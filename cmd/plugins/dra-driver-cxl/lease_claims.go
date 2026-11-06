@@ -34,6 +34,7 @@ import (
 
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 // The lease device "lease" of the cxl.nri.io slice: a claim on it gives
@@ -440,8 +441,11 @@ func (b *broker) mounts() ([]mountInfo, error) {
 	if b.cfg.Mounts != nil {
 		return b.cfg.Mounts()
 	}
-	return newSysMounter("").Mounts()
+	return kernel.New().Mounts()
 }
+
+// mountInfo is a mount of a mount namespace.
+type mountInfo = kernel.MountInfo
 
 // listen starts the socket of a lease claim if it is not running.
 // Called with b.mu held.

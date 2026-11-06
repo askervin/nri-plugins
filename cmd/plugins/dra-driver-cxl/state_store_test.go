@@ -28,7 +28,7 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/kubernetes/fake"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 
@@ -525,72 +525,6 @@ func TestStateStoreLost(t *testing.T) {
 	}
 }
 
-// TestStartOnALostStore: on a store in LOST mode the driver starts (D-50,
-// L-24: no crash loop): the node state, the local allocator, the pool
-// driver and the lease broker load and write back what they read, the
-// first Prepare fails with the text of the lost state, and nothing is
-// written: neither the document nor a view.
-func TestStartOnALostStore(t *testing.T) {
-	root := t.TempDir()
-	local, pool := filepath.Join(root, device.DriverName), filepath.Join(root, device.PoolDriverName)
-	noErr(t, os.MkdirAll(local, 0o750))
-	noErr(t, os.WriteFile(filepath.Join(local, store.FileName), []byte("{"), 0o600))
-	for _, d := range []string{"sys/bus/cxl/devices", "sys/devices/system/node"} {
-		noErr(t, os.MkdirAll(filepath.Join(root, d), 0o755))
-	}
-	s, closeStore := openTestStateStore(t, local, pool, "boot-1", store.Flags{CompatViews: true})
-	defer closeStore()
-	if s.st.Lost() == nil {
-		t.Fatal("the store is not lost")
-	}
-	ctx := context.Background()
-
-	config := &pluginConfig{Flags: &CXLFlags{}, KubeletPluginDir: local}
-	allocator, err := newLocalHelper(ctx, config, &DriverConfig{}, root, nil, "boot-1")
-	noErr(t, err)
-	if uses := allocator.Snapshot().Uses; len(uses) != 0 {
-		t.Errorf("local uses %v", uses)
-	}
-	devs := device.DevicesInfo{"dram": {Name: "dram", Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}}}
-	ns, err := newNodeState(devs, filepath.Join(root, "cdi"), filepath.Join(local, device.PreparedClaimsFileName), "n1", &DriverConfig{}, nil, "boot-1")
-	noErr(t, err)
-	flags := &CXLFlags{PoolDriverName: device.PoolDriverName, PoolPrepareTimeout: time.Second}
-	p, err := loadPoolDriver(ctx, config, flags, root, nil, "boot-1", nil, s.st)
-	noErr(t, err)
-	if r := p.records(); len(r.Preparations) != 0 || len(p.Serials()) != 0 {
-		t.Errorf("pool driver: preparations %v, serials %v", r.Preparations, p.Serials())
-	}
-	cache, err := cdiapi.NewCache(cdiapi.WithSpecDirs(filepath.Join(root, "cdi")), cdiapi.WithAutoRefresh(false))
-	noErr(t, err)
-	b, err := newBroker(brokerConfig{Client: fake.NewClientset(), NodeName: testNode, DataDir: local, CDI: cache,
-		CLI: filepath.Join(root, "cxl-request"), WaitDefault: time.Second, PoolDriver: device.PoolDriverName, BootID: "boot-1"})
-	noErr(t, err)
-	defer b.stop()
-
-	claim := &resourcev1.ResourceClaim{
-		ObjectMeta: metav1.ObjectMeta{UID: "u1", Name: "c", Namespace: "ns"},
-		Status: resourcev1.ResourceClaimStatus{Allocation: &resourcev1.AllocationResult{Devices: resourcev1.DeviceAllocationResult{
-			Results: []resourcev1.DeviceRequestAllocationResult{{Request: "mem", Driver: device.DriverName, Pool: "n1", Device: "dram"}}}}},
-	}
-	if err := ns.Prepare(ctx, claim); err == nil || !strings.Contains(err.Error(), "the driver state is lost") ||
-		!strings.Contains(err.Error(), "--new-state") {
-		t.Errorf("Prepare in LOST mode: %v", err)
-	}
-	if ns.GetClaimInfo("u1") != nil {
-		t.Error("the claim is prepared")
-	}
-	if data, err := os.ReadFile(filepath.Join(local, store.FileName)); err != nil || string(data) != "{" {
-		t.Errorf("the lost document was rewritten: %q %v", data, err)
-	}
-	for _, name := range store.ViewNames {
-		for _, dir := range []string{local, pool} {
-			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
-				t.Errorf("view %s written in LOST mode", filepath.Join(dir, name))
-			}
-		}
-	}
-}
-
 // TestViewsOfDriverFiles commits the state files that the driver's file
 // writer wrote on a node, in the directories cxl.nri.io and cxl-pool.nri.io
 // of testdata/node-files (of the VM n4-cxl-shared-2 after a test90 run: a
@@ -673,4 +607,72 @@ var importOrder = []string{
 func untouchedDevice(d preparedPoolDevice) preparedPoolDevice {
 	return preparedPoolDevice{Result: d.Result, Request: d.Request, Device: d.Device, Pool: d.Pool, Serial: d.Serial, Shared: d.Shared,
 		Size: d.Size, Mode: d.Mode, ReadOnly: d.ReadOnly, Persistent: d.Persistent, Access: d.Access, FsType: d.FsType, Path: d.Path, Node: -1}
+}
+
+// On a store in LOST mode the driver starts (no crash loop): the device
+// engine recovers nothing, the pool driver, the node state and the lease
+// broker start empty, the first Prepare fails with the text of the lost
+// state, and nothing is written: neither the document nor a view.
+func TestStartOnALostStore(t *testing.T) {
+	root := t.TempDir()
+	local, pool := filepath.Join(root, device.DriverName), filepath.Join(root, device.PoolDriverName)
+	noErr(t, os.MkdirAll(local, 0o750))
+	noErr(t, os.WriteFile(filepath.Join(local, store.FileName), []byte("{"), 0o600))
+	for _, d := range []string{"sys/bus/cxl/devices", "sys/devices/system/node", "cdi"} {
+		noErr(t, os.MkdirAll(filepath.Join(root, d), 0o755))
+	}
+	s, closeStore := openTestStateStore(t, local, pool, "boot-1", store.Flags{CompatViews: true})
+	defer closeStore()
+	if s.st.Lost() == nil {
+		t.Fatal("the store is not lost")
+	}
+	ctx := context.Background()
+
+	flags := &CXLFlags{PoolDriverName: device.PoolDriverName, PoolPrepareTimeout: time.Second, CDIRoot: filepath.Join(root, "cdi"), NodeName: "n1"}
+	config := &pluginConfig{Flags: flags, KubeletPluginDir: local}
+	devices, err := newDriverDevices(config, flags, &DriverConfig{}, root, nil, s.st)
+	noErr(t, err)
+	p, err := loadPoolDriver(config, flags, nil, "boot-1", nil, s.st, devices)
+	noErr(t, err)
+	ns, err := newDriverState(ctx, config, &DriverConfig{}, root, p, nil, devices, s.st, "boot-1")
+	noErr(t, err)
+	if r := p.records(); len(r.Preparations) != 0 || len(p.Serials()) != 0 {
+		t.Errorf("pool driver: preparations %v, serials %v", r.Preparations, p.Serials())
+	}
+	if uses := ns.local.Snapshot().Uses; len(uses) != 0 {
+		t.Errorf("local uses %v", uses)
+	}
+	cache, err := cdiapi.NewCache(cdiapi.WithSpecDirs(filepath.Join(root, "cdi")), cdiapi.WithAutoRefresh(false))
+	noErr(t, err)
+	b, err := newBroker(brokerConfig{Client: k8sfake.NewClientset(), NodeName: testNode, DataDir: local, CDI: cache,
+		CLI: filepath.Join(root, "cxl-request"), WaitDefault: time.Second, PoolDriver: device.PoolDriverName, BootID: "boot-1"})
+	noErr(t, err)
+	defer b.stop()
+
+	ns.Lock()
+	ns.Allocatable = device.DevicesInfo{"dram": {Name: "dram", Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}}}
+	ns.Unlock()
+	claim := &resourcev1.ResourceClaim{
+		ObjectMeta: metav1.ObjectMeta{UID: "u1", Name: "c", Namespace: "ns"},
+		Status: resourcev1.ResourceClaimStatus{Allocation: &resourcev1.AllocationResult{Devices: resourcev1.DeviceAllocationResult{
+			Results: []resourcev1.DeviceRequestAllocationResult{{Request: "mem", Driver: device.DriverName, Pool: "n1", Device: "dram"}}}}},
+	}
+	if err := ns.Prepare(ctx, claim); err == nil || !strings.Contains(err.Error(), "the driver state is lost") ||
+		!strings.Contains(err.Error(), "--new-state") {
+		t.Errorf("Prepare in LOST mode: %v", err)
+	}
+	if ns.GetClaimInfo("u1") != nil {
+		t.Error("the claim is prepared")
+	}
+	noErr(t, ns.Unprepare(ctx, "u1"))
+	if data, err := os.ReadFile(filepath.Join(local, store.FileName)); err != nil || string(data) != "{" {
+		t.Errorf("the lost document was rewritten: %q %v", data, err)
+	}
+	for _, name := range store.ViewNames {
+		for _, dir := range []string{local, pool} {
+			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+				t.Errorf("view %s written in LOST mode", filepath.Join(dir, name))
+			}
+		}
+	}
 }

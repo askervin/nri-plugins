@@ -26,6 +26,95 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
+// orphanOwner owns the uses of a memdev in localDevices.json whose release
+// failed (no claim UID is "-").
+const orphanOwner = "-"
+
+// The content of localDevices.json, as the local allocator of an older
+// driver wrote it: the old files that a test imports have it.
+
+// localSlice is what one allocation result got of a local memdev.
+type localSlice struct {
+	Request string `json:"request"`
+	// Result is the index of the allocation result in the claim (of a
+	// persistent device).
+	Result int    `json:"result,omitempty"`
+	Region string `json:"region"`
+	// Mode is api.ModeNUMA (the memory of the slice is system RAM of the
+	// NUMA node of the region) or api.ModeDax (a devdax device).
+	Mode string `json:"mode"`
+	// Size is the slice size in bytes.
+	Size uint64 `json:"size"`
+	// Dax is the dax device of the slice (daxX.Y).
+	Dax       string `json:"dax,omitempty"`
+	DaxDevice string `json:"daxDevice,omitempty"` // dax: /dev/daxX.Y
+	Major     int    `json:"major,omitempty"`
+	Minor     int    `json:"minor,omitempty"`
+	ReadOnly  bool   `json:"readOnly,omitempty"`
+	// The use of a persistent device by the allocation result (Mode
+	// api.ModeBlock or api.ModeFs, Size the size of the block device,
+	// ReadOnly effective): fs: the effective access, the type and the node
+	// mount of the filesystem, the loop device of a cached node mount and
+	// the directory in the containers.
+	Access     string `json:"access,omitempty"`
+	FsType     string `json:"fsType,omitempty"`
+	NodeMount  string `json:"nodeMount,omitempty"`
+	LoopDevice string `json:"loopDevice,omitempty"`
+	Path       string `json:"path,omitempty"`
+}
+
+// localDevice is a local memdev that the allocator used.
+type localDevice struct {
+	Serial    uint64 `json:"serial"`
+	SerialHex string `json:"serialHex"`
+	Memdev    string `json:"memdev"`
+	// Region is the region that the allocator created on the memdev, ""
+	// while it is created: then the region on the memdev that Creating
+	// names is the allocator's, or every region on the memdev if Creating
+	// is "" (the memdev had none, checkRegions).
+	Region string `json:"region,omitempty"`
+	// Creating is the region that cxl create-region creates for the
+	// device while Region is "", recorded before it runs (regionNote); ""
+	// if its name is not known (a record of an older plugin).
+	Creating string `json:"creating,omitempty"`
+	Node     int    `json:"node"` // NUMA node of the memory of the region, -1 if unknown
+	// Dax is the first dax device of the region, "" while the region is
+	// not set up: its creation failed or was cut, or it was kept for
+	// claims whose Prepare did not finish (keepRegion), until setUpRegion.
+	Dax string `json:"dax,omitempty"`
+	// Shared is true for a shared memdev: every claim has the whole dax
+	// device Dax; of a persistent device, sharedDevices listed it when its
+	// region was created.
+	Shared bool `json:"shared,omitempty"`
+	// Persistent is true for a memdev of persistent memory: its region is
+	// a pmem region that all claims use, never sliced, zeroed or onlined.
+	Persistent bool `json:"persistent,omitempty"`
+	// NdRegion is the nvdimm region of the pmem region, "" while the
+	// region is not set up (the role of Dax of other devices).
+	NdRegion string `json:"ndRegion,omitempty"`
+	// Namespace is the fsdax namespace (map mem) of NdRegion, BlockDevice
+	// its block device (/dev/pmemK) and BlockMajor, BlockMinor its
+	// numbers; "" while there is none.
+	Namespace   string `json:"namespace,omitempty"`
+	BlockDevice string `json:"blockDevice,omitempty"`
+	BlockMajor  int    `json:"blockMajor,omitempty"`
+	BlockMinor  int    `json:"blockMinor,omitempty"`
+	// Claims are the slices of the claims that use the memdev, by claim
+	// UID. A claim without slices holds the region: the claim whose
+	// Acquire creates the region (recorded before it, so that a Prepare
+	// cut in the creation leaves its claim), and a claim whose Prepare
+	// did not finish, for its Unprepare or its Prepare again
+	// (keepRegion).
+	Claims map[string][]*localSlice `json:"claims"`
+}
+
+// localState is the content of the state file: the devices the allocator
+// uses, and the boot of the kernel that they belong to.
+type localState struct {
+	BootID  string         `json:"bootID"`
+	Devices []*localDevice `json:"devices"`
+}
+
 // putLocal replaces the records of cxl.nri.io in doc with those of the
 // content of its state files: the prepared claims and their infos
 // (preparedClaims.json and preparedClaimsInfo.json; a claim that only one

@@ -1151,68 +1151,6 @@ func TestBrokerCloseClaimRetry(t *testing.T) {
 	e.wantGone(companionName(r.Lease))
 }
 
-// TestLeaseDevice publishes the lease device and prepares a claim on it
-// through nodeState: result marker + lease CDI device, socket opened.
-func TestLeaseDevice(t *testing.T) {
-	devs, err := buildDevInfos(&DriverConfig{IgnoreDRAMNodes: true, PublishLeaseDevice: true}, &nricxl.Devices{}, nil, nil)
-	noErr(t, err)
-	if d := devs["lease"]; d == nil || d.Name != "lease" {
-		t.Fatalf("no lease device in %v", devs)
-	} else if _, ok := d.Dev.(*device.LeaseToken); !ok {
-		t.Fatalf("lease Dev %T", d.Dev)
-	}
-	none, _ := buildDevInfos(&DriverConfig{IgnoreDRAMNodes: true}, &nricxl.Devices{}, nil, nil)
-	if len(none) != 0 {
-		t.Fatalf("lease device published without --leases: %v", none)
-	}
-
-	e := newBrokerEnv(t)
-	cache, err := cdiapi.NewCache(cdiapi.WithSpecDirs(e.cdiDir), cdiapi.WithAutoRefresh(false))
-	noErr(t, err)
-	s := &nodeState{
-		baseState: &baseState{
-			CdiCache:               cache,
-			Allocatable:            devs,
-			Prepared:               claimPreparations{},
-			PreparedClaimsFilePath: filepath.Join(e.dir, "preparedClaims.json"),
-			NodeName:               testNode,
-		},
-		config:         &DriverConfig{},
-		preparedClaims: PreparedClaimsInfo{},
-		claimsFilePath: filepath.Join(e.dir, "preparedClaimsInfo.json"),
-		podClaims:      map[string]map[string]bool{},
-	}
-
-	r := s.GetResources()
-	got := r.Pools[testNode].Slices[0].Devices
-	want := []resourceapi.Device{{
-		Name: "lease",
-		Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
-			"type": {StringValue: ptr("lease")},
-		},
-		AllowMultipleAllocations: ptr(true),
-	}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("published %+v", got)
-	}
-
-	// lending disabled: Prepare fails
-	wantErr(t, s.Prepare(context.Background(), leaseClaimObj()), "claim demo/lease: lending to running containers is disabled (--leases=false)")
-
-	s.leases = e.b
-	noErr(t, s.Prepare(context.Background(), leaseClaimObj()))
-	res := s.Prepared[testLeaseClaimUID]
-	if len(res.Devices) != 1 || !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl=claim-lc1-0", "nri.io/cxl=lease-lc1"}) {
-		t.Fatalf("prepared %+v", res.Devices)
-	}
-	if info := s.preparedClaims[testLeaseClaimUID]; info == nil || info.Devices[0].DeviceType != "lease" || info.Devices[0].Mode != "" {
-		t.Fatalf("claim info %+v", info)
-	}
-	if _, err := os.Stat(e.sock()); err != nil {
-		t.Fatalf("no lease socket: %v", err)
-	}
-}
-
 // poolSlice is the pool controller's ResourceSlice with an exclusive
 // device pooled0 and the shared devices shared0 and shared1.
 func poolSlice() *resourceapi.ResourceSlice {
@@ -2910,5 +2848,65 @@ func TestBrokerLendsRestored(t *testing.T) {
 	case <-l.restored:
 		t.Fatal("lends restored twice")
 	default:
+	}
+}
+
+// The lease device is published with --leases only, and a claim on it is
+// prepared through the node state: the result marker and the lease CDI
+// device, its socket opened; without the broker its Prepare fails.
+func TestLeaseDevice(t *testing.T) {
+	devs, err := buildDevInfos(&DriverConfig{IgnoreDRAMNodes: true, PublishLeaseDevice: true}, &nricxl.Devices{}, nil, nil)
+	noErr(t, err)
+	if d := devs["lease"]; d == nil || d.Name != "lease" {
+		t.Fatalf("no lease device in %v", devs)
+	} else if _, ok := d.Dev.(*device.LeaseToken); !ok {
+		t.Fatalf("lease Dev %T", d.Dev)
+	}
+	none, _ := buildDevInfos(&DriverConfig{IgnoreDRAMNodes: true}, &nricxl.Devices{}, nil, nil)
+	if len(none) != 0 {
+		t.Fatalf("lease device published without --leases: %v", none)
+	}
+
+	e := newBrokerEnv(t)
+	n := newLocalTestEnv(t)
+	n.start()
+	s := n.s
+	s.Lock()
+	s.Allocatable = devs
+	s.Unlock()
+
+	r := s.GetResources()
+	got := r.Pools[testNode].Slices[0].Devices
+	want := []resourceapi.Device{{
+		Name: "lease",
+		Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
+			"type": {StringValue: ptr("lease")},
+		},
+		AllowMultipleAllocations: ptr(true),
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("published %+v", got)
+	}
+
+	// lending disabled: Prepare fails
+	ctx := context.Background()
+	wantErr(t, s.Prepare(ctx, leaseClaimObj()), "claim demo/lease: lending to running containers is disabled (--leases=false)")
+	if n.preparation(testLeaseClaimUID) != nil {
+		t.Fatalf("preparation of a refused claim %+v", n.preparation(testLeaseClaimUID))
+	}
+
+	// the lease claim records are the broker's, in the store of its
+	// directory
+	s.leases = e.b
+	noErr(t, s.Prepare(ctx, leaseClaimObj()))
+	res := s.Prepared[testLeaseClaimUID]
+	if len(res.Devices) != 1 || !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl=claim-lc1-0", "nri.io/cxl=lease-lc1"}) {
+		t.Fatalf("prepared %+v", res.Devices)
+	}
+	if info := s.GetClaimInfo(testLeaseClaimUID); info == nil || info.Devices[0].DeviceType != "lease" || info.Devices[0].Mode != "" {
+		t.Fatalf("claim info %+v", info)
+	}
+	if _, err := os.Stat(e.sock()); err != nil {
+		t.Fatalf("no lease socket: %v", err)
 	}
 }

@@ -29,183 +29,40 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 
 	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 )
 
-// wantRegionCount checks how many times region0 was created and destroyed.
-func (f *fakeLocalSys) wantRegionCount(t *testing.T, created, destroyed int) {
+// newSharedEnv returns a started node whose local memdev is configured
+// shared, with the memdevs of specs plugged.
+func newSharedEnv(t *testing.T, specs ...fake.MemdevSpec) *localTestEnv {
 	t.Helper()
-	cmds := f.commands()
-	if c, d := strings.Count(cmds, "cxl create-region"), strings.Count(cmds, "cxl destroy-region"); c != created || d != destroyed {
-		t.Fatalf("region created %d and destroyed %d times, expected %d and %d:\n%s", c, d, created, destroyed, cmds)
-	}
+	e := newLocalTestEnv(t, specs...)
+	configureShared(e, true)
+	e.start()
+	return e
 }
 
-// wantUse checks how the allocator uses the local memdev.
-func wantUse(t *testing.T, a *localAllocator, want *localUse) {
-	t.Helper()
-	got, ok := a.Snapshot().use(localSerial)
-	switch {
-	case want == nil && ok:
-		t.Fatalf("memdev used %+v, expected unused", got)
-	case want != nil && (!ok || got.Shared != want.Shared || !slices.Equal(got.Claims, want.Claims)):
-		t.Fatalf("memdev used %v %+v, expected %+v", ok, got, *want)
+// configureShared configures the local memdev shared or not: in the
+// configuration of the publisher and of the next start, and in the shared
+// memdevs of the running device engine.
+func configureShared(e *localTestEnv, shared bool) {
+	e.config.SharedDevices = nil
+	e.shared = map[uint64]bool{}
+	if shared {
+		e.config.SharedDevices = []string{"0xc100e2e1"}
+		e.shared[localSerial] = true
 	}
-}
-
-// acquireShared gives the shared local memdev to a claim.
-func acquireShared(t *testing.T, a *localAllocator, uid string, readOnly bool) *localSlice {
-	t.Helper()
-	s, err := a.AcquireShared(testContext(t), uid, "mem", localSerial, readOnly, "1 share")
-	noErr(t, err)
-	return s
-}
-
-// The claims of a shared memdev get the same whole dax device: zeroed once
-// when its region is created, never resized or onlined; the region stays
-// when the memdev is idle and configured shared, and is reused by the next
-// claim without zeroing.
-func TestLocalSharedClaims(t *testing.T) {
-	f := newFakeLocalSys(t)
-	dir := t.TempDir()
-	a := f.allocator(t, dir)
-	a.SetShared(map[uint64]bool{localSerial: true})
-	ctx := context.Background()
-
-	wantSlice(t, acquireShared(t, a, "u1", false),
-		localSlice{Request: "mem", Region: "region0", Mode: api.ModeDax, Size: localRegionSize, Dax: "dax0.0", DaxDevice: "/dev/dax0.0", Major: 252})
-	wantSlice(t, acquireShared(t, a, "u2", true),
-		localSlice{Request: "mem", Region: "region0", Mode: api.ModeDax, Size: localRegionSize, Dax: "dax0.0", DaxDevice: "/dev/dax0.0", Major: 252, ReadOnly: true})
-	f.wantDax(t, "dax0.0", localRegionSize, "device_dax")
-	f.wantMemoryBlocks(t, "")
-	f.wantRegionCount(t, 1, 0)
-	if !slices.Equal(f.zeroed, []string{"252:0 1073741824 2097152"}) || strings.Contains(f.commands(), "size") {
-		t.Fatalf("shared device zeroed %v or resized:\n%s", f.zeroed, f.commands())
+	if e.devices != nil {
+		e.devices.setShared(e.shared)
 	}
-	wantUse(t, a, &localUse{Shared: true, Claims: []string{"u1", "u2"}})
-	if !a.holds("u2", "dax0.0") {
-		t.Fatal("dax0.0 not held for u2")
-	}
-	// the state file says shared
-	data, err := os.ReadFile(filepath.Join(dir, localStateFileName))
-	noErr(t, err)
-	if !strings.Contains(string(data), `"shared": true`) {
-		t.Fatalf("state file %s", data)
-	}
-
-	// releases keep the region and the dax device
-	noErr(t, a.Release(ctx, "u1"))
-	noErr(t, a.Release(ctx, "u2"))
-	f.wantRegionCount(t, 1, 0)
-	f.wantDax(t, "dax0.0", localRegionSize, "device_dax")
-	wantUse(t, a, &localUse{Shared: true, Claims: []string{}})
-	// the idle device is reused
-	acquireShared(t, a, "u3", false)
-	f.wantRegionCount(t, 1, 0)
-	noErr(t, a.Release(ctx, "u3"))
-	f.wantRegionCount(t, 1, 0)
-	if len(f.zeroed) != 1 {
-		t.Fatalf("zeroed again: %v", f.zeroed)
-	}
-
-	// not configured shared any more: the last release takes the region
-	acquireShared(t, a, "u4", false)
-	a.SetShared(nil)
-	noErr(t, a.Release(ctx, "u4"))
-	f.wantRegionReleased(t, "region0")
-	wantUse(t, a, nil)
-}
-
-// A memdev is either sliced or shared while it has claims.
-func TestLocalSharedMismatch(t *testing.T) {
-	f := newFakeLocalSys(t)
-	a := f.allocator(t, t.TempDir())
-	ctx := context.Background()
-
-	acquire(t, a, "u1", api.ModeDax, localBlockSize)
-	_, err := a.AcquireShared(ctx, "u2", "mem", localSerial, false, "exclusive")
-	wantErr(t, err, "memdev mem0 (serial 0xc100e2e1): used as slices by claims [u1]; a shared device cannot be sliced")
-	f.wantDax(t, "dax0.0", localBlockSize, "device_dax")
-	noErr(t, a.Release(ctx, "u1"))
-	f.wantRegionReleased(t, "region0")
-
-	acquireShared(t, a, "u2", false)
-	_, _, err = a.Acquire(ctx, "u3", "mem", localSerial, api.ModeNUMA, localBlockSize, false)
-	wantErr(t, err, "memdev mem0 (serial 0xc100e2e1): used shared by claims [u2]; a sliced device cannot be shared")
-	f.wantDax(t, "dax0.0", localRegionSize, "device_dax")
-	f.wantRegionCount(t, 2, 1)
-	noErr(t, a.Release(ctx, "u2"))
-
-	// a sliced memdev without claims is released for a shared claim, and
-	// an idle shared one that is not configured shared for a slice
-	a.SetShared(nil)
-	acquire(t, a, "u4", api.ModeDax, localBlockSize)
-	noErr(t, a.Release(ctx, "u4"))
-	f.wantRegionCount(t, 3, 3)
-}
-
-// A restart keeps an idle shared device while it is configured shared,
-// keeps one with prepared claims anyway, and releases one that is idle and
-// not configured shared.
-func TestLocalSharedReconcile(t *testing.T) {
-	f := newFakeLocalSys(t)
-	dir := t.TempDir()
-	ctx := context.Background()
-	a := f.allocator(t, dir)
-	acquireShared(t, a, "u1", false)
-	acquireShared(t, a, "u2", true)
-
-	// configured shared: the claim that is not prepared is dropped
-	b := f.allocator(t, dir)
-	b.SetShared(map[uint64]bool{localSerial: true})
-	b.Reconcile(ctx, map[string]bool{"u2": true}, nil)
-	wantUse(t, b, &localUse{Shared: true, Claims: []string{"u2"}})
-	f.wantDax(t, "dax0.0", localRegionSize, "device_dax")
-	// configured shared, no claims: kept idle
-	b = f.allocator(t, dir)
-	b.SetShared(map[uint64]bool{localSerial: true})
-	b.Reconcile(ctx, nil, nil)
-	wantUse(t, b, &localUse{Shared: true, Claims: []string{}})
-	f.wantRegionCount(t, 1, 0)
-	acquireShared(t, b, "u3", false)
-	f.wantRegionCount(t, 1, 0)
-
-	// not configured shared: kept for its prepared claim, released after
-	c := f.allocator(t, dir)
-	c.Reconcile(ctx, map[string]bool{"u3": true}, nil)
-	wantUse(t, c, &localUse{Shared: true, Claims: []string{"u3"}})
-	f.wantRegionCount(t, 1, 0)
-	noErr(t, c.Release(ctx, "u3"))
-	f.wantRegionReleased(t, "region0")
-	wantUse(t, c, nil)
-
-	// not configured shared and idle: released at start
-	acquireShared(t, c, "u4", false)
-	noErr(t, c.Release(ctx, "u4"))
-	f.wantRegionCount(t, 2, 1)
-	d := f.allocator(t, dir)
-	d.Reconcile(ctx, nil, nil)
-	f.wantRegionReleased(t, "region0")
-	wantUse(t, d, nil)
-}
-
-// A state file without "shared" is of a sliced memdev.
-func TestLocalSharedOldStateFile(t *testing.T) {
-	f := newFakeLocalSys(t)
-	dir := t.TempDir()
-	state := `{"bootID":"boot-1","devices":[{"serial":3238060769,"serialHex":"c100e2e1","memdev":"mem0","region":"region0","node":-1,"dax":"dax0.0","claims":{}}]}`
-	noErr(t, os.WriteFile(filepath.Join(dir, localStateFileName), []byte(state), 0o600))
-	a := f.allocator(t, dir)
-	if d := a.devices[localSerial]; d == nil || d.Shared {
-		t.Fatalf("device of an old state file %+v", d)
-	}
-	wantUse(t, a, &localUse{Claims: []string{}})
 }
 
 // sharedClaim returns a claim allocated the shared local memdev for
@@ -219,20 +76,23 @@ func sharedClaim(uid, shares string, configs ...string) *resourcev1.ResourceClai
 	return c
 }
 
-// newSharedTestState returns a localTestState whose local memdev is
-// configured shared.
-func newSharedTestState(t *testing.T) *localTestState {
-	e := newLocalTestState(t)
-	e.config.SharedDevices = []string{"0xc100e2e1"}
-	e.local.SetShared(map[uint64]bool{localSerial: true})
-	e.rescan()
-	return e
+// wantSharedUse checks how the device engine uses the local memdev, nil
+// for not at all.
+func wantSharedUse(t *testing.T, e *localTestEnv, want *localUse) {
+	t.Helper()
+	got, ok := e.s.local.Snapshot().use(localSerial)
+	switch {
+	case want == nil && ok:
+		t.Fatalf("memdev used %+v, expected unused", got)
+	case want != nil && (!ok || got.Shared != want.Shared || !slices.Equal(got.Claims, want.Claims)):
+		t.Fatalf("memdev used %v %+v, expected %+v", ok, got, *want)
+	}
 }
 
-// published returns the local memdev as the node state publishes it, nil
-// if it is not published.
-func (e *localTestState) published() *resourcev1.Device {
-	for _, d := range e.GetResources().Pools[testNode].Slices[0].Devices {
+// sharedPublished returns the local memdev as the node state publishes
+// it, nil if it is not published.
+func sharedPublished(e *localTestEnv) *resourcev1.Device {
+	for _, d := range e.s.GetResources().Pools[testNode].Slices[0].Devices {
 		if d.Name == localDeviceName {
 			return &d
 		}
@@ -240,9 +100,265 @@ func (e *localTestState) published() *resourcev1.Device {
 	return nil
 }
 
+// wantCDIDeviceIDs checks the CDI devices of the result of a prepared
+// claim.
+func wantCDIDeviceIDs(t *testing.T, e *localTestEnv, uid string, ids ...string) {
+	t.Helper()
+	res, ok := e.s.Prepared[uid]
+	if !ok || len(res.Devices) != 1 || !slices.Equal(res.Devices[0].CDIDeviceIDs, ids) {
+		t.Fatalf("claim %s: prepared %v %+v, expected CDI devices %v", uid, ok, res.Devices, ids)
+	}
+}
+
+// wantDax checks the size and the driver of a dax device of the kernel.
+func wantDax(t *testing.T, e *localTestEnv, dax string, size uint64, driver string) {
+	t.Helper()
+	if got, d := e.k.DaxSize(dax), e.k.DaxDriver(dax); got != size || d != driver {
+		t.Fatalf("%s: size %d driver %q, expected %d %q", dax, got, d, size, driver)
+	}
+}
+
+// logLines returns the lines of logs that match the constant template of
+// compat (no regular expression).
+func logLines(logs, template string) []string {
+	var out []string
+	for _, line := range strings.Split(logs, "\n") {
+		if compat.Matches(template, line) {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// wantLogLine fails the test unless a line of logs matches the constant
+// template of compat.
+func wantLogLine(t *testing.T, logs, template string) {
+	t.Helper()
+	if len(logLines(logs, template)) == 0 {
+		t.Fatalf("no line %q in\n%s", template, logs)
+	}
+}
+
+// regexpLines returns the lines of logs that match the regular expression
+// constant pattern of compat.
+func regexpLines(t *testing.T, logs, pattern string) []string {
+	t.Helper()
+	var out []string
+	for _, line := range strings.Split(logs, "\n") {
+		ok, err := compat.MatchesRegexp(pattern, line)
+		noErr(t, err)
+		if ok {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// publishLocalAs makes the devices of the last scan have the local memdev
+// shared or not, as a scan before a change of the configuration published
+// it: a claim allocated from it then is a stale allocation.
+func publishLocalAs(e *localTestEnv, shared bool) {
+	e.t.Helper()
+	cfg := *e.config
+	cfg.SharedDevices = nil
+	if shared {
+		cfg.SharedDevices = []string{"0xc100e2e1"}
+	}
+	devs, err := buildDevInfos(&cfg, &nricxl.Devices{MemoryDevices: []*nricxl.MemoryDevice{e.memdevs[localSerial]}}, nil,
+		&localSnapshot{BlockSize: localBlockSize})
+	noErr(e.t, err)
+	if devs[localDeviceName] == nil {
+		e.t.Fatalf("the local memdev is not published shared %v", shared)
+	}
+	e.s.Lock()
+	e.s.Allocatable = devs
+	e.s.Unlock()
+}
+
+// The claims of a shared memdev get the same whole dax device: zeroed once
+// when its region is made, never resized or onlined; the region stays when
+// the memdev is idle and configured shared, and the next claim gets it
+// without zeroing. Without the configuration the last Unprepare releases
+// the region. The lines of the zeroing and of the claims are the pinned
+// ones.
+func TestLocalSharedClaims(t *testing.T) {
+	e := newSharedEnv(t)
+	logs := captureKlog(t)
+	resized := false
+	e.k.Before("write bus/dax/devices/dax0.0/size", func() { resized = true })
+	e.mustPrepare(localClaim("u1", -int64(device.SharesUnlimited)))
+	e.mustPrepare(localClaim("u2", -1, localROConfig))
+	for _, uid := range []string{"u1", "u2"} {
+		g := e.grant(uid, 0)
+		if g.Got.Region != "region0" || g.Got.Dax != "dax0.0" || g.Got.Size != localRegionSize || g.Got.DaxDev.Major != 252 || g.Asked.ReadOnly != (uid == "u2") {
+			t.Fatalf("grant %s: %+v %+v", uid, g.Asked, g.Got)
+		}
+	}
+	wantDax(t, e, "dax0.0", localRegionSize, "device_dax")
+	if got := e.onlineBlocks(); len(got) > 0 {
+		t.Fatalf("online blocks %v", got)
+	}
+	wantLocalRegionCount(t, e, 1, 0)
+	if z := e.k.Zeroed(); !slices.Equal(z, []string{"252:0 1073741824 2097152"}) || resized {
+		t.Fatalf("shared device zeroed %v or resized (%v)", z, resized)
+	}
+	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{"u1", "u2"}})
+	if d := e.localDevice(localSerial); d == nil || !d.Shared {
+		t.Fatalf("view %+v", d)
+	}
+	lines := logs()
+	wantLogLine(t, lines, compat.LogZeroedNewSharedSharedDaxSizeDRALocalSizeIn)
+	wantLogLine(t, lines, compat.LogClaimWriterUidRequestMemSharedSharedDaxSizeDRALocalSize)
+	wantLogLine(t, lines, compat.LogClaimClaimUidRequestMemSharedSharedDaxSizeDRALocalSize)
+	if got := regexpLines(t, lines, compat.LogZeroedNewSharedReleasingItsRegionReleasedSharedRegion); len(got) != 1 {
+		t.Fatalf("lines of the zeroing and the release %q", got)
+	}
+
+	// Unprepares keep the region and the dax device
+	e.mustUnprepare("u1")
+	e.mustUnprepare("u2")
+	wantLocalRegionCount(t, e, 1, 0)
+	wantDax(t, e, "dax0.0", localRegionSize, "device_dax")
+	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{}})
+	// the idle device is reused
+	e.mustPrepare(localClaim("u3", -1))
+	e.mustUnprepare("u3")
+	wantLocalRegionCount(t, e, 1, 0)
+	if z := e.k.Zeroed(); len(z) != 1 {
+		t.Fatalf("zeroed again: %v", z)
+	}
+
+	// not configured shared any more: the last Unprepare takes the region
+	e.mustPrepare(localClaim("u4", -1))
+	configureShared(e, false)
+	e.mustUnprepare("u4")
+	wantReleasedLast(t, e, "region0")
+	wantSharedUse(t, e, nil)
+}
+
+// A memdev is either sliced or shared while it has claims: a stale
+// allocation of the other use is refused before the memdev is touched. An
+// idle shared device that is not configured shared is released for a
+// slice.
+func TestLocalSharedMismatch(t *testing.T) {
+	e := newLocalTestEnv(t)
+	e.start()
+	e.mustPrepare(localClaim("u1", localBlockSize, localDaxConfig))
+	publishLocalAs(e, true)
+	before := e.k.Commands()
+	wantErr(t, e.prepare(localClaim("u2", -int64(device.SharesUnlimited))),
+		"memdev mem0 (serial 0xc100e2e1): used as slices by claims [u1]; a shared device cannot be sliced")
+	if got := e.k.CommandsSince(before); got != "" {
+		t.Fatalf("commands of a refused claim:\n%s", got)
+	}
+	wantDax(t, e, "dax0.0", localBlockSize, "device_dax")
+	e.mustUnprepare("u1")
+	wantReleasedLast(t, e, "region0")
+
+	e.mustPrepare(localClaim("u2", -1))
+	publishLocalAs(e, false)
+	wantErr(t, e.prepare(localClaim("u3", localBlockSize)),
+		"memdev mem0 (serial 0xc100e2e1): used shared by claims [u2]; a sliced device cannot be shared")
+	wantDax(t, e, "dax0.0", localRegionSize, "device_dax")
+	wantLocalRegionCount(t, e, 2, 1)
+	e.mustUnprepare("u2")
+
+	// the idle shared device, not configured shared, for a slice
+	configureShared(e, false)
+	e.mustPrepare(localClaim("u4", localBlockSize, localDaxConfig))
+	e.mustUnprepare("u4")
+	wantLocalRegionCount(t, e, 3, 3)
+	e.wantClean()
+}
+
+// A restart keeps an idle shared device while it is configured shared,
+// keeps one with prepared claims anyway, and releases one that is idle and
+// not configured shared; the grant of a claim whose Prepare did not finish
+// is dropped. The start logs what it keeps and releases in the pinned
+// lines.
+func TestLocalSharedReconcile(t *testing.T) {
+	const other = 0x91
+	e := newSharedEnv(t, fake.MemdevSpec{Serial: other, Ram: 512 * mib, HostBridge: 24})
+	e.mustPrepare(localClaim("u2", -1, localROConfig))
+	// u1 is cut after its shared device, in the region of its second
+	// result
+	c := localClaim("u1", -1)
+	c.Status.Allocation.Devices.Results = append(c.Status.Allocation.Devices.Results,
+		resourcev1.DeviceRequestAllocationResult{Request: "other", Driver: device.DriverName, Pool: testNode, Device: memdevDeviceName(other)})
+	e.k.CutAfter("cxl create-region -t ram -d decoder0.1")
+	cutLocalPrepare(t, e, c)
+	logs := captureKlog(t)
+	e.restart()
+	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{"u2"}})
+	wantDax(t, e, "dax0.0", localRegionSize, "device_dax")
+	if rs := e.regions(other); len(rs) > 0 {
+		t.Fatalf("the region of the cut claim is left: %v", rs)
+	}
+	lines := logs()
+	wantLogLine(t, lines, compat.LogSerialDRALocalSerialKeepingSharedSharedRegionAndSharedDaxClaims)
+	if got := logLines(lines, compat.LogSerialDRALocalSerialKeepingSharedSharedRegionAndSharedDaxClaims); !strings.HasSuffix(got[0], "keeping shared region0 and dax0.0, claims [u2]") {
+		t.Fatalf("line %q", got[0])
+	}
+
+	// configured shared, no claims: kept idle
+	e.mustUnprepare("u2")
+	n := len(logs())
+	e.restart()
+	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{}})
+	e.mustPrepare(localClaim("u3", -1))
+	wantLocalRegionCount(t, e, 1, 0)
+	if got := regexpLines(t, logs()[n:], compat.LogZeroedNewSharedReleasingItsRegionReleasedSharedRegion); len(got) > 0 {
+		t.Fatalf("the kept device was zeroed or released: %q", got)
+	}
+
+	// not configured shared: kept for its prepared claim, released after
+	configureShared(e, false)
+	e.restart()
+	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{"u3"}})
+	wantLocalRegionCount(t, e, 1, 0)
+	if sharedPublished(e) != nil {
+		t.Fatal("the memdev is published while a claim uses it shared")
+	}
+	e.mustUnprepare("u3")
+	wantReleasedLast(t, e, "region0")
+	wantSharedUse(t, e, nil)
+
+	// not configured shared and idle: released at the start
+	configureShared(e, true)
+	e.restart()
+	e.mustPrepare(localClaim("u4", -1))
+	e.mustUnprepare("u4")
+	wantLocalRegionCount(t, e, 2, 1)
+	configureShared(e, false)
+	n = len(logs())
+	e.restart()
+	wantReleasedLast(t, e, "region0")
+	wantSharedUse(t, e, nil)
+	lines = logs()[n:]
+	wantLogLine(t, lines, compat.LogSerialDRALocalSerialNotConfiguredSharedAnyMoreReleasing)
+	if got := regexpLines(t, lines, compat.LogZeroedNewSharedReleasingItsRegionReleasedSharedRegion); len(got) == 0 {
+		t.Fatalf("no line of the release in\n%s", lines)
+	}
+}
+
+// A memdev of a localDevices.json without "shared", as an older driver
+// wrote it, is a sliced memdev in the records.
+func TestLocalSharedOldStateFile(t *testing.T) {
+	old := `{"bootID":"boot-1","devices":[{"serial":3238060769,"serialHex":"c100e2e1","memdev":"mem0","region":"region0","node":-1,"dax":"dax0.0","claims":{}}]}`
+	doc := &store.Document{Schema: store.Schema}
+	noErr(t, putContent(doc, testViewOptions, localStateFileName, []byte(old), nil))
+	m := doc.Memdev(localSerial)
+	if m == nil || m.Facts.Shared || m.Facts.Persistent || len(m.Grants) > 0 || len(m.Regions) != 1 {
+		t.Fatalf("memdev of an old state file %+v", m)
+	}
+}
+
+// The publication of a shared local memdev: shares without a request
+// policy, no memory capacity, of any size, also with an unknown memory
+// block size.
 func TestPublishSharedLocalMemdev(t *testing.T) {
-	e := newSharedTestState(t)
-	got := e.published()
+	e := newSharedEnv(t)
+	got := sharedPublished(e)
 	want := &resourcev1.Device{
 		Name: localDeviceName,
 		Attributes: map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
@@ -344,6 +460,7 @@ func TestSharedLocalPrecedence(t *testing.T) {
 	}
 }
 
+// The sharedDevices of the configuration: a list of strings.
 func TestDriverConfigSharedDevices(t *testing.T) {
 	cfg, err := newDriverConfigFromString(`sharedDevices: ["0xc100e2e1", "mem1"]`)
 	noErr(t, err)
@@ -359,129 +476,129 @@ func TestDriverConfigSharedDevices(t *testing.T) {
 
 // Claims of a shared local memdev: one dax device for all, exclusive or a
 // share by the consumed shares, read-only per claim, content never zeroed
-// and the region kept when idle.
+// and the region kept when idle; the shares and the mode are checked
+// before the device is touched.
 func TestPrepareSharedLocal(t *testing.T) {
-	e := newSharedTestState(t)
-	ctx := context.Background()
+	e := newSharedEnv(t)
+	daxDev := filepath.Join(e.k.DevRoot(), "dax0.0")
 
 	// the writer: no shares request, the scheduler counts all of them
-	noErr(t, e.Prepare(ctx, sharedClaim("u1", "1M")))
-	e.wantCDIDevices(t, "u1", "nri.io/cxl=claim-u1-0")
-	e.wantDeviceInfo(t, "u1", PreparedDeviceInfo{
+	e.mustPrepare(sharedClaim("u1", "1M"))
+	wantCDIDeviceIDs(t, e, "u1", "nri.io/cxl=claim-u1-0")
+	e.wantDeviceInfo("u1", PreparedDeviceInfo{
 		RequestName: "mem", DeviceName: localDeviceName, DeviceType: device.DeviceTypeMemdev, Mode: api.ModeDax, Shared: true,
-		SysfsPath: e.f.p("bus/cxl/devices/region0"), NodeAffinities: []int{0},
+		SysfsPath: e.k.P("bus/cxl/devices/region0"), NodeAffinities: []int{0},
 		TotalBytes: localRegionSize, ConsumedBytes: localRegionSize, Serial: "0xc100e2e1",
-		DaxDevice: "/dev/dax0.0", DaxMajor: 252, DaxMinor: 0,
+		DaxDevice: daxDev, DaxMajor: 252, DaxMinor: 0,
 	})
-	e.wantCDIDevice(t, "claim-u1-0",
-		[]string{"CXL_C100E2E1_DAX=/dev/dax0.0", "CXL_C100E2E1_MODE=dax", "CXL_C100E2E1_READONLY=0", "CXL_C100E2E1_SERIAL=0xc100e2e1",
+	e.wantCDIDevice("claim-u1-0",
+		[]string{"CXL_C100E2E1_DAX=" + daxDev, "CXL_C100E2E1_MODE=dax", "CXL_C100E2E1_READONLY=0", "CXL_C100E2E1_SERIAL=0xc100e2e1",
 			"CXL_C100E2E1_SHARED=1", "CXL_C100E2E1_SIZE=1073741824", "CXL_CLAIM_u1_0=1"},
-		[]*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: 252, Minor: 0}})
+		[]*cdiSpecs.DeviceNode{{Path: daxDev, Type: "c", Major: 252, Minor: 0}})
 	// readers: one share each, read-only device nodes of the same device
-	noErr(t, e.Prepare(ctx, sharedClaim("u2", "1", localROConfig)))
-	noErr(t, e.Prepare(ctx, sharedClaim("u3", "1", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"readOnly":true}}`)))
+	e.mustPrepare(sharedClaim("u2", "1", localROConfig))
+	e.mustPrepare(sharedClaim("u3", "1", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"readOnly":true}}`))
 	for _, uid := range []string{"u2", "u3"} {
-		e.wantCDIDevice(t, "claim-"+uid+"-0",
-			[]string{"CXL_C100E2E1_DAX=/dev/dax0.0", "CXL_C100E2E1_MODE=dax", "CXL_C100E2E1_READONLY=1", "CXL_C100E2E1_SERIAL=0xc100e2e1",
+		e.wantCDIDevice("claim-"+uid+"-0",
+			[]string{"CXL_C100E2E1_DAX=" + daxDev, "CXL_C100E2E1_MODE=dax", "CXL_C100E2E1_READONLY=1", "CXL_C100E2E1_SERIAL=0xc100e2e1",
 				"CXL_C100E2E1_SHARED=1", "CXL_C100E2E1_SIZE=1073741824", "CXL_CLAIM_" + uid + "_0=1"},
-			[]*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: 252, Minor: 0, Permissions: "r"}})
+			[]*cdiSpecs.DeviceNode{{Path: daxDev, Type: "c", Major: 252, Minor: 0, Permissions: "r"}})
 	}
-	e.f.wantRegionCount(t, 1, 0)
-	if len(e.f.zeroed) != 1 {
-		t.Fatalf("shared device zeroed %v, expected once at creation", e.f.zeroed)
+	wantLocalRegionCount(t, e, 1, 0)
+	if z := e.k.Zeroed(); len(z) != 1 {
+		t.Fatalf("shared device zeroed %v, expected once at creation", z)
 	}
 	// still published while shared
 	e.rescan()
-	if d := e.published(); d == nil || *d.Attributes["shared"].BoolValue != true {
+	if d := sharedPublished(e); d == nil || !*d.Attributes["shared"].BoolValue {
 		t.Fatalf("published %+v", d)
 	}
 
 	// the shares guard, before the device is touched
-	before := e.f.commands()
+	before := e.k.Commands()
 	for _, tc := range []struct{ shares, text string }{{"0", `"0"`}, {"", `""`}, {"500m", `"500m"`}} {
-		wantErr(t, e.Prepare(ctx, sharedClaim("u9", tc.shares)),
+		wantErr(t, e.prepare(sharedClaim("u9", tc.shares)),
 			"claim demo/claim-u9: request mem: device 0xc100e2e1: consumed shares "+tc.text+" is less than 1: request shares: 1 (a share) or no shares (exclusive)")
 	}
 	// dax only
-	wantErr(t, e.Prepare(ctx, sharedClaim("u9", "1", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"numa"}}`)),
+	wantErr(t, e.prepare(sharedClaim("u9", "1", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"numa"}}`)),
 		"MemoryConfig: device: a shared device is used as dax only")
-	wantErr(t, e.Prepare(ctx, sharedClaim("u9", "1", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"numa","readOnly":true}}`)),
+	wantErr(t, e.prepare(sharedClaim("u9", "1", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"numa","readOnly":true}}`)),
 		"MemoryConfig: device.readOnly needs mode dax")
-	if e.f.commands() != before || e.Prepared["u9"].Devices != nil {
-		t.Fatalf("a refused claim touched the device:\n%s", strings.TrimPrefix(e.f.commands(), before))
+	if got := e.k.CommandsSince(before); got != "" || e.s.Prepared["u9"].Devices != nil || e.preparation("u9") != nil {
+		t.Fatalf("a refused claim touched the device:\n%s", got)
 	}
 
 	// all claims gone: the region and its dax device stay
 	for _, uid := range []string{"u1", "u2", "u3"} {
-		noErr(t, e.Unprepare(ctx, uid))
+		e.mustUnprepare(uid)
 	}
-	e.f.wantRegionCount(t, 1, 0)
-	e.f.wantDax(t, "dax0.0", localRegionSize, "device_dax")
-	if e.cdiSpec(t) != nil || !e.inUse() {
-		t.Fatalf("after the last unprepare: in use %v", e.inUse())
+	wantLocalRegionCount(t, e, 1, 0)
+	wantDax(t, e, "dax0.0", localRegionSize, "device_dax")
+	if e.cdiSpec() != nil || !e.inUse() {
+		t.Fatalf("after the last Unprepare: CDI spec %+v, in use %v", e.cdiSpec(), e.inUse())
 	}
 	e.rescan()
-	if d := e.published(); d == nil {
+	if d := sharedPublished(e); d == nil {
 		t.Fatal("idle shared device not published")
 	}
-	noErr(t, e.Prepare(ctx, sharedClaim("u4", "1M")))
-	e.f.wantRegionCount(t, 1, 0)
-	noErr(t, e.Unprepare(ctx, "u4"))
+	e.mustPrepare(sharedClaim("u4", "1M"))
+	wantLocalRegionCount(t, e, 1, 0)
+	e.mustUnprepare("u4")
 }
 
 // A memdev is not published while claims of the other use have it.
 func TestPrepareSharedLocalHiding(t *testing.T) {
-	e := newSharedTestState(t)
-	ctx := context.Background()
-	noErr(t, e.Prepare(ctx, sharedClaim("u1", "1")))
-	// the configuration says sliced after a restart: hidden while shared
-	e.config.SharedDevices = nil
-	e.local.SetShared(nil)
+	e := newSharedEnv(t)
+	e.mustPrepare(sharedClaim("u1", "1"))
+	// the configuration says sliced: hidden while shared
+	configureShared(e, false)
 	e.rescan()
-	if d := e.published(); d != nil {
+	if d := sharedPublished(e); d != nil {
 		t.Fatalf("published while used shared: %+v", d)
 	}
-	noErr(t, e.Unprepare(ctx, "u1"))
-	e.f.wantRegionReleased(t, "region0")
+	e.mustUnprepare("u1")
+	wantReleasedLast(t, e, "region0")
 	e.rescan()
-	if d := e.published(); d == nil || *d.Attributes["shared"].BoolValue {
+	if d := sharedPublished(e); d == nil || *d.Attributes["shared"].BoolValue {
 		t.Fatalf("published %+v", d)
 	}
 	// sliced claims hide the memdev when it is configured shared
-	noErr(t, e.Prepare(ctx, localClaim("u2", localBlockSize, localDaxConfig)))
+	e.mustPrepare(localClaim("u2", localBlockSize, localDaxConfig))
 	e.config.SharedDevices = []string{"mem0"}
 	e.rescan()
-	if d := e.published(); d != nil {
+	if d := sharedPublished(e); d != nil {
 		t.Fatalf("published while used as slices: %+v", d)
 	}
-	noErr(t, e.Unprepare(ctx, "u2"))
+	e.mustUnprepare("u2")
 	e.rescan()
-	if d := e.published(); d == nil || !*d.Attributes["shared"].BoolValue {
+	if d := sharedPublished(e); d == nil || !*d.Attributes["shared"].BoolValue {
 		t.Fatalf("published %+v", d)
 	}
 }
 
 // The companion claim of a lease of a shared local memdev: the broker
-// gets the shared device.
+// gets the shared device, no NUMA node is lent, the region stays.
 func TestPrepareSharedLocalLend(t *testing.T) {
-	e, lender, hooks := newLendTestState(t)
-	e.config.SharedDevices = []string{"0xc100e2e1"}
-	e.local.SetShared(map[uint64]bool{localSerial: true})
-	e.rescan()
-	ctx := context.Background()
+	e := newSharedEnv(t)
+	lender, hooks := newFakeLender(), &fakeHooks{}
+	e.s.lending.set(lender, hooks)
 	c := sharedClaim("u1", "1", localROConfig)
 	c.ObjectMeta = companionClaim("l1").ObjectMeta
-	c.UID = types.UID("u1")
-	noErr(t, e.Prepare(ctx, c))
-	if len(hooks.devs) != 1 || !hooks.devs[0].Shared || hooks.devs[0].DaxDevice != "/dev/dax0.0" || !hooks.devs[0].ReadOnly || hooks.devs[0].Size != localRegionSize {
+	c.UID = "u1"
+	e.mustPrepare(c)
+	if len(hooks.devs) != 1 || !hooks.devs[0].Shared || hooks.devs[0].DaxDevice != filepath.Join(e.k.DevRoot(), "dax0.0") ||
+		!hooks.devs[0].ReadOnly || hooks.devs[0].Size != localRegionSize {
 		t.Fatalf("lent devices %+v", hooks.devs)
 	}
-	e.wantCDIDevices(t, "u1")
-	noErr(t, e.Unprepare(ctx, "u1"))
+	if res := e.s.Prepared["u1"]; len(res.Devices) != 1 || len(res.Devices[0].CDIDeviceIDs) != 0 {
+		t.Fatalf("CDI devices of a companion claim: %+v", res.Devices)
+	}
+	e.mustUnprepare("u1")
 	if len(lender.calls) != 0 {
 		t.Fatalf("nodes lent for a shared device: %v", lender.calls)
 	}
-	e.f.wantRegionCount(t, 1, 0)
+	wantLocalRegionCount(t, e, 1, 0)
 }
 
 // A share of a shared local device through the broker: Ready with the
@@ -567,117 +684,116 @@ func TestConsumedShares(t *testing.T) {
 }
 
 // A failed creation of the region of a shared memdev, or of its zeroing,
-// leaves no device, no claim and no region.
+// leaves no device, no claim and no region; a dax device of a kept region
+// that fails leaves the region kept and no claim.
 func TestLocalSharedCreateFailures(t *testing.T) {
-	f := newFakeLocalSys(t)
-	a := f.allocator(t, t.TempDir())
-	a.SetShared(map[uint64]bool{localSerial: true})
-	ctx := context.Background()
+	e := newSharedEnv(t)
+	// the retry fails too
+	e.k.FailCommand("cxl create-region", fake.ErrAddDev, fake.ErrAddDev)
+	wantErr(t, e.prepare(sharedClaim("u1", "1M")), "add_dev")
+	wantSharedUse(t, e, nil)
 
-	f.failCreate = 2 // the retry fails too
-	_, err := a.AcquireShared(ctx, "u1", "mem", localSerial, false, "exclusive")
-	wantErr(t, err, "add_dev")
-	wantUse(t, a, nil)
-
-	f.zeroErr = errors.New("no mmap")
-	_, err = a.AcquireShared(ctx, "u1", "mem", localSerial, false, "exclusive")
+	e.k.ZeroErr = errors.New("no mmap")
+	err := e.prepare(sharedClaim("u1", "1M"))
 	wantErr(t, err, "memdev mem0 (serial 0xc100e2e1): zeroing new shared dax0.0: no mmap")
-	f.wantRegionReleased(t, "region0")
-	wantUse(t, a, nil)
-	f.zeroErr = nil
+	wantReleasedLast(t, e, "region0")
+	wantSharedUse(t, e, nil)
+	e.k.ZeroErr = nil
 
 	// the dax device of a kept region fails: no claim, the region stays
-	acquireShared(t, a, "u2", false)
-	noErr(t, a.Release(ctx, "u2"))
-	f.write(daxPath+"/dev", "bogus")
-	_, err = a.AcquireShared(ctx, "u3", "mem", localSerial, false, "1 share")
-	wantErr(t, err, "memdev mem0 (serial 0xc100e2e1): dax0.0: ")
-	wantUse(t, a, &localUse{Shared: true, Claims: []string{}})
-	f.write(daxPath+"/dev", "252:0")
-	acquireShared(t, a, "u3", false)
-	wantUse(t, a, &localUse{Shared: true, Claims: []string{"u3"}})
+	e.mustPrepare(sharedClaim("u2", "1M"))
+	e.mustUnprepare("u2")
+	e.k.Write("bus/dax/devices/dax0.0/dev", "bogus")
+	before := e.k.Commands()
+	wantErr(t, e.prepare(sharedClaim("u3", "1")), `memdev mem0 (serial 0xc100e2e1): dax0.0: dax0.0: cannot parse device numbers "bogus"`)
+	wantNoRegionRelease(t, e.k.CommandsSince(before))
+	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{}})
+	e.k.Write("bus/dax/devices/dax0.0/dev", "252:0")
+	e.mustPrepare(sharedClaim("u3", "1"))
+	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{"u3"}})
 }
 
 // A kept region that disappeared is forgotten, and the next claim creates
 // and zeroes a new one.
 func TestLocalSharedRegionGone(t *testing.T) {
-	f := newFakeLocalSys(t)
-	a := f.allocator(t, t.TempDir())
-	ctx := context.Background()
-	acquireShared(t, a, "u1", false)
-	noErr(t, a.Release(ctx, "u1"))
-	noErr(t, a.mem.ReleaseRegion(ctx, "region0"))
-	f.wantRegionCount(t, 1, 1)
-	acquireShared(t, a, "u2", false)
-	f.wantRegionCount(t, 2, 1)
-	if len(f.zeroed) != 2 {
-		t.Fatalf("new region not zeroed: %v", f.zeroed)
+	e := newSharedEnv(t)
+	e.mustPrepare(sharedClaim("u1", "1"))
+	e.mustUnprepare("u1")
+	noErr(t, e.k.Kernel().ReleaseRegion(context.Background(), "region0"))
+	wantLocalRegionCount(t, e, 1, 1)
+	logs := captureKlog(t)
+	noErr(t, e.s.Prepare(context.Background(), sharedClaim("u2", "1")))
+	e.check("prepared u2")
+	// the other claims of the device: none
+	if want := strings.NewReplacer("mem1", "mem0", "[<uids>]", "[]").Replace(compat.DocLocalMemdevMem1Serial0xc100e2e1Region0OfThe); !strings.Contains(logs(), want) {
+		t.Fatalf("no %q in\n%s", want, logs())
 	}
-	wantUse(t, a, &localUse{Shared: true, Claims: []string{"u2"}})
+	wantLocalRegionCount(t, e, 2, 1)
+	if z := e.k.Zeroed(); len(z) != 2 {
+		t.Fatalf("new region not zeroed: %v", z)
+	}
+	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{"u2"}})
 }
 
-// The state of another boot is dropped without touching the region; a
-// half-made shared entry is kept while configured shared and rebuilt by
-// the next claim.
+// The preparations of another boot are dropped at the start without
+// touching the memdev: no claim, no use, no command.
 func TestLocalSharedReconcileOtherBootAndHalfMade(t *testing.T) {
-	f := newFakeLocalSys(t)
-	dir := t.TempDir()
-	ctx := context.Background()
-	a := f.allocator(t, dir)
-	acquireShared(t, a, "u1", false)
-	before := f.commands()
-	b := f.allocatorOfBoot(t, dir, "boot-2")
-	b.Reconcile(ctx, map[string]bool{"u1": true}, nil)
-	wantUse(t, b, nil)
-	if f.commands() != before {
-		t.Fatalf("another boot's state touched the system:\n%s", strings.TrimPrefix(f.commands(), before))
+	e := newSharedEnv(t)
+	e.mustPrepare(sharedClaim("u1", "1"))
+	e.k.Reboot()
+	before := e.k.Commands()
+	e.start()
+	if got := e.k.CommandsSince(before); got != "" {
+		t.Fatalf("another boot's records touched the system:\n%s", got)
 	}
-
-	// half-made: region known, dax device not
-	a = f.allocator(t, t.TempDir())
-	a.devices[localSerial] = &localDevice{Serial: localSerial, SerialHex: "c100e2e1", Memdev: "mem0", Region: "region0", Node: -1, Shared: true, Claims: map[string][]*localSlice{}}
-	a.SetShared(map[uint64]bool{localSerial: true})
-	a.Reconcile(ctx, nil, nil)
-	wantUse(t, a, &localUse{Shared: true, Claims: []string{}})
-	acquireShared(t, a, "u2", false)
-	f.wantRegionCount(t, 2, 1)
-	if s := a.devices[localSerial].Claims["u2"]; len(s) != 1 || s[0].Dax != "dax0.0" {
-		t.Fatalf("rebuilt device %+v", a.devices[localSerial])
+	if e.preparation("u1") != nil || e.s.GetClaimInfo("u1") != nil {
+		t.Fatalf("claim of another boot %+v", e.preparation("u1"))
 	}
+	wantSharedUse(t, e, nil)
+	e.mustPrepare(sharedClaim("u1", "1"))
+	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{"u1"}})
 }
 
-// Prepare failures after the shared acquire roll the claim back and keep
-// the region: a failed save, and a claim whose second result fails.
+// Prepare failures after the shared device was realised roll the claim
+// back and keep the region: a failed write of the CDI spec. A claim whose
+// second result has no device fails before the device is touched.
 func TestPrepareSharedLocalRollback(t *testing.T) {
-	e := newSharedTestState(t)
-	ctx := context.Background()
-	noErr(t, e.Prepare(ctx, sharedClaim("u0", "1")))
-	noErr(t, e.Unprepare(ctx, "u0"))
-	tmp := e.local.stateFile + ".tmp"
-	noErr(t, os.MkdirAll(filepath.Join(tmp, "x"), 0o755))
-	wantErr(t, e.Prepare(ctx, sharedClaim("u1", "1")), localStateFileName)
-	noErr(t, os.RemoveAll(tmp))
-	wantUse(t, e.local, &localUse{Shared: true, Claims: []string{}})
-	e.f.wantRegionCount(t, 1, 0)
+	e := newSharedEnv(t)
+	e.mustPrepare(sharedClaim("u0", "1"))
+	e.mustUnprepare("u0")
+	spec := filepath.Join(e.cdiDir, device.ClaimsCDISpecName+".yaml")
+	noErr(t, os.MkdirAll(filepath.Join(spec, "x"), 0o755))
+	wantErr(t, e.prepare(sharedClaim("u1", "1")), "failed to write CDI spec")
+	noErr(t, os.RemoveAll(spec))
+	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{}})
+	wantLocalRegionCount(t, e, 1, 0)
+	if e.preparation("u1") != nil || e.s.GetClaimInfo("u1") != nil {
+		t.Fatalf("rolled back claim %+v", e.preparation("u1"))
+	}
 
 	c := sharedClaim("u2", "1")
 	c.Status.Allocation.Devices.Results = append(c.Status.Allocation.Devices.Results,
 		resourcev1.DeviceRequestAllocationResult{Request: "other", Driver: device.DriverName, Pool: testNode, Device: "missing"})
-	wantErr(t, e.Prepare(ctx, c), "could not find allocatable device missing")
-	wantUse(t, e.local, &localUse{Shared: true, Claims: []string{}})
-	e.f.wantRegionCount(t, 1, 0)
-	if len(e.Prepared) != 0 {
-		t.Fatalf("prepared %v", e.Prepared)
+	before := e.k.Commands()
+	wantErr(t, e.prepare(c), "could not find allocatable device missing")
+	if got := e.k.CommandsSince(before); got != "" {
+		t.Fatalf("commands of a refused claim:\n%s", got)
+	}
+	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{}})
+	wantLocalRegionCount(t, e, 1, 0)
+	if len(e.s.Prepared) != 0 {
+		t.Fatalf("prepared %v", e.s.Prepared)
 	}
 }
 
 // A stale allocation of the shared shape is refused on a sliced memdev.
 func TestPrepareSlicedRefusesShares(t *testing.T) {
-	e := newLocalTestState(t)
-	wantErr(t, e.Prepare(context.Background(), sharedClaim("u1", "1M")),
+	e := newLocalTestEnv(t)
+	e.start()
+	wantErr(t, e.prepare(sharedClaim("u1", "1M")),
 		"claim demo/claim-u1: request mem: device 0xc100e2e1: allocated as a shared device, which it is not any more")
-	if strings.Contains(e.f.commands(), "create-region") || e.inUse() {
-		t.Fatalf("a refused claim touched the memdev:\n%s", e.f.commands())
+	if strings.Contains(e.commands(), "create-region") || e.inUse() {
+		t.Fatalf("a refused claim touched the memdev:\n%s", e.commands())
 	}
 }
 

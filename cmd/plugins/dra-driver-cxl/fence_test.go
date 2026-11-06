@@ -475,37 +475,6 @@ func TestFenceRestart(t *testing.T) {
 	e.expectUpdates("c2 mems=0-1")
 }
 
-func TestFenceLocalBeforeOnline(t *testing.T) {
-	f := newFakeLocalSys(t)
-	a := f.allocator(t, t.TempDir())
-	// the state of the memory blocks at each pass
-	online := func() string {
-		m, _ := filepath.Glob(f.p("devices/system/memory/memory*/state"))
-		n := 0
-		for _, path := range m {
-			if b, _ := os.ReadFile(path); strings.HasPrefix(string(b), "online") {
-				n++
-			}
-		}
-		return "online=" + strings.Repeat("x", n)
-	}
-	fence, r := newRecordedFence(online)
-	a.fence = fence
-	acquire(t, a, "u1", cxlapi.ModeDax, localBlockSize)
-	if got := r.taken(); len(got) != 0 {
-		t.Fatalf("dax slice fenced: %v", got)
-	}
-	acquire(t, a, "u2", cxlapi.ModeNUMA, localBlockSize)
-	if got := r.taken(); !reflect.DeepEqual(got, []string{"2 online="}) {
-		t.Fatalf("passes %v, expected one before onlining", got)
-	}
-	f.wantMemoryBlocks(t, "online_movable", 75)
-	acquire(t, a, "u3", cxlapi.ModeNUMA, localBlockSize)
-	if got := r.taken(); len(got) != 0 {
-		t.Fatalf("fenced node fenced again: %v", got)
-	}
-}
-
 func TestFencePoolBeforeOnline(t *testing.T) {
 	e := newPoolTestEnv(t)
 	e.plug(0xc1ee0001)
@@ -557,6 +526,44 @@ func TestFencePoolBeforeOnline(t *testing.T) {
 	if got := r2.taken(); len(got) != 0 || p2.numaNodes() != nil {
 		t.Fatalf("dax device fenced: %v, numa nodes %v", got, p2.numaNodes())
 	}
+}
+
+// The NUMA node of a local numa slice is fenced once, before its memory
+// goes online; a dax slice is not fenced.
+func TestFenceLocalBeforeOnline(t *testing.T) {
+	e := newLocalTestEnv(t)
+	// the memory blocks online at each pass
+	online := func() string {
+		m, _ := filepath.Glob(e.k.P("devices/system/memory/memory*/state"))
+		n := 0
+		for _, path := range m {
+			if b, _ := os.ReadFile(path); strings.HasPrefix(string(b), "online") {
+				n++
+			}
+		}
+		return "online=" + strings.Repeat("x", n)
+	}
+	fence, r := newRecordedFence(online)
+	e.fence = fence
+	e.start()
+	e.mustPrepare(localClaim("u1", localBlockSize, localDaxConfig))
+	if got := r.taken(); len(got) != 0 {
+		t.Fatalf("dax slice fenced: %v", got)
+	}
+	e.mustPrepare(localClaim("u2", localBlockSize))
+	if got := r.taken(); !reflect.DeepEqual(got, []string{"2 online="}) {
+		t.Fatalf("passes %v, expected one before onlining", got)
+	}
+	// the block of the numa slice is the only one, online movable
+	(&sliceTestEnv{e}).wantMemoryBlocks(75)
+	e.mustPrepare(localClaim("u3", localBlockSize))
+	if got := r.taken(); len(got) != 0 {
+		t.Fatalf("fenced node fenced again: %v", got)
+	}
+	for _, uid := range []string{"u1", "u2", "u3"} {
+		e.mustUnprepare(uid)
+	}
+	e.wantClean()
 }
 
 // TestFenceConcurrent checks that a Fence of a node that another Fence is

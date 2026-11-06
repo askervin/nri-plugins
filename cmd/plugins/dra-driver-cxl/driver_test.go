@@ -23,9 +23,10 @@ import (
 	"testing"
 	"time"
 
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 	resourceapi "k8s.io/api/resource/v1"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
+
+	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -611,36 +612,6 @@ func TestDriverConfigManageMemdevs(t *testing.T) {
 	}
 }
 
-func TestNewLocalHelper(t *testing.T) {
-	dir := t.TempDir()
-	for _, d := range []string{"sys/bus/cxl/devices", "sys/devices/system/node"} {
-		noErr(t, os.MkdirAll(filepath.Join(dir, d), 0o755))
-	}
-	config := &pluginConfig{Flags: &CXLFlags{}, KubeletPluginDir: dir}
-	off := &DriverConfig{ManageMemdevs: ptr(false)}
-	if local, err := newLocalHelper(context.Background(), config, off, dir, nil, ""); err != nil || local != nil {
-		t.Fatalf("unmanaged memdevs: %v %v", local, err)
-	}
-	// the state of a memdev that is gone is dropped at start
-	state := `[{"serial":3238060769,"serialHex":"c100e2e1","memdev":"mem0","region":"region0","node":2,"claims":{"u1":[{"request":"mem","region":"region0","mode":"numa","size":2097152,"dax":"dax0.1"}]}}]`
-	if err := os.WriteFile(filepath.Join(dir, localStateFileName), []byte(state), 0600); err != nil {
-		t.Fatal(err)
-	}
-	local, err := newLocalHelper(context.Background(), config, &DriverConfig{}, dir, nil, "")
-	if err != nil || local == nil {
-		t.Fatalf("local helper: %v %v", local, err)
-	}
-	if m := local.Snapshot().Uses; len(m) != 0 {
-		t.Fatalf("uses %v of a gone memdev", m)
-	}
-	if local.mem.SysRoot != dir+"/sys" || local.stateFile != filepath.Join(dir, localStateFileName) {
-		t.Fatalf("local helper %+v", local)
-	}
-	if _, err := os.Stat(filepath.Join(dir, preparedClaimsInfoFileName)); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // Before the kubelet plugin runs, a rescan updates the devices but does not
 // publish them (there is no helper yet).
 func TestRescanBeforeStart(t *testing.T) {
@@ -705,12 +676,62 @@ func TestDriverConfigDefaults(t *testing.T) {
 	}
 }
 
-// TestPrepareWaitsForNRI (plan-13 bug-19): a Prepare of either driver
-// waits until the NRI plugin has synchronized with the runtime, as kubelet
-// creates the containers of the claims after it, and fails for kubelet to
-// retry when that does not happen within nriPrepareWait, before it touches
-// a device. A Prepare of a claim that is prepared already waits too.
-// Without an NRI plugin (it failed to start) a Prepare does not wait.
+// The local part of a start: nothing with manageMemdevs false, else the
+// store and kernel of the node; an old file of a gone memdev is not used.
+func TestNewLocalHelper(t *testing.T) {
+	ctx := context.Background()
+	// start starts the local part of the driver on a node of its own with
+	// the old state file old ("" for none); the store is closed by the
+	// returned function
+	start := func(cfg *DriverConfig, old string) (*nodeState, string, func()) {
+		t.Helper()
+		dir := t.TempDir()
+		for _, d := range []string{"sys/bus/cxl/devices", "sys/devices/system/node", "cdi"} {
+			noErr(t, os.MkdirAll(filepath.Join(dir, d), 0o755))
+		}
+		if old != "" {
+			noErr(t, os.WriteFile(filepath.Join(dir, localStateFileName), []byte(old), 0o600))
+		}
+		flags := &CXLFlags{CDIRoot: filepath.Join(dir, "cdi"), NodeName: testNode}
+		flags.Store.CompatViews = true
+		config := &pluginConfig{Flags: flags, KubeletPluginDir: dir}
+		st, closeStore, err := openDriverStore(ctx, config, flags, dir, "")
+		noErr(t, err)
+		devices, err := newDriverDevices(config, flags, cfg, dir, nil, st)
+		if err == nil {
+			var s *nodeState
+			if s, err = newDriverState(ctx, config, cfg, dir, nil, nil, devices, st, ""); err == nil {
+				return s, dir, closeStore
+			}
+		}
+		closeStore()
+		t.Fatal(err)
+		return nil, "", nil
+	}
+	s, _, stop := start(&DriverConfig{ManageMemdevs: ptr(false)}, "")
+	stop()
+	if s.local.managed || s.local.Snapshot() != nil {
+		t.Fatalf("unmanaged memdevs: %+v", s.local)
+	}
+	// the state of a memdev that is gone is not used at start
+	old := `[{"serial":3238060769,"serialHex":"c100e2e1","memdev":"mem0","region":"region0","node":2,"claims":{"u1":[{"request":"mem","region":"region0","mode":"numa","size":2097152,"dax":"dax0.1"}]}}]`
+	s, dir, stop := start(&DriverConfig{}, old)
+	defer stop()
+	if snap := s.local.Snapshot(); snap == nil || len(snap.Uses) != 0 {
+		t.Fatalf("uses %+v of a gone memdev", snap)
+	}
+	if s.local.k.SysRoot != dir+"/sys" {
+		t.Fatalf("local devices on %s", s.local.k.SysRoot)
+	}
+	for _, name := range []string{"state.json", localStateFileName + ".old", preparedClaimsInfoFileName} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A Prepare of either driver waits for the first NRI Synchronize (also of a
+// prepared claim), failing before any device after nriPrepareWait.
 func TestPrepareWaitsForNRI(t *testing.T) {
 	old := nriPrepareWait
 	t.Cleanup(func() { nriPrepareWait = old })
@@ -745,9 +766,10 @@ func TestPrepareWaitsForNRI(t *testing.T) {
 	}
 
 	t.Run(device.DriverName, func(t *testing.T) {
-		e, _, _ := newLendTestState(t)
+		e := newLocalTestEnv(t)
+		e.start()
 		nri := newNRI()
-		d := &driver{state: *e.nodeState, nriPlugin: nri}
+		d := &driver{state: *e.s, nriPlugin: nri}
 		claim := localClaim("u1", 16*mib)
 		prepare := func() kubeletplugin.PrepareResult {
 			res, err := d.PrepareResourceClaims(ctx, []*resourceapi.ResourceClaim{claim})
@@ -757,13 +779,13 @@ func TestPrepareWaitsForNRI(t *testing.T) {
 			return res[claim.UID]
 		}
 		nriPrepareWait = 20 * time.Millisecond
-		ncmds := len(e.f.commands())
+		cmds := e.commands()
 		wantErr(t, prepare().Err, why)
 		d.state.Lock()
 		_, prepared := d.state.Prepared[string(claim.UID)]
 		d.state.Unlock()
-		if prepared || len(e.f.commands()) != ncmds {
-			t.Fatalf("prepared %v, commands:\n%s", prepared, e.f.commands()[ncmds:])
+		if prepared || e.preparation("u1") != nil || e.commands() != cmds {
+			t.Fatalf("prepared %v, preparation %+v, commands:\n%s", prepared, e.preparation("u1"), strings.TrimPrefix(e.commands(), cmds))
 		}
 		waits(t, nri, prepare)
 		// prepared already: it waits too
@@ -772,6 +794,8 @@ func TestPrepareWaitsForNRI(t *testing.T) {
 		// no NRI plugin
 		d.nriPlugin = nil
 		noErr(t, prepare().Err)
+		e.mustUnprepare("u1")
+		e.wantClean()
 	})
 
 	t.Run(device.PoolDriverName, func(t *testing.T) {

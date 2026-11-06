@@ -148,14 +148,16 @@ func (f *nodeFence) setNoNRI() {
 	f.noNRI = true
 }
 
-// preparedNodes returns the NUMA nodes on which prepared claims of both
-// drivers have memory that the driver onlined: numa slices of local
-// memdevs and pool devices in mode numa.
+// preparedNodes returns the NUMA nodes on which claims of both drivers
+// have memory that the driver onlined: numa slices of local memdevs and
+// pool devices in mode numa of prepared claims, and of claims whose
+// Prepare did not finish (a numa companion kept at the start).
 func preparedNodes(state *nodeState, pool *poolDriver) cpuset.CPUSet {
 	nodes := cpuset.New(pool.numaNodes()...)
 	if state == nil || state.baseState == nil {
 		return nodes
 	}
+	nodes = nodes.Union(cpuset.New(nonNegative(state.local.unfinishedNodes())...))
 	state.Lock()
 	defer state.Unlock()
 	for _, info := range state.preparedClaims {

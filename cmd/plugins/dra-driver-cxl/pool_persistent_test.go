@@ -32,6 +32,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// fsMountFlags are the flags of the node mounts of read-only filesystem
+// types (mount(2)) that the engine mounts.
+const fsMountFlags = unix.MS_RDONLY | unix.MS_NOSUID | unix.MS_NODEV
+
 const (
 	// a shared persistent device with one share, and exclusive
 	persistentData = `{"serial":"0xc1ae0001","shared":true,"size":536870912,"persistent":true}`

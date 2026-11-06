@@ -15,7 +15,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -24,6 +23,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -31,184 +31,24 @@ import (
 
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/dynamic-resource-allocation/kubeletplugin"
-	"sigs.k8s.io/yaml"
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	nricxl "github.com/containers/nri-plugins/pkg/cxl"
-
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
-func makeOpaqueConfig(driver string, source resourcev1.AllocationConfigSource, config interface{}) resourcev1.DeviceAllocationConfiguration {
-	raw, _ := json.Marshal(config)
-	return resourcev1.DeviceAllocationConfiguration{
-		Source: source,
-		DeviceConfiguration: resourcev1.DeviceConfiguration{
-			Opaque: &resourcev1.OpaqueDeviceConfiguration{
-				Driver: driver,
-				Parameters: runtime.RawExtension{
-					Raw: raw,
-				},
-			},
-		},
-	}
-}
+// localOtherSerial is a second local memdev of RAM, under host bridge 24.
+const localOtherSerial = 0xc100e2e3
 
-func TestPreparedClaimsInfo_Persistence(t *testing.T) {
-	fileBackendOnly(t, "preparedClaimsInfo.json alone; successor TestLocalContentRoundTrip (u-numa)")
-	tmpDir := t.TempDir()
-	filePath := filepath.Join(tmpDir, "preparedClaimsInfo.json")
-
-	// Write claims info.
-	claims := PreparedClaimsInfo{
-		"uid-1": {
-			ClaimName: "test-ns/test-claim",
-			Devices: []PreparedDeviceInfo{
-				{
-					RequestName:    "req1",
-					DeviceName:     "region0-node2",
-					DeviceType:     device.DeviceTypeRegion,
-					Mode:           api.ModeNUMA,
-					Region:         "region0",
-					SysfsPath:      "/sys/bus/cxl/devices/region0",
-					NUMANodes:      []int{2},
-					NodeAffinities: []int{0},
-					TotalBytes:     4294967296,
-					ConsumedBytes:  1073741824,
-					ResultSettings: config.ResultSettings{
-						Container: &config.Container{Steering: &config.Steering{Policy: "first-dram", MinStep: "128M", MaxStep: "1G"}},
-						Origins:   map[string]string{config.FieldPolicy: "claim test-ns/test-claim request req1"},
-					},
-				},
-			},
-		},
-	}
-	if err := writePreparedClaimsInfoToFile(filePath, claims); err != nil {
-		t.Fatalf("failed to write: %v", err)
-	}
-	data, err := os.ReadFile(filePath)
-	noErr(t, err)
-	var compact bytes.Buffer
-	noErr(t, json.Compact(&compact, data))
-	if !strings.Contains(compact.String(), `"container":{"steering":{"policy":"first-dram","minStep":"128M","maxStep":"1G"}},"origins":{"container.steering.policy":"claim test-ns/test-claim request req1"}`) {
-		t.Fatalf("stored settings: %s", compact.String())
-	}
-
-	// Read them back.
-	loaded, err := getOrCreatePreparedClaimsInfo(filePath)
-	if err != nil {
-		t.Fatalf("failed to load: %v", err)
-	}
-
-	if len(loaded) != 1 {
-		t.Fatalf("expected 1 claim, got %d", len(loaded))
-	}
-	info := loaded["uid-1"]
-	if info == nil {
-		t.Fatal("expected non-nil claim info for uid-1")
-	}
-	if info.ClaimName != "test-ns/test-claim" {
-		t.Errorf("expected test-ns/test-claim, got %s", info.ClaimName)
-	}
-	if len(info.Devices) != 1 {
-		t.Fatalf("expected 1 device, got %d", len(info.Devices))
-	}
-	dev := info.Devices[0]
-	if got := [3]string{dev.DeviceType, dev.Mode, dev.Region}; got != [3]string{device.DeviceTypeRegion, api.ModeNUMA, "region0"} {
-		t.Errorf("expected a numa region region0, got %+v", dev)
-	}
-	if dev.SysfsPath != "/sys/bus/cxl/devices/region0" {
-		t.Errorf("expected sysfs path, got %s", dev.SysfsPath)
-	}
-	if dev.TotalBytes != 4294967296 {
-		t.Errorf("expected 4GiB total, got %d", dev.TotalBytes)
-	}
-	if dev.ConsumedBytes != 1073741824 {
-		t.Errorf("expected 1GiB consumed, got %d", dev.ConsumedBytes)
-	}
-	if len(dev.NUMANodes) != 1 || dev.NUMANodes[0] != 2 {
-		t.Errorf("expected NUMA [2], got %v", dev.NUMANodes)
-	}
-	if !reflect.DeepEqual(dev.ResultSettings, claims["uid-1"].Devices[0].ResultSettings) {
-		t.Errorf("settings %+v", dev.ResultSettings)
-	}
-}
-
-func TestPreparedClaimsInfo_CreateEmpty(t *testing.T) {
-	tmpDir := t.TempDir()
-	filePath := filepath.Join(tmpDir, "preparedClaimsInfo.json")
-
-	claims, err := getOrCreatePreparedClaimsInfo(filePath)
-	if err != nil {
-		t.Fatalf("failed: %v", err)
-	}
-	if len(claims) != 0 {
-		t.Fatalf("expected empty claims, got %d", len(claims))
-	}
-
-	// Verify the file exists.
-	if _, err := os.Stat(filePath); err != nil {
-		t.Fatalf("file should exist: %v", err)
-	}
-}
-
-func TestPreparedClaimsInfo_NoSettings(t *testing.T) {
-	fileBackendOnly(t, "preparedClaimsInfo.json alone; successor TestLocalContentRoundTrip (u-two)")
-	tmpDir := t.TempDir()
-	filePath := filepath.Join(tmpDir, "preparedClaimsInfo.json")
-
-	claims := PreparedClaimsInfo{
-		"uid-no-policy": {
-			ClaimName: "ns/claim-no-policy",
-			Devices: []PreparedDeviceInfo{
-				{
-					RequestName: "req1",
-					DeviceName:  "dram-0",
-					DeviceType:  device.DeviceTypeDRAM,
-					NUMANodes:   []int{0, 1},
-					TotalBytes:  8589934592,
-				},
-			},
-		},
-	}
-	if err := writePreparedClaimsInfoToFile(filePath, claims); err != nil {
-		t.Fatalf("failed to write: %v", err)
-	}
-
-	loaded, err := getOrCreatePreparedClaimsInfo(filePath)
-	if err != nil {
-		t.Fatalf("failed to load: %v", err)
-	}
-
-	info := loaded["uid-no-policy"]
-	if info == nil {
-		t.Fatal("expected claim info")
-	}
-	if d := info.Devices[0]; d.Container != nil || d.Origins != nil {
-		t.Errorf("expected no settings, got %+v", d.ResultSettings)
-	}
-	if info.Devices[0].DeviceType != device.DeviceTypeDRAM {
-		t.Errorf("expected %s, got %s", device.DeviceTypeDRAM, info.Devices[0].DeviceType)
-	}
-}
-
-const localDeviceName = "memdev-c100e2e1"
-
-// localMemdev returns the detected local memdev of a fakeLocalSys.
-func localMemdev() *nricxl.MemoryDevice {
-	return &nricxl.MemoryDevice{
-		Name: "mem0", DevName: "cxl/mem0", SysfsPath: "/sys/bus/cxl/devices/mem0", RamSize: localRegionSize,
-		Serial: localSerial, NodeAffinity: 0, Driver: "cxl_mem", Major: 251, Minor: 0, Enabled: true,
-	}
-}
-
+// The scan publishes free and used local memdevs of at least a memory block
+// of a known size, not pooled, ignored or disabled ones.
 func TestBuildDevInfosLocalMemdevs(t *testing.T) {
 	memdev := func(name string, serial uint64) *nricxl.MemoryDevice {
 		return &nricxl.MemoryDevice{Name: name, DevName: "cxl/" + name, RamSize: 1 << 30, Serial: serial, NodeAffinity: -1, Enabled: true}
@@ -286,6 +126,8 @@ func TestBuildDevInfosLocalMemdevs(t *testing.T) {
 	}
 }
 
+// The published device of a local memdev: its attributes, its capacity
+// with the request policy of memory blocks, no nodeAffinity when unknown.
 func TestGetResourcesLocalMemdev(t *testing.T) {
 	devs, err := buildDevInfos(&DriverConfig{IgnoreDRAMNodes: true}, &nricxl.Devices{MemoryDevices: []*nricxl.MemoryDevice{localMemdev()}}, nil, &localSnapshot{BlockSize: localBlockSize})
 	noErr(t, err)
@@ -418,246 +260,128 @@ func TestLocalRequestPolicy(t *testing.T) {
 	}
 }
 
-// localTestState is a nodeState of node testNode with the local memdev of
-// a fakeLocalSys published, as newDriver sets it up.
-type localTestState struct {
-	*nodeState
-	f      *fakeLocalSys
-	cdiDir string
+// localRegionNode returns the NUMA node of the region of the local memdev
+// in the kernel.
+func localRegionNode(e *localTestEnv) int {
+	e.t.Helper()
+	rs := e.regions(localSerial)
+	if len(rs) != 1 {
+		e.t.Fatalf("regions %v", rs)
+	}
+	ri, err := e.k.Kernel().Region(rs[0])
+	noErr(e.t, err)
+	if ri.NumaNode < 0 {
+		e.t.Fatalf("region %+v without a node", ri)
+	}
+	return ri.NumaNode
 }
 
-func newLocalTestState(t *testing.T) *localTestState {
-	f := newFakeLocalSys(t)
-	dir := t.TempDir()
-	cdiDir := filepath.Join(dir, "cdi")
-	noErr(t, os.MkdirAll(cdiDir, 0o755))
-	cache, err := cdiapi.NewCache(cdiapi.WithSpecDirs(cdiDir), cdiapi.WithAutoRefresh(false))
-	noErr(t, err)
-	e := &localTestState{f: f, cdiDir: cdiDir}
-	e.nodeState = &nodeState{
-		baseState: &baseState{
-			CdiCache:               cache,
-			Prepared:               claimPreparations{},
-			PreparedClaimsFilePath: filepath.Join(dir, "preparedClaims.json"),
-			NodeName:               testNode,
-		},
-		config:         &DriverConfig{IgnoreDRAMNodes: true},
-		preparedClaims: PreparedClaimsInfo{},
-		claimsFilePath: filepath.Join(dir, preparedClaimsInfoFileName),
-		podClaims:      map[string]map[string]bool{},
-		local:          f.allocator(t, dir),
-		lending:        newCompanionLender(device.DriverName),
-		locks:          &nodeLocks{},
-		bootID:         "boot-1",
+// wantMovable checks that n memory blocks are online, all movable and in
+// the region of the local memdev.
+func wantMovable(e *localTestEnv, n int) {
+	e.t.Helper()
+	online := e.onlineBlocks()
+	if len(online) != n {
+		e.t.Fatalf("%d blocks online %v, expected %d", len(online), online, n)
 	}
-	e.rescan()
-	return e
-}
-
-// rescan publishes the local memdev as rescanAndPublish does.
-func (e *localTestState) rescan() {
-	devs, _ := buildDevInfos(e.config, &nricxl.Devices{MemoryDevices: []*nricxl.MemoryDevice{localMemdev()}}, nil, e.local.Snapshot())
-	e.Lock()
-	e.Allocatable = devs
-	e.Unlock()
-}
-
-// inUse tells whether the local allocator uses the local memdev.
-func (e *localTestState) inUse() bool {
-	return e.local.Snapshot().uses(localSerial)
-}
-
-// cdiSpec returns the CDI spec of the claims on disk, nil if there is
-// none.
-func (e *localTestState) cdiSpec(t *testing.T) *cdiSpecs.Spec {
-	t.Helper()
-	m, _ := filepath.Glob(filepath.Join(e.cdiDir, device.ClaimsCDISpecName+".*"))
-	if len(m) == 0 {
-		return nil
+	if n == 0 {
+		return
 	}
-	data, err := os.ReadFile(m[0])
-	noErr(t, err)
-	spec := &cdiSpecs.Spec{}
-	noErr(t, yaml.Unmarshal(data, spec))
-	return spec
-}
-
-// localClaim returns a claim allocated the local memdev for request "mem",
-// consuming bytes of it (0: no consumed capacity), with opaque cxl.nri.io
-// claim configs.
-func localClaim(uid string, consumed int64, configs ...string) *resourcev1.ResourceClaim {
-	r := resourcev1.DeviceRequestAllocationResult{Request: "mem", Driver: device.DriverName, Pool: testNode, Device: localDeviceName}
-	if consumed > 0 {
-		r.ConsumedCapacity = map[resourcev1.QualifiedName]resource.Quantity{device.CapacityMemory: *resource.NewQuantity(consumed, resource.BinarySI)}
-	}
-	c := &resourcev1.ResourceClaim{
-		ObjectMeta: metav1.ObjectMeta{UID: types.UID(uid), Name: "claim-" + uid, Namespace: testNS},
-		Status: resourcev1.ResourceClaimStatus{
-			Allocation: &resourcev1.AllocationResult{
-				Devices: resourcev1.DeviceAllocationResult{Results: []resourcev1.DeviceRequestAllocationResult{r}},
-			},
-		},
-	}
-	for _, params := range configs {
-		c.Status.Allocation.Devices.Config = append(c.Status.Allocation.Devices.Config, makeOpaqueConfig(device.DriverName, resourcev1.AllocationConfigSourceClaim, json.RawMessage(params)))
-	}
-	return c
-}
-
-// localCompanion returns localClaim as the companion claim of lease l1.
-func localCompanion(uid string, consumed int64, configs ...string) *resourcev1.ResourceClaim {
-	c := localClaim(uid, consumed, configs...)
-	c.ObjectMeta = companionClaim("l1").ObjectMeta
-	c.UID = types.UID(uid)
-	return c
-}
-
-const (
-	localDaxConfig = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"dax"}}`
-	localROConfig  = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"dax","readOnly":true}}`
-)
-
-func TestPrepareLocalNUMA(t *testing.T) {
-	e := newLocalTestState(t)
-	ctx := context.Background()
-	// 64Mi is rounded up to a memory block
-	noErr(t, e.Prepare(ctx, localClaim("u1", 64*mib)))
-	if !e.inUse() {
-		t.Fatal("memdev not in use")
-	}
-	res := e.Prepared["u1"]
-	if len(res.Devices) != 1 || !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl=claim-u1-0"}) {
-		t.Fatalf("prepared %+v", res.Devices)
-	}
-	if boot := e.preparedClaims["u1"].BootID; boot != "boot-1" {
-		t.Fatalf("prepared in boot %q", boot)
-	}
-	e.wantDeviceInfo(t, "u1", PreparedDeviceInfo{
-		RequestName: "mem", DeviceName: localDeviceName, DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA,
-		SysfsPath: e.f.p("bus/cxl/devices/region0"), NUMANodes: []int{2}, NodeAffinities: []int{0},
-		TotalBytes: localBlockSize, ConsumedBytes: localBlockSize, Serial: "0xc100e2e1",
-	})
-	e.f.wantMemoryBlocks(t, "online_movable", 74)
-	e.wantCDIDevice(t, "claim-u1-0", []string{"CXL_C100E2E1_MODE=numa", "CXL_C100E2E1_NODE=2", "CXL_C100E2E1_SERIAL=0xc100e2e1",
-		"CXL_C100E2E1_SHARED=0", "CXL_C100E2E1_SIZE=134217728", "CXL_CLAIM_u1_0=1"}, nil)
-	// a dax claim on the same device, and another numa claim on the node
-	noErr(t, e.Prepare(ctx, localClaim("u2", localBlockSize, localDaxConfig)))
-	noErr(t, e.Prepare(ctx, localClaim("u3", 2*localBlockSize)))
-	if got := e.preparedClaims["u3"].Devices[0]; !slices.Equal(got.NUMANodes, []int{2}) || got.TotalBytes != 2*localBlockSize || got.ConsumedBytes != 2*localBlockSize {
-		t.Fatalf("device info %+v", got)
-	}
-	e.f.wantMemoryBlocks(t, "online_movable", 74, 76, 77)
-
-	noErr(t, e.Unprepare(ctx, "u1"))
-	e.f.wantMemoryBlocks(t, "online_movable", 76, 77)
-	noErr(t, e.Unprepare(ctx, "u3"))
-	e.f.wantMemoryBlocks(t, "")
-	noErr(t, e.Unprepare(ctx, "u2"))
-	e.f.wantRegionReleased(t, "region0")
-	if e.inUse() || len(e.Prepared) != 0 || len(e.preparedClaims) != 0 {
-		t.Fatalf("after unprepare: in use %v, prepared %v", e.inUse(), e.Prepared)
-	}
-	// the whole memdev without consumed capacity
-	noErr(t, e.Prepare(ctx, localClaim("u4", 0)))
-	if got := e.preparedClaims["u4"].Devices[0].ConsumedBytes; got != localRegionSize {
-		t.Fatalf("consumed %d", got)
-	}
-	e.f.wantMemoryBlocks(t, "online_movable", 74, 75, 76, 77, 78, 79, 80, 81)
-	noErr(t, e.Unprepare(ctx, "u4"))
-	e.f.wantRegionReleased(t, "region0")
-	// an unknown claim
-	noErr(t, e.Unprepare(ctx, "u1"))
-}
-
-// wantCDIDevices checks the CDI devices of the first device of a prepared
-// claim.
-func (e *localTestState) wantCDIDevices(t *testing.T, uid string, ids ...string) {
-	t.Helper()
-	if res := e.Prepared[uid]; len(res.Devices) == 0 || !slices.Equal(res.Devices[0].CDIDeviceIDs, ids) {
-		t.Fatalf("claim %s: prepared %+v, expected CDI devices %v", uid, res.Devices, ids)
+	blocks, err := e.k.Kernel().RegionBlocks(e.regions(localSerial)[0])
+	noErr(e.t, err)
+	for _, b := range online {
+		if mb := e.k.Kernel().MemoryBlock(b); mb.Zones != "Movable" || !slices.Contains(blocks, b) {
+			e.t.Fatalf("block %+v online, region blocks %v", mb, blocks)
+		}
 	}
 }
 
-// wantDeviceInfo checks the info of the first device of a prepared claim.
-func (e *localTestState) wantDeviceInfo(t *testing.T, uid string, want PreparedDeviceInfo) {
-	t.Helper()
-	if got := e.preparedClaims[uid].Devices[0]; !reflect.DeepEqual(got, want) {
-		t.Fatalf("claim %s: device info\n%+v\nexpected\n%+v", uid, got, want)
+// localDax returns the path of the device node of a dax device and its
+// numbers.
+func localDax(e *localTestEnv, dax string) (string, int, int) {
+	e.t.Helper()
+	major, minor, err := e.k.Kernel().DaxDevNumbers(dax)
+	noErr(e.t, err)
+	return filepath.Join(e.k.DevRoot(), dax), major, minor
+}
+
+// wantLocalCDIDevices checks the CDI devices of the first device of a
+// prepared claim.
+func wantLocalCDIDevices(e *localTestEnv, uid string, ids ...string) {
+	e.t.Helper()
+	e.s.Lock()
+	res := e.s.Prepared[uid]
+	e.s.Unlock()
+	if len(res.Devices) == 0 || !slices.Equal(res.Devices[0].CDIDeviceIDs, ids) {
+		e.t.Fatalf("claim %s: prepared %+v, expected CDI devices %v", uid, res.Devices, ids)
 	}
 }
 
-// wantCDIDevice checks the env and the device nodes of a CDI device of the
-// claims spec.
-func (e *localTestState) wantCDIDevice(t *testing.T, name string, env []string, nodes []*cdiSpecs.DeviceNode) {
-	t.Helper()
-	d := cdiDeviceByName(e.cdiSpec(t), name)
-	if d == nil || !slices.Equal(d.ContainerEdits.Env, env) || !reflect.DeepEqual(d.ContainerEdits.DeviceNodes, nodes) {
-		t.Fatalf("CDI device %s: %+v, expected env %v nodes %+v", name, d, env, nodes)
-	}
-}
-
+// Dax slices of a local memdev: devdax devices of whole blocks, read-only
+// device nodes, no device node of a slice gone at a start.
 func TestPrepareLocalDax(t *testing.T) {
-	e := newLocalTestState(t)
-	ctx := context.Background()
-	noErr(t, e.Prepare(ctx, localClaim("u1", localBlockSize, localDaxConfig)))
+	e := newLocalTestEnv(t)
+	e.start()
+	e.mustPrepare(localClaim("u1", localBlockSize, localDaxConfig))
 	// 32Mi is rounded up to a memory block
-	noErr(t, e.Prepare(ctx, localClaim("u2", 32*mib, localROConfig)))
-	e.wantCDIDevices(t, "u2", "nri.io/cxl=claim-u2-0")
-	e.wantDeviceInfo(t, "u2", PreparedDeviceInfo{
+	e.mustPrepare(localClaim("u2", 32*mib, localROConfig))
+	wantLocalCDIDevices(e, "u2", "nri.io/cxl=claim-u2-0")
+	dax1, major, minor1 := localDax(e, "dax0.1")
+	dax0, _, minor0 := localDax(e, "dax0.0")
+	e.wantDeviceInfo("u2", PreparedDeviceInfo{
 		RequestName: "mem", DeviceName: localDeviceName, DeviceType: device.DeviceTypeMemdev, Mode: api.ModeDax,
-		SysfsPath: e.f.p("bus/cxl/devices/region0"), NodeAffinities: []int{0},
+		SysfsPath: e.k.P("bus/cxl/devices/region0"), NodeAffinities: []int{0},
 		TotalBytes: localBlockSize, ConsumedBytes: localBlockSize, Serial: "0xc100e2e1",
-		DaxDevice: "/dev/dax0.1", DaxMajor: 252, DaxMinor: 1, ReadOnly: true,
+		DaxDevice: dax1, DaxMajor: major, DaxMinor: minor1, ReadOnly: true,
 	})
-	e.wantCDIDevice(t, "claim-u2-0",
-		[]string{"CXL_C100E2E1_DAX=/dev/dax0.1", "CXL_C100E2E1_MODE=dax", "CXL_C100E2E1_READONLY=1", "CXL_C100E2E1_SERIAL=0xc100e2e1",
+	e.wantCDIDevice("claim-u2-0",
+		[]string{"CXL_C100E2E1_DAX=" + dax1, "CXL_C100E2E1_MODE=dax", "CXL_C100E2E1_READONLY=1", "CXL_C100E2E1_SERIAL=0xc100e2e1",
 			"CXL_C100E2E1_SHARED=0", "CXL_C100E2E1_SIZE=134217728", "CXL_CLAIM_u2_0=1"},
-		[]*cdiSpecs.DeviceNode{{Path: "/dev/dax0.1", Type: "c", Major: 252, Minor: 1, Permissions: "r"}})
-	e.wantCDIDevice(t, "claim-u1-0",
-		[]string{"CXL_C100E2E1_DAX=/dev/dax0.0", "CXL_C100E2E1_MODE=dax", "CXL_C100E2E1_READONLY=0", "CXL_C100E2E1_SERIAL=0xc100e2e1",
+		[]*cdiSpecs.DeviceNode{{Path: dax1, Type: "c", Major: int64(major), Minor: int64(minor1), Permissions: "r"}})
+	e.wantCDIDevice("claim-u1-0",
+		[]string{"CXL_C100E2E1_DAX=" + dax0, "CXL_C100E2E1_MODE=dax", "CXL_C100E2E1_READONLY=0", "CXL_C100E2E1_SERIAL=0xc100e2e1",
 			"CXL_C100E2E1_SHARED=0", "CXL_C100E2E1_SIZE=134217728", "CXL_CLAIM_u1_0=1"},
-		[]*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: 252, Minor: 0}})
+		[]*cdiSpecs.DeviceNode{{Path: dax0, Type: "c", Major: int64(major), Minor: int64(minor0)}})
 
-	// the spec is rebuilt from the prepared claims after a restart,
-	// without the slices that are gone
-	_ = os.RemoveAll(e.cdiDir)
+	// the spec is rebuilt from the prepared claims at a start, without the
+	// device node of a slice that is gone
+	k := e.k.Kernel()
+	noErr(t, k.UnbindDax(context.Background(), "dax0.1"))
+	noErr(t, k.DeleteDaxDevice(context.Background(), "region0", "dax0.1"))
+	noErr(t, os.RemoveAll(e.cdiDir))
 	noErr(t, os.MkdirAll(e.cdiDir, 0o755))
-	e.Prepared["stale"] = kubeletplugin.PrepareResult{}
-	e.preparedClaims["stale"] = &PreparedClaimInfo{Devices: []PreparedDeviceInfo{{DeviceType: device.DeviceTypeMemdev, Mode: api.ModeDax,
-		Serial: "0xc100e2e1", TotalBytes: localBlockSize, DaxDevice: "/dev/dax0.7", DaxMajor: 252, DaxMinor: 7}}}
-	e.forgetGoneSlices()
-	noErr(t, e.persist())
-	if spec := e.cdiSpec(t); len(spec.Devices) != 3 {
+	e.restart()
+	if spec := e.cdiSpec(); spec == nil || len(spec.Devices) != 2 {
 		t.Fatalf("rebuilt CDI spec %+v", spec)
 	}
-	e.wantCDIDevice(t, "claim-stale-0", []string{"CXL_C100E2E1_MODE=dax", "CXL_C100E2E1_READONLY=0", "CXL_C100E2E1_SERIAL=0xc100e2e1",
-		"CXL_C100E2E1_SHARED=0", "CXL_C100E2E1_SIZE=134217728", "CXL_CLAIM_stale_0=1"}, nil)
-	delete(e.Prepared, "stale")
-	delete(e.preparedClaims, "stale")
+	e.wantCDIDevice("claim-u2-0", []string{"CXL_C100E2E1_MODE=dax", "CXL_C100E2E1_READONLY=1", "CXL_C100E2E1_SERIAL=0xc100e2e1",
+		"CXL_C100E2E1_SHARED=0", "CXL_C100E2E1_SIZE=134217728", "CXL_CLAIM_u2_0=1"}, nil)
 	// a numa claim on the same device gets the node
-	noErr(t, e.Prepare(ctx, localClaim("u3", localBlockSize)))
-	if got := e.preparedClaims["u3"].Devices[0]; got.DeviceType != device.DeviceTypeMemdev || got.Mode != api.ModeNUMA || !slices.Equal(got.NUMANodes, []int{2}) {
+	e.mustPrepare(localClaim("u3", localBlockSize))
+	if got := e.s.GetClaimInfo("u3").Devices[0]; got.DeviceType != device.DeviceTypeMemdev || got.Mode != api.ModeNUMA || !slices.Equal(got.NUMANodes, []int{localRegionNode(e)}) {
 		t.Fatalf("numa claim %+v", got)
 	}
-	noErr(t, e.Unprepare(ctx, "u3"))
+	e.mustUnprepare("u3")
 
-	noErr(t, e.Unprepare(ctx, "u1"))
-	if cdiDeviceByName(e.cdiSpec(t), "claim-u1-0") != nil {
+	e.mustUnprepare("u1")
+	if cdiDeviceByName(e.cdiSpec(), "claim-u1-0") != nil {
 		t.Fatal("CDI device of u1 not removed")
 	}
-	e.f.wantDax(t, "dax0.0", 0, "")
-	noErr(t, e.Unprepare(ctx, "u2"))
-	if e.cdiSpec(t) != nil || e.inUse() {
+	if e.k.DaxSize("dax0.0") != 0 || e.k.DaxDriver("dax0.0") != "" {
+		t.Fatalf("dax0.0 of size %d bound to %q after its slice", e.k.DaxSize("dax0.0"), e.k.DaxDriver("dax0.0"))
+	}
+	e.mustUnprepare("u2")
+	if e.cdiSpec() != nil || e.inUse() {
 		t.Fatalf("after the last unprepare: in use %v", e.inUse())
 	}
-	e.f.wantRegionReleased(t, "region0")
+	e.wantClean()
 }
 
-// A claim with two requests, the second one read-only: each allocation
-// result has a CDI device of its own with only its slice, so that a
-// container that references one request gets only that slice.
+// Two results of a claim on one memdev: a CDI device each with only its
+// slice, the second one's env keys with _2.
 func TestPrepareLocalTwoSlices(t *testing.T) {
-	e := newLocalTestState(t)
+	e := newLocalTestEnv(t)
+	e.start()
 	claim := localClaim("u1", 8*mib, localDaxConfig)
 	r := claim.Status.Allocation.Devices.Results[0]
 	r.Request = "mem2"
@@ -665,31 +389,35 @@ func TestPrepareLocalTwoSlices(t *testing.T) {
 	ro := makeOpaqueConfig(device.DriverName, resourcev1.AllocationConfigSourceClaim, json.RawMessage(localROConfig))
 	ro.Requests = []string{"mem2"}
 	claim.Status.Allocation.Devices.Config = append(claim.Status.Allocation.Devices.Config, ro)
-	noErr(t, e.Prepare(context.Background(), claim))
-	devs := e.Prepared["u1"].Devices
+	e.mustPrepare(claim)
+	devs := e.s.Prepared["u1"].Devices
 	if len(devs) != 2 || !slices.Equal(devs[0].CDIDeviceIDs, []string{"nri.io/cxl=claim-u1-0"}) ||
 		!slices.Equal(devs[1].CDIDeviceIDs, []string{"nri.io/cxl=claim-u1-1"}) {
 		t.Fatalf("prepared %+v", devs)
 	}
-	e.wantCDIDevice(t, "claim-u1-0", []string{
-		"CXL_C100E2E1_DAX=/dev/dax0.0", "CXL_C100E2E1_MODE=dax", "CXL_C100E2E1_READONLY=0", "CXL_C100E2E1_SERIAL=0xc100e2e1",
+	dax0, major, minor0 := localDax(e, "dax0.0")
+	dax1, _, minor1 := localDax(e, "dax0.1")
+	e.wantCDIDevice("claim-u1-0", []string{
+		"CXL_C100E2E1_DAX=" + dax0, "CXL_C100E2E1_MODE=dax", "CXL_C100E2E1_READONLY=0", "CXL_C100E2E1_SERIAL=0xc100e2e1",
 		"CXL_C100E2E1_SHARED=0", "CXL_C100E2E1_SIZE=134217728", "CXL_CLAIM_u1_0=1"},
-		[]*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: 252, Minor: 0}})
+		[]*cdiSpecs.DeviceNode{{Path: dax0, Type: "c", Major: int64(major), Minor: int64(minor0)}})
 	// the second slice of the memdev in the claim: <HEX>_2
-	e.wantCDIDevice(t, "claim-u1-1", []string{
-		"CXL_C100E2E1_2_DAX=/dev/dax0.1", "CXL_C100E2E1_2_MODE=dax", "CXL_C100E2E1_2_READONLY=1", "CXL_C100E2E1_2_SERIAL=0xc100e2e1",
+	e.wantCDIDevice("claim-u1-1", []string{
+		"CXL_C100E2E1_2_DAX=" + dax1, "CXL_C100E2E1_2_MODE=dax", "CXL_C100E2E1_2_READONLY=1", "CXL_C100E2E1_2_SERIAL=0xc100e2e1",
 		"CXL_C100E2E1_2_SHARED=0", "CXL_C100E2E1_2_SIZE=134217728", "CXL_CLAIM_u1_1=1"},
-		[]*cdiSpecs.DeviceNode{{Path: "/dev/dax0.1", Type: "c", Major: 252, Minor: 1, Permissions: "r"}})
-	if spec := e.cdiSpec(t); len(spec.Devices) != 2 {
+		[]*cdiSpecs.DeviceNode{{Path: dax1, Type: "c", Major: int64(major), Minor: int64(minor1), Permissions: "r"}})
+	if spec := e.cdiSpec(); len(spec.Devices) != 2 {
 		t.Fatalf("CDI devices %+v", spec.Devices)
 	}
-	noErr(t, e.Unprepare(context.Background(), "u1"))
-	e.f.wantRegionReleased(t, "region0")
+	e.mustUnprepare("u1")
+	e.wantClean()
 }
 
+// Refused MemoryConfigs and a result of a missing device touch no device;
+// unmanaged memdevs are refused.
 func TestPrepareLocalErrors(t *testing.T) {
-	e := newLocalTestState(t)
-	ctx := context.Background()
+	e := newLocalTestEnv(t)
+	e.start()
 	for _, tc := range []struct{ params, err string }{
 		{`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"readOnly":true}}`, "MemoryConfig: device.readOnly needs mode dax"},
 		{`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"ram"}}`, `MemoryConfig: device.mode: invalid mode "ram" (numa or dax)`},
@@ -698,30 +426,35 @@ func TestPrepareLocalErrors(t *testing.T) {
 		{`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"LendConfig","lease":"l1"}`, `unknown kind "LendConfig" (MemoryConfig)`},
 		{`{"apiVersion":"cxl.nri.io/v1alpha1","mode":"dax"}`, `unknown kind "" (MemoryConfig)`},
 	} {
-		wantErr(t, e.Prepare(ctx, localClaim("u1", 2*mib, tc.params)), tc.err)
+		wantErr(t, e.prepare(localClaim("u1", 2*mib, tc.params)), tc.err)
 	}
-	if strings.Contains(e.f.commands(), "create-region") || len(e.Prepared) != 0 {
-		t.Fatalf("a refused config touched the memdev:\n%s", e.f.commands())
+	if strings.Contains(e.commands(), "create-region") || len(e.s.Prepared) != 0 {
+		t.Fatalf("a refused config touched the memdev:\n%s", e.commands())
 	}
-	// a failure after the memory was acquired rolls it back
+	// a result on a device that is not there stops the claim before its
+	// memdev is touched
 	claim := localClaim("u1", 2*mib, localDaxConfig)
 	claim.Status.Allocation.Devices.Results = append(claim.Status.Allocation.Devices.Results,
 		resourcev1.DeviceRequestAllocationResult{Request: "other", Driver: device.DriverName, Pool: testNode, Device: "missing"})
-	wantErr(t, e.Prepare(ctx, claim), "could not find allocatable device missing")
-	e.f.wantRegionReleased(t, "region0")
-	if e.inUse() || len(e.Prepared) != 0 {
-		t.Fatal("not rolled back")
+	wantErr(t, e.prepare(claim), "could not find allocatable device missing")
+	if strings.Contains(e.commands(), "create-region") || e.inUse() || len(e.s.Prepared) != 0 || e.preparation("u1") != nil {
+		t.Fatalf("a refused claim touched the memdev:\n%s", e.commands())
 	}
 	// unmanaged memdevs
-	e.local = nil
-	wantErr(t, e.Prepare(ctx, localClaim("u1", 2*mib)), "manageMemdevs: false")
+	e.s.local.managed = false
+	wantErr(t, e.prepare(localClaim("u1", 2*mib)), "manageMemdevs: false")
+	e.wantClean()
 }
 
-// newLendTestState returns a localTestState with lending enabled.
-func newLendTestState(t *testing.T) (*localTestState, *fakeLender, *fakeHooks) {
-	e := newLocalTestState(t)
+// newLocalLendEnv returns a started localTestEnv with the memdevs of specs
+// too, whose companion claims are lent by the fake lender and told to the
+// fake hooks.
+func newLocalLendEnv(t *testing.T, specs ...fake.MemdevSpec) (*localTestEnv, *fakeLender, *fakeHooks) {
+	t.Helper()
+	e := newLocalTestEnv(t, specs...)
+	e.start()
 	lender, hooks := newFakeLender(), &fakeHooks{}
-	e.lending.set(lender, hooks)
+	e.s.lending.set(lender, hooks)
 	return e, lender, hooks
 }
 
@@ -733,124 +466,115 @@ func wantLog(t *testing.T, log, want string) {
 	}
 }
 
+// A companion claim of a numa slice: the node lent and told to the broker,
+// no CDI device, told again by a Prepare again, revoked before the release.
 func TestPrepareLocalLend(t *testing.T) {
-	e, lender, hooks := newLendTestState(t)
-	ctx := context.Background()
+	e, lender, hooks := newLocalLendEnv(t)
 	// the lease gets the slice: 64Mi rounded up to a memory block
-	noErr(t, e.Prepare(ctx, localCompanion("u1", 64*mib)))
-	wantLog(t, strings.Join(lender.calls, "\n"), "lend pod-uid-1/app 2")
+	e.mustPrepare(localCompanion("u1", 64*mib))
+	node := localRegionNode(e)
+	wantLog(t, lender.callLog(), "lend pod-uid-1/app "+strconv.Itoa(node))
 	wantLog(t, hooks.log(), "lending l1 cxl-lease-l1\nprepared l1")
 	wantDev := lentDevice{
 		Driver: device.DriverName, Source: api.SourceLocal, Request: "mem", Device: localDeviceName, Pool: testNode,
-		Serial: localSerial, Size: localBlockSize, Mode: api.ModeNUMA, Node: 2,
+		Serial: localSerial, Size: localBlockSize, Mode: api.ModeNUMA, Node: node,
 	}
 	if !reflect.DeepEqual(hooks.devs, []lentDevice{wantDev}) {
 		t.Fatalf("lent devices %+v", hooks.devs)
 	}
-	if rec := e.preparedClaims["u1"].Lend; rec == nil || rec.Lease != "l1" || !slices.Equal(rec.Nodes, []int{2}) {
+	if rec := e.s.GetClaimInfo("u1").Lend; rec == nil || rec.Lease != "l1" || !slices.Equal(rec.Nodes, []int{node}) {
 		t.Fatalf("lend record %+v", rec)
 	}
 	// the companion's own containers get no CDI device, and the spec has
 	// none of the companion
-	e.wantCDIDevices(t, "u1")
-	if cdiDeviceByName(e.cdiSpec(t), "claim-u1-0") != nil {
+	wantLocalCDIDevices(e, "u1")
+	if cdiDeviceByName(e.cdiSpec(), "claim-u1-0") != nil {
 		t.Fatal("CDI device of a companion claim")
 	}
-	// the lend is stored with the claims info
-	data, err := os.ReadFile(e.claimsFilePath)
+	// the lend is in the claims info
+	data, err := os.ReadFile(filepath.Join(e.dir, preparedClaimsInfoFileName))
 	if err != nil || !strings.Contains(string(data), `"lease": "l1"`) {
 		t.Fatalf("claims info lacks the lend: %v\n%s", err, data)
 	}
 	// a repeated Prepare tells the broker again
-	noErr(t, e.Prepare(ctx, localCompanion("u1", 64*mib)))
+	e.mustPrepare(localCompanion("u1", 64*mib))
 	wantLog(t, hooks.log(), "prepared l1\nlending l1 cxl-lease-l1\nprepared l1")
 
-	noErr(t, e.Unprepare(ctx, "u1"))
-	wantLog(t, strings.Join(lender.calls, "\n"), "lend pod-uid-1/app 2\nrevoke pod-uid-1/app 2")
+	e.mustUnprepare("u1")
+	wantLog(t, lender.callLog(), "lend pod-uid-1/app "+strconv.Itoa(node)+"\nrevoke pod-uid-1/app "+strconv.Itoa(node))
 	wantLog(t, hooks.log(), "releasing l1")
-	e.f.wantRegionReleased(t, "region0")
+	e.wantClean()
 }
 
+// A companion claim of a dax slice: the broker passes the dax device, no
+// node is lent.
 func TestPrepareLocalLendDax(t *testing.T) {
-	e, lender, hooks := newLendTestState(t)
-	ctx := context.Background()
-	noErr(t, e.Prepare(ctx, localCompanion("u1", 16*mib, localDaxConfig)))
-	if len(hooks.devs) != 1 || hooks.devs[0].Mode != api.ModeDax || hooks.devs[0].DaxDevice != "/dev/dax0.0" || hooks.devs[0].Node != -1 {
+	e, lender, hooks := newLocalLendEnv(t)
+	e.mustPrepare(localCompanion("u1", 16*mib, localDaxConfig))
+	dax0, _, _ := localDax(e, "dax0.0")
+	if len(hooks.devs) != 1 || hooks.devs[0].Mode != api.ModeDax || hooks.devs[0].DaxDevice != dax0 || hooks.devs[0].Node != -1 {
 		t.Fatalf("lent dax devices %+v", hooks.devs)
 	}
 	// the borrower gets the fd from the broker, the companion nothing
-	e.wantCDIDevices(t, "u1")
-	noErr(t, e.Unprepare(ctx, "u1"))
+	wantLocalCDIDevices(e, "u1")
+	e.mustUnprepare("u1")
 	if len(lender.calls) != 0 {
 		t.Fatalf("nodes lent for a dax lease: %v", lender.calls)
 	}
+	e.wantClean()
 }
 
+// The refusals of a companion claim: lending disabled, a failed lend rolled
+// back, other devices than local memdevs, a companion the broker refuses.
 func TestPrepareLocalLendErrors(t *testing.T) {
-	e := newLocalTestState(t)
-	ctx := context.Background()
-	wantErr(t, e.Prepare(ctx, localCompanion("u1", 64*mib)), "lease l1: lending to running containers is disabled (--leases=false)")
+	e := newLocalTestEnv(t)
+	e.start()
+	wantErr(t, e.prepare(localCompanion("u1", 64*mib)), "lease l1: lending to running containers is disabled (--leases=false)")
+	e.wantClean()
 
-	e, lender, hooks := newLendTestState(t)
+	e, lender, hooks := newLocalLendEnv(t)
 	// a failed lend rolls back
 	lender.lendErr = errors.New("container is steered")
-	wantErr(t, e.Prepare(ctx, localCompanion("u2", 64*mib)), "container is steered")
-	wantLog(t, hooks.log(), "failed l1: lease l1: lending node 2 to demo/borrower/app: container is steered")
-	e.f.wantRegionReleased(t, "region0")
-	if e.inUse() || len(e.Prepared) != 0 {
+	wantErr(t, e.prepare(localCompanion("u2", 64*mib)), "container is steered")
+	failed := hooks.log()
+	wantLog(t, failed, "failed l1: lease l1: lending node 2 to demo/borrower/app: container is steered")
+	if e.inUse() || len(e.s.Prepared) != 0 || len(e.regions(localSerial)) != 0 {
 		t.Fatal("not rolled back")
 	}
 
 	// only local memdevs are lent
-	if devs, ok := e.Allocatable.(device.DevicesInfo); ok {
-		devs["dram"] = &device.DeviceInfo{Name: "dram", Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}}
-	}
+	devs, err := e.s.allocatable()
+	noErr(t, err)
+	e.s.Lock()
+	devs["dram"] = &device.DeviceInfo{Name: "dram", Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}}
+	e.s.Unlock()
 	claim := localCompanion("u4", 64*mib)
 	claim.Status.Allocation.Devices.Results[0].Device = "dram"
-	wantErr(t, e.Prepare(ctx, claim), "the companion claim of lease l1 needs memdev devices only")
+	wantErr(t, e.prepare(claim), "the companion claim of lease l1 needs memdev devices only")
 
 	// a refused companion claim: the device is not touched
 	hooks.lendingErr = errors.New("claim demo/cxl-lease-l1: not the companion of lease l1")
-	ncmds := len(e.f.commands())
-	wantErr(t, e.Prepare(ctx, localCompanion("u5", 64*mib)), "not the companion of lease l1")
-	if len(e.f.commands()) != ncmds {
-		t.Fatalf("a refused companion touched the memdev:\n%s", e.f.commands()[ncmds:])
+	before := e.commands()
+	wantErr(t, e.prepare(localCompanion("u5", 64*mib)), "not the companion of lease l1")
+	if e.commands() != before {
+		t.Fatalf("a refused companion touched the memdev:\n%s", strings.TrimPrefix(e.commands(), before))
+	}
+	e.wantClean()
+	if !strings.Contains(failed, "\nfailed l1: lease l1: lending node ") {
+		t.Fatalf("the broker hears %q, expected the lend error without the claim", failed[strings.LastIndex(failed, "failed l1: "):])
 	}
 }
 
-func TestPreparedClaimsInfo_LocalFields(t *testing.T) {
-	fileBackendOnly(t, "preparedClaimsInfo.json alone; successor TestLocalContentRoundTrip (u-comp, u-dax)")
-	filePath := filepath.Join(t.TempDir(), preparedClaimsInfoFileName)
-	noErr(t, os.WriteFile(filePath, []byte(`{"u1":{"claimName":"ns/c","devices":[{"requestName":"r","deviceName":"region0-node2","deviceType":"region","mode":"numa","region":"region0","numaNodes":[2],"totalBytes":1,"consumedBytes":1}]}}`), 0600))
-	claims, err := getOrCreatePreparedClaimsInfo(filePath)
-	noErr(t, err)
-	if info := claims["u1"]; info.Lend != nil || info.usesLocalMemdevs() || info.Devices[0].Serial != "" || info.Devices[0].Region != "region0" {
-		t.Fatalf("region claim info %+v", info)
-	}
-	claims["u2"] = &PreparedClaimInfo{
-		ClaimName: "ns/c2",
-		Devices:   []PreparedDeviceInfo{{DeviceType: device.DeviceTypeMemdev, Mode: api.ModeDax, Serial: "0xc100e2e1", DaxDevice: "/dev/dax0.1", DaxMinor: 1, ReadOnly: true}},
-		Lend:      &lendRecord{Lease: "l1", Pod: podRef{Namespace: "ns", Name: "p", UID: "uid"}, Container: "app"},
-	}
-	noErr(t, writePreparedClaimsInfoToFile(filePath, claims))
-	loaded, err := getOrCreatePreparedClaimsInfo(filePath)
-	noErr(t, err)
-	if !reflect.DeepEqual(loaded["u2"], claims["u2"]) || !loaded["u2"].usesLocalMemdevs() {
-		t.Fatalf("loaded %+v", loaded["u2"])
-	}
-}
-
-// A claim that is prepared already is returned as it is, even without an
-// allocation (kubelet after a restart), and only a companion claim tells
-// the broker again.
+// A prepared claim is returned as it is, also without an allocation; only a
+// companion claim tells the broker again.
 func TestPrepareAlreadyPrepared(t *testing.T) {
-	e, lender, hooks := newLendTestState(t)
+	e, lender, hooks := newLocalLendEnv(t)
 	ctx := context.Background()
-	d := &driver{state: *e.nodeState}
+	d := &driver{state: *e.s}
 	res := d.prepareResourceClaim(ctx, localCompanion("u1", 64*mib))
 	noErr(t, res.Err)
 	noErr(t, d.prepareResourceClaim(ctx, localClaim("u2", 16*mib)).Err)
-	ncmds := len(e.f.commands())
+	before := e.commands()
 
 	again := localCompanion("u1", 64*mib)
 	again.Status.Allocation = nil
@@ -862,12 +586,16 @@ func TestPrepareAlreadyPrepared(t *testing.T) {
 	again = localClaim("u2", 16*mib)
 	again.Status.Allocation = nil
 	noErr(t, d.prepareResourceClaim(ctx, again).Err)
-	if len(e.f.commands()) != ncmds || len(lender.calls) != 1 {
-		t.Fatalf("repeated prepare touched devices:\n%s\nlender %v", e.f.commands()[ncmds:], lender.calls)
+	if e.commands() != before || len(lender.calls) != 1 {
+		t.Fatalf("repeated prepare touched devices:\n%s\nlender %v", strings.TrimPrefix(e.commands(), before), lender.calls)
 	}
 	if n := strings.Count(hooks.log(), "prepared l1"); n != 2 {
 		t.Fatalf("hooks %s", hooks.log())
 	}
+	e.check("prepared again")
+	e.mustUnprepare("u1")
+	e.mustUnprepare("u2")
+	e.wantClean()
 }
 
 // blockingLender is a fakeLender whose LendNode waits until release is
@@ -887,6 +615,7 @@ func (b *blockingLender) LendNode(ctx context.Context, podUID, name string, node
 	return b.fakeLender.LendNode(ctx, podUID, name, node, holder)
 }
 
+// lends returns the number of calls of the lender.
 func (b *blockingLender) lends() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -896,15 +625,16 @@ func (b *blockingLender) lends() int {
 // The NRI readers, the publisher and other claims never wait for a Prepare
 // that lends, and two Prepares of one claim run one after the other.
 func TestPrepareDoesNotBlockReaders(t *testing.T) {
-	e := newLocalTestState(t)
+	e := newLocalTestEnv(t)
+	e.start()
 	bl := &blockingLender{fakeLender: newFakeLender(), entered: make(chan struct{}, 1), release: make(chan struct{})}
 	hooks := &fakeHooks{}
-	e.lending.set(bl, hooks)
+	e.s.lending.set(bl, hooks)
 	ctx := context.Background()
-	noErr(t, e.Prepare(ctx, localClaim("u0", 32*mib)))
+	e.mustPrepare(localClaim("u0", 32*mib))
 
 	done := make(chan error, 2)
-	go func() { done <- e.Prepare(ctx, localCompanion("u1", 64*mib)) }()
+	go func() { done <- e.s.Prepare(ctx, localCompanion("u1", 64*mib)) }()
 	select {
 	case <-bl.entered:
 	case <-time.After(10 * time.Second):
@@ -912,15 +642,15 @@ func TestPrepareDoesNotBlockReaders(t *testing.T) {
 	}
 	readers := make(chan error, 1)
 	go func() {
-		if e.GetClaimInfo("u0") == nil {
+		if e.s.GetClaimInfo("u0") == nil {
 			readers <- errors.New("no claim info of u0")
 			return
 		}
-		_, _, _ = e.preparedResult("u0", 0)
-		_ = e.GetResources()
-		err := e.Prepare(ctx, localClaim("u2", 2*mib))
+		_, _, _ = e.s.preparedResult("u0", 0)
+		_ = e.s.GetResources()
+		err := e.s.Prepare(ctx, localClaim("u2", 2*mib))
 		if err == nil {
-			err = e.Unprepare(ctx, "u2")
+			err = e.s.Unprepare(ctx, "u2")
 		}
 		readers <- err
 	}()
@@ -931,7 +661,7 @@ func TestPrepareDoesNotBlockReaders(t *testing.T) {
 		t.Fatal("claim info, resources or another claim waited for a lend")
 	}
 
-	go func() { done <- e.Prepare(ctx, localCompanion("u1", 64*mib)) }()
+	go func() { done <- e.s.Prepare(ctx, localCompanion("u1", 64*mib)) }()
 	select {
 	case err := <-done:
 		t.Fatalf("a Prepare of u1 finished during the lend of u1: %v", err)
@@ -946,87 +676,114 @@ func TestPrepareDoesNotBlockReaders(t *testing.T) {
 			t.Fatal("Prepare of u1 did not finish")
 		}
 	}
+	e.check("prepared")
 	if n := bl.lends(); n != 1 {
 		t.Fatalf("%d lends of u1", n)
 	}
-	if n := len(e.local.devices[localSerial].Claims["u1"]); n != 1 {
-		t.Fatalf("%d slices of u1", n)
+	n := 0
+	for _, g := range e.records().Grants {
+		if g.Ref.Claim == "u1" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d grants of u1", n)
 	}
 	wantLog(t, hooks.log(), "lending l1 cxl-lease-l1\nprepared l1\nlending l1 cxl-lease-l1\nprepared l1")
+	e.mustUnprepare("u1")
+	e.mustUnprepare("u0")
+	e.wantClean()
 }
 
+// A failed revoke keeps the companion claim and its memory; a failed slice
+// release keeps the claim and its CDI device for the retry.
 func TestUnprepareLocalFailures(t *testing.T) {
-	e := newLocalTestState(t)
+	e := newLocalTestEnv(t)
+	e.start()
 	hooks := &fakeHooks{}
-	e.lending.set(revokeFailer{fakeLender: newFakeLender()}, hooks)
-	ctx := context.Background()
+	e.s.lending.set(revokeFailer{fakeLender: newFakeLender()}, hooks)
 
 	// a revoke that fails keeps the claim and its memory
-	noErr(t, e.Prepare(ctx, localCompanion("u1", 64*mib)))
-	wantErr(t, e.Unprepare(ctx, "u1"), "node 2 busy")
-	if _, found := e.Prepared["u1"]; !found || strings.Contains(e.f.commands(), "destroy-region") {
-		t.Fatalf("claim released after a failed revoke:\n%s", e.f.commands())
+	e.mustPrepare(localCompanion("u1", 64*mib))
+	wantErr(t, e.unprepare("u1"), "node "+strconv.Itoa(localRegionNode(e))+" busy")
+	if _, found := e.s.Prepared["u1"]; !found || strings.Contains(e.commands(), "destroy-region") {
+		t.Fatalf("claim released after a failed revoke:\n%s", e.commands())
 	}
 	wantLog(t, hooks.log(), "releasing l1")
-	e.lending.set(newFakeLender(), hooks)
-	noErr(t, e.Unprepare(ctx, "u1"))
-	e.f.wantRegionReleased(t, "region0")
+	e.s.lending.set(newFakeLender(), hooks)
+	e.mustUnprepare("u1")
+	if len(e.regions(localSerial)) != 0 {
+		t.Fatalf("regions %v", e.regions(localSerial))
+	}
 
 	// a slice that fails to delete keeps the claim and its CDI device
-	noErr(t, e.Prepare(ctx, localClaim("u2", 8*mib, localDaxConfig)))
-	e.f.fail = map[string]error{"bus/dax/devices/dax0.0/size": syscall.EBUSY}
-	wantErr(t, e.Unprepare(ctx, "u2"), "releasing slice dax0.0")
-	if _, found := e.Prepared["u2"]; !found || cdiDeviceByName(e.cdiSpec(t), "claim-u2-0") == nil {
+	e.mustPrepare(localClaim("u2", 8*mib, localDaxConfig))
+	e.k.FailWrite("bus/dax/devices/dax0.0/size", syscall.EBUSY)
+	wantErr(t, e.unprepare("u2"), "releasing slice dax0.0")
+	if _, found := e.s.Prepared["u2"]; !found || cdiDeviceByName(e.cdiSpec(), "claim-u2-0") == nil {
 		t.Fatal("claim or CDI device gone after a failed release")
 	}
-	noErr(t, e.Unprepare(ctx, "u2"))
-	if e.cdiSpec(t) != nil || e.inUse() {
+	e.mustUnprepare("u2")
+	if e.cdiSpec() != nil || e.inUse() {
 		t.Fatalf("after the retry: in use %v", e.inUse())
 	}
+	e.wantClean()
 }
 
-// A Prepare that cannot write the prepared claims rolls back: the lend is
-// revoked, the broker hears the error, the memory is released.
+// A companion claim whose CDI spec cannot be written rolls back: the lend
+// revoked, the broker told, the memory released.
 func TestPrepareLocalPersistFailure(t *testing.T) {
-	e, lender, hooks := newLendTestState(t)
-	ctx := context.Background()
-	path := e.claimsFilePath
-	e.claimsFilePath = filepath.Join(t.TempDir(), "missing", preparedClaimsInfoFileName)
-	wantErr(t, e.Prepare(ctx, localCompanion("u1", 64*mib)), "failed to write prepared claims info")
-	wantLog(t, strings.Join(lender.calls, "\n"), "lend pod-uid-1/app 2\nrevoke pod-uid-1/app 2")
-	if log := hooks.log(); !strings.Contains(log, "failed l1: failed to write prepared claims info") || strings.Contains(log, "releasing") {
+	e, lender, hooks := newLocalLendEnv(t, fake.MemdevSpec{Serial: localOtherSerial, Ram: localRegionSize, HostBridge: 24})
+	e.rescan()
+	// a claim with a CDI device on the other memdev, then a CDI directory
+	// that cannot be written
+	e.mustPrepare(memdevClaim("u0", memdevDeviceName(localOtherSerial), localBlockSize))
+	noErr(t, os.RemoveAll(e.cdiDir))
+	noErr(t, os.WriteFile(e.cdiDir, nil, 0o644))
+	err := e.prepare(localCompanion("u1", 64*mib))
+	wantErr(t, err, "CDI spec")
+	if calls := lender.callLog(); calls != "lend pod-uid-1/app 2\nrevoke pod-uid-1/app 2" {
+		t.Fatalf("lender calls %q", calls)
+	}
+	if log := hooks.log(); !strings.HasSuffix(log, "\nfailed l1: "+err.Error()) || strings.Contains(log, "releasing") {
 		t.Fatalf("hooks %s", log)
 	}
-	e.f.wantRegionReleased(t, "region0")
-	if _, found := e.Prepared["u1"]; found || e.GetClaimInfo("u1") != nil {
-		t.Fatal("claim kept after the rollback")
+	if _, found := e.s.Prepared["u1"]; found || e.s.GetClaimInfo("u1") != nil || e.preparation("u1") != nil || len(e.regions(localSerial)) != 0 {
+		t.Fatalf("claim kept after the rollback, regions %v", e.regions(localSerial))
 	}
-	e.claimsFilePath = path
-	noErr(t, e.Prepare(ctx, localCompanion("u1", 64*mib)))
+	noErr(t, os.Remove(e.cdiDir))
+	noErr(t, os.MkdirAll(e.cdiDir, 0o755))
+	e.mustPrepare(localCompanion("u1", 64*mib))
+	e.mustUnprepare("u1")
+	e.mustUnprepare("u0")
+	e.wantClean()
 }
 
-// A Prepare that fails after the lease was marked Lending leaves the lease
-// to the retry.
+// A Prepare that fails after the lease was marked Lending (a region on the
+// memdev that the driver did not make) leaves the lease to the retry.
 func TestPrepareLocalFailsAfterCheck(t *testing.T) {
-	e, _, hooks := newLendTestState(t)
-	ctx := context.Background()
-	_, err := e.f.exec(ctx, "cxl", "create-region", "-t", "ram", "-d", "decoder0.0", "-m", "mem0")
+	e, _, hooks := newLocalLendEnv(t)
+	k := e.k.Kernel()
+	memdev := e.k.Memdev(localSerial)
+	d, err := k.RootDecoder(memdev, kernel.RegionRAM)
 	noErr(t, err)
-	wantErr(t, e.Prepare(ctx, localCompanion("u1", 64*mib)), "did not create")
+	region, err := k.CreateRegion(context.Background(), kernel.CreateRegionRequest{Memdev: memdev, Decoder: d, Type: kernel.RegionRAM})
+	noErr(t, err)
+	wantErr(t, e.prepare(localCompanion("u1", 64*mib)), "that the plugin did not create")
 	if log := hooks.log(); log != "lending l1 cxl-lease-l1" {
 		t.Fatalf("hooks %s", log)
 	}
-	_, err = e.f.exec(ctx, "cxl", "destroy-region", "region0")
-	noErr(t, err)
-	noErr(t, e.Prepare(ctx, localCompanion("u1", 64*mib)))
+	noErr(t, k.ReleaseRegion(context.Background(), region))
+	e.mustPrepare(localCompanion("u1", 64*mib))
 	if log := hooks.log(); log != "lending l1 cxl-lease-l1\nlending l1 cxl-lease-l1\nprepared l1" {
 		t.Fatalf("hooks %s", log)
 	}
+	e.mustUnprepare("u1")
+	e.wantClean()
 }
 
-// TestClaimsCDISpec builds the CDI devices of the allocation results of a
-// claim on DRAM and a pre-created region, of a lease claim, and none of a
-// companion claim.
+// The CDI devices of results on DRAM, a region and the lease device, none
+// of a companion claim.
 func TestClaimsCDISpec(t *testing.T) {
 	s := &nodeState{
 		baseState: &baseState{Prepared: claimPreparations{"u1": {}, "u2": {}, "u3": {}}},
@@ -1072,16 +829,27 @@ func TestRemoveCXLSpecs(t *testing.T) {
 	}
 }
 
+// injectDevices adds devices of regions, DRAM or the lease device to the
+// devices of the scan of the node state of the env.
+func injectDevices(e *localTestEnv, infos ...*device.DeviceInfo) {
+	e.t.Helper()
+	devs, err := e.s.allocatable()
+	noErr(e.t, err)
+	e.s.Lock()
+	defer e.s.Unlock()
+	for _, d := range infos {
+		devs[d.Name] = d
+	}
+}
+
 // A device section on a region or DRAM request fails unless it is numa.
 func TestPrepareRegionDRAMNUMAOnly(t *testing.T) {
-	e := newLocalTestState(t)
-	ctx := context.Background()
-	devs, ok := e.Allocatable.(device.DevicesInfo)
-	if !ok {
-		t.Fatal("no devices")
-	}
-	devs["region0-node2"] = &device.DeviceInfo{Name: "region0-node2", Dev: &nricxl.RegionDevice{Name: "region0", Node: 2, Size: 1 << 30, Enabled: true}}
-	devs["dram"] = &device.DeviceInfo{Name: "dram", Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}}
+	e := newLocalTestEnv(t)
+	e.start()
+	injectDevices(e,
+		&device.DeviceInfo{Name: "region0-node2", Dev: &nricxl.RegionDevice{Name: "region0", Node: 2, Size: 1 << 30, Enabled: true}},
+		&device.DeviceInfo{Name: "dram", Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}})
+	var unprefixed []string
 	for _, tc := range []struct{ dev, params, err string }{
 		{"region0-node2", localDaxConfig, "claim demo/claim-u1: request mem: MemoryConfig: device: a region is used as numa only"},
 		{"region0-node2", localROConfig, "MemoryConfig: device: a region is used as numa only"},
@@ -1094,24 +862,39 @@ func TestPrepareRegionDRAMNUMAOnly(t *testing.T) {
 	} {
 		claim := localClaim("u1", 64*mib, tc.params)
 		claim.Status.Allocation.Devices.Results[0].Device = tc.dev
-		err := e.Prepare(ctx, claim)
+		err := e.prepare(claim)
 		switch {
 		case tc.err == "" && err != nil:
 			t.Errorf("%s %s: %v", tc.dev, tc.params, err)
-		case tc.err != "" && (err == nil || !strings.Contains(err.Error(), tc.err)):
+		case tc.err != "" && (err == nil || !strings.Contains(err.Error(), strings.TrimPrefix(tc.err, "claim demo/claim-u1: request mem: "))):
 			t.Errorf("%s %s: expected error %q, got %v", tc.dev, tc.params, tc.err, err)
+		case tc.err != "" && !strings.Contains(err.Error(), tc.err):
+			unprefixed = append(unprefixed, err.Error())
 		}
 		if err == nil {
-			noErr(t, e.Unprepare(ctx, "u1"))
+			e.mustUnprepare("u1")
 		}
 	}
-	if len(e.Prepared) != 0 {
-		t.Fatalf("prepared %v", e.Prepared)
+	if len(e.s.Prepared) != 0 {
+		t.Fatalf("prepared %v", e.s.Prepared)
+	}
+	e.wantClean()
+	wantPrefixed(t, unprefixed)
+}
+
+// wantPrefixed fails the test when errors of the device settings of a
+// region, the DRAM or the lease device lacked the claim and the request.
+func wantPrefixed(t *testing.T, unprefixed []string) {
+	t.Helper()
+	if len(unprefixed) > 0 {
+		t.Errorf("the error of the device settings of a region, the DRAM or the lease device does not name the claim and the request: %q", unprefixed)
 	}
 }
 
-// fakeLeaseClaims records the lease claims whose sockets are open.
+// fakeLeaseClaims records the lease claims whose sockets are open, with
+// their records in the store st as the lease broker keeps them.
 type fakeLeaseClaims struct {
+	st   *store.Store
 	open map[string]bool
 }
 
@@ -1120,12 +903,19 @@ func (f *fakeLeaseClaims) OpenClaim(claim *resourcev1.ResourceClaim) error {
 		f.open = map[string]bool{}
 	}
 	f.open[string(claim.UID)] = true
-	return nil
+	return f.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
+		doc.LeaseClaims = append(doc.LeaseClaims, state.LeaseClaim{UID: string(claim.UID), Namespace: claim.Namespace, Name: claim.Name,
+			State: state.LeaseClaimOpen})
+		return nil
+	})
 }
 
-func (f *fakeLeaseClaims) CloseClaim(_ context.Context, uid string) error {
+func (f *fakeLeaseClaims) CloseClaim(ctx context.Context, uid string) error {
 	delete(f.open, uid)
-	return nil
+	return f.st.Commit(ctx, store.Durable, func(doc *store.Document) error {
+		doc.LeaseClaims = slices.DeleteFunc(doc.LeaseClaims, func(c state.LeaseClaim) bool { return c.UID == uid })
+		return nil
+	})
 }
 
 // memoryConfigClaim returns a claim with the results numa (a slice of the
@@ -1157,24 +947,17 @@ func memoryConfigEntry(source resourcev1.AllocationConfigSource, requests []stri
 	return e
 }
 
-// TestPrepareMemoryConfig prepares the results of every device type of
-// cxl.nri.io with MemoryConfig entries: a class entry is a preset that
-// claim entries change field by field, each result stores its container
-// settings with their origins and has its own marker, and the NRI plugin
-// manages a container by the results it uses. Refused entries touch no
-// device.
+// The MemoryConfig entries of results of every device type: presets of
+// classes, settings with origins, markers; refused entries touch no device.
 func TestPrepareMemoryConfig(t *testing.T) {
-	e := newLocalTestState(t)
-	leases := &fakeLeaseClaims{}
-	e.leases = leases
-	ctx := context.Background()
-	devs, ok := e.Allocatable.(device.DevicesInfo)
-	if !ok {
-		t.Fatal("no devices")
-	}
-	devs["region5-node4"] = &device.DeviceInfo{Name: "region5-node4", Dev: &nricxl.RegionDevice{Name: "region5", Node: 4, Size: 1 << 30, Enabled: true}}
-	devs["dram"] = &device.DeviceInfo{Name: "dram", Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}}
-	devs[device.LeaseDeviceName] = &device.DeviceInfo{Name: device.LeaseDeviceName, Dev: &device.LeaseToken{}}
+	e := newLocalTestEnv(t)
+	e.start()
+	leases := &fakeLeaseClaims{st: e.st}
+	e.s.leases = leases
+	injectDevices(e,
+		&device.DeviceInfo{Name: "region5-node4", Dev: &nricxl.RegionDevice{Name: "region5", Node: 4, Size: 1 << 30, Enabled: true}},
+		&device.DeviceInfo{Name: "dram", Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}},
+		&device.DeviceInfo{Name: device.LeaseDeviceName, Dev: &device.LeaseToken{}})
 	const (
 		class = resourcev1.AllocationConfigSourceClass
 		claim = resourcev1.AllocationConfigSourceClaim
@@ -1187,8 +970,8 @@ func TestPrepareMemoryConfig(t *testing.T) {
 		// null removes the preset of the class
 		memoryConfigEntry(claim, []string{"numa"}, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"steering":{"policy":null}}}`),
 	)
-	noErr(t, e.Prepare(ctx, c))
-	info := e.preparedClaims["u1"]
+	e.mustPrepare(c)
+	info := e.s.GetClaimInfo("u1")
 	auto := func(origin string) config.ResultSettings {
 		return config.ResultSettings{Container: &config.Container{Steering: &config.Steering{Policy: config.PolicyAuto}}, Origins: map[string]string{config.FieldPolicy: origin}}
 	}
@@ -1199,16 +982,17 @@ func TestPrepareMemoryConfig(t *testing.T) {
 			Origins: map[string]string{config.FieldPolicy: "claim demo/claim-u1 request dram", config.FieldMaxStep: "claim demo/claim-u1 request dram"}},
 		auto("class cxl-lease"),
 	} {
-		if d := info.Devices[i]; d.Result != i || !reflect.DeepEqual(d.ResultSettings, want) {
+		if d := info.Devices[i]; d.Result != i || !sameSettings(d.ResultSettings, want) {
 			t.Errorf("result %d (%s): %d %+v %v, expected %+v %v", i, d.RequestName, d.Result, d.Container, d.Origins, want.Container, want.Origins)
 		}
 	}
-	if d := info.Devices[0]; d.Mode != api.ModeNUMA || !slices.Equal(d.NUMANodes, []int{2}) {
+	node := localRegionNode(e)
+	if d := info.Devices[0]; d.Mode != api.ModeNUMA || !slices.Equal(d.NUMANodes, []int{node}) {
 		t.Fatalf("numa slice %+v", d)
 	}
 	// one CDI device per result, with the marker of the result
 	for n, wantID := range []string{"claim-u1-0", "claim-u1-1", "claim-u1-2", "claim-u1-3"} {
-		d := cdiDeviceByName(e.cdiSpec(t), wantID)
+		d := cdiDeviceByName(e.cdiSpec(), wantID)
 		marker := resultEnvVarName("u1", n) + "=1"
 		if d == nil || !slices.Contains(d.ContainerEdits.Env, marker) {
 			t.Fatalf("CDI device %s: %+v, expected %s", wantID, d, marker)
@@ -1224,15 +1008,15 @@ func TestPrepareMemoryConfig(t *testing.T) {
 	}
 
 	// a container gets the management of the results it uses
-	p := &nriPlugin{state: e.nodeState}
+	p := &nriPlugin{state: e.s}
 	for _, tc := range []struct {
 		results []int
 		want    string
 	}{
-		{[]int{0}, "fenced 2 none (default)"},
+		{[]int{0}, "fenced " + strconv.Itoa(node) + " none (default)"},
 		{[]int{1}, "steered 4 auto from class cxl-region"},
 		{[]int{2}, "steered  first-dram from claim demo/claim-u1 request dram"},
-		{[]int{0, 1}, "steered 2,4 auto from class cxl-region"},
+		{[]int{0, 1}, "steered " + strconv.Itoa(node) + ",4 auto from class cxl-region"},
 		{[]int{3}, "fenced  auto from class cxl-lease"},
 	} {
 		var refs []resultRef
@@ -1247,25 +1031,31 @@ func TestPrepareMemoryConfig(t *testing.T) {
 	}
 	_, err := p.manage("demo/pod/ctr", p.containerResults("demo/pod/ctr", []resultRef{{"u1", 1}, {"u1", 2}}), true)
 	wantErr(t, err, "container demo/pod/ctr: container.steering.policy: class cxl-region says auto, claim demo/claim-u1 request dram says first-dram")
-	noErr(t, e.Unprepare(ctx, "u1"))
+	noErr(t, leases.CloseClaim(context.Background(), "u1"))
+	e.mustUnprepare("u1")
 
-	// the device rules of a result are checked at the result: the slice
-	// of the memdev of result 0 is rolled back
+	// the device rules of every result are checked before any device is
+	// touched
+	commands := e.commands()
+	var unprefixed []string
 	for _, tc := range []struct{ request, params, err string }{
 		{"lease", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"numa"}}`,
 			"claim demo/claim-u9: request lease: MemoryConfig: device: the lease device has no device settings"},
 		{"region", localDaxConfig, "claim demo/claim-u9: request region: MemoryConfig: device: a region is used as numa only"},
 		{"dram", localROConfig, "claim demo/claim-u9: request dram: MemoryConfig: device: a dram is used as numa only"},
 	} {
-		wantErr(t, e.Prepare(ctx, memoryConfigClaim("u9", memoryConfigEntry(claim, []string{tc.request}, tc.params))), tc.err)
-		if len(e.Prepared) != 0 || e.inUse() || leases.open["u9"] {
-			t.Fatalf("%s: prepared %v, memdev in use %v", tc.err, e.Prepared, e.inUse())
+		err := e.prepare(memoryConfigClaim("u9", memoryConfigEntry(claim, []string{tc.request}, tc.params)))
+		wantErr(t, err, strings.TrimPrefix(tc.err, "claim demo/claim-u9: request "+tc.request+": "))
+		if !strings.Contains(err.Error(), tc.err) {
+			unprefixed = append(unprefixed, err.Error())
+		}
+		if len(e.s.Prepared) != 0 || e.inUse() || leases.open["u9"] {
+			t.Fatalf("%s: prepared %v, memdev in use %v", tc.err, e.s.Prepared, e.inUse())
 		}
 	}
 
 	// the entries and the values of all results are checked before any
 	// device is touched
-	commands := e.f.commands()
 	for _, tc := range []struct {
 		configs []resourcev1.DeviceAllocationConfiguration
 		err     string
@@ -1290,12 +1080,114 @@ func TestPrepareMemoryConfig(t *testing.T) {
 			memoryConfigEntry(claim, []string{"other"}, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"online":"all"}}`)},
 			`claim demo/claim-u9: MemoryConfig: FromClaim config 0: json: unknown field "device.online"`},
 	} {
-		wantErr(t, e.Prepare(ctx, memoryConfigClaim("u9", tc.configs...)), tc.err)
-		if len(e.Prepared) != 0 || e.inUse() || leases.open["u9"] {
-			t.Fatalf("%s: prepared %v, memdev in use %v", tc.err, e.Prepared, e.inUse())
+		wantErr(t, e.prepare(memoryConfigClaim("u9", tc.configs...)), tc.err)
+		if len(e.s.Prepared) != 0 || e.inUse() || leases.open["u9"] {
+			t.Fatalf("%s: prepared %v, memdev in use %v", tc.err, e.s.Prepared, e.inUse())
 		}
 	}
-	if got := e.f.commands(); got != commands {
+	if got := e.commands(); got != commands {
 		t.Fatalf("a refused config touched the memdev:\n%s", strings.TrimPrefix(got, commands))
 	}
+	e.wantClean()
+	wantPrefixed(t, unprefixed)
+}
+
+// sameSettings tells whether two container settings are equal, an empty
+// map of origins as none.
+func sameSettings(a, b config.ResultSettings) bool {
+	if len(a.Origins) == 0 && len(b.Origins) == 0 {
+		a.Origins, b.Origins = nil, nil
+	}
+	return reflect.DeepEqual(a, b)
+}
+
+// A Prepare again of a claim that a failed Prepare left KEPT, refused by
+// its validation, rolls nothing back: the region kept for the claim stays
+// for the next Prepare or the Unprepare.
+func TestPrepareKeptRefusedKeepsItsRegion(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		claim func() *resourcev1.ResourceClaim
+		err   string
+	}{
+		{"a device that is not allocatable", func() *resourcev1.ResourceClaim {
+			claim := localClaim("u1", localBlockSize)
+			claim.Status.Allocation.Devices.Results[0].Device = "memdev-deadbeef"
+			return claim
+		}, "could not find allocatable device memdev-deadbeef"},
+		{"an invalid MemoryConfig", func() *resourcev1.ResourceClaim {
+			return localClaim("u1", localBlockSize, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"bogus"}}`)
+		}, "MemoryConfig: "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newLocalTestEnv(t)
+			other := plugAbove(e)
+			e.start()
+			above := makeAboveAfterCreate(e, other)
+			failDeviceDax(e)
+			wantErr(t, e.prepare(localClaim("u1", localBlockSize)), errDeviceDax)
+			releaseAbove(e, above())
+			before := e.commands()
+			wantErr(t, e.prepare(tc.claim()), tc.err)
+			if got := strings.TrimPrefix(e.commands(), before); got != "" {
+				t.Fatalf("the refused Prepare touched the memdev:\n%s", got)
+			}
+			if p := e.preparation("u1"); p == nil || p.State != state.PreparationKept {
+				t.Fatalf("preparation %+v", p)
+			}
+			if d := e.localDevice(localSerial); d == nil || d.Region != "region0" {
+				t.Fatalf("view %+v", d)
+			} else if _, ok := d.Claims["u1"]; !ok {
+				t.Fatalf("the region is not kept for u1: %+v", d)
+			}
+			e.mustPrepare(localClaim("u1", localBlockSize))
+			wantLocalRegionCount(t, e, 1, 0)
+			e.mustUnprepare("u1")
+			e.wantClean()
+		})
+	}
+}
+
+// A companion claim of mode numa whose Prepare a process stop cut after its
+// memory went online is kept at the start; its Prepare again refused by the
+// lease broker revokes and releases nothing, and the next Prepare reuses its
+// part.
+func TestPrepareKeptCompanionRefused(t *testing.T) {
+	e, _, _ := newLocalLendEnv(t)
+	e.k.CutAfter("write devices/system/memory/memory74/state online_movable")
+	cutLocalPrepare(t, e, localCompanion("u1", localBlockSize))
+	e.restart()
+	lender, hooks := newFakeLender(), &fakeHooks{}
+	e.s.lending.set(lender, hooks)
+	if p := e.preparation("u1"); p == nil || p.State != state.PreparationPreparing {
+		t.Fatalf("preparation after the start %+v", p)
+	}
+	g := e.grant("u1", 0)
+	if g == nil || g.Got.Dax == "" {
+		t.Fatalf("grant after the start %+v", g)
+	}
+	kept := *g
+	hooks.lendingErr = errors.New("claim demo/cxl-lease-l1: not the companion of lease l1")
+	before := e.commands()
+	wantErr(t, e.prepare(localCompanion("u1", localBlockSize)), "not the companion of lease l1")
+	if got := strings.TrimPrefix(e.commands(), before); got != "" {
+		t.Fatalf("the refused Prepare touched the memdev:\n%s", got)
+	}
+	if calls := lender.callLog(); calls != "" {
+		t.Fatalf("the refused Prepare called the lender: %s", calls)
+	}
+	if p := e.preparation("u1"); p == nil || p.State != state.PreparationPreparing {
+		t.Fatalf("preparation after the refusal %+v", p)
+	}
+	if g := e.grant("u1", 0); g == nil || g.State != kept.State || g.Got.Dax != kept.Got.Dax {
+		t.Fatalf("grant after the refusal %+v, was %+v", g, kept)
+	}
+	hooks.lendingErr = nil
+	before = e.commands()
+	e.mustPrepare(localCompanion("u1", localBlockSize))
+	if got := strings.TrimPrefix(e.commands(), before); strings.Contains(got, "create-region") || strings.Contains(got, "/size") {
+		t.Fatalf("the Prepare again made its part anew:\n%s", got)
+	}
+	e.mustUnprepare("u1")
+	e.wantClean()
 }

@@ -719,7 +719,7 @@ func localDevicesView(doc *Document, opts ViewOptions, marker string) viewLocalD
 			}
 		}
 		if len(regions) > 0 {
-			localRegionView(&ld, regions[0])
+			localRegionView(&ld, regions[0], doc.RegionInMaking(m, regions[0]))
 		}
 		localUsesView(doc, m, &ld, opts)
 		orphansView(regions, &ld)
@@ -729,18 +729,25 @@ func localDevicesView(doc *Document, opts ViewOptions, marker string) viewLocalD
 }
 
 // localRegionView sets the facts of the region of a local memdev in its
-// view: the region, or its noted name while it is created; its NUMA node;
-// its first dax device or nd region once it is set up; its namespace.
-func localRegionView(ld *viewLocalDevice, reg *state.Region) {
-	switch reg.State {
-	case state.RegionOwned, state.RegionKept:
+// view: the region, or its name while it is created (making: also while it
+// is set up, probed and zeroed for its first Prepare); the NUMA node of a
+// ram region; its first dax device or nd region once it is set up; its
+// namespace.
+func localRegionView(ld *viewLocalDevice, reg *state.Region, making bool) {
+	switch {
+	case making && reg.State == state.RegionOwned:
+		ld.Creating = reg.Name
+		return
+	case reg.State == state.RegionOwned || reg.State == state.RegionKept:
 		ld.Region = reg.Name
-	case state.RegionNoted, state.RegionCreating:
+	case reg.State == state.RegionNoted || reg.State == state.RegionCreating:
 		ld.Creating = reg.NotedName
 	}
-	ld.NumaNode = state.NumaNodeOf(reg.NumaNode)
-	if w := reg.WholeDevice(); reg.SetUp && w != nil {
-		ld.Dax = w.Name
+	if reg.Mode == state.RegionRam {
+		ld.NumaNode = state.NumaNodeOf(reg.NumaNode)
+	}
+	if reg.SetUp {
+		ld.Dax = reg.FirstDax()
 	}
 	if p := reg.Pmem; p != nil {
 		if reg.SetUp {
@@ -939,4 +946,15 @@ func PoolDevicesContent(doc *Document, p *state.Preparation, opts ViewOptions) (
 		}
 	}
 	return json.Marshal(devs)
+}
+
+// ClaimInfoContent returns a preparation of cxl.nri.io as
+// preparedClaimsInfo.json has its value, in any state.
+func ClaimInfoContent(doc *Document, p *state.Preparation, opts ViewOptions) ([]byte, error) {
+	opts = opts.withDefaults()
+	info := viewClaimInfo{ClaimName: p.ClaimName, Devices: []viewDeviceInfo{}, Lend: lendView(doc, p), BootID: p.BootID}
+	for _, r := range results(p) {
+		info.Devices = append(info.Devices, deviceInfoView(doc, r, opts))
+	}
+	return json.Marshal(info)
 }
