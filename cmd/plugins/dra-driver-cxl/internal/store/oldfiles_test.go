@@ -125,6 +125,57 @@ func TestOldFilesWithoutExistingRegionsMovedAside(t *testing.T) {
 	}
 }
 
+// A localDevices.json of the oldest shape, a list of devices without a
+// boot id, is an old state file as the object shape is: refused while a
+// region that it names exists, moved aside when none does. An empty list
+// holds no records.
+func TestOldFilesListShaped(t *testing.T) {
+	const list = `[{"serial":3238060769,"serialHex":"c100e2e1","memdev":"mem0","region":"region0","node":2,` +
+		`"claims":{"u1":[{"request":"mem","region":"region0","mode":"numa","size":2097152,"dax":"dax0.1"}]}}]`
+	t.Run("region exists", func(t *testing.T) {
+		local := t.TempDir()
+		writeFiles(t, local, map[string]string{"localDevices.json": list})
+		exists := func(name string) bool { return name == "region0" }
+		_, err := HandleOldFiles(local, "", exists, false)
+		var oe *OldStateError
+		if !errors.As(err, &oe) {
+			t.Fatalf("HandleOldFiles: %v, want an *OldStateError", err)
+		}
+		if want := []string{filepath.Join(local, "localDevices.json")}; !slices.Equal(oe.Files, want) || !slices.Equal(oe.Regions, []string{"region0"}) {
+			t.Errorf("refused for files %v regions %v, want %v and region0", oe.Files, oe.Regions, want)
+		}
+		if _, err := os.Stat(filepath.Join(local, "localDevices.json")); err != nil {
+			t.Errorf("a refusal moved the file: %v", err)
+		}
+		_, err = Open(context.Background(), Options{Dir: local, RegionExists: exists})
+		if !errors.As(err, &oe) {
+			t.Errorf("Open: %v, want an *OldStateError", err)
+		}
+	})
+	t.Run("region gone", func(t *testing.T) {
+		local := t.TempDir()
+		writeFiles(t, local, map[string]string{"localDevices.json": list})
+		moved, err := HandleOldFiles(local, "", func(string) bool { return false }, false)
+		if want := []string{filepath.Join(local, "localDevices.json")}; err != nil || !slices.Equal(moved, want) {
+			t.Fatalf("moved %v, %v, want %v", moved, err, want)
+		}
+		if _, err := os.Stat(filepath.Join(local, "localDevices.json"+OldSuffix)); err != nil {
+			t.Errorf("not moved aside: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(local, "localDevices.json")); err == nil {
+			t.Errorf("the old file is still there")
+		}
+	})
+	t.Run("empty", func(t *testing.T) {
+		local := t.TempDir()
+		writeFiles(t, local, map[string]string{"localDevices.json": `[]`})
+		got, err := OldFiles(local, "")
+		if err != nil || len(got) != 0 {
+			t.Errorf("old files %v, %v of an empty list", got, err)
+		}
+	})
+}
+
 func TestOldFilesMovedAside(t *testing.T) {
 	for _, tc := range []struct {
 		name                  string

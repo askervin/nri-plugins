@@ -16,6 +16,7 @@ package state
 
 import (
 	"slices"
+	"strings"
 )
 
 // Region is the record of a CXL region on the node: one of ours, or a
@@ -594,6 +595,20 @@ func (r *Region) WholeDevice() *DaxDevice {
 		}
 	}
 	return nil
+}
+
+// FirstDax returns the name of the first dax device of the region: its
+// Whole device, else its daxN.0 (also once a part reuses it), "" for none.
+func (r *Region) FirstDax() string {
+	if w := r.WholeDevice(); w != nil {
+		return w.Name
+	}
+	for _, d := range r.DaxDevices {
+		if strings.HasSuffix(d.Name, ".0") {
+			return d.Name
+		}
+	}
+	return ""
 }
 
 // Mount returns the node mount with the access, nil if there is none.

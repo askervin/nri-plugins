@@ -57,6 +57,7 @@ func Catalogue() []Object {
 		{Name: "LeaseClaim", Tables: []TableText{LeaseClaimTable.Text()}},
 		{Name: "Steered"},
 		{Name: "ListedPool"},
+		{Name: "Probe"},
 	}
 }
 

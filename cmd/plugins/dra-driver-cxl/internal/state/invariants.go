@@ -17,6 +17,7 @@ package state
 import (
 	"fmt"
 	"slices"
+	"strings"
 )
 
 // Violation is a record that breaks an invariant.
@@ -24,6 +25,19 @@ type Violation struct {
 	Invariant string
 	Record    string
 	Text      string
+}
+
+// leaseClaimMissing is the text of the violation of a lease result of a
+// prepared claim whose lease claim has no record.
+const leaseClaimMissing = "lease claim %s has no record"
+
+// LeaseClaimMissing tells whether a violation is that of a lease result of
+// a prepared claim whose lease claim has no record: the claim's Unprepare
+// closes its lease claim before its preparation turns UNPREPARING.
+func LeaseClaimMissing(v Violation) bool {
+	prefix, suffix, _ := strings.Cut(leaseClaimMissing, "%s")
+	return v.Invariant == "records" && strings.HasPrefix(v.Record, "preparation ") &&
+		strings.HasPrefix(v.Text, prefix) && strings.HasSuffix(v.Text, suffix)
 }
 
 // String returns the violation in words.
@@ -55,7 +69,8 @@ var DocumentInvariants = []Invariant{
 			"but of a PREPARING or UNPREPARING preparation (not journaled yet, or released before the front-end's " +
 			"commit). A PREPARED preparation's grants are " +
 			"REALISED, a PREPARED_UNRESTORED one's REALISED or REALISED_UNRESTORED, and the lease claim of their " +
-			"lease results exists. A node mount is MOUNTED_RW iff a writer uses it. A lease lends only while READY, " +
+			"lease results exists unless the claim's Unprepare runs (it closes the lease claim before the " +
+			"preparation turns UNPREPARING; the engine leaves this rule to the lease broker). A node mount is MOUNTED_RW iff a writer uses it. A lease lends only while READY, " +
 			"releasing or FAILED.",
 		check: checkRecords,
 	},
@@ -64,8 +79,9 @@ var DocumentInvariants = []Invariant{
 		Text: "Between requests and after the recovery, every region of ours is OWNED, KEPT or HOLLOW_OWNED, and " +
 			"every dax device of a region of ours that is OWNED or KEPT and is not the seed has a user grant that is " +
 			"REALISED, REALISED_UNRESTORED or RELEASING, or is the Whole device of a KEPT region, of a memdev that " +
-			"is IDLE_KEPT, or of a region that a grant of a Prepare that did not finish names (a companion kept for " +
-			"its Unprepare); the recovery deletes the others, those of a HOLLOW_OWNED region go with it.",
+			"is IDLE_KEPT, or of a region that a grant of a Prepare that did not finish names, or has as its user a " +
+			"grant of a Prepare that did not finish of a numa companion or of a KEPT preparation (kept for its " +
+			"Unprepare); the recovery deletes the others, those of a HOLLOW_OWNED region go with it.",
 		check: checkUsers,
 	},
 	{
@@ -332,7 +348,7 @@ func checkPreparation(r *Records, p *Preparation, add addFunc) {
 			checkGrantResult(r, p, res, add)
 		case ResultLeaseClaim:
 			if (p.State == PreparationPrepared || p.State == PreparationUnrestored) && r.LeaseClaim(res.LeaseClaim.UID) == nil {
-				add(preparationID(p), "lease claim %s has no record", res.LeaseClaim.UID)
+				add(preparationID(p), leaseClaimMissing, res.LeaseClaim.UID)
 			}
 		}
 	}
@@ -419,7 +435,7 @@ func checkUsers(r *Records, add addFunc) {
 			continue
 		}
 		for _, d := range reg.DaxDevices {
-			if d.State == DaxSeed || (d.Whole && (kept(r, reg) || unfinished(r, reg))) || used(r, &d) {
+			if d.State == DaxSeed || (d.Whole && (kept(r, reg) || unfinished(r, reg))) || used(r, &d) || r.UnfinishedUser(&d) {
 				continue
 			}
 			add(regionID(reg), "dax device %s has no realised or releasing user", d.Name)
@@ -436,6 +452,44 @@ func used(r *Records, d *DaxDevice) bool {
 		}
 	}
 	return false
+}
+
+// UnfinishedUser tells whether a user of the dax device is a grant of a
+// Prepare that did not finish (JOURNALED, REALISING) that the start kept
+// with its part for its Unprepare: one of a numa companion, or one of a
+// KEPT preparation whose release at the start failed.
+func (r *Records) UnfinishedUser(d *DaxDevice) bool {
+	for _, u := range d.Users {
+		g := r.Grant(u)
+		if g == nil || (g.State != GrantJournaled && g.State != GrantRealising) {
+			continue
+		}
+		if p := r.PreparationOf(g.Ref); (g.Intent.Lend != nil && g.Asked.Mode == ModeNUMA) || (p != nil && p.State == PreparationKept) {
+			return true
+		}
+	}
+	return false
+}
+
+// RegionInMaking tells whether the region reg of the local memdev m is
+// still being made for a Prepare: NOTED or CREATING, or a ram region OWNED
+// while every grant of the memdev is of a Prepare that did not finish
+// (JOURNALED, REALISING) and got no part of it yet (it is set up, probed and
+// zeroed before its first part).
+func (r *Records) RegionInMaking(m *Memdev, reg *Region) bool {
+	switch {
+	case reg.State == RegionNoted || reg.State == RegionCreating:
+		return true
+	case reg.State != RegionOwned || reg.Mode != RegionRam || len(m.Grants) == 0:
+		return false
+	}
+	for _, ref := range m.Grants {
+		g := r.Grant(ref)
+		if g == nil || (g.State != GrantJournaled && g.State != GrantRealising) || g.Got.Dax != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // unfinished tells whether a grant of a Prepare that did not finish

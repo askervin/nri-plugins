@@ -101,3 +101,10 @@ func writeFileAtomic(files fileOps, path string, data []byte, sync bool) error {
 	}
 	return nil
 }
+
+// WriteFileAtomic replaces the file path with data, readable by the owner
+// only: data is written to path.tmp and synced, renamed to path, and the
+// directory synced, so that a crash leaves the old content or the new one.
+func WriteFileAtomic(path string, data []byte) error {
+	return writeFileAtomic(osFiles{}, path, data, true)
+}
