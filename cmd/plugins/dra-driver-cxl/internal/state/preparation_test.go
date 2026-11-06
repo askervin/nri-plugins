@@ -25,11 +25,11 @@ func TestPreparationTable(t *testing.T) {
 func TestPreparationLifeCycles(t *testing.T) {
 	type st = step[PreparationState]
 	tb := &PreparationTable
-	walk(t, tb, "prepared, prepared again, an Unprepare that fails once and is cut", PreparationUnknown,
+	walk(t, tb, "prepared, prepared again, an Unprepare that fails once, prepared again and is cut", PreparationUnknown,
 		st{PreparationPreparing, TriggerPrepare}, st{PreparationPrepared, TriggerPrepare},
 		st{PreparationPrepared, TriggerPrepare}, st{PreparationUnpreparing, TriggerUnprepare},
-		st{PreparationUnpreparing, TriggerUnprepare}, st{PreparationUnpreparing, TriggerRecover},
-		st{PreparationUnknown, TriggerUnprepare})
+		st{PreparationUnpreparing, TriggerUnprepare}, st{PreparationUnpreparing, TriggerPrepare},
+		st{PreparationUnpreparing, TriggerRecover}, st{PreparationUnknown, TriggerUnprepare})
 	walk(t, tb, "a failed Prepare whose rollback released everything", PreparationUnknown,
 		st{PreparationPreparing, TriggerPrepare}, st{PreparationUnknown, TriggerPrepare})
 	walk(t, tb, "a cut Prepare kept by the recovery, retried, kept again, refused again, unprepared", PreparationUnknown,
@@ -47,8 +47,8 @@ func TestPreparationLifeCycles(t *testing.T) {
 	walk(t, tb, "stale after a reboot, still stale after the next, unprepared", PreparationPrepared,
 		st{PreparationStale, TriggerLoad}, st{PreparationStale, TriggerLoad},
 		st{PreparationUnknown, TriggerUnprepare})
-	walk(t, tb, "a cut Prepare of another boot, prepared anew", PreparationPreparing,
-		st{PreparationStale, TriggerLoad}, st{PreparationPreparing, TriggerPrepare})
+	walk(t, tb, "a cut Prepare of another boot, refused once, prepared anew", PreparationPreparing,
+		st{PreparationStale, TriggerLoad}, st{PreparationStale, TriggerPrepare}, st{PreparationPreparing, TriggerPrepare})
 	walk(t, tb, "a preparation of another boot of a driver that drops them", PreparationPrepared,
 		st{PreparationUnknown, TriggerLoad})
 }

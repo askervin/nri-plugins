@@ -257,6 +257,11 @@ var PreparationTable = Table[PreparationState]{
 			Effects: "the old grants dropped in the same commit (d); then as UNKNOWN -> PREPARING",
 		},
 		{
+			From: list(PreparationStale), Stays: true, Triggers: list(TriggerPrepare),
+			When:    "a Prepare again fails validation or the companion gate",
+			Effects: "error to kubelet; the record stays for the next Prepare or the Unprepare",
+		},
+		{
 			From: list(PreparationStale), To: PreparationUnknown, Triggers: list(TriggerUnprepare),
 			Effects: "release by serial: a pool memdev disabled iff no grant of this boot uses the serial; no " +
 				"revoke; commit (d) removing the record",
@@ -279,8 +284,14 @@ var PreparationTable = Table[PreparationState]{
 		},
 		{
 			From: list(PreparationUnpreparing), Stays: true, Triggers: list(TriggerRecover),
-			When:    "the record at the start: no CDI device, no remount; kubelet's Unprepare retry finishes it",
+			When: "the record at the start: no remount; cxl.nri.io's CDI spec keeps the claim's devices " +
+				"(CDIUnpreparing) until kubelet's Unprepare retry removes them, the pool driver's has none",
 			Effects: "nothing at start",
+		},
+		{
+			From: list(PreparationUnpreparing), Stays: true, Triggers: list(TriggerPrepare),
+			When:    "a Prepare again before kubelet's Unprepare retry",
+			Effects: "the result is returned as prepared (both drivers); a companion is announced again; no commit",
 		},
 		{
 			From: list(PreparationKept), To: PreparationPreparing, Triggers: list(TriggerPrepare),

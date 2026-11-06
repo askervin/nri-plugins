@@ -460,14 +460,14 @@ func results(p *state.Preparation) []*state.Result {
 func preparedClaimsView(doc *Document, marker string) map[string]viewPrepareResult {
 	out := map[string]viewPrepareResult{}
 	for _, p := range viewed(doc, device.DriverName) {
-		out[p.UID] = viewPrepareResult{PrepareResult: prepareResult(p, device.CDIKind), ViewOf: marker}
+		out[p.UID] = viewPrepareResult{PrepareResult: PrepareResult(p, device.CDIKind), ViewOf: marker}
 	}
 	return out
 }
 
-// prepareResult returns the PrepareResult of a preparation with CDI
+// PrepareResult returns the PrepareResult of a preparation with CDI
 // devices of the CDI kind kind; a companion claim has no CDI devices.
-func prepareResult(p *state.Preparation, kind string) kubeletplugin.PrepareResult {
+func PrepareResult(p *state.Preparation, kind string) kubeletplugin.PrepareResult {
 	res := kubeletplugin.PrepareResult{Devices: []kubeletplugin.Device{}}
 	for _, r := range results(p) {
 		d := kubeletplugin.Device{
@@ -627,7 +627,7 @@ func preparedPoolClaimsView(doc *Document, opts ViewOptions, marker string) map[
 		pc := viewPoolClaim{
 			ClaimName: p.ClaimName,
 			Devices:   []viewPoolDevice{},
-			Result:    prepareResult(p, device.PoolCDIKind),
+			Result:    PrepareResult(p, device.PoolCDIKind),
 			Lend:      lendView(doc, p),
 			BootID:    p.BootID,
 			ViewOf:    marker,

@@ -55,11 +55,13 @@ States: UNKNOWN, PREPARING, PREPARED, PREPARED_UNRESTORED, PREPARED_STALE, UNPRE
 | PREPARING, PREPARED, PREPARED_UNRESTORED, PREPARED_STALE, UNPREPARING, KEPT | PREPARED_STALE | `load`: the record's boot id differs from the running boot | its driver keeps the records of another boot | commit (l): grants keep Serial, Source and Asked, Got and Intent cleared; no CDI device; nothing released at start |
 | PREPARING, PREPARED, PREPARED_UNRESTORED, PREPARED_STALE, UNPREPARING, KEPT | UNKNOWN | `load`: the record's boot id differs from the running boot | its driver drops the records of another boot (cxl.nri.io until its preparations are kept as stale) | commit (l) removing the record and its grants; kubelet's Prepare again prepares the claim anew, an Unprepare finds nothing |
 | PREPARED_STALE | PREPARING | `a-prepare`: Prepare again (kubelet after a reboot) | - | the old grants dropped in the same commit (d); then as UNKNOWN -> PREPARING |
+| PREPARED_STALE | (unchanged) | `a-prepare`: a Prepare again fails validation or the companion gate | - | error to kubelet; the record stays for the next Prepare or the Unprepare |
 | PREPARED_STALE | UNKNOWN | `a-unprepare` | - | release by serial: a pool memdev disabled iff no grant of this boot uses the serial; no revoke; commit (d) removing the record |
 | PREPARED, PREPARED_UNRESTORED | UNPREPARING | `a-unprepare` | lease claim: CloseClaim returned; companion: OnReleasing done | commit (d) |
 | UNPREPARING | UNKNOWN | `a-unprepare`: every grant RELEASED | - | commit (d) removing the record; kubelet gets nil |
 | UNPREPARING | (unchanged) | `a-unprepare`: a release step failed (EBUSY, a revoke before the lender is set up) | - | error to kubelet (retried about every second); records unchanged; the retry finds out from the kernel what exists |
-| UNPREPARING | (unchanged) | `a-recover`: the record at the start: no CDI device, no remount; kubelet's Unprepare retry finishes it | - | nothing at start |
+| UNPREPARING | (unchanged) | `a-recover`: the record at the start: no remount; cxl.nri.io's CDI spec keeps the claim's devices (CDIUnpreparing) until kubelet's Unprepare retry removes them, the pool driver's has none | - | nothing at start |
+| UNPREPARING | (unchanged) | `a-prepare`: a Prepare again before kubelet's Unprepare retry | - | the result is returned as prepared (both drivers); a companion is announced again; no commit |
 | KEPT | PREPARING | `a-prepare`: Prepare again | - | the kept region is enabled and set up again |
 | KEPT | (unchanged) | `a-prepare`: a Prepare again fails validation or the companion gate | - | error to kubelet; the record and the kept region stay for the next Prepare or the Unprepare |
 | KEPT | UNKNOWN | `a-unprepare` | - | the kept region destroyed per Policy; commit (d) removing the record |
