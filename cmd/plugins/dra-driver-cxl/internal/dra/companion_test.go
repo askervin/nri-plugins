@@ -330,8 +330,8 @@ func TestCompanionFinishFails(t *testing.T) {
 }
 
 // The Unprepare of a numa companion whose Prepare a stop cut after the
-// lend: the pool driver tells the broker and revokes the node, cxl.nri.io
-// does neither (RevokeUnfinished); both release the memory.
+// lend: either driver tells the broker and revokes the node before it
+// releases the memory (L-55).
 func TestCompanionUnfinishedRevoke(t *testing.T) {
 	for _, local := range []bool{true, false} {
 		e := lendEnv(t)
@@ -352,11 +352,7 @@ func TestCompanionUnfinishedRevoke(t *testing.T) {
 			}
 			e.takeEvents()
 			e.mustUnprepare(p, "c1")
-			var want []string
-			if !local {
-				want = []string{"releasing l1", "revoke pod-uid-1/app 2 l1"}
-			}
-			e.wantEvents("unprepared", want...)
+			e.wantEvents("unprepared", "releasing l1", "revoke pod-uid-1/app 2 l1")
 			e.wantClean()
 		})
 	}

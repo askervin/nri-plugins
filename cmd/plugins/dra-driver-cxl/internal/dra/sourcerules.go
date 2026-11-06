@@ -52,10 +52,6 @@ type SourceRules struct {
 	// CDIUnpreparing: the CDI spec keeps the devices of a claim whose
 	// Unprepare did not finish.
 	CDIUnpreparing bool
-	// RevokeUnfinished: the Unprepare of a companion claim whose Prepare
-	// did not finish tells the broker and revokes its lend, as that of a
-	// prepared one does.
-	RevokeUnfinished bool
 	// FailLeaseOnFinish: a companion claim whose CDI spec or PREPARED
 	// commit fails after the lend tells the broker that the lend failed.
 	FailLeaseOnFinish bool
@@ -105,7 +101,6 @@ func PoolRules(name, mountsDir, preparingFile string) SourceRules {
 		CDIKind:             device.PoolCDIKind,
 		CDISpecName:         device.PoolCDISpecName,
 		MountsDir:           mountsDir,
-		RevokeUnfinished:    true,
 		RetryStaleOnRefusal: true,
 		validate:            (*Plugin).validatePool,
 		voice:               poolVoice{name: name, preparing: preparingFile},
