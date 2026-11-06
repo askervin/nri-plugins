@@ -55,6 +55,10 @@ type Recovered struct {
 	// Unrestored are the realised grants whose objects did not verify
 	// (no CDI device for their claims), Restored those that verify again.
 	Unrestored, Restored []state.GrantRef
+	// Why are the reasons of the grants of prepared claims whose node
+	// mount is not mounted after the start: the Unrestored ones and those
+	// that were unrestored already.
+	Why map[state.GrantRef]error
 }
 
 // Recover is the first phase of the recovery at the start of the process,
@@ -81,7 +85,7 @@ type Recovered struct {
 //     devices of our regions that no record names deleted, our hollow
 //     regions deleted when their memory is offline.
 func (e *Engine) Recover(ctx context.Context) (*Recovered, error) {
-	out := &Recovered{}
+	out := &Recovered{Why: map[state.GrantRef]error{}}
 	snap, err := e.Observe(ctx)
 	if err != nil {
 		return nil, err
@@ -377,7 +381,7 @@ func (e *Engine) restoreGrants(ctx context.Context, out *Recovered) error {
 		}
 	}
 	for _, serial := range sortedKeys(serials) {
-		failed, restored, loops := e.restoreSerial(serial)
+		failed, restored, loops := e.restoreSerial(serial, out.Why)
 		if len(failed) == 0 && len(restored) == 0 && len(loops) == 0 {
 			continue
 		}
@@ -398,12 +402,13 @@ func (e *Engine) restoreGrants(ctx context.Context, out *Recovered) error {
 
 // restoreSerial restores the node mounts of the realised grants of the
 // memdev with the serial, and returns the grants that do not verify, with
-// why, and the unrestored ones that verify again.
-func (e *Engine) restoreSerial(serial state.Serial) (map[state.GrantRef]error, []state.GrantRef, map[string]string) {
+// why (also in why with those that stay unrestored), and the unrestored
+// ones that verify again.
+func (e *Engine) restoreSerial(serial state.Serial, why map[state.GrantRef]error) (map[state.GrantRef]error, []state.GrantRef, map[string]string) {
 	uses := e.preparedUses(serial)
 	writer := firstWriter(uses) != nil
 	byMount := e.restoreMounts(uses, writer)
-	failed, restored := e.classifyRestored(serial, byMount)
+	failed, restored := e.classifyRestored(serial, byMount, why)
 	if dev := blockDeviceOf(uses); dev != "" && e.checkUseBlockDevice(serial, dev) == nil {
 		e.restoreFlags(serial, dev, uses, writer)
 	}
@@ -455,8 +460,11 @@ func (e *Engine) restoreMounts(uses []use, writer bool) map[string]restoredMount
 	for _, mnt := range nodeMounts(uses) {
 		i := slices.IndexFunc(uses, func(u use) bool { return u.nodeMount == mnt })
 		loop, err := e.restoreNodeMount(&uses[i], writer, nodeMounts(uses))
-		if err != nil && errors.Is(err, errForeignMount) {
+		switch {
+		case err != nil && errors.Is(err, errForeignMount):
 			e.errorf(uses[i].source, "%v: it is never used or unmounted by the driver", err)
+		case err != nil:
+			e.errorf(uses[i].source, "claim %s: %v", e.claimNameOf(uses[i].ref), err)
 		}
 		byMount[mnt] = restoredMount{loop: loop, err: err}
 	}
@@ -498,8 +506,9 @@ type restoredMount struct {
 
 // classifyRestored returns the realised grants of prepared claims of the
 // memdev with the serial whose node mount was not restored (byMount), with
-// why, and the unrestored ones whose node mount is mounted again.
-func (e *Engine) classifyRestored(serial state.Serial, byMount map[string]restoredMount) (map[state.GrantRef]error, []state.GrantRef) {
+// why (in why also those that stay unrestored), and the unrestored ones
+// whose node mount is mounted again.
+func (e *Engine) classifyRestored(serial state.Serial, byMount map[string]restoredMount, why map[state.GrantRef]error) (map[state.GrantRef]error, []state.GrantRef) {
 	failed := map[state.GrantRef]error{}
 	var restored []state.GrantRef
 	r := e.records()
@@ -512,10 +521,12 @@ func (e *Engine) classifyRestored(serial state.Serial, byMount map[string]restor
 		}
 		rm, ok := byMount[path]
 		err := rm.err
+		if ok && err != nil {
+			why[g.Ref] = err
+		}
 		switch {
 		case !ok:
 		case err != nil && g.State == state.GrantRealised:
-			klog.Errorf("%s: grant %s: %v", e.driver(g.Asked.Source), g.Ref, err)
 			failed[g.Ref] = err
 		case err == nil && g.State == state.GrantUnrestored:
 			restored = append(restored, g.Ref)
@@ -704,16 +715,17 @@ func (e *Engine) restoreBinds(ctx context.Context) {
 		if err != nil || mi != nil {
 			continue
 		}
+		claim, what := e.claimNameOf(g.Ref), bindWhat(g)
 		if node, err := e.k.Mounted(u.nodeMount); err != nil || node == nil {
-			e.errorf(g.Asked.Source, "grant %s: not binding %s again: %s is not mounted (%v)", g.Ref, b.Target, u.nodeMount, err)
+			e.errorf(g.Asked.Source, "claim %s: %s: not binding %s again: %s is not mounted (%v)", claim, what, b.Target, u.nodeMount, err)
 			continue
 		}
 		ref := g.Ref
 		if _, err := e.bindLease(&u, b.Target, func(t string) bool { return e.bindUsed(t, ref) }); err != nil {
-			e.errorf(g.Asked.Source, "grant %s: not binding %s again: %v", g.Ref, b.Target, err)
+			e.errorf(g.Asked.Source, "claim %s: %s: not binding %s again: %v", claim, what, b.Target, err)
 			continue
 		}
-		e.logf(g.Asked.Source, "grant %s: bound %s at %s again", g.Ref, u.nodeMount, b.Target)
+		e.logf(g.Asked.Source, "claim %s: %s: bound %s at %s again", claim, what, u.nodeMount, b.Target)
 		if err := e.commit(ctx, func(r *state.Records) error {
 			rb := r.Grant(ref).Got.Bind
 			return state.Apply(&state.BindTable, &rb.State, state.BindBound, state.TriggerRecover)

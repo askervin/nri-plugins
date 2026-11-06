@@ -288,6 +288,11 @@ var PreparationTable = Table[PreparationState]{
 			Effects: "the kept region is enabled and set up again",
 		},
 		{
+			From: list(PreparationKept), Stays: true, Triggers: list(TriggerPrepare),
+			When:    "a Prepare again fails validation or the companion gate",
+			Effects: "error to kubelet; the record and the kept region stay for the next Prepare or the Unprepare",
+		},
+		{
 			From: list(PreparationKept), To: PreparationUnknown, Triggers: list(TriggerUnprepare),
 			Effects: "the kept region destroyed per Policy; commit (d) removing the record",
 		},

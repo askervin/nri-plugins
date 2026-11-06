@@ -1272,11 +1272,18 @@ func hollowRegion(r *state.Records, ref state.RegionRef) error {
 // releaseStale releases a grant of a PREPARED_STALE preparation: nothing
 // of it exists in this boot, so its memdev is released by its serial (a
 // pool memdev that no grant of this boot uses is disabled when it has no
-// region), and the grant is dropped.
+// region), the directory of its lease bind is removed when nothing is
+// mounted there, and the grant is dropped.
 func (e *Engine) releaseStale(ctx context.Context, ref state.GrantRef, trigger state.Trigger) error {
 	r := e.records()
 	g := r.Grant(ref)
 	serial := g.Serial
+	if target := g.Intent.BindTarget; target != "" {
+		// the directory of the lease bind of another boot
+		if mi, err := e.k.Mounted(target); err == nil && mi == nil {
+			e.removeMountDir(g.Asked.Source, target)
+		}
+	}
 	if g.Asked.Source == state.SourcePool && r.Memdev(serial) == nil {
 		memdev, err := e.k.FindMemdev(uint64(serial))
 		switch {

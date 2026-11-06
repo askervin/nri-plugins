@@ -32,11 +32,11 @@ func TestPreparationLifeCycles(t *testing.T) {
 		st{PreparationUnknown, TriggerUnprepare})
 	walk(t, tb, "a failed Prepare whose rollback released everything", PreparationUnknown,
 		st{PreparationPreparing, TriggerPrepare}, st{PreparationUnknown, TriggerPrepare})
-	walk(t, tb, "a cut Prepare kept by the recovery, retried, kept again, unprepared", PreparationUnknown,
+	walk(t, tb, "a cut Prepare kept by the recovery, retried, kept again, refused again, unprepared", PreparationUnknown,
 		st{PreparationPreparing, TriggerPrepare}, st{PreparationPreparing, TriggerRecover},
 		st{PreparationKept, TriggerRecover}, st{PreparationPreparing, TriggerPrepare},
 		st{PreparationPreparing, TriggerPrepare}, st{PreparationKept, TriggerPrepare},
-		st{PreparationUnknown, TriggerUnprepare})
+		st{PreparationKept, TriggerPrepare}, st{PreparationUnknown, TriggerUnprepare})
 	walk(t, tb, "unrestored at a start, restored at the next and by a Prepare again", PreparationPrepared,
 		st{PreparationUnrestored, TriggerRecover}, st{PreparationUnrestored, TriggerRecover},
 		st{PreparationUnrestored, TriggerPrepare}, st{PreparationPrepared, TriggerRecover},

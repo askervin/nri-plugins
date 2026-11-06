@@ -62,9 +62,10 @@ var DocumentInvariants = []Invariant{
 	{
 		Name: "users",
 		Text: "Between requests and after the recovery, every region of ours is OWNED, KEPT or HOLLOW_OWNED, and " +
-			"every dax device of a region of ours that is not the seed has a user grant that is REALISED, " +
-			"REALISED_UNRESTORED or RELEASING, or is the Whole device of a KEPT region or of a memdev that is " +
-			"IDLE_KEPT; the recovery deletes the others.",
+			"every dax device of a region of ours that is OWNED or KEPT and is not the seed has a user grant that is " +
+			"REALISED, REALISED_UNRESTORED or RELEASING, or is the Whole device of a KEPT region, of a memdev that " +
+			"is IDLE_KEPT, or of a region that a grant of a Prepare that did not finish names (a companion kept for " +
+			"its Unprepare); the recovery deletes the others, those of a HOLLOW_OWNED region go with it.",
 		check: checkUsers,
 	},
 	{
@@ -413,8 +414,12 @@ func checkUsers(r *Records, add addFunc) {
 		if reg.State == RegionNoted || reg.State == RegionCreating {
 			add(regionID(reg), "%s between requests", reg.State)
 		}
+		if reg.State == RegionHollowOwned {
+			// its dax devices go with it when it is deleted
+			continue
+		}
 		for _, d := range reg.DaxDevices {
-			if d.State == DaxSeed || (d.Whole && kept(r, reg)) || used(r, &d) {
+			if d.State == DaxSeed || (d.Whole && (kept(r, reg) || unfinished(r, reg))) || used(r, &d) {
 				continue
 			}
 			add(regionID(reg), "dax device %s has no realised or releasing user", d.Name)
@@ -427,6 +432,18 @@ func checkUsers(r *Records, add addFunc) {
 func used(r *Records, d *DaxDevice) bool {
 	for _, u := range d.Users {
 		if g := r.Grant(u); g != nil && (g.State == GrantRealised || g.State == GrantUnrestored || g.State == GrantReleasing) {
+			return true
+		}
+	}
+	return false
+}
+
+// unfinished tells whether a grant of a Prepare that did not finish
+// (JOURNALED, REALISING) names the region.
+func unfinished(r *Records, reg *Region) bool {
+	for i := range r.Grants {
+		g := &r.Grants[i]
+		if (g.State == GrantJournaled || g.State == GrantRealising) && (g.Got.Region == reg.Ref() || g.Intent.Region == reg.Ref()) {
 			return true
 		}
 	}

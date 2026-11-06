@@ -48,6 +48,22 @@ func (e *foreignRegionError) Is(target error) bool {
 	return target == ErrForeignRegion
 }
 
+// GrantError is the error of a grant that could not be realised.
+type GrantError struct {
+	Ref state.GrantRef
+	Err error
+}
+
+// Error returns the error of the grant.
+func (e *GrantError) Error() string {
+	return e.Err.Error()
+}
+
+// Unwrap returns the error of the grant.
+func (e *GrantError) Unwrap() error {
+	return e.Err
+}
+
 // keptOnlineError is the error of memory blocks that keep coming online
 // after offlining them.
 type keptOnlineError struct {
@@ -86,7 +102,7 @@ func (e *Engine) PrepareGrants(ctx context.Context, reqs []GrantRequest) ([]stat
 			kept := e.rollback(rctx, reqs)
 			e.verify(rctx, nil)
 			cancel()
-			return kept, err
+			return kept, &GrantError{Ref: reqs[i].Ref, Err: err}
 		}
 	}
 	e.verify(ctx, refs)
@@ -950,6 +966,7 @@ func (e *Engine) rollback(ctx context.Context, reqs []GrantRequest) []state.Gran
 		return nil
 	}
 	source := r.Grant(refs[0]).Asked.Source
+	e.revokeLends(ctx, refs)
 	e.retryAllStale(ctx, state.TriggerPrepare)
 	call := newReleaseCall(e, ReleaseRollback, refs)
 	for _, group := range e.byMemdev(refs) {
@@ -958,6 +975,41 @@ func (e *Engine) rollback(ctx context.Context, reqs []GrantRequest) []state.Gran
 		}
 	}
 	return e.grantsOf(refs)
+}
+
+// revokeLends revokes the NUMA nodes that the grants refs lend (Got.Lend,
+// recorded before the lend) through Options.Revoke before their memory goes
+// offline. Errors are logged: the release goes on.
+func (e *Engine) revokeLends(ctx context.Context, refs []state.GrantRef) {
+	if e.opts.Revoke == nil {
+		return
+	}
+	r := e.records()
+	for _, ref := range refs {
+		g := r.Grant(ref)
+		if g == nil || g.Got.Lend == nil || g.Got.Lend.NumaNode == nil {
+			continue
+		}
+		if err := e.opts.Revoke(ctx, ref, *g.Got.Lend); err != nil {
+			e.errorf(g.Asked.Source, "rollback: claim %s: %v", e.claimNameOf(ref), err)
+		}
+	}
+}
+
+// RecordLend records the NUMA node that the realised grant ref of a
+// companion claim lends, before it is lent: the node in the lend of its
+// intent, and that lend as the grant's (Got.Lend), in one durable commit.
+func (e *Engine) RecordLend(ctx context.Context, ref state.GrantRef, node int) error {
+	return e.commit(ctx, func(r *state.Records) error {
+		g := r.Grant(ref)
+		if g == nil || g.Intent.Lend == nil {
+			return fmt.Errorf("grant %s has no lend", ref)
+		}
+		g.Intent.Lend.NumaNode = state.NumaNodePtr(node)
+		lend := *g.Intent.Lend
+		g.Got.Lend = &lend
+		return nil
+	})
 }
 
 // verifyGrant returns an error if what a REALISED grant got is not what

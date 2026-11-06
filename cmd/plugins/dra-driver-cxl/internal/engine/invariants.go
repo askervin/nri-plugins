@@ -37,7 +37,8 @@ type Invariant struct {
 type CheckOptions struct {
 	// Sources are the sources whose records the engine owns, nil for all.
 	Sources []state.Source
-	// MountsDirs are the directories of the node mounts of the sources.
+	// MountsDirs are the directories of the node mounts of the sources:
+	// the lease binds that I8 checks are those of the node mounts there.
 	MountsDirs []string
 	// LeaseFsRoot is the directory of the lease-fs directories.
 	LeaseFsRoot string
@@ -414,16 +415,23 @@ func checkI8(c *checker) {
 			listed[sp.Path] = true
 		}
 	}
-	under := func(target string) bool {
-		for _, d := range c.opts.MountsDirs {
-			if filepath.Dir(target) == d {
-				return true
-			}
-		}
-		return c.opts.LeaseFsRoot != "" && strings.HasPrefix(target, c.opts.LeaseFsRoot+"/")
+	inMountsDir := func(target string) bool {
+		return slices.Contains(c.opts.MountsDirs, filepath.Dir(target))
 	}
+	// a lease bind is of a node mount of the sources (its source is that
+	// of a mount in their mounts directories)
+	own := map[string]bool{}
 	for _, mi := range c.s.Mounts {
-		if under(mi.Target) && !listed[mi.Target] {
+		if inMountsDir(mi.Target) {
+			own[mi.Source] = true
+		}
+	}
+	under := func(mi *kernel.MountInfo) bool {
+		return inMountsDir(mi.Target) ||
+			c.opts.LeaseFsRoot != "" && strings.HasPrefix(mi.Target, c.opts.LeaseFsRoot+"/") && own[mi.Source]
+	}
+	for i := range c.s.Mounts {
+		if mi := &c.s.Mounts[i]; under(mi) && !listed[mi.Target] {
 			c.add("mount "+mi.Target, "no realised grant of a prepared claim lists it")
 		}
 	}
@@ -494,8 +502,10 @@ func checkI12(c *checker) {
 // store and the kernel now, for the sources that the engine owns.
 func (e *Engine) Check(snap *kernel.Snapshot, sources []state.Source, fenced []int) []state.Violation {
 	var dirs []string
-	for _, d := range e.opts.MountsDirs {
-		dirs = append(dirs, d)
+	for s, d := range e.opts.MountsDirs {
+		if sources == nil || slices.Contains(sources, s) {
+			dirs = append(dirs, d)
+		}
 	}
 	return Check(e.records(), snap, CheckOptions{Sources: sources, MountsDirs: dirs, LeaseFsRoot: e.opts.LeaseFsRoot, Fenced: fenced})
 }

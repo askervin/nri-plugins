@@ -61,6 +61,7 @@ States: UNKNOWN, PREPARING, PREPARED, PREPARED_UNRESTORED, PREPARED_STALE, UNPRE
 | UNPREPARING | (unchanged) | `a-unprepare`: a release step failed (EBUSY, a revoke before the lender is set up) | - | error to kubelet (retried about every second); records unchanged; the retry finds out from the kernel what exists |
 | UNPREPARING | (unchanged) | `a-recover`: the record at the start: no CDI device, no remount; kubelet's Unprepare retry finishes it | - | nothing at start |
 | KEPT | PREPARING | `a-prepare`: Prepare again | - | the kept region is enabled and set up again |
+| KEPT | (unchanged) | `a-prepare`: a Prepare again fails validation or the companion gate | - | error to kubelet; the record and the kept region stay for the next Prepare or the Unprepare |
 | KEPT | UNKNOWN | `a-unprepare` | - | the kept region destroyed per Policy; commit (d) removing the record |
 
 Refused:
@@ -497,7 +498,7 @@ Checked by `state.Check` over the records alone; the engine checks the invariant
 need the kernel's view.
 
 - **records**: Every record has a state of its table that a stored record may have, and a unique identity. Every region of ours is one Region record, referenced by every memdev in its Targets, and every region a memdev references is a record of ours that targets it; a FOREIGN region is owned by no one. Every grant belongs to one result of one preparation and is listed by the memdev of its serial (except the grants of a PREPARED_STALE preparation); what Got names lists the grant among its users, and every user of a dax device or a node mount names it back; a grant result names a grant record, but of a PREPARING or UNPREPARING preparation (not journaled yet, or released before the front-end's commit). A PREPARED preparation's grants are REALISED, a PREPARED_UNRESTORED one's REALISED or REALISED_UNRESTORED, and the lease claim of their lease results exists. A node mount is MOUNTED_RW iff a writer uses it. A lease lends only while READY, releasing or FAILED.
-- **users**: Between requests and after the recovery, every region of ours is OWNED, KEPT or HOLLOW_OWNED, and every dax device of a region of ours that is not the seed has a user grant that is REALISED, REALISED_UNRESTORED or RELEASING, or is the Whole device of a KEPT region or of a memdev that is IDLE_KEPT; the recovery deletes the others.
+- **users**: Between requests and after the recovery, every region of ours is OWNED, KEPT or HOLLOW_OWNED, and every dax device of a region of ours that is OWNED or KEPT and is not the seed has a user grant that is REALISED, REALISED_UNRESTORED or RELEASING, or is the Whole device of a KEPT region, of a memdev that is IDLE_KEPT, or of a region that a grant of a Prepare that did not finish names (a companion kept for its Unprepare); the recovery deletes the others, those of a HOLLOW_OWNED region go with it.
 - **journaled**: Every object that the driver created lies inside a journaled container: a region of ours targets memdevs with a record; the region, bind target and lend of a grant's Got are named by its Intent; a node mount's path is the Intent of a user grant or a Stale entry of its memdev.
 
 ## Kernel objects

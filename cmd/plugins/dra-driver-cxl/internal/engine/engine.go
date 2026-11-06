@@ -49,8 +49,8 @@ import (
 // kernel command that depends on it.
 //
 // Locks and waits: a queue per memdev (one request of a memdev at a time),
-// and the engine lock around each short kernel call and the durable commit
-// of the note that must precede it, never across a wait. Waits (a pool
+// and the engine lock (Options.Lock) around each short kernel call and the
+// durable commit of the note that must precede it, never across a wait. Waits (a pool
 // memdev to appear, an nd region to settle, a holder to go, memory blocks
 // to stay offline) and zeroing run outside the lock with Busy set. The
 // lock order is queue -> engine lock -> store commit.
@@ -60,7 +60,7 @@ type Engine struct {
 	opts  Options
 
 	// mu is the engine lock.
-	mu sync.Mutex
+	mu sync.Locker
 
 	// qmu guards queues, busy, last, hollowLogged and devices.
 	qmu          sync.Mutex
@@ -80,8 +80,11 @@ type Engine struct {
 // Options configure an Engine.
 type Options struct {
 	// Kernel observes and changes the kernel objects. Its Serialize stays
-	// nil: the engine holds its own lock around each call.
+	// nil: the engine holds its lock around each call.
 	Kernel *kernel.Kernel
+	// Lock is the engine lock, nil for a lock of the engine's own: one
+	// that the region creations of the process outside the engine hold.
+	Lock sync.Locker
 	// Store keeps the records.
 	Store *store.Store
 	// Drivers are the names of the drivers of the sources, the prefix of
@@ -110,6 +113,9 @@ type Options struct {
 	// Shared tells whether a local memdev is configured shared, nil for
 	// none.
 	Shared func(serial state.Serial) bool
+	// Revoke revokes the NUMA node that the grant ref of a companion claim
+	// lends (lend.NumaNode), nil for no lends.
+	Revoke func(ctx context.Context, ref state.GrantRef, lend state.GrantLend) error
 	// Sources are the sources whose records the engine owns, nil for all.
 	Sources []state.Source
 	// Records are the names that the log lines of the recovery give the
@@ -233,10 +239,15 @@ func New(opts Options) (*Engine, error) {
 		opts.Filesystems = "/proc/filesystems"
 	}
 	opts.Timeouts = opts.Timeouts.withDefaults()
+	lock := opts.Lock
+	if lock == nil {
+		lock = &sync.Mutex{}
+	}
 	return &Engine{
 		k:            opts.Kernel,
 		store:        opts.Store,
 		opts:         opts,
+		mu:           lock,
 		queues:       map[state.Serial]chan struct{}{},
 		busy:         map[state.Serial]bool{},
 		hollowLogged: map[string]bool{},
@@ -265,9 +276,11 @@ type GrantRequest struct {
 	// claim, <lease claim FsDir>/<name>; "" for none.
 	BindTarget string
 	// Lend is the lend of a grant of a companion claim, nil for others:
-	// the engine binds the lease of mode fs, the front-end lends the NUMA
-	// node of mode numa after PrepareGrants returned (so a rollback never
-	// releases a lent grant) and revokes it before ReleaseGrants.
+	// the engine binds the lease of mode fs; the NUMA node of mode numa is
+	// lent by the front-end after PrepareGrants returned, recorded before
+	// (RecordLend), and revoked by the front-end before ReleaseGrants, by
+	// the engine (Options.Revoke) before the rollback of a later Prepare
+	// of the claim releases the grant.
 	Lend *state.GrantLend
 }
 
@@ -387,6 +400,11 @@ func (e *Engine) setBusy(serial state.Serial, busy bool, trigger state.Trigger) 
 	} else {
 		delete(e.busy, serial)
 	}
+}
+
+// Timeouts returns the bounds of the waits of the engine.
+func (e *Engine) Timeouts() Timeouts {
+	return e.opts.Timeouts
 }
 
 // Busy tells whether a wait or zeroing of the memdev with the serial is in

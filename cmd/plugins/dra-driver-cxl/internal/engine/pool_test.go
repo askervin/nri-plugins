@@ -17,11 +17,14 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
@@ -267,5 +270,51 @@ func TestPoolRollbackReturnsKept(t *testing.T) {
 	}
 	if len(kept) != 1 || kept[0].Ref != (state.GrantRef{Claim: "c"}) || kept[0].State != state.GrantReleasing {
 		t.Fatalf("kept %+v", kept)
+	}
+}
+
+// The rollback of a Prepare of a companion claim revokes the NUMA node that
+// a grant of an earlier Prepare lends (recorded before the lend) before its
+// memory goes offline.
+func TestPoolRollbackRevokesLend(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialB})
+	companion := poolReq("c", 0, serialA, state.ModeNUMA, state.KindExclusive)
+	companion.Lend = &state.GrantLend{Lease: "0123abcd", Pod: state.PodRef{UID: "p1", Namespace: "ns", Name: "pod"}, Container: "ctr"}
+	if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
+		doc.Preparations = append(doc.Preparations, state.Preparation{UID: "c", Driver: poolDriver, ClaimName: "ns/c", Lease: "0123abcd",
+			BootID: v.f.BootID(), State: state.PreparationPreparing, Results: []state.Result{grantResult("c", 0), grantResult("c", 1)}})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{companion}); err != nil {
+		t.Fatal(err)
+	}
+	node := state.NumaNodeOf(v.grant("c", 0).Got.NumaNode)
+	if err := v.e.RecordLend(context.Background(), state.GrantRef{Claim: "c"}, node); err != nil {
+		t.Fatal(err)
+	}
+	if l := v.grant("c", 0).Got.Lend; l == nil || state.NumaNodeOf(l.NumaNode) != node {
+		t.Fatalf("lend %+v", l)
+	}
+	k := v.f.Kernel()
+	region := string(v.grant("c", 0).Got.Region)
+	var revoked []string
+	v.e.opts.Revoke = func(_ context.Context, ref state.GrantRef, lend state.GrantLend) error {
+		blocks, _ := k.RegionBlocks(region)
+		online := len(blocks) > 0 && slices.ContainsFunc(blocks, func(b int) bool { return k.MemoryBlock(b).State == kernel.BlockOnline })
+		revoked = append(revoked, fmt.Sprintf("%s %s node %d online %v", ref, lend.Lease, state.NumaNodeOf(lend.NumaNode), online))
+		return nil
+	}
+	v.f.FailCommand("cxl create-region", errors.New("cxl region: cmd_create_region: failed"))
+	_, err := v.e.PrepareGrants(context.Background(), []GrantRequest{companion, poolReq("c", 1, serialB, state.ModeDax, state.KindExclusive)})
+	if err == nil {
+		t.Fatal("the Prepare did not fail")
+	}
+	if want := []string{fmt.Sprintf("c/0 0123abcd node %d online true", node)}; !slices.Equal(revoked, want) {
+		t.Fatalf("revoked %q, want %q", revoked, want)
+	}
+	if g := v.records().Grant(state.GrantRef{Claim: "c"}); g != nil {
+		t.Fatalf("the lent grant is not released: %+v", g)
 	}
 }

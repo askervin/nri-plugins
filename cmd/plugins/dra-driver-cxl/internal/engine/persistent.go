@@ -296,7 +296,7 @@ func (e *Engine) bindCompanion(ctx context.Context, req *GrantRequest, u use, go
 		return nil
 	}
 	if err := e.bindGrant(ctx, req, u); err != nil {
-		return err
+		return &BindError{Err: err}
 	}
 	got.Bind = &state.Bind{Target: req.BindTarget, State: state.BindAbsent}
 	if err := state.Apply(&state.BindTable, &got.Bind.State, state.BindBound, state.TriggerPrepare); err != nil {
@@ -1157,12 +1157,32 @@ func (e *Engine) bindGrant(ctx context.Context, req *GrantRequest, u use) error 
 	if err != nil {
 		return err
 	}
+	what := "grant " + req.Ref.String()
+	if req.Lend != nil {
+		what = "lease " + req.Lend.Lease
+	}
 	if found {
-		e.logf(req.Asked.Source, "grant %s: %s is bound at %s already", req.Ref, u.nodeMount, req.BindTarget)
+		e.logf(req.Asked.Source, "%s: %s is bound at %s already", what, u.nodeMount, req.BindTarget)
 	} else {
-		e.logf(req.Asked.Source, "grant %s: bound %s at %s", req.Ref, u.nodeMount, req.BindTarget)
+		e.logf(req.Asked.Source, "%s: bound %s at %s", what, u.nodeMount, req.BindTarget)
 	}
 	return nil
+}
+
+// BindError is the error of the lease bind of a grant of a companion
+// claim of mode fs.
+type BindError struct {
+	Err error
+}
+
+// Error returns the error of the bind.
+func (e *BindError) Error() string {
+	return e.Err.Error()
+}
+
+// Unwrap returns the error of the bind.
+func (e *BindError) Unwrap() error {
+	return e.Err
 }
 
 // bindUsed tells whether a prepared grant other than except has the lease
