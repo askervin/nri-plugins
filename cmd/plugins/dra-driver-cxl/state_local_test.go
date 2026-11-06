@@ -15,6 +15,7 @@
 package main
 
 import (
+	"encoding/json"
 	"maps"
 	"slices"
 
@@ -25,6 +26,48 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
+
+func init() {
+	putLocalContent = putLocalFileContent
+}
+
+// putLocalFileContent replaces the records of cxl.nri.io in doc with those of
+// the content of one of its state files and the others as doc has them.
+func putLocalFileContent(doc *store.Document, opts store.ViewOptions, name string, data, preparedData []byte) error {
+	view := func(n string) ([]byte, error) { return store.ViewContent(doc, n, opts) }
+	var err error
+	if preparedData == nil {
+		if preparedData, err = view(store.ViewPreparedClaims); err != nil {
+			return err
+		}
+	}
+	infoData, localData := data, data
+	if name == localStateFileName {
+		infoData, err = view(store.ViewPreparedClaimsInfo)
+	} else {
+		localData, err = view(store.ViewLocalDevices)
+	}
+	if err != nil {
+		return err
+	}
+	prepared := map[string]kubeletplugin.PrepareResult{}
+	infos := PreparedClaimsInfo{}
+	var local localState
+	if err := json.Unmarshal(preparedData, &prepared); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(infoData, &infos); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(localData, &local); err != nil {
+		// localDevices.json as a list of devices (no boot id)
+		if lerr := json.Unmarshal(localData, &local.Devices); lerr != nil {
+			return err
+		}
+	}
+	putLocal(doc, prepared, infos, &local)
+	return nil
+}
 
 // orphanOwner owns the uses of a memdev in localDevices.json whose release
 // failed (no claim UID is "-").
