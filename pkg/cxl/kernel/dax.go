@@ -138,6 +138,8 @@ var DaxTransitions = Table[DaxState]{
 		{From: list(DaxDeviceDax), To: DaxKmem, When: "BindDax(kmem)"},
 		{From: list(DaxOther), To: DaxDeviceDax, When: "BindDax(device_dax)"},
 		{From: list(DaxOther), To: DaxKmem, When: "BindDax(kmem)"},
+		{From: list(DaxSeed), To: DaxKmem, When: "ResizeDaxDevice of the seed daxN.0 and BindDax(kmem), observed across them: a numa part on the seed"},
+		{From: list(DaxSeed), To: DaxDeviceDax, When: "ResizeDaxDevice of the seed daxN.0 and BindDax(device_dax), observed across them: a dax part on the seed"},
 	},
 }
 

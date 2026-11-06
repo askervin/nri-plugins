@@ -372,6 +372,23 @@ func TestDaxTransitions(t *testing.T) {
 			noErr(t, f.WriteAttr(f.P("bus/cxl/devices/region0/dax_region0/dax_region/create"), "1"))
 			return from, state(k, "dax0.1")
 		},
+		// a part on the seed daxN.0: sized and bound by one Prepare
+		"SEED->KMEM#0": func(t *testing.T) (kernel.DaxState, kernel.DaxState) {
+			_, k := sliceNode(t)
+			noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 0))
+			from := state(k, "dax0.0")
+			noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", bs))
+			noErr(t, k.BindDax(ctx, "dax0.0", kernel.DriverKmem))
+			return from, state(k, "dax0.0")
+		},
+		"SEED->DEVICE_DAX#0": func(t *testing.T) (kernel.DaxState, kernel.DaxState) {
+			_, k := sliceNode(t)
+			noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 0))
+			from := state(k, "dax0.0")
+			noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", bs))
+			noErr(t, k.BindDax(ctx, "dax0.0", kernel.DriverDeviceDax))
+			return from, state(k, "dax0.0")
+		},
 		"SEED->UNBOUND#0": func(t *testing.T) (kernel.DaxState, kernel.DaxState) {
 			_, k := seed(t)
 			from := state(k, "dax0.1")
