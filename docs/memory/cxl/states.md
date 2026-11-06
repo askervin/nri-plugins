@@ -492,13 +492,29 @@ ListedPool is a CXL memory pool whose ResourceSlices the driver listed with seri
 
 **Locks and waits.** The provenance watcher is the only writer.
 
+## Probe
+
+Probe is the result of the address line probe of a local memdev whose memory aliases: offsets X and X+P reach the same memory, so only the first UsableSize bytes are distinct. The regions of the memdev are made with that size from then on, and the publisher publishes it.
+
+**Identity.** The serial of the memdev, the key of the file in hex without 0x.
+
+**States.** None: a fact about the hardware, recorded when a probe finds aliasing.
+
+**Transitions.** None; the driver never removes a probe, an operator removes the file to probe every memdev again.
+
+**Invariants.** UsableSize is a positive multiple of 256 MiB.
+
+**Persistence.** &lt;plugin data dir>/localProbes.json, not the document: it survives a reboot, the e2e state cleanup and --discard-old-state, so that no start probes a memdev again.
+
+**Locks and waits.** Written by the engine in the queue of the memdev.
+
 ## Invariants over the document
 
 Checked by `state.Check` over the records alone; the engine checks the invariants that also
 need the kernel's view.
 
-- **records**: Every record has a state of its table that a stored record may have, and a unique identity. Every region of ours is one Region record, referenced by every memdev in its Targets, and every region a memdev references is a record of ours that targets it; a FOREIGN region is owned by no one. Every grant belongs to one result of one preparation and is listed by the memdev of its serial (except the grants of a PREPARED_STALE preparation); what Got names lists the grant among its users, and every user of a dax device or a node mount names it back; a grant result names a grant record, but of a PREPARING or UNPREPARING preparation (not journaled yet, or released before the front-end's commit). A PREPARED preparation's grants are REALISED, a PREPARED_UNRESTORED one's REALISED or REALISED_UNRESTORED, and the lease claim of their lease results exists. A node mount is MOUNTED_RW iff a writer uses it. A lease lends only while READY, releasing or FAILED.
-- **users**: Between requests and after the recovery, every region of ours is OWNED, KEPT or HOLLOW_OWNED, and every dax device of a region of ours that is OWNED or KEPT and is not the seed has a user grant that is REALISED, REALISED_UNRESTORED or RELEASING, or is the Whole device of a KEPT region, of a memdev that is IDLE_KEPT, or of a region that a grant of a Prepare that did not finish names (a companion kept for its Unprepare); the recovery deletes the others, those of a HOLLOW_OWNED region go with it.
+- **records**: Every record has a state of its table that a stored record may have, and a unique identity. Every region of ours is one Region record, referenced by every memdev in its Targets, and every region a memdev references is a record of ours that targets it; a FOREIGN region is owned by no one. Every grant belongs to one result of one preparation and is listed by the memdev of its serial (except the grants of a PREPARED_STALE preparation); what Got names lists the grant among its users, and every user of a dax device or a node mount names it back; a grant result names a grant record, but of a PREPARING or UNPREPARING preparation (not journaled yet, or released before the front-end's commit). A PREPARED preparation's grants are REALISED, a PREPARED_UNRESTORED one's REALISED or REALISED_UNRESTORED, and the lease claim of their lease results exists unless the claim's Unprepare runs (it closes the lease claim before the preparation turns UNPREPARING; the engine leaves this rule to the lease broker). A node mount is MOUNTED_RW iff a writer uses it. A lease lends only while READY, releasing or FAILED.
+- **users**: Between requests and after the recovery, every region of ours is OWNED, KEPT or HOLLOW_OWNED, and every dax device of a region of ours that is OWNED or KEPT and is not the seed has a user grant that is REALISED, REALISED_UNRESTORED or RELEASING, or is the Whole device of a KEPT region, of a memdev that is IDLE_KEPT, or of a region that a grant of a Prepare that did not finish names, or has as its user a grant of a Prepare that did not finish of a numa companion or of a KEPT preparation (kept for its Unprepare); the recovery deletes the others, those of a HOLLOW_OWNED region go with it.
 - **journaled**: Every object that the driver created lies inside a journaled container: a region of ours targets memdevs with a record; the region, bind target and lend of a grant's Got are named by its Intent; a node mount's path is the Intent of a user grant or a Stale entry of its memdev.
 
 ## Kernel objects
