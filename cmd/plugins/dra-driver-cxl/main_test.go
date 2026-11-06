@@ -15,24 +15,16 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"flag"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	resourcev1 "k8s.io/api/resource/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/dynamic-resource-allocation/kubeletplugin"
-
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
-	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
@@ -214,178 +206,51 @@ func TestEnsureDir(t *testing.T) {
 	}
 }
 
-func TestPreparedClaimsFile(t *testing.T) {
-	fileBackendOnly(t, "preparedClaims.json alone, and an undecodable one (the store keeps it with its info; LOST replaces an undecodable file)")
-	path := filepath.Join(t.TempDir(), device.PreparedClaimsFileName)
-	prepared, err := getOrCreatePreparedClaims(path)
-	if err != nil || len(prepared) != 0 {
-		t.Fatalf("new file: %v %v", prepared, err)
-	}
-	if data, err := os.ReadFile(path); err != nil || string(data) != "{}" {
-		t.Fatalf("new file %q %v", data, err)
-	}
-	want := claimPreparations{"u1": {Devices: []kubeletplugin.Device{{
-		Requests: []string{"mem"}, PoolName: "n1", DeviceName: "memdev-c100e2e1", CDIDeviceIDs: []string{"nri.io/cxl=claim-u1-0"}}}}}
-	if err := writePreparedClaimsToFile(path, want); err != nil {
-		t.Fatal(err)
-	}
-	prepared, err = getOrCreatePreparedClaims(path)
-	if err != nil || !reflect.DeepEqual(prepared, want) {
-		t.Fatalf("read %+v %v, expected %+v", prepared, err, want)
-	}
-	if err := writePreparedClaimsToFile(path, nil); err != nil {
-		t.Fatal(err)
-	}
-	if prepared, err := readPreparedClaimsFromFile(path); err != nil || len(prepared) != 0 {
-		t.Fatalf("read %+v %v, expected no claims", prepared, err)
-	}
-	if err := os.WriteFile(path, []byte(`{"u1": [`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := getOrCreatePreparedClaims(path); err == nil {
-		t.Fatal("invalid file: expected an error")
-	}
-}
-
-// The two files of the prepared claims after a crash between their writes
-// (bug-07): a claim is prepared only when both have it.
-func TestPreparedClaimsReconcile(t *testing.T) {
-	fileBackendOnly(t, "the two claim files with different claims, a window that one commit of both does not have")
-	dir := t.TempDir()
-	path := filepath.Join(dir, device.PreparedClaimsFileName)
-	result := func(uid string) kubeletplugin.PrepareResult {
-		return kubeletplugin.PrepareResult{Devices: []kubeletplugin.Device{{
-			Requests: []string{"mem"}, PoolName: "n1", DeviceName: "dram0", CDIDeviceIDs: []string{"nri.io/cxl=claim-" + uid + "-0"}}}}
-	}
-	info := &PreparedClaimInfo{ClaimName: "ns/c", Devices: []PreparedDeviceInfo{{RequestName: "mem", DeviceName: "dram0", DeviceType: device.DeviceTypeDRAM}}}
-	// u1 prepared; u2 stopped in its Prepare (the first file written);
-	// u3 stopped in its Unprepare (the first file written); u4 with a null
-	// info
-	noErr(t, writePreparedClaimsToFile(path, claimPreparations{"u1": result("u1"), "u2": result("u2"), "u4": result("u4")}))
-	noErr(t, writePreparedClaimsInfoToFile(filepath.Join(dir, preparedClaimsInfoFileName), PreparedClaimsInfo{"u1": info, "u3": info, "u4": nil}))
-	prepared, infos, preparing, unpreparing, err := loadPreparedClaims(path)
-	noErr(t, err)
-	if !reflect.DeepEqual(prepared, claimPreparations{"u1": result("u1")}) || !reflect.DeepEqual(infos, PreparedClaimsInfo{"u1": info}) {
-		t.Errorf("prepared %v info %v, expected u1 only", prepared, infos)
-	}
-	if !reflect.DeepEqual(preparing, []string{"u2", "u4"}) || !reflect.DeepEqual(unpreparing, []string{"u3"}) {
-		t.Errorf("forgotten preparing %v unpreparing %v", preparing, unpreparing)
-	}
-
-	// missing files are created empty
-	empty := filepath.Join(t.TempDir(), device.PreparedClaimsFileName)
-	prepared, infos, preparing, unpreparing, err = loadPreparedClaims(empty)
-	if err != nil || len(prepared) != 0 || len(infos) != 0 || preparing != nil || unpreparing != nil {
-		t.Fatalf("new files: %v %v %v %v %v", prepared, infos, preparing, unpreparing, err)
-	}
-	for _, name := range []string{device.PreparedClaimsFileName, preparedClaimsInfoFileName} {
-		if data, err := os.ReadFile(filepath.Join(filepath.Dir(empty), name)); err != nil || string(data) != "{}" {
-			t.Errorf("new %s %q %v", name, data, err)
-		}
-	}
-
-	// a restarted node state prepares u2 again, has no info of u3 (its
-	// fenced node and lend are gone) and writes both files so
-	s, err := newNodeState(device.DevicesInfo{}, t.TempDir(), path, "n1", &DriverConfig{}, nil, "boot-1")
-	noErr(t, err)
-	if _, found := s.preparedInfo("u2"); found {
-		t.Error("u2 is prepared")
-	}
-	if s.GetClaimInfo("u3") != nil {
-		t.Error("u3 has info")
-	}
-	prepared, infos, preparing, unpreparing, err = loadPreparedClaims(path)
-	noErr(t, err)
-	if len(prepared) != 1 || len(infos) != 1 || preparing != nil || unpreparing != nil {
-		t.Errorf("files after the start: %v %v %v %v", prepared, infos, preparing, unpreparing)
-	}
-	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("temporary file left: %v", err)
-	}
-}
-
-// TestPreparedClaimsOtherBoot: the claims of cxl.nri.io prepared in another
-// boot are not prepared at start (plan-13 bug-15): not in the files, no CDI
-// device, the nodes of their numa slices not fenced; their Unprepare finds
-// nothing, their Prepare again prepares them anew. A claim without a boot
-// id (saved by an older driver) is of this boot and gets its id; with the
-// boot id of the kernel unknown every claim is.
+// The claims of cxl.nri.io prepared in another boot are not prepared at
+// the start: no record, not in the views, no CDI device, no NUMA node to
+// fence, no command; their Unprepare finds nothing, their Prepare again
+// prepares them anew in this boot.
 func TestPreparedClaimsOtherBoot(t *testing.T) {
-	dir := t.TempDir()
-	cdiDir := filepath.Join(dir, "cdi")
-	noErr(t, os.MkdirAll(cdiDir, 0o755))
-	path := filepath.Join(dir, device.PreparedClaimsFileName)
-	result := func(uid string) kubeletplugin.PrepareResult {
-		return kubeletplugin.PrepareResult{Devices: []kubeletplugin.Device{{
-			Requests: []string{"mem"}, PoolName: "n1", DeviceName: "memdev-c100e2e1", CDIDeviceIDs: []string{"nri.io/cxl=claim-" + uid + "-0"}}}}
+	e := newLocalTestEnv(t)
+	e.start()
+	e.mustPrepare(localClaim("u1", localBlockSize))
+	e.mustPrepare(localClaim("u2", localBlockSize, localDaxConfig))
+	if got := preparedNodes(e.s, nil); got.String() == "" {
+		t.Fatal("no NUMA node of the numa slice")
 	}
-	info := func(boot string, node int) *PreparedClaimInfo {
-		return &PreparedClaimInfo{ClaimName: "ns/c", BootID: boot, Devices: []PreparedDeviceInfo{{RequestName: "mem", DeviceName: "memdev-c100e2e1",
-			DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA, NUMANodes: []int{node}, Serial: "0xc100e2e1", TotalBytes: 1 << 27}}}
+	old := e.k.BootID()
+	before := e.k.Commands()
+	e.reboot()
+	if got := e.k.CommandsSince(before); got != "" {
+		t.Fatalf("commands at the start:\n%s", got)
 	}
-	write := func() {
-		t.Helper()
-		noErr(t, writePreparedClaimsToFile(path, claimPreparations{"u1": result("u1"), "u2": result("u2"), "u3": result("u3")}))
-		noErr(t, writePreparedClaimsInfoToFile(filepath.Join(dir, preparedClaimsInfoFileName),
-			PreparedClaimsInfo{"u1": info("boot-1", 3), "u2": info("boot-2", 2), "u3": info("", 2)}))
-	}
-	cdiDevices := func() []string {
-		t.Helper()
-		m, _ := filepath.Glob(filepath.Join(cdiDir, device.ClaimsCDISpecName+".*"))
-		if len(m) != 1 {
-			t.Fatalf("CDI specs %v", m)
+	for _, uid := range []string{"u1", "u2"} {
+		if e.preparation(uid) != nil || e.s.GetClaimInfo(uid) != nil {
+			t.Fatalf("claim %s of another boot: %+v", uid, e.preparation(uid))
 		}
-		data, err := os.ReadFile(m[0])
+	}
+	for _, name := range []string{store.ViewPreparedClaims, store.ViewPreparedClaimsInfo} {
+		data, err := e.st.View(name)
 		noErr(t, err)
-		var names []string
-		for _, line := range strings.Split(string(data), "\n") {
-			if name, ok := strings.CutPrefix(strings.TrimSpace(line), "- name: "); ok {
-				names = append(names, name)
-			}
+		if strings.Contains(string(data), `"u1"`) || strings.Contains(string(data), `"u2"`) {
+			t.Fatalf("%s has the claims of another boot: %s", name, data)
 		}
-		return names
 	}
-	devs := device.DevicesInfo{"dram": {Name: "dram", Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}}}
-
-	write()
-	restartStore(dir, "boot-2")
-	s, err := newNodeState(devs, cdiDir, path, "n1", &DriverConfig{}, nil, "boot-2")
-	noErr(t, err)
-	if _, found := s.preparedInfo("u1"); found || s.GetClaimInfo("u3").BootID != "boot-2" {
-		t.Fatalf("prepared %v, infos %v", s.Prepared, s.preparedClaims)
+	if spec := e.cdiSpec(); spec != nil && len(spec.Devices) > 0 {
+		t.Fatalf("CDI devices of another boot %+v", spec.Devices)
 	}
-	prepared, infos, _, _, err := loadPreparedClaims(path)
-	noErr(t, err)
-	if len(prepared) != 2 || len(infos) != 2 || infos["u1"] != nil || infos["u3"].BootID != "boot-2" {
-		t.Fatalf("files after the start: %v %v", prepared, infos)
-	}
-	if got := cdiDevices(); !slices.Equal(got, []string{"claim-u2-0", "claim-u3-0"}) {
-		t.Fatalf("CDI devices %v", got)
-	}
-	if got := preparedNodes(s, nil); got.String() != "2" {
+	if got := preparedNodes(e.s, nil); got.String() != "" {
 		t.Fatalf("fenced nodes %s", got)
 	}
-	ctx := context.Background()
-	noErr(t, s.Unprepare(ctx, "u1"))
-	claim := &resourcev1.ResourceClaim{
-		ObjectMeta: metav1.ObjectMeta{UID: "u1", Name: "c", Namespace: "ns"},
-		Status: resourcev1.ResourceClaimStatus{Allocation: &resourcev1.AllocationResult{Devices: resourcev1.DeviceAllocationResult{
-			Results: []resourcev1.DeviceRequestAllocationResult{{Request: "mem", Driver: device.DriverName, Pool: "n1", Device: "dram"}}}}},
+	if e.inUse() {
+		t.Fatal("the memdev is in use")
 	}
-	noErr(t, s.Prepare(ctx, claim))
-	if info := s.GetClaimInfo("u1"); info == nil || info.BootID != "boot-2" || info.Devices[0].DeviceType != device.DeviceTypeDRAM {
+	e.mustUnprepare("u1")
+	e.mustPrepare(localClaim("u1", localBlockSize))
+	if info := e.s.GetClaimInfo("u1"); info == nil || info.BootID != e.k.BootID() || info.BootID == old {
 		t.Fatalf("prepared again %+v", info)
 	}
-	if got := cdiDevices(); !slices.Equal(got, []string{"claim-u1-0", "claim-u2-0", "claim-u3-0"}) {
-		t.Fatalf("CDI devices %v", got)
-	}
-
-	// the boot id of the kernel unknown
-	write()
-	restartStore(dir, "")
-	s, err = newNodeState(devs, cdiDir, path, "n1", &DriverConfig{}, nil, "")
-	noErr(t, err)
-	if len(s.Prepared) != 3 || s.GetClaimInfo("u3").BootID != "" {
-		t.Fatalf("prepared %v, infos %v", s.Prepared, s.preparedClaims)
+	if spec := e.cdiSpec(); spec == nil || len(spec.Devices) != 1 || spec.Devices[0].Name != "claim-u1-0" {
+		t.Fatalf("CDI spec %+v", spec)
 	}
 }

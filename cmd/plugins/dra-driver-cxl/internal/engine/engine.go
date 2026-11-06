@@ -59,9 +59,8 @@ type Engine struct {
 	store *store.Store
 	opts  Options
 
-	// mu is the engine lock (Options.Lock, else own).
-	mu      sync.Locker
-	ownLock sync.Mutex
+	// mu is the engine lock.
+	mu sync.Mutex
 
 	// qmu guards queues, busy, last, unknown, orphanBinds, running,
 	// started, observed, hollowLogged, devices and probes.
@@ -98,9 +97,6 @@ type Options struct {
 	// Kernel observes and changes the kernel objects. Its Serialize stays
 	// nil: the engine holds its lock around each call.
 	Kernel *kernel.Kernel
-	// Lock is the engine lock, nil for a lock of the engine's own: one
-	// that the region creations of the process outside the engine hold.
-	Lock sync.Locker
 	// Store keeps the records.
 	Store *store.Store
 	// Drivers are the names of the drivers of the sources, the prefix of
@@ -266,21 +262,16 @@ func New(opts Options) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	e := &Engine{
+	return &Engine{
 		k:            opts.Kernel,
 		store:        opts.Store,
 		opts:         opts,
-		mu:           opts.Lock,
 		queues:       map[state.Serial]chan struct{}{},
 		busy:         map[state.Serial]bool{},
 		hollowLogged: map[string]bool{},
 		devices:      map[state.GrantRef]string{},
 		probes:       probes,
-	}
-	if e.mu == nil {
-		e.mu = &e.ownLock
-	}
-	return e, nil
+	}, nil
 }
 
 // settle returns how long a grant of the source waits for the kernel to

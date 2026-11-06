@@ -41,7 +41,6 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
-	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 // The pool driver is a second DRA kubelet plugin in this process. It
@@ -293,19 +292,13 @@ func (d *poolDevice) facts() config.DeviceFacts {
 type poolConfig struct {
 	// Name is the DRA driver name, cxl-pool.nri.io.
 	Name string
-	// Kernel observes and changes the CXL kernel objects of the node.
-	Kernel *kernel.Kernel
+	// Devices is the device engine of the pool's records.
+	Devices *deviceEngine
 	// Store keeps the records.
 	Store *store.Store
 	// DataDir is the plugin data directory of the pool driver: its node
 	// mounts are in DataDir/mounts.
 	DataDir string
-	// Timeout is how long Prepare waits for a memdev to appear and for
-	// its persistent memory to settle (<= 0: 30 s).
-	Timeout time.Duration
-	// LeaseFsRoot is the directory of the lease-fs directories of the
-	// lease claims, "" for none.
-	LeaseFsRoot string
 	// BootID is the boot id of the running kernel, "" if it is unknown.
 	BootID string
 	// FsTypes are the filesystem types that mode fs mounts (none:
@@ -314,35 +307,14 @@ type poolConfig struct {
 	// Fence gets the NUMA nodes of devices in mode numa before their
 	// memory goes online, nil for none.
 	Fence *nodeFence
-	// Lock is the lock of the region creations of the process, nil for
-	// none.
-	Lock sync.Locker
-	// Filesystems is the list of the filesystem types of the kernel, ""
-	// for /proc/filesystems.
-	Filesystems string
-	// HolderWait, ProbeGrace, RegionRetry and OfflineSettle are the holder
-	// wait of a release, the grace for the driver of a present memdev, the
-	// pause before the retry of a region creation and how long memory
-	// blocks stay offline before their dax device changes driver, zero for
-	// the defaults.
-	HolderWait, ProbeGrace, RegionRetry, OfflineSettle time.Duration
 }
 
-// newPoolDriver returns a pool driver over the engine of the records of
-// its source in the store, recovered: what the store has is matched with
-// the kernel (engine.Recover), the CDI spec is written by start.
-func newPoolDriver(ctx context.Context, cfg poolConfig) (*poolDriver, error) {
-	if cfg.Timeout <= 0 {
-		cfg.Timeout = defaultPoolPrepareTimeout
-	}
-	if cfg.ProbeGrace <= 0 {
-		cfg.ProbeGrace = defaultMemdevProbeGrace
-	}
-	if cfg.RegionRetry <= 0 {
-		cfg.RegionRetry = defaultRegionRetryDelay
-	}
-	if cfg.Store == nil {
-		return nil, errors.New("the pool driver needs the state store")
+// newPoolDriver returns a pool driver over the device engine of the
+// records of its source in the store; recovered sets what the recovery of
+// the engine found, the CDI spec is written by start.
+func newPoolDriver(cfg poolConfig) (*poolDriver, error) {
+	if cfg.Store == nil || cfg.Devices == nil {
+		return nil, errors.New("the pool driver needs the state store and the device engine")
 	}
 	fsTypes := cfg.FsTypes
 	if len(fsTypes) == 0 {
@@ -352,75 +324,37 @@ func newPoolDriver(ctx context.Context, cfg poolConfig) (*poolDriver, error) {
 		name:     cfg.Name,
 		dataDir:  cfg.DataDir,
 		st:       cfg.Store,
+		engine:   cfg.Devices.Engine,
 		lender:   newCompanionLender(cfg.Name),
 		inflight: map[uint64]int{},
 		fence:    cfg.Fence,
 		bootID:   cfg.BootID,
 		fsTypes:  fsTypes,
 	}
-	opts := engine.Options{
-		Kernel:      cfg.Kernel,
-		Store:       cfg.Store,
-		Lock:        cfg.Lock,
-		Drivers:     map[state.Source]string{state.SourcePool: cfg.Name},
-		MountsDirs:  map[state.Source]string{state.SourcePool: filepath.Join(cfg.DataDir, mountsDirName)},
-		LeaseFsRoot: cfg.LeaseFsRoot,
-		FsTypes:     p.fsTypes,
-		Filesystems: cfg.Filesystems,
-		Sources:     []state.Source{state.SourcePool},
-		Records:     map[state.Source]string{state.SourcePool: p.preparingFile()},
-		Revoke:      p.revokeLend,
-		Timeouts: engine.Timeouts{Memdev: cfg.Timeout, Settle: cfg.Timeout, Holder: cfg.HolderWait,
-			ProbeGrace: cfg.ProbeGrace, RegionRetry: cfg.RegionRetry, OfflineSettle: cfg.OfflineSettle},
+	cfg.Devices.setLender(state.SourcePool, p.lender)
+	return p, nil
+}
+
+// recovered logs what the recovery of the engine found of the pool's
+// records, rec nil for none (a LOST store), and sets the serials of its
+// devices.
+func (p *poolDriver) recovered(rec *engine.Recovered) {
+	if p == nil {
+		return
 	}
-	if cfg.Fence != nil {
-		opts.Fence = p.fenceNode
-	}
-	e, err := engine.New(opts)
-	if err != nil {
-		return nil, err
-	}
-	p.engine = e
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if err := cfg.Store.Lost(); err != nil {
-		// nothing is released: every Prepare fails with the loss
-		klog.Errorf("%s: %v: the devices of the pool driver are not recovered", p.name, err)
-		return p, nil
+	if rec != nil {
+		p.logLoaded()
+		p.logRecovered(rec)
 	}
-	rec, err := e.Recover(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("recovering the pool devices: %w", err)
-	}
-	p.logLoaded()
-	p.logRecovered(rec)
 	p.updateSerials()
-	return p, nil
 }
 
 // preparingFile returns the path of the records of the claims whose
 // Prepare did not finish, as the log lines name them.
 func (p *poolDriver) preparingFile() string {
 	return filepath.Join(p.dataDir, poolPreparingFileName)
-}
-
-// fenceNode fences a NUMA node before memory of it goes online.
-func (p *poolDriver) fenceNode(ctx context.Context, node int) {
-	p.fence.Fence(ctx, node)
-}
-
-// revokeLend revokes the NUMA node that the grant ref of a companion claim
-// lends.
-func (p *poolDriver) revokeLend(ctx context.Context, ref state.GrantRef, lend state.GrantLend) error {
-	claimName := ref.Claim
-	if prep := p.records().Preparation(p.name, ref.Claim); prep != nil {
-		claimName = prep.ClaimName
-	}
-	rec := &lendRecord{Lease: lend.Lease, Pod: podRef(lend.Pod), Container: lend.Container}
-	if lend.NumaNode != nil {
-		rec.Nodes = []int{*lend.NumaNode}
-	}
-	return p.lender.revoke(ctx, rec, claimName)
 }
 
 // recoverCompanions is the second phase of the recovery, once the lender
@@ -716,9 +650,16 @@ func (p *poolDriver) PrepareResourceClaims(ctx context.Context, claims []*resour
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, claim := range claims {
-		response[claim.UID] = p.prepareClaim(ctx, claim)
+		response[claim.UID] = p.prepareClaimRequest(ctx, claim)
 	}
 	return response, nil
+}
+
+// prepareClaimRequest prepares a claim in a request of the engine.
+func (p *poolDriver) prepareClaimRequest(ctx context.Context, claim *resourceapi.ResourceClaim) kubeletplugin.PrepareResult {
+	ctx, end := p.engine.Request(ctx)
+	defer end()
+	return p.prepareClaim(ctx, claim)
 }
 
 // poolPrepare is a Prepare of a claim of the pool driver: its requests to
@@ -1342,9 +1283,16 @@ func (p *poolDriver) UnprepareResourceClaims(ctx context.Context, claims []kubel
 	defer p.mu.Unlock()
 	response := map[types.UID]error{}
 	for _, claim := range claims {
-		response[claim.UID] = p.unprepareClaim(ctx, string(claim.UID))
+		response[claim.UID] = p.unprepareClaimRequest(ctx, string(claim.UID))
 	}
 	return response, nil
+}
+
+// unprepareClaimRequest unprepares a claim in a request of the engine.
+func (p *poolDriver) unprepareClaimRequest(ctx context.Context, uid string) error {
+	ctx, end := p.engine.Request(ctx)
+	defer end()
+	return p.unprepareClaim(ctx, uid)
 }
 
 // unprepareClaim releases the devices of a claim and removes its
@@ -1429,28 +1377,6 @@ func (p *poolDriver) logUnfinished(prep *state.Preparation) {
 		what = "not prepared any more (" + reason + ")"
 	}
 	klog.Infof("%s: unpreparing claim %s (%s), %s: releasing devices %s", p.name, prep.ClaimName, prep.UID, what, strings.Join(serials, ", "))
-}
-
-// leaseBinds returns the lease binds that the realised grants of the
-// prepared claims of the pool driver list.
-func (p *poolDriver) leaseBinds() map[string]bool {
-	if p == nil {
-		return nil
-	}
-	out := map[string]bool{}
-	r := p.records()
-	for i := range r.Preparations {
-		prep := &r.Preparations[i]
-		if prep.Driver != p.name || !prep.Prepared() {
-			continue
-		}
-		for _, res := range prep.Results {
-			if g := grantOf(r, &res); g != nil && g.Got.Bind != nil && (g.State == state.GrantRealised || g.State == state.GrantUnrestored) {
-				out[g.Got.Bind.Target] = true
-			}
-		}
-	}
-	return out
 }
 
 // poolCDIDeviceID returns the qualified CDI device name of the allocation

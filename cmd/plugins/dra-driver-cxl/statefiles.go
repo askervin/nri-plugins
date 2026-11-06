@@ -43,12 +43,6 @@ var stateFiles = struct {
 // read nor written.
 var stateAutoBackend func(path string) stateBackend
 
-// stateExister is a backend that tells whether a state file exists; a
-// backend without it has every state file.
-type stateExister interface {
-	stateExists(path string) bool
-}
-
 // registerStateFiles makes the backend b keep the state files paths and
 // returns the function that ends it.
 func registerStateFiles(b stateBackend, paths ...string) func() {
@@ -106,16 +100,6 @@ func writeStateFile(path string, v any) error {
 		return fmt.Errorf("encoding %s: %w", path, err)
 	}
 	return b.writeState(path, data)
-}
-
-// stateFileExists tells whether the state file path exists; one that no
-// backend keeps exists, its read fails.
-func stateFileExists(path string) bool {
-	b := stateBackendOf(path)
-	if e, ok := b.(stateExister); ok {
-		return e.stateExists(path)
-	}
-	return true
 }
 
 // notExist returns the error of reading the state file path that does not

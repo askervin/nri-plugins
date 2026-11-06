@@ -38,6 +38,7 @@ import (
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/engine"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
@@ -148,23 +149,35 @@ func (e *poolTestEnv) driver(t *testing.T) *poolDriver {
 	e.st, err = store.Open(context.Background(), store.Options{Dir: e.dir, PoolDir: e.dir, PoolDriver: device.PoolDriverName,
 		BootID: e.k.BootID(), CompatViews: true, DropOtherBoot: func(driver string) bool { return driver == device.DriverName }})
 	noErr(t, err)
-	p, err := newPoolDriver(context.Background(), poolConfig{
-		Name:          device.PoolDriverName,
+	devices, err := newDeviceEngine(deviceConfig{
 		Kernel:        e.k.Kernel(),
 		Store:         e.st,
-		DataDir:       e.dir,
-		Timeout:       e.timeout,
+		PoolDriver:    device.PoolDriverName,
+		PoolDataDir:   e.dir,
 		LeaseFsRoot:   e.leaseFsRoot,
-		BootID:        e.k.BootID(),
 		FsTypes:       config.KnownFsTypes,
-		Fence:         e.fence,
 		Filesystems:   e.filesystems,
+		Fence:         e.fence,
+		PoolTimeout:   e.timeout,
 		HolderWait:    e.holderWait,
 		ProbeGrace:    20 * time.Millisecond,
 		RegionRetry:   10 * time.Millisecond,
 		OfflineSettle: 20 * time.Millisecond,
 	})
 	noErr(t, err)
+	p, err := newPoolDriver(poolConfig{
+		Name:    device.PoolDriverName,
+		Devices: devices,
+		Store:   e.st,
+		DataDir: e.dir,
+		BootID:  e.k.BootID(),
+		FsTypes: config.KnownFsTypes,
+		Fence:   e.fence,
+	})
+	noErr(t, err)
+	rec, err := devices.recover(context.Background())
+	noErr(t, err)
+	p.recovered(rec)
 	p.cdi = cache
 	noErr(t, p.writeCDISpec(""))
 	checkPool(t, p, "started")
@@ -402,13 +415,17 @@ func unprepare(t *testing.T, p *poolDriver, uid string) error {
 
 // checkPool fails the test on a violation of the invariants of the records
 // of the pool driver and the kernel now: the document's (state.Check) and
-// the engine's.
+// the engine's; and on a change of a kernel object that no row of its
+// table has since the last check.
 func checkPool(t *testing.T, p *poolDriver, what string) {
 	t.Helper()
 	snap, err := p.engine.Observe(context.Background())
 	noErr(t, err)
 	for _, v := range p.engine.Check(snap, []state.Source{state.SourcePool}, nil) {
 		t.Errorf("%s: %s", what, v)
+	}
+	for _, line := range p.engine.UnknownSeen() {
+		t.Errorf("%s: %s%s", what, engine.UnknownTransition, line)
 	}
 }
 
@@ -456,13 +473,7 @@ func (e *poolTestEnv) nodeMount(serial uint64, access string) string {
 // mounts returns the mounts of the node as the driver's mount table has
 // them.
 func (e *poolTestEnv) mounts() ([]mountInfo, error) {
-	ms, err := e.k.Kernel().Mounts()
-	var out []mountInfo
-	for _, m := range ms {
-		out = append(out, mountInfo{DevNum: m.DevNum, Root: m.Root, Target: m.Target, FsType: m.FsType, Source: m.Source,
-			SuperOpts: m.SuperOpts, MountFlags: m.MountFlags})
-	}
-	return out, err
+	return e.k.Kernel().Mounts()
 }
 
 // mounted returns the mount at target, nil if there is none.

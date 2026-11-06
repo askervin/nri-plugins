@@ -337,3 +337,23 @@ func (k envKeys) next(base string) string {
 	k[base]++
 	return api.Nth(base, k[base])
 }
+
+// fsCDIMount returns the CDI mount of a node mount at path in a container:
+// options bind, ro, nosuid, nodev, without ro for a use that writes.
+func fsCDIMount(nodeMount, path string, readOnly bool) *cdiSpecs.Mount {
+	options := []string{"bind", "ro", "nosuid", "nodev"}
+	if !readOnly {
+		options = []string{"bind", "nosuid", "nodev"}
+	}
+	return &cdiSpecs.Mount{HostPath: nodeMount, ContainerPath: path, Type: "bind", Options: options}
+}
+
+// blockDeviceNode returns the CDI device node of a block device, with
+// permissions "r" when read-only.
+func blockDeviceNode(dev string, major, minor int, readOnly bool) *cdiSpecs.DeviceNode {
+	node := &cdiSpecs.DeviceNode{Path: dev, Type: "b", Major: int64(major), Minor: int64(minor)}
+	if readOnly {
+		node.Permissions = "r"
+	}
+	return node
+}

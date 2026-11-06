@@ -20,6 +20,8 @@ import (
 	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 )
 
+// The usable size of a local memdev from its memdevSettings and the probed
+// size, rounded down to 256 MiB; invalid settings are refused.
 func TestMemdevSettings(t *testing.T) {
 	cfg, err := newDriverConfigFromString(`
 memdevSettings:

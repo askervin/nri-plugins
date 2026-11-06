@@ -32,8 +32,8 @@ func pmemMemdev(name string, serial uint64) *nricxl.MemoryDevice {
 	return &nricxl.MemoryDevice{Name: name, DevName: "cxl/" + name, PmemSize: 4 << 30, Serial: serial, NodeAffinity: -1, Enabled: true}
 }
 
-// The publication of persistent local memdevs (contract 7) and its
-// refusals; persistent: false on every other local memdev.
+// The publication of persistent local memdevs and its refusals;
+// persistent: false on every other local memdev.
 func TestBuildDevInfosPersistentMemdevs(t *testing.T) {
 	free, shared, ignored, pooled, held, disabled, foreign, ramAndPmem, sliced, otherSharing :=
 		pmemMemdev("mem1", 0xb1), pmemMemdev("mem2", 0xb2), pmemMemdev("mem3", 0xb3), pmemMemdev("mem4", 0xb4),
@@ -94,6 +94,7 @@ func buildDevInfosHeldOK(t *testing.T, cfg *DriverConfig, devices *nricxl.Device
 	return devInfos
 }
 
+// A persistent local memdev is published with its shares, shared or not.
 func TestGetResourcesPersistentMemdev(t *testing.T) {
 	for _, shared := range []bool{false, true} {
 		got := localMemdevDevice("memdev-c100f5e1", &device.Memdev{Name: "mem2", Serial: 0xc100f5e1, Size: 4 << 30, NodeAffinity: 0, Shared: shared, Persistent: true})
@@ -119,6 +120,8 @@ func TestGetResourcesPersistentMemdev(t *testing.T) {
 	}
 }
 
+// fsTypes defaults to erofs, is returned as a copy, and its invalid or
+// misspelt settings are refused.
 func TestDriverConfigFsTypes(t *testing.T) {
 	cfg, err := newDriverConfigFromString("")
 	noErr(t, err)
@@ -145,6 +148,8 @@ func TestDriverConfigFsTypes(t *testing.T) {
 	wantErr(t, err, `unknown field "fsType"`)
 }
 
+// coherent of memdevSettings matches a memdev by name or serial in every
+// notation; without a configuration nothing is coherent.
 func TestDriverConfigMemdevCoherent(t *testing.T) {
 	cfg, err := newDriverConfigFromString(`
 memdevSettings:

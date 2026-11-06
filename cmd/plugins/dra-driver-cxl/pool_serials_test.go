@@ -627,22 +627,6 @@ func TestPoolSerialsCheckLocal(t *testing.T) {
 	}
 }
 
-// driver returns a driver that rescans the memdevs of e (not
-// started: it does not publish).
-func (e *serialsEnv) driver(detect func(string) (*nricxl.Devices, error)) *driver {
-	e.t.Helper()
-	old := detectDevices
-	detectDevices = detect
-	e.t.Cleanup(func() { detectDevices = old })
-	local := newFakeLocalSys(e.t).allocator(e.t, e.t.TempDir())
-	return &driver{
-		sysfsRoot:  e.t.TempDir(),
-		config:     &DriverConfig{IgnoreDRAMNodes: true},
-		state:      nodeState{baseState: &baseState{NodeName: testNode}, local: local},
-		poolSlices: e.ps,
-	}
-}
-
 // allocatableNames returns the names of the devices that d would publish.
 func (d *driver) allocatableNames() []string {
 	d.state.Lock()
@@ -737,28 +721,51 @@ func TestPoolWatch(t *testing.T) {
 	watch("memdev-a1")
 }
 
-// The local allocator refuses a pool device before it creates a region on
-// it or onlines its memory: a local claim allocated on a memdev that a
-// pool slice lists by now fails (review DRV2 E2).
+// driver returns a driver that rescans the memdevs of e (not
+// started: it does not publish).
+func (e *serialsEnv) driver(detect func(string) (*nricxl.Devices, error)) *driver {
+	e.t.Helper()
+	old := detectDevices
+	detectDevices = detect
+	e.t.Cleanup(func() { detectDevices = old })
+	local := newLocalTestEnv(e.t).start().local
+	return &driver{
+		sysfsRoot:  e.t.TempDir(),
+		config:     &DriverConfig{IgnoreDRAMNodes: true},
+		state:      nodeState{baseState: &baseState{NodeName: testNode}, local: local},
+		poolSlices: e.ps,
+	}
+}
+
+// A local claim, sliced or shared, on a memdev that a pool slice lists by
+// now is refused before a region is made on it.
 func TestPrepareLocalPoolDevice(t *testing.T) {
-	e := newLocalTestState(t)
+	e := newLocalTestEnv(t)
+	e.start()
 	env := newSerialsEnv(t)
 	env.publish("0xc1ee2001", "0xc100e2e1")
-	e.local.poolGuard = localPoolGuard(nil, env.ps)
-	ctx := context.Background()
-	err := e.Prepare(ctx, localClaim("u1", 64*mib))
-	if err == nil || !strings.Contains(err.Error(), "memory device serial 0xc100e2e1 is a pool device of "+device.PoolDriverName+"/pool-c: it is not used as a local memory device") {
-		t.Fatalf("expected a refusal, got %v", err)
-	}
-	if _, err := e.local.AcquireShared(ctx, "u2", "mem", localSerial, false, "exclusive"); err == nil || !strings.Contains(err.Error(), "is a pool device") {
-		t.Fatalf("expected a refusal, got %v", err)
-	}
-	if e.inUse() || strings.Contains(e.f.commands(), "create-region") {
-		t.Fatalf("the pool device was used:\n%s", e.f.commands())
+	e.devices.setGuard(localPoolGuard(nil, env.ps))
+	const refusal = "memory device serial 0xc100e2e1 is a pool device of " + device.PoolDriverName + "/pool-c: it is not used as a local memory device"
+	wantErr(t, e.prepare(localClaim("u1", 64*mib)), refusal)
+	// shared
+	e.config.SharedDevices = []string{"0xc100e2e1"}
+	e.shared[localSerial] = true
+	e.restart()
+	e.devices.setGuard(localPoolGuard(nil, env.ps))
+	wantErr(t, e.prepare(localClaim("u2", -1, localDaxConfig)), "is a pool device")
+	if e.inUse() || strings.Contains(e.commands(), "create-region") {
+		t.Fatalf("the pool device was used:\n%s", e.commands())
 	}
 	// not listed: prepared
 	env.publish("0xc1ee2001")
 	env.ps = newPoolSlices(env.client, testNode, "", "")
-	e.local.poolGuard = localPoolGuard(nil, env.ps)
-	noErr(t, e.Prepare(ctx, localClaim("u1", 64*mib)))
+	e.devices.setGuard(localPoolGuard(nil, env.ps))
+	e.mustPrepare(localClaim("u2", -1, localDaxConfig))
+	e.mustUnprepare("u2")
+	e.config.SharedDevices = nil
+	e.shared = map[uint64]bool{}
+	e.restart()
+	e.mustPrepare(localClaim("u1", 64*mib))
+	e.mustUnprepare("u1")
+	e.wantClean()
 }

@@ -93,11 +93,6 @@ func (fileBackend) writeState(path string, data []byte) error {
 	return writeJSONFile(path, json.RawMessage(data))
 }
 
-func (fileBackend) stateExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
 // knownMismatches are the writes, by test and file, of content that the
 // driver never writes and the store does not give back, with why the
 // difference does not matter.
@@ -570,4 +565,55 @@ func TestBrokerOtherBootOnStore(t *testing.T) {
 		t.Fatalf("new request %+v", resp)
 	}
 	e.waitClaim(companionName(resp.Lease))
+}
+
+// writeJSONFile replaces the file with v in JSON, readable by the owner
+// only. The new content is synced before the rename, and the directory
+// after it: after a crash or a power loss the file has the old content or
+// the new one, never an empty or a partial one.
+func writeJSONFile(path string, v any) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding %s: %w", path, err)
+	}
+	tmp := path + ".tmp"
+	if err := writeSynced(tmp, data, 0600); err != nil {
+		return fmt.Errorf("writing %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("renaming %s: %w", tmp, err)
+	}
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("syncing the directory of %s: %w", path, err)
+	}
+	return nil
+}
+
+// writeSynced writes data to the file name and syncs it.
+func writeSynced(name string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// syncDir syncs a directory, so that a rename in it is durable.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	if cerr := d.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
