@@ -165,11 +165,13 @@ func TestVerifyStepLogs(t *testing.T) {
 	if _, err := v.e.Observe(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	// the last observation had dax0.0 as a seed: SEED -> DEVICE_DAX is no
-	// row
+	// a memdev whose endpoint port is still missing (BOUND) that the last
+	// observation had READY: READY -> BOUND is no row
+	v.f.EndpointDelay = time.Second
+	v.f.Plug(fake.MemdevSpec{Serial: serialB})
 	v.e.qmu.Lock()
 	last := *v.e.last
-	last.DaxDevices = []kernel.DaxDeviceInfo{{Name: "dax0.0", State: kernel.DaxSeed}}
+	last.Memdevs = append(append([]kernel.MemdevInfo(nil), last.Memdevs...), kernel.MemdevInfo{Serial: serialB, State: kernel.MemdevReady})
 	v.e.last = &last
 	v.e.qmu.Unlock()
 	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive)}); err != nil {
@@ -188,7 +190,7 @@ func TestVerifyStepLogs(t *testing.T) {
 	}
 	out := logs()
 	for _, want := range []string{
-		UnknownTransition + "dax device dax0.0: DaxDeviceInfo.State: SEED -> DEVICE_DAX",
+		UnknownTransition + "memdev 0xb1: MemdevInfo.State: READY -> BOUND",
 		"engine invariant: I10: grant l/0: a new local grant on serial 0x11 of provenance HELD",
 	} {
 		if !strings.Contains(out, want) {

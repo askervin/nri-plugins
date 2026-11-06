@@ -637,6 +637,8 @@ States: ABSENT, SEED, UNBOUND, DEVICE_DAX, KMEM, OTHER.
 | DEVICE_DAX | KMEM | BindDax(kmem) | - | - |
 | OTHER | DEVICE_DAX | BindDax(device_dax) | - | - |
 | OTHER | KMEM | BindDax(kmem) | - | - |
+| SEED | KMEM | ResizeDaxDevice of the seed daxN.0 and BindDax(kmem), observed across them: a numa part on the seed | - | - |
+| SEED | DEVICE_DAX | ResizeDaxDevice of the seed daxN.0 and BindDax(device_dax), observed across them: a dax part on the seed | - | - |
 
 ## MemoryBlock (kernel)
 

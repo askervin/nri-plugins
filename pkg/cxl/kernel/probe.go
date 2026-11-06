@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"unsafe"
@@ -78,8 +79,25 @@ func (k *Kernel) ProbeAliasing(dax string) (*Aliasing, error) {
 	return a, err
 }
 
+// ZeroError is the error of the writes of the zeros to the memory of a dax
+// device.
+type ZeroError struct {
+	Dax string
+	Err error
+}
+
+// Error returns the error in words.
+func (e *ZeroError) Error() string {
+	return fmt.Sprintf("zeroing %s: %v", e.Dax, e.Err)
+}
+
+// Unwrap returns the error of the writes.
+func (e *ZeroError) Unwrap() error {
+	return e.Err
+}
+
 // Zero writes zeros to all of the memory of a dax device bound to
-// device_dax.
+// device_dax; the error of the writes is a *ZeroError.
 func (k *Kernel) Zero(ctx context.Context, dax string) error {
 	size, err := k.DaxDeviceSize(dax)
 	if err != nil {
@@ -95,10 +113,36 @@ func (k *Kernel) Zero(ctx context.Context, dax string) error {
 		align, _ = ReadUint(filepath.Join(filepath.Dir(real), "dax_region", "align"))
 	}
 	if err := k.sys().ZeroDax(ctx, major, minor, size, align); err != nil {
-		return fmt.Errorf("zeroing %s: %w", dax, err)
+		return &ZeroError{Dax: dax, Err: err}
 	}
 	k.logf("%s: zeroed %d bytes", dax, size)
 	return nil
+}
+
+// daxNodeDirs are the patterns of the temporary directories of private dax
+// device nodes under DevRoot: of this package, and of older drivers.
+var daxNodeDirs = []string{".cxl-dax-*", ".cxl-local-zero-*", ".cxl-probe-*"}
+
+// RemoveDaxNodeDirs removes the temporary directories of private dax device
+// nodes under DevRoot that a process stopped in a zeroing or a probe left,
+// and returns those that it removed.
+func (k *Kernel) RemoveDaxNodeDirs() ([]string, error) {
+	var removed []string
+	var errs []error
+	for _, pattern := range daxNodeDirs {
+		dirs, err := filepath.Glob(filepath.Join(k.DevRoot, pattern))
+		if err != nil {
+			return removed, err
+		}
+		for _, dir := range dirs {
+			if err := os.RemoveAll(dir); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			removed = append(removed, dir)
+		}
+	}
+	return removed, errors.Join(errs...)
 }
 
 // ProbeMemory runs the address line test of ProbeAliasing on mapped memory.
