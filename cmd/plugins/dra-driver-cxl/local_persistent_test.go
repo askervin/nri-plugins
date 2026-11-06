@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -31,6 +32,7 @@ import (
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
@@ -756,10 +758,14 @@ func TestLoadPoolDriverFsTypes(t *testing.T) {
 		pc := &pluginConfig{KubeletPluginDir: filepath.Join(dir, device.DriverName)}
 		noErr(t, os.MkdirAll(pc.KubeletPluginDir, 0o750))
 		flags := &CXLFlags{PoolDriverName: device.PoolDriverName, PoolPrepareTimeout: time.Second}
-		p, err := loadPoolDriver(pc, flags, dir, nil, "boot-1", cfg.fsTypes())
+		st, err := store.Open(context.Background(), store.Options{Dir: pc.KubeletPluginDir, PoolDir: filepath.Join(dir, device.PoolDriverName),
+			PoolDriver: device.PoolDriverName, BootID: "boot-1"})
 		noErr(t, err)
-		if !slices.Equal(p.pn.cfg.FsTypes, tc.want) {
-			t.Fatalf("config %q: pool fsTypes %v, expected %v", tc.config, p.pn.cfg.FsTypes, tc.want)
+		p, err := loadPoolDriver(context.Background(), pc, flags, dir, nil, "boot-1", cfg.fsTypes(), st)
+		noErr(t, err)
+		if !slices.Equal(p.fsTypes, tc.want) {
+			t.Fatalf("config %q: pool fsTypes %v, expected %v", tc.config, p.fsTypes, tc.want)
 		}
+		noErr(t, st.Close())
 	}
 }

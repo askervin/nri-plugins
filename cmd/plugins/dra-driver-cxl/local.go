@@ -313,6 +313,12 @@ func (a *localAllocator) readBlockSize() (uint64, error) {
 	return bs, nil
 }
 
+// isAddDevError matches the transient region creation failure right
+// after a hotplug.
+func isAddDevError(err error) bool {
+	return strings.Contains(err.Error(), "add_dev")
+}
+
 // readBootID returns the boot id of the running kernel, "" if it cannot be
 // read.
 func readBootID(sysfsRoot string) string {

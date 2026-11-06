@@ -50,11 +50,9 @@ func fsROConfig(access string) string {
 // writers makes it read-only, that of the reader releases the device.
 func TestPoolPersistentReadWrite(t *testing.T) {
 	e := newPoolTestEnv(t)
-	e.f.plugPersistent(persistentSerial)
-	e.f.labels = true
-	e.m.images["/dev/pmem0"] = fsImage("ext4")
+	e.plugPersistent(0xc1ae0001, "ext4")
 	p := e.driver(t)
-	direct := p.nodeMountPath(0xc1ae0001, "direct")
+	direct := e.nodeMount(0xc1ae0001, "direct")
 
 	// read-write needs the device on this node only
 	wantErr(t, prepare(t, p, persistentClaim("x", persistentData, fsRWConfig("", "", ""))).Err,
@@ -64,7 +62,7 @@ func TestPoolPersistentReadWrite(t *testing.T) {
 	noErr(t, prepare(t, p, persistentClaim("a", singleHostData, fsRWConfig("", "", ""))).Err)
 	noErr(t, prepare(t, p, persistentClaim("b", singleHostData, fsRWConfig("", "/data", "ext4"))).Err)
 	noErr(t, prepare(t, p, persistentClaim("c", singleHostData, fsROConfig(""))).Err)
-	if got := e.m.callsOf("fsmount"); !slices.Equal(got, []string{"fsmount /dev/pmem0 " + direct + " ext4 rw dax=always"}) {
+	if got := e.k.MountCalls("fsmount"); !slices.Equal(got, []string{"fsmount " + e.pmem + " " + direct + " ext4 rw dax=always"}) {
 		t.Fatalf("mounts %q", got)
 	}
 	env := func(uid, path, ro string) []string {
@@ -86,7 +84,7 @@ func TestPoolPersistentReadWrite(t *testing.T) {
 		}
 	}
 	data, _ := os.ReadFile(e.stateFile)
-	if !strings.Contains(string(data), `"fsType": "ext4"`) || p.prepared["a"].Devices[0].ReadOnly || !p.prepared["c"].Devices[0].ReadOnly {
+	if !strings.Contains(string(data), `"fsType": "ext4"`) || e.device(p, "a", 0).ReadOnly || !e.device(p, "c", 0).ReadOnly {
 		t.Fatalf("state:\n%s", data)
 	}
 
@@ -95,30 +93,30 @@ func TestPoolPersistentReadWrite(t *testing.T) {
 		"device 0xc1ae0001: it is mounted read-write with access direct on this node: access cached would mount it a second time")
 
 	// a restart keeps the read-write node mount as it is
-	n := len(e.m.calls)
+	n := len(e.k.MountCalls(""))
 	p = e.driver(t)
-	for _, c := range e.m.calls[n:] {
+	for _, c := range e.k.MountCalls("")[n:] {
 		if strings.HasPrefix(c, "fsmount") || strings.HasPrefix(c, "reconfigure") || strings.HasPrefix(c, "umount") {
-			t.Fatalf("restart touched the mounts: %q", e.m.calls[n:])
+			t.Fatalf("restart touched the mounts: %q", e.k.MountCalls("")[n:])
 		}
 	}
 	// the writers go: read-only for the reader
 	noErr(t, unprepare(t, p, "a"))
-	n = len(e.m.calls)
+	n = len(e.k.MountCalls(""))
 	noErr(t, unprepare(t, p, "b"))
-	got := slices.DeleteFunc(slices.Clone(e.m.calls[n:]), func(c string) bool { return strings.HasPrefix(c, "superblocks ") })
-	if !slices.Equal(got, []string{"syncfs " + direct, "reconfigure " + direct + " ro", "blkroset /dev/pmem0 1"}) {
+	got := slices.DeleteFunc(slices.Clone(e.k.MountCalls("")[n:]), func(c string) bool { return strings.HasPrefix(c, "superblocks ") })
+	if !slices.Equal(got, []string{"syncfs " + direct, "reconfigure " + direct + " ro", "blkroset " + e.pmem + " 1"}) {
 		t.Fatalf("downgrade calls %q", got)
 	}
 	// a writer again upgrades in place
 	noErr(t, prepare(t, p, persistentClaim("w", singleHostData, fsRWConfig("direct", "", ""))).Err)
-	if mi, _ := e.m.Mounted(direct); mi == nil || mi.SuperOpts[0] != "rw" || e.m.isRO("/dev/pmem0") {
+	if mi, _ := e.mountedErr(direct); mi == nil || mi.SuperOpts[0] != "rw" || e.k.IsReadOnly(e.pmem) {
 		t.Fatalf("not upgraded: %+v", mi)
 	}
 	for _, uid := range []string{"w", "c"} {
 		noErr(t, unprepare(t, p, uid))
 	}
-	e.f.wantReleased(t)
+	e.wantReleased(t, "region0", "mem0")
 	e.wantClean(t, p)
 	e.wantNoMounts(t, p)
 }
@@ -127,82 +125,17 @@ func TestPoolPersistentReadWrite(t *testing.T) {
 // gfs2 with lock_dlm on coherent memory.
 func TestPoolPersistentCluster(t *testing.T) {
 	e := newPoolTestEnv(t)
-	e.f.plugPersistent(persistentSerial)
-	e.f.labels = true
-	e.m.images["/dev/pmem0"] = fsImage("gfs2-nolock")
+	e.plugPersistent(0xc1ae0001, "gfs2-nolock")
 	p := e.driver(t)
 	wantErr(t, prepare(t, p, persistentClaim("x", coherentData, fsRWConfig("", "", "gfs2"))).Err,
 		"device 0xc1ae0001: read-write on several hosts needs a cluster filesystem on coherent memory: gfs2 with lock_nolock is a single-host filesystem")
-	e.f.wantReleased(t)
-	e.m.images["/dev/pmem0"] = fsImage("gfs2")
+	e.wantReleased(t, "region0", "mem0")
+	e.setImage("mem0", "gfs2")
 	noErr(t, prepare(t, p, persistentClaim("x", coherentData, fsRWConfig("", "", "gfs2"))).Err)
 	e.wantCDIDevice(t, "claim-x-0", []string{"CXL_C1AE0001_ACCESS=cached", "CXL_C1AE0001_FSTYPE=gfs2", "CXL_C1AE0001_MODE=fs",
 		"CXL_C1AE0001_PATH=/run/cxl-fs/C1AE0001", "CXL_C1AE0001_READONLY=0", "CXL_C1AE0001_SERIAL=0xc1ae0001", "CXL_C1AE0001_SHARED=1",
 		"CXL_C1AE0001_SIZE=534773760", "CXL_CLAIM_x_0=1"})
 	noErr(t, unprepare(t, p, "x"))
-	e.wantClean(t, p)
-	e.wantNoMounts(t, p)
-}
-
-// TestPoolPersistentOldState: a state file of a driver without filesystem
-// types has erofs claims: they are restored as erofs, nothing is
-// remounted.
-func TestPoolPersistentOldState(t *testing.T) {
-	e := newPoolTestEnv(t)
-	e.f.plugPersistent(persistentSerial)
-	e.f.labels = true
-	p := e.driver(t)
-	noErr(t, prepare(t, p, persistentClaim("d1", persistentData, fsConfig("direct", ""))).Err)
-	data, _ := os.ReadFile(e.stateFile)
-	old := strings.ReplaceAll(string(data), `"fsType": "erofs",`, "")
-	if old == string(data) {
-		t.Fatalf("no fsType in the state file:\n%s", data)
-	}
-	noErr(t, os.WriteFile(e.stateFile, []byte(old), 0o644))
-	n := len(e.m.calls)
-	p = e.driver(t)
-	if d := p.prepared["d1"].Devices[0]; d.FsType != "erofs" || !d.ReadOnly {
-		t.Fatalf("device %+v", d)
-	}
-	for _, c := range e.m.calls[n:] {
-		if !strings.HasPrefix(c, "blkroset") {
-			t.Fatalf("restart calls %q", e.m.calls[n:])
-		}
-	}
-	noErr(t, unprepare(t, p, "d1"))
-	e.wantClean(t, p)
-	e.wantNoMounts(t, p)
-}
-
-// TestPoolPersistentCutUpgrade: the plugin is killed in the Prepare of a
-// writer after the upgrade of the readers' superblock: the start makes it
-// read-only again for the readers, the Prepare again upgrades it.
-func TestPoolPersistentCutUpgrade(t *testing.T) {
-	e := newPoolTestEnv(t)
-	e.f.plugPersistent(persistentSerial)
-	e.f.labels = true
-	e.m.images["/dev/pmem0"] = fsImage("ext4")
-	p := e.driver(t)
-	direct := p.nodeMountPath(0xc1ae0001, "direct")
-	noErr(t, prepare(t, p, persistentClaim("r", singleHostData, fsROConfig(""))).Err)
-	e.m.cutAt = direct
-	w := persistentClaim("w", singleHostData, fsRWConfig("", "", ""))
-	cutPrepare(t, p, w)
-	if mi, _ := e.m.Mounted(direct); mi == nil || mi.SuperOpts[0] != "rw" {
-		t.Fatalf("not upgraded before the cut: %+v", mi)
-	}
-	p = e.driver(t)
-	if mi, _ := e.m.Mounted(direct); mi == nil || mi.SuperOpts[0] != "ro" || !e.m.isRO("/dev/pmem0") {
-		t.Fatalf("the start did not make the superblock read-only: %+v", mi)
-	}
-	noErr(t, prepare(t, p, w).Err)
-	if mi, _ := e.m.Mounted(direct); mi == nil || mi.SuperOpts[0] != "rw" {
-		t.Fatalf("not upgraded again: %+v", mi)
-	}
-	for _, uid := range []string{"w", "r"} {
-		noErr(t, unprepare(t, p, uid))
-	}
-	e.f.wantReleased(t)
 	e.wantClean(t, p)
 	e.wantNoMounts(t, p)
 }

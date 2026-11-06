@@ -36,9 +36,9 @@ const fsRWLeaseData = `{"serial":"0xc1af0001","shared":true,"size":536870912,"pe
 // clone), the responses with the type and the environment.
 func TestBrokerFsLeaseReadWrite(t *testing.T) {
 	e := newLeaseFsEnv(t)
-	e.pe.m.images["/dev/pmem0"] = fsImage("ext4")
+	e.pe.setImage("mem0", "ext4")
 	fsDir := filepath.Join(e.dir, "lease-fs", testLeaseClaimUID)
-	direct := e.p.nodeMountPath(0xc1af0001, "direct")
+	direct := e.pe.nodeMount(0xc1af0001, "direct")
 
 	prepare := func(id string, req api.Request, data string) api.Response {
 		t.Helper()
@@ -59,16 +59,16 @@ func TestBrokerFsLeaseReadWrite(t *testing.T) {
 	}
 	wantResponse(t, rw, api.Response{State: api.StateReady, Source: "pool", Mode: "fs", FsType: "ext4", Shared: true, Access: "direct",
 		Path: "/run/cxl/fs/rw", Size: fakePmemBytes, Serial: "0xc1af0001", Env: env("/run/cxl/fs/rw", "0")})
-	if mi, _ := e.pe.m.Mounted(filepath.Join(fsDir, "rw")); mi == nil || !slices.Equal(mi.MountFlags, []string{"rw", "nosuid", "nodev"}) || mi.FsType != "ext4" {
+	if mi, _ := e.pe.mountedErr(filepath.Join(fsDir, "rw")); mi == nil || !slices.Equal(mi.MountFlags, []string{"rw", "nosuid", "nodev"}) || mi.FsType != "ext4" {
 		t.Fatalf("read-write bind %+v", mi)
 	}
-	if mi, _ := e.pe.m.Mounted(direct); mi == nil || mi.SuperOpts[0] != "rw" {
+	if mi, _ := e.pe.mountedErr(direct); mi == nil || mi.SuperOpts[0] != "rw" {
 		t.Fatalf("node mount %+v", mi)
 	}
 	ro := prepare("000000a2", api.Request{Op: "request", Serial: "0xc1af0001", Shared: true, Mode: "fs", Name: "ro", Wait: "5s"}, fsLeaseData)
 	wantResponse(t, ro, api.Response{State: api.StateReady, Source: "pool", Mode: "fs", FsType: "ext4", Shared: true, ReadOnly: true, Access: "direct",
 		Path: "/run/cxl/fs/ro", Size: fakePmemBytes, Serial: "0xc1af0001", Env: env("/run/cxl/fs/ro", "1")})
-	if c := e.pe.m.callsOf("robind"); !slices.Equal(c, []string{"robind " + direct + " " + filepath.Join(fsDir, "ro")}) {
+	if c := e.pe.k.MountCalls("robind"); !slices.Equal(c, []string{"robind " + direct + " " + filepath.Join(fsDir, "ro")}) {
 		t.Fatalf("read-only bind calls %q", c)
 	}
 	// the companion configs say readOnly explicitly
@@ -90,7 +90,9 @@ func TestBrokerFsLeaseReadWrite(t *testing.T) {
 	if !l.ReadWrite || l.ReadOnly || l.FsType != "ext4" || l.readOnly() {
 		t.Fatalf("lease %s", data)
 	}
-	e.pe.m.wantNoViolations(t)
+	if v := e.pe.k.Violations(); len(v) > 0 {
+		t.Fatalf("mount rules violated: %v", v)
+	}
 }
 
 // TestBrokerLeaseSocketNoFollow: what a container of before the read-only

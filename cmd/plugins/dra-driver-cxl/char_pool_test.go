@@ -23,23 +23,21 @@ import (
 
 	resourceapi "k8s.io/api/resource/v1"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
-
-	"github.com/containers/nri-plugins/pkg/cxl/config"
-	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
 // TestCharPoolPrepareTimeout: the Prepare of a pool claim whose memdev never
 // appears on the node waits for it up to the prepare timeout of the pool
 // driver and fails then, with an error that names the serial and wraps
-// context.DeadlineExceeded. The claim is in the preparing file during the
-// wait; the failed Prepare touches no device and forgets the claim, and its
+// context.DeadlineExceeded. The claim is in the records of the claims
+// whose Prepare did not finish during the wait (preparingPoolClaims.json);
+// the failed Prepare touches no device and forgets the claim, and its
 // Unprepare is no error. A timeout of 0 or less is 30 s.
 func TestCharPoolPrepareTimeout(t *testing.T) {
 	const timeout = 300 * time.Millisecond
 	e := newPoolTestEnv(t)
+	e.timeout = timeout
 	// mem0 is never plugged: no memdev has the serial of the claim
-	p, err := newPoolDriver(device.PoolDriverName, e.f.manager(), e.m, e.stateFile, timeout, e.leaseFsRoot, e.bootID, config.KnownFsTypes...)
-	noErr(t, err)
+	p := e.driver(t)
 	claim := poolClaim("u1", "c1", "pooled0", exclusiveData)
 
 	type result struct {
@@ -85,7 +83,7 @@ wait:
 	}
 
 	// the error after the timeout: names the serial, wraps the deadline
-	err = r.res.Err
+	err := r.res.Err
 	if err == nil {
 		t.Fatalf("the Prepare succeeded: %+v", r.res)
 	}
@@ -100,7 +98,7 @@ wait:
 	}
 
 	// nothing ran: no region created, no memdev enabled or released
-	if cmds := e.f.commands(); cmds != "" {
+	if cmds := e.commands(); cmds != "" {
 		t.Fatalf("commands of a Prepare whose memdev never appeared:\n%s", cmds)
 	}
 	// the failed Prepare forgot the claim in the preparing file already
@@ -109,17 +107,17 @@ wait:
 	}
 	noErr(t, unprepare(t, p, "u1"))
 	e.wantClean(t, p)
-	if cmds := e.f.commands(); cmds != "" {
+	if cmds := e.commands(); cmds != "" {
 		t.Fatalf("commands of the Unprepare:\n%s", cmds)
 	}
 
 	// a timeout of 0 or less is the default of 30 s
 	for _, d := range []time.Duration{0, -time.Second} {
 		e := newPoolTestEnv(t)
-		p, err := newPoolDriver(device.PoolDriverName, e.f.manager(), e.m, e.stateFile, d, e.leaseFsRoot, e.bootID, config.KnownFsTypes...)
-		noErr(t, err)
-		if p.timeout != 30*time.Second {
-			t.Fatalf("prepare timeout %v of the pool driver of timeout %v, expected 30s", p.timeout, d)
+		e.timeout = d
+		p := e.driver(t)
+		if got := p.engine.Timeouts().Memdev; got != 30*time.Second {
+			t.Fatalf("prepare timeout %v of the pool driver of timeout %v, expected 30s", got, d)
 		}
 	}
 }

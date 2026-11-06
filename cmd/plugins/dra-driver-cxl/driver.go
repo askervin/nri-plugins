@@ -38,8 +38,10 @@ import (
 	"sigs.k8s.io/yaml"
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 
 	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 	"github.com/containers/nri-plugins/pkg/cxl/memctl"
@@ -431,7 +433,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	// serials, the steering record and the pool's preparing records are
 	// no files); the store drops or marks stale what is of another boot
 	// before they are read.
-	closeStore, err := openDriverStore(ctx, config, cxlFlags, sysfsRoot, bootID)
+	st, closeStore, err := openDriverStore(ctx, config, cxlFlags, sysfsRoot, bootID)
 	if err != nil {
 		return nil, err
 	}
@@ -442,10 +444,10 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 		}
 	}()
 
-	// The pool driver's prepared claims are loaded before the first
-	// scan, so that its devices are never published as cxl.nri.io
-	// devices (D29). Its kubelet plugin is started after cxl.nri.io.
-	pool, err := loadPoolDriver(config, cxlFlags, sysfsRoot, fence, bootID, driverConfig.fsTypes())
+	// The pool driver's devices are recovered before the first scan, so
+	// that they are never published as cxl.nri.io devices. Its
+	// kubelet plugin is started after cxl.nri.io.
+	pool, err := loadPoolDriver(ctx, config, cxlFlags, sysfsRoot, fence, bootID, driverConfig.fsTypes(), st)
 	if err != nil {
 		return nil, err
 	}
@@ -542,6 +544,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 		pool.lending().set(nil, nil)
 		driver.state.lending.set(nil, nil)
 	}
+	pool.recoverCompanions()
 
 	klog.Infof(`Starting DRA driver kubelet plugin
 RegistrarDirectoryPath: %v
@@ -619,20 +622,20 @@ const storeLockWait = 2 * time.Minute
 
 // openDriverStore opens the state store in the plugin data directory of
 // cxl.nri.io with the state files of the pool driver in its own, and
-// returns its close.
-func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot, bootID string) (func(), error) {
+// returns it and its close.
+func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot, bootID string) (*store.Store, func(), error) {
 	poolDir := ""
 	if cxlFlags.PoolDriverName != "" {
 		poolDir = filepath.Join(filepath.Dir(config.KubeletPluginDir), cxlFlags.PoolDriverName)
 		if err := os.MkdirAll(poolDir, 0750); err != nil {
-			return nil, fmt.Errorf("pool driver data directory: %w", err)
+			return nil, nil, fmt.Errorf("pool driver data directory: %w", err)
 		}
 	}
 	mem := newMemctl(sysfsRoot)
 	// a driver pod that still runs holds the lock: wait for its exit
 	ctx, cancel := context.WithTimeout(ctx, storeLockWait)
 	defer cancel()
-	_, closeStore, err := openStateStore(ctx, stateStoreConfig{
+	s, closeStore, err := openStateStore(ctx, stateStoreConfig{
 		LocalDir:   config.KubeletPluginDir,
 		PoolDir:    poolDir,
 		PoolDriver: cxlFlags.PoolDriverName,
@@ -642,16 +645,15 @@ func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFla
 		DevRoot:    mem.DevRoot,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("state store: %w", err)
+		return nil, nil, fmt.Errorf("state store: %w", err)
 	}
-	return closeStore, nil
+	return s.st, closeStore, nil
 }
 
-// loadPoolDriver returns the pool driver with its prepared claims loaded,
-// those of another boot than bootID not prepared, the fenced nodes fence
-// and the filesystem types fsTypes of mode fs, or nil if it is disabled
-// (empty --pool-driver-name).
-func loadPoolDriver(config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot string, fence *nodeFence, bootID string, fsTypes []string) (*poolDriver, error) {
+// loadPoolDriver returns the pool driver over the records of the store st,
+// recovered, with the fenced nodes fence and the filesystem types fsTypes
+// of mode fs, or nil if it is disabled (empty --pool-driver-name).
+func loadPoolDriver(ctx context.Context, config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot string, fence *nodeFence, bootID string, fsTypes []string, st *store.Store) (*poolDriver, error) {
 	if cxlFlags.PoolDriverName == "" {
 		return nil, nil
 	}
@@ -660,13 +662,36 @@ func loadPoolDriver(config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot string, 
 		return nil, fmt.Errorf("pool driver data directory: %w", err)
 	}
 	mem := newMemctl(sysfsRoot)
-	pool, err := newPoolDriver(cxlFlags.PoolDriverName, mem, newSysMounter(mem.SysRoot), filepath.Join(poolDataDir, poolStateFileName),
-		cxlFlags.PoolPrepareTimeout, filepath.Join(config.KubeletPluginDir, leaseFsDirName), bootID, fsTypes...)
+	pool, err := newPoolDriver(ctx, poolConfig{
+		Name:        cxlFlags.PoolDriverName,
+		Kernel:      poolKernel(mem),
+		Store:       st,
+		DataDir:     poolDataDir,
+		Timeout:     cxlFlags.PoolPrepareTimeout,
+		LeaseFsRoot: filepath.Join(config.KubeletPluginDir, leaseFsDirName),
+		BootID:      bootID,
+		FsTypes:     fsTypes,
+		Fence:       fence,
+		Lock:        memctl.CreationLock(),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("pool driver: %w", err)
 	}
-	pool.fence = fence
 	return pool, nil
+}
+
+// poolKernel returns the kernel of the pool driver's engine on the sysfs
+// and device roots, commands and sysfs writes of mem; the engine holds its
+// lock around each call.
+func poolKernel(mem *memctl.Manager) *kernel.Kernel {
+	return &kernel.Kernel{
+		SysRoot:      mem.SysRoot,
+		DevRoot:      mem.DevRoot,
+		Exec:         mem.Exec,
+		WriteFile:    mem.WriteFile,
+		Sys:          &kernel.SysCalls{DevRoot: mem.DevRoot},
+		PollInterval: mem.PollInterval,
+	}
 }
 
 // sweepStaleLeaseBinds unmounts the lease binds that no prepared claim of
@@ -676,11 +701,9 @@ func loadPoolDriver(config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot string, 
 func sweepStaleLeaseBinds(ctx context.Context, state *nodeState, pool *poolDriver) {
 	wanted := state.leaseBinds()
 	maps.Copy(wanted, pool.leaseBinds())
-	var poolNode *persistentNode
-	if pool != nil {
-		poolNode = pool.pn
-	}
-	sweepLeaseBinds(wanted, poolNode, state.local.persistentNode())
+	// the pool's binds of node mounts that are there were swept by its
+	// engine at its start
+	sweepLeaseBinds(wanted, state.local.persistentNode())
 	state.local.ReleaseIdle(ctx)
 }
 
@@ -796,7 +819,7 @@ func startPoolDriver(ctx context.Context, config *pluginConfig, pool *poolDriver
 		kubeletplugin.NodeName(config.Flags.NodeName),
 		kubeletplugin.DriverName(pool.name),
 		kubeletplugin.RegistrarDirectoryPath(config.KubeletPluginsRegistryDir),
-		kubeletplugin.PluginDataDirectoryPath(filepath.Dir(pool.stateFile)),
+		kubeletplugin.PluginDataDirectoryPath(pool.dataDir),
 	)
 }
 

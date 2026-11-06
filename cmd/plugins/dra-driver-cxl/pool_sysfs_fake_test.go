@@ -306,24 +306,6 @@ func (f *fakePoolSys) wantCommand(t *testing.T, cmd string) {
 	}
 }
 
-const releaseCommands = "cxl disable-region region0\ncxl destroy-region region0\ncxl disable-memdev mem0"
-
-func (f *fakePoolSys) wantReleased(t *testing.T) {
-	t.Helper()
-	if !strings.HasSuffix(f.commands(), releaseCommands) {
-		t.Fatalf("device not released:\n%s", f.commands())
-	}
-}
-
-func (f *fakePoolSys) wantBlocks(t *testing.T, state string) {
-	t.Helper()
-	for _, b := range []string{"74", "75"} {
-		if st := f.read("devices/system/memory/memory" + b + "/state"); st != state {
-			t.Fatalf("memory%s is %q, expected %q", b, st, state)
-		}
-	}
-}
-
 // The nvdimm region of a pmem region0 of mem0, as the kernel of the e2e
 // VMs shows it (see pkg/cxl/memctl/pmem_test.go).
 const (
@@ -388,15 +370,4 @@ func (f *fakePoolSys) removeNdRegion() {
 	for _, l := range []string{"bus/nd/devices/region0", "bus/nd/devices/namespace0.0", "bus/nd/devices/pfn0.0", "class/block/pmem0"} {
 		_ = os.Remove(f.p(l))
 	}
-}
-
-// renamePmem gives the fsdax namespace of region0 the block device name
-// with the numbers dev, as the next boot or a new probe may.
-func (f *fakePoolSys) renamePmem(name, dev string) {
-	pd := fakeNdRegionPath + "/pfn0.0"
-	_ = os.RemoveAll(f.p(pd + "/block/pmem0"))
-	_ = os.Remove(f.p("class/block/pmem0"))
-	f.write(pd+"/block/"+name+"/dev", dev)
-	f.write(pd+"/block/"+name+"/size", fmt.Sprint(fakePmemBytes/512))
-	f.link("class/block/"+name, "../../"+pd+"/block/"+name)
 }
