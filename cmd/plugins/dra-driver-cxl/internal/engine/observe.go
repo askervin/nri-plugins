@@ -43,22 +43,110 @@ func (e *Engine) Observe(ctx context.Context) (*kernel.Snapshot, error) {
 	}
 	e.qmu.Lock()
 	prev := e.last
-	e.last = snap
+	e.last, e.observed = snap, e.started
 	e.qmu.Unlock()
 	if prev != nil {
-		for _, line := range UnknownTransitions(prev, snap) {
+		lines := UnknownTransitions(prev, snap)
+		for _, line := range lines {
 			klog.V(4).Info(UnknownTransition + line)
 		}
+		e.addUnknown(lines)
 	}
 	e.logHollow(snap)
 	return snap, nil
 }
 
+// unknownKept is how many of the latest unknown changes of kernel objects
+// the engine keeps until UnknownSeen.
+const unknownKept = 32
+
+// addUnknown keeps the unknown changes lines, the latest unknownKept of
+// them.
+func (e *Engine) addUnknown(lines []string) {
+	if len(lines) == 0 {
+		return
+	}
+	e.qmu.Lock()
+	defer e.qmu.Unlock()
+	e.unknown = append(e.unknown, lines...)
+	if n := len(e.unknown) - unknownKept; n > 0 {
+		e.unknown = slices.Delete(e.unknown, 0, n)
+	}
+}
+
+// UnknownSeen returns the changes of kernel objects that no row of their
+// tables has that Observe logged since the last call (the latest
+// unknownKept of them), and forgets them.
+func (e *Engine) UnknownSeen() []string {
+	e.qmu.Lock()
+	defer e.qmu.Unlock()
+	out := e.unknown
+	e.unknown = nil
+	return out
+}
+
+// requestKey is the key of the engine of a request in its context.
+type requestKey struct{}
+
+// Request marks a request of a front-end in progress (a Prepare or an
+// Unprepare of a claim, whose calls of the engine get the context that it
+// returns) until the function that it returns is called. The invariants of
+// the records and the kernel hold between requests: at the end of a request
+// they are logged at klog V(4) ("engine invariant: ...") when no other
+// request is in progress. A call of PrepareGrants or ReleaseGrants outside
+// a request is a request of its own.
+func (e *Engine) Request(ctx context.Context) (context.Context, func()) {
+	if ctx.Value(requestKey{}) == e {
+		return ctx, func() {}
+	}
+	e.qmu.Lock()
+	e.running++
+	e.started++
+	seq := e.started
+	e.qmu.Unlock()
+	return context.WithValue(ctx, requestKey{}, e), func() {
+		e.checkBetween(seq)
+		e.qmu.Lock()
+		e.running--
+		e.qmu.Unlock()
+	}
+}
+
+// checkBetween logs the violations of the invariants at the end of the
+// request seq at klog V(4), by the latest observation of the kernel, when no
+// other request is in progress or starts meanwhile and the request observed
+// the kernel (the observation is of its end).
+func (e *Engine) checkBetween(seq int) {
+	if !klog.V(4).Enabled() {
+		return
+	}
+	e.qmu.Lock()
+	snap, started, others, observed := e.last, e.started, e.running-1, e.observed
+	e.qmu.Unlock()
+	switch {
+	case snap == nil || observed < seq:
+		return
+	case others > 0:
+		klog.V(5).Infof("engine: invariants not checked: %d other requests in progress", others)
+		return
+	}
+	violations := e.Check(snap, e.opts.Sources, nil)
+	e.qmu.Lock()
+	again := e.started != started || e.running > 1
+	e.qmu.Unlock()
+	if again {
+		klog.V(5).Info("engine: invariants not checked: another request started")
+		return
+	}
+	for _, v := range violations {
+		klog.V(4).Info("engine invariant: " + v.String())
+	}
+}
+
 // verify is the verify step after a Prepare or a release of grants: a new
-// observation (Observe), the objects of the grants refs that are REALISED
-// checked in it (an error logged for one that does not verify), and at
-// klog V(4) every invariant of the records and the kernel ("engine
-// invariant: ...").
+// observation (Observe), and the objects of the grants refs that are
+// REALISED checked in it (an error logged for one that does not verify).
+// The end of the request checks the invariants (Request).
 func (e *Engine) verify(ctx context.Context, refs []state.GrantRef) {
 	snap, err := e.Observe(ctx)
 	if err != nil {
@@ -73,12 +161,6 @@ func (e *Engine) verify(ctx context.Context, refs []state.GrantRef) {
 	}
 	for _, v := range c.out {
 		klog.Errorf("engine: a grant does not verify: %s", v)
-	}
-	if !klog.V(4).Enabled() {
-		return
-	}
-	for _, v := range e.Check(snap, e.opts.Sources, nil) {
-		klog.V(4).Info("engine invariant: " + v.String())
 	}
 }
 

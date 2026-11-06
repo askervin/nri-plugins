@@ -63,6 +63,8 @@ States: UNKNOWN, PREPARING, PREPARED, PREPARED_UNRESTORED, PREPARED_STALE, UNPRE
 | KEPT | PREPARING | `a-prepare`: Prepare again | - | the kept region is enabled and set up again |
 | KEPT | (unchanged) | `a-prepare`: a Prepare again fails validation or the companion gate | - | error to kubelet; the record and the kept region stay for the next Prepare or the Unprepare |
 | KEPT | UNKNOWN | `a-unprepare` | - | the kept region destroyed per Policy; commit (d) removing the record |
+| KEPT | (unchanged) | `a-recover`: the recovery at a later start released some of its kept grants and kept the others | - | commit (d) dropping the results of the released grants |
+| KEPT | UNKNOWN | `a-recover`: the recovery at a later start released every grant that it kept (nothing lies above its regions any more, or its idle shared memdev keeps its region) | - | commit (d) removing the record; kubelet's Prepare again prepares the claim anew, its Unprepare finds nothing |
 
 Refused:
 

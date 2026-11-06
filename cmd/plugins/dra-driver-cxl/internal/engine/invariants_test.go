@@ -111,8 +111,31 @@ func TestInvariantViolations(t *testing.T) {
 			t.Errorf("%s: no violation %q in %v", c.inv, c.want, Check(&r, &s, o))
 		}
 	}
-	// the records of a source that the engine does not own are not checked
+	// a lease that is released keeps its lend record while the memory of
+	// its companion goes offline
 	r := v.records().Clone()
+	r.Leases = append(r.Leases, state.Lease{ID: "0123abcd", State: state.LeaseReleasing, Lend: &state.Lend{NumaNode: state.NumaNodePtr(7)}})
+	if out := Check(&r, snap, opts); len(out) > 0 {
+		t.Errorf("violations of a lease that is released: %v", out)
+	}
+	// the lease claim of a prepared claim is the lease broker's record: its
+	// absence is a violation of the document, not one of the engine's
+	r = v.records().Clone()
+	r.Preparations = append(r.Preparations, state.Preparation{UID: "lc", Driver: localDriver, ClaimName: "demo/lc",
+		State: state.PreparationPrepared, Results: []state.Result{{Index: 0, Kind: state.ResultLeaseClaim,
+			LeaseClaim: &state.LeaseClaimResult{UID: "lc"}}}})
+	missing := false
+	for _, viol := range state.Check(&r) {
+		missing = missing || (state.LeaseClaimMissing(viol) && strings.Contains(viol.Text, "lease claim lc has no record"))
+	}
+	if !missing {
+		t.Errorf("no violation of the missing lease claim in %v", state.Check(&r))
+	}
+	if out := Check(&r, snap, opts); len(out) > 0 {
+		t.Errorf("the engine reports the missing lease claim: %v", out)
+	}
+	// the records of a source that the engine does not own are not checked
+	r = v.records().Clone()
 	s := *snap
 	s.Regions = append(append([]kernel.RegionInfo(nil), snap.Regions...),
 		kernel.RegionInfo{Name: "region9", State: kernel.RegionEnabled, Serials: []uint64{serialA}})
@@ -122,4 +145,40 @@ func TestInvariantViolations(t *testing.T) {
 	_ = os.Remove(filepath.Join(opts.MountsDirs[0], "a1-direct"))
 	v.mustUnprepare(poolDriver, "w")
 	v.mustUnprepare(poolDriver, "n")
+}
+
+// A part whose user is the grant of a Prepare that did not finish is a
+// violation of I2, but for the grant of a numa companion and of a KEPT
+// preparation, which the start keeps with its part for their Unprepare.
+func TestI2UnfinishedUser(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
+	v.mustPrepare(localDriver, "s", sliceReq("s", 0, state.ModeNUMA, 256*mib))
+	snap, err := v.f.Kernel().Observe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := v.grant("s", 0).Got.Dax
+	for _, c := range []struct {
+		name   string
+		change func(g *state.Grant, p *state.Preparation)
+		want   bool
+	}{
+		{"journaled", func(g *state.Grant, p *state.Preparation) {}, true},
+		{"a numa companion", func(g *state.Grant, p *state.Preparation) {
+			g.Intent.Lend = &state.GrantLend{Lease: "l1"}
+		}, false},
+		{"of a KEPT preparation", func(g *state.Grant, p *state.Preparation) { p.State = state.PreparationKept }, false},
+	} {
+		r := v.records().Clone()
+		g, p := r.Grant(state.GrantRef{Claim: "s"}), r.Preparation(localDriver, "s")
+		g.State, p.State = state.GrantJournaled, state.PreparationPreparing
+		c.change(g, p)
+		found := false
+		for _, viol := range Check(&r, snap, CheckOptions{Fenced: []int{2}}) {
+			found = found || (viol.Invariant == "I2" && strings.Contains(viol.Text, part+" has no REALISED or RELEASING user"))
+		}
+		if found != c.want {
+			t.Errorf("%s: violation of I2 %v, want %v: %v", c.name, found, c.want, Check(&r, snap, CheckOptions{Fenced: []int{2}}))
+		}
+	}
 }

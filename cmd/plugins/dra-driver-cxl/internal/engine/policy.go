@@ -43,13 +43,24 @@ type Kind string
 const (
 	// KindLocalSliced is a local memdev whose grants have parts of it.
 	KindLocalSliced Kind = "local sliced"
-	// KindLocalShared is a local memdev configured shared.
+	// KindLocalShared is a local memdev configured shared whose region is
+	// established: set up and zeroed, or kept by an earlier release.
 	KindLocalShared Kind = "local shared"
+	// KindLocalSharedNew is a local memdev configured shared whose region a
+	// Prepare made and did not set up or zero (it failed or was cut).
+	KindLocalSharedNew Kind = "local shared, new region"
 	// KindLocalUnshared is a local memdev used shared that is not
-	// configured shared any more.
+	// configured shared any more, its region established.
 	KindLocalUnshared Kind = "local unshared"
-	// KindLocalPersistent is a local memdev of persistent memory.
+	// KindLocalUnsharedNew is a local memdev used shared that is not
+	// configured shared any more, its region new (KindLocalSharedNew).
+	KindLocalUnsharedNew Kind = "local unshared, new region"
+	// KindLocalPersistent is a local memdev of persistent memory whose
+	// region is established: set up, or kept by an earlier release.
 	KindLocalPersistent Kind = "local persistent"
+	// KindLocalPersistentNew is a local memdev of persistent memory whose
+	// region a Prepare made and did not set up (it failed or was cut).
+	KindLocalPersistentNew Kind = "local persistent, new region"
 	// KindPoolExclusive is a pool device of one grant.
 	KindPoolExclusive Kind = "pool exclusive"
 	// KindPoolShared is a pool device that several grants share.
@@ -58,7 +69,8 @@ const (
 	KindPoolPersistent Kind = "pool persistent"
 )
 
-// Decision is what the release does with the region of a memdev.
+// Decision is what the release does with the region of a memdev, and
+// whom a region that stays is for.
 type Decision string
 
 const (
@@ -67,58 +79,84 @@ const (
 	Destroy Decision = "destroy"
 	// InOrder releases the region unless a newer region of another memdev
 	// lies above it in the decoders of a port, before or after its
-	// disable: then the region stays (KEPT, disabled when the newer one
-	// came during the release).
+	// disable: then the region stays (disabled when the newer one came
+	// during the release) for the claim of a rollback or a recovery
+	// (KEPT), for the idle memdev of an Unprepare or an idle release.
 	InOrder Decision = "in order"
-	// Keep leaves the region as it is.
+	// InOrderIdle is InOrder with a region that stays for the idle memdev
+	// also at a rollback or a recovery.
+	InOrderIdle Decision = "in order, kept idle"
+	// Keep leaves the region as it is, for the claim of a rollback or a
+	// recovery (KEPT), for the idle memdev of an Unprepare or an idle
+	// release.
 	Keep Decision = "keep"
+	// KeepIdle leaves the region as it is for the idle memdev, also at a
+	// rollback or a recovery.
+	KeepIdle Decision = "keep idle"
 )
+
+// forClaim tells whether a region that the decision keeps at the release
+// is kept for the claim of the released grant (KEPT), not for the idle
+// memdev.
+func (d Decision) forClaim(release Release) bool {
+	return (d == InOrder || d == Keep) && (release == ReleaseRollback || release == ReleaseRecovery)
+}
+
+// inOrder tells whether the decision releases the region in order.
+func (d Decision) inOrder() bool {
+	return d == InOrder || d == InOrderIdle
+}
+
+// keeps tells whether the decision leaves the region as it is.
+func (d Decision) keeps() bool {
+	return d == Keep || d == KeepIdle
+}
+
+// localPolicy are the decisions of the release policy for the kinds of
+// local memdevs, by release: a sliced memdev is released in the order that
+// the user chose (a hole is allowed), a shared one is kept while it is
+// configured shared (zeroed once), a persistent one is kept idle while
+// regions of other memdevs lie above it.
+var localPolicy = map[Kind]map[Release]Decision{
+	//                                Unprepare    rollback  recovery     idle
+	KindLocalSliced:        byRelease(Destroy, InOrder, InOrder, Destroy),
+	KindLocalShared:        byRelease(KeepIdle, KeepIdle, KeepIdle, KeepIdle),
+	KindLocalSharedNew:     byRelease(KeepIdle, InOrder, InOrder, KeepIdle),
+	KindLocalUnshared:      byRelease(Destroy, InOrder, Destroy, Destroy),
+	KindLocalUnsharedNew:   byRelease(Destroy, InOrder, InOrder, Destroy),
+	KindLocalPersistent:    byRelease(InOrderIdle, InOrder, InOrderIdle, InOrderIdle),
+	KindLocalPersistentNew: byRelease(InOrderIdle, InOrder, InOrder, InOrderIdle),
+}
+
+// byRelease returns the decisions of a row of the release policy.
+func byRelease(unprepare, rollback, recovery, idle Decision) map[Release]Decision {
+	return map[Release]Decision{ReleaseUnprepare: unprepare, ReleaseRollback: rollback, ReleaseRecovery: recovery,
+		ReleaseIdle: idle}
+}
 
 // Policy returns what happens to the region of a memdev of a kind when its
 // last grant goes by release, with the regions of other memdevs above its
 // regions now (regionsAbove).
 func Policy(release Release, kind Kind, regionsAbove []string) Decision {
-	above := len(regionsAbove) > 0
 	switch kind {
-	case KindLocalSliced:
-		switch release {
-		case ReleaseUnprepare, ReleaseIdle:
-			// the order that the user chose: a hole is allowed
-			return Destroy
-		}
-		return InOrder
-	case KindLocalShared:
-		if release == ReleaseRollback {
-			return InOrder
-		}
-		return Keep
-	case KindLocalUnshared:
-		switch release {
-		case ReleaseRollback:
-			return InOrder
-		case ReleaseRecovery:
-			return Keep
-		}
-		return Destroy
-	case KindLocalPersistent:
-		if release == ReleaseRecovery {
-			return Keep
-		}
-		return InOrder
 	case KindPoolExclusive, KindPoolShared, KindPoolPersistent:
 		// a kept pool region would block the hot-remove of the device
-		if release == ReleaseRecovery && above {
+		if release == ReleaseRecovery && len(regionsAbove) > 0 {
 			return Keep
 		}
 		return Destroy
+	}
+	if d, ok := localPolicy[kind][release]; ok {
+		return d
 	}
 	return Keep
 }
 
 // kindOf returns the row of the release policy of a memdev of the source
 // whose grants ask as asked; shared tells whether a local memdev is
-// configured shared now.
-func kindOf(asked state.Asked, shared bool) Kind {
+// configured shared now, established whether its region is set up (and
+// zeroed, of a shared memdev) or kept by an earlier release.
+func kindOf(asked state.Asked, shared, established bool) Kind {
 	if asked.Source == state.SourcePool {
 		switch asked.Kind {
 		case state.KindPersistent:
@@ -129,12 +167,18 @@ func kindOf(asked state.Asked, shared bool) Kind {
 		return KindPoolExclusive
 	}
 	switch {
-	case asked.Kind == state.KindPersistent:
+	case asked.Kind == state.KindPersistent && established:
 		return KindLocalPersistent
-	case asked.Kind == state.KindShared && shared:
+	case asked.Kind == state.KindPersistent:
+		return KindLocalPersistentNew
+	case asked.Kind == state.KindShared && shared && established:
 		return KindLocalShared
-	case asked.Kind == state.KindShared:
+	case asked.Kind == state.KindShared && shared:
+		return KindLocalSharedNew
+	case asked.Kind == state.KindShared && established:
 		return KindLocalUnshared
+	case asked.Kind == state.KindShared:
+		return KindLocalUnsharedNew
 	}
 	return KindLocalSliced
 }

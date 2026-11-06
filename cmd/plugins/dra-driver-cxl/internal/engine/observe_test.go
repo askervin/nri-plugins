@@ -198,3 +198,76 @@ func TestVerifyStepLogs(t *testing.T) {
 		}
 	}
 }
+
+// The verify step checks the invariants only between requests: a request
+// whose verify step runs while a local part of another request is half made
+// logs no violation of it; between requests, a part whose only user is the
+// grant of a Prepare that did not finish (not a kept one) is a violation.
+func TestVerifyStepBetweenRequests(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialL, Ram: gib})
+	logs := captureKlogV(t, "4")
+	ran := false
+	v.onZero = func() {
+		// the dax part of l is sized and bound, its grant REALISING
+		ran = true
+		if err := v.prepare(poolDriver, "p", poolReq("p", 0, serialA, state.ModeDax, state.KindExclusive)); err != nil {
+			t.Error(err)
+		}
+	}
+	v.mustPrepare(localDriver, "l", sliceReq("l", 0, state.ModeDax, 256*mib))
+	if !ran {
+		t.Fatal("no zeroing of the dax part")
+	}
+	if out := logs(); strings.Contains(out, "engine invariant:") {
+		t.Fatalf("violations of a request in progress logged:\n%s", out)
+	}
+	region, part := v.grant("l", 0).Got.Region, v.grant("l", 0).Got.Dax
+	if err := v.st.Commit(context.Background(), 0, func(doc *storeDocument) error {
+		doc.Grant(state.GrantRef{Claim: "l"}).State = state.GrantJournaled
+		doc.Preparation(localDriver, "l").State = state.PreparationPreparing
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.e.ReleaseGrants(context.Background(), []state.GrantRef{{Claim: "p"}}, ReleaseUnprepare); err != nil {
+		t.Fatal(err)
+	}
+	out := logs()
+	for _, want := range []string{
+		"engine invariant: users: region " + string(region) + ": dax device " + part + " has no realised or releasing user",
+		"engine invariant: I2: region " + string(region) + ": " + part + " has no REALISED or RELEASING user",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no line %q in\n%s", want, out)
+		}
+	}
+}
+
+// The end of a request checks the invariants by its last observation when
+// no other request is in progress: a Prepare of mode fs and its Unprepare
+// log no violation of their node mount, nor does a request that ends while
+// the Prepare of mode fs is in progress (its grant realised and its node
+// mount mounted, its preparation PREPARING).
+func TestRequestChecksAtItsEnd(t *testing.T) {
+	v := pmemEnv(t, "ext4")
+	v.f.Plug(fake.MemdevSpec{Serial: serialA})
+	logs := captureKlogV(t, "4")
+	v.mustPrepare(poolDriver, "w", fsGrant("w", false, ""))
+	v.mustUnprepare(poolDriver, "w")
+	ran := false
+	v.beforePrepared = func() {
+		ran = true
+		if err := v.prepare(poolDriver, "p", poolReq("p", 0, serialA, state.ModeDax, state.KindExclusive)); err != nil {
+			t.Error(err)
+		}
+	}
+	v.mustPrepare(poolDriver, "r", fsGrant("r", true, state.AccessDirect))
+	if !ran {
+		t.Fatal("no request in the Prepare of mode fs")
+	}
+	v.mustUnprepare(poolDriver, "r")
+	v.mustUnprepare(poolDriver, "p")
+	if out := logs(); strings.Contains(out, "engine invariant:") {
+		t.Fatalf("violations logged:\n%s", out)
+	}
+}

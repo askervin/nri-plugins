@@ -28,6 +28,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
+	"golang.org/x/sys/unix"
 )
 
 // The rows of the recovery table: a PREPARED claim whose grants verify is
@@ -863,4 +864,51 @@ func TestRecoverClaimLines(t *testing.T) {
 	v.mustUnprepare(poolDriver, "comp")
 	v.mustUnprepare(poolDriver, "plain")
 	v.clean("unprepared")
+}
+
+// A lease bind whose node mount is gone belongs to no memdev: the start
+// unmounts it, and when that fails, every release tries again until it is
+// gone.
+func TestRecoverOrphanBind(t *testing.T) {
+	v := pmemEnv(t, "ext4")
+	v.f.Plug(fake.MemdevSpec{Serial: serialA})
+	k := v.f.Kernel()
+	gone := filepath.Join(v.dir, "gone")
+	orphan := filepath.Join(v.dir, localDriver, "lease-fs", "lc3", "x")
+	for _, dir := range []string{gone, orphan} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := k.FsMount(filepath.Join(v.e.devRoot(), "pmem6"), gone, "ext4", true, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Mount(gone, orphan, "", unix.MS_BIND, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Unmount(gone); err != nil {
+		t.Fatal(err)
+	}
+	v.f.SetBusy(orphan, true)
+	logs := captureKlog(t)
+	v.restart()
+	wantLog(t, logs(), orphan+" belongs to no prepared claim, unmounting it",
+		"unmounting "+orphan+": device or resource busy; trying again at the next release")
+	if mi, _ := k.Mounted(orphan); mi == nil {
+		t.Fatal("the busy bind is gone")
+	}
+	// a release while it is busy keeps it, the next one unmounts it
+	v.mustPrepare(poolDriver, "p", poolReq("p", 0, serialA, state.ModeDax, state.KindExclusive))
+	v.mustUnprepare(poolDriver, "p")
+	wantLog(t, logs(), "unmounting stale lease bind "+orphan+": device or resource busy")
+	if mi, _ := k.Mounted(orphan); mi == nil {
+		t.Fatal("the busy bind is gone")
+	}
+	v.f.SetBusy(orphan, false)
+	v.mustPrepare(poolDriver, "p", poolReq("p", 0, serialA, state.ModeDax, state.KindExclusive))
+	v.mustUnprepare(poolDriver, "p")
+	wantLog(t, logs(), "unbound stale lease bind "+orphan)
+	if mi, _ := k.Mounted(orphan); mi != nil {
+		t.Fatalf("the orphan bind is still mounted: %+v", mi)
+	}
 }

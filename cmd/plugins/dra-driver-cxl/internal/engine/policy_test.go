@@ -21,7 +21,13 @@ import (
 )
 
 // The values of the release policy: every cell of the matrix, with and
-// without a region of another memdev above.
+// without a region of another memdev above. The local cells are those of
+// the local allocator that the engine replaces: a sliced region released
+// in order for a claim whose Prepare did not finish, else destroyed; a
+// shared region kept idle once it is established (set up and zeroed, or
+// kept by an earlier release), a new one released in order for its claim;
+// an unshared one destroyed; a persistent one released in order, kept for
+// the claim of a rollback, idle otherwise.
 func TestPolicy(t *testing.T) {
 	above := []string{"region9"}
 	for _, c := range []struct {
@@ -31,9 +37,12 @@ func TestPolicy(t *testing.T) {
 		idle                    Decision
 	}{
 		{KindLocalSliced, Destroy, InOrder, InOrder, InOrder, Destroy},
-		{KindLocalShared, Keep, InOrder, Keep, Keep, Keep},
-		{KindLocalUnshared, Destroy, InOrder, Keep, Keep, Destroy},
-		{KindLocalPersistent, InOrder, InOrder, Keep, Keep, InOrder},
+		{KindLocalShared, KeepIdle, KeepIdle, KeepIdle, KeepIdle, KeepIdle},
+		{KindLocalSharedNew, KeepIdle, InOrder, InOrder, InOrder, KeepIdle},
+		{KindLocalUnshared, Destroy, InOrder, Destroy, Destroy, Destroy},
+		{KindLocalUnsharedNew, Destroy, InOrder, InOrder, InOrder, Destroy},
+		{KindLocalPersistent, InOrderIdle, InOrder, InOrderIdle, InOrderIdle, InOrderIdle},
+		{KindLocalPersistentNew, InOrderIdle, InOrder, InOrder, InOrder, InOrderIdle},
 		{KindPoolExclusive, Destroy, Destroy, Destroy, Keep, Destroy},
 		{KindPoolShared, Destroy, Destroy, Destroy, Keep, Destroy},
 		{KindPoolPersistent, Destroy, Destroy, Destroy, Keep, Destroy},
@@ -60,25 +69,43 @@ func TestPolicy(t *testing.T) {
 	if got := Policy(ReleaseUnprepare, Kind("dcd"), nil); got != Keep {
 		t.Errorf("an unknown kind: %s", got)
 	}
+	for _, c := range []struct {
+		d        Decision
+		release  Release
+		forClaim bool
+	}{
+		{InOrder, ReleaseRollback, true}, {InOrder, ReleaseRecovery, true}, {InOrder, ReleaseUnprepare, false},
+		{InOrder, ReleaseIdle, false}, {Keep, ReleaseRecovery, true}, {Keep, ReleaseUnprepare, false},
+		{KeepIdle, ReleaseRollback, false}, {InOrderIdle, ReleaseRecovery, false}, {Destroy, ReleaseRollback, false},
+	} {
+		if got := c.d.forClaim(c.release); got != c.forClaim {
+			t.Errorf("%s at %s: for the claim %v, want %v", c.d, c.release, got, c.forClaim)
+		}
+	}
 }
 
 // The row of the policy of the grants of a memdev.
 func TestKindOf(t *testing.T) {
 	for _, c := range []struct {
-		asked  state.Asked
-		shared bool
-		want   Kind
+		asked       state.Asked
+		shared      bool
+		established bool
+		want        Kind
 	}{
-		{state.Asked{Source: state.SourcePool, Kind: state.KindExclusive}, false, KindPoolExclusive},
-		{state.Asked{Source: state.SourcePool, Kind: state.KindShared, Shared: true}, false, KindPoolShared},
-		{state.Asked{Source: state.SourcePool, Kind: state.KindPersistent}, false, KindPoolPersistent},
-		{state.Asked{Source: state.SourceLocal, Kind: state.KindExclusive}, false, KindLocalSliced},
-		{state.Asked{Source: state.SourceLocal, Kind: state.KindShared}, true, KindLocalShared},
-		{state.Asked{Source: state.SourceLocal, Kind: state.KindShared}, false, KindLocalUnshared},
-		{state.Asked{Source: state.SourceLocal, Kind: state.KindPersistent}, false, KindLocalPersistent},
+		{state.Asked{Source: state.SourcePool, Kind: state.KindExclusive}, false, true, KindPoolExclusive},
+		{state.Asked{Source: state.SourcePool, Kind: state.KindShared, Shared: true}, false, false, KindPoolShared},
+		{state.Asked{Source: state.SourcePool, Kind: state.KindPersistent}, false, true, KindPoolPersistent},
+		{state.Asked{Source: state.SourceLocal, Kind: state.KindExclusive}, false, false, KindLocalSliced},
+		{state.Asked{Source: state.SourceLocal, Kind: state.KindExclusive}, true, true, KindLocalSliced},
+		{state.Asked{Source: state.SourceLocal, Kind: state.KindShared}, true, true, KindLocalShared},
+		{state.Asked{Source: state.SourceLocal, Kind: state.KindShared}, true, false, KindLocalSharedNew},
+		{state.Asked{Source: state.SourceLocal, Kind: state.KindShared}, false, true, KindLocalUnshared},
+		{state.Asked{Source: state.SourceLocal, Kind: state.KindShared}, false, false, KindLocalUnsharedNew},
+		{state.Asked{Source: state.SourceLocal, Kind: state.KindPersistent}, true, true, KindLocalPersistent},
+		{state.Asked{Source: state.SourceLocal, Kind: state.KindPersistent}, false, false, KindLocalPersistentNew},
 	} {
-		if got := kindOf(c.asked, c.shared); got != c.want {
-			t.Errorf("kindOf(%+v, %v) = %s, want %s", c.asked, c.shared, got, c.want)
+		if got := kindOf(c.asked, c.shared, c.established); got != c.want {
+			t.Errorf("kindOf(%+v, %v, %v) = %s, want %s", c.asked, c.shared, c.established, got, c.want)
 		}
 	}
 }

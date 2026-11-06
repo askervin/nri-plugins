@@ -15,12 +15,15 @@
 package engine
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"time"
+
+	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -39,6 +42,8 @@ import (
 // released by its serial: a pool memdev that no grant of this boot uses is
 // disabled.
 func (e *Engine) ReleaseGrants(ctx context.Context, refs []state.GrantRef, release Release) error {
+	ctx, end := e.Request(ctx)
+	defer end()
 	r := e.records()
 	for _, ref := range refs {
 		if g := r.Grant(ref); g != nil && !e.owns(g.Asked.Source) {
@@ -46,6 +51,7 @@ func (e *Engine) ReleaseGrants(ctx context.Context, refs []state.GrantRef, relea
 		}
 	}
 	e.retryAllStale(ctx, triggerOf(release))
+	refs = localOrder(r, refs)
 	call := newReleaseCall(e, release, refs)
 	var errs []error
 	for _, group := range e.byMemdev(refs) {
@@ -55,6 +61,37 @@ func (e *Engine) ReleaseGrants(ctx context.Context, refs []state.GrantRef, relea
 	}
 	e.verify(ctx, nil)
 	return errors.Join(errs...)
+}
+
+// localOrder returns refs with the grants of local memdevs in the order of
+// their release: by the serial of their memdev, the last result of a claim
+// on a memdev first; the others where they are.
+func localOrder(r *state.Records, refs []state.GrantRef) []state.GrantRef {
+	local := func(ref state.GrantRef) *state.Grant {
+		if g := r.Grant(ref); g != nil && g.Asked.Source == state.SourceLocal {
+			return g
+		}
+		return nil
+	}
+	var idx []int
+	var grants []*state.Grant
+	for i, ref := range refs {
+		if g := local(ref); g != nil {
+			idx = append(idx, i)
+			grants = append(grants, g)
+		}
+	}
+	slices.SortStableFunc(grants, func(a, b *state.Grant) int {
+		if a.Serial != b.Serial {
+			return cmp.Compare(a.Serial, b.Serial)
+		}
+		return cmp.Compare(b.Ref.Result, a.Ref.Result)
+	})
+	out := slices.Clone(refs)
+	for i, j := range idx {
+		out[j] = grants[i].Ref
+	}
+	return out
 }
 
 // releaseCall is what the release of the grants of one call shares: its
@@ -234,6 +271,7 @@ func (c *releaseCall) noteUnrestored(r *state.Records, g *state.Grant) {
 func (e *Engine) releaseLast(ctx context.Context, cur *state.Grant, call *releaseCall) error {
 	ref, trigger := cur.Ref, call.trigger
 	others, ofCall := e.memdevUsers(cur.Serial, ref, call)
+	e.logReleased(cur, call.release)
 	if others && !ofCall && cur.Asked.Source == state.SourcePool {
 		e.logf(cur.Asked.Source, "serial %s is still used by another claim", serialText(cur.Serial))
 	}
@@ -350,11 +388,30 @@ func (e *Engine) recoveryAbove(serial state.Serial, refs []state.GrantRef) []str
 	if err != nil {
 		above = []string{"(" + err.Error() + ")"}
 	}
-	shared := e.opts.Shared != nil && e.opts.Shared(serial)
-	if Policy(ReleaseRecovery, kindOf(g.Asked, shared), above) != Keep {
+	if Policy(ReleaseRecovery, e.kindOf(g), above) != Keep {
 		return nil
 	}
 	return above
+}
+
+// kindOf returns the row of the release policy of the memdev of the grant g
+// now: shared as configured (Options.Shared), its region established or
+// new.
+func (e *Engine) kindOf(g *state.Grant) Kind {
+	shared := e.opts.Shared != nil && e.opts.Shared(g.Serial)
+	return kindOf(g.Asked, shared, established(e.records(), g))
+}
+
+// established tells whether the region of ours of the memdev of the grant g
+// is set up (a ram region also zeroed) or kept by an earlier release, not
+// one that a Prepare made and did not finish setting up.
+func established(r *state.Records, g *state.Grant) bool {
+	if g.Asked.Kind == state.KindPersistent {
+		reg := ownRegion(r, g.Serial, state.RegionPmem)
+		return reg != nil && (reg.State == state.RegionKept || reg.SetUp)
+	}
+	reg := ownRegion(r, g.Serial, state.RegionRam)
+	return reg != nil && (reg.State == state.RegionKept || (reg.SetUp && reg.Zeroed))
 }
 
 // keptForClaim records a grant whose region is kept for its claim:
@@ -545,6 +602,40 @@ func (e *Engine) retryAllStale(ctx context.Context, trigger state.Trigger) {
 		}
 		e.retryStale(ctx, m.Serial, trigger)
 	}
+	e.retryOrphanBinds()
+}
+
+// addOrphanBind keeps a lease bind of no memdev whose unmount failed, once,
+// for the next release.
+func (e *Engine) addOrphanBind(target string) {
+	e.qmu.Lock()
+	defer e.qmu.Unlock()
+	if !slices.Contains(e.orphanBinds, target) {
+		e.orphanBinds = append(e.orphanBinds, target)
+	}
+}
+
+// retryOrphanBinds unmounts again the lease binds of no memdev that a start
+// could not unmount, and forgets those that are gone or that a prepared
+// grant lists again; the others are tried again at the next release.
+func (e *Engine) retryOrphanBinds() {
+	e.qmu.Lock()
+	binds := e.orphanBinds
+	e.orphanBinds = nil
+	e.qmu.Unlock()
+	var left []string
+	for _, target := range binds {
+		if e.bindUsed(target, state.GrantRef{}) {
+			continue
+		}
+		if err := e.unbindStale(state.SourceLocal, target); err != nil {
+			e.errorf(state.SourceLocal, "unmounting stale lease bind %s: %v", target, err)
+			left = append(left, target)
+		}
+	}
+	for _, target := range left {
+		e.addOrphanBind(target)
+	}
 }
 
 // retryStale unmounts the stale lease binds of the memdev with the serial
@@ -620,8 +711,12 @@ func (e *Engine) releaseAfterStale(ctx context.Context, serial state.Serial, tri
 		call.release = releaseOf(r.PreparationOf(ref))
 		errs = append(errs, e.releaseGrant(ctx, ref, call))
 	}
-	if len(refs) == 0 && source == state.SourcePool {
+	switch {
+	case len(refs) == 0 && source == state.SourcePool:
 		errs = append(errs, e.releaseIdle(ctx, *m, call))
+	case len(refs) == 0 && m.Facts.Persistent:
+		region, _ := e.localRegionNames(m)
+		errs = append(errs, e.releaseIdleQueued(ctx, m, InOrderIdle, region, trigger))
 	}
 	e.logAfterStale(source, serial, errs)
 	if err := e.commit(ctx, func(r *state.Records) error {
@@ -887,34 +982,67 @@ func (e *Engine) releaseDax(ctx context.Context, g *state.Grant, trigger state.T
 		return nil
 	}
 	region, dax := string(g.Got.Region), g.Got.Dax
+	memdev := e.memdevName(g.Serial)
+	part := localPart{memdev: memdev, serial: g.Serial, claim: g.Ref.Claim, dax: dax, mode: g.Asked.Mode, size: d.Size}
+	if err := e.offlineDax(ctx, &part); err != nil {
+		return err
+	}
 	start := time.Now()
-	if err := e.offlineDax(ctx, dax); err != nil {
-		return fmt.Errorf("memdev %s: releasing %w", serialText(g.Serial), err)
-	}
 	if err := e.locked(func() error { return e.k.DeleteDaxDevice(ctx, region, dax) }); err != nil {
-		return fmt.Errorf("memdev %s: releasing %s: %w", serialText(g.Serial), dax, err)
+		return fmt.Errorf("memdev %s (serial %s): releasing slice %s: %w", memdev, serialText(g.Serial), dax, err)
 	}
-	e.logf(g.Asked.Source, "memdev %s: claim %s: deleted %s mode %s size %d in %s", serialText(g.Serial), g.Ref.Claim, dax,
-		g.Asked.Mode, d.Size, since(start))
+	part.logf("deleted", start, "")
 	return e.commit(ctx, func(r *state.Records) error { return releasedDax(r, g.Ref, g.Got.Region, dax, trigger) })
 }
 
-// offlineDax offlines the memory blocks of a dax device bound to kmem, under
-// the engine lock.
-func (e *Engine) offlineDax(ctx context.Context, dax string) error {
-	if e.k.DaxDriver(dax) != kernel.DriverKmem {
+// localPart names a part of a local memdev (a dax device of a grant) in the
+// log lines and errors of its release.
+type localPart struct {
+	memdev     string
+	serial     state.Serial
+	claim, dax string
+	mode       state.Mode
+	size       uint64
+}
+
+// logf logs a step of the release of the part that began at start.
+func (p *localPart) logf(step string, start time.Time, details string) {
+	klog.InfofDepth(1, "local: memdev %s (serial %s): claim %s: %s slice %s mode %s size %d%s in %s",
+		p.memdev, serialText(p.serial), p.claim, step, p.dax, p.mode, p.size, details, since(start))
+}
+
+// memdevName returns the name of the memdev with the serial: its record's,
+// else the kernel's, else the serial.
+func (e *Engine) memdevName(serial state.Serial) string {
+	if m := e.records().Memdev(serial); m != nil && m.Name != "" {
+		return m.Name
+	}
+	if name, err := e.k.FindMemdev(uint64(serial)); err == nil {
+		return name
+	}
+	return serialText(serial)
+}
+
+// offlineDax offlines the memory blocks of the dax device of a part bound
+// to kmem, under the engine lock.
+func (e *Engine) offlineDax(ctx context.Context, p *localPart) error {
+	if e.k.DaxDriver(p.dax) != kernel.DriverKmem {
 		return nil
 	}
+	start := time.Now()
 	bs, err := e.k.BlockSize()
 	var blocks []int
 	if err == nil {
-		blocks, err = e.k.DaxDeviceBlocks(dax, bs)
+		blocks, err = e.k.DaxDeviceBlocks(p.dax, bs)
 	}
 	if err == nil {
 		err = e.locked(func() error { return e.k.OfflineBlocks(ctx, blocks, 0, 0) })
 	}
 	if err != nil {
-		return fmt.Errorf("%s: cannot offline its memory (in use?): %w", dax, err)
+		return fmt.Errorf("memdev %s (serial %s): releasing slice %s: cannot offline its memory (in use?): %w", p.memdev, serialText(p.serial), p.dax, err)
+	}
+	if p.claim != "" {
+		p.logf("offlined", start, fmt.Sprintf(" blocks %v", blocks))
 	}
 	return nil
 }
@@ -973,8 +1101,9 @@ func (e *Engine) releaseMemdev(ctx context.Context, g *state.Grant, call *releas
 		return false, &releaseError{serial: serial, err: err}
 	}
 	decision := e.decision(g, memdev, release)
-	forClaim := release == ReleaseRollback || release == ReleaseRecovery
-	if decision == Keep {
+	forClaim := decision.forClaim(release)
+	if decision.keeps() {
+		e.keptIdle(g, memdev, decision, release)
 		return forClaim, e.keepMemdev(ctx, serial, trigger, forClaim)
 	}
 	if dev := e.blockDeviceOf(g, call); dev != "" {
@@ -1012,8 +1141,7 @@ func (e *Engine) releaseGone(ctx context.Context, g *state.Grant, trigger state.
 // the last grant g (Policy); decoders that cannot be read count as a
 // region above.
 func (e *Engine) decision(g *state.Grant, memdev string, release Release) Decision {
-	shared := e.opts.Shared != nil && e.opts.Shared(g.Serial)
-	kind := kindOf(g.Asked, shared)
+	kind := e.kindOf(g)
 	var above []string
 	var aboveErr error
 	if release == ReleaseRecovery {
@@ -1036,6 +1164,7 @@ func (e *Engine) releaseRegions(ctx context.Context, g *state.Grant, memdev stri
 	if m := e.records().Memdev(serial); m != nil {
 		regions = slices.Clone(m.Regions)
 	}
+	start := time.Now()
 	for _, ref := range regions {
 		name := string(ref)
 		if _, err := e.k.Region(name); err != nil {
@@ -1046,7 +1175,7 @@ func (e *Engine) releaseRegions(ctx context.Context, g *state.Grant, memdev stri
 		}
 		var rs []string
 		err := e.locked(func() error {
-			if decision == InOrder {
+			if decision.inOrder() {
 				var err error
 				rs, err = e.k.ReleaseRegionInOrder(ctx, memdev, name)
 				return err
@@ -1057,12 +1186,16 @@ func (e *Engine) releaseRegions(ctx context.Context, g *state.Grant, memdev stri
 			return false, err
 		}
 		if len(rs) > 0 {
+			idle := "the idle device"
+			if g.Asked.Kind == state.KindPersistent {
+				idle = "the idle persistent device"
+			}
 			if forClaim {
-				e.warnf(source, "memdev %s (serial %s): keeping %s for claims %v, whose Prepare did not finish: %s lie above it, its release would leave a hole in the decoders of their ports; their Unprepare releases it, their Prepare again reuses it",
+				e.warnLocal(source, "memdev %s (serial %s): keeping %s for claims %v, whose Prepare did not finish: %s lie above it, its release would leave a hole in the decoders of their ports; their Unprepare releases it, their Prepare again reuses it",
 					memdev, serialText(serial), name, []string{g.Ref.Claim}, strings.Join(rs, ", "))
 			} else {
-				e.warnf(source, "memdev %s (serial %s): keeping %s of the idle device: %s lie above it, its release would leave a hole in the decoders of their ports",
-					memdev, serialText(serial), name, strings.Join(rs, ", "))
+				e.warnLocal(source, "memdev %s (serial %s): keeping %s of %s: %s lie above it, its release would leave a hole in the decoders of their ports",
+					memdev, serialText(serial), name, idle, strings.Join(rs, ", "))
 			}
 			return forClaim, e.keepMemdev(ctx, serial, trigger, forClaim)
 		}
@@ -1071,7 +1204,7 @@ func (e *Engine) releaseRegions(ctx context.Context, g *state.Grant, memdev stri
 		}
 		if source != state.SourcePool {
 			// the pool logs the release of its memdev
-			e.logf(source, "released %s (serial %s)", name, serialText(serial))
+			klog.Infof("local: memdev %s (serial %s): released %s in %s", memdev, serialText(serial), name, since(start))
 		}
 	}
 	return false, nil
@@ -1198,6 +1331,8 @@ func (e *Engine) keepMemdev(ctx context.Context, serial state.Serial, trigger st
 			if err := state.Apply(&state.RegionTable, &reg.State, state.RegionKept, trigger); err != nil {
 				return err
 			}
+			// set up again, a kept region is zeroed again
+			reg.Zeroed = false
 			if reg.SetUp {
 				if err := state.Apply(&state.RegionSetUpTable, &reg.SetUp, false, trigger); err != nil {
 					return err

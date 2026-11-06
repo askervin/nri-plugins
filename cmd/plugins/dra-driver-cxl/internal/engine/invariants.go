@@ -71,7 +71,9 @@ var Invariants = []Invariant{
 	{Name: "I9", Text: "Every object that the driver created lies inside a journaled container (the document side is the " +
 		"\"journaled\" invariant of package state).", check: checkI9},
 	{Name: "I10", Text: "No new local grant on a serial whose provenance is POOL or HELD.", check: checkI10},
-	{Name: "I12", Text: "No lend on a NUMA node whose memory is offline.", check: checkI12},
+	{Name: "I12", Text: "No lend of a READY lease on a NUMA node whose memory is offline (a releasing or failed lease " +
+		"is revoked before the memory of its companion goes offline, and keeps its lend record until it is gone).",
+		check: checkI12},
 }
 
 // checker is one check of the invariants.
@@ -118,8 +120,14 @@ func Check(r *state.Records, s *kernel.Snapshot, opts CheckOptions) []state.Viol
 
 // violationOwned tells whether a document violation is of a record that the
 // engine owns: a memdev, region or grant of an owned source, or another
-// record.
+// record. The lease claims are the lease broker's records, written out of
+// order with the preparations: the missing lease claim of a prepared claim
+// whose Unprepare closed it before its preparation turned UNPREPARING is
+// not one of the engine's.
 func (c *checker) violationOwned(v state.Violation) bool {
+	if state.LeaseClaimMissing(v) {
+		return false
+	}
 	if c.opts.Sources == nil {
 		return true
 	}
@@ -259,14 +267,28 @@ func checkI2Device(c *checker, reg *state.Region, d kernel.DaxDeviceInfo) {
 	name := string(reg.Ref())
 	rec := reg.DaxDevice(d.Name)
 	switch {
-	case rec == nil && reg.State == state.RegionKept && strings.HasSuffix(d.Name, ".0"):
-		// the Whole device of a region kept before it was set up
+	case rec == nil && (reg.State == state.RegionKept || unfinishedRegion(c.r, reg)) && strings.HasSuffix(d.Name, ".0"):
+		// the Whole device of a region kept, or of a companion kept at a
+		// start, before it was set up
 	case rec == nil:
 		c.add("region "+name, "the kernel has %s (%s) that no record names", d.Name, d.State)
-	case rec.Whole && (reg.State == state.RegionKept || kept(c.r, reg) || len(rec.Users) > 0 || reg.SetUp):
-	case !usedBy(c.r, rec):
+	case rec.Whole && (reg.State == state.RegionKept || kept(c.r, reg) || len(rec.Users) > 0 || reg.SetUp || unfinishedRegion(c.r, reg)):
+	case !usedBy(c.r, rec) && !c.r.UnfinishedUser(rec):
 		c.add("region "+name, "%s has no REALISED or RELEASING user", d.Name)
 	}
+}
+
+// unfinishedRegion tells whether a grant of a Prepare that did not finish
+// (JOURNALED, REALISING) names the region: a numa companion that a start
+// keeps for its Unprepare.
+func unfinishedRegion(r *state.Records, reg *state.Region) bool {
+	for i := range r.Grants {
+		g := &r.Grants[i]
+		if (g.State == state.GrantJournaled || g.State == state.GrantRealising) && (g.Got.Region == reg.Ref() || g.Intent.Region == reg.Ref()) {
+			return true
+		}
+	}
+	return false
 }
 
 // kept tells whether a memdev of the region is IDLE_KEPT.
@@ -390,15 +412,20 @@ func checkI7(c *checker) {
 		if reg.Pmem == nil || reg.Pmem.BlockDevice == nil || reg.State != state.RegionOwned {
 			continue
 		}
-		writer, uses := false, 0
+		writer, uses, releasing := false, 0, false
 		for i := range c.r.Grants {
 			g := &c.r.Grants[i]
-			if g.Got.Region == reg.Ref() && g.State == state.GrantRealised {
+			if g.Got.Region != reg.Ref() {
+				continue
+			}
+			// a release that failed leaves the flag as it found it
+			releasing = releasing || g.State == state.GrantReleasing
+			if g.State == state.GrantRealised {
 				uses++
 				writer = writer || !g.Asked.ReadOnly
 			}
 		}
-		if uses == 0 {
+		if uses == 0 || releasing {
 			continue
 		}
 		dev, ok := c.s.BlockDevice(reg.Pmem.BlockDevice.Name)
@@ -489,7 +516,7 @@ func checkI10(c *checker) {
 
 func checkI12(c *checker) {
 	for _, l := range c.r.Leases {
-		if l.Lend == nil || l.Lend.NumaNode == nil {
+		if l.State != state.LeaseReady || l.Lend == nil || l.Lend.NumaNode == nil {
 			continue
 		}
 		if n, ok := c.s.NumaNode(*l.Lend.NumaNode); !ok || !n.HasMemory {

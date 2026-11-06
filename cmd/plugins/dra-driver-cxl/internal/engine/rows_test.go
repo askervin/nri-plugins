@@ -50,8 +50,6 @@ var notDriven = map[string]string{
 	"Region.State NONE -> FOREIGN on a-observe,a-recover": "the records of foreign regions are the publisher's; the " +
 		"engine refuses a memdev with a region that no record names",
 	"Region.State FOREIGN -> NONE on a-observe,a-recover": "the records of foreign regions are the publisher's",
-	"Memdev.State IDLE_KEPT -> UNUSED on a-recover,a-prepare": "the release of idle local memdevs (shared not " +
-		"configured any more, idle persistent) at the start and the next Prepare: the local driver's",
 	"Bind.State ABSENT,BOUND -> FOREIGN on a-recover": "the recovery of lease binds records foreign binds with the " +
 		"leases; the engine logs them and leaves them",
 	"Bind.State ABSENT,BOUND -> OTHER_CLAIM on a-recover": "the recovery of lease binds records the binds of other " +
@@ -63,7 +61,8 @@ var notDriven = map[string]string{
 
 // TestMain counts the rows that the tests apply and, when every test ran,
 // fails if a row of engineTables that the engine drives was applied by no
-// test; with -v it lists the rows that the engine does not drive.
+// test, or if a test applied a row of notDriven; with -v it lists the rows
+// that the engine does not drive.
 func TestMain(m *testing.M) {
 	rows := fsm.CountRows()
 	code := m.Run()
@@ -83,10 +82,17 @@ func rowName(t fsm.TableText, r fsm.RowText) string {
 }
 
 // reportRows prints the rows of engineTables that no test applied and
-// returns 1 if one of them is not in notDriven.
+// returns 1 if one of them is not in notDriven, or if a row of notDriven
+// was applied.
 func reportRows(rows *fsm.Rows) int {
 	code := 0
 	for _, t := range engineTables {
+		for i, r := range t.Rows {
+			if name := rowName(t, r); notDriven[name] != "" && rows.Applied(t.Object, t.Field, i) {
+				fmt.Printf("FAIL: row %d %s is applied by a test of the engine: remove it from notDriven\n", i, name)
+				code = 1
+			}
+		}
 		for _, i := range rows.Unapplied(t) {
 			name := rowName(t, t.Rows[i])
 			why, ok := notDriven[name]
