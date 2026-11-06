@@ -1,0 +1,288 @@
+// Copyright The NRI Plugins Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package provenance
+
+import (
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"reflect"
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
+)
+
+// TestRecordsCommitted pins what the store keeps: the POOL and LOCAL
+// serials with Serial, State, Pool and LastSeen only, and the listed pools;
+// a HELD memdev never. A new POOL serial is committed durably.
+func TestRecordsCommitted(t *testing.T) {
+	e := newWatchEnv(t)
+	t0 := e.now()
+	e.publish("0xc1ee2001")
+	e.plug(localSerial)
+	e.wantHeld("local memdev")
+	// pool-c is missing: a new memdev is held
+	e.publish()
+	e.advance(time.Minute)
+	e.plug(otherLocalSerial)
+	e.wantHeld("pool-c missing", otherLocalSerial)
+	// the second scan changed LastSeen only: not committed yet
+	recs, pools := e.records()
+	want := []state.Provenance{
+		{Serial: localSerial, State: state.ProvenanceLocal, LastSeen: t0},
+		{Serial: 0xc1ee2001, State: state.ProvenancePool, Pool: poolC, LastSeen: t0},
+	}
+	if !reflect.DeepEqual(recs, want) {
+		t.Fatalf("records %+v, expected %+v", recs, want)
+	}
+	if !reflect.DeepEqual(pools, []state.ListedPool{{Pool: poolC, Listed: t0}}) {
+		t.Fatalf("listed pools %+v", pools)
+	}
+	if e.stateOf(otherLocalSerial) != state.ProvenanceHeld || !e.w.Holding() {
+		t.Fatal("the new memdev is not held")
+	}
+	data, err := os.ReadFile(filepath.Join(e.dir, store.FileName))
+	noErr(t, err)
+	var doc map[string]any
+	noErr(t, json.Unmarshal(data, &doc))
+	for _, r := range doc["provenance"].([]any) {
+		for k := range r.(map[string]any) {
+			if !slices.Contains([]string{"serial", "state", "pool", "lastSeen"}, k) {
+				t.Errorf("record field %s committed: %s", k, data)
+			}
+		}
+	}
+
+	// a new pool serial is committed durably: the snapshot has it when the
+	// list returns
+	e.publish("0xc1ee2001", "0xc1ee2002")
+	_, _ = e.w.Serials(t.Context())
+	if r := e.st.Snapshot().ProvenanceOf(0xc1ee2002); r == nil || r.State != state.ProvenancePool {
+		t.Fatalf("the new pool serial is not committed durably: %+v", r)
+	}
+}
+
+// TestRecordsRefresh pins when a record whose LastSeen only changed is
+// committed: not before Refresh since the last commit, then at the next
+// observation; a change of the records is committed at once.
+func TestRecordsRefresh(t *testing.T) {
+	e := newWatchEnv(t)
+	t0 := e.now()
+	e.publish("0xc1ee2001")
+	e.plug(localSerial)
+	e.wantHeld("first scan")
+	e.flush()
+	gen := e.st.Snapshot().Generation
+	// seen again: LastSeen changes in memory only
+	e.advance(Refresh - time.Minute)
+	e.wantHeld("seen again")
+	e.flush()
+	if g := e.st.Snapshot().Generation; g != gen {
+		t.Fatalf("generation %d after a change of LastSeen only, expected %d", g, gen)
+	}
+	if r := e.record(0xc1ee2001); r == nil || !r.LastSeen.Equal(t0) {
+		t.Fatalf("record %+v, expected LastSeen %v", r, t0)
+	}
+	if r := e.record(localSerial); r == nil || !r.LastSeen.Equal(t0) {
+		t.Fatalf("record %+v, expected LastSeen %v", r, t0)
+	}
+	// a Refresh after the last commit: the list commits, with the times
+	// of the memdevs of the scan before
+	e.advance(time.Minute)
+	e.wantHeld("a refresh later")
+	if r := e.record(0xc1ee2001); r == nil || !r.LastSeen.Equal(t0.Add(Refresh)) {
+		t.Fatalf("record %+v, expected LastSeen %v", r, t0.Add(Refresh))
+	}
+	if r := e.record(localSerial); r == nil || !r.LastSeen.Equal(t0.Add(Refresh-time.Minute)) {
+		t.Fatalf("record %+v, expected LastSeen %v", r, t0.Add(Refresh-time.Minute))
+	}
+	gen = e.st.Snapshot().Generation
+	// a change is committed at once
+	e.advance(time.Minute)
+	e.plug(otherLocalSerial)
+	e.wantHeld("a new local memdev")
+	if r := e.record(otherLocalSerial); r == nil || r.State != state.ProvenanceLocal || e.st.Snapshot().Generation != gen+1 {
+		t.Fatalf("record %+v, generation %d (%d before)", r, e.st.Snapshot().Generation, gen)
+	}
+}
+
+// TestRecordsLoaded pins the load of the records at New: the line with
+// their counts and the name, POOL serials that stay pool devices without
+// their slices, LOCAL ones that are local at once, and the listed pools.
+func TestRecordsLoaded(t *testing.T) {
+	logs := captureKlog(t)
+	e := newWatchEnv(t)
+	wantLogLine(t, logs(), fmt.Sprintf("pool serials: loaded 0 serials (0 pool serials) and 0 pools from %s", e.name()))
+	e.publish("0xc1ee2001", "0xc1ae2001")
+	e.plug(localSerial)
+	e.wantHeld("first start")
+	e.publish()
+	e.restart()
+	wantLogLine(t, logs(), fmt.Sprintf("pool serials: loaded 3 serials (2 pool serials) and 1 pools from %s", e.name()))
+	e.wantState(0xc1ee2001, state.ProvenancePool)
+	e.wantState(sharedPoolSerial, state.ProvenancePool)
+	e.wantState(localSerial, state.ProvenanceLocal)
+	if !reflect.DeepEqual(e.w.pools, map[string]time.Time{poolC: e.now()}) {
+		t.Fatalf("pools %v", e.w.pools)
+	}
+	// the pool device is attached while its slices are gone
+	e.plug(sharedPoolSerial)
+	e.wantHeld("restarted without the slice")
+	pool, _ := e.w.Gate(t.Context(), e.devices(), nil, nil)
+	if !pool[sharedPoolSerial] || pool[localSerial] {
+		t.Fatalf("pool serials %v", pool)
+	}
+}
+
+// TestLoadSkipsHeldRecord pins that a record in a state that the watcher
+// does not keep (HELD, in a hand-edited state.json) is skipped with a
+// warning, and the others are loaded.
+func TestLoadSkipsHeldRecord(t *testing.T) {
+	logs := captureKlog(t)
+	e := newWatchEnv(t)
+	seen := time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)
+	e.commit(func(doc *store.Document) {
+		doc.Provenance = []state.Provenance{
+			{Serial: otherLocalSerial, State: state.ProvenanceHeld},
+			{Serial: sharedPoolSerial, State: state.ProvenancePool, LastSeen: seen},
+		}
+	})
+	e.restart()
+	out := logs()
+	wantLogLine(t, out, fmt.Sprintf("pool serials: %s: skipping the record of serial 0xa1 in state HELD", e.name()))
+	wantLogLine(t, out, fmt.Sprintf("pool serials: loaded 1 serials (1 pool serials) and 0 pools from %s", e.name()))
+	e.wantState(otherLocalSerial, state.ProvenanceUnknown)
+	e.wantState(sharedPoolSerial, state.ProvenancePool)
+	e.plug(sharedPoolSerial)
+	e.wantHeld("pool serial of the store")
+}
+
+// TestLostStore pins the records of a LOST store: the error with the lost
+// reason at New, a new memdev held for HoldBack within MissingWindow and
+// then published as local, a new memdev local at once after MissingWindow,
+// and no commit tried on the store.
+func TestLostStore(t *testing.T) {
+	logs := captureKlog(t)
+	e := newWatchEnv(t)
+	e.lose("{bogus")
+	lost := e.st.Lost().Error()
+	out := logs()
+	wantLogLine(t, out, fmt.Sprintf("pool serials: %s: %s: the remembered pool serials are lost; new memory devices are held "+
+		"back for up to 5m0s each in the next 1h0m0s", e.name(), lost))
+	if e.w.lost != lost {
+		t.Fatalf("lost %q, expected %q", e.w.lost, lost)
+	}
+	e.plug(localSerial)
+	e.wantHeld("lost records", localSerial)
+	wantLogLine(t, logs(), fmt.Sprintf(compat.LogPoolSerialsHoldingBackNewMemdev+" mem0 (serial 0xc100e2e1): it may be a pool device: "+
+		"the remembered pool serials are lost (%s)", lost))
+	e.w.mu.Lock()
+	reason := e.w.entries[localSerial].rec.HeldReason
+	e.w.mu.Unlock()
+	if reason != state.HeldLost {
+		t.Fatalf("held reason %q", reason)
+	}
+	e.advance(HoldBack - time.Second)
+	e.wantHeld("lost records, before the hold back time", localSerial)
+	e.advance(time.Second)
+	e.wantHeld("lost records, held back for long enough")
+	e.wantState(localSerial, state.ProvenanceLocal)
+	wantLogLine(t, logs(), "pool serials: publishing memdev mem0 (serial 0xc100e2e1) as a local memory device after holding it back for 5m0s "+
+		"(the remembered pool serials are lost (")
+	// the store refuses the commits: not tried, nothing logged
+	if n := countLogLines(logs(), "pool serials: writing "); n != 0 {
+		t.Fatalf("%d failed commits logged:\n%s", n, logs())
+	}
+	// another new memdev within MissingWindow of the first scan
+	e.advance(MissingWindow - HoldBack - time.Second)
+	e.plug(otherLocalSerial)
+	e.wantHeld("lost records, in the window", otherLocalSerial)
+	e.advance(time.Second)
+	e.wantHeld("lost records, after the window")
+	e.plug(0xa2)
+	e.wantHeld("a new memdev after the window")
+	e.wantState(0xa2, state.ProvenanceLocal)
+	e.wantState(otherLocalSerial, state.ProvenanceLocal)
+}
+
+// TestFlagsForget pins --forget-pool-serial: repeatable, a comma-separated
+// list of serials in hex or decimal, and an invalid serial refused.
+func TestFlagsForget(t *testing.T) {
+	var f Flags
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	f.Register(fs)
+	noErr(t, fs.Parse([]string{"--forget-pool-serial", "0xC1AE2001", "--forget-pool-serial=161, 0xa2,,"}))
+	if !slices.Equal(f.Forget, []uint64{sharedPoolSerial, 0xa1, 0xa2}) {
+		t.Fatalf("serials %#x", f.Forget)
+	}
+	if got := fs.Lookup("forget-pool-serial").Value.String(); got != "0xc1ae2001,0xa1,0xa2" {
+		t.Fatalf("value %q", got)
+	}
+	var none Flags
+	fs = flag.NewFlagSet("test", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	none.Register(fs)
+	err := fs.Parse([]string{"--forget-pool-serial", "0xa1,0xzz"})
+	wantErr(t, err, `invalid value "0xa1,0xzz" for flag -forget-pool-serial: invalid serial "0xzz"`)
+	if (*serialsFlag)(nil).String() != "" {
+		t.Fatal("the value of no flag")
+	}
+}
+
+// TestForget pins New with Forget: the POOL and LOCAL records of the
+// serials are removed with a line each, durably; a serial without a record
+// is a warning; a memdev of a removed serial is new again.
+func TestForget(t *testing.T) {
+	logs := captureKlog(t)
+	e := newWatchEnv(t)
+	e.publish("0xc1ae2001")
+	e.plug(localSerial)
+	e.wantHeld("first start")
+	e.publish()
+	e.forget = []uint64{sharedPoolSerial, localSerial, 0xbeef}
+	e.restart()
+	out := logs()
+	wantLogLine(t, out, "pool serials: forgetting serial 0xc1ae2001 (POOL, --forget-pool-serial)")
+	wantLogLine(t, out, "pool serials: forgetting serial 0xc100e2e1 (LOCAL, --forget-pool-serial)")
+	wantLogLine(t, out, "pool serials: --forget-pool-serial 0xbeef: no record of the serial")
+	if recs := e.st.Snapshot().Provenance; len(recs) != 0 {
+		t.Fatalf("records %+v after forgetting them", recs)
+	}
+	// on disk when New returns
+	data, err := os.ReadFile(filepath.Join(e.dir, store.FileName))
+	noErr(t, err)
+	var doc store.Document
+	noErr(t, json.Unmarshal(data, &doc))
+	if len(doc.Provenance) != 0 || len(doc.ListedPools) != 1 {
+		t.Fatalf("state.json %s", data)
+	}
+	e.wantState(sharedPoolSerial, state.ProvenanceUnknown)
+	e.wantState(localSerial, state.ProvenanceUnknown)
+	// pool-c is remembered, and missing: both memdevs are new
+	e.plug(sharedPoolSerial)
+	e.wantHeld("forgotten serials", localSerial, sharedPoolSerial)
+	// a second restart without --forget-pool-serial keeps that
+	e.forget = nil
+	e.restart()
+	wantLogLine(t, logs(), fmt.Sprintf("pool serials: loaded 0 serials (0 pool serials) and 1 pools from %s", e.name()))
+}

@@ -35,8 +35,10 @@ import (
 // Invariants: POOL never turns LOCAL; no new local grant on a serial that is
 // POOL or HELD.
 //
-// Persistence: fact; LastSeen committed lazily, at most hourly. Kept across
-// reboots.
+// Persistence: fact; the records of POOL and LOCAL serials with Pool and
+// LastSeen (committed at most hourly when only LastSeen changed), kept across
+// reboots. HELD, LastObserved, HeldSince and HeldReason are kept in memory
+// only: a restart observes anew.
 //
 // Locks and waits: the provenance watcher is the only writer.
 type Provenance struct {
@@ -103,7 +105,7 @@ var ProvenanceTable = Table[ProvenanceState]{
 			When: "a new memdev appears with a reason for doubt: pool ResourceSlices never listed; a pool claim of " +
 				"the node attaching; a remembered pool's ResourceSlices missing for less than 1 h; the list fails; " +
 				"the record was lost",
-			Effects: "commit (l) of HeldSince and HeldReason; not published",
+			Effects: "HeldSince and HeldReason kept in memory, not committed; not published",
 		},
 		{
 			From: list(ProvenanceUnknown), To: ProvenanceLocal, Triggers: list(TriggerObserve),
@@ -113,7 +115,7 @@ var ProvenanceTable = Table[ProvenanceState]{
 		{
 			From: list(ProvenanceHeld), Stays: true, Triggers: list(TriggerObserve, TriggerList),
 			When:    "the reason refreshed by a later observation",
-			Effects: "commit (l)",
+			Effects: "the reason refreshed in memory, not committed",
 		},
 		{
 			From: list(ProvenanceHeld), To: ProvenanceLocal, Triggers: list(TriggerExpire),
@@ -121,6 +123,17 @@ var ProvenanceTable = Table[ProvenanceState]{
 				"lost, claims not listable",
 			Guard:   "not \"never listed\", not \"attaching\"",
 			Effects: "commit (l); published",
+		},
+		{
+			From: list(ProvenanceHeld), To: ProvenanceLocal, Triggers: list(TriggerObserve),
+			When:    "a later observation finds no reason for doubt any more, or the engine has the memdev as local",
+			Guard:   "not listed by a pool ResourceSlice or claim",
+			Effects: "commit (l); published",
+		},
+		{
+			From: list(ProvenanceHeld), To: ProvenanceUnknown, Triggers: list(TriggerObserve),
+			When:    "the memdev is gone before its hold ended",
+			Effects: "the hold forgotten",
 		},
 		{
 			From: list(ProvenanceHeld), To: ProvenancePool, Triggers: list(TriggerList, TriggerPrepare),
@@ -147,6 +160,11 @@ var ProvenanceTable = Table[ProvenanceState]{
 			From: list(ProvenanceLocal), To: ProvenanceUnknown, Triggers: list(TriggerExpire),
 			When:    "the memdev absent for 24 h of observed absence",
 			Effects: "commit (l) removing the record",
+		},
+		{
+			From: list(ProvenancePool, ProvenanceLocal), To: ProvenanceUnknown, Triggers: list(TriggerLoad),
+			When:    "the operator names the serial with --forget-pool-serial at the start",
+			Effects: "commit (d) removing the record; a memdev of the serial is new again",
 		},
 	},
 	Refused: []Refusal[ProvenanceState]{
