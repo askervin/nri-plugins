@@ -423,3 +423,64 @@ func TestLocalRecoverHeldBlockDevice(t *testing.T) {
 	wantLog(t, logs(), "local: memdev mem0 (serial 0x91): released region0 in ")
 	v.clean("unprepared")
 }
+
+// localBusyCompanionNextToReader prepares the fs claim r and the fs lease
+// companion c on the node mount of the shared persistent local memdev
+// serialP, then fails the Unprepare of c on its busy lease bind. It returns
+// the node mount and the bind.
+func localBusyCompanionNextToReader(t *testing.T, v *env) (string, string) {
+	t.Helper()
+	target := companionTarget(v)
+	r := localPmemReq("r", 0, state.ModeFs, true, "")
+	r.Facts.Shared = true
+	c := localPmemReq("c", 0, state.ModeFs, true, "")
+	c.Facts.Shared = true
+	c.BindTarget = target
+	c.Lend = &state.GrantLend{Lease: "0123abcd", Name: "data"}
+	v.mustPrepare(localDriver, "r", r)
+	v.mustPrepare(localDriver, "c", c)
+	mnt := mountPathOf(v.records(), v.grant("c", 0))
+	if mnt == "" || mnt != mountPathOf(v.records(), v.grant("r", 0)) {
+		t.Fatalf("node mounts %q and %q, want one", mnt, mountPathOf(v.records(), v.grant("r", 0)))
+	}
+	v.f.SetBusy(target, true)
+	if err := v.unprepare(localDriver, "c"); err == nil {
+		t.Fatal("a busy unbind succeeded")
+	}
+	return mnt, target
+}
+
+// localPmemEnvShared returns a node with the persistent local memdev
+// serialP, configured shared, of erofs.
+func localPmemEnvShared(t *testing.T) *env {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib})
+	v.configure(func(o *Options) { o.Shared = func(state.Serial) bool { return true } })
+	v.formatPmem("mem0", "erofs")
+	return v
+}
+
+// A local companion whose Unprepare failed on its busy lease bind still uses
+// its node mount: the Unprepare of another fs claim of the node mount keeps
+// it; the Unprepare again of the companion unbinds and unmounts.
+func TestLocalReleaseKeepsNodeMountOfBusyCompanion(t *testing.T) {
+	v := localPmemEnvShared(t)
+	mnt, target := localBusyCompanionNextToReader(t, v)
+	v.mustUnprepare(localDriver, "r")
+	v.mustBeMounted("after the Unprepare of r", mnt, target)
+	v.f.SetBusy(target, false)
+	v.mustUnprepare(localDriver, "c")
+	v.mustNotBeMounted("after the Unprepare again of c", mnt, target)
+}
+
+// A start between the failed Unprepare of a local companion and its
+// Unprepare again keeps the companion's node mount and bind.
+func TestLocalRecoverKeepsNodeMountOfBusyCompanion(t *testing.T) {
+	v := localPmemEnvShared(t)
+	mnt, target := localBusyCompanionNextToReader(t, v)
+	v.mustUnprepare(localDriver, "r")
+	v.restart()
+	v.mustBeMounted("after the start", mnt, target)
+	v.f.SetBusy(target, false)
+	v.mustUnprepare(localDriver, "c")
+	v.mustNotBeMounted("after the Unprepare again of c", mnt, target)
+}

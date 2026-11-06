@@ -912,3 +912,17 @@ func TestRecoverOrphanBind(t *testing.T) {
 		t.Fatalf("the orphan bind is still mounted: %+v", mi)
 	}
 }
+
+// A start between the failed Unprepare of a companion on its busy lease
+// bind and its Unprepare again keeps the companion's node mount and bind.
+func TestRecoverKeepsNodeMountOfBusyCompanion(t *testing.T) {
+	v := pmemEnv(t, "erofs")
+	mnt, target := busyCompanionNextToReader(t, v)
+	v.mustUnprepare(poolDriver, "r")
+	v.restart()
+	v.mustBeMounted("after the start", mnt, target)
+	v.f.SetBusy(target, false)
+	v.mustUnprepare(poolDriver, "c")
+	v.mustNotBeMounted("after the Unprepare again of c", mnt, target)
+	v.clean("unprepared")
+}

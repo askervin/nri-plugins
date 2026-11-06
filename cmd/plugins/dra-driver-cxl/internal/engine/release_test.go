@@ -245,3 +245,57 @@ func TestReleaseOneCallTogether(t *testing.T) {
 	v.mustUnprepare(poolDriver, "r2")
 	v.clean("unprepared")
 }
+
+// busyCompanionNextToReader prepares the fs claim r and the fs lease
+// companion c on the node mount of serialP, then fails the Unprepare of c
+// on its busy lease bind. It returns the node mount and the bind.
+func busyCompanionNextToReader(t *testing.T, v *env) (string, string) {
+	t.Helper()
+	target := companionTarget(v)
+	v.mustPrepare(poolDriver, "r", fsGrant("r", true, ""))
+	v.mustPrepare(poolDriver, "c", bindReq("c", target))
+	mnt := mountPathOf(v.records(), v.grant("c", 0))
+	if mnt == "" || mnt != mountPathOf(v.records(), v.grant("r", 0)) {
+		t.Fatalf("node mounts %q and %q, want one", mnt, mountPathOf(v.records(), v.grant("r", 0)))
+	}
+	v.f.SetBusy(target, true)
+	if err := v.unprepare(poolDriver, "c"); err == nil {
+		t.Fatal("a busy unbind succeeded")
+	}
+	return mnt, target
+}
+
+// mustBeMounted fails the test when nothing is mounted at each path.
+func (v *env) mustBeMounted(what string, paths ...string) {
+	v.t.Helper()
+	for _, p := range paths {
+		if mi, err := v.f.Kernel().Mounted(p); err != nil || mi == nil {
+			v.t.Fatalf("%s: %s is not mounted (%v)", what, p, err)
+		}
+	}
+}
+
+// mustNotBeMounted fails the test when something is mounted at a path.
+func (v *env) mustNotBeMounted(what string, paths ...string) {
+	v.t.Helper()
+	for _, p := range paths {
+		if mi, err := v.f.Kernel().Mounted(p); err != nil || mi != nil {
+			v.t.Fatalf("%s: %s is mounted: %+v (%v)", what, p, mi, err)
+		}
+	}
+}
+
+// A companion whose Unprepare failed on its busy lease bind still uses its
+// node mount: the Unprepare of another fs claim of the node mount keeps it;
+// when the holder of the bind ended, the Unprepare again of the companion
+// unbinds, unmounts and releases the memdev.
+func TestReleaseKeepsNodeMountOfBusyCompanion(t *testing.T) {
+	v := pmemEnv(t, "erofs")
+	mnt, target := busyCompanionNextToReader(t, v)
+	v.mustUnprepare(poolDriver, "r")
+	v.mustBeMounted("after the Unprepare of r", mnt, target)
+	v.f.SetBusy(target, false)
+	v.mustUnprepare(poolDriver, "c")
+	v.mustNotBeMounted("after the Unprepare again of c", mnt, target)
+	v.clean("unprepared")
+}
