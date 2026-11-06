@@ -49,8 +49,8 @@ import (
 // kernel command that depends on it.
 //
 // Locks and waits: a queue per memdev (one request of a memdev at a time),
-// and the engine lock (Options.Lock) around each short kernel call and the
-// durable commit of the note that must precede it, never across a wait. Waits (a pool
+// and the engine lock around each short kernel call and the durable commit
+// of the note that must precede it, never across a wait. Waits (a pool
 // memdev to appear, an nd region to settle, a holder to go, memory blocks
 // to stay offline) and zeroing run outside the lock with Busy set. The
 // lock order is queue -> engine lock -> store commit.
@@ -59,18 +59,34 @@ type Engine struct {
 	store *store.Store
 	opts  Options
 
-	// mu is the engine lock.
-	mu sync.Locker
+	// mu is the engine lock (Options.Lock, else own).
+	mu      sync.Locker
+	ownLock sync.Mutex
 
-	// qmu guards queues, busy, last, hollowLogged and devices.
-	qmu          sync.Mutex
-	queues       map[state.Serial]chan struct{}
-	busy         map[state.Serial]bool
-	last         *kernel.Snapshot
-	hollowLogged map[string]bool
+	// qmu guards queues, busy, last, unknown, orphanBinds, running,
+	// started, observed, hollowLogged, devices and probes.
+	qmu    sync.Mutex
+	queues map[state.Serial]chan struct{}
+	busy   map[state.Serial]bool
+	last   *kernel.Snapshot
+	// unknown are the latest changes of kernel objects that no row of
+	// their tables has, as Observe logged them, until UnknownSeen.
+	unknown []string
+	// orphanBinds are the lease binds of no memdev (their node mount is
+	// gone) that a start could not unmount, unmounted again at every
+	// release.
+	orphanBinds []string
+	// running is the number of requests in progress (Request), started
+	// the number of those that started, observed the value of started at
+	// the latest observation (last).
+	running, started, observed int
+	hollowLogged               map[string]bool
 	// devices are the DRA devices of the requests of the grants, for the
 	// errors of their release.
 	devices map[state.GrantRef]string
+	// probes are the results of the address line probes of the local
+	// memdevs (Options.ProbesFile).
+	probes map[state.Serial]state.Probe
 
 	// afterCommit is called after every commit that the store applied, nil
 	// outside the tests that stop the process at a commit.
@@ -113,6 +129,11 @@ type Options struct {
 	// Shared tells whether a local memdev is configured shared, nil for
 	// none.
 	Shared func(serial state.Serial) bool
+	// ProbeAddressing runs the address line probe on the new regions of
+	// local memdevs; ProbesFile keeps the probes that found aliasing, ""
+	// for none.
+	ProbeAddressing bool
+	ProbesFile      string
 	// Revoke revokes the NUMA node that the grant ref of a companion claim
 	// lends (lend.NumaNode), nil for no lends.
 	Revoke func(ctx context.Context, ref state.GrantRef, lend state.GrantLend) error
@@ -136,10 +157,11 @@ type Timeouts struct {
 	// RegionRetry is the pause before the one retry of a region creation
 	// whose memdev had no endpoint port yet.
 	RegionRetry time.Duration
-	// Settle is how long a grant waits for the kernel to set up its
+	// Settle is how long a pool grant waits for the kernel to set up its
 	// region: the dax region and the memory blocks of a ram region, the nd
-	// region and the namespaces of a pmem region.
-	Settle time.Duration
+	// region and the namespaces of a pmem region; LocalSettle how long a
+	// local grant does.
+	Settle, LocalSettle time.Duration
 	// Restore is how long the verification of a block device waits for the
 	// namespaces of its region.
 	Restore time.Duration
@@ -185,6 +207,7 @@ func (t Timeouts) withDefaults() Timeouts {
 	set(&t.ProbeGrace, defaultProbeGrace)
 	set(&t.RegionRetry, defaultRegionRetry)
 	set(&t.Settle, defaultSettle)
+	set(&t.LocalSettle, defaultSettle)
 	set(&t.Restore, defaultRestore)
 	set(&t.Holder, defaultHolderWait)
 	set(&t.Rollback, defaultRollback)
@@ -239,20 +262,34 @@ func New(opts Options) (*Engine, error) {
 		opts.Filesystems = "/proc/filesystems"
 	}
 	opts.Timeouts = opts.Timeouts.withDefaults()
-	lock := opts.Lock
-	if lock == nil {
-		lock = &sync.Mutex{}
+	probes, err := loadProbes(opts.ProbesFile)
+	if err != nil {
+		return nil, err
 	}
-	return &Engine{
+	e := &Engine{
 		k:            opts.Kernel,
 		store:        opts.Store,
 		opts:         opts,
-		mu:           lock,
+		mu:           opts.Lock,
 		queues:       map[state.Serial]chan struct{}{},
 		busy:         map[state.Serial]bool{},
 		hollowLogged: map[string]bool{},
 		devices:      map[state.GrantRef]string{},
-	}, nil
+		probes:       probes,
+	}
+	if e.mu == nil {
+		e.mu = &e.ownLock
+	}
+	return e, nil
+}
+
+// settle returns how long a grant of the source waits for the kernel to
+// set up its region.
+func (e *Engine) settle(source state.Source) time.Duration {
+	if source == state.SourceLocal {
+		return e.opts.Timeouts.LocalSettle
+	}
+	return e.opts.Timeouts.Settle
 }
 
 // GrantRequest is a grant that a front-end asks the engine to realise: the
@@ -465,6 +502,11 @@ func (e *Engine) owns(source state.Source) bool {
 	return e.opts.Sources == nil || slices.Contains(e.opts.Sources, source)
 }
 
+// ownsAll tells whether the engine owns the records of every source.
+func (e *Engine) ownsAll() bool {
+	return e.owns(state.SourcePool) && e.owns(state.SourceLocal)
+}
+
 // logf logs at info level with the driver of the source as the prefix.
 func (e *Engine) logf(source state.Source, format string, args ...any) {
 	klog.InfofDepth(1, e.driver(source)+": "+format, args...)
@@ -473,6 +515,17 @@ func (e *Engine) logf(source state.Source, format string, args ...any) {
 // warnf logs a warning with the driver of the source as the prefix.
 func (e *Engine) warnf(source state.Source, format string, args ...any) {
 	klog.WarningfDepth(1, e.driver(source)+": "+format, args...)
+}
+
+// warnLocal logs a warning of a region of a memdev with the prefix of the
+// lines of the local memdevs, "local", for the local source, else the
+// driver of the source.
+func (e *Engine) warnLocal(source state.Source, format string, args ...any) {
+	prefix := e.driver(source)
+	if source == state.SourceLocal {
+		prefix = "local"
+	}
+	klog.WarningfDepth(1, prefix+": "+format, args...)
 }
 
 // errorf logs an error with the driver of the source as the prefix.

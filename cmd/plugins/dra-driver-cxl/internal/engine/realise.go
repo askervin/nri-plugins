@@ -88,6 +88,8 @@ func (e *keptOnlineError) Is(target error) bool {
 // that the end of ctx does not end; what the rollback keeps stays recorded
 // and is returned with the error.
 func (e *Engine) PrepareGrants(ctx context.Context, reqs []GrantRequest) ([]state.Grant, error) {
+	ctx, end := e.Request(ctx)
+	defer end()
 	refs := make([]state.GrantRef, 0, len(reqs))
 	for i := range reqs {
 		if !e.owns(reqs[i].Asked.Source) {
@@ -147,6 +149,9 @@ func (e *Engine) prepareGrant(ctx context.Context, req *GrantRequest) error {
 			}
 		}
 	}
+	if err := e.checkLocalKind(ctx, req); err != nil {
+		return err
+	}
 	if err := e.journal(ctx, req); err != nil {
 		return err
 	}
@@ -160,6 +165,7 @@ func (e *Engine) prepareGrant(ctx context.Context, req *GrantRequest) error {
 func (e *Engine) journal(ctx context.Context, req *GrantRequest) error {
 	if req.Asked.Source == state.SourceLocal {
 		if err := e.localGuard(ctx, req.Serial); err != nil {
+			klog.Errorf("local: refusing memdev serial %s: %v", serialText(req.Serial), err)
 			return err
 		}
 	}
@@ -348,7 +354,13 @@ func (e *Engine) ensureRegion(ctx context.Context, req *GrantRequest, memdev str
 		return "", err
 	}
 	if reg := ownRegion(e.records(), req.Serial, mode); reg != nil {
-		return e.useRegion(ctx, req, memdev, reg)
+		gone, err := e.forgetGoneRegion(ctx, req, memdev, reg)
+		if err != nil {
+			return "", err
+		}
+		if !gone {
+			return e.useRegion(ctx, req, memdev, reg)
+		}
 	}
 	for _, name := range e.k.Regions(memdev) {
 		return "", &foreignRegionError{memdev: memdev, region: name}
@@ -366,6 +378,30 @@ func (e *Engine) ensureRegion(ctx context.Context, req *GrantRequest, memdev str
 	return name, err
 }
 
+// forgetGoneRegion forgets the recorded region of ours reg of a local
+// shared or persistent memdev that is gone (another tool released it while
+// the driver ran), with what its grants got of it, and tells whether it
+// did: a new region is made then.
+func (e *Engine) forgetGoneRegion(ctx context.Context, req *GrantRequest, memdev string, reg *state.Region) (bool, error) {
+	if req.Asked.Source != state.SourceLocal || req.Asked.Kind == state.KindExclusive {
+		return false, nil
+	}
+	name := string(reg.Ref())
+	if ri, err := e.k.Region(name); err == nil && slices.Contains(ri.Memdevs, memdev) {
+		return false, nil
+	}
+	what := "shared"
+	if req.Asked.Kind == state.KindPersistent {
+		what = "persistent"
+	}
+	claims := []string{}
+	if m := e.records().Memdev(req.Serial); m != nil {
+		claims = append(claims, otherClaims(m, req.Ref.Claim)...)
+	}
+	klog.Warningf("local: memdev %s (serial %s): %s of the %s device is gone, forgetting it and its claims %v", memdev, serialText(req.Serial), name, what, claims)
+	return true, e.commit(ctx, func(r *state.Records) error { return dropRegion(r, reg.Ref(), state.TriggerPrepare) })
+}
+
 // useRegion returns the name of the recorded region of ours reg for a
 // grant: KEPT is enabled again (OWNED, not set up), OWNED as it is. The
 // region must exist and target the memdev.
@@ -377,7 +413,10 @@ func (e *Engine) useRegion(ctx context.Context, req *GrantRequest, memdev string
 	}
 	switch reg.State {
 	case state.RegionOwned:
-		e.k.Logf("%s: reusing %s", memdev, name)
+		if req.Asked.Source == state.SourcePool {
+			// memctl's line of the pool's reuse
+			e.k.Logf("%s: reusing %s", memdev, name)
+		}
 	case state.RegionKept:
 		if err := e.locked(func() error { return e.k.EnableRegion(ctx, name) }); err != nil {
 			return "", err
@@ -553,9 +592,10 @@ func (e *Engine) wholeDevice(ctx context.Context, req *GrantRequest, region, dri
 		return "", nil
 	}
 	// set up before (a kept region): its first device may be unbound or
-	// smaller after a cut resize or driver switch
-	again := reg != nil && reg.WholeDevice() != nil
-	ctx, cancel := context.WithTimeout(ctx, e.opts.Timeouts.Settle)
+	// smaller after a cut resize or driver switch, or the seed that a part
+	// on it left
+	again := reg != nil && len(reg.DaxDevices) > 0
+	ctx, cancel := context.WithTimeout(ctx, e.settle(req.Asked.Source))
 	defer cancel()
 	dax, err := e.waitWhole(ctx, req, region, again)
 	if err != nil {
@@ -687,6 +727,7 @@ func (e *Engine) commitWhole(ctx context.Context, req *GrantRequest, region, dax
 		if err := bindRecord(d, driver); err != nil {
 			return err
 		}
+		d.Whole = true
 		d.Size, d.Dev, d.Ranges = info.Size, state.DevNumbers{Major: info.Major, Minor: info.Minor}, addressRanges(info.Ranges)
 		if !reg.SetUp {
 			return state.Apply(&state.RegionSetUpTable, &reg.SetUp, true, state.TriggerPrepare)
@@ -850,6 +891,22 @@ func (e *Engine) onlineRegion(ctx context.Context, req *GrantRequest, memdev, re
 	if len(blocks) == 0 {
 		return -1, fmt.Errorf("%s: no memory blocks found for %s", memdev, region)
 	}
+	node, err := e.onlineMemory(ctx, region, dax, blocks, fenced, func(node int) {
+		klog.V(3).Infof("%s: %s: NUMA node %d of %s known only after onlining, fencing it late", e.driver(req.Asked.Source), memdev, node, region)
+	})
+	if err == nil && node < 0 {
+		err = fmt.Errorf("%s: cannot find the NUMA node of %s", memdev, region)
+	}
+	return node, err
+}
+
+// onlineMemory onlines the memory blocks of the dax device dax of a region
+// movable, kmem's, and fences its NUMA node again when it is known only
+// after onlining (fenced is the node fenced before, the one that the dax
+// device tells; late logs the late fence); it records the device
+// KMEM_ONLINE and the node of the region, and returns the node, < 0 when
+// it cannot be found.
+func (e *Engine) onlineMemory(ctx context.Context, region, dax string, blocks []int, fenced int, late func(node int)) (int, error) {
 	if err := e.locked(func() error { return e.k.OnlineBlocks(blocks, true) }); err != nil {
 		return -1, err
 	}
@@ -858,21 +915,19 @@ func (e *Engine) onlineRegion(ctx context.Context, req *GrantRequest, memdev, re
 		node = e.k.BlocksNode(blocks)
 	}
 	if node < 0 {
-		return -1, fmt.Errorf("%s: cannot find the NUMA node of %s", memdev, region)
+		return -1, nil
 	}
 	if e.opts.Fence != nil && node != fenced {
-		klog.V(3).Infof("%s: %s: NUMA node %d of %s known only after onlining, fencing it late", e.driver(req.Asked.Source), memdev, node, region)
+		late(node)
 		e.fence(ctx, node)
 	}
 	return node, e.commit(ctx, func(r *state.Records) error {
 		reg := r.Region(state.RegionRef(region))
 		d := reg.DaxDevice(dax)
-		if d.State == state.DaxKmemOffline {
-			if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxKmemOnline, state.TriggerPrepare); err != nil {
-				return err
-			}
-		}
 		reg.NumaNode = state.NumaNodePtr(node)
+		if d.State == state.DaxKmemOffline {
+			return state.Apply(&state.DaxDeviceTable, &d.State, state.DaxKmemOnline, state.TriggerPrepare)
+		}
 		return nil
 	})
 }
@@ -966,6 +1021,7 @@ func (e *Engine) rollback(ctx context.Context, reqs []GrantRequest) []state.Gran
 		return nil
 	}
 	source := r.Grant(refs[0]).Asked.Source
+	refs = localOrder(r, refs)
 	e.revokeLends(ctx, refs)
 	e.retryAllStale(ctx, state.TriggerPrepare)
 	call := newReleaseCall(e, ReleaseRollback, refs)

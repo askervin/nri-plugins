@@ -296,6 +296,18 @@ var PreparationTable = Table[PreparationState]{
 			From: list(PreparationKept), To: PreparationUnknown, Triggers: list(TriggerUnprepare),
 			Effects: "the kept region destroyed per Policy; commit (d) removing the record",
 		},
+		{
+			From: list(PreparationKept), Stays: true, Triggers: list(TriggerRecover),
+			When:    "the recovery at a later start released some of its kept grants and kept the others",
+			Effects: "commit (d) dropping the results of the released grants",
+		},
+		{
+			From: list(PreparationKept), To: PreparationUnknown, Triggers: list(TriggerRecover),
+			When: "the recovery at a later start released every grant that it kept (nothing lies above its " +
+				"regions any more, or its idle shared memdev keeps its region)",
+			Effects: "commit (d) removing the record; kubelet's Prepare again prepares the claim anew, its " +
+				"Unprepare finds nothing",
+		},
 	},
 	Refused: []Refusal[PreparationState]{
 		{

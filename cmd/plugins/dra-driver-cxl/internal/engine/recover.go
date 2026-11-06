@@ -90,6 +90,7 @@ func (e *Engine) Recover(ctx context.Context) (*Recovered, error) {
 	if err != nil {
 		return nil, err
 	}
+	e.removeDaxNodeDirs()
 	if err := e.recoverMemdevs(ctx, snap); err != nil {
 		return nil, err
 	}
@@ -106,6 +107,7 @@ func (e *Engine) Recover(ctx context.Context) (*Recovered, error) {
 	}
 	e.sweepBinds(ctx)
 	e.sweepNodeMounts()
+	e.forgetGoneParts(ctx)
 	e.deleteUnowned(ctx)
 	for _, m := range e.records().Memdevs {
 		if len(m.Hollow) > 0 && e.owns(m.Source) {
@@ -114,10 +116,32 @@ func (e *Engine) Recover(ctx context.Context) (*Recovered, error) {
 			}
 		}
 	}
+	e.recoverLocal(ctx)
 	if err := e.commit(ctx, func(r *state.Records) error { return dropUnused(r, e.owns) }); err != nil {
 		return nil, err
 	}
+	if e.owns(state.SourceLocal) {
+		n := 0
+		for _, m := range e.records().Memdevs {
+			if m.Source == state.SourceLocal {
+				n++
+			}
+		}
+		klog.Infof("local: %d memdevs in use after reconcile", n)
+	}
 	return out, nil
+}
+
+// removeDaxNodeDirs removes the temporary directories of the private dax
+// device nodes of the zeroing and the probe that a stopped process left.
+func (e *Engine) removeDaxNodeDirs() {
+	removed, err := e.k.RemoveDaxNodeDirs()
+	for _, dir := range removed {
+		klog.Infof("engine: removed %s, left by a zeroing or an address line probe that did not finish", dir)
+	}
+	if err != nil {
+		klog.Errorf("engine: %v", err)
+	}
 }
 
 // dropUnused removes the memdev records of which nothing is left (UNUSED):
@@ -381,45 +405,150 @@ func (e *Engine) restoreGrants(ctx context.Context, out *Recovered) error {
 		}
 	}
 	for _, serial := range sortedKeys(serials) {
-		failed, restored, loops := e.restoreSerial(serial, out.Why)
-		if len(failed) == 0 && len(restored) == 0 && len(loops) == 0 {
-			continue
-		}
-		if err := e.commit(ctx, func(r *state.Records) error {
-			remounted(r, loops)
-			return unrestored(r, failed, restored)
-		}); err != nil {
+		if err := e.restoreGrantsOf(ctx, serial, out); err != nil {
 			return err
 		}
-		for ref := range failed {
-			out.Unrestored = append(out.Unrestored, ref)
-		}
-		out.Restored = append(out.Restored, restored...)
 	}
 	slices.SortFunc(out.Unrestored, state.GrantRef.Compare)
 	return nil
 }
 
+// restoreGrantsOf restores the node mounts of the realised grants of the
+// memdev with the serial (restoreSerial), records what it found and adds it
+// to out.
+func (e *Engine) restoreGrantsOf(ctx context.Context, serial state.Serial, out *Recovered) error {
+	rs := e.restoreSerial(serial, out.Why)
+	if len(rs.failed) == 0 && len(rs.restored) == 0 && len(rs.loops) == 0 && len(rs.bad) == 0 {
+		return nil
+	}
+	if err := e.commit(ctx, func(r *state.Records) error {
+		remounted(r, rs.loops)
+		if err := unrestored(r, rs.failed, rs.restored); err != nil {
+			return err
+		}
+		return badBlocks(r, rs.bad)
+	}); err != nil {
+		return err
+	}
+	for ref := range rs.failed {
+		out.Unrestored = append(out.Unrestored, ref)
+	}
+	for ref := range rs.bad {
+		out.Unrestored = append(out.Unrestored, ref)
+	}
+	out.Restored = append(out.Restored, rs.restored...)
+	return nil
+}
+
+// localBlockError returns why a local grant of a persistent memdev does not
+// verify: its block device is not the one of the fsdax namespace of its
+// region now; nil for another grant.
+func (e *Engine) localBlockError(g *state.Grant) error {
+	if g.Asked.Source != state.SourceLocal || g.Asked.Kind != state.KindPersistent || g.Got.BlockDevice == nil {
+		return nil
+	}
+	return e.checkBlockDevice(g)
+}
+
+// restoredSerial is what the restore of the realised grants of a memdev
+// found: the grants whose node mount is not mounted again, with why; the
+// unrestored ones that verify again; the loop devices of the cached node
+// mounts now, by node mount; the grants of a local memdev whose block
+// device is not the one of its region now, with why.
+type restoredSerial struct {
+	failed   map[state.GrantRef]error
+	restored []state.GrantRef
+	loops    map[string]string
+	bad      map[state.GrantRef]error
+}
+
 // restoreSerial restores the node mounts of the realised grants of the
-// memdev with the serial, and returns the grants that do not verify, with
-// why (also in why with those that stay unrestored), and the unrestored
-// ones that verify again.
-func (e *Engine) restoreSerial(serial state.Serial, why map[state.GrantRef]error) (map[state.GrantRef]error, []state.GrantRef, map[string]string) {
+// memdev with the serial and returns what it found; why gets the reasons of
+// the grants that stay unrestored too.
+func (e *Engine) restoreSerial(serial state.Serial, why map[state.GrantRef]error) restoredSerial {
 	uses := e.preparedUses(serial)
-	writer := firstWriter(uses) != nil
-	byMount := e.restoreMounts(uses, writer)
-	failed, restored := e.classifyRestored(serial, byMount, why)
+	writer := firstWriter(uses) != nil || firstWriter(e.unpreparedUses(serial)) != nil
+	badWhy := map[state.GrantRef]error{}
+	var rs restoredSerial
+	rs.bad = e.checkLocalBlock(serial, badWhy)
+	byMount := e.restoreMounts(uses, writer, rs.bad)
+	rs.failed, rs.restored = e.classifyRestored(serial, byMount, why)
+	for ref, err := range badWhy {
+		why[ref] = err
+	}
+	for ref := range rs.bad {
+		rs.restored = slices.DeleteFunc(rs.restored, func(r state.GrantRef) bool { return r == ref })
+		if _, ok := rs.failed[ref]; ok {
+			// its node mount is not mounted again: UNRESTORED with it
+			rs.failed[ref] = rs.bad[ref]
+			delete(rs.bad, ref)
+		}
+	}
 	if dev := blockDeviceOf(uses); dev != "" && e.checkUseBlockDevice(serial, dev) == nil {
 		e.restoreFlags(serial, dev, uses, writer)
 	}
-	loops := map[string]string{}
+	rs.loops = map[string]string{}
 	for _, u := range uses {
 		if rm, ok := byMount[u.nodeMount]; ok && rm.err == nil && rm.loop != u.loop && u.access == api.AccessCached {
 			e.logf(u.source, "device %s: %s is on %s now, not %s", serialText(serial), u.nodeMount, rm.loop, u.loop)
-			loops[u.nodeMount] = rm.loop
+			rs.loops[u.nodeMount] = rm.loop
 		}
 	}
-	return failed, restored, loops
+	return rs
+}
+
+// checkLocalBlock returns the realised and unrestored grants of prepared
+// claims of the local persistent memdev with the serial when its block
+// device is not the one of the fsdax namespace of its region now: all of
+// its uses, also of mode block, have no CDI device then; why gets the
+// reason.
+func (e *Engine) checkLocalBlock(serial state.Serial, why map[state.GrantRef]error) map[state.GrantRef]error {
+	r := e.records()
+	var grants []*state.Grant
+	for i := range r.Grants {
+		g := &r.Grants[i]
+		p := r.PreparationOf(g.Ref)
+		if g.Serial == serial && g.Asked.Source == state.SourceLocal && g.Asked.Kind == state.KindPersistent &&
+			prepared(g) && g.Got.BlockDevice != nil && p != nil && (p.State == state.PreparationPrepared || p.State == state.PreparationUnrestored) {
+			grants = append(grants, g)
+		}
+	}
+	if len(grants) == 0 {
+		return nil
+	}
+	err := e.checkBlockDevice(grants[0])
+	if err == nil {
+		return nil
+	}
+	klog.Errorf("local: memdev %s (serial %s): %v", e.memdevName(serial), serialText(serial), err)
+	bad := map[state.GrantRef]error{}
+	for _, g := range grants {
+		why[g.Ref], bad[g.Ref] = err, err
+	}
+	return bad
+}
+
+// badBlocks records the grants whose block device changed (bad)
+// REALISED_UNRESTORED and their preparations PREPARED_UNRESTORED; their
+// node mounts stay as they are, released with them.
+func badBlocks(r *state.Records, bad map[state.GrantRef]error) error {
+	for ref := range bad {
+		g := r.Grant(ref)
+		if g == nil {
+			continue
+		}
+		if g.State == state.GrantRealised {
+			if err := state.Apply(&state.GrantTable, &g.State, state.GrantUnrestored, state.TriggerRecover); err != nil {
+				return err
+			}
+		}
+		if p := r.PreparationOf(ref); p != nil && p.State == state.PreparationPrepared {
+			if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationUnrestored, state.TriggerRecover); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // remounted records the loop devices of the cached node mounts that are on
@@ -453,17 +582,42 @@ func (e *Engine) preparedUses(serial state.Serial) []use {
 	return out
 }
 
+// unpreparedUses returns the uses of the local memdev with the serial by the
+// grants of claims whose Unprepare did not finish (UNPREPARING) that still
+// use their node mount: a start leaves them as they are, and a writer of
+// them keeps the device read-write until kubelet's retry of the Unprepare.
+func (e *Engine) unpreparedUses(serial state.Serial) []use {
+	r := e.records()
+	if m := r.Memdev(serial); m == nil || m.Source != state.SourceLocal {
+		return nil
+	}
+	var out []use
+	for _, u := range usesOf(r, serial) {
+		p, g := r.PreparationOf(u.ref), r.Grant(u.ref)
+		if p == nil || p.State != state.PreparationUnpreparing || g == nil {
+			continue
+		}
+		if m := mountRecord(r, g); u.mode == state.ModeBlock || (m != nil && slices.Contains(m.Users, u.ref)) {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
 // restoreMounts restores the node mount of each of the uses and returns why
-// each that is not mounted afterwards is not, by node mount.
-func (e *Engine) restoreMounts(uses []use, writer bool) map[string]restoredMount {
+// each that is not mounted afterwards is not, by node mount. The error of a
+// node mount whose uses are all on a block device that changed (bad) is not
+// logged: the block device's is.
+func (e *Engine) restoreMounts(uses []use, writer bool, bad map[state.GrantRef]error) map[string]restoredMount {
 	byMount := map[string]restoredMount{}
 	for _, mnt := range nodeMounts(uses) {
 		i := slices.IndexFunc(uses, func(u use) bool { return u.nodeMount == mnt })
 		loop, err := e.restoreNodeMount(&uses[i], writer, nodeMounts(uses))
+		quiet := !slices.ContainsFunc(uses, func(u use) bool { return u.nodeMount == mnt && bad[u.ref] == nil })
 		switch {
 		case err != nil && errors.Is(err, errForeignMount):
 			e.errorf(uses[i].source, "%v: it is never used or unmounted by the driver", err)
-		case err != nil:
+		case err != nil && !quiet:
 			e.errorf(uses[i].source, "claim %s: %v", e.claimNameOf(uses[i].ref), err)
 		}
 		byMount[mnt] = restoredMount{loop: loop, err: err}
@@ -981,41 +1135,88 @@ func (e *Engine) topMost(bySerial map[state.Serial][]state.GrantRef) state.Seria
 
 // recoverPreparations makes a PREPARING preparation with a grant that the
 // recovery kept KEPT, with the results of its grants that are left; the
-// others stay PREPARING with their results for kubelet's retry.
+// others stay PREPARING with their results for kubelet's retry. A KEPT
+// preparation of an earlier start loses the results of the grants that the
+// recovery released, and goes when none is left (keptReleased).
 func (e *Engine) recoverPreparations(ctx context.Context, out *Recovered) error {
 	if len(out.Kept) == 0 && len(out.Released) == 0 {
 		return nil
 	}
 	return e.commit(ctx, func(r *state.Records) error {
-		for i := range r.Preparations {
-			p := &r.Preparations[i]
-			if p.State != state.PreparationPreparing {
+		if err := keptReleased(r, out.Released); err != nil {
+			return err
+		}
+		return preparingRecovered(r, out)
+	})
+}
+
+// preparingRecovered makes a PREPARING preparation with a grant that the
+// recovery kept (out.Kept) KEPT, with the results of its grants that are
+// left, and one with a grant that it released PREPARING again.
+func preparingRecovered(r *state.Records, out *Recovered) error {
+	for i := range r.Preparations {
+		p := &r.Preparations[i]
+		if p.State != state.PreparationPreparing {
+			continue
+		}
+		kept, touched := false, false
+		for _, res := range p.Results {
+			if res.Grant == nil {
 				continue
 			}
-			kept, touched := false, false
-			for _, res := range p.Results {
-				if res.Grant == nil {
-					continue
-				}
-				kept = kept || slices.Contains(out.Kept, *res.Grant)
-				touched = touched || kept || slices.Contains(out.Released, *res.Grant)
+			kept = kept || slices.Contains(out.Kept, *res.Grant)
+			touched = touched || kept || slices.Contains(out.Released, *res.Grant)
+		}
+		switch {
+		case kept:
+			if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationKept, state.TriggerRecover); err != nil {
+				return err
 			}
-			switch {
-			case kept:
-				if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationKept, state.TriggerRecover); err != nil {
-					return err
-				}
-				p.Results = slices.DeleteFunc(p.Results, func(res state.Result) bool {
-					return res.Grant != nil && r.Grant(*res.Grant) == nil
-				})
-			case touched:
-				if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationPreparing, state.TriggerRecover); err != nil {
-					return err
-				}
+			p.Results = slices.DeleteFunc(p.Results, func(res state.Result) bool {
+				return res.Grant != nil && r.Grant(*res.Grant) == nil
+			})
+		case touched:
+			if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationPreparing, state.TriggerRecover); err != nil {
+				return err
 			}
 		}
-		return nil
-	})
+	}
+	return nil
+}
+
+// keptReleased drops from the KEPT preparations the results of the grants
+// released (the recovery released them: nothing lies above their regions
+// any more, or their idle shared memdev keeps its region), and removes a
+// KEPT preparation that has no grant left: its Prepare again prepares the
+// claim anew, its Unprepare finds nothing.
+func keptReleased(r *state.Records, released []state.GrantRef) error {
+	type key struct{ uid, driver string }
+	var gone []key
+	for i := range r.Preparations {
+		p := &r.Preparations[i]
+		if p.State != state.PreparationKept || !slices.ContainsFunc(p.Results, func(res state.Result) bool {
+			return res.Grant != nil && slices.Contains(released, *res.Grant)
+		}) {
+			continue
+		}
+		p.Results = slices.DeleteFunc(p.Results, func(res state.Result) bool {
+			return res.Grant != nil && r.Grant(*res.Grant) == nil
+		})
+		if slices.ContainsFunc(p.Results, func(res state.Result) bool { return res.Grant != nil }) {
+			if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationKept, state.TriggerRecover); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationUnknown, state.TriggerRecover); err != nil {
+			return err
+		}
+		gone = append(gone, key{p.UID, p.Driver})
+	}
+	for _, k := range gone {
+		removeRecord(&r.Preparations, func(x *state.Preparation) bool { return x.UID == k.uid && x.Driver == k.driver })
+	}
+	return nil
 }
 
 // listedMounts returns the node mounts and lease binds that the realised
@@ -1077,9 +1278,10 @@ func (e *Engine) sweepNodeMounts() {
 // sweepBinds unmounts, topmost first, the mounts under the lease-fs root
 // that no realised grant of a prepared claim lists and that bind a node
 // mount of an owned source (their source is that of a mount in its mounts
-// directory), and forgets those that a memdev had as stale. One that
-// cannot be unmounted is logged and recorded stale with the memdev of the
-// node mount that it binds.
+// directory), or any such mount when the engine owns every source, and
+// forgets those that a memdev had as stale. One that cannot be unmounted is
+// logged and recorded stale with the memdev of the node mount that it
+// binds, if that is known.
 func (e *Engine) sweepBinds(ctx context.Context) {
 	if e.opts.LeaseFsRoot == "" {
 		return
@@ -1096,14 +1298,22 @@ func (e *Engine) sweepBinds(ctx context.Context) {
 			continue
 		}
 		serial, source, ok := e.bindOrigin(mounts, mi.Source)
-		if !ok {
+		if !ok && !e.ownsAll() {
 			continue
+		}
+		if !ok {
+			// its node mount is gone: the bind of no memdev
+			source = state.SourceLocal
 		}
 		e.logf(source, "%s belongs to no prepared claim, unmounting it", mi.Target)
 		target := mi.Target
 		if err := e.locked(func() error { return e.k.Unmount(target) }); err != nil {
 			e.errorf(source, "unmounting %s: %v; trying again at the next release", target, err)
-			e.addStale(serial, target, state.StaleBind)
+			if ok {
+				e.addStale(serial, target, state.StaleBind)
+			} else {
+				e.addOrphanBind(target)
+			}
 			continue
 		}
 		e.removeMountDir(source, target)
@@ -1144,7 +1354,7 @@ func (e *Engine) deleteUnowned(ctx context.Context) {
 			if d == nil && strings.HasSuffix(dax, ".0") {
 				continue
 			}
-			if err := e.deleteDax(ctx, reg.Ref(), dax); err != nil {
+			if err := e.deleteDax(ctx, reg, dax); err != nil {
 				klog.Errorf("engine: %s: %v", name, err)
 			}
 		}
@@ -1153,14 +1363,34 @@ func (e *Engine) deleteUnowned(ctx context.Context) {
 
 // deleteDax offlines the memory of a dax device of a region of ours that
 // no grant uses, deletes it and drops its record.
-func (e *Engine) deleteDax(ctx context.Context, region state.RegionRef, dax string) error {
-	if err := e.offlineDax(ctx, dax); err != nil {
+func (e *Engine) deleteDax(ctx context.Context, reg *state.Region, dax string) error {
+	region := reg.Ref()
+	part := localPart{dax: dax, mode: state.ModeDax}
+	if len(reg.Targets) > 0 {
+		part.serial = reg.Targets[0]
+		part.memdev = e.memdevName(part.serial)
+	}
+	local := false
+	if m := e.records().Memdev(part.serial); m != nil {
+		local = m.Source == state.SourceLocal
+	}
+	if e.k.DaxDriver(dax) == kernel.DriverKmem {
+		part.mode = state.ModeNUMA
+	}
+	part.size, _ = e.k.DaxDeviceSize(dax)
+	if local {
+		klog.Warningf("local: memdev %s (serial %s): %s (mode %s, %d bytes) belongs to no claim, deleting it",
+			part.memdev, serialText(part.serial), dax, part.mode, part.size)
+	}
+	if err := e.offlineDax(ctx, &part); err != nil {
 		return err
 	}
 	if err := e.locked(func() error { return e.k.DeleteDaxDevice(ctx, string(region), dax) }); err != nil {
 		return err
 	}
-	klog.Infof("engine: %s: deleted %s, which belongs to no grant", region, dax)
+	if !local {
+		klog.Infof("engine: %s: deleted %s, which belongs to no grant", region, dax)
+	}
 	return e.commit(ctx, func(r *state.Records) error {
 		reg := r.Region(region)
 		if reg == nil {
@@ -1182,6 +1412,17 @@ func (e *Engine) deleteDax(ctx context.Context, region state.RegionRef, dax stri
 // for a Prepare again of its claim, and makes it REALISED (its node mount
 // mounted); an error names why it stays unrestored.
 func (e *Engine) restoreGrant(ctx context.Context, req *GrantRequest) error {
+	if err := e.localBlockError(e.records().Grant(req.Ref)); err != nil {
+		// the uses of a local device whose block device changed stay
+		// unrestored
+		return err
+	}
+	return e.remountGrant(ctx, req)
+}
+
+// remountGrant mounts again the node mount of a REALISED_UNRESTORED grant
+// and makes it REALISED (restoreGrant).
+func (e *Engine) remountGrant(ctx context.Context, req *GrantRequest) error {
 	g := e.records().Grant(req.Ref)
 	uses := e.preparedUses(g.Serial)
 	i := slices.IndexFunc(uses, func(u use) bool { return u.ref == g.Ref })

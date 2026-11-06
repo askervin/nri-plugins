@@ -37,6 +37,9 @@ func TestPreparationLifeCycles(t *testing.T) {
 		st{PreparationKept, TriggerRecover}, st{PreparationPreparing, TriggerPrepare},
 		st{PreparationPreparing, TriggerPrepare}, st{PreparationKept, TriggerPrepare},
 		st{PreparationKept, TriggerPrepare}, st{PreparationUnknown, TriggerUnprepare})
+	walk(t, tb, "a cut Prepare kept by the recovery, released in part and then in all by later starts", PreparationUnknown,
+		st{PreparationPreparing, TriggerPrepare}, st{PreparationKept, TriggerRecover},
+		st{PreparationKept, TriggerRecover}, st{PreparationUnknown, TriggerRecover})
 	walk(t, tb, "unrestored at a start, restored at the next and by a Prepare again", PreparationPrepared,
 		st{PreparationUnrestored, TriggerRecover}, st{PreparationUnrestored, TriggerRecover},
 		st{PreparationUnrestored, TriggerPrepare}, st{PreparationPrepared, TriggerRecover},

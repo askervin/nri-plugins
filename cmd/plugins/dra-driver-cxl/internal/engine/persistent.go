@@ -125,18 +125,30 @@ func prepared(g *state.Grant) bool {
 }
 
 // usesOf returns the uses of the memdev with the serial by the prepared
-// grants other than except.
+// grants other than except, and by the grants of a local memdev whose
+// release in an Unprepare failed (RELEASING, of an UNPREPARING claim): they
+// keep what they still have until kubelet's retry of the Unprepare.
 func usesOf(r *state.Records, serial state.Serial, except ...state.GrantRef) []use {
 	var out []use
 	for i := range r.Grants {
 		g := &r.Grants[i]
-		if g.Serial != serial || !prepared(g) || slices.Contains(except, g.Ref) ||
+		if g.Serial != serial || (!prepared(g) && !unpreparing(r, g)) || slices.Contains(except, g.Ref) ||
 			(g.Asked.Mode != state.ModeBlock && g.Asked.Mode != state.ModeFs) {
 			continue
 		}
 		out = append(out, useOf(r, g))
 	}
 	return out
+}
+
+// unpreparing tells whether a grant of a local memdev is one whose release
+// in an Unprepare failed: RELEASING, of an UNPREPARING preparation.
+func unpreparing(r *state.Records, g *state.Grant) bool {
+	if g.State != state.GrantReleasing || g.Asked.Source != state.SourceLocal {
+		return false
+	}
+	p := r.PreparationOf(g.Ref)
+	return p != nil && p.State == state.PreparationUnpreparing
 }
 
 // firstWriter returns the first use that writes, nil if none does.
@@ -251,11 +263,14 @@ func (e *Engine) pmemChain(ctx context.Context, req *GrantRequest, memdev string
 	if !ok {
 		return "", nil, fmt.Errorf("device %s: %s has no persistent memory", serialText(req.Serial), memdev)
 	}
-	wctx, cancel := context.WithTimeout(ctx, e.opts.Timeouts.Settle)
+	wctx, cancel := context.WithTimeout(ctx, e.settle(req.Asked.Source))
 	defer cancel()
 	if reg := ownRegion(e.records(), req.Serial, state.RegionRam); reg != nil {
 		return "", nil, fmt.Errorf("%s: %s is not a region of persistent memory", memdev, reg.Ref())
 	}
+	reg := ownRegion(e.records(), req.Serial, state.RegionPmem)
+	created, again := reg == nil, reg != nil && !reg.SetUp
+	start := time.Now()
 	region, err := e.ensureRegion(wctx, req, memdev, state.RegionPmem, 0)
 	if err != nil {
 		return "", nil, err
@@ -271,6 +286,14 @@ func (e *Engine) pmemChain(ctx context.Context, req *GrantRequest, memdev string
 		return err
 	}); err != nil {
 		return "", nil, err
+	}
+	if req.Asked.Source == state.SourceLocal {
+		switch {
+		case created:
+			klog.Infof("local: memdev %s (serial %s): created %s (pmem, nvdimm %s) in %s", memdev, serialText(req.Serial), region, nd, since(start))
+		case again:
+			klog.Infof("local: memdev %s (serial %s): set up kept %s (pmem, nvdimm %s)", memdev, serialText(req.Serial), region, nd)
+		}
 	}
 	ns, err := e.pmemNamespace(wctx, req, nd, nss)
 	if err != nil {

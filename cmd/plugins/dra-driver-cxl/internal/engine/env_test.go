@@ -68,6 +68,18 @@ type env struct {
 	fenced  []int
 	// sources are the sources that the engine owns, nil for all.
 	sources []state.Source
+	// tune changes the options of every engine that the node starts, nil
+	// for none.
+	tune func(o *Options)
+	// cutZero stops the process before ("before") or after ("after") the
+	// next zeroing of a dax device, "" for never; onZero runs before the
+	// next zeroing, nil for nothing; cutMu guards them.
+	cutMu   sync.Mutex
+	cutZero string
+	onZero  func()
+	// beforePrepared runs once in the next Prepare (prepare) between its
+	// grants realised and its preparation PREPARED, nil for nothing.
+	beforePrepared func()
 }
 
 // newEnv returns a node with the memdevs of specs plugged.
@@ -95,10 +107,25 @@ func (v *env) open() {
 		v.t.Fatal(err)
 	}
 	v.st = st
+	v.startEngine()
+}
+
+// configure sets the options of the engines of the node (tune) and starts
+// a new engine with them on the store, without a recovery.
+func (v *env) configure(tune func(o *Options)) {
+	v.t.Helper()
+	v.tune = tune
+	v.startEngine()
+}
+
+// startEngine starts a new engine on the store of the node.
+func (v *env) startEngine() {
+	v.t.Helper()
 	k := v.f.Kernel()
-	e, err := New(Options{
+	k.Sys = &cutSys{Sys: k.Sys, v: v}
+	opts := Options{
 		Kernel:  k,
-		Store:   st,
+		Store:   v.st,
 		Drivers: map[state.Source]string{state.SourcePool: poolDriver, state.SourceLocal: localDriver},
 		MountsDirs: map[state.Source]string{
 			state.SourcePool:  filepath.Join(v.dir, poolDriver, "mounts"),
@@ -116,9 +143,13 @@ func (v *env) open() {
 			}
 		},
 		Timeouts: Timeouts{Memdev: 2 * time.Second, ProbeGrace: 20 * time.Millisecond, RegionRetry: 10 * time.Millisecond,
-			Settle: 5 * time.Second, Restore: time.Second, Holder: 300 * time.Millisecond, OfflineSettle: 20 * time.Millisecond,
-			Offline: time.Second},
-	})
+			Settle: 5 * time.Second, LocalSettle: 5 * time.Second, Restore: time.Second, Holder: 300 * time.Millisecond,
+			OfflineSettle: 20 * time.Millisecond, Offline: time.Second},
+	}
+	if v.tune != nil {
+		v.tune(&opts)
+	}
+	e, err := New(opts)
 	if err != nil {
 		v.t.Fatal(err)
 	}
@@ -130,6 +161,41 @@ func (v *env) open() {
 		}
 	}
 	v.e = e
+}
+
+// cutSys is the system calls of the fake that stop the process at a
+// zeroing (env.cutZero).
+type cutSys struct {
+	kernel.Sys
+	v *env
+}
+
+// ZeroDax zeroes a dax device, the process stopped before or after it when
+// the node says so.
+func (s *cutSys) ZeroDax(ctx context.Context, major, minor int, size, align uint64) error {
+	s.v.cutMu.Lock()
+	when, on := s.v.cutZero, s.v.onZero
+	s.v.cutZero, s.v.onZero = "", nil
+	s.v.cutMu.Unlock()
+	if on != nil {
+		on()
+	}
+	if when == "before" {
+		panic(fake.ErrCut)
+	}
+	err := s.Sys.ZeroDax(ctx, major, minor, size, align)
+	if when == "after" {
+		panic(fake.ErrCut)
+	}
+	return err
+}
+
+// cutZeroing makes the process stop before (after false) or after the next
+// zeroing of a dax device.
+func (v *env) cutZeroing(after bool) {
+	v.cutMu.Lock()
+	defer v.cutMu.Unlock()
+	v.cutZero = map[bool]string{false: "before", true: "after"}[after]
 }
 
 // cutAfter makes the process stop (panic with fake.ErrCut) after the n-th
@@ -172,7 +238,8 @@ func (v *env) records() *state.Records {
 }
 
 // check fails the test on a violation of the invariants of the records and
-// the kernel now.
+// the kernel now, and on a change of a kernel object that no row of its
+// table has since the last check.
 func (v *env) check(what string) {
 	v.t.Helper()
 	snap, err := v.f.Kernel().Observe(context.Background())
@@ -188,6 +255,9 @@ func (v *env) check(what string) {
 	for _, viol := range v.e.Check(snap, v.sources, fenced) {
 		v.t.Errorf("%s: %s", what, viol)
 	}
+	for _, line := range v.e.UnknownSeen() {
+		v.t.Errorf("%s: %s%s", what, UnknownTransition, line)
+	}
 }
 
 // grantResult returns a result of kind grant of the claim uid with index
@@ -197,13 +267,14 @@ func grantResult(uid string, n int) state.Result {
 }
 
 // prepare does what a front-end does for a Prepare of a claim of the driver
-// with the grants reqs: the preparation PREPARING with its results, the
-// grants realised, then PREPARED; on an error the preparation is removed,
-// or KEPT when the rollback kept a grant. It returns the error of
-// PrepareGrants.
+// with the grants reqs, in a request of the engine: the preparation
+// PREPARING with its results, the grants realised, then (after
+// beforePrepared) PREPARED; on an error the preparation is removed, or KEPT
+// when the rollback kept a grant. It returns the error of PrepareGrants.
 func (v *env) prepare(driver, uid string, reqs ...GrantRequest) error {
 	v.t.Helper()
-	ctx := context.Background()
+	ctx, end := v.e.Request(context.Background())
+	defer end()
 	if err := v.st.Commit(ctx, store.Durable, func(doc *store.Document) error {
 		p := doc.Preparation(driver, uid)
 		if p == nil {
@@ -233,6 +304,10 @@ func (v *env) prepare(driver, uid string, reqs ...GrantRequest) error {
 		v.t.Fatal(err)
 	}
 	_, err := v.e.PrepareGrants(ctx, reqs)
+	if before := v.beforePrepared; before != nil && err == nil {
+		v.beforePrepared = nil
+		before()
+	}
 	if cerr := v.st.Commit(ctx, store.Durable, func(doc *store.Document) error {
 		p := doc.Preparation(driver, uid)
 		if err == nil {
@@ -270,11 +345,13 @@ func failedPreparation(r *state.Records, p *state.Preparation) error {
 }
 
 // unprepare does what a front-end does for an Unprepare of a claim of the
-// driver: UNPREPARING, the grants released, the preparation removed. It
-// returns the error of ReleaseGrants (the preparation stays then).
+// driver, in a request of the engine: UNPREPARING, the grants released, the
+// preparation removed. It returns the error of ReleaseGrants (the
+// preparation stays then).
 func (v *env) unprepare(driver, uid string) error {
 	v.t.Helper()
-	ctx := context.Background()
+	ctx, end := v.e.Request(context.Background())
+	defer end()
 	p := v.records().Preparation(driver, uid)
 	if p == nil {
 		return nil

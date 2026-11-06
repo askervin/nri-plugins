@@ -131,19 +131,118 @@ func TestPersistentFsReadOnly(t *testing.T) {
 
 // A read-write claim with access cached of a device that a reader mounts
 // with access direct only is refused with the text of the e2e tests, and
-// nothing is mounted.
+// the refusal mounts and changes nothing.
 func TestPersistentP9D(t *testing.T) {
 	v := pmemEnv(t, "ext4")
 	v.mustPrepare(poolDriver, "r", fsGrant("r", true, state.AccessDirect))
+	n := mountCalls(v)
 	err := v.prepare(poolDriver, "w", fsGrant("w", false, state.AccessCached))
 	want := strings.ReplaceAll(compat.EventDeviceFSSerialItIsMountedWithAccessDirect, "$FS_SERIAL", api.FormatSerial(serialP))
 	if err == nil || err.Error() != want {
 		t.Fatalf("error %v, want %q", err, want)
 	}
-	if mounts := v.f.MountTable(); len(mounts) != 1 {
+	// the refusal mounts and changes nothing: the reader's read-only node
+	// mount stays the only one, on the read-only block device
+	wantMountCalls(t, v, n)
+	direct := v.grant("r", 0).Got.MountPath
+	if mounts := v.f.MountTable(); len(mounts) != 1 || mounts[0].Target != direct || !mounts[0].SuperReadOnly() {
 		t.Fatalf("mounts %+v", mounts)
 	}
+	if !v.f.IsReadOnly(filepath.Join(v.f.DevRoot(), "pmem0")) {
+		t.Fatal("block device writable after the refusal")
+	}
 	v.mustUnprepare(poolDriver, "r")
+}
+
+// sources are the sources of the grants of the engine.
+var sources = []state.Source{state.SourcePool, state.SourceLocal}
+
+// driverOf returns the driver of the claims of a source.
+func driverOf(source state.Source) string {
+	if source == state.SourceLocal {
+		return localDriver
+	}
+	return poolDriver
+}
+
+// fsUse returns the request of a grant of mode fs of the claim uid on the
+// persistent memdev serialP of the source.
+func fsUse(source state.Source, uid string, readOnly bool, access state.Access) GrantRequest {
+	if source == state.SourceLocal {
+		return localPmemReq(uid, 0, state.ModeFs, readOnly, access)
+	}
+	return fsGrant(uid, readOnly, access)
+}
+
+// mountCalls returns the number of system calls of the mount table of the
+// node so far.
+func mountCalls(v *env) int {
+	return len(v.f.MountCalls(""))
+}
+
+// mountCallsSince returns the system calls of the mount table of the node
+// after the first n.
+func mountCallsSince(v *env, n int) []string {
+	return slices.Clone(v.f.MountCalls("")[n:])
+}
+
+// wantMountCalls fails the test unless the system calls of the mount table
+// of the node after the first n are want.
+func wantMountCalls(t *testing.T, v *env, n int, want ...string) {
+	t.Helper()
+	if got := mountCallsSince(v, n); !slices.Equal(got, want) {
+		t.Fatalf("calls\n  %s\nwant\n  %s", strings.Join(got, "\n  "), strings.Join(want, "\n  "))
+	}
+}
+
+// A cached ext4 is on a writable loop device: the reader makes the block
+// device read-only, attaches the loop device read-write and makes it
+// read-only before its mount; a writer makes the block device, then the
+// loop device writable before the superblock; the release of the writer
+// writes the data out before the superblock turns read-only, then the loop
+// device, then the block device. A read-only type is on a read-only loop
+// device.
+func TestPersistentCachedOrder(t *testing.T) {
+	for _, source := range sources {
+		t.Run(string(source), func(t *testing.T) {
+			driver := driverOf(source)
+			v := pmemEnv(t, "ext4")
+			cached := filepath.Join(v.dir, driver, "mounts", "91-cached")
+			pmem, loop := filepath.Join(v.f.DevRoot(), "pmem0"), filepath.Join(v.f.DevRoot(), "loop0")
+			n := mountCalls(v)
+			v.mustPrepare(driver, "r", fsUse(source, "r", true, state.AccessCached))
+			if g := v.grant("r", 0); g.Got.Loop != loop || g.Got.MountPath != cached {
+				t.Fatalf("grant %+v", g.Got)
+			}
+			wantMountCalls(t, v, n, "blkroset "+pmem+" 1", "loop "+loop+" "+pmem+" rw", "blkroset "+loop+" 1",
+				"fsmount "+loop+" "+cached+" ext4 ro dax=never", "loop-release "+loop+" detach=false")
+			n = mountCalls(v)
+			v.mustPrepare(driver, "w", fsUse(source, "w", false, state.AccessCached))
+			wantMountCalls(t, v, n, "blkroset "+pmem+" 0", "blkroset "+loop+" 0", "reconfigure "+cached+" rw")
+			n = mountCalls(v)
+			v.mustUnprepare(driver, "w")
+			wantMountCalls(t, v, n, "syncfs "+cached, "reconfigure "+cached+" ro", "blkroset "+loop+" 1", "blkroset "+pmem+" 1")
+			v.mustUnprepare(driver, "r")
+			if mounts, loops := v.f.MountTable(), v.f.Kernel().LoopDevices(); len(mounts) != 0 || len(loops) != 0 {
+				t.Fatalf("left: mounts %+v loops %+v", mounts, loops)
+			}
+			v.clean("unprepared")
+			if len(v.f.Violations()) > 0 {
+				t.Fatalf("violations %v", v.f.Violations())
+			}
+		})
+	}
+	t.Run("read-only type", func(t *testing.T) {
+		v := pmemEnv(t, "erofs")
+		pmem, loop := filepath.Join(v.f.DevRoot(), "pmem0"), filepath.Join(v.f.DevRoot(), "loop0")
+		n := mountCalls(v)
+		v.mustPrepare(poolDriver, "r", fsGrant("r", true, state.AccessCached))
+		if got := v.f.MountCalls("loop "); !slices.Equal(got, []string{"loop " + loop + " " + pmem}) {
+			t.Fatalf("loop devices %q of the calls %q", got, mountCallsSince(v, n))
+		}
+		v.mustUnprepare(poolDriver, "r")
+		v.clean("unprepared")
+	})
 }
 
 // The lease bind of a companion grant of mode fs: bound at its target after
@@ -287,4 +386,66 @@ func TestPersistentBindBusy(t *testing.T) {
 	v.f.SetBusy(req.BindTarget, false)
 	v.mustUnprepare(poolDriver, "c")
 	v.clean("unprepared")
+}
+
+// A use of a local persistent memdev whose release failed stays a use of
+// the device until its release is done: the node mount of a reader whose
+// unmount is busy, the read-write superblock of a writer whose downgrade is
+// busy. The rules of one node refuse the Prepares of other claims next to
+// it, which mount and change nothing; a reader of its node mount reuses it
+// as it is.
+func TestPersistentReleasingUses(t *testing.T) {
+	refused := func(t *testing.T, v *env, req GrantRequest, want string) {
+		t.Helper()
+		n := mountCalls(v)
+		if err := v.prepare(localDriver, req.Ref.Claim, req); err == nil || err.Error() != want {
+			t.Errorf("claim %s: error %v, want %q", req.Ref.Claim, err, want)
+		}
+		if calls := mountCallsSince(v, n); len(calls) > 0 {
+			t.Errorf("claim %s: calls %q of a refused Prepare", req.Ref.Claim, calls)
+		}
+	}
+	t.Run("node mount of a reader", func(t *testing.T) {
+		v := pmemEnv(t, "ext4")
+		v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFs, true, state.AccessCached))
+		cached := v.grant("r", 0).Got.MountPath
+		v.f.SetBusy(cached, true)
+		if err := v.unprepare(localDriver, "r"); err == nil || !strings.Contains(err.Error(), "unmounting "+cached+": device or resource busy") {
+			t.Fatalf("error %v", err)
+		}
+		refused(t, v, localPmemReq("w", 0, state.ModeFs, false, state.AccessDirect),
+			"device 0x91: it is mounted with access cached only on this node: a read-write claim with access direct would mount it a second time")
+		v.f.SetBusy(cached, false)
+		finish(t, v, "finished")
+		if viol := v.f.Violations(); len(viol) > 0 {
+			t.Fatalf("violations %v", viol)
+		}
+	})
+	t.Run("superblock of a writer", func(t *testing.T) {
+		v := pmemEnv(t, "ext4")
+		v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
+		v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFs, true, ""))
+		direct := v.grant("w", 0).Got.MountPath
+		v.f.SetWriting(direct, true)
+		if err := v.unprepare(localDriver, "w"); err == nil || !strings.Contains(err.Error(), "remounting "+direct+" read-only: device or resource busy") {
+			t.Fatalf("error %v", err)
+		}
+		other := strings.ReplaceAll(compat.EventDeviceFSSerialItIsMountedReadWriteWith, "$FS_SERIAL", api.FormatSerial(serialP))
+		refused(t, v, localPmemReq("c", 0, state.ModeFs, true, state.AccessCached), other)
+		refused(t, v, localPmemReq("w2", 0, state.ModeFs, false, state.AccessCached), other)
+		// a reader of the node mount: as it is, read-write
+		n := mountCalls(v)
+		v.mustPrepare(localDriver, "r2", localPmemReq("r2", 0, state.ModeFs, true, state.AccessDirect))
+		if calls := mountCallsSince(v, n); len(calls) > 0 {
+			t.Errorf("calls %q of the reader", calls)
+		}
+		if mi, _ := v.f.Kernel().Mounted(direct); mi == nil || mi.SuperReadOnly() {
+			t.Errorf("node mount %+v", mi)
+		}
+		v.f.SetWriting(direct, false)
+		finish(t, v, "finished")
+		if viol := v.f.Violations(); len(viol) > 0 {
+			t.Fatalf("violations %v", viol)
+		}
+	})
 }
