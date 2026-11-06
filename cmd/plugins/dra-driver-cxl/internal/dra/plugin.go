@@ -723,7 +723,7 @@ func (p *Plugin) unprepare(ctx context.Context, uid string) (string, error) {
 	if !isPrepared {
 		v.unfinished(prep, serialsOf(p.records(), prep))
 	}
-	companion := prep.Lease != "" && (isPrepared || p.rules.RevokeUnfinished)
+	companion := prep.Lease != ""
 	if companion {
 		p.lender.Releasing(prep.Lease)
 	}
