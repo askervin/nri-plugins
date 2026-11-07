@@ -81,7 +81,7 @@ type deviceConfig struct {
 	Filesystems string
 	// Fence gets the NUMA nodes of memory before it goes online, nil for
 	// none.
-	Fence *nodeFence
+	Fence func(ctx context.Context, node int)
 	// ProbeAddressing runs the address line probe on new regions of local
 	// memdevs.
 	ProbeAddressing bool
@@ -178,10 +178,7 @@ func newDeviceEngine(cfg deviceConfig) (*deviceEngine, error) {
 			return nil, fmt.Errorf("no directory of the node mounts of the %s source", src)
 		}
 	}
-	if cfg.Fence != nil {
-		fence := cfg.Fence
-		opts.Fence = func(ctx context.Context, node int) { fence.Fence(ctx, node) }
-	}
+	opts.Fence = cfg.Fence
 	e, err := engine.New(opts)
 	if err != nil {
 		return nil, err

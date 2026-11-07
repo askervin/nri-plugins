@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
@@ -40,10 +41,14 @@ type header struct {
 }
 
 // render returns docs/memory/cxl/states.md for the record types whose Go
-// files are in the directory stateDir and the kernel objects whose Go files
-// are in the directory kernelDir.
-func render(stateDir, kernelDir string) ([]byte, error) {
+// files are in the directories stateDir and containersDir and the kernel
+// objects whose Go files are in the directory kernelDir.
+func render(stateDir, containersDir, kernelDir string) ([]byte, error) {
 	docs, triggers, err := parseState(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	ctrDocs, ctrTriggers, err := parseState(containersDir)
 	if err != nil {
 		return nil, err
 	}
@@ -58,29 +63,15 @@ func render(stateDir, kernelDir string) ([]byte, error) {
 	b.WriteString("directory of `cxl.nri.io`, and the transitions of every state field; `Memdev.Busy` is held in\n")
 	b.WriteString("memory only. The driver refuses a transition that is not a row of its table. In the effects,\n")
 	b.WriteString("\"commit (d)\" is durable before the next externally visible act, \"commit (l)\" is lazy. The\n")
-	b.WriteString("last part, \"Kernel objects\", has the states of the CXL kernel objects that the driver observes.\n\n")
+	b.WriteString("part \"Containers\" has the records of the NRI plugin, held in memory; the last part, \"Kernel\n")
+	b.WriteString("objects\", has the states of the CXL kernel objects that the driver observes.\n\n")
 	b.WriteString("Triggers:\n\n")
 	for _, tr := range state.Triggers {
 		fmt.Fprintf(&b, "- `%s`: %s\n", tr, escape(triggers[string(tr)]))
 	}
 	b.WriteString("\n")
-	for _, o := range state.Catalogue() {
-		h, ok := docs[o.Name]
-		if !ok {
-			return nil, fmt.Errorf("%s: no doc comment of type %s", stateDir, o.Name)
-		}
-		fmt.Fprintf(&b, "## %s\n\n", o.Name)
-		for _, p := range h.purpose {
-			b.WriteString(escape(p) + "\n\n")
-		}
-		for _, l := range labels {
-			fmt.Fprintf(&b, "**%s.** %s\n\n", l, escape(capitalize(h.sections[l])))
-			if l == "Transitions" {
-				for _, t := range o.Tables {
-					renderTable(&b, t)
-				}
-			}
-		}
+	if err := renderObjects(&b, state.Catalogue(), docs, stateDir, ""); err != nil {
+		return nil, err
 	}
 	b.WriteString("## Invariants over the document\n\n")
 	b.WriteString("Checked by `state.Check` over the records alone; the engine checks the invariants that also\n")
@@ -88,10 +79,45 @@ func render(stateDir, kernelDir string) ([]byte, error) {
 	for _, inv := range state.DocumentInvariants {
 		fmt.Fprintf(&b, "- **%s**: %s\n", inv.Name, escape(inv.Text))
 	}
+	b.WriteString("\n## Containers\n\n")
+	b.WriteString("The records of the NRI plugin of the driver (`internal/containers`), held in memory: Synchronize\n")
+	b.WriteString("builds them again after a restart. Triggers:\n\n")
+	for _, tr := range containers.Triggers {
+		fmt.Fprintf(&b, "- `%s`: %s\n", tr, escape(ctrTriggers[string(tr)]))
+	}
+	b.WriteString("\n")
+	if err := renderObjects(&b, containers.Catalogue(), ctrDocs, containersDir, " (in memory)"); err != nil {
+		return nil, err
+	}
 	if err := renderKernel(&b, kernelDocs, kernelDir); err != nil {
 		return nil, err
 	}
 	return append(bytes.TrimRight(b.Bytes(), "\n"), '\n'), nil
+}
+
+// renderObjects writes the sections of the record types of a catalogue:
+// the header of each from docs (of the Go files in dir), with suffix after
+// its name, and the tables of its states.
+func renderObjects(b *bytes.Buffer, objects []state.Object, docs map[string]header, dir, suffix string) error {
+	for _, o := range objects {
+		h, ok := docs[o.Name]
+		if !ok {
+			return fmt.Errorf("%s: no doc comment of type %s", dir, o.Name)
+		}
+		fmt.Fprintf(b, "## %s%s\n\n", o.Name, suffix)
+		for _, p := range h.purpose {
+			b.WriteString(escape(p) + "\n\n")
+		}
+		for _, l := range labels {
+			fmt.Fprintf(b, "**%s.** %s\n\n", l, escape(capitalize(h.sections[l])))
+			if l == "Transitions" {
+				for _, t := range o.Tables {
+					renderTable(b, t)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // renderKernel writes the sections of the kernel objects: the header of

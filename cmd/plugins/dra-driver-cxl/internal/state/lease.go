@@ -15,6 +15,7 @@
 package state
 
 import (
+	"slices"
 	"time"
 )
 
@@ -119,6 +120,30 @@ type Lend struct {
 	BindTarget string `json:"bindTarget,omitempty"`
 }
 
+// LeaseLends returns the NUMA nodes that the READY leases of mode numa of
+// the container name of the pod podUID lend it, each with the ids of the
+// leases that hold it, sorted; nil for none. A requester container that
+// restarts is created with them.
+func LeaseLends(r *Records, podUID, container string) map[int][]string {
+	var nodes map[int][]string
+	for i := range r.Leases {
+		l := &r.Leases[i]
+		if l.Pod.UID != podUID || l.Container != container || l.Asked.Mode != ModeNUMA || l.State != LeaseReady ||
+			l.Lend == nil || l.Lend.NumaNode == nil {
+			continue
+		}
+		if nodes == nil {
+			nodes = map[int][]string{}
+		}
+		n := *l.Lend.NumaNode
+		nodes[n] = append(nodes[n], l.ID)
+	}
+	for _, ids := range nodes {
+		slices.Sort(ids)
+	}
+	return nodes
+}
+
 // LeaseState is the state of a Lease.
 type LeaseState string
 
@@ -145,9 +170,9 @@ var LeaseTable = Table[LeaseState]{
 	Rows: []Transition[LeaseState]{
 		{
 			From: list(LeaseNone), To: LeaseCreating, Triggers: list(TriggerRequest),
-			When:    "a request on a lease claim's socket: authenticated, validated, serial resolved",
-			Guard:   "the lease claim OPEN",
-			Effects: "commit (d) before any API object exists",
+			When:    "a request on a lease claim's socket: authenticated, validated, the serial resolved, the id chosen",
+			Guard:   "an fs lease: its lease claim has FsDir and the name is unused",
+			Effects: "commit (d) before any API object exists; a failed commit refuses the request",
 		},
 		{
 			From: list(LeaseCreating), To: LeasePending, Triggers: list(TriggerRequest),
@@ -156,102 +181,97 @@ var LeaseTable = Table[LeaseState]{
 			Effects: "commit (d)",
 		},
 		{
-			From: list(LeaseCreating), To: LeaseFailed, Triggers: list(TriggerRequest),
-			When:    "the companion creation failed (AlreadyExists, API error)",
-			Effects: "commit (d); then the release starts",
+			From: list(LeaseCreating, LeaseReleasing), To: LeaseFailed, Triggers: list(TriggerRequest),
+			When:    "the companion creation failed (AlreadyExists, API error); RELEASING: released meanwhile",
+			Effects: "the release starts, the lease stays FAILED; the client gets Failed with the error",
 		},
 		{
 			From: list(LeaseCreating, LeasePending), To: LeaseLending, Triggers: list(TriggerOnLending),
-			When:    "the companion gate passed (name, namespace, owner, state; the spec hash on this first Prepare)",
-			Effects: "commit (d) jointly with the Preparation PREPARING",
+			When:    "the companion gate passed: the name, the namespace and the owner of the claim",
+			Effects: "commit (d); the lend of the requester to the driver (with FsDir and the name of an fs lease)",
 		},
 		{
 			From: list(LeaseLending, LeaseReady), Stays: true, Triggers: list(TriggerOnLending),
-			When:    "a retried or announced-again Prepare of the companion",
+			When:    "a retried or announced-again Prepare of the companion (also while kubelet retries a failed one)",
 			Effects: "no commit",
 		},
 		{
 			From: list(LeaseLending), To: LeaseReady, Triggers: list(TriggerOnPrepared),
 			When:  "the companion's Prepare hands over the lent devices",
-			Guard: "the mode matches",
-			Effects: "commit (d) jointly with the companion PREPARED; the waiting client gets the response (fd for " +
-				"dax and block)",
+			Guard: "the mode of the device matches (fs and block)",
+			Effects: "commit (d) of Got and of the Lend (the NUMA node of numa, the bind target of fs); the waiting " +
+				"client gets the response (the fd of dax and block)",
 		},
 		{
 			From: list(LeaseReady), Stays: true, Triggers: list(TriggerOnPrepared),
-			When:    "the companion's Prepare announced again",
-			Effects: "no commit",
+			When:    "the companion's Prepare announced again (kubelet prepares a prepared claim again)",
+			Effects: "commit (d) of Got and the Lend again",
 		},
 		{
-			From: list(LeaseLending), Stays: true, Triggers: list(TriggerPrepare),
-			When:    "the companion's device preparation failed (kubelet retries)",
-			Effects: "no commit; the client waits until its --wait ends",
+			From: list(LeaseLending, LeaseReady), To: LeaseFailed, Triggers: list(TriggerOnPrepared),
+			When:    "the companion prepared a device of another mode (fs or block against another)",
+			Effects: "commit (d); the release starts",
 		},
 		{
-			From: list(LeaseLending, LeaseReady), To: LeaseFailed, Triggers: list(TriggerOnLendFailed, TriggerOnPrepared),
-			When:    "a bind or lend error; a wrong mode",
+			From: list(LeaseCreating, LeasePending, LeaseLending, LeaseReady), To: LeaseFailed, Triggers: list(TriggerOnLendFailed),
+			When:    "a bind or lend error of the companion's Prepare",
 			Effects: "commit (d); the release starts",
 		},
 		{
 			From:     list(LeaseCreating, LeasePending, LeaseLending, LeaseReady, LeaseFailed),
 			To:       LeaseFailed,
 			Triggers: list(TriggerOnReleasing),
-			When:     "the companion claim unprepared behind the broker (the companion pod deleted by someone)",
-			Effects:  "commit (d); the reconcile releases it",
+			When:     "the companion claim unprepared behind the broker (the companion pod deleted or evicted)",
+			Effects:  "commit (d); the reconcile releases it once the companion pod is gone",
 		},
 		{
-			From: list(LeasePending, LeaseLending), To: LeaseReleasing, Triggers: list(TriggerRequest),
+			From: list(LeaseCreating, LeasePending, LeaseLending), To: LeaseReleasing, Triggers: list(TriggerRequest),
 			When:    "the request's --wait ended",
-			Effects: "the client gets Failed \"timeout: not Ready after D\"; commit (d)",
+			Effects: "the client gets Failed \"timeout: not Ready after D\"; commit (d) of ReleaseRequested",
 		},
 		{
-			From: list(LeaseReady), To: LeaseReleasing, Triggers: list(TriggerRelease, TriggerUnprepare, TriggerReconcile),
-			When: "a release by the client; the requester pod done; CloseClaim of the lease claim; the reconcile " +
-				"(companion gone)",
+			From:     list(LeaseCreating, LeasePending, LeaseLending, LeaseReady),
+			To:       LeaseReleasing,
+			Triggers: list(TriggerRelease, TriggerUnprepare, TriggerReconcile),
+			When: "a release by the client; the requester gone; CloseClaim of the lease claim; the reconcile " +
+				"(companion gone, requester done, CREATING for longer than 2 min: left over by a crash)",
 			Effects: "commit (d) of ReleaseRequested; the node revoked; pod and claim deleted (Foreground); " +
 				"DeletionRequested (d)",
 		},
 		{
-			From: list(LeaseFailed), Stays: true, Triggers: list(TriggerRelease, TriggerReconcile, TriggerUnprepare),
-			When: "the release after the failure, the reconcile, or CloseClaim",
+			From: list(LeaseFailed), Stays: true,
+			Triggers: list(TriggerRequest, TriggerRelease, TriggerUnprepare, TriggerReconcile, TriggerOnPrepared,
+				TriggerOnLendFailed, TriggerRecover),
+			When: "the release of a failed lease",
 			Effects: "released in place: commit (d) of ReleaseRequested; the node revoked; pod and claim deleted " +
 				"(Foreground); DeletionRequested (d); the lease stays FAILED so that a list shows why",
 		},
 		{
-			From: list(LeaseFailed), To: LeaseNone, Triggers: list(TriggerRelease, TriggerReconcile),
-			When:    "pod and claim both NotFound",
-			Effects: "commit (d) removing the lease",
+			From: list(LeaseReleasing, LeaseReleasingBusy), Stays: true,
+			Triggers: list(TriggerRelease, TriggerUnprepare, TriggerReconcile),
+			When:     "the release started again: a record of a start (ReleaseRequested set), its release not running",
+			Effects:  "the release runs again",
 		},
 		{
-			From: list(LeaseReady), To: LeaseFailed, Triggers: list(TriggerRecover),
-			When:    "the companion's bind cannot be restored at a start: its Preparation is PREPARED_UNRESTORED",
-			Effects: "commit (d); the release starts; the requester's next list shows the lease Failed",
-		},
-		{
-			From: list(LeaseReady, LeaseReleasing), To: LeaseReleasingBusy, Triggers: list(TriggerUnprepare),
-			When:    "the companion's unbind failed with EBUSY (a mapped file)",
+			From: list(LeaseReleasing), To: LeaseReleasingBusy, Triggers: list(TriggerRelease),
+			When:    "the companion's bind is STALE: its unbind failed with EBUSY (a file of it is mapped)",
 			Effects: "commit (d); the companion stays Terminating; reads work until the holder ends",
 		},
 		{
-			From: list(LeaseReleasingBusy), To: LeaseReleasing, Triggers: list(TriggerUnprepare, TriggerReconcile),
-			When:    "the holder ended and the unbind succeeded",
+			From: list(LeaseReleasingBusy), To: LeaseReleasing, Triggers: list(TriggerRelease),
+			When:    "the companion's bind is not STALE any more (the holder ended, the unbind succeeded), or it is gone",
 			Effects: "commit (d)",
 		},
 		{
-			From: list(LeaseReleasing), To: LeaseNone, Triggers: list(TriggerRelease, TriggerReconcile),
+			From: list(LeaseReleasing, LeaseFailed), To: LeaseNone, Triggers: list(TriggerRelease),
 			When: "pod and claim both NotFound",
-			Effects: "commit (d) removing the lease; the lease claim's directories removed when CLOSED and no " +
-				"lease left",
+			Effects: "commit (d) removing the lease; the lease claim's directories removed when it is closed and " +
+				"this was its last lease",
 		},
 		{
-			From: list(LeaseReleasing), Stays: true, Triggers: list(TriggerRecover),
-			When:    "the record at a start: ReleaseRequested set, the release is not running",
-			Effects: "the first reconcile starts the release again",
-		},
-		{
-			From: list(LeaseCreating), To: LeaseReleasing, Triggers: list(TriggerReconcile),
-			When:    "the record older than 2 min at a start (left over by a crash)",
-			Effects: "commit (d)",
+			From: list(LeaseReady), To: LeaseFailed, Triggers: list(TriggerRecover),
+			When:    "the start did not restore the device of the companion: its Preparation is PREPARED_UNRESTORED",
+			Effects: "commit (d); the release starts; the requester's next list shows the lease Failed",
 		},
 		{
 			From: leaseStored, To: LeaseNone, Triggers: list(TriggerLoad),

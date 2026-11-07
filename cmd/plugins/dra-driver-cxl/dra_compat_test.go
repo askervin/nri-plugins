@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
@@ -101,25 +102,6 @@ func poolNumaNodes(p *dra.Plugin) []int {
 	return dra.NumaNodes(p.Records(), p.Name())
 }
 
-// claimTable is a table of prepared claims of cxl.nri.io by UID, as the
-// NRI plugin reads them.
-type claimTable PreparedClaimsInfo
-
-// PreparedResult returns the claim name and the prepared device of the
-// allocation result n of a claim of the table, and false if there is none.
-func (t claimTable) PreparedResult(uid string, n int) (string, PreparedDeviceInfo, bool) {
-	info := t[uid]
-	if info == nil {
-		return "", PreparedDeviceInfo{}, false
-	}
-	for _, d := range info.Devices {
-		if d.Result == n {
-			return info.ClaimName, d, true
-		}
-	}
-	return "", PreparedDeviceInfo{}, false
-}
-
 // prepareOn prepares a claim on the plugin p as kubelet does and returns
 // its error.
 func prepareOn(ctx context.Context, p *dra.Plugin, claim *resourceapi.ResourceClaim) error {
@@ -148,7 +130,7 @@ func unprepareOn(ctx context.Context, p *dra.Plugin, uid string) error {
 
 // setNRI makes the Prepares of the plugin p wait for the first Synchronize
 // of the NRI plugin nri, nil for none.
-func setNRI(p *dra.Plugin, nri *nriPlugin) {
+func setNRI(p *dra.Plugin, nri *containers.Plugin) {
 	if nri == nil {
 		p.SetWaitNRI(nil)
 		return

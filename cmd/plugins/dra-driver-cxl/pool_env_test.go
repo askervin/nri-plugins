@@ -43,7 +43,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
-	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -67,7 +66,7 @@ type poolTestEnv struct {
 	timeout        time.Duration
 	holderWait     time.Duration
 	// fence fences the NUMA nodes, nil for none.
-	fence *nodeFence
+	fence func(ctx context.Context, node int)
 	// base are the commands of the fake before those of the driver.
 	base string
 	// pmem is the block device of the persistent device plugged last.
@@ -506,22 +505,6 @@ func (e *poolTestEnv) wantNoMounts(t *testing.T, p *dra.Plugin) {
 	}
 }
 
-// wantDaxDriver fails the test unless the dax device is bound to driver.
-func (e *poolTestEnv) wantDaxDriver(t *testing.T, dax, driver string) {
-	t.Helper()
-	if d := e.k.DaxDriver(dax); d != driver {
-		t.Fatalf("%s is bound to %q, expected %s", dax, d, driver)
-	}
-}
-
-// wantOffline fails the test when memory of the region is online.
-func (e *poolTestEnv) wantOffline(t *testing.T, region string) {
-	t.Helper()
-	if n := e.onlineBlocks(region); n != 0 {
-		t.Fatalf("%d memory blocks of %s online", n, region)
-	}
-}
-
 // bindCall returns the mount call of a bind of a node mount at target.
 func bindCall(nodeMount, target string) string {
 	return fmt.Sprintf("mount %s %s  0x%x ", nodeMount, target, unix.MS_BIND)
@@ -531,14 +514,6 @@ func bindCall(nodeMount, target string) string {
 // error, as a mount table does.
 func (e *poolTestEnv) mountedErr(target string) (*mountInfo, error) {
 	return e.mounted(target), nil
-}
-
-// parseHexSerial returns the serial of its 0x hex text.
-func parseHexSerial(t *testing.T, text string) uint64 {
-	t.Helper()
-	serial, err := api.ParseSerial(text)
-	noErr(t, err)
-	return serial
 }
 
 // setImage writes a filesystem of the types on the fsdax namespace of the

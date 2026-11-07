@@ -6,7 +6,8 @@ The records that the CXL DRA driver keeps in its store, `state.json` in the plug
 directory of `cxl.nri.io`, and the transitions of every state field; `Memdev.Busy` is held in
 memory only. The driver refuses a transition that is not a row of its table. In the effects,
 "commit (d)" is durable before the next externally visible act, "commit (l)" is lazy. The
-last part, "Kernel objects", has the states of the CXL kernel objects that the driver observes.
+part "Containers" has the records of the NRI plugin, held in memory; the last part, "Kernel
+objects", has the states of the CXL kernel objects that the driver observes.
 
 Triggers:
 
@@ -396,26 +397,24 @@ States: NONE, CREATING, PENDING, LENDING, READY, RELEASING, RELEASING_BUSY, FAIL
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| NONE | CREATING | `a-request`: a request on a lease claim's socket: authenticated, validated, serial resolved | the lease claim OPEN | commit (d) before any API object exists |
+| NONE | CREATING | `a-request`: a request on a lease claim's socket: authenticated, validated, the serial resolved, the id chosen | an fs lease: its lease claim has FsDir and the name is unused | commit (d) before any API object exists; a failed commit refuses the request |
 | CREATING | PENDING | `a-request`: the companion claim and pod created | still CREATING (OnLending may have won) | commit (d) |
-| CREATING | FAILED | `a-request`: the companion creation failed (AlreadyExists, API error) | - | commit (d); then the release starts |
-| CREATING, PENDING | LENDING | `OnLending`: the companion gate passed (name, namespace, owner, state; the spec hash on this first Prepare) | - | commit (d) jointly with the Preparation PREPARING |
-| LENDING, READY | (unchanged) | `OnLending`: a retried or announced-again Prepare of the companion | - | no commit |
-| LENDING | READY | `OnPrepared`: the companion's Prepare hands over the lent devices | the mode matches | commit (d) jointly with the companion PREPARED; the waiting client gets the response (fd for dax and block) |
-| READY | (unchanged) | `OnPrepared`: the companion's Prepare announced again | - | no commit |
-| LENDING | (unchanged) | `a-prepare`: the companion's device preparation failed (kubelet retries) | - | no commit; the client waits until its --wait ends |
-| LENDING, READY | FAILED | `OnLendFailed`, `OnPrepared`: a bind or lend error; a wrong mode | - | commit (d); the release starts |
-| CREATING, PENDING, LENDING, READY, FAILED | FAILED | `OnReleasing`: the companion claim unprepared behind the broker (the companion pod deleted by someone) | - | commit (d); the reconcile releases it |
-| PENDING, LENDING | RELEASING | `a-request`: the request's --wait ended | - | the client gets Failed "timeout: not Ready after D"; commit (d) |
-| READY | RELEASING | `a-release`, `a-unprepare`, `a-reconcile`: a release by the client; the requester pod done; CloseClaim of the lease claim; the reconcile (companion gone) | - | commit (d) of ReleaseRequested; the node revoked; pod and claim deleted (Foreground); DeletionRequested (d) |
-| FAILED | (unchanged) | `a-release`, `a-reconcile`, `a-unprepare`: the release after the failure, the reconcile, or CloseClaim | - | released in place: commit (d) of ReleaseRequested; the node revoked; pod and claim deleted (Foreground); DeletionRequested (d); the lease stays FAILED so that a list shows why |
-| FAILED | NONE | `a-release`, `a-reconcile`: pod and claim both NotFound | - | commit (d) removing the lease |
-| READY | FAILED | `a-recover`: the companion's bind cannot be restored at a start: its Preparation is PREPARED_UNRESTORED | - | commit (d); the release starts; the requester's next list shows the lease Failed |
-| READY, RELEASING | RELEASING_BUSY | `a-unprepare`: the companion's unbind failed with EBUSY (a mapped file) | - | commit (d); the companion stays Terminating; reads work until the holder ends |
-| RELEASING_BUSY | RELEASING | `a-unprepare`, `a-reconcile`: the holder ended and the unbind succeeded | - | commit (d) |
-| RELEASING | NONE | `a-release`, `a-reconcile`: pod and claim both NotFound | - | commit (d) removing the lease; the lease claim's directories removed when CLOSED and no lease left |
-| RELEASING | (unchanged) | `a-recover`: the record at a start: ReleaseRequested set, the release is not running | - | the first reconcile starts the release again |
-| CREATING | RELEASING | `a-reconcile`: the record older than 2 min at a start (left over by a crash) | - | commit (d) |
+| CREATING, RELEASING | FAILED | `a-request`: the companion creation failed (AlreadyExists, API error); RELEASING: released meanwhile | - | the release starts, the lease stays FAILED; the client gets Failed with the error |
+| CREATING, PENDING | LENDING | `OnLending`: the companion gate passed: the name, the namespace and the owner of the claim | - | commit (d); the lend of the requester to the driver (with FsDir and the name of an fs lease) |
+| LENDING, READY | (unchanged) | `OnLending`: a retried or announced-again Prepare of the companion (also while kubelet retries a failed one) | - | no commit |
+| LENDING | READY | `OnPrepared`: the companion's Prepare hands over the lent devices | the mode of the device matches (fs and block) | commit (d) of Got and of the Lend (the NUMA node of numa, the bind target of fs); the waiting client gets the response (the fd of dax and block) |
+| READY | (unchanged) | `OnPrepared`: the companion's Prepare announced again (kubelet prepares a prepared claim again) | - | commit (d) of Got and the Lend again |
+| LENDING, READY | FAILED | `OnPrepared`: the companion prepared a device of another mode (fs or block against another) | - | commit (d); the release starts |
+| CREATING, PENDING, LENDING, READY | FAILED | `OnLendFailed`: a bind or lend error of the companion's Prepare | - | commit (d); the release starts |
+| CREATING, PENDING, LENDING, READY, FAILED | FAILED | `OnReleasing`: the companion claim unprepared behind the broker (the companion pod deleted or evicted) | - | commit (d); the reconcile releases it once the companion pod is gone |
+| CREATING, PENDING, LENDING | RELEASING | `a-request`: the request's --wait ended | - | the client gets Failed "timeout: not Ready after D"; commit (d) of ReleaseRequested |
+| CREATING, PENDING, LENDING, READY | RELEASING | `a-release`, `a-unprepare`, `a-reconcile`: a release by the client; the requester gone; CloseClaim of the lease claim; the reconcile (companion gone, requester done, CREATING for longer than 2 min: left over by a crash) | - | commit (d) of ReleaseRequested; the node revoked; pod and claim deleted (Foreground); DeletionRequested (d) |
+| FAILED | (unchanged) | `a-request`, `a-release`, `a-unprepare`, `a-reconcile`, `OnPrepared`, `OnLendFailed`, `a-recover`: the release of a failed lease | - | released in place: commit (d) of ReleaseRequested; the node revoked; pod and claim deleted (Foreground); DeletionRequested (d); the lease stays FAILED so that a list shows why |
+| RELEASING, RELEASING_BUSY | (unchanged) | `a-release`, `a-unprepare`, `a-reconcile`: the release started again: a record of a start (ReleaseRequested set), its release not running | - | the release runs again |
+| RELEASING | RELEASING_BUSY | `a-release`: the companion's bind is STALE: its unbind failed with EBUSY (a file of it is mapped) | - | commit (d); the companion stays Terminating; reads work until the holder ends |
+| RELEASING_BUSY | RELEASING | `a-release`: the companion's bind is not STALE any more (the holder ended, the unbind succeeded), or it is gone | - | commit (d) |
+| RELEASING, FAILED | NONE | `a-release`: pod and claim both NotFound | - | commit (d) removing the lease; the lease claim's directories removed when it is closed and this was its last lease |
+| READY | FAILED | `a-recover`: the start did not restore the device of the companion: its Preparation is PREPARED_UNRESTORED | - | commit (d); the release starts; the requester's next list shows the lease Failed |
 | CREATING, PENDING, LENDING, READY, RELEASING, RELEASING_BUSY, FAILED | NONE | `load`: the document is of another boot | - | dropped; the companions deleted by the first reconcile |
 
 Refused:
@@ -435,7 +434,7 @@ LeaseClaim is a claim on the lease device, prepared by cxl.nri.io for a pod: its
 
 **Identity.** UID, the claim UID (also the socket directory and the CDI device name); Namespace and Name of the claim.
 
-**States.** LeaseClaimState. NONE: no record. OPEN: listening. OPEN_NO_LISTENER: listening again at a start failed; retried. CLOSING: CloseClaim releases every lease of the claim; new requests are refused; a start listens on it again. CLOSED: listener and connections closed, record removed. REMOVING: its directories are being removed (a bind still mounted keeps lease-fs/&lt;uid> until the last lease is gone).
+**States.** LeaseClaimState. NONE: no record. OPEN: listening. OPEN_NO_LISTENER: listening again at a start failed; the next OpenClaim listens. CLOSING: CloseClaim releases every lease of the claim (requests on the socket are still served); a start listens on it again. CLOSED: the listener closed, the record removed. REMOVING: its directories are being removed (a bind still mounted keeps lease-fs/&lt;uid> until the last lease is gone). CLOSED and REMOVING are in memory only.
 
 **Transitions.** LeaseClaimTable below; a transition not in it is refused.
 
@@ -445,25 +444,25 @@ States: NONE, OPEN, OPEN_NO_LISTENER, CLOSING, CLOSED, REMOVING.
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| NONE | OPEN | `a-prepare`: a Prepare of a claim with a lease result (OpenClaim) | - | socket created in a private directory and renamed; CDI device lease-&lt;uid>; FsDir made; commit (d) jointly with the Preparation PREPARED |
-| OPEN | (unchanged) | `a-prepare`, `a-request`: OpenClaim again; Pods refreshed from reservedFor when a peer's pod is unknown | - | commit (l) |
-| OPEN | (unchanged) | `a-recover`: the start listens on the socket again | listen succeeded | - |
-| OPEN | OPEN_NO_LISTENER | `a-recover`: listening again at the start failed | - | logged; retried by the reconcile |
-| OPEN_NO_LISTENER | OPEN | `a-reconcile`, `a-recover`: a retry listens | - | - |
-| OPEN, OPEN_NO_LISTENER | CLOSING | `a-unprepare`: an Unprepare of the claim (CloseClaim) | - | every lease of the claim RELEASING; new requests on the socket refused; commit (d) |
-| CLOSING | OPEN | `a-recover`: the start listens on the socket of a claim whose close was cut | listen succeeded | commit (l); kubelet's Unprepare retry closes the claim again (requests on the socket are served until then, as on an OPEN claim) |
-| CLOSING | (unchanged) | `a-unprepare`: within 5 s not every lease has DeletionRequested | - | "still releasing N leases" to kubelet (retry) |
-| CLOSING | CLOSED | `a-unprepare`: every lease has DeletionRequested (not necessarily gone) | - | listener and open connections closed; CDI device removed; commit (d) removing the record |
-| CLOSED | REMOVING | `a-release`, `a-reconcile`, `a-recover`: the last lease of the claim gone | no bind mounted under its FsDir | directories removed |
-| REMOVING | NONE | `a-release`, `a-reconcile`, `a-recover`: directories removed | - | - |
+| NONE | OPEN | `a-prepare`: a Prepare of a claim with a lease result (OpenClaim) | - | commit (d), a failed one fails the Prepare; CDI device lease-&lt;uid>; FsDir made; the socket created in a private directory and renamed |
+| OPEN | (unchanged) | `a-prepare`, `a-request`: OpenClaim again; Pods refreshed from reservedFor when a peer's pod is unknown | - | commit (d) |
+| OPEN_NO_LISTENER, CLOSING | OPEN | `a-prepare`: OpenClaim of a claim whose socket did not start again, or whose close did not finish | - | commit (d); the socket started; a later Unprepare closes the claim |
+| OPEN, OPEN_NO_LISTENER | OPEN | `a-recover`: the start listens on the socket again | listen succeeded | - |
+| OPEN, OPEN_NO_LISTENER, CLOSING | OPEN_NO_LISTENER | `a-recover`: listening again at the start failed | - | logged; the socket starts at the next OpenClaim |
+| OPEN, OPEN_NO_LISTENER | CLOSING | `a-unprepare`: an Unprepare of the claim (CloseClaim) | - | commit (d); every lease of the claim released; requests on the socket are still served (the leases asked for meanwhile are released by the next CloseClaim) |
+| CLOSING | OPEN | `a-recover`: the start listens on the socket of a claim whose close a stop cut | listen succeeded | commit (d); kubelet's Unprepare retry closes the claim again (requests on the socket are served until then, as on an OPEN claim) |
+| CLOSING | (unchanged) | `a-unprepare`: the Unprepare retried: the leases of the claim released again | - | "still releasing N leases" to kubelet while not every lease has DeletionRequested within 5 s |
+| CLOSING | CLOSED | `a-unprepare`: every lease has DeletionRequested (not necessarily gone) | - | the listener closed (open connections keep serving); commit (d) removing the record; CDI device removed; the socket removed |
+| CLOSED | REMOVING | `a-unprepare`, `a-release`, `a-reconcile`, `a-recover`: the directories of a claim without a record are removed: by CloseClaim, by the release of its last lease, by the sweep of the reconcile and of the start | no bind mounted in its lease-fs directory, which is removed (else it stays CLOSED) | the entries of its socket directory removed by name, never following a symlink |
+| REMOVING | NONE | `a-unprepare`, `a-release`, `a-reconcile`, `a-recover`: the socket directory removed | - | - |
 
 Refused:
 
-- CLOSING -> OPEN except on a-recover: a closing claim is not opened again but by the start
+- CLOSING -> OPEN except on a-recover, a-prepare: a closing claim is opened again only by the start or by a Prepare of the claim
 
 **Invariants.** A lease claim in the store is OPEN, OPEN_NO_LISTENER or CLOSING; lease-fs/&lt;uid> and leases/&lt;uid> exist only for lease claims of prepared claims.
 
-**Persistence.** Fact; committed jointly with the Preparation PREPARED of the claim. Kept across reboots: kubelet prepares the claim again.
+**Persistence.** Fact; committed by OpenClaim before the Preparation PREPARED of the claim. Kept across reboots: kubelet prepares the claim again.
 
 **Locks and waits.** The broker's mutex; CloseClaim waits up to 5 s for the leases of the claim.
 
@@ -523,6 +522,70 @@ need the kernel's view.
 - **records**: Every record has a state of its table that a stored record may have, and a unique identity. Every region of ours is one Region record, referenced by every memdev in its Targets, and every region a memdev references is a record of ours that targets it; a FOREIGN region is owned by no one. Every grant belongs to one result of one preparation and is listed by the memdev of its serial (except the grants of a PREPARED_STALE preparation); what Got names lists the grant among its users, and every user of a dax device or a node mount names it back; a grant result names a grant record, but of a PREPARING or UNPREPARING preparation (not journaled yet, or released before the front-end's commit). A PREPARED preparation's grants are REALISED, a PREPARED_UNRESTORED one's REALISED or REALISED_UNRESTORED, and the lease claim of their lease results exists unless the claim's Unprepare runs (it closes the lease claim before the preparation turns UNPREPARING; the engine leaves this rule to the lease broker). A node mount is MOUNTED_RW iff a writer uses it. A lease lends only while READY, releasing or FAILED.
 - **users**: Between requests and after the recovery, every region of ours is OWNED, KEPT or HOLLOW_OWNED, and every dax device of a region of ours that is OWNED or KEPT and is not the seed has a user grant that is REALISED, REALISED_UNRESTORED or RELEASING, or is the Whole device of a KEPT region, of a memdev that is IDLE_KEPT, or of a region that a grant of a Prepare that did not finish names, or has as its user a grant of a Prepare that did not finish of a numa companion or of a KEPT preparation (kept for its Unprepare); the recovery deletes the others, those of a HOLLOW_OWNED region go with it.
 - **journaled**: Every object that the driver created lies inside a journaled container: a region of ours targets memdevs with a record; the region, bind target and lend of a grant's Got are named by its Intent; a node mount's path is the Intent of a user grant or a Stale entry of its memdev.
+
+## Containers
+
+The records of the NRI plugin of the driver (`internal/containers`), held in memory: Synchronize
+builds them again after a restart. Triggers:
+
+- `NRI CreateContainer`: the NRI CreateContainer of a container.
+- `NRI StartContainer`: the NRI StartContainer of a container: its task is created.
+- `NRI PostStartContainer`: the NRI PostStartContainer of a container: the runtime marked it started.
+- `NRI StopContainer`: the NRI StopContainer or RemoveContainer of a container.
+- `NRI Synchronize`: the NRI Synchronize of the plugin: the containers that the runtime has.
+
+## Container (in memory)
+
+Container is the plugin's record of a container of a pod on the node: how the plugin manages its memory, the cpuset.mems of its spec as the plugin knows it, the NUMA nodes of its allocation results and the nodes lent to it.
+
+**Identity.** ID, the container ID. A restart of the container of a pod is a new ID of the same (PodUID, Name), which a lease is bound to; the newest record of the pair is its container.
+
+**States.** Lifecycle (LifecycleTable): UNSEEN, created while the plugin was not connected and found by Synchronize, its CreateContainer adjustment was never applied; CREATED, its CreateContainer seen, the spec holds cpuset.mems, the cgroup may not exist; TASK_CREATED, StartContainer seen, the runtime made the cgroup from the spec and an update reaches the spec only; STARTED, the runtime marked it started (PostStartContainer, or running at Synchronize): updates reach the cgroup; GONE, stopped or removed, the record leaves the table. Management (ManagementTable), decided once when the record is made: STEERED, a cgmpolmgr manager of this process writes its cpuset.mems and memory.high (or will, with its Plan; or its settings do not combine any more), never fenced and never lent to; FENCED, the plugin owns its cpuset.mems through NRI: wantMems; NONE (fencing none): its cpuset.mems is left as the runtime made it, a lend changes only one that has a cpuset.mems of its own.
+
+**Transitions.** LifecycleTable and ManagementTable below; a transition not in them is refused. A lend or a revoke changes no state; its rules: a lend to a STEERED container is refused (ErrSteered); a lend to a container that has not started (UNSEEN, CREATED) is done when the container was lent the node at its creation (the READY numa leases of its pod and name, seeded), an error otherwise; a revoke of a seeded node drops its holder, and of a FENCED container takes the node off its spec; a lend or a revoke of a started container (TASK_CREATED, STARTED) recomputes wantMems and sends one UpdateContainers outside the table mutex when its cpuset.mems changes.
+
+### Container.Lifecycle
+
+States: NONE, UNSEEN, CREATED, TASK_CREATED, STARTED, GONE.
+
+| from | to | trigger | guard | effects |
+|:-----|:---|:--------|:------|:--------|
+| NONE | CREATED | `NRI CreateContainer`: the runtime creates the container | - | the management decided; fenced: an adjustment of cpuset.mems iff wantMems differs from the spec; the nodes of its READY numa leases recorded as lent (seeded); also when the settings of its results do not combine (the creation fails, the record stays with the management of the defaults until the container stops) |
+| NONE | UNSEEN | `NRI Synchronize`: Synchronize lists a created, running or paused container that the plugin has no record of | the first Synchronize, or one after a reconnect | the management decided from its results; not steered by this process; a manager of a previous process (its Steered record, or its settings without any record) released (memory.high max); seeded; no adjustment possible |
+| UNSEEN, CREATED, TASK_CREATED | STARTED | `NRI Synchronize`: Synchronize lists the container running or paused | - | its pid, cgroup and own nodes read; its claimed nodes in its cpuset.mems are its own |
+| UNSEEN, CREATED, TASK_CREATED, STARTED | (unchanged) | `NRI Synchronize`: Synchronize lists a container that the plugin has a record of | - | the cpuset.mems of its spec recorded |
+| NONE, UNSEEN, CREATED | TASK_CREATED | `NRI StartContainer`: the runtime has created the task of the container (a record is made for a container that the plugin has none of, with the management of the defaults) | - | its pid, cgroup and own nodes read; steered: the Steered record committed (d, bounded) before the manager starts; a manager that does not start makes it fenced or none; updates from here reach its spec only |
+| UNSEEN, CREATED, TASK_CREATED | STARTED | `NRI PostStartContainer`: the runtime has marked the container started | - | its pid, cgroup and own nodes read if StartContainer was not seen; the OnContainerStarted callbacks (the broker lends the nodes of its READY numa leases again); fenced: the repair pass of the one container (wantMems against its cgroup) once fencing is ready |
+| UNSEEN, CREATED, TASK_CREATED, STARTED | GONE | `NRI StopContainer`, `NRI Synchronize`: the runtime stops or removes the container, or Synchronize does not list it | - | the record leaves the table; the OnContainerGone callbacks (the broker keeps its leases while the pod lives or a newer instance exists); its manager stopped (memory.high max), then its Steered record removed (d, bounded) |
+
+Refused:
+
+- GONE -> any state: a gone container is out of the table; its restart is a new record
+- STARTED -> NONE, UNSEEN, CREATED, TASK_CREATED: a started container never goes back
+
+### Container.Management
+
+States: UNDECIDED, STEERED, FENCED, NONE.
+
+| from | to | trigger | guard | effects |
+|:-----|:---|:--------|:------|:--------|
+| UNDECIDED | STEERED | `NRI CreateContainer`: the effective settings of its results steer and there is DRAM or CXL numa memory to steer | the settings of the results combine and a plan is built (else the creation fails) | the plan kept until its start; no adjustment: it has every node until its manager writes its cgroup |
+| UNDECIDED | STEERED | `NRI Synchronize`: the settings of the results of a container that Synchronize finds do not combine | - | taken as steered: neither fenced nor lent to |
+| UNDECIDED | FENCED | `NRI CreateContainer`, `NRI Synchronize`, `NRI StartContainer`: not steered (by this process) and fencing allowed-mems; the defaults for a container whose creation failed or that the plugin has no record of | - | wantMems: its own nodes without the fenced nodes, its claimed and its lent nodes |
+| UNDECIDED | NONE | `NRI CreateContainer`, `NRI Synchronize`, `NRI StartContainer`: not steered (by this process) and fencing none | - | its cpuset.mems is left as the runtime made it |
+| STEERED | FENCED | `NRI StartContainer`: its manager does not start (no cgroup, cgmpolmgr.New or Start fails) and fencing allowed-mems | - | its Steered record removed; fenced by the repair pass at its PostStartContainer |
+| STEERED | NONE | `NRI StartContainer`: its manager does not start and fencing none | - | its Steered record removed |
+
+Refused:
+
+- FENCED, NONE -> STEERED: a container is steered only by a plan of its creation; a re-created container is a new record
+
+**Invariants.** A FENCED container's cpuset.mems is wantMems or an update is pending (I11); Claimed are the NUMA nodes of the CXL numa memory of the results that it uses; a lent node has a holder; Plan only while STEERED and not started; manager only while STEERED.
+
+**Persistence.** None, the table is in memory; Synchronize builds it again after a restart, the leases of the store seed the lends, and a Steered record of the store names a container whose manager was of a previous process.
+
+**Locks and waits.** The plugin's table mutex guards the record; the update token is held from the computation of wantMems to the record of the update's result.
+
 
 ## Kernel objects
 

@@ -27,11 +27,12 @@ import (
 	coreclientset "k8s.io/client-go/kubernetes"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	"k8s.io/klog/v2"
-	"k8s.io/utils/cpuset"
 	"sigs.k8s.io/yaml"
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
@@ -44,9 +45,10 @@ import (
 )
 
 type driver struct {
-	client      coreclientset.Interface
-	config      *DriverConfig
-	nriPlugin   *nriPlugin
+	client coreclientset.Interface
+	config *DriverConfig
+	// nri is the NRI plugin, nil when NRI did not start.
+	nri         *containers.Plugin
 	udevWatcher *UdevEventWatcher
 	sysfsRoot   string
 	// local is cxl.nri.io, pool the pool driver (nil when it is
@@ -56,7 +58,7 @@ type driver struct {
 	pool      *dra.Plugin
 	publisher *dra.Publisher
 	watcher   *provenance.Watcher
-	broker    *broker // nil when lending is disabled
+	broker    leaseBroker // nil when lending is disabled
 	// closeStore writes the pending commits of the state store and
 	// closes it.
 	closeStore func()
@@ -167,6 +169,15 @@ func (c *DriverConfig) fencing() string {
 		return f
 	}
 	return config.FencingAllowedMems
+}
+
+// fenceOf returns the fence of the NUMA nodes of the NRI plugin nri that
+// the device engine calls before memory goes online, nil with fencing none.
+func (c *DriverConfig) fenceOf(nri *containers.Plugin) func(ctx context.Context, node int) {
+	if c.fencing() != config.FencingAllowedMems {
+		return nil
+	}
+	return nri.Fence
 }
 
 // steeringPolicy returns defaults.container.steering.policy,
@@ -397,9 +408,6 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 		cxlFlags.SysfsRoot = sysfsRoot[:len(sysfsRoot)-4]
 	}
 
-	// The fenced nodes exist before any Prepare can online memory, and
-	// without NRI too.
-	fence := newNodeFence(driverConfig.fencing())
 	driverConfig.logDefaults()
 	driverConfig.logFsTypes()
 
@@ -428,6 +436,15 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 		}
 	}()
 
+	// The NRI plugin with the fenced nodes exists before any Prepare can
+	// online memory, and without NRI too.
+	nri, err := containers.New(containers.Options{Defaults: driverConfig.containerDefaults(), Store: st, Leases: cxlFlags.Leases,
+		SysRoot: sysfsRoot})
+	if err != nil {
+		return nil, err
+	}
+	fence := driverConfig.fenceOf(nri)
+
 	// One device engine owns the CXL kernel objects of both drivers. Its
 	// records are recovered before the first scan, so that the regions of
 	// the drivers are never published as region devices. The pool
@@ -454,7 +471,8 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	}
 	// Not the nodes of the claims of another boot: they have no memory
 	// online, their Prepares again fence the nodes before they online it.
-	fence.seed(cpuset.New(dra.NumaNodes(&st.Snapshot().Records, fe.local.Name(), fe.pool.Name())...))
+	nri.Seed(dra.NumaNodes(&st.Snapshot().Records, fe.local.Name(), fe.pool.Name()))
+	nri.SetResults(fe.local, fe.pool)
 
 	driver := &driver{
 		client:     config.Client,
@@ -469,8 +487,10 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 
 	// The lease broker re-creates the sockets of prepared lease claims
 	// before kubelet can call Prepare or Unprepare.
+	var broker *leases.Broker
 	if driverConfig.PublishLeaseDevice {
-		b, err := newBroker(brokerConfig{
+		b, err := leases.New(leases.Options{
+			Store:       st,
 			Client:      config.Client,
 			NodeName:    config.Flags.NodeName,
 			DataDir:     config.KubeletPluginDir,
@@ -479,12 +499,11 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 			Image:       cxlFlags.LeaseCompanionImage,
 			WaitDefault: cxlFlags.LeaseWait,
 			PoolDriver:  fe.pool.Name(),
-			BootID:      bootID,
 		})
 		if err != nil {
 			return nil, err
 		}
-		driver.broker = b
+		broker, driver.broker = b, b
 		fe.local.SetLeases(b)
 	}
 
@@ -496,39 +515,17 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	// above. A Prepare still waits for the first Synchronize (waitNRI): the
 	// stub starts when the runtime has configured it, before it
 	// synchronizes.
-	nriOpts := NRIOpts{
-		Name:   cxlFlags.NRIName,
-		Idx:    cxlFlags.NRIIdx,
-		Socket: cxlFlags.NRISocket,
-	}
-	var leases leaseNodes // the lease table is loaded: Synchronize may use it
-	if driver.broker != nil {
-		leases = driver.broker
-	}
-	nri, err := startNRIPlugin(ctx, fe.local, nriOpts, driverConfig.containerDefaults(), fence, fe.pool.ClaimResults, leases, sysfsRoot, config.KubeletPluginDir)
-	if err != nil {
-		klog.Warningf("Failed to start NRI plugin (continuing without it): %v", err)
-		fence.setNoNRI()
-	} else {
-		driver.nriPlugin = nri
-		wait := func(ctx context.Context) error { return waitNRI(ctx, nri) }
-		fe.local.SetWaitNRI(wait)
-		fe.pool.SetWaitNRI(wait)
-		if driver.broker == nil {
-			// no lends to restore
-			nri.LendsRestored()
-		}
-	}
+	driver.nri = startNRI(ctx, nri, cxlFlags, fe, broker != nil)
 	// A nil lender (NRI not connected) makes lease requests and companion
 	// claims fail with errLendingUnavailable.
-	var lender nodeLender
+	var lender leases.Containers
 	var nodes dra.NodeLender
-	if driver.nriPlugin != nil {
-		lender, nodes = driver.nriPlugin, driver.nriPlugin
+	if driver.nri != nil {
+		lender, nodes = driver.nri, driver.nri
 	}
-	if driver.broker != nil {
-		fe.pool.Lender().Set(nodes, driver.broker)
-		fe.local.Lender().Set(nodes, driver.broker)
+	if broker != nil {
+		fe.pool.Lender().Set(nodes, broker)
+		fe.local.Lender().Set(nodes, broker)
 	} else {
 		// lending disabled: a lend recorded before is not revoked
 		fe.pool.Lender().Set(nil, nil)
@@ -566,8 +563,8 @@ PluginDataDirectoryPath: %v`,
 	}
 	go watcher.Watch(ctx, fe.publisher.Trigger, fe.publisher.LastScan)
 
-	if driver.broker != nil {
-		driver.broker.start(lender)
+	if broker != nil {
+		broker.Start(lender)
 	}
 
 	// Start udev event watcher for NUMA node hotplug detection.
@@ -599,6 +596,25 @@ PluginDataDirectoryPath: %v`,
 	klog.V(3).Info("Finished creating new driver")
 	started = true
 	return driver, nil
+}
+
+// startNRI connects the NRI plugin nri to the runtime and returns it, nil
+// when it did not start: then the driver runs without NRI. A Prepare of
+// either driver waits for its first Synchronize; without the lease broker
+// (withBroker false) there are no lends to restore.
+func startNRI(ctx context.Context, nri *containers.Plugin, cxlFlags *CXLFlags, fe *frontEnds, withBroker bool) *containers.Plugin {
+	if err := nri.Start(ctx, containers.Connection{Name: cxlFlags.NRIName, Idx: cxlFlags.NRIIdx, Socket: cxlFlags.NRISocket}); err != nil {
+		klog.Warningf("Failed to start NRI plugin (continuing without it): %v", err)
+		return nil
+	}
+	wait := func(ctx context.Context) error { return waitNRI(ctx, nri) }
+	fe.local.SetWaitNRI(wait)
+	fe.pool.SetWaitNRI(wait)
+	if !withBroker {
+		// no lends to restore
+		nri.LendsRestored()
+	}
+	return nri
 }
 
 // storeLockWait is how long the driver waits at start for the lock of the
@@ -668,12 +684,12 @@ func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFla
 // the pool driver unless it is disabled (empty --pool-driver-name), of the
 // local memdevs unless they are not managed (manageMemdevs: false); the
 // node mounts of each source in the MountsDir of its rules.
-func newDriverDevices(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, sysfsRoot string, fence *nodeFence, st *store.Store, rules driverRules) (*deviceEngine, error) {
+func newDriverDevices(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, sysfsRoot string, fence func(ctx context.Context, node int), st *store.Store, rules driverRules) (*deviceEngine, error) {
 	cfg := deviceConfig{
 		Kernel:          systemKernel(newMemctl(sysfsRoot)),
 		Store:           st,
 		MountsDirs:      dra.MountsDirs(rules.all()...),
-		LeaseFsRoot:     filepath.Join(config.KubeletPluginDir, leaseFsDirName),
+		LeaseFsRoot:     leases.LeaseFsRoot(config.KubeletPluginDir),
 		FsTypes:         driverConfig.fsTypes(),
 		Fence:           fence,
 		ProbeAddressing: driverConfig.verifyAddressing(),
@@ -903,7 +919,7 @@ var nriPrepareWait = 30 * time.Second
 // NRI plugin (nil: it failed to start, and the driver runs without it). The
 // lends do not need to be restored: a new container gets the kept lends of
 // its leases at its creation.
-func waitNRI(ctx context.Context, nri *nriPlugin) error {
+func waitNRI(ctx context.Context, nri *containers.Plugin) error {
 	if nri == nil {
 		return nil
 	}
@@ -929,15 +945,17 @@ func (d *driver) Shutdown(ctx context.Context) error {
 
 	// First: the runtime may close the NRI connection while the rest
 	// stops (the broker waits for its reconciles), which is no loss now.
-	if d.nriPlugin != nil {
-		d.nriPlugin.markStopping()
+	if d.nri != nil {
+		d.nri.MarkStopping()
 	}
 	if d.udevWatcher != nil {
 		d.udevWatcher.Stop()
 	}
-	d.broker.stop()
-	if d.nriPlugin != nil {
-		d.nriPlugin.Stop()
+	if d.broker != nil {
+		d.broker.Stop()
+	}
+	if d.nri != nil {
+		d.nri.Stop()
 	}
 	d.pool.Stop()
 	d.publisher.Stop()

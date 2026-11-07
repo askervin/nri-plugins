@@ -33,6 +33,7 @@ import (
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -380,18 +381,13 @@ func serialsFixture() *poolSerialsFile {
 	}
 }
 
-func TestSerialsAndSteeringContentRoundTrip(t *testing.T) {
+func TestSerialsContentRoundTrip(t *testing.T) {
 	f := serialsFixture()
-	ids := map[string]string{"c0ffee": "/sys/fs/cgroup/c0ffee", "beef": "/sys/fs/cgroup/beef"}
 	doc := &store.Document{Schema: store.Schema}
 	noErr(t, putContent(doc, testViewOptions, poolSerialsFileName, mustJSON(t, f), nil))
-	noErr(t, putContent(doc, testViewOptions, steeredFileName, mustJSON(t, ids), nil))
 	got, err := serialsContent(doc)
 	noErr(t, err)
 	jsonEqual(t, poolSerialsFileName, got, mustJSON(t, f))
-	got, err = steeredContent(doc)
-	noErr(t, err)
-	jsonEqual(t, steeredFileName, got, mustJSON(t, ids))
 }
 
 // openTestStateStore opens a state store in a new directory pair.
@@ -410,10 +406,6 @@ func openTestStateStore(t *testing.T, local, pool, bootID string, flags store.Fl
 func TestStateStoreFiles(t *testing.T) {
 	local, pool := t.TempDir(), t.TempDir()
 	_, closeStore := openTestStateStore(t, local, pool, "boot-1", store.Flags{CompatViews: true})
-	steered := filepath.Join(local, steeredFileName)
-	if _, err := readStateFile(steered); !os.IsNotExist(err) {
-		t.Errorf("steering record of a new document: %v, want none (legacy)", err)
-	}
 	prepared, infos, ls := localFixture()
 	noErr(t, writeStateFile(filepath.Join(local, localStateFileName), ls))
 	noErr(t, writeStateFile(filepath.Join(local, device.PreparedClaimsFileName), prepared))
@@ -421,7 +413,6 @@ func TestStateStoreFiles(t *testing.T) {
 	pp, pr := poolFixture()
 	noErr(t, writeStateFile(filepath.Join(pool, poolStateFileName), pp))
 	noErr(t, writeStateFile(filepath.Join(pool, poolPreparingFileName), pr))
-	noErr(t, writeStateFile(steered, map[string]string{"c1": "/cg/c1"}))
 	noErr(t, writeStateFile(filepath.Join(local, leasesFileName), leasesFixture()))
 	noErr(t, writeStateFile(filepath.Join(local, poolSerialsFileName), serialsFixture()))
 	contents := map[string]any{
@@ -432,7 +423,6 @@ func TestStateStoreFiles(t *testing.T) {
 		filepath.Join(local, poolSerialsFileName):           serialsFixture(),
 		filepath.Join(pool, poolStateFileName):              pp,
 		filepath.Join(pool, poolPreparingFileName):          pr,
-		steered: map[string]string{"c1": "/cg/c1"},
 	}
 	readAll := func(what string) {
 		t.Helper()
@@ -518,13 +508,6 @@ func TestStateStoreLost(t *testing.T) {
 	if _, err := readStateFile(filepath.Join(local, localStateFileName)); !os.IsNotExist(err) {
 		t.Errorf("local devices in LOST mode: %v", err)
 	}
-	ls, err := loadLeaseStore(filepath.Join(local, leasesFileName))
-	if err != nil || !ls.Recovered {
-		t.Errorf("lease store in LOST mode: %+v, %v", ls, err)
-	}
-	if _, err := readStateFile(filepath.Join(local, steeredFileName)); !os.IsNotExist(err) {
-		t.Errorf("steering record in LOST mode: %v", err)
-	}
 }
 
 // TestViewsOfDriverFiles commits the state files that the driver's file
@@ -601,7 +584,7 @@ func TestViewsOfDriverFiles(t *testing.T) {
 // import: the prepared claims before their infos.
 var importOrder = []string{
 	device.PreparedClaimsFileName, preparedClaimsInfoFileName, localStateFileName, poolStateFileName, poolPreparingFileName,
-	leasesFileName, poolSerialsFileName, steeredFileName,
+	leasesFileName, poolSerialsFileName,
 }
 
 // untouchedDevice returns a device as a Prepare records it before it touches it:
@@ -647,10 +630,10 @@ func TestStartOnALostStore(t *testing.T) {
 	}
 	cache, err := cdiapi.NewCache(cdiapi.WithSpecDirs(filepath.Join(root, "cdi")), cdiapi.WithAutoRefresh(false))
 	noErr(t, err)
-	b, err := newBroker(brokerConfig{Client: k8sfake.NewClientset(), NodeName: testNode, DataDir: local, CDI: cache,
-		CLI: filepath.Join(root, "cxl-request"), WaitDefault: time.Second, PoolDriver: device.PoolDriverName, BootID: "boot-1"})
+	b, err := leases.New(leases.Options{Store: s.st, Client: k8sfake.NewClientset(), NodeName: testNode, DataDir: local, CDI: cache,
+		CLI: filepath.Join(root, "cxl-request"), WaitDefault: time.Second, PoolDriver: device.PoolDriverName})
 	noErr(t, err)
-	defer b.stop()
+	defer b.Stop()
 
 	fe.publisher.SetDevices(device.DevicesInfo{"dram": {Name: "dram", Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}}})
 	claim := &resourcev1.ResourceClaim{

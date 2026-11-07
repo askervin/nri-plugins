@@ -33,7 +33,6 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
-	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
@@ -70,15 +69,6 @@ func TestMain(m *testing.M) {
 	}
 	mismatches.Unlock()
 	os.Exit(code)
-}
-
-// fileBackendOnly skips a test of the state files themselves, which a
-// store does not keep as files, unless the files keep them.
-func fileBackendOnly(t *testing.T, reason string) {
-	t.Helper()
-	if !stateFilesMode {
-		t.Skipf("on the state store: %s (CXL_STATE_FILES=1 runs it)", reason)
-	}
 }
 
 // fileBackend keeps the state files in the files, written as the driver's
@@ -214,23 +204,7 @@ var autoStores, boots sync.Map
 // stateFileNames are the names of the files that the store keeps.
 var stateFileNames = map[string]bool{
 	device.PreparedClaimsFileName: true, preparedClaimsInfoFileName: true, localStateFileName: true, leasesFileName: true,
-	poolSerialsFileName: true, steeredFileName: true, poolStateFileName: true, poolPreparingFileName: true,
-}
-
-// restartStore is a restart of the driver in the boot bootID ("": not
-// known) on the state files of dir: the store of dir is opened again as
-// the driver opens it at its start, which handles a document of another
-// boot (D-21, D-33) before the restarted code reads it.
-func restartStore(dir, bootID string) {
-	if stateFilesMode {
-		return
-	}
-	boots.Store(dir, bootID)
-	if v, ok := autoStores.Load(dir); ok {
-		if err := v.(*autoBackend).reopen(func(o *store.Options) { o.BootID = bootID }); err != nil {
-			panic(fmt.Sprintf("reopening the state store of %s: %v", dir, err))
-		}
-	}
+	poolSerialsFileName: true, poolStateFileName: true, poolPreparingFileName: true,
 }
 
 // closeAutoStores closes the stores of the tests.
@@ -365,8 +339,6 @@ func decodesStrictly(name string, data []byte) bool {
 		v = &leaseStore{}
 	case poolSerialsFileName:
 		v = &poolSerialsFile{}
-	case steeredFileName:
-		v = &map[string]string{}
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -463,7 +435,7 @@ func (b *autoBackend) writeState(path string, data []byte) error {
 // for a file of the test that the store did not read (other than path, the
 // file just written).
 func (b *autoBackend) mirror(path string) error {
-	for _, name := range []string{poolPreparingFileName, poolSerialsFileName, steeredFileName} {
+	for _, name := range []string{poolPreparingFileName, poolSerialsFileName} {
 		p := filepath.Join(b.localDir, name)
 		content, err := b.stateStore.readState(p)
 		if err != nil {
@@ -511,60 +483,6 @@ func (b *autoBackend) learn(data []byte) error {
 			o.DevRoot = devRoot
 		}
 	})
-}
-
-// TestBrokerOtherBootOnStore is the reboot of TestBrokerOtherBoot on the
-// state store: the restart in another boot opens the store, which drops the
-// leases of the old boot before the broker reads them (D-21) and keeps the
-// lease claim. The numa lease is gone, its node neither lent to the
-// restarted requester nor revoked, the reconcile deletes its companion,
-// and the requester's new request is served.
-func TestBrokerOtherBootOnStore(t *testing.T) {
-	if stateFilesMode {
-		t.Skip("the reboot on the state store; TestBrokerOtherBoot on the files")
-	}
-	e := newBrokerEnv(t)
-	noErr(t, e.b.OpenClaim(leaseClaimObj()))
-	e.start()
-	resp, _ := e.call(api.Request{Op: "request", Size: "256Mi", Wait: "0s"})
-	id := resp.Lease
-	e.waitClaim(companionName(id))
-	_, err := e.b.OnLending(id, companionClaim(id))
-	noErr(t, err)
-	e.b.OnPrepared(id, []lentDevice{{Source: api.SourcePool, Serial: 0xc1ee0001, Size: 1 << 28, Mode: api.ModeNUMA, Node: 2}})
-	e.waitState(id, api.StateReady)
-
-	// a reboot: the requester restarted without the node
-	e.bootID = "boot-2"
-	e.lender.mu.Lock()
-	e.lender.lent = map[string]map[int][]string{}
-	e.lender.calls = nil
-	e.lender.mu.Unlock()
-	e.restart()
-	if e.lease(id) != nil || e.b.LeaseNodes(testPodUID, testCtr) != nil {
-		t.Fatalf("lease of another boot %+v, lease nodes %v", e.lease(id), e.b.LeaseNodes(testPodUID, testCtr))
-	}
-	data, err := os.ReadFile(filepath.Join(e.dir, leasesFileName))
-	noErr(t, err)
-	if strings.Contains(string(data), id) || !strings.Contains(string(data), `"bootID": "boot-2"`) ||
-		!strings.Contains(string(data), testLeaseClaimUID) {
-		t.Fatalf("leases.json after the reboot:\n%s", data)
-	}
-	e.start()
-	list, _ := e.call(api.Request{Op: "list"})
-	if list.Error != "" || list.Leases == nil || len(*list.Leases) != 0 {
-		t.Fatalf("list after the reboot %+v", list)
-	}
-	e.b.reconcile()
-	e.wantGone(companionName(id))
-	if got := e.lender.LentNodes(testPodUID, testCtr); len(got) != 0 || e.lender.callLog() != "" {
-		t.Fatalf("lent nodes %v, lender calls:\n%s", got, e.lender.callLog())
-	}
-	resp, _ = e.call(api.Request{Op: "request", Size: "256Mi", Wait: "0s"})
-	if resp.Error != "" || resp.State != api.StatePending {
-		t.Fatalf("new request %+v", resp)
-	}
-	e.waitClaim(companionName(resp.Lease))
 }
 
 // writeJSONFile replaces the file with v in JSON, readable by the owner

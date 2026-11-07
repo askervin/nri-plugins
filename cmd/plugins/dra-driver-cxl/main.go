@@ -32,6 +32,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -151,10 +152,10 @@ func parseFlags(fs *flag.FlagSet, args []string, lookupEnv func(string) (string,
 	fs.StringVar(&f.PoolDriverName, "pool-driver-name", device.PoolDriverName, "DRA driver name of the CXL memory pool driver (empty disables it)")
 	fs.DurationVar(&f.PoolPrepareTimeout, "pool-prepare-timeout", defaultPoolPrepareTimeout, "how long the pool driver waits for a hotplugged CXL memory device to appear")
 	fs.BoolVar(&f.Leases, "leases", true, "lend memory to running containers: publish the lease device, serve lease sockets, create companions (needs NRI; pool memory needs the pool driver)")
-	fs.StringVar(&f.LeaseCLI, "lease-cli", defaultLeaseCLI, "host path of the static cxl-request CLI, mounted into containers of lease claims")
+	fs.StringVar(&f.LeaseCLI, "lease-cli", leases.DefaultCLI, "host path of the static cxl-request CLI, mounted into containers of lease claims")
 	fs.StringVar(&f.LeaseCLISource, "lease-cli-source", "", "cxl-request CLI that is copied to --lease-cli at start (empty for none)")
-	fs.DurationVar(&f.LeaseWait, "lease-wait", defaultLeaseWait, "default wait of a lease request for the lease to become Ready")
-	fs.StringVar(&f.LeaseCompanionImage, "lease-companion-image", defaultLeaseCompanionImage, "container image of the companion pods that hold the devices of leases")
+	fs.DurationVar(&f.LeaseWait, "lease-wait", leases.DefaultWait, "default wait of a lease request for the lease to become Ready")
+	fs.StringVar(&f.LeaseCompanionImage, "lease-companion-image", leases.DefaultCompanionImage, "container image of the companion pods that hold the devices of leases")
 	f.Store.Register(fs)
 	f.Provenance.Register(fs)
 	for _, fe := range flagEnvs {
@@ -269,7 +270,7 @@ func installLeaseCLI(src, dst string) (retErr error) {
 	if err := os.Chmod(tmp.Name(), 0755); err != nil {
 		return fmt.Errorf("lease CLI: %w", err)
 	}
-	selinuxLabel(tmp.Name())
+	leases.SELinuxLabel(tmp.Name())
 	if err := os.Rename(tmp.Name(), dst); err != nil {
 		return fmt.Errorf("lease CLI: %w", err)
 	}

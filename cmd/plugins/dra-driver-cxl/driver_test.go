@@ -27,6 +27,7 @@ import (
 	resourceapi "k8s.io/api/resource/v1"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
@@ -772,14 +773,18 @@ func TestPrepareWaitsForNRI(t *testing.T) {
 	t.Cleanup(func() { nriPrepareWait = old })
 	ctx := context.Background()
 	const why = "NRI not synchronized yet: context deadline exceeded: the containers of the claims would be created before the NRI plugin sees them; kubelet retries the Prepare"
-	newNRI := func() *nriPlugin {
-		p := &nriPlugin{}
-		p.initLendState()
+	newNRI := func(t *testing.T) *containers.Plugin {
+		t.Helper()
+		st, err := store.Open(ctx, store.Options{Dir: t.TempDir()})
+		noErr(t, err)
+		t.Cleanup(func() { _ = st.Close() })
+		p, err := containers.New(containers.Options{Store: st, SysRoot: t.TempDir()})
+		noErr(t, err)
 		return p
 	}
 	// waits runs prepare in the background and checks that it waits until
 	// the NRI plugin synchronizes, then succeeds.
-	waits := func(t *testing.T, nri *nriPlugin, prepare func() kubeletplugin.PrepareResult) {
+	waits := func(t *testing.T, nri *containers.Plugin, prepare func() kubeletplugin.PrepareResult) {
 		t.Helper()
 		nriPrepareWait = time.Minute
 		done := make(chan kubeletplugin.PrepareResult, 1)
@@ -803,7 +808,7 @@ func TestPrepareWaitsForNRI(t *testing.T) {
 	t.Run(device.DriverName, func(t *testing.T) {
 		e := newLocalTestEnv(t)
 		e.start()
-		nri := newNRI()
+		nri := newNRI(t)
 		setNRI(e.s, nri)
 		claim := localClaim("u1", 16*mib)
 		prepare := func() kubeletplugin.PrepareResult { return prepareResultOn(ctx, e.s, claim) }
@@ -816,7 +821,7 @@ func TestPrepareWaitsForNRI(t *testing.T) {
 		}
 		waits(t, nri, prepare)
 		// prepared already: it waits too
-		nri = newNRI()
+		nri = newNRI(t)
 		setNRI(e.s, nri)
 		waits(t, nri, prepare)
 		// no NRI plugin
@@ -830,7 +835,7 @@ func TestPrepareWaitsForNRI(t *testing.T) {
 		e := newPoolTestEnv(t)
 		e.plug(0xc1ee0001)
 		p := e.driver(t)
-		nri := newNRI()
+		nri := newNRI(t)
 		setNRI(p, nri)
 		claim := poolClaim("u1", "c1", "pooled0", exclusiveData)
 		nriPrepareWait = 20 * time.Millisecond

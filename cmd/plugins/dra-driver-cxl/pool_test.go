@@ -29,6 +29,7 @@ import (
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -541,12 +542,13 @@ func TestPoolPrepareMemoryConfig(t *testing.T) {
 	e.wantCDIDevice(t, "claim-u1-0", []string{"CXL_C1EE0001_MODE=numa", "CXL_C1EE0001_NODE=2", "CXL_C1EE0001_SERIAL=0xc1ee0001",
 		"CXL_C1EE0001_SHARED=0", "CXL_C1EE0001_SIZE=268435456", "CXL_CLAIM_u1_0=1"})
 
-	// the NRI plugin steers a container that uses the result
-	n := &nriPlugin{poolResults: p.ClaimResults}
-	m, err := n.manage("default/pod/ctr", n.containerResults("default/pod/ctr", []resultRef{{"u1", 0}}), true)
+	// the NRI plugin steers a container that uses the result: the plan
+	// of policy auto of a CXL node is first-cxl, of the quota of the result
+	ctr, err := createdContainer(t, e.st, nil, p, "u1", 0)
 	noErr(t, err)
-	if m.memory != memorySteered || m.policy != "first-cxl" || m.claimed.String() != "2" || m.plan == nil || m.mem.CXLQuota != 256<<20 {
-		t.Fatalf("management %+v", m)
+	if ctr.Management != containers.ManagementSteered || ctr.Steering != "auto from class cxl-pool" || ctr.Claimed.String() != "2" ||
+		ctr.Plan == nil || ctr.Plan.String() != "waypoints=[[2:268435456]] minStep=67108864 maxStep=67108864" {
+		t.Fatalf("container %+v, plan %v", ctr, ctr.Plan)
 	}
 
 	// the settings survive a restart of the driver
