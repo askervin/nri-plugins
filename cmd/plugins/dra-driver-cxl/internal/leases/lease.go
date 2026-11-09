@@ -327,6 +327,7 @@ func (b *Broker) removeLease(l *state.Lease) {
 		delete(b.leases, l.ID)
 	}
 	delete(b.releasing, l.ID)
+	delete(b.specHashes, l.ID)
 	b.saveLocked()
 	// the lease-fs directory of a closed lease claim may have waited for
 	// the unmount of the companion's bind

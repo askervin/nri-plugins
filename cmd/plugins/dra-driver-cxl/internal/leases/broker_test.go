@@ -1258,3 +1258,26 @@ func TestLeaseListAndReleaseOfTheClaim(t *testing.T) {
 		t.Fatalf("lease %s of lc1 released by release --all on lc2", r.Lease)
 	}
 }
+
+// The broker tells the companion gate the hash of the companion claim's
+// spec as the API server returned it at its creation, while the lease
+// waits for the claim's first Prepare (L-10).
+func TestCompanionSpecHash(t *testing.T) {
+	e := brokerEnv(t)
+	e.openClaim()
+	e.start()
+	r, _ := e.call(api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s"})
+	if r.Error != "" {
+		t.Fatalf("request %+v", r)
+	}
+	claim, err := e.client.ResourceV1().ResourceClaims(envNS).Get(context.Background(), CompanionName(r.Lease), metav1.GetOptions{})
+	mustOK(t, err)
+	hash, first := e.b.CompanionSpecHash(r.Lease)
+	if hash != dra.SpecHash(&claim.Spec) || !first {
+		t.Fatalf("hash %q first %v, want %q first", hash, first, dra.SpecHash(&claim.Spec))
+	}
+	var hasher dra.SpecHasher = e.b
+	if h, _ := hasher.CompanionSpecHash("00000000"); h != "" {
+		t.Fatalf("hash of no lease %q", h)
+	}
+}

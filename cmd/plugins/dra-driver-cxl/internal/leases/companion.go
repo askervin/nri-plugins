@@ -304,9 +304,13 @@ func (b *Broker) createCompanion(l *state.Lease) error {
 	}
 	ctx, cancel := b.apiContext()
 	defer cancel()
-	if _, err := b.opts.Client.ResourceV1().ResourceClaims(claim.Namespace).Create(ctx, claim, metav1.CreateOptions{}); err != nil {
+	created, err := b.opts.Client.ResourceV1().ResourceClaims(claim.Namespace).Create(ctx, claim, metav1.CreateOptions{})
+	if err != nil {
 		return fmt.Errorf("creating companion claim %s/%s: %w", claim.Namespace, claim.Name, err)
 	}
+	b.mu.Lock()
+	b.specHashes[l.ID] = dra.SpecHash(&created.Spec)
+	b.mu.Unlock()
 	if _, err := b.opts.Client.CoreV1().Pods(pod.Namespace).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
 		return fmt.Errorf("creating companion pod %s/%s: %w", pod.Namespace, pod.Name, err)
 	}
@@ -316,6 +320,20 @@ func (b *Broker) createCompanion(l *state.Lease) error {
 
 // The hooks (dra.LeaseHooks) that the drivers call for the companion
 // claims with the claim locked: they only touch the records of the broker.
+
+// CompanionSpecHash returns the hash of the spec of the companion claim of
+// the lease id as the API server returned it at its creation ("" if this
+// process did not create it), and whether the lease waits for the first
+// Prepare of the claim (CREATING or PENDING).
+func (b *Broker) CompanionSpecHash(id string) (string, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	l := b.leases[id]
+	if l == nil {
+		return "", false
+	}
+	return b.specHashes[id], l.State == state.LeaseCreating || l.State == state.LeasePending
+}
 
 // OnLending is the companion gate: it checks that a claim is the companion
 // of a lease that is being created or lent (its name cxl-lease-<id>, its

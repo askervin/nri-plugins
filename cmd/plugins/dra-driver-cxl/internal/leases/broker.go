@@ -181,6 +181,9 @@ type Broker struct {
 	// open connections.
 	listeners map[string]*net.UnixListener
 	conns     map[string]map[*net.UnixConn]bool
+	// specHashes are the hashes of the specs of the companion claims that
+	// the broker created, by lease (dra.SpecHash).
+	specHashes map[string]string
 	// releasing are the leases whose release runs.
 	releasing map[string]bool
 	// removing are the lease claims (uid) whose directories are being
@@ -221,18 +224,19 @@ func New(opts Options) (*Broker, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &Broker{
-		opts:      opts,
-		st:        opts.Store,
-		t:         opts.Timeouts.withDefaults(),
-		leases:    map[string]*state.Lease{},
-		claims:    map[string]*state.LeaseClaim{},
-		listeners: map[string]*net.UnixListener{},
-		conns:     map[string]map[*net.UnixConn]bool{},
-		releasing: map[string]bool{},
-		removing:  map[string]chan struct{}{},
-		changed:   make(chan struct{}),
-		ctx:       ctx,
-		cancel:    cancel,
+		opts:       opts,
+		st:         opts.Store,
+		t:          opts.Timeouts.withDefaults(),
+		leases:     map[string]*state.Lease{},
+		claims:     map[string]*state.LeaseClaim{},
+		listeners:  map[string]*net.UnixListener{},
+		conns:      map[string]map[*net.UnixConn]bool{},
+		specHashes: map[string]string{},
+		releasing:  map[string]bool{},
+		removing:   map[string]chan struct{}{},
+		changed:    make(chan struct{}),
+		ctx:        ctx,
+		cancel:     cancel,
 	}
 	b.mu.Lock()
 	b.load()
