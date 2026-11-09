@@ -93,7 +93,7 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             # The driver writes sysfs and cgroupfs, onlines memory, runs the
-            # cxl, daxctl and ndctl tools, and mounts filesystems of
+            # cxl and ndctl tools, and mounts filesystems of
             # persistent memory.
             privileged: true
             readOnlyRootFilesystem: true

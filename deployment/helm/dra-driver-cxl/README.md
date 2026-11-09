@@ -42,7 +42,7 @@ described in the
   CentOS Stream and Fedora does: override it, see the requirements in the
   CXL memory documentation).
 
-The image contains the `cxl`, `daxctl` and `ndctl` tools of ndctl and the
+The image contains the `cxl` and `ndctl` tools of ndctl and the
 static `cxl-request` command line tool of leases. The pod runs privileged
 in the host PID namespace, and mounts from the host `/sys`, `/dev`,
 `/lib/modules` (read-only), the NRI socket directory `/var/run/nri`, the
