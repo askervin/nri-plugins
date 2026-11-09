@@ -27,8 +27,9 @@ import (
 // cpuset.mems only when one of its allocation results has numa memory on it
 // or it borrows it (wantMems). F is seeded at the start from the grants of
 // this boot (Seed) and only grows; a node is fenced before its memory goes
-// online: Fence returns after the containers have been updated through NRI.
-// With fencing none F stays empty.
+// online: Fence returns after the containers have been updated through NRI,
+// or at the end of its context, the pass finishing in the background. With
+// fencing none F stays empty.
 //
 // A fence pass applies wantMems to the fenced containers of the table under
 // the update token, like a lend, so that lends and passes never compute from
@@ -58,14 +59,32 @@ func (p *Plugin) Fenced() cpuset.CPUSet {
 }
 
 // Fence adds a node to the fenced nodes and returns once the containers are
-// updated through NRI; one that is fenced already returns after the pass
-// that fenced it. Before fencing of running containers is ready, and
-// without NRI, the node is only recorded. With fencing none it does
-// nothing.
+// updated through NRI, or at the end of ctx: the node is recorded and the
+// containers updated in the background then. One that is fenced already
+// returns after the pass that fenced it. Before fencing of running
+// containers is ready, and without NRI, the node is only recorded. With
+// fencing none it does nothing.
 func (p *Plugin) Fence(ctx context.Context, node int) {
 	if !p.fencing || node < 0 {
 		return
 	}
+	done := make(chan struct{})
+	p.passes.Add(1)
+	go func() {
+		defer p.passes.Done()
+		defer close(done)
+		p.fence(node)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		klog.V(3).Infof("NRI fence: fencing CXL node %d goes on in the background: %v", node, ctx.Err())
+	}
+}
+
+// fence adds a node to the fenced nodes and runs the pass that updates the
+// containers, after the pass of a Fence that runs.
+func (p *Plugin) fence(node int) {
 	p.fenceMu.Lock()
 	defer p.fenceMu.Unlock()
 	p.mu.Lock()
@@ -82,7 +101,7 @@ func (p *Plugin) Fence(ctx context.Context, node int) {
 	case absent:
 		klog.Warningf("NRI fence: NRI not connected, containers are not fenced from CXL node %d", node)
 	case connected:
-		p.pass(ctx, "")
+		p.pass(context.Background(), "")
 	}
 }
 

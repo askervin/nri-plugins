@@ -399,9 +399,10 @@ func TestFenceConcurrent(t *testing.T) {
 	e.expectUpdates("c1 mems=0-1")
 }
 
-// TestFenceDeadline checks that a Fence whose context ends before its pass
-// runs records the node without the pass: the engine onlines the memory
-// anyway after its deadline; the next pass updates the containers.
+// TestFenceDeadline checks that a Fence returns at the end of its context,
+// while the pass that it waits for still runs: the engine onlines the
+// memory anyway after its deadline; the node is recorded and the
+// containers updated in the background.
 func TestFenceDeadline(t *testing.T) {
 	e := newFenceEnv(t, "0-2")
 	e.readyFence()
@@ -410,7 +411,7 @@ func TestFenceDeadline(t *testing.T) {
 	if got := e.createMems(pod, c1); got != "-" {
 		t.Fatalf("adjustment %s", got)
 	}
-	// a Fence waits for the one running, past its deadline
+	// a Fence waits for the one running, until its deadline
 	e.stub.closeGate(t)
 	first := make(chan struct{})
 	go func() { e.p.Fence(context.Background(), 2); close(first) }()
@@ -419,31 +420,36 @@ func TestFenceDeadline(t *testing.T) {
 	defer cancel()
 	second := make(chan struct{})
 	go func() { e.p.Fence(ctx, 3); close(second) }()
-	<-ctx.Done()
+	select {
+	case <-second:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a Fence did not return at its deadline while a pass runs")
+	}
+	select {
+	case <-first:
+		t.Fatal("the first Fence returned before its update")
+	default:
+	}
 	e.stub.openGate()
 	<-first
-	<-second
+	e.passes()
 	e.expectUpdates("c1 mems=0-1")
 	if got := e.p.Fenced().String(); got != "2-3" {
 		t.Fatalf("fenced %s", got)
 	}
-	// node 3 changed nothing of c1; the next pass sees it
-	e.p.Fence(context.Background(), 4)
-	e.expectUpdates()
-	// a Fence whose context is done before it starts: recorded only, the
-	// next pass updates
-	if got := e.createMems(pod, withSpecMems(testCtr(pod, "c2", "app2", 0), "0-5")); got != "0-1,5" {
+	// a Fence whose context is done before it starts: the node recorded
+	// and the containers updated in the background
+	if got := e.createMems(pod, withSpecMems(testCtr(pod, "c2", "app2", 0), "0-5")); got != "0-1,4-5" {
 		t.Fatalf("adjustment %s", got)
 	}
 	done, stop := context.WithCancel(context.Background())
 	stop()
 	e.p.Fence(done, 5)
-	e.expectUpdates()
-	if got := e.p.Fenced().String(); got != "2-5" {
+	e.passes()
+	e.expectUpdates("c2 mems=0-1,4")
+	if got := e.p.Fenced().String(); got != "2-3,5" {
 		t.Fatalf("fenced %s", got)
 	}
-	e.p.Fence(context.Background(), 6)
-	e.expectUpdates("c2 mems=0-1")
 }
 
 // TestFenceMissedAtStart checks that a container whose update failed

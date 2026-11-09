@@ -185,8 +185,9 @@ restart. The fence is the set of NUMA nodes on which the driver onlined
 CXL memory since it started: a FENCED container has its own nodes
 without the fenced ones, plus the nodes of its results and leases. A
 node joins the fence before its memory goes online, and the running
-containers are updated before that; it leaves the fence only when the
-driver restarts. A container whose memory a steering manager of the
+containers are updated before that (an update that takes longer than
+the fence deadline finishes in the background); it leaves the fence
+only when the driver restarts. A container whose memory a steering manager of the
 driver writes has a [Steered](states.md#steered) record in the store, so
 that the next process releases exactly the containers that its managers
 throttled.
