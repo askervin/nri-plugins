@@ -417,10 +417,10 @@ func (b *Broker) deleteCompanion(ns, name string) (bool, error) {
 	return gone, errors.Join(errs...)
 }
 
-// failUnrestored fails the READY leases whose companion claim the start
-// did not restore (its preparation PREPARED_UNRESTORED): the requester's
-// next list shows them Failed, and Start releases them. Called with b.mu
-// held.
+// failUnrestored fails the LENDING and READY leases whose companion claim
+// the start did not restore (its preparation PREPARED_UNRESTORED): the
+// requester's next list shows them Failed, and Start releases them. Called
+// with b.mu held.
 func (b *Broker) failUnrestored(r *state.Records) {
 	changed := false
 	for i := range r.Preparations {
@@ -429,7 +429,7 @@ func (b *Broker) failUnrestored(r *state.Records) {
 			continue
 		}
 		l := b.leases[p.Lease]
-		if l == nil || l.State != state.LeaseReady || !apply(l, state.LeaseFailed, state.TriggerRecover) {
+		if l == nil || (l.State != state.LeaseReady && l.State != state.LeaseLending) || !apply(l, state.LeaseFailed, state.TriggerRecover) {
 			continue
 		}
 		l.Error = fmt.Sprintf("the device of companion claim %s was not restored at the start of the driver", p.ClaimName)

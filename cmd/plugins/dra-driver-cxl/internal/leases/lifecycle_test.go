@@ -34,6 +34,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -136,6 +137,55 @@ func TestUnrestoredCompanionFails(t *testing.T) {
 		})
 	}
 	e.b.Stop()
+	_ = e.st.Close()
+	mustOK(t, e.k.Kernel().Unmount(filepath.Join(e.poolDir, "mounts", "c1af0001-direct")))
+	e.k.SetMountError(dev, syscall.EIO, "")
+	e.boot()
+	if p := e.st.Snapshot().Preparation(e.pool.Name(), "uid-cxl-lease-000000a1"); p == nil || p.State != state.PreparationUnrestored {
+		t.Fatalf("companion %+v", p)
+	}
+	l := e.stored("000000a1")
+	if l == nil || l.State != state.LeaseFailed || l.Error != "the device of companion claim demo/cxl-lease-000000a1 was not restored at the start of the driver" {
+		t.Fatalf("lease %+v", l)
+	}
+	e.start()
+	list, _ := e.call(api.Request{Op: api.OpList})
+	if list.Leases == nil || len(*list.Leases) != 1 || (*list.Leases)[0].State != api.StateFailed || (*list.Leases)[0].Error != l.Error {
+		t.Fatalf("list %+v", list)
+	}
+	e.waitStored("000000a1", func(l *state.Lease) bool { return l.ReleaseRequested && l.State == state.LeaseFailed })
+	stay.Store(false)
+	e.k.SetMountError(dev, nil, "")
+	e.waitState("000000a1", state.LeaseNone)
+	e.wantGone(CompanionName("000000a1"))
+	e.wantNoRegions()
+}
+
+// A LENDING lease whose companion claim the start did not restore (a stop
+// between the companion's PREPARED and OnPrepared) fails and is released in
+// place as a READY one (L-64).
+func TestUnrestoredLendingCompanionFails(t *testing.T) {
+	e := newLeaseEnv(t, nil, fake.MemdevSpec{Serial: serialPoolP, Pmem: 512 << 20})
+	dev := e.formatPmem(serialPoolP, "erofs")
+	e.addSlices(persistentPoolSlice())
+	e.openClaim()
+	e.start()
+	_, r := e.requestPool("000000a1", api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Shared: true, Mode: "fs", Wait: "5s"}, "llm0", poolPmemData)
+	if r.resp.State != api.StateReady {
+		t.Fatalf("response %+v", r.resp)
+	}
+	var stay atomic.Bool
+	stay.Store(true)
+	for _, resource := range []string{"pods", "resourceclaims"} {
+		e.client.PrependReactor("delete", resource, func(a k8stesting.Action) (bool, runtime.Object, error) {
+			return stay.Load(), nil, nil
+		})
+	}
+	e.b.Stop()
+	mustOK(t, e.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
+		doc.Lease("000000a1").State = state.LeaseLending
+		return nil
+	}))
 	_ = e.st.Close()
 	mustOK(t, e.k.Kernel().Unmount(filepath.Join(e.poolDir, "mounts", "c1af0001-direct")))
 	e.k.SetMountError(dev, syscall.EIO, "")

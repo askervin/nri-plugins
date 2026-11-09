@@ -413,7 +413,7 @@ States: NONE, CREATING, PENDING, LENDING, READY, RELEASING, RELEASING_BUSY, FAIL
 | RELEASING | RELEASING_BUSY | `a-release`: the companion's bind is STALE: its unbind failed with EBUSY (a file of it is mapped) | - | commit (d); the companion stays Terminating; reads work until the holder ends |
 | RELEASING_BUSY | RELEASING | `a-release`: the companion's bind is not STALE any more (the holder ended, the unbind succeeded), or it is gone | - | commit (d) |
 | RELEASING, FAILED | NONE | `a-release`: pod and claim both NotFound | - | commit (d) removing the lease; the lease claim's directories removed when it is closed and this was its last lease |
-| READY | FAILED | `a-recover`: the start did not restore the device of the companion: its Preparation is PREPARED_UNRESTORED | - | commit (d); the release starts; the requester's next list shows the lease Failed |
+| LENDING, READY | FAILED | `a-recover`: the start did not restore the device of the companion: its Preparation is PREPARED_UNRESTORED | - | commit (d); the release starts; the requester's next list shows the lease Failed |
 | CREATING, PENDING, LENDING, READY, RELEASING, RELEASING_BUSY, FAILED | NONE | `load`: the document is of another boot | - | dropped; the companions deleted by the first reconcile |
 
 Refused:

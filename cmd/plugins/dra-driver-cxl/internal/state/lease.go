@@ -279,7 +279,7 @@ var LeaseTable = Table[LeaseState]{
 				"this was its last lease",
 		},
 		{
-			From: list(LeaseReady), To: LeaseFailed, Triggers: list(TriggerRecover),
+			From: list(LeaseLending, LeaseReady), To: LeaseFailed, Triggers: list(TriggerRecover),
 			When:    "the start did not restore the device of the companion: its Preparation is PREPARED_UNRESTORED",
 			Effects: "commit (d); the release starts; the requester's next list shows the lease Failed",
 		},
