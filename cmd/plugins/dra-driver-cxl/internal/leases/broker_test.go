@@ -1408,3 +1408,57 @@ func TestRequestWaitsForStart(t *testing.T) {
 		t.Fatal("no response")
 	}
 }
+
+// The limits of a lease socket and of the leases of a pod (L-18): a
+// connection beyond the limit is closed at once, an idle one after the
+// idle limit, a request beyond the leases of a pod refused.
+func TestLimits(t *testing.T) {
+	e := brokerEnv(t)
+	e.opts = func(o *Options) { o.Limits = Limits{Connections: 1, Idle: 300 * time.Millisecond, LeasesPerPod: 1} }
+	e.restart()
+	e.openClaim()
+	e.start()
+	r, _ := e.call(api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s"})
+	if r.Error != "" {
+		t.Fatalf("request %+v", r)
+	}
+	resp, _ := e.call(api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s"})
+	if resp.Error != "pod demo/borrower has 1 leases, the limit of --lease-max-per-pod" {
+		t.Fatalf("a request beyond the leases of the pod %+v", resp)
+	}
+	// the connections of the calls are gone
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		e.b.mu.Lock()
+		n := len(e.b.conns[envLeaseClaim])
+		e.b.mu.Unlock()
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d connections left", n)
+		}
+	}
+	c1, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: e.sock(), Net: "unix"})
+	mustOK(t, err)
+	defer func() { _ = c1.Close() }()
+	_, err = c1.Write([]byte(`{"op":"list"}` + "\n"))
+	mustOK(t, err)
+	r1 := bufio.NewReader(c1)
+	mustOK(t, c1.SetReadDeadline(time.Now().Add(5*time.Second)))
+	if _, err := r1.ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	// a second connection while c1 is open
+	c2, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: e.sock(), Net: "unix"})
+	mustOK(t, err)
+	defer func() { _ = c2.Close() }()
+	mustOK(t, c2.SetReadDeadline(time.Now().Add(5*time.Second)))
+	if data, err := io.ReadAll(c2); err != nil || len(data) != 0 {
+		t.Fatalf("a connection beyond the limit: %q %v", data, err)
+	}
+	// c1 idle: closed
+	start := time.Now()
+	if data, err := io.ReadAll(r1); err != nil || len(data) != 0 || time.Since(start) > 4*time.Second {
+		t.Fatalf("an idle connection: %q %v after %v", data, err, time.Since(start))
+	}
+}

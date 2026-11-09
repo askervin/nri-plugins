@@ -108,6 +108,7 @@ func newBroker(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverCon
 		Image:       cxlFlags.LeaseCompanionImage,
 		WaitDefault: cxlFlags.LeaseWait,
 		PoolDriver:  fe.pool.Name(),
+		Limits:      cxlFlags.LeaseLimits,
 	})
 	if err != nil {
 		return nil, err

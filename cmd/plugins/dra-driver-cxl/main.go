@@ -92,6 +92,9 @@ type CXLFlags struct {
 	LeaseWait time.Duration
 	// LeaseCompanionImage is the image of the companion pods.
 	LeaseCompanionImage string
+	// LeaseLimits are the limits of the lease sockets and of the leases of
+	// a pod.
+	LeaseLimits leases.Limits
 
 	// Store are the flags of the state store (state.json).
 	Store store.Flags
@@ -126,6 +129,9 @@ var flagEnvs = []struct{ flag, env string }{
 	{"lease-cli-source", "LEASE_CLI_SOURCE"},
 	{"lease-wait", "LEASE_WAIT"},
 	{"lease-companion-image", "LEASE_COMPANION_IMAGE"},
+	{"lease-max-connections", "LEASE_MAX_CONNECTIONS"},
+	{"lease-idle-timeout", "LEASE_IDLE_TIMEOUT"},
+	{"lease-max-per-pod", "LEASE_MAX_PER_POD"},
 }
 
 // flagAliases maps short flags to their long names.
@@ -158,6 +164,9 @@ func parseFlags(fs *flag.FlagSet, args []string, lookupEnv func(string) (string,
 	fs.StringVar(&f.LeaseCLISource, "lease-cli-source", "", "cxl-request CLI that is copied to --lease-cli at start (empty for none)")
 	fs.DurationVar(&f.LeaseWait, "lease-wait", leases.DefaultWait, "default wait of a lease request for the lease to become Ready")
 	fs.StringVar(&f.LeaseCompanionImage, "lease-companion-image", leases.DefaultCompanionImage, "container image of the companion pods that hold the devices of leases")
+	fs.IntVar(&f.LeaseLimits.Connections, "lease-max-connections", leases.DefaultMaxConnections, "open connections of the lease socket of a lease claim")
+	fs.DurationVar(&f.LeaseLimits.Idle, "lease-idle-timeout", leases.DefaultIdle, "how long a connection of a lease socket may stay without a request")
+	fs.IntVar(&f.LeaseLimits.LeasesPerPod, "lease-max-per-pod", leases.DefaultMaxLeasesPerPod, "leases of the containers of a pod")
 	f.Store.Register(fs)
 	f.Provenance.Register(fs)
 	for _, fe := range flagEnvs {

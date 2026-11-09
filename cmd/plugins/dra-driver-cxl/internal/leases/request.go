@@ -106,6 +106,15 @@ func (b *Broker) storeCreating(l *state.Lease, req *api.Request) error {
 	if err := b.claimOpenLocked(l.Claim); err != nil {
 		return err
 	}
+	n := 0
+	for _, other := range b.leases {
+		if other.Pod.UID == l.Pod.UID {
+			n++
+		}
+	}
+	if n >= b.opts.Limits.LeasesPerPod {
+		return fmt.Errorf("pod %s/%s has %d leases, the limit of --lease-max-per-pod", l.Pod.Namespace, l.Pod.Name, n)
+	}
 	if err := b.fsLeaseOptions(l, req); err != nil {
 		return err
 	}

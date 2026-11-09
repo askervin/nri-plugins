@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -58,6 +59,7 @@ func TestParseFlagsDefaults(t *testing.T) {
 		LeaseCLI:            "/usr/local/bin/cxl-request",
 		LeaseWait:           120 * time.Second,
 		LeaseCompanionImage: "registry.k8s.io/pause:3.10",
+		LeaseLimits:         leases.Limits{Connections: 64, Idle: 10 * time.Minute, LeasesPerPod: 64},
 		Store:               store.Flags{CompatViews: true},
 	}
 	if !reflect.DeepEqual(f, want) {
@@ -87,6 +89,9 @@ func TestParseFlagsEnvironment(t *testing.T) {
 		"LEASE_CLI_SOURCE":      "/bin/cxl-request",
 		"LEASE_WAIT":            "5s",
 		"LEASE_COMPANION_IMAGE": "pause:test",
+		"LEASE_MAX_CONNECTIONS": "8",
+		"LEASE_IDLE_TIMEOUT":    "1h",
+		"LEASE_MAX_PER_POD":     "4",
 	}
 	f, err := testParseFlags(nil, env)
 	if err != nil {
@@ -110,6 +115,7 @@ func TestParseFlagsEnvironment(t *testing.T) {
 		LeaseCLISource:      "/bin/cxl-request",
 		LeaseWait:           5 * time.Second,
 		LeaseCompanionImage: "pause:test",
+		LeaseLimits:         leases.Limits{Connections: 8, Idle: time.Hour, LeasesPerPod: 4},
 		Store:               store.Flags{CompatViews: true},
 	}
 	if !reflect.DeepEqual(f, want) {

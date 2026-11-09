@@ -138,6 +138,40 @@ type Options struct {
 	OpenDevice func(path string, readOnly bool) (*os.File, error)
 	// NewID returns a new lease id; nil: 8 random hex digits.
 	NewID func() string
+	// Limits are the limits of the sockets and of the leases of a pod.
+	Limits Limits
+}
+
+// Limits bound what the containers of a pod can make the broker hold.
+type Limits struct {
+	// Connections is the number of open connections of the socket of a
+	// lease claim; 0: DefaultMaxConnections.
+	Connections int
+	// Idle is how long a connection may stay without a request; 0:
+	// DefaultIdle.
+	Idle time.Duration
+	// LeasesPerPod is the number of leases of a pod; 0:
+	// DefaultMaxLeasesPerPod.
+	LeasesPerPod int
+}
+
+const (
+	// DefaultMaxConnections is the default limit of the open connections
+	// of the socket of a lease claim.
+	DefaultMaxConnections = 64
+	// DefaultIdle is the default limit of the time a connection may stay
+	// without a request.
+	DefaultIdle = 10 * time.Minute
+	// DefaultMaxLeasesPerPod is the default limit of the leases of a pod.
+	DefaultMaxLeasesPerPod = 64
+)
+
+// withDefaults returns the limits with the defaults for the zero ones.
+func (l Limits) withDefaults() Limits {
+	l.Connections = cmp.Or(l.Connections, DefaultMaxConnections)
+	l.Idle = cmp.Or(l.Idle, DefaultIdle)
+	l.LeasesPerPod = cmp.Or(l.LeasesPerPod, DefaultMaxLeasesPerPod)
+	return l
 }
 
 // Broker is the lease broker of the node: the lease claims of the pods and
@@ -219,6 +253,7 @@ func New(opts Options) (*Broker, error) {
 		opts.WaitDefault = DefaultWait
 	}
 	opts.Image = cmp.Or(opts.Image, DefaultCompanionImage)
+	opts.Limits = opts.Limits.withDefaults()
 	if opts.OpenDevice == nil {
 		opts.OpenDevice = openDevice
 	}

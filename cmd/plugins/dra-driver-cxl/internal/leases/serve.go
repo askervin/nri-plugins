@@ -75,6 +75,10 @@ func (b *Broker) serveConn(claimUID string, c *net.UnixConn) {
 	connected, known := who, authErr == nil
 	r := bufio.NewReaderSize(c, 4096)
 	for first := true; ; first = false {
+		// a connection without a request for Limits.Idle is closed
+		if err := c.SetReadDeadline(time.Now().Add(b.opts.Limits.Idle)); err != nil {
+			return
+		}
 		line, err := readLine(r)
 		if err != nil {
 			return
@@ -106,11 +110,16 @@ func (b *Broker) serveConn(claimUID string, c *net.UnixConn) {
 }
 
 // addConn records an open connection of the socket of a lease claim, and
-// returns false when the claim's socket is closed.
+// returns false when the claim's socket is closed or has as many open
+// connections as Limits.Connections.
 func (b *Broker) addConn(claimUID string, c *net.UnixConn) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.listeners[claimUID] == nil {
+		return false
+	}
+	if n := len(b.conns[claimUID]); n >= b.opts.Limits.Connections {
+		klog.Warningf("lease broker: claim %s: refusing a connection: %d are open, the limit of --lease-max-connections", claimUID, n)
 		return false
 	}
 	if b.conns[claimUID] == nil {
