@@ -174,7 +174,9 @@ type Broker struct {
 
 	mu sync.Mutex
 	// containers is the container plugin (nil: NRI not connected) and
-	// identity the identity of the peers (nil: requests are refused).
+	// started: Start ran; identity the identity of the peers (nil:
+	// requests are refused).
+	started    bool
 	containers Containers
 	identity   Identity
 	leases     map[string]*state.Lease
@@ -291,6 +293,7 @@ func randomLeaseID() string {
 // start and starts the reconcile loop.
 func (b *Broker) Start(containers Containers) {
 	b.mu.Lock()
+	b.started = true
 	b.containers = containers
 	if containers != nil {
 		b.identity = b.opts.Identity
@@ -300,6 +303,7 @@ func (b *Broker) Start(containers Containers) {
 	}
 	unrestored := b.unrestored
 	b.unrestored = nil
+	b.notify()
 	b.mu.Unlock()
 	if containers != nil {
 		containers.OnContainerGone(b.containerGone)

@@ -17,6 +17,7 @@ package leases
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -204,8 +205,29 @@ func (b *Broker) respond(c *net.UnixConn, resp *api.Response, fd leaseFd) error 
 	return err
 }
 
-// authenticate maps the peer to a container of a pod of the lease claim.
+// waitIdentity waits, at most Timeouts.SyncWait, until the broker is
+// started and the container plugin has synchronized with the runtime: the
+// identity of a peer is known only then.
+func (b *Broker) waitIdentity() {
+	ctx, cancel := context.WithTimeout(b.ctx, b.t.SyncWait)
+	defer cancel()
+	_ = b.waitFor(ctx, func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.started
+	})
+	b.mu.Lock()
+	containers := b.containers
+	b.mu.Unlock()
+	if containers != nil {
+		_ = containers.WaitSynchronized(ctx)
+	}
+}
+
+// authenticate maps the peer to a container of a pod of the lease claim,
+// after the identity of the peers is known (waitIdentity).
 func (b *Broker) authenticate(claimUID string, c *net.UnixConn) (Requester, error) {
+	b.waitIdentity()
 	b.mu.Lock()
 	identity := b.identity
 	var lc *state.LeaseClaim

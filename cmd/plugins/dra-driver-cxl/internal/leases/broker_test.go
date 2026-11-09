@@ -119,8 +119,16 @@ func TestLeaseClaimSocketAndCDI(t *testing.T) {
 		leaseContainerDir+"/"+leaseSocketName != api.DefaultSocket {
 		t.Fatalf("env %v", dev.ContainerEdits.Env)
 	}
+	// before the start a request waits for it, bounded (L-17)
+	e.opts = func(o *Options) { o.Timeouts.SyncWait = 200 * time.Millisecond }
+	e.restart()
+	e.opts = nil
+	start := time.Now()
 	resp, _ := e.call(api.Request{Op: api.OpList})
 	wantErrText(t, errors.New(resp.Error), "lending unavailable: NRI not connected")
+	if took := time.Since(start); took < 200*time.Millisecond || took > 5*time.Second {
+		t.Fatalf("a request before the start answered after %v", took)
+	}
 
 	e.restart()
 	e.start()
@@ -1376,5 +1384,27 @@ func TestIdentityPerRequest(t *testing.T) {
 	e.ctrs.setPeer(nil)
 	if line := list(); !strings.Contains(line, `"leases":[]`) {
 		t.Fatalf("a peer that exited %q", line)
+	}
+}
+
+// A request that comes before the broker starts waits for the start
+// (L-17), then is served.
+func TestRequestWaitsForStart(t *testing.T) {
+	e := brokerEnv(t)
+	e.openClaim()
+	ch := make(chan api.Response, 1)
+	go func() {
+		resp, _ := e.call(api.Request{Op: api.OpList})
+		ch <- resp
+	}()
+	time.Sleep(100 * time.Millisecond)
+	e.start()
+	select {
+	case resp := <-ch:
+		if resp.Error != "" || resp.Leases == nil {
+			t.Fatalf("response %+v", resp)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no response")
 	}
 }
