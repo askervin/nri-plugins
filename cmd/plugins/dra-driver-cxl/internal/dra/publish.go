@@ -73,8 +73,11 @@ type Publisher struct {
 	scanMu  sync.Mutex
 	scanned atomic.Int64
 
-	mu         sync.Mutex
-	devices    device.DevicesInfo
+	mu      sync.Mutex
+	devices device.DevicesInfo
+	// published is the table of the last publication, nil before the
+	// first.
+	published  device.DevicesInfo
 	generation uint64
 	names      []string
 	slices     *nodeResourceSlices // nil before Start
@@ -173,6 +176,17 @@ func (p *Publisher) SetOnError(onError func(ctx context.Context, err error, msg 
 	p.opts.OnError = onError
 }
 
+// Published returns the devices of the last publication, by name, those of
+// the last scan before the first publication.
+func (p *Publisher) Published() device.DevicesInfo {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.published == nil {
+		return p.devices
+	}
+	return p.published
+}
+
 // Devices returns the devices of the last scan, by name.
 func (p *Publisher) Devices() device.DevicesInfo {
 	p.mu.Lock()
@@ -225,6 +239,12 @@ func (p *Publisher) Resources() resourceslice.DriverResources {
 	p.mu.Lock()
 	devs := p.devices
 	p.mu.Unlock()
+	return p.resourcesOf(devs)
+}
+
+// resourcesOf returns the resources of the node's ResourceSlice of the
+// devices of a table, sorted by name.
+func (p *Publisher) resourcesOf(devs device.DevicesInfo) resourceslice.DriverResources {
 	return resourceslice.DriverResources{
 		Pools: map[string]resourceslice.Pool{
 			p.opts.NodeName: {Slices: []resourceslice.Slice{{Devices: resources(devs)}}},
@@ -357,7 +377,10 @@ func (p *Publisher) Rescan(ctx context.Context, periodic bool) {
 
 // publish publishes the table.
 func (p *Publisher) publish(ctx context.Context) error {
-	res := p.Resources()
+	p.mu.Lock()
+	table := p.devices
+	p.mu.Unlock()
+	res := p.resourcesOf(table)
 	devs := res.Pools[p.opts.NodeName].Slices[0].Devices
 	for i := range devs {
 		klog.V(5).Infof("Processing allocatable device %v: %+v", devs[i].Name, devs[i])
@@ -370,6 +393,9 @@ func (p *Publisher) publish(ctx context.Context) error {
 	if err := s.publish(ctx, res); err != nil {
 		return fmt.Errorf("error publishing resources: %v", err)
 	}
+	p.mu.Lock()
+	p.published = table
+	p.mu.Unlock()
 	return nil
 }
 

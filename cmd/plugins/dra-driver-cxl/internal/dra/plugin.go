@@ -264,13 +264,14 @@ func (p *Plugin) commit(ctx context.Context, fn func(doc *store.Document) error)
 	return commit(ctx, p.st, fn)
 }
 
-// allocatable returns the devices of the last scan of the node, nil for a
-// driver that does not publish.
+// allocatable returns the devices of the last publication of the node's
+// ResourceSlice (the scheduler allocated from it), nil for a driver that
+// does not publish.
 func (p *Plugin) allocatable() device.DevicesInfo {
 	if p.publisher == nil {
 		return nil
 	}
-	return p.publisher.Devices()
+	return p.publisher.Published()
 }
 
 // PrepareResourceClaims prepares the claims of kubelet: after the first NRI

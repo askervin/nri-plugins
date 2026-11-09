@@ -618,3 +618,34 @@ func TestRescanBeforeStart(t *testing.T) {
 	}
 	wantLogLineText(t, logs(), "rescanAndPublish: published updated resources (1 devices)")
 }
+
+// TestPublishedTable pins the table that a local Prepare looks its devices
+// up in (L-09): that of the last publication, the last scan's before the
+// first one; a scan that is not published leaves it.
+func TestPublishedTable(t *testing.T) {
+	client := sliceTestClient(pubNode, nil)
+	p := pubPublisher(t, PublishOptions{
+		Config:   PublishConfig{IgnoreDRAMNodes: true, PublishLeaseDevice: true},
+		NodeName: pubNode,
+		Client:   client,
+		Scan:     func() (*nricxl.Devices, error) { return nricxl.NewDevices(), nil },
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pubNoErr(t, p.Scan(ctx))
+	if p.Published()[device.LeaseDeviceName] == nil {
+		t.Fatalf("published table before the first publication: %+v", p.Published())
+	}
+	pubNoErr(t, p.Start(ctx))
+	defer p.Stop()
+	// a scan without the lease device, not published
+	p.SetConfig(PublishConfig{IgnoreDRAMNodes: true})
+	pubNoErr(t, p.Scan(ctx))
+	if p.Devices()[device.LeaseDeviceName] != nil || p.Published()[device.LeaseDeviceName] == nil {
+		t.Fatalf("scanned %v, published %v", p.Devices(), p.Published())
+	}
+	p.Rescan(ctx, false)
+	if p.Published()[device.LeaseDeviceName] != nil {
+		t.Fatalf("published %v after the rescan", p.Published())
+	}
+}
