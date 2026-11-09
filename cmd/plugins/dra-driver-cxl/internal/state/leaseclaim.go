@@ -25,12 +25,12 @@ package state
 //
 // States: LeaseClaimState. NONE: no record. OPEN: listening.
 // OPEN_NO_LISTENER: listening again at a start failed; the next OpenClaim
-// listens. CLOSING: CloseClaim releases every lease of the claim (requests
-// on the socket are still served); a start listens on it again. CLOSED:
-// the listener closed, the record removed. REMOVING: its lease-fs
-// directory is gone and its socket directory is being removed (a bind
-// still mounted keeps lease-fs/<uid>, and the claim CLOSED, until the last
-// lease is gone). CLOSED and REMOVING are in memory only.
+// listens. CLOSING: CloseClaim releases every lease of the claim; a new
+// lease request on the socket is refused; a start keeps it CLOSING.
+// CLOSED: the listener and its connections closed, the record removed.
+// REMOVING: its lease-fs directory is gone and its socket directory is
+// being removed (a bind still mounted keeps lease-fs/<uid>, and the claim
+// CLOSED, until the last lease is gone). CLOSED and REMOVING are in memory only.
 //
 // Transitions: LeaseClaimTable below; a transition not in it is refused.
 //
@@ -97,7 +97,7 @@ var LeaseClaimTable = Table[LeaseClaimState]{
 			Guard: "listen succeeded",
 		},
 		{
-			From:     list(LeaseClaimOpen, LeaseClaimOpenNoListener, LeaseClaimClosing),
+			From:     list(LeaseClaimOpen, LeaseClaimOpenNoListener),
 			To:       LeaseClaimOpenNoListener,
 			Triggers: list(TriggerRecover),
 			When:     "listening again at the start failed",
@@ -106,15 +106,14 @@ var LeaseClaimTable = Table[LeaseClaimState]{
 		{
 			From: list(LeaseClaimOpen, LeaseClaimOpenNoListener), To: LeaseClaimClosing, Triggers: list(TriggerUnprepare),
 			When: "an Unprepare of the claim (CloseClaim)",
-			Effects: "commit (d); every lease of the claim released; requests on the socket are still served (the " +
-				"leases asked for meanwhile are released by the next CloseClaim)",
+			Effects: "commit (d); every lease of the claim released; a new lease request on the socket is refused, " +
+				"releases, lists and env are served",
 		},
 		{
-			From: list(LeaseClaimClosing), To: LeaseClaimOpen, Triggers: list(TriggerRecover),
-			When:  "the start listens on the socket of a claim whose close a stop cut",
-			Guard: "listen succeeded",
-			Effects: "commit (d); kubelet's Unprepare retry closes the claim again (requests on the socket are " +
-				"served until then, as on an OPEN claim)",
+			From: list(LeaseClaimClosing), Stays: true, Triggers: list(TriggerRecover),
+			When: "the start of a claim whose close a stop cut",
+			Effects: "the socket listened again (a failed listen logged); new lease requests refused; kubelet's " +
+				"Unprepare retry closes the claim",
 		},
 		{
 			From: list(LeaseClaimClosing), Stays: true, Triggers: list(TriggerUnprepare),
@@ -124,8 +123,8 @@ var LeaseClaimTable = Table[LeaseClaimState]{
 		{
 			From: list(LeaseClaimClosing), To: LeaseClaimClosed, Triggers: list(TriggerUnprepare),
 			When: "every lease has DeletionRequested (not necessarily gone)",
-			Effects: "the listener closed (open connections keep serving); commit (d) removing the record; CDI " +
-				"device removed; the socket removed",
+			Effects: "the listener and its open connections closed; commit (d) removing the record; CDI device " +
+				"removed; the socket removed",
 		},
 		{
 			From:     list(LeaseClaimClosed),
@@ -145,8 +144,8 @@ var LeaseClaimTable = Table[LeaseClaimState]{
 	},
 	Refused: []Refusal[LeaseClaimState]{
 		{
-			From: list(LeaseClaimClosing), To: list(LeaseClaimOpen), Except: list(TriggerRecover, TriggerPrepare),
-			Why: "a closing claim is opened again only by the start or by a Prepare of the claim",
+			From: list(LeaseClaimClosing), To: list(LeaseClaimOpen), Except: list(TriggerPrepare),
+			Why: "a closing claim is opened again only by a Prepare of the claim",
 		},
 	},
 }

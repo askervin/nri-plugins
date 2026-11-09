@@ -59,9 +59,14 @@ func (b *Broker) accept(claimUID string, l *net.UnixListener) {
 	}
 }
 
-// serveConn answers the request lines of one connection.
+// serveConn answers the request lines of one connection until it ends or
+// its lease claim is closed.
 func (b *Broker) serveConn(claimUID string, c *net.UnixConn) {
-	defer func() { _ = c.Close() }()
+	if !b.addConn(claimUID, c) {
+		_ = c.Close()
+		return
+	}
+	defer b.removeConn(claimUID, c)
 	who, authErr := b.authenticate(claimUID, c)
 	if authErr != nil {
 		klog.Warningf("lease broker: claim %s: rejected connection: %v", claimUID, authErr)
@@ -87,6 +92,41 @@ func (b *Broker) serveConn(claimUID string, c *net.UnixConn) {
 			klog.Warningf("lease broker: claim %s: response to %s/%s: %v", claimUID, who.Pod.Name, who.Container, err)
 			return
 		}
+	}
+}
+
+// addConn records an open connection of the socket of a lease claim, and
+// returns false when the claim's socket is closed.
+func (b *Broker) addConn(claimUID string, c *net.UnixConn) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.listeners[claimUID] == nil {
+		return false
+	}
+	if b.conns[claimUID] == nil {
+		b.conns[claimUID] = map[*net.UnixConn]bool{}
+	}
+	b.conns[claimUID][c] = true
+	return true
+}
+
+// removeConn closes a connection of the socket of a lease claim and forgets
+// it.
+func (b *Broker) removeConn(claimUID string, c *net.UnixConn) {
+	_ = c.Close()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.conns[claimUID], c)
+	if len(b.conns[claimUID]) == 0 {
+		delete(b.conns, claimUID)
+	}
+}
+
+// closeConnsLocked closes the open connections of the socket of a lease
+// claim. Called with b.mu held.
+func (b *Broker) closeConnsLocked(claimUID string) {
+	for c := range b.conns[claimUID] {
+		_ = c.Close()
 	}
 }
 

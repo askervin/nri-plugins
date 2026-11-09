@@ -433,7 +433,7 @@ LeaseClaim is a claim on the lease device, prepared by cxl.nri.io for a pod: its
 
 **Identity.** UID, the claim UID (also the socket directory and the CDI device name); Namespace and Name of the claim.
 
-**States.** LeaseClaimState. NONE: no record. OPEN: listening. OPEN_NO_LISTENER: listening again at a start failed; the next OpenClaim listens. CLOSING: CloseClaim releases every lease of the claim (requests on the socket are still served); a start listens on it again. CLOSED: the listener closed, the record removed. REMOVING: its lease-fs directory is gone and its socket directory is being removed (a bind still mounted keeps lease-fs/&lt;uid>, and the claim CLOSED, until the last lease is gone). CLOSED and REMOVING are in memory only.
+**States.** LeaseClaimState. NONE: no record. OPEN: listening. OPEN_NO_LISTENER: listening again at a start failed; the next OpenClaim listens. CLOSING: CloseClaim releases every lease of the claim; a new lease request on the socket is refused; a start keeps it CLOSING. CLOSED: the listener and its connections closed, the record removed. REMOVING: its lease-fs directory is gone and its socket directory is being removed (a bind still mounted keeps lease-fs/&lt;uid>, and the claim CLOSED, until the last lease is gone). CLOSED and REMOVING are in memory only.
 
 **Transitions.** LeaseClaimTable below; a transition not in it is refused.
 
@@ -447,17 +447,17 @@ States: NONE, OPEN, OPEN_NO_LISTENER, CLOSING, CLOSED, REMOVING.
 | OPEN | (unchanged) | `a-prepare`, `a-request`: OpenClaim again; Pods refreshed from reservedFor when a peer's pod is unknown | - | commit (d) |
 | OPEN_NO_LISTENER, CLOSING | OPEN | `a-prepare`: OpenClaim of a claim whose socket did not start again, or whose close did not finish | - | commit (d); the socket started; a later Unprepare closes the claim |
 | OPEN, OPEN_NO_LISTENER | OPEN | `a-recover`: the start listens on the socket again | listen succeeded | - |
-| OPEN, OPEN_NO_LISTENER, CLOSING | OPEN_NO_LISTENER | `a-recover`: listening again at the start failed | - | logged; the socket starts at the next OpenClaim |
-| OPEN, OPEN_NO_LISTENER | CLOSING | `a-unprepare`: an Unprepare of the claim (CloseClaim) | - | commit (d); every lease of the claim released; requests on the socket are still served (the leases asked for meanwhile are released by the next CloseClaim) |
-| CLOSING | OPEN | `a-recover`: the start listens on the socket of a claim whose close a stop cut | listen succeeded | commit (d); kubelet's Unprepare retry closes the claim again (requests on the socket are served until then, as on an OPEN claim) |
+| OPEN, OPEN_NO_LISTENER | OPEN_NO_LISTENER | `a-recover`: listening again at the start failed | - | logged; the socket starts at the next OpenClaim |
+| OPEN, OPEN_NO_LISTENER | CLOSING | `a-unprepare`: an Unprepare of the claim (CloseClaim) | - | commit (d); every lease of the claim released; a new lease request on the socket is refused, releases, lists and env are served |
+| CLOSING | (unchanged) | `a-recover`: the start of a claim whose close a stop cut | - | the socket listened again (a failed listen logged); new lease requests refused; kubelet's Unprepare retry closes the claim |
 | CLOSING | (unchanged) | `a-unprepare`: the Unprepare retried: the leases of the claim released again | - | "still releasing N leases" to kubelet while not every lease has DeletionRequested within 5 s |
-| CLOSING | CLOSED | `a-unprepare`: every lease has DeletionRequested (not necessarily gone) | - | the listener closed (open connections keep serving); commit (d) removing the record; CDI device removed; the socket removed |
+| CLOSING | CLOSED | `a-unprepare`: every lease has DeletionRequested (not necessarily gone) | - | the listener and its open connections closed; commit (d) removing the record; CDI device removed; the socket removed |
 | CLOSED | REMOVING | `a-unprepare`, `a-release`, `a-reconcile`, `a-recover`: the directories of a claim without a record are removed: by CloseClaim, by the release of its last lease, by the sweep of the reconcile and of the start | no bind mounted in its lease-fs directory, which is removed (else it stays CLOSED) | the entries of its socket directory removed by name, never following a symlink |
 | REMOVING | NONE | `a-unprepare`, `a-release`, `a-reconcile`, `a-recover`: the socket directory removed | - | - |
 
 Refused:
 
-- CLOSING -> OPEN except on a-recover, a-prepare: a closing claim is opened again only by the start or by a Prepare of the claim
+- CLOSING -> OPEN except on a-prepare: a closing claim is opened again only by a Prepare of the claim
 
 **Invariants.** A lease claim in the store is OPEN, OPEN_NO_LISTENER or CLOSING; lease-fs/&lt;uid> and leases/&lt;uid> exist only for lease claims of prepared claims.
 

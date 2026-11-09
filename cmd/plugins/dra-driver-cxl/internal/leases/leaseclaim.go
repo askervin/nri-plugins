@@ -168,19 +168,24 @@ func (b *Broker) OpenClaim(claim *resourcev1.ResourceClaim) error {
 }
 
 // recoverClaims starts the sockets of the stored lease claims at the
-// start: an OPEN claim and a CLOSING one whose close a stop cut (kubelet's
-// Unprepare retry closes it) listen again; a failed listen is logged and
-// the claim is OPEN_NO_LISTENER until it is prepared again. Called with
-// b.mu held.
+// start: an OPEN claim and a CLOSING one whose close a stop cut listen
+// again; a failed listen is logged and an open claim is OPEN_NO_LISTENER
+// until it is prepared again. A CLOSING claim stays CLOSING (no new
+// leases) for kubelet's Unprepare retry. Called with b.mu held.
 func (b *Broker) recoverClaims() {
 	changed := false
 	for _, uid := range slices.Sorted(maps.Keys(b.claims)) {
 		lc := b.claims[uid]
 		to := state.LeaseClaimOpen
+		if lc.State == state.LeaseClaimClosing {
+			to = state.LeaseClaimClosing
+		}
 		err := b.listen(uid)
 		if err != nil {
 			klog.Errorf("lease broker: lease claim %s: %v", uid, err)
-			to = state.LeaseClaimOpenNoListener
+			if to != state.LeaseClaimClosing {
+				to = state.LeaseClaimOpenNoListener
+			}
 		}
 		was := lc.State
 		if applyClaim(lc, to, state.TriggerRecover) && was != lc.State {
@@ -267,6 +272,7 @@ func (b *Broker) closed(uid string) (bool, error) {
 		_ = l.Close()
 		delete(b.listeners, uid)
 	}
+	b.closeConnsLocked(uid)
 	delete(b.claims, uid)
 	return true, errors.Join(b.persistLocked(), b.writeCDISpec())
 }

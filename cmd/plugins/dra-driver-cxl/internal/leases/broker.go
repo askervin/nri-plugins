@@ -177,8 +177,10 @@ type Broker struct {
 	claims     map[string]*state.LeaseClaim
 	// lost: the store is lost, the lease claims of the node are unknown.
 	lost bool
-	// listeners are the sockets of the lease claims by uid.
+	// listeners are the sockets of the lease claims by uid, conns their
+	// open connections.
 	listeners map[string]*net.UnixListener
+	conns     map[string]map[*net.UnixConn]bool
 	// releasing are the leases whose release runs.
 	releasing map[string]bool
 	// removing are the lease claims (uid) whose directories are being
@@ -225,6 +227,7 @@ func New(opts Options) (*Broker, error) {
 		leases:    map[string]*state.Lease{},
 		claims:    map[string]*state.LeaseClaim{},
 		listeners: map[string]*net.UnixListener{},
+		conns:     map[string]map[*net.UnixConn]bool{},
 		releasing: map[string]bool{},
 		removing:  map[string]chan struct{}{},
 		changed:   make(chan struct{}),

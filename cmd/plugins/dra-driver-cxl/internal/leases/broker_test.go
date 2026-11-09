@@ -15,6 +15,7 @@
 package leases
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -869,7 +870,8 @@ func TestCloseClaimDoesNotWaitForCompanions(t *testing.T) {
 
 // CloseClaim fails while the deletion of a companion cannot be requested
 // ("still releasing", kubelet retries): the claim is CLOSING with its
-// socket; a restart listens on it again (OPEN); the retry closes it.
+// socket, which refuses new leases and serves the others; a restart keeps
+// it CLOSING and listens on it again; the retry closes it.
 func TestCloseClaimRetry(t *testing.T) {
 	e := brokerEnv(t)
 	var fail atomic.Bool
@@ -892,18 +894,24 @@ func TestCloseClaimRetry(t *testing.T) {
 	if c := e.st.Snapshot().LeaseClaim(envLeaseClaim); c == nil || c.State != state.LeaseClaimClosing {
 		t.Fatalf("lease claim %+v", c)
 	}
-	// requests are served while it closes
+	// lists are served while it closes, new leases refused
 	if resp, _ := e.call(api.Request{Op: api.OpList}); resp.Error != "" {
 		t.Fatalf("list on a closing claim %+v", resp)
+	}
+	if resp, _ := e.call(api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s"}); resp.Error != "lease claim demo/lease is being unprepared: no new leases" {
+		t.Fatalf("request on a closing claim %+v", resp)
 	}
 	wantErrText(t, e.b.CloseClaim(context.Background(), envLeaseClaim), "still releasing 1 leases, retry")
 
 	e.opts = nil
 	e.restart()
-	if c := e.st.Snapshot().LeaseClaim(envLeaseClaim); c == nil || c.State != state.LeaseClaimOpen {
+	if c := e.st.Snapshot().LeaseClaim(envLeaseClaim); c == nil || c.State != state.LeaseClaimClosing {
 		t.Fatalf("lease claim after a restart %+v", c)
 	}
 	e.start()
+	if resp, _ := e.call(api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s"}); resp.Error == "" {
+		t.Fatalf("request on a closing claim after a restart %+v", resp)
+	}
 	fail.Store(false)
 	mustOK(t, e.b.CloseClaim(context.Background(), envLeaseClaim))
 	e.waitState(r.Lease, state.LeaseNone)
@@ -1180,4 +1188,27 @@ func (m *atomicMounts) get() ([]kernelMount, error) {
 		return slices.Clone(*p), nil
 	}
 	return nil, nil
+}
+
+// CloseClaim closes the open connections of the claim's socket with its
+// listener: a client waiting on one reads EOF.
+func TestCloseClaimClosesConnections(t *testing.T) {
+	e := brokerEnv(t)
+	e.openClaim()
+	e.start()
+	c, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: e.sock(), Net: "unix"})
+	mustOK(t, err)
+	defer func() { _ = c.Close() }()
+	// an answered request: the connection is served
+	_, err = c.Write([]byte(`{"op":"list"}` + "\n"))
+	mustOK(t, err)
+	mustOK(t, c.SetReadDeadline(time.Now().Add(5*time.Second)))
+	r := bufio.NewReader(c)
+	if line, err := r.ReadString('\n'); err != nil || !strings.Contains(line, `"leases":[]`) {
+		t.Fatalf("list: %q %v", line, err)
+	}
+	mustOK(t, e.b.CloseClaim(context.Background(), envLeaseClaim))
+	if data, err := io.ReadAll(r); err != nil || len(data) != 0 {
+		t.Fatalf("after CloseClaim: %q %v", data, err)
+	}
 }

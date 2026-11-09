@@ -103,6 +103,9 @@ func (b *Broker) requested(who Requester, requestID string) string {
 func (b *Broker) storeCreating(l *state.Lease, req *api.Request) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := b.claimOpenLocked(l.Claim); err != nil {
+		return err
+	}
 	if err := b.fsLeaseOptions(l, req); err != nil {
 		return err
 	}
@@ -113,6 +116,18 @@ func (b *Broker) storeCreating(l *state.Lease, req *api.Request) error {
 	if err := b.persistLocked(); err != nil {
 		delete(b.leases, l.ID)
 		return err
+	}
+	return nil
+}
+
+// claimOpenLocked returns an error if the lease claim uid takes no new
+// leases: it is closing (its Unprepare runs) or gone. Called with b.mu held.
+func (b *Broker) claimOpenLocked(uid string) error {
+	switch lc := b.claims[uid]; {
+	case lc == nil:
+		return fmt.Errorf("lease claim %s is not prepared: no new leases", uid)
+	case lc.State == state.LeaseClaimClosing:
+		return fmt.Errorf("lease claim %s/%s is being unprepared: no new leases", lc.Namespace, lc.Name)
 	}
 	return nil
 }
