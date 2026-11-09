@@ -17,6 +17,7 @@ package dra
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -278,5 +279,28 @@ func TestPoolSchedulerHold(t *testing.T) {
 		t.Fatalf("devices %+v", d)
 	}
 	e.mustUnprepare(e.pool, "xdax")
+	e.wantClean()
+}
+
+// A Prepare whose context ends after cxl create-region and whose CDI spec
+// cannot be written fails, and its rollback still releases everything: the
+// cleanup is not bound to the context of the request.
+func TestPoolRollbackOutlivesContext(t *testing.T) {
+	e := newDriverEnv(t, nil, poolSpec(serialPoolX))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	e.k.After("cxl create-region", func() {
+		cancel()
+		mustOK(t, os.RemoveAll(e.cdiDir))
+		mustOK(t, os.WriteFile(e.cdiDir, nil, 0o644))
+	})
+	claim := poolClaim("u1", "pooled0", poolExclusiveData)
+	res, err := e.pool.PrepareResourceClaims(ctx, []*resourcev1.ResourceClaim{claim})
+	mustOK(t, err)
+	wantErrText(t, res[claim.UID].Err, "failed to write CDI spec")
+	mustOK(t, os.Remove(e.cdiDir))
+	mustOK(t, os.MkdirAll(e.cdiDir, 0o755))
+	e.check("rolled back")
+	e.wantState(e.pool, "u1", state.PreparationUnknown)
 	e.wantClean()
 }

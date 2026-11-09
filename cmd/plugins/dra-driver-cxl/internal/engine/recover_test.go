@@ -865,6 +865,35 @@ func TestRecoverClaimLines(t *testing.T) {
 	v.clean("unprepared")
 }
 
+// An engine that owns the pool's records only sweeps a lease bind that no
+// prepared claim lists by its node mount in the pool's mounts directory:
+// the binds are swept before the node mounts, so that the node mount still
+// tells whose the bind is.
+func TestRecoverSweepsBindsBeforeNodeMounts(t *testing.T) {
+	v := pmemEnv(t, "ext4")
+	v.sources = []state.Source{state.SourcePool}
+	k := v.f.Kernel()
+	node := filepath.Join(v.dir, poolDriver, "mounts", "a1-direct")
+	bind := filepath.Join(v.dir, localDriver, "lease-fs", "lc4", "data")
+	for _, dir := range []string{node, bind} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := k.FsMount(filepath.Join(v.e.devRoot(), "pmem6"), node, "ext4", true, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Mount(node, bind, "", unix.MS_BIND, ""); err != nil {
+		t.Fatal(err)
+	}
+	v.restart()
+	for _, path := range []string{bind, node} {
+		if mi, _ := k.Mounted(path); mi != nil {
+			t.Errorf("%s is mounted: %+v", path, mi)
+		}
+	}
+}
+
 // A lease bind whose node mount is gone belongs to no memdev: the start
 // unmounts it, and when that fails, every release tries again until it is
 // gone.

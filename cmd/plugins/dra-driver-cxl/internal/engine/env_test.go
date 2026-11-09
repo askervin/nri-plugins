@@ -64,8 +64,10 @@ type env struct {
 	// commit from now, 0 for never.
 	cutAt   int
 	commits int
-	fenceMu sync.Mutex
-	fenced  []int
+	// commitMu guards cutAt and commits against concurrent requests.
+	commitMu sync.Mutex
+	fenceMu  sync.Mutex
+	fenced   []int
 	// sources are the sources that the engine owns, nil for all.
 	sources []state.Source
 	// tune changes the options of every engine that the node starts, nil
@@ -154,9 +156,14 @@ func (v *env) startEngine() {
 		v.t.Fatal(err)
 	}
 	e.afterCommit = func() {
+		v.commitMu.Lock()
 		v.commits++
-		if v.cutAt > 0 && v.commits == v.cutAt {
+		cut := v.cutAt > 0 && v.commits == v.cutAt
+		if cut {
 			v.cutAt = 0
+		}
+		v.commitMu.Unlock()
+		if cut {
 			panic(fake.ErrCut)
 		}
 	}
