@@ -97,6 +97,9 @@ func (e *Engine) Recover(ctx context.Context) (*Recovered, error) {
 	if err := e.recoverRegions(ctx, snap); err != nil {
 		return nil, err
 	}
+	if err := e.recoverForeign(ctx, snap); err != nil {
+		return nil, err
+	}
 	if err := e.restoreGrants(ctx, out); err != nil {
 		return nil, err
 	}
@@ -279,6 +282,151 @@ func (e *Engine) recoverRegions(ctx context.Context, snap *kernel.Snapshot) erro
 	for _, ref := range dropped {
 		klog.Warningf("engine: %s is gone: its record is dropped, its grants kept for kubelet", ref)
 	}
+	return nil
+}
+
+// recoverForeign records the regions of the snapshot on the memdevs of
+// the engine's records that no record names as FOREIGN, and removes the
+// FOREIGN records of the regions that are gone.
+func (e *Engine) recoverForeign(ctx context.Context, snap *kernel.Snapshot) error {
+	r := e.records()
+	seen := map[string]kernel.RegionInfo{}
+	var names []string
+	for _, m := range r.Memdevs {
+		if !e.owns(m.Source) {
+			continue
+		}
+		for _, ri := range snap.RegionsOf(uint64(m.Serial)) {
+			if _, ok := seen[ri.Name]; !ok {
+				seen[ri.Name] = ri
+				names = append(names, ri.Name)
+			}
+		}
+	}
+	for _, reg := range r.Regions {
+		if name := string(reg.Ref()); reg.State == state.RegionForeign && !slices.Contains(names, name) {
+			seen[name] = snap.Region(name)
+		}
+	}
+	return e.commit(ctx, func(r *state.Records) error { return syncForeign(r, seen, names, state.TriggerRecover) })
+}
+
+// forgetGoneForeign removes the FOREIGN records of the regions that the
+// snapshot does not have on their targets.
+func (e *Engine) forgetGoneForeign(ctx context.Context, snap *kernel.Snapshot, trigger state.Trigger) error {
+	seen := map[string]kernel.RegionInfo{}
+	gone := false
+	for _, reg := range e.records().Regions {
+		if reg.State == state.RegionForeign {
+			name := string(reg.Ref())
+			seen[name] = snap.Region(name)
+			gone = gone || !foreignStays(&reg, seen[name])
+		}
+	}
+	if !gone {
+		return nil
+	}
+	return e.commit(ctx, func(r *state.Records) error { return syncForeign(r, seen, nil, trigger) })
+}
+
+// noteForeign records the regions names that no record names as FOREIGN,
+// and removes the FOREIGN records of the regions that are gone.
+func (e *Engine) noteForeign(ctx context.Context, names []string, trigger state.Trigger) error {
+	r := e.records()
+	seen := map[string]kernel.RegionInfo{}
+	for _, name := range names {
+		seen[name] = e.kernelRegion(name)
+	}
+	changed := false
+	for _, reg := range r.Regions {
+		if reg.State != state.RegionForeign {
+			continue
+		}
+		name := string(reg.Ref())
+		if _, ok := seen[name]; !ok {
+			seen[name] = e.kernelRegion(name)
+		}
+		changed = changed || !foreignStays(&reg, seen[name])
+	}
+	for _, name := range names {
+		changed = changed || r.Region(state.RegionRef(name)) == nil
+	}
+	if !changed {
+		return nil
+	}
+	return e.commit(ctx, func(r *state.Records) error { return syncForeign(r, seen, names, trigger) })
+}
+
+// kernelRegion returns what the kernel has of the region name, in state
+// RegionAbsent when it has none.
+func (e *Engine) kernelRegion(name string) kernel.RegionInfo {
+	ri, err := e.k.Region(name)
+	if err != nil {
+		return kernel.RegionInfo{Name: name, State: kernel.RegionAbsent, NumaNode: -1}
+	}
+	return ri
+}
+
+// syncForeign removes the FOREIGN records whose region seen does not have
+// on their targets (NONE), and records the regions names of seen that no
+// record names (FOREIGN).
+func syncForeign(r *state.Records, seen map[string]kernel.RegionInfo, names []string, trigger state.Trigger) error {
+	for _, ref := range regionRefs(r) {
+		if reg := r.Region(ref); reg.State == state.RegionForeign && !foreignStays(reg, seen[string(ref)]) {
+			if err := forgetForeign(r, ref, trigger); err != nil {
+				return err
+			}
+		}
+	}
+	for _, name := range names {
+		ri := seen[name]
+		if ri.State == kernel.RegionAbsent || r.Region(state.RegionRef(name)) != nil {
+			continue
+		}
+		reg := state.Region{Name: name, Mode: state.RegionMode(ri.Mode), Owner: state.OwnerForeign, Locked: ri.Locked,
+			State: state.RegionNone}
+		for _, serial := range ri.Serials {
+			reg.Targets = append(reg.Targets, state.Serial(serial))
+		}
+		if ri.Range.End > 0 {
+			reg.Size = ri.Range.Size()
+		}
+		if ri.NumaNode >= 0 {
+			node := ri.NumaNode
+			reg.NumaNode = &node
+		}
+		if err := state.Apply(&state.RegionTable, &reg.State, state.RegionForeign, trigger); err != nil {
+			return err
+		}
+		r.Regions = append(r.Regions, reg)
+	}
+	return nil
+}
+
+// foreignStays tells whether the kernel has the region of a FOREIGN record
+// on the record's targets.
+func foreignStays(reg *state.Region, ri kernel.RegionInfo) bool {
+	if ri.State == kernel.RegionAbsent || len(ri.Serials) != len(reg.Targets) {
+		return false
+	}
+	for _, serial := range reg.Targets {
+		if !slices.Contains(ri.Serials, uint64(serial)) {
+			return false
+		}
+	}
+	return true
+}
+
+// forgetForeign removes the FOREIGN record ref, if there is one.
+func forgetForeign(r *state.Records, ref state.RegionRef, trigger state.Trigger) error {
+	reg := r.Region(ref)
+	if reg == nil || reg.State != state.RegionForeign {
+		return nil
+	}
+	if err := state.Apply(&state.RegionTable, &reg.State, state.RegionNone, trigger); err != nil {
+		return err
+	}
+	removeRecord(&r.Regions, func(x *state.Region) bool { return x.Ref() == ref })
 	return nil
 }
 

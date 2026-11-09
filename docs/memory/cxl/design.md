@@ -93,9 +93,11 @@ the [states](states.md#regionstate) NOTED (the name that
 KEPT (disabled and kept: its release would leave a hole in the decoders
 of a port, or it waits for the claim whose Prepare did not finish) and
 HOLLOW_OWNED (its memdev went; deleted when its memory is offline). A
-region that the driver did not create is FOREIGN: it is never touched,
-it is published as a `region` device when it is online RAM, and its
-memdevs are not published as memdevs.
+region that the driver did not create is never touched: it is published
+as a `region` device when it is online RAM, and its memdevs are not
+published as memdevs. On a memdev that the driver uses it gets a FOREIGN
+record (a Prepare that it refuses, or a start, records it), and the
+record goes with the region.
 
 Linux commits the decoders of a CXL port in order: destroying a region
 below a newer region of another memdev on the same host bridge or switch
@@ -123,9 +125,10 @@ that use it ([Mount](states.md#mount)). Containers of claims get a bind
 of it at their `path`. It is read-write while a writer grant uses it and
 read-only otherwise ([MOUNTED_RO, MOUNTED_RW](states.md#mountstate)). A
 bind is the bind of a node mount into the `lease-fs` directory of a
-lease claim, the lend of an `fs` lease ([Bind](states.md#bind)). A
-mount or bind whose unmount is busy (a file of it is open or mapped) is
-STALE and is unmounted again later.
+lease claim, the lend of an `fs` lease ([Bind](states.md#bind)). A bind
+whose unmount is busy (a file of it is mapped) is STALE and is unmounted
+again later. A node mount whose unmount is busy fails the release, and
+kubelet retries it.
 
 ### Grant
 
@@ -396,8 +399,8 @@ may exist and finishes or undoes it. The start goes in this order:
    recovery keeps the `numa` companions whose Prepare did not finish for
    kubelet's Unprepare or Prepare again.
 6. The kubelet plugins register, the ResourceSlice is published, the
-   watchers and the periodic passes start (stale binds and mounts are
-   unmounted again, the `cpuset.mems` of fenced containers repaired).
+   watchers and the periodic passes start (stale binds are unmounted
+   again, the `cpuset.mems` of fenced containers repaired).
 
 What a restart keeps, and what a reboot changes:
 

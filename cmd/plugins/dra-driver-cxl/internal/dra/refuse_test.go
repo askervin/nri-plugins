@@ -201,7 +201,15 @@ func TestPrepareFailedAfterIntent(t *testing.T) {
 	wantErrText(t, res.Err, "claim demo/claim-u2: device "+localDev+": ")
 	wantErrText(t, res.Err, "that the plugin did not create")
 	e.wantState(e.local, "u2", state.PreparationUnknown)
+	if reg := e.records().Region(state.RegionRef(region)); reg == nil || reg.State != state.RegionForeign {
+		t.Fatalf("region record %+v", reg)
+	}
+	// the Prepare again, the foreign region gone, forgets its record
 	mustOK(t, k.ReleaseRegion(context.Background(), region))
+	if res = e.prepare(e.local, localClaim("u2", localDev, envBlockSize)); res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	e.mustUnprepare(e.local, "u2")
 	if spec := e.cdiSpec(device.ClaimsCDISpecName); spec != nil {
 		t.Fatalf("CDI spec %+v", spec)
 	}

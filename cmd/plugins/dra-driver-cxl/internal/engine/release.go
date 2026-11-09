@@ -59,7 +59,7 @@ func (e *Engine) ReleaseGrants(ctx context.Context, refs []state.GrantRef, relea
 			errs = append(errs, err)
 		}
 	}
-	e.verify(ctx, nil)
+	e.verify(ctx, nil, triggerOf(release))
 	return errors.Join(errs...)
 }
 
@@ -110,6 +110,9 @@ type releaseCall struct {
 	// unrestored are the node mounts of the grants of the call that the
 	// start did not mount again (UNRESTORED, FOREIGN), by grant.
 	unrestored map[state.GrantRef]string
+	// reasons are the Reasons of the grants of the call that are released
+	// before they were realised, by grant.
+	reasons map[state.GrantRef]string
 }
 
 // newReleaseCall returns the release call of the grants refs.
@@ -122,6 +125,7 @@ func newReleaseCall(e *Engine, release Release, refs []state.GrantRef) *releaseC
 		deadlines:  map[string]time.Time{},
 		uses:       map[state.Serial]error{},
 		unrestored: map[state.GrantRef]string{},
+		reasons:    map[state.GrantRef]string{},
 	}
 	for _, ref := range refs {
 		c.refs[ref] = true
@@ -314,8 +318,12 @@ func (e *Engine) startReleases(ctx context.Context, refs []state.GrantRef, call 
 	return e.commit(ctx, func(r *state.Records) error {
 		for _, ref := range start {
 			if g := r.Grant(ref); g != nil {
+				realised := g.State != state.GrantJournaled && g.State != state.GrantRealising
 				if err := state.Apply(&state.GrantTable, &g.State, state.GrantReleasing, call.trigger); err != nil {
 					return err
+				}
+				if !realised {
+					g.Reason = call.reasons[ref]
 				}
 			}
 		}
@@ -426,6 +434,7 @@ func (e *Engine) keptForClaim(ctx context.Context, ref state.GrantRef, trigger s
 		if err := state.Apply(&state.GrantTable, &g.State, state.GrantJournaled, trigger); err != nil {
 			return err
 		}
+		g.Reason = ""
 		if g.Got.Region != "" {
 			g.Intent.Region = g.Got.Region
 		}

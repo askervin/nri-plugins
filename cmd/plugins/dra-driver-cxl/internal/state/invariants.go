@@ -88,7 +88,7 @@ var DocumentInvariants = []Invariant{
 		Name: "journaled",
 		Text: "Every object that the driver created lies inside a journaled container: a region of ours targets " +
 			"memdevs with a record; the region, bind target and lend of a grant's Got are named by its Intent; " +
-			"a node mount's path is the Intent of a user grant or a Stale entry of its memdev.",
+			"a node mount's path is the Intent of a user grant.",
 		check: checkJournaled,
 	},
 }
@@ -121,8 +121,8 @@ func CheckStates(r *Records) error {
 var (
 	memdevStored     = list(MemdevActive, MemdevIdleKept, MemdevGone)
 	daxDeviceStored  = list(DaxCreating, DaxSized, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline, DaxReleasing, DaxSeed)
-	mountStored      = list(MountedRO, MountedRW, MountForeign, MountUnrestored, MountStale)
-	bindStored       = list(BindAbsent, BindBound, BindStale, BindForeign, BindOtherClaim)
+	mountStored      = list(MountedRO, MountedRW, MountForeign, MountUnrestored)
+	bindStored       = list(BindAbsent, BindBound, BindStale)
 	leaseClaimStored = list(LeaseClaimOpen, LeaseClaimOpenNoListener, LeaseClaimClosing)
 	provenanceStored = list(ProvenanceHeld, ProvenanceLocal, ProvenancePool)
 	lendingLeases    = list(LeaseReady, LeaseReleasing, LeaseReleasingBusy, LeaseFailed)
@@ -530,8 +530,8 @@ func checkJournaled(r *Records, add addFunc) {
 			}
 		}
 		for _, m := range reg.Mounts {
-			if m.State != MountForeign && !journaledMount(r, reg, &m) {
-				add(regionID(reg), "mount %s is named by no intent and no Stale entry", m.Path)
+			if m.State != MountForeign && !journaledMount(r, &m) {
+				add(regionID(reg), "mount %s is named by no intent", m.Path)
 			}
 		}
 	}
@@ -557,16 +557,11 @@ func checkGrantIntent(g *Grant, add addFunc) {
 	}
 }
 
-// journaledMount tells whether a user grant's intent or a Stale entry of a
-// target memdev names the path of the mount.
-func journaledMount(r *Records, reg *Region, m *Mount) bool {
+// journaledMount tells whether a user grant's intent names the path of the
+// mount.
+func journaledMount(r *Records, m *Mount) bool {
 	for _, u := range m.Users {
 		if g := r.Grant(u); g != nil && g.Intent.MountPath == m.Path {
-			return true
-		}
-	}
-	for _, serial := range reg.Targets {
-		if md := r.Memdev(serial); md != nil && slices.Contains(md.Stale, StalePath{Path: m.Path, Kind: StaleMount}) {
 			return true
 		}
 	}

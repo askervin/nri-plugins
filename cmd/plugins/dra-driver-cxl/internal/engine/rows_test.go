@@ -47,16 +47,6 @@ var notDriven = map[string]string{
 	"Memdev.State ACTIVE,IDLE_KEPT,GONE -> UNUSED on load": "the store's load of a document of another boot",
 	"Region.State NOTED,CREATING,OWNED,KEPT,HOLLOW_OWNED,FOREIGN -> NONE on load": "the store's load of a document of " +
 		"another boot",
-	"Region.State NONE -> FOREIGN on a-observe,a-recover": "the records of foreign regions are the publisher's; the " +
-		"engine refuses a memdev with a region that no record names",
-	"Region.State FOREIGN -> NONE on a-observe,a-recover": "the records of foreign regions are the publisher's",
-	"Bind.State ABSENT,BOUND -> FOREIGN on a-recover": "the recovery of lease binds records foreign binds with the " +
-		"leases; the engine logs them and leaves them",
-	"Bind.State ABSENT,BOUND -> OTHER_CLAIM on a-recover": "the recovery of lease binds records the binds of other " +
-		"claims with the leases",
-	"Mount.State MOUNTED_RO,MOUNTED_RW -> STALE on a-unprepare,a-prepare,a-recover": "a busy node mount fails the " +
-		"release; a stale node mount retried later is a change of behaviour still to come",
-	"Mount.State STALE -> ABSENT on a-unprepare,a-prepare,a-recover,a-reconcile": "see the row to STALE",
 }
 
 // TestMain counts the rows that the tests apply and, when every test ran,

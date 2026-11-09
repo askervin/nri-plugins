@@ -101,13 +101,13 @@ func (e *Engine) PrepareGrants(ctx context.Context, reqs []GrantRequest) ([]stat
 		refs = append(refs, reqs[i].Ref)
 		if err := e.prepareGrant(ctx, &reqs[i]); err != nil {
 			rctx, cancel := e.rollbackContext(ctx)
-			kept := e.rollback(rctx, reqs)
-			e.verify(rctx, nil)
+			kept := e.rollback(rctx, reqs, reqs[i].Ref, err)
+			e.verify(rctx, nil, state.TriggerPrepare)
 			cancel()
 			return kept, &GrantError{Ref: reqs[i].Ref, Err: err}
 		}
 	}
-	e.verify(ctx, refs)
+	e.verify(ctx, refs, state.TriggerPrepare)
 	return e.grantsOf(refs), nil
 }
 
@@ -347,8 +347,8 @@ func ownRegion(r *state.Records, serial state.Serial, mode state.RegionMode) *st
 // region mode, made ready for set-up: an OWNED one as it is, a KEPT one
 // enabled again, else a new one (noted before cxl create-region, one retry
 // after Timeouts.RegionRetry when the memdev had no endpoint port yet). A
-// region of the memdev that no record names refuses the memdev. The grant's
-// intent and the memdev record name the region.
+// region of the memdev that no record names refuses the memdev, recorded
+// FOREIGN. The grant's intent and the memdev record name the region.
 func (e *Engine) ensureRegion(ctx context.Context, req *GrantRequest, memdev string, mode state.RegionMode, size uint64) (string, error) {
 	if err := e.locked(func() error { return e.k.EnableMemdev(ctx, memdev) }); err != nil {
 		return "", err
@@ -362,7 +362,11 @@ func (e *Engine) ensureRegion(ctx context.Context, req *GrantRequest, memdev str
 			return e.useRegion(ctx, req, memdev, reg)
 		}
 	}
-	for _, name := range e.k.Regions(memdev) {
+	names := e.k.Regions(memdev)
+	if err := e.noteForeign(ctx, names, state.TriggerPrepare); err != nil {
+		return "", err
+	}
+	for _, name := range names {
 		return "", &foreignRegionError{memdev: memdev, region: name}
 	}
 	name, err := e.createRegion(ctx, req, memdev, mode, size)
@@ -499,6 +503,9 @@ func (e *Engine) createRegion(ctx context.Context, req *GrantRequest, memdev str
 // NOTED), named by the memdev and the grant's intent.
 func noteRegion(r *state.Records, req *GrantRequest, name string, mode state.RegionMode) error {
 	ref := state.RegionRef(name)
+	if err := forgetForeign(r, ref, state.TriggerPrepare); err != nil {
+		return err
+	}
 	if r.Region(ref) != nil {
 		return fmt.Errorf("region %s has a record already", name)
 	}
@@ -519,6 +526,9 @@ func noteRegion(r *state.Records, req *GrantRequest, name string, mode state.Reg
 func createdRegion(r *state.Records, req *GrantRequest, noted, created string, mode state.RegionMode, ri kernel.RegionInfo) error {
 	if noted == "" {
 		// the next name could not be read: recorded after the creation
+		if err := forgetForeign(r, state.RegionRef(created), state.TriggerPrepare); err != nil {
+			return err
+		}
 		reg := state.Region{NotedName: created, Mode: mode, Targets: []state.Serial{req.Serial}, Owner: state.OwnerOurs,
 			State: state.RegionNone}
 		if err := state.Apply(&state.RegionTable, &reg.State, state.RegionNoted, state.TriggerPrepare); err != nil {
@@ -994,7 +1004,7 @@ func addDaxUser(reg *state.Region, dax string, ref state.GrantRef) error {
 // front-end logs that it keeps their claim's record). The grants of a
 // claim that is prepared (a Prepare again that failed) stay. Errors are
 // logged.
-func (e *Engine) rollback(ctx context.Context, reqs []GrantRequest) []state.Grant {
+func (e *Engine) rollback(ctx context.Context, reqs []GrantRequest, failed state.GrantRef, why error) []state.Grant {
 	r := e.records()
 	var refs []state.GrantRef
 	seen := map[state.GrantRef]bool{}
@@ -1026,6 +1036,7 @@ func (e *Engine) rollback(ctx context.Context, reqs []GrantRequest) []state.Gran
 	e.revokeLends(ctx, refs)
 	e.retryAllStale(ctx, state.TriggerPrepare)
 	call := newReleaseCall(e, ReleaseRollback, refs)
+	call.reasons[failed] = why.Error()
 	for _, group := range e.byMemdev(refs) {
 		if err := e.releaseGroup(ctx, group, call); err != nil {
 			e.errorf(source, "rollback: %v", err)

@@ -129,25 +129,86 @@ func TestPoolWaitsForMemdev(t *testing.T) {
 }
 
 // A region on a pool memdev that no record names is never reused: the
-// memdev is refused.
+// memdev is refused naming it, the region recorded FOREIGN and the failed
+// grant RELEASING with the refusal as its Reason; the record goes once the
+// region is gone, at a start or at the next Prepare.
 func TestPoolForeignRegion(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
 	k := v.f.Kernel()
-	d, _ := k.RootDecoder("mem0", kernel.RegionRAM)
-	if _, err := k.CreateRegion(context.Background(), kernel.CreateRegionRequest{Memdev: "mem0", Decoder: d, Type: kernel.RegionRAM}); err != nil {
-		t.Fatal(err)
+	foreign := func() {
+		t.Helper()
+		d, _ := k.RootDecoder("mem0", kernel.RegionRAM)
+		if _, err := k.CreateRegion(context.Background(), kernel.CreateRegionRequest{Memdev: "mem0", Decoder: d, Type: kernel.RegionRAM}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	destroy := func(name string) {
+		t.Helper()
+		if err := k.DisableRegion(context.Background(), name); err != nil {
+			t.Fatal(err)
+		}
+		if err := k.DestroyRegion(context.Background(), name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wantForeign := func(what string, n int) {
+		t.Helper()
+		r := v.records()
+		if len(r.Regions) != n {
+			t.Fatalf("%s: regions %+v", what, r.Regions)
+		}
+		if n == 1 {
+			if reg := r.Regions[0]; reg.Name != "region0" || reg.State != state.RegionForeign || reg.Owner != state.OwnerForeign ||
+				!slices.Equal(reg.Targets, []state.Serial{serialA}) {
+				t.Fatalf("%s: region %+v", what, reg)
+			}
+		}
+	}
+	foreign()
+	var reason string
+	prev := v.e.afterCommit
+	v.e.afterCommit = func() {
+		prev()
+		if g := v.records().Grant(state.GrantRef{Claim: "c1"}); g != nil && g.State == state.GrantReleasing {
+			reason = g.Reason
+		}
 	}
 	before := v.f.Commands()
 	err := v.prepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindExclusive))
-	if !errors.Is(err, ErrForeignRegion) || !strings.Contains(err.Error(), "memdev mem0 has region region0 that the plugin did not create") {
+	const refusal = "memdev mem0 has region region0 that the plugin did not create"
+	if !errors.Is(err, ErrForeignRegion) || !strings.Contains(err.Error(), refusal) {
 		t.Fatalf("error %v", err)
 	}
+	if reason != refusal {
+		t.Fatalf("reason of the refused grant %q", reason)
+	}
+	v.e.afterCommit = prev
 	if cmds := v.f.CommandsSince(before); strings.Contains(cmds, "region0") {
 		t.Fatalf("the foreign region was touched: %s", cmds)
 	}
-	if r := v.records(); len(r.Grants) > 0 || len(r.Regions) > 0 {
+	if r := v.records(); len(r.Grants) > 0 || len(r.Memdevs) > 0 {
 		t.Fatalf("records %+v", r)
 	}
+	wantForeign("refused", 1)
+	v.restart()
+	wantForeign("a start with the region", 1)
+	destroy("region0")
+	v.restart()
+	wantForeign("a start without the region", 0)
+
+	// gone at the next Prepare, which creates a region of the name
+	foreign()
+	if err := v.prepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindExclusive)); !errors.Is(err, ErrForeignRegion) {
+		t.Fatalf("error %v", err)
+	}
+	wantForeign("refused again", 1)
+	destroy("region0")
+	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindExclusive))
+	if reg := v.records().Region("region0"); reg == nil || !reg.Ours() || reg.State != state.RegionOwned {
+		t.Fatalf("region %+v", reg)
+	}
+	v.mustUnprepare(poolDriver, "c1")
+	v.clean("unprepared")
 }
 
 // A memdev whose endpoint port is not there yet: the region creation is

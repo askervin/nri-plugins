@@ -85,7 +85,7 @@ Grant is the memory given to one allocation result of a claim on one memdev, loc
 
 **Identity.** Ref, the claim UID and the index of the allocation result; Serial is the memdev.
 
-**States.** GrantState. REQUESTED: decided from the claim and the config, nothing touched, not in the store. JOURNALED: the intent is in the store; a cut after this point is recoverable. REALISING: kernel work in progress. REALISED: usable by a container. REALISED_UNRESTORED: its node mount, dax or block device did not verify at a start: no CDI device. RELEASING: lends revoked, binds and mounts undone, memory offlined, dax device deleted, the region released per Policy when the grant was its last user. RELEASED: gone from the store. REFUSED is a Reason on the way to RELEASING, not a state; a decoder hole is a typed error of the Prepare.
+**States.** GrantState. REQUESTED: decided from the claim and the config, nothing touched, not in the store. JOURNALED: the intent is in the store; a cut after this point is recoverable. REALISING: kernel work in progress. REALISED: usable by a container. REALISED_UNRESTORED: its node mount, dax or block device did not verify at a start: no CDI device. RELEASING: lends revoked, binds and mounts undone, memory offlined, dax device deleted, the region released per Policy when the grant was its last user. RELEASED: gone from the store. A refusal is a Reason on the way to RELEASING, not a state; a decoder hole is a typed error of the Prepare.
 
 **Transitions.** GrantTable below, and BindTable for Got.Bind; a transition not in them is refused.
 
@@ -98,12 +98,12 @@ States: REQUESTED, JOURNALED, REALISING, REALISED, REALISED_UNRESTORED, RELEASIN
 | REQUESTED | JOURNALED | `a-prepare`: the grant request is built from the result and the config | no FOREIGN region on the memdev; local: provenance not POOL or HELD, a fresh list of the pool ResourceSlices does not name the serial, no pool grant on it | commit (d) of the intent: serial, mode, what may be created (noted region name, namespace, mount path, bind target, lend) |
 | JOURNALED | REALISING | `a-prepare`: the first kernel action of the grant | memdev ready (pool: waited for; without a driver: enabled after the probe grace) | kernel commands; every created object committed (d) into Got before the next command that depends on it |
 | REALISING | REALISED | `a-prepare`: the last step done (numa: fenced and online; dax: bound and zeroed; block, fs: mounted and verified; companion: bound or lent) | - | commit (d) jointly with the Preparation PREPARED (or per grant for claims of several results, then PREPARED last) |
-| REALISING | RELEASING | `a-prepare`, `a-unprepare`: a persistent refusal (no fsdax namespace for a reader; no allowed filesystem type; a block writer that is not exclusive) or a config refusal found after kernel work; or any other failure (decoder hole, no room, EBUSY online, timeout) | - | Reason REFUSED (the refusal text is the Prepare's error) or the error (a typed error to the front-end); rollback: the objects this grant made are released per Policy (trigger rollback); an Unprepare of a grant that a failed release at the start left REALISING releases it the same way |
-| JOURNALED | RELEASING | `a-prepare`, `a-unprepare`: the rollback of a Prepare that failed before the grant's first kernel action; an Unprepare of a PREPARING or KEPT preparation | - | release what Got and Intent name (a kept region per Policy); commit (d) |
+| REALISING | RELEASING | `a-prepare`, `a-unprepare`: a persistent refusal (no fsdax namespace for a reader; no allowed filesystem type; a block writer that is not exclusive) or a config refusal found after kernel work; or any other failure (decoder hole, no room, EBUSY online, timeout) | - | Reason the error of the step, the Prepare's error (a typed error to the front-end); rollback: the objects this grant made are released per Policy (trigger rollback); an Unprepare of a grant that a failed release at the start left REALISING releases it the same way |
+| JOURNALED | RELEASING | `a-prepare`, `a-unprepare`: the rollback of a Prepare that failed before the grant's first kernel action; an Unprepare of a PREPARING or KEPT preparation | - | Reason the error of the step when the grant's own Prepare failed; release what Got and Intent name (a kept region per Policy); commit (d) |
 | REALISED | RELEASING | `a-unprepare`, `a-prepare`, `a-recover`: an Unprepare; the rollback of a sibling grant of the same claim; the recovery of a PREPARING preparation (unfinished claim) | companion: lends revoked and binds unbound first | commit (d) |
 | RELEASING | RELEASED | `a-unprepare`, `a-prepare`, `a-recover`: mounts unmounted or downgraded, blocks offline, dax device deleted, the region per Policy when the grant was its last user | - | commit (d) removing the grant; the Memdev's grants and the users of the region's objects updated |
 | RELEASING | (unchanged) | `a-unprepare`, `a-prepare`, `a-recover`: a release step failed (EBUSY offline, busy mount, holder) | - | error up (kubelet retries); records unchanged |
-| RELEASING | JOURNALED | `a-prepare`, `a-recover`: the rollback of a failed Prepare, or the recovery of a cut Prepare's REALISED grant, released what the grant made but kept its region below a newer region of another memdev (Policy in order refused, or recovery keep) | - | the grant holds the KEPT region for its claim (Intent.Region; Got cleared but Bind and Lend; the preparation KEPT): its Prepare again reuses it, its Unprepare releases it; commit (d) |
+| RELEASING | JOURNALED | `a-prepare`, `a-recover`: the rollback of a failed Prepare, or the recovery of a cut Prepare's REALISED grant, released what the grant made but kept its region below a newer region of another memdev (Policy in order refused, or recovery keep) | - | the grant holds the KEPT region for its claim (Intent.Region; Got cleared but Bind and Lend; Reason cleared; the preparation KEPT): its Prepare again reuses it, its Unprepare releases it; commit (d) |
 | REALISED | REALISED_UNRESTORED | `a-recover`: verification failed (mount: not remountable; dax: name, dev, size or region mismatch; block: namespace, name or dev mismatch) | - | commit (l); no CDI device |
 | REALISED_UNRESTORED | REALISED | `a-prepare`, `a-recover`: Prepare again, or the recovery at a restart, verifies or mounts again | - | commit (d) |
 | REALISED_UNRESTORED | RELEASING | `a-unprepare`, `a-prepare`, `a-recover`: an Unprepare or a rollback | - | commit (d); nothing of Got to undo beyond what verifies |
@@ -130,13 +130,13 @@ Bind is the bind of a node mount into the lease-fs directory of a lease claim, t
 
 **Identity.** Target, lease-fs/&lt;lease claim uid>/&lt;name>.
 
-**States.** BindState. ABSENT: not bound. BOUND: bound and verified. STALE: the unmount failed with EBUSY (a file of the bind is mapped): also in the memdev's Stale list, retried. FOREIGN and OTHER_CLAIM are observed at a start: something else is mounted at the target, or the target is listed by another prepared claim.
+**States.** BindState. ABSENT: not bound. BOUND: bound and verified. STALE: the unmount failed with EBUSY (a file of the bind is mapped): also in the memdev's Stale list, retried. A start leaves what else is mounted at a target, or a target that another prepared claim lists, as it is, without a record.
 
 **Transitions.** BindTable below; a transition not in it is refused.
 
 ### Bind.State
 
-States: ABSENT, BOUND, STALE, FOREIGN, OTHER_CLAIM.
+States: ABSENT, BOUND, STALE.
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
@@ -145,12 +145,6 @@ States: ABSENT, BOUND, STALE, FOREIGN, OTHER_CLAIM.
 | BOUND | STALE | `a-unprepare`, `a-prepare`, `a-recover`: the unmount failed with EBUSY (a file of the bind is mapped) | - | the memdev's Stale list gets the target; the lease RELEASING_BUSY; retried at every release and by the periodic pass |
 | STALE | ABSENT | `a-unprepare`, `a-prepare`, `a-recover`, `a-reconcile`: a retry unmounts it (the holder ended) | - | commit (d) |
 | ABSENT, BOUND | BOUND | `a-recover`: the recovery binds a REALISED fs companion again whose node mount is mounted; an existing mount at a listed target is kept | - | - |
-| ABSENT, BOUND | FOREIGN | `a-recover`: the recovery finds something else mounted at the target | - | skipped, never unmounted |
-| ABSENT, BOUND | OTHER_CLAIM | `a-recover`: the recovery finds the target listed by another prepared claim | - | skipped |
-
-Refused:
-
-- FOREIGN, OTHER_CLAIM -> BOUND, STALE: an observed bind is never used or unmounted
 
 **Invariants.** A BOUND bind's node mount is mounted.
 
@@ -160,7 +154,7 @@ Refused:
 
 ## Memdev
 
-Memdev is the engine's record of one memdev under the driver's care, local or pool: its facts, the regions of ours on it, the hollow regions and stale mounts and binds left to delete, and its grants.
+Memdev is the engine's record of one memdev under the driver's care, local or pool: its facts, the regions of ours on it, the hollow regions and stale lease binds left to delete, and its grants.
 
 **Identity.** Serial. Name is the kernel's memN at the last observation; it changes with the probe order.
 
@@ -210,7 +204,7 @@ Region is the record of a CXL region on the node: one of ours, or a foreign one 
 
 **Identity.** Name (regionN), or NotedName while the region is being created (RegionRef).
 
-**States.** RegionState. NONE: no record. NOTED: the name that cxl create-region will give is committed before it runs. CREATING: create-region runs. OWNED: ours, enabled. KEPT: ours, disabled, kept below newer regions of another memdev (its release would leave a decoder hole) or for a claim whose Prepare did not finish. HOLLOW_OWNED: ours, hollow (its memdev went or create-region was cut), deleted when its blocks are offline. FOREIGN: on a memdev that no record of ours names; published as a region device, never touched. SetUp: the first dax device (or the nd region) of the region is made; false again while KEPT.
+**States.** RegionState. NONE: no record. NOTED: the name that cxl create-region will give is committed before it runs. CREATING: create-region runs. OWNED: ours, enabled. KEPT: ours, disabled, kept below newer regions of another memdev (its release would leave a decoder hole) or for a claim whose Prepare did not finish. HOLLOW_OWNED: ours, hollow (its memdev went or create-region was cut), deleted when its blocks are offline. FOREIGN: not ours, on a memdev under the driver's care, named by no record of ours; recorded when a Prepare refuses the memdev for it and by the recovery, removed once it is gone; never touched. SetUp: the first dax device (or the nd region) of the region is made; false again while KEPT.
 
 **Transitions.** RegionTable and RegionSetUpTable below; a transition not in them is refused.
 
@@ -232,8 +226,8 @@ States: NONE, NOTED, CREATING, OWNED, KEPT, HOLLOW_OWNED, FOREIGN.
 | OWNED | NONE | `a-unprepare`, `a-prepare`, `a-recover`: the last user released and Policy says destroy; or the recovery finds the region missing | blocks offline | disable and destroy under the engine lock (the in-order check repeated after the disable); commit (d); a missing region: the record cleared, the grants kept for kubelet |
 | OWNED, KEPT | HOLLOW_OWNED | `a-observe`, `a-recover`: the memdev was removed under the region | - | the memdev's Hollow gets the name; commit (l) |
 | HOLLOW_OWNED | NONE | `a-unprepare`, `a-prepare`, `a-recover`: the hollow region deleted | every block of its range offline | delete_region written under the engine lock; commit (d) |
-| NONE | FOREIGN | `a-observe`, `a-recover`: a region on a memdev that no record of ours names is observed | - | published as a region device; its memdev never published as sliced |
-| FOREIGN | NONE | `a-observe`, `a-recover`: the foreign region is gone | - | record removed |
+| NONE | FOREIGN | `a-prepare`, `a-recover`: a Prepare finds a region that no record names on its memdev, or the recovery on a memdev of a record | - | commit (d) of the record (Owner foreign, Targets from the kernel); the Prepare refused, its error naming the region; never touched |
+| FOREIGN | NONE | `a-prepare`, `a-unprepare`, `a-recover`: a Prepare, an Unprepare or the recovery finds the region gone or on other targets, or a Prepare creates a region of its name | - | commit (d) removing the record |
 | NOTED, CREATING, OWNED, KEPT, HOLLOW_OWNED, FOREIGN | NONE | `load`: the document is of another boot | - | the record dropped: region names are given anew at every boot |
 
 Refused:
@@ -306,13 +300,13 @@ Mount is a node mount of the filesystem of a pmem region with one access, and th
 
 **Identity.** The region and Access; Path is &lt;data dir of the grant's source driver>/mounts/&lt;serial hex>-&lt;access>.
 
-**States.** MountState. ABSENT: not mounted. MOUNTED_RO, MOUNTED_RW: mounted, read-write while a writer grant uses it. FOREIGN: something else is mounted at the path; never used or unmounted. UNRESTORED: at a start the mount of a REALISED grant could not be restored. STALE: its unmount failed busy; also in the memdev's Stale list, retried.
+**States.** MountState. ABSENT: not mounted. MOUNTED_RO, MOUNTED_RW: mounted, read-write while a writer grant uses it. FOREIGN: something else is mounted at the path; never used or unmounted. UNRESTORED: at a start the mount of a REALISED grant could not be restored. An unmount that fails busy fails the release, the mount stays as it is: kubelet retries.
 
 **Transitions.** MountTable below; a transition not in it is refused.
 
 ### Mount.State
 
-States: ABSENT, MOUNTED_RO, MOUNTED_RW, FOREIGN, UNRESTORED, STALE.
+States: ABSENT, MOUNTED_RO, MOUNTED_RW, FOREIGN, UNRESTORED.
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
@@ -321,9 +315,7 @@ States: ABSENT, MOUNTED_RO, MOUNTED_RW, FOREIGN, UNRESTORED, STALE.
 | MOUNTED_RO | MOUNTED_RW | `a-prepare`: a writer grant arrives on a mounted access | type upgradable (ext4, xfs); no unexplained superblock; no other access mounted | block device, loop device and superblock read-write; commit (d) |
 | MOUNTED_RW | MOUNTED_RO | `a-unprepare`, `a-prepare`, `a-recover`: the last writer grant released, readers remain | - | syncfs, superblock read-only, loop and block device read-only; EBUSY (a file open for write): error up, state unchanged |
 | MOUNTED_RO, MOUNTED_RW | (unchanged) | `a-unprepare`, `a-prepare`, `a-recover`: an fs grant of the same access arrives, or one is released while others remain; or the recovery verified the mount or mounted it again by block device identity | - | Users gets the grant or loses it; commit (d) |
-| MOUNTED_RO, MOUNTED_RW | ABSENT | `a-unprepare`, `a-prepare`, `a-recover`: the last user released | - | unmounted (never detached); directory removed; commit (d) |
-| MOUNTED_RO, MOUNTED_RW | STALE | `a-unprepare`, `a-prepare`, `a-recover`: the unmount failed with EBUSY | - | the memdev's Stale list gets the path; retried at every release of the memdev and by the periodic pass |
-| STALE | ABSENT | `a-unprepare`, `a-prepare`, `a-recover`, `a-reconcile`: a retry unmounts it | - | commit (d) |
+| MOUNTED_RO, MOUNTED_RW | ABSENT | `a-unprepare`, `a-prepare`, `a-recover`: the last user released | - | unmounted (never detached); directory removed; commit (d); an unmount that fails busy fails the release, the mount unchanged |
 | ABSENT, MOUNTED_RO, MOUNTED_RW, UNRESTORED | UNRESTORED | `a-recover`: the recovery cannot mount a REALISED grant's node mount again (region gone, namespace or block device changed, mount failed), or fails again at a later start | - | the grants of the mount REALISED_UNRESTORED; commit (l) |
 | UNRESTORED | MOUNTED_RO | `a-prepare`, `a-recover`: a Prepare again, or the recovery at a restart, mounts it, no writer | identity verified | commit (d) |
 | UNRESTORED | MOUNTED_RW | `a-prepare`, `a-recover`: a Prepare again, or the recovery at a restart, mounts it for a writer | identity verified | commit (d) |
@@ -332,7 +324,7 @@ States: ABSENT, MOUNTED_RO, MOUNTED_RW, FOREIGN, UNRESTORED, STALE.
 
 Refused:
 
-- FOREIGN -> MOUNTED_RO, MOUNTED_RW, ABSENT, STALE: a foreign mount is never used or unmounted
+- FOREIGN -> MOUNTED_RO, MOUNTED_RW, ABSENT: a foreign mount is never used or unmounted
 
 **Invariants.** MOUNTED_RW iff Writer; the block device is read-only iff no writer grant uses the region.
 
@@ -521,7 +513,7 @@ need the kernel's view.
 
 - **records**: Every record has a state of its table that a stored record may have, and a unique identity. Every region of ours is one Region record, referenced by every memdev in its Targets, and every region a memdev references is a record of ours that targets it; a FOREIGN region is owned by no one. Every grant belongs to one result of one preparation and is listed by the memdev of its serial (except the grants of a PREPARED_STALE preparation); what Got names lists the grant among its users, and every user of a dax device or a node mount names it back; a grant result names a grant record, but of a PREPARING or UNPREPARING preparation (not journaled yet, or released before the front-end's commit). A PREPARED preparation's grants are REALISED, a PREPARED_UNRESTORED one's REALISED or REALISED_UNRESTORED, and the lease claim of their lease results exists unless the claim's Unprepare runs (it closes the lease claim before the preparation turns UNPREPARING; the engine leaves this rule to the lease broker). A node mount is MOUNTED_RW iff a writer uses it. A lease lends only while READY, releasing or FAILED.
 - **users**: Between requests and after the recovery, every region of ours is OWNED, KEPT or HOLLOW_OWNED, and every dax device of a region of ours that is OWNED or KEPT and is not the seed has a user grant that is REALISED, REALISED_UNRESTORED or RELEASING, or is the Whole device of a KEPT region, of a memdev that is IDLE_KEPT, or of a region that a grant of a Prepare that did not finish names, or has as its user a grant of a Prepare that did not finish of a numa companion or of a KEPT preparation (kept for its Unprepare); the recovery deletes the others, those of a HOLLOW_OWNED region go with it.
-- **journaled**: Every object that the driver created lies inside a journaled container: a region of ours targets memdevs with a record; the region, bind target and lend of a grant's Got are named by its Intent; a node mount's path is the Intent of a user grant or a Stale entry of its memdev.
+- **journaled**: Every object that the driver created lies inside a journaled container: a region of ours targets memdevs with a record; the region, bind target and lend of a grant's Got are named by its Intent; a node mount's path is the Intent of a user grant.
 
 ## Containers
 

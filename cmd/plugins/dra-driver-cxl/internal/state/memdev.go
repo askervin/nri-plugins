@@ -20,7 +20,7 @@ import (
 
 // Memdev is the engine's record of one memdev under the driver's care,
 // local or pool: its facts, the regions of ours on it, the hollow regions
-// and stale mounts and binds left to delete, and its grants.
+// and stale lease binds left to delete, and its grants.
 //
 // Identity: Serial. Name is the kernel's memN at the last observation; it
 // changes with the probe order.
@@ -55,9 +55,8 @@ type Memdev struct {
 	// Hollow are the hollow regions of ours on the memdev, deleted when
 	// their blocks are offline.
 	Hollow []RegionRef `json:"hollow,omitempty"`
-	// Stale are the node mounts and lease binds whose unmount failed
-	// busy, retried at every release of the memdev and by the periodic
-	// pass.
+	// Stale are the lease binds whose unmount failed busy, retried at
+	// every release of the memdev and by the periodic pass.
 	Stale  []StalePath `json:"stale,omitempty"`
 	Grants []GrantRef  `json:"grants,omitempty"`
 	State  MemdevState `json:"state"`
@@ -82,7 +81,7 @@ type MemdevFacts struct {
 	HostBridge   string `json:"hostBridge,omitempty"`
 }
 
-// StalePath is a node mount or lease bind whose unmount failed busy.
+// StalePath is a lease bind whose unmount failed busy.
 type StalePath struct {
 	Path string    `json:"path"`
 	Kind StaleKind `json:"kind"`
@@ -92,8 +91,7 @@ type StalePath struct {
 type StaleKind string
 
 const (
-	StaleMount StaleKind = "mount"
-	StaleBind  StaleKind = "bind"
+	StaleBind StaleKind = "bind"
 )
 
 // MemdevState is the state of a Memdev.

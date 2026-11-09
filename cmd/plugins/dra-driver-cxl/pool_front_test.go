@@ -153,8 +153,9 @@ func TestPoolRollbackKept(t *testing.T) {
 	if rec := e.preparingFile(t)["u1"]; rec == nil || len(rec.Devices) != 1 || rec.Devices[0].Serial != 0xc1ee0001 {
 		t.Fatalf("record %+v", rec)
 	}
-	noErr(t, unprepare(t, p, "u1"))
+	// the foreign region goes; the Unprepare forgets its record
 	noErr(t, k.ReleaseRegion(context.Background(), region))
+	noErr(t, unprepare(t, p, "u1"))
 	e.wantClean(t, p)
 }
 

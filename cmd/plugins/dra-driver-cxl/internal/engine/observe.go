@@ -144,14 +144,18 @@ func (e *Engine) checkBetween(seq int) {
 }
 
 // verify is the verify step after a Prepare or a release of grants: a new
-// observation (Observe), and the objects of the grants refs that are
-// REALISED checked in it (an error logged for one that does not verify).
-// The end of the request checks the invariants (Request).
-func (e *Engine) verify(ctx context.Context, refs []state.GrantRef) {
+// observation (Observe), the FOREIGN records of the regions that are gone
+// removed, and the objects of the grants refs that are REALISED checked in
+// it (an error logged for one that does not verify). The end of the
+// request checks the invariants (Request).
+func (e *Engine) verify(ctx context.Context, refs []state.GrantRef, trigger state.Trigger) {
 	snap, err := e.Observe(ctx)
 	if err != nil {
 		klog.Errorf("engine: observing the kernel: %v", err)
 		return
+	}
+	if err := e.forgetGoneForeign(ctx, snap, trigger); err != nil {
+		klog.Errorf("engine: %v", err)
 	}
 	c := &checker{r: e.records(), s: snap, opts: CheckOptions{Sources: e.opts.Sources}, inv: "I3"}
 	for _, ref := range refs {

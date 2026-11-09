@@ -242,8 +242,9 @@ func TestPoolRollbackKept(t *testing.T) {
 	if e.pool.ClaimResults("u1") != nil || e.pool.ClaimInfo("u1") != nil {
 		t.Fatal("results of a KEPT claim")
 	}
-	e.mustUnprepare(e.pool, "u1")
+	// the foreign region goes; the Unprepare forgets its record
 	mustOK(t, k.ReleaseRegion(context.Background(), region))
+	e.mustUnprepare(e.pool, "u1")
 	e.wantClean()
 }
 

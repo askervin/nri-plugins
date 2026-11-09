@@ -34,8 +34,10 @@ import (
 // below newer regions of another memdev (its release would leave a decoder
 // hole) or for a claim whose Prepare did not finish. HOLLOW_OWNED: ours,
 // hollow (its memdev went or create-region was cut), deleted when its
-// blocks are offline. FOREIGN: on a memdev that no record of ours names;
-// published as a region device, never touched. SetUp: the first dax device
+// blocks are offline. FOREIGN: not ours, on a memdev under the driver's
+// care, named by no record of ours; recorded when a Prepare refuses the
+// memdev for it and by the recovery, removed once it is gone; never
+// touched. SetUp: the first dax device
 // (or the nd region) of the region is made; false again while KEPT.
 //
 // Transitions: RegionTable and RegionSetUpTable below; a transition not in
@@ -183,8 +185,8 @@ const (
 // States: MountState. ABSENT: not mounted. MOUNTED_RO, MOUNTED_RW: mounted,
 // read-write while a writer grant uses it. FOREIGN: something else is
 // mounted at the path; never used or unmounted. UNRESTORED: at a start the
-// mount of a REALISED grant could not be restored. STALE: its unmount
-// failed busy; also in the memdev's Stale list, retried.
+// mount of a REALISED grant could not be restored. An unmount that fails
+// busy fails the release, the mount stays as it is: kubelet retries.
 //
 // Transitions: MountTable below; a transition not in it is refused.
 //
@@ -217,7 +219,6 @@ const (
 	MountedRW       MountState = "MOUNTED_RW"
 	MountForeign    MountState = "FOREIGN"
 	MountUnrestored MountState = "UNRESTORED"
-	MountStale      MountState = "STALE"
 )
 
 // regionStored are the states of a region record in the store.
@@ -300,14 +301,17 @@ var RegionTable = Table[RegionState]{
 			Effects: "delete_region written under the engine lock; commit (d)",
 		},
 		{
-			From: list(RegionNone), To: RegionForeign, Triggers: list(TriggerObserve, TriggerRecover),
-			When:    "a region on a memdev that no record of ours names is observed",
-			Effects: "published as a region device; its memdev never published as sliced",
+			From: list(RegionNone), To: RegionForeign, Triggers: list(TriggerPrepare, TriggerRecover),
+			When: "a Prepare finds a region that no record names on its memdev, or the recovery on a memdev of " +
+				"a record",
+			Effects: "commit (d) of the record (Owner foreign, Targets from the kernel); the Prepare refused, " +
+				"its error naming the region; never touched",
 		},
 		{
-			From: list(RegionForeign), To: RegionNone, Triggers: list(TriggerObserve, TriggerRecover),
-			When:    "the foreign region is gone",
-			Effects: "record removed",
+			From: list(RegionForeign), To: RegionNone, Triggers: list(TriggerPrepare, TriggerUnprepare, TriggerRecover),
+			When: "a Prepare, an Unprepare or the recovery finds the region gone or on other targets, or a Prepare " +
+				"creates a region of its name",
+			Effects: "commit (d) removing the record",
 		},
 		{
 			From: regionStored, To: RegionNone, Triggers: list(TriggerLoad),
@@ -468,7 +472,7 @@ var mounted = list(MountedRO, MountedRW)
 var MountTable = Table[MountState]{
 	Object: "Mount",
 	Field:  "State",
-	States: list(MountAbsent, MountedRO, MountedRW, MountForeign, MountUnrestored, MountStale),
+	States: list(MountAbsent, MountedRO, MountedRW, MountForeign, MountUnrestored),
 	Rows: []Transition[MountState]{
 		{
 			From: list(MountAbsent), To: MountedRO, Triggers: list(TriggerPrepare),
@@ -504,21 +508,9 @@ var MountTable = Table[MountState]{
 		},
 		{
 			From: mounted, To: MountAbsent, Triggers: releasers,
-			When:    "the last user released",
-			Effects: "unmounted (never detached); directory removed; commit (d)",
-		},
-		{
-			From: mounted, To: MountStale, Triggers: releasers,
-			When: "the unmount failed with EBUSY",
-			Effects: "the memdev's Stale list gets the path; retried at every release of the memdev and by the " +
-				"periodic pass",
-		},
-		{
-			From:     list(MountStale),
-			To:       MountAbsent,
-			Triggers: list(TriggerUnprepare, TriggerPrepare, TriggerRecover, TriggerReconcile),
-			When:     "a retry unmounts it",
-			Effects:  "commit (d)",
+			When: "the last user released",
+			Effects: "unmounted (never detached); directory removed; commit (d); an unmount that fails busy " +
+				"fails the release, the mount unchanged",
 		},
 		{
 			From: list(MountAbsent, MountedRO, MountedRW, MountUnrestored), To: MountUnrestored, Triggers: list(TriggerRecover),
@@ -552,7 +544,7 @@ var MountTable = Table[MountState]{
 	Refused: []Refusal[MountState]{
 		{
 			From: list(MountForeign),
-			To:   list(MountedRO, MountedRW, MountAbsent, MountStale),
+			To:   list(MountedRO, MountedRW, MountAbsent),
 			Why:  "a foreign mount is never used or unmounted",
 		},
 	},

@@ -31,7 +31,7 @@ package state
 // or block device did not verify at a start: no CDI device. RELEASING:
 // lends revoked, binds and mounts undone, memory offlined, dax device
 // deleted, the region released per Policy when the grant was its last user.
-// RELEASED: gone from the store. REFUSED is a Reason on the way to
+// RELEASED: gone from the store. A refusal is a Reason on the way to
 // RELEASING, not a state; a decoder hole is a typed error of the Prepare.
 //
 // Transitions: GrantTable below, and BindTable for Got.Bind; a transition
@@ -55,14 +55,10 @@ type Grant struct {
 	Intent Intent     `json:"intent,omitzero"`
 	Got    Got        `json:"got,omitzero"`
 	State  GrantState `json:"state"`
-	// Reason tells why a grant is RELEASING before it was REALISED:
-	// ReasonRefused, or the error of the failed step.
+	// Reason tells why a grant is RELEASING before it was REALISED: the
+	// error of the step of its Prepare that failed or refused it.
 	Reason string `json:"reason,omitempty"`
 }
-
-// ReasonRefused is the Reason of a grant that the device refuses at every
-// retry (a persistent refusal).
-const ReasonRefused = "REFUSED"
 
 // GrantState is the state of a Grant.
 type GrantState string
@@ -181,9 +177,9 @@ type GrantLend struct {
 //
 // States: BindState. ABSENT: not bound. BOUND: bound and verified. STALE:
 // the unmount failed with EBUSY (a file of the bind is mapped): also in
-// the memdev's Stale list, retried. FOREIGN and OTHER_CLAIM are observed
-// at a start: something else is mounted at the target, or the target is
-// listed by another prepared claim.
+// the memdev's Stale list, retried. A start leaves what else is mounted at
+// a target, or a target that another prepared claim lists, as it is,
+// without a record.
 //
 // Transitions: BindTable below; a transition not in it is refused.
 //
@@ -201,11 +197,9 @@ type Bind struct {
 type BindState string
 
 const (
-	BindAbsent     BindState = "ABSENT"
-	BindBound      BindState = "BOUND"
-	BindStale      BindState = "STALE"
-	BindForeign    BindState = "FOREIGN"
-	BindOtherClaim BindState = "OTHER_CLAIM"
+	BindAbsent BindState = "ABSENT"
+	BindBound  BindState = "BOUND"
+	BindStale  BindState = "STALE"
 )
 
 // releasers are the actions that release the objects of a grant.
@@ -247,15 +241,16 @@ var GrantTable = Table[GrantState]{
 			When: "a persistent refusal (no fsdax namespace for a reader; no allowed filesystem type; a block " +
 				"writer that is not exclusive) or a config refusal found after kernel work; or any other " +
 				"failure (decoder hole, no room, EBUSY online, timeout)",
-			Effects: "Reason REFUSED (the refusal text is the Prepare's error) or the error (a typed error to " +
-				"the front-end); rollback: the objects this grant made are released per Policy (trigger rollback); " +
+			Effects: "Reason the error of the step, the Prepare's error (a typed error to the front-end); " +
+				"rollback: the objects this grant made are released per Policy (trigger rollback); " +
 				"an Unprepare of a grant that a failed release at the start left REALISING releases it the same way",
 		},
 		{
 			From: list(GrantJournaled), To: GrantReleasing, Triggers: list(TriggerPrepare, TriggerUnprepare),
 			When: "the rollback of a Prepare that failed before the grant's first kernel action; an Unprepare of " +
 				"a PREPARING or KEPT preparation",
-			Effects: "release what Got and Intent name (a kept region per Policy); commit (d)",
+			Effects: "Reason the error of the step when the grant's own Prepare failed; release what Got and " +
+				"Intent name (a kept region per Policy); commit (d)",
 		},
 		{
 			From: list(GrantRealised), To: GrantReleasing, Triggers: releasers,
@@ -281,8 +276,9 @@ var GrantTable = Table[GrantState]{
 			When: "the rollback of a failed Prepare, or the recovery of a cut Prepare's REALISED grant, released what " +
 				"the grant made but kept its region below a newer region of another memdev (Policy in order refused, " +
 				"or recovery keep)",
-			Effects: "the grant holds the KEPT region for its claim (Intent.Region; Got cleared but Bind and Lend; the " +
-				"preparation KEPT): its Prepare again reuses it, its Unprepare releases it; commit (d)",
+			Effects: "the grant holds the KEPT region for its claim (Intent.Region; Got cleared but Bind and Lend; " +
+				"Reason cleared; the preparation KEPT): its Prepare again reuses it, its Unprepare releases it; " +
+				"commit (d)",
 		},
 		{
 			From: list(GrantRealised), To: GrantUnrestored, Triggers: list(TriggerRecover),
@@ -342,7 +338,7 @@ var GrantTable = Table[GrantState]{
 var BindTable = Table[BindState]{
 	Object: "Bind",
 	Field:  "State",
-	States: list(BindAbsent, BindBound, BindStale, BindForeign, BindOtherClaim),
+	States: list(BindAbsent, BindBound, BindStale),
 	Rows: []Transition[BindState]{
 		{
 			From: list(BindAbsent), To: BindBound, Triggers: list(TriggerPrepare),
@@ -374,23 +370,6 @@ var BindTable = Table[BindState]{
 			From: list(BindAbsent, BindBound), To: BindBound, Triggers: list(TriggerRecover),
 			When: "the recovery binds a REALISED fs companion again whose node mount is mounted; an existing mount " +
 				"at a listed target is kept",
-		},
-		{
-			From: list(BindAbsent, BindBound), To: BindForeign, Triggers: list(TriggerRecover),
-			When:    "the recovery finds something else mounted at the target",
-			Effects: "skipped, never unmounted",
-		},
-		{
-			From: list(BindAbsent, BindBound), To: BindOtherClaim, Triggers: list(TriggerRecover),
-			When:    "the recovery finds the target listed by another prepared claim",
-			Effects: "skipped",
-		},
-	},
-	Refused: []Refusal[BindState]{
-		{
-			From: list(BindForeign, BindOtherClaim),
-			To:   list(BindBound, BindStale),
-			Why:  "an observed bind is never used or unmounted",
 		},
 	},
 }
