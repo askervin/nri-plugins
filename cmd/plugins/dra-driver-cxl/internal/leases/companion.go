@@ -118,16 +118,33 @@ func (b *Broker) companionObjects(l *state.Lease) (*resourcev1.ResourceClaim, *c
 			AutomountServiceAccountToken:  ptr(false),
 			EnableServiceLinks:            ptr(false),
 			TerminationGracePeriodSeconds: ptr(int64(1)),
-			ResourceClaims:                []corev1.PodResourceClaim{{Name: companionClaimRef, ResourceClaimName: ptr(name)}},
+			// the restricted Pod Security profile: the pod is made in the
+			// requester's namespace, which may enforce it
+			SecurityContext: &corev1.PodSecurityContext{
+				RunAsNonRoot:   ptr(true),
+				RunAsUser:      ptr(companionUser),
+				RunAsGroup:     ptr(companionUser),
+				SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+			},
+			ResourceClaims: []corev1.PodResourceClaim{{Name: companionClaimRef, ResourceClaimName: ptr(name)}},
 			Containers: []corev1.Container{{
 				Name:      companionContainer,
 				Image:     b.opts.Image,
 				Resources: corev1.ResourceRequirements{Requests: res, Limits: res.DeepCopy()},
+				SecurityContext: &corev1.SecurityContext{
+					AllowPrivilegeEscalation: ptr(false),
+					ReadOnlyRootFilesystem:   ptr(true),
+					Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+				},
 			}},
 		},
 	}
 	return claim, pod, nil
 }
+
+// companionUser is the user and group of the companion container: the
+// nobody of the pause image.
+const companionUser = int64(65535)
 
 // ptr returns a pointer to v.
 func ptr[T any](v T) *T {

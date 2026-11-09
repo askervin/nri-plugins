@@ -591,6 +591,10 @@ The companion objects of lease `<id>` live in the requester's namespace:
   memory 16Mi (Guaranteed; runc init needs about 9 MiB, and with 1m CPU
   the pause container takes about 12 s to start), no `resources.claims`,
   and `spec.resourceClaims: [{name: lease, resourceClaimName: cxl-lease-<id>}]`.
+  It meets the `restricted` Pod Security profile: `runAsNonRoot`, user and
+  group 65535, seccomp `RuntimeDefault`, and in the container no privilege
+  escalation, a read-only root filesystem and capabilities `drop: [ALL]`;
+  an image of `--lease-companion-image` must work as that user.
   kubelet prepares a pod's claims even if no container references them.
   Both drivers return no CDI device for a companion claim, so nothing of
   its memory reaches the pause container, which is not steered either.

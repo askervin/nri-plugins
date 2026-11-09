@@ -208,10 +208,14 @@ func TestPoolNumaLease(t *testing.T) {
 		AutomountServiceAccountToken:  ptr(false),
 		EnableServiceLinks:            ptr(false),
 		TerminationGracePeriodSeconds: ptr(int64(1)),
-		ResourceClaims:                []corev1.PodResourceClaim{{Name: "lease", ResourceClaimName: ptr(name)}},
+		SecurityContext: &corev1.PodSecurityContext{RunAsNonRoot: ptr(true), RunAsUser: ptr(int64(65535)), RunAsGroup: ptr(int64(65535)),
+			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
+		ResourceClaims: []corev1.PodResourceClaim{{Name: "lease", ResourceClaimName: ptr(name)}},
 		Containers: []corev1.Container{{
 			Name: "pause", Image: "registry.k8s.io/pause:3.10",
 			Resources: corev1.ResourceRequirements{Requests: res, Limits: res},
+			SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: ptr(false), ReadOnlyRootFilesystem: ptr(true),
+				Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}},
 		}},
 	}
 	if !reflect.DeepEqual(pod.Spec, wantPodSpec) {
