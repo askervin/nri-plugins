@@ -52,7 +52,7 @@ func cdiID(claimUID string) string {
 }
 
 // numaDevice is the lent device of a pool numa lease on node 2.
-var numaDevice = dra.LentDevice{Source: api.SourcePool, Serial: serialPoolX, Size: 1 << 28, Mode: api.ModeNUMA, Node: 2}
+var numaDevice = dra.LentDevice{Source: api.SourcePool, Serial: serialPoolX, Size: 1 << 28, Mode: api.ModeNUMA, NumaNode: 2}
 
 // readyNUMA requests a numa lease and makes it READY through the hooks, as
 // a companion's Prepare does, and returns its id.
@@ -314,7 +314,7 @@ func TestLeaseRequestID(t *testing.T) {
 	}
 	_, err := e.b.OnLending(first.Lease, companionClaim(first.Lease))
 	mustOK(t, err)
-	e.b.OnPrepared(first.Lease, []dra.LentDevice{{Source: api.SourcePool, Serial: serialPoolX, Size: 64 << 20, Mode: api.ModeNUMA, Node: 2}})
+	e.b.OnPrepared(first.Lease, []dra.LentDevice{{Source: api.SourcePool, Serial: serialPoolX, Size: 64 << 20, Mode: api.ModeNUMA, NumaNode: 2}})
 	third, _ := e.call(req)
 	if third.Lease != first.Lease || third.State != api.StateReady {
 		t.Fatalf("third %+v", third)
@@ -540,19 +540,19 @@ func TestPreparedModeMismatch(t *testing.T) {
 		err string
 	}{
 		{api.Request{Op: "request", Shared: true, ReadOnly: true, Mode: "fs", Size: "64Mi", Wait: "5s"},
-			dra.LentDevice{Source: api.SourcePool, Serial: serialPoolS, Size: 1 << 28, Mode: api.ModeDax, Node: -1, DaxDevice: "/dev/dax0.0"},
+			dra.LentDevice{Source: api.SourcePool, Serial: serialPoolS, Size: 1 << 28, Mode: api.ModeDax, NumaNode: -1, DaxDevice: "/dev/dax0.0"},
 			"companion prepared mode dax, lease is mode fs"},
 		{api.Request{Op: "request", Source: "pool", Mode: "dax", Size: "64Mi", Wait: "5s"},
-			dra.LentDevice{Source: api.SourcePool, Serial: serialPoolP, Size: pmemBytes, Mode: api.ModeFs, Node: -1, Access: "direct"},
+			dra.LentDevice{Source: api.SourcePool, Serial: serialPoolP, Size: pmemBytes, Mode: api.ModeFs, NumaNode: -1, Access: "direct"},
 			"companion prepared mode fs, lease is mode dax"},
 		{api.Request{Op: "request", Shared: true, ReadOnly: true, Mode: "block", Size: "64Mi", Wait: "5s"},
-			dra.LentDevice{Source: api.SourcePool, Serial: serialPoolP, Size: pmemBytes, Mode: api.ModeFs, Node: -1, Access: "direct", BlockDevice: "/dev/pmem0"},
+			dra.LentDevice{Source: api.SourcePool, Serial: serialPoolP, Size: pmemBytes, Mode: api.ModeFs, NumaNode: -1, Access: "direct", BlockDevice: "/dev/pmem0"},
 			"companion prepared mode fs, lease is mode block"},
 		{api.Request{Op: "request", Shared: true, ReadOnly: true, Mode: "fs", Size: "64Mi", Wait: "5s"},
-			dra.LentDevice{Source: api.SourcePool, Serial: serialPoolP, Size: pmemBytes, Mode: api.ModeBlock, ReadOnly: true, Node: -1, BlockDevice: "/dev/pmem0"},
+			dra.LentDevice{Source: api.SourcePool, Serial: serialPoolP, Size: pmemBytes, Mode: api.ModeBlock, ReadOnly: true, NumaNode: -1, BlockDevice: "/dev/pmem0"},
 			"companion prepared mode block, lease is mode fs"},
 		{api.Request{Op: "request", Source: "pool", Mode: "block", Size: "64Mi", Wait: "5s"},
-			dra.LentDevice{Source: api.SourcePool, Serial: serialPoolX, Size: 1 << 28, Mode: api.ModeDax, Node: -1, DaxDevice: "/dev/dax0.0"},
+			dra.LentDevice{Source: api.SourcePool, Serial: serialPoolX, Size: 1 << 28, Mode: api.ModeDax, NumaNode: -1, DaxDevice: "/dev/dax0.0"},
 			"companion prepared mode dax, lease is mode block"},
 	} {
 		id := fmt.Sprintf("%08x", 0xa1+i)
@@ -837,7 +837,7 @@ func TestCloseClaimDoesNotWaitForCompanions(t *testing.T) {
 	r, _ := e.call(api.Request{Op: api.OpRequest, Size: "64Mi", Source: "local", Wait: "0s"})
 	_, err := e.b.OnLending(r.Lease, companionClaim(r.Lease))
 	mustOK(t, err)
-	e.b.OnPrepared(r.Lease, []dra.LentDevice{{Source: api.SourceLocal, Serial: serialSliced, Size: 64 << 20, Mode: api.ModeNUMA, Node: 2}})
+	e.b.OnPrepared(r.Lease, []dra.LentDevice{{Source: api.SourceLocal, Serial: serialSliced, Size: 64 << 20, Mode: api.ModeNUMA, NumaNode: 2}})
 	mustOK(t, e.ctrs.LendNode(context.Background(), envPodUID, envCtr, 2, r.Lease))
 	stay.Store(true)
 

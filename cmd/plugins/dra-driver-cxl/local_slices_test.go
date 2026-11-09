@@ -233,7 +233,7 @@ func TestLocalMixedSlices(t *testing.T) {
 	// a dax slice of 64 MiB is rounded up to a block: dax0.0 is reused
 	e.mustPrepare(localClaim("u1", 64*mib, localDaxConfig))
 	g := e.grant("u1", 0)
-	if g.Got.Region != "region0" || g.Got.Dax != "dax0.0" || g.Got.Size != localBlockSize || g.Got.DaxDev.Major != 252 || g.Got.DaxDev.Minor != 0 {
+	if g.Got.Region != "region0" || g.Got.Dax != "dax0.0" || g.Got.Size != localBlockSize || e.records().DaxDevOf(g).Major != 252 || e.records().DaxDevOf(g).Minor != 0 {
 		t.Fatalf("dax slice %+v", g.Got)
 	}
 	if info := e.s.ClaimInfo("u1").Devices[0]; info.Mode != api.ModeDax || info.DaxDevice != filepath.Join(e.k.DevRoot(), "dax0.0") || info.DaxMajor != 252 || info.TotalBytes != localBlockSize {
@@ -317,11 +317,11 @@ func TestLocalDaxSlices(t *testing.T) {
 	e.start()
 
 	e.mustPrepare(localClaim("u1", localBlockSize, localDaxConfig))
-	if g := e.grant("u1", 0); g.Got.Dax != "dax0.0" || g.Got.Size != localBlockSize || g.Got.DaxDev.Major != 252 || g.Got.DaxDev.Minor != 0 {
+	if g := e.grant("u1", 0); g.Got.Dax != "dax0.0" || g.Got.Size != localBlockSize || e.records().DaxDevOf(g).Major != 252 || e.records().DaxDevOf(g).Minor != 0 {
 		t.Fatalf("slice %+v", g.Got)
 	}
 	e.mustPrepare(localClaim("u2", 3*mib, localROConfig))
-	if g := e.grant("u2", 0); g.Got.Dax != "dax0.1" || g.Got.Size != localBlockSize || g.Got.DaxDev.Minor != 1 || !g.Asked.ReadOnly {
+	if g := e.grant("u2", 0); g.Got.Dax != "dax0.1" || g.Got.Size != localBlockSize || e.records().DaxDevOf(g).Minor != 1 || !g.Asked.ReadOnly {
 		t.Fatalf("read-only slice %+v %+v", g.Asked, g.Got)
 	}
 	if info := e.s.ClaimInfo("u2").Devices[0]; !info.ReadOnly || info.DaxDevice != filepath.Join(e.k.DevRoot(), "dax0.1") || info.DaxMinor != 1 {
@@ -342,7 +342,7 @@ func TestLocalDaxSlices(t *testing.T) {
 	// the first gets dax0.0
 	e.mustPrepare(claimOfTwo("u3", 16*mib, 2*mib, localDaxConfig))
 	if g := e.grant("u3", 0); g.Got.Dax != "dax0.0" || g.Got.Size != localBlockSize || g.Got.Region != "region0" ||
-		g.Got.DaxDev.Major != 252 || g.Got.DaxDev.Minor != 0 {
+		e.records().DaxDevOf(g).Major != 252 || e.records().DaxDevOf(g).Minor != 0 {
 		t.Fatalf("first slice %+v", g.Got)
 	}
 	if g := e.grant("u3", 1); g.Got.Dax != "dax0.2" || g.Got.Size != localBlockSize {

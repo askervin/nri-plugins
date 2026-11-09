@@ -46,7 +46,7 @@ type preparingPoolClaim struct {
 }
 
 // preparingRegion is a region that a Prepare creates on the memdev with
-// the serial under the root decoder.
+// the serial under the root decoder; the records do not keep the decoder.
 type preparingRegion struct {
 	Serial  uint64 `json:"serial"`
 	Region  string `json:"region"`
@@ -103,14 +103,13 @@ func addPoolClaim(b *recordBuilder, driver, uid, claimName, bootID string, st st
 		r := state.Result{
 			Index: d.Result, Kind: state.ResultGrant, Request: d.Request, Pool: d.Pool, Device: d.Device,
 			Settings: d.ResultSettings, Grant: &ref,
-			Memdev: &state.MemdevResult{Shared: d.Shared, Persistent: d.Persistent},
 		}
 		if j < len(results) && results[j].ShareID != nil {
 			r.ShareID = string(*results[j].ShareID)
 		}
 		p.Results = append(p.Results, r)
 		g := addPoolGrant(b, ref, d, st)
-		lends.assign(g, d.Mode, d.Node)
+		lends.assign(g, d.Mode, d.NumaNode)
 	}
 	return p
 }
@@ -128,6 +127,7 @@ func addPoolGrant(b *recordBuilder, ref state.GrantRef, d *preparedPoolDevice, s
 		Asked: state.Asked{
 			Source:   state.SourcePool,
 			Kind:     grantKind(d.Shared, d.Persistent),
+			Shared:   d.Shared,
 			Mode:     state.Mode(d.Mode),
 			ReadOnly: d.ReadOnly,
 			Access:   state.Access(d.Access),
@@ -138,15 +138,11 @@ func addPoolGrant(b *recordBuilder, ref state.GrantRef, d *preparedPoolDevice, s
 		Got: state.Got{
 			Region:      state.RegionRef(d.Region),
 			Dax:         d.Dax,
-			DaxDev:      state.DevNumbers{Major: d.DaxMajor, Minor: d.DaxMinor},
-			NumaNode:    state.NumaNodePtr(d.Node),
+			NumaNode:    state.NumaNodePtr(d.NumaNode),
 			Size:        d.Size,
 			Namespace:   d.Namespace,
 			BlockDevice: blockDevice(d.BlockDevice, d.BlockMajor, d.BlockMinor),
 			Mount:       state.Access(d.Access),
-			MountPath:   d.NodeMount,
-			Loop:        d.LoopDevice,
-			FsType:      d.FsType,
 		},
 		Intent: state.Intent{Region: state.RegionRef(d.Region)},
 	})
@@ -170,12 +166,13 @@ func addPoolGrant(b *recordBuilder, ref state.GrantRef, d *preparedPoolDevice, s
 			r.Pmem = &state.Pmem{NdRegion: d.NdRegion, Namespace: d.Namespace, BlockDevice: blockDevice(d.BlockDevice, d.BlockMajor, d.BlockMinor)}
 		}
 	}
+	b.useDax(g, d.Dax, state.DevNumbers{Major: d.DaxMajor, Minor: d.DaxMinor})
+	b.useMount(g, d.NodeMount, d.LoopDevice, d.FsType)
 	return g
 }
 
 // addPreparingRegions adds the regions that a Prepare that did not finish
-// created or was creating, noted with their root decoder, as the intent
-// of its grant on their memdev.
+// created or was creating as the intent of its grant on their memdev.
 func addPreparingRegions(b *recordBuilder, p *state.Preparation, regions []preparingRegion) {
 	for _, pr := range regions {
 		var g *state.Grant
@@ -186,13 +183,10 @@ func addPreparingRegions(b *recordBuilder, p *state.Preparation, regions []prepa
 			}
 		}
 		m := b.memdev(state.Memdev{Serial: state.Serial(pr.Serial), Source: state.SourcePool, State: state.MemdevActive})
-		r := b.region(state.Region{
+		b.region(state.Region{
 			NotedName: pr.Region, Mode: state.RegionRam, Targets: []state.Serial{state.Serial(pr.Serial)},
-			Owner: state.OwnerOurs, State: state.RegionNoted, Decoder: pr.Decoder,
+			Owner: state.OwnerOurs, State: state.RegionNoted,
 		}, m)
-		if r.Decoder == "" {
-			r.Decoder = pr.Decoder
-		}
 		if g != nil {
 			if g.Intent.Region != "" && g.Intent.Region != state.RegionRef(pr.Region) && g.Intent.Region != g.Got.Region {
 				g.Intent.Noted = append(g.Intent.Noted, g.Intent.Region)
@@ -227,8 +221,8 @@ func preparingContent(doc *store.Document, opts store.ViewOptions) ([]byte, erro
 			d.Memdev = ""
 			if g := doc.Grant(state.GrantRef{Claim: p.UID, Result: d.Result}); g != nil {
 				d.Access, d.FsType = string(g.Asked.Access), g.Asked.FsType
-				if d.Mode == string(state.ModeNUMA) && d.Node < 0 {
-					d.Node = regionNode(doc, g)
+				if d.Mode == string(state.ModeNUMA) && d.NumaNode < 0 {
+					d.NumaNode = regionNode(doc, g)
 				}
 			}
 		}
@@ -281,7 +275,7 @@ func preparingLend(doc *store.Document, p *state.Preparation) *lendRecord {
 			identity = true
 		}
 		if l.NumaNode != nil {
-			lend.Nodes = append(lend.Nodes, *l.NumaNode)
+			lend.NumaNodes = append(lend.NumaNodes, *l.NumaNode)
 		}
 		if t := g.Intent.BindTarget; t != "" && !slices.Contains(lend.Mounts, t) {
 			lend.Mounts = append(lend.Mounts, t)
@@ -291,7 +285,7 @@ func preparingLend(doc *store.Document, p *state.Preparation) *lendRecord {
 }
 
 // preparingRegions returns the regions that a Prepare that did not finish
-// noted: those of the intents of its grants, with their root decoder.
+// noted: those of the intents of its grants.
 func preparingRegions(doc *store.Document, p *state.Preparation) []preparingRegion {
 	var out []preparingRegion
 	for _, r := range p.Results {
@@ -306,11 +300,7 @@ func preparingRegions(doc *store.Document, p *state.Preparation) []preparingRegi
 			if ref == "" || slices.ContainsFunc(out, func(pr preparingRegion) bool { return pr.Region == string(ref) }) {
 				continue
 			}
-			pr := preparingRegion{Serial: uint64(g.Serial), Region: string(ref)}
-			if reg := doc.Region(ref); reg != nil {
-				pr.Decoder = reg.Decoder
-			}
-			out = append(out, pr)
+			out = append(out, preparingRegion{Serial: uint64(g.Serial), Region: string(ref)})
 		}
 	}
 	return out

@@ -208,7 +208,7 @@ func TestOldFilesMovedAside(t *testing.T) {
 func TestOldFilesIgnoredWithADocument(t *testing.T) {
 	local := t.TempDir()
 	writeFiles(t, local, map[string]string{
-		FileName:              `{"schema": 1, "generation": 1}`,
+		FileName:              `{"schema": 2, "generation": 1}`,
 		"preparedClaims.json": `{"uid": {"Err": null, "Devices": []}}`,
 	})
 	moved, err := HandleOldFiles(local, "", anyRegion, false)

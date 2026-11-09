@@ -185,7 +185,7 @@ func (b *Broker) serialOptions(a *state.LeaseAsked, req *api.Request) error {
 // deviceRefusal returns the error of a request for a share of a device
 // without shares and, for a shared or persistent device, of the wrong
 // source or of another node; text is the serial of the device.
-func (b *Broker) deviceRefusal(dev *sliceDevice, a *state.LeaseAsked, req *api.Request, text string) error {
+func (b *Broker) deviceRefusal(dev *publishedDevice, a *state.LeaseAsked, req *api.Request, text string) error {
 	switch {
 	case !dev.shares && a.Shared:
 		return fmt.Errorf("device %s: not shareable", text)
@@ -207,7 +207,7 @@ func persistent(mode state.Mode) bool {
 
 // deviceSourceOf returns the source of a device in a ResourceSlice when the
 // request names no source, "" otherwise.
-func deviceSourceOf(dev *sliceDevice, req *api.Request) state.Source {
+func deviceSourceOf(dev *publishedDevice, req *api.Request) state.Source {
 	switch {
 	case req.Source != "":
 		return ""
@@ -217,8 +217,8 @@ func deviceSourceOf(dev *sliceDevice, req *api.Request) state.Source {
 	return state.SourcePool
 }
 
-// sliceDevice is a device with a serial in a ResourceSlice.
-type sliceDevice struct {
+// publishedDevice is a device with a serial in a ResourceSlice.
+type publishedDevice struct {
 	shared     bool
 	shares     bool   // the device has the capacity shares
 	persistent bool   // a device of persistent memory
@@ -230,7 +230,7 @@ type sliceDevice struct {
 // of cxl.nri.io and the pool driver, nil if there is none or no
 // Kubernetes client: the local device of this node first, then a pool
 // device, then a local device of another node.
-func (b *Broker) deviceBySerial(serial uint64) (*sliceDevice, error) {
+func (b *Broker) deviceBySerial(serial uint64) (*publishedDevice, error) {
 	if b.opts.Client == nil {
 		return nil, nil
 	}
@@ -242,14 +242,14 @@ func (b *Broker) deviceBySerial(serial uint64) (*sliceDevice, error) {
 	}
 	// the first device of each preference: this node, the pool, another
 	// node
-	var found [3]*sliceDevice
+	var found [3]*publishedDevice
 	for i := range list.Items {
 		rs := &list.Items[i]
 		if rs.Spec.Driver != device.DriverName && (b.opts.PoolDriver == "" || rs.Spec.Driver != b.opts.PoolDriver) {
 			continue
 		}
 		for j := range rs.Spec.Devices {
-			if dev := sliceDeviceOf(rs, &rs.Spec.Devices[j], serial); dev != nil && found[b.preference(dev)] == nil {
+			if dev := publishedDeviceOf(rs, &rs.Spec.Devices[j], serial); dev != nil && found[b.preference(dev)] == nil {
 				found[b.preference(dev)] = dev
 			}
 		}
@@ -268,7 +268,7 @@ func (b *Broker) deviceBySerial(serial uint64) (*sliceDevice, error) {
 // preference returns the rank of a device of a serial: 0 for the local
 // device of this node, 1 for a pool device, 2 for a local device of
 // another node.
-func (b *Broker) preference(dev *sliceDevice) int {
+func (b *Broker) preference(dev *publishedDevice) int {
 	switch {
 	case dev.driver != device.DriverName:
 		return 1
@@ -278,13 +278,13 @@ func (b *Broker) preference(dev *sliceDevice) int {
 	return 2
 }
 
-// sliceDeviceOf returns the device d of the ResourceSlice rs when it has
+// publishedDeviceOf returns the device d of the ResourceSlice rs when it has
 // the serial, nil otherwise.
-func sliceDeviceOf(rs *resourcev1.ResourceSlice, d *resourcev1.Device, serial uint64) *sliceDevice {
+func publishedDeviceOf(rs *resourcev1.ResourceSlice, d *resourcev1.Device, serial uint64) *publishedDevice {
 	if s, ok := deviceSerial(d, rs.Spec.Driver); !ok || s != serial {
 		return nil
 	}
-	dev := &sliceDevice{driver: rs.Spec.Driver}
+	dev := &publishedDevice{driver: rs.Spec.Driver}
 	if a, ok := deviceAttribute(d, rs.Spec.Driver, device.AttrShared); ok && a.BoolValue != nil {
 		dev.shared = *a.BoolValue
 	}

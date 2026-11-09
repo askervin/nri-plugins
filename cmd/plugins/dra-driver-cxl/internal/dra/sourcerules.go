@@ -245,11 +245,11 @@ func (localVoice) prepared(p *Plugin, pr *prepare) {
 			klog.Infof("local: memdev %s (serial 0x%x): claim %s request %s: shared %s size %d read-only %v %s",
 				memdev, s, pr.uid, request, g.Got.Dax, g.Got.Size, g.Asked.ReadOnly, pr.uses[req.Ref])
 		case state.KindPersistent:
-			dev, access, fsType := "", string(g.Got.Mount), g.Got.FsType
+			dev, access, fsType := "", string(g.Got.Mount), ""
 			if g.Got.BlockDevice != nil {
 				dev = g.Got.BlockDevice.Name
 			}
-			if m := mountOf(r, g); m != nil && fsType == "" {
+			if m := r.MountOf(g); m != nil {
 				fsType = m.FsType
 			}
 			klog.Infof("local: memdev %s (serial 0x%x) %s: claim %s request %s: persistent %s mode %s read-only %v access %q fs %q",
@@ -397,13 +397,13 @@ func (v poolVoice) prepared(p *Plugin, pr *prepare) {
 			continue
 		}
 		klog.Infof("%s: claim %s: prepared %s (serial 0x%x, shared %v, mode %s, read-only %v) as %s %s dax %s node %d",
-			v.name, pr.claimName, d.Device, d.Serial, d.Shared, d.Mode, d.ReadOnly, d.Memdev, d.Region, d.Dax, d.Node)
+			v.name, pr.claimName, d.Device, d.Serial, d.Shared, d.Mode, d.ReadOnly, d.Memdev, d.Region, d.Dax, d.NumaNode)
 	}
 }
 
 func (v poolVoice) companionPrepared(claimName string, lend *Lend) {
 	klog.Infof("%s: claim %s: companion of lease %s of %s/%s/%s prepared (nodes %v, binds %v)",
-		v.name, claimName, lend.Lease, lend.Pod.Namespace, lend.Pod.Name, lend.Container, lend.Nodes, lend.Mounts)
+		v.name, claimName, lend.Lease, lend.Pod.Namespace, lend.Pod.Name, lend.Container, lend.NumaNodes, lend.Mounts)
 }
 
 func (v poolVoice) kept(uid, claimName string) {
@@ -518,12 +518,4 @@ func serialsOf(r *state.Records, prep *state.Preparation) []string {
 		}
 	}
 	return serials
-}
-
-// mountOf returns the node mount of a grant of mode fs, nil for none.
-func mountOf(r *state.Records, g *state.Grant) *state.Mount {
-	if reg := r.Region(g.Got.Region); reg != nil && g.Got.Mount != "" {
-		return reg.Mount(g.Got.Mount)
-	}
-	return nil
 }

@@ -35,6 +35,28 @@ type recordBuilder struct {
 	// next is the next negative result index of a claim, for a use of a
 	// memdev that no prepared result names.
 	next map[string]int
+	// daxUses and mountUses are what the grants got of the dax devices and
+	// node mounts of their regions, added to the region records last.
+	daxUses   []daxUse
+	mountUses []mountUse
+}
+
+// daxUse is a dax device of a region that a grant got.
+type daxUse struct {
+	ref    state.GrantRef
+	region state.RegionRef
+	dax    string
+	dev    state.DevNumbers
+	mode   string
+}
+
+// mountUse is a node mount of a region that a grant uses.
+type mountUse struct {
+	ref                state.GrantRef
+	region             state.RegionRef
+	access             state.Access
+	path, loop, fsType string
+	writer             bool
 }
 
 // newRecordBuilder returns an empty builder.
@@ -46,8 +68,93 @@ func newRecordBuilder() *recordBuilder {
 	}
 }
 
+// useDax notes the dax device dax of the region of the grant g, with its
+// device numbers, for the region's record.
+func (b *recordBuilder) useDax(g *state.Grant, dax string, dev state.DevNumbers) {
+	if dax != "" && g.Got.Region != "" {
+		b.daxUses = append(b.daxUses, daxUse{ref: g.Ref, region: g.Got.Region, dax: dax, dev: dev, mode: string(g.Asked.Mode)})
+	}
+}
+
+// orphanDax adds the dax device of a use s of no claim to the record of its
+// region, without users.
+func (b *recordBuilder) orphanDax(region state.RegionRef, s *localSlice) {
+	for _, r := range b.regions {
+		if r.Ref() != region || r.DaxDevice(s.Dax) != nil {
+			continue
+		}
+		st, driver := state.DaxDeviceDax, state.DriverDeviceDax
+		if s.Mode == api.ModeNUMA {
+			st, driver = state.DaxKmemOnline, state.DriverKmem
+		}
+		r.DaxDevices = append(r.DaxDevices, state.DaxDevice{Name: s.Dax, Size: s.Size, State: st, Driver: driver,
+			Dev: state.DevNumbers{Major: s.Major, Minor: s.Minor}})
+	}
+}
+
+// useMount notes the node mount of the grant g at path, with its loop
+// device and filesystem type, for the record of the grant's region.
+func (b *recordBuilder) useMount(g *state.Grant, path, loop, fsType string) {
+	if path != "" && g.Got.Region != "" && g.Got.Mount != "" {
+		b.mountUses = append(b.mountUses, mountUse{ref: g.Ref, region: g.Got.Region, access: g.Got.Mount,
+			path: path, loop: loop, fsType: fsType, writer: !g.Asked.ReadOnly})
+	}
+}
+
+// applyUses adds the noted dax devices and node mounts to the records of
+// their regions.
+func (b *recordBuilder) applyUses() {
+	region := func(ref state.RegionRef) *state.Region {
+		for _, r := range b.regions {
+			if r.Ref() == ref {
+				return r
+			}
+		}
+		return nil
+	}
+	for _, u := range b.daxUses {
+		reg := region(u.region)
+		if reg == nil {
+			continue
+		}
+		d := reg.DaxDevice(u.dax)
+		if d == nil {
+			st, driver := state.DaxDeviceDax, state.DriverDeviceDax
+			if u.mode == api.ModeNUMA {
+				st, driver = state.DaxKmemOnline, state.DriverKmem
+			}
+			reg.DaxDevices = append(reg.DaxDevices, state.DaxDevice{Name: u.dax, State: st, Driver: driver})
+			d = &reg.DaxDevices[len(reg.DaxDevices)-1]
+		}
+		if d.Dev.IsZero() {
+			d.Dev = u.dev
+		}
+		if !slices.Contains(d.Users, u.ref) {
+			d.Users = append(d.Users, u.ref)
+		}
+	}
+	for _, u := range b.mountUses {
+		reg := region(u.region)
+		if reg == nil {
+			continue
+		}
+		m := reg.Mount(u.access)
+		if m == nil {
+			reg.Mounts = append(reg.Mounts, state.Mount{Access: u.access, Path: u.path, Loop: u.loop, FsType: u.fsType, State: state.MountedRO})
+			m = &reg.Mounts[len(reg.Mounts)-1]
+		}
+		if u.writer {
+			m.Writer, m.State = true, state.MountedRW
+		}
+		if !slices.Contains(m.Users, u.ref) {
+			m.Users = append(m.Users, u.ref)
+		}
+	}
+}
+
 // addTo adds the collected records to doc.
 func (b *recordBuilder) addTo(doc *store.Document) {
+	b.applyUses()
 	for _, p := range b.preps {
 		doc.Preparations = append(doc.Preparations, *p)
 	}
@@ -105,12 +212,17 @@ func (b *recordBuilder) newRef(uid string) state.GrantRef {
 }
 
 // memdev returns the memdev record of the serial, made with m when the
-// builder has none.
+// builder has none, else with the name and facts of m added.
 func (b *recordBuilder) memdev(m state.Memdev) *state.Memdev {
 	for _, have := range b.memdevs {
 		if have.Serial == m.Serial {
 			if have.Name == "" {
 				have.Name = m.Name
+			}
+			have.Facts.Shared = have.Facts.Shared || m.Facts.Shared
+			have.Facts.Persistent = have.Facts.Persistent || m.Facts.Persistent
+			if have.Facts.NumaAffinity == nil {
+				have.Facts.NumaAffinity = m.Facts.NumaAffinity
 			}
 			return have
 		}
@@ -232,8 +344,8 @@ func (l *grantLends) assign(g *state.Grant, mode string, node int) {
 		FsDir:     l.lend.FsDir,
 		Name:      l.lend.Name,
 	}
-	if mode == api.ModeNUMA && node >= 0 && l.node < len(l.lend.Nodes) {
-		gl.NumaNode = state.NumaNodePtr(l.lend.Nodes[l.node])
+	if mode == api.ModeNUMA && node >= 0 && l.node < len(l.lend.NumaNodes) {
+		gl.NumaNode = state.NumaNodePtr(l.lend.NumaNodes[l.node])
 		l.node++
 	}
 	intent := *gl

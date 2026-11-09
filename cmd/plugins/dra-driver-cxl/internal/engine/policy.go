@@ -41,8 +41,8 @@ const (
 type Kind string
 
 const (
-	// KindLocalSliced is a local memdev whose grants have parts of it.
-	KindLocalSliced Kind = "local sliced"
+	// KindLocalParts is a local memdev whose grants have parts of it.
+	KindLocalParts Kind = "local sliced"
 	// KindLocalShared is a local memdev configured shared whose region is
 	// established: set up and zeroed, or kept by an earlier release.
 	KindLocalShared Kind = "local shared"
@@ -119,7 +119,7 @@ func (d Decision) keeps() bool {
 // regions of other memdevs lie above it.
 var localPolicy = map[Kind]map[Release]Decision{
 	//                                Unprepare    rollback  recovery     idle
-	KindLocalSliced:        byRelease(Destroy, InOrder, InOrder, Destroy),
+	KindLocalParts:         byRelease(Destroy, InOrder, InOrder, Destroy),
 	KindLocalShared:        byRelease(KeepIdle, KeepIdle, KeepIdle, KeepIdle),
 	KindLocalSharedNew:     byRelease(KeepIdle, InOrder, InOrder, KeepIdle),
 	KindLocalUnshared:      byRelease(Destroy, InOrder, Destroy, Destroy),
@@ -180,5 +180,5 @@ func kindOf(asked state.Asked, shared, established bool) Kind {
 	case asked.Kind == state.KindShared:
 		return KindLocalUnsharedNew
 	}
-	return KindLocalSliced
+	return KindLocalParts
 }

@@ -50,7 +50,7 @@ func TestLocalSliced(t *testing.T) {
 	if g.Got.Dax != "dax0.1" || g.Got.Size != 256*mib || v.f.DaxDriver("dax0.1") != kernel.DriverDeviceDax {
 		t.Fatalf("dax part %+v", g.Got)
 	}
-	if z := v.f.Zeroed(); len(z) != 1 || !strings.HasPrefix(z[0], fmt.Sprintf("%d:%d ", g.Got.DaxDev.Major, g.Got.DaxDev.Minor)) {
+	if z := v.f.Zeroed(); len(z) != 1 || !strings.HasPrefix(z[0], fmt.Sprintf("%d:%d ", v.records().DaxDevOf(g).Major, v.records().DaxDevOf(g).Minor)) {
 		t.Fatalf("zeroed %v", z)
 	}
 	v.mustUnprepare(localDriver, "n1")

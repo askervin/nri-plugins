@@ -57,7 +57,7 @@ type result struct {
 	// deviceType is the device type of a result of cxl.nri.io.
 	deviceType string
 	mode       string
-	nodes      []int
+	numaNodes  []int
 	// bytes is the memory of the result.
 	bytes    int64
 	settings config.ResultSettings
@@ -136,7 +136,7 @@ func (p *Plugin) localResult(ctrName string, ref resultRef) (result, bool) {
 		ctrName, ref.uid, claim, ref.n,
 		d.DeviceName, d.DeviceType, d.Mode, d.SysfsPath, d.NUMANodes, d.NodeAffinities,
 		formatBytes(d.TotalBytes), formatBytes(uint64(d.ConsumedBytes)), d.RequestName)
-	return result{deviceType: d.DeviceType, mode: d.Mode, nodes: nonNegative(d.NUMANodes), bytes: d.ConsumedBytes,
+	return result{deviceType: d.DeviceType, mode: d.Mode, numaNodes: nonNegative(d.NUMANodes), bytes: d.ConsumedBytes,
 		settings: d.ResultSettings}, true
 }
 
@@ -153,10 +153,10 @@ func (p *Plugin) poolResult(ctrName string, ref resultRef) (result, bool) {
 	}
 	r := results[i]
 	klog.V(5).Infof("NRI CreateContainer: ctr=%s claim=%s result %d: pool device mode=%s node=%d size=%s request=%s",
-		ctrName, ref.uid, ref.n, r.Mode, r.Node, formatBytes(r.Size), r.Request)
+		ctrName, ref.uid, ref.n, r.Mode, r.NumaNode, formatBytes(r.Size), r.Request)
 	out := result{pool: true, mode: r.Mode, bytes: int64(r.Size), settings: r.Settings}
-	if r.Node >= 0 {
-		out.nodes = []int{r.Node}
+	if r.NumaNode >= 0 {
+		out.numaNodes = []int{r.NumaNode}
 	}
 	return out, true
 }
@@ -267,7 +267,7 @@ func claimedNodes(results []result) cpuset.CPUSet {
 	nodes := cpuset.New()
 	for i := range results {
 		if results[i].numaCXL() {
-			nodes = nodes.Union(cpuset.New(results[i].nodes...))
+			nodes = nodes.Union(cpuset.New(results[i].numaNodes...))
 		}
 	}
 	return nodes
@@ -283,10 +283,10 @@ func steeredMemory(results []result) cgmpolmgr.MemoryTypes {
 		r := &results[i]
 		switch {
 		case r.deviceType == device.DeviceTypeDRAM:
-			dram = dram.Union(cpuset.New(r.nodes...))
+			dram = dram.Union(cpuset.New(r.numaNodes...))
 			mem.DRAMQuota += r.bytes
 		case r.numaCXL():
-			cxl = cxl.Union(cpuset.New(r.nodes...))
+			cxl = cxl.Union(cpuset.New(r.numaNodes...))
 			mem.CXLQuota += r.bytes
 		}
 	}

@@ -275,7 +275,7 @@ func TestPoolViewOfEngineRecords(t *testing.T) {
 	}
 	llm0 := func(uid, mode string, readOnly bool) preparedPoolDevice {
 		return preparedPoolDevice{Request: "mem", Device: "llm0", Pool: "fake-cxl-pool", Serial: 0xc1ae0001, Shared: true, Size: fakePmemBytes,
-			Mode: mode, ReadOnly: readOnly, Memdev: pmemMem, Region: region(pmemMem), Node: -1, Persistent: true, NdRegion: region(pmemMem),
+			Mode: mode, ReadOnly: readOnly, Memdev: pmemMem, Region: region(pmemMem), NumaNode: -1, Persistent: true, NdRegion: region(pmemMem),
 			Namespace: pmemNs, BlockDevice: pmemDev, BlockMajor: pmemMajor, BlockMinor: pmemMinor, ResultSettings: settings(uid)}
 	}
 	fsDev := func(uid, access, path, mnt, loop string) preparedPoolDevice {
@@ -288,24 +288,24 @@ func TestPoolViewOfEngineRecords(t *testing.T) {
 	want := map[string]*preparedPoolClaim{
 		"n1": {ClaimName: "default/c-n1", BootID: boot, Result: result("n1", "pooled0", true, nil), Devices: []preparedPoolDevice{{
 			Request: "mem", Device: "pooled0", Pool: "fake-cxl-pool", Serial: 0xc1ee0001, Size: 268435456, Mode: "numa", Memdev: numaMem,
-			Region: region(numaMem), Dax: daxOf(numaMem), Node: k.TargetNode(daxOf(numaMem)), ResultSettings: settings("n1")}}},
+			Region: region(numaMem), Dax: daxOf(numaMem), NumaNode: k.TargetNode(daxOf(numaMem)), ResultSettings: settings("n1")}}},
 		"s1": {ClaimName: "default/c-s1", BootID: boot, Result: result("s1", "shared1", true, &shareID), Devices: []preparedPoolDevice{{
 			Request: "mem", Device: "shared1", Pool: "fake-cxl-pool", Serial: 0xc1ae0002, Shared: true, Size: 268435456, Mode: "dax",
 			Memdev: daxMem, Region: region(daxMem), Dax: daxOf(daxMem), DaxDevice: "/dev/" + daxOf(daxMem), DaxMajor: major, DaxMinor: minor,
-			Node: -1, ResultSettings: settings("s1")}}},
+			NumaNode: -1, ResultSettings: settings("s1")}}},
 		"f1": {ClaimName: "default/c-f1", BootID: boot, Result: result("f1", "llm0", true, nil),
 			Devices: []preparedPoolDevice{fsDev("f1", "cached", "/models", cached, loop)}},
 		"r1": {ClaimName: "default/c-r1", BootID: boot, Result: result("r1", "llm0", true, nil),
 			Devices: []preparedPoolDevice{llm0("r1", "block", true)}},
 		"w1": {ClaimName: "default/c-w1", BootID: boot, Result: result("w1", "llm1", true, nil), Devices: []preparedPoolDevice{{
 			Request: "mem", Device: "llm1", Pool: "fake-cxl-pool", Serial: 0xc1af0001, Shared: true, Size: fakePmemBytes, Mode: "block",
-			Memdev: blockMem, Region: region(blockMem), Node: -1, Persistent: true, NdRegion: region(blockMem), Namespace: blockNs,
+			Memdev: blockMem, Region: region(blockMem), NumaNode: -1, Persistent: true, NdRegion: region(blockMem), Namespace: blockNs,
 			BlockDevice: blockDev, BlockMajor: blockMajor, BlockMinor: blockMinor, ResultSettings: settings("w1")}}},
 		"uid-cxl-lease-n2": {ClaimName: "demo/cxl-lease-n2", BootID: boot, Result: result("uid-cxl-lease-n2", "pooled3", false, nil),
 			Devices: []preparedPoolDevice{{Request: "mem", Device: "pooled3", Pool: "fake-cxl-pool", Serial: 0xc1ee0003, Size: 268435456,
-				Mode: "numa", Memdev: compMem, Region: region(compMem), Dax: daxOf(compMem), Node: compNode, ResultSettings: settings("uid-cxl-lease-n2")}},
+				Mode: "numa", Memdev: compMem, Region: region(compMem), Dax: daxOf(compMem), NumaNode: compNode, ResultSettings: settings("uid-cxl-lease-n2")}},
 			// the lend as the broker gave it (OnLending), with the node lent
-			Lend: &lendRecord{Lease: "n2", Pod: pod, Container: testCtr, Nodes: []int{compNode}, FsDir: hooks.fsDir, Name: "models"}},
+			Lend: &lendRecord{Lease: "n2", Pod: pod, Container: testCtr, NumaNodes: []int{compNode}, FsDir: hooks.fsDir, Name: "models"}},
 		"uid-cxl-lease-l1": {ClaimName: "demo/cxl-lease-l1", BootID: boot, Result: result("uid-cxl-lease-l1", "llm0", false, nil),
 			Devices: []preparedPoolDevice{fsDev("uid-cxl-lease-l1", "direct", "/run/cxl-fs/C1AE0001", direct, "")},
 			Lend: &lendRecord{Lease: "l1", Pod: pod, Container: testCtr, FsDir: hooks.fsDir, Name: "models",
@@ -328,8 +328,8 @@ func TestPoolKeptRecordShape(t *testing.T) {
 	reg := e.records().Region("region0")
 	want := &preparingPoolClaim{ClaimName: "default/c1", BootID: e.k.BootID(),
 		Devices: []preparedPoolDevice{{Request: "mem", Device: "pooled0", Pool: "fake-cxl-pool", Serial: 0xc1ee0001, Size: 268435456,
-			Mode: "numa", Node: state.NumaNodeOf(reg.NumaNode)}},
-		Regions: []preparingRegion{{Serial: 0xc1ee0001, Region: "region0", Decoder: "decoder0.0"}}}
+			Mode: "numa", NumaNode: state.NumaNodeOf(reg.NumaNode)}},
+		Regions: []preparingRegion{{Serial: 0xc1ee0001, Region: "region0"}}}
 	if state.NumaNodeOf(reg.NumaNode) < 0 {
 		t.Fatalf("region %+v", reg)
 	}

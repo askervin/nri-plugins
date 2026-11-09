@@ -268,10 +268,6 @@ func (p *Plugin) localResults(claim *resourcev1.ResourceClaim, pr *prepare, allo
 				pr.reqs = append(pr.reqs, req)
 				ref := req.Ref
 				result.Kind, result.Grant = state.ResultGrant, &ref
-				result.Memdev = &state.MemdevResult{Shared: d.Shared, Persistent: d.Persistent}
-				if d.NodeAffinity >= 0 {
-					result.Memdev.NumaAffinity = []int{d.NodeAffinity}
-				}
 			}
 		default:
 			if err = otherResult(&result, r, d, cfg); err != nil {
@@ -308,7 +304,7 @@ func otherResult(res *state.Result, r *resourcev1.DeviceRequestAllocationResult,
 		if err := cfg.NUMAOnly(device.DeviceTypeRegion); err != nil {
 			return err
 		}
-		reg := &state.RegionResult{Name: d.Name, SysfsPath: d.SysfsPath, NumaNode: d.Node, Size: d.Size, Consumed: consumed}
+		reg := &state.RegionResult{Name: d.Name, NumaNode: d.Node, Size: d.Size, Consumed: consumed}
 		for _, mem := range d.Memories {
 			if mem.NodeAffinity >= 0 {
 				reg.NumaAffinity = append(reg.NumaAffinity, mem.NodeAffinity)
@@ -583,8 +579,7 @@ func grantKind(shared, persistent bool) state.GrantKind {
 func poolResultOf(uid string, n int, r *resourcev1.DeviceRequestAllocationResult, data *poolDevice, settings config.ResultSettings) state.Result {
 	res := state.Result{
 		Index: n, Kind: state.ResultGrant, Request: r.Request, Pool: r.Pool, Device: r.Device, Settings: settings,
-		Grant:  &state.GrantRef{Claim: uid, Result: n},
-		Memdev: &state.MemdevResult{Shared: data.Shared, Persistent: data.Persistent},
+		Grant: &state.GrantRef{Claim: uid, Result: n},
 	}
 	if r.ShareID != nil {
 		res.ShareID = string(*r.ShareID)

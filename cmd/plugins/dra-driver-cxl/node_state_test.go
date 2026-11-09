@@ -260,12 +260,12 @@ func TestPrepareLocalLend(t *testing.T) {
 	wantLog(t, hooks.log(), "lending l1 cxl-lease-l1\nprepared l1")
 	wantDev := lentDevice{
 		Driver: device.DriverName, Source: api.SourceLocal, Request: "mem", Device: localDeviceName, Pool: testNode,
-		Serial: localSerial, Size: localBlockSize, Mode: api.ModeNUMA, Node: node,
+		Serial: localSerial, Size: localBlockSize, Mode: api.ModeNUMA, NumaNode: node,
 	}
 	if !reflect.DeepEqual(hooks.devs, []lentDevice{wantDev}) {
 		t.Fatalf("lent devices %+v", hooks.devs)
 	}
-	if rec := e.s.ClaimInfo("u1").Lend; rec == nil || rec.Lease != "l1" || !slices.Equal(rec.Nodes, []int{node}) {
+	if rec := e.s.ClaimInfo("u1").Lend; rec == nil || rec.Lease != "l1" || !slices.Equal(rec.NumaNodes, []int{node}) {
 		t.Fatalf("lend record %+v", rec)
 	}
 	// the companion's own containers get no CDI device, and the spec has
@@ -295,7 +295,7 @@ func TestPrepareLocalLendDax(t *testing.T) {
 	e, lender, hooks := newLocalLendEnv(t)
 	e.mustPrepare(localCompanion("u1", 16*mib, localDaxConfig))
 	dax0, _, _ := localDax(e, "dax0.0")
-	if len(hooks.devs) != 1 || hooks.devs[0].Mode != api.ModeDax || hooks.devs[0].DaxDevice != dax0 || hooks.devs[0].Node != -1 {
+	if len(hooks.devs) != 1 || hooks.devs[0].Mode != api.ModeDax || hooks.devs[0].DaxDevice != dax0 || hooks.devs[0].NumaNode != -1 {
 		t.Fatalf("lent dax devices %+v", hooks.devs)
 	}
 	// the borrower gets the fd from the broker, the companion nothing

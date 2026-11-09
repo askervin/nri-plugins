@@ -43,8 +43,9 @@ const (
 	PrevName = "state.json.prev"
 	// LockName is the file that the store locks against a second process.
 	LockName = "state.lock"
-	// Schema is the schema of the document.
-	Schema = 1
+	// Schema is the schema of the document; a document of another schema
+	// does not decode.
+	Schema = 2
 
 	// lockPoll is how often Open tries to lock the document again.
 	lockPoll = 100 * time.Millisecond
@@ -374,10 +375,19 @@ func readDocument(path string) (*Document, error) {
 	return decodeDocument(data)
 }
 
-// decodeDocument returns the document in data, decoded strictly: unknown
-// fields, another schema, data after the document and states that a stored
-// record may not have are errors.
+// decodeDocument returns the document in data, decoded strictly: another
+// schema (checked first), unknown fields, data after the document and
+// states that a stored record may not have are errors.
 func decodeDocument(data []byte) (*Document, error) {
+	var head struct {
+		Schema int `json:"schema"`
+	}
+	if err := json.Unmarshal(data, &head); err != nil {
+		return nil, err
+	}
+	if head.Schema != Schema {
+		return nil, fmt.Errorf("unsupported schema %d (this driver reads schema %d)", head.Schema, Schema)
+	}
 	doc := &Document{}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -386,9 +396,6 @@ func decodeDocument(data []byte) (*Document, error) {
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return nil, errors.New("data after the document")
-	}
-	if doc.Schema != Schema {
-		return nil, fmt.Errorf("unsupported schema %d", doc.Schema)
 	}
 	if err := state.CheckStates(&doc.Records); err != nil {
 		return nil, err

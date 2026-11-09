@@ -108,36 +108,19 @@ type Result struct {
 	ShareID string `json:"shareID,omitempty"`
 	// Settings are the container settings of the resolved MemoryConfig
 	// of the result.
-	Settings config.ResultSettings `json:"settings,omitzero"`
-	Grant    *GrantRef             `json:"grant,omitempty"`
-	// Memdev are the facts of the memdev of a result of kind grant, for
-	// the views of the state files (transitional: removed in H6 (schema
-	// 2)).
-	Memdev     *MemdevResult     `json:"memdev,omitempty"`
-	Region     *RegionResult     `json:"region,omitempty"`
-	DRAM       *DRAMResult       `json:"dram,omitempty"`
-	LeaseClaim *LeaseClaimResult `json:"leaseClaim,omitempty"`
-}
-
-// MemdevResult are the facts of the memdev of a result of kind grant at
-// its Prepare, for the views of the state files (transitional: removed in
-// H6 (schema 2)).
-type MemdevResult struct {
-	Shared     bool `json:"shared,omitempty"`
-	Persistent bool `json:"persistent,omitempty"`
-	// NumaAffinity are the CPU NUMA nodes of the memdev.
-	NumaAffinity []int `json:"numaAffinity,omitempty"`
+	Settings   config.ResultSettings `json:"settings,omitzero"`
+	Grant      *GrantRef             `json:"grant,omitempty"`
+	Region     *RegionResult         `json:"region,omitempty"`
+	DRAM       *DRAMResult           `json:"dram,omitempty"`
+	LeaseClaim *LeaseClaimResult     `json:"leaseClaim,omitempty"`
 }
 
 // RegionResult is a result of kind region: a region that existed before
 // the driver.
 type RegionResult struct {
-	Name string `json:"name"`
-	// SysfsPath is the sysfs directory of the region, for the views of
-	// the state files (transitional: removed in H6 (schema 2)).
-	SysfsPath string `json:"sysfsPath,omitempty"`
-	NumaNode  int    `json:"numaNode"`
-	Size      uint64 `json:"size"`
+	Name     string `json:"name"`
+	NumaNode int    `json:"numaNode"`
+	Size     uint64 `json:"size"`
 	// Consumed is the memory capacity that the allocation consumed.
 	Consumed int64 `json:"consumed,omitempty"`
 	// NumaAffinity are the CPU NUMA nodes of the memdevs of the region.

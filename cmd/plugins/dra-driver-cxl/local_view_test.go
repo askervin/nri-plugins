@@ -363,7 +363,7 @@ func TestLocalViewOfEngineRecords(t *testing.T) {
 		wantInfo[uid] = &PreparedClaimInfo{ClaimName: "demo/claim-" + uid, BootID: e.k.BootID()}
 	}
 	wantInfo["comp"].ClaimName = "demo/cxl-lease-l1"
-	wantInfo["comp"].Lend = &lendRecord{Lease: "l1", Pod: podRef{Namespace: testNS, Name: testPod, UID: testPodUID}, Container: testCtr, Nodes: []int{node}}
+	wantInfo["comp"].Lend = &lendRecord{Lease: "l1", Pod: podRef{Namespace: testNS, Name: testPod, UID: testPodUID}, Container: testCtr, NumaNodes: []int{node}}
 	for _, uid := range []string{"n1", "d1", "comp", "b1"} {
 		wantInfo[uid].Devices = append(wantInfo[uid].Devices, o.info(claims[uid], 0, localSerial, sliced.Claims[uid][0]))
 	}

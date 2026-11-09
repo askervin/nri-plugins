@@ -112,13 +112,13 @@ func TestClaimReaders(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, poolSpec(serialPoolX))
 	e.mustPrepare(e.pool, poolClaim("p1", "pooled0", poolExclusiveData))
 	e.mustPrepare(e.local, localClaim("l1", localDev, envBlockSize))
-	want := []PoolResult{{Index: 0, Request: "mem", Mode: api.ModeNUMA, Node: 2, Size: 256 << 20}}
+	want := []PoolResult{{Index: 0, Request: "mem", Mode: api.ModeNUMA, NumaNode: 2, Size: 256 << 20}}
 	if got := e.pool.ClaimResults("p1"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("results %+v, expected %+v", got, want)
 	}
 	devs := e.pool.PoolDevices("p1")
 	if len(devs) != 1 || devs[0].Result != 0 || devs[0].Request != "mem" || devs[0].Device != "pooled0" || devs[0].Pool != envPool ||
-		devs[0].Serial != serialPoolX || devs[0].Memdev != "mem1" || devs[0].Region != "region0" || devs[0].Node != 2 || devs[0].Mode != api.ModeNUMA {
+		devs[0].Serial != serialPoolX || devs[0].Memdev != "mem1" || devs[0].Region != "region0" || devs[0].NumaNode != 2 || devs[0].Mode != api.ModeNUMA {
 		t.Fatalf("pool devices %+v", devs)
 	}
 	name, d, ok := e.local.PreparedResult("l1", 0)

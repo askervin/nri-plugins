@@ -127,12 +127,12 @@ func TestNodeSliceBackAfterKubeletWipe(t *testing.T) {
 	client := sliceTestClient(node, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s := newNodeSlices(client, node, func(_ context.Context, err error, msg string) {
+	s := newNodeResourceSlices(client, node, func(_ context.Context, err error, msg string) {
 		t.Errorf("unexpected error %s: %v", msg, err)
 	})
 	defer s.stop()
-	if s.syncDelay != nodeSliceSyncDelay || nodeSliceSyncDelay >= resourceslice.DefaultSyncDelay/10 {
-		t.Fatalf("sync delay %v, expected a short %v", s.syncDelay, nodeSliceSyncDelay)
+	if s.syncDelay != nodeResourceSliceSyncDelay || nodeResourceSliceSyncDelay >= resourceslice.DefaultSyncDelay/10 {
+		t.Fatalf("sync delay %v, expected a short %v", s.syncDelay, nodeResourceSliceSyncDelay)
 	}
 
 	pubNoErr(t, s.publish(ctx, nodeResources(node, "dram", "lease")))
@@ -148,8 +148,8 @@ func TestNodeSliceBackAfterKubeletWipe(t *testing.T) {
 	if got := nodeSliceDevices(t, client, node); got != nil {
 		t.Fatalf("slice not deleted: %v", got)
 	}
-	took := waitNodeSlice(t, client, node, nodeSliceSyncDelay+5*time.Second, "dram", "lease")
-	t.Logf("slice back %v after the wipe (sync delay %v)", took.Round(time.Millisecond), nodeSliceSyncDelay)
+	took := waitNodeSlice(t, client, node, nodeResourceSliceSyncDelay+5*time.Second, "dram", "lease")
+	t.Logf("slice back %v after the wipe (sync delay %v)", took.Round(time.Millisecond), nodeResourceSliceSyncDelay)
 
 	// A publish of the driver (e.g. a udev rescan) syncs at once, also
 	// right after an informer event of the slice (its re-creation above):
@@ -171,7 +171,7 @@ func TestNodeSliceBackAfterKubeletWipe(t *testing.T) {
 		t.Fatalf("%d slices after stop, expected 1", len(list.Items))
 	}
 	pubNoErr(t, client.ResourceV1().ResourceSlices().Delete(ctx, list.Items[0].Name, metav1.DeleteOptions{}))
-	time.Sleep(nodeSliceSyncDelay + 500*time.Millisecond)
+	time.Sleep(nodeResourceSliceSyncDelay + 500*time.Millisecond)
 	if got := nodeSliceDevices(t, client, node); got != nil {
 		t.Errorf("slice re-created after stop: %v", got)
 	}
@@ -190,7 +190,7 @@ func TestNodeSliceErrorsRecoverable(t *testing.T) {
 		}
 	})
 	errs := make(chan error, 10)
-	s := newNodeSlices(client, node, func(_ context.Context, err error, _ string) { errs <- err })
+	s := newNodeResourceSlices(client, node, func(_ context.Context, err error, _ string) { errs <- err })
 	defer s.stop()
 	res := nodeResources(node, "lease")
 	res.Pools[node].Slices[0].Devices[0].AllowMultipleAllocations = ptr(true)
@@ -212,13 +212,13 @@ func TestNodeSliceErrorsRecoverable(t *testing.T) {
 	select {
 	case err := <-errs:
 		t.Errorf("another error: %v", err)
-	case <-time.After(3 * nodeSliceSyncDelay):
+	case <-time.After(3 * nodeResourceSliceSyncDelay):
 	}
 
-	if err := newNodeSlices(client, "", nil).publish(context.Background(), res); err == nil {
+	if err := newNodeResourceSlices(client, "", nil).publish(context.Background(), res); err == nil {
 		t.Error("publish without a node name: no error")
 	}
-	var none *nodeSlices
+	var none *nodeResourceSlices
 	none.stop()
-	newNodeSlices(client, node, nil).stop()
+	newNodeResourceSlices(client, node, nil).stop()
 }

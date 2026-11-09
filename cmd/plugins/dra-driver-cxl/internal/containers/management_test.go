@@ -94,11 +94,11 @@ func nriClaims() claimTable {
 func nriPoolResults() map[string][]dra.PoolResult {
 	return map[string][]dra.PoolResult{
 		"pool": {
-			{Index: 0, Request: "numa", Mode: cxlapi.ModeNUMA, Node: 3, Size: 256 << 20},
-			{Index: 1, Request: "dax", Mode: cxlapi.ModeDax, Node: -1, Size: 256 << 20},
+			{Index: 0, Request: "numa", Mode: cxlapi.ModeNUMA, NumaNode: 3, Size: 256 << 20},
+			{Index: 1, Request: "dax", Mode: cxlapi.ModeDax, NumaNode: -1, Size: 256 << 20},
 		},
 		"poolauto": {
-			{Index: 0, Request: "mem", Mode: cxlapi.ModeNUMA, Node: 3, Size: 256 << 20,
+			{Index: 0, Request: "mem", Mode: cxlapi.ModeNUMA, NumaNode: 3, Size: 256 << 20,
 				Settings: claimSettings("poolauto", "mem", config.Steering{Policy: config.PolicyAuto})},
 		},
 	}
@@ -256,7 +256,7 @@ func TestManage(t *testing.T) {
 	_, err := p.decide("ns/pod/ctr", results, true)
 	wantErr(t, err, "container ns/pod/ctr: MemoryConfig: container.steering.maxStep needs a policy other than none (policy none (default), maxStep 1Gi from claim ns/a request r)")
 	// no plan of a quota that cgmpolmgr refuses
-	results = []result{{deviceType: device.DeviceTypeDRAM, mode: cxlapi.ModeNUMA, nodes: []int{0},
+	results = []result{{deviceType: device.DeviceTypeDRAM, mode: cxlapi.ModeNUMA, numaNodes: []int{0},
 		settings: claimSettings("a", "r", config.Steering{Policy: config.PolicyFirstDRAM, MinStep: "1Gi"})}}
 	_, err = p.decide("ns/pod/ctr", results, true)
 	wantErr(t, err, "NRI CreateContainer: ctr=ns/pod/ctr: failed to build memory steering plan")

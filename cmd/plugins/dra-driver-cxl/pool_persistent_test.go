@@ -330,7 +330,7 @@ func TestPoolLeaseBind(t *testing.T) {
 	}
 	// the broker gets the access and the node mount
 	if d := hooks.devs[0]; d.Mode != api.ModeFs || d.Access != api.AccessDirect || d.NodeMount != direct || d.BlockDevice != e.pmem || d.Serial != 0xc1ae0001 ||
-		d.Size != fakePmemBytes || !d.ReadOnly || d.Node != -1 {
+		d.Size != fakePmemBytes || !d.ReadOnly || d.NumaNode != -1 {
 		t.Fatalf("lent device %+v", d)
 	}
 	if log := hooks.log(); log != "lending l1 cxl-lease-l1\nprepared l1" {

@@ -36,7 +36,7 @@ func TestPolicy(t *testing.T) {
 		recovery, recoveryAbove Decision
 		idle                    Decision
 	}{
-		{KindLocalSliced, Destroy, InOrder, InOrder, InOrder, Destroy},
+		{KindLocalParts, Destroy, InOrder, InOrder, InOrder, Destroy},
 		{KindLocalShared, KeepIdle, KeepIdle, KeepIdle, KeepIdle, KeepIdle},
 		{KindLocalSharedNew, KeepIdle, InOrder, InOrder, InOrder, KeepIdle},
 		{KindLocalUnshared, Destroy, InOrder, Destroy, Destroy, Destroy},
@@ -95,8 +95,8 @@ func TestKindOf(t *testing.T) {
 		{state.Asked{Source: state.SourcePool, Kind: state.KindExclusive}, false, true, KindPoolExclusive},
 		{state.Asked{Source: state.SourcePool, Kind: state.KindShared, Shared: true}, false, false, KindPoolShared},
 		{state.Asked{Source: state.SourcePool, Kind: state.KindPersistent}, false, true, KindPoolPersistent},
-		{state.Asked{Source: state.SourceLocal, Kind: state.KindExclusive}, false, false, KindLocalSliced},
-		{state.Asked{Source: state.SourceLocal, Kind: state.KindExclusive}, true, true, KindLocalSliced},
+		{state.Asked{Source: state.SourceLocal, Kind: state.KindExclusive}, false, false, KindLocalParts},
+		{state.Asked{Source: state.SourceLocal, Kind: state.KindExclusive}, true, true, KindLocalParts},
 		{state.Asked{Source: state.SourceLocal, Kind: state.KindShared}, true, true, KindLocalShared},
 		{state.Asked{Source: state.SourceLocal, Kind: state.KindShared}, true, false, KindLocalSharedNew},
 		{state.Asked{Source: state.SourceLocal, Kind: state.KindShared}, false, true, KindLocalUnshared},

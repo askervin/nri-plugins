@@ -45,7 +45,7 @@ func TestRecoverPreparedVerifies(t *testing.T) {
 		t.Fatalf("recovered %+v, commands %q", out, v.f.CommandsSince(before))
 	}
 	// the node mount is mounted again when it is gone (a new mount namespace)
-	direct := v.grant("w", 0).Got.MountPath
+	direct := v.mount("w", 0).Path
 	if err := v.f.Kernel().Unmount(direct); err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestRecoverPreparedVerifies(t *testing.T) {
 func TestRecoverUnrestored(t *testing.T) {
 	v := pmemEnv(t, "ext4")
 	v.mustPrepare(poolDriver, "w", fsGrant("w", false, ""))
-	direct := v.grant("w", 0).Got.MountPath
+	direct := v.mount("w", 0).Path
 	if err := v.f.Kernel().Unmount(direct); err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +326,7 @@ func TestRecoverUnpreparing(t *testing.T) {
 	if !v.cut(func() { _ = v.unprepare(poolDriver, "w") }) {
 		t.Fatal("not cut")
 	}
-	direct := v.grant("w", 0).Got.MountPath
+	direct := v.mount("w", 0).Path
 	if err := v.f.Kernel().Unmount(direct); err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +466,7 @@ func TestRecoverHollowNoted(t *testing.T) {
 	if reg.State != state.RegionNoted {
 		t.Fatalf("region %+v", reg)
 	}
-	if name := v.f.HollowRegion(reg.Decoder, 256*mib); name != reg.NotedName {
+	if name := v.f.HollowRegion("decoder0.0", 256*mib); name != reg.NotedName {
 		t.Fatalf("hollow %s, noted %s", name, reg.NotedName)
 	}
 	v.restart()
@@ -501,12 +501,12 @@ func TestRecoverBind(t *testing.T) {
 func TestRecoverForeignMount(t *testing.T) {
 	v := pmemEnv(t, "ext4")
 	v.mustPrepare(poolDriver, "r", fsGrant("r", true, state.AccessCached))
-	g := v.grant("r", 0)
+	g, mnt := v.grant("r", 0), v.mount("r", 0).Path
 	k := v.f.Kernel()
-	if err := k.Unmount(g.Got.MountPath); err != nil {
+	if err := k.Unmount(mnt); err != nil {
 		t.Fatal(err)
 	}
-	if err := k.FsMount(g.Got.BlockDevice.Name, g.Got.MountPath, "ext4", false, []string{"dax=never"}); err != nil {
+	if err := k.FsMount(g.Got.BlockDevice.Name, mnt, "ext4", false, []string{"dax=never"}); err != nil {
 		t.Fatal(err)
 	}
 	out := v.restart()
@@ -519,10 +519,10 @@ func TestRecoverForeignMount(t *testing.T) {
 	if err := v.unprepare(poolDriver, "r"); err == nil || !strings.Contains(err.Error(), "is still in use") {
 		t.Fatalf("unprepare: %v", err)
 	}
-	if mi, _ := k.Mounted(g.Got.MountPath); mi == nil || mi.Source != g.Got.BlockDevice.Name {
+	if mi, _ := k.Mounted(mnt); mi == nil || mi.Source != g.Got.BlockDevice.Name {
 		t.Fatalf("the foreign mount was touched: %+v", mi)
 	}
-	if err := k.Unmount(g.Got.MountPath); err != nil {
+	if err := k.Unmount(mnt); err != nil {
 		t.Fatal(err)
 	}
 	v.mustUnprepare(poolDriver, "r")
@@ -536,8 +536,8 @@ func TestRecoverRestored(t *testing.T) {
 	for _, writer := range []bool{true, false} {
 		v := pmemEnv(t, "ext4")
 		v.mustPrepare(poolDriver, "c", fsGrant("c", !writer, ""))
-		g := v.grant("c", 0)
-		if err := v.f.Kernel().Unmount(g.Got.MountPath); err != nil {
+		g, mnt := v.grant("c", 0), v.mount("c", 0).Path
+		if err := v.f.Kernel().Unmount(mnt); err != nil {
 			t.Fatal(err)
 		}
 		v.f.RenamePmem("region0", "pmem3", "259:9")
@@ -622,7 +622,7 @@ func TestRecoverRestoreBeforeRelease(t *testing.T) {
 	v := pmemEnv(t, "ext4")
 	v.f.Plug(fake.MemdevSpec{Serial: serialA})
 	v.mustPrepare(poolDriver, "r", fsGrant("r", true, ""))
-	direct := v.grant("r", 0).Got.MountPath
+	direct := v.mount("r", 0).Path
 	v.f.CutAfter("cxl create-region")
 	if !v.cut(func() { _ = v.prepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive)) }) {
 		t.Fatal("not cut")
@@ -653,8 +653,8 @@ func TestRecoverOtherSources(t *testing.T) {
 	v.formatPmem("mem2", "ext4")
 	v.sources = []state.Source{state.SourcePool}
 	ref := state.GrantRef{Claim: "l"}
-	// a node mount of a local claim (an adapter's record: no Mount record
-	// lists it) and a stale lease bind of a local memdev
+	// the node mount directory of a local claim (no Mount record lists it)
+	// and a stale lease bind of a local memdev
 	localMount := filepath.Join(v.dir, localDriver, "mounts", "11-direct")
 	staleBind := filepath.Join(v.dir, localDriver, "lease-fs", "lc9", "data")
 	for _, d := range []string{localMount, staleBind} {
@@ -674,8 +674,7 @@ func TestRecoverOtherSources(t *testing.T) {
 		doc.Grants = append(doc.Grants, state.Grant{Ref: ref, Serial: serialL, State: state.GrantJournaled,
 			Asked: state.Asked{Source: state.SourceLocal, Mode: state.ModeDax, Kind: state.KindExclusive}},
 			state.Grant{Ref: fsRef, Serial: serialL, State: state.GrantRealised,
-				Asked: state.Asked{Source: state.SourceLocal, Mode: state.ModeFs, Kind: state.KindPersistent},
-				Got:   state.Got{MountPath: localMount}})
+				Asked: state.Asked{Source: state.SourceLocal, Mode: state.ModeFs, Kind: state.KindPersistent}})
 		doc.Regions = append(doc.Regions, state.Region{Name: "region7", Mode: state.RegionRam, Targets: []state.Serial{serialL},
 			Owner: state.OwnerOurs, State: state.RegionOwned})
 		return nil
@@ -732,12 +731,12 @@ func TestRecoverOtherSources(t *testing.T) {
 func TestRecoverOwnDeviceOtherOptions(t *testing.T) {
 	v := pmemEnv(t, "ext4")
 	v.mustPrepare(poolDriver, "r", fsGrant("r", true, ""))
-	g := v.grant("r", 0)
+	g, mnt := v.grant("r", 0), v.mount("r", 0).Path
 	k := v.f.Kernel()
-	if err := k.Unmount(g.Got.MountPath); err != nil {
+	if err := k.Unmount(mnt); err != nil {
 		t.Fatal(err)
 	}
-	if err := k.FsMount(g.Got.BlockDevice.Name, g.Got.MountPath, "ext4", false, []string{"dax=never"}); err != nil {
+	if err := k.FsMount(g.Got.BlockDevice.Name, mnt, "ext4", false, []string{"dax=never"}); err != nil {
 		t.Fatal(err)
 	}
 	logs := captureKlog(t)
@@ -751,7 +750,7 @@ func TestRecoverOwnDeviceOtherOptions(t *testing.T) {
 		t.Fatalf("grant %s", g.State)
 	}
 	v.mustUnprepare(poolDriver, "r")
-	if mi, _ := k.Mounted(g.Got.MountPath); mi != nil {
+	if mi, _ := k.Mounted(mnt); mi != nil {
 		t.Fatalf("still mounted: %+v", mi)
 	}
 	v.clean("unprepared")
@@ -764,9 +763,9 @@ func TestRecoverLoopRecorded(t *testing.T) {
 	v := pmemEnv(t, "ext4")
 	v.mustPrepare(poolDriver, "r1", fsGrant("r1", true, state.AccessCached))
 	v.mustPrepare(poolDriver, "r2", fsGrant("r2", true, state.AccessCached))
-	g := v.grant("r1", 0)
+	mnt := v.mount("r1", 0).Path
 	k := v.f.Kernel()
-	if err := k.Unmount(g.Got.MountPath); err != nil {
+	if err := k.Unmount(mnt); err != nil {
 		t.Fatal(err)
 	}
 	// another loop device takes the number of the old one
@@ -774,13 +773,13 @@ func TestRecoverLoopRecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 	v.restart()
-	g = v.grant("r1", 0)
+	g := v.grant("r1", 0)
 	m := v.records().Region(g.Got.Region).Mount(g.Got.Mount)
-	if mi, _ := k.Mounted(g.Got.MountPath); mi == nil || mi.Source != m.Loop || g.Got.Loop != m.Loop {
+	if mi, _ := k.Mounted(mnt); mi == nil || mi.Source != m.Loop || m.Path != mnt {
 		t.Fatalf("mounted %+v, mount %+v, grant %+v", mi, m, g.Got)
 	}
 	// unrestored: a block device that is not the one prepared
-	if err := k.Unmount(g.Got.MountPath); err != nil {
+	if err := k.Unmount(mnt); err != nil {
 		t.Fatal(err)
 	}
 	v.f.RenamePmem("region0", "pmem3", "259:9")

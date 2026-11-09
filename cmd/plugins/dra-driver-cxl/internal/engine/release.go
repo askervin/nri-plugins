@@ -259,7 +259,7 @@ func (e *Engine) releaseGrant(ctx context.Context, ref state.GrantRef, call *rel
 // noteUnrestored remembers the node mount of a grant that the start did not
 // mount again (UNRESTORED, FOREIGN).
 func (c *releaseCall) noteUnrestored(r *state.Records, g *state.Grant) {
-	if m := mountRecord(r, g); m != nil && (m.State == state.MountUnrestored || m.State == state.MountForeign) {
+	if m := r.MountOf(g); m != nil && (m.State == state.MountUnrestored || m.State == state.MountForeign) {
 		c.unrestored[g.Ref] = m.Path
 	}
 }
@@ -919,7 +919,7 @@ func (e *Engine) cutMountUse(g *state.Grant, u use) use {
 func leaveMount(r *state.Records, refs []state.GrantRef, writer bool, trigger state.Trigger) error {
 	for _, ref := range refs {
 		if rg := r.Grant(ref); rg != nil {
-			rg.Got.Mount, rg.Got.MountPath, rg.Got.Loop = "", "", ""
+			rg.Got.Mount = ""
 		}
 	}
 	for i := range r.Regions {

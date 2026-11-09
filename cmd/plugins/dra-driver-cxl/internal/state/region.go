@@ -56,10 +56,6 @@ type Region struct {
 	Mode      RegionMode  `json:"mode"`
 	Targets   []Serial    `json:"targets"`
 	Owner     RegionOwner `json:"owner"`
-	// Decoder is the root decoder that gave the noted name, for the
-	// content of the pool's preparing records (transitional: removed in
-	// H6 (schema 2)).
-	Decoder string `json:"decoder,omitempty"`
 	// Locked is a region that the firmware committed and locked.
 	Locked bool        `json:"locked,omitempty"`
 	State  RegionState `json:"state"`

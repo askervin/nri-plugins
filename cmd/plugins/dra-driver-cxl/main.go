@@ -32,6 +32,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
@@ -276,6 +278,130 @@ func installLeaseCLI(src, dst string) (retErr error) {
 	}
 	klog.Infof("Installed lease CLI %s from %s", dst, src)
 	return nil
+}
+
+// newDriver returns the driver of the configuration of config, started in
+// the order of its start-up:
+//  1. the boot id and the state store;
+//  2. the device engine and the first phase of its recovery, with the first
+//     list of the pool devices, the first scan and the CDI specs of the
+//     prepared claims of cxl.nri.io;
+//  3. the fence of the NRI plugin seeded with the NUMA nodes of the claims;
+//  4. the lease broker loaded, the sockets of its lease claims made again;
+//  5. the NRI plugin started, the lenders wired and the second phase of the
+//     recovery (the numa companions whose Prepare did not finish);
+//  6. the kubelet plugins of cxl.nri.io and of the pool driver registered,
+//     the first publication of the node's ResourceSlice and the watchers.
+func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
+	cxlFlags := config.Flags
+	driverConfig, sysfsRoot, err := loadDriverConfig(cxlFlags)
+	if err != nil {
+		return nil, err
+	}
+
+	// 1. The prepared claims, the slices of local memdevs and the leases of
+	// another boot are not prepared: nothing of what their Prepares made
+	// survives a reboot. The records of both drivers are kept in the state
+	// store (state.json), which writes five of them as its views; the store
+	// drops or marks stale what is of another boot before they are read.
+	bootID := readBootID(sysfsRoot)
+	if bootID != "" {
+		klog.Infof("boot id %s", bootID)
+	}
+	rules := newDriverRules(config, cxlFlags)
+	st, closeStore, err := openDriverStore(ctx, config, cxlFlags, sysfsRoot, bootID, rules)
+	if err != nil {
+		return nil, err
+	}
+	started := false
+	defer func() {
+		if !started {
+			closeStore()
+		}
+	}()
+
+	// 2. The NRI plugin with the fenced nodes exists before any Prepare can
+	// online memory, and without NRI too. One device engine owns the CXL
+	// kernel objects of both drivers; its records are recovered before the
+	// first scan, so that the regions of the drivers are never published as
+	// region devices. The provenance of the serials is remembered across
+	// restarts: a pool device on the node is never a local memdev, also
+	// while the pool controller has deleted its ResourceSlices.
+	nri, err := containers.New(containers.Options{Defaults: driverConfig.containerDefaults(), Store: st, Leases: cxlFlags.Leases,
+		SysRoot: sysfsRoot})
+	if err != nil {
+		return nil, err
+	}
+	devices, err := newDriverDevices(config, cxlFlags, driverConfig, sysfsRoot, fenceOf(nri), st, rules)
+	if err != nil {
+		return nil, err
+	}
+	// the lease device and the lease broker lend local memdevs and, with
+	// the pool driver, pool devices
+	driverConfig.PublishLeaseDevice = cxlFlags.Leases
+	watcher := newWatcher(config, cxlFlags, st)
+	fe, err := newFrontEnds(config, cxlFlags, driverConfig, sysfsRoot, bootID, st, devices, watcher, rules)
+	if err != nil {
+		return nil, err
+	}
+	if err := fe.recover(ctx, config.Flags.CDIRoot, sysfsRoot, driverConfig, devices); err != nil {
+		return nil, err
+	}
+
+	// 3. Not the nodes of the claims of another boot: they have no memory
+	// online, their Prepares again fence the nodes before they online it.
+	nri.Seed(dra.NumaNodes(&st.Snapshot().Records, fe.local.Name(), fe.pool.Name()))
+	// fe.pool is a nil *dra.Plugin without the pool driver: its readers
+	// are nil-receiver safe (no pool results)
+	nri.SetResults(fe.local, fe.pool)
+
+	d := &driver{
+		client:     config.Client,
+		config:     driverConfig,
+		sysfsRoot:  sysfsRoot,
+		local:      fe.local,
+		pool:       fe.pool,
+		publisher:  fe.publisher,
+		watcher:    watcher,
+		closeStore: closeStore,
+	}
+
+	// 4. The lease broker re-creates the sockets of prepared lease claims
+	// before kubelet can call Prepare or Unprepare.
+	broker, err := newBroker(config, cxlFlags, driverConfig, st, fe)
+	if err != nil {
+		return nil, err
+	}
+	if broker != nil {
+		d.broker = broker
+	}
+
+	// 5. The NRI plugin starts before the kubelet plugins: kubelet creates
+	// the containers of a pod after its claims are prepared, and a container
+	// created before the NRI plugin is in the runtime is only found by
+	// Synchronize: its CreateContainer is never seen. Its Synchronize may
+	// use the prepared claims of both drivers and the lease table, loaded
+	// above. A Prepare still waits for the first Synchronize (waitNRI): the
+	// stub starts when the runtime has configured it, before it
+	// synchronizes.
+	d.nri = startNRI(ctx, nri, cxlFlags, fe, broker != nil)
+	lender := wireLenders(d.nri, broker, fe)
+	recoverCompanions(fe, devices)
+
+	// 6. The kubelet plugins, the publisher and the watchers.
+	if err := d.startPlugins(ctx, config, fe, watcher); err != nil {
+		return nil, err
+	}
+	if broker != nil {
+		broker.Start(lender)
+	}
+	if err := d.startUdev(ctx, driverConfig); err != nil {
+		return nil, err
+	}
+
+	klog.V(3).Info("Finished creating new driver")
+	started = true
+	return d, nil
 }
 
 // run runs the driver until a signal stops it.

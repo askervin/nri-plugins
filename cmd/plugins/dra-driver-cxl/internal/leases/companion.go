@@ -417,8 +417,8 @@ func (b *Broker) gotOf(l *state.Lease, d *dra.LentDevice) (*state.LeaseGot, *sta
 	case api.ModeBlock:
 		g.Block = d.BlockDevice
 	default:
-		if d.Node >= 0 {
-			return g, &state.Lend{NumaNode: state.NumaNodePtr(d.Node)}
+		if d.NumaNode >= 0 {
+			return g, &state.Lend{NumaNode: state.NumaNodePtr(d.NumaNode)}
 		}
 	}
 	return g, nil

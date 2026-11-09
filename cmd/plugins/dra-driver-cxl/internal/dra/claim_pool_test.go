@@ -117,7 +117,7 @@ func TestPoolDaxAndShared(t *testing.T) {
 	e.mustPrepare(e.pool, poolClaim("x1", "pooled0", poolExclusiveData, cfgDax))
 	x := e.pool.PoolDevices("x1")[0]
 	cd := e.cdiDevice(e.pool, "claim-x1-0")
-	if x.Mode != api.ModeDax || x.DaxDevice == "" || x.Node != -1 || cd == nil ||
+	if x.Mode != api.ModeDax || x.DaxDevice == "" || x.NumaNode != -1 || cd == nil ||
 		!reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, []*cdiSpecs.DeviceNode{DaxDeviceNode(x.DaxDevice, x.DaxMajor, x.DaxMinor, false)}) {
 		t.Fatalf("device %+v, CDI device %+v", x, cd)
 	}

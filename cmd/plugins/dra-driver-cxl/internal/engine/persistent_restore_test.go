@@ -49,7 +49,7 @@ func TestRestoreFlags(t *testing.T) {
 			}
 			v.mustPrepare(driver, "w", fsUse(source, "w", false, ""))
 			v.mustPrepare(driver, "r", fsUse(source, "r", true, ""))
-			direct := v.grant("w", 0).Got.MountPath
+			direct := v.mount("w", 0).Path
 
 			// gone, its block device read-only: mounted again read-write
 			if err := k.Unmount(direct); err != nil {

@@ -77,7 +77,7 @@ type Publisher struct {
 	devices    device.DevicesInfo
 	generation uint64
 	names      []string
-	slices     *nodeSlices // nil before Start
+	slices     *nodeResourceSlices // nil before Start
 
 	triggerMu     sync.Mutex
 	pending       bool // a scan is asked for
@@ -251,7 +251,7 @@ func (p *Publisher) Scan(ctx context.Context) error {
 func (p *Publisher) Start(ctx context.Context) error {
 	p.mu.Lock()
 	if p.slices == nil {
-		p.slices = newNodeSlices(p.opts.Client, p.opts.NodeName, p.opts.OnError)
+		p.slices = newNodeResourceSlices(p.opts.Client, p.opts.NodeName, p.opts.OnError)
 	}
 	p.mu.Unlock()
 	if err := p.publish(ctx); err != nil {
@@ -856,7 +856,7 @@ func addLocalMemdevs(devInfos device.DevicesInfo, cfg PublishConfig, detected *n
 			continue
 		}
 		size := memdevUsableSize(cfg, memDev, local)
-		if reason := slicedRefusal(cfg, memDev, size, bs, poolSerials, held, regions[memDev.Serial], local); reason != "" {
+		if reason := partsRefusal(cfg, memDev, size, bs, poolSerials, held, regions[memDev.Serial], local); reason != "" {
 			klog.V(4).Infof("- not publishing memory device %q as a local memory device: %s", memDev.Name, reason)
 			continue
 		}
@@ -876,12 +876,12 @@ func addLocalMemdevs(devInfos device.DevicesInfo, cfg PublishConfig, detected *n
 	}
 }
 
-// slicedRefusal returns why a memdev of usable size bytes with memory
+// partsRefusal returns why a memdev of usable size bytes with memory
 // blocks of bs bytes is not published as a sliced local memdev, "" if it
 // is: no RAM, an unknown block size, too small, disabled, a pool or held
 // memdev, regions that the engine did not create, claims that use it
 // persistent or shared, ignoreDevices.
-func slicedRefusal(cfg PublishConfig, memDev *nricxl.MemoryDevice, size, bs uint64, poolSerials, held map[uint64]bool, regions []string, local *LocalSnapshot) string {
+func partsRefusal(cfg PublishConfig, memDev *nricxl.MemoryDevice, size, bs uint64, poolSerials, held map[uint64]bool, regions []string, local *LocalSnapshot) string {
 	use, used := local.Use(memDev.Serial)
 	switch {
 	case memDev.RamSize == 0:

@@ -73,7 +73,7 @@ func TestPoolDax(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
 	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindExclusive))
 	g := v.grant("c1", 0)
-	if g.Got.Dax != "dax0.0" || g.Got.DaxDev.IsZero() || v.f.DaxDriver("dax0.0") != kernel.DriverDeviceDax {
+	if g.Got.Dax != "dax0.0" || v.records().DaxDevOf(g).IsZero() || v.f.DaxDriver("dax0.0") != kernel.DriverDeviceDax {
 		t.Fatalf("grant %+v, driver %s", g, v.f.DaxDriver("dax0.0"))
 	}
 	if len(v.fenced) != 0 {

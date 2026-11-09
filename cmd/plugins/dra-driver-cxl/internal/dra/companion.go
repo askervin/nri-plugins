@@ -57,7 +57,7 @@ type Lend struct {
 	Lease     string       `json:"lease"`
 	Pod       state.PodRef `json:"pod"`
 	Container string       `json:"container"`
-	Nodes     []int        `json:"nodes,omitempty"` // lent NUMA nodes
+	NumaNodes []int        `json:"nodes,omitempty"` // lent NUMA nodes
 	// FsDir is the host directory of the mounts of the fs leases of the
 	// lease claim, "" for other leases and for a lease claim without it.
 	FsDir string `json:"fsDir,omitempty"`
@@ -81,7 +81,7 @@ type LentDevice struct {
 	Size      uint64 // bytes the lease gets: the slice size or the device size
 	Mode      string // api.ModeNUMA, api.ModeDax, api.ModeBlock or api.ModeFs
 	ReadOnly  bool
-	Node      int    // numa: NUMA node of the memory, else -1
+	NumaNode  int    // numa: NUMA node of the memory, else -1
 	DaxDevice string // dax: /dev/daxX.Y
 	// BlockDevice is the host path of the block device of a block or fs
 	// device, /dev/pmemK.
@@ -251,17 +251,17 @@ func checkSpecHash(hooks LeaseHooks, id string, claim *resourcev1.ResourceClaim)
 func (c *Lender) Lend(ctx context.Context, rec *Lend, devs []LentDevice) error {
 	nodes, _ := c.get()
 	for _, d := range devs {
-		if d.Mode != api.ModeNUMA || d.Node < 0 {
+		if d.Mode != api.ModeNUMA || d.NumaNode < 0 {
 			continue
 		}
 		if nodes == nil {
 			return fmt.Errorf("lease %s: %w", rec.Lease, ErrLendingUnavailable)
 		}
-		rec.Nodes = append(rec.Nodes, d.Node)
-		if err := nodes.LendNode(ctx, rec.Pod.UID, rec.Container, d.Node, rec.Lease); err != nil {
-			return fmt.Errorf("lease %s: lending node %d to %s/%s/%s: %w", rec.Lease, d.Node, rec.Pod.Namespace, rec.Pod.Name, rec.Container, err)
+		rec.NumaNodes = append(rec.NumaNodes, d.NumaNode)
+		if err := nodes.LendNode(ctx, rec.Pod.UID, rec.Container, d.NumaNode, rec.Lease); err != nil {
+			return fmt.Errorf("lease %s: lending node %d to %s/%s/%s: %w", rec.Lease, d.NumaNode, rec.Pod.Namespace, rec.Pod.Name, rec.Container, err)
 		}
-		klog.Infof("%s: lease %s: lent node %d to %s/%s/%s", c.driver, rec.Lease, d.Node, rec.Pod.Namespace, rec.Pod.Name, rec.Container)
+		klog.Infof("%s: lease %s: lent node %d to %s/%s/%s", c.driver, rec.Lease, d.NumaNode, rec.Pod.Namespace, rec.Pod.Name, rec.Container)
 	}
 	return nil
 }
@@ -272,20 +272,20 @@ func (c *Lender) Lend(ctx context.Context, rec *Lend, devs []LentDevice) error {
 // stale node stays in the container's cpuset.mems. Before the lender is set
 // up it is an error.
 func (c *Lender) Revoke(ctx context.Context, rec *Lend, claimName string) error {
-	if rec == nil || len(rec.Nodes) == 0 {
+	if rec == nil || len(rec.NumaNodes) == 0 {
 		return nil
 	}
 	if !c.ready() {
-		return fmt.Errorf("lease %s: %w: nodes %v of %s/%s/%s not revoked yet", rec.Lease, errLendingStarting, rec.Nodes, rec.Pod.Namespace, rec.Pod.Name, rec.Container)
+		return fmt.Errorf("lease %s: %w: nodes %v of %s/%s/%s not revoked yet", rec.Lease, errLendingStarting, rec.NumaNodes, rec.Pod.Namespace, rec.Pod.Name, rec.Container)
 	}
 	nodes, _ := c.get()
 	if nodes == nil {
 		klog.Warningf("%s: claim %s: lease %s: %v, cannot revoke nodes %v from %s/%s/%s",
-			c.name(), claimName, rec.Lease, ErrLendingUnavailable, rec.Nodes, rec.Pod.Namespace, rec.Pod.Name, rec.Container)
+			c.name(), claimName, rec.Lease, ErrLendingUnavailable, rec.NumaNodes, rec.Pod.Namespace, rec.Pod.Name, rec.Container)
 		return nil
 	}
 	var errs []error
-	for _, n := range rec.Nodes {
+	for _, n := range rec.NumaNodes {
 		if err := nodes.RevokeNode(ctx, rec.Pod.UID, rec.Container, n, rec.Lease); err != nil {
 			errs = append(errs, fmt.Errorf("lease %s: revoking node %d from %s/%s/%s: %w", rec.Lease, n, rec.Pod.Namespace, rec.Pod.Name, rec.Container, err))
 		}
@@ -352,7 +352,7 @@ func (c *Lender) name() string {
 func (c *Lender) RevokeGrant(ctx context.Context, lend state.GrantLend, claimName string) error {
 	rec := &Lend{Lease: lend.Lease, Pod: lend.Pod, Container: lend.Container}
 	if lend.NumaNode != nil {
-		rec.Nodes = []int{*lend.NumaNode}
+		rec.NumaNodes = []int{*lend.NumaNode}
 	}
 	return c.Revoke(ctx, rec, claimName)
 }

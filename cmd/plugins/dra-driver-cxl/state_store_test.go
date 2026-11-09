@@ -156,7 +156,7 @@ func localFixture() (claimPreparations, PreparedClaimsInfo, localState) {
 			daxDev(sliced(2, "dax"), "dax0.4", 4, false),
 		}},
 		"u-comp": {ClaimName: "demo/cxl-lease-0a1b2c3d", Devices: []PreparedDeviceInfo{sliced(0, "numa")}, BootID: "boot-1",
-			Lend: &lendRecord{Lease: "0a1b2c3d", Pod: pod, Container: "main", Nodes: []int{2}}},
+			Lend: &lendRecord{Lease: "0a1b2c3d", Pod: pod, Container: "main", NumaNodes: []int{2}}},
 		"u-sh1": {ClaimName: "demo/c-sh1", Devices: []PreparedDeviceInfo{shared(false)}, BootID: "boot-1"},
 		"u-sh2": {ClaimName: "demo/c-sh2", Devices: []PreparedDeviceInfo{shared(true)}, BootID: "boot-1"},
 		"u-fs":  {ClaimName: "demo/c-fs", Devices: []PreparedDeviceInfo{persistent(0, "fs", "direct", direct, "")}, BootID: "boot-1"},
@@ -202,7 +202,9 @@ func localFixture() (claimPreparations, PreparedClaimsInfo, localState) {
 			"u-comp": {use("numa", "dax0.7", 0, false)},
 			"u-mid":  {use("numa", "dax0.5", 0, false)},
 			"u-hold": nil,
-			"-":      {{Request: "old", Region: "region0", Mode: "dax", Size: 128 * mi, Dax: "dax0.6", DaxDevice: "/dev/dax0.6", Major: 252, Minor: 6}},
+			// a dax device of no claim: the records keep its region, mode,
+			// size and name
+			"-": {{Region: "region0", Mode: "dax", Size: 128 * mi, Dax: "dax0.6"}},
 		}},
 		{Serial: 0xc100e2e2, SerialHex: "c100e2e2", Memdev: "mem1", Region: "region1", Node: 3, Dax: "dax1.0", Shared: true, Claims: map[string][]*localSlice{
 			"u-sh1": {sharedUse(false)}, "u-sh2": {sharedUse(true)},
@@ -286,12 +288,12 @@ func poolFixture() (map[string]*preparedPoolClaim, map[string]*preparingPoolClai
 		return res
 	}
 	numa := []preparedPoolDevice{{Result: 0, Request: "mem", Device: "pooled3", Pool: "pool-a", Serial: 0xc1ae2003, Size: gi, Mode: "numa",
-		Memdev: "mem4", Region: "region4", Dax: "dax4.0", Node: 4}}
+		Memdev: "mem4", Region: "region4", Dax: "dax4.0", NumaNode: 4}}
 	dax := []preparedPoolDevice{{Result: 1, Request: "mem", Device: "pooled4", Pool: "pool-b", Serial: 0xc1ae2004, Shared: true, Size: gi, Mode: "dax",
-		ReadOnly: true, Memdev: "mem5", Region: "region6", Dax: "dax6.0", DaxDevice: "/dev/dax6.0", DaxMajor: 252, DaxMinor: 6, Node: -1}}
+		ReadOnly: true, Memdev: "mem5", Region: "region6", Dax: "dax6.0", DaxDevice: "/dev/dax6.0", DaxMajor: 252, DaxMinor: 6, NumaNode: -1}}
 	fs := func(n int) []preparedPoolDevice {
 		return []preparedPoolDevice{{Result: n, Request: "mem", Device: "pooled2", Pool: "pool-c", Serial: 0xc1ae2002, Shared: true, Size: gi,
-			Mode: "fs", ReadOnly: true, Memdev: "mem3", Region: "region3", Node: -1, Persistent: true, NdRegion: "region8",
+			Mode: "fs", ReadOnly: true, Memdev: "mem3", Region: "region3", NumaNode: -1, Persistent: true, NdRegion: "region8",
 			Namespace: "namespace8.0", BlockDevice: "/dev/pmem8", BlockMajor: 259, BlockMinor: 1, Access: "cached", FsType: "erofs",
 			Path: "/run/cxl-fs/C1AE2002", NodeMount: mount, LoopDevice: "/dev/loop0"}}
 	}
@@ -302,12 +304,12 @@ func poolFixture() (map[string]*preparedPoolClaim, map[string]*preparingPoolClai
 		"p-fs":   {ClaimName: "demo/c-pfs", Devices: fs(0), Result: result("p-fs", fs(0), false, &share), BootID: "boot-1"},
 		"p-comp": {ClaimName: "demo/cxl-lease-1b2c3d4e", Devices: fs(0), Result: result("p-comp", fs(0), true, &share), Lend: lend, BootID: "boot-1"},
 	}
-	untouched := preparedPoolDevice{Result: 0, Request: "mem", Device: "pooled5", Pool: "pool-a", Serial: 0xc1ae2005, Size: gi, Mode: "numa", Node: 5}
+	untouched := preparedPoolDevice{Result: 0, Request: "mem", Device: "pooled5", Pool: "pool-a", Serial: 0xc1ae2005, Size: gi, Mode: "numa", NumaNode: 5}
 	stale := untouchedDevice(fs(0)[0])
 	staleLend := *lend
 	preparing := map[string]*preparingPoolClaim{
 		"p-cut": {ClaimName: "demo/c-cut", Devices: []preparedPoolDevice{untouched}, BootID: "boot-1",
-			Regions: []preparingRegion{{Serial: 0xc1ae2005, Region: "region9", Decoder: "decoder0.0"}}},
+			Regions: []preparingRegion{{Serial: 0xc1ae2005, Region: "region9"}}},
 		"p-stale": {ClaimName: "demo/cxl-lease-2c3d4e5f", Devices: []preparedPoolDevice{stale}, Lend: &staleLend, BootID: "boot-1",
 			Stale: "prepared in another boot (boot-0, this is boot-1)"},
 	}
@@ -490,7 +492,7 @@ func TestStateStoreReboot(t *testing.T) {
 	if rec == nil || rec.Stale != "prepared in another boot (boot-1, this is boot-2)" || rec.BootID != "boot-2" {
 		t.Fatalf("stale companion %+v", rec)
 	}
-	if rec.Lend == nil || rec.Lend.Lease != "1b2c3d4e" || rec.Lend.Pod.Name != "requester" || len(rec.Lend.Nodes) != 0 || len(rec.Lend.Mounts) != 1 {
+	if rec.Lend == nil || rec.Lend.Lease != "1b2c3d4e" || rec.Lend.Pod.Name != "requester" || len(rec.Lend.NumaNodes) != 0 || len(rec.Lend.Mounts) != 1 {
 		t.Errorf("lend of the stale companion %+v", rec.Lend)
 	}
 	want := untouchedDevice(pp["p-comp"].Devices[0])
@@ -591,7 +593,7 @@ var importOrder = []string{
 // what the claim asks for, without what the Prepare made of it.
 func untouchedDevice(d preparedPoolDevice) preparedPoolDevice {
 	return preparedPoolDevice{Result: d.Result, Request: d.Request, Device: d.Device, Pool: d.Pool, Serial: d.Serial, Shared: d.Shared,
-		Size: d.Size, Mode: d.Mode, ReadOnly: d.ReadOnly, Persistent: d.Persistent, Access: d.Access, FsType: d.FsType, Path: d.Path, Node: -1}
+		Size: d.Size, Mode: d.Mode, ReadOnly: d.ReadOnly, Persistent: d.Persistent, Access: d.Access, FsType: d.FsType, Path: d.Path, NumaNode: -1}
 }
 
 // On a store in LOST mode the driver starts (no crash loop): the device

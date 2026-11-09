@@ -29,7 +29,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
-// nodeSliceSyncDelay is the SyncDelay of the controller of the node's
+// nodeResourceSliceSyncDelay is the SyncDelay of the controller of the node's
 // cxl.nri.io ResourceSlice: how long it waits after an informer event of
 // the slice (someone else created, changed or deleted it) before it puts
 // the slice back as the driver publishes it.
@@ -50,12 +50,12 @@ import (
 // slice of the old owner) make the slice flap about once a second instead
 // of once in 30 s. Accepted: one pool of one slice, one write a second at
 // most.
-const nodeSliceSyncDelay = time.Second
+const nodeResourceSliceSyncDelay = time.Second
 
-// nodeSlices publishes the ResourceSlice of the node with a resourceslice
+// nodeResourceSlices publishes the ResourceSlice of the node with a resourceslice
 // controller of its own, like kubeletplugin.Helper.PublishResources does
 // (the same owner, names and error handling), but with SyncDelay
-// nodeSliceSyncDelay: the helper starts its controller with the default
+// nodeResourceSliceSyncDelay: the helper starts its controller with the default
 // SyncDelay and has no option for it.
 //
 // Identity: one per Publisher, of the node nodeName.
@@ -72,7 +72,7 @@ const nodeSliceSyncDelay = time.Second
 //
 // Locks and waits: mu guards ctl; publish does not wait for the API
 // server, stop waits for the controller with mu released.
-type nodeSlices struct {
+type nodeResourceSlices struct {
 	client    coreclientset.Interface
 	nodeName  string
 	syncDelay time.Duration
@@ -82,13 +82,13 @@ type nodeSlices struct {
 	ctl *resourceslice.Controller // nil before the first publish
 }
 
-// newNodeSlices returns the publisher of the ResourceSlice of node
+// newNodeResourceSlices returns the publisher of the ResourceSlice of node
 // nodeName. onError gets the errors of publishing, marked recoverable.
-func newNodeSlices(client coreclientset.Interface, nodeName string, onError func(ctx context.Context, err error, msg string)) *nodeSlices {
-	return &nodeSlices{
+func newNodeResourceSlices(client coreclientset.Interface, nodeName string, onError func(ctx context.Context, err error, msg string)) *nodeResourceSlices {
+	return &nodeResourceSlices{
 		client:    client,
 		nodeName:  nodeName,
-		syncDelay: nodeSliceSyncDelay,
+		syncDelay: nodeResourceSliceSyncDelay,
 		onError:   onError,
 	}
 }
@@ -96,7 +96,7 @@ func newNodeSlices(client coreclientset.Interface, nodeName string, onError func
 // publish sets the resources of the node: the first call starts the
 // controller, which runs until ctx ends or stop is called, later calls
 // update its desired state. publish does not wait for the API server.
-func (s *nodeSlices) publish(ctx context.Context, resources resourceslice.DriverResources) error {
+func (s *nodeResourceSlices) publish(ctx context.Context, resources resourceslice.DriverResources) error {
 	if s.nodeName == "" {
 		return errors.New("no node name to publish resources")
 	}
@@ -118,7 +118,7 @@ func (s *nodeSlices) publish(ctx context.Context, resources resourceslice.Driver
 			// As the helper: neither retrying nor restarting fixes these
 			// errors, all are recoverable.
 			if s.onError != nil {
-				s.onError(ctx, recoverableSliceError{err}, msg)
+				s.onError(ctx, recoverableResourceSliceError{err}, msg)
 			}
 		},
 	})
@@ -130,7 +130,7 @@ func (s *nodeSlices) publish(ctx context.Context, resources resourceslice.Driver
 }
 
 // stop stops the controller and waits for it. The published slices stay.
-func (s *nodeSlices) stop() {
+func (s *nodeResourceSlices) stop() {
 	if s == nil {
 		return
 	}
@@ -141,13 +141,15 @@ func (s *nodeSlices) stop() {
 	ctl.Stop() // nil-safe
 }
 
-// recoverableSliceError is an error of the ResourceSlice controller,
+// recoverableResourceSliceError is an error of the ResourceSlice controller,
 // recoverable (errors.Is kubeletplugin.ErrRecoverable) as the helper marks
 // them, with an unchanged message.
-type recoverableSliceError struct{ error }
+type recoverableResourceSliceError struct{ error }
 
-func (e recoverableSliceError) Is(target error) bool { return target == kubeletplugin.ErrRecoverable }
-func (e recoverableSliceError) Unwrap() error        { return e.error }
+func (e recoverableResourceSliceError) Is(target error) bool {
+	return target == kubeletplugin.ErrRecoverable
+}
+func (e recoverableResourceSliceError) Unwrap() error { return e.error }
 
 // ptr returns a pointer to v.
 func ptr[T any](v T) *T {

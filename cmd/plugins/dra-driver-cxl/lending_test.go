@@ -136,15 +136,15 @@ func TestCompanionLenderDisabled(t *testing.T) {
 	}
 	// numa devices cannot be lent without NRI, dax devices need no lend
 	rec := testLendRecord()
-	if err := c.Lend(context.Background(), rec, []lentDevice{{Mode: api.ModeNUMA, Node: 3}}); !errors.Is(err, errLendingUnavailable) || len(rec.Nodes) != 0 {
+	if err := c.Lend(context.Background(), rec, []lentDevice{{Mode: api.ModeNUMA, NumaNode: 3}}); !errors.Is(err, errLendingUnavailable) || len(rec.NumaNodes) != 0 {
 		t.Fatalf("lend without NRI: %+v %v", rec, err)
 	}
-	noErr(t, c.Lend(context.Background(), rec, []lentDevice{{Mode: api.ModeDax, Node: -1, DaxDevice: "/dev/dax0.1"}}))
-	if rec.Lease != "l1" || rec.Container != testCtr || len(rec.Nodes) != 0 {
+	noErr(t, c.Lend(context.Background(), rec, []lentDevice{{Mode: api.ModeDax, NumaNode: -1, DaxDevice: "/dev/dax0.1"}}))
+	if rec.Lease != "l1" || rec.Container != testCtr || len(rec.NumaNodes) != 0 {
 		t.Fatalf("dax lend record %+v", rec)
 	}
 	// revoking without NRI only warns
-	noErr(t, c.Revoke(context.Background(), &lendRecord{Lease: "l1", Nodes: []int{3}}, "ns/c"))
+	noErr(t, c.Revoke(context.Background(), &lendRecord{Lease: "l1", NumaNodes: []int{3}}, "ns/c"))
 	if log := hooks.log(); log != "" {
 		t.Fatalf("hooks called: %s", log)
 	}
@@ -182,13 +182,13 @@ func TestCompanionLenderLendRevoke(t *testing.T) {
 	hooks.lendingErr = nil
 
 	devs := []lentDevice{
-		{Mode: api.ModeNUMA, Node: 2},
-		{Mode: api.ModeDax, Node: -1, DaxDevice: "/dev/dax0.0"},
-		{Mode: api.ModeNUMA, Node: -1},
-		{Mode: api.ModeNUMA, Node: 3},
+		{Mode: api.ModeNUMA, NumaNode: 2},
+		{Mode: api.ModeDax, NumaNode: -1, DaxDevice: "/dev/dax0.0"},
+		{Mode: api.ModeNUMA, NumaNode: -1},
+		{Mode: api.ModeNUMA, NumaNode: 3},
 	}
 	noErr(t, c.Lend(ctx, rec, devs))
-	want := &lendRecord{Lease: "l1", Pod: rec.Pod, Container: testCtr, Nodes: []int{2, 3}}
+	want := &lendRecord{Lease: "l1", Pod: rec.Pod, Container: testCtr, NumaNodes: []int{2, 3}}
 	if !reflect.DeepEqual(rec, want) {
 		t.Fatalf("lend record %+v", rec)
 	}
@@ -207,13 +207,13 @@ func TestCompanionLenderLendRevoke(t *testing.T) {
 	nodes.lendErr = containers.ErrSteered
 	nodes.mu.Unlock()
 	rec = testLendRecord()
-	if err := c.Lend(ctx, rec, devs); !errors.Is(err, containers.ErrSteered) || !reflect.DeepEqual(rec.Nodes, []int{2}) {
+	if err := c.Lend(ctx, rec, devs); !errors.Is(err, containers.ErrSteered) || !reflect.DeepEqual(rec.NumaNodes, []int{2}) {
 		t.Fatalf("failed lend: %+v %v", rec, err)
 	}
 
 	// revoke errors are joined
 	c.Set(revokeFailer{nodes}, hooks)
-	err = c.Revoke(ctx, &lendRecord{Lease: "l1", Pod: rec.Pod, Container: testCtr, Nodes: []int{2, 3}}, "ns/c")
+	err = c.Revoke(ctx, &lendRecord{Lease: "l1", Pod: rec.Pod, Container: testCtr, NumaNodes: []int{2, 3}}, "ns/c")
 	wantErr(t, err, "revoking node 2")
 	wantErr(t, err, "node 3 busy")
 
@@ -237,7 +237,7 @@ func TestLendRecordJSON(t *testing.T) {
 	enc := `{"lease":"000000a1","pod":{"namespace":"demo","name":"borrower","uid":"pod-uid-1"},"container":"app","nodes":[2]}`
 	var rec lendRecord
 	noErr(t, json.Unmarshal([]byte(enc), &rec))
-	want := lendRecord{Lease: "000000a1", Pod: podRef{Namespace: testNS, Name: testPod, UID: testPodUID}, Container: testCtr, Nodes: []int{2}}
+	want := lendRecord{Lease: "000000a1", Pod: podRef{Namespace: testNS, Name: testPod, UID: testPodUID}, Container: testCtr, NumaNodes: []int{2}}
 	if !reflect.DeepEqual(rec, want) {
 		t.Fatalf("loaded %+v", rec)
 	}

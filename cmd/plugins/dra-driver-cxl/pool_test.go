@@ -340,7 +340,7 @@ func TestPoolPrepareExclusiveDax(t *testing.T) {
 	if !reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, wantNodes) {
 		t.Fatalf("unexpected device nodes %+v", cd.ContainerEdits.DeviceNodes)
 	}
-	if d.Mode != api.ModeDax || d.Node != -1 || d.DaxDevice != "/dev/dax0.0" {
+	if d.Mode != api.ModeDax || d.NumaNode != -1 || d.DaxDevice != "/dev/dax0.0" {
 		t.Fatalf("prepared device %+v", d)
 	}
 
@@ -448,7 +448,7 @@ func TestPoolCDISpecKeys(t *testing.T) {
 	noErr(t, prepare(t, p, c).Err)
 	spec := e.cdiSpec(t)
 	dax := e.device(p, "u1", 0)
-	node := e.device(p, "u1", 3).Node
+	node := e.device(p, "u1", 3).NumaNode
 	want := []cdiSpecs.Device{
 		{Name: "claim-u1-0", ContainerEdits: cdiSpecs.ContainerEdits{
 			Env: []string{"CXL_C1AE0001_DAX=/dev/dax0.0", "CXL_C1AE0001_MODE=dax", "CXL_C1AE0001_READONLY=0", "CXL_C1AE0001_SERIAL=0xc1ae0001",
@@ -531,11 +531,11 @@ func TestPoolPrepareMemoryConfig(t *testing.T) {
 		Container: &config.Container{Steering: &config.Steering{Policy: config.PolicyAuto, MaxStep: "64Mi"}},
 		Origins:   map[string]string{config.FieldPolicy: "class cxl-pool", config.FieldMaxStep: "claim default/c1 request mem"},
 	}
-	if d := e.device(p, "u1", 0); d.Mode != api.ModeNUMA || d.Node != 2 || !reflect.DeepEqual(d.ResultSettings, want) {
+	if d := e.device(p, "u1", 0); d.Mode != api.ModeNUMA || d.NumaNode != 2 || !reflect.DeepEqual(d.ResultSettings, want) {
 		t.Fatalf("prepared device %+v", d)
 	}
 	got := p.ClaimResults("u1")
-	if len(got) != 1 || got[0].Index != 0 || got[0].Request != "mem" || got[0].Mode != api.ModeNUMA || got[0].Node != 2 ||
+	if len(got) != 1 || got[0].Index != 0 || got[0].Request != "mem" || got[0].Mode != api.ModeNUMA || got[0].NumaNode != 2 ||
 		got[0].Size != 256<<20 || !reflect.DeepEqual(got[0].Settings, want) {
 		t.Fatalf("claim results %+v", got)
 	}

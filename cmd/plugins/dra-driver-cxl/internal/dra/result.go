@@ -117,7 +117,7 @@ type PoolDevice struct {
 	DaxDevice string `json:"daxDevice,omitempty"` // /dev/daxX.Y (dax mode)
 	DaxMajor  int    `json:"daxMajor,omitempty"`
 	DaxMinor  int    `json:"daxMinor,omitempty"`
-	Node      int    `json:"node"` // NUMA node of the memory (numa mode), -1 if none
+	NumaNode  int    `json:"node"` // NUMA node of the memory (numa mode), -1 if none
 	// Devices of persistent memory (modes block and fs).
 	Persistent  bool   `json:"persistent,omitempty"`
 	NdRegion    string `json:"ndRegion,omitempty"`    // nvdimm region of Region
@@ -141,11 +141,11 @@ type PoolDevice struct {
 // plugin sees it.
 type PoolResult struct {
 	// Index is the index of the allocation result in the claim.
-	Index   int
-	Request string
-	Mode    string // api.ModeNUMA, ModeDax, ModeBlock or ModeFs
-	Node    int    // NUMA node of the memory (numa mode), -1 if none
-	Size    uint64
+	Index    int
+	Request  string
+	Mode     string // api.ModeNUMA, ModeDax, ModeBlock or ModeFs
+	NumaNode int    // NUMA node of the memory (numa mode), -1 if none
+	Size     uint64
 	// Settings are the container settings of the result.
 	Settings config.ResultSettings
 }
@@ -245,7 +245,7 @@ func (d *DeviceInfo) lent(driver, source, pool string) LentDevice {
 		Mode:     d.Mode,
 		ReadOnly: d.ReadOnly,
 		Shared:   d.Shared,
-		Node:     -1,
+		NumaNode: -1,
 	}
 	switch {
 	case d.Persistent:
@@ -253,7 +253,7 @@ func (d *DeviceInfo) lent(driver, source, pool string) LentDevice {
 	case d.Mode == api.ModeDax:
 		ld.DaxDevice = d.DaxDevice
 	case len(d.NUMANodes) > 0:
-		ld.Node = d.NUMANodes[0]
+		ld.NumaNode = d.NUMANodes[0]
 	}
 	return ld
 }

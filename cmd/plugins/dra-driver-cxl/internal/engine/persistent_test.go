@@ -86,10 +86,10 @@ func TestPersistentFsReadWrite(t *testing.T) {
 	v.mustPrepare(poolDriver, "w", fsGrant("w", false, ""))
 	g := v.grant("w", 0)
 	direct := filepath.Join(v.dir, poolDriver, "mounts", "91-direct")
-	if g.Got.MountPath != direct || g.Got.Mount != state.AccessDirect || g.Got.FsType != "ext4" || g.Intent.MountPath != direct {
-		t.Fatalf("grant %+v", g.Got)
-	}
 	m := v.records().Region(g.Got.Region).Mount(state.AccessDirect)
+	if m == nil || m.Path != direct || g.Got.Mount != state.AccessDirect || m.FsType != "ext4" || g.Intent.MountPath != direct {
+		t.Fatalf("grant %+v, mount %+v", g.Got, m)
+	}
 	if m == nil || m.State != state.MountedRW || !m.Writer {
 		t.Fatalf("mount %+v", m)
 	}
@@ -116,9 +116,9 @@ func TestPersistentFsReadWrite(t *testing.T) {
 func TestPersistentFsReadOnly(t *testing.T) {
 	v := pmemEnv(t, "erofs")
 	v.mustPrepare(poolDriver, "r", fsGrant("r", true, state.AccessCached))
-	g := v.grant("r", 0)
-	if g.Got.Mount != state.AccessCached || g.Got.Loop == "" || g.Got.FsType != "erofs" {
-		t.Fatalf("grant %+v", g.Got)
+	g, m := v.grant("r", 0), v.mount("r", 0)
+	if g.Got.Mount != state.AccessCached || m.Loop == "" || m.FsType != "erofs" {
+		t.Fatalf("grant %+v, mount %+v", g.Got, m)
 	}
 	err := v.prepare(poolDriver, "w", fsGrant("w", false, state.AccessCached))
 	want := "erofs is a read-only filesystem: set readOnly: true"
@@ -144,7 +144,7 @@ func TestPersistentP9D(t *testing.T) {
 	// the refusal mounts and changes nothing: the reader's read-only node
 	// mount stays the only one, on the read-only block device
 	wantMountCalls(t, v, n)
-	direct := v.grant("r", 0).Got.MountPath
+	direct := v.mount("r", 0).Path
 	if mounts := v.f.MountTable(); len(mounts) != 1 || mounts[0].Target != direct || !mounts[0].SuperReadOnly() {
 		t.Fatalf("mounts %+v", mounts)
 	}
@@ -211,8 +211,8 @@ func TestPersistentCachedOrder(t *testing.T) {
 			pmem, loop := filepath.Join(v.f.DevRoot(), "pmem0"), filepath.Join(v.f.DevRoot(), "loop0")
 			n := mountCalls(v)
 			v.mustPrepare(driver, "r", fsUse(source, "r", true, state.AccessCached))
-			if g := v.grant("r", 0); g.Got.Loop != loop || g.Got.MountPath != cached {
-				t.Fatalf("grant %+v", g.Got)
+			if m := v.mount("r", 0); m.Loop != loop || m.Path != cached {
+				t.Fatalf("mount %+v", m)
 			}
 			wantMountCalls(t, v, n, "blkroset "+pmem+" 1", "loop "+loop+" "+pmem+" rw", "blkroset "+loop+" 1",
 				"fsmount "+loop+" "+cached+" ext4 ro dax=never", "loop-release "+loop+" detach=false")
@@ -408,7 +408,7 @@ func TestPersistentReleasingUses(t *testing.T) {
 	t.Run("node mount of a reader", func(t *testing.T) {
 		v := pmemEnv(t, "ext4")
 		v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFs, true, state.AccessCached))
-		cached := v.grant("r", 0).Got.MountPath
+		cached := v.mount("r", 0).Path
 		v.f.SetBusy(cached, true)
 		if err := v.unprepare(localDriver, "r"); err == nil || !strings.Contains(err.Error(), "unmounting "+cached+": device or resource busy") {
 			t.Fatalf("error %v", err)
@@ -425,7 +425,7 @@ func TestPersistentReleasingUses(t *testing.T) {
 		v := pmemEnv(t, "ext4")
 		v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
 		v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFs, true, ""))
-		direct := v.grant("w", 0).Got.MountPath
+		direct := v.mount("w", 0).Path
 		v.f.SetWriting(direct, true)
 		if err := v.unprepare(localDriver, "w"); err == nil || !strings.Contains(err.Error(), "remounting "+direct+" read-only: device or resource busy") {
 			t.Fatalf("error %v", err)

@@ -117,6 +117,26 @@ func (r *Records) Region(ref RegionRef) *Region {
 	return nil
 }
 
+// DaxDevOf returns the device numbers of the dax device that the grant g
+// got, those of its region's record; zero if it has none.
+func (r *Records) DaxDevOf(g *Grant) DevNumbers {
+	if reg := r.Region(g.Got.Region); reg != nil && g.Got.Dax != "" {
+		if d := reg.DaxDevice(g.Got.Dax); d != nil {
+			return d.Dev
+		}
+	}
+	return DevNumbers{}
+}
+
+// MountOf returns the record of the node mount that the grant g uses, nil
+// if none.
+func (r *Records) MountOf(g *Grant) *Mount {
+	if reg := r.Region(g.Got.Region); reg != nil && g.Got.Mount != "" {
+		return reg.Mount(g.Got.Mount)
+	}
+	return nil
+}
+
 // Lease returns the lease with the id, nil if there is none.
 func (r *Records) Lease(id string) *Lease {
 	for i := range r.Leases {
@@ -232,11 +252,6 @@ func (p *Preparation) Clone() Preparation {
 		rc := *r
 		rc.Settings = cloneSettings(r.Settings)
 		rc.Grant = clonePtr(r.Grant)
-		if r.Memdev != nil {
-			m := *r.Memdev
-			m.NumaAffinity = slices.Clone(r.Memdev.NumaAffinity)
-			rc.Memdev = &m
-		}
 		if r.Region != nil {
 			reg := *r.Region
 			reg.NumaAffinity = slices.Clone(r.Region.NumaAffinity)

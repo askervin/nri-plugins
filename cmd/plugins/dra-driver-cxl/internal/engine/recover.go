@@ -552,18 +552,13 @@ func badBlocks(r *state.Records, bad map[state.GrantRef]error) error {
 }
 
 // remounted records the loop devices of the cached node mounts that are on
-// another one now (loops by node mount path) in their mounts and grants.
+// another one now (loops by node mount path) in their mounts.
 func remounted(r *state.Records, loops map[string]string) {
 	for i := range r.Regions {
 		for j := range r.Regions[i].Mounts {
 			if m := &r.Regions[i].Mounts[j]; loops[m.Path] != "" {
 				m.Loop = loops[m.Path]
 			}
-		}
-	}
-	for i := range r.Grants {
-		if g := &r.Grants[i]; loops[mountPathOf(r, g)] != "" {
-			g.Got.Loop = loops[mountPathOf(r, g)]
 		}
 	}
 }
@@ -597,7 +592,7 @@ func (e *Engine) unpreparedUses(serial state.Serial) []use {
 		if p == nil || p.State != state.PreparationUnpreparing || g == nil {
 			continue
 		}
-		if m := mountRecord(r, g); u.mode == state.ModeBlock || (m != nil && slices.Contains(m.Users, u.ref)) {
+		if m := r.MountOf(g); u.mode == state.ModeBlock || (m != nil && slices.Contains(m.Users, u.ref)) {
 			out = append(out, u)
 		}
 	}
@@ -1455,7 +1450,7 @@ func (e *Engine) remountGrant(ctx context.Context, req *GrantRequest) error {
 			return nil
 		}
 		if loop != "" {
-			m.Loop, g.Got.Loop = loop, loop
+			m.Loop = loop
 		}
 		if m.State == state.MountUnrestored {
 			want := state.MountedRO

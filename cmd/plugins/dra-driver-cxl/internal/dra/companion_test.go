@@ -182,11 +182,11 @@ func TestCompanionLendNUMA(t *testing.T) {
 		e := lendEnv(t)
 		p := e.pool
 		want := LentDevice{Driver: device.PoolDriverName, Source: api.SourcePool, Request: "mem", Device: "pooled0", Pool: envPool,
-			Serial: serialPoolX, Size: 256 << 20, Mode: api.ModeNUMA, Node: 2}
+			Serial: serialPoolX, Size: 256 << 20, Mode: api.ModeNUMA, NumaNode: 2}
 		if local {
 			p = e.local
 			want = LentDevice{Driver: device.DriverName, Source: api.SourceLocal, Request: "mem", Device: localDev, Pool: envNode,
-				Serial: serialSliced, Size: uint64(envBlockSize), Mode: api.ModeNUMA, Node: 2}
+				Serial: serialSliced, Size: uint64(envBlockSize), Mode: api.ModeNUMA, NumaNode: 2}
 		}
 		t.Run(p.Name(), func(t *testing.T) {
 			e.t = t
@@ -212,7 +212,7 @@ func TestCompanionLendNUMA(t *testing.T) {
 			if !local {
 				wantLogText(t, logs(), "cxl-pool.nri.io: claim demo/cxl-lease-l1: companion of lease l1 of demo/borrower/app prepared (nodes [2], binds [])")
 			}
-			if info := p.ClaimInfo("c1"); info == nil || info.Lend == nil || info.Lend.Lease != "l1" || !slices.Equal(info.Lend.Nodes, []int{2}) ||
+			if info := p.ClaimInfo("c1"); info == nil || info.Lend == nil || info.Lend.Lease != "l1" || !slices.Equal(info.Lend.NumaNodes, []int{2}) ||
 				info.Lend.Pod.UID != envPodUID || info.Lend.Container != envCtr {
 				t.Fatalf("claim info %+v", info)
 			}

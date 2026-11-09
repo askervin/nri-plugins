@@ -97,7 +97,7 @@ func forgotParts(r *state.Records, gone []state.GrantRef, present map[string]boo
 		g := r.Grant(ref)
 		reg := r.Region(g.Got.Region)
 		dax := g.Got.Dax
-		g.Got.Dax, g.Got.DaxDev = "", state.DevNumbers{}
+		g.Got.Dax = ""
 		d := reg.DaxDevice(dax)
 		if d == nil {
 			continue

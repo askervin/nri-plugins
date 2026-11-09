@@ -886,7 +886,7 @@ func (p *Plugin) ClaimResults(uid string) []PoolResult {
 	}
 	var out []PoolResult
 	for _, d := range p.PoolDevices(uid) {
-		out = append(out, PoolResult{Index: d.Result, Request: d.Request, Mode: d.Mode, Node: d.Node, Size: d.Size, Settings: d.ResultSettings})
+		out = append(out, PoolResult{Index: d.Result, Request: d.Request, Mode: d.Mode, NumaNode: d.NumaNode, Size: d.Size, Settings: d.ResultSettings})
 	}
 	return out
 }

@@ -21,27 +21,13 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 )
 
-// The names of the front-end (internal/dra) as the lease broker, the NRI
-// plugin and the adapters of the state files of the driver package use
-// them, and the shapes of those state files.
+// The names of the front-end (internal/dra) as the adapters of the state
+// files of the tests use them, and the shapes of those state files.
 
 const (
 	// preparedClaimsInfoFileName is the view of the prepared claims of
 	// cxl.nri.io with their devices in its plugin data directory.
 	preparedClaimsInfoFileName = "preparedClaimsInfo.json"
-	// poolStateFileName is the view of the prepared pool claims in the
-	// plugin data directory of the pool driver.
-	poolStateFileName = "preparedPoolClaims.json"
-	// poolPreparingFileName is the name of the records of the claims whose
-	// Prepare did not finish or that a rollback kept, in the log lines; the
-	// state store gives their content (preparingContent), no file is
-	// written.
-	poolPreparingFileName = "preparingPoolClaims.json"
-	// poolSerialsFileName is the name of the provenance records of the
-	// serials in the log lines; no file is written (the tests read and
-	// write the records in the shape of poolSerials.json:
-	// state_serials_test.go).
-	poolSerialsFileName = "poolSerials.json"
 )
 
 type (

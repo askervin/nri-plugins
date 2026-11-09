@@ -294,7 +294,7 @@ func (e *Engine) realise(ctx context.Context, req *GrantRequest) error {
 	case req.Asked.Kind == state.KindShared:
 		return e.realiseLocalShared(ctx, req, memdev)
 	}
-	return e.realiseLocalSliced(ctx, req, memdev)
+	return e.realiseLocalParts(ctx, req, memdev)
 }
 
 // memdevOf returns the name of the memdev of a grant. A pool grant waits
@@ -474,7 +474,7 @@ func (e *Engine) createRegion(ctx context.Context, req *GrantRequest, memdev str
 				if next == "" {
 					return nil
 				}
-				if err := e.commit(ctx, func(r *state.Records) error { return noteRegion(r, req, next, decoder, mode) }); err != nil {
+				if err := e.commit(ctx, func(r *state.Records) error { return noteRegion(r, req, next, mode) }); err != nil {
 					return fmt.Errorf("recording region %s: %w", next, err)
 				}
 				noted = next
@@ -489,7 +489,7 @@ func (e *Engine) createRegion(ctx context.Context, req *GrantRequest, memdev str
 		return "", err
 	}
 	ri, _ := e.k.Region(created)
-	if err := e.commit(ctx, func(r *state.Records) error { return createdRegion(r, req, noted, created, decoder, mode, ri) }); err != nil {
+	if err := e.commit(ctx, func(r *state.Records) error { return createdRegion(r, req, noted, created, mode, ri) }); err != nil {
 		return "", err
 	}
 	return created, nil
@@ -497,13 +497,13 @@ func (e *Engine) createRegion(ctx context.Context, req *GrantRequest, memdev str
 
 // noteRegion records the region that a creation will make (NONE ->
 // NOTED), named by the memdev and the grant's intent.
-func noteRegion(r *state.Records, req *GrantRequest, name, decoder string, mode state.RegionMode) error {
+func noteRegion(r *state.Records, req *GrantRequest, name string, mode state.RegionMode) error {
 	ref := state.RegionRef(name)
 	if r.Region(ref) != nil {
 		return fmt.Errorf("region %s has a record already", name)
 	}
 	reg := state.Region{NotedName: name, Mode: mode, Targets: []state.Serial{req.Serial}, Owner: state.OwnerOurs,
-		Decoder: decoder, State: state.RegionNone}
+		State: state.RegionNone}
 	if err := state.Apply(&state.RegionTable, &reg.State, state.RegionNoted, state.TriggerPrepare); err != nil {
 		return err
 	}
@@ -516,11 +516,11 @@ func noteRegion(r *state.Records, req *GrantRequest, name, decoder string, mode 
 
 // createdRegion records the region that a creation made (NOTED ->
 // CREATING -> OWNED) under its name, which replaces the noted one.
-func createdRegion(r *state.Records, req *GrantRequest, noted, created, decoder string, mode state.RegionMode, ri kernel.RegionInfo) error {
+func createdRegion(r *state.Records, req *GrantRequest, noted, created string, mode state.RegionMode, ri kernel.RegionInfo) error {
 	if noted == "" {
 		// the next name could not be read: recorded after the creation
 		reg := state.Region{NotedName: created, Mode: mode, Targets: []state.Serial{req.Serial}, Owner: state.OwnerOurs,
-			Decoder: decoder, State: state.RegionNone}
+			State: state.RegionNone}
 		if err := state.Apply(&state.RegionTable, &reg.State, state.RegionNoted, state.TriggerPrepare); err != nil {
 			return err
 		}
@@ -859,6 +859,7 @@ func (e *Engine) realisePoolRam(ctx context.Context, req *GrantRequest, memdev s
 		return err
 	}
 	got := state.Got{Region: state.RegionRef(region), Dax: dax}
+	var dev state.DevNumbers
 	if req.Asked.Mode == state.ModeNUMA {
 		node, err := e.onlineRegion(ctx, req, memdev, region, dax)
 		if err != nil {
@@ -873,10 +874,10 @@ func (e *Engine) realisePoolRam(ctx context.Context, req *GrantRequest, memdev s
 		if err != nil {
 			return err
 		}
-		got.DaxDev = state.DevNumbers{Major: major, Minor: minor}
+		dev = state.DevNumbers{Major: major, Minor: minor}
 	}
 	got.Size = req.Asked.Size
-	return e.realised(ctx, req, got)
+	return e.realised(ctx, req, got, dev)
 }
 
 // onlineRegion fences the node of the memory of a region of mode numa,
@@ -934,7 +935,7 @@ func (e *Engine) onlineMemory(ctx context.Context, region, dax string, blocks []
 
 // realised records what a grant got and the grant REALISED, the grant a
 // user of its dax device and node mount.
-func (e *Engine) realised(ctx context.Context, req *GrantRequest, got state.Got) error {
+func (e *Engine) realised(ctx context.Context, req *GrantRequest, got state.Got, dev state.DevNumbers) error {
 	return e.commit(ctx, func(r *state.Records) error {
 		g := r.Grant(req.Ref)
 		if g == nil {
@@ -957,8 +958,8 @@ func (e *Engine) realised(ctx context.Context, req *GrantRequest, got state.Got)
 				if err := addDaxUser(reg, got.Dax, req.Ref); err != nil {
 					return err
 				}
-				if !got.DaxDev.IsZero() {
-					reg.DaxDevice(got.Dax).Dev = got.DaxDev
+				if !dev.IsZero() {
+					reg.DaxDevice(got.Dax).Dev = dev
 				}
 			}
 		}
@@ -1080,7 +1081,7 @@ func (e *Engine) verifyGrant(g *state.Grant) error {
 		return fmt.Errorf("grant %s: %s is gone", g.Ref, g.Got.Region)
 	}
 	r := e.records()
-	if dev := daxDevOf(r, g); g.Got.Dax != "" && !dev.IsZero() {
+	if dev := r.DaxDevOf(g); g.Got.Dax != "" && !dev.IsZero() {
 		major, minor, err := e.k.DaxDevNumbers(g.Got.Dax)
 		if err != nil || major != dev.Major || minor != dev.Minor {
 			return fmt.Errorf("grant %s: %s is not the dax device %d:%d as prepared", g.Ref, g.Got.Dax, dev.Major, dev.Minor)

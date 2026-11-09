@@ -199,7 +199,7 @@ func TestLocalRecoverGoneParts(t *testing.T) {
 				"local: memdev mem0 (serial 0x11): claim d2: slice dax0.1 of 268435456 bytes is gone, dropping it",
 				"claim d2: no device node for the dax slice " + filepath.Join(v.f.DevRoot(), "dax0.1") + ": the slice is gone",
 			}, c.want...)...)
-			if g := v.grant("d2", 0); g.Got.Dax != "" || !g.Got.DaxDev.IsZero() || g.Got.Region != "region0" || g.State != state.GrantRealised {
+			if g := v.grant("d2", 0); g.Got.Dax != "" || g.Got.Region != "region0" || g.State != state.GrantRealised {
 				t.Fatalf("grant %+v", g)
 			}
 			if d := v.records().Region("region0").DaxDevice("dax0.1"); d != nil {
@@ -238,7 +238,10 @@ func TestLocalRecoverBadBlocks(t *testing.T) {
 				v.formatPmem("mem0", "ext4")
 			}
 			v.mustPrepare(localDriver, "w", c.req)
-			mount := v.grant("w", 0).Got.MountPath
+			mount := ""
+			if m := v.records().MountOf(v.grant("w", 0)); m != nil {
+				mount = m.Path
+			}
 			v.f.RenamePmem("region0", "pmem3", "259:9")
 			logs := captureKlog(t)
 			out := v.restart()

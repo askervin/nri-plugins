@@ -54,7 +54,17 @@ const (
 	localProbesFileName = "localProbes.json"
 	// localStateFileName is the view of the local memdevs in the plugin
 	// data directory of cxl.nri.io.
-	localStateFileName = "localDevices.json"
+	localStateFileName = store.ViewLocalDevices
+	// poolStateFileName is the view of the prepared pool claims in the
+	// plugin data directory of the pool driver.
+	poolStateFileName = store.ViewPreparedPoolClaims
+	// poolPreparingFileName names the records of the pool claims whose
+	// Prepare did not finish or that a rollback kept in the log lines; no
+	// file is written.
+	poolPreparingFileName = "preparingPoolClaims.json"
+	// poolSerialsFileName names the provenance records of the serials in
+	// the log lines; no file is written.
+	poolSerialsFileName = "poolSerials.json"
 )
 
 // deviceConfig are the settings of the device engine of the driver.

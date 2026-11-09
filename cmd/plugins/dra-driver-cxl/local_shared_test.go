@@ -186,7 +186,7 @@ func TestLocalSharedClaims(t *testing.T) {
 	e.mustPrepare(localClaim("u2", -1, localROConfig))
 	for _, uid := range []string{"u1", "u2"} {
 		g := e.grant(uid, 0)
-		if g.Got.Region != "region0" || g.Got.Dax != "dax0.0" || g.Got.Size != localRegionSize || g.Got.DaxDev.Major != 252 || g.Asked.ReadOnly != (uid == "u2") {
+		if g.Got.Region != "region0" || g.Got.Dax != "dax0.0" || g.Got.Size != localRegionSize || e.records().DaxDevOf(g).Major != 252 || g.Asked.ReadOnly != (uid == "u2") {
 			t.Fatalf("grant %s: %+v %+v", uid, g.Asked, g.Got)
 		}
 	}

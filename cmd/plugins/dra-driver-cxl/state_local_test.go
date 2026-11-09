@@ -165,9 +165,8 @@ type localState struct {
 // (localDevices.json). The grant of a use of a memdev is that of the
 // prepared result of the claim on the memdev (matchUses); a use that no
 // prepared result names is a grant with a negative result index in a
-// preparation PREPARING. The uses of no claim ("-") are grants RELEASING
-// of the pseudo-preparation "-" in KEPT (transitional: removed in H6
-// (schema 2); 5.2 has them as dax devices of a region without users).
+// preparation PREPARING. The uses of no claim ("-") are dax devices of the
+// memdev's region without users.
 func putLocal(doc *store.Document, prepared claimPreparations, infos PreparedClaimsInfo, local *localState) {
 	removeDriverRecords(doc, device.DriverName, state.SourceLocal)
 	b := newRecordBuilder()
@@ -220,7 +219,7 @@ func addClaimInfo(b *recordBuilder, uid string, info *PreparedClaimInfo, pr *kub
 				node = d.NUMANodes[0]
 			}
 			r.Kind = state.ResultRegion
-			r.Region = &state.RegionResult{Name: d.Region, SysfsPath: d.SysfsPath, NumaNode: node, Size: d.TotalBytes,
+			r.Region = &state.RegionResult{Name: d.Region, NumaNode: node, Size: d.TotalBytes,
 				Consumed: d.ConsumedBytes, NumaAffinity: d.NodeAffinities}
 		case device.DeviceTypeDRAM:
 			r.Kind = state.ResultDRAM
@@ -231,7 +230,6 @@ func addClaimInfo(b *recordBuilder, uid string, info *PreparedClaimInfo, pr *kub
 		default:
 			ref := state.GrantRef{Claim: uid, Result: d.Result}
 			r.Kind, r.Grant = state.ResultGrant, &ref
-			r.Memdev = &state.MemdevResult{Shared: d.Shared, Persistent: d.Persistent, NumaAffinity: d.NodeAffinities}
 			addDeviceGrant(b, ref, d, lends)
 		}
 		p.Results = append(p.Results, r)
@@ -246,6 +244,7 @@ func addDeviceGrant(b *recordBuilder, ref state.GrantRef, d *PreparedDeviceInfo,
 		Asked: state.Asked{
 			Source:   state.SourceLocal,
 			Kind:     grantKind(d.Shared, d.Persistent),
+			Shared:   d.Shared,
 			Mode:     state.Mode(d.Mode),
 			ReadOnly: d.ReadOnly,
 			Access:   state.Access(d.Access),
@@ -256,14 +255,10 @@ func addDeviceGrant(b *recordBuilder, ref state.GrantRef, d *PreparedDeviceInfo,
 		Got: state.Got{
 			Region:      state.RegionRef(baseName(d.SysfsPath)),
 			Dax:         baseName(d.DaxDevice),
-			DaxDev:      state.DevNumbers{Major: d.DaxMajor, Minor: d.DaxMinor},
 			Size:        d.TotalBytes,
 			Namespace:   d.Namespace,
 			BlockDevice: blockDevice(d.BlockDevice, d.BlockMajor, d.BlockMinor),
 			Mount:       state.Access(d.Access),
-			MountPath:   d.NodeMount,
-			Loop:        d.LoopDevice,
-			FsType:      d.FsType,
 		},
 	})
 	node := -1
@@ -272,6 +267,14 @@ func addDeviceGrant(b *recordBuilder, ref state.GrantRef, d *PreparedDeviceInfo,
 		g.Got.NumaNode = &node
 	}
 	g.Intent.Region = g.Got.Region
+	b.useDax(g, g.Got.Dax, state.DevNumbers{Major: d.DaxMajor, Minor: d.DaxMinor})
+	b.useMount(g, d.NodeMount, d.LoopDevice, d.FsType)
+	m := state.Memdev{Serial: g.Serial, Source: state.SourceLocal, State: state.MemdevActive,
+		Facts: state.MemdevFacts{Shared: d.Shared, Persistent: d.Persistent}}
+	if len(d.NodeAffinities) == 1 {
+		m.Facts.NumaAffinity = state.NumaNodePtr(d.NodeAffinities[0])
+	}
+	b.memdev(m)
 	lends.assign(g, d.Mode, node)
 }
 
@@ -296,6 +299,14 @@ func addLocalDevice(b *recordBuilder, d *localDevice, bootID string) {
 	}
 	for _, uid := range slices.Sorted(maps.Keys(d.Claims)) {
 		uses := d.Claims[uid]
+		if uid == orphanOwner {
+			for _, s := range uses {
+				if s != nil {
+					b.orphanDax(state.RegionRef(s.Region), s)
+				}
+			}
+			continue
+		}
 		if len(uses) == 0 {
 			ref := b.newRef(uid)
 			g := useGrant(b, ref, d, nil, bootID)
@@ -435,11 +446,7 @@ func useGrant(b *recordBuilder, ref state.GrantRef, d *localDevice, s *localSlic
 		if s != nil {
 			request = s.Request
 		}
-		st := state.PreparationPreparing
-		if ref.Claim == orphanOwner {
-			st, g.State = state.PreparationKept, state.GrantReleasing
-		}
-		p := b.preparation(ref.Claim, state.Preparation{UID: ref.Claim, Driver: device.DriverName, BootID: bootID, State: st})
+		p := b.preparation(ref.Claim, state.Preparation{UID: ref.Claim, Driver: device.DriverName, BootID: bootID, State: state.PreparationPreparing})
 		p.Results = append(p.Results, state.Result{Index: ref.Result, Kind: state.ResultGrant, Request: request, Grant: &ref})
 	}
 	if s == nil {
@@ -448,8 +455,9 @@ func useGrant(b *recordBuilder, ref state.GrantRef, d *localDevice, s *localSlic
 	g.Asked.Mode, g.Asked.ReadOnly, g.Asked.Path = state.Mode(s.Mode), s.ReadOnly, s.Path
 	g.Asked.Access, g.Asked.FsType = state.Access(s.Access), s.FsType
 	g.Got.Region, g.Got.Dax, g.Got.Size = state.RegionRef(s.Region), s.Dax, s.Size
-	g.Got.DaxDev = state.DevNumbers{Major: s.Major, Minor: s.Minor}
-	g.Got.Mount, g.Got.MountPath, g.Got.Loop, g.Got.FsType = state.Access(s.Access), s.NodeMount, s.LoopDevice, s.FsType
+	g.Got.Mount = state.Access(s.Access)
+	b.useDax(g, s.Dax, state.DevNumbers{Major: s.Major, Minor: s.Minor})
+	b.useMount(g, s.NodeMount, s.LoopDevice, s.FsType)
 	if g.Intent.Region == "" {
 		g.Intent.Region = g.Got.Region
 	}

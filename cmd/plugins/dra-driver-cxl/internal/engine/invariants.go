@@ -349,7 +349,7 @@ func checkI3Dax(c *checker, g *state.Grant, id string) {
 		return
 	}
 	d := c.s.DaxDevice(g.Got.Dax)
-	dev := daxDevOf(c.r, g)
+	dev := c.r.DaxDevOf(g)
 	switch {
 	case d.State == kernel.DaxAbsent || d.Region != string(g.Got.Region):
 		c.add(id, "%s is not a dax device of %s", g.Got.Dax, g.Got.Region)

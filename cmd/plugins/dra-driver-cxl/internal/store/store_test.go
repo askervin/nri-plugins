@@ -441,7 +441,7 @@ func TestPrevFallback(t *testing.T) {
 		}
 	}
 	closeStore(t, s)
-	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(`{"schema": 1, "generation": `), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(`{"schema": 2, "generation": `), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	s = open(t, dir, nil, nil)
@@ -490,11 +490,17 @@ func TestLostMode(t *testing.T) {
 		state, prev string
 	}{
 		{"garbage", "{", "nonsense"},
-		{"unknown schema", `{"schema": 2, "generation": 1}`, `{"schema": 2, "generation": 0}`},
-		{"unknown field", `{"schema": 1, "generation": 1, "fence": []}`, ""},
+		{"unknown schema", `{"schema": 3, "generation": 1}`, `{"schema": 3, "generation": 0}`},
+		{
+			"schema 1",
+			`{"schema": 1, "generation": 1, "regions": [{"notedName": "region0", "mode": "ram", "targets": [1], ` +
+				`"owner": "ours", "decoder": "decoder0.0", "state": "NOTED"}]}`,
+			`{"schema": 1, "generation": 0}`,
+		},
+		{"unknown field", `{"schema": 2, "generation": 1, "fence": []}`, ""},
 		{
 			"unknown state",
-			`{"schema": 1, "generation": 1, "preparations": [{"uid": "u", "driver": "cxl.nri.io", "claimName": "n/c", ` +
+			`{"schema": 2, "generation": 1, "preparations": [{"uid": "u", "driver": "cxl.nri.io", "claimName": "n/c", ` +
 				`"state": "PREPARD", "results": []}]}`,
 			"",
 		},
@@ -520,6 +526,9 @@ func TestLostMode(t *testing.T) {
 			}
 			if tc.name == "unknown state" && !strings.Contains(lost.Error(), `preparation cxl.nri.io/u: state "PREPARD"`) {
 				t.Errorf("lost error %q does not name the state", lost)
+			}
+			if tc.name == "schema 1" && !strings.Contains(lost.Error(), "unsupported schema 1 (this driver reads schema 2)") {
+				t.Errorf("lost error %q does not name the schema", lost)
 			}
 			if tc.name == "unknown field" && !strings.Contains(lost.Error(), `unknown field "fence"`) {
 				t.Errorf("lost error %q does not name the field", lost)

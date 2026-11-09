@@ -147,7 +147,7 @@ func TestFenceWantMems(t *testing.T) {
 func TestFenceCreateContainer(t *testing.T) {
 	e := newFenceEnv(t, "0-2")
 	e.local.set(fenceClaims())
-	e.setPool(map[string][]dra.PoolResult{"pool": {{Mode: cxlapi.ModeNUMA, Node: 3, Size: 1 << 30}}})
+	e.setPool(map[string][]dra.PoolResult{"pool": {{Mode: cxlapi.ModeNUMA, NumaNode: 3, Size: 1 << 30}}})
 	pod := testPod("u1")
 
 	// nothing fenced: no adjustment

@@ -408,6 +408,17 @@ func (v *env) mustUnprepare(driver, uid string) {
 }
 
 // grant returns the record of the grant of result n of the claim uid,
+// mount returns the record of the node mount that the grant n of the claim
+// uid uses; the test fails if it has none.
+func (v *env) mount(uid string, n int) *state.Mount {
+	v.t.Helper()
+	m := v.records().MountOf(v.grant(uid, n))
+	if m == nil {
+		v.t.Fatalf("grant %s/%d has no node mount", uid, n)
+	}
+	return m
+}
+
 // failing the test without one.
 func (v *env) grant(uid string, n int) *state.Grant {
 	v.t.Helper()

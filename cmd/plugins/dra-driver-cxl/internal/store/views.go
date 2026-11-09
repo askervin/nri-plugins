@@ -512,7 +512,7 @@ func deviceInfoView(doc *Document, r *state.Result, opts ViewOptions) viewDevice
 	case state.ResultRegion:
 		d.DeviceType, d.Mode = device.DeviceTypeRegion, api.ModeNUMA
 		d.Region = r.Region.Name
-		d.SysfsPath = r.Region.SysfsPath
+		d.SysfsPath = regionPath(opts, r.Region.Name)
 		d.NumaNodes = []int{r.Region.NumaNode}
 		d.NumaAffinities = slices.Clone(r.Region.NumaAffinity)
 		d.TotalBytes, d.ConsumedBytes = r.Region.Size, r.Region.Consumed
@@ -535,13 +535,12 @@ func deviceInfoView(doc *Document, r *state.Result, opts ViewOptions) viewDevice
 // grantInfoView sets what a grant of cxl.nri.io got in the view of its
 // device in preparedClaimsInfo.json.
 func grantInfoView(doc *Document, r *state.Result, g *state.Grant, d *viewDeviceInfo, opts ViewOptions) {
-	facts := memdevFacts(doc, r, g)
 	d.Mode = string(g.Asked.Mode)
 	d.Serial = g.Serial.String()
 	d.SysfsPath = regionPath(opts, string(g.Got.Region))
 	d.TotalBytes, d.ConsumedBytes = g.Got.Size, int64(g.Got.Size)
-	d.NumaAffinities = slices.Clone(facts.NumaAffinity)
-	d.Shared = facts.Shared
+	d.NumaAffinities = numaAffinity(doc, g)
+	d.Shared = sharedGrant(g)
 	switch g.Asked.Mode {
 	case state.ModeNUMA:
 		if g.Got.NumaNode != nil {
@@ -567,21 +566,21 @@ func grantInfoView(doc *Document, r *state.Result, g *state.Grant, d *viewDevice
 	}
 }
 
-// memdevFacts returns the facts of the memdev of a grant result: those
-// recorded with the result, else those of the memdev record.
-func memdevFacts(doc *Document, r *state.Result, g *state.Grant) state.MemdevResult {
-	if r != nil && r.Memdev != nil {
-		return *r.Memdev
+// sharedGrant tells whether a grant maps its memdev shared.
+func sharedGrant(g *state.Grant) bool {
+	return g.Asked.Shared || g.Asked.Kind == state.KindShared
+}
+
+// numaAffinity returns the CPU NUMA nodes of the local memdev of a grant,
+// nil if they are not known.
+func numaAffinity(doc *Document, g *state.Grant) []int {
+	if g.Asked.Source != state.SourceLocal {
+		return nil
 	}
-	m := doc.Memdev(g.Serial)
-	if m == nil {
-		return state.MemdevResult{}
+	if m := doc.Memdev(g.Serial); m != nil && m.Facts.NumaAffinity != nil {
+		return []int{*m.Facts.NumaAffinity}
 	}
-	f := state.MemdevResult{Shared: m.Facts.Shared, Persistent: m.Facts.Persistent}
-	if m.Facts.NumaAffinity != nil {
-		f.NumaAffinity = []int{*m.Facts.NumaAffinity}
-	}
-	return f
+	return nil
 }
 
 // lendView returns the lend of a companion claim, nil for another claim:
@@ -650,9 +649,8 @@ func poolDeviceView(doc *Document, r *state.Result, opts ViewOptions) viewPoolDe
 	if g == nil {
 		return d
 	}
-	facts := memdevFacts(doc, r, g)
 	d.Serial = uint64(g.Serial)
-	d.Shared = facts.Shared
+	d.Shared = sharedGrant(g)
 	d.Size = g.Got.Size
 	if d.Size == 0 {
 		d.Size = g.Asked.Size
@@ -891,31 +889,18 @@ func leaseView(l *state.Lease) *viewLease {
 	return v
 }
 
-// daxNumbers returns the device numbers of the dax device of a grant: those
-// that the grant got, else those of the dax device of its region.
+// daxNumbers returns the device numbers of the dax device of a grant in its
+// region.
 func daxNumbers(doc *Document, g *state.Grant) (int, int) {
-	if !g.Got.DaxDev.IsZero() {
-		return g.Got.DaxDev.Major, g.Got.DaxDev.Minor
-	}
-	if reg := doc.Region(g.Got.Region); reg != nil {
-		if d := reg.DaxDevice(g.Got.Dax); d != nil {
-			return d.Dev.Major, d.Dev.Minor
-		}
-	}
-	return 0, 0
+	dev := doc.DaxDevOf(g)
+	return dev.Major, dev.Minor
 }
 
 // mountFacts returns the path, the loop device and the filesystem type of
-// the node mount of a grant: those that the grant got, else those of the
-// node mount of its region.
+// the node mount of a grant in its region.
 func mountFacts(doc *Document, g *state.Grant) (string, string, string) {
-	if g.Got.MountPath != "" || g.Got.Loop != "" || g.Got.FsType != "" {
-		return g.Got.MountPath, g.Got.Loop, g.Got.FsType
-	}
-	if reg := doc.Region(g.Got.Region); reg != nil && g.Got.Mount != "" {
-		if m := reg.Mount(g.Got.Mount); m != nil {
-			return m.Path, m.Loop, m.FsType
-		}
+	if m := doc.MountOf(g); m != nil {
+		return m.Path, m.Loop, m.FsType
 	}
 	return "", "", ""
 }

@@ -100,7 +100,7 @@ func TestFencePoolBeforeOnline(t *testing.T) {
 	if e.onlineBlocks("region0") == 0 {
 		t.Fatal("the memory of the region is not online")
 	}
-	if got := p.ClaimResults("u1"); len(got) != 1 || got[0].Node != 2 || got[0].Mode != cxlapi.ModeNUMA || got[0].Index != 0 || got[0].Size != 256<<20 {
+	if got := p.ClaimResults("u1"); len(got) != 1 || got[0].NumaNode != 2 || got[0].Mode != cxlapi.ModeNUMA || got[0].Index != 0 || got[0].Size != 256<<20 {
 		t.Fatalf("claim results %+v", got)
 	}
 	if got := poolNumaNodes(p); !reflect.DeepEqual(got, []int{2}) {
