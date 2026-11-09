@@ -144,12 +144,13 @@ func (p *Plugin) fenceCreated(c *Container) (string, cpuset.CPUSet) {
 }
 
 // memsDiffer returns the cpuset.mems of a container (curMems) and whether
-// it is not want, and logs it when its cgroup has not got an update that
-// the plugin has recorded.
+// it or the cpuset.mems of its spec is not want (a later update of its
+// resources writes the spec's to the cgroup), and logs it when its cgroup
+// has not got an update that the plugin has recorded.
 func memsDiffer(c *Container, want cpuset.CPUSet, prefix string) (string, bool) {
 	cur := curMems(c)
 	if sameMems(want, cur) {
-		return cur, false
+		return cur, !sameMems(want, c.SpecMems)
 	}
 	if sameMems(want, c.SpecMems) {
 		klog.Infof("%s: ctr=%s id=%s: the cpuset.mems of its cgroup is %q, not %s as updated, updating again",

@@ -277,6 +277,18 @@ func TestFencePass(t *testing.T) {
 	e.p.Fence(ctx, 5)
 	e.expectUpdates("c1 mems=0-1", "c2 mems=0-1")
 
+	// a running container whose cgroup has want but whose spec does not
+	// is updated (L-58): a later update of its resources would write the
+	// spec's cpuset.mems to the cgroup
+	withSpecMems(c1, "0-2")
+	withSpecMems(c2, "0-1")
+	e.setCgroupMems("kubepods/u1/c1", "0-1")
+	resync()
+	e.expectUpdates("c1 mems=0-1")
+	withSpecMems(c1, "0-1")
+	resync()
+	e.expectUpdates()
+
 	// a new container is fenced at creation, the pass leaves it be
 	if got := e.createMems(p2, testCtr(p2, "c6", "new", 0)); got != "0-1" {
 		t.Fatalf("adjustment %s", got)
