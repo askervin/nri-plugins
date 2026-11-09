@@ -1,0 +1,608 @@
+// Copyright The NRI Plugins Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package leases
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"maps"
+	"net"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+
+	"golang.org/x/sys/unix"
+	resourcev1 "k8s.io/api/resource/v1"
+	"k8s.io/klog/v2"
+	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
+	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
+
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/pkg/cxl/api"
+	"github.com/containers/nri-plugins/pkg/cxl/device"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
+)
+
+// LeaseClaim: a claim on the lease device "lease" of cxl.nri.io, prepared
+// for the containers that reference it: OpenClaim creates
+// <data dir>/leases/<uid>/cxl.sock and <data dir>/lease-fs/<uid>, and the
+// CDI device nri.io/cxl=lease-<uid> bind-mounts the socket directory at
+// /run/cxl, the lease-fs directory read-only as a slave at /run/cxl/fs
+// (the driver of the device binds the filesystems of fs leases below it,
+// and they appear in the running containers) and the cxl-request CLI at
+// /usr/local/bin.
+//
+// Identity: the record state.LeaseClaim: UID, the claim UID (the socket
+// directory and the CDI device name); Namespace and Name of the claim.
+//
+// States: state.LeaseClaimState; CLOSED and REMOVING have no record: the
+// removal of the directories of a claim that is not in the store
+// (removeClaimDirs, with the claim's entry in removing while it runs) goes
+// through them in memory: REMOVING once the lease-fs directory is gone,
+// while the socket directory is removed.
+//
+// Transitions: state.LeaseClaimTable, applied by applyClaim.
+//
+// Invariants: a lease claim OPEN or CLOSING has its socket listened; the
+// directories of a claim without a record are removed unless a bind is
+// mounted in its lease-fs directory, then by the release of its last lease
+// or a later sweep.
+//
+// Persistence: the record in the store; lease claims survive a reboot
+// (kubelet prepares them again). A lost store keeps every directory.
+//
+// Locks and waits: the broker's mutex, without it for the removal of the
+// directories (the removal in progress of a claim is waited for, and its
+// socket is not started meanwhile); CloseClaim waits up to Timeouts.Close
+// for the leases of the claim.
+
+const (
+	// leaseDirName is the directory of the socket directories of the
+	// lease claims in the plugin data directory.
+	leaseDirName = "leases"
+	// leaseSocketName is the socket in the directory of a lease claim.
+	leaseSocketName = "cxl.sock"
+	// leaseSocketTmpDirName is the directory in the plugin data directory
+	// where the sockets are created before they are renamed into the
+	// directories of the claims: no container has it.
+	leaseSocketTmpDirName = ".lease-sockets"
+	// leaseFsDirName is the directory of the lease-fs directories of the
+	// lease claims in the plugin data directory. Only the plugin writes
+	// them; containers have them read-only.
+	leaseFsDirName = "lease-fs"
+	// leaseFsMountPoint is the mount point of api.FsDir in the socket
+	// directory of a lease claim, as runc would create it.
+	leaseFsMountPoint = "fs"
+	// leaseContainerDir is where the directory of a lease claim is
+	// mounted: the directory of api.DefaultSocket.
+	leaseContainerDir = "/run/cxl"
+	// leaseCLIContainerPath is where the CLI is mounted.
+	leaseCLIContainerPath = "/usr/local/bin/cxl-request"
+	// selinuxContainerFileLabel lets container processes use the socket
+	// directory on SELinux hosts (best effort, ignored elsewhere).
+	selinuxContainerFileLabel = "system_u:object_r:container_file_t:s0"
+)
+
+// CDIDeviceName is the CDI device name of a lease claim.
+func CDIDeviceName(claimUID string) string {
+	return "lease-" + claimUID
+}
+
+// leaseDir returns the host directory of a lease claim.
+func (b *Broker) leaseDir(claimUID string) string {
+	return filepath.Join(b.opts.DataDir, leaseDirName, claimUID)
+}
+
+// LeaseFsRoot returns the directory of the lease-fs directories of the
+// lease claims in the plugin data directory dataDir.
+func LeaseFsRoot(dataDir string) string {
+	return filepath.Join(dataDir, leaseFsDirName)
+}
+
+// leaseFsDir returns the host directory of the mounts of the fs leases of
+// a lease claim.
+func (b *Broker) leaseFsDir(claimUID string) string {
+	return filepath.Join(LeaseFsRoot(b.opts.DataDir), claimUID)
+}
+
+// hasPod tells whether the pod with the uid is a pod of the lease claim.
+func hasPod(c *state.LeaseClaim, uid string) bool {
+	return slices.ContainsFunc(c.Pods, func(p state.PodRef) bool { return p.UID == uid })
+}
+
+// reservedPods returns the pods in the reservedFor of a claim.
+func reservedPods(claim *resourcev1.ResourceClaim) []state.PodRef {
+	var pods []state.PodRef
+	for _, c := range claim.Status.ReservedFor {
+		if c.Resource == "pods" && c.APIGroup == "" {
+			pods = append(pods, state.PodRef{Namespace: claim.Namespace, Name: c.Name, UID: string(c.UID)})
+		}
+	}
+	return pods
+}
+
+// OpenClaim records a claim on the lease device, writes its CDI device and
+// starts its socket. Idempotent: an open claim gets the pods of its
+// reservedFor and keeps its FsDir (containers created from the old CDI
+// device keep their mounts).
+func (b *Broker) OpenClaim(claim *resourcev1.ResourceClaim) error {
+	uid := string(claim.UID)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	lc := b.claims[uid]
+	if lc == nil {
+		lc = &state.LeaseClaim{UID: uid, State: state.LeaseClaimNone, FsDir: b.leaseFsDir(uid)}
+	}
+	cp := lc.Clone()
+	cp.Namespace, cp.Name, cp.Pods = claim.Namespace, claim.Name, reservedPods(claim)
+	if !applyClaim(&cp, state.LeaseClaimOpen, state.TriggerPrepare) {
+		return fmt.Errorf("lease claim %s is %s", uid, lc.State)
+	}
+	b.claims[uid] = &cp
+	if err := b.persistLocked(); err != nil {
+		return err
+	}
+	if err := b.writeCDISpec(); err != nil {
+		return err
+	}
+	if err := b.listen(uid); err != nil {
+		return err
+	}
+	klog.Infof("lease broker: claim %s/%s (%s): lease socket %s for pods %v",
+		claim.Namespace, claim.Name, uid, filepath.Join(b.leaseDir(uid), leaseSocketName), cp.Pods)
+	return nil
+}
+
+// recoverClaims starts the sockets of the stored lease claims at the
+// start: an OPEN claim and a CLOSING one whose close a stop cut (kubelet's
+// Unprepare retry closes it) listen again; a failed listen is logged and
+// the claim is OPEN_NO_LISTENER until it is prepared again. Called with
+// b.mu held.
+func (b *Broker) recoverClaims() {
+	changed := false
+	for _, uid := range slices.Sorted(maps.Keys(b.claims)) {
+		lc := b.claims[uid]
+		to := state.LeaseClaimOpen
+		err := b.listen(uid)
+		if err != nil {
+			klog.Errorf("lease broker: lease claim %s: %v", uid, err)
+			to = state.LeaseClaimOpenNoListener
+		}
+		was := lc.State
+		if applyClaim(lc, to, state.TriggerRecover) && was != lc.State {
+			changed = true
+		}
+	}
+	if changed {
+		b.saveLocked()
+	}
+}
+
+// CloseClaim releases every lease of a lease claim, waits up to
+// Timeouts.Close until their nodes are revoked and the deletion of their
+// companions is requested, then stops the socket, removes the claim and
+// its CDI device and its directories; a lease-fs directory with a mount in
+// it is removed later. The leases are removed when their companions are
+// gone. A timeout is an error (kubelet retries the Unprepare). Unknown
+// claims are not an error.
+func (b *Broker) CloseClaim(ctx context.Context, uid string) error {
+	b.mu.Lock()
+	lc := b.claims[uid]
+	if lc == nil {
+		b.mu.Unlock()
+		return nil
+	}
+	ns, name := lc.Namespace, lc.Name
+	if applyClaim(lc, state.LeaseClaimClosing, state.TriggerUnprepare) {
+		b.saveLocked()
+	}
+	var ids []string
+	for _, l := range b.leasesOf(uid) {
+		ids = append(ids, l.ID)
+	}
+	b.mu.Unlock()
+	for _, id := range ids {
+		b.startRelease(id, "lease claim unprepared (pod done)", state.TriggerUnprepare)
+	}
+	ctx, cancel := context.WithTimeout(ctx, b.t.Close)
+	defer cancel()
+	remaining := func() int {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		n := 0
+		for _, l := range b.leasesOf(uid) {
+			if !l.DeletionRequested {
+				n++
+			}
+		}
+		return n
+	}
+	if err := b.waitFor(ctx, func() bool { return remaining() == 0 }); err != nil {
+		return fmt.Errorf("claim %s/%s: still releasing %d leases, retry", ns, name, remaining())
+	}
+	closed, err := b.closed(uid)
+	if !closed {
+		return fmt.Errorf("claim %s/%s: prepared again while it was closed, retry", ns, name)
+	}
+	errs := []error{err}
+	sock := filepath.Join(b.leaseDir(uid), leaseSocketName)
+	if err := os.Remove(sock); err != nil && !errors.Is(err, os.ErrNotExist) {
+		errs = append(errs, err)
+	}
+	if left := b.removeClaimDirs(uid, state.TriggerUnprepare); len(left) > 0 {
+		klog.Infof("lease broker: claim %s/%s (%s): left %v, removed later", ns, name, uid, left)
+	}
+	klog.Infof("lease broker: claim %s/%s (%s): lease socket closed", ns, name, uid)
+	return errors.Join(errs...)
+}
+
+// closed stops the socket of a closing lease claim and removes its record
+// and its CDI device; it reports whether the claim is closed (false: it was
+// opened again meanwhile) and returns the errors of the writes.
+func (b *Broker) closed(uid string) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	lc := b.claims[uid]
+	switch {
+	case lc == nil:
+		return true, nil
+	case !applyClaim(lc, state.LeaseClaimClosed, state.TriggerUnprepare):
+		return false, nil
+	}
+	if l := b.listeners[uid]; l != nil {
+		_ = l.Close()
+		delete(b.listeners, uid)
+	}
+	delete(b.claims, uid)
+	return true, errors.Join(b.persistLocked(), b.writeCDISpec())
+}
+
+// removeClaimDirs removes the directories of a lease claim that is not in
+// the store and returns the paths that are left: lease-fs/<uid>
+// (removeFsDir, os.Remove only), then, once it is gone, the entries of
+// leases/<uid> by name (with whatever a container of before its read-only
+// mount wrote into its /run/cxl; never following a symlink) and the
+// directory. While a bind is in lease-fs/<uid>, leases/<uid> stays with
+// the mount point of api.FsDir in it: an rmdir of that mount point would
+// detach the bind lazily in a container that is still there. Nothing is
+// mounted below leases/<uid> in the plugin's mount namespace. Called
+// without b.mu: the removal of what a container wrote may take long; the
+// claim's socket is not started meanwhile (listen). A removal of the
+// claim's directories in progress is waited for, then it is decided again.
+func (b *Broker) removeClaimDirs(uid string, trigger state.Trigger) []string {
+	b.mu.Lock()
+	for {
+		if b.claims[uid] != nil {
+			b.mu.Unlock()
+			return nil
+		}
+		busy, ok := b.removing[uid]
+		if !ok {
+			break
+		}
+		b.mu.Unlock()
+		<-busy
+		b.mu.Lock()
+	}
+	done := make(chan struct{})
+	b.removing[uid] = done
+	b.mu.Unlock()
+	defer func() {
+		b.mu.Lock()
+		delete(b.removing, uid)
+		close(done)
+		b.mu.Unlock()
+	}()
+	if !b.removeFsDir(uid) {
+		return []string{b.leaseFsDir(uid)}
+	}
+	gone := &state.LeaseClaim{UID: uid, State: state.LeaseClaimClosed}
+	applyClaim(gone, state.LeaseClaimRemoving, trigger)
+	dir := b.leaseDir(uid)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		applyClaim(gone, state.LeaseClaimNone, trigger)
+		return nil
+	}
+	var errs []error
+	if err != nil {
+		errs = append(errs, err)
+	}
+	for _, e := range entries {
+		// RemoveAll removes a symlink itself, never its target
+		errs = append(errs, os.RemoveAll(filepath.Join(dir, e.Name())))
+	}
+	if err := errors.Join(errs...); err == nil {
+		err = os.Remove(dir)
+		if err == nil || errors.Is(err, os.ErrNotExist) {
+			applyClaim(gone, state.LeaseClaimNone, trigger)
+			return nil
+		}
+		errs = append(errs, err)
+	}
+	klog.Warningf("lease broker: removing %s: %v", dir, errors.Join(errs...))
+	return []string{dir}
+}
+
+// removeFsDir removes the lease-fs directory of a lease claim and its
+// entries, except entries that are mount points or have mounts below them:
+// those and the directory stay. It reports whether the directory is gone.
+// Errors are logged.
+func (b *Broker) removeFsDir(uid string) bool {
+	dir := b.leaseFsDir(uid)
+	entries, err := os.ReadDir(dir)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return true
+	case err != nil:
+		klog.Errorf("lease broker: %v", err)
+		return false
+	}
+	mounts, err := b.mounts()
+	if err != nil {
+		klog.Errorf("lease broker: not removing %s: %v", dir, err)
+		return false
+	}
+	left := 0
+	for _, e := range entries {
+		p := filepath.Join(dir, e.Name())
+		if mountedAtOrBelow(mounts, p) {
+			klog.V(3).Infof("lease broker: %s is mounted, keeping it and %s", p, dir)
+			left++
+			continue
+		}
+		// os.Remove only: RemoveAll could descend into a mount
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			klog.Warningf("lease broker: removing %s: %v", p, err)
+			left++
+		}
+	}
+	if left > 0 {
+		return false
+	}
+	if err := os.Remove(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
+		klog.Warningf("lease broker: removing %s: %v", dir, err)
+		return false
+	}
+	klog.V(3).Infof("lease broker: removed %s", dir)
+	return true
+}
+
+// mountedAtOrBelow tells whether a mount has the target p or a target
+// below p.
+func mountedAtOrBelow(mounts []kernel.MountInfo, p string) bool {
+	for i := range mounts {
+		if t := mounts[i].Target; t == p || strings.HasPrefix(t, p+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// sweepFsDirs removes the lease-fs and socket directories of lease claims
+// that are not in the store (removeClaimDirs), unless the store is lost:
+// then the lease claims of the node are unknown, and nothing is removed.
+// Called without b.mu.
+func (b *Broker) sweepFsDirs(trigger state.Trigger) {
+	b.mu.Lock()
+	if b.lost {
+		b.mu.Unlock()
+		klog.V(3).Infof("lease broker: the lease table was not decoded, keeping the directories of lease claims")
+		return
+	}
+	var uids []string
+	seen := map[string]bool{}
+	for _, root := range []string{LeaseFsRoot(b.opts.DataDir), filepath.Join(b.opts.DataDir, leaseDirName)} {
+		entries, err := os.ReadDir(root)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			klog.Errorf("lease broker: %v", err)
+		}
+		for _, e := range entries {
+			uid := e.Name()
+			if !e.IsDir() || seen[uid] || b.claims[uid] != nil {
+				continue
+			}
+			seen[uid] = true
+			uids = append(uids, uid)
+		}
+	}
+	b.mu.Unlock()
+	for _, uid := range uids {
+		b.removeClaimDirs(uid, trigger)
+	}
+}
+
+// listen starts the socket of a lease claim if it is not running. Called
+// with b.mu held.
+func (b *Broker) listen(uid string) error {
+	if b.listeners[uid] != nil {
+		return nil
+	}
+	if _, ok := b.removing[uid]; ok {
+		return fmt.Errorf("the directories of lease claim %s are being removed, retry", uid)
+	}
+	dir := b.leaseDir(uid)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	if err := os.Chmod(dir, 0755); err != nil {
+		return err
+	}
+	if err := b.makeFsDirs(uid); err != nil {
+		return err
+	}
+	// The socket is made and given its mode where no container can
+	// replace it by a symlink, then renamed into the claim's directory
+	// (which containers of before its read-only mount can write): the
+	// rename replaces whatever is at the path, and follows nothing.
+	tmpDir := filepath.Join(b.opts.DataDir, leaseSocketTmpDirName)
+	if err := os.MkdirAll(tmpDir, 0700); err != nil {
+		return err
+	}
+	tmp := filepath.Join(tmpDir, uid+".sock")
+	_ = os.Remove(tmp)
+	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: tmp, Net: "unix"})
+	if err != nil {
+		return fmt.Errorf("listening on %s: %w", tmp, err)
+	}
+	// The socket is removed explicitly (CloseClaim): a plugin that stops
+	// must leave the path to the next instance.
+	l.SetUnlinkOnClose(false)
+	sock := filepath.Join(dir, leaseSocketName)
+	if err := os.Chmod(tmp, 0666); err != nil {
+		_ = l.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, sock); err != nil {
+		_ = l.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("placing the lease socket %s: %w", sock, err)
+	}
+	SELinuxLabel(dir, sock)
+	b.listeners[uid] = l
+	b.wg.Add(1)
+	go b.accept(uid, l)
+	return nil
+}
+
+// makeFsDirs creates, for a lease claim with FsDir, the mount point of
+// api.FsDir in its socket directory and its lease-fs directory. Called
+// with b.mu held.
+func (b *Broker) makeFsDirs(uid string) error {
+	lc := b.claims[uid]
+	if lc == nil || lc.FsDir == "" {
+		return nil
+	}
+	mp := filepath.Join(b.leaseDir(uid), leaseFsMountPoint)
+	if err := mkdirNoFollow(mp); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(lc.FsDir, 0755); err != nil {
+		return err
+	}
+	if err := os.Chmod(lc.FsDir, 0755); err != nil {
+		return err
+	}
+	SELinuxLabel(mp, lc.FsDir)
+	return nil
+}
+
+// mkdirNoFollow makes p a directory of mode 0755 in a directory that a
+// container may write: whatever else is at p (a symlink, a file) is
+// removed first, and the mode is set on the directory opened without
+// following a symlink.
+func mkdirNoFollow(p string) error {
+	if fi, err := os.Lstat(p); err == nil && !fi.IsDir() {
+		if err := os.Remove(p); err != nil {
+			return err
+		}
+	}
+	if err := os.Mkdir(p, 0755); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	fd, err := unix.Open(p, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("opening %s: %w", p, err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	if err := unix.Fchmod(fd, 0755); err != nil {
+		return fmt.Errorf("chmod %s: %w", p, err)
+	}
+	return nil
+}
+
+// SELinuxLabel labels the socket directory and socket for containers when
+// SELinux is enabled. Errors are logged only.
+func SELinuxLabel(paths ...string) {
+	if _, err := os.Stat("/sys/fs/selinux/enforce"); err != nil {
+		return
+	}
+	for _, p := range paths {
+		if err := unix.Lsetxattr(p, "security.selinux", []byte(selinuxContainerFileLabel), 0); err != nil {
+			klog.Warningf("lease broker: cannot label %s %s: %v", p, selinuxContainerFileLabel, err)
+		}
+	}
+}
+
+// cdiDevice returns the CDI device of a lease claim. Called with b.mu
+// held.
+func (b *Broker) cdiDevice(claimUID string) cdiSpecs.Device {
+	edits := cdiSpecs.ContainerEdits{
+		Env: []string{api.SocketEnv + "=" + api.DefaultSocket},
+		// read-only: connect(2) needs write access to the socket only,
+		// and the containers never write the host directory
+		Mounts: []*cdiSpecs.Mount{{
+			HostPath:      b.leaseDir(claimUID),
+			ContainerPath: leaseContainerDir,
+			Type:          "bind",
+			Options:       []string{"rbind", "ro"},
+		}},
+	}
+	// The containers of a claim prepared without FsDir were created
+	// without this mount: their CDI device stays as it was.
+	if lc := b.claims[claimUID]; lc != nil && lc.FsDir != "" {
+		edits.Mounts = append(edits.Mounts, &cdiSpecs.Mount{
+			HostPath:      lc.FsDir,
+			ContainerPath: api.FsDir,
+			Type:          "bind",
+			Options:       []string{"rbind", "ro", "rslave"},
+		})
+	}
+	// A missing bind mount source fails the container creation, so the
+	// CLI is mounted only if it exists. The socket works without it.
+	if b.opts.CLI != "" {
+		if _, err := os.Stat(b.opts.CLI); err == nil {
+			edits.Mounts = append(edits.Mounts, &cdiSpecs.Mount{
+				HostPath:      b.opts.CLI,
+				ContainerPath: leaseCLIContainerPath,
+				Type:          "bind",
+				Options:       []string{"bind", "ro"},
+			})
+		} else {
+			klog.Warningf("lease broker: cxl-request CLI %s not mounted into containers: %v", b.opts.CLI, err)
+		}
+	}
+	return cdiSpecs.Device{Name: CDIDeviceName(claimUID), ContainerEdits: edits}
+}
+
+// writeCDISpec writes the CDI spec of all lease claims, or removes it when
+// there are none. Called with b.mu held.
+func (b *Broker) writeCDISpec() error {
+	if b.opts.CDI == nil {
+		return nil
+	}
+	spec := &cdiSpecs.Spec{Kind: device.CDIKind}
+	for _, uid := range slices.Sorted(maps.Keys(b.claims)) {
+		spec.Devices = append(spec.Devices, b.cdiDevice(uid))
+	}
+	if len(spec.Devices) == 0 {
+		if err := b.opts.CDI.RemoveSpec(device.LeasesCDISpecName); err != nil {
+			klog.V(5).Infof("lease broker: could not remove CDI spec %s (may not exist): %v", device.LeasesCDISpecName, err)
+		}
+		return nil
+	}
+	v, err := cdiapi.MinimumRequiredVersion(spec)
+	if err != nil {
+		return fmt.Errorf("CDI spec version: %w", err)
+	}
+	spec.Version = v
+	if err := b.opts.CDI.WriteSpec(spec, device.LeasesCDISpecName); err != nil {
+		return fmt.Errorf("failed to write CDI spec %s: %w", device.LeasesCDISpecName, err)
+	}
+	return nil
+}
