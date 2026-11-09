@@ -23,15 +23,31 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 )
 
-// The commits of the Preparation record of a claim (state.Preparation) by
-// the front-end: one record per claim UID and driver, with the results of
-// the claim's allocation results of the driver. A Prepare commits the
-// record PREPARING with every result (the intent) before the engine touches
-// a device, PREPARED once the grants are realised and the CDI spec is
-// written; KEPT with the results of the grants that a failed Prepare's
-// rollback kept, or removed. An Unprepare commits UNPREPARING before it
-// revokes and releases, and removes the record once every grant is
-// released. The transitions are those of state.PreparationTable.
+// Preparation: the commits of the record of a claim as one driver prepares
+// it (state.Preparation), the record that kubelet's prepared flag of the
+// claim refers to.
+//
+// Identity: the claim UID and the driver (cxl.nri.io or the pool driver),
+// one record per pair, with a result per allocation result of the driver.
+//
+// States: state.PreparationState. A Prepare commits the record PREPARING
+// with every result (the intent) before the engine touches a device,
+// PREPARED once the grants are realised and the CDI spec is written; KEPT
+// with the results of the grants that a failed Prepare's rollback kept, or
+// removed. An Unprepare commits UNPREPARING before it revokes and releases,
+// and removes the record once every grant is released.
+//
+// Transitions: state.PreparationTable (docs/memory/cxl/states.md), applied
+// by state.Apply in the commits below; a transition not in it is refused.
+//
+// Invariants: those of state.Preparation; a PREPARED preparation's CDI
+// devices are in the CDI spec of its driver.
+//
+// Persistence: every commit is durable, bounded by commitTimeout and not by
+// the request's context, and done before kubelet gets the response.
+//
+// Locks and waits: the kubelet helper serializes the Prepares and
+// Unprepares of a driver; the store serializes the commits.
 
 // commitTimeout bounds a commit of the records of the claims, which the end
 // of a request does not withdraw.

@@ -12,11 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Command statedoc renders the transition tables and the record headers of
-// the CXL driver's internal/state and internal/containers packages, and
-// those of the kernel objects of pkg/cxl/kernel, into
-// docs/memory/cxl/states.md.
-// It runs by go generate in cmd/plugins/dra-driver-cxl.
 package main
 
 import (
