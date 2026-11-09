@@ -26,7 +26,7 @@ import (
 func (p *Plugin) Check() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.fenceReady || p.fenced.IsEmpty() {
+	if p.readiness != ReadinessReady || p.fenced.IsEmpty() {
 		return nil
 	}
 	var out []string

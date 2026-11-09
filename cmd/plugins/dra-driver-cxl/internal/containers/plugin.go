@@ -32,6 +32,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
 // Options configure a Plugin.
@@ -66,14 +67,16 @@ type Connection struct {
 //
 // Identity: one per driver process.
 //
-// States: the readiness of fencing, an in-memory latch: not ready (Fence
-// records a node only) until NRI has synchronized and the lends of the
-// leases are restored, then ready; never back. The NRI connection: not
-// started, connected, absent (Start failed: the containers are not fenced,
-// lends fail), lost (the process exits).
+// States: Readiness, the readiness of fencing of the running containers:
+// WAITING (Fence records a node only, no pass), SYNCHRONIZED,
+// LENDS_RESTORED, READY once NRI has synchronized and the lends of the
+// leases are restored, never back. Conn, the NRI connection: NONE,
+// STARTED, ABSENT (Start failed: the containers are not fenced, lends
+// fail), CLOSED (before Start returned), STOPPING, STOPPED, LOST (the
+// process exits).
 //
-// Transitions: the tables of Container; the readiness and the connection
-// as above.
+// Transitions: ReadinessTable and ConnTable, and the tables of Container; a
+// transition not in them is refused.
 //
 // Invariants: the fenced nodes only grow within a process; a fence pass and
 // a lend run under the update token.
@@ -83,12 +86,12 @@ type Connection struct {
 // (Seed), the table by Synchronize, the lends from the READY leases of the
 // store and the broker's first reconcile.
 //
-// Locks and waits: fenceMu serializes Fence across its pass; the update
+// Locks and waits: the mutex fenceMu serializes Fence across its pass; the update
 // token (token) is held from computing wantMems to recording the result of
 // UpdateContainers; the table mutex (mu) is never held across
 // UpdateContainers, a store commit or a callback, as the runtime serializes
-// NRI events and unsolicited updates with one lock; connMu guards the
-// connection. Order: fenceMu, token, mu.
+// NRI events and unsolicited updates with one lock; connMu guards Conn.
+// Order: fenceMu, token, mu, connMu.
 type Plugin struct {
 	opts Options
 	// fencing: defaults.container.fencing is allowed-mems.
@@ -109,24 +112,22 @@ type Plugin struct {
 	mu sync.Mutex
 	// stub is the NRI stub, nil while NRI is not connected.
 	stub nriStub
-	// connected is set when the stub has started, absent when it did not.
-	connected, absent bool
-	ctrs              map[string]*Container
-	seq               uint64
+	ctrs map[string]*Container
+	seq  uint64
 	// fenced are the fenced NUMA nodes, F.
 	fenced cpuset.CPUSet
 	// synced is closed at the first Synchronize.
 	synced     chan struct{}
 	goneFns    []func(pod state.PodRef, container string)
 	startedFns []func(pod state.PodRef, container string)
-	// lendsRestored is set when the lends of a restarted plugin are
-	// applied again, fenceReady when fencing of running containers runs.
-	lendsRestored, fenceReady bool
+	// readiness is the readiness of fencing (ReadinessTable).
+	readiness Readiness
 	// passes are the fence passes in the background.
 	passes sync.WaitGroup
 
-	connMu                    sync.Mutex
-	started, stopping, closed bool
+	connMu sync.Mutex
+	// conn is the state of the NRI connection (ConnTable).
+	conn ConnState
 }
 
 // nriStub is the part of stub.Stub that the plugin uses.
@@ -156,6 +157,8 @@ func New(opts Options) (*Plugin, error) {
 		ctrs:      map[string]*Container{},
 		fenced:    cpuset.New(),
 		synced:    make(chan struct{}),
+		readiness: ReadinessWaiting,
+		conn:      ConnNone,
 	}
 	switch opts.Store.Origin() {
 	case store.New, store.NewState, store.Lost:
@@ -219,11 +222,35 @@ func (p *Plugin) Fencing() bool {
 	return p.fencing
 }
 
-// connect sets the stub of the connection, nil when NRI did not start.
+// connect sets the stub of the connection, nil when NRI did not start
+// (the connection ABSENT).
 func (p *Plugin) connect(s nriStub) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.stub, p.connected, p.absent = s, s != nil, s == nil
+	p.stub = s
+	p.mu.Unlock()
+	if s == nil {
+		p.connMu.Lock()
+		defer p.connMu.Unlock()
+		p.connTo(ConnAbsent, TriggerNRIStart)
+	}
+}
+
+// connTo applies a transition of the NRI connection; one that its table
+// refuses is logged and leaves it as it is. Called with connMu held.
+func (p *Plugin) connTo(to ConnState, trigger Trigger) {
+	if p.conn == "" {
+		p.conn = ConnNone
+	}
+	if err := fsm.Apply(&ConnTable, &p.conn, to, trigger); err != nil {
+		klog.Warningf("NRI: %v", err)
+	}
+}
+
+// absent tells whether the stub could not be made or started.
+func (p *Plugin) absent() bool {
+	p.connMu.Lock()
+	defer p.connMu.Unlock()
+	return p.conn == ConnAbsent
 }
 
 // Stop shuts the plugin down: the steering managers stop, then the
@@ -262,14 +289,19 @@ func (p *Plugin) Stop() {
 func (p *Plugin) MarkStopping() {
 	p.connMu.Lock()
 	defer p.connMu.Unlock()
-	p.stopping = true
+	switch p.conn {
+	case ConnStopping, ConnStopped, ConnLost:
+		p.connTo(p.conn, TriggerStopping)
+	default:
+		p.connTo(ConnStopping, TriggerStopping)
+	}
 }
 
 // Stopping tells whether a close of the connection is no loss any more.
 func (p *Plugin) Stopping() bool {
 	p.connMu.Lock()
 	defer p.connMu.Unlock()
-	return p.stopping
+	return p.conn == ConnStopping || p.conn == ConnStopped
 }
 
 // onClose records that the connection to the runtime has closed and exits
@@ -281,8 +313,17 @@ func (p *Plugin) Stopping() bool {
 func (p *Plugin) onClose(ctx context.Context) {
 	p.connMu.Lock()
 	defer p.connMu.Unlock()
-	p.closed = true
-	p.exitIfLostLocked(ctx)
+	switch p.conn {
+	case "", ConnNone:
+		p.connTo(ConnClosed, TriggerNRIClose)
+	case ConnStarted:
+		p.closedLocked(ctx, TriggerNRIClose)
+	case ConnStopping:
+		p.connTo(ConnStopped, TriggerNRIClose)
+		klog.V(3).Info("NRI connection to the runtime closed (stopping)")
+	default:
+		p.connTo(p.conn, TriggerNRIClose)
+	}
 }
 
 // connStarted records that Start of the stub has succeeded, and exits if
@@ -290,22 +331,26 @@ func (p *Plugin) onClose(ctx context.Context) {
 func (p *Plugin) connStarted(ctx context.Context) {
 	p.connMu.Lock()
 	defer p.connMu.Unlock()
-	p.started = true
-	p.exitIfLostLocked(ctx)
+	switch p.conn {
+	case "", ConnNone:
+		p.connTo(ConnStarted, TriggerNRIStart)
+	case ConnClosed:
+		p.closedLocked(ctx, TriggerNRIStart)
+	default:
+		p.connTo(p.conn, TriggerNRIStart)
+	}
 }
 
-// exitIfLostLocked ends the process with exit status 1 if the connection
-// that the stub has started is closed, not by Stop, while ctx is not done.
-// Called with connMu held: Stop cannot come between the decision and the
-// exit.
-func (p *Plugin) exitIfLostLocked(ctx context.Context) {
-	switch {
-	case !p.started || !p.closed:
-		return
-	case p.stopping || ctx.Err() != nil:
+// closedLocked records a close of a started connection: STOPPED once ctx
+// is done, else LOST, and the process ends with exit status 1. Called
+// with connMu held: Stop cannot come between the decision and the exit.
+func (p *Plugin) closedLocked(ctx context.Context, trigger Trigger) {
+	if ctx.Err() != nil {
+		p.connTo(ConnStopped, trigger)
 		klog.V(3).Info("NRI connection to the runtime closed (stopping)")
 		return
 	}
+	p.connTo(ConnLost, trigger)
 	klog.Error("NRI connection to the runtime lost, exiting to be restarted and connect again")
 	klog.Flush()
 	exitOnNRILost(1)

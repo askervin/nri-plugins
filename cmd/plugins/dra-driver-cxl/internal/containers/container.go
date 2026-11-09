@@ -151,7 +151,8 @@ const (
 
 // Triggers are the triggers of the tables, in the order of the
 // documentation.
-var Triggers = []Trigger{TriggerCreate, TriggerStart, TriggerPostStart, TriggerStop, TriggerSynchronize}
+var Triggers = []Trigger{TriggerCreate, TriggerStart, TriggerPostStart, TriggerStop, TriggerSynchronize,
+	TriggerLendsRestored, TriggerNRIStart, TriggerNRIClose, TriggerStopping}
 
 // LifecycleTable is the transition table of Container.Lifecycle.
 var LifecycleTable = fsm.Table[Lifecycle]{
@@ -279,6 +280,7 @@ var ManagementTable = fsm.Table[Management]{
 func Catalogue() []state.Object {
 	return []state.Object{
 		{Name: "Container", Tables: []fsm.TableText{LifecycleTable.Text(), ManagementTable.Text()}},
+		{Name: "Plugin", Tables: []fsm.TableText{ReadinessTable.Text(), ConnTable.Text()}},
 	}
 }
 

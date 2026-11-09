@@ -82,7 +82,7 @@ func (p *Plugin) Synchronize(_ context.Context, pods []*api.PodSandbox, ctrs []*
 		close(p.synced)
 	}
 	klog.V(3).Infof("NRI Synchronize: %d pods, %d containers tracked", len(pods), len(p.ctrs))
-	p.startFencing()
+	p.synchronized()
 	return nil, nil
 }
 

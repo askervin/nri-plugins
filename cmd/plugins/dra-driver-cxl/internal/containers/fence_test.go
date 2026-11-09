@@ -72,7 +72,7 @@ func TestFenceNodes(t *testing.T) {
 	// before Start: recorded only
 	n := newFenceEnv(t, "0-2")
 	n.p.mu.Lock()
-	n.p.stub, n.p.connected = nil, false
+	n.p.stub = nil
 	n.p.mu.Unlock()
 	n.p.Fence(ctx, 2)
 	if got := n.p.Fenced().String(); got != "2" {

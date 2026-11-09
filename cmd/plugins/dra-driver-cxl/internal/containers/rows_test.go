@@ -32,7 +32,7 @@ func TestMain(m *testing.M) {
 	rows := fsm.CountRows()
 	code := m.Run()
 	if f := flag.Lookup("test.run"); code == 0 && (f == nil || f.Value.String() == "") {
-		code = reportRows(rows, LifecycleTable.Text(), ManagementTable.Text())
+		code = reportRows(rows, LifecycleTable.Text(), ManagementTable.Text(), ReadinessTable.Text(), ConnTable.Text())
 	}
 	os.Exit(code)
 }
@@ -105,9 +105,11 @@ func checkTable[S comparable](t *testing.T, table *fsm.Table[S]) {
 func TestTables(t *testing.T) {
 	checkTable(t, &LifecycleTable)
 	checkTable(t, &ManagementTable)
+	checkTable(t, &ReadinessTable)
+	checkTable(t, &ConnTable)
 	for _, tr := range Triggers {
 		used := false
-		for _, table := range []fsm.TableText{LifecycleTable.Text(), ManagementTable.Text()} {
+		for _, table := range []fsm.TableText{LifecycleTable.Text(), ManagementTable.Text(), ReadinessTable.Text(), ConnTable.Text()} {
 			for _, r := range table.Rows {
 				used = used || slices.Contains(r.Triggers, string(tr))
 			}
@@ -116,7 +118,8 @@ func TestTables(t *testing.T) {
 			t.Errorf("trigger %s is used by no row", tr)
 		}
 	}
-	if got := Catalogue(); len(got) != 1 || got[0].Name != "Container" || len(got[0].Tables) != 2 {
+	if got := Catalogue(); len(got) != 2 || got[0].Name != "Container" || len(got[0].Tables) != 2 || got[1].Name != "Plugin" ||
+		len(got[1].Tables) != 2 {
 		t.Fatalf("catalogue %+v", got)
 	}
 	// a transition that its table refuses leaves the record as it is

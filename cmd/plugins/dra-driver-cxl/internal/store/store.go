@@ -210,9 +210,34 @@ type Options struct {
 	files fileOps
 }
 
-// Store keeps the document: readers get an immutable snapshot, commits are
+// Store keeps the document of the records of the node, state.json in the
+// plugin data directory: readers get an immutable snapshot, commits are
 // applied by one writer goroutine in groups, each group written with one
 // fsync'd rename.
+//
+// Identity: one per process, over its directory, locked with flock so that
+// a second process cannot open it.
+//
+// States: OPEN (Origin Loaded, FromPrev, New or NewState): commits are
+// applied and written. LOST (Origin Lost, the LostError in lost): neither
+// state.json nor state.json.prev decodes; the snapshot is an empty
+// document, every commit fails with the LostError and nothing is written.
+// CLOSED (closed): every commit fails with ErrClosed.
+//
+// Transitions: Open makes an OPEN or a LOST store; Close makes either
+// CLOSED after the pending commits are written; nothing else changes the
+// state.
+//
+// Invariants: the snapshot is never ahead of the disk for a Durable commit:
+// a failed write leaves it as it was; Generation grows by one per write.
+//
+// Persistence: state.json, the previous document in state.json.prev, and
+// with CompatViews the five view files of the observer.
+//
+// Locks and waits: mu guards the document pointer, the pending commits
+// and closed, and is never held across a write; the writer goroutine
+// applies the pure commit functions; a Durable commit waits for its group's
+// write or the end of its context.
 type Store struct {
 	opts   Options
 	files  fileOps

@@ -525,6 +525,10 @@ builds them again after a restart. Triggers:
 - `NRI PostStartContainer`: the NRI PostStartContainer of a container: the runtime marked it started.
 - `NRI StopContainer`: the NRI StopContainer or RemoveContainer of a container.
 - `NRI Synchronize`: the NRI Synchronize of the plugin: the containers that the runtime has.
+- `lends restored`: the lease broker's word that the lends of the leases are applied again (LendsRestored).
+- `NRI Start`: the return of Start of the NRI stub.
+- `NRI close`: the close of the NRI connection that the stub reports.
+- `Stop`: the stop of the driver (MarkStopping, Stop).
 
 ## Container (in memory)
 
@@ -578,6 +582,57 @@ Refused:
 **Persistence.** None, the table is in memory; Synchronize builds it again after a restart, the leases of the store seed the lends, and a Steered record of the store names a container whose manager was of a previous process.
 
 **Locks and waits.** The plugin's table mutex guards the record; the update token is held from the computation of wantMems to the record of the update's result.
+
+## Plugin (in memory)
+
+Plugin is the NRI plugin of the node: the table of the containers, the fenced NUMA nodes and the lends of nodes to running containers. It is the only writer of the cpuset.mems of the containers that it does not steer.
+
+**Identity.** One per driver process.
+
+**States.** Readiness, the readiness of fencing of the running containers: WAITING (Fence records a node only, no pass), SYNCHRONIZED, LENDS_RESTORED, READY once NRI has synchronized and the lends of the leases are restored, never back. Conn, the NRI connection: NONE, STARTED, ABSENT (Start failed: the containers are not fenced, lends fail), CLOSED (before Start returned), STOPPING, STOPPED, LOST (the process exits).
+
+**Transitions.** ReadinessTable and ConnTable, and the tables of Container; a transition not in them is refused.
+
+### Plugin.Readiness
+
+States: WAITING, SYNCHRONIZED, LENDS_RESTORED, READY.
+
+| from | to | trigger | guard | effects |
+|:-----|:---|:--------|:------|:--------|
+| WAITING | SYNCHRONIZED | `NRI Synchronize`: the first Synchronize built the container table | - | WaitSynchronized returns: the lease peers are identified, Prepare goes on |
+| WAITING | LENDS_RESTORED | `lends restored`: the broker's first reconcile restored the lends before the first Synchronize | - | - |
+| SYNCHRONIZED | READY | `lends restored`: the lends restored after the first Synchronize | - | a fence pass in the background (fencing allowed-mems); logged once |
+| LENDS_RESTORED | READY | `NRI Synchronize`: the first Synchronize after the lends were restored | - | WaitSynchronized returns; a fence pass in the background (fencing allowed-mems); logged once |
+| SYNCHRONIZED, READY | (unchanged) | `NRI Synchronize`: a later Synchronize | - | READY: a fence pass in the background |
+
+Refused:
+
+- READY -> WAITING, SYNCHRONIZED, LENDS_RESTORED: fencing stays ready for the life of the process
+
+### Plugin.Conn
+
+States: NONE, STARTED, ABSENT, CLOSED, STOPPING, STOPPED, LOST.
+
+| from | to | trigger | guard | effects |
+|:-----|:---|:--------|:------|:--------|
+| NONE | STARTED | `NRI Start`: Start of the stub succeeded | - | the plugin gets the container events |
+| NONE, CLOSED | ABSENT | `NRI Start`: the stub could not be made or started | - | Fence records a node only (warned), lends fail with "lending unavailable: NRI not connected" |
+| NONE | CLOSED | `NRI close`: the runtime closed the connection before Start returned | - | - |
+| STARTED, CLOSED | LOST | `NRI Start`, `NRI close`: the connection is closed after it started, not stopping, while the context of Start runs | - | exit status 1: the restarted process connects again and gets its state from the store |
+| STARTED, CLOSED | STOPPED | `NRI Start`, `NRI close`: the connection is closed after it started, after the context of Start ended | - | - |
+| NONE, STARTED, ABSENT, CLOSED | STOPPING | `Stop`: the driver stops | - | a close of the connection from now on is no loss |
+| STOPPING | STOPPED | `NRI close`: the connection closed while stopping | - | - |
+| STOPPING, STOPPED, ABSENT, LOST | (unchanged) | `NRI Start`, `NRI close`, `Stop`: a Start, close or stop of a connection that is stopping, gone or absent | - | - |
+
+Refused:
+
+- LOST, STOPPED -> STARTED: the stub never connects again: the process exits
+
+**Invariants.** The fenced nodes only grow within a process; a fence pass and a lend run under the update token.
+
+**Persistence.** The Steered records in the store; the rest is in memory and rebuilt at a start: the fenced nodes seeded from the grants of this boot (Seed), the table by Synchronize, the lends from the READY leases of the store and the broker's first reconcile.
+
+**Locks and waits.** The mutex fenceMu serializes Fence across its pass; the update token (token) is held from computing wantMems to recording the result of UpdateContainers; the table mutex (mu) is never held across UpdateContainers, a store commit or a callback, as the runtime serializes NRI events and unsolicited updates with one lock; connMu guards Conn. Order: fenceMu, token, mu, connMu.
 
 
 ## Kernel objects

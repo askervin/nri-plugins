@@ -19,6 +19,8 @@ import (
 
 	"k8s.io/klog/v2"
 	"k8s.io/utils/cpuset"
+
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
 // The fence (defaults.container.fencing allowed-mems): the NUMA nodes F on
@@ -93,16 +95,15 @@ func (p *Plugin) fence(node int) {
 		return
 	}
 	p.fenced = p.fenced.Union(cpuset.New(node))
-	nodes, connected, absent := p.fenced, p.connected, p.absent
+	nodes := p.fenced
 	p.mu.Unlock()
 
 	klog.Infof("NRI fence: fencing CXL node %d (fenced nodes %s)", node, nodes)
-	switch {
-	case absent:
+	if p.absent() {
 		klog.Warningf("NRI fence: NRI not connected, containers are not fenced from CXL node %d", node)
-	case connected:
-		p.pass(context.Background(), "")
+		return
 	}
+	p.pass(context.Background(), "")
 }
 
 // LendsRestored tells that the lends of a restarted plugin are applied
@@ -111,36 +112,50 @@ func (p *Plugin) fence(node int) {
 func (p *Plugin) LendsRestored() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.lendsRestored {
+	switch p.readiness {
+	case ReadinessLendsRestored, ReadinessReady:
 		return
+	case ReadinessSynchronized:
+		p.ready(ReadinessReady, TriggerLendsRestored)
+	default:
+		p.ready(ReadinessLendsRestored, TriggerLendsRestored)
 	}
-	p.lendsRestored = true
-	p.startFencing()
 }
 
-// startFencing makes fencing of running containers ready when NRI has
-// synchronized and the lends are restored, and then starts a fence pass in
-// the background. With fencing none there is no pass, but the point is
-// logged all the same: it tells when the lends of a restarted plugin are
-// back. Called with mu held.
-func (p *Plugin) startFencing() {
-	if !p.lendsRestored {
+// synchronized records the first Synchronize, or a later one, in the
+// readiness of fencing. Called with mu held.
+func (p *Plugin) synchronized() {
+	to := ReadinessSynchronized
+	if p.readiness == ReadinessLendsRestored || p.readiness == ReadinessReady {
+		to = ReadinessReady
+	}
+	p.ready(to, TriggerSynchronize)
+}
+
+// ready applies a transition of the readiness of fencing; at READY a fence
+// pass starts in the background. With fencing none there is no pass, but
+// the first READY is logged all the same: it tells when the lends of a
+// restarted plugin are back. Called with mu held.
+func (p *Plugin) ready(to Readiness, trigger Trigger) {
+	from := p.readiness
+	if from == "" {
+		from = ReadinessWaiting
+	}
+	p.readiness = from
+	if err := fsm.Apply(&ReadinessTable, &p.readiness, to, trigger); err != nil {
+		klog.Warningf("NRI fence: %v", err)
 		return
 	}
-	select {
-	case <-p.synced:
-	default:
+	if to != ReadinessReady {
 		return
 	}
 	if !p.fencing {
-		if !p.fenceReady {
-			p.fenceReady = true
+		if from != ReadinessReady {
 			klog.V(3).Info("NRI fence: lends restored (fencing none)")
 		}
 		return
 	}
-	if !p.fenceReady {
-		p.fenceReady = true
+	if from != ReadinessReady {
 		klog.V(3).Info("NRI fence: lends restored, fencing running containers")
 	}
 	p.background("")
@@ -152,7 +167,7 @@ func (p *Plugin) startFencing() {
 // reached its spec only, also that of a pass while the plugin synchronized
 // as the runtime was creating its task. Called with mu held.
 func (p *Plugin) fenceAtStart(c *Container) bool {
-	return p.fenceReady && c.Management == ManagementFenced && !p.fenced.IsEmpty()
+	return p.readiness == ReadinessReady && c.Management == ManagementFenced && !p.fenced.IsEmpty()
 }
 
 // repair starts the repair pass of one started container in the
@@ -187,7 +202,7 @@ func (p *Plugin) pass(ctx context.Context, only string) {
 	}
 	// not waiting for a lend when not ready: readiness never ends
 	p.mu.Lock()
-	ready := p.fenceReady
+	ready := p.readiness == ReadinessReady
 	p.mu.Unlock()
 	if !ready {
 		return

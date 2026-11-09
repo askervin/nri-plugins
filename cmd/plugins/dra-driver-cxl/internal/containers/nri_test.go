@@ -419,7 +419,7 @@ func waitClosed(t *testing.T, p *Plugin) {
 	t.Helper()
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
 		p.connMu.Lock()
-		closed := p.closed
+		closed := p.conn == ConnClosed || p.conn == ConnStopped || p.conn == ConnLost
 		p.connMu.Unlock()
 		if closed {
 			return
