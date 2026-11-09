@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -452,7 +453,6 @@ func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Driver
 // devices of the sysfs under sysfsRoot, the CDI specs of the claims of
 // cxl.nri.io rewritten in the directory cdiRoot.
 func (fe *frontEnds) recover(ctx context.Context, cdiRoot, sysfsRoot string, driverConfig *DriverConfig, devices *deviceEngine) error {
-	cfg, poolSerials := fe.publisher.ScanInput(ctx)
 	detected, err := nricxl.DevicesFromSysfs(sysfsRoot)
 	if err != nil {
 		return fmt.Errorf("failed to detect devices: %v", err)
@@ -460,8 +460,13 @@ func (fe *frontEnds) recover(ctx context.Context, cdiRoot, sysfsRoot string, dri
 	if driverConfig.Testability != nil {
 		injectFakeDevices(driverConfig.Testability, detected)
 	}
-	devices.setShared(dra.SharedSerials(cfg, detected.MemoryDevices, poolSerials))
-	if err := devices.forgetPoolSerials(ctx, poolSerials); err != nil {
+	// phase 1 knows the pool serials of the records: those that the pool
+	// driver prepares and the remembered ones
+	known := map[uint64]bool{}
+	maps.Copy(known, fe.pool.Serials())
+	maps.Copy(known, fe.watcher.PoolSerials())
+	devices.setShared(dra.SharedSerials(driverConfig.publishConfig(), detected.MemoryDevices, known))
+	if err := devices.forgetPoolSerials(ctx, known); err != nil {
 		return err
 	}
 	rec, err := devices.recover(ctx)
@@ -470,6 +475,10 @@ func (fe *frontEnds) recover(ctx context.Context, cdiRoot, sysfsRoot string, dri
 	}
 	fe.pool.Recovered(rec, filepath.Join(fe.poolDir, poolStateFileName))
 	devices.setGuard(localPoolGuard(fe.pool, fe.watcher))
+	// the first list of the pool ResourceSlices, after phase 1: it gates
+	// the publication of local memdevs
+	cfg, poolSerials := fe.publisher.ScanInput(ctx)
+	devices.setShared(dra.SharedSerials(cfg, detected.MemoryDevices, poolSerials))
 	if driverConfig.manageMemdevs() {
 		if _, err := devices.k.BlockSize(); err != nil {
 			klog.Warningf("local: memory block size: %v: local memory devices are not published until the memory block size is known", err)

@@ -25,10 +25,12 @@ import (
 	"time"
 
 	resourceapi "k8s.io/api/resource/v1"
+
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	nricxl "github.com/containers/nri-plugins/pkg/cxl"
@@ -879,5 +881,41 @@ func TestEveryPeriod(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("not stopped")
+	}
+}
+
+// The first list of the pool ResourceSlices runs after phase 1 of the
+// recovery (L-57): when it runs, the engine has recovered its records and
+// the local guard is set.
+func TestFirstListAfterRecovery(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	for _, d := range []string{"sys/bus/cxl/devices", "sys/devices/system/node", "cdi"} {
+		noErr(t, os.MkdirAll(filepath.Join(dir, d), 0o755))
+	}
+	flags := &CXLFlags{CDIRoot: filepath.Join(dir, "cdi"), NodeName: testNode}
+	config := &pluginConfig{Flags: flags, KubeletPluginDir: dir}
+	rules := newDriverRules(config, flags)
+	st, closeStore, err := openDriverStore(ctx, config, flags, dir, "", rules)
+	noErr(t, err)
+	defer closeStore()
+	devices, err := newDriverDevices(config, flags, &DriverConfig{}, dir, nil, st, rules)
+	noErr(t, err)
+	lists, guarded := 0, 0
+	watcher := provenance.New(provenance.Options{Store: st, NodeName: testNode, Name: "poolSerials.json",
+		List: func(context.Context) ([]resourceapi.ResourceSlice, error) {
+			lists++
+			devices.mu.Lock()
+			if devices.guard != nil {
+				guarded++
+			}
+			devices.mu.Unlock()
+			return nil, nil
+		}})
+	fe, err := newFrontEnds(config, flags, &DriverConfig{}, dir, "", st, devices, watcher, rules)
+	noErr(t, err)
+	noErr(t, fe.recover(ctx, flags.CDIRoot, dir, &DriverConfig{}, devices))
+	if lists == 0 || guarded != lists {
+		t.Fatalf("%d lists, %d after the recovery", lists, guarded)
 	}
 }

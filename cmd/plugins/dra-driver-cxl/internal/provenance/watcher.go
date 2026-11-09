@@ -244,6 +244,17 @@ func DeviceSerial(d *resourcev1.Device, driver string) (uint64, bool) {
 	return 0, false
 }
 
+// PoolSerials returns the serials of the POOL records, without a list; nil
+// for a nil watcher.
+func (w *Watcher) PoolSerials() map[uint64]bool {
+	if w == nil {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.poolSerialsLocked()
+}
+
 // Failing tells whether the last list failed.
 func (w *Watcher) Failing() bool {
 	if w == nil {
