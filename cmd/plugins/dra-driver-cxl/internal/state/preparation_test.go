@@ -49,8 +49,6 @@ func TestPreparationLifeCycles(t *testing.T) {
 		st{PreparationUnknown, TriggerUnprepare})
 	walk(t, tb, "a cut Prepare of another boot, refused once, prepared anew", PreparationPreparing,
 		st{PreparationStale, TriggerLoad}, st{PreparationStale, TriggerPrepare}, st{PreparationPreparing, TriggerPrepare})
-	walk(t, tb, "a preparation of another boot of a driver that drops them", PreparationPrepared,
-		st{PreparationUnknown, TriggerLoad})
 }
 
 func TestPreparationPrepared(t *testing.T) {

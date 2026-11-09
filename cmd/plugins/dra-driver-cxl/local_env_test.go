@@ -173,8 +173,7 @@ func (e *localTestEnv) start() *dra.Plugin {
 	}
 	var err error
 	e.st, err = store.Open(context.Background(), store.Options{Dir: e.dir, PoolDir: e.poolDir, PoolDriver: device.PoolDriverName,
-		BootID: e.k.BootID(), CompatViews: true, SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot(),
-		DropOtherBoot: dra.DropOtherBoot(e.rules()...)})
+		BootID: e.k.BootID(), CompatViews: true, SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot()})
 	noErr(t, err)
 	e.devices, err = newDeviceEngine(deviceConfig{
 		Kernel:          e.k.Kernel(),

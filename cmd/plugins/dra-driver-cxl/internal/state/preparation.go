@@ -221,18 +221,9 @@ var PreparationTable = Table[PreparationState]{
 		},
 		{
 			From: preparationStored, To: PreparationStale, Triggers: list(TriggerLoad),
-			When:  "the record's boot id differs from the running boot",
-			Guard: "its driver keeps the records of another boot",
+			When: "the record's boot id differs from the running boot",
 			Effects: "commit (l): grants keep Serial, Source and Asked, Got and Intent cleared; no CDI device; " +
 				"nothing released at start",
-		},
-		{
-			From: preparationStored, To: PreparationUnknown, Triggers: list(TriggerLoad),
-			When: "the record's boot id differs from the running boot",
-			Guard: "its driver drops the records of another boot (cxl.nri.io until its preparations are kept as " +
-				"stale)",
-			Effects: "commit (l) removing the record and its grants; kubelet's Prepare again prepares the claim anew, " +
-				"an Unprepare finds nothing",
 		},
 		{
 			From: list(PreparationStale), To: PreparationPreparing, Triggers: list(TriggerPrepare),

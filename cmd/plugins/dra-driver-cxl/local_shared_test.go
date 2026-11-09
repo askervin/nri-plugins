@@ -30,6 +30,7 @@ import (
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -586,8 +587,9 @@ func TestLocalSharedRegionGone(t *testing.T) {
 	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{"u2"}})
 }
 
-// The preparations of another boot are dropped at the start without
-// touching the memdev: no claim, no use, no command.
+// The preparations of another boot are kept PREPARED_STALE at the start
+// without touching the memdev: no prepared claim, no use, no command; the
+// Prepare again makes the claim anew.
 func TestLocalSharedReconcileOtherBootAndHalfMade(t *testing.T) {
 	e := newSharedEnv(t)
 	e.mustPrepare(sharedClaim("u1", "1"))
@@ -597,11 +599,14 @@ func TestLocalSharedReconcileOtherBootAndHalfMade(t *testing.T) {
 	if got := e.k.CommandsSince(before); got != "" {
 		t.Fatalf("another boot's records touched the system:\n%s", got)
 	}
-	if e.preparation("u1") != nil || e.s.ClaimInfo("u1") != nil {
-		t.Fatalf("claim of another boot %+v", e.preparation("u1"))
+	if p := e.preparation("u1"); p == nil || p.State != state.PreparationStale || e.s.ClaimInfo("u1") != nil {
+		t.Fatalf("claim of another boot %+v", p)
 	}
 	wantSharedUse(t, e, nil)
 	e.mustPrepare(sharedClaim("u1", "1"))
+	if p := e.preparation("u1"); p == nil || p.State != state.PreparationPrepared {
+		t.Fatalf("claim prepared again %+v", p)
+	}
 	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{"u1"}})
 }
 

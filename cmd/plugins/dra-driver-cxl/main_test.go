@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
@@ -208,9 +209,9 @@ func TestEnsureDir(t *testing.T) {
 }
 
 // The claims of cxl.nri.io prepared in another boot are not prepared at
-// the start: no record, not in the views, no CDI device, no NUMA node to
-// fence, no command; their Unprepare finds nothing, their Prepare again
-// prepares them anew in this boot.
+// the start: their records PREPARED_STALE, not in the views, no CDI device,
+// no NUMA node to fence, no command; their Unprepare releases nothing and
+// removes the record, their Prepare again prepares them anew in this boot.
 func TestPreparedClaimsOtherBoot(t *testing.T) {
 	e := newLocalTestEnv(t)
 	e.start()
@@ -226,8 +227,8 @@ func TestPreparedClaimsOtherBoot(t *testing.T) {
 		t.Fatalf("commands at the start:\n%s", got)
 	}
 	for _, uid := range []string{"u1", "u2"} {
-		if e.preparation(uid) != nil || e.s.ClaimInfo(uid) != nil {
-			t.Fatalf("claim %s of another boot: %+v", uid, e.preparation(uid))
+		if p := e.preparation(uid); p == nil || p.State != state.PreparationStale || e.s.ClaimInfo(uid) != nil {
+			t.Fatalf("claim %s of another boot: %+v", uid, p)
 		}
 	}
 	for _, name := range []string{store.ViewPreparedClaims, store.ViewPreparedClaimsInfo} {
@@ -246,12 +247,20 @@ func TestPreparedClaimsOtherBoot(t *testing.T) {
 	if e.inUse() {
 		t.Fatal("the memdev is in use")
 	}
+	before = e.k.Commands()
 	e.mustUnprepare("u1")
+	if got := e.k.CommandsSince(before); got != "" || e.preparation("u1") != nil {
+		t.Fatalf("the Unprepare of a claim of another boot: %+v\n%s", e.preparation("u1"), got)
+	}
 	e.mustPrepare(localClaim("u1", localBlockSize))
+	if p := e.preparation("u2"); p == nil || p.State != state.PreparationStale {
+		t.Fatalf("claim u2 of another boot %+v", p)
+	}
+	e.mustPrepare(localClaim("u2", localBlockSize, localDaxConfig))
 	if info := e.s.ClaimInfo("u1"); info == nil || info.BootID != e.k.BootID() || info.BootID == old {
 		t.Fatalf("prepared again %+v", info)
 	}
-	if spec := e.cdiSpec(); spec == nil || len(spec.Devices) != 1 || spec.Devices[0].Name != "claim-u1-0" {
+	if spec := e.cdiSpec(); spec == nil || len(spec.Devices) != 2 || spec.Devices[0].Name != "claim-u1-0" {
 		t.Fatalf("CDI spec %+v", spec)
 	}
 }

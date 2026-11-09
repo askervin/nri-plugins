@@ -32,7 +32,6 @@ import (
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
@@ -397,7 +396,6 @@ func openTestStateStore(t *testing.T, local, pool, bootID string, flags store.Fl
 	t.Helper()
 	s, closeStore, err := openStateStore(context.Background(), stateStoreConfig{
 		LocalDir: local, PoolDir: pool, PoolDriver: device.PoolDriverName, BootID: bootID, Flags: flags, SysRoot: "/sys", DevRoot: "/dev",
-		DropOtherBoot: dra.DropOtherBoot(dra.LocalRules(filepath.Join(local, mountsDirName))),
 	})
 	if err != nil {
 		t.Fatal(err)

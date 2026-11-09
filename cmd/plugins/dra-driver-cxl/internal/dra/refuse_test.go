@@ -120,8 +120,7 @@ func TestPrepareRefusedKeepsPreparing(t *testing.T) {
 	e.wantClean()
 }
 
-// After a reboot the claims of the pool driver are PREPARED_STALE (those
-// of cxl.nri.io are dropped): a refused Prepare again keeps one, a Prepare
+// After a reboot the claims of both drivers are PREPARED_STALE: a refused Prepare again keeps one, a Prepare
 // again prepares it anew, an Unprepare of another removes it without a
 // revoke.
 func TestPrepareRefusedKeepsStale(t *testing.T) {
@@ -132,7 +131,7 @@ func TestPrepareRefusedKeepsStale(t *testing.T) {
 	logs := klogCapture(t)
 	e.reboot()
 	e.wantState(e.pool, "u1", state.PreparationStale)
-	e.wantState(e.local, "l1", state.PreparationUnknown)
+	e.wantState(e.local, "l1", state.PreparationStale)
 	if e.cdiDevice(e.pool, "claim-u1-0") != nil || e.pool.ClaimInfo("u1") != nil {
 		t.Fatal("a stale claim has CDI devices")
 	}
@@ -146,7 +145,9 @@ func TestPrepareRefusedKeepsStale(t *testing.T) {
 	e.mustUnprepare(e.pool, "u2")
 	wantLogText(t, logs(), "cxl-pool.nri.io: unpreparing claim demo/claim-u2 (u2), not prepared any more (")
 	e.mustUnprepare(e.pool, "u1")
+	e.wantState(e.local, "l1", state.PreparationStale)
 	e.mustUnprepare(e.local, "l1")
+	e.wantState(e.local, "l1", state.PreparationUnknown)
 	e.wantClean()
 }
 

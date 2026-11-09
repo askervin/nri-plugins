@@ -266,7 +266,7 @@ func (r driverRules) all() []dra.SourceRules {
 
 // openDriverStore opens the state store in the plugin data directory of
 // cxl.nri.io with the state files of the pool driver in its own, and
-// returns it and its close; the load applies the DropOtherBoot of rules.
+// returns it and its close.
 func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot, bootID string, rules driverRules) (*store.Store, func(), error) {
 	poolDir := ""
 	if cxlFlags.PoolDriverName != "" {
@@ -294,7 +294,6 @@ func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFla
 			_, err := os.Stat(filepath.Join(sysRoot, "bus", "cxl", "devices", name))
 			return err == nil
 		},
-		DropOtherBoot: dra.DropOtherBoot(rules.all()...),
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("state store: %w", err)

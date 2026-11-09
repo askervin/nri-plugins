@@ -251,8 +251,7 @@ func autoStateBackend(path string) stateBackend {
 	}
 	// the files of the test, which the first start moves aside
 	files := testFiles(dir, nil)
-	opts := store.Options{Dir: dir, PoolDir: dir, PoolDriver: device.PoolDriverName, CompatViews: true,
-		DropOtherBoot: func(driver string) bool { return driver == device.DriverName }}
+	opts := store.Options{Dir: dir, PoolDir: dir, PoolDriver: device.PoolDriverName, CompatViews: true}
 	if boot, ok := boots.Load(dir); ok {
 		opts.BootID = boot.(string)
 	}

@@ -699,12 +699,12 @@ func TestDriverRules(t *testing.T) {
 				return nil
 			}))
 		} else {
+			// both drivers keep their preparations of another boot
 			r := st.Snapshot().Records
-			if p := r.Preparation(device.DriverName, uid(device.DriverName)); p != nil {
-				t.Errorf("a local preparation of another boot is kept: %+v", p)
-			}
-			if p := r.Preparation(device.PoolDriverName, uid(device.PoolDriverName)); p == nil || p.State != state.PreparationStale {
-				t.Errorf("the pool preparation of another boot: %+v", p)
+			for _, driver := range []string{device.DriverName, device.PoolDriverName} {
+				if p := r.Preparation(driver, uid(driver)); p == nil || p.State != state.PreparationStale {
+					t.Errorf("the preparation of %s of another boot: %+v", driver, p)
+				}
 			}
 		}
 		closeStore()

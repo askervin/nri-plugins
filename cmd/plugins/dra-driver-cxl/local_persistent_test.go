@@ -471,12 +471,18 @@ func TestLocalPersistentRestart(t *testing.T) {
 		t.Fatalf("left: %+v", e.k.MountTable())
 	}
 
-	// a reboot: the claims of the other boot are dropped untouched
+	// a reboot: the claims of the other boot are kept PREPARED_STALE
+	// untouched; their Unprepare releases nothing and removes the record
 	e.mustPrepare(pmemClaim("ro2", localPmemShare, localPmemFsRO))
 	before = e.k.Commands()
 	e.reboot()
-	if e.k.CommandsSince(before) != "" || e.used() || e.s.ClaimInfo("ro2") != nil || e.preparation("ro2") != nil {
-		t.Fatalf("a reboot touched the device or kept the claim:\n%s", e.k.CommandsSince(before))
+	if p := e.preparation("ro2"); e.k.CommandsSince(before) != "" || e.used() || e.s.ClaimInfo("ro2") != nil ||
+		p == nil || p.State != state.PreparationStale {
+		t.Fatalf("a reboot touched the device or did not keep the claim stale (%+v):\n%s", p, e.k.CommandsSince(before))
+	}
+	e.mustUnprepare("ro2")
+	if e.k.CommandsSince(before) != "" || e.preparation("ro2") != nil {
+		t.Fatalf("the Unprepare of a stale claim:\n%s", e.k.CommandsSince(before))
 	}
 	e.wantNoViolations()
 }

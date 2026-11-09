@@ -34,19 +34,18 @@ func otherBoot(recorded, running string) bool {
 // applyBoot changes the records of doc as a load in the boot running
 // requires, and returns whether it changed the document. Nothing of a
 // record of another boot exists in the kernel any more: its preparations
-// become PREPARED_STALE (kubelet prepares them again or unprepares them),
-// or are dropped with their grants when drop(driver) is true; the grants of
-// a stale preparation keep Serial, Source and Asked, and of Got and Intent
-// only the lease and requester of a lend and the target of a lease bind;
-// the memdev and region records, the grants that no preparation names and
+// become PREPARED_STALE (kubelet prepares them again or unprepares them);
+// the grants of a stale preparation keep Serial, Source and Asked, and of
+// Got and Intent only the lease and requester of a lend and the target of a
+// lease bind; the memdev and region records, the grants that no preparation names and
 // the leases are dropped (the first reconcile deletes the leases'
 // companions); lease claims, provenance and steering records are kept. A
 // preparation without a boot id is of the boot of the document.
-func applyBoot(doc *Document, running string, drop func(driver string) bool) (bool, error) {
+func applyBoot(doc *Document, running string) (bool, error) {
 	if running == "" {
 		return false, nil
 	}
-	changed, err := stalePreparations(doc, running, drop)
+	changed, err := stalePreparations(doc, running)
 	if err != nil {
 		return changed, err
 	}
@@ -65,10 +64,9 @@ func applyBoot(doc *Document, running string, drop func(driver string) bool) (bo
 }
 
 // stalePreparations makes the preparations of another boot than running
-// PREPARED_STALE, or drops them with their grants when drop(driver), and
-// gives the preparations without a boot id of this boot the running one.
+// PREPARED_STALE, and gives the preparations without a boot id of this boot the running one.
 // It returns whether it changed the document.
-func stalePreparations(doc *Document, running string, drop func(driver string) bool) (bool, error) {
+func stalePreparations(doc *Document, running string) (bool, error) {
 	changed := false
 	kept := doc.Preparations[:0]
 	for i := range doc.Preparations {
@@ -84,14 +82,6 @@ func stalePreparations(doc *Document, running string, drop func(driver string) b
 				changed = true
 			}
 			kept = append(kept, p)
-			continue
-		case drop != nil && drop(p.Driver):
-			klog.Warningf("store: claim %s (%s) of %s was prepared in boot %s, this is %s: forgotten",
-				p.ClaimName, p.UID, p.Driver, boot, running)
-			if err := dropPreparation(doc, &p); err != nil {
-				return changed, err
-			}
-			changed = true
 			continue
 		case p.State == state.PreparationStale && !otherBoot(doc.BootID, running):
 			kept = append(kept, p)
@@ -160,42 +150,6 @@ func clearGrants(doc *Document, p *state.Preparation) (bool, error) {
 		changed = true
 	}
 	return changed, nil
-}
-
-// dropPreparation checks that the preparation and its grants may be
-// dropped at the load, and removes its grants and every reference to them
-// from the document.
-func dropPreparation(doc *Document, p *state.Preparation) error {
-	if err := state.PreparationTable.Check(p.State, state.PreparationUnknown, state.TriggerLoad); err != nil {
-		return err
-	}
-	gone := map[state.GrantRef]bool{}
-	for _, res := range p.Results {
-		if res.Grant == nil {
-			continue
-		}
-		if g := doc.Grant(*res.Grant); g != nil {
-			if err := state.GrantTable.Check(g.State, state.GrantReleased, state.TriggerLoad); err != nil {
-				return err
-			}
-			gone[g.Ref] = true
-		}
-	}
-	doc.Grants = slices.DeleteFunc(doc.Grants, func(g state.Grant) bool { return gone[g.Ref] })
-	isGone := func(ref state.GrantRef) bool { return gone[ref] }
-	for i := range doc.Memdevs {
-		doc.Memdevs[i].Grants = slices.DeleteFunc(doc.Memdevs[i].Grants, isGone)
-	}
-	for i := range doc.Regions {
-		reg := &doc.Regions[i]
-		for j := range reg.DaxDevices {
-			reg.DaxDevices[j].Users = slices.DeleteFunc(reg.DaxDevices[j].Users, isGone)
-		}
-		for j := range reg.Mounts {
-			reg.Mounts[j].Users = slices.DeleteFunc(reg.Mounts[j].Users, isGone)
-		}
-	}
-	return nil
 }
 
 // checkDrops returns the error of the first lease, memdev or region record

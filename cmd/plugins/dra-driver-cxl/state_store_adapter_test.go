@@ -57,9 +57,6 @@ type stateStoreConfig struct {
 	// SysRoot and DevRoot are the sysfs mount point and the directory of
 	// the device nodes of the memdevs.
 	SysRoot, DevRoot string
-	// DropOtherBoot is store.Options.DropOtherBoot: the drivers whose
-	// preparations of another boot the load drops (dra.DropOtherBoot).
-	DropOtherBoot func(driver string) bool
 }
 
 // openStateStore opens the store of the state files and registers them.
@@ -79,7 +76,6 @@ func openStateStore(ctx context.Context, cfg stateStoreConfig) (*stateStore, fun
 			_, err := os.Stat(filepath.Join(sysRoot, "bus", "cxl", "devices", name))
 			return err == nil
 		},
-		DropOtherBoot: cfg.DropOtherBoot,
 	})
 	if err != nil {
 		return nil, nil, err

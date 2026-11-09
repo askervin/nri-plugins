@@ -31,7 +31,7 @@ func fixture(boot string) *Document {
 func TestBootOfAnotherBoot(t *testing.T) {
 	doc := fixture(statetest.BootID)
 	orig := doc.Clone()
-	changed, err := applyBoot(doc, "boot-2", nil)
+	changed, err := applyBoot(doc, "boot-2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,49 +75,43 @@ func TestBootOfAnotherBoot(t *testing.T) {
 	}
 }
 
-func TestBootDropsTheRecordsOfADriver(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		drop func(driver string) bool
-	}{
-		{"cxl.nri.io dropped", func(driver string) bool { return driver == statetest.LocalDriver }},
-		{"both kept", func(string) bool { return false }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			doc := fixture(statetest.BootID)
-			orig := doc.Clone()
-			if _, err := applyBoot(doc, "boot-2", tc.drop); err != nil {
-				t.Fatal(err)
+// The preparations of both drivers of another boot are kept PREPARED_STALE
+// with their grants (L-08: cxl.nri.io's are not dropped).
+func TestBootKeepsThePreparationsOfBothDrivers(t *testing.T) {
+	doc := fixture(statetest.BootID)
+	orig := doc.Clone()
+	if _, err := applyBoot(doc, "boot-2"); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range orig.Preparations {
+		got := doc.Preparation(p.Driver, p.UID)
+		if got == nil || got.State != state.PreparationStale {
+			t.Errorf("preparation %s of %s: %+v, want PREPARED_STALE", p.UID, p.Driver, got)
+		}
+		for _, r := range p.Results {
+			if r.Grant != nil && doc.Grant(*r.Grant) == nil {
+				t.Errorf("grant %s of %s dropped", r.Grant, p.Driver)
 			}
-			for _, p := range orig.Preparations {
-				dropped := tc.drop(p.Driver)
-				if got := doc.Preparation(p.Driver, p.UID); (got == nil) != dropped {
-					t.Errorf("preparation %s of %s: kept %v, dropped %v", p.UID, p.Driver, got != nil, dropped)
-				}
-				for _, r := range p.Results {
-					if r.Grant != nil && (doc.Grant(*r.Grant) == nil) != dropped {
-						t.Errorf("grant %s of %s: dropped %v", r.Grant, p.Driver, doc.Grant(*r.Grant) == nil)
-					}
-				}
-			}
-			for _, v := range state.Check(&doc.Records) {
-				t.Errorf("after the reboot: %s", v)
-			}
-		})
+		}
+	}
+	for _, v := range state.Check(&doc.Records) {
+		t.Errorf("after the reboot: %s", v)
 	}
 }
 
-func TestBootDropsAStalePreparationOfAnOlderBoot(t *testing.T) {
+// A stale preparation of an older boot stays as it is in a load of the
+// boot of the document.
+func TestBootKeepsAStalePreparationOfAnOlderBoot(t *testing.T) {
 	doc := fixture(statetest.BootID)
-	dropLocal := func(driver string) bool { return driver == statetest.LocalDriver }
-	if _, err := applyBoot(doc, statetest.BootID, dropLocal); err != nil {
+	before := doc.Preparation(statetest.LocalDriver, statetest.ClaimStale).Clone()
+	if _, err := applyBoot(doc, statetest.BootID); err != nil {
 		t.Fatal(err)
 	}
-	if p := doc.Preparation(statetest.LocalDriver, statetest.ClaimStale); p != nil {
-		t.Errorf("a stale preparation of an older boot is kept: %+v", p)
+	if p := doc.Preparation(statetest.LocalDriver, statetest.ClaimStale); p == nil || !reflect.DeepEqual(*p, before) {
+		t.Errorf("a stale preparation of an older boot changed: %+v", p)
 	}
-	if g := doc.Grant(state.GrantRef{Claim: statetest.ClaimStale}); g != nil {
-		t.Errorf("its grant is kept")
+	if g := doc.Grant(state.GrantRef{Claim: statetest.ClaimStale}); g == nil {
+		t.Errorf("its grant is dropped")
 	}
 	if p := doc.Preparation(statetest.LocalDriver, statetest.ClaimDax); p == nil || p.State != state.PreparationPrepared {
 		t.Errorf("a preparation of this boot changed: %+v", p)
@@ -127,7 +121,7 @@ func TestBootDropsAStalePreparationOfAnOlderBoot(t *testing.T) {
 func TestBootOfThisBoot(t *testing.T) {
 	doc := fixture(statetest.BootID)
 	orig := doc.Clone()
-	changed, err := applyBoot(doc, statetest.BootID, nil)
+	changed, err := applyBoot(doc, statetest.BootID)
 	if err != nil || changed {
 		t.Errorf("changed %v, %v", changed, err)
 	}
@@ -139,7 +133,7 @@ func TestBootOfThisBoot(t *testing.T) {
 func TestBootUnknown(t *testing.T) {
 	doc := fixture(statetest.BootID)
 	orig := doc.Clone()
-	if changed, err := applyBoot(doc, "", nil); err != nil || changed || !reflect.DeepEqual(doc, orig) {
+	if changed, err := applyBoot(doc, ""); err != nil || changed || !reflect.DeepEqual(doc, orig) {
 		t.Errorf("an unknown running boot changed the document: %v %v", changed, err)
 	}
 }
@@ -151,7 +145,7 @@ func TestBootWithoutBootID(t *testing.T) {
 			doc.Preparations[i].BootID = ""
 		}
 	}
-	changed, err := applyBoot(doc, statetest.BootID, nil)
+	changed, err := applyBoot(doc, statetest.BootID)
 	if err != nil || !changed {
 		t.Errorf("changed %v, %v", changed, err)
 	}

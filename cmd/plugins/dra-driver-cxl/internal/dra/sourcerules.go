@@ -46,9 +46,6 @@ type SourceRules struct {
 	// MountsDir is the directory of the node mounts of mode fs of the
 	// driver's devices.
 	MountsDir string
-	// DropOtherBoot: the store drops the driver's preparations of another
-	// boot at the load instead of keeping them PREPARED_STALE.
-	DropOtherBoot bool
 	// CDIUnpreparing: the CDI spec keeps the devices of a claim whose
 	// Unprepare did not finish.
 	CDIUnpreparing bool
@@ -80,7 +77,6 @@ func LocalRules(mountsDir string) SourceRules {
 		CDIKind:            device.CDIKind,
 		CDISpecName:        device.ClaimsCDISpecName,
 		MountsDir:          mountsDir,
-		DropOtherBoot:      true,
 		CDIUnpreparing:     true,
 		FailLeaseOnFinish:  true,
 		FailUnprepareOnCDI: true,
@@ -105,17 +101,6 @@ func PoolRules(name, mountsDir, preparingFile string) SourceRules {
 		validate:            (*Plugin).validatePool,
 		voice:               poolVoice{name: name, preparing: preparingFile},
 	}
-}
-
-// DropOtherBoot returns the choice of store.Options.DropOtherBoot of the
-// drivers of rules: the load drops the preparations of another boot of a
-// driver whose rules say DropOtherBoot.
-func DropOtherBoot(rules ...SourceRules) func(driver string) bool {
-	drop := map[string]bool{}
-	for _, r := range rules {
-		drop[r.Name] = r.DropOtherBoot
-	}
-	return func(driver string) bool { return drop[driver] }
 }
 
 // MountsDirs returns the directories of the node mounts of mode fs of the

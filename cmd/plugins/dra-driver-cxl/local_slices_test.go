@@ -845,6 +845,8 @@ func TestLocalStateAndReconcile(t *testing.T) {
 	e.mustPrepare(localClaim("u1", localBlockSize))
 	e.reboot()
 	e.wantUsed(false)
+	// the claim of the other boot is kept stale for kubelet's Unprepare
+	e.mustUnprepare("u1")
 	e.wantClean()
 
 	// restart: the memdev is gone: its records stay for kubelet's
@@ -928,7 +930,8 @@ func TestLocalSliceFailures(t *testing.T) {
 }
 
 // The records of another boot and a memdev whose cut creation left no
-// region are dropped without commands; an unknown boot keeps them.
+// region are dropped without commands, the claims of another boot kept
+// PREPARED_STALE; an unknown boot keeps them all.
 func TestLocalStateOfAnotherBoot(t *testing.T) {
 	e := newSliceTestEnv(t)
 	e.start()
@@ -939,7 +942,7 @@ func TestLocalStateOfAnotherBoot(t *testing.T) {
 	}
 	cmds := e.k.Commands()
 
-	// an unknown boot keeps the records, another boot forgets them
+	// an unknown boot keeps the records, another boot forgets the memdev's
 	bootID := filepath.Join(e.k.ProcRoot(), "sys/kernel/random/boot_id")
 	boot := e.k.BootID()
 	noErr(t, os.WriteFile(bootID, []byte("\n"), 0o644))
@@ -965,6 +968,12 @@ func TestLocalStateOfAnotherBoot(t *testing.T) {
 		t.Fatalf("a memdev without a region touched:\n%s", strings.TrimPrefix(now, cmds))
 	}
 	e.mustUnprepare("u2")
+	// the claim of the other boot, kept stale, needs nothing released
+	cmds = e.k.Commands()
+	e.mustUnprepare("u1")
+	if now := e.k.Commands(); now != cmds {
+		t.Fatalf("the Unprepare of a claim of another boot:\n%s", strings.TrimPrefix(now, cmds))
+	}
 	e.wantClean()
 }
 

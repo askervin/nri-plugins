@@ -200,10 +200,6 @@ type Options struct {
 	// files are moved aside also when they name one.
 	RegionExists    func(name string) bool
 	DiscardOldState bool
-	// DropOtherBoot tells whether the load drops the preparations of the
-	// driver of another boot, with their grants, instead of keeping them
-	// PREPARED_STALE; nil keeps them.
-	DropOtherBoot func(driver string) bool
 	// CompatViews writes the views of the five files that test90's
 	// observer reads after every commit.
 	CompatViews bool
@@ -294,7 +290,7 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 		close(s.done)
 		return s, nil
 	}
-	changed, err := applyBoot(doc, opts.BootID, opts.DropOtherBoot)
+	changed, err := applyBoot(doc, opts.BootID)
 	if err != nil {
 		return nil, errors.Join(err, s.unlock())
 	}
