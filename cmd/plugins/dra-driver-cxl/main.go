@@ -347,6 +347,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	if err != nil {
 		return nil, err
 	}
+	stopEvents := wakeOnUevents(devices)
 	// the lease device and the lease broker lend local memdevs and, with
 	// the pool driver, pool devices
 	driverConfig.PublishLeaseDevice = cxlFlags.Leases
@@ -376,6 +377,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 		watcher:    watcher,
 		closeStore: closeStore,
 		stop:       make(chan struct{}),
+		stopEvents: stopEvents,
 	}
 
 	// 4. The lease broker re-creates the sockets of prepared lease claims

@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"os"
 	"path/filepath"
@@ -37,6 +38,7 @@ import (
 
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 func TestNewDriverConfigFromString_WithTestability(t *testing.T) {
@@ -937,5 +939,39 @@ func TestDriverConfigDeadKeys(t *testing.T) {
 	(&DriverConfig{}).logDeadKeys()
 	if out := logs(); strings.Contains(out, "no effect") {
 		t.Errorf("a warning without the keys:\n%s", out)
+	}
+}
+
+// fakeEvents are kernel uevents for tests.
+type fakeEvents struct {
+	kernel.Changes
+	started, stopped bool
+	startErr         error
+}
+
+func (f *fakeEvents) Start(string) error { f.started = true; return f.startErr }
+func (f *fakeEvents) Stop()              { f.stopped = true }
+
+// The uevents of the kernel objects wake the waits of the engine's kernel
+// (L-20); without them the waits only poll.
+func TestWakeOnUevents(t *testing.T) {
+	old := newKernelEvents
+	t.Cleanup(func() { newKernelEvents = old })
+	ev := &fakeEvents{}
+	newKernelEvents = func() (kernelEvents, error) { return ev, nil }
+	devices := &deviceEngine{k: &kernel.Kernel{}}
+	stop := wakeOnUevents(devices)
+	if !ev.started || devices.k.Events != kernel.Events(ev) {
+		t.Fatalf("events %+v, kernel events %v", ev, devices.k.Events)
+	}
+	stop()
+	if !ev.stopped {
+		t.Fatal("not stopped")
+	}
+	ev = &fakeEvents{startErr: errors.New("no netlink")}
+	devices = &deviceEngine{k: &kernel.Kernel{}}
+	wakeOnUevents(devices)()
+	if devices.k.Events != nil {
+		t.Fatalf("kernel events %v without uevents", devices.k.Events)
 	}
 }

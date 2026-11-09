@@ -61,6 +61,8 @@ type driver struct {
 	closeStore func()
 	// stop ends the periodic passes of the driver.
 	stop chan struct{}
+	// stopEvents stops the uevents that wake the waits of the kernel.
+	stopEvents func()
 }
 
 // leaseBroker is the lease broker as the driver stops it.
@@ -183,6 +185,41 @@ PluginDataDirectoryPath: %v`,
 // staleBindPeriod is how often the stale lease binds are unmounted again
 // between releases.
 const staleBindPeriod = 60 * time.Second
+
+// kernelEvents are the uevents of the kernel objects that wake the waits of
+// the kernel package.
+type kernelEvents interface {
+	kernel.Events
+	Start(fifoPath string) error
+	Stop()
+}
+
+// newKernelEvents returns the uevents of the kernel objects (a variable for
+// tests).
+var newKernelEvents = func() (kernelEvents, error) {
+	ev, err := kernel.NewUdevEvents(0)
+	if err != nil {
+		return nil, err
+	}
+	ev.Logf = func(format string, args ...any) { klog.Infof("kernel uevents: "+format, args...) }
+	return ev, nil
+}
+
+// wakeOnUevents makes the uevents of the kernel objects wake the waits of
+// the kernel of the device engine early (they still poll), and returns
+// their stop; without uevents the waits only poll.
+func wakeOnUevents(devices *deviceEngine) func() {
+	ev, err := newKernelEvents()
+	if err == nil {
+		err = ev.Start("")
+	}
+	if err != nil {
+		klog.Warningf("kernel uevents: %v: the waits for kernel objects only poll", err)
+		return func() {}
+	}
+	devices.k.Events = ev
+	return ev.Stop
+}
 
 // repairPeriod is how often the fence pass of the NRI plugin tries the
 // failed updates of the cpuset.mems of the fenced containers again.
@@ -614,6 +651,9 @@ func (d *driver) Shutdown(ctx context.Context) error {
 	}
 	if d.stop != nil {
 		close(d.stop)
+	}
+	if d.stopEvents != nil {
+		d.stopEvents()
 	}
 	if d.broker != nil {
 		d.broker.Stop()
