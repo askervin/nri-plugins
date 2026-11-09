@@ -919,3 +919,23 @@ func TestFirstListAfterRecovery(t *testing.T) {
 		t.Fatalf("%d lists, %d after the recovery", lists, guarded)
 	}
 }
+
+// The dead keys ignoreNewMemoryDevices and ignoreNewRegions are accepted
+// with a warning (L-30, D-6); unset, nothing is logged.
+func TestDriverConfigDeadKeys(t *testing.T) {
+	logs := captureKlog(t)
+	cfg, err := newDriverConfigFromString("{ignoreNewMemoryDevices: true, ignoreNewRegions: true}")
+	noErr(t, err)
+	cfg.logDeadKeys()
+	out := logs()
+	for _, want := range []string{"ignoreNewMemoryDevices: the key has no effect and is ignored", "ignoreNewRegions: the key has no effect and is ignored"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q in\n%s", want, out)
+		}
+	}
+	logs = captureKlog(t)
+	(&DriverConfig{}).logDeadKeys()
+	if out := logs(); strings.Contains(out, "no effect") {
+		t.Errorf("a warning without the keys:\n%s", out)
+	}
+}

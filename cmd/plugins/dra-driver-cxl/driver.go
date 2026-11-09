@@ -87,6 +87,7 @@ func loadDriverConfig(cxlFlags *CXLFlags) (*DriverConfig, string, error) {
 	}
 	driverConfig.logDefaults()
 	driverConfig.logFsTypes()
+	driverConfig.logDeadKeys()
 	return driverConfig, sysfsRoot, nil
 }
 

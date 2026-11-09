@@ -68,8 +68,9 @@ type DriverConfig struct {
 	// driver.
 	IgnoreNodes []int `json:"ignoreNodes,omitempty"`
 
-	// If IgnoreNew* is true, hotplugged devices, created regions
-	// and enabled nodes will be ignored by the driver.
+	// If IgnoreNewNodes is true, enabled nodes are ignored by the driver.
+	// IgnoreNewMemoryDevices and IgnoreNewRegions are accepted with a
+	// warning and have no effect.
 	IgnoreNewMemoryDevices bool `json:"ignoreNewMemoryDevices,omitempty"`
 	IgnoreNewRegions       bool `json:"ignoreNewRegions,omitempty"`
 	IgnoreNewNodes         bool `json:"ignoreNewNodes,omitempty"`
@@ -194,6 +195,19 @@ func (c *DriverConfig) fsTypes() []string {
 		return slices.Clone(defaultFsTypes)
 	}
 	return slices.Clone(c.FsTypes)
+}
+
+// logDeadKeys warns of the configuration keys that are accepted but have no
+// effect: ignoreNewMemoryDevices and ignoreNewRegions.
+func (c *DriverConfig) logDeadKeys() {
+	for _, k := range []struct {
+		name string
+		set  bool
+	}{{"ignoreNewMemoryDevices", c.IgnoreNewMemoryDevices}, {"ignoreNewRegions", c.IgnoreNewRegions}} {
+		if k.set {
+			klog.Warningf("%s: the key has no effect and is ignored", k.name)
+		}
+	}
 }
 
 // logFsTypes logs the filesystem types that mode fs mounts on the node.
