@@ -20,20 +20,22 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 const (
-	stateDir   = "../state"
-	kernelDir  = "../../../../../pkg/cxl/kernel"
-	statesFile = "../../../../../docs/memory/cxl/states.md"
+	stateDir      = "../state"
+	containersDir = "../containers"
+	kernelDir     = "../../../../../pkg/cxl/kernel"
+	statesFile    = "../../../../../docs/memory/cxl/states.md"
 )
 
 // TestStatesFileIsCurrent checks that docs/memory/cxl/states.md is what
 // go generate renders from the state package now.
 func TestStatesFileIsCurrent(t *testing.T) {
-	want, err := render(stateDir, kernelDir)
+	want, err := render(stateDir, containersDir, kernelDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,6 +84,27 @@ func TestEveryObjectHasItsHeader(t *testing.T) {
 		}
 	}
 	for _, tr := range state.Triggers {
+		if triggers[string(tr)] == "" {
+			t.Errorf("trigger %s: no doc comment", tr)
+		}
+	}
+	docs, triggers, err = parseState(containersDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range containers.Catalogue() {
+		h, ok := docs[o.Name]
+		if !ok || len(h.purpose) == 0 {
+			t.Errorf("%s: no header", o.Name)
+			continue
+		}
+		for _, l := range labels {
+			if h.sections[l] == "" {
+				t.Errorf("%s: no %q section", o.Name, l)
+			}
+		}
+	}
+	for _, tr := range containers.Triggers {
 		if triggers[string(tr)] == "" {
 			t.Errorf("trigger %s: no doc comment", tr)
 		}

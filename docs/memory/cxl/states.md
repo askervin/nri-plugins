@@ -6,7 +6,8 @@ The records that the CXL DRA driver keeps in its store, `state.json` in the plug
 directory of `cxl.nri.io`, and the transitions of every state field; `Memdev.Busy` is held in
 memory only. The driver refuses a transition that is not a row of its table. In the effects,
 "commit (d)" is durable before the next externally visible act, "commit (l)" is lazy. The
-last part, "Kernel objects", has the states of the CXL kernel objects that the driver observes.
+part "Containers" has the records of the NRI plugin, held in memory; the last part, "Kernel
+objects", has the states of the CXL kernel objects that the driver observes.
 
 Triggers:
 
@@ -521,6 +522,71 @@ need the kernel's view.
 - **records**: Every record has a state of its table that a stored record may have, and a unique identity. Every region of ours is one Region record, referenced by every memdev in its Targets, and every region a memdev references is a record of ours that targets it; a FOREIGN region is owned by no one. Every grant belongs to one result of one preparation and is listed by the memdev of its serial (except the grants of a PREPARED_STALE preparation); what Got names lists the grant among its users, and every user of a dax device or a node mount names it back; a grant result names a grant record, but of a PREPARING or UNPREPARING preparation (not journaled yet, or released before the front-end's commit). A PREPARED preparation's grants are REALISED, a PREPARED_UNRESTORED one's REALISED or REALISED_UNRESTORED, and the lease claim of their lease results exists unless the claim's Unprepare runs (it closes the lease claim before the preparation turns UNPREPARING; the engine leaves this rule to the lease broker). A node mount is MOUNTED_RW iff a writer uses it. A lease lends only while READY, releasing or FAILED.
 - **users**: Between requests and after the recovery, every region of ours is OWNED, KEPT or HOLLOW_OWNED, and every dax device of a region of ours that is OWNED or KEPT and is not the seed has a user grant that is REALISED, REALISED_UNRESTORED or RELEASING, or is the Whole device of a KEPT region, of a memdev that is IDLE_KEPT, or of a region that a grant of a Prepare that did not finish names, or has as its user a grant of a Prepare that did not finish of a numa companion or of a KEPT preparation (kept for its Unprepare); the recovery deletes the others, those of a HOLLOW_OWNED region go with it.
 - **journaled**: Every object that the driver created lies inside a journaled container: a region of ours targets memdevs with a record; the region, bind target and lend of a grant's Got are named by its Intent; a node mount's path is the Intent of a user grant or a Stale entry of its memdev.
+
+## Containers
+
+The records of the NRI plugin of the driver (`internal/containers`), held in memory: Synchronize
+builds them again after a restart. Triggers:
+
+- `NRI CreateContainer`: the NRI CreateContainer of a container.
+- `NRI StartContainer`: the NRI StartContainer of a container: its task is created.
+- `NRI PostStartContainer`: the NRI PostStartContainer of a container: the runtime marked it started.
+- `NRI StopContainer`: the NRI StopContainer or RemoveContainer of a container.
+- `NRI Synchronize`: the NRI Synchronize of the plugin: the containers that the runtime has.
+
+## Container (in memory)
+
+Container is the plugin's record of a container of a pod on the node: how the plugin manages its memory, the cpuset.mems of its spec as the plugin knows it, the NUMA nodes of its allocation results and the nodes lent to it.
+
+**Identity.** ID, the container ID. A restart of the container of a pod is a new ID of the same (PodUID, Name), which a lease is bound to; the newest record of the pair is its container.
+
+**States.** Lifecycle (LifecycleTable): UNSEEN, created while the plugin was not connected and found by Synchronize, its CreateContainer adjustment was never applied; CREATED, its CreateContainer seen, the spec holds cpuset.mems, the cgroup may not exist; TASK_CREATED, StartContainer seen, the runtime made the cgroup from the spec and an update reaches the spec only; STARTED, the runtime marked it started (PostStartContainer, or running at Synchronize): updates reach the cgroup; GONE, stopped or removed, the record leaves the table. Management (ManagementTable), decided once when the record is made: STEERED, a cgmpolmgr manager of this process writes its cpuset.mems and memory.high (or will, with its Plan; or its settings do not combine any more), never fenced and never lent to; FENCED, the plugin owns its cpuset.mems through NRI: wantMems; NONE (fencing none): its cpuset.mems is left as the runtime made it, a lend changes only one that has a cpuset.mems of its own.
+
+**Transitions.** LifecycleTable and ManagementTable below; a transition not in them is refused. A lend or a revoke changes no state; its rules: a lend to a STEERED container is refused (ErrSteered); a lend to a container that has not started (UNSEEN, CREATED) is done when the container was lent the node at its creation (the READY numa leases of its pod and name, seeded), an error otherwise; a revoke of a seeded node drops its holder, and of a FENCED container takes the node off its spec; a lend or a revoke of a started container (TASK_CREATED, STARTED) recomputes wantMems and sends one UpdateContainers outside the table mutex when its cpuset.mems changes.
+
+### Container.Lifecycle
+
+States: NONE, UNSEEN, CREATED, TASK_CREATED, STARTED, GONE.
+
+| from | to | trigger | guard | effects |
+|:-----|:---|:--------|:------|:--------|
+| NONE | CREATED | `NRI CreateContainer`: the runtime creates the container | - | the management decided; fenced: an adjustment of cpuset.mems iff wantMems differs from the spec; the nodes of its READY numa leases recorded as lent (seeded); also when the settings of its results do not combine (the creation fails, the record stays with the management of the defaults until the container stops) |
+| NONE | UNSEEN | `NRI Synchronize`: Synchronize lists a created, running or paused container that the plugin has no record of | the first Synchronize of the process | the management decided from its results; not steered by this process; a manager of a previous process (its Steered record, or its settings without any record) released (memory.high max); seeded; no adjustment possible |
+| UNSEEN, CREATED, TASK_CREATED | STARTED | `NRI Synchronize`: Synchronize lists the container running or paused | - | its pid, cgroup and own nodes read; its claimed nodes in its cpuset.mems are its own |
+| UNSEEN, CREATED, TASK_CREATED, STARTED | (unchanged) | `NRI Synchronize`: Synchronize lists a container that the plugin has a record of | - | the cpuset.mems of its spec recorded |
+| NONE, UNSEEN, CREATED | TASK_CREATED | `NRI StartContainer`: the runtime has created the task of the container (a record is made for a container that the plugin has none of, with the management of the defaults) | - | its pid, cgroup and own nodes read; steered: the Steered record committed (d, bounded) before the manager starts; a manager that does not start makes it fenced or none; updates from here reach its spec only |
+| UNSEEN, CREATED, TASK_CREATED | STARTED | `NRI PostStartContainer`: the runtime has marked the container started | - | its pid, cgroup and own nodes read if StartContainer was not seen; the OnContainerStarted callbacks (the broker lends the nodes of its READY numa leases again); fenced: the repair pass of the one container (wantMems against its cgroup) once fencing is ready |
+| STARTED | (unchanged) | `NRI PostStartContainer`: Synchronize found the container running before its PostStartContainer | - | the OnContainerStarted callbacks; fenced: the repair pass of the one container once fencing is ready |
+| UNSEEN, CREATED, TASK_CREATED, STARTED | GONE | `NRI StopContainer`, `NRI Synchronize`: the runtime stops or removes the container, or Synchronize does not list it | - | the record leaves the table; the OnContainerGone callbacks (the broker keeps its leases while the pod lives or a newer instance exists); its manager stopped (memory.high max), then its Steered record removed (d, bounded) |
+
+Refused:
+
+- GONE -> any state: a gone container is out of the table; its restart is a new record
+- STARTED -> NONE, UNSEEN, CREATED, TASK_CREATED: a started container never goes back
+
+### Container.Management
+
+States: UNDECIDED, STEERED, FENCED, NONE.
+
+| from | to | trigger | guard | effects |
+|:-----|:---|:--------|:------|:--------|
+| UNDECIDED | STEERED | `NRI CreateContainer`: the effective settings of its results steer and there is DRAM or CXL numa memory to steer | the settings of the results combine and a plan is built (else the creation fails) | the plan kept until its start; no adjustment: it has every node until its manager writes its cgroup |
+| UNDECIDED | STEERED | `NRI Synchronize`: the settings of the results of a container that Synchronize finds do not combine | - | taken as steered: neither fenced nor lent to |
+| UNDECIDED | FENCED | `NRI CreateContainer`, `NRI Synchronize`, `NRI StartContainer`: not steered (by this process) and fencing allowed-mems; the defaults for a container whose creation failed or that the plugin has no record of | - | wantMems: its own nodes without the fenced nodes, its claimed and its lent nodes |
+| UNDECIDED | NONE | `NRI CreateContainer`, `NRI Synchronize`, `NRI StartContainer`: not steered (by this process) and fencing none | - | its cpuset.mems is left as the runtime made it |
+| STEERED | FENCED | `NRI StartContainer`: its manager does not start (no cgroup, cgmpolmgr.New or Start fails) and fencing allowed-mems | - | its Steered record removed; fenced by the repair pass at its PostStartContainer |
+| STEERED | NONE | `NRI StartContainer`: its manager does not start and fencing none | - | its Steered record removed |
+
+Refused:
+
+- FENCED, NONE -> STEERED: a container is steered only by a plan of its creation; a re-created container is a new record
+
+**Invariants.** A FENCED container's cpuset.mems is wantMems or an update is pending (I11); Claimed are the NUMA nodes of the CXL numa memory of the results that it uses; a lent node has a holder; Plan only while STEERED and not started; manager only while STEERED.
+
+**Persistence.** None, the table is in memory; Synchronize builds it again after a restart, the leases of the store seed the lends, and a Steered record of the store names a container whose manager was of a previous process.
+
+**Locks and waits.** The plugin's table mutex guards the record; the update token is held from the computation of wantMems to the record of the update's result.
+
 
 ## Kernel objects
 

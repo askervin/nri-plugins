@@ -1,0 +1,235 @@
+// Copyright The NRI Plugins Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package containers
+
+import (
+	"context"
+
+	"k8s.io/klog/v2"
+	"k8s.io/utils/cpuset"
+)
+
+// The fence (defaults.container.fencing allowed-mems): the NUMA nodes F on
+// which the driver onlines CXL memory, numa slices of local memdevs and
+// pool devices in mode numa. A fenced container has a fenced node in its
+// cpuset.mems only when one of its allocation results has numa memory on it
+// or it borrows it (wantMems). F is seeded at the start from the grants of
+// this boot (Seed) and only grows; a node is fenced before its memory goes
+// online: Fence returns after the containers have been updated through NRI.
+// With fencing none F stays empty.
+//
+// A fence pass applies wantMems to the fenced containers of the table under
+// the update token, like a lend, so that lends and passes never compute from
+// stale sets. A pass runs when a node is fenced, when fencing of running
+// containers becomes ready (NRI synchronized and the lends restored) and at
+// every Synchronize after that, for one container at its PostStartContainer
+// (the repair pass), in the background but for Fence. A failed update is
+// tried again by the next pass.
+
+// Seed adds the nodes to the fenced nodes without a pass.
+func (p *Plugin) Seed(nodes []int) {
+	set := cpuset.New(nonNegative(nodes)...)
+	if !p.fencing || set.IsEmpty() {
+		return
+	}
+	klog.Infof("NRI fence: fencing CXL nodes %s of prepared claims", set)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.fenced = p.fenced.Union(set)
+}
+
+// Fenced returns the fenced nodes.
+func (p *Plugin) Fenced() cpuset.CPUSet {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.fenced
+}
+
+// Fence adds a node to the fenced nodes and returns once the containers are
+// updated through NRI; one that is fenced already returns after the pass
+// that fenced it. Before fencing of running containers is ready, and
+// without NRI, the node is only recorded. With fencing none it does
+// nothing.
+func (p *Plugin) Fence(ctx context.Context, node int) {
+	if !p.fencing || node < 0 {
+		return
+	}
+	p.fenceMu.Lock()
+	defer p.fenceMu.Unlock()
+	p.mu.Lock()
+	if p.fenced.Contains(node) {
+		p.mu.Unlock()
+		return
+	}
+	p.fenced = p.fenced.Union(cpuset.New(node))
+	nodes, connected, absent := p.fenced, p.connected, p.absent
+	p.mu.Unlock()
+
+	klog.Infof("NRI fence: fencing CXL node %d (fenced nodes %s)", node, nodes)
+	switch {
+	case absent:
+		klog.Warningf("NRI fence: NRI not connected, containers are not fenced from CXL node %d", node)
+	case connected:
+		p.pass(ctx, "")
+	}
+}
+
+// LendsRestored tells that the lends of a restarted plugin are applied
+// again. Fencing of running containers starts when NRI has synchronized
+// too.
+func (p *Plugin) LendsRestored() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.lendsRestored {
+		return
+	}
+	p.lendsRestored = true
+	p.startFencing()
+}
+
+// startFencing makes fencing of running containers ready when NRI has
+// synchronized and the lends are restored, and then starts a fence pass in
+// the background. With fencing none there is no pass, but the point is
+// logged all the same: it tells when the lends of a restarted plugin are
+// back. Called with mu held.
+func (p *Plugin) startFencing() {
+	if !p.lendsRestored {
+		return
+	}
+	select {
+	case <-p.synced:
+	default:
+		return
+	}
+	if !p.fencing {
+		if !p.fenceReady {
+			p.fenceReady = true
+			klog.V(3).Info("NRI fence: lends restored (fencing none)")
+		}
+		return
+	}
+	if !p.fenceReady {
+		p.fenceReady = true
+		klog.V(3).Info("NRI fence: lends restored, fencing running containers")
+	}
+	p.background("")
+}
+
+// fenceAtStart tells whether a started container gets the repair pass of
+// its own: it is fenced, there are fenced nodes and fencing of running
+// containers is ready. Updates of the container before its start may have
+// reached its spec only, also that of a pass while the plugin synchronized
+// as the runtime was creating its task. Called with mu held.
+func (p *Plugin) fenceAtStart(c *Container) bool {
+	return p.fenceReady && c.Management == ManagementFenced && !p.fenced.IsEmpty()
+}
+
+// repair starts the repair pass of one started container in the
+// background: its cgroup gets its wantMems if it has not got it.
+func (p *Plugin) repair(id string) {
+	p.background(id)
+}
+
+// background runs a fence pass of the container id, of all if id is "",
+// in the background.
+func (p *Plugin) background(id string) {
+	p.passes.Add(1)
+	go func() {
+		defer p.passes.Done()
+		p.pass(context.Background(), id)
+	}()
+}
+
+// pass sets cpuset.mems of the fenced containers of the table to wantMems
+// where that changes it (curMems: the cgroup of a container whose task
+// exists), with one NRI UpdateContainers, once fencing of running
+// containers is ready; of the container with the id only if it is not "".
+func (p *Plugin) pass(ctx context.Context, only string) {
+	if ctx.Err() != nil {
+		return
+	}
+	// not waiting for a lend when not ready: readiness never ends
+	p.mu.Lock()
+	ready := p.fenceReady
+	p.mu.Unlock()
+	if !ready {
+		return
+	}
+	p.token.Lock()
+	defer p.token.Unlock()
+
+	p.mu.Lock()
+	fenced, s := p.fenced, p.stub
+	if s == nil || fenced.IsEmpty() {
+		p.mu.Unlock()
+		return
+	}
+	changes := p.passChanges(fenced, only)
+	p.mu.Unlock()
+	if len(changes) == 0 {
+		return
+	}
+
+	mems := make(map[string]string, len(changes))
+	order := make([]string, 0, len(changes))
+	for _, ch := range changes {
+		mems[ch.c.ID] = ch.mems
+		order = append(order, ch.c.ID)
+	}
+	failed := applyMems(s, mems, order)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, ch := range changes {
+		if err := failed[ch.c.ID]; err != nil {
+			klog.Warningf("NRI fence: ctr=%s id=%s: %v", ch.c.name(), ch.c.ID, err)
+			continue
+		}
+		if p.ctrs[ch.c.ID] == ch.c {
+			ch.c.SpecMems = ch.mems
+		}
+		klog.V(3).Infof("NRI fence: ctr=%s id=%s cpuset.mems=%s (was %q, fenced nodes %s)", ch.c.name(), ch.c.ID, ch.mems, ch.was, fenced)
+	}
+	klog.Infof("NRI fence: %d containers updated, %d failed (fenced nodes %s)", len(changes)-len(failed), len(failed), fenced)
+}
+
+// passChange is an update of the cpuset.mems of a container by a fence
+// pass.
+type passChange struct {
+	c         *Container
+	was, mems string
+}
+
+// passChanges returns the updates of a fence pass of the fenced containers
+// in the order of their creation, of the container only if it is not "".
+// Called with mu held.
+func (p *Plugin) passChanges(fenced cpuset.CPUSet, only string) []passChange {
+	var changes []passChange
+	mem := p.memNodes()
+	for _, c := range p.sorted() {
+		if (only != "" && c.ID != only) || c.Management != ManagementFenced {
+			continue
+		}
+		want, err := passMems(c, fenced, mem)
+		if err != nil {
+			klog.Warningf("NRI fence: ctr=%s id=%s: %v", c.name(), c.ID, err)
+			continue
+		}
+		if was, differ := memsDiffer(c, want, "NRI fence"); differ {
+			changes = append(changes, passChange{c: c, was: was, mems: want.String()})
+		}
+	}
+	return changes
+}

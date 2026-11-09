@@ -268,6 +268,7 @@ func TestCDINames(t *testing.T) {
 	}{
 		{"CXL_CLAIM_a_b_3=1", "a-b", 3, true},
 		{"CXL_CLAIM_u1_0", "u1", 0, true},
+		{"CXL_CLAIM_u1_12=1", "u1", 12, true},
 		{"CXL_CLAIM_u1_03=1", "", 0, false},
 		{"CXL_CLAIM_u1_x=1", "", 0, false},
 		{"CXL_CLAIM__1=1", "", 0, false},

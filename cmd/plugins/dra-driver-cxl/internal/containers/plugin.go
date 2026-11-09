@@ -1,0 +1,450 @@
+// Copyright The NRI Plugins Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package containers
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"maps"
+	"os"
+	"path/filepath"
+	"sort"
+	"sync"
+
+	"github.com/containerd/nri/pkg/api"
+	"github.com/containerd/nri/pkg/stub"
+	"k8s.io/klog/v2"
+	"k8s.io/utils/cpuset"
+
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
+	"github.com/containers/nri-plugins/pkg/cxl/config"
+)
+
+// Options configure a Plugin.
+type Options struct {
+	// Defaults are the container settings of the driver configuration
+	// (defaults.container); their fencing is the node's.
+	Defaults config.Container
+	// Store keeps the Steered records and the leases that seed the lends.
+	Store *store.Store
+	// Leases: the lease broker lends nodes, and the READY numa leases of
+	// the store seed the lends of a container of their requester.
+	Leases bool
+	// SysRoot is the root of the sysfs mount: the NUMA nodes with memory
+	// are in <SysRoot>/sys/devices/system/node.
+	SysRoot string
+	// Local and Pool are the prepared claims of cxl.nri.io and of the pool
+	// driver, nil for none.
+	Local LocalResults
+	Pool  PoolResults
+}
+
+// Connection are the NRI settings of the plugin: its name and index in
+// the runtime's chain of plugins and the runtime's socket ("" for the
+// defaults).
+type Connection struct {
+	Name, Idx, Socket string
+}
+
+// Plugin is the NRI plugin of the node: the table of the containers, the
+// fenced NUMA nodes and the lends of nodes to running containers. It is the
+// only writer of the cpuset.mems of the containers that it does not steer.
+//
+// Identity: one per driver process.
+//
+// States: the readiness of fencing, an in-memory latch: not ready (Fence
+// records a node only) until NRI has synchronized and the lends of the
+// leases are restored, then ready; never back. The NRI connection: not
+// started, connected, absent (Start failed: the containers are not fenced,
+// lends fail), lost (the process exits).
+//
+// Transitions: the tables of Container; the readiness and the connection
+// as above.
+//
+// Invariants: the fenced nodes only grow within a process; a fence pass and
+// a lend run under the update token.
+//
+// Persistence: the Steered records in the store; the rest is in memory and
+// rebuilt at a start: the fenced nodes seeded from the grants of this boot
+// (Seed), the table by Synchronize, the lends from the READY leases of the
+// store and the broker's first reconcile.
+//
+// Locks and waits: fenceMu serializes Fence across its pass; the update
+// token (token) is held from computing wantMems to recording the result of
+// UpdateContainers; the table mutex (mu) is never held across
+// UpdateContainers, a store commit or a callback, as the runtime serializes
+// NRI events and unsolicited updates with one lock; connMu guards the
+// connection. Order: fenceMu, token, mu.
+type Plugin struct {
+	opts Options
+	// fencing: defaults.container.fencing is allowed-mems.
+	fencing bool
+	// hasMemory is the sysfs file of the NUMA nodes with memory.
+	hasMemory string
+	// legacy: the store had no Steered records at start (a new or lost
+	// document): Synchronize releases the started containers that their
+	// settings steer.
+	legacy bool
+
+	fenceMu sync.Mutex
+	token   sync.Mutex
+
+	mu sync.Mutex
+	// stub is the NRI stub, nil while NRI is not connected.
+	stub nriStub
+	// connected is set when the stub has started, absent when it did not.
+	connected, absent bool
+	ctrs              map[string]*Container
+	seq               uint64
+	// fenced are the fenced NUMA nodes, F.
+	fenced cpuset.CPUSet
+	// synced is closed at the first Synchronize.
+	synced     chan struct{}
+	goneFns    []func(pod state.PodRef, container string)
+	startedFns []func(pod state.PodRef, container string)
+	// lendsRestored is set when the lends of a restarted plugin are
+	// applied again, fenceReady when fencing of running containers runs.
+	lendsRestored, fenceReady bool
+	// passes are the fence passes in the background.
+	passes sync.WaitGroup
+
+	connMu                    sync.Mutex
+	started, stopping, closed bool
+}
+
+// nriStub is the part of stub.Stub that the plugin uses.
+type nriStub interface {
+	Start(context.Context) error
+	Stop()
+	UpdateContainers([]*api.ContainerUpdate) ([]*api.ContainerUpdate, error)
+}
+
+// hasMemoryFile lists the NUMA nodes with memory, under the sysfs root.
+const hasMemoryFile = "sys/devices/system/node/has_memory"
+
+// exitOnNRILost ends the process when the runtime has closed the NRI
+// connection (a variable for tests).
+var exitOnNRILost = os.Exit
+
+// New returns the plugin of the options, not connected to NRI: Fence
+// records the nodes until Start. It returns an error without a store.
+func New(opts Options) (*Plugin, error) {
+	if opts.Store == nil {
+		return nil, errors.New("containers: no store")
+	}
+	p := &Plugin{
+		opts:      opts,
+		fencing:   opts.Defaults.Fencing == "" || opts.Defaults.Fencing == config.FencingAllowedMems,
+		hasMemory: filepath.Join(opts.SysRoot, "/", hasMemoryFile),
+		ctrs:      map[string]*Container{},
+		fenced:    cpuset.New(),
+		synced:    make(chan struct{}),
+	}
+	switch opts.Store.Origin() {
+	case store.New, store.NewState, store.Lost:
+		klog.V(3).Info("NRI: no steering records in the store: releasing the containers that their settings steer")
+		p.legacy = true
+	}
+	return p, nil
+}
+
+// Start connects the plugin to the runtime's NRI socket. The plugin
+// receives the container events from now on; a loss of the connection that
+// Stop does not cause ends the process. Without a connection the plugin
+// fences no container and lends fail.
+func (p *Plugin) Start(ctx context.Context, c Connection) error {
+	opts := []stub.Option{stub.WithOnClose(func() { p.onClose(ctx) })}
+	if c.Name != "" {
+		opts = append(opts, stub.WithPluginName(c.Name))
+	}
+	if c.Idx != "" {
+		opts = append(opts, stub.WithPluginIdx(c.Idx))
+	}
+	if c.Socket != "" {
+		opts = append(opts, stub.WithSocketPath(c.Socket))
+	}
+	s, err := stub.New(p, opts...)
+	if err != nil {
+		p.connect(nil)
+		return fmt.Errorf("failed to create NRI plugin stub: %w", err)
+	}
+	p.mu.Lock()
+	p.stub = s
+	p.mu.Unlock()
+	if err := s.Start(ctx); err != nil {
+		p.connect(nil)
+		return fmt.Errorf("failed to start NRI plugin: %w", err)
+	}
+	p.connStarted(ctx)
+	p.connect(s)
+	klog.V(3).Info("NRI plugin started")
+	return nil
+}
+
+// SetResults sets the prepared claims of cxl.nri.io and of the pool driver
+// (nil for none) that the containers use. Not guarded: it comes before
+// Start, and the NRI events read them without the table mutex.
+func (p *Plugin) SetResults(local LocalResults, pool PoolResults) {
+	p.opts.Local, p.opts.Pool = local, pool
+}
+
+// Fencing tells whether the plugin fences the CXL nodes of the driver:
+// defaults.container.fencing is allowed-mems.
+func (p *Plugin) Fencing() bool {
+	return p.fencing
+}
+
+// connect sets the stub of the connection, nil when NRI did not start.
+func (p *Plugin) connect(s nriStub) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stub, p.connected, p.absent = s, s != nil, s == nil
+}
+
+// Stop shuts the plugin down: the steering managers stop, then the
+// connection closes, which is not a loss.
+func (p *Plugin) Stop() {
+	p.MarkStopping()
+	p.mu.Lock()
+	var steered []*Container
+	var managers []func()
+	for _, c := range p.ctrs {
+		c.Plan = nil
+		if c.manager != nil {
+			steered, managers = append(steered, c), append(managers, c.manager.Stop)
+			c.manager = nil
+		}
+	}
+	s := p.stub
+	p.mu.Unlock()
+	ids := make([]string, 0, len(steered))
+	for i, c := range steered {
+		managers[i]()
+		ids = append(ids, c.ID)
+	}
+	if len(ids) > 0 {
+		p.removeSteered(ids...)
+	}
+	if s != nil {
+		s.Stop()
+		klog.V(3).Info("NRI plugin stopped")
+	}
+}
+
+// MarkStopping makes a close of the connection from now on not a loss:
+// the driver is stopping, and the runtime may close the connection while
+// the driver stops (a node shutdown stops both).
+func (p *Plugin) MarkStopping() {
+	p.connMu.Lock()
+	defer p.connMu.Unlock()
+	p.stopping = true
+}
+
+// Stopping tells whether a close of the connection is no loss any more.
+func (p *Plugin) Stopping() bool {
+	p.connMu.Lock()
+	defer p.connMu.Unlock()
+	return p.stopping
+}
+
+// onClose records that the connection to the runtime has closed and exits
+// if that is a loss. The stub never connects again: the process exits so
+// that it is restarted (by the DaemonSet, or by Restart= of a systemd unit)
+// and connects again; the restarted driver gets its state back from the
+// store and Synchronize, as after a SIGKILL. A close while stopping or
+// after ctx is done is not a loss, nor is one before Start has succeeded.
+func (p *Plugin) onClose(ctx context.Context) {
+	p.connMu.Lock()
+	defer p.connMu.Unlock()
+	p.closed = true
+	p.exitIfLostLocked(ctx)
+}
+
+// connStarted records that Start of the stub has succeeded, and exits if
+// the runtime has closed the connection already.
+func (p *Plugin) connStarted(ctx context.Context) {
+	p.connMu.Lock()
+	defer p.connMu.Unlock()
+	p.started = true
+	p.exitIfLostLocked(ctx)
+}
+
+// exitIfLostLocked ends the process with exit status 1 if the connection
+// that the stub has started is closed, not by Stop, while ctx is not done.
+// Called with connMu held: Stop cannot come between the decision and the
+// exit.
+func (p *Plugin) exitIfLostLocked(ctx context.Context) {
+	switch {
+	case !p.started || !p.closed:
+		return
+	case p.stopping || ctx.Err() != nil:
+		klog.V(3).Info("NRI connection to the runtime closed (stopping)")
+		return
+	}
+	klog.Error("NRI connection to the runtime lost, exiting to be restarted and connect again")
+	klog.Flush()
+	exitOnNRILost(1)
+}
+
+// WaitSynchronized waits until the first Synchronize has filled the
+// container table, and returns an error when ctx is done first.
+func (p *Plugin) WaitSynchronized(ctx context.Context) error {
+	select {
+	case <-p.synced:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("NRI not synchronized yet: %w", ctx.Err())
+	}
+}
+
+// OnContainerGone registers fn, called in its own goroutine for each
+// container that stops, is removed, or that Synchronize does not list.
+func (p *Plugin) OnContainerGone(fn func(pod state.PodRef, container string)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.goneFns = append(p.goneFns, fn)
+}
+
+// OnContainerStarted registers fn, called in its own goroutine for each
+// container that the runtime has marked started: it applies updates to its
+// cgroup from now on.
+func (p *Plugin) OnContainerStarted(fn func(pod state.PodRef, container string)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.startedFns = append(p.startedFns, fn)
+}
+
+// fireGone runs the OnContainerGone callbacks of a container in the
+// background. Called with mu held.
+func (p *Plugin) fireGone(c *Container) {
+	if lent := c.Lends.nodes(); !lent.IsEmpty() {
+		klog.V(3).Infof("NRI lend: ctr=%s id=%s gone with lent nodes %s", c.name(), c.ID, lent)
+	}
+	pod, name := c.pod(), c.Name
+	for _, fn := range p.goneFns {
+		go fn(pod, name)
+	}
+}
+
+// fireStarted runs the OnContainerStarted callbacks of a container in the
+// background. Called with mu held.
+func (p *Plugin) fireStarted(c *Container) {
+	pod, name := c.pod(), c.Name
+	for _, fn := range p.startedFns {
+		go fn(pod, name)
+	}
+}
+
+// ContainerByPid returns the pod and the name of the container whose cgroup
+// has the process pid: the record with the longest cgroup directory that
+// has its cgroup, or one whose cgroup is not resolved whose ID the cgroup
+// names; false for none.
+func (p *Plugin) ContainerByPid(pid int) (state.PodRef, string, bool) {
+	c, ok := p.byPid(pid)
+	if !ok {
+		return state.PodRef{}, "", false
+	}
+	return c.pod(), c.Name, true
+}
+
+// byPid returns a copy of the record of the container whose cgroup has the
+// process pid.
+func (p *Plugin) byPid(pid int) (Container, bool) {
+	dir, err := pidCgroupDir(pid)
+	if err != nil {
+		klog.V(4).Infof("NRI lend: pid %d: %v", pid, err)
+		return Container{}, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var best *Container
+	for _, c := range p.ctrs {
+		if inCgroup(c, dir) && (best == nil || len(c.CgroupDir) > len(best.CgroupDir)) {
+			best = c
+		}
+	}
+	if best == nil {
+		return Container{}, false
+	}
+	return *best, true
+}
+
+// Running tells whether the table has a record of the container name of
+// the pod, created or started.
+func (p *Plugin) Running(podUID, container string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lookup(podUID, container) != nil
+}
+
+// Record returns a copy of the record of the container id, and false for
+// none.
+func (p *Plugin) Record(id string) (Container, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	c, ok := p.ctrs[id]
+	if !ok {
+		return Container{}, false
+	}
+	out := *c
+	out.Lends = nil
+	for n, holders := range c.Lends {
+		out.Lends = out.Lends.set(n, maps.Clone(holders))
+	}
+	out.manager = nil
+	return out, true
+}
+
+// LentNodes returns the nodes lent to the newest container of the pod with
+// the name.
+func (p *Plugin) LentNodes(podUID, name string) []int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	c := p.lookup(podUID, name)
+	if c == nil {
+		return nil
+	}
+	return c.Lends.nodes().List()
+}
+
+// lookup returns the newest record of the container name of the pod, nil
+// for none. Called with mu held.
+func (p *Plugin) lookup(podUID, name string) *Container {
+	var best *Container
+	for _, c := range p.ctrs {
+		if c.PodUID == podUID && c.Name == name && (best == nil || c.seq > best.seq) {
+			best = c
+		}
+	}
+	return best
+}
+
+// sorted returns the records in the order of their creation. Called with mu
+// held.
+func (p *Plugin) sorted() []*Container {
+	out := make([]*Container, 0, len(p.ctrs))
+	for _, c := range p.ctrs {
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].seq < out[j].seq })
+	return out
+}
+
+// ctrName returns the name of a container of a pod: namespace/pod/name.
+func ctrName(pod *api.PodSandbox, ctr *api.Container) string {
+	return pod.GetNamespace() + "/" + pod.GetName() + "/" + ctr.GetName()
+}
