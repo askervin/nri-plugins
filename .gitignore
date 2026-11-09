@@ -26,3 +26,4 @@ test/statistics-analysis/output
 
 *.test
 testdata/
+cmd/plugins/dra-driver-cxl/dra-driver-cxl
