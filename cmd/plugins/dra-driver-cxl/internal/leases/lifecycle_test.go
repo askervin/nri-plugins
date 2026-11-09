@@ -25,7 +25,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
-	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -349,33 +348,4 @@ func TestLeaseClaimPrepare(t *testing.T) {
 		t.Fatalf("lease claim left: %v", err)
 	}
 	e.waitState(resp.Lease, state.LeaseNone)
-}
-
-// openBlockDevice opens a device read-write and read-only, waits for a
-// node that appears, and fails at once with another error.
-func TestOpenBlockDevice(t *testing.T) {
-	dir := t.TempDir()
-	dev := filepath.Join(dir, "pmem0")
-	mustOK(t, os.WriteFile(dev, []byte("BLK"), 0o600))
-	for _, readOnly := range []bool{false, true} {
-		f, err := openDevice(dev, readOnly)
-		mustOK(t, err)
-		_, werr := f.Write([]byte("x"))
-		_ = f.Close()
-		if (werr == nil) == readOnly {
-			t.Fatalf("read-only %v: write error %v", readOnly, werr)
-		}
-	}
-	late := filepath.Join(dir, "pmem1")
-	go func() {
-		time.Sleep(300 * time.Millisecond)
-		_ = os.WriteFile(late, []byte("BLK"), 0o600)
-	}()
-	f, err := openBlockDevice(late, true)
-	mustOK(t, err)
-	_ = f.Close()
-	start := time.Now()
-	if _, err := openBlockDevice(filepath.Join(dev, "x"), true); err == nil || time.Since(start) > time.Second {
-		t.Fatalf("open below a file: %v after %v", err, time.Since(start))
-	}
 }

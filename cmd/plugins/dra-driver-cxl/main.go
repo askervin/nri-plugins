@@ -386,7 +386,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 
 	// 4. The lease broker re-creates the sockets of prepared lease claims
 	// before kubelet can call Prepare or Unprepare.
-	broker, err := newBroker(config, cxlFlags, driverConfig, st, fe)
+	broker, err := newBroker(config, cxlFlags, driverConfig, st, fe, devices.k)
 	if err != nil {
 		return nil, err
 	}

@@ -570,6 +570,10 @@ func (m *mountTable) ZeroDax(ctx context.Context, major, minor int, size, align 
 	return nil
 }
 
+func (m *mountTable) OpenDax(ctx context.Context, major, minor int, readOnly bool) (*os.File, error) {
+	return nil, fmt.Errorf("no private node of %d:%d in the fake: %w", major, minor, syscall.ENXIO)
+}
+
 func (m *mountTable) ProbeDax(major, minor int, size uint64) (*kernel.Aliasing, error) {
 	f := m.f
 	f.mu.Lock()

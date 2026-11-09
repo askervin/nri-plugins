@@ -97,7 +97,7 @@ func loadDriverConfig(cxlFlags *CXLFlags) (*DriverConfig, string, error) {
 // newBroker returns the lease broker of the lease claims and the leases of
 // the store st, nil when lending is disabled; cxl.nri.io tells it of its
 // lease claims.
-func newBroker(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, st *store.Store, fe *frontEnds) (*leases.Broker, error) {
+func newBroker(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, st *store.Store, fe *frontEnds, k *kernel.Kernel) (*leases.Broker, error) {
 	if !driverConfig.PublishLeaseDevice {
 		return nil, nil
 	}
@@ -112,6 +112,7 @@ func newBroker(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverCon
 		WaitDefault: cxlFlags.LeaseWait,
 		PoolDriver:  fe.pool.Name(),
 		Limits:      cxlFlags.LeaseLimits,
+		Kernel:      k,
 	})
 	if err != nil {
 		return nil, err

@@ -108,6 +108,10 @@ type Sys interface {
 	// ProbeDax runs the address line probe (see ProbeAliasing) on the
 	// first size bytes of the dax character device major:minor.
 	ProbeDax(major, minor int, size uint64) (*Aliasing, error)
+	// OpenDax opens the dax character device major:minor, read-only or
+	// read-write, through a private device node that is removed again at
+	// once. The context ends the wait for the character device.
+	OpenDax(ctx context.Context, major, minor int, readOnly bool) (*os.File, error)
 }
 
 // Loop is a loop device set up by Sys.AttachLoop, held open until

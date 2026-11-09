@@ -182,7 +182,7 @@ func readLine(r *bufio.Reader) ([]byte, error) {
 // the error.
 func (b *Broker) respond(c *net.UnixConn, resp *api.Response, fd leaseFd) error {
 	if fd.path != "" {
-		f, err := b.opts.OpenDevice(fd.path, fd.readOnly)
+		f, err := b.openDevice(fd.path, fd.readOnly)
 		if err != nil {
 			resp = &api.Response{Lease: resp.Lease, State: resp.State, Error: fmt.Sprintf("opening %s: %v", fd.path, err)}
 		} else {

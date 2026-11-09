@@ -107,7 +107,7 @@ func TestOpenDaxNode(t *testing.T) {
 		}
 		return os.OpenFile(name, flag, perm)
 	}
-	f, err := openDaxNode(context.Background(), node)
+	f, err := openDaxNode(context.Background(), node, false)
 	if err != nil || fails != 3 {
 		t.Fatalf("open after ENXIO: %v, %d fails", err, fails)
 	}
@@ -117,21 +117,21 @@ func TestOpenDaxNode(t *testing.T) {
 		calls++
 		return nil, &os.PathError{Op: "open", Path: name, Err: unix.EACCES}
 	}
-	if _, err := openDaxNode(context.Background(), node); !errors.Is(err, unix.EACCES) || calls != 1 {
+	if _, err := openDaxNode(context.Background(), node, false); !errors.Is(err, unix.EACCES) || calls != 1 {
 		t.Fatalf("expected EACCES at once, got %v after %d calls", err, calls)
 	}
 	daxOpenTimeout = 20 * time.Millisecond
 	openFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
 		return nil, &os.PathError{Op: "open", Path: name, Err: unix.ENXIO}
 	}
-	if _, err := openDaxNode(context.Background(), node); !errors.Is(err, unix.ENXIO) {
+	if _, err := openDaxNode(context.Background(), node, false); !errors.Is(err, unix.ENXIO) {
 		t.Fatalf("expected ENXIO after the timeout, got %v", err)
 	}
 	// the context ends the retries
 	daxOpenTimeout = time.Hour
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	if _, err := openDaxNode(ctx, node); !errors.Is(err, unix.ENXIO) {
+	if _, err := openDaxNode(ctx, node, false); !errors.Is(err, unix.ENXIO) {
 		t.Fatalf("expected ENXIO at the end of the context, got %v", err)
 	}
 }

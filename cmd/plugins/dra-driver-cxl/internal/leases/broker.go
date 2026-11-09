@@ -124,8 +124,11 @@ type Options struct {
 	WaitDefault time.Duration
 	// PoolDriver is the name of the pool driver, "" when it is disabled.
 	PoolDriver string
+	// Kernel reads the mounts of the plugin's mount namespace and opens
+	// the devices of dax and block leases (nil: kernel.New()).
+	Kernel *kernel.Kernel
 	// Mounts returns the mounts of the plugin's mount namespace; nil:
-	// /proc/self/mountinfo.
+	// those of Kernel.
 	Mounts func() ([]kernel.MountInfo, error)
 	// Identity resolves the peers of the sockets when Start gets a
 	// container plugin (without one every request is refused); nil: the
@@ -134,7 +137,7 @@ type Options struct {
 	// Timeouts are the waits and periods.
 	Timeouts Timeouts
 	// OpenDevice opens the device of a dax or block lease for passing it
-	// to a container; nil: the device node, waiting for udev.
+	// to a container; nil: Kernel's OpenDevice.
 	OpenDevice func(path string, readOnly bool) (*os.File, error)
 	// NewID returns a new lease id; nil: 8 random hex digits.
 	NewID func() string
@@ -254,8 +257,8 @@ func New(opts Options) (*Broker, error) {
 	}
 	opts.Image = cmp.Or(opts.Image, DefaultCompanionImage)
 	opts.Limits = opts.Limits.withDefaults()
-	if opts.OpenDevice == nil {
-		opts.OpenDevice = openDevice
+	if opts.Kernel == nil {
+		opts.Kernel = kernel.New()
 	}
 	if opts.NewID == nil {
 		opts.NewID = randomLeaseID
@@ -470,7 +473,16 @@ func (b *Broker) mounts() ([]kernel.MountInfo, error) {
 	if b.opts.Mounts != nil {
 		return b.opts.Mounts()
 	}
-	return kernel.New().Mounts()
+	return b.opts.Kernel.Mounts()
+}
+
+// openDevice opens the device of a dax or block lease for passing it to a
+// container, read-only or read-write.
+func (b *Broker) openDevice(path string, readOnly bool) (*os.File, error) {
+	if b.opts.OpenDevice != nil {
+		return b.opts.OpenDevice(path, readOnly)
+	}
+	return b.opts.Kernel.OpenDevice(b.ctx, path, readOnly)
 }
 
 // apiContext returns the context of one API call.

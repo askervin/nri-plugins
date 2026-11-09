@@ -301,13 +301,17 @@ var (
 	openFile = os.OpenFile
 )
 
-// openDaxNode opens the device node of a dax device for reading and
-// writing, trying again while the character device is not there yet, until
-// daxOpenTimeout or the end of the context.
-func openDaxNode(ctx context.Context, node string) (*os.File, error) {
+// openDaxNode opens the device node of a dax device read-only or for
+// reading and writing, trying again while the character device is not
+// there yet, until daxOpenTimeout or the end of the context.
+func openDaxNode(ctx context.Context, node string, readOnly bool) (*os.File, error) {
+	flag := os.O_RDWR
+	if readOnly {
+		flag = os.O_RDONLY
+	}
 	deadline := time.Now().Add(daxOpenTimeout)
 	for {
-		f, err := openFile(node, os.O_RDWR, 0)
+		f, err := openFile(node, flag, 0)
 		notYet := errors.Is(err, unix.ENXIO) || errors.Is(err, unix.ENODEV)
 		if !notYet || !time.Now().Before(deadline) {
 			return f, err
@@ -318,12 +322,11 @@ func openDaxNode(ctx context.Context, node string) (*os.File, error) {
 	}
 }
 
-// openDax opens the dax character device major:minor through a private
-// device node in a temporary directory under DevRoot (the container may
-// have no /dev/daxX.Y, and a device node can be opened only on a filesystem
-// without nodev: DevRoot, a devtmpfs, not a tmpfs), which is removed again
-// at once.
-func (s *SysCalls) openDax(ctx context.Context, major, minor int) (*os.File, error) {
+// OpenDax opens the dax character device through a private device node in
+// a temporary directory under DevRoot (the container may have no
+// /dev/daxX.Y, and a device node can be opened only on a filesystem without
+// nodev: DevRoot, a devtmpfs, not a tmpfs).
+func (s *SysCalls) OpenDax(ctx context.Context, major, minor int, readOnly bool) (*os.File, error) {
 	dir, err := os.MkdirTemp(s.devRoot(), ".cxl-dax-")
 	if err != nil {
 		return nil, err
@@ -333,14 +336,14 @@ func (s *SysCalls) openDax(ctx context.Context, major, minor int) (*os.File, err
 	if err := unix.Mknod(node, unix.S_IFCHR|0o600, int(unix.Mkdev(uint32(major), uint32(minor)))); err != nil {
 		return nil, fmt.Errorf("mknod %d:%d: %w", major, minor, err)
 	}
-	return openDaxNode(ctx, node)
+	return openDaxNode(ctx, node, readOnly)
 }
 
 // zeroChunk is the size of the windows in which a dax device is zeroed.
 const zeroChunk = 64 << 20
 
 func (s *SysCalls) ZeroDax(ctx context.Context, major, minor int, size, align uint64) error {
-	f, err := s.openDax(ctx, major, minor)
+	f, err := s.OpenDax(ctx, major, minor, false)
 	if err != nil {
 		return err
 	}
@@ -373,7 +376,7 @@ func (s *SysCalls) ProbeDax(major, minor int, size uint64) (*Aliasing, error) {
 	if !cacheFlushSupported {
 		return nil, ErrProbeUnsupported
 	}
-	f, err := s.openDax(context.Background(), major, minor)
+	f, err := s.OpenDax(context.Background(), major, minor, false)
 	if err != nil {
 		return nil, err
 	}

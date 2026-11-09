@@ -19,6 +19,7 @@ package kernel
 import (
 	"context"
 	"errors"
+	"os"
 )
 
 // SysCalls is the Sys of the running system; only Linux has one.
@@ -50,5 +51,8 @@ func (s *SysCalls) ZeroDax(ctx context.Context, major, minor int, size, align ui
 	return errNotLinux
 }
 func (s *SysCalls) ProbeDax(major, minor int, size uint64) (*Aliasing, error) {
+	return nil, errNotLinux
+}
+func (s *SysCalls) OpenDax(ctx context.Context, major, minor int, readOnly bool) (*os.File, error) {
 	return nil, errNotLinux
 }
