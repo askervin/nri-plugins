@@ -347,7 +347,10 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	if err != nil {
 		return nil, err
 	}
-	stopEvents := wakeOnUevents(devices)
+	events, stopEvents, err := wakeOnUevents(devices, driverConfig)
+	if err != nil {
+		return nil, err
+	}
 	// the lease device and the lease broker lend local memdevs and, with
 	// the pool driver, pool devices
 	driverConfig.PublishLeaseDevice = cxlFlags.Leases
@@ -377,6 +380,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 		watcher:    watcher,
 		closeStore: closeStore,
 		stop:       make(chan struct{}),
+		events:     events,
 		stopEvents: stopEvents,
 	}
 
@@ -415,9 +419,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	if d.nri != nil {
 		go everyPeriod(repairPeriod, d.stop, func() { d.nri.Repair(ctx) })
 	}
-	if err := d.startUdev(ctx, driverConfig); err != nil {
-		return nil, err
-	}
+	d.startRescans(ctx, driverConfig)
 
 	klog.V(3).Info("Finished creating new driver")
 	started = true

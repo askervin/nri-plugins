@@ -947,31 +947,47 @@ type fakeEvents struct {
 	kernel.Changes
 	started, stopped bool
 	startErr         error
+	fifo             string
+	stable           chan struct{}
 }
 
-func (f *fakeEvents) Start(string) error { f.started = true; return f.startErr }
-func (f *fakeEvents) Stop()              { f.stopped = true }
+func (f *fakeEvents) Start(fifo string) error { f.started, f.fifo = true, fifo; return f.startErr }
+func (f *fakeEvents) Stop()                   { f.stopped = true }
+func (f *fakeEvents) Stable() <-chan struct{} { return f.stable }
 
-// The uevents of the kernel objects wake the waits of the engine's kernel
-// (L-20); without them the waits only poll.
+// One watch of the uevents of the kernel objects, with the fake events of
+// the FIFO, wakes the waits of the engine's kernel and gives the stable
+// signal of the rescans after udevStableDuration; without uevents the waits
+// only poll.
 func TestWakeOnUevents(t *testing.T) {
 	old := newKernelEvents
 	t.Cleanup(func() { newKernelEvents = old })
 	ev := &fakeEvents{}
-	newKernelEvents = func() (kernelEvents, error) { return ev, nil }
+	var stable time.Duration
+	newKernelEvents = func(d time.Duration) (kernelEvents, error) { stable = d; return ev, nil }
 	devices := &deviceEngine{k: &kernel.Kernel{}}
-	stop := wakeOnUevents(devices)
-	if !ev.started || devices.k.Events != kernel.Events(ev) {
-		t.Fatalf("events %+v, kernel events %v", ev, devices.k.Events)
+	cfg := &DriverConfig{UdevStableDuration: "1s", Testability: &TestabilityConfig{FakeUdevFifo: "/run/fifo"}}
+	got, stop, err := wakeOnUevents(devices, cfg)
+	noErr(t, err)
+	if !ev.started || ev.fifo != "/run/fifo" || stable != time.Second || got != kernelEvents(ev) || devices.k.Events != kernel.Events(ev) {
+		t.Fatalf("events %+v, stable %v, kernel events %v", ev, stable, devices.k.Events)
 	}
 	stop()
 	if !ev.stopped {
 		t.Fatal("not stopped")
 	}
+	if _, _, err := wakeOnUevents(devices, &DriverConfig{UdevStableDuration: "-1s"}); err == nil {
+		t.Fatal("a negative udevStableDuration")
+	}
+	if _, _, err := wakeOnUevents(devices, &DriverConfig{UdevStableDuration: "-1s", IgnoreNewNodes: true}); err != nil {
+		t.Fatalf("udevStableDuration with ignoreNewNodes: %v", err)
+	}
 	ev = &fakeEvents{startErr: errors.New("no netlink")}
 	devices = &deviceEngine{k: &kernel.Kernel{}}
-	wakeOnUevents(devices)()
-	if devices.k.Events != nil {
+	got, stop, err = wakeOnUevents(devices, &DriverConfig{})
+	noErr(t, err)
+	stop()
+	if got != nil || devices.k.Events != nil {
 		t.Fatalf("kernel events %v without uevents", devices.k.Events)
 	}
 }

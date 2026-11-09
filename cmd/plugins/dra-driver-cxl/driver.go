@@ -45,9 +45,8 @@ type driver struct {
 	client coreclientset.Interface
 	config *DriverConfig
 	// nri is the NRI plugin, nil when NRI did not start.
-	nri         *containers.Plugin
-	udevWatcher *UdevEventWatcher
-	sysfsRoot   string
+	nri       *containers.Plugin
+	sysfsRoot string
 	// local is cxl.nri.io, pool the pool driver (nil when it is
 	// disabled), publisher the publisher of the node's ResourceSlice,
 	// watcher the watcher of the pool devices (nil without a client).
@@ -61,7 +60,9 @@ type driver struct {
 	closeStore func()
 	// stop ends the periodic passes of the driver.
 	stop chan struct{}
-	// stopEvents stops the uevents that wake the waits of the kernel.
+	// events are the uevents of the kernel objects, nil without them;
+	// stopEvents stops them.
+	events     kernelEvents
 	stopEvents func()
 }
 
@@ -186,18 +187,19 @@ PluginDataDirectoryPath: %v`,
 // between releases.
 const staleBindPeriod = 60 * time.Second
 
-// kernelEvents are the uevents of the kernel objects that wake the waits of
-// the kernel package.
+// kernelEvents are the uevents of the kernel objects: they wake the waits
+// of the kernel package, and their stable signal the rescans.
 type kernelEvents interface {
 	kernel.Events
 	Start(fifoPath string) error
 	Stop()
+	Stable() <-chan struct{}
 }
 
-// newKernelEvents returns the uevents of the kernel objects (a variable for
-// tests).
-var newKernelEvents = func() (kernelEvents, error) {
-	ev, err := kernel.NewUdevEvents(0)
+// newKernelEvents returns the uevents of the kernel objects whose stable
+// signal comes after stableDuration of quiet (a variable for tests).
+var newKernelEvents = func(stableDuration time.Duration) (kernelEvents, error) {
+	ev, err := kernel.NewUdevEvents(stableDuration)
 	if err != nil {
 		return nil, err
 	}
@@ -205,20 +207,35 @@ var newKernelEvents = func() (kernelEvents, error) {
 	return ev, nil
 }
 
-// wakeOnUevents makes the uevents of the kernel objects wake the waits of
-// the kernel of the device engine early (they still poll), and returns
-// their stop; without uevents the waits only poll.
-func wakeOnUevents(devices *deviceEngine) func() {
-	ev, err := newKernelEvents()
+// wakeOnUevents starts the one watch of the uevents of the kernel objects,
+// with the fake events of the FIFO of the configuration, and makes them
+// wake the waits of the kernel of the device engine early (they still
+// poll). It returns the events, nil without them (the waits only poll),
+// and their stop; an invalid udevStableDuration is an error unless
+// ignoreNewNodes is set.
+func wakeOnUevents(devices *deviceEngine, driverConfig *DriverConfig) (kernelEvents, func(), error) {
+	var stableDuration time.Duration
+	if !driverConfig.IgnoreNewNodes {
+		d, err := parseUdevStableDuration(driverConfig.UdevStableDuration)
+		if err != nil {
+			return nil, nil, err
+		}
+		stableDuration = d
+	}
+	var fifoPath string
+	if driverConfig.Testability != nil {
+		fifoPath = driverConfig.Testability.FakeUdevFifo
+	}
+	ev, err := newKernelEvents(stableDuration)
 	if err == nil {
-		err = ev.Start("")
+		err = ev.Start(fifoPath)
 	}
 	if err != nil {
-		klog.Warningf("kernel uevents: %v: the waits for kernel objects only poll", err)
-		return func() {}
+		klog.Warningf("kernel uevents: %v: the waits for kernel objects only poll, no rescan on uevents", err)
+		return nil, func() {}, nil
 	}
 	devices.k.Events = ev
-	return ev.Stop
+	return ev, ev.Stop, nil
 }
 
 // repairPeriod is how often the fence pass of the NRI plugin tries the
@@ -239,34 +256,17 @@ func everyPeriod(period time.Duration, stop <-chan struct{}, pass func()) {
 	}
 }
 
-// startUdev starts the watcher of udev events for NUMA node hotplug
-// detection unless ignoreNewNodes is set; a watcher that cannot be made or
-// started is logged and the driver runs without it.
-func (d *driver) startUdev(ctx context.Context, driverConfig *DriverConfig) error {
+// startRescans starts the rescans of the publisher on the stable signal of
+// the uevents unless ignoreNewNodes is set or there are no uevents.
+func (d *driver) startRescans(ctx context.Context, driverConfig *DriverConfig) {
 	if driverConfig.IgnoreNewNodes {
-		klog.V(3).Info("Udev node watcher disabled (ignoreNewNodes=true)")
-		return nil
+		klog.V(3).Info("rescans on uevents disabled (ignoreNewNodes=true)")
+		return
 	}
-	stableDuration, err := parseUdevStableDuration(driverConfig.UdevStableDuration)
-	if err != nil {
-		return err
+	if d.events == nil {
+		return
 	}
-	watcher, err := NewUdevEventWatcher(stableDuration)
-	if err != nil {
-		klog.Warningf("Failed to create udev watcher (continuing without it): %v", err)
-		return nil
-	}
-	var fifoPath string
-	if driverConfig.Testability != nil {
-		fifoPath = driverConfig.Testability.FakeUdevFifo
-	}
-	if err := watcher.Start(fifoPath); err != nil {
-		klog.Warningf("Failed to start udev watcher (continuing without it): %v", err)
-		return nil
-	}
-	d.udevWatcher = watcher
-	go d.udevRescanLoop(ctx)
-	return nil
+	go d.rescanLoop(ctx, d.events.Stable())
 }
 
 // fenceOf returns the fence of the NUMA nodes of the NRI plugin nri that
@@ -629,13 +629,18 @@ func waitNRI(ctx context.Context, nri *containers.Plugin) error {
 	return nil
 }
 
-// udevRescanLoop reads stable-notifications from the udev watcher and asks
-// the publisher for a rescan on each one.
-func (d *driver) udevRescanLoop(ctx context.Context) {
-	for range d.udevWatcher.Events() {
-		d.publisher.Trigger(ctx, false)
+// rescanLoop asks the publisher for a rescan at every signal of stable
+// until d.stop is closed.
+func (d *driver) rescanLoop(ctx context.Context, stable <-chan struct{}) {
+	for {
+		select {
+		case <-d.stop:
+			return
+		case <-stable:
+			klog.V(3).Info("kernel uevents: sysfs stabilized, signaling rescan")
+			d.publisher.Trigger(ctx, false)
+		}
 	}
-	klog.V(3).Info("udevRescanLoop: exiting (watcher channel closed)")
 }
 
 func (d *driver) Shutdown(ctx context.Context) error {
@@ -645,9 +650,6 @@ func (d *driver) Shutdown(ctx context.Context) error {
 	// stops (the broker waits for its reconciles), which is no loss now.
 	if d.nri != nil {
 		d.nri.MarkStopping()
-	}
-	if d.udevWatcher != nil {
-		d.udevWatcher.Stop()
 	}
 	if d.stop != nil {
 		close(d.stop)
