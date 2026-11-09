@@ -27,13 +27,9 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
-func init() {
-	putLocalContent = putLocalFileContent
-}
-
-// putLocalFileContent replaces the records of cxl.nri.io in doc with those of
+// putLocalContent replaces the records of cxl.nri.io in doc with those of
 // the content of one of its state files and the others as doc has them.
-func putLocalFileContent(doc *store.Document, opts store.ViewOptions, name string, data, preparedData []byte) error {
+func putLocalContent(doc *store.Document, opts store.ViewOptions, name string, data, preparedData []byte) error {
 	view := func(n string) ([]byte, error) { return store.ViewContent(doc, n, opts) }
 	var err error
 	if preparedData == nil {

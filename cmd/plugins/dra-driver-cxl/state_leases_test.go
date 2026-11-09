@@ -31,13 +31,9 @@ import (
 // (internal/leases), and the store writes leases.json as their view; the
 // tests compare that view with the old content.
 
-func init() {
-	putLeasesContent = putLeasesFileContent
-}
-
-// putLeasesFileContent replaces the lease claims and the leases in doc
+// putLeasesContent replaces the lease claims and the leases in doc
 // with those of the content of leases.json.
-func putLeasesFileContent(doc *store.Document, data []byte) error {
+func putLeasesContent(doc *store.Document, data []byte) error {
 	var ls leaseStore
 	if err := json.Unmarshal(data, &ls); err != nil {
 		return err

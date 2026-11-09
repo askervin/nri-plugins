@@ -57,23 +57,18 @@ type preparingRegion struct {
 // the content of its state files: the prepared claims
 // (preparedPoolClaims.json, PREPARED) and the claims whose Prepare did not
 // finish (preparingPoolClaims.json, PREPARING, or PREPARED_STALE with the
-// reason of a stale record). A claim that both have is prepared, unless the
-// preparing file is just written (preferPreparing) with the claim stale: a
-// claim demoted at start is saved in the preparing file first.
-func putPool(doc *store.Document, driver string, prepared map[string]*preparedPoolClaim, preparing map[string]*preparingPoolClaim, preferPreparing bool) {
+// reason of a stale record). A claim that both have is prepared.
+func putPool(doc *store.Document, driver string, prepared map[string]*preparedPoolClaim, preparing map[string]*preparingPoolClaim) {
 	removeDriverRecords(doc, driver, state.SourcePool)
-	demoted := func(uid string) bool {
-		return preferPreparing && preparing[uid] != nil && preparing[uid].Stale != ""
-	}
 	b := newRecordBuilder()
 	for _, uid := range slices.Sorted(maps.Keys(prepared)) {
-		if pc := prepared[uid]; pc != nil && !demoted(uid) {
+		if pc := prepared[uid]; pc != nil {
 			addPoolClaim(b, driver, uid, pc.ClaimName, pc.BootID, state.PreparationPrepared, pc.Devices, pc.Result.Devices, pc.Lend)
 		}
 	}
 	for _, uid := range slices.Sorted(maps.Keys(preparing)) {
 		rec := preparing[uid]
-		if rec == nil || (prepared[uid] != nil && !demoted(uid)) {
+		if rec == nil || prepared[uid] != nil {
 			continue
 		}
 		st := state.PreparationPreparing

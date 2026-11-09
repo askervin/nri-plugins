@@ -20,7 +20,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -318,18 +317,13 @@ func poolFixture() (map[string]*preparedPoolClaim, map[string]*preparingPoolClai
 func TestPoolContentRoundTrip(t *testing.T) {
 	prepared, preparing := poolFixture()
 	doc := &store.Document{Schema: store.Schema, BootID: "boot-1"}
-	putPool(doc, device.PoolDriverName, prepared, preparing, false)
+	putPool(doc, device.PoolDriverName, prepared, preparing)
 	doc.Sort()
 	got, err := store.ViewContent(doc, store.ViewPreparedPoolClaims, testViewOptions)
 	if err != nil {
 		t.Fatal(err)
 	}
 	jsonEqual(t, poolStateFileName, got, mustJSON(t, prepared))
-	got, err = preparingContent(doc, testViewOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	jsonEqual(t, poolPreparingFileName, got, mustJSON(t, preparing))
 }
 
 // leasesFixture returns a lease table of a lease claim with a lease of
@@ -368,29 +362,6 @@ func TestLeasesContentRoundTrip(t *testing.T) {
 	jsonEqual(t, leasesFileName, got, mustJSON(t, ls))
 }
 
-// serialsFixture returns the pool serials of a local memdev, a pool
-// device of a remembered pool and one never listed.
-func serialsFixture() *poolSerialsFile {
-	seen := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
-	return &poolSerialsFile{
-		Serials: []*serialRecord{
-			{Serial: "0xc100e2e1", Local: true, Seen: seen},
-			{Serial: "0xc1ae2002", Pool: "cxl-pool.nri.io/pool-c", Seen: seen},
-			{Serial: "0xc1ae2003"},
-		},
-		Pools: map[string]time.Time{"cxl-pool.nri.io/pool-c": seen},
-	}
-}
-
-func TestSerialsContentRoundTrip(t *testing.T) {
-	f := serialsFixture()
-	doc := &store.Document{Schema: store.Schema}
-	noErr(t, putContent(doc, testViewOptions, poolSerialsFileName, mustJSON(t, f), nil))
-	got, err := serialsContent(doc)
-	noErr(t, err)
-	jsonEqual(t, poolSerialsFileName, got, mustJSON(t, f))
-}
-
 // openTestStateStore opens a state store in a new directory pair.
 func openTestStateStore(t *testing.T, local, pool, bootID string, flags store.Flags) (*stateStore, func()) {
 	t.Helper()
@@ -405,29 +376,24 @@ func openTestStateStore(t *testing.T, local, pool, bootID string, flags store.Fl
 
 func TestStateStoreFiles(t *testing.T) {
 	local, pool := t.TempDir(), t.TempDir()
-	_, closeStore := openTestStateStore(t, local, pool, "boot-1", store.Flags{CompatViews: true})
+	s, closeStore := openTestStateStore(t, local, pool, "boot-1", store.Flags{CompatViews: true})
 	prepared, infos, ls := localFixture()
-	noErr(t, writeStateFile(filepath.Join(local, localStateFileName), ls))
-	noErr(t, writeStateFile(filepath.Join(local, device.PreparedClaimsFileName), prepared))
-	noErr(t, writeStateFile(filepath.Join(local, preparedClaimsInfoFileName), infos))
-	pp, pr := poolFixture()
-	noErr(t, writeStateFile(filepath.Join(pool, poolStateFileName), pp))
-	noErr(t, writeStateFile(filepath.Join(pool, poolPreparingFileName), pr))
-	noErr(t, writeStateFile(filepath.Join(local, leasesFileName), leasesFixture()))
-	noErr(t, writeStateFile(filepath.Join(local, poolSerialsFileName), serialsFixture()))
+	pp, _ := poolFixture()
 	contents := map[string]any{
 		filepath.Join(local, device.PreparedClaimsFileName): prepared,
 		filepath.Join(local, preparedClaimsInfoFileName):    infos,
 		filepath.Join(local, localStateFileName):            ls,
 		filepath.Join(local, leasesFileName):                leasesFixture(),
-		filepath.Join(local, poolSerialsFileName):           serialsFixture(),
 		filepath.Join(pool, poolStateFileName):              pp,
-		filepath.Join(pool, poolPreparingFileName):          pr,
+	}
+	for _, path := range []string{filepath.Join(local, localStateFileName), filepath.Join(local, device.PreparedClaimsFileName),
+		filepath.Join(local, preparedClaimsInfoFileName), filepath.Join(pool, poolStateFileName), filepath.Join(local, leasesFileName)} {
+		noErr(t, s.writeState(path, mustJSON(t, contents[path])))
 	}
 	readAll := func(what string) {
 		t.Helper()
 		for path, want := range contents {
-			got, err := readStateFile(path)
+			got, err := s.readState(path)
 			noErr(t, err)
 			jsonEqual(t, what+" "+path, got, mustJSON(t, want))
 		}
@@ -438,16 +404,13 @@ func TestStateStoreFiles(t *testing.T) {
 	if !strings.Contains(string(data), `"viewOf": "state.json"`) {
 		t.Errorf("the view of %s has no marker", poolStateFileName)
 	}
-	if _, err := os.Stat(filepath.Join(pool, poolPreparingFileName)); err == nil {
-		t.Errorf("%s is written as a file", poolPreparingFileName)
-	}
 	closeStore()
 	if _, err := os.ReadFile(filepath.Join(local, store.FileName)); err != nil {
 		t.Errorf("no document: %v", err)
 	}
 
 	// reopened from state.json, with the views off
-	_, closeStore = openTestStateStore(t, local, pool, "boot-1", store.Flags{})
+	s, closeStore = openTestStateStore(t, local, pool, "boot-1", store.Flags{})
 	defer closeStore()
 	readAll("reopened")
 	if _, err := os.Stat(filepath.Join(pool, poolStateFileName)); err == nil {
@@ -460,29 +423,29 @@ func TestStateStoreFiles(t *testing.T) {
 // stale records as the pool driver demotes them.
 func TestStateStoreReboot(t *testing.T) {
 	local, pool := t.TempDir(), t.TempDir()
-	_, closeStore := openTestStateStore(t, local, pool, "boot-1", store.Flags{})
+	s, closeStore := openTestStateStore(t, local, pool, "boot-1", store.Flags{})
 	prepared, infos, ls := localFixture()
-	noErr(t, writeStateFile(filepath.Join(local, localStateFileName), ls))
-	noErr(t, writeStateFile(filepath.Join(local, device.PreparedClaimsFileName), prepared))
-	noErr(t, writeStateFile(filepath.Join(local, preparedClaimsInfoFileName), infos))
+	noErr(t, s.writeState(filepath.Join(local, localStateFileName), mustJSON(t, ls)))
+	noErr(t, s.writeState(filepath.Join(local, device.PreparedClaimsFileName), mustJSON(t, prepared)))
+	noErr(t, s.writeState(filepath.Join(local, preparedClaimsInfoFileName), mustJSON(t, infos)))
 	pp, _ := poolFixture()
-	noErr(t, writeStateFile(filepath.Join(pool, poolStateFileName), pp))
+	noErr(t, s.writeState(filepath.Join(pool, poolStateFileName), mustJSON(t, pp)))
 	closeStore()
 
-	_, closeStore = openTestStateStore(t, local, pool, "boot-2", store.Flags{})
+	s, closeStore = openTestStateStore(t, local, pool, "boot-2", store.Flags{})
 	defer closeStore()
 	for _, name := range []string{device.PreparedClaimsFileName, preparedClaimsInfoFileName} {
-		got, err := readStateFile(filepath.Join(local, name))
+		got, err := s.readState(filepath.Join(local, name))
 		noErr(t, err)
 		jsonEqual(t, name, got, []byte(`{}`))
 	}
-	got, err := readStateFile(filepath.Join(local, localStateFileName))
+	got, err := s.readState(filepath.Join(local, localStateFileName))
 	noErr(t, err)
 	jsonEqual(t, localStateFileName, got, []byte(`{"bootID": "boot-2", "devices": []}`))
-	got, err = readStateFile(filepath.Join(pool, poolStateFileName))
+	got, err = s.readState(filepath.Join(pool, poolStateFileName))
 	noErr(t, err)
 	jsonEqual(t, poolStateFileName, got, []byte(`{}`))
-	got, err = readStateFile(filepath.Join(pool, poolPreparingFileName))
+	got, err = s.readState(filepath.Join(pool, poolPreparingFileName))
 	noErr(t, err)
 	recs := map[string]*preparingPoolClaim{}
 	noErr(t, json.Unmarshal(got, &recs))
@@ -500,12 +463,13 @@ func TestStateStoreReboot(t *testing.T) {
 func TestStateStoreLost(t *testing.T) {
 	local := t.TempDir()
 	noErr(t, os.WriteFile(filepath.Join(local, store.FileName), []byte("{"), 0o600))
-	_, closeStore := openTestStateStore(t, local, "", "boot-1", store.Flags{})
+	s, closeStore := openTestStateStore(t, local, "", "boot-1", store.Flags{})
 	defer closeStore()
-	if err := writeStateFile(filepath.Join(local, localStateFileName), localState{}); err == nil || !strings.Contains(err.Error(), "--new-state") {
+	if err := s.writeState(filepath.Join(local, localStateFileName), mustJSON(t, localState{})); err == nil ||
+		!strings.Contains(err.Error(), "--new-state") {
 		t.Errorf("write in LOST mode: %v", err)
 	}
-	if _, err := readStateFile(filepath.Join(local, localStateFileName)); !os.IsNotExist(err) {
+	if _, err := s.readState(filepath.Join(local, localStateFileName)); !os.IsNotExist(err) {
 		t.Errorf("local devices in LOST mode: %v", err)
 	}
 }
@@ -524,7 +488,7 @@ func TestViewsOfDriverFiles(t *testing.T) {
 	files := map[string][]byte{}
 	bootID := ""
 	for _, d := range []string{device.DriverName, device.PoolDriverName} {
-		for _, name := range importOrder {
+		for _, name := range viewOrder {
 			data, err := os.ReadFile(filepath.Join(dir, d, name))
 			if err != nil {
 				continue
@@ -546,7 +510,7 @@ func TestViewsOfDriverFiles(t *testing.T) {
 	s, closeStore := openTestStateStore(t, local, pool, bootID, store.Flags{CompatViews: true})
 	defer closeStore()
 	for _, d := range []string{device.DriverName, device.PoolDriverName} {
-		for _, name := range importOrder {
+		for _, name := range viewOrder {
 			if data, ok := files[filepath.Join(d, name)]; ok {
 				noErr(t, s.writeState(filepath.Join(root, d, name), data))
 			}
@@ -557,9 +521,6 @@ func TestViewsOfDriverFiles(t *testing.T) {
 		read, err := s.readState(path)
 		noErr(t, err)
 		jsonEqual(t, rel+" read", read, want)
-		if !slices.Contains(store.ViewNames, filepath.Base(rel)) {
-			continue
-		}
 		view, err := os.ReadFile(path)
 		noErr(t, err)
 		// the marker is in the file or in each of its entries
@@ -580,11 +541,10 @@ func TestViewsOfDriverFiles(t *testing.T) {
 	}
 }
 
-// importOrder are the names of the state files in the order of their
-// import: the prepared claims before their infos.
-var importOrder = []string{
-	device.PreparedClaimsFileName, preparedClaimsInfoFileName, localStateFileName, poolStateFileName, poolPreparingFileName,
-	leasesFileName, poolSerialsFileName,
+// viewOrder are the names of the views in the order of their commits: the
+// prepared claims before their infos.
+var viewOrder = []string{
+	device.PreparedClaimsFileName, preparedClaimsInfoFileName, localStateFileName, poolStateFileName, leasesFileName,
 }
 
 // untouchedDevice returns a device as a Prepare records it before it touches it:
