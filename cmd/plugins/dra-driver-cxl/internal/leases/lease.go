@@ -442,6 +442,19 @@ func (b *Broker) failUnrestored(r *state.Records) {
 	}
 }
 
+// LeaseLends returns the NUMA nodes lent by the READY numa leases of the
+// container of the pod with their lease ids, by node, as the broker has
+// them (state.LeaseLends).
+func (b *Broker) LeaseLends(podUID, container string) map[int][]string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	r := &state.Records{}
+	for _, l := range b.leases {
+		r.Leases = append(r.Leases, *l)
+	}
+	return state.LeaseLends(r, podUID, container)
+}
+
 // CompanionName is the name of the companion claim and pod of a lease.
 func CompanionName(id string) string {
 	return "cxl-lease-" + id

@@ -99,6 +99,9 @@ type Plugin struct {
 	// document): Synchronize releases the started containers that their
 	// settings steer.
 	legacy bool
+	// leaseLends is the source of the lends that seed a container, nil
+	// for the leases of the store (SetLeaseLends).
+	leaseLends func(podUID, container string) map[int][]string
 
 	fenceMu sync.Mutex
 	token   sync.Mutex
@@ -200,6 +203,14 @@ func (p *Plugin) Start(ctx context.Context, c Connection) error {
 // Start, and the NRI events read them without the table mutex.
 func (p *Plugin) SetResults(local LocalResults, pool PoolResults) {
 	p.opts.Local, p.opts.Pool = local, pool
+}
+
+// SetLeaseLends sets the source of the lends that seed a container of a
+// requester: the nodes of its READY numa leases with their ids, by node
+// (the lease broker's LeaseLends); without one the leases of the store
+// seed them. Set before Start.
+func (p *Plugin) SetLeaseLends(lends func(podUID, container string) map[int][]string) {
+	p.leaseLends = lends
 }
 
 // Fencing tells whether the plugin fences the CXL nodes of the driver:

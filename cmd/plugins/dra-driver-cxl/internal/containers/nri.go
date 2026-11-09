@@ -363,14 +363,21 @@ func (p *Plugin) manage(c *Container, to Management, trigger Trigger) {
 }
 
 // seedLends gives a container that has no lends the nodes of the READY numa
-// leases of its pod and name in the store, unless it is steered (lending to
-// it is refused), and returns the lent nodes. Called with mu held.
+// leases of its pod and name (of the lease broker, else of the store),
+// unless it is steered (lending to it is refused), and returns the lent
+// nodes. Called with mu held.
 func (p *Plugin) seedLends(c *Container) cpuset.CPUSet {
 	if !p.opts.Leases || c.PodUID == "" || len(c.Lends) != 0 || c.steered() {
 		return cpuset.New()
 	}
+	lends := p.leaseLends
+	if lends == nil {
+		lends = func(podUID, container string) map[int][]string {
+			return state.LeaseLends(&p.opts.Store.Snapshot().Records, podUID, container)
+		}
+	}
 	var kept Lends
-	for node, ids := range state.LeaseLends(&p.opts.Store.Snapshot().Records, c.PodUID, c.Name) {
+	for node, ids := range lends(c.PodUID, c.Name) {
 		for _, id := range ids {
 			if node >= 0 {
 				kept = kept.set(node, kept.with(node, id, true))

@@ -376,6 +376,8 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	}
 	if broker != nil {
 		d.broker = broker
+		// the broker's leases seed the lends of the containers
+		nri.SetLeaseLends(broker.LeaseLends)
 	}
 
 	// 5. The NRI plugin starts before the kubelet plugins: kubelet creates
