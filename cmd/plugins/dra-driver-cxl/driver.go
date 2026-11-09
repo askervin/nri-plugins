@@ -183,6 +183,10 @@ PluginDataDirectoryPath: %v`,
 // between releases.
 const staleBindPeriod = 60 * time.Second
 
+// repairPeriod is how often the fence pass of the NRI plugin tries the
+// failed updates of the cpuset.mems of the fenced containers again.
+const repairPeriod = 60 * time.Second
+
 // everyPeriod runs pass every period until stop is closed.
 func everyPeriod(period time.Duration, stop <-chan struct{}, pass func()) {
 	t := time.NewTicker(period)

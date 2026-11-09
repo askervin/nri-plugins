@@ -142,6 +142,12 @@ func (p *Plugin) repair(id string) {
 	p.background(id)
 }
 
+// Repair runs a fence pass over every fenced container (the periodic
+// repair pass): an update of its cpuset.mems that failed is tried again.
+func (p *Plugin) Repair(ctx context.Context) {
+	p.pass(ctx, "")
+}
+
 // background runs a fence pass of the container id, of all if id is "",
 // in the background.
 func (p *Plugin) background(id string) {

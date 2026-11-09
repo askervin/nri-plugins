@@ -252,8 +252,13 @@ func TestFencePass(t *testing.T) {
 	e.p.LendsRestored() // once only
 	e.passes()
 	e.expectUpdates()
-	e.p.Fence(ctx, 4)
+	// the periodic repair pass tries the failed update again (L-11)
+	e.p.Repair(ctx)
 	e.expectUpdates("c5 mems=0-1")
+	e.p.Repair(ctx)
+	e.expectUpdates()
+	e.p.Fence(ctx, 4)
+	e.expectUpdates()
 
 	// the runtime has the updates: nothing to do at a reconnect
 	for _, c := range []*api.Container{c1, c2, c3, c5} {

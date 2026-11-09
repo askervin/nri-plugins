@@ -291,8 +291,9 @@ func installLeaseCLI(src, dst string) (retErr error) {
 //  5. the NRI plugin started, the lenders wired and the second phase of the
 //     recovery (the numa companions whose Prepare did not finish);
 //  6. the kubelet plugins of cxl.nri.io and of the pool driver registered,
-//     the first publication of the node's ResourceSlice, the watchers and
-//     the periodic pass over the stale lease binds.
+//     the first publication of the node's ResourceSlice, the watchers, the
+//     periodic pass over the stale lease binds and the periodic repair pass
+//     of the cpuset.mems of the fenced containers.
 func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	cxlFlags := config.Flags
 	driverConfig, sysfsRoot, err := loadDriverConfig(cxlFlags)
@@ -400,6 +401,9 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 		broker.Start(lender)
 	}
 	go everyPeriod(staleBindPeriod, d.stop, func() { devices.retryStale(ctx) })
+	if d.nri != nil {
+		go everyPeriod(repairPeriod, d.stop, func() { d.nri.Repair(ctx) })
+	}
 	if err := d.startUdev(ctx, driverConfig); err != nil {
 		return nil, err
 	}
