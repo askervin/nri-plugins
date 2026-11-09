@@ -18,7 +18,7 @@ import (
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
-	"github.com/containers/nri-plugins/pkg/cxl/api"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 )
 
 // The names of the front-end (internal/dra) as the lease broker, the NRI
@@ -57,9 +57,6 @@ type (
 	claimPreparations map[string]kubeletplugin.PrepareResult
 	// preparedPoolDevice is a device of a prepared pool claim.
 	preparedPoolDevice = dra.PoolDevice
-	// poolResult is a prepared allocation result of a pool claim as the
-	// NRI plugin sees it.
-	poolResult = dra.PoolResult
 	// lendRecord is the lend of a companion claim.
 	lendRecord = dra.Lend
 	// lentDevice is a device of a companion claim as the lease broker
@@ -69,6 +66,8 @@ type (
 	leaseHooks = dra.LeaseHooks
 	// companionLender lends the companion claims of a driver.
 	companionLender = dra.Lender
+	// podRef identifies a pod.
+	podRef = state.PodRef
 )
 
 // preparedPoolClaim is a value of preparedPoolClaims.json.
@@ -79,18 +78,6 @@ type preparedPoolClaim struct {
 	Lend      *lendRecord                 `json:"lend,omitempty"`
 	// BootID is the boot id of the kernel that the claim was prepared in.
 	BootID string `json:"bootID,omitempty"`
-}
-
-// resultFromEnvVar returns the allocation result of a result marker
-// "CXL_CLAIM_<uid>_<n>=<value>", and false for other environment variables.
-func resultFromEnvVar(envVar string) (resultRef, bool) {
-	uid, n, ok := dra.ResultFromEnvVar(envVar)
-	return resultRef{uid: uid, n: n}, ok
-}
-
-// persistentMode tells whether a mode is a mode of persistent devices.
-func persistentMode(mode string) bool {
-	return mode == api.ModeBlock || mode == api.ModeFs
 }
 
 // ptr returns a pointer to v.

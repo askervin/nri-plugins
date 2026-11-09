@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -165,7 +166,7 @@ func TestCompanionLenderDisabled(t *testing.T) {
 func TestCompanionLenderLendRevoke(t *testing.T) {
 	ctx := context.Background()
 	claim := companionClaim("l1")
-	nodes := newFakeLender(testRef)
+	nodes := newFakeLender()
 	hooks := &fakeHooks{}
 	c := dra.NewLender(device.PoolDriverName)
 	c.Set(nodes, hooks)
@@ -203,10 +204,10 @@ func TestCompanionLenderLendRevoke(t *testing.T) {
 	// a failing LendNode leaves the nodes lent so far, including the
 	// failed one, in the record, so that a revoke cleans up
 	nodes.mu.Lock()
-	nodes.lendErr = errSteered
+	nodes.lendErr = containers.ErrSteered
 	nodes.mu.Unlock()
 	rec = testLendRecord()
-	if err := c.Lend(ctx, rec, devs); !errors.Is(err, errSteered) || !reflect.DeepEqual(rec.Nodes, []int{2}) {
+	if err := c.Lend(ctx, rec, devs); !errors.Is(err, containers.ErrSteered) || !reflect.DeepEqual(rec.Nodes, []int{2}) {
 		t.Fatalf("failed lend: %+v %v", rec, err)
 	}
 
@@ -244,25 +245,6 @@ func TestLendRecordJSON(t *testing.T) {
 	noErr(t, err)
 	if string(data) != enc {
 		t.Fatalf("encoded %s", data)
-	}
-}
-
-// TestPoolCompanionRefused prepares a companion claim through the pool
-// driver without a broker or a lender: nothing is touched.
-func TestPoolCompanionRefused(t *testing.T) {
-	pe := newPoolTestEnv(t)
-	pe.plug(0xc1ee0001)
-	p := pe.driver(t)
-	claim := poolClaim("u9", "c9", "pooled0", exclusiveData)
-	claim.Namespace = testNS
-	claim.Labels = map[string]string{device.LeaseLabel: "abc"}
-	wantErr(t, prepare(t, p, claim).Err, "lending to running containers is disabled (--leases=false)")
-	p.Lender().Set(nil, &broker{store: &leaseStore{Leases: map[string]*lease{}}, changed: make(chan struct{})})
-	wantErr(t, prepare(t, p, claim).Err, "lending unavailable: NRI not connected")
-	p.Lender().Set(newFakeLender(testRef), &broker{store: &leaseStore{Leases: map[string]*lease{}}, changed: make(chan struct{})})
-	wantErr(t, prepare(t, p, claim).Err, "claim demo/c9: not the companion of lease abc")
-	if strings.Contains(pe.commands(), "create-region") {
-		t.Fatalf("device touched for a refused lend:\n%s", pe.commands())
 	}
 }
 

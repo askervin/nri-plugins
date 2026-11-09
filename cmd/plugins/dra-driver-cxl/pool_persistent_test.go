@@ -277,7 +277,7 @@ func newPoolLeaseEnv(t *testing.T) (*poolTestEnv, *dra.Plugin, *fakeHooks) {
 func (e *poolTestEnv) leaseDriver(t *testing.T, hooks *fakeHooks) *dra.Plugin {
 	t.Helper()
 	p := e.driver(t)
-	p.Lender().Set(newFakeLender(testRef), hooks)
+	p.Lender().Set(newFakeLender(), hooks)
 	return p
 }
 

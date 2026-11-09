@@ -739,7 +739,6 @@ func TestPrepareMemoryConfig(t *testing.T) {
 	}
 
 	// a container gets the management of the results it uses
-	p := &nriPlugin{claims: e.s}
 	for _, tc := range []struct {
 		results []int
 		want    string
@@ -750,17 +749,13 @@ func TestPrepareMemoryConfig(t *testing.T) {
 		{[]int{0, 1}, "steered " + strconv.Itoa(node) + ",4 auto from class cxl-region"},
 		{[]int{3}, "fenced  auto from class cxl-lease"},
 	} {
-		var refs []resultRef
-		for _, n := range tc.results {
-			refs = append(refs, resultRef{"u1", n})
-		}
-		m, err := p.manage("demo/pod/ctr", p.containerResults("demo/pod/ctr", refs), true)
+		c, err := createdContainer(t, e.st, e.s, nil, "u1", tc.results...)
 		noErr(t, err)
-		if got := m.memory + " " + m.claimed.String() + " " + m.eff.PolicyText(); got != tc.want {
+		if got := strings.ToLower(string(c.Management)) + " " + c.Claimed.String() + " " + c.Steering; got != tc.want {
 			t.Errorf("results %v: %q, expected %q", tc.results, got, tc.want)
 		}
 	}
-	_, err := p.manage("demo/pod/ctr", p.containerResults("demo/pod/ctr", []resultRef{{"u1", 1}, {"u1", 2}}), true)
+	_, err := createdContainer(t, e.st, e.s, nil, "u1", 1, 2)
 	wantErr(t, err, "container demo/pod/ctr: container.steering.policy: class cxl-region says auto, claim demo/claim-u1 request dram says first-dram")
 	noErr(t, leases.CloseClaim(context.Background(), "u1"))
 	e.mustUnprepare("u1")

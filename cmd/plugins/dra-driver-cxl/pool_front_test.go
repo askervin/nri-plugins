@@ -166,11 +166,11 @@ func TestPoolRefusedPrepareAgain(t *testing.T) {
 	e.plug(0xc1ee0001)
 	p := e.driver(t)
 	hooks := &fakeHooks{}
-	p.Lender().Set(newFakeLender(testRef), hooks)
+	p.Lender().Set(newFakeLender(), hooks)
 	e.k.CutAfter("write devices/system/memory/memory")
 	cutPrepare(t, p, numaCompanion("l1"))
 	p = e.driver(t)
-	p.Lender().Set(newFakeLender(testRef), hooks)
+	p.Lender().Set(newFakeLender(), hooks)
 	uid := "uid-cxl-lease-l1"
 	before := e.commands()
 	// the companion gate refuses it (the lease went while the driver was
@@ -201,7 +201,7 @@ func TestPoolUnfinishedNodes(t *testing.T) {
 	e.k.CutAfter("write devices/system/memory/memory")
 	claim := numaCompanion("l1")
 	hooks := &fakeHooks{}
-	p.Lender().Set(newFakeLender(testRef), hooks)
+	p.Lender().Set(newFakeLender(), hooks)
 	cutPrepare(t, p, claim)
 	p = e.driver(t)
 	uid := "uid-cxl-lease-l1"
@@ -209,7 +209,7 @@ func TestPoolUnfinishedNodes(t *testing.T) {
 	if node < 0 || !slices.Equal(poolNumaNodes(p), []int{node}) || p.ClaimResults(uid) != nil {
 		t.Fatalf("numa nodes %v (region on %d), results %v", poolNumaNodes(p), node, p.ClaimResults(uid))
 	}
-	p.Lender().Set(newFakeLender(testRef), hooks)
+	p.Lender().Set(newFakeLender(), hooks)
 	noErr(t, unprepare(t, p, uid))
 	if poolNumaNodes(p) != nil {
 		t.Fatalf("numa nodes %v", poolNumaNodes(p))
@@ -226,7 +226,7 @@ func TestPoolCompanionRevoke(t *testing.T) {
 	e.plug(0xc1ee0001)
 	p := e.driver(t)
 	hooks := &fakeHooks{}
-	lender := &recordedLender{fakeLender: newFakeLender(testRef), e: e, region: "region0"}
+	lender := &recordedLender{fakeLender: newFakeLender(), e: e, region: "region0"}
 	p.Lender().Set(lender, hooks)
 	uid := "uid-cxl-lease-l1"
 	noErr(t, prepare(t, p, numaCompanion("l1")).Err)
@@ -265,7 +265,7 @@ func TestPoolCompanionRollbackRevokes(t *testing.T) {
 	e.plug(0xc1ee0001)
 	p := e.driver(t)
 	hooks := &fakeHooks{}
-	lender := &recordedLender{fakeLender: newFakeLender(testRef), e: e, region: "region1"}
+	lender := &recordedLender{fakeLender: newFakeLender(), e: e, region: "region1"}
 	p.Lender().Set(lender, hooks)
 	// a claim with a CDI device, then a CDI directory that cannot be
 	// written
@@ -364,7 +364,7 @@ func TestPoolOtherBootCompanion(t *testing.T) {
 		e.plug(0xc1ee0001)
 		p := e.driver(t)
 		hooks := &fakeHooks{}
-		lender := newFakeLender(testRef)
+		lender := newFakeLender()
 		p.Lender().Set(lender, hooks)
 		uid := "uid-cxl-lease-l1"
 		noErr(t, prepare(t, p, numaCompanion("l1")).Err)

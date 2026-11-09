@@ -97,7 +97,7 @@ type localTestEnv struct {
 	poolSerials map[uint64]bool
 	// fence fences the NUMA nodes of memory before it goes online, nil
 	// for none.
-	fence *nodeFence
+	fence func(ctx context.Context, node int)
 	// holderWait is the holder wait of a release.
 	holderWait time.Duration
 	// memdevs are the local memdevs that the publisher sees, by serial.

@@ -116,7 +116,7 @@ func TestPoolCutCompanionKept(t *testing.T) {
 	e.plug(0xc1ee0001)
 	p := e.driver(t)
 	hooks := &fakeHooks{}
-	lender := newFakeLender(testRef)
+	lender := newFakeLender()
 	p.Lender().Set(lender, hooks)
 	claim := poolClaim("uid-cxl-lease-l1", "cxl-lease-l1", "pooled0", exclusiveData)
 	claim.Namespace = testNS
@@ -195,7 +195,7 @@ func TestPoolViewOfEngineRecords(t *testing.T) {
 	p := e.driver(t)
 	hooks := &fakeHooks{fsDir: filepath.Join(e.leaseFsRoot, "lc1"), name: "models"}
 	noErr(t, os.MkdirAll(hooks.fsDir, 0o755))
-	p.Lender().Set(newFakeLender(testRef), hooks)
+	p.Lender().Set(newFakeLender(), hooks)
 	shareID := types.UID("share-1")
 	claims := map[string]*resourceapi.ResourceClaim{
 		"n1": poolClaim("n1", "c-n1", "pooled0", exclusiveData),

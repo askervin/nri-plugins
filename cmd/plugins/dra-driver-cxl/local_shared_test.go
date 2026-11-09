@@ -27,7 +27,6 @@ import (
 
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
@@ -535,55 +534,6 @@ func TestPrepareSharedLocalLend(t *testing.T) {
 	wantLocalRegionCount(t, e, 1, 0)
 }
 
-// A share of a shared local device through the broker: Ready with the
-// environment of a shared device.
-func TestBrokerLocalSharedLease(t *testing.T) {
-	e, lender := newLocalLeaseEnv(t)
-	ch := e.async(api.Request{Op: "request", Serial: "0xc100e2e1", Shared: true, ReadOnly: true, Source: "local", Wait: "5s"})
-	claim := e.waitClaim("cxl-lease-000000a1")
-	ex := claim.Spec.Devices.Requests[0].Exactly
-	if ex == nil || ex.DeviceClassName != device.ClassLocalShared || ex.Capacity == nil {
-		t.Fatalf("companion request %+v", claim.Spec.Devices.Requests[0])
-	}
-	if q := ex.Capacity.Requests[device.CapacityShares]; q.String() != "1" {
-		t.Fatalf("companion capacity %+v", ex.Capacity)
-	}
-	c := allocatedLocal(claim, "lease", localDeviceName)
-	rec, err := lender.Check("000000a1", c)
-	noErr(t, err)
-	devs := []lentDevice{{Driver: device.DriverName, Source: api.SourceLocal, Request: "lease", Device: localDeviceName,
-		Serial: localSerial, Shared: true, Size: localRegionSize, Mode: api.ModeDax, ReadOnly: true, Node: -1, DaxDevice: "/dev/dax1.1"}}
-	noErr(t, lender.Lend(context.Background(), rec, devs))
-	lender.Prepared("000000a1", devs)
-	wantResponse(t, <-ch, api.Response{State: api.StateReady, Source: "local", Mode: "dax", Shared: true, ReadOnly: true,
-		Size: localRegionSize, Serial: "0xc100e2e1", Dax: "/dev/dax1.1", Env: map[string]string{
-			"CXL_C100E2E1_DAX": "/dev/dax1.1", "CXL_C100E2E1_MODE": "dax", "CXL_C100E2E1_READONLY": "1",
-			"CXL_C100E2E1_SERIAL": "0xc100e2e1", "CXL_C100E2E1_SHARED": "1", "CXL_C100E2E1_SIZE": "1073741824"}})
-	e.wantReleaseAll(1)
-}
-
-// A lease table of hosts capacities fails the strict decode: the plugin
-// starts with an empty table.
-func TestLeaseStoreWithHosts(t *testing.T) {
-	fileBackendOnly(t, "saves a lease without a state, which the broker never writes")
-	path := filepath.Join(t.TempDir(), leasesFileName)
-	old := `{"claims":{},"leases":{"000000a1":{"id":"000000a1","claim":"lc1","mode":"dax","shared":false,"hosts":"4","pod":{"namespace":"demo","name":"p","uid":"u"},"container":"c","state":"Ready","node":-1,"created":"2026-10-19T00:00:00Z"}}}`
-	noErr(t, os.WriteFile(path, []byte(old), 0o600))
-	s, err := loadLeaseStore(path)
-	noErr(t, err)
-	if len(s.Leases) != 0 || len(s.Claims) != 0 {
-		t.Fatalf("lease store %+v", s)
-	}
-	// the new field round-trips
-	s.Leases["000000a2"] = &lease{ID: "000000a2", SharedDevice: true, Node: -1}
-	noErr(t, s.save())
-	s, err = loadLeaseStore(path)
-	noErr(t, err)
-	if l := s.Leases["000000a2"]; l == nil || !l.SharedDevice || !l.deviceShared() {
-		t.Fatalf("lease %+v", l)
-	}
-}
-
 // A failed creation of the region of a shared memdev, or of its zeroing,
 // leaves no device, no claim and no region; a dax device of a kept region
 // that fails leaves the region kept and no claim.
@@ -696,28 +646,4 @@ func TestPrepareSlicedRefusesShares(t *testing.T) {
 	if strings.Contains(e.commands(), "create-region") || e.inUse() {
 		t.Fatalf("a refused claim touched the memdev:\n%s", e.commands())
 	}
-}
-
-// The local device of this node wins over another node's device with the
-// same serial, whatever the order of the ResourceSlices.
-func TestBrokerSerialOfThisNode(t *testing.T) {
-	e := newSlicesBrokerEnv(t)
-	node0 := nodeResourceSlice("node0", localMemdevDevice("memdev-c100e2e2", &device.Memdev{Serial: 0xc100e2e2, Size: 256 * mib, NodeAffinity: -1, Shared: true}))
-	_, err := e.client.ResourceV1().ResourceSlices().Create(context.Background(), node0, metav1.CreateOptions{})
-	noErr(t, err)
-	dev, err := e.b.deviceBySerial(0xc100e2e2)
-	noErr(t, err)
-	if dev == nil || dev.node != testNode || dev.driver != device.DriverName {
-		t.Fatalf("device %+v", dev)
-	}
-	var l lease
-	req := api.Request{Op: api.OpRequest, Serial: "0xc100e2e2", Shared: true, ReadOnly: true}
-	noErr(t, e.b.requestOptions(&l, &req))
-	if !l.SharedDevice || l.DeviceSource != api.SourceLocal {
-		t.Fatalf("lease %+v", l)
-	}
-	// only another node has it
-	l = lease{}
-	req.Serial = "0xc100e2e3"
-	wantErr(t, e.b.requestOptions(&l, &req), "device 0xc100e2e3: a local device of node node2, not of this node")
 }

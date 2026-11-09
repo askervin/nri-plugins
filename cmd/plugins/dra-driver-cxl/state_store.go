@@ -44,8 +44,6 @@ type stateStore struct {
 	// write of preparedClaimsInfo.json that follows it: both go in one
 	// commit.
 	prepared []byte
-	// steered: the steering record was written by this process.
-	steered bool
 }
 
 // stateStoreConfig are the settings of the store of the state files.
@@ -105,7 +103,6 @@ func (s *stateStore) paths() []string {
 		filepath.Join(s.localDir, localStateFileName),
 		filepath.Join(s.localDir, leasesFileName),
 		filepath.Join(s.localDir, poolSerialsFileName),
-		filepath.Join(s.localDir, steeredFileName),
 	}
 	if s.poolDir != "" {
 		paths = append(paths, filepath.Join(s.poolDir, poolStateFileName), filepath.Join(s.poolDir, poolPreparingFileName))
@@ -140,14 +137,6 @@ func (s *stateStore) readState(path string) ([]byte, error) {
 			return nil, notExist(path)
 		}
 		return serialsFileContent(s.st.Snapshot())
-	case steeredFileName:
-		s.mu.Lock()
-		written := s.steered
-		s.mu.Unlock()
-		if o := s.st.Origin(); !written && (o == store.New || o == store.NewState) {
-			return nil, notExist(path)
-		}
-		return steeredContent(s.st.Snapshot())
 	}
 	return s.st.View(name)
 }
@@ -177,11 +166,6 @@ func (s *stateStore) writeState(path string, data []byte) error {
 	if err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
-	if name == steeredFileName {
-		s.mu.Lock()
-		s.steered = true
-		s.mu.Unlock()
-	}
 	return nil
 }
 
@@ -206,6 +190,16 @@ func jsonSame(a, b []byte) bool {
 // in the driver: only the tests write those files (state_local_test.go).
 var putLocalContent func(doc *store.Document, opts store.ViewOptions, name string, data, preparedData []byte) error
 
+// putLeasesContent replaces the lease claims and the leases in a document
+// with those of the content of leases.json, nil in the driver: the lease
+// broker keeps them in the store itself, only the tests write that file
+// (state_leases_test.go).
+var putLeasesContent func(doc *store.Document, data []byte) error
+
+// leasesFileName is the view of the lease claims and the leases in the
+// plugin data directory of cxl.nri.io.
+const leasesFileName = store.ViewLeases
+
 // serialsFileContent and putSerialsFileContent read and replace the
 // provenance records of the serials in a document as the content of
 // poolSerials.json, nil in the driver: only the tests read and write that
@@ -228,22 +222,13 @@ func putContent(doc *store.Document, opts store.ViewOptions, name string, data, 
 	case poolStateFileName, poolPreparingFileName:
 		return putPoolContent(doc, opts, name, data)
 	case leasesFileName:
-		var ls leaseStore
-		if err := json.Unmarshal(data, &ls); err != nil {
-			return err
+		if putLeasesContent != nil {
+			return putLeasesContent(doc, data)
 		}
-		return putLeases(doc, &ls)
 	case poolSerialsFileName:
 		if putSerialsFileContent != nil {
 			return putSerialsFileContent(doc, data)
 		}
-	case steeredFileName:
-		ids := map[string]string{}
-		if err := json.Unmarshal(data, &ids); err != nil {
-			return err
-		}
-		putSteered(doc, ids)
-		return nil
 	}
 	return fmt.Errorf("no records of the state file %s", name)
 }

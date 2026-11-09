@@ -15,26 +15,35 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"maps"
-	"os"
 	"slices"
 	"time"
 
-	"k8s.io/klog/v2"
-
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 )
 
-// leasesFileName is the lease store in the cxl.nri.io plugin data
-// directory.
-const leasesFileName = "leases.json"
+// The content of leases.json as the driver before the state store wrote
+// it, and its records: the lease broker keeps its records in the store
+// (internal/leases), and the store writes leases.json as their view; the
+// tests compare that view with the old content.
 
-// podRef identifies a pod.
-type podRef = state.PodRef
+func init() {
+	putLeasesContent = putLeasesFileContent
+}
+
+// putLeasesFileContent replaces the lease claims and the leases in doc
+// with those of the content of leases.json.
+func putLeasesFileContent(doc *store.Document, data []byte) error {
+	var ls leaseStore
+	if err := json.Unmarshal(data, &ls); err != nil {
+		return err
+	}
+	return putLeases(doc, &ls)
+}
 
 // leaseClaim is a prepared claim on the lease device: it owns the socket
 // <data dir>/leases/<uid>/cxl.sock and, when FsDir is set, the directory
@@ -47,16 +56,6 @@ type leaseClaim struct {
 	Name      string   `json:"name"`
 	Pods      []podRef `json:"pods"` // reservedFor at Prepare (refreshed on demand)
 	FsDir     string   `json:"fsDir,omitempty"`
-}
-
-// hasPod tells whether the pod with the uid is one of the claim's pods.
-func (c *leaseClaim) hasPod(uid string) bool {
-	for _, p := range c.Pods {
-		if p.UID == uid {
-			return true
-		}
-	}
-	return false
 }
 
 // lease is one request of a container. A lease is stored in state
@@ -109,61 +108,9 @@ type lease struct {
 	Created time.Time `json:"created"`
 }
 
-// readOnly tells whether a lease allows reads only: an fs lease unless it
-// is read-write.
-func (l *lease) readOnly() bool {
-	return l.ReadOnly || (l.Mode == api.ModeFs && !l.ReadWrite)
-}
-
-// deviceShared tells whether the device of a lease is a shared device:
-// one share of it, or the whole device.
-func (l *lease) deviceShared() bool {
-	return l.Shared || l.SharedDevice
-}
-
-// memory returns what a Ready lease gives its container, false before.
-// The path of a block lease is the host path of its block device.
-func (l *lease) memory() (api.Memory, bool) {
-	serial, err := api.ParseSerial(l.Serial)
-	if l.State != api.StateReady || err != nil {
-		return api.Memory{}, false
-	}
-	path := l.Path
-	if l.Mode == api.ModeBlock {
-		path = l.Block
-	}
-	// a persistent device: its attribute shared, whatever the share
-	shared := l.deviceShared()
-	if persistentMode(l.Mode) {
-		shared = l.SharedDevice
-	}
-	m := api.Memory{
-		Key:      api.Key(serial, 1),
-		Serial:   l.Serial,
-		Shared:   shared,
-		Mode:     l.Mode,
-		Size:     l.Bytes,
-		Node:     l.Node,
-		Dax:      l.Dax,
-		Path:     path,
-		Access:   l.Access,
-		ReadOnly: l.readOnly(),
-	}
-	if l.Mode == api.ModeFs {
-		m.FsType = l.FsType
-	}
-	return m, true
-}
-
-// companionName is the name of the companion claim and pod of a lease.
-func companionName(id string) string {
-	return "cxl-lease-" + id
-}
-
 // leaseStore is the persisted lease table. Not safe for concurrent use:
 // the broker serializes access with its mutex.
 type leaseStore struct {
-	path   string
 	Claims map[string]*leaseClaim `json:"claims"` // lease claim uid -> ...
 	Leases map[string]*lease      `json:"leases"` // lease id -> ...
 	// BootID is the boot id of the kernel of the leases: a lease does not
@@ -174,77 +121,95 @@ type leaseStore struct {
 	Recovered bool `json:"-"`
 }
 
-// loadLeaseStore reads the store at path: an empty store if it does not
-// exist or cannot be decoded (strictly), Recovered in the latter case.
-func loadLeaseStore(path string) (*leaseStore, error) {
-	s := &leaseStore{path: path}
-	data, err := readStateFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
+// leaseStates are the lease states by the protocol's names.
+var leaseStates = map[string]state.LeaseState{
+	api.StateCreating:  state.LeaseCreating,
+	api.StatePending:   state.LeasePending,
+	api.StateLending:   state.LeaseLending,
+	api.StateReady:     state.LeaseReady,
+	api.StateReleasing: state.LeaseReleasing,
+	api.StateFailed:    state.LeaseFailed,
+}
+
+// putLeases replaces the lease claims and the leases in doc with those of
+// the content of leases.json.
+func putLeases(doc *store.Document, s *leaseStore) error {
+	doc.LeaseClaims, doc.Leases = nil, nil
+	if s.BootID != "" {
+		doc.BootID = s.BootID
 	}
-	if err == nil {
-		dec := json.NewDecoder(bytes.NewReader(data))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(s); err != nil {
-			klog.Errorf("lease broker: parsing %s: %v; starting with an empty lease table", path, err)
-			s = &leaseStore{path: path, Recovered: true}
+	for _, uid := range slices.Sorted(maps.Keys(s.Claims)) {
+		c := s.Claims[uid]
+		if c == nil {
+			continue
+		}
+		lc := state.LeaseClaim{UID: c.UID, Namespace: c.Namespace, Name: c.Name, FsDir: c.FsDir, State: state.LeaseClaimOpen}
+		for _, p := range c.Pods {
+			lc.Pods = append(lc.Pods, state.PodRef(p))
+		}
+		doc.LeaseClaims = append(doc.LeaseClaims, lc)
+	}
+	for _, id := range slices.Sorted(maps.Keys(s.Leases)) {
+		l := s.Leases[id]
+		if l == nil {
+			continue
+		}
+		rec, err := leaseRecord(l)
+		if err != nil {
+			return err
+		}
+		doc.Leases = append(doc.Leases, rec)
+	}
+	return nil
+}
+
+// leaseRecord returns the lease record of a lease of leases.json: what a
+// lease that got its device has of it (bytes, a device path, a directory)
+// are its Got as well.
+func leaseRecord(l *lease) (state.Lease, error) {
+	st, ok := leaseStates[l.State]
+	if !ok {
+		return state.Lease{}, fmt.Errorf("lease %s: state %q", l.ID, l.State)
+	}
+	rec := state.Lease{
+		ID:        l.ID,
+		Claim:     l.Claim,
+		RequestID: l.RequestID,
+		Pod:       state.PodRef(l.Pod),
+		Container: l.Container,
+		State:     st,
+		Error:     l.Error,
+		Created:   l.Created,
+		Asked: state.LeaseAsked{
+			Source:       state.Source(l.Source),
+			DeviceSource: state.Source(l.DeviceSource),
+			Mode:         state.Mode(l.Mode),
+			Shared:       l.Shared,
+			SharedDevice: l.SharedDevice,
+			ReadOnly:     l.ReadOnly,
+			ReadWrite:    l.ReadWrite,
+			Access:       state.Access(l.Access),
+			FsType:       l.FsType,
+			Name:         l.Name,
+			Size:         l.Size,
+			Serial:       parseSerial(l.Serial),
+		},
+	}
+	if l.Bytes != 0 || l.Dax != "" || l.Block != "" || l.Path != "" {
+		rec.Got = &state.LeaseGot{
+			Source:       state.Source(l.Source),
+			Serial:       parseSerial(l.Serial),
+			SharedDevice: l.SharedDevice,
+			Bytes:        l.Bytes,
+			Dax:          l.Dax,
+			Block:        l.Block,
+			Access:       state.Access(l.Access),
+			FsType:       l.FsType,
+			Path:         l.Path,
 		}
 	}
-	if s.Claims == nil {
-		s.Claims = map[string]*leaseClaim{}
+	if l.Node >= 0 {
+		rec.Lend = &state.Lend{NumaNode: state.NumaNodePtr(l.Node)}
 	}
-	if s.Leases == nil {
-		s.Leases = map[string]*lease{}
-	}
-	return s, nil
-}
-
-// save writes the store atomically.
-func (s *leaseStore) save() error {
-	return writeStateFile(s.path, s)
-}
-
-// forgetOtherBoot drops the leases of another boot than bootID ("":
-// unknown) and returns them, and makes the store one of bootID. A reboot
-// ended the processes that had the fds of dax and block leases, unmounted
-// the binds of fs leases and took the memory of numa leases: the requester
-// containers start anew without them, and ask again. Kept, a lease would
-// stay Ready on memory that is gone, and the node of a numa lease would be
-// lent again to the restarted requester (plan-13 bug-15). The companion
-// pods and claims of the dropped leases are deleted by the reconcile
-// (deleteOrphans). Leases without a boot id (saved by an older driver)
-// are taken as of this boot. The lease claims stay: kubelet prepares them
-// again.
-func (s *leaseStore) forgetOtherBoot(bootID string) []*lease {
-	var gone []*lease
-	if otherBoot(s.BootID, bootID) {
-		for _, id := range slices.Sorted(maps.Keys(s.Leases)) {
-			gone = append(gone, s.Leases[id])
-			delete(s.Leases, id)
-		}
-	}
-	if bootID != "" {
-		s.BootID = bootID
-	}
-	return gone
-}
-
-// leasesOf returns the leases received on the lease claim's socket.
-func (s *leaseStore) leasesOf(claimUID string) []*lease {
-	var out []*lease
-	for _, l := range s.Leases {
-		if l.Claim == claimUID {
-			out = append(out, l)
-		}
-	}
-	return out
-}
-
-// otherBoot tells whether a record of the boot recorded is of another boot
-// than the running one, bootID. A record without a boot id, written by a
-// driver that did not record it, is taken as one of this boot (a driver
-// upgraded without a reboot), and so is every record when the boot id of
-// the running kernel is unknown.
-func otherBoot(recorded, bootID string) bool {
-	return recorded != "" && bootID != "" && recorded != bootID
+	return rec, nil
 }
