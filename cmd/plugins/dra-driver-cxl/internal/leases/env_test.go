@@ -503,7 +503,23 @@ func (e *leaseEnv) call(req api.Request) (api.Response, int) {
 // received fd (-1 for none).
 func (e *leaseEnv) callRaw(req string) (api.Response, int) {
 	e.t.Helper()
-	c, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: e.sock(), Net: "unix"})
+	return e.callRawAt(e.sock(), req)
+}
+
+// callAt sends one request to the socket of the lease claim uid and returns
+// the response.
+func (e *leaseEnv) callAt(uid string, req api.Request) api.Response {
+	e.t.Helper()
+	data, _ := json.Marshal(req)
+	resp, _ := e.callRawAt(filepath.Join(e.dir, leaseDirName, uid, leaseSocketName), string(data))
+	return resp
+}
+
+// callRawAt sends one request line to the socket sock and returns the
+// response and the received fd (-1 for none).
+func (e *leaseEnv) callRawAt(sock, req string) (api.Response, int) {
+	e.t.Helper()
+	c, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: sock, Net: "unix"})
 	mustOK(e.t, err)
 	defer func() { _ = c.Close() }()
 	_, err = c.Write([]byte(req + "\n"))

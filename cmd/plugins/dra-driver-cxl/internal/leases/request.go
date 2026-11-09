@@ -420,26 +420,28 @@ func (b *Broker) ownLease(who Requester, id string) *state.Lease {
 	return l
 }
 
-// releaseOne releases a lease of the pod of the requester and returns its
-// state after waiting up to wait for it to be gone.
-func (b *Broker) releaseOne(who Requester, id string, wait time.Duration) *api.Response {
+// releaseOne releases a lease of the pod of the requester asked for on the
+// socket of the lease claim claimUID and returns its state after waiting up
+// to wait for it to be gone.
+func (b *Broker) releaseOne(claimUID string, who Requester, id string, wait time.Duration) *api.Response {
 	b.mu.Lock()
 	l := b.ownLease(who, id)
 	b.mu.Unlock()
-	if l == nil {
+	if l == nil || l.Claim != claimUID {
 		return &api.Response{Lease: id, Error: "no such lease"}
 	}
 	b.startRelease(id, "released by "+who.Container, state.TriggerRelease)
 	return b.waitReleased([]string{id}, wait)[0]
 }
 
-// releaseAll releases every lease of the pod of the requester and returns
-// their states after waiting up to wait for them to be gone.
-func (b *Broker) releaseAll(who Requester, wait time.Duration) *api.Response {
+// releaseAll releases every lease of the pod of the requester asked for on
+// the socket of the lease claim claimUID and returns their states after
+// waiting up to wait for them to be gone.
+func (b *Broker) releaseAll(claimUID string, who Requester, wait time.Duration) *api.Response {
 	var ids []string
 	b.mu.Lock()
 	for id, l := range b.leases {
-		if l.Pod.UID == who.Pod.UID {
+		if l.Pod.UID == who.Pod.UID && l.Claim == claimUID {
 			ids = append(ids, id)
 		}
 	}
@@ -484,13 +486,14 @@ func (b *Broker) waitReleased(ids []string, wait time.Duration) []*api.Response 
 	return out
 }
 
-// list returns the leases of the pod of the requester.
-func (b *Broker) list(who Requester) *api.Response {
+// list returns the leases of the pod of the requester asked for on the
+// socket of the lease claim claimUID.
+func (b *Broker) list(claimUID string, who Requester) *api.Response {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	out := []api.Response{}
 	for _, id := range slices.Sorted(maps.Keys(b.leases)) {
-		if l := b.leases[id]; l.Pod.UID == who.Pod.UID {
+		if l := b.leases[id]; l.Pod.UID == who.Pod.UID && l.Claim == claimUID {
 			out = append(out, *leaseInfo(l))
 		}
 	}

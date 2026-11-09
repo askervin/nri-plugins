@@ -1212,3 +1212,49 @@ func TestCloseClaimClosesConnections(t *testing.T) {
 		t.Fatalf("after CloseClaim: %q %v", data, err)
 	}
 }
+
+// A pod with two lease claims lists and releases on the socket of each
+// only the leases asked for on that socket (D-5).
+func TestLeaseListAndReleaseOfTheClaim(t *testing.T) {
+	e := brokerEnv(t)
+	e.openClaim()
+	other := leaseClaimObj()
+	other.Name, other.UID = "lease2", "lc2"
+	mustOK(t, e.b.OpenClaim(other))
+	e.start()
+	r, _ := e.call(api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s"})
+	if r.Error != "" {
+		t.Fatalf("request %+v", r)
+	}
+	r2 := e.callAt("lc2", api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s"})
+	if r2.Error != "" {
+		t.Fatalf("request on lc2 %+v", r2)
+	}
+	ids := func(resp api.Response) []string {
+		var out []string
+		if resp.Leases != nil {
+			for _, l := range *resp.Leases {
+				out = append(out, l.Lease)
+			}
+		}
+		return out
+	}
+	if got, _ := e.call(api.Request{Op: api.OpList}); !slices.Equal(ids(got), []string{r.Lease}) {
+		t.Fatalf("list on lc1 %+v", got)
+	}
+	if got := e.callAt("lc2", api.Request{Op: api.OpList}); !slices.Equal(ids(got), []string{r2.Lease}) {
+		t.Fatalf("list on lc2 %+v", got)
+	}
+	if got := e.callAt("lc2", api.Request{Op: api.OpRelease, Lease: r.Lease, Wait: "0s"}); got.Error != "no such lease" {
+		t.Fatalf("release of a lease of lc1 on lc2 %+v", got)
+	}
+	if got := e.callAt("lc2", api.Request{Op: api.OpRelease, All: true, Wait: "0s"}); !slices.Equal(ids(got), []string{r2.Lease}) {
+		t.Fatalf("release --all on lc2 %+v", got)
+	}
+	e.b.mu.Lock()
+	_, kept := e.b.leases[r.Lease]
+	e.b.mu.Unlock()
+	if !kept {
+		t.Fatalf("lease %s of lc1 released by release --all on lc2", r.Lease)
+	}
+}

@@ -268,11 +268,11 @@ func (b *Broker) handle(claimUID string, who Requester, req *api.Request) (*api.
 		return b.requestLease(claimUID, who, req, wait)
 	case api.OpRelease:
 		if req.All {
-			return b.releaseAll(who, wait), leaseFd{}
+			return b.releaseAll(claimUID, who, wait), leaseFd{}
 		}
-		return b.releaseOne(who, req.Lease, wait), leaseFd{}
+		return b.releaseOne(claimUID, who, req.Lease, wait), leaseFd{}
 	case api.OpList:
-		return b.list(who), leaseFd{}
+		return b.list(claimUID, who), leaseFd{}
 	case api.OpFd:
 		return b.waitLease(who, req.Lease, wait, true)
 	default: // api.OpEnv
