@@ -299,7 +299,7 @@ func TestBindDaxWrites(t *testing.T) {
 	}
 }
 
-// bug-21: whoever writes a new_id of a dax driver makes the kernel attach
+// Whoever writes a new_id of a dax driver makes the kernel attach
 // the driver to every unbound dax device whose name it has as an id. A
 // slice that UnbindDax had just unbound to resize it was taken back by
 // device_dax when another Prepare bound its device at that moment, and the

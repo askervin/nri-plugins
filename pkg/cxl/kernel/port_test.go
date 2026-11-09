@@ -26,9 +26,9 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
-// stackNode is bug-02's VM0: mem0 (1 GiB) and mem1 under the switch port3
-// of host bridge port1, with region0 (mem0), region1 (mem1) and region2
-// (mem0) on decoders 0-2 of both ports.
+// stackNode is a VM of the e2e tests: mem0 (1 GiB) and mem1 under the
+// switch port3 of host bridge port1, with region0 (mem0), region1 (mem1)
+// and region2 (mem0) on decoders 0-2 of both ports.
 func stackNode(t *testing.T) (*fake.Fake, *kernel.Kernel) {
 	t.Helper()
 	f := fake.New(t)

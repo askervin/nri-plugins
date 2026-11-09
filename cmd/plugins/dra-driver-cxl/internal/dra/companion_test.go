@@ -332,7 +332,7 @@ func TestCompanionFinishFails(t *testing.T) {
 
 // The Unprepare of a numa companion whose Prepare a stop cut after the
 // lend: either driver tells the broker and revokes the node before it
-// releases the memory (L-55).
+// releases the memory.
 func TestCompanionUnfinishedRevoke(t *testing.T) {
 	for _, local := range []bool{true, false} {
 		e := lendEnv(t)

@@ -160,7 +160,7 @@ func TestNamespacesWaitForProbe(t *testing.T) {
 	poll(kernel.NdProbing)
 	f.Write(pfn+"/block/pmem0/dev", "259:0")
 	// the disk complete, the mode of the pfn device not readable (or
-	// unknown): not settled, whatever the order of the reads (bug-10 C)
+	// unknown): not settled, whatever the order of the reads
 	f.Remove(pfn + "/mode")
 	poll(kernel.NdProbing)
 	f.Write(pfn+"/mode", "bogus")

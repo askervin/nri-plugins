@@ -251,7 +251,7 @@ func TestFencePass(t *testing.T) {
 	e.p.LendsRestored() // once only
 	e.passes()
 	e.expectUpdates()
-	// the periodic repair pass tries the failed update again (L-11)
+	// the periodic repair pass tries the failed update again
 	e.p.Repair(ctx)
 	e.expectUpdates("c5 mems=0-1")
 	e.p.Repair(ctx)
@@ -282,7 +282,7 @@ func TestFencePass(t *testing.T) {
 	e.expectUpdates("c1 mems=0-1", "c2 mems=0-1")
 
 	// a running container whose cgroup has want but whose spec does not
-	// is updated (L-58): a later update of its resources would write the
+	// is updated (want differs from its spec): a later update of its resources would write the
 	// spec's cpuset.mems to the cgroup
 	withSpecMems(c1, "0-2")
 	withSpecMems(c2, "0-1")

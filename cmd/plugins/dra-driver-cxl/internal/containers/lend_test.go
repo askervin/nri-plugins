@@ -813,7 +813,7 @@ func memoryHigh(t *testing.T, dir string) string {
 }
 
 // The lends of a container found by Synchronize are seeded from the lease
-// broker when it is the source (L-65), not from the store: a lease that
+// broker when it is the source, not from the store: a lease that
 // the store has and the broker does not seeds nothing.
 func TestLendSeedFromBroker(t *testing.T) {
 	ctx := context.Background()

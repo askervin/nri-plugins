@@ -76,7 +76,7 @@ func TestBootOfAnotherBoot(t *testing.T) {
 }
 
 // The preparations of both drivers of another boot are kept PREPARED_STALE
-// with their grants (L-08: cxl.nri.io's are not dropped).
+// with their grants: those of cxl.nri.io are not dropped.
 func TestBootKeepsThePreparationsOfBothDrivers(t *testing.T) {
 	doc := fixture(statetest.BootID)
 	orig := doc.Clone()

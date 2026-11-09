@@ -219,7 +219,7 @@ func TestRegionDaxReofflinesAutoOnlined(t *testing.T) {
 	}
 }
 
-// bug-21: SetDaxDriver leaves no id after a bind, and an id that another
+// SetDaxDriver leaves no id after a bind, and an id that another
 // tool left is removed by the unbind of a resize (TestDaxIDsNotLeft).
 func TestDaxIDsNotLeft(t *testing.T) {
 	for _, tc := range []struct {

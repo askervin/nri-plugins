@@ -493,7 +493,7 @@ func TestWatch(t *testing.T) {
 }
 
 // TestCheckLocalListFails pins that a failed list of the pool
-// ResourceSlices refuses a new local grant (L-56, fail closed) until a list
+// ResourceSlices refuses a new local grant (fail closed) until a list
 // succeeds again.
 func TestCheckLocalListFails(t *testing.T) {
 	e := newWatchEnv(t)

@@ -121,7 +121,7 @@ func TestLeaseClaimSocketAndCDI(t *testing.T) {
 		leaseContainerDir+"/"+leaseSocketName != api.DefaultSocket {
 		t.Fatalf("env %v", dev.ContainerEdits.Env)
 	}
-	// before the start a request waits for it, bounded (L-17)
+	// before the start a request waits for it, bounded
 	e.opts = func(o *Options) { o.Timeouts.SyncWait = 200 * time.Millisecond }
 	e.restart()
 	e.opts = nil
@@ -774,7 +774,7 @@ func TestCompanionGoneAndContainerGone(t *testing.T) {
 	if l := e.lease(r1.Lease); l.State != state.LeaseFailed || l.Error != "companion claim unprepared (companion pod deleted or evicted)" {
 		t.Fatalf("lease %+v", l)
 	}
-	// released by the reconcile, also while its companion runs (L-14)
+	// released by the reconcile, also while its companion runs
 	e.b.reconcile()
 	e.waitState(r1.Lease, state.LeaseNone)
 	e.wantGone(CompanionName(r1.Lease))
@@ -1221,7 +1221,7 @@ func TestCloseClaimClosesConnections(t *testing.T) {
 }
 
 // A pod with two lease claims lists and releases on the socket of each
-// only the leases asked for on that socket (D-5).
+// only the leases asked for on that socket.
 func TestLeaseListAndReleaseOfTheClaim(t *testing.T) {
 	e := brokerEnv(t)
 	e.openClaim()
@@ -1268,7 +1268,7 @@ func TestLeaseListAndReleaseOfTheClaim(t *testing.T) {
 
 // The broker tells the companion gate the hash of the companion claim's
 // spec as the API server returned it at its creation, while the lease
-// waits for the claim's first Prepare (L-10).
+// waits for the claim's first Prepare.
 func TestCompanionSpecHash(t *testing.T) {
 	e := brokerEnv(t)
 	e.openClaim()
@@ -1290,7 +1290,7 @@ func TestCompanionSpecHash(t *testing.T) {
 }
 
 // A graceful stop does not release the lease of a request still waiting
-// for Ready (L-62): the client is told to ask again, the lease stays for
+// for Ready: the client is told to ask again, the lease stays for
 // the restarted plugin.
 func TestStopKeepsWaitingLease(t *testing.T) {
 	e := brokerEnv(t)
@@ -1314,7 +1314,7 @@ func TestStopKeepsWaitingLease(t *testing.T) {
 }
 
 // A commit of the broker's records waits at most Timeouts.Persist for a
-// stalled store (L-66): the error is returned, the mutex is not held for
+// stalled store: the error is returned, the mutex is not held for
 // ever, the commit is applied later.
 func TestPersistBounded(t *testing.T) {
 	e := brokerEnv(t)
@@ -1339,8 +1339,8 @@ func TestPersistBounded(t *testing.T) {
 	}
 }
 
-// The reconcile releases a FAILED lease whose companion still runs
-// (L-14): its companion is deleted and the lease goes.
+// The reconcile releases a FAILED lease whose companion still runs: its
+// companion is deleted and the lease goes.
 func TestReconcileReleasesFailedLease(t *testing.T) {
 	e := brokerEnv(t)
 	e.openClaim()
@@ -1356,7 +1356,7 @@ func TestReconcileReleasesFailedLease(t *testing.T) {
 	e.wantGone(CompanionName(r.Lease))
 }
 
-// The identity of every request on a connection is evaluated again (L-16):
+// The identity of every request on a connection is evaluated again:
 // a peer that is now in another pod is refused; a peer in no known
 // container (its process exited) keeps the identity of the connection.
 func TestIdentityPerRequest(t *testing.T) {
@@ -1447,7 +1447,7 @@ func TestProcessStartTime(t *testing.T) {
 }
 
 // A request that comes before the broker starts waits for the start
-// (L-17), then is served.
+// (bounded), then is served.
 func TestRequestWaitsForStart(t *testing.T) {
 	e := brokerEnv(t)
 	e.openClaim()
@@ -1468,7 +1468,7 @@ func TestRequestWaitsForStart(t *testing.T) {
 	}
 }
 
-// The limits of a lease socket and of the leases of a pod (L-18): a
+// The limits of a lease socket and of the leases of a pod: a
 // connection beyond the limit is closed at once, an idle one after the
 // idle limit, a request beyond the leases of a pod refused.
 func TestLimits(t *testing.T) {

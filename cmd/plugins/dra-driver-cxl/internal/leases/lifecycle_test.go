@@ -162,7 +162,7 @@ func TestUnrestoredCompanionFails(t *testing.T) {
 
 // A LENDING lease whose companion claim the start did not restore (a stop
 // between the companion's PREPARED and OnPrepared) fails and is released in
-// place as a READY one (L-64).
+// place as a READY one.
 func TestUnrestoredLendingCompanionFails(t *testing.T) {
 	e := newLeaseEnv(t, nil, fake.MemdevSpec{Serial: serialPoolP, Pmem: 512 << 20})
 	dev := e.formatPmem(serialPoolP, "erofs")
@@ -256,7 +256,7 @@ func TestRelistenFails(t *testing.T) {
 	if c := e.st.Snapshot().LeaseClaim(envLeaseClaim); c == nil || c.State != state.LeaseClaimOpenNoListener {
 		t.Fatalf("lease claim %+v", c)
 	}
-	// the reconcile listens again once it can (L-61)
+	// the reconcile listens again once it can
 	e.b.reconcile()
 	if c := e.st.Snapshot().LeaseClaim(envLeaseClaim); c == nil || c.State != state.LeaseClaimOpenNoListener {
 		t.Fatalf("lease claim after a failed listen of the reconcile %+v", c)

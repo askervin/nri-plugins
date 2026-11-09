@@ -956,7 +956,7 @@ func TestRecoverKeepsNodeMountOfBusyCompanion(t *testing.T) {
 }
 
 // A pool block grant whose block device is not the one of its region at a
-// start is REALISED_UNRESTORED (L-04: every grant kind is verified), its
+// start is REALISED_UNRESTORED (every grant kind is verified), its
 // preparation PREPARED_UNRESTORED; a Prepare again once the block device is
 // the prepared one again restores it.
 func TestRecoverPoolBlockChanged(t *testing.T) {

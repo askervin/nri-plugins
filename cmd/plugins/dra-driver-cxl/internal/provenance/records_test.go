@@ -156,7 +156,7 @@ func TestRecordsLoaded(t *testing.T) {
 	}
 }
 
-// TestLoadHeldRecord pins that a HELD record is loaded (L-19): the hold
+// TestLoadHeldRecord pins that a HELD record is loaded: the hold
 // goes on from its HeldSince, so a memdev held before a restart is
 // published HoldBack after its first hold, not after the restart.
 func TestLoadHeldRecord(t *testing.T) {

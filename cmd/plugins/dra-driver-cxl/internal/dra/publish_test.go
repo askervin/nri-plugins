@@ -620,7 +620,7 @@ func TestRescanBeforeStart(t *testing.T) {
 }
 
 // TestPublishedTable pins the table that a local Prepare looks its devices
-// up in (L-09): that of the last publication, the last scan's before the
+// up in: that of the last publication, the last scan's before the
 // first one; a scan that is not published leaves it.
 func TestPublishedTable(t *testing.T) {
 	client := sliceTestClient(pubNode, nil)

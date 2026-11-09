@@ -158,8 +158,8 @@ func TestRegionNodeOfOnlineSlices(t *testing.T) {
 }
 
 // A region whose memory device was removed before the region was
-// destroyed keeps its address range with target0 empty and commit 0 (bug-12
-// of plan-13: evidence of the e2e VMs, region1 of a pmem device). The scan
+// destroyed keeps its address range with target0 empty and commit 0 (seen
+// on the e2e VMs, region1 of a pmem device). The scan
 // skips the empty target instead of failing: region1 has no targets, no
 // memories and is disabled, and region0 and its memdev are found as before.
 func TestHollowRegion(t *testing.T) {

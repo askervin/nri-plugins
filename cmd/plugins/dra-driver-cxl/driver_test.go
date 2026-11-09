@@ -887,7 +887,7 @@ func TestEveryPeriod(t *testing.T) {
 }
 
 // The first list of the pool ResourceSlices runs after phase 1 of the
-// recovery (L-57): when it runs, the engine has recovered its records and
+// recovery: when it runs, the engine has recovered its records and
 // the local guard is set.
 func TestFirstListAfterRecovery(t *testing.T) {
 	ctx := context.Background()
@@ -923,7 +923,7 @@ func TestFirstListAfterRecovery(t *testing.T) {
 }
 
 // The dead keys ignoreNewMemoryDevices and ignoreNewRegions are accepted
-// with a warning (L-30, D-6); unset, nothing is logged.
+// with a warning that they have no effect; unset, nothing is logged.
 func TestDriverConfigDeadKeys(t *testing.T) {
 	logs := captureKlog(t)
 	cfg, err := newDriverConfigFromString("{ignoreNewMemoryDevices: true, ignoreNewRegions: true}")

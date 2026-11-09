@@ -141,7 +141,7 @@ func (s *stateStore) writeState(path string, data []byte) error {
 	return nil
 }
 
-// writeLost is a write of a store in LOST mode (D-50): the content that a
+// writeLost is a write of a store in LOST mode: the content that a
 // read gives succeeds without a commit (the start writes the files it
 // read), any other write fails with the error of the lost state.
 func (s *stateStore) writeLost(path string, data []byte, lost error) error {
