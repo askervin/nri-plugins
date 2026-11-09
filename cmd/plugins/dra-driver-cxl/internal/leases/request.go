@@ -400,7 +400,15 @@ func (b *Broker) waitReady(id string, wait time.Duration, release bool) (*api.Re
 		resp = leaseInfo(l)
 		return wait == 0
 	}
-	if err := b.waitFor(ctx, done); err != nil && release {
+	err := b.waitFor(ctx, done)
+	if err != nil && b.ctx.Err() != nil {
+		// a graceful stop: the lease stays for the restarted plugin
+		msg := fmt.Sprintf("the driver is stopping: lease %s stays %s, ask again", id, resp.State)
+		klog.Infof("lease broker: lease %s: %s", id, msg)
+		resp.Error = msg
+		return resp, leaseFd{}
+	}
+	if err != nil && release {
 		msg := fmt.Sprintf("timeout: not Ready after %v", wait)
 		klog.Warningf("lease broker: lease %s: %s, releasing", id, msg)
 		resp = b.startRelease(id, msg, state.TriggerRequest)

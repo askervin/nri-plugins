@@ -1281,3 +1281,27 @@ func TestCompanionSpecHash(t *testing.T) {
 		t.Fatalf("hash of no lease %q", h)
 	}
 }
+
+// A graceful stop does not release the lease of a request still waiting
+// for Ready (L-62): the client is told to ask again, the lease stays for
+// the restarted plugin.
+func TestStopKeepsWaitingLease(t *testing.T) {
+	e := brokerEnv(t)
+	e.openClaim()
+	e.start()
+	ch := e.async(api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "60s"})
+	e.waitClaim(CompanionName("000000a1"))
+	e.b.Stop()
+	var resp api.Response
+	select {
+	case resp = <-ch:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no response at the stop")
+	}
+	if !strings.Contains(resp.Error, "the driver is stopping: lease 000000a1 stays Pending, ask again") {
+		t.Fatalf("response %+v", resp)
+	}
+	if l := e.st.Snapshot().Lease("000000a1"); l == nil || l.State != state.LeasePending {
+		t.Fatalf("lease %+v after the stop", l)
+	}
+}
