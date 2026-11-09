@@ -232,7 +232,7 @@ func wakeOnUevents(devices *deviceEngine, driverConfig *DriverConfig) (kernelEve
 		err = ev.Start(fifoPath)
 	}
 	if err != nil {
-		klog.Warningf("kernel uevents: %v: the waits for kernel objects only poll, no rescan on uevents", err)
+		klog.Errorf("kernel uevents: %v: the waits for kernel objects only poll, and the ResourceSlice is not rescanned on uevents", err)
 		return nil, func() {}, nil
 	}
 	devices.k.Events = ev
@@ -267,7 +267,7 @@ func (d *driver) startRescans(ctx context.Context, driverConfig *DriverConfig) {
 	if d.events == nil {
 		return
 	}
-	go d.rescanLoop(ctx, d.events.Stable())
+	go rescanLoop(d.stop, d.events.Stable(), func() { d.publisher.Trigger(ctx, false) })
 }
 
 // fenceOf returns the fence of the NUMA nodes of the NRI plugin nri that
@@ -630,16 +630,15 @@ func waitNRI(ctx context.Context, nri *containers.Plugin) error {
 	return nil
 }
 
-// rescanLoop asks the publisher for a rescan at every signal of stable
-// until d.stop is closed.
-func (d *driver) rescanLoop(ctx context.Context, stable <-chan struct{}) {
+// rescanLoop runs rescan at every signal of stable until stop is closed.
+func rescanLoop(stop, stable <-chan struct{}, rescan func()) {
 	for {
 		select {
-		case <-d.stop:
+		case <-stop:
 			return
 		case <-stable:
 			klog.V(3).Info("kernel uevents: sysfs stabilized, signaling rescan")
-			d.publisher.Trigger(ctx, false)
+			rescan()
 		}
 	}
 }

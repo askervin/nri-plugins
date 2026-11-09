@@ -984,10 +984,45 @@ func TestWakeOnUevents(t *testing.T) {
 	}
 	ev = &fakeEvents{startErr: errors.New("no netlink")}
 	devices = &deviceEngine{k: &kernel.Kernel{}}
+	logs := captureKlog(t)
 	got, stop, err = wakeOnUevents(devices, &DriverConfig{})
 	noErr(t, err)
 	stop()
 	if got != nil || devices.k.Events != nil {
 		t.Fatalf("kernel events %v without uevents", devices.k.Events)
 	}
+	// an error, not a warning: nothing rescans the ResourceSlice
+	if out := logs(); !strings.HasPrefix(out, "E") || !strings.Contains(out, "the ResourceSlice is not rescanned on uevents") {
+		t.Fatalf("no error line in\n%s", out)
+	}
+}
+
+// Every stable signal of the uevents rescans once, until the driver stops.
+func TestRescanOnStable(t *testing.T) {
+	stop, stable, rescans := make(chan struct{}), make(chan struct{}), make(chan struct{}, 4)
+	done := make(chan struct{})
+	logs := captureKlog(t)
+	go func() {
+		defer close(done)
+		rescanLoop(stop, stable, func() { rescans <- struct{}{} })
+	}()
+	stable <- struct{}{}
+	select {
+	case <-rescans:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no rescan after a stable signal")
+	}
+	close(stop)
+	<-done
+	if len(rescans) != 0 {
+		t.Fatalf("%d rescans more", len(rescans))
+	}
+	if !strings.Contains(logs(), "kernel uevents: sysfs stabilized, signaling rescan") {
+		t.Fatalf("no rescan line in\n%s", logs())
+	}
+	// without uevents, and with ignoreNewNodes, nothing rescans
+	d := &driver{stop: make(chan struct{})}
+	d.startRescans(context.Background(), &DriverConfig{})
+	d.events = &fakeEvents{stable: stable}
+	d.startRescans(context.Background(), &DriverConfig{IgnoreNewNodes: true})
 }
