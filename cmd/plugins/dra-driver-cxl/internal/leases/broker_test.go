@@ -291,7 +291,7 @@ func TestLeaseWaitDefault(t *testing.T) {
 		t.Fatalf("defaults: wait %v, image %s", b.opts.WaitDefault, b.opts.Image)
 	}
 	if b.t != (Timeouts{Close: 5 * time.Second, Poll: 500 * time.Millisecond, Reconcile: time.Minute, CreatingGrace: 2 * time.Minute,
-		SyncWait: 30 * time.Second}) {
+		SyncWait: 30 * time.Second, Persist: time.Minute}) {
 		t.Fatalf("timeouts %+v", b.t)
 	}
 	if _, err := New(Options{DataDir: t.TempDir()}); err == nil {
@@ -1303,5 +1303,31 @@ func TestStopKeepsWaitingLease(t *testing.T) {
 	}
 	if l := e.st.Snapshot().Lease("000000a1"); l == nil || l.State != state.LeasePending {
 		t.Fatalf("lease %+v after the stop", l)
+	}
+}
+
+// A commit of the broker's records waits at most Timeouts.Persist for a
+// stalled store (L-66): the error is returned, the mutex is not held for
+// ever, the commit is applied later.
+func TestPersistBounded(t *testing.T) {
+	e := brokerEnv(t)
+	e.opts = func(o *Options) { o.Timeouts.Persist = 50 * time.Millisecond }
+	e.restart()
+	stall, stalled := make(chan struct{}), make(chan struct{})
+	go func() {
+		_ = e.st.Commit(context.Background(), store.Lazy, func(*store.Document) error {
+			close(stalled)
+			<-stall
+			return nil
+		})
+	}()
+	<-stalled
+	start := time.Now()
+	e.b.mu.Lock()
+	err := e.b.persistLocked()
+	e.b.mu.Unlock()
+	close(stall)
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 5*time.Second {
+		t.Fatalf("persist of a stalled store: %v after %v", err, time.Since(start))
 	}
 }

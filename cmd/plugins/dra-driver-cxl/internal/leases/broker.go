@@ -87,6 +87,9 @@ type Timeouts struct {
 	// SyncWait bounds the wait of the first reconcile for the container
 	// plugin to synchronize; 30 s.
 	SyncWait time.Duration
+	// Persist bounds the wait of a commit of the records, which runs with
+	// the broker's mutex held; 1 min.
+	Persist time.Duration
 }
 
 // withDefaults returns the timeouts with the defaults for the zero ones.
@@ -96,6 +99,7 @@ func (t Timeouts) withDefaults() Timeouts {
 	t.Reconcile = cmp.Or(t.Reconcile, 60*time.Second)
 	t.CreatingGrace = cmp.Or(t.CreatingGrace, 2*time.Minute)
 	t.SyncWait = cmp.Or(t.SyncWait, 30*time.Second)
+	t.Persist = cmp.Or(t.Persist, time.Minute)
 	return t
 }
 
@@ -367,7 +371,9 @@ func (b *Broker) persistLocked() error {
 	for _, id := range slices.Sorted(maps.Keys(b.leases)) {
 		leases = append(leases, b.leases[id].Clone())
 	}
-	err := b.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
+	ctx, cancel := context.WithTimeout(context.Background(), b.t.Persist)
+	defer cancel()
+	err := b.st.Commit(ctx, store.Durable, func(doc *store.Document) error {
 		doc.LeaseClaims, doc.Leases = claims, leases
 		return nil
 	})
