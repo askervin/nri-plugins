@@ -230,7 +230,7 @@ var LeaseTable = Table[LeaseState]{
 			To:       LeaseFailed,
 			Triggers: list(TriggerOnReleasing),
 			When:     "the companion claim unprepared behind the broker (the companion pod deleted or evicted)",
-			Effects:  "commit (d); the reconcile releases it once the companion pod is gone",
+			Effects:  "commit (d); the next reconcile releases it",
 		},
 		{
 			From:     list(LeaseCreating, LeasePending, LeaseLending, LeaseReady),

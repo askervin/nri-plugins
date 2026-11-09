@@ -749,7 +749,7 @@ func TestLendsRestored(t *testing.T) {
 }
 
 // The companion unprepared behind the broker fails the lease and the
-// reconcile releases it once the companion pod is gone; the requester
+// reconcile releases it, its companion pod deleted; the requester
 // with restartPolicy Never releases its leases when its container stops;
 // a started container gets its nodes again.
 func TestCompanionGoneAndContainerGone(t *testing.T) {
@@ -764,13 +764,10 @@ func TestCompanionGoneAndContainerGone(t *testing.T) {
 	if l := e.lease(r1.Lease); l.State != state.LeaseFailed || l.Error != "companion claim unprepared (companion pod deleted or evicted)" {
 		t.Fatalf("lease %+v", l)
 	}
-	e.b.reconcile()
-	if l := e.lease(r1.Lease); l == nil || l.ReleaseRequested {
-		t.Fatalf("a failed lease whose companion runs released %+v", l)
-	}
-	mustOK(t, e.client.CoreV1().Pods(envNS).Delete(context.Background(), CompanionName(r1.Lease), metav1.DeleteOptions{}))
+	// released by the reconcile, also while its companion runs (L-14)
 	e.b.reconcile()
 	e.waitState(r1.Lease, state.LeaseNone)
+	e.wantGone(CompanionName(r1.Lease))
 
 	// a started container gets the nodes of its READY numa leases again
 	id := e.readyNUMA()
@@ -1330,4 +1327,21 @@ func TestPersistBounded(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 5*time.Second {
 		t.Fatalf("persist of a stalled store: %v after %v", err, time.Since(start))
 	}
+}
+
+// The reconcile releases a FAILED lease whose companion still runs
+// (L-14): its companion is deleted and the lease goes.
+func TestReconcileReleasesFailedLease(t *testing.T) {
+	e := brokerEnv(t)
+	e.openClaim()
+	e.start()
+	r, _ := e.call(api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s"})
+	e.waitClaim(CompanionName(r.Lease))
+	e.b.mu.Lock()
+	l := e.b.leases[r.Lease]
+	l.State, l.Error = state.LeaseFailed, "lending failed"
+	e.b.mu.Unlock()
+	e.b.reconcile()
+	e.waitState(r.Lease, state.LeaseNone)
+	e.wantGone(CompanionName(r.Lease))
 }

@@ -61,7 +61,9 @@ func (b *Broker) reconcileLoop(containers Containers) {
 	}
 }
 
-// reconcile runs one reconcile.
+// reconcile runs one reconcile: it releases the leases left releasing, left
+// CREATING by a crash, FAILED (also while their companion runs), and those
+// whose companion or requester is gone.
 func (b *Broker) reconcile() {
 	b.mu.Lock()
 	containers := b.containers
@@ -76,6 +78,10 @@ func (b *Broker) reconcile() {
 		switch {
 		case releasingState(l.State):
 			b.startRelease(l.ID, "release interrupted", state.TriggerReconcile)
+			continue
+		case l.State == state.LeaseFailed:
+			// also while its companion still runs
+			b.startRelease(l.ID, "failed: "+l.Error, state.TriggerReconcile)
 			continue
 		case l.State == state.LeaseCreating:
 			if time.Since(l.Created) > b.t.CreatingGrace {
