@@ -58,6 +58,8 @@ type driver struct {
 	// closeStore writes the pending commits of the state store and
 	// closes it.
 	closeStore func()
+	// stop ends the periodic passes of the driver.
+	stop chan struct{}
 }
 
 // leaseBroker is the lease broker as the driver stops it.
@@ -173,6 +175,24 @@ PluginDataDirectoryPath: %v`,
 	}
 	go watcher.Watch(ctx, fe.publisher.Trigger, fe.publisher.LastScan)
 	return nil
+}
+
+// staleBindPeriod is how often the stale lease binds are unmounted again
+// between releases.
+const staleBindPeriod = 60 * time.Second
+
+// everyPeriod runs pass every period until stop is closed.
+func everyPeriod(period time.Duration, stop <-chan struct{}, pass func()) {
+	t := time.NewTicker(period)
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+			pass()
+		}
+	}
 }
 
 // startUdev starts the watcher of udev events for NUMA node hotplug
@@ -576,6 +596,9 @@ func (d *driver) Shutdown(ctx context.Context) error {
 	}
 	if d.udevWatcher != nil {
 		d.udevWatcher.Stop()
+	}
+	if d.stop != nil {
+		close(d.stop)
 	}
 	if d.broker != nil {
 		d.broker.Stop()

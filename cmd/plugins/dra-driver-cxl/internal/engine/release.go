@@ -588,6 +588,16 @@ func boundTo(r *state.Records, ref state.GrantRef, target string, to state.BindS
 	return nil
 }
 
+// RetryStale unmounts the stale lease binds of every memdev and the lease
+// binds of no memdev again, as every release does first, and finishes the
+// Unprepares that they kept from releasing (the periodic pass): the
+// transitions are those of an Unprepare. Errors are logged.
+func (e *Engine) RetryStale(ctx context.Context) {
+	ctx, end := e.Request(ctx)
+	defer end()
+	e.retryAllStale(ctx, state.TriggerUnprepare)
+}
+
 // retryAllStale unmounts the stale lease binds of every memdev of the
 // sources of the engine that no prepared grant lists again, in the queue of
 // each memdev that no other request holds, and forgets those that are

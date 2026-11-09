@@ -857,3 +857,27 @@ func TestPrepareWaitsForNRI(t *testing.T) {
 		e.wantClean(t, p)
 	})
 }
+
+// everyPeriod runs its pass at every period until it is stopped.
+func TestEveryPeriod(t *testing.T) {
+	stop := make(chan struct{})
+	passes := make(chan struct{}, 10)
+	done := make(chan struct{})
+	go func() {
+		everyPeriod(time.Millisecond, stop, func() { passes <- struct{}{} })
+		close(done)
+	}()
+	for range 3 {
+		select {
+		case <-passes:
+		case <-time.After(5 * time.Second):
+			t.Fatal("no pass")
+		}
+	}
+	close(stop)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("not stopped")
+	}
+}

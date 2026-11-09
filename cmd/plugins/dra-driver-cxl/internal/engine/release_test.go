@@ -163,6 +163,32 @@ func TestReleaseRetriesStaleBindsOfEveryMemdev(t *testing.T) {
 	v.clean("released after the stale bind")
 }
 
+// The periodic pass unmounts a stale lease bind once its holder is gone,
+// without a release, and releases the grant it left RELEASING and the
+// memdev; a bind still busy stays for the next pass.
+func TestRetryStalePeriodic(t *testing.T) {
+	v := pmemEnv(t, "ext4")
+	target := busyCompanion(t, v)
+	v.f.SetBusy(target, true)
+	v.e.RetryStale(context.Background())
+	v.mustBeMounted("a busy stale bind after the pass", target)
+	if m := v.records().Memdev(serialP); m == nil || len(m.Stale) != 1 {
+		t.Fatalf("memdev %+v", m)
+	}
+	v.f.SetBusy(target, false)
+	logs := captureKlog(t)
+	v.e.RetryStale(context.Background())
+	v.mustNotBeMounted("after the pass", target)
+	if out := logs(); !strings.Contains(out, "released mem0 (serial 0x91)") {
+		t.Errorf("the memdev is not released:\n%s", out)
+	}
+	if m := v.records().Memdev(serialP); m != nil {
+		t.Fatalf("memdev record %+v", m)
+	}
+	v.mustUnprepare(poolDriver, "c")
+	v.clean("released by the periodic pass")
+}
+
 // A busy lease bind at the start is recorded as stale with the memdev of
 // the node mount it binds, unmounted at the next release.
 func TestRecoverBusyBindIsStale(t *testing.T) {
