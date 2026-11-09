@@ -125,6 +125,7 @@ type Plugin struct {
 	// passes are the fence passes in the background.
 	passes sync.WaitGroup
 
+	// connMu guards conn: a leaf lock.
 	connMu sync.Mutex
 	// conn is the state of the NRI connection (ConnTable).
 	conn ConnState

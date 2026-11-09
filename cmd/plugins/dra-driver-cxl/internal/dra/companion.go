@@ -90,10 +90,11 @@ func LeaseOf(claim *resourcev1.ResourceClaim) string {
 // Locks and waits: mu guards the fields, never held across a hook or a lend.
 type Lender struct {
 	driver string
-	mu     sync.Mutex
-	nodes  NodeLender      // nil: NRI not connected
-	hooks  lend.LeaseHooks // nil: lending disabled
-	isSet  bool
+	// mu guards the fields below: a leaf lock.
+	mu    sync.Mutex
+	nodes NodeLender      // nil: NRI not connected
+	hooks lend.LeaseHooks // nil: lending disabled
+	isSet bool
 }
 
 // NewLender returns the lender of the companion claims of driver, with

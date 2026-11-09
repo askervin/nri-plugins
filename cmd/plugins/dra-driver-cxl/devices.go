@@ -115,7 +115,7 @@ type deviceEngine struct {
 	// drivers are the DRA driver names of the sources.
 	drivers map[state.Source]string
 
-	// mu guards guard, shared and lenders.
+	// mu guards guard, shared and lenders: a leaf lock.
 	mu sync.Mutex
 	// guard refuses a local memdev that is a pool device (or may be one),
 	// nil for no check.

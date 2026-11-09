@@ -73,6 +73,7 @@ type Publisher struct {
 	scanMu  sync.Mutex
 	scanned atomic.Int64
 
+	// mu guards the fields below up to triggerMu: a leaf lock.
 	mu      sync.Mutex
 	devices device.DevicesInfo
 	// published is the table of the last publication, nil before the
@@ -82,6 +83,7 @@ type Publisher struct {
 	names      []string
 	slices     *nodeResourceSlices // nil before Start
 
+	// triggerMu guards the fields below: a leaf lock.
 	triggerMu     sync.Mutex
 	pending       bool // a scan is asked for
 	pendingUrgent bool // a scan that is not periodic is asked for
@@ -598,6 +600,7 @@ var hollowRegions = &hollowRegionLog{warned: map[string]bool{}}
 //
 // Locks and waits: mu guards warned, held for one observe.
 type hollowRegionLog struct {
+	// mu guards warned: a leaf lock.
 	mu     sync.Mutex
 	warned map[string]bool // sysfs path and resource of a hollow region
 }

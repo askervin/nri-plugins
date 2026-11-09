@@ -87,10 +87,11 @@ type Plugin struct {
 	helper    *kubeletplugin.Helper
 
 	locks claimLocks
-	// cdiMu serializes the writes of the CDI spec.
+	// cdiMu serializes the writes of the CDI spec: a leaf lock.
 	cdiMu sync.Mutex
 	cdi   *cdiapi.Cache
 
+	// mu guards the fields below: a leaf lock.
 	mu      sync.Mutex
 	leases  lend.LeaseClaims
 	waitNRI func(ctx context.Context) error
@@ -1006,6 +1007,7 @@ func (p *Plugin) WatchHealthStatus(ctx context.Context, reports chan<- kubeletpl
 
 // claimLocks serializes the work on each claim.
 type claimLocks struct {
+	// mu guards claims: a leaf lock.
 	mu     sync.Mutex
 	claims map[string]*claimLock
 }

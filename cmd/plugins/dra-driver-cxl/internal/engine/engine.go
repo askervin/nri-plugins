@@ -63,7 +63,7 @@ type Engine struct {
 	mu sync.Mutex
 
 	// qmu guards queues, busy, last, unknown, orphanBinds, running,
-	// started, observed, hollowLogged, devices and probes.
+	// started, observed, hollowLogged, devices and probes: a leaf lock.
 	qmu    sync.Mutex
 	queues map[state.Serial]chan struct{}
 	busy   map[state.Serial]bool

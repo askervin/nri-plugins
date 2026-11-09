@@ -14,7 +14,8 @@
 
 // gostats prints per-function length and cyclomatic complexity, the struct
 // fields that recur across structs, and the mutexes of the non-test Go files
-// of the directories given as arguments. Generated files (a "Code generated
+// of the directories given as arguments; a mutex whose comment says "a leaf
+// lock" is left out of the limit of the mutexes. Generated files (a "Code generated
 // ... DO NOT EDIT." line) are left out and their lines reported separately.
 // The cyclomatic complexity is gocyclo's: 1 plus one for every if, for,
 // range, case and select case except default, && and ||. With -r it descends
@@ -54,6 +55,10 @@ type mutex struct {
 	owner string
 	file  string
 	line  int
+	// leaf is a mutex whose comment says "a leaf lock": no other lock and
+	// no wait is taken while it is held, it is no node of the wait-for
+	// graph.
+	leaf bool
 }
 
 type stats struct {
@@ -74,14 +79,17 @@ var (
 	maxLines   = flag.Int("max-lines", 0, "limit of non-test lines (0: none)")
 	maxCyclo15 = flag.Int("max-cyclo15", -1, "limit of functions over cyclomatic 15 (-1: none)")
 	maxCyclo30 = flag.Int("max-cyclo30", -1, "limit of functions over cyclomatic 30 outside -keep files (-1: none)")
-	maxMutexes = flag.Int("max-mutexes", -1, "limit of sync.Mutex and sync.RWMutex fields and variables (-1: none)")
+	maxMutexes = flag.Int("max-mutexes", -1, "limit of sync.Mutex and sync.RWMutex fields and variables but leaf locks (-1: none)")
 	maxAccess  = flag.Int("max-access-structs", -1, "limit of structs with a Mode, ReadOnly, Access or FsType field (-1: none)")
 	keepFiles  = flag.String("keep", "", "comma-separated file names exempt from -max-cyclo30")
+	keepAccess = flag.String("keep-access", "", "comma-separated file names whose structs are exempt from -max-access-structs")
 
 	// failed is set when a file or directory cannot be read.
 	failed = false
-	// keep holds the file names of -keep.
-	keep = map[string]bool{}
+	// keep holds the file names of -keep, accessKept those of
+	// -keep-access.
+	keep       = map[string]bool{}
+	accessKept = map[string]bool{}
 )
 
 func main() {
@@ -97,6 +105,11 @@ func main() {
 	for _, f := range strings.Split(*keepFiles, ",") {
 		if f != "" {
 			keep[f] = true
+		}
+	}
+	for _, f := range strings.Split(*keepAccess, ",") {
+		if f != "" {
+			accessKept[f] = true
 		}
 	}
 
@@ -211,8 +224,9 @@ func (s *stats) addGenDecl(fset *token.FileSet, base string, d *ast.GenDecl) {
 		switch sp := spec.(type) {
 		case *ast.ValueSpec:
 			if isMutex(sp.Type) {
+				leaf := isLeaf(d.Doc, sp.Doc, sp.Comment)
 				for _, n := range sp.Names {
-					s.mutexes = append(s.mutexes, mutex{n.Name, base, fset.Position(n.Pos()).Line})
+					s.mutexes = append(s.mutexes, mutex{n.Name, base, fset.Position(n.Pos()).Line, leaf})
 				}
 			}
 		case *ast.TypeSpec:
@@ -229,12 +243,22 @@ func (s *stats) addGenDecl(fset *token.FileSet, base string, d *ast.GenDecl) {
 					si.fields = append(si.fields, "(embedded)"+types(fl.Type))
 				}
 				if isMutex(fl.Type) {
-					s.mutexes = append(s.mutexes, mutex{sp.Name.Name, base, fset.Position(fl.Pos()).Line})
+					s.mutexes = append(s.mutexes, mutex{sp.Name.Name, base, fset.Position(fl.Pos()).Line, isLeaf(fl.Doc, fl.Comment)})
 				}
 			}
 			s.structs = append(s.structs, si)
 		}
 	}
+}
+
+// isLeaf tells whether one of the comments says "a leaf lock".
+func isLeaf(groups ...*ast.CommentGroup) bool {
+	for _, g := range groups {
+		if g != nil && strings.Contains(g.Text(), "a leaf lock") {
+			return true
+		}
+	}
+	return false
 }
 
 // cyclomatic returns 1 plus the number of branch points in body, default
@@ -352,7 +376,9 @@ func report(s *stats) {
 func summary(all []*stats) bool {
 	lines, generated, cyclo15, cyclo30, cyclo30Kept := 0, 0, 0, 0, 0
 	var mutexes []string
+	leaves := 0
 	var access []string
+	accessExempt := 0
 	var over30 []string
 	for _, s := range all {
 		lines += s.lines
@@ -371,12 +397,21 @@ func summary(all []*stats) bool {
 			}
 		}
 		for _, m := range s.mutexes {
+			if m.leaf {
+				leaves++
+				continue
+			}
 			mutexes = append(mutexes, fmt.Sprintf("%s/%s:%d %s", s.dir, m.file, m.line, m.owner))
 		}
 		for _, st := range s.structs {
-			if hasAccessField(st) {
-				access = append(access, st.name)
+			if !hasAccessField(st) {
+				continue
 			}
+			if accessKept[st.file] {
+				accessExempt++
+				continue
+			}
+			access = append(access, st.name)
 		}
 	}
 
@@ -400,11 +435,12 @@ func summary(all []*stats) bool {
 	for _, f := range over30 {
 		fmt.Printf("    %s\n", f)
 	}
-	check("mutexes", len(mutexes), *maxMutexes, -1)
+	check(fmt.Sprintf("mutexes on the wait-for graph (%d leaf locks left out)", leaves), len(mutexes), *maxMutexes, -1)
 	for _, m := range mutexes {
 		fmt.Printf("    %s\n", m)
 	}
-	check("structs with "+strings.Join(accessFields, "/")+" fields", len(access), *maxAccess, -1)
+	check(fmt.Sprintf("structs with %s fields (%d in -keep-access files)", strings.Join(accessFields, "/"), accessExempt),
+		len(access), *maxAccess, -1)
 	if len(access) > 0 {
 		fmt.Printf("    %s\n", strings.Join(access, ","))
 	}

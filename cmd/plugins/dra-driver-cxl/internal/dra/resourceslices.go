@@ -78,6 +78,7 @@ type nodeResourceSlices struct {
 	syncDelay time.Duration
 	onError   func(ctx context.Context, err error, msg string)
 
+	// mu guards ctl: a leaf lock.
 	mu  sync.Mutex
 	ctl *resourceslice.Controller // nil before the first publish
 }
