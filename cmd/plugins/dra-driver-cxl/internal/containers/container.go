@@ -178,16 +178,9 @@ var LifecycleTable = fsm.Table[Lifecycle]{
 				"(memory.high max); seeded; no adjustment possible",
 		},
 		{
-			From: list(LifecycleUnseen, LifecycleCreated, LifecycleTaskCreated), To: LifecycleStarted,
-			Triggers: list(TriggerSynchronize),
-			When:     "Synchronize lists the container running or paused",
-			Effects:  "its pid, cgroup and own nodes read; its claimed nodes in its cpuset.mems are its own",
-		},
-		{
-			From: list(LifecycleUnseen, LifecycleCreated, LifecycleTaskCreated, LifecycleStarted), Stays: true,
-			Triggers: list(TriggerSynchronize),
-			When:     "Synchronize lists a container that the plugin has a record of",
-			Effects:  "the cpuset.mems of its spec recorded",
+			From: list(LifecycleUnseen), To: LifecycleStarted, Triggers: list(TriggerSynchronize),
+			When:    "Synchronize lists the container running or paused",
+			Effects: "its pid, cgroup and own nodes read; its claimed nodes in its cpuset.mems are its own",
 		},
 		{
 			From: list(LifecycleNone, LifecycleUnseen, LifecycleCreated), To: LifecycleTaskCreated,
@@ -213,8 +206,8 @@ var LifecycleTable = fsm.Table[Lifecycle]{
 		},
 		{
 			From: list(LifecycleUnseen, LifecycleCreated, LifecycleTaskCreated, LifecycleStarted), To: LifecycleGone,
-			Triggers: list(TriggerStop, TriggerSynchronize),
-			When:     "the runtime stops or removes the container, or Synchronize does not list it",
+			Triggers: list(TriggerStop),
+			When:     "the runtime stops or removes the container",
 			Effects: "the record leaves the table; the OnContainerGone callbacks (the broker keeps its leases " +
 				"while the pod lives or a newer instance exists); its manager stopped (memory.high max), then " +
 				"its Steered record removed (d, bounded)",

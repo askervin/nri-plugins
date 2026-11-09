@@ -548,12 +548,11 @@ States: NONE, UNSEEN, CREATED, TASK_CREATED, STARTED, GONE.
 |:-----|:---|:--------|:------|:--------|
 | NONE | CREATED | `NRI CreateContainer`: the runtime creates the container | - | the management decided; fenced: an adjustment of cpuset.mems iff wantMems differs from the spec; the nodes of its READY numa leases recorded as lent (seeded); also when the settings of its results do not combine (the creation fails, the record stays with the management of the defaults until the container stops) |
 | NONE | UNSEEN | `NRI Synchronize`: Synchronize lists a created, running or paused container that the plugin has no record of | the first Synchronize of the process | the management decided from its results; not steered by this process; a manager of a previous process (its Steered record, or its settings without any record) released (memory.high max); seeded; no adjustment possible |
-| UNSEEN, CREATED, TASK_CREATED | STARTED | `NRI Synchronize`: Synchronize lists the container running or paused | - | its pid, cgroup and own nodes read; its claimed nodes in its cpuset.mems are its own |
-| UNSEEN, CREATED, TASK_CREATED, STARTED | (unchanged) | `NRI Synchronize`: Synchronize lists a container that the plugin has a record of | - | the cpuset.mems of its spec recorded |
+| UNSEEN | STARTED | `NRI Synchronize`: Synchronize lists the container running or paused | - | its pid, cgroup and own nodes read; its claimed nodes in its cpuset.mems are its own |
 | NONE, UNSEEN, CREATED | TASK_CREATED | `NRI StartContainer`: the runtime has created the task of the container (a record is made for a container that the plugin has none of, with the management of the defaults) | - | its pid, cgroup and own nodes read; steered: the Steered record committed (d, bounded) before the manager starts; a manager that does not start makes it fenced or none; updates from here reach its spec only |
 | UNSEEN, CREATED, TASK_CREATED | STARTED | `NRI PostStartContainer`: the runtime has marked the container started | - | its pid, cgroup and own nodes read if StartContainer was not seen; the OnContainerStarted callbacks (the broker lends the nodes of its READY numa leases again); fenced: the repair pass of the one container (wantMems against its cgroup) once fencing is ready |
 | STARTED | (unchanged) | `NRI PostStartContainer`: Synchronize found the container running before its PostStartContainer | - | the OnContainerStarted callbacks; fenced: the repair pass of the one container once fencing is ready |
-| UNSEEN, CREATED, TASK_CREATED, STARTED | GONE | `NRI StopContainer`, `NRI Synchronize`: the runtime stops or removes the container, or Synchronize does not list it | - | the record leaves the table; the OnContainerGone callbacks (the broker keeps its leases while the pod lives or a newer instance exists); its manager stopped (memory.high max), then its Steered record removed (d, bounded) |
+| UNSEEN, CREATED, TASK_CREATED, STARTED | GONE | `NRI StopContainer`: the runtime stops or removes the container | - | the record leaves the table; the OnContainerGone callbacks (the broker keeps its leases while the pod lives or a newer instance exists); its manager stopped (memory.high max), then its Steered record removed (d, bounded) |
 
 Refused:
 
@@ -603,7 +602,6 @@ States: WAITING, SYNCHRONIZED, LENDS_RESTORED, READY.
 | WAITING | LENDS_RESTORED | `lends restored`: the broker's first reconcile restored the lends before the first Synchronize | - | - |
 | SYNCHRONIZED | READY | `lends restored`: the lends restored after the first Synchronize | - | a fence pass in the background (fencing allowed-mems); logged once |
 | LENDS_RESTORED | READY | `NRI Synchronize`: the first Synchronize after the lends were restored | - | WaitSynchronized returns; a fence pass in the background (fencing allowed-mems); logged once |
-| SYNCHRONIZED, READY | (unchanged) | `NRI Synchronize`: a later Synchronize | - | READY: a fence pass in the background |
 
 Refused:
 

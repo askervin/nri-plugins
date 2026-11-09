@@ -33,20 +33,19 @@ var _ stub.PostStartContainerInterface = (*Plugin)(nil)
 
 // Synchronize builds the container table from the runtime's pods and
 // containers, and starts a fence pass in the background when fencing of
-// running containers is ready. A container new to the table is managed as
-// its results say, but never steered: steering is planned at
-// CreateContainer and runs in the process that started the container; a
-// manager of a previous process is released (releaseSteering). It gets the
-// lends of its READY numa leases. Containers that are no longer listed are
-// gone. The Steered records keep the managers of this process only from
-// now on.
+// running containers is ready. It comes once per process: the runtime
+// synchronizes a plugin once per connection, and a lost connection ends
+// the process. A container is managed as its results say, but never
+// steered: steering is planned at CreateContainer and runs in the process
+// that started the container; a manager of a previous process is released
+// (releaseSteering). It gets the lends of its READY numa leases. The
+// Steered records keep the managers of this process only from now on.
 func (p *Plugin) Synchronize(_ context.Context, pods []*api.PodSandbox, ctrs []*api.Container) ([]*api.ContainerUpdate, error) {
 	podByID := make(map[string]*api.PodSandbox, len(pods))
 	for _, pod := range pods {
 		podByID[pod.GetId()] = pod
 	}
 	p.mu.Lock()
-	seen := make(map[string]bool, len(ctrs))
 	for _, ctr := range ctrs {
 		if !listed(ctr.GetState()) {
 			continue
@@ -55,14 +54,7 @@ func (p *Plugin) Synchronize(_ context.Context, pods []*api.PodSandbox, ctrs []*
 		if !ok {
 			pod = &api.PodSandbox{Id: ctr.GetPodSandboxId()}
 		}
-		seen[ctr.GetId()] = true
 		p.syncContainer(pod, ctr)
-	}
-	var stopped []*Container
-	for id, c := range p.ctrs {
-		if !seen[id] {
-			stopped = append(stopped, p.untrack(c, TriggerSynchronize))
-		}
 	}
 	var keep []string
 	for id, c := range p.ctrs {
@@ -71,7 +63,6 @@ func (p *Plugin) Synchronize(_ context.Context, pods []*api.PodSandbox, ctrs []*
 		}
 	}
 	p.mu.Unlock()
-	p.stopManagers(stopped)
 	p.syncSteered(keep)
 
 	p.mu.Lock()
@@ -93,19 +84,14 @@ func listed(s api.ContainerState) bool {
 		s == api.ContainerState_CONTAINER_PAUSED
 }
 
-// syncContainer adds a container that Synchronize lists to the table, or
-// updates its record. Called with mu held.
+// syncContainer adds a container that Synchronize lists to the table; one
+// that the table has is left as it is. Called with mu held.
 func (p *Plugin) syncContainer(pod *api.PodSandbox, ctr *api.Container) {
-	running := ctr.GetState() != api.ContainerState_CONTAINER_CREATED
-	c := p.ctrs[ctr.GetId()]
-	switch {
-	case c == nil:
-		c = p.syncNew(pod, ctr, running)
-	case running:
-		p.startTask(c, ctr, LifecycleStarted, TriggerSynchronize)
-	default:
-		p.lifecycle(c, c.Lifecycle, TriggerSynchronize)
+	if c := p.ctrs[ctr.GetId()]; c != nil {
+		klog.Warningf("NRI Synchronize: ctr=%s id=%s has a record already, left as it is", c.name(), c.ID)
+		return
 	}
+	c := p.syncNew(pod, ctr, ctr.GetState() != api.ContainerState_CONTAINER_CREATED)
 	c.SpecMems = specMems(ctr)
 	klog.V(4).Infof("NRI Synchronize: ctr=%s id=%s pid=%d cgroup=%s baseMems=%s memory=%s",
 		c.name(), c.ID, c.Pid, c.CgroupDir, c.Base, c.Management.text())

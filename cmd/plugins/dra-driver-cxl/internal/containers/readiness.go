@@ -101,11 +101,6 @@ var ReadinessTable = fsm.Table[Readiness]{
 			When:    "the first Synchronize after the lends were restored",
 			Effects: "WaitSynchronized returns; a fence pass in the background (fencing allowed-mems); logged once",
 		},
-		{
-			From: list(ReadinessSynchronized, ReadinessReady), Stays: true, Triggers: list(TriggerSynchronize),
-			When:    "a later Synchronize",
-			Effects: "READY: a fence pass in the background",
-		},
 	},
 	Refused: []fsm.Refusal[Readiness]{
 		{From: list(ReadinessReady), To: list(ReadinessWaiting, ReadinessSynchronized, ReadinessLendsRestored),

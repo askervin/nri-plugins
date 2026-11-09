@@ -111,11 +111,17 @@ func TestLifecycleOfContainers(t *testing.T) {
 	noErr(t, e.p.RemoveContainer(ctx, pod, c3))
 	e.wait(e.gone, "u1", "unseen")
 
-	// a container that Synchronize found created gets started
+	// a container that Synchronize found created gets started; one that
+	// PostStart starts; one that Synchronize found running
 	c4 := testCtr(pod, "c4", "synced", 104)
 	c4.State = nriapi.ContainerState_CONTAINER_CREATED
+	c5 := testCtr(pod, "c5", "post", 105)
+	c5.State = nriapi.ContainerState_CONTAINER_CREATED
+	c6 := testCtr(pod, "c6", "late", 106)
+	c6.State = nriapi.ContainerState_CONTAINER_RUNNING
 	n := newFenceEnv(t, "0-2", 2)
-	_, err = n.p.Synchronize(ctx, []*nriapi.PodSandbox{pod}, []*nriapi.Container{c4})
+	n.proc(106, "kubepods/u1/c6", "0-2", "0-2")
+	_, err = n.p.Synchronize(ctx, []*nriapi.PodSandbox{pod}, []*nriapi.Container{c4, c5, c6})
 	noErr(t, err)
 	if lifecycle(n, "c4") != LifecycleUnseen {
 		t.Fatalf("lifecycle %s", lifecycle(n, "c4"))
@@ -125,26 +131,12 @@ func TestLifecycleOfContainers(t *testing.T) {
 	if lifecycle(n, "c4") != LifecycleStarted {
 		t.Fatalf("lifecycle %s", lifecycle(n, "c4"))
 	}
-	// a container that Synchronize found created and that PostStart starts
-	c5 := testCtr(pod, "c5", "post", 105)
-	c5.State = nriapi.ContainerState_CONTAINER_CREATED
-	_, err = n.p.Synchronize(ctx, []*nriapi.PodSandbox{pod}, []*nriapi.Container{c4, c5})
-	noErr(t, err)
 	n.proc(105, "kubepods/u1/c5", "0-2", "0-2")
 	noErr(t, n.p.PostStartContainer(ctx, pod, c5))
 	n.wait(n.start, "u1", "post")
 	if c := n.record("c5"); c.Lifecycle != LifecycleStarted || c.Pid != 105 {
 		t.Fatalf("record %+v", c)
 	}
-	// a created container that the next Synchronize finds running
-	c6 := testCtr(pod, "c6", "late", 106)
-	c6.State = nriapi.ContainerState_CONTAINER_CREATED
-	_, err = n.p.Synchronize(ctx, []*nriapi.PodSandbox{pod}, []*nriapi.Container{c4, c5, c6})
-	noErr(t, err)
-	n.proc(106, "kubepods/u1/c6", "0-2", "0-2")
-	c6.State = nriapi.ContainerState_CONTAINER_RUNNING
-	_, err = n.p.Synchronize(ctx, []*nriapi.PodSandbox{pod}, []*nriapi.Container{c4, c5, c6})
-	noErr(t, err)
 	if c := n.record("c6"); c.Lifecycle != LifecycleStarted || c.Pid != 106 {
 		t.Fatalf("record %+v", c)
 	}

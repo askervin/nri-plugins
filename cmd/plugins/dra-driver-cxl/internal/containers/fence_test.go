@@ -222,15 +222,10 @@ func TestFencePass(t *testing.T) {
 	c5 := testCtr(p2, "c5", "flaky", 0)
 	c5.State = api.ContainerState_CONTAINER_CREATED
 	ctrs := []*api.Container{c1, c2, c3, c4, c5}
-	resync := func() {
-		t.Helper()
-		_, err := e.p.Synchronize(ctx, []*api.PodSandbox{p1, p2}, ctrs)
-		noErr(t, err)
-		e.passes()
-	}
-
 	// not ready before the lends are restored: Fence only records
-	resync()
+	_, err := e.p.Synchronize(ctx, []*api.PodSandbox{p1, p2}, ctrs)
+	noErr(t, err)
+	e.passes()
 	e.p.Fence(ctx, 3)
 	e.expectUpdates()
 	if got := e.p.Fenced().String(); got != "2-3" {
@@ -259,38 +254,22 @@ func TestFencePass(t *testing.T) {
 	e.p.Fence(ctx, 4)
 	e.expectUpdates()
 
-	// the runtime has the updates: nothing to do at a reconnect
-	for _, c := range []*api.Container{c1, c2, c3, c5} {
-		withSpecMems(c, "0-1")
-	}
-	resync()
-	e.expectUpdates()
-	// a reconnect after an update was lost does it again
-	withSpecMems(c2, "")
-	resync()
-	e.expectUpdates("c2 mems=0-1")
-
 	// an error of UpdateContainers fails all, the next pass repeats
-	withSpecMems(c1, "0-2")
 	e.setCgroupMems("kubepods/u1/c1", "0-2")
-	withSpecMems(c2, "0-2")
 	e.stub.setErr(errors.New("ttrpc closed"), false)
-	resync()
+	e.p.Repair(ctx)
 	e.expectUpdates()
 	e.stub.setErr(nil, false)
 	e.p.Fence(ctx, 5)
-	e.expectUpdates("c1 mems=0-1", "c2 mems=0-1")
+	e.expectUpdates("c1 mems=0-1")
 
 	// a running container whose cgroup has want but whose spec does not
-	// is updated (want differs from its spec): a later update of its resources would write the
-	// spec's cpuset.mems to the cgroup
-	withSpecMems(c1, "0-2")
-	withSpecMems(c2, "0-1")
-	e.setCgroupMems("kubepods/u1/c1", "0-1")
-	resync()
+	// is updated (want differs from its spec): a later update of its
+	// resources would write the spec's cpuset.mems to the cgroup
+	e.setSpecMems("c1", "0-2")
+	e.p.Repair(ctx)
 	e.expectUpdates("c1 mems=0-1")
-	withSpecMems(c1, "0-1")
-	resync()
+	e.p.Repair(ctx)
 	e.expectUpdates()
 
 	// a new container is fenced at creation, the pass leaves it be

@@ -368,7 +368,7 @@ func (p *Plugin) WaitSynchronized(ctx context.Context) error {
 }
 
 // OnContainerGone registers fn, called in its own goroutine for each
-// container that stops, is removed, or that Synchronize does not list.
+// container that stops or is removed.
 func (p *Plugin) OnContainerGone(fn func(pod state.PodRef, container string)) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

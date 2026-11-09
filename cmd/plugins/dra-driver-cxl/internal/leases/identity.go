@@ -45,7 +45,7 @@ type Containers interface {
 	// container that is gone is not an error. Idempotent.
 	RevokeNode(ctx context.Context, podUID, container string, node int, holder string) error
 	// OnContainerGone registers fn, called in a goroutine of its own for
-	// a container that stopped, was removed or is gone at a Synchronize.
+	// a container that stopped or was removed.
 	OnContainerGone(fn func(pod state.PodRef, container string))
 	// OnContainerStarted registers fn, called in a goroutine of its own
 	// once a container has started.

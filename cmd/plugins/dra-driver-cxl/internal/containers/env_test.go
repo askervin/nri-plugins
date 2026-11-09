@@ -515,6 +515,19 @@ func (e *env) specOf(id string) string {
 	return e.record(id).SpecMems
 }
 
+// setSpecMems sets the cpuset.mems of the spec of a container in its
+// record, as an update of the runtime that the plugin did not see.
+func (e *env) setSpecMems(id, mems string) {
+	e.t.Helper()
+	e.p.mu.Lock()
+	defer e.p.mu.Unlock()
+	c := e.p.ctrs[id]
+	if c == nil {
+		e.t.Fatalf("no record of %s", id)
+	}
+	c.SpecMems = mems
+}
+
 // newest returns a copy of the newest record of the container name of the
 // pod podUID, and false for none.
 func (e *env) newest(podUID, name string) (Container, bool) {

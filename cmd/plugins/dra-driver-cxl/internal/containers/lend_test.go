@@ -413,28 +413,6 @@ func TestLendSynchronize(t *testing.T) {
 	// A revoke without a re-lend still shrinks cpuset.mems.
 	noErr(t, e.p.RevokeNode(ctx, "u2", "app", 3, "l1"))
 	e.expectUpdates("c2 mems=0")
-
-	// A later Synchronize (reconnect) keeps lends and reports
-	// containers that vanished.
-	noErr(t, e.p.LendNode(ctx, "u1", "app", 5, "l1"))
-	e.expectUpdates("c1 mems=0-1,5")
-	_, err = e.p.Synchronize(ctx, []*api.PodSandbox{p1}, []*api.Container{c1})
-	noErr(t, err)
-	got := map[string]bool{}
-	for range 2 {
-		select {
-		case ev := <-e.gone:
-			got[ev.pod.UID+"/"+ev.name] = true
-		case <-time.After(5 * time.Second):
-			t.Fatal("missing gone callback")
-		}
-	}
-	if !got["u2/app"] || !got["u2/init"] {
-		t.Fatalf("gone after resync: %v", got)
-	}
-	if lent := e.p.LentNodes("u1", "app"); !reflect.DeepEqual(lent, []int{5}) {
-		t.Fatalf("lent after resync: %v", lent)
-	}
 }
 
 func TestLendConcurrent(t *testing.T) {

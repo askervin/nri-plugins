@@ -36,9 +36,9 @@ import (
 // A fence pass applies wantMems to the fenced containers of the table under
 // the update token, like a lend, so that lends and passes never compute from
 // stale sets. A pass runs when a node is fenced, when fencing of running
-// containers becomes ready (NRI synchronized and the lends restored) and at
-// every Synchronize after that, for one container at its PostStartContainer
-// (the repair pass), in the background but for Fence. A failed update is
+// containers becomes ready (NRI synchronized and the lends restored), for
+// one container at its PostStartContainer and periodically (the repair
+// passes), in the background but for Fence. A failed update is
 // tried again by the next pass.
 
 // Seed adds the nodes to the fenced nodes without a pass.
