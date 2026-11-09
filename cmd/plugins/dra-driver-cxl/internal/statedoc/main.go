@@ -23,10 +23,11 @@ import (
 func main() {
 	stateDir := flag.String("state", "internal/state", "the directory of the Go files of the state package")
 	containersDir := flag.String("containers", "internal/containers", "the directory of the Go files of the containers package")
+	engineDir := flag.String("engine", "internal/engine", "the directory of the Go files of the engine package")
 	kernelDir := flag.String("kernel", "../../../pkg/cxl/kernel", "the directory of the Go files of the kernel package")
 	out := flag.String("o", "../../../docs/memory/cxl/states.md", "the markdown file to write")
 	flag.Parse()
-	data, err := render(*stateDir, *containersDir, *kernelDir)
+	data, err := render(*stateDir, *containersDir, *engineDir, *kernelDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "statedoc: %v\n", err)
 		os.Exit(1)

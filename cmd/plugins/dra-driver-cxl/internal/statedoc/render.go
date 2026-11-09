@@ -27,6 +27,7 @@ import (
 	"strings"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/engine"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
@@ -41,9 +42,10 @@ type header struct {
 }
 
 // render returns docs/memory/cxl/states.md for the record types whose Go
-// files are in the directories stateDir and containersDir and the kernel
+// files are in the directories stateDir and containersDir, the release
+// policy of the engine whose Go files are in engineDir and the kernel
 // objects whose Go files are in the directory kernelDir.
-func render(stateDir, containersDir, kernelDir string) ([]byte, error) {
+func render(stateDir, containersDir, engineDir, kernelDir string) ([]byte, error) {
 	docs, triggers, err := parseState(stateDir)
 	if err != nil {
 		return nil, err
@@ -78,6 +80,9 @@ func render(stateDir, containersDir, kernelDir string) ([]byte, error) {
 	b.WriteString("need the kernel's view.\n\n")
 	for _, inv := range state.DocumentInvariants {
 		fmt.Fprintf(&b, "- **%s**: %s\n", inv.Name, escape(inv.Text))
+	}
+	if err := renderPolicy(&b, engineDir); err != nil {
+		return nil, err
 	}
 	b.WriteString("\n## Containers\n\n")
 	b.WriteString("The records of the NRI plugin of the driver (`internal/containers`), held in memory: Synchronize\n")
@@ -398,4 +403,122 @@ func capitalize(text string) string {
 // paragraph returns the lines of a paragraph joined into one.
 func paragraph(text string) string {
 	return strings.Join(strings.Fields(text), " ")
+}
+
+// renderPolicy writes the release policy of the engine (engine.Policy): a
+// row per kind of memdev, a column per release, with the doc comments of
+// the constants of the kinds, releases and decisions in engineDir.
+func renderPolicy(b *bytes.Buffer, engineDir string) error {
+	texts := map[string]map[string]string{}
+	for _, typ := range []string{"Kind", "Release", "Decision"} {
+		docs, err := constDocs(engineDir, typ)
+		if err != nil {
+			return err
+		}
+		texts[typ] = docs
+	}
+	b.WriteString("## Release policy\n\n")
+	b.WriteString("What the release of the last grant of a memdev does with the region of the memdev\n")
+	b.WriteString("(`engine.Policy`): a row per kind of memdev, a column per release. A cell with two decisions\n")
+	b.WriteString("has the second when regions of other memdevs lie above the region in the decoders of a port.\n\n")
+	b.WriteString("| kind |")
+	for _, r := range engine.PolicyReleases {
+		fmt.Fprintf(b, " %s |", r)
+	}
+	b.WriteString("\n|:-----|")
+	for range engine.PolicyReleases {
+		b.WriteString(":---|")
+	}
+	b.WriteString("\n")
+	for _, k := range engine.PolicyKinds {
+		fmt.Fprintf(b, "| %s |", k)
+		for _, r := range engine.PolicyReleases {
+			d, above := engine.Policy(r, k, nil), engine.Policy(r, k, []string{"above"})
+			if d == above {
+				fmt.Fprintf(b, " %s |", d)
+			} else {
+				fmt.Fprintf(b, " %s; %s |", d, above)
+			}
+		}
+		b.WriteString("\n")
+	}
+	for _, sec := range []struct {
+		title, typ string
+		values     []string
+	}{
+		{"Kinds", "Kind", stringsOf(engine.PolicyKinds)},
+		{"Releases", "Release", stringsOf(engine.PolicyReleases)},
+		{"Decisions", "Decision", stringsOf([]engine.Decision{engine.Destroy, engine.InOrder, engine.InOrderIdle, engine.Keep,
+			engine.KeepIdle})},
+	} {
+		fmt.Fprintf(b, "\n%s:\n\n", sec.title)
+		for _, v := range sec.values {
+			text, ok := texts[sec.typ][v]
+			if !ok {
+				return fmt.Errorf("%s: no doc comment of the %s %q", engineDir, sec.typ, v)
+			}
+			fmt.Fprintf(b, "- `%s`: %s\n", v, escape(text))
+		}
+	}
+	return nil
+}
+
+// stringsOf returns the values as strings.
+func stringsOf[S ~string](values []S) []string {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		out = append(out, string(v))
+	}
+	return out
+}
+
+// constDocs returns the doc comments of the string constants of the type
+// typ in the Go files of dir, by value, without the name of the constant.
+func constDocs(dir, typ string) (map[string]string, error) {
+	names, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	fset := token.NewFileSet()
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, parser.ParseComments)
+		if err != nil {
+			return nil, err
+		}
+		for _, d := range f.Decls {
+			gd, ok := d.(*ast.GenDecl)
+			if !ok || gd.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				s, ok := spec.(*ast.ValueSpec)
+				if !ok || s.Doc == nil || len(s.Values) != 1 {
+					continue
+				}
+				if id, ok := s.Type.(*ast.Ident); !ok || id.Name != typ {
+					continue
+				}
+				lit, ok := s.Values[0].(*ast.BasicLit)
+				if !ok {
+					continue
+				}
+				v, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					return nil, err
+				}
+				text := paragraph(s.Doc.Text())
+				if t, ok := strings.CutPrefix(text, s.Names[0].Name+" is "); ok {
+					text = t
+				} else {
+					text = strings.TrimPrefix(text, s.Names[0].Name+" ")
+				}
+				out[v] = capitalize(text)
+			}
+		}
+	}
+	return out, nil
 }

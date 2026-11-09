@@ -514,6 +514,52 @@ need the kernel's view.
 - **records**: Every record has a state of its table that a stored record may have, and a unique identity. Every region of ours is one Region record, referenced by every memdev in its Targets, and every region a memdev references is a record of ours that targets it; a FOREIGN region is owned by no one. Every grant belongs to one result of one preparation and is listed by the memdev of its serial (except the grants of a PREPARED_STALE preparation); what Got names lists the grant among its users, and every user of a dax device or a node mount names it back; a grant result names a grant record, but of a PREPARING or UNPREPARING preparation (not journaled yet, or released before the front-end's commit). A PREPARED preparation's grants are REALISED, a PREPARED_UNRESTORED one's REALISED or REALISED_UNRESTORED, and the lease claim of their lease results exists unless the claim's Unprepare runs (it closes the lease claim before the preparation turns UNPREPARING; the engine leaves this rule to the lease broker). A node mount is MOUNTED_RW iff a writer uses it. A lease lends only while READY, releasing or FAILED.
 - **users**: Between requests and after the recovery, every region of ours is OWNED, KEPT or HOLLOW_OWNED, and every dax device of a region of ours that is OWNED or KEPT and is not the seed has a user grant that is REALISED, REALISED_UNRESTORED or RELEASING, or is the Whole device of a KEPT region, of a memdev that is IDLE_KEPT, or of a region that a grant of a Prepare that did not finish names, or has as its user a grant of a Prepare that did not finish of a numa companion or of a KEPT preparation (kept for its Unprepare); the recovery deletes the others, those of a HOLLOW_OWNED region go with it.
 - **journaled**: Every object that the driver created lies inside a journaled container: a region of ours targets memdevs with a record; the region, bind target and lend of a grant's Got are named by its Intent; a node mount's path is the Intent of a user grant.
+## Release policy
+
+What the release of the last grant of a memdev does with the region of the memdev
+(`engine.Policy`): a row per kind of memdev, a column per release. A cell with two decisions
+has the second when regions of other memdevs lie above the region in the decoders of a port.
+
+| kind | unprepare | rollback | recovery | idle |
+|:-----|:---|:---|:---|:---|
+| local sliced | destroy | in order | in order | destroy |
+| local shared | keep idle | keep idle | keep idle | keep idle |
+| local shared, new region | keep idle | in order | in order | keep idle |
+| local unshared | destroy | in order | destroy | destroy |
+| local unshared, new region | destroy | in order | in order | destroy |
+| local persistent | in order, kept idle | in order | in order, kept idle | in order, kept idle |
+| local persistent, new region | in order, kept idle | in order | in order | in order, kept idle |
+| pool exclusive | destroy | destroy | destroy; keep | destroy |
+| pool shared | destroy | destroy | destroy; keep | destroy |
+| pool persistent | destroy | destroy | destroy; keep | destroy |
+
+Kinds:
+
+- `local sliced`: A local memdev whose grants have parts of it.
+- `local shared`: A local memdev configured shared whose region is established: set up and zeroed, or kept by an earlier release.
+- `local shared, new region`: A local memdev configured shared whose region a Prepare made and did not set up or zero (it failed or was cut).
+- `local unshared`: A local memdev used shared that is not configured shared any more, its region established.
+- `local unshared, new region`: A local memdev used shared that is not configured shared any more, its region new (as of a local shared memdev, new region).
+- `local persistent`: A local memdev of persistent memory whose region is established: set up, or kept by an earlier release.
+- `local persistent, new region`: A local memdev of persistent memory whose region a Prepare made and did not set up (it failed or was cut).
+- `pool exclusive`: A pool device of one grant.
+- `pool shared`: A pool device that several grants share.
+- `pool persistent`: A pool device of persistent memory.
+
+Releases:
+
+- `unprepare`: The Unprepare of the last grant of the memdev.
+- `rollback`: The rollback of a Prepare that failed.
+- `recovery`: The release of a Prepare that a process stop cut, at the start.
+- `idle`: The release of a region of the driver that no grant and no cut Prepare holds, at the start or at the next Prepare of the memdev.
+
+Decisions:
+
+- `destroy`: Releases the region, also below a newer region of another memdev (a hole left in the decoders of a port).
+- `in order`: Releases the region unless a newer region of another memdev lies above it in the decoders of a port, before or after its disable: then the region stays (disabled when the newer one came during the release) for the claim of a rollback or a recovery (KEPT), for the idle memdev of an Unprepare or an idle release.
+- `in order, kept idle`: Releases the region in order, and a region that stays is for the idle memdev also at a rollback or a recovery.
+- `keep`: Leaves the region as it is, for the claim of a rollback or a recovery (KEPT), for the idle memdev of an Unprepare or an idle release.
+- `keep idle`: Leaves the region as it is for the idle memdev, also at a rollback or a recovery.
 
 ## Containers
 

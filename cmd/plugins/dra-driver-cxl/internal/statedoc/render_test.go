@@ -28,6 +28,7 @@ import (
 const (
 	stateDir      = "../state"
 	containersDir = "../containers"
+	engineDir     = "../engine"
 	kernelDir     = "../../../../../pkg/cxl/kernel"
 	statesFile    = "../../../../../docs/memory/cxl/states.md"
 )
@@ -35,7 +36,7 @@ const (
 // TestStatesFileIsCurrent checks that docs/memory/cxl/states.md is what
 // go generate renders from the state package now.
 func TestStatesFileIsCurrent(t *testing.T) {
-	want, err := render(stateDir, containersDir, kernelDir)
+	want, err := render(stateDir, containersDir, engineDir, kernelDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,5 +138,27 @@ func TestEveryKernelObjectHasItsHeader(t *testing.T) {
 func TestEscape(t *testing.T) {
 	if got := escape("a | b * <uid>"); got != `a \| b \* &lt;uid>` {
 		t.Errorf("escape: %q", got)
+	}
+}
+
+// The release policy has a row per kind of memdev with the decisions of
+// engine.Policy, and every kind, release and decision has its text.
+func TestPolicyMatrix(t *testing.T) {
+	var b bytes.Buffer
+	if err := renderPolicy(&b, engineDir); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"| local sliced | destroy | in order | in order | destroy |",
+		"| local persistent | in order, kept idle | in order | in order, kept idle | in order, kept idle |",
+		"| pool exclusive | destroy | destroy | destroy; keep | destroy |",
+		"- `keep idle`: Leaves the region as it is for the idle memdev",
+	} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("no %q in\n%s", want, b.String())
+		}
+	}
+	if err := renderPolicy(&b, t.TempDir()); err == nil {
+		t.Error("a policy without the doc comments")
 	}
 }

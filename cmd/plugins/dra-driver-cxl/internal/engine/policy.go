@@ -53,7 +53,8 @@ const (
 	// configured shared any more, its region established.
 	KindLocalUnshared Kind = "local unshared"
 	// KindLocalUnsharedNew is a local memdev used shared that is not
-	// configured shared any more, its region new (KindLocalSharedNew).
+	// configured shared any more, its region new (as of a local shared
+	// memdev, new region).
 	KindLocalUnsharedNew Kind = "local unshared, new region"
 	// KindLocalPersistent is a local memdev of persistent memory whose
 	// region is established: set up, or kept by an earlier release.
@@ -83,8 +84,8 @@ const (
 	// during the release) for the claim of a rollback or a recovery
 	// (KEPT), for the idle memdev of an Unprepare or an idle release.
 	InOrder Decision = "in order"
-	// InOrderIdle is InOrder with a region that stays for the idle memdev
-	// also at a rollback or a recovery.
+	// InOrderIdle releases the region in order, and a region that stays
+	// is for the idle memdev also at a rollback or a recovery.
 	InOrderIdle Decision = "in order, kept idle"
 	// Keep leaves the region as it is, for the claim of a rollback or a
 	// recovery (KEPT), for the idle memdev of an Unprepare or an idle
@@ -127,6 +128,15 @@ var localPolicy = map[Kind]map[Release]Decision{
 	KindLocalPersistent:    byRelease(InOrderIdle, InOrder, InOrderIdle, InOrderIdle),
 	KindLocalPersistentNew: byRelease(InOrderIdle, InOrder, InOrder, InOrderIdle),
 }
+
+// PolicyKinds are the rows of the release policy, in the order of the
+// documentation.
+var PolicyKinds = []Kind{KindLocalParts, KindLocalShared, KindLocalSharedNew, KindLocalUnshared, KindLocalUnsharedNew,
+	KindLocalPersistent, KindLocalPersistentNew, KindPoolExclusive, KindPoolShared, KindPoolPersistent}
+
+// PolicyReleases are the columns of the release policy, in the order of
+// the documentation.
+var PolicyReleases = []Release{ReleaseUnprepare, ReleaseRollback, ReleaseRecovery, ReleaseIdle}
 
 // byRelease returns the decisions of a row of the release policy.
 func byRelease(unprepare, rollback, recovery, idle Decision) map[Release]Decision {
