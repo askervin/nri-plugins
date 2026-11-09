@@ -368,4 +368,8 @@ func TestLeaseOfADevice(t *testing.T) {
 	if v := leaseView(l); v.Source != "local" || !v.SharedDevice || v.Access != "direct" || v.Serial != "" {
 		t.Errorf("a lease without a device %+v", v)
 	}
+	l.Asked.SerialZero = true
+	if v := leaseView(l); v.Serial != "0x0" {
+		t.Errorf("a lease of serial 0 %+v", v)
+	}
 }

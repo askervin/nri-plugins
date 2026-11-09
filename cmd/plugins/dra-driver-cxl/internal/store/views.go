@@ -867,7 +867,7 @@ func leaseView(l *state.Lease) *viewLease {
 		NumaNode:     -1,
 		Created:      l.Created,
 	}
-	if l.Asked.Serial != 0 {
+	if l.Asked.AsksSerial() {
 		v.Serial = l.Asked.Serial.String()
 	}
 	if got := l.Got; got != nil {

@@ -396,26 +396,24 @@ States: NONE, CREATING, PENDING, LENDING, READY, RELEASING, RELEASING_BUSY, FAIL
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| NONE | CREATING | `a-request`: a request on a lease claim's socket: authenticated, validated, serial resolved | the lease claim OPEN | commit (d) before any API object exists |
+| NONE | CREATING | `a-request`: a request on a lease claim's socket: authenticated, validated, the serial resolved, the id chosen | an fs lease: its lease claim has FsDir and the name is unused | commit (d) before any API object exists; a failed commit refuses the request |
 | CREATING | PENDING | `a-request`: the companion claim and pod created | still CREATING (OnLending may have won) | commit (d) |
-| CREATING | FAILED | `a-request`: the companion creation failed (AlreadyExists, API error) | - | commit (d); then the release starts |
-| CREATING, PENDING | LENDING | `OnLending`: the companion gate passed (name, namespace, owner, state; the spec hash on this first Prepare) | - | commit (d) jointly with the Preparation PREPARING |
-| LENDING, READY | (unchanged) | `OnLending`: a retried or announced-again Prepare of the companion | - | no commit |
-| LENDING | READY | `OnPrepared`: the companion's Prepare hands over the lent devices | the mode matches | commit (d) jointly with the companion PREPARED; the waiting client gets the response (fd for dax and block) |
-| READY | (unchanged) | `OnPrepared`: the companion's Prepare announced again | - | no commit |
-| LENDING | (unchanged) | `a-prepare`: the companion's device preparation failed (kubelet retries) | - | no commit; the client waits until its --wait ends |
-| LENDING, READY | FAILED | `OnLendFailed`, `OnPrepared`: a bind or lend error; a wrong mode | - | commit (d); the release starts |
-| CREATING, PENDING, LENDING, READY, FAILED | FAILED | `OnReleasing`: the companion claim unprepared behind the broker (the companion pod deleted by someone) | - | commit (d); the reconcile releases it |
-| PENDING, LENDING | RELEASING | `a-request`: the request's --wait ended | - | the client gets Failed "timeout: not Ready after D"; commit (d) |
-| READY | RELEASING | `a-release`, `a-unprepare`, `a-reconcile`: a release by the client; the requester pod done; CloseClaim of the lease claim; the reconcile (companion gone) | - | commit (d) of ReleaseRequested; the node revoked; pod and claim deleted (Foreground); DeletionRequested (d) |
-| FAILED | (unchanged) | `a-release`, `a-reconcile`, `a-unprepare`: the release after the failure, the reconcile, or CloseClaim | - | released in place: commit (d) of ReleaseRequested; the node revoked; pod and claim deleted (Foreground); DeletionRequested (d); the lease stays FAILED so that a list shows why |
-| FAILED | NONE | `a-release`, `a-reconcile`: pod and claim both NotFound | - | commit (d) removing the lease |
-| READY | FAILED | `a-recover`: the companion's bind cannot be restored at a start: its Preparation is PREPARED_UNRESTORED | - | commit (d); the release starts; the requester's next list shows the lease Failed |
-| READY, RELEASING | RELEASING_BUSY | `a-unprepare`: the companion's unbind failed with EBUSY (a mapped file) | - | commit (d); the companion stays Terminating; reads work until the holder ends |
-| RELEASING_BUSY | RELEASING | `a-unprepare`, `a-reconcile`: the holder ended and the unbind succeeded | - | commit (d) |
-| RELEASING | NONE | `a-release`, `a-reconcile`: pod and claim both NotFound | - | commit (d) removing the lease; the lease claim's directories removed when CLOSED and no lease left |
-| RELEASING | (unchanged) | `a-recover`: the record at a start: ReleaseRequested set, the release is not running | - | the first reconcile starts the release again |
-| CREATING | RELEASING | `a-reconcile`: the record older than 2 min at a start (left over by a crash) | - | commit (d) |
+| CREATING, RELEASING | FAILED | `a-request`: the companion creation failed (AlreadyExists, API error); RELEASING: released meanwhile | - | the release starts, the lease stays FAILED; the client gets Failed with the error |
+| CREATING, PENDING | LENDING | `OnLending`: the companion gate passed: the name, the namespace and the owner of the claim | - | commit (d); the lend of the requester to the driver (with FsDir and the name of an fs lease) |
+| LENDING, READY | (unchanged) | `OnLending`: a retried or announced-again Prepare of the companion (also while kubelet retries a failed one) | - | no commit |
+| LENDING | READY | `OnPrepared`: the companion's Prepare hands over the lent devices | the mode of the device matches (fs and block) | commit (d) of Got and of the Lend (the NUMA node of numa, the bind target of fs); the waiting client gets the response (the fd of dax and block) |
+| READY | (unchanged) | `OnPrepared`: the companion's Prepare announced again (kubelet prepares a prepared claim again) | - | commit (d) of Got and the Lend again |
+| LENDING, READY | FAILED | `OnPrepared`: the companion prepared a device of another mode (fs or block against another) | - | commit (d); the release starts |
+| CREATING, PENDING, LENDING, READY | FAILED | `OnLendFailed`: a bind or lend error of the companion's Prepare | - | commit (d); the release starts |
+| CREATING, PENDING, LENDING, READY, FAILED | FAILED | `OnReleasing`: the companion claim unprepared behind the broker (the companion pod deleted or evicted) | - | commit (d); the reconcile releases it once the companion pod is gone |
+| CREATING, PENDING, LENDING, READY | RELEASING | `a-request`: the request's --wait ended (READY: the companion's Prepare made it READY meanwhile) | - | the client gets Failed "timeout: not Ready after D"; commit (d) of ReleaseRequested |
+| CREATING, PENDING, LENDING, READY | RELEASING | `a-release`, `a-unprepare`, `a-reconcile`: a release by the client; the requester gone; CloseClaim of the lease claim; the reconcile (companion gone, requester done, CREATING for longer than 2 min: left over by a crash) | - | commit (d) of ReleaseRequested; the node revoked; pod and claim deleted (Foreground); DeletionRequested (d) |
+| FAILED | (unchanged) | `a-request`, `a-release`, `a-unprepare`, `a-reconcile`, `OnPrepared`, `OnLendFailed`, `a-recover`: the release of a failed lease | - | released in place: commit (d) of ReleaseRequested; the node revoked; pod and claim deleted (Foreground); DeletionRequested (d); the lease stays FAILED so that a list shows why |
+| RELEASING, RELEASING_BUSY | (unchanged) | `a-release`, `a-unprepare`, `a-reconcile`: the release started again: a record of a start (ReleaseRequested set), its release not running | - | the release runs again |
+| RELEASING | RELEASING_BUSY | `a-release`: the companion's bind is STALE: its unbind failed with EBUSY (a file of it is mapped) | - | commit (d); the companion stays Terminating; reads work until the holder ends |
+| RELEASING_BUSY | RELEASING | `a-release`: the companion's bind is not STALE any more (the holder ended, the unbind succeeded), or it is gone | - | commit (d) |
+| RELEASING, FAILED | NONE | `a-release`: pod and claim both NotFound | - | commit (d) removing the lease; the lease claim's directories removed when it is closed and this was its last lease |
+| READY | FAILED | `a-recover`: the start did not restore the device of the companion: its Preparation is PREPARED_UNRESTORED | - | commit (d); the release starts; the requester's next list shows the lease Failed |
 | CREATING, PENDING, LENDING, READY, RELEASING, RELEASING_BUSY, FAILED | NONE | `load`: the document is of another boot | - | dropped; the companions deleted by the first reconcile |
 
 Refused:
@@ -435,7 +433,7 @@ LeaseClaim is a claim on the lease device, prepared by cxl.nri.io for a pod: its
 
 **Identity.** UID, the claim UID (also the socket directory and the CDI device name); Namespace and Name of the claim.
 
-**States.** LeaseClaimState. NONE: no record. OPEN: listening. OPEN_NO_LISTENER: listening again at a start failed; retried. CLOSING: CloseClaim releases every lease of the claim; new requests are refused; a start listens on it again. CLOSED: listener and connections closed, record removed. REMOVING: its directories are being removed (a bind still mounted keeps lease-fs/&lt;uid> until the last lease is gone).
+**States.** LeaseClaimState. NONE: no record. OPEN: listening. OPEN_NO_LISTENER: listening again at a start failed; the next OpenClaim listens. CLOSING: CloseClaim releases every lease of the claim (requests on the socket are still served); a start listens on it again. CLOSED: the listener closed, the record removed. REMOVING: its lease-fs directory is gone and its socket directory is being removed (a bind still mounted keeps lease-fs/&lt;uid>, and the claim CLOSED, until the last lease is gone). CLOSED and REMOVING are in memory only.
 
 **Transitions.** LeaseClaimTable below; a transition not in it is refused.
 
@@ -445,25 +443,25 @@ States: NONE, OPEN, OPEN_NO_LISTENER, CLOSING, CLOSED, REMOVING.
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| NONE | OPEN | `a-prepare`: a Prepare of a claim with a lease result (OpenClaim) | - | socket created in a private directory and renamed; CDI device lease-&lt;uid>; FsDir made; commit (d) jointly with the Preparation PREPARED |
-| OPEN | (unchanged) | `a-prepare`, `a-request`: OpenClaim again; Pods refreshed from reservedFor when a peer's pod is unknown | - | commit (l) |
-| OPEN | (unchanged) | `a-recover`: the start listens on the socket again | listen succeeded | - |
-| OPEN | OPEN_NO_LISTENER | `a-recover`: listening again at the start failed | - | logged; retried by the reconcile |
-| OPEN_NO_LISTENER | OPEN | `a-reconcile`, `a-recover`: a retry listens | - | - |
-| OPEN, OPEN_NO_LISTENER | CLOSING | `a-unprepare`: an Unprepare of the claim (CloseClaim) | - | every lease of the claim RELEASING; new requests on the socket refused; commit (d) |
-| CLOSING | OPEN | `a-recover`: the start listens on the socket of a claim whose close was cut | listen succeeded | commit (l); kubelet's Unprepare retry closes the claim again (requests on the socket are served until then, as on an OPEN claim) |
-| CLOSING | (unchanged) | `a-unprepare`: within 5 s not every lease has DeletionRequested | - | "still releasing N leases" to kubelet (retry) |
-| CLOSING | CLOSED | `a-unprepare`: every lease has DeletionRequested (not necessarily gone) | - | listener and open connections closed; CDI device removed; commit (d) removing the record |
-| CLOSED | REMOVING | `a-release`, `a-reconcile`, `a-recover`: the last lease of the claim gone | no bind mounted under its FsDir | directories removed |
-| REMOVING | NONE | `a-release`, `a-reconcile`, `a-recover`: directories removed | - | - |
+| NONE | OPEN | `a-prepare`: a Prepare of a claim with a lease result (OpenClaim) | - | commit (d), a failed one fails the Prepare; CDI device lease-&lt;uid>; FsDir made; the socket created in a private directory and renamed |
+| OPEN | (unchanged) | `a-prepare`, `a-request`: OpenClaim again; Pods refreshed from reservedFor when a peer's pod is unknown | - | commit (d) |
+| OPEN_NO_LISTENER, CLOSING | OPEN | `a-prepare`: OpenClaim of a claim whose socket did not start again, or whose close did not finish | - | commit (d); the socket started; a later Unprepare closes the claim |
+| OPEN, OPEN_NO_LISTENER | OPEN | `a-recover`: the start listens on the socket again | listen succeeded | - |
+| OPEN, OPEN_NO_LISTENER, CLOSING | OPEN_NO_LISTENER | `a-recover`: listening again at the start failed | - | logged; the socket starts at the next OpenClaim |
+| OPEN, OPEN_NO_LISTENER | CLOSING | `a-unprepare`: an Unprepare of the claim (CloseClaim) | - | commit (d); every lease of the claim released; requests on the socket are still served (the leases asked for meanwhile are released by the next CloseClaim) |
+| CLOSING | OPEN | `a-recover`: the start listens on the socket of a claim whose close a stop cut | listen succeeded | commit (d); kubelet's Unprepare retry closes the claim again (requests on the socket are served until then, as on an OPEN claim) |
+| CLOSING | (unchanged) | `a-unprepare`: the Unprepare retried: the leases of the claim released again | - | "still releasing N leases" to kubelet while not every lease has DeletionRequested within 5 s |
+| CLOSING | CLOSED | `a-unprepare`: every lease has DeletionRequested (not necessarily gone) | - | the listener closed (open connections keep serving); commit (d) removing the record; CDI device removed; the socket removed |
+| CLOSED | REMOVING | `a-unprepare`, `a-release`, `a-reconcile`, `a-recover`: the directories of a claim without a record are removed: by CloseClaim, by the release of its last lease, by the sweep of the reconcile and of the start | no bind mounted in its lease-fs directory, which is removed (else it stays CLOSED) | the entries of its socket directory removed by name, never following a symlink |
+| REMOVING | NONE | `a-unprepare`, `a-release`, `a-reconcile`, `a-recover`: the socket directory removed | - | - |
 
 Refused:
 
-- CLOSING -> OPEN except on a-recover: a closing claim is not opened again but by the start
+- CLOSING -> OPEN except on a-recover, a-prepare: a closing claim is opened again only by the start or by a Prepare of the claim
 
 **Invariants.** A lease claim in the store is OPEN, OPEN_NO_LISTENER or CLOSING; lease-fs/&lt;uid> and leases/&lt;uid> exist only for lease claims of prepared claims.
 
-**Persistence.** Fact; committed jointly with the Preparation PREPARED of the claim. Kept across reboots: kubelet prepares the claim again.
+**Persistence.** Fact; committed by OpenClaim before the Preparation PREPARED of the claim. Kept across reboots: kubelet prepares the claim again.
 
 **Locks and waits.** The broker's mutex; CloseClaim waits up to 5 s for the leases of the claim.
 

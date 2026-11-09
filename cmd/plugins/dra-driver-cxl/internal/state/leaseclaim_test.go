@@ -26,9 +26,13 @@ func TestLeaseClaimLifeCycle(t *testing.T) {
 	type st = step[LeaseClaimState]
 	walk(t, &LeaseClaimTable, "opened, listened again, closed after a cut close", LeaseClaimNone,
 		st{LeaseClaimOpen, TriggerPrepare}, st{LeaseClaimOpen, TriggerRequest}, st{LeaseClaimOpen, TriggerRecover},
-		st{LeaseClaimOpenNoListener, TriggerRecover}, st{LeaseClaimOpen, TriggerReconcile},
-		st{LeaseClaimClosing, TriggerUnprepare}, st{LeaseClaimOpen, TriggerRecover},
+		st{LeaseClaimOpenNoListener, TriggerRecover}, st{LeaseClaimOpenNoListener, TriggerRecover},
+		st{LeaseClaimOpen, TriggerRecover}, st{LeaseClaimOpenNoListener, TriggerRecover},
+		st{LeaseClaimOpen, TriggerPrepare}, st{LeaseClaimClosing, TriggerUnprepare}, st{LeaseClaimOpen, TriggerRecover},
 		st{LeaseClaimClosing, TriggerUnprepare}, st{LeaseClaimClosing, TriggerUnprepare},
 		st{LeaseClaimClosed, TriggerUnprepare}, st{LeaseClaimRemoving, TriggerRelease},
 		st{LeaseClaimNone, TriggerRelease})
+	walk(t, &LeaseClaimTable, "a close that timed out, opened again by a Prepare", LeaseClaimNone,
+		st{LeaseClaimOpen, TriggerPrepare}, st{LeaseClaimClosing, TriggerUnprepare}, st{LeaseClaimOpen, TriggerPrepare},
+		st{LeaseClaimClosing, TriggerUnprepare}, st{LeaseClaimOpenNoListener, TriggerRecover})
 }
