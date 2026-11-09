@@ -173,7 +173,7 @@ func (e *leaseEnv) waitStored(id string, cond func(l *state.Lease) bool) {
 }
 
 // A lease claim whose socket does not start at a start is OPEN_NO_LISTENER;
-// its Prepare again starts it.
+// its Prepare again or the reconcile starts it.
 func TestRelistenFails(t *testing.T) {
 	e := brokerEnv(t)
 	e.openClaim()
@@ -206,6 +206,20 @@ func TestRelistenFails(t *testing.T) {
 	e.boot()
 	if c := e.st.Snapshot().LeaseClaim(envLeaseClaim); c == nil || c.State != state.LeaseClaimOpenNoListener {
 		t.Fatalf("lease claim %+v", c)
+	}
+	// the reconcile listens again once it can (L-61)
+	e.b.reconcile()
+	if c := e.st.Snapshot().LeaseClaim(envLeaseClaim); c == nil || c.State != state.LeaseClaimOpenNoListener {
+		t.Fatalf("lease claim after a failed listen of the reconcile %+v", c)
+	}
+	mustOK(t, os.Remove(dir))
+	e.b.reconcile()
+	if c := e.st.Snapshot().LeaseClaim(envLeaseClaim); c == nil || c.State != state.LeaseClaimOpen {
+		t.Fatalf("lease claim after the reconcile %+v", c)
+	}
+	e.start()
+	if resp, _ := e.call(api.Request{Op: api.OpList}); resp.Error != "" {
+		t.Fatalf("list %+v", resp)
 	}
 }
 

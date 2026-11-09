@@ -433,7 +433,7 @@ LeaseClaim is a claim on the lease device, prepared by cxl.nri.io for a pod: its
 
 **Identity.** UID, the claim UID (also the socket directory and the CDI device name); Namespace and Name of the claim.
 
-**States.** LeaseClaimState. NONE: no record. OPEN: listening. OPEN_NO_LISTENER: listening again at a start failed; the next OpenClaim listens. CLOSING: CloseClaim releases every lease of the claim; a new lease request on the socket is refused; a start keeps it CLOSING. CLOSED: the listener and its connections closed, the record removed. REMOVING: its lease-fs directory is gone and its socket directory is being removed (a bind still mounted keeps lease-fs/&lt;uid>, and the claim CLOSED, until the last lease is gone). CLOSED and REMOVING are in memory only.
+**States.** LeaseClaimState. NONE: no record. OPEN: listening. OPEN_NO_LISTENER: listening again at a start failed; the reconcile and the next OpenClaim listen again. CLOSING: CloseClaim releases every lease of the claim; a new lease request on the socket is refused; a start keeps it CLOSING. CLOSED: the listener and its connections closed, the record removed. REMOVING: its lease-fs directory is gone and its socket directory is being removed (a bind still mounted keeps lease-fs/&lt;uid>, and the claim CLOSED, until the last lease is gone). CLOSED and REMOVING are in memory only.
 
 **Transitions.** LeaseClaimTable below; a transition not in it is refused.
 
@@ -447,6 +447,7 @@ States: NONE, OPEN, OPEN_NO_LISTENER, CLOSING, CLOSED, REMOVING.
 | OPEN | (unchanged) | `a-prepare`, `a-request`: OpenClaim again; Pods refreshed from reservedFor when a peer's pod is unknown | - | commit (d) |
 | OPEN_NO_LISTENER, CLOSING | OPEN | `a-prepare`: OpenClaim of a claim whose socket did not start again, or whose close did not finish | - | commit (d); the socket started; a later Unprepare closes the claim |
 | OPEN, OPEN_NO_LISTENER | OPEN | `a-recover`: the start listens on the socket again | listen succeeded | - |
+| OPEN_NO_LISTENER | OPEN | `a-reconcile`: the reconcile listens on the socket again | listen succeeded | commit (d) |
 | OPEN, OPEN_NO_LISTENER | OPEN_NO_LISTENER | `a-recover`: listening again at the start failed | - | logged; the socket starts at the next OpenClaim |
 | OPEN, OPEN_NO_LISTENER | CLOSING | `a-unprepare`: an Unprepare of the claim (CloseClaim) | - | commit (d); every lease of the claim released; a new lease request on the socket is refused, releases, lists and env are served |
 | CLOSING | (unchanged) | `a-recover`: the start of a claim whose close a stop cut | - | the socket listened again (a failed listen logged); new lease requests refused; kubelet's Unprepare retry closes the claim |

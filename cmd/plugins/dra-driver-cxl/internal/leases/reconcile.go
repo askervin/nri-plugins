@@ -99,6 +99,31 @@ func (b *Broker) reconcile() {
 	}
 	b.deleteOrphans()
 	b.sweepFsDirs(state.TriggerReconcile)
+	b.listenAgain()
+}
+
+// listenAgain listens again on the sockets of the lease claims that are
+// OPEN_NO_LISTENER (a listen at the start failed); a failure is logged and
+// tried again at the next reconcile.
+func (b *Broker) listenAgain() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	changed := false
+	for _, uid := range slices.Sorted(maps.Keys(b.claims)) {
+		lc := b.claims[uid]
+		if lc.State != state.LeaseClaimOpenNoListener {
+			continue
+		}
+		if err := b.listen(uid); err != nil {
+			klog.Warningf("lease broker: lease claim %s: listening again: %v", uid, err)
+			continue
+		}
+		klog.Infof("lease broker: lease claim %s/%s (%s): listening again", lc.Namespace, lc.Name, uid)
+		changed = applyClaim(lc, state.LeaseClaimOpen, state.TriggerReconcile) || changed
+	}
+	if changed {
+		b.saveLocked()
+	}
 }
 
 // companionGone reports whether a companion pod no longer holds its claim:

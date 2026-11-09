@@ -35,4 +35,6 @@ func TestLeaseClaimLifeCycle(t *testing.T) {
 	walk(t, &LeaseClaimTable, "a close that timed out, opened again by a Prepare", LeaseClaimNone,
 		st{LeaseClaimOpen, TriggerPrepare}, st{LeaseClaimClosing, TriggerUnprepare}, st{LeaseClaimOpen, TriggerPrepare},
 		st{LeaseClaimClosing, TriggerUnprepare}, st{LeaseClaimClosing, TriggerRecover}, st{LeaseClaimOpen, TriggerPrepare})
+	walk(t, &LeaseClaimTable, "a socket that did not start again, made by the reconcile", LeaseClaimNone,
+		st{LeaseClaimOpen, TriggerPrepare}, st{LeaseClaimOpenNoListener, TriggerRecover}, st{LeaseClaimOpen, TriggerReconcile})
 }

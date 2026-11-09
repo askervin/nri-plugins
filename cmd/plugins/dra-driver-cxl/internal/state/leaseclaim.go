@@ -24,8 +24,8 @@ package state
 // device name); Namespace and Name of the claim.
 //
 // States: LeaseClaimState. NONE: no record. OPEN: listening.
-// OPEN_NO_LISTENER: listening again at a start failed; the next OpenClaim
-// listens. CLOSING: CloseClaim releases every lease of the claim; a new
+// OPEN_NO_LISTENER: listening again at a start failed; the reconcile and
+// the next OpenClaim listen again. CLOSING: CloseClaim releases every lease of the claim; a new
 // lease request on the socket is refused; a start keeps it CLOSING.
 // CLOSED: the listener and its connections closed, the record removed.
 // REMOVING: its lease-fs directory is gone and its socket directory is
@@ -95,6 +95,12 @@ var LeaseClaimTable = Table[LeaseClaimState]{
 			From: list(LeaseClaimOpen, LeaseClaimOpenNoListener), To: LeaseClaimOpen, Triggers: list(TriggerRecover),
 			When:  "the start listens on the socket again",
 			Guard: "listen succeeded",
+		},
+		{
+			From: list(LeaseClaimOpenNoListener), To: LeaseClaimOpen, Triggers: list(TriggerReconcile),
+			When:    "the reconcile listens on the socket again",
+			Guard:   "listen succeeded",
+			Effects: "commit (d)",
 		},
 		{
 			From:     list(LeaseClaimOpen, LeaseClaimOpenNoListener),
