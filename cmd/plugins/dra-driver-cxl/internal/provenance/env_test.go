@@ -125,16 +125,6 @@ func (e *watchEnv) lose(content string) {
 	}
 }
 
-// commit makes the records of the store those of fn, durably, before a
-// restart: a hand-edited state.json.
-func (e *watchEnv) commit(fn func(doc *store.Document)) {
-	e.t.Helper()
-	noErr(e.t, e.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
-		fn(doc)
-		return nil
-	}))
-}
-
 func (e *watchEnv) now() time.Time {
 	e.mu.Lock()
 	defer e.mu.Unlock()

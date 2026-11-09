@@ -143,7 +143,8 @@ func newEntry(serial uint64) *entry {
 	return &entry{rec: state.Provenance{Serial: state.Serial(serial), State: state.ProvenanceUnknown}}
 }
 
-// load loads the POOL and LOCAL records and the listed pools of the store.
+// load loads the POOL, LOCAL and HELD records and the listed pools of the
+// store: a hold goes on from its HeldSince.
 // The records of a LOST store are lost: lost is set, which holds new
 // memdevs for MissingWindow.
 func (w *Watcher) load() {
@@ -159,17 +160,32 @@ func (w *Watcher) load() {
 	}
 	doc := st.Snapshot()
 	for _, p := range doc.Provenance {
-		if p.State != state.ProvenancePool && p.State != state.ProvenanceLocal {
+		switch p.State {
+		case state.ProvenancePool, state.ProvenanceLocal:
+			w.entries[uint64(p.Serial)] = &entry{rec: state.Provenance{Serial: p.Serial, State: p.State, Pool: p.Pool, LastSeen: p.LastSeen}}
+		case state.ProvenanceHeld:
+			w.entries[uint64(p.Serial)] = &entry{rec: state.Provenance{Serial: p.Serial, State: p.State, HeldSince: p.HeldSince,
+				HeldReason: p.HeldReason}}
+		default:
 			klog.Warningf("pool serials: %s: skipping the record of serial %s in state %s", w.opts.Name, p.Serial, p.State)
-			continue
 		}
-		w.entries[uint64(p.Serial)] = &entry{rec: state.Provenance{Serial: p.Serial, State: p.State, Pool: p.Pool, LastSeen: p.LastSeen}}
 	}
 	for _, lp := range doc.ListedPools {
 		w.pools[lp.Pool] = lp.Listed
 	}
+	recorded, held := 0, 0
+	for _, e := range w.entries {
+		if e.held() {
+			held++
+		} else {
+			recorded++
+		}
+	}
 	klog.Infof("pool serials: loaded %d serials (%d pool serials) and %d pools from %s",
-		len(w.entries), len(w.poolSerialsLocked()), len(w.pools), w.opts.Name)
+		recorded, len(w.poolSerialsLocked()), len(w.pools), w.opts.Name)
+	if held > 0 {
+		klog.Infof("pool serials: %d memdevs held back before the restart stay held", held)
+	}
 }
 
 // forget removes the records of the serials, as the operator orders with
@@ -209,8 +225,12 @@ func (w *Watcher) saveLocked(changed bool, now time.Time) {
 	}
 	var recs []state.Provenance
 	for _, s := range slices.Sorted(maps.Keys(w.entries)) {
-		if e := w.entries[s]; e.recorded() {
+		switch e := w.entries[s]; {
+		case e.recorded():
 			recs = append(recs, state.Provenance{Serial: e.rec.Serial, State: e.rec.State, Pool: e.rec.Pool, LastSeen: e.rec.LastSeen})
+		case e.held():
+			recs = append(recs, state.Provenance{Serial: e.rec.Serial, State: e.rec.State, HeldSince: e.rec.HeldSince,
+				HeldReason: e.rec.HeldReason})
 		}
 	}
 	var pools []state.ListedPool
@@ -397,6 +417,7 @@ func (w *Watcher) Gate(ctx context.Context, devs *nricxl.Devices, poolSerials ma
 	for _, s := range slices.Sorted(maps.Keys(w.entries)) {
 		if e := w.entries[s]; e.held() && !present[s] && e.apply(state.ProvenanceUnknown, triggerObserve) {
 			delete(w.entries, s)
+			changed = true
 		}
 	}
 	w.saveLocked(changed, g.now)
@@ -459,8 +480,8 @@ func (w *Watcher) observeNewLocked(m *nricxl.MemoryDevice, e *entry, g *gateScan
 		}
 		return false, false, w.noteLocalLocked(m, g.now, triggerObserve)
 	}
-	if w.hold(m, e, why, hold, expires, g.now) {
-		return false, true, false
+	if stays, changed := w.hold(m, e, why, hold, expires, g.now); stays {
+		return false, true, changed
 	}
 	klog.Warningf("pool serials: publishing memdev %s (serial 0x%x) as a local memory device after holding it back for %v (%s)",
 		m.Name, m.Serial, HoldBack, why)
@@ -489,11 +510,13 @@ func (w *Watcher) evidence(ctx context.Context, devs *nricxl.Devices, poolSerial
 }
 
 // hold holds the new memdev m (its entry e, nil for none) for the reason
-// why (hold), and tells whether it stays HELD: a reason that does not
-// expire holds it, one that expires holds it for HoldBack from the first
-// hold. Called with w.mu held.
-func (w *Watcher) hold(m *nricxl.MemoryDevice, e *entry, why string, hold state.HeldReason, expires bool, now time.Time) bool {
+// why (hold), and tells whether it stays HELD and whether its record
+// changed (a new hold, another reason): a reason that does not expire
+// holds it, one that expires holds it for HoldBack from the first hold.
+// Called with w.mu held.
+func (w *Watcher) hold(m *nricxl.MemoryDevice, e *entry, why string, hold state.HeldReason, expires bool, now time.Time) (bool, bool) {
 	s := m.Serial
+	changed := e == nil || e.rec.HeldReason != hold
 	if e == nil {
 		klog.Warningf("pool serials: holding back new memdev %s (serial 0x%x): it may be a pool device: %s", m.Name, s, why)
 		e = newEntry(s)
@@ -508,7 +531,7 @@ func (w *Watcher) hold(m *nricxl.MemoryDevice, e *entry, why string, hold state.
 		}
 	}
 	e.rec.HeldReason = hold
-	return !expires || now.Sub(e.rec.HeldSince) < HoldBack
+	return !expires || now.Sub(e.rec.HeldSince) < HoldBack, changed
 }
 
 // noteLocalLocked makes the memdev m seen now LOCAL on the trigger (a new

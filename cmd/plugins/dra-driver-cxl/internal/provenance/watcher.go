@@ -51,8 +51,8 @@ import (
 // Invariants: a serial that a pool ResourceSlice lists is POOL; a POOL
 // serial never turns LOCAL; a HELD memdev is not published.
 //
-// Persistence: the POOL and LOCAL records and the listed pools in the
-// store; the hold of a memdev and the absence timers in memory.
+// Persistence: the POOL, LOCAL and HELD records and the listed pools in
+// the store; the absence timers in memory.
 //
 // Locks and waits: mu guards the records and the timers, never held across
 // a list of the API server (bounded by apiTimeout).

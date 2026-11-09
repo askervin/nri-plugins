@@ -36,9 +36,11 @@ import (
 // POOL or HELD.
 //
 // Persistence: fact; the records of POOL and LOCAL serials with Pool and
-// LastSeen (committed at most hourly when only LastSeen changed), kept across
-// reboots. HELD, LastObserved, HeldSince and HeldReason are kept in memory
-// only: a restart observes anew.
+// LastSeen (committed at most hourly when only LastSeen changed), and of
+// HELD serials with HeldSince and HeldReason (committed when the hold starts
+// or its reason changes), kept across restarts and reboots: a hold goes on
+// from its HeldSince. LastObserved and the absence of a serial are kept in
+// memory only: a restart observes them anew.
 //
 // Locks and waits: the provenance watcher is the only writer.
 type Provenance struct {
@@ -105,7 +107,7 @@ var ProvenanceTable = Table[ProvenanceState]{
 			When: "a new memdev appears with a reason for doubt: pool ResourceSlices never listed; a pool claim of " +
 				"the node attaching; a remembered pool's ResourceSlices missing for less than 1 h; the list fails; " +
 				"the record was lost",
-			Effects: "HeldSince and HeldReason kept in memory, not committed; not published",
+			Effects: "commit (l) with HeldSince and HeldReason; not published",
 		},
 		{
 			From: list(ProvenanceUnknown), To: ProvenanceLocal, Triggers: list(TriggerObserve),
@@ -115,7 +117,7 @@ var ProvenanceTable = Table[ProvenanceState]{
 		{
 			From: list(ProvenanceHeld), Stays: true, Triggers: list(TriggerObserve, TriggerList),
 			When:    "the reason refreshed by a later observation",
-			Effects: "the reason refreshed in memory, not committed",
+			Effects: "commit (l) when the reason changed",
 		},
 		{
 			From: list(ProvenanceHeld), To: ProvenanceLocal, Triggers: list(TriggerExpire),
@@ -133,7 +135,7 @@ var ProvenanceTable = Table[ProvenanceState]{
 		{
 			From: list(ProvenanceHeld), To: ProvenanceUnknown, Triggers: list(TriggerObserve),
 			When:    "the memdev is gone before its hold ended",
-			Effects: "the hold forgotten",
+			Effects: "commit (l) removing the record",
 		},
 		{
 			From: list(ProvenanceHeld), To: ProvenancePool, Triggers: list(TriggerList, TriggerPrepare),

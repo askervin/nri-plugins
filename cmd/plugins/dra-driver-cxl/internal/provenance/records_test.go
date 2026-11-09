@@ -32,8 +32,9 @@ import (
 )
 
 // TestRecordsCommitted pins what the store keeps: the POOL and LOCAL
-// serials with Serial, State, Pool and LastSeen only, and the listed pools;
-// a HELD memdev never. A new POOL serial is committed durably.
+// serials with Serial, State, Pool and LastSeen only, the HELD ones with
+// HeldSince and HeldReason, and the listed pools. A new POOL serial is
+// committed durably.
 func TestRecordsCommitted(t *testing.T) {
 	e := newWatchEnv(t)
 	t0 := e.now()
@@ -45,10 +46,12 @@ func TestRecordsCommitted(t *testing.T) {
 	e.advance(time.Minute)
 	e.plug(otherLocalSerial)
 	e.wantHeld("pool-c missing", otherLocalSerial)
-	// the second scan changed LastSeen only: not committed yet
+	// the second scan held a memdev and changed LastSeen: the hold is
+	// committed with the LastSeen of then
 	recs, pools := e.records()
 	want := []state.Provenance{
-		{Serial: localSerial, State: state.ProvenanceLocal, LastSeen: t0},
+		{Serial: otherLocalSerial, State: state.ProvenanceHeld, HeldSince: t0.Add(time.Minute), HeldReason: state.HeldPoolMissing},
+		{Serial: localSerial, State: state.ProvenanceLocal, LastSeen: t0.Add(time.Minute)},
 		{Serial: 0xc1ee2001, State: state.ProvenancePool, Pool: poolC, LastSeen: t0},
 	}
 	if !reflect.DeepEqual(recs, want) {
@@ -66,7 +69,7 @@ func TestRecordsCommitted(t *testing.T) {
 	noErr(t, json.Unmarshal(data, &doc))
 	for _, r := range doc["provenance"].([]any) {
 		for k := range r.(map[string]any) {
-			if !slices.Contains([]string{"serial", "state", "pool", "lastSeen"}, k) {
+			if !slices.Contains([]string{"serial", "state", "pool", "lastSeen", "heldSince", "heldReason"}, k) {
 				t.Errorf("record field %s committed: %s", k, data)
 			}
 		}
@@ -153,27 +156,27 @@ func TestRecordsLoaded(t *testing.T) {
 	}
 }
 
-// TestLoadSkipsHeldRecord pins that a record in a state that the watcher
-// does not keep (HELD, in a hand-edited state.json) is skipped with a
-// warning, and the others are loaded.
-func TestLoadSkipsHeldRecord(t *testing.T) {
+// TestLoadHeldRecord pins that a HELD record is loaded (L-19): the hold
+// goes on from its HeldSince, so a memdev held before a restart is
+// published HoldBack after its first hold, not after the restart.
+func TestLoadHeldRecord(t *testing.T) {
 	logs := captureKlog(t)
 	e := newWatchEnv(t)
-	seen := time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)
-	e.commit(func(doc *store.Document) {
-		doc.Provenance = []state.Provenance{
-			{Serial: otherLocalSerial, State: state.ProvenanceHeld},
-			{Serial: sharedPoolSerial, State: state.ProvenancePool, LastSeen: seen},
-		}
-	})
+	e.publish("0xc1ee2001")
+	e.plug(localSerial)
+	e.wantHeld("local memdev")
+	e.publish()
+	e.advance(time.Minute)
+	e.plug(otherLocalSerial)
+	e.wantHeld("pool-c missing", otherLocalSerial)
+	e.advance(HoldBack - time.Minute)
 	e.restart()
-	out := logs()
-	wantLogLine(t, out, fmt.Sprintf("pool serials: %s: skipping the record of serial 0xa1 in state HELD", e.name()))
-	wantLogLine(t, out, fmt.Sprintf("pool serials: loaded 1 serials (1 pool serials) and 0 pools from %s", e.name()))
-	e.wantState(otherLocalSerial, state.ProvenanceUnknown)
-	e.wantState(sharedPoolSerial, state.ProvenancePool)
-	e.plug(sharedPoolSerial)
-	e.wantHeld("pool serial of the store")
+	wantLogLine(t, logs(), "pool serials: 1 memdevs held back before the restart stay held")
+	e.wantState(otherLocalSerial, state.ProvenanceHeld)
+	e.wantHeld("held before the restart", otherLocalSerial)
+	e.advance(2 * time.Minute)
+	e.wantHeld("hold expired")
+	e.wantState(otherLocalSerial, state.ProvenanceLocal)
 }
 
 // TestLostStore pins the records of a LOST store: the error with the lost
