@@ -64,6 +64,7 @@ type Watcher struct {
 	listed   map[string]bool // the pools with serials in the last successful list
 	known    bool            // a list succeeded
 	failing  bool            // the last list failed
+	listErr  error           // the error of the last list that failed
 	lastList time.Time       // of the last successful list
 	// prepared has the serials that the pool driver prepared at the last
 	// scan (NotePrepared).
@@ -190,7 +191,7 @@ func (w *Watcher) Serials(ctx context.Context) (map[uint64]bool, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if err != nil {
-		w.failing = true
+		w.failing, w.listErr = true, err
 		if w.known {
 			klog.Warningf("listing the ResourceSlices of pool controllers: %v; using the serials of the last list", err)
 		} else {
@@ -289,8 +290,8 @@ func (w *Watcher) NotePrepared(serials map[uint64]bool) {
 
 // CheckLocal returns an error if the memdev with the serial must not be
 // used as a local memory device: it is a remembered pool serial, in a
-// current pool slice (listed now; the serials of the last list if that
-// fails) or held.
+// current pool ResourceSlice (listed now; the serials of the last list if
+// that fails), held, or the list fails.
 func (w *Watcher) CheckLocal(ctx context.Context, serial uint64) error {
 	if w == nil {
 		return nil
@@ -307,6 +308,10 @@ func (w *Watcher) CheckLocal(ctx context.Context, serial uint64) error {
 	}
 	if e := w.entries[serial]; e != nil && e.held() {
 		return fmt.Errorf("memory device serial 0x%x is held back as a possible pool device: it is not used as a local memory device yet", serial)
+	}
+	if w.failing {
+		return fmt.Errorf("the ResourceSlices of pool controllers cannot be listed (%v): memory device serial 0x%x is not used as a local memory device until a list succeeds",
+			w.listErr, serial)
 	}
 	return nil
 }

@@ -491,3 +491,26 @@ func TestWatch(t *testing.T) {
 	mu.Unlock()
 	watch("not scanned for Poll", true)
 }
+
+// TestCheckLocalListFails pins that a failed list of the pool
+// ResourceSlices refuses a new local grant (L-56, fail closed) until a list
+// succeeds again.
+func TestCheckLocalListFails(t *testing.T) {
+	e := newWatchEnv(t)
+	ctx := t.Context()
+	e.publish("0xc1ee2001")
+	e.plug(localSerial)
+	e.wantHeld("local")
+	var fail atomic.Bool
+	e.client.PrependReactor("list", "resourceslices", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if fail.Load() {
+			return true, nil, errors.New("apiserver unavailable")
+		}
+		return false, nil, nil
+	})
+	fail.Store(true)
+	wantErr(t, e.w.CheckLocal(ctx, localSerial), "the ResourceSlices of pool controllers cannot be listed (apiserver unavailable): "+
+		"memory device serial 0xc100e2e1 is not used as a local memory device until a list succeeds")
+	fail.Store(false)
+	noErr(t, e.w.CheckLocal(ctx, localSerial))
+}
