@@ -1345,3 +1345,36 @@ func TestReconcileReleasesFailedLease(t *testing.T) {
 	e.waitState(r.Lease, state.LeaseNone)
 	e.wantGone(CompanionName(r.Lease))
 }
+
+// The identity of every request on a connection is evaluated again (L-16):
+// a peer that is now in another pod is refused; a peer in no known
+// container (its process exited) keeps the identity of the connection.
+func TestIdentityPerRequest(t *testing.T) {
+	e := brokerEnv(t)
+	e.openClaim()
+	e.start()
+	c, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: e.sock(), Net: "unix"})
+	mustOK(t, err)
+	defer func() { _ = c.Close() }()
+	r := bufio.NewReader(c)
+	list := func() string {
+		t.Helper()
+		_, err := c.Write([]byte(`{"op":"list"}` + "\n"))
+		mustOK(t, err)
+		mustOK(t, c.SetReadDeadline(time.Now().Add(5*time.Second)))
+		line, err := r.ReadString('\n')
+		mustOK(t, err)
+		return line
+	}
+	if line := list(); !strings.Contains(line, `"leases":[]`) {
+		t.Fatalf("first request %q", line)
+	}
+	e.ctrs.setPeer(&Requester{Pod: state.PodRef{Namespace: envNS, Name: "intruder", UID: "other-pod"}, Container: "x"})
+	if line := list(); !strings.Contains(line, "is in demo/intruder/x") {
+		t.Fatalf("a peer in another pod %q", line)
+	}
+	e.ctrs.setPeer(nil)
+	if line := list(); !strings.Contains(line, `"leases":[]`) {
+		t.Fatalf("a peer that exited %q", line)
+	}
+}

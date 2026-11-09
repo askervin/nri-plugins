@@ -71,11 +71,20 @@ func (b *Broker) serveConn(claimUID string, c *net.UnixConn) {
 	if authErr != nil {
 		klog.Warningf("lease broker: claim %s: rejected connection: %v", claimUID, authErr)
 	}
+	connected, known := who, authErr == nil
 	r := bufio.NewReaderSize(c, 4096)
-	for {
+	for first := true; ; first = false {
 		line, err := readLine(r)
 		if err != nil {
 			return
+		}
+		if !first {
+			// the identity of every request is that of its peer now; the
+			// identity of the connection when the peer has exited
+			who, authErr = b.authenticate(claimUID, c)
+			if pe := (*peerGoneError)(nil); known && errors.As(authErr, &pe) {
+				who, authErr = connected, nil
+			}
 		}
 		var resp *api.Response
 		var fd leaseFd
@@ -218,7 +227,7 @@ func (b *Broker) authenticate(claimUID string, c *net.UnixConn) (Requester, erro
 	who, err := identity.Resolve(pid)
 	switch {
 	case errors.Is(err, ErrUnknownPeer):
-		return Requester{}, fmt.Errorf("%w (pid %d is in no known container)", errNotOurPod, pid)
+		return Requester{}, &peerGoneError{fmt.Errorf("%w (pid %d is in no known container)", errNotOurPod, pid)}
 	case err != nil:
 		return Requester{}, fmt.Errorf("%w (pid %d: %v)", errNotOurPod, pid, err)
 	}
@@ -227,6 +236,13 @@ func (b *Broker) authenticate(claimUID string, c *net.UnixConn) (Requester, erro
 	}
 	return who, nil
 }
+
+// peerGoneError is the refusal of a peer whose process is in no known
+// container: it has exited, or it is not in a container of the node.
+type peerGoneError struct{ err error }
+
+func (e *peerGoneError) Error() string { return e.err.Error() }
+func (e *peerGoneError) Unwrap() error { return e.err }
 
 // refreshClaimPods reads the reservedFor of a lease claim again (a claim
 // shared by several pods is prepared only once) and reports whether the
