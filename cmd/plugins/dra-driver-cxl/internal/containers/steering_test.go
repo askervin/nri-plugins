@@ -341,7 +341,7 @@ func fmtOrigin(o store.Origin) string {
 // steering) that do not steer it: the Steered record names it.
 func TestReviewReleaseAfterDefaultsChange(t *testing.T) {
 	old := newDecider(t, config.Container{Steering: &config.Steering{Policy: config.PolicyAuto}})
-	d, err := old.decide("x", old.results("x", []resultRef{{uid: "split", n: 0}, {uid: "split", n: 2}}), false)
+	d, err := old.decide("x", old.results(testPod("p"), "x", []resultRef{{uid: "split", n: 0}, {uid: "split", n: 2}}), false)
 	noErr(t, err)
 	if d.management != ManagementSteered {
 		t.Fatalf("precondition: old defaults do not steer: %s", d.management)

@@ -255,7 +255,10 @@ Every Prepare of either driver goes the same way:
 Then kubelet creates the containers. The CDI device of every result has
 a marker variable; at CreateContainer the NRI plugin finds the results
 of the container by their markers and sets its `cpuset.mems` or starts
-its steering.
+its steering. A marker of a claim of another namespace, or of a lease
+claim whose recorded `reservedFor` does not have the pod, is ignored with
+a warning: a container cannot take the memory of another pod's claim by
+setting the variable itself.
 
 A Prepare that fails rolls back: it releases what its grants made, with
 the release policy of a rollback. A region that it cannot release

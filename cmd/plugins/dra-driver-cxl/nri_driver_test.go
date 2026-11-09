@@ -186,9 +186,10 @@ func TestShutdownStopsNRIFirst(t *testing.T) {
 	}
 }
 
-// createdContainer returns the record of a container demo/pod/ctr whose
-// env has the markers of the results of the claim uid, as an NRI plugin
-// with the prepared claims local and pool creates it, and the error of its
+// createdContainer returns the record of a container <namespace>/pod/ctr
+// (the namespace of the claim, demo without a preparation) whose env has
+// the markers of the results of the claim uid, as an NRI plugin with the
+// prepared claims local and pool creates it, and the error of its
 // creation.
 func createdContainer(t *testing.T, st *store.Store, local containers.LocalResults, pool containers.PoolResults, uid string, results ...int) (containers.Container, error) {
 	t.Helper()
@@ -196,6 +197,11 @@ func createdContainer(t *testing.T, st *store.Store, local containers.LocalResul
 	noErr(t, err)
 	p.SetResults(local, pool)
 	pod := &nriapi.PodSandbox{Id: "sb", Uid: "pod-uid", Namespace: "demo", Name: "pod"}
+	for _, prep := range st.Snapshot().Preparations {
+		if prep.UID == uid {
+			pod.Namespace, _, _ = strings.Cut(prep.ClaimName, "/")
+		}
+	}
 	ctr := &nriapi.Container{Id: "ctr-id", PodSandboxId: "sb", Name: "ctr"}
 	for _, n := range results {
 		ctr.Env = append(ctr.Env, resultEnvVarName(uid, n)+"=1")

@@ -17,11 +17,14 @@ package containers
 import (
 	"fmt"
 	"slices"
+	"strings"
 
+	"github.com/containerd/nri/pkg/api"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/cpuset"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
 	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
@@ -105,10 +108,15 @@ func extractResults(env []string) []resultRef {
 }
 
 // results returns the prepared allocation results of both drivers that refs
-// refer to; results that are not prepared are left out.
-func (p *Plugin) results(ctrName string, refs []resultRef) []result {
+// refer to; results that are not prepared, and those of claims that are not
+// the pod's (foreignClaim), are left out.
+func (p *Plugin) results(pod *api.PodSandbox, ctrName string, refs []resultRef) []result {
 	var out []result
 	for _, ref := range refs {
+		if why := p.foreignClaim(pod, ref.uid); why != "" {
+			klog.Warningf("NRI CreateContainer: ctr=%s: ignoring the marker of claim %s: %s", ctrName, ref.uid, why)
+			continue
+		}
 		if r, ok := p.localResult(ctrName, ref); ok {
 			out = append(out, r)
 			continue
@@ -120,6 +128,30 @@ func (p *Plugin) results(ctrName string, refs []resultRef) []result {
 		klog.V(5).Infof("NRI CreateContainer: ctr=%s claim=%s result %d: not prepared (driver may have restarted)", ctrName, ref.uid, ref.n)
 	}
 	return out
+}
+
+// foreignClaim tells why the claim uid of a marker in the environment of a
+// container of the pod is not the pod's, "" when it may be: a preparation
+// of the claim in another namespace, or a pod that is not in the
+// reservedFor that its lease claim recorded.
+func (p *Plugin) foreignClaim(pod *api.PodSandbox, uid string) string {
+	if p.opts.Store == nil {
+		return ""
+	}
+	doc := p.opts.Store.Snapshot()
+	for i := range doc.Preparations {
+		prep := &doc.Preparations[i]
+		if ns, _, _ := strings.Cut(prep.ClaimName, "/"); prep.UID == uid && ns != pod.GetNamespace() {
+			return fmt.Sprintf("the claim %s is not of namespace %s", prep.ClaimName, pod.GetNamespace())
+		}
+	}
+	for i := range doc.LeaseClaims {
+		lc := &doc.LeaseClaims[i]
+		if lc.UID == uid && len(lc.Pods) > 0 && !slices.ContainsFunc(lc.Pods, func(r state.PodRef) bool { return r.UID == pod.GetUid() }) {
+			return fmt.Sprintf("pod %s/%s is not in the reservedFor of the claim %s/%s", pod.GetNamespace(), pod.GetName(), lc.Namespace, lc.Name)
+		}
+	}
+	return ""
 }
 
 // localResult returns the prepared result ref of cxl.nri.io, and false if

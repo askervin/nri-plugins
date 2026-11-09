@@ -25,6 +25,8 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
 	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
@@ -177,7 +179,7 @@ func TestContainerResults(t *testing.T) {
 		// unknown claims and results
 		{[]resultRef{{"split", 7}, {"gone", 0}, {"pool", 2}}, cgmpolmgr.MemoryTypes{}, ""},
 	} {
-		results := p.results("ns/pod/ctr", tc.refs)
+		results := p.results(testPod("p"), "ns/pod/ctr", tc.refs)
 		if mem := steeredMemory(results); fmt.Sprint(mem) != fmt.Sprint(tc.mem) {
 			t.Errorf("%v: memory %+v, expected %+v", tc.refs, mem, tc.mem)
 		}
@@ -187,8 +189,44 @@ func TestContainerResults(t *testing.T) {
 	}
 	// without the drivers
 	none := &Plugin{}
-	if got := none.results("ns/pod/ctr", []resultRef{{"split", 0}}); got != nil {
+	if got := none.results(testPod("p"), "ns/pod/ctr", []resultRef{{"split", 0}}); got != nil {
 		t.Fatalf("results %+v", got)
+	}
+}
+
+// The marker of a claim of another namespace, or of a lease claim whose
+// recorded reservedFor does not have the pod, is not the container's: its
+// results are left out.
+func TestForeignClaimMarker(t *testing.T) {
+	e := newEnvWith(t, envOptions{})
+	e.local.set(nriClaims())
+	e.setPool(nriPoolResults())
+	noErr(t, e.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
+		doc.Preparations = append(doc.Preparations,
+			state.Preparation{UID: "split", Driver: device.DriverName, ClaimName: "other/split", State: state.PreparationPrepared},
+			state.Preparation{UID: "lease", Driver: device.DriverName, ClaimName: "ns/lease", State: state.PreparationPrepared})
+		doc.LeaseClaims = append(doc.LeaseClaims, state.LeaseClaim{UID: "lease", Namespace: "ns", Name: "lease",
+			Pods: []state.PodRef{{Namespace: "ns", Name: "pod-q", UID: "q"}}, State: state.LeaseClaimOpen})
+		return nil
+	}))
+	refs := []resultRef{{"split", 0}, {"lease", 0}, {"pool", 0}}
+	logs := captureKlog(t)
+	if got := e.p.results(testPod("p"), "ns/pod-p/ctr", refs); len(got) != 1 || !got[0].pool {
+		t.Fatalf("results %+v of another pod's claims", got)
+	}
+	for _, want := range []string{"ignoring the marker of claim split: the claim other/split is not of namespace ns",
+		"ignoring the marker of claim lease: pod ns/pod-p is not in the reservedFor of the claim ns/lease"} {
+		if !strings.Contains(logs(), want) {
+			t.Errorf("no %q in\n%s", want, logs())
+		}
+	}
+	other := testPod("p")
+	other.Namespace = "other"
+	if got := e.p.results(other, "other/pod-p/ctr", refs[:1]); len(got) != 1 {
+		t.Fatalf("results %+v of the pod's own claim", got)
+	}
+	if got := e.p.results(testPod("q"), "ns/pod-q/ctr", refs[1:2]); len(got) != 1 {
+		t.Fatalf("results %+v of a pod in the reservedFor", got)
 	}
 }
 
@@ -229,7 +267,7 @@ func TestManage(t *testing.T) {
 			management: "container ns/pod/ctr: container.steering.policy: claim ns/dram request mem says first-dram, claim ns/none request mem says none"},
 	} {
 		p := newDecider(t, tc.defaults)
-		d, err := p.decide("ns/pod/ctr", p.results("ns/pod/ctr", tc.refs), true)
+		d, err := p.decide("ns/pod/ctr", p.results(testPod("p"), "ns/pod/ctr", tc.refs), true)
 		if err != nil {
 			if err.Error() != tc.management {
 				t.Errorf("%s: %v, expected %s", tc.name, err, tc.management)

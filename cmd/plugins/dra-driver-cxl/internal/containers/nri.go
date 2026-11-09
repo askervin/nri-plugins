@@ -119,7 +119,7 @@ func (p *Plugin) syncContainer(pod *api.PodSandbox, ctr *api.Container) {
 // held.
 func (p *Plugin) syncNew(pod *api.PodSandbox, ctr *api.Container, running bool) *Container {
 	name := ctrName(pod, ctr)
-	d, err := p.decide(name, p.results(name, extractResults(ctr.GetEnv())), false)
+	d, err := p.decide(name, p.results(pod, name, extractResults(ctr.GetEnv())), false)
 	management, claimed, steers := ManagementSteered, cpuset.New(), false
 	switch {
 	case err != nil:
@@ -163,7 +163,7 @@ func (p *Plugin) CreateContainer(_ context.Context, pod *api.PodSandbox, ctr *ap
 	klog.V(3).Infof("NRI CreateContainer: ctr=%s id=%s", name, id)
 
 	// the results are read before the table mutex is taken
-	results := p.results(name, extractResults(ctr.GetEnv()))
+	results := p.results(pod, name, extractResults(ctr.GetEnv()))
 	d, err := p.decide(name, results, true)
 	if err != nil {
 		klog.Errorf("NRI CreateContainer: %v", err)
