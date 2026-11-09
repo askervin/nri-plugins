@@ -43,7 +43,7 @@ type (
 var (
 	memdevDeviceName  = dra.MemdevDeviceName
 	localMemdevDevice = dra.LocalMemdevDevice
-	resultEnvVarName  = dra.ResultEnvVarName
+	resultEnvVarName  = state.ResultEnvVarName
 	daxDeviceNode     = dra.DaxDeviceNode
 	blockDeviceNode   = dra.BlockDeviceNode
 	fsCDIMount        = dra.FsCDIMount

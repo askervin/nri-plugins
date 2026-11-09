@@ -20,6 +20,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -112,7 +113,7 @@ func TestClaimReaders(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, poolSpec(serialPoolX))
 	e.mustPrepare(e.pool, poolClaim("p1", "pooled0", poolExclusiveData))
 	e.mustPrepare(e.local, localClaim("l1", localDev, envBlockSize))
-	want := []PoolResult{{Index: 0, Request: "mem", Mode: api.ModeNUMA, NumaNode: 2, Size: 256 << 20}}
+	want := []state.PoolResult{{Index: 0, Request: "mem", Mode: api.ModeNUMA, NumaNode: 2, Size: 256 << 20}}
 	if got := e.pool.ClaimResults("p1"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("results %+v, expected %+v", got, want)
 	}
@@ -167,7 +168,7 @@ func TestShapes(t *testing.T) {
 		v    any
 		want []string
 	}{
-		{DeviceInfo{}, []string{"requestName", "deviceName", "result", "deviceType", "mode,omitempty", "sysfsPath,omitempty", "numaNodes",
+		{state.DeviceInfo{}, []string{"requestName", "deviceName", "result", "deviceType", "mode,omitempty", "sysfsPath,omitempty", "numaNodes",
 			"nodeAffinities,omitempty", "totalBytes", "consumedBytes", "serial,omitempty", "region,omitempty", "daxDevice,omitempty",
 			"daxMajor,omitempty", "daxMinor,omitempty", "readOnly,omitempty", "shared,omitempty", "persistent,omitempty",
 			"namespace,omitempty", "blockDevice,omitempty", "blockMajor,omitempty", "blockMinor,omitempty", "access,omitempty",
@@ -178,7 +179,7 @@ func TestShapes(t *testing.T) {
 			"ndRegion,omitempty", "namespace,omitempty", "blockDevice,omitempty", "blockMajor,omitempty", "blockMinor,omitempty",
 			"access,omitempty", "fsType,omitempty", "path,omitempty", "nodeMount,omitempty", "loopDevice,omitempty",
 			"inline config.ResultSettings"}},
-		{Lend{}, []string{"lease", "pod", "container", "nodes,omitempty", "fsDir,omitempty", "name,omitempty", "mounts,omitempty"}},
+		{lend.Lend{}, []string{"lease", "pod", "container", "nodes,omitempty", "fsDir,omitempty", "name,omitempty", "mounts,omitempty"}},
 		{state.PodRef{}, []string{"namespace", "name", "uid"}},
 	} {
 		typ := reflect.TypeOf(tc.v)
@@ -186,8 +187,8 @@ func TestShapes(t *testing.T) {
 			t.Errorf("%s: json tags\n%q\nexpected\n%q", typ, got, tc.want)
 		}
 	}
-	if typ := reflect.TypeOf(ClaimInfo{}); typ.Field(1).Type.Elem() != reflect.TypeOf(DeviceInfo{}) ||
-		typ.Field(2).Type.Elem() != reflect.TypeOf(Lend{}) || reflect.TypeOf(Lend{}).Field(1).Type != reflect.TypeOf(state.PodRef{}) {
+	if typ := reflect.TypeOf(ClaimInfo{}); typ.Field(1).Type.Elem() != reflect.TypeOf(state.DeviceInfo{}) ||
+		typ.Field(2).Type.Elem() != reflect.TypeOf(lend.Lend{}) || reflect.TypeOf(lend.Lend{}).Field(1).Type != reflect.TypeOf(state.PodRef{}) {
 		t.Fatal("the types of the fields of ClaimInfo or Lend")
 	}
 }

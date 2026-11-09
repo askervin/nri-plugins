@@ -27,7 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
@@ -326,7 +326,7 @@ func (b *Broker) createCompanion(l *state.Lease) error {
 		return fmt.Errorf("creating companion claim %s/%s: %w", claim.Namespace, claim.Name, err)
 	}
 	b.mu.Lock()
-	b.specHashes[l.ID] = dra.SpecHash(&created.Spec)
+	b.specHashes[l.ID] = lend.SpecHash(&created.Spec)
 	b.mu.Unlock()
 	if _, err := b.opts.Client.CoreV1().Pods(pod.Namespace).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
 		return fmt.Errorf("creating companion pod %s/%s: %w", pod.Namespace, pod.Name, err)
@@ -335,7 +335,7 @@ func (b *Broker) createCompanion(l *state.Lease) error {
 	return nil
 }
 
-// The hooks (dra.LeaseHooks) that the drivers call for the companion
+// The hooks (lend.LeaseHooks) that the drivers call for the companion
 // claims with the claim locked: they only touch the records of the broker.
 
 // CompanionSpecHash returns the hash of the spec of the companion claim of
@@ -357,7 +357,7 @@ func (b *Broker) CompanionSpecHash(id string) (string, bool) {
 // namespace and owner pod those of the requester), marks the lease LENDING
 // and returns the lend of the requester's container, with the filesystem
 // directory of the lease claim and the name of an fs lease.
-func (b *Broker) OnLending(id string, claim *resourcev1.ResourceClaim) (*dra.Lend, error) {
+func (b *Broker) OnLending(id string, claim *resourcev1.ResourceClaim) (*lend.Lend, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	l := b.leases[id]
@@ -373,7 +373,7 @@ func (b *Broker) OnLending(id string, claim *resourcev1.ResourceClaim) (*dra.Len
 	default:
 		return nil, fmt.Errorf("lease %s is %s", l.ID, stateName(l.State))
 	}
-	rec := &dra.Lend{Lease: id, Pod: l.Pod, Container: l.Container}
+	rec := &lend.Lend{Lease: id, Pod: l.Pod, Container: l.Container}
 	if l.Asked.Mode == state.ModeFs {
 		if lc := b.claims[l.Claim]; lc != nil {
 			rec.FsDir = lc.FsDir
@@ -396,7 +396,7 @@ func ownedBy(claim *resourcev1.ResourceClaim, uid string) bool {
 // OnPrepared makes a lease READY with the first prepared device of its
 // companion and its lend. A device whose mode is fs or block when the
 // lease's is not, or the reverse, fails the lease, and it is released.
-func (b *Broker) OnPrepared(id string, devs []dra.LentDevice) {
+func (b *Broker) OnPrepared(id string, devs []lend.LentDevice) {
 	b.mu.Lock()
 	l := b.leases[id]
 	if l == nil || releasingState(l.State) || len(devs) == 0 {
@@ -429,7 +429,7 @@ func (b *Broker) OnPrepared(id string, devs []dra.LentDevice) {
 // gotOf returns what the prepared device gives a lease and what the lease
 // lends: the NUMA node of a numa lease, the bind of an fs lease in the
 // filesystem directory of its lease claim. Called with b.mu held.
-func (b *Broker) gotOf(l *state.Lease, d *dra.LentDevice) (*state.LeaseGot, *state.Lend) {
+func (b *Broker) gotOf(l *state.Lease, d *lend.LentDevice) (*state.LeaseGot, *state.Lend) {
 	g := &state.LeaseGot{Source: state.Source(d.Source), Serial: state.Serial(d.Serial), Bytes: d.Size}
 	if persistent(state.Mode(d.Mode)) {
 		// the attribute shared of the device, whatever the share

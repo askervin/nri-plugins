@@ -33,7 +33,7 @@ import (
 	"k8s.io/klog/v2"
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -45,7 +45,7 @@ import (
 // scheduler allocates a local memdev (cxl.nri.io) or a pool device to the
 // claim, the pool controller attaches a pool device, and kubelet prepares
 // the claim through the driver of the device, which lends the memory to
-// the requesting container (the hooks of dra.LeaseHooks). Deleting the
+// the requesting container (the hooks of lend.LeaseHooks). Deleting the
 // companion releases it again. See docs/memory/cxl/leases.md.
 
 const (
@@ -64,7 +64,7 @@ const (
 )
 
 var (
-	errLendingUnavailable = dra.ErrLendingUnavailable
+	errLendingUnavailable = lend.ErrLendingUnavailable
 	errNotOurPod          = errors.New("not a container of the claim's pod")
 	errPoolDisabled       = errors.New("pool driver disabled (--pool-driver-name)")
 )
@@ -225,7 +225,7 @@ type Broker struct {
 	listeners map[string]*net.UnixListener
 	conns     map[string]map[*net.UnixConn]bool
 	// specHashes are the hashes of the specs of the companion claims that
-	// the broker created, by lease (dra.SpecHash).
+	// the broker created, by lease (lend.SpecHash).
 	specHashes map[string]string
 	// releasing are the leases whose release runs.
 	releasing map[string]bool
@@ -491,6 +491,6 @@ func (b *Broker) apiContext() (context.Context, context.CancelFunc) {
 }
 
 var (
-	_ dra.LeaseHooks  = (*Broker)(nil)
-	_ dra.LeaseClaims = (*Broker)(nil)
+	_ lend.LeaseHooks  = (*Broker)(nil)
+	_ lend.LeaseClaims = (*Broker)(nil)
 )

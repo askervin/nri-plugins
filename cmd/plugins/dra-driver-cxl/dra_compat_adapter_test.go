@@ -18,6 +18,7 @@ import (
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 )
 
@@ -32,7 +33,7 @@ const (
 
 type (
 	// PreparedDeviceInfo is a device of a prepared claim of cxl.nri.io.
-	PreparedDeviceInfo = dra.DeviceInfo
+	PreparedDeviceInfo = state.DeviceInfo
 	// PreparedClaimInfo is a prepared claim of cxl.nri.io with its devices.
 	PreparedClaimInfo = dra.ClaimInfo
 	// PreparedClaimsInfo is preparedClaimsInfo.json: the prepared claims of
@@ -44,12 +45,12 @@ type (
 	// preparedPoolDevice is a device of a prepared pool claim.
 	preparedPoolDevice = dra.PoolDevice
 	// lendRecord is the lend of a companion claim.
-	lendRecord = dra.Lend
+	lendRecord = lend.Lend
 	// lentDevice is a device of a companion claim as the lease broker
 	// needs it.
-	lentDevice = dra.LentDevice
+	lentDevice = lend.LentDevice
 	// leaseHooks is what the drivers tell the lease broker.
-	leaseHooks = dra.LeaseHooks
+	leaseHooks = lend.LeaseHooks
 	// companionLender lends the companion claims of a driver.
 	companionLender = dra.Lender
 	// podRef identifies a pod.

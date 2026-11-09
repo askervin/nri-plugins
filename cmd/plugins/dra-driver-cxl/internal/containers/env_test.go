@@ -161,7 +161,7 @@ type env struct {
 	start chan event
 	// local and pool are the prepared claims of the drivers.
 	local claimTable
-	pool  map[string][]dra.PoolResult
+	pool  map[string][]state.PoolResult
 }
 
 // envOptions are the settings of a test env.
@@ -213,7 +213,7 @@ func newEnvWith(t *testing.T, o envOptions) *env {
 		gone:  make(chan event, 16),
 		start: make(chan event, 16),
 		local: claimTable{},
-		pool:  map[string][]dra.PoolResult{},
+		pool:  map[string][]state.PoolResult{},
 	}
 	e.st = openStore(t, filepath.Join(root, "state"), o)
 	defaults := o.defaults
@@ -400,7 +400,7 @@ func withSpecMems(ctr *api.Container, mems string) *api.Container {
 // a container.
 func withClaims(ctr *api.Container, uids ...string) *api.Container {
 	for _, uid := range uids {
-		ctr.Env = append(ctr.Env, dra.ResultEnvVarName(uid, 0)+"=1")
+		ctr.Env = append(ctr.Env, state.ResultEnvVarName(uid, 0)+"=1")
 	}
 	return ctr
 }
@@ -574,17 +574,17 @@ func (e *env) readyFence() {
 type claimTable map[string]*dra.ClaimInfo
 
 // PreparedResult implements LocalResults.
-func (c claimTable) PreparedResult(uid string, n int) (string, dra.DeviceInfo, bool) {
+func (c claimTable) PreparedResult(uid string, n int) (string, state.DeviceInfo, bool) {
 	info := c[uid]
 	if info == nil {
-		return "", dra.DeviceInfo{}, false
+		return "", state.DeviceInfo{}, false
 	}
 	for _, d := range info.Devices {
 		if d.Result == n {
 			return info.ClaimName, d, true
 		}
 	}
-	return "", dra.DeviceInfo{}, false
+	return "", state.DeviceInfo{}, false
 }
 
 // set replaces the claims of the table.
@@ -598,15 +598,15 @@ func (c claimTable) set(claims claimTable) {
 }
 
 // poolTable is the prepared claims of the pool driver by uid.
-type poolTable map[string][]dra.PoolResult
+type poolTable map[string][]state.PoolResult
 
 // ClaimResults implements PoolResults.
-func (p poolTable) ClaimResults(uid string) []dra.PoolResult {
+func (p poolTable) ClaimResults(uid string) []state.PoolResult {
 	return p[uid]
 }
 
 // setPool replaces the pool claims of the env.
-func (e *env) setPool(results map[string][]dra.PoolResult) {
+func (e *env) setPool(results map[string][]state.PoolResult) {
 	for uid := range e.pool {
 		delete(e.pool, uid)
 	}

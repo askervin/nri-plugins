@@ -24,7 +24,6 @@ import (
 	"github.com/containerd/nri/pkg/api"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
@@ -69,32 +68,32 @@ func optIn(policy string) config.ResultSettings {
 func nriClaims() claimTable {
 	auto := claimSettings("auto", "mem", config.Steering{Policy: config.PolicyAuto})
 	return claimTable{
-		"split": {ClaimName: "ns/split", Devices: []dra.DeviceInfo{
+		"split": {ClaimName: "ns/split", Devices: []state.DeviceInfo{
 			{Result: 0, RequestName: "numa", DeviceType: device.DeviceTypeMemdev, Mode: cxlapi.ModeNUMA, NUMANodes: []int{2}, ConsumedBytes: 1 << 30},
 			{Result: 1, RequestName: "dax", DeviceType: device.DeviceTypeMemdev, Mode: cxlapi.ModeDax, ConsumedBytes: 1 << 30},
 			{Result: 2, RequestName: "dram", DeviceType: device.DeviceTypeDRAM, Mode: cxlapi.ModeNUMA, NUMANodes: []int{1, 0}, ConsumedBytes: 2 << 30},
 			{Result: 3, RequestName: "region", DeviceType: device.DeviceTypeRegion, Mode: cxlapi.ModeNUMA, NUMANodes: []int{4}, ConsumedBytes: 1 << 30},
 		}},
-		"auto": {ClaimName: "ns/auto", Devices: []dra.DeviceInfo{
+		"auto": {ClaimName: "ns/auto", Devices: []state.DeviceInfo{
 			{RequestName: "mem", DeviceType: device.DeviceTypeMemdev, Mode: cxlapi.ModeNUMA, NUMANodes: []int{2}, ConsumedBytes: 1 << 30, ResultSettings: auto},
 		}},
-		"none": {ClaimName: "ns/none", Devices: []dra.DeviceInfo{
+		"none": {ClaimName: "ns/none", Devices: []state.DeviceInfo{
 			{RequestName: "mem", DeviceType: device.DeviceTypeMemdev, Mode: cxlapi.ModeNUMA, NUMANodes: []int{2}, ConsumedBytes: 1 << 30,
 				ResultSettings: claimSettings("none", "mem", config.Steering{Policy: config.PolicyNone})},
 		}},
-		"dram": {ClaimName: "ns/dram", Devices: []dra.DeviceInfo{
+		"dram": {ClaimName: "ns/dram", Devices: []state.DeviceInfo{
 			{RequestName: "mem", DeviceType: device.DeviceTypeDRAM, Mode: cxlapi.ModeNUMA, NUMANodes: []int{0}, ConsumedBytes: 1 << 30,
 				ResultSettings: claimSettings("dram", "mem", config.Steering{Policy: config.PolicyFirstDRAM, MaxStep: "64Mi"})},
 		}},
-		"lease": {ClaimName: "ns/lease", Devices: []dra.DeviceInfo{{RequestName: "lease", DeviceType: device.DeviceTypeLease}}},
+		"lease": {ClaimName: "ns/lease", Devices: []state.DeviceInfo{{RequestName: "lease", DeviceType: device.DeviceTypeLease}}},
 	}
 }
 
 // nriPoolResults are prepared results of pool claims: pool result 0 a numa
 // device on node 3, result 1 a dax device; poolauto a numa device on node 3
 // that opts in with policy auto.
-func nriPoolResults() map[string][]dra.PoolResult {
-	return map[string][]dra.PoolResult{
+func nriPoolResults() map[string][]state.PoolResult {
+	return map[string][]state.PoolResult{
 		"pool": {
 			{Index: 0, Request: "numa", Mode: cxlapi.ModeNUMA, NumaNode: 3, Size: 256 << 20},
 			{Index: 1, Request: "dax", Mode: cxlapi.ModeDax, NumaNode: -1, Size: 256 << 20},
@@ -111,22 +110,22 @@ func nriPoolResults() map[string][]dra.PoolResult {
 // steering.
 func fenceClaims() claimTable {
 	return claimTable{
-		"dram-auto": {ClaimName: "ns/dram-auto", Devices: []dra.DeviceInfo{
+		"dram-auto": {ClaimName: "ns/dram-auto", Devices: []state.DeviceInfo{
 			{DeviceType: device.DeviceTypeDRAM, Mode: cxlapi.ModeNUMA, NUMANodes: []int{0}, ConsumedBytes: 1 << 30, ResultSettings: optIn(config.PolicyAuto)},
 		}},
-		"numa-auto": {ClaimName: "ns/numa-auto", Devices: []dra.DeviceInfo{
+		"numa-auto": {ClaimName: "ns/numa-auto", Devices: []state.DeviceInfo{
 			{DeviceType: device.DeviceTypeMemdev, Mode: cxlapi.ModeNUMA, NUMANodes: []int{2}, ConsumedBytes: 1 << 30, ResultSettings: optIn(config.PolicyAuto)},
 		}},
-		"dram": {ClaimName: "ns/dram", Devices: []dra.DeviceInfo{
+		"dram": {ClaimName: "ns/dram", Devices: []state.DeviceInfo{
 			{DeviceType: device.DeviceTypeDRAM, Mode: cxlapi.ModeNUMA, NUMANodes: []int{0}, ConsumedBytes: 1 << 30},
 		}},
-		"dax": {ClaimName: "ns/dax", Devices: []dra.DeviceInfo{
+		"dax": {ClaimName: "ns/dax", Devices: []state.DeviceInfo{
 			{DeviceType: device.DeviceTypeMemdev, Mode: cxlapi.ModeDax, NUMANodes: []int{2}, ConsumedBytes: 1 << 30},
 		}},
-		"numa": {ClaimName: "ns/numa", Devices: []dra.DeviceInfo{
+		"numa": {ClaimName: "ns/numa", Devices: []state.DeviceInfo{
 			{DeviceType: device.DeviceTypeMemdev, Mode: cxlapi.ModeNUMA, NUMANodes: []int{2}, ConsumedBytes: 1 << 30},
 		}},
-		"region": {ClaimName: "ns/region", Devices: []dra.DeviceInfo{
+		"region": {ClaimName: "ns/region", Devices: []state.DeviceInfo{
 			{DeviceType: device.DeviceTypeRegion, Mode: cxlapi.ModeNUMA, NUMANodes: []int{4}, ConsumedBytes: 1 << 30},
 		}},
 	}
@@ -145,10 +144,10 @@ func newDecider(t *testing.T, defaults config.Container) *Plugin {
 func TestResultMarkers(t *testing.T) {
 	uid := "0a1b2c3d-0000-1111-2222-333344445555"
 	uid2 := "6a1b2c3d-0000-1111-2222-333344445555"
-	env := []string{"PATH=/bin", dra.ResultEnvVarName(uid, 0) + "=1", "CXL_C1EE0001_SIZE=1", dra.ResultEnvVarName(uid2, 1) + "=1",
-		dra.ResultEnvVarName(uid, 0) + "=1", dra.ResultEnvVarName(uid, 2) + "=1", "CXL_CLAIM_u1_01=1", "CXL_CLAIM__1=1",
+	env := []string{"PATH=/bin", state.ResultEnvVarName(uid, 0) + "=1", "CXL_C1EE0001_SIZE=1", state.ResultEnvVarName(uid2, 1) + "=1",
+		state.ResultEnvVarName(uid, 0) + "=1", state.ResultEnvVarName(uid, 2) + "=1", "CXL_CLAIM_u1_01=1", "CXL_CLAIM__1=1",
 		"CXL_CLAIM_u1=1", "CXL_CLAIM_u1_x=1", "CXL_CLAIM_u1_+1=1", "CXL_CLAIM_u1_-1=1"}
-	if got := dra.ResultEnvVarName(uid, 3); got != "CXL_CLAIM_0a1b2c3d_0000_1111_2222_333344445555_3" {
+	if got := state.ResultEnvVarName(uid, 3); got != "CXL_CLAIM_0a1b2c3d_0000_1111_2222_333344445555_3" {
 		t.Fatalf("marker %s", got)
 	}
 	if got := extractResults(env); !reflect.DeepEqual(got, []resultRef{{uid, 0}, {uid2, 1}, {uid, 2}}) {
@@ -314,7 +313,7 @@ func TestCreateContainerManagement(t *testing.T) {
 	management := func(id string) Management { return e.record(id).Management }
 
 	// a numa claim is not steered by default: fenced with its node, no plan
-	ctr := &api.Container{Id: "c1", PodSandboxId: pod.GetId(), Name: "a", Env: []string{dra.ResultEnvVarName("split", 0) + "=1"}}
+	ctr := &api.Container{Id: "c1", PodSandboxId: pod.GetId(), Name: "a", Env: []string{state.ResultEnvVarName("split", 0) + "=1"}}
 	if got := e.createMems(pod, ctr); got != "0-2" || management("c1") != ManagementFenced || e.record("c1").Plan != nil {
 		t.Fatalf("adjustment %s, management %s", got, management("c1"))
 	}
@@ -322,7 +321,7 @@ func TestCreateContainerManagement(t *testing.T) {
 	if got := e.createMems(pod, withClaims(testCtr(pod, "c2", "b", 0))); got != "0-1" {
 		t.Fatalf("adjustment %s of a container without results", got)
 	}
-	ctr = &api.Container{Id: "c3", PodSandboxId: pod.GetId(), Name: "c", Env: []string{dra.ResultEnvVarName("split", 1) + "=1"}}
+	ctr = &api.Container{Id: "c3", PodSandboxId: pod.GetId(), Name: "c", Env: []string{state.ResultEnvVarName("split", 1) + "=1"}}
 	if got := e.createMems(pod, ctr); got != "0-1" || management("c3") != ManagementFenced {
 		t.Fatalf("adjustment %s of the dax result", got)
 	}
@@ -363,7 +362,7 @@ func TestCharCreateContainerLogLines(t *testing.T) {
 	// DRAM and a region in mode numa with the default steering none: the
 	// claims reserve capacity only (with policy auto the DRAM is steered)
 	ctr := &api.Container{Id: "c7", PodSandboxId: pod.GetId(), Name: "g",
-		Env: []string{dra.ResultEnvVarName("split", 2) + "=1", dra.ResultEnvVarName("split", 3) + "=1"}}
+		Env: []string{state.ResultEnvVarName("split", 2) + "=1", state.ResultEnvVarName("split", 3) + "=1"}}
 	if got := e.createMems(pod, ctr); got != "0-1,4" {
 		t.Fatalf("adjustment %s", got)
 	}
@@ -387,7 +386,7 @@ func TestCharCreateContainerLogLines(t *testing.T) {
 
 	// the lines that the e2e tests and the documentation quote
 	auto := claimSettings("a", "r", config.Steering{Policy: config.PolicyAuto})
-	e.local.set(claimTable{"a": {ClaimName: "ns/a", Devices: []dra.DeviceInfo{
+	e.local.set(claimTable{"a": {ClaimName: "ns/a", Devices: []state.DeviceInfo{
 		{RequestName: "r", DeviceType: device.DeviceTypeMemdev, Mode: cxlapi.ModeNUMA, NUMANodes: []int{2}, ConsumedBytes: 1 << 30, ResultSettings: auto},
 	}}})
 	plain := &api.PodSandbox{Id: "sb-plain", Uid: "uplain", Namespace: "ns", Name: "plain"}

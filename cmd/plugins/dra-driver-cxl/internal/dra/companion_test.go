@@ -25,6 +25,7 @@ import (
 
 	resourcev1 "k8s.io/api/resource/v1"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -72,7 +73,7 @@ func TestCompanionGate(t *testing.T) {
 		hooks := &fakeHooks{e: e}
 		e.lend(nil, hooks)
 		res := e.prepare(p, e.companionOf(p))
-		if !errors.Is(res.Err, ErrLendingUnavailable) {
+		if !errors.Is(res.Err, lend.ErrLendingUnavailable) {
 			t.Fatalf("%s: without NRI: %v", p.Name(), res.Err)
 		}
 		wantErrText(t, res.Err, e.prefix(p)+"lease l1: lending unavailable: NRI not connected")
@@ -113,7 +114,7 @@ func specClaim() *resourcev1.ResourceClaim {
 // the version of SpecHash; a mismatch refuses the claim before OnLending
 // and any device; a Prepare again does not compare.
 func TestCompanionSpecHash(t *testing.T) {
-	good := SpecHash(&specClaim().Spec)
+	good := lend.SpecHash(&specClaim().Spec)
 	if !strings.HasPrefix(good, "v1:") {
 		t.Fatalf("hash %q", good)
 	}
@@ -135,7 +136,7 @@ func TestCompanionSpecHash(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			e := lendEnv(t)
 			hooks := &fakeHooks{e: e}
-			var lh LeaseHooks = hooks
+			var lh lend.LeaseHooks = hooks
 			if tc.hasher {
 				lh = &fakeSpecHooks{fakeHooks: hooks, hash: tc.hash, first: tc.first}
 			}
@@ -181,11 +182,11 @@ func TestCompanionLendNUMA(t *testing.T) {
 	for _, local := range []bool{true, false} {
 		e := lendEnv(t)
 		p := e.pool
-		want := LentDevice{Driver: device.PoolDriverName, Source: api.SourcePool, Request: "mem", Device: "pooled0", Pool: envPool,
+		want := lend.LentDevice{Driver: device.PoolDriverName, Source: api.SourcePool, Request: "mem", Device: "pooled0", Pool: envPool,
 			Serial: serialPoolX, Size: 256 << 20, Mode: api.ModeNUMA, NumaNode: 2}
 		if local {
 			p = e.local
-			want = LentDevice{Driver: device.DriverName, Source: api.SourceLocal, Request: "mem", Device: localDev, Pool: envNode,
+			want = lend.LentDevice{Driver: device.DriverName, Source: api.SourceLocal, Request: "mem", Device: localDev, Pool: envNode,
 				Serial: serialSliced, Size: uint64(envBlockSize), Mode: api.ModeNUMA, NumaNode: 2}
 		}
 		t.Run(p.Name(), func(t *testing.T) {
@@ -203,7 +204,7 @@ func TestCompanionLendNUMA(t *testing.T) {
 				t.Fatalf("the grant's lend at the lend: %v", atLend)
 			}
 			e.wantEvents("prepared", "lending l1 cxl-lease-l1", "lend pod-uid-1/app 2 l1", "prepared l1")
-			if got := hooks.lentDevices(); !reflect.DeepEqual(got, []LentDevice{want}) {
+			if got := hooks.lentDevices(); !reflect.DeepEqual(got, []lend.LentDevice{want}) {
 				t.Fatalf("lent devices %+v, expected %+v", got, want)
 			}
 			if e.cdiSpec(p.Rules().CDISpecName) != nil {

@@ -16,9 +16,6 @@ package dra
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -28,6 +25,7 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/klog/v2"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -51,70 +49,6 @@ import (
 // into the lease claim's directory by the engine, and the broker gets the
 // devices (LentDevice) when the claim is prepared.
 
-// Lend is the lend of a companion claim: the lease and its requester, the
-// NUMA nodes lent and the lease binds, as the views of the claim give it.
-type Lend struct {
-	Lease     string       `json:"lease"`
-	Pod       state.PodRef `json:"pod"`
-	Container string       `json:"container"`
-	NumaNodes []int        `json:"nodes,omitempty"` // lent NUMA nodes
-	// FsDir is the host directory of the mounts of the fs leases of the
-	// lease claim, "" for other leases and for a lease claim without it.
-	FsDir string `json:"fsDir,omitempty"`
-	// Name is the mount point of an fs lease in FsDir.
-	Name string `json:"name,omitempty"`
-	// Mounts are the host paths of the binds of the node mounts of the fs
-	// devices in FsDir.
-	Mounts []string `json:"mounts,omitempty"`
-}
-
-// LentDevice is one prepared device of a companion claim, as the lease
-// broker needs it.
-type LentDevice struct {
-	Driver    string // DRA driver that prepared the device
-	Source    string // api.SourcePool or api.SourceLocal
-	Request   string
-	Device    string
-	Pool      string
-	Serial    uint64
-	Shared    bool
-	Size      uint64 // bytes the lease gets: the slice size or the device size
-	Mode      string // api.ModeNUMA, api.ModeDax, api.ModeBlock or api.ModeFs
-	ReadOnly  bool
-	NumaNode  int    // numa: NUMA node of the memory, else -1
-	DaxDevice string // dax: /dev/daxX.Y
-	// BlockDevice is the host path of the block device of a block or fs
-	// device, /dev/pmemK.
-	BlockDevice string
-	Access      string // fs: api.AccessDirect or api.AccessCached
-	FsType      string // fs: the filesystem type
-	NodeMount   string // fs: the host path of the node mount of the device
-}
-
-// LeaseHooks is what a driver tells the lease broker about companion
-// claims. The hooks are called with the driver's claim locked and must not
-// call back into the driver.
-type LeaseHooks interface {
-	// OnLending checks that the claim is the companion of the lease,
-	// marks the lease Lending and returns the lend of the lease's
-	// container (without nodes). An error fails the Prepare.
-	OnLending(id string, claim *resourcev1.ResourceClaim) (*Lend, error)
-	// OnPrepared marks the lease Ready with the prepared devices.
-	OnPrepared(id string, devs []LentDevice)
-	// OnLendFailed records a lend error (kubelet retries the Prepare).
-	OnLendFailed(id string, err error)
-	// OnReleasing is called when the companion claim is unprepared.
-	OnReleasing(id string)
-}
-
-// SpecHasher is the part of the hooks that tells the hash of the spec of
-// the companion claim of a lease that the hooks recorded when they made the
-// claim ("" for none, then no comparison), and whether the lease waits for
-// its first Prepare (CREATING or PENDING).
-type SpecHasher interface {
-	CompanionSpecHash(lease string) (hash string, first bool)
-}
-
 // NodeLender lends NUMA nodes to running containers.
 type NodeLender interface {
 	// LendNode lends NUMA node to the container on behalf of holder.
@@ -127,27 +61,10 @@ type NodeLender interface {
 }
 
 var (
-	// ErrLendingUnavailable is the error of a lend without NRI.
-	ErrLendingUnavailable = errors.New("lending unavailable: NRI not connected")
 	// errLendingStarting is the error of a revoke before the lender is set
 	// up: kubelet retries the Unprepare.
 	errLendingStarting = errors.New("lending is not set up yet (the plugin is starting)")
 )
-
-// specHashVersion is the version of SpecHash; a recorded hash of another
-// version is not compared.
-const specHashVersion = "v1:"
-
-// SpecHash returns the hash of the spec of a claim, of version
-// specHashVersion: the SHA-256 of its JSON.
-func SpecHash(spec *resourcev1.ResourceClaimSpec) string {
-	data, err := json.Marshal(spec)
-	if err != nil {
-		return ""
-	}
-	sum := sha256.Sum256(data)
-	return specHashVersion + hex.EncodeToString(sum[:])
-}
 
 // LeaseOf returns the lease id of a companion claim (its label
 // device.LeaseLabel), "" for other claims.
@@ -174,8 +91,8 @@ func LeaseOf(claim *resourcev1.ResourceClaim) string {
 type Lender struct {
 	driver string
 	mu     sync.Mutex
-	nodes  NodeLender // nil: NRI not connected
-	hooks  LeaseHooks // nil: lending disabled
+	nodes  NodeLender      // nil: NRI not connected
+	hooks  lend.LeaseHooks // nil: lending disabled
 	isSet  bool
 }
 
@@ -188,7 +105,7 @@ func NewLender(driver string) *Lender {
 // Set enables lending: nodes lends NUMA nodes (nil when NRI is not
 // connected, then companion claims fail), hooks is the lease broker (nil
 // disables lending).
-func (c *Lender) Set(nodes NodeLender, hooks LeaseHooks) {
+func (c *Lender) Set(nodes NodeLender, hooks lend.LeaseHooks) {
 	if c == nil {
 		return
 	}
@@ -200,7 +117,7 @@ func (c *Lender) Set(nodes NodeLender, hooks LeaseHooks) {
 }
 
 // get returns the node lender and the hooks.
-func (c *Lender) get() (NodeLender, LeaseHooks) {
+func (c *Lender) get() (NodeLender, lend.LeaseHooks) {
 	if c == nil {
 		return nil, nil
 	}
@@ -212,13 +129,13 @@ func (c *Lender) get() (NodeLender, LeaseHooks) {
 // Check is the companion gate of the lease broker for a companion claim of
 // the lease id, before any device is touched: it marks the lease Lending and
 // returns the lend of the lease's container.
-func (c *Lender) Check(id string, claim *resourcev1.ResourceClaim) (*Lend, error) {
+func (c *Lender) Check(id string, claim *resourcev1.ResourceClaim) (*lend.Lend, error) {
 	nodes, hooks := c.get()
 	if hooks == nil {
 		return nil, fmt.Errorf("lease %s: lending to running containers is disabled (--leases=false)", id)
 	}
 	if nodes == nil {
-		return nil, fmt.Errorf("lease %s: %w", id, ErrLendingUnavailable)
+		return nil, fmt.Errorf("lease %s: %w", id, lend.ErrLendingUnavailable)
 	}
 	if err := checkSpecHash(hooks, id, claim); err != nil {
 		return nil, err
@@ -229,16 +146,16 @@ func (c *Lender) Check(id string, claim *resourcev1.ResourceClaim) (*Lend, error
 // checkSpecHash returns an error if the hooks recorded the hash of the spec
 // of the companion claim of the lease id, the lease waits for its first
 // Prepare, and the claim's spec has another hash.
-func checkSpecHash(hooks LeaseHooks, id string, claim *resourcev1.ResourceClaim) error {
-	h, ok := hooks.(SpecHasher)
+func checkSpecHash(hooks lend.LeaseHooks, id string, claim *resourcev1.ResourceClaim) error {
+	h, ok := hooks.(lend.SpecHasher)
 	if !ok {
 		return nil
 	}
 	want, first := h.CompanionSpecHash(id)
-	if !first || !strings.HasPrefix(want, specHashVersion) {
+	if !first || !strings.HasPrefix(want, lend.SpecHashVersion) {
 		return nil
 	}
-	if got := SpecHash(&claim.Spec); got != want {
+	if got := lend.SpecHash(&claim.Spec); got != want {
 		return fmt.Errorf("claim %s/%s: not the companion of lease %s: its spec is not the one made for the lease", claim.Namespace, claim.Name, id)
 	}
 	return nil
@@ -248,14 +165,14 @@ func checkSpecHash(hooks LeaseHooks, id string, claim *resourcev1.ResourceClaim)
 // container of the lend, held by its lease, and records them in rec. Dax
 // and block devices are passed as an fd by the broker. On error rec lists
 // the nodes lent so far.
-func (c *Lender) Lend(ctx context.Context, rec *Lend, devs []LentDevice) error {
+func (c *Lender) Lend(ctx context.Context, rec *lend.Lend, devs []lend.LentDevice) error {
 	nodes, _ := c.get()
 	for _, d := range devs {
 		if d.Mode != api.ModeNUMA || d.NumaNode < 0 {
 			continue
 		}
 		if nodes == nil {
-			return fmt.Errorf("lease %s: %w", rec.Lease, ErrLendingUnavailable)
+			return fmt.Errorf("lease %s: %w", rec.Lease, lend.ErrLendingUnavailable)
 		}
 		rec.NumaNodes = append(rec.NumaNodes, d.NumaNode)
 		if err := nodes.LendNode(ctx, rec.Pod.UID, rec.Container, d.NumaNode, rec.Lease); err != nil {
@@ -271,7 +188,7 @@ func (c *Lender) Lend(ctx context.Context, rec *Lend, devs []LentDevice) error {
 // cannot be revoked: the release then migrates the pages anyway, but the
 // stale node stays in the container's cpuset.mems. Before the lender is set
 // up it is an error.
-func (c *Lender) Revoke(ctx context.Context, rec *Lend, claimName string) error {
+func (c *Lender) Revoke(ctx context.Context, rec *lend.Lend, claimName string) error {
 	if rec == nil || len(rec.NumaNodes) == 0 {
 		return nil
 	}
@@ -281,7 +198,7 @@ func (c *Lender) Revoke(ctx context.Context, rec *Lend, claimName string) error 
 	nodes, _ := c.get()
 	if nodes == nil {
 		klog.Warningf("%s: claim %s: lease %s: %v, cannot revoke nodes %v from %s/%s/%s",
-			c.name(), claimName, rec.Lease, ErrLendingUnavailable, rec.NumaNodes, rec.Pod.Namespace, rec.Pod.Name, rec.Container)
+			c.name(), claimName, rec.Lease, lend.ErrLendingUnavailable, rec.NumaNodes, rec.Pod.Namespace, rec.Pod.Name, rec.Container)
 		return nil
 	}
 	var errs []error
@@ -295,7 +212,7 @@ func (c *Lender) Revoke(ctx context.Context, rec *Lend, claimName string) error 
 
 // Prepared tells the broker that the companion claim of a lease is prepared
 // and lent.
-func (c *Lender) Prepared(id string, devs []LentDevice) {
+func (c *Lender) Prepared(id string, devs []lend.LentDevice) {
 	if _, hooks := c.get(); hooks != nil {
 		hooks.OnPrepared(id, devs)
 	}
@@ -303,7 +220,7 @@ func (c *Lender) Prepared(id string, devs []LentDevice) {
 
 // Reprepared tells the broker again that a stored companion claim is
 // prepared and lent, as kubelet asks to prepare a prepared claim again.
-func (c *Lender) Reprepared(rec *Lend, claim *resourcev1.ResourceClaim, devs []LentDevice) {
+func (c *Lender) Reprepared(rec *lend.Lend, claim *resourcev1.ResourceClaim, devs []lend.LentDevice) {
 	_, hooks := c.get()
 	if hooks == nil || rec == nil {
 		return
@@ -349,10 +266,10 @@ func (c *Lender) name() string {
 
 // RevokeGrant revokes the NUMA node that one grant of a companion claim
 // lends, for the engine's rollback of a later Prepare of the claim.
-func (c *Lender) RevokeGrant(ctx context.Context, lend state.GrantLend, claimName string) error {
-	rec := &Lend{Lease: lend.Lease, Pod: lend.Pod, Container: lend.Container}
-	if lend.NumaNode != nil {
-		rec.NumaNodes = []int{*lend.NumaNode}
+func (c *Lender) RevokeGrant(ctx context.Context, gl state.GrantLend, claimName string) error {
+	rec := &lend.Lend{Lease: gl.Lease, Pod: gl.Pod, Container: gl.Container}
+	if gl.NumaNode != nil {
+		rec.NumaNodes = []int{*gl.NumaNode}
 	}
 	return c.Revoke(ctx, rec, claimName)
 }
@@ -370,7 +287,7 @@ func (e *leaseBindError) Error() string {
 
 // leaseBindTarget returns the lease bind of the device of mode fs of a
 // companion claim, <FsDir>/<Name> of its lend.
-func leaseBindTarget(lend *Lend) (string, error) {
+func leaseBindTarget(lend *lend.Lend) (string, error) {
 	switch {
 	case lend.Name == "":
 		return "", fmt.Errorf("lease %s: the device is of mode %s, the lease is not", lend.Lease, api.ModeFs)

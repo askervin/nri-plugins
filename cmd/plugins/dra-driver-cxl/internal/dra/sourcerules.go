@@ -24,6 +24,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/engine"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -128,7 +129,7 @@ type voice interface {
 	// prepared logs what the grants of a Prepare got.
 	prepared(p *Plugin, pr *prepare)
 	// companionPrepared logs the lend of a prepared companion claim.
-	companionPrepared(claimName string, lend *Lend)
+	companionPrepared(claimName string, lend *lend.Lend)
 	// kept logs a preparation that a failed Prepare's rollback kept.
 	kept(uid, claimName string)
 	// alreadyPrepared logs a Prepare of a prepared claim.
@@ -252,7 +253,7 @@ func (localVoice) prepared(p *Plugin, pr *prepare) {
 	}
 }
 
-func (localVoice) companionPrepared(string, *Lend) {}
+func (localVoice) companionPrepared(string, *lend.Lend) {}
 
 func (localVoice) kept(string, string) {}
 
@@ -386,7 +387,7 @@ func (v poolVoice) prepared(p *Plugin, pr *prepare) {
 	}
 }
 
-func (v poolVoice) companionPrepared(claimName string, lend *Lend) {
+func (v poolVoice) companionPrepared(claimName string, lend *lend.Lend) {
 	klog.Infof("%s: claim %s: companion of lease %s of %s/%s/%s prepared (nodes %v, binds %v)",
 		v.name, claimName, lend.Lease, lend.Pod.Namespace, lend.Pod.Name, lend.Container, lend.NumaNodes, lend.Mounts)
 }

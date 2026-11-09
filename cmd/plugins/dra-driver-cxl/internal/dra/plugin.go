@@ -30,6 +30,7 @@ import (
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/engine"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
@@ -91,25 +92,13 @@ type Plugin struct {
 	cdi   *cdiapi.Cache
 
 	mu      sync.Mutex
-	leases  LeaseClaims
+	leases  lend.LeaseClaims
 	waitNRI func(ctx context.Context) error
 	// inflight are the serials of the Prepares in progress, by count.
 	inflight map[uint64]int
 	// unrestored are why the claims (uid) have no CDI devices since the
 	// start: their node mounts did not mount again.
 	unrestored map[string]error
-}
-
-// LeaseClaims is what cxl.nri.io needs from the lease broker for claims on
-// the lease device.
-type LeaseClaims interface {
-	// OpenClaim records the claim and starts its socket. Idempotent.
-	OpenClaim(claim *resourcev1.ResourceClaim) error
-	// CloseClaim releases every lease of the claim, waits (bounded) until
-	// their nodes are revoked and the deletion of their companions is
-	// requested, then stops the socket and removes the directories.
-	// Unknown claims are not an error.
-	CloseClaim(ctx context.Context, uid string) error
 }
 
 // Options are the settings of a Plugin.
@@ -196,7 +185,7 @@ func (p *Plugin) Lender() *Lender {
 
 // SetLeases sets the lease broker of the claims on the lease device, nil
 // when lending is disabled.
-func (p *Plugin) SetLeases(leases LeaseClaims) {
+func (p *Plugin) SetLeases(leases lend.LeaseClaims) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.leases = leases
@@ -214,7 +203,7 @@ func (p *Plugin) SetWaitNRI(wait func(ctx context.Context) error) {
 }
 
 // leaseClaims returns the lease broker of the claims on the lease device.
-func (p *Plugin) leaseClaims() LeaseClaims {
+func (p *Plugin) leaseClaims() lend.LeaseClaims {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.leases
@@ -499,7 +488,7 @@ func (p *Plugin) lendCompanion(ctx context.Context, pr *prepare) error {
 	info, err := claimInfoOf(p.st.Snapshot(), p.preparation(pr.uid), p.st.ViewOptions())
 	if err == nil {
 		for _, d := range info.Devices {
-			if node := d.numaNode(); node >= 0 {
+			if node := deviceNumaNode(&d); node >= 0 {
 				if err = p.engine.RecordLend(ctx, state.GrantRef{Claim: pr.uid, Result: d.Result}, node); err != nil {
 					break
 				}
@@ -519,7 +508,7 @@ func (p *Plugin) lendCompanion(ctx context.Context, pr *prepare) error {
 
 // lendAndDevices returns the lend of a preparation of a companion claim and
 // its memdevs as the lease broker sees them.
-func (p *Plugin) lendAndDevices(prep *state.Preparation) (*Lend, []LentDevice) {
+func (p *Plugin) lendAndDevices(prep *state.Preparation) (*lend.Lend, []lend.LentDevice) {
 	if prep == nil {
 		return nil, nil
 	}
@@ -537,12 +526,12 @@ func (p *Plugin) lendAndDevices(prep *state.Preparation) (*Lend, []LentDevice) {
 }
 
 // lentDevices returns the memdevs of a claim as the lease broker sees them.
-func (p *Plugin) lentDevices(prep *state.Preparation, info *ClaimInfo) []LentDevice {
+func (p *Plugin) lentDevices(prep *state.Preparation, info *ClaimInfo) []lend.LentDevice {
 	source := api.SourceLocal
 	if p.rules.Source == state.SourcePool {
 		source = api.SourcePool
 	}
-	devs := []LentDevice{}
+	devs := []lend.LentDevice{}
 	for i := range info.Devices {
 		d := &info.Devices[i]
 		if d.DeviceType != device.DeviceTypeMemdev {
@@ -552,7 +541,7 @@ func (p *Plugin) lentDevices(prep *state.Preparation, info *ClaimInfo) []LentDev
 		if res := prep.Result(d.Result); res != nil {
 			pool = res.Pool
 		}
-		devs = append(devs, d.lent(p.rules.Name, source, pool))
+		devs = append(devs, lentDevice(d, p.rules.Name, source, pool))
 	}
 	return devs
 }
@@ -848,17 +837,17 @@ func (p *Plugin) ClaimInfo(uid string) *ClaimInfo {
 
 // PreparedResult returns the claim name and the prepared device of the
 // allocation result n of a prepared claim, and false if there is none.
-func (p *Plugin) PreparedResult(uid string, n int) (string, DeviceInfo, bool) {
+func (p *Plugin) PreparedResult(uid string, n int) (string, state.DeviceInfo, bool) {
 	info := p.ClaimInfo(uid)
 	if info == nil {
-		return "", DeviceInfo{}, false
+		return "", state.DeviceInfo{}, false
 	}
 	for _, d := range info.Devices {
 		if d.Result == n {
 			return info.ClaimName, d, true
 		}
 	}
-	return "", DeviceInfo{}, false
+	return "", state.DeviceInfo{}, false
 }
 
 // PoolDevices returns the devices of a preparation of the claim uid in any
@@ -877,7 +866,7 @@ func (p *Plugin) PoolDevices(uid string) []PoolDevice {
 
 // ClaimResults returns the prepared allocation results of a claim of the
 // pool driver as the NRI plugin sees them; nil for a nil plugin.
-func (p *Plugin) ClaimResults(uid string) []PoolResult {
+func (p *Plugin) ClaimResults(uid string) []state.PoolResult {
 	if p == nil {
 		return nil
 	}
@@ -885,9 +874,9 @@ func (p *Plugin) ClaimResults(uid string) []PoolResult {
 	if prep == nil || !prep.Prepared() {
 		return nil
 	}
-	var out []PoolResult
+	var out []state.PoolResult
 	for _, d := range p.PoolDevices(uid) {
-		out = append(out, PoolResult{Index: d.Result, Request: d.Request, Mode: d.Mode, NumaNode: d.NumaNode, Size: d.Size, Settings: d.ResultSettings})
+		out = append(out, state.PoolResult{Index: d.Result, Request: d.Request, Mode: d.Mode, NumaNode: d.NumaNode, Size: d.Size, Settings: d.ResultSettings})
 	}
 	return out
 }

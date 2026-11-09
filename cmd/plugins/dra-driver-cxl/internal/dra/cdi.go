@@ -21,7 +21,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
-	"strings"
 
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
@@ -45,33 +44,6 @@ import (
 // of a claim: "claim-<uid>-<n>".
 func ClaimCDIDeviceName(claimUID string, n int) string {
 	return "claim-" + claimUID + "-" + strconv.Itoa(n)
-}
-
-// ResultEnvVarName returns the name of the marker of the allocation result
-// n of a claim, CXL_CLAIM_<uid>_<n> with the hyphens of the UID replaced by
-// underscores (env var names have no hyphens).
-func ResultEnvVarName(claimUID string, n int) string {
-	return api.ClaimEnvPrefix + strings.ReplaceAll(claimUID, "-", "_") + "_" + strconv.Itoa(n)
-}
-
-// ResultFromEnvVar returns the claim UID and the allocation result of a
-// result marker "CXL_CLAIM_<uid>_<n>=<value>", and false for other
-// environment variables.
-func ResultFromEnvVar(envVar string) (string, int, bool) {
-	key, _, _ := strings.Cut(envVar, "=")
-	rest, ok := strings.CutPrefix(key, api.ClaimEnvPrefix)
-	if !ok {
-		return "", 0, false
-	}
-	i := strings.LastIndexByte(rest, '_')
-	if i <= 0 {
-		return "", 0, false
-	}
-	n, err := strconv.Atoi(rest[i+1:])
-	if err != nil || n < 0 || strconv.Itoa(n) != rest[i+1:] {
-		return "", 0, false
-	}
-	return strings.ReplaceAll(rest[:i], "_", "-"), n, true
 }
 
 // envKeys counts the memories of each base env key in one claim.
@@ -163,10 +135,10 @@ func buildCDISpec(doc *store.Document, driver, kind string, opts store.ViewOptio
 
 // cdiDevice returns the CDI device of a prepared device of the claim uid,
 // with the env key of its memory from keys.
-func cdiDevice(uid string, d *DeviceInfo, keys envKeys) cdiSpecs.Device {
-	env := map[string]string{ResultEnvVarName(uid, d.Result): "1"}
+func cdiDevice(uid string, d *state.DeviceInfo, keys envKeys) cdiSpecs.Device {
+	env := map[string]string{state.ResultEnvVarName(uid, d.Result): "1"}
 	edits := cdiSpecs.ContainerEdits{}
-	if m, ok := d.memory(keys); ok {
+	if m, ok := deviceMemory(d, keys); ok {
 		maps.Copy(env, api.Env(m))
 	}
 	switch {

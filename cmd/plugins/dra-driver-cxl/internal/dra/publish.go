@@ -39,7 +39,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
-	"github.com/containers/nri-plugins/pkg/cxl/memctl"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 
 	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 )
@@ -603,7 +603,7 @@ type hollowRegionLog struct {
 }
 
 // observe returns the hollow regions among regions (pkg/cxl
-// RegionDevice.Hollow, memctl.HollowRegion), and logs a warning for each one
+// RegionDevice.Hollow, kernel.RegionHollow), and logs a warning for each one
 // that the last scan did not have: no decoder maps its address range any
 // more (memory of it that kmem could not remove stays online until a
 // reboot, which is why such a region may still have a node), it holds that
@@ -695,7 +695,7 @@ func regionIgnoreReason(cfg PublishConfig, regDev *nricxl.RegionDevice, poolSeri
 	if !regDev.Enabled {
 		reason = "region is disabled"
 	}
-	if reason == "" && regDev.Mode == memctl.RegionPmem {
+	if reason == "" && regDev.Mode == kernel.RegionPmem {
 		reason = "region of persistent memory"
 	}
 	if reason != "" {

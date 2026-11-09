@@ -24,6 +24,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/engine"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
@@ -50,7 +51,7 @@ const defaultFsPathDir = "/run/cxl-fs"
 // results.
 type prepare struct {
 	uid, claimName string
-	lend           *Lend
+	lend           *lend.Lend
 	reqs           []engine.GrantRequest
 	results        []state.Result
 	// uses are the shares of the grants of shared memdevs, for the log

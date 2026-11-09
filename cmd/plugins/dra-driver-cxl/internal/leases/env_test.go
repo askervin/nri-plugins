@@ -49,6 +49,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/engine"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
@@ -970,10 +971,10 @@ type fakeContainers struct {
 }
 
 var (
-	_ Containers      = (*fakeContainers)(nil)
-	_ dra.NodeLender  = (*fakeContainers)(nil)
-	_ dra.LeaseHooks  = (*Broker)(nil)
-	_ dra.LeaseClaims = (*Broker)(nil)
+	_ Containers       = (*fakeContainers)(nil)
+	_ dra.NodeLender   = (*fakeContainers)(nil)
+	_ lend.LeaseHooks  = (*Broker)(nil)
+	_ lend.LeaseClaims = (*Broker)(nil)
 )
 
 // newFakeContainers returns a container plugin with the running containers

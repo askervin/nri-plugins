@@ -27,6 +27,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
@@ -46,7 +47,7 @@ type stopFunc func()
 func (f stopFunc) Stop() { f() }
 
 // errLendingUnavailable is the error of a lend without NRI.
-var errLendingUnavailable = dra.ErrLendingUnavailable
+var errLendingUnavailable = lend.ErrLendingUnavailable
 
 // mountInfo is a mount of a mount namespace.
 type mountInfo = kernel.MountInfo

@@ -68,7 +68,7 @@ func TestLocalSlicedNUMA(t *testing.T) {
 	wantLogText(t, logs(), "local: memdev mem0 (serial 0xc100e2e1) region0: claim u1 request mem: slice "+g.Got.Dax+
 		" mode numa size 134217728 node "+strconv.Itoa(node))
 	info := e.local.ClaimInfo("u1")
-	want := DeviceInfo{RequestName: "mem", DeviceName: localDev, DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA,
+	want := state.DeviceInfo{RequestName: "mem", DeviceName: localDev, DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA,
 		SysfsPath: e.k.P("bus/cxl/devices/region0"), NUMANodes: []int{node}, NodeAffinities: []int{0},
 		TotalBytes: uint64(envBlockSize), ConsumedBytes: envBlockSize, Serial: "0xc100e2e1"}
 	if info == nil || info.ClaimName != envNS+"/claim-u1" || info.BootID != e.k.BootID() || len(info.Devices) != 1 ||
@@ -240,10 +240,10 @@ func TestLocalRegion(t *testing.T) {
 	res := e.mustPrepare(e.local, localClaim("u1", dev, 64*mib))
 	wantResult(t, res, resultDevice("mem", envNode, dev, "nri.io/cxl=claim-u1-0"))
 	e.wantNoCommands("a region result")
-	want := DeviceInfo{RequestName: "mem", DeviceName: dev, DeviceType: device.DeviceTypeRegion, Mode: api.ModeNUMA,
+	want := state.DeviceInfo{RequestName: "mem", DeviceName: dev, DeviceType: device.DeviceTypeRegion, Mode: api.ModeNUMA,
 		SysfsPath: e.k.P("bus/cxl/devices/region5"), NUMANodes: []int{4}, NodeAffinities: []int{1}, TotalBytes: 1 << 30,
 		ConsumedBytes: 64 * mib, Region: "region5"}
-	if info := e.local.ClaimInfo("u1"); !reflect.DeepEqual(info.Devices, []DeviceInfo{want}) {
+	if info := e.local.ClaimInfo("u1"); !reflect.DeepEqual(info.Devices, []state.DeviceInfo{want}) {
 		t.Fatalf("device info %+v, expected %+v", info.Devices, want)
 	}
 	cd := e.cdiDevice(e.local, "claim-u1-0")

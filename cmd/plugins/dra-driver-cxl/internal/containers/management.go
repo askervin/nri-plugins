@@ -23,7 +23,6 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/utils/cpuset"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
 	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
@@ -36,13 +35,13 @@ type LocalResults interface {
 	// PreparedResult returns the claim name and the prepared device of
 	// the allocation result n of a prepared claim, and false if there is
 	// none.
-	PreparedResult(uid string, n int) (string, dra.DeviceInfo, bool)
+	PreparedResult(uid string, n int) (string, state.DeviceInfo, bool)
 }
 
 // PoolResults are the prepared claims of the pool driver.
 type PoolResults interface {
 	// ClaimResults returns the prepared allocation results of a claim.
-	ClaimResults(uid string) []dra.PoolResult
+	ClaimResults(uid string) []state.PoolResult
 }
 
 // resultRef is an allocation result of a claim: the claim UID and the
@@ -98,7 +97,7 @@ func extractResults(env []string) []resultRef {
 	seen := make(map[resultRef]bool)
 	var refs []resultRef
 	for _, e := range env {
-		uid, n, ok := dra.ResultFromEnvVar(e)
+		uid, n, ok := state.ResultFromEnvVar(e)
 		if ref := (resultRef{uid: uid, n: n}); ok && !seen[ref] {
 			seen[ref] = true
 			refs = append(refs, ref)
@@ -179,7 +178,7 @@ func (p *Plugin) poolResult(ctrName string, ref resultRef) (result, bool) {
 		return result{}, false
 	}
 	results := p.opts.Pool.ClaimResults(ref.uid)
-	i := slices.IndexFunc(results, func(r dra.PoolResult) bool { return r.Index == ref.n })
+	i := slices.IndexFunc(results, func(r state.PoolResult) bool { return r.Index == ref.n })
 	if i < 0 {
 		return result{}, false
 	}

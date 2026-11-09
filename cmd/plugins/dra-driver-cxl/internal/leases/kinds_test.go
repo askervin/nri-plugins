@@ -35,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
@@ -524,7 +525,7 @@ func TestTwoLeasesOneNode(t *testing.T) {
 		resp, _ := e.call(api.Request{Op: api.OpRequest, Size: "64Mi", Source: source, Wait: "0s"})
 		rec, err := lender.Check(resp.Lease, e.waitClaim(CompanionName(resp.Lease)))
 		mustOK(t, err)
-		devs := []dra.LentDevice{{Source: source, Serial: serialSliced, Size: 64 << 20, Mode: api.ModeNUMA, NumaNode: 2}}
+		devs := []lend.LentDevice{{Source: source, Serial: serialSliced, Size: 64 << 20, Mode: api.ModeNUMA, NumaNode: 2}}
 		mustOK(t, lender.Lend(context.Background(), rec, devs))
 		lender.Prepared(resp.Lease, devs)
 		e.waitState(resp.Lease, state.LeaseReady)
@@ -545,7 +546,7 @@ func TestTwoLeasesOneNode(t *testing.T) {
 	if rel.State != api.StateReleased {
 		t.Fatalf("release %+v", rel)
 	}
-	mustOK(t, lender.Revoke(context.Background(), &dra.Lend{Lease: ids[0], Pod: requester.Pod, Container: envCtr, NumaNodes: []int{2}}, "ns/c"))
+	mustOK(t, lender.Revoke(context.Background(), &lend.Lend{Lease: ids[0], Pod: requester.Pod, Container: envCtr, NumaNodes: []int{2}}, "ns/c"))
 	if got := e.ctrs.holders(envPodUID, envCtr, 2); !slices.Equal(got, ids[1:]) {
 		t.Fatalf("holders after the first release: %v", got)
 	}
@@ -831,7 +832,7 @@ type closingHooks struct {
 }
 
 // OnLending is the broker's, then closes the lease claim once.
-func (h *closingHooks) OnLending(id string, claim *resourcev1.ResourceClaim) (*dra.Lend, error) {
+func (h *closingHooks) OnLending(id string, claim *resourcev1.ResourceClaim) (*lend.Lend, error) {
 	rec, err := h.Broker.OnLending(id, claim)
 	if err == nil && h.close != nil {
 		h.close()

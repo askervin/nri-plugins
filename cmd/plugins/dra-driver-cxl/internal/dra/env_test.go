@@ -44,6 +44,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/engine"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
@@ -139,7 +140,7 @@ type driverEnv struct {
 	// nodes and hooks are the lender of both drivers (Lender.Set) after
 	// lend, leases the lease claims of cxl.nri.io after setLeases.
 	nodes  *fakeNodes
-	hooks  LeaseHooks
+	hooks  lend.LeaseHooks
 	lent   bool
 	leases *fakeLeaseClaims
 }
@@ -377,7 +378,7 @@ func (e *driverEnv) addRegion(name string, node int, size uint64) string {
 
 // lend sets the lender of both drivers: the fake of NRI (nil: NRI is not
 // connected) and the hooks of the broker (nil: lending disabled).
-func (e *driverEnv) lend(nodes *fakeNodes, hooks LeaseHooks) {
+func (e *driverEnv) lend(nodes *fakeNodes, hooks lend.LeaseHooks) {
 	e.nodes, e.hooks, e.lent = nodes, hooks, true
 	e.local.Lender().Set(e.nodeLender(), hooks)
 	e.pool.Lender().Set(e.nodeLender(), hooks)
@@ -817,15 +818,15 @@ type fakeHooks struct {
 	// closed; entered gets the claim names of OnLending when it is set.
 	block   map[string]chan struct{}
 	entered chan string
-	devs    []LentDevice
+	devs    []lend.LentDevice
 }
 
 // OnLending returns the lend of the lease's container.
-func (h *fakeHooks) OnLending(id string, claim *resourcev1.ResourceClaim) (*Lend, error) {
+func (h *fakeHooks) OnLending(id string, claim *resourcev1.ResourceClaim) (*lend.Lend, error) {
 	h.e.event("lending %s %s", id, claim.Name)
 	h.mu.Lock()
 	err, block, entered := h.lendingErr, h.block[claim.Name], h.entered
-	lend := &Lend{Lease: id, Pod: state.PodRef{Namespace: envNS, Name: envPod, UID: envPodUID}, Container: envCtr, FsDir: h.fsDir, Name: h.name}
+	lend := &lend.Lend{Lease: id, Pod: state.PodRef{Namespace: envNS, Name: envPod, UID: envPodUID}, Container: envCtr, FsDir: h.fsDir, Name: h.name}
 	h.mu.Unlock()
 	if entered != nil {
 		entered <- claim.Name
@@ -840,7 +841,7 @@ func (h *fakeHooks) OnLending(id string, claim *resourcev1.ResourceClaim) (*Lend
 }
 
 // OnPrepared marks the lease Ready with the devices.
-func (h *fakeHooks) OnPrepared(id string, devs []LentDevice) {
+func (h *fakeHooks) OnPrepared(id string, devs []lend.LentDevice) {
 	h.e.event("prepared %s", id)
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -858,7 +859,7 @@ func (h *fakeHooks) OnReleasing(id string) {
 }
 
 // lentDevices returns the devices of the last OnPrepared.
-func (h *fakeHooks) lentDevices() []LentDevice {
+func (h *fakeHooks) lentDevices() []lend.LentDevice {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return slices.Clone(h.devs)

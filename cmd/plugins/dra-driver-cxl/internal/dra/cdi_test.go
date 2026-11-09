@@ -257,7 +257,7 @@ func TestCDINames(t *testing.T) {
 	if got := ClaimCDIDeviceName("a-b", 3); got != "claim-a-b-3" {
 		t.Fatalf("device name %q", got)
 	}
-	if got := ResultEnvVarName("a-b", 3); got != "CXL_CLAIM_a_b_3" {
+	if got := state.ResultEnvVarName("a-b", 3); got != "CXL_CLAIM_a_b_3" {
 		t.Fatalf("marker %q", got)
 	}
 	for _, tc := range []struct {
@@ -274,7 +274,7 @@ func TestCDINames(t *testing.T) {
 		{"CXL_CLAIM__1=1", "", 0, false},
 		{"CXL_DRAM_SIZE=1", "", 0, false},
 	} {
-		uid, n, ok := ResultFromEnvVar(tc.env)
+		uid, n, ok := state.ResultFromEnvVar(tc.env)
 		if uid != tc.uid || n != tc.n || ok != tc.ok {
 			t.Errorf("%s: %q %d %v", tc.env, uid, n, ok)
 		}
