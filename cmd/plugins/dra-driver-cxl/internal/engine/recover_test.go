@@ -925,3 +925,34 @@ func TestRecoverKeepsNodeMountOfBusyCompanion(t *testing.T) {
 	v.mustNotBeMounted("after the Unprepare again of c", mnt, target)
 	v.clean("unprepared")
 }
+
+// A pool block grant whose block device is not the one of its region at a
+// start is REALISED_UNRESTORED (L-04: every grant kind is verified), its
+// preparation PREPARED_UNRESTORED; a Prepare again once the block device is
+// the prepared one again restores it.
+func TestRecoverPoolBlockChanged(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib})
+	v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialP, state.ModeBlock, state.KindPersistent))
+	v.f.RenamePmem("region0", "pmem3", "259:9")
+	out := v.restart()
+	if !slices.Equal(out.Unrestored, []state.GrantRef{{Claim: "b"}}) || out.Why[state.GrantRef{Claim: "b"}] == nil {
+		t.Fatalf("recovered %+v", out)
+	}
+	if g := v.grant("b", 0); g.State != state.GrantUnrestored {
+		t.Fatalf("grant %s", g.State)
+	}
+	wantPreparation(t, v, poolDriver, "b", state.PreparationUnrestored)
+	req := poolReq("b", 0, serialP, state.ModeBlock, state.KindPersistent)
+	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{req}); err == nil || !strings.Contains(err.Error(), "as prepared") {
+		t.Fatalf("Prepare again with another block device: %v", err)
+	}
+	v.f.RenamePmem("region0", "pmem0", "259:0")
+	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{req}); err != nil {
+		t.Fatalf("Prepare again: %v", err)
+	}
+	if g := v.grant("b", 0); g.State != state.GrantRealised {
+		t.Fatalf("grant %s after the Prepare again", g.State)
+	}
+	v.mustUnprepare(poolDriver, "b")
+	v.clean("unprepared")
+}

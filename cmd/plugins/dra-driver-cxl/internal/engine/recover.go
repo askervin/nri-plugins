@@ -440,11 +440,11 @@ func (e *Engine) restoreGrantsOf(ctx context.Context, serial state.Serial, out *
 	return nil
 }
 
-// localBlockError returns why a local grant of a persistent memdev does not
-// verify: its block device is not the one of the fsdax namespace of its
-// region now; nil for another grant.
-func (e *Engine) localBlockError(g *state.Grant) error {
-	if g.Asked.Source != state.SourceLocal || g.Asked.Kind != state.KindPersistent || g.Got.BlockDevice == nil {
+// blockError returns why a grant of a persistent memdev does not verify:
+// its block device is not the one of the fsdax namespace of its region now;
+// nil for another grant.
+func (e *Engine) blockError(g *state.Grant) error {
+	if !blockChecked(g) {
 		return nil
 	}
 	return e.checkBlockDevice(g)
@@ -453,8 +453,8 @@ func (e *Engine) localBlockError(g *state.Grant) error {
 // restoredSerial is what the restore of the realised grants of a memdev
 // found: the grants whose node mount is not mounted again, with why; the
 // unrestored ones that verify again; the loop devices of the cached node
-// mounts now, by node mount; the grants of a local memdev whose block
-// device is not the one of its region now, with why.
+// mounts now, by node mount; the grants of a memdev whose block device is
+// not the one of its region now, with why.
 type restoredSerial struct {
 	failed   map[state.GrantRef]error
 	restored []state.GrantRef
@@ -470,7 +470,7 @@ func (e *Engine) restoreSerial(serial state.Serial, why map[state.GrantRef]error
 	writer := firstWriter(uses) != nil || firstWriter(e.unpreparedUses(serial)) != nil
 	badWhy := map[state.GrantRef]error{}
 	var rs restoredSerial
-	rs.bad = e.checkLocalBlock(serial, badWhy)
+	rs.bad = e.checkBlocks(serial, badWhy)
 	byMount := e.restoreMounts(uses, writer, rs.bad)
 	rs.failed, rs.restored = e.classifyRestored(serial, byMount, why)
 	for ref, err := range badWhy {
@@ -497,19 +497,29 @@ func (e *Engine) restoreSerial(serial state.Serial, why map[state.GrantRef]error
 	return rs
 }
 
-// checkLocalBlock returns the realised and unrestored grants of prepared
-// claims of the local persistent memdev with the serial when its block
-// device is not the one of the fsdax namespace of its region now: all of
-// its uses, also of mode block, have no CDI device then; why gets the
-// reason.
-func (e *Engine) checkLocalBlock(serial state.Serial, why map[state.GrantRef]error) map[state.GrantRef]error {
+// blockChecked tells whether the block device of a grant is verified
+// against its region at a start: every grant of a local persistent memdev,
+// a pool grant of mode block (a pool grant of mode fs is verified by its
+// node mount).
+func blockChecked(g *state.Grant) bool {
+	if g.Asked.Kind != state.KindPersistent || g.Got.BlockDevice == nil {
+		return false
+	}
+	return g.Asked.Source == state.SourceLocal || g.Asked.Mode == state.ModeBlock
+}
+
+// checkBlocks returns the realised and unrestored grants of prepared claims
+// of the persistent memdev with the serial whose block device is verified
+// (blockChecked) when it is not the one of the fsdax namespace of its
+// region now: those uses have no CDI device then; why gets the reason.
+func (e *Engine) checkBlocks(serial state.Serial, why map[state.GrantRef]error) map[state.GrantRef]error {
 	r := e.records()
 	var grants []*state.Grant
 	for i := range r.Grants {
 		g := &r.Grants[i]
 		p := r.PreparationOf(g.Ref)
-		if g.Serial == serial && g.Asked.Source == state.SourceLocal && g.Asked.Kind == state.KindPersistent &&
-			prepared(g) && g.Got.BlockDevice != nil && p != nil && (p.State == state.PreparationPrepared || p.State == state.PreparationUnrestored) {
+		if g.Serial == serial && blockChecked(g) &&
+			prepared(g) && p != nil && (p.State == state.PreparationPrepared || p.State == state.PreparationUnrestored) {
 			grants = append(grants, g)
 		}
 	}
@@ -520,7 +530,11 @@ func (e *Engine) checkLocalBlock(serial state.Serial, why map[state.GrantRef]err
 	if err == nil {
 		return nil
 	}
-	klog.Errorf("local: memdev %s (serial %s): %v", e.memdevName(serial), serialText(serial), err)
+	if source := grants[0].Asked.Source; source == state.SourceLocal {
+		klog.Errorf("local: memdev %s (serial %s): %v", e.memdevName(serial), serialText(serial), err)
+	} else {
+		e.errorf(source, "memdev %s (serial %s): %v", e.memdevName(serial), serialText(serial), err)
+	}
 	bad := map[state.GrantRef]error{}
 	for _, g := range grants {
 		why[g.Ref], bad[g.Ref] = err, err
@@ -1408,8 +1422,8 @@ func (e *Engine) deleteDax(ctx context.Context, reg *state.Region, dax string) e
 // for a Prepare again of its claim, and makes it REALISED (its node mount
 // mounted); an error names why it stays unrestored.
 func (e *Engine) restoreGrant(ctx context.Context, req *GrantRequest) error {
-	if err := e.localBlockError(e.records().Grant(req.Ref)); err != nil {
-		// the uses of a local device whose block device changed stay
+	if err := e.blockError(e.records().Grant(req.Ref)); err != nil {
+		// the uses of a device whose block device changed stay
 		// unrestored
 		return err
 	}
