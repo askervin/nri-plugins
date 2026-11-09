@@ -611,13 +611,13 @@ and cannot make it the companion of a lease it did not request.
 
 ## Life cycle
 
-- The lease table `leases.json` in the `cxl.nri.io` plugin data
-  directory is written before any object is created. The driver that
-  prepared the companion claim stores the lend with it
-  (`preparedPoolClaims.json` of the pool driver, `preparedClaimsInfo.json`
-  of `cxl.nri.io`), so it can revoke after a restart. A lease table that
-  cannot be decoded (strictly) is logged, and the plugin starts with an
-  empty one.
+- The lease is recorded in the state of the plugin (`state.json` in the
+  `cxl.nri.io` plugin data directory, viewed as `leases.json`) before any
+  object is created. The driver that prepared the companion claim
+  records the lend with the claim's grant, so it can revoke after a
+  restart ([design.md](design.md#leases-and-lease-claims)). A state that
+  cannot be read makes the plugin start LOST, with an empty lease table
+  ([usage.md](usage.md#upgrade)).
 - Requester container stops: if the pod is being deleted, finished, gone
   or has restartPolicy Never, its leases are released. Otherwise they
   are kept, and the restarted container is created with the nodes of its
@@ -656,12 +656,10 @@ and cannot make it the companion of a lease it did not request.
   requester containers, which restart too, have no leases and ask again;
   the first reconcile deletes the companions, whose claims the drivers
   then unprepare (their device is released, nothing was lent in the new
-  boot). The lease claims stay; kubelet prepares them again. A table
-  without a boot id (of an older plugin) is taken as one of this boot.
+  boot). The lease claims stay; kubelet prepares them again.
 - Mode `fs`: the bind `lease-fs/<claim uid>/<name>` is the lend of the
   device, made by the driver of the device when it prepares the companion
-  claim and recorded with it (`preparedPoolClaims.json`,
-  `preparedClaimsInfo.json`); its unmount when the
+  claim and recorded with its grant; its unmount when the
   companion claim is unprepared is the revoke. The unmount is never lazy:
   while the borrower has files of the filesystem open or mapped (a
   running `llama-server` maps its model), it fails with `device or

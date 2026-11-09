@@ -643,7 +643,7 @@ NodePrepareResources, for each allocated device of the driver:
    ```
    CXL_<KEY>_SERIAL=0x<serial>
    CXL_<KEY>_SHARED=0|1
-   CXL_<KEY>_MODE=numa|dax
+   CXL_<KEY>_MODE=numa|dax|block|fs
    CXL_<KEY>_SIZE=<bytes>
    CXL_<KEY>_NODE=<N>                 (numa)
    CXL_<KEY>_DAX=/dev/daxX.Y          (dax)
@@ -659,9 +659,10 @@ NodePrepareResources, for each allocated device of the driver:
    references only; by the marker the NRI plugin finds the results that
    a container uses, and their settings and memory. A companion
    claim of a lease gets no CDI device ([leases.md](leases.md)). The
-   prepared claim is stored in
-   `/var/lib/kubelet/plugins/cxl-pool.nri.io/preparedPoolClaims.json`.
-   A repeated prepare of a prepared claim returns the stored result; a
+   prepared claim is recorded in the state of the plugin (`state.json`
+   in the `cxl.nri.io` plugin data directory, viewed as
+   `/var/lib/kubelet/plugins/cxl-pool.nri.io/preparedPoolClaims.json`).
+   A repeated prepare of a prepared claim returns the recorded result; a
    region that already exists on the device (another claim on this node
    for the same shared device, or a restart) is reused. A claim that wants
    a device in another mode than another claim on the node prepared it
@@ -704,8 +705,9 @@ another host has the device. See [leases.md](leases.md).
 
 ## Node requirements
 
-- `cxl` (ndctl) and `daxctl` command line tools, and `ndctl` for devices
-  of persistent memory. The container image of the driver includes them;
+- The `cxl` (ndctl) command line tool, and `ndctl` for devices of
+  persistent memory; the plugin binds dax devices to their drivers
+  through sysfs itself. The container image of the driver includes them;
   a host process
   ([usage.md](usage.md#as-a-host-process)) needs them installed on the
   node.
@@ -785,8 +787,8 @@ another host has the device. See [leases.md](leases.md).
   and numbers of those devices (`/dev/daxX.Y`, `/dev/pmemK`, 252:N, 259:N)
   to other devices. kubelet keeps the pods and their claims, and prepares
   every claim of the node again before it starts its containers. At
-  start the plugin keeps a claim of another boot as a stale claim in
-  `preparingPoolClaims.json` (`stale`): not prepared, no CDI device, no
+  start the plugin keeps a claim of another boot as a stale claim
+  ([PREPARED_STALE](states.md#preparationstate)): not prepared, no CDI device, no
   results for NRI, its NUMA nodes not fenced, its device no longer that
   of a prepared claim (another claim may prepare it, and a release does
   not wait for it), nothing released at start. Its Prepare again
@@ -795,14 +797,13 @@ another host has the device. See [leases.md](leases.md).
   disable-memdev`) before the controller detaches it, also when the
   device was away at a start. The record of a Prepare that did not
   finish in another boot loses the region names and lent nodes of that
-  boot and is kept the same way. Claims saved without a boot id (by an
-  older plugin) are taken as prepared in this boot, and so is every claim
-  when the plugin cannot read the boot id: then only the node mount
+  boot and is kept the same way. Every claim is taken as prepared in
+  this boot when the plugin cannot read the boot id: then only the node mount
   check above keeps the claims of mode `fs` from the old boot's devices.
 - Plugin stopped in a Prepare (killed, crashed, or exited on the loss of
   NRI): before a Prepare touches a device it records the claim and the
-  device in
-  `/var/lib/kubelet/plugins/cxl-pool.nri.io/preparingPoolClaims.json`,
+  device in the state of the plugin
+  ([PREPARING](states.md#preparationstate)),
   and before it runs `cxl create-region` the name of the region to come
   (the root decoder's `create_ram_region` or `create_pmem_region`); it
   forgets the claim when the claim is prepared or its rollback released

@@ -53,8 +53,9 @@ and it tries again every 30 seconds while the list fails.
 
 A pool controller deletes its ResourceSlices when it stops gracefully,
 while its devices stay attached to their nodes. So the plugin remembers
-serials in `poolSerials.json` in its data directory (written atomically
-and synced to disk, kept across restarts and reboots):
+the source of serials in its state, `state.json` in its data directory
+(written atomically and synced to disk, kept across restarts and
+reboots, [design.md](design.md#provenance)):
 
 - A serial that it has seen in a ResourceSlice of the pool driver, that
   the pool driver prepared, or that the status of a pool claim allocated
@@ -78,9 +79,9 @@ and synced to disk, kept across restarts and reboots):
   attach), a new memdev is held back for as long as that lasts: it may be
   the device of that claim. A new memdev is local at once otherwise,
   unless a pool that the plugin remembers has been observed without
-  ResourceSlices for less than an hour, the list fails, or
-  `poolSerials.json` could not be read in the last hour (it exists but is
-  corrupt: the log has an error). Then it is held back: it is not
+  ResourceSlices for less than an hour, the list fails, or the state of
+  the plugin could not be read in the last hour (the plugin runs LOST:
+  the log has an error, [usage.md](usage.md#upgrade)). Then it is held back: it is not
   published at all for up to 5 minutes, until the pool is back. If the
   pool's ResourceSlices list the serial, it is a pool device; otherwise,
   or after the 5 minutes, it is local. The log has
@@ -97,19 +98,27 @@ memdevs are on a real machine, from boot) and a local memdev that is
 hot-added while all pools have their ResourceSlices are published at
 once. After a restart of the plugin, the hour of a pool without
 ResourceSlices starts again, because absence is not kept across
-restarts. The rules depend on the file: if it is lost (deleted,
-or a first start with this version) while a pool controller is stopped,
+restarts. The rules depend on the remembered serials: if they are lost
+(a state that cannot be read, `--new-state`, or a first start with this
+version, which does not read the files of older versions) while a pool
+controller is stopped,
 an unprepared pool device on the node is taken as local, unless the
 status of a pool claim of the node names it or a pool claim of the node
 is still being attached. A pool device whose claim was deleted before
 the controller detached it is not covered then. Shared pool memory must
-never be onlined as RAM, so keep the file with the other state of the
-plugin, and upgrade while the pool controllers run.
+never be onlined as RAM, so keep the state of the plugin on the node,
+and upgrade while the pool controllers run.
 
 A pool device that stays attached stays a pool device. To use a former
-pool device as a local memdev without detaching it, stop the plugin,
-remove the record of its serial from `poolSerials.json` (`jq
-'.serials |= map(select(.serial != "0x..."))'`) and start the plugin.
+pool device as a local memdev without detaching it, restart the plugin
+once with `--forget-pool-serial 0x...` (repeatable, or a comma-separated
+list; see [usage.md](usage.md#files-on-the-node) for the DaemonSet): the
+start removes the record of the serial and logs
+`pool serials: forgetting serial 0x... (POOL, --forget-pool-serial)`, and
+a memdev of it is new again. While a ResourceSlice of the pool driver
+lists the serial, the plugin learns it as a pool device again. Remove the
+flag after the start: while it is given, every start forgets the serial
+again.
 
 ```yaml
 - name: memdev-c100e2e1               # "memdev-" + serial in lower-case hex
@@ -318,8 +327,9 @@ A Prepare that fails releases what it took for the claim, but a region
 that only this claim used and that lies below a region of another memory
 device is kept for the claim (see Restart below). Preparing a claim that
 is prepared already touches no device. The plugin's use of the
-devices is stored in `localDevices.json` in the `cxl.nri.io` plugin data
-directory, with the mode of every slice.
+devices is recorded in the state of the plugin, `state.json` in the
+`cxl.nri.io` plugin data directory (viewed as `localDevices.json`), with
+the mode of every slice.
 
 Unprepare: a `numa` slice's memory blocks are offlined (only the blocks
 of that slice), then the slice is unbound, set to size 0 and deleted
@@ -333,11 +343,11 @@ migrate on a later try). kmem is never unbound from memory that is not
 offline: the kernel could not remove it, and it would stay online until a
 reboot.
 
-A slice whose release fails where no claim is left to retry it (a
-restart's release of a claim that is not prepared, the rollback of a
-failed Prepare, a dax device that belongs to no slice) is kept in the
-state under the owner `-` (no claim UID is `-`). Such a slice is never
-handed out again; the next Prepare on the device releases it first, and
+A slice whose release fails where kubelet does not retry it (a
+restart's release of a claim whose Prepare did not finish, the rollback
+of a failed Prepare) stays recorded with its claim, being released
+([RELEASING](states.md#grantstate)). Such a slice is never handed out
+again; the next Prepare or Unprepare of the claim releases it first, and
 fails with the release error while it cannot, and so does every restart.
 The region stays while such a slice exists.
 
@@ -354,13 +364,11 @@ local: memdev mem1 (serial 0xc100e2e1): claim <uid>: deleted slice dax0.1 mode n
 local: memdev mem1 (serial 0xc100e2e1): released region0 in 90.733ms
 ```
 
-Restart: the state file is read again; regions are found by the memdev
-serial and slices by name; a slice that is gone is dropped, the slices of
-claims that are not in the prepared claims (in both `preparedClaims.json`
-and `preparedClaimsInfo.json`: a plugin stopped between their writes
-left a claim in one only, which is not prepared then) are released
-(`numa` slices offlined first), and so are the slices of the
-owner `-`, dax devices of the region that belong to no slice are deleted,
+Restart ([design.md](design.md#how-a-restart-recovers)): the state of
+the plugin is read again; regions are found by the memdev serial and
+slices by name; a slice that is gone is dropped, the slices of claims
+whose Prepare did not finish are released (`numa` slices offlined
+first), dax devices of the region that belong to no slice are deleted,
 and a region of the plugin without claims is destroyed.
 A Prepare that the plugin did not finish while it created the region of
 the first claim of a memdev (a restart, kill or crash of the plugin cuts
@@ -371,9 +379,7 @@ the region that it was creating. The start destroys that region, and the
 Prepare again of the claim creates a new one. A region that a cut
 `cxl create-region` left without a target is deleted. A region on the
 memdev with another name is not the plugin's: it is not touched, and the
-memdev is not published. A device recorded by an older plugin, without
-the name, takes every region on the memdev as what the creation left:
-the memdev had none when the device was recorded. On a memdev that is a
+memdev is not published. On a memdev that is a
 pool device now nothing is touched.
 Linux commits the HDM decoders of a CXL port in order, and destroying a
 region below the region of another memory device on the same host bridge
@@ -395,16 +401,15 @@ probed (and zeroed for a shared device). When nothing lies above it any
 more, the Prepare again destroys it and creates a new one instead. A
 kept region whose memory aliases is not created again smaller until
 nothing lies above it; the Prepare fails meanwhile.
-Regions do not survive a node reboot: the state file records the boot id
-of the kernel (`/proc/sys/kernel/random/boot_id`), and the state of
-another boot is dropped without touching any region, so that a region
-that firmware or an admin created under the same name is never taken for
-the plugin's. The info of each prepared claim (`preparedClaimsInfo.json`)
-records the boot id too: a claim prepared in another boot is not prepared
+Regions do not survive a node reboot: the state of the plugin records
+the boot id of the kernel (`/proc/sys/kernel/random/boot_id`), and the
+records of the regions and slices of another boot are dropped without
+touching any region, so that a region that firmware or an admin created
+under the same name is never taken for the plugin's. A claim prepared in
+another boot is not prepared
 at start (no CDI device, its numa slices not fenced), kubelet's Prepare
 again after the reboot gets a new slice, and its Unprepare (the pod went
-during the reboot) finds nothing to release. A claim saved without a boot
-id (by an older plugin) is taken as prepared in this boot. A `dax` slice
+during the reboot) finds nothing to release. A `dax` slice
 that is gone gets no device node and no `CXL_<KEY>_DAX` in its CDI
 device.
 
@@ -514,7 +519,8 @@ with `cxl-request request --serial 0xc100e2e1` (exclusively) or
    device slower. When the zeroing fails, the new region is released
    again and the claim gets nothing. A region that exists already, kept
    from earlier claims, is used again and not zeroed.
-3. The claim is recorded on the device in `localDevices.json`, with the
+3. The claim is recorded on the device in the state of the plugin
+   (viewed in `localDevices.json`), with the
    dax device, mode, size and `readOnly`; the device entry says
    `"shared": true`.
 4. The claim's CDI device `nri.io/cxl=claim-<claim uid>-<n>` has the
@@ -576,7 +582,7 @@ The two errors about the other use are prefixed with
 | the region disappears while the plugin runs | the plugin forgets the region and its claims; the next claim creates a new region and zeroes it |
 | an exclusive claim (no `shares` request) | no other claim is allocated until it is gone; waiting claims are Pending (Unschedulable) |
 | the last claim is gone | the claim is dropped; the region, `daxX.0` and the bytes stay; the ResourceSlice is unchanged; `cxl list` shows the region on an idle node |
-| plugin start, the device in `sharedDevices` | the state file of the same boot names the device shared with its region: the region is found by serial, `daxX.0` by name, both kept; claims that are not prepared are dropped. Without state nothing happens until the first claim |
+| plugin start, the device in `sharedDevices` | the state of the same boot names the device shared with its region: the region is found by serial, `daxX.0` by name, both kept; claims that are not prepared are dropped. Without state nothing happens until the first claim |
 | plugin start, the device not in `sharedDevices` | the state says shared: with prepared claims the device stays as it is and serves them, and is not published; without claims the region is destroyed, the state entry dropped, and the device is published as a sliced memdev at the next scan |
 | plugin restart | as plugin start (the same boot) |
 | node reboot | the region and the bytes are gone (volatile); the state of another boot is dropped without touching any region; the first claim creates the region again and zeroes it |
@@ -675,7 +681,7 @@ has a writer and a reader. A running container leases the device with
    `claim <ns>/<name>: request <req>: `.
 2. The first claim of the device on the node creates a pmem region on the
    memdev under a root decoder with persistent capacity. The region is
-   recorded in `localDevices.json` like the regions of slices (the name
+   recorded in the state of the plugin like the regions of slices (the name
    before `cxl create-region` runs), and the rules of local regions
    apply to it: the decoder order of a host bridge, kept regions, hollow
    regions ([What Prepare does](#what-prepare-does)).
@@ -867,13 +873,13 @@ The plugin protects against such devices in two ways:
   `CONFIG_LIBNVDIMM`, `CONFIG_BLK_DEV_PMEM`, `CONFIG_ND_PFN`,
   `CONFIG_BLK_DEV_LOOP` and the filesystems that the node mounts, and the
   `ndctl` tool.
-- The `cxl` (ndctl) tool. `daxctl` is optional: dax drivers are switched
-  with `daxctl` when it is installed, else through sysfs; slices are made
-  through sysfs. The container image of the driver has both; a host
-  process needs them installed on the node.
+- The `cxl` (ndctl) tool. The plugin makes slices and binds dax devices
+  to their drivers through sysfs itself. The container image of the
+  driver has `cxl` and `ndctl`; a host process needs them installed on
+  the node.
 - `/sys/devices/system/memory/auto_online_blocks` should be `offline`:
   the plugin onlines the blocks of `numa` slices movable itself (kmem is
-  bound through sysfs, not with `daxctl`). Region creation also adds the
+  bound through sysfs). Region creation also adds the
   whole region through kmem for a moment (the kernel binds the dax device
   of a new RAM region to kmem) before the plugin switches it to
   `device_dax`: with `online` the kernel onlines the whole region in a

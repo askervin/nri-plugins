@@ -21,18 +21,20 @@ The words used below (`source`, `type`, `shared`, `persistent`,
 - [Example claims](#example-claims)
 - [nri-dra-driver-cxl flags](#nri-dra-driver-cxl-flags)
 - [Configuration file](#configuration-file)
-- [Files on the node](#files-on-the-node)
+- [Files on the node](#files-on-the-node), [Upgrade](#upgrade)
 
 Local memory devices are described in [local.md](local.md), pool devices
 and the pool controller contract in [pool.md](pool.md), memory for running
 containers in [leases.md](leases.md). [e2e.md](e2e.md) shows how to try
-all of it in the e2e test VMs.
+all of it in the e2e test VMs. [design.md](design.md) describes the
+objects of the driver, how a claim becomes memory and how a restart
+recovers.
 
 ## Requirements
 
 - Kubernetes v1.37 or later, see [Feature gates](#feature-gates).
-- A container runtime with CDI support (containerd 1.7 or newer with CDI
-  enabled, CRI-O 1.23 or newer) and with NRI enabled: the driver keeps
+- A container runtime with CDI support and with NRI enabled (containerd
+  1.7 or newer, CRI-O 1.26 or newer): the driver keeps
   containers off the CXL memory they did not claim, steers them, and lends
   memory to them through NRI.
 - cgroup v2.
@@ -47,11 +49,12 @@ all of it in the e2e test VMs.
   [Persistent memory](#persistent-memory)), and `CONFIG_BLK_DEV_LOOP` for
   `access: cached`. A cluster filesystem (gfs2 with `lock_dlm`) also needs
   its cluster stack (corosync, `dlm_controld`) on every host.
-- The `cxl` (ndctl) tool for local memdevs and pool devices, `daxctl` for
-  pool devices, `ndctl` for pool devices of persistent memory
+- The `cxl` (ndctl) tool for local memdevs and pool devices, and `ndctl`
+  for devices of persistent memory
   ([local.md](local.md#node-requirements),
-  [pool.md](pool.md#node-requirements)). The container image of the driver
-  includes them; a host process needs them installed on the node.
+  [pool.md](pool.md#node-requirements)). The driver binds dax devices to
+  their drivers through sysfs itself. The container image of the driver
+  includes both tools; a host process needs them installed on the node.
 - `/sys/devices/system/memory/auto_online_blocks` set to `offline`: the
   plugin onlines the memory of `numa` slices and pool devices itself, and
   the kernel must never online shared devices as RAM.
@@ -133,7 +136,7 @@ images of the other plugins of this repository, and contains:
 |:-----|:-|
 | `/bin/nri-dra-driver-cxl` | the driver, the entrypoint of the image |
 | `/bin/cxl-request` | the static lease CLI; the plugin copies it to the host at start (`--lease-cli-source`), from where it mounts it into the containers of lease claims |
-| `/usr/bin/cxl`, `/usr/bin/daxctl`, `/usr/bin/ndctl` | the tools of ndctl v85, with their shared libraries and the dynamic loader |
+| `/usr/bin/cxl`, `/usr/bin/ndctl` | the tools of ndctl v85, with their shared libraries and the dynamic loader |
 | `/licenses/` | the licenses of the driver, `cxl-request` and ndctl |
 
 ### Deploy with Helm
@@ -161,7 +164,7 @@ its callers to containers), and mounts `/var/lib/kubelet/plugins`,
 at the same paths. `/var/lib/kubelet/plugins` has `mountPropagation:
 Bidirectional`: the filesystems that both drivers mount there for mode
 `fs` reach the host, where the container runtime binds them into
-containers. Its image has the `cxl`, `daxctl` and `ndctl` tools. So every
+containers. Its image has the `cxl` and `ndctl` tools. So every
 feature works in the DaemonSet: local memdevs, pool devices, steering and
 leases.
 
@@ -219,7 +222,7 @@ detached only after that.
 ### As a host process
 
 The driver can run on the node as a host process instead, for example as a
-systemd unit. It then needs the `cxl`, `daxctl` and `ndctl` tools on the node and a
+systemd unit. It then needs the `cxl` and `ndctl` tools on the node and a
 kubeconfig with the rights of the ClusterRole of the chart. Build both
 static binaries into `build/bin`:
 
@@ -375,7 +378,17 @@ memory device has `source` and `size`; the other attributes exist on some
 devices only, and a selector that reads an attribute a device does not
 have fails the allocation of the claim. The shipped classes guarantee the
 attributes their devices have, so selectors in claims on them may use
-those.
+those. Pool devices have `coherent`, local memdevs do not (the
+`memdevSettings[].coherent` of the configuration file is a fact the
+plugin uses, not an attribute): a selector on `coherent` matches no local
+memdev.
+
+The plugin publishes the slice again when the devices of the node
+change, and logs
+
+```
+rescanAndPublish: published updated resources (N devices)
+```
 
 ## DeviceClasses
 
@@ -761,19 +774,24 @@ container ns/pod/ctr: MemoryConfig: container.steering.maxStep needs a policy ot
 container ns/pod/ctr: MemoryConfig: container.steering.minStep 2Gi exceeds maxStep 1Gi (minStep 2Gi from claim ns/a request r, maxStep 1Gi (node default))
 ```
 
-Of the `device` section, `cxl.nri.io`, in this order:
+Of the `device` section, `cxl.nri.io`, in this order, for a memdev of
+volatile memory (`cxl-local`, `cxl-local-shared`), a `region` and a
+`dram` (modes `block` and `fs` are of persistent memdevs, below); the
+last one is that of the `lease` device:
 
 - `MemoryConfig: device.mode: invalid mode "..." (numa or dax)`
 - `MemoryConfig: device.readOnly needs mode dax`
 - `MemoryConfig: device: a shared device is used as dax only`
 - `MemoryConfig: device.access needs mode fs`
 - `MemoryConfig: device.path needs mode fs`
+- `MemoryConfig: device.fsType needs mode fs`
 - `MemoryConfig: device: a region is used as numa only`,
   `MemoryConfig: device: a dram is used as numa only`
 - `MemoryConfig: device: the lease device has no device settings`
 
 A persistent local memdev (`cxl-local-persistent`) is checked like a
-persistent pool device, with the texts of `cxl-pool.nri.io` below; its
+persistent pool device, with the texts of `cxl-pool.nri.io` below
+(`invalid mode "..." (numa, dax, block or fs)` included); its
 facts come from the configuration file instead of the claim status
 (shared: in `sharedDevices`; single host: not in `sharedDevices`;
 coherent: `memdevSettings[].coherent`).
@@ -1238,8 +1256,9 @@ down: the restarted plugin manages them like containers that are not
 steered (below), and they keep their memory policies. It sets the
 `memory.high` of the containers that the steering of the stopped plugin
 throttled to `max`, as the end of a steering does, also when the
-configuration no longer steers them (the plugin keeps them in
-`steeredContainers.json`), and leaves the `memory.high` of the others
+configuration no longer steers them (the plugin records every steered
+container in `state.json` before its steering starts,
+[Files on the node](#files-on-the-node)), and leaves the `memory.high` of the others
 alone. A container whose steering fails to start (`failed to start
 memory steering`) is managed like a container that is not steered too.
 
@@ -1309,7 +1328,9 @@ without these CXL nodes, plus the nodes of its `numa` results and leases.
 Its own nodes are the `cpuset.mems` of its spec (set by the kubelet
 memory manager or an earlier NRI plugin), or all nodes with memory
 (`/sys/devices/system/node/has_memory`) when the spec has none. A new
-container gets it when it is created; the running and created containers
+container gets it when it is created (logged at verbosity 3 as
+`NRI CreateContainer: ctr=<ctr>: cpuset.mems=<nodes> (fenced nodes <S>)`
+when the plugin sets it); the running and created containers
 are updated before the memory of a new node goes online, so no running
 container sees the node. containerd applies an update of a container
 that it has not marked started to its spec only: a container that is
@@ -1342,9 +1363,19 @@ defaults.container.steering.policy: none: containers are steered only when their
 defaults.container.steering.policy: auto: containers with numa claims are steered unless their claims say none
 ```
 
-(the last one with the policy of the node default), and
-`NRI fence: fencing CXL node N (fenced nodes ...)` when it starts keeping
-a node away.
+(the last one with the policy of the node default). When it starts
+keeping a node away, before the memory of the node goes online, it logs
+
+```
+NRI fence: fencing CXL node N (fenced nodes S)
+```
+
+with `S` every node kept away (cpuset syntax), and at start, for the
+nodes of the claims that are prepared in this boot,
+
+```
+NRI fence: fencing CXL nodes S of prepared claims
+```
 
 While no node is kept away (no CXL memory onlined by the plugin since
 its start, and none of its prepared claims), no container is changed.
@@ -1470,8 +1501,9 @@ spec:
 
 The claims show `spec.devices` and the environment the container sees,
 with the local memdev `0xc100e2e1`, the shared local device `0xc100e2e2`
-(listed in `sharedDevices`), the exclusive pool device `0xc1ee0001` and
-the shared pool device `0xc1ae0001`.
+(listed in `sharedDevices`), the exclusive pool device `0xc1ee0001`,
+the shared pool device `0xc1ae0001` and the shared pool devices of
+persistent memory `0xc1af0001` (an erofs) and `0xc1af0002` (an ext4).
 
 1. 128Mi of local CXL memory as RAM; the container is not steered, it has
    the node in its `cpuset.mems`
@@ -1658,12 +1690,12 @@ the shared pool device `0xc1ae0001`.
     ```
 
     ```
-    CXL_C1AE0001_MODE=block
-    CXL_C1AE0001_PATH=/dev/pmem1
-    CXL_C1AE0001_READONLY=0
-    CXL_C1AE0001_SERIAL=0xc1ae0001
-    CXL_C1AE0001_SHARED=1
-    CXL_C1AE0001_SIZE=534773760
+    CXL_C1AF0001_MODE=block
+    CXL_C1AF0001_PATH=/dev/pmem1
+    CXL_C1AF0001_READONLY=0
+    CXL_C1AF0001_SERIAL=0xc1af0001
+    CXL_C1AF0001_SHARED=1
+    CXL_C1AF0001_SIZE=534773760
     CXL_CLAIM_<uid>_0=1
     ```
 
@@ -1676,11 +1708,11 @@ the shared pool device `0xc1ae0001`.
     ```
 
     ```
-    CXL_C1AE0001_ACCESS=direct
-    CXL_C1AE0001_FSTYPE=erofs
-    CXL_C1AE0001_MODE=fs
-    CXL_C1AE0001_PATH=/models
-    CXL_C1AE0001_READONLY=1
+    CXL_C1AF0001_ACCESS=direct
+    CXL_C1AF0001_FSTYPE=erofs
+    CXL_C1AF0001_MODE=fs
+    CXL_C1AF0001_PATH=/models
+    CXL_C1AF0001_READONLY=1
     ...
     ```
 
@@ -1730,7 +1762,7 @@ the shared pool device `0xc1ae0001`.
 
 16. A read-write filesystem and a reader of it on the same node: an ext4
     that a writer in mode `block` stored in the persistent pool device
-    `0xc1ae0001`
+    `0xc1af0002`
     ([pool-persistent-fs-rw.yaml](blob:/deployment/samples/dra-driver-cxl/pool-persistent-fs-rw.yaml)).
     The node must allow ext4 (`fsTypes: [erofs, ext4]` in the
     [configuration file](#configuration-file)), which trusts every raw
@@ -1744,14 +1776,14 @@ the shared pool device `0xc1ae0001`.
     ```
 
     ```
-    CXL_C1AE0001_ACCESS=direct
-    CXL_C1AE0001_FSTYPE=ext4
-    CXL_C1AE0001_MODE=fs
-    CXL_C1AE0001_PATH=/data
-    CXL_C1AE0001_READONLY=0
-    CXL_C1AE0001_SERIAL=0xc1ae0001
-    CXL_C1AE0001_SHARED=1
-    CXL_C1AE0001_SIZE=534773760
+    CXL_C1AF0002_ACCESS=direct
+    CXL_C1AF0002_FSTYPE=ext4
+    CXL_C1AF0002_MODE=fs
+    CXL_C1AF0002_PATH=/data
+    CXL_C1AF0002_READONLY=0
+    CXL_C1AF0002_SERIAL=0xc1af0002
+    CXL_C1AF0002_SHARED=1
+    CXL_C1AF0002_SIZE=534773760
     CXL_CLAIM_<uid>_0=1
     ```
 
@@ -1759,7 +1791,7 @@ the shared pool device `0xc1ae0001`.
     pod with a `podAffinity` to the writer's pod (`topologyKey:
     kubernetes.io/hostname`): on another node it would wait until the
     writer is gone ([Several nodes](#several-nodes-readwriteonce-and-cluster-filesystems)).
-    `CXL_C1AE0001_READONLY=1`; it reads what the writer writes.
+    `CXL_C1AF0002_READONLY=1`; it reads what the writer writes.
 
 17. A persistent local memdev `0xc100f5e1`: a writer in mode `block`
     without a capacity request stores an ext4 in it; then claims of one
@@ -1809,6 +1841,13 @@ variable when it is set. Both `-flag` and `--flag` work.
 | `--lease-cli-source` | `LEASE_CLI_SOURCE` | (empty) | at start, before any CDI spec is written, copy this file to `--lease-cli` (mode 0755, replaced atomically); the chart copies the `/bin/cxl-request` of the image to the host this way |
 | `--lease-wait` | `LEASE_WAIT` | `120s` | how long a lease request waits for Ready when it does not say |
 | `--lease-companion-image` | `LEASE_COMPANION_IMAGE` | `registry.k8s.io/pause:3.10` | image of the companion pods of leases |
+| `--lease-max-connections` | `LEASE_MAX_CONNECTIONS` | `64` | open connections of the lease socket of one lease claim; one more is closed at once |
+| `--lease-idle-timeout` | `LEASE_IDLE_TIMEOUT` | `10m0s` | how long a connection of a lease socket may stay without a request before the plugin closes it |
+| `--lease-max-per-pod` | `LEASE_MAX_PER_POD` | `64` | leases of the containers of one pod; a request beyond it is refused |
+| `--compat-views` | | `true` | write the [view files](#files-on-the-node) of `state.json`; `false` removes the view files that exist at start and writes none |
+| `--discard-old-state` | | `false` | at a first start (no `state.json`), start although state files of an older plugin name CXL regions that exist: the files are moved aside, the regions are left as they are ([Upgrade](#upgrade)) |
+| `--new-state` | | `false` | start with a new `state.json` when neither `state.json` nor `state.json.prev` can be read ([Upgrade](#upgrade)) |
+| `--forget-pool-serial` | | (none) | serial (`0x<hex>` or decimal) whose remembered provenance (pool device or local memdev) is removed at start, so that a memdev of it is new again; repeatable, or a comma-separated list ([local.md](local.md#what-the-plugin-publishes)) |
 
 `-v` and the other logging flags of klog are accepted too;
 `nri-dra-driver-cxl -help` lists them all. The plugin stops on SIGTERM and
@@ -1887,30 +1926,90 @@ restarts.
 
 ## Files on the node
 
+The plugin keeps the records of both drivers in one document,
+`state.json` in the plugin data directory of `cxl.nri.io`, and writes it
+before it acts on what a record says
+([design.md](design.md#files-on-the-node)). Only the plugin writes the
+files below: do not edit them, and do not copy them to another node. The
+flags `--forget-pool-serial`, `--discard-old-state` and `--new-state`
+are the changes that an operator makes to them. `D` is
+`/var/lib/kubelet/plugins/cxl.nri.io`, `P` the plugin data directory of
+the pool driver, `/var/lib/kubelet/plugins/cxl-pool.nri.io`.
+
 | file | |
 |:-----|:-|
-| `/var/lib/kubelet/plugins/cxl.nri.io/preparedClaims.json` | prepared claims of `cxl.nri.io` (kubelet plugin helper) |
-| `/var/lib/kubelet/plugins/cxl.nri.io/preparedClaimsInfo.json` | devices of every prepared claim of `cxl.nri.io`, with the request and the resolved `container` settings of each result, its lend and the boot id of its Prepare: a claim of another boot is not prepared at start ([local.md](local.md#what-prepare-does)) |
-| `/var/lib/kubelet/plugins/cxl.nri.io/localDevices.json` | regions and slices of local memdevs, the claims of shared local devices, and the pmem regions and claims of persistent local memdevs |
-| `/var/lib/kubelet/plugins/cxl.nri.io/poolSerials.json` | the serials of pool devices and of local memdevs that the plugin has seen, and the pools it has listed: a pool device is never published as a local memdev while its controller's ResourceSlices are absent; edit it only while the plugin is stopped ([local.md](local.md#what-the-plugin-publishes)) |
-| `/var/lib/kubelet/plugins/cxl.nri.io/steeredContainers.json` | the containers that the steering of the plugin throttles, with their cgroups: a restarted plugin removes their `memory.high` ([Steering](#steering)) |
-| `/var/lib/kubelet/plugins/cxl.nri.io/leases.json` | the lease table, with the boot id of its leases: the leases of another boot are dropped at start ([leases.md](leases.md#life-cycle)) |
-| `/var/lib/kubelet/plugins/cxl.nri.io/leases/<claim uid>/cxl.sock` | the lease socket of a lease claim |
-| `/var/lib/kubelet/plugins/cxl.nri.io/cxl-request` | the lease CLI that the plugin of the Helm chart copies from its image (`--lease-cli-source`) |
-| `/var/lib/kubelet/plugins/cxl.nri.io/mounts/<serial hex>-<access>` | the node mount of the filesystem of a persistent local memdev for mode `fs` ([Persistent memory](#persistent-memory)) |
-| `/var/lib/kubelet/plugins/cxl-pool.nri.io/preparedPoolClaims.json` | prepared claims of `cxl-pool.nri.io`, with the boot id of their Prepare |
-| `/var/lib/kubelet/plugins/cxl-pool.nri.io/preparingPoolClaims.json` | claims of `cxl-pool.nri.io` whose Prepare has touched a device and not finished: a restarted plugin releases the device at start, or keeps the claim for its Unprepare or its Prepare again; and the stale claims (`stale`: prepared in another boot), kept for their Unprepare or their Prepare again ([pool.md](pool.md#ordering-and-failure-semantics)) |
-| `/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/<serial hex>-<access>` | the node mount of the filesystem of a persistent pool device for mode `fs` |
+| `D/state.json` | the document: the prepared claims of both drivers and the memory they got, the memdevs and regions of the driver, what the driver knows about the source of every serial (pool device or local memdev) and the pools it has listed, the lease claims and leases, the steered containers; with the boot id of its records: what a reboot leaves of them is changed at the first start of the new boot ([design.md](design.md#how-a-restart-recovers)) |
+| `D/state.json.prev` | the document before the last write; read when `state.json` cannot be |
+| `D/state.json.tmp`, `D/state.json.prev.tmp` | present only while the document is being written |
+| `D/state.json.bad` | a `state.json` that could not be read, moved aside when the plugin started from `state.json.prev`; kept for diagnosis |
+| `D/state.json.lost`, `D/state.json.prev.lost` | the documents that could not be read, moved aside by `--new-state`; kept for diagnosis |
+| `D/state.lock` | locked by the running plugin, with its holder (`pid <pid> host <host>`): a second plugin on the node, such as the new pod of a rolling update, waits up to 2 minutes for it and then exits |
+| `D/<file>.old`, `P/<file>.old` | a state file of an older plugin, moved aside at the first start ([Upgrade](#upgrade)) |
+| `D/preparedClaims.json`, `D/preparedClaimsInfo.json`, `D/localDevices.json`, `D/leases.json`, `P/preparedPoolClaims.json` | views of `state.json` in the format of the state files of earlier versions, for reading: the prepared claims of `cxl.nri.io` and their devices, the regions and slices of local memdevs, the lease claims and leases, the prepared claims of the pool driver. Every view is marked with `"viewOf": "state.json"` (in every value of the three files of prepared claims, else at the top), rewritten after every change of the document and not synced to the disk. The plugin never reads them; `--compat-views=false` removes them at start and writes none |
+| `D/localProbes.json` | the usable size of every local memdev whose memory aliases, by serial ([local.md](local.md#broken-and-aliased-memory)): a fact about the hardware, not part of the document; it is kept across restarts, reboots and `--discard-old-state`. Delete it, with the plugin stopped, to probe every memdev again |
+| `D/leases/<claim uid>/cxl.sock` | the lease socket of a lease claim; the directory is the container's `/run/cxl` ([leases.md](leases.md#opting-in)) |
+| `D/lease-fs/<claim uid>/<name>` | the bind of the node mount of an `fs` lease; the directory of the claim is the container's `/run/cxl/fs` ([leases.md](leases.md#opting-in)) |
+| `D/cxl-request` | the lease CLI that the plugin of the Helm chart copies from its image (`--lease-cli-source`) |
+| `D/mounts/<serial hex>-<access>`, `P/mounts/<serial hex>-<access>` | the node mount of the filesystem of a persistent local memdev, or of a persistent pool device, for mode `fs` ([Persistent memory](#persistent-memory)) |
 | `<cdi root>/cxl-claims.yaml` | CDI kind `nri.io/cxl`: a device `claim-<uid>-<n>` per allocation result n of a prepared `cxl.nri.io` claim, with the marker, the result's variables and its dax device node |
 | `<cdi root>/cxl-leases.yaml` | CDI kind `nri.io/cxl`: a device `lease-<uid>` per lease claim |
 | `<cdi root>/cxl-pool.yaml` | CDI kind `nri.io/cxl-pool`: a device `claim-<uid>-<n>` per allocation result n of a prepared pool claim, likewise |
 
-The regions and slices of local memdevs are described in
-[local.md](local.md#what-prepare-does), the lease table and sockets in
-[leases.md](leases.md#life-cycle), the prepared pool claims in
-[pool.md](pool.md#what-the-node-plugin-does). Companion claims of leases
-get no CDI device ([leases.md](leases.md#companion-objects)).
+The view files are the files that the e2e tests and the reliability
+test read; a later version may stop writing them. Companion claims of
+leases get no CDI device ([leases.md](leases.md#companion-objects)). At
+start the plugin deletes every CDI spec of the kinds `nri.io/cxl` and
+`nri.io/cxl-pool` and writes the three files again from the document.
 
-At start the plugin deletes every CDI spec of the kinds `nri.io/cxl` and
-`nri.io/cxl-pool` and writes the three files again from the prepared
-claims.
+The flags of the files are no values of the Helm chart: add one to the
+`args` of the container of the DaemonSet
+(`kubectl -n kube-system edit daemonset nri-dra-driver-cxl`), and remove
+it again when the plugin has started. The DaemonSet passes it on every
+node; `--discard-old-state` acts only at a first start, `--new-state`
+only when no document can be read, and `--forget-pool-serial` only on
+the nodes that remember the serial, but on them at every start while it
+is given.
+
+### Upgrade
+
+The plugin reads `state.json` only. At its first start on a node (no
+`state.json`, no `state.json.prev`) it looks for the state files of an
+older plugin that hold records: `preparedClaims.json`,
+`preparedClaimsInfo.json`, `localDevices.json`, `poolSerials.json`,
+`leases.json` and `steeredContainers.json` in `D`,
+`preparedPoolClaims.json` and `preparingPoolClaims.json` in `P` (a view
+of `state.json` holds none). It does not import them:
+
+- When no record of them names a CXL region that exists on the node, it
+  moves them aside and starts with a new document, logging
+  `store: old state file <file> moved aside to <file>.old`.
+- Otherwise it refuses to start:
+  `old state files found; drain the node's claims or start with --discard-old-state: <files> (regions <regions>)`.
+
+So drain the node's claims before the upgrade: delete (or move) the pods
+with claims of the drivers on the node, or cordon and drain it, and wait
+until kubelet has unprepared their claims, so that the old plugin
+releases its regions. With `--discard-old-state` the plugin moves the
+files aside also when their regions exist, and starts without knowing
+them: it has no record of their claims, and their regions are
+foreign to it (published as `region` devices when they are online RAM,
+their memdevs not published, never touched). Destroy such regions with
+`cxl disable-region` and `cxl destroy-region` when nothing uses them.
+The remembered pool serials of `poolSerials.json` are not carried over
+either: upgrade while the pool controllers run and publish their
+ResourceSlices ([local.md](local.md#what-the-plugin-publishes)).
+
+A `state.json` that the plugin cannot read, because it was written by a
+plugin of another schema (an older or a newer one) or it is damaged, is
+replaced by `state.json.prev` when that one can be read. When neither
+can be read, the plugin starts LOST: it logs
+`store: the driver state is lost: state.json: <error>; state.json.prev: <error>; start the driver with --new-state to create a new one`,
+writes nothing, releases nothing, recovers nothing at start, fails every
+Prepare with that error, starts the lease broker without leases, and
+holds back every new memdev for up to 5 minutes in its first hour (the
+remembered pool serials are lost). It does
+not crash or restart. Drain the node's claims and start it once with
+`--new-state`: it moves both files aside (`.lost`) and starts with a new
+document, and what the lost records named is foreign to it, as with
+`--discard-old-state`. A downgrade is not supported: an older plugin does
+not read `state.json`.

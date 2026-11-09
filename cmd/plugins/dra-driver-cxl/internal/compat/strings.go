@@ -535,6 +535,9 @@ const (
 	// Quoted in docs/memory/cxl/usage.md section "Steering".
 	DocNRICreateContainerError = "NRI CreateContainer: <error>"
 
+	// Quoted in docs/memory/cxl/usage.md section "Containers without claims".
+	DocNRICreateContainerCtrCtrCpusetMemsNodesFenced = "NRI CreateContainer: ctr=<ctr>: cpuset.mems=<nodes> (fenced nodes <S>)"
+
 	// Quoted in docs/memory/cxl/usage.md section "Steering".
 	DocNRICreateContainerCtrCtrDramAndRegionMemory = "NRI CreateContainer: ctr=<ctr>: dram and region memory is not steered: the claims reserve capacity only"
 
@@ -549,6 +552,9 @@ const (
 
 	// Quoted in docs/memory/cxl/usage.md section "Steering".
 	DocNRICreateContainerCtrCtrSteeringPolicyAutoNo = "NRI CreateContainer: ctr=<ctr>: steering policy auto: no numa memory to steer"
+
+	// Quoted in docs/memory/cxl/usage.md section "Containers without claims".
+	DocNRIFenceFencingCXLNodeNFencedNodes = "NRI fence: fencing CXL node N (fenced nodes S)"
 
 	// Quoted in docs/memory/cxl/usage.md section "One node: superblock, block device, binds".
 	DocCXLPoolNRIIoDevice0xSerialDevH11871f = "cxl-pool.nri.io: device 0x<serial>: /dev/loopN read-write"
@@ -644,7 +650,19 @@ const (
 	DocMemoryNOnlineAgainAfterOffliningItAutoOnlined = "memoryN: online again after offlining it (auto-onlined by udev?)"
 
 	// Quoted in docs/memory/cxl/local.md section "What the plugin publishes".
+	DocPoolSerialsForgettingSerial0xPOOLForgetPool = "pool serials: forgetting serial 0x... (POOL, --forget-pool-serial)"
+
+	// Quoted in docs/memory/cxl/local.md section "What the plugin publishes".
 	DocPoolSerialsHoldingBackNewMemdev = "pool serials: holding back new memdev ..."
+
+	// Quoted in docs/memory/cxl/usage.md section "Devices of cxl.nri.io".
+	DocRescanAndPublishPublishedUpdatedResourcesNDevices = "rescanAndPublish: published updated resources (N devices)"
+
+	// Quoted in docs/memory/cxl/usage.md section "Upgrade".
+	DocStoreOldStateFileFileMovedAsideTo = "store: old state file <file> moved aside to <file>.old"
+
+	// Quoted in docs/memory/cxl/usage.md section "Upgrade".
+	DocStoreTheDriverStateIsLostStateJson = "store: the driver state is lost: state.json: <error>; state.json.prev: <error>; start the driver with --new-state to create a new one"
 )
 
 // regexps are the constants that are regular expressions and their dialects.
