@@ -15,10 +15,15 @@
 package leases
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
-	"syscall"
+	"os"
+	"strings"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 )
@@ -85,21 +90,80 @@ func (t tableIdentity) Resolve(pid int) (Requester, error) {
 	return Requester{Pod: pod, Container: name}, nil
 }
 
-// peerPid returns the pid of the process that connected.
-func peerPid(c *net.UnixConn) (int, error) {
+// peer is the process that connected to a lease socket, fixed at connect:
+// a pid alone names whichever process holds it now.
+type peer struct {
+	pid int
+	// start is the start time of the process at connect, "" when unknown.
+	start string
+	// pidfd refers to the process itself (SO_PEERPIDFD), -1 when the
+	// kernel has no SO_PEERPIDFD.
+	pidfd int
+}
+
+// processStartTime returns the start time of the process pid, field 22 of
+// /proc/<pid>/stat.
+var processStartTime = func(pid int) (string, error) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return "", err
+	}
+	// the command name in parentheses may hold spaces and parentheses
+	i := bytes.LastIndexByte(data, ')')
+	if i < 0 {
+		return "", fmt.Errorf("/proc/%d/stat: no command name", pid)
+	}
+	// the fields after the command name start at field 3
+	fields := strings.Fields(string(data[i+1:]))
+	if len(fields) < 20 {
+		return "", fmt.Errorf("/proc/%d/stat: %d fields", pid, len(fields)+2)
+	}
+	return fields[19], nil
+}
+
+// openPeer returns the process that connected: its pid from SO_PEERCRED,
+// its start time and, where the kernel has SO_PEERPIDFD, its pidfd.
+func openPeer(c *net.UnixConn) (*peer, error) {
 	raw, err := c.SyscallConn()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	var cred *syscall.Ucred
+	p := &peer{pidfd: -1}
 	var credErr error
 	if err := raw.Control(func(fd uintptr) {
-		cred, credErr = syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
+		var cred *unix.Ucred
+		cred, credErr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
+		if credErr != nil {
+			return
+		}
+		p.pid = int(cred.Pid)
+		if pidfd, err := unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_PEERPIDFD); err == nil {
+			p.pidfd = pidfd
+		}
 	}); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if credErr != nil {
-		return 0, credErr
+		return nil, credErr
 	}
-	return int(cred.Pid), nil
+	p.start, _ = processStartTime(p.pid)
+	return p, nil
+}
+
+// running tells whether the process that connected still runs: a process
+// that exited, or a pid whose start time differs, is gone.
+func (p *peer) running() bool {
+	if p.pidfd >= 0 && unix.PidfdSendSignal(p.pidfd, 0, nil, 0) != nil {
+		return false
+	}
+	start, err := processStartTime(p.pid)
+	return err == nil && p.start != "" && start == p.start
+}
+
+// close releases the pidfd of the process.
+func (p *peer) close() {
+	if p != nil && p.pidfd >= 0 {
+		_ = unix.Close(p.pidfd)
+		p.pidfd = -1
+	}
 }

@@ -36,7 +36,9 @@ import (
 // several requests per connection, a request line of at most
 // maxRequestLine bytes decoded strictly; the response of a Ready dax or
 // block lease carries the open fd of its device (SCM_RIGHTS) on the write
-// of its line. The peer is identified once, when it connects.
+// of its line. The peer is the process that connected, fixed at connect by
+// its pid, start time and pidfd; the identity of every request is that of
+// the peer's container then, the connection's once the peer is gone.
 
 // leaseFd names the device of a dax or block lease whose fd goes with a
 // response: none if path is "".
@@ -68,11 +70,13 @@ func (b *Broker) serveConn(claimUID string, c *net.UnixConn) {
 		return
 	}
 	defer b.removeConn(claimUID, c)
-	who, authErr := b.authenticate(claimUID, c)
+	proc, procErr := openPeer(c)
+	defer proc.close()
+	who, authErr := b.authenticate(claimUID, proc, procErr)
 	if authErr != nil {
 		klog.Warningf("lease broker: claim %s: rejected connection: %v", claimUID, authErr)
 	}
-	connected, known := who, authErr == nil
+	connected, connectedErr := who, authErr
 	r := bufio.NewReaderSize(c, 4096)
 	for first := true; ; first = false {
 		// a connection without a request for Limits.Idle is closed
@@ -84,12 +88,7 @@ func (b *Broker) serveConn(claimUID string, c *net.UnixConn) {
 			return
 		}
 		if !first {
-			// the identity of every request is that of its peer now; the
-			// identity of the connection when the peer has exited
-			who, authErr = b.authenticate(claimUID, c)
-			if pe := (*peerGoneError)(nil); known && errors.As(authErr, &pe) {
-				who, authErr = connected, nil
-			}
+			who, authErr = b.reauthenticate(claimUID, proc, connected, connectedErr)
 		}
 		var resp *api.Response
 		var fd leaseFd
@@ -234,8 +233,9 @@ func (b *Broker) waitIdentity() {
 }
 
 // authenticate maps the peer to a container of a pod of the lease claim,
-// after the identity of the peers is known (waitIdentity).
-func (b *Broker) authenticate(claimUID string, c *net.UnixConn) (Requester, error) {
+// after the identity of the peers is known (waitIdentity); procErr is the
+// error of reading the peer's credentials.
+func (b *Broker) authenticate(claimUID string, proc *peer, procErr error) (Requester, error) {
 	b.waitIdentity()
 	b.mu.Lock()
 	identity := b.identity
@@ -251,10 +251,10 @@ func (b *Broker) authenticate(claimUID string, c *net.UnixConn) (Requester, erro
 	if lc == nil {
 		return Requester{}, errNotOurPod
 	}
-	pid, err := peerPid(c)
-	if err != nil {
-		return Requester{}, fmt.Errorf("peer credentials: %w", err)
+	if procErr != nil {
+		return Requester{}, fmt.Errorf("peer credentials: %w", procErr)
 	}
+	pid := proc.pid
 	who, err := identity.Resolve(pid)
 	switch {
 	case errors.Is(err, ErrUnknownPeer):
@@ -266,6 +266,25 @@ func (b *Broker) authenticate(claimUID string, c *net.UnixConn) (Requester, erro
 		return Requester{}, fmt.Errorf("%w (pid %d is in %s/%s/%s)", errNotOurPod, pid, who.Pod.Namespace, who.Pod.Name, who.Container)
 	}
 	return who, nil
+}
+
+// reauthenticate returns the identity of a later request of a connection:
+// that of its peer now while the process that connected runs, else the
+// identity of the connection (connected, connectedErr). A peer in no known
+// container keeps an identity that the connection had.
+func (b *Broker) reauthenticate(claimUID string, proc *peer, connected Requester, connectedErr error) (Requester, error) {
+	if proc == nil || !proc.running() {
+		return connected, connectedErr
+	}
+	who, err := b.authenticate(claimUID, proc, nil)
+	// the pid may have gone to another process while it was resolved
+	if !proc.running() {
+		return connected, connectedErr
+	}
+	if pe := (*peerGoneError)(nil); connectedErr == nil && errors.As(err, &pe) {
+		return connected, nil
+	}
+	return who, err
 }
 
 // peerGoneError is the refusal of a peer whose process is in no known

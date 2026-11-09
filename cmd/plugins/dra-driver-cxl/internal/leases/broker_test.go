@@ -25,7 +25,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1384,6 +1386,63 @@ func TestIdentityPerRequest(t *testing.T) {
 	e.ctrs.setPeer(nil)
 	if line := list(); !strings.Contains(line, `"leases":[]`) {
 		t.Fatalf("a peer that exited %q", line)
+	}
+}
+
+// A pid that another process holds now is not the peer: once the start
+// time of the pid differs from that at connect, every later request keeps
+// the identity of the connection, whatever container the pid is in now.
+func TestIdentityPidReuse(t *testing.T) {
+	start := "100"
+	var mu sync.Mutex
+	saved := processStartTime
+	processStartTime = func(pid int) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return start, nil
+	}
+	defer func() { processStartTime = saved }()
+	e := brokerEnv(t)
+	e.openClaim()
+	e.start()
+	c, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: e.sock(), Net: "unix"})
+	mustOK(t, err)
+	defer func() { _ = c.Close() }()
+	r := bufio.NewReader(c)
+	list := func() string {
+		t.Helper()
+		_, err := c.Write([]byte(`{"op":"list"}` + "\n"))
+		mustOK(t, err)
+		mustOK(t, c.SetReadDeadline(time.Now().Add(5*time.Second)))
+		line, err := r.ReadString('\n')
+		mustOK(t, err)
+		return line
+	}
+	if line := list(); !strings.Contains(line, `"leases":[]`) {
+		t.Fatalf("first request %q", line)
+	}
+	e.ctrs.setPeer(&Requester{Pod: state.PodRef{Namespace: envNS, Name: "intruder", UID: "other-pod"}, Container: "x"})
+	if line := list(); !strings.Contains(line, "is in demo/intruder/x") {
+		t.Fatalf("the same process in another pod %q", line)
+	}
+	mu.Lock()
+	start = "200"
+	mu.Unlock()
+	if line := list(); !strings.Contains(line, `"leases":[]`) {
+		t.Fatalf("a reused pid in another pod %q", line)
+	}
+}
+
+// The start time of a process is field 22 of its stat, after a command
+// name that may hold spaces and parentheses.
+func TestProcessStartTime(t *testing.T) {
+	start, err := processStartTime(os.Getpid())
+	mustOK(t, err)
+	if _, err := strconv.ParseUint(start, 10, 64); err != nil {
+		t.Fatalf("start time %q", start)
+	}
+	if _, err := processStartTime(-1); err == nil {
+		t.Fatal("start time of pid -1")
 	}
 }
 

@@ -516,9 +516,13 @@ answered with `opening <device>: <error>` instead, and the lease is kept.
 Caller authentication: the socket identifies the lease claim, and the
 claim's `reservedFor` the pod. SO_PEERCRED gives the caller's pid; the
 NRI plugin maps it through `/proc/<pid>/cgroup` to a container. The
-container's pod must be a pod of the claim. A lease is bound to that pod
-and container: memory is lent to the calling container only; any
-container of the same pod with the socket may list and release it.
+container's pod must be a pod of the claim. Every request of a
+connection is authenticated again while the process that connected runs;
+once it has exited (its pidfd, or a start time that differs from that at
+connect, tells), the connection keeps the identity it had. A lease is
+bound to that pod and container: memory is lent to the calling container
+only; any container of the same pod with the socket may list and release
+it.
 
 ## Companion objects
 
