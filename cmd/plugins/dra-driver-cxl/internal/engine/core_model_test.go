@@ -423,16 +423,6 @@ func (s *coreState) requestEnabled(ca *coreAction) bool {
 // by name: each tells whether a request runs into it. The requests that do
 // are not generated unless -core.known leaves the finding out.
 var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{
-	// F10: the next Prepare of a local persistent memdev whose idle region
-	// has nothing above reuses the region instead of destroying it first
-	// (5.4 the idle row, T3 IDLE_KEPT -> UNUSED): a hole below it stays.
-	"F10": func(s *coreState, ca *coreAction) bool {
-		md := coreSlots[ca.slot].md
-		st := s.stacks[coreMemdevs[md].hb]
-		i := slices.Index(st, coreMemdevs[md].id)
-		return ca.verb == "prepare" && s.mds[md].rec == state.MemdevIdleKept && coreMemdevs[md].kind == state.KindPersistent &&
-			!s.regionsAbove(md) && i > 0 && slices.Contains(st[:i], "_")
-	},
 	// F11: a start downgrades the node mount of a pool persistent memdev
 	// that the writer of an unfinished Unprepare still lists, when a reader
 	// of a prepared claim has it too (the unfinished uses are counted for

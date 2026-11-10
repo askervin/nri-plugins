@@ -152,10 +152,27 @@ func (e *Engine) prepareGrant(ctx context.Context, req *GrantRequest) error {
 	if err := e.checkLocalKind(ctx, req); err != nil {
 		return err
 	}
+	if err := e.releaseIdleLeftover(ctx, req); err != nil {
+		return err
+	}
 	if err := e.journal(ctx, req); err != nil {
 		return err
 	}
 	return e.realise(ctx, req)
+}
+
+// releaseIdleLeftover releases the region of a local persistent memdev that
+// was kept idle when the next Prepare of the memdev finds no region above it
+// any more (the release policy's idle leftover), the memdev's queue held:
+// the Prepare makes it anew.
+func (e *Engine) releaseIdleLeftover(ctx context.Context, req *GrantRequest) error {
+	m := e.records().Memdev(req.Serial)
+	if req.Asked.Source != state.SourceLocal || req.Asked.Kind != state.KindPersistent || m == nil || m.State != state.MemdevIdleKept {
+		return nil
+	}
+	idle := *m
+	region, _ := e.localRegionNames(&idle)
+	return e.releaseIdleQueued(ctx, &idle, InOrderIdle, region, state.TriggerPrepare)
 }
 
 // journal commits the intent of the grant (REQUESTED -> JOURNALED), with

@@ -484,3 +484,27 @@ func TestLocalPersistentRetryKeepsDisabledRegion(t *testing.T) {
 	v.restart()
 	v.clean("restarted")
 }
+
+// The next Prepare of a local persistent memdev whose region was kept idle
+// below a newer region that is gone now destroys the idle region first and
+// makes it anew: the hole below it is reaped.
+func TestLocalPersistentIdleLeftoverAtPrepare(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialB}, fake.MemdevSpec{Serial: serialP, Pmem: gib}, fake.MemdevSpec{Serial: serialC})
+	v.formatPmem("mem1", "ext4")
+	v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeDax, state.KindExclusive))
+	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
+	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialC, state.ModeDax, state.KindExclusive))
+	v.mustUnprepare(localDriver, "w")
+	v.mustUnprepare(poolDriver, "b")
+	v.mustUnprepare(poolDriver, "c")
+	port := v.f.Kernel().Memdev(serialP).Ports[0]
+	if st := v.f.Stack(port); len(st) != 2 || st[0] != "" {
+		t.Fatalf("stack %q, want a hole below the idle region", st)
+	}
+	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
+	if st := v.f.Stack(port); slices.Contains(st, "") {
+		t.Fatalf("stack %q: the hole below the idle region stayed", st)
+	}
+	v.mustUnprepare(localDriver, "w")
+	v.clean("unprepared")
+}
