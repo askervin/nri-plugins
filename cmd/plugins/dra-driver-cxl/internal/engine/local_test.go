@@ -710,3 +710,41 @@ func TestLocalCutCompanionHoldsNoNewRegion(t *testing.T) {
 		})
 	}
 }
+
+// The Unprepare of a numa companion whose Prepare a process stop cut after
+// its region was made, or set up, before it got its part (the start kept
+// it) fails: the region's whole dax device counts as used by the releasing
+// grant, whether a record names it yet (set up, cxl destroy-region fails)
+// or not (made, cxl disable-region fails), and the retry releases
+// everything.
+func TestLocalCutCompanionRegionReleaseFails(t *testing.T) {
+	for _, setUp := range []bool{false, true} {
+		t.Run(map[bool]string{false: "made", true: "set up"}[setUp], func(t *testing.T) {
+			v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
+			req := sliceReq("comp", 0, state.ModeNUMA, 256*mib)
+			req.Lend = &state.GrantLend{Lease: "0123abcd", Container: "c"}
+			if setUp {
+				v.e.afterCommit = func() {
+					if reg := v.records().Region("region0"); reg != nil && reg.SetUp {
+						panic(fake.ErrCut)
+					}
+				}
+			} else {
+				v.f.CutAfter("cxl create-region")
+			}
+			if !v.cut(func() { _ = v.prepare(localDriver, "comp", req) }) {
+				t.Fatal("not cut")
+			}
+			if out := v.restart(); !slices.Equal(out.Companions, []state.GrantRef{{Claim: "comp"}}) {
+				t.Fatalf("recovered %+v", out)
+			}
+			v.f.FailCommand(map[bool]string{false: "cxl disable-region", true: "cxl destroy-region"}[setUp], errors.New("failed"))
+			if err := v.unprepare(localDriver, "comp"); err == nil {
+				t.Fatal("the release did not fail")
+			}
+			v.check("the release failed")
+			v.mustUnprepare(localDriver, "comp")
+			v.clean("unprepared")
+		})
+	}
+}

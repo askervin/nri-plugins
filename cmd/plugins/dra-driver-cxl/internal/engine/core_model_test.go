@@ -520,13 +520,6 @@ func (s *coreState) requestEnabled(ca *coreAction) bool {
 // runs into it. The requests that do are not generated unless -core.known
 // leaves the finding out.
 var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{
-	// C2: the failed or cut release of a numa companion that a start kept
-	// before it got its dax device leaves the region's whole dax device
-	// that no record names against I2
-	"C2": func(s *coreState, ca *coreAction) bool {
-		sl := &coreSlots[ca.slot]
-		return s.arm > 0 && ca.verb == "unprepare" && sl.lease && sl.mode == state.ModeNUMA && s.slots[ca.slot].grant != state.GrantRealised
-	},
 	// C4: a numa companion that enabled again a region that a failed
 	// release left disabled, cut before its set-up and kept at the start,
 	// has the region's whole dax device recorded as the seed against I2

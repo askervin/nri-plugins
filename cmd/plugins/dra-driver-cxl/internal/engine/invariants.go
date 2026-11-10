@@ -282,12 +282,15 @@ func checkI2Device(c *checker, reg *state.Region, d kernel.DaxDeviceInfo) {
 }
 
 // unfinishedRegion tells whether a grant of a Prepare that did not finish
-// (JOURNALED, REALISING) names the region: a numa companion that a start
-// keeps for its Unprepare.
+// (JOURNALED, REALISING, or RELEASING by a failed release before it got a
+// dax device) names the region: a numa companion that a start keeps for
+// its Unprepare.
 func unfinishedRegion(r *state.Records, reg *state.Region) bool {
 	for i := range r.Grants {
 		g := &r.Grants[i]
-		if (g.State == state.GrantJournaled || g.State == state.GrantRealising) && (g.Got.Region == reg.Ref() || g.Intent.Region == reg.Ref()) {
+		open := g.State == state.GrantJournaled || g.State == state.GrantRealising ||
+			g.State == state.GrantReleasing && g.Got.Dax == "" && unfinished(r, g)
+		if open && (g.Got.Region == reg.Ref() || g.Intent.Region == reg.Ref()) {
 			return true
 		}
 	}

@@ -495,15 +495,24 @@ func (r *Records) RegionInMaking(m *Memdev, reg *Region) bool {
 }
 
 // unfinished tells whether a grant of a Prepare that did not finish
-// (JOURNALED, REALISING) names the region.
+// (JOURNALED, REALISING, or RELEASING by a failed release before it got a
+// dax device) names the region.
 func unfinished(r *Records, reg *Region) bool {
 	for i := range r.Grants {
 		g := &r.Grants[i]
-		if (g.State == GrantJournaled || g.State == GrantRealising) && (g.Got.Region == reg.Ref() || g.Intent.Region == reg.Ref()) {
+		open := g.State == GrantJournaled || g.State == GrantRealising || g.State == GrantReleasing && g.Got.Dax == "" && notPrepared(r, g)
+		if open && (g.Got.Region == reg.Ref() || g.Intent.Region == reg.Ref()) {
 			return true
 		}
 	}
 	return false
+}
+
+// notPrepared tells whether a grant is of a claim whose Prepare did not
+// finish: PREPARING or KEPT.
+func notPrepared(r *Records, g *Grant) bool {
+	p := r.PreparationOf(g.Ref)
+	return p != nil && (p.State == PreparationPreparing || p.State == PreparationKept)
 }
 
 // kept tells whether the region is KEPT or a memdev of it is IDLE_KEPT.
