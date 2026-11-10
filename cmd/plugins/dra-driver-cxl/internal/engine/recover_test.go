@@ -1019,3 +1019,33 @@ func TestRecoverPoolBlockChanged(t *testing.T) {
 	v.mustUnprepare(poolDriver, "b")
 	v.clean("unprepared")
 }
+
+// A cut Prepare of a pool claim whose memdev has another tool's region
+// below a region of another memdev made nothing to keep: the start
+// releases its grant, the claim stays PREPARING and the other tool's
+// regions are left alone.
+func TestRecoverCutPrepareOnForeignBelow(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialB})
+	below := rawRegion(t, v, "mem1")
+	above := rawRegion(t, v, "mem0")
+	v.cutAfter(1)
+	if !v.cut(func() { _ = v.prepare(poolDriver, "c", poolReq("c", 0, serialB, state.ModeDax, state.KindExclusive)) }) {
+		t.Fatal("not cut")
+	}
+	out := v.restart()
+	if len(out.Kept) > 0 || !slices.Equal(out.Released, []state.GrantRef{{Claim: "c"}}) {
+		t.Fatalf("recovered %+v", out)
+	}
+	wantPreparation(t, v, poolDriver, "c", state.PreparationPreparing)
+	if m := v.records().Memdev(serialB); m != nil {
+		t.Fatalf("memdev %+v", m)
+	}
+	for _, region := range []string{below, above} {
+		if _, err := v.f.Kernel().Region(region); err != nil {
+			t.Fatalf("%s: %v", region, err)
+		}
+	}
+	dropRaw(t, v, above)
+	dropRaw(t, v, below)
+	finish(t, v, "finished")
+}

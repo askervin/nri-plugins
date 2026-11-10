@@ -431,14 +431,6 @@ var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{
 		m := &s.mds[coreSlots[ca.slot].md]
 		return ca.verb == "prepare" && m.reg == state.RegionOwned && m.kreg == kregOff
 	},
-	// F4: the recovery of a cut pool Prepare whose memdev has another
-	// tool's region below a region of another memdev keeps the claim
-	// (KEPT, its grant JOURNALED, the memdev ACTIVE): nothing of ours is
-	// there to keep.
-	"F4": func(s *coreState, ca *coreAction) bool {
-		md := coreSlots[ca.slot].md
-		return ca.verb == "prepare" && s.arm > 0 && coreArms[s.arm-1].cut != "" && s.mds[md].foreign && s.regionsAbove(md)
-	},
 	// F7: a memdev with the grant of an unfinished release whose region is
 	// gone (UNPREPARING, RELEASING) keeps a region that a later Prepare
 	// made when its last user goes (the recovery of a cut Prepare leaves

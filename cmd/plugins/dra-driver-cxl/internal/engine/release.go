@@ -388,6 +388,10 @@ func (e *Engine) recoveryAbove(serial state.Serial, refs []state.GrantRef) []str
 	if m == nil || slices.ContainsFunc(m.Grants, func(o state.GrantRef) bool { return !slices.Contains(refs, o) }) {
 		return nil
 	}
+	if !ownRegions(r, m) {
+		// nothing of ours to keep: another tool's region is FOREIGN
+		return nil
+	}
 	g := r.Grant(refs[0])
 	memdev, err := e.k.FindMemdev(uint64(serial))
 	if err != nil || g == nil {
@@ -401,6 +405,14 @@ func (e *Engine) recoveryAbove(serial state.Serial, refs []state.GrantRef) []str
 		return nil
 	}
 	return above
+}
+
+// ownRegions tells whether the memdev record m names a region of ours.
+func ownRegions(r *state.Records, m *state.Memdev) bool {
+	return m != nil && slices.ContainsFunc(m.Regions, func(ref state.RegionRef) bool {
+		reg := r.Region(ref)
+		return reg != nil && reg.Ours()
+	})
 }
 
 // kindOf returns the row of the release policy of the memdev of the grant g
@@ -1164,7 +1176,7 @@ func (e *Engine) decision(g *state.Grant, memdev string, release Release) Decisi
 	kind := e.kindOf(g)
 	var above []string
 	var aboveErr error
-	if release == ReleaseRecovery {
+	if r := e.records(); release == ReleaseRecovery && ownRegions(r, r.Memdev(g.Serial)) {
 		above, aboveErr = e.k.RegionsAbove(memdev)
 	}
 	decision := Policy(release, kind, above)
