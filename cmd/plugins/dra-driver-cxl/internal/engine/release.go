@@ -1359,16 +1359,29 @@ func dropRegion(r *state.Records, ref state.RegionRef, trigger state.Trigger) er
 }
 
 // keepMemdev records the regions of the memdev with the serial kept: KEPT
-// (disabled, not set up) when kept for claims, as they are otherwise.
+// (disabled, not set up) when kept for claims, as they are otherwise, but
+// those that the kernel has disabled (a release that failed after cxl
+// disable-region) KEPT too.
 func (e *Engine) keepMemdev(ctx context.Context, serial state.Serial, trigger state.Trigger, forClaims bool) error {
+	disabled := map[state.RegionRef]bool{}
+	if m := e.records().Memdev(serial); m != nil && !forClaims {
+		for _, ref := range m.Regions {
+			if ri, err := e.k.Region(string(ref)); err == nil && ri.State == kernel.RegionDisabled {
+				disabled[ref] = true
+			}
+		}
+	}
+	if !forClaims && len(disabled) == 0 {
+		return e.commit(ctx, func(*state.Records) error { return nil })
+	}
 	return e.commit(ctx, func(r *state.Records) error {
 		m := r.Memdev(serial)
-		if m == nil || !forClaims {
+		if m == nil {
 			return nil
 		}
 		for _, ref := range m.Regions {
 			reg := r.Region(ref)
-			if reg == nil || reg.State != state.RegionOwned {
+			if reg == nil || reg.State != state.RegionOwned || !forClaims && !disabled[ref] {
 				continue
 			}
 			if err := keepRegion(reg, trigger); err != nil {

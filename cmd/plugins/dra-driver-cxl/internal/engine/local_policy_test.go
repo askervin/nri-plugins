@@ -462,3 +462,25 @@ func TestPoolPolicyRollbackDestroysBelow(t *testing.T) {
 	dropRaw(t, v, "region1")
 	v.clean("rolled back")
 }
+
+// The retry of the release of a local persistent memdev whose cxl
+// destroy-region failed keeps the region idle when a region of another
+// memdev came above it meanwhile: the region is KEPT (disabled), set up
+// again by the next Prepare; the start destroys it once nothing is above.
+func TestLocalPersistentRetryKeepsDisabledRegion(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib}, fake.MemdevSpec{Serial: serialC})
+	v.formatPmem("mem0", "ext4")
+	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
+	region := v.grant("w", 0).Got.Region
+	v.f.FailCommand("cxl destroy-region", errors.New("cxl region: cmd_destroy_region: failed"))
+	if err := v.unprepare(localDriver, "w"); err == nil {
+		t.Fatal("the release succeeded")
+	}
+	v.check("release failed")
+	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialC, state.ModeDax, state.KindExclusive))
+	v.mustUnprepare(localDriver, "w")
+	wantRegion(t, v, string(region), state.RegionKept)
+	v.mustUnprepare(poolDriver, "c")
+	v.restart()
+	v.clean("restarted")
+}

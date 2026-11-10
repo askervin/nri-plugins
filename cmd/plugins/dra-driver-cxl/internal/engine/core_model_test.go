@@ -472,16 +472,6 @@ var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{
 		return ca.verb == "prepare" && s.arm > 0 && coreArms[s.arm-1].cut != "" && s.mds[md].kreg == kregOff &&
 			s.regionsAbove(md)
 	},
-	// F6: the retry of a release that failed at cxl destroy-region keeps
-	// the region idle when a region of another memdev came above it
-	// meanwhile (local persistent), the record OWNED and the kernel region
-	// disabled: I1.
-	"F6": func(s *coreState, ca *coreAction) bool {
-		md := coreSlots[ca.slot].md
-		m := &s.mds[md]
-		return ca.verb == "unprepare" && m.reg == state.RegionOwned && m.kreg == kregOff && len(s.regionUsers(md, ca.slot)) == 0 &&
-			unprepareDestroys(s, md) == policyKeep
-	},
 }
 
 // unfinishedWithoutRegion tells whether the request is on a memdev with the
