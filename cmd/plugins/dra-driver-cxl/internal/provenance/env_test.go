@@ -38,8 +38,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
-
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 const (
@@ -68,7 +67,7 @@ type watchEnv struct {
 
 	mu      sync.Mutex
 	clock   time.Time
-	devs    map[uint64]*nricxl.MemoryDevice // on the node
+	devs    map[uint64]kernel.MemdevInfo // on the node
 	plugged int
 }
 
@@ -79,7 +78,7 @@ func newWatchEnv(t *testing.T) *watchEnv {
 		client: fake.NewClientset(),
 		dir:    t.TempDir(),
 		clock:  time.Date(2026, 10, 26, 9, 35, 0, 0, time.UTC),
-		devs:   map[uint64]*nricxl.MemoryDevice{},
+		devs:   map[uint64]kernel.MemdevInfo{},
 	}
 	t.Cleanup(e.closeStore)
 	e.restart()
@@ -169,8 +168,8 @@ func (e *watchEnv) publish(serials ...string) {
 func (e *watchEnv) plug(serial uint64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.devs[serial] = &nricxl.MemoryDevice{Name: fmt.Sprintf("mem%d", e.plugged), DevName: fmt.Sprintf("cxl/mem%d", e.plugged),
-		RamSize: 1 << 30, Serial: serial, NodeAffinity: 0, Enabled: true}
+	e.devs[serial] = kernel.MemdevInfo{Name: fmt.Sprintf("mem%d", e.plugged), RamSize: 1 << 30, Serial: serial, NodeAffinity: 0,
+		State: kernel.MemdevReady}
 	e.plugged++
 }
 
@@ -180,13 +179,13 @@ func (e *watchEnv) unplug(serial uint64) {
 	delete(e.devs, serial)
 }
 
-// devices returns the memdevs on the node.
-func (e *watchEnv) devices() *nricxl.Devices {
+// devices returns the observation of the memdevs on the node.
+func (e *watchEnv) devices() *kernel.Snapshot {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	devs := &nricxl.Devices{}
+	devs := &kernel.Snapshot{}
 	for _, s := range slices.Sorted(maps.Keys(e.devs)) {
-		devs.MemoryDevices = append(devs.MemoryDevices, e.devs[s])
+		devs.Memdevs = append(devs.Memdevs, e.devs[s])
 	}
 	return devs
 }

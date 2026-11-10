@@ -34,7 +34,6 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -578,7 +577,7 @@ func TestPrepareRegionDRAMNUMAOnly(t *testing.T) {
 	e := newLocalTestEnv(t)
 	e.start()
 	injectDevices(e,
-		&device.DeviceInfo{Name: "region0-node2", Dev: &nricxl.RegionDevice{Name: "region0", Node: 2, Size: 1 << 30, Enabled: true}},
+		&device.DeviceInfo{Name: "region0-node2", Dev: &device.Region{Name: "region0", NumaNode: 2, Size: 1 << 30}},
 		&device.DeviceInfo{Name: "dram", Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}})
 	var unprefixed []string
 	for _, tc := range []struct{ dev, params, err string }{
@@ -686,7 +685,7 @@ func TestPrepareMemoryConfig(t *testing.T) {
 	leases := &fakeLeaseClaims{st: e.st}
 	e.s.SetLeases(leases)
 	injectDevices(e,
-		&device.DeviceInfo{Name: "region5-node4", Dev: &nricxl.RegionDevice{Name: "region5", Node: 4, Size: 1 << 30, Enabled: true}},
+		&device.DeviceInfo{Name: "region5-node4", Dev: &device.Region{Name: "region5", NumaNode: 4, Size: 1 << 30}},
 		&device.DeviceInfo{Name: "dram", Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}},
 		&device.DeviceInfo{Name: device.LeaseDeviceName, Dev: &device.LeaseToken{}})
 	const (

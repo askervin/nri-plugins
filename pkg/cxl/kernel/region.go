@@ -241,10 +241,17 @@ func (k *Kernel) region(region string, t topology) (RegionInfo, error) {
 	if r.State == RegionAbsent {
 		return r, errorf(ErrNotFound, "%s: %w", region, os.ErrNotExist)
 	}
-	r.Mode, _ = ReadTrim(filepath.Join(dir, "mode"))
+	var err error
+	r.Mode, err = ReadTrim(filepath.Join(dir, "mode"))
+	k.factErr(err)
 	r.Committed = regionCommitted(dir)
 	r.Locked = regionLocked(dir)
-	r.Range, _ = k.RegionRange(region)
+	if r.Range, err = k.RegionRange(region); err != nil {
+		// a region without an address range yet has the size 0
+		if size, serr := ReadUint(filepath.Join(dir, "size")); serr != nil || size > 0 {
+			k.factErr(err)
+		}
+	}
 	r.Targets = k.regionTargets(region)
 	for _, target := range r.Targets {
 		ep := "endpoint" + strings.TrimSuffix(strings.TrimPrefix(target, "decoder"), filepath.Ext(target))

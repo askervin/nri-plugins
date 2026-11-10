@@ -34,9 +34,9 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
@@ -323,10 +323,10 @@ func TestCompanionUnpreparedBehind(t *testing.T) {
 // prepared by cxl.nri.io through the broker: its CDI devices claim-<uid>-0
 // and lease-<uid>, its socket; its Unprepare closes the lease claim first.
 func TestLeaseClaimPrepare(t *testing.T) {
-	if devs := dra.BuildDevices(dra.PublishConfig{IgnoreDRAMNodes: true, PublishLeaseDevice: true}, &nricxl.Devices{}, nil, nil, nil); devs["lease"] == nil {
+	if devs := dra.BuildDevices(dra.PublishConfig{IgnoreDRAMNodes: true, PublishLeaseDevice: true}, &kernel.Snapshot{}, nil, nil, nil); devs["lease"] == nil {
 		t.Fatalf("no lease device in %v", devs)
 	}
-	if devs := dra.BuildDevices(dra.PublishConfig{IgnoreDRAMNodes: true}, &nricxl.Devices{}, nil, nil, nil); len(devs) != 0 {
+	if devs := dra.BuildDevices(dra.PublishConfig{IgnoreDRAMNodes: true}, &kernel.Snapshot{}, nil, nil, nil); len(devs) != 0 {
 		t.Fatalf("lease device published without --leases: %v", devs)
 	}
 	e := brokerEnv(t)

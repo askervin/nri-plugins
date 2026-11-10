@@ -30,8 +30,6 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
-
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 )
 
 // A process stop inside a Prepare of a claim of the local memdev (a driver
@@ -158,11 +156,9 @@ func wantLocalDevice(t *testing.T, e *localTestEnv, region, dax string, claims m
 // the regions that are on it in the kernel, nil if it is not published.
 func localPublished(e *localTestEnv) *device.Memdev {
 	e.t.Helper()
-	memdev := e.memdevs[localSerial]
-	devs := &nricxl.Devices{MemoryDevices: []*nricxl.MemoryDevice{memdev}}
+	devs := &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{e.memdevs[localSerial]}}
 	for _, r := range e.regions(localSerial) {
-		devs.RegionDevices = append(devs.RegionDevices, &nricxl.RegionDevice{Name: r, Size: localRegionSize, Mode: "ram", Node: -1,
-			Memories: []*nricxl.MemoryDevice{memdev}})
+		observedRegion(devs, r, kernel.RegionRAM, -1, localRegionSize, localSerial)
 	}
 	infos, err := buildDevInfos(e.config, devs, e.poolSerials, e.localSnapshot())
 	noErr(e.t, err)

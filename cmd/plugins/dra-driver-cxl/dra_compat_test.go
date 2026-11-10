@@ -28,8 +28,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
-
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 // The names of the front-end (internal/dra) as the tests of the driver
@@ -69,16 +68,35 @@ func lendOf(doc *store.Document, prep *state.Preparation) *lendRecord {
 }
 
 // buildDevInfos returns the devices that the publisher publishes of the
-// detected devices with the configuration, the pool serials and the uses of
-// the local memdevs.
-func buildDevInfos(cfg *DriverConfig, detected *nricxl.Devices, poolSerials map[uint64]bool, local *localSnapshot) (device.DevicesInfo, error) {
+// observation of the node with the configuration, the pool serials and the
+// uses of the local memdevs.
+func buildDevInfos(cfg *DriverConfig, detected *kernel.Snapshot, poolSerials map[uint64]bool, local *localSnapshot) (device.DevicesInfo, error) {
 	return dra.BuildDevices(cfg.publishConfig(), detected, poolSerials, nil, local), nil
 }
 
 // buildDevInfosHeld is buildDevInfos with the serials of the new memdevs
 // that are held.
-func buildDevInfosHeld(cfg *DriverConfig, detected *nricxl.Devices, poolSerials, held map[uint64]bool, local *localSnapshot) (device.DevicesInfo, error) {
+func buildDevInfosHeld(cfg *DriverConfig, detected *kernel.Snapshot, poolSerials, held map[uint64]bool, local *localSnapshot) (device.DevicesInfo, error) {
 	return dra.BuildDevices(cfg.publishConfig(), detected, poolSerials, held, local), nil
+}
+
+// observedMemdev returns an observed memdev with a driver, of RAM capacity
+// ram and with the CPU NUMA node affinity.
+func observedMemdev(name string, serial, ram uint64, affinity int) kernel.MemdevInfo {
+	return kernel.MemdevInfo{Name: name, Serial: serial, State: kernel.MemdevReady, RamSize: ram, NodeAffinity: affinity}
+}
+
+// observedRegion adds a region of the mode and of size bytes on the memdevs
+// with the serials to the snapshot s: enabled on node, which a dax device of
+// the region tells, disabled for node -1.
+func observedRegion(s *kernel.Snapshot, name, mode string, node int, size uint64, serials ...uint64) {
+	r := kernel.RegionInfo{Name: name, State: kernel.RegionEnabled, Mode: mode, NumaNode: node, Range: kernel.Range{End: size - 1}, Serials: serials}
+	if node < 0 {
+		r.State = kernel.RegionDisabled
+	} else {
+		s.DaxDevices = append(s.DaxDevices, kernel.DaxDeviceInfo{Name: "dax-" + name, Region: name, Size: size, TargetNode: node})
+	}
+	s.Regions = append(s.Regions, r)
 }
 
 // claimCDIDeviceID returns the qualified CDI device name of the allocation

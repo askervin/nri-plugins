@@ -17,7 +17,7 @@ package main
 import (
 	"testing"
 
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 // The usable size of a local memdev from its memdevSettings; invalid
@@ -38,12 +38,12 @@ memdevSettings:
 	}
 	// the publisher rounds them down (internal/dra TestMemdevUsableSize)
 	for _, tc := range []struct {
-		m    *nricxl.MemoryDevice
+		m    *kernel.MemdevInfo
 		want uint64
 	}{
-		{&nricxl.MemoryDevice{Name: "mem0", Serial: 0x0badc0dedeadbeef, RamSize: 192 << 30}, 128 << 30},
-		{&nricxl.MemoryDevice{Name: "mem1", Serial: 0x1, RamSize: 2 << 30}, 1000 << 20},
-		{&nricxl.MemoryDevice{Name: "mem2", Serial: 0x2, RamSize: 2 << 30}, 0},
+		{&kernel.MemdevInfo{Name: "mem0", Serial: 0x0badc0dedeadbeef, RamSize: 192 << 30}, 128 << 30},
+		{&kernel.MemdevInfo{Name: "mem1", Serial: 0x1, RamSize: 2 << 30}, 1000 << 20},
+		{&kernel.MemdevInfo{Name: "mem2", Serial: 0x2, RamSize: 2 << 30}, 0},
 	} {
 		if got := cfg.configuredUsableSize(tc.m.Name, tc.m.Serial); got != tc.want {
 			t.Errorf("%s: configured usable size %d, expected %d", tc.m.Name, got, tc.want)

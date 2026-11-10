@@ -27,8 +27,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
-
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 // Provenance of a serial (state.Provenance): which memdevs are devices of
@@ -378,17 +377,17 @@ func (w *Watcher) uncertainLocked(now time.Time) (string, state.HeldReason) {
 	return strings.Join(why, "; "), reason
 }
 
-// Gate observes the memdevs of a scan. It returns the pool serials (those
+// Gate observes the memdevs of a snapshot. It returns the pool serials (those
 // of poolSerials, the POOL records and those in the status of pool claims
 // of the node) and the new memdevs that are HELD, which the scan does not
 // publish, and makes LOCAL the memdevs that it takes as local. local has the
 // claims of the local memdevs that the device engine has records of, by
 // serial: they are local unless they are pool serials.
-func (w *Watcher) Gate(ctx context.Context, devs *nricxl.Devices, poolSerials map[uint64]bool, local map[uint64][]string) (map[uint64]bool, map[uint64]bool) {
-	if w == nil || devs == nil {
+func (w *Watcher) Gate(ctx context.Context, snap *kernel.Snapshot, poolSerials map[uint64]bool, local map[uint64][]string) (map[uint64]bool, map[uint64]bool) {
+	if w == nil || snap == nil {
 		return poolSerials, nil
 	}
-	ev, evErr := w.evidence(ctx, devs, poolSerials, local)
+	ev, evErr := w.evidence(ctx, snap, poolSerials, local)
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -402,7 +401,8 @@ func (w *Watcher) Gate(ctx context.Context, devs *nricxl.Devices, poolSerials ma
 		out = map[uint64]bool{}
 	}
 	held, present, changed := map[uint64]bool{}, map[uint64]bool{}, false
-	for _, m := range devs.MemoryDevices {
+	for i := range snap.Memdevs {
+		m := &snap.Memdevs[i]
 		present[m.Serial] = true
 		pool, isHeld, ch := w.observeLocked(m, g)
 		changed = ch || changed
@@ -440,7 +440,7 @@ type gateScan struct {
 // observeLocked observes the memdev m on the node in the scan g: a pool
 // device (pool), a new memdev that stays HELD (held), else a local memdev;
 // it returns whether the records changed. Called with w.mu held.
-func (w *Watcher) observeLocked(m *nricxl.MemoryDevice, g *gateScan) (pool, held, changed bool) {
+func (w *Watcher) observeLocked(m *kernel.MemdevInfo, g *gateScan) (pool, held, changed bool) {
 	s := m.Serial
 	e := w.entries[s]
 	claimPool, inClaim := "", false
@@ -466,7 +466,7 @@ func (w *Watcher) observeLocked(m *nricxl.MemoryDevice, g *gateScan) (pool, held
 // observeNewLocked observes a new memdev m (its entry e, nil or HELD) in
 // the scan g: HELD while there is a reason for doubt (held), else LOCAL; it
 // returns whether the records changed. Called with w.mu held.
-func (w *Watcher) observeNewLocked(m *nricxl.MemoryDevice, e *entry, g *gateScan) (pool, held, changed bool) {
+func (w *Watcher) observeNewLocked(m *kernel.MemdevInfo, e *entry, g *gateScan) (pool, held, changed bool) {
 	why, hold, expires := g.uncertain, g.reason, true
 	switch {
 	case !w.known:
@@ -488,16 +488,16 @@ func (w *Watcher) observeNewLocked(m *nricxl.MemoryDevice, e *entry, g *gateScan
 	return false, false, w.noteLocalLocked(m, g.now, triggerExpire)
 }
 
-// evidence lists the pool claims of the node when a memdev of devs is new
+// evidence lists the pool claims of the node when a memdev of snap is new
 // (no pool serial, no record, no local use), without w.mu.
-func (w *Watcher) evidence(ctx context.Context, devs *nricxl.Devices, poolSerials map[uint64]bool, local map[uint64][]string) (*claimEvidence, error) {
+func (w *Watcher) evidence(ctx context.Context, snap *kernel.Snapshot, poolSerials map[uint64]bool, local map[uint64][]string) (*claimEvidence, error) {
 	w.mu.Lock()
-	isNew := func(m *nricxl.MemoryDevice) bool {
+	isNew := func(m kernel.MemdevInfo) bool {
 		e := w.entries[m.Serial]
 		_, uses := local[m.Serial]
 		return !poolSerials[m.Serial] && (e == nil || !e.recorded()) && !uses
 	}
-	anyNew := slices.ContainsFunc(devs.MemoryDevices, isNew)
+	anyNew := slices.ContainsFunc(snap.Memdevs, isNew)
 	w.mu.Unlock()
 	if !anyNew || w.opts.Claims == nil || w.opts.NodeName == "" {
 		return nil, nil
@@ -514,7 +514,7 @@ func (w *Watcher) evidence(ctx context.Context, devs *nricxl.Devices, poolSerial
 // changed (a new hold, another reason): a reason that does not expire
 // holds it, one that expires holds it for HoldBack from the first hold.
 // Called with w.mu held.
-func (w *Watcher) hold(m *nricxl.MemoryDevice, e *entry, why string, hold state.HeldReason, expires bool, now time.Time) (bool, bool) {
+func (w *Watcher) hold(m *kernel.MemdevInfo, e *entry, why string, hold state.HeldReason, expires bool, now time.Time) (bool, bool) {
 	s := m.Serial
 	changed := e == nil || e.rec.HeldReason != hold
 	if e == nil {
@@ -537,7 +537,7 @@ func (w *Watcher) hold(m *nricxl.MemoryDevice, e *entry, why string, hold state.
 // noteLocalLocked makes the memdev m seen now LOCAL on the trigger (a new
 // or a HELD one), and returns whether the records changed. Called with
 // w.mu held.
-func (w *Watcher) noteLocalLocked(m *nricxl.MemoryDevice, now time.Time, trigger state.Trigger) bool {
+func (w *Watcher) noteLocalLocked(m *kernel.MemdevInfo, now time.Time, trigger state.Trigger) bool {
 	s := m.Serial
 	e, changed := w.entries[s], false
 	switch {

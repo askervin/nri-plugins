@@ -31,8 +31,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
-
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 // TestPoolSlicesSerials pins Serials: only the slices of the pool driver
@@ -75,7 +74,7 @@ func TestPoolSlicesSerials(t *testing.T) {
 		t.Fatalf("nil watcher: serials %v known %v", serials, known)
 	}
 	none.NotePrepared(map[uint64]bool{1: true})
-	if pool, held := none.Gate(ctx, &nricxl.Devices{}, map[uint64]bool{1: true}, nil); !pool[1] || held != nil {
+	if pool, held := none.Gate(ctx, &kernel.Snapshot{}, map[uint64]bool{1: true}, nil); !pool[1] || held != nil {
 		t.Fatalf("nil watcher: pool %v held %v", pool, held)
 	}
 }
@@ -414,7 +413,7 @@ func TestWatch(t *testing.T) {
 	last := time.Now()
 	scan := func() {
 		serials, _ := w.Serials(ctx)
-		w.Gate(ctx, &nricxl.Devices{MemoryDevices: []*nricxl.MemoryDevice{{Name: "mem0", Serial: otherLocalSerial}}}, serials, nil)
+		w.Gate(ctx, &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{{Name: "mem0", Serial: otherLocalSerial}}}, serials, nil)
 	}
 	rescan := func(_ context.Context, periodic bool) {
 		mu.Lock()

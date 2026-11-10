@@ -32,7 +32,6 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -217,7 +216,7 @@ func TestLocalBlockSize(t *testing.T) {
 	if bs := e.localSnapshot().BlockSize; bs != localBlockSize {
 		t.Fatalf("block size %d", bs)
 	}
-	off, err := dra.NewPublisher(dra.PublishOptions{Store: e.st, Scan: func() (*nricxl.Devices, error) { return nricxl.NewDevices(), nil }})
+	off, err := dra.NewPublisher(dra.PublishOptions{Store: e.st, Scan: func(context.Context) (*kernel.Snapshot, error) { return &kernel.Snapshot{}, nil }})
 	noErr(t, err)
 	if off.LocalSnapshot() != nil {
 		t.Fatal("snapshot of unmanaged local devices")

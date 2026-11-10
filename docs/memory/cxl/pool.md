@@ -849,8 +849,10 @@ another host has the device. See [leases.md](leases.md).
   Unprepare), and the regions recorded for a Prepare that did not finish
   (at start, or when the claim is prepared again, unprepared, or rolled
   back). The
-  device scan of `cxl.nri.io` skips every hollow region and logs a
-  warning once, with that command.
+  device scan of `cxl.nri.io` skips every hollow region; it logs a
+  warning once, with that command, for each one that is not the
+  driver's own, and the device engine warns about the driver's own when
+  it observes them.
 - `cxl create-region` right after a hotplug can fail once with
   "add_dev() failed"; the pool driver retries a region creation once
   after 3 s.

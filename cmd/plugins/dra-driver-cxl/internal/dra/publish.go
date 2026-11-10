@@ -19,9 +19,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,8 +40,6 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
-
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 )
 
 // Publisher publishes the ResourceSlice of the node of cxl.nri.io: one pool
@@ -100,8 +98,8 @@ type PublishOptions struct {
 	NodeName string
 	Client   coreclientset.Interface
 	OnError  func(ctx context.Context, err error, msg string)
-	// Scan returns the devices of the node.
-	Scan func() (*nricxl.Devices, error)
+	// Scan returns an observation of the kernel objects of the node.
+	Scan func(ctx context.Context) (*kernel.Snapshot, error)
 	// Watcher knows the provenance of the memdevs, nil for no pool.
 	Watcher *provenance.Watcher
 	// PoolSerials returns the serials of the pool driver's devices, nil
@@ -426,16 +424,27 @@ func (p *Publisher) ScanWith(ctx context.Context, cfg PublishConfig, poolSerials
 // scanWith returns the devices to publish of a scan of the node with the
 // configuration and the pool serials of ScanInput.
 func (p *Publisher) scanWith(ctx context.Context, cfg PublishConfig, poolSerials map[uint64]bool) (device.DevicesInfo, error) {
-	detected, err := p.opts.Scan()
+	snap, err := p.opts.Scan(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to detect devices: %v", err)
 	}
 	local := p.LocalSnapshot()
-	poolSerials, held := p.opts.Watcher.Gate(ctx, detected, poolSerials, local.claims())
-	if len(detected.RegionDevices) == 0 {
+	poolSerials, held := p.opts.Watcher.Gate(ctx, snap, poolSerials, local.claims())
+	if len(snap.Regions) == 0 {
 		klog.Info("No region devices detected")
 	}
-	return BuildDevices(cfg, detected, poolSerials, held, local), nil
+	hollowRegions.observe(snap.Regions, p.ours())
+	return BuildDevices(cfg, snap, poolSerials, held, local), nil
+}
+
+// ours returns whether the records have the region with the name as one
+// of the device engine.
+func (p *Publisher) ours() func(name string) bool {
+	r := &p.opts.Store.Snapshot().Records
+	return func(name string) bool {
+		reg := r.Region(state.RegionRef(name))
+		return reg != nil && reg.Ours()
+	}
 }
 
 // ScanInput returns the configuration and the pool serials of a scan: the
@@ -587,7 +596,8 @@ func LocalUsableSize(size, bs uint64) uint64 {
 // hollowRegions are the hollow regions of the last scan, warned about.
 var hollowRegions = &hollowRegionLog{warned: map[string]bool{}}
 
-// hollowRegionLog warns once about each hollow region of the scans.
+// hollowRegionLog warns once about each hollow region of the scans that is
+// not one of the device engine (the engine warns about its own).
 //
 // Identity: one per process (hollowRegions), shared by the scans.
 //
@@ -602,80 +612,141 @@ var hollowRegions = &hollowRegionLog{warned: map[string]bool{}}
 type hollowRegionLog struct {
 	// mu guards warned: a leaf lock.
 	mu     sync.Mutex
-	warned map[string]bool // sysfs path and resource of a hollow region
+	warned map[string]bool // name and resource of a hollow region
 }
 
-// observe returns the hollow regions among regions (pkg/cxl
-// RegionDevice.Hollow, kernel.RegionHollow), and logs a warning for each one
-// that the last scan did not have: no decoder maps its address range any
-// more (memory of it that kmem could not remove stays online until a
-// reboot, which is why such a region may still have a node), it holds that
-// range in its root decoder, and cxl destroy-region cannot remove it. The
-// device engine deletes such a region that it knows as its own; others are
-// only reported, with the command that removes them.
-func (h *hollowRegionLog) observe(regions []*nricxl.RegionDevice) map[*nricxl.RegionDevice]bool {
-	out := map[*nricxl.RegionDevice]bool{}
+// observe logs a warning for each hollow region among regions that is not
+// ours and that the last scan did not have: no decoder maps its address
+// range any more (memory of it that kmem could not remove stays online
+// until a reboot, which is why such a region may still have a node), it
+// holds that range in its root decoder, and cxl destroy-region cannot
+// remove it; with the command that removes it.
+func (h *hollowRegionLog) observe(regions []kernel.RegionInfo, ours func(name string) bool) {
 	seen := map[string]bool{}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, r := range regions {
-		if !r.Hollow {
+		if r.State != kernel.RegionHollow || ours(r.Name) {
 			continue
 		}
-		out[r] = true
-		key := fmt.Sprintf("%s@%#x", r.SysfsPath, r.Resource)
+		key := fmt.Sprintf("%s@%#x", r.Name, r.Range.Start)
 		seen[key] = true
 		if h.warned[key] {
 			continue
 		}
-		decoder := "<its root decoder>"
-		if real, err := filepath.EvalSymlinks(r.SysfsPath); err == nil {
-			decoder = filepath.Base(filepath.Dir(real))
+		decoder := r.RootDecoder
+		if decoder == "" {
+			decoder = "<its root decoder>"
 		}
 		klog.Warningf("CXL region %s (mode %s, resource %#x, size %#x) has no target decoder: it is not published. It is left behind when its memory device was removed before the region was destroyed (or is being created right now). No decoder maps its address range, which it holds; cxl destroy-region cannot remove it. If it stays and none of its memory blocks is online: echo %s > /sys/bus/cxl/devices/%s/delete_region",
-			r.Name, r.Mode, r.Resource, r.Size, r.Name, decoder)
+			r.Name, r.Mode, r.Range.Start, regionSize(r), r.Name, decoder)
 	}
 	h.warned = seen
+}
+
+// regionSize returns the size of a region in bytes, 0 while it has no
+// address range.
+func regionSize(r kernel.RegionInfo) uint64 {
+	if r.Range == (kernel.Range{}) {
+		return 0
+	}
+	return r.Range.Size()
+}
+
+// regionNodes returns the NUMA node of the memory of each region of the
+// snapshot, by name: the node of a zone of online memory that starts in the
+// region (the first online memory block of its node and zone), else the
+// target node of a dax device of the region, -1 if neither tells.
+func regionNodes(snap *kernel.Snapshot) map[string]int {
+	type zone struct {
+		node  int
+		zones string
+	}
+	// a zone of /proc/zoneinfo starts at its first online memory block
+	first := map[zone]int{}
+	for _, b := range snap.Blocks {
+		z := zone{b.NumaNode, b.Zones}
+		if f, ok := first[z]; b.State == kernel.BlockOnline && b.NumaNode >= 0 && (!ok || b.Index < f) {
+			first[z] = b.Index
+		}
+	}
+	out := map[string]int{}
+	for _, r := range snap.Regions {
+		node := -1
+		for z, b := range first {
+			if addr := uint64(b) * snap.BlockSize; r.Range != (kernel.Range{}) && addr >= r.Range.Start && addr <= r.Range.End {
+				node = z.node
+			}
+		}
+		for _, d := range snap.DaxDevicesOf(r.Name) {
+			if node < 0 && d.TargetNode >= 0 {
+				node = d.TargetNode
+			}
+		}
+		out[r.Name] = node
+	}
 	return out
 }
 
-// BuildDevices returns the devices to publish of the detected devices, by
-// device name. poolSerials are the serials of pool devices (prepared by the
+// numaNodesByName returns the NUMA nodes of the snapshot in the order of
+// their names (node10 before node2).
+func numaNodesByName(snap *kernel.Snapshot) []kernel.NumaNode {
+	nodes := slices.Clone(snap.NumaNodes)
+	slices.SortStableFunc(nodes, func(a, b kernel.NumaNode) int { return strings.Compare(strconv.Itoa(a.ID), strconv.Itoa(b.ID)) })
+	return nodes
+}
+
+// regionMemdevs returns the memdevs of the targets of a region, in the
+// order of the names of their endpoints.
+func regionMemdevs(snap *kernel.Snapshot, r *kernel.RegionInfo) []kernel.MemdevInfo {
+	out := make([]kernel.MemdevInfo, 0, len(r.Serials))
+	for _, s := range r.Serials {
+		out = append(out, snap.Memdev(s))
+	}
+	slices.SortStableFunc(out, func(a, b kernel.MemdevInfo) int { return strings.Compare(a.Endpoint, b.Endpoint) })
+	return out
+}
+
+// BuildDevices returns the devices to publish of a snapshot, by device
+// name. poolSerials are the serials of pool devices (prepared by the
 // pool driver, published by a pool controller, or remembered as such): their
 // regions are skipped, and they are never local memdevs; held are the
 // serials of new memdevs that are held as possible pool devices: like pool
 // devices, neither they nor their regions are published. Regions on memdevs
 // that the device engine uses (local) are skipped too: the engine created
 // them, and the memdevs are published as memdev devices.
-func BuildDevices(cfg PublishConfig, detected *nricxl.Devices, poolSerials, held map[uint64]bool, local *LocalSnapshot) device.DevicesInfo {
+func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held map[uint64]bool, local *LocalSnapshot) device.DevicesInfo {
 	cxlNodes := make(map[int]bool)
 	devInfos := make(map[string]*device.DeviceInfo)
-	hollow := hollowRegions.observe(detected.RegionDevices)
-	for _, regDev := range detected.RegionDevices {
-		klog.V(3).Infof("discovered CXL region device: %+v", regDev)
-		if hollow[regDev] {
-			// its memory that kmem could not remove is not DRAM
-			cxlNodes[regDev.Node] = true
-			klog.V(4).Infof("- ignoring region device %q: it has no target decoder", regDev.Name)
+	nodes := regionNodes(snap)
+	for i := range snap.Regions {
+		r := &snap.Regions[i]
+		node := nodes[r.Name]
+		klog.V(3).Infof("discovered CXL region device: %+v", *r)
+		// the memory of a hollow region that kmem could not remove is not
+		// DRAM either
+		cxlNodes[node] = true
+		if r.State == kernel.RegionHollow {
+			klog.V(4).Infof("- ignoring region device %q: it has no target decoder", r.Name)
 			continue
 		}
-		cxlNodes[regDev.Node] = true
-		if reason := regionIgnoreReason(cfg, regDev, poolSerials, held, local); reason != "" {
-			klog.V(4).Infof("- ignoring region device %q: %s", regDev.Name, reason)
+		mems := regionMemdevs(snap, r)
+		if reason := regionIgnoreReason(cfg, r, node, mems, poolSerials, held, local); reason != "" {
+			klog.V(4).Infof("- ignoring region device %q: %s", r.Name, reason)
 			continue
 		}
-		name := regionDeviceName(regDev)
-		devInfos[name] = &device.DeviceInfo{
-			Name:      name,
-			Dev:       any(regDev),
-			SysfsPath: regDev.SysfsPath,
+		dev := &device.Region{Name: r.Name, NumaNode: node, Size: regionSize(*r)}
+		for _, m := range mems {
+			dev.NodeAffinity = append(dev.NodeAffinity, m.NodeAffinity)
 		}
+		name := fmt.Sprintf("%s-node%d", r.Name, node)
+		devInfos[name] = &device.DeviceInfo{Name: name, Dev: dev}
 	}
 	if cfg.ManageMemdevs {
-		addLocalMemdevs(devInfos, cfg, detected, poolSerials, held, local)
+		addLocalMemdevs(devInfos, cfg, snap, poolSerials, held, local)
 	}
 	if !cfg.IgnoreDRAMNodes {
-		addDRAM(devInfos, cfg, detected, cxlNodes)
+		addDRAM(devInfos, cfg, snap, cxlNodes)
 	}
 	if cfg.PublishLeaseDevice {
 		devInfos[device.LeaseDeviceName] = &device.DeviceInfo{
@@ -686,33 +757,34 @@ func BuildDevices(cfg PublishConfig, detected *nricxl.Devices, poolSerials, held
 	return devInfos
 }
 
-// regionIgnoreReason returns why a region that is not hollow is not
-// published, "" if it is: on a pool or held memdev, on a memdev of the
-// engine, disabled, of persistent memory, in ignoreRegions, on a node of
-// ignoreNodes, with a memdev of ignoreDevices; the first reason only.
-func regionIgnoreReason(cfg PublishConfig, regDev *nricxl.RegionDevice, poolSerials, held map[uint64]bool, local *LocalSnapshot) string {
-	reason := poolIgnoreReason(regDev, poolSerials, held)
+// regionIgnoreReason returns why a region on node with the memdevs mems
+// that is not hollow is not published, "" if it is: on a pool or held
+// memdev, on a memdev of the engine, without a node (disabled), of
+// persistent memory, in ignoreRegions, on a node of ignoreNodes, with a
+// memdev of ignoreDevices; the first reason only.
+func regionIgnoreReason(cfg PublishConfig, r *kernel.RegionInfo, node int, mems []kernel.MemdevInfo, poolSerials, held map[uint64]bool, local *LocalSnapshot) string {
+	reason := poolIgnoreReason(mems, poolSerials, held)
 	if reason == "" {
-		reason = localIgnoreReason(regDev, local)
+		reason = localIgnoreReason(mems, local)
 	}
-	if !regDev.Enabled {
+	if node < 0 {
 		reason = "region is disabled"
 	}
-	if reason == "" && regDev.Mode == kernel.RegionPmem {
+	if reason == "" && r.Mode == kernel.RegionPmem {
 		reason = "region of persistent memory"
 	}
 	if reason != "" {
 		return reason
 	}
-	if slices.Contains(cfg.IgnoreRegions, regDev.Name) {
-		return fmt.Sprintf("region name %q", regDev.Name)
+	if slices.Contains(cfg.IgnoreRegions, r.Name) {
+		return fmt.Sprintf("region name %q", r.Name)
 	}
-	if slices.Contains(cfg.IgnoreNodes, regDev.Node) {
-		return fmt.Sprintf("region is on node %d", regDev.Node)
+	if slices.Contains(cfg.IgnoreNodes, node) {
+		return fmt.Sprintf("region is on node %d", node)
 	}
-	for _, memDev := range regDev.Memories {
-		if r := memdevMatches(cfg.IgnoreDevices, memDev); r != "" {
-			return "region has a " + r
+	for i := range mems {
+		if m := memdevMatches(cfg.IgnoreDevices, &mems[i]); m != "" {
+			return "region has a " + m
 		}
 	}
 	return ""
@@ -720,15 +792,15 @@ func regionIgnoreReason(cfg PublishConfig, regDev *nricxl.RegionDevice, poolSeri
 
 // addDRAM adds the DRAM device of the memory nodes that are not CXL nodes
 // to devInfos.
-func addDRAM(devInfos device.DevicesInfo, cfg PublishConfig, detected *nricxl.Devices, cxlNodes map[int]bool) {
+func addDRAM(devInfos device.DevicesInfo, cfg PublishConfig, snap *kernel.Snapshot, cxlNodes map[int]bool) {
 	dramDev := &device.DRAM{}
-	for _, node := range detected.MemoryNodes {
+	for _, node := range numaNodesByName(snap) {
 		if cxlNodes[node.ID] {
 			continue
 		}
 		ignoreReason := ""
 		switch {
-		case node.Size == 0:
+		case node.MemTotal == 0:
 			ignoreReason = "node has 0 size"
 		case slices.Contains(cfg.IgnoreNodes, node.ID):
 			ignoreReason = fmt.Sprintf("node ID %d is in ignoreNodes", node.ID)
@@ -738,8 +810,8 @@ func addDRAM(devInfos device.DevicesInfo, cfg PublishConfig, detected *nricxl.De
 			continue
 		}
 		dramDev.Nodes = append(dramDev.Nodes, node.ID)
-		dramDev.Size += node.Size
-		klog.V(4).Infof("discovered DRAM memory on node %d: size %d bytes", node.ID, node.Size)
+		dramDev.Size += node.MemTotal
+		klog.V(4).Infof("discovered DRAM memory on node %d: size %d bytes", node.ID, node.MemTotal)
 	}
 	if dramDev.Size > 0 {
 		devInfos[device.DRAMDeviceName] = &device.DeviceInfo{
@@ -750,15 +822,11 @@ func addDRAM(devInfos device.DevicesInfo, cfg PublishConfig, detected *nricxl.De
 	}
 }
 
-// regionDeviceName returns the device name of a region: <region>-node<N>.
-func regionDeviceName(regDev *nricxl.RegionDevice) string {
-	return fmt.Sprintf("%s-node%d", regDev.Name, regDev.Node)
-}
-
-// poolIgnoreReason returns why a region on a pool device or on a memdev
-// that is held is not published, "" if it is on neither.
-func poolIgnoreReason(regDev *nricxl.RegionDevice, poolSerials, held map[uint64]bool) string {
-	for _, memDev := range regDev.Memories {
+// poolIgnoreReason returns why a region on the memdevs mems, a pool device
+// or a memdev that is held among them, is not published, "" if it is on
+// neither.
+func poolIgnoreReason(mems []kernel.MemdevInfo, poolSerials, held map[uint64]bool) string {
+	for _, memDev := range mems {
 		if poolSerials[memDev.Serial] {
 			return fmt.Sprintf("pool device (%s), memory device serial 0x%x", device.PoolDriverName, memDev.Serial)
 		}
@@ -772,10 +840,11 @@ func poolIgnoreReason(regDev *nricxl.RegionDevice, poolSerials, held map[uint64]
 // heldReason is why a memdev that is held is not published.
 const heldReason = "held back: it may be a pool device"
 
-// localIgnoreReason returns why a region on a local memdev that the engine
-// uses is not published, "" if it is not on one.
-func localIgnoreReason(regDev *nricxl.RegionDevice, local *LocalSnapshot) string {
-	for _, memDev := range regDev.Memories {
+// localIgnoreReason returns why a region on the memdevs mems, a local
+// memdev that the engine uses among them, is not published, "" if it is not
+// on one.
+func localIgnoreReason(mems []kernel.MemdevInfo, local *LocalSnapshot) string {
+	for _, memDev := range mems {
 		if local.InUse(memDev.Serial) {
 			return fmt.Sprintf("created by the plugin on local memory device %s", MemdevDeviceName(memDev.Serial))
 		}
@@ -787,12 +856,12 @@ func localIgnoreReason(regDev *nricxl.RegionDevice, local *LocalSnapshot) string
 // "" if none does. A spec matches the memdev name (mem0), the uevent device
 // name (cxl/mem0), <major>:<minor> or the serial in decimal, 0x<hex> or
 // <hex>.
-func memdevMatches(specs []string, memDev *nricxl.MemoryDevice) string {
+func memdevMatches(specs []string, memDev *kernel.MemdevInfo) string {
 	for _, spec := range specs {
 		switch spec {
 		case memDev.Name:
 			return fmt.Sprintf("memory device name %q", spec)
-		case memDev.DevName:
+		case "cxl/" + memDev.Name:
 			return fmt.Sprintf("memory uevent device name %q", spec)
 		case fmt.Sprintf("%d:%d", memDev.Major, memDev.Minor):
 			return fmt.Sprintf("memory device with major:minor %q", spec)
@@ -806,7 +875,7 @@ func memdevMatches(specs []string, memDev *nricxl.MemoryDevice) string {
 // sharedListing tells whether SharedDevices of the configuration lists a
 // memdev, and why a listed memdev is not a shared local device: it is
 // ignored, a pool device or held ("" if it is one).
-func sharedListing(cfg PublishConfig, memDev *nricxl.MemoryDevice, poolSerials, held map[uint64]bool) (bool, string) {
+func sharedListing(cfg PublishConfig, memDev *kernel.MemdevInfo, poolSerials, held map[uint64]bool) (bool, string) {
 	if memdevMatches(cfg.SharedDevices, memDev) == "" {
 		return false, ""
 	}
@@ -825,9 +894,10 @@ func sharedListing(cfg PublishConfig, memDev *nricxl.MemoryDevice, poolSerials, 
 // SharedSerials returns the serials of the memdevs that are shared local
 // devices of the configuration: SharedDevices lists them, and they are
 // neither ignored nor pool devices.
-func SharedSerials(cfg PublishConfig, memDevs []*nricxl.MemoryDevice, poolSerials map[uint64]bool) map[uint64]bool {
+func SharedSerials(cfg PublishConfig, memDevs []kernel.MemdevInfo, poolSerials map[uint64]bool) map[uint64]bool {
 	out := map[uint64]bool{}
-	for _, memDev := range memDevs {
+	for i := range memDevs {
+		memDev := &memDevs[i]
 		if listed, refusal := sharedListing(cfg, memDev, poolSerials, nil); listed && refusal == "" {
 			out[memDev.Serial] = true
 		}
@@ -841,7 +911,7 @@ var sharedRefusalsLogged sync.Map
 
 // logSharedRefusal logs once why a memdev of SharedDevices is not published
 // as a shared local device.
-func logSharedRefusal(memDev *nricxl.MemoryDevice, reason string) {
+func logSharedRefusal(memDev *kernel.MemdevInfo, reason string) {
 	if _, logged := sharedRefusalsLogged.LoadOrStore(memDev.Name+"\x00"+reason, true); !logged {
 		klog.Infof("- not publishing memory device %q as a shared local device: %s", memDev.Name, reason)
 	}
@@ -857,18 +927,19 @@ func logSharedRefusal(memDev *nricxl.MemoryDevice, reason string) {
 // is enabled, its RAM capacity is sure to hold a whole memory block, it has
 // no regions but the engine's and no claims that use it shared or
 // persistent.
-func addLocalMemdevs(devInfos device.DevicesInfo, cfg PublishConfig, detected *nricxl.Devices, poolSerials, held map[uint64]bool, local *LocalSnapshot) {
+func addLocalMemdevs(devInfos device.DevicesInfo, cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held map[uint64]bool, local *LocalSnapshot) {
 	bs := uint64(0)
 	if local != nil {
 		bs = local.BlockSize
 	}
 	regions := map[uint64][]string{}
-	for _, regDev := range detected.RegionDevices {
-		for _, memDev := range regDev.Memories {
-			regions[memDev.Serial] = append(regions[memDev.Serial], regDev.Name)
+	for _, r := range snap.Regions {
+		for _, s := range r.Serials {
+			regions[s] = append(regions[s], r.Name)
 		}
 	}
-	for _, memDev := range detected.MemoryDevices {
+	for i := range snap.Memdevs {
+		memDev := &snap.Memdevs[i]
 		listed, refusal := sharedListing(cfg, memDev, poolSerials, held)
 		if refusal != "" {
 			logSharedRefusal(memDev, refusal)
@@ -899,7 +970,6 @@ func addLocalMemdevs(devInfos device.DevicesInfo, cfg PublishConfig, detected *n
 				NodeAffinity: memDev.NodeAffinity,
 				BlockSize:    bs,
 			},
-			SysfsPath: memDev.SysfsPath,
 		}
 		klog.V(3).Infof("discovered local memory device %s: %s serial 0x%x size %d (RAM capacity %d) memory block size %d", name, memDev.Name, memDev.Serial, size, memDev.RamSize, bs)
 	}
@@ -910,7 +980,7 @@ func addLocalMemdevs(devInfos device.DevicesInfo, cfg PublishConfig, detected *n
 // is: no RAM, an unknown block size, too small, disabled, a pool or held
 // memdev, regions that the engine did not create, claims that use it
 // persistent or shared, ignoreDevices.
-func partsRefusal(cfg PublishConfig, memDev *nricxl.MemoryDevice, size, bs uint64, poolSerials, held map[uint64]bool, regions []string, local *LocalSnapshot) string {
+func partsRefusal(cfg PublishConfig, memDev *kernel.MemdevInfo, size, bs uint64, poolSerials, held map[uint64]bool, regions []string, local *LocalSnapshot) string {
 	use, used := local.Use(memDev.Serial)
 	switch {
 	case memDev.RamSize == 0:
@@ -919,7 +989,7 @@ func partsRefusal(cfg PublishConfig, memDev *nricxl.MemoryDevice, size, bs uint6
 		return "the memory block size is unknown"
 	case LocalUsableSize(size, bs) == 0:
 		return fmt.Sprintf("usable RAM capacity %d is not sure to hold a whole memory block of %d bytes", size, bs)
-	case !memDev.Enabled:
+	case memDev.State == kernel.MemdevUnbound:
 		return "memory device is disabled"
 	case poolSerials[memDev.Serial]:
 		return "pool device"
@@ -938,7 +1008,7 @@ func partsRefusal(cfg PublishConfig, memDev *nricxl.MemoryDevice, size, bs uint6
 // memdevUsableSize returns the bytes of a local memdev that the engine
 // uses: its RAM capacity, or less when memdevSettings or the address line
 // probe limit it, rounded down to the alignment of CXL regions.
-func memdevUsableSize(cfg PublishConfig, memDev *nricxl.MemoryDevice, local *LocalSnapshot) uint64 {
+func memdevUsableSize(cfg PublishConfig, memDev *kernel.MemdevInfo, local *LocalSnapshot) uint64 {
 	size := memDev.RamSize
 	for _, limit := range []uint64{cfg.usableSize(memDev.Name, memDev.Serial), local.ProbedSize(memDev.Serial)} {
 		if limit > 0 && limit < size {
@@ -953,13 +1023,13 @@ func memdevUsableSize(cfg PublishConfig, memDev *nricxl.MemoryDevice, local *Loc
 // the engine did not create or claims that use it as slices.
 //   - regions: the regions on the memdev
 //   - bs: the memory block size, 0 if unknown
-func addSharedMemdev(devInfos device.DevicesInfo, memDev *nricxl.MemoryDevice, size uint64, regions []string, local *LocalSnapshot, bs uint64) {
+func addSharedMemdev(devInfos device.DevicesInfo, memDev *kernel.MemdevInfo, size uint64, regions []string, local *LocalSnapshot, bs uint64) {
 	use, used := local.Use(memDev.Serial)
 	reason := ""
 	switch {
 	case memDev.RamSize == 0:
 		reason = "no RAM capacity"
-	case !memDev.Enabled:
+	case memDev.State == kernel.MemdevUnbound:
 		reason = "memory device is disabled"
 	case len(regions) > 0 && !used:
 		reason = fmt.Sprintf("it has regions %v that the plugin did not create", regions)
@@ -983,7 +1053,6 @@ func addSharedMemdev(devInfos device.DevicesInfo, memDev *nricxl.MemoryDevice, s
 			BlockSize:    bs,
 			Shared:       true,
 		},
-		SysfsPath: memDev.SysfsPath,
 	}
 	klog.V(3).Infof("discovered shared local memory device %s: %s serial 0x%x size %d", name, memDev.Name, memDev.Serial, memDev.RamSize)
 }
@@ -996,7 +1065,7 @@ func addSharedMemdev(devInfos device.DevicesInfo, memDev *nricxl.MemoryDevice, s
 //   - shared: sharedDevices lists the memdev, which is neither ignored nor
 //     a pool device
 //   - regions: the regions on the memdev
-func addPersistentMemdev(devInfos device.DevicesInfo, cfg PublishConfig, memDev *nricxl.MemoryDevice, shared bool, poolSerials, held map[uint64]bool, regions []string, local *LocalSnapshot) {
+func addPersistentMemdev(devInfos device.DevicesInfo, cfg PublishConfig, memDev *kernel.MemdevInfo, shared bool, poolSerials, held map[uint64]bool, regions []string, local *LocalSnapshot) {
 	use, used := local.Use(memDev.Serial)
 	reason := memdevMatches(cfg.IgnoreDevices, memDev)
 	switch {
@@ -1005,7 +1074,7 @@ func addPersistentMemdev(devInfos device.DevicesInfo, cfg PublishConfig, memDev 
 		reason = "pool device"
 	case held[memDev.Serial]:
 		reason = heldReason
-	case !memDev.Enabled:
+	case memDev.State == kernel.MemdevUnbound:
 		reason = "memory device is disabled"
 	case len(regions) > 0 && !used:
 		reason = fmt.Sprintf("it has regions %v that the plugin did not create", regions)
@@ -1032,7 +1101,6 @@ func addPersistentMemdev(devInfos device.DevicesInfo, cfg PublishConfig, memDev 
 			Shared:       shared,
 			Persistent:   true,
 		},
-		SysfsPath: memDev.SysfsPath,
 	}
 	klog.V(3).Infof("discovered persistent local memory device %s: %s serial 0x%x size %d shared %v", name, memDev.Name, memDev.Serial, memDev.PmemSize, shared)
 }
@@ -1061,7 +1129,7 @@ func resources(devs device.DevicesInfo) []resourcev1.Device {
 			continue
 		}
 		switch dev := allocatable.Dev.(type) {
-		case *nricxl.RegionDevice:
+		case *device.Region:
 			out = append(out, regionDevice(name, dev))
 		case *device.DRAM:
 			out = append(out, dramDevice(name, dev))
@@ -1102,11 +1170,11 @@ func memoryCapacity(size uint64) map[resourcev1.QualifiedName]resourcev1.DeviceC
 }
 
 // regionDevice returns the ResourceSlice device of a region.
-func regionDevice(name string, dev *nricxl.RegionDevice) resourcev1.Device {
+func regionDevice(name string, dev *device.Region) resourcev1.Device {
 	attrs := map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
 		device.AttrType:   {StringValue: ptr(device.DeviceTypeRegion)},
 		device.AttrSource: {StringValue: ptr(api.SourceLocal)},
-		device.AttrNode:   {IntValue: ptr(int64(dev.Node))},
+		device.AttrNode:   {IntValue: ptr(int64(dev.NumaNode))},
 		device.AttrSize:   {IntValue: ptr(int64(dev.Size))},
 	}
 	if a, ok := regionNodeAffinity(dev); ok {
@@ -1123,15 +1191,15 @@ func regionDevice(name string, dev *nricxl.RegionDevice) resourcev1.Device {
 
 // regionNodeAffinity returns the CPU NUMA node of the memdevs of a region,
 // and whether they all have the same known one.
-func regionNodeAffinity(dev *nricxl.RegionDevice) (int, bool) {
+func regionNodeAffinity(dev *device.Region) (int, bool) {
 	affinity := -1
-	for _, mem := range dev.Memories {
+	for _, a := range dev.NodeAffinity {
 		switch {
-		case mem.NodeAffinity < 0:
+		case a < 0:
 			return -1, false
 		case affinity < 0:
-			affinity = mem.NodeAffinity
-		case mem.NodeAffinity != affinity:
+			affinity = a
+		case a != affinity:
 			return -1, false
 		}
 	}

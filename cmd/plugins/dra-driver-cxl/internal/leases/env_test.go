@@ -57,8 +57,6 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
-
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 )
 
 const (
@@ -127,7 +125,7 @@ type leaseEnv struct {
 	b      *Broker
 
 	// memdevs are the local memdevs that the scans find, by serial.
-	memdevs map[uint64]*nricxl.MemoryDevice
+	memdevs map[uint64]kernel.MemdevInfo
 	// shared are the local memdevs configured shared.
 	shared map[uint64]bool
 
@@ -161,7 +159,7 @@ func newLeaseEnv(t *testing.T, local []fake.MemdevSpec, pool ...fake.MemdevSpec)
 		cli:         filepath.Join(dir, "cxl-request"),
 		filesystems: filepath.Join(dir, "filesystems"),
 		client:      k8sfake.NewClientset(requesterPod(), leaseClaimObj()),
-		memdevs:     map[uint64]*nricxl.MemoryDevice{},
+		memdevs:     map[uint64]kernel.MemdevInfo{},
 		shared:      map[uint64]bool{},
 		prepared:    map[string]string{},
 	}
@@ -227,10 +225,8 @@ func (e *leaseEnv) plugLocal(spec fake.MemdevSpec) string {
 	if ram == 0 && pmem == 0 {
 		ram = 256 << 20
 	}
-	e.memdevs[spec.Serial] = &nricxl.MemoryDevice{
-		Name: name, DevName: "cxl/" + name, SysfsPath: filepath.Join(e.k.SysRoot(), "bus/cxl/devices", name), RamSize: ram,
-		PmemSize: pmem, Serial: spec.Serial, NodeAffinity: 0, Driver: "cxl_mem", Enabled: true,
-	}
+	e.memdevs[spec.Serial] = kernel.MemdevInfo{Name: name, Serial: spec.Serial, State: kernel.MemdevReady, RamSize: ram, PmemSize: pmem,
+		NodeAffinity: 0}
 	return name
 }
 
@@ -275,7 +271,7 @@ func (e *leaseEnv) boot() {
 	e.pub, err = dra.NewPublisher(dra.PublishOptions{
 		Config:    e.publishConfig(),
 		NodeName:  envNode,
-		Scan:      func() (*nricxl.Devices, error) { return e.detected(), nil },
+		Scan:      func(context.Context) (*kernel.Snapshot, error) { return e.detected(), nil },
 		Store:     st,
 		Probes:    e.eng.Probes,
 		BlockSize: e.k.Kernel().BlockSize,
@@ -382,11 +378,11 @@ func (e *leaseEnv) publishConfig() dra.PublishConfig {
 	return cfg
 }
 
-// detected returns the devices that a scan of the node finds.
-func (e *leaseEnv) detected() *nricxl.Devices {
-	d := &nricxl.Devices{MemoryNodes: []*nricxl.MemoryNode{{ID: 0, Name: "node0", Size: 8 << 30}}}
+// detected returns the observation of the node that a scan makes.
+func (e *leaseEnv) detected() *kernel.Snapshot {
+	d := &kernel.Snapshot{NumaNodes: []kernel.NumaNode{{ID: 0, HasMemory: true, MemTotal: 8 << 30}}}
 	for _, s := range slices.Sorted(maps.Keys(e.memdevs)) {
-		d.MemoryDevices = append(d.MemoryDevices, e.memdevs[s])
+		d.Memdevs = append(d.Memdevs, e.memdevs[s])
 	}
 	return d
 }

@@ -34,9 +34,8 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
-
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 )
 
 // newSharedEnv returns a started node whose local memdev is configured
@@ -163,7 +162,7 @@ func publishLocalAs(e *localTestEnv, shared bool) {
 	if shared {
 		cfg.SharedDevices = []string{"0xc100e2e1"}
 	}
-	devs, err := buildDevInfos(&cfg, &nricxl.Devices{MemoryDevices: []*nricxl.MemoryDevice{e.memdevs[localSerial]}}, nil,
+	devs, err := buildDevInfos(&cfg, &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{e.memdevs[localSerial]}}, nil,
 		&localSnapshot{BlockSize: localBlockSize})
 	noErr(e.t, err)
 	if devs[localDeviceName] == nil {
@@ -387,7 +386,7 @@ func TestPublishSharedLocalMemdev(t *testing.T) {
 	// any size, also with an unknown memory block size
 	small := localMemdev()
 	small.RamSize = 64 * mib
-	devs, err := buildDevInfos(e.config, &nricxl.Devices{MemoryDevices: []*nricxl.MemoryDevice{small}}, nil, &localSnapshot{})
+	devs, err := buildDevInfos(e.config, &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{small}}, nil, &localSnapshot{})
 	noErr(t, err)
 	if m, ok := devs[localDeviceName].Dev.(*device.Memdev); !ok || !m.Shared || m.Size != 64*mib {
 		t.Fatalf("small shared memdev %+v", devs[localDeviceName])

@@ -142,6 +142,16 @@ type DRAM struct {
 	Size  uint64
 }
 
+// Region is the Dev of a region device (DeviceTypeRegion).
+type Region struct {
+	Name     string // regionN
+	NumaNode int    // NUMA node of its memory
+	Size     uint64 // bytes
+	// NodeAffinity are the CPU NUMA nodes of its memdevs, -1 for one not
+	// known.
+	NodeAffinity []int
+}
+
 // Memdev is the Dev of a local memdev device (DeviceTypeMemdev).
 type Memdev struct {
 	Name         string // memN

@@ -355,11 +355,11 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	// the pool driver, pool devices
 	driverConfig.PublishLeaseDevice = cxlFlags.Leases
 	watcher := newWatcher(config, cxlFlags, st)
-	fe, err := newFrontEnds(config, cxlFlags, driverConfig, sysfsRoot, bootID, st, devices, watcher, rules)
+	fe, err := newFrontEnds(config, cxlFlags, driverConfig, bootID, st, devices, watcher, rules)
 	if err != nil {
 		return nil, err
 	}
-	if err := fe.recover(ctx, config.Flags.CDIRoot, sysfsRoot, driverConfig, devices); err != nil {
+	if err := fe.recover(ctx, config.Flags.CDIRoot, driverConfig, devices); err != nil {
 		return nil, err
 	}
 

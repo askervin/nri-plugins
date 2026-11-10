@@ -578,9 +578,9 @@ func TestStartOnALostStore(t *testing.T) {
 	rules := newDriverRules(config, flags)
 	devices, err := newDriverDevices(config, flags, &DriverConfig{}, root, nil, s.st, rules)
 	noErr(t, err)
-	fe, err := newFrontEnds(config, flags, &DriverConfig{}, root, "boot-1", s.st, devices, nil, rules)
+	fe, err := newFrontEnds(config, flags, &DriverConfig{}, "boot-1", s.st, devices, nil, rules)
 	noErr(t, err)
-	noErr(t, fe.recover(ctx, filepath.Join(root, "cdi"), root, &DriverConfig{}, devices))
+	noErr(t, fe.recover(ctx, filepath.Join(root, "cdi"), &DriverConfig{}, devices))
 	p, ns := fe.pool, fe.local
 	if r := p.Records(); len(r.Preparations) != 0 || len(p.Serials()) != 0 {
 		t.Errorf("pool driver: preparations %v, serials %v", r.Preparations, p.Serials())

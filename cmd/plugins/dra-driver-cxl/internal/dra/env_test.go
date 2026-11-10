@@ -51,8 +51,6 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
-
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 )
 
 const (
@@ -122,9 +120,9 @@ type driverEnv struct {
 	rec *engine.Recovered
 
 	// memdevs are the local memdevs that the scans find, by serial;
-	// regions the regions that they find besides.
-	memdevs map[uint64]*nricxl.MemoryDevice
-	regions []*nricxl.RegionDevice
+	// extra the regions that they find besides, with their memdevs.
+	memdevs map[uint64]kernel.MemdevInfo
+	extra   kernel.Snapshot
 	// fsTypes are the filesystem types that mode fs may mount.
 	fsTypes []string
 	// base are the commands of the fake before those of the drivers.
@@ -157,7 +155,7 @@ func newDriverEnv(t *testing.T, localSpecs []fake.MemdevSpec, poolSpecs ...fake.
 		poolDir:     filepath.Join(dir, device.PoolDriverName),
 		cdiDir:      filepath.Join(dir, "cdi"),
 		filesystems: filepath.Join(dir, "filesystems"),
-		memdevs:     map[uint64]*nricxl.MemoryDevice{},
+		memdevs:     map[uint64]kernel.MemdevInfo{},
 		shared:      map[uint64]bool{},
 		fsTypes:     slices.Clone(config.KnownFsTypes),
 	}
@@ -203,10 +201,9 @@ func (e *driverEnv) plugLocal(spec fake.MemdevSpec) string {
 	if ram == 0 && pmem == 0 {
 		ram = 256 << 20
 	}
-	e.memdevs[spec.Serial] = &nricxl.MemoryDevice{
-		Name: name, DevName: "cxl/" + name, SysfsPath: filepath.Join(e.k.SysRoot(), "bus/cxl/devices", name), RamSize: ram,
-		PmemSize: pmem, Serial: spec.Serial, NodeAffinity: 0, Driver: "cxl_mem", Enabled: true,
-	}
+	m := pubMem(name, spec.Serial, ram, 0)
+	m.PmemSize = pmem
+	e.memdevs[spec.Serial] = m
 	return name
 }
 
@@ -263,7 +260,7 @@ func (e *driverEnv) start() {
 	e.pub, err = NewPublisher(PublishOptions{
 		Config:    e.publishConfig(),
 		NodeName:  envNode,
-		Scan:      func() (*nricxl.Devices, error) { return e.detected(), nil },
+		Scan:      func(context.Context) (*kernel.Snapshot, error) { return e.detected(), nil },
 		Store:     st,
 		Probes:    e.eng.Probes,
 		BlockSize: e.k.Kernel().BlockSize,
@@ -346,15 +343,16 @@ func (e *driverEnv) publishConfig() PublishConfig {
 	return cfg
 }
 
-// detected returns the devices that a scan of the node finds: the local
-// memdevs, the extra regions and two NUMA nodes of DRAM.
-func (e *driverEnv) detected() *nricxl.Devices {
-	d := &nricxl.Devices{RegionDevices: e.regions, MemoryNodes: []*nricxl.MemoryNode{
-		{ID: 0, Name: "node0", Size: 8 << 30}, {ID: 1, Name: "node1", Size: 8 << 30},
+// detected returns the observation of the node that a scan makes: the
+// local memdevs, the extra regions and two NUMA nodes of DRAM.
+func (e *driverEnv) detected() *kernel.Snapshot {
+	d := &kernel.Snapshot{Regions: e.extra.Regions, DaxDevices: e.extra.DaxDevices, NumaNodes: []kernel.NumaNode{
+		{ID: 0, HasMemory: true, MemTotal: 8 << 30}, {ID: 1, HasMemory: true, MemTotal: 8 << 30},
 	}}
 	for _, s := range slices.Sorted(maps.Keys(e.memdevs)) {
-		d.MemoryDevices = append(d.MemoryDevices, e.memdevs[s])
+		d.Memdevs = append(d.Memdevs, e.memdevs[s])
 	}
+	d.Memdevs = append(d.Memdevs, e.extra.Memdevs...)
 	return d
 }
 
@@ -367,11 +365,10 @@ func (e *driverEnv) rescan() {
 }
 
 // addRegion adds a region that existed before the driver, on node, to the
-// scans; its memdev is none of the env's.
+// scans; its memdev mem9 (no RAM capacity of its own) is none of the env's.
 func (e *driverEnv) addRegion(name string, node int, size uint64) string {
-	e.regions = append(e.regions, &nricxl.RegionDevice{Name: name, Node: node, Size: size, Mode: "ram", Enabled: true,
-		SysfsPath: filepath.Join(e.k.SysRoot(), "bus/cxl/devices", name), Targets: []string{"decoder9.0"},
-		Memories: []*nricxl.MemoryDevice{{Name: "mem9", Serial: 0xeeee, NodeAffinity: 1}}})
+	pubRegion(&e.extra, name, node, size, 0xeeee)
+	e.extra.Memdevs = append(e.extra.Memdevs, pubMem("mem9", 0xeeee, 0, 1))
 	e.rescan()
 	return fmt.Sprintf("%s-node%d", name, node)
 }

@@ -22,26 +22,17 @@ import (
 	"testing"
 
 	"github.com/containers/nri-plugins/pkg/cxl/device"
-
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
-// charRegions returns the detected devices of two regions of memdevs that
-// are not the driver's, region0 on node 2 and region1 on node 3, and the
-// DRAM nodes 0, 2 and 3.
-func charRegions() *nricxl.Devices {
-	mem := func(name string, serial uint64) *nricxl.MemoryDevice {
-		return &nricxl.MemoryDevice{Name: name, DevName: "cxl/" + name, RamSize: 1 << 30, Serial: serial, NodeAffinity: 0, Enabled: true}
-	}
-	m0, m1 := mem("mem0", 0xb0), mem("mem1", 0xb1)
-	region := func(name string, node int, m *nricxl.MemoryDevice) *nricxl.RegionDevice {
-		return &nricxl.RegionDevice{Name: name, Size: 1 << 30, Mode: "ram", Node: node, Enabled: true, Memories: []*nricxl.MemoryDevice{m}}
-	}
-	return &nricxl.Devices{
-		MemoryDevices: []*nricxl.MemoryDevice{m0, m1},
-		RegionDevices: []*nricxl.RegionDevice{region("region0", 2, m0), region("region1", 3, m1)},
-		MemoryNodes:   []*nricxl.MemoryNode{{ID: 0, Size: 1 << 30}, {ID: 2, Size: 1 << 30}, {ID: 3, Size: 1 << 30}},
-	}
+// charRegions returns the observation of two regions of memdevs that are
+// not the driver's, region0 on node 2 and region1 on node 3, and the DRAM
+// nodes 0, 2 and 3.
+func charRegions() *kernel.Snapshot {
+	s := &kernel.Snapshot{NumaNodes: pubNodes(0, 2, 3), Memdevs: []kernel.MemdevInfo{pubMem("mem0", 0xb0, 1<<30, 0), pubMem("mem1", 0xb1, 1<<30, 0)}}
+	pubRegion(s, "region0", 2, 1<<30, 0xb0)
+	pubRegion(s, "region1", 3, 1<<30, 0xb1)
+	return s
 }
 
 // TestCharIgnoreRegions: a region of ignoreRegions is not published, with
@@ -95,7 +86,7 @@ func TestCharPublishOrder(t *testing.T) {
 		"memdev-a5":            {Name: "memdev-a5", Dev: &device.Memdev{Name: "mem5", Serial: 0xa5, Size: 1 << 30, NodeAffinity: -1, BlockSize: pubBlockSize}},
 		device.DRAMDeviceName:  {Name: device.DRAMDeviceName, Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}},
 		"memdev-a1":            {Name: "memdev-a1", Dev: &device.Memdev{Name: "mem1", Serial: 0xa1, Size: 1 << 30, NodeAffinity: -1, BlockSize: pubBlockSize}},
-		"region0-node2":        {Name: "region0-node2", Dev: &nricxl.RegionDevice{Name: "region0", Size: 1 << 30, Node: 2, Enabled: true}},
+		"region0-node2":        {Name: "region0-node2", Dev: &device.Region{Name: "region0", Size: 1 << 30, NumaNode: 2}},
 		device.LeaseDeviceName: {Name: device.LeaseDeviceName, Dev: &device.LeaseToken{}},
 	}
 	p := pubPublisher(t, PublishOptions{NodeName: pubNode})
@@ -118,7 +109,7 @@ func TestCharPublishOrder(t *testing.T) {
 	q := pubPublisher(t, PublishOptions{
 		Config:   PublishConfig{IgnoreDRAMNodes: true, PublishLeaseDevice: true},
 		NodeName: pubNode,
-		Scan:     func() (*nricxl.Devices, error) { return nricxl.NewDevices(), nil },
+		Scan:     pubNoScan,
 	})
 	q.Rescan(context.Background(), false)
 	logs := captureKlogV(t, "4")
@@ -137,7 +128,7 @@ func TestCharPersistentCapacityOfRAMMemdev(t *testing.T) {
 	logs := captureKlogV(t, "3")
 	m := pubMemdev()
 	m.PmemSize = 256 * pubMiB
-	devs := BuildDevices(PublishConfig{IgnoreDRAMNodes: true, ManageMemdevs: true}, &nricxl.Devices{MemoryDevices: []*nricxl.MemoryDevice{m}}, nil, nil,
+	devs := BuildDevices(PublishConfig{IgnoreDRAMNodes: true, ManageMemdevs: true}, &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{m}}, nil, nil,
 		&LocalSnapshot{BlockSize: pubBlockSize})
 	dev, ok := devs[pubLocalDeviceName]
 	if !ok {

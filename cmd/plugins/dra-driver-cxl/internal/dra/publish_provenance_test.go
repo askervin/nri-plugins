@@ -40,8 +40,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
-
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 // The serials of a shared pool device, c-shared0 of pool-c (c-pooled0 is
@@ -65,8 +64,8 @@ type pubSerialsEnv struct {
 
 	mu      sync.Mutex
 	clock   time.Time
-	devs    map[uint64]*nricxl.MemoryDevice // on the node
-	regions map[uint64]bool                 // memdevs with a region
+	devs    map[uint64]kernel.MemdevInfo // on the node
+	regions map[uint64]bool              // memdevs with a region
 	plugged int
 }
 
@@ -76,7 +75,7 @@ func newPubSerialsEnv(t *testing.T) *pubSerialsEnv {
 		client:  fake.NewClientset(),
 		dir:     t.TempDir(),
 		clock:   time.Date(2026, 10, 26, 9, 35, 0, 0, time.UTC),
-		devs:    map[uint64]*nricxl.MemoryDevice{},
+		devs:    map[uint64]kernel.MemdevInfo{},
 		regions: map[uint64]bool{},
 	}
 	t.Cleanup(e.closeStore)
@@ -103,12 +102,12 @@ func (e *pubSerialsEnv) restart() {
 	list, claims := provenance.ClientLists(e.client, "")
 	e.w = provenance.New(provenance.Options{Store: e.st, List: list, Claims: claims, NodeName: pubNode,
 		Name: filepath.Join(e.dir, "poolSerials.json"), Now: e.now})
-	e.p = e.publisher(func() (*nricxl.Devices, error) { return e.devices(), nil })
+	e.p = e.publisher(func(context.Context) (*kernel.Snapshot, error) { return e.devices(), nil })
 }
 
 // publisher returns a publisher of the env (not started: it does not
 // publish) whose scans detect the devices of scan.
-func (e *pubSerialsEnv) publisher(scan func() (*nricxl.Devices, error)) *Publisher {
+func (e *pubSerialsEnv) publisher(scan func(context.Context) (*kernel.Snapshot, error)) *Publisher {
 	return pubPublisher(e.t, PublishOptions{
 		Config:    PublishConfig{IgnoreDRAMNodes: true, ManageMemdevs: true},
 		NodeName:  pubNode,
@@ -198,20 +197,17 @@ func (e *pubSerialsEnv) withRegion(serial uint64) {
 	e.regions[serial] = true
 }
 
-// devices returns the devices on the node: the memdevs, and region<N> of
-// node 2+N on the memdevs with a region.
-func (e *pubSerialsEnv) devices() *nricxl.Devices {
+// devices returns the observation of the node: the memdevs, and
+// region<N> of node 2+N on the memdevs with a region.
+func (e *pubSerialsEnv) devices() *kernel.Snapshot {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	devs := &nricxl.Devices{}
+	devs := &kernel.Snapshot{}
 	for _, s := range slices.Sorted(maps.Keys(e.devs)) {
-		m := e.devs[s]
-		devs.MemoryDevices = append(devs.MemoryDevices, m)
+		devs.Memdevs = append(devs.Memdevs, e.devs[s])
 		if e.regions[s] {
-			n := len(devs.RegionDevices)
-			devs.RegionDevices = append(devs.RegionDevices, &nricxl.RegionDevice{
-				Name: fmt.Sprintf("region%d", n), Size: 1 << 30, Mode: "ram", Node: 2 + n, Enabled: true, Memories: []*nricxl.MemoryDevice{m},
-			})
+			n := len(devs.Regions)
+			pubRegion(devs, fmt.Sprintf("region%d", n), 2+n, 1<<30, s)
 		}
 	}
 	return devs
@@ -520,7 +516,7 @@ func TestPoolSerialsPrepared(t *testing.T) {
 	e.p = pubPublisher(t, PublishOptions{
 		Config:      PublishConfig{IgnoreDRAMNodes: true, ManageMemdevs: true},
 		NodeName:    pubNode,
-		Scan:        func() (*nricxl.Devices, error) { return e.devices(), nil },
+		Scan:        func(context.Context) (*kernel.Snapshot, error) { return e.devices(), nil },
 		Watcher:     e.w,
 		PoolSerials: func() map[uint64]bool { return map[uint64]bool{pubOtherLocalSerial: true} },
 		Store:       e.st,
@@ -704,7 +700,7 @@ func TestPoolSerialsHeldRegion(t *testing.T) {
 	e.withRegion(pubOtherLocalSerial)
 	e.wantScan("held back")
 	devs := e.devices()
-	if r := poolIgnoreReason(devs.RegionDevices[0], nil, map[uint64]bool{pubOtherLocalSerial: true}); !strings.Contains(r, "held back") {
+	if r := poolIgnoreReason(regionMemdevs(devs, &devs.Regions[0]), nil, map[uint64]bool{pubOtherLocalSerial: true}); !strings.Contains(r, "held back") {
 		t.Fatalf("reason %q", r)
 	}
 	e.advance(provenance.HoldBack)
@@ -751,7 +747,7 @@ func TestRescanSerialized(t *testing.T) {
 	entered := make(chan int32, 2)
 	release := make(chan struct{})
 	var n atomic.Int32
-	p := e.publisher(func() (*nricxl.Devices, error) {
+	p := e.publisher(func(context.Context) (*kernel.Snapshot, error) {
 		i := n.Add(1)
 		entered <- i
 		if i == 1 {
@@ -790,7 +786,7 @@ func TestPoolWatch(t *testing.T) {
 	e.publish()
 	e.plug(pubOtherLocalSerial)
 	devs := e.devices()
-	p := e.publisher(func() (*nricxl.Devices, error) { return devs, nil })
+	p := e.publisher(func(context.Context) (*kernel.Snapshot, error) { return devs, nil })
 	ctx := context.Background()
 	p.Rescan(ctx, false)
 	if got := pubNames(p.Devices()); !slices.Equal(got, []string{pubLocalDeviceName}) {
@@ -822,10 +818,10 @@ func TestPoolWatch(t *testing.T) {
 
 // poolTestDevices are local memdevs with the serial of a pool device
 // (0xc1ee0001) and of a free local device.
-func poolTestDevices() *nricxl.Devices {
+func poolTestDevices() *kernel.Snapshot {
 	pooled := pubMemdev()
 	pooled.Name, pooled.Serial = "mem1", 0xc1ee0001
-	return &nricxl.Devices{MemoryDevices: []*nricxl.MemoryDevice{pubMemdev(), pooled}}
+	return &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{pubMemdev(), pooled}}
 }
 
 // scanNames returns the names of the devices that a scan of
@@ -836,7 +832,7 @@ func scanNames(t *testing.T, ctx context.Context, st *store.Store, w *provenance
 	p := pubPublisher(t, PublishOptions{
 		Config:    PublishConfig{IgnoreDRAMNodes: true, ManageMemdevs: true},
 		NodeName:  pubNode,
-		Scan:      func() (*nricxl.Devices, error) { return poolTestDevices(), nil },
+		Scan:      func(context.Context) (*kernel.Snapshot, error) { return poolTestDevices(), nil },
 		Watcher:   w,
 		Store:     st,
 		BlockSize: func() (uint64, error) { return pubBlockSize, nil },

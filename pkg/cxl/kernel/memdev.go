@@ -16,6 +16,7 @@ package kernel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -174,12 +175,26 @@ func (k *Kernel) memdev(name string, endpoints map[string]string) (MemdevInfo, e
 	if err != nil {
 		return MemdevInfo{}, fmt.Errorf("%s: serial: %w", name, err)
 	}
-	m := MemdevInfo{Name: name, Serial: serial, State: MemdevUnbound, NodeAffinity: readInt(k.cxlDev(name, "numa_node"), -1)}
-	m.RamSize, _ = ReadUint(k.cxlDev(name, "ram", "size"))
-	m.PmemSize, _ = ReadUint(k.cxlDev(name, "pmem", "size"))
-	if v, err := ReadTrim(k.cxlDev(name, "dev")); err == nil {
-		m.Major, m.Minor, _ = parseDevNumbers(name, v)
+	if s, _ := ReadTrim(k.cxlDev(name, "serial")); k.fact != nil && !strings.HasPrefix(s, "0x") {
+		k.factErr(fmt.Errorf("%s: serial %q is not 0x<hex>", name, s))
 	}
+	m := MemdevInfo{Name: name, Serial: serial, State: MemdevUnbound, NodeAffinity: -1}
+	numa, err := ReadTrim(k.cxlDev(name, "numa_node"))
+	if err == nil {
+		m.NodeAffinity, err = strconv.Atoi(numa)
+	}
+	if err != nil {
+		m.NodeAffinity = -1
+	}
+	k.factErr(err)
+	var ramErr, pmemErr error
+	m.RamSize, ramErr = ReadUint(k.cxlDev(name, "ram", "size"))
+	m.PmemSize, pmemErr = ReadUint(k.cxlDev(name, "pmem", "size"))
+	dev, err := ReadTrim(k.cxlDev(name, "dev"))
+	if err == nil {
+		m.Major, m.Minor, err = parseDevNumbers(name, dev)
+	}
+	k.factErr(errors.Join(ramErr, pmemErr, err))
 	if !hasDriver(k.cxlDev(name)) {
 		return m, nil
 	}

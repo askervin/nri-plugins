@@ -25,7 +25,6 @@ import (
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
@@ -175,8 +174,7 @@ func TestNew(t *testing.T) {
 	wantErrText(t, err, "zero.nri.io: the rules have no validation or voice")
 	_, err = New(Options{Rules: LocalRules(""), Store: e.st, Engine: e.eng})
 	wantErrText(t, err, "cxl.nri.io: the plugin publishes and needs the publisher")
-	scan := func() (*nricxl.Devices, error) { return nricxl.NewDevices(), nil }
-	for _, opts := range []PublishOptions{{Scan: scan}, {Store: e.st}} {
+	for _, opts := range []PublishOptions{{Scan: pubNoScan}, {Store: e.st}} {
 		_, err = NewPublisher(opts)
 		wantErrText(t, err, "the publisher needs the state store and the scan of the devices")
 	}

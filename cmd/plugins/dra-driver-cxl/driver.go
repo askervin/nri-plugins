@@ -36,8 +36,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
-
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 	"github.com/containers/nri-plugins/pkg/cxl/memctl"
 )
 
@@ -434,9 +432,9 @@ type frontEnds struct {
 
 // newFrontEnds returns the DRA drivers of rules over the store st and the
 // device engine devices: cxl.nri.io, which publishes the node's
-// ResourceSlice of the devices of the sysfs under sysfsRoot, and the pool
+// ResourceSlice of the devices of the kernel of the engine, and the pool
 // driver unless it is disabled (rules.pool nil).
-func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, sysfsRoot, bootID string, st *store.Store, devices *deviceEngine, watcher *provenance.Watcher, rules driverRules) (*frontEnds, error) {
+func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, bootID string, st *store.Store, devices *deviceEngine, watcher *provenance.Watcher, rules driverRules) (*frontEnds, error) {
 	fe := &frontEnds{watcher: watcher}
 	if rules.pool != nil {
 		fe.poolDir = filepath.Join(filepath.Dir(config.KubeletPluginDir), cxlFlags.PoolDriverName)
@@ -458,7 +456,7 @@ func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Driver
 		Config:      driverConfig.publishConfig(),
 		NodeName:    cxlFlags.NodeName,
 		Client:      config.Client,
-		Scan:        driverConfig.scanFunc(sysfsRoot),
+		Scan:        driverConfig.scanFunc(devices.k),
 		Watcher:     watcher,
 		PoolSerials: fe.pool.Serials,
 		Store:       st,
@@ -494,22 +492,19 @@ func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Driver
 // the local memdevs that are pool devices now forgotten, the recovery of
 // the engine (before any scan: the regions of the drivers are never
 // published as region devices), the local guard, the first scan of the
-// devices of the sysfs under sysfsRoot, the CDI specs of the claims of
+// devices of the kernel of the engine, the CDI specs of the claims of
 // cxl.nri.io rewritten in the directory cdiRoot.
-func (fe *frontEnds) recover(ctx context.Context, cdiRoot, sysfsRoot string, driverConfig *DriverConfig, devices *deviceEngine) error {
-	detected, err := nricxl.DevicesFromSysfs(sysfsRoot)
+func (fe *frontEnds) recover(ctx context.Context, cdiRoot string, driverConfig *DriverConfig, devices *deviceEngine) error {
+	snap, err := driverConfig.scanFunc(devices.k)(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to detect devices: %v", err)
-	}
-	if driverConfig.Testability != nil {
-		injectFakeDevices(driverConfig.Testability, detected)
 	}
 	// phase 1 knows the pool serials of the records: those that the pool
 	// driver prepares and the remembered ones
 	known := map[uint64]bool{}
 	maps.Copy(known, fe.pool.Serials())
 	maps.Copy(known, fe.watcher.PoolSerials())
-	devices.setShared(dra.SharedSerials(driverConfig.publishConfig(), detected.MemoryDevices, known))
+	devices.setShared(dra.SharedSerials(driverConfig.publishConfig(), snap.Memdevs, known))
 	if err := devices.forgetPoolSerials(ctx, known); err != nil {
 		return err
 	}
@@ -522,7 +517,7 @@ func (fe *frontEnds) recover(ctx context.Context, cdiRoot, sysfsRoot string, dri
 	// the first list of the pool ResourceSlices, after phase 1: it gates
 	// the publication of local memdevs
 	cfg, poolSerials := fe.publisher.ScanInput(ctx)
-	devices.setShared(dra.SharedSerials(cfg, detected.MemoryDevices, poolSerials))
+	devices.setShared(dra.SharedSerials(cfg, snap.Memdevs, poolSerials))
 	if driverConfig.manageMemdevs() {
 		if _, err := devices.k.BlockSize(); err != nil {
 			klog.Warningf("local: memory block size: %v: local memory devices are not published until the memory block size is known", err)

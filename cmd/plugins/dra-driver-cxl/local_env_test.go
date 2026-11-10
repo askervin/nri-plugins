@@ -46,8 +46,6 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
-
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 )
 
 const (
@@ -101,9 +99,7 @@ type localTestEnv struct {
 	// holderWait is the holder wait of a release.
 	holderWait time.Duration
 	// memdevs are the local memdevs that the publisher sees, by serial.
-	memdevs map[uint64]*nricxl.MemoryDevice
-	// extra are the devices of the scan besides the memdevs (regions).
-	extra []*nricxl.RegionDevice
+	memdevs map[uint64]kernel.MemdevInfo
 	// base are the commands of the fake before those of the driver.
 	base string
 	// rec is what the recovery of the last start found.
@@ -127,7 +123,7 @@ func newLocalTestEnv(t *testing.T, specs ...fake.MemdevSpec) *localTestEnv {
 		shared:      map[uint64]bool{},
 		poolSerials: map[uint64]bool{},
 		holderWait:  50 * time.Millisecond,
-		memdevs:     map[uint64]*nricxl.MemoryDevice{},
+		memdevs:     map[uint64]kernel.MemdevInfo{},
 	}
 	for _, d := range []string{e.dir, e.poolDir, e.cdiDir} {
 		noErr(t, os.MkdirAll(d, 0o755))
@@ -154,10 +150,12 @@ func (e *localTestEnv) plug(spec fake.MemdevSpec) string {
 	if ram == 0 && pmem == 0 {
 		ram = 256 * mib
 	}
-	e.memdevs[spec.Serial] = &nricxl.MemoryDevice{
-		Name: name, DevName: "cxl/" + name, SysfsPath: filepath.Join(e.k.SysRoot(), "bus/cxl/devices", name), RamSize: ram, PmemSize: pmem,
-		Serial: spec.Serial, NodeAffinity: 0, Driver: "cxl_mem", Enabled: !spec.Disabled,
+	m := observedMemdev(name, spec.Serial, ram, 0)
+	m.PmemSize = pmem
+	if spec.Disabled {
+		m.State = kernel.MemdevUnbound
 	}
+	e.memdevs[spec.Serial] = m
 	return name
 }
 
@@ -221,7 +219,7 @@ func (e *localTestEnv) start() *dra.Plugin {
 	e.publisher, err = dra.NewPublisher(dra.PublishOptions{
 		Config:    e.config.publishConfig(),
 		NodeName:  testNode,
-		Scan:      func() (*nricxl.Devices, error) { return e.detected(), nil },
+		Scan:      func(context.Context) (*kernel.Snapshot, error) { return e.detected(), nil },
 		Store:     e.st,
 		Probes:    e.devices.Probes,
 		BlockSize: e.k.Kernel().BlockSize,
@@ -263,12 +261,12 @@ func (e *localTestEnv) reboot() *dra.Plugin {
 	return e.start()
 }
 
-// detected returns the devices that a scan of the node finds: the local
-// memdevs that the publisher sees and the extra regions.
-func (e *localTestEnv) detected() *nricxl.Devices {
-	detected := &nricxl.Devices{RegionDevices: e.extra}
+// detected returns the observation of the node that a scan makes: the
+// local memdevs that the publisher sees.
+func (e *localTestEnv) detected() *kernel.Snapshot {
+	detected := &kernel.Snapshot{}
 	for _, serial := range slices.Sorted(maps.Keys(e.memdevs)) {
-		detected.MemoryDevices = append(detected.MemoryDevices, e.memdevs[serial])
+		detected.Memdevs = append(detected.Memdevs, e.memdevs[serial])
 	}
 	return detected
 }
@@ -608,12 +606,11 @@ func makeOpaqueConfig(driver string, source resourcev1.AllocationConfigSource, c
 	}
 }
 
-// localMemdev returns the detected local memdev localSerial.
-func localMemdev() *nricxl.MemoryDevice {
-	return &nricxl.MemoryDevice{
-		Name: "mem0", DevName: "cxl/mem0", SysfsPath: "/sys/bus/cxl/devices/mem0", RamSize: localRegionSize,
-		Serial: localSerial, NodeAffinity: 0, Driver: "cxl_mem", Major: 251, Minor: 0, Enabled: true,
-	}
+// localMemdev returns the observed local memdev localSerial.
+func localMemdev() kernel.MemdevInfo {
+	m := observedMemdev("mem0", localSerial, localRegionSize, 0)
+	m.Major = 251
+	return m
 }
 
 // localClaim returns a claim allocated the local memdev for request "mem",

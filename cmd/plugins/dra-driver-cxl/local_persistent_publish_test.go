@@ -15,6 +15,7 @@
 package main
 
 import (
+	"fmt"
 	"maps"
 	"reflect"
 	"slices"
@@ -23,32 +24,29 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 // pmemMemdev returns a memdev of persistent memory only.
-func pmemMemdev(name string, serial uint64) *nricxl.MemoryDevice {
-	return &nricxl.MemoryDevice{Name: name, DevName: "cxl/" + name, PmemSize: 4 << 30, Serial: serial, NodeAffinity: -1, Enabled: true}
+func pmemMemdev(name string, serial uint64) kernel.MemdevInfo {
+	m := observedMemdev(name, serial, 0, -1)
+	m.PmemSize = 4 << 30
+	return m
 }
 
 // The publication of persistent local memdevs and its refusals;
 // persistent: false on every other local memdev.
 func TestBuildDevInfosPersistentMemdevs(t *testing.T) {
-	free, shared, ignored, pooled, held, disabled, foreign, ramAndPmem, sliced, otherSharing :=
-		pmemMemdev("mem1", 0xb1), pmemMemdev("mem2", 0xb2), pmemMemdev("mem3", 0xb3), pmemMemdev("mem4", 0xb4),
-		pmemMemdev("mem5", 0xb5), pmemMemdev("mem6", 0xb6), pmemMemdev("mem7", 0xb7), pmemMemdev("mem8", 0xb8),
-		pmemMemdev("mem9", 0xb9), pmemMemdev("mem10", 0xba)
-	free.NodeAffinity = 1
-	disabled.Enabled = false
-	ramAndPmem.RamSize = 1 << 30
-	devices := &nricxl.Devices{
-		MemoryDevices: []*nricxl.MemoryDevice{free, shared, ignored, pooled, held, disabled, foreign, ramAndPmem, sliced, otherSharing},
-		RegionDevices: []*nricxl.RegionDevice{
-			// a foreign pmem region with a node is not a region device (A5)
-			{Name: "region0", Size: 4 << 30, Mode: "pmem", Node: 2, Enabled: true, Memories: []*nricxl.MemoryDevice{foreign}},
-		},
+	devices := &kernel.Snapshot{}
+	for i := range 10 {
+		devices.Memdevs = append(devices.Memdevs, pmemMemdev(fmt.Sprintf("mem%d", i+1), 0xb1+uint64(i)))
 	}
+	devices.Memdevs[0].NodeAffinity = 1
+	devices.Memdevs[5].State = kernel.MemdevUnbound
+	devices.Memdevs[7].RamSize = 1 << 30
+	// a foreign pmem region with a node is not a region device (A5)
+	observedRegion(devices, "region0", kernel.RegionPmem, 2, 4<<30, 0xb7)
 	cfg := &DriverConfig{IgnoreDevices: []string{"mem3"}, SharedDevices: []string{"0xb2", "0xba"}, IgnoreDRAMNodes: true}
 	local := &localSnapshot{Uses: map[uint64]localUse{
 		0xb9: {Claims: []string{"u1"}},
@@ -80,14 +78,14 @@ func TestBuildDevInfosPersistentMemdevs(t *testing.T) {
 	ram := localMemdev()
 	ram.Serial = 0xbb
 	local.Uses[0xbb] = localUse{Persistent: true, Claims: []string{"u3"}}
-	devices.MemoryDevices = append(devices.MemoryDevices, ram)
+	devices.Memdevs = append(devices.Memdevs, ram)
 	if devInfos = buildDevInfosHeldOK(t, cfg, devices, nil, nil, local); devInfos["memdev-bb"] != nil {
 		t.Fatal("a memdev used as a persistent device published as sliced")
 	}
 }
 
 // buildDevInfosHeldOK is buildDevInfosHeld, failing the test on error.
-func buildDevInfosHeldOK(t *testing.T, cfg *DriverConfig, devices *nricxl.Devices, pool, held map[uint64]bool, local *localSnapshot) map[string]*device.DeviceInfo {
+func buildDevInfosHeldOK(t *testing.T, cfg *DriverConfig, devices *kernel.Snapshot, pool, held map[uint64]bool, local *localSnapshot) map[string]*device.DeviceInfo {
 	t.Helper()
 	devInfos, err := buildDevInfosHeld(cfg, devices, pool, held, local)
 	noErr(t, err)

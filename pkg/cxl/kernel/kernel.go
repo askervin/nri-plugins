@@ -57,6 +57,10 @@ type Kernel struct {
 	// caller that holds its own lock around these calls leaves it nil; it
 	// must never be a lock that the caller holds already.
 	Serialize func(fn func() error) error
+
+	// fact gets the errors of reading the facts of objects that the
+	// observations tolerate (ObserveTopology does not); nil ignores them.
+	fact func(error)
 }
 
 // Sys makes the system calls of the kernel objects that are not sysfs
@@ -161,6 +165,13 @@ func RunCommand(ctx context.Context, name string, args ...string) (string, error
 // writeSysfs writes a value to a sysfs attribute.
 func writeSysfs(path, val string) error {
 	return os.WriteFile(path, []byte(val), 0o644)
+}
+
+// factErr passes err, an error of reading a fact of an object, to fact.
+func (k *Kernel) factErr(err error) {
+	if err != nil && k.fact != nil {
+		k.fact(err)
+	}
 }
 
 func (k *Kernel) logf(format string, args ...any) {

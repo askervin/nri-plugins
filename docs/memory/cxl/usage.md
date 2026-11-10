@@ -1938,7 +1938,7 @@ defaults:
 | `verifyAddressing` | bool | `true` | run an address line test on every new region of a local memdev of RAM, and use only the distinct bytes of a memdev whose memory aliases ([local.md](local.md#broken-and-aliased-memory)); persistent memdevs are not probed |
 | `defaults.container.steering` | object | `{policy: none}` | the steering of every container of the node whose results do not set it, the fields of `container.steering` ([MemoryConfig fields](#memoryconfig-fields), [Steering](#steering)); `{policy: auto}` steers every container with `numa` memory |
 | `defaults.container.fencing` | string | `allowed-mems` | how the plugin manages the memory of containers on the CXL nodes it onlines: `allowed-mems`, `mempolicy` (not implemented) or `none` ([Containers without claims](#containers-without-claims)) |
-| `testability` | object | | fake devices for testing without CXL hardware: `fakeRegionDevices`, `fakeUdevFifo` |
+| `testability` | object | | fake devices for testing without CXL hardware: `fakeRegionDevices`, `fakeUdevFifo`; in `fakeRegionDevices` the keys `SysfsPath`, `OnlineSize`, `Targets` and, in `Memories`, `SysfsPath`, `Driver`, `DevName` have no effect (one warning names those that are set) |
 
 `defaults` has the `container` section of a
 [MemoryConfig](#memoryconfig-fields) only: the node defaults of the

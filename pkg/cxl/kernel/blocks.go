@@ -374,16 +374,19 @@ func (k *Kernel) NumaNodes() []NumaNode {
 			continue
 		}
 		n := NumaNode{ID: id, HasMemory: hasMemory[id]}
-		if data, err := os.ReadFile(filepath.Join(p, "meminfo")); err == nil {
+		data, err := os.ReadFile(filepath.Join(p, "meminfo"))
+		if err == nil {
+			err = fmt.Errorf("%s: no MemTotal in its meminfo", filepath.Base(p))
 			for _, line := range strings.Split(string(data), "\n") {
 				var nid int
 				var kb uint64
-				if _, err := fmt.Sscanf(line, "Node %d MemTotal: %d kB", &nid, &kb); err == nil {
-					n.MemTotal = kb << 10
+				if _, serr := fmt.Sscanf(line, "Node %d MemTotal: %d kB", &nid, &kb); serr == nil {
+					n.MemTotal, err = kb<<10, nil
 					break
 				}
 			}
 		}
+		k.factErr(err)
 		out = append(out, n)
 	}
 	return out

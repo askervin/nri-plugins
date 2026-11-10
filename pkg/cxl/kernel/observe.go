@@ -16,7 +16,9 @@ package kernel
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -94,82 +96,9 @@ func (k *Kernel) Observe(ctx context.Context) (*Snapshot, error) {
 	if s.BootID, err = k.BootID(); err != nil {
 		problem("boot id: %v", err)
 	}
-	if s.BlockSize, err = k.BlockSize(); err != nil {
-		problem("memory block size: %v", err)
-	}
-	t := k.topology()
-	endpoints := map[string]string{}
-	for ep, memdev := range t.memdevOfEndpoint {
-		endpoints[memdev] = ep
-	}
-	seenPort := map[string]bool{}
-	for _, name := range k.memdevNames() {
-		m, err := k.memdev(name, endpoints)
-		if err != nil {
-			problem("%v", err)
-			continue
-		}
-		s.Memdevs = append(s.Memdevs, m)
-		if m.Endpoint == "" {
-			continue
-		}
-		for _, dir := range k.endpointPorts(m.Endpoint) {
-			name := filepath.Base(dir)
-			if seenPort[name] {
-				continue
-			}
-			seenPort[name] = true
-			p, err := readPort(dir)
-			if err != nil {
-				problem("%s: %v", name, err)
-				continue
-			}
-			s.Ports = append(s.Ports, p)
-		}
-	}
-	if err := ctx.Err(); err != nil {
+	if err := k.observeSysfs(ctx, s, problem, true); err != nil {
 		return nil, err
 	}
-	for _, name := range k.listCXL("region*") {
-		r, err := k.region(name, t)
-		if err != nil {
-			problem("%v", err)
-			continue
-		}
-		s.Regions = append(s.Regions, r)
-		if r.DaxRegion != "" {
-			if d, err := k.DaxRegion(name); err == nil {
-				s.DaxRegions = append(s.DaxRegions, d)
-			} else {
-				problem("%s: dax region: %v", name, err)
-			}
-			for _, dax := range k.DaxDevices(name) {
-				if d, err := k.DaxDevice(dax); err == nil {
-					s.DaxDevices = append(s.DaxDevices, d)
-				} else {
-					problem("%v", err)
-				}
-			}
-		}
-		if r.Mode == RegionRAM && r.Range != (Range{}) && s.BlockSize > 0 {
-			for _, b := range r.Range.blocks(s.BlockSize) {
-				s.Blocks = append(s.Blocks, k.MemoryBlock(b))
-			}
-		}
-		if r.NdRegion != "" {
-			nd, err := k.NdRegion(r.NdRegion)
-			if err != nil {
-				problem("%s: %v", r.NdRegion, err)
-				continue
-			}
-			nd.Region = name
-			s.Pmem = append(s.Pmem, nd)
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	s.NumaNodes = k.NumaNodes()
 	k.observeBlockDevices(s, problem)
 	if mounts, err := k.Mounts(); err == nil {
 		s.Mounts = mounts
@@ -189,6 +118,142 @@ func (k *Kernel) Observe(ctx context.Context) (*Snapshot, error) {
 	}
 	s.index()
 	return s, ctx.Err()
+}
+
+// ObserveTopology returns a snapshot of the memory block size, the memdevs,
+// the regions with their dax devices and memory blocks, and the NUMA nodes
+// of the node, read from sysfs only: it opens no device and reads no
+// mounts, and the snapshot has no ports, dax regions, pmem, block devices,
+// mounts or boot id. Its error is that of reading the CXL bus, of a memdev,
+// a region or a NUMA node of which a fact cannot be read, of a serial that
+// is not 0x<hex>, of a memory block size that cannot be read on a node
+// with regions, or the error of the context when it ends.
+func (k *Kernel) ObserveTopology(ctx context.Context) (*Snapshot, error) {
+	if _, err := os.ReadDir(k.cxlDev()); err != nil {
+		return nil, err
+	}
+	var errs []error
+	strict := *k
+	strict.fact = func(err error) { errs = append(errs, err) }
+	s := &Snapshot{}
+	problem := func(format string, args ...any) {
+		s.Errors = append(s.Errors, fmt.Sprintf(format, args...))
+	}
+	if err := strict.observeSysfs(ctx, s, problem, false); err != nil {
+		return nil, err
+	}
+	if s.BlockSize == 0 && len(s.Regions) > 0 {
+		errs = append(errs, errors.New("the memory block size cannot be read"))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return nil, err
+	}
+	s.index()
+	return s, nil
+}
+
+// observeSysfs adds the memory block size, the memdevs, the regions with
+// their dax devices and memory blocks, and the NUMA nodes to the snapshot
+// s, and with full the ports of the memdevs, the dax regions and the nd
+// regions. Its error is the error of the context when it ends.
+func (k *Kernel) observeSysfs(ctx context.Context, s *Snapshot, problem func(string, ...any), full bool) error {
+	var err error
+	if s.BlockSize, err = k.BlockSize(); err != nil {
+		problem("memory block size: %v", err)
+	}
+	t := k.topology()
+	endpoints := map[string]string{}
+	for ep, memdev := range t.memdevOfEndpoint {
+		endpoints[memdev] = ep
+	}
+	seenPort := map[string]bool{}
+	for _, name := range k.memdevNames() {
+		m, err := k.memdev(name, endpoints)
+		if err != nil {
+			problem("%v", err)
+			k.factErr(err)
+			continue
+		}
+		s.Memdevs = append(s.Memdevs, m)
+		if full {
+			k.observePorts(s, m.Endpoint, seenPort, problem)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for _, name := range k.listCXL("region*") {
+		r, err := k.region(name, t)
+		if err != nil {
+			problem("%v", err)
+			k.factErr(err)
+			continue
+		}
+		s.Regions = append(s.Regions, r)
+		k.observeRegion(s, r, problem, full)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.NumaNodes = k.NumaNodes()
+	return nil
+}
+
+// observePorts adds the ports of the decoder path of the endpoint ep ("" for
+// none) that are not seen yet to the snapshot s.
+func (k *Kernel) observePorts(s *Snapshot, ep string, seen map[string]bool, problem func(string, ...any)) {
+	if ep == "" {
+		return
+	}
+	for _, dir := range k.endpointPorts(ep) {
+		name := filepath.Base(dir)
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		p, err := readPort(dir)
+		if err != nil {
+			problem("%s: %v", name, err)
+			continue
+		}
+		s.Ports = append(s.Ports, p)
+	}
+}
+
+// observeRegion adds the dax devices and the memory blocks of the region r
+// to the snapshot s, and with full its dax region and its nd region.
+func (k *Kernel) observeRegion(s *Snapshot, r RegionInfo, problem func(string, ...any), full bool) {
+	if r.DaxRegion != "" && full {
+		if d, err := k.DaxRegion(r.Name); err == nil {
+			s.DaxRegions = append(s.DaxRegions, d)
+		} else {
+			problem("%s: dax region: %v", r.Name, err)
+		}
+	}
+	if r.DaxRegion != "" {
+		for _, dax := range k.DaxDevices(r.Name) {
+			if d, err := k.DaxDevice(dax); err == nil {
+				s.DaxDevices = append(s.DaxDevices, d)
+			} else {
+				problem("%v", err)
+			}
+		}
+	}
+	if r.Mode == RegionRAM && r.Range != (Range{}) && s.BlockSize > 0 {
+		for _, b := range r.Range.blocks(s.BlockSize) {
+			s.Blocks = append(s.Blocks, k.MemoryBlock(b))
+		}
+	}
+	if !full || r.NdRegion == "" {
+		return
+	}
+	nd, err := k.NdRegion(r.NdRegion)
+	if err != nil {
+		problem("%s: %v", r.NdRegion, err)
+		return
+	}
+	nd.Region = r.Name
+	s.Pmem = append(s.Pmem, nd)
 }
 
 // observeBlockDevices adds the block devices of the namespaces of the
@@ -233,6 +298,10 @@ func (k *Kernel) observeBlockDevices(s *Snapshot, problem func(string, ...any)) 
 		s.Devices = append(s.Devices, d)
 	}
 }
+
+// Reindex builds the indexes of the lookups of the snapshot again, for the
+// objects added to its lists.
+func (s *Snapshot) Reindex() { s.index() }
 
 // index builds the indexes of the lookups of the snapshot.
 func (s *Snapshot) index() {

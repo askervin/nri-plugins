@@ -15,6 +15,8 @@
 package main
 
 import (
+	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -26,20 +28,21 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
+
+	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 )
 
 // TestabilityConfig holds configuration for injecting fake CXL
 // devices for testing without real hardware. Fake devices are
-// appended to the real detected devices before buildDevInfos()
-// processes them.
+// appended to the observation of the kernel before the publisher
+// builds its devices of it.
 type TestabilityConfig struct {
-	// FakeRegionDevices lists CXL region devices to inject.
-	// Each entry is appended to nricxl.Devices.RegionDevices
-	// right after DevicesFromSysfs() returns. Memory devices
-	// referenced in Memories are also appended to
-	// nricxl.Devices.MemoryDevices.
+	// FakeRegionDevices lists CXL region devices to inject, in the
+	// shape of pkg/cxl's RegionDevice. Each entry is appended to the
+	// regions of every observation of the publisher, and the memory
+	// devices in its Memories to the memdevs.
 	FakeRegionDevices []nricxl.RegionDevice `json:"fakeRegionDevices,omitempty"`
 	// FakeUdevFifo is a path to a named pipe (FIFO) from which
 	// the driver reads fake udev events. Each line is a JSON
@@ -198,7 +201,8 @@ func (c *DriverConfig) fsTypes() []string {
 }
 
 // logDeadKeys warns of the configuration keys that are accepted but have no
-// effect: ignoreNewMemoryDevices and ignoreNewRegions.
+// effect: ignoreNewMemoryDevices, ignoreNewRegions, and those of the fake
+// regions of testability (deadKeys), in one warning.
 func (c *DriverConfig) logDeadKeys() {
 	for _, k := range []struct {
 		name string
@@ -208,6 +212,35 @@ func (c *DriverConfig) logDeadKeys() {
 			klog.Warningf("%s: the key has no effect and is ignored", k.name)
 		}
 	}
+	if keys := c.Testability.deadKeys(); len(keys) > 0 {
+		klog.Warningf("testability.fakeRegionDevices: the keys %s have no effect and are ignored", strings.Join(keys, ", "))
+	}
+}
+
+// deadKeys returns the keys of the fake regions and their memories that are
+// set and have no effect, sorted; none of a nil configuration.
+func (tc *TestabilityConfig) deadKeys() []string {
+	if tc == nil {
+		return nil
+	}
+	var keys []string
+	add := func(key string, set bool) {
+		if set && !slices.Contains(keys, key) {
+			keys = append(keys, key)
+		}
+	}
+	for _, r := range tc.FakeRegionDevices {
+		add("SysfsPath", r.SysfsPath != "")
+		add("OnlineSize", r.OnlineSize != 0)
+		add("Targets", len(r.Targets) > 0)
+		for _, m := range r.Memories {
+			add("SysfsPath", m.SysfsPath != "")
+			add("Driver", m.Driver != "")
+			add("DevName", m.DevName != "")
+		}
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // logFsTypes logs the filesystem types that mode fs mounts on the node.
@@ -276,65 +309,54 @@ func resolveConfigStr(flags *CXLFlags) (string, error) {
 	return flags.ConfigStr, nil
 }
 
-// injectFakeDevices appends fake CXL region devices from the
-// testability configuration into the detected devices structure.
-// Sensible defaults are applied for fields left unset.
-func injectFakeDevices(tc *TestabilityConfig, devices *nricxl.Devices) {
+// injectFakeDevices appends the fake CXL regions of the testability
+// configuration and the memdevs of their memories to the snapshot, a
+// region in mode ram unless it has one, enabled when it has a node (a dax
+// device of the region tells the node), its memdevs enabled.
+func injectFakeDevices(tc *TestabilityConfig, snap *kernel.Snapshot) {
 	if len(tc.FakeRegionDevices) == 0 {
 		return
 	}
 	klog.Warning("Testability: injecting fake CXL devices - do not use in production")
-	for i := range tc.FakeRegionDevices {
-		reg := &tc.FakeRegionDevices[i]
-		if reg.SysfsPath == "" {
-			reg.SysfsPath = fmt.Sprintf("/fake/sys/bus/cxl/devices/%s", reg.Name)
+	for _, reg := range tc.FakeRegionDevices {
+		r := kernel.RegionInfo{Name: reg.Name, Mode: cmp.Or(reg.Mode, kernel.RegionRAM), State: kernel.RegionDisabled, NumaNode: reg.Node}
+		switch {
+		case reg.Hollow:
+			r.State = kernel.RegionHollow
+		case reg.Node >= 0 || reg.Enabled:
+			r.State = kernel.RegionEnabled
 		}
-		if reg.Mode == "" {
-			reg.Mode = "ram"
+		if reg.Size > 0 {
+			r.Range = kernel.Range{Start: reg.Resource, End: reg.Resource + reg.Size - 1}
 		}
 		if reg.Node >= 0 {
-			reg.Enabled = true
+			snap.DaxDevices = append(snap.DaxDevices, kernel.DaxDeviceInfo{Name: "dax-" + reg.Name, Region: reg.Name, Size: reg.Size, TargetNode: reg.Node})
 		}
-		if reg.OnlineSize == 0 && reg.Enabled {
-			reg.OnlineSize = reg.Size
-		}
-		for j := range reg.Memories {
-			mem := reg.Memories[j]
-			if mem.SysfsPath == "" {
-				mem.SysfsPath = fmt.Sprintf("/fake/sys/bus/cxl/devices/%s", mem.Name)
-			}
-			if mem.Driver == "" {
-				mem.Driver = "cxl_mem"
-			}
-			if mem.DevName == "" {
-				mem.DevName = fmt.Sprintf("cxl/%s", mem.Name)
-			}
-			mem.Enabled = true
-			devices.MemoryDevices = append(devices.MemoryDevices, mem)
+		for _, mem := range reg.Memories {
+			r.Memdevs, r.Serials = append(r.Memdevs, mem.Name), append(r.Serials, mem.Serial)
+			snap.Memdevs = append(snap.Memdevs, kernel.MemdevInfo{Name: mem.Name, Serial: mem.Serial, State: kernel.MemdevReady,
+				RamSize: mem.RamSize, PmemSize: mem.PmemSize, NodeAffinity: mem.NodeAffinity, Major: mem.Major, Minor: mem.Minor})
 		}
 		klog.Infof("Testability: injecting fake region %q (node %d, size %d, memories %d)",
 			reg.Name, reg.Node, reg.Size, len(reg.Memories))
-		devices.RegionDevices = append(devices.RegionDevices, reg)
+		snap.Regions = append(snap.Regions, r)
 	}
+	snap.Reindex()
 }
 
-// detectDevices detects the devices under the sysfs root (a variable for
-// tests).
-var detectDevices = nricxl.DevicesFromSysfs
-
-// scanFunc returns the scan of the devices of the node under sysfsRoot:
-// the devices of sysfs, with the fake devices of the testability
-// configuration.
-func (c *DriverConfig) scanFunc(sysfsRoot string) func() (*nricxl.Devices, error) {
-	return func() (*nricxl.Devices, error) {
-		detected, err := detectDevices(sysfsRoot)
+// scanFunc returns the observation of the node of the publisher: the
+// topology of the kernel k (ObserveTopology) with the fake devices of the
+// testability configuration.
+func (c *DriverConfig) scanFunc(k *kernel.Kernel) func(ctx context.Context) (*kernel.Snapshot, error) {
+	return func(ctx context.Context) (*kernel.Snapshot, error) {
+		snap, err := k.ObserveTopology(ctx)
 		if err != nil {
 			return nil, err
 		}
 		if c.Testability != nil {
-			injectFakeDevices(c.Testability, detected)
+			injectFakeDevices(c.Testability, snap)
 		}
-		return detected, nil
+		return snap, nil
 	}
 }
 

@@ -17,6 +17,7 @@ package kernel_test
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"reflect"
 	"syscall"
 	"testing"
@@ -274,4 +275,68 @@ func TestProbeAndZero(t *testing.T) {
 	if _, err := k.ProbeAliasing("dax9.9"); err == nil {
 		t.Fatal("probe of a missing device")
 	}
+}
+
+// noSys is a Sys of which every call panics.
+type noSys struct{ kernel.Sys }
+
+// The topology of a node is read from sysfs only: no system call (no
+// device is opened) and nothing of procfs (no mounts, no boot id). Its
+// objects are those of a full observation, without the ports, dax regions,
+// pmem, block devices, loop devices, mounts and superblocks.
+func TestObserveTopology(t *testing.T) {
+	f, k, _ := mixedNode(t)
+	full := observe(t, k)
+	f.HideProc(true)
+	k.Sys = noSys{}
+	k.DevRoot = filepath.Join(t.TempDir(), "none")
+	s, err := k.ObserveTopology(context.Background())
+	noErr(t, err)
+	if len(s.Errors) != 0 || s.BootID != "" || len(s.Ports)+len(s.DaxRegions)+len(s.Pmem)+len(s.Devices)+len(s.Loops)+len(s.Mounts)+len(s.Supers) != 0 {
+		t.Fatalf("topology %+v", s)
+	}
+	for what, eq := range map[string]bool{
+		"block size":   s.BlockSize == full.BlockSize,
+		"memdevs":      reflect.DeepEqual(s.Memdevs, full.Memdevs),
+		"regions":      reflect.DeepEqual(s.Regions, full.Regions),
+		"dax devices":  reflect.DeepEqual(s.DaxDevices, full.DaxDevices),
+		"blocks":       reflect.DeepEqual(s.Blocks, full.Blocks),
+		"NUMA nodes":   reflect.DeepEqual(s.NumaNodes, full.NumaNodes),
+		"the lookups":  s.Memdev(serial1).Name == "mem1" && s.Region("region2").State == kernel.RegionHollow,
+		"a dax lookup": s.DaxDevice("dax0.1").State == kernel.DaxDeviceDax,
+	} {
+		if !eq {
+			t.Errorf("%s of the topology differ from the full observation", what)
+		}
+	}
+}
+
+// The topology is an error where a fact cannot be read that the full
+// observation tolerates: a serial that is not 0x<hex> (the "0" of a memdev
+// without a serial number), a memdev without its NUMA node or capacity, a
+// region without its mode, a NUMA node without its meminfo, the memory
+// block size on a node with a region, the CXL bus.
+func TestObserveTopologyFacts(t *testing.T) {
+	ctx := context.Background()
+	for name, change := range map[string]func(f *fake.Fake){
+		"serial 0":   func(f *fake.Fake) { f.Write("bus/cxl/devices/mem0/serial", "0") },
+		"numa_node":  func(f *fake.Fake) { f.Remove("bus/cxl/devices/mem0/numa_node") },
+		"ram size":   func(f *fake.Fake) { f.Write("bus/cxl/devices/mem0/ram/size", "bogus") },
+		"mode":       func(f *fake.Fake) { f.Remove("bus/cxl/devices/region0/mode") },
+		"meminfo":    func(f *fake.Fake) { f.Remove("devices/system/node/node1/meminfo") },
+		"block size": func(f *fake.Fake) { f.Remove("devices/system/memory/block_size_bytes") },
+	} {
+		f, k := newNode(t)
+		createRegion(t, k, "mem0", kernel.RegionRAM, 0)
+		noErr(t, func() error { _, err := k.ObserveTopology(ctx); return err }())
+		change(f)
+		if _, err := k.ObserveTopology(ctx); err == nil {
+			t.Errorf("%s: no error", name)
+		}
+		if s, err := k.Observe(ctx); err != nil || len(s.Memdevs) != 1 || len(s.Regions) != 1 {
+			t.Errorf("%s: full observation %+v, %v", name, s, err)
+		}
+	}
+	_, err := (&kernel.Kernel{SysRoot: t.TempDir()}).ObserveTopology(ctx)
+	wantErr(t, err, nil, "bus/cxl/devices: no such file or directory")
 }

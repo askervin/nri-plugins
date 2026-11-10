@@ -30,8 +30,6 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
-
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 )
 
 // A claim's allocation results of a driver become the results of its
@@ -301,14 +299,14 @@ func otherResult(res *state.Result, r *resourcev1.DeviceRequestAllocationResult,
 		consumed = q.Value()
 	}
 	switch d := dev.(type) {
-	case *nricxl.RegionDevice:
+	case *device.Region:
 		if err := cfg.NUMAOnly(device.DeviceTypeRegion); err != nil {
 			return err
 		}
-		reg := &state.RegionResult{Name: d.Name, NumaNode: d.Node, Size: d.Size, Consumed: consumed}
-		for _, mem := range d.Memories {
-			if mem.NodeAffinity >= 0 {
-				reg.NumaAffinity = append(reg.NumaAffinity, mem.NodeAffinity)
+		reg := &state.RegionResult{Name: d.Name, NumaNode: d.NumaNode, Size: d.Size, Consumed: consumed}
+		for _, a := range d.NodeAffinity {
+			if a >= 0 {
+				reg.NumaAffinity = append(reg.NumaAffinity, a)
 			}
 		}
 		res.Kind, res.Region = state.ResultRegion, reg

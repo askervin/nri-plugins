@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"flag"
+	"fmt"
 	"maps"
 	"reflect"
 	"slices"
@@ -34,8 +35,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
-
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 // The helpers of the tests of the publisher have the prefix pub (or a name
@@ -55,12 +55,40 @@ const (
 	pubBlockSize = 128 * pubMiB
 )
 
-// pubMemdev returns the detected local memdev pubLocalSerial.
-func pubMemdev() *nricxl.MemoryDevice {
-	return &nricxl.MemoryDevice{
-		Name: "mem0", DevName: "cxl/mem0", SysfsPath: "/sys/bus/cxl/devices/mem0", RamSize: pubRegionSize,
-		Serial: pubLocalSerial, NodeAffinity: 0, Driver: "cxl_mem", Major: 251, Minor: 0, Enabled: true,
+// pubMemdev returns the observed local memdev pubLocalSerial.
+func pubMemdev() kernel.MemdevInfo {
+	m := pubMem("mem0", pubLocalSerial, pubRegionSize, 0)
+	m.Major = 251
+	return m
+}
+
+// pubMem returns an observed memdev with a driver, of RAM capacity ram and
+// with the CPU NUMA node affinity.
+func pubMem(name string, serial, ram uint64, affinity int) kernel.MemdevInfo {
+	return kernel.MemdevInfo{Name: name, Serial: serial, State: kernel.MemdevReady, RamSize: ram, NodeAffinity: affinity}
+}
+
+// pubRegion adds a region of RAM of size bytes on the memdevs with the
+// serials to the snapshot s: enabled on node, which a dax device of the
+// region tells, disabled for node -1.
+func pubRegion(s *kernel.Snapshot, name string, node int, size uint64, serials ...uint64) {
+	r := kernel.RegionInfo{Name: name, State: kernel.RegionEnabled, Mode: kernel.RegionRAM, NumaNode: node,
+		Range: kernel.Range{Start: 0, End: size - 1}, Serials: serials}
+	if node < 0 {
+		r.State = kernel.RegionDisabled
+	} else {
+		s.DaxDevices = append(s.DaxDevices, kernel.DaxDeviceInfo{Name: "dax-" + name, Region: name, Size: size, TargetNode: node})
 	}
+	s.Regions = append(s.Regions, r)
+}
+
+// pubNodes returns NUMA nodes of 1 GiB of memory with the ids.
+func pubNodes(ids ...int) []kernel.NumaNode {
+	var out []kernel.NumaNode
+	for _, id := range ids {
+		out = append(out, kernel.NumaNode{ID: id, HasMemory: true, MemTotal: 1 << 30})
+	}
+	return out
 }
 
 func pubNoErr(t *testing.T, err error) {
@@ -88,12 +116,15 @@ func pubPublisher(t *testing.T, opts PublishOptions) *Publisher {
 		opts.Store = pubStore(t)
 	}
 	if opts.Scan == nil {
-		opts.Scan = func() (*nricxl.Devices, error) { return nricxl.NewDevices(), nil }
+		opts.Scan = pubNoScan
 	}
 	p, err := NewPublisher(opts)
 	pubNoErr(t, err)
 	return p
 }
+
+// pubNoScan returns an observation of a node without CXL objects.
+func pubNoScan(context.Context) (*kernel.Snapshot, error) { return &kernel.Snapshot{}, nil }
 
 // pubNames returns the names of the devices, sorted.
 func pubNames(devs device.DevicesInfo) []string {
@@ -164,22 +195,16 @@ func logMatches(log, template string, replace ...string) int {
 // size, not pooled, ignored, disabled or without RAM; the node of the
 // plugin's region is not DRAM; without managed memdevs regions only.
 func TestBuildDevInfosLocalMemdevs(t *testing.T) {
-	memdev := func(name string, serial uint64) *nricxl.MemoryDevice {
-		return &nricxl.MemoryDevice{Name: name, DevName: "cxl/" + name, RamSize: 1 << 30, Serial: serial, NodeAffinity: -1, Enabled: true}
+	devices := &kernel.Snapshot{NumaNodes: pubNodes(0, 2, 3)}
+	for i, name := range []string{"mem1", "mem2", "mem3", "mem4", "mem5", "mem6", "mem7"} {
+		devices.Memdevs = append(devices.Memdevs, pubMem(name, 0xa1+uint64(i), 1<<30, -1))
 	}
-	free, foreign, pooled, ignored, used := memdev("mem1", 0xa1), memdev("mem2", 0xa2), memdev("mem3", 0xa3), memdev("mem4", 0xa4), memdev("mem5", 0xa5)
+	free := &devices.Memdevs[0]
 	free.NodeAffinity = 1
-	disabled, noRAM := memdev("mem6", 0xa6), memdev("mem7", 0xa7)
-	disabled.Enabled = false
-	noRAM.RamSize = 0
-	region := func(name string, node int, mem *nricxl.MemoryDevice) *nricxl.RegionDevice {
-		return &nricxl.RegionDevice{Name: name, Size: 1 << 30, Mode: "ram", Node: node, Enabled: true, Memories: []*nricxl.MemoryDevice{mem}}
-	}
-	devices := &nricxl.Devices{
-		MemoryDevices: []*nricxl.MemoryDevice{free, foreign, pooled, ignored, used, disabled, noRAM},
-		RegionDevices: []*nricxl.RegionDevice{region("region0", 2, foreign), region("region1", 3, used)},
-		MemoryNodes:   []*nricxl.MemoryNode{{ID: 0, Size: 1 << 30}, {ID: 2, Size: 1 << 30}, {ID: 3, Size: 1 << 30}},
-	}
+	devices.Memdevs[5].State = kernel.MemdevUnbound
+	devices.Memdevs[6].RamSize = 0
+	pubRegion(devices, "region0", 2, 1<<30, 0xa2)
+	pubRegion(devices, "region1", 3, 1<<30, 0xa5)
 	cfg := PublishConfig{IgnoreDevices: []string{"0xa4"}, ManageMemdevs: true}
 	local := &LocalSnapshot{Uses: map[uint64]LocalUse{0xa5: {}}, BlockSize: pubBlockSize}
 	pool := map[uint64]bool{0xa3: true}
@@ -240,7 +265,7 @@ func TestBuildDevInfosLocalMemdevs(t *testing.T) {
 // its attributes, its capacity with the request policy of memory blocks,
 // no nodeAffinity when unknown.
 func TestGetResourcesLocalMemdev(t *testing.T) {
-	devs := BuildDevices(PublishConfig{IgnoreDRAMNodes: true, ManageMemdevs: true}, &nricxl.Devices{MemoryDevices: []*nricxl.MemoryDevice{pubMemdev()}},
+	devs := BuildDevices(PublishConfig{IgnoreDRAMNodes: true, ManageMemdevs: true}, &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{pubMemdev()}},
 		nil, nil, &LocalSnapshot{BlockSize: pubBlockSize})
 	p := pubPublisher(t, PublishOptions{NodeName: pubNode})
 	p.SetDevices(devs)
@@ -287,16 +312,12 @@ func TestGetResourcesLocalMemdev(t *testing.T) {
 // lease device: every memory device has type, source and size, a region
 // the nodeAffinity of its memdevs when they agree.
 func TestGetResourcesRegionDRAMLease(t *testing.T) {
-	mem := func(affinity int) *nricxl.MemoryDevice {
-		return &nricxl.MemoryDevice{Serial: 1, NodeAffinity: affinity, Enabled: true}
-	}
-	devices := &nricxl.Devices{
-		RegionDevices: []*nricxl.RegionDevice{
-			{Name: "region0", Size: 2 << 30, Mode: "ram", Node: 2, Enabled: true, Memories: []*nricxl.MemoryDevice{mem(0), mem(0)}},
-			{Name: "region1", Size: 1 << 30, Mode: "ram", Node: 3, Enabled: true, Memories: []*nricxl.MemoryDevice{mem(0), mem(1)}},
-		},
-		MemoryNodes: []*nricxl.MemoryNode{{ID: 0, Size: 1 << 30}, {ID: 1, Size: 1 << 30}, {ID: 2, Size: 2 << 30}, {ID: 3, Size: 1 << 30}},
-	}
+	devices := &kernel.Snapshot{NumaNodes: pubNodes(0, 1, 2, 3), Memdevs: []kernel.MemdevInfo{
+		pubMem("mem1", 1, 1<<30, 0), pubMem("mem2", 2, 1<<30, 0), pubMem("mem3", 3, 1<<30, 0), pubMem("mem4", 4, 1<<30, 1),
+	}}
+	devices.NumaNodes[2].MemTotal = 2 << 30
+	pubRegion(devices, "region0", 2, 2<<30, 1, 2)
+	pubRegion(devices, "region1", 3, 1<<30, 3, 4)
 	devs := BuildDevices(PublishConfig{PublishLeaseDevice: true}, devices, nil, nil, nil)
 	p := pubPublisher(t, PublishOptions{NodeName: pubNode})
 	p.SetDevices(devs)
@@ -332,8 +353,17 @@ func TestGetResourcesRegionDRAMLease(t *testing.T) {
 	if l := got["lease"]; l.Capacity != nil || !*l.AllowMultipleAllocations {
 		t.Errorf("lease device %+v", l)
 	}
-	if _, ok := regionNodeAffinity(&nricxl.RegionDevice{Memories: []*nricxl.MemoryDevice{mem(-1)}}); ok {
+	if _, ok := regionNodeAffinity(&device.Region{NodeAffinity: []int{-1}}); ok {
 		t.Error("an unknown affinity is published")
+	}
+}
+
+// TestDRAMNodeOrder pins the order of the nodes of the DRAM, which a
+// Prepare records: that of their names.
+func TestDRAMNodeOrder(t *testing.T) {
+	devs := BuildDevices(PublishConfig{}, &kernel.Snapshot{NumaNodes: pubNodes(0, 1, 2, 10)}, nil, nil, nil)
+	if dram, ok := devs["dram"].Dev.(*device.DRAM); !ok || !slices.Equal(dram.Nodes, []int{0, 1, 10, 2}) {
+		t.Fatalf("DRAM %+v", devs["dram"].Dev)
 	}
 }
 
@@ -375,19 +405,16 @@ func TestLocalRequestPolicy(t *testing.T) {
 
 // TestBuildDevInfosHollowRegion pins a hollow region of a scan: it is not
 // published, the other devices are, and it is warned about once while it
-// stays. The hollow region still has a node: memory of its address range
-// that kmem could not remove is online, so the scan finds the node and the
-// region enabled; that node is not DRAM either.
+// stays, unless it is one of the device engine. The hollow region still
+// has a node: memory of its address range that kmem could not remove is
+// online, so the scan finds the node; that node is not DRAM either.
 func TestBuildDevInfosHollowRegion(t *testing.T) {
-	devices := nricxl.NewDevices()
-	hollow := &nricxl.RegionDevice{Name: "region1", SysfsPath: "/sys/bus/cxl/devices/region1", Mode: "ram", Resource: 0x850000000, Size: 1 << 28,
-		Node: 3, Enabled: true, OnlineSize: 1 << 28, Hollow: true}
-	devices.RegionDevices = []*nricxl.RegionDevice{
-		{Name: "region0", Size: 1 << 30, Mode: "ram", Node: 2, Enabled: true, Targets: []string{"decoder4.0"},
-			Memories: []*nricxl.MemoryDevice{{Name: "mem0", Serial: 0xc100e2e0, Enabled: true}}},
-		hollow,
-	}
-	devices.MemoryNodes = []*nricxl.MemoryNode{{ID: 0, Size: 1 << 30}, {ID: 2, Size: 1 << 30}, {ID: 3, Size: 1 << 28}}
+	devices := &kernel.Snapshot{NumaNodes: pubNodes(0, 2, 3), Memdevs: []kernel.MemdevInfo{pubMem("mem0", 0xc100e2e0, 0, -1)}, BlockSize: 1 << 28}
+	devices.NumaNodes[2].MemTotal = 1 << 28
+	pubRegion(devices, "region0", 2, 1<<30, 0xc100e2e0)
+	devices.Regions = append(devices.Regions, kernel.RegionInfo{Name: "region1", State: kernel.RegionHollow, Mode: kernel.RegionRAM,
+		Range: kernel.Range{Start: 0x850000000, End: 0x850000000 + 1<<28 - 1}, NumaNode: 3, RootDecoder: "decoder0.1"})
+	devices.Blocks = []kernel.MemoryBlock{{Index: 0x85, State: kernel.BlockOnline, Zones: "Movable", NumaNode: 3}}
 	devInfos := BuildDevices(PublishConfig{ManageMemdevs: true}, devices, nil, nil, nil)
 	if devInfos["region0-node2"] == nil || devInfos["region1-node3"] != nil || len(devInfos) != 2 {
 		t.Fatalf("devices %v", pubNames(devInfos))
@@ -396,15 +423,26 @@ func TestBuildDevInfosHollowRegion(t *testing.T) {
 		t.Fatalf("DRAM %+v", devInfos["dram"])
 	}
 
+	logs := captureKlogV(t, "0")
 	h := &hollowRegionLog{warned: map[string]bool{}}
+	notOurs := func(string) bool { return false }
 	for i, want := range []int{1, 1, 0} {
-		regions := devices.RegionDevices
+		regions := devices.Regions
 		if want == 0 {
 			regions = regions[:1]
 		}
-		if got := h.observe(regions); len(got) != want || (want == 1 && !got[hollow]) || len(h.warned) != want {
-			t.Fatalf("scan %d: hollow %v, warned %v", i, got, h.warned)
+		if h.observe(regions, notOurs); len(h.warned) != want {
+			t.Fatalf("scan %d: warned %v", i, h.warned)
 		}
+	}
+	h.observe(devices.Regions, func(name string) bool { return name == "region1" })
+	if len(h.warned) != 0 {
+		t.Fatalf("a hollow region of the engine warned %v", h.warned)
+	}
+	out := logs()
+	want := "CXL region region1 (mode ram, resource 0x850000000, size 0x10000000) has no target decoder: it is not published."
+	if n := strings.Count(out, want); n != 1 || !strings.Contains(out, "echo region1 > /sys/bus/cxl/devices/decoder0.1/delete_region") {
+		t.Fatalf("%d warnings of the hollow region:\n%s", n, out)
 	}
 }
 
@@ -413,16 +451,14 @@ func TestBuildDevInfosHollowRegion(t *testing.T) {
 // ignoreDevices and sharedDevices matches; a memdev used one way by claims
 // is not published the other way until it has none.
 func TestSharedLocalPrecedence(t *testing.T) {
-	memdev := func(name string, serial uint64) *nricxl.MemoryDevice {
-		return &nricxl.MemoryDevice{Name: name, DevName: "cxl/" + name, RamSize: 1 << 30, Serial: serial, NodeAffinity: -1, Enabled: true, Major: 251, Minor: int(serial & 0xf)}
+	devices := &kernel.Snapshot{}
+	for i := range 10 {
+		m := pubMem(fmt.Sprintf("mem%d", i+1), 0xa1+uint64(i), 1<<30, -1)
+		m.Major, m.Minor = 251, int(m.Serial&0xf)
+		devices.Memdevs = append(devices.Memdevs, m)
 	}
-	byName, byDevName, byNumbers, byDecimal, ignored, pooled, sliced, usedSliced, usedShared, foreign :=
-		memdev("mem1", 0xa1), memdev("mem2", 0xa2), memdev("mem3", 0xa3), memdev("mem4", 0xa4), memdev("mem5", 0xa5),
-		memdev("mem6", 0xa6), memdev("mem7", 0xa7), memdev("mem8", 0xa8), memdev("mem9", 0xa9), memdev("mem10", 0xaa)
-	devices := &nricxl.Devices{
-		MemoryDevices: []*nricxl.MemoryDevice{byName, byDevName, byNumbers, byDecimal, ignored, pooled, sliced, usedSliced, usedShared, foreign},
-		RegionDevices: []*nricxl.RegionDevice{{Name: "region9", Size: 1 << 30, Mode: "ram", Node: 3, Enabled: true, Memories: []*nricxl.MemoryDevice{foreign}}},
-	}
+	byName, ignored, pooled, sliced := &devices.Memdevs[0], &devices.Memdevs[4], &devices.Memdevs[5], &devices.Memdevs[6]
+	pubRegion(devices, "region9", 3, 1<<30, 0xaa)
 	cfg := PublishConfig{
 		IgnoreDevices: []string{"0xa5"},
 		SharedDevices: []string{"mem1", "cxl/mem2", "251:3", "164", "a5", "0xa6", "0xa8", "0xaa"},
@@ -445,7 +481,7 @@ func TestSharedLocalPrecedence(t *testing.T) {
 		t.Fatalf("published memdevs (name: shared) %v, expected %v", shared, want)
 	}
 	for _, tc := range []struct {
-		mem  *nricxl.MemoryDevice
+		mem  *kernel.MemdevInfo
 		want string
 	}{
 		{ignored, `ignored by memory device serial "0xa5"`},
@@ -457,7 +493,7 @@ func TestSharedLocalPrecedence(t *testing.T) {
 			t.Errorf("%s: refusal %q, expected %q", tc.mem.Name, got, tc.want)
 		}
 	}
-	if got := SharedSerials(cfg, devices.MemoryDevices, pool); !maps.Equal(got, map[uint64]bool{0xa1: true, 0xa2: true, 0xa3: true, 0xa4: true, 0xa8: true, 0xaa: true}) {
+	if got := SharedSerials(cfg, devices.Memdevs, pool); !maps.Equal(got, map[uint64]bool{0xa1: true, 0xa2: true, 0xa3: true, 0xa4: true, 0xa8: true, 0xaa: true}) {
 		t.Fatalf("shared serials %v", got)
 	}
 
@@ -481,9 +517,8 @@ func TestSharedRefusalLogged(t *testing.T) {
 	for _, reason := range []string{heldReason, "pool device"} {
 		sharedRefusalsLogged.Delete("mem-refused\x00" + reason)
 	}
-	m := &nricxl.MemoryDevice{Name: "mem-refused", RamSize: 1 << 30, Serial: 0xa1f, NodeAffinity: -1, Enabled: true}
 	cfg := PublishConfig{SharedDevices: []string{"mem-refused"}, ManageMemdevs: true, IgnoreDRAMNodes: true}
-	detected := &nricxl.Devices{MemoryDevices: []*nricxl.MemoryDevice{m}}
+	detected := &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{pubMem("mem-refused", 0xa1f, 1<<30, -1)}}
 	local := &LocalSnapshot{BlockSize: pubBlockSize}
 	for range 2 {
 		if devs := BuildDevices(cfg, detected, nil, map[uint64]bool{0xa1f: true}, local); len(devs) != 0 {
@@ -507,8 +542,9 @@ func TestSharedRefusalLogged(t *testing.T) {
 // device, a held memdev, a disabled one.
 func TestPersistentMemdevRefusals(t *testing.T) {
 	logs := captureKlogV(t, "4")
-	m := &nricxl.MemoryDevice{Name: "mem3", PmemSize: 512 * pubMiB, Serial: 0xc100f5e1, NodeAffinity: -1, Enabled: true}
-	detected := &nricxl.Devices{MemoryDevices: []*nricxl.MemoryDevice{m}}
+	detected := &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{pubMem("mem3", 0xc100f5e1, 0, -1)}}
+	m := &detected.Memdevs[0]
+	m.PmemSize = 512 * pubMiB
 	cfg := PublishConfig{ManageMemdevs: true, IgnoreDRAMNodes: true}
 	local := &LocalSnapshot{BlockSize: pubBlockSize}
 	if devs := BuildDevices(cfg, detected, nil, nil, local); !slices.Equal(pubNames(devs), []string{"memdev-c100f5e1"}) {
@@ -524,7 +560,7 @@ func TestPersistentMemdevRefusals(t *testing.T) {
 		{nil, serial, true, heldReason},
 		{nil, nil, false, "memory device is disabled"},
 	} {
-		m.Enabled = tc.enabled
+		m.State = map[bool]kernel.MemdevState{true: kernel.MemdevReady, false: kernel.MemdevUnbound}[tc.enabled]
 		if devs := BuildDevices(cfg, detected, tc.pool, tc.held, local); len(devs) != 0 {
 			t.Fatalf("%s: published %v", tc.reason, pubNames(devs))
 		}
@@ -547,11 +583,11 @@ func TestMemdevSettings(t *testing.T) {
 		}
 		return 0
 	}}
-	m0 := &nricxl.MemoryDevice{Name: "mem0", Serial: 0x0badc0dedeadbeef, RamSize: 192 << 30}
-	m1 := &nricxl.MemoryDevice{Name: "mem1", Serial: 0x1, RamSize: 2 << 30}
-	m2 := &nricxl.MemoryDevice{Name: "mem2", Serial: 0x2, RamSize: 2 << 30}
+	m0 := &kernel.MemdevInfo{Name: "mem0", Serial: 0x0badc0dedeadbeef, RamSize: 192 << 30}
+	m1 := &kernel.MemdevInfo{Name: "mem1", Serial: 0x1, RamSize: 2 << 30}
+	m2 := &kernel.MemdevInfo{Name: "mem2", Serial: 0x2, RamSize: 2 << 30}
 	for _, tc := range []struct {
-		m      *nricxl.MemoryDevice
+		m      *kernel.MemdevInfo
 		probed uint64
 		want   uint64
 	}{
@@ -581,7 +617,7 @@ func TestRescanBeforeStart(t *testing.T) {
 		Config:   PublishConfig{IgnoreDRAMNodes: true, PublishLeaseDevice: true},
 		NodeName: pubNode,
 		Client:   client,
-		Scan:     func() (*nricxl.Devices, error) { return nricxl.NewDevices(), nil },
+		Scan:     pubNoScan,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -628,7 +664,7 @@ func TestPublishedTable(t *testing.T) {
 		Config:   PublishConfig{IgnoreDRAMNodes: true, PublishLeaseDevice: true},
 		NodeName: pubNode,
 		Client:   client,
-		Scan:     func() (*nricxl.Devices, error) { return nricxl.NewDevices(), nil },
+		Scan:     pubNoScan,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

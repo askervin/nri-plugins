@@ -116,11 +116,11 @@ func scanTopologies() map[string]func(t *testing.T) scanTopology {
 // configuration, as the characterization pins them.
 func scanDevices(t *testing.T, top scanTopology, c scanCase) map[string]scanDevice {
 	t.Helper()
-	detected, err := nricxl.DevicesFromSysfs(top.root)
+	snap, err := top.k.ObserveTopology(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	devs := BuildDevices(c.cfg, detected, c.pool, c.held, c.local)
+	devs := BuildDevices(c.cfg, snap, c.pool, c.held, c.local)
 	out := map[string]scanDevice{}
 	for _, d := range resources(devs) {
 		sd := scanDevice{Device: d}
@@ -175,6 +175,60 @@ func TestCharScanTopologies(t *testing.T) {
 			}
 			if !bytes.Equal(data, want) {
 				t.Errorf("the devices differ from %s:\n%s", golden, data)
+			}
+		})
+	}
+}
+
+// TestCharScanReaders compares the facts of pkg/cxl's reader (cxl-dump's)
+// with those that the publisher takes from the kernel's snapshot on the
+// topologies of TestCharScanTopologies: the memdevs, the regions (hollow,
+// node, size, mode, the memdevs in the order of their endpoints) and the
+// NUMA nodes in the order of their names; memdevs and regions in any order.
+func TestCharScanReaders(t *testing.T) {
+	for name, build := range scanTopologies() {
+		t.Run(name, func(t *testing.T) {
+			top := build(t)
+			old, err := nricxl.DevicesFromSysfs(top.root)
+			mustOK(t, err)
+			snap, err := top.k.ObserveTopology(context.Background())
+			mustOK(t, err)
+			var want, got []string
+			for _, m := range old.MemoryDevices {
+				want = append(want, fmt.Sprintf("%s 0x%x ram %d pmem %d affinity %d enabled %v %s %d:%d", m.Name, m.Serial, m.RamSize, m.PmemSize,
+					m.NodeAffinity, m.Enabled, m.DevName, m.Major, m.Minor))
+			}
+			for _, m := range snap.Memdevs {
+				got = append(got, fmt.Sprintf("%s 0x%x ram %d pmem %d affinity %d enabled %v cxl/%s %d:%d", m.Name, m.Serial, m.RamSize, m.PmemSize,
+					m.NodeAffinity, m.State != kernel.MemdevUnbound, m.Name, m.Major, m.Minor))
+			}
+			for _, r := range old.RegionDevices {
+				line := fmt.Sprintf("%s hollow %v node %d size %d mode %s memdevs", r.Name, r.Hollow, r.Node, r.Size, r.Mode)
+				for _, m := range r.Memories {
+					line += fmt.Sprintf(" 0x%x/%d", m.Serial, m.NodeAffinity)
+				}
+				want = append(want, line)
+			}
+			nodes := regionNodes(snap)
+			for i := range snap.Regions {
+				r := &snap.Regions[i]
+				line := fmt.Sprintf("%s hollow %v node %d size %d mode %s memdevs", r.Name, r.State == kernel.RegionHollow, nodes[r.Name], regionSize(*r), r.Mode)
+				for _, m := range regionMemdevs(snap, r) {
+					line += fmt.Sprintf(" 0x%x/%d", m.Serial, m.NodeAffinity)
+				}
+				got = append(got, line)
+			}
+			slices.Sort(want)
+			slices.Sort(got)
+			// the nodes in their order: that of the nodes of the DRAM
+			for _, n := range old.MemoryNodes {
+				want = append(want, fmt.Sprintf("node %d size %d", n.ID, n.Size))
+			}
+			for _, n := range numaNodesByName(snap) {
+				got = append(got, fmt.Sprintf("node %d size %d", n.ID, n.MemTotal))
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("the snapshot has\n%s\npkg/cxl's reader\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 			}
 		})
 	}

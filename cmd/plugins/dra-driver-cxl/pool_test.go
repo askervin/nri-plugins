@@ -33,8 +33,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
-
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 const (
@@ -270,15 +269,13 @@ func TestPoolPrepareErrors(t *testing.T) {
 }
 
 func TestBuildDevInfosSkipsPoolDevices(t *testing.T) {
-	devices := nricxl.NewDevices()
-	region := func(name string, node int, serial uint64) *nricxl.RegionDevice {
-		return &nricxl.RegionDevice{
-			Name: name, Size: 1 << 30, Mode: "ram", Node: node, Enabled: true,
-			Memories: []*nricxl.MemoryDevice{{Name: "mem-" + name, Serial: serial, Enabled: true}},
-		}
+	devices := &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{observedMemdev("mem-region0", 0xc100e2e0, 0, 0),
+		observedMemdev("mem-region1", 0xc1ee0001, 0, 0)}}
+	observedRegion(devices, "region0", kernel.RegionRAM, 2, 1<<30, 0xc100e2e0)
+	observedRegion(devices, "region1", kernel.RegionRAM, 3, 1<<30, 0xc1ee0001)
+	for _, id := range []int{0, 2, 3} {
+		devices.NumaNodes = append(devices.NumaNodes, kernel.NumaNode{ID: id, HasMemory: true, MemTotal: 1 << 30})
 	}
-	devices.RegionDevices = []*nricxl.RegionDevice{region("region0", 2, 0xc100e2e0), region("region1", 3, 0xc1ee0001)}
-	devices.MemoryNodes = []*nricxl.MemoryNode{{ID: 0, Size: 1 << 30}, {ID: 2, Size: 1 << 30}, {ID: 3, Size: 1 << 30}}
 	devInfos, err := buildDevInfos(&DriverConfig{}, devices, map[uint64]bool{0xc1ee0001: true}, nil)
 	if err != nil {
 		t.Fatal(err)
