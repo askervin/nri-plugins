@@ -423,14 +423,6 @@ func (s *coreState) requestEnabled(ca *coreAction) bool {
 // by name: each tells whether a request runs into it. The requests that do
 // are not generated unless -core.known leaves the finding out.
 var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{
-	// F1: a release that failed at cxl destroy-region leaves the region
-	// record OWNED and the kernel region disabled; a Prepare of another
-	// claim on the memdev uses it without enabling it and fails after the
-	// settle timeout.
-	"F1": func(s *coreState, ca *coreAction) bool {
-		m := &s.mds[coreSlots[ca.slot].md]
-		return ca.verb == "prepare" && m.reg == state.RegionOwned && m.kreg == kregOff
-	},
 	// F7: a memdev with the grant of an unfinished release whose region is
 	// gone (UNPREPARING, RELEASING) keeps a region that a later Prepare
 	// made when its last user goes (the recovery of a cut Prepare leaves

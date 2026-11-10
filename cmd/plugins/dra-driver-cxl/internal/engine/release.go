@@ -1371,19 +1371,25 @@ func (e *Engine) keepMemdev(ctx context.Context, serial state.Serial, trigger st
 			if reg == nil || reg.State != state.RegionOwned {
 				continue
 			}
-			if err := state.Apply(&state.RegionTable, &reg.State, state.RegionKept, trigger); err != nil {
+			if err := keepRegion(reg, trigger); err != nil {
 				return err
-			}
-			// set up again, a kept region is zeroed again
-			reg.Zeroed = false
-			if reg.SetUp {
-				if err := state.Apply(&state.RegionSetUpTable, &reg.SetUp, false, trigger); err != nil {
-					return err
-				}
 			}
 		}
 		return nil
 	})
+}
+
+// keepRegion records an OWNED region KEPT: disabled, to be set up again.
+func keepRegion(reg *state.Region, trigger state.Trigger) error {
+	if err := state.Apply(&state.RegionTable, &reg.State, state.RegionKept, trigger); err != nil {
+		return err
+	}
+	// set up again, a kept region is zeroed again
+	reg.Zeroed = false
+	if reg.SetUp {
+		return state.Apply(&state.RegionSetUpTable, &reg.SetUp, false, trigger)
+	}
+	return nil
 }
 
 // deleteHollow deletes the regions of ours of the memdev with the serial

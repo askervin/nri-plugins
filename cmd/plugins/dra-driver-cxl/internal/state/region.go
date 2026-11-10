@@ -267,7 +267,9 @@ var RegionTable = Table[RegionState]{
 		{
 			From: list(RegionOwned), To: RegionKept, Triggers: releasers,
 			When: "a release with Policy \"in order\" found a newer region of another memdev above after cxl " +
-				"disable-region; or the recovery keeps a cut Prepare's region untouched below a newer region (Policy keep)",
+				"disable-region; or the recovery keeps a cut Prepare's region untouched below a newer region (Policy keep); " +
+				"or a-prepare (5.3) finds an OWNED region that the kernel has disabled (a release failed after cxl " +
+				"disable-region): recorded KEPT, enabled and set up again by the Prepare",
 			Effects: "the region stays disabled (in order) or as it is (recovery); SetUp false; commit (d)",
 		},
 		{

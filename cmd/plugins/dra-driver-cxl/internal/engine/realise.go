@@ -407,13 +407,26 @@ func (e *Engine) forgetGoneRegion(ctx context.Context, req *GrantRequest, memdev
 }
 
 // useRegion returns the name of the recorded region of ours reg for a
-// grant: KEPT is enabled again (OWNED, not set up), OWNED as it is. The
-// region must exist and target the memdev.
+// grant: KEPT is enabled again (OWNED, not set up), OWNED as it is, an
+// OWNED one that the kernel has disabled (a release failed after cxl
+// disable-region) as KEPT. The region must exist and target the memdev.
 func (e *Engine) useRegion(ctx context.Context, req *GrantRequest, memdev string, reg *state.Region) (string, error) {
 	name := string(reg.Ref())
 	ri, err := e.k.Region(name)
 	if err != nil || !slices.Contains(ri.Memdevs, memdev) {
 		return "", fmt.Errorf("memdev %s: its %s is gone (%v)", memdev, name, err)
+	}
+	// a region has one target memdev: its kernel state is the one to look
+	// at (an interleaved region would need every target's)
+	if reg.State == state.RegionOwned && ri.State == kernel.RegionDisabled {
+		e.logf(req.Asked.Source, "memdev %s (serial %s): %s is disabled: keeping it to enable and set it up again", memdev,
+			serialText(req.Serial), name)
+		if err := e.commit(ctx, func(r *state.Records) error {
+			return keepRegion(r.Region(reg.Ref()), state.TriggerPrepare)
+		}); err != nil {
+			return "", err
+		}
+		reg = e.records().Region(reg.Ref())
 	}
 	switch reg.State {
 	case state.RegionOwned:

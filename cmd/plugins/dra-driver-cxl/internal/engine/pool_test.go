@@ -379,3 +379,25 @@ func TestPoolRollbackRevokesLend(t *testing.T) {
 		t.Fatalf("the lent grant is not released: %+v", g)
 	}
 }
+
+// A region that a release left disabled when its cxl destroy-region
+// failed is enabled and set up again for the next grant of its memdev:
+// the Prepare of another claim of the shared device succeeds, the retry of
+// the release leaves the region to it.
+func TestPoolRegionLeftDisabledIsSetUpAgain(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialC})
+	v.configure(func(o *Options) { o.Timeouts.Settle = 300 * time.Millisecond })
+	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialC, state.ModeDax, state.KindShared))
+	v.f.FailCommand("cxl destroy-region", errors.New("cxl region: cmd_destroy_region: failed"))
+	if err := v.unprepare(poolDriver, "c1"); err == nil {
+		t.Fatal("the release succeeded")
+	}
+	v.check("release failed")
+	v.mustPrepare(poolDriver, "c2", poolReq("c2", 0, serialC, state.ModeDax, state.KindShared))
+	v.mustUnprepare(poolDriver, "c1")
+	if g := v.grant("c2", 0); v.f.DaxDriver(g.Got.Dax) != "device_dax" {
+		t.Fatalf("dax device %s of c2: driver %q", g.Got.Dax, v.f.DaxDriver(g.Got.Dax))
+	}
+	v.mustUnprepare(poolDriver, "c2")
+	v.clean("unprepared")
+}
