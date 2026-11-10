@@ -1088,7 +1088,8 @@ func (e *Engine) checkUseBlockDevice(serial state.Serial, blockDev string) error
 	r := e.records()
 	for i := range r.Grants {
 		g := &r.Grants[i]
-		if g.Serial == serial && g.Got.BlockDevice != nil && g.Got.BlockDevice.Name == blockDev {
+		// a grant whose region is gone has the block device of that region
+		if g.Serial == serial && g.Got.Region != "" && g.Got.BlockDevice != nil && g.Got.BlockDevice.Name == blockDev {
 			return e.checkBlockDevice(g)
 		}
 	}

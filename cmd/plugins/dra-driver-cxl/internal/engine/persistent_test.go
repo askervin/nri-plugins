@@ -505,3 +505,28 @@ func TestPersistentFailedReleaseWithoutMountIsNoUse(t *testing.T) {
 	v.mustUnprepare(localDriver, "r")
 	v.clean("unprepared")
 }
+
+// A claim of mode fs whose Unprepare a process stop cut after its region
+// was destroyed keeps the block device of that region in its record; the
+// writer of a new region next to a reader goes, and the block device, which
+// may have the same name now, is read-only again: the records of the uses
+// say what it is, not that claim's.
+func TestPersistentReleaseIgnoresGoneBlockDevice(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib})
+	v.formatPmem("mem0", "ext4")
+	v.mustPrepare(localDriver, "a", localPmemReq("a", 0, state.ModeFs, true, ""))
+	v.f.CutAfter("cxl destroy-region")
+	if !v.cut(func() { _ = v.unprepare(localDriver, "a") }) {
+		t.Fatal("not cut")
+	}
+	v.restart()
+	v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFs, true, ""))
+	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
+	v.mustUnprepare(localDriver, "w")
+	if g := v.grant("r", 0); !v.f.IsReadOnly(g.Got.BlockDevice.Name) {
+		t.Fatalf("%s is read-write without a writer", g.Got.BlockDevice.Name)
+	}
+	v.mustUnprepare(localDriver, "r")
+	v.mustUnprepare(localDriver, "a")
+	v.clean("unprepared")
+}

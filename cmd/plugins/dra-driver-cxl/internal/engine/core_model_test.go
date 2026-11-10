@@ -520,14 +520,6 @@ func (s *coreState) requestEnabled(ca *coreAction) bool {
 // runs into it. The requests that do are not generated unless -core.known
 // leaves the finding out.
 var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{
-	// C6: the release of a writer of mode fs next to a claim whose
-	// Unprepare a stop cut after its region was destroyed checks the block
-	// device against that claim's record of the region gone: the block
-	// device stays read-write without a writer (I7)
-	"C6": func(s *coreState, ca *coreAction) bool {
-		return s.arm > 0 && coreArms[s.arm-1].cut != "" && ca.verb == "unprepare" &&
-			coreMemdevs[coreSlots[ca.slot].md].kind == state.KindPersistent
-	},
 	// C7: the Unprepare of a KEPT claim cut after it released the grant
 	// leaves the preparation KEPT without a grant at the start
 	"C7": func(s *coreState, ca *coreAction) bool {
