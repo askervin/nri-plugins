@@ -81,11 +81,11 @@ DRA_LEASE_LABEL=cxl.nri.io/lease
 DRA_REQUESTER_LABEL=cxl.nri.io/requester-uid
 DRA_NODE_LABEL=cxl.nri.io/node
 DRA_REQUESTER_ANNOTATION=cxl.nri.io/requester
-# Node-local CXL memory devices that the driver publishes whole and
-# partitions on demand (cxl.nri.io devices memdev-<serial>, DeviceClass
-# cxl-local, docs/memory/cxl/local.md): the state file of the regions and
-# slices that the driver created.
-DRA_LOCAL_STATE=/var/lib/kubelet/plugins/cxl.nri.io/localDevices.json
+# The state document of the driver: the records of its claims, memdevs,
+# regions and slices (of the node-local CXL memory devices that it publishes
+# whole and partitions on demand, cxl.nri.io devices memdev-<serial>,
+# DeviceClass cxl-local, docs/memory/cxl/local.md) and leases.
+DRA_STATE=/var/lib/kubelet/plugins/cxl.nri.io/state.json
 DRA_CONTROLLER_BIN="$nri_resource_policy_src/scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-controller"
 # The systemd units of the pool controllers in the VM of the test:
 # fake-cxl-pool-controller for the first pool server, and
@@ -128,7 +128,7 @@ DRA_LOCAL_LD=""                    # dra-py expression of its ResourceSlice devi
 DRA_LOCAL_REGIONS=""               # cxl-py expression of its regions in cxl-dump,
 DRA_LOCAL_PUBLISHED=""             # its ResourceSlice device as JSON,
 DRA_LOCAL_ATTACHMENT=""            # and the state of its attachment to the VM
-DRA_LOCAL_STATE_JSON=""            # dra-local-state-shared: the state file of the node plugin
+DRA_STATE_JSON=""                  # dra-local-state-shared: the state document of the node plugin
 DRA_LOCAL_SHARED_REGION=""         # dra-local-shared-wait: the region of the shared local device
 DRA_LOCAL_SHARED_DAX=""            # and its dax device (daxX.Y)
 DRA_DRIVER_POD=""                  # dra-driver-restart: the new pod of the driver
@@ -558,15 +558,14 @@ dra-state-cleanup() {
     # Remove the state of the driver in the VM of VMDIR that refers to CXL
     # regions, if the VM has no regions: then it is a leftover of an earlier
     # VM boot. That is the state document of the driver (state.json,
-    # state.json.prev), the prepared claims and their info
-    # (preparedClaims.json, preparedClaimsInfo.json), the prepared and
-    # preparing pool claims (preparedPoolClaims.json,
-    # preparingPoolClaims.json), the regions and slices of local devices
-    # (localDevices.json), the leases (leases.json), the lease sockets of
-    # lease claims (leases/) and the serials of pool devices seen by the
-    # driver (poolSerials.json, so that every test starts with the pools of
-    # its own servers only).
-    dra-vm-command "$1" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the CXL state of the driver'; else rm -fv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/state.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/state.json.prev /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/preparedClaims.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/preparedClaimsInfo.json /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparedPoolClaims.json /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparingPoolClaims.json $DRA_LOCAL_STATE /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/poolSerials.json; rm -rfv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases; fi"
+    # state.json.prev), the state files and views of earlier versions that
+    # an upgraded node may still have (preparedClaims.json,
+    # preparedClaimsInfo.json, preparedPoolClaims.json,
+    # preparingPoolClaims.json, localDevices.json, leases.json), the lease
+    # sockets of lease claims (leases/) and the serials of pool devices seen
+    # by the driver (poolSerials.json, so that every test starts with the
+    # pools of its own servers only).
+    dra-vm-command "$1" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the CXL state of the driver'; else rm -fv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/state.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/state.json.prev /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/preparedClaims.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/preparedClaimsInfo.json /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparedPoolClaims.json /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparingPoolClaims.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/localDevices.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/poolSerials.json; rm -rfv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases; fi"
 }
 
 dra-wait-node() {
@@ -1131,20 +1130,14 @@ dra-local-claim-slice() { # script API
     # Usage: dra-local-claim-slice VMDIR CLAIM-UID
     #
     # Print the dax device (daxX.Y) of the slice of the claim with
-    # CLAIM-UID in the state of the node plugin in the VM of VMDIR
-    # ($DRA_LOCAL_STATE: devices[].claims[CLAIM-UID][0].dax). Return 1 if
-    # the claim has no slice there.
-    local json
-    json=$(dra-vm-command-q "$1" "cat $DRA_LOCAL_STATE") || return 1
-    python3 -c '
-import json, sys
-uid = sys.argv[1]
-for d in json.loads(sys.stdin.read()).get("devices") or []:
-    slices = (d.get("claims") or {}).get(uid) or []
-    if slices and slices[0].get("dax"):
-        print(slices[0]["dax"])
-        sys.exit(0)
-sys.exit(1)' "$2" <<< "$json"
+    # CLAIM-UID in the state of the node plugin in the VM of VMDIR: of the
+    # first grant of the claim that uses a local memdev ($DRA_STATE, see
+    # claim_uses() of dra-py). Return 1 if the claim has no slice there.
+    local json dax
+    json=$(dra-state-json "$1") || return 1
+    dax=$(dra-py eval "$json" "next((u[0]['got']['dax'] for u in (claim_uses(m, '$2') for m in local_memdevs()) if u and (u[0].get('got') or {}).get('dax')), '')") || return 1
+    [ -n "$dax" ] || return 1
+    echo "$dax"
 }
 
 dra-delete-pod() { # script API
@@ -1342,21 +1335,13 @@ print(json.dumps(sorted(out, key=lambda m: m["target"]), sort_keys=True))' "$DRA
 dra-local-state-claims() {
     # Usage: dra-local-state-claims VMDIR
     #
-    # Print how many claims the node plugin in the VM of VMDIR has in its
-    # state file of local devices (0 without a file): the entries of every
-    # "claims" object or list in it, whatever the case of the key.
+    # Print how many claims the node plugin in the VM of VMDIR has on its
+    # local memdevs in its state document (0 without one): the
+    # local_claims() of dra-py of every local memdev.
     local json
-    json=$(dra-vm-command-q "$1" "cat $DRA_LOCAL_STATE 2>/dev/null || echo '{}'")
-    echo "$DRA_LOCAL_STATE: $json" >&2
-    python3 -c '
-import json, sys
-def count(o):
-    if isinstance(o, dict):
-        return sum(len(v) if k.lower() == "claims" and isinstance(v, (dict, list)) else count(v) for k, v in o.items())
-    if isinstance(o, list):
-        return sum(count(v) for v in o)
-    return 0
-print(count(json.loads(sys.stdin.read().strip() or "{}")))' <<< "$json"
+    json=$(dra-state-json "$1" 2>/dev/null) || json='{}'
+    echo "$DRA_STATE: claims of local memdevs: $(dra-value "$json" "json.dumps({m['serial']: local_claims(m) for m in local_memdevs()})")" >&2
+    dra-value "$json" "sum(len(local_claims(m)) for m in local_memdevs())"
 }
 
 dra-local-initial-state() { # script API
@@ -1374,10 +1359,10 @@ dra-local-initial-state() { # script API
     dra-local-unchanged "$vmdir"
     [ -z "$(dra-cdi-devices-with "$vmdir" "CXL_${DRA_LOCAL_HEX}_")" ] ||
         error "$label: CDI devices of claims of the local device are left: $(dra-cdi-devices-with "$vmdir" "CXL_${DRA_LOCAL_HEX}_")"
-    dra-vm-command-q "$vmdir" "test -s $DRA_LOCAL_STATE" ||
-        error "$label: the node plugin has no $DRA_LOCAL_STATE"
+    dra-vm-command-q "$vmdir" "test -s $DRA_STATE" ||
+        error "$label: the node plugin has no $DRA_STATE"
     [ "$(dra-local-state-claims "$vmdir")" == 0 ] ||
-        error "$label: the node plugin still has claims in $DRA_LOCAL_STATE"
+        error "$label: the node plugin still has claims of local memdevs in $DRA_STATE"
     [ -z "$node" ] || dra-node-wait "$vmdir" "$node" 0 10
     echo "$label: the local device is in its initial state"
 }
@@ -1385,21 +1370,16 @@ dra-local-initial-state() { # script API
 dra-local-state-shared() {
     # Usage: dra-local-state-shared VMDIR CLAIM-UID...
     #
-    # Return 0 if the state file of the node plugin in the VM of VMDIR
-    # ($DRA_LOCAL_STATE) has the local device (DRA_LOCAL_SERIAL) with
-    # "shared": true and exactly the claims CLAIM-UID (none: no claims).
-    # DRA_LOCAL_STATE_JSON is the state file as it was read.
-    local vmdir="$1"
+    # Return 0 if the state document of the node plugin in the VM of VMDIR
+    # ($DRA_STATE) has the local memdev DRA_LOCAL_SERIAL with the fact
+    # "shared": true and exactly the claims CLAIM-UID (none: no claims, see
+    # local_claims() of dra-py). DRA_STATE_JSON is the document as it was
+    # read.
+    local vmdir="$1" want=""
     shift
-    DRA_LOCAL_STATE_JSON=$(dra-vm-command-q "$vmdir" "cat $DRA_LOCAL_STATE 2>/dev/null || echo '{}'") || return 1
-    python3 -c '
-import json, sys
-serial, want = int(sys.argv[1], 16), sorted(sys.argv[2:])
-for d in json.loads(sys.stdin.read().strip() or "{}").get("devices") or []:
-    hexs = str(d.get("serialHex") or "").lower()
-    if d.get("serial") == serial or (hexs and int(hexs, 16) == serial):
-        sys.exit(0 if d.get("shared") is True and sorted((d.get("claims") or {}).keys()) == want else 1)
-sys.exit(1)' "$DRA_LOCAL_SERIAL" "$@" <<< "$DRA_LOCAL_STATE_JSON"
+    DRA_STATE_JSON=$(dra-state-json "$vmdir" 2>/dev/null) || DRA_STATE_JSON='{}'
+    [ "$#" == 0 ] || want=$(printf "'%s'," "$@")
+    dra-py assert "$DRA_STATE_JSON" "(lambda m: m is not None and m.get('source') == 'local' and (m.get('facts') or {}).get('shared') is True and sorted(local_claims(m)) == sorted([$want]))(memdev('$DRA_LOCAL_SERIAL'))"
 }
 
 dra-local-shared-wait() { # script API
@@ -1418,10 +1398,10 @@ dra-local-shared-wait() { # script API
     shift 2
     claims=("$@")
     vmlabel=$(dra-vm-label "$vmdir")
-    retry-until --timeout 60 --interval 1 --message "$vmlabel: $DRA_LOCAL_STATE has $DRA_LOCAL_SERIAL shared, with claims [$*]" \
+    retry-until --timeout 60 --interval 1 --message "$vmlabel: $DRA_STATE has $DRA_LOCAL_SERIAL shared, with claims [$*]" \
         'dra-local-state-shared "$vmdir" "${claims[@]}"' ||
-        error "$vmlabel: $DRA_LOCAL_STATE does not have $DRA_LOCAL_SERIAL shared with claims [$*]: $DRA_LOCAL_STATE_JSON"
-    echo "$vmlabel: $DRA_LOCAL_STATE: $DRA_LOCAL_SERIAL shared, claims [$*]"
+        error "$vmlabel: $DRA_STATE does not have $DRA_LOCAL_SERIAL shared with claims [$*]: $(dra-py eval "$DRA_STATE_JSON" "json.dumps((lambda m: m and dict(m, claims=local_claims(m)))(memdev('$DRA_LOCAL_SERIAL')))")"
+    echo "$vmlabel: $DRA_STATE: $DRA_LOCAL_SERIAL shared, claims [$*]"
     pool-cxl-wait "$vmdir" "$label" "len($DRA_LOCAL_REGIONS) == 1 and ${DRA_LOCAL_REGIONS}[0]['Enabled'] and ${DRA_LOCAL_REGIONS}[0]['OnlineSize'] == 0" 30
     dra-memdev-wait "$vmdir" "$label" "$DRA_LOCAL_SERIAL" \
         "j['enabled'] and len(j['regions']) == 1 and j['regions'][0]['size'] == $DRA_LOCAL_SIZE and [(d['size'], d['driver']) for d in dax_slices()] == [($DRA_LOCAL_SIZE, 'device_dax')]" 30
@@ -2674,6 +2654,23 @@ dra-py() {
     #   events(reason, name)   Events with reason, of object name
     #   dax_slices(driver)     dax devices with a size of a dra-memdev-sysfs
     #                          document (j), bound to driver if given
+    # On the state document of the driver (j, dra-state-json):
+    #   grant(ref)             the grant record of ref ({claim, result}),
+    #                          None if none
+    #   region(ref)            the region record of ref (its name, or its
+    #                          noted name), None if none
+    #   memdev(serial)         the memdev record of serial (a number, or
+    #                          hex text), None if none
+    #   local_memdevs()        the memdev records of source local
+    #   claim_uses(m, uid)     the grants of claim uid that use memdev m
+    #                          (REALISED, REALISED_UNRESTORED, RELEASING),
+    #                          in the order of m's grants
+    #   local_claims(m)        the claims of memdev m: the UIDs of its grants
+    #                          that use it or are being realised (JOURNALED,
+    #                          REALISING), and "-" if a region of the driver
+    #                          of m has a dax device that no grant uses (not
+    #                          the whole device, not the seed)
+    #   lease(id)              the lease record of id, None if none
     python3 -c '
 import decimal, json, sys
 
@@ -2805,6 +2802,40 @@ def dax_slices(driver=None):
     return [d for r in j.get("regions") or [] for d in r.get("dax") or []
             if d.get("size") and (driver is None or d.get("driver") == driver)]
 
+def grant(ref):
+    return next((g for g in j.get("grants") or [] if g.get("ref") == ref), None)
+
+def region(ref):
+    return next((r for r in j.get("regions") or [] if (r.get("name") or r.get("notedName")) == ref), None)
+
+def serial_number(s):
+    return s if isinstance(s, int) else int(str(s), 16)
+
+def memdev(serial):
+    return next((m for m in j.get("memdevs") or [] if serial_number(m["serial"]) == serial_number(serial)), None)
+
+def local_memdevs():
+    return [m for m in j.get("memdevs") or [] if m.get("source") == "local"]
+
+def claim_uses(m, uid):
+    gs = [grant(r) for r in m.get("grants") or [] if r.get("claim") == uid]
+    return [g for g in gs if g and g.get("state") in ("REALISED", "REALISED_UNRESTORED", "RELEASING")]
+
+def local_claims(m):
+    out = []
+    for r in m.get("grants") or []:
+        g = grant(r)
+        if g and g.get("state") in ("REALISED", "REALISED_UNRESTORED", "RELEASING", "JOURNALED", "REALISING") \
+                and r.get("claim") not in out:
+            out.append(r.get("claim"))
+    regs = [reg for reg in (region(x) for x in m.get("regions") or []) if reg and reg.get("owner") == "ours"]
+    if any(not d.get("whole") and d.get("state") != "SEED" and not d.get("users") for reg in regs for d in reg.get("daxDevices") or []):
+        out.append("-")
+    return out
+
+def lease(lid):
+    return next((l for l in j.get("leases") or [] if l.get("id") == lid), None)
+
 value = eval(expression)
 if mode == "eval":
     print(value)
@@ -2827,6 +2858,15 @@ dra-json() { # script API
     status=$?
     COMMAND_OUTPUT="$DRA_JSON"
     return $status
+}
+
+dra-state-json() { # script API
+    # Usage: dra-state-json VMDIR
+    #
+    # Print the state document of the driver ($DRA_STATE) in the VM of
+    # VMDIR, quietly, for the names of dra-py on it. Return 1 if it cannot
+    # be read.
+    dra-vm-command-q "$1" "cat $DRA_STATE"
 }
 
 dra-assert() { # script API

@@ -74,7 +74,6 @@ SHARED_CLASS=cxl-local-shared
 TAG="dra-local-one-writer $(date +%Y-%m-%dT%H:%M:%S.%N)"
 TEXT="Hello from the writer, $TAG"
 READERS=(reader-a reader-b reader-c)
-LEASES_FILE="$(dirname "$DRA_LOCAL_STATE")/leases.json"   # the lease table of the node plugin
 declare -A POD_UID=()       # pod -> its uid
 declare -A READER_LEASE=()  # reader -> the lease of its share
 REQ_JSON=""                 # request: the response
@@ -302,27 +301,24 @@ lease-objects() {
 lease-store-check() {
     # Usage: lease-store-check LEASE SHARED
     #
-    # Check that the lease table of the node plugin ($LEASES_FILE) has
-    # lease LEASE of a shared device ("sharedDevice": true) with "shared"
-    # SHARED (True: one share, False: the device exclusively).
+    # Check that the state document of the node plugin ($DRA_STATE) has
+    # lease LEASE of a shared device (sharedDevice true: what it got, or
+    # what it asked before it got a device) with shared SHARED as asked
+    # (True: one share, False: the device exclusively).
     local json
-    json=$(dra-vm-command-q "$VM2" "cat $LEASES_FILE") || error "cannot read $LEASES_FILE"
-    dra-assert "$json" "(lambda l: (bool(l.get('sharedDevice')), bool(l.get('shared'))))(j['leases']['$1']) == (True, $2)"
+    json=$(dra-state-json "$VM2") || error "cannot read $DRA_STATE"
+    dra-assert "$json" "(lambda l: (bool((l['got'] if l.get('got') is not None else l['asked']).get('sharedDevice')), bool(l['asked'].get('shared'))))(lease('$1')) == (True, $2)"
 }
 
 lease-table-size() {
     # Usage: lease-table-size
     #
-    # Print how many leases the lease table of the node plugin
-    # ($LEASES_FILE) has (0 without the file), quietly.
+    # Print how many leases the state document of the node plugin
+    # ($DRA_STATE) has (0 without the document), quietly.
     local json
-    json=$(dra-vm-command-q "$VM2" "cat $LEASES_FILE 2>/dev/null || echo '{}'")
-    echo "$LEASES_FILE: $json" >&2
-    python3 -c '
-import json, sys
-j = json.loads(sys.stdin.read().strip() or "{}")
-leases = j.get("leases") if isinstance(j, dict) else j
-print(len(leases or []))' <<< "$json"
+    json=$(dra-state-json "$VM2" 2>/dev/null) || json='{}'
+    echo "$DRA_STATE: leases: $(dra-value "$json" "json.dumps(j.get('leases') or [])")" >&2
+    dra-value "$json" "len(j.get('leases') or [])"
 }
 
 echo "### preconditions: patched qemu, hdm_for_passthrough=on, kernel with CONFIG_FS_DAX"
@@ -563,8 +559,8 @@ holding "${READERS[@]}" || error "not all readers hold the memory before L9"
 dra-vm-command "$VM2" "kubectl delete -n $DRA_NS pods writer ${READERS[*]} --grace-period=2 --wait=true --timeout=60s && kubectl delete -n $DRA_NS resourceclaimtemplate cxl-lease" ||
     command-error "cannot delete the pods and the lease template"
 dra-wait "$VM2" no-lease-objects "pods,resourceclaims -n $DRA_NS" "items == []" 60
-retry-until --timeout 60 --interval 1 --message "no leases in $LEASES_FILE" \
-    '[ "$(lease-table-size)" == 0 ]' || error "the node plugin still has leases in $LEASES_FILE"
+retry-until --timeout 60 --interval 1 --message "no leases in $DRA_STATE" \
+    '[ "$(lease-table-size)" == 0 ]' || error "the node plugin still has leases in $DRA_STATE"
 # Kept while the device is configured shared: the region and its dax
 # device, with no claims.
 dra-local-shared-wait "$VM2" deleted

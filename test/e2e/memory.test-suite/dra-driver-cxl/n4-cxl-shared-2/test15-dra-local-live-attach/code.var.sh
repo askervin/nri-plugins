@@ -318,7 +318,7 @@ numa-slice() {
     # check that sysfs has it as a kmem slice of BYTES.
     local dax
     dax=$(dra-local-claim-slice "$VM2" "$2") ||
-        error "$1: the node plugin has no slice of claim $2 in $DRA_LOCAL_STATE"
+        error "$1: the node plugin has no slice of claim $2 in $DRA_STATE"
     NUMA_SLICES[$1]="$dax $3"
     dra-memdev-wait "$VM2" "slice-$1" "$DRA_LOCAL_SERIAL" \
         "[(d['driver'], d['size']) for d in dax_slices() if d['name'] == '$dax'] == [('kmem', $3)]" 10
