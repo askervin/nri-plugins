@@ -22,7 +22,7 @@ spec:
   variables:
   - name: userNodeName
     expression: >-
-      request.userInfo.extra[?'authentication.kubernetes.io/node-name'][0].orValue('')
+      request.userInfo.?extra[?'authentication.kubernetes.io/node-name'][0].orValue('')
   - name: objectNodeName
     expression: >-
       (request.operation == "DELETE" ? oldObject : object).spec.?nodeName.orValue("")
