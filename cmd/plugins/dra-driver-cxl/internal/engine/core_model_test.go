@@ -520,14 +520,6 @@ func (s *coreState) requestEnabled(ca *coreAction) bool {
 // runs into it. The requests that do are not generated unless -core.known
 // leaves the finding out.
 var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{
-	// C1: the CDI spec of cxl.nri.io does not write (an fs device without
-	// its host path) while a claim of mode fs whose release failed or was
-	// cut after its node mount went is UNPREPARING
-	"C1": func(s *coreState, ca *coreAction) bool {
-		sl := &coreSlots[ca.slot]
-		return coreFront && s.arm > 0 && ca.verb == "unprepare" && sl.mode == state.ModeFs && !sl.lease &&
-			coreMemdevs[sl.md].source == state.SourceLocal
-	},
 	// C2: the failed or cut release of a numa companion that a start kept
 	// before it got its dax device leaves the region's whole dax device
 	// that no record names against I2

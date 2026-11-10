@@ -280,3 +280,35 @@ func TestCDINames(t *testing.T) {
 		}
 	}
 }
+
+// A PREPARED or pending claim whose fs device has no node mount makes the
+// CDI spec an error: a container would start without its filesystem. The
+// kept device of an UNPREPARING claim has none after a failed release, and
+// the spec still writes. A dax device that is gone has no device node, as
+// TestPrepareLocalDax of the main package pins.
+func TestCDISpecOfIncompleteDevices(t *testing.T) {
+	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec(), pmemSpec()})
+	e.formatPmem(serialPmem, "ext4")
+	e.mustPrepare(e.local, localClaim("f", pmemDev, -1, cfgFsRO))
+	e.mustPrepare(e.local, localClaim("d", localDev, envBlockSize, cfgDax))
+	doc := e.st.Snapshot().Clone()
+	doc.Grant(state.GrantRef{Claim: "f"}).Got.Mount = ""
+	doc.Grant(state.GrantRef{Claim: "d"}).Got.Dax = ""
+	build := func(pending string) (*cdiSpecs.Spec, error) {
+		return buildCDISpec(doc, device.DriverName, device.CDIKind, e.st.ResultOptions(), pending, true)
+	}
+	spec, err := build("")
+	wantErrText(t, err, "claim demo/claim-f: result 0: no node mount")
+	if len(spec.Devices) != 1 || spec.Devices[0].Name != "claim-d-0" || len(spec.Devices[0].ContainerEdits.DeviceNodes) > 0 {
+		t.Fatalf("CDI devices %+v", spec.Devices)
+	}
+	doc.Preparation(device.DriverName, "f").State = state.PreparationPreparing
+	_, err = build("f")
+	wantErrText(t, err, "claim demo/claim-f: result 0: no node mount")
+	doc.Preparation(device.DriverName, "f").State = state.PreparationUnpreparing
+	spec, err = build("")
+	mustOK(t, err)
+	if len(spec.Devices) != 2 || len(spec.Devices[0].ContainerEdits.DeviceNodes)+len(spec.Devices[1].ContainerEdits.Mounts) > 0 {
+		t.Fatalf("CDI devices %+v", spec.Devices)
+	}
+}

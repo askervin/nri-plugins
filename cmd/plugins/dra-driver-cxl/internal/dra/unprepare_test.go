@@ -193,3 +193,35 @@ func TestUnprepareCDIFails(t *testing.T) {
 		})
 	}
 }
+
+// The Unprepare of a claim of mode fs of cxl.nri.io that failed after its
+// node mount was unmounted: the claim stays UNPREPARING with its CDI device
+// (CDIUnpreparing) without the mount that is gone, the CDI spec still
+// writes, so the next Prepare and a start succeed, and kubelet's retry
+// finishes the release.
+func TestUnprepareFailedAfterUnmount(t *testing.T) {
+	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec(), pmemSpec()})
+	e.formatPmem(serialPmem, "ext4")
+	e.mustPrepare(e.local, localClaim("w1", pmemDev, -device.SharesUnlimited, cfgFsRW))
+	mnt := e.local.ClaimInfo("w1").Devices[0].NodeMount
+	e.k.FailCommand("cxl disable-region", syscall.EIO)
+	wantErrText(t, e.unprepare(e.local, "w1"), "error freeing devices: claim demo/claim-w1: ")
+	e.wantState(e.local, "w1", state.PreparationUnpreparing)
+	if mi, err := e.k.Kernel().Mounted(mnt); err != nil || mi != nil {
+		t.Fatalf("node mount %s: %+v %v", mnt, mi, err)
+	}
+	e.mustPrepare(e.local, localClaim("u2", localDev, envBlockSize))
+	cd := e.cdiDevice(e.local, "claim-w1-0")
+	hasEnv(t, cd, "CXL_CLAIM_w1_0=1")
+	if len(cd.ContainerEdits.Mounts) != 0 {
+		t.Fatalf("the CDI device of the claim mounts %+v", cd.ContainerEdits.Mounts)
+	}
+	e.restart()
+	e.wantState(e.local, "w1", state.PreparationUnpreparing)
+	if e.cdiDevice(e.local, "claim-w1-0") == nil || e.cdiDevice(e.local, "claim-u2-0") == nil {
+		t.Fatalf("CDI devices after a start %v", e.cdiNames(e.local))
+	}
+	e.mustUnprepare(e.local, "w1")
+	e.mustUnprepare(e.local, "u2")
+	e.wantClean()
+}

@@ -35,8 +35,10 @@ import (
 // result n of every claim that the driver has prepared, but companion
 // claims and claims whose devices did not verify at a start: the result
 // marker CXL_CLAIM_<uid>_<n>, the environment of the result's memory
-// (api.Env), the device node of a dax or block device and the bind mount of
-// the node mount of an fs device. It is built from the records (not from
+// (api.Env), the device node of a dax or block device (none of a dax
+// device that is gone) and the bind mount of the node mount of an fs device
+// (none for the kept device of an UNPREPARING claim whose node mount a
+// failed release unmounted). It is built from the records (not from
 // the existing file), so it is right also after a restart, and the same
 // for both drivers but its kind and file name.
 
@@ -108,7 +110,8 @@ func cdiClaims(prep *state.Preparation, pending string, unpreparing bool) bool {
 }
 
 // buildCDISpec returns the CDI spec of the kind of the claims of the driver
-// in doc that cdiClaims takes.
+// in doc that cdiClaims takes, and an error for a PREPARED or pending claim
+// with a device of mode fs that has no node mount.
 func buildCDISpec(doc *store.Document, driver, kind string, opts store.ResultOptions, pending string, unpreparing bool) (*cdiSpecs.Spec, error) {
 	spec := &cdiSpecs.Spec{Kind: kind}
 	byUID := map[string]*state.Preparation{}
@@ -127,10 +130,24 @@ func buildCDISpec(doc *store.Document, driver, kind string, opts store.ResultOpt
 		}
 		keys := envKeys{}
 		for i := range info.Devices {
-			spec.Devices = append(spec.Devices, cdiDevice(uid, &info.Devices[i], keys))
+			d := &info.Devices[i]
+			if err := incomplete(d); err != nil && byUID[uid].State != state.PreparationUnpreparing {
+				errs = append(errs, fmt.Errorf("claim %s: %w", byUID[uid].ClaimName, err))
+				continue
+			}
+			spec.Devices = append(spec.Devices, cdiDevice(uid, d, keys))
 		}
 	}
 	return spec, errors.Join(errs...)
+}
+
+// incomplete returns an error if a prepared device of mode fs has no node
+// mount for its CDI mount.
+func incomplete(d *state.DeviceInfo) error {
+	if d.Persistent && d.Mode == api.ModeFs && d.NodeMount == "" {
+		return fmt.Errorf("result %d: no node mount", d.Result)
+	}
+	return nil
 }
 
 // cdiDevice returns the CDI device of a prepared device of the claim uid,
@@ -146,7 +163,7 @@ func cdiDevice(uid string, d *state.DeviceInfo, keys envKeys) cdiSpecs.Device {
 		edits.DeviceNodes = []*cdiSpecs.DeviceNode{DaxDeviceNode(d.DaxDevice, d.DaxMajor, d.DaxMinor, d.ReadOnly)}
 	case d.Persistent && d.Mode == api.ModeBlock:
 		edits.DeviceNodes = []*cdiSpecs.DeviceNode{BlockDeviceNode(d.BlockDevice, d.BlockMajor, d.BlockMinor, d.ReadOnly)}
-	case d.Persistent && d.Mode == api.ModeFs:
+	case d.Persistent && d.Mode == api.ModeFs && d.NodeMount != "":
 		edits.Mounts = []*cdiSpecs.Mount{FsCDIMount(d.NodeMount, d.Path, d.ReadOnly)}
 	}
 	edits.Env = api.EnvList(env)
