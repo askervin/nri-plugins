@@ -207,7 +207,7 @@ test-cxl:
 GOSTATS_GATE      ?=
 GOSTATS_CXL_FLAGS ?= -r -max-lines 30000 -max-cyclo15 10 -max-cyclo30 0 -keep persistent.go \
                      -max-mutexes 10 -max-access-structs 6 -keep-access views.go
-GOSTATS_KERNEL_FLAGS ?= -max-cyclo15 3 -max-cyclo30 0
+GOSTATS_KERNEL_FLAGS ?= -max-cyclo15 2 -max-cyclo30 0
 
 gostats-cxl:
 	$(Q)$(GO_CMD) run ./scripts/hack/gostats $(GOSTATS_GATE) $(GOSTATS_CXL_FLAGS) ./cmd/plugins/dra-driver-cxl
