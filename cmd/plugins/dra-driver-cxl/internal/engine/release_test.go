@@ -16,6 +16,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -323,5 +324,27 @@ func TestReleaseKeepsNodeMountOfBusyCompanion(t *testing.T) {
 	v.f.SetBusy(target, false)
 	v.mustUnprepare(poolDriver, "c")
 	v.mustNotBeMounted("after the Unprepare again of c", mnt, target)
+	v.clean("unprepared")
+}
+
+// The release of a persistent grant whose region a failed release left
+// disabled waits for no holder of its recorded block device when that name
+// is another memdev's block device now: the mount of the other memdev does
+// not fail it.
+func TestReleaseRecordedBlockDeviceOfAnother(t *testing.T) {
+	v := twoPmemEnv(t)
+	v.mustPrepare(poolDriver, "q", qGrant("q", 0))
+	recorded := *v.grant("q", 0).Got.BlockDevice
+	v.f.FailCommand("cxl destroy-region", errors.New("cxl region: cmd_destroy_region: failed"))
+	if err := v.unprepare(poolDriver, "q"); err == nil {
+		t.Fatal("the release succeeded")
+	}
+	v.check("release failed")
+	v.mustPrepare(localDriver, "p", localPmemReq("p", 0, state.ModeFs, false, ""))
+	if bd := v.grant("p", 0).Got.BlockDevice; bd.Name != recorded.Name || bd.Dev == recorded.Dev {
+		t.Fatalf("block device of p %+v, of q %+v: not the same name with other numbers", bd, recorded)
+	}
+	v.mustUnprepare(poolDriver, "q")
+	v.mustUnprepare(localDriver, "p")
 	v.clean("unprepared")
 }

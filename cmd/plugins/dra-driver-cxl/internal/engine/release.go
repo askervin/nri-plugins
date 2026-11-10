@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -1274,6 +1275,10 @@ func (e *Engine) blockDeviceOf(g *state.Grant, call *releaseCall) string {
 	s, claim := serialText(g.Serial), e.claimNameOf(g.Ref)
 	cur := e.currentBlockDevice(g.Serial)
 	switch {
+	case cur == "" && e.hasRegion(g.Serial) && e.otherBlockDevice(g.Got.BlockDevice):
+		e.logf(g.Asked.Source, "claim %s: %v; %s is another block device now: the release of device %s waits for no holder of it",
+			claim, err, recorded, s)
+		return ""
 	case cur == "" && e.hasRegion(g.Serial):
 		e.warnf(g.Asked.Source, "claim %s: %v; the block device of the region of device %s is not known now: its release waits for the holders of %s as prepared",
 			claim, err, s, recorded)
@@ -1285,6 +1290,13 @@ func (e *Engine) blockDeviceOf(g *state.Grant, call *releaseCall) string {
 			claim, err, s, cur, recorded)
 	}
 	return cur
+}
+
+// otherBlockDevice tells whether the name of the recorded block device bd
+// is a block device with other numbers now.
+func (e *Engine) otherBlockDevice(bd *state.BlockDevice) bool {
+	major, minor, _, err := e.k.BlockDeviceInfo(filepath.Base(bd.Name))
+	return err == nil && (major != bd.Dev.Major || minor != bd.Dev.Minor)
 }
 
 // hasRegion tells whether the memdev with the serial has a region.

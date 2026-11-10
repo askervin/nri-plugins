@@ -508,23 +508,6 @@ var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{
 			return o.mode == state.ModeFs && ss.prep == state.PreparationUnpreparing && ss.grant == state.GrantReleasing && !ss.user
 		})
 	},
-	// F5: the release of a persistent grant waits for no holder of the
-	// block device by its recorded name; after its region was disabled
-	// (a failed cxl destroy-region), the name may be the block device of
-	// another persistent memdev, whose mount then fails the release: "is
-	// still in use".
-	"F5": func(s *coreState, ca *coreAction) bool {
-		md := coreSlots[ca.slot].md
-		if ca.verb != "unprepare" || coreMemdevs[md].kind != state.KindPersistent || s.mds[md].kreg != kregOff {
-			return false
-		}
-		for o, d := range coreMemdevs {
-			if o != md && d.kind == state.KindPersistent && s.mds[o].kreg == kregOn {
-				return true
-			}
-		}
-		return false
-	},
 	// F6: the retry of a release that failed at cxl destroy-region keeps
 	// the region idle when a region of another memdev came above it
 	// meanwhile (local persistent), the record OWNED and the kernel region
