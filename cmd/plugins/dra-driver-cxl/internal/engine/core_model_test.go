@@ -480,17 +480,6 @@ var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{
 		return ca.verb == "prepare" && s.arm > 0 && coreArms[s.arm-1].cut != "" && s.mds[md].kreg == kregOff &&
 			s.regionsAbove(md)
 	},
-	// F3: the realised grant of a claim of another boot (PREPARED_STALE,
-	// its Got cleared) counts as a use of its persistent device; with no
-	// node mount its access is "", and a Prepare of mode fs next to it is
-	// refused (a stale writer: "it is mounted read-write with access  on
-	// this node"; a stale reader and a new writer: "it is mounted with
-	// access  only on this node"), a block writer as not alone.
-	"F3": func(s *coreState, ca *coreAction) bool {
-		return s.persistentNextTo(ca, func(_ *coreSlot, ss coreSlotState) bool {
-			return ss.prep == state.PreparationStale && ss.grant == state.GrantRealised
-		})
-	},
 	// F2: the grant of a claim of mode fs whose release failed or was cut
 	// (UNPREPARING, RELEASING) counts as a use of the device after its
 	// node mount is gone, with access "": a Prepare of mode fs is refused

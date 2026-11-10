@@ -449,3 +449,33 @@ func TestPersistentReleasingUses(t *testing.T) {
 		}
 	})
 }
+
+// A claim of mode fs of another boot (PREPARED_STALE) has nothing mounted:
+// the one-node rules do not count it, a new reader next to a stale writer
+// and a new writer next to a stale reader are prepared.
+func TestPersistentStaleClaimIsNoUse(t *testing.T) {
+	for _, c := range []struct {
+		name         string
+		stale, newer bool
+		want         state.MountState
+	}{
+		{"stale writer, new reader", false, true, state.MountedRO},
+		{"stale reader, new writer", true, false, state.MountedRW},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib})
+			v.formatPmem("mem0", "ext4")
+			v.mustPrepare(localDriver, "old", localPmemReq("old", 0, state.ModeFs, c.stale, ""))
+			v.f.Reboot()
+			v.restart()
+			wantPreparation(t, v, localDriver, "old", state.PreparationStale)
+			v.mustPrepare(localDriver, "new", localPmemReq("new", 0, state.ModeFs, c.newer, ""))
+			if m := v.mount("new", 0); m.State != c.want {
+				t.Fatalf("node mount %+v, want %s", m, c.want)
+			}
+			v.mustUnprepare(localDriver, "old")
+			v.mustUnprepare(localDriver, "new")
+			v.clean("unprepared")
+		})
+	}
+}
