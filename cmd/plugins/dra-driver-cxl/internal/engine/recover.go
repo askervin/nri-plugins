@@ -750,11 +750,7 @@ func (e *Engine) unpreparedUses(serial state.Serial) []use {
 	}
 	var out []use
 	for _, u := range usesOf(r, serial) {
-		p, g := r.PreparationOf(u.ref), r.Grant(u.ref)
-		if p == nil || p.State != state.PreparationUnpreparing || g == nil {
-			continue
-		}
-		if m := r.MountOf(g); u.mode == state.ModeBlock || (m != nil && slices.Contains(m.Users, u.ref)) {
+		if p := r.PreparationOf(u.ref); p != nil && p.State == state.PreparationUnpreparing {
 			out = append(out, u)
 		}
 	}
