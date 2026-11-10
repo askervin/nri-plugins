@@ -422,25 +422,7 @@ func (s *coreState) requestEnabled(ca *coreAction) bool {
 // coreFindings are the findings of the core model that are not fixed yet,
 // by name: each tells whether a request runs into it. The requests that do
 // are not generated unless -core.known leaves the finding out.
-var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{
-	// F11: a start downgrades the node mount of a pool persistent memdev
-	// that the writer of an unfinished Unprepare still lists, when a reader
-	// of a prepared claim has it too (the unfinished uses are counted for
-	// local memdevs only): D1 and D2 keep it read-write.
-	"F11": func(s *coreState, ca *coreAction) bool {
-		if ca.verb != "restart" && (ca.verb != "arm" || coreArms[ca.arm-1].cut == "") {
-			return false
-		}
-		for i, ss := range s.slots {
-			sl := &coreSlots[i]
-			if coreMemdevs[sl.md].source == state.SourcePool && sl.mode == state.ModeFs && !sl.readOnly &&
-				ss.prep == state.PreparationUnpreparing && ss.grant == state.GrantReleasing && ss.user {
-				return true
-			}
-		}
-		return false
-	},
-}
+var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{}
 
 // coreAvoid are the findings whose requests are not generated.
 var coreAvoid = map[string]bool{}

@@ -739,13 +739,13 @@ func (e *Engine) preparedUses(serial state.Serial) []use {
 	return out
 }
 
-// unpreparedUses returns the uses of the local memdev with the serial by the
+// unpreparedUses returns the uses of the memdev with the serial by the
 // grants of claims whose Unprepare did not finish (UNPREPARING) that still
 // use their node mount: a start leaves them as they are, and a writer of
 // them keeps the device read-write until kubelet's retry of the Unprepare.
 func (e *Engine) unpreparedUses(serial state.Serial) []use {
 	r := e.records()
-	if m := r.Memdev(serial); m == nil || m.Source != state.SourceLocal {
+	if m := r.Memdev(serial); m == nil {
 		return nil
 	}
 	var out []use

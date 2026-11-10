@@ -1049,3 +1049,30 @@ func TestRecoverCutPrepareOnForeignBelow(t *testing.T) {
 	dropRaw(t, v, below)
 	finish(t, v, "finished")
 }
+
+// A start keeps the node mount of a pool persistent device read-write
+// while the writer of an Unprepare that a stop cut still uses it, next to a
+// reader of a claim prepared after the stop.
+func TestRecoverPoolUnfinishedWriterKeepsMount(t *testing.T) {
+	v := pmemEnv(t, "ext4")
+	v.mustPrepare(poolDriver, "w", fsGrant("w", false, ""))
+	v.cutAfter(1)
+	if !v.cut(func() { _ = v.unprepare(poolDriver, "w") }) {
+		t.Fatal("not cut")
+	}
+	v.restart()
+	v.mustPrepare(poolDriver, "r", fsGrant("r", true, ""))
+	v.mustUnprepare(poolDriver, "r")
+	v.mustPrepare(poolDriver, "r", fsGrant("r", true, ""))
+	v.restart()
+	if g := v.grant("w", 0); g.State != state.GrantReleasing || !slices.Contains(v.mount("r", 0).Users, g.Ref) {
+		t.Fatalf("grant %+v, node mount %+v", g, v.mount("r", 0))
+	}
+	m := v.mount("r", 0)
+	if mi, err := v.f.Kernel().Mounted(m.Path); err != nil || mi == nil || mi.SuperReadOnly() || m.State != state.MountedRW {
+		t.Fatalf("node mount %+v, in the kernel %+v (%v)", m, mi, err)
+	}
+	v.mustUnprepare(poolDriver, "w")
+	v.mustUnprepare(poolDriver, "r")
+	v.clean("unprepared")
+}
