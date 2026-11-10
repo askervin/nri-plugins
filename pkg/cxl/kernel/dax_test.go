@@ -17,9 +17,11 @@ package kernel_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -364,3 +366,144 @@ func TestDaxDefaultKmem(t *testing.T) {
 }
 
 func itoa(n uint64) string { return strconv.FormatUint(n, 10) }
+
+// during runs read in a goroutine and returns whether it returned within
+// 200 ms, and a channel that is closed when it has returned.
+func during(read func()) (bool, <-chan struct{}) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		read()
+	}()
+	select {
+	case <-done:
+		return true, done
+	case <-time.After(200 * time.Millisecond):
+		return false, done
+	}
+}
+
+// A read of the mappings of a dax device waits for a write of the size or
+// of a mapping of a dax device, which may remove a mapping: the kernel
+// would wait for the reader inside the files of the mapping while the
+// reader waits for the writer (drivers/dax/bus.c). The read then has the
+// memory after the write.
+func TestResizeDaxDeviceExcludesMappingReads(t *testing.T) {
+	f, k := sliceNode(t)
+	ctx := context.Background()
+	noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 128*mib))
+	first := kernel.Range{Start: window0, End: window0 + 128*mib - 1}
+	var got []kernel.Range
+	var returned bool
+	var done <-chan struct{}
+	f.Before("write bus/dax/devices/dax0.0/size 0", func() {
+		returned, done = during(func() { got, _ = k.DaxDeviceRanges("dax0.0") })
+	})
+	noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 0))
+	<-done
+	if returned || got != nil {
+		t.Fatalf("a read of the mappings during the shrink: returned inside it %v, memory %v", returned, got)
+	}
+	noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 128*mib))
+	f.Before("write bus/dax/devices/dax0.1/mapping", func() {
+		returned, done = during(func() { got, _ = k.DaxDeviceRanges("dax0.0") })
+	})
+	second := kernel.Range{Start: window0 + 256*mib, End: window0 + 384*mib - 1}
+	dax, err := k.CreateDaxDeviceRanges(ctx, "region0", []kernel.Range{second})
+	noErr(t, err)
+	<-done
+	if dax != "dax0.1" || returned || !reflect.DeepEqual(got, []kernel.Range{first}) {
+		t.Fatalf("a read of the mappings during the mapping of %s: returned inside it %v, memory %v", dax, returned, got)
+	}
+}
+
+// The topology reads no mapping of a dax device: a scan during a write of
+// the size of a dax device does not wait for it, while a full observation,
+// which reads the memory of the dax devices, waits and has the memory
+// after the write.
+func TestObserveTopologyDuringDaxWrite(t *testing.T) {
+	f, k := sliceNode(t)
+	ctx := context.Background()
+	noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 128*mib))
+	var top, full *kernel.Snapshot
+	var topErr, fullErr error
+	var topReturned, fullReturned bool
+	var topDone, fullDone <-chan struct{}
+	f.Before("write bus/dax/devices/dax0.0/size 0", func() {
+		fullReturned, fullDone = during(func() { full, fullErr = k.Observe(ctx) })
+		topReturned, topDone = during(func() { top, topErr = k.ObserveTopology(ctx) })
+	})
+	noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 0))
+	<-topDone
+	<-fullDone
+	noErr(t, topErr)
+	noErr(t, fullErr)
+	if !topReturned || fullReturned {
+		t.Fatalf("during the shrink of dax0.0: the topology returned %v, the full observation %v", topReturned, fullReturned)
+	}
+	if d := top.DaxDevice("dax0.0"); d.Size != 128*mib || d.Ranges != nil || d.WholeBlocks != 0 {
+		t.Fatalf("dax0.0 of the topology %+v, expected its size before the shrink and no memory", d)
+	}
+	if d := full.DaxDevice("dax0.0"); d.Ranges != nil || d.WholeBlocks != 0 {
+		t.Fatalf("dax0.0 of the full observation %+v, expected no memory", d)
+	}
+}
+
+// The mappings of a dax device that the size writes of another goroutine
+// change are read before or after each write, never in between: its
+// memory is none or all of the first slice; the observations of the node
+// run beside them without an error.
+func TestDaxMappingsRace(t *testing.T) {
+	f, k := sliceNode(t)
+	ctx := context.Background()
+	noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 0))
+	first := []kernel.Range{{Start: window0, End: window0 + 128*mib - 1}}
+	second := []kernel.Range{{Start: window0 + 256*mib, End: window0 + 384*mib - 1}}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	loop := func(fn func() error) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if err := fn(); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+	}
+	loop(func() error {
+		if err := k.ResizeDaxDevice(ctx, "dax0.0", 128*mib); err != nil {
+			return err
+		}
+		dax, err := k.CreateDaxDeviceRanges(ctx, "region0", second)
+		if err != nil {
+			return err
+		}
+		if err := k.DeleteDaxDevice(ctx, "region0", dax); err != nil {
+			return err
+		}
+		return k.ResizeDaxDevice(ctx, "dax0.0", 0)
+	})
+	loop(func() error {
+		got, err := k.DaxDeviceRanges("dax0.0")
+		if err != nil || (got != nil && !reflect.DeepEqual(got, first)) {
+			return fmt.Errorf("memory of dax0.0 %v, %v", got, err)
+		}
+		return nil
+	})
+	loop(func() error { _, err := k.Observe(ctx); return err })
+	loop(func() error { _, err := k.ObserveTopology(ctx); return err })
+	time.Sleep(2 * time.Second)
+	close(stop)
+	wg.Wait()
+	if s := f.DaxSize("dax0.0"); s != 0 && s != 128*mib {
+		t.Fatalf("dax0.0 has %d bytes", s)
+	}
+}

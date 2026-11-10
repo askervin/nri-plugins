@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 )
 
@@ -54,6 +55,18 @@ import (
 // Waits: the driver link appears before the probe has finished: kmem is
 // still adding the memory blocks (WaitDaxBlocks), device_dax has not added
 // the character device yet (the opens of Sys retry ENXIO).
+
+// daxMappings orders, in this process, the sysfs writes that may remove a
+// mappingN of a dax device (size, mapping) against the reads of the
+// mappings: the kernel removes a mapping with dax_region_rwsem held and
+// waits for the readers inside its files, while a reader of mappingN/start
+// or end waits for that rwsem inside the file (drivers/dax/bus.c), and
+// neither would end. The writes hold it exclusively and the reads shared,
+// each around its sysfs operations only: a leaf lock. It is not reentrant:
+// writeDax, the only exclusive holder, runs nothing but the one write of
+// WriteFile under it, and DaxDeviceRanges, the only shared holder, calls
+// nothing that takes it again.
+var daxMappings sync.RWMutex
 
 // Dax drivers.
 const (
@@ -231,6 +244,13 @@ func (k *Kernel) DaxDevices(region string) []string {
 // DaxDevice returns the observation of a dax device, an error of kind
 // ErrNotFound if it does not exist.
 func (k *Kernel) DaxDevice(dax string) (DaxDeviceInfo, error) {
+	return k.daxDevice(dax, true)
+}
+
+// daxDevice returns the observation of a dax device, with its memory
+// ranges and memory blocks if memory is set; an error of kind ErrNotFound
+// if it does not exist.
+func (k *Kernel) daxDevice(dax string, memory bool) (DaxDeviceInfo, error) {
 	d := DaxDeviceInfo{Name: dax, TargetNode: -1}
 	real, err := filepath.EvalSymlinks(k.daxDev(dax))
 	if err != nil {
@@ -241,9 +261,12 @@ func (k *Kernel) DaxDevice(dax string) (DaxDeviceInfo, error) {
 	d.Driver = k.DaxDriver(dax)
 	d.Size, _ = k.DaxDeviceSize(dax)
 	d.State = daxState(d.Driver, d.Size)
-	d.Ranges, _ = k.DaxDeviceRanges(dax)
 	d.Major, d.Minor, _ = k.DaxDevNumbers(dax)
 	d.TargetNode = k.TargetNode(dax)
+	if !memory {
+		return d, nil
+	}
+	d.Ranges, _ = k.DaxDeviceRanges(dax)
 	if bs, err := k.BlockSize(); err == nil {
 		d.Blocks, d.WholeBlocks, _ = k.daxBlocks(dax, bs)
 	}
@@ -291,6 +314,8 @@ func (k *Kernel) DaxDeviceSize(dax string) (uint64, error) {
 // before 5.10) the device has one range from its resource and size. A
 // device of size 0 has none.
 func (k *Kernel) DaxDeviceRanges(dax string) ([]Range, error) {
+	daxMappings.RLock()
+	defer daxMappings.RUnlock()
 	dirs, _ := filepath.Glob(k.daxDev(dax, "mapping[0-9]*"))
 	if len(dirs) == 0 {
 		size, err := k.DaxDeviceSize(dax)
@@ -503,7 +528,7 @@ func (k *Kernel) ResizeDaxDevice(ctx context.Context, dax string, size uint64) e
 	if err := k.UnbindDax(ctx, dax); err != nil {
 		return err
 	}
-	if err := k.writeFile(k.daxDev(dax, "size"), strconv.FormatUint(size, 10)); err != nil {
+	if err := k.writeDax(dax, "size", strconv.FormatUint(size, 10)); err != nil {
 		return noRoom(fmt.Errorf("%s: set size %d: %w", dax, size, err))
 	}
 	got, err := k.DaxDeviceSize(dax)
@@ -515,6 +540,14 @@ func (k *Kernel) ResizeDaxDevice(ctx context.Context, dax string, size uint64) e
 	}
 	k.logf("%s: size %d", dax, size)
 	return nil
+}
+
+// writeDax writes the value to a sysfs attribute of a dax device that may
+// remove a mapping of the device, exclusively of the reads of mappings.
+func (k *Kernel) writeDax(dax, attr, val string) error {
+	daxMappings.Lock()
+	defer daxMappings.Unlock()
+	return k.writeFile(k.daxDev(dax, attr), val)
 }
 
 // CreateDaxDevice creates a dax device of size bytes in the dax region of a
@@ -552,7 +585,7 @@ func (k *Kernel) CreateDaxDeviceRanges(ctx context.Context, region string, range
 		return "", err
 	}
 	for _, r := range ranges {
-		if err = k.writeFile(k.daxDev(dax, "mapping"), r.String()); err != nil {
+		if err = k.writeDax(dax, "mapping", r.String()); err != nil {
 			err = noRoom(fmt.Errorf("%s: map %s: %w", dax, r, err))
 			break
 		}

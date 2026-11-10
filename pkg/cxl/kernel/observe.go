@@ -123,11 +123,12 @@ func (k *Kernel) Observe(ctx context.Context) (*Snapshot, error) {
 // ObserveTopology returns a snapshot of the memory block size, the memdevs,
 // the regions with their dax devices and memory blocks, and the NUMA nodes
 // of the node, read from sysfs only: it opens no device and reads no
-// mounts, and the snapshot has no ports, dax regions, pmem, block devices,
-// mounts or boot id. Its error is that of reading the CXL bus, of a memdev,
-// a region or a NUMA node of which a fact cannot be read, of a serial that
-// is not 0x<hex>, of a memory block size that cannot be read on a node
-// with regions, or the error of the context when it ends.
+// mounts or mappings of dax devices, and the snapshot has no ports, dax
+// regions, pmem, block devices, mounts, boot id, or memory ranges and
+// memory blocks of dax devices. Its error is that of reading the CXL bus,
+// of a memdev, a region or a NUMA node of which a fact cannot be read, of
+// a serial that is not 0x<hex>, of a memory block size that cannot be read
+// on a node with regions, or the error of the context when it ends.
 func (k *Kernel) ObserveTopology(ctx context.Context) (*Snapshot, error) {
 	if _, err := os.ReadDir(k.cxlDev()); err != nil {
 		return nil, err
@@ -154,8 +155,9 @@ func (k *Kernel) ObserveTopology(ctx context.Context) (*Snapshot, error) {
 
 // observeSysfs adds the memory block size, the memdevs, the regions with
 // their dax devices and memory blocks, and the NUMA nodes to the snapshot
-// s, and with full the ports of the memdevs, the dax regions and the nd
-// regions. Its error is the error of the context when it ends.
+// s, and with full the ports of the memdevs, the dax regions, the nd
+// regions and the memory of the dax devices. Its error is the error of the
+// context when it ends.
 func (k *Kernel) observeSysfs(ctx context.Context, s *Snapshot, problem func(string, ...any), full bool) error {
 	var err error
 	if s.BlockSize, err = k.BlockSize(); err != nil {
@@ -221,7 +223,8 @@ func (k *Kernel) observePorts(s *Snapshot, ep string, seen map[string]bool, prob
 }
 
 // observeRegion adds the dax devices and the memory blocks of the region r
-// to the snapshot s, and with full its dax region and its nd region.
+// to the snapshot s, and with full its dax region, its nd region and the
+// memory of its dax devices.
 func (k *Kernel) observeRegion(s *Snapshot, r RegionInfo, problem func(string, ...any), full bool) {
 	if r.DaxRegion != "" && full {
 		if d, err := k.DaxRegion(r.Name); err == nil {
@@ -232,7 +235,7 @@ func (k *Kernel) observeRegion(s *Snapshot, r RegionInfo, problem func(string, .
 	}
 	if r.DaxRegion != "" {
 		for _, dax := range k.DaxDevices(r.Name) {
-			if d, err := k.DaxDevice(dax); err == nil {
+			if d, err := k.daxDevice(dax, full); err == nil {
 				s.DaxDevices = append(s.DaxDevices, d)
 			} else {
 				problem("%v", err)

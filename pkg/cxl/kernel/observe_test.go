@@ -283,10 +283,19 @@ type noSys struct{ kernel.Sys }
 // The topology of a node is read from sysfs only: no system call (no
 // device is opened) and nothing of procfs (no mounts, no boot id). Its
 // objects are those of a full observation, without the ports, dax regions,
-// pmem, block devices, loop devices, mounts and superblocks.
+// pmem, block devices, loop devices, mounts and superblocks, and without
+// the memory ranges and memory blocks of the dax devices.
 func TestObserveTopology(t *testing.T) {
 	f, k, _ := mixedNode(t)
 	full := observe(t, k)
+	var daxes []kernel.DaxDeviceInfo
+	for _, d := range full.DaxDevices {
+		if len(d.Ranges) == 0 || d.WholeBlocks == 0 {
+			t.Fatalf("full observation of %s without its memory: %+v", d.Name, d)
+		}
+		d.Ranges, d.Blocks, d.WholeBlocks = nil, nil, 0
+		daxes = append(daxes, d)
+	}
 	f.HideProc(true)
 	k.Sys = noSys{}
 	k.DevRoot = filepath.Join(t.TempDir(), "none")
@@ -299,7 +308,7 @@ func TestObserveTopology(t *testing.T) {
 		"block size":   s.BlockSize == full.BlockSize,
 		"memdevs":      reflect.DeepEqual(s.Memdevs, full.Memdevs),
 		"regions":      reflect.DeepEqual(s.Regions, full.Regions),
-		"dax devices":  reflect.DeepEqual(s.DaxDevices, full.DaxDevices),
+		"dax devices":  len(daxes) == 2 && reflect.DeepEqual(s.DaxDevices, daxes),
 		"blocks":       reflect.DeepEqual(s.Blocks, full.Blocks),
 		"NUMA nodes":   reflect.DeepEqual(s.NumaNodes, full.NumaNodes),
 		"the lookups":  s.Memdev(serial1).Name == "mem1" && s.Region("region2").State == kernel.RegionHollow,
