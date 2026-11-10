@@ -58,24 +58,24 @@
 # cache charged to its pod is less than 5% of the model and that of the
 # node grows by less than half of it: no copy of the weights exists.
 # Cached readers: the first one on a node is charged the model (90% at
-# least), grows the page cache of its node by it and pulls it from CXL
-# through the loop device (90% at least of its block reads), the second
-# one on VM2 is charged less than 5%, grows the page cache by less than
-# half the model and reads less than 5% from CXL (one copy per node); the
-# model is resident in the page cache of the node (fincore), and while a
-# cached reader generates 128 tokens the present pages of its mappings are
-# all in System RAM and its loop device reads less than 1 MiB: inference
-# is served from the page cache of the node, not from CXL. (Presence of
-# every page is not asserted for cached readers: khugepaged may unmap
-# page-cached ranges at any time; block reads of the only path to CXL are
-# the measure.) The mounts, loop devices, environment and CDI devices are
-# what the driver promises, writes under the mount fail, the readers change
-# neither the data nor the labels of the device, and nothing is left at the
-# end. The leases of the dynamic readers, their companion objects, the CDI
-# device of their lease claim and their binds on the node are what the
-# lease protocol promises. In qemu, CXL memory is host RAM mapped into the
-# VMs: timing cannot tell CXL from DRAM, page frames and page cache
-# counters can.
+# least) and pulls it from CXL through the loop device (90% at least of its
+# block reads), and the page cache of its node grows by less than 150% of
+# the model; the second one on VM2 is charged less than 5%, grows the page
+# cache by less than half the model and reads less than 5% from CXL (one
+# copy per node); the model is resident in the page cache of the node
+# (fincore), and while a cached reader generates 128 tokens the present
+# pages of its mappings are all in System RAM and its loop device reads
+# less than 1 MiB: inference is served from the page cache of the node, not
+# from CXL. (Presence of every page is not asserted for cached readers:
+# khugepaged may unmap page-cached ranges at any time; block reads of the
+# only path to CXL are the measure.) The mounts, loop devices, environment
+# and CDI devices are what the driver promises, writes under the mount
+# fail, the readers change neither the data nor the labels of the device,
+# and nothing is left at the end. The leases of the dynamic readers, their
+# companion objects, the CDI device of their lease claim and their binds on
+# the node are what the lease protocol promises. In qemu, CXL memory is
+# host RAM mapped into the VMs: timing cannot tell CXL from DRAM, page
+# frames and page cache counters can.
 #
 # What you will see: VM1 building the erofs image (the first time), the
 # writer on VM1 flashing it into llm0 in about a second, the host finding
@@ -864,9 +864,11 @@ dra-apply "$VM2" <<< "$(dra-lease-template-yaml "$LEASE_TEMPLATE")"
 # Page cache proofs: the page cache charged to the pod of a reader (its
 # first toucher is charged; the warm-up pod already holds the files of the
 # image) is the exact measure of what the reader put there. The page cache
-# of the whole node is a coarse bound only: it moves by tens of MB from
-# things outside the test, while a copy of the model is at least 90% of
-# it, so a growth below 50% still proves that no copy was made.
+# of the whole node is a coarse upper bound only: it moves by tens of MB
+# from things outside the test and grows by less than a copy when the node
+# reclaims older page cache meanwhile, while a copy of the model is at
+# least 90% of it, so a growth below 50% still proves that no copy was
+# made.
 for r in "${DIRECT[@]}"; do
     reader-start "$r"
     # The weights are not copied anywhere.
@@ -892,12 +894,16 @@ for r in "${CACHED[@]}"; do
     reader-start "$r"
     if [ -n "$first" ]; then
         # The first cached reader of a node reads the model into the page
-        # cache of the node, once, and is charged for it.
-        cache-assert "$r" -ge "$LLM_NINETY_PCT" -ge "$LLM_NINETY_PCT" "the first cached reader of the node did not read the model into the page cache"
+        # cache of the node, once, and is charged for it: the charge of
+        # its pod is the measure, the growth of the page cache of the node
+        # an upper bound only.
+        cache-cmp "$POD_FILE" -ge "$LLM_NINETY_PCT" ||
+            error "$r: the page cache charged to its pod is $POD_FILE bytes, less than 90% of the model ($LLM_NINETY_PCT): the first cached reader of the node did not read the model into the page cache"
         # One copy: no second one in the page cache of the pmem block
         # device under the loop device (direct I/O).
         cache-cmp "$CACHE_DELTA" -lt "$LLM_ONE_HALF" ||
             error "$r: the page cache of $(pool-vm-label "$vm") grew by $CACHE_DELTA bytes, not less than 150% of the model ($LLM_ONE_HALF): the model is cached twice"
+        echo "page cache ok: $r: pod $POD_FILE -ge $LLM_NINETY_PCT, node +$CACHE_DELTA -lt $LLM_ONE_HALF"
         # It pulled the model from CXL: the loop device is the only path.
         cache-cmp "$LOOP_READ" -ge "$LLM_NINETY_PCT" ||
             error "$r: ${READER_LOOP[$r]} read $LOOP_READ bytes from CXL, less than 90% of the model ($LLM_NINETY_PCT)"
