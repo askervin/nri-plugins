@@ -51,9 +51,11 @@ import (
 // counts its changes; not started (the scans set the table, nothing is
 // published) and started (every scan is published).
 //
-// Transitions: a scan (at the start, then on udev events and the watch's
-// ticks, one at a time from the list of the pool slices to the publish)
-// sets the table; the generation grows when its devices change.
+// Transitions: a scan (at the start, then on udev events, the watch's
+// ticks and after the Prepares and Unprepares that changed the records,
+// one at a time from the list of the pool slices to the publish) sets the
+// table; the generation grows when its devices change. A publish of an
+// unchanged table writes nothing to the API server.
 //
 // Invariants: a pool device and a HELD memdev are never published as local
 // ones; the devices are sorted by name, so their order is not a change; no

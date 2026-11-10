@@ -36,6 +36,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	coreclientset "k8s.io/client-go/kubernetes"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/yaml"
@@ -127,13 +128,17 @@ type driverEnv struct {
 	fsTypes []string
 	// base are the commands of the fake before those of the drivers.
 	base string
+	// client is the API server of the publisher, nil for none.
+	client coreclientset.Interface
 
-	// mu guards shared and events.
+	// mu guards shared, events and onScan.
 	mu sync.Mutex
 	// shared are the local memdevs configured shared or used shared.
 	shared map[uint64]bool
 	// events are the calls of the fakes of the broker and of NRI, in order.
 	events []string
+	// onScan is called at each scan of the publisher, nil for nothing.
+	onScan func()
 
 	// nodes and hooks are the lender of both drivers (Lender.Set) after
 	// lend, leases the lease claims of cxl.nri.io after setLeases.
@@ -258,12 +263,14 @@ func (e *driverEnv) start() {
 	e.cache, err = cdiapi.NewCache(cdiapi.WithSpecDirs(e.cdiDir), cdiapi.WithAutoRefresh(false))
 	mustOK(t, err)
 	e.pub, err = NewPublisher(PublishOptions{
-		Config:    e.publishConfig(),
-		NodeName:  envNode,
-		Scan:      func(context.Context) (*kernel.Snapshot, error) { return e.detected(), nil },
-		Store:     st,
-		Probes:    e.eng.Probes,
-		BlockSize: e.k.Kernel().BlockSize,
+		Config:      e.publishConfig(),
+		NodeName:    envNode,
+		Client:      e.client,
+		Scan:        e.scan,
+		PoolSerials: func() map[uint64]bool { return e.pool.Serials() },
+		Store:       st,
+		Probes:      e.eng.Probes,
+		BlockSize:   e.k.Kernel().BlockSize,
 	})
 	mustOK(t, err)
 	e.local, err = New(Options{
@@ -285,7 +292,7 @@ func (e *driverEnv) start() {
 	})
 	mustOK(t, err)
 	e.pool, err = New(Options{Rules: pool, Store: st, Engine: e.eng, NodeName: envNode, BootID: e.k.BootID(),
-		DevRoot: e.k.DevRoot(), CDI: e.cache})
+		DevRoot: e.k.DevRoot(), CDI: e.cache, Publisher: e.pub})
 	mustOK(t, err)
 	if e.lent {
 		e.local.Lender().Set(e.nodeLender(), e.hooks)
@@ -341,6 +348,25 @@ func (e *driverEnv) publishConfig() PublishConfig {
 		cfg.SharedDevices = append(cfg.SharedDevices, fmt.Sprintf("0x%x", s))
 	}
 	return cfg
+}
+
+// scan returns the observation of a scan of the publisher (detected),
+// after onScan.
+func (e *driverEnv) scan(context.Context) (*kernel.Snapshot, error) {
+	e.mu.Lock()
+	onScan := e.onScan
+	e.mu.Unlock()
+	if onScan != nil {
+		onScan()
+	}
+	return e.detected(), nil
+}
+
+// setOnScan sets the function called at each scan of the publisher.
+func (e *driverEnv) setOnScan(fn func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onScan = fn
 }
 
 // detected returns the observation of the node that a scan makes: the

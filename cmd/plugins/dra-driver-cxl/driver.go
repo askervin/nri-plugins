@@ -435,32 +435,17 @@ type frontEnds struct {
 // newFrontEnds returns the DRA drivers of rules over the store st and the
 // device engine devices: cxl.nri.io, which publishes the node's
 // ResourceSlice of the devices of the kernel of the engine, and the pool
-// driver unless it is disabled (rules.pool nil).
+// driver unless it is disabled (rules.pool nil). The Prepares and
+// Unprepares of both have the publisher rescan.
 func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, bootID string, st *store.Store, devices *deviceEngine, watcher *provenance.Watcher, rules driverRules) (*frontEnds, error) {
 	fe := &frontEnds{watcher: watcher}
-	if rules.pool != nil {
-		fe.poolDir = filepath.Join(filepath.Dir(config.KubeletPluginDir), cxlFlags.PoolDriverName)
-		pool, err := dra.New(dra.Options{
-			Rules:    *rules.pool,
-			Store:    st,
-			Engine:   devices.Engine,
-			NodeName: cxlFlags.NodeName,
-			BootID:   bootID,
-			DevRoot:  devices.k.DevRoot,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("pool driver: %w", err)
-		}
-		fe.pool = pool
-		devices.setLender(state.SourcePool, pool.Lender())
-	}
 	publisher, err := dra.NewPublisher(dra.PublishOptions{
 		Config:      driverConfig.publishConfig(),
 		NodeName:    cxlFlags.NodeName,
 		Client:      config.Client,
 		Scan:        driverConfig.scanFunc(devices.k),
 		Watcher:     watcher,
-		PoolSerials: fe.pool.Serials,
+		PoolSerials: func() map[uint64]bool { return fe.pool.Serials() },
 		Store:       st,
 		Probes:      devices.Probes,
 		BlockSize:   devices.k.BlockSize,
@@ -469,6 +454,23 @@ func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Driver
 		return nil, err
 	}
 	fe.publisher = publisher
+	if rules.pool != nil {
+		fe.poolDir = filepath.Join(filepath.Dir(config.KubeletPluginDir), cxlFlags.PoolDriverName)
+		pool, err := dra.New(dra.Options{
+			Rules:     *rules.pool,
+			Store:     st,
+			Engine:    devices.Engine,
+			NodeName:  cxlFlags.NodeName,
+			BootID:    bootID,
+			DevRoot:   devices.k.DevRoot,
+			Publisher: fe.publisher,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("pool driver: %w", err)
+		}
+		fe.pool = pool
+		devices.setLender(state.SourcePool, pool.Lender())
+	}
 	local, err := dra.New(dra.Options{
 		Rules:     rules.local,
 		Store:     st,

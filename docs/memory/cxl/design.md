@@ -31,7 +31,10 @@ One process on every node has these parts:
   devices, the claim status that the pool controller writes for pool
   devices), where their node mounts live, and whether they publish.
 - The publisher, which writes the ResourceSlice of `cxl.nri.io` for the
-  node. The pool driver publishes nothing: the pool controller does.
+  node. It scans the node after udev events, after the Prepares and
+  Unprepares of both drivers that changed the records, and on the ticks
+  of the provenance watch, and writes the slice only when its devices
+  changed. The pool driver publishes nothing: the pool controller does.
 - The device engine, the one owner of every CXL kernel object that the
   driver makes on the node, for both drivers: regions, dax devices and
   their drivers, memory blocks, namespaces, block device flags, node

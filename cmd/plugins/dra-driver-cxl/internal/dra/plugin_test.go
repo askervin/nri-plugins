@@ -123,26 +123,6 @@ func TestWaitNRI(t *testing.T) {
 	e.wantClean()
 }
 
-// Prepares and Unprepares of cxl.nri.io neither scan nor publish: the
-// table of the publisher and its generation stay as they are.
-func TestPrepareDoesNotPublish(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec(), pmemSpec()})
-	gen, scanned, devs := e.pub.Generation(), e.pub.LastScan(), e.pub.Devices()
-	e.mustPrepare(e.local, localClaim("u1", localDev, envBlockSize))
-	e.mustPrepare(e.local, localClaim("u2", pmemDev, -device.SharesUnlimited, cfgBlock))
-	e.mustPrepare(e.local, localClaim("u3", device.DRAMDeviceName, 64*mib))
-	e.mustUnprepare(e.local, "u1")
-	e.mustUnprepare(e.local, "u2")
-	e.mustUnprepare(e.local, "u3")
-	if g := e.pub.Generation(); g != gen || !e.pub.LastScan().Equal(scanned) || len(e.pub.Devices()) != len(devs) {
-		t.Fatalf("generation %d (was %d), last scan %v (was %v)", g, gen, e.pub.LastScan(), scanned)
-	}
-	e.rescan()
-	if g := e.pub.Generation(); g != gen {
-		t.Fatalf("a rescan after the claims changed the generation %d -> %d", gen, g)
-	}
-}
-
 // HandleError logs the errors of the kubelet plugin helper as recoverable
 // or not with the driver; the drivers report no device health.
 func TestHandleErrorAndHealth(t *testing.T) {

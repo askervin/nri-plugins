@@ -45,8 +45,10 @@ ResourceSlice of the pool driver (`--pool-driver-name`, by default
 controller publishes its devices before it attaches one to a node, so a
 pool device is never offered as a local one, not even between its attach
 and its Prepare, or when its pod never starts. The plugin lists these
-ResourceSlices at every scan, and scans at least every 2 minutes (plus at
-most 30 seconds) also without udev events. When a list fails it keeps
+ResourceSlices at every scan. It scans after udev events, after every
+Prepare and Unprepare of either driver that changed its records, and at
+least every 2 minutes (plus at most 30 seconds) also without udev events.
+When a list fails it keeps
 the serials of the last successful one; until a list has succeeded it
 publishes no `memdev` device at all (regions are published as usual),
 and it tries again every 30 seconds while the list fails.
@@ -70,8 +72,10 @@ reboots, [design.md](design.md#provenance)):
   after a restart of the plugin.
 - A memdev that it has published as a local memdev before stays local,
   unless the pool driver publishes or prepares its serial: then it is a
-  pool device, and the next scan (within about 2.5 minutes) withdraws it
-  from the ResourceSlice. If local claims use it at that moment, the log
+  pool device. The scan after the Prepare of the pool driver withdraws it
+  from the ResourceSlice when the Prepare ends; a serial that only a
+  ResourceSlice of the pool driver names is withdrawn by the next scan
+  (within about 2.5 minutes). If local claims use it at that moment, the log
   has an error; they keep their memory, but no new local claim is
   prepared on it.
 - Any other memdev is new. While a pool claim that is allocated to the

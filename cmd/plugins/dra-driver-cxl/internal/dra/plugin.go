@@ -63,13 +63,16 @@ import (
 //
 // Persistence: the preparations are records of the store, committed
 // durably before kubelet gets a response; the CDI spec is derived from
-// them.
+// them. A Prepare or an Unprepare that committed a change of the records
+// asks the publisher for a rescan when it ends.
 //
 // Locks and waits: the kubelet helper serializes the Prepares and
 // Unprepares of the driver; a claim's lock serializes its own (and a
 // test's); the CDI write lock the writes of the spec; mu guards the
 // in-flight serials, the unrestored claims and the late settings. A Prepare
-// waits up to 30 s for the first NRI Synchronize before any claim lock.
+// waits up to 30 s for the first NRI Synchronize before any claim lock. The
+// rescan is asked for with no lock of the plugin or the engine held, and
+// is not waited for.
 type Plugin struct {
 	rules    SourceRules
 	st       *store.Store
@@ -80,8 +83,7 @@ type Plugin struct {
 	lender   *Lender
 	local    LocalConfig
 	onShared func(serial uint64)
-	// publisher publishes the node's ResourceSlice, nil for a driver that
-	// does not publish.
+	// publisher publishes the node's ResourceSlice, nil for none.
 	publisher *Publisher
 	helper    *kubeletplugin.Helper
 
@@ -119,8 +121,9 @@ type Options struct {
 	// OnShared is told the serial of a local memdev that a claim uses
 	// shared, nil for none.
 	OnShared func(serial uint64)
-	// Publisher publishes the node's ResourceSlice (rules that publish),
-	// whose last scan has the devices of the claims.
+	// Publisher publishes the node's ResourceSlice: it rescans after a
+	// request that changed the records; the rules that publish look the
+	// devices of their claims up in its last publication.
 	Publisher *Publisher
 }
 
@@ -257,7 +260,7 @@ func (p *Plugin) commit(ctx context.Context, fn func(doc *store.Document) error)
 // ResourceSlice (the scheduler allocated from it), nil for a driver that
 // does not publish.
 func (p *Plugin) allocatable() device.DevicesInfo {
-	if p.publisher == nil {
+	if p.publisher == nil || !p.rules.Publishes {
 		return nil
 	}
 	return p.publisher.Published()
@@ -288,8 +291,11 @@ func (p *Plugin) PrepareResourceClaims(ctx context.Context, claims []*resourcev1
 }
 
 // prepareClaim prepares a claim with its lock held, in a request of the
-// engine.
+// engine, and asks the publisher for a rescan when the Prepare changed the
+// records.
 func (p *Plugin) prepareClaim(ctx context.Context, claim *resourcev1.ResourceClaim) kubeletplugin.PrepareResult {
+	// deferred first: runs after the unlock and the end of the request
+	defer p.republish(ctx, p.generation())
 	unlock := p.locks.lock(string(claim.UID))
 	defer unlock()
 	ctx, end := p.engine.Request(ctx)
@@ -662,8 +668,11 @@ func (p *Plugin) UnprepareResourceClaims(ctx context.Context, claims []kubeletpl
 
 // unprepareClaim unprepares a claim: its lease claim closed first (a claim
 // on the lease device of cxl.nri.io), then its devices released with the
-// claim's lock held, in a request of the engine.
+// claim's lock held, in a request of the engine. It asks the publisher for
+// a rescan when the Unprepare changed the records.
 func (p *Plugin) unprepareClaim(ctx context.Context, uid string) error {
+	// deferred first: runs after the unlock and the end of the request
+	defer p.republish(ctx, p.generation())
 	if leases := p.leaseClaims(); leases != nil {
 		// the leases of a lease claim are released first (bounded; an
 		// error makes kubelet retry)
@@ -757,6 +766,21 @@ func (p *Plugin) revokeLends(ctx context.Context, prep *state.Preparation, compa
 		return err
 	}
 	return p.lender.Revoke(ctx, lend, prep.ClaimName)
+}
+
+// generation returns the generation of the document of the store: it
+// grows with every commit that changes the records.
+func (p *Plugin) generation() uint64 {
+	return p.st.Snapshot().Generation
+}
+
+// republish asks the publisher for a rescan (Trigger, not periodic) when
+// the records changed since the generation gen; nothing without a
+// publisher.
+func (p *Plugin) republish(ctx context.Context, gen uint64) {
+	if p.publisher != nil && p.generation() != gen {
+		p.publisher.Trigger(ctx, false)
+	}
 }
 
 // addInflight adds n to the counts of the serials of reqs.

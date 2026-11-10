@@ -418,12 +418,16 @@ those. Pool devices have `coherent`, local memdevs do not (the
 plugin uses, not an attribute): a selector on `coherent` matches no local
 memdev.
 
-The plugin publishes the slice again when the devices of the node
-change, and logs
+The plugin scans the node again after udev events, after every Prepare
+and Unprepare of either driver that changed its records, and at least
+every 2 minutes. After each scan that is not periodic it logs
 
 ```
 rescanAndPublish: published updated resources (N devices)
 ```
+
+and the slice is written to the API server only when its devices
+changed.
 
 ## DeviceClasses
 
