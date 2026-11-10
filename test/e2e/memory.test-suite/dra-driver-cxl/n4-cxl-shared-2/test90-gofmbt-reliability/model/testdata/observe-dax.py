@@ -9,8 +9,9 @@ ranges and of none (a kernel before 5.10) as the ranges of its mappingN
 give them, and reads no mappingN file of a device of one range or none.
 Then arm_stacks writes STACKS_MARKER, the kernel stacks of the threads of
 the process and the Python stacks of its threads to stderr, nothing once
-cancelled, and the executor MBT_SOURCE (mbt.source.sh) looks for the same
-marker. Prints "ok" and exits 0, or prints the failures and exits 1.
+cancelled; the stacks of a child blocked in a read of a pipe name the
+call and the pipe; and the executor MBT_SOURCE (mbt.source.sh) looks for
+the same marker. Prints "ok" and exits 0, or prints the failures and exits 1.
 
 Python 3 standard library only.
 """
@@ -18,6 +19,7 @@ Python 3 standard library only.
 import importlib.util
 import io
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -128,6 +130,17 @@ def check_stacks(obs, failures):
     text = stderr_of(lambda: obs.arm_stacks(0.1)(), 1.6)
     if text:
         failures.append("stacks after the cancel: %r" % text[:200])
+    # a thread blocked in a read: the call and its file
+    child = subprocess.Popen([sys.executable, "-I", "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE)
+    try:
+        time.sleep(0.5)
+        lines = obs.task_stacks(child.pid)
+    finally:
+        child.stdin.close()
+        child.wait()
+    want = "syscall read pipe:["
+    if not any(want in line for line in lines if line.startswith("-- task %d " % child.pid)):
+        failures.append("stacks of a reader of a pipe: no %r in %r" % (want, lines[:3]))
 
 
 def main():

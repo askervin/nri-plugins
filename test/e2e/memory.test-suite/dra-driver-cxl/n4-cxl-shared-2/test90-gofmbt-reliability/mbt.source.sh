@@ -1588,8 +1588,8 @@ mbt-observe() { # script API
     # part takes longer than MBT_OBS_TIMEOUT s is left out (null, with an
     # error): the observer runs under timeout in the VM, and its ssh is
     # killed on the host 10 s later. 5 s before its timeout the observer
-    # writes the kernel stacks of the threads of the driver and of itself
-    # and its Python stacks to its stderr, which is kept as
+    # writes the state, system call and kernel stack of the threads of the
+    # driver and of itself and its Python stacks to its stderr, kept as
     # mbt-obs-stacks/obs-STEP-POLL.VM.txt when the part printed nothing or
     # the stacks. Return non-zero if the observation could not be
     # assembled: MBT_OBS is then an observation with the error only.

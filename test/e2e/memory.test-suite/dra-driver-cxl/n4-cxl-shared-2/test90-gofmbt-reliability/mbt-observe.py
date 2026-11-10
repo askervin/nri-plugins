@@ -25,9 +25,10 @@ Usage:
       NODE their Kubernetes node names; P are pool ids (a, b, c), UNIT the
       systemd units of their controllers.
       With --stacks-after S, an observation still running after S seconds
-      writes to stderr the line STACKS_MARKER, the kernel stacks of the
-      threads of the driver process and of itself (/proc/PID/task/TID/
-      stack), and a second later the Python stacks of its threads.
+      writes to stderr the line STACKS_MARKER, the state, system call (of
+      a read or write with its file) and kernel stack of the threads of
+      the driver process and of itself (/proc/PID/task/TID/), and a
+      second later the Python stacks of its threads.
   mbt-observe.py assemble --step N --poll K --nodes ID=NODE,...
                           --vm ID=FILE... --attachments P=FILE...
                           [--inspected-in FILE] [--inspected-out FILE]
@@ -2072,9 +2073,31 @@ def cluster_observation(ns, nodes, units, inspected, pools=None):
 STACKS_MARKER = "mbt-observe: the observation is still running, stacks follow"
 
 
+SYSCALL_NAMES = {"0": "read", "1": "write", "17": "pread64", "18": "pwrite64"}
+
+
+def task_syscall(pid, task):
+    """The system call of thread task of process pid
+    (/proc/PID/task/TID/syscall): of a read or write its name and the file
+    of its fd, else its number, or "running"."""
+    try:
+        words = read(task + "/syscall").split()
+    except OSError as e:
+        return "(%s)" % e.strerror
+    name = SYSCALL_NAMES.get(words[0] if words else "")
+    if name is None or len(words) < 2:
+        return " ".join(words[:1])
+    try:
+        return "%s %s" % (name, os.readlink("/proc/%d/fd/%d" % (pid, int(words[1], 16))))
+    except (OSError, ValueError):
+        return "%s fd %s" % (name, words[1])
+
+
 def task_stacks(pid):
     """Lines of the kernel stacks of the threads of process pid: per
-    thread its name, state, wait channel and /proc/PID/task/TID/stack."""
+    thread its name, state, wait channel, system call (task_syscall) and
+    /proc/PID/task/TID/stack, which kernels without CONFIG_STACKTRACE do
+    not have."""
     out = []
     for task in sorted(glob.glob("/proc/%d/task/[0-9]*" % pid), key=natkey):
         fields = {}
@@ -2084,7 +2107,8 @@ def task_stacks(pid):
             except OSError as e:
                 fields[name] = "(%s)" % e.strerror
         state = fields["stat"].rsplit(")", 1)[-1].split()[:1] or ["?"]
-        out.append("-- task %s %s state %s wchan %s" % (os.path.basename(task), fields["comm"], state[0], fields["wchan"]))
+        out.append("-- task %s %s state %s wchan %s syscall %s" % (os.path.basename(task), fields["comm"], state[0],
+                                                                 fields["wchan"], task_syscall(pid, task)))
         out.extend("   " + line for line in fields["stack"].splitlines())
     return out
 
