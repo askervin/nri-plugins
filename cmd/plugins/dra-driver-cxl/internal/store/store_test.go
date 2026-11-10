@@ -685,3 +685,29 @@ func TestCommitsGiveAnUnknownBoot(t *testing.T) {
 		t.Errorf("the boot of a store without a running boot: %+v", doc)
 	}
 }
+
+// The hook after a commit sees every commit that succeeded, a Durable one
+// written, and no failed or refused one.
+func TestAfterCommit(t *testing.T) {
+	var s *Store
+	var seen []string
+	s = open(t, t.TempDir(), nil, func(o *Options) {
+		o.AfterCommit = func() { seen = append(seen, strings.Join(steered(s.Snapshot()), ",")) }
+	})
+	if err := s.Commit(context.Background(), Durable, addSteered("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Commit(context.Background(), Durable, func(*Document) error { return errors.New("refused") }); err == nil {
+		t.Fatal("a refused commit succeeded")
+	}
+	if err := s.Commit(context.Background(), Lazy, addSteered("b")); err != nil {
+		t.Fatal(err)
+	}
+	closeStore(t, s)
+	if err := s.Commit(context.Background(), Durable, addSteered("c")); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Commit after Close: %v", err)
+	}
+	if len(seen) != 2 || seen[0] != "a" {
+		t.Fatalf("the hook saw %q, expected the durable commit written and the lazy one", seen)
+	}
+}

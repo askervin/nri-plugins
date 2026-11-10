@@ -204,6 +204,11 @@ type Options struct {
 	// the device nodes in the paths of the results (ResultOptions), "/sys"
 	// and "/dev" if "".
 	SysRoot, DevRoot string
+	// AfterCommit is called after every commit that succeeded, a Durable
+	// one once it is written, in the goroutine of Commit; nil for none.
+	// Only tests set it. It must not commit or call the engine: the caller
+	// may hold the engine's locks.
+	AfterCommit func()
 
 	files fileOps
 }
@@ -439,6 +444,15 @@ func (s *Store) Lost() error {
 // failed write leaves the snapshot as it was: the store never shows what
 // is not on disk. A wait that ctx ends does not withdraw fn.
 func (s *Store) Commit(ctx context.Context, d Durability, fn Func) error {
+	err := s.commit(ctx, d, fn)
+	if err == nil && s.opts.AfterCommit != nil {
+		s.opts.AfterCommit()
+	}
+	return err
+}
+
+// commit applies fn to the document, as Commit.
+func (s *Store) commit(ctx context.Context, d Durability, fn Func) error {
 	if s.lost != nil {
 		return s.lost
 	}
