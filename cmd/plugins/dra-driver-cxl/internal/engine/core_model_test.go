@@ -456,14 +456,6 @@ var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{
 	"F9": func(s *coreState, ca *coreAction) bool {
 		return s.unfinishedWithoutRegion(ca, true)
 	},
-	// F8: a kept region that a Prepare enabled again and a cut stopped
-	// before its set-up is kept again by the recovery with its daxN.0
-	// recorded as the seed while the kernel has it whole: I2.
-	"F8": func(s *coreState, ca *coreAction) bool {
-		md := coreSlots[ca.slot].md
-		return ca.verb == "prepare" && s.arm > 0 && coreArms[s.arm-1].cut != "" && s.mds[md].kreg == kregOff &&
-			s.regionsAbove(md)
-	},
 }
 
 // unfinishedWithoutRegion tells whether the request is on a memdev with the

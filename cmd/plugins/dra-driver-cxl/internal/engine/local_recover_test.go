@@ -16,6 +16,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -509,5 +510,29 @@ func TestLocalReleasingGrantHoldsNoNewRegion(t *testing.T) {
 		t.Fatalf("regions left %v", regions)
 	}
 	v.mustUnprepare(localDriver, "d")
+	v.clean("unprepared")
+}
+
+// A kept region that a Prepare enabled again is kept again by the start
+// after a stop before its set-up: its daxN.0 is the Whole device of a kept
+// region, and the Prepare again of the claim sets the region up.
+func TestLocalKeptRegionEnabledAgainCut(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib}, fake.MemdevSpec{Serial: serialB})
+	v.mustPrepare(localDriver, "d", sliceReq("d", 0, state.ModeDax, 256*mib))
+	v.f.FailCommand("cxl destroy-region", errors.New("cxl region: cmd_destroy_region: failed"))
+	if err := v.unprepare(localDriver, "d"); err == nil {
+		t.Fatal("the release succeeded")
+	}
+	v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeDax, state.KindExclusive))
+	v.f.CutAfter("cxl enable-region")
+	if !v.cut(func() { _ = v.prepare(localDriver, "n", sliceReq("n", 0, state.ModeNUMA, 256*mib)) }) {
+		t.Fatal("not cut")
+	}
+	v.restart()
+	wantPreparation(t, v, localDriver, "n", state.PreparationKept)
+	v.mustPrepare(localDriver, "n", sliceReq("n", 0, state.ModeNUMA, 256*mib))
+	v.mustUnprepare(localDriver, "n")
+	v.mustUnprepare(localDriver, "d")
+	v.mustUnprepare(poolDriver, "b")
 	v.clean("unprepared")
 }
