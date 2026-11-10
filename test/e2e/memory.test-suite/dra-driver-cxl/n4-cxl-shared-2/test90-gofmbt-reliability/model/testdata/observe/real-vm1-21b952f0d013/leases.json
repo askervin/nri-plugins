@@ -1,0 +1,20 @@
+{
+  "claims": {
+    "bea71712-59a5-42d9-88a3-79add70b2d3f": {
+      "uid": "bea71712-59a5-42d9-88a3-79add70b2d3f",
+      "namespace": "cxl-pool-demo",
+      "name": "mbt-plse-vm1-0-g1-c0-pdvcw",
+      "pods": [
+        {
+          "namespace": "cxl-pool-demo",
+          "name": "mbt-plse-vm1-0-g1",
+          "uid": "993dd76a-dd52-41d2-9639-7f6ae9342e7c"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/bea71712-59a5-42d9-88a3-79add70b2d3f"
+    }
+  },
+  "leases": {},
+  "bootID": "46537e1b-8ce7-44a2-9bac-b841ddb0aa7d",
+  "viewOf": "state.json"
+}

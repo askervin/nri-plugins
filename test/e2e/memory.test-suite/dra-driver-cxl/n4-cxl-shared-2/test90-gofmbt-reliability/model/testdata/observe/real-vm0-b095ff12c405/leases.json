@@ -1,0 +1,43 @@
+{
+  "claims": {
+    "910b7edf-4af8-424b-a16b-198781b29499": {
+      "uid": "910b7edf-4af8-424b-a16b-198781b29499",
+      "namespace": "cxl-pool-demo",
+      "name": "mbt-plse-vm0-0-g1-c0-m6t8k",
+      "pods": [
+        {
+          "namespace": "cxl-pool-demo",
+          "name": "mbt-plse-vm0-0-g1",
+          "uid": "1e72ee56-64ca-47a8-a8c7-fbd9bc7931b9"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/910b7edf-4af8-424b-a16b-198781b29499"
+    }
+  },
+  "leases": {
+    "01c17e8e": {
+      "id": "01c17e8e",
+      "claim": "910b7edf-4af8-424b-a16b-198781b29499",
+      "source": "pool",
+      "mode": "block",
+      "shared": true,
+      "sharedDevice": true,
+      "deviceSource": "pool",
+      "readOnly": true,
+      "serial": "0xc1ae2002",
+      "pod": {
+        "namespace": "cxl-pool-demo",
+        "name": "mbt-plse-vm0-0-g1",
+        "uid": "1e72ee56-64ca-47a8-a8c7-fbd9bc7931b9"
+      },
+      "container": "main",
+      "state": "Ready",
+      "node": -1,
+      "bytes": 266338304,
+      "block": "/dev/pmem1",
+      "created": "2026-11-10T10:35:53.626041887Z"
+    }
+  },
+  "bootID": "c9f07507-e455-4795-9326-87091af61334",
+  "viewOf": "state.json"
+}

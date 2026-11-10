@@ -1,0 +1,50 @@
+{
+  "d2ce6832-47ae-4f98-98ca-5e63aa010d01": {
+    "claimName": "cxl-pool-demo/btrfs-rw",
+    "devices": [
+      {
+        "result": 0,
+        "request": "mem",
+        "device": "fs0",
+        "pool": "fake-cxl-pool",
+        "serial": 3249405953,
+        "shared": true,
+        "size": 534773760,
+        "mode": "fs",
+        "memdev": "mem0",
+        "region": "region0",
+        "dax": "",
+        "node": -1,
+        "persistent": true,
+        "ndRegion": "region0",
+        "namespace": "namespace0.0",
+        "blockDevice": "/dev/pmem0",
+        "blockMajor": 259,
+        "access": "cached",
+        "fsType": "btrfs",
+        "path": "/run/cxl-fs/C1AE0001",
+        "nodeMount": "/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-cached",
+        "loopDevice": "/dev/loop0"
+      }
+    ],
+    "result": {
+      "Err": null,
+      "Devices": [
+        {
+          "Requests": [
+            "mem"
+          ],
+          "PoolName": "fake-cxl-pool",
+          "DeviceName": "fs0",
+          "CDIDeviceIDs": [
+            "nri.io/cxl-pool=claim-d2ce6832-47ae-4f98-98ca-5e63aa010d01-0"
+          ],
+          "ShareID": "686968cd-fd33-4b2e-add6-3332e82a70d6",
+          "Metadata": null
+        }
+      ]
+    },
+    "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+    "viewOf": "state.json"
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "schema": 2,
+  "generation": 152,
+  "bootID": "46537e1b-8ce7-44a2-9bac-b841ddb0aa7d",
+  "preparations": [
+    {
+      "uid": "9a6c0f7d-d78f-446e-91a5-c313136a526f",
+      "driver": "cxl.nri.io",
+      "claimName": "cxl-pool-demo/lease-b-lease-n4phs",
+      "bootID": "46537e1b-8ce7-44a2-9bac-b841ddb0aa7d",
+      "state": "PREPARED",
+      "results": [
+        {
+          "index": 0,
+          "kind": "leaseClaim",
+          "request": "lease",
+          "pool": "n4-cxl-shared-1-fedora-43-containerd",
+          "device": "lease",
+          "shareID": "2034cc73-5a0f-441b-b651-d4bb653c2572",
+          "leaseClaim": {
+            "uid": "9a6c0f7d-d78f-446e-91a5-c313136a526f"
+          }
+        }
+      ]
+    }
+  ],
+  "leaseClaims": [
+    {
+      "uid": "9a6c0f7d-d78f-446e-91a5-c313136a526f",
+      "namespace": "cxl-pool-demo",
+      "name": "lease-b-lease-n4phs",
+      "pods": [
+        {
+          "namespace": "cxl-pool-demo",
+          "name": "lease-b",
+          "uid": "9d7d892e-e20f-4eb6-85cb-3415d20643cd"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/9a6c0f7d-d78f-446e-91a5-c313136a526f",
+      "state": "OPEN"
+    }
+  ],
+  "leases": [
+    {
+      "id": "0011233a",
+      "claim": "9a6c0f7d-d78f-446e-91a5-c313136a526f",
+      "pod": {
+        "namespace": "cxl-pool-demo",
+        "name": "lease-b",
+        "uid": "9d7d892e-e20f-4eb6-85cb-3415d20643cd"
+      },
+      "container": "main",
+      "asked": {
+        "deviceSource": "pool",
+        "mode": "fs",
+        "shared": true,
+        "sharedDevice": true,
+        "readWrite": true,
+        "name": "0011233a",
+        "serial": "0xc1ae0001"
+      },
+      "state": "PENDING",
+      "created": "2026-11-10T09:44:26.910855343Z"
+    }
+  ],
+  "provenance": [
+    {
+      "serial": "0xc1ae0001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/fake-cxl-pool",
+      "lastSeen": "2026-11-10T09:34:36.349833057Z"
+    }
+  ],
+  "listedPools": [
+    {
+      "pool": "cxl-pool.nri.io/fake-cxl-pool",
+      "listed": "2026-11-10T09:34:36.349833057Z"
+    }
+  ]
+}

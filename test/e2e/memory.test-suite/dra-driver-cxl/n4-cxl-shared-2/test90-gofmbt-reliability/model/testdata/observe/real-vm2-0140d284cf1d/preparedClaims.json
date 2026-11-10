@@ -1,0 +1,21 @@
+{
+  "a072f899-096c-4e1d-96e1-103e6f2ad13c": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "lease"
+        ],
+        "PoolName": "n4-cxl-shared-2-fedora-43-containerd",
+        "DeviceName": "lease",
+        "CDIDeviceIDs": [
+          "nri.io/cxl=claim-a072f899-096c-4e1d-96e1-103e6f2ad13c-0",
+          "nri.io/cxl=lease-a072f899-096c-4e1d-96e1-103e6f2ad13c"
+        ],
+        "ShareID": "b260315a-fb67-4dde-be2f-a568b0494f53",
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+  "devices": [
+    {
+      "serial": 3238060769,
+      "serialHex": "c100e2e1",
+      "memdev": "mem0",
+      "region": "region0",
+      "node": 2,
+      "dax": "dax0.0",
+      "shared": true,
+      "claims": {
+        "b5baf7e1-63d3-401c-bf89-0bc563bb4542": [
+          {
+            "request": "lease",
+            "region": "region0",
+            "mode": "dax",
+            "size": 1073741824,
+            "dax": "dax0.0",
+            "daxDevice": "/dev/dax0.0",
+            "major": 252
+          }
+        ]
+      }
+    }
+  ],
+  "viewOf": "state.json"
+}

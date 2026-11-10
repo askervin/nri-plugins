@@ -1,0 +1,37 @@
+{
+  "21775482-c03b-4003-a22b-385bbc5c32a1": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "lease"
+        ],
+        "PoolName": "n4-cxl-shared-0-fedora-43-containerd",
+        "DeviceName": "memdev-c100e2e1",
+        "CDIDeviceIDs": null,
+        "ShareID": "9b2aa232-762f-4020-be2a-dc680cfc57a6",
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  },
+  "495909a9-30fa-4521-a56b-cba112538218": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "lease"
+        ],
+        "PoolName": "n4-cxl-shared-0-fedora-43-containerd",
+        "DeviceName": "lease",
+        "CDIDeviceIDs": [
+          "nri.io/cxl=claim-495909a9-30fa-4521-a56b-cba112538218-0",
+          "nri.io/cxl=lease-495909a9-30fa-4521-a56b-cba112538218"
+        ],
+        "ShareID": "8ae71cf6-e36a-47eb-827f-8287e477a56b",
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  }
+}

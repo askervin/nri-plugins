@@ -1,0 +1,73 @@
+{
+  "schema": 2,
+  "generation": 166,
+  "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+  "memdevs": [
+    {
+      "serial": "0xc100e2e1",
+      "name": "mem0",
+      "source": "local",
+      "facts": {
+        "shared": true,
+        "numaAffinity": 0
+      },
+      "regions": [
+        "region0"
+      ],
+      "state": "IDLE_KEPT"
+    }
+  ],
+  "regions": [
+    {
+      "name": "region0",
+      "mode": "ram",
+      "targets": [
+        "0xc100e2e1"
+      ],
+      "owner": "ours",
+      "state": "OWNED",
+      "setUp": true,
+      "zeroed": true,
+      "numaNode": 2,
+      "size": 1073741824,
+      "daxDevices": [
+        {
+          "name": "dax0.0",
+          "dev": {
+            "major": 252,
+            "minor": 0
+          },
+          "size": 1073741824,
+          "ranges": [
+            {
+              "start": 28185722880,
+              "end": 29259464703
+            }
+          ],
+          "driver": "device_dax",
+          "state": "DEVICE_DAX",
+          "whole": true
+        }
+      ]
+    }
+  ],
+  "provenance": [
+    {
+      "serial": "0xc100e2e1",
+      "state": "LOCAL",
+      "lastSeen": "2026-11-10T09:27:22.198783536Z"
+    },
+    {
+      "serial": "0xc1ae0001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/fake-cxl-pool",
+      "lastSeen": "2026-11-10T09:27:51.303748865Z"
+    }
+  ],
+  "listedPools": [
+    {
+      "pool": "cxl-pool.nri.io/fake-cxl-pool",
+      "listed": "2026-11-10T09:27:51.303748865Z"
+    }
+  ]
+}

@@ -1,0 +1,100 @@
+{
+  "2b7af236-70cf-405d-8371-b3b2ebfe858b": {
+    "claimName": "cxl-pool-demo/reader-a-cxl-6c84l",
+    "devices": [
+      {
+        "requestName": "lease",
+        "deviceName": "lease",
+        "result": 0,
+        "deviceType": "lease",
+        "numaNodes": null,
+        "totalBytes": 0,
+        "consumedBytes": 0
+      }
+    ],
+    "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+    "viewOf": "state.json"
+  },
+  "6d0fbe39-d9e1-4866-8474-39e0f4da83c1": {
+    "claimName": "cxl-pool-demo/reader-b-cxl-snrsp",
+    "devices": [
+      {
+        "requestName": "lease",
+        "deviceName": "lease",
+        "result": 0,
+        "deviceType": "lease",
+        "numaNodes": null,
+        "totalBytes": 0,
+        "consumedBytes": 0
+      }
+    ],
+    "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+    "viewOf": "state.json"
+  },
+  "89cd4ac7-5822-47f6-ae4a-6d18054cf3fd": {
+    "claimName": "cxl-pool-demo/reader-c-cxl-lwvrl",
+    "devices": [
+      {
+        "requestName": "lease",
+        "deviceName": "lease",
+        "result": 0,
+        "deviceType": "lease",
+        "numaNodes": null,
+        "totalBytes": 0,
+        "consumedBytes": 0
+      }
+    ],
+    "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+    "viewOf": "state.json"
+  },
+  "b5baf7e1-63d3-401c-bf89-0bc563bb4542": {
+    "claimName": "cxl-pool-demo/cxl-lease-81911d15",
+    "devices": [
+      {
+        "requestName": "lease",
+        "deviceName": "memdev-c100e2e1",
+        "result": 0,
+        "deviceType": "memdev",
+        "mode": "dax",
+        "sysfsPath": "/sys/bus/cxl/devices/region0",
+        "numaNodes": null,
+        "nodeAffinities": [
+          0
+        ],
+        "totalBytes": 1073741824,
+        "consumedBytes": 1073741824,
+        "serial": "0xc100e2e1",
+        "daxDevice": "/dev/dax0.0",
+        "daxMajor": 252,
+        "shared": true
+      }
+    ],
+    "lend": {
+      "lease": "81911d15",
+      "pod": {
+        "namespace": "cxl-pool-demo",
+        "name": "writer",
+        "uid": "aabbc117-ac37-418a-9dee-c9e1b93516ee"
+      },
+      "container": "main"
+    },
+    "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+    "viewOf": "state.json"
+  },
+  "e448ebdb-7065-47a9-a6fb-b3b560fb7f6a": {
+    "claimName": "cxl-pool-demo/writer-cxl-dws7v",
+    "devices": [
+      {
+        "requestName": "lease",
+        "deviceName": "lease",
+        "result": 0,
+        "deviceType": "lease",
+        "numaNodes": null,
+        "totalBytes": 0,
+        "consumedBytes": 0
+      }
+    ],
+    "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+    "viewOf": "state.json"
+  }
+}

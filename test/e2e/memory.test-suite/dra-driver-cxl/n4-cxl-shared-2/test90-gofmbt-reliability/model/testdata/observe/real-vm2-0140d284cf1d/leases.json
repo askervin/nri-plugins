@@ -1,0 +1,40 @@
+{
+  "claims": {
+    "a072f899-096c-4e1d-96e1-103e6f2ad13c": {
+      "uid": "a072f899-096c-4e1d-96e1-103e6f2ad13c",
+      "namespace": "cxl-pool-demo",
+      "name": "borrower-cxl-6pstk",
+      "pods": [
+        {
+          "namespace": "cxl-pool-demo",
+          "name": "borrower",
+          "uid": "ef9efb7a-52f3-4da4-bd35-26fd5e2369eb"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/a072f899-096c-4e1d-96e1-103e6f2ad13c"
+    }
+  },
+  "leases": {
+    "ac63b04e": {
+      "id": "ac63b04e",
+      "claim": "a072f899-096c-4e1d-96e1-103e6f2ad13c",
+      "source": "pool",
+      "mode": "numa",
+      "shared": false,
+      "size": "512Mi",
+      "serial": "0xc1ee0001",
+      "pod": {
+        "namespace": "cxl-pool-demo",
+        "name": "borrower",
+        "uid": "ef9efb7a-52f3-4da4-bd35-26fd5e2369eb"
+      },
+      "container": "main",
+      "state": "Releasing",
+      "node": 2,
+      "bytes": 536870912,
+      "created": "2026-11-10T09:49:21.687460554Z"
+    }
+  },
+  "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+  "viewOf": "state.json"
+}

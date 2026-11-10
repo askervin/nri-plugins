@@ -1,0 +1,367 @@
+{
+  "schema": 2,
+  "generation": 35,
+  "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+  "memdevs": [
+    {
+      "serial": "0xc100e2e1",
+      "name": "mem0",
+      "source": "local",
+      "facts": {
+        "shared": true,
+        "numaAffinity": 0
+      },
+      "regions": [
+        "region0"
+      ],
+      "grants": [
+        {
+          "claim": "b5baf7e1-63d3-401c-bf89-0bc563bb4542",
+          "result": 0
+        }
+      ],
+      "state": "ACTIVE"
+    }
+  ],
+  "regions": [
+    {
+      "name": "region0",
+      "mode": "ram",
+      "targets": [
+        "0xc100e2e1"
+      ],
+      "owner": "ours",
+      "state": "OWNED",
+      "setUp": true,
+      "zeroed": true,
+      "numaNode": 2,
+      "size": 1073741824,
+      "daxDevices": [
+        {
+          "name": "dax0.0",
+          "dev": {
+            "major": 252,
+            "minor": 0
+          },
+          "size": 1073741824,
+          "ranges": [
+            {
+              "start": 28185722880,
+              "end": 29259464703
+            }
+          ],
+          "driver": "device_dax",
+          "state": "DEVICE_DAX",
+          "users": [
+            {
+              "claim": "b5baf7e1-63d3-401c-bf89-0bc563bb4542",
+              "result": 0
+            }
+          ],
+          "whole": true
+        }
+      ]
+    }
+  ],
+  "grants": [
+    {
+      "ref": {
+        "claim": "b5baf7e1-63d3-401c-bf89-0bc563bb4542",
+        "result": 0
+      },
+      "serial": "0xc100e2e1",
+      "asked": {
+        "source": "local",
+        "kind": "shared",
+        "mode": "dax",
+        "shared": true
+      },
+      "intent": {
+        "region": "region0",
+        "lend": {
+          "lease": "81911d15",
+          "pod": {
+            "namespace": "cxl-pool-demo",
+            "name": "writer",
+            "uid": "aabbc117-ac37-418a-9dee-c9e1b93516ee"
+          },
+          "container": "main"
+        }
+      },
+      "got": {
+        "region": "region0",
+        "dax": "dax0.0",
+        "size": 1073741824
+      },
+      "state": "REALISED"
+    }
+  ],
+  "preparations": [
+    {
+      "uid": "2b7af236-70cf-405d-8371-b3b2ebfe858b",
+      "driver": "cxl.nri.io",
+      "claimName": "cxl-pool-demo/reader-a-cxl-6c84l",
+      "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+      "state": "PREPARED",
+      "results": [
+        {
+          "index": 0,
+          "kind": "leaseClaim",
+          "request": "lease",
+          "pool": "n4-cxl-shared-2-fedora-43-containerd",
+          "device": "lease",
+          "shareID": "454239da-38f8-4c65-b2fc-7a4e6776eb4f",
+          "leaseClaim": {
+            "uid": "2b7af236-70cf-405d-8371-b3b2ebfe858b"
+          }
+        }
+      ]
+    },
+    {
+      "uid": "6d0fbe39-d9e1-4866-8474-39e0f4da83c1",
+      "driver": "cxl.nri.io",
+      "claimName": "cxl-pool-demo/reader-b-cxl-snrsp",
+      "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+      "state": "PREPARED",
+      "results": [
+        {
+          "index": 0,
+          "kind": "leaseClaim",
+          "request": "lease",
+          "pool": "n4-cxl-shared-2-fedora-43-containerd",
+          "device": "lease",
+          "shareID": "dad4574e-284f-4650-b0b0-ce511675ceb0",
+          "leaseClaim": {
+            "uid": "6d0fbe39-d9e1-4866-8474-39e0f4da83c1"
+          }
+        }
+      ]
+    },
+    {
+      "uid": "89cd4ac7-5822-47f6-ae4a-6d18054cf3fd",
+      "driver": "cxl.nri.io",
+      "claimName": "cxl-pool-demo/reader-c-cxl-lwvrl",
+      "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+      "state": "PREPARED",
+      "results": [
+        {
+          "index": 0,
+          "kind": "leaseClaim",
+          "request": "lease",
+          "pool": "n4-cxl-shared-2-fedora-43-containerd",
+          "device": "lease",
+          "shareID": "cee217e4-6ca7-4aba-87e0-9c48ce07a8a4",
+          "leaseClaim": {
+            "uid": "89cd4ac7-5822-47f6-ae4a-6d18054cf3fd"
+          }
+        }
+      ]
+    },
+    {
+      "uid": "b5baf7e1-63d3-401c-bf89-0bc563bb4542",
+      "driver": "cxl.nri.io",
+      "claimName": "cxl-pool-demo/cxl-lease-81911d15",
+      "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+      "state": "PREPARED",
+      "lease": "81911d15",
+      "results": [
+        {
+          "index": 0,
+          "kind": "grant",
+          "request": "lease",
+          "pool": "n4-cxl-shared-2-fedora-43-containerd",
+          "device": "memdev-c100e2e1",
+          "shareID": "cd7bd20c-b5a1-44ad-8877-9ef4a69dfa48",
+          "grant": {
+            "claim": "b5baf7e1-63d3-401c-bf89-0bc563bb4542",
+            "result": 0
+          }
+        }
+      ]
+    },
+    {
+      "uid": "e448ebdb-7065-47a9-a6fb-b3b560fb7f6a",
+      "driver": "cxl.nri.io",
+      "claimName": "cxl-pool-demo/writer-cxl-dws7v",
+      "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+      "state": "PREPARED",
+      "results": [
+        {
+          "index": 0,
+          "kind": "leaseClaim",
+          "request": "lease",
+          "pool": "n4-cxl-shared-2-fedora-43-containerd",
+          "device": "lease",
+          "shareID": "6bf2a008-ec44-4e2d-8ef5-e1d6a8fa0a73",
+          "leaseClaim": {
+            "uid": "e448ebdb-7065-47a9-a6fb-b3b560fb7f6a"
+          }
+        }
+      ]
+    }
+  ],
+  "leaseClaims": [
+    {
+      "uid": "2b7af236-70cf-405d-8371-b3b2ebfe858b",
+      "namespace": "cxl-pool-demo",
+      "name": "reader-a-cxl-6c84l",
+      "pods": [
+        {
+          "namespace": "cxl-pool-demo",
+          "name": "reader-a",
+          "uid": "48f21d6b-5919-40e8-adf9-e227cc4dd94f"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/2b7af236-70cf-405d-8371-b3b2ebfe858b",
+      "state": "OPEN"
+    },
+    {
+      "uid": "6d0fbe39-d9e1-4866-8474-39e0f4da83c1",
+      "namespace": "cxl-pool-demo",
+      "name": "reader-b-cxl-snrsp",
+      "pods": [
+        {
+          "namespace": "cxl-pool-demo",
+          "name": "reader-b",
+          "uid": "c8da2bd8-7193-4e08-a65e-62033aa7487e"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/6d0fbe39-d9e1-4866-8474-39e0f4da83c1",
+      "state": "OPEN"
+    },
+    {
+      "uid": "89cd4ac7-5822-47f6-ae4a-6d18054cf3fd",
+      "namespace": "cxl-pool-demo",
+      "name": "reader-c-cxl-lwvrl",
+      "pods": [
+        {
+          "namespace": "cxl-pool-demo",
+          "name": "reader-c",
+          "uid": "55b01a46-67af-4dba-a549-da1c16edc4c2"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/89cd4ac7-5822-47f6-ae4a-6d18054cf3fd",
+      "state": "OPEN"
+    },
+    {
+      "uid": "e448ebdb-7065-47a9-a6fb-b3b560fb7f6a",
+      "namespace": "cxl-pool-demo",
+      "name": "writer-cxl-dws7v",
+      "pods": [
+        {
+          "namespace": "cxl-pool-demo",
+          "name": "writer",
+          "uid": "aabbc117-ac37-418a-9dee-c9e1b93516ee"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/e448ebdb-7065-47a9-a6fb-b3b560fb7f6a",
+      "state": "OPEN"
+    }
+  ],
+  "leases": [
+    {
+      "id": "345e7acb",
+      "claim": "89cd4ac7-5822-47f6-ae4a-6d18054cf3fd",
+      "pod": {
+        "namespace": "cxl-pool-demo",
+        "name": "reader-c",
+        "uid": "55b01a46-67af-4dba-a549-da1c16edc4c2"
+      },
+      "container": "main",
+      "asked": {
+        "deviceSource": "local",
+        "mode": "dax",
+        "shared": true,
+        "sharedDevice": true,
+        "readOnly": true,
+        "serial": "0xc100e2e1"
+      },
+      "state": "PENDING",
+      "created": "2026-11-10T09:28:06.120622789Z"
+    },
+    {
+      "id": "81911d15",
+      "claim": "e448ebdb-7065-47a9-a6fb-b3b560fb7f6a",
+      "pod": {
+        "namespace": "cxl-pool-demo",
+        "name": "writer",
+        "uid": "aabbc117-ac37-418a-9dee-c9e1b93516ee"
+      },
+      "container": "main",
+      "asked": {
+        "deviceSource": "local",
+        "mode": "dax",
+        "sharedDevice": true,
+        "serial": "0xc100e2e1"
+      },
+      "got": {
+        "source": "local",
+        "serial": "0xc100e2e1",
+        "sharedDevice": true,
+        "bytes": 1073741824,
+        "dax": "/dev/dax0.0"
+      },
+      "state": "READY",
+      "created": "2026-11-10T09:27:51.180243783Z"
+    },
+    {
+      "id": "a0ff0406",
+      "claim": "2b7af236-70cf-405d-8371-b3b2ebfe858b",
+      "pod": {
+        "namespace": "cxl-pool-demo",
+        "name": "reader-a",
+        "uid": "48f21d6b-5919-40e8-adf9-e227cc4dd94f"
+      },
+      "container": "main",
+      "asked": {
+        "deviceSource": "local",
+        "mode": "dax",
+        "shared": true,
+        "sharedDevice": true,
+        "readOnly": true,
+        "serial": "0xc100e2e1"
+      },
+      "state": "PENDING",
+      "created": "2026-11-10T09:28:05.028305183Z"
+    },
+    {
+      "id": "d1537514",
+      "claim": "6d0fbe39-d9e1-4866-8474-39e0f4da83c1",
+      "pod": {
+        "namespace": "cxl-pool-demo",
+        "name": "reader-b",
+        "uid": "c8da2bd8-7193-4e08-a65e-62033aa7487e"
+      },
+      "container": "main",
+      "asked": {
+        "deviceSource": "local",
+        "mode": "dax",
+        "shared": true,
+        "sharedDevice": true,
+        "readOnly": true,
+        "serial": "0xc100e2e1"
+      },
+      "state": "PENDING",
+      "created": "2026-11-10T09:28:05.580065995Z"
+    }
+  ],
+  "provenance": [
+    {
+      "serial": "0xc100e2e1",
+      "state": "LOCAL",
+      "lastSeen": "2026-11-10T09:27:22.198783536Z"
+    },
+    {
+      "serial": "0xc1ae0001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/fake-cxl-pool",
+      "lastSeen": "2026-11-10T09:27:51.303748865Z"
+    }
+  ],
+  "listedPools": [
+    {
+      "pool": "cxl-pool.nri.io/fake-cxl-pool",
+      "listed": "2026-11-10T09:27:51.303748865Z"
+    }
+  ]
+}

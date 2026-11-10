@@ -1,0 +1,46 @@
+{
+  "claims": {
+    "1726d601-c25f-4e41-8006-cf1b31f03d81": {
+      "uid": "1726d601-c25f-4e41-8006-cf1b31f03d81",
+      "namespace": "cxl-pool-demo",
+      "name": "mbt-plse-vm2-0-g1-c0-qs9j4",
+      "pods": [
+        {
+          "namespace": "cxl-pool-demo",
+          "name": "mbt-plse-vm2-0-g1",
+          "uid": "0343737f-2695-4d20-a248-19414d748135"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/1726d601-c25f-4e41-8006-cf1b31f03d81"
+    }
+  },
+  "leases": {
+    "58cb8eb3": {
+      "id": "58cb8eb3",
+      "claim": "1726d601-c25f-4e41-8006-cf1b31f03d81",
+      "source": "pool",
+      "mode": "fs",
+      "shared": true,
+      "sharedDevice": true,
+      "deviceSource": "pool",
+      "readOnly": true,
+      "access": "cached",
+      "fsType": "erofs",
+      "name": "58cb8eb3",
+      "path": "/run/cxl/fs/58cb8eb3",
+      "serial": "0xc1ae2002",
+      "pod": {
+        "namespace": "cxl-pool-demo",
+        "name": "mbt-plse-vm2-0-g1",
+        "uid": "0343737f-2695-4d20-a248-19414d748135"
+      },
+      "container": "main",
+      "state": "Ready",
+      "node": -1,
+      "bytes": 266338304,
+      "created": "2026-11-10T10:40:32.245420022Z"
+    }
+  },
+  "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+  "viewOf": "state.json"
+}

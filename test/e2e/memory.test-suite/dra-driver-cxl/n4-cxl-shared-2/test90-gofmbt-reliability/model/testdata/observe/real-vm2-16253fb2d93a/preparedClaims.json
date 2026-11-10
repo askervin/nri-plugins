@@ -1,0 +1,37 @@
+{
+  "17c302a3-4b46-4893-8bde-f00768bcf289": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "lease"
+        ],
+        "PoolName": "n4-cxl-shared-2-fedora-43-containerd",
+        "DeviceName": "memdev-c100e2e1",
+        "CDIDeviceIDs": null,
+        "ShareID": "104d5f04-9453-4670-8e44-7e8e87c94100",
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  },
+  "239b9482-cb4e-4182-942d-efe611aa6b54": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "lease"
+        ],
+        "PoolName": "n4-cxl-shared-2-fedora-43-containerd",
+        "DeviceName": "lease",
+        "CDIDeviceIDs": [
+          "nri.io/cxl=claim-239b9482-cb4e-4182-942d-efe611aa6b54-0",
+          "nri.io/cxl=lease-239b9482-cb4e-4182-942d-efe611aa6b54"
+        ],
+        "ShareID": "41f90a5d-d824-40e2-b3e8-7ec0ac17aaa4",
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  }
+}

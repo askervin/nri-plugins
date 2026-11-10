@@ -1,0 +1,18 @@
+{
+  "9a6c0f7d-d78f-446e-91a5-c313136a526f": {
+    "claimName": "cxl-pool-demo/lease-b-lease-n4phs",
+    "devices": [
+      {
+        "requestName": "lease",
+        "deviceName": "lease",
+        "result": 0,
+        "deviceType": "lease",
+        "numaNodes": null,
+        "totalBytes": 0,
+        "consumedBytes": 0
+      }
+    ],
+    "bootID": "46537e1b-8ce7-44a2-9bac-b841ddb0aa7d",
+    "viewOf": "state.json"
+  }
+}

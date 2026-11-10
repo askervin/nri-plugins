@@ -1,0 +1,76 @@
+{
+  "1726d601-c25f-4e41-8006-cf1b31f03d81": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "lease"
+        ],
+        "PoolName": "n4-cxl-shared-2-fedora-43-containerd",
+        "DeviceName": "lease",
+        "CDIDeviceIDs": [
+          "nri.io/cxl=claim-1726d601-c25f-4e41-8006-cf1b31f03d81-0",
+          "nri.io/cxl=lease-1726d601-c25f-4e41-8006-cf1b31f03d81"
+        ],
+        "ShareID": "8e9faaf1-3de9-4626-944a-ec40b4606df5",
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  },
+  "40fda3cd-ac39-42a0-806e-595f5f021d8e": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "mem"
+        ],
+        "PoolName": "n4-cxl-shared-2-fedora-43-containerd",
+        "DeviceName": "memdev-c100e2e1",
+        "CDIDeviceIDs": [
+          "nri.io/cxl=claim-40fda3cd-ac39-42a0-806e-595f5f021d8e-0"
+        ],
+        "ShareID": "de0cccbe-2d6b-454d-b9fb-0b97359a3572",
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  },
+  "571c9014-6824-40cd-ad10-866234c7c360": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "lease"
+        ],
+        "PoolName": "n4-cxl-shared-2-fedora-43-containerd",
+        "DeviceName": "lease",
+        "CDIDeviceIDs": [
+          "nri.io/cxl=claim-571c9014-6824-40cd-ad10-866234c7c360-0",
+          "nri.io/cxl=lease-571c9014-6824-40cd-ad10-866234c7c360"
+        ],
+        "ShareID": "1e893875-d415-44d9-aeac-2b172300b304",
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  },
+  "be8736e2-987a-449f-bcf7-86ccf665d1f8": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "mem"
+        ],
+        "PoolName": "n4-cxl-shared-2-fedora-43-containerd",
+        "DeviceName": "memdev-c100e2e1",
+        "CDIDeviceIDs": [
+          "nri.io/cxl=claim-be8736e2-987a-449f-bcf7-86ccf665d1f8-0"
+        ],
+        "ShareID": "b228d4dd-a232-4d93-83b9-44dafa63a5dc",
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  }
+}

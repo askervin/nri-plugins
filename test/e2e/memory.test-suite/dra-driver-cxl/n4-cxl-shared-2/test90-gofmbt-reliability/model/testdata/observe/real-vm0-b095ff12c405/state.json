@@ -1,0 +1,251 @@
+{
+  "schema": 2,
+  "generation": 18,
+  "bootID": "c9f07507-e455-4795-9326-87091af61334",
+  "memdevs": [
+    {
+      "serial": "0xc1ae2002",
+      "name": "mem1",
+      "source": "pool",
+      "facts": {
+        "shared": true,
+        "persistent": true,
+        "coherent": true
+      },
+      "regions": [
+        "region1"
+      ],
+      "grants": [
+        {
+          "claim": "ff3023c8-e1ee-4c6b-98e3-bfc63df02851",
+          "result": 0
+        }
+      ],
+      "state": "ACTIVE"
+    }
+  ],
+  "regions": [
+    {
+      "name": "region1",
+      "mode": "pmem",
+      "targets": [
+        "0xc1ae2002"
+      ],
+      "owner": "ours",
+      "state": "OWNED",
+      "setUp": true,
+      "size": 268435456,
+      "pmem": {
+        "ndRegion": "region1",
+        "namespace": "namespace1.0",
+        "blockDevice": {
+          "name": "/dev/pmem1",
+          "dev": {
+            "major": 259,
+            "minor": 0
+          }
+        }
+      }
+    }
+  ],
+  "grants": [
+    {
+      "ref": {
+        "claim": "ff3023c8-e1ee-4c6b-98e3-bfc63df02851",
+        "result": 0
+      },
+      "serial": "0xc1ae2002",
+      "asked": {
+        "source": "pool",
+        "kind": "persistent",
+        "mode": "block",
+        "readOnly": true,
+        "size": 268435456,
+        "shared": true
+      },
+      "intent": {
+        "region": "region1",
+        "lend": {
+          "lease": "01c17e8e",
+          "pod": {
+            "namespace": "cxl-pool-demo",
+            "name": "mbt-plse-vm0-0-g1",
+            "uid": "1e72ee56-64ca-47a8-a8c7-fbd9bc7931b9"
+          },
+          "container": "main"
+        }
+      },
+      "got": {
+        "region": "region1",
+        "size": 266338304,
+        "namespace": "namespace1.0",
+        "blockDevice": {
+          "name": "/dev/pmem1",
+          "dev": {
+            "major": 259,
+            "minor": 0
+          }
+        }
+      },
+      "state": "REALISED"
+    }
+  ],
+  "preparations": [
+    {
+      "uid": "910b7edf-4af8-424b-a16b-198781b29499",
+      "driver": "cxl.nri.io",
+      "claimName": "cxl-pool-demo/mbt-plse-vm0-0-g1-c0-m6t8k",
+      "bootID": "c9f07507-e455-4795-9326-87091af61334",
+      "state": "PREPARED",
+      "results": [
+        {
+          "index": 0,
+          "kind": "leaseClaim",
+          "request": "lease",
+          "pool": "n4-cxl-shared-0-fedora-43-containerd",
+          "device": "lease",
+          "shareID": "95e4d426-59fe-4f53-b23b-17872ed4ba64",
+          "leaseClaim": {
+            "uid": "910b7edf-4af8-424b-a16b-198781b29499"
+          }
+        }
+      ]
+    },
+    {
+      "uid": "ff3023c8-e1ee-4c6b-98e3-bfc63df02851",
+      "driver": "cxl-pool.nri.io",
+      "claimName": "cxl-pool-demo/cxl-lease-01c17e8e",
+      "bootID": "c9f07507-e455-4795-9326-87091af61334",
+      "state": "PREPARED",
+      "lease": "01c17e8e",
+      "results": [
+        {
+          "index": 0,
+          "kind": "grant",
+          "request": "lease",
+          "pool": "pool-c",
+          "device": "c-pmem0",
+          "shareID": "00e4c576-675f-4fd7-81af-2eca2610f2fe",
+          "grant": {
+            "claim": "ff3023c8-e1ee-4c6b-98e3-bfc63df02851",
+            "result": 0
+          }
+        }
+      ]
+    }
+  ],
+  "leaseClaims": [
+    {
+      "uid": "910b7edf-4af8-424b-a16b-198781b29499",
+      "namespace": "cxl-pool-demo",
+      "name": "mbt-plse-vm0-0-g1-c0-m6t8k",
+      "pods": [
+        {
+          "namespace": "cxl-pool-demo",
+          "name": "mbt-plse-vm0-0-g1",
+          "uid": "1e72ee56-64ca-47a8-a8c7-fbd9bc7931b9"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/910b7edf-4af8-424b-a16b-198781b29499",
+      "state": "OPEN"
+    }
+  ],
+  "leases": [
+    {
+      "id": "01c17e8e",
+      "claim": "910b7edf-4af8-424b-a16b-198781b29499",
+      "pod": {
+        "namespace": "cxl-pool-demo",
+        "name": "mbt-plse-vm0-0-g1",
+        "uid": "1e72ee56-64ca-47a8-a8c7-fbd9bc7931b9"
+      },
+      "container": "main",
+      "asked": {
+        "deviceSource": "pool",
+        "mode": "block",
+        "shared": true,
+        "sharedDevice": true,
+        "readOnly": true,
+        "serial": "0xc1ae2002"
+      },
+      "got": {
+        "source": "pool",
+        "serial": "0xc1ae2002",
+        "sharedDevice": true,
+        "bytes": 266338304,
+        "block": "/dev/pmem1"
+      },
+      "state": "READY",
+      "created": "2026-11-10T10:35:53.626041887Z"
+    }
+  ],
+  "provenance": [
+    {
+      "serial": "0xc100e2e1",
+      "state": "LOCAL",
+      "lastSeen": "2026-11-10T10:29:06.431778859Z"
+    },
+    {
+      "serial": "0xc1ae0001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-a",
+      "lastSeen": "2026-11-10T10:29:06.424233992Z"
+    },
+    {
+      "serial": "0xc1ae1001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-b",
+      "lastSeen": "2026-11-10T10:29:06.424233992Z"
+    },
+    {
+      "serial": "0xc1ae2001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-c",
+      "lastSeen": "2026-11-10T10:29:06.424233992Z"
+    },
+    {
+      "serial": "0xc1ae2002",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-c",
+      "lastSeen": "2026-11-10T10:29:06.424233992Z"
+    },
+    {
+      "serial": "0xc1ee0001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-a",
+      "lastSeen": "2026-11-10T10:29:06.424233992Z"
+    },
+    {
+      "serial": "0xc1ee1001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-b",
+      "lastSeen": "2026-11-10T10:29:06.424233992Z"
+    },
+    {
+      "serial": "0xc1ee2001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-c",
+      "lastSeen": "2026-11-10T10:29:06.424233992Z"
+    },
+    {
+      "serial": "0xc1ee2002",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-c",
+      "lastSeen": "2026-11-10T10:29:06.424233992Z"
+    }
+  ],
+  "listedPools": [
+    {
+      "pool": "cxl-pool.nri.io/pool-a",
+      "listed": "2026-11-10T10:29:06.424233992Z"
+    },
+    {
+      "pool": "cxl-pool.nri.io/pool-b",
+      "listed": "2026-11-10T10:29:06.424233992Z"
+    },
+    {
+      "pool": "cxl-pool.nri.io/pool-c",
+      "listed": "2026-11-10T10:29:06.424233992Z"
+    }
+  ]
+}
