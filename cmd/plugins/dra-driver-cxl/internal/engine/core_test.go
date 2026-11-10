@@ -23,6 +23,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -317,6 +318,7 @@ func (r *coreRun) step(ca *coreAction, want string) {
 // index of the alternative.
 func (r *coreRun) runAndObserve(ca *coreAction, start *coreState, alts []*coreState, what string) int {
 	_, _ = fmt.Fprintf(r.log, "core: step %s\n", what)
+	defer r.watch(what)()
 	out := r.x.run(ca, start)
 	if ca.verb == "arm" {
 		r.state = alts[0]
@@ -358,6 +360,24 @@ func (r *coreRun) runAndObserve(ca *coreAction, start *coreState, alts []*coreSt
 	r.state = w
 	r.adopted[fmt.Sprintf("%s %d", ca.verb, got+1)]++
 	return got
+}
+
+// coreStepBound is the time that a step may take.
+const coreStepBound = 2 * time.Minute
+
+// watch writes the stacks of every goroutine to the log and to stderr and
+// ends the process with a panic if the step what does not end within
+// coreStepBound; the returned function ends the watch.
+func (r *coreRun) watch(what string) func() {
+	timer := time.AfterFunc(coreStepBound, func() {
+		buf := make([]byte, 16<<20)
+		buf = buf[:runtime.Stack(buf, true)]
+		_, _ = fmt.Fprintf(r.log, "core: step %s did not end within %v\n%s\n", what, coreStepBound, buf)
+		_ = r.log.Sync()
+		_, _ = os.Stderr.Write(buf)
+		panic(fmt.Sprintf("core model: step %s did not end within %v (log %s)", what, coreStepBound, filepath.Join(r.out, "run.log")))
+	})
+	return func() { timer.Stop() }
 }
 
 // fail fails the test with the report of a step: the start state, the

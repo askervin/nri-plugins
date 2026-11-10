@@ -51,6 +51,12 @@ type coreExec struct {
 	mu    sync.Mutex
 	fault *coreArm
 	hit   bool
+	// reads are the reads of the memory of dax devices that started
+	// inside writes of the size of a dax device, closed when they end;
+	// readProblems what the readers inside those writes saw. mu guards
+	// them.
+	reads        []<-chan struct{}
+	readProblems []string
 	// violations is the number of violations of the fake seen.
 	violations int
 	// front runs kubelet's requests, nil for the tests' own front-end
@@ -168,11 +174,15 @@ func (x *coreExec) exec(inner func(ctx context.Context, name string, args ...str
 }
 
 // writeFile returns the sysfs writer of the kernel with the armed fault: a
-// memory block that refuses to go online or offline (EBUSY).
+// memory block that refuses to go online or offline (EBUSY); the writes of
+// the size of a dax device have the readers of daxWrite inside them.
 func (x *coreExec) writeFile(inner func(path, val string) error) func(path, val string) error {
 	root := x.v.f.SysRoot()
 	return func(path, val string) error {
 		rel, _ := filepath.Rel(root, path)
+		if dir := filepath.Dir(rel); filepath.Base(rel) == "size" && filepath.Dir(dir) == "bus/dax/devices" {
+			x.daxWrite(filepath.Base(dir))
+		}
 		block := strings.HasPrefix(rel, "devices/system/memory/memory") && strings.HasSuffix(rel, "/state")
 		f := x.take(func(a *coreArm) bool {
 			switch {
@@ -190,6 +200,72 @@ func (x *coreExec) writeFile(inner func(path, val string) error) func(path, val 
 		}
 		return inner(path, val)
 	}
+}
+
+// daxWrite starts the readers of the process inside a write of the size of
+// the dax device dax, which may remove a mapping of it: the topology of the
+// node (the scan of the publisher), which reads no mapping and ends inside
+// the write, and the memory of the device (the observation of the verify
+// step), which waits for the write. A reader of a mapping inside the write
+// would stop the kernel's removal of the mapping, and the write, forever
+// (drivers/dax/bus.c). The problems and the end of the reads are checked
+// at the end of the step (check).
+func (x *coreExec) daxWrite(dax string) {
+	k := x.v.f.Kernel()
+	k.Logf = nil
+	read := make(chan struct{})
+	top := make(chan struct{})
+	go func() {
+		defer close(read)
+		_, _ = k.DaxDeviceRanges(dax)
+	}()
+	go func() {
+		defer close(top)
+		_, _ = k.ObserveTopology(context.Background())
+	}()
+	problem := ""
+	select {
+	case <-top:
+		select {
+		case <-read:
+			problem = "a read of the memory of " + dax + " ended inside a write of its size"
+		default:
+		}
+	case <-time.After(coreReadBound):
+		problem = "the topology of the node did not end inside a write of the size of " + dax
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	x.reads = append(x.reads, read)
+	if problem != "" {
+		x.readProblems = append(x.readProblems, problem)
+	}
+}
+
+// coreReadBound is the time that a read of the kernel's objects may wait.
+const coreReadBound = 10 * time.Second
+
+// checkReads returns the problems of the readers inside the writes of the
+// size of dax devices since the last call, and the reads that did not end
+// within coreReadBound after the step; and a problem if the engine lock is
+// held after the step.
+func (x *coreExec) checkReads() []string {
+	x.mu.Lock()
+	reads, out := x.reads, x.readProblems
+	x.reads, x.readProblems = nil, nil
+	x.mu.Unlock()
+	for _, read := range reads {
+		select {
+		case <-read:
+		case <-time.After(coreReadBound):
+			out = append(out, "a read of the memory of a dax device did not end after the step")
+		}
+	}
+	if !x.v.e.mu.TryLock() {
+		return append(out, "the engine lock is held after the step")
+	}
+	x.v.e.mu.Unlock()
+	return out
 }
 
 // grantRequest returns the request of the grant of the claim uid of the
@@ -631,8 +707,8 @@ func (x *coreExec) mountOf(snap *kernel.Snapshot, source state.Source) string {
 
 // check returns the violations of the invariants of the records and the
 // kernel now (Engine.Check), the changes of kernel objects that no row of
-// their tables has, and the new violations of the rules of persistent
-// devices of the fake.
+// their tables has, the new violations of the rules of persistent devices
+// of the fake, and the problems of checkReads.
 func (x *coreExec) check() []string {
 	v := x.v
 	snap, err := v.f.Kernel().Observe(context.Background())
@@ -662,7 +738,7 @@ func (x *coreExec) check() []string {
 			out = append(out, "front-end: "+viol)
 		}
 	}
-	return out
+	return append(out, x.checkReads()...)
 }
 
 // clean returns what is left on the node: memdev, region, grant and
