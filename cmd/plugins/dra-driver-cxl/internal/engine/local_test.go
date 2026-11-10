@@ -748,3 +748,33 @@ func TestLocalCutCompanionRegionReleaseFails(t *testing.T) {
 		})
 	}
 }
+
+// A numa companion whose Prepare enabled again a region that a failed
+// release left disabled and a process stop cut before its set-up (the
+// start kept it): the region's whole dax device, recorded as the seed,
+// counts as used.
+func TestLocalCutCompanionEnabledRegion(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
+	v.mustPrepare(localDriver, "n", sliceReq("n", 0, state.ModeNUMA, 256*mib))
+	v.f.FailCommand("cxl destroy-region", errors.New("failed"))
+	if err := v.unprepare(localDriver, "n"); err == nil {
+		t.Fatal("the release did not fail")
+	}
+	req := sliceReq("comp", 0, state.ModeNUMA, 256*mib)
+	req.Lend = &state.GrantLend{Lease: "0123abcd", Container: "c"}
+	v.e.afterCommit = func() {
+		r := v.records()
+		if reg := r.Region("region0"); reg != nil && reg.State == state.RegionOwned && !reg.SetUp && r.Grant(state.GrantRef{Claim: "comp"}) != nil {
+			panic(fake.ErrCut)
+		}
+	}
+	if !v.cut(func() { _ = v.prepare(localDriver, "comp", req) }) {
+		t.Fatal("not cut")
+	}
+	if out := v.restart(); !slices.Equal(out.Companions, []state.GrantRef{{Claim: "comp"}}) {
+		t.Fatalf("recovered %+v", out)
+	}
+	v.mustUnprepare(localDriver, "comp")
+	v.mustUnprepare(localDriver, "n")
+	v.clean("unprepared")
+}

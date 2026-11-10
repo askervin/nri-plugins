@@ -272,9 +272,9 @@ func checkI2Device(c *checker, reg *state.Region, d kernel.DaxDeviceInfo) {
 		// start, before it was set up
 	case rec == nil:
 		c.add("region "+name, "the kernel has %s (%s) that no record names", d.Name, d.State)
-	case reg.State == state.RegionKept && !reg.SetUp && strings.HasSuffix(d.Name, ".0"):
-		// the Whole device of a kept region, enabled again before its
-		// set-up
+	case (reg.State == state.RegionKept || unfinishedRegion(c.r, reg)) && !reg.SetUp && strings.HasSuffix(d.Name, ".0"):
+		// the Whole device of a kept region, or of a companion kept at a
+		// start, enabled again before its set-up
 	case rec.Whole && (reg.State == state.RegionKept || kept(c.r, reg) || len(rec.Users) > 0 || reg.SetUp || unfinishedRegion(c.r, reg)):
 	case !usedBy(c.r, rec) && !c.r.UnfinishedUser(rec):
 		c.add("region "+name, "%s has no REALISED or RELEASING user", d.Name)
