@@ -450,27 +450,6 @@ var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{
 		}
 		return false
 	},
-	// F9: the same for mode block: the grant of an unfinished Unprepare of
-	// mode block holds the region also when its Got names none any more
-	// (its region gone and forgotten at a start).
-	"F9": func(s *coreState, ca *coreAction) bool {
-		return s.unfinishedWithoutRegion(ca, true)
-	},
-}
-
-// unfinishedWithoutRegion tells whether the request is on a memdev with the
-// grant of another slot's unfinished Unprepare (UNPREPARING, RELEASING) that
-// holds no region of it by the 5.2 Users (no dax device or node mount lists
-// it; mode block: its Got names none), of mode block or of the others.
-func (s *coreState) unfinishedWithoutRegion(ca *coreAction, block bool) bool {
-	md := coreSlots[ca.slot].md
-	for i, ss := range s.slots {
-		if i != ca.slot && coreSlots[i].md == md && (coreSlots[i].mode == state.ModeBlock) == block &&
-			ss.prep == state.PreparationUnpreparing && ss.grant == state.GrantReleasing && !ss.user {
-			return true
-		}
-	}
-	return false
 }
 
 // coreAvoid are the findings whose requests are not generated.

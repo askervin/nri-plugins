@@ -536,3 +536,28 @@ func TestLocalKeptRegionEnabledAgainCut(t *testing.T) {
 	v.mustUnprepare(poolDriver, "b")
 	v.clean("unprepared")
 }
+
+// The grant of a reader of mode block of an Unprepare that a stop cut after
+// its region was destroyed (its region forgotten at the start) holds no
+// region: the region that a later claim of the memdev made goes with that
+// claim's Unprepare.
+func TestLocalReleasingBlockGrantHoldsNoNewRegion(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib})
+	v.formatPmem("mem0", "ext4")
+	v.mustPrepare(localDriver, "b", localPmemReq("b", 0, state.ModeBlock, true, ""))
+	v.f.CutAfter("cxl destroy-region")
+	if !v.cut(func() { _ = v.unprepare(localDriver, "b") }) {
+		t.Fatal("not cut")
+	}
+	v.restart()
+	if g := v.grant("b", 0); g.State != state.GrantReleasing || g.Got.Region != "" {
+		t.Fatalf("grant %+v", g)
+	}
+	v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeBlock, true, ""))
+	v.mustUnprepare(localDriver, "r")
+	if regions := v.f.Kernel().Regions("mem0"); len(regions) > 0 {
+		t.Fatalf("regions left %v", regions)
+	}
+	v.mustUnprepare(localDriver, "b")
+	v.clean("unprepared")
+}

@@ -351,13 +351,16 @@ func (e *Engine) memdevUsers(serial state.Serial, ref state.GrantRef, call *rele
 
 // holdsRegion tells whether the grant ref of the memdev record m may hold a
 // region of it: every grant but the one of an unfinished Unprepare
-// (RELEASING, of an UNPREPARING claim) of a dax device or a node mount that
-// no dax device or node mount of its regions lists as a user (its region
-// is gone; a new one may have its name).
+// (RELEASING, of an UNPREPARING claim) that no dax device or node mount of
+// its regions lists as a user, of mode block whose Got names no region (its
+// region is gone; a new one may have its name).
 func holdsRegion(r *state.Records, m *state.Memdev, ref state.GrantRef) bool {
 	g := r.Grant(ref)
-	if g == nil || !unpreparing(r, g) || g.Asked.Mode == state.ModeBlock {
+	switch {
+	case g == nil || !unpreparing(r, g):
 		return true
+	case g.Asked.Mode == state.ModeBlock:
+		return g.Got.Region != ""
 	}
 	for _, rr := range m.Regions {
 		reg := r.Region(rr)
