@@ -1076,3 +1076,42 @@ func TestRecoverPoolUnfinishedWriterKeepsMount(t *testing.T) {
 	v.mustUnprepare(poolDriver, "r")
 	v.clean("unprepared")
 }
+
+// The Unprepare of a KEPT claim that a process stop cut after its grant was
+// released: the start removes the preparation, which has nothing kept any
+// more.
+func TestRecoverKeptWithoutGrant(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib}, fake.MemdevSpec{Serial: serialB})
+	v.f.After("cxl create-region", func() {
+		v.f.After("cxl create-region", func() {})
+		k := v.f.Kernel()
+		d, _ := k.RootDecoder("mem1", kernel.RegionRAM)
+		if _, err := k.CreateRegion(context.Background(), kernel.CreateRegionRequest{Memdev: "mem1", Decoder: d, Type: kernel.RegionRAM}); err != nil {
+			t.Error(err)
+		}
+	})
+	v.f.FailWrite("bus/dax/devices/dax0.0/size", errBusy)
+	if err := v.prepare(localDriver, "k", localReq("k", 0, serialL, state.ModeDax, state.KindExclusive, 256*mib)); err == nil {
+		t.Fatal("the Prepare succeeded")
+	}
+	if p := v.records().Preparation(localDriver, "k"); p == nil || p.State != state.PreparationKept {
+		t.Fatalf("preparation %+v", p)
+	}
+	v.e.afterCommit = func() {
+		if v.records().Grant(state.GrantRef{Claim: "k"}) == nil {
+			panic(fake.ErrCut)
+		}
+	}
+	if !v.cut(func() { _ = v.unprepare(localDriver, "k") }) {
+		t.Fatal("not cut")
+	}
+	v.restart()
+	if p := v.records().Preparation(localDriver, "k"); p != nil {
+		t.Fatalf("preparation %+v", p)
+	}
+	// the region above, of another tool
+	if err := v.f.Kernel().ReleaseRegion(context.Background(), "region1"); err != nil {
+		t.Fatal(err)
+	}
+	v.clean("unprepared")
+}

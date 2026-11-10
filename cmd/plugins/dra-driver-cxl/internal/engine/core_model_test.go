@@ -519,13 +519,7 @@ func (s *coreState) requestEnabled(ca *coreAction) bool {
 // by name: each tells whether a request (with the fault or cut armed in s)
 // runs into it. The requests that do are not generated unless -core.known
 // leaves the finding out.
-var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{
-	// C7: the Unprepare of a KEPT claim cut after it released the grant
-	// leaves the preparation KEPT without a grant at the start
-	"C7": func(s *coreState, ca *coreAction) bool {
-		return s.arm > 0 && coreArms[s.arm-1].cut != "" && ca.verb == "unprepare" && s.slots[ca.slot].prep == state.PreparationKept
-	},
-}
+var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{}
 
 // coreAvoid are the findings whose requests are not generated.
 var coreAvoid = map[string]bool{}

@@ -1292,7 +1292,7 @@ func (e *Engine) topMost(bySerial map[state.Serial][]state.GrantRef) state.Seria
 // preparation of an earlier start loses the results of the grants that the
 // recovery released, and goes when none is left (keptReleased).
 func (e *Engine) recoverPreparations(ctx context.Context, out *Recovered) error {
-	if len(out.Kept) == 0 && len(out.Released) == 0 {
+	if len(out.Kept) == 0 && len(out.Released) == 0 && !keptWithoutGrant(e.records()) {
 		return nil
 	}
 	return e.commit(ctx, func(r *state.Records) error {
@@ -1339,16 +1339,17 @@ func preparingRecovered(r *state.Records, out *Recovered) error {
 
 // keptReleased drops from the KEPT preparations the results of the grants
 // released (the recovery released them: nothing lies above their regions
-// any more, or their idle shared memdev keeps its region), and removes a
-// KEPT preparation that has no grant left: its Prepare again prepares the
-// claim anew, its Unprepare finds nothing.
+// any more, or their idle shared memdev keeps its region) or gone (a cut
+// Unprepare released them), and removes a KEPT preparation that has no
+// grant left: its Prepare again prepares the claim anew, its Unprepare
+// finds nothing.
 func keptReleased(r *state.Records, released []state.GrantRef) error {
 	type key struct{ uid, driver string }
 	var gone []key
 	for i := range r.Preparations {
 		p := &r.Preparations[i]
 		if p.State != state.PreparationKept || !slices.ContainsFunc(p.Results, func(res state.Result) bool {
-			return res.Grant != nil && slices.Contains(released, *res.Grant)
+			return res.Grant != nil && (slices.Contains(released, *res.Grant) || r.Grant(*res.Grant) == nil)
 		}) {
 			continue
 		}
@@ -1370,6 +1371,20 @@ func keptReleased(r *state.Records, released []state.GrantRef) error {
 		removeRecord(&r.Preparations, func(x *state.Preparation) bool { return x.UID == k.uid && x.Driver == k.driver })
 	}
 	return nil
+}
+
+// keptWithoutGrant tells whether a KEPT preparation has a result whose grant
+// has no record: an Unprepare that a stop cut after it released the grant.
+func keptWithoutGrant(r *state.Records) bool {
+	for i := range r.Preparations {
+		p := &r.Preparations[i]
+		if p.State == state.PreparationKept && slices.ContainsFunc(p.Results, func(res state.Result) bool {
+			return res.Grant != nil && r.Grant(*res.Grant) == nil
+		}) {
+			return true
+		}
+	}
+	return false
 }
 
 // listedMounts returns the node mounts and lease binds that the realised
