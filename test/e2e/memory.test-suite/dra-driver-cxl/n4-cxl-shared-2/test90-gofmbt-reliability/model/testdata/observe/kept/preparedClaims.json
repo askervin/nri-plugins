@@ -1,0 +1,73 @@
+{
+  "11111111-0000-0000-0000-000000000001": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "mem"
+        ],
+        "PoolName": "node-1",
+        "DeviceName": "memdev-c100e2e1",
+        "CDIDeviceIDs": [
+          "nri.io/cxl=claim-11111111-0000-0000-0000-000000000001-0"
+        ],
+        "ShareID": null,
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  },
+  "11111111-0000-0000-0000-000000000006": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "pmem"
+        ],
+        "PoolName": "node-1",
+        "DeviceName": "memdev-c1ae2001",
+        "CDIDeviceIDs": [
+          "nri.io/cxl=claim-11111111-0000-0000-0000-000000000006-0"
+        ],
+        "ShareID": null,
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  },
+  "11111111-0000-0000-0000-000000000007": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "lease"
+        ],
+        "PoolName": "node-1",
+        "DeviceName": "lease",
+        "CDIDeviceIDs": [
+          "nri.io/cxl=claim-11111111-0000-0000-0000-000000000007-0",
+          "nri.io/cxl=lease-11111111-0000-0000-0000-000000000007"
+        ],
+        "ShareID": null,
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  },
+  "22222222-0000-0000-0000-000000000001": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "memory"
+        ],
+        "PoolName": "node-1",
+        "DeviceName": "memdev-c100e2e1",
+        "CDIDeviceIDs": null,
+        "ShareID": null,
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "claims": {
+    "11111111-0000-0000-0000-000000000007": {
+      "uid": "11111111-0000-0000-0000-000000000007",
+      "namespace": "demo",
+      "name": "c-lease",
+      "pods": [
+        {
+          "namespace": "demo",
+          "name": "requester",
+          "uid": "55555555-0000-0000-0000-000000000001"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/11111111-0000-0000-0000-000000000007"
+    }
+  },
+  "leases": {
+    "0a1b2c3d": {
+      "id": "0a1b2c3d",
+      "claim": "11111111-0000-0000-0000-000000000007",
+      "requestId": "req-1",
+      "source": "local",
+      "mode": "numa",
+      "shared": false,
+      "size": "128Mi",
+      "serial": "0xc100e2e1",
+      "pod": {
+        "namespace": "demo",
+        "name": "requester",
+        "uid": "55555555-0000-0000-0000-000000000001"
+      },
+      "container": "main",
+      "state": "Ready",
+      "node": 2,
+      "bytes": 134217728,
+      "created": "2026-11-05T12:00:00Z"
+    },
+    "1b2c3d4e": {
+      "id": "1b2c3d4e",
+      "claim": "11111111-0000-0000-0000-000000000007",
+      "source": "pool",
+      "mode": "fs",
+      "shared": false,
+      "sharedDevice": true,
+      "access": "cached",
+      "fsType": "erofs",
+      "name": "mbt",
+      "path": "/run/cxl/fs/mbt",
+      "serial": "0xc1ae2002",
+      "pod": {
+        "namespace": "demo",
+        "name": "requester",
+        "uid": "55555555-0000-0000-0000-000000000001"
+      },
+      "container": "main",
+      "state": "Releasing",
+      "node": -1,
+      "bytes": 1073741824,
+      "created": "2026-11-05T12:01:00Z"
+    }
+  },
+  "viewOf": "state.json"
+}

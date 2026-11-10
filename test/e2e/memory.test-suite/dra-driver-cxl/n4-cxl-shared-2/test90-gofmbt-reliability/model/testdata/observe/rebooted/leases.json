@@ -1,0 +1,20 @@
+{
+  "claims": {
+    "11111111-0000-0000-0000-000000000007": {
+      "uid": "11111111-0000-0000-0000-000000000007",
+      "namespace": "demo",
+      "name": "c-lease",
+      "pods": [
+        {
+          "namespace": "demo",
+          "name": "requester",
+          "uid": "55555555-0000-0000-0000-000000000001"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/11111111-0000-0000-0000-000000000007"
+    }
+  },
+  "leases": {},
+  "bootID": "boot-2",
+  "viewOf": "state.json"
+}

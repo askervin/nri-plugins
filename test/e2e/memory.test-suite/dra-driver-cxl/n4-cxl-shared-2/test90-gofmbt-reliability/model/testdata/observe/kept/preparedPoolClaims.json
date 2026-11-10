@@ -1,0 +1,187 @@
+{
+  "33333333-0000-0000-0000-000000000001": {
+    "claimName": "demo/c-pnuma",
+    "devices": [
+      {
+        "result": 0,
+        "request": "mem",
+        "device": "pooled3",
+        "pool": "pool-a",
+        "serial": 3249414147,
+        "shared": false,
+        "size": 1073741824,
+        "mode": "numa",
+        "memdev": "mem4",
+        "region": "region4",
+        "dax": "dax4.0",
+        "node": 4
+      }
+    ],
+    "result": {
+      "Err": null,
+      "Devices": [
+        {
+          "Requests": [
+            "mem"
+          ],
+          "PoolName": "pool-a",
+          "DeviceName": "pooled3",
+          "CDIDeviceIDs": [
+            "nri.io/cxl-pool=claim-33333333-0000-0000-0000-000000000001-0"
+          ],
+          "ShareID": null,
+          "Metadata": null
+        }
+      ]
+    },
+    "bootID": "boot-1",
+    "viewOf": "state.json"
+  },
+  "33333333-0000-0000-0000-000000000002": {
+    "claimName": "demo/c-pfs",
+    "devices": [
+      {
+        "result": 0,
+        "request": "mem",
+        "device": "pooled2",
+        "pool": "pool-c",
+        "serial": 3249414146,
+        "shared": true,
+        "size": 1073741824,
+        "mode": "block",
+        "readOnly": true,
+        "memdev": "mem3",
+        "region": "region3",
+        "dax": "",
+        "node": -1,
+        "persistent": true,
+        "ndRegion": "region8",
+        "namespace": "namespace8.0",
+        "blockDevice": "/dev/pmem8",
+        "blockMajor": 259,
+        "blockMinor": 1
+      }
+    ],
+    "result": {
+      "Err": null,
+      "Devices": [
+        {
+          "Requests": [
+            "mem"
+          ],
+          "PoolName": "pool-c",
+          "DeviceName": "pooled2",
+          "CDIDeviceIDs": [
+            "nri.io/cxl-pool=claim-33333333-0000-0000-0000-000000000002-0"
+          ],
+          "ShareID": "aaaaaaaa-0000-0000-0000-000000000001",
+          "Metadata": null
+        }
+      ]
+    },
+    "bootID": "boot-1",
+    "viewOf": "state.json"
+  },
+  "33333333-0000-0000-0000-000000000003": {
+    "claimName": "demo/c-pdax",
+    "devices": [
+      {
+        "result": 0,
+        "request": "mem",
+        "device": "pooled4",
+        "pool": "pool-b",
+        "serial": 3249414148,
+        "shared": true,
+        "size": 1073741824,
+        "mode": "dax",
+        "memdev": "mem5",
+        "region": "region6",
+        "dax": "dax6.0",
+        "daxDevice": "/dev/dax6.0",
+        "daxMajor": 252,
+        "daxMinor": 6,
+        "node": -1
+      }
+    ],
+    "result": {
+      "Err": null,
+      "Devices": [
+        {
+          "Requests": [
+            "mem"
+          ],
+          "PoolName": "pool-b",
+          "DeviceName": "pooled4",
+          "CDIDeviceIDs": [
+            "nri.io/cxl-pool=claim-33333333-0000-0000-0000-000000000003-0"
+          ],
+          "ShareID": "aaaaaaaa-0000-0000-0000-000000000002",
+          "Metadata": null
+        }
+      ]
+    },
+    "bootID": "boot-1",
+    "viewOf": "state.json"
+  },
+  "44444444-0000-0000-0000-000000000001": {
+    "claimName": "demo/cxl-lease-1b2c3d4e",
+    "devices": [
+      {
+        "result": 0,
+        "request": "memory",
+        "device": "pooled2",
+        "pool": "pool-c",
+        "serial": 3249414146,
+        "shared": true,
+        "size": 1073741824,
+        "mode": "fs",
+        "readOnly": true,
+        "memdev": "mem3",
+        "region": "region3",
+        "dax": "",
+        "node": -1,
+        "persistent": true,
+        "ndRegion": "region8",
+        "namespace": "namespace8.0",
+        "blockDevice": "/dev/pmem8",
+        "blockMajor": 259,
+        "blockMinor": 1,
+        "access": "cached",
+        "fsType": "erofs",
+        "path": "/run/cxl-fs/C1AE2002",
+        "nodeMount": "/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae2002-cached",
+        "loopDevice": "/dev/loop0"
+      }
+    ],
+    "result": {
+      "Err": null,
+      "Devices": [
+        {
+          "Requests": [
+            "memory"
+          ],
+          "PoolName": "pool-c",
+          "DeviceName": "pooled2",
+          "CDIDeviceIDs": null,
+          "ShareID": "aaaaaaaa-0000-0000-0000-000000000003",
+          "Metadata": null
+        }
+      ]
+    },
+    "lend": {
+      "lease": "1b2c3d4e",
+      "pod": {
+        "namespace": "demo",
+        "name": "requester",
+        "uid": "55555555-0000-0000-0000-000000000001"
+      },
+      "container": "intent",
+      "name": "intent",
+      "mounts": [
+        "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/11111111-0000-0000-0000-000000000007/mbt"
+      ]
+    },
+    "bootID": "boot-1",
+    "viewOf": "state.json"
+  }
+}

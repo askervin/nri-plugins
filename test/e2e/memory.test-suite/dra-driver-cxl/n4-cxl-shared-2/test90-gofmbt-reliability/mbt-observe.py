@@ -66,10 +66,23 @@ Where the data comes from:
                 committed one, plan-13 bug-02) with region ("" for none),
                 start and size
   nodes         /sys/devices/system/node/nodeN/meminfo MemTotal
-  state         /var/lib/kubelet/plugins/cxl.nri.io/{preparedClaims,
-                preparedClaimsInfo,localDevices,leases}.json and
-                /var/lib/kubelet/plugins/cxl-pool.nri.io/
-                preparedPoolClaims.json (a missing file is null)
+  state         the records of the driver's document
+                /var/lib/kubelet/plugins/cxl.nri.io/state.json (schema
+                2; every part is null without it): "prepared" and
+                "info" the UIDs of the claims of cxl.nri.io that kubelet
+                may take as prepared (PREPARED, PREPARED_UNRESTORED,
+                UNPREPARING), "pool" those of cxl-pool.nri.io;
+                "localDevices" the boot id and per local memdev its
+                serial, region (its first region of the driver once that
+                one is KEPT, or OWNED and made; else "") and per claim
+                UID its uses (request, region, mode, size, dax), null
+                for a claim whose grant holds the region without a use
+                yet, "-" for the dax devices of the memdev's regions
+                that no grant uses; "leases" the lease claims by UID and
+                the leases by
+                id: mode, state (Creating, Pending, Lending, Ready,
+                Releasing, Failed), node (of the lend, -1 for none) and
+                pod name
   cdi           /etc/cdi/* and /var/run/cdi/*: file -> device names
   containers    crictl ps (running containers of NS) and crictl inspect:
                 the cgroup v2 directory of each container is that of its
@@ -172,10 +185,12 @@ holder check and a concurrent erofs mount would fail):
   ctrMounts     per running container of NS (as containers): its erofs
                 mounts from /proc/PID/mountinfo: target, source, root,
                 vfsopts
-  poolClaims    preparedPoolClaims.json: per claim uid its claimName, the
-                devices (serial, device, shared, mode, readOnly, region,
-                persistent, ndRegion, namespace, blockDevice, major,
-                minor, access, path, nodeMount, loopDevice) and lend
+  poolClaims    of state.json ({} without it): per prepared claim of
+                cxl-pool.nri.io by UID its claimName, the devices of its
+                grants (serial, mode, readOnly, persistent, blockDevice,
+                access, path, nodeMount, loopDevice; null for what the
+                grant does not have) and lend (of a companion claim:
+                lease, pod, container, fsDir, name, mounts; else null)
   cdiPool       the CDI devices of the pool driver's spec (cxl-pool.*):
                 per device name its env, deviceNodes (path, type, major,
                 minor, permissions) and mounts (hostPath, containerPath,
@@ -221,8 +236,8 @@ holder check and a concurrent erofs mount would fail):
       process. State in /run/mbt-killat/state.json: marker, armed,
       fired, done, reason (fired, expired, driver restarted, disarmed by
       VERB, or an error), ms (from arming to the kill or the end), seen
-      (what it saw), pid, container, stateChanged (preparedPoolClaims
-      .json changed between arming and the kill).
+      (what it saw), pid, container, stateChanged (poolClaims of
+      state.json changed between arming and the kill).
   mbt-observe.py kill-at-disarm [--verb VERB]
       Stop that watcher and print its state, done; not fired yet: reason
       "disarmed by VERB".
@@ -536,8 +551,8 @@ def numa_nodes():
 
 
 def json_file(path):
-    """The JSON of path, None if it does not exist. The driver writes
-    preparedClaims.json in place: retry a torn read."""
+    """The JSON of path, None if it does not exist. A read that does not
+    decode is retried."""
     last = None
     for _ in range(4):
         try:
@@ -551,47 +566,6 @@ def json_file(path):
             last = e
             time.sleep(0.05)
     raise ValueError("%s: %s" % (path, last))
-
-
-def keys(obj):
-    return None if obj is None else sorted((obj or {}).keys())
-
-
-def local_devices(obj):
-    if obj is None:
-        return None
-    out = {"bootID": obj.get("bootID"), "devices": []}
-    for d in obj.get("devices") or []:
-        serial = d.get("serial")
-        if serial is None and d.get("serialHex"):
-            serial = int(str(d["serialHex"]), 16)
-        out["devices"].append({
-            "serial": serial_text(serial) if serial is not None else None,
-            "memdev": d.get("memdev"),
-            "region": d.get("region") or "",
-            "node": d.get("node"),
-            "shared": bool(d.get("shared")),
-            "dax": d.get("dax") or "",
-            "claims": d.get("claims") or {},
-        })
-    return out
-
-
-def state(errors):
-    out = {"prepared": None, "info": None, "pool": None, "localDevices": None, "leases": None}
-    files = [
-        ("prepared", LOCAL_DIR + "/preparedClaims.json", keys),
-        ("info", LOCAL_DIR + "/preparedClaimsInfo.json", keys),
-        ("pool", POOL_DIR + "/preparedPoolClaims.json", keys),
-        ("localDevices", LOCAL_DIR + "/localDevices.json", local_devices),
-        ("leases", LOCAL_DIR + "/leases.json", lambda o: o),
-    ]
-    for key, path, fn in files:
-        try:
-            out[key] = fn(json_file(path))
-        except Exception as e:
-            errors.append("state %s: %s" % (key, e))
-    return out
 
 
 def unquote(text):
@@ -907,6 +881,267 @@ def driver_log(errors):
 
 
 ###
+### The driver's state: the records of state.json (schema 2)
+###
+
+STATE_FILE = LOCAL_DIR + "/state.json"
+LOCAL_DRIVER = "cxl.nri.io"
+# the states of a preparation that kubelet may take as prepared
+PREPARED = ("PREPARED", "PREPARED_UNRESTORED", "UNPREPARING")
+# the states of a grant that uses its memdev, and of one that holds its
+# region without a use yet
+GRANT_USES = ("REALISED", "REALISED_UNRESTORED", "RELEASING")
+GRANT_UNFINISHED = ("JOURNALED", "REALISING")
+# the protocol's names of the lease states
+LEASE_STATES = {"CREATING": "Creating", "PENDING": "Pending", "LENDING": "Lending", "READY": "Ready",
+                "RELEASING": "Releasing", "RELEASING_BUSY": "Releasing", "FAILED": "Failed"}
+
+
+def grant_key(ref):
+    """The claim UID and result index of a grant reference, None for none."""
+    return None if ref is None else (ref.get("claim"), ref.get("result"))
+
+
+def result_of(p, n):
+    """The first result of preparation p with the index n, None if none."""
+    return next((r for r in p.get("results") or [] if r.get("index") == n), None)
+
+
+def results_of(p):
+    """The results of preparation p that are allocation results (a negative
+    index is a use of a memdev that no allocation result names)."""
+    return [r for r in p.get("results") or [] if (r.get("index") or 0) >= 0]
+
+
+class Records:
+    """The records of a state.json document and the driver's lookups over
+    them: the first record of a reference wins."""
+
+    def __init__(self, doc):
+        self.doc = doc
+        self.grants, self.regions = {}, {}
+        for g in doc.get("grants") or []:
+            self.grants.setdefault(grant_key(g.get("ref")), g)
+        for r in doc.get("regions") or []:
+            self.regions.setdefault(r.get("name") or r.get("notedName") or "", r)
+
+    def grant(self, ref):
+        return self.grants.get(grant_key(ref))
+
+    def region(self, ref):
+        return self.regions.get(ref or "")
+
+    def prepared(self, driver):
+        """The preparations of driver that kubelet may take as prepared."""
+        return [p for p in self.doc.get("preparations") or []
+                if p.get("driver") == driver and p.get("state") in PREPARED]
+
+    def request_of(self, ref):
+        """The request of the allocation result of the grant ref, "" if no
+        preparation names the grant."""
+        for p in self.doc.get("preparations") or []:
+            if p.get("uid") != ref.get("claim"):
+                continue
+            r = result_of(p, ref.get("result"))
+            if r is not None and grant_key(r.get("grant")) == grant_key(ref):
+                return r.get("request") or ""
+        return ""
+
+    def mount_of(self, g):
+        """The node mount of grant g in its region, None if it has none."""
+        got = g.get("got") or {}
+        reg = self.region(got.get("region"))
+        if reg is None or not got.get("mount"):
+            return None
+        return next((m for m in reg.get("mounts") or [] if m.get("access") == got["mount"]), None)
+
+
+def prepared_uids(recs, driver):
+    """The UIDs of the claims of driver that kubelet may take as prepared,
+    sorted."""
+    return sorted({p.get("uid") for p in recs.prepared(driver)})
+
+
+def set_up_for_first_part(recs, m, reg):
+    """Whether the OWNED region reg of the local memdev m is a ram region
+    still set up for the Prepares of its memdev: every grant of m is of an
+    unfinished Prepare that got no part of it yet."""
+    if reg.get("mode") != "ram" or not m.get("grants"):
+        return False
+    for ref in m["grants"]:
+        g = recs.grant(ref)
+        if g is None or g.get("state") not in GRANT_UNFINISHED or (g.get("got") or {}).get("dax"):
+            return False
+    return True
+
+
+def local_region(recs, m, regions):
+    """The name of the region of a local memdev: its first region of the
+    driver once that one is made (KEPT, or OWNED and not set up for its
+    first part any more), else ""."""
+    if not regions:
+        return ""
+    reg = regions[0]
+    st = reg.get("state")
+    if st == "KEPT" or (st == "OWNED" and not set_up_for_first_part(recs, m, reg)):
+        return reg.get("name") or ""
+    return ""
+
+
+def use_entry(request, region, mode, size, dax):
+    """A use of a local memdev: request, region, mode, size and dax (null
+    for none)."""
+    return {"request": request, "region": region, "mode": mode, "size": size, "dax": dax or None}
+
+
+def local_devices(recs):
+    """The local memdevs: per memdev its serial, region and per claim UID
+    its uses (null: its grant holds the region without a use yet; "-": the
+    dax devices of the memdev's regions that no grant uses)."""
+    devices = []
+    for m in recs.doc.get("memdevs") or []:
+        if m.get("source") != "local":
+            continue
+        regions = [r for r in (recs.region(ref) for ref in m.get("regions") or [])
+                   if r is not None and r.get("owner") == "ours"]
+        claims = {}
+        for ref in m.get("grants") or []:
+            g = recs.grant(ref)
+            if g is None:
+                continue
+            uid = ref.get("claim")
+            if g.get("state") in GRANT_USES:
+                asked, got = g.get("asked") or {}, g.get("got") or {}
+                use = use_entry(recs.request_of(ref), got.get("region") or "", asked.get("mode") or "",
+                                got.get("size") or 0, got.get("dax"))
+                claims[uid] = (claims.get(uid) or []) + [use]
+            elif g.get("state") in GRANT_UNFINISHED:
+                claims.setdefault(uid, None)
+        for reg in regions:
+            for d in reg.get("daxDevices") or []:
+                if d.get("whole") or d.get("state") == "SEED" or d.get("users"):
+                    continue
+                mode = "numa" if d.get("driver") == "kmem" else "dax"
+                use = use_entry("", reg.get("name") or "", mode, d.get("size") or 0, d.get("name"))
+                claims["-"] = (claims.get("-") or []) + [use]
+        devices.append({
+            "serial": serial_text(m["serial"]) if m.get("serial") is not None else None,
+            "region": local_region(recs, m, regions),
+            "claims": claims,
+        })
+    return {"bootID": recs.doc.get("bootID") or "", "devices": devices}
+
+
+def lease_store(recs):
+    """The lease claims by UID and the leases by id: mode, state (the
+    protocol's name), NUMA node of the lend (-1 for none) and pod name."""
+    claims = {c.get("uid"): {"uid": c.get("uid")} for c in recs.doc.get("leaseClaims") or []}
+    leases = {}
+    for l in recs.doc.get("leases") or []:
+        lend = l.get("lend")
+        node = -1 if lend is None or lend.get("numaNode") is None else lend["numaNode"]
+        leases[l.get("id")] = {"id": l.get("id"), "mode": (l.get("asked") or {}).get("mode") or "",
+                               "state": LEASE_STATES.get(l.get("state"), ""), "node": node,
+                               "pod": {"name": (l.get("pod") or {}).get("name") or ""}}
+    return {"claims": claims, "leases": leases}
+
+
+def driver_state(doc, errors):
+    """The part "state": the prepared claims of cxl.nri.io by UID ("prepared"
+    and "info"), those of the pool driver ("pool"), the local memdevs and
+    the leases of the document; a part is null without a document."""
+    out = dict.fromkeys(("prepared", "info", "pool", "localDevices", "leases"))
+    if doc is None:
+        return out
+    recs = Records(doc)
+    parts = [
+        ("prepared", lambda: prepared_uids(recs, LOCAL_DRIVER)),
+        ("info", lambda: prepared_uids(recs, LOCAL_DRIVER)),
+        ("pool", lambda: prepared_uids(recs, POOL_DRIVER)),
+        ("localDevices", lambda: local_devices(recs)),
+        ("leases", lambda: lease_store(recs)),
+    ]
+    for key, fn in parts:
+        try:
+            out[key] = fn()
+        except Exception as e:
+            errors.append("state %s: %s" % (key, e))
+    return out
+
+
+def state_document(errors):
+    """The document state.json and whether it was read: (None, True) if
+    it does not exist."""
+    try:
+        return json_file(STATE_FILE), True
+    except Exception as e:
+        errors.append("state: %s" % e)
+        return None, False
+
+
+def pool_device(recs, r):
+    """A device of a pool claim: the result r with what its grant asked and
+    got (serial 0x0 and null facts when the grant is gone)."""
+    e = {"serial": "0x0", "mode": "", "readOnly": None, "persistent": None, "blockDevice": None,
+         "access": None, "path": None, "nodeMount": None, "loopDevice": None}
+    g = recs.grant(r.get("grant"))
+    if g is None:
+        return e
+    asked, got = g.get("asked") or {}, g.get("got") or {}
+    mode = asked.get("mode") or ""
+    e.update(serial=serial_text(g["serial"]) if g.get("serial") is not None else None, mode=mode,
+             readOnly=True if asked.get("readOnly") else None)
+    if mode in ("block", "fs"):
+        e.update(persistent=True, blockDevice=(got.get("blockDevice") or {}).get("name") or None)
+    if mode == "fs":
+        m = recs.mount_of(g) or {}
+        e.update(access=got.get("mount") or None, path=asked.get("path") or None,
+                 nodeMount=m.get("path") or None, loopDevice=m.get("loop") or None)
+    return e
+
+
+def lend_of(recs, p):
+    """The lend of a companion claim, None for another claim: the lease, and
+    of the first grant with a lend its requester pod, container, fsDir and
+    name; the targets of the lease binds of its grants (null for none)."""
+    if not p.get("lease"):
+        return None
+    v = {"lease": p["lease"], "pod": {"namespace": "", "name": "", "uid": ""}, "container": "",
+         "fsDir": None, "name": None, "mounts": None}
+    identity, mounts = False, []
+    for r in results_of(p):
+        g = recs.grant(r.get("grant"))
+        if g is None:
+            continue
+        got = g.get("got") or {}
+        lend = got.get("lend") or (g.get("intent") or {}).get("lend")
+        if lend and not identity:
+            pod = lend.get("pod") or {}
+            v.update(pod={k: pod.get(k) or "" for k in ("namespace", "name", "uid")},
+                     container=lend.get("container") or "", fsDir=lend.get("fsDir") or None,
+                     name=lend.get("name") or None)
+            identity = True
+        b = got.get("bind")
+        if b and b.get("state") in ("BOUND", "STALE") and b.get("target") not in mounts:
+            mounts.append(b.get("target"))
+    v.update(mounts=mounts or None)
+    return v
+
+
+def pool_claims(doc):
+    """The part "poolClaims": per prepared claim of the pool driver its
+    claimName, devices and lend; {} without a document."""
+    if doc is None:
+        return {}
+    recs = Records(doc)
+    out = {}
+    for p in recs.prepared(POOL_DRIVER):
+        devs = [pool_device(recs, r) for r in results_of(p) if r.get("kind") == "grant"]
+        out[p.get("uid")] = {"claimName": p.get("claimName") or "", "devices": devs, "lend": lend_of(recs, p)}
+    return out
+
+
+###
 ### Persistent pool devices (A24)
 ###
 
@@ -1102,29 +1337,6 @@ def pmem(errors):
                 if entry["size"]:
                     r["namespaces"].append(entry)
         out.append(r)
-    return out
-
-
-def pool_claims(obj):
-    """preparedPoolClaims.json reduced to what the oracle checks. The
-    driver writes the file at its first pool claim: no file is no
-    prepared pool claim."""
-    if obj is None:
-        return {}
-    keys = ("device", "shared", "mode", "readOnly", "region", "persistent", "ndRegion", "namespace",
-            "blockDevice", "blockMajor", "blockMinor", "access", "path", "nodeMount", "loopDevice", "dax")
-    out = {}
-    for uid, pc in sorted(obj.items()):
-        pc = pc or {}
-        devs = []
-        for d in pc.get("devices") or []:
-            e = {k: d.get(k) for k in keys}
-            e["serial"] = serial_text(d["serial"]) if d.get("serial") is not None else None
-            devs.append(e)
-        lend = pc.get("lend")
-        if lend is not None:
-            lend = {k: lend.get(k) for k in ("lease", "pod", "container", "fsDir", "name", "mounts")}
-        out[uid] = {"claimName": pc.get("claimName"), "devices": devs, "lend": lend}
     return out
 
 
@@ -1324,7 +1536,8 @@ def vm_observation(ns):
     obs["regions"] = part(errors, "regions", regions, errors)
     obs["ports"] = part(errors, "ports", ports, errors)
     obs["nodes"] = part(errors, "nodes", numa_nodes)
-    obs["state"] = part(errors, "state", state, errors)
+    doc, doc_read = state_document(errors)
+    obs["state"] = part(errors, "state", driver_state, doc, errors)
     obs["cdi"] = part(errors, "cdi", cdi, errors)
     ctr_mounts = []
     obs["containers"] = part(errors, "containers", containers, ns, errors, ctr_mounts)
@@ -1338,7 +1551,7 @@ def vm_observation(ns):
     obs["leaseBinds"] = None if mi is None else mounts_under(mi, LEASE_FS)
     obs["leaseDirs"] = part(errors, "leaseDirs", lease_dirs)
     obs["loops"] = part(errors, "loops", loops_over_pmem)
-    obs["poolClaims"] = part(errors, "poolClaims", lambda: pool_claims(json_file(POOL_DIR + "/preparedPoolClaims.json")))
+    obs["poolClaims"] = part(errors, "poolClaims", pool_claims, doc) if doc_read else None
     obs["cdiPool"] = part(errors, "cdiPool", cdi_pool, errors)
     obs["kernel"] = part(errors, "kernel", kernel, errors)
     obs["killAt"] = part(errors, "killAt", kill_at_state)
@@ -1947,11 +2160,12 @@ class Marker:
         return None
 
 
-def file_stamp(path):
+def pool_claims_now():
+    """The part "poolClaims" of state.json now, None if it cannot be
+    read."""
     try:
-        st = os.stat(path)
-        return [st.st_mtime_ns, st.st_size, st.st_ino]
-    except OSError:
+        return pool_claims(json_file(STATE_FILE))
+    except Exception:
         return None
 
 
@@ -1991,7 +2205,6 @@ def cmd_kill_at(args):
     disarmed by VERB (kill-at-disarm), or an error."""
     os.makedirs(KILLAT_DIR, exist_ok=True)
     statefile = KILLAT_DIR + "/state.json"
-    claims = POOL_DIR + "/preparedPoolClaims.json"
     t0 = time.monotonic()
     st = {"marker": args.marker, "armed": False, "fired": False, "done": False, "ms": None, "seen": None,
           "pid": None, "container": None, "watcher": os.getpid(), "armedAt": time.time(), "error": None,
@@ -2004,7 +2217,7 @@ def cmd_kill_at(args):
         return
     drv = DriverProcess(pid)
     marker = Marker(args.marker)
-    stamp = file_stamp(claims)
+    claims = pool_claims_now()
     st.update(armed=True, pid=pid, container=cid)
     write_json(statefile, st)
     print(json.dumps(st, sort_keys=True), flush=True)
@@ -2027,7 +2240,7 @@ def cmd_kill_at(args):
                 err = "kill %s: %s" % (pid, e)
             st.update(fired=err is None, done=True, seen=hit, error=err,
                       reason="fired" if err is None else "driver restarted",
-                      ms=int((killed_at - t0) * 1000), stateChanged=file_stamp(claims) != stamp)
+                      ms=int((killed_at - t0) * 1000), stateChanged=pool_claims_now() != claims)
             write_json(statefile, st)
             return
         time.sleep(interval)

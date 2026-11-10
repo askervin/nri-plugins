@@ -346,6 +346,9 @@ const (
 	// Pinned by test90 mbt-observe.py LEASES_DIR.
 	NameLeasesDir = "/var/lib/kubelet/plugins/cxl.nri.io/leases"
 
+	// Pinned by test90 mbt-observe.py STATE_FILE.
+	NameStateFile = "/var/lib/kubelet/plugins/cxl.nri.io/state.json"
+
 	// Pinned by test90 mbt-observe.py DRIVER_LABEL.
 	NameDriverLabel = "app.kubernetes.io/name=nri-dra-driver-cxl"
 
@@ -354,6 +357,9 @@ const (
 
 	// Pinned by test90 mbt-observe.py POOL_DRIVER.
 	NamePoolDriver = "cxl-pool.nri.io"
+
+	// Pinned by test90 mbt-observe.py LOCAL_DRIVER.
+	NameLocalDriver = "cxl.nri.io"
 
 	// Pinned by test90 mbt-observe.py LEASE_LABEL.
 	NameLeaseLabel = "cxl.nri.io/lease"
@@ -368,157 +374,173 @@ const (
 	NameDriverContainer = "nri-dra-driver-cxl"
 )
 
-// State view files that the test90 observer reads.
+// Fields of the records of state.json that the test90 observer reads.
 const (
-	// Pinned by test90 mbt-observe.py state() leases, in LOCAL_DIR.
-	ViewLeases = "leases.json"
+	// Pinned by test90 mbt-observe.py Records.
+	FieldStateAccess = "access"
 
-	// Pinned by test90 mbt-observe.py state() localDevices, in LOCAL_DIR.
-	ViewLocalDevices = "localDevices.json"
+	// Pinned by test90 mbt-observe.py lease_store(), test90 mbt-observe.py local_devices(), test90
+	// mbt-observe.py pool_device().
+	FieldStateAsked = "asked"
 
-	// Pinned by test90 mbt-observe.py state() prepared, in LOCAL_DIR.
-	ViewPreparedClaims = "preparedClaims.json"
+	// Pinned by test90 mbt-observe.py lend_of().
+	FieldStateBind = "bind"
 
-	// Pinned by test90 mbt-observe.py state() info, in LOCAL_DIR.
-	ViewPreparedClaimsInfo = "preparedClaimsInfo.json"
-
-	// Pinned by test90 mbt-observe.py state() pool, in POOL_DIR.
-	ViewPreparedPoolClaims = "preparedPoolClaims.json"
-)
-
-// Fields of the state views that the test90 observer and oracle read, by view.
-const (
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsAccess = "access"
-
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsBlockDevice = "blockDevice"
-
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsBlockMajor = "blockMajor"
-
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsBlockMinor = "blockMinor"
+	// Pinned by test90 mbt-observe.py pool_device().
+	FieldStateBlockDevice = "blockDevice"
 
 	// Pinned by test90 mbt-observe.py local_devices().
-	FieldLocalDevicesBootID = "bootID"
+	FieldStateBootID = "bootID"
+
+	// Pinned by test90 mbt-observe.py Records, test90 mbt-observe.py grant_key(), test90
+	// mbt-observe.py local_devices().
+	FieldStateClaim = "claim"
 
 	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsClaimName = "claimName"
+	FieldStateClaimName = "claimName"
 
-	// Pinned by test90 model/oracle.go checkLeaseStore.
-	FieldLeasesClaims = "claims"
+	// Pinned by test90 mbt-observe.py lend_of().
+	FieldStateContainer = "container"
+
+	// Pinned by test90 mbt-observe.py local_devices(), test90 mbt-observe.py set_up_for_first_part().
+	FieldStateDax = "dax"
 
 	// Pinned by test90 mbt-observe.py local_devices().
-	FieldLocalDevicesClaims = "claims"
+	FieldStateDaxDevices = "daxDevices"
+
+	// Pinned by test90 mbt-observe.py Records, test90 mbt-observe.py local_devices().
+	FieldStateDriver = "driver"
+
+	// Pinned by test90 mbt-observe.py lend_of().
+	FieldStateFsDir = "fsDir"
+
+	// Pinned by test90 mbt-observe.py Records, test90 mbt-observe.py lend_of(), test90 mbt-observe.py
+	// local_devices(), test90 mbt-observe.py pool_device(), test90 mbt-observe.py
+	// set_up_for_first_part().
+	FieldStateGot = "got"
+
+	// Pinned by test90 mbt-observe.py Records, test90 mbt-observe.py lend_of(), test90 mbt-observe.py
+	// pool_device().
+	FieldStateGrant = "grant"
+
+	// Pinned by test90 mbt-observe.py Records, test90 mbt-observe.py local_devices(), test90
+	// mbt-observe.py set_up_for_first_part().
+	FieldStateGrants = "grants"
+
+	// Pinned by test90 mbt-observe.py lease_store().
+	FieldStateID = "id"
+
+	// Pinned by test90 mbt-observe.py result_of(), test90 mbt-observe.py results_of().
+	FieldStateIndex = "index"
+
+	// Pinned by test90 mbt-observe.py lend_of().
+	FieldStateIntent = "intent"
 
 	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsContainer = "container"
+	FieldStateKind = "kind"
+
+	// Pinned by test90 mbt-observe.py lend_of().
+	FieldStateLease = "lease"
+
+	// Pinned by test90 mbt-observe.py lease_store().
+	FieldStateLeaseClaims = "leaseClaims"
+
+	// Pinned by test90 mbt-observe.py lease_store().
+	FieldStateLeases = "leases"
+
+	// Pinned by test90 mbt-observe.py lease_store(), test90 mbt-observe.py lend_of().
+	FieldStateLend = "lend"
+
+	// Pinned by test90 mbt-observe.py pool_device().
+	FieldStateLoop = "loop"
 
 	// Pinned by test90 mbt-observe.py local_devices().
-	FieldLocalDevicesDax = "dax"
+	FieldStateMemdevs = "memdevs"
 
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsDax = "dax"
+	// Pinned by test90 mbt-observe.py lease_store(), test90 mbt-observe.py local_devices(), test90
+	// mbt-observe.py pool_device(), test90 mbt-observe.py set_up_for_first_part().
+	FieldStateMode = "mode"
 
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsDevice = "device"
+	// Pinned by test90 mbt-observe.py Records, test90 mbt-observe.py pool_device().
+	FieldStateMount = "mount"
 
-	// Pinned by test90 mbt-observe.py local_devices().
-	FieldLocalDevicesDevices = "devices"
+	// Pinned by test90 mbt-observe.py Records.
+	FieldStateMounts = "mounts"
 
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsDevices = "devices"
+	// Pinned by test90 mbt-observe.py Records, test90 mbt-observe.py lease_store(), test90
+	// mbt-observe.py lend_of(), test90 mbt-observe.py local_devices(), test90 mbt-observe.py
+	// local_region(), test90 mbt-observe.py pool_device().
+	FieldStateName = "name"
 
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsFsDir = "fsDir"
+	// Pinned by test90 mbt-observe.py lend_of().
+	FieldStateNamespace = "namespace"
 
-	// Pinned by test90 model/oracle.go checkLeaseStore.
-	FieldLeasesID = "id"
+	// Pinned by test90 mbt-observe.py Records.
+	FieldStateNotedName = "notedName"
 
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsLease = "lease"
-
-	// Pinned by test90 model/oracle.go checkLeaseStore.
-	FieldLeasesLeases = "leases"
-
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsLend = "lend"
-
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsLoopDevice = "loopDevice"
+	// Pinned by test90 mbt-observe.py lease_store().
+	FieldStateNumaNode = "numaNode"
 
 	// Pinned by test90 mbt-observe.py local_devices().
-	FieldLocalDevicesMemdev = "memdev"
+	FieldStateOwner = "owner"
 
-	// Pinned by test90 model/oracle.go checkLeaseStore.
-	FieldLeasesMode = "mode"
+	// Pinned by test90 mbt-observe.py pool_device().
+	FieldStatePath = "path"
 
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsMode = "mode"
+	// Pinned by test90 mbt-observe.py lease_store(), test90 mbt-observe.py lend_of().
+	FieldStatePod = "pod"
 
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsMounts = "mounts"
+	// Pinned by test90 mbt-observe.py Records.
+	FieldStatePreparations = "preparations"
 
-	// Pinned by test90 model/oracle.go checkLeaseStore.
-	FieldLeasesName = "name"
+	// Pinned by test90 mbt-observe.py pool_device().
+	FieldStateReadOnly = "readOnly"
 
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsName = "name"
+	// Pinned by test90 mbt-observe.py Records.
+	FieldStateRef = "ref"
 
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsNamespace = "namespace"
+	// Pinned by test90 mbt-observe.py Records, test90 mbt-observe.py local_devices().
+	FieldStateRegion = "region"
 
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsNdRegion = "ndRegion"
+	// Pinned by test90 mbt-observe.py Records, test90 mbt-observe.py local_devices().
+	FieldStateRegions = "regions"
 
-	// Pinned by test90 model/oracle.go checkLeaseStore.
-	FieldLeasesNode = "node"
+	// Pinned by test90 mbt-observe.py Records.
+	FieldStateRequest = "request"
 
-	// Pinned by test90 mbt-observe.py local_devices().
-	FieldLocalDevicesNode = "node"
+	// Pinned by test90 mbt-observe.py Records, test90 mbt-observe.py grant_key().
+	FieldStateResult = "result"
 
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsNodeMount = "nodeMount"
+	// Pinned by test90 mbt-observe.py result_of(), test90 mbt-observe.py results_of().
+	FieldStateResults = "results"
 
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsPath = "path"
-
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsPersistent = "persistent"
-
-	// Pinned by test90 model/oracle.go checkLeaseStore.
-	FieldLeasesPod = "pod"
-
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsPod = "pod"
-
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsReadOnly = "readOnly"
+	// Pinned by test90 mbt-observe.py local_devices(), test90 mbt-observe.py pool_device().
+	FieldStateSerial = "serial"
 
 	// Pinned by test90 mbt-observe.py local_devices().
-	FieldLocalDevicesRegion = "region"
-
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsRegion = "region"
+	FieldStateSize = "size"
 
 	// Pinned by test90 mbt-observe.py local_devices().
-	FieldLocalDevicesSerial = "serial"
+	FieldStateSource = "source"
 
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsSerial = "serial"
+	// Pinned by test90 mbt-observe.py Records, test90 mbt-observe.py lease_store(), test90
+	// mbt-observe.py lend_of(), test90 mbt-observe.py local_devices(), test90 mbt-observe.py
+	// local_region(), test90 mbt-observe.py set_up_for_first_part().
+	FieldStateState = "state"
+
+	// Pinned by test90 mbt-observe.py lend_of().
+	FieldStateTarget = "target"
+
+	// Pinned by test90 mbt-observe.py Records, test90 mbt-observe.py lease_store(), test90
+	// mbt-observe.py lend_of(), test90 mbt-observe.py pool_claims(), test90 mbt-observe.py
+	// prepared_uids().
+	FieldStateUid = "uid"
 
 	// Pinned by test90 mbt-observe.py local_devices().
-	FieldLocalDevicesSerialHex = "serialHex"
+	FieldStateUsers = "users"
 
 	// Pinned by test90 mbt-observe.py local_devices().
-	FieldLocalDevicesShared = "shared"
-
-	// Pinned by test90 mbt-observe.py pool_claims().
-	FieldPreparedPoolClaimsShared = "shared"
-
-	// Pinned by test90 model/oracle.go checkLeaseStore.
-	FieldLeasesState = "state"
+	FieldStateWhole = "whole"
 )
 
 // Log lines that docs/memory/cxl quotes.

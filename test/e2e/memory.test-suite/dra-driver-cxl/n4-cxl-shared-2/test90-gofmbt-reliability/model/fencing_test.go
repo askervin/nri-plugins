@@ -340,7 +340,7 @@ func TestDualOccupancy(t *testing.T) {
 	p.Claims = p.Claims[:1]
 	v, _ = checkState(s, o, "")
 	wantVerdict(t, v, VFail, "want its two (A39)")
-	// its local claim in the state files, its pool claim in the pool's
+	// its local claim in state.json, its pool claim in the pool's
 	o = observation(t, s)
 	o.VMs["vm1"].State.Prepared = slices.DeleteFunc(o.VMs["vm1"].State.Prepared, func(u string) bool { return strings.HasSuffix(u, "-local") })
 	v, _ = checkState(s, o, "")

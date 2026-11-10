@@ -897,7 +897,7 @@ func (k *checker) checkSlices(v VM) {
 	}
 }
 
-// checkLeaseStore: leases.json of a VM has the claims of its running
+// checkLeaseStore: state.json of a VM has the lease claims of its running
 // lease pods and their leases (A13, D I11).
 func (k *checker) checkLeaseStore(v VM, ov *ObsVM) {
 	if ov.State == nil {
@@ -1833,7 +1833,7 @@ func (k *checker) checkNodes(v VM, ov *ObsVM, pr *vmPred) {
 	}
 }
 
-// O4: the driver's state files and CDI specs.
+// O4: the driver's state.json and CDI specs.
 func (k *checker) checkStateFiles(v VM, ov *ObsVM, pr *vmPred) {
 	st := ov.State
 	if st == nil {

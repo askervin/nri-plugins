@@ -30,11 +30,10 @@ package compat
 //     one variable is replaced by the value of its only assignment in the
 //     same file, and skipped when there is no such value.
 //   - test90's mbt-observe.py: the driver log patterns from PANIC to the end
-//     of LOG_COUNTS, the names of observerNames, the state view files of
-//     state(), the fields read by local_devices() and pool_claims(), the
-//     CDI spec glob of cdi_pool() and the socket of driver_log().
-//   - test90's model/oracle*.go: the string constants, and the json fields
-//     of leases.json that checkLeaseStore decodes.
+//     of LOG_COUNTS, the names of observerNames, the fields of the records
+//     of state.json that its section of the driver's state reads, the CDI
+//     spec glob of cdi_pool() and the socket of driver_log().
+//   - test90's model/oracle*.go: the string constants.
 //   - docs/memory/cxl/*.md, not the generated ones: the lines of fenced
 //     blocks without a language that a paragraph mentioning a log
 //     introduces, and the inline code spans of 20 or more characters with
@@ -51,7 +50,6 @@ import (
 	"hash/fnv"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -78,7 +76,6 @@ const (
 	kindObserver
 	kindOracle
 	kindName
-	kindView
 	kindField
 	kindDoc
 )
@@ -92,8 +89,7 @@ var kinds = []struct{ prefix, title, verb string }{
 	kindObserver:  {"Observer", "Patterns of the driver log that the test90 observer counts or waits for.", "Pinned by"},
 	kindOracle:    {"Oracle", "Texts of the Events of the driver that the test90 oracle matches.", "Pinned by"},
 	kindName:      {"Name", "Paths, labels and names of the driver that the test90 observer reads.", "Pinned by"},
-	kindView:      {"View", "State view files that the test90 observer reads.", "Pinned by"},
-	kindField:     {"Field", "Fields of the state views that the test90 observer and oracle read, by view.", "Pinned by"},
+	kindField:     {"Field", "Fields of the records of state.json that the test90 observer reads.", "Pinned by"},
 	kindDoc:       {"Doc", "Log lines that docs/memory/cxl quotes.", "Quoted in"},
 }
 
@@ -959,21 +955,26 @@ func words(toks []shellToken) []string {
 // observerNames are the names of mbt-observe.py that hold paths, labels and
 // names of the driver.
 var observerNames = []string{
-	"LOCAL_DIR", "POOL_DIR", "POOL_MOUNTS", "LEASE_FS", "LEASES_DIR", "LEASE_FS_CTR",
-	"LEASE_LABEL", "REQUESTER_LABEL", "DRIVER_LABEL", "DRIVER_CONTAINER", "POOL_DRIVER", "CXL_REQUEST",
+	"LOCAL_DIR", "POOL_DIR", "POOL_MOUNTS", "LEASE_FS", "LEASES_DIR", "LEASE_FS_CTR", "STATE_FILE",
+	"LEASE_LABEL", "REQUESTER_LABEL", "DRIVER_LABEL", "DRIVER_CONTAINER", "LOCAL_DRIVER", "POOL_DRIVER",
+	"CXL_REQUEST",
 }
 
+// stateSection is the heading of the section of mbt-observe.py that reads
+// the records of state.json, up to the next heading.
+const stateSection = "### The driver's state"
+
 var (
-	pyAssign    = regexp.MustCompile(`^([A-Z][A-Z0-9_]*) = (.+)$`)
-	pyCompile   = regexp.MustCompile(`^re\.compile\(r"(.*)"\)$`)
-	pyLiteral   = regexp.MustCompile(`^"((?:[^"\\]|\\.)*)"$`)
-	pyCount     = regexp.MustCompile(`^\s+\("(\w+)", re\.compile\(r"(.*)"\)\),?$`)
-	pyStateFile = regexp.MustCompile(`\("(\w+)", ([A-Z_]+) \+ "/([^"]+)", `)
-	pyGet       = regexp.MustCompile(`\.get\("(\w+)"\)|\["(\w+)"\]`)
-	pyTuple     = regexp.MustCompile(`(?s)(?:keys = |for k in )\(([^)]*)\)`)
-	pyQuoted    = regexp.MustCompile(`"(\w+)"`)
-	pyGlob      = regexp.MustCompile(`glob\.glob\(d \+ "/([^"]+)"\)`)
-	pySocket    = regexp.MustCompile(`"/var/lib/kubelet/plugins/%s/([\w.]+\.sock)"`)
+	pyAssign  = regexp.MustCompile(`^([A-Z][A-Z0-9_]*) = (.+)$`)
+	pyCompile = regexp.MustCompile(`^re\.compile\(r"(.*)"\)$`)
+	pyLiteral = regexp.MustCompile(`^"((?:[^"\\]|\\.)*)"$`)
+	pyCount   = regexp.MustCompile(`^\s+\("(\w+)", re\.compile\(r"(.*)"\)\),?$`)
+	pyDef     = regexp.MustCompile(`^(?:def|class) (\w+)`)
+	pyGet     = regexp.MustCompile(`\.get\("(\w+)"\)|\["(\w+)"\]`)
+	pyTuple   = regexp.MustCompile(`for k in \(([^)]*)\)`)
+	pyQuoted  = regexp.MustCompile(`"(\w+)"`)
+	pyGlob    = regexp.MustCompile(`glob\.glob\(d \+ "/([^"]+)"\)`)
+	pySocket  = regexp.MustCompile(`"/var/lib/kubelet/plugins/%s/([\w.]+\.sock)"`)
 )
 
 // collectObserver adds the strings of test90's mbt-observe.py.
@@ -1054,43 +1055,17 @@ func collectObserver(c *collection, root string) error {
 		return "", fmt.Errorf("%s: no function %s", file, fn)
 	}
 
-	// The state view files and the fields read from them.
-	views := map[string]string{} // observer key -> file name
-	b, err := body("state")
+	// The fields of the records of state.json that the section of the
+	// driver's state reads, by function or class.
+	fields, err := stateFields(lines)
 	if err != nil {
 		return err
 	}
-	for _, m := range pyStateFile.FindAllStringSubmatch(b, -1) {
-		if _, ok := values[m[2]]; !ok {
-			return fmt.Errorf("%s: state(): unknown directory %s", file, m[2])
-		}
-		views[m[1]] = m[3]
-		c.add(kindView, viewName(m[3]), m[3], pin("state() "+m[1]+", in "+m[2]))
-	}
-	for _, fv := range []struct{ fn, key string }{{"local_devices", "localDevices"}, {"pool_claims", "pool"}} {
-		view, ok := views[fv.key]
-		if !ok {
-			return fmt.Errorf("%s: state() reads no %s", file, fv.key)
-		}
-		b, err := body(fv.fn)
-		if err != nil {
-			return err
-		}
-		var fields []string
-		for _, m := range pyGet.FindAllStringSubmatch(b, -1) {
-			fields = append(fields, m[1]+m[2])
-		}
-		for _, t := range pyTuple.FindAllStringSubmatch(b, -1) {
-			for _, q := range pyQuoted.FindAllStringSubmatch(t[1], -1) {
-				fields = append(fields, q[1])
-			}
-		}
-		for _, field := range fields {
-			c.add(kindField, viewName(view)+camel(field), field, pin(fv.fn+"()"))
-		}
+	for _, f := range fields {
+		c.add(kindField, "State"+camel(f.field), f.field, pin(f.where))
 	}
 
-	b, err = body("cdi_pool")
+	b, err := body("cdi_pool")
 	if err != nil {
 		return err
 	}
@@ -1106,6 +1081,53 @@ func collectObserver(c *collection, root string) error {
 		c.add(kindName, "DRASocket", m[1], pin("driver_log() sockets"))
 	}
 	return nil
+}
+
+// stateField is a field of the records of state.json that a function or
+// class of mbt-observe.py reads.
+type stateField struct {
+	field, where string
+}
+
+// stateFields returns the fields that the section stateSection of the
+// lines of mbt-observe.py reads, by function or class in their order:
+// the keys of .get("KEY") and ["KEY"] and of the tuples of "for k in".
+func stateFields(lines []string) ([]stateField, error) {
+	start := -1
+	for i, l := range lines {
+		if strings.HasPrefix(l, stateSection) {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 {
+		return nil, fmt.Errorf("mbt-observe.py: no section %q", stateSection)
+	}
+	var out []stateField
+	where := ""
+	for _, l := range lines[start:] {
+		if strings.HasPrefix(l, "### ") {
+			break
+		}
+		if m := pyDef.FindStringSubmatch(l); m != nil {
+			where = m[1]
+			if strings.HasPrefix(l, "def ") {
+				where += "()"
+			}
+		}
+		for _, m := range pyGet.FindAllStringSubmatch(l, -1) {
+			out = append(out, stateField{m[1] + m[2], where})
+		}
+		for _, t := range pyTuple.FindAllStringSubmatch(l, -1) {
+			for _, q := range pyQuoted.FindAllStringSubmatch(t[1], -1) {
+				out = append(out, stateField{q[1], where})
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("mbt-observe.py: section %q reads no fields", stateSection)
+	}
+	return out, nil
 }
 
 // pyConcat returns the value of a Python expression of string literals and
@@ -1124,15 +1146,13 @@ func pyConcat(expr string, values map[string]string) (string, bool) {
 	return b.String(), true
 }
 
-// collectOracle adds the string constants of test90's model/oracle*.go and
-// the fields of leases.json that its checkLeaseStore decodes.
+// collectOracle adds the string constants of test90's model/oracle*.go.
 func collectOracle(c *collection, root string) error {
 	files, err := filepath.Glob(filepath.Join(root, test90Dir, "model", "oracle*.go"))
 	if err != nil {
 		return err
 	}
 	sort.Strings(files)
-	found := false
 	for _, path := range files {
 		if strings.HasSuffix(path, "_test.go") {
 			continue
@@ -1143,65 +1163,28 @@ func collectOracle(c *collection, root string) error {
 			return err
 		}
 		for _, d := range af.Decls {
-			switch d := d.(type) {
-			case *ast.GenDecl:
-				if d.Tok != token.CONST {
-					continue
-				}
-				for _, spec := range d.Specs {
-					vs := spec.(*ast.ValueSpec)
-					for i, v := range vs.Values {
-						lit, ok := v.(*ast.BasicLit)
-						if !ok || lit.Kind != token.STRING || i >= len(vs.Names) {
-							continue
-						}
-						text, err := strconv.Unquote(lit.Value)
-						if err != nil {
-							return fmt.Errorf("%s: %w", file, err)
-						}
-						name := vs.Names[i].Name
-						c.add(kindOracle, camel(name), text, "test90 "+file+" "+name)
+			gd, ok := d.(*ast.GenDecl)
+			if !ok || gd.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				vs := spec.(*ast.ValueSpec)
+				for i, v := range vs.Values {
+					lit, ok := v.(*ast.BasicLit)
+					if !ok || lit.Kind != token.STRING || i >= len(vs.Names) {
+						continue
 					}
-				}
-			case *ast.FuncDecl:
-				if d.Name.Name == "checkLeaseStore" {
-					found = leaseStoreFields(c, file, d.Body) || found
+					text, err := strconv.Unquote(lit.Value)
+					if err != nil {
+						return fmt.Errorf("%s: %w", file, err)
+					}
+					name := vs.Names[i].Name
+					c.add(kindOracle, camel(name), text, "test90 "+file+" "+name)
 				}
 			}
 		}
-	}
-	if !found {
-		return fmt.Errorf("model/oracle*.go: no var store in checkLeaseStore")
 	}
 	return nil
-}
-
-// leaseStoreFields adds the json fields of the variable store in body and
-// returns whether body has one.
-func leaseStoreFields(c *collection, file string, body *ast.BlockStmt) bool {
-	found := false
-	ast.Inspect(body, func(n ast.Node) bool {
-		vs, ok := n.(*ast.ValueSpec)
-		if !ok || len(vs.Names) != 1 || vs.Names[0].Name != "store" {
-			return true
-		}
-		found = true
-		ast.Inspect(vs.Type, func(n ast.Node) bool {
-			fl, ok := n.(*ast.Field)
-			if !ok || fl.Tag == nil {
-				return true
-			}
-			tag, err := strconv.Unquote(fl.Tag.Value)
-			if err != nil {
-				return true
-			}
-			name := strings.Split(reflect.StructTag(tag).Get("json"), ",")[0]
-			c.add(kindField, "Leases"+camel(name), name, "test90 "+file+" checkLeaseStore")
-			return true
-		})
-		return false
-	})
-	return found
 }
 
 //
@@ -1374,11 +1357,6 @@ func camelUpper(s string) string {
 }
 
 var initialisms = map[string]bool{"CDI": true, "CXL": true, "DRA": true, "FS": true, "ID": true, "NRI": true}
-
-// viewName returns the name of a view file name.
-func viewName(file string) string {
-	return camel(strings.TrimSuffix(file, filepath.Ext(file)))
-}
 
 // derivedName returns a name of text from its first words, a shell expansion
 // giving the name of its variable as a word.

@@ -1,0 +1,111 @@
+{
+  "bootID": "boot-1",
+  "devices": [
+    {
+      "serial": 3238060769,
+      "serialHex": "c100e2e1",
+      "memdev": "mem0",
+      "region": "region0",
+      "node": 2,
+      "dax": "dax0.0",
+      "claims": {
+        "11111111-0000-0000-0000-000000000001": [
+          {
+            "request": "mem",
+            "region": "region0",
+            "mode": "numa",
+            "size": 134217728,
+            "dax": "dax0.1"
+          }
+        ],
+        "11111111-0000-0000-0000-000000000002": [
+          {
+            "request": "mem",
+            "region": "region0",
+            "mode": "dax",
+            "size": 134217728,
+            "dax": "dax0.2",
+            "daxDevice": "/dev/dax0.2",
+            "major": 252,
+            "minor": 2,
+            "readOnly": true
+          }
+        ],
+        "11111111-0000-0000-0000-000000000005": null,
+        "22222222-0000-0000-0000-000000000001": [
+          {
+            "request": "memory",
+            "region": "region0",
+            "mode": "numa",
+            "size": 134217728,
+            "dax": "dax0.3"
+          }
+        ]
+      }
+    },
+    {
+      "serial": 3238060770,
+      "serialHex": "c100e2e2",
+      "memdev": "mem1",
+      "region": "region1",
+      "node": 3,
+      "dax": "dax1.0",
+      "shared": true,
+      "claims": {
+        "11111111-0000-0000-0000-000000000003": [
+          {
+            "request": "mem",
+            "region": "region1",
+            "mode": "dax",
+            "size": 536870912,
+            "dax": "dax1.0",
+            "daxDevice": "/dev/dax1.0",
+            "major": 252,
+            "minor": 4
+          }
+        ],
+        "11111111-0000-0000-0000-000000000004": [
+          {
+            "request": "shared",
+            "region": "region1",
+            "mode": "dax",
+            "size": 536870912,
+            "dax": "dax1.0",
+            "daxDevice": "/dev/dax1.0",
+            "major": 252,
+            "minor": 4,
+            "readOnly": true
+          }
+        ]
+      }
+    },
+    {
+      "serial": 3249414145,
+      "serialHex": "c1ae2001",
+      "memdev": "mem2",
+      "region": "region2",
+      "node": -1,
+      "persistent": true,
+      "ndRegion": "region7",
+      "namespace": "namespace7.0",
+      "blockDevice": "/dev/pmem7",
+      "blockMajor": 259,
+      "claims": {
+        "11111111-0000-0000-0000-000000000006": [
+          {
+            "request": "pmem",
+            "region": "region2",
+            "mode": "fs",
+            "size": 1073741824,
+            "readOnly": true,
+            "access": "direct",
+            "fsType": "erofs",
+            "nodeMount": "/var/lib/kubelet/plugins/cxl.nri.io/mounts/c1ae2001-direct",
+            "path": "/run/cxl-fs/C1AE2001"
+          }
+        ]
+      }
+    }
+  ],
+  "viewOf": "state.json"
+}

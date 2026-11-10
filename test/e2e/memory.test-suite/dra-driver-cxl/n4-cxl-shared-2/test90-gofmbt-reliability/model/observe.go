@@ -315,7 +315,8 @@ type ObsCtrMounts struct {
 	Mounts []ObsMount `json:"mounts"`
 }
 
-// ObsPoolClaim is an entry of preparedPoolClaims.json (A24 poolClaims).
+// ObsPoolClaim is a prepared claim of the pool driver in state.json (A24
+// poolClaims).
 type ObsPoolClaim struct {
 	ClaimName string            `json:"claimName"`
 	Devices   []ObsPoolClaimDev `json:"devices"`
@@ -445,6 +446,9 @@ type ObsNode struct {
 	MemTotal uint64 `json:"memtotal"`
 }
 
+// ObsDriverState is what the observer derives from the driver's
+// state.json: the prepared claims of cxl.nri.io (Prepared, Info) and of the
+// pool driver (Pool) by UID, the local memdevs and the leases.
 type ObsDriverState struct {
 	Prepared     []string         `json:"prepared"`
 	Info         []string         `json:"info"`
@@ -458,8 +462,8 @@ type ObsLocalDevices struct {
 	Devices []ObsLocalDevice `json:"devices"`
 }
 
-// ObsLocalDevice is a device of localDevices.json. The driver writes the
-// serial as a number (and serialHex); a string is accepted too.
+// ObsLocalDevice is a local memdev of state.json. The observer writes the
+// serial as 0x hex text; a number and serialHex are accepted too.
 type ObsLocalDevice struct {
 	Serial    json.RawMessage            `json:"serial"`
 	SerialHex string                     `json:"serialHex"`

@@ -1,0 +1,114 @@
+{
+  "11111111-0000-0000-0000-000000000001": {
+    "claimName": "demo/c-numa",
+    "devices": [
+      {
+        "requestName": "mem",
+        "deviceName": "memdev-c100e2e1",
+        "result": 0,
+        "deviceType": "memdev",
+        "mode": "numa",
+        "sysfsPath": "/sys/bus/cxl/devices/region0",
+        "numaNodes": [
+          2
+        ],
+        "nodeAffinities": [
+          0
+        ],
+        "totalBytes": 134217728,
+        "consumedBytes": 134217728,
+        "serial": "0xc100e2e1",
+        "container": {
+          "steering": {
+            "policy": "auto"
+          }
+        },
+        "origins": {
+          "container.steering.policy": "claim"
+        }
+      }
+    ],
+    "bootID": "boot-1",
+    "viewOf": "state.json"
+  },
+  "11111111-0000-0000-0000-000000000006": {
+    "claimName": "demo/c-fs",
+    "devices": [
+      {
+        "requestName": "pmem",
+        "deviceName": "memdev-c1ae2001",
+        "result": 0,
+        "deviceType": "memdev",
+        "mode": "fs",
+        "sysfsPath": "/sys/bus/cxl/devices/region2",
+        "numaNodes": null,
+        "totalBytes": 1073741824,
+        "consumedBytes": 1073741824,
+        "serial": "0xc1ae2001",
+        "readOnly": true,
+        "persistent": true,
+        "namespace": "namespace7.0",
+        "blockDevice": "/dev/pmem7",
+        "blockMajor": 259,
+        "access": "direct",
+        "path": "/run/cxl-fs/C1AE2001",
+        "nodeMount": "/var/lib/kubelet/plugins/cxl.nri.io/mounts/c1ae2001-direct",
+        "fsType": "erofs"
+      }
+    ],
+    "bootID": "boot-1",
+    "viewOf": "state.json"
+  },
+  "11111111-0000-0000-0000-000000000007": {
+    "claimName": "demo/c-lease",
+    "devices": [
+      {
+        "requestName": "lease",
+        "deviceName": "lease",
+        "result": 0,
+        "deviceType": "lease",
+        "numaNodes": null,
+        "totalBytes": 0,
+        "consumedBytes": 0
+      }
+    ],
+    "bootID": "boot-1",
+    "viewOf": "state.json"
+  },
+  "22222222-0000-0000-0000-000000000001": {
+    "claimName": "demo/cxl-lease-0a1b2c3d",
+    "devices": [
+      {
+        "requestName": "memory",
+        "deviceName": "memdev-c100e2e1",
+        "result": 0,
+        "deviceType": "memdev",
+        "mode": "numa",
+        "sysfsPath": "/sys/bus/cxl/devices/region0",
+        "numaNodes": [
+          2
+        ],
+        "nodeAffinities": [
+          0
+        ],
+        "totalBytes": 134217728,
+        "consumedBytes": 134217728,
+        "serial": "0xc100e2e1"
+      }
+    ],
+    "lend": {
+      "lease": "0a1b2c3d",
+      "pod": {
+        "namespace": "demo",
+        "name": "requester",
+        "uid": "55555555-0000-0000-0000-000000000001"
+      },
+      "container": "main",
+      "nodes": [
+        2
+      ]
+    },
+    "bootID": "boot-1",
+    "viewOf": "state.json"
+  }
+}

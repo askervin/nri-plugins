@@ -970,7 +970,7 @@ func (s *sim) observeVM(v VM) *ObsVM {
 	return ov
 }
 
-// leaseStore is the leases.json of a VM.
+// leaseStore is the leases of state.json of a VM.
 func (s *sim) leaseStore(v VM) json.RawMessage {
 	st := s.truth
 	type lease struct {

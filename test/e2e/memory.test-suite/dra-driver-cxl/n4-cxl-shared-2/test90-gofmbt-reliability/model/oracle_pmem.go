@@ -621,8 +621,8 @@ func (k *checker) checkLeaseDirs(v VM, ov *ObsVM, want, either map[mountKey]bool
 	}
 }
 
-// checkPoolClaims (P4): the block device of the persistent claims in
-// preparedPoolClaims.json is the namespace's.
+// checkPoolClaims (P4): the block device of the persistent pool claims in
+// state.json is the namespace's.
 func (k *checker) checkPoolClaims(v VM, ov *ObsVM, blockdevs map[DevID]string) {
 	var claims map[string]ObsPoolClaim
 	if !k.part(v, "poolClaims", ov.PoolClaims, &claims) {
