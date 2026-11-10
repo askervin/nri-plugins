@@ -67,38 +67,6 @@ type viewPrepareResult struct {
 	ViewOf string `json:"viewOf,omitempty"`
 }
 
-// viewDeviceInfo is a device of a value of preparedClaimsInfo.json.
-type viewDeviceInfo struct {
-	RequestName    string `json:"requestName"`
-	DeviceName     string `json:"deviceName"`
-	Result         int    `json:"result"`
-	DeviceType     string `json:"deviceType"`
-	Mode           string `json:"mode,omitempty"`
-	SysfsPath      string `json:"sysfsPath,omitempty"`
-	NumaNodes      []int  `json:"numaNodes"`
-	NumaAffinities []int  `json:"nodeAffinities,omitempty"`
-	TotalBytes     uint64 `json:"totalBytes"`
-	ConsumedBytes  int64  `json:"consumedBytes"`
-	Serial         string `json:"serial,omitempty"`
-	Region         string `json:"region,omitempty"`
-	DaxDevice      string `json:"daxDevice,omitempty"`
-	DaxMajor       int    `json:"daxMajor,omitempty"`
-	DaxMinor       int    `json:"daxMinor,omitempty"`
-	ReadOnly       bool   `json:"readOnly,omitempty"`
-	Shared         bool   `json:"shared,omitempty"`
-	Persistent     bool   `json:"persistent,omitempty"`
-	Namespace      string `json:"namespace,omitempty"`
-	BlockDevice    string `json:"blockDevice,omitempty"`
-	BlockMajor     int    `json:"blockMajor,omitempty"`
-	BlockMinor     int    `json:"blockMinor,omitempty"`
-	Access         string `json:"access,omitempty"`
-	Path           string `json:"path,omitempty"`
-	NodeMount      string `json:"nodeMount,omitempty"`
-	LoopDevice     string `json:"loopDevice,omitempty"`
-	FsType         string `json:"fsType,omitempty"`
-	config.ResultSettings
-}
-
 // viewLend is the lend of a companion claim in preparedClaimsInfo.json and
 // preparedPoolClaims.json.
 type viewLend struct {
@@ -113,49 +81,57 @@ type viewLend struct {
 
 // viewClaimInfo is a value of preparedClaimsInfo.json.
 type viewClaimInfo struct {
-	ClaimName string           `json:"claimName"`
-	Devices   []viewDeviceInfo `json:"devices"`
-	Lend      *viewLend        `json:"lend,omitempty"`
-	BootID    string           `json:"bootID,omitempty"`
-	ViewOf    string           `json:"viewOf,omitempty"`
+	ClaimName string             `json:"claimName"`
+	Devices   []state.DeviceInfo `json:"devices"`
+	Lend      *viewLend          `json:"lend,omitempty"`
+	BootID    string             `json:"bootID,omitempty"`
+	ViewOf    string             `json:"viewOf,omitempty"`
 }
 
-// viewPoolDevice is a device of a value of preparedPoolClaims.json.
-type viewPoolDevice struct {
-	Result      int    `json:"result"`
-	Request     string `json:"request"`
-	Device      string `json:"device"`
-	Pool        string `json:"pool"`
-	Serial      uint64 `json:"serial"`
-	Shared      bool   `json:"shared"`
-	Size        uint64 `json:"size"`
-	Mode        string `json:"mode"`
-	ReadOnly    bool   `json:"readOnly,omitempty"`
-	Memdev      string `json:"memdev"`
-	Region      string `json:"region"`
-	Dax         string `json:"dax"`
-	DaxDevice   string `json:"daxDevice,omitempty"`
-	DaxMajor    int    `json:"daxMajor,omitempty"`
-	DaxMinor    int    `json:"daxMinor,omitempty"`
-	NumaNode    int    `json:"node"`
+// PoolDevice is a device of a value of preparedPoolClaims.json: one
+// allocation result of a pool claim.
+type PoolDevice struct {
+	// Result is the index of the allocation result of the device in the
+	// claim, the n of its CDI device claim-<uid>-<n>.
+	Result    int    `json:"result"`
+	Request   string `json:"request"`
+	Device    string `json:"device"`
+	Pool      string `json:"pool"`
+	Serial    uint64 `json:"serial"`
+	Shared    bool   `json:"shared"`
+	Size      uint64 `json:"size"`
+	Mode      string `json:"mode"`               // api.ModeNUMA, ModeDax, ModeBlock or ModeFs
+	ReadOnly  bool   `json:"readOnly,omitempty"` // dax, block: the CDI device node allows reads only; fs: the mount
+	Memdev    string `json:"memdev"`
+	Region    string `json:"region"`
+	Dax       string `json:"dax"`
+	DaxDevice string `json:"daxDevice,omitempty"` // /dev/daxX.Y (dax mode)
+	DaxMajor  int    `json:"daxMajor,omitempty"`
+	DaxMinor  int    `json:"daxMinor,omitempty"`
+	NumaNode  int    `json:"node"` // NUMA node of the memory (numa mode), -1 if none
+	// Devices of persistent memory (modes block and fs).
 	Persistent  bool   `json:"persistent,omitempty"`
-	NdRegion    string `json:"ndRegion,omitempty"`
-	Namespace   string `json:"namespace,omitempty"`
-	BlockDevice string `json:"blockDevice,omitempty"`
+	NdRegion    string `json:"ndRegion,omitempty"`    // nvdimm region of Region
+	Namespace   string `json:"namespace,omitempty"`   // fsdax namespace, namespaceK.M
+	BlockDevice string `json:"blockDevice,omitempty"` // its block device, /dev/pmemK
 	BlockMajor  int    `json:"blockMajor,omitempty"`
 	BlockMinor  int    `json:"blockMinor,omitempty"`
-	Access      string `json:"access,omitempty"`
-	FsType      string `json:"fsType,omitempty"`
-	Path        string `json:"path,omitempty"`
-	NodeMount   string `json:"nodeMount,omitempty"`
-	LoopDevice  string `json:"loopDevice,omitempty"`
+	Access      string `json:"access,omitempty"` // fs: api.AccessDirect or api.AccessCached ("" in a record of preparing: the default)
+	// FsType is the filesystem type of mode fs: the one mounted, the
+	// declared one ("": detect) in a record of preparing.
+	FsType     string `json:"fsType,omitempty"`
+	Path       string `json:"path,omitempty"`       // fs: the directory in the container
+	NodeMount  string `json:"nodeMount,omitempty"`  // fs: the node mount of the serial and access
+	LoopDevice string `json:"loopDevice,omitempty"` // fs, cached: the loop device of the node mount
+	// ResultSettings are the container settings of the resolved
+	// MemoryConfig of the result and their origins.
 	config.ResultSettings
 }
 
 // viewPoolClaim is a value of preparedPoolClaims.json.
 type viewPoolClaim struct {
 	ClaimName string                      `json:"claimName"`
-	Devices   []viewPoolDevice            `json:"devices"`
+	Devices   []PoolDevice                `json:"devices"`
 	Result    kubeletplugin.PrepareResult `json:"result"`
 	Lend      *viewLend                   `json:"lend,omitempty"`
 	BootID    string                      `json:"bootID,omitempty"`
@@ -495,7 +471,7 @@ func PrepareResult(p *state.Preparation, kind string) kubeletplugin.PrepareResul
 func preparedClaimsInfoView(doc *Document, opts ViewOptions, marker string) map[string]viewClaimInfo {
 	out := map[string]viewClaimInfo{}
 	for _, p := range viewed(doc, device.DriverName) {
-		info := viewClaimInfo{ClaimName: p.ClaimName, Devices: []viewDeviceInfo{}, Lend: lendView(doc, p), BootID: p.BootID, ViewOf: marker}
+		info := viewClaimInfo{ClaimName: p.ClaimName, Devices: []state.DeviceInfo{}, Lend: lendView(doc, p), BootID: p.BootID, ViewOf: marker}
 		for _, r := range results(p) {
 			info.Devices = append(info.Devices, deviceInfoView(doc, r, opts))
 		}
@@ -506,19 +482,19 @@ func preparedClaimsInfoView(doc *Document, opts ViewOptions, marker string) map[
 
 // deviceInfoView returns a result of a preparation of cxl.nri.io as a
 // device of preparedClaimsInfo.json.
-func deviceInfoView(doc *Document, r *state.Result, opts ViewOptions) viewDeviceInfo {
-	d := viewDeviceInfo{RequestName: r.Request, DeviceName: r.Device, Result: r.Index, ResultSettings: r.Settings}
+func deviceInfoView(doc *Document, r *state.Result, opts ViewOptions) state.DeviceInfo {
+	d := state.DeviceInfo{RequestName: r.Request, DeviceName: r.Device, Result: r.Index, ResultSettings: r.Settings}
 	switch r.Kind {
 	case state.ResultRegion:
 		d.DeviceType, d.Mode = device.DeviceTypeRegion, api.ModeNUMA
 		d.Region = r.Region.Name
 		d.SysfsPath = regionPath(opts, r.Region.Name)
-		d.NumaNodes = []int{r.Region.NumaNode}
-		d.NumaAffinities = slices.Clone(r.Region.NumaAffinity)
+		d.NUMANodes = []int{r.Region.NumaNode}
+		d.NodeAffinities = slices.Clone(r.Region.NumaAffinity)
 		d.TotalBytes, d.ConsumedBytes = r.Region.Size, r.Region.Consumed
 	case state.ResultDRAM:
 		d.DeviceType, d.Mode = device.DeviceTypeDRAM, api.ModeNUMA
-		d.NumaNodes = slices.Clone(r.DRAM.NumaNodes)
+		d.NUMANodes = slices.Clone(r.DRAM.NumaNodes)
 		d.TotalBytes, d.ConsumedBytes = r.DRAM.Size, r.DRAM.Consumed
 	case state.ResultLeaseClaim:
 		d.DeviceType = device.DeviceTypeLease
@@ -534,17 +510,17 @@ func deviceInfoView(doc *Document, r *state.Result, opts ViewOptions) viewDevice
 
 // grantInfoView sets what a grant of cxl.nri.io got in the view of its
 // device in preparedClaimsInfo.json.
-func grantInfoView(doc *Document, r *state.Result, g *state.Grant, d *viewDeviceInfo, opts ViewOptions) {
+func grantInfoView(doc *Document, r *state.Result, g *state.Grant, d *state.DeviceInfo, opts ViewOptions) {
 	d.Mode = string(g.Asked.Mode)
 	d.Serial = g.Serial.String()
 	d.SysfsPath = regionPath(opts, string(g.Got.Region))
 	d.TotalBytes, d.ConsumedBytes = g.Got.Size, int64(g.Got.Size)
-	d.NumaAffinities = numaAffinity(doc, g)
+	d.NodeAffinities = numaAffinity(doc, g)
 	d.Shared = sharedGrant(g)
 	switch g.Asked.Mode {
 	case state.ModeNUMA:
 		if g.Got.NumaNode != nil {
-			d.NumaNodes = []int{*g.Got.NumaNode}
+			d.NUMANodes = []int{*g.Got.NumaNode}
 		}
 	case state.ModeDax:
 		if g.Got.Dax != "" {
@@ -625,7 +601,7 @@ func preparedPoolClaimsView(doc *Document, opts ViewOptions, marker string) map[
 	for _, p := range viewed(doc, opts.PoolDriver) {
 		pc := viewPoolClaim{
 			ClaimName: p.ClaimName,
-			Devices:   []viewPoolDevice{},
+			Devices:   []PoolDevice{},
 			Result:    PrepareResult(p, device.PoolCDIKind),
 			Lend:      lendView(doc, p),
 			BootID:    p.BootID,
@@ -643,8 +619,8 @@ func preparedPoolClaimsView(doc *Document, opts ViewOptions, marker string) map[
 
 // poolDeviceView returns a result of a pool preparation as a device of
 // preparedPoolClaims.json.
-func poolDeviceView(doc *Document, r *state.Result, opts ViewOptions) viewPoolDevice {
-	d := viewPoolDevice{Result: r.Index, Request: r.Request, Device: r.Device, Pool: r.Pool, NumaNode: -1, ResultSettings: r.Settings}
+func poolDeviceView(doc *Document, r *state.Result, opts ViewOptions) PoolDevice {
+	d := PoolDevice{Result: r.Index, Request: r.Request, Device: r.Device, Pool: r.Pool, NumaNode: -1, ResultSettings: r.Settings}
 	g := doc.Grant(*r.Grant)
 	if g == nil {
 		return d
@@ -675,7 +651,7 @@ func poolDeviceView(doc *Document, r *state.Result, opts ViewOptions) viewPoolDe
 
 // poolPersistentView sets the facts of a pool device of persistent memory
 // in its view.
-func poolPersistentView(doc *Document, g *state.Grant, d *viewPoolDevice) {
+func poolPersistentView(doc *Document, g *state.Grant, d *PoolDevice) {
 	d.Persistent = true
 	if reg := doc.Region(g.Got.Region); reg != nil && reg.Pmem != nil {
 		d.NdRegion = reg.Pmem.NdRegion
@@ -924,7 +900,7 @@ func PoolLendContent(doc *Document, p *state.Preparation) ([]byte, error) {
 // driver as preparedPoolClaims.json has them, in any state.
 func PoolDevicesContent(doc *Document, p *state.Preparation, opts ViewOptions) ([]byte, error) {
 	opts = opts.withDefaults()
-	devs := []viewPoolDevice{}
+	devs := []PoolDevice{}
 	for _, r := range results(p) {
 		if r.Kind == state.ResultGrant {
 			devs = append(devs, poolDeviceView(doc, r, opts))
@@ -937,7 +913,7 @@ func PoolDevicesContent(doc *Document, p *state.Preparation, opts ViewOptions) (
 // preparedClaimsInfo.json has its value, in any state.
 func ClaimInfoContent(doc *Document, p *state.Preparation, opts ViewOptions) ([]byte, error) {
 	opts = opts.withDefaults()
-	info := viewClaimInfo{ClaimName: p.ClaimName, Devices: []viewDeviceInfo{}, Lend: lendView(doc, p), BootID: p.BootID}
+	info := viewClaimInfo{ClaimName: p.ClaimName, Devices: []state.DeviceInfo{}, Lend: lendView(doc, p), BootID: p.BootID}
 	for _, r := range results(p) {
 		info.Devices = append(info.Devices, deviceInfoView(doc, r, opts))
 	}

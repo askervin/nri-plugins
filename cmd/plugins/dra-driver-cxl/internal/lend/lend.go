@@ -46,29 +46,6 @@ type Lend struct {
 	Mounts []string `json:"mounts,omitempty"`
 }
 
-// LentDevice is one prepared device of a companion claim, as the lease
-// broker needs it.
-type LentDevice struct {
-	Driver    string // DRA driver that prepared the device
-	Source    string // api.SourcePool or api.SourceLocal
-	Request   string
-	Device    string
-	Pool      string
-	Serial    uint64
-	Shared    bool
-	Size      uint64 // bytes the lease gets: the slice size or the device size
-	Mode      string // api.ModeNUMA, api.ModeDax, api.ModeBlock or api.ModeFs
-	ReadOnly  bool
-	NumaNode  int    // numa: NUMA node of the memory, else -1
-	DaxDevice string // dax: /dev/daxX.Y
-	// BlockDevice is the host path of the block device of a block or fs
-	// device, /dev/pmemK.
-	BlockDevice string
-	Access      string // fs: api.AccessDirect or api.AccessCached
-	FsType      string // fs: the filesystem type
-	NodeMount   string // fs: the host path of the node mount of the device
-}
-
 // LeaseHooks is what a driver tells the lease broker about companion
 // claims. The hooks are called with the driver's claim locked and must not
 // call back into the driver.
@@ -77,8 +54,9 @@ type LeaseHooks interface {
 	// marks the lease Lending and returns the lend of the lease's
 	// container (without nodes). An error fails the Prepare.
 	OnLending(id string, claim *resourcev1.ResourceClaim) (*Lend, error)
-	// OnPrepared marks the lease Ready with the prepared devices.
-	OnPrepared(id string, devs []LentDevice)
+	// OnPrepared marks the lease Ready with the prepared memdevs of the
+	// companion claim, of the source.
+	OnPrepared(id string, source state.Source, devs []state.DeviceInfo)
 	// OnLendFailed records a lend error (kubelet retries the Prepare).
 	OnLendFailed(id string, err error)
 	// OnReleasing is called when the companion claim is unprepared.

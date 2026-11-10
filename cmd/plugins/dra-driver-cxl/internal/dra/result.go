@@ -25,16 +25,15 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
-	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
 // The results of a preparation as the readers of the claims get them,
 // derived from the records by the store's views (one derivation for the
 // view files, kubelet, the CDI spec, the lease broker and the NRI plugin):
-// the PrepareResult of kubelet, DeviceInfo per result (the devices of
-// preparedClaimsInfo.json, of either driver), PoolDevice (the devices of
-// preparedPoolClaims.json).
+// the PrepareResult of kubelet, state.DeviceInfo per result (the devices of
+// preparedClaimsInfo.json, of either driver), store.PoolDevice (the devices
+// of preparedPoolClaims.json).
 
 // ClaimInfo is a prepared claim with its devices: a value of
 // preparedClaimsInfo.json.
@@ -45,46 +44,6 @@ type ClaimInfo struct {
 	Lend *lend.Lend `json:"lend,omitempty"`
 	// BootID is the boot id of the kernel that the claim was prepared in.
 	BootID string `json:"bootID,omitempty"`
-}
-
-// PoolDevice is one allocation result of a pool claim: a device of
-// preparedPoolClaims.json.
-type PoolDevice struct {
-	// Result is the index of the allocation result of the device in the
-	// claim, the n of its CDI device claim-<uid>-<n>.
-	Result    int    `json:"result"`
-	Request   string `json:"request"`
-	Device    string `json:"device"`
-	Pool      string `json:"pool"`
-	Serial    uint64 `json:"serial"`
-	Shared    bool   `json:"shared"`
-	Size      uint64 `json:"size"`
-	Mode      string `json:"mode"`               // api.ModeNUMA, ModeDax, ModeBlock or ModeFs
-	ReadOnly  bool   `json:"readOnly,omitempty"` // dax, block: the CDI device node allows reads only; fs: the mount
-	Memdev    string `json:"memdev"`
-	Region    string `json:"region"`
-	Dax       string `json:"dax"`
-	DaxDevice string `json:"daxDevice,omitempty"` // /dev/daxX.Y (dax mode)
-	DaxMajor  int    `json:"daxMajor,omitempty"`
-	DaxMinor  int    `json:"daxMinor,omitempty"`
-	NumaNode  int    `json:"node"` // NUMA node of the memory (numa mode), -1 if none
-	// Devices of persistent memory (modes block and fs).
-	Persistent  bool   `json:"persistent,omitempty"`
-	NdRegion    string `json:"ndRegion,omitempty"`    // nvdimm region of Region
-	Namespace   string `json:"namespace,omitempty"`   // fsdax namespace, namespaceK.M
-	BlockDevice string `json:"blockDevice,omitempty"` // its block device, /dev/pmemK
-	BlockMajor  int    `json:"blockMajor,omitempty"`
-	BlockMinor  int    `json:"blockMinor,omitempty"`
-	Access      string `json:"access,omitempty"` // fs: api.AccessDirect or api.AccessCached ("" in a record of preparing: the default)
-	// FsType is the filesystem type of mode fs: the one mounted, the
-	// declared one ("": detect) in a record of preparing.
-	FsType     string `json:"fsType,omitempty"`
-	Path       string `json:"path,omitempty"`       // fs: the directory in the container
-	NodeMount  string `json:"nodeMount,omitempty"`  // fs: the node mount of the serial and access
-	LoopDevice string `json:"loopDevice,omitempty"` // fs, cached: the loop device of the node mount
-	// ResultSettings are the container settings of the resolved
-	// MemoryConfig of the result and their origins.
-	config.ResultSettings
 }
 
 // claimInfoOf returns a preparation in any state as preparedClaimsInfo.json
@@ -103,12 +62,12 @@ func claimInfoOf(doc *store.Document, prep *state.Preparation, opts store.ViewOp
 
 // poolDevicesOf returns the devices of a preparation in any state as
 // preparedPoolClaims.json has them.
-func poolDevicesOf(doc *store.Document, prep *state.Preparation, opts store.ViewOptions) ([]PoolDevice, error) {
+func poolDevicesOf(doc *store.Document, prep *state.Preparation, opts store.ViewOptions) ([]store.PoolDevice, error) {
 	data, err := store.PoolDevicesContent(doc, prep, opts)
 	if err != nil {
 		return nil, err
 	}
-	var devs []PoolDevice
+	var devs []store.PoolDevice
 	if err := json.Unmarshal(data, &devs); err != nil {
 		return nil, err
 	}
@@ -165,35 +124,6 @@ func deviceMemory(d *state.DeviceInfo, keys envKeys) (api.Memory, bool) {
 		return m, false
 	}
 	return m, true
-}
-
-// lentDevice returns a memdev of a prepared claim of the driver of the
-// source as the lease broker sees it, with the pool of its allocation
-// result.
-func lentDevice(d *state.DeviceInfo, driver, source, pool string) lend.LentDevice {
-	serial, _ := api.ParseSerial(d.Serial)
-	ld := lend.LentDevice{
-		Driver:   driver,
-		Source:   source,
-		Request:  d.RequestName,
-		Device:   d.DeviceName,
-		Pool:     pool,
-		Serial:   serial,
-		Size:     d.TotalBytes,
-		Mode:     d.Mode,
-		ReadOnly: d.ReadOnly,
-		Shared:   d.Shared,
-		NumaNode: -1,
-	}
-	switch {
-	case d.Persistent:
-		ld.BlockDevice, ld.Access, ld.NodeMount, ld.FsType = d.BlockDevice, d.Access, d.NodeMount, d.FsType
-	case d.Mode == api.ModeDax:
-		ld.DaxDevice = d.DaxDevice
-	case len(d.NUMANodes) > 0:
-		ld.NumaNode = d.NUMANodes[0]
-	}
-	return ld
 }
 
 // deviceNumaNode returns the NUMA node of a memdev in mode numa, -1 for

@@ -759,7 +759,7 @@ func TestLocalPersistentLease(t *testing.T) {
 		t.Fatalf("lend %+v", rec)
 	}
 	if len(hooks.devs) != 1 || hooks.devs[0].Mode != api.ModeFs || hooks.devs[0].NodeMount != e.nodeMount("direct") || hooks.devs[0].FsType != "ext4" ||
-		hooks.devs[0].BlockDevice != pmem || !hooks.devs[0].ReadOnly || hooks.devs[0].Source != api.SourceLocal {
+		hooks.devs[0].BlockDevice != pmem || !hooks.devs[0].ReadOnly || hooks.source != state.SourceLocal {
 		t.Fatalf("lent %+v", hooks.devs)
 	}
 	if cdiDeviceByName(e.cdiSpec(), "claim-c1-0") != nil {

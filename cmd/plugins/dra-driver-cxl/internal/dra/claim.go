@@ -15,6 +15,7 @@
 package dra
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"slices"
@@ -423,22 +424,10 @@ func (p *Plugin) persistentRequest(pr *prepare, req *engine.GrantRequest, r *res
 	return nil
 }
 
-// poolDevice is the status data of an allocation result of a pool claim,
-// with the mode, read-only setting, access, filesystem type and path of its
-// device settings.
-type poolDevice struct {
-	provenance.DeviceData
-	Mode     string
-	ReadOnly bool
-	Access   string // fs: api.AccessDirect, api.AccessCached or "" (by type)
-	FsType   string // fs: the declared type, "" to detect it
-	Path     string // fs: the directory in the container
-}
-
-// facts returns the facts of the device (the contract of the pool): a
-// device that is not shared has one claim at most, and no other host while
-// it is allocated.
-func (d *poolDevice) facts() config.DeviceFacts {
+// poolFacts returns the facts of a pool device of its status data (the
+// contract of the pool): a device that is not shared has one claim at most,
+// and no other host while it is allocated.
+func poolFacts(d *provenance.DeviceData) config.DeviceFacts {
 	single := d.Exclusive || !d.Shared
 	return config.DeviceFacts{
 		Persistent: d.Persistent,
@@ -495,11 +484,10 @@ func (p *Plugin) poolResults(claim *resourcev1.ResourceClaim, pr *prepare, resol
 		if r.Driver != p.rules.Name {
 			continue
 		}
-		dd, err := provenance.StatusData(claim, r)
+		data, err := provenance.StatusData(claim, r)
 		if err != nil {
 			return err
 		}
-		data := &poolDevice{DeviceData: *dd}
 		if data.Shared {
 			// before the device is touched: shares "0" fits next to an
 			// exclusive holder
@@ -510,53 +498,42 @@ func (p *Plugin) poolResults(claim *resourcev1.ResourceClaim, pr *prepare, resol
 		res := resolved[n]
 		klog.V(3).Infof("%s: claim %s request %s result %d: MemoryConfig %s", p.rules.Name, pr.claimName, r.Request, n, res.Config.Compact())
 		cfg := res.Config.DeviceSection()
-		if data.Mode, err = cfg.PoolMode(data.facts()); err != nil {
+		mode, err := cfg.PoolMode(poolFacts(data))
+		if err != nil {
 			return fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, err)
 		}
-		data.ReadOnly = cfg.IsReadOnly()
+		asked := state.Asked{Source: state.SourcePool, Kind: grantKind(data.Shared, data.Persistent), Mode: state.Mode(mode),
+			ReadOnly: cfg.IsReadOnly(), Size: data.Size, Shared: data.Shared}
 		// the env key of the device, as the CDI spec counts them
 		key := keys.next(api.Key(data.Serial, 1))
-		if data.Mode == api.ModeFs {
+		if mode == api.ModeFs {
 			// access "": by the type of the filesystem, at its Prepare
-			data.Access, data.Path, data.FsType = cfg.Access, cfg.Path, cfg.FsType
-			if data.Path == "" {
-				data.Path = defaultFsPath(key)
-			}
+			asked.Access, asked.Path, asked.FsType = state.Access(cfg.Access), cmp.Or(cfg.Path, defaultFsPath(key)), cfg.FsType
 		}
-		if err := p.checkSamePreparation(data, pr.uid); err != nil {
+		if err := p.checkSamePreparation(data, asked, pr.uid); err != nil {
 			return fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, err)
 		}
-		req := poolRequest(pr, n, r, data)
+		req := poolRequest(pr, n, r, data, asked)
 		if err := pr.leaseBind(&req, &fs); err != nil {
 			return err
 		}
 		pr.reqs = append(pr.reqs, req)
-		pr.results = append(pr.results, poolResultOf(pr.uid, n, r, data, res.Settings()))
+		pr.results = append(pr.results, poolResultOf(pr.uid, n, r, res.Settings()))
 	}
 	return nil
 }
 
 // poolRequest returns the request to the engine of the allocation result n
-// of a Prepare of a claim, with its parsed status data and settings.
-func poolRequest(pr *prepare, n int, r *resourcev1.DeviceRequestAllocationResult, data *poolDevice) engine.GrantRequest {
+// of a Prepare of a claim, with its parsed status data and what it asks.
+func poolRequest(pr *prepare, n int, r *resourcev1.DeviceRequestAllocationResult, data *provenance.DeviceData, asked state.Asked) engine.GrantRequest {
 	return engine.GrantRequest{
-		Ref:       state.GrantRef{Claim: pr.uid, Result: n},
-		ClaimName: pr.claimName,
-		Device:    r.Device,
-		Serial:    state.Serial(data.Serial),
-		Asked: state.Asked{
-			Source:   state.SourcePool,
-			Kind:     grantKind(data.Shared, data.Persistent),
-			Mode:     state.Mode(data.Mode),
-			ReadOnly: data.ReadOnly,
-			Access:   state.Access(data.Access),
-			FsType:   data.FsType,
-			Path:     data.Path,
-			Size:     data.Size,
-			Shared:   data.Shared,
-		},
+		Ref:        state.GrantRef{Claim: pr.uid, Result: n},
+		ClaimName:  pr.claimName,
+		Device:     r.Device,
+		Serial:     state.Serial(data.Serial),
+		Asked:      asked,
 		Facts:      state.MemdevFacts{Shared: data.Shared, Persistent: data.Persistent, Coherent: data.Coherent},
-		SingleHost: data.facts().SingleHost,
+		SingleHost: poolFacts(data).SingleHost,
 		Lend:       pr.grantLend(),
 	}
 }
@@ -575,7 +552,7 @@ func grantKind(shared, persistent bool) state.GrantKind {
 
 // poolResultOf returns the result n of a Prepare of a claim: a grant of the
 // device of the allocation result, with what the claim asks.
-func poolResultOf(uid string, n int, r *resourcev1.DeviceRequestAllocationResult, data *poolDevice, settings config.ResultSettings) state.Result {
+func poolResultOf(uid string, n int, r *resourcev1.DeviceRequestAllocationResult, settings config.ResultSettings) state.Result {
 	res := state.Result{
 		Index: n, Kind: state.ResultGrant, Request: r.Request, Pool: r.Pool, Device: r.Device, Settings: settings,
 		Grant: &state.GrantRef{Claim: uid, Result: n},
@@ -604,20 +581,20 @@ func (p *Plugin) preparedGrant(serial uint64, exceptUID string) *state.Grant {
 	return nil
 }
 
-// checkSamePreparation refuses a device that another claim prepared
-// differently: as shared or exclusive, or in another mode. Read-only may
-// differ: it is a property of the CDI device node, not of the region. Modes
-// block and fs, and fs with either access, are compatible: they share one
-// pmem region.
-func (p *Plugin) checkSamePreparation(data *poolDevice, exceptUID string) error {
+// checkSamePreparation refuses a device (its status data, what a claim
+// asks of it) that another claim prepared differently: as shared or
+// exclusive, or in another mode. Read-only may differ: it is a property of
+// the CDI device node, not of the region. Modes block and fs, and fs with
+// either access, are compatible: they share one pmem region.
+func (p *Plugin) checkSamePreparation(data *provenance.DeviceData, asked state.Asked, exceptUID string) error {
 	other := p.preparedGrant(data.Serial, exceptUID)
 	switch {
 	case other == nil:
 		return nil
 	case other.Asked.Shared != data.Shared:
 		return fmt.Errorf("shared=%v, but another claim prepared it with shared=%v", data.Shared, other.Asked.Shared)
-	case string(other.Asked.Mode) != data.Mode && (!persistentMode(string(other.Asked.Mode)) || !persistentMode(data.Mode)):
-		return fmt.Errorf("mode %s, but another claim prepared it in mode %s", data.Mode, other.Asked.Mode)
+	case other.Asked.Mode != asked.Mode && (!persistentMode(string(other.Asked.Mode)) || !persistentMode(string(asked.Mode))):
+		return fmt.Errorf("mode %s, but another claim prepared it in mode %s", asked.Mode, other.Asked.Mode)
 	}
 	return nil
 }

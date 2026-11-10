@@ -182,12 +182,12 @@ func TestCompanionLendNUMA(t *testing.T) {
 	for _, local := range []bool{true, false} {
 		e := lendEnv(t)
 		p := e.pool
-		want := lend.LentDevice{Driver: device.PoolDriverName, Source: api.SourcePool, Request: "mem", Device: "pooled0", Pool: envPool,
-			Serial: serialPoolX, Size: 256 << 20, Mode: api.ModeNUMA, NumaNode: 2}
+		pool, source := envPool, state.SourcePool
+		want := state.DeviceInfo{RequestName: "mem", DeviceName: "pooled0", DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA,
+			Serial: api.FormatSerial(serialPoolX), TotalBytes: 256 << 20, ConsumedBytes: 256 << 20, NUMANodes: []int{2}}
 		if local {
-			p = e.local
-			want = lend.LentDevice{Driver: device.DriverName, Source: api.SourceLocal, Request: "mem", Device: localDev, Pool: envNode,
-				Serial: serialSliced, Size: uint64(envBlockSize), Mode: api.ModeNUMA, NumaNode: 2}
+			p, pool, source = e.local, envNode, state.SourceLocal
+			want.DeviceName, want.Serial, want.TotalBytes, want.ConsumedBytes = localDev, api.FormatSerial(serialSliced), uint64(envBlockSize), envBlockSize
 		}
 		t.Run(p.Name(), func(t *testing.T) {
 			e.t = t
@@ -199,13 +199,15 @@ func TestCompanionLendNUMA(t *testing.T) {
 			}
 			logs := klogCapture(t)
 			res := e.mustPrepare(p, e.companionOf(p))
-			wantResult(t, res, resultDevice("mem", want.Pool, want.Device))
+			wantResult(t, res, resultDevice("mem", pool, want.DeviceName))
 			if !slices.Equal(atLend, []string{"l1", "2"}) {
 				t.Fatalf("the grant's lend at the lend: %v", atLend)
 			}
 			e.wantEvents("prepared", "lending l1 cxl-lease-l1", "lend pod-uid-1/app 2 l1", "prepared l1")
-			if got := hooks.lentDevices(); !reflect.DeepEqual(got, []lend.LentDevice{want}) {
-				t.Fatalf("lent devices %+v, expected %+v", got, want)
+			if got, src := hooks.lentDevices(); len(got) != 1 || src != source || got[0].Serial != want.Serial || got[0].TotalBytes != want.TotalBytes ||
+				got[0].Mode != want.Mode || !slices.Equal(got[0].NUMANodes, want.NUMANodes) || got[0].DeviceName != want.DeviceName ||
+				got[0].RequestName != want.RequestName || !reflect.DeepEqual(got[0], p.ClaimInfo("c1").Devices[0]) {
+				t.Fatalf("lent devices %+v of %q, expected %+v of %q", got, src, want, source)
 			}
 			if e.cdiSpec(p.Rules().CDISpecName) != nil {
 				t.Fatal("a CDI device of a companion claim")

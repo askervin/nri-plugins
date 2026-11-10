@@ -71,16 +71,3 @@ type DeviceInfo struct {
 	// MemoryConfig of the result and their origins.
 	config.ResultSettings
 }
-
-// PoolResult is a prepared allocation result of a pool claim as the NRI
-// plugin sees it.
-type PoolResult struct {
-	// Index is the index of the allocation result in the claim.
-	Index    int
-	Request  string
-	Mode     string // api.ModeNUMA, ModeDax, ModeBlock or ModeFs
-	NumaNode int    // NUMA node of the memory (numa mode), -1 if none
-	Size     uint64
-	// Settings are the container settings of the result.
-	Settings config.ResultSettings
-}

@@ -28,6 +28,7 @@ import (
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"golang.org/x/sys/unix"
@@ -329,8 +330,8 @@ func TestPoolLeaseBind(t *testing.T) {
 		}
 	}
 	// the broker gets the access and the node mount
-	if d := hooks.devs[0]; d.Mode != api.ModeFs || d.Access != api.AccessDirect || d.NodeMount != direct || d.BlockDevice != e.pmem || d.Serial != 0xc1ae0001 ||
-		d.Size != fakePmemBytes || !d.ReadOnly || d.NumaNode != -1 {
+	if d := hooks.devs[0]; d.Mode != api.ModeFs || d.Access != api.AccessDirect || d.NodeMount != direct || d.BlockDevice != e.pmem || d.Serial != "0xc1ae0001" ||
+		d.TotalBytes != fakePmemBytes || !d.ReadOnly || len(d.NUMANodes) != 0 || hooks.source != state.SourcePool {
 		t.Fatalf("lent device %+v", d)
 	}
 	if log := hooks.log(); log != "lending l1 cxl-lease-l1\nprepared l1" {

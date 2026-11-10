@@ -521,7 +521,7 @@ func TestPrepareSharedLocalLend(t *testing.T) {
 	c.UID = "u1"
 	e.mustPrepare(c)
 	if len(hooks.devs) != 1 || !hooks.devs[0].Shared || hooks.devs[0].DaxDevice != filepath.Join(e.k.DevRoot(), "dax0.0") ||
-		!hooks.devs[0].ReadOnly || hooks.devs[0].Size != localRegionSize {
+		!hooks.devs[0].ReadOnly || hooks.devs[0].TotalBytes != localRegionSize {
 		t.Fatalf("lent devices %+v", hooks.devs)
 	}
 	if res := e.preparedMap()["u1"]; len(res.Devices) != 1 || len(res.Devices[0].CDIDeviceIDs) != 0 {

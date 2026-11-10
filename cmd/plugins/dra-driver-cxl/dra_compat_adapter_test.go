@@ -20,6 +20,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 )
 
 // The names of the front-end (internal/dra) as the adapters of the state
@@ -43,12 +44,12 @@ type (
 	// prepared claims of cxl.nri.io by UID.
 	claimPreparations map[string]kubeletplugin.PrepareResult
 	// preparedPoolDevice is a device of a prepared pool claim.
-	preparedPoolDevice = dra.PoolDevice
+	preparedPoolDevice = store.PoolDevice
 	// lendRecord is the lend of a companion claim.
 	lendRecord = lend.Lend
-	// lentDevice is a device of a companion claim as the lease broker
-	// needs it.
-	lentDevice = lend.LentDevice
+	// lentDevice is a memdev of a companion claim as the lease broker gets
+	// it.
+	lentDevice = state.DeviceInfo
 	// leaseHooks is what the drivers tell the lease broker.
 	leaseHooks = lend.LeaseHooks
 	// companionLender lends the companion claims of a driver.

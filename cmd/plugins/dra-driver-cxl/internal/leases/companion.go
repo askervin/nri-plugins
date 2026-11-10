@@ -396,7 +396,7 @@ func ownedBy(claim *resourcev1.ResourceClaim, uid string) bool {
 // OnPrepared makes a lease READY with the first prepared device of its
 // companion and its lend. A device whose mode is fs or block when the
 // lease's is not, or the reverse, fails the lease, and it is released.
-func (b *Broker) OnPrepared(id string, devs []lend.LentDevice) {
+func (b *Broker) OnPrepared(id string, source state.Source, devs []state.DeviceInfo) {
 	b.mu.Lock()
 	l := b.leases[id]
 	if l == nil || releasingState(l.State) || len(devs) == 0 {
@@ -418,7 +418,7 @@ func (b *Broker) OnPrepared(id string, devs []lend.LentDevice) {
 	if !apply(l, state.LeaseReady, state.TriggerOnPrepared) {
 		return
 	}
-	l.Got, l.Lend = b.gotOf(l, &d)
+	l.Got, l.Lend = b.gotOf(l, source, &d)
 	l.Error = ""
 	b.saveLocked()
 	g := l.Got
@@ -429,8 +429,9 @@ func (b *Broker) OnPrepared(id string, devs []lend.LentDevice) {
 // gotOf returns what the prepared device gives a lease and what the lease
 // lends: the NUMA node of a numa lease, the bind of an fs lease in the
 // filesystem directory of its lease claim. Called with b.mu held.
-func (b *Broker) gotOf(l *state.Lease, d *lend.LentDevice) (*state.LeaseGot, *state.Lend) {
-	g := &state.LeaseGot{Source: state.Source(d.Source), Serial: state.Serial(d.Serial), Bytes: d.Size}
+func (b *Broker) gotOf(l *state.Lease, source state.Source, d *state.DeviceInfo) (*state.LeaseGot, *state.Lend) {
+	serial, _ := api.ParseSerial(d.Serial)
+	g := &state.LeaseGot{Source: source, Serial: state.Serial(serial), Bytes: d.TotalBytes}
 	if persistent(state.Mode(d.Mode)) {
 		// the attribute shared of the device, whatever the share
 		g.SharedDevice = d.Shared
@@ -452,8 +453,8 @@ func (b *Broker) gotOf(l *state.Lease, d *lend.LentDevice) (*state.LeaseGot, *st
 	case api.ModeBlock:
 		g.Block = d.BlockDevice
 	default:
-		if d.NumaNode >= 0 {
-			return g, &state.Lend{NumaNode: state.NumaNodePtr(d.NumaNode)}
+		if len(d.NUMANodes) > 0 && d.NUMANodes[0] >= 0 {
+			return g, &state.Lend{NumaNode: state.NumaNodePtr(d.NUMANodes[0])}
 		}
 	}
 	return g, nil

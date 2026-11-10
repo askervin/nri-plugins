@@ -257,12 +257,10 @@ func TestPrepareLocalLend(t *testing.T) {
 	node := localRegionNode(e)
 	wantLog(t, lender.callLog(), "lend pod-uid-1/app "+strconv.Itoa(node))
 	wantLog(t, hooks.log(), "lending l1 cxl-lease-l1\nprepared l1")
-	wantDev := lentDevice{
-		Driver: device.DriverName, Source: api.SourceLocal, Request: "mem", Device: localDeviceName, Pool: testNode,
-		Serial: localSerial, Size: localBlockSize, Mode: api.ModeNUMA, NumaNode: node,
-	}
-	if !reflect.DeepEqual(hooks.devs, []lentDevice{wantDev}) {
-		t.Fatalf("lent devices %+v", hooks.devs)
+	if d := hooks.devs; hooks.source != state.SourceLocal || len(d) != 1 || !reflect.DeepEqual(d[0], e.s.ClaimInfo("u1").Devices[0]) ||
+		d[0].RequestName != "mem" || d[0].DeviceName != localDeviceName || d[0].Serial != "0xc100e2e1" || d[0].TotalBytes != localBlockSize ||
+		d[0].Mode != api.ModeNUMA || !slices.Equal(d[0].NUMANodes, []int{node}) {
+		t.Fatalf("lent devices %+v of %q", hooks.devs, hooks.source)
 	}
 	if rec := e.s.ClaimInfo("u1").Lend; rec == nil || rec.Lease != "l1" || !slices.Equal(rec.NumaNodes, []int{node}) {
 		t.Fatalf("lend record %+v", rec)
@@ -294,7 +292,7 @@ func TestPrepareLocalLendDax(t *testing.T) {
 	e, lender, hooks := newLocalLendEnv(t)
 	e.mustPrepare(localCompanion("u1", 16*mib, localDaxConfig))
 	dax0, _, _ := localDax(e, "dax0.0")
-	if len(hooks.devs) != 1 || hooks.devs[0].Mode != api.ModeDax || hooks.devs[0].DaxDevice != dax0 || hooks.devs[0].NumaNode != -1 {
+	if len(hooks.devs) != 1 || hooks.devs[0].Mode != api.ModeDax || hooks.devs[0].DaxDevice != dax0 || len(hooks.devs[0].NUMANodes) != 0 {
 		t.Fatalf("lent dax devices %+v", hooks.devs)
 	}
 	// the borrower gets the fd from the broker, the companion nothing

@@ -92,15 +92,15 @@ func nriClaims() claimTable {
 // nriPoolResults are prepared results of pool claims: pool result 0 a numa
 // device on node 3, result 1 a dax device; poolauto a numa device on node 3
 // that opts in with policy auto.
-func nriPoolResults() map[string][]state.PoolResult {
-	return map[string][]state.PoolResult{
+func nriPoolResults() map[string][]store.PoolDevice {
+	return map[string][]store.PoolDevice{
 		"pool": {
-			{Index: 0, Request: "numa", Mode: cxlapi.ModeNUMA, NumaNode: 3, Size: 256 << 20},
-			{Index: 1, Request: "dax", Mode: cxlapi.ModeDax, NumaNode: -1, Size: 256 << 20},
+			{Result: 0, Request: "numa", Mode: cxlapi.ModeNUMA, NumaNode: 3, Size: 256 << 20},
+			{Result: 1, Request: "dax", Mode: cxlapi.ModeDax, NumaNode: -1, Size: 256 << 20},
 		},
 		"poolauto": {
-			{Index: 0, Request: "mem", Mode: cxlapi.ModeNUMA, NumaNode: 3, Size: 256 << 20,
-				Settings: claimSettings("poolauto", "mem", config.Steering{Policy: config.PolicyAuto})},
+			{Result: 0, Request: "mem", Mode: cxlapi.ModeNUMA, NumaNode: 3, Size: 256 << 20,
+				ResultSettings: claimSettings("poolauto", "mem", config.Steering{Policy: config.PolicyAuto})},
 		},
 	}
 }

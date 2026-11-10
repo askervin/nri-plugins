@@ -55,7 +55,25 @@ func cdiID(claimUID string) string {
 }
 
 // numaDevice is the lent device of a pool numa lease on node 2.
-var numaDevice = lend.LentDevice{Source: api.SourcePool, Serial: serialPoolX, Size: 1 << 28, Mode: api.ModeNUMA, NumaNode: 2}
+var numaDevice = preparedDev(serialPoolX, 1<<28, api.ModeNUMA, 2)
+
+// preparedDev returns a memdev of a companion claim as a driver tells the
+// broker: its serial, size, mode and the NUMA node of mode numa (-1 for
+// none).
+func preparedDev(serial, size uint64, mode string, node int) state.DeviceInfo {
+	d := state.DeviceInfo{DeviceType: device.DeviceTypeMemdev, Serial: api.FormatSerial(serial), TotalBytes: size, Mode: mode,
+		Persistent: mode == api.ModeBlock || mode == api.ModeFs}
+	if node >= 0 {
+		d.NUMANodes = []int{node}
+	}
+	return d
+}
+
+// withDev returns d changed by fn.
+func withDev(d state.DeviceInfo, fn func(d *state.DeviceInfo)) state.DeviceInfo {
+	fn(&d)
+	return d
+}
 
 // readyNUMA requests a numa lease and makes it READY through the hooks, as
 // a companion's Prepare does, and returns its id.
@@ -66,7 +84,7 @@ func (e *leaseEnv) readyNUMA() string {
 	e.waitClaim(CompanionName(id))
 	_, err := e.b.OnLending(id, companionClaim(id))
 	mustOK(e.t, err)
-	e.b.OnPrepared(id, []lend.LentDevice{numaDevice})
+	e.b.OnPrepared(id, state.SourcePool, []state.DeviceInfo{numaDevice})
 	e.waitState(id, state.LeaseReady)
 	return id
 }
@@ -325,7 +343,7 @@ func TestLeaseRequestID(t *testing.T) {
 	}
 	_, err := e.b.OnLending(first.Lease, companionClaim(first.Lease))
 	mustOK(t, err)
-	e.b.OnPrepared(first.Lease, []lend.LentDevice{{Source: api.SourcePool, Serial: serialPoolX, Size: 64 << 20, Mode: api.ModeNUMA, NumaNode: 2}})
+	e.b.OnPrepared(first.Lease, state.SourcePool, []state.DeviceInfo{preparedDev(serialPoolX, 64<<20, api.ModeNUMA, 2)})
 	third, _ := e.call(req)
 	if third.Lease != first.Lease || third.State != api.StateReady {
 		t.Fatalf("third %+v", third)
@@ -491,7 +509,7 @@ func TestOnLending(t *testing.T) {
 		t.Fatalf("a failed lease lent: %v", err)
 	}
 	// the hooks of an unknown lease change nothing
-	e.b.OnPrepared("ffffffff", []lend.LentDevice{numaDevice})
+	e.b.OnPrepared("ffffffff", state.SourcePool, []state.DeviceInfo{numaDevice})
 	e.b.OnLendFailed("ffffffff", errors.New("boom"))
 	e.b.OnReleasing("ffffffff")
 	e.waitState(id, state.LeaseNone)
@@ -547,23 +565,23 @@ func TestPreparedModeMismatch(t *testing.T) {
 	e.start()
 	for i, c := range []struct {
 		req api.Request
-		dev lend.LentDevice
+		dev state.DeviceInfo
 		err string
 	}{
 		{api.Request{Op: "request", Shared: true, ReadOnly: true, Mode: "fs", Size: "64Mi", Wait: "5s"},
-			lend.LentDevice{Source: api.SourcePool, Serial: serialPoolS, Size: 1 << 28, Mode: api.ModeDax, NumaNode: -1, DaxDevice: "/dev/dax0.0"},
+			withDev(preparedDev(serialPoolS, 1<<28, api.ModeDax, -1), func(d *state.DeviceInfo) { d.DaxDevice = "/dev/dax0.0" }),
 			"companion prepared mode dax, lease is mode fs"},
 		{api.Request{Op: "request", Source: "pool", Mode: "dax", Size: "64Mi", Wait: "5s"},
-			lend.LentDevice{Source: api.SourcePool, Serial: serialPoolP, Size: pmemBytes, Mode: api.ModeFs, NumaNode: -1, Access: "direct"},
+			withDev(preparedDev(serialPoolP, pmemBytes, api.ModeFs, -1), func(d *state.DeviceInfo) { d.Access = "direct" }),
 			"companion prepared mode fs, lease is mode dax"},
 		{api.Request{Op: "request", Shared: true, ReadOnly: true, Mode: "block", Size: "64Mi", Wait: "5s"},
-			lend.LentDevice{Source: api.SourcePool, Serial: serialPoolP, Size: pmemBytes, Mode: api.ModeFs, NumaNode: -1, Access: "direct", BlockDevice: "/dev/pmem0"},
+			withDev(preparedDev(serialPoolP, pmemBytes, api.ModeFs, -1), func(d *state.DeviceInfo) { d.Access, d.BlockDevice = "direct", "/dev/pmem0" }),
 			"companion prepared mode fs, lease is mode block"},
 		{api.Request{Op: "request", Shared: true, ReadOnly: true, Mode: "fs", Size: "64Mi", Wait: "5s"},
-			lend.LentDevice{Source: api.SourcePool, Serial: serialPoolP, Size: pmemBytes, Mode: api.ModeBlock, ReadOnly: true, NumaNode: -1, BlockDevice: "/dev/pmem0"},
+			withDev(preparedDev(serialPoolP, pmemBytes, api.ModeBlock, -1), func(d *state.DeviceInfo) { d.ReadOnly, d.BlockDevice = true, "/dev/pmem0" }),
 			"companion prepared mode block, lease is mode fs"},
 		{api.Request{Op: "request", Source: "pool", Mode: "block", Size: "64Mi", Wait: "5s"},
-			lend.LentDevice{Source: api.SourcePool, Serial: serialPoolX, Size: 1 << 28, Mode: api.ModeDax, NumaNode: -1, DaxDevice: "/dev/dax0.0"},
+			withDev(preparedDev(serialPoolX, 1<<28, api.ModeDax, -1), func(d *state.DeviceInfo) { d.DaxDevice = "/dev/dax0.0" }),
 			"companion prepared mode dax, lease is mode block"},
 	} {
 		id := fmt.Sprintf("%08x", 0xa1+i)
@@ -571,7 +589,7 @@ func TestPreparedModeMismatch(t *testing.T) {
 		e.waitClaim(CompanionName(id))
 		_, err := e.b.OnLending(id, companionClaim(id))
 		mustOK(t, err)
-		e.b.OnPrepared(id, []lend.LentDevice{c.dev})
+		e.b.OnPrepared(id, state.SourcePool, []state.DeviceInfo{c.dev})
 		if r := <-ch; r.State != api.StateFailed || r.Error != c.err || r.Path != "" || r.Block != "" {
 			t.Errorf("%s: response %+v", c.err, r)
 		}
@@ -845,7 +863,7 @@ func TestCloseClaimDoesNotWaitForCompanions(t *testing.T) {
 	r, _ := e.call(api.Request{Op: api.OpRequest, Size: "64Mi", Source: "local", Wait: "0s"})
 	_, err := e.b.OnLending(r.Lease, companionClaim(r.Lease))
 	mustOK(t, err)
-	e.b.OnPrepared(r.Lease, []lend.LentDevice{{Source: api.SourceLocal, Serial: serialSliced, Size: 64 << 20, Mode: api.ModeNUMA, NumaNode: 2}})
+	e.b.OnPrepared(r.Lease, state.SourceLocal, []state.DeviceInfo{preparedDev(serialSliced, 64<<20, api.ModeNUMA, 2)})
 	mustOK(t, e.ctrs.LendNode(context.Background(), envPodUID, envCtr, 2, r.Lease))
 	stay.Store(true)
 
@@ -1519,5 +1537,38 @@ func TestLimits(t *testing.T) {
 	start := time.Now()
 	if data, err := io.ReadAll(r1); err != nil || len(data) != 0 || time.Since(start) > 4*time.Second {
 		t.Fatalf("an idle connection: %q %v after %v", data, err, time.Since(start))
+	}
+}
+
+// What a lease gets of the prepared memdev of its companion, by mode: the
+// source, serial and bytes, and the node that it lends (numa), the device
+// node (dax, block), or the access, type and path of its filesystem (fs);
+// a shared device for a shared lease or a shared device.
+func TestGotOfPrepared(t *testing.T) {
+	e := brokerEnv(t)
+	shared := func(d state.DeviceInfo) state.DeviceInfo { d.Shared = true; return d }
+	for name, tc := range map[string]struct {
+		asked state.LeaseAsked
+		dev   state.DeviceInfo
+		got   state.LeaseGot
+		lend  *state.Lend
+	}{
+		"numa": {state.LeaseAsked{Mode: state.ModeNUMA}, preparedDev(serialPoolX, 1<<28, api.ModeNUMA, 2),
+			state.LeaseGot{Source: state.SourcePool, Serial: serialPoolX, Bytes: 1 << 28}, &state.Lend{NumaNode: state.NumaNodePtr(2)}},
+		"numa shared lease": {state.LeaseAsked{Mode: state.ModeNUMA, SharedDevice: true}, preparedDev(serialPoolX, 1<<28, api.ModeNUMA, -1),
+			state.LeaseGot{Source: state.SourcePool, Serial: serialPoolX, SharedDevice: true, Bytes: 1 << 28}, nil},
+		"dax": {state.LeaseAsked{Mode: state.ModeDax}, shared(withDev(preparedDev(serialPoolS, 1<<28, api.ModeDax, -1), func(d *state.DeviceInfo) { d.DaxDevice = "/dev/dax0.0" })),
+			state.LeaseGot{Source: state.SourcePool, Serial: serialPoolS, SharedDevice: true, Bytes: 1 << 28, Dax: "/dev/dax0.0"}, nil},
+		"block": {state.LeaseAsked{Mode: state.ModeBlock, SharedDevice: true}, withDev(preparedDev(serialPoolP, pmemBytes, api.ModeBlock, -1), func(d *state.DeviceInfo) { d.BlockDevice = "/dev/pmem0" }),
+			state.LeaseGot{Source: state.SourcePool, Serial: serialPoolP, Bytes: pmemBytes, Block: "/dev/pmem0"}, nil},
+		"fs": {state.LeaseAsked{Mode: state.ModeFs, Name: "data"}, shared(withDev(preparedDev(serialPoolP, pmemBytes, api.ModeFs, -1), func(d *state.DeviceInfo) {
+			d.Access, d.FsType, d.BlockDevice = api.AccessDirect, "ext4", "/dev/pmem0"
+		})), state.LeaseGot{Source: state.SourcePool, Serial: serialPoolP, SharedDevice: true, Bytes: pmemBytes, Access: state.Access(api.AccessDirect),
+			FsType: "ext4", Path: api.FsDir + "/data"}, nil},
+	} {
+		got, lend := e.b.gotOf(&state.Lease{Asked: tc.asked}, state.SourcePool, &tc.dev)
+		if !reflect.DeepEqual(*got, tc.got) || !reflect.DeepEqual(lend, tc.lend) {
+			t.Errorf("%s: got %+v, lend %+v; expected %+v, %+v", name, *got, lend, tc.got, tc.lend)
+		}
 	}
 }

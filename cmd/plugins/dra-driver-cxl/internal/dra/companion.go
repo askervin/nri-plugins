@@ -47,7 +47,7 @@ import (
 // The NUMA nodes of its devices in mode numa are lent to the requester (a
 // grant records its lend before it is lent), its device of mode fs is bound
 // into the lease claim's directory by the engine, and the broker gets the
-// devices (LentDevice) when the claim is prepared.
+// memdevs (state.DeviceInfo) when the claim is prepared.
 
 // NodeLender lends NUMA nodes to running containers.
 type NodeLender interface {
@@ -166,20 +166,21 @@ func checkSpecHash(hooks lend.LeaseHooks, id string, claim *resourcev1.ResourceC
 // container of the lend, held by its lease, and records them in rec. Dax
 // and block devices are passed as an fd by the broker. On error rec lists
 // the nodes lent so far.
-func (c *Lender) Lend(ctx context.Context, rec *lend.Lend, devs []lend.LentDevice) error {
+func (c *Lender) Lend(ctx context.Context, rec *lend.Lend, devs []state.DeviceInfo) error {
 	nodes, _ := c.get()
-	for _, d := range devs {
-		if d.Mode != api.ModeNUMA || d.NumaNode < 0 {
+	for i := range devs {
+		node := deviceNumaNode(&devs[i])
+		if node < 0 {
 			continue
 		}
 		if nodes == nil {
 			return fmt.Errorf("lease %s: %w", rec.Lease, lend.ErrLendingUnavailable)
 		}
-		rec.NumaNodes = append(rec.NumaNodes, d.NumaNode)
-		if err := nodes.LendNode(ctx, rec.Pod.UID, rec.Container, d.NumaNode, rec.Lease); err != nil {
-			return fmt.Errorf("lease %s: lending node %d to %s/%s/%s: %w", rec.Lease, d.NumaNode, rec.Pod.Namespace, rec.Pod.Name, rec.Container, err)
+		rec.NumaNodes = append(rec.NumaNodes, node)
+		if err := nodes.LendNode(ctx, rec.Pod.UID, rec.Container, node, rec.Lease); err != nil {
+			return fmt.Errorf("lease %s: lending node %d to %s/%s/%s: %w", rec.Lease, node, rec.Pod.Namespace, rec.Pod.Name, rec.Container, err)
 		}
-		klog.Infof("%s: lease %s: lent node %d to %s/%s/%s", c.driver, rec.Lease, d.NumaNode, rec.Pod.Namespace, rec.Pod.Name, rec.Container)
+		klog.Infof("%s: lease %s: lent node %d to %s/%s/%s", c.driver, rec.Lease, node, rec.Pod.Namespace, rec.Pod.Name, rec.Container)
 	}
 	return nil
 }
@@ -212,22 +213,22 @@ func (c *Lender) Revoke(ctx context.Context, rec *lend.Lend, claimName string) e
 }
 
 // Prepared tells the broker that the companion claim of a lease is prepared
-// and lent.
-func (c *Lender) Prepared(id string, devs []lend.LentDevice) {
+// and lent, with its memdevs of the source.
+func (c *Lender) Prepared(id string, source state.Source, devs []state.DeviceInfo) {
 	if _, hooks := c.get(); hooks != nil {
-		hooks.OnPrepared(id, devs)
+		hooks.OnPrepared(id, source, devs)
 	}
 }
 
 // Reprepared tells the broker again that a stored companion claim is
 // prepared and lent, as kubelet asks to prepare a prepared claim again.
-func (c *Lender) Reprepared(rec *lend.Lend, claim *resourcev1.ResourceClaim, devs []lend.LentDevice) {
+func (c *Lender) Reprepared(rec *lend.Lend, claim *resourcev1.ResourceClaim, source state.Source, devs []state.DeviceInfo) {
 	_, hooks := c.get()
 	if hooks == nil || rec == nil {
 		return
 	}
 	if _, err := hooks.OnLending(rec.Lease, claim); err == nil {
-		hooks.OnPrepared(rec.Lease, devs)
+		hooks.OnPrepared(rec.Lease, source, devs)
 	}
 }
 

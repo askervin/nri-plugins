@@ -24,6 +24,7 @@ import (
 	"k8s.io/utils/cpuset"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
 	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
@@ -40,8 +41,8 @@ type LocalResults interface {
 
 // PoolResults are the prepared claims of the pool driver.
 type PoolResults interface {
-	// ClaimResults returns the prepared allocation results of a claim.
-	ClaimResults(uid string) []state.PoolResult
+	// ClaimResults returns the devices of a prepared claim.
+	ClaimResults(uid string) []store.PoolDevice
 }
 
 // resultRef is an allocation result of a claim: the claim UID and the
@@ -178,14 +179,14 @@ func (p *Plugin) poolResult(ctrName string, ref resultRef) (result, bool) {
 		return result{}, false
 	}
 	results := p.opts.Pool.ClaimResults(ref.uid)
-	i := slices.IndexFunc(results, func(r state.PoolResult) bool { return r.Index == ref.n })
+	i := slices.IndexFunc(results, func(r store.PoolDevice) bool { return r.Result == ref.n })
 	if i < 0 {
 		return result{}, false
 	}
 	r := results[i]
 	klog.V(5).Infof("NRI CreateContainer: ctr=%s claim=%s result %d: pool device mode=%s node=%d size=%s request=%s",
 		ctrName, ref.uid, ref.n, r.Mode, r.NumaNode, formatBytes(r.Size), r.Request)
-	out := result{pool: true, mode: r.Mode, bytes: int64(r.Size), settings: r.Settings}
+	out := result{pool: true, mode: r.Mode, bytes: int64(r.Size), settings: r.ResultSettings}
 	if r.NumaNode >= 0 {
 		out.numaNodes = []int{r.NumaNode}
 	}

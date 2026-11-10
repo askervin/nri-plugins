@@ -532,8 +532,8 @@ func TestPoolPrepareMemoryConfig(t *testing.T) {
 		t.Fatalf("prepared device %+v", d)
 	}
 	got := p.ClaimResults("u1")
-	if len(got) != 1 || got[0].Index != 0 || got[0].Request != "mem" || got[0].Mode != api.ModeNUMA || got[0].NumaNode != 2 ||
-		got[0].Size != 256<<20 || !reflect.DeepEqual(got[0].Settings, want) {
+	if len(got) != 1 || got[0].Result != 0 || got[0].Request != "mem" || got[0].Mode != api.ModeNUMA || got[0].NumaNode != 2 ||
+		got[0].Size != 256<<20 || !reflect.DeepEqual(got[0].ResultSettings, want) {
 		t.Fatalf("claim results %+v", got)
 	}
 	e.wantCDIDevice(t, "claim-u1-0", []string{"CXL_C1EE0001_MODE=numa", "CXL_C1EE0001_NODE=2", "CXL_C1EE0001_SERIAL=0xc1ee0001",
@@ -550,7 +550,7 @@ func TestPoolPrepareMemoryConfig(t *testing.T) {
 
 	// the settings survive a restart of the driver
 	p = e.driver(t)
-	if got := p.ClaimResults("u1"); len(got) != 1 || !reflect.DeepEqual(got[0].Settings, want) {
+	if got := p.ClaimResults("u1"); len(got) != 1 || !reflect.DeepEqual(got[0].ResultSettings, want) {
 		t.Fatalf("claim results after a restart %+v", got)
 	}
 	noErr(t, unprepare(t, p, "u1"))

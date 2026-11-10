@@ -525,9 +525,9 @@ func TestTwoLeasesOneNode(t *testing.T) {
 		resp, _ := e.call(api.Request{Op: api.OpRequest, Size: "64Mi", Source: source, Wait: "0s"})
 		rec, err := lender.Check(resp.Lease, e.waitClaim(CompanionName(resp.Lease)))
 		mustOK(t, err)
-		devs := []lend.LentDevice{{Source: source, Serial: serialSliced, Size: 64 << 20, Mode: api.ModeNUMA, NumaNode: 2}}
+		devs := []state.DeviceInfo{preparedDev(serialSliced, 64<<20, api.ModeNUMA, 2)}
 		mustOK(t, lender.Lend(context.Background(), rec, devs))
-		lender.Prepared(resp.Lease, devs)
+		lender.Prepared(resp.Lease, state.Source(source), devs)
 		e.waitState(resp.Lease, state.LeaseReady)
 		ids = append(ids, resp.Lease)
 	}

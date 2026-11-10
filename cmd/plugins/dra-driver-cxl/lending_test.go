@@ -32,6 +32,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
@@ -42,6 +43,7 @@ type fakeHooks struct {
 	calls      []string
 	lendingErr error
 	devs       []lentDevice
+	source     state.Source // of the devices
 	fsDir      string       // FsDir of the lend records
 	name       string       // Name of the lend records
 	onPrepared func(string) // called by OnPrepared with the lease id
@@ -58,10 +60,10 @@ func (h *fakeHooks) OnLending(id string, claim *resourceapi.ResourceClaim) (*len
 		FsDir: h.fsDir, Name: h.name}, nil
 }
 
-func (h *fakeHooks) OnPrepared(id string, devs []lentDevice) {
+func (h *fakeHooks) OnPrepared(id string, source state.Source, devs []lentDevice) {
 	h.mu.Lock()
 	h.calls = append(h.calls, "prepared "+id)
-	h.devs = devs
+	h.devs, h.source = devs, source
 	fn := h.onPrepared
 	h.mu.Unlock()
 	if fn != nil {
@@ -136,10 +138,10 @@ func TestCompanionLenderDisabled(t *testing.T) {
 	}
 	// numa devices cannot be lent without NRI, dax devices need no lend
 	rec := testLendRecord()
-	if err := c.Lend(context.Background(), rec, []lentDevice{{Mode: api.ModeNUMA, NumaNode: 3}}); !errors.Is(err, errLendingUnavailable) || len(rec.NumaNodes) != 0 {
+	if err := c.Lend(context.Background(), rec, []lentDevice{numaLent(3)}); !errors.Is(err, errLendingUnavailable) || len(rec.NumaNodes) != 0 {
 		t.Fatalf("lend without NRI: %+v %v", rec, err)
 	}
-	noErr(t, c.Lend(context.Background(), rec, []lentDevice{{Mode: api.ModeDax, NumaNode: -1, DaxDevice: "/dev/dax0.1"}}))
+	noErr(t, c.Lend(context.Background(), rec, []lentDevice{{DeviceType: device.DeviceTypeMemdev, Mode: api.ModeDax, DaxDevice: "/dev/dax0.1"}}))
 	if rec.Lease != "l1" || rec.Container != testCtr || len(rec.NumaNodes) != 0 {
 		t.Fatalf("dax lend record %+v", rec)
 	}
@@ -152,10 +154,10 @@ func TestCompanionLenderDisabled(t *testing.T) {
 	// a nil companionLender is disabled and safe to use
 	var n *companionLender
 	n.Set(newFakeLender(), hooks)
-	n.Prepared("l1", nil)
+	n.Prepared("l1", state.SourceLocal, nil)
 	n.Failed("l1", errors.New("x"))
 	n.Releasing("l1")
-	n.Reprepared(&lendRecord{Lease: "l1"}, claim, nil)
+	n.Reprepared(&lendRecord{Lease: "l1"}, claim, state.SourceLocal, nil)
 	if hooks.log() != "" {
 		t.Fatalf("nil companionLender: hooks %s", hooks.log())
 	}
@@ -182,10 +184,10 @@ func TestCompanionLenderLendRevoke(t *testing.T) {
 	hooks.lendingErr = nil
 
 	devs := []lentDevice{
-		{Mode: api.ModeNUMA, NumaNode: 2},
-		{Mode: api.ModeDax, NumaNode: -1, DaxDevice: "/dev/dax0.0"},
-		{Mode: api.ModeNUMA, NumaNode: -1},
-		{Mode: api.ModeNUMA, NumaNode: 3},
+		numaLent(2),
+		{DeviceType: device.DeviceTypeMemdev, Mode: api.ModeDax, DaxDevice: "/dev/dax0.0"},
+		{DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA},
+		numaLent(3),
 	}
 	noErr(t, c.Lend(ctx, rec, devs))
 	want := &lendRecord{Lease: "l1", Pod: rec.Pod, Container: testCtr, NumaNodes: []int{2, 3}}
@@ -219,18 +221,23 @@ func TestCompanionLenderLendRevoke(t *testing.T) {
 
 	// hook forwarding
 	hooks.calls = nil
-	c.Prepared("l1", devs[:1])
+	c.Prepared("l1", state.SourcePool, devs[:1])
 	c.Failed("l1", errors.New("boom"))
 	c.Releasing("l1")
-	c.Reprepared(&lendRecord{Lease: "l2", Pod: rec.Pod, Container: testCtr}, companionClaim("l2"), devs[1:2])
+	c.Reprepared(&lendRecord{Lease: "l2", Pod: rec.Pod, Container: testCtr}, companionClaim("l2"), state.SourcePool, devs[1:2])
 	hooks.lendingErr = errors.New("unknown lease")
-	c.Reprepared(&lendRecord{Lease: "l3"}, companionClaim("l3"), devs)
+	c.Reprepared(&lendRecord{Lease: "l3"}, companionClaim("l3"), state.SourcePool, devs)
 	if got, want := hooks.log(), "prepared l1\nfailed l1: boom\nreleasing l1\nlending l2 cxl-lease-l2\nprepared l2\nlending l3 cxl-lease-l3"; got != want {
 		t.Fatalf("hook calls:\n%s\nexpected:\n%s", got, want)
 	}
-	if !reflect.DeepEqual(hooks.devs, devs[1:2]) {
-		t.Fatalf("prepared devices %+v", hooks.devs)
+	if !reflect.DeepEqual(hooks.devs, devs[1:2]) || hooks.source != state.SourcePool {
+		t.Fatalf("prepared devices %+v of %q", hooks.devs, hooks.source)
 	}
+}
+
+// numaLent returns a memdev of a companion claim in mode numa on node.
+func numaLent(node int) lentDevice {
+	return lentDevice{DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA, NUMANodes: []int{node}}
 }
 
 func TestLendRecordJSON(t *testing.T) {

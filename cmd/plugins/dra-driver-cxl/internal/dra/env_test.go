@@ -815,7 +815,8 @@ type fakeHooks struct {
 	// closed; entered gets the claim names of OnLending when it is set.
 	block   map[string]chan struct{}
 	entered chan string
-	devs    []lend.LentDevice
+	devs    []state.DeviceInfo
+	source  state.Source // of devs
 }
 
 // OnLending returns the lend of the lease's container.
@@ -838,11 +839,11 @@ func (h *fakeHooks) OnLending(id string, claim *resourcev1.ResourceClaim) (*lend
 }
 
 // OnPrepared marks the lease Ready with the devices.
-func (h *fakeHooks) OnPrepared(id string, devs []lend.LentDevice) {
+func (h *fakeHooks) OnPrepared(id string, source state.Source, devs []state.DeviceInfo) {
 	h.e.event("prepared %s", id)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.devs = devs
+	h.devs, h.source = devs, source
 }
 
 // OnLendFailed records a lend error.
@@ -855,11 +856,11 @@ func (h *fakeHooks) OnReleasing(id string) {
 	h.e.event("releasing %s", id)
 }
 
-// lentDevices returns the devices of the last OnPrepared.
-func (h *fakeHooks) lentDevices() []lend.LentDevice {
+// lentDevices returns the devices of the last OnPrepared and their source.
+func (h *fakeHooks) lentDevices() ([]state.DeviceInfo, state.Source) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return slices.Clone(h.devs)
+	return slices.Clone(h.devs), h.source
 }
 
 // setLendingErr sets the error of the next OnLending calls.

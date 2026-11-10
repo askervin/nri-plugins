@@ -33,7 +33,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
-	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
@@ -397,7 +396,7 @@ func (p *Plugin) finish(ctx context.Context, pr *prepare) kubeletplugin.PrepareR
 		if lend != nil {
 			v.companionPrepared(pr.claimName, lend)
 		}
-		p.lender.Prepared(pr.lend.Lease, devs)
+		p.lender.Prepared(pr.lend.Lease, p.rules.Source, devs)
 	}
 	klog.V(5).Infof("Created prepared claim %v allocation", pr.uid)
 	return result
@@ -508,8 +507,8 @@ func (p *Plugin) lendCompanion(ctx context.Context, pr *prepare) error {
 }
 
 // lendAndDevices returns the lend of a preparation of a companion claim and
-// its memdevs as the lease broker sees them.
-func (p *Plugin) lendAndDevices(prep *state.Preparation) (*lend.Lend, []lend.LentDevice) {
+// its memdevs.
+func (p *Plugin) lendAndDevices(prep *state.Preparation) (*lend.Lend, []state.DeviceInfo) {
 	if prep == nil {
 		return nil, nil
 	}
@@ -523,28 +522,13 @@ func (p *Plugin) lendAndDevices(prep *state.Preparation) (*lend.Lend, []lend.Len
 		klog.Errorf("%s: claim %s: %v", p.rules.Name, prep.ClaimName, err)
 		return lend, nil
 	}
-	return lend, p.lentDevices(prep, info)
-}
-
-// lentDevices returns the memdevs of a claim as the lease broker sees them.
-func (p *Plugin) lentDevices(prep *state.Preparation, info *ClaimInfo) []lend.LentDevice {
-	source := api.SourceLocal
-	if p.rules.Source == state.SourcePool {
-		source = api.SourcePool
-	}
-	devs := []lend.LentDevice{}
-	for i := range info.Devices {
-		d := &info.Devices[i]
-		if d.DeviceType != device.DeviceTypeMemdev {
-			continue
+	devs := []state.DeviceInfo{}
+	for _, d := range info.Devices {
+		if d.DeviceType == device.DeviceTypeMemdev {
+			devs = append(devs, d)
 		}
-		pool := ""
-		if res := prep.Result(d.Result); res != nil {
-			pool = res.Pool
-		}
-		devs = append(devs, lentDevice(d, p.rules.Name, source, pool))
 	}
-	return devs
+	return lend, devs
 }
 
 // failedPrepare commits the preparation of a Prepare that failed after its
@@ -613,7 +597,7 @@ func (p *Plugin) preparedAgain(ctx context.Context, claim *resourcev1.ResourceCl
 	}
 	if prep.Lease != "" {
 		lend, devs := p.lendAndDevices(prep)
-		p.lender.Reprepared(lend, claim, devs)
+		p.lender.Reprepared(lend, claim, p.rules.Source, devs)
 		return prepareResult(prep, p.rules.CDIKind)
 	}
 	if prep.State != state.PreparationUnrestored {
@@ -853,7 +837,7 @@ func (p *Plugin) PreparedResult(uid string, n int) (string, state.DeviceInfo, bo
 
 // PoolDevices returns the devices of a preparation of the claim uid in any
 // state as preparedPoolClaims.json has them, nil without a record.
-func (p *Plugin) PoolDevices(uid string) []PoolDevice {
+func (p *Plugin) PoolDevices(uid string) []store.PoolDevice {
 	prep := p.preparation(uid)
 	if prep == nil {
 		return nil
@@ -865,21 +849,16 @@ func (p *Plugin) PoolDevices(uid string) []PoolDevice {
 	return devs
 }
 
-// ClaimResults returns the prepared allocation results of a claim of the
-// pool driver as the NRI plugin sees them; nil for a nil plugin.
-func (p *Plugin) ClaimResults(uid string) []state.PoolResult {
+// ClaimResults returns the devices of a prepared claim of the pool driver
+// (PoolDevices); nil for a nil plugin and a claim that is not prepared.
+func (p *Plugin) ClaimResults(uid string) []store.PoolDevice {
 	if p == nil {
 		return nil
 	}
-	prep := p.preparation(uid)
-	if prep == nil || !prep.Prepared() {
+	if prep := p.preparation(uid); prep == nil || !prep.Prepared() {
 		return nil
 	}
-	var out []state.PoolResult
-	for _, d := range p.PoolDevices(uid) {
-		out = append(out, state.PoolResult{Index: d.Result, Request: d.Request, Mode: d.Mode, NumaNode: d.NumaNode, Size: d.Size, Settings: d.ResultSettings})
-	}
-	return out
+	return p.PoolDevices(uid)
 }
 
 // Recovered logs what the recovery of the engine (rec, nil for a LOST

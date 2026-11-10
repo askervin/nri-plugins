@@ -22,6 +22,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -113,11 +114,11 @@ func TestClaimReaders(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, poolSpec(serialPoolX))
 	e.mustPrepare(e.pool, poolClaim("p1", "pooled0", poolExclusiveData))
 	e.mustPrepare(e.local, localClaim("l1", localDev, envBlockSize))
-	want := []state.PoolResult{{Index: 0, Request: "mem", Mode: api.ModeNUMA, NumaNode: 2, Size: 256 << 20}}
-	if got := e.pool.ClaimResults("p1"); !reflect.DeepEqual(got, want) {
-		t.Fatalf("results %+v, expected %+v", got, want)
-	}
 	devs := e.pool.PoolDevices("p1")
+	if got := e.pool.ClaimResults("p1"); !reflect.DeepEqual(got, devs) || len(got) != 1 || got[0].Result != 0 || got[0].Request != "mem" ||
+		got[0].Mode != api.ModeNUMA || got[0].NumaNode != 2 || got[0].Size != 256<<20 {
+		t.Fatalf("results %+v", got)
+	}
 	if len(devs) != 1 || devs[0].Result != 0 || devs[0].Request != "mem" || devs[0].Device != "pooled0" || devs[0].Pool != envPool ||
 		devs[0].Serial != serialPoolX || devs[0].Memdev != "mem1" || devs[0].Region != "region0" || devs[0].NumaNode != 2 || devs[0].Mode != api.ModeNUMA {
 		t.Fatalf("pool devices %+v", devs)
@@ -160,9 +161,9 @@ func jsonTags(t reflect.Type) []string {
 	return out
 }
 
-// The JSON of DeviceInfo, ClaimInfo, PoolDevice and Lend is that of the
-// structs of the state files before the store: PreparedDeviceInfo,
-// PreparedClaimInfo, preparedPoolDevice and lendRecord.
+// The JSON of state.DeviceInfo, ClaimInfo, store.PoolDevice and Lend is
+// that of the structs of the state files before the store:
+// PreparedDeviceInfo, PreparedClaimInfo, preparedPoolDevice and lendRecord.
 func TestShapes(t *testing.T) {
 	for _, tc := range []struct {
 		v    any
@@ -174,7 +175,7 @@ func TestShapes(t *testing.T) {
 			"namespace,omitempty", "blockDevice,omitempty", "blockMajor,omitempty", "blockMinor,omitempty", "access,omitempty",
 			"path,omitempty", "nodeMount,omitempty", "loopDevice,omitempty", "fsType,omitempty", "inline config.ResultSettings"}},
 		{ClaimInfo{}, []string{"claimName", "devices", "lend,omitempty", "bootID,omitempty"}},
-		{PoolDevice{}, []string{"result", "request", "device", "pool", "serial", "shared", "size", "mode", "readOnly,omitempty", "memdev",
+		{store.PoolDevice{}, []string{"result", "request", "device", "pool", "serial", "shared", "size", "mode", "readOnly,omitempty", "memdev",
 			"region", "dax", "daxDevice,omitempty", "daxMajor,omitempty", "daxMinor,omitempty", "node", "persistent,omitempty",
 			"ndRegion,omitempty", "namespace,omitempty", "blockDevice,omitempty", "blockMajor,omitempty", "blockMinor,omitempty",
 			"access,omitempty", "fsType,omitempty", "path,omitempty", "nodeMount,omitempty", "loopDevice,omitempty",

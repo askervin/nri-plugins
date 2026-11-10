@@ -161,7 +161,7 @@ type env struct {
 	start chan event
 	// local and pool are the prepared claims of the drivers.
 	local claimTable
-	pool  map[string][]state.PoolResult
+	pool  map[string][]store.PoolDevice
 }
 
 // envOptions are the settings of a test env.
@@ -213,7 +213,7 @@ func newEnvWith(t *testing.T, o envOptions) *env {
 		gone:  make(chan event, 16),
 		start: make(chan event, 16),
 		local: claimTable{},
-		pool:  map[string][]state.PoolResult{},
+		pool:  map[string][]store.PoolDevice{},
 	}
 	e.st = openStore(t, filepath.Join(root, "state"), o)
 	defaults := o.defaults
@@ -611,15 +611,15 @@ func (c claimTable) set(claims claimTable) {
 }
 
 // poolTable is the prepared claims of the pool driver by uid.
-type poolTable map[string][]state.PoolResult
+type poolTable map[string][]store.PoolDevice
 
 // ClaimResults implements PoolResults.
-func (p poolTable) ClaimResults(uid string) []state.PoolResult {
+func (p poolTable) ClaimResults(uid string) []store.PoolDevice {
 	return p[uid]
 }
 
 // setPool replaces the pool claims of the env.
-func (e *env) setPool(results map[string][]state.PoolResult) {
+func (e *env) setPool(results map[string][]store.PoolDevice) {
 	for uid := range e.pool {
 		delete(e.pool, uid)
 	}
