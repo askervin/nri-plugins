@@ -703,7 +703,7 @@ func TestPrepareWaitsForNRI(t *testing.T) {
 		nriPrepareWait = 20 * time.Millisecond
 		cmds := e.commands()
 		wantErr(t, prepare().Err, why)
-		_, prepared := e.preparedMap()[string(claim.UID)]
+		_, prepared := e.prepared()[string(claim.UID)]
 		if prepared || e.preparation("u1") != nil || e.commands() != cmds {
 			t.Fatalf("prepared %v, preparation %+v, commands:\n%s", prepared, e.preparation("u1"), strings.TrimPrefix(e.commands(), cmds))
 		}

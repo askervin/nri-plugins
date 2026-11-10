@@ -151,8 +151,8 @@ func TestPoolRollbackKept(t *testing.T) {
 	if prep == nil || prep.State != state.PreparationKept || len(prep.Results) != 1 || prep.Results[0].Index != 0 {
 		t.Fatalf("preparation %+v", prep)
 	}
-	if rec := e.preparingFile(t)["u1"]; rec == nil || len(rec.Devices) != 1 || rec.Devices[0].Serial != 0xc1ee0001 {
-		t.Fatalf("record %+v", rec)
+	if g := e.grant("u1", 0); g == nil || g.Serial != 0xc1ee0001 {
+		t.Fatalf("grant %+v", g)
 	}
 	// the foreign region goes; the Unprepare forgets its record
 	noErr(t, k.ReleaseRegion(context.Background(), region))
@@ -234,6 +234,11 @@ func TestPoolCompanionRevoke(t *testing.T) {
 	noErr(t, prepare(t, p, numaCompanion("l1")).Err)
 	if !strings.Contains(lender.callLog(), "lend ") {
 		t.Fatalf("lender calls:\n%s", lender.callLog())
+	}
+	// the lend recorded with the node of the memory of the device
+	if rec, node := lendOf(e.st.Snapshot(), e.preparation(uid)), e.k.Kernel().TargetNode("dax0.0"); rec == nil || rec.Lease != "l1" ||
+		node < 0 || !slices.Equal(rec.NumaNodes, []int{node}) {
+		t.Fatalf("lend %+v, the memory on node %d", rec, node)
 	}
 	noErr(t, unprepare(t, p, uid))
 	if got := lender.revokes(); !slices.Equal(got, []bool{true}) {

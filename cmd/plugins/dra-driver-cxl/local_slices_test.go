@@ -745,7 +745,7 @@ func TestLocalRegionErrors(t *testing.T) {
 	e.wantClean()
 }
 
-// localDevices.json has the slices of the claims; a start releases cut
+// The records have the slices of the claims; a start releases cut
 // Prepares, unnamed dax devices, gone slices, idle regions, another boot's.
 func TestLocalStateAndReconcile(t *testing.T) {
 	e := newSliceTestEnv(t)
@@ -754,15 +754,17 @@ func TestLocalStateAndReconcile(t *testing.T) {
 	e.mustPrepare(localClaim("u1", localBlockSize, localDaxConfig))
 	e.mustPrepare(localClaim("u2", localBlockSize))
 	e.mustPrepare(localClaim("u3", localBlockSize, localDaxConfig))
-	data, _ := e.view(localStateFileName)
-	for _, want := range []string{`"serialHex": "c100e2e1"`, `"region": "region0"`, `"mode": "dax"`, `"mode": "numa"`, `"dax": "dax0.1"`,
-		`"daxDevice": "` + filepath.Join(e.k.DevRoot(), "dax0.2") + `"`} {
-		if !strings.Contains(string(data), want) {
-			t.Fatalf("localDevices.json lacks %s:\n%s", want, data)
-		}
+	if region, _, _ := e.localRegion(localSerial); region != "region0" || len(e.localUses(localSerial)) != 3 {
+		t.Fatalf("region %q, claims %v", region, e.localUses(localSerial))
 	}
-	if d := e.localDevice(localSerial); d == nil || len(d.Claims) != 3 || d.Claims["u2"][0].Mode != api.ModeNUMA || d.Claims["u2"][0].Dax != "dax0.1" {
-		t.Fatalf("view %+v", d)
+	if g := e.grant("u1", 0); g == nil || g.Asked.Mode != state.ModeDax {
+		t.Fatalf("grant of u1 %+v", g)
+	}
+	if g := e.grant("u2", 0); g == nil || g.Asked.Mode != state.ModeNUMA || g.Got.Dax != "dax0.1" {
+		t.Fatalf("grant of u2 %+v", g)
+	}
+	if info := e.s.ClaimInfo("u3"); info == nil || info.Devices[0].DaxDevice != filepath.Join(e.k.DevRoot(), "dax0.2") {
+		t.Fatalf("device info of u3 %+v", info)
 	}
 
 	// restart: the numa claim u4 is not prepared (its Prepare was cut after
@@ -775,8 +777,8 @@ func TestLocalStateAndReconcile(t *testing.T) {
 	u4 := e.dax("u4", 0)
 	e.restart()
 	e.wantGone(u4)
-	if d := e.localDevice(localSerial); d == nil || len(d.Claims) != 3 || e.grant("u4", 0) != nil {
-		t.Fatalf("after the restart: %+v, u4 %+v", d, e.grant("u4", 0))
+	if uses := e.localUses(localSerial); len(uses) != 3 || e.grant("u4", 0) != nil {
+		t.Fatalf("after the restart: claims %v, u4 %+v", uses, e.grant("u4", 0))
 	}
 	// its preparation stays for kubelet's retry
 	if p := e.preparation("u4"); p == nil || p.State != state.PreparationPreparing {
@@ -931,8 +933,8 @@ func TestLocalStateOfAnotherBoot(t *testing.T) {
 	e.start()
 	ctx := context.Background()
 	e.mustPrepare(localClaim("u1", localBlockSize))
-	if v := e.localView(); v.BootID != e.k.BootID() || v.BootID == "" {
-		t.Fatalf("localDevices.json of boot %q, expected %q", v.BootID, e.k.BootID())
+	if boot := e.st.Snapshot().BootID; boot != e.k.BootID() || boot == "" {
+		t.Fatalf("records of boot %q, expected %q", boot, e.k.BootID())
 	}
 	cmds := e.k.Commands()
 

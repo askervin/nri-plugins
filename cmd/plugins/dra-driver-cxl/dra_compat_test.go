@@ -53,8 +53,8 @@ var (
 	parsePoolDeviceData = provenance.ParseDeviceData
 )
 
-// lendOf returns the lend of a companion claim as preparedPoolClaims.json
-// has it, nil for another claim.
+// lendOf returns the lend of a companion claim as the pool driver gives it
+// (PoolLendContent), nil for another claim.
 func lendOf(doc *store.Document, prep *state.Preparation) *lendRecord {
 	var rec *lendRecord
 	data, err := store.PoolLendContent(doc, prep)
@@ -97,18 +97,6 @@ func observedRegion(s *kernel.Snapshot, name, mode string, node int, size uint64
 		s.DaxDevices = append(s.DaxDevices, kernel.DaxDeviceInfo{Name: "dax-" + name, Region: name, Size: size, TargetNode: node})
 	}
 	s.Regions = append(s.Regions, r)
-}
-
-// claimCDIDeviceID returns the qualified CDI device name of the allocation
-// result n of a claim of cxl.nri.io.
-func claimCDIDeviceID(claimUID string, n int) string {
-	return device.CDIKind + "=" + dra.ClaimCDIDeviceName(claimUID, n)
-}
-
-// poolCDIDeviceID returns the qualified CDI device name of the allocation
-// result n of a claim of the pool driver.
-func poolCDIDeviceID(claimUID string, n int) string {
-	return device.PoolCDIKind + "=" + dra.ClaimCDIDeviceName(claimUID, n)
 }
 
 // poolNumaNodes returns the NUMA nodes of the memory of the claims of the

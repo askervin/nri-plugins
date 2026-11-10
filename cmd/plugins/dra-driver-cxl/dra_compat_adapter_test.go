@@ -15,44 +15,28 @@
 package main
 
 import (
-	"k8s.io/dynamic-resource-allocation/kubeletplugin"
-
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 )
 
-// The names of the front-end (internal/dra) as the adapters of the state
-// files of the tests use them, and the shapes of those state files.
+// The names of the front-end (internal/dra) as the tests use them, and the
+// state files of earlier versions that the tests of the start write.
 
 const (
-	// preparedClaimsInfoFileName is the view of the prepared claims of
-	// cxl.nri.io with their devices in its plugin data directory.
-	preparedClaimsInfoFileName = "preparedClaimsInfo.json"
-	// localStateFileName is the state file of the local memdevs in the
-	// plugin data directory of cxl.nri.io.
+	// localStateFileName is the state file of the local memdevs of an
+	// earlier version in the plugin data directory of cxl.nri.io.
 	localStateFileName = "localDevices.json"
-	// poolStateFileName is the state file of the prepared pool claims in
-	// the plugin data directory of the pool driver.
-	poolStateFileName = "preparedPoolClaims.json"
-	// poolPreparingFileName is the state file of the pool claims whose
-	// Prepare did not finish or that a rollback kept, in the plugin data
-	// directory of the pool driver.
-	poolPreparingFileName = "preparingPoolClaims.json"
+	// preparedClaimsInfoFileName is the view of the prepared claims of
+	// cxl.nri.io with their devices of an earlier version in its plugin
+	// data directory.
+	preparedClaimsInfoFileName = "preparedClaimsInfo.json"
 )
 
 type (
 	// PreparedDeviceInfo is a device of a prepared claim of cxl.nri.io.
 	PreparedDeviceInfo = state.DeviceInfo
-	// PreparedClaimInfo is a prepared claim of cxl.nri.io with its devices.
-	PreparedClaimInfo = dra.ClaimInfo
-	// PreparedClaimsInfo is preparedClaimsInfo.json: the prepared claims of
-	// cxl.nri.io by UID.
-	PreparedClaimsInfo map[string]*PreparedClaimInfo
-	// claimPreparations is preparedClaims.json: the PrepareResults of the
-	// prepared claims of cxl.nri.io by UID.
-	claimPreparations map[string]kubeletplugin.PrepareResult
 	// preparedPoolDevice is a device of a prepared pool claim.
 	preparedPoolDevice = store.PoolDevice
 	// lendRecord is the lend of a companion claim.
@@ -67,16 +51,6 @@ type (
 	// podRef identifies a pod.
 	podRef = state.PodRef
 )
-
-// preparedPoolClaim is a value of preparedPoolClaims.json.
-type preparedPoolClaim struct {
-	ClaimName string                      `json:"claimName"` // namespace/name
-	Devices   []preparedPoolDevice        `json:"devices"`
-	Result    kubeletplugin.PrepareResult `json:"result"` // what Prepare returned
-	Lend      *lendRecord                 `json:"lend,omitempty"`
-	// BootID is the boot id of the kernel that the claim was prepared in.
-	BootID string `json:"bootID,omitempty"`
-}
 
 // ptr returns a pointer to v.
 func ptr[T any](v T) *T {

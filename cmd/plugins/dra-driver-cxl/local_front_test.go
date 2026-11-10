@@ -49,7 +49,7 @@ func TestPrepareLocalNUMA(t *testing.T) {
 	if !e.inUse() {
 		t.Fatal("memdev not in use")
 	}
-	res := e.preparedMap()["u1"]
+	res := e.prepared()["u1"]
 	if len(res.Devices) != 1 || !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl=claim-u1-0"}) {
 		t.Fatalf("prepared %+v", res.Devices)
 	}
@@ -81,8 +81,8 @@ func TestPrepareLocalNUMA(t *testing.T) {
 	e.mustUnprepare("u3")
 	wantNUMABlocks(e)
 	e.mustUnprepare("u2")
-	if e.inUse() || len(e.preparedMap()) != 0 || len(e.regions(localSerial)) != 0 {
-		t.Fatalf("after unprepare: in use %v, prepared %v, regions %v", e.inUse(), e.preparedMap(), e.regions(localSerial))
+	if e.inUse() || len(e.prepared()) != 0 || len(e.regions(localSerial)) != 0 {
+		t.Fatalf("after unprepare: in use %v, prepared %v, regions %v", e.inUse(), e.prepared(), e.regions(localSerial))
 	}
 	// the whole memdev without consumed capacity
 	e.mustPrepare(localClaim("u4", 0))
@@ -110,22 +110,23 @@ func TestPrepareSharedLocalLifeCycle(t *testing.T) {
 	if z := e.k.Zeroed(); len(z) != 1 {
 		t.Fatalf("zeroed %v", z)
 	}
-	d := e.localDevice(localSerial)
-	if d == nil || !d.Shared || d.Region != "region0" || d.Dax != "dax0.0" || len(d.Claims) != 2 {
-		t.Fatalf("view %+v", d)
+	region, _, dax := e.localRegion(localSerial)
+	if m := e.localMemdev(localSerial); m == nil || !m.Facts.Shared || region != "region0" || dax != "dax0.0" || len(e.localUses(localSerial)) != 2 {
+		t.Fatalf("memdev %+v: region %q dax %q claims %v", m, region, dax, e.localUses(localSerial))
 	}
 	info := e.s.ClaimInfo("u1").Devices[0]
 	if !info.Shared || info.DaxDevice == "" || !info.ReadOnly || info.TotalBytes != localRegionSize {
 		t.Fatalf("device info %+v", info)
 	}
 	e.restart()
-	if d := e.localDevice(localSerial); d == nil || len(d.Claims) != 2 {
-		t.Fatalf("after the restart: %+v", d)
+	if uses := e.localUses(localSerial); len(uses) != 2 {
+		t.Fatalf("claims after the restart: %v", uses)
 	}
 	e.mustUnprepare("u1")
 	e.mustUnprepare("u2")
-	if d := e.localDevice(localSerial); d == nil || !d.Shared || d.Region != "region0" || len(d.Claims) != 0 {
-		t.Fatalf("idle: %+v", d)
+	region, _, _ = e.localRegion(localSerial)
+	if m := e.localMemdev(localSerial); m == nil || !m.Facts.Shared || region != "region0" || len(e.localUses(localSerial)) != 0 {
+		t.Fatalf("idle: memdev %+v region %q claims %v", m, region, e.localUses(localSerial))
 	}
 	e.restart()
 	if len(e.regions(localSerial)) != 1 {

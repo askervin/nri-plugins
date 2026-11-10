@@ -625,8 +625,8 @@ func TestLocalPersistentCutCreation(t *testing.T) {
 			if !e.cut(func() { _ = prepareOn(context.Background(), e.s, pmemClaim("ro1", localPmemShare, localPmemFsRO)) }) {
 				t.Fatal("the Prepare was not cut")
 			}
-			if d := e.localDevice(localPmemSerial); d == nil || d.Region != "" || d.Creating != "region0" {
-				t.Fatalf("record of the cut creation %+v", d)
+			if region, creating, _ := e.localRegion(localPmemSerial); region != "" || creating != "region0" {
+				t.Fatalf("record of the cut creation: region %q, creating %q", region, creating)
 			}
 			if above {
 				e.regionAbove()
@@ -634,12 +634,12 @@ func TestLocalPersistentCutCreation(t *testing.T) {
 			e.restart()
 			if above {
 				e.wantRegions(1, 0)
-				d := e.localDevice(localPmemSerial)
-				if d == nil || d.Region != "region0" || d.NdRegion != "" {
-					t.Fatalf("kept region %+v", d)
+				reg := e.localRegionRecord(localPmemSerial)
+				if region, _, _ := e.localRegion(localPmemSerial); region != "region0" || (reg.SetUp && reg.Pmem != nil && reg.Pmem.NdRegion != "") {
+					t.Fatalf("kept region %+v", reg)
 				}
-				if _, ok := d.Claims["ro1"]; !ok {
-					t.Fatalf("the region is not kept for the cut claim ro1: claims %v", d.Claims)
+				if _, ok := e.localUses(localPmemSerial)["ro1"]; !ok {
+					t.Fatalf("the region is not kept for the cut claim ro1: claims %v", e.localUses(localPmemSerial))
 				}
 				e.mustPrepare(pmemClaim("ro1", localPmemShare, localPmemFsRO))
 				e.wantRegions(1, 0)
@@ -800,19 +800,26 @@ func TestLocalPersistentLease(t *testing.T) {
 	e.wantNoViolations()
 }
 
-// The record of a persistent device in the state file localDevices.json.
+// The records of a persistent device and of a claim of a filesystem on it.
 func TestLocalPersistentStateFile(t *testing.T) {
 	e := newPmemTestEnv(t)
 	pmem := e.formatted("ext4")
 	e.start()
 	e.mustPrepare(pmemClaim("rw1", localPmemShare, localPmemFsRW))
-	data, err := e.view(localStateFileName)
-	noErr(t, err)
-	for _, want := range []string{`"persistent": true`, `"ndRegion": "region0"`, `"namespace": "namespace0.0"`, `"blockDevice": "` + pmem + `"`,
-		`"mode": "fs"`, `"access": "direct"`, `"fsType": "ext4"`, `"nodeMount": "` + e.nodeMount("direct") + `"`, `"path": "` + localPmemPath + `"`} {
-		if !strings.Contains(string(data), want) {
-			t.Fatalf("state file lacks %s:\n%s", want, data)
-		}
+	if m := e.localMemdev(localPmemSerial); m == nil || !m.Facts.Persistent {
+		t.Fatalf("memdev %+v", m)
+	}
+	reg := e.localRegionRecord(localPmemSerial)
+	if reg == nil || !reg.SetUp || reg.Pmem == nil || reg.Pmem.NdRegion != "region0" || reg.Pmem.Namespace != "namespace0.0" ||
+		reg.Pmem.BlockDevice == nil || reg.Pmem.BlockDevice.Name != pmem {
+		t.Fatalf("region %+v", reg)
+	}
+	g := e.grant("rw1", 0)
+	if g == nil || g.Asked.Mode != state.ModeFs || g.Got.Mount != state.AccessDirect || g.Asked.Path != localPmemPath {
+		t.Fatalf("grant %+v", g)
+	}
+	if m := e.records().MountOf(g); m == nil || m.FsType != "ext4" || m.Path != e.nodeMount("direct") {
+		t.Fatalf("node mount %+v", m)
 	}
 	e.mustUnprepare("rw1")
 	e.wantClean()

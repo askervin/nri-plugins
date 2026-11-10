@@ -16,7 +16,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -96,12 +95,6 @@ func newPoolTestEnv(t *testing.T) *poolTestEnv {
 
 // plug hot-adds the pool device with the serial (volatile memory) and
 // returns its memdev.
-// poolView returns the prepared pool claims of the records of the store in
-// the shape of preparedPoolClaims.json (viewContent).
-func (e *poolTestEnv) poolView() ([]byte, error) {
-	return viewContent(e.st.Snapshot(), poolStateFileName, e.st.ResultOptions())
-}
-
 func (e *poolTestEnv) plug(serial uint64) string {
 	return e.k.Plug(fake.MemdevSpec{Serial: serial})
 }
@@ -203,8 +196,8 @@ func (e *poolTestEnv) preparation(uid string) *state.Preparation {
 	return e.records().Preparation(device.PoolDriverName, uid)
 }
 
-// device returns the device of the result n of the claim uid as the view
-// gives it, failing the test without one.
+// device returns the device of the result n of the claim uid as the pool
+// driver gives it (PoolDevices), failing the test without one.
 func (e *poolTestEnv) device(p *dra.Plugin, uid string, n int) preparedPoolDevice {
 	e.t.Helper()
 	prep := e.preparation(uid)
@@ -294,15 +287,22 @@ func (e *poolTestEnv) commands() string {
 	return e.k.CommandsSince(e.base)
 }
 
-// preparingFile returns the records of the claims whose Prepare did not
-// finish, as preparingPoolClaims.json has them.
-func (e *poolTestEnv) preparingFile(t *testing.T) map[string]*preparingPoolClaim {
-	t.Helper()
-	data, err := preparingContent(e.st.Snapshot(), e.st.ResultOptions())
-	noErr(t, err)
-	recs := map[string]*preparingPoolClaim{}
-	noErr(t, json.Unmarshal(data, &recs))
-	return recs
+// grant returns the grant of result n of the claim uid, nil if there is
+// none.
+func (e *poolTestEnv) grant(uid string, n int) *state.Grant {
+	return e.records().Grant(state.GrantRef{Claim: uid, Result: n})
+}
+
+// unfinished returns the preparation of the claim uid of the pool driver
+// whose Prepare did not finish (PREPARING), that a rollback or the start
+// kept (KEPT) or that is of another boot (PREPARED_STALE), nil if there is
+// none.
+func (e *poolTestEnv) unfinished(uid string) *state.Preparation {
+	p := e.preparation(uid)
+	if p == nil || (p.State != state.PreparationPreparing && p.State != state.PreparationKept && p.State != state.PreparationStale) {
+		return nil
+	}
+	return p
 }
 
 // wantNoClaims checks that the pool driver has no claim: no CDI spec, no

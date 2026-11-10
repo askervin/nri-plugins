@@ -45,7 +45,7 @@ func fsROConfig(access string) string {
 
 // TestPoolPersistentReadWrite: two writers and a reader of one ext4 on one
 // node (test20 phase C): one read-write node mount, CDI binds by claim, the
-// environment, the state file; a restart keeps it; the Unprepare of the
+// environment, the devices; a restart keeps it; the Unprepare of the
 // writers makes it read-only, that of the reader releases the device.
 func TestPoolPersistentReadWrite(t *testing.T) {
 	e := newPoolTestEnv(t)
@@ -82,9 +82,8 @@ func TestPoolPersistentReadWrite(t *testing.T) {
 			t.Fatalf("%s: CDI mounts %+v", c.uid, cd.ContainerEdits.Mounts)
 		}
 	}
-	data, _ := e.poolView()
-	if !strings.Contains(string(data), `"fsType": "ext4"`) || e.device(p, "a", 0).ReadOnly || !e.device(p, "c", 0).ReadOnly {
-		t.Fatalf("state:\n%s", data)
+	if a, c := e.device(p, "a", 0), e.device(p, "c", 0); a.FsType != "ext4" || a.ReadOnly || !c.ReadOnly {
+		t.Fatalf("devices %+v, %+v", a, c)
 	}
 
 	// a reader with the other access next to the writers: P9a

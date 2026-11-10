@@ -93,7 +93,7 @@ func localDax(e *localTestEnv, dax string) (string, int, int) {
 // prepared claim.
 func wantLocalCDIDevices(e *localTestEnv, uid string, ids ...string) {
 	e.t.Helper()
-	res := e.preparedMap()[uid]
+	res := e.prepared()[uid]
 	if len(res.Devices) == 0 || !slices.Equal(res.Devices[0].CDIDeviceIDs, ids) {
 		e.t.Fatalf("claim %s: prepared %+v, expected CDI devices %v", uid, res.Devices, ids)
 	}
@@ -172,7 +172,7 @@ func TestPrepareLocalTwoSlices(t *testing.T) {
 	ro.Requests = []string{"mem2"}
 	claim.Status.Allocation.Devices.Config = append(claim.Status.Allocation.Devices.Config, ro)
 	e.mustPrepare(claim)
-	devs := e.preparedMap()["u1"].Devices
+	devs := e.prepared()["u1"].Devices
 	if len(devs) != 2 || !slices.Equal(devs[0].CDIDeviceIDs, []string{"nri.io/cxl=claim-u1-0"}) ||
 		!slices.Equal(devs[1].CDIDeviceIDs, []string{"nri.io/cxl=claim-u1-1"}) {
 		t.Fatalf("prepared %+v", devs)
@@ -210,7 +210,7 @@ func TestPrepareLocalErrors(t *testing.T) {
 	} {
 		wantErr(t, e.prepare(localClaim("u1", 2*mib, tc.params)), tc.err)
 	}
-	if strings.Contains(e.commands(), "create-region") || len(e.preparedMap()) != 0 {
+	if strings.Contains(e.commands(), "create-region") || len(e.prepared()) != 0 {
 		t.Fatalf("a refused config touched the memdev:\n%s", e.commands())
 	}
 	// a result on a device that is not there stops the claim before its
@@ -219,7 +219,7 @@ func TestPrepareLocalErrors(t *testing.T) {
 	claim.Status.Allocation.Devices.Results = append(claim.Status.Allocation.Devices.Results,
 		resourcev1.DeviceRequestAllocationResult{Request: "other", Driver: device.DriverName, Pool: testNode, Device: "missing"})
 	wantErr(t, e.prepare(claim), "could not find allocatable device missing")
-	if strings.Contains(e.commands(), "create-region") || e.inUse() || len(e.preparedMap()) != 0 || e.preparation("u1") != nil {
+	if strings.Contains(e.commands(), "create-region") || e.inUse() || len(e.prepared()) != 0 || e.preparation("u1") != nil {
 		t.Fatalf("a refused claim touched the memdev:\n%s", e.commands())
 	}
 	// unmanaged memdevs
@@ -271,11 +271,6 @@ func TestPrepareLocalLend(t *testing.T) {
 	if cdiDeviceByName(e.cdiSpec(), "claim-u1-0") != nil {
 		t.Fatal("CDI device of a companion claim")
 	}
-	// the lend is in the claims info
-	data, err := e.view(preparedClaimsInfoFileName)
-	if err != nil || !strings.Contains(string(data), `"lease": "l1"`) {
-		t.Fatalf("claims info lacks the lend: %v\n%s", err, data)
-	}
 	// a repeated Prepare tells the broker again
 	e.mustPrepare(localCompanion("u1", 64*mib))
 	wantLog(t, hooks.log(), "prepared l1\nlending l1 cxl-lease-l1\nprepared l1")
@@ -318,7 +313,7 @@ func TestPrepareLocalLendErrors(t *testing.T) {
 	wantErr(t, e.prepare(localCompanion("u2", 64*mib)), "container is steered")
 	failed := hooks.log()
 	wantLog(t, failed, "failed l1: lease l1: lending node 2 to demo/borrower/app: container is steered")
-	if e.inUse() || len(e.preparedMap()) != 0 || len(e.regions(localSerial)) != 0 {
+	if e.inUse() || len(e.prepared()) != 0 || len(e.regions(localSerial)) != 0 {
 		t.Fatal("not rolled back")
 	}
 
@@ -483,7 +478,7 @@ func TestUnprepareLocalFailures(t *testing.T) {
 	// a revoke that fails keeps the claim and its memory
 	e.mustPrepare(localCompanion("u1", 64*mib))
 	wantErr(t, e.unprepare("u1"), "node "+strconv.Itoa(localRegionNode(e))+" busy")
-	if _, found := e.preparedMap()["u1"]; !found || strings.Contains(e.commands(), "destroy-region") {
+	if _, found := e.prepared()["u1"]; !found || strings.Contains(e.commands(), "destroy-region") {
 		t.Fatalf("claim released after a failed revoke:\n%s", e.commands())
 	}
 	wantLog(t, hooks.log(), "releasing l1")
@@ -497,7 +492,7 @@ func TestUnprepareLocalFailures(t *testing.T) {
 	e.mustPrepare(localClaim("u2", 8*mib, localDaxConfig))
 	e.k.FailWrite("bus/dax/devices/dax0.0/size", syscall.EBUSY)
 	wantErr(t, e.unprepare("u2"), "releasing slice dax0.0")
-	if _, found := e.preparedMap()["u2"]; !found || cdiDeviceByName(e.cdiSpec(), "claim-u2-0") == nil {
+	if _, found := e.prepared()["u2"]; !found || cdiDeviceByName(e.cdiSpec(), "claim-u2-0") == nil {
 		t.Fatal("claim or CDI device gone after a failed release")
 	}
 	e.mustUnprepare("u2")
@@ -525,7 +520,7 @@ func TestPrepareLocalPersistFailure(t *testing.T) {
 	if log := hooks.log(); !strings.HasSuffix(log, "\nfailed l1: "+err.Error()) || strings.Contains(log, "releasing") {
 		t.Fatalf("hooks %s", log)
 	}
-	if _, found := e.preparedMap()["u1"]; found || e.s.ClaimInfo("u1") != nil || e.preparation("u1") != nil || len(e.regions(localSerial)) != 0 {
+	if _, found := e.prepared()["u1"]; found || e.s.ClaimInfo("u1") != nil || e.preparation("u1") != nil || len(e.regions(localSerial)) != 0 {
 		t.Fatalf("claim kept after the rollback, regions %v", e.regions(localSerial))
 	}
 	noErr(t, os.Remove(e.cdiDir))
@@ -603,8 +598,8 @@ func TestPrepareRegionDRAMNUMAOnly(t *testing.T) {
 			e.mustUnprepare("u1")
 		}
 	}
-	if len(e.preparedMap()) != 0 {
-		t.Fatalf("prepared %v", e.preparedMap())
+	if len(e.prepared()) != 0 {
+		t.Fatalf("prepared %v", e.prepared())
 	}
 	e.wantClean()
 	wantPrefixed(t, unprefixed)
@@ -772,8 +767,8 @@ func TestPrepareMemoryConfig(t *testing.T) {
 		if !strings.Contains(err.Error(), tc.err) {
 			unprefixed = append(unprefixed, err.Error())
 		}
-		if len(e.preparedMap()) != 0 || e.inUse() || leases.open["u9"] {
-			t.Fatalf("%s: prepared %v, memdev in use %v", tc.err, e.preparedMap(), e.inUse())
+		if len(e.prepared()) != 0 || e.inUse() || leases.open["u9"] {
+			t.Fatalf("%s: prepared %v, memdev in use %v", tc.err, e.prepared(), e.inUse())
 		}
 	}
 
@@ -804,8 +799,8 @@ func TestPrepareMemoryConfig(t *testing.T) {
 			`claim demo/claim-u9: MemoryConfig: FromClaim config 0: json: unknown field "device.online"`},
 	} {
 		wantErr(t, e.prepare(memoryConfigClaim("u9", tc.configs...)), tc.err)
-		if len(e.preparedMap()) != 0 || e.inUse() || leases.open["u9"] {
-			t.Fatalf("%s: prepared %v, memdev in use %v", tc.err, e.preparedMap(), e.inUse())
+		if len(e.prepared()) != 0 || e.inUse() || leases.open["u9"] {
+			t.Fatalf("%s: prepared %v, memdev in use %v", tc.err, e.prepared(), e.inUse())
 		}
 	}
 	if got := e.commands(); got != commands {
@@ -858,10 +853,11 @@ func TestPrepareKeptRefusedKeepsItsRegion(t *testing.T) {
 			if p := e.preparation("u1"); p == nil || p.State != state.PreparationKept {
 				t.Fatalf("preparation %+v", p)
 			}
-			if d := e.localDevice(localSerial); d == nil || d.Region != "region0" {
-				t.Fatalf("view %+v", d)
-			} else if _, ok := d.Claims["u1"]; !ok {
-				t.Fatalf("the region is not kept for u1: %+v", d)
+			if region, _, _ := e.localRegion(localSerial); region != "region0" {
+				t.Fatalf("region %q", region)
+			}
+			if _, ok := e.localUses(localSerial)["u1"]; !ok {
+				t.Fatalf("the region is not kept for u1: %v", e.localUses(localSerial))
 			}
 			e.mustPrepare(localClaim("u1", localBlockSize))
 			wantLocalRegionCount(t, e, 1, 0)

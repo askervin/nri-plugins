@@ -31,7 +31,6 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -102,7 +101,7 @@ func sharedPublished(e *localTestEnv) *resourcev1.Device {
 // claim.
 func wantCDIDeviceIDs(t *testing.T, e *localTestEnv, uid string, ids ...string) {
 	t.Helper()
-	res, ok := e.preparedMap()[uid]
+	res, ok := e.prepared()[uid]
 	if !ok || len(res.Devices) != 1 || !slices.Equal(res.Devices[0].CDIDeviceIDs, ids) {
 		t.Fatalf("claim %s: prepared %v %+v, expected CDI devices %v", uid, ok, res.Devices, ids)
 	}
@@ -199,8 +198,8 @@ func TestLocalSharedClaims(t *testing.T) {
 		t.Fatalf("shared device zeroed %v or resized (%v)", z, resized)
 	}
 	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{"u1", "u2"}})
-	if d := e.localDevice(localSerial); d == nil || !d.Shared {
-		t.Fatalf("view %+v", d)
+	if m := e.localMemdev(localSerial); m == nil || !m.Facts.Shared {
+		t.Fatalf("memdev %+v", m)
 	}
 	lines := logs()
 	wantLogLine(t, lines, compat.LogZeroedNewSharedSharedDaxSizeDRALocalSizeIn)
@@ -337,18 +336,6 @@ func TestLocalSharedReconcile(t *testing.T) {
 	}
 }
 
-// A memdev of a localDevices.json without "shared", as an older driver
-// wrote it, is a sliced memdev in the records.
-func TestLocalSharedOldStateFile(t *testing.T) {
-	old := `{"bootID":"boot-1","devices":[{"serial":3238060769,"serialHex":"c100e2e1","memdev":"mem0","region":"region0","node":-1,"dax":"dax0.0","claims":{}}]}`
-	doc := &store.Document{Schema: store.Schema}
-	noErr(t, putContent(doc, testResultOptions, localStateFileName, []byte(old), nil))
-	m := doc.Memdev(localSerial)
-	if m == nil || m.Facts.Shared || m.Facts.Persistent || len(m.Grants) > 0 || len(m.Regions) != 1 {
-		t.Fatalf("memdev of an old state file %+v", m)
-	}
-}
-
 // The publication of a shared local memdev: shares without a request
 // policy, no memory capacity, of any size, also with an unknown memory
 // block size.
@@ -458,7 +445,7 @@ func TestPrepareSharedLocal(t *testing.T) {
 		"MemoryConfig: device: a shared device is used as dax only")
 	wantErr(t, e.prepare(sharedClaim("u9", "1", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"numa","readOnly":true}}`)),
 		"MemoryConfig: device.readOnly needs mode dax")
-	if got := e.k.CommandsSince(before); got != "" || e.preparedMap()["u9"].Devices != nil || e.preparation("u9") != nil {
+	if got := e.k.CommandsSince(before); got != "" || e.prepared()["u9"].Devices != nil || e.preparation("u9") != nil {
 		t.Fatalf("a refused claim touched the device:\n%s", got)
 	}
 
@@ -524,7 +511,7 @@ func TestPrepareSharedLocalLend(t *testing.T) {
 		!hooks.devs[0].ReadOnly || hooks.devs[0].TotalBytes != localRegionSize {
 		t.Fatalf("lent devices %+v", hooks.devs)
 	}
-	if res := e.preparedMap()["u1"]; len(res.Devices) != 1 || len(res.Devices[0].CDIDeviceIDs) != 0 {
+	if res := e.prepared()["u1"]; len(res.Devices) != 1 || len(res.Devices[0].CDIDeviceIDs) != 0 {
 		t.Fatalf("CDI devices of a companion claim: %+v", res.Devices)
 	}
 	e.mustUnprepare("u1")
@@ -636,8 +623,8 @@ func TestPrepareSharedLocalRollback(t *testing.T) {
 	}
 	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{}})
 	wantLocalRegionCount(t, e, 1, 0)
-	if len(e.preparedMap()) != 0 {
-		t.Fatalf("prepared %v", e.preparedMap())
+	if len(e.prepared()) != 0 {
+		t.Fatalf("prepared %v", e.prepared())
 	}
 }
 

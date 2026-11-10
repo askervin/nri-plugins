@@ -374,28 +374,89 @@ func (e *localTestEnv) commands() string {
 	return e.k.CommandsSince(e.base)
 }
 
-// localView returns the local memdevs of the records in the shape of the
-// local allocator's state file localDevices.json.
-func (e *localTestEnv) localView() *localState {
-	e.t.Helper()
-	data, err := e.view(localStateFileName)
-	noErr(e.t, err)
-	var st localState
-	dec := json.NewDecoder(strings.NewReader(string(data)))
-	dec.DisallowUnknownFields()
-	noErr(e.t, dec.Decode(&st))
-	return &st
+// localMemdev returns the record of the local memdev with the serial, nil
+// if there is none.
+func (e *localTestEnv) localMemdev(serial uint64) *state.Memdev {
+	if m := e.records().Memdev(state.Serial(serial)); m != nil && m.Source == state.SourceLocal {
+		return m
+	}
+	return nil
 }
 
-// localDevice returns the memdev with the serial in localDevices.json, nil
-// if it has none.
-func (e *localTestEnv) localDevice(serial uint64) *localDevice {
-	for _, d := range e.localView().Devices {
-		if d.Serial == serial {
-			return d
+// localRegionRecord returns the record of the first region of ours on the
+// local memdev with the serial, nil if it has none.
+func (e *localTestEnv) localRegionRecord(serial uint64) *state.Region {
+	r := e.records()
+	if m := e.localMemdev(serial); m != nil {
+		for _, ref := range m.Regions {
+			if reg := r.Region(ref); reg != nil && reg.Ours() {
+				return reg
+			}
 		}
 	}
 	return nil
+}
+
+// localRegion returns the first region of ours on the local memdev with
+// the serial: its name once it is made (KEPT, or OWNED and no longer made
+// for a first Prepare), else the name of the region being made as
+// creating, and its first dax device once it is set up.
+func (e *localTestEnv) localRegion(serial uint64) (region, creating, dax string) {
+	reg := e.localRegionRecord(serial)
+	switch {
+	case reg == nil:
+		return "", "", ""
+	case reg.State == state.RegionOwned && e.records().RegionInMaking(e.localMemdev(serial), reg):
+		return "", reg.Name, ""
+	case reg.State == state.RegionOwned || reg.State == state.RegionKept:
+		region = reg.Name
+	case reg.State == state.RegionNoted || reg.State == state.RegionCreating:
+		creating = reg.NotedName
+	}
+	if reg.SetUp {
+		dax = reg.FirstDax()
+	}
+	return region, creating, dax
+}
+
+// localUses returns the claims of the local memdev with the serial with
+// the number of their grants on it that got their use (REALISED,
+// REALISED_UNRESTORED or RELEASING), 0 for a claim whose grant holds the
+// region without a use yet (JOURNALED or REALISING). The dax devices of
+// its regions that no grant uses are the uses of the claim "-".
+func (e *localTestEnv) localUses(serial uint64) map[string]int {
+	r := e.records()
+	out := map[string]int{}
+	m := e.localMemdev(serial)
+	if m == nil {
+		return out
+	}
+	for _, ref := range m.Grants {
+		g := r.Grant(ref)
+		if g == nil {
+			continue
+		}
+		switch g.State {
+		case state.GrantRealised, state.GrantUnrestored, state.GrantReleasing:
+			out[ref.Claim]++
+		case state.GrantJournaled, state.GrantRealising:
+			if _, ok := out[ref.Claim]; !ok {
+				out[ref.Claim] = 0
+			}
+		}
+	}
+	for _, ref := range m.Regions {
+		reg := r.Region(ref)
+		if reg == nil || !reg.Ours() {
+			continue
+		}
+		for _, d := range reg.DaxDevices {
+			if !d.Whole && d.State != state.DaxSeed && len(d.Users) == 0 {
+				out["-"]++
+			}
+		}
+	}
+	return out
 }
 
 // inUse tells whether the engine has a record of the local memdev.
@@ -445,20 +506,16 @@ func (e *localTestEnv) localSnapshot() *dra.LocalSnapshot {
 	return e.publisher.LocalSnapshot()
 }
 
-// view returns the state file name of the records of the store of the env
-// (viewContent).
-func (e *localTestEnv) view(name string) ([]byte, error) {
-	return viewContent(e.st.Snapshot(), name, e.st.ResultOptions())
-}
-
-// preparedMap returns the PrepareResults of the prepared claims of
-// cxl.nri.io as preparedClaims.json has them.
-func (e *localTestEnv) preparedMap() claimPreparations {
-	e.t.Helper()
-	data, err := e.view(device.PreparedClaimsFileName)
-	noErr(e.t, err)
-	out := claimPreparations{}
-	noErr(e.t, json.Unmarshal(data, &out))
+// prepared returns the PrepareResults that kubelet gets of the prepared
+// claims of cxl.nri.io in the records, by UID.
+func (e *localTestEnv) prepared() map[string]kubeletplugin.PrepareResult {
+	r := e.records()
+	out := map[string]kubeletplugin.PrepareResult{}
+	for i := range r.Preparations {
+		if p := &r.Preparations[i]; p.Driver == device.DriverName && p.Prepared() {
+			out[p.UID] = store.PrepareResult(p, device.CDIKind)
+		}
+	}
 	return out
 }
 

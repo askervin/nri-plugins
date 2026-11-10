@@ -215,7 +215,7 @@ func TestEnsureDir(t *testing.T) {
 }
 
 // The claims of cxl.nri.io prepared in another boot are not prepared at
-// the start: their records PREPARED_STALE, not in the views, no CDI device,
+// the start: their records PREPARED_STALE, no result for kubelet, no CDI device,
 // no NUMA node to fence, no command; their Unprepare releases nothing and
 // removes the record, their Prepare again prepares them anew in this boot.
 func TestPreparedClaimsOtherBoot(t *testing.T) {
@@ -237,12 +237,8 @@ func TestPreparedClaimsOtherBoot(t *testing.T) {
 			t.Fatalf("claim %s of another boot: %+v", uid, p)
 		}
 	}
-	for _, name := range []string{device.PreparedClaimsFileName, preparedClaimsInfoFileName} {
-		data, err := e.view(name)
-		noErr(t, err)
-		if strings.Contains(string(data), `"u1"`) || strings.Contains(string(data), `"u2"`) {
-			t.Fatalf("%s has the claims of another boot: %s", name, data)
-		}
+	if got := e.prepared(); len(got) != 0 {
+		t.Fatalf("kubelet gets the claims of another boot: %+v", got)
 	}
 	if spec := e.cdiSpec(); spec != nil && len(spec.Devices) > 0 {
 		t.Fatalf("CDI devices of another boot %+v", spec.Devices)

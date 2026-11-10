@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	resourceapi "k8s.io/api/resource/v1"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 )
@@ -28,9 +29,8 @@ import (
 // TestCharPoolPrepareTimeout: the Prepare of a pool claim whose memdev never
 // appears on the node waits for it up to the prepare timeout of the pool
 // driver and fails then, with an error that names the serial and wraps
-// context.DeadlineExceeded. The claim is in the records of the claims
-// whose Prepare did not finish during the wait (preparingPoolClaims.json);
-// the failed Prepare touches no device and forgets the claim, and its
+// context.DeadlineExceeded. The claim is PREPARING with its grant during
+// the wait; the failed Prepare touches no device and forgets the claim, and its
 // Unprepare is no error. A timeout of 0 or less is 30 s.
 func TestCharPoolPrepareTimeout(t *testing.T) {
 	const timeout = 300 * time.Millisecond
@@ -69,19 +69,19 @@ wait:
 				continue
 			}
 			// the preparation is committed before the grant of its
-			// device: a device without the grant has no serial yet
-			rec := e.preparingFile(t)["u1"]
-			if rec == nil || (len(rec.Devices) == 1 && rec.Devices[0].Serial == 0) {
+			// device
+			prep, g := e.unfinished("u1"), e.grant("u1", 0)
+			if prep == nil || g == nil {
 				continue
 			}
 			sawPreparing = true
-			if rec.ClaimName != "default/c1" || len(rec.Devices) != 1 || rec.Devices[0].Serial != 0xc1ee0001 || rec.Devices[0].Memdev != "" {
-				t.Errorf("preparing record during the wait: %+v", rec)
+			if prep.State != state.PreparationPreparing || prep.ClaimName != "default/c1" || len(prep.Results) != 1 || g.Serial != 0xc1ee0001 {
+				t.Errorf("preparing record during the wait: %+v, grant %+v", prep, g)
 			}
 		}
 	}
 	if !sawPreparing {
-		t.Error("the claim was not in the preparing file during the wait")
+		t.Error("the claim was not PREPARING with its grant during the wait")
 	}
 
 	// the error after the timeout: names the serial, wraps the deadline
@@ -103,9 +103,9 @@ wait:
 	if cmds := e.commands(); cmds != "" {
 		t.Fatalf("commands of a Prepare whose memdev never appeared:\n%s", cmds)
 	}
-	// the failed Prepare forgot the claim in the preparing file already
-	if recs := e.preparingFile(t); recs["u1"] != nil {
-		t.Fatalf("the failed Prepare kept its record: %+v", recs["u1"])
+	// the failed Prepare forgot the claim's record of preparing already
+	if prep := e.unfinished("u1"); prep != nil {
+		t.Fatalf("the failed Prepare kept its record: %+v", prep)
 	}
 	noErr(t, unprepare(t, p, "u1"))
 	e.wantClean(t, p)

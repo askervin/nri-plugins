@@ -23,12 +23,10 @@ import (
 	"testing"
 
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
-	cdiparser "tags.cncf.io/container-device-interface/pkg/parser"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
-	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
@@ -136,9 +134,4 @@ func (e *poolTestEnv) wantNoCDIDevices(t *testing.T, r kubeletplugin.PrepareResu
 	if len(r.Devices) != 1 || len(r.Devices[0].CDIDeviceIDs) != 0 || e.cdiSpec(t) != nil {
 		t.Fatalf("CDI devices of a companion claim: %+v, spec %+v", r.Devices, e.cdiSpec(t))
 	}
-}
-
-// leaseCDIDeviceID is the qualified CDI device name of a lease claim.
-func leaseCDIDeviceID(claimUID string) string {
-	return cdiparser.QualifiedName(device.CDIVendor, device.CDIClass, leases.CDIDeviceName(claimUID))
 }

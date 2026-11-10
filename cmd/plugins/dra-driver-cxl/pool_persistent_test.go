@@ -70,12 +70,9 @@ func TestPoolPersistentWriter(t *testing.T) {
 		len(cd.ContainerEdits.Mounts) != 0 {
 		t.Fatalf("CDI device %+v", cd.ContainerEdits)
 	}
-	data, _ := e.poolView()
-	for _, want := range []string{`"persistent": true`, `"ndRegion": "region0"`, `"namespace": "namespace0.0"`, `"blockDevice": "` + e.pmem + `"`,
-		`"blockMajor": 259`, `"mode": "block"`} {
-		if !strings.Contains(string(data), want) {
-			t.Fatalf("state file lacks %s:\n%s", want, data)
-		}
+	if d := e.device(p, "w1", 0); !d.Persistent || d.NdRegion != "region0" || d.Namespace != "namespace0.0" || d.BlockDevice != e.pmem ||
+		d.BlockMajor != 259 || d.Mode != api.ModeBlock {
+		t.Fatalf("device %+v", d)
 	}
 	noErr(t, unprepare(t, p, "w1"))
 	e.wantReleased(t, "region0", "mem0")
@@ -319,15 +316,9 @@ func TestPoolLeaseBind(t *testing.T) {
 	if mi, _ := e.mountedErr(target); mi == nil || mi.FsType != "erofs" || mi.Source != e.pmem || !slices.Equal(mi.MountFlags, []string{"ro", "nosuid", "nodev"}) {
 		t.Fatalf("bind %+v", mi)
 	}
-	// recorded in the lend and the state file
+	// recorded in the lend
 	if rec := lendOf(e.st.Snapshot(), e.preparation(uid)); rec.FsDir != hooks.fsDir || rec.Name != "models" || !slices.Equal(rec.Mounts, []string{target}) {
 		t.Fatalf("lend record %+v", rec)
-	}
-	data, _ := e.poolView()
-	for _, want := range []string{`"fsDir": "` + hooks.fsDir + `"`, `"name": "models"`, `"mounts": [`, `"` + target + `"`} {
-		if !strings.Contains(string(data), want) {
-			t.Fatalf("state file lacks %s:\n%s", want, data)
-		}
 	}
 	// the broker gets the access and the node mount
 	if d := hooks.devs[0]; d.Mode != api.ModeFs || d.Access != api.AccessDirect || d.NodeMount != direct || d.BlockDevice != e.pmem || d.Serial != "0xc1ae0001" ||

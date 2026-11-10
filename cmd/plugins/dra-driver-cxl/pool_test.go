@@ -25,6 +25,7 @@ import (
 	resourceapi "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
@@ -132,12 +133,11 @@ func TestPoolPrepareExclusive(t *testing.T) {
 	if !p.Serials()[0xc1ee0001] {
 		t.Fatalf("serial missing from %v", p.Serials())
 	}
-	data, err := e.poolView()
-	noErr(t, err)
-	for _, want := range []string{`"memdev": "` + memdev + `"`, `"region": "region0"`, `"node": 2`, `"claimName": "default/c1"`} {
-		if !strings.Contains(string(data), want) {
-			t.Fatalf("state file lacks %s:\n%s", want, data)
-		}
+	if d := e.device(p, "u1", 0); d.Memdev != memdev || d.Region != "region0" || d.NumaNode != 2 {
+		t.Fatalf("device %+v", d)
+	}
+	if prep := e.preparation("u1"); prep.ClaimName != "default/c1" {
+		t.Fatalf("preparation %+v", prep)
 	}
 
 	// unprepare releases: offline, destroy, disable
@@ -158,10 +158,18 @@ func TestPoolPrepareSharedTwoClaims(t *testing.T) {
 	memdev := e.plug(0xc1ae0001)
 	p := e.driver(t)
 
-	res := prepare(t, p, poolClaim("u1", "c1", "shared0", sharedData))
+	// the share of the claim's allocation result is in its record and in
+	// the result for kubelet
+	shareID := types.UID("share-1")
+	c1 := poolClaim("u1", "c1", "shared0", sharedData)
+	c1.Status.Allocation.Devices.Results[0].ShareID = &shareID
+	res := prepare(t, p, c1)
 	noErr(t, res.Err)
-	if !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl-pool=claim-u1-0"}) {
+	if !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl-pool=claim-u1-0"}) || res.Devices[0].ShareID == nil || *res.Devices[0].ShareID != shareID {
 		t.Fatalf("unexpected device %+v", res.Devices[0])
+	}
+	if prep := e.preparation("u1"); prep == nil || prep.Results[0].ShareID != string(shareID) {
+		t.Fatalf("preparation %+v", prep)
 	}
 	if n := e.onlineBlocks("region0"); n != 0 {
 		t.Fatalf("%d blocks of shared memory online", n) // shared memory is never onlined
@@ -333,11 +341,13 @@ func TestPoolPrepareExclusiveDax(t *testing.T) {
 	cd := e.wantCDIDevice(t, "claim-u1-0", []string{"CXL_C1EE0001_DAX=/dev/dax0.0", "CXL_C1EE0001_MODE=dax", "CXL_C1EE0001_READONLY=0",
 		"CXL_C1EE0001_SERIAL=0xc1ee0001", "CXL_C1EE0001_SHARED=0", "CXL_C1EE0001_SIZE=268435456", "CXL_CLAIM_u1_0=1"})
 	d := e.device(p, "u1", 0)
-	wantNodes := []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: int64(d.DaxMajor), Minor: int64(d.DaxMinor)}}
+	major, minor, err := e.k.Kernel().DaxDevNumbers("dax0.0")
+	noErr(t, err)
+	wantNodes := []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: int64(major), Minor: int64(minor)}}
 	if !reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, wantNodes) {
 		t.Fatalf("unexpected device nodes %+v", cd.ContainerEdits.DeviceNodes)
 	}
-	if d.Mode != api.ModeDax || d.NumaNode != -1 || d.DaxDevice != "/dev/dax0.0" {
+	if d.Mode != api.ModeDax || d.NumaNode != -1 || d.DaxDevice != "/dev/dax0.0" || d.DaxMajor != major || d.DaxMinor != minor {
 		t.Fatalf("prepared device %+v", d)
 	}
 

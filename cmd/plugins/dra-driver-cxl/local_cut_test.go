@@ -129,26 +129,27 @@ func wantNoRegionRelease(t *testing.T, cmds string) {
 	}
 }
 
-// wantLocalDevice checks the local memdev in localDevices.json: its region,
-// its first dax device ("" while the region is not set up: kept for a claim
+// wantLocalDevice checks the record of the local memdev: its region, its
+// first dax device ("" while the region is not set up: kept for a claim
 // whose Prepare did not finish, until a Prepare sets it up again) and the
-// number of uses of each claim (0 for a claim that holds the region without
-// a use). No region, no dax device and no claims: the view has no memdev.
+// number of uses of each claim (localUses). No region, no dax device and no
+// claims: no record of the memdev, or one without them.
 func wantLocalDevice(t *testing.T, e *localTestEnv, region, dax string, claims map[string]int) {
 	t.Helper()
-	d := e.localDevice(localSerial)
-	if d == nil {
-		if region != "" || dax != "" || len(claims) > 0 {
-			t.Fatalf("no local memdev in the view, expected region %q dax %q claims %v", region, dax, claims)
-		}
-		return
+	gotRegion, creating, gotDax := e.localRegion(localSerial)
+	got := e.localUses(localSerial)
+	if gotRegion != region || gotDax != dax || !maps.Equal(got, claims) {
+		t.Fatalf("records: region %q (creating %q) dax %q claims %v, expected %q %q %v", gotRegion, creating, gotDax, got, region, dax, claims)
 	}
-	got := map[string]int{}
-	for uid, uses := range d.Claims {
-		got[uid] = len(uses)
-	}
-	if d.Region != region || d.Dax != dax || !maps.Equal(got, claims) {
-		t.Fatalf("view: region %q (creating %q) dax %q claims %v, expected %q %q %v", d.Region, d.Creating, d.Dax, got, region, dax, claims)
+}
+
+// wantLocalCreating checks that the record of the local memdev has the
+// region being made and no region made or set up yet.
+func wantLocalCreating(t *testing.T, e *localTestEnv, creating string) {
+	t.Helper()
+	region, got, dax := e.localRegion(localSerial)
+	if region != "" || got != creating || dax != "" {
+		t.Fatalf("records after the cut: region %q creating %q dax %q, expected region %s being created", region, got, dax, creating)
 	}
 }
 
@@ -383,8 +384,9 @@ func TestLocalCutCreationPoolOrNone(t *testing.T) {
 	e.start()
 	e.k.CutBefore("cxl create-region")
 	cutLocalPrepare(t, e, localClaim("u2", localBlockSize))
-	if d := e.localDevice(localSerial); d == nil || d.Region != "" || d.Creating != "region0" || len(d.Claims) != 1 || d.Dax != "" {
-		t.Fatalf("view after the cut: %+v", d)
+	wantLocalCreating(t, e, "region0")
+	if uses := e.localUses(localSerial); len(uses) != 1 {
+		t.Fatalf("claims after the cut: %v", uses)
 	}
 	before := e.k.Commands()
 	e.restart()
@@ -397,7 +399,7 @@ func TestLocalCutCreationPoolOrNone(t *testing.T) {
 }
 
 // A restart without a cut changes nothing: the region and the slices of
-// the prepared claims stay, and no command runs; the view names the
+// the prepared claims stay, and no command runs; the records name the
 // region and its first dax device.
 func TestLocalRestartWithoutCut(t *testing.T) {
 	e := newLocalTestEnv(t)
@@ -574,8 +576,8 @@ func TestLocalCutSharedCreation(t *testing.T) {
 			t.Fatalf("above %v: zeroed %v, expected the region once", above, z)
 		}
 		wantLocalDevice(t, e, "region0", "dax0.0", map[string]int{"u1": 1})
-		if d := e.localDevice(localSerial); !d.Shared {
-			t.Fatalf("above %v: view %+v", above, d)
+		if m := e.localMemdev(localSerial); m == nil || !m.Facts.Shared {
+			t.Fatalf("above %v: memdev %+v", above, m)
 		}
 	}
 }
@@ -791,8 +793,8 @@ func TestLocalKeptRegionSetUpAgain(t *testing.T) {
 			before := e.k.Commands()
 			e.restart()
 			wantNoRegionRelease(t, e.k.CommandsSince(before))
-			// the view lists the use of the releasing grant; the disabled
-			// region is not set up
+			// the records keep the use of the releasing grant; the
+			// disabled region is not set up
 			wantLocalDevice(t, e, "region0", "", map[string]int{"u1": 1})
 			if g := e.grant("u1", 0); g == nil || g.State != state.GrantReleasing {
 				t.Fatalf("grant of the kept claim %+v", g)
@@ -954,19 +956,14 @@ func TestLocalCutCreationRecordedRegion(t *testing.T) {
 		e.start()
 		e.k.CutBefore("cxl create-region")
 		cutLocalPrepare(t, e, localClaim("u1", localBlockSize))
-		if d := e.localDevice(localSerial); d == nil || d.Creating != "region0" || d.Region != "" || d.Dax != "" {
-			t.Fatalf("view after the cut: %+v, expected region0 being created", d)
-		}
+		wantLocalCreating(t, e, "region0")
 	})
 	t.Run("probe", func(t *testing.T) {
 		e := newLocalTestEnv(t)
 		e.start()
 		e.k.CutProbe()
 		cutLocalPrepare(t, e, localClaim("u1", localBlockSize))
-		d := e.localDevice(localSerial)
-		if d == nil || d.Creating != "region0" || d.Region != "" || d.Dax != "" {
-			t.Fatalf("view after the cut: %+v, expected region0 being created", d)
-		}
+		wantLocalCreating(t, e, "region0")
 	})
 	t.Run("other", func(t *testing.T) {
 		e := newLocalTestEnv(t)
@@ -974,9 +971,7 @@ func TestLocalCutCreationRecordedRegion(t *testing.T) {
 		e.k.Write("bus/cxl/devices/decoder0.0/create_ram_region", "region5")
 		e.k.CutBefore("cxl create-region")
 		cutLocalPrepare(t, e, localClaim("u1", localBlockSize))
-		if d := e.localDevice(localSerial); d == nil || d.Creating != "region5" {
-			t.Fatalf("view after the cut: %+v, expected region5 being created", d)
-		}
+		wantLocalCreating(t, e, "region5")
 		_, err := e.k.Exec(ctx, "cxl", "create-region", "-t", "ram", "-d", "decoder0.0", "-m", "mem0")
 		noErr(t, err)
 		before := e.k.Commands()
