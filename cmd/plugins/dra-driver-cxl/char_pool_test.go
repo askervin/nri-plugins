@@ -68,8 +68,10 @@ wait:
 			if sawPreparing {
 				continue
 			}
+			// the preparation is committed before the grant of its
+			// device: a device without the grant has no serial yet
 			rec := e.preparingFile(t)["u1"]
-			if rec == nil {
+			if rec == nil || (len(rec.Devices) == 1 && rec.Devices[0].Serial == 0) {
 				continue
 			}
 			sawPreparing = true
