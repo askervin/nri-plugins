@@ -29,6 +29,38 @@ func TestFixtureIsConsistent(t *testing.T) {
 	}
 }
 
+// A grant result of a PREPARING, UNPREPARING or PREPARED_STALE preparation
+// may name a grant that has no record (the recovery released the grants of
+// a cut Prepare, then a reboot made it stale); of a PREPARED or KEPT one it
+// may not.
+func TestGrantResultWithoutItsGrant(t *testing.T) {
+	for _, tc := range []struct {
+		state state.PreparationState
+		want  bool
+	}{
+		{state.PreparationPreparing, false},
+		{state.PreparationUnpreparing, false},
+		{state.PreparationStale, false},
+		{state.PreparationPrepared, true},
+		{state.PreparationKept, true},
+	} {
+		r := statetest.Records()
+		ref := state.GrantRef{Claim: "cut"}
+		r.Preparations = append(r.Preparations, state.Preparation{UID: "cut", Driver: statetest.PoolDriver, ClaimName: "demo/c-cut",
+			BootID: statetest.BootID, State: tc.state,
+			Results: []state.Result{{Kind: state.ResultGrant, Request: "mem", Grant: &ref}}})
+		var got []state.Violation
+		for _, v := range state.Check(&r) {
+			if strings.Contains(v.Text, "grant "+ref.String()+" has no record") {
+				got = append(got, v)
+			}
+		}
+		if (len(got) > 0) != tc.want {
+			t.Errorf("%s: violations %v, want one %v", tc.state, got, tc.want)
+		}
+	}
+}
+
 func TestInvariantViolations(t *testing.T) {
 	ref := func(claim string, n int) state.GrantRef { return state.GrantRef{Claim: claim, Result: n} }
 	for _, tc := range []struct {

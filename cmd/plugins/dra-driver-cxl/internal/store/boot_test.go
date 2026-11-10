@@ -99,6 +99,34 @@ func TestBootKeepsThePreparationsOfBothDrivers(t *testing.T) {
 	}
 }
 
+// A pool preparation whose cut Prepare the recovery released (PREPARING,
+// its grant without a record) is PREPARED_STALE after a reboot with its
+// results, next to a PREPARED one with its grant: the records satisfy the
+// invariants.
+func TestBootOfACutPrepareThatTheRecoveryReleased(t *testing.T) {
+	doc := fixture(statetest.BootID)
+	ref := state.GrantRef{Claim: "cut"}
+	results := []state.Result{{Kind: state.ResultGrant, Request: "mem", Grant: &ref}}
+	doc.Preparations = append(doc.Preparations, state.Preparation{UID: "cut", Driver: statetest.PoolDriver, ClaimName: "demo/c-cut",
+		BootID: statetest.BootID, State: state.PreparationPreparing, Results: results})
+	for _, v := range state.Check(&doc.Records) {
+		t.Errorf("before the reboot: %s", v)
+	}
+	if _, err := applyBoot(doc, "boot-2"); err != nil {
+		t.Fatal(err)
+	}
+	if p := doc.Preparation(statetest.PoolDriver, "cut"); p == nil || p.State != state.PreparationStale || !reflect.DeepEqual(p.Results, results) {
+		t.Errorf("the cut preparation after the reboot: %+v", p)
+	}
+	if p := doc.Preparation(statetest.PoolDriver, statetest.ClaimPoolNUMA); p == nil || p.State != state.PreparationStale ||
+		doc.Grant(state.GrantRef{Claim: statetest.ClaimPoolNUMA}) == nil {
+		t.Errorf("the prepared pool claim after the reboot: %+v", p)
+	}
+	for _, v := range state.Check(&doc.Records) {
+		t.Errorf("after the reboot: %s", v)
+	}
+}
+
 // A stale preparation of an older boot stays as it is in a load of the
 // boot of the document.
 func TestBootKeepsAStalePreparationOfAnOlderBoot(t *testing.T) {

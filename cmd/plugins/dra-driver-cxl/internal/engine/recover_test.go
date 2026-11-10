@@ -615,6 +615,40 @@ func TestRecoverStaleCut(t *testing.T) {
 	finish(t, v, "finished")
 }
 
+// A pool claim prepared and a pool claim whose cut Prepare the recovery
+// released (PREPARING without its grant record) are both PREPARED_STALE
+// after a reboot; the records satisfy the invariants after the load and
+// the recovery, after the Unprepare of the prepared claim and after the
+// Prepare again of the cut one.
+func TestRecoverRebootAfterReleasedCut(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialB})
+	v.mustPrepare(poolDriver, "p", poolReq("p", 0, serialA, state.ModeNUMA, state.KindExclusive))
+	v.f.CutAfter("cxl create-region")
+	if !v.cut(func() { _ = v.prepare(poolDriver, "c", poolReq("c", 0, serialB, state.ModeNUMA, state.KindExclusive)) }) {
+		t.Fatal("not cut")
+	}
+	out := v.restart()
+	if len(out.Released) != 1 || v.records().Grant(state.GrantRef{Claim: "c"}) != nil {
+		t.Fatalf("recovered %+v, grant %+v", out, v.records().Grant(state.GrantRef{Claim: "c"}))
+	}
+	if p := v.records().Preparation(poolDriver, "c"); p == nil || p.State != state.PreparationPreparing {
+		t.Fatalf("preparation of the released cut %+v", p)
+	}
+	v.f.Reboot()
+	v.restart()
+	for _, uid := range []string{"p", "c"} {
+		if p := v.records().Preparation(poolDriver, uid); p == nil || p.State != state.PreparationStale {
+			t.Fatalf("preparation %s %+v", uid, p)
+		}
+	}
+	v.mustUnprepare(poolDriver, "p")
+	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialB, state.ModeNUMA, state.KindExclusive))
+	if g := v.grant("c", 0); g.State != state.GrantRealised || g.Got.Region == "" {
+		t.Fatalf("prepared anew %+v", g)
+	}
+	finish(t, v, "finished")
+}
+
 // The node mounts are restored before the cut grants are released: the
 // release of a cut claim on another memdev finds the prepared claim's node
 // mount mounted again.

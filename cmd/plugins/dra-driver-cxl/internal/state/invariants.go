@@ -67,7 +67,7 @@ var DocumentInvariants = []Invariant{
 			"(except the grants of a PREPARED_STALE preparation); what Got names lists the grant among its users, " +
 			"and every user of a dax device or a node mount names it back; a grant result names a grant record, " +
 			"but of a PREPARING or UNPREPARING preparation (not journaled yet, or released before the front-end's " +
-			"commit). A PREPARED preparation's grants are " +
+			"commit) and of a PREPARED_STALE one (a reboot cut that Prepare or Unprepare). A PREPARED preparation's grants are " +
 			"REALISED, a PREPARED_UNRESTORED one's REALISED or REALISED_UNRESTORED, and the lease claim of their " +
 			"lease results exists unless the claim's Unprepare runs (it closes the lease claim before the " +
 			"preparation turns UNPREPARING; the engine leaves this rule to the lease broker). A node mount is MOUNTED_RW iff a writer uses it. A lease lends only while READY, " +
@@ -363,9 +363,11 @@ func checkGrantResult(r *Records, p *Preparation, res *Result, add addFunc) {
 	}
 	g := r.Grant(*res.Grant)
 	switch {
-	case g == nil && (p.State == PreparationPreparing || p.State == PreparationUnpreparing):
+	case g == nil && (p.State == PreparationPreparing || p.State == PreparationUnpreparing || p.State == PreparationStale):
 		// not journaled yet, or released by a rollback, the recovery or
-		// the Unprepare before the front-end's commit
+		// the Unprepare before the front-end's commit; a stale preparation
+		// is such a PREPARING or UNPREPARING one of another boot, whose
+		// Prepare again or Unprepare has nothing of the grant to release
 	case g == nil:
 		add(preparationID(p), "grant %s has no record", res.Grant)
 	case p.State == PreparationPrepared && g.State != GrantRealised:
