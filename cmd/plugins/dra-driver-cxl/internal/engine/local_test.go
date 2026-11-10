@@ -674,3 +674,39 @@ func TestLocalCutCompanionPart(t *testing.T) {
 		v.clean("unprepared")
 	})
 }
+
+// A numa companion whose Prepare a process stop cut before its region was
+// made (the start kept it) holds no region: the region that another claim
+// of the memdev makes goes with that claim, cut or unprepared.
+func TestLocalCutCompanionHoldsNoNewRegion(t *testing.T) {
+	for _, cut := range []bool{true, false} {
+		t.Run(map[bool]string{true: "cut", false: "unprepared"}[cut], func(t *testing.T) {
+			v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
+			req := sliceReq("comp", 0, state.ModeNUMA, 256*mib)
+			req.Lend = &state.GrantLend{Lease: "0123abcd", Container: "c"}
+			v.f.CutBefore("cxl create-region")
+			if !v.cut(func() { _ = v.prepare(localDriver, "comp", req) }) {
+				t.Fatal("not cut")
+			}
+			if out := v.restart(); !slices.Equal(out.Companions, []state.GrantRef{{Claim: "comp"}}) {
+				t.Fatalf("recovered %+v", out)
+			}
+			if cut {
+				v.f.CutAfter("cxl create-region")
+				if !v.cut(func() { _ = v.prepare(localDriver, "n", sliceReq("n", 0, state.ModeDax, 256*mib)) }) {
+					t.Fatal("not cut")
+				}
+				v.restart()
+			} else {
+				v.mustPrepare(localDriver, "n", sliceReq("n", 0, state.ModeDax, 256*mib))
+				v.mustUnprepare(localDriver, "n")
+			}
+			if regions := v.f.Kernel().Regions(v.f.Memdev(serialL)); len(regions) > 0 {
+				t.Fatalf("regions left %v", regions)
+			}
+			v.mustUnprepare(localDriver, "n")
+			v.mustUnprepare(localDriver, "comp")
+			v.clean("unprepared")
+		})
+	}
+}

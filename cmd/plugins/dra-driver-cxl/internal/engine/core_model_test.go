@@ -527,19 +527,6 @@ var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{
 		sl := &coreSlots[ca.slot]
 		return s.arm > 0 && ca.verb == "unprepare" && sl.lease && sl.mode == state.ModeNUMA && s.slots[ca.slot].grant != state.GrantRealised
 	},
-	// C3: a grant of a Prepare that did not finish before it named a
-	// region (a numa companion that a start kept, a KEPT claim) holds the
-	// region that another claim of the memdev makes: the region stays
-	// after that claim, its whole dax device against I2 after a cut
-	"C3": func(s *coreState, ca *coreAction) bool {
-		for i, ss := range s.slots {
-			if i != ca.slot && coreSlots[i].md == coreSlots[ca.slot].md && ss.grant != "" && (!ss.named || !ss.user) &&
-				(ss.prep == state.PreparationPreparing || ss.prep == state.PreparationKept) {
-				return true
-			}
-		}
-		return false
-	},
 	// C4: a numa companion that enabled again a region that a failed
 	// release left disabled, cut before its set-up and kept at the start,
 	// has the region's whole dax device recorded as the seed against I2

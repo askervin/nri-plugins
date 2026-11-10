@@ -350,13 +350,16 @@ func (e *Engine) memdevUsers(serial state.Serial, ref state.GrantRef, call *rele
 }
 
 // holdsRegion tells whether the grant ref of the memdev record m may hold a
-// region of it: every grant but the one of an unfinished Unprepare
-// (RELEASING, of an UNPREPARING claim) that no dax device or node mount of
-// its regions lists as a user, of mode block whose Got names no region (its
-// region is gone; a new one may have its name).
+// region of it: every grant but the one of a Prepare that did not finish
+// (of a PREPARING or KEPT claim) before it named a region, and the one of
+// an unfinished Unprepare (RELEASING, of an UNPREPARING claim) that no dax
+// device or node mount of its regions lists as a user, of mode block whose
+// Got names no region (its region is gone; a new one may have its name).
 func holdsRegion(r *state.Records, m *state.Memdev, ref state.GrantRef) bool {
 	g := r.Grant(ref)
 	switch {
+	case g != nil && g.Got.Region == "" && g.Intent.Region == "" && unfinished(r, g):
+		return false
 	case g == nil || !unpreparing(r, g):
 		return true
 	case g.Asked.Mode == state.ModeBlock:
@@ -379,6 +382,13 @@ func holdsRegion(r *state.Records, m *state.Memdev, ref state.GrantRef) bool {
 		}
 	}
 	return false
+}
+
+// unfinished tells whether a grant is of a claim whose Prepare did not
+// finish: PREPARING (a numa companion that a start kept) or KEPT.
+func unfinished(r *state.Records, g *state.Grant) bool {
+	p := r.PreparationOf(g.Ref)
+	return p != nil && (p.State == state.PreparationPreparing || p.State == state.PreparationKept)
 }
 
 // keepForRecovery keeps the cut grants refs of one memdev whose region lies
