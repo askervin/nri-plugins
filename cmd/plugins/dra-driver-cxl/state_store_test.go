@@ -42,8 +42,8 @@ const (
 	gi = uint64(1) << 30
 )
 
-// testViewOptions are the view options of the fixtures.
-var testViewOptions = store.ViewOptions{PoolDriver: device.PoolDriverName, SysRoot: "/sys", DevRoot: "/dev"}
+// testResultOptions are the view options of the fixtures.
+var testResultOptions = store.ResultOptions{PoolDriver: device.PoolDriverName, SysRoot: "/sys", DevRoot: "/dev"}
 
 // jsonEqual fails the test when the JSON a and b differ in content.
 func jsonEqual(t *testing.T, what string, got, want []byte) {
@@ -225,11 +225,11 @@ func TestLocalContentRoundTrip(t *testing.T) {
 	putLocal(doc, prepared, infos, &local)
 	doc.Sort()
 	for name, want := range map[string]any{
-		store.ViewPreparedClaims:     prepared,
-		store.ViewPreparedClaimsInfo: infos,
-		store.ViewLocalDevices:       local,
+		device.PreparedClaimsFileName: prepared,
+		preparedClaimsInfoFileName:    infos,
+		localStateFileName:            local,
 	} {
-		got, err := store.ViewContent(doc, name, testViewOptions)
+		got, err := viewContent(doc, name, testResultOptions)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -244,21 +244,21 @@ func TestLocalContentOfOneFile(t *testing.T) {
 	doc := &store.Document{Schema: store.Schema, BootID: local.BootID}
 	putLocal(doc, prepared, infos, &local)
 	delete(local.Devices[0].Claims, "u-mid")
-	if err := putLocalContent(doc, testViewOptions, localStateFileName, mustJSON(t, local), nil); err != nil {
+	if err := putLocalContent(doc, testResultOptions, localStateFileName, mustJSON(t, local), nil); err != nil {
 		t.Fatal(err)
 	}
 	delete(infos, "u-dax")
 	delete(prepared, "u-dax")
-	if err := putLocalContent(doc, testViewOptions, preparedClaimsInfoFileName, mustJSON(t, infos), mustJSON(t, prepared)); err != nil {
+	if err := putLocalContent(doc, testResultOptions, preparedClaimsInfoFileName, mustJSON(t, infos), mustJSON(t, prepared)); err != nil {
 		t.Fatal(err)
 	}
 	doc.Sort()
 	for name, want := range map[string]any{
-		store.ViewPreparedClaims:     prepared,
-		store.ViewPreparedClaimsInfo: infos,
-		store.ViewLocalDevices:       local,
+		device.PreparedClaimsFileName: prepared,
+		preparedClaimsInfoFileName:    infos,
+		localStateFileName:            local,
 	} {
-		got, err := store.ViewContent(doc, name, testViewOptions)
+		got, err := viewContent(doc, name, testResultOptions)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -319,7 +319,7 @@ func TestPoolContentRoundTrip(t *testing.T) {
 	doc := &store.Document{Schema: store.Schema, BootID: "boot-1"}
 	putPool(doc, device.PoolDriverName, prepared, preparing)
 	doc.Sort()
-	got, err := store.ViewContent(doc, store.ViewPreparedPoolClaims, testViewOptions)
+	got, err := viewContent(doc, poolStateFileName, testResultOptions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,10 +352,10 @@ func leasesFixture() *leaseStore {
 func TestLeasesContentRoundTrip(t *testing.T) {
 	ls := leasesFixture()
 	doc := &store.Document{Schema: store.Schema, BootID: "boot-1"}
-	if err := putContent(doc, testViewOptions, leasesFileName, mustJSON(t, ls), nil); err != nil {
+	if err := putContent(doc, testResultOptions, leasesFileName, mustJSON(t, ls), nil); err != nil {
 		t.Fatal(err)
 	}
-	got, err := store.ViewContent(doc, store.ViewLeases, testViewOptions)
+	got, err := viewContent(doc, leasesFileName, testResultOptions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +376,7 @@ func openTestStateStore(t *testing.T, local, pool, bootID string, flags store.Fl
 
 func TestStateStoreFiles(t *testing.T) {
 	local, pool := t.TempDir(), t.TempDir()
-	s, closeStore := openTestStateStore(t, local, pool, "boot-1", store.Flags{CompatViews: true})
+	s, closeStore := openTestStateStore(t, local, pool, "boot-1", store.Flags{})
 	prepared, infos, ls := localFixture()
 	pp, _ := poolFixture()
 	contents := map[string]any{
@@ -399,22 +399,19 @@ func TestStateStoreFiles(t *testing.T) {
 		}
 	}
 	readAll("written")
-	data, err := os.ReadFile(filepath.Join(pool, poolStateFileName))
-	noErr(t, err)
-	if !strings.Contains(string(data), `"viewOf": "state.json"`) {
-		t.Errorf("the view of %s has no marker", poolStateFileName)
-	}
 	closeStore()
 	if _, err := os.ReadFile(filepath.Join(local, store.FileName)); err != nil {
 		t.Errorf("no document: %v", err)
 	}
 
-	// reopened from state.json, with the views off
+	// reopened from state.json
 	s, closeStore = openTestStateStore(t, local, pool, "boot-1", store.Flags{})
 	defer closeStore()
 	readAll("reopened")
-	if _, err := os.Stat(filepath.Join(pool, poolStateFileName)); err == nil {
-		t.Errorf("the views stay with --compat-views=false")
+	for path := range contents {
+		if _, err := os.Stat(path); err == nil {
+			t.Errorf("the store wrote %s", path)
+		}
 	}
 }
 
@@ -478,8 +475,7 @@ func TestStateStoreLost(t *testing.T) {
 // writer wrote on a node, in the directories cxl.nri.io and cxl-pool.nri.io
 // of testdata/node-files (of the VM n4-cxl-shared-2 after a test90 run: a
 // local dax lease companion and a lease claim) or of CXL_VIEW_DIFF_DIR, to
-// a store, and compares each file with its view on disk without the marker
-// and with its content read from the store.
+// a store, and compares each file with its content read from the store.
 func TestViewsOfDriverFiles(t *testing.T) {
 	dir := os.Getenv("CXL_VIEW_DIFF_DIR")
 	if dir == "" {
@@ -507,7 +503,7 @@ func TestViewsOfDriverFiles(t *testing.T) {
 	}
 	root := t.TempDir()
 	local, pool := filepath.Join(root, device.DriverName), filepath.Join(root, device.PoolDriverName)
-	s, closeStore := openTestStateStore(t, local, pool, bootID, store.Flags{CompatViews: true})
+	s, closeStore := openTestStateStore(t, local, pool, bootID, store.Flags{})
 	defer closeStore()
 	for _, d := range []string{device.DriverName, device.PoolDriverName} {
 		for _, name := range viewOrder {
@@ -521,23 +517,6 @@ func TestViewsOfDriverFiles(t *testing.T) {
 		read, err := s.readState(path)
 		noErr(t, err)
 		jsonEqual(t, rel+" read", read, want)
-		view, err := os.ReadFile(path)
-		noErr(t, err)
-		// the marker is in the file or in each of its entries
-		var v map[string]any
-		noErr(t, json.Unmarshal(view, &v))
-		marked := v["viewOf"] == store.FileName
-		delete(v, "viewOf")
-		for _, c := range v {
-			if m, ok := c.(map[string]any); ok && !marked {
-				if m["viewOf"] != store.FileName {
-					t.Errorf("%s: an entry without the marker: %v", rel, m)
-				}
-				delete(m, "viewOf")
-			}
-		}
-		jsonEqual(t, rel+" view", mustJSON(t, v), want)
-		t.Logf("%s: the view is the file", rel)
 	}
 }
 
@@ -566,7 +545,7 @@ func TestStartOnALostStore(t *testing.T) {
 	for _, d := range []string{"sys/bus/cxl/devices", "sys/devices/system/node", "cdi"} {
 		noErr(t, os.MkdirAll(filepath.Join(root, d), 0o755))
 	}
-	s, closeStore := openTestStateStore(t, local, pool, "boot-1", store.Flags{CompatViews: true})
+	s, closeStore := openTestStateStore(t, local, pool, "boot-1", store.Flags{})
 	defer closeStore()
 	if s.st.Lost() == nil {
 		t.Fatal("the store is not lost")
@@ -612,10 +591,10 @@ func TestStartOnALostStore(t *testing.T) {
 	if data, err := os.ReadFile(filepath.Join(local, store.FileName)); err != nil || string(data) != "{" {
 		t.Errorf("the lost document was rewritten: %q %v", data, err)
 	}
-	for _, name := range store.ViewNames {
+	for _, name := range viewOrder {
 		for _, dir := range []string{local, pool} {
 			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
-				t.Errorf("view %s written in LOST mode", filepath.Join(dir, name))
+				t.Errorf("state file %s written in LOST mode", filepath.Join(dir, name))
 			}
 		}
 	}

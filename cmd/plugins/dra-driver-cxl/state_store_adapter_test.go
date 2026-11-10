@@ -70,7 +70,6 @@ func openStateStore(ctx context.Context, cfg stateStoreConfig) (*stateStore, fun
 		BootID:          cfg.BootID,
 		NewState:        cfg.Flags.NewState,
 		DiscardOldState: cfg.Flags.DiscardOldState,
-		CompatViews:     cfg.Flags.CompatViews,
 		SysRoot:         sysRoot,
 		DevRoot:         cfg.DevRoot,
 		RegionExists: func(name string) bool {
@@ -108,9 +107,9 @@ func (s *stateStore) readState(path string) ([]byte, error) {
 		return nil, notExist(path)
 	}
 	if name == poolPreparingFileName {
-		return preparingContent(s.st.Snapshot(), s.st.ViewOptions())
+		return preparingContent(s.st.Snapshot(), s.st.ResultOptions())
 	}
-	return s.st.View(name)
+	return viewContent(s.st.Snapshot(), name, s.st.ResultOptions())
 }
 
 // writeState commits the content data of the state file path: the records
@@ -133,7 +132,7 @@ func (s *stateStore) writeState(path string, data []byte) error {
 		s.mu.Unlock()
 	}
 	err := s.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
-		return putContent(doc, s.st.ViewOptions(), name, data, stashed)
+		return putContent(doc, s.st.ResultOptions(), name, data, stashed)
 	})
 	if err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
@@ -163,15 +162,11 @@ func jsonSame(a, b []byte) bool {
 	return json.Unmarshal(a, &va) == nil && json.Unmarshal(b, &vb) == nil && reflect.DeepEqual(va, vb)
 }
 
-// leasesFileName is the view of the lease claims and the leases in the
-// plugin data directory of cxl.nri.io.
-const leasesFileName = store.ViewLeases
-
 // putContent replaces the records of the owner of the state file name in
 // doc with those of its content data; prepared is the content of
 // preparedClaims.json written with preparedClaimsInfo.json, nil for that
 // of the document.
-func putContent(doc *store.Document, opts store.ViewOptions, name string, data, prepared []byte) error {
+func putContent(doc *store.Document, opts store.ResultOptions, name string, data, prepared []byte) error {
 	switch name {
 	case preparedClaimsInfoFileName, localStateFileName:
 		return putLocalContent(doc, opts, name, data, prepared)
@@ -186,7 +181,7 @@ func putContent(doc *store.Document, opts store.ViewOptions, name string, data, 
 // putPoolContent replaces the prepared claims of the pool driver in doc
 // with those of the content of preparedPoolClaims.json, keeping the claims
 // whose Prepare did not finish as doc has them.
-func putPoolContent(doc *store.Document, opts store.ViewOptions, data []byte) error {
+func putPoolContent(doc *store.Document, opts store.ResultOptions, data []byte) error {
 	preparingData, err := preparingContent(doc, opts)
 	if err != nil {
 		return err

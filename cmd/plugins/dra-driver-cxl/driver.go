@@ -340,6 +340,9 @@ func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFla
 	}
 	mem := newMemctl(sysfsRoot)
 	sysRoot := mem.SysRoot
+	for _, w := range cxlFlags.Store.Warnings() {
+		klog.Warning(w)
+	}
 	// a driver pod that still runs holds the lock: wait for its exit
 	ctx, cancel := context.WithTimeout(ctx, storeLockWait)
 	defer cancel()
@@ -350,7 +353,6 @@ func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFla
 		BootID:          bootID,
 		NewState:        cxlFlags.Store.NewState,
 		DiscardOldState: cxlFlags.Store.DiscardOldState,
-		CompatViews:     cxlFlags.Store.CompatViews,
 		SysRoot:         sysRoot,
 		DevRoot:         mem.DevRoot,
 		RegionExists: func(name string) bool {

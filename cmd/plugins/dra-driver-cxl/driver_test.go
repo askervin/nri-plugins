@@ -610,7 +610,6 @@ func TestNewLocalHelper(t *testing.T) {
 			noErr(t, os.WriteFile(filepath.Join(dir, localStateFileName), []byte(old), 0o600))
 		}
 		flags := &CXLFlags{CDIRoot: filepath.Join(dir, "cdi"), NodeName: testNode}
-		flags.Store.CompatViews = true
 		config := &pluginConfig{Flags: flags, KubeletPluginDir: dir}
 		rules := newDriverRules(config, flags)
 		st, closeStore, err := openDriverStore(ctx, config, flags, dir, "", rules)
@@ -643,9 +642,14 @@ func TestNewLocalHelper(t *testing.T) {
 	if devices.k.SysRoot != dir+"/sys" {
 		t.Fatalf("local devices on %s", devices.k.SysRoot)
 	}
-	for _, name := range []string{"state.json", localStateFileName + ".old", preparedClaimsInfoFileName} {
+	for _, name := range []string{"state.json", localStateFileName + ".old"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{localStateFileName, preparedClaimsInfoFileName} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			t.Fatalf("the driver wrote %s", name)
 		}
 	}
 }

@@ -22,6 +22,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"k8s.io/klog/v2"
 )
 
 // OldSuffix is the suffix of an old state file moved aside.
@@ -38,6 +40,70 @@ var (
 	}
 	poolOldFiles = []string{"preparedPoolClaims.json", "preparingPoolClaims.json"}
 )
+
+// Earlier versions wrote views of the document in the files that
+// oldViews names, marked with viewKey: at the top of an object, or in every
+// value of a file that maps claim UIDs to records.
+const (
+	viewKey = "viewOf"
+	viewOf  = FileName
+)
+
+// oldViews are the view files of earlier versions, in the plugin data
+// directory of cxl.nri.io (local) and of the pool driver.
+var oldViews = []struct {
+	name  string
+	local bool
+}{
+	{"preparedClaims.json", true}, {"preparedClaimsInfo.json", true}, {"localDevices.json", true},
+	{"leases.json", true}, {"preparedPoolClaims.json", false},
+}
+
+// removeViews removes the view files of earlier versions: the files at the
+// paths of the views that carry the marker.
+func (s *Store) removeViews() {
+	for _, v := range oldViews {
+		dir := s.opts.Dir
+		if !v.local {
+			dir = s.opts.PoolDir
+		}
+		if dir == "" {
+			continue
+		}
+		path := filepath.Join(dir, v.name)
+		data, err := os.ReadFile(path)
+		if err != nil || !isView(data) {
+			continue
+		}
+		if err := s.files.Remove(path); err != nil {
+			klog.Errorf("store: removing the view %s: %v", path, err)
+			continue
+		}
+		klog.Infof("store: removed the view %s of an earlier version", path)
+	}
+}
+
+// isView tells whether the content of a file is a view of the document:
+// it carries the marker at the top, or in every value.
+func isView(data []byte) bool {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(data, &m) != nil {
+		return false
+	}
+	if string(m[viewKey]) == `"`+viewOf+`"` {
+		return true
+	}
+	if len(m) == 0 {
+		return false
+	}
+	for _, raw := range m {
+		var v map[string]json.RawMessage
+		if json.Unmarshal(raw, &v) != nil || string(v[viewKey]) != `"`+viewOf+`"` {
+			return false
+		}
+	}
+	return true
+}
 
 // OldStateError is the refusal to start with old state files whose records
 // name CXL regions that exist.

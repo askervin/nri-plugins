@@ -463,12 +463,11 @@ path.
 - `state.lock` is locked by the running driver, so that a second
   process (the new pod of a rolling update) waits for the first one to
   exit.
-- The view files (`preparedClaims.json`, `preparedClaimsInfo.json`,
-  `localDevices.json`, `leases.json`, and `preparedPoolClaims.json` of the
-  pool driver) are views of the document in the format of the state
-  files of earlier versions, written after every change, marked with
-  `"viewOf": "state.json"`, and never read by the driver. Tests read
-  them; `--compat-views=false` turns them off.
+- The view files of earlier versions (`preparedClaims.json`,
+  `preparedClaimsInfo.json`, `localDevices.json`, `leases.json`, and
+  `preparedPoolClaims.json` of the pool driver), marked with
+  `"viewOf": "state.json"`, are removed at start; the driver writes no
+  views. Tests and operators read `state.json`.
 - `localProbes.json` holds the results of the address line probe, facts
   about the hardware that outlive every state of the driver.
 - `leases/<claim uid>/cxl.sock` are the lease sockets and

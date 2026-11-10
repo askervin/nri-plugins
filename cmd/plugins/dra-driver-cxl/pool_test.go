@@ -132,7 +132,7 @@ func TestPoolPrepareExclusive(t *testing.T) {
 	if !p.Serials()[0xc1ee0001] {
 		t.Fatalf("serial missing from %v", p.Serials())
 	}
-	data, err := os.ReadFile(e.stateFile)
+	data, err := e.poolView()
 	noErr(t, err)
 	for _, want := range []string{`"memdev": "` + memdev + `"`, `"region": "region0"`, `"node": 2`, `"claimName": "default/c1"`} {
 		if !strings.Contains(string(data), want) {

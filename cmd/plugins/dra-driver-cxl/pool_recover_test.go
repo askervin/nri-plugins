@@ -24,7 +24,6 @@ import (
 	"testing"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -177,8 +176,9 @@ func TestPoolOtherBoot(t *testing.T) {
 	e.wantClean(t, p)
 }
 
-// The view preparedPoolClaims.json of the engine's records has the format
-// and the values of the file that the pool driver wrote before the engine
+// The prepared pool claims of the engine's records, in the shape of
+// preparedPoolClaims.json, have the format and the values of the file that
+// the pool driver wrote before the engine
 // (the struct preparedPoolClaim, decoded strictly), computed from the
 // kernel's objects and the claims: a numa, a shared dax device with a share
 // id, a cached fs reader, a block reader, a block writer, the companions of
@@ -215,18 +215,10 @@ func TestPoolViewOfEngineRecords(t *testing.T) {
 		noErr(t, prepare(t, p, claims[uid]).Err)
 	}
 
-	data, err := os.ReadFile(e.stateFile)
+	data, err := e.poolView()
 	noErr(t, err)
-	var marked map[string]map[string]any
-	noErr(t, json.Unmarshal(data, &marked))
-	for uid, v := range marked {
-		if v["viewOf"] != store.FileName {
-			t.Fatalf("%s: no marker", uid)
-		}
-		delete(v, "viewOf")
-	}
 	got := map[string]*preparedPoolClaim{}
-	dec := json.NewDecoder(bytes.NewReader(mustJSON(t, marked)))
+	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	noErr(t, dec.Decode(&got))
 

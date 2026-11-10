@@ -29,19 +29,19 @@ import (
 
 // putLocalContent replaces the records of cxl.nri.io in doc with those of
 // the content of one of its state files and the others as doc has them.
-func putLocalContent(doc *store.Document, opts store.ViewOptions, name string, data, preparedData []byte) error {
-	view := func(n string) ([]byte, error) { return store.ViewContent(doc, n, opts) }
+func putLocalContent(doc *store.Document, opts store.ResultOptions, name string, data, preparedData []byte) error {
+	view := func(n string) ([]byte, error) { return viewContent(doc, n, opts) }
 	var err error
 	if preparedData == nil {
-		if preparedData, err = view(store.ViewPreparedClaims); err != nil {
+		if preparedData, err = view(device.PreparedClaimsFileName); err != nil {
 			return err
 		}
 	}
 	infoData, localData := data, data
 	if name == localStateFileName {
-		infoData, err = view(store.ViewPreparedClaimsInfo)
+		infoData, err = view(preparedClaimsInfoFileName)
 	} else {
-		localData, err = view(store.ViewLocalDevices)
+		localData, err = view(localStateFileName)
 	}
 	if err != nil {
 		return err

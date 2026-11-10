@@ -60,7 +60,7 @@ func TestParseFlagsDefaults(t *testing.T) {
 		LeaseWait:           120 * time.Second,
 		LeaseCompanionImage: "registry.k8s.io/pause:3.10",
 		LeaseLimits:         leases.Limits{Connections: 64, Idle: 10 * time.Minute, LeasesPerPod: 64},
-		Store:               store.Flags{CompatViews: true},
+		Store:               store.Flags{},
 	}
 	if !reflect.DeepEqual(f, want) {
 		t.Fatalf("flags\n%+v, expected\n%+v", f, want)
@@ -116,7 +116,7 @@ func TestParseFlagsEnvironment(t *testing.T) {
 		LeaseWait:           5 * time.Second,
 		LeaseCompanionImage: "pause:test",
 		LeaseLimits:         leases.Limits{Connections: 8, Idle: time.Hour, LeasesPerPod: 4},
-		Store:               store.Flags{CompatViews: true},
+		Store:               store.Flags{},
 	}
 	if !reflect.DeepEqual(f, want) {
 		t.Fatalf("flags\n%+v, expected\n%+v", f, want)
@@ -237,8 +237,8 @@ func TestPreparedClaimsOtherBoot(t *testing.T) {
 			t.Fatalf("claim %s of another boot: %+v", uid, p)
 		}
 	}
-	for _, name := range []string{store.ViewPreparedClaims, store.ViewPreparedClaimsInfo} {
-		data, err := e.st.View(name)
+	for _, name := range []string{device.PreparedClaimsFileName, preparedClaimsInfoFileName} {
+		data, err := e.view(name)
 		noErr(t, err)
 		if strings.Contains(string(data), `"u1"`) || strings.Contains(string(data), `"u2"`) {
 			t.Fatalf("%s has the claims of another boot: %s", name, data)

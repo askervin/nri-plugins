@@ -628,7 +628,7 @@ and cannot make it the companion of a lease it did not request.
 ## Life cycle
 
 - The lease is recorded in the state of the plugin (`state.json` in the
-  `cxl.nri.io` plugin data directory, viewed as `leases.json`) before any
+  `cxl.nri.io` plugin data directory) before any
   object is created. The driver that prepared the companion claim
   records the lend with the claim's grant, so it can revoke after a
   restart ([design.md](design.md#leases-and-lease-claims)). A state that

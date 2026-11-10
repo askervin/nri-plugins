@@ -43,9 +43,9 @@ func bigRecords() state.Records {
 
 // benchmarkCommits commits b.N changes of the steering records of a
 // document of 50 claims from parallel callers.
-func benchmarkCommits(b *testing.B, callers int, views bool) {
+func benchmarkCommits(b *testing.B, callers int) {
 	s, err := Open(context.Background(), Options{
-		Dir: b.TempDir(), BootID: statetest.BootID, CompatViews: views,
+		Dir: b.TempDir(), BootID: statetest.BootID,
 		PoolDir: b.TempDir(), PoolDriver: statetest.PoolDriver,
 	})
 	if err != nil {
@@ -81,7 +81,6 @@ func benchmarkCommits(b *testing.B, callers int, views bool) {
 	b.ReportMetric(float64(s.writes.Load()-writes)/float64(b.N), "writes/commit")
 }
 
-func BenchmarkDurableCommit(b *testing.B)          { benchmarkCommits(b, 1, false) }
-func BenchmarkDurableCommitViews(b *testing.B)     { benchmarkCommits(b, 1, true) }
-func BenchmarkDurableCommit8Callers(b *testing.B)  { benchmarkCommits(b, 8, true) }
-func BenchmarkDurableCommit50Callers(b *testing.B) { benchmarkCommits(b, 50, true) }
+func BenchmarkDurableCommit(b *testing.B)          { benchmarkCommits(b, 1) }
+func BenchmarkDurableCommit8Callers(b *testing.B)  { benchmarkCommits(b, 8) }
+func BenchmarkDurableCommit50Callers(b *testing.B) { benchmarkCommits(b, 50) }

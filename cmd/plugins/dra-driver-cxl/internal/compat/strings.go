@@ -683,6 +683,9 @@ const (
 	// Quoted in docs/memory/cxl/usage.md section "Upgrade".
 	DocStoreOldStateFileFileMovedAsideTo = "store: old state file <file> moved aside to <file>.old"
 
+	// Quoted in docs/memory/cxl/usage.md section "Files on the node".
+	DocStoreRemovedTheViewFileOfAnEarlier = "store: removed the view <file> of an earlier version"
+
 	// Quoted in docs/memory/cxl/usage.md section "Upgrade".
 	DocStoreTheDriverStateIsLostStateJson = "store: the driver state is lost: state.json: <error>; state.json.prev: <error>; start the driver with --new-state to create a new one"
 )

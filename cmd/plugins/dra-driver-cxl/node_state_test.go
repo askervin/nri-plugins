@@ -272,7 +272,7 @@ func TestPrepareLocalLend(t *testing.T) {
 		t.Fatal("CDI device of a companion claim")
 	}
 	// the lend is in the claims info
-	data, err := os.ReadFile(filepath.Join(e.dir, preparedClaimsInfoFileName))
+	data, err := e.view(preparedClaimsInfoFileName)
 	if err != nil || !strings.Contains(string(data), `"lease": "l1"`) {
 		t.Fatalf("claims info lacks the lend: %v\n%s", err, data)
 	}

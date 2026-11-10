@@ -17,6 +17,7 @@ package store
 import (
 	"context"
 	"errors"
+	"flag"
 	"os"
 	"path/filepath"
 	"slices"
@@ -224,5 +225,63 @@ func TestOpenMovesOldFilesAside(t *testing.T) {
 	closeStore(t, s)
 	if _, err := os.Stat(filepath.Join(local, "steeredContainers.json"+OldSuffix)); err != nil {
 		t.Errorf("not moved aside: %v", err)
+	}
+}
+
+// TestOpenRemovesViewsOfEarlierVersions starts on a node whose earlier
+// version wrote the view files: the marked ones go, at the top or in every
+// value, a file of the same name without the marker stays.
+func TestOpenRemovesViewsOfEarlierVersions(t *testing.T) {
+	local, pool := t.TempDir(), t.TempDir()
+	marked := `{"bootID": "boot-1", "devices": [], "viewOf": "state.json"}`
+	writeFiles(t, local, map[string]string{
+		FileName:                  `{"schema": 2, "generation": 3}`,
+		"preparedClaims.json":     `{"u1": {"Devices": [], "viewOf": "state.json"}}`,
+		"preparedClaimsInfo.json": `{"u1": {"claimName": "n/c", "devices": []}}`,
+		"localDevices.json":       marked,
+		"leases.json":             `{"claims": {}, "leases": {}, "viewOf": "state.json"}`,
+	})
+	writeFiles(t, pool, map[string]string{"preparedPoolClaims.json": `{}`})
+	s := open(t, local, nil, func(o *Options) { o.PoolDir, o.PoolDriver = pool, "cxl-pool.nri.io" })
+	defer closeStore(t, s)
+	for _, name := range []string{"preparedClaims.json", "localDevices.json", "leases.json"} {
+		if _, err := os.Stat(filepath.Join(local, name)); err == nil {
+			t.Errorf("view %s of an earlier version stays", name)
+		}
+	}
+	for _, path := range []string{filepath.Join(local, "preparedClaimsInfo.json"), filepath.Join(pool, "preparedPoolClaims.json")} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("unmarked file %s removed: %v", path, err)
+		}
+	}
+	if err := s.Commit(context.Background(), Durable, addSteered("x")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(local, "localDevices.json")); err == nil {
+		t.Errorf("a commit wrote a view")
+	}
+}
+
+func TestFlags(t *testing.T) {
+	var f Flags
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	f.Register(fs)
+	if err := fs.Parse([]string{"--compat-views", "--discard-old-state", "--new-state"}); err != nil {
+		t.Fatal(err)
+	}
+	if !f.CompatViews || !f.DiscardOldState || !f.NewState {
+		t.Errorf("flags %+v", f)
+	}
+	if w := f.Warnings(); len(w) != 1 || !strings.Contains(w[0], "--compat-views is deprecated and has no effect") {
+		t.Errorf("warnings %q", w)
+	}
+	var d Flags
+	ds := flag.NewFlagSet("d", flag.ContinueOnError)
+	d.Register(ds)
+	if err := ds.Parse([]string{"--compat-views=false"}); err != nil {
+		t.Fatal(err)
+	}
+	if d.CompatViews || d.DiscardOldState || d.NewState || len(d.Warnings()) != 0 {
+		t.Errorf("defaults %+v, warnings %q", d, d.Warnings())
 	}
 }

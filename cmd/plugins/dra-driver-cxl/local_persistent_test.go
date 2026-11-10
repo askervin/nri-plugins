@@ -806,7 +806,7 @@ func TestLocalPersistentStateFile(t *testing.T) {
 	pmem := e.formatted("ext4")
 	e.start()
 	e.mustPrepare(pmemClaim("rw1", localPmemShare, localPmemFsRW))
-	data, err := os.ReadFile(filepath.Join(e.dir, localStateFileName))
+	data, err := e.view(localStateFileName)
 	noErr(t, err)
 	for _, want := range []string{`"persistent": true`, `"ndRegion": "region0"`, `"namespace": "namespace0.0"`, `"blockDevice": "` + pmem + `"`,
 		`"mode": "fs"`, `"access": "direct"`, `"fsType": "ext4"`, `"nodeMount": "` + e.nodeMount("direct") + `"`, `"path": "` + localPmemPath + `"`} {

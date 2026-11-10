@@ -515,7 +515,7 @@ func TestLostMode(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			s := open(t, dir, nil, func(o *Options) { o.CompatViews = true })
+			s := open(t, dir, nil, nil)
 			lost := s.Lost()
 			var le *LostError
 			if !errors.As(lost, &le) || !errors.Is(lost, ErrLost) {
@@ -551,8 +551,12 @@ func TestLostMode(t *testing.T) {
 			if string(data) != tc.state {
 				t.Errorf("LOST mode changed %s", FileName)
 			}
-			if _, err := os.Stat(filepath.Join(dir, ViewPreparedClaims)); err == nil {
-				t.Errorf("LOST mode wrote a view")
+			if entries, err := os.ReadDir(dir); err == nil {
+				for _, e := range entries {
+					if n := e.Name(); n != FileName && n != PrevName && n != LockName {
+						t.Errorf("LOST mode wrote %s", n)
+					}
+				}
 			}
 
 			s = open(t, dir, nil, func(o *Options) { o.NewState = true })

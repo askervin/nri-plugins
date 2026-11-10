@@ -30,7 +30,7 @@ import (
 )
 
 // Lend is the lend of a companion claim: the lease and its requester, the
-// NUMA nodes lent and the lease binds, as the views of the claim give it.
+// NUMA nodes lent and the lease binds, as the results of the claim give it.
 type Lend struct {
 	Lease     string       `json:"lease"`
 	Pod       state.PodRef `json:"pod"`

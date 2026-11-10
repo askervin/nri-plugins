@@ -236,9 +236,12 @@ func TestPoolNumaLease(t *testing.T) {
 	numaEnv := map[string]string{"CXL_C1EE0001_MODE": "numa", "CXL_C1EE0001_NODE": "2", "CXL_C1EE0001_SERIAL": "0xc1ee0001",
 		"CXL_C1EE0001_SHARED": "0", "CXL_C1EE0001_SIZE": "268435456"}
 	wantResponse(t, <-ch, api.Response{State: api.StateReady, Source: "pool", Mode: "numa", Node: ptr(2), Size: 268435456, Serial: "0xc1ee0001", Env: numaEnv})
-	data, _ := os.ReadFile(filepath.Join(e.poolDir, "preparedPoolClaims.json"))
-	if !strings.Contains(string(data), `"lease": "000000a1"`) || !strings.Contains(string(data), `"nodes": [`) {
-		t.Fatalf("lend not in the view of the pool claims:\n%s", data)
+	doc := e.st.Snapshot()
+	if p := doc.Preparation(device.PoolDriverName, string(alloc.UID)); p == nil {
+		t.Fatal("no preparation of the companion claim")
+	} else if data, _ := store.PoolLendContent(doc, p); !strings.Contains(string(data), `"lease":"000000a1"`) ||
+		!strings.Contains(string(data), `"nodes":[2]`) {
+		t.Fatalf("lend not in the results of the pool claim: %s", data)
 	}
 	if l := e.stored("000000a1"); l == nil || l.Lend == nil || state.NumaNodeOf(l.Lend.NumaNode) != 2 {
 		t.Fatalf("the lease's lend %+v", l)
@@ -669,9 +672,6 @@ func TestFsLease(t *testing.T) {
 	e.waitState("000000a1", state.LeaseReleasingBusy)
 	if l := e.stored("000000a1"); l == nil || l.State != state.LeaseReleasingBusy {
 		t.Fatalf("stored busy lease %+v", l)
-	}
-	if data, _ := os.ReadFile(filepath.Join(e.dir, store.ViewLeases)); !strings.Contains(string(data), `"state": "Releasing"`) {
-		t.Fatalf("leases.json of a busy lease:\n%s", data)
 	}
 	if e.mounted(bind) == nil {
 		t.Fatal("busy bind unmounted")

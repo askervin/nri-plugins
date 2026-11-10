@@ -240,7 +240,7 @@ func (e *leaseEnv) boot() {
 	local := dra.LocalRules(filepath.Join(e.dir, "mounts"))
 	pool := dra.PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, "mounts"), filepath.Join(e.poolDir, "preparingPoolClaims.json"))
 	st, err := store.Open(ctx, store.Options{Dir: e.dir, PoolDir: e.poolDir, PoolDriver: pool.Name, BootID: e.k.BootID(),
-		CompatViews: true, SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot(),
+		SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot(),
 		NewState: e.newState})
 	mustOK(t, err)
 	e.st = st

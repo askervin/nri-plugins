@@ -58,13 +58,13 @@ type poolTestEnv struct {
 	k  *fake.Fake
 	st *store.Store
 	// dir is the plugin data directory of the pool driver and of the
-	// store, stateFile its view of the prepared claims.
-	dir, stateFile string
-	cdiDir         string
-	leaseFsRoot    string // of the pool driver, "" for none
-	filesystems    string
-	timeout        time.Duration
-	holderWait     time.Duration
+	// store.
+	dir         string
+	cdiDir      string
+	leaseFsRoot string // of the pool driver, "" for none
+	filesystems string
+	timeout     time.Duration
+	holderWait  time.Duration
 	// fence fences the NUMA nodes, nil for none.
 	fence func(ctx context.Context, node int)
 	// base are the commands of the fake before those of the driver.
@@ -84,7 +84,6 @@ func newPoolTestEnv(t *testing.T) *poolTestEnv {
 		timeout:     200 * time.Millisecond,
 		holderWait:  50 * time.Millisecond,
 	}
-	e.stateFile = filepath.Join(e.dir, poolStateFileName)
 	noErr(t, os.MkdirAll(e.dir, 0o755))
 	noErr(t, os.WriteFile(e.filesystems, []byte("nodev\tproc\nnodev\ttmpfs\n\text4\n\txfs\n\terofs\n\tbtrfs\n\tsquashfs\n\tgfs2\n"), 0o644))
 	t.Cleanup(func() {
@@ -97,6 +96,12 @@ func newPoolTestEnv(t *testing.T) *poolTestEnv {
 
 // plug hot-adds the pool device with the serial (volatile memory) and
 // returns its memdev.
+// poolView returns the prepared pool claims of the records of the store in
+// the shape of preparedPoolClaims.json (viewContent).
+func (e *poolTestEnv) poolView() ([]byte, error) {
+	return viewContent(e.st.Snapshot(), poolStateFileName, e.st.ResultOptions())
+}
+
 func (e *poolTestEnv) plug(serial uint64) string {
 	return e.k.Plug(fake.MemdevSpec{Serial: serial})
 }
@@ -149,7 +154,7 @@ func (e *poolTestEnv) driver(t *testing.T) *dra.Plugin {
 	}
 	rules := dra.PoolRules(device.PoolDriverName, filepath.Join(e.dir, mountsDirName), filepath.Join(e.dir, poolPreparingFileName))
 	e.st, err = store.Open(context.Background(), store.Options{Dir: e.dir, PoolDir: e.dir, PoolDriver: device.PoolDriverName,
-		BootID: e.k.BootID(), CompatViews: true})
+		BootID: e.k.BootID()})
 	noErr(t, err)
 	devices, err := newDeviceEngine(deviceConfig{
 		Kernel:        e.k.Kernel(),
@@ -292,7 +297,7 @@ func (e *poolTestEnv) commands() string {
 // finish, as preparingPoolClaims.json has them.
 func (e *poolTestEnv) preparingFile(t *testing.T) map[string]*preparingPoolClaim {
 	t.Helper()
-	data, err := preparingContent(e.st.Snapshot(), e.st.ViewOptions())
+	data, err := preparingContent(e.st.Snapshot(), e.st.ResultOptions())
 	noErr(t, err)
 	recs := map[string]*preparingPoolClaim{}
 	noErr(t, json.Unmarshal(data, &recs))

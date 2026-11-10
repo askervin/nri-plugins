@@ -109,7 +109,7 @@ func cdiClaims(prep *state.Preparation, pending string, unpreparing bool) bool {
 
 // buildCDISpec returns the CDI spec of the kind of the claims of the driver
 // in doc that cdiClaims takes.
-func buildCDISpec(doc *store.Document, driver, kind string, opts store.ViewOptions, pending string, unpreparing bool) (*cdiSpecs.Spec, error) {
+func buildCDISpec(doc *store.Document, driver, kind string, opts store.ResultOptions, pending string, unpreparing bool) (*cdiSpecs.Spec, error) {
 	spec := &cdiSpecs.Spec{Kind: kind}
 	byUID := map[string]*state.Preparation{}
 	for i := range doc.Preparations {

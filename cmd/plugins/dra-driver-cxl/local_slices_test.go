@@ -754,12 +754,7 @@ func TestLocalStateAndReconcile(t *testing.T) {
 	e.mustPrepare(localClaim("u1", localBlockSize, localDaxConfig))
 	e.mustPrepare(localClaim("u2", localBlockSize))
 	e.mustPrepare(localClaim("u3", localBlockSize, localDaxConfig))
-	path := filepath.Join(e.dir, "localDevices.json")
-	st, err := os.Stat(path)
-	if err != nil || st.Mode().Perm() != 0o600 {
-		t.Fatalf("localDevices.json: %v %v", st, err)
-	}
-	data, _ := os.ReadFile(path)
+	data, _ := e.view(localStateFileName)
 	for _, want := range []string{`"serialHex": "c100e2e1"`, `"region": "region0"`, `"mode": "dax"`, `"mode": "numa"`, `"dax": "dax0.1"`,
 		`"daxDevice": "` + filepath.Join(e.k.DevRoot(), "dax0.2") + `"`} {
 		if !strings.Contains(string(data), want) {

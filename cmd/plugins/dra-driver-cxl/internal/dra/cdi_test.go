@@ -74,7 +74,7 @@ func TestClaimsCDISpec(t *testing.T) {
 			"CXL_CLAIM_u1_2=1", "CXL_REGION0_MODE=numa", "CXL_REGION0_NODE=2", "CXL_REGION0_SIZE=67108864"}}},
 		{Name: "claim-u2-0", ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{"CXL_CLAIM_u2_0=1"}}},
 	}
-	spec, err := buildCDISpec(e.st.Snapshot(), device.DriverName, device.CDIKind, e.st.ViewOptions(), "", true)
+	spec, err := buildCDISpec(e.st.Snapshot(), device.DriverName, device.CDIKind, e.st.ResultOptions(), "", true)
 	mustOK(t, err)
 	if spec.Kind != "nri.io/cxl" || !reflect.DeepEqual(spec.Devices, want) {
 		t.Fatalf("CDI spec %+v", spec)
@@ -116,7 +116,7 @@ func TestCDISpecOfClaims(t *testing.T) {
 		doc.Preparation(driver, uid).State = s
 	}
 	names := func(p *Plugin, pending string) []string {
-		spec, err := buildCDISpec(doc, p.Name(), p.Rules().CDIKind, e.st.ViewOptions(), pending, p.Rules().CDIUnpreparing)
+		spec, err := buildCDISpec(doc, p.Name(), p.Rules().CDIKind, e.st.ResultOptions(), pending, p.Rules().CDIUnpreparing)
 		mustOK(t, err)
 		var out []string
 		for _, d := range spec.Devices {

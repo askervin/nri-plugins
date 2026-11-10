@@ -20,7 +20,7 @@ import (
 
 // Flags are the command line flags of the store.
 type Flags struct {
-	// CompatViews writes the views of state.json (Options.CompatViews).
+	// CompatViews is the deprecated --compat-views: accepted, no effect.
 	CompatViews bool
 	// DiscardOldState starts with old state files and CXL regions on the
 	// node, moving the files aside.
@@ -32,10 +32,19 @@ type Flags struct {
 
 // Register registers the flags in fs.
 func (f *Flags) Register(fs *flag.FlagSet) {
-	fs.BoolVar(&f.CompatViews, "compat-views", true,
-		"write preparedClaims.json, preparedClaimsInfo.json, preparedPoolClaims.json, localDevices.json and leases.json as views of state.json")
+	fs.BoolVar(&f.CompatViews, "compat-views", false,
+		"deprecated, no effect: the driver writes no view files of state.json and removes those of earlier versions")
 	fs.BoolVar(&f.DiscardOldState, "discard-old-state", false,
 		"start although old state files and CXL regions exist, moving the files aside")
 	fs.BoolVar(&f.NewState, "new-state", false,
 		"start with a new state.json when neither state.json nor state.json.prev can be read")
+}
+
+// Warnings returns the warnings of the flags set: one for a deprecated flag
+// set to true.
+func (f *Flags) Warnings() []string {
+	if f.CompatViews {
+		return []string{"--compat-views is deprecated and has no effect: the driver writes no view files of state.json"}
+	}
+	return nil
 }

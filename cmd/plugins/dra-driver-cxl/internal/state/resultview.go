@@ -19,10 +19,9 @@ import (
 )
 
 // The results of a prepared claim as the NRI plugin reads them: derived
-// from the records by the views of the store.
+// from the records by the store (store.ClaimInfoContent).
 
-// DeviceInfo is one allocation result of a prepared claim with what it got:
-// a device of preparedClaimsInfo.json.
+// DeviceInfo is one allocation result of a prepared claim with what it got.
 type DeviceInfo struct {
 	RequestName string `json:"requestName"`
 	DeviceName  string `json:"deviceName"` // device name in the pool

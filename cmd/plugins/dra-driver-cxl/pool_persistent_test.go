@@ -70,7 +70,7 @@ func TestPoolPersistentWriter(t *testing.T) {
 		len(cd.ContainerEdits.Mounts) != 0 {
 		t.Fatalf("CDI device %+v", cd.ContainerEdits)
 	}
-	data, _ := os.ReadFile(e.stateFile)
+	data, _ := e.poolView()
 	for _, want := range []string{`"persistent": true`, `"ndRegion": "region0"`, `"namespace": "namespace0.0"`, `"blockDevice": "` + e.pmem + `"`,
 		`"blockMajor": 259`, `"mode": "block"`} {
 		if !strings.Contains(string(data), want) {
@@ -109,7 +109,7 @@ func TestPoolPersistentReaders(t *testing.T) {
 	p := e.driver(t)
 	direct := e.nodeMount(0xc1ae0001, "direct")
 	cached := e.nodeMount(0xc1ae0001, "cached")
-	if want := filepath.Join(filepath.Dir(e.stateFile), "mounts", "c1ae0001-direct"); direct != want {
+	if want := filepath.Join(e.dir, "mounts", "c1ae0001-direct"); direct != want {
 		t.Fatalf("node mount %s, expected %s", direct, want)
 	}
 
@@ -266,7 +266,7 @@ func TestPoolPersistentRestart(t *testing.T) {
 func newPoolLeaseEnv(t *testing.T) (*poolTestEnv, *dra.Plugin, *fakeHooks) {
 	t.Helper()
 	e := newPoolTestEnv(t)
-	e.leaseFsRoot = filepath.Join(filepath.Dir(e.stateFile), "lease-fs")
+	e.leaseFsRoot = filepath.Join(e.dir, "lease-fs")
 	e.plugPersistent(0xc1ae0001, "erofs")
 	hooks := &fakeHooks{fsDir: filepath.Join(e.leaseFsRoot, "lc1"), name: "models"}
 	noErr(t, os.MkdirAll(hooks.fsDir, 0o755))
@@ -323,7 +323,7 @@ func TestPoolLeaseBind(t *testing.T) {
 	if rec := lendOf(e.st.Snapshot(), e.preparation(uid)); rec.FsDir != hooks.fsDir || rec.Name != "models" || !slices.Equal(rec.Mounts, []string{target}) {
 		t.Fatalf("lend record %+v", rec)
 	}
-	data, _ := os.ReadFile(e.stateFile)
+	data, _ := e.poolView()
 	for _, want := range []string{`"fsDir": "` + hooks.fsDir + `"`, `"name": "models"`, `"mounts": [`, `"` + target + `"`} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("state file lacks %s:\n%s", want, data)

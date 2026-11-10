@@ -29,14 +29,12 @@ import (
 )
 
 // The results of a preparation as the readers of the claims get them,
-// derived from the records by the store's views (one derivation for the
-// view files, kubelet, the CDI spec, the lease broker and the NRI plugin):
-// the PrepareResult of kubelet, state.DeviceInfo per result (the devices of
-// preparedClaimsInfo.json, of either driver), store.PoolDevice (the devices
-// of preparedPoolClaims.json).
+// derived from the records by the store (one derivation for kubelet, the
+// CDI spec, the lease broker and the NRI plugin): the PrepareResult of
+// kubelet, state.DeviceInfo per result (of either driver), store.PoolDevice
+// per result of a pool claim.
 
-// ClaimInfo is a prepared claim with its devices: a value of
-// preparedClaimsInfo.json.
+// ClaimInfo is a prepared claim with its devices.
 type ClaimInfo struct {
 	ClaimName string             `json:"claimName"` // namespace/name
 	Devices   []state.DeviceInfo `json:"devices"`
@@ -46,9 +44,8 @@ type ClaimInfo struct {
 	BootID string `json:"bootID,omitempty"`
 }
 
-// claimInfoOf returns a preparation in any state as preparedClaimsInfo.json
-// has its value.
-func claimInfoOf(doc *store.Document, prep *state.Preparation, opts store.ViewOptions) (*ClaimInfo, error) {
+// claimInfoOf returns a preparation in any state with its devices.
+func claimInfoOf(doc *store.Document, prep *state.Preparation, opts store.ResultOptions) (*ClaimInfo, error) {
 	data, err := store.ClaimInfoContent(doc, prep, opts)
 	if err != nil {
 		return nil, err
@@ -60,9 +57,9 @@ func claimInfoOf(doc *store.Document, prep *state.Preparation, opts store.ViewOp
 	return info, nil
 }
 
-// poolDevicesOf returns the devices of a preparation in any state as
-// preparedPoolClaims.json has them.
-func poolDevicesOf(doc *store.Document, prep *state.Preparation, opts store.ViewOptions) ([]store.PoolDevice, error) {
+// poolDevicesOf returns the devices of a preparation of the pool driver in
+// any state.
+func poolDevicesOf(doc *store.Document, prep *state.Preparation, opts store.ResultOptions) ([]store.PoolDevice, error) {
 	data, err := store.PoolDevicesContent(doc, prep, opts)
 	if err != nil {
 		return nil, err
@@ -74,9 +71,9 @@ func poolDevicesOf(doc *store.Document, prep *state.Preparation, opts store.View
 	return devs, nil
 }
 
-// lendOf returns the lend of a companion claim as its views have it: the
-// lease and its requester, the NUMA nodes lent and the lease binds; nil for
-// another claim.
+// lendOf returns the lend of a companion claim: the lease and its
+// requester, the NUMA nodes lent and the lease binds; nil for another
+// claim.
 func lendOf(doc *store.Document, prep *state.Preparation) (*lend.Lend, error) {
 	var rec *lend.Lend
 	data, err := store.PoolLendContent(doc, prep)

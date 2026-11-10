@@ -202,11 +202,11 @@ test-cxl:
 # GOSTATS_GATE=-gate to make an exceeded limit fail. The limits are a
 # ratchet: the non-test lines of the driver are to come down to 26000; the
 # mutexes counted are those on the wait-for graph, a mutex whose comment
-# says "a leaf lock" is left out; views.go keeps the old shapes of the view
-# files.
+# says "a leaf lock" is left out; of the 7 structs with access fields,
+# store.PoolDevice is the next to merge.
 GOSTATS_GATE      ?=
 GOSTATS_CXL_FLAGS ?= -r -max-lines 30000 -max-cyclo15 10 -max-cyclo30 0 -keep persistent.go \
-                     -max-mutexes 10 -max-access-structs 6 -keep-access views.go
+                     -max-mutexes 10 -max-access-structs 7
 GOSTATS_KERNEL_FLAGS ?= -max-cyclo15 2 -max-cyclo30 0
 
 gostats-cxl:

@@ -52,12 +52,14 @@ const (
 	// localProbesFileName keeps the usable sizes that the address line
 	// probe found, by serial, across restarts and reboots.
 	localProbesFileName = "localProbes.json"
-	// localStateFileName is the view of the local memdevs in the plugin
-	// data directory of cxl.nri.io.
-	localStateFileName = store.ViewLocalDevices
-	// poolStateFileName is the view of the prepared pool claims in the
-	// plugin data directory of the pool driver.
-	poolStateFileName = store.ViewPreparedPoolClaims
+	// localStateFileName names the records of the local memdevs in the
+	// plugin data directory of cxl.nri.io in the log lines; no file is
+	// written.
+	localStateFileName = "localDevices.json"
+	// poolStateFileName names the records of the prepared pool claims in
+	// the plugin data directory of the pool driver in the log lines; no
+	// file is written.
+	poolStateFileName = "preparedPoolClaims.json"
 	// poolPreparingFileName names the records of the pool claims whose
 	// Prepare did not finish or that a rollback kept in the log lines; no
 	// file is written.

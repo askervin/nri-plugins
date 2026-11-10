@@ -16,7 +16,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -83,7 +82,7 @@ func TestPoolPersistentReadWrite(t *testing.T) {
 			t.Fatalf("%s: CDI mounts %+v", c.uid, cd.ContainerEdits.Mounts)
 		}
 	}
-	data, _ := os.ReadFile(e.stateFile)
+	data, _ := e.poolView()
 	if !strings.Contains(string(data), `"fsType": "ext4"`) || e.device(p, "a", 0).ReadOnly || !e.device(p, "c", 0).ReadOnly {
 		t.Fatalf("state:\n%s", data)
 	}

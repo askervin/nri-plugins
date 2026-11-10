@@ -171,7 +171,7 @@ func (e *localTestEnv) start() *dra.Plugin {
 	}
 	var err error
 	e.st, err = store.Open(context.Background(), store.Options{Dir: e.dir, PoolDir: e.poolDir, PoolDriver: device.PoolDriverName,
-		BootID: e.k.BootID(), CompatViews: true, SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot()})
+		BootID: e.k.BootID(), SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot()})
 	noErr(t, err)
 	e.devices, err = newDeviceEngine(deviceConfig{
 		Kernel:          e.k.Kernel(),
@@ -373,11 +373,11 @@ func (e *localTestEnv) commands() string {
 	return e.k.CommandsSince(e.base)
 }
 
-// localView returns localDevices.json, the view of the local memdevs, in
-// the shape of the local allocator's state file.
+// localView returns the local memdevs of the records in the shape of the
+// local allocator's state file localDevices.json.
 func (e *localTestEnv) localView() *localState {
 	e.t.Helper()
-	data, err := e.st.View(store.ViewLocalDevices)
+	data, err := e.view(localStateFileName)
 	noErr(e.t, err)
 	var st localState
 	dec := json.NewDecoder(strings.NewReader(string(data)))
@@ -444,11 +444,17 @@ func (e *localTestEnv) localSnapshot() *dra.LocalSnapshot {
 	return e.publisher.LocalSnapshot()
 }
 
+// view returns the state file name of the records of the store of the env
+// (viewContent).
+func (e *localTestEnv) view(name string) ([]byte, error) {
+	return viewContent(e.st.Snapshot(), name, e.st.ResultOptions())
+}
+
 // preparedMap returns the PrepareResults of the prepared claims of
 // cxl.nri.io as preparedClaims.json has them.
 func (e *localTestEnv) preparedMap() claimPreparations {
 	e.t.Helper()
-	data, err := e.st.View(store.ViewPreparedClaims)
+	data, err := e.view(device.PreparedClaimsFileName)
 	noErr(e.t, err)
 	out := claimPreparations{}
 	noErr(e.t, json.Unmarshal(data, &out))

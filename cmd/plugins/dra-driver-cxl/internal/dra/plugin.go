@@ -485,7 +485,7 @@ func (p *Plugin) lendCompanion(ctx context.Context, pr *prepare) error {
 	if pr.lend == nil {
 		return nil
 	}
-	info, err := claimInfoOf(p.st.Snapshot(), p.preparation(pr.uid), p.st.ViewOptions())
+	info, err := claimInfoOf(p.st.Snapshot(), p.preparation(pr.uid), p.st.ResultOptions())
 	if err == nil {
 		for _, d := range info.Devices {
 			if node := deviceNumaNode(&d); node >= 0 {
@@ -517,7 +517,7 @@ func (p *Plugin) lendAndDevices(prep *state.Preparation) (*lend.Lend, []state.De
 	if err != nil {
 		klog.Errorf("%s: claim %s: %v", p.rules.Name, prep.ClaimName, err)
 	}
-	info, err := claimInfoOf(doc, prep, p.st.ViewOptions())
+	info, err := claimInfoOf(doc, prep, p.st.ResultOptions())
 	if err != nil {
 		klog.Errorf("%s: claim %s: %v", p.rules.Name, prep.ClaimName, err)
 		return lend, nil
@@ -812,7 +812,7 @@ func (p *Plugin) ClaimInfo(uid string) *ClaimInfo {
 	if prep == nil || !prep.Prepared() {
 		return nil
 	}
-	info, err := claimInfoOf(p.st.Snapshot(), prep, p.st.ViewOptions())
+	info, err := claimInfoOf(p.st.Snapshot(), prep, p.st.ResultOptions())
 	if err != nil {
 		klog.Errorf("%s: claim %s: %v", p.rules.Name, prep.ClaimName, err)
 		return nil
@@ -836,13 +836,13 @@ func (p *Plugin) PreparedResult(uid string, n int) (string, state.DeviceInfo, bo
 }
 
 // PoolDevices returns the devices of a preparation of the claim uid in any
-// state as preparedPoolClaims.json has them, nil without a record.
+// state, nil without a record.
 func (p *Plugin) PoolDevices(uid string) []store.PoolDevice {
 	prep := p.preparation(uid)
 	if prep == nil {
 		return nil
 	}
-	devs, err := poolDevicesOf(p.st.Snapshot(), prep, p.st.ViewOptions())
+	devs, err := poolDevicesOf(p.st.Snapshot(), prep, p.st.ResultOptions())
 	if err != nil {
 		klog.Errorf("%s: claim %s: %v", p.rules.Name, prep.ClaimName, err)
 	}
@@ -943,7 +943,7 @@ func (p *Plugin) writeCDI(pending string) error {
 	}
 	p.cdiMu.Lock()
 	defer p.cdiMu.Unlock()
-	spec, err := buildCDISpec(p.st.Snapshot(), p.rules.Name, p.rules.CDIKind, p.st.ViewOptions(), pending, p.rules.CDIUnpreparing)
+	spec, err := buildCDISpec(p.st.Snapshot(), p.rules.Name, p.rules.CDIKind, p.st.ResultOptions(), pending, p.rules.CDIUnpreparing)
 	if err != nil {
 		return err
 	}

@@ -181,8 +181,8 @@ func (e *LostError) Is(target error) bool {
 
 // Options are the settings of a store.
 type Options struct {
-	// Dir is the plugin data directory of cxl.nri.io: the document, its
-	// lock and the views of cxl.nri.io.
+	// Dir is the plugin data directory of cxl.nri.io: the document and its
+	// lock.
 	Dir string
 	// PoolDir is the plugin data directory of the pool driver, "" without
 	// a pool driver.
@@ -200,11 +200,9 @@ type Options struct {
 	// files are moved aside also when they name one.
 	RegionExists    func(name string) bool
 	DiscardOldState bool
-	// CompatViews writes the views of the five files that test90's
-	// observer reads after every commit.
-	CompatViews bool
 	// SysRoot and DevRoot are the sysfs mount point and the directory of
-	// the device nodes in the paths of the views, "/sys" and "/dev" if "".
+	// the device nodes in the paths of the results (ResultOptions), "/sys"
+	// and "/dev" if "".
 	SysRoot, DevRoot string
 
 	files fileOps
@@ -231,8 +229,8 @@ type Options struct {
 // Invariants: the snapshot is never ahead of the disk for a Durable commit:
 // a failed write leaves it as it was; Generation grows by one per write.
 //
-// Persistence: state.json, the previous document in state.json.prev, and
-// with CompatViews the five view files of the observer.
+// Persistence: state.json and the previous document in state.json.prev. At
+// the start it removes the view files that earlier versions wrote.
 //
 // Locks and waits: mu guards the document pointer, the pending commits
 // and closed, and is never held across a write; the writer goroutine
@@ -251,11 +249,6 @@ type Store struct {
 	closed  bool
 	wake    chan struct{}
 	done    chan struct{}
-
-	// views has the last content written to each view file, viewDoc the
-	// document of the last views.
-	views   map[string][]byte
-	viewDoc *Document
 	// writes counts the writes of the document.
 	writes atomic.Int64
 }
@@ -303,7 +296,6 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 		lock:  lock,
 		wake:  make(chan struct{}, 1),
 		done:  make(chan struct{}),
-		views: map[string][]byte{},
 	}
 	doc, write, err := s.load()
 	if err != nil {
@@ -327,11 +319,7 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 		}
 	}
 	s.doc = doc
-	if opts.CompatViews {
-		s.writeViews(doc)
-	} else {
-		s.removeViews()
-	}
+	s.removeViews()
 	go s.writer()
 	return s, nil
 }
@@ -554,7 +542,6 @@ func (s *Store) commitGroup(cur *Document, group []*request) {
 			s.mu.Lock()
 			s.doc = work
 			s.mu.Unlock()
-			s.writeViews(work)
 		} else {
 			klog.Errorf("store: %v; the commits of the group are discarded", err)
 		}

@@ -313,8 +313,8 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	// 1. The prepared claims, the slices of local memdevs and the leases of
 	// another boot are not prepared: nothing of what their Prepares made
 	// survives a reboot. The records of both drivers are kept in the state
-	// store (state.json), which writes five of them as its views; the store
-	// drops or marks stale what is of another boot before they are read.
+	// store (state.json); the store drops or marks stale what is of another
+	// boot before they are read.
 	bootID := readBootID(sysfsRoot)
 	if bootID != "" {
 		klog.Infof("boot id %s", bootID)

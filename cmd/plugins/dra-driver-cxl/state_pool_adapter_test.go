@@ -196,7 +196,7 @@ func addPreparingRegions(b *recordBuilder, p *state.Preparation, regions []prepa
 // e2e tests (test90's observer reads preparedPoolClaims.json only): its
 // preparations PREPARING, KEPT (a rollback or the start kept what they
 // made) and PREPARED_STALE.
-func preparingContent(doc *store.Document, opts store.ViewOptions) ([]byte, error) {
+func preparingContent(doc *store.Document, opts store.ResultOptions) ([]byte, error) {
 	out := map[string]*preparingPoolClaim{}
 	for i := range doc.Preparations {
 		p := &doc.Preparations[i]

@@ -1883,7 +1883,7 @@ variable when it is set. Both `-flag` and `--flag` work.
 | `--lease-max-connections` | `LEASE_MAX_CONNECTIONS` | `64` | open connections of the lease socket of one lease claim; one more is closed at once |
 | `--lease-idle-timeout` | `LEASE_IDLE_TIMEOUT` | `10m0s` | how long a connection of a lease socket may stay without a request before the plugin closes it |
 | `--lease-max-per-pod` | `LEASE_MAX_PER_POD` | `64` | leases of the containers of one pod; a request beyond it is refused |
-| `--compat-views` | | `true` | write the [view files](#files-on-the-node) of `state.json`; `false` removes the view files that exist at start and writes none |
+| `--compat-views` | | `false` | deprecated, no effect: accepted, logged with a warning when `true`; the plugin writes no view files of `state.json` ([Files on the node](#files-on-the-node)) |
 | `--discard-old-state` | | `false` | at a first start (no `state.json`), start although state files of an older plugin name CXL regions that exist: the files are moved aside, the regions are left as they are ([Upgrade](#upgrade)) |
 | `--new-state` | | `false` | start with a new `state.json` when neither `state.json` nor `state.json.prev` can be read ([Upgrade](#upgrade)) |
 | `--forget-pool-serial` | | (none) | serial (`0x<hex>` or decimal) whose remembered provenance (pool device or local memdev) is removed at start, so that a memdev of it is new again; repeatable, or a comma-separated list ([local.md](local.md#what-the-plugin-publishes)) |
@@ -1984,7 +1984,7 @@ the pool driver, `/var/lib/kubelet/plugins/cxl-pool.nri.io`.
 | `D/state.json.lost`, `D/state.json.prev.lost` | the documents that could not be read, moved aside by `--new-state`; kept for diagnosis |
 | `D/state.lock` | locked by the running plugin, with its holder (`pid <pid> host <host>`): a second plugin on the node, such as the new pod of a rolling update, waits up to 2 minutes for it and then exits |
 | `D/<file>.old`, `P/<file>.old` | a state file of an older plugin, moved aside at the first start ([Upgrade](#upgrade)) |
-| `D/preparedClaims.json`, `D/preparedClaimsInfo.json`, `D/localDevices.json`, `D/leases.json`, `P/preparedPoolClaims.json` | views of `state.json` in the format of the state files of earlier versions, for reading: the prepared claims of `cxl.nri.io` and their devices, the regions and slices of local memdevs, the lease claims and leases, the prepared claims of the pool driver. Every view is marked with `"viewOf": "state.json"` (in every value of the three files of prepared claims, else at the top), rewritten after every change of the document and not synced to the disk. The plugin never reads them; `--compat-views=false` removes them at start and writes none |
+| `D/preparedClaims.json`, `D/preparedClaimsInfo.json`, `D/localDevices.json`, `D/leases.json`, `P/preparedPoolClaims.json` | views of `state.json` that earlier versions wrote, marked with `"viewOf": "state.json"` (in every value of the three files of prepared claims, else at the top). The plugin writes none and removes those it finds at start, logging `store: removed the view <file> of an earlier version`; a file of the same name without the marker is a state file of an older plugin ([Upgrade](#upgrade)) |
 | `D/localProbes.json` | the usable size of every local memdev whose memory aliases, by serial ([local.md](local.md#broken-and-aliased-memory)): a fact about the hardware, not part of the document; it is kept across restarts, reboots and `--discard-old-state`. Delete it, with the plugin stopped, to probe every memdev again |
 | `D/leases/<claim uid>/cxl.sock` | the lease socket of a lease claim; the directory is the container's `/run/cxl` ([leases.md](leases.md#opting-in)) |
 | `D/lease-fs/<claim uid>/<name>` | the bind of the node mount of an `fs` lease; the directory of the claim is the container's `/run/cxl/fs` ([leases.md](leases.md#opting-in)) |
@@ -1994,9 +1994,9 @@ the pool driver, `/var/lib/kubelet/plugins/cxl-pool.nri.io`.
 | `<cdi root>/cxl-leases.yaml` | CDI kind `nri.io/cxl`: a device `lease-<uid>` per lease claim |
 | `<cdi root>/cxl-pool.yaml` | CDI kind `nri.io/cxl-pool`: a device `claim-<uid>-<n>` per allocation result n of a prepared pool claim, likewise |
 
-The view files are the files that the e2e tests and the reliability
-test read; a later version may stop writing them. Companion claims of
-leases get no CDI device ([leases.md](leases.md#companion-objects)). At
+To read the records, read `state.json` (with the plugin running it is
+replaced, never written in place). Companion claims of leases get no CDI
+device ([leases.md](leases.md#companion-objects)). At
 start the plugin deletes every CDI spec of the kinds `nri.io/cxl` and
 `nri.io/cxl-pool` and writes the three files again from the document.
 
@@ -2017,7 +2017,8 @@ older plugin that hold records: `preparedClaims.json`,
 `preparedClaimsInfo.json`, `localDevices.json`, `poolSerials.json`,
 `leases.json` and `steeredContainers.json` in `D`,
 `preparedPoolClaims.json` and `preparingPoolClaims.json` in `P` (a view
-of `state.json` holds none). It does not import them:
+of `state.json` that an earlier version wrote holds none, and is removed).
+It does not import them:
 
 - When no record of them names a CXL region that exists on the node, it
   moves them aside and starts with a new document, logging

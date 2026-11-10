@@ -328,8 +328,7 @@ that only this claim used and that lies below a region of another memory
 device is kept for the claim (see Restart below). Preparing a claim that
 is prepared already touches no device. The plugin's use of the
 devices is recorded in the state of the plugin, `state.json` in the
-`cxl.nri.io` plugin data directory (viewed as `localDevices.json`), with
-the mode of every slice.
+`cxl.nri.io` plugin data directory, with the mode of every slice.
 
 Unprepare: a `numa` slice's memory blocks are offlined (only the blocks
 of that slice), then the slice is unbound, set to size 0 and deleted
@@ -520,9 +519,8 @@ with `cxl-request request --serial 0xc100e2e1` (exclusively) or
    again and the claim gets nothing. A region that exists already, kept
    from earlier claims, is used again and not zeroed.
 3. The claim is recorded on the device in the state of the plugin
-   (viewed in `localDevices.json`), with the
-   dax device, mode, size and `readOnly`; the device entry says
-   `"shared": true`.
+   (`state.json`), with the dax device, mode, size and `readOnly`; the
+   memdev's facts say `"shared": true`.
 4. The claim's CDI device `nri.io/cxl=claim-<claim uid>-<n>` has the
    marker `CXL_CLAIM_<uid>_<n>=1`, the variables of
    [usage.md](usage.md#environment-variables) with

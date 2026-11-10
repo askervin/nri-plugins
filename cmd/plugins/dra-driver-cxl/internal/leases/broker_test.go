@@ -1175,10 +1175,8 @@ func TestOtherBoot(t *testing.T) {
 	if e.lease(id) != nil || state.LeaseLends(&e.st.Snapshot().Records, envPodUID, envCtr) != nil {
 		t.Fatalf("lease of another boot %+v", e.lease(id))
 	}
-	data, err := os.ReadFile(filepath.Join(e.dir, store.ViewLeases))
-	mustOK(t, err)
-	if strings.Contains(string(data), id) || !strings.Contains(string(data), envLeaseClaim) {
-		t.Fatalf("leases.json after the reboot:\n%s", data)
+	if doc := e.st.Snapshot(); doc.Lease(id) != nil || doc.LeaseClaim(envLeaseClaim) == nil {
+		t.Fatalf("stored leases %+v and lease claims %+v after the reboot", doc.Leases, doc.LeaseClaims)
 	}
 	e.start()
 	list, _ := e.call(api.Request{Op: api.OpList})

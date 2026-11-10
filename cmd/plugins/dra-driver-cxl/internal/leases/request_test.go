@@ -17,8 +17,6 @@ package leases
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -30,7 +28,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
@@ -345,10 +342,8 @@ func TestSerialZero(t *testing.T) {
 	if len(sel) != 1 || sel[0].CEL.Expression != `device.attributes["cxl.nri.io"].serial == "0x0"` {
 		t.Fatalf("selectors %+v", sel)
 	}
-	data, err := os.ReadFile(filepath.Join(e.dir, store.ViewLeases))
-	mustOK(t, err)
-	if !strings.Contains(string(data), `"serial": "0x0"`) {
-		t.Fatalf("leases.json:\n%s", data)
+	if l := e.stored(resp.Lease); l == nil || !l.Asked.AsksSerial() || l.Asked.Serial != 0 {
+		t.Fatalf("stored lease %+v, want one that asks for serial 0x0", l)
 	}
 }
 

@@ -342,7 +342,7 @@ func TestLocalSharedReconcile(t *testing.T) {
 func TestLocalSharedOldStateFile(t *testing.T) {
 	old := `{"bootID":"boot-1","devices":[{"serial":3238060769,"serialHex":"c100e2e1","memdev":"mem0","region":"region0","node":-1,"dax":"dax0.0","claims":{}}]}`
 	doc := &store.Document{Schema: store.Schema}
-	noErr(t, putContent(doc, testViewOptions, localStateFileName, []byte(old), nil))
+	noErr(t, putContent(doc, testResultOptions, localStateFileName, []byte(old), nil))
 	m := doc.Memdev(localSerial)
 	if m == nil || m.Facts.Shared || m.Facts.Persistent || len(m.Grants) > 0 || len(m.Regions) != 1 {
 		t.Fatalf("memdev of an old state file %+v", m)

@@ -28,7 +28,6 @@ import (
 
 	resourcev1 "k8s.io/api/resource/v1"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -96,7 +95,7 @@ func generic(t *testing.T, v any) any {
 // strictly into v.
 func strictView(e *localTestEnv, name string, v any) {
 	e.t.Helper()
-	data, err := e.st.View(name)
+	data, err := e.view(name)
 	noErr(e.t, err)
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -353,7 +352,7 @@ func TestLocalViewOfEngineRecords(t *testing.T) {
 	slices.SortFunc(want.Devices, func(a, b *localDevice) int { return cmp.Compare(a.Serial, b.Serial) })
 
 	got := &localState{}
-	strictView(e, store.ViewLocalDevices, got)
+	strictView(e, localStateFileName, got)
 	diffs := jsonDiffs("localDevices.json", generic(t, got), generic(t, want))
 
 	// the prepared claims as the Prepare of the allocator described them
@@ -376,7 +375,7 @@ func TestLocalViewOfEngineRecords(t *testing.T) {
 	wantInfo["f1"].Devices = []PreparedDeviceInfo{o.pmemInfo(claims["f1"], 0, fs, fs.Claims["f1"][0])}
 	wantInfo["b1"].Devices = append(wantInfo["b1"].Devices, o.pmemInfo(claims["b1"], 1, fs, fs.Claims["b1"][0]))
 	gotInfo := PreparedClaimsInfo{}
-	strictView(e, store.ViewPreparedClaimsInfo, &gotInfo)
+	strictView(e, preparedClaimsInfoFileName, &gotInfo)
 	diffs = append(diffs, jsonDiffs("preparedClaimsInfo.json", generic(t, gotInfo), generic(t, wantInfo))...)
 	// the first dax device of the sliced memdev, which its first slice
 	// resized, is not in the view

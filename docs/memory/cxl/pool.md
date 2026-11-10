@@ -660,8 +660,7 @@ NodePrepareResources, for each allocated device of the driver:
    a container uses, and their settings and memory. A companion
    claim of a lease gets no CDI device ([leases.md](leases.md)). The
    prepared claim is recorded in the state of the plugin (`state.json`
-   in the `cxl.nri.io` plugin data directory, viewed as
-   `/var/lib/kubelet/plugins/cxl-pool.nri.io/preparedPoolClaims.json`).
+   in the `cxl.nri.io` plugin data directory).
    A repeated prepare of a prepared claim returns the recorded result; a
    region that already exists on the device (another claim on this node
    for the same shared device, or a restart) is reused. A claim that wants

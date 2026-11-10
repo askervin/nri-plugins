@@ -531,7 +531,7 @@ and the state of the driver:
 ```bash
 sudo cxl list -R
 grep MemTotal /sys/devices/system/node/node2/meminfo
-sudo cat /var/lib/kubelet/plugins/cxl.nri.io/localDevices.json; echo
+sudo cat /var/lib/kubelet/plugins/cxl.nri.io/state.json; echo
 kubectl logs -n kube-system $(kubectl get pods -n kube-system -l app.kubernetes.io/name=nri-dra-driver-cxl \
     --field-selector spec.nodeName=$(hostname) -o name) | grep 'local: memdev'
 ```

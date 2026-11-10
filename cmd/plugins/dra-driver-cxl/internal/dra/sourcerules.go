@@ -370,7 +370,7 @@ func (v poolVoice) prepared(p *Plugin, pr *prepare) {
 	if prep == nil {
 		return
 	}
-	devs, err := poolDevicesOf(p.st.Snapshot(), prep, p.st.ViewOptions())
+	devs, err := poolDevicesOf(p.st.Snapshot(), prep, p.st.ResultOptions())
 	if err != nil {
 		klog.Errorf("%s: claim %s: %v", v.name, prep.ClaimName, err)
 	}
