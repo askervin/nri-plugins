@@ -2,7 +2,8 @@
 """Observations of test90-gofmbt-reliability (plan-13, 04-contract.txt 6).
 
 Usage:
-  mbt-observe.py vm [--ns NS] [--cluster --nodes ID=NODE,... --units P=UNIT,...
+  mbt-observe.py vm [--ns NS] [--stacks-after S]
+                     [--cluster --nodes ID=NODE,... --units P=UNIT,...
                      [--pools P=POOL,...]
                      [--inspected UID:RESTARTS,...]]
       In a VM, as root (mbt.source.sh installs it as /usr/local/bin/
@@ -23,6 +24,10 @@ Usage:
       of the model (vm2, vm1, vm0),
       NODE their Kubernetes node names; P are pool ids (a, b, c), UNIT the
       systemd units of their controllers.
+      With --stacks-after S, an observation still running after S seconds
+      writes to stderr the line STACKS_MARKER, the kernel stacks of the
+      threads of the driver process and of itself (/proc/PID/task/TID/
+      stack), and a second later the Python stacks of its threads.
   mbt-observe.py assemble --step N --poll K --nodes ID=NODE,...
                           --vm ID=FILE... --attachments P=FILE...
                           [--inspected-in FILE] [--inspected-out FILE]
@@ -54,7 +59,9 @@ Where the data comes from:
                 target_node of its dax devices; dax = the dax devices of
                 its dax region with a size (the zero-size seed device is
                 left out): size, driver (kmem, device_dax or null), online
-                = bytes of its memory blocks that are online
+                = bytes of its memory blocks that are online (the memory of
+                a device of one range from its resource and size, of
+                several ranges from its mappingN)
   ports         /sys/bus/cxl/devices/portN and endpointN with
                 decoders_committed > 0: kind (hostbridge: a port right
                 under rootR; switch: a port below one; endpoint), hb (the
@@ -245,6 +252,7 @@ holder check and a concurrent erofs mount would fail):
 
 import argparse
 import errno
+import faulthandler
 import glob
 import hashlib
 import json
@@ -364,10 +372,18 @@ def memdevs(errors):
 
 
 def online_bytes(dax, bs):
-    """Bytes of the memory blocks of dax device dax (daxX.Y) that are online."""
+    """Bytes of the memory blocks of dax device dax (daxX.Y) that are
+    online. The memory of a device of one range (one mappingN, none before
+    kernel 5.10) is its resource and size: a reader inside a mappingN file
+    stops a shrink of the device by the driver until the reader exits (the
+    kernel removes the mapping holding the rwsem that the reader waits for,
+    and waits for the reader, drivers/dax/bus.c). A device of several
+    ranges is read from its mappingN files, which can hold a shrink the
+    same way until the observer ends."""
     base = DAX + "/" + dax
+    maps = sorted(glob.glob(base + "/mapping[0-9]*"), key=natkey)
     ranges = []
-    for m in sorted(glob.glob(base + "/mapping[0-9]*"), key=natkey):
+    for m in maps if len(maps) > 1 else []:
         try:
             ranges.append((int(read(m + "/start"), 0), int(read(m + "/end"), 0)))
         except (OSError, ValueError):
@@ -2053,7 +2069,71 @@ def cluster_observation(ns, nodes, units, inspected, pools=None):
     return out
 
 
+STACKS_MARKER = "mbt-observe: the observation is still running, stacks follow"
+
+
+def task_stacks(pid):
+    """Lines of the kernel stacks of the threads of process pid: per
+    thread its name, state, wait channel and /proc/PID/task/TID/stack."""
+    out = []
+    for task in sorted(glob.glob("/proc/%d/task/[0-9]*" % pid), key=natkey):
+        fields = {}
+        for name in ("comm", "wchan", "stat", "stack"):
+            try:
+                fields[name] = read(task + "/" + name)
+            except OSError as e:
+                fields[name] = "(%s)" % e.strerror
+        state = fields["stat"].rsplit(")", 1)[-1].split()[:1] or ["?"]
+        out.append("-- task %s %s state %s wchan %s" % (os.path.basename(task), fields["comm"], state[0], fields["wchan"]))
+        out.extend("   " + line for line in fields["stack"].splitlines())
+    return out
+
+
+def driver_pids():
+    """The pids of the processes of the driver binary (argv[0] is
+    .../DRIVER_CONTAINER), from /proc only."""
+    out = []
+    for d in glob.glob("/proc/[0-9]*"):
+        try:
+            with open(d + "/cmdline", "rb") as f:
+                argv0 = f.read().split(b"\0", 1)[0].decode(errors="replace")
+        except OSError:
+            continue
+        if os.path.basename(argv0) == DRIVER_CONTAINER:
+            out.append(int(os.path.basename(d)))
+    return sorted(out)
+
+
+def write_stacks():
+    """Write STACKS_MARKER and the kernel stacks of the threads of the
+    driver processes and of this process to stderr."""
+    lines = [STACKS_MARKER]
+    for pid in driver_pids():
+        lines.append("== driver pid %d" % pid)
+        lines.extend(task_stacks(pid))
+    lines.append("== observer pid %d" % os.getpid())
+    lines.extend(task_stacks(os.getpid()))
+    sys.stderr.write("\n".join(lines) + "\n")
+    sys.stderr.flush()
+
+
+def arm_stacks(seconds):
+    """After seconds, write write_stacks and a second later the Python
+    stacks of every thread to stderr; the returned function cancels
+    both."""
+    t = threading.Timer(seconds, write_stacks)
+    t.daemon = True
+    t.start()
+    faulthandler.dump_traceback_later(seconds + 1, exit=False)
+
+    def cancel():
+        t.cancel()
+        faulthandler.cancel_dump_traceback_later()
+    return cancel
+
+
 def cmd_vm(args):
+    cancel = arm_stacks(args.stacks_after) if args.stacks_after > 0 else None
     out = {}
     threads = []
     if args.cluster:
@@ -2066,6 +2146,8 @@ def cmd_vm(args):
     out["vm"] = vm_observation(args.ns)
     for t in threads:
         t.join()
+    if cancel:
+        cancel()
     print(json.dumps(out, sort_keys=True, separators=(",", ":")))
 
 
@@ -2444,6 +2526,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     v = sub.add_parser("vm")
     v.add_argument("--ns", default="cxl-pool-demo")
+    v.add_argument("--stacks-after", type=float, default=0)
     v.add_argument("--cluster", action="store_true")
     v.add_argument("--nodes", default="")
     v.add_argument("--units", default="")

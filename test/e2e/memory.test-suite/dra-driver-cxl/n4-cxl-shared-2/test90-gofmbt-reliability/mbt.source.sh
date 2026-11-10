@@ -23,7 +23,8 @@
 # commands and their output go to $TEST_OUTPUT_DIR/mbt-exec.log, the
 # observations to $TEST_OUTPUT_DIR/mbt-obs/ (the last MBT_OBS_KEEP, and
 # fail-N.json of a failed step), the time of every step to
-# mbt-times.tsv and of every observation to mbt-obs-times.tsv.
+# mbt-times.tsv and of every observation to mbt-obs-times.tsv, the stacks
+# of a VM's part of an observation that timed out to mbt-obs-stacks/.
 
 MBT_HELPER_DIR="$(dirname "${BASH_SOURCE[0]}")"
 MBT_OBSERVER="$MBT_HELPER_DIR/mbt-observe.py"   # the observer, on the host
@@ -39,6 +40,7 @@ MBT_EXEC_RETRY=30                               # seconds to retry a kubectl exe
 MBT_READ_TIMEOUT="${MBT_READ_TIMEOUT:-900}"     # seconds to wait for a line of the generator
 MBT_OBS_KEEP="${MBT_OBS_KEEP:-30}"              # observations kept in mbt-obs/
 MBT_OBS_TIMEOUT="${MBT_OBS_TIMEOUT:-60}"        # seconds of one VM's part of an observation
+MBT_OBS_STACKS_MARKER="mbt-observe: the observation is still running, stacks follow"  # of mbt-observe.py --stacks-after
 MBT_NRI_RESTART_WAIT=60                         # containerd-restart: seconds to wait for the driver's restart
 MBT_DRIVER_READY_WAIT="${MBT_DRIVER_READY_WAIT:-120}"   # seconds to wait for a driver to be ready (mbt-driver-ready)
 MBT_LENDS_RESTORED="NRI fence: lends restored"  # the driver's log line when NRI and lending are up
@@ -1585,10 +1587,13 @@ mbt-observe() { # script API
     # follow the logs of restarted drivers (mbt-drivers-seen). A VM whose
     # part takes longer than MBT_OBS_TIMEOUT s is left out (null, with an
     # error): the observer runs under timeout in the VM, and its ssh is
-    # killed on the host 10 s later. Return non-zero if the observation
-    # could not be assembled: MBT_OBS is then an observation with the
-    # error only.
-    local step="$1" poll="$2" t0=$EPOCHREALTIME vm p pids=() cmd inspected args=() url dev killat
+    # killed on the host 10 s later. 5 s before its timeout the observer
+    # writes the kernel stacks of the threads of the driver and of itself
+    # and its Python stacks to its stderr, which is kept as
+    # mbt-obs-stacks/obs-STEP-POLL.VM.txt when the part printed nothing or
+    # the stacks. Return non-zero if the observation could not be
+    # assembled: MBT_OBS is then an observation with the error only.
+    local step="$1" poll="$2" t0=$EPOCHREALTIME vm p pids=() cmd inspected args=() url dev killat stacks
     inspected=$(paste -sd, "$MBT_TMP/inspected")
     # A24 pdevs from the backing files on the host, A23 killAt of the VM
     # of an armed driver-kill-at watcher.
@@ -1598,7 +1603,7 @@ mbt-observe() { # script API
     killat=$MBT_KILLAT_VM
     [ -z "$killat" ] || args+=(--kill-at "$killat")
     for vm in "${MBT_VMIDS[@]}"; do
-        cmd="timeout -k 5 $MBT_OBS_TIMEOUT python3 $MBT_OBSERVER_VM vm --ns $DRA_NS"
+        cmd="timeout -k 5 $MBT_OBS_TIMEOUT python3 $MBT_OBSERVER_VM vm --ns $DRA_NS --stacks-after $(( MBT_OBS_TIMEOUT - 5 ))"
         [ "$vm" != vm2 ] || cmd+=" --cluster --nodes $MBT_NODES --units $MBT_UNITS --pools $MBT_POOLS --inspected '$inspected'"
         dra-vm-command-q "${MBT_VMDIR[$vm]}" "$cmd" > "$MBT_TMP/obs.$vm" 2> "$MBT_TMP/obs.$vm.err" &
         pids+=("$!")
@@ -1611,6 +1616,14 @@ mbt-observe() { # script API
         args+=(--attachments "$p=$MBT_TMP/att.$p")
     done
     mbt-wait-pids $(( MBT_OBS_TIMEOUT + 10 )) "${pids[@]}"
+    for vm in "${MBT_VMIDS[@]}"; do
+        if [ ! -s "$MBT_TMP/obs.$vm" ] || grep -qxF "$MBT_OBS_STACKS_MARKER" "$MBT_TMP/obs.$vm.err"; then
+            stacks="mbt-obs-stacks/obs-$(printf '%06d-%03d' "$step" "$poll").$vm.txt"
+            mkdir -p "$TEST_OUTPUT_DIR/mbt-obs-stacks"
+            cp "$MBT_TMP/obs.$vm.err" "$TEST_OUTPUT_DIR/$stacks"
+            echo "    observation $poll of step $step: $vm printed no observation or its stacks, its stderr in $stacks"
+        fi
+    done
     if MBT_OBS=$(python3 "$MBT_OBSERVER" assemble --step "$step" --poll "$poll" --nodes "$MBT_NODES" "${args[@]}" \
                      --inspected-in "$MBT_TMP/inspected" --inspected-out "$MBT_TMP/inspected.new" \
                      --summary "$MBT_TMP/summary" 2>"$MBT_TMP/assemble.err") && [ -n "$MBT_OBS" ]; then
