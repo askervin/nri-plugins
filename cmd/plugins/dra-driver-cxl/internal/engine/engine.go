@@ -136,8 +136,8 @@ type Options struct {
 	// Sources are the sources whose records the engine owns, nil for all.
 	Sources []state.Source
 	// Records are the names that the log lines of the recovery give the
-	// record of a claim whose Prepare did not finish, per source: for the
-	// pool, the file preparingPoolClaims.json.
+	// record of a claim whose Prepare did not finish, per source: the path
+	// of state.json.
 	Records map[state.Source]string
 	// Timeouts are the bounds of the waits; zero values are the defaults.
 	Timeouts Timeouts
