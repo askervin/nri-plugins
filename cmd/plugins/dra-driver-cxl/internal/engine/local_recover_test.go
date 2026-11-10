@@ -487,3 +487,27 @@ func TestLocalRecoverKeepsNodeMountOfBusyCompanion(t *testing.T) {
 	v.mustUnprepare(localDriver, "c")
 	v.mustNotBeMounted("after the Unprepare again of c", mnt, target)
 }
+
+// The grant of an Unprepare that a stop cut after its region was destroyed
+// (UNPREPARING, RELEASING, its region forgotten at the start) holds no
+// region: the region that a later claim of the memdev made goes with that
+// claim's Unprepare.
+func TestLocalReleasingGrantHoldsNoNewRegion(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
+	v.mustPrepare(localDriver, "d", sliceReq("d", 0, state.ModeDax, 256*mib))
+	v.f.CutAfter("cxl destroy-region")
+	if !v.cut(func() { _ = v.unprepare(localDriver, "d") }) {
+		t.Fatal("not cut")
+	}
+	v.restart()
+	if g := v.grant("d", 0); g.State != state.GrantReleasing {
+		t.Fatalf("grant %+v", g)
+	}
+	v.mustPrepare(localDriver, "n", sliceReq("n", 0, state.ModeNUMA, 256*mib))
+	v.mustUnprepare(localDriver, "n")
+	if regions := v.f.Kernel().Regions("mem0"); len(regions) > 0 {
+		t.Fatalf("regions left %v", regions)
+	}
+	v.mustUnprepare(localDriver, "d")
+	v.clean("unprepared")
+}

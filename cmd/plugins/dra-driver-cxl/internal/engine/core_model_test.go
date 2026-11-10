@@ -423,14 +423,6 @@ func (s *coreState) requestEnabled(ca *coreAction) bool {
 // by name: each tells whether a request runs into it. The requests that do
 // are not generated unless -core.known leaves the finding out.
 var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{
-	// F7: a memdev with the grant of an unfinished release whose region is
-	// gone (UNPREPARING, RELEASING) keeps a region that a later Prepare
-	// made when its last user goes (the recovery of a cut Prepare leaves
-	// the cut grant's dax device without a user: I2); only the retry of
-	// that release is generated.
-	"F7": func(s *coreState, ca *coreAction) bool {
-		return s.unfinishedWithoutRegion(ca, false)
-	},
 	// F10: the next Prepare of a local persistent memdev whose idle region
 	// has nothing above reuses the region instead of destroying it first
 	// (5.4 the idle row, T3 IDLE_KEPT -> UNUSED): a hole below it stays.

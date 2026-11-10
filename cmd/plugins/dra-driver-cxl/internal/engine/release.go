@@ -333,15 +333,49 @@ func (e *Engine) startReleases(ctx context.Context, refs []state.GrantRef, call 
 }
 
 // memdevUsers tells whether the memdev with the serial has grants but ref
-// of other calls (others) and of the release call (ofCall).
+// of other calls (others) and of the release call (ofCall), but those of
+// unfinished Unprepares that hold none of its regions.
 func (e *Engine) memdevUsers(serial state.Serial, ref state.GrantRef, call *releaseCall) (others, ofCall bool) {
-	if m := e.records().Memdev(serial); m != nil {
+	r := e.records()
+	if m := r.Memdev(serial); m != nil {
 		for _, o := range m.Grants {
-			others = others || (o != ref && !call.refs[o])
-			ofCall = ofCall || (o != ref && call.refs[o])
+			if o == ref || !holdsRegion(r, m, o) {
+				continue
+			}
+			others = others || !call.refs[o]
+			ofCall = ofCall || call.refs[o]
 		}
 	}
 	return others, ofCall
+}
+
+// holdsRegion tells whether the grant ref of the memdev record m may hold a
+// region of it: every grant but the one of an unfinished Unprepare
+// (RELEASING, of an UNPREPARING claim) of a dax device or a node mount that
+// no dax device or node mount of its regions lists as a user (its region
+// is gone; a new one may have its name).
+func holdsRegion(r *state.Records, m *state.Memdev, ref state.GrantRef) bool {
+	g := r.Grant(ref)
+	if g == nil || !unpreparing(r, g) || g.Asked.Mode == state.ModeBlock {
+		return true
+	}
+	for _, rr := range m.Regions {
+		reg := r.Region(rr)
+		if reg == nil {
+			continue
+		}
+		for _, d := range reg.DaxDevices {
+			if slices.Contains(d.Users, ref) {
+				return true
+			}
+		}
+		for _, mt := range reg.Mounts {
+			if slices.Contains(mt.Users, ref) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // keepForRecovery keeps the cut grants refs of one memdev whose region lies
