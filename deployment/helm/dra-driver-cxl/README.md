@@ -72,9 +72,12 @@ The command above deploys the driver on the Kubernetes cluster within the
 the chart installs the DeviceClasses `cxl-local`, `cxl-local-shared`,
 `cxl-local-persistent`, `cxl-pool`, `cxl-pool-shared`,
 `cxl-pool-persistent`, `cxl-region`, `cxl-dram` and `cxl-lease`, a
-ClusterRole
-and a ValidatingAdmissionPolicy that lets the driver modify only the
-ResourceSlices of its own node. To customize the available parameters as
+ClusterRole, and two ValidatingAdmissionPolicies that let the driver
+modify only the ResourceSlices and the lease companion pods and claims of
+its own node (they need the `ServiceAccountTokenPodNodeInfo` feature, on
+by default since Kubernetes 1.30; see
+[RBAC and admission policies](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#rbac-and-admission-policies)).
+To customize the available parameters as
 described in the [Configuration options](#configuration-options) below, you
 have two options: you can use the `--set` flag or create a custom
 values.yaml file and provide it using the `-f` flag. For example:

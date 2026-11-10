@@ -152,9 +152,10 @@ helm install -n kube-system cxl deployment/helm/dra-driver-cxl \
 ```
 
 creates the DaemonSet `nri-dra-driver-cxl` with its ServiceAccount, the
-ClusterRole and ClusterRoleBinding of the driver, a
-ValidatingAdmissionPolicy that lets the driver's ServiceAccount change only
-the ResourceSlices of its own node, a ConfigMap with the
+ClusterRole and ClusterRoleBinding of the driver, two
+ValidatingAdmissionPolicies that let the driver's ServiceAccount change
+only the ResourceSlices and the lease companions of its own node
+([RBAC and admission policies](#rbac-and-admission-policies)), a ConfigMap with the
 [configuration file](#configuration-file), and the nine
 [DeviceClasses](#deviceclasses). The pod of the DaemonSet is privileged,
 runs in the host PID namespace (the lease broker maps the process ids of
@@ -218,6 +219,40 @@ kubectl logs -n kube-system -l app.kubernetes.io/name=nri-dra-driver-cxl \
 DeviceClasses. Delete the pods with claims of the driver first: kubelet
 needs the running plugin to unprepare their claims, and pool devices are
 detached only after that.
+
+### RBAC and admission policies
+
+The ClusterRole `nri-dra-driver-cxl` of the chart lets the driver get
+nodes, change ResourceSlices, read ResourceClaims, create and delete pods
+and ResourceClaims in every namespace (the companions of
+[leases](leases.md#companion-objects)) and create Events. Two
+ValidatingAdmissionPolicies of the chart, bound with
+`validationActions: [Deny]`, narrow that down for the user
+`system:serviceaccount:<release namespace>:nri-dra-driver-cxl`:
+
+- `resourceslices-policy-nri-dra-driver-cxl`: it creates, updates and
+  deletes only the ResourceSlices of its own node (`spec.nodeName`).
+- `lease-companions-policy-nri-dra-driver-cxl`: it creates only pods and
+  ResourceClaims with the labels `cxl.nri.io/lease`,
+  `cxl.nri.io/requester-uid` and `cxl.nri.io/node`, the node label its
+  own node, and of pods only those that a required node affinity pins to
+  that node (`matchFields` on `metadata.name`), without volumes, without
+  the host network, PID or IPC namespace and without privileged
+  containers, whose containers all run `leases.companionImage`. It
+  deletes only pods and ResourceClaims whose `cxl.nri.io/node` is its
+  node.
+
+The API server knows the node of the user from the token of the driver's
+pod (the user extra `authentication.kubernetes.io/node-name`): both
+policies need the `ServiceAccountTokenPodNodeInfo` feature, on by default
+since Kubernetes v1.30, and without it they refuse every request of the
+ServiceAccount that they match. A mutating admission webhook that adds
+volumes or containers to the pods of the requesters' namespaces, or
+rewrites their images (sidecar injection, registry mirrors), makes the
+companion policy refuse the companions, and the leases fail: exempt the
+pods with the label `cxl.nri.io/lease` from it. A host process
+([As a host process](#as-a-host-process)) uses a kubeconfig of its own
+user, whom the policies do not match.
 
 ### As a host process
 

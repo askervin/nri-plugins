@@ -602,6 +602,14 @@ The companion objects of lease `<id>` live in the requester's namespace:
   `cxl.nri.io/requester-uid=<pod uid>`, `cxl.nri.io/node=<node>` and
   the annotation `cxl.nri.io/requester=<ns>/<pod>/<container>`.
 
+The admission policy `lease-companions-policy-nri-dra-driver-cxl` of the
+Helm chart admits the driver's creation of these objects only with the
+three labels, its own node in `cxl.nri.io/node` and, for the pod, the
+node affinity to its node, no volumes, no host namespaces, no privileged
+container and the image of `leases.companionImage`, and their deletion
+only with its own node in `cxl.nri.io/node`
+([usage.md](usage.md#rbac-and-admission-policies)).
+
 A claim with the label `cxl.nri.io/lease` is a companion claim. Before
 it touches a device, the driver that prepares it checks that the lease is
 in the lease table and is being created (or Lending or Ready, for a
@@ -786,9 +794,10 @@ and cannot make it the companion of a lease it did not request.
 - RBAC: the plugin creates and deletes pods and resourceclaims in every
   namespace (the ClusterRole of the Helm chart,
   [`deployment/helm/dra-driver-cxl/templates`](tree:/deployment/helm/dra-driver-cxl/templates));
-  companions count against the tenant's ResourceQuota. No admission
-  policy limits what the plugin's account may create to companions on its
-  own node.
+  companions count against the tenant's ResourceQuota. The chart's
+  admission policy limits the plugin's account to the companions of its
+  own node ([usage.md](usage.md#rbac-and-admission-policies)); a host
+  process with a kubeconfig of another user has no such limit.
 - The plugin must run in the host pid namespace with the NRI socket (the
   DaemonSet of the Helm chart has `hostPID` and mounts `/var/run/nri`; a
   host process has both anyway). SELinux labels of the socket are set
