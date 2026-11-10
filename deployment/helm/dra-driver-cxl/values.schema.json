@@ -115,6 +115,25 @@
                 }
             }
         },
+        "leaseMemoryConfig": {
+            "type": "object",
+            "$comment": "a MemoryConfig body for the class of the lease device, which has no device settings: readOnly false (the default) only",
+            "additionalProperties": false,
+            "properties": {
+                "device": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "readOnly": {
+                            "enum": [false]
+                        }
+                    }
+                },
+                "container": {
+                    "$ref": "#/definitions/container"
+                }
+            }
+        },
         "poolMemoryConfig": {
             "type": "object",
             "$comment": "a MemoryConfig body for a class of cxl-pool.nri.io",
@@ -323,7 +342,7 @@
                     "$ref": "#/definitions/localMemoryConfig"
                 },
                 "cxl-lease": {
-                    "$ref": "#/definitions/localMemoryConfig"
+                    "$ref": "#/definitions/leaseMemoryConfig"
                 }
             }
         },

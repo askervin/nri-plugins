@@ -12,12 +12,14 @@ CAUTION: experimental. Interfaces may change.
 
 How to use the driver, its DeviceClasses, configurations and leases are
 described in the
-[CXL memory documentation](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md).
+[CXL memory documentation](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md);
+this page summarizes the chart and points there for detail.
 
 ## Prerequisites
 
-- Kubernetes 1.37+, with the DRA feature gates listed in the CXL memory
-  documentation.
+- Kubernetes 1.37+, with the DRA
+  [feature gates](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#feature-gates)
+  of the CXL memory documentation.
 - Helm 3.0.0+
 - Container runtime with CDI and NRI enabled:
   - containerD:
@@ -32,15 +34,18 @@ described in the
     - Enable NRI feature by following
       [these](https://github.com/cri-o/cri-o/blob/main/docs/crio.conf.5.md#crionri-table)
       detailed instructions, or set `nri.runtime.patchConfig` (see below).
-- cgroup v2 and a kernel with CXL regions (`CONFIG_CXL_REGION`),
-  `CONFIG_DEV_DAX`, `CONFIG_DEV_DAX_KMEM`, `CONFIG_MEMORY_HOTREMOVE` and
-  `CONFIG_FS_DAX`; for pool devices of persistent memory also
-  `CONFIG_CXL_PMEM`, `CONFIG_LIBNVDIMM`, `CONFIG_BLK_DEV_PMEM`,
-  `CONFIG_ND_PFN`, `CONFIG_EROFS_FS` and `CONFIG_BLK_DEV_LOOP`.
+- cgroup v2 and a kernel with CXL regions, device DAX and its kmem
+  driver, memory hot-remove and `CONFIG_FS_DAX`; for devices of
+  persistent memory (pool devices and persistent local memdevs) also the
+  CXL pmem, libnvdimm, pmem block device and pfn options, the
+  filesystems that mode `fs` mounts and the loop device. The
+  [requirements](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#requirements)
+  list the kernel options.
 - `/sys/devices/system/memory/auto_online_blocks` set to `offline`, and
   no udev rule that onlines hot-added memory (`40-redhat.rules` of RHEL,
-  CentOS Stream and Fedora does: override it, see the requirements in the
-  CXL memory documentation).
+  CentOS Stream and Fedora does: override it as the
+  [requirements](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#requirements)
+  show).
 
 The image contains the `cxl` and `ndctl` tools of ndctl and the
 static `cxl-request` command line tool of leases. The pod runs privileged
@@ -51,12 +56,16 @@ CDI directories `/etc/cdi` and `/var/run/cdi`, and the kubelet directories
 the driver copies `cxl-request` to
 `/var/lib/kubelet/plugins/cxl.nri.io/cxl-request` on the host, from where
 lease claims mount it into containers. `/var/lib/kubelet/plugins` is
-mounted with `mountPropagation: Bidirectional`: the erofs filesystems
-that the pool driver mounts under
-`/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts` for claims in mode `fs`
-must reach the host, where the container runtime binds them into
-containers (kubelet makes `/var/lib/kubelet` a shared mount, and
-Bidirectional needs a privileged container).
+mounted with `mountPropagation: Bidirectional`: the filesystems that both
+drivers mount for mode `fs`, those of persistent local memdevs under
+`/var/lib/kubelet/plugins/cxl.nri.io/mounts` and those of pool devices
+under `/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts`, and the binds of
+`fs` leases under `/var/lib/kubelet/plugins/cxl.nri.io/lease-fs`, must
+reach the host, where the container runtime binds them into containers
+(kubelet makes `/var/lib/kubelet` a shared mount, and Bidirectional needs
+a privileged container). The
+[files on the node](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#files-on-the-node)
+are listed in the CXL memory documentation.
 
 ## Installing the Chart
 
@@ -71,7 +80,11 @@ The command above deploys the driver on the Kubernetes cluster within the
 `kube-system` namespace with default configuration. Besides the DaemonSet
 the chart installs the DeviceClasses `cxl-local`, `cxl-local-shared`,
 `cxl-local-persistent`, `cxl-pool`, `cxl-pool-shared`,
-`cxl-pool-persistent`, `cxl-region`, `cxl-dram` and `cxl-lease`, a
+`cxl-pool-persistent`, `cxl-region`, `cxl-dram` and `cxl-lease`
+([DeviceClasses](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#deviceclasses):
+`cxl-local-persistent` selects the local memdevs of persistent memory,
+whose claims get their block device or a filesystem on it, and
+`cxl-local` and `cxl-local-shared` the other local memdevs), a
 ClusterRole, and two ValidatingAdmissionPolicies that let the driver
 modify only the ResourceSlices and the lease companion pods and claims of
 its own node (they need the `ServiceAccountTokenPodNodeInfo` feature, on
@@ -108,6 +121,19 @@ EOF
 helm install my-dra-driver-cxl nri-plugins/nri-dra-driver-cxl --namespace kube-system -f myPath/values.yaml
 ```
 
+## Upgrading the Chart
+
+On a node whose driver keeps the state files of earlier versions (no
+`state.json` yet), drain the claims of the drivers before the upgrade:
+the new driver does not import those files, and refuses to start while
+they name CXL regions that exist
+([Upgrade](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#upgrade)).
+`cxl-local` and `cxl-local-shared` test the attribute `persistent`, which
+the ResourceSlices of an older driver lack, so claims of these classes do
+not allocate until the new driver has published its ResourceSlices again:
+upgrade the DaemonSet before the classes, or expect that window
+([DeviceClasses](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#deviceclasses)).
+
 ## Uninstalling the Chart
 
 To uninstall the driver run the following command:
@@ -141,7 +167,7 @@ customize with their own values, along with the default values.
 | `leases.wait`            | 120s                                                                                                                          | how long a lease request waits for Ready when it does not say (`--lease-wait`) |
 | `leases.companionImage`  | registry.k8s.io/pause:3.10                                                                                                    | image of the companion pods of leases (`--lease-companion-image`) |
 | `config`                 | {}                                                                                                                            | driver configuration file (`-f`)                     |
-| `deviceClassConfig`      | {}                                                                                                                            | class name: the body of a `MemoryConfig` (`device`, `container`, `pool`), rendered into the `spec.config` of the class |
+| `deviceClassConfig`      | {}                                                                                                                            | class name: the body of a `MemoryConfig` (`device`, `container`, `pool`; `container` only for `cxl-lease`), rendered into the `spec.config` of the class |
 | `logLevel`               | 4                                                                                                                             | log verbosity (`-v`)                                 |
 | `extraEnv`               | {}                                                                                                                            | extra environment variables of the driver, name: value |
 | `initContainerImage.name` | [ghcr.io/containers/nri-plugins/nri-config-manager](https://ghcr.io/containers/nri-plugins/nri-config-manager)               | init container image name                            |
@@ -163,6 +189,9 @@ squashfs and gfs2 are not hardened against crafted images: adding a type
 trusts every party that can write the devices raw, that is every
 read-write block claim and lease of a persistent device on any node of
 any cluster that shares the pool. The chart sets no `fsTypes`.
+`config.memdevSettings[].coherent` declares the memory of a local memdev
+in `config.sharedDevices` coherent between the hosts that share it, so
+that a cluster filesystem may be read-write on it.
 `config.defaults.container`
 holds the node defaults of the settings of containers:
 `fencing` (`allowed-mems` by default) keeps the CXL nodes of the driver

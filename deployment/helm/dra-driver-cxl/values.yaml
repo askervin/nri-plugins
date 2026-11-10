@@ -77,7 +77,8 @@ config: {}
 
 # MemoryConfig presets of the DeviceClasses of the chart: class name ->
 # the body of a MemoryConfig (device, container; pool for the cxl-pool*
-# classes). The chart renders it into the spec.config of the class as an
+# classes; container only for cxl-lease, the lease device has no device
+# settings). The chart renders it into the spec.config of the class as an
 # opaque entry of the class's driver, apiVersion cxl.nri.io/v1alpha1, kind
 # MemoryConfig. Claims of the class change it field by field. See
 # docs/memory/cxl/usage.md.

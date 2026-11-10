@@ -105,8 +105,10 @@ spec:
           - name: dra-driver-cxl-config-vol
             mountPath: /etc/nri/dra-driver-cxl
           # Sockets and data of the DRA drivers, and cxl-request for leases.
-          # The node mounts of mode fs under cxl-pool.nri.io/mounts must
-          # reach the host, where the runtime binds them into containers.
+          # The node mounts of mode fs of both drivers (cxl.nri.io/mounts,
+          # cxl-pool.nri.io/mounts) and the binds of fs leases
+          # (cxl.nri.io/lease-fs) must reach the host, where the runtime
+          # binds them into containers.
           - name: kubelet-plugins
             mountPath: /var/lib/kubelet/plugins
             mountPropagation: Bidirectional
@@ -122,7 +124,8 @@ spec:
             readOnly: true
           - name: sysfs
             mountPath: /sys
-          # Device nodes that appear after the start, like /dev/dax*.
+          # Device nodes that appear after the start, like /dev/dax* and
+          # /dev/pmem*.
           - name: devfs
             mountPath: /dev
           - name: kernel-modules
