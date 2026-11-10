@@ -107,19 +107,27 @@ func prepared(g *state.Grant) bool {
 // usesOf returns the uses of the memdev with the serial by the prepared
 // grants other than except, and by the grants whose release in an
 // Unprepare failed (RELEASING, of an UNPREPARING claim): they keep what
-// they still have until kubelet's retry of the Unprepare. The grants of
-// claims of another boot (PREPARED_STALE) have nothing of this boot.
+// they still have until kubelet's retry of the Unprepare, one of mode fs
+// only while its node mount lists it. The grants of claims of another boot
+// (PREPARED_STALE) have nothing of this boot.
 func usesOf(r *state.Records, serial state.Serial, except ...state.GrantRef) []use {
 	var out []use
 	for i := range r.Grants {
 		g := &r.Grants[i]
 		if g.Serial != serial || (!prepared(g) && !unpreparing(r, g)) || slices.Contains(except, g.Ref) ||
-			(g.Asked.Mode != state.ModeBlock && g.Asked.Mode != state.ModeFs) || stale(r, g) {
+			(g.Asked.Mode != state.ModeBlock && g.Asked.Mode != state.ModeFs) || stale(r, g) ||
+			unpreparing(r, g) && g.Asked.Mode == state.ModeFs && !mounted(r, g) {
 			continue
 		}
 		out = append(out, useOf(r, g))
 	}
 	return out
+}
+
+// mounted tells whether the node mount of a grant lists it as a user.
+func mounted(r *state.Records, g *state.Grant) bool {
+	m := r.MountOf(g)
+	return m != nil && slices.Contains(m.Users, g.Ref)
 }
 
 // stale tells whether a grant is of a claim of another boot

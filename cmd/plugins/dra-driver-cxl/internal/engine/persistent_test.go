@@ -16,6 +16,7 @@ package engine
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"path/filepath"
 	"slices"
@@ -478,4 +479,29 @@ func TestPersistentStaleClaimIsNoUse(t *testing.T) {
 			v.clean("unprepared")
 		})
 	}
+}
+
+// A writer whose Unprepare failed after its node mount was unmounted has
+// nothing mounted: the one-node rules do not count it, a reader is
+// prepared next to it; the retry of the Unprepare leaves the reader's
+// mount.
+func TestPersistentFailedReleaseWithoutMountIsNoUse(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib})
+	v.formatPmem("mem0", "ext4")
+	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
+	v.f.FailCommand("cxl disable-region", errors.New("cxl region: cmd_disable_region: failed"))
+	if err := v.unprepare(localDriver, "w"); err == nil {
+		t.Fatal("the release succeeded")
+	}
+	v.check("release failed")
+	v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFs, true, ""))
+	if m := v.mount("r", 0); m.State != state.MountedRO {
+		t.Fatalf("node mount %+v", m)
+	}
+	v.mustUnprepare(localDriver, "w")
+	if m := v.mount("r", 0); m.State != state.MountedRO {
+		t.Fatalf("node mount after the retry %+v", m)
+	}
+	v.mustUnprepare(localDriver, "r")
+	v.clean("unprepared")
 }

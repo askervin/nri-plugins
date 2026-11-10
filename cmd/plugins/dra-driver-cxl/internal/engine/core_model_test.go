@@ -480,15 +480,6 @@ var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{
 		return ca.verb == "prepare" && s.arm > 0 && coreArms[s.arm-1].cut != "" && s.mds[md].kreg == kregOff &&
 			s.regionsAbove(md)
 	},
-	// F2: the grant of a claim of mode fs whose release failed or was cut
-	// (UNPREPARING, RELEASING) counts as a use of the device after its
-	// node mount is gone, with access "": a Prepare of mode fs is refused
-	// as in F3.
-	"F2": func(s *coreState, ca *coreAction) bool {
-		return s.persistentNextTo(ca, func(o *coreSlot, ss coreSlotState) bool {
-			return o.mode == state.ModeFs && ss.prep == state.PreparationUnpreparing && ss.grant == state.GrantReleasing && !ss.user
-		})
-	},
 	// F6: the retry of a release that failed at cxl destroy-region keeps
 	// the region idle when a region of another memdev came above it
 	// meanwhile (local persistent), the record OWNED and the kernel region
@@ -510,24 +501,6 @@ func (s *coreState) unfinishedWithoutRegion(ca *coreAction, block bool) bool {
 	for i, ss := range s.slots {
 		if i != ca.slot && coreSlots[i].md == md && (coreSlots[i].mode == state.ModeBlock) == block &&
 			ss.prep == state.PreparationUnpreparing && ss.grant == state.GrantReleasing && !ss.user {
-			return true
-		}
-	}
-	return false
-}
-
-// persistentNextTo tells whether the request is a Prepare of mode fs or
-// block next to a claim of mode fs or block on the same memdev for which
-// other is true that the one-node rules count against it: a writer, or any
-// use when the new claim writes.
-func (s *coreState) persistentNextTo(ca *coreAction, other func(o *coreSlot, ss coreSlotState) bool) bool {
-	sl := &coreSlots[ca.slot]
-	if ca.verb != "prepare" || sl.mode != state.ModeFs && sl.mode != state.ModeBlock {
-		return false
-	}
-	for i, ss := range s.slots {
-		o := &coreSlots[i]
-		if i != ca.slot && o.md == sl.md && (!o.readOnly || !sl.readOnly) && other(o, ss) {
 			return true
 		}
 	}
