@@ -53,6 +53,9 @@ type coreExec struct {
 	hit   bool
 	// violations is the number of violations of the fake seen.
 	violations int
+	// front runs kubelet's requests, nil for the tests' own front-end
+	// (env.prepare, env.unprepare).
+	front CoreFront
 }
 
 // coreTB is the testing.TB of the fake of the core model: its log goes to
@@ -69,11 +72,16 @@ func (tb coreTB) Logf(format string, args ...any) {
 
 // newCoreExec returns the executor of a node with the memdevs of the core
 // model plugged, the persistent ones with an ext4 filesystem, its log
-// written to log.
-func newCoreExec(t *testing.T, log io.Writer) *coreExec {
+// written to log; with newFront the requests go through the front-end that
+// it returns, the cuts count every commit of the store.
+func newCoreExec(t *testing.T, log io.Writer, newFront func(f *fake.Fake, dir string) CoreFront) *coreExec {
 	x := &coreExec{t: t, log: log, shared: true}
 	v := &env{t: t, f: fake.New(coreTB{T: t, log: log}), dir: t.TempDir()}
 	x.v = v
+	if newFront != nil {
+		x.front = newFront(v.f, v.dir)
+		v.storeCuts, v.tuneStore = true, x.front.TuneStore
+	}
 	for _, d := range coreMemdevs {
 		v.f.Plug(d.spec)
 	}
@@ -89,6 +97,15 @@ func newCoreExec(t *testing.T, log io.Writer) *coreExec {
 	v.tune = x.tune
 	v.open()
 	t.Cleanup(func() { _ = v.st.Close() })
+	if x.front != nil {
+		rec, err := v.e.Recover(context.Background())
+		if err == nil {
+			err = x.front.Started(v.st, v.e, rec)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	return x
 }
 
@@ -107,6 +124,9 @@ func (x *coreExec) tune(o *Options) {
 	}
 	o.Kernel.Exec = x.exec(o.Kernel.Exec)
 	o.Kernel.WriteFile = x.writeFile(o.Kernel.WriteFile)
+	if x.front != nil {
+		x.front.TuneEngine(o)
+	}
 }
 
 // take returns the armed fault if the kernel call matches it and no call
@@ -222,6 +242,8 @@ type coreOutcome struct {
 	msg string
 	// unreached is set when the armed fault was not reached.
 	unreached bool
+	// start is the error of the start after a cut, "" for none.
+	start string
 }
 
 // run executes the action from the start state.
@@ -261,8 +283,40 @@ func (x *coreExec) run(ca *coreAction, start *coreState) coreOutcome {
 		x.v.f.Unplug(coreMemdevs[ca.md].serial)
 	case "plug":
 		x.v.f.Plug(coreMemdevs[ca.md].spec)
+	case "lose":
+		if err := x.lose(ca.md); err != nil {
+			return coreOutcome{msg: err.Error()}
+		}
 	}
 	return coreOutcome{err: start.err}
+}
+
+// lose unmounts the node mounts of the persistent memdev and starts the
+// process again with the mounts of their block devices failing.
+func (x *coreExec) lose(md int) error {
+	k := x.v.f.Kernel()
+	snap, err := k.Observe(context.Background())
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(x.v.dir, driverOf(coreMemdevs[md].source), "mounts") + "/"
+	var sources []string
+	for _, mi := range snap.Mounts {
+		if strings.HasPrefix(mi.Target, dir) {
+			if err := k.Unmount(mi.Target); err != nil {
+				return err
+			}
+			sources = append(sources, mi.Source)
+		}
+	}
+	for _, src := range sources {
+		x.v.f.SetMountError(src, syscall.EIO, "")
+	}
+	err = x.start(0)
+	for _, src := range sources {
+		x.v.f.SetMountError(src, nil, "")
+	}
+	return err
 }
 
 // foreign makes a region on the memdev as another tool does, the memdev
@@ -309,9 +363,14 @@ func (x *coreExec) request(ca *coreAction, start *coreState, arm *coreArm) coreO
 	}
 	var err error
 	cut := v.cut(func() {
-		if ca.verb == "prepare" {
+		switch {
+		case x.front != nil && ca.verb == "prepare":
+			err = x.front.Prepare(coreSlotOf(ca.slot), uid)
+		case x.front != nil:
+			err = x.front.Unprepare(coreSlotOf(ca.slot), uid)
+		case ca.verb == "prepare":
 			err = v.prepare(sl.driver(), uid, grantRequest(ca.slot, uid))
-		} else {
+		default:
 			err = v.unprepare(sl.driver(), uid)
 		}
 	})
@@ -333,7 +392,7 @@ func (x *coreExec) request(ca *coreAction, start *coreState, arm *coreArm) coreO
 			j = arm.j
 		}
 		if err := x.start(j); err != nil {
-			out.msg = err.Error()
+			out.start = err.Error()
 		}
 	}
 	return out
@@ -353,13 +412,17 @@ func (x *coreExec) start(j int) error {
 		}
 		v.commitMu.Unlock()
 		var err error
-		cut := v.cut(func() { _, err = v.e.Recover(context.Background()) })
+		var rec *Recovered
+		cut := v.cut(func() { rec, err = v.e.Recover(context.Background()) })
 		v.commitMu.Lock()
 		v.cutAt = 0
 		v.commitMu.Unlock()
 		if !cut {
 			if err != nil {
 				return fmt.Errorf("recover: %w", err)
+			}
+			if x.front != nil {
+				return x.front.Started(v.st, v.e, rec)
 			}
 			return nil
 		}
@@ -401,6 +464,7 @@ func (x *coreExec) observe(from *coreState, class string) (*coreState, []string)
 		}
 		if g := r.Grant(state.GrantRef{Claim: uid}); g != nil {
 			o.slots[i].grant = g.State
+			o.slots[i].named = g.Got.Region != "" || g.Intent.Region != ""
 		}
 	}
 	users := map[state.GrantRef]bool{}
@@ -423,6 +487,9 @@ func (x *coreExec) observe(from *coreState, class string) (*coreState, []string)
 			// a grant of mode block uses its region as Got names it
 			o.slots[i].user = g.Got.Region != ""
 		}
+	}
+	if coreFront {
+		x.grantsOnline(o, r, snap)
 	}
 	for _, p := range r.Preparations {
 		if !current[p.Driver+"/"+p.UID] {
@@ -505,6 +572,32 @@ func (x *coreExec) observe(from *coreState, class string) (*coreState, []string)
 	return o, problems
 }
 
+// grantsOnline sets whether the memory of each grant of mode numa of the
+// observation o is online: a memory block of the ranges of the dax device
+// that it records is online.
+func (x *coreExec) grantsOnline(o *coreState, r *state.Records, snap *kernel.Snapshot) {
+	for i := range coreSlots {
+		g := r.Grant(state.GrantRef{Claim: coreSlots[i].uid(o.gens[i])})
+		if g == nil || g.Asked.Mode != state.ModeNUMA || g.Got.Dax == "" {
+			continue
+		}
+		var ranges []kernel.Range
+		for _, d := range snap.DaxDevices {
+			if d.Name == g.Got.Dax {
+				ranges = d.Ranges
+			}
+		}
+		for _, b := range snap.Blocks {
+			addr := uint64(b.Index) * snap.BlockSize
+			for _, rg := range ranges {
+				if b.State == kernel.BlockOnline && addr >= rg.Start && addr <= rg.End {
+					o.slots[i].online = true
+				}
+			}
+		}
+	}
+}
+
 // mountOf returns the node mounts of the driver of the source: "rw" or "ro"
 // by the superblock, with "!bdev-ro" or "!bdev-rw" when the read-only flag
 // of the block device disagrees, joined by "+".
@@ -564,6 +657,11 @@ func (x *coreExec) check() []string {
 		out = append(out, "fake: "+viol)
 	}
 	x.violations = len(viols)
+	if x.front != nil {
+		for _, viol := range x.front.Check() {
+			out = append(out, "front-end: "+viol)
+		}
+	}
 	return out
 }
 

@@ -38,6 +38,12 @@ import (
 // serialS is the local memdev that the core model configures shared.
 const serialS = 0x51
 
+// coreFront tells whether kubelet's requests go through the DRA front-ends
+// of the driver (RunCoreModel): the companion slots, the Prepare again of a
+// prepared claim, the node mounts lost at a start (PREPARED_UNRESTORED) and
+// the cuts at the front-end's commits are modelled then.
+var coreFront bool
+
 // coreMemdev is a memdev of the node of the core model.
 type coreMemdev struct {
 	id     string
@@ -88,23 +94,27 @@ type coreSlot struct {
 	readOnly bool
 	// kind names the kind of the claims in the coverage.
 	kind string
+	// lease: the claims are companions of a lease (front-ends only).
+	lease bool
 }
 
 // coreSlots are the slots of the core model.
 var coreSlots = []coreSlot{
-	{"pnuma", mdA, state.ModeNUMA, false, "pool-numa"},
-	{"pdax", mdB, state.ModeDax, false, "pool-dax"},
-	{"psh0", mdC, state.ModeDax, false, "pool-shared"},
-	{"psh1", mdC, state.ModeDax, false, "pool-shared"},
-	{"pfsw", mdQ, state.ModeFs, false, "pool-fs-rw"},
-	{"pfsr", mdQ, state.ModeFs, true, "pool-fs-ro"},
-	{"lnuma", mdL, state.ModeNUMA, false, "local-numa"},
-	{"ldax", mdL, state.ModeDax, false, "local-dax"},
-	{"lsh0", mdS, state.ModeDax, false, "local-shared"},
-	{"lsh1", mdS, state.ModeDax, false, "local-shared"},
-	{"lfsw", mdP, state.ModeFs, false, "local-fs-rw"},
-	{"lfsr", mdP, state.ModeFs, true, "local-fs-ro"},
-	{"lblk", mdP, state.ModeBlock, false, "local-block-rw"},
+	{"pnuma", mdA, state.ModeNUMA, false, "pool-numa", false},
+	{"pdax", mdB, state.ModeDax, false, "pool-dax", false},
+	{"psh0", mdC, state.ModeDax, false, "pool-shared", false},
+	{"psh1", mdC, state.ModeDax, false, "pool-shared", false},
+	{"pfsw", mdQ, state.ModeFs, false, "pool-fs-rw", false},
+	{"pfsr", mdQ, state.ModeFs, true, "pool-fs-ro", false},
+	{"lnuma", mdL, state.ModeNUMA, false, "local-numa", false},
+	{"ldax", mdL, state.ModeDax, false, "local-dax", false},
+	{"lsh0", mdS, state.ModeDax, false, "local-shared", false},
+	{"lsh1", mdS, state.ModeDax, false, "local-shared", false},
+	{"lfsw", mdP, state.ModeFs, false, "local-fs-rw", false},
+	{"lfsr", mdP, state.ModeFs, true, "local-fs-ro", false},
+	{"lblk", mdP, state.ModeBlock, false, "local-block-rw", false},
+	{"cnuma", mdL, state.ModeNUMA, false, "local-numa-companion", true},
+	{"cfsr", mdP, state.ModeFs, true, "local-fs-ro-companion", true},
 }
 
 // driver returns the driver of the claims of the slot.
@@ -136,6 +146,13 @@ type coreSlotState struct {
 	// its region; the RELEASING grant of an UNPREPARING claim that is none
 	// holds no region (its objects released, its region gone).
 	user bool
+	// online: the memory of the grant (mode numa) is online; not
+	// compared (the memdev's is), the front-ends' runs adopt the
+	// observation's.
+	online bool
+	// named: the grant names a region (Got or Intent); not compared, the
+	// observation's is adopted.
+	named bool
 }
 
 // coreMemdevState is what the store and the kernel have of a memdev:
@@ -307,7 +324,7 @@ var coreArms = []coreArm{
 // coreAction is an action of the core model.
 type coreAction struct {
 	// verb is "prepare", "unprepare", "arm", "restart", "reboot",
-	// "foreign", "unforeign", "plug", "unplug".
+	// "foreign", "unforeign", "plug", "unplug", "lose".
 	verb string
 	slot int
 	md   int
@@ -343,6 +360,9 @@ func coreActions() []*coreAction {
 		out = append(out,
 			&coreAction{verb: "unplug", md: md, a: gofmbt.NewAction("unplug %s", coreMemdevs[md].id)},
 			&coreAction{verb: "plug", md: md, a: gofmbt.NewAction("plug %s", coreMemdevs[md].id)})
+	}
+	for _, md := range []int{mdQ, mdP} {
+		out = append(out, &coreAction{verb: "lose", md: md, a: gofmbt.NewAction("lose mount %s", coreMemdevs[md].id)})
 	}
 	return out
 }
@@ -385,7 +405,7 @@ func (s *coreState) enabled(ca *coreAction) bool {
 	case "prepare", "unprepare":
 		return s.requestEnabled(ca)
 	case "arm":
-		return s.armEnabled(&coreArms[ca.arm-1]) && !s.avoided(ca)
+		return s.armEnabled(ca.arm) && !s.avoided(ca)
 	case "restart", "reboot":
 		return !s.avoided(ca)
 	case "foreign":
@@ -400,8 +420,69 @@ func (s *coreState) enabled(ca *coreAction) bool {
 		return m.plugged && m.rec == "" && m.kreg == kregNone
 	case "plug":
 		return !s.mds[ca.md].plugged
+	case "lose":
+		return coreFront && s.loseEnabled(ca.md)
 	}
 	return false
+}
+
+// isPrepared tells whether a preparation is prepared: kubelet's Prepare
+// again returns its result (6.3, 03a T1).
+func isPrepared(prep state.PreparationState) bool {
+	return prep == state.PreparationPrepared || prep == state.PreparationUnrestored || prep == state.PreparationUnpreparing
+}
+
+// unpreparedState returns the state of a preparation after the front-end's
+// UNPREPARING commit of an Unprepare (03a T1 PREPARED | PREPARED_UNRESTORED
+// -> UNPREPARING).
+func unpreparedState(prep state.PreparationState) state.PreparationState {
+	if prep == state.PreparationPrepared || prep == state.PreparationUnrestored {
+		return state.PreparationUnpreparing
+	}
+	return prep
+}
+
+// mountsAgain tells whether the request is a new Prepare of mode fs (not a
+// companion) of a memdev with grants REALISED_UNRESTORED: it mounts their
+// node mount again.
+func (s *coreState) mountsAgain(ca *coreAction) bool {
+	sl := &coreSlots[ca.slot]
+	return ca.verb == "prepare" && s.slots[ca.slot].prep == "" && sl.mode == state.ModeFs && !sl.lease && s.unrestored(sl.md)
+}
+
+// unrestored tells whether a claim of this boot of the memdev is
+// PREPARED_UNRESTORED or has a grant REALISED_UNRESTORED (an Unprepare of
+// it cut before its release).
+func (s *coreState) unrestored(md int) bool {
+	for i, ss := range s.slots {
+		if coreSlots[i].md == md && ss.prep != state.PreparationStale &&
+			(ss.prep == state.PreparationUnrestored || ss.grant == state.GrantUnrestored) {
+			return true
+		}
+	}
+	return false
+}
+
+// loseEnabled tells whether the node mount of the persistent memdev may be
+// lost at a start: it is mounted and every claim of the memdev is a
+// prepared claim of mode fs that is not a companion (the documents say
+// nothing of a lost node mount next to the other uses).
+func (s *coreState) loseEnabled(md int) bool {
+	if s.mds[md].mount == "" || !s.mds[md].plugged {
+		return false
+	}
+	n := 0
+	for i, ss := range s.slots {
+		sl := &coreSlots[i]
+		if sl.md != md || ss.prep == "" {
+			continue
+		}
+		if sl.lease || sl.mode != state.ModeFs || ss.prep != state.PreparationPrepared || ss.grant != state.GrantRealised {
+			return false
+		}
+		n++
+	}
+	return n > 0
 }
 
 // requestEnabled tells whether kubelet may send the request of the action:
@@ -409,20 +490,94 @@ func (s *coreState) enabled(ca *coreAction) bool {
 // finish (KEPT, PREPARING) or of another boot (PREPARED_STALE); an
 // Unprepare of a slot with a claim.
 func (s *coreState) requestEnabled(ca *coreAction) bool {
+	sl := &coreSlots[ca.slot]
 	prep := s.slots[ca.slot].prep
+	if sl.lease && !coreFront {
+		return false
+	}
+	if s.unrestored(sl.md) && prep != state.PreparationUnrestored && s.slots[ca.slot].grant != state.GrantUnrestored &&
+		(ca.verb != "prepare" || prep != state.PreparationPrepared) && !s.mountsAgain(ca) {
+		// not modelled: another request of a memdev whose node mount a
+		// start did not mount again than a Prepare that mounts it (the
+		// documents do not say what the other uses of the device do then)
+		return false
+	}
 	if ca.verb == "prepare" {
+		if coreFront && isPrepared(prep) {
+			// kubelet's Prepare again of a prepared claim
+			return !s.avoided(ca)
+		}
 		// not modelled: a Prepare of a claim whose memdev is GONE (03a T1
 		// and T3 do not say what it does)
 		return (prep == "" || prep == state.PreparationKept || prep == state.PreparationPreparing ||
-			prep == state.PreparationStale) && s.mds[coreSlots[ca.slot].md].rec != state.MemdevGone && !s.avoided(ca)
+			prep == state.PreparationStale) && s.mds[sl.md].rec != state.MemdevGone && !s.avoided(ca)
 	}
 	return prep != "" && !s.avoided(ca)
 }
 
 // coreFindings are the findings of the core model that are not fixed yet,
-// by name: each tells whether a request runs into it. The requests that do
-// are not generated unless -core.known leaves the finding out.
-var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{}
+// by name: each tells whether a request (with the fault or cut armed in s)
+// runs into it. The requests that do are not generated unless -core.known
+// leaves the finding out.
+var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{
+	// C1: the CDI spec of cxl.nri.io does not write (an fs device without
+	// its host path) while a claim of mode fs whose release failed or was
+	// cut after its node mount went is UNPREPARING
+	"C1": func(s *coreState, ca *coreAction) bool {
+		sl := &coreSlots[ca.slot]
+		return coreFront && s.arm > 0 && ca.verb == "unprepare" && sl.mode == state.ModeFs && !sl.lease &&
+			coreMemdevs[sl.md].source == state.SourceLocal
+	},
+	// C2: the failed or cut release of a numa companion that a start kept
+	// before it got its dax device leaves the region's whole dax device
+	// that no record names against I2
+	"C2": func(s *coreState, ca *coreAction) bool {
+		sl := &coreSlots[ca.slot]
+		return s.arm > 0 && ca.verb == "unprepare" && sl.lease && sl.mode == state.ModeNUMA && s.slots[ca.slot].grant != state.GrantRealised
+	},
+	// C3: a grant of a Prepare that did not finish before it named a
+	// region (a numa companion that a start kept, a KEPT claim) holds the
+	// region that another claim of the memdev makes: the region stays
+	// after that claim, its whole dax device against I2 after a cut
+	"C3": func(s *coreState, ca *coreAction) bool {
+		for i, ss := range s.slots {
+			if i != ca.slot && coreSlots[i].md == coreSlots[ca.slot].md && ss.grant != "" && (!ss.named || !ss.user) &&
+				(ss.prep == state.PreparationPreparing || ss.prep == state.PreparationKept) {
+				return true
+			}
+		}
+		return false
+	},
+	// C4: a numa companion that enabled again a region that a failed
+	// release left disabled, cut before its set-up and kept at the start,
+	// has the region's whole dax device recorded as the seed against I2
+	"C4": func(s *coreState, ca *coreAction) bool {
+		sl := &coreSlots[ca.slot]
+		return s.arm > 0 && coreArms[s.arm-1].cut != "" && ca.verb == "prepare" && sl.lease && sl.mode == state.ModeNUMA &&
+			s.mds[sl.md].kreg == kregOff
+	},
+	// C5: the Unprepare of a numa companion that a start kept while its
+	// Prepare made its part next to another claim's (dax device CREATING)
+	// fails on a transition not in the table
+	"C5": func(s *coreState, ca *coreAction) bool {
+		sl := &coreSlots[ca.slot]
+		return s.arm > 0 && coreArms[s.arm-1].cut != "" && ca.verb == "prepare" && sl.lease && sl.mode == state.ModeNUMA &&
+			len(s.usersOf(sl.md, ca.slot)) > 0
+	},
+	// C6: the release of a writer of mode fs next to a claim whose
+	// Unprepare a stop cut after its region was destroyed checks the block
+	// device against that claim's record of the region gone: the block
+	// device stays read-write without a writer (I7)
+	"C6": func(s *coreState, ca *coreAction) bool {
+		return s.arm > 0 && coreArms[s.arm-1].cut != "" && ca.verb == "unprepare" &&
+			coreMemdevs[coreSlots[ca.slot].md].kind == state.KindPersistent
+	},
+	// C7: the Unprepare of a KEPT claim cut after it released the grant
+	// leaves the preparation KEPT without a grant at the start
+	"C7": func(s *coreState, ca *coreAction) bool {
+		return s.arm > 0 && coreArms[s.arm-1].cut != "" && ca.verb == "unprepare" && s.slots[ca.slot].prep == state.PreparationKept
+	},
+}
 
 // coreAvoid are the findings whose requests are not generated.
 var coreAvoid = map[string]bool{}
@@ -437,16 +592,20 @@ func (s *coreState) avoided(ca *coreAction) bool {
 	return false
 }
 
-// armEnabled tells whether the fault or cut may be armed: some request (or
-// start) reaches it.
-func (s *coreState) armEnabled(arm *coreArm) bool {
+// armEnabled tells whether the fault or cut n (an index of coreArms plus
+// one) may be armed: some request (or start) that is enabled with it armed
+// reaches it.
+func (s *coreState) armEnabled(n int) bool {
+	arm := &coreArms[n-1]
 	if arm.cut == "start" {
 		return true
 	}
+	w := s.clone()
+	w.arm = n
 	for i := range coreSlots {
 		for _, verb := range []string{"prepare", "unprepare"} {
 			ca := &coreAction{verb: verb, slot: i}
-			if s.requestEnabled(ca) && s.reaches(arm, ca) {
+			if w.requestEnabled(ca) && w.reaches(arm, ca) {
 				return true
 			}
 		}
@@ -460,6 +619,11 @@ func (s *coreState) armEnabled(arm *coreArm) bool {
 // the region per 5.4).
 func (s *coreState) reaches(arm *coreArm, ca *coreAction) bool {
 	sl := &coreSlots[ca.slot]
+	if ca.verb == "prepare" && isPrepared(s.slots[ca.slot].prep) || s.mountsAgain(ca) {
+		// a Prepare again, or one that mounts an unrestored node mount
+		// again, is not faulted
+		return false
+	}
 	if arm.cut == "commit" {
 		// a Prepare journals its grant first; an Unprepare commits only
 		// when there is a grant
@@ -475,7 +639,8 @@ func (s *coreState) reaches(arm *coreArm, ca *coreAction) bool {
 		case "create-region":
 			return made == madeCreated
 		case "online":
-			return sl.mode == state.ModeNUMA && class == ""
+			// a kept companion's part that went online is reused
+			return sl.mode == state.ModeNUMA && class == "" && !s.slots[ca.slot].online
 		}
 		return false
 	}
@@ -486,7 +651,7 @@ func (s *coreState) reaches(arm *coreArm, ca *coreAction) bool {
 	m := &s.mds[sl.md]
 	switch what {
 	case "offline":
-		return sl.mode == state.ModeNUMA && m.online && ss.grant == state.GrantRealised
+		return sl.mode == state.ModeNUMA && ss.online && ss.grant == state.GrantRealised
 	case "destroy-region", "disable-region":
 		if len(s.regionUsers(sl.md, ca.slot)) > 0 || m.kreg == kregNone || m.foreign {
 			return false
@@ -522,7 +687,7 @@ func (s *coreState) nextToBlock(i int) bool {
 	for o, ss := range s.slots {
 		sl := &coreSlots[o]
 		if sl.md == coreSlots[i].md && sl.mode == state.ModeBlock && !sl.readOnly && ss.prep != state.PreparationStale &&
-			(ss.grant == state.GrantRealised && ss.prep == state.PreparationPrepared ||
+			(ss.grant == state.GrantRealised && (ss.prep == state.PreparationPrepared || ss.prep == state.PreparationUnpreparing) ||
 				ss.prep == state.PreparationUnpreparing && ss.grant == state.GrantReleasing) {
 			return true
 		}
@@ -532,13 +697,17 @@ func (s *coreState) nextToBlock(i int) bool {
 
 // regionUsers returns the slots of usersOf whose grants hold the region of
 // the memdev: all but those of unfinished Unprepares that no dax device or
-// node mount lists as a user (5.2 Users).
+// node mount lists as a user (5.2 Users), and those of unfinished Prepares
+// (a numa companion that a start kept) that name no region.
 func (s *coreState) regionUsers(md int, except ...int) []int {
 	var out []int
 	for _, i := range s.usersOf(md, except...) {
-		if ss := s.slots[i]; ss.prep != state.PreparationUnpreparing || ss.grant != state.GrantReleasing || ss.user {
-			out = append(out, i)
+		ss := s.slots[i]
+		if ss.prep == state.PreparationUnpreparing && ss.grant == state.GrantReleasing && !ss.user ||
+			!ss.named && (ss.prep == state.PreparationPreparing || ss.prep == state.PreparationKept) {
+			continue
 		}
+		out = append(out, i)
 	}
 	return out
 }
@@ -591,19 +760,25 @@ func (s *coreState) destroy(md int) {
 	s.stacks[hb] = st
 	m := &s.mds[md]
 	m.kreg, m.reg, m.online, m.foreign, m.est = kregNone, "", false, false, false
+	for i := range s.slots {
+		if coreSlots[i].md == md {
+			s.slots[i].online = false
+		}
+	}
 	m.rec = ""
 	s.detach(md)
 }
 
 // detach makes no grant of the memdev a user of a region, and keeps the
-// memdev record for the grants of unfinished releases.
+// memdev record for the grants left on it: those of unfinished releases,
+// and of unfinished Prepares that hold no region.
 func (s *coreState) detach(md int) {
 	for i := range s.slots {
 		if coreSlots[i].md != md {
 			continue
 		}
 		s.slots[i].user = false
-		if s.slots[i].grant == state.GrantReleasing && s.slots[i].prep != state.PreparationStale {
+		if s.slots[i].grant != "" && s.slots[i].prep != state.PreparationStale {
 			s.mds[md].rec = state.MemdevActive
 		}
 	}
@@ -644,15 +819,16 @@ func (s *coreState) mountAfter(md int) string {
 
 // blockUses tells whether a grant of the persistent memdev but the slot's
 // is a use that a block writer must be alone of (5.3 P9c): a realised one
-// of this boot, or one of an unfinished Unprepare that a node mount lists
-// or of mode block.
+// of a prepared claim of this boot (or of one whose Unprepare was cut
+// before its release), or one of an unfinished Unprepare that a node mount
+// lists or of mode block.
 func (s *coreState) blockUses(md, except int) bool {
 	for i, ss := range s.slots {
 		sl := &coreSlots[i]
 		if i == except || sl.md != md || ss.prep == state.PreparationStale {
 			continue
 		}
-		if ss.grant == state.GrantRealised && ss.prep == state.PreparationPrepared ||
+		if ss.grant == state.GrantRealised && (ss.prep == state.PreparationPrepared || ss.prep == state.PreparationUnpreparing) ||
 			ss.prep == state.PreparationUnpreparing && ss.grant == state.GrantReleasing && (ss.user || sl.mode == state.ModeBlock) {
 			return true
 		}
@@ -762,10 +938,10 @@ func (s *coreState) prepareOutcome(i int) (*coreState, int) {
 		w.rollback(i, made, "failed")
 		return w, made
 	}
-	w.slots[i] = coreSlotState{prep: state.PreparationPrepared, grant: state.GrantRealised, user: true}
+	w.slots[i] = coreSlotState{prep: state.PreparationPrepared, grant: state.GrantRealised, user: true, named: true}
 	m.est = true
 	if sl.mode == state.ModeNUMA {
-		m.online = true
+		m.online, w.slots[i].online = true, true
 	}
 	if sl.mode == state.ModeFs {
 		// joins the node mount as it is; a writer makes it read-write
@@ -774,6 +950,10 @@ func (s *coreState) prepareOutcome(i int) (*coreState, int) {
 			m.mount = "rw"
 		case m.mount == "":
 			m.mount = "ro"
+		}
+		if coreFront && w.unrestored(md) {
+			// mounted again for the unrestored grants too (DA3)
+			w.remountAll(md)
 		}
 	}
 	return w, made
@@ -820,7 +1000,7 @@ func (w *coreState) rollback(i, made int, class string) {
 	w.err = class
 	w.slots[i] = coreSlotState{}
 	if coreSlots[i].mode == state.ModeNUMA {
-		m.online = false
+		w.offline(i)
 	}
 	if coreSlots[i].mode == state.ModeFs {
 		m.mount = w.mountAfter(md)
@@ -837,8 +1017,75 @@ func (w *coreState) rollback(i, made int, class string) {
 		return
 	}
 	// in order refused: the region kept disabled for the claim
-	w.slots[i] = coreSlotState{prep: state.PreparationKept, grant: state.GrantJournaled}
+	w.slots[i] = coreSlotState{prep: state.PreparationKept, grant: state.GrantJournaled, named: true}
 	m.kreg, m.reg, m.rec, m.est = kregOff, state.RegionKept, state.MemdevActive, true
+}
+
+// numaCompanionSlot tells whether the claims of the slot are companions of
+// mode numa.
+func numaCompanionSlot(i int) bool {
+	return coreSlots[i].lease && coreSlots[i].mode == state.ModeNUMA
+}
+
+// keptCompanion returns the states of a numa companion of a cut Prepare
+// that a start keeps for phase 2 (5.6; "stay KEPT": its preparation
+// PREPARING or KEPT): its grant as the cut left it, journaled, realising,
+// realised or releasing (a cut rollback or release of the claim, which D-70
+// calls a cut Prepare), a user of its dax device or not yet, its memory
+// online or not.
+func (s *coreState) keptCompanion(i int) []*coreState {
+	md := coreSlots[i].md
+	regions := [][2]string{{s.mds[md].kreg, string(s.mds[md].reg)}}
+	if s.mds[md].kreg == kregOff {
+		// a region that a failed release left disabled is enabled again
+		// (KEPT -> OWNED) before its set-up (5.3)
+		regions = append(regions, [2]string{kregOn, string(state.RegionOwned)}, [2]string{kregOn, string(state.RegionKept)},
+			[2]string{kregOff, string(state.RegionKept)})
+	}
+	var out []*coreState
+	for _, prep := range []state.PreparationState{state.PreparationPreparing, state.PreparationKept} {
+		for _, g := range []state.GrantState{state.GrantJournaled, state.GrantRealising, state.GrantRealised, state.GrantReleasing} {
+			for _, user := range []bool{true, false} {
+				for _, online := range []bool{true, false} {
+					for _, reg := range regions {
+						k := s.clone()
+						k.slots[i] = coreSlotState{prep: prep, grant: g, user: user && s.mds[md].kreg != kregNone, online: online}
+						k.offline(i)
+						k.slots[i].online = online
+						m := &k.mds[md]
+						m.online = m.online || online
+						m.kreg, m.reg = reg[0], state.RegionState(reg[1])
+						out = append(out, k)
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// othersOnline tells whether a grant of the memdev of the slot but its own
+// has its memory online.
+func (s *coreState) othersOnline(i int) bool {
+	for j := range s.slots {
+		if j != i && coreSlots[j].md == coreSlots[i].md && s.slots[j].online {
+			return true
+		}
+	}
+	return false
+}
+
+// offline makes the memory of the grant of the slot offline: the memdev's
+// memory stays online while another grant of it has its memory online.
+func (w *coreState) offline(i int) {
+	md := coreSlots[i].md
+	w.slots[i].online = false
+	w.mds[md].online = false
+	for j := range w.slots {
+		if coreSlots[j].md == md && w.slots[j].online {
+			w.mds[md].online = true
+		}
+	}
 }
 
 // dropIdle removes the record of a memdev without grants: none is left
@@ -911,6 +1158,8 @@ func (s *coreState) alternatives(ca *coreAction) []*coreState {
 		w := s.clone()
 		w.mds[ca.md].plugged = ca.verb == "plug"
 		out = []*coreState{w}
+	case "lose":
+		out = s.lost(ca.md)
 	}
 	return out
 }
@@ -932,6 +1181,9 @@ func dedup(states []*coreState) []*coreState {
 // predictPrepare returns the states after the Prepare of the slot, with
 // the armed fault or cut.
 func (s *coreState) predictPrepare(i int) []*coreState {
+	if isPrepared(s.slots[i].prep) {
+		return s.preparedAgain(i)
+	}
 	var arm *coreArm
 	if s.arm > 0 {
 		arm = &coreArms[s.arm-1]
@@ -978,8 +1230,68 @@ func (s *coreState) predictPrepare(i int) []*coreState {
 	cuts := s.cutPrepare(i, arm, w, made)
 	if arm.cut == "commit" {
 		cuts = append(cuts, w)
+		cuts = append(cuts, w.cutLast()...)
 	}
 	return cuts
+}
+
+// preparedAgain returns the states after kubelet's Prepare again of the
+// prepared claim of the slot (03a T1): PREPARED and UNPREPARING stay, the
+// result returned; PREPARED_UNRESTORED -> PREPARED, its node mount mounted
+// again for every grant that lists it (remountAll).
+func (s *coreState) preparedAgain(i int) []*coreState {
+	w := s.clone()
+	w.arm, w.err = 0, ""
+	if s.slots[i].prep == state.PreparationUnrestored {
+		w.remountAll(coreSlots[i].md)
+	}
+	return []*coreState{w}
+}
+
+// remountAll mounts the node mount of the memdev again for its unrestored
+// grants (one node mount, one state, DA3): every REALISED_UNRESTORED grant
+// of this boot REALISED, a PREPARED_UNRESTORED preparation PREPARED (an
+// UNPREPARING one stays UNPREPARING).
+func (w *coreState) remountAll(md int) {
+	for i := range w.slots {
+		if ss := &w.slots[i]; coreSlots[i].md == md && ss.prep != state.PreparationStale && ss.grant == state.GrantUnrestored {
+			ss.grant = state.GrantRealised
+			if ss.prep == state.PreparationUnrestored {
+				ss.prep = state.PreparationPrepared
+			}
+		}
+	}
+	w.remount(md)
+}
+
+// remount mounts the node mount of the memdev for its realised grants of
+// mode fs: read-write with a writer among them, else read-only.
+func (w *coreState) remount(md int) {
+	switch users, writer := w.fsUsers(md); {
+	case writer:
+		w.mds[md].mount = "rw"
+	case users:
+		w.mds[md].mount = "ro"
+	}
+}
+
+// lost returns the states after a start at which the node mount of the
+// persistent memdev was gone and could not be mounted again: its claims
+// (all prepared, of mode fs) PREPARED_UNRESTORED with their grants
+// REALISED_UNRESTORED, without CDI devices (03a T1, T2; 5.6 restore).
+func (s *coreState) lost(md int) []*coreState {
+	w := s.clone()
+	w.arm = 0
+	alts := w.restarted()
+	for _, a := range alts {
+		for i := range a.slots {
+			if coreSlots[i].md == md && a.slots[i].prep == state.PreparationPrepared {
+				a.slots[i].prep, a.slots[i].grant = state.PreparationUnrestored, state.GrantUnrestored
+			}
+		}
+		a.mds[md].mount = ""
+	}
+	return alts
 }
 
 // cutPrepare returns the states after a cut of the Prepare of the slot and
@@ -989,7 +1301,30 @@ func (s *coreState) predictPrepare(i int) []*coreState {
 // the region.
 func (s *coreState) cutPrepare(i int, arm *coreArm, w *coreState, made int) []*coreState {
 	var mids []*coreState
+	if coreFront && arm.cut == "commit" {
+		// cut after the front-end's PREPARING commit, before the engine
+		// journals: a grant of another boot is dropped in that commit (6.3)
+		mid := s.clone()
+		mid.arm, mid.err = 0, "cut"
+		ss := &mid.slots[i]
+		if ss.prep == "" {
+			mid.gens[i]++
+		}
+		if ss.prep == state.PreparationStale {
+			ss.grant, ss.user = "", false
+		}
+		ss.prep = state.PreparationPreparing
+		mids = append(mids, mid)
+	}
 	if arm.cmd != "after" {
+		if s.slots[i].grant == state.GrantReleasing && s.slots[i].prep != state.PreparationStale {
+			// cut after the leftover of the claim was released, before
+			// the journal
+			l := s.leftoverReleased(i)
+			l.arm, l.err = 0, "cut"
+			l.slots[i] = coreSlotState{prep: state.PreparationPreparing}
+			mids = append(mids, l)
+		}
 		mid := s.leftoverReleased(i)
 		mid.arm, mid.err = 0, "cut"
 		mid.preparing(i)
@@ -1019,7 +1354,8 @@ func (s *coreState) cutPrepare(i int, arm *coreArm, w *coreState, made int) []*c
 	if arm.cmd != "before" && w.err == "" {
 		mid := w.clone()
 		mid.err = "cut"
-		mid.slots[i] = coreSlotState{prep: state.PreparationPreparing, grant: state.GrantRealised, user: true}
+		mid.slots[i] = coreSlotState{prep: state.PreparationPreparing, grant: state.GrantRealised, user: true,
+			online: w.slots[i].online}
 		mids = append(mids, mid)
 		// cut before the set-up of a region that the Prepare made or
 		// enabled again: not established (a shared region in use is set
@@ -1058,6 +1394,9 @@ func (s *coreState) predictUnprepare(i int) []*coreState {
 	cuts := s.cutUnprepare(i, arm, ws)
 	if arm.cut == "commit" {
 		cuts = append(cuts, ws...)
+		for _, w := range ws {
+			cuts = append(cuts, w.cutLast()...)
+		}
 	}
 	return cuts
 }
@@ -1078,7 +1417,7 @@ func (s *coreState) unprepareOutcome(i int) *coreState {
 		return w
 	}
 	if sl.mode == state.ModeNUMA {
-		m.online = false
+		w.offline(i)
 	}
 	if sl.mode == state.ModeFs {
 		m.mount = w.mountAfter(md)
@@ -1116,9 +1455,7 @@ func (s *coreState) failedRelease(i int, fail string) *coreState {
 	sl := &coreSlots[i]
 	m := &w.mds[sl.md]
 	ss := &w.slots[i]
-	if ss.prep == state.PreparationPrepared {
-		ss.prep = state.PreparationUnpreparing
-	}
+	ss.prep = unpreparedState(ss.prep)
 	ss.grant = state.GrantReleasing
 	if fail == "offline" {
 		return w
@@ -1131,7 +1468,7 @@ func (s *coreState) failedRelease(i int, fail string) *coreState {
 		ss.user = false
 	}
 	if sl.mode == state.ModeNUMA {
-		m.online = false
+		w.offline(i)
 	}
 	if sl.mode == state.ModeFs {
 		m.mount = w.mountAfter(sl.md)
@@ -1153,13 +1490,18 @@ func (s *coreState) cutUnprepare(i int, arm *coreArm, ws []*coreState) []*coreSt
 	md := sl.md
 	w := ws[0]
 	before, after := s.mds[md], w.mds[md]
-	prep := s.slots[i].prep
-	if prep == state.PreparationPrepared {
-		prep = state.PreparationUnpreparing
-	}
+	prep := unpreparedState(s.slots[i].prep)
 	// the grant is removed after the region is released (T2 RELEASING ->
 	// RELEASED): a cut after it leaves the kernel as the release does
 	var out []*coreState
+	if coreFront && arm.cut == "commit" && isPrepared(s.slots[i].prep) {
+		// cut after the front-end's UNPREPARING commit (none for an
+		// UNPREPARING claim), before the release
+		mid := s.clone()
+		mid.arm, mid.err = 0, "cut"
+		mid.slots[i].prep = prep
+		out = append(out, mid.restarted()...)
+	}
 	for _, x := range ws {
 		if arm.cmd == "destroy-region" {
 			break
@@ -1196,6 +1538,14 @@ func (s *coreState) cutUnprepare(i int, arm *coreArm, ws []*coreState) []*coreSt
 						mid := s.clone()
 						mid.arm, mid.err = 0, "cut"
 						mid.slots[i] = coreSlotState{prep: prep, grant: state.GrantReleasing, user: user && kreg != kregNone}
+						if sl.mode == state.ModeNUMA {
+							// the memory of the grant as the cut left it;
+							// not told while another grant's is online
+							mid.slots[i].online = online
+							if s.othersOnline(i) {
+								mid.slots[i].online = s.slots[i].online
+							}
+						}
 						for h := range st {
 							mid.stacks[h] = slices.Clone(st[h])
 						}
@@ -1215,6 +1565,19 @@ func (s *coreState) cutUnprepare(i int, arm *coreArm, ws []*coreState) []*coreSt
 		}
 	}
 	return out
+}
+
+// cutLast returns the states after a cut at the last commit of a request
+// whose outcome is the state, and the start after it: the front-end's last
+// commit (PREPARED, KEPT or the record removed) is a commit of the store;
+// none for the tests' own front-end, whose commits are not cut.
+func (s *coreState) cutLast() []*coreState {
+	if !coreFront {
+		return nil
+	}
+	c := s.clone()
+	c.err = "cut"
+	return c.restarted()
 }
 
 // uniq returns the values without repeats.
@@ -1237,6 +1600,7 @@ func (w *coreState) rebooted() {
 		if w.slots[i].prep != "" {
 			w.slots[i].prep = state.PreparationStale
 		}
+		w.slots[i].online = false
 	}
 	for i := range w.mds {
 		w.mds[i] = coreMemdevState{plugged: w.mds[i].plugged}
@@ -1255,6 +1619,13 @@ func (w *coreState) rebooted() {
 // (T3 IDLE_KEPT -> UNUSED).
 func (w *coreState) restarted() []*coreState {
 	w.arm = 0
+	for i := range w.slots {
+		if w.slots[i].prep == state.PreparationKept && w.slots[i].grant == "" {
+			// an Unprepare cut after it released the kept grant: nothing
+			// is kept for the claim (03a T1 KEPT -> UNKNOWN on a-recover)
+			w.slots[i] = coreSlotState{}
+		}
+	}
 	for md := range w.mds {
 		m := &w.mds[md]
 		if m.kreg == kregNone {
@@ -1274,6 +1645,17 @@ func (w *coreState) restarted() []*coreState {
 			m.rec = state.MemdevActive
 		}
 	}
+	if coreFront {
+		// the node mounts of unrestored claims mounted again (03a T1
+		// PREPARED_UNRESTORED -> PREPARED on a-recover, D-31)
+		for md := range w.mds {
+			for i := range w.slots {
+				if coreSlots[i].md == md && w.slots[i].prep == state.PreparationUnrestored {
+					w.remountAll(md)
+				}
+			}
+		}
+	}
 	alts := w.releaseKept()
 	for i, ss := range w.slots {
 		if ss.prep != state.PreparationPreparing || ss.grant == "" || !w.mds[coreSlots[i].md].plugged {
@@ -1281,6 +1663,10 @@ func (w *coreState) restarted() []*coreState {
 		}
 		var next []*coreState
 		for _, a := range alts {
+			if numaCompanionSlot(i) {
+				next = append(next, a.keptCompanion(i)...)
+				continue
+			}
 			next = append(next, a.releaseCut(i)...)
 		}
 		alts = next
@@ -1317,7 +1703,9 @@ func (w *coreState) releaseKept() []*coreState {
 	for md := range w.mds {
 		var kept []int
 		for i, ss := range w.slots {
-			if coreSlots[i].md == md && ss.prep == state.PreparationKept && ss.grant == state.GrantJournaled && w.mds[md].plugged {
+			if coreSlots[i].md == md && ss.prep == state.PreparationKept && ss.grant == state.GrantJournaled && w.mds[md].plugged &&
+				!numaCompanionSlot(i) {
+				// (numa companions are kept for phase 2, 5.6)
 				kept = append(kept, i)
 			}
 		}
@@ -1336,17 +1724,22 @@ func (w *coreState) releaseKept() []*coreState {
 // releaseKeptOf returns the states after the start released the KEPT claims
 // kept of the memdev (releaseKept); when none of them is released for
 // another holder, each may be the last of them, which the policy decides.
+// Next to a cut Prepare's grant they are released, or (D8) released with it
+// as cut grants by the recovery column of the policy (releaseCut).
 func (w *coreState) releaseKeptOf(md int, kept []int) []*coreState {
-	others := w.hasCut(md)
+	others := false
 	for _, i := range w.regionUsers(md) {
-		if !slices.Contains(kept, i) {
+		if !slices.Contains(kept, i) && w.slots[i].prep != state.PreparationPreparing {
 			others = true
 		}
 	}
-	if others {
+	if others || w.hasCut(md) {
 		r := w.clone()
 		for _, i := range kept {
 			r.slots[i] = coreSlotState{}
+		}
+		if d := &coreMemdevs[md]; !others && (d.source == state.SourcePool || d.kind == state.KindExclusive) {
+			return []*coreState{r, w.clone()}
 		}
 		return []*coreState{r}
 	}
@@ -1403,12 +1796,21 @@ func (w *coreState) releaseCut(i int) []*coreState {
 	m := &r.mds[md]
 	r.slots[i] = coreSlotState{prep: state.PreparationPreparing}
 	if coreSlots[i].mode == state.ModeNUMA {
-		m.online = false
+		r.offline(i)
 	}
 	if coreSlots[i].mode == state.ModeFs {
 		m.mount = r.mountAfter(md)
 	}
-	if len(r.regionUsers(md)) > 0 {
+	// the KEPT claims of the memdev that the start did not release go with
+	// the cut grant as cut grants (releaseKeptOf)
+	var keptToo []int
+	for o, ss := range r.slots {
+		if coreSlots[o].md == md && ss.prep == state.PreparationKept && ss.grant == state.GrantJournaled &&
+			!numaCompanionSlot(o) {
+			keptToo = append(keptToo, o)
+		}
+	}
+	if len(r.regionUsers(md, keptToo...)) > 0 {
 		return []*coreState{r}
 	}
 	if m.kreg == kregNone || m.foreign {
@@ -1417,6 +1819,11 @@ func (w *coreState) releaseCut(i int) []*coreState {
 	}
 	d := &coreMemdevs[md]
 	idle := d.source == state.SourceLocal && d.kind != state.KindExclusive && m.est
+	if !r.regionsAbove(md) {
+		for _, o := range keptToo {
+			r.slots[o] = coreSlotState{}
+		}
+	}
 	switch {
 	case idle && d.kind == state.KindPersistent && !r.regionsAbove(md):
 		r.destroy(md)
@@ -1437,7 +1844,7 @@ func (w *coreState) releaseCut(i int) []*coreState {
 	var out []*coreState
 	for _, kreg := range uniq(kregOff, m.kreg) {
 		k := r.clone()
-		k.slots[i] = coreSlotState{prep: state.PreparationKept, grant: state.GrantJournaled}
+		k.slots[i] = coreSlotState{prep: state.PreparationKept, grant: state.GrantJournaled, named: true}
 		km := &k.mds[md]
 		km.kreg, km.reg, km.rec, km.est = kreg, state.RegionKept, state.MemdevActive, true
 		out = append(out, k)

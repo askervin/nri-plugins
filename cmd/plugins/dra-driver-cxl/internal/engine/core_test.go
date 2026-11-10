@@ -33,6 +33,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
 // The flags of TestCoreModel.
@@ -55,7 +56,7 @@ var (
 // teardown leaves nothing. -core.seed, -core.steps, -core.duration,
 // -core.depth plan a run; -core.replay runs a steps file again.
 func TestCoreModel(t *testing.T) {
-	r := newCoreRun(t)
+	r := newCoreRun(t, nil)
 	if *coreReplay != "" {
 		r.replay(*coreReplay)
 	} else {
@@ -85,8 +86,9 @@ type coreRun struct {
 }
 
 // newCoreRun returns a run on a new node, its steps file and log in the
-// output directory.
-func newCoreRun(t *testing.T) *coreRun {
+// output directory; with newFront the requests go through the front-end
+// that it returns.
+func newCoreRun(t *testing.T, newFront func(f *fake.Fake, dir string) CoreFront) *coreRun {
 	clear(coreAvoid)
 	for name := range coreFindings {
 		if *coreKnown == "all" || slices.Contains(strings.Split(*coreKnown, ","), name) {
@@ -118,9 +120,9 @@ func newCoreRun(t *testing.T) *coreRun {
 		_ = r.log.Close()
 	})
 	r.captureKlog(r.log)
-	r.x = newCoreExec(t, r.log)
-	_, _ = fmt.Fprintf(r.steps, "# core model: seed=%d steps=%d duration=%v depth=%d teardown=%d known=%q replay=%q\n", *coreSeed,
-		*coreSteps, *coreDuration, *coreDepth, *coreTeardown, *coreKnown, *coreReplay)
+	r.x = newCoreExec(t, r.log, newFront)
+	_, _ = fmt.Fprintf(r.steps, "# core model: seed=%d steps=%d duration=%v depth=%d teardown=%d known=%q replay=%q front=%v\n", *coreSeed,
+		*coreSteps, *coreDuration, *coreDepth, *coreTeardown, *coreKnown, *coreReplay, coreFront)
 	return r
 }
 
@@ -131,11 +133,13 @@ func (r *coreRun) captureKlog(w io.Writer) {
 	klog.InitFlags(fs)
 	_ = fs.Set("logtostderr", "false")
 	_ = fs.Set("alsologtostderr", "false")
+	_ = fs.Set("stderrthreshold", "FATAL")
 	_ = fs.Set("v", strconv.Itoa(*coreVerbose))
 	klog.SetOutput(w)
 	r.t.Cleanup(func() {
 		klog.Flush()
 		_ = fs.Set("logtostderr", "true")
+		_ = fs.Set("stderrthreshold", "ERROR")
 		_ = fs.Set("v", "0")
 	})
 }
@@ -260,6 +264,11 @@ func (r *coreRun) replay(path string) {
 		}
 		_, rest, _ := strings.Cut(line, " ")
 		name, adoption, _ := strings.Cut(rest, " | ")
+		if strings.HasPrefix(name, "teardown ") {
+			// the failed step of a teardown
+			r.teardown()
+			continue
+		}
 		ca := r.byName[name]
 		if ca == nil {
 			r.t.Fatalf("steps file %s: no action %q", path, name)
@@ -322,6 +331,9 @@ func (r *coreRun) runAndObserve(ca *coreAction, start *coreState, alts []*coreSt
 	if ca.verb != "prepare" && ca.verb != "unprepare" && out.msg != "" {
 		problems = append(problems, "the action failed: "+out.msg)
 	}
+	if out.start != "" {
+		problems = append(problems, "the start after the cut failed: "+out.start)
+	}
 	got := -1
 	if obs != nil {
 		for i, a := range alts {
@@ -334,9 +346,16 @@ func (r *coreRun) runAndObserve(ca *coreAction, start *coreState, alts []*coreSt
 	if got < 0 || len(problems) > 0 {
 		r.fail(what, start, alts, obs, out, problems)
 	}
-	// the alternative has the observed parts and those that the model
-	// knows (generations, foreign regions)
-	r.state = alts[got]
+	// the alternative has the observed parts, those that the model knows
+	// (generations, foreign regions) and those it learns (named)
+	w := alts[got].clone()
+	for i := range w.slots {
+		w.slots[i].named = obs.slots[i].named
+		if coreFront {
+			w.slots[i].online = obs.slots[i].online
+		}
+	}
+	r.state = w
 	r.adopted[fmt.Sprintf("%s %d", ca.verb, got+1)]++
 	return got
 }
@@ -379,8 +398,8 @@ func (r *coreRun) fail(what string, start *coreState, alts []*coreState, obs *co
 		data = append(data, []byte(fmt.Sprintf("%s | FAILED\n", what))...)
 		_ = os.WriteFile(kept, data, 0o644)
 	}
-	fmt.Fprintf(&b, "steps file %s (log %s)\nreplay: go test ./cmd/plugins/dra-driver-cxl/internal/engine -run TestCoreModel -core.replay=%s",
-		kept, filepath.Join(r.out, "run.log"), kept)
+	fmt.Fprintf(&b, "steps file %s (log %s)\nreplay: go test ./cmd/plugins/dra-driver-cxl/internal/engine -run %s -core.replay=%s",
+		kept, filepath.Join(r.out, "run.log"), r.t.Name(), kept)
 	_, _ = fmt.Fprintln(r.log, b.String())
 	_ = os.WriteFile(filepath.Join(r.out, "failure.txt"), []byte(b.String()), 0o644)
 	if data, err := json.MarshalIndent(r.x.v.records(), "", "  "); err == nil {
@@ -394,12 +413,13 @@ func (r *coreRun) fail(what string, start *coreState, alts []*coreState, obs *co
 // left. The node starts again configured as before.
 func (r *coreRun) teardown() {
 	_, _ = fmt.Fprintln(r.steps, "teardown")
-	// the claims whose Unprepare runs into a known finding go last, when
-	// the others are gone
-	for pass := 0; pass < 2; pass++ {
+	// the unrestored claims go first; the claims whose Unprepare runs into
+	// a known finding go last, when the others are gone
+	for pass := 0; pass < 3; pass++ {
 		for i := range coreSlots {
 			ca := r.byName["unprepare "+coreSlots[i].id]
-			if r.state.slots[i].prep != "" && (pass == 1 || !r.state.avoided(ca)) {
+			prep := r.state.slots[i].prep
+			if prep != "" && (pass == 0) == (prep == state.PreparationUnrestored) && (pass == 2 || !r.state.avoided(ca)) {
 				r.substep(ca)
 			}
 		}

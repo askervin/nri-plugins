@@ -82,6 +82,11 @@ type env struct {
 	// beforePrepared runs once in the next Prepare (prepare) between its
 	// grants realised and its preparation PREPARED, nil for nothing.
 	beforePrepared func()
+	// storeCuts counts the commits of cutAt at the store (every commit)
+	// instead of at the engine; tuneStore changes the options of every
+	// store that the node opens, nil for none.
+	storeCuts bool
+	tuneStore func(o *store.Options)
 }
 
 // newEnv returns a node with the memdevs of specs plugged.
@@ -104,7 +109,14 @@ func newEnv(t *testing.T, specs ...fake.MemdevSpec) *env {
 // does.
 func (v *env) open() {
 	v.t.Helper()
-	st, err := store.Open(context.Background(), store.Options{Dir: filepath.Join(v.dir, "state"), BootID: v.f.BootID()})
+	opts := store.Options{Dir: filepath.Join(v.dir, "state"), BootID: v.f.BootID()}
+	if v.tuneStore != nil {
+		v.tuneStore(&opts)
+	}
+	if v.storeCuts {
+		opts.AfterCommit = v.committed
+	}
+	st, err := store.Open(context.Background(), opts)
 	if err != nil {
 		v.t.Fatal(err)
 	}
@@ -155,19 +167,25 @@ func (v *env) startEngine() {
 	if err != nil {
 		v.t.Fatal(err)
 	}
-	e.afterCommit = func() {
-		v.commitMu.Lock()
-		v.commits++
-		cut := v.cutAt > 0 && v.commits == v.cutAt
-		if cut {
-			v.cutAt = 0
-		}
-		v.commitMu.Unlock()
-		if cut {
-			panic(fake.ErrCut)
-		}
+	if !v.storeCuts {
+		e.afterCommit = v.committed
 	}
 	v.e = e
+}
+
+// committed counts a commit and stops the process (panics with
+// fake.ErrCut) at the commit of cutAt.
+func (v *env) committed() {
+	v.commitMu.Lock()
+	v.commits++
+	cut := v.cutAt > 0 && v.commits == v.cutAt
+	if cut {
+		v.cutAt = 0
+	}
+	v.commitMu.Unlock()
+	if cut {
+		panic(fake.ErrCut)
+	}
 }
 
 // cutSys is the system calls of the fake that stop the process at a
