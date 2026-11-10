@@ -303,6 +303,7 @@ func (v *env) prepare(driver, uid string, reqs ...GrantRequest) error {
 				p.Results = append(p.Results, grantResult(uid, reqs[i].Ref.Result))
 			}
 		}
+		p.BootID = v.f.BootID()
 		if p.State == state.PreparationPreparing {
 			return state.Apply(&state.PreparationTable, &p.State, state.PreparationPreparing, state.TriggerPrepare)
 		}
