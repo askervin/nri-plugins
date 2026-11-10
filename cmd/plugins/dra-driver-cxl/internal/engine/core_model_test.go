@@ -520,14 +520,6 @@ func (s *coreState) requestEnabled(ca *coreAction) bool {
 // runs into it. The requests that do are not generated unless -core.known
 // leaves the finding out.
 var coreFindings = map[string]func(s *coreState, ca *coreAction) bool{
-	// C5: the Unprepare of a numa companion that a start kept while its
-	// Prepare made its part next to another claim's (dax device CREATING)
-	// fails on a transition not in the table
-	"C5": func(s *coreState, ca *coreAction) bool {
-		sl := &coreSlots[ca.slot]
-		return s.arm > 0 && coreArms[s.arm-1].cut != "" && ca.verb == "prepare" && sl.lease && sl.mode == state.ModeNUMA &&
-			len(s.usersOf(sl.md, ca.slot)) > 0
-	},
 	// C6: the release of a writer of mode fs next to a claim whose
 	// Unprepare a stop cut after its region was destroyed checks the block
 	// device against that claim's record of the region gone: the block

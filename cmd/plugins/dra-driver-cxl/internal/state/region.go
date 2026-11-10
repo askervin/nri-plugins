@@ -375,8 +375,9 @@ var DaxDeviceTable = Table[DaxDeviceState]{
 			Effects: "commit (d) of name, dev and ranges; Users the grant",
 		},
 		{
-			From: list(DaxCreating), To: DaxAbsent, Triggers: list(TriggerPrepare),
-			When:    "size or ranges failed, or the verification failed",
+			From: list(DaxCreating), To: DaxAbsent, Triggers: list(TriggerPrepare, TriggerUnprepare),
+			When: "size or ranges failed, or the verification failed; or the Unprepare of a claim whose Prepare did not " +
+				"finish (PREPARING or KEPT, 03a T1 PREPARING -> UNKNOWN) deletes the device its cut Prepare was making",
 			Effects: "deleted; error",
 		},
 		{

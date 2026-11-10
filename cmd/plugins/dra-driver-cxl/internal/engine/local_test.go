@@ -778,3 +778,31 @@ func TestLocalCutCompanionEnabledRegion(t *testing.T) {
 	v.mustUnprepare(localDriver, "n")
 	v.clean("unprepared")
 }
+
+// The Unprepare of a numa companion whose Prepare a process stop cut while
+// it made its part next to another claim's (the start kept it, its dax
+// device CREATING) rolls that part back and releases everything.
+func TestLocalCutCompanionCreatingPart(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
+	v.mustPrepare(localDriver, "n", sliceReq("n", 0, state.ModeDax, 256*mib))
+	req := sliceReq("comp", 0, state.ModeNUMA, 256*mib)
+	req.Lend = &state.GrantLend{Lease: "0123abcd", Container: "c"}
+	v.e.afterCommit = func() {
+		for _, reg := range v.records().Regions {
+			for _, d := range reg.DaxDevices {
+				if d.State == state.DaxCreating {
+					panic(fake.ErrCut)
+				}
+			}
+		}
+	}
+	if !v.cut(func() { _ = v.prepare(localDriver, "comp", req) }) {
+		t.Fatal("not cut")
+	}
+	if out := v.restart(); !slices.Equal(out.Companions, []state.GrantRef{{Claim: "comp"}}) {
+		t.Fatalf("recovered %+v", out)
+	}
+	v.mustUnprepare(localDriver, "comp")
+	v.mustUnprepare(localDriver, "n")
+	v.clean("unprepared")
+}

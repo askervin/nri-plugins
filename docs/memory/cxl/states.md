@@ -268,7 +268,7 @@ States: ABSENT, CREATING, SIZED, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE, RELEASIN
 |:-----|:---|:--------|:------|:--------|
 | ABSENT | CREATING | `a-prepare`: a grant needs a dax device (or the Whole device at set-up) | engine lock held | dax_region/create written; the name read back |
 | CREATING | SIZED | `a-prepare`: size (or explicit ranges) written and verified | room in the dax region; whole-block placement verified (created again through the mapping attribute if not) | commit (d) of name, dev and ranges; Users the grant |
-| CREATING | ABSENT | `a-prepare`: size or ranges failed, or the verification failed | - | deleted; error |
+| CREATING | ABSENT | `a-prepare`, `a-unprepare`: size or ranges failed, or the verification failed; or the Unprepare of a claim whose Prepare did not finish (PREPARING or KEPT, 03a T1 PREPARING -> UNKNOWN) deletes the device its cut Prepare was making | - | deleted; error |
 | ABSENT | KMEM_OFFLINE | `a-prepare`: the first device (daxN.0) of a new ram region appeared, bound to kmem by the kernel | - | its blocks offlined and held offline; commit (d) |
 | ABSENT | DEVICE_DAX | `a-prepare`: the first device (daxN.0) of a new ram region appeared bound to device_dax (an id of its name that another tool left in device_dax) | - | commit (d) |
 | KMEM_OFFLINE | SIZED | `a-prepare`: kmem unbound from the offline device (the set-up of a region for device_dax or for slices) | - | commit (d) |
