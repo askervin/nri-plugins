@@ -85,9 +85,10 @@ func newWatchEnv(t *testing.T) *watchEnv {
 	return e
 }
 
-// name is the name of the records in the log lines.
+// name is the name of the records in the log lines: the path of the
+// document of the store.
 func (e *watchEnv) name() string {
-	return filepath.Join(e.dir, "poolSerials.json")
+	return filepath.Join(e.dir, store.FileName)
 }
 
 // closeStore closes the store, writing its pending commits.

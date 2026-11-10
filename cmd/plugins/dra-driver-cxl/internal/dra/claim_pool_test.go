@@ -232,7 +232,7 @@ func TestPoolRollbackKept(t *testing.T) {
 	logs := klogCapture(t)
 	wantErrText(t, e.prepare(e.pool, claim).Err, "that the plugin did not create")
 	wantLogText(t, logs(), "cxl-pool.nri.io: rollback: claim demo/claim-u1 (u1): not everything was released: keeping its record in "+
-		e.preparingFile()+" for its Unprepare or its next Prepare")
+		e.stateFile()+" for its Unprepare or its next Prepare")
 	prep := e.preparation(e.pool, "u1")
 	if prep == nil || prep.State != state.PreparationKept || len(prep.Results) != 1 || prep.Results[0].Index != 0 {
 		t.Fatalf("preparation %+v", prep)

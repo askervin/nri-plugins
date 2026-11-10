@@ -89,9 +89,9 @@ func LocalRules(mountsDir string) SourceRules {
 // PoolRules returns the rules of the pool driver name: the devices that a
 // pool controller attached to the node for a claim, found by the serial of
 // the claim's status data; publishes nothing; CDI kind device.PoolCDIKind;
-// node mounts in mountsDir; preparingFile names its records of claims whose
+// node mounts in mountsDir; records names its records of claims whose
 // Prepare did not finish in the log lines.
-func PoolRules(name, mountsDir, preparingFile string) SourceRules {
+func PoolRules(name, mountsDir, records string) SourceRules {
 	return SourceRules{
 		Name:                name,
 		Source:              state.SourcePool,
@@ -100,7 +100,7 @@ func PoolRules(name, mountsDir, preparingFile string) SourceRules {
 		MountsDir:           mountsDir,
 		RetryStaleOnRefusal: true,
 		validate:            (*Plugin).validatePool,
-		voice:               poolVoice{name: name, preparing: preparingFile},
+		voice:               poolVoice{name: name, records: records},
 	}
 }
 
@@ -341,10 +341,10 @@ func (localVoice) cdiWrote(name string, n int) {
 	klog.V(5).Infof("Wrote CDI spec %s with %d devices", name, n)
 }
 
-// poolVoice are the words of the pool driver name, which names its records
-// of claims whose Prepare did not finish preparing.
+// poolVoice are the words of the pool driver name; records names its
+// records of claims whose Prepare did not finish.
 type poolVoice struct {
-	name, preparing string
+	name, records string
 }
 
 // fail returns an error of a Prepare of the claim, logged.
@@ -394,7 +394,7 @@ func (v poolVoice) companionPrepared(claimName string, lend *lend.Lend) {
 
 func (v poolVoice) kept(uid, claimName string) {
 	klog.Warningf("%s: rollback: claim %s (%s): not everything was released: keeping its record in %s for its Unprepare or its next Prepare",
-		v.name, claimName, uid, v.preparing)
+		v.name, claimName, uid, v.records)
 }
 
 func (v poolVoice) alreadyPrepared(prep *state.Preparation) {

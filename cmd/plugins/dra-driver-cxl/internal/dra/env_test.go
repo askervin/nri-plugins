@@ -236,7 +236,7 @@ func (e *driverEnv) start() {
 	t.Helper()
 	ctx := context.Background()
 	local := LocalRules(filepath.Join(e.dir, "mounts"))
-	pool := PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, "mounts"), e.preparingFile())
+	pool := PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, "mounts"), e.stateFile())
 	st, err := store.Open(ctx, store.Options{Dir: e.dir, PoolDir: e.poolDir, PoolDriver: pool.Name, BootID: e.k.BootID(),
 		SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot()})
 	mustOK(t, err)
@@ -246,7 +246,7 @@ func (e *driverEnv) start() {
 		Store:       st,
 		Drivers:     map[state.Source]string{state.SourcePool: pool.Name, state.SourceLocal: local.Name},
 		MountsDirs:  MountsDirs(local, pool),
-		Records:     map[state.Source]string{state.SourcePool: e.preparingFile()},
+		Records:     map[state.Source]string{state.SourcePool: e.stateFile()},
 		Sources:     []state.Source{state.SourcePool, state.SourceLocal},
 		LeaseFsRoot: e.leaseFsRoot(),
 		FsTypes:     e.fsTypes,
@@ -301,7 +301,7 @@ func (e *driverEnv) start() {
 	if e.leases != nil {
 		e.local.SetLeases(e.leases)
 	}
-	e.pool.Recovered(e.rec, filepath.Join(e.poolDir, "preparedPoolClaims.json"))
+	e.pool.Recovered(e.rec, e.stateFile())
 	e.local.Recovered(e.rec, "")
 	mustOK(t, e.local.WriteCDI())
 	mustOK(t, e.pool.WriteCDI())
@@ -327,10 +327,9 @@ func (e *driverEnv) reboot() {
 	e.restart()
 }
 
-// preparingFile is the name of the records of the pool claims whose
-// Prepare did not finish in the log lines.
-func (e *driverEnv) preparingFile() string {
-	return filepath.Join(e.poolDir, "preparingPoolClaims.json")
+// stateFile returns the path of the document of the store.
+func (e *driverEnv) stateFile() string {
+	return filepath.Join(e.dir, store.FileName)
 }
 
 // leaseFsRoot is the directory of the lease-fs directories.

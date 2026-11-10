@@ -152,7 +152,7 @@ func (e *poolTestEnv) driver(t *testing.T) *dra.Plugin {
 	if e.st != nil {
 		_ = e.st.Close()
 	}
-	rules := dra.PoolRules(device.PoolDriverName, filepath.Join(e.dir, mountsDirName), filepath.Join(e.dir, poolPreparingFileName))
+	rules := dra.PoolRules(device.PoolDriverName, filepath.Join(e.dir, mountsDirName), filepath.Join(e.dir, store.FileName))
 	e.st, err = store.Open(context.Background(), store.Options{Dir: e.dir, PoolDir: e.dir, PoolDriver: device.PoolDriverName,
 		BootID: e.k.BootID()})
 	noErr(t, err)
@@ -163,6 +163,7 @@ func (e *poolTestEnv) driver(t *testing.T) *dra.Plugin {
 		PoolDriver:    device.PoolDriverName,
 		PoolDataDir:   e.dir,
 		LeaseFsRoot:   e.leaseFsRoot,
+		StateFile:     filepath.Join(e.dir, store.FileName),
 		FsTypes:       config.KnownFsTypes,
 		Filesystems:   e.filesystems,
 		Fence:         e.fence,
@@ -185,7 +186,7 @@ func (e *poolTestEnv) driver(t *testing.T) *dra.Plugin {
 	devices.setLender(state.SourcePool, p.Lender())
 	rec, err := devices.recover(context.Background())
 	noErr(t, err)
-	p.Recovered(rec, filepath.Join(e.dir, poolStateFileName))
+	p.Recovered(rec, filepath.Join(e.dir, store.FileName))
 	noErr(t, p.WriteCDI())
 	checkPool(t, p, "started")
 	return p

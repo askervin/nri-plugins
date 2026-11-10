@@ -181,6 +181,7 @@ func (e *localTestEnv) start() *dra.Plugin {
 		PoolDataDir:     e.poolDir,
 		LocalDir:        e.dir,
 		LeaseFsRoot:     filepath.Join(e.dir, leaseFsDirName),
+		StateFile:       filepath.Join(e.dir, store.FileName),
 		FsTypes:         e.config.fsTypes(),
 		Filesystems:     e.filesystems,
 		Fence:           e.fence,
@@ -406,7 +407,7 @@ func (e *localTestEnv) inUse() bool {
 func (e *localTestEnv) rules() []dra.SourceRules {
 	return []dra.SourceRules{
 		dra.LocalRules(filepath.Join(e.dir, mountsDirName)),
-		dra.PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, mountsDirName), filepath.Join(e.poolDir, poolPreparingFileName)),
+		dra.PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, mountsDirName), filepath.Join(e.dir, store.FileName)),
 	}
 }
 

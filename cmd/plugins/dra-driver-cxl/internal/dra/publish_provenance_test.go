@@ -101,7 +101,7 @@ func (e *pubSerialsEnv) restart() {
 	e.st = st
 	list, claims := provenance.ClientLists(e.client, "")
 	e.w = provenance.New(provenance.Options{Store: e.st, List: list, Claims: claims, NodeName: pubNode,
-		Name: filepath.Join(e.dir, "poolSerials.json"), Now: e.now})
+		Name: filepath.Join(e.dir, store.FileName), Now: e.now})
 	e.p = e.publisher(func(context.Context) (*kernel.Snapshot, error) { return e.devices(), nil })
 }
 

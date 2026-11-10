@@ -30,6 +30,16 @@ const (
 	// preparedClaimsInfoFileName is the view of the prepared claims of
 	// cxl.nri.io with their devices in its plugin data directory.
 	preparedClaimsInfoFileName = "preparedClaimsInfo.json"
+	// localStateFileName is the state file of the local memdevs in the
+	// plugin data directory of cxl.nri.io.
+	localStateFileName = "localDevices.json"
+	// poolStateFileName is the state file of the prepared pool claims in
+	// the plugin data directory of the pool driver.
+	poolStateFileName = "preparedPoolClaims.json"
+	// poolPreparingFileName is the state file of the pool claims whose
+	// Prepare did not finish or that a rollback kept, in the plugin data
+	// directory of the pool driver.
+	poolPreparingFileName = "preparingPoolClaims.json"
 )
 
 type (

@@ -29,6 +29,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
@@ -141,7 +142,7 @@ func TestPoolRollbackKept(t *testing.T) {
 	claim := addPoolDevice(poolClaim("u1", "c1", "pooled0", exclusiveData), "mem2", "pooled1", `{"serial":"0xc1ee0002","shared":false,"size":268435456}`)
 	logs := captureKlog(t)
 	wantErr(t, prepare(t, p, claim).Err, "that the plugin did not create")
-	want := "rollback: claim default/c1 (u1): not everything was released: keeping its record in " + filepath.Join(e.dir, poolPreparingFileName) +
+	want := "rollback: claim default/c1 (u1): not everything was released: keeping its record in " + filepath.Join(e.dir, store.FileName) +
 		" for its Unprepare or its next Prepare"
 	if !strings.Contains(logs(), want) {
 		t.Fatalf("no %q in\n%s", want, logs())

@@ -238,7 +238,7 @@ func (e *leaseEnv) boot() {
 	t.Helper()
 	ctx := context.Background()
 	local := dra.LocalRules(filepath.Join(e.dir, "mounts"))
-	pool := dra.PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, "mounts"), filepath.Join(e.poolDir, "preparingPoolClaims.json"))
+	pool := dra.PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, "mounts"), filepath.Join(e.dir, store.FileName))
 	st, err := store.Open(ctx, store.Options{Dir: e.dir, PoolDir: e.poolDir, PoolDriver: pool.Name, BootID: e.k.BootID(),
 		SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot(),
 		NewState: e.newState})
@@ -249,7 +249,7 @@ func (e *leaseEnv) boot() {
 		Store:       st,
 		Drivers:     map[state.Source]string{state.SourcePool: pool.Name, state.SourceLocal: local.Name},
 		MountsDirs:  dra.MountsDirs(local, pool),
-		Records:     map[state.Source]string{state.SourcePool: filepath.Join(e.poolDir, "preparingPoolClaims.json")},
+		Records:     map[state.Source]string{state.SourcePool: filepath.Join(e.dir, store.FileName)},
 		Sources:     []state.Source{state.SourcePool, state.SourceLocal},
 		LeaseFsRoot: LeaseFsRoot(e.dir),
 		FsTypes:     config.KnownFsTypes,
@@ -285,7 +285,7 @@ func (e *leaseEnv) boot() {
 	e.pool, err = dra.New(dra.Options{Rules: pool, Store: st, Engine: e.eng, NodeName: envNode, BootID: e.k.BootID(),
 		DevRoot: e.k.DevRoot(), CDI: e.cache})
 	mustOK(t, err)
-	e.pool.Recovered(rec, filepath.Join(e.poolDir, "preparedPoolClaims.json"))
+	e.pool.Recovered(rec, filepath.Join(e.dir, store.FileName))
 	e.local.Recovered(rec, "")
 	mustOK(t, e.local.WriteCDI())
 	mustOK(t, e.pool.WriteCDI())

@@ -95,7 +95,7 @@ func TestRemountPool(t *testing.T) {
 	log := logs()
 	wantLogText(t, log, "cxl-pool.nri.io: claim demo/claim-r1 (r1) has no CDI device: its node mount "+mnt+" is not mounted ("+why.Error()+
 		"); a new container of it fails on its CDI device, its Prepare again tries to mount it again, its Unprepare releases the device")
-	wantLogText(t, log, "cxl-pool.nri.io: loaded 1 prepared claims from "+filepath.Join(e.poolDir, "preparedPoolClaims.json"))
+	wantLogText(t, log, "cxl-pool.nri.io: loaded 1 prepared claims from "+e.stateFile())
 	wantErrText(t, e.prepare(e.pool, claim).Err, "cxl-pool.nri.io: preparing claim demo/claim-r1: ")
 	e.wantState(e.pool, "r1", state.PreparationUnrestored)
 	e.k.SetMountError(dev, nil, "")

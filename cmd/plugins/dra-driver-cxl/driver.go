@@ -313,7 +313,7 @@ func newDriverRules(config *pluginConfig, cxlFlags *CXLFlags) driverRules {
 	r := driverRules{local: dra.LocalRules(filepath.Join(config.KubeletPluginDir, mountsDirName))}
 	if cxlFlags.PoolDriverName != "" {
 		poolDir := filepath.Join(filepath.Dir(config.KubeletPluginDir), cxlFlags.PoolDriverName)
-		pool := dra.PoolRules(cxlFlags.PoolDriverName, filepath.Join(poolDir, mountsDirName), filepath.Join(poolDir, poolPreparingFileName))
+		pool := dra.PoolRules(cxlFlags.PoolDriverName, filepath.Join(poolDir, mountsDirName), config.stateFile())
 		r.pool = &pool
 	}
 	return r
@@ -325,6 +325,11 @@ func (r driverRules) all() []dra.SourceRules {
 		return []dra.SourceRules{r.local}
 	}
 	return []dra.SourceRules{r.local, *r.pool}
+}
+
+// stateFile returns the path of the document of the state store.
+func (c *pluginConfig) stateFile() string {
+	return filepath.Join(c.KubeletPluginDir, store.FileName)
 }
 
 // openDriverStore opens the state store in the plugin data directory of
@@ -381,6 +386,7 @@ func newDriverDevices(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Dr
 		Store:           st,
 		MountsDirs:      dra.MountsDirs(rules.all()...),
 		LeaseFsRoot:     leases.LeaseFsRoot(config.KubeletPluginDir),
+		StateFile:       config.stateFile(),
 		FsTypes:         driverConfig.fsTypes(),
 		Fence:           fence,
 		ProbeAddressing: driverConfig.verifyAddressing(),
@@ -416,7 +422,7 @@ func newWatcher(config *pluginConfig, cxlFlags *CXLFlags, st *store.Store) *prov
 		Claims:   claims,
 		Driver:   cxlFlags.PoolDriverName,
 		NodeName: cxlFlags.NodeName,
-		Name:     filepath.Join(config.KubeletPluginDir, poolSerialsFileName),
+		Name:     config.stateFile(),
 		Forget:   cxlFlags.Provenance.Forget,
 	})
 }
@@ -428,8 +434,8 @@ type frontEnds struct {
 	pool      *dra.Plugin // nil when the pool driver is disabled
 	publisher *dra.Publisher
 	watcher   *provenance.Watcher
-	// poolDir is the plugin data directory of the pool driver.
-	poolDir string
+	// stateFile is the path of the document of the store.
+	stateFile string
 }
 
 // newFrontEnds returns the DRA drivers of rules over the store st and the
@@ -438,7 +444,7 @@ type frontEnds struct {
 // driver unless it is disabled (rules.pool nil). The Prepares and
 // Unprepares of both have the publisher rescan.
 func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, bootID string, st *store.Store, devices *deviceEngine, watcher *provenance.Watcher, rules driverRules) (*frontEnds, error) {
-	fe := &frontEnds{watcher: watcher}
+	fe := &frontEnds{watcher: watcher, stateFile: config.stateFile()}
 	publisher, err := dra.NewPublisher(dra.PublishOptions{
 		Config:      driverConfig.publishConfig(),
 		NodeName:    cxlFlags.NodeName,
@@ -455,7 +461,6 @@ func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Driver
 	}
 	fe.publisher = publisher
 	if rules.pool != nil {
-		fe.poolDir = filepath.Join(filepath.Dir(config.KubeletPluginDir), cxlFlags.PoolDriverName)
 		pool, err := dra.New(dra.Options{
 			Rules:     *rules.pool,
 			Store:     st,
@@ -516,7 +521,7 @@ func (fe *frontEnds) recover(ctx context.Context, cdiRoot string, driverConfig *
 	if err != nil {
 		return err
 	}
-	fe.pool.Recovered(rec, filepath.Join(fe.poolDir, poolStateFileName))
+	fe.pool.Recovered(rec, fe.stateFile)
 	devices.setGuard(localPoolGuard(fe.pool, fe.watcher))
 	// the first list of the pool ResourceSlices, after phase 1: it gates
 	// the publication of local memdevs

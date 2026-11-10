@@ -105,8 +105,8 @@ type Options struct {
 	// Driver is the name of the pool driver, "" for device.PoolDriverName;
 	// NodeName the node of the driver.
 	Driver, NodeName string
-	// Name names the records in the log lines (the path of
-	// poolSerials.json).
+	// Name names the records in the log lines (the path of the document
+	// of Store).
 	Name string
 	// Forget are the serials whose records the operator removes at the
 	// start (--forget-pool-serial).

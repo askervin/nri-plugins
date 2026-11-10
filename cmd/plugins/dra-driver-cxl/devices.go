@@ -52,21 +52,6 @@ const (
 	// localProbesFileName keeps the usable sizes that the address line
 	// probe found, by serial, across restarts and reboots.
 	localProbesFileName = "localProbes.json"
-	// localStateFileName names the records of the local memdevs in the
-	// plugin data directory of cxl.nri.io in the log lines; no file is
-	// written.
-	localStateFileName = "localDevices.json"
-	// poolStateFileName names the records of the prepared pool claims in
-	// the plugin data directory of the pool driver in the log lines; no
-	// file is written.
-	poolStateFileName = "preparedPoolClaims.json"
-	// poolPreparingFileName names the records of the pool claims whose
-	// Prepare did not finish or that a rollback kept in the log lines; no
-	// file is written.
-	poolPreparingFileName = "preparingPoolClaims.json"
-	// poolSerialsFileName names the provenance records of the serials in
-	// the log lines; no file is written.
-	poolSerialsFileName = "poolSerials.json"
 )
 
 // deviceConfig are the settings of the device engine of the driver.
@@ -82,6 +67,9 @@ type deviceConfig struct {
 	// manages no local memdevs; LeaseFsRoot the directory of the lease-fs
 	// directories of the lease claims, "" for none.
 	LocalDir, LeaseFsRoot string
+	// StateFile is the path of the document of Store, which the log lines
+	// name as the record of a claim.
+	StateFile string
 	// MountsDirs are the directories of the node mounts of mode fs of the
 	// sources (dra.MountsDirs of the drivers' rules); one for each source
 	// of the engine.
@@ -171,14 +159,14 @@ func newDeviceEngine(cfg deviceConfig) (*deviceEngine, error) {
 		d.drivers[state.SourcePool] = cfg.PoolDriver
 		opts.Sources = append(opts.Sources, state.SourcePool)
 		opts.MountsDirs[state.SourcePool] = cfg.MountsDirs[state.SourcePool]
-		opts.Records[state.SourcePool] = filepath.Join(cfg.PoolDataDir, poolPreparingFileName)
+		opts.Records[state.SourcePool] = cfg.StateFile
 	}
 	if cfg.LocalDir != "" {
 		// the lines of the local memdevs that the local allocator logged
 		d.drivers[state.SourceLocal] = device.DriverName
 		opts.Sources = append(opts.Sources, state.SourceLocal)
 		opts.MountsDirs[state.SourceLocal] = cfg.MountsDirs[state.SourceLocal]
-		opts.Records[state.SourceLocal] = filepath.Join(cfg.LocalDir, localStateFileName)
+		opts.Records[state.SourceLocal] = cfg.StateFile
 		opts.ProbesFile = filepath.Join(cfg.LocalDir, localProbesFileName)
 	}
 	if opts.Sources == nil {
