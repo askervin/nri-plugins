@@ -539,7 +539,8 @@ The `device` fields per device:
   is allowed and nothing else. In a claim that has such requests next to
   `dax` memdev requests, list the memdev requests in the `requests` of
   the entry.
-- Lease device (`cxl-lease`): no `device` field.
+- Lease device (`cxl-lease`): no `device` settings; `readOnly: false`,
+  the default, is the only one accepted.
 - Pool devices: `numa` (exclusive devices, their default) or `dax`;
   shared devices of volatile memory `dax` only; devices of persistent
   memory `block` or `fs` only; `fs` is read-only unless `readOnly: false`
@@ -724,7 +725,10 @@ The Helm value `deviceClassConfig` gives the shipped classes such an
 entry: class name to a `MemoryConfig` body (`device`, `container`, and
 `pool` for the classes of `cxl-pool.nri.io`), which the chart renders
 into the class's `spec.config` with the class's driver, the apiVersion
-and the kind. Steering on for every container with memory of `cxl-local`
+and the kind. The values schema of the chart checks the bodies: for
+`cxl-lease` it allows `container` and no `device` settings (only
+`readOnly: false`), which the driver would refuse in every lease claim.
+Steering on for every container with memory of `cxl-local`
 or `cxl-pool`, unless its claim says
 `container: {steering: {policy: none}}`:
 
@@ -1538,7 +1542,7 @@ The claims show `spec.devices` and the environment the container sees,
 with the local memdev `0xc100e2e1`, the shared local device `0xc100e2e2`
 (listed in `sharedDevices`), the exclusive pool device `0xc1ee0001`,
 the shared pool device `0xc1ae0001` and the shared pool devices of
-persistent memory `0xc1af0001` (an erofs) and `0xc1af0002` (an ext4).
+persistent memory `0xc1ae0002` (an erofs) and `0xc1ae0003` (an ext4).
 
 1. 128Mi of local CXL memory as RAM; the container is not steered, it has
    the node in its `cpuset.mems`
@@ -1725,12 +1729,12 @@ persistent memory `0xc1af0001` (an erofs) and `0xc1af0002` (an ext4).
     ```
 
     ```
-    CXL_C1AF0001_MODE=block
-    CXL_C1AF0001_PATH=/dev/pmem1
-    CXL_C1AF0001_READONLY=0
-    CXL_C1AF0001_SERIAL=0xc1af0001
-    CXL_C1AF0001_SHARED=1
-    CXL_C1AF0001_SIZE=534773760
+    CXL_C1AE0002_MODE=block
+    CXL_C1AE0002_PATH=/dev/pmem1
+    CXL_C1AE0002_READONLY=0
+    CXL_C1AE0002_SERIAL=0xc1ae0002
+    CXL_C1AE0002_SHARED=1
+    CXL_C1AE0002_SIZE=534773760
     CXL_CLAIM_<uid>_0=1
     ```
 
@@ -1743,11 +1747,11 @@ persistent memory `0xc1af0001` (an erofs) and `0xc1af0002` (an ext4).
     ```
 
     ```
-    CXL_C1AF0001_ACCESS=direct
-    CXL_C1AF0001_FSTYPE=erofs
-    CXL_C1AF0001_MODE=fs
-    CXL_C1AF0001_PATH=/models
-    CXL_C1AF0001_READONLY=1
+    CXL_C1AE0002_ACCESS=direct
+    CXL_C1AE0002_FSTYPE=erofs
+    CXL_C1AE0002_MODE=fs
+    CXL_C1AE0002_PATH=/models
+    CXL_C1AE0002_READONLY=1
     ...
     ```
 
@@ -1797,7 +1801,7 @@ persistent memory `0xc1af0001` (an erofs) and `0xc1af0002` (an ext4).
 
 16. A read-write filesystem and a reader of it on the same node: an ext4
     that a writer in mode `block` stored in the persistent pool device
-    `0xc1af0002`
+    `0xc1ae0003`
     ([pool-persistent-fs-rw.yaml](blob:/deployment/samples/dra-driver-cxl/pool-persistent-fs-rw.yaml)).
     The node must allow ext4 (`fsTypes: [erofs, ext4]` in the
     [configuration file](#configuration-file)), which trusts every raw
@@ -1811,14 +1815,14 @@ persistent memory `0xc1af0001` (an erofs) and `0xc1af0002` (an ext4).
     ```
 
     ```
-    CXL_C1AF0002_ACCESS=direct
-    CXL_C1AF0002_FSTYPE=ext4
-    CXL_C1AF0002_MODE=fs
-    CXL_C1AF0002_PATH=/data
-    CXL_C1AF0002_READONLY=0
-    CXL_C1AF0002_SERIAL=0xc1af0002
-    CXL_C1AF0002_SHARED=1
-    CXL_C1AF0002_SIZE=534773760
+    CXL_C1AE0003_ACCESS=direct
+    CXL_C1AE0003_FSTYPE=ext4
+    CXL_C1AE0003_MODE=fs
+    CXL_C1AE0003_PATH=/data
+    CXL_C1AE0003_READONLY=0
+    CXL_C1AE0003_SERIAL=0xc1ae0003
+    CXL_C1AE0003_SHARED=1
+    CXL_C1AE0003_SIZE=534773760
     CXL_CLAIM_<uid>_0=1
     ```
 
@@ -1826,7 +1830,7 @@ persistent memory `0xc1af0001` (an erofs) and `0xc1af0002` (an ext4).
     pod with a `podAffinity` to the writer's pod (`topologyKey:
     kubernetes.io/hostname`): on another node it would wait until the
     writer is gone ([Several nodes](#several-nodes-readwriteonce-and-cluster-filesystems)).
-    `CXL_C1AF0002_READONLY=1`; it reads what the writer writes.
+    `CXL_C1AE0003_READONLY=1`; it reads what the writer writes.
 
 17. A persistent local memdev `0xc100f5e1`: a writer in mode `block`
     without a capacity request stores an ext4 in it; then claims of one

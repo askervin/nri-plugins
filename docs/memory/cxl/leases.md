@@ -158,7 +158,7 @@ block device of a device of persistent memory (attribute
 node in the container, no mount:
 
 ```
-container: cxl-request request --serial 0xc1af0001 --mode block
+container: cxl-request request --serial 0xc1ae0002 --mode block
   -> companion claim cxl-lease-L of class cxl-pool-persistent (cxl-local-persistent for a local memdev),
      MemoryConfig device {mode: block, readOnly}
   -> kubelet prepares cxl-lease-L as a claim of mode block: pmem region, the fsdax namespace
@@ -379,7 +379,7 @@ once. Without
 Examples, with the local memdev `0xc100e2e1`, the shared local device
 `0xc100e2e2`, the exclusive pool device `0xc1ee0001`, the shared pool
 device `0xc1ae0001`, the shared pool devices of persistent memory
-`0xc1af0001` with an erofs that has `model.gguf` and `0xc1af0002` with an
+`0xc1ae0002` with an erofs that has `model.gguf` and `0xc1ae0003` with an
 ext4, and the persistent local memdev `0xc100f5e1`:
 
 ```
@@ -397,21 +397,21 @@ cxl-request request --serial 0xc100e2e2 --shared --read-only  # one read-only sh
 cxl-request request --shared --size 256Mi                     # one share of any shared device of 256Mi or more, local first, then pool
 cxl-request request --source local --shared --size 64Mi       # one share of a shared local device
 cxl-request request --size 1Gi --wait 0s --request-id r1      # asynchronous: Pending
-cxl-request request --serial 0xc1af0001 --shared --read-only --mode fs \
-    --exec sh -c 'exec llama-server -m "$CXL_C1AF0001_PATH/model.gguf"'   # direct: /run/cxl/fs/<lease id>
+cxl-request request --serial 0xc1ae0002 --shared --read-only --mode fs \
+    --exec sh -c 'exec llama-server -m "$CXL_C1AE0002_PATH/model.gguf"'   # direct: /run/cxl/fs/<lease id>
   -> {"lease":"1a2b3c4e","state":"Ready","source":"pool","mode":"fs","shared":true,"readOnly":true,"access":"direct",
-      "path":"/run/cxl/fs/1a2b3c4e","size":534773760,"serial":"0xc1af0001","env":{"CXL_C1AF0001_PATH":"/run/cxl/fs/1a2b3c4e",...}}
-cxl-request request --serial 0xc1af0001 --shared --read-only --mode fs --access cached --name models \
+      "path":"/run/cxl/fs/1a2b3c4e","size":534773760,"serial":"0xc1ae0002","env":{"CXL_C1AE0002_PATH":"/run/cxl/fs/1a2b3c4e",...}}
+cxl-request request --serial 0xc1ae0002 --shared --read-only --mode fs --access cached --name models \
     --exec llama-server -m /run/cxl/fs/models/model.gguf         # cached, at a fixed path
-cxl-request request --serial 0xc1af0002 --shared --mode fs --read-write --fs-type ext4 --name data \
+cxl-request request --serial 0xc1ae0003 --shared --mode fs --read-write --fs-type ext4 --name data \
     --exec sh -c 'date > /run/cxl/fs/data/stamp'               # read-write ext4 (fsTypes lists ext4), ReadWriteOnce
 cxl-request request --source local --serial 0xc100f5e1 --mode fs   # a persistent local memdev, read-only
-cxl-request request --serial 0xc1af0001 --mode block \
+cxl-request request --serial 0xc1ae0002 --mode block \
     --exec sh -c 'cat /tmp/model.erofs >&3'                   # the writer: an erofs image into the device
   -> {"lease":"1a2b3c4f","state":"Ready","source":"pool","mode":"block","shared":false,"readOnly":false,
-      "size":534773760,"serial":"0xc1af0001","block":"/dev/pmem0","env":{"CXL_C1AF0001_PATH":"/dev/pmem0",...}}
+      "size":534773760,"serial":"0xc1ae0002","block":"/dev/pmem0","env":{"CXL_C1AE0002_PATH":"/dev/pmem0",...}}
 cxl-request fd --lease 1a2b3c4f --exec sh -c 'cat /tmp/model.erofs >&3'   # the same through the fd again
-cxl-request request --serial 0xc1af0001 --shared --read-only --mode block --exec prog   # a reader of the block device
+cxl-request request --serial 0xc1ae0002 --shared --read-only --mode block --exec prog   # a reader of the block device
 cxl-request env --lease 1a2b3c4d                              # KEY=VALUE lines (DAX, not FD)
 cxl-request fd --lease 1a2b3c4d --wait 60s --exec prog        # the fd again after a restart of prog
 cxl-request env --lease 1a2b3c4d --exec numactl --membind=2 prog   # a numa lease: CXL_C100E2E1_NODE=2
@@ -457,9 +457,9 @@ For example:
 | `{"op":"request","source":"local","size":"64Mi","serial":"0xc100e2e1"}` | memory of the device with the serial |
 | `{"op":"request","serial":"0xc1ae0001","shared":true}` | one share of a shared device, fd passed |
 | `{"op":"request","serial":"0xc1ae0001"}` | the shared device, nobody else meanwhile, fd passed |
-| `{"op":"request","serial":"0xc1af0001","shared":true,"readOnly":true,"mode":"fs","access":"cached","name":"models"}` | one share of a persistent device, its filesystem at `/run/cxl/fs/models`, page-cached |
-| `{"op":"request","serial":"0xc1af0001","mode":"block"}` | a persistent device whole, the fd of its block device passed, read-write |
-| `{"op":"request","serial":"0xc1af0002","shared":true,"mode":"fs","readWrite":true,"fsType":"ext4"}` | one share of a persistent device, its ext4 read-write at `/run/cxl/fs/<lease id>` |
+| `{"op":"request","serial":"0xc1ae0002","shared":true,"readOnly":true,"mode":"fs","access":"cached","name":"models"}` | one share of a persistent device, its filesystem at `/run/cxl/fs/models`, page-cached |
+| `{"op":"request","serial":"0xc1ae0002","mode":"block"}` | a persistent device whole, the fd of its block device passed, read-write |
+| `{"op":"request","serial":"0xc1ae0003","shared":true,"mode":"fs","readWrite":true,"fsType":"ext4"}` | one share of a persistent device, its ext4 read-write at `/run/cxl/fs/<lease id>` |
 | `{"op":"release","lease":"1a2b3c4d","wait":"120s"}` | release one lease of the pod |
 | `{"op":"release","all":true}` | release all leases of the pod |
 | `{"op":"list"}` | leases of the pod |

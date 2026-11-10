@@ -2,8 +2,7 @@
 
 Scripts that validate the local CXL memory allocations of
 `nri-dra-driver-cxl` (driver `cxl.nri.io`) on a real single-node
-Kubernetes cluster with a CXL memory expander, and the
-[report](REPORT.md) of their first run on real hardware.
+Kubernetes cluster with a CXL memory expander.
 
 The scripts run on a workstation and drive the node over ssh
 (`TARGET`, "root@hostname"): `kubectl`, `cxl`, `daxctl` and `helm` run
