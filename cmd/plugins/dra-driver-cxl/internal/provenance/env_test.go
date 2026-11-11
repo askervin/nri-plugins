@@ -17,6 +17,7 @@ package provenance
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"maps"
@@ -210,15 +211,29 @@ func (e *watchEnv) wantHeld(what string, want ...uint64) {
 	}
 }
 
-// stateOf returns the state of the serial in the watcher, UNKNOWN for
-// none.
+// stateOf returns the state of the serial in the records of the watcher,
+// UNKNOWN for none.
 func (e *watchEnv) stateOf(serial uint64) state.ProvenanceState {
-	e.w.mu.Lock()
-	defer e.w.mu.Unlock()
-	if en := e.w.entries[serial]; en != nil {
-		return en.rec.State
+	e.t.Helper()
+	if p := e.watched(serial); p != nil {
+		return p.State
 	}
 	return state.ProvenanceUnknown
+}
+
+// watched returns a copy of the record of the serial that the watcher
+// reads once the commits so far are written (the records in memory of a
+// LOST store), nil for none.
+func (e *watchEnv) watched(serial uint64) *state.Provenance {
+	e.t.Helper()
+	if e.st.Lost() == nil {
+		e.flush()
+	}
+	if p := e.w.records().ProvenanceOf(state.Serial(serial)); p != nil {
+		c := *p
+		return &c
+	}
+	return nil
 }
 
 // wantState fails unless the serial is in the state.
@@ -227,6 +242,42 @@ func (e *watchEnv) wantState(serial uint64, want state.ProvenanceState) {
 	if got := e.stateOf(serial); got != want {
 		e.t.Fatalf("serial %#x: state %s, expected %s", serial, got, want)
 	}
+}
+
+// errDisk is the error of a failed write of the store.
+var errDisk = errors.New("disk failure")
+
+// loseWrites makes the writes of the watcher's commits fail until restore
+// is called: a durable commit fails with errDisk, a lazy one returns once
+// it is applied and its write fails later; the snapshot keeps the records.
+func (e *watchEnv) loseWrites() (restore func()) {
+	commit := e.w.storeCommit
+	e.w.storeCommit = func(_ context.Context, d store.Durability, fn store.Func) error {
+		if err := fn(e.st.Snapshot().Clone()); err != nil {
+			return err
+		}
+		if d == store.Durable {
+			return errDisk
+		}
+		return nil
+	}
+	return func() { e.w.storeCommit = commit }
+}
+
+// refuseCommits makes every commit of the watcher fail with errDisk until
+// restore is called, as a closed store does.
+func (e *watchEnv) refuseCommits() (restore func()) {
+	commit := e.w.storeCommit
+	e.w.storeCommit = func(context.Context, store.Durability, store.Func) error { return errDisk }
+	return func() { e.w.storeCommit = commit }
+}
+
+// generation returns the generation of the store's document once the
+// commits so far are written.
+func (e *watchEnv) generation() uint64 {
+	e.t.Helper()
+	e.flush()
+	return e.st.Snapshot().Generation
 }
 
 // flush waits until the lazy commits so far are written.

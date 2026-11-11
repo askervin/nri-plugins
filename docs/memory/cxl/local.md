@@ -93,9 +93,14 @@ reboots, [design.md](design.md#provenance)):
 
 A memdev that is held back, or a pool device, is not used by the plugin
 even if a local claim was allocated on it: before it creates a region on
-a memdev or onlines its memory, the plugin lists the ResourceSlices of
-the pool driver again, and Prepare fails with `memory device serial
-0x... is a pool device ...: it is not used as a local memory device`.
+a memdev or onlines its memory, the plugin reads the provenance it
+remembers of the memdev and lists the ResourceSlices of the pool driver
+again. Prepare fails with `memdev 0x... is a pool device (HELD): not
+used as a local memdev` for a memdev that is held back, `memdev 0x... is
+a pool device (POOL): not used as a local memdev` for a remembered pool
+device, and `memory device serial 0x... is a pool device of ...: it is
+not used as a local memory device` for a memdev that the ResourceSlices
+of a pool list at that moment.
 
 Memdevs that are on the node when the plugin first starts (as local
 memdevs are on a real machine, from boot) and a local memdev that is

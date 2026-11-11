@@ -707,9 +707,10 @@ func TestPoolSerialsHeldRegion(t *testing.T) {
 	e.wantScan("published", "region0-node2")
 }
 
-// TestPoolSerialsCheckLocal pins CheckLocal, the check before the engine
-// uses a memdev: it refuses a remembered pool serial, a serial of a current
-// pool slice and a held memdev.
+// TestPoolSerialsCheckLocal pins CheckLocal, the fresh list of the
+// engine's guard: it refuses a serial of a current pool slice; a
+// remembered pool serial and a held memdev pass it: their POOL and HELD
+// records, which the engine reads itself, refuse them.
 func TestPoolSerialsCheckLocal(t *testing.T) {
 	e := newPubSerialsEnv(t)
 	ctx := context.Background()
@@ -724,13 +725,15 @@ func TestPoolSerialsCheckLocal(t *testing.T) {
 		t.Fatalf("expected a refusal, got %v", err)
 	}
 	e.publish()
-	if err := e.w.CheckLocal(ctx, pubLocalSerial); err == nil {
-		t.Fatal("a remembered pool serial accepted")
+	pubNoErr(t, e.w.CheckLocal(ctx, pubLocalSerial))
+	if r := e.st.Snapshot().ProvenanceOf(pubLocalSerial); r == nil || r.State != state.ProvenancePool {
+		t.Fatalf("a remembered pool serial: record %+v", r)
 	}
 	e.plug(pubOtherLocalSerial)
 	e.wantScan("held")
-	if err := e.w.CheckLocal(ctx, pubOtherLocalSerial); err == nil || !strings.Contains(err.Error(), "held back") {
-		t.Fatalf("expected a refusal, got %v", err)
+	pubNoErr(t, e.w.CheckLocal(ctx, pubOtherLocalSerial))
+	if r := e.st.Snapshot().ProvenanceOf(pubOtherLocalSerial); r == nil || r.State != state.ProvenanceHeld {
+		t.Fatalf("a held memdev: record %+v", r)
 	}
 	if err := (*provenance.Watcher)(nil).CheckLocal(ctx, pubLocalSerial); err != nil {
 		t.Fatal(err)

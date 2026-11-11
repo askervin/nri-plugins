@@ -556,8 +556,8 @@ func (fe *frontEnds) recover(ctx context.Context, cdiRoot string, driverConfig *
 }
 
 // localPoolGuard returns the check of a local memdev before the engine
-// uses it: a memdev that the pool driver prepares, or that the watcher
-// knows as a pool device or holds, is refused (with a fresh list).
+// uses it: a memdev that the pool driver prepares, or that a pool
+// ResourceSlice lists now (a fresh list of the watcher), is refused.
 func localPoolGuard(pool *dra.Plugin, watcher *provenance.Watcher) func(ctx context.Context, serial uint64) error {
 	return func(ctx context.Context, serial uint64) error {
 		if pool.Serials()[serial] {

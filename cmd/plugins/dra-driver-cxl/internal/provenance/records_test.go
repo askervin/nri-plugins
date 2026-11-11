@@ -84,9 +84,10 @@ func TestRecordsCommitted(t *testing.T) {
 	}
 }
 
-// TestRecordsRefresh pins when a record whose LastSeen only changed is
-// committed: not before Refresh since the last commit, then at the next
-// observation; a change of the records is committed at once.
+// TestRecordsRefresh pins when the times of last sight of the records are
+// committed: not before Refresh since they were, then at the next list or
+// observation that sees them; a change of the records is committed at
+// once, with the times of the records that its step saw.
 func TestRecordsRefresh(t *testing.T) {
 	e := newWatchEnv(t)
 	t0 := e.now()
@@ -108,15 +109,18 @@ func TestRecordsRefresh(t *testing.T) {
 	if r := e.record(localSerial); r == nil || !r.LastSeen.Equal(t0) {
 		t.Fatalf("record %+v, expected LastSeen %v", r, t0)
 	}
-	// a Refresh after the last commit: the list commits, with the times
-	// of the memdevs of the scan before
+	// a Refresh after the last commit: the list and the observation of
+	// the memdevs commit the times of their sight
 	e.advance(time.Minute)
 	e.wantHeld("a refresh later")
 	if r := e.record(0xc1ee2001); r == nil || !r.LastSeen.Equal(t0.Add(Refresh)) {
 		t.Fatalf("record %+v, expected LastSeen %v", r, t0.Add(Refresh))
 	}
-	if r := e.record(localSerial); r == nil || !r.LastSeen.Equal(t0.Add(Refresh-time.Minute)) {
-		t.Fatalf("record %+v, expected LastSeen %v", r, t0.Add(Refresh-time.Minute))
+	if r := e.record(localSerial); r == nil || !r.LastSeen.Equal(t0.Add(Refresh)) {
+		t.Fatalf("record %+v, expected LastSeen %v", r, t0.Add(Refresh))
+	}
+	if _, pools := e.records(); len(pools) != 1 || !pools[0].Listed.Equal(t0.Add(Refresh)) {
+		t.Fatalf("listed pools %+v, expected Listed %v", pools, t0.Add(Refresh))
 	}
 	gen = e.st.Snapshot().Generation
 	// a change is committed at once
@@ -144,8 +148,8 @@ func TestRecordsLoaded(t *testing.T) {
 	e.wantState(0xc1ee2001, state.ProvenancePool)
 	e.wantState(sharedPoolSerial, state.ProvenancePool)
 	e.wantState(localSerial, state.ProvenanceLocal)
-	if !reflect.DeepEqual(e.w.pools, map[string]time.Time{poolC: e.now()}) {
-		t.Fatalf("pools %v", e.w.pools)
+	if pools := e.w.records().ListedPools; !reflect.DeepEqual(pools, []state.ListedPool{{Pool: poolC, Listed: e.now()}}) {
+		t.Fatalf("pools %v", pools)
 	}
 	// the pool device is attached while its slices are gone
 	e.plug(sharedPoolSerial)
@@ -198,10 +202,7 @@ func TestLostStore(t *testing.T) {
 	e.wantHeld("lost records", localSerial)
 	wantLogLine(t, logs(), fmt.Sprintf(compat.LogPoolSerialsHoldingBackNewMemdev+" mem0 (serial 0xc100e2e1): it may be a pool device: "+
 		"the remembered pool serials are lost (%s)", lost))
-	e.w.mu.Lock()
-	reason := e.w.entries[localSerial].rec.HeldReason
-	e.w.mu.Unlock()
-	if reason != state.HeldLost {
+	if reason := e.watched(localSerial).HeldReason; reason != state.HeldLost {
 		t.Fatalf("held reason %q", reason)
 	}
 	e.advance(HoldBack - time.Second)

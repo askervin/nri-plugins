@@ -148,13 +148,11 @@ func TestHeldUntilPoolBack(t *testing.T) {
 // test if it is not held.
 func (e *watchEnv) held(serial uint64) time.Time {
 	e.t.Helper()
-	e.w.mu.Lock()
-	defer e.w.mu.Unlock()
-	en := e.w.entries[serial]
-	if en == nil || !en.held() || en.rec.HeldSince.IsZero() {
-		e.t.Fatalf("serial %#x is not held: %+v", serial, en)
+	p := e.watched(serial)
+	if p == nil || p.State != state.ProvenanceHeld || p.HeldSince.IsZero() {
+		e.t.Fatalf("serial %#x is not held: %+v", serial, p)
 	}
-	return en.rec.HeldSince
+	return p.HeldSince
 }
 
 // TestHeldGone pins a held memdev that is detached before its hold ended:
@@ -189,10 +187,7 @@ func TestHeldBecomesPool(t *testing.T) {
 		t.Fatalf("record %+v", r)
 	}
 	e.wantHeld("listed")
-	e.w.mu.Lock()
-	rec := e.w.entries[sharedPoolSerial].rec
-	e.w.mu.Unlock()
-	if rec.State != state.ProvenancePool || !rec.HeldSince.IsZero() || rec.HeldReason != "" {
+	if rec := *e.watched(sharedPoolSerial); rec.State != state.ProvenancePool || !rec.HeldSince.IsZero() || rec.HeldReason != "" {
 		t.Fatalf("entry %+v", rec)
 	}
 }
@@ -221,14 +216,17 @@ func TestLocalBecomesPool(t *testing.T) {
 	if r := e.st.Snapshot().ProvenanceOf(0xa2); r == nil || r.State != state.ProvenancePool || r.Pool != "" {
 		t.Fatalf("record of a prepared serial %+v", r)
 	}
-	// seen again
+	// seen again: its LastSeen is refreshed a Refresh after its change
+	changed := e.now()
 	e.advance(time.Minute)
 	e.wantHeld("seen again")
 	e.wantState(localSerial, state.ProvenancePool)
-	e.w.mu.Lock()
-	seen := e.w.entries[localSerial].rec.LastSeen
-	e.w.mu.Unlock()
-	if !seen.Equal(e.now()) {
+	if seen := e.watched(localSerial).LastSeen; !seen.Equal(changed) {
+		t.Fatalf("last seen %v, expected %v", seen, changed)
+	}
+	e.advance(Refresh)
+	e.wantHeld("seen a refresh later")
+	if seen := e.watched(localSerial).LastSeen; !seen.Equal(e.now()) {
 		t.Fatalf("last seen %v, expected %v", seen, e.now())
 	}
 	e.w.NotePrepared(nil)
@@ -347,9 +345,12 @@ func TestPoolDeviceUsedByLocalClaims(t *testing.T) {
 	e.wantState(otherLocalSerial, state.ProvenanceLocal)
 }
 
-// TestCheckLocalRefusals pins the two refusals of CheckLocal, with a fresh
-// list: a pool device (of its pool, if known) and a held memdev; a local
-// memdev and a nil watcher are accepted.
+// TestCheckLocalRefusals pins CheckLocal, the fresh list of the engine's
+// guard: a serial that a pool slice lists now is refused, with its pool,
+// and its POOL record is in the snapshot when CheckLocal returns. A serial
+// that the slices no longer list, a prepared one and a held memdev pass
+// CheckLocal: their POOL and HELD records, which the engine reads itself,
+// refuse them. A local memdev and a nil watcher are accepted.
 func TestCheckLocalRefusals(t *testing.T) {
 	e := newWatchEnv(t)
 	ctx := t.Context()
@@ -361,16 +362,32 @@ func TestCheckLocalRefusals(t *testing.T) {
 	e.publish("0xc1ee2001", "0xc100e2e1")
 	wantErr(t, e.w.CheckLocal(ctx, localSerial),
 		"memory device serial 0xc100e2e1 is a pool device of "+poolC+": it is not used as a local memory device")
+	snapshotState := func(serial uint64) state.ProvenanceState {
+		if r := e.st.Snapshot().ProvenanceOf(state.Serial(serial)); r != nil {
+			return r.State
+		}
+		return state.ProvenanceUnknown
+	}
+	if st := snapshotState(localSerial); st != state.ProvenancePool {
+		t.Fatalf("a listed serial is %s in the snapshot", st)
+	}
 	e.publish()
-	wantErr(t, e.w.CheckLocal(ctx, localSerial),
-		"memory device serial 0xc100e2e1 is a pool device of "+poolC+": it is not used as a local memory device")
-	// prepared by the pool driver: no pool
+	noErr(t, e.w.CheckLocal(ctx, localSerial))
+	if st := snapshotState(localSerial); st != state.ProvenancePool {
+		t.Fatalf("a remembered pool serial is %s in the snapshot", st)
+	}
+	// prepared by the pool driver
 	e.w.NotePrepared(map[uint64]bool{0xa2: true})
-	wantErr(t, e.w.CheckLocal(ctx, 0xa2), "memory device serial 0xa2 is a pool device: it is not used as a local memory device")
+	noErr(t, e.w.CheckLocal(ctx, 0xa2))
+	if st := snapshotState(0xa2); st != state.ProvenancePool {
+		t.Fatalf("a prepared serial is %s in the snapshot", st)
+	}
 	e.plug(otherLocalSerial)
 	e.wantHeld("held", otherLocalSerial)
-	wantErr(t, e.w.CheckLocal(ctx, otherLocalSerial),
-		"memory device serial 0xa1 is held back as a possible pool device: it is not used as a local memory device yet")
+	noErr(t, e.w.CheckLocal(ctx, otherLocalSerial))
+	if st := snapshotState(otherLocalSerial); st != state.ProvenanceHeld {
+		t.Fatalf("a held memdev is %s in the snapshot", st)
+	}
 	if err := (*Watcher)(nil).CheckLocal(ctx, localSerial); err != nil {
 		t.Fatal(err)
 	}
@@ -381,9 +398,9 @@ func TestCheckLocalRefusals(t *testing.T) {
 }
 
 // TestWatch pins the ticks of Watch: a rescan (not periodic) at every
-// ListRetry while the list fails or a memdev is held, none while neither
-// and the node was scanned, a periodic one after Poll without a scan, and
-// the end with ctx.
+// ListRetry while the list fails, a memdev is held or the last commit of a
+// step failed, none while none of them and the node was scanned, a
+// periodic one after Poll without a scan, and the end with ctx.
 func TestWatch(t *testing.T) {
 	oldRetry, oldPoll := ListRetry, Poll
 	t.Cleanup(func() { ListRetry, Poll = oldRetry, oldPoll })
@@ -483,6 +500,14 @@ func TestWatch(t *testing.T) {
 		t.Fatal("holding or failing")
 	}
 	watch("idle")
+	// the last commit of an observation failed
+	w.mu.Lock()
+	w.uncommitted["observation"] = true
+	w.mu.Unlock()
+	watch("commit failed", false)
+	w.mu.Lock()
+	delete(w.uncommitted, "observation")
+	w.mu.Unlock()
 	// not scanned for Poll
 	Poll = 20 * time.Millisecond
 	mu.Lock()

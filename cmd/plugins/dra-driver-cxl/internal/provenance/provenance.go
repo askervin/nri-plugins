@@ -16,8 +16,10 @@ package provenance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -57,25 +59,34 @@ import (
 // also without udev events. An absence counts from the first observation
 // that missed it, over observations no more than ObservationGap apart: a
 // longer gap (a stopped driver, a starved process, a failing list, a step
-// of the clock) starts it again. Absence and holds are not committed:
-// after a restart they start again.
+// of the clock) starts it again. Absence is not committed: after a restart
+// it starts again; a hold goes on from its HeldSince.
 //
 // Identity: the serial.
 //
-// States: state.ProvenanceState; UNKNOWN is no entry.
+// States: state.ProvenanceState; UNKNOWN is no record.
 //
 // Transitions: see the table state.ProvenanceTable (internal/state and
 // docs/memory/cxl/states.md); a transition not in it is refused.
 //
-// Invariants: POOL never turns LOCAL; a HELD memdev has no record in the
-// store.
+// Invariants: POOL never turns LOCAL; a record changes only by a committed
+// step.
 //
-// Persistence: POOL and LOCAL entries are the Provenance records of the
-// store with Pool and LastSeen, and the listed pools its ListedPools; a
-// commit when they change, or at most every Refresh when only LastSeen
-// does; durable when a serial turned POOL or the operator removed a record.
+// Persistence: the Provenance records and the ListedPools of the store
+// are the only copy. A change is a step, a pure function of the records
+// that the store applies to its document: durable when a serial turns
+// POOL, a hold starts, ends or changes its reason, or the operator removes
+// a record; lazy otherwise. Nothing acts on a change before its commit; a
+// failed commit changes nothing and the step is taken again at the next
+// scan. A lazy step's lines and effects follow its application by the
+// store: its write may still fail, and then the next scan takes it again.
+// A step refreshes LastSeen of the records that it sees, and Listed of the
+// pools, when it changes the records or one of the times is older than
+// Refresh. Without a store, or with a LOST one, which refuses every
+// commit, the records are process memory.
 //
-// Locks and waits: Watcher.mu.
+// Locks and waits: the steps take no lock; Watcher.mu guards the records
+// in memory.
 
 var (
 	// Retention is how long a serial is remembered after it was first
@@ -87,8 +98,8 @@ var (
 	// HoldBack is how long a new memdev is held at most while a pool is
 	// missing.
 	HoldBack = 5 * time.Minute
-	// Refresh is how often the records are committed at most when only the
-	// times of last sight changed.
+	// Refresh is how often the times of last sight are committed at most
+	// when nothing else changes.
 	Refresh = time.Hour
 	// ObservationGap is the longest time between two observations over
 	// which an absence continues.
@@ -106,47 +117,414 @@ const (
 	triggerLoad    = state.TriggerLoad
 )
 
-// entry is the provenance of one serial.
-type entry struct {
-	rec state.Provenance
+// errDurable is the error of a step applied in a lazy commit that makes a
+// change which must be committed durably.
+var errDurable = errors.New("the step must be committed durably")
+
+// recorded tells whether the record is POOL or LOCAL.
+func recorded(p *state.Provenance) bool {
+	return p.State == state.ProvenancePool || p.State == state.ProvenanceLocal
 }
 
-// held tells whether the memdev of the entry is HELD.
-func (e *entry) held() bool {
-	return e.rec.State == state.ProvenanceHeld
+// expires tells whether a hold for the reason expires after HoldBack.
+func expires(reason state.HeldReason) bool {
+	return reason != state.HeldNeverListed && reason != state.HeldAttaching
 }
 
-// recorded tells whether the entry is a record of the store: POOL or
-// LOCAL.
-func (e *entry) recorded() bool {
-	return e.rec.State == state.ProvenancePool || e.rec.State == state.ProvenanceLocal
+// recordOf returns the record of the serial in r, nil for none.
+func recordOf(r *state.Records, serial uint64) *state.Provenance {
+	return r.ProvenanceOf(state.Serial(serial))
 }
 
-// pool tells whether the serial of the entry is POOL.
-func (e *entry) pool() bool {
-	return e.rec.State == state.ProvenancePool
+// poolSerialsOf returns the serials of the POOL records of r.
+func poolSerialsOf(r *state.Records) map[uint64]bool {
+	out := map[uint64]bool{}
+	for i := range r.Provenance {
+		if r.Provenance[i].State == state.ProvenancePool {
+			out[uint64(r.Provenance[i].Serial)] = true
+		}
+	}
+	return out
 }
 
-// apply moves the entry to the state on the trigger, as the table allows;
-// a refused transition is logged and leaves the entry as it is.
-func (e *entry) apply(to state.ProvenanceState, trigger state.Trigger) bool {
-	if err := state.Apply(&state.ProvenanceTable, &e.rec.State, to, trigger); err != nil {
-		klog.Errorf("pool serials: serial %s: %v", e.rec.Serial, err)
+// sections returns a copy of the provenance sections of r: the records
+// that the steps change.
+func sections(r *state.Records) *state.Records {
+	return &state.Records{Provenance: slices.Clone(r.Provenance), ListedPools: slices.Clone(r.ListedPools)}
+}
+
+// step is one change of the records at now: the transitions of a list, of
+// the serials that the pool driver prepares, of an observation of the
+// memdevs or of the operator's order. Its methods apply the transitions to
+// records and collect what they did.
+type step struct {
+	now time.Time
+	// changed: the step changed a record or a pool beyond the times of
+	// last sight; durable: a change that is committed durably.
+	changed, durable bool
+	// seen and seenPools are the serials and the pools that the step saw:
+	// their times of last sight are refreshed with a change.
+	seen      []uint64
+	seenPools []string
+	// lines are the log lines of the transitions.
+	lines []func()
+	// pool and held are the memdevs of an observation that are pool
+	// devices and HELD; conflicts the pool devices that local claims use.
+	pool, held map[uint64]bool
+	conflicts  []conflict
+	// forgotten are the serials and poolsGone the pools whose records the
+	// step removed.
+	forgotten []uint64
+	poolsGone []string
+}
+
+// conflict is a pool device that local claims use.
+type conflict struct {
+	serial uint64
+	name   string
+	claims []string
+}
+
+// stepFunc applies the transitions of a step to the records.
+type stepFunc func(s *step, r *state.Records)
+
+// log adds a line of the step.
+func (s *step) log(line func()) {
+	s.lines = append(s.lines, line)
+}
+
+// transit moves the record p to the state on the trigger, as the table
+// allows, and tells whether it did; a refused transition is a line of the
+// step and leaves p as it is.
+func (s *step) transit(p *state.Provenance, to state.ProvenanceState, trigger state.Trigger) bool {
+	if err := state.Apply(&state.ProvenanceTable, &p.State, to, trigger); err != nil {
+		serial := p.Serial
+		s.log(func() { klog.Errorf("pool serials: serial %s: %v", serial, err) })
 		return false
 	}
 	return true
 }
 
-// newEntry returns the entry of a serial without provenance (UNKNOWN).
-func newEntry(serial uint64) *entry {
-	return &entry{rec: state.Provenance{Serial: state.Serial(serial), State: state.ProvenanceUnknown}}
+// add adds the record of a serial without one (UNKNOWN) moved to the state
+// on the trigger, and returns it; nil if the table refuses the transition.
+func (s *step) add(r *state.Records, serial uint64, to state.ProvenanceState, trigger state.Trigger) *state.Provenance {
+	p := state.Provenance{Serial: state.Serial(serial), State: state.ProvenanceUnknown}
+	if !s.transit(&p, to, trigger) {
+		return nil
+	}
+	r.Provenance = append(r.Provenance, p)
+	s.changed = true
+	return &r.Provenance[len(r.Provenance)-1]
 }
 
-// load loads the POOL, LOCAL and HELD records and the listed pools of the
-// store: a hold goes on from its HeldSince.
-// The records of a LOST store are lost: lost is set, which holds new
-// memdevs for MissingWindow.
-func (w *Watcher) load() {
+// remove moves the record of the serial to UNKNOWN on the trigger and
+// removes it, and tells whether it did.
+func (s *step) remove(r *state.Records, serial uint64, trigger state.Trigger) bool {
+	i := slices.IndexFunc(r.Provenance, func(p state.Provenance) bool { return uint64(p.Serial) == serial })
+	if i < 0 || !s.transit(&r.Provenance[i], state.ProvenanceUnknown, trigger) {
+		return false
+	}
+	r.Provenance = slices.Delete(r.Provenance, i, i+1)
+	s.changed = true
+	return true
+}
+
+// notePool makes the serial seen now POOL on the trigger, listed in pool
+// ("" when prepared).
+func (s *step) notePool(r *state.Records, serial uint64, pool string, trigger state.Trigger) {
+	p := recordOf(r, serial)
+	switch {
+	case p == nil:
+		if p = s.add(r, serial, state.ProvenancePool, trigger); p == nil {
+			return
+		}
+		s.durable = true
+	case p.State == state.ProvenancePool:
+		s.transit(p, state.ProvenancePool, trigger)
+	default:
+		local := p.State == state.ProvenanceLocal
+		if !s.transit(p, state.ProvenancePool, trigger) {
+			return
+		}
+		if local {
+			s.log(func() {
+				klog.Infof("pool serials: memdev serial 0x%x is a pool device now (%s)", serial, orPrepared(pool))
+			})
+		}
+		p.HeldSince, p.HeldReason = time.Time{}, ""
+		s.changed, s.durable = true, true
+	}
+	if pool != "" && p.Pool != pool {
+		p.Pool, s.changed = pool, true
+	}
+	s.seen = append(s.seen, serial)
+}
+
+// noteLocal makes the memdev m seen now LOCAL on the trigger: a new or a
+// HELD one.
+func (s *step) noteLocal(r *state.Records, m *kernel.MemdevInfo, trigger state.Trigger) {
+	p, changed := recordOf(r, m.Serial), false
+	switch {
+	case p == nil:
+		p = s.add(r, m.Serial, state.ProvenanceLocal, triggerObserve)
+		changed = p != nil
+	case p.State == state.ProvenanceHeld:
+		if changed = s.transit(p, state.ProvenanceLocal, trigger); changed {
+			p.HeldSince, p.HeldReason = time.Time{}, ""
+			s.changed, s.durable = true, true
+		}
+	}
+	if changed {
+		name, serial := m.Name, m.Serial
+		s.log(func() { klog.Infof("pool serials: memdev %s (serial 0x%x) is a local memory device", name, serial) })
+	}
+	if p != nil {
+		s.seen = append(s.seen, m.Serial)
+	}
+}
+
+// hold holds the new memdev m (its record p, nil for none, else HELD) for
+// the reason why (reason), and tells whether it stays HELD: a reason that
+// does not expire holds it; one that expires holds it for HoldBack from the
+// start of the hold, or from the change of its reason from one that does
+// not expire.
+func (s *step) hold(r *state.Records, m *kernel.MemdevInfo, p *state.Provenance, why string, reason state.HeldReason) bool {
+	if p == nil {
+		name, serial := m.Name, m.Serial
+		s.log(func() {
+			klog.Warningf("pool serials: holding back new memdev %s (serial 0x%x): it may be a pool device: %s", name, serial, why)
+		})
+		if p = s.add(r, m.Serial, state.ProvenanceHeld, triggerObserve); p == nil {
+			return true
+		}
+		p.HeldSince, p.HeldReason = s.now, reason
+		s.durable = true
+	} else {
+		s.transit(p, state.ProvenanceHeld, triggerObserve)
+		if p.HeldReason != reason {
+			if expires(reason) && !expires(p.HeldReason) {
+				p.HeldSince = s.now
+			}
+			p.HeldReason = reason
+			s.changed, s.durable = true, true
+		}
+	}
+	return !expires(reason) || s.now.Sub(p.HeldSince) < HoldBack
+}
+
+// forget removes the POOL or LOCAL record of the serial, as the operator
+// orders with --forget-pool-serial.
+func (s *step) forget(r *state.Records, serial uint64) {
+	p := recordOf(r, serial)
+	if p == nil || !recorded(p) {
+		s.log(func() {
+			klog.Warningf("pool serials: --forget-pool-serial %s: no record of the serial", api.FormatSerial(serial))
+		})
+		return
+	}
+	old := p.State
+	if s.remove(r, serial, triggerLoad) {
+		s.durable = true
+		s.forgotten = append(s.forgotten, serial)
+		s.log(func() { klog.Infof("pool serials: forgetting serial 0x%x (%s, --forget-pool-serial)", serial, old) })
+	}
+}
+
+// expireAbsent removes the POOL or LOCAL record of the serial that has been
+// observed absent since then for Retention.
+func (s *step) expireAbsent(r *state.Records, serial uint64, since time.Time) {
+	p := recordOf(r, serial)
+	if p == nil || !recorded(p) {
+		return
+	}
+	pool := p.State == state.ProvenancePool
+	if s.remove(r, serial, triggerExpire) {
+		s.forgotten = append(s.forgotten, serial)
+		s.log(func() {
+			klog.Infof("pool serials: forgetting serial 0x%x (pool %v, observed absent since %s)", serial, pool, since.Format(time.RFC3339))
+		})
+	}
+}
+
+// poolGone is a pool observed without ResourceSlices since then for
+// Retention.
+type poolGone struct {
+	pool  string
+	since time.Time
+}
+
+// notePools adds the pools of a list that are new and removes the pools
+// gone.
+func (s *step) notePools(r *state.Records, listed map[string]bool, gone []poolGone) {
+	for _, pool := range slices.Sorted(maps.Keys(listed)) {
+		if !slices.ContainsFunc(r.ListedPools, func(lp state.ListedPool) bool { return lp.Pool == pool }) {
+			r.ListedPools = append(r.ListedPools, state.ListedPool{Pool: pool, Listed: s.now})
+			s.changed = true
+		}
+		s.seenPools = append(s.seenPools, pool)
+	}
+	for _, g := range gone {
+		i := slices.IndexFunc(r.ListedPools, func(lp state.ListedPool) bool { return lp.Pool == g.pool })
+		if i < 0 {
+			continue
+		}
+		r.ListedPools = slices.Delete(r.ListedPools, i, i+1)
+		s.changed = true
+		s.poolsGone = append(s.poolsGone, g.pool)
+		s.log(func() {
+			klog.Infof("pool serials: forgetting pool %s (observed without ResourceSlices since %s)", g.pool, g.since.Format(time.RFC3339))
+		})
+	}
+}
+
+// finish refreshes the times of last sight of the records and the pools
+// that the step saw, when the step changed the records or one of the
+// times is older than Refresh.
+func (s *step) finish(r *state.Records) {
+	var times []*time.Time
+	for _, serial := range s.seen {
+		if p := recordOf(r, serial); p != nil && recorded(p) {
+			times = append(times, &p.LastSeen)
+		}
+	}
+	for _, pool := range s.seenPools {
+		if i := slices.IndexFunc(r.ListedPools, func(lp state.ListedPool) bool { return lp.Pool == pool }); i >= 0 {
+			times = append(times, &r.ListedPools[i].Listed)
+		}
+	}
+	stale := slices.ContainsFunc(times, func(t *time.Time) bool { return s.now.Sub(*t) >= Refresh })
+	if !s.changed && !stale {
+		return
+	}
+	for _, t := range times {
+		*t = s.now
+	}
+}
+
+// run applies fn and the refresh of the times of the step s to r.
+func (s *step) run(r *state.Records, fn stepFunc) {
+	fn(s, r)
+	s.finish(r)
+}
+
+// records returns the provenance records: of the store's snapshot, or in
+// memory.
+func (w *Watcher) records() *state.Records {
+	if w.st != nil {
+		return &w.st.Snapshot().Records
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.mem
+}
+
+// commit applies fn to the records in a commit of durability d: through the
+// store, or to a copy of the records in memory that replaces them.
+func (w *Watcher) commit(d store.Durability, fn func(r *state.Records) error) error {
+	if w.st == nil {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		next := sections(w.mem)
+		if err := fn(next); err != nil {
+			return err
+		}
+		next.Sort()
+		if len(next.Provenance) == 0 {
+			next.Provenance = nil
+		}
+		if len(next.ListedPools) == 0 {
+			next.ListedPools = nil
+		}
+		w.mem = next
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), commitTimeout)
+	defer cancel()
+	return w.storeCommit(ctx, d, func(doc *store.Document) error {
+		return fn(&doc.Records)
+	})
+}
+
+// commitStep applies the step fn of the kind at now to the records in one
+// commit, and returns what it did and whether it is committed. A dry run on
+// r0, the records read before, decides: a step that changes nothing is not
+// committed; the commit is durable if a change of the dry run must be, and
+// applied again durably if a lazy one finds such a change. The lines of the
+// step are logged once the store applied it, a lazy step's before its
+// write. A failed commit changes nothing: the dry run is returned without
+// its lines and effects, and the watch scans again at each tick until a
+// step of the kind is committed. A durable commit whose wait ends is failed
+// although the store may still write it later: its lines are not logged.
+func (w *Watcher) commitStep(kind string, now time.Time, r0 *state.Records, fn stepFunc) (*step, bool) {
+	dry := &step{now: now}
+	work := sections(r0)
+	dry.run(work, fn)
+	if reflect.DeepEqual(work.Provenance, r0.Provenance) && reflect.DeepEqual(work.ListedPools, r0.ListedPools) {
+		w.committed(kind, dry)
+		return dry, true
+	}
+	var s *step
+	apply := func(d store.Durability) func(r *state.Records) error {
+		return func(r *state.Records) error {
+			s = &step{now: now}
+			s.run(r, fn)
+			if s.durable && d == store.Lazy {
+				return errDurable
+			}
+			return nil
+		}
+	}
+	d := store.Lazy
+	if dry.durable {
+		d = store.Durable
+	}
+	err := w.commit(d, apply(d))
+	if errors.Is(err, errDurable) {
+		err = w.commit(store.Durable, apply(store.Durable))
+	}
+	if err != nil {
+		klog.Errorf("pool serials: writing %s: %v", w.opts.Name, err)
+		w.mu.Lock()
+		w.uncommitted[kind] = true
+		w.mu.Unlock()
+		return dry, false
+	}
+	w.committed(kind, s)
+	return s, true
+}
+
+// committed takes the effects of the committed step s of the kind on the
+// memory of the watcher and logs its lines.
+func (w *Watcher) committed(kind string, s *step) {
+	lines := s.lines
+	w.mu.Lock()
+	delete(w.uncommitted, kind)
+	for _, serial := range s.forgotten {
+		delete(w.absent, serial)
+	}
+	for _, pool := range s.poolsGone {
+		delete(w.poolAbsent, pool)
+	}
+	for _, c := range s.conflicts {
+		if w.conflicts[c.serial] {
+			continue
+		}
+		w.conflicts[c.serial] = true
+		lines = append(lines, func() {
+			klog.Errorf("pool serials: memdev %s (serial 0x%x) is a pool device, but local claims use it: it is no longer published, and no local claim is prepared on it; release the local claims (%v) and check its memory",
+				c.name, c.serial, c.claims)
+		})
+	}
+	w.mu.Unlock()
+	for _, line := range lines {
+		line()
+	}
+}
+
+// open opens the records of the store: the line with their counts, or the
+// error of a LOST store, whose records are lost: lost is set, which holds
+// new memdevs for MissingWindow, and the records are kept in memory.
+func (w *Watcher) open() {
 	st := w.opts.Store
 	if st == nil {
 		return
@@ -157,31 +535,16 @@ func (w *Watcher) load() {
 			w.opts.Name, err, HoldBack, MissingWindow)
 		return
 	}
-	doc := st.Snapshot()
-	for _, p := range doc.Provenance {
-		switch p.State {
-		case state.ProvenancePool, state.ProvenanceLocal:
-			w.entries[uint64(p.Serial)] = &entry{rec: state.Provenance{Serial: p.Serial, State: p.State, Pool: p.Pool, LastSeen: p.LastSeen}}
-		case state.ProvenanceHeld:
-			w.entries[uint64(p.Serial)] = &entry{rec: state.Provenance{Serial: p.Serial, State: p.State, HeldSince: p.HeldSince,
-				HeldReason: p.HeldReason}}
-		default:
-			klog.Warningf("pool serials: %s: skipping the record of serial %s in state %s", w.opts.Name, p.Serial, p.State)
-		}
-	}
-	for _, lp := range doc.ListedPools {
-		w.pools[lp.Pool] = lp.Listed
-	}
-	recorded, held := 0, 0
-	for _, e := range w.entries {
-		if e.held() {
+	w.st, w.storeCommit = st, st.Commit
+	r := w.records()
+	held := 0
+	for i := range r.Provenance {
+		if r.Provenance[i].State == state.ProvenanceHeld {
 			held++
-		} else {
-			recorded++
 		}
 	}
 	klog.Infof("pool serials: loaded %d serials (%d pool serials) and %d pools from %s",
-		recorded, len(w.poolSerialsLocked()), len(w.pools), w.opts.Name)
+		len(r.Provenance)-held, len(poolSerialsOf(r)), len(r.ListedPools), w.opts.Name)
 	if held > 0 {
 		klog.Infof("pool serials: %d memdevs held back before the restart stay held", held)
 	}
@@ -193,127 +556,36 @@ func (w *Watcher) forget(serials []uint64) {
 	if len(serials) == 0 {
 		return
 	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	changed := false
-	for _, s := range serials {
-		e := w.entries[s]
-		if e == nil || !e.recorded() {
-			klog.Warningf("pool serials: --forget-pool-serial %s: no record of the serial", api.FormatSerial(s))
-			continue
+	w.commitStep("forget", w.opts.Now(), w.records(), func(s *step, r *state.Records) {
+		for _, serial := range serials {
+			s.forget(r, serial)
 		}
-		old := e.rec.State
-		if !e.apply(state.ProvenanceUnknown, triggerLoad) {
-			continue
-		}
-		klog.Infof("pool serials: forgetting serial 0x%x (%s, --forget-pool-serial)", s, old)
-		delete(w.entries, s)
-		delete(w.absent, s)
-		changed, w.durable = true, true
-	}
-	w.saveLocked(changed, w.opts.Now())
-}
-
-// saveLocked commits the records if they changed, or if only times changed
-// and the last commit is older than Refresh. A LOST store refuses every
-// commit, which load has logged: the records stay in memory. Called with
-// w.mu held.
-func (w *Watcher) saveLocked(changed bool, now time.Time) {
-	if w.opts.Store == nil || w.lost != "" || (!changed && (!w.dirty || now.Sub(w.saved) < Refresh)) {
-		return
-	}
-	var recs []state.Provenance
-	for _, s := range slices.Sorted(maps.Keys(w.entries)) {
-		switch e := w.entries[s]; {
-		case e.recorded():
-			recs = append(recs, state.Provenance{Serial: e.rec.Serial, State: e.rec.State, Pool: e.rec.Pool, LastSeen: e.rec.LastSeen})
-		case e.held():
-			recs = append(recs, state.Provenance{Serial: e.rec.Serial, State: e.rec.State, HeldSince: e.rec.HeldSince,
-				HeldReason: e.rec.HeldReason})
-		}
-	}
-	var pools []state.ListedPool
-	for _, pool := range slices.Sorted(maps.Keys(w.pools)) {
-		pools = append(pools, state.ListedPool{Pool: pool, Listed: w.pools[pool]})
-	}
-	durability := store.Lazy
-	if w.durable {
-		durability = store.Durable
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), commitTimeout)
-	defer cancel()
-	err := w.opts.Store.Commit(ctx, durability, func(doc *store.Document) error {
-		doc.Provenance, doc.ListedPools = recs, pools
-		return nil
 	})
-	if err != nil {
-		klog.Errorf("pool serials: writing %s: %v", w.opts.Name, err)
-		return
-	}
-	w.saved, w.dirty, w.durable = now, false, false
 }
 
-// notePoolLocked makes a serial seen now POOL, listed in pool ("" when
-// prepared), on the trigger. It returns whether the records changed.
+// observePoolsLocked observes the absence of the pools of r that the list
+// at now does not list, and returns those observed absent for Retention.
 // Called with w.mu held.
-func (w *Watcher) notePoolLocked(serial uint64, pool string, now time.Time, trigger state.Trigger) bool {
-	e, changed := w.entries[serial], false
-	switch {
-	case e == nil:
-		e = newEntry(serial)
-		w.entries[serial] = e
-		changed = e.apply(state.ProvenancePool, trigger)
-	case e.rec.State == state.ProvenanceLocal:
-		klog.Infof("pool serials: memdev serial 0x%x is a pool device now (%s)", serial, orPrepared(pool))
-		changed = e.apply(state.ProvenancePool, trigger)
-	case e.held():
-		changed = e.apply(state.ProvenancePool, trigger)
-		e.rec.HeldSince, e.rec.HeldReason = time.Time{}, ""
-	default:
-		e.apply(state.ProvenancePool, trigger)
-	}
-	if changed {
-		w.durable = true
-	}
-	if pool != "" && e.rec.Pool != pool {
-		e.rec.Pool, changed = pool, true
-	}
-	e.rec.LastSeen, w.dirty = now, true
-	delete(w.absent, serial)
-	return changed
-}
-
-// notePoolsLocked remembers the pools of a successful list at now, and
-// observes the absence of the others: a pool is forgotten after Retention
-// of observed absence. It returns whether the pools changed. Called with
-// w.mu held.
-func (w *Watcher) notePoolsLocked(listed map[string]bool, now time.Time) bool {
-	changed := false
+func (w *Watcher) observePoolsLocked(r *state.Records, listed map[string]bool, now time.Time) []poolGone {
 	continuous := observedSince(w.lastList, now)
 	for pool := range listed {
-		if _, ok := w.pools[pool]; !ok {
-			changed = true
-		}
-		w.pools[pool], w.dirty = now, true
 		delete(w.poolAbsent, pool)
 	}
-	for _, pool := range slices.Sorted(maps.Keys(w.pools)) {
-		if listed[pool] {
+	var gone []poolGone
+	for _, lp := range r.ListedPools {
+		if listed[lp.Pool] {
 			continue
 		}
-		since, ok := w.poolAbsent[pool]
+		since, ok := w.poolAbsent[lp.Pool]
 		switch {
 		case !ok || !continuous:
-			w.poolAbsent[pool] = now
+			w.poolAbsent[lp.Pool] = now
 		case now.Sub(since) > Retention:
-			klog.Infof("pool serials: forgetting pool %s (observed without ResourceSlices since %s)", pool, since.Format(time.RFC3339))
-			delete(w.pools, pool)
-			delete(w.poolAbsent, pool)
-			changed = true
+			gone = append(gone, poolGone{pool: lp.Pool, since: since})
 		}
 	}
 	w.lastList = now
-	return changed
+	return gone
 }
 
 // observedSince tells whether an observation at now continues the one at
@@ -330,23 +602,12 @@ func orPrepared(pool string) string {
 	return "in a ResourceSlice of " + pool
 }
 
-// poolSerialsLocked returns the POOL serials. Called with w.mu held.
-func (w *Watcher) poolSerialsLocked() map[uint64]bool {
-	out := map[uint64]bool{}
-	for s, e := range w.entries {
-		if e.pool() {
-			out[s] = true
-		}
-	}
-	return out
-}
-
 // uncertainLocked returns why a new memdev cannot be taken as local now but
-// may be after HoldBack, and its reason: the list fails, pools have been
-// observed without ResourceSlices for less than MissingWindow, or the
+// may be after HoldBack, and its reason: the list fails, pools of r have
+// been observed without ResourceSlices for less than MissingWindow, or the
 // records were lost less than MissingWindow ago. "" if it can. Called with
 // w.mu held.
-func (w *Watcher) uncertainLocked(now time.Time) (string, state.HeldReason) {
+func (w *Watcher) uncertainLocked(r *state.Records, now time.Time) (string, state.HeldReason) {
 	if w.failing || !w.known {
 		return "the ResourceSlices of pool controllers cannot be listed", state.HeldListFailing
 	}
@@ -362,9 +623,9 @@ func (w *Watcher) uncertainLocked(now time.Time) (string, state.HeldReason) {
 		}
 	}
 	var missing []string
-	for pool := range w.pools {
-		if since, ok := w.poolAbsent[pool]; ok && !w.listed[pool] && now.Sub(since) < MissingWindow {
-			missing = append(missing, pool)
+	for _, lp := range r.ListedPools {
+		if since, ok := w.poolAbsent[lp.Pool]; ok && !w.listed[lp.Pool] && now.Sub(since) < MissingWindow {
+			missing = append(missing, lp.Pool)
 		}
 	}
 	if len(missing) > 0 {
@@ -387,119 +648,163 @@ func (w *Watcher) Gate(ctx context.Context, snap *kernel.Snapshot, poolSerials m
 	if w == nil || snap == nil {
 		return poolSerials, nil
 	}
-	ev, evErr := w.evidence(ctx, snap, poolSerials, local)
-
+	r0 := w.records()
+	ev, evErr := w.evidence(ctx, r0, snap, poolSerials, local)
+	g := &gateScan{memdevs: snap.Memdevs, ev: ev, poolSerials: poolSerials, local: local}
+	present := map[uint64]bool{}
+	for i := range snap.Memdevs {
+		present[snap.Memdevs[i].Serial] = true
+	}
+	now := w.opts.Now()
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	g := &gateScan{ev: ev, poolSerials: poolSerials, local: local, now: w.opts.Now()}
-	g.uncertain, g.reason = w.uncertainLocked(g.now)
+	g.known = w.known
+	g.uncertain, g.reason = w.uncertainLocked(r0, now)
 	if evErr != nil && g.uncertain == "" {
 		g.uncertain, g.reason = "the pool claims of the node cannot be listed", state.HeldClaimsNotListable
 	}
-	out := maps.Clone(poolSerials)
-	if out == nil {
-		out = map[uint64]bool{}
+	for serial := range present {
+		delete(w.absent, serial)
 	}
-	held, present, changed := map[uint64]bool{}, map[uint64]bool{}, false
-	for i := range snap.Memdevs {
-		m := &snap.Memdevs[i]
-		present[m.Serial] = true
-		pool, isHeld, ch := w.observeLocked(m, g)
-		changed = ch || changed
-		if pool {
-			out[m.Serial] = true
-		}
-		if isHeld {
-			held[m.Serial] = true
-		}
+	g.expired = w.observeAbsenceLocked(r0, present, now)
+	w.mu.Unlock()
+	s, ok := w.commitStep("observation", now, r0, g.apply)
+	if !ok {
+		g.withhold(s, r0)
 	}
-	changed = w.observeAbsenceLocked(present, g.now) || changed
-	for _, s := range slices.Sorted(maps.Keys(w.entries)) {
-		if e := w.entries[s]; e.held() && !present[s] && e.apply(state.ProvenanceUnknown, triggerObserve) {
-			delete(w.entries, s)
-			changed = true
-		}
-	}
-	w.saveLocked(changed, g.now)
-	return out, held
+	return s.pool, s.held
 }
 
-// gateScan is one observation of the memdevs of a scan: the pool serials
-// and the local uses that the scan has, the evidence of the pool claims of
-// the node (nil when they were not listed), the reason for doubt of a new
-// memdev ("" for none) and the time.
+// gateScan is one observation of the memdevs of a scan: the memdevs, the
+// pool serials and the local uses that the scan has, the evidence of the
+// pool claims of the node (nil when they were not listed), whether a list
+// succeeded, the reason for doubt of a new memdev ("" for none) and the
+// recorded serials observed absent for Retention, with the start of their
+// absence.
 type gateScan struct {
+	memdevs     []kernel.MemdevInfo
 	ev          *claimEvidence
 	poolSerials map[uint64]bool
 	local       map[uint64][]string
+	known       bool
 	uncertain   string
 	reason      state.HeldReason
-	now         time.Time
+	expired     map[uint64]time.Time
 }
 
-// observeLocked observes the memdev m on the node in the scan g: a pool
-// device (pool), a new memdev that stays HELD (held), else a local memdev;
-// it returns whether the records changed. Called with w.mu held.
-func (w *Watcher) observeLocked(m *kernel.MemdevInfo, g *gateScan) (pool, held, changed bool) {
-	s := m.Serial
-	e := w.entries[s]
+// apply applies the observation g to the records r in the step s: each
+// memdev observed, the records of the serials absent for Retention and
+// the HELD ones of memdevs that are gone removed.
+func (g *gateScan) apply(s *step, r *state.Records) {
+	s.pool, s.held = maps.Clone(g.poolSerials), map[uint64]bool{}
+	if s.pool == nil {
+		s.pool = map[uint64]bool{}
+	}
+	present := map[uint64]bool{}
+	for i := range g.memdevs {
+		m := &g.memdevs[i]
+		present[m.Serial] = true
+		pool, held := g.observe(s, r, m)
+		if pool {
+			s.pool[m.Serial] = true
+		}
+		if held {
+			s.held[m.Serial] = true
+		}
+	}
+	for _, serial := range slices.Sorted(maps.Keys(g.expired)) {
+		s.expireAbsent(r, serial, g.expired[serial])
+	}
+	var gone []uint64
+	for i := range r.Provenance {
+		if p := &r.Provenance[i]; p.State == state.ProvenanceHeld && !present[uint64(p.Serial)] {
+			gone = append(gone, uint64(p.Serial))
+		}
+	}
+	for _, serial := range gone {
+		if s.remove(r, serial, triggerObserve) {
+			s.durable = true
+		}
+	}
+}
+
+// withhold adds to the held memdevs of the step s, whose commit failed,
+// those without a POOL or LOCAL record in r that s does not take as pool
+// devices: a new memdev or the end of a hold is not published before its
+// commit.
+func (g *gateScan) withhold(s *step, r *state.Records) {
+	for i := range g.memdevs {
+		serial := g.memdevs[i].Serial
+		if p := recordOf(r, serial); !s.pool[serial] && (p == nil || !recorded(p)) {
+			s.held[serial] = true
+		}
+	}
+}
+
+// observe observes the memdev m on the node in the step s: a pool device
+// (pool), a new memdev that stays HELD (held), else a local memdev.
+func (g *gateScan) observe(s *step, r *state.Records, m *kernel.MemdevInfo) (pool, held bool) {
+	serial := m.Serial
+	p := recordOf(r, serial)
 	claimPool, inClaim := "", false
 	if g.ev != nil {
-		claimPool, inClaim = g.ev.serials[s]
+		claimPool, inClaim = g.ev.serials[serial]
 	}
-	claims, uses := g.local[s]
+	claims, uses := g.local[serial]
 	switch {
-	case g.poolSerials[s] || (e != nil && e.pool()) || inClaim:
-		changed = w.notePoolLocked(s, claimPool, g.now, triggerList)
-		if uses && !w.conflicts[s] {
-			w.conflicts[s] = true
-			klog.Errorf("pool serials: memdev %s (serial 0x%x) is a pool device, but local claims use it: it is no longer published, and no local claim is prepared on it; release the local claims (%v) and check its memory",
-				m.Name, s, claims)
+	case g.poolSerials[serial] || (p != nil && p.State == state.ProvenancePool) || inClaim:
+		s.notePool(r, serial, claimPool, triggerList)
+		if uses {
+			s.conflicts = append(s.conflicts, conflict{serial: serial, name: m.Name, claims: claims})
 		}
-		return true, false, changed
-	case (e != nil && e.recorded()) || uses:
-		return false, false, w.noteLocalLocked(m, g.now, triggerObserve)
+		return true, false
+	case (p != nil && recorded(p)) || uses:
+		s.noteLocal(r, m, triggerObserve)
+		return false, false
 	}
-	return w.observeNewLocked(m, e, g)
+	return false, g.observeNew(s, r, m, p)
 }
 
-// observeNewLocked observes a new memdev m (its entry e, nil or HELD) in
-// the scan g: HELD while there is a reason for doubt (held), else LOCAL; it
-// returns whether the records changed. Called with w.mu held.
-func (w *Watcher) observeNewLocked(m *kernel.MemdevInfo, e *entry, g *gateScan) (pool, held, changed bool) {
-	why, hold, expires := g.uncertain, g.reason, true
+// observeNew observes a new memdev m (its record p, nil or HELD) in the
+// step s, and tells whether it stays HELD: while there is a reason for
+// doubt; else it is LOCAL.
+func (g *gateScan) observeNew(s *step, r *state.Records, m *kernel.MemdevInfo, p *state.Provenance) bool {
+	why, reason := g.uncertain, g.reason
 	switch {
-	case !w.known:
-		why, hold, expires = "the ResourceSlices of pool controllers were never listed", state.HeldNeverListed, false
+	case !g.known:
+		why, reason = "the ResourceSlices of pool controllers were never listed", state.HeldNeverListed
 	case g.ev != nil && len(g.ev.attaching) > 0:
-		why, hold, expires = "pool claims of the node are not attached yet: "+strings.Join(g.ev.attaching, ", "), state.HeldAttaching, false
+		why, reason = "pool claims of the node are not attached yet: "+strings.Join(g.ev.attaching, ", "), state.HeldAttaching
 	}
+	name, serial := m.Name, m.Serial
 	if why == "" {
-		if e != nil && e.held() {
-			klog.Infof("pool serials: publishing memdev %s (serial 0x%x) as a local memory device: no pool is missing now", m.Name, m.Serial)
+		if p != nil && p.State == state.ProvenanceHeld {
+			s.log(func() {
+				klog.Infof("pool serials: publishing memdev %s (serial 0x%x) as a local memory device: no pool is missing now", name, serial)
+			})
 		}
-		return false, false, w.noteLocalLocked(m, g.now, triggerObserve)
+		s.noteLocal(r, m, triggerObserve)
+		return false
 	}
-	if stays, changed := w.hold(m, e, why, hold, expires, g.now); stays {
-		return false, true, changed
+	if s.hold(r, m, p, why, reason) {
+		return true
 	}
-	klog.Warningf("pool serials: publishing memdev %s (serial 0x%x) as a local memory device after holding it back for %v (%s)",
-		m.Name, m.Serial, HoldBack, why)
-	return false, false, w.noteLocalLocked(m, g.now, triggerExpire)
+	s.log(func() {
+		klog.Warningf("pool serials: publishing memdev %s (serial 0x%x) as a local memory device after holding it back for %v (%s)",
+			name, serial, HoldBack, why)
+	})
+	s.noteLocal(r, m, triggerExpire)
+	return false
 }
 
 // evidence lists the pool claims of the node when a memdev of snap is new
-// (no pool serial, no record, no local use), without w.mu.
-func (w *Watcher) evidence(ctx context.Context, snap *kernel.Snapshot, poolSerials map[uint64]bool, local map[uint64][]string) (*claimEvidence, error) {
-	w.mu.Lock()
+// (no pool serial, no record in r, no local use).
+func (w *Watcher) evidence(ctx context.Context, r *state.Records, snap *kernel.Snapshot, poolSerials map[uint64]bool, local map[uint64][]string) (*claimEvidence, error) {
 	isNew := func(m kernel.MemdevInfo) bool {
-		e := w.entries[m.Serial]
+		p := recordOf(r, m.Serial)
 		_, uses := local[m.Serial]
-		return !poolSerials[m.Serial] && (e == nil || !e.recorded()) && !uses
+		return !poolSerials[m.Serial] && (p == nil || !recorded(p)) && !uses
 	}
-	anyNew := slices.ContainsFunc(snap.Memdevs, isNew)
-	w.mu.Unlock()
-	if !anyNew || w.opts.Claims == nil || w.opts.NodeName == "" {
+	if !slices.ContainsFunc(snap.Memdevs, isNew) || w.opts.Claims == nil || w.opts.NodeName == "" {
 		return nil, nil
 	}
 	ev, err := w.claimEvidence(ctx)
@@ -509,72 +814,25 @@ func (w *Watcher) evidence(ctx context.Context, snap *kernel.Snapshot, poolSeria
 	return ev, err
 }
 
-// hold holds the new memdev m (its entry e, nil for none) for the reason
-// why (hold), and tells whether it stays HELD and whether its record
-// changed (a new hold, another reason): a reason that does not expire
-// holds it, one that expires holds it for HoldBack from the first hold.
-// Called with w.mu held.
-func (w *Watcher) hold(m *kernel.MemdevInfo, e *entry, why string, hold state.HeldReason, expires bool, now time.Time) (bool, bool) {
-	s := m.Serial
-	changed := e == nil || e.rec.HeldReason != hold
-	if e == nil {
-		klog.Warningf("pool serials: holding back new memdev %s (serial 0x%x): it may be a pool device: %s", m.Name, s, why)
-		e = newEntry(s)
-		w.entries[s] = e
-		e.apply(state.ProvenanceHeld, triggerObserve)
-		e.rec.HeldSince = now
-	} else {
-		e.apply(state.ProvenanceHeld, triggerObserve)
-		if !expires {
-			// the hold time counts while it may expire
-			e.rec.HeldSince = now
-		}
-	}
-	e.rec.HeldReason = hold
-	return !expires || now.Sub(e.rec.HeldSince) < HoldBack, changed
-}
-
-// noteLocalLocked makes the memdev m seen now LOCAL on the trigger (a new
-// or a HELD one), and returns whether the records changed. Called with
-// w.mu held.
-func (w *Watcher) noteLocalLocked(m *kernel.MemdevInfo, now time.Time, trigger state.Trigger) bool {
-	s := m.Serial
-	e, changed := w.entries[s], false
-	switch {
-	case e == nil:
-		e = newEntry(s)
-		w.entries[s] = e
-		changed = e.apply(state.ProvenanceLocal, triggerObserve)
-	case e.held():
-		changed = e.apply(state.ProvenanceLocal, trigger)
-		e.rec.HeldSince, e.rec.HeldReason = time.Time{}, ""
-	}
-	if changed {
-		klog.Infof("pool serials: memdev %s (serial 0x%x) is a local memory device", m.Name, s)
-	}
-	e.rec.LastSeen, w.dirty = now, true
-	delete(w.absent, s)
-	return changed
-}
-
-// observeAbsenceLocked observes the absence of the recorded serials that
-// are not on the node (present), not in the pool slices of the last list
-// and not prepared, when that list is current, and forgets those observed
-// absent for Retention. It returns whether the records changed. Called with
-// w.mu held.
-func (w *Watcher) observeAbsenceLocked(present map[uint64]bool, now time.Time) bool {
+// observeAbsenceLocked observes the absence of the recorded serials of r
+// that are not on the node (present), not in the pool slices of the last
+// list and not prepared, when that list is current, and returns those
+// observed absent for Retention with the start of their absence. Called
+// with w.mu held.
+func (w *Watcher) observeAbsenceLocked(r *state.Records, present map[uint64]bool, now time.Time) map[uint64]time.Time {
 	if !w.known || w.failing || !observedSince(w.lastList, now) {
-		return false // the slices are not observed now
+		return nil // the slices are not observed now
 	}
 	continuous := observedSince(w.lastObs, now)
 	w.lastObs = now
-	changed := false
-	for _, s := range slices.Sorted(maps.Keys(w.entries)) {
-		e := w.entries[s]
-		if !e.recorded() {
+	expired := map[uint64]time.Time{}
+	for i := range r.Provenance {
+		p := &r.Provenance[i]
+		s := uint64(p.Serial)
+		if !recorded(p) {
 			continue
 		}
-		if present[s] || w.serials[s] || w.prepared[s] {
+		if _, listed := w.serials[s]; present[s] || listed || w.prepared[s] {
 			delete(w.absent, s)
 			continue
 		}
@@ -583,15 +841,8 @@ func (w *Watcher) observeAbsenceLocked(present map[uint64]bool, now time.Time) b
 		case !ok || !continuous:
 			w.absent[s] = now
 		case now.Sub(since) > Retention:
-			pool := e.pool()
-			if !e.apply(state.ProvenanceUnknown, triggerExpire) {
-				continue
-			}
-			klog.Infof("pool serials: forgetting serial 0x%x (pool %v, observed absent since %s)", s, pool, since.Format(time.RFC3339))
-			delete(w.entries, s)
-			delete(w.absent, s)
-			changed = true
+			expired[s] = since
 		}
 	}
-	return changed
+	return expired
 }
