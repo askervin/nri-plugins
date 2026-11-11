@@ -209,6 +209,10 @@ type Options struct {
 	// Only tests set it. It must not commit or call the engine: the caller
 	// may hold the engine's locks.
 	AfterCommit func()
+	// WriteFault is called before every write of the document, in the
+	// store's writer; an error fails the write as the disk would. nil for
+	// none. Only tests set it.
+	WriteFault func() error
 
 	files fileOps
 }
@@ -570,6 +574,11 @@ func (s *Store) commitGroup(cur *Document, group []*request) {
 // write writes the document: a synced temporary file, the current file
 // linked as the previous one, the rename and the sync of the directory.
 func (s *Store) write(doc *Document) error {
+	if s.opts.WriteFault != nil {
+		if err := s.opts.WriteFault(); err != nil {
+			return fmt.Errorf("writing %s: %w", FileName, err)
+		}
+	}
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encoding %s: %w", FileName, err)

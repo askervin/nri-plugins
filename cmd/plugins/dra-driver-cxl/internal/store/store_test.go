@@ -15,14 +15,17 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -709,5 +712,41 @@ func TestAfterCommit(t *testing.T) {
 	}
 	if len(seen) != 2 || seen[0] != "a" {
 		t.Fatalf("the hook saw %q, expected the durable commit written and the lazy one", seen)
+	}
+}
+
+// A fault of a write fails the commits of its group as a failed write of
+// the disk does: a Durable commit gets the error, the snapshot and the
+// file keep the document before them; the next write works again.
+func TestWriteFault(t *testing.T) {
+	var fault atomic.Bool
+	dir := t.TempDir()
+	s := open(t, dir, nil, func(o *Options) {
+		o.WriteFault = func() error {
+			if fault.Load() {
+				return errors.New("disk failure")
+			}
+			return nil
+		}
+	})
+	defer closeStore(t, s)
+	if err := s.Commit(context.Background(), Durable, addSteered("a")); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(dir, FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fault.Store(true)
+	if err := s.Commit(context.Background(), Durable, addSteered("b")); err == nil || !strings.Contains(err.Error(), "disk failure") {
+		t.Fatalf("a commit with a write fault: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(dir, FileName))
+	if err != nil || !bytes.Equal(before, after) || !slices.Equal(steered(s.Snapshot()), []string{"a"}) {
+		t.Fatalf("a failed write changed the document: %v, snapshot %v", err, steered(s.Snapshot()))
+	}
+	fault.Store(false)
+	if err := s.Commit(context.Background(), Durable, addSteered("c")); err != nil || !slices.Equal(steered(s.Snapshot()), []string{"a", "c"}) {
+		t.Fatalf("a commit after the fault: %v, snapshot %v", err, steered(s.Snapshot()))
 	}
 }
