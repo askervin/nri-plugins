@@ -38,11 +38,12 @@ package state
 // CLOSING; lease-fs/<uid> and leases/<uid> exist only for lease claims of
 // prepared claims.
 //
-// Persistence: fact; committed by OpenClaim before the Preparation PREPARED
-// of the claim. Kept across reboots: kubelet prepares the claim again.
+// Persistence: fact, the only copy; committed by OpenClaim before its
+// socket, its CDI device and the Preparation PREPARED of the claim. Kept
+// across reboots: kubelet prepares the claim again.
 //
-// Locks and waits: the broker's mutex; CloseClaim waits up to 5 s for the
-// leases of the claim.
+// Locks and waits: the commits of the store; CloseClaim waits up to 5 s for
+// the leases of the claim.
 type LeaseClaim struct {
 	UID       string `json:"uid"`
 	Namespace string `json:"namespace"`

@@ -453,11 +453,11 @@ func TestTimeoutReleases(t *testing.T) {
 		t.Fatalf("lease after fd and env %+v", l)
 	}
 	// a request id whose lease is still CREATING: its wait ends too
-	e.b.mu.Lock()
-	l := e.b.leases[resp.Lease]
-	l.RequestID = "r9"
-	l.State = state.LeaseCreating
-	e.b.mu.Unlock()
+	e.edit(func(r *state.Records) {
+		l := r.Lease(resp.Lease)
+		l.RequestID = "r9"
+		l.State = state.LeaseCreating
+	})
 	r, _ := e.call(api.Request{Op: api.OpRequest, Size: "1Gi", RequestID: "r9", Wait: "20ms"})
 	if r.State != api.StateFailed || r.Lease != resp.Lease {
 		t.Fatalf("request id of a CREATING lease %+v", r)
@@ -680,8 +680,8 @@ func TestTimeoutOfAReadyLease(t *testing.T) {
 	e.openClaim()
 	e.start()
 	id := e.readyNUMA()
-	resp := e.b.startRelease(id, "timeout: not Ready after 1s", state.TriggerRequest)
-	if resp.State != api.StateReleasing {
+	resp, err := e.b.commitRelease(id, "timeout: not Ready after 1s", state.TriggerRequest)
+	if err != nil || resp.State != api.StateReleasing {
 		t.Fatalf("response %+v", resp)
 	}
 	e.waitState(id, state.LeaseNone)
@@ -731,13 +731,12 @@ func TestLeaseCreatingGrace(t *testing.T) {
 	e := brokerEnv(t)
 	e.openClaim()
 	pod := requester.Pod
-	e.b.mu.Lock()
-	for id, created := range map[string]time.Time{"0000old0": time.Now().Add(-time.Second), "0000new0": time.Now().Add(time.Hour)} {
-		e.b.leases[id] = &state.Lease{ID: id, Claim: envLeaseClaim, Asked: state.LeaseAsked{Mode: state.ModeNUMA, Size: "64Mi"}, Pod: pod,
-			Container: envCtr, State: state.LeaseCreating, Created: created.UTC()}
-	}
-	mustOK(t, e.b.persistLocked())
-	e.b.mu.Unlock()
+	e.edit(func(r *state.Records) {
+		for id, created := range map[string]time.Time{"0000old0": time.Now().Add(-time.Second), "0000new0": time.Now().Add(time.Hour)} {
+			r.Leases = append(r.Leases, state.Lease{ID: id, Claim: envLeaseClaim, Asked: state.LeaseAsked{Mode: state.ModeNUMA, Size: "64Mi"}, Pod: pod,
+				Container: envCtr, State: state.LeaseCreating, Created: created.UTC()})
+		}
+	})
 	e.opts = func(o *Options) { o.Timeouts.CreatingGrace = 100 * time.Millisecond }
 	e.restart()
 	e.start()
@@ -999,7 +998,7 @@ func TestCloseClaimWaitsForRemoval(t *testing.T) {
 	}
 	e.b.mu.Lock()
 	e.b.removing["lc3"] = make(chan struct{})
-	err := e.b.listen("lc3")
+	err := e.b.listen("lc3", "")
 	e.b.mu.Unlock()
 	if err == nil || err.Error() != "the directories of lease claim lc3 are being removed, retry" {
 		t.Fatalf("listen during a removal: %v", err)
@@ -1072,14 +1071,11 @@ func TestFsLeaseClaims(t *testing.T) {
 	e := brokerEnv(t)
 	e.openClaim()
 	e.start()
-	e.b.mu.Lock()
-	e.b.claims[envLeaseClaim].FsDir = ""
-	e.b.mu.Unlock()
+	e.edit(func(r *state.Records) { r.LeaseClaim(envLeaseClaim).FsDir = "" })
 	e.openClaim()
-	e.b.mu.Lock()
-	dev := e.b.cdiDevice(envLeaseClaim)
-	fsDir := e.b.claims[envLeaseClaim].FsDir
-	e.b.mu.Unlock()
+	lc := e.claim(envLeaseClaim)
+	dev := e.b.cdiDevice(lc)
+	fsDir := lc.FsDir
 	if fsDir != "" || len(dev.ContainerEdits.Mounts) != 2 || dev.ContainerEdits.Mounts[1].ContainerPath != "/usr/local/bin/cxl-request" {
 		t.Fatalf("FsDir %q, CDI mounts %+v", fsDir, dev.ContainerEdits.Mounts)
 	}
@@ -1136,7 +1132,7 @@ func TestLostStore(t *testing.T) {
 		t.Fatal("the store is not lost")
 	}
 	e.start()
-	if e.claim(envLeaseClaim) != nil || e.numLeases() != 0 || !e.b.lost {
+	if e.claim(envLeaseClaim) != nil || e.numLeases() != 0 {
 		t.Fatalf("lease claims or leases of a lost store")
 	}
 	e.b.reconcile()
@@ -1153,7 +1149,7 @@ func TestLostStore(t *testing.T) {
 	_ = e.st.Close()
 	e.newState = true
 	e.boot()
-	if e.st.Lost() != nil || e.b.lost {
+	if e.st.Lost() != nil {
 		t.Fatal("the new document is lost")
 	}
 	if _, err := os.Stat(filepath.Join(e.dir, "lease-fs", envLeaseClaim)); !errors.Is(err, os.ErrNotExist) {
@@ -1274,10 +1270,7 @@ func TestLeaseListAndReleaseOfTheClaim(t *testing.T) {
 	if got := e.callAt("lc2", api.Request{Op: api.OpRelease, All: true, Wait: "0s"}); !slices.Equal(ids(got), []string{r2.Lease}) {
 		t.Fatalf("release --all on lc2 %+v", got)
 	}
-	e.b.mu.Lock()
-	_, kept := e.b.leases[r.Lease]
-	e.b.mu.Unlock()
-	if !kept {
+	if kept := e.lease(r.Lease) != nil; !kept {
 		t.Fatalf("lease %s of lc1 released by release --all on lc2", r.Lease)
 	}
 }
@@ -1330,8 +1323,8 @@ func TestStopKeepsWaitingLease(t *testing.T) {
 }
 
 // A commit of the broker's records waits at most Timeouts.Persist for a
-// stalled store: the error is returned, the mutex is not held for
-// ever, the commit is applied later.
+// stalled store, without the broker's mutex: the error is returned, the
+// change is applied later.
 func TestPersistBounded(t *testing.T) {
 	e := brokerEnv(t)
 	e.opts = func(o *Options) { o.Timeouts.Persist = 50 * time.Millisecond }
@@ -1346,12 +1339,30 @@ func TestPersistBounded(t *testing.T) {
 	}()
 	<-stalled
 	start := time.Now()
-	e.b.mu.Lock()
-	err := e.b.persistLocked()
-	e.b.mu.Unlock()
-	close(stall)
-	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 5*time.Second {
-		t.Fatalf("persist of a stalled store: %v after %v", err, time.Since(start))
+	done := make(chan error, 1)
+	go func() {
+		done <- e.b.commit(func(r *state.Records) error {
+			r.Leases = append(r.Leases, state.Lease{ID: "0000late", Claim: envLeaseClaim, State: state.LeaseCreating})
+			return nil
+		})
+	}()
+	for {
+		select {
+		case err := <-done:
+			close(stall)
+			if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 5*time.Second {
+				t.Fatalf("commit to a stalled store: %v after %v", err, time.Since(start))
+			}
+			e.waitStored("0000late", func(l *state.Lease) bool { return l != nil })
+			return
+		default:
+		}
+		if !e.b.mu.TryLock() {
+			close(stall)
+			t.Fatal("the broker's mutex is held during a commit")
+		}
+		e.b.mu.Unlock()
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -1363,10 +1374,10 @@ func TestReconcileReleasesFailedLease(t *testing.T) {
 	e.start()
 	r, _ := e.call(api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s"})
 	e.waitClaim(CompanionName(r.Lease))
-	e.b.mu.Lock()
-	l := e.b.leases[r.Lease]
-	l.State, l.Error = state.LeaseFailed, "lending failed"
-	e.b.mu.Unlock()
+	e.edit(func(r2 *state.Records) {
+		l := r2.Lease(r.Lease)
+		l.State, l.Error = state.LeaseFailed, "lending failed"
+	})
 	e.b.reconcile()
 	e.waitState(r.Lease, state.LeaseNone)
 	e.wantGone(CompanionName(r.Lease))
@@ -1543,7 +1554,6 @@ func TestLimits(t *testing.T) {
 // node (dax, block), or the access, type and path of its filesystem (fs);
 // a shared device for a shared lease or a shared device.
 func TestGotOfPrepared(t *testing.T) {
-	e := brokerEnv(t)
 	shared := func(d state.DeviceInfo) state.DeviceInfo { d.Shared = true; return d }
 	for name, tc := range map[string]struct {
 		asked state.LeaseAsked
@@ -1564,7 +1574,7 @@ func TestGotOfPrepared(t *testing.T) {
 		})), state.LeaseGot{Source: state.SourcePool, Serial: serialPoolP, SharedDevice: true, Bytes: pmemBytes, Access: state.Access(api.AccessDirect),
 			FsType: "ext4", Path: api.FsDir + "/data"}, nil},
 	} {
-		got, lend := e.b.gotOf(&state.Lease{Asked: tc.asked}, state.SourcePool, &tc.dev)
+		got, lend := gotOf(&state.Records{}, &state.Lease{Asked: tc.asked}, state.SourcePool, &tc.dev)
 		if !reflect.DeepEqual(*got, tc.got) || !reflect.DeepEqual(lend, tc.lend) {
 			t.Errorf("%s: got %+v, lend %+v; expected %+v, %+v", name, *got, lend, tc.got, tc.lend)
 		}

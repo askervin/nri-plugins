@@ -343,44 +343,70 @@ func (b *Broker) createCompanion(l *state.Lease) error {
 // process did not create it), and whether the lease waits for the first
 // Prepare of the claim (CREATING or PENDING).
 func (b *Broker) CompanionSpecHash(id string) (string, bool) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	l := b.leases[id]
+	l := b.records().Lease(id)
 	if l == nil {
 		return "", false
 	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	return b.specHashes[id], l.State == state.LeaseCreating || l.State == state.LeasePending
 }
 
 // OnLending is the companion gate: it checks that a claim is the companion
 // of a lease that is being created or lent (its name cxl-lease-<id>, its
-// namespace and owner pod those of the requester), marks the lease LENDING
-// and returns the lend of the requester's container, with the filesystem
-// directory of the lease claim and the name of an fs lease.
+// namespace and owner pod those of the requester), commits the lease
+// LENDING and returns the lend of the requester's container, with the
+// filesystem directory of the lease claim and the name of an fs lease.
 func (b *Broker) OnLending(id string, claim *resourcev1.ResourceClaim) (*lend.Lend, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	l := b.leases[id]
+	l, rec, err := lending(b.records(), id, claim)
+	switch {
+	case err != nil:
+		return nil, err
+	case l.State == state.LeaseLending || l.State == state.LeaseReady:
+		cp := l.Clone()
+		apply(&cp, cp.State, state.TriggerOnLending)
+		return rec, nil
+	}
+	err = b.commit(func(r *state.Records) error {
+		l, cur, err := lending(r, id, claim)
+		if err != nil {
+			return err
+		}
+		to := l.State
+		if to == state.LeaseCreating || to == state.LeasePending {
+			to = state.LeaseLending
+		}
+		apply(l, to, state.TriggerOnLending)
+		rec = cur
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return rec, nil
+}
+
+// lending returns the lease id of the records whose companion the claim is,
+// if it is CREATING, PENDING, LENDING or READY, and the lend of the
+// requester's container.
+func lending(r *state.Records, id string, claim *resourcev1.ResourceClaim) (*state.Lease, *lend.Lend, error) {
+	l := r.Lease(id)
 	if l == nil || claim.Name != CompanionName(id) || claim.Namespace != l.Pod.Namespace || !ownedBy(claim, l.Pod.UID) {
-		return nil, fmt.Errorf("claim %s/%s: not the companion of lease %s", claim.Namespace, claim.Name, id)
+		return nil, nil, fmt.Errorf("claim %s/%s: not the companion of lease %s", claim.Namespace, claim.Name, id)
 	}
 	switch l.State {
-	case state.LeaseCreating, state.LeasePending:
-		apply(l, state.LeaseLending, state.TriggerOnLending)
-		b.saveLocked()
-	case state.LeaseLending, state.LeaseReady:
-		apply(l, l.State, state.TriggerOnLending)
+	case state.LeaseCreating, state.LeasePending, state.LeaseLending, state.LeaseReady:
 	default:
-		return nil, fmt.Errorf("lease %s is %s", l.ID, stateName(l.State))
+		return nil, nil, fmt.Errorf("lease %s is %s", l.ID, stateName(l.State))
 	}
 	rec := &lend.Lend{Lease: id, Pod: l.Pod, Container: l.Container}
 	if l.Asked.Mode == state.ModeFs {
-		if lc := b.claims[l.Claim]; lc != nil {
+		if lc := r.LeaseClaim(l.Claim); lc != nil {
 			rec.FsDir = lc.FsDir
 		}
 		rec.Name = l.Asked.Name
 	}
-	return rec, nil
+	return l, rec, nil
 }
 
 // ownedBy tells whether a claim has an owner reference with the uid.
@@ -393,43 +419,52 @@ func ownedBy(claim *resourcev1.ResourceClaim, uid string) bool {
 	return false
 }
 
-// OnPrepared makes a lease READY with the first prepared device of its
+// OnPrepared commits a lease READY with the first prepared device of its
 // companion and its lend. A device whose mode is fs or block when the
 // lease's is not, or the reverse, fails the lease, and it is released.
 func (b *Broker) OnPrepared(id string, source state.Source, devs []state.DeviceInfo) {
-	b.mu.Lock()
-	l := b.leases[id]
-	if l == nil || releasingState(l.State) || len(devs) == 0 {
-		b.mu.Unlock()
-		return
-	}
-	d := devs[0]
-	if mode := state.Mode(d.Mode); (mode == state.ModeFs) != (l.Asked.Mode == state.ModeFs) || (mode == state.ModeBlock) != (l.Asked.Mode == state.ModeBlock) {
-		if apply(l, state.LeaseFailed, state.TriggerOnPrepared) {
-			l.Error = fmt.Sprintf("companion prepared mode %s, lease is mode %s", d.Mode, l.Asked.Mode)
-			b.saveLocked()
-			klog.Errorf("lease broker: lease %s: %s", id, l.Error)
+	var ready *state.Lease
+	mismatch, failed := false, ""
+	if !b.change(func(r *state.Records) {
+		l := r.Lease(id)
+		if l == nil || releasingState(l.State) || len(devs) == 0 {
+			return
 		}
-		b.mu.Unlock()
+		d := devs[0]
+		if mode := state.Mode(d.Mode); (mode == state.ModeFs) != (l.Asked.Mode == state.ModeFs) || (mode == state.ModeBlock) != (l.Asked.Mode == state.ModeBlock) {
+			mismatch = true
+			if apply(l, state.LeaseFailed, state.TriggerOnPrepared) {
+				l.Error = fmt.Sprintf("companion prepared mode %s, lease is mode %s", d.Mode, l.Asked.Mode)
+				failed = l.Error
+			}
+			return
+		}
+		if apply(l, state.LeaseReady, state.TriggerOnPrepared) {
+			l.Got, l.Lend = gotOf(r, l, source, &d)
+			l.Error = ""
+			cp := l.Clone()
+			ready = &cp
+		}
+	}) {
+		return
+	}
+	switch {
+	case mismatch:
+		if failed != "" {
+			klog.Errorf("lease broker: lease %s: %s", id, failed)
+		}
 		b.startRelease(id, "wrong mode", state.TriggerOnPrepared)
-		return
+	case ready != nil:
+		l, g := ready, ready.Got
+		klog.Infof("lease broker: lease %s: Ready (source %s, serial %s, mode %s, read-only %v, node %d, dax %q, block %q, access %q, fs %q, path %q, %d bytes)",
+			l.ID, g.Source, g.Serial, l.Asked.Mode, readOnly(l), numaNodeOf(l), g.Dax, g.Block, accessOf(l), fsTypeOf(l), g.Path, g.Bytes)
 	}
-	defer b.mu.Unlock()
-	if !apply(l, state.LeaseReady, state.TriggerOnPrepared) {
-		return
-	}
-	l.Got, l.Lend = b.gotOf(l, source, &d)
-	l.Error = ""
-	b.saveLocked()
-	g := l.Got
-	klog.Infof("lease broker: lease %s: Ready (source %s, serial %s, mode %s, read-only %v, node %d, dax %q, block %q, access %q, fs %q, path %q, %d bytes)",
-		l.ID, g.Source, g.Serial, l.Asked.Mode, readOnly(l), numaNodeOf(l), g.Dax, g.Block, accessOf(l), fsTypeOf(l), g.Path, g.Bytes)
 }
 
-// gotOf returns what the prepared device gives a lease and what the lease
-// lends: the NUMA node of a numa lease, the bind of an fs lease in the
-// filesystem directory of its lease claim. Called with b.mu held.
-func (b *Broker) gotOf(l *state.Lease, source state.Source, d *state.DeviceInfo) (*state.LeaseGot, *state.Lend) {
+// gotOf returns what the prepared device gives a lease of the records and
+// what the lease lends: the NUMA node of a numa lease, the bind of an fs
+// lease in the filesystem directory of its lease claim.
+func gotOf(r *state.Records, l *state.Lease, source state.Source, d *state.DeviceInfo) (*state.LeaseGot, *state.Lend) {
 	serial, _ := api.ParseSerial(d.Serial)
 	g := &state.LeaseGot{Source: source, Serial: state.Serial(serial), Bytes: d.TotalBytes}
 	if persistent(state.Mode(d.Mode)) {
@@ -444,7 +479,7 @@ func (b *Broker) gotOf(l *state.Lease, source state.Source, d *state.DeviceInfo)
 	case api.ModeFs:
 		g.Access, g.FsType, g.Path = state.Access(d.Access), d.FsType, api.FsDir+"/"+l.Asked.Name
 		fsDir := ""
-		if lc := b.claims[l.Claim]; lc != nil {
+		if lc := r.LeaseClaim(l.Claim); lc != nil {
 			fsDir = lc.FsDir
 		}
 		if target := fsBindTarget(fsDir, l.Asked.Name); target != "" {
@@ -460,20 +495,13 @@ func (b *Broker) gotOf(l *state.Lease, source state.Source, d *state.DeviceInfo)
 	return g, nil
 }
 
-// OnLendFailed fails the lease with the lend error (for example a
+// OnLendFailed commits the lease FAILED with the lend error (for example a
 // container that is memory-steered, not started or gone) and releases it:
 // the waiting request returns Failed with the message.
 func (b *Broker) OnLendFailed(id string, err error) {
-	b.mu.Lock()
-	l := b.leases[id]
-	if l == nil || releasingState(l.State) || l.State == state.LeaseFailed || !apply(l, state.LeaseFailed, state.TriggerOnLendFailed) {
-		b.mu.Unlock()
-		return
+	if b.fail(id, err.Error(), state.TriggerOnLendFailed, true) {
+		b.startRelease(id, "lend failed", state.TriggerOnLendFailed)
 	}
-	l.Error = err.Error()
-	b.saveLocked()
-	b.mu.Unlock()
-	b.startRelease(id, "lend failed", state.TriggerOnLendFailed)
 }
 
 // OnReleasing is told that the companion claim of a lease is being
@@ -481,13 +509,23 @@ func (b *Broker) OnLendFailed(id string, err error) {
 // deleted or evicted behind its back: the lease fails (the requester has
 // lost the memory) and the reconcile releases it.
 func (b *Broker) OnReleasing(id string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	l := b.leases[id]
-	if l == nil || releasingState(l.State) || !apply(l, state.LeaseFailed, state.TriggerOnReleasing) {
-		return
+	const text = "companion claim unprepared (companion pod deleted or evicted)"
+	if b.fail(id, text, state.TriggerOnReleasing, false) {
+		klog.Warningf("lease broker: lease %s: %s", id, text)
 	}
-	l.Error = "companion claim unprepared (companion pod deleted or evicted)"
-	b.saveLocked()
-	klog.Warningf("lease broker: lease %s: %s", id, l.Error)
+}
+
+// fail commits the lease id FAILED with the error text on trigger, when
+// the lease table allows it and the lease is not FAILED with keepFailed,
+// and reports whether it did; a failed commit is logged.
+func (b *Broker) fail(id, text string, trigger state.Trigger, keepFailed bool) bool {
+	fails := func(l *state.Lease) bool {
+		return l != nil && (!keepFailed || l.State != state.LeaseFailed) && state.LeaseTable.Allows(l.State, state.LeaseFailed, trigger)
+	}
+	failed := false
+	return fails(b.records().Lease(id)) && b.change(func(r *state.Records) {
+		if l := r.Lease(id); fails(l) && apply(l, state.LeaseFailed, trigger) {
+			l.Error, failed = text, true
+		}
+	}) && failed
 }

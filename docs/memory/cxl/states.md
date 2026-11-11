@@ -415,9 +415,9 @@ Refused:
 
 **Invariants.** Lend is set only while the lease is READY, RELEASING, RELEASING_BUSY or FAILED; no lend on a NUMA node whose memory is offline.
 
-**Persistence.** Intent (CREATING before the API objects) and fact. A load in another boot drops every lease; the first reconcile deletes their companions.
+**Persistence.** Intent (CREATING before the API objects) and fact, the only copy: a transition is committed before the act that follows it. A load in another boot drops every lease; the first reconcile deletes their companions.
 
-**Locks and waits.** The broker's mutex, never held across a lender or API call.
+**Locks and waits.** The commits of the store.
 
 ## LeaseClaim
 
@@ -454,9 +454,9 @@ Refused:
 
 **Invariants.** A lease claim in the store is OPEN, OPEN_NO_LISTENER or CLOSING; lease-fs/&lt;uid> and leases/&lt;uid> exist only for lease claims of prepared claims.
 
-**Persistence.** Fact; committed by OpenClaim before the Preparation PREPARED of the claim. Kept across reboots: kubelet prepares the claim again.
+**Persistence.** Fact, the only copy; committed by OpenClaim before its socket, its CDI device and the Preparation PREPARED of the claim. Kept across reboots: kubelet prepares the claim again.
 
-**Locks and waits.** The broker's mutex; CloseClaim waits up to 5 s for the leases of the claim.
+**Locks and waits.** The commits of the store; CloseClaim waits up to 5 s for the leases of the claim.
 
 ## Steered
 

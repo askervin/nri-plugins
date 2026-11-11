@@ -17,7 +17,9 @@ package leases
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
+	"slices"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -58,13 +60,13 @@ import (
 // reconcile; a FAILED one with ReleaseRequested by a running release, or by
 // a reconcile once its companion pod is gone.
 //
-// Persistence: the record in the store, CREATING before any API object
-// exists; a document of another boot has no leases (the store drops them,
-// the reconcile deletes their companions).
+// Persistence: the record in the store, its only copy, CREATING before any
+// API object exists; a document of another boot has no leases (the store
+// drops them, the reconcile deletes their companions).
 //
-// Locks and waits: the broker's mutex; the release worker waits for the
-// companion with a backoff of 0.5 s to 8 s and calls the API and the
-// container plugin without the mutex.
+// Locks and waits: the commits of the store; the release worker waits for
+// the companion with a backoff of 0.5 s to 8 s and calls the API and the
+// container plugin without the broker's mutex.
 
 // stateName returns the protocol's word for a lease state.
 func stateName(s state.LeaseState) string {
@@ -200,7 +202,7 @@ func memory(l *state.Lease) (api.Memory, bool) {
 	return m, true
 }
 
-// leaseInfo is the response of a lease. Called with b.mu held.
+// leaseInfo is the response of a lease.
 func leaseInfo(l *state.Lease) *api.Response {
 	g := got(l)
 	r := &api.Response{Lease: l.ID, State: stateName(l.State), Source: string(sourceOf(l)), Mode: string(l.Asked.Mode),
@@ -235,31 +237,70 @@ func fdOf(l *state.Lease) leaseFd {
 }
 
 // startRelease starts the release of a lease (once) on trigger and returns
-// its response: a FAILED lease stays FAILED while it is released, so that
-// it shows why.
+// its response (commitRelease).
 func (b *Broker) startRelease(id, reason string, trigger state.Trigger) *api.Response {
+	resp, _ := b.commitRelease(id, reason, trigger)
+	return resp
+}
+
+// commitRelease starts the release of a lease (once) on trigger and returns
+// its response, and an error unless its release is committed: a FAILED
+// lease stays FAILED while it is released, so that it shows why. The
+// release runs once its start is committed.
+func (b *Broker) commitRelease(id, reason string, trigger state.Trigger) (*api.Response, error) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	l := b.leases[id]
-	if l == nil {
-		return &api.Response{Lease: id, State: api.StateReleased}
+	running := b.releasing[id]
+	b.releasing[id] = true
+	b.mu.Unlock()
+	if running {
+		if l := b.records().Lease(id); l != nil && !l.ReleaseRequested {
+			return leaseInfo(l), errors.New("its release is being committed")
+		}
+		return infoOf(b.records(), id), nil
 	}
-	if !b.releasing[id] {
-		to, was := state.LeaseReleasing, stateName(l.State)
+	var was string
+	var started *state.Lease
+	err := b.commit(func(r *state.Records) error {
+		l := r.Lease(id)
+		if l == nil {
+			return nil
+		}
+		to, from := state.LeaseReleasing, stateName(l.State)
 		if l.State == state.LeaseFailed || l.State == state.LeaseReleasingBusy {
 			to = l.State
 		}
+		was = from
 		if apply(l, to, trigger) {
-			klog.Infof("lease broker: lease %s: releasing (%s, was %s)", id, reason, was)
-			b.releasing[id] = true
 			l.ReleaseRequested = true
-			b.saveLocked()
 			cp := l.Clone()
-			b.wg.Add(1)
-			go b.release(&cp)
+			started = &cp
 		}
+		return nil
+	})
+	if err != nil || started == nil {
+		if err != nil {
+			klog.Errorf("lease broker: lease %s: not releasing (%s): %v", id, reason, err)
+		} else if was != "" {
+			err = fmt.Errorf("lease %s is %s", id, was)
+		}
+		b.mu.Lock()
+		delete(b.releasing, id)
+		b.mu.Unlock()
+		return infoOf(b.records(), id), err
 	}
-	return leaseInfo(l)
+	klog.Infof("lease broker: lease %s: releasing (%s, was %s)", id, reason, was)
+	b.wg.Add(1)
+	go b.release(started)
+	return leaseInfo(started), nil
+}
+
+// infoOf returns the response of the lease id of the records, Released
+// without one.
+func infoOf(r *state.Records, id string) *api.Response {
+	if l := r.Lease(id); l != nil {
+		return leaseInfo(l)
+	}
+	return &api.Response{Lease: id, State: api.StateReleased}
 }
 
 // release revokes the lent node of a numa lease, deletes the companion pod
@@ -304,59 +345,79 @@ func (b *Broker) release(l *state.Lease) {
 			delay *= 2
 		}
 	}
-	b.removeLease(l)
-	klog.Infof("lease broker: lease %s: released", l.ID)
+	if b.removeLease(l) {
+		klog.Infof("lease broker: lease %s: released", l.ID)
+	}
 }
 
-// deletionRequested records that the deletion of the companion of a lease
-// was requested.
+// deletionRequested commits that the deletion of the companion of a lease
+// was requested; a failed commit is logged (the release tries again).
 func (b *Broker) deletionRequested(id string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if cur := b.leases[id]; cur != nil && !cur.DeletionRequested {
-		cur.DeletionRequested = true
-		b.saveLocked()
+	if l := b.records().Lease(id); l != nil && !l.DeletionRequested {
+		b.change(func(r *state.Records) {
+			if l := r.Lease(id); l != nil {
+				l.DeletionRequested = true
+			}
+		})
 	}
 }
 
 // removeLease removes a released lease and the directories of its lease
-// claim when the claim is closed and this was its last lease.
-func (b *Broker) removeLease(l *state.Lease) {
+// claim when the claim is closed and this was its last lease, and reports
+// whether the lease is gone: a failed commit leaves it for the next
+// reconcile to release again.
+func (b *Broker) removeLease(l *state.Lease) bool {
+	removed := b.change(func(r *state.Records) {
+		if cur := r.Lease(l.ID); cur != nil && apply(cur, state.LeaseNone, state.TriggerRelease) {
+			r.Leases = slices.DeleteFunc(r.Leases, func(other state.Lease) bool { return other.ID == l.ID })
+		}
+	})
 	b.mu.Lock()
-	if cur := b.leases[l.ID]; cur != nil && apply(cur, state.LeaseNone, state.TriggerRelease) {
-		delete(b.leases, l.ID)
-	}
 	delete(b.releasing, l.ID)
-	delete(b.specHashes, l.ID)
-	b.saveLocked()
+	if removed {
+		delete(b.specHashes, l.ID)
+	}
+	b.mu.Unlock()
+	if !removed {
+		return false
+	}
 	// the lease-fs directory of a closed lease claim may have waited for
 	// the unmount of the companion's bind
-	closed := b.claims[l.Claim] == nil && len(b.leasesOf(l.Claim)) == 0
-	b.mu.Unlock()
-	if closed {
+	if r := b.records(); r.LeaseClaim(l.Claim) == nil && len(leasesOf(r, l.Claim)) == 0 {
 		b.removeClaimDirs(l.Claim, state.TriggerRelease)
 	}
+	return true
 }
 
 // noteBusy makes a RELEASING lease RELEASING_BUSY while the bind of its
 // companion is busy (its unbind failed with EBUSY: a file of it is mapped)
 // and RELEASING again once it is not, or once the companion is gone.
 func (b *Broker) noteBusy(id string, gone bool) {
-	busy := !gone && companionBusy(&b.st.Snapshot().Records, id)
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	l := b.leases[id]
-	switch {
-	case l == nil:
-	case busy && l.State == state.LeaseReleasing:
-		if apply(l, state.LeaseReleasingBusy, state.TriggerRelease) {
-			b.saveLocked()
-		}
-	case !busy && l.State == state.LeaseReleasingBusy:
-		if apply(l, state.LeaseReleasing, state.TriggerRelease) {
-			b.saveLocked()
-		}
+	if _, ok := busyTo(b.records(), id, gone); ok {
+		b.change(func(r *state.Records) {
+			if to, ok := busyTo(r, id, gone); ok {
+				apply(r.Lease(id), to, state.TriggerRelease)
+			}
+		})
 	}
+}
+
+// busyTo returns the state that the lease id of the records goes to as the
+// bind of its companion is busy or not (gone: the companion is gone), false
+// for none.
+func busyTo(r *state.Records, id string, gone bool) (state.LeaseState, bool) {
+	l := r.Lease(id)
+	if l == nil {
+		return "", false
+	}
+	busy := !gone && companionBusy(r, id)
+	switch {
+	case busy && l.State == state.LeaseReleasing:
+		return state.LeaseReleasingBusy, true
+	case !busy && l.State == state.LeaseReleasingBusy:
+		return state.LeaseReleasing, true
+	}
+	return "", false
 }
 
 // companionBusy tells whether the bind of a grant of the companion claim
@@ -418,41 +479,53 @@ func (b *Broker) deleteCompanion(ns, name string) (bool, error) {
 }
 
 // failUnrestored fails the LENDING and READY leases whose companion claim
-// the start did not restore (its preparation PREPARED_UNRESTORED): the
-// requester's next list shows them Failed, and Start releases them. Called
-// with b.mu held.
-func (b *Broker) failUnrestored(r *state.Records) {
-	changed := false
+// the start did not restore (its preparation PREPARED_UNRESTORED) and
+// returns them: the requester's next list shows them Failed, and they are
+// released. A failed commit is logged: the next reconcile tries again.
+func (b *Broker) failUnrestored() []string {
+	if len(unrestoredOf(b.records())) == 0 {
+		return nil
+	}
+	failed := map[string]string{}
+	if !b.change(func(r *state.Records) {
+		for id, claim := range unrestoredOf(r) {
+			if l := r.Lease(id); apply(l, state.LeaseFailed, state.TriggerRecover) {
+				l.Error = fmt.Sprintf("the device of companion claim %s was not restored at the start of the driver", claim)
+				failed[id] = l.Error
+			}
+		}
+	}) {
+		return nil
+	}
+	ids := slices.Sorted(maps.Keys(failed))
+	for _, id := range ids {
+		klog.Warningf("lease broker: lease %s: %s", id, failed[id])
+	}
+	return ids
+}
+
+// unrestoredOf returns the LENDING and READY leases of the records whose
+// companion's preparation is PREPARED_UNRESTORED, with the name of the
+// companion claim.
+func unrestoredOf(r *state.Records) map[string]string {
+	out := map[string]string{}
 	for i := range r.Preparations {
 		p := &r.Preparations[i]
 		if p.Lease == "" || p.State != state.PreparationUnrestored {
 			continue
 		}
-		l := b.leases[p.Lease]
-		if l == nil || (l.State != state.LeaseReady && l.State != state.LeaseLending) || !apply(l, state.LeaseFailed, state.TriggerRecover) {
-			continue
+		if l := r.Lease(p.Lease); l != nil && (l.State == state.LeaseReady || l.State == state.LeaseLending) {
+			out[l.ID] = p.ClaimName
 		}
-		l.Error = fmt.Sprintf("the device of companion claim %s was not restored at the start of the driver", p.ClaimName)
-		klog.Warningf("lease broker: lease %s: %s", l.ID, l.Error)
-		b.unrestored = append(b.unrestored, l.ID)
-		changed = true
 	}
-	if changed {
-		b.saveLocked()
-	}
+	return out
 }
 
 // LeaseLends returns the NUMA nodes lent by the READY numa leases of the
-// container of the pod with their lease ids, by node, as the broker has
+// container of the pod with their lease ids, by node, as the store has
 // them (state.LeaseLends).
 func (b *Broker) LeaseLends(podUID, container string) map[int][]string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	r := &state.Records{}
-	for _, l := range b.leases {
-		r.Leases = append(r.Leases, *l)
-	}
-	return state.LeaseLends(r, podUID, container)
+	return state.LeaseLends(b.records(), podUID, container)
 }
 
 // CompanionName is the name of the companion claim and pod of a lease.

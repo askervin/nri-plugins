@@ -140,14 +140,6 @@ func (b *Broker) removeConn(claimUID string, c *net.UnixConn) {
 	}
 }
 
-// closeConnsLocked closes the open connections of the socket of a lease
-// claim. Called with b.mu held.
-func (b *Broker) closeConnsLocked(claimUID string) {
-	for c := range b.conns[claimUID] {
-		_ = c.Close()
-	}
-}
-
 // decodeRequest returns the request of a line, decoded strictly.
 func decodeRequest(line []byte) (*api.Request, error) {
 	req := &api.Request{}
@@ -239,12 +231,8 @@ func (b *Broker) authenticate(claimUID string, proc *peer, procErr error) (Reque
 	b.waitIdentity()
 	b.mu.Lock()
 	identity := b.identity
-	var lc *state.LeaseClaim
-	if cur := b.claims[claimUID]; cur != nil {
-		cp := cur.Clone()
-		lc = &cp
-	}
 	b.mu.Unlock()
+	lc := b.records().LeaseClaim(claimUID)
 	if identity == nil {
 		return Requester{}, errLendingUnavailable
 	}
@@ -295,8 +283,8 @@ func (e *peerGoneError) Error() string { return e.err.Error() }
 func (e *peerGoneError) Unwrap() error { return e.err }
 
 // refreshClaimPods reads the reservedFor of a lease claim again (a claim
-// shared by several pods is prepared only once) and reports whether the
-// pod is in it now.
+// shared by several pods is prepared only once), commits it, and reports
+// whether the pod is in it now.
 func (b *Broker) refreshClaimPods(lc *state.LeaseClaim, podUID string) bool {
 	if b.opts.Client == nil {
 		return false
@@ -308,18 +296,16 @@ func (b *Broker) refreshClaimPods(lc *state.LeaseClaim, podUID string) bool {
 		return false
 	}
 	pods := reservedPods(claim)
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	cur := b.claims[lc.UID]
-	if cur == nil {
-		return false
-	}
-	cur.Pods = pods
-	if cur.State == state.LeaseClaimOpen {
-		applyClaim(cur, state.LeaseClaimOpen, state.TriggerRequest)
-	}
-	b.saveLocked()
-	return hasPod(cur, podUID)
+	found := false
+	return b.change(func(r *state.Records) {
+		if cur := r.LeaseClaim(lc.UID); cur != nil {
+			cur.Pods = pods
+			if cur.State == state.LeaseClaimOpen {
+				applyClaim(cur, state.LeaseClaimOpen, state.TriggerRequest)
+			}
+			found = hasPod(cur, podUID)
+		}
+	}) && found
 }
 
 // handle runs one authenticated request. It returns the response and the

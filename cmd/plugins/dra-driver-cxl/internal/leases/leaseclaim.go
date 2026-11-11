@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -62,13 +61,15 @@ import (
 // mounted in its lease-fs directory, then by the release of its last lease
 // or a later sweep.
 //
-// Persistence: the record in the store; lease claims survive a reboot
-// (kubelet prepares them again). A lost store keeps every directory.
+// Persistence: the record in the store, its only copy, committed before its
+// socket and CDI device; lease claims survive a reboot (kubelet prepares
+// them again). A lost store keeps every directory.
 //
-// Locks and waits: the broker's mutex, without it for the removal of the
-// directories (the removal in progress of a claim is waited for, and its
-// socket is not started meanwhile); CloseClaim waits up to Timeouts.Close
-// for the leases of the claim.
+// Locks and waits: the commits of the store; the broker's mutex for the
+// sockets, without it for the removal of the directories (the removal in
+// progress of a claim is waited for, and its socket is not started
+// meanwhile); CloseClaim waits up to Timeouts.Close for the leases of the
+// claim.
 
 const (
 	// leaseDirName is the directory of the socket directories of the
@@ -141,29 +142,34 @@ func reservedPods(claim *resourcev1.ResourceClaim) []state.PodRef {
 // device keep their mounts).
 func (b *Broker) OpenClaim(claim *resourcev1.ResourceClaim) error {
 	uid := string(claim.UID)
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	lc := b.claims[uid]
-	if lc == nil {
-		lc = &state.LeaseClaim{UID: uid, State: state.LeaseClaimNone, FsDir: b.leaseFsDir(uid)}
-	}
-	cp := lc.Clone()
-	cp.Namespace, cp.Name, cp.Pods = claim.Namespace, claim.Name, reservedPods(claim)
-	if !applyClaim(&cp, state.LeaseClaimOpen, state.TriggerPrepare) {
-		return fmt.Errorf("lease claim %s is %s", uid, lc.State)
-	}
-	b.claims[uid] = &cp
-	if err := b.persistLocked(); err != nil {
+	var lc state.LeaseClaim
+	err := b.commit(func(r *state.Records) error {
+		cur := r.LeaseClaim(uid)
+		if cur == nil {
+			r.LeaseClaims = append(r.LeaseClaims, state.LeaseClaim{UID: uid, State: state.LeaseClaimNone, FsDir: b.leaseFsDir(uid)})
+			cur = &r.LeaseClaims[len(r.LeaseClaims)-1]
+		}
+		was := cur.State
+		cur.Namespace, cur.Name, cur.Pods = claim.Namespace, claim.Name, reservedPods(claim)
+		if !applyClaim(cur, state.LeaseClaimOpen, state.TriggerPrepare) {
+			return fmt.Errorf("lease claim %s is %s", uid, was)
+		}
+		lc = cur.Clone()
+		return nil
+	})
+	if err != nil {
 		return err
 	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if err := b.writeCDISpec(); err != nil {
 		return err
 	}
-	if err := b.listen(uid); err != nil {
+	if err := b.listen(uid, lc.FsDir); err != nil {
 		return err
 	}
 	klog.Infof("lease broker: claim %s/%s (%s): lease socket %s for pods %v",
-		claim.Namespace, claim.Name, uid, filepath.Join(b.leaseDir(uid), leaseSocketName), cp.Pods)
+		claim.Namespace, claim.Name, uid, filepath.Join(b.leaseDir(uid), leaseSocketName), lc.Pods)
 	return nil
 }
 
@@ -171,30 +177,35 @@ func (b *Broker) OpenClaim(claim *resourcev1.ResourceClaim) error {
 // start: an OPEN claim and a CLOSING one whose close a stop cut listen
 // again; a failed listen is logged and an open claim is OPEN_NO_LISTENER
 // until it is prepared again. A CLOSING claim stays CLOSING (no new
-// leases) for kubelet's Unprepare retry. Called with b.mu held.
+// leases) for kubelet's Unprepare retry.
 func (b *Broker) recoverClaims() {
-	changed := false
-	for _, uid := range slices.Sorted(maps.Keys(b.claims)) {
-		lc := b.claims[uid]
-		to := state.LeaseClaimOpen
+	r := b.records()
+	to := map[string]state.LeaseClaimState{}
+	b.mu.Lock()
+	for i := range r.LeaseClaims {
+		lc := &r.LeaseClaims[i]
+		to[lc.UID] = state.LeaseClaimOpen
 		if lc.State == state.LeaseClaimClosing {
-			to = state.LeaseClaimClosing
+			to[lc.UID] = state.LeaseClaimClosing
 		}
-		err := b.listen(uid)
-		if err != nil {
-			klog.Errorf("lease broker: lease claim %s: %v", uid, err)
-			if to != state.LeaseClaimClosing {
-				to = state.LeaseClaimOpenNoListener
+		if err := b.listen(lc.UID, lc.FsDir); err != nil {
+			klog.Errorf("lease broker: lease claim %s: %v", lc.UID, err)
+			if to[lc.UID] != state.LeaseClaimClosing {
+				to[lc.UID] = state.LeaseClaimOpenNoListener
 			}
 		}
-		was := lc.State
-		if applyClaim(lc, to, state.TriggerRecover) && was != lc.State {
-			changed = true
+	}
+	b.mu.Unlock()
+	if len(to) == 0 {
+		return
+	}
+	b.change(func(r *state.Records) {
+		for uid, next := range to {
+			if lc := r.LeaseClaim(uid); lc != nil {
+				applyClaim(lc, next, state.TriggerRecover)
+			}
 		}
-	}
-	if changed {
-		b.saveLocked()
-	}
+	})
 }
 
 // CloseClaim releases every lease of a lease claim, waits up to
@@ -205,31 +216,36 @@ func (b *Broker) recoverClaims() {
 // gone. A timeout is an error (kubelet retries the Unprepare). Unknown
 // claims are not an error.
 func (b *Broker) CloseClaim(ctx context.Context, uid string) error {
-	b.mu.Lock()
-	lc := b.claims[uid]
-	if lc == nil {
+	if b.records().LeaseClaim(uid) == nil {
+		// a socket left by a removal committed after its wait ended
+		b.mu.Lock()
+		b.stopListening(uid)
 		b.mu.Unlock()
 		return nil
 	}
-	ns, name := lc.Namespace, lc.Name
-	if applyClaim(lc, state.LeaseClaimClosing, state.TriggerUnprepare) {
-		b.saveLocked()
+	var ns, name string
+	err := b.commit(func(r *state.Records) error {
+		if lc := r.LeaseClaim(uid); lc != nil {
+			ns, name = lc.Namespace, lc.Name
+			applyClaim(lc, state.LeaseClaimClosing, state.TriggerUnprepare)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 	var ids []string
-	for _, l := range b.leasesOf(uid) {
+	for _, l := range leasesOf(b.records(), uid) {
 		ids = append(ids, l.ID)
 	}
-	b.mu.Unlock()
 	for _, id := range ids {
 		b.startRelease(id, "lease claim unprepared (pod done)", state.TriggerUnprepare)
 	}
 	ctx, cancel := context.WithTimeout(ctx, b.t.Close)
 	defer cancel()
 	remaining := func() int {
-		b.mu.Lock()
-		defer b.mu.Unlock()
 		n := 0
-		for _, l := range b.leasesOf(uid) {
+		for _, l := range leasesOf(b.records(), uid) {
 			if !l.DeletionRequested {
 				n++
 			}
@@ -240,7 +256,10 @@ func (b *Broker) CloseClaim(ctx context.Context, uid string) error {
 		return fmt.Errorf("claim %s/%s: still releasing %d leases, retry", ns, name, remaining())
 	}
 	closed, err := b.closed(uid)
-	if !closed {
+	switch {
+	case !closed && err != nil:
+		return err
+	case !closed:
 		return fmt.Errorf("claim %s/%s: prepared again while it was closed, retry", ns, name)
 	}
 	errs := []error{err}
@@ -255,26 +274,45 @@ func (b *Broker) CloseClaim(ctx context.Context, uid string) error {
 	return errors.Join(errs...)
 }
 
-// closed stops the socket of a closing lease claim and removes its record
-// and its CDI device; it reports whether the claim is closed (false: it was
-// opened again meanwhile) and returns the errors of the writes.
+// closed removes the record of a closing lease claim, then stops its
+// socket and removes its CDI device; it reports whether the claim is
+// closed (false: it was opened again meanwhile, or the commit failed) and
+// returns the error of the commit or of the CDI write.
 func (b *Broker) closed(uid string) (bool, error) {
+	closed := true
+	err := b.commit(func(r *state.Records) error {
+		lc := r.LeaseClaim(uid)
+		switch {
+		case lc == nil:
+		case !applyClaim(lc, state.LeaseClaimClosed, state.TriggerUnprepare):
+			closed = false
+		default:
+			r.LeaseClaims = slices.DeleteFunc(r.LeaseClaims, func(c state.LeaseClaim) bool { return c.UID == uid })
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	lc := b.claims[uid]
-	switch {
-	case lc == nil:
-		return true, nil
-	case !applyClaim(lc, state.LeaseClaimClosed, state.TriggerUnprepare):
+	if !closed || b.records().LeaseClaim(uid) != nil {
 		return false, nil
 	}
+	b.stopListening(uid)
+	return true, b.writeCDISpec()
+}
+
+// stopListening closes the listener of the socket of a lease claim and its
+// open connections. Called with b.mu held.
+func (b *Broker) stopListening(uid string) {
 	if l := b.listeners[uid]; l != nil {
 		_ = l.Close()
 		delete(b.listeners, uid)
 	}
-	b.closeConnsLocked(uid)
-	delete(b.claims, uid)
-	return true, errors.Join(b.persistLocked(), b.writeCDISpec())
+	for c := range b.conns[uid] {
+		_ = c.Close()
+	}
 }
 
 // removeClaimDirs removes the directories of a lease claim that is not in
@@ -292,7 +330,7 @@ func (b *Broker) closed(uid string) (bool, error) {
 func (b *Broker) removeClaimDirs(uid string, trigger state.Trigger) []string {
 	b.mu.Lock()
 	for {
-		if b.claims[uid] != nil {
+		if b.records().LeaseClaim(uid) != nil {
 			b.mu.Unlock()
 			return nil
 		}
@@ -404,12 +442,11 @@ func mountedAtOrBelow(mounts []kernel.MountInfo, p string) bool {
 // then the lease claims of the node are unknown, and nothing is removed.
 // Called without b.mu.
 func (b *Broker) sweepFsDirs(trigger state.Trigger) {
-	b.mu.Lock()
-	if b.lost {
-		b.mu.Unlock()
+	if b.st.Lost() != nil {
 		klog.V(3).Infof("lease broker: the lease table was not decoded, keeping the directories of lease claims")
 		return
 	}
+	r := b.records()
 	var uids []string
 	seen := map[string]bool{}
 	for _, root := range []string{LeaseFsRoot(b.opts.DataDir), filepath.Join(b.opts.DataDir, leaseDirName)} {
@@ -419,24 +456,26 @@ func (b *Broker) sweepFsDirs(trigger state.Trigger) {
 		}
 		for _, e := range entries {
 			uid := e.Name()
-			if !e.IsDir() || seen[uid] || b.claims[uid] != nil {
+			if !e.IsDir() || seen[uid] || r.LeaseClaim(uid) != nil {
 				continue
 			}
 			seen[uid] = true
 			uids = append(uids, uid)
 		}
 	}
-	b.mu.Unlock()
 	for _, uid := range uids {
 		b.removeClaimDirs(uid, trigger)
 	}
 }
 
-// listen starts the socket of a lease claim if it is not running. Called
-// with b.mu held.
-func (b *Broker) listen(uid string) error {
-	if b.listeners[uid] != nil {
+// listen starts the socket of a lease claim if it is not running, with the
+// directories of its fsDir, unless the broker stops. Called with b.mu held.
+func (b *Broker) listen(uid, fsDir string) error {
+	switch {
+	case b.listeners[uid] != nil:
 		return nil
+	case b.ctx.Err() != nil:
+		return errors.New("the lease broker is stopping")
 	}
 	if _, ok := b.removing[uid]; ok {
 		return fmt.Errorf("the directories of lease claim %s are being removed, retry", uid)
@@ -448,7 +487,7 @@ func (b *Broker) listen(uid string) error {
 	if err := os.Chmod(dir, 0755); err != nil {
 		return err
 	}
-	if err := b.makeFsDirs(uid); err != nil {
+	if err := b.makeFsDirs(uid, fsDir); err != nil {
 		return err
 	}
 	// The socket is made and given its mode where no container can
@@ -486,25 +525,23 @@ func (b *Broker) listen(uid string) error {
 	return nil
 }
 
-// makeFsDirs creates, for a lease claim with FsDir, the mount point of
-// api.FsDir in its socket directory and its lease-fs directory. Called
-// with b.mu held.
-func (b *Broker) makeFsDirs(uid string) error {
-	lc := b.claims[uid]
-	if lc == nil || lc.FsDir == "" {
+// makeFsDirs creates, for a lease claim with its lease-fs directory fsDir,
+// the mount point of api.FsDir in its socket directory and fsDir.
+func (b *Broker) makeFsDirs(uid, fsDir string) error {
+	if fsDir == "" {
 		return nil
 	}
 	mp := filepath.Join(b.leaseDir(uid), leaseFsMountPoint)
 	if err := mkdirNoFollow(mp); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(lc.FsDir, 0755); err != nil {
+	if err := os.MkdirAll(fsDir, 0755); err != nil {
 		return err
 	}
-	if err := os.Chmod(lc.FsDir, 0755); err != nil {
+	if err := os.Chmod(fsDir, 0755); err != nil {
 		return err
 	}
-	SELinuxLabel(mp, lc.FsDir)
+	SELinuxLabel(mp, fsDir)
 	return nil
 }
 
@@ -545,9 +582,9 @@ func SELinuxLabel(paths ...string) {
 	}
 }
 
-// cdiDevice returns the CDI device of a lease claim. Called with b.mu
-// held.
-func (b *Broker) cdiDevice(claimUID string) cdiSpecs.Device {
+// cdiDevice returns the CDI device of a lease claim.
+func (b *Broker) cdiDevice(lc *state.LeaseClaim) cdiSpecs.Device {
+	claimUID := lc.UID
 	edits := cdiSpecs.ContainerEdits{
 		Env: []string{api.SocketEnv + "=" + api.DefaultSocket},
 		// read-only: connect(2) needs write access to the socket only,
@@ -561,7 +598,7 @@ func (b *Broker) cdiDevice(claimUID string) cdiSpecs.Device {
 	}
 	// The containers of a claim prepared without FsDir were created
 	// without this mount: their CDI device stays as it was.
-	if lc := b.claims[claimUID]; lc != nil && lc.FsDir != "" {
+	if lc.FsDir != "" {
 		edits.Mounts = append(edits.Mounts, &cdiSpecs.Mount{
 			HostPath:      lc.FsDir,
 			ContainerPath: api.FsDir,
@@ -586,15 +623,17 @@ func (b *Broker) cdiDevice(claimUID string) cdiSpecs.Device {
 	return cdiSpecs.Device{Name: CDIDeviceName(claimUID), ContainerEdits: edits}
 }
 
-// writeCDISpec writes the CDI spec of all lease claims, or removes it when
-// there are none. Called with b.mu held.
+// writeCDISpec writes the CDI spec of the lease claims of the records, or
+// removes it when there are none. Called with b.mu held: the writes of the
+// spec are serialized, each of the latest records.
 func (b *Broker) writeCDISpec() error {
 	if b.opts.CDI == nil {
 		return nil
 	}
 	spec := &cdiSpecs.Spec{Kind: device.CDIKind}
-	for _, uid := range slices.Sorted(maps.Keys(b.claims)) {
-		spec.Devices = append(spec.Devices, b.cdiDevice(uid))
+	r := b.records()
+	for i := range r.LeaseClaims {
+		spec.Devices = append(spec.Devices, b.cdiDevice(&r.LeaseClaims[i]))
 	}
 	if len(spec.Devices) == 0 {
 		if err := b.opts.CDI.RemoveSpec(device.LeasesCDISpecName); err != nil {

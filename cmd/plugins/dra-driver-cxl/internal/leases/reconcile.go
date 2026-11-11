@@ -67,11 +67,9 @@ func (b *Broker) reconcileLoop(containers Containers) {
 func (b *Broker) reconcile() {
 	b.mu.Lock()
 	containers := b.containers
-	leases := make([]state.Lease, 0, len(b.leases))
-	for _, id := range slices.Sorted(maps.Keys(b.leases)) {
-		leases = append(leases, b.leases[id].Clone())
-	}
 	b.mu.Unlock()
+	b.failUnrestored()
+	leases := b.records().Leases
 
 	for i := range leases {
 		l := &leases[i]
@@ -109,27 +107,38 @@ func (b *Broker) reconcile() {
 }
 
 // listenAgain listens again on the sockets of the lease claims that are
-// OPEN_NO_LISTENER (a listen at the start failed); a failure is logged and
-// tried again at the next reconcile.
+// OPEN_NO_LISTENER (a listen at the start failed) or OPEN without one (a
+// commit of the start failed); a failure is logged and tried again at the
+// next reconcile.
 func (b *Broker) listenAgain() {
+	r := b.records()
+	var again []string
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	changed := false
-	for _, uid := range slices.Sorted(maps.Keys(b.claims)) {
-		lc := b.claims[uid]
-		if lc.State != state.LeaseClaimOpenNoListener {
+	for i := range r.LeaseClaims {
+		lc := &r.LeaseClaims[i]
+		if lc.State != state.LeaseClaimOpenNoListener && (lc.State != state.LeaseClaimOpen || b.listeners[lc.UID] != nil) {
 			continue
 		}
-		if err := b.listen(uid); err != nil {
-			klog.Warningf("lease broker: lease claim %s: listening again: %v", uid, err)
+		if err := b.listen(lc.UID, lc.FsDir); err != nil {
+			klog.Warningf("lease broker: lease claim %s: listening again: %v", lc.UID, err)
 			continue
 		}
-		klog.Infof("lease broker: lease claim %s/%s (%s): listening again", lc.Namespace, lc.Name, uid)
-		changed = applyClaim(lc, state.LeaseClaimOpen, state.TriggerReconcile) || changed
+		klog.Infof("lease broker: lease claim %s/%s (%s): listening again", lc.Namespace, lc.Name, lc.UID)
+		if lc.State == state.LeaseClaimOpenNoListener {
+			again = append(again, lc.UID)
+		}
 	}
-	if changed {
-		b.saveLocked()
+	b.mu.Unlock()
+	if len(again) == 0 {
+		return
 	}
+	b.change(func(r *state.Records) {
+		for _, uid := range again {
+			if lc := r.LeaseClaim(uid); lc != nil && lc.State == state.LeaseClaimOpenNoListener {
+				applyClaim(lc, state.LeaseClaimOpen, state.TriggerReconcile)
+			}
+		}
+	})
 }
 
 // companionGone reports whether a companion pod no longer holds its claim:
@@ -179,15 +188,16 @@ func (b *Broker) requesterDone(pod state.PodRef) bool {
 // containerGone is told that a container stopped or was removed: the
 // leases of a container that will not come back are released.
 func (b *Broker) containerGone(pod state.PodRef, container string) {
-	b.mu.Lock()
 	var ids []string
 	var owner state.PodRef
-	for _, id := range slices.Sorted(maps.Keys(b.leases)) {
-		if l := b.leases[id]; l.Pod.UID == pod.UID && l.Container == container {
-			ids = append(ids, id)
+	r := b.records()
+	for i := range r.Leases {
+		if l := &r.Leases[i]; l.Pod.UID == pod.UID && l.Container == container {
+			ids = append(ids, l.ID)
 			owner = l.Pod
 		}
 	}
+	b.mu.Lock()
 	containers := b.containers
 	b.mu.Unlock()
 	if len(ids) == 0 {
@@ -216,15 +226,11 @@ func (b *Broker) containerStarted(pod state.PodRef, container string) {
 func (b *Broker) relendContainer(podUID, container string) {
 	b.mu.Lock()
 	containers := b.containers
-	r := state.Records{Leases: make([]state.Lease, 0, len(b.leases))}
-	for _, id := range slices.Sorted(maps.Keys(b.leases)) {
-		r.Leases = append(r.Leases, b.leases[id].Clone())
-	}
 	b.mu.Unlock()
 	if containers == nil {
 		return
 	}
-	lends := state.LeaseLends(&r, podUID, container)
+	lends := state.LeaseLends(b.records(), podUID, container)
 	for _, node := range slices.Sorted(maps.Keys(lends)) {
 		for _, id := range lends[node] {
 			ctx, cancel := b.apiContext()
@@ -252,9 +258,7 @@ func (b *Broker) deleteOrphans() {
 		if o.Name != CompanionName(id) || o.DeletionTimestamp != nil {
 			return false
 		}
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		return b.leases[id] == nil
+		return b.records().Lease(id) == nil
 	}
 	if pods, err := b.opts.Client.CoreV1().Pods("").List(ctx, sel); err != nil {
 		klog.Warningf("lease broker: listing companion pods: %v", err)

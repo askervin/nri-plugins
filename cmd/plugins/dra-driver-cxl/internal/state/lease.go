@@ -44,12 +44,12 @@ import (
 // RELEASING_BUSY or FAILED; no lend on a NUMA node whose memory is
 // offline.
 //
-// Persistence: intent (CREATING before the API objects) and fact. A load in
+// Persistence: intent (CREATING before the API objects) and fact, the only
+// copy: a transition is committed before the act that follows it. A load in
 // another boot drops every lease; the first reconcile deletes their
 // companions.
 //
-// Locks and waits: the broker's mutex, never held across a lender or API
-// call.
+// Locks and waits: the commits of the store.
 type Lease struct {
 	ID        string     `json:"id"`
 	Claim     string     `json:"claim"`

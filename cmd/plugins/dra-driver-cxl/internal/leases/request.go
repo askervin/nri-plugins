@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"time"
 
@@ -40,7 +39,7 @@ import (
 // socket of a lease claim, and the device whose fd goes with it: it stores
 // the lease, creates its companion and waits up to wait for it.
 func (b *Broker) requestLease(claimUID string, who Requester, req *api.Request, wait time.Duration) (*api.Response, leaseFd) {
-	if id := b.requested(who, req.RequestID); id != "" {
+	if id := requested(b.records(), who, req.RequestID); id != "" {
 		return b.waitReady(id, wait, true)
 	}
 	l := &state.Lease{
@@ -54,8 +53,13 @@ func (b *Broker) requestLease(claimUID string, who Requester, req *api.Request, 
 	if err := b.requestOptions(&l.Asked, req); err != nil {
 		return &api.Response{Error: err.Error()}, leaseFd{}
 	}
-	if err := b.storeCreating(l, req); err != nil {
+	l, created, err := b.storeCreating(l, req)
+	switch {
+	case err != nil:
 		return &api.Response{Error: err.Error()}, leaseFd{}
+	case !created:
+		// an equal request was stored first
+		return b.waitReady(l.ID, wait, true)
 	}
 	a := &l.Asked
 	klog.Infof("lease broker: lease %s: %s/%s/%s requests size %q serial %q (source %q, mode %s, shared %v, shared device %v, read-only %v, access %q, name %q)",
@@ -63,76 +67,88 @@ func (b *Broker) requestLease(claimUID string, who Requester, req *api.Request, 
 
 	if err := b.createCompanion(l); err != nil {
 		klog.Errorf("lease broker: lease %s: %v", l.ID, err)
-		b.mu.Lock()
-		if cur := b.leases[l.ID]; cur != nil && apply(cur, state.LeaseFailed, state.TriggerRequest) {
-			cur.Error = err.Error()
+		b.fail(l.ID, err.Error(), state.TriggerRequest, false)
+		return b.releaseFailed(l.ID, err.Error()), leaseFd{}
+	}
+	b.change(func(r *state.Records) {
+		if cur := r.Lease(l.ID); cur != nil && cur.State == state.LeaseCreating {
+			apply(cur, state.LeasePending, state.TriggerRequest)
 		}
-		b.mu.Unlock()
-		resp := b.startRelease(l.ID, err.Error(), state.TriggerRequest)
-		resp.State, resp.Error = api.StateFailed, err.Error()
-		return resp, leaseFd{}
-	}
-	b.mu.Lock()
-	if cur := b.leases[l.ID]; cur != nil && cur.State == state.LeaseCreating {
-		apply(cur, state.LeasePending, state.TriggerRequest)
-		b.saveLocked()
-	}
-	b.mu.Unlock()
+	})
 	return b.waitReady(l.ID, wait, true)
 }
 
-// requested returns the id of the lease that the container asked for with
-// the request id before, "" for none.
-func (b *Broker) requested(who Requester, requestID string) string {
+// requested returns the id of the lease of the records that the container
+// asked for with the request id before, "" for none.
+func requested(r *state.Records, who Requester, requestID string) string {
 	if requestID == "" {
 		return ""
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for _, id := range slices.Sorted(maps.Keys(b.leases)) {
-		if l := b.leases[id]; l.RequestID == requestID && l.Pod.UID == who.Pod.UID && l.Container == who.Container {
-			return id
+	for i := range r.Leases {
+		if l := &r.Leases[i]; l.RequestID == requestID && l.Pod.UID == who.Pod.UID && l.Container == who.Container {
+			return l.ID
 		}
 	}
 	return ""
 }
 
-// storeCreating chooses the id (and the name of an fs lease) of a new
-// lease and stores it CREATING before any API object exists; a failed
-// write forgets it again.
-func (b *Broker) storeCreating(l *state.Lease, req *api.Request) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if err := b.claimOpenLocked(l.Claim); err != nil {
+// storeCreating commits a new lease CREATING before any API object exists,
+// with its id (and the name of an fs lease) chosen, and returns it and
+// true; when a lease of the same request id of the container is stored,
+// that one and false. The lease claim must take new leases, the pod must
+// have fewer than Limits.LeasesPerPod.
+func (b *Broker) storeCreating(l *state.Lease, req *api.Request) (*state.Lease, bool, error) {
+	var stored state.Lease
+	created := false
+	who := Requester{Pod: l.Pod, Container: l.Container}
+	err := b.commit(func(r *state.Records) error {
+		if id := requested(r, who, l.RequestID); id != "" {
+			stored, created = r.Lease(id).Clone(), false
+			return nil
+		}
+		next := l.Clone()
+		if err := creating(r, &next, req, b.opts.Limits.LeasesPerPod, b.opts.NewID); err != nil {
+			return err
+		}
+		stored, created = next, true
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return &stored, created, nil
+}
+
+// creating adds the lease l to the records CREATING, with its id chosen by
+// newID (and the name of an fs lease): the lease claim takes new leases,
+// the pod of the lease has fewer than limit.
+func creating(r *state.Records, l *state.Lease, req *api.Request, limit int, newID func() string) error {
+	if err := claimOpen(r, l.Claim); err != nil {
 		return err
 	}
 	n := 0
-	for _, other := range b.leases {
-		if other.Pod.UID == l.Pod.UID {
+	for i := range r.Leases {
+		if r.Leases[i].Pod.UID == l.Pod.UID {
 			n++
 		}
 	}
-	if n >= b.opts.Limits.LeasesPerPod {
+	if n >= limit {
 		return fmt.Errorf("pod %s/%s has %d leases, the limit of --lease-max-per-pod", l.Pod.Namespace, l.Pod.Name, n)
 	}
-	if err := b.fsLeaseOptions(l, req); err != nil {
+	if err := fsLeaseOptions(r, l, req, newID); err != nil {
 		return err
 	}
 	if !apply(l, state.LeaseCreating, state.TriggerRequest) {
 		return fmt.Errorf("lease %s: not created", l.ID)
 	}
-	b.leases[l.ID] = l
-	if err := b.persistLocked(); err != nil {
-		delete(b.leases, l.ID)
-		return err
-	}
+	r.Leases = append(r.Leases, l.Clone())
 	return nil
 }
 
-// claimOpenLocked returns an error if the lease claim uid takes no new
-// leases: it is closing (its Unprepare runs) or gone. Called with b.mu held.
-func (b *Broker) claimOpenLocked(uid string) error {
-	switch lc := b.claims[uid]; {
+// claimOpen returns an error if the lease claim uid of the records takes no
+// new leases: it is closing (its Unprepare runs) or gone.
+func claimOpen(r *state.Records, uid string) error {
+	switch lc := r.LeaseClaim(uid); {
 	case lc == nil:
 		return fmt.Errorf("lease claim %s is not prepared: no new leases", uid)
 	case lc.State == state.LeaseClaimClosing:
@@ -344,14 +360,14 @@ func deviceSerial(d *resourcev1.Device, driver string) (uint64, bool) {
 	return 0, false
 }
 
-// fsLeaseOptions chooses the id of a new lease and, for an fs lease, its
-// name: the requested one, or the id. An fs lease needs a lease claim with
-// a filesystem directory, and a name that no other lease of the claim has.
-// Called with b.mu held.
-func (b *Broker) fsLeaseOptions(l *state.Lease, req *api.Request) error {
+// fsLeaseOptions chooses the id of a new lease of the records by newID and,
+// for an fs lease, its name: the requested one, or the id. An fs lease
+// needs a lease claim with a filesystem directory, and a name that no other
+// lease of the claim has.
+func fsLeaseOptions(r *state.Records, l *state.Lease, req *api.Request, newID func() string) error {
 	fs := l.Asked.Mode == state.ModeFs
 	if fs {
-		if lc := b.claims[l.Claim]; lc == nil || lc.FsDir == "" {
+		if lc := r.LeaseClaim(l.Claim); lc == nil || lc.FsDir == "" {
 			ns, name := l.Pod.Namespace, l.Claim
 			if lc != nil {
 				ns, name = lc.Namespace, lc.Name
@@ -360,8 +376,8 @@ func (b *Broker) fsLeaseOptions(l *state.Lease, req *api.Request) error {
 		}
 	}
 	// a default name never clashes with a name that a request chose
-	for l.ID == "" || b.leases[l.ID] != nil || (fs && req.Name == "" && b.nameUser(l.Claim, l.ID) != nil) {
-		l.ID = b.opts.NewID()
+	for l.ID == "" || r.Lease(l.ID) != nil || (fs && req.Name == "" && nameUser(r, l.Claim, l.ID) != nil) {
+		l.ID = newID()
 	}
 	if !fs {
 		return nil
@@ -369,17 +385,17 @@ func (b *Broker) fsLeaseOptions(l *state.Lease, req *api.Request) error {
 	if l.Asked.Name == "" {
 		l.Asked.Name = l.ID
 	}
-	if other := b.nameUser(l.Claim, l.Asked.Name); other != nil {
+	if other := nameUser(r, l.Claim, l.Asked.Name); other != nil {
 		return fmt.Errorf("name %q is in use by lease %s", l.Asked.Name, other.ID)
 	}
 	return nil
 }
 
-// nameUser returns the lease of the lease claim whose fs mount has the
-// name, nil if there is none. Called with b.mu held.
-func (b *Broker) nameUser(claimUID, name string) *state.Lease {
-	for _, l := range b.leases {
-		if l.Claim == claimUID && l.Asked.Name == name {
+// nameUser returns the lease of the records of the lease claim whose fs
+// mount has the name, nil if there is none.
+func nameUser(r *state.Records, claimUID, name string) *state.Lease {
+	for i := range r.Leases {
+		if l := &r.Leases[i]; l.Claim == claimUID && l.Asked.Name == name {
 			return l
 		}
 	}
@@ -395,9 +411,7 @@ func (b *Broker) waitReady(id string, wait time.Duration, release bool) (*api.Re
 	var resp *api.Response
 	var fd leaseFd
 	done := func() bool {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		l := b.leases[id]
+		l := b.records().Lease(id)
 		switch {
 		case l == nil:
 			resp = &api.Response{Lease: id, State: api.StateReleased, Error: "lease was released"}
@@ -420,17 +434,28 @@ func (b *Broker) waitReady(id string, wait time.Duration, release bool) (*api.Re
 	if err != nil && release {
 		msg := fmt.Sprintf("timeout: not Ready after %v", wait)
 		klog.Warningf("lease broker: lease %s: %s, releasing", id, msg)
-		resp = b.startRelease(id, msg, state.TriggerRequest)
-		resp.State, resp.Error = api.StateFailed, msg
-		return resp, leaseFd{}
+		return b.releaseFailed(id, msg), leaseFd{}
 	}
 	return resp, fd
 }
 
-// ownLease returns the lease if it belongs to the pod of the requester.
-// Called with b.mu held.
-func (b *Broker) ownLease(who Requester, id string) *state.Lease {
-	l := b.leases[id]
+// releaseFailed starts the release of a lease that failed with msg and
+// returns the response: Failed with msg once the release is committed, else
+// the lease as it is with why it was not released.
+func (b *Broker) releaseFailed(id, msg string) *api.Response {
+	resp, err := b.commitRelease(id, msg, state.TriggerRequest)
+	if err != nil {
+		resp.Error = fmt.Sprintf("%s; not released: %v: release it", msg, err)
+		return resp
+	}
+	resp.State, resp.Error = api.StateFailed, msg
+	return resp
+}
+
+// ownLease returns the lease of the records if it belongs to the pod of the
+// requester.
+func ownLease(r *state.Records, who Requester, id string) *state.Lease {
+	l := r.Lease(id)
 	if l == nil || l.Pod.UID != who.Pod.UID {
 		return nil
 	}
@@ -441,10 +466,7 @@ func (b *Broker) ownLease(who Requester, id string) *state.Lease {
 // socket of the lease claim claimUID and returns its state after waiting up
 // to wait for it to be gone.
 func (b *Broker) releaseOne(claimUID string, who Requester, id string, wait time.Duration) *api.Response {
-	b.mu.Lock()
-	l := b.ownLease(who, id)
-	b.mu.Unlock()
-	if l == nil || l.Claim != claimUID {
+	if l := ownLease(b.records(), who, id); l == nil || l.Claim != claimUID {
 		return &api.Response{Lease: id, Error: "no such lease"}
 	}
 	b.startRelease(id, "released by "+who.Container, state.TriggerRelease)
@@ -456,14 +478,11 @@ func (b *Broker) releaseOne(claimUID string, who Requester, id string, wait time
 // waiting up to wait for them to be gone.
 func (b *Broker) releaseAll(claimUID string, who Requester, wait time.Duration) *api.Response {
 	var ids []string
-	b.mu.Lock()
-	for id, l := range b.leases {
-		if l.Pod.UID == who.Pod.UID && l.Claim == claimUID {
-			ids = append(ids, id)
+	for _, l := range leasesOf(b.records(), claimUID) {
+		if l.Pod.UID == who.Pod.UID {
+			ids = append(ids, l.ID)
 		}
 	}
-	b.mu.Unlock()
-	slices.Sort(ids)
 	for _, id := range ids {
 		b.startRelease(id, "released by "+who.Container, state.TriggerRelease)
 	}
@@ -480,25 +499,14 @@ func (b *Broker) waitReleased(ids []string, wait time.Duration) []*api.Response 
 	ctx, cancel := context.WithTimeout(b.ctx, wait)
 	defer cancel()
 	gone := func() bool {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		for _, id := range ids {
-			if b.leases[id] != nil {
-				return false
-			}
-		}
-		return true
+		r := b.records()
+		return !slices.ContainsFunc(ids, func(id string) bool { return r.Lease(id) != nil })
 	}
 	_ = b.waitFor(ctx, gone)
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	r := b.records()
 	out := make([]*api.Response, 0, len(ids))
 	for _, id := range ids {
-		if l := b.leases[id]; l != nil {
-			out = append(out, leaseInfo(l))
-		} else {
-			out = append(out, &api.Response{Lease: id, State: api.StateReleased})
-		}
+		out = append(out, infoOf(r, id))
 	}
 	return out
 }
@@ -506,11 +514,9 @@ func (b *Broker) waitReleased(ids []string, wait time.Duration) []*api.Response 
 // list returns the leases of the pod of the requester asked for on the
 // socket of the lease claim claimUID.
 func (b *Broker) list(claimUID string, who Requester) *api.Response {
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	out := []api.Response{}
-	for _, id := range slices.Sorted(maps.Keys(b.leases)) {
-		if l := b.leases[id]; l.Pod.UID == who.Pod.UID && l.Claim == claimUID {
+	for _, l := range leasesOf(b.records(), claimUID) {
+		if l.Pod.UID == who.Pod.UID {
 			out = append(out, *leaseInfo(l))
 		}
 	}
@@ -521,19 +527,15 @@ func (b *Broker) list(claimUID string, who Requester) *api.Response {
 // most wait, and returns its response, and with withFd the device of a dax
 // or block lease of the requester container whose fd goes with it.
 func (b *Broker) waitLease(who Requester, id string, wait time.Duration, withFd bool) (*api.Response, leaseFd) {
-	b.mu.Lock()
-	l := b.ownLease(who, id)
+	l := ownLease(b.records(), who, id)
 	switch {
 	case l == nil || (withFd && l.Container != who.Container):
-		b.mu.Unlock()
 		return &api.Response{Lease: id, Error: "no such lease of this container"}, leaseFd{}
 	case withFd && l.Asked.Mode != state.ModeDax && l.Asked.Mode != state.ModeBlock:
 		resp := leaseInfo(l)
-		b.mu.Unlock()
 		resp.Error = fmt.Sprintf("lease %s is not a %s or %s lease; use %s", id, api.ModeDax, api.ModeBlock, api.OpEnv)
 		return resp, leaseFd{}
 	}
-	b.mu.Unlock()
 	resp, fd := b.waitReady(id, wait, false)
 	if !withFd {
 		fd = leaseFd{}

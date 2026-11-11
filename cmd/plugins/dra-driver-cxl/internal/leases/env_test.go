@@ -28,6 +28,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -131,10 +132,14 @@ type leaseEnv struct {
 
 	// opts change the options of the broker of the next start, nil for
 	// none; started tells whether the broker was started; newState makes
-	// the next start make a new document when the store is lost.
-	opts     func(o *Options)
-	started  bool
-	newState bool
+	// the next start make a new document when the store is lost;
+	// afterCommit is the store's AfterCommit hook of the next start; the
+	// writes of the store fail while failing is set (failWrites).
+	opts        func(o *Options)
+	started     bool
+	newState    bool
+	afterCommit func()
+	failing     atomic.Bool
 	// pmem is the block device of the persistent device formatted last.
 	pmem string
 
@@ -241,7 +246,7 @@ func (e *leaseEnv) boot() {
 	pool := dra.PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, "mounts"), filepath.Join(e.dir, store.FileName))
 	st, err := store.Open(ctx, store.Options{Dir: e.dir, PoolDir: e.poolDir, PoolDriver: pool.Name, BootID: e.k.BootID(),
 		SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot(),
-		NewState: e.newState})
+		NewState: e.newState, AfterCommit: e.afterCommit, WriteFault: e.writeFault})
 	mustOK(t, err)
 	e.st = st
 	e.eng, err = engine.New(engine.Options{
@@ -633,11 +638,9 @@ func (e *leaseEnv) waitGoneDir(dir string) {
 	e.t.Fatalf("directory %s left: %v", dir, err)
 }
 
-// lease returns a copy of the lease record of the broker, nil for none.
+// lease returns a copy of the lease record of the store, nil for none.
 func (e *leaseEnv) lease(id string) *state.Lease {
-	e.b.mu.Lock()
-	defer e.b.mu.Unlock()
-	if l := e.b.leases[id]; l != nil {
+	if l := e.st.Snapshot().Lease(id); l != nil {
 		c := l.Clone()
 		return &c
 	}
@@ -649,23 +652,28 @@ func (e *leaseEnv) stored(id string) *state.Lease {
 	return e.st.Snapshot().Lease(id)
 }
 
-// claim returns a copy of the lease claim record of the broker, nil for
+// claim returns a copy of the lease claim record of the store, nil for
 // none.
 func (e *leaseEnv) claim(uid string) *state.LeaseClaim {
-	e.b.mu.Lock()
-	defer e.b.mu.Unlock()
-	if c := e.b.claims[uid]; c != nil {
+	if c := e.st.Snapshot().LeaseClaim(uid); c != nil {
 		cp := c.Clone()
 		return &cp
 	}
 	return nil
 }
 
-// numLeases returns the number of leases of the broker.
+// numLeases returns the number of leases of the store.
 func (e *leaseEnv) numLeases() int {
-	e.b.mu.Lock()
-	defer e.b.mu.Unlock()
-	return len(e.b.leases)
+	return len(e.st.Snapshot().Leases)
+}
+
+// edit commits fn, a change of the records of the store.
+func (e *leaseEnv) edit(fn func(r *state.Records)) {
+	e.t.Helper()
+	mustOK(e.t, e.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
+		fn(&doc.Records)
+		return nil
+	}))
 }
 
 // waitState waits until the lease is in the state (NONE: gone).
