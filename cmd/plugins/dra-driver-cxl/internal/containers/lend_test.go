@@ -21,7 +21,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -788,27 +787,4 @@ func memoryHigh(t *testing.T, dir string) string {
 	data, err := os.ReadFile(filepath.Join(dir, "memory.high"))
 	noErr(t, err)
 	return strings.TrimSpace(string(data))
-}
-
-// The lends of a container found by Synchronize are seeded from the lease
-// broker when it is the source, not from the store: a lease that
-// the store has and the broker does not seeds nothing.
-func TestLendSeedFromBroker(t *testing.T) {
-	ctx := context.Background()
-	pod := testPod("u1")
-	n := newEnvWith(t, envOptions{fencing: config.FencingNone, leases: []state.Lease{readyLease("l1", "u1", "main", 2)}})
-	n.p.SetLeaseLends(func(podUID, container string) map[int][]string {
-		if podUID == "u1" && container == "main" {
-			return map[int][]string{3: {"l3"}}
-		}
-		return nil
-	})
-	n.proc(101, "kubepods/u1/c1", "0-3", "")
-	c1 := testCtr(pod, "c1", "main", 101)
-	c1.State = api.ContainerState_CONTAINER_RUNNING
-	_, err := n.p.Synchronize(ctx, []*api.PodSandbox{pod}, []*api.Container{c1})
-	noErr(t, err)
-	if got := n.p.LentNodes("u1", "main"); !slices.Equal(got, []int{3}) {
-		t.Fatalf("lent %v, expected the broker's [3]", got)
-	}
 }

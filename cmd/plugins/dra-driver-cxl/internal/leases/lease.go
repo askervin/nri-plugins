@@ -521,13 +521,6 @@ func unrestoredOf(r *state.Records) map[string]string {
 	return out
 }
 
-// LeaseLends returns the NUMA nodes lent by the READY numa leases of the
-// container of the pod with their lease ids, by node, as the store has
-// them (state.LeaseLends).
-func (b *Broker) LeaseLends(podUID, container string) map[int][]string {
-	return state.LeaseLends(b.records(), podUID, container)
-}
-
 // CompanionName is the name of the companion claim and pod of a lease.
 func CompanionName(id string) string {
 	return "cxl-lease-" + id
