@@ -349,12 +349,12 @@ States: UNKNOWN, HELD, LOCAL, POOL.
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
 | UNKNOWN | POOL | `a-list`, `a-prepare`: a pool ResourceSlice lists the serial; or a pool claim's status data names it; or a pool grant is JOURNALED | - | commit (d) with Pool &lt;driver>/&lt;pool> and LastSeen |
-| UNKNOWN | HELD | `a-observe`: a new memdev appears with a reason for doubt: pool ResourceSlices never listed; a pool claim of the node attaching; a remembered pool's ResourceSlices missing for less than 1 h; the list fails; the record was lost | - | commit (l) with HeldSince and HeldReason; not published |
+| UNKNOWN | HELD | `a-observe`: a new memdev appears with a reason for doubt: pool ResourceSlices never listed; a pool claim of the node attaching; a remembered pool's ResourceSlices missing for less than 1 h; the list fails; the record was lost | - | commit (d) with HeldSince and HeldReason; not published |
 | UNKNOWN | LOCAL | `a-observe`: a new memdev appears and there is no reason to hold it | - | commit (l); published per its kind |
-| HELD | (unchanged) | `a-observe`, `a-list`: the reason refreshed by a later observation | - | commit (l) when the reason changed |
-| HELD | LOCAL | `expire`: the hold expired (5 min) and the reason was: list failing, pool missing for less than 1 h, file lost, claims not listable | not "never listed", not "attaching" | commit (l); published |
-| HELD | LOCAL | `a-observe`: a later observation finds no reason for doubt any more, or the engine has the memdev as local | not listed by a pool ResourceSlice or claim | commit (l); published |
-| HELD | UNKNOWN | `a-observe`: the memdev is gone before its hold ended | - | commit (l) removing the record |
+| HELD | (unchanged) | `a-observe`, `a-list`: the reason refreshed by a later observation | - | commit (d) when the reason changed; HeldSince restarts at a change from a reason without expiry |
+| HELD | LOCAL | `expire`: the hold expired (5 min) and the reason was: list failing, pool missing for less than 1 h, file lost, claims not listable | not "never listed", not "attaching" | commit (d); published |
+| HELD | LOCAL | `a-observe`: a later observation finds no reason for doubt any more, or the engine has the memdev as local | not listed by a pool ResourceSlice or claim | commit (d); published |
+| HELD | UNKNOWN | `a-observe`: the memdev is gone before its hold ended | - | commit (d) removing the record |
 | HELD | POOL | `a-list`, `a-prepare`: listed by a ResourceSlice or a claim, or a pool grant | - | commit (d) |
 | LOCAL | POOL | `a-list`, `a-prepare`: a pool ResourceSlice or claim lists it later | - | commit (d); withdrawn from publication; existing local grants logged once (conflict) |
 | POOL | (unchanged) | `a-list`, `a-observe`, `a-prepare`: seen again | - | LastSeen (l, at most hourly) |
@@ -368,7 +368,7 @@ Refused:
 
 **Invariants.** POOL never turns LOCAL; no new local grant on a serial that is POOL or HELD.
 
-**Persistence.** Fact; the records of POOL and LOCAL serials with Pool and LastSeen (committed at most hourly when only LastSeen changed), and of HELD serials with HeldSince and HeldReason (committed when the hold starts or its reason changes), kept across restarts and reboots: a hold goes on from its HeldSince. LastObserved and the absence of a serial are kept in memory only: a restart observes them anew.
+**Persistence.** Fact, the only copy of the provenance; the records of POOL and LOCAL serials with Pool and LastSeen (committed at most hourly when only LastSeen changed), and of HELD serials with HeldSince and HeldReason (committed durably when the hold starts, ends or changes its reason), kept across restarts and reboots: a hold goes on from its HeldSince. LastObserved and the absence of a serial are kept in memory only: a restart observes them anew.
 
 **Locks and waits.** The provenance watcher is the only writer.
 

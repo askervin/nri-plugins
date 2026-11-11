@@ -35,12 +35,13 @@ import (
 // Invariants: POOL never turns LOCAL; no new local grant on a serial that is
 // POOL or HELD.
 //
-// Persistence: fact; the records of POOL and LOCAL serials with Pool and
-// LastSeen (committed at most hourly when only LastSeen changed), and of
-// HELD serials with HeldSince and HeldReason (committed when the hold starts
-// or its reason changes), kept across restarts and reboots: a hold goes on
-// from its HeldSince. LastObserved and the absence of a serial are kept in
-// memory only: a restart observes them anew.
+// Persistence: fact, the only copy of the provenance; the records of POOL
+// and LOCAL serials with Pool and LastSeen (committed at most hourly when
+// only LastSeen changed), and of HELD serials with HeldSince and HeldReason
+// (committed durably when the hold starts, ends or changes its reason), kept
+// across restarts and reboots: a hold goes on from its HeldSince.
+// LastObserved and the absence of a serial are kept in memory only: a
+// restart observes them anew.
 //
 // Locks and waits: the provenance watcher is the only writer.
 type Provenance struct {
@@ -55,9 +56,11 @@ type Provenance struct {
 	// LastObserved is the last observation that the absence of the serial
 	// counts over: absence counts only over observations at most 5 min
 	// apart.
-	LastObserved time.Time  `json:"lastObserved,omitzero"`
-	HeldSince    time.Time  `json:"heldSince,omitzero"`
-	HeldReason   HeldReason `json:"heldReason,omitempty"`
+	LastObserved time.Time `json:"lastObserved,omitzero"`
+	// HeldSince is when the hold started, or when its reason last turned
+	// from one without expiry to one with: the expiry counts from it.
+	HeldSince  time.Time  `json:"heldSince,omitzero"`
+	HeldReason HeldReason `json:"heldReason,omitempty"`
 }
 
 // HeldReason tells why a serial is HELD.
@@ -107,7 +110,7 @@ var ProvenanceTable = Table[ProvenanceState]{
 			When: "a new memdev appears with a reason for doubt: pool ResourceSlices never listed; a pool claim of " +
 				"the node attaching; a remembered pool's ResourceSlices missing for less than 1 h; the list fails; " +
 				"the record was lost",
-			Effects: "commit (l) with HeldSince and HeldReason; not published",
+			Effects: "commit (d) with HeldSince and HeldReason; not published",
 		},
 		{
 			From: list(ProvenanceUnknown), To: ProvenanceLocal, Triggers: list(TriggerObserve),
@@ -117,25 +120,25 @@ var ProvenanceTable = Table[ProvenanceState]{
 		{
 			From: list(ProvenanceHeld), Stays: true, Triggers: list(TriggerObserve, TriggerList),
 			When:    "the reason refreshed by a later observation",
-			Effects: "commit (l) when the reason changed",
+			Effects: "commit (d) when the reason changed; HeldSince restarts at a change from a reason without expiry",
 		},
 		{
 			From: list(ProvenanceHeld), To: ProvenanceLocal, Triggers: list(TriggerExpire),
 			When: "the hold expired (5 min) and the reason was: list failing, pool missing for less than 1 h, file " +
 				"lost, claims not listable",
 			Guard:   "not \"never listed\", not \"attaching\"",
-			Effects: "commit (l); published",
+			Effects: "commit (d); published",
 		},
 		{
 			From: list(ProvenanceHeld), To: ProvenanceLocal, Triggers: list(TriggerObserve),
 			When:    "a later observation finds no reason for doubt any more, or the engine has the memdev as local",
 			Guard:   "not listed by a pool ResourceSlice or claim",
-			Effects: "commit (l); published",
+			Effects: "commit (d); published",
 		},
 		{
 			From: list(ProvenanceHeld), To: ProvenanceUnknown, Triggers: list(TriggerObserve),
 			When:    "the memdev is gone before its hold ended",
-			Effects: "commit (l) removing the record",
+			Effects: "commit (d) removing the record",
 		},
 		{
 			From: list(ProvenanceHeld), To: ProvenancePool, Triggers: list(TriggerList, TriggerPrepare),
