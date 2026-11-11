@@ -477,6 +477,7 @@ func (b *Broker) apiContext() (context.Context, context.CancelFunc) {
 }
 
 var (
-	_ lend.LeaseHooks  = (*Broker)(nil)
-	_ lend.LeaseClaims = (*Broker)(nil)
+	_ lend.LeaseHooks      = (*Broker)(nil)
+	_ lend.LeaseClaims     = (*Broker)(nil)
+	_ lend.PreparedStepper = (*Broker)(nil)
 )

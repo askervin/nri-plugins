@@ -212,6 +212,19 @@ func (c *Lender) Revoke(ctx context.Context, rec *lend.Lend, claimName string) e
 	return errors.Join(errs...)
 }
 
+// preparedStep returns the change of the records that tells the broker that
+// the companion claim of a lease is prepared and lent, with its memdevs of
+// the source, to commit with its preparation PREPARED, and what follows the
+// commit: Prepared, when the broker takes no change.
+func (c *Lender) preparedStep(id string, source state.Source, devs []state.DeviceInfo) (func(r *state.Records), func()) {
+	if _, hooks := c.get(); hooks != nil {
+		if s, ok := hooks.(lend.PreparedStepper); ok {
+			return s.PreparedStep(id, source, devs)
+		}
+	}
+	return func(*state.Records) {}, func() { c.Prepared(id, source, devs) }
+}
+
 // Prepared tells the broker that the companion claim of a lease is prepared
 // and lent, with its memdevs of the source.
 func (c *Lender) Prepared(id string, source state.Source, devs []state.DeviceInfo) {

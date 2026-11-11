@@ -71,6 +71,15 @@ type SpecHasher interface {
 	CompanionSpecHash(lease string) (hash string, first bool)
 }
 
+// PreparedStepper is the part of the hooks whose OnPrepared is a change of
+// the records that the driver commits with the preparation PREPARED of the
+// companion claim.
+type PreparedStepper interface {
+	// PreparedStep returns OnPrepared of the lease as a change of the
+	// records and what follows its commit.
+	PreparedStep(id string, source state.Source, devs []state.DeviceInfo) (step func(r *state.Records), after func())
+}
+
 // LeaseClaims is what cxl.nri.io needs from the lease broker for claims on
 // the lease device.
 type LeaseClaims interface {

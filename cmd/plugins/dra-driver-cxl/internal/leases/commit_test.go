@@ -17,9 +17,11 @@ package leases
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,6 +31,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
 // The records of the store are the only copy of the leases and the lease
@@ -325,6 +328,36 @@ func TestFailedCommitUnrestored(t *testing.T) {
 	e.waitState(id, state.LeaseNone)
 	if calls := e.ctrs.callLog(); !strings.Contains(calls, "revoke pod-uid-1/app 2") {
 		t.Fatalf("not revoked; calls:\n%s", calls)
+	}
+}
+
+// The preparation PREPARED of a companion claim and its lease READY are one
+// commit: no document has the companion prepared and its lease LENDING.
+func TestCompanionPreparedWithReady(t *testing.T) {
+	var mu sync.Mutex
+	var apart []string
+	e := newLeaseEnv(t, nil, fake.MemdevSpec{Serial: serialPoolX})
+	e.afterCommit = func() {
+		r := e.st.Snapshot()
+		for _, p := range r.Preparations {
+			if l := r.Lease(p.Lease); p.Lease != "" && l != nil && p.State == state.PreparationPrepared && l.State == state.LeaseLending {
+				mu.Lock()
+				apart = append(apart, fmt.Sprintf("generation %d: %s %s, lease %s %s", r.Generation, p.ClaimName, p.State, l.ID, l.State))
+				mu.Unlock()
+			}
+		}
+	}
+	e.restart()
+	e.openClaim()
+	e.start()
+	_, r := e.requestPool("000000a1", api.Request{Op: api.OpRequest, Source: "pool", Size: "256Mi", Wait: "5s"}, "pooled0", poolExclusiveData)
+	if r.resp.Error != "" || r.resp.State != api.StateReady {
+		t.Fatalf("response %+v", r.resp)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(apart) > 0 {
+		t.Fatalf("PREPARED and READY in separate commits: %v", apart)
 	}
 }
 

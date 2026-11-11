@@ -376,19 +376,36 @@ func (p *Plugin) realise(ctx context.Context, pr *prepare) error {
 }
 
 // finish writes the CDI spec with the devices of a Prepare whose grants are
-// realised, commits it PREPARED and tells the broker of a companion claim;
-// a failure rolls the Prepare back.
+// realised, commits it PREPARED and tells the broker of a companion claim,
+// in the same commit when the broker takes it so; a failure rolls the
+// Prepare back.
 func (p *Plugin) finish(ctx context.Context, pr *prepare) kubeletplugin.PrepareResult {
 	v := p.rules.voice
 	result := prepareResult(p.preparation(pr.uid), p.rules.CDIKind)
+	var rec *lend.Lend
+	step, after := func(*state.Records) {}, func() {}
+	if pr.lend != nil {
+		var devs []state.DeviceInfo
+		rec, devs = p.lendAndDevices(p.preparation(pr.uid))
+		step, after = p.lender.preparedStep(pr.lend.Lease, p.rules.Source, devs)
+	}
 	err := p.writeCDI(pr.uid)
 	if err == nil {
-		err = p.commit(ctx, func(doc *store.Document) error { return prepared(doc, p.rules.Name, pr.uid) })
+		err = p.commit(ctx, func(doc *store.Document) error {
+			err := prepared(doc, p.rules.Name, pr.uid)
+			if err == nil {
+				step(&doc.Records)
+			}
+			return err
+		})
 	}
 	if err != nil {
+		// a commit whose wait ended may still be written with the lease
+		// READY: the lease is failed after it
+		late := pr.lend != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled))
 		err = v.finishFailure(pr.claimName, err)
 		p.rollback(ctx, pr.uid, pr.claimName, func() {
-			if pr.lend != nil && p.rules.FailLeaseOnFinish {
+			if pr.lend != nil && (p.rules.FailLeaseOnFinish || late) {
 				p.lender.Failed(pr.lend.Lease, err)
 			}
 		})
@@ -397,13 +414,10 @@ func (p *Plugin) finish(ctx context.Context, pr *prepare) kubeletplugin.PrepareR
 		}
 		return failed(err)
 	}
-	if pr.lend != nil {
-		lend, devs := p.lendAndDevices(p.preparation(pr.uid))
-		if lend != nil {
-			v.companionPrepared(pr.claimName, lend)
-		}
-		p.lender.Prepared(pr.lend.Lease, p.rules.Source, devs)
+	if rec != nil {
+		v.companionPrepared(pr.claimName, rec)
 	}
+	after()
 	klog.V(5).Infof("Created prepared claim %v allocation", pr.uid)
 	return result
 }

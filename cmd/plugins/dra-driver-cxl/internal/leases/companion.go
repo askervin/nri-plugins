@@ -423,9 +423,18 @@ func ownedBy(claim *resourcev1.ResourceClaim, uid string) bool {
 // companion and its lend. A device whose mode is fs or block when the
 // lease's is not, or the reverse, fails the lease, and it is released.
 func (b *Broker) OnPrepared(id string, source state.Source, devs []state.DeviceInfo) {
+	if step, after := b.PreparedStep(id, source, devs); b.change(step) {
+		after()
+	}
+}
+
+// PreparedStep returns OnPrepared of the lease id as a change of the
+// records, and what follows its commit: the waiters woken and the lease
+// logged Ready, or the lease of another mode released.
+func (b *Broker) PreparedStep(id string, source state.Source, devs []state.DeviceInfo) (func(r *state.Records), func()) {
 	var ready *state.Lease
 	mismatch, failed := false, ""
-	if !b.change(func(r *state.Records) {
+	step := func(r *state.Records) {
 		l := r.Lease(id)
 		if l == nil || releasingState(l.State) || len(devs) == 0 {
 			return
@@ -445,20 +454,24 @@ func (b *Broker) OnPrepared(id string, source state.Source, devs []state.DeviceI
 			cp := l.Clone()
 			ready = &cp
 		}
-	}) {
-		return
 	}
-	switch {
-	case mismatch:
-		if failed != "" {
-			klog.Errorf("lease broker: lease %s: %s", id, failed)
+	after := func() {
+		b.mu.Lock()
+		b.notify()
+		b.mu.Unlock()
+		switch {
+		case mismatch:
+			if failed != "" {
+				klog.Errorf("lease broker: lease %s: %s", id, failed)
+			}
+			b.startRelease(id, "wrong mode", state.TriggerOnPrepared)
+		case ready != nil:
+			l, g := ready, ready.Got
+			klog.Infof("lease broker: lease %s: Ready (source %s, serial %s, mode %s, read-only %v, node %d, dax %q, block %q, access %q, fs %q, path %q, %d bytes)",
+				l.ID, g.Source, g.Serial, l.Asked.Mode, readOnly(l), numaNodeOf(l), g.Dax, g.Block, accessOf(l), fsTypeOf(l), g.Path, g.Bytes)
 		}
-		b.startRelease(id, "wrong mode", state.TriggerOnPrepared)
-	case ready != nil:
-		l, g := ready, ready.Got
-		klog.Infof("lease broker: lease %s: Ready (source %s, serial %s, mode %s, read-only %v, node %d, dax %q, block %q, access %q, fs %q, path %q, %d bytes)",
-			l.ID, g.Source, g.Serial, l.Asked.Mode, readOnly(l), numaNodeOf(l), g.Dax, g.Block, accessOf(l), fsTypeOf(l), g.Path, g.Bytes)
 	}
+	return step, after
 }
 
 // gotOf returns what the prepared device gives a lease of the records and

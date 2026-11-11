@@ -51,7 +51,7 @@ import (
 
 // commitTimeout bounds a commit of the records of the claims, which the end
 // of a request does not withdraw.
-const commitTimeout = time.Minute
+var commitTimeout = time.Minute
 
 // commit applies fn to the document of the store in one durable commit,
 // bounded by commitTimeout, not by ctx.

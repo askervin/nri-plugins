@@ -137,8 +137,10 @@ type driverEnv struct {
 	shared map[uint64]bool
 	// events are the calls of the fakes of the broker and of NRI, in order.
 	events []string
-	// onScan is called at each scan of the publisher, nil for nothing.
-	onScan func()
+	// onScan is called at each scan of the publisher, nil for nothing;
+	// onWrite at the next write of the store (writeFault), nil for none.
+	onScan  func()
+	onWrite func() error
 
 	// nodes and hooks are the lender of both drivers (Lender.Set) after
 	// lend, leases the lease claims of cxl.nri.io after setLeases.
@@ -238,7 +240,7 @@ func (e *driverEnv) start() {
 	local := LocalRules(filepath.Join(e.dir, "mounts"))
 	pool := PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, "mounts"), e.stateFile())
 	st, err := store.Open(ctx, store.Options{Dir: e.dir, PoolDir: e.poolDir, PoolDriver: pool.Name, BootID: e.k.BootID(),
-		SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot()})
+		SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot(), WriteFault: e.writeFault})
 	mustOK(t, err)
 	e.st = st
 	e.eng, err = engine.New(engine.Options{
@@ -610,6 +612,19 @@ func (e *driverEnv) cdiNames(p *Plugin) []string {
 		}
 	}
 	return out
+}
+
+// writeFault is the store's WriteFault hook: it runs onWrite once, when it
+// is set.
+func (e *driverEnv) writeFault() error {
+	e.mu.Lock()
+	fn := e.onWrite
+	e.onWrite = nil
+	e.mu.Unlock()
+	if fn == nil {
+		return nil
+	}
+	return fn()
 }
 
 // event records a call of a fake.
