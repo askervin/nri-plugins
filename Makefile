@@ -199,11 +199,13 @@ test-cxl:
 
 # Code metrics of the CXL memory driver and of its kernel package against
 # their structural limits. The limits are reported, not enforced: set
-# GOSTATS_GATE=-gate to make an exceeded limit fail. The limits are a
-# ratchet: the non-test lines of the driver are to come down to 26000; the
-# mutexes counted are those on the wait-for graph, a mutex whose comment
-# says "a leaf lock" is left out; of the 7 structs with access fields,
-# store.PoolDevice is the next to merge.
+# GOSTATS_GATE=-gate to make an exceeded limit fail. The limit of the
+# non-test lines of the driver (-max-lines) is a review signal, not a
+# target: when good structure, review, maintenance or extension needs more
+# lines, re-set it with the reason, and never trim code only to meet it.
+# The other limits are a ratchet: the mutexes counted are those on the
+# wait-for graph, a mutex whose comment says "a leaf lock" is left out; of
+# the 7 structs with access fields, store.PoolDevice is the next to merge.
 GOSTATS_GATE      ?=
 GOSTATS_CXL_FLAGS ?= -r -max-lines 30000 -max-cyclo15 10 -max-cyclo30 0 -keep persistent.go \
                      -max-mutexes 10 -max-access-structs 7

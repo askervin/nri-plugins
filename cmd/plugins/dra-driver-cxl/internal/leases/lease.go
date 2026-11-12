@@ -46,11 +46,13 @@ import (
 //
 // Transitions: state.LeaseTable, applied by apply. The request makes it
 // CREATING, the companion's creation PENDING, the companion gate of its
-// Prepare LENDING (OnLending), the lent devices READY (OnPrepared); a
-// release (startRelease) makes it RELEASING, or keeps a FAILED lease FAILED
-// so that a list shows why, and the release worker removes it once its
-// companion pod and claim are gone; while the companion's bind is busy the
-// lease is RELEASING_BUSY.
+// Prepare LENDING (OnLending), the lent devices READY (OnPrepared, in the
+// DRA driver's commit of the companion's preparation PREPARED through
+// PreparedStep); a release (commitRelease, or startRelease when the caller
+// does not need to know that it was committed) makes it RELEASING, or
+// keeps a FAILED lease FAILED so that a list shows why, and the release
+// worker removes it once its companion pod and claim are gone; while the
+// companion's bind is busy the lease is RELEASING_BUSY.
 //
 // Invariants: the lease owns its Lend, set at READY: the lent NUMA node of
 // a numa lease, the bind target of an fs lease; the companion's grants
@@ -64,8 +66,9 @@ import (
 // API object exists; a document of another boot has no leases (the store
 // drops them, the reconcile deletes their companions).
 //
-// Locks and waits: the commits of the store; the release worker waits for
-// the companion with a backoff of 0.5 s to 8 s and calls the API and the
+// Locks and waits: the commits of the store (the broker's releasing holds
+// a release from before its commit, see Broker); the release worker waits
+// for the companion with a backoff of 0.5 s to 8 s and calls the API and the
 // container plugin without the broker's mutex.
 
 // stateName returns the protocol's word for a lease state.

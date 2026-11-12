@@ -189,20 +189,28 @@ func (l Limits) withDefaults() Limits {
 // Transitions: state.LeaseTable and state.LeaseClaimTable, applied by
 // apply and applyClaim in the commits of the records with their checks.
 //
-// Invariants: a running release (releasing) is that of a lease with
-// ReleaseRequested; a RELEASING or RELEASING_BUSY lease without one is
-// released again by the next reconcile.
+// Invariants: a lease is in releasing from before the commit of the start
+// of its release until its release worker ends, so that it is released
+// once; a running release is that of a lease with ReleaseRequested; a
+// RELEASING or RELEASING_BUSY lease without one is released again by the
+// next reconcile.
 //
 // Persistence: every change is committed durably before the act that
 // depends on it; a failed commit means the change did not happen: the
 // request gets an error or the unchanged answer, the release worker and
-// the reconcile try again.
+// the reconcile try again. A read (records) is the store's snapshot,
+// taken without mu and possibly stale: a change decided on it is checked
+// again inside its commit, on the records it changes; a snapshot read
+// before a commit only spares the commit when there is nothing to change.
 //
 // Locks and waits: mu guards the process memory; a leaf lock among the
 // driver's locks, held across the CDI cache's lock and the file operations
 // of a socket, never across a commit, an API call or a call of the
-// container plugin. A commit waits at most Timeouts.Persist. Waiters poll
-// changed and every Timeouts.Poll.
+// container plugin. A commit function changes only the records: it takes
+// no lock and waits for nothing, as it runs inside the store's
+// commit (the DRA driver runs the step of PreparedStep inside its own
+// commit). A commit waits at most Timeouts.Persist. Waiters poll changed
+// and every Timeouts.Poll.
 type Broker struct {
 	opts Options
 	st   *store.Store

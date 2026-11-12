@@ -140,6 +140,14 @@ func (b *Broker) removeConn(claimUID string, c *net.UnixConn) {
 	}
 }
 
+// closeConnsLocked closes the open connections of the socket of a lease
+// claim. Called with b.mu held.
+func (b *Broker) closeConnsLocked(claimUID string) {
+	for c := range b.conns[claimUID] {
+		_ = c.Close()
+	}
+}
+
 // decodeRequest returns the request of a line, decoded strictly.
 func decodeRequest(line []byte) (*api.Request, error) {
 	req := &api.Request{}

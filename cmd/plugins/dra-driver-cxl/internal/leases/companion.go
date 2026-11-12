@@ -531,6 +531,15 @@ func (b *Broker) OnReleasing(id string) {
 // fail commits the lease id FAILED with the error text on trigger, when
 // the lease table allows it and the lease is not FAILED with keepFailed,
 // and reports whether it did; a failed commit is logged.
+//
+// The table's Allows is the guard that a lease being released (RELEASING,
+// RELEASING_BUSY) stays as it is: the table has no row from those states
+// to FAILED. It is asked before apply so that this expected refusal is not
+// logged as a refused transition, and asked first on the snapshot so that
+// a lease that does not fail costs no commit; the commit asks again on the
+// records it changes. keepFailed is for a trigger whose FAILED-to-FAILED
+// row is the release in place (OnLendFailed), not a new failure: a FAILED
+// lease keeps its first error and is not released again.
 func (b *Broker) fail(id, text string, trigger state.Trigger, keepFailed bool) bool {
 	fails := func(l *state.Lease) bool {
 		return l != nil && (!keepFailed || l.State != state.LeaseFailed) && state.LeaseTable.Allows(l.State, state.LeaseFailed, trigger)

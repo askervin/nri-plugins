@@ -376,13 +376,16 @@ func (p *Plugin) realise(ctx context.Context, pr *prepare) error {
 }
 
 // finish writes the CDI spec with the devices of a Prepare whose grants are
-// realised, commits it PREPARED and tells the broker of a companion claim,
-// in the same commit when the broker takes it so; a failure rolls the
-// Prepare back.
+// realised, commits it PREPARED and tells the broker of a companion claim:
+// in the same commit when the broker's hooks are a lend.PreparedStepper
+// (the lease READY with its preparation PREPARED), else after the commit
+// (Lender.preparedStep); a failure rolls the Prepare back.
 func (p *Plugin) finish(ctx context.Context, pr *prepare) kubeletplugin.PrepareResult {
 	v := p.rules.voice
 	result := prepareResult(p.preparation(pr.uid), p.rules.CDIKind)
 	var rec *lend.Lend
+	// step changes the records in the PREPARED commit, after runs once it
+	// is committed; both do nothing for a claim that is not a companion
 	step, after := func(*state.Records) {}, func() {}
 	if pr.lend != nil {
 		var devs []state.DeviceInfo

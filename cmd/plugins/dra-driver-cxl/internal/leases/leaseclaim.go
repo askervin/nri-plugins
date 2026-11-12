@@ -56,14 +56,18 @@ import (
 //
 // Transitions: state.LeaseClaimTable, applied by applyClaim.
 //
-// Invariants: a lease claim OPEN or CLOSING has its socket listened; the
-// directories of a claim without a record are removed unless a bind is
-// mounted in its lease-fs directory, then by the release of its last lease
-// or a later sweep.
+// Invariants: a lease claim OPEN or CLOSING has its socket listened, but
+// for a window after a commit that failed or ended late: the next
+// reconcile listens again on an OPEN claim without a socket (listenAgain),
+// and CloseClaim of a claim without a record stops a socket left by a late
+// removal; the directories of a claim without a record are removed unless
+// a bind is mounted in its lease-fs directory, then by the release of its
+// last lease or a later sweep.
 //
 // Persistence: the record in the store, its only copy, committed before its
-// socket and CDI device; lease claims survive a reboot (kubelet prepares
-// them again). A lost store keeps every directory.
+// socket and CDI device, and its removal committed before the socket stops
+// and the CDI device goes (closed); lease claims survive a reboot (kubelet
+// prepares them again). A lost store keeps every directory.
 //
 // Locks and waits: the commits of the store; the broker's mutex for the
 // sockets, without it for the removal of the directories (the removal in
@@ -303,16 +307,15 @@ func (b *Broker) closed(uid string) (bool, error) {
 	return true, b.writeCDISpec()
 }
 
-// stopListening closes the listener of the socket of a lease claim and its
-// open connections. Called with b.mu held.
+// stopListening stops the socket of a lease claim: it closes the listener,
+// so that no new connection is accepted, and the open connections
+// (closeConnsLocked), so that their requests end. Called with b.mu held.
 func (b *Broker) stopListening(uid string) {
 	if l := b.listeners[uid]; l != nil {
 		_ = l.Close()
 		delete(b.listeners, uid)
 	}
-	for c := range b.conns[uid] {
-		_ = c.Close()
-	}
+	b.closeConnsLocked(uid)
 }
 
 // removeClaimDirs removes the directories of a lease claim that is not in

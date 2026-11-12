@@ -34,8 +34,11 @@ import (
 // or companion is gone and the CREATING ones left over by a crash, starts
 // the releases that a stop cut again, lends the nodes of the READY numa
 // leases again, deletes the companions of this node that have no lease and
-// removes the directories of closed lease claims. The container plugin
-// hears after the first one that the lends are restored.
+// removes the directories of closed lease claims. It also does again what
+// a failed commit left undone: it fails the leases whose companion the
+// start did not restore, and listens on the lease claims that are OPEN
+// without a socket. The container plugin hears after the first one that
+// the lends are restored.
 
 // reconcileLoop reconciles at the start (once the container plugin is
 // synchronized) and periodically.
