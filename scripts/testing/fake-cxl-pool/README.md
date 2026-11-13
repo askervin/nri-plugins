@@ -13,6 +13,16 @@ A fake CXL memory pooling and sharing appliance for testing on one host:
   it publishes the pool devices for DRA (driver `cxl-pool.nri.io`) and
   attaches and detaches them as the scheduler allocates and frees claims
   (see [fake-cxl-pool-controller](#fake-cxl-pool-controller)).
+- `cxl-numa-place` runs on the host. It prints on which NUMA nodes the pages
+  of backing files are (`cxl-numa-place where FILE...`) and moves them to
+  other nodes (`sudo cxl-numa-place move --nodes N[,M] FILE...`), the pages
+  that every qemu attaching a device maps.
+- `cxl-load` runs on the host. It streams reads and writes over buffers bound
+  to the memory of some NUMA nodes from threads pinned to some CPUs, at a
+  bandwidth that a pause per block sets, and prints the bandwidth it
+  achieves. On the CPUs of the far socket it queues up the far memory, which
+  raises the latency that the near CPUs see to it, like a busy CXL link or
+  device (`cxl-load -nodes NODES -cpus CPUS -pause 10us`).
 
 One server is one pool appliance; several servers on one host are several
 appliances, each with a controller of its own (see
@@ -27,7 +37,8 @@ label storage area, see [Persistent devices](#persistent-devices)).
 ## Build and test
 
 ```
-make -C scripts/testing/fake-cxl-pool          # bin/fake-cxl-pool-{server,client,controller}
+make -C scripts/testing/fake-cxl-pool          # bin/fake-cxl-pool-{server,client,controller}, bin/cxl-numa-place, bin/cxl-load
+make -C scripts/testing/fake-cxl-pool image    # the controller image, bin/fake-cxl-pool-controller-image.tar
 make -C scripts/testing/fake-cxl-pool test     # unit tests (go test -race)
 make -C scripts/testing/fake-cxl-pool lint     # go vet + gofmt
 ```
@@ -107,7 +118,11 @@ have `"persistent": false` and no `lsaPath`. Attach adds two
 the LSA `fcp_<device>.hp<N>-lsa` (`size=262144`), and plugs
 `cxl-type3,persistent-memdev=fcp_<device>.hp<N>,lsa=fcp_<device>.hp<N>-lsa`
 instead of `volatile-memdev=`. Detach deletes both objects after
-`device_del`, as does a failed `device_add`. Every qemu that attaches a
+`device_del`, as does a failed `device_add`. The data backend of a device
+whose size is a multiple of 2 MiB, volatile or persistent, has
+`align=2097152`: qemu maps its file 2 MiB-aligned, so that the host can map
+it with 2 MiB pages where the file system has them (a tmpfs with `huge=`)
+and qemu runs with transparent huge pages enabled. Every qemu that attaches a
 persistent device maps the same two files, so the namespace labels in the
 LSA are shared by all VMs: a namespace created in one VM appears in the
 others from the labels. A persistent device cannot use a backend
@@ -365,7 +380,25 @@ systemd-run --unit fake-cxl-pool-controller /usr/local/bin/fake-cxl-pool-control
 [deploy/fake-cxl-pool-controller.yaml](deploy/fake-cxl-pool-controller.yaml)
 runs it as a Deployment with a ServiceAccount and the RBAC it needs
 (`resourceclaims/driver` `arbitrary-node:update` for `cxl-pool.nri.io`,
-`resourceclaims/status`, `resourceslices`, nodes, events).
+`resourceclaims/status`, `resourceslices`, nodes, events), in the host
+network of a node (it reaches the server at 192.168.76.2) as user nobody.
+Its image `localhost/fake-cxl-pool-controller:testing` is the static binary
+alone ([Dockerfile](Dockerfile)); `make image` builds it with docker and
+saves it, also tagged with the first 12 hex digits of the sha256 of the
+binary, to `bin/fake-cxl-pool-controller-image.tar`, to be imported into
+the container runtime of every node:
+
+```
+make -C scripts/testing/fake-cxl-pool image
+scp -F test/e2e/<vm>/.ssh-config scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-controller-image.tar vagrant@node:
+ssh -F test/e2e/<vm>/.ssh-config vagrant@node sudo ctr -n k8s.io images import fake-cxl-pool-controller-image.tar
+kubectl apply -f scripts/testing/fake-cxl-pool/deploy/fake-cxl-pool-controller.yaml
+```
+
+The e2e helpers do the same with `DRA_CONTROLLER_MODE=pod` (`dra-install`
+of test/e2e/memory.test-suite/dra-driver-cxl/dra.source.sh: a Deployment
+per server, named like the systemd units below), which the demo
+demo01-share-write-read uses.
 
 ### Where a device is attached
 
@@ -504,4 +537,5 @@ pkg/qemu                   Monitor interface: QMP (persistent, events, QOM tree)
 pkg/pool                   pools, backing files, serials
 pkg/cxl/memctl in nri-plugins  guest side: sysfs + cxl/daxctl
 deploy/                    Kubernetes manifests (controller Deployment + RBAC)
+Dockerfile                 the controller image (make image)
 ```
