@@ -27,6 +27,16 @@ import (
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu"
 )
 
+// dataAlign returns the alignment of qemu's mapping of the data backend of
+// a device of SIZE bytes: qemu.HugePageAlign if SIZE is a multiple of it,
+// so that the host can map the backing file with 2 MiB pages, else 0.
+func dataAlign(size int64) uint64 {
+	if size > 0 && size%qemu.HugePageAlign == 0 {
+		return qemu.HugePageAlign
+	}
+	return 0
+}
+
 // Status returns the server status.
 func (s *Server) Status() api.Status {
 	s.mu.RLock()
@@ -789,7 +799,8 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 	if b != nil {
 		objID, serial = b.ObjectID, b.Serial
 	} else {
-		backends = append(backends, qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: objID, Size: uint64(d.Size), MemPath: d.Path, Share: true})
+		backends = append(backends, qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: objID, Size: uint64(d.Size), MemPath: d.Path, Share: true,
+			Align: dataAlign(d.Size)})
 	}
 	t3 := qemu.CXLType3{ID: qemuID, Bus: bus, Serial: serial}
 	if d.Persistent {

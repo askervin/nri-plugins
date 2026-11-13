@@ -190,7 +190,7 @@ func TestParseCmdline(t *testing.T) {
 	if p.Name != "n4-cxl-fedora-43-containerd" {
 		t.Fatalf("unexpected name %q", p.Name)
 	}
-	if p.ProjectDir != "/home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-fedora-43-containerd" {
+	if p.ProjectDir != "/home/user/github.com/containers/nri-plugins/test/e2e/n4-cxl-fedora-43-containerd" {
 		t.Fatalf("unexpected project dir %q", p.ProjectDir)
 	}
 	if len(p.QMPSockets) != 0 {

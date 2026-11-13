@@ -203,6 +203,9 @@ func HMPObjectAdd(b MemoryBackend) string {
 	}
 	if b.QomType == MemoryBackendFile {
 		sb.WriteString(",mem-path=" + EscapeOptValue(b.MemPath))
+		if b.Align != 0 {
+			fmt.Fprintf(&sb, ",align=%d", b.Align)
+		}
 	}
 	return sb.String()
 }

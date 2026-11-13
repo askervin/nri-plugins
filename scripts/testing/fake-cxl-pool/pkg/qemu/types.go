@@ -79,7 +79,14 @@ type MemoryBackend struct {
 	Size    uint64
 	MemPath string // memory-backend-file only
 	Share   bool
+	// Align is the alignment of qemu's mapping of the backend in bytes,
+	// 0 for qemu's default (memory-backend-file only).
+	Align uint64
 }
+
+// HugePageAlign is the alignment of the mapping of a backend that lets
+// the host map its file with 2 MiB pages (a tmpfs with huge=).
+const HugePageAlign = 2 << 20
 
 // LSAObjectID returns the id of the label storage area backend that
 // belongs to the memory backend dataID of a persistent device.
