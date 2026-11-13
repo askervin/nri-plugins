@@ -95,7 +95,8 @@ discovery:
   # slots: ["*hb0"]
 
 # How long DELETE .../attachments/{host} waits for qemu to delete the
-# device (DEVICE_DELETED, ~6 s when the guest has released it).
+# device (DEVICE_DELETED, which comes after the guest's own hot-unplug
+# delay when the guest has released the device).
 detachTimeout: 15s
 
 # Several pool servers

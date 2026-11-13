@@ -304,8 +304,8 @@ For every allocated `memdev` device of a claim:
    ([usage.md](usage.md#steering)).
 5. `dax`: the slice is bound to `device_dax`. The plugin writes zeros to
    the whole slice before the claim gets it, so a claim never reads what
-   an earlier claim left there (this takes size / memory write bandwidth,
-   about 30 ms for 64 MiB and 120 ms for 256 MiB of DRAM). A read-only
+   an earlier claim left there (this takes time in proportion to the size
+   of the slice and the memory write bandwidth). A read-only
    slice has device node permissions `r`: the device cgroup refuses opens
    for writing, whatever the container's capabilities. Applications
    `mmap` the device (`MAP_SHARED`, aligned to the device alignment,
@@ -360,16 +360,16 @@ fails with the release error while it cannot, and so does every restart.
 The region stays while such a slice exists.
 
 The plugin logs every step of a slice with its dax device, mode, size and
-duration:
+duration (`<t>`):
 
 ```
-local: memdev mem1 (serial 0xc100e2e1): created region0 (devdax, dax dax0.0, node 2) in 112.031ms
-local: memdev mem1 (serial 0xc100e2e1): claim <uid>: created slice dax0.1 mode numa size 134217728 at [0x258000000-0x25fffffff] in 3.208ms
-local: memdev mem1 (serial 0xc100e2e1): claim <uid>: onlined slice dax0.1 mode numa size 134217728 blocks [75] node 2 in 41.002ms
-local: memdev mem1 (serial 0xc100e2e1): claim <uid>: zeroed slice dax0.0 mode dax size 134217728 in 60.415ms
-local: memdev mem1 (serial 0xc100e2e1): claim <uid>: offlined slice dax0.1 mode numa size 134217728 blocks [75] in 20.117ms
-local: memdev mem1 (serial 0xc100e2e1): claim <uid>: deleted slice dax0.1 mode numa size 134217728 in 5.420ms
-local: memdev mem1 (serial 0xc100e2e1): released region0 in 90.733ms
+local: memdev mem1 (serial 0xc100e2e1): created region0 (devdax, dax dax0.0, node 2) in <t>
+local: memdev mem1 (serial 0xc100e2e1): claim <uid>: created slice dax0.1 mode numa size 134217728 at [0x258000000-0x25fffffff] in <t>
+local: memdev mem1 (serial 0xc100e2e1): claim <uid>: onlined slice dax0.1 mode numa size 134217728 blocks [75] node 2 in <t>
+local: memdev mem1 (serial 0xc100e2e1): claim <uid>: zeroed slice dax0.0 mode dax size 134217728 in <t>
+local: memdev mem1 (serial 0xc100e2e1): claim <uid>: offlined slice dax0.1 mode numa size 134217728 blocks [75] in <t>
+local: memdev mem1 (serial 0xc100e2e1): claim <uid>: deleted slice dax0.1 mode numa size 134217728 in <t>
+local: memdev mem1 (serial 0xc100e2e1): released region0 in <t>
 ```
 
 Restart ([design.md](design.md#how-a-restart-recovers)): the state of

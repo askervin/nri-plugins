@@ -206,9 +206,9 @@ kubectl get nodes -o wide
 
 ```
 NAME                                   STATUS   ROLES           AGE   VERSION   INTERNAL-IP     EXTERNAL-IP   OS-IMAGE                          KERNEL-VERSION      CONTAINER-RUNTIME
-n4-cxl-shared-0-fedora-43-containerd   Ready    <none>          68s   v1.37.1   10.76.170.229   <none>        Fedora Linux 43 (Cloud Edition)   7.3.0-rc4 (amd64)   containerd://2.4.2
-n4-cxl-shared-1-fedora-43-containerd   Ready    <none>          72s   v1.37.1   10.76.85.237    <none>        Fedora Linux 43 (Cloud Edition)   7.3.0-rc4 (amd64)   containerd://2.4.1
-n4-cxl-shared-2-fedora-43-containerd   Ready    control-plane   87s   v1.37.1   10.76.162.174   <none>        Fedora Linux 43 (Cloud Edition)   7.3.0-rc4 (amd64)   containerd://2.4.1
+n4-cxl-shared-0-fedora-43-containerd   Ready    <none>          <age>   v1.37.1   10.76.170.229   <none>        Fedora Linux 43 (Cloud Edition)   7.3.0-rc4 (amd64)   containerd://2.4.2
+n4-cxl-shared-1-fedora-43-containerd   Ready    <none>          <age>   v1.37.1   10.76.85.237    <none>        Fedora Linux 43 (Cloud Edition)   7.3.0-rc4 (amd64)   containerd://2.4.1
+n4-cxl-shared-2-fedora-43-containerd   Ready    control-plane   <age>   v1.37.1   10.76.162.174   <none>        Fedora Linux 43 (Cloud Edition)   7.3.0-rc4 (amd64)   containerd://2.4.1
 ```
 
 Kubernetes is the latest release (`k8s_release`), v1.37 or later is
@@ -422,14 +422,14 @@ cat /sys/devices/system/memory/auto_online_blocks
 
 ```
 NAME                       READY   STATUS    RESTARTS   AGE   IP           NODE                                   NOMINATED NODE   READINESS GATES
-nri-dra-driver-cxl-9q69p   1/1     Running   0          33s   10.217.2.2   n4-cxl-shared-0-fedora-43-containerd   <none>           <none>
-nri-dra-driver-cxl-jp8hc   1/1     Running   0          33s   10.217.1.2   n4-cxl-shared-1-fedora-43-containerd   <none>           <none>
-nri-dra-driver-cxl-r6h87   1/1     Running   0          33s   10.217.0.4   n4-cxl-shared-2-fedora-43-containerd   <none>           <none>
+nri-dra-driver-cxl-9q69p   1/1     Running   0          <age>   10.217.2.2   n4-cxl-shared-0-fedora-43-containerd   <none>           <none>
+nri-dra-driver-cxl-jp8hc   1/1     Running   0          <age>   10.217.1.2   n4-cxl-shared-1-fedora-43-containerd   <none>           <none>
+nri-dra-driver-cxl-r6h87   1/1     Running   0          <age>   10.217.0.4   n4-cxl-shared-2-fedora-43-containerd   <none>           <none>
 NAME                                                          NODE                                   DRIVER            POOL                                   AGE
-00000-cxl-pool.nri.io-bzjmb                                                                          cxl-pool.nri.io   fake-cxl-pool                          25s
-00000-cxl.nri.io-n4-cxl-shared-0-fedora-43-containerd-62btn   n4-cxl-shared-0-fedora-43-containerd   cxl.nri.io        n4-cxl-shared-0-fedora-43-containerd   31s
-00000-cxl.nri.io-n4-cxl-shared-1-fedora-43-containerd-m28fg   n4-cxl-shared-1-fedora-43-containerd   cxl.nri.io        n4-cxl-shared-1-fedora-43-containerd   31s
-00000-cxl.nri.io-n4-cxl-shared-2-fedora-43-containerd-lcvfx   n4-cxl-shared-2-fedora-43-containerd   cxl.nri.io        n4-cxl-shared-2-fedora-43-containerd   32s
+00000-cxl-pool.nri.io-bzjmb                                                                          cxl-pool.nri.io   fake-cxl-pool                          <age>
+00000-cxl.nri.io-n4-cxl-shared-0-fedora-43-containerd-62btn   n4-cxl-shared-0-fedora-43-containerd   cxl.nri.io        n4-cxl-shared-0-fedora-43-containerd   <age>
+00000-cxl.nri.io-n4-cxl-shared-1-fedora-43-containerd-m28fg   n4-cxl-shared-1-fedora-43-containerd   cxl.nri.io        n4-cxl-shared-1-fedora-43-containerd   <age>
+00000-cxl.nri.io-n4-cxl-shared-2-fedora-43-containerd-lcvfx   n4-cxl-shared-2-fedora-43-containerd   cxl.nri.io        n4-cxl-shared-2-fedora-43-containerd   <age>
 offline
 ```
 
@@ -858,8 +858,8 @@ pod/shared-reader created
 pod/shared-writer condition met
 pod/shared-reader condition met
 NAME            READY   STATUS    RESTARTS   AGE   IP             NODE                                   NOMINATED NODE   READINESS GATES
-shared-reader   1/1     Running   0          7s    10.217.1.29    n4-cxl-shared-1-fedora-43-containerd   <none>           <none>
-shared-writer   1/1     Running   0          7s    10.217.0.100   n4-cxl-shared-2-fedora-43-containerd   <none>           <none>
+shared-reader   1/1     Running   0          <age>    10.217.1.29    n4-cxl-shared-1-fedora-43-containerd   <none>           <none>
+shared-writer   1/1     Running   0          <age>    10.217.0.100   n4-cxl-shared-2-fedora-43-containerd   <none>           <none>
 NAME                      NODE                                   SHARES
 shared-reader-mem-4whx5   n4-cxl-shared-1-fedora-43-containerd   1
 shared-writer-mem-rf9kh   n4-cxl-shared-2-fedora-43-containerd   1
@@ -970,10 +970,10 @@ kubectl get pods,resourceclaims -l cxl.nri.io/lease
 {"lease":"319ab5d0","state":"Ready","source":"local","mode":"numa","shared":false,"readOnly":false,"size":134217728,"serial":"0xc100e2e1","node":2,"env":{"CXL_C100E2E1_MODE":"numa","CXL_C100E2E1_NODE":"2","CXL_C100E2E1_SERIAL":"0xc100e2e1","CXL_C100E2E1_SHARED":"0","CXL_C100E2E1_SIZE":"134217728"}}
 0-2
 NAME                     READY   STATUS              RESTARTS   AGE
-pod/cxl-lease-319ab5d0   0/1     ContainerCreating   0          1s
+pod/cxl-lease-319ab5d0   0/1     ContainerCreating   0          <age>
 
 NAME                                               STATE                AGE
-resourceclaim.resource.k8s.io/cxl-lease-319ab5d0   allocated,reserved   1s
+resourceclaim.resource.k8s.io/cxl-lease-319ab5d0   allocated,reserved   <age>
 ```
 
 The lease is Ready as soon as the companion claim is prepared and the
@@ -1296,9 +1296,9 @@ for r in reader-1 reader-2 reader-3; do echo "=== $r"; kubectl logs $r; done
 
 ```
 NAME       READY   STATUS    RESTARTS   AGE   IP             NODE                                   NOMINATED NODE   READINESS GATES
-reader-1   1/1     Running   0          13s   10.217.0.104   n4-cxl-shared-2-fedora-43-containerd   <none>           <none>
-reader-2   1/1     Running   0          13s   10.217.0.105   n4-cxl-shared-2-fedora-43-containerd   <none>           <none>
-reader-3   1/1     Running   0          12s   10.217.1.31    n4-cxl-shared-1-fedora-43-containerd   <none>           <none>
+reader-1   1/1     Running   0          <age>   10.217.0.104   n4-cxl-shared-2-fedora-43-containerd   <none>           <none>
+reader-2   1/1     Running   0          <age>   10.217.0.105   n4-cxl-shared-2-fedora-43-containerd   <none>           <none>
+reader-3   1/1     Running   0          <age>   10.217.1.31    n4-cxl-shared-1-fedora-43-containerd   <none>           <none>
 === reader-1
 archive in /dev/dax0.0 (268435456 bytes, read-only 1):
   d      0 notes

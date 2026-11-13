@@ -29,8 +29,8 @@ package main
 //
 // What it models:
 //   - controller: a start (ctrl-start, the start half of ctrl-restart)
-//     syncs its informers (0.3-1.5 s), then every sync publishes the
-//     pool's ResourceSlice if it is not there (written 0.1-0.8 s later;
+//     syncs its informers (a short random time), then every sync publishes
+//     the pool's ResourceSlice if it is not there (written a little later;
 //     unchanged content is no API write) and reconciles. A graceful stop
 //     (ctrl-restart) deletes the slices; SIGKILL (ctrl-kill) keeps them
 //     and loses a publish that was not written yet.
@@ -40,28 +40,29 @@ package main
 //     another host), set the exclusive flag of existing ones, write
 //     Attached into claims whose attachment is attached, detach the
 //     undesired attached ones. Triggered by claim changes and server
-//     events (debounce 0.5 s), every 10 s otherwise; only while the
-//     controller runs and its server answers.
-//   - server: an attach or detach completes 0.3-2 s after its request,
+//     events (debounce refDebounce), every refSyncInterval otherwise; only
+//     while the controller runs and its server answers.
+//   - server: an attach or detach completes shortly after its request,
 //     also when the controller is killed meanwhile (then no Attached is
 //     written until the next incarnation reconciles). server-restart
-//     makes it unreachable for 3-6.5 s.
+//     makes it unreachable for a few seconds of the reference's clock.
 //   - scheduler: a pending pool pod is attempted shortly after its
 //     creation and after every requeueing event (a claim deallocated, a
 //     ResourceSlice added: the pool's publish, kubelet and driver
-//     restarts sometimes), else at the unschedulable flush (5:00-5:30
-//     after its last attempt). An attempt needs the pool's slices and a
-//     free device: exclusive devices and sexcl conflict with every other
-//     allocation of the device, shares only with sexcl; in-flight
-//     allocations count. PreBind polls every 5 s from the allocation:
-//     the pod binds once its claim is Attached; it fails on AttachFailed
-//     (the controller's attach conflicts with an attachment of the
-//     device on another host that a claim still wants, e.g. one being
-//     detached after an exclusive use) and after 600 s (binding
-//     timeout): the claim is deallocated, the pod tried again.
-//   - delete: a bound pod is gone after kubelet's termination (0.6-2.6
-//     s), then its claim is deallocated (a requeueing event). An unbound
-//     pod is gone at once, its claim deallocated 0.1-0.35 s later (a
+//     restarts sometimes), else at the unschedulable flush (refFlushAfter
+//     after its last attempt, at the next refFlushPeriod tick). An attempt
+//     needs the pool's slices and a free device: exclusive devices and
+//     sexcl conflict with every other allocation of the device, shares
+//     only with sexcl; in-flight allocations count. PreBind polls every
+//     refPollPeriod from the allocation: the pod binds once its claim is
+//     Attached; it fails on AttachFailed (the controller's attach
+//     conflicts with an attachment of the device on another host that a
+//     claim still wants, e.g. one being detached after an exclusive use)
+//     and after refBindingTimeout: the claim is deallocated, the pod
+//     tried again.
+//   - delete: a bound pod is gone after kubelet's termination (a random
+//     time), then its claim is deallocated (a requeueing event). An
+//     unbound pod is gone at once, its claim deallocated a moment later (a
 //     requeueing event that comes while the deleted claim is still in
 //     flight in the scheduler: the HOLD of A19), and the scheduler drops
 //     the in-flight allocation at the next PreBind poll after the claim
@@ -370,10 +371,11 @@ func (r *refPool) do(a Act, h refHint) {
 		}
 	case VNodeReboot:
 		// the VM goes down: a guest reboot keeps the attachments; a
-		// qemu restart ends the qemu process after ~3.5 s and the pool
-		// servers drop its attachments (bug-16), the controllers attach
-		// them into the new qemu once the servers have discovered it.
-		// ssh after ~20 s, the driver ready after ~45 s (12-findings
+		// qemu restart ends the qemu process soon after the step (the
+		// first advance below) and the pool servers drop its attachments
+		// (bug-16), the controllers attach them into the new qemu once
+		// the servers have discovered it. ssh answers much later and the
+		// driver is ready later still (the second advance; 12-findings
 		// 3.1, 4.1): the lease broker of the new boot releases the
 		// VM's leases (bug-15), their companions go; the node's slice
 		// is published again.

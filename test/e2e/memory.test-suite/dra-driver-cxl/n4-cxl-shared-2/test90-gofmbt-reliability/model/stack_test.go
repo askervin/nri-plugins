@@ -248,9 +248,10 @@ func simStep(t *testing.T, sm *sim, model *State, n int, line string, now time.T
 // oracle allows by its clock (A9: kubelet's back-off is capped at 5 min;
 // A19: --stall-window). Review of 2026-10-29: experiment --exp growth
 // --profile fullp --seed 22 --reboot=guest --step-time 20s failed at
-// step 181, "pod pwr-c@vm2#0: not Running 7m20s after its decoder hole
-// cleared": the truth had kept it Unblocking through 5 settles 80-120 s
-// apart. Here settles come 80 s apart.
+// step 181, "pod pwr-c@vm2#0: not Running <T> after its decoder hole
+// cleared", with <T> beyond the cap: the truth had kept it Unblocking
+// through 5 settles, each a long way of the clock apart. Here settles come
+// 80 s of the oracle's clock apart.
 func TestSimRetryDeadlines(t *testing.T) {
 	const gap = 80 * time.Second
 	cfg := testConfig(t, "full", true)

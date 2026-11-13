@@ -495,8 +495,9 @@ func (k *checker) resolve() {
 		rs.setUnblockAt(w, k.now.Unix())
 	}
 	// the scheduler's hold of a device whose claim was deleted before
-	// its pod was bound ends within 5.5 s of the delete (A19): timed
-	// from the settle that ended its window, cleared 6 s after it
+	// its pod was bound ends within a PreBind poll period (5 s) of the delete
+	// (A19): timed from the settle that ended its window, cleared
+	// heldSeconds after it
 	for d := DevID(0); d < nDevs; d++ {
 		if !rs.held(Res(d)) || k.now.IsZero() {
 			continue
@@ -1001,7 +1002,7 @@ func (k *checker) checkUnblocking(i int, name string) {
 		k.waitf("%s: phase %s, want Running (or ContainerCreating for its retry)", name, p.Phase)
 	case p.Node == nil:
 		// (F13) a pool pod is bound only at PreBind's next poll after
-		// its claim is Attached (up to 5 s): until then its delete is
+		// its claim is Attached (up to a PreBind poll period, 5 s): until then its delete is
 		// that of an unbound claim (A19)
 		k.waitf("%s: not bound yet, want it on %s (its retry after its decoder hole cleared)", name, k.rs.Slots[i].Node)
 	case k.rs.unblockAt(i) > 0 && k.unblock > 0 && k.now.Sub(time.Unix(k.rs.unblockAt(i), 0)) > k.unblock:

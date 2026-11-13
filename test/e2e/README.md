@@ -719,12 +719,12 @@ vm-k8s-reinit "$POOL_VM2_DIR" "$POOL_VM1_DIR"   # two single-node clusters
 ```
 
 Each argument is a cluster: VM names or output directories, the control
-plane first. A cluster that has its shape is left alone in a second or so.
+plane first. A cluster that has its shape is left alone, which is quick.
 The others are rebuilt with `kubeadm reset`, `kubeadm init` and `kubeadm
 join`, which loses all cluster state: deploy what the test needs after it.
 Pods run on every node, and every node has the admin kubeconfig. Rebuilding
-two nodes takes about half a minute, two single-node clusters about two
-minutes. As that is slow, a test suite makes its shape once, in one test,
+is slow: two single-node clusters take several times longer than one
+cluster of two nodes. So a test suite makes its shape once, in one test,
 and the other tests only check it. In `memory.test-suite/dra-driver-cxl`,
 `n4-cxl-shared-2/test00-up` makes one cluster of the VMs of
 `n4-cxl-shared-2` (control plane) and `n4-cxl-shared-1` (worker), and

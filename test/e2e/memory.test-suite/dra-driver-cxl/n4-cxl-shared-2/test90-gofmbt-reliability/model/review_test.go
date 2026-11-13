@@ -611,9 +611,10 @@ func adoptSlices(t *testing.T, s *State, p Pool, st SliceSt) *State {
 // TestRefPoolRegressions replays the fuzz's own sequences.
 
 // F2 (A19): a claim deleted before its pod was bound holds its device in
-// the scheduler up to 5 s after the delete, also past a short settle: a
-// contender created in the next window may stall. The oracle ends the
-// hold 6 s after the settle that ended the delete's window (adoption
+// the scheduler up to a PreBind poll period (5 s) after the delete, also past a
+// short settle: a contender created in the next window may stall. The
+// oracle ends the hold heldSeconds after the settle that ended the
+// delete's window (adoption
 // record held=DEV:off). Off-line nothing would end it: no such delete.
 func TestReviewF2HoldAfterSettle(t *testing.T) {
 	s := revState(t, "full", true, "ctrl-kill a", "create xnuma-a@vm1#0", "settle", "delete xnuma-a@vm1#0", "settle")
@@ -972,7 +973,7 @@ func simSteps(t *testing.T, cfg *Config, seed int64, dt time.Duration, lines ...
 // sro-b created again long after was Starting in the model (its Prepare
 // through vm0/hb0 [hole,local]: Blocked) and Stalled in the simulator,
 // which then promoted it Running with its region pushed above the hole.
-// The real hold ends within 5 s of the delete (bug-08); a promoted
+// The real hold ends within a PreBind poll period (5 s) of the delete (bug-08); a promoted
 // contender's Prepare through a hole is refused like any other (A9).
 // Both are the simulator's errors; the model was right.
 func TestReviewM8SimHoldAndHole(t *testing.T) {

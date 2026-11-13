@@ -3342,7 +3342,7 @@ width = max([len(r[1]) for r in rows] + [3])
 with open(out_path, "w") as out:
     out.write("# What every component did in %s, in order.\n" % test)
     out.write("# Times are host clock receipt times: the host stamped each line when it\n")
-    out.write("# arrived. Lines from the VMs come over ssh, which adds a few ms; there is\n")
+    out.write("# arrived. Lines from the VMs come over ssh, which adds a small delay; there is\n")
     out.write("# no VM clock skew. +s is seconds since the first line below.\n")
     out.write("# Tags: server = fake-cxl-pool-server on the host (<name>.server: the pool\n")
     out.write("# server <name> of several); <vm>.controller = the fake-cxl-pool-controllers,\n")

@@ -44,7 +44,7 @@
 # keeps running with its devices; qemu, a restart of the qemu process, a
 # power cycle after which the pool controllers attach their devices again
 # and the executor the local memdev; empty, the default: none; a reboot
-# step costs ~2 min; the model gets --reboot=MODE; a replay and an
+# step takes far longer than any other step; the model gets --reboot=MODE; a replay and an
 # off-line run take it from the header of their file as MBT_FENCING (set,
 # also empty, it must be the header's); guest needs the qemu fix of
 # plan-13 bug-17 in the qemu processes of vm0 and vm1, checked at the start),
@@ -60,7 +60,7 @@
 # kept in mbt-obs/), MBT_STUB=1 (run mbt-stub.py, a fixed list of steps
 # that exercises every action, instead of the model; also when there is no
 # model/; MBT_STUB_LIST=volatile|persistent|all picks its lists, all by
-# default, ~15 min; reboot, the node-reboot list of the MBT_REBOOT variant;
+# default, a long run; reboot, the node-reboot list of the MBT_REBOOT variant;
 # MBT_STUB_STEPS=FILE a list of one's own), MBT_BIN
 # (another generator), MBT_KILLAT_TIMEOUT (60 s: a
 # driver-kill-at watcher gives up), MBT_REBOOT_WAIT (180 s: node-reboot

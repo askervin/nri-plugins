@@ -86,10 +86,10 @@ func (b *Broker) companionObjects(l *state.Lease) (*resourcev1.ResourceClaim, *c
 		},
 	}
 	// Guaranteed QoS keeps the companion from being evicted first. The
-	// CPU limit is 100m, not 1m: with a 1m limit a pause pod needs ~12 s to
-	// reach Running on the e2e VMs (CFS throttling of the container start),
-	// which delays the release of a lease whose companion has not started
-	// yet; with 100m it takes ~2 s. The memory limit leaves room for runc
+	// CPU limit is 100m, not 1m: with a 1m limit the CFS quota throttles
+	// the container start so much that a pause pod reaches Running far
+	// later than with 100m, which delays the release of a lease whose
+	// companion has not started yet. The memory limit leaves room for runc
 	// init, which needs about 9 MiB in the container's cgroup.
 	res := corev1.ResourceList{
 		corev1.ResourceCPU:    resource.MustParse("100m"),

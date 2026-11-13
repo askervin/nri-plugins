@@ -71,8 +71,10 @@ const (
 	// Stalled: the contender of a device whose holder was deleted
 	// while its claim waited for the binding conditions (A19, bug-08):
 	// the scheduler may keep it Pending (claim not allocated) until a
-	// requeueing event or 5:30 after the delete, or promote it at once.
-	// Both are accepted for 360 s; the observation decides. Holds the
+	// requeueing event or the scheduler's unschedulable flush (pods
+	// unschedulable for 5 min, flushed every 30 s) after the delete, or
+	// promote it at once. Both are accepted for
+	// defaultStallWindow; the observation decides. Holds the
 	// device in the model (the only candidate).
 	Stalled
 	// Refused: an allocated, attached persistent claim whose Prepare the
@@ -435,15 +437,15 @@ type State struct {
 	Contested uint16 // resources with an unsettled transfer: no creates
 	// Held: pool devices whose claim was deleted before its pod was
 	// bound, in a window that a settle ended: kube-scheduler may still
-	// hold the device in flight (up to 5 s after the delete, A19): a
-	// contender created now may stall. HeldAt: the Unix time of the
-	// settle that ended that window (on-line; the oracle clears the
-	// bit 6 s after it).
+	// hold the device in flight (up to a PreBind poll period, 5 s, after the
+	// delete, A19): a contender created now may stall. HeldAt: the Unix
+	// time of the settle that ended that window (on-line; the oracle
+	// clears the bit heldSeconds after it).
 	Held   uint16
 	HeldAt [nDevs]int64
 	// Released: pool devices whose claim was deleted in the window that
 	// the last settle ended: the claim may still be deallocated a
-	// moment after its pod is gone (0.1-0.3 s); a claim created now may
+	// moment after its pod is gone; a claim created now may
 	// fail its first attempt and wait for that event, and a second one
 	// would race with it: one candidate (contested) per such device
 	Released  uint16

@@ -243,8 +243,8 @@ func (s *sim) resolve(st *State) *State {
 	n := st.clone()
 	s.reorderStacks(n)
 	// The scheduler's hold of a device whose claim was deleted before
-	// its pod was bound ends within 5 s of the delete (A19, bug-08):
-	// here it lasts through the window after the settle that ended the
+	// its pod was bound ends within a PreBind poll period (5 s) of the delete
+	// (A19, bug-08): here it lasts through the window after the settle that ended the
 	// delete's window. Never longer: the oracle ends it at a settle at
 	// least heldSeconds after that one, and a contender that the truth
 	// stalls after the model's hold has ended would be a difference of
@@ -406,7 +406,7 @@ func (s *sim) keepKillAt(n *State) {
 
 // fireLate fires a watcher that the truth kept (keepKillAt) before a
 // step, at random, when a Prepare that comes at any time shows its
-// marker (killAnyTime): FP4's refused reader retried by kubelet 0.4 s
+// marker (killAnyTime): FP4's refused reader retried by kubelet right
 // after the settle's observation, and deleted later in the window.
 func (s *sim) fireLate(st *State) *State {
 	var fired [nVMs]bool
