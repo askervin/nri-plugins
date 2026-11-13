@@ -615,16 +615,16 @@ const (
 	DocLocalMemdevMem1Serial0xc100e2e1ClaimUidRequest = "local: memdev mem1 (serial 0xc100e2e1): claim <uid> request mem: shared dax0.0 size 1073741824 read-only false exclusive"
 
 	// Quoted in docs/memory/cxl/local.md section "What Prepare does".
-	DocLocalMemdevMem1Serial0xc100e2e1ClaimUidCreated = "local: memdev mem1 (serial 0xc100e2e1): claim <uid>: created slice dax0.1 mode numa size 134217728 at [0x258000000-0x25fffffff] in 3.208ms"
+	DocLocalMemdevMem1Serial0xc100e2e1ClaimUidCreated = "local: memdev mem1 (serial 0xc100e2e1): claim <uid>: created slice dax0.1 mode numa size 134217728 at [0x258000000-0x25fffffff] in <t>"
 
 	// Quoted in docs/memory/cxl/local.md section "What Prepare does".
-	DocLocalMemdevMem1Serial0xc100e2e1ClaimUidDeleted = "local: memdev mem1 (serial 0xc100e2e1): claim <uid>: deleted slice dax0.1 mode numa size 134217728 in 5.420ms"
+	DocLocalMemdevMem1Serial0xc100e2e1ClaimUidDeleted = "local: memdev mem1 (serial 0xc100e2e1): claim <uid>: deleted slice dax0.1 mode numa size 134217728 in <t>"
 
 	// Quoted in docs/memory/cxl/local.md section "What Prepare does".
-	DocLocalMemdevMem1Serial0xc100e2e1ClaimUidOfflined = "local: memdev mem1 (serial 0xc100e2e1): claim <uid>: offlined slice dax0.1 mode numa size 134217728 blocks [75] in 20.117ms"
+	DocLocalMemdevMem1Serial0xc100e2e1ClaimUidOfflined = "local: memdev mem1 (serial 0xc100e2e1): claim <uid>: offlined slice dax0.1 mode numa size 134217728 blocks [75] in <t>"
 
 	// Quoted in docs/memory/cxl/local.md section "What Prepare does".
-	DocLocalMemdevMem1Serial0xc100e2e1ClaimUidOnlined = "local: memdev mem1 (serial 0xc100e2e1): claim <uid>: onlined slice dax0.1 mode numa size 134217728 blocks [75] node 2 in 41.002ms"
+	DocLocalMemdevMem1Serial0xc100e2e1ClaimUidOnlined = "local: memdev mem1 (serial 0xc100e2e1): claim <uid>: onlined slice dax0.1 mode numa size 134217728 blocks [75] node 2 in <t>"
 
 	// Quoted in docs/memory/cxl/local.md section "What Prepare does for a shared device".
 	DocLocalMemdevMem1Serial0xc100e2e1ClaimUidReleased = "local: memdev mem1 (serial 0xc100e2e1): claim <uid>: released shared dax0.0, claims left [<uids>]"
@@ -633,10 +633,10 @@ const (
 	DocLocalMemdevMem1Serial0xc100e2e1ClaimUidSlice = "local: memdev mem1 (serial 0xc100e2e1): claim <uid>: slice dax0.2 at [0x...] is not aligned to the memory block size 536870912, placing it explicitly"
 
 	// Quoted in docs/memory/cxl/local.md section "What Prepare does".
-	DocLocalMemdevMem1Serial0xc100e2e1ClaimUidZeroed = "local: memdev mem1 (serial 0xc100e2e1): claim <uid>: zeroed slice dax0.0 mode dax size 134217728 in 60.415ms"
+	DocLocalMemdevMem1Serial0xc100e2e1ClaimUidZeroed = "local: memdev mem1 (serial 0xc100e2e1): claim <uid>: zeroed slice dax0.0 mode dax size 134217728 in <t>"
 
 	// Quoted in docs/memory/cxl/local.md section "What Prepare does".
-	DocLocalMemdevMem1Serial0xc100e2e1CreatedRegion0Devdax = "local: memdev mem1 (serial 0xc100e2e1): created region0 (devdax, dax dax0.0, node 2) in 112.031ms"
+	DocLocalMemdevMem1Serial0xc100e2e1CreatedRegion0Devdax = "local: memdev mem1 (serial 0xc100e2e1): created region0 (devdax, dax dax0.0, node 2) in <t>"
 
 	// Quoted in docs/memory/cxl/local.md section "What Prepare does for a shared device".
 	DocLocalMemdevMem1Serial0xc100e2e1KeepingRegion0And = "local: memdev mem1 (serial 0xc100e2e1): keeping region0 and dax0.0 of the idle shared device"
@@ -648,7 +648,7 @@ const (
 	DocLocalMemdevMem1Serial0xc100e2e1Region0OfThe = "local: memdev mem1 (serial 0xc100e2e1): region0 of the shared device is gone, forgetting it and its claims [<uids>]"
 
 	// Quoted in docs/memory/cxl/local.md section "What Prepare does".
-	DocLocalMemdevMem1Serial0xc100e2e1ReleasedRegion0In = "local: memdev mem1 (serial 0xc100e2e1): released region0 in 90.733ms"
+	DocLocalMemdevMem1Serial0xc100e2e1ReleasedRegion0In = "local: memdev mem1 (serial 0xc100e2e1): released region0 in <t>"
 
 	// Quoted in docs/memory/cxl/local.md section "What Prepare does for a shared device".
 	DocLocalMemdevMem1Serial0xc100e2e1ZeroedNewShared = "local: memdev mem1 (serial 0xc100e2e1): zeroed new shared dax0.0 size 1073741824 in <t>"

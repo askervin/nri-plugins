@@ -71,8 +71,8 @@ func releasesPLease(from, to *State, i int) bool {
 }
 
 // refPoll advances the reference to the poll of a settle (bash observes
-// about 0.5 s after the step, then every MBT_POLL 3 s) and resolves the
-// prediction against it.
+// soon after the step, then every MBT_POLL) and resolves the prediction
+// against it.
 func (s *sim) refPoll(poll int) {
 	gap := int64(3000)
 	if poll == 1 {

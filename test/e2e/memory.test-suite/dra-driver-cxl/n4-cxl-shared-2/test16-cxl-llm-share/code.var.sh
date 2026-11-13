@@ -78,7 +78,7 @@
 # frames and page cache counters can.
 #
 # What you will see: VM1 building the erofs image (the first time), the
-# writer on VM1 flashing it into llm0 in about a second, the host finding
+# writer on VM1 flashing it into llm0 quickly, the host finding
 # the model in the data file, three direct and three cached llama.cpp
 # servers on two nodes answering "hello" from the one copy in CXL memory or
 # from one page cache copy per node, two of them on a filesystem that

@@ -1052,7 +1052,7 @@ func (s *State) killCandidate(v VM, marker int) bool {
 // event of the window, may show the marker (killCandidate). It may come
 // right after the observation of a settle that saw the watcher armed
 // and its claim may be gone by the next settle: FP4's refused reader,
-// retried by kubelet 0.4 s after the observation and deleted four steps
+// retried by kubelet right after the observation and deleted four steps
 // later (apply keeps it in KillMay).
 func (s *State) killAnyTime(v VM, marker int) bool {
 	for i := range s.Slots {

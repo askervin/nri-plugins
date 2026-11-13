@@ -246,7 +246,8 @@ fake-cxl-pool-client detach pooled0 --self
 ```
 
 Release in the guest **before** detach. `device_del` makes the guest remove
-the PCI device after about 5 s whatever its state. If its memory was still
+the PCI device after the fixed delay of its PCIe hotplug driver (5 s)
+whatever its state. If its memory was still
 online, qemu can never finalize the device: no `DEVICE_DELETED`, and the
 backend stays mapped into that guest until the VM restarts. The server then
 reports the attachment `failed` (exit code 3 / HTTP 409), keeps it listed,

@@ -589,7 +589,8 @@ The companion objects of lease `<id>` live in the requester's namespace:
   container `pause` (`--lease-companion-image`,
   default `registry.k8s.io/pause:3.10`) with requests = limits cpu 100m,
   memory 16Mi (Guaranteed; runc init needs about 9 MiB, and with 1m CPU
-  the pause container takes about 12 s to start), no `resources.claims`,
+  the CFS quota throttles the start of the pause container so much that
+  it starts far later), no `resources.claims`,
   and `spec.resourceClaims: [{name: lease, resourceClaimName: cxl-lease-<id>}]`.
   It meets the `restricted` Pod Security profile: `runAsNonRoot`, user and
   group 65535, seccomp `RuntimeDefault`, and in the container no privilege
@@ -785,8 +786,9 @@ and cannot make it the companion of a lease it did not request.
   waits for them, and readers on other nodes wait for it: the scheduler
   does not place companions near the writers (they run on the
   requester's node).
-- Latency: about 5-7 s per pool request (the scheduler's binding
-  condition poll), about 8 s for a release. A local lease takes a few
+- Latency: a pool request is noticeably slower than a local one, because
+  the scheduler checks the binding condition only by polling (every 5 s),
+  and a release takes longer than a request. A local lease takes a few
   seconds. An `fs` lease adds the pmem region and the mounts, as a claim
   of mode `fs` does; its release waits for the borrower to close the
   files. A `block` lease adds the pmem region and, for the writer of a

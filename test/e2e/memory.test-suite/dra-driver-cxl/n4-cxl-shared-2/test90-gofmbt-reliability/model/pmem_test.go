@@ -887,7 +887,7 @@ func TestPmemFP1AnyFiresWatcher(t *testing.T) {
 
 // FP4 (step 1177): driver-kill-at vm0 ns (step 1164) with the refused
 // reader pfsc-c@vm0#0 (c-pmem0 has a namespace, no erofs). Kubelet,
-// restarted at step 1169, retried its Prepare 0.4 s after the
+// restarted at step 1169, retried its Prepare right after the
 // observation of settle 1170 had seen the watcher armed: it fired at the
 // probe's namespace (restarts 2) while that settle adopted the outcome
 // without the kill. The reader was deleted (1175), so no candidate was
@@ -929,7 +929,7 @@ func TestPmemFP4RefusedRetryAfterSettle(t *testing.T) {
 	}
 	// FP4V, its replay in short: the refused reader under the ns
 	// watcher, kubelet-restart vm0, a settle whose observation saw the
-	// watcher armed 0.2 s before it fired, the delete of the reader; the
+	// watcher armed just before it fired, the delete of the reader; the
 	// final settle's observation is ok, adopted with the kill
 	st = replaySteps(t, cfg, "recorded/fp4v-mbt-steps.txt", 11)
 	if d := st.Drv[VM0]; d.KillAt != markerNS+1 || !d.KillMay {
@@ -1077,7 +1077,7 @@ func TestPmemFP5LendingAfterCutBind(t *testing.T) {
 	wantVerdict(t, v, VFail, "an fs lease it cannot see")
 	// FP5V, its replay in short: c-pmem0 written, the lease-get under
 	// the bind watcher; observation 2 of the settle: Lending, no mount
-	// (inspected again while Lending); 22: kubelet's retry 79 s after the
+	// (inspected again while Lending); 22: kubelet's retry after the
 	// kill made it Ready and the requester sees /run/cxl/fs/<id>, the
 	// companion not yet Running; 23: ok, kept with the kill
 	st = replaySteps(t, cfg, "recorded/fp5v-mbt-steps.txt", 10)
@@ -1116,7 +1116,7 @@ func TestPmemFP5LendingAfterCutBind(t *testing.T) {
 // FP6 (step 1352): delete plse@vm0#0, driver-kill vm0 (restarts 1),
 // kubelet-restart vm0, settle: "driver vm0: pod nri-dra-driver-cxl-t6gbc
 // has 2 restarts, want 1". The old kubelet created the killed driver's
-// container again (attempt 1, 0.5 s after the exit) and was stopped
+// container again (attempt 1, right after the exit) and was stopped
 // before it started it; the new kubelet removed it and created attempt
 // 2: M2 for the driver pod. The settle accepts and adopts the extra
 // restart; the run's own observation of step 1352 is ok now.

@@ -573,7 +573,7 @@ local-numa-lease "$LEASE1"
 NUMA_LEASE1="$LEASE"
 T_LOCAL_NUMA="$LEASE_SECONDS"
 numa-slice lease-1 "$COMPANION_UID" "$LEASE1"
-printf 'the local NUMA lease is Ready in %.2f s (a pool lease of test12: about 5.7 s)\n' "$T_LOCAL_NUMA"
+printf 'the local NUMA lease is Ready in %.2f s\n' "$T_LOCAL_NUMA"
 dra-local-slices-wait "$VM2" lease-1 "$NUMA_NODE" "numa:$STATIC_A" "numa:$LEASE1"
 node-size lease-1 $(( STATIC_A + LEASE1 ))
 lent-check "$NUMA_NODE" B "$DRA_NS/static-a/main"
@@ -851,7 +851,7 @@ echo "### G: what every component did, in order"
 dra-local-slices-aligned "$VM2"
 dra-trace-stop
 dra-trace-summary
-printf 'timings (s, test steps): local NUMA lease Ready %.2f (pool lease of test12: about 5.7); the last NUMA lease of the container given back until its pages left the node %.1f\n' "$T_LOCAL_NUMA" "$T_GIVE_BACK"
+printf 'timings (s, test steps): local NUMA lease Ready %.2f; the last NUMA lease of the container given back until its pages left the node %.1f\n' "$T_LOCAL_NUMA" "$T_GIVE_BACK"
 printf 'timings (s, test steps): local dax lease with --exec %.2f; the dax leases released until their slices were gone %.1f\n' "$T_DAX" "$T_DAX_RELEASE"
 printf 'timings (s, test steps): without --source: local (the whole device) %.2f, pool %.2f; pod deleted with leases, clean %.1f\n' "$T_ANY_LOCAL" "$T_ANY_POOL" "$T_DELETE"
 echo "timings (s, test steps): MemTotal of node $NUMA_NODE changed, seen by the test this long after the request, release or delete (checks included): ${NODE_TIMES[*]}"

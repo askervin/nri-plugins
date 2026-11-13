@@ -1076,7 +1076,8 @@ func (s *State) apply(a Act) *State {
 		// A kubelet restart keeps the containers; one that it was
 		// creating is created again by the new kubelet: restarts +1
 		// without a crash (04-status-EXEC M2). The node's cxl.nri.io
-		// slice is gone for ~30 s (S3): local claims wait, which the
+		// slice is gone for a while (S3, the sync delay of the
+		// resourceslice controller): local claims wait, which the
 		// settle waits for.
 		n.restartSlack(a.VM)
 		n.driverSlack(a.VM)
