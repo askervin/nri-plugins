@@ -107,6 +107,19 @@ Before running E2E tests ensure that you have all the required components locall
     policies.test-suite balloons test10-health-checking : PASS
     ```
 
+## Transparent huge pages for the qemu of a VM
+
+When the host has transparent huge pages (THP) set to `always`
+(`cat /sys/kernel/mm/transparent_hugepage/enabled`), Ruby turns them off for
+its own process, and the qemu that vagrant starts inherits that: the guest
+RAM and any file-backed memory of the VM, like the pool memory of
+`fake-cxl-pool`, then have 4 KiB pages only (`THP_enabled: 0` in
+`/proc/<qemu pid>/status`). `vm-setup` therefore adds a few lines of Ruby to
+the `Vagrantfile` and `Vagrantfile.erb` of every VM, new or existing, that
+allow them again (`vm-thp-patch-vagrantfile`). An existing VM gets huge pages
+at the next start of its qemu. With the host setting `madvise` or `never`
+nothing changes.
+
 ## Caching a provisioned VM
 
 Most of the time a test run spends before the first test case goes into
