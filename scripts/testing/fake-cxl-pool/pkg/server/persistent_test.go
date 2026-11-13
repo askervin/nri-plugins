@@ -121,7 +121,7 @@ func TestPersistentAttachDetach(t *testing.T) {
 		}
 		// every qemu maps the same two files
 		want := []string{
-			"object_add memory-backend-file,id=fcp_llm0.hp1,size=536870912,share=on,mem-path=" + data,
+			"object_add memory-backend-file,id=fcp_llm0.hp1,size=536870912,share=on,mem-path=" + data + ",align=2097152",
 			"object_add memory-backend-file,id=fcp_llm0.hp1-lsa,size=262144,share=on,mem-path=" + lsa,
 			"device_add cxl-type3,bus=" + a.Slot.Bus + ",persistent-memdev=fcp_llm0.hp1,lsa=fcp_llm0.hp1-lsa,id=fcp_llm0.hp1,sn=0xc1ae0001",
 		}
@@ -350,5 +350,22 @@ func TestPersistentFinalizeWithoutDevice(t *testing.T) {
 	e.srv.Refresh(ctx, true)
 	if f1.HasObject("fcp_p0.hp1") || f1.HasObject("fcp_p0.hp1-lsa") {
 		t.Fatalf("backends left in qemu: %v", f1.Commands())
+	}
+}
+
+func TestDataAlign(t *testing.T) {
+	for _, c := range []struct {
+		size int64
+		want uint64
+	}{
+		{512 << 20, 2 << 20}, // pool devices: whole 2 MiB pages
+		{2 << 20, 2 << 20},
+		{256 << 10, 0}, // a label storage area
+		{3 << 20, 0},
+		{0, 0},
+	} {
+		if got := dataAlign(c.size); got != c.want {
+			t.Errorf("dataAlign(%d) = %d, want %d", c.size, got, c.want)
+		}
 	}
 }

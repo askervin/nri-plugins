@@ -348,6 +348,9 @@ func QMPObjectAddArgs(b MemoryBackend) map[string]any {
 	}
 	if b.QomType == MemoryBackendFile {
 		args["mem-path"] = b.MemPath
+		if b.Align != 0 {
+			args["align"] = b.Align
+		}
 	}
 	return args
 }

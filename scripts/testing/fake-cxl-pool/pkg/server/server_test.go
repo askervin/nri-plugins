@@ -344,7 +344,7 @@ func TestAttachDetachExclusive(t *testing.T) {
 	}
 	f1 := e.fake("vm1")
 	cmds := strings.Join(f1.Commands(), "\n")
-	if !strings.Contains(cmds, "object_add memory-backend-file,id=fcp_pooled0.hp1,size=536870912,share=on,mem-path="+filepath.Join(e.dir, "pool", "pooled0.raw")) ||
+	if !strings.Contains(cmds, "object_add memory-backend-file,id=fcp_pooled0.hp1,size=536870912,share=on,mem-path="+filepath.Join(e.dir, "pool", "pooled0.raw")+",align=2097152") ||
 		!strings.Contains(cmds, "device_add cxl-type3,bus=ds0_hb0,volatile-memdev=fcp_pooled0.hp1,id=fcp_pooled0.hp1,sn=0xc1ee0001") {
 		t.Fatalf("unexpected qemu commands:\n%s", cmds)
 	}

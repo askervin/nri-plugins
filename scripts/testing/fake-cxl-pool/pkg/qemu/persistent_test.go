@@ -56,6 +56,31 @@ func TestPersistentCommandLines(t *testing.T) {
 	}
 }
 
+func TestObjectAddAlign(t *testing.T) {
+	aligned := pmemData
+	aligned.Align = HugePageAlign
+	if got := HMPObjectAdd(aligned); got != "object_add memory-backend-file,id=fcp_llm0.hp1,size=536870912,share=on,mem-path=/pool/llm0.raw,align=2097152" {
+		t.Fatalf("HMP object_add with align: %s", got)
+	}
+	want := map[string]any{"qom-type": MemoryBackendFile, "id": "fcp_llm0.hp1", "size": uint64(512 << 20), "share": true,
+		"mem-path": "/pool/llm0.raw", "align": uint64(2 << 20)}
+	if got := QMPObjectAddArgs(aligned); !reflect.DeepEqual(got, want) {
+		t.Fatalf("QMP object-add with align: %v", got)
+	}
+	// Without Align qemu chooses: no align argument.
+	if got := HMPObjectAdd(pmemData); strings.Contains(got, "align") {
+		t.Fatalf("HMP object_add without align: %s", got)
+	}
+	if _, ok := QMPObjectAddArgs(pmemData)["align"]; ok {
+		t.Fatalf("QMP object-add without align: %v", QMPObjectAddArgs(pmemData))
+	}
+	// A RAM backend has no file mapping to align.
+	ram := MemoryBackend{QomType: MemoryBackendRAM, ID: "m", Size: 2 << 20, Share: true, Align: HugePageAlign}
+	if got := HMPObjectAdd(ram); got != "object_add memory-backend-ram,id=m,size=2097152,share=on" {
+		t.Fatalf("HMP object_add of RAM: %s", got)
+	}
+}
+
 func TestFakePersistentChecks(t *testing.T) {
 	ctx := context.Background()
 	f := NewFake(map[string]int{"hb0": 0}, map[string]string{"ds0": "hb0", "ds1": "hb0"})
