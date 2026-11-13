@@ -54,6 +54,8 @@ declare -A POOL_SERVER_PORTS=()
 declare -A POOL_SERVER_LOGS=()
 declare -A POOL_SERVER_HOSTS=()
 POOL_BUILT=""                                   # pool-server-start built fake-cxl-pool
+# The EXIT trap that pool-server-start sets, "" for "pool-cleanup".
+POOL_EXIT_TRAP=""
 POOL_DEVICE_DATA=""                             # pool-device-files: the backing file of a device
 POOL_DEVICE_LSA=""                              # and its label storage area file
 
@@ -431,12 +433,13 @@ pool-server-start() { # script API
     #   --slots "PAT..."   discovery.slots, the CXL slots it is cabled to
     #                      (path patterns of slot names, default: all)
     #   --local-devices yes|no  discovery.localDevices (default yes)
+    #   --dir DIR          the pool directory, of the device backing files
+    #                      (default $POOL_DIR, or /tmp/fake-cxl-pool-NAME)
     # The configuration, the state (removed first: every server starts
     # empty) and the log are in $TEST_OUTPUT_DIR: fake-cxl-pool.yaml,
     # fake-cxl-pool.state.json and fake-cxl-pool-server.log for the default
     # name, fake-cxl-pool-NAME.yaml, fake-cxl-pool-NAME.state.json and
-    # fake-cxl-pool-server-NAME.log for others. The device backing files
-    # are in $POOL_DIR, or /tmp/fake-cxl-pool-NAME.
+    # fake-cxl-pool-server-NAME.log for others.
     #
     # The server discovers only the VMs of --hosts, so that it never
     # connects to the monitors of other VMs on the host. Fail if a server
@@ -448,10 +451,11 @@ pool-server-start() { # script API
     # POOL_URL and POOL_GUEST_URL; every server is in POOL_SERVERS,
     # POOL_SERVER_PIDS, POOL_SERVER_PORTS, POOL_SERVER_LOGS and
     # POOL_SERVER_HOSTS. Set an EXIT trap that detaches the devices that
-    # the test left attached and stops the servers (pool-cleanup).
+    # the test left attached and stops the servers (pool-cleanup, or
+    # POOL_EXIT_TRAP).
     local name="$POOL_DEFAULT_NAME" port="$POOL_PORT" hosts="$POOL_VM1_DIR $POOL_VM2_DIR"
-    local index="" control="" slots="" local_devices=yes
-    local devices config state log dir suffix="" names="" vmdir vmdirs=() pat pats=() slot_list="" pid url
+    local index="" control="" slots="" local_devices=yes dir=""
+    local devices config state log suffix="" names="" vmdir vmdirs=() pat pats=() slot_list="" pid url
     while [ $# -gt 0 ]; do
         case "$1" in
             --name) name="$2"; shift 2;;
@@ -461,6 +465,7 @@ pool-server-start() { # script API
             --control) control="$2"; shift 2;;
             --slots) slots="$2"; shift 2;;
             --local-devices) local_devices="$2"; shift 2;;
+            --dir) dir="$2"; shift 2;;
             --*) error "pool-server-start: unknown option $1";;
             *) break;;
         esac
@@ -491,11 +496,11 @@ pool-server-start() { # script API
         fi
         error "port $port of server $name is busy, is another fake-cxl-pool-server running? ($(ss -ltnpH "sport = :$port" 2>/dev/null)) Stop it, or give another --port"
     fi
-    dir="$POOL_DIR"
     if [ "$name" != "$POOL_DEFAULT_NAME" ]; then
         suffix="-$name"
-        dir="/tmp/fake-cxl-pool-$name"
+        dir="${dir:-/tmp/fake-cxl-pool-$name}"
     fi
+    dir="${dir:-$POOL_DIR}"
     config="$TEST_OUTPUT_DIR/fake-cxl-pool$suffix.yaml"
     state="$TEST_OUTPUT_DIR/fake-cxl-pool$suffix.state.json"
     log="$TEST_OUTPUT_DIR/fake-cxl-pool-server$suffix.log"
@@ -544,7 +549,10 @@ EOF
     "$POOL_BIN_DIR/fake-cxl-pool-server" -config "$config" -state "$state" -v \
         </dev/null >"$log" 2>&1 &
     pid=$!
-    [ "${#POOL_SERVERS[@]}" -gt 0 ] || trap pool-cleanup EXIT
+    if [ "${#POOL_SERVERS[@]}" -eq 0 ]; then
+        # shellcheck disable=SC2064 # the value is the trap command itself
+        trap "${POOL_EXIT_TRAP:-pool-cleanup}" EXIT
+    fi
     POOL_SERVERS+=("$name")
     POOL_SERVER_PIDS["$name"]="$pid"
     POOL_SERVER_PORTS["$name"]="$port"
