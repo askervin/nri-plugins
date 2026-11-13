@@ -798,6 +798,13 @@ print(vm_uuid)' "$vmname") || error "cannot create UUID for VM $vmname"
             echo "E2E_NO_PROVISION=1" >> "$vagrantdir/env"
     fi
 
+    # Transparent huge pages for the qemu of the VM, whatever Ruby does to
+    # its own. An existing VM gets them at the next start of its qemu.
+    vm-thp-patch-vagrantfile "$vagrantdir/Vagrantfile.erb" ||
+        error "cannot enable transparent huge pages in $vagrantdir/Vagrantfile.erb"
+    vm-thp-patch-vagrantfile "$vagrantdir/Vagrantfile" ||
+        error "cannot enable transparent huge pages in $vagrantdir/Vagrantfile"
+
     # The NIC of the VM network of the topology, if it has one. An existing
     # VM gets it at its next start (vm-vmnet-ensure restarts it).
     if [ -n "$vm_network" ]; then
@@ -970,6 +977,64 @@ vm-vmnet-record() {
     if grep -q '^NO_PROXY="' "$vmdir/env" && ! grep -q "^NO_PROXY=\".*$cidr" "$vmdir/env"; then
         sed -i "s#^NO_PROXY=\"\([^\"]*\)\"#NO_PROXY=\"\1,$cidr\"#" "$vmdir/env" || return 1
     fi
+}
+
+vm-thp-patch-vagrantfile() {
+    # Usage: vm-thp-patch-vagrantfile FILE
+    #
+    # Add to FILE, a Vagrantfile or Vagrantfile.erb, unless it is there, the
+    # Ruby that allows transparent huge pages (THP) again in the vagrant
+    # process, and so in the qemu that vagrant-qemu starts from it. Fail,
+    # and leave FILE as it was, if it has no line to put the Ruby after or
+    # is not valid Ruby with it.
+    local file="$1" patch="$1.thp-patch.rb" patched="$1.thp-patched"
+    local anchor="ENV['VAGRANT_DEFAULT_PROVIDER'] = 'qemu'"
+    [ -f "$file" ] || return 0
+    grep -q 'PR_SET_THP_DISABLE' "$file" && return 0
+    grep -qxF "$anchor" "$file" || {
+        echo "vm-thp-patch-vagrantfile: no VAGRANT_DEFAULT_PROVIDER line in $file to put it after" >&2
+        return 1
+    }
+    # When the host's THP mode is "always", Ruby calls
+    # prctl(PR_SET_THP_DISABLE, 1) at its start. A process and its children
+    # then get no huge pages (THP_enabled: 0 in /proc/PID/status), so the
+    # guest RAM and any file-backed memory of a VM, the CXL pool memory of the
+    # fake-cxl-pool included, would have 4 KiB pages only. A VM gets the
+    # change at the next start of its qemu. The patch goes into the
+    # Vagrantfile of the VM, not into files/Vagrantfile.in, which belongs to
+    # the box recipe: editing it would change the box key without changing
+    # the box.
+    cat > "$patch" <<'EOF'
+
+# Ruby disables transparent huge pages (THP) for its own process when the
+# host has them "always", and the qemu that vagrant-qemu starts from this
+# process inherits that: its guest RAM and file-backed memory would have
+# 4 KiB pages only. Allow them again before any qemu starts. The
+# PR_SET_THP_DISABLE prctl takes (41, 0, 0, 0, 0) to clear the flag.
+begin
+  require 'fiddle'
+  prctl = Fiddle::Function.new(Fiddle.dlopen(nil)['prctl'],
+                               [Fiddle::TYPE_INT] + [Fiddle::TYPE_LONG] * 4,
+                               Fiddle::TYPE_INT)
+  warn "prctl(PR_SET_THP_DISABLE, 0) failed, qemu runs without THP" unless prctl.call(41, 0, 0, 0, 0) == 0
+rescue LoadError, StandardError => e
+  warn "cannot allow THP for qemu: #{e.message}"
+end
+EOF
+    # The patch goes into a copy of FILE, which replaces FILE once it is valid.
+    cp -p "$file" "$patched" &&
+        awk -v anchor="$anchor" -v patch="$patch" '{ print } $0 == anchor { while ((getline line < patch) > 0) print line; close(patch) }' "$file" > "$patched" || {
+        rm -f "$patch" "$patched"
+        return 1
+    }
+    rm -f "$patch"
+    if command -v ruby >/dev/null && ! ruby -c "$patched" >/dev/null; then
+        echo "vm-thp-patch-vagrantfile: $file is not valid Ruby after the patch" >&2
+        rm -f "$patched"
+        return 1
+    fi
+    mv "$patched" "$file" || return 1
+    echo "vm-thp-patch-vagrantfile: $file allows transparent huge pages for qemu"
 }
 
 vm-vmnet-patch-vagrantfile() {
