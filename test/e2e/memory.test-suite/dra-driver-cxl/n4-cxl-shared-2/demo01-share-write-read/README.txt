@@ -3,7 +3,7 @@ CXL memory sharing: the live demo (presenter's guide)
 One sentence: "a container asks for CXL memory while it runs; the
 scheduler gives it a share of a device only when the rules allow; the
 node maps the device into the container; every sharer sees the same
-bytes; readers cannot write". Four scripts tell it, each with one writer
+bytes; readers cannot write". Five scripts tell it, each with one writer
 and three readers:
   local  all four pods on vm2 share vm2's own CXL memory device (1Gi);
   pool   the writer on vm1, readers on vm2 and vm1 share shared0 (256Mi)
@@ -14,15 +14,21 @@ and three readers:
   pool-fs  the same pods and nodes, fs0 (512Mi) persistent: the writer
          makes an ext4 (or xfs, btrfs) on it and mounts it read-write;
          vm1's reader shares it at once, vm2's readers wait until the
-         writer leaves (ReadWriteOnce).
+         writer leaves (ReadWriteOnce);
+  llm-share  a language model on llm0 (persistent, the size of the model)
+         for all three VMs: the writer on vm1 fetches it and writes an erofs
+         of it, one llama-server reader per VM serves it, a client measures
+         the time to the first token and per token, alone and all at once;
+         the readers map the model from the device (direct: one copy in
+         host memory for all VMs) or from a copy in the page cache of
+         their VM (cached); section 6e.
 A wizard shows the rest: every kind of device that the driver offers
 (local and pool, volatile and persistent), any claim or lease of it that
 the driver accepts, its YAML, created and deleted (section 6d).
-The design is N/scripts/testing/fake-cxl-pool/plan-8-demo/03-demo-design.txt
-(pool-shared-fs: 12-fs-demo-design.txt there, pool-fs: section 3 of
-22-official-design.txt, the wizard: section 4 there; N = the nri-plugins
-tree);
-this file says how to run it.
+How to prepare a host and the three VMs (qemu, kernel, Kubernetes, images),
+and the llm-share story from the first command to the results, is in the
+replication guide N/docs/memory/cxl/demo-llm-share.md (N = the nri-plugins
+tree); this file says how to run the demos as a presenter.
 This directory is N/test/e2e/memory.test-suite/dra-driver-cxl/
 n4-cxl-shared-2/demo01-share-write-read. It is no test: run_tests.sh runs
 only the test* directories of a topology, so a run of the suite or of
@@ -41,30 +47,36 @@ github.com/containers/nri-plugins), or NRI_PLUGINS_SRC=N.
     ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-1/test00-up
     ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-0/test00-up
     ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test00-up
-  (the patched qemu, see .github/skills/run-e2e-tests/SKILL.md, qemu_bin).
+  (the patched qemu, see .github/skills/run-e2e-tests/SKILL.md, qemu_bin;
+  how to build it and the rest: N/docs/memory/cxl/demo-llm-share.md).
 - The driver image with shared local devices (sharedDevices, plan-9):
     cd N && make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
 - Nothing else runs on the VMs: no run_tests.sh, no other
   fake-cxl-pool-server (port 9909). demo refuses to start a setup while
   run_tests.sh runs.
-- Host tools: bash, python3, ssh, curl (nothing to install); for
-  pool-shared-fs and pool-fs also docker (as for the driver image): setup
+- Host tools: bash, python3, ssh, curl and docker (as for the driver
+  image: setup builds the image of the pool controller); for
+  pool-shared-fs and pool-fs setup also
   builds the demo image localhost/cxl-demo-tools from image/Dockerfile
   (python:3-alpine with erofs-utils, e2fsprogs, xfsprogs and btrfs-progs,
   through the proxies of
   ~/.docker/config.json) and imports it into vm1 and vm2. The first setup
-  takes 20-40 s longer for that; the image is kept on the host and in the
-  VMs (the import is skipped when they have it).
+  takes longer for that; the image is kept on the host and in the VMs (the
+  import is skipped when they have it).
 - Desk check of this directory: "demo selftest" renders every view from
-  testdata/ and checks that it fits 50 x 10.
+  testdata/ and checks that it fits 50 x 10, and runs bin/selftest-shell.sh,
+  which checks bin/pool-tmpfs.sh, bin/latency.sh and the Vagrantfile patch
+  of lib/vm.bash with stubbed sudo, mount and taskset on a fake /sys (no
+  root).
 
 2. Setup, teardown, reset
 -------------------------
   demo setup local      (or: demo setup pool, demo setup pool-shared-fs,
                         demo setup pool-fs [ext4|xfs|btrfs], default ext4,
-                        demo setup wizard)
-                        about 2-4 minutes (wizard: more, section 6d)
-  demo teardown         about 1-2 minutes; leaves all VMs clean
+                        demo setup wizard, demo setup llm-share: its
+                        options are in section 6e)
+                        (the wizard takes longer, section 6d)
+  demo teardown         leaves all VMs clean
   demo reset local      (or pool, pool-shared-fs, pool-fs) deletes the demo pods and
                         their leases: start the script again from step 1;
                         reset wizard is demo wizard delete --all
@@ -82,7 +94,12 @@ installs
 the driver on every node with helm (local: sharedDevices: [<the serial
 of vm2's device>]; pool-fs: fsTypes: [erofs, <type>], with the trust note
 of section 6c; wizard: fsTypes: [erofs, ext4, xfs, btrfs], the trust note
-of section 6d), starts the pool controller, pulls the images
+of section 6d), starts the pool controller in a pod (a Deployment in
+namespace fake-cxl-pool; its image, built from
+N/scripts/testing/fake-cxl-pool/Dockerfile with docker, is imported into
+every node: in every case of the demo, not only llm-share, so docker is
+needed for all of them; everything but the pool server runs in pods, as in
+a cluster with a pool appliance), pulls the images
 (pool-shared-fs, pool-fs, wizard: imports the demo image), creates the ConfigMap
 demo-tools (/demo/write, /demo/read, /demo/hold, /demo/env, /demo/mkfs,
 /demo/fswrite in the pods; wizard: /demo/cxl-wizard.py),
@@ -99,7 +116,14 @@ over pmem is left in the VMs: if one is, it stops with a WARNING and the
 manual cleanup (releasing a region under a live filesystem can crash the
 guest); "demo teardown" again goes on from there. It removes the files of
 the persistent shared0 or fs0 at the end (wizard: also of lp0; it detaches
-the local devices of both VMs and stops local-pmem).
+the local devices of both VMs and stops local-pmem). llm-share: it unmounts
+the pool tmpfs and removes the pool directory. qemu keeps the backing file
+of a detached device mapped, about the size of the device in each VM that
+had it attached, until its next memory change or a restart of the VM;
+on a tmpfs that memory stays allocated meanwhile, so the unmount is lazy
+("tmpfs unmounted lazily, processes ... still map removed files of it"),
+and /proc/<qemu>/maps shows the file as "/llm0.raw (deleted)", without the
+directory.
 
 3. The screen: 2 columns x 3 rows, each terminal 50 x 10
 --------------------------------------------------------
@@ -231,13 +255,12 @@ L1 T6 "shared0 256Mi shared free", "attached: nowhere"; T4 no CXL memory.
 L2 the device is hot-plugged into vm1: T6 "attached: vm1 exclusive",
    T4 vm1 mem0 c1ae0001 region0 dax0.0, T5 ctrl "attach shared0 to vm1
    excl", pool "shared0 attached to vm1", kern "vm1 add mem0 ...". The
-   lease takes 5-10 s (the scheduler waits for the attach: T5 sched
+   lease is Ready after the attach (the scheduler waits for it: T5 sched
    "waits for the attach").
 L3 T6 shows the line from the host's side: the bytes are in the pool.
 L5 T3 "waiting: ..." for readers on both nodes.
 L6 shared0 stays on vm1 (now shared) and is attached to vm2 as well
-   (about 10 s until all three leases are Ready, the attach included;
-   meanwhile T2 "attaching" and T3 "attaching: reader-a reader-b" for the
+   (until all three leases are Ready, the attach included; meanwhile T2 "attaching" and T3 "attaching: reader-a reader-b" for the
    readers allocated shared0 whose node does not have it yet):
    T6 "attached: vm1, vm2", T4 mem0 in both nodes, T5 drv "vm1 released
    mem0" (vm1 disables the memdev of the writer), pool "shared0 on vm1:
@@ -274,7 +297,7 @@ F2 "the writer asks for the device as a block device"
    asks block rw excl", ctrl and pool attach lines, kern "vm1 add mem0",
    then "vm1 add region0 pmem0", drv "writer: prepared pmem0 rw",
    "writer: lease Ready block pmem0". T6 "attached: vm1 exclusive". The
-   lease takes about 5.5 s (attach, region, namespace).
+   lease is Ready after the attach, the region and the namespace.
    Say: the lease is a claim of the whole device (exclusive); the node
    made a pmem region and a namespace; the writer got an fd of the block
    device, no device node in the container.
@@ -375,7 +398,7 @@ R2 "the writer asks for the device as a block device"
    "attached: vm1 exclusive".
 R3 "the writer makes an empty ext4 filesystem on it"
    $ kubectl exec writer -- /demo/mkfs --type ext4
-   T1 "wrote an empty ext4 of 510 MiB in 2.1 s". T4 "pmem0 510M ext4
+   T1 "wrote an empty ext4 of 510 MiB in N s". T4 "pmem0 510M ext4
    (block rw)", "open: writer rw" for 3 seconds. T6 'ext4 "demo" 510M,
    clean': read from the backing file on the host, 2 MiB into the device
    ("demo zoom fs").
@@ -416,7 +439,7 @@ R7 "readers ask to read: vm1's reader at once, vm2's must wait"
    (Conflict): reader-a reader-b". T4 vm1 "mounted: reader-c (dax),
    writer (dax rw)" (one superblock: reader-c's bind is read-only), vm2
    no CXL memory. T5 "reader-a: fs0 not on vm2: Conflict" once per
-   reader: the scheduler allocates their claims again every 7 seconds
+   reader: the scheduler allocates their claims again and again
    and the attach to vm2 fails each time; the trace shows it once (the
    reason comes from the controller's AttachFailed condition and Event;
    between the attempts, deallocated or allocated again, "waiting
@@ -442,8 +465,8 @@ R9 "the writer is done: vm1 turns the filesystem read-only, vm2's readers mount 
    "reader-a waits: claim deallocated" (the end of the attempt before),
    "reader-c: fs0 on vm1 already" (vm1's attachment kept, no longer
    exclusive), the attach to vm2, "vm2 pmem0 read-only", "vm2 node mount
-   pmem0 ext4 ro", "vm2 reader-a: lease Ready fs data" (about 6 s after
-   the release). T6 "attached: vm1, vm2", 'ext4 ... clean'.
+   pmem0 ext4 ro", "vm2 reader-a: lease Ready fs data" (after the
+   release). T6 "attached: vm1, vm2", 'ext4 ... clean'.
    Say: the writer's release synced the ext4 and made it read-only on
    vm1 (block device too) before the controller let another host in;
    vm2 reads what vm1 wrote.
@@ -586,6 +609,228 @@ A walk (bin/wizard-rules.sh runs one for every rule and checks each result):
 "demo reset wizard" is "demo wizard delete --all". "demo wizard check"
 runs the wizard's desk checks (part of demo selftest).
 
+6e. Script 5: llm-share (llm0 persistent, the model's size, serial 0xc1ae0001)
+------------------------------------------------------------------------------
+The replication guide, for someone who has never seen this tree (host tools,
+qemu, kernel, Kubernetes, images, the model, the latency variant, reading
+the results): N/docs/memory/cxl/demo-llm-share.md. This section is the
+presenter's reference.
+One copy of a language model in pooled memory for every VM. The writer on
+vm1 fetches the GGUF file of the model, makes an erofs of it in its
+container and writes that into llm0 through its block lease (as F3, but
+streamed in 4 MiB chunks). Then a reader starts on each of vm0, vm1 and
+vm2: stock llama.cpp (ghcr.io/ggml-org/llama.cpp:server-b11681), the
+model at /models from a read-only fs claim of llm0 (manifests/llm-share/
+model-direct.yaml or model-cached.yaml: the template llm-model that
+readers.yaml uses), -nr (the weights stay in the mapping of the file),
+threads = its CPU limit (6 of 8). A client pod on vm2 asks them, the way
+an agent asks its model: a system prompt, the question "What is the
+weather like in Helsinki right now, and should I take an umbrella?" and
+one tool, get_weather; the model answers with a call of the tool.
+- access direct: each node mounts the erofs with DAX, so llama-server maps
+  the gguf from the device itself. Every VM's qemu maps the same backing
+  file (share=on), so the model is in host memory once, whatever the
+  number of VMs, and in no page cache of a VM.
+- access cached: each node mounts the erofs through a read-only loop
+  device: the model is read once into the page cache of each VM, and
+  llama-server maps that copy (one copy per VM, in guest RAM).
+vm0 takes part: the pool server of llm-share is cabled to all three VMs,
+setup imports the images into all three and labels vm0 too.
+Setup (environment of "demo setup llm-share"):
+  DEMO_LLM_MODEL      qwen3.5-2b (default; unsloth Qwen3.5-2B-GGUF Q4_K_M,
+                      1222 MiB, llm0 1536Mi), qwen3.5-0.8b (508 MiB, 768Mi)
+                      or qwen3-0.6b (378 MiB, 512Mi: the model of test16);
+                      each pinned by its Hugging Face commit and sha256
+                      (LLM_MODELS of test90)
+  DEMO_LLM_MODEL_URL  where the writer fetches it (default its Hugging
+                      Face URL, through the proxies of the VMs'
+                      /etc/environment: setup puts them into ConfigMap
+                      llm-model)
+  DEMO_LLM_MODEL_DIR  a host directory that holds the model file: setup
+                      checks its sha256 and serves the directory to the
+                      writer (python3 -m http.server on 127.0.0.1:9920 of
+                      the host, 192.168.76.2:9920 for the VMs), like a
+                      model registry outside the cluster. Needed where
+                      the VMs cannot reach huggingface.co (through a TLS
+                      intercepting proxy, for instance); fast for
+                      rehearsals: fetch once, e.g.
+                        curl -LO https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf
+  DEMO_LLM_ACCESS     direct (default) or cached: the readers' first
+                      access; the steps switch to the other one at M10
+  DEMO_LLM_LATENCY    the latency setup: off (default), local or far
+                      ("on" is far). For local and far bin/latency.sh on
+                      runs in setup after the VMs are reset and before the
+                      pool server makes the files of llm0; teardown, and a
+                      failed setup, run "latency.sh off". "demo latency on
+                      [far|local]|off|status" runs it by hand; it refuses
+                      "on" while the demo is set up. The three setups:
+                        off    nothing is pinned or moved; the model is
+                               spread over all memory nodes of the host
+                               (see DEMO_POOL_DIR). Not a local setup: on
+                               a two-socket host about half of it is on
+                               the other socket.
+                        local  the qemus of the three VMs pinned to the
+                               CPUs of socket 0 and their memory moved to
+                               its nodes (also KSM, automatic NUMA
+                               balancing and demotion off), the model
+                               interleaved over socket 0's memory nodes
+                               too (mpol=interleave): the best placement
+                               of the model in host memory, nearest to
+                               every VM. No frequency cap, no load. Needs
+                               socket 0 only.
+                        far    the same pinning, the model bound to socket
+                               1's nodes (mpol=bind), the uncore and IO
+                               die frequencies of socket 1 capped where
+                               the host allows, and, with
+                               DEMO_LLM_LATENCY_LOAD, a load: every read
+                               of the model crosses the socket link.
+                               Needs two sockets.
+                      "demo latency status" and every saved result name the
+                      setup.
+  DEMO_LLM_LATENCY_LOAD
+                      off (default) or a level (700 or 1000, "demo latency
+                      levels"), with DEMO_LLM_LATENCY=far: latency.sh on
+                      starts cxl-load in the background after the
+                      frequency caps, writing to the memory of the far
+                      socket from its CPUs; the memory controllers queue
+                      up, and the idle latency that mlc measures from a
+                      near CPU to the far memory rises to about the level
+                      in ns, like it does to a busy CXL link or device.
+                      "latency.sh off" and teardown stop it; "demo latency
+                      status" shows it. The levels were calibrated on a
+                      two-socket Intel Xeon 6 server with sub-NUMA
+                      clustering (docs/memory/cxl/demo-llm-share.md);
+                      LATENCY_LOAD_ARGS gives other cxl-load arguments for
+                      another host. The saved results name the level in
+                      their latency column (far+700). The local setup
+                      starts no load.
+  DEMO_LLM_REPEAT     bench repetitions (default 3; also at step time:
+                      DEMO_LLM_REPEAT=5 demo llm-share 7)
+  DEMO_POOL_DIR       the pool directory (default /tmp/fake-cxl-pool-llm):
+                      setup mounts a tmpfs of its own there with 2 MiB pages
+                      where possible (huge=within_size, bin/pool-tmpfs.sh),
+                      whose pages are the memory of llm0, interleaved over
+                      the memory nodes of the host that have CPUs too
+                      (mpol=interleave:NODES; none on a host with one such
+                      node; the memory of a CXL device or HBM, a node
+                      without CPUs, is left out). Without a policy the file
+                      lands on the node where the writer's CPU happens to
+                      run, and readers at once then wait on that node:
+                      three direct readers at once decoded up to twice
+                      as slowly with the file on one node as with it spread
+                      over the four nodes of a two-socket host. latency.sh on
+                      mounts the same with the memory policy of one socket
+                      instead: the nodes of the far socket (mpol=bind:NODES)
+                      in the far setup, those of the near socket
+                      (mpol=interleave:NODES) in the local one, so the
+                      setups differ in the policy, the nodes and the
+                      pinning only. A node
+                      list has a comma and mount(8) splits options at
+                      commas, so the mount runs with LIBMOUNT_FORCE_MOUNT2=
+                      always. With huge pages a 2 MiB page can fall to the
+                      next node: "demo llm mem" shows the nodes of llm0
+                      (cxl-numa-place where). Teardown unmounts it. It
+                      needs sudo without a password; without it setup warns
+                      and uses /dev/shm/fake-cxl-pool-llm on the host's
+                      shared tmpfs (4 KiB pages, no policy, unless /dev/shm
+                      has huge=; note that systemd-logind removes a
+                      user's files in /dev/shm when the user's last session
+                      ends, RemoveIPC=yes). Every memory snapshot and saved
+                      result records the mount options of the pool
+                      directory, with the policy (pool.mpol), and how much
+                      of llm0 the qemus map in 2 MiB pages (smaps
+                      ShmemPmdMapped):
+                      100% when the qemus may use transparent huge pages
+                      ("THP_enabled: 1" in /proc/<qemu>/status). The e2e
+                      framework allows them in the Vagrantfile of every VM
+                      (vm-thp-patch-vagrantfile), as vagrant's Ruby would
+                      disable them for itself (prctl PR_SET_THP_DISABLE)
+                      where the host has THP "always", and qemu inherits
+                      that. A VM whose qemu started before it got that
+                      change shows "THP_enabled: 0", 0% and 4 KiB pages
+                      in the guest RAM too, until its next restart.
+Steps (S = 0xc1ae0001; X = the first access, Y = the other one):
+M1 "a writer starts on vm1; it has no CXL memory yet"
+   $ kubectl apply -f llm-share/writer.yaml
+M2 "the writer asks for llm0 as a block device"
+   $ kubectl exec writer -- cxl-request request --serial S --mode block
+   As F2: llm0 attached to vm1 exclusively; T4 "vm1 mem0 1.5G region0".
+M3 "the writer fetches the model and writes an erofs of it into llm0"
+   $ kubectl exec writer -- /demo/mkfs --model
+   T1 "fetched 1221 MiB in N s (N MB/s), sha256 ok", "erofs of 1223
+   MiB in N s, written in N s". T6 "erofs: Qwen3.5-2B-Q4_K_M.gguf
+   1280835840 bytes", its first bytes "GGUF....", "host memory: 1.2G of
+   the file, once". mkfs.erofs -b4096 --dsunit=512 -Enoinline_data puts
+   the file in one plain extent 2 MiB-aligned: the condition of DAX.
+M4 "the writer is done and releases the device"; llm0 detaches from vm1.
+M5 "a reader starts on every VM: llama-server on a read-only share of
+   llm0, X"
+   $ kubectl apply -f llm-share/model-X.yaml -f llm-share/readers.yaml -f
+     llm-share/client.yaml
+   T1 "Ready: reader-0 vm0, reader-1 vm1, reader-2 vm2", "llm0 attached
+   to vm0, vm1, vm2". T2 the readers' "claim fs ro share direct". T3
+   "shared: reader-0 ro, reader-1 ro, reader-2 ro". T4 per VM "erofs ro
+   dax: reader-N" (cached: "erofs ro cached loopN: reader-N"): who maps a
+   file of the filesystem.
+M6 "a client asks each reader, as an agent asks its model: the model
+   calls a tool"
+   $ kubectl exec client -- /demo/llm ask
+   T1 'reader-0 N s: get_weather {"city":"Helsinki",...'.
+M7 "each reader alone: time to first token, per token (X)"
+   $ kubectl exec client -- /demo/llm bench single --repeat 3
+M8 "all readers at once (X)": the same, simultaneous (three rounds).
+   T1 per reader "TTFT median (min-max) TPOT ms tok/s". TTFT is the time
+   from sending the request to its first streamed delta; TPOT is the
+   server's time per predicted token for a tool-call answer (the parser
+   of tool calls holds the deltas back and streams a few chunks), else
+   the client's (last - first delta) / (tokens - 1). Each bench is saved
+   in run/llm-results/ with the model, the access and the latency setup
+   (off, local, far or far+LEVEL);
+   "demo llm results" prints the table of all of them.
+M9 (host) "the host has the model once: every VM maps the same pages"
+   $ demo llm mem X
+   T1 "host: 1224M of llm0 in memory, once", "3 qemus map it: Rss 1222M,
+   Pss 407M each" (Pss is Rss shared by three), "page cache charged to
+   readers: 0M 0M 0M", "readers map the gguf: 1211M ...". The full output
+   (run/steps.log) adds each qemu's NUMA nodes of those pages and
+   cxl-numa-place where (when it is built). Snapshot run/llm-mem-X.json.
+M10 "the readers start again with page-cached access, a copy in each VM"
+   $ kubectl delete -f llm-share/readers.yaml -f llm-share/model-X.yaml &&
+     kubectl apply -f llm-share/model-Y.yaml -f llm-share/readers.yaml
+   llama-server reads the model at its start: through the loop device
+   into the page cache (M10 waits for the readers to be Ready).
+M11-M13 ask and bench again (Y).
+M14 (host) "every VM has its own copy of the model in its page cache"
+   $ demo llm mem Y --since X
+   T1 "page cache charged to readers: 1222M 1222M 1221M", "VM Cached
+   +1222M +1222M +1193M; qemu anon +18M +2M +5M": the copies are in guest
+   RAM that the host had backed already (a VM that ran a while), so qemu
+   grows little; on a fresh VM it grows by the copy.
+M15 "everything goes away"
+   $ kubectl delete -f llm-share/ --ignore-not-found
+To trigger an inference by hand: "kubectl exec client -- /demo/llm ask
+reader-1" in vm2's /root/demo, or the reader's own curl:
+  kubectl exec reader-0 -- curl -s localhost:8080/v1/chat/completions \
+    -H 'Content-Type: application/json' -d '{"messages": [{"role": "user", "content": "hello"}]}'
+"kubectl exec reader-0 -- /demo/llm-mem" prints its memory in one line.
+The matrix of the measurements: one setup runs both accesses and both
+modes (M7, M8, M12, M13) at the latency setup of its setup ("latency.sh
+on" refuses while the demo is set up), so the latency axis is a setup of
+its own for each value; "demo llm results" merges the results of all of
+them into one table (run/llm-results/ stays over teardown):
+  DEMO_LLM_LATENCY=off   demo setup llm-share; demo llm-share --auto; demo teardown
+  DEMO_LLM_LATENCY=local demo setup llm-share; demo llm-share --auto; demo teardown
+  DEMO_LLM_LATENCY=far   demo setup llm-share; demo llm-share --auto; demo teardown
+  demo llm results
+How far direct access gets from cached is read between local and cached
+(the same placement near the VMs; what is left is the page cache against
+the DAX mapping), and what the distance costs between local and far.
+Rehearsals 2026-11-12 on a two-socket x86 host (VMs unpinned, model
+mirror): the first setup also pulls the llama.cpp image (300 MB) in each
+VM. Three readers at once decoded 1.8 times as slowly as one alone with
+direct access and 1.4 times with cached access (Qwen3.5-2B), and 2.4 and
+1.4 times (Qwen3-0.6B).
+
 7. Zooms (in T1: z, or any terminal: demo zoom ...), paged with less
 --------------------------------------------------------------------
   demo zoom slice [DEVICE]   the ResourceSlice entry: attributes, the
@@ -666,31 +911,13 @@ runs the wizard's desk checks (part of demo selftest).
   memory devices, test00-up of that VM (or pool-vm-reset in any e2e
   test) restarts it.
 
-9. Timings and load (rehearsals 2026-10-20, two --auto runs each)
-------------------------------------------------------------------
-  setup about 1 min, teardown 35-50 s; a whole --auto run 63-67 s.
-  local L1-L9: 2.2 0.4-1.1 3.9 2.0 0.7 2.2 2.9-3.1 0.5 2.4-3.1 s
-  pool  L1-L9: 2.0-2.2 5.6 4.0 2.0 0.7 10.3 3.2 0.5 1.6-2.0 s
-  (L3 includes the writer's 3 s hold; pool L6 the attach to vm2.)
-  pool-shared-fs (rehearsals 2026-10-22, three --auto runs, s):
-        F1-F9: 2.0-2.2 5.6-5.8 3.8-4.0 2.0 0.7-0.8 10.1-10.3 0.6-0.7 0.3-0.4 1.6-2.8
-  (F3 includes the writer's 3 s hold of the fd; F6 the attach to vm2.)
-  A whole --auto run 73 s; setup 63-67 s
-  (the demo image cached), teardown 38 s. No view went stale.
-  2026-11-03 (one run each from this directory, driver b0a0eb6c6c91, s):
-    local L1-L9  2.1 2.0 3.9 2.1 0.9 2.3 3.2 0.5 3.2; setup 74, teardown 50
-    pool  L1-L9  2.1 6.4 4.0 2.2 0.8 11.8 3.3 0.5 2.1; setup 61, teardown 38
-    pool-shared-fs F1-F9  2.1 5.6 3.8 2.1 0.9 10.4 0.7 0.4 2.2; setup 65,
-                 teardown 36
-    pool-fs R1-R11 (ext4 twice, xfs, btrfs; s):
-                 2.1 5.6-5.7 6.0-6.1 12.7-12.8 0.5 2.1-2.2 8.0-8.1 0.7
-                 5.2-7.9 0.9-1.0 2.0-3.0; setup 65-69, teardown 38
-                 (R3: the 510 MiB written in 2.0-2.1 s and the 3 s hold;
-                 R4: the block lease's detach and the fs lease's attach;
-                 R9: the attach to vm2, ext4 7.9, xfs and btrfs 5.2-5.3)
-  The four ssh views (T2, T3, T4, T6) at 1 s cost VM2 about 1.1 of its 8
-  CPUs (idle: 0.08), mostly kubectl; no refresh went stale during the
-  rehearsals. "demo view tN --interval 2" halves a view's share.
+9. Load and captures (rehearsals)
+---------------------------------
+  The slow steps are those that wait for an attach (pool L6, pool-shared-fs
+  F6, pool-fs R4 and R9) or for the writer's hold of its fd (3 s; L3 and
+  F3, R3). No view went stale in the rehearsals.
+  The four ssh views (T2, T3, T4, T6) poll VM2 once a second, mostly with
+  kubectl; "demo view tN --interval 2" halves a view's load on VM2.
   "demo capture LABEL" writes each view once (50 x 10) to
   captures/CASE-LABEL-tN.txt; "demo truth LABEL" writes the ground truth
   of the moment to captures/CASE-LABEL-truth.txt (kubectl objects, cxl
@@ -709,7 +936,10 @@ runs the wizard's desk checks (part of demo selftest).
                       over ssh stdin, one call per node per refresh)
   bin/steps.py        the step runner (T1), bin/zoom.py the zooms,
                       bin/truth.py the ground truth (demo truth)
-  bin/tools/          the tools in the pods (ConfigMap demo-tools)
+  bin/tools/          the tools in the pods (ConfigMap demo-tools);
+                      llm-share: cxl-llm.py (/demo/llm, the client),
+                      llm-mem (the readers' memory, sh)
+  bin/llm.py          llm-share on the host: demo llm mem, demo llm results
   bin/fsinfo.py       the superblock of ext4, xfs, btrfs or erofs at the
                       start of a block device (T6 and zoom fs of pool-fs)
   bin/wizard.py       the wizard (demo wizard); bin/wizard_views.py its
@@ -718,23 +948,32 @@ runs the wizard's desk checks (part of demo selftest).
                       bin/wizard-rules.sh the scripted set of every rule
                       (live, or --dry-run at the desk); bin/tools/
                       cxl-wizard.py the tool of its pods
-  image/Dockerfile    the demo image of pool-shared-fs and pool-fs
-                      (mkfs.erofs, mkfs.ext4, mkfs.xfs, mkfs.btrfs)
+  image/Dockerfile    the demo image of pool-shared-fs, pool-fs and
+                      llm-share (mkfs.erofs, mkfs.ext4, mkfs.xfs,
+                      mkfs.btrfs)
   bin/selftest.py     the desk check; testdata/ its samples
+  bin/selftest-shell.sh  its checks of bin/pool-tmpfs.sh, bin/latency.sh and
+                      the Vagrantfile patch of lib/vm.bash
                       (make-samples.py writes them with the objects and
                       log lines of the current driver, make-samples-pool-
                       fs.py those of pool-fs; hello.erofs.hex a real
                       image of mkfs.erofs, pool-fs-super.json the
                       superblocks of real empty ext4, xfs and btrfs;
-                      make-wizard-samples.py those of the wizard)
+                      make-wizard-samples.py those of the wizard;
+                      record-sample.py writes a sample from a live demo:
+                      llm-share-M9 and llm-share-M14)
   manifests/local, manifests/pool, manifests/pool-shared-fs, manifests/pool-fs
                       the pods and the lease claim template
+  manifests/llm-share the writer, the readers' claim templates (direct,
+                      cached), the readers with their Service, the client
   manifests/wizard/formatter.yaml
                       the formatter of fs0 and lp0 of demo setup wizard
   e2e/                the setup (test90) and teardown (test91) tests
   run/                state, logs and timings of the current demo
                       (step.env: the last step and its start; wizard/:
-                      the YAML of each object of the wizard)
+                      the YAML of each object of the wizard; llm-results/
+                      and llm-mem-*.json: the benches and memory
+                      snapshots of llm-share)
   captures/           demo capture and demo truth
   .gitignore          run/ and captures/ out of git, testdata/ and
                       bin/tools/ in

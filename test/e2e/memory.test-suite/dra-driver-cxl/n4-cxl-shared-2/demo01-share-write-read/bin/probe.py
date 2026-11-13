@@ -12,7 +12,8 @@ Prints one JSON object with the sections that ARGS ask for:
                  size, memdevs, dax devices with size and driver, the fsdax
                  namespaces of pmem regions with their block device, its
                  read-only flag and the filesystem type on it), the
-                 processes of pods that map a dax device (/proc/PID/maps) or
+                 processes of pods that map a dax device or a file of a
+                 filesystem on a pmem block device (/proc/PID/maps) or
                  have an fd of a pmem block device (/proc/PID/fd), with the
                  pod uid of their cgroup, and the mounts of the pmem block
                  devices (mountinfo)
@@ -260,8 +261,14 @@ def pod_pids():
     return out
 
 
-def mappers(pids):
-    """Return the processes of PIDS that map a dax device."""
+def mappers(pids, fs_devs=None):
+    """Return the processes of PIDS that map a dax device, or a file of a filesystem on a device of FS_DEVS.
+
+    FS_DEVS maps the device numbers of mountinfo ("259:0") to (the pmem
+    block device under the filesystem, the device of the mount: the same
+    or a loop device over it); such a mapping is {"block", "source",
+    "path"} instead of {"dax"}.
+    """
     out = []
     for pid, pod_uid in pids:
         try:
@@ -269,7 +276,7 @@ def mappers(pids):
                 maps = f.read()
         except OSError:
             continue
-        seen = {}
+        seen, files = {}, {}
         for line in maps.splitlines():
             parts = line.split()
             if len(parts) >= 6 and re.fullmatch(r"/dev/dax\d+\.\d+", parts[5]):
@@ -277,9 +284,16 @@ def mappers(pids):
                 perms = parts[1]
                 if "w" in perms or dev not in seen:
                     seen[dev] = perms
+            elif len(parts) >= 6 and fs_devs and parts[3] != "00:00":
+                major, minor = (int(x, 16) for x in parts[3].split(":"))
+                dev = fs_devs.get("%d:%d" % (major, minor))
+                if dev:
+                    files[parts[5]] = dev
+        comm = read("/proc/%s/comm" % pid, "?") if seen or files else None
         for dev, perms in seen.items():
-            out.append({"pid": int(pid), "comm": read("/proc/%s/comm" % pid, "?"),
-                        "podUID": pod_uid, "dax": dev, "perms": perms})
+            out.append({"pid": int(pid), "comm": comm, "podUID": pod_uid, "dax": dev, "perms": perms})
+        for fpath, (block, source) in sorted(files.items()):
+            out.append({"pid": int(pid), "comm": comm, "podUID": pod_uid, "block": block, "source": source, "path": fpath})
     return out
 
 
@@ -357,11 +371,17 @@ def node(errors):
         regs = regions(endpoints, devs)
         blocks = [n["block"] for r in regs for n in r.get("namespaces") or [] if n.get("block")]
         pids = pod_pids()
-        out = {"hostname": read("/proc/sys/kernel/hostname", ""), "memdevs": devs,
-               "regions": regs, "mappers": mappers(pids)}
+        out = {"hostname": read("/proc/sys/kernel/hostname", ""), "memdevs": devs, "regions": regs}
+        fs_devs = {}
         if blocks:
             out["openers"] = openers(pids, blocks)
             out["mounts"] = fs_mounts(blocks)
+            for m in out["mounts"]:
+                source = m["source"][len("/dev/"):]
+                num = read("/sys/class/block/%s/dev" % source)
+                if num:
+                    fs_devs[num] = (m["block"], source)
+        out["mappers"] = mappers(pids, fs_devs)
         return out
     except Exception as e:   # the views show it, the probe must not die
         errors.append("node: %r" % e)

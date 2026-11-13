@@ -250,6 +250,8 @@ def manifests_test():
     mdir = os.path.join(c.DEMO_DIR, "manifests")
     count = 0
     for case in sorted(os.listdir(mdir)):
+        # llm-share has a reader on every VM: setup labels vm0 too.
+        nodes = DEMO_NODES + ("vm0",) if case == "llm-share" else DEMO_NODES
         for f in sorted(os.listdir(os.path.join(mdir, case))):
             if not f.endswith(".yaml"):
                 continue
@@ -260,8 +262,8 @@ def manifests_test():
                     continue
                 count += 1
                 expect("manifests/%s/%s" % (case, f),
-                       re.search(r"^  nodeSelector:\n    %s: (%s)\b" % (re.escape(w.NODE_LABEL), "|".join(DEMO_NODES)), doc, re.M),
-                       "a Pod without nodeSelector %s: vm1|vm2:\n%s" % (w.NODE_LABEL, doc[:300]))
+                       re.search(r"^  nodeSelector:\n    %s: (%s)\b" % (re.escape(w.NODE_LABEL), "|".join(nodes)), doc, re.M),
+                       "a Pod without nodeSelector %s: %s:\n%s" % (w.NODE_LABEL, "|".join(nodes), doc[:300]))
     expect("manifests", count >= 10, "%d Pods" % count)
 
 

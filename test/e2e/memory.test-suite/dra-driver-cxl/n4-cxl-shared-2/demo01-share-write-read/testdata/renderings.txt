@@ -1,4 +1,70 @@
 # demo selftest: every rendering of testdata/, TZ=UTC (bin/selftest.py --write)
++--------------------------------------------------+ llm-share-M14 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running -        -                 |
+|client    vm2  Running -        -                 |
+|reader-0  vm0  Running claim    fs ro share cached|
+|reader-1  vm1  Running claim    fs ro share cached|
+|reader-2  vm2  Running claim    fs ro share cached|
++--------------------------------------------------+
++--------------------------------------------------+ llm-share-M14 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  vm0 ok  pool ok          |
+|llm0 @pool 512Mi shared persistent                |
+|  shared: reader-0 ro, reader-1 ro, reader-2 ro   |
++--------------------------------------------------+
++--------------------------------------------------+ llm-share-M14 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm0 mem0 512M region0 pmem0 erofs                 |
+|    erofs ro cached loop0: reader-0               |
+|vm1 mem0 512M region0 pmem0 erofs                 |
+|    erofs ro cached loop0: reader-1               |
+|vm2 mem0 512M region0 pmem0 erofs                 |
+|    erofs ro cached loop0: reader-2               |
++--------------------------------------------------+
++--------------------------------------------------+ llm-share-M14 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|llm0 512Mi shared persistent  attached            |
+|  attached: vm0, vm1, vm2                         |
+|erofs: Qwen3-0.6B-Q4_K_M.gguf 396705472 bytes     |
+|  "GGUF....6....... ...............general.archite|
+|host memory: 380M of the file, once               |
+|file /dev/shm/fake-cxl-pool-llm/llm0.raw          |
++--------------------------------------------------+
++--------------------------------------------------+ llm-share-M9 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running -        -                 |
+|client    vm2  Running -        -                 |
+|reader-0  vm0  Running claim    fs ro share direct|
+|reader-1  vm1  Running claim    fs ro share direct|
+|reader-2  vm2  Running claim    fs ro share direct|
++--------------------------------------------------+
++--------------------------------------------------+ llm-share-M9 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  vm0 ok  pool ok          |
+|llm0 @pool 512Mi shared persistent                |
+|  shared: reader-0 ro, reader-1 ro, reader-2 ro   |
++--------------------------------------------------+
++--------------------------------------------------+ llm-share-M9 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm0 mem0 512M region0 pmem0 erofs                 |
+|    erofs ro dax: reader-0                        |
+|vm1 mem0 512M region0 pmem0 erofs                 |
+|    erofs ro dax: reader-1                        |
+|vm2 mem0 512M region0 pmem0 erofs                 |
+|    erofs ro dax: reader-2                        |
++--------------------------------------------------+
++--------------------------------------------------+ llm-share-M9 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|llm0 512Mi shared persistent  attached            |
+|  attached: vm0, vm1, vm2                         |
+|erofs: Qwen3-0.6B-Q4_K_M.gguf 396705472 bytes     |
+|  "GGUF....6....... ...............general.archite|
+|host memory: 380M of the file, once               |
+|file /dev/shm/fake-cxl-pool-llm/llm0.raw          |
++--------------------------------------------------+
 +--------------------------------------------------+ local-L1 t2
 |PODS & LEASES                            12:41:07 |
 |POD       NODE STATE   LEASE    MEMORY            |
@@ -1194,6 +1260,12 @@
 |0000: 48656c6c 6f206672 6f6d2074 68652077         |
 |shared by: reader-a ro, reader-b ro, reader-c ro  |
 +--------------------------------------------------+
++--------------------------------------------------+ probe on a fake pmem node, t4 llm-share
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 256M region0 pmem0 erofs                 |
+|    erofs ro cached loop0: reader-1               |
+|    erofs ro dax: reader-1                        |
++--------------------------------------------------+
 +--------------------------------------------------+ probe on a fake pmem node, t4
 |NODES: CXL IN THE KERNEL                 12:41:07 |
 |vm1 mem0 c1ae0001 256M  region0 pmem 256M         |
@@ -1806,6 +1878,318 @@
 |PRESENTER pool-fs R11/11                 12:41:07 |
 |everything goes away                              |
 |$ kubectl delete -f pool-fs/                      |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share direct M1
+|PRESENTER llm-share M1/15                12:41:07 |
+|a writer starts on vm1; it has no CXL memory yet  |
+|$ kubectl apply -f llm-share/writer.yaml          |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share direct M2
+|PRESENTER llm-share M2/15                12:41:07 |
+|the writer asks for llm0 as a block device        |
+|$ kubectl exec writer -- cxl-request request      |
+|    --serial 0xc1ae0001 --mode block              |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share direct M3
+|PRESENTER llm-share M3/15                12:41:07 |
+|the writer fetches the model and writes an erofs  |
+|  of it into llm0                                 |
+|$ kubectl exec writer -- /demo/mkfs --model       |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share direct M4
+|PRESENTER llm-share M4/15                12:41:07 |
+|the writer is done and releases the device        |
+|$ kubectl exec writer -- cxl-request release --all|
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share direct M5
+|PRESENTER llm-share M5/15                12:41:07 |
+|a reader starts on every VM: llama-server on a    |
+|  read-only share of llm0, direct                 |
+|$ kubectl apply -f llm-share/model-direct.yaml -f |
+|    llm-share/readers.yaml -f                     |
+|    llm-share/client.yaml                         |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share direct M6
+|PRESENTER llm-share M6/15                12:41:07 |
+|a client asks each reader, as an agent asks its   |
+|  model: the model calls a tool                   |
+|$ kubectl exec client -- /demo/llm ask            |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share direct M7
+|PRESENTER llm-share M7/15                12:41:07 |
+|each reader alone: time to first token, per token |
+|  (direct)                                        |
+|$ kubectl exec client -- /demo/llm bench single   |
+|    --repeat 10                                   |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share direct M8
+|PRESENTER llm-share M8/15                12:41:07 |
+|all readers at once (direct)                      |
+|$ kubectl exec client -- /demo/llm bench          |
+|    simultaneous --repeat 10                      |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share direct M9
+|PRESENTER llm-share M9/15                12:41:07 |
+|the host has the model once: every VM maps the    |
+|  same pages                                      |
+|$ demo llm mem direct                             |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share direct M10
+|PRESENTER llm-share M10/15               12:41:07 |
+|the readers start again with page-cached access, a|
+|  copy in each VM                                 |
+|$ kubectl delete -f llm-share/readers.yaml -f     |
+|    llm-share/model-direct.yaml && kubectl apply  |
+|    -f llm-share/model-cached.yaml -f             |
+|    llm-share/readers.yaml                        |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share direct M11
+|PRESENTER llm-share M11/15               12:41:07 |
+|the client asks each reader again (cached)        |
+|$ kubectl exec client -- /demo/llm ask            |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share direct M12
+|PRESENTER llm-share M12/15               12:41:07 |
+|each reader alone (cached)                        |
+|$ kubectl exec client -- /demo/llm bench single   |
+|    --repeat 10                                   |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share direct M13
+|PRESENTER llm-share M13/15               12:41:07 |
+|all readers at once (cached)                      |
+|$ kubectl exec client -- /demo/llm bench          |
+|    simultaneous --repeat 10                      |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share direct M14
+|PRESENTER llm-share M14/15               12:41:07 |
+|every VM has its own copy of the model in its page|
+|  cache                                           |
+|$ demo llm mem cached --since direct              |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share direct M15
+|PRESENTER llm-share M15/15               12:41:07 |
+|everything goes away                              |
+|$ kubectl delete -f llm-share/ --ignore-not-found |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share cached M1
+|PRESENTER llm-share M1/15                12:41:07 |
+|a writer starts on vm1; it has no CXL memory yet  |
+|$ kubectl apply -f llm-share/writer.yaml          |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share cached M2
+|PRESENTER llm-share M2/15                12:41:07 |
+|the writer asks for llm0 as a block device        |
+|$ kubectl exec writer -- cxl-request request      |
+|    --serial 0xc1ae0001 --mode block              |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share cached M3
+|PRESENTER llm-share M3/15                12:41:07 |
+|the writer fetches the model and writes an erofs  |
+|  of it into llm0                                 |
+|$ kubectl exec writer -- /demo/mkfs --model       |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share cached M4
+|PRESENTER llm-share M4/15                12:41:07 |
+|the writer is done and releases the device        |
+|$ kubectl exec writer -- cxl-request release --all|
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share cached M5
+|PRESENTER llm-share M5/15                12:41:07 |
+|a reader starts on every VM: llama-server on a    |
+|  read-only share of llm0, cached                 |
+|$ kubectl apply -f llm-share/model-cached.yaml -f |
+|    llm-share/readers.yaml -f                     |
+|    llm-share/client.yaml                         |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share cached M6
+|PRESENTER llm-share M6/15                12:41:07 |
+|a client asks each reader, as an agent asks its   |
+|  model: the model calls a tool                   |
+|$ kubectl exec client -- /demo/llm ask            |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share cached M7
+|PRESENTER llm-share M7/15                12:41:07 |
+|each reader alone: time to first token, per token |
+|  (cached)                                        |
+|$ kubectl exec client -- /demo/llm bench single   |
+|    --repeat 10                                   |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share cached M8
+|PRESENTER llm-share M8/15                12:41:07 |
+|all readers at once (cached)                      |
+|$ kubectl exec client -- /demo/llm bench          |
+|    simultaneous --repeat 10                      |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share cached M9
+|PRESENTER llm-share M9/15                12:41:07 |
+|every VM has its own copy of the model in its page|
+|  cache                                           |
+|$ demo llm mem cached                             |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share cached M10
+|PRESENTER llm-share M10/15               12:41:07 |
+|the readers start again with direct access, the   |
+|  model mapped from the device                    |
+|$ kubectl delete -f llm-share/readers.yaml -f     |
+|    llm-share/model-cached.yaml && kubectl apply  |
+|    -f llm-share/model-direct.yaml -f             |
+|    llm-share/readers.yaml                        |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share cached M11
+|PRESENTER llm-share M11/15               12:41:07 |
+|the client asks each reader again (direct)        |
+|$ kubectl exec client -- /demo/llm ask            |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share cached M12
+|PRESENTER llm-share M12/15               12:41:07 |
+|each reader alone (direct)                        |
+|$ kubectl exec client -- /demo/llm bench single   |
+|    --repeat 10                                   |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share cached M13
+|PRESENTER llm-share M13/15               12:41:07 |
+|all readers at once (direct)                      |
+|$ kubectl exec client -- /demo/llm bench          |
+|    simultaneous --repeat 10                      |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share cached M14
+|PRESENTER llm-share M14/15               12:41:07 |
+|the host has the model once: every VM maps the    |
+|  same pages                                      |
+|$ demo llm mem direct --since cached              |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 llm-share cached M15
+|PRESENTER llm-share M15/15               12:41:07 |
+|everything goes away                              |
+|$ kubectl delete -f llm-share/ --ignore-not-found |
 |-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
 |   rrrrrrrrrrrrr                                  |
 |-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
