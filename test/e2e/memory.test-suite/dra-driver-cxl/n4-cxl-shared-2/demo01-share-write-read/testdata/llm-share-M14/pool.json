@@ -1,0 +1,109 @@
+{
+ "device": {
+  "allocation": null,
+  "attachments": [
+   {
+    "created": "2026-11-12T09:08:03.741044312Z",
+    "device": "llm0",
+    "host": "n4-cxl-shared-0-fedora-43-containerd",
+    "id": "llm0@n4-cxl-shared-0-fedora-43-containerd",
+    "owner": "k8s:resourceclaim/640873be-d68c-4987-b6d1-b18f2efa4feb",
+    "qemuDeviceId": "fcp_llm0.hp2",
+    "qemuLsaObjectId": "fcp_llm0.hp2-lsa",
+    "qemuObjectId": "fcp_llm0.hp2",
+    "serial": "0xc1ae0001",
+    "slot": {
+     "attachment": "llm0@n4-cxl-shared-0-fedora-43-containerd",
+     "bus": "cxlsw_ds0_usrp0hb0",
+     "device": "fcp_llm0.hp2",
+     "hostBridge": "cxlhb0",
+     "kind": "downstream",
+     "numaNode": 0
+    },
+    "state": "attached",
+    "updated": "2026-11-12T09:08:03.781754693Z"
+   },
+   {
+    "created": "2026-11-12T09:08:03.845845662Z",
+    "device": "llm0",
+    "host": "n4-cxl-shared-1-fedora-43-containerd",
+    "id": "llm0@n4-cxl-shared-1-fedora-43-containerd",
+    "owner": "k8s:resourceclaim/303342b1-5bed-4bc9-b8e3-cd34e2979ba4",
+    "qemuDeviceId": "fcp_llm0.hp3",
+    "qemuLsaObjectId": "fcp_llm0.hp3-lsa",
+    "qemuObjectId": "fcp_llm0.hp3",
+    "serial": "0xc1ae0001",
+    "slot": {
+     "attachment": "llm0@n4-cxl-shared-1-fedora-43-containerd",
+     "bus": "cxlsw_ds0_usrp0hb0",
+     "device": "fcp_llm0.hp3",
+     "hostBridge": "cxlhb0",
+     "kind": "downstream",
+     "numaNode": 0
+    },
+    "state": "attached",
+    "updated": "2026-11-12T09:08:03.887485176Z"
+   },
+   {
+    "created": "2026-11-12T09:08:03.908988664Z",
+    "device": "llm0",
+    "host": "n4-cxl-shared-2-fedora-43-containerd",
+    "id": "llm0@n4-cxl-shared-2-fedora-43-containerd",
+    "owner": "k8s:resourceclaim/95258e9b-e2e1-49c9-9c60-a3485fc8b0a0",
+    "qemuDeviceId": "fcp_llm0.hp2",
+    "qemuLsaObjectId": "fcp_llm0.hp2-lsa",
+    "qemuObjectId": "fcp_llm0.hp2",
+    "serial": "0xc1ae0001",
+    "slot": {
+     "attachment": "llm0@n4-cxl-shared-2-fedora-43-containerd",
+     "bus": "cxlsw_ds0_usrp0hb0",
+     "device": "fcp_llm0.hp2",
+     "hostBridge": "cxlhb0",
+     "kind": "downstream",
+     "numaNode": 0
+    },
+    "state": "attached",
+    "updated": "2026-11-12T09:08:04.006574856Z"
+   }
+  ],
+  "backend": "file",
+  "created": "2026-11-12T09:05:20.518782038Z",
+  "lsaPath": "/dev/shm/fake-cxl-pool-llm/llm0.lsa",
+  "name": "llm0",
+  "path": "/dev/shm/fake-cxl-pool-llm/llm0.raw",
+  "persistent": true,
+  "pool": "default",
+  "scope": "pool",
+  "serial": "0xc1ae0001",
+  "shared": true,
+  "size": 536870912,
+  "state": "attached",
+  "static": true
+ },
+ "fileResident": 399077376,
+ "fs": {
+  "error": "",
+  "files": [
+   {
+    "name": "Qwen3-0.6B-Q4_K_M.gguf",
+    "size": 396705472,
+    "text": "GGUF....6....... ...............general.architec",
+    "type": "file"
+   }
+  ],
+  "super": {
+   "blkszbits": 12,
+   "blocks": 97364,
+   "blocksize": 4096,
+   "featureCompat": "0x3",
+   "featureIncompat": "0x0",
+   "inos": 2,
+   "magic": "0xe0f5e1e2",
+   "metaBlkaddr": 0,
+   "rootNid": 36,
+   "xattrBlkaddr": 0
+  },
+  "type": "erofs"
+ },
+ "fsOffset": 2097152
+}

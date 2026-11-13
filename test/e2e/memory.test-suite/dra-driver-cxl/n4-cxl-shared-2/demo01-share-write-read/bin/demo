@@ -22,32 +22,51 @@ nri-src() {
 
 NRI_SRC="${NRI_PLUGINS_SRC:-$(nri-src)}"
 [ -n "$NRI_SRC" ] || { echo "demo: no nri-plugins tree above $DEMO_DIR: set NRI_PLUGINS_SRC" >&2; exit 1; }
+export NRI_PLUGINS_SRC="$NRI_SRC"
 E2E_DIR="$NRI_SRC/test/e2e"
+# The directory of the output directories of the VMs, where run_tests.sh
+# runs: DEMO_E2E_ROOT runs the demo of this tree on the VMs of another
+# checkout.
+E2E_ROOT="${DEMO_E2E_ROOT:-$E2E_DIR}"
 E2E_SUITE="$E2E_DIR/memory.test-suite/dra-driver-cxl"
 DEMO_SUITE="$DEMO_DIR/e2e/demo.test-suite/dra-driver-cxl"
 export DEMO_DIR
 export DEMO_STATE_DIR="${DEMO_STATE_DIR:-$DEMO_DIR/run}"
+# The pool directory of llm-share: setup mounts a tmpfs there, whose pages
+# are the memory of the pool device (bin/pool-tmpfs.sh; bin/latency.sh
+# mounts its own). The state has the one of the demo that is set up.
+export DEMO_POOL_DIR="${DEMO_POOL_DIR:-/tmp/fake-cxl-pool-llm}"
 STATE="$DEMO_STATE_DIR/state.env"
-CASES="local|pool|pool-shared-fs|pool-fs|wizard"
+CASES="local|pool|pool-shared-fs|pool-fs|wizard|llm-share"
 
 usage() {
     cat <<EOF
 usage: demo COMMAND
   setup CASE [TYPE]        set up the cluster for a demo (minutes);
-                           CASE is local, pool, pool-shared-fs, pool-fs or
-                           wizard; TYPE of pool-fs: ext4 (default), xfs or
-                           btrfs
+                           CASE is local, pool, pool-shared-fs, pool-fs,
+                           wizard or llm-share; TYPE of pool-fs: ext4
+                           (default), xfs or btrfs; llm-share takes
+                           DEMO_LLM_* (below)
   teardown                 remove all of it, leave the VMs clean
   reset CASE               delete the demo pods and leases, start over
   commands                 print the commands of the six terminals
   view t2|t3|t4|t5|t6 [CASE] [--once] [--no-color]
                            a live view: t2 pods and leases, t3 scheduler,
                            t4 nodes, t5 trace, t6 memory (pool server)
-  local [N|N-|--auto]      the steps of the local demo (T1)
-  pool [N|N-|--auto]       the steps of the pool demo (T1)
-  pool-shared-fs [N|N-|--auto]
+  local [N|N-|N-M|--auto]  the steps of the local demo (T1)
+  pool [N|N-|N-M|--auto]   the steps of the pool demo (T1)
+  pool-shared-fs [N|N-|N-M|--auto]
                            the steps of the file system demo (T1)
-  pool-fs [N|N-|--auto]    the steps of the read-write filesystem demo (T1)
+  pool-fs [N|N-|N-M|--auto]
+                           the steps of the read-write filesystem demo (T1)
+  llm-share [N|N-|N-M|--auto]
+                           the steps of the shared language model demo (T1)
+  llm mem LABEL [--since LABEL] | results [FILE...]
+                           llm-share on the host: the memory of the model
+                           in the host and in the VMs; the bench results
+  latency on [far|local]|off|status|levels
+                           llm-share: the latency setups of the pool memory
+                           on a two-socket host (bin/latency.sh)
   wizard [new OPTIONS|list|yaml NAME|delete NAME...|--all]
                            the wizard (T1): a pod and a claim or lease of
                            any device of the case, its YAML; "demo
@@ -61,6 +80,26 @@ usage: demo COMMAND
                            the pool server and the logs since the last step
                            began (or EPOCH), to captures/CASE-LABEL-truth.txt
   selftest                 render every view from testdata/, check 50 x 10
+Environment of setup llm-share:
+  DEMO_LLM_MODEL           qwen3.5-2b (default), qwen3.5-0.8b or qwen3-0.6b
+  DEMO_LLM_MODEL_URL       where the writer fetches it (default: Hugging Face)
+  DEMO_LLM_MODEL_DIR       a host directory with the model file: setup
+                           serves it to the writer instead (a mirror)
+  DEMO_LLM_ACCESS          direct (default) or cached: the readers' first
+                           access; the steps switch to the other one
+  DEMO_LLM_LATENCY         the latency setup (bin/latency.sh), before the
+                           device is made: off (default: VMs unpinned, the
+                           model spread over all nodes), local (VMs on
+                           socket 0, the model on socket 0's nodes) or far
+                           (VMs on socket 0, the model on socket 1, its
+                           uncore frequencies capped; "on" is far)
+  DEMO_LLM_LATENCY_LOAD    off (default) or a level of bin/latency.sh (with
+                           DEMO_LLM_LATENCY=far): background memory traffic
+                           on the far socket, "demo latency levels"
+  DEMO_LLM_REPEAT          bench repetitions (default 3)
+  DEMO_POOL_DIR            the pool directory, a tmpfs that setup mounts
+                           (default /tmp/fake-cxl-pool-llm; without sudo
+                           /dev/shm/fake-cxl-pool-llm)
 EOF
 }
 
@@ -101,8 +140,9 @@ e2e-links() {
 e2e-run() {
     # Usage: e2e-run TEST
     #
-    # Run the test TEST of the demo suite with run_tests.sh, the way the
-    # e2e tests run (one at a time: no other run_tests.sh may run).
+    # Run the test TEST of the demo suite with run_tests.sh of this tree in
+    # $E2E_ROOT, the way the e2e tests run (one at a time: no other
+    # run_tests.sh may run).
     local out
     if command -v pgrep >/dev/null && pgrep -x run_tests.sh >/dev/null; then
         die "run_tests.sh runs already: wait until it is done (the VMs serve one run at a time)"
@@ -111,8 +151,65 @@ e2e-run() {
     out="$DEMO_STATE_DIR/$1.log"
     mkdir -p "$DEMO_STATE_DIR"
     echo "demo: running $1 through the e2e framework, log $out"
-    (cd "$E2E_DIR" && ./run_tests.sh "$DEMO_SUITE/n4-cxl-shared-2/$1") 2>&1 | tee "$out"
+    (cd "$E2E_ROOT" && "$E2E_DIR/run_tests.sh" "$DEMO_SUITE/n4-cxl-shared-2/$1") 2>&1 | tee "$out"
     grep -q "^PASS " "$out"
+}
+
+vm-dirs() {
+    # Usage: vm-dirs
+    #
+    # Print the output directories of vm0, vm1 and vm2 separated by spaces:
+    # those of the state of demo setup, else the one directory of each
+    # n4-cxl-shared-0, -1 and -2 in $E2E_ROOT. Print nothing if they are not
+    # found.
+    local n dirs=() found
+    if [ -n "$(state-get VM0_DIR)" ]; then
+        echo "$(state-get VM0_DIR) $(state-get VM1_DIR) $(state-get VM2_DIR)"
+        return 0
+    fi
+    for n in 0 1 2; do
+        found=("$E2E_ROOT/n4-cxl-shared-$n-"*/.ssh-config)
+        [ "${#found[@]}" == 1 ] && [ -f "${found[0]}" ] || return 0
+        dirs+=("$(dirname "${found[0]}")")
+    done
+    echo "${dirs[*]}"
+}
+
+latency() {
+    # Usage: latency ARGS
+    #
+    # Run bin/latency.sh ARGS with the pool directory and the VMs of the
+    # demo in its environment. Return its status, 0 if it is not there.
+    [ -x "$DEMO_BIN/latency.sh" ] || return 0
+    DEMO_VM_DIRS="${DEMO_VM_DIRS:-$(vm-dirs)}" DEMO_POOL_DIR="$(state-get DEMO_POOL_DIR | grep . || echo "$DEMO_POOL_DIR")" \
+        "$DEMO_BIN/latency.sh" "$@"
+}
+
+latency-setup() {
+    # Usage: latency-setup [NAME]
+    #
+    # Print the latency setup that NAME (default: DEMO_LLM_LATENCY, else
+    # off) stands for: off, local or far ("on" is far). Fail for another
+    # name.
+    case "${1:-${DEMO_LLM_LATENCY:-off}}" in
+        off) echo off;;
+        local) echo local;;
+        far|on) echo far;;
+        *) return 1;;
+    esac
+}
+
+latency-load-check() {
+    # Usage: latency-load-check
+    #
+    # Exit unless DEMO_LLM_LATENCY_LOAD is off, unset, or a level of
+    # bin/latency.sh and DEMO_LLM_LATENCY is far.
+    local load="${DEMO_LLM_LATENCY_LOAD:-off}"
+    [ "$load" == off ] && return 0
+    [ "${DEMO_LLM_LATENCY:-off}" == far ] || die "DEMO_LLM_LATENCY_LOAD=$load needs DEMO_LLM_LATENCY=far (the local setup starts no load)"
+    [ -x "$DEMO_BIN/latency.sh" ] || die "DEMO_LLM_LATENCY_LOAD=$load: there is no $DEMO_BIN/latency.sh in this tree"
+    [[ " $("$DEMO_BIN/latency.sh" levels) " == *" $load "* ]] ||
+        die "DEMO_LLM_LATENCY_LOAD is $load: it is off or one of the levels $("$DEMO_BIN/latency.sh" levels)"
 }
 
 print-commands() {
@@ -129,7 +226,7 @@ EOF
 }
 
 cmd-setup() {
-    local case="$1" fstype="$2" tar
+    local case="$1" fstype="$2" tar setup
     [[ "$case" =~ ^($CASES)$ ]] || die "setup $CASES"
     if [ "$case" == pool-fs ]; then
         fstype="${fstype:-ext4}"
@@ -138,18 +235,35 @@ cmd-setup() {
         die "setup $case takes no filesystem type"
     fi
     [ ! -f "$STATE" ] || die "a demo ($(state-get DEMO_CASE)) is set up already: demo teardown first"
+    if [ "$case" == llm-share ]; then
+        [[ "${DEMO_LLM_ACCESS:-direct}" =~ ^(direct|cached)$ ]] || die "DEMO_LLM_ACCESS is direct or cached"
+        setup=$(latency-setup) || die "DEMO_LLM_LATENCY is $DEMO_LLM_LATENCY: off, local or far (on is far)"
+        export DEMO_LLM_LATENCY="$setup"
+        [ "$DEMO_LLM_LATENCY" == off ] || [ -x "$DEMO_BIN/latency.sh" ] ||
+            die "DEMO_LLM_LATENCY=$DEMO_LLM_LATENCY: there is no $DEMO_BIN/latency.sh in this tree"
+        latency-load-check
+    fi
     # shellcheck disable=SC2012 # the newest by mtime, like the e2e framework
     tar=$(ls -1t "$NRI_SRC"/build/images/nri-dra-driver-cxl-image-*.tar 2>/dev/null | head -n 1)
     [ -n "$tar" ] || die "no image of the driver, build it: make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images"
     echo "demo setup $case${fstype:+ $fstype}: driver image $tar"
-    DEMO_CASE="$case" DEMO_FSTYPE="$fstype" e2e-run test90-demo-setup ||
+    if ! DEMO_CASE="$case" DEMO_FSTYPE="$fstype" e2e-run test90-demo-setup; then
+        [ "$case" != llm-share ] || [ "${DEMO_LLM_LATENCY:-off}" == off ] || latency off
         die "setup failed, see $DEMO_STATE_DIR/test90-demo-setup.log (its EXIT trap cleaned up)"
+    fi
     echo
     print-commands "$case"
 }
 
 cmd-teardown() {
+    local vms pool
+    vms="$(vm-dirs)" pool="$(state-get DEMO_POOL_DIR)"   # before the state goes
     e2e-run test91-demo-teardown || die "teardown failed, see $DEMO_STATE_DIR/test91-demo-teardown.log; run it again"
+    DEMO_VM_DIRS="$vms" latency off || die "teardown: latency.sh off failed: run demo latency off again"
+    # The mount point of the pool tmpfs of latency.sh.
+    if [ -n "$pool" ] && [ -d "$pool" ] && ! mountpoint -q "$pool"; then
+        rmdir "$pool" 2>/dev/null || echo "demo teardown: $pool is not empty, left as it is"
+    fi
     echo "demo teardown: done, the VMs are clean"
 }
 
@@ -210,7 +324,11 @@ main() {
         reset) cmd-reset "$@";;
         commands) print-commands "$(state-get DEMO_CASE)";;
         view) exec python3 "$DEMO_BIN/views.py" "$@";;
-        local|pool|pool-shared-fs|pool-fs) exec python3 "$DEMO_BIN/steps.py" "$cmd" "$@";;
+        local|pool|pool-shared-fs|pool-fs|llm-share) exec python3 "$DEMO_BIN/steps.py" "$cmd" "$@";;
+        llm) exec python3 "$DEMO_BIN/llm.py" "$@";;
+        latency)
+            [ -x "$DEMO_BIN/latency.sh" ] || die "latency: not available (no $DEMO_BIN/latency.sh)"
+            latency "$@";;
         wizard) exec python3 "$DEMO_BIN/wizard.py" "$@";;
         zoom) cmd-zoom "$@";;
         capture) cmd-capture "$@";;

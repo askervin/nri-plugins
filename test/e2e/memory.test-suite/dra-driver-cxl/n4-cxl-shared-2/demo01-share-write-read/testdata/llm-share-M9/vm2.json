@@ -1,0 +1,3760 @@
+{
+ "k8s": {
+  "claims": {
+   "apiVersion": "v1",
+   "items": [
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceClaim",
+     "metadata": {
+      "annotations": {
+       "resource.kubernetes.io/pod-claim-name": "model"
+      },
+      "creationTimestamp": "2026-11-12T09:06:57Z",
+      "finalizers": [
+       "resource.kubernetes.io/delete-protection"
+      ],
+      "generateName": "reader-0-model-",
+      "name": "reader-0-model-6qn79",
+      "namespace": "cxl-demo",
+      "ownerReferences": [
+       {
+        "apiVersion": "v1",
+        "controller": true,
+        "kind": "Pod",
+        "name": "reader-0",
+        "uid": "ec3a8f42-4d35-42be-a3c7-0f659587f071"
+       }
+      ],
+      "resourceVersion": "3856530",
+      "uid": "cab8670b-c2a8-4398-ba08-682bf1f4b55c"
+     },
+     "spec": {
+      "devices": {
+       "config": [
+        {
+         "opaque": {
+          "driver": "cxl-pool.nri.io",
+          "parameters": {
+           "apiVersion": "cxl.nri.io/v1alpha1",
+           "device": {
+            "access": "direct",
+            "mode": "fs",
+            "path": "/models",
+            "readOnly": true
+           },
+           "kind": "MemoryConfig"
+          }
+         }
+        }
+       ],
+       "requests": [
+        {
+         "exactly": {
+          "allocationMode": "ExactCount",
+          "capacity": {
+           "requests": {
+            "shares": "1"
+           }
+          },
+          "count": 1,
+          "deviceClassName": "cxl-pool-persistent",
+          "selectors": [
+           {
+            "cel": {
+             "expression": "device.attributes[\"cxl-pool.nri.io\"].serial == \"0xc1ae0001\""
+            }
+           }
+          ]
+         },
+         "name": "model"
+        }
+       ]
+      }
+     },
+     "status": {
+      "allocation": {
+       "allocationTimestamp": "2026-11-12T09:06:57Z",
+       "devices": {
+        "config": [
+         {
+          "opaque": {
+           "driver": "cxl-pool.nri.io",
+           "parameters": {
+            "apiVersion": "cxl.nri.io/v1alpha1",
+            "device": {
+             "access": "direct",
+             "mode": "fs",
+             "path": "/models",
+             "readOnly": true
+            },
+            "kind": "MemoryConfig"
+           }
+          },
+          "source": "FromClaim"
+         }
+        ],
+        "results": [
+         {
+          "bindingConditions": [
+           "cxl-pool.nri.io/Attached"
+          ],
+          "bindingFailureConditions": [
+           "cxl-pool.nri.io/AttachFailed"
+          ],
+          "consumedCapacity": {
+           "shares": "1"
+          },
+          "device": "llm0",
+          "driver": "cxl-pool.nri.io",
+          "pool": "fake-cxl-pool",
+          "request": "model",
+          "shareID": "4fd8ec0c-9f06-4371-a54e-9a295d7dab29"
+         }
+        ]
+       },
+       "nodeSelector": {
+        "nodeSelectorTerms": [
+         {
+          "matchFields": [
+           {
+            "key": "metadata.name",
+            "operator": "In",
+            "values": [
+             "n4-cxl-shared-0-fedora-43-containerd"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      },
+      "devices": [
+       {
+        "conditions": [
+         {
+          "lastTransitionTime": "2026-11-12T09:06:59Z",
+          "message": "llm0 attached to n4-cxl-shared-0-fedora-43-containerd (slot cxlsw_ds0_usrp0hb0)",
+          "reason": "Attached",
+          "status": "True",
+          "type": "cxl-pool.nri.io/Attached"
+         }
+        ],
+        "data": {
+         "attachment": "llm0@n4-cxl-shared-0-fedora-43-containerd",
+         "coherent": true,
+         "host": "n4-cxl-shared-0-fedora-43-containerd",
+         "hostUUID": "140edfaa-e57c-5e4c-9fb4-84744231dcad",
+         "persistent": true,
+         "qemuDeviceId": "fcp_llm0.hp1",
+         "serial": "0xc1ae0001",
+         "shared": true,
+         "size": 536870912
+        },
+        "device": "llm0",
+        "driver": "cxl-pool.nri.io",
+        "pool": "fake-cxl-pool",
+        "shareID": "4fd8ec0c-9f06-4371-a54e-9a295d7dab29"
+       }
+      ],
+      "reservedFor": [
+       {
+        "name": "reader-0",
+        "resource": "pods",
+        "uid": "ec3a8f42-4d35-42be-a3c7-0f659587f071"
+       }
+      ]
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceClaim",
+     "metadata": {
+      "annotations": {
+       "resource.kubernetes.io/pod-claim-name": "model"
+      },
+      "creationTimestamp": "2026-11-12T09:06:57Z",
+      "finalizers": [
+       "resource.kubernetes.io/delete-protection"
+      ],
+      "generateName": "reader-1-model-",
+      "name": "reader-1-model-b8xqd",
+      "namespace": "cxl-demo",
+      "ownerReferences": [
+       {
+        "apiVersion": "v1",
+        "controller": true,
+        "kind": "Pod",
+        "name": "reader-1",
+        "uid": "65f45f51-b9e0-4ea9-b749-bf129f22a8a3"
+       }
+      ],
+      "resourceVersion": "3856533",
+      "uid": "d1dd4999-7fc7-445f-bf56-e69546843f21"
+     },
+     "spec": {
+      "devices": {
+       "config": [
+        {
+         "opaque": {
+          "driver": "cxl-pool.nri.io",
+          "parameters": {
+           "apiVersion": "cxl.nri.io/v1alpha1",
+           "device": {
+            "access": "direct",
+            "mode": "fs",
+            "path": "/models",
+            "readOnly": true
+           },
+           "kind": "MemoryConfig"
+          }
+         }
+        }
+       ],
+       "requests": [
+        {
+         "exactly": {
+          "allocationMode": "ExactCount",
+          "capacity": {
+           "requests": {
+            "shares": "1"
+           }
+          },
+          "count": 1,
+          "deviceClassName": "cxl-pool-persistent",
+          "selectors": [
+           {
+            "cel": {
+             "expression": "device.attributes[\"cxl-pool.nri.io\"].serial == \"0xc1ae0001\""
+            }
+           }
+          ]
+         },
+         "name": "model"
+        }
+       ]
+      }
+     },
+     "status": {
+      "allocation": {
+       "allocationTimestamp": "2026-11-12T09:06:57Z",
+       "devices": {
+        "config": [
+         {
+          "opaque": {
+           "driver": "cxl-pool.nri.io",
+           "parameters": {
+            "apiVersion": "cxl.nri.io/v1alpha1",
+            "device": {
+             "access": "direct",
+             "mode": "fs",
+             "path": "/models",
+             "readOnly": true
+            },
+            "kind": "MemoryConfig"
+           }
+          },
+          "source": "FromClaim"
+         }
+        ],
+        "results": [
+         {
+          "bindingConditions": [
+           "cxl-pool.nri.io/Attached"
+          ],
+          "bindingFailureConditions": [
+           "cxl-pool.nri.io/AttachFailed"
+          ],
+          "consumedCapacity": {
+           "shares": "1"
+          },
+          "device": "llm0",
+          "driver": "cxl-pool.nri.io",
+          "pool": "fake-cxl-pool",
+          "request": "model",
+          "shareID": "55aa410e-d305-431d-b4e3-ce357c45f129"
+         }
+        ]
+       },
+       "nodeSelector": {
+        "nodeSelectorTerms": [
+         {
+          "matchFields": [
+           {
+            "key": "metadata.name",
+            "operator": "In",
+            "values": [
+             "n4-cxl-shared-1-fedora-43-containerd"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      },
+      "devices": [
+       {
+        "conditions": [
+         {
+          "lastTransitionTime": "2026-11-12T09:06:59Z",
+          "message": "llm0 attached to n4-cxl-shared-1-fedora-43-containerd (slot cxlsw_ds0_usrp0hb0)",
+          "reason": "Attached",
+          "status": "True",
+          "type": "cxl-pool.nri.io/Attached"
+         }
+        ],
+        "data": {
+         "attachment": "llm0@n4-cxl-shared-1-fedora-43-containerd",
+         "coherent": true,
+         "host": "n4-cxl-shared-1-fedora-43-containerd",
+         "hostUUID": "b6a78455-edb1-558d-8cf1-01a259f76e97",
+         "persistent": true,
+         "qemuDeviceId": "fcp_llm0.hp2",
+         "serial": "0xc1ae0001",
+         "shared": true,
+         "size": 536870912
+        },
+        "device": "llm0",
+        "driver": "cxl-pool.nri.io",
+        "pool": "fake-cxl-pool",
+        "shareID": "55aa410e-d305-431d-b4e3-ce357c45f129"
+       }
+      ],
+      "reservedFor": [
+       {
+        "name": "reader-1",
+        "resource": "pods",
+        "uid": "65f45f51-b9e0-4ea9-b749-bf129f22a8a3"
+       }
+      ]
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceClaim",
+     "metadata": {
+      "annotations": {
+       "resource.kubernetes.io/pod-claim-name": "model"
+      },
+      "creationTimestamp": "2026-11-12T09:06:57Z",
+      "finalizers": [
+       "resource.kubernetes.io/delete-protection"
+      ],
+      "generateName": "reader-2-model-",
+      "name": "reader-2-model-bxm9n",
+      "namespace": "cxl-demo",
+      "ownerReferences": [
+       {
+        "apiVersion": "v1",
+        "controller": true,
+        "kind": "Pod",
+        "name": "reader-2",
+        "uid": "8c1cc84e-bd6f-434f-b1e7-16bb7a6f015f"
+       }
+      ],
+      "resourceVersion": "3856535",
+      "uid": "7a777e8f-b582-4324-93de-6fdfd0397a86"
+     },
+     "spec": {
+      "devices": {
+       "config": [
+        {
+         "opaque": {
+          "driver": "cxl-pool.nri.io",
+          "parameters": {
+           "apiVersion": "cxl.nri.io/v1alpha1",
+           "device": {
+            "access": "direct",
+            "mode": "fs",
+            "path": "/models",
+            "readOnly": true
+           },
+           "kind": "MemoryConfig"
+          }
+         }
+        }
+       ],
+       "requests": [
+        {
+         "exactly": {
+          "allocationMode": "ExactCount",
+          "capacity": {
+           "requests": {
+            "shares": "1"
+           }
+          },
+          "count": 1,
+          "deviceClassName": "cxl-pool-persistent",
+          "selectors": [
+           {
+            "cel": {
+             "expression": "device.attributes[\"cxl-pool.nri.io\"].serial == \"0xc1ae0001\""
+            }
+           }
+          ]
+         },
+         "name": "model"
+        }
+       ]
+      }
+     },
+     "status": {
+      "allocation": {
+       "allocationTimestamp": "2026-11-12T09:06:57Z",
+       "devices": {
+        "config": [
+         {
+          "opaque": {
+           "driver": "cxl-pool.nri.io",
+           "parameters": {
+            "apiVersion": "cxl.nri.io/v1alpha1",
+            "device": {
+             "access": "direct",
+             "mode": "fs",
+             "path": "/models",
+             "readOnly": true
+            },
+            "kind": "MemoryConfig"
+           }
+          },
+          "source": "FromClaim"
+         }
+        ],
+        "results": [
+         {
+          "bindingConditions": [
+           "cxl-pool.nri.io/Attached"
+          ],
+          "bindingFailureConditions": [
+           "cxl-pool.nri.io/AttachFailed"
+          ],
+          "consumedCapacity": {
+           "shares": "1"
+          },
+          "device": "llm0",
+          "driver": "cxl-pool.nri.io",
+          "pool": "fake-cxl-pool",
+          "request": "model",
+          "shareID": "d995a95b-5217-44c5-b4dd-a220211a6568"
+         }
+        ]
+       },
+       "nodeSelector": {
+        "nodeSelectorTerms": [
+         {
+          "matchFields": [
+           {
+            "key": "metadata.name",
+            "operator": "In",
+            "values": [
+             "n4-cxl-shared-2-fedora-43-containerd"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      },
+      "devices": [
+       {
+        "conditions": [
+         {
+          "lastTransitionTime": "2026-11-12T09:06:59Z",
+          "message": "llm0 attached to n4-cxl-shared-2-fedora-43-containerd (slot cxlsw_ds0_usrp0hb0)",
+          "reason": "Attached",
+          "status": "True",
+          "type": "cxl-pool.nri.io/Attached"
+         }
+        ],
+        "data": {
+         "attachment": "llm0@n4-cxl-shared-2-fedora-43-containerd",
+         "coherent": true,
+         "host": "n4-cxl-shared-2-fedora-43-containerd",
+         "hostUUID": "1b6d55a2-ae4a-52f8-bbba-2e3f9adca1b1",
+         "persistent": true,
+         "qemuDeviceId": "fcp_llm0.hp1",
+         "serial": "0xc1ae0001",
+         "shared": true,
+         "size": 536870912
+        },
+        "device": "llm0",
+        "driver": "cxl-pool.nri.io",
+        "pool": "fake-cxl-pool",
+        "shareID": "d995a95b-5217-44c5-b4dd-a220211a6568"
+       }
+      ],
+      "reservedFor": [
+       {
+        "name": "reader-2",
+        "resource": "pods",
+        "uid": "8c1cc84e-bd6f-434f-b1e7-16bb7a6f015f"
+       }
+      ]
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceClaim",
+     "metadata": {
+      "annotations": {
+       "resource.kubernetes.io/pod-claim-name": "cxl"
+      },
+      "creationTimestamp": "2026-11-12T09:06:28Z",
+      "finalizers": [
+       "resource.kubernetes.io/delete-protection"
+      ],
+      "generateName": "writer-cxl-",
+      "name": "writer-cxl-vbl9q",
+      "namespace": "cxl-demo",
+      "ownerReferences": [
+       {
+        "apiVersion": "v1",
+        "controller": true,
+        "kind": "Pod",
+        "name": "writer",
+        "uid": "5b093c84-655c-4a84-a6b7-a4c237f76bf8"
+       }
+      ],
+      "resourceVersion": "3856405",
+      "uid": "4ce24226-fcb6-4b20-87d3-a4621f2b9a15"
+     },
+     "spec": {
+      "devices": {
+       "requests": [
+        {
+         "exactly": {
+          "allocationMode": "ExactCount",
+          "count": 1,
+          "deviceClassName": "cxl-lease"
+         },
+         "name": "lease"
+        }
+       ]
+      }
+     },
+     "status": {
+      "allocation": {
+       "allocationTimestamp": "2026-11-12T09:06:28Z",
+       "devices": {
+        "results": [
+         {
+          "device": "lease",
+          "driver": "cxl.nri.io",
+          "pool": "n4-cxl-shared-1-fedora-43-containerd",
+          "request": "lease",
+          "shareID": "775e9fba-a46f-4494-8a77-53b2de05499e"
+         }
+        ]
+       },
+       "nodeSelector": {
+        "nodeSelectorTerms": [
+         {
+          "matchFields": [
+           {
+            "key": "metadata.name",
+            "operator": "In",
+            "values": [
+             "n4-cxl-shared-1-fedora-43-containerd"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      },
+      "reservedFor": [
+       {
+        "name": "writer",
+        "resource": "pods",
+        "uid": "5b093c84-655c-4a84-a6b7-a4c237f76bf8"
+       }
+      ]
+     }
+    }
+   ],
+   "kind": "List"
+  },
+  "drivers": {
+   "apiVersion": "v1",
+   "items": [
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {
+       "checksum/config": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "creationTimestamp": "2026-11-12T09:05:42Z",
+      "generateName": "nri-dra-driver-cxl-",
+      "generation": 1,
+      "labels": {
+       "app.kubernetes.io/instance": "test",
+       "app.kubernetes.io/managed-by": "Helm",
+       "app.kubernetes.io/name": "nri-dra-driver-cxl",
+       "controller-revision-hash": "cbf975998",
+       "helm.sh/chart": "nri-dra-driver-cxl-v0.0.0",
+       "pod-template-generation": "1"
+      },
+      "name": "nri-dra-driver-cxl-8kkzt",
+      "namespace": "kube-system",
+      "ownerReferences": [
+       {
+        "apiVersion": "apps/v1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "DaemonSet",
+        "name": "nri-dra-driver-cxl",
+        "uid": "6c066405-5a52-4fa9-a5dc-3d2023e956d9"
+       }
+      ],
+      "resourceVersion": "3856545",
+      "uid": "93cf7c1b-4c7b-478c-a497-8eab38ac183a"
+     },
+     "spec": {
+      "affinity": {
+       "nodeAffinity": {
+        "requiredDuringSchedulingIgnoredDuringExecution": {
+         "nodeSelectorTerms": [
+          {
+           "matchFields": [
+            {
+             "key": "metadata.name",
+             "operator": "In",
+             "values": [
+              "n4-cxl-shared-0-fedora-43-containerd"
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       }
+      },
+      "containers": [
+       {
+        "args": [
+         "--nri-idx",
+         "30",
+         "--pool-driver-name",
+         "cxl-pool.nri.io",
+         "--pool-prepare-timeout",
+         "30s",
+         "--leases=true",
+         "--lease-wait",
+         "120s",
+         "--lease-companion-image",
+         "registry.k8s.io/pause:3.10",
+         "--lease-cli",
+         "/var/lib/kubelet/plugins/cxl.nri.io/cxl-request",
+         "--lease-cli-source",
+         "/bin/cxl-request",
+         "-f",
+         "/etc/nri/dra-driver-cxl/config.yaml",
+         "-v",
+         "4"
+        ],
+        "env": [
+         {
+          "name": "NODE_NAME",
+          "valueFrom": {
+           "fieldRef": {
+            "apiVersion": "v1",
+            "fieldPath": "spec.nodeName"
+           }
+          }
+         },
+         {
+          "name": "GOCOVERDIR",
+          "value": "/var/lib/nri-resource-policy/coverage"
+         }
+        ],
+        "image": "localhost/dra-driver-cxl:testing",
+        "imagePullPolicy": "Never",
+        "name": "nri-dra-driver-cxl",
+        "resources": {
+         "requests": {
+          "cpu": "50m",
+          "memory": "256Mi"
+         }
+        },
+        "securityContext": {
+         "privileged": true,
+         "readOnlyRootFilesystem": true
+        },
+        "terminationMessagePath": "/dev/termination-log",
+        "terminationMessagePolicy": "File",
+        "volumeMounts": [
+         {
+          "mountPath": "/etc/nri/dra-driver-cxl",
+          "name": "dra-driver-cxl-config-vol"
+         },
+         {
+          "mountPath": "/var/lib/kubelet/plugins",
+          "mountPropagation": "Bidirectional",
+          "name": "kubelet-plugins"
+         },
+         {
+          "mountPath": "/var/lib/kubelet/plugins_registry",
+          "name": "kubelet-plugins-registry"
+         },
+         {
+          "mountPath": "/etc/cdi",
+          "name": "cdi-etc"
+         },
+         {
+          "mountPath": "/var/run/cdi",
+          "name": "cdi-run"
+         },
+         {
+          "mountPath": "/var/run/nri",
+          "name": "nrisockets",
+          "readOnly": true
+         },
+         {
+          "mountPath": "/sys",
+          "name": "sysfs"
+         },
+         {
+          "mountPath": "/dev",
+          "name": "devfs"
+         },
+         {
+          "mountPath": "/lib/modules",
+          "name": "kernel-modules",
+          "readOnly": true
+         },
+         {
+          "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+          "name": "kube-api-access-5cm8x",
+          "readOnly": true
+         }
+        ]
+       }
+      ],
+      "dnsPolicy": "ClusterFirst",
+      "enableServiceLinks": true,
+      "hostPID": true,
+      "nodeName": "n4-cxl-shared-0-fedora-43-containerd",
+      "nodeSelector": {
+       "kubernetes.io/os": "linux"
+      },
+      "preemptionPolicy": "PreemptLowerPriority",
+      "priority": 2000001000,
+      "priorityClassName": "system-node-critical",
+      "restartPolicy": "Always",
+      "schedulerName": "default-scheduler",
+      "securityContext": {},
+      "serviceAccount": "nri-dra-driver-cxl",
+      "serviceAccountName": "nri-dra-driver-cxl",
+      "terminationGracePeriodSeconds": 30,
+      "tolerations": [
+       {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/not-ready",
+        "operator": "Exists"
+       },
+       {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/unreachable",
+        "operator": "Exists"
+       },
+       {
+        "effect": "NoSchedule",
+        "key": "node.kubernetes.io/disk-pressure",
+        "operator": "Exists"
+       },
+       {
+        "effect": "NoSchedule",
+        "key": "node.kubernetes.io/memory-pressure",
+        "operator": "Exists"
+       },
+       {
+        "effect": "NoSchedule",
+        "key": "node.kubernetes.io/pid-pressure",
+        "operator": "Exists"
+       },
+       {
+        "effect": "NoSchedule",
+        "key": "node.kubernetes.io/unschedulable",
+        "operator": "Exists"
+       }
+      ],
+      "volumes": [
+       {
+        "configMap": {
+         "defaultMode": 420,
+         "name": "nri-dra-driver-cxl-config"
+        },
+        "name": "dra-driver-cxl-config-vol"
+       },
+       {
+        "hostPath": {
+         "path": "/var/lib/kubelet/plugins",
+         "type": "DirectoryOrCreate"
+        },
+        "name": "kubelet-plugins"
+       },
+       {
+        "hostPath": {
+         "path": "/var/lib/kubelet/plugins_registry",
+         "type": "DirectoryOrCreate"
+        },
+        "name": "kubelet-plugins-registry"
+       },
+       {
+        "hostPath": {
+         "path": "/etc/cdi",
+         "type": "DirectoryOrCreate"
+        },
+        "name": "cdi-etc"
+       },
+       {
+        "hostPath": {
+         "path": "/var/run/cdi",
+         "type": "DirectoryOrCreate"
+        },
+        "name": "cdi-run"
+       },
+       {
+        "hostPath": {
+         "path": "/var/run/nri",
+         "type": "DirectoryOrCreate"
+        },
+        "name": "nrisockets"
+       },
+       {
+        "hostPath": {
+         "path": "/sys",
+         "type": "Directory"
+        },
+        "name": "sysfs"
+       },
+       {
+        "hostPath": {
+         "path": "/dev",
+         "type": "Directory"
+        },
+        "name": "devfs"
+       },
+       {
+        "hostPath": {
+         "path": "/lib/modules",
+         "type": "Directory"
+        },
+        "name": "kernel-modules"
+       },
+       {
+        "name": "kube-api-access-5cm8x",
+        "projected": {
+         "defaultMode": 420,
+         "sources": [
+          {
+           "serviceAccountToken": {
+            "expirationSeconds": 3607,
+            "path": "token"
+           }
+          },
+          {
+           "configMap": {
+            "items": [
+             {
+              "key": "ca.crt",
+              "path": "ca.crt"
+             }
+            ],
+            "name": "kube-root-ca.crt"
+           }
+          },
+          {
+           "downwardAPI": {
+            "items": [
+             {
+              "fieldRef": {
+               "apiVersion": "v1",
+               "fieldPath": "metadata.namespace"
+              },
+              "path": "namespace"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "status": {
+      "allocatedResources": {
+       "cpu": "50m",
+       "memory": "256Mi"
+      },
+      "conditions": [
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:05:43Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodReadyToStartContainers"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:05:42Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Initialized"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:05:43Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Ready"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:05:43Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "ContainersReady"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:05:42Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodScheduled"
+       }
+      ],
+      "containerStatuses": [
+       {
+        "allocatedResources": {
+         "cpu": "50m",
+         "memory": "256Mi"
+        },
+        "containerID": "containerd://a51702bc2d90818576634472200b83fa93140954f57da9d76cab7ec47cc3650e",
+        "image": "docker.io/library/nri-dra-driver-cxl:v0.15.0-214-g0883d760d",
+        "imageID": "sha256:9455093c3599cfc9aaeb3b2ede6f83fc5c5cd7c287dff6a4b601dec0f8077972",
+        "lastState": {},
+        "name": "nri-dra-driver-cxl",
+        "ready": true,
+        "resources": {
+         "requests": {
+          "cpu": "50m",
+          "memory": "256Mi"
+         }
+        },
+        "restartCount": 0,
+        "started": true,
+        "state": {
+         "running": {
+          "startedAt": "2026-11-12T09:05:43Z"
+         }
+        },
+        "user": {
+         "linux": {
+          "gid": 0,
+          "supplementalGroups": [
+           0
+          ],
+          "uid": 0
+         }
+        },
+        "volumeMounts": [
+         {
+          "mountPath": "/etc/nri/dra-driver-cxl",
+          "name": "dra-driver-cxl-config-vol"
+         },
+         {
+          "mountPath": "/var/lib/kubelet/plugins",
+          "name": "kubelet-plugins"
+         },
+         {
+          "mountPath": "/var/lib/kubelet/plugins_registry",
+          "name": "kubelet-plugins-registry"
+         },
+         {
+          "mountPath": "/etc/cdi",
+          "name": "cdi-etc"
+         },
+         {
+          "mountPath": "/var/run/cdi",
+          "name": "cdi-run"
+         },
+         {
+          "mountPath": "/var/run/nri",
+          "name": "nrisockets",
+          "readOnly": true,
+          "recursiveReadOnly": "Disabled"
+         },
+         {
+          "mountPath": "/sys",
+          "name": "sysfs"
+         },
+         {
+          "mountPath": "/dev",
+          "name": "devfs"
+         },
+         {
+          "mountPath": "/lib/modules",
+          "name": "kernel-modules",
+          "readOnly": true,
+          "recursiveReadOnly": "Disabled"
+         },
+         {
+          "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+          "name": "kube-api-access-5cm8x",
+          "readOnly": true,
+          "recursiveReadOnly": "Disabled"
+         }
+        ]
+       }
+      ],
+      "hostIP": "10.76.170.229",
+      "hostIPs": [
+       {
+        "ip": "10.76.170.229"
+       }
+      ],
+      "observedGeneration": 1,
+      "phase": "Running",
+      "podIP": "10.217.2.37",
+      "podIPs": [
+       {
+        "ip": "10.217.2.37"
+       }
+      ],
+      "qosClass": "Burstable",
+      "resources": {
+       "requests": {
+        "cpu": "28m",
+        "memory": "256Mi"
+       }
+      },
+      "startTime": "2026-11-12T09:05:42Z"
+     }
+    },
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {
+       "checksum/config": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "creationTimestamp": "2026-11-12T09:05:42Z",
+      "generateName": "nri-dra-driver-cxl-",
+      "generation": 1,
+      "labels": {
+       "app.kubernetes.io/instance": "test",
+       "app.kubernetes.io/managed-by": "Helm",
+       "app.kubernetes.io/name": "nri-dra-driver-cxl",
+       "controller-revision-hash": "cbf975998",
+       "helm.sh/chart": "nri-dra-driver-cxl-v0.0.0",
+       "pod-template-generation": "1"
+      },
+      "name": "nri-dra-driver-cxl-px4bw",
+      "namespace": "kube-system",
+      "ownerReferences": [
+       {
+        "apiVersion": "apps/v1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "DaemonSet",
+        "name": "nri-dra-driver-cxl",
+        "uid": "6c066405-5a52-4fa9-a5dc-3d2023e956d9"
+       }
+      ],
+      "resourceVersion": "3856609",
+      "uid": "a12ede91-4706-4da0-8c24-0b1bfae23024"
+     },
+     "spec": {
+      "affinity": {
+       "nodeAffinity": {
+        "requiredDuringSchedulingIgnoredDuringExecution": {
+         "nodeSelectorTerms": [
+          {
+           "matchFields": [
+            {
+             "key": "metadata.name",
+             "operator": "In",
+             "values": [
+              "n4-cxl-shared-1-fedora-43-containerd"
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       }
+      },
+      "containers": [
+       {
+        "args": [
+         "--nri-idx",
+         "30",
+         "--pool-driver-name",
+         "cxl-pool.nri.io",
+         "--pool-prepare-timeout",
+         "30s",
+         "--leases=true",
+         "--lease-wait",
+         "120s",
+         "--lease-companion-image",
+         "registry.k8s.io/pause:3.10",
+         "--lease-cli",
+         "/var/lib/kubelet/plugins/cxl.nri.io/cxl-request",
+         "--lease-cli-source",
+         "/bin/cxl-request",
+         "-f",
+         "/etc/nri/dra-driver-cxl/config.yaml",
+         "-v",
+         "4"
+        ],
+        "env": [
+         {
+          "name": "NODE_NAME",
+          "valueFrom": {
+           "fieldRef": {
+            "apiVersion": "v1",
+            "fieldPath": "spec.nodeName"
+           }
+          }
+         },
+         {
+          "name": "GOCOVERDIR",
+          "value": "/var/lib/nri-resource-policy/coverage"
+         }
+        ],
+        "image": "localhost/dra-driver-cxl:testing",
+        "imagePullPolicy": "Never",
+        "name": "nri-dra-driver-cxl",
+        "resources": {
+         "requests": {
+          "cpu": "50m",
+          "memory": "256Mi"
+         }
+        },
+        "securityContext": {
+         "privileged": true,
+         "readOnlyRootFilesystem": true
+        },
+        "terminationMessagePath": "/dev/termination-log",
+        "terminationMessagePolicy": "File",
+        "volumeMounts": [
+         {
+          "mountPath": "/etc/nri/dra-driver-cxl",
+          "name": "dra-driver-cxl-config-vol"
+         },
+         {
+          "mountPath": "/var/lib/kubelet/plugins",
+          "mountPropagation": "Bidirectional",
+          "name": "kubelet-plugins"
+         },
+         {
+          "mountPath": "/var/lib/kubelet/plugins_registry",
+          "name": "kubelet-plugins-registry"
+         },
+         {
+          "mountPath": "/etc/cdi",
+          "name": "cdi-etc"
+         },
+         {
+          "mountPath": "/var/run/cdi",
+          "name": "cdi-run"
+         },
+         {
+          "mountPath": "/var/run/nri",
+          "name": "nrisockets",
+          "readOnly": true
+         },
+         {
+          "mountPath": "/sys",
+          "name": "sysfs"
+         },
+         {
+          "mountPath": "/dev",
+          "name": "devfs"
+         },
+         {
+          "mountPath": "/lib/modules",
+          "name": "kernel-modules",
+          "readOnly": true
+         },
+         {
+          "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+          "name": "kube-api-access-8znff",
+          "readOnly": true
+         }
+        ]
+       }
+      ],
+      "dnsPolicy": "ClusterFirst",
+      "enableServiceLinks": true,
+      "hostPID": true,
+      "nodeName": "n4-cxl-shared-1-fedora-43-containerd",
+      "nodeSelector": {
+       "kubernetes.io/os": "linux"
+      },
+      "preemptionPolicy": "PreemptLowerPriority",
+      "priority": 2000001000,
+      "priorityClassName": "system-node-critical",
+      "restartPolicy": "Always",
+      "schedulerName": "default-scheduler",
+      "securityContext": {},
+      "serviceAccount": "nri-dra-driver-cxl",
+      "serviceAccountName": "nri-dra-driver-cxl",
+      "terminationGracePeriodSeconds": 30,
+      "tolerations": [
+       {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/not-ready",
+        "operator": "Exists"
+       },
+       {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/unreachable",
+        "operator": "Exists"
+       },
+       {
+        "effect": "NoSchedule",
+        "key": "node.kubernetes.io/disk-pressure",
+        "operator": "Exists"
+       },
+       {
+        "effect": "NoSchedule",
+        "key": "node.kubernetes.io/memory-pressure",
+        "operator": "Exists"
+       },
+       {
+        "effect": "NoSchedule",
+        "key": "node.kubernetes.io/pid-pressure",
+        "operator": "Exists"
+       },
+       {
+        "effect": "NoSchedule",
+        "key": "node.kubernetes.io/unschedulable",
+        "operator": "Exists"
+       }
+      ],
+      "volumes": [
+       {
+        "configMap": {
+         "defaultMode": 420,
+         "name": "nri-dra-driver-cxl-config"
+        },
+        "name": "dra-driver-cxl-config-vol"
+       },
+       {
+        "hostPath": {
+         "path": "/var/lib/kubelet/plugins",
+         "type": "DirectoryOrCreate"
+        },
+        "name": "kubelet-plugins"
+       },
+       {
+        "hostPath": {
+         "path": "/var/lib/kubelet/plugins_registry",
+         "type": "DirectoryOrCreate"
+        },
+        "name": "kubelet-plugins-registry"
+       },
+       {
+        "hostPath": {
+         "path": "/etc/cdi",
+         "type": "DirectoryOrCreate"
+        },
+        "name": "cdi-etc"
+       },
+       {
+        "hostPath": {
+         "path": "/var/run/cdi",
+         "type": "DirectoryOrCreate"
+        },
+        "name": "cdi-run"
+       },
+       {
+        "hostPath": {
+         "path": "/var/run/nri",
+         "type": "DirectoryOrCreate"
+        },
+        "name": "nrisockets"
+       },
+       {
+        "hostPath": {
+         "path": "/sys",
+         "type": "Directory"
+        },
+        "name": "sysfs"
+       },
+       {
+        "hostPath": {
+         "path": "/dev",
+         "type": "Directory"
+        },
+        "name": "devfs"
+       },
+       {
+        "hostPath": {
+         "path": "/lib/modules",
+         "type": "Directory"
+        },
+        "name": "kernel-modules"
+       },
+       {
+        "name": "kube-api-access-8znff",
+        "projected": {
+         "defaultMode": 420,
+         "sources": [
+          {
+           "serviceAccountToken": {
+            "expirationSeconds": 3607,
+            "path": "token"
+           }
+          },
+          {
+           "configMap": {
+            "items": [
+             {
+              "key": "ca.crt",
+              "path": "ca.crt"
+             }
+            ],
+            "name": "kube-root-ca.crt"
+           }
+          },
+          {
+           "downwardAPI": {
+            "items": [
+             {
+              "fieldRef": {
+               "apiVersion": "v1",
+               "fieldPath": "metadata.namespace"
+              },
+              "path": "namespace"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "status": {
+      "allocatedResources": {
+       "cpu": "50m",
+       "memory": "256Mi"
+      },
+      "conditions": [
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:05:43Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodReadyToStartContainers"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:05:42Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Initialized"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:05:43Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Ready"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:05:43Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "ContainersReady"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:05:42Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodScheduled"
+       }
+      ],
+      "containerStatuses": [
+       {
+        "allocatedResources": {
+         "cpu": "50m",
+         "memory": "256Mi"
+        },
+        "containerID": "containerd://76371bbae49cf9ea99bfb5c7d6e884528a0d2c37e195181b1746dbc806ed4ad4",
+        "image": "docker.io/library/nri-dra-driver-cxl:v0.15.0-214-g0883d760d",
+        "imageID": "sha256:9455093c3599cfc9aaeb3b2ede6f83fc5c5cd7c287dff6a4b601dec0f8077972",
+        "lastState": {},
+        "name": "nri-dra-driver-cxl",
+        "ready": true,
+        "resources": {
+         "requests": {
+          "cpu": "50m",
+          "memory": "256Mi"
+         }
+        },
+        "restartCount": 0,
+        "started": true,
+        "state": {
+         "running": {
+          "startedAt": "2026-11-12T09:05:43Z"
+         }
+        },
+        "user": {
+         "linux": {
+          "gid": 0,
+          "supplementalGroups": [
+           0
+          ],
+          "uid": 0
+         }
+        },
+        "volumeMounts": [
+         {
+          "mountPath": "/etc/nri/dra-driver-cxl",
+          "name": "dra-driver-cxl-config-vol"
+         },
+         {
+          "mountPath": "/var/lib/kubelet/plugins",
+          "name": "kubelet-plugins"
+         },
+         {
+          "mountPath": "/var/lib/kubelet/plugins_registry",
+          "name": "kubelet-plugins-registry"
+         },
+         {
+          "mountPath": "/etc/cdi",
+          "name": "cdi-etc"
+         },
+         {
+          "mountPath": "/var/run/cdi",
+          "name": "cdi-run"
+         },
+         {
+          "mountPath": "/var/run/nri",
+          "name": "nrisockets",
+          "readOnly": true,
+          "recursiveReadOnly": "Disabled"
+         },
+         {
+          "mountPath": "/sys",
+          "name": "sysfs"
+         },
+         {
+          "mountPath": "/dev",
+          "name": "devfs"
+         },
+         {
+          "mountPath": "/lib/modules",
+          "name": "kernel-modules",
+          "readOnly": true,
+          "recursiveReadOnly": "Disabled"
+         },
+         {
+          "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+          "name": "kube-api-access-8znff",
+          "readOnly": true,
+          "recursiveReadOnly": "Disabled"
+         }
+        ]
+       }
+      ],
+      "hostIP": "10.76.85.237",
+      "hostIPs": [
+       {
+        "ip": "10.76.85.237"
+       }
+      ],
+      "observedGeneration": 1,
+      "phase": "Running",
+      "podIP": "10.217.1.48",
+      "podIPs": [
+       {
+        "ip": "10.217.1.48"
+       }
+      ],
+      "qosClass": "Burstable",
+      "resources": {
+       "requests": {
+        "cpu": "28m",
+        "memory": "256Mi"
+       }
+      },
+      "startTime": "2026-11-12T09:05:42Z"
+     }
+    },
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {
+       "checksum/config": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "creationTimestamp": "2026-11-12T09:05:42Z",
+      "generateName": "nri-dra-driver-cxl-",
+      "generation": 1,
+      "labels": {
+       "app.kubernetes.io/instance": "test",
+       "app.kubernetes.io/managed-by": "Helm",
+       "app.kubernetes.io/name": "nri-dra-driver-cxl",
+       "controller-revision-hash": "cbf975998",
+       "helm.sh/chart": "nri-dra-driver-cxl-v0.0.0",
+       "pod-template-generation": "1"
+      },
+      "name": "nri-dra-driver-cxl-vsdw6",
+      "namespace": "kube-system",
+      "ownerReferences": [
+       {
+        "apiVersion": "apps/v1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "DaemonSet",
+        "name": "nri-dra-driver-cxl",
+        "uid": "6c066405-5a52-4fa9-a5dc-3d2023e956d9"
+       }
+      ],
+      "resourceVersion": "3856525",
+      "uid": "db2f8732-03fc-44fb-9441-0e7144f4bcce"
+     },
+     "spec": {
+      "affinity": {
+       "nodeAffinity": {
+        "requiredDuringSchedulingIgnoredDuringExecution": {
+         "nodeSelectorTerms": [
+          {
+           "matchFields": [
+            {
+             "key": "metadata.name",
+             "operator": "In",
+             "values": [
+              "n4-cxl-shared-2-fedora-43-containerd"
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       }
+      },
+      "containers": [
+       {
+        "args": [
+         "--nri-idx",
+         "30",
+         "--pool-driver-name",
+         "cxl-pool.nri.io",
+         "--pool-prepare-timeout",
+         "30s",
+         "--leases=true",
+         "--lease-wait",
+         "120s",
+         "--lease-companion-image",
+         "registry.k8s.io/pause:3.10",
+         "--lease-cli",
+         "/var/lib/kubelet/plugins/cxl.nri.io/cxl-request",
+         "--lease-cli-source",
+         "/bin/cxl-request",
+         "-f",
+         "/etc/nri/dra-driver-cxl/config.yaml",
+         "-v",
+         "4"
+        ],
+        "env": [
+         {
+          "name": "NODE_NAME",
+          "valueFrom": {
+           "fieldRef": {
+            "apiVersion": "v1",
+            "fieldPath": "spec.nodeName"
+           }
+          }
+         },
+         {
+          "name": "GOCOVERDIR",
+          "value": "/var/lib/nri-resource-policy/coverage"
+         }
+        ],
+        "image": "localhost/dra-driver-cxl:testing",
+        "imagePullPolicy": "Never",
+        "name": "nri-dra-driver-cxl",
+        "resources": {
+         "requests": {
+          "cpu": "50m",
+          "memory": "256Mi"
+         }
+        },
+        "securityContext": {
+         "privileged": true,
+         "readOnlyRootFilesystem": true
+        },
+        "terminationMessagePath": "/dev/termination-log",
+        "terminationMessagePolicy": "File",
+        "volumeMounts": [
+         {
+          "mountPath": "/etc/nri/dra-driver-cxl",
+          "name": "dra-driver-cxl-config-vol"
+         },
+         {
+          "mountPath": "/var/lib/kubelet/plugins",
+          "mountPropagation": "Bidirectional",
+          "name": "kubelet-plugins"
+         },
+         {
+          "mountPath": "/var/lib/kubelet/plugins_registry",
+          "name": "kubelet-plugins-registry"
+         },
+         {
+          "mountPath": "/etc/cdi",
+          "name": "cdi-etc"
+         },
+         {
+          "mountPath": "/var/run/cdi",
+          "name": "cdi-run"
+         },
+         {
+          "mountPath": "/var/run/nri",
+          "name": "nrisockets",
+          "readOnly": true
+         },
+         {
+          "mountPath": "/sys",
+          "name": "sysfs"
+         },
+         {
+          "mountPath": "/dev",
+          "name": "devfs"
+         },
+         {
+          "mountPath": "/lib/modules",
+          "name": "kernel-modules",
+          "readOnly": true
+         },
+         {
+          "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+          "name": "kube-api-access-ghzgb",
+          "readOnly": true
+         }
+        ]
+       }
+      ],
+      "dnsPolicy": "ClusterFirst",
+      "enableServiceLinks": true,
+      "hostPID": true,
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd",
+      "nodeSelector": {
+       "kubernetes.io/os": "linux"
+      },
+      "preemptionPolicy": "PreemptLowerPriority",
+      "priority": 2000001000,
+      "priorityClassName": "system-node-critical",
+      "restartPolicy": "Always",
+      "schedulerName": "default-scheduler",
+      "securityContext": {},
+      "serviceAccount": "nri-dra-driver-cxl",
+      "serviceAccountName": "nri-dra-driver-cxl",
+      "terminationGracePeriodSeconds": 30,
+      "tolerations": [
+       {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/not-ready",
+        "operator": "Exists"
+       },
+       {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/unreachable",
+        "operator": "Exists"
+       },
+       {
+        "effect": "NoSchedule",
+        "key": "node.kubernetes.io/disk-pressure",
+        "operator": "Exists"
+       },
+       {
+        "effect": "NoSchedule",
+        "key": "node.kubernetes.io/memory-pressure",
+        "operator": "Exists"
+       },
+       {
+        "effect": "NoSchedule",
+        "key": "node.kubernetes.io/pid-pressure",
+        "operator": "Exists"
+       },
+       {
+        "effect": "NoSchedule",
+        "key": "node.kubernetes.io/unschedulable",
+        "operator": "Exists"
+       }
+      ],
+      "volumes": [
+       {
+        "configMap": {
+         "defaultMode": 420,
+         "name": "nri-dra-driver-cxl-config"
+        },
+        "name": "dra-driver-cxl-config-vol"
+       },
+       {
+        "hostPath": {
+         "path": "/var/lib/kubelet/plugins",
+         "type": "DirectoryOrCreate"
+        },
+        "name": "kubelet-plugins"
+       },
+       {
+        "hostPath": {
+         "path": "/var/lib/kubelet/plugins_registry",
+         "type": "DirectoryOrCreate"
+        },
+        "name": "kubelet-plugins-registry"
+       },
+       {
+        "hostPath": {
+         "path": "/etc/cdi",
+         "type": "DirectoryOrCreate"
+        },
+        "name": "cdi-etc"
+       },
+       {
+        "hostPath": {
+         "path": "/var/run/cdi",
+         "type": "DirectoryOrCreate"
+        },
+        "name": "cdi-run"
+       },
+       {
+        "hostPath": {
+         "path": "/var/run/nri",
+         "type": "DirectoryOrCreate"
+        },
+        "name": "nrisockets"
+       },
+       {
+        "hostPath": {
+         "path": "/sys",
+         "type": "Directory"
+        },
+        "name": "sysfs"
+       },
+       {
+        "hostPath": {
+         "path": "/dev",
+         "type": "Directory"
+        },
+        "name": "devfs"
+       },
+       {
+        "hostPath": {
+         "path": "/lib/modules",
+         "type": "Directory"
+        },
+        "name": "kernel-modules"
+       },
+       {
+        "name": "kube-api-access-ghzgb",
+        "projected": {
+         "defaultMode": 420,
+         "sources": [
+          {
+           "serviceAccountToken": {
+            "expirationSeconds": 3607,
+            "path": "token"
+           }
+          },
+          {
+           "configMap": {
+            "items": [
+             {
+              "key": "ca.crt",
+              "path": "ca.crt"
+             }
+            ],
+            "name": "kube-root-ca.crt"
+           }
+          },
+          {
+           "downwardAPI": {
+            "items": [
+             {
+              "fieldRef": {
+               "apiVersion": "v1",
+               "fieldPath": "metadata.namespace"
+              },
+              "path": "namespace"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "status": {
+      "allocatedResources": {
+       "cpu": "50m",
+       "memory": "256Mi"
+      },
+      "conditions": [
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:05:42Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodReadyToStartContainers"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:05:42Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Initialized"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:05:43Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Ready"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:05:43Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "ContainersReady"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:05:42Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodScheduled"
+       }
+      ],
+      "containerStatuses": [
+       {
+        "allocatedResources": {
+         "cpu": "50m",
+         "memory": "256Mi"
+        },
+        "containerID": "containerd://b8d3d2221862ea5da7586dde8045130158e9248c438afbc660dd0b49d93cb138",
+        "image": "docker.io/library/nri-dra-driver-cxl:v0.15.0-214-g0883d760d",
+        "imageID": "sha256:9455093c3599cfc9aaeb3b2ede6f83fc5c5cd7c287dff6a4b601dec0f8077972",
+        "lastState": {},
+        "name": "nri-dra-driver-cxl",
+        "ready": true,
+        "resources": {
+         "requests": {
+          "cpu": "50m",
+          "memory": "256Mi"
+         }
+        },
+        "restartCount": 0,
+        "started": true,
+        "state": {
+         "running": {
+          "startedAt": "2026-11-12T09:05:43Z"
+         }
+        },
+        "user": {
+         "linux": {
+          "gid": 0,
+          "supplementalGroups": [
+           0
+          ],
+          "uid": 0
+         }
+        },
+        "volumeMounts": [
+         {
+          "mountPath": "/etc/nri/dra-driver-cxl",
+          "name": "dra-driver-cxl-config-vol"
+         },
+         {
+          "mountPath": "/var/lib/kubelet/plugins",
+          "name": "kubelet-plugins"
+         },
+         {
+          "mountPath": "/var/lib/kubelet/plugins_registry",
+          "name": "kubelet-plugins-registry"
+         },
+         {
+          "mountPath": "/etc/cdi",
+          "name": "cdi-etc"
+         },
+         {
+          "mountPath": "/var/run/cdi",
+          "name": "cdi-run"
+         },
+         {
+          "mountPath": "/var/run/nri",
+          "name": "nrisockets",
+          "readOnly": true,
+          "recursiveReadOnly": "Disabled"
+         },
+         {
+          "mountPath": "/sys",
+          "name": "sysfs"
+         },
+         {
+          "mountPath": "/dev",
+          "name": "devfs"
+         },
+         {
+          "mountPath": "/lib/modules",
+          "name": "kernel-modules",
+          "readOnly": true,
+          "recursiveReadOnly": "Disabled"
+         },
+         {
+          "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+          "name": "kube-api-access-ghzgb",
+          "readOnly": true,
+          "recursiveReadOnly": "Disabled"
+         }
+        ]
+       }
+      ],
+      "hostIP": "10.76.162.174",
+      "hostIPs": [
+       {
+        "ip": "10.76.162.174"
+       }
+      ],
+      "observedGeneration": 1,
+      "phase": "Running",
+      "podIP": "10.217.0.223",
+      "podIPs": [
+       {
+        "ip": "10.217.0.223"
+       }
+      ],
+      "qosClass": "Burstable",
+      "resources": {
+       "requests": {
+        "cpu": "28m",
+        "memory": "256Mi"
+       }
+      },
+      "startTime": "2026-11-12T09:05:42Z"
+     }
+    }
+   ],
+   "kind": "List"
+  },
+  "pods": {
+   "apiVersion": "v1",
+   "items": [
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"Pod\",\"metadata\":{\"annotations\":{},\"labels\":{\"app\":\"cxl-demo\"},\"name\":\"client\",\"namespace\":\"cxl-demo\"},\"spec\":{\"containers\":[{\"command\":[\"sh\",\"-c\",\"trap 'exit 0' TERM; sleep infinity \\u0026 wait\"],\"envFrom\":[{\"configMapRef\":{\"name\":\"llm-model\"}}],\"image\":\"localhost/cxl-demo-tools:demo\",\"imagePullPolicy\":\"Never\",\"name\":\"main\",\"volumeMounts\":[{\"mountPath\":\"/demo\",\"name\":\"demo\"}]}],\"nodeSelector\":{\"cxl-demo/node\":\"vm2\"},\"restartPolicy\":\"Never\",\"terminationGracePeriodSeconds\":2,\"volumes\":[{\"configMap\":{\"defaultMode\":493,\"name\":\"demo-tools\"},\"name\":\"demo\"}]}}\n"
+      },
+      "creationTimestamp": "2026-11-12T09:06:57Z",
+      "generation": 1,
+      "labels": {
+       "app": "cxl-demo"
+      },
+      "name": "client",
+      "namespace": "cxl-demo",
+      "resourceVersion": "3856538",
+      "uid": "7f5dfb04-9d05-4054-8b92-bfcec2118abe"
+     },
+     "spec": {
+      "containers": [
+       {
+        "command": [
+         "sh",
+         "-c",
+         "trap 'exit 0' TERM; sleep infinity & wait"
+        ],
+        "envFrom": [
+         {
+          "configMapRef": {
+           "name": "llm-model"
+          }
+         }
+        ],
+        "image": "localhost/cxl-demo-tools:demo",
+        "imagePullPolicy": "Never",
+        "name": "main",
+        "resources": {},
+        "terminationMessagePath": "/dev/termination-log",
+        "terminationMessagePolicy": "File",
+        "volumeMounts": [
+         {
+          "mountPath": "/demo",
+          "name": "demo"
+         },
+         {
+          "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+          "name": "kube-api-access-xpcbc",
+          "readOnly": true
+         }
+        ]
+       }
+      ],
+      "dnsPolicy": "ClusterFirst",
+      "enableServiceLinks": true,
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd",
+      "nodeSelector": {
+       "cxl-demo/node": "vm2"
+      },
+      "preemptionPolicy": "PreemptLowerPriority",
+      "priority": 0,
+      "restartPolicy": "Never",
+      "schedulerName": "default-scheduler",
+      "securityContext": {},
+      "serviceAccount": "default",
+      "serviceAccountName": "default",
+      "terminationGracePeriodSeconds": 2,
+      "tolerations": [
+       {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/not-ready",
+        "operator": "Exists",
+        "tolerationSeconds": 300
+       },
+       {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/unreachable",
+        "operator": "Exists",
+        "tolerationSeconds": 300
+       }
+      ],
+      "volumes": [
+       {
+        "configMap": {
+         "defaultMode": 493,
+         "name": "demo-tools"
+        },
+        "name": "demo"
+       },
+       {
+        "name": "kube-api-access-xpcbc",
+        "projected": {
+         "defaultMode": 420,
+         "sources": [
+          {
+           "serviceAccountToken": {
+            "expirationSeconds": 3607,
+            "path": "token"
+           }
+          },
+          {
+           "configMap": {
+            "items": [
+             {
+              "key": "ca.crt",
+              "path": "ca.crt"
+             }
+            ],
+            "name": "kube-root-ca.crt"
+           }
+          },
+          {
+           "downwardAPI": {
+            "items": [
+             {
+              "fieldRef": {
+               "apiVersion": "v1",
+               "fieldPath": "metadata.namespace"
+              },
+              "path": "namespace"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "status": {
+      "conditions": [
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:06:58Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodReadyToStartContainers"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:06:57Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Initialized"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:06:58Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Ready"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:06:58Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "ContainersReady"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:06:57Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodScheduled"
+       }
+      ],
+      "containerStatuses": [
+       {
+        "containerID": "containerd://27fd359b50e4c7179db9623cccb9a4991851074326367c19a8be0e7670520442",
+        "image": "localhost/cxl-demo-tools:572bcd92fbb0",
+        "imageID": "sha256:03c1a04f3296d2701f0f106c0536ac7f5976766e3776c5cd04e4b78771afa061",
+        "lastState": {},
+        "name": "main",
+        "ready": true,
+        "resources": {},
+        "restartCount": 0,
+        "started": true,
+        "state": {
+         "running": {
+          "startedAt": "2026-11-12T09:06:58Z"
+         }
+        },
+        "user": {
+         "linux": {
+          "gid": 0,
+          "supplementalGroups": [
+           0,
+           1,
+           2,
+           3,
+           4,
+           6,
+           10,
+           11,
+           20,
+           26,
+           27
+          ],
+          "uid": 0
+         }
+        },
+        "volumeMounts": [
+         {
+          "mountPath": "/demo",
+          "name": "demo"
+         },
+         {
+          "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+          "name": "kube-api-access-xpcbc",
+          "readOnly": true,
+          "recursiveReadOnly": "Disabled"
+         }
+        ]
+       }
+      ],
+      "hostIP": "10.76.162.174",
+      "hostIPs": [
+       {
+        "ip": "10.76.162.174"
+       }
+      ],
+      "observedGeneration": 1,
+      "phase": "Running",
+      "podIP": "10.217.0.224",
+      "podIPs": [
+       {
+        "ip": "10.217.0.224"
+       }
+      ],
+      "qosClass": "BestEffort",
+      "resources": {},
+      "startTime": "2026-11-12T09:06:57Z"
+     }
+    },
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"Pod\",\"metadata\":{\"annotations\":{},\"labels\":{\"app\":\"cxl-demo\",\"cxl-demo/role\":\"llm-reader\"},\"name\":\"reader-0\",\"namespace\":\"cxl-demo\"},\"spec\":{\"containers\":[{\"command\":[\"sh\",\"-c\",\"ls -l /models\\nexec /app/llama-server -m \\\"/models/$LLM_MODEL_FILE\\\" -nr -t \\\"$LLM_THREADS\\\" -c 4096 -np 1 \\\\\\n    --reasoning off --host 0.0.0.0 --port 8080\\n\"],\"env\":[{\"name\":\"LLM_THREADS\",\"valueFrom\":{\"resourceFieldRef\":{\"divisor\":\"1\",\"resource\":\"limits.cpu\"}}}],\"envFrom\":[{\"configMapRef\":{\"name\":\"llm-model\"}}],\"image\":\"ghcr.io/ggml-org/llama.cpp:server-b11681\",\"imagePullPolicy\":\"IfNotPresent\",\"name\":\"main\",\"ports\":[{\"containerPort\":8080}],\"readinessProbe\":{\"httpGet\":{\"path\":\"/health\",\"port\":8080},\"periodSeconds\":1},\"resources\":{\"claims\":[{\"name\":\"model\"}],\"limits\":{\"cpu\":\"6\",\"memory\":\"3Gi\"},\"requests\":{\"cpu\":\"6\",\"memory\":\"3Gi\"}},\"volumeMounts\":[{\"mountPath\":\"/demo\",\"name\":\"demo\"}]}],\"hostname\":\"reader-0\",\"nodeSelector\":{\"cxl-demo/node\":\"vm0\"},\"resourceClaims\":[{\"name\":\"model\",\"resourceClaimTemplateName\":\"llm-model\"}],\"restartPolicy\":\"Never\",\"subdomain\":\"llm-readers\",\"terminationGracePeriodSeconds\":2,\"volumes\":[{\"configMap\":{\"defaultMode\":493,\"name\":\"demo-tools\"},\"name\":\"demo\"}]}}\n"
+      },
+      "creationTimestamp": "2026-11-12T09:06:57Z",
+      "generation": 1,
+      "labels": {
+       "app": "cxl-demo",
+       "cxl-demo/role": "llm-reader"
+      },
+      "name": "reader-0",
+      "namespace": "cxl-demo",
+      "resourceVersion": "3856601",
+      "uid": "ec3a8f42-4d35-42be-a3c7-0f659587f071"
+     },
+     "spec": {
+      "containers": [
+       {
+        "command": [
+         "sh",
+         "-c",
+         "ls -l /models\nexec /app/llama-server -m \"/models/$LLM_MODEL_FILE\" -nr -t \"$LLM_THREADS\" -c 4096 -np 1 \\\n    --reasoning off --host 0.0.0.0 --port 8080\n"
+        ],
+        "env": [
+         {
+          "name": "LLM_THREADS",
+          "valueFrom": {
+           "resourceFieldRef": {
+            "divisor": "1",
+            "resource": "limits.cpu"
+           }
+          }
+         }
+        ],
+        "envFrom": [
+         {
+          "configMapRef": {
+           "name": "llm-model"
+          }
+         }
+        ],
+        "image": "ghcr.io/ggml-org/llama.cpp:server-b11681",
+        "imagePullPolicy": "IfNotPresent",
+        "name": "main",
+        "ports": [
+         {
+          "containerPort": 8080,
+          "protocol": "TCP"
+         }
+        ],
+        "readinessProbe": {
+         "failureThreshold": 3,
+         "httpGet": {
+          "path": "/health",
+          "port": 8080,
+          "scheme": "HTTP"
+         },
+         "periodSeconds": 1,
+         "successThreshold": 1,
+         "timeoutSeconds": 1
+        },
+        "resources": {
+         "claims": [
+          {
+           "name": "model"
+          }
+         ],
+         "limits": {
+          "cpu": "6",
+          "memory": "3Gi"
+         },
+         "requests": {
+          "cpu": "6",
+          "memory": "3Gi"
+         }
+        },
+        "terminationMessagePath": "/dev/termination-log",
+        "terminationMessagePolicy": "File",
+        "volumeMounts": [
+         {
+          "mountPath": "/demo",
+          "name": "demo"
+         },
+         {
+          "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+          "name": "kube-api-access-lcpsq",
+          "readOnly": true
+         }
+        ]
+       }
+      ],
+      "dnsPolicy": "ClusterFirst",
+      "enableServiceLinks": true,
+      "hostname": "reader-0",
+      "nodeName": "n4-cxl-shared-0-fedora-43-containerd",
+      "nodeSelector": {
+       "cxl-demo/node": "vm0"
+      },
+      "preemptionPolicy": "PreemptLowerPriority",
+      "priority": 0,
+      "resourceClaims": [
+       {
+        "name": "model",
+        "resourceClaimTemplateName": "llm-model"
+       }
+      ],
+      "restartPolicy": "Never",
+      "schedulerName": "default-scheduler",
+      "securityContext": {},
+      "serviceAccount": "default",
+      "serviceAccountName": "default",
+      "subdomain": "llm-readers",
+      "terminationGracePeriodSeconds": 2,
+      "tolerations": [
+       {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/not-ready",
+        "operator": "Exists",
+        "tolerationSeconds": 300
+       },
+       {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/unreachable",
+        "operator": "Exists",
+        "tolerationSeconds": 300
+       }
+      ],
+      "volumes": [
+       {
+        "configMap": {
+         "defaultMode": 493,
+         "name": "demo-tools"
+        },
+        "name": "demo"
+       },
+       {
+        "name": "kube-api-access-lcpsq",
+        "projected": {
+         "defaultMode": 420,
+         "sources": [
+          {
+           "serviceAccountToken": {
+            "expirationSeconds": 3607,
+            "path": "token"
+           }
+          },
+          {
+           "configMap": {
+            "items": [
+             {
+              "key": "ca.crt",
+              "path": "ca.crt"
+             }
+            ],
+            "name": "kube-root-ca.crt"
+           }
+          },
+          {
+           "downwardAPI": {
+            "items": [
+             {
+              "fieldRef": {
+               "apiVersion": "v1",
+               "fieldPath": "metadata.namespace"
+              },
+              "path": "namespace"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "status": {
+      "allocatedResources": {
+       "cpu": "6",
+       "memory": "3Gi"
+      },
+      "conditions": [
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:07:03Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodReadyToStartContainers"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:07:02Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Initialized"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:07:06Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Ready"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:07:06Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "ContainersReady"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:07:02Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodScheduled"
+       }
+      ],
+      "containerStatuses": [
+       {
+        "allocatedResources": {
+         "cpu": "6",
+         "memory": "3Gi"
+        },
+        "allocatedResourcesStatus": [
+         {
+          "name": "claim:model",
+          "resources": [
+           {
+            "health": "Unknown",
+            "resourceID": "nri.io/cxl-pool=claim-cab8670b-c2a8-4398-ba08-682bf1f4b55c-0"
+           }
+          ]
+         }
+        ],
+        "containerID": "containerd://32a2f159ff9e0381c6b0080d4ce1a6ce32faa4e38427d6d39a99d1d91ef3bcc6",
+        "image": "ghcr.io/ggml-org/llama.cpp:server-b11681",
+        "imageID": "ghcr.io/ggml-org/llama.cpp@sha256:e83cbdc66e692129e17aad70293366cb00e3acca94b9f197c91a8a56e92201c3",
+        "lastState": {},
+        "name": "main",
+        "ready": true,
+        "resources": {
+         "claims": [
+          {
+           "name": "model"
+          }
+         ],
+         "limits": {
+          "cpu": "6",
+          "memory": "3Gi"
+         },
+         "requests": {
+          "cpu": "6",
+          "memory": "3Gi"
+         }
+        },
+        "restartCount": 0,
+        "started": true,
+        "state": {
+         "running": {
+          "startedAt": "2026-11-12T09:07:03Z"
+         }
+        },
+        "user": {
+         "linux": {
+          "gid": 0,
+          "supplementalGroups": [
+           0
+          ],
+          "uid": 0
+         }
+        },
+        "volumeMounts": [
+         {
+          "mountPath": "/demo",
+          "name": "demo"
+         },
+         {
+          "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+          "name": "kube-api-access-lcpsq",
+          "readOnly": true,
+          "recursiveReadOnly": "Disabled"
+         }
+        ]
+       }
+      ],
+      "hostIP": "10.76.170.229",
+      "hostIPs": [
+       {
+        "ip": "10.76.170.229"
+       }
+      ],
+      "observedGeneration": 1,
+      "phase": "Running",
+      "podIP": "10.217.2.38",
+      "podIPs": [
+       {
+        "ip": "10.217.2.38"
+       }
+      ],
+      "qosClass": "Guaranteed",
+      "resourceClaimStatuses": [
+       {
+        "name": "model",
+        "resourceClaimName": "reader-0-model-6qn79"
+       }
+      ],
+      "resources": {
+       "limits": {
+        "cpu": "6",
+        "memory": "3Gi"
+       },
+       "requests": {
+        "cpu": "5993m",
+        "memory": "3Gi"
+       }
+      },
+      "startTime": "2026-11-12T09:07:02Z"
+     }
+    },
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"Pod\",\"metadata\":{\"annotations\":{},\"labels\":{\"app\":\"cxl-demo\",\"cxl-demo/role\":\"llm-reader\"},\"name\":\"reader-1\",\"namespace\":\"cxl-demo\"},\"spec\":{\"containers\":[{\"command\":[\"sh\",\"-c\",\"ls -l /models\\nexec /app/llama-server -m \\\"/models/$LLM_MODEL_FILE\\\" -nr -t \\\"$LLM_THREADS\\\" -c 4096 -np 1 \\\\\\n    --reasoning off --host 0.0.0.0 --port 8080\\n\"],\"env\":[{\"name\":\"LLM_THREADS\",\"valueFrom\":{\"resourceFieldRef\":{\"divisor\":\"1\",\"resource\":\"limits.cpu\"}}}],\"envFrom\":[{\"configMapRef\":{\"name\":\"llm-model\"}}],\"image\":\"ghcr.io/ggml-org/llama.cpp:server-b11681\",\"imagePullPolicy\":\"IfNotPresent\",\"name\":\"main\",\"ports\":[{\"containerPort\":8080}],\"readinessProbe\":{\"httpGet\":{\"path\":\"/health\",\"port\":8080},\"periodSeconds\":1},\"resources\":{\"claims\":[{\"name\":\"model\"}],\"limits\":{\"cpu\":\"6\",\"memory\":\"3Gi\"},\"requests\":{\"cpu\":\"6\",\"memory\":\"3Gi\"}},\"volumeMounts\":[{\"mountPath\":\"/demo\",\"name\":\"demo\"}]}],\"hostname\":\"reader-1\",\"nodeSelector\":{\"cxl-demo/node\":\"vm1\"},\"resourceClaims\":[{\"name\":\"model\",\"resourceClaimTemplateName\":\"llm-model\"}],\"restartPolicy\":\"Never\",\"subdomain\":\"llm-readers\",\"terminationGracePeriodSeconds\":2,\"volumes\":[{\"configMap\":{\"defaultMode\":493,\"name\":\"demo-tools\"},\"name\":\"demo\"}]}}\n"
+      },
+      "creationTimestamp": "2026-11-12T09:06:57Z",
+      "generation": 1,
+      "labels": {
+       "app": "cxl-demo",
+       "cxl-demo/role": "llm-reader"
+      },
+      "name": "reader-1",
+      "namespace": "cxl-demo",
+      "resourceVersion": "3856595",
+      "uid": "65f45f51-b9e0-4ea9-b749-bf129f22a8a3"
+     },
+     "spec": {
+      "containers": [
+       {
+        "command": [
+         "sh",
+         "-c",
+         "ls -l /models\nexec /app/llama-server -m \"/models/$LLM_MODEL_FILE\" -nr -t \"$LLM_THREADS\" -c 4096 -np 1 \\\n    --reasoning off --host 0.0.0.0 --port 8080\n"
+        ],
+        "env": [
+         {
+          "name": "LLM_THREADS",
+          "valueFrom": {
+           "resourceFieldRef": {
+            "divisor": "1",
+            "resource": "limits.cpu"
+           }
+          }
+         }
+        ],
+        "envFrom": [
+         {
+          "configMapRef": {
+           "name": "llm-model"
+          }
+         }
+        ],
+        "image": "ghcr.io/ggml-org/llama.cpp:server-b11681",
+        "imagePullPolicy": "IfNotPresent",
+        "name": "main",
+        "ports": [
+         {
+          "containerPort": 8080,
+          "protocol": "TCP"
+         }
+        ],
+        "readinessProbe": {
+         "failureThreshold": 3,
+         "httpGet": {
+          "path": "/health",
+          "port": 8080,
+          "scheme": "HTTP"
+         },
+         "periodSeconds": 1,
+         "successThreshold": 1,
+         "timeoutSeconds": 1
+        },
+        "resources": {
+         "claims": [
+          {
+           "name": "model"
+          }
+         ],
+         "limits": {
+          "cpu": "6",
+          "memory": "3Gi"
+         },
+         "requests": {
+          "cpu": "6",
+          "memory": "3Gi"
+         }
+        },
+        "terminationMessagePath": "/dev/termination-log",
+        "terminationMessagePolicy": "File",
+        "volumeMounts": [
+         {
+          "mountPath": "/demo",
+          "name": "demo"
+         },
+         {
+          "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+          "name": "kube-api-access-jgb5q",
+          "readOnly": true
+         }
+        ]
+       }
+      ],
+      "dnsPolicy": "ClusterFirst",
+      "enableServiceLinks": true,
+      "hostname": "reader-1",
+      "nodeName": "n4-cxl-shared-1-fedora-43-containerd",
+      "nodeSelector": {
+       "cxl-demo/node": "vm1"
+      },
+      "preemptionPolicy": "PreemptLowerPriority",
+      "priority": 0,
+      "resourceClaims": [
+       {
+        "name": "model",
+        "resourceClaimTemplateName": "llm-model"
+       }
+      ],
+      "restartPolicy": "Never",
+      "schedulerName": "default-scheduler",
+      "securityContext": {},
+      "serviceAccount": "default",
+      "serviceAccountName": "default",
+      "subdomain": "llm-readers",
+      "terminationGracePeriodSeconds": 2,
+      "tolerations": [
+       {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/not-ready",
+        "operator": "Exists",
+        "tolerationSeconds": 300
+       },
+       {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/unreachable",
+        "operator": "Exists",
+        "tolerationSeconds": 300
+       }
+      ],
+      "volumes": [
+       {
+        "configMap": {
+         "defaultMode": 493,
+         "name": "demo-tools"
+        },
+        "name": "demo"
+       },
+       {
+        "name": "kube-api-access-jgb5q",
+        "projected": {
+         "defaultMode": 420,
+         "sources": [
+          {
+           "serviceAccountToken": {
+            "expirationSeconds": 3607,
+            "path": "token"
+           }
+          },
+          {
+           "configMap": {
+            "items": [
+             {
+              "key": "ca.crt",
+              "path": "ca.crt"
+             }
+            ],
+            "name": "kube-root-ca.crt"
+           }
+          },
+          {
+           "downwardAPI": {
+            "items": [
+             {
+              "fieldRef": {
+               "apiVersion": "v1",
+               "fieldPath": "metadata.namespace"
+              },
+              "path": "namespace"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "status": {
+      "allocatedResources": {
+       "cpu": "6",
+       "memory": "3Gi"
+      },
+      "conditions": [
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:07:03Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodReadyToStartContainers"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:07:02Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Initialized"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:07:05Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Ready"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:07:05Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "ContainersReady"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:07:02Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodScheduled"
+       }
+      ],
+      "containerStatuses": [
+       {
+        "allocatedResources": {
+         "cpu": "6",
+         "memory": "3Gi"
+        },
+        "allocatedResourcesStatus": [
+         {
+          "name": "claim:model",
+          "resources": [
+           {
+            "health": "Unknown",
+            "resourceID": "nri.io/cxl-pool=claim-d1dd4999-7fc7-445f-bf56-e69546843f21-0"
+           }
+          ]
+         }
+        ],
+        "containerID": "containerd://f75e652508e1fd909f107fcc911b591390f19840dcfdffbff71d079a80b86c2c",
+        "image": "ghcr.io/ggml-org/llama.cpp:server-b11681",
+        "imageID": "ghcr.io/ggml-org/llama.cpp@sha256:e83cbdc66e692129e17aad70293366cb00e3acca94b9f197c91a8a56e92201c3",
+        "lastState": {},
+        "name": "main",
+        "ready": true,
+        "resources": {
+         "claims": [
+          {
+           "name": "model"
+          }
+         ],
+         "limits": {
+          "cpu": "6",
+          "memory": "3Gi"
+         },
+         "requests": {
+          "cpu": "6",
+          "memory": "3Gi"
+         }
+        },
+        "restartCount": 0,
+        "started": true,
+        "state": {
+         "running": {
+          "startedAt": "2026-11-12T09:07:03Z"
+         }
+        },
+        "user": {
+         "linux": {
+          "gid": 0,
+          "supplementalGroups": [
+           0
+          ],
+          "uid": 0
+         }
+        },
+        "volumeMounts": [
+         {
+          "mountPath": "/demo",
+          "name": "demo"
+         },
+         {
+          "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+          "name": "kube-api-access-jgb5q",
+          "readOnly": true,
+          "recursiveReadOnly": "Disabled"
+         }
+        ]
+       }
+      ],
+      "hostIP": "10.76.85.237",
+      "hostIPs": [
+       {
+        "ip": "10.76.85.237"
+       }
+      ],
+      "observedGeneration": 1,
+      "phase": "Running",
+      "podIP": "10.217.1.51",
+      "podIPs": [
+       {
+        "ip": "10.217.1.51"
+       }
+      ],
+      "qosClass": "Guaranteed",
+      "resourceClaimStatuses": [
+       {
+        "name": "model",
+        "resourceClaimName": "reader-1-model-b8xqd"
+       }
+      ],
+      "resources": {
+       "limits": {
+        "cpu": "6",
+        "memory": "3Gi"
+       },
+       "requests": {
+        "cpu": "5993m",
+        "memory": "3Gi"
+       }
+      },
+      "startTime": "2026-11-12T09:07:02Z"
+     }
+    },
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"Pod\",\"metadata\":{\"annotations\":{},\"labels\":{\"app\":\"cxl-demo\",\"cxl-demo/role\":\"llm-reader\"},\"name\":\"reader-2\",\"namespace\":\"cxl-demo\"},\"spec\":{\"containers\":[{\"command\":[\"sh\",\"-c\",\"ls -l /models\\nexec /app/llama-server -m \\\"/models/$LLM_MODEL_FILE\\\" -nr -t \\\"$LLM_THREADS\\\" -c 4096 -np 1 \\\\\\n    --reasoning off --host 0.0.0.0 --port 8080\\n\"],\"env\":[{\"name\":\"LLM_THREADS\",\"valueFrom\":{\"resourceFieldRef\":{\"divisor\":\"1\",\"resource\":\"limits.cpu\"}}}],\"envFrom\":[{\"configMapRef\":{\"name\":\"llm-model\"}}],\"image\":\"ghcr.io/ggml-org/llama.cpp:server-b11681\",\"imagePullPolicy\":\"IfNotPresent\",\"name\":\"main\",\"ports\":[{\"containerPort\":8080}],\"readinessProbe\":{\"httpGet\":{\"path\":\"/health\",\"port\":8080},\"periodSeconds\":1},\"resources\":{\"claims\":[{\"name\":\"model\"}],\"limits\":{\"cpu\":\"6\",\"memory\":\"3Gi\"},\"requests\":{\"cpu\":\"6\",\"memory\":\"3Gi\"}},\"volumeMounts\":[{\"mountPath\":\"/demo\",\"name\":\"demo\"}]}],\"hostname\":\"reader-2\",\"nodeSelector\":{\"cxl-demo/node\":\"vm2\"},\"resourceClaims\":[{\"name\":\"model\",\"resourceClaimTemplateName\":\"llm-model\"}],\"restartPolicy\":\"Never\",\"subdomain\":\"llm-readers\",\"terminationGracePeriodSeconds\":2,\"volumes\":[{\"configMap\":{\"defaultMode\":493,\"name\":\"demo-tools\"},\"name\":\"demo\"}]}}\n"
+      },
+      "creationTimestamp": "2026-11-12T09:06:57Z",
+      "generation": 1,
+      "labels": {
+       "app": "cxl-demo",
+       "cxl-demo/role": "llm-reader"
+      },
+      "name": "reader-2",
+      "namespace": "cxl-demo",
+      "resourceVersion": "3856598",
+      "uid": "8c1cc84e-bd6f-434f-b1e7-16bb7a6f015f"
+     },
+     "spec": {
+      "containers": [
+       {
+        "command": [
+         "sh",
+         "-c",
+         "ls -l /models\nexec /app/llama-server -m \"/models/$LLM_MODEL_FILE\" -nr -t \"$LLM_THREADS\" -c 4096 -np 1 \\\n    --reasoning off --host 0.0.0.0 --port 8080\n"
+        ],
+        "env": [
+         {
+          "name": "LLM_THREADS",
+          "valueFrom": {
+           "resourceFieldRef": {
+            "divisor": "1",
+            "resource": "limits.cpu"
+           }
+          }
+         }
+        ],
+        "envFrom": [
+         {
+          "configMapRef": {
+           "name": "llm-model"
+          }
+         }
+        ],
+        "image": "ghcr.io/ggml-org/llama.cpp:server-b11681",
+        "imagePullPolicy": "IfNotPresent",
+        "name": "main",
+        "ports": [
+         {
+          "containerPort": 8080,
+          "protocol": "TCP"
+         }
+        ],
+        "readinessProbe": {
+         "failureThreshold": 3,
+         "httpGet": {
+          "path": "/health",
+          "port": 8080,
+          "scheme": "HTTP"
+         },
+         "periodSeconds": 1,
+         "successThreshold": 1,
+         "timeoutSeconds": 1
+        },
+        "resources": {
+         "claims": [
+          {
+           "name": "model"
+          }
+         ],
+         "limits": {
+          "cpu": "6",
+          "memory": "3Gi"
+         },
+         "requests": {
+          "cpu": "6",
+          "memory": "3Gi"
+         }
+        },
+        "terminationMessagePath": "/dev/termination-log",
+        "terminationMessagePolicy": "File",
+        "volumeMounts": [
+         {
+          "mountPath": "/demo",
+          "name": "demo"
+         },
+         {
+          "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+          "name": "kube-api-access-bkpxz",
+          "readOnly": true
+         }
+        ]
+       }
+      ],
+      "dnsPolicy": "ClusterFirst",
+      "enableServiceLinks": true,
+      "hostname": "reader-2",
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd",
+      "nodeSelector": {
+       "cxl-demo/node": "vm2"
+      },
+      "preemptionPolicy": "PreemptLowerPriority",
+      "priority": 0,
+      "resourceClaims": [
+       {
+        "name": "model",
+        "resourceClaimTemplateName": "llm-model"
+       }
+      ],
+      "restartPolicy": "Never",
+      "schedulerName": "default-scheduler",
+      "securityContext": {},
+      "serviceAccount": "default",
+      "serviceAccountName": "default",
+      "subdomain": "llm-readers",
+      "terminationGracePeriodSeconds": 2,
+      "tolerations": [
+       {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/not-ready",
+        "operator": "Exists",
+        "tolerationSeconds": 300
+       },
+       {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/unreachable",
+        "operator": "Exists",
+        "tolerationSeconds": 300
+       }
+      ],
+      "volumes": [
+       {
+        "configMap": {
+         "defaultMode": 493,
+         "name": "demo-tools"
+        },
+        "name": "demo"
+       },
+       {
+        "name": "kube-api-access-bkpxz",
+        "projected": {
+         "defaultMode": 420,
+         "sources": [
+          {
+           "serviceAccountToken": {
+            "expirationSeconds": 3607,
+            "path": "token"
+           }
+          },
+          {
+           "configMap": {
+            "items": [
+             {
+              "key": "ca.crt",
+              "path": "ca.crt"
+             }
+            ],
+            "name": "kube-root-ca.crt"
+           }
+          },
+          {
+           "downwardAPI": {
+            "items": [
+             {
+              "fieldRef": {
+               "apiVersion": "v1",
+               "fieldPath": "metadata.namespace"
+              },
+              "path": "namespace"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "status": {
+      "allocatedResources": {
+       "cpu": "6",
+       "memory": "3Gi"
+      },
+      "conditions": [
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:07:03Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodReadyToStartContainers"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:07:02Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Initialized"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:07:05Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Ready"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:07:05Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "ContainersReady"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:07:02Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodScheduled"
+       }
+      ],
+      "containerStatuses": [
+       {
+        "allocatedResources": {
+         "cpu": "6",
+         "memory": "3Gi"
+        },
+        "allocatedResourcesStatus": [
+         {
+          "name": "claim:model",
+          "resources": [
+           {
+            "health": "Unknown",
+            "resourceID": "nri.io/cxl-pool=claim-7a777e8f-b582-4324-93de-6fdfd0397a86-0"
+           }
+          ]
+         }
+        ],
+        "containerID": "containerd://9a54566be1ca579addbb9961b11b54cd17423ad6fe66d0cfa2af538d99b709b2",
+        "image": "ghcr.io/ggml-org/llama.cpp:server-b11681",
+        "imageID": "ghcr.io/ggml-org/llama.cpp@sha256:e83cbdc66e692129e17aad70293366cb00e3acca94b9f197c91a8a56e92201c3",
+        "lastState": {},
+        "name": "main",
+        "ready": true,
+        "resources": {
+         "claims": [
+          {
+           "name": "model"
+          }
+         ],
+         "limits": {
+          "cpu": "6",
+          "memory": "3Gi"
+         },
+         "requests": {
+          "cpu": "6",
+          "memory": "3Gi"
+         }
+        },
+        "restartCount": 0,
+        "started": true,
+        "state": {
+         "running": {
+          "startedAt": "2026-11-12T09:07:03Z"
+         }
+        },
+        "user": {
+         "linux": {
+          "gid": 0,
+          "supplementalGroups": [
+           0
+          ],
+          "uid": 0
+         }
+        },
+        "volumeMounts": [
+         {
+          "mountPath": "/demo",
+          "name": "demo"
+         },
+         {
+          "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+          "name": "kube-api-access-bkpxz",
+          "readOnly": true,
+          "recursiveReadOnly": "Disabled"
+         }
+        ]
+       }
+      ],
+      "hostIP": "10.76.162.174",
+      "hostIPs": [
+       {
+        "ip": "10.76.162.174"
+       }
+      ],
+      "observedGeneration": 1,
+      "phase": "Running",
+      "podIP": "10.217.0.225",
+      "podIPs": [
+       {
+        "ip": "10.217.0.225"
+       }
+      ],
+      "qosClass": "Guaranteed",
+      "resourceClaimStatuses": [
+       {
+        "name": "model",
+        "resourceClaimName": "reader-2-model-bxm9n"
+       }
+      ],
+      "resources": {
+       "limits": {
+        "cpu": "6",
+        "memory": "3Gi"
+       },
+       "requests": {
+        "cpu": "5993m",
+        "memory": "3Gi"
+       }
+      },
+      "startTime": "2026-11-12T09:07:02Z"
+     }
+    },
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"Pod\",\"metadata\":{\"annotations\":{},\"labels\":{\"app\":\"cxl-demo\"},\"name\":\"writer\",\"namespace\":\"cxl-demo\"},\"spec\":{\"containers\":[{\"command\":[\"sh\",\"-c\",\"trap 'exit 0' TERM; sleep infinity \\u0026 wait\"],\"envFrom\":[{\"configMapRef\":{\"name\":\"llm-model\"}}],\"image\":\"localhost/cxl-demo-tools:demo\",\"imagePullPolicy\":\"Never\",\"name\":\"main\",\"resources\":{\"claims\":[{\"name\":\"cxl\"}]},\"volumeMounts\":[{\"mountPath\":\"/demo\",\"name\":\"demo\"}]}],\"nodeSelector\":{\"cxl-demo/node\":\"vm1\"},\"resourceClaims\":[{\"name\":\"cxl\",\"resourceClaimTemplateName\":\"cxl-lease\"}],\"restartPolicy\":\"Never\",\"terminationGracePeriodSeconds\":2,\"volumes\":[{\"configMap\":{\"defaultMode\":493,\"name\":\"demo-tools\"},\"name\":\"demo\"}]}}\n"
+      },
+      "creationTimestamp": "2026-11-12T09:06:28Z",
+      "generation": 1,
+      "labels": {
+       "app": "cxl-demo"
+      },
+      "name": "writer",
+      "namespace": "cxl-demo",
+      "resourceVersion": "3856414",
+      "uid": "5b093c84-655c-4a84-a6b7-a4c237f76bf8"
+     },
+     "spec": {
+      "containers": [
+       {
+        "command": [
+         "sh",
+         "-c",
+         "trap 'exit 0' TERM; sleep infinity & wait"
+        ],
+        "envFrom": [
+         {
+          "configMapRef": {
+           "name": "llm-model"
+          }
+         }
+        ],
+        "image": "localhost/cxl-demo-tools:demo",
+        "imagePullPolicy": "Never",
+        "name": "main",
+        "resources": {
+         "claims": [
+          {
+           "name": "cxl"
+          }
+         ]
+        },
+        "terminationMessagePath": "/dev/termination-log",
+        "terminationMessagePolicy": "File",
+        "volumeMounts": [
+         {
+          "mountPath": "/demo",
+          "name": "demo"
+         },
+         {
+          "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+          "name": "kube-api-access-blkgn",
+          "readOnly": true
+         }
+        ]
+       }
+      ],
+      "dnsPolicy": "ClusterFirst",
+      "enableServiceLinks": true,
+      "nodeName": "n4-cxl-shared-1-fedora-43-containerd",
+      "nodeSelector": {
+       "cxl-demo/node": "vm1"
+      },
+      "preemptionPolicy": "PreemptLowerPriority",
+      "priority": 0,
+      "resourceClaims": [
+       {
+        "name": "cxl",
+        "resourceClaimTemplateName": "cxl-lease"
+       }
+      ],
+      "restartPolicy": "Never",
+      "schedulerName": "default-scheduler",
+      "securityContext": {},
+      "serviceAccount": "default",
+      "serviceAccountName": "default",
+      "terminationGracePeriodSeconds": 2,
+      "tolerations": [
+       {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/not-ready",
+        "operator": "Exists",
+        "tolerationSeconds": 300
+       },
+       {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/unreachable",
+        "operator": "Exists",
+        "tolerationSeconds": 300
+       }
+      ],
+      "volumes": [
+       {
+        "configMap": {
+         "defaultMode": 493,
+         "name": "demo-tools"
+        },
+        "name": "demo"
+       },
+       {
+        "name": "kube-api-access-blkgn",
+        "projected": {
+         "defaultMode": 420,
+         "sources": [
+          {
+           "serviceAccountToken": {
+            "expirationSeconds": 3607,
+            "path": "token"
+           }
+          },
+          {
+           "configMap": {
+            "items": [
+             {
+              "key": "ca.crt",
+              "path": "ca.crt"
+             }
+            ],
+            "name": "kube-root-ca.crt"
+           }
+          },
+          {
+           "downwardAPI": {
+            "items": [
+             {
+              "fieldRef": {
+               "apiVersion": "v1",
+               "fieldPath": "metadata.namespace"
+              },
+              "path": "namespace"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "status": {
+      "conditions": [
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:06:28Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodReadyToStartContainers"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:06:28Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Initialized"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:06:29Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Ready"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:06:29Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "ContainersReady"
+       },
+       {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-12T09:06:28Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodScheduled"
+       }
+      ],
+      "containerStatuses": [
+       {
+        "allocatedResourcesStatus": [
+         {
+          "name": "claim:cxl",
+          "resources": [
+           {
+            "health": "Unknown",
+            "resourceID": "nri.io/cxl=claim-4ce24226-fcb6-4b20-87d3-a4621f2b9a15-0"
+           }
+          ]
+         }
+        ],
+        "containerID": "containerd://8014f336d91d9fc2c40cee7ac90520a1054d1de1ad1297868ba4f56ebb692384",
+        "image": "localhost/cxl-demo-tools:572bcd92fbb0",
+        "imageID": "sha256:03c1a04f3296d2701f0f106c0536ac7f5976766e3776c5cd04e4b78771afa061",
+        "lastState": {},
+        "name": "main",
+        "ready": true,
+        "resources": {
+         "claims": [
+          {
+           "name": "cxl"
+          }
+         ]
+        },
+        "restartCount": 0,
+        "started": true,
+        "state": {
+         "running": {
+          "startedAt": "2026-11-12T09:06:29Z"
+         }
+        },
+        "user": {
+         "linux": {
+          "gid": 0,
+          "supplementalGroups": [
+           0,
+           1,
+           2,
+           3,
+           4,
+           6,
+           10,
+           11,
+           20,
+           26,
+           27
+          ],
+          "uid": 0
+         }
+        },
+        "volumeMounts": [
+         {
+          "mountPath": "/demo",
+          "name": "demo"
+         },
+         {
+          "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+          "name": "kube-api-access-blkgn",
+          "readOnly": true,
+          "recursiveReadOnly": "Disabled"
+         }
+        ]
+       }
+      ],
+      "hostIP": "10.76.85.237",
+      "hostIPs": [
+       {
+        "ip": "10.76.85.237"
+       }
+      ],
+      "observedGeneration": 1,
+      "phase": "Running",
+      "podIP": "10.217.1.49",
+      "podIPs": [
+       {
+        "ip": "10.217.1.49"
+       }
+      ],
+      "qosClass": "BestEffort",
+      "resourceClaimStatuses": [
+       {
+        "name": "cxl",
+        "resourceClaimName": "writer-cxl-vbl9q"
+       }
+      ],
+      "resources": {},
+      "startTime": "2026-11-12T09:06:28Z"
+     }
+    }
+   ],
+   "kind": "List"
+  },
+  "slices": {
+   "apiVersion": "v1",
+   "items": [
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceSlice",
+     "metadata": {
+      "creationTimestamp": "2026-11-12T09:05:52Z",
+      "generateName": "00000-cxl-pool.nri.io-",
+      "generation": 1,
+      "name": "00000-cxl-pool.nri.io-5pskp",
+      "resourceVersion": "3856332",
+      "uid": "8f37964d-f37e-48a8-ad21-b624b5c84e81"
+     },
+     "spec": {
+      "devices": [
+       {
+        "allowMultipleAllocations": true,
+        "attributes": {
+         "coherent": {
+          "bool": true
+         },
+         "persistent": {
+          "bool": true
+         },
+         "serial": {
+          "string": "0xc1ae0001"
+         },
+         "shared": {
+          "bool": true
+         },
+         "size": {
+          "int": 536870912
+         },
+         "source": {
+          "string": "pool"
+         },
+         "type": {
+          "string": "memdev"
+         }
+        },
+        "bindingConditions": [
+         "cxl-pool.nri.io/Attached"
+        ],
+        "bindingFailureConditions": [
+         "cxl-pool.nri.io/AttachFailed"
+        ],
+        "bindsToNode": true,
+        "capacity": {
+         "shares": {
+          "value": "1M"
+         }
+        },
+        "name": "llm0"
+       }
+      ],
+      "driver": "cxl-pool.nri.io",
+      "nodeSelector": {
+       "nodeSelectorTerms": [
+        {
+         "matchExpressions": [
+          {
+           "key": "kubernetes.io/hostname",
+           "operator": "In",
+           "values": [
+            "n4-cxl-shared-0-fedora-43-containerd",
+            "n4-cxl-shared-1-fedora-43-containerd",
+            "n4-cxl-shared-2-fedora-43-containerd"
+           ]
+          }
+         ]
+        }
+       ]
+      },
+      "pool": {
+       "generation": 1,
+       "name": "fake-cxl-pool",
+       "resourceSliceCount": 1
+      }
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceSlice",
+     "metadata": {
+      "creationTimestamp": "2026-11-12T09:05:44Z",
+      "generateName": "00000-cxl.nri.io-n4-cxl-shared-0-fedora-43-containerd-",
+      "generation": 4,
+      "name": "00000-cxl.nri.io-n4-cxl-shared-0-fedora-43-containerd-kgwlx",
+      "ownerReferences": [
+       {
+        "apiVersion": "v1",
+        "controller": true,
+        "kind": "Node",
+        "name": "n4-cxl-shared-0-fedora-43-containerd",
+        "uid": "669f51d8-2979-4c46-b1eb-5c8211804047"
+       }
+      ],
+      "resourceVersion": "3856560",
+      "uid": "5a72508f-ee10-4ba2-919c-c8fd84272415"
+     },
+     "spec": {
+      "devices": [
+       {
+        "allowMultipleAllocations": true,
+        "attributes": {
+         "nodes": {
+          "string": "0-1"
+         },
+         "size": {
+          "int": 8362401792
+         },
+         "source": {
+          "string": "local"
+         },
+         "type": {
+          "string": "dram"
+         }
+        },
+        "capacity": {
+         "memory": {
+          "value": "8166408Ki"
+         }
+        },
+        "name": "dram"
+       },
+       {
+        "allowMultipleAllocations": true,
+        "attributes": {
+         "type": {
+          "string": "lease"
+         }
+        },
+        "name": "lease"
+       }
+      ],
+      "driver": "cxl.nri.io",
+      "nodeName": "n4-cxl-shared-0-fedora-43-containerd",
+      "pool": {
+       "generation": 1,
+       "name": "n4-cxl-shared-0-fedora-43-containerd",
+       "resourceSliceCount": 1
+      }
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceSlice",
+     "metadata": {
+      "creationTimestamp": "2026-11-12T09:05:44Z",
+      "generateName": "00000-cxl.nri.io-n4-cxl-shared-1-fedora-43-containerd-",
+      "generation": 11,
+      "name": "00000-cxl.nri.io-n4-cxl-shared-1-fedora-43-containerd-ts9ld",
+      "ownerReferences": [
+       {
+        "apiVersion": "v1",
+        "controller": true,
+        "kind": "Node",
+        "name": "n4-cxl-shared-1-fedora-43-containerd",
+        "uid": "72e0b698-b9ab-4391-8827-fe901ba9b42c"
+       }
+      ],
+      "resourceVersion": "3856561",
+      "uid": "3cae2238-fd7a-4b5a-8a3a-e2f3771bafb3"
+     },
+     "spec": {
+      "devices": [
+       {
+        "allowMultipleAllocations": true,
+        "attributes": {
+         "nodes": {
+          "string": "0-1"
+         },
+         "size": {
+          "int": 8362401792
+         },
+         "source": {
+          "string": "local"
+         },
+         "type": {
+          "string": "dram"
+         }
+        },
+        "capacity": {
+         "memory": {
+          "value": "8166408Ki"
+         }
+        },
+        "name": "dram"
+       },
+       {
+        "allowMultipleAllocations": true,
+        "attributes": {
+         "type": {
+          "string": "lease"
+         }
+        },
+        "name": "lease"
+       }
+      ],
+      "driver": "cxl.nri.io",
+      "nodeName": "n4-cxl-shared-1-fedora-43-containerd",
+      "pool": {
+       "generation": 1,
+       "name": "n4-cxl-shared-1-fedora-43-containerd",
+       "resourceSliceCount": 1
+      }
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceSlice",
+     "metadata": {
+      "creationTimestamp": "2026-11-12T09:05:44Z",
+      "generateName": "00000-cxl.nri.io-n4-cxl-shared-2-fedora-43-containerd-",
+      "generation": 4,
+      "name": "00000-cxl.nri.io-n4-cxl-shared-2-fedora-43-containerd-8ns86",
+      "ownerReferences": [
+       {
+        "apiVersion": "v1",
+        "controller": true,
+        "kind": "Node",
+        "name": "n4-cxl-shared-2-fedora-43-containerd",
+        "uid": "f9e8fb75-a171-48b3-abd9-bd33adf9e83f"
+       }
+      ],
+      "resourceVersion": "3856562",
+      "uid": "fe09464f-a64f-4516-aaf3-3c582baf7a96"
+     },
+     "spec": {
+      "devices": [
+       {
+        "allowMultipleAllocations": true,
+        "attributes": {
+         "nodes": {
+          "string": "0-1"
+         },
+         "size": {
+          "int": 8362401792
+         },
+         "source": {
+          "string": "local"
+         },
+         "type": {
+          "string": "dram"
+         }
+        },
+        "capacity": {
+         "memory": {
+          "value": "8166408Ki"
+         }
+        },
+        "name": "dram"
+       },
+       {
+        "allowMultipleAllocations": true,
+        "attributes": {
+         "type": {
+          "string": "lease"
+         }
+        },
+        "name": "lease"
+       }
+      ],
+      "driver": "cxl.nri.io",
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd",
+      "pool": {
+       "generation": 1,
+       "name": "n4-cxl-shared-2-fedora-43-containerd",
+       "resourceSliceCount": 1
+      }
+     }
+    }
+   ],
+   "kind": "List"
+  }
+ },
+ "node": {
+  "hostname": "n4-cxl-shared-2-fedora-43-containerd",
+  "mappers": [
+   {
+    "block": "pmem0",
+    "comm": "llama-server",
+    "path": "/models/Qwen3-0.6B-Q4_K_M.gguf",
+    "pid": 4015578,
+    "podUID": "8c1cc84e-bd6f-434f-b1e7-16bb7a6f015f",
+    "source": "pmem0"
+   }
+  ],
+  "memdevs": [
+   {
+    "enabled": true,
+    "name": "mem0",
+    "numaNode": 0,
+    "serial": "0xc1ae0001",
+    "size": 536870912
+   }
+  ],
+  "mounts": [
+   {
+    "block": "pmem0",
+    "dax": true,
+    "fstype": "erofs",
+    "kind": "node",
+    "loop": false,
+    "mountRO": true,
+    "ro": true,
+    "source": "/dev/pmem0",
+    "target": "/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct"
+   }
+  ],
+  "openers": [],
+  "regions": [
+   {
+    "dax": [],
+    "memdevs": [
+     "mem0"
+    ],
+    "mode": "pmem",
+    "name": "region0",
+    "namespaces": [
+     {
+      "block": "pmem0",
+      "fs": "erofs",
+      "major": 259,
+      "minor": 0,
+      "mode": "fsdax",
+      "name": "namespace0.0",
+      "ro": true,
+      "size": 534773760
+     }
+    ],
+    "size": 536870912
+   }
+  ]
+ }
+}

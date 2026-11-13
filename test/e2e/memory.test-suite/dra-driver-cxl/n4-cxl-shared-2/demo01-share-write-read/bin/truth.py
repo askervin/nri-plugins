@@ -8,7 +8,7 @@ taken in parallel, each section stamped with the host clock:
 - the cluster (in vm2): kubectl get pods,resourceclaims -o yaml in the
   demo namespace, its resourceclaimtemplates, resourceslices -o yaml, the
   driver pods, the events of the demo namespace;
-- each node (vm2, vm1): cxl list -M -R -X -u -i, /sys/bus/dax/devices (driver,
+- each node (vm2, vm1, and vm0 in llm-share): cxl list -M -R -X -u -i, /sys/bus/dax/devices (driver,
   size, target node), the pmem block devices (size, read-only flag,
   filesystem of blkid -p), the mountinfo lines of the node mounts, lease
   binds and mounts of pmem and loop devices, the loop devices, the
@@ -244,6 +244,8 @@ def main():
         "vm1": lambda: vm_section("node vm1 (%s)" % state.get("VM1_NODE"), state["VM1_DIR"], NODE_SCRIPT),
         "trace": lambda: trace_section(state, since),
     }
+    if state.get("VM0_DIR"):
+        jobs["vm0"] = lambda: vm_section("node vm0 (%s)" % state.get("VM0_NODE"), state["VM0_DIR"], NODE_SCRIPT)
     if state.get("POOL_URL"):
         jobs["pool"] = lambda: pool_section(state["POOL_URL"], state.get("POOL_DEVICE", "shared0"), "the pool server")
     if state.get("LP_URL"):
@@ -262,7 +264,7 @@ def main():
     head = ["# demo truth %s of case %s at %s (host clock); logs since %s (%s)" % (
         label, case, time.strftime("%Y-%m-%d ", time.localtime(t0)) + stamp(t0), stamp(since), since_what)]
     lines = head
-    for key in ("cluster", "vm2", "vm1", "pool", "lp", "trace"):
+    for key in ("cluster", "vm2", "vm1", "vm0", "pool", "lp", "trace"):
         if key in sections:
             lines += [""] + sections[key]
     os.makedirs(os.path.join(c.DEMO_DIR, "captures"), exist_ok=True)

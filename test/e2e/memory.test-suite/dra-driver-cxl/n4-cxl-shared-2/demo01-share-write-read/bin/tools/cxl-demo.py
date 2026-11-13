@@ -17,26 +17,40 @@ hold, env and mkfs:
                      the size of the block device of a block lease with
                      mkfs.TYPE, write all of it through the fd, check its
                      superblock on the device, keep the fd DEMO_HOLD seconds
+  /demo/mkfs --model fetch the model file LLM_MODEL_FILE from LLM_MODEL_URL
+                     (http_proxy, https_proxy and no_proxy apply), check its
+                     sha256 LLM_MODEL_SHA256, make an erofs of it that a
+                     node can mount with DAX and write that at offset 0 of
+                     the block device of a block lease, keep the fd
+                     DEMO_HOLD seconds; the page cache of the VM (Cached of
+                     /proc/meminfo) before the fetch and after the write
   /demo/fswrite [--append] TEXT
                      write TEXT and a newline into hello.txt of the
                      filesystem of the newest read-write fs lease (append
                      with --append), fsync it
 The lease is the newest dax lease of the container (block lease for mkfs,
 read-write fs lease for fswrite; cxl-request list); DEMO_LEASE=ID picks
-one. The fd comes from
+one. Images are written through the fd in chunks, never read into memory
+whole, and removed when they are written; the pages that the write left
+in the page cache of the block device are dropped. The fd comes from
 "cxl-request fd --lease ID --exec": the container needs no device node. A
 read-only lease's fd refuses a writable mapping: write prints "refused:
-read-only (EACCES)"; mkfs prints "refused: read-only (EBADF)". The tools
-keep their files in /tmp: /run/cxl of the container is read-only.
+read-only (EACCES)"; mkfs prints "refused: read-only (EBADF)"; mkfs --model
+prints "refused: the device is too small for the image of N bytes (ENOSPC)"
+if the model does not fit. The tools keep their files in /tmp: /run/cxl of
+the container is read-only.
 """
 import errno
+import hashlib
 import json
 import mmap
 import os
+import shutil
 import signal
 import subprocess
 import sys
 import time
+import urllib.request
 
 FD = 3
 MAP_LEN = 2 << 20     # devdax maps in multiples of its 2 MiB alignment
@@ -46,7 +60,12 @@ FS_DIR = "/tmp/fs"
 FS_FILE = "hello.txt"
 FS_IMAGE = "/tmp/hello.erofs"
 EMPTY_IMAGE = "/tmp/empty.img"
+MODEL_DIR = "/tmp/model"          # the root of the erofs of mkfs --model: the model file only
+MODEL_IMAGE = "/tmp/model.erofs"
 CHUNK = 4 << 20
+# The erofs of the model: its data in one plain extent at a 2 MiB-aligned
+# offset, no inline tail (else the file gets no DAX).
+MKFS_MODEL = ["mkfs.erofs", "-b4096", "--dsunit=512", "-Enoinline_data"]
 # mkfs of the empty filesystems: the block size of ext4 is the page size (DAX).
 MKFS = {"ext4": ["mkfs.ext4", "-q", "-F", "-b", "4096", "-L", "demo"], "xfs": ["mkfs.xfs", "-q", "-f", "-L", "demo"],
         "btrfs": ["mkfs.btrfs", "-q", "-f", "-L", "demo"]}
@@ -152,26 +171,105 @@ def do_mkfs(text):
     if p.returncode != 0:
         sys.stdout.write(p.stdout.decode(errors="replace"))
         sys.exit("mkfs.erofs failed with exit status %d" % p.returncode)
-    with_fd("_flash", FS_IMAGE, modes=("block",))
+    with_fd("_flash", FS_IMAGE, '%s: "%s"' % (FS_FILE, text), modes=("block",))
 
 
-def do_flash(image):
-    """Write IMAGE at offset 0 of fd 3, fsync it, and keep the fd DEMO_HOLD seconds."""
-    with open(image, "rb") as f:
-        data = f.read()
+def fetch(url, path, want_sha256):
+    """Return (bytes, seconds) of the download of URL to PATH; exit unless its sha256 is WANT_SHA256."""
+    h = hashlib.sha256()
+    size = 0
+    t0 = time.time()
     try:
-        done = 0
-        while done < len(data):
-            done += os.pwrite(FD, data[done:], done)
-        os.fsync(FD)
+        with urllib.request.urlopen(url, timeout=60) as r, open(path, "wb") as f:
+            while True:
+                chunk = r.read(CHUNK)
+                if not chunk:
+                    break
+                h.update(chunk)
+                f.write(chunk)
+                size += len(chunk)
+    except OSError as e:
+        sys.exit("cannot fetch %s: %s" % (url, e))
+    t = time.time() - t0
+    if h.hexdigest() != want_sha256:
+        os.unlink(path)
+        sys.exit("%s from %s has sha256 %s, expected %s" % (os.path.basename(path), url, h.hexdigest(), want_sha256))
+    return size, t
+
+
+def vm_cached_mib():
+    """Return Cached of /proc/meminfo (the page cache of the VM: not of the container) in MiB."""
+    with open("/proc/meminfo") as f:
+        for line in f:
+            if line.startswith("Cached:"):
+                return int(line.split()[1]) >> 10
+    return -1
+
+
+def do_mkfs_model():
+    """Fetch the model of LLM_MODEL_URL, check its sha256, make an erofs of it and write that through the fd of a block lease."""
+    try:
+        url, name, sha = (os.environ[k] for k in ("LLM_MODEL_URL", "LLM_MODEL_FILE", "LLM_MODEL_SHA256"))
+    except KeyError as e:
+        sys.exit("no %s: the pod has no ConfigMap llm-model (demo setup llm-share writes it)" % e)
+    print("page cache of the VM before the fetch: %d MiB" % vm_cached_mib())
+    shutil.rmtree(MODEL_DIR, ignore_errors=True)
+    os.makedirs(MODEL_DIR)
+    path = os.path.join(MODEL_DIR, name)
+    size, t = fetch(url, path, sha)
+    print("fetched %s: %d MiB in %.1f s (%.0f MB/s), sha256 ok" % (name, size >> 20, t, size / max(t, 1e-3) / 1e6))
+    sys.stdout.flush()
+    if os.path.exists(MODEL_IMAGE):
+        os.unlink(MODEL_IMAGE)
+    t0 = time.time()
+    p = subprocess.run(MKFS_MODEL + [MODEL_IMAGE, MODEL_DIR], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    os.unlink(path)   # the image holds it
+    if p.returncode != 0:
+        sys.stdout.write(p.stdout.decode(errors="replace"))
+        sys.exit("mkfs.erofs failed with exit status %d" % p.returncode)
+    print("made an erofs of it: %d MiB in %.1f s" % (os.path.getsize(MODEL_IMAGE) >> 20, time.time() - t0))
+    sys.stdout.flush()
+    with_fd("_flash", MODEL_IMAGE, name, modes=("block",))
+
+
+def stream_to_fd(image):
+    """Return (bytes, seconds) of writing the file IMAGE at offset 0 of fd 3 in chunks of CHUNK, fsyncing it and dropping it from the page cache of the device."""
+    t0 = time.time()
+    off = 0
+    with open(image, "rb") as f:
+        while True:
+            data = f.read(CHUNK)
+            if not data:
+                break
+            done = 0
+            while done < len(data):
+                done += os.pwrite(FD, data[done:], off + done)
+            off += len(data)
+    os.fsync(FD)
+    try:
+        os.posix_fadvise(FD, 0, off, os.POSIX_FADV_DONTNEED)
+    except OSError:
+        pass   # the pages stay cached, nothing else changes
+    return off, time.time() - t0
+
+
+def do_flash(image, what):
+    """Write IMAGE (an erofs with WHAT) at offset 0 of fd 3, fsync it, remove it, and keep the fd DEMO_HOLD seconds."""
+    try:
+        size, t = stream_to_fd(image)
     except OSError as e:
         if e.errno == errno.EBADF:
             print("refused: read-only (EBADF)")
             sys.exit(1)
+        if e.errno == errno.ENOSPC:
+            print("refused: the device is too small for the image of %d bytes (ENOSPC)" % os.path.getsize(image))
+            os.unlink(image)
+            sys.exit(1)
         raise
-    with open(os.path.join(FS_DIR, FS_FILE)) as f:
-        text = f.read().rstrip("\n")
-    print('wrote erofs (%d bytes) with %s: "%s"' % (len(data), FS_FILE, text))
+    os.unlink(image)
+    print("streamed %s through the fd of the lease: %d bytes in %.1f s" % (image, size, t))
+    print("removed %s: page cache of the VM now %d MiB" % (image, vm_cached_mib()))
+    print("wrote erofs (%d bytes) with %s" % (size, what))
     sys.stdout.flush()
     time.sleep(float(os.environ.get("DEMO_HOLD", "3")))
     os.close(FD)
@@ -192,26 +290,14 @@ def do_mkfs_type(fstype):
         sys.stdout.write(p.stdout.decode(errors="replace"))
         os.unlink(EMPTY_IMAGE)
         sys.exit("%s failed with exit status %d" % (MKFS[fstype][0], p.returncode))
-    t0 = time.time()
     try:
-        with open(EMPTY_IMAGE, "rb") as f:
-            off = 0
-            while True:
-                data = f.read(CHUNK)
-                if not data:
-                    break
-                done = 0
-                while done < len(data):
-                    done += os.pwrite(FD, data[done:], off + done)
-                off += len(data)
-        os.fsync(FD)
+        _, t = stream_to_fd(EMPTY_IMAGE)
     except OSError as e:
         os.unlink(EMPTY_IMAGE)
         if e.errno == errno.EBADF:
             print("refused: read-only (EBADF)")
             sys.exit(1)
         raise
-    t = time.time() - t0
     so, sl = SUPERBLOCK[fstype]
     with open(EMPTY_IMAGE, "rb") as f:
         f.seek(so)
@@ -266,7 +352,9 @@ def main():
         do_env()
     elif op == "mkfs" and len(args) == 3 and args[1] == "--type" and args[2] in MKFS:
         with_fd("_mkfs", args[2], modes=("block",))
-    elif op == "mkfs" and len(args) == 2:
+    elif op == "mkfs" and args[1:] == ["--model"]:
+        do_mkfs_model()
+    elif op == "mkfs" and len(args) == 2 and not args[1].startswith("--"):
         do_mkfs(args[1])
     elif op == "_mkfs" and len(args) == 2:
         do_mkfs_type(args[1])
@@ -274,8 +362,8 @@ def main():
         do_fswrite(args[1], False)
     elif op == "fswrite" and len(args) == 3 and args[1] == "--append":
         do_fswrite(args[2], True)
-    elif op == "_flash" and len(args) == 2:
-        do_flash(args[1])
+    elif op == "_flash" and len(args) == 3:
+        do_flash(args[1], args[2])
     elif op == "_write":
         do_write(args[1])
     elif op == "_read":

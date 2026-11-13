@@ -31,7 +31,8 @@ Usage: zoom.py WHAT [ARGS]
                     (default 0); in pool-shared-fs and pool-fs of its block
                     device (1024 is the erofs and the ext4 superblock)
   last              the full output of the last step
-NODE is vm1 or vm2. The output is plain text; "demo zoom" pages it.
+NODE is vm1 or vm2, or vm0 in llm-share. The output is plain text; "demo
+zoom" pages it.
 """
 import json
 import os
@@ -43,9 +44,9 @@ import fsinfo
 
 
 def vmdir(state, node):
-    key = {"vm1": "VM1_DIR", "vm2": "VM2_DIR"}.get(node)
-    if not key:
-        sys.exit("NODE is vm1 or vm2, not %r" % node)
+    key = {"vm0": "VM0_DIR", "vm1": "VM1_DIR", "vm2": "VM2_DIR"}.get(node)
+    if not key or not state.get(key):
+        sys.exit("NODE is vm1 or vm2%s, not %r" % (", or vm0" if state.get("VM0_DIR") else "", node))
     return state[key]
 
 
@@ -269,8 +270,9 @@ def main():
     elif what == "cdi" and rest:
         zoom_shell(state, rest[0], CDI_SCRIPT)
     elif what == "driver" and rest:
+        vmdir(state, rest[0])   # refuses a NODE that the demo does not have
         n = int(rest[1]) if len(rest) > 1 else 30
-        node = state["VM1_NODE" if rest[0] == "vm1" else "VM2_NODE"]
+        node = state.get({"vm0": "VM0_NODE", "vm1": "VM1_NODE"}.get(rest[0], "VM2_NODE")) or state["VM2_NODE"]
         zoom_shell(state, "vm2", "pod=$(kubectl get pods -n kube-system -l app.kubernetes.io/name=nri-dra-driver-cxl "
                    "--field-selector spec.nodeName=%s -o name | head -n 1); kubectl logs -n kube-system --tail=%d -c nri-dra-driver-cxl $pod "
                    "| grep -vE 'CA file|Watch close|some fields were dropped|Waited before sending request' | tail -n %d "

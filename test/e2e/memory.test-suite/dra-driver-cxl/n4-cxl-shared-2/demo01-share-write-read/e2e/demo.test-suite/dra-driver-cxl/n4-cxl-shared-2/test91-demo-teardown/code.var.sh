@@ -16,7 +16,11 @@
 #   (pool-cleanup), the files of a persistent pool device removed
 #   (POOL_DEVICE_FILES of the state), node labels and /root/demo removed;
 # - of the wizard demo also its claims and claim templates, the local
-#   devices of both VMs and the second pool server local-pmem with lp0.
+#   devices of both VMs and the second pool server local-pmem with lp0;
+# - of the llm-share demo VM0 in all of the above, the model mirror
+#   stopped, the pool tmpfs that setup mounted unmounted (bin/pool-tmpfs.sh;
+#   bin/demo runs latency.sh off afterwards, which unmounts its own) and
+#   the pool directory removed if it is empty and no mount point.
 # Works without the state file of setup too (a setup that failed half
 # way): then it cleans what it finds.
 
@@ -24,6 +28,7 @@ DEMO_STATE_DIR="${DEMO_STATE_DIR:-$DEMO_DIR/run}"
 state="$DEMO_STATE_DIR/state.env"
 VM2="$OUTPUT_DIR"
 VM1="$POOL_VM1_DIR"
+VM0_DIR=""   # of the state of llm-share
 DRA_NS=cxl-demo
 DEMO_CASE=unknown
 TRACE_DIR=""
@@ -32,6 +37,10 @@ POOL_DEVICE_FILES=""
 LP_SERVER=local-pmem   # the second server of the wizard demo
 LP_PORT=9912
 LP_SERVER_PID=""
+LLM_MIRROR_PID=""
+DEMO_POOL_DIR="${DEMO_POOL_DIR:-}"   # of bin/demo, of the state if there is one
+# shellcheck source=/dev/null # the pool tmpfs of llm-share
+source "$DEMO_DIR/bin/pool-tmpfs.sh"
 if [ -f "$state" ]; then
     # The views stop asking when the state is gone.
     mv "$state" "$state.teardown" || error "cannot move $state"
@@ -46,7 +55,10 @@ elif [ -f "$state.teardown" ]; then
     DRA_NS="$NS"
 else
     echo "demo teardown: no state file $state: cleaning what is there"
+    VM0_DIR="$POOL_VM0_DIR"
 fi
+DEMO_VMS=("$VM2" "$VM1")
+[ -z "$VM0_DIR" ] || DEMO_VMS+=("$VM0_DIR")
 if [ -n "$POOL_SERVER_PID" ] && ! kill -0 "$POOL_SERVER_PID" 2>/dev/null; then
     POOL_SERVER_PID=""
 fi
@@ -79,7 +91,7 @@ echo "### demo teardown: the trace"
 if [ -n "$TRACE_DIR" ] && [ -f "$TRACE_DIR/pids" ]; then
     DRA_TRACE_DIR="$TRACE_DIR"
     DRA_TRACE_RUNNING=1
-    DRA_TRACE_VMS=("$VM2" "$VM1")
+    DRA_TRACE_VMS=("${DEMO_VMS[@]}")
     dra-trace-stop
     dra-trace-summary > /dev/null
     echo "demo teardown: trace $TEST_OUTPUT_DIR/trace.txt, summary $TEST_OUTPUT_DIR/trace-summary.txt"
@@ -122,12 +134,13 @@ if [ "$DEMO_CASE" == wizard ] && [ -n "$POOL_SERVER_PID" ]; then
     # The wizard attached the (sliced) local device of VM1 too.
     dra-local-detach "$VM1"
 fi
-dra-state-cleanup "$VM2"
-dra-state-cleanup "$VM1"
+for vm in "${DEMO_VMS[@]}"; do
+    dra-state-cleanup "$vm"
+done
 
 echo "### demo teardown: no filesystem mounts left in the VMs"
 held=""
-for vm in "$VM2" "$VM1"; do
+for vm in "${DEMO_VMS[@]}"; do
     label=$(pool-vm-label "$vm")
     if ! dra-fs-mounts "$vm" >/dev/null; then
         held+="
@@ -168,6 +181,11 @@ if [ -n "$held" ]; then
     error "demo teardown: the pool device is still mounted, see the WARNING above"
 fi
 
+if [ -n "$LLM_MIRROR_PID" ] && grep -qa http.server "/proc/$LLM_MIRROR_PID/cmdline" 2>/dev/null; then
+    echo "### demo teardown: the model mirror"
+    kill "$LLM_MIRROR_PID" || error "cannot stop the model mirror, pid $LLM_MIRROR_PID"
+fi
+
 echo "### demo teardown: the pool server"
 if [ -n "$POOL_SERVER_PID" ] || [ -n "$LP_SERVER_PID" ]; then
     pool-cleanup
@@ -177,12 +195,18 @@ if [ -n "$POOL_DEVICE_FILES" ]; then
     rm -f $POOL_DEVICE_FILES || error "cannot remove $POOL_DEVICE_FILES"
     echo "demo teardown: removed $POOL_DEVICE_FILES"
 fi
+if [ -n "$DEMO_POOL_DIR" ] && [ "$(findmnt -n -o SOURCE --mountpoint "$DEMO_POOL_DIR")" == "$POOL_TMPFS_SOURCE" ]; then
+    pool-tmpfs-umount "$DEMO_POOL_DIR" "$POOL_TMPFS_SOURCE" || error "cannot unmount the pool tmpfs at $DEMO_POOL_DIR, see above"
+fi
+if [ -n "$DEMO_POOL_DIR" ] && [ -d "$DEMO_POOL_DIR" ] && ! mountpoint -q "$DEMO_POOL_DIR"; then
+    rmdir "$DEMO_POOL_DIR" || echo "demo teardown: $DEMO_POOL_DIR is not empty, left as it is"
+fi
 pool-port-busy && error "port $POOL_PORT is still busy: a fake-cxl-pool-server that the demo did not start? stop it"
 pool-port-busy "$LP_PORT" && error "port $LP_PORT is still busy: a fake-cxl-pool-server $LP_SERVER that the demo did not start? stop it"
-dra-vm-command "$VM2" "kubectl label node $POOL_VM2_NAME cxl-demo/node- ; kubectl label node $POOL_VM1_NAME cxl-demo/node- ; rm -rf /root/demo; true"
+dra-vm-command "$VM2" "kubectl label node $POOL_VM2_NAME $POOL_VM1_NAME $POOL_VM0_NAME cxl-demo/node- ; rm -rf /root/demo; true"
 
 echo "### demo teardown: the VMs are clean"
-for vm in "$VM2" "$VM1"; do
+for vm in "${DEMO_VMS[@]}"; do
     pool-cxl-dump "$vm" clean
     cxl-assert 'memdevs == [] and regions == []'
 done

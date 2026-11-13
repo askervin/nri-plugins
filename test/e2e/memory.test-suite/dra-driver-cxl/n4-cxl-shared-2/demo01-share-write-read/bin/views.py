@@ -2,7 +2,7 @@
 """The live views of the demo, one per terminal of 50 x 10.
 
 Usage:
-  views.py VIEW [local|pool|pool-shared-fs|pool-fs|wizard] [--color|--no-color] [--once] [--interval S]
+  views.py VIEW [local|pool|pool-shared-fs|pool-fs|wizard|llm-share] [--color|--no-color] [--once] [--interval S]
   views.py VIEW --sample DIR [--now EPOCH] [--until EPOCH]
 
 VIEW is t2 (pods and leases), t3 (scheduler: devices and claims), t4
@@ -15,7 +15,7 @@ only the new lines below them, so that the terminal scrolls; the end of
 the demo and a new trace are a line each, the cursor never goes back. --once prints
 one rendering without color (captures).
 --sample renders the files of a test data directory instead: state.env,
-vm2.json and vm1.json (probe.py output), pool.json, trace/.
+vm2.json, vm1.json and vm0.json (probe.py output), pool.json, trace/.
 """
 import json
 import os
@@ -28,12 +28,17 @@ import common as c
 import fsinfo
 import wizard_views as wv
 
-CASES = ("local", "pool", "pool-shared-fs", "pool-fs", "wizard")
+CASES = ("local", "pool", "pool-shared-fs", "pool-fs", "wizard", "llm-share")
 
 
 def pool_case(state):
-    """Return True if the case of STATE is a pool demo (pool, pool-shared-fs)."""
-    return (state.get("DEMO_CASE") or "").startswith("pool")
+    """Return True if the case of STATE is a pool demo (pool, pool-shared-fs, pool-fs, llm-share)."""
+    return (state.get("DEMO_CASE") or "").startswith("pool") or state.get("DEMO_CASE") == "llm-share"
+
+
+def demo_nodes(state):
+    """Return the node names of the demo of STATE: vm2 and vm1, and vm0 in llm-share."""
+    return [state.get(k) for k in ("VM2_NODE", "VM1_NODE", "VM0_NODE") if state.get(k)]
 
 
 ###
@@ -61,6 +66,28 @@ def leases_of(claims, pod):
     return sorted(out, key=lambda cl: c.meta(cl).get("creationTimestamp") or "")
 
 
+def owned_claims(claims, pod):
+    """Return the claims of POD from its templates that are no lease device (class cxl-lease): a reader's claim of the model."""
+    uid = c.meta(pod).get("uid")
+    out = []
+    for cl in claims:
+        if c.lease_id(cl) or not any(o.get("uid") == uid for o in c.meta(cl).get("ownerReferences") or []):
+            continue
+        if any(r.get("deviceClassName") == "cxl-lease" for r in c.subrequests(cl)):
+            continue
+        out.append(cl)
+    return out
+
+
+def claim_memory(cl):
+    """Return the MEMORY column of a claim: that of a lease, and the access of mode fs if it is there."""
+    words = c.lease_memory(cl)
+    dev = c.device_section(cl)
+    if words.startswith("fs ") and dev.get("access"):
+        words += " " + dev["access"]
+    return words
+
+
 def render_t2(data, state, now=None, stale=False):
     if state.get("DEMO_CASE") == "wizard":
         return wv.render_t2(data, state, now, stale)
@@ -74,7 +101,10 @@ def render_t2(data, state, now=None, stale=False):
         node = c.short_node((p.get("spec") or {}).get("nodeName"), state)
         head = "%-9s %-4s %-7s " % (name[:9], node[:4], pod_state(p))
         leases = leases_of(claims, p)
-        if not leases:
+        for cl in owned_claims(claims, p):
+            rows.append(head + "%-8s %s" % ("claim", claim_memory(cl)))
+            head = " " * len(head)
+        if not leases and head.strip():
             rows.append(head + "%-8s %s" % ("-", "-"))
         for i, cl in enumerate(leases):
             prefix = head if i == 0 else " " * len(head)
@@ -107,7 +137,7 @@ def fs_lease_memory(cl, events, state):
 ###
 
 def driver_status(drivers_doc, state, case):
-    nodes = [state.get("VM2_NODE"), state.get("VM1_NODE")]
+    nodes = demo_nodes(state)
     words = []
     pods = c.items(drivers_doc, "Pod")
     for n in [n for n in nodes if n]:
@@ -369,6 +399,31 @@ def node_lines(label, node, names, claim_pods=None, node_mounts=False):
     return out
 
 
+def llm_node_lines(label, node, names):
+    """Return the lines of a node of llm-share: its memdev, region and filesystem, the node mount and who maps a file of it."""
+    if node is None:
+        return ["%s unreachable" % label]
+    devs = node.get("memdevs") or []
+    if not devs:
+        return ["%s no CXL memory" % label]
+    out = []
+    for d in devs:
+        mine = [r for r in node.get("regions") or [] if d["name"] in (r.get("memdevs") or [])]
+        spaces = [n for r in mine for n in r.get("namespaces") or []]
+        what = ("%s %s" % (mine[0]["name"], " ".join("%s %s" % (n.get("block") or n.get("name"), n.get("fs") or "")
+                                                     for n in spaces) or "no namespace")) if mine else "no region"
+        out.append("%s %s %s %s" % (label, d["name"], c.kernel_size(d.get("size")), what.rstrip()))
+        for n in spaces:
+            for m in sorted((m for m in node.get("mounts") or [] if m.get("block") == n.get("block") and m.get("kind") == "node"),
+                            key=lambda m: m.get("target") or ""):
+                how = "cached " + os.path.basename(m.get("source") or "?") if m.get("loop") else ("dax" if m.get("dax") else "no dax")
+                who = sorted(set(names.get(x.get("podUID")) or "pid %s" % x.get("pid") for x in node.get("mappers") or []
+                                 if x.get("path") and x.get("source") == os.path.basename(m.get("source") or "")))
+                out += c.wrap_list("    %s %s %s: " % (m.get("fstype") or "?", "ro" if m.get("ro") else "rw", how),
+                                   who or ["not mapped"], indent=6)
+    return out
+
+
 def render_t4(data, state, now=None, stale=False):
     if state.get("DEMO_CASE") == "wizard":
         return wv.render_t4(data, state, now, stale)
@@ -378,6 +433,12 @@ def render_t4(data, state, now=None, stale=False):
     names = pod_names(k8s.get("pods"))
     claim_pods = lease_claim_pods(k8s)
     lines = [c.title("NODES: CXL IN THE KERNEL", stale, now)]
+    if state.get("DEMO_CASE") == "llm-share":
+        rows = []
+        for label in ("vm0", "vm1", "vm2"):
+            d = data.get(label)
+            rows += llm_node_lines(label, d.get("node") if d else None, names)
+        return lines + c.fit(rows)
     order = [("vm2", vm2), ("vm1", vm1)]
     if pool_case(state):
         order.reverse()
@@ -467,13 +528,15 @@ def render_t6_pool(data, state, now=None, stale=False):
         rows.append("  owner: " + c.short_text(dev["allocation"].get("owner") or "?", state))
     if pool.get("fileError"):
         rows.append("backing file: " + pool["fileError"])
-    elif state.get("DEMO_CASE") == "pool-shared-fs":
+    elif state.get("DEMO_CASE") in ("pool-shared-fs", "llm-share"):
         rows += fs_lines(pool.get("fs"))
     elif state.get("DEMO_CASE") == "pool-fs":
         rows += fsinfo.lines(pool.get("super"))
     elif pool.get("hex"):
         rows.append("at 0: " + text_at(pool["hex"], c.WIDTH - 6))
         rows.append(hex_line(pool["hex"]))
+    if pool.get("fileResident") is not None:
+        rows.append("host memory: %s of the file, once" % c.kernel_size(pool["fileResident"]))
     rows.append("file " + (dev.get("path") or "?"))
     return lines + c.fit(rows)
 
@@ -913,12 +976,14 @@ def collect(view, state):
                 errs.append("%s: %s" % (key, e))
         ts = [threading.Thread(target=get, args=("vm2", vm2, ["--node", "--k8s", "pods,claims", "--ns", ns])),
               threading.Thread(target=get, args=("vm1", vm1, ["--node"]))]
+        if state.get("VM0_DIR"):
+            ts.append(threading.Thread(target=get, args=("vm0", state["VM0_DIR"], ["--node"])))
         for t in ts:
             t.start()
         for t in ts:
             t.join()
         out["partial"] = errs
-        if len(errs) == 2:
+        if len(errs) == len(ts):
             raise RuntimeError("; ".join(errs))
         return out
     if view == "t6" and state.get("DEMO_CASE") == "wizard":
@@ -928,9 +993,13 @@ def collect(view, state):
         out = {"device": c.http_json("%s/api/v1/devices/%s" % (state["POOL_URL"], dev))}
         try:
             with open(out["device"].get("path") or "", "rb") as f:
-                if state.get("DEMO_CASE") == "pool-shared-fs":
-                    # The erofs is on the block device: after the pfn info block.
-                    out["fsOffset"], data = c.read_fsdax(f, 1 << 20)
+                if state.get("DEMO_CASE") == "llm-share":
+                    # The pages of the backing file are the device in host memory.
+                    out["fileResident"] = os.fstat(f.fileno()).st_blocks * 512
+                if state.get("DEMO_CASE") in ("pool-shared-fs", "llm-share"):
+                    # The erofs is on the block device: after the pfn info
+                    # block. The model's data starts 2 MiB into it.
+                    out["fsOffset"], data = c.read_fsdax(f, (4 if state.get("DEMO_CASE") == "llm-share" else 1) << 20)
                     out["fs"] = c.erofs_files(data)
                 elif state.get("DEMO_CASE") == "pool-fs":
                     # The superblock of the filesystem on the block device.
@@ -1077,7 +1146,7 @@ def sample(view, sdir, now, until):
         tr.poll(until)
         return render_t5(tr, state, now)
     data = {}
-    for key in ("vm2", "vm1", "pool"):
+    for key in ("vm2", "vm1", "vm0", "pool"):
         p = os.path.join(sdir, key + ".json")
         if os.path.exists(p):
             with open(p) as f:

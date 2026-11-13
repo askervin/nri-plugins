@@ -17,10 +17,20 @@ Usage: selftest.py [--write] [--quiet]
 - checks the trace lines of trace-pool-fs (a writer's exclusive attach, a
   reader's Conflict once however often the scheduler retries, the
   downgrade) and the superblocks of testdata/pool-fs-super.json (fsinfo);
-- lays out the presenter terminal (T1) of every step of the four scripts
-  with a two-line result and checks that it fits;
+- lays out the presenter terminal (T1) of every step of the five scripts
+  with a result of the rows of the step and checks that it fits;
+- runs the client of llm-share (bin/tools/cxl-llm.py) on fake llama-servers
+  (a tool-call answer and a content answer, and streams that end early)
+  and checks its TTFT and TPOT, that an early end is a failed sample, the
+  bench result line, and the checks of the writer, bench and memory steps;
 - checks a few helpers (quantities, wrapping, lease memory words, the
-  claim status of pool-fs, its step checks);
+  claim status of pool-fs, its step checks) and the selection of steps
+  (N, N-, N-M, and the refusal of anything else), that zoom, llm and the
+  step runner refuse a node, a label and a repeat count that they cannot
+  use, and that the writer says when the device is too small;
+- runs selftest-shell.sh: pool-tmpfs.sh, latency.sh and the Vagrantfile
+  patch of lib/vm.bash with stubbed sudo, mount and taskset, a fake /sys
+  and a stand-in load, no root needed;
 - runs the checks of the wizard (wizard_check.py: its rules, its YAML,
   its question screens, the states of its objects, its scripted set).
 The terminal size is 50 x 10 whatever the terminal.
@@ -40,6 +50,7 @@ time.tzset()
 
 import common as c   # noqa: E402
 import fsinfo        # noqa: E402
+import llm           # noqa: E402
 import steps         # noqa: E402
 import views         # noqa: E402
 import wizard_check  # noqa: E402
@@ -216,6 +227,16 @@ def fake_tree_pmem(root):
         os.makedirs("%s/proc/%d/fd" % (root, pid), exist_ok=True)
         os.symlink("/dev/pmem0", "%s/proc/%d/fd/3" % (root, pid))
         os.symlink("/dev/null", "%s/proc/%d/fd/0" % (root, pid))
+    # llama-server of a reader maps the gguf of the dax mount (259:0 is
+    # 103:00 in maps) and of the cached one (the loop device, 07:00).
+    write(root + "/sys/class/block/pmem0/dev", "259:0\n")
+    write(root + "/sys/class/block/loop0/dev", "7:0\n")
+    write(root + "/proc/203/cgroup", cg % "7e1d0000_0000_4000_8000_000000000203")
+    write(root + "/proc/203/comm", "llama-server\n")
+    write(root + "/proc/203/maps", "55d0a0000000-55d0a0100000 r-xp 00000000 fd:00 77 /app/llama-server\n"
+          "7f0000000000-7f0010000000 r--s 00000000 103:00 12 /models/a.gguf\n"
+          "7f0020000000-7f0030000000 r--s 00000000 07:00 13 /models/b.gguf\n"
+          "7f0040000000-7f0040001000 rw-p 00000000 00:00 0 \n")
     return lease_uid
 
 
@@ -238,6 +259,13 @@ def probe_pmem_test():
            str(node.get("mounts")))
     expect("probe pmem openers", sorted((o["pid"], o["block"], o["perms"]) for o in node.get("openers") or []) == [(200, "pmem0", "rw"), (201, "pmem0", "ro")],
            str(node.get("openers")))
+    expect("probe pmem file mappers", sorted((m["pid"], m["comm"], m["block"], m["source"], m["path"]) for m in node.get("mappers") or [] if m.get("path"))
+           == [(203, "llama-server", "pmem0", "loop0", "/models/b.gguf"), (203, "llama-server", "pmem0", "pmem0", "/models/a.gguf")],
+           str(node.get("mappers")))
+    llm_lines = views.llm_node_lines("vm1", node, {"7e1d0000-0000-4000-8000-000000000203": "reader-1"})
+    check("probe on a fake pmem node, t4 llm-share", [c.title("NODES: CXL IN THE KERNEL", now=NOW)] + llm_lines)
+    expect("probe pmem t4 llm-share", llm_lines == ["vm1 mem0 256M region0 pmem0 erofs", "    erofs ro cached loop0: reader-1",
+                                                     "    erofs ro dax: reader-1"], "\n".join(llm_lines))
     with open(os.path.join(TESTDATA, "pool-shared-fs-F6", "vm2.json")) as f:
         vm2 = json.load(f)
     state = c.load_state(os.path.join(TESTDATA, "pool-shared-fs-F6", "state.env"))
@@ -516,8 +544,12 @@ def poolfs_helper_test():
 def presenter_test():
     for case, serial, fstype in (("local", "0xc100e2e1", ""), ("pool", "0xc1ae0001", ""), ("pool-shared-fs", "0xc1ae0001", ""),
                                  ("pool-fs", "0xc1ae0001", "ext4"), ("pool-fs", "0xc1ae0001", "xfs"),
-                                 ("pool-fs", "0xc1ae0001", "btrfs")):
-        all_steps = steps.steps(case, serial, fstype or "ext4")
+                                 ("pool-fs", "0xc1ae0001", "btrfs"), ("llm-share", "0xc1ae0001", "direct"),
+                                 ("llm-share", "0xc1ae0001", "cached")):
+        if case == "llm-share":
+            all_steps = steps.steps(case, serial, access=fstype, repeat=10)
+        else:
+            all_steps = steps.steps(case, serial, fstype or "ext4")
         for n, st in enumerate(all_steps, 1):
             caption = c.wrap_list("", st.caption.split(" "), indent=2, sep="")
             expect("T1 %s %d caption" % (case, n), len(caption) <= 2, st.caption)
@@ -583,6 +615,242 @@ def helper_test():
     expect("check_cat different", steps.check_cat({}, bad, 1)[0] == "readers read different texts!", str(steps.check_cat({}, bad, 1)))
 
 
+def selection_test():
+    """Check the selection of steps of the step runner: N, N-, N-M, and the refusal of any other argument."""
+    for args, want in (([], (1, 15)), (["--auto"], (1, 15)), (["7"], (7, 7)), (["7-"], (7, 15)), (["2-5"], (2, 5)),
+                       (["--no-color", "3-3"], (3, 3)), (["4-", "--auto"], (4, 15)), (["1-15"], (1, 15)), (["15"], (15, 15))):
+        try:
+            got = steps.select_steps(args, 15)
+        except ValueError as e:
+            got = str(e)
+        expect("select_steps %s" % args, got == want, str(got))
+    for args, words in ((["2-x"], ['cannot understand "2-x"', "N-M"]), (["-5"], ['cannot understand "-5"']),
+                        (["2..5"], ['cannot understand "2..5"']), (["first"], ['cannot understand "first"']),
+                        (["2,5"], ['cannot understand "2,5"']), (["--autto"], ['cannot understand "--autto"']),
+                        (["2", "5-"], ['one selection', '"2" and "5-"']), (["0"], ["step 0 does not exist", "1-15"]),
+                        (["16"], ["step 16 does not exist"]), (["3-20"], ["step 20 does not exist"]),
+                        (["5-2"], ['"5-2" selects no step'])):
+        try:
+            got = "no error: %s" % (steps.select_steps(args, 15),)
+        except ValueError as e:
+            got = str(e)
+        expect("select_steps refuses %s" % args, all(w in got for w in words), got)
+
+
+def argument_test():
+    """Check that zoom, llm and the step runner refuse a node, a label and a repeat count that they cannot use."""
+    import zoom
+
+    def refused(module, argv, state=None):
+        """Return the message with which module.main() exits for the arguments ARGV, with the demo STATE."""
+        saved = sys.argv, c.load_state, os.environ.pop("DEMO_LLM_REPEAT", None)
+        sys.argv = [module.__name__] + argv
+        c.load_state = lambda: state
+        try:
+            module.main()
+            return "no error"
+        except SystemExit as e:
+            return str(e.code)
+        finally:
+            sys.argv, c.load_state = saved[:2]
+            if saved[2] is not None:
+                os.environ["DEMO_LLM_REPEAT"] = saved[2]
+    state = {"NS": "cxl-demo", "VM2_DIR": "/vm2", "VM2_NODE": "node2", "VM1_DIR": "/vm1", "VM1_NODE": "node1"}
+    for node in ("vm9", "vm0", "../x"):
+        got = refused(zoom, ["driver", node], state)
+        expect("zoom driver %s is refused" % node, "NODE is vm1 or vm2, not %r" % node in got, got)
+    for argv in (["mem", "../x"], ["mem", "a", "--since", "b/c"], ["mem", "a b"]):
+        got = refused(llm, argv)
+        expect("llm %s is refused" % argv, "letters, digits, dot, dash and underscore only" in got, got)
+    got = refused(steps, ["llm-share", "7"], dict(state, DEMO_CASE="llm-share", SERIAL="0xc1ae0001", DEMO_LLM_REPEAT="five"))
+    expect("a DEMO_LLM_REPEAT that is no number is refused", "DEMO_LLM_REPEAT is 'five'" in got, got)
+
+
+def flash_test():
+    """Check that the writer's flash of an image says so when the device is too small (/dev/full stands in for it)."""
+    import contextlib
+    import io
+    demo = load_tool("cxl-demo.py")
+    with tempfile.TemporaryDirectory() as tmp:
+        image = os.path.join(tmp, "model.erofs")
+        with open(image, "wb") as f:
+            f.write(b"x" * 8192)
+        demo.FD = os.open("/dev/full", os.O_WRONLY)
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                demo.do_flash(image, "model.gguf")
+            code = "no exit"
+        except SystemExit as e:
+            code = e.code
+        finally:
+            os.close(demo.FD)
+        expect("flash to a device that is too small exits 1", code == 1, str(code))
+        expect("flash to a device that is too small says so", "too small for the image of 8192 bytes (ENOSPC)" in buf.getvalue(), buf.getvalue())
+        expect("flash to a device that is too small removes the image", not os.path.exists(image))
+
+
+def shell_test():
+    """Run the checks of the shell scripts of the host side (selftest-shell.sh), which need no root."""
+    p = subprocess.run(["bash", os.path.join(c.BIN_DIR, "selftest-shell.sh")], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       timeout=300)
+    text = p.stdout.decode(errors="replace")
+    expect("selftest-shell.sh", p.returncode == 0 and text.strip() == "selftest-shell: ok", text[-3000:])
+
+
+def load_tool(name):
+    """Return the module of the pod tool bin/tools/NAME (its file name has a dash)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_").replace(".py", ""), os.path.join(c.BIN_DIR, "tools", name))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def fake_llama(answer):
+    """Return a started HTTP server on 127.0.0.1 that answers /health and streams a chat completion of ANSWER.
+
+    ANSWER is tool or text (a whole answer), nofinish (no finish reason), or cut, cut-chunked, cut-length (the
+    connection closes after the first deltas: with no length, in chunked encoding, with a Content-Length).
+    """
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            self.send_response(200 if self.path == "/health" else 404)
+            self.end_headers()
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            expect("llm request", body.get("stream") and body.get("tools") and body.get("temperature") == 0, str(body))
+            if answer in ("tool", "nofinish"):
+                deltas = [{"tool_calls": [{"index": 0, "function": {"name": "get_weather", "arguments": ""}}]},
+                          {"tool_calls": [{"index": 0, "function": {"arguments": '{"city":"Helsinki"}'}}]}]
+            else:
+                deltas = [{"content": w} for w in ("The ", "sky ", "is ", "blue.")]
+            chunked = answer == "cut-chunked"
+            if chunked or answer == "cut-length":
+                self.protocol_version = "HTTP/1.1"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            if chunked:
+                self.send_header("Transfer-Encoding", "chunked")
+            if answer == "cut-length":
+                self.send_header("Content-Length", "100000")
+            self.end_headers()
+
+            def send(data):
+                self.wfile.write(("%x\r\n" % len(data)).encode() + data + b"\r\n" if chunked else data)
+            for d in deltas:
+                time.sleep(0.02)
+                send(b"data: " + json.dumps({"choices": [{"delta": d}]}).encode() + b"\n\n")
+            if answer.startswith("cut"):
+                # The server dies after the first deltas: no finish chunk, no [DONE], the connection closes.
+                self.close_connection = True
+                return
+            last = {"choices": [{"delta": {}, "finish_reason": None if answer == "nofinish" else "tool_calls" if answer == "tool" else "stop"}],
+                    "usage": {"completion_tokens": 21, "prompt_tokens": 217},
+                    "timings": {"prompt_ms": 300.0, "predicted_ms": 480.0, "predicted_per_token_ms": 22.5, "prompt_n": 217, "predicted_n": 21}}
+            send(b"data: " + json.dumps(last).encode() + b"\n\ndata: [DONE]\n\n")
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def llm_test():
+    """Check the client tool of llm-share on a fake llama-server, and the checks of its steps."""
+    tool = load_tool("cxl-llm.py")
+    servers = {name: fake_llama(answer) for name, answer in (
+        ("r-tool", "tool"), ("r-text", "text"), ("r-nofinish", "nofinish"),
+        ("r-cut", "cut"), ("r-cut-chunked", "cut-chunked"), ("r-cut-length", "cut-length"))}
+    tool.url = lambda reader, path: "http://127.0.0.1:%d%s" % (servers[reader].server_address[1], path)
+    s = tool.sample("r-tool")
+    expect("llm tool sample", s["answer"] == 'get_weather {"city":"Helsinki"}' and s["tpotFrom"] == "server"
+           and s["tpotMs"] == 22.5 and s["ttftMs"] > 0 and s["finish"] == "tool_calls" and s["completionTokens"] == 21, str(s))
+    s = tool.sample("r-text")
+    expect("llm text sample", s["answer"] == "The sky is blue." and s["tpotFrom"] == "client" and s["tpotMs"] > 0, str(s))
+    res = tool.bench("simultaneous", 2, ["r-tool", "r-text"])
+    expect("llm bench", len(res["samples"]) == 4 and res["perReader"]["r-tool"]["tpotMs"]["median"] == 22.5
+           and not res["perReader"]["r-text"]["errors"], str(res["perReader"]))
+    for name, word in (("r-cut", "before [DONE]"), ("r-cut-chunked", ""), ("r-cut-length", "before [DONE]"), ("r-nofinish", "finish reason")):
+        s = tool.safe_sample(name)
+        expect("llm %s is a failed sample" % name, s.get("error") and word in s["error"] and "ttftMs" not in s, str(s))
+    res_cut = tool.bench("simultaneous", 2, ["r-tool", "r-cut"])
+    expect("llm bench counts a cut stream as failed", res_cut["perReader"]["r-cut"]["errors"] == 2
+           and res_cut["perReader"]["r-cut"]["ttftMs"] is None and not res_cut["perReader"]["r-tool"]["errors"],
+           str(res_cut["perReader"]))
+    import threading
+    orig_sample, orig_hook = tool.safe_sample, threading.excepthook
+    servers["r-boom"] = servers["r-tool"]
+    tool.safe_sample = lambda r: 1 / 0 if r == "r-boom" else orig_sample(r)
+    threading.excepthook = lambda args: None
+    try:
+        res_boom = tool.bench("simultaneous", 1, ["r-tool", "r-boom"])
+    finally:
+        tool.safe_sample, threading.excepthook = orig_sample, orig_hook
+    expect("llm bench counts a sample thread that died as failed", res_boom["perReader"]["r-boom"]["errors"] == 1
+           and not res_boom["perReader"]["r-tool"]["errors"], str(res_boom["perReader"]))
+    import contextlib
+    import io
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        tool.print_bench(res)
+    expect("llm bench line", steps.bench_result(buf.getvalue()) == json.loads(json.dumps(res)), buf.getvalue()[:200])
+    for srv in set(servers.values()):
+        srv.shutdown()
+    out = ("page cache of the VM before the fetch: 3100 MiB\n"
+           "fetched Qwen3-0.6B-Q4_K_M.gguf: 378 MiB in 1.6 s (243 MB/s), sha256 ok\n"
+           "made an erofs of it: 380 MiB in 0.2 s\n"
+           "streamed /tmp/model.erofs through the fd of the lease: 398802944 bytes in 1.7 s\n"
+           "removed /tmp/model.erofs: page cache of the VM now 3104 MiB\n"
+           "wrote erofs (398802944 bytes) with Qwen3-0.6B-Q4_K_M.gguf\n")
+    expect("check_model", steps.check_model({}, out, 0) == [
+        "fetched 378 MiB in 1.6 s (243 MB/s), sha256 ok", "erofs of 380 MiB in 0.2 s, written in 1.7 s",
+        "VM page cache +4 MiB (3100 -> 3104 MiB)"], str(steps.check_model({}, out, 0)))
+
+    ask = 'reader-0: get_weather {"city":"Helsinki","unit":"celsius"} (TTFT 3.9 s, 40 tokens)\nreader-1: not serving: timed out\n'
+    got = steps.check_answers({}, ask, 0)
+    expect("check_answers", got == ['reader-0 3.9 s: get_weather {"city":"Helsink...', "reader-1: not serving: timed out"], str(got))
+
+    def snap(cached, anon):
+        g = {r: {"cgFileKb": cached, "cachedKb": 3000000 + cached, "ggufRssKb": 381596, "memAvailableKb": 6000000 - cached, "pgsteal": 0}
+             for r in llm.READERS}
+        vms = {vm: {"qemuPid": 1, "qemuRssAnonKb": anon, "mapping": {"Rss": 388252, "Pss": 129417, "ShmemPmdMapped": 385024,
+                                                                      "nodes": {"5": 60000, "6": 37063}}}
+               for vm in ("vm0", "vm1", "vm2")}
+        return {"host": {"file": "/tmp/x/llm0.raw", "fileResidentKb": 389724, "vms": vms, "pmdShare": llm.pmd_share(vms),
+                         "pool": {"dir": "/tmp/x", "source": "cxl-demo-pool", "fstype": "tmpfs", "options": "rw,huge=within_size"}},
+                "guest": g}
+    direct, cached = snap(0, 8000000), snap(387000, 8005000)
+    got = steps.check_mem({}, "mem: " + json.dumps({"snapshot": cached, "since": direct}), 0)
+    expect("check_mem", got == ["host: 381M of llm0, once; 2M pages 99%", "3 qemus map it: Rss 379M, Pss 126M each",
+                                "page cache charged to readers: 378M 378M 378M", "VM Cached +378M +378M +378M; qemu anon +5M +5M +5M"], str(got))
+    for l in llm.mem_lines(cached, direct):
+        expect("mem_lines ascii", all(32 <= ord(ch) < 127 for ch in l), l)
+    opts = llm.mount_options("rw,relatime,size=8388608k,huge=within_size,mpol=interleave:1-2,5-6,inode64")
+    expect("mount_options mpol with commas", opts.get("mpol") == "interleave:1-2,5-6" and opts.get("huge") == "within_size"
+           and opts.get("inode64") == "" and opts.get("size") == "8388608k", str(opts))
+    opts = llm.mount_options("rw,mpol=bind:2-3,huge=within_size")
+    expect("mount_options mpol bind", opts.get("mpol") == "bind:2-3" and opts.get("huge") == "within_size", str(opts))
+    expect("mount_options no mpol", "mpol" not in llm.mount_options("rw,huge=within_size,size=1024k"))
+    rec = {"model": "qwen3-0.6b", "latency": "off", "access": "direct", "bench": res, "pool": {"huge": "within_size", "pmdShare": 0.991}}
+    rows = llm.result_rows(rec)
+    expect("result_rows", [r[6] for r in rows] == ["r-tool", "r-text"] and rows[0][2:4] == ["within_size", "99%"]
+           and rows[0][9].startswith("22 (") and rows[0][10] == "44.4", str(rows))
+    # The latency column names the setup: off, local, far (the old name "on" too) and far with a load.
+    for latency, load, want in (("off", "off", "off"), ("local", "off", "local"), ("far", "off", "far"), ("on", "off", "far"),
+                                ("far", "700", "far+700"), ("on", "1000", "far+1000"), ("local", None, "local")):
+        got = llm.result_rows(dict(rec, latency=latency, latencyLoad=load))[0][1]
+        expect("result_rows latency %s load %s" % (latency, load), got == want, got)
+    got = [llm.latency_setup(name) for name in (None, "", "off", "local", "far", "on")]
+    expect("latency_setup", got == ["off", "off", "off", "local", "far", "far"], str(got))
+
+
 def wizard_test():
     """Run the checks of the wizard; its views are rendered with the other scenarios."""
     for test in (wizard_check.yaml_scalar_test, wizard_check.rule_test, wizard_check.question_test,
@@ -595,6 +863,9 @@ def wizard_test():
 
 def main():
     helper_test()
+    selection_test()
+    argument_test()
+    flash_test()
     render_scenarios()
     probe_test()
     probe_pmem_test()
@@ -608,6 +879,8 @@ def main():
     trace_poolfs_test()
     poolfs_helper_test()
     presenter_test()
+    llm_test()
+    shell_test()
     wizard_test()
     report = "\n".join(out) + "\n"
     if "--write" in sys.argv:
