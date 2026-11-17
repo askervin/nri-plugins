@@ -62,14 +62,11 @@ func TestDiscoveryControl(t *testing.T) {
 		t.Fatalf("default control: %+v %v", h, err)
 	}
 
-	// hmp for every host but vm2, which has a control of its own
-	e = newTestEnv(t, "discovery: {control: hmp}\nhosts: [{name: vm2, control: qmp}]\n")
+	// hmp for every host
+	e = newTestEnv(t, "discovery: {control: hmp}\n")
 	h, err := e.c.Host(ctx, "vm1")
 	if err != nil || h.Control != "" || h.Error != "no monitor socket" || h.State == api.HostRunning {
 		t.Fatalf("hmp without an HMP socket: %+v %v", h, err)
-	}
-	if h, err := e.c.Host(ctx, "vm2"); err != nil || h.Control != "qmp" || h.State != api.HostRunning {
-		t.Fatalf("host control qmp: %+v %v", h, err)
 	}
 	e.stop()
 	e.mu.Lock()
@@ -80,9 +77,6 @@ func TestDiscoveryControl(t *testing.T) {
 	h, err = e.c.Host(ctx, "vm1")
 	if err != nil || h.Control != "hmp" || h.HMP != "/e2e/vm1/monitor.sock" || h.State != api.HostRunning || h.Error != "" {
 		t.Fatalf("discovery control hmp: %+v %v", h, err)
-	}
-	if h, err := e.c.Host(ctx, "vm2"); err != nil || h.Control != "qmp" {
-		t.Fatalf("host control qmp with both sockets: %+v %v", h, err)
 	}
 	if _, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"}); err != nil {
 		t.Fatalf("attach over hmp: %v", err)
@@ -101,19 +95,13 @@ func slotBuses(h *api.Host) string {
 }
 
 func TestSlotPatterns(t *testing.T) {
-	for _, bad := range []string{`discovery: {slots: ["["]}`, `hosts: [{name: vm1, slots: ["a[" ]}]`} {
-		if _, err := ParseConfig([]byte(bad)); err == nil || !strings.Contains(err.Error(), `invalid pattern "`) {
-			t.Errorf("%s: %v", bad, err)
-		}
+	if _, err := ParseConfig([]byte(`discovery: {slots: ["["]}`)); err == nil || !strings.Contains(err.Error(), `invalid pattern "`) {
+		t.Errorf("bad slot pattern: %v", err)
 	}
-	e := newTestEnv(t, `discovery: {slots: ["*_hb0"]}`+"\nhosts: [{name: vm2, slots: [ds0_hb1]}]\n")
+	e := newTestEnv(t, `discovery: {slots: ["*_hb0"]}`+"\n")
 	h1, err := e.c.Host(ctx, "vm1")
 	if err != nil || slotBuses(h1) != "ds0_hb0 ds1_hb0" {
 		t.Fatalf("vm1 slots %q %v", slotBuses(h1), err)
-	}
-	h2, err := e.c.Host(ctx, "vm2")
-	if err != nil || slotBuses(h2) != "ds0_hb1" {
-		t.Fatalf("vm2 slots %q %v", slotBuses(h2), err)
 	}
 	// a slot outside the patterns does not exist for this server
 	_, _, err = e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", Slot: "ds0_hb1"})
@@ -141,23 +129,6 @@ func TestSlotPatterns(t *testing.T) {
 	}
 	_, _, err = e.c.Attach(ctx, "d3", api.AttachRequest{Host: "vm1"})
 	mustCode(t, err, api.CodeConflict)
-	// a host's patterns override those of discovery
-	if a, _, err := e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm2"}); err != nil || a.Slot.Bus != "ds0_hb1" {
-		t.Fatalf("shared0 on vm2: %+v %v", a, err)
-	}
-
-	// no slots key on a host: discovery.slots; an empty list: every slot
-	cfg, err := ParseConfig([]byte("hosts: [{name: a}, {name: b, slots: []}]"))
-	if err != nil || cfg.Hosts[0].Slots != nil || cfg.Hosts[1].Slots == nil || len(cfg.Hosts[1].Slots) != 0 {
-		t.Fatalf("slots of hosts: %+v %v", cfg, err)
-	}
-	e = newTestEnv(t, `discovery: {slots: ["*_hb0"]}`+"\nhosts: [{name: vm2, slots: []}]\n")
-	if h1, err := e.c.Host(ctx, "vm1"); err != nil || slotBuses(h1) != "ds0_hb0 ds1_hb0" {
-		t.Fatalf("vm1 slots %q %v", slotBuses(h1), err)
-	}
-	if h2, err := e.c.Host(ctx, "vm2"); err != nil || slotBuses(h2) != "ds0_hb0 ds1_hb0 ds0_hb1 ds1_hb1" {
-		t.Fatalf("vm2 slots %q %v", slotBuses(h2), err)
-	}
 }
 
 func TestAdoptionChecksSerial(t *testing.T) {
@@ -182,9 +153,9 @@ func TestAdoptionChecksSerial(t *testing.T) {
 	}
 	// another pool server's device of the same name in vm1
 	plug(e.fake("vm1"), "fcp_pooled0.hp7", 0xc1ee1001)
-	e.srv.Refresh(ctx, true)
-	e.srv.Refresh(ctx, true)
-	_, err := e.c.DeviceAttachment(ctx, "pooled0", "vm1")
+	e.srv.Refresh(ctx)
+	e.srv.Refresh(ctx)
+	_, err := e.attachment("pooled0", "vm1")
 	mustCode(t, err, api.CodeNotFound)
 	warning := "WARNING: host vm1 has qemu device fcp_pooled0.hp7 with serial 0xc1ee1001, not the serial 0xc1ee0001 " +
 		"of device pooled0: not adopted (another pool server's device?)"
@@ -195,7 +166,7 @@ func TestAdoptionChecksSerial(t *testing.T) {
 	if err := e.fake("vm1").DeviceDel(ctx, "fcp_pooled0.hp7"); err != nil {
 		t.Fatal(err)
 	}
-	e.srv.Refresh(ctx, true)
+	e.srv.Refresh(ctx)
 	e.srv.mu.RLock()
 	warned := e.srv.adoptWarned["vm1/fcp_pooled0.hp7"]
 	e.srv.mu.RUnlock()
@@ -204,15 +175,15 @@ func TestAdoptionChecksSerial(t *testing.T) {
 	}
 	// the device's own serial is adopted
 	plug(e.fake("vm2"), "fcp_pooled0.hp8", 0xc1ee0001)
-	e.srv.Refresh(ctx, true)
-	a, err := e.c.DeviceAttachment(ctx, "pooled0", "vm2")
+	e.srv.Refresh(ctx)
+	a, err := e.attachment("pooled0", "vm2")
 	if err != nil || !a.Adopted || a.QemuDeviceID != "fcp_pooled0.hp8" || a.Serial != "0xc1ee0001" {
 		t.Fatalf("not adopted: %+v %v", a, err)
 	}
 	// a qemu device without a serial is adopted with the device's serial
 	plug(e.fake("vm1"), "fcp_shared0.hp9", 0)
-	e.srv.Refresh(ctx, true)
-	a, err = e.c.DeviceAttachment(ctx, "shared0", "vm1")
+	e.srv.Refresh(ctx)
+	a, err = e.attachment("shared0", "vm1")
 	if err != nil || !a.Adopted || a.QemuDeviceID != "fcp_shared0.hp9" || a.Serial != "0xc1ae0000" {
 		t.Fatalf("without serial not adopted: %+v %v", a, err)
 	}

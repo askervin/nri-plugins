@@ -31,7 +31,6 @@ import (
 
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
-	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/client"
 )
 
 // DeviceName turns a server device name into a DNS label: lower-case,
@@ -171,7 +170,7 @@ func (c *Controller) driverResources(devs []resourceapi.Device, sel *corev1.Node
 // when the devices or the nodes changed. Without such nodes the pool has
 // no ResourceSlice.
 func (c *Controller) publish(ctx context.Context, hm hostMap) error {
-	ds, err := c.pool.Devices(ctx, client.DeviceListOptions{Scope: api.ScopePool})
+	ds, err := c.pool.Devices(ctx, api.ScopePool)
 	if err != nil {
 		return err
 	}

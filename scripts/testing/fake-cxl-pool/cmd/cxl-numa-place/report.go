@@ -38,18 +38,6 @@ type Placement struct {
 	// Unlocated is the number of resident pages without a node, by the
 	// errno name of move_pages (ENOENT: not mapped).
 	Unlocated map[string]int `json:"unlocated,omitempty"`
-	Move      *MoveResult    `json:"move,omitempty"`
-}
-
-// MoveResult is what a move did to the resident pages of a file.
-type MoveResult struct {
-	Nodes []int `json:"nodes"`
-	// Kept is the number of pages that were on one of Nodes already.
-	Kept  int `json:"kept"`
-	Moved int `json:"moved"`
-	// Failed is the number of pages not moved, by the errno name of
-	// move_pages ("elsewhere" for a page that ended on another node).
-	Failed map[string]int `json:"failed,omitempty"`
 }
 
 // newPlacement returns the placement of the resident pages of m from
@@ -76,28 +64,6 @@ func newPlacement(m *fileMap, status []int32) *Placement {
 	return p
 }
 
-// tally counts the pages of a move by its status and the target nodes.
-func (r *MoveResult) tally(status, to []int32) {
-	for i, s := range status {
-		switch {
-		case s == to[i]:
-			r.Moved++
-		case s >= 0:
-			r.fail("elsewhere")
-		default:
-			r.fail(errnoName(-s))
-		}
-	}
-}
-
-// fail counts one page that was not moved, for the reason why.
-func (r *MoveResult) fail(why string) {
-	if r.Failed == nil {
-		r.Failed = map[string]int{}
-	}
-	r.Failed[why]++
-}
-
 // errnoName returns the name of the errno e, like "ENOENT".
 func errnoName(e int32) string {
 	if name := unix.ErrnoName(syscall.Errno(e)); name != "" {
@@ -113,8 +79,7 @@ func mib(pages, pageSize int) string {
 }
 
 // writeTable writes the placements as a table, sizes in MiB: one row per
-// file, one column per node and per errno of the unlocated pages, and
-// for a move one line of what it did under the table.
+// file, one column per node and per errno of the unlocated pages.
 func writeTable(w io.Writer, ps []*Placement) error {
 	nodes, errnos := columns(ps)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
@@ -140,14 +105,6 @@ func writeTable(w io.Writer, ps []*Placement) error {
 	}
 	if len(errnos) > 0 {
 		if _, err := fmt.Fprintln(w, "(the E... columns: resident pages without a node, by the error of move_pages)"); err != nil {
-			return err
-		}
-	}
-	for _, p := range ps {
-		if p.Move == nil {
-			continue
-		}
-		if _, err := fmt.Fprintln(w, moveLine(p)); err != nil {
 			return err
 		}
 	}
@@ -200,22 +157,6 @@ func pageCount(n int) string {
 		return "1 page"
 	}
 	return fmt.Sprintf("%d pages", n)
-}
-
-// moveLine returns one line of what the move of p did.
-func moveLine(p *Placement) string {
-	r := p.Move
-	line := fmt.Sprintf("%s: to nodes %s: moved %s (%s MiB), kept %s on the nodes",
-		p.File, formatNodeList(r.Nodes), pageCount(r.Moved), mib(r.Moved, p.PageSize), pageCount(r.Kept))
-	if len(r.Failed) > 0 {
-		var why []string
-		for e, n := range r.Failed {
-			why = append(why, fmt.Sprintf("%s %d", e, n))
-		}
-		sort.Strings(why)
-		line += ", not moved: " + strings.Join(why, ", ")
-	}
-	return line
 }
 
 // writeJSON writes the placements as a JSON array.

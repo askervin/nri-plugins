@@ -21,6 +21,17 @@ import (
 	"testing"
 )
 
+// treeDevice returns the cxl-type3 device of the tree by id, nil if not
+// found.
+func treeDevice(t *Tree, id string) *Type3Device {
+	for i := range t.Type3 {
+		if t.Type3[i].ID == id {
+			return &t.Type3[i]
+		}
+	}
+	return nil
+}
+
 // rawSession returns the bytes that a client sees after sending the
 // command line in a raw socat capture: everything after the first prompt.
 func rawSession(t *testing.T, name string) string {
@@ -53,43 +64,6 @@ func TestCleanHMPOutput(t *testing.T) {
 	}
 }
 
-func TestParseQtreeBrief(t *testing.T) {
-	tree := ParseQtree(CleanHMPOutput(rawSession(t, "hmp-raw-info-qtree.txt")))
-	if len(tree.HostBridges) != 2 {
-		t.Fatalf("expected 2 host bridges, got %+v", tree.HostBridges)
-	}
-	if tree.HostBridge("cxlhb0") == nil || tree.HostBridge("cxlhb1") == nil {
-		t.Fatalf("missing host bridges: %+v", tree.HostBridges)
-	}
-	slots := 0
-	for _, p := range tree.Ports {
-		if p.IsSlot() {
-			slots++
-		}
-	}
-	// 2 downstream ports under hb0, 8 under hb1; root ports have switches
-	if slots != 10 {
-		t.Fatalf("expected 10 slots, got %d: %+v", slots, tree.Ports)
-	}
-	if rp := tree.Port("cxlrp0hb0"); rp == nil || rp.IsSlot() || rp.Kind != PortRootPort {
-		t.Fatalf("root port with a switch must not be a slot: %+v", rp)
-	}
-	p := tree.Port("cxlsw_ds0_usrp0hb1")
-	if p == nil || p.HostBridge != "cxlhb1" || p.Occupant() != "cxl_memdev2.hp3" {
-		t.Fatalf("unexpected port: %+v", p)
-	}
-	if p := tree.Port("cxlsw_ds7_usrp0hb1"); p == nil || p.Occupant() != "" {
-		t.Fatalf("expected free port: %+v", p)
-	}
-	if len(tree.Type3) != 3 {
-		t.Fatalf("expected 3 cxl-type3 devices, got %+v", tree.Type3)
-	}
-	d := tree.Device("cxl_memdev0.hp1")
-	if d == nil || d.Bus != "cxlsw_ds0_usrp0hb0" || d.HasSerial {
-		t.Fatalf("unexpected device %+v", d)
-	}
-}
-
 func TestParseQtreeFull(t *testing.T) {
 	tree := ParseQtree(CleanHMPOutput(rawSession(t, "hmp-raw-info-qtree-full-crio.txt")))
 	if hb := tree.HostBridge("cxlhb1"); hb == nil || hb.NumaNode != 1 {
@@ -98,7 +72,7 @@ func TestParseQtreeFull(t *testing.T) {
 	if hb := tree.HostBridge("cxlhb0"); hb == nil || hb.NumaNode != 0 {
 		t.Fatalf("expected cxlhb0 on numa node 0: %+v", tree.HostBridges)
 	}
-	d := tree.Device("cxl_memdev2.hp3")
+	d := treeDevice(tree, "cxl_memdev2.hp3")
 	if d == nil {
 		t.Fatalf("cxl_memdev2.hp3 not found: %+v", tree.Type3)
 	}
@@ -145,7 +119,7 @@ func TestParseQtreeRootPortSlot(t *testing.T) {
 	if tree.Port("cxlrp1hb0").Occupant() != "x.hp1" {
 		t.Fatalf("unexpected occupant")
 	}
-	d := tree.Device("x.hp1")
+	d := treeDevice(tree, "x.hp1")
 	if d == nil || d.VolatileMemdev != "fcp_x.hp1" || d.Serial != 0xc1f00001 || d.Bus != "cxlrp1hb0" {
 		t.Fatalf("unexpected device %+v", d)
 	}
@@ -200,19 +174,13 @@ func TestParseCmdline(t *testing.T) {
 		!strings.HasSuffix(p.HMPSockets[1], "/qemu_socket") {
 		t.Fatalf("unexpected hmp sockets %v", p.HMPSockets)
 	}
-	if len(p.HostBridges) != 2 || p.HostBridgeNuma("cxlhb1") != 1 || p.HostBridges[1].BusNr != 24 {
-		t.Fatalf("unexpected host bridges %+v", p.HostBridges)
-	}
-	if p.FMWSize("cxlhb0") != 4<<30 || p.FMWSize("cxlhb1") != 4<<30 {
-		t.Fatalf("unexpected fmws %+v", p.FMWs)
-	}
 	lbs := p.LocalBackends()
 	if len(lbs) != 10 {
 		t.Fatalf("expected 10 local backends, got %d", len(lbs))
 	}
 	lb := lbs[3]
 	if lb.Memdev != "cxl_memdev3" || lb.Bus != "cxlsw_ds1_usrp0hb1" || lb.Serial != 0xc100e2e3 ||
-		lb.Size != 256<<20 || lb.QomType != MemoryBackendRAM || !lb.Share {
+		lb.Size != 256<<20 || lb.ObjectID != "beram_cxl_memdev3__bus_cxlsw_ds1_usrp0hb1__sn_0xc100e2e3" {
 		t.Fatalf("unexpected local backend %+v", lb)
 	}
 	// daemonized qemu: cwd is "/", sockets are in the project dir
@@ -236,9 +204,9 @@ func TestParseCmdlineQMPAndUUID(t *testing.T) {
 		"-mon", "chardev=qmp1,mode=control",
 		"-chardev", "socket,id=c2,path=/run/client.sock",
 		"-mon", "chardev=c2",
-		"-object", `{"qom-type":"memory-backend-file","id":"befile_cxl_memdev0__bus_ds0__sn_0xc1f0ee00","mem-path":"/tmp/fake-cxl-pool/s0.raw","size":268435456,"share":true}`,
-		"-device", "cxl-type3,bus=ds0,volatile-memdev=befile_cxl_memdev0__bus_ds0__sn_0xc1f0ee00,id=cxl_memdev0,sn=0xc1f0ee00",
-		"-M", "q35,cxl=on,cxl-fmw.0.targets.0=cxlhb0,cxl-fmw.0.targets.1=cxlhb1,cxl-fmw.0.size=8G",
+		"-object", `{"qom-type":"memory-backend-ram","id":"beram_cxl_memdev0__bus_ds0__sn_0xc1f0ee00","size":268435456,"share":true}`,
+		"-object", "memory-backend-file,id=befile_cxl_memdev1__bus_ds1__sn_0xc1f0ee01,mem-path=/tmp/f.raw,size=256M",
+		"-device", "cxl-type3,bus=ds0,volatile-memdev=beram_cxl_memdev0__bus_ds0__sn_0xc1f0ee00,id=cxl_memdev0,sn=0xc1f0ee00",
 		"-daemonize",
 	}
 	p := ParseCmdline(args)
@@ -251,13 +219,10 @@ func TestParseCmdlineQMPAndUUID(t *testing.T) {
 	if len(p.HMPSockets) != 0 {
 		t.Fatalf("client chardev must not be a monitor: %v", p.HMPSockets)
 	}
+	// a memory-backend-file is no local backend
 	lbs := p.LocalBackends()
-	if len(lbs) != 1 || lbs[0].QomType != MemoryBackendFile || lbs[0].MemPath != "/tmp/fake-cxl-pool/s0.raw" ||
-		lbs[0].Size != 256<<20 || !lbs[0].Share || lbs[0].Serial != 0xc1f0ee00 {
+	if len(lbs) != 1 || lbs[0].Size != 256<<20 || lbs[0].Serial != 0xc1f0ee00 || lbs[0].Bus != "ds0" {
 		t.Fatalf("unexpected local backends %+v", lbs)
-	}
-	if p.FMWSize("cxlhb1") != 4<<30 { // 8G interleaved over two host bridges
-		t.Fatalf("unexpected fmw %+v", p.FMWs)
 	}
 }
 
@@ -327,8 +292,7 @@ func TestCommandLines(t *testing.T) {
 	}
 }
 
-// Review L3, L4: unassigned NUMA nodes (qemu MAX_NODES = 128) are -1, and
-// interleaved windows are shared by their targets.
+// Review L3, L4: unassigned NUMA nodes (qemu MAX_NODES = 128) are -1.
 func TestNumaUnassignedAndInterleave(t *testing.T) {
 	tree := ParseQtree(`bus: main-system-bus
   dev: q35-pcihost, id ""
@@ -340,10 +304,5 @@ func TestNumaUnassignedAndInterleave(t *testing.T) {
 `)
 	if len(tree.HostBridges) != 1 || tree.HostBridges[0].NumaNode != -1 {
 		t.Fatalf("unexpected host bridges %+v", tree.HostBridges)
-	}
-	p := ParseCmdline([]string{"qemu-system-x86_64", "-device", "pxb-cxl,id=cxlhb0,bus_nr=12,numa_node=128",
-		"-M", "cxl-fmw.0.targets.0=cxlhb0,cxl-fmw.0.targets.1=cxlhb1,cxl-fmw.0.size=4G,cxl-fmw.1.targets.0=cxlhb1,cxl-fmw.1.size=1G"})
-	if p.HostBridgeNuma("cxlhb0") != -1 || p.FMWSize("cxlhb0") != 2<<30 || p.FMWSize("cxlhb1") != 3<<30 {
-		t.Fatalf("numa %d fmw %d %d", p.HostBridgeNuma("cxlhb0"), p.FMWSize("cxlhb0"), p.FMWSize("cxlhb1"))
 	}
 }

@@ -48,7 +48,7 @@ func newFsEnv(t *testing.T) *env {
 	t.Helper()
 	e := newEnvWith(t, func(p *fakePool, _ *Config) {
 		p.devices["fs0"] = api.Device{Name: "fs0", Serial: "0xc1af0001", Size: 512 << 20, Shared: true, Persistent: true,
-			Pool: "default", Scope: api.ScopePool, State: api.DeviceFree}
+			Scope: api.ScopePool, State: api.DeviceFree}
 	})
 	e.sync()
 	return e

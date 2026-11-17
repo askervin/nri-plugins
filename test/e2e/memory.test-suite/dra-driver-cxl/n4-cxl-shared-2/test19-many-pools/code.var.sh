@@ -218,34 +218,28 @@ pool-server-start --name pool-a --hosts "$VM1 $VM2" --index 0 --slots "*hb0" "
   - name: a-pooled0
     size: 512Mi
     shared: false
-    pool: default
     serial: $A_POOLED0_SERIAL
   - name: a-shared0
     size: 256Mi
     shared: true
-    pool: default
     serial: $A_SHARED0_SERIAL"
 pool-server-start --name pool-b --port 9910 --hosts "$VM0" --index 1 --slots "*hb0" "
   - name: b-pooled0
     size: 512Mi
     shared: false
-    pool: default
     serial: $B_POOLED0_SERIAL
   - name: b-shared0
     size: 256Mi
     shared: true
-    pool: default
     serial: $B_SHARED0_SERIAL"
 pool-server-start --name pool-c --port 9911 --hosts "$VM0 $VM1 $VM2" --index 2 --control hmp --slots "*hb1" --local-devices no "
   - name: c-shared0
     size: 256Mi
     shared: true
-    pool: default
     serial: $C_SHARED0_SERIAL
   - name: c-pooled0
     size: 256Mi
     shared: false
-    pool: default
     serial: $C_POOLED0_SERIAL"
 # Each server knows exactly the VMs it is cabled to, through its own
 # monitor protocol, and only the slots of its host bridge.

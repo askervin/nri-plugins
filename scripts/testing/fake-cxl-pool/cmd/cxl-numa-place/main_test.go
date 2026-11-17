@@ -17,32 +17,15 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// testCLI returns a cli with the nodes with memory 1-2,5-6 and the
-// permission to move pages canMove, and its output buffers.
-func testCLI(t *testing.T, canMove bool) (*cli, *bytes.Buffer, *bytes.Buffer) {
-	t.Helper()
-	sysfs := t.TempDir()
-	dir := filepath.Join(sysfs, "devices/system/node")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "has_memory"), []byte("1-2,5-6\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+// testCLI returns a cli and its output buffers.
+func testCLI() (*cli, *bytes.Buffer, *bytes.Buffer) {
 	var stdout, stderr bytes.Buffer
-	c := &cli{
-		stdout:     &stdout,
-		stderr:     &stderr,
-		sysfs:      sysfs,
-		canMoveAll: func() (bool, error) { return canMove, nil },
-	}
-	return c, &stdout, &stderr
+	return &cli{stdout: &stdout, stderr: &stderr}, &stdout, &stderr
 }
 
 func TestUsage(t *testing.T) {
@@ -56,13 +39,11 @@ func TestUsage(t *testing.T) {
 		{args: []string{"where"}, code: exitUsage, err: "where: no FILE"},
 		{args: []string{"where", "-o", "yaml", "f"}, code: exitUsage, err: `-o "yaml": the output is table or json`},
 		{args: []string{"where", "--nodes", "5", "f"}, code: exitUsage, err: "flag provided but not defined: -nodes"},
-		{args: []string{"move", "f"}, code: exitUsage, err: "move: no --nodes"},
-		{args: []string{"move", "--nodes", "6-5", "f"}, code: exitUsage, err: "ends before it starts"},
-		{args: []string{"move", "--nodes", "4", "f"}, code: exitError, err: "move --nodes 4: node 4 has no memory (the nodes with memory: 1-2,5-6)"},
+		{args: []string{"move", "f"}, code: exitUsage, err: `unknown command "move"`},
 		{args: []string{"--help"}, code: exitOK},
 		{args: []string{"where", "-h"}, code: exitOK},
 	} {
-		c, stdout, stderr := testCLI(t, true)
+		c, stdout, stderr := testCLI()
 		code := c.run(tc.args)
 		if code != tc.code || !strings.Contains(stderr.String(), tc.err) {
 			t.Errorf("%v: exit %d, stderr %q, want exit %d and %q", tc.args, code, stderr.String(), tc.code, tc.err)
@@ -73,18 +54,10 @@ func TestUsage(t *testing.T) {
 	}
 }
 
-func TestMoveNeedsCapSysNice(t *testing.T) {
-	c, _, stderr := testCLI(t, false)
-	code := c.run([]string{"move", "--nodes", "5,6", sparseFile(t)})
-	if code != exitError || !strings.Contains(stderr.String(), "move needs CAP_SYS_NICE (root)") {
-		t.Errorf("move without CAP_SYS_NICE: exit %d, stderr %q", code, stderr.String())
-	}
-}
-
 func TestWhereCommand(t *testing.T) {
 	path := sparseFile(t)
 	whereOrSkip(t, path)
-	c, stdout, stderr := testCLI(t, true)
+	c, stdout, stderr := testCLI()
 	if code := c.run([]string{"where", path, "-o", "json"}); code != exitOK {
 		t.Fatalf("where -o json: exit %d, stderr %q", code, stderr.String())
 	}
@@ -100,7 +73,7 @@ func TestWhereCommand(t *testing.T) {
 	if len(lines) != 3 || !strings.HasPrefix(lines[0], "FILE") || !strings.HasPrefix(lines[1], path) {
 		t.Errorf("where of a file twice: %q", stdout.String())
 	}
-	c, _, stderr = testCLI(t, true)
+	c, _, stderr = testCLI()
 	if code := c.run([]string{"where", filepath.Join(t.TempDir(), "missing")}); code != exitError || !strings.Contains(stderr.String(), "no such file") {
 		t.Errorf("where of a missing file: exit %d, stderr %q", code, stderr.String())
 	}

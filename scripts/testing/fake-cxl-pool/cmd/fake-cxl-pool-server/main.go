@@ -51,11 +51,10 @@ func discoveryInfo(d *server.DiscoveryConfig) string {
 
 func main() {
 	configFile := flag.String("config", "", "YAML config file (default: built-in defaults)")
-	listen := flag.String("listen", "", "listen address, overrides the config (default 127.0.0.1:9909)")
-	stateFile := flag.String("state", "", "state file, overrides the config (\"-\": no persistence)")
+	stateFile := flag.String("state", "", "state file (default: <dir>.state.json of the config; \"-\": no persistence)")
 	verbose := flag.Bool("v", false, "log every qemu command and http request")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [-config FILE] [-listen ADDR] [-state FILE] [-v]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [-config FILE] [-state FILE] [-v]\n", os.Args[0])
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -76,9 +75,6 @@ func main() {
 		}
 	} else {
 		cfg = server.DefaultConfig()
-	}
-	if *listen != "" {
-		cfg.Listen = *listen
 	}
 	if *stateFile != "" {
 		cfg.StateFile = *stateFile

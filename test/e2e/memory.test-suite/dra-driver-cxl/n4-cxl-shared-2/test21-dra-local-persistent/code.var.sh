@@ -171,7 +171,6 @@ pool-server-start --name "$LP_SERVER" --port "$LP_PORT" --hosts "$VM2" --control
     size: 512Mi
     shared: false
     persistent: true
-    pool: default
     serial: $LP_SERIAL"
 [ "${DRA_CONTROLLER_UNITS[*]}" == "$DRA_CONTROLLER_UNIT" ] ||
     error "pool controllers ${DRA_CONTROLLER_UNITS[*]}, expected $DRA_CONTROLLER_UNIT only"

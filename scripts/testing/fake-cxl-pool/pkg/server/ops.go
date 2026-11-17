@@ -19,23 +19,12 @@ import (
 	"fmt"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/pool"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu"
 )
-
-// dataAlign returns the alignment of qemu's mapping of the data backend of
-// a device of SIZE bytes: qemu.HugePageAlign if SIZE is a multiple of it,
-// so that the host can map the backing file with 2 MiB pages, else 0.
-func dataAlign(size int64) uint64 {
-	if size > 0 && size%qemu.HugePageAlign == 0 {
-		return qemu.HugePageAlign
-	}
-	return 0
-}
 
 // Status returns the server status.
 func (s *Server) Status() api.Status {
@@ -44,7 +33,7 @@ func (s *Server) Status() api.Status {
 	st := api.Status{
 		Name:        s.cfg.Name,
 		Version:     api.ServerVersion,
-		Qemu:        api.QemuStatus{Discovery: s.cfg.Discovery.QemuEnabled(), Versions: map[string]string{}},
+		Qemu:        api.QemuStatus{Versions: map[string]string{}},
 		Hosts:       len(s.hosts),
 		Devices:     len(s.devices),
 		Attachments: len(s.atts),
@@ -62,33 +51,10 @@ func (s *Server) Status() api.Status {
 	return st
 }
 
-// Pools lists pools.
-func (s *Server) Pools() []api.Pool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := []api.Pool{}
-	for _, n := range s.poolOrder {
-		out = append(out, s.poolViewLocked(n))
-	}
-	return out
-}
-
-// Pool returns a pool.
-func (s *Server) Pool(name string) (api.Pool, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if _, ok := s.pools[name]; !ok {
-		return api.Pool{}, api.NotFound("pool %q not found", name)
-	}
-	return s.poolViewLocked(name), nil
-}
-
-// Hosts lists hosts. Device trees are queried first unless cached is true.
-func (s *Server) Hosts(ctx context.Context, cached bool) []api.Host {
+// Hosts lists hosts. Device trees are queried first.
+func (s *Server) Hosts(ctx context.Context) []api.Host {
 	ctx = context.WithoutCancel(ctx) // a client disconnect must not fail monitor calls
-	if !cached {
-		s.refreshTrees(ctx)
-	}
+	s.refreshTrees(ctx)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := []api.Host{}
@@ -99,26 +65,17 @@ func (s *Server) Hosts(ctx context.Context, cached bool) []api.Host {
 }
 
 // Host returns a host by name or uuid.
-func (s *Server) Host(ctx context.Context, ref string, cached bool) (api.Host, error) {
+func (s *Server) Host(ctx context.Context, ref string) (api.Host, error) {
 	s.mu.RLock()
 	h := s.lookupHostLocked(ref)
 	s.mu.RUnlock()
 	if h == nil {
 		return api.Host{}, api.NotFound("host %q not found", ref)
 	}
-	if !cached {
-		s.refreshTrees(context.WithoutCancel(ctx), h.name)
-	}
+	s.refreshTrees(context.WithoutCancel(ctx), h.name)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.hostViewLocked(h), nil
-}
-
-// Rescan rediscovers qemu processes.
-func (s *Server) Rescan(ctx context.Context) []api.Host {
-	ctx = context.WithoutCancel(ctx)
-	s.Refresh(ctx, true)
-	return s.Hosts(ctx, true)
 }
 
 // Resolve finds the host of a client by uuid and/or hostname.
@@ -135,57 +92,17 @@ func (s *Server) Resolve(hostname, uuid string) (api.Host, error) {
 	return s.hostViewLocked(h), nil
 }
 
-// DeviceFilter filters device lists.
-type DeviceFilter struct {
-	Shared *bool
-	State  string
-	Host   string // attached to or local to the host (name or uuid)
-	Pool   string
-	Scope  string
-}
-
-// Devices lists devices.
-func (s *Server) Devices(f DeviceFilter) ([]api.Device, error) {
+// Devices lists the devices of a scope ("" for all).
+func (s *Server) Devices(scope string) []api.Device {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	hostName := ""
-	if f.Host != "" {
-		h := s.lookupHostLocked(f.Host)
-		if h == nil {
-			return nil, api.NotFound("host %q not found", f.Host)
-		}
-		hostName = h.name
-	}
 	out := []api.Device{}
 	for _, d := range sortedDevices(s.devices) {
-		v := s.deviceViewLocked(d)
-		if f.Shared != nil && v.Shared != *f.Shared {
-			continue
+		if scope == "" || d.Scope == scope {
+			out = append(out, s.deviceViewLocked(d))
 		}
-		if f.State != "" && v.State != f.State {
-			continue
-		}
-		if f.Pool != "" && v.Pool != f.Pool {
-			continue
-		}
-		if f.Scope != "" && v.Scope != f.Scope {
-			continue
-		}
-		if hostName != "" {
-			_, local := d.bindings[hostName]
-			attached := false
-			for _, a := range v.Attachments {
-				if a.Host == hostName {
-					attached = true
-				}
-			}
-			if !local && !attached {
-				continue
-			}
-		}
-		out = append(out, v)
 	}
-	return out, nil
+	return out
 }
 
 // Device returns a device.
@@ -209,17 +126,6 @@ func (s *Server) CreateDevice(req api.DeviceCreate) (api.Device, error) {
 	}
 	if size%CapacityMultiplier != 0 {
 		return api.Device{}, api.InvalidArgument("size %s is not a multiple of %s (CXL capacity unit)", api.FormatSize(size), api.FormatSize(CapacityMultiplier))
-	}
-	poolName := req.Pool
-	if poolName == "" {
-		poolName = s.poolOrder[0]
-	}
-	p := s.pools[poolName]
-	if p == nil {
-		return api.Device{}, api.NotFound("pool %q not found", poolName)
-	}
-	if req.Shared && !p.Sharable {
-		return api.Device{}, api.InvalidArgument("pool %q is not sharable", poolName)
 	}
 	name := req.Name
 	if name == "" {
@@ -252,11 +158,7 @@ func (s *Server) CreateDevice(req api.DeviceCreate) (api.Device, error) {
 	} else {
 		sn = s.serials.NextExcept(name, req.Shared, s.localSerialLocked)
 	}
-	if err := p.Reserve(name, size); err != nil {
-		s.serials.Release(sn)
-		return api.Device{}, api.Conflict("%v", err)
-	}
-	path := p.FilePath(name)
+	path := s.filePath(name)
 	d := &device{
 		Device: api.Device{
 			Name:       name,
@@ -266,25 +168,16 @@ func (s *Server) CreateDevice(req api.DeviceCreate) (api.Device, error) {
 			Persistent: req.Persistent,
 			Backend:    api.BackendFile,
 			Path:       path,
-			Pool:       p.Name,
 			Scope:      api.ScopePool,
-			Labels:     req.Labels,
 			Created:    time.Now().UTC(),
 		},
-		serial:   sn,
-		dynamic:  true,
-		bindings: map[string]*binding{},
+		serial:  sn,
+		dynamic: true,
 	}
 	if req.Persistent {
 		d.LSAPath = pool.LSAPath(path)
 	}
-	if other := s.deviceWithFilesLocked(d); other != nil {
-		p.Unreserve(name)
-		s.serials.Release(sn)
-		return api.Device{}, api.Conflict("a file of device %q would be a file of device %q", name, other.Name)
-	}
 	if err := d.ensureFiles(); err != nil {
-		p.Unreserve(name)
 		s.serials.Release(sn)
 		removeDeviceFiles(d, s.logf)
 		return api.Device{}, api.Internal("cannot create backing file: %v", err)
@@ -301,22 +194,6 @@ func (s *Server) CreateDevice(req api.DeviceCreate) (api.Device, error) {
 	return v, nil
 }
 
-// deviceWithFilesLocked returns a device other than d that has a file
-// (data or label storage area) of d.
-func (s *Server) deviceWithFilesLocked(d *device) *device {
-	for _, o := range sortedDevices(s.devices) {
-		if o == d || o.Backend != api.BackendFile {
-			continue
-		}
-		for _, f := range []string{d.Path, d.LSAPath} {
-			if f != "" && ((o.Path != "" && samePath(f, o.Path)) || (o.LSAPath != "" && samePath(f, o.LSAPath))) {
-				return o
-			}
-		}
-	}
-	return nil
-}
-
 // removeDeviceFiles removes the backing files of a device: the data file
 // and the label storage area file.
 func removeDeviceFiles(d *device, logf func(string, ...any)) {
@@ -328,33 +205,6 @@ func removeDeviceFiles(d *device, logf func(string, ...any)) {
 			logf("device %s: cannot remove %s: %v", d.Name, f, err)
 		}
 	}
-}
-
-// PatchDevice updates shared and labels of a device that is not attached.
-func (s *Server) PatchDevice(name string, patch api.DevicePatch) (api.Device, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	d := s.devices[name]
-	if d == nil {
-		return api.Device{}, api.NotFound("device %q not found", name)
-	}
-	if len(s.deviceAttachmentsLocked(name)) > 0 {
-		return api.Device{}, api.Conflict("device %q is attached", name)
-	}
-	if patch.Shared != nil {
-		if *patch.Shared && d.Pool != "" && !s.pools[d.Pool].Sharable {
-			return api.Device{}, api.InvalidArgument("pool %q is not sharable", d.Pool)
-		}
-		d.Shared = *patch.Shared
-	}
-	if patch.Labels != nil {
-		d.Labels = patch.Labels
-	}
-	d.patched = d.patched || patch.Shared != nil || patch.Labels != nil
-	s.saveStateLocked()
-	v := s.deviceViewLocked(d)
-	s.events.publish(api.EventDeviceUpdated, v)
-	return v, nil
 }
 
 // DeleteDevice deletes a device created over the API and its backing files.
@@ -374,18 +224,13 @@ func (s *Server) DeleteDevice(ctx context.Context, name string, force bool) erro
 		return api.Conflict("device %q is a local device of a qemu command line", name)
 	}
 	atts := s.deviceAttachmentsLocked(name)
-	if d.Allocation != nil && !force {
-		owner := d.Allocation.Owner
-		s.mu.RUnlock()
-		return api.Conflict("device %q is allocated to %q, release it first or use force", name, owner)
-	}
 	s.mu.RUnlock()
 	if len(atts) > 0 {
 		if !force {
 			return api.Conflict("device %q is attached to %d host(s), detach first or use force", name, len(atts))
 		}
 		for _, a := range atts {
-			if _, _, err := s.Detach(ctx, name, a.Host, DetachOptions{Wait: true, Timeout: time.Duration(s.cfg.DetachTimeout), Force: true}); err != nil {
+			if _, _, err := s.Detach(ctx, name, a.Host, DetachOptions{Timeout: time.Duration(s.cfg.DetachTimeout), Force: true}); err != nil {
 				return err
 			}
 		}
@@ -399,11 +244,8 @@ func (s *Server) DeleteDevice(ctx context.Context, name string, force bool) erro
 		return api.Conflict("device %q was attached again", name)
 	}
 	delete(s.devices, name)
-	if p := s.pools[d.Pool]; p != nil {
-		p.Unreserve(name)
-		if filepath.Dir(d.Path) == filepath.Clean(p.Dir) {
-			removeDeviceFiles(d, s.logf)
-		}
+	if filepath.Dir(d.Path) == filepath.Clean(s.cfg.Dir) {
+		removeDeviceFiles(d, s.logf)
 	}
 	s.serials.Release(d.serial)
 	s.logf("device %s: deleted", name)
@@ -411,52 +253,6 @@ func (s *Server) DeleteDevice(ctx context.Context, name string, force bool) erro
 	v := d.Device
 	v.State = "deleted"
 	s.events.publish(api.EventDeviceUpdated, v)
-	return nil
-}
-
-// Allocate records the owner of a device.
-func (s *Server) Allocate(name string, req api.AllocationRequest) (api.Allocation, error) {
-	if req.Owner == "" {
-		return api.Allocation{}, api.InvalidArgument("owner is required")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	d := s.devices[name]
-	if d == nil {
-		return api.Allocation{}, api.NotFound("device %q not found", name)
-	}
-	if d.Allocation != nil && d.Allocation.Owner != req.Owner {
-		return *d.Allocation, api.Conflict("device %q is allocated to %q", name, d.Allocation.Owner)
-	}
-	if d.Allocation == nil {
-		d.Allocation = &api.Allocation{Owner: req.Owner, Since: time.Now().UTC()}
-		s.logf("device %s: allocated to %s", name, req.Owner)
-	}
-	d.Allocation.Note = req.Note
-	s.saveStateLocked()
-	s.events.publish(api.EventDeviceUpdated, s.deviceViewLocked(d))
-	return *d.Allocation, nil
-}
-
-// ReleaseAllocation removes the owner of a device. If owner is given, it
-// must match unless force.
-func (s *Server) ReleaseAllocation(name, owner string, force bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	d := s.devices[name]
-	if d == nil {
-		return api.NotFound("device %q not found", name)
-	}
-	if d.Allocation == nil {
-		return nil
-	}
-	if owner != "" && owner != d.Allocation.Owner && !force {
-		return api.Conflict("device %q is allocated to %q", name, d.Allocation.Owner)
-	}
-	s.logf("device %s: allocation of %s released", name, d.Allocation.Owner)
-	d.Allocation = nil
-	s.saveStateLocked()
-	s.events.publish(api.EventDeviceUpdated, s.deviceViewLocked(d))
 	return nil
 }
 
@@ -491,42 +287,6 @@ func (s *Server) Attachments(f AttachmentFilter) ([]api.Attachment, error) {
 	return out, nil
 }
 
-// Attachment returns an attachment by id ("<device>@<host>"; the host part
-// may be a uuid).
-func (s *Server) Attachment(id string) (api.Attachment, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if a := s.atts[id]; a != nil {
-		return a.Attachment, nil
-	}
-	if i := strings.LastIndex(id, "@"); i > 0 {
-		if h := s.lookupHostLocked(id[i+1:]); h != nil {
-			if a := s.atts[api.AttachmentID(id[:i], h.name)]; a != nil {
-				return a.Attachment, nil
-			}
-		}
-	}
-	return api.Attachment{}, api.NotFound("attachment %q not found", id)
-}
-
-// DeviceAttachment returns the attachment of a device to a host.
-func (s *Server) DeviceAttachment(device, hostRef string) (api.Attachment, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.devices[device] == nil {
-		return api.Attachment{}, api.NotFound("device %q not found", device)
-	}
-	h := s.lookupHostLocked(hostRef)
-	if h == nil {
-		return api.Attachment{}, api.NotFound("host %q not found", hostRef)
-	}
-	a := s.atts[api.AttachmentID(device, h.name)]
-	if a == nil {
-		return api.Attachment{}, api.NotFound("device %q is not attached to %q", device, h.name)
-	}
-	return a.Attachment, nil
-}
-
 // AttachResult tells how an attach request ended.
 type AttachResult int
 
@@ -539,11 +299,8 @@ const (
 	AttachAccepted
 )
 
-// checkAttachLocked checks the sharing and ownership rules.
+// checkAttachLocked checks the sharing rules.
 func (s *Server) checkAttachLocked(d *device, h *host, req api.AttachRequest) error {
-	if d.Allocation != nil && d.Allocation.Owner != req.Owner && !req.Force {
-		return api.Conflict("device %q is allocated to %q (request owner %q)", d.Name, d.Allocation.Owner, req.Owner)
-	}
 	for _, a := range s.deviceAttachmentsLocked(d.Name) {
 		switch {
 		case a.Host == h.name:
@@ -555,14 +312,15 @@ func (s *Server) checkAttachLocked(d *device, h *host, req api.AttachRequest) er
 			return api.Conflict("device %q is attached exclusively to %q", d.Name, a.Host)
 		}
 	}
-	if _, ok := d.bindings[h.name]; !ok {
-		if d.Scope == api.ScopeLocal && d.Backend != api.BackendFile {
+	if d.Scope == api.ScopeLocal {
+		if d.localTo(h.name) == nil {
 			return api.InvalidArgument("device %q is a local device of host %q", d.Name, d.LocalHost)
 		}
-		// the guest finds devices by serial: it must be unique in the VM
-		if ld := s.localDeviceWithSerialLocked(d.serial, h.name); ld != nil && ld != d {
-			return api.Conflict("device %q has the serial %s of local device %q of host %q", d.Name, d.Serial, ld.Name, h.name)
-		}
+		return nil
+	}
+	// the guest finds devices by serial: it must be unique in the VM
+	if ld := s.localDeviceWithSerialLocked(d.serial, h.name); ld != nil {
+		return api.Conflict("device %q has the serial %s of local device %q of host %q", d.Name, d.Serial, ld.Name, h.name)
 	}
 	return nil
 }
@@ -570,15 +328,7 @@ func (s *Server) checkAttachLocked(d *device, h *host, req api.AttachRequest) er
 // fmwSizeLocked returns the fixed memory window size of a host bridge, 0
 // if unknown.
 func fmwSizeLocked(h *host, hb string) int64 {
-	if h.fmw != nil {
-		if v, ok := h.fmw[hb]; ok {
-			return v
-		}
-	}
-	if h.proc != nil {
-		return h.proc.FMWSize(hb)
-	}
-	return 0
+	return h.fmw[hb]
 }
 
 // attachedBytesLocked returns the size of the devices attached under a
@@ -619,7 +369,7 @@ func (s *Server) chooseSlotLocked(h *host, b *binding, req api.AttachRequest, si
 	}
 	if req.Slot != "" {
 		p := h.tree.Port(req.Slot)
-		if p == nil || !p.IsSlot() || !s.slotKnownLocked(h, p.Bus) {
+		if p == nil || !p.IsSlot() || !s.slotKnownLocked(p.Bus) {
 			return "", api.InvalidArgument("host %q has no CXL slot %q", h.name, req.Slot)
 		}
 		if !free(p) {
@@ -629,7 +379,7 @@ func (s *Server) chooseSlotLocked(h *host, b *binding, req api.AttachRequest, si
 	}
 	if b != nil && b.Bus != "" {
 		p := h.tree.Port(b.Bus)
-		if p == nil || !p.IsSlot() || !s.slotKnownLocked(h, p.Bus) {
+		if p == nil || !p.IsSlot() || !s.slotKnownLocked(p.Bus) {
 			return "", api.InvalidArgument("host %q has no CXL slot %q for its local device", h.name, b.Bus)
 		}
 		if !free(p) {
@@ -641,7 +391,7 @@ func (s *Server) chooseSlotLocked(h *host, b *binding, req api.AttachRequest, si
 	// device, and slots on the requested NUMA node.
 	reserved := map[string]bool{}
 	for _, d := range s.devices {
-		if lb := d.bindings[h.name]; lb != nil {
+		if lb := d.localTo(h.name); lb != nil {
 			reserved[lb.Bus] = true
 		}
 	}
@@ -691,7 +441,6 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 		}
 		timeout = t
 	}
-	wait := req.Wait == nil || *req.Wait
 
 	s.mu.Lock()
 	d := s.devices[name]
@@ -714,9 +463,6 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 			return att, AttachExisting, err
 		}
 		// attaching
-		if !wait {
-			return att, AttachAccepted, nil
-		}
 		return s.waitAttaching(ctx, existing, timeout)
 	}
 	if err := s.checkAttachLocked(d, h, req); err != nil {
@@ -778,12 +524,7 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 		h.opMu.Unlock()
 		return api.Attachment{}, 0, err
 	}
-	b := d.bindings[h.name]
-	if b != nil && d.Persistent {
-		s.mu.Unlock()
-		h.opMu.Unlock()
-		return api.Attachment{}, 0, api.InvalidArgument("device %q is persistent: host %q pre-declares backend %s for it, which has no label storage area", d.Name, h.name, b.ObjectID)
-	}
+	b := d.localTo(h.name)
 	bus, err := s.chooseSlotLocked(h, b, req, d.Size)
 	if err != nil {
 		s.mu.Unlock()
@@ -799,8 +540,9 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 	if b != nil {
 		objID, serial = b.ObjectID, b.Serial
 	} else {
+		// the host can map the backing file with 2 MiB pages
 		backends = append(backends, qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: objID, Size: uint64(d.Size), MemPath: d.Path, Share: true,
-			Align: dataAlign(d.Size)})
+			Align: qemu.HugePageAlign})
 	}
 	t3 := qemu.CXLType3{ID: qemuID, Bus: bus, Serial: serial}
 	if d.Persistent {
@@ -915,18 +657,6 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 		s.publishAttachmentLocked(a)
 		return err
 	}
-	if !wait {
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			ctx, cancel := context.WithTimeout(s.ctx, timeout)
-			defer cancel()
-			_ = run(ctx)
-		}()
-		s.mu.RLock()
-		defer s.mu.RUnlock()
-		return a.Attachment, AttachAccepted, nil
-	}
 	rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer rcancel()
 	if err := run(rctx); err != nil {
@@ -994,9 +724,6 @@ func (s *Server) existingAttachmentLocked(d *device, h *host, req api.AttachRequ
 	if a == nil {
 		return nil, false, nil
 	}
-	if d.Allocation != nil && d.Allocation.Owner != req.Owner && !req.Force {
-		return a, true, api.Conflict("device %q is allocated to %q (request owner %q)", d.Name, d.Allocation.Owner, req.Owner)
-	}
 	switch a.State {
 	case api.AttachmentAttached, api.AttachmentAttaching:
 		if req.Slot != "" && req.Slot != a.Slot.Bus {
@@ -1031,11 +758,10 @@ func (s *Server) waitAttaching(ctx context.Context, a *attachment, timeout time.
 	return a.Attachment, 0, &api.Error{Code: api.CodeUnavailable, Message: "attach failed: " + a.Error, Object: a.Attachment}
 }
 
-// DetachOptions are the options of a detach request.
+// DetachOptions are the options of a detach request. Force forgets a
+// failed attachment.
 type DetachOptions struct {
-	Wait    bool
 	Timeout time.Duration
-	Owner   string
 	Force   bool
 }
 
@@ -1049,10 +775,10 @@ const (
 	DetachAccepted
 )
 
-// Detach hot-removes a device from a host. With Wait, it waits for qemu to
-// delete the device until Timeout, and returns a Conflict error with the
-// attachment (state detaching) if that did not happen; waiting continues in
-// the background.
+// Detach hot-removes a device from a host. It waits for qemu to delete the
+// device until Timeout, and returns a Conflict error with the attachment
+// (state failed) if that did not happen; waiting continues in the
+// background.
 func (s *Server) Detach(ctx context.Context, name, hostRef string, opts DetachOptions) (api.Attachment, DetachResult, error) {
 	// The detach must not depend on the client connection: a client that
 	// gives up must not fake a timeout or skip the leak check and object-del.
@@ -1078,10 +804,6 @@ func (s *Server) Detach(ctx context.Context, name, hostRef string, opts DetachOp
 		return api.Attachment{}, 0, api.NotFound("device %q is not attached to %q", name, h.name)
 	}
 	att := a.Attachment // copy under the lock
-	if d.Allocation != nil && opts.Owner != d.Allocation.Owner && !opts.Force {
-		s.mu.Unlock()
-		return att, 0, api.Conflict("device %q is allocated to %q (request owner %q)", name, d.Allocation.Owner, opts.Owner)
-	}
 	if a.State == api.AttachmentAttaching {
 		s.mu.Unlock()
 		return att, 0, api.Conflict("device %q is being attached to %q", name, h.name)
@@ -1150,13 +872,6 @@ func (s *Server) Detach(ctx context.Context, name, hostRef string, opts DetachOp
 			s.mu.Unlock()
 			return att, 0, api.Unavailable("detach %s from %s: %v", name, h.name, err)
 		}
-	}
-	if !opts.Wait {
-		s.mu.Lock()
-		s.startBackgroundWaitLocked(a, opts.Timeout)
-		att = a.Attachment
-		s.mu.Unlock()
-		return att, DetachAccepted, nil
 	}
 	wctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	err := mon.WaitDeviceDeleted(wctx, qemuID)

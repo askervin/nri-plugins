@@ -51,9 +51,6 @@ func (s *Size) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// String returns the size as FormatSize does.
-func (s Size) String() string { return FormatSize(int64(s)) }
-
 // ParseSize parses a size string: a decimal or 0x-hex number of bytes,
 // optionally followed by K, M, G, T (also Ki, KiB, MB, ...; all binary).
 func ParseSize(s string) (int64, error) {

@@ -38,9 +38,9 @@ var (
 	qtreePropRe = regexp.MustCompile(`^([A-Za-z0-9_.-]+) = (.*)$`)
 )
 
-// parseQtreeNodes parses "info qtree" or "info qtree -b" output into a
-// node tree. Lines other than bus, dev and "key = value" properties are
-// ignored. Nesting is decided by indentation only.
+// parseQtreeNodes parses "info qtree" output into a node tree. Lines
+// other than bus, dev and "key = value" properties are ignored. Nesting is
+// decided by indentation only.
 func parseQtreeNodes(text string) []*qtreeNode {
 	var (
 		roots []*qtreeNode
@@ -87,11 +87,10 @@ func parseQtreeNodes(text string) []*qtreeNode {
 	return roots
 }
 
-// ParseQtree extracts the CXL topology from "info qtree" (full or brief)
-// output: host bridges (pxb-cxl-host buses), cxl-downstream and cxl-rp
-// ports, and cxl-type3 devices. With full output, host bridge NUMA nodes,
-// and the volatile-memdev, persistent-memdev, lsa and sn properties of
-// cxl-type3 devices are filled in too.
+// ParseQtree extracts the CXL topology from "info qtree" output: host
+// bridges (pxb-cxl-host buses) with their NUMA nodes, cxl-downstream and
+// cxl-rp ports, and cxl-type3 devices with their volatile-memdev,
+// persistent-memdev, lsa and sn properties.
 func ParseQtree(text string) *Tree {
 	t := &Tree{}
 	roots := parseQtreeNodes(text)

@@ -33,8 +33,7 @@ VM2="$OUTPUT_DIR"      # the VM of this test
 VM1_NAME="$POOL_VM1_NAME"
 VM2_NAME="$POOL_VM2_NAME"
 # Serials: 0xc1ae.... shared, 0xc1ee.... exclusive pool devices (the server
-# assigns those), 0xc100.... boot-time devices of a VM. 0xc1ae0001, not
-# 0xc1ae0000: that is the static shared device of the topology.
+# assigns those), 0xc100.... boot-time devices of a VM.
 SHARED_SERIAL=0xc1ae0001
 MEM_SIZE=$(( 256 << 20 ))
 MiB=$(( 1 << 20 ))
@@ -72,7 +71,6 @@ pool-server-start "
   - name: shared0
     size: 256Mi
     shared: true
-    pool: default
     serial: $SHARED_SERIAL"
 pool-host-client hosts || command-error "cannot list the hosts of the server"
 HOSTS_JSON=$(curl -sS --max-time 30 "$POOL_URL/api/v1/hosts") ||
@@ -254,7 +252,7 @@ cxl-assert 'memdevs == [] and regions == []'
 echo "### server: nothing attached, every detach completed in qemu"
 pool-host-client -o json attachments || command-error "cannot list attachments"
 pool-assert "$COMMAND_OUTPUT" 'j in (None, [])'
-pool-host-client -o json devices --host "$VM2_NAME" || command-error "cannot list devices"
+pool-host-client -o json devices || command-error "cannot list devices"
 pool-assert "$COMMAND_OUTPUT" 'all(d["state"] == "free" for d in j)'
 pool-snapshot end
 deleted=$(grep -c 'event DEVICE_DELETED' "$POOL_SERVER_LOG")

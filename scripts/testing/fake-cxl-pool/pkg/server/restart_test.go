@@ -48,7 +48,6 @@ func (m *socketMonitor) qemu() qemu.Monitor {
 	return f
 }
 
-func (m *socketMonitor) Protocol() string { return m.qemu().Protocol() }
 func (m *socketMonitor) Version(ctx context.Context) (string, error) {
 	return m.qemu().Version(ctx)
 }
@@ -167,9 +166,8 @@ func (e *testEnv) startQemu() *qemu.Fake {
 // gone: no attachment left, none finalized into the new qemu f.
 func (e *testEnv) checkStopped(f *qemu.Fake) {
 	e.t.Helper()
-	h, err := e.srv.Host(ctx, "vm1", true) // cached: no monitor call
-	if err != nil || h.State == api.HostRunning || h.PID != 0 || len(h.Attachments) != 0 {
-		e.t.Fatalf("vm1 not stopped: %+v %v", h, err)
+	if h := cachedHost(e.srv, "vm1"); h.State == api.HostRunning || h.PID != 0 || len(h.Attachments) != 0 {
+		e.t.Fatalf("vm1 not stopped: %+v", h)
 	}
 	logs := e.logbuf.String()
 	if !strings.Contains(logs, "host vm1: stopped: qemu process 101 not found") ||
@@ -188,17 +186,9 @@ func (e *testEnv) checkStopped(f *qemu.Fake) {
 // discovery does not drop it as the old qemu's (it was adopted without
 // owner after "qemu restarted", and never detached).
 func TestQemuRestartSeenByMonitorFirst(t *testing.T) {
-	for _, tc := range []struct {
-		name, control, config string
-	}{
-		{"qmp", qemu.ProtoQMP, ""},
-		{"hmp", qemu.ProtoHMP, ""},
-		// a config host takes its liveness from its monitor while no
-		// process is known: it runs again before discovery
-		{"config-hmp", qemu.ProtoHMP, "hosts: [{name: vm1, hmp: /e2e/vm1/monitor.sock}]\n"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			e := newRestartEnv(t, tc.control, tc.config)
+	for _, control := range []string{qemu.ProtoQMP, qemu.ProtoHMP} {
+		t.Run(control, func(t *testing.T) {
+			e := newRestartEnv(t, control, "")
 			if _, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", Owner: "k8s:old"}); err != nil {
 				t.Fatal(err)
 			}
@@ -210,26 +200,19 @@ func TestQemuRestartSeenByMonitorFirst(t *testing.T) {
 			}
 			e.checkStopped(f)
 			_, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", Owner: "k8s:new"})
-			if tc.config == "" {
-				mustCode(t, err, api.CodeUnavailable)
-				if _, err := e.c.Rescan(ctx); err != nil {
-					t.Fatal(err)
-				}
-				_, _, err = e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", Owner: "k8s:new"})
-			}
-			if err != nil {
+			mustCode(t, err, api.CodeUnavailable)
+			e.srv.Refresh(ctx)
+			if _, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", Owner: "k8s:new"}); err != nil {
 				t.Fatal(err)
 			}
 			for i := 0; i < 2; i++ {
-				if _, err := e.c.Rescan(ctx); err != nil {
-					t.Fatal(err)
-				}
+				e.srv.Refresh(ctx)
 			}
 			h, err := e.c.Host(ctx, "vm1")
 			if err != nil || h.State != api.HostRunning || h.PID != 201 {
 				t.Fatalf("vm1 not running the new qemu: %+v %v", h, err)
 			}
-			a, err := e.c.DeviceAttachment(ctx, "pooled0", "vm1")
+			a, err := e.attachment("pooled0", "vm1")
 			if err != nil || a.Owner != "k8s:new" || a.Adopted || a.State != api.AttachmentAttached || !f.HasDevice(a.QemuDeviceID) {
 				t.Fatalf("attachment into the new qemu: %+v %v", a, err)
 			}
@@ -271,18 +254,14 @@ func TestQemuRestartDuringAttach(t *testing.T) {
 					t.Fatalf("attach error: %v", err)
 				}
 				e.checkStopped(f)
-				if _, err := e.c.Rescan(ctx); err != nil {
-					t.Fatal(err)
-				}
+				e.srv.Refresh(ctx)
 				if _, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", Owner: "k8s:new"}); err != nil {
 					t.Fatal(err)
 				}
 				for i := 0; i < 2; i++ {
-					if _, err := e.c.Rescan(ctx); err != nil {
-						t.Fatal(err)
-					}
+					e.srv.Refresh(ctx)
 				}
-				a, err := e.c.DeviceAttachment(ctx, "pooled0", "vm1")
+				a, err := e.attachment("pooled0", "vm1")
 				if err != nil || a.Owner != "k8s:new" || a.Adopted || a.State != api.AttachmentAttached || !f.HasDevice(a.QemuDeviceID) {
 					t.Fatalf("attachment into the new qemu: %+v %v", a, err)
 				}
@@ -311,9 +290,7 @@ func TestQemuExitSeenByMonitorFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.checkStopped(f)
-	if _, err := e.c.Rescan(ctx); err != nil {
-		t.Fatal(err)
-	}
+	e.srv.Refresh(ctx)
 	if h, err := e.c.Host(ctx, "vm1"); err != nil || h.State != api.HostRunning || h.PID != 201 {
 		t.Fatalf("vm1 not running the new qemu: %+v %v", h, err)
 	}
@@ -329,7 +306,7 @@ func TestAttachTakesOverAttachmentWithoutOwner(t *testing.T) {
 	if err := f.PlugDevice(qemu.CXLType3{ID: "fcp_pooled0.hp7", Bus: "ds0_hb0", VolatileMemdev: "fcp_pooled0.hp7", Serial: 0xc1ee0001}); err != nil {
 		t.Fatal(err)
 	}
-	e.srv.Refresh(ctx, true)
+	e.srv.Refresh(ctx)
 	plugged := len(f.Commands())
 	for _, tc := range []struct{ owner, want string }{
 		{"", ""},
@@ -346,7 +323,7 @@ func TestAttachTakesOverAttachmentWithoutOwner(t *testing.T) {
 	}
 	e.stop()
 	e.start()
-	if a, err := e.c.DeviceAttachment(ctx, "pooled0", "vm1"); err != nil || a.Owner != "k8s:a" {
+	if a, err := e.attachment("pooled0", "vm1"); err != nil || a.Owner != "k8s:a" {
 		t.Fatalf("owner not restored: %+v %v", a, err)
 	}
 }

@@ -35,13 +35,11 @@ import (
 func newTestServer(t *testing.T) (string, *qemu.Fake) {
 	t.Helper()
 	dir := t.TempDir()
-	cfg, err := server.ParseConfig([]byte(`
-stateFile: "-"
-pools: [{name: default, dir: ` + filepath.Join(dir, "pool") + `, capacity: 2G}]
-`))
+	cfg, err := server.ParseConfig([]byte("dir: " + filepath.Join(dir, "pool")))
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg.StateFile = "-"
 	fake := qemu.NewFake(map[string]int{"cxlhb0": 0}, map[string]string{"ds0": "cxlhb0", "ds1": "cxlhb0"})
 	p := qemu.ParseCmdline([]string{"qemu-system-x86_64", "-uuid", "11111111-2222-3333-4444-555555555555",
 		"-drive", "file=/e2e/vm1/.vagrant/machines/vm1/qemu/x/linked-box.img", "-qmp", "unix:/e2e/vm1/qmp.sock,server,nowait"})
@@ -101,7 +99,7 @@ func TestCLI(t *testing.T) {
 	if rc != 0 || !strings.Contains(out, "vm1") || !strings.Contains(out, "2/2") {
 		t.Fatalf("hosts: %d\n%s", rc, out)
 	}
-	rc, out, _ = runCLI(t, url, "create", "--size", "256Mi", "--shared", "--name", "s0", "--label", "a=b")
+	rc, out, _ = runCLI(t, url, "create", "--size", "256Mi", "--shared", "--name", "s0")
 	if rc != 0 || !strings.Contains(out, "s0") || !strings.Contains(out, " 256Mi ") {
 		t.Fatalf("create: %d\n%s", rc, out)
 	}

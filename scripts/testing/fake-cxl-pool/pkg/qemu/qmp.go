@@ -27,49 +27,32 @@ import (
 	"time"
 )
 
-// DefaultQMPIdleTimeout is how long an idle QMP connection is kept open by
-// default. The server uses a persistent connection (IdleTimeout 0) on a
-// socket reserved for it (qmp.sock), so that no DEVICE_DELETED event is
-// missed.
-const DefaultQMPIdleTimeout = 200 * time.Millisecond
-
 // QMP is a Monitor that talks QMP over a unix socket. One connection
 // demultiplexes responses (by "id") and events. The connection is opened on
-// demand. If IdleTimeout > 0, it is closed when it has been idle that long,
-// so that other clients of the same socket (a qemu QMP socket serves one
-// client at a time) are not blocked for long; if IdleTimeout <= 0 it is kept
-// open and reopened after errors.
+// demand and kept open, so that no DEVICE_DELETED event is missed. It is
+// opened again after an error.
 type QMP struct {
 	Path         string
-	IdleTimeout  time.Duration
 	PollInterval time.Duration
 	Log          Logf
 
-	mu        sync.Mutex
-	closed    bool // Close is final: no redial afterwards
-	conn      *qmpConn
-	users     int
-	idleTimer *time.Timer
-	deleted   map[string]time.Time // DEVICE_DELETED seen, by device id
-	unplugErr map[string]string    // DEVICE_UNPLUG_GUEST_ERROR seen
-	waiters   map[string][]chan struct{}
+	mu      sync.Mutex
+	closed  bool // Close is final: no redial afterwards
+	conn    *qmpConn
+	deleted map[string]time.Time // DEVICE_DELETED seen, by device id
+	waiters map[string][]chan struct{}
 }
 
 // NewQMP returns a QMP monitor for the socket path.
 func NewQMP(path string, log Logf) *QMP {
 	return &QMP{
 		Path:         path,
-		IdleTimeout:  DefaultQMPIdleTimeout,
 		PollInterval: 2 * time.Second,
 		Log:          log,
 		deleted:      map[string]time.Time{},
-		unplugErr:    map[string]string{},
 		waiters:      map[string][]chan struct{}{},
 	}
 }
-
-// Protocol implements Monitor.
-func (q *QMP) Protocol() string { return ProtoQMP }
 
 type qmpMessage struct {
 	QMP    json.RawMessage `json:"QMP,omitempty"`
@@ -207,33 +190,25 @@ func (q *QMP) onEvent(m *qmpMessage) {
 	if id == "" {
 		id = strings.TrimPrefix(data.Path, "/machine/peripheral/")
 	}
-	switch m.Event {
-	case "DEVICE_DELETED":
-		q.mu.Lock()
-		q.deleted[id] = time.Now()
-		ws := q.waiters[id]
-		delete(q.waiters, id)
-		q.mu.Unlock()
-		for _, w := range ws {
-			close(w)
-		}
-	case "DEVICE_UNPLUG_GUEST_ERROR":
-		q.mu.Lock()
-		q.unplugErr[id] = string(m.Data)
-		q.mu.Unlock()
+	if m.Event != "DEVICE_DELETED" {
+		return
+	}
+	q.mu.Lock()
+	q.deleted[id] = time.Now()
+	ws := q.waiters[id]
+	delete(q.waiters, id)
+	q.mu.Unlock()
+	for _, w := range ws {
+		close(w)
 	}
 }
 
-// acquire returns a connected qmpConn and a release function.
-func (q *QMP) acquire(ctx context.Context) (*qmpConn, func(), error) {
+// acquire returns the connection, which it opens if there is none.
+func (q *QMP) acquire(ctx context.Context) (*qmpConn, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.closed {
-		return nil, nil, ErrClosed
-	}
-	if q.idleTimer != nil {
-		q.idleTimer.Stop()
-		q.idleTimer = nil
+		return nil, ErrClosed
 	}
 	if q.conn != nil {
 		select {
@@ -246,41 +221,11 @@ func (q *QMP) acquire(ctx context.Context) (*qmpConn, func(), error) {
 	if q.conn == nil {
 		c, err := q.dial(ctx)
 		if err != nil {
-			if q.users == 0 {
-				q.armIdleLocked()
-			}
-			return nil, nil, err
+			return nil, err
 		}
 		q.conn = c
 	}
-	q.users++
-	c := q.conn
-	var once sync.Once
-	return c, func() {
-		once.Do(func() {
-			q.mu.Lock()
-			defer q.mu.Unlock()
-			q.users--
-			if q.users == 0 {
-				q.armIdleLocked()
-			}
-		})
-	}, nil
-}
-
-func (q *QMP) armIdleLocked() {
-	if q.conn == nil || q.IdleTimeout <= 0 {
-		return
-	}
-	c := q.conn
-	q.idleTimer = time.AfterFunc(q.IdleTimeout, func() {
-		q.mu.Lock()
-		defer q.mu.Unlock()
-		if q.users == 0 && q.conn == c {
-			_ = c.c.Close()
-			q.conn = nil
-		}
-	})
+	return q.conn, nil
 }
 
 // Execute runs a QMP command and unmarshals its return value into result
@@ -288,11 +233,10 @@ func (q *QMP) armIdleLocked() {
 func (q *QMP) Execute(ctx context.Context, cmd string, args any, result any) error {
 	ctx, cancel := withDefaultTimeout(ctx)
 	defer cancel()
-	c, release, err := q.acquire(ctx)
+	c, err := q.acquire(ctx)
 	if err != nil {
 		return err
 	}
-	defer release()
 	ret, err := c.execute(ctx, cmd, args)
 	if cmd != "human-monitor-command" && !strings.HasPrefix(cmd, "qom-") && !strings.HasPrefix(cmd, "query-") {
 		a, _ := json.Marshal(args)
@@ -390,17 +334,8 @@ func (q *QMP) ObjectDel(ctx context.Context, id string) error {
 func (q *QMP) DeviceAdd(ctx context.Context, d CXLType3) error {
 	q.mu.Lock()
 	delete(q.deleted, d.ID)
-	delete(q.unplugErr, d.ID)
 	q.mu.Unlock()
-	err := q.Execute(ctx, "device_add", QMPDeviceAddArgs(d), nil)
-	var qe *Error
-	if errors.As(err, &qe) && strings.Contains(qe.Desc, "'sn'") {
-		// Fallback in case a qemu version wants the serial as a string.
-		args := QMPDeviceAddArgs(d)
-		args["sn"] = fmt.Sprintf("0x%x", d.Serial)
-		err = q.Execute(ctx, "device_add", args, nil)
-	}
-	return err
+	return q.Execute(ctx, "device_add", QMPDeviceAddArgs(d), nil)
 }
 
 // DeviceDel implements Monitor.
@@ -417,19 +352,9 @@ func (q *QMP) QueryMemdevs(ctx context.Context) ([]Memdev, error) {
 	return mds, nil
 }
 
-// QueryTree implements Monitor. It reads the CXL topology from QOM, and
-// falls back to parsing "info qtree" over human-monitor-command.
+// QueryTree implements Monitor. It reads the CXL topology from QOM.
 func (q *QMP) QueryTree(ctx context.Context) (*Tree, error) {
-	t, err := q.queryTreeQOM(ctx)
-	if err == nil {
-		return t, nil
-	}
-	q.Log.printf("qmp %s: QOM tree query failed, using info qtree: %v", q.Path, err)
-	out, err := q.HumanMonitorCommand(ctx, "info qtree")
-	if err != nil {
-		return nil, err
-	}
-	return ParseQtree(out), nil
+	return q.queryTreeQOM(ctx)
 }
 
 // QomGet implements Monitor.
@@ -585,28 +510,10 @@ func (q *QMP) BackendMapped(ctx context.Context, objID string) (bool, error) {
 	return BackendMappedIn(out, objID), nil
 }
 
-// DeletedEventSeen returns true if DEVICE_DELETED of the device has been
-// received since it was added.
-func (q *QMP) DeletedEventSeen(id string) bool {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	_, ok := q.deleted[id]
-	return ok
-}
-
-// UnplugError returns the data of a DEVICE_UNPLUG_GUEST_ERROR event seen
-// for the device, "" if none.
-func (q *QMP) UnplugError(id string) string {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	return q.unplugErr[id]
-}
-
-// WaitDeviceDeleted implements Monitor. It keeps the connection open and
-// returns when DEVICE_DELETED for the device arrives, or when a periodic
-// check finds the device gone.
+// WaitDeviceDeleted implements Monitor. It returns when DEVICE_DELETED for
+// the device arrives, or when a periodic check finds the device gone.
 func (q *QMP) WaitDeviceDeleted(ctx context.Context, id string) error {
-	c, release, err := q.acquire(ctx)
+	_, err := q.acquire(ctx)
 	if errors.Is(err, ErrClosed) {
 		return err
 	}
@@ -614,8 +521,6 @@ func (q *QMP) WaitDeviceDeleted(ctx context.Context, id string) error {
 		// cannot listen to events: fall back to polling
 		return pollDeviceDeleted(ctx, id, q.PollInterval, q.DeviceExists)
 	}
-	defer release()
-	_ = c
 	ch := make(chan struct{})
 	q.mu.Lock()
 	q.waiters[id] = append(q.waiters[id], ch)
@@ -663,10 +568,6 @@ func (q *QMP) Close() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.closed = true
-	if q.idleTimer != nil {
-		q.idleTimer.Stop()
-		q.idleTimer = nil
-	}
 	if q.conn != nil {
 		_ = q.conn.c.Close()
 		q.conn = nil

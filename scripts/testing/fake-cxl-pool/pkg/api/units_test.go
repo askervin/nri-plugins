@@ -37,9 +37,6 @@ func TestFormatSize(t *testing.T) {
 		if got := FormatSize(tc.v); got != tc.want {
 			t.Errorf("FormatSize(%d) = %q, expected %q", tc.v, got, tc.want)
 		}
-		if got := Size(tc.v).String(); got != tc.want {
-			t.Errorf("Size(%d).String() = %q, expected %q", tc.v, got, tc.want)
-		}
 	}
 }
 

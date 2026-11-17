@@ -23,13 +23,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const (
-	// movePagesBatch is the number of pages of one move_pages call.
-	movePagesBatch = 1 << 16
-	// blockSize is the unit in which move spreads pages over nodes: a
-	// transparent huge page of a tmpfs file stays on one node.
-	blockSize = 2 << 20
-)
+// movePagesBatch is the number of pages of one move_pages call.
+const movePagesBatch = 1 << 16
 
 // errMovePagesDenied is the error of a move_pages status query that the
 // host does not permit, for instance a seccomp filter of a container.
@@ -144,7 +139,7 @@ func (m *fileMap) span(first, last int) []byte {
 // negative errno if the page has none (-ENOENT: not mapped).
 func (m *fileMap) query(pages []int) ([]int32, error) {
 	status := make([]int32, len(pages))
-	err := m.movePages(pages, nil, status, 0)
+	err := m.movePages(pages, status)
 	if errors.Is(err, unix.EPERM) || errors.Is(err, unix.ENOSYS) {
 		return nil, fmt.Errorf("%w: %v", errMovePagesDenied, err)
 	}
@@ -154,29 +149,10 @@ func (m *fileMap) query(pages []int) ([]int32, error) {
 	return status, nil
 }
 
-// move moves the pages with the given indexes to the nodes in to, the
-// same length as pages, and returns the node of each page after the move
-// or a negative errno if the page was not moved.
-func (m *fileMap) move(pages []int, to []int32) ([]int32, error) {
-	status := make([]int32, len(pages))
-	err := m.movePages(pages, to, status, unix.MPOL_MF_MOVE_ALL)
-	switch {
-	case errors.Is(err, unix.EPERM):
-		return nil, fmt.Errorf("move_pages on %s: %w: moving pages that other processes map (MPOL_MF_MOVE_ALL) needs CAP_SYS_NICE (root)", m.path, err)
-	case errors.Is(err, unix.ENODEV):
-		return nil, fmt.Errorf("move_pages on %s: %w: a target node is not online", m.path, err)
-	case err != nil:
-		return nil, fmt.Errorf("move_pages on %s: %w", m.path, err)
-	}
-	return status, nil
-}
-
-// movePages calls move_pages(2) on this process for the pages with the
-// given indexes, in batches of movePagesBatch pages:
-//   - nodes: the target node of each page, nil for a status query;
-//   - status: receives the node of each page or a negative errno;
-//   - flags: 0 or MPOL_MF_MOVE_ALL.
-func (m *fileMap) movePages(pages []int, nodes, status []int32, flags int) error {
+// movePages calls move_pages(2) without target nodes on this process for
+// the pages with the given indexes, in batches of movePagesBatch pages. It
+// sets status to the node of each page or a negative errno.
+func (m *fileMap) movePages(pages []int, status []int32) error {
 	addrs := make([]uintptr, 0, min(len(pages), movePagesBatch))
 	for start := 0; start < len(pages); start += movePagesBatch {
 		end := min(start+movePagesBatch, len(pages))
@@ -184,15 +160,8 @@ func (m *fileMap) movePages(pages []int, nodes, status []int32, flags int) error
 		for _, p := range pages[start:end] {
 			addrs = append(addrs, m.addr(p))
 		}
-		var nodesPtr unsafe.Pointer
-		if nodes != nil {
-			nodesPtr = unsafe.Pointer(&nodes[start])
-		}
-		// A positive result is the number of pages not moved: their
-		// status tells why.
 		_, _, errno := unix.Syscall6(unix.SYS_MOVE_PAGES, 0, uintptr(len(addrs)),
-			uintptr(unsafe.Pointer(&addrs[0])), uintptr(nodesPtr),
-			uintptr(unsafe.Pointer(&status[start])), uintptr(flags))
+			uintptr(unsafe.Pointer(&addrs[0])), 0, uintptr(unsafe.Pointer(&status[start])), 0)
 		if errno != 0 {
 			return errno
 		}
@@ -266,77 +235,4 @@ func where(path string) (*Placement, error) {
 		return nil, err
 	}
 	return newPlacement(m, status), nil
-}
-
-// moveFile moves the resident pages of the file path to nodes and
-// returns their placement after the move. A page on one of nodes stays
-// there; the others go to nodes in turn by blocks of blockSize bytes of
-// the file.
-func moveFile(path string, nodes []int) (*Placement, error) {
-	if err := checkResidencyVisible(path); err != nil {
-		return nil, err
-	}
-	m, err := openMap(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = m.close() }()
-	pages, status, err := m.locate()
-	if err != nil {
-		return nil, err
-	}
-	idx, to := movePlan(pages, status, nodes, blockSize/m.pageSize)
-	result := &MoveResult{Nodes: nodes, Kept: countKept(status, nodes)}
-	if len(idx) > 0 {
-		sel := make([]int, len(idx))
-		for k, i := range idx {
-			sel[k] = pages[i]
-		}
-		moved, err := m.move(sel, to)
-		if err != nil {
-			return nil, err
-		}
-		result.tally(moved, to)
-	}
-	if status, err = m.query(pages); err != nil {
-		return nil, err
-	}
-	p := newPlacement(m, status)
-	p.Move = result
-	return p, nil
-}
-
-// movePlan returns the indexes in pages of the pages to move and the
-// target node of each: the located pages that are not on one of nodes,
-// spread over nodes in turn by blocks of blockPages pages of the file.
-func movePlan(pages []int, status []int32, nodes []int, blockPages int) ([]int, []int32) {
-	on := map[int32]bool{}
-	for _, n := range nodes {
-		on[int32(n)] = true
-	}
-	var idx []int
-	var to []int32
-	for i, s := range status {
-		if s < 0 || on[s] {
-			continue
-		}
-		idx = append(idx, i)
-		to = append(to, int32(nodes[(pages[i]/blockPages)%len(nodes)]))
-	}
-	return idx, to
-}
-
-// countKept returns the number of located pages that are on one of nodes.
-func countKept(status []int32, nodes []int) int {
-	on := map[int32]bool{}
-	for _, n := range nodes {
-		on[int32(n)] = true
-	}
-	kept := 0
-	for _, s := range status {
-		if s >= 0 && on[s] {
-			kept++
-		}
-	}
-	return kept
 }

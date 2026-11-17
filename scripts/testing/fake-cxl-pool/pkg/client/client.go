@@ -27,7 +27,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -140,20 +139,6 @@ func (c *Client) Status(ctx context.Context) (*api.Status, error) {
 	return &st, err
 }
 
-// Pools lists pools.
-func (c *Client) Pools(ctx context.Context) ([]api.Pool, error) {
-	var ps []api.Pool
-	_, err := c.do(ctx, http.MethodGet, api.PathPools(), nil, nil, &ps)
-	return ps, err
-}
-
-// Pool returns a pool.
-func (c *Client) Pool(ctx context.Context, name string) (*api.Pool, error) {
-	var p api.Pool
-	_, err := c.do(ctx, http.MethodGet, api.PathPool(name), nil, nil, &p)
-	return &p, err
-}
-
 // Hosts lists hosts.
 func (c *Client) Hosts(ctx context.Context) ([]api.Host, error) {
 	var hs []api.Host
@@ -166,13 +151,6 @@ func (c *Client) Host(ctx context.Context, name string) (*api.Host, error) {
 	var h api.Host
 	_, err := c.do(ctx, http.MethodGet, api.PathHost(name), nil, nil, &h)
 	return &h, err
-}
-
-// Rescan makes the server rediscover qemu processes.
-func (c *Client) Rescan(ctx context.Context) ([]api.Host, error) {
-	var hs []api.Host
-	_, err := c.do(ctx, http.MethodPost, api.PathHostsRescan(), nil, nil, &hs)
-	return hs, err
 }
 
 // Resolve finds the host of a hostname and/or SMBIOS system uuid.
@@ -215,25 +193,11 @@ func (c *Client) Self(ctx context.Context) (*api.Host, error) {
 	return c.Resolve(ctx, hostname, uuid)
 }
 
-// DeviceListOptions filter device lists.
-type DeviceListOptions struct {
-	Shared *bool
-	State  string
-	Host   string
-	Pool   string
-	Scope  string
-}
-
-// Devices lists devices.
-func (c *Client) Devices(ctx context.Context, o DeviceListOptions) ([]api.Device, error) {
+// Devices lists the devices of a scope ("" for all).
+func (c *Client) Devices(ctx context.Context, scope string) ([]api.Device, error) {
 	q := url.Values{}
-	if o.Shared != nil {
-		q.Set("shared", strconv.FormatBool(*o.Shared))
-	}
-	for k, v := range map[string]string{"state": o.State, "host": o.Host, "pool": o.Pool, "scope": o.Scope} {
-		if v != "" {
-			q.Set(k, v)
-		}
+	if scope != "" {
+		q.Set("scope", scope)
 	}
 	var ds []api.Device
 	_, err := c.do(ctx, http.MethodGet, api.PathDevices(), q, nil, &ds)
@@ -254,13 +218,6 @@ func (c *Client) CreateDevice(ctx context.Context, req api.DeviceCreate) (*api.D
 	return &d, err
 }
 
-// PatchDevice updates shared and labels of a device.
-func (c *Client) PatchDevice(ctx context.Context, name string, patch api.DevicePatch) (*api.Device, error) {
-	var d api.Device
-	_, err := c.do(ctx, http.MethodPatch, api.PathDevice(name), nil, patch, &d)
-	return &d, err
-}
-
 // DeleteDevice deletes a device.
 func (c *Client) DeleteDevice(ctx context.Context, name string, force bool) error {
 	q := url.Values{}
@@ -268,26 +225,6 @@ func (c *Client) DeleteDevice(ctx context.Context, name string, force bool) erro
 		q.Set("force", "true")
 	}
 	_, err := c.do(ctx, http.MethodDelete, api.PathDevice(name), q, nil, nil)
-	return err
-}
-
-// Allocate records an owner of a device.
-func (c *Client) Allocate(ctx context.Context, name, owner, note string) (*api.Allocation, error) {
-	var a api.Allocation
-	_, err := c.do(ctx, http.MethodPut, api.PathAllocation(name), nil, api.AllocationRequest{Owner: owner, Note: note}, &a)
-	return &a, err
-}
-
-// Release removes the owner of a device.
-func (c *Client) Release(ctx context.Context, name, owner string, force bool) error {
-	q := url.Values{}
-	if owner != "" {
-		q.Set("owner", owner)
-	}
-	if force {
-		q.Set("force", "true")
-	}
-	_, err := c.do(ctx, http.MethodDelete, api.PathAllocation(name), q, nil, nil)
 	return err
 }
 
@@ -302,27 +239,20 @@ func (c *Client) Attach(ctx context.Context, name string, req api.AttachRequest)
 	return &a, status, err
 }
 
-// DetachOptions are the options of Detach.
+// DetachOptions are the options of Detach. Force forgets a failed
+// attachment.
 type DetachOptions struct {
-	NoWait  bool
 	Timeout time.Duration
-	Owner   string
 	Force   bool
 }
 
 // Detach detaches a device from a host. If the guest has not released the
 // device within the timeout, the error is a Conflict and the returned
-// attachment is in state "detaching".
+// attachment is in state "failed".
 func (c *Client) Detach(ctx context.Context, name, host string, o DetachOptions) (*api.Attachment, int, error) {
 	q := url.Values{}
-	if o.NoWait {
-		q.Set("wait", "false")
-	}
 	if o.Timeout > 0 {
 		q.Set("timeout", o.Timeout.String())
-	}
-	if o.Owner != "" {
-		q.Set("owner", o.Owner)
 	}
 	if o.Force {
 		q.Set("force", "true")
@@ -347,38 +277,6 @@ func (c *Client) Attachments(ctx context.Context, host, device string) ([]api.At
 	var as []api.Attachment
 	_, err := c.do(ctx, http.MethodGet, api.PathAttachments(), q, nil, &as)
 	return as, err
-}
-
-// Attachment returns an attachment by id.
-func (c *Client) Attachment(ctx context.Context, id string) (*api.Attachment, error) {
-	var a api.Attachment
-	_, err := c.do(ctx, http.MethodGet, api.PathAttachment(id), nil, nil, &a)
-	return &a, err
-}
-
-// DeviceAttachment returns the attachment of a device to a host.
-func (c *Client) DeviceAttachment(ctx context.Context, device, host string) (*api.Attachment, error) {
-	var a api.Attachment
-	_, err := c.do(ctx, http.MethodGet, api.PathDeviceAttachment(device, host), nil, nil, &a)
-	return &a, err
-}
-
-// WaitDetached polls until the device is no longer attached to the host.
-func (c *Client) WaitDetached(ctx context.Context, device, host string, interval time.Duration) error {
-	if interval <= 0 {
-		interval = time.Second
-	}
-	for {
-		_, err := c.DeviceAttachment(ctx, device, host)
-		if api.IsCode(err, api.CodeNotFound) {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(interval):
-		}
-	}
 }
 
 // Event is an event with an undecoded object.

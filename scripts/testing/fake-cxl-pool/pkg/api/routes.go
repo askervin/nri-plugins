@@ -30,44 +30,29 @@ const (
 
 // Route patterns (net/http ServeMux, Go 1.22+ syntax).
 const (
-	RouteStatus           = "GET " + Prefix + "/status"
-	RoutePools            = "GET " + Prefix + "/pools"
-	RoutePool             = "GET " + Prefix + "/pools/{name}"
-	RouteHosts            = "GET " + Prefix + "/hosts"
-	RouteHostsRescan      = "POST " + Prefix + "/hosts/rescan"
-	RouteHostsResolve     = "GET " + Prefix + "/hosts/resolve"
-	RouteHost             = "GET " + Prefix + "/hosts/{name}"
-	RouteDevices          = "GET " + Prefix + "/devices"
-	RouteDevicesCreate    = "POST " + Prefix + "/devices"
-	RouteDevice           = "GET " + Prefix + "/devices/{name}"
-	RouteDevicePatch      = "PATCH " + Prefix + "/devices/{name}"
-	RouteDeviceDelete     = "DELETE " + Prefix + "/devices/{name}"
-	RouteAllocationPut    = "PUT " + Prefix + "/devices/{name}/allocation"
-	RouteAllocationDelete = "DELETE " + Prefix + "/devices/{name}/allocation"
-	RouteDeviceAttach     = "POST " + Prefix + "/devices/{name}/attachments"
-	RouteDeviceAttachList = "GET " + Prefix + "/devices/{name}/attachments"
-	RouteDeviceAttachment = "GET " + Prefix + "/devices/{name}/attachments/{host}"
-	RouteDeviceDetach     = "DELETE " + Prefix + "/devices/{name}/attachments/{host}"
-	RouteAttachments      = "GET " + Prefix + "/attachments"
-	RouteAttachment       = "GET " + Prefix + "/attachments/{id}"
-	RouteEvents           = "GET " + Prefix + "/events"
+	RouteStatus        = "GET " + Prefix + "/status"
+	RouteHosts         = "GET " + Prefix + "/hosts"
+	RouteHostsResolve  = "GET " + Prefix + "/hosts/resolve"
+	RouteHost          = "GET " + Prefix + "/hosts/{name}"
+	RouteDevices       = "GET " + Prefix + "/devices"
+	RouteDevicesCreate = "POST " + Prefix + "/devices"
+	RouteDevice        = "GET " + Prefix + "/devices/{name}"
+	RouteDeviceDelete  = "DELETE " + Prefix + "/devices/{name}"
+	RouteDeviceAttach  = "POST " + Prefix + "/devices/{name}/attachments"
+	RouteDeviceDetach  = "DELETE " + Prefix + "/devices/{name}/attachments/{host}"
+	RouteAttachments   = "GET " + Prefix + "/attachments"
+	RouteEvents        = "GET " + Prefix + "/events"
 )
 
 // Paths for clients.
 
 func PathStatus() string       { return Prefix + "/status" }
-func PathPools() string        { return Prefix + "/pools" }
-func PathPool(n string) string { return Prefix + "/pools/" + url.PathEscape(n) }
 func PathHosts() string        { return Prefix + "/hosts" }
-func PathHostsRescan() string  { return Prefix + "/hosts/rescan" }
 func PathHostsResolve() string { return Prefix + "/hosts/resolve" }
 func PathHost(n string) string { return Prefix + "/hosts/" + url.PathEscape(n) }
 func PathDevices() string      { return Prefix + "/devices" }
 func PathDevice(n string) string {
 	return Prefix + "/devices/" + url.PathEscape(n)
-}
-func PathAllocation(dev string) string {
-	return PathDevice(dev) + "/allocation"
 }
 func PathDeviceAttachments(dev string) string {
 	return PathDevice(dev) + "/attachments"
@@ -76,7 +61,4 @@ func PathDeviceAttachment(dev, host string) string {
 	return PathDeviceAttachments(dev) + "/" + url.PathEscape(host)
 }
 func PathAttachments() string { return Prefix + "/attachments" }
-func PathAttachment(id string) string {
-	return Prefix + "/attachments/" + url.PathEscape(id)
-}
-func PathEvents() string { return Prefix + "/events" }
+func PathEvents() string      { return Prefix + "/events" }

@@ -50,7 +50,7 @@ func run() int {
 	server := flag.String("server", client.DefaultURL(), "fake-cxl-pool server URL (env FAKE_CXL_POOL_SERVER)")
 	kubeconfig := flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "kubeconfig file (env KUBECONFIG; \"\": in-cluster config)")
 	flag.StringVar(&cfg.DriverName, "driver-name", controller.DefaultDriverName, "DRA driver name")
-	flag.StringVar(&cfg.PoolName, "pool-name", "", "DRA pool name of the published devices (default: the name of the server, \""+controller.DefaultPoolName+"\" for a server without a name)")
+	flag.StringVar(&cfg.PoolName, "pool-name", "", "DRA pool name of the published devices (default: the name of the server)")
 	flag.DurationVar(&cfg.SyncInterval, "sync-interval", controller.DefaultSyncInterval, "interval of full reconciles")
 	flag.DurationVar(&cfg.AttachTimeout, "attach-timeout", controller.DefaultAttachTimeout, "attach request timeout")
 	flag.DurationVar(&cfg.DetachTimeout, "detach-timeout", controller.DefaultDetachTimeout, "detach request timeout")

@@ -47,6 +47,10 @@ import (
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/client"
 )
 
+// testPoolName is the name of the fake pool server, the pool name of its
+// controller.
+const testPoolName = "fake-cxl-pool"
+
 // fakePool is an in-memory fake-cxl-pool server.
 type fakePool struct {
 	mu      sync.Mutex
@@ -71,18 +75,18 @@ type fakePool struct {
 
 func newFakePool() *fakePool {
 	return &fakePool{
-		name: "fake-cxl-pool",
+		name: testPoolName,
 		hosts: []api.Host{
 			{Name: "vm1", UUID: "b6a78455-edb1-558d-8cf1-01a259f76e97", State: api.HostRunning},
 			{Name: "node2", UUID: "", State: api.HostRunning},
 			{Name: "foreign", UUID: "11111111-2222-3333-4444-555555555555", State: api.HostRunning},
 		},
 		devices: map[string]api.Device{
-			"pooled0":     {Name: "pooled0", Serial: "0xC1EE0001", Size: 512 << 20, Pool: "default", Scope: api.ScopePool, State: api.DeviceFree},
-			"shared0":     {Name: "shared0", Serial: "0xc1ae0001", Size: 256 << 20, Shared: true, Pool: "default", Scope: api.ScopePool, State: api.DeviceFree},
-			"bad0":        {Name: "bad0", Serial: "0xc1ee0002", Size: 256 << 20, Pool: "default", Scope: api.ScopePool, State: api.DeviceError},
-			"weird.name_": {Name: "weird.name_", Serial: "0xc1ee0003", Size: 256 << 20, Pool: "default", Scope: api.ScopePool, State: api.DeviceFree},
-			"vm1.memdev0": {Name: "vm1.memdev0", Serial: "0xc100e2e0", Size: 256 << 20, Pool: "default", Scope: api.ScopeLocal, State: api.DeviceFree},
+			"pooled0":     {Name: "pooled0", Serial: "0xC1EE0001", Size: 512 << 20, Scope: api.ScopePool, State: api.DeviceFree},
+			"shared0":     {Name: "shared0", Serial: "0xc1ae0001", Size: 256 << 20, Shared: true, Scope: api.ScopePool, State: api.DeviceFree},
+			"bad0":        {Name: "bad0", Serial: "0xc1ee0002", Size: 256 << 20, Scope: api.ScopePool, State: api.DeviceError},
+			"weird.name_": {Name: "weird.name_", Serial: "0xc1ee0003", Size: 256 << 20, Scope: api.ScopePool, State: api.DeviceFree},
+			"vm1.memdev0": {Name: "vm1.memdev0", Serial: "0xc100e2e0", Size: 256 << 20, Scope: api.ScopeLocal, State: api.DeviceFree},
 		},
 		atts:      map[string]api.Attachment{},
 		attachErr: map[string]string{},
@@ -393,7 +397,7 @@ func (e *env) createClaimShares(name, devName, nodeName string, shareID string, 
 func (e *env) createClaimConfig(name, devName, nodeName string, shareID string, shares int64, config []resourceapi.DeviceAllocationConfiguration) *resourceapi.ResourceClaim {
 	e.t.Helper()
 	r := resourceapi.DeviceRequestAllocationResult{
-		Request: "mem", Driver: DefaultDriverName, Pool: DefaultPoolName, Device: devName,
+		Request: "mem", Driver: DefaultDriverName, Pool: testPoolName, Device: devName,
 		BindingConditions:        []string{DefaultDriverName + "/Attached"},
 		BindingFailureConditions: []string{DefaultDriverName + "/AttachFailed"},
 	}
@@ -480,7 +484,7 @@ func (e *env) condition(name, condType string) (*metav1.Condition, *resourceapi.
 	c := e.claim(name)
 	for i := range c.Status.Devices {
 		d := &c.Status.Devices[i]
-		if d.Driver == DefaultDriverName && d.Pool == DefaultPoolName {
+		if d.Driver == DefaultDriverName && d.Pool == testPoolName {
 			return meta.FindStatusCondition(d.Conditions, condType), d
 		}
 	}
@@ -516,7 +520,7 @@ func TestPublish(t *testing.T) {
 	e.eventually("ResourceSlice", func() bool { return len(e.slices()) == 1 })
 	slice := e.slices()[0]
 	s := slice.Spec
-	if s.Driver != DefaultDriverName || s.Pool.Name != DefaultPoolName || s.Pool.ResourceSliceCount != 1 ||
+	if s.Driver != DefaultDriverName || s.Pool.Name != testPoolName || s.Pool.ResourceSliceCount != 1 ||
 		s.AllNodes != nil || s.NodeName != nil || s.PerDeviceNodeSelection != nil {
 		t.Fatalf("unexpected slice spec %+v", s)
 	}
@@ -607,7 +611,7 @@ func TestPublishManyDevices(t *testing.T) {
 	e.eventually("two ResourceSlices", func() bool { return len(e.slices()) == 2 })
 	devs := 0
 	for _, s := range e.slices() {
-		if s.Spec.Pool.Name != DefaultPoolName || s.Spec.Pool.ResourceSliceCount != 2 || len(s.Spec.Devices) > resourceapi.ResourceSliceMaxDevices {
+		if s.Spec.Pool.Name != testPoolName || s.Spec.Pool.ResourceSliceCount != 2 || len(s.Spec.Devices) > resourceapi.ResourceSliceMaxDevices {
 			t.Fatalf("unexpected slice: pool %+v, %d devices", s.Spec.Pool, len(s.Spec.Devices))
 		}
 		devs += len(s.Spec.Devices)
@@ -1065,7 +1069,7 @@ func TestPersistentAttributeAndStatus(t *testing.T) {
 	e := newEnv(t)
 	e.pool.mu.Lock()
 	e.pool.devices["llm0"] = api.Device{Name: "llm0", Serial: "0xc1ae0002", Size: 512 << 20, Shared: true, Persistent: true,
-		Pool: "default", Scope: api.ScopePool, State: api.DeviceFree}
+		Scope: api.ScopePool, State: api.DeviceFree}
 	e.pool.mu.Unlock()
 	e.sync()
 	e.eventually("ResourceSlice", func() bool { return len(e.slices()) == 1 })

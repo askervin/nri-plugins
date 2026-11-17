@@ -239,23 +239,19 @@ pool-server-start --name pool-a --hosts "$VM1 $VM2" --index 0 --slots "*hb0" "
   - name: a-pooled0
     size: 512Mi
     shared: false
-    pool: default
     serial: ${MBT_POOLED_SERIAL[a]}
   - name: a-shared0
     size: 256Mi
     shared: true
-    pool: default
     serial: ${MBT_SHARED_SERIAL[a]}"
 pool-server-start --name pool-b --port 9910 --hosts "$VM0" --index 1 --slots "*hb0" "
   - name: b-pooled0
     size: 512Mi
     shared: false
-    pool: default
     serial: ${MBT_POOLED_SERIAL[b]}
   - name: b-shared0
     size: 256Mi
     shared: true
-    pool: default
     serial: ${MBT_SHARED_SERIAL[b]}"
 # The persistent devices of pool-c start fresh: no data, no labels (the
 # server creates missing files as zeros, and never rewrites them).
@@ -264,24 +260,20 @@ pool-server-start --name pool-c --port 9911 --hosts "$VM0 $VM1 $VM2" --index 2 -
   - name: c-shared0
     size: 256Mi
     shared: true
-    pool: default
     serial: ${MBT_SHARED_SERIAL[c]}
   - name: c-pooled0
     size: 256Mi
     shared: false
-    pool: default
     serial: ${MBT_POOLED_SERIAL[c]}
   - name: c-pmem0
     size: 256Mi
     shared: true
     persistent: true
-    pool: default
     serial: ${MBT_PMEM_SERIAL[c]}
   - name: c-pmem1
     size: 256Mi
     shared: false
     persistent: true
-    pool: default
     serial: ${MBT_XPMEM_SERIAL[c]}"
 # Until dra-install sets its trap (mbt-exit-trap): the files go too.
 trap 'pool-cleanup; mbt-pdev-files-remove "$MBT_PDEV_DIR" c-pmem0 c-pmem1' EXIT

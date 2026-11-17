@@ -399,7 +399,6 @@ if [ "$DEMO_CASE" == pool ]; then
   - name: shared0
     size: 256Mi
     shared: true
-    pool: default
     serial: $SHARED_SERIAL"
 elif [ "$DEMO_CASE" == pool-shared-fs ]; then
     # A new device: no file system until the writer makes one.
@@ -410,7 +409,6 @@ elif [ "$DEMO_CASE" == pool-shared-fs ]; then
     size: 256Mi
     shared: true
     persistent: true
-    pool: default
     serial: $SHARED_SERIAL"
     pool-device-files shared0
     pool-assert "$COMMAND_OUTPUT" "j['persistent'] == True and j['shared'] == True"
@@ -427,7 +425,6 @@ elif [ "$DEMO_CASE" == pool-fs ]; then
     size: 512Mi
     shared: true
     persistent: true
-    pool: default
     serial: $SHARED_SERIAL"
     pool-device-files fs0
     pool-assert "$COMMAND_OUTPUT" "j['persistent'] == True and j['shared'] == True"
@@ -446,18 +443,15 @@ elif [ "$DEMO_CASE" == wizard ]; then
   - name: pooled0
     size: 512Mi
     shared: false
-    pool: default
     serial: $POOLED_SERIAL
   - name: shared0
     size: 256Mi
     shared: true
-    pool: default
     serial: $SHARED_SERIAL
   - name: fs0
     size: 512Mi
     shared: true
     persistent: true
-    pool: default
     serial: $FS0_SERIAL"
     pool-device-files fs0
     pool-assert "$COMMAND_OUTPUT" "j['persistent'] == True and j['shared'] == True"
@@ -469,7 +463,6 @@ elif [ "$DEMO_CASE" == llm-share ]; then
     size: $LLM_DEVICE_SIZE
     shared: true
     persistent: true
-    pool: default
     serial: $SHARED_SERIAL"
     pool-device-files llm0
     pool-assert "$COMMAND_OUTPUT" "j['persistent'] == True and j['shared'] == True"
@@ -538,7 +531,6 @@ if [ "$DEMO_CASE" == wizard ]; then
     size: 512Mi
     shared: false
     persistent: true
-    pool: default
     serial: $LP_SERIAL"
     pool-device-files --pool "$LP_SERVER" "$LP_DEVICE"
     POOL_DEVICE_FILES+=" $POOL_DEVICE_DATA $POOL_DEVICE_LSA"

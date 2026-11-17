@@ -6,17 +6,14 @@
 #   sees its UUID in /sys/class/dmi/id/product_uuid).
 # - Qemu answers on QMP, and host bridges have HDM decoders
 #   (hdm_for_passthrough=on) for more than one region per host bridge.
-# - Qemu has the statically shared, file-backed CXL memory device of the
-#   topology (cxl_memdev0, serial 0xc1ae0000) and the local one (cxl_memdev1),
-#   both unplugged, and the empty pool slots for hotplugging pool devices.
-#   Serials: 0xc100.... boot-time devices of one VM, 0xc1ae.... shared and
-#   0xc1ee.... exclusive pool devices. VMs created before this scheme have
-#   0xc1f0ee00 here: recreate them (see the error message).
+# - Qemu has the local CXL memory device of the topology (cxl_memdev0,
+#   serial 0xc100e2e1), unplugged, and the empty pool slots for hotplugging
+#   pool devices. Serials: 0xc100.... boot-time devices of one VM,
+#   0xc1ae.... shared and 0xc1ee.... exclusive pool devices.
 # - The VM sees no CXL memory devices.
 #
 # The topologies n4-cxl-shared-0, n4-cxl-shared-1 and n4-cxl-shared-2 have
-# the same pool slots and the same statically shared device, so their VMs
-# can share the same CXL memory devices. They differ only in the size of the
+# the same pool slots, so their VMs can share the same CXL memory devices. They differ only in the size of the
 # local device: 256M in n4-cxl-shared-0 and n4-cxl-shared-1, 1G in
 # n4-cxl-shared-2. Hot-removing and hotplugging a device again needs a
 # patched qemu. Give it when creating the VM, see qemu_bin in
@@ -80,21 +77,11 @@ python3 -c 'import json, sys; v = json.loads(sys.argv[1])["return"]; print("%(ma
 echo "### qemu CXL memory devices and slots"
 cxl_hw=$(show_sn=1 show_be=1 vm-cxl-hw)
 echo "$cxl_hw"
-if grep -q "^cxl_memdev0 sn=0xc1f0ee00 " <<< "$cxl_hw"; then
-    error "cxl_memdev0 has the serial 0xc1f0ee00 of an older topology, expected 0xc1ae0000 (shared pool devices are 0xc1ae....). The VM was created from the older topology.var.json. Recreate it: vagrant destroy in $OUTPUT_DIR, remove the directory, and run
-  qemu_bin=\$HOME/github.com/qemu/qemu/build/qemu-system-x86_64 ./run_tests.sh memory.test-suite/dra-driver-cxl/$(basename "$TOPOLOGY_DIR")/test00-up"
-fi
-grep -q "^cxl_memdev0 sn=0xc1ae0000 volatile-memdev=befile_cxl_memdev0__" <<< "$cxl_hw" ||
-    error "statically shared, file-backed CXL memory device cxl_memdev0 sn=0xc1ae0000 not found"
-grep -q "^cxl_memdev1 sn=0xc100e2e1 volatile-memdev=beram_cxl_memdev1__" <<< "$cxl_hw" ||
-    error "local CXL memory device cxl_memdev1 not found"
+grep -q "^cxl_memdev0 sn=0xc100e2e1 volatile-memdev=beram_cxl_memdev0__" <<< "$cxl_hw" ||
+    error "local CXL memory device cxl_memdev0 not found"
 if grep -q plugged <<< "$cxl_hw"; then
     error "expected no CXL memory devices plugged in at boot"
 fi
-# The files of file-backed memory are created by qemu.
-for mem_path in $(grep -o 'mem-path=[^, ]*' "$TEST_OUTPUT_DIR/qemu-cmdline.txt" | sed 's/^mem-path=//'); do
-    ls -l "$mem_path" || error "qemu memory backend file $mem_path is missing"
-done
 # Every switch port, 4 + 4, is free: neither pool slots nor declared but not
 # present devices have a cxl-type3 device at boot.
 qtree=$(vm-monitor "info qtree -b")

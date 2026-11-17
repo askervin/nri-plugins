@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package pool manages fake-cxl-pool memory pools: directories of device
-// backing files with capacity accounting, and device serial numbers.
+// Package pool manages the device backing files and the device serial
+// numbers of the pool server.
 package pool
 
 import (
@@ -22,84 +22,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 )
-
-// Pool is a directory of backing files with a capacity limit.
-type Pool struct {
-	Name     string
-	Dir      string
-	Capacity int64
-	Sharable bool
-
-	mu   sync.Mutex
-	used map[string]int64 // device name -> size
-}
-
-// New returns a pool.
-func New(name, dir string, capacity int64, sharable bool) *Pool {
-	return &Pool{Name: name, Dir: dir, Capacity: capacity, Sharable: sharable, used: map[string]int64{}}
-}
-
-// Used returns the sum of the sizes of the devices in the pool.
-func (p *Pool) Used() int64 {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	var total int64
-	for _, s := range p.used {
-		total += s
-	}
-	return total
-}
-
-// Free returns the remaining capacity.
-func (p *Pool) Free() int64 {
-	return p.Capacity - p.Used()
-}
-
-// Reserve accounts a device of the size in the pool. Reserving an already
-// reserved name updates its size.
-func (p *Pool) Reserve(device string, size int64) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	var total int64
-	for n, s := range p.used {
-		if n != device {
-			total += s
-		}
-	}
-	if p.Capacity > 0 && total+size > p.Capacity {
-		return fmt.Errorf("pool %q: not enough capacity for %d bytes (capacity %d, used %d)", p.Name, size, p.Capacity, total)
-	}
-	p.used[device] = size
-	return nil
-}
-
-// Unreserve removes a device from the pool accounting.
-func (p *Pool) Unreserve(device string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	delete(p.used, device)
-}
-
-// Devices returns the names of the reserved devices.
-func (p *Pool) Devices() []string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	var out []string
-	for n := range p.used {
-		out = append(out, n)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// FilePath returns the default backing file path of a device.
-func (p *Pool) FilePath(device string) string {
-	return filepath.Join(p.Dir, device+".raw")
-}
 
 // LSASize is the size of the label storage area file of a persistent
 // device.
@@ -110,11 +35,6 @@ const LSASize = 256 << 10
 // ".lsa" appended if dataPath has no extension.
 func LSAPath(dataPath string) string {
 	return strings.TrimSuffix(dataPath, filepath.Ext(dataPath)) + ".lsa"
-}
-
-// EnsureDir creates the pool directory.
-func (p *Pool) EnsureDir() error {
-	return os.MkdirAll(p.Dir, 0o755)
 }
 
 // EnsureBackingFile creates the backing file (and its directory) if it is

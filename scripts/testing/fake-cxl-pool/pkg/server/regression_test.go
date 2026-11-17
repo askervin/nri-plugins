@@ -63,14 +63,15 @@ func (g *gatedMon) QueryTree(ctx context.Context) (*qemu.Tree, error) {
 	return t, err
 }
 
-// newServerWith starts a server for the config whose hosts vm1 (and vm2)
-// use the given monitors.
+// newServerWith starts a server without a state file for the config
+// whose hosts vm1 (and vm2) use the given monitors.
 func newServerWith(t *testing.T, cfgText string, mons map[string]qemu.Monitor) *Server {
 	t.Helper()
 	cfg, err := ParseConfig([]byte(cfgText))
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg.StateFile = "-"
 	var procs []*qemu.Process
 	for i, n := range []string{"vm1", "vm2"} {
 		if mons[n] != nil {
@@ -104,20 +105,20 @@ func newServerWith(t *testing.T, cfgText string, mons map[string]qemu.Monitor) *
 }
 
 func poolConfig(dir, extra string) string {
-	return "pools:\n  - name: default\n    dir: " + filepath.Join(dir, "pool") + "\n" + extra
+	return "dir: " + filepath.Join(dir, "pool") + "\n" + extra
 }
 
-const pooled0 = "devices:\n  - name: pooled0\n    size: 256M\n"
+const pooled0 = "devices:\n  - name: pooled0\n    size: 256M\n    serial: 0xc1ee0001\n"
 
 // H1: a refresh whose tree was read before an attach completed must not
 // drop the new attachment.
 func TestStaleTreeKeepsNewAttachment(t *testing.T) {
 	f := newVMFake()
 	g := newGatedMon(f)
-	srv := newServerWith(t, "stateFile: \"-\"\n"+poolConfig(t.TempDir(), pooled0), map[string]qemu.Monitor{"vm1": g})
+	srv := newServerWith(t, poolConfig(t.TempDir(), pooled0), map[string]qemu.Monitor{"vm1": g})
 	g.arm()
 	done := make(chan struct{})
-	go func() { srv.Hosts(ctx, false); close(done) }() // GET /hosts
+	go func() { srv.Hosts(ctx); close(done) }() // GET /hosts
 	<-g.snap
 	a, _, err := srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"})
 	if err != nil {
@@ -125,7 +126,7 @@ func TestStaleTreeKeepsNewAttachment(t *testing.T) {
 	}
 	close(g.gate)
 	<-done
-	cur, err := srv.DeviceAttachment("pooled0", "vm1")
+	cur, err := attachmentOf(srv, "pooled0", "vm1")
 	if err != nil || cur.State != api.AttachmentAttached {
 		t.Fatalf("attachment dropped by a reconcile with a stale tree: %+v %v (qemu has %s: %v)",
 			cur, err, a.QemuDeviceID, f.HasDevice(a.QemuDeviceID))
@@ -139,7 +140,7 @@ func TestStaleTreeKeepsNewAttachment(t *testing.T) {
 // device to a second host.
 func TestStaleTreeNoDoubleExclusiveAttach(t *testing.T) {
 	g1 := newGatedMon(newVMFake())
-	srv := newServerWith(t, "stateFile: \"-\"\n"+poolConfig(t.TempDir(), pooled0),
+	srv := newServerWith(t, poolConfig(t.TempDir(), pooled0),
 		map[string]qemu.Monitor{"vm1": g1, "vm2": newVMFake()})
 	g1.arm()
 	done := make(chan struct{})
@@ -163,7 +164,7 @@ func TestStaleTreeNoDoubleExclusiveAttach(t *testing.T) {
 func TestAdoptionRespectsExclusive(t *testing.T) {
 	dir := t.TempDir()
 	f1, f2 := newVMFake(), newVMFake()
-	srv := newServerWith(t, "stateFile: \"-\"\n"+poolConfig(dir, pooled0), map[string]qemu.Monitor{"vm1": f1, "vm2": f2})
+	srv := newServerWith(t, poolConfig(dir, pooled0), map[string]qemu.Monitor{"vm1": f1, "vm2": f2})
 	if _, _, err := srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm2"}); err != nil {
 		t.Fatal(err)
 	}
@@ -179,10 +180,10 @@ func TestAdoptionRespectsExclusive(t *testing.T) {
 		t.Fatalf("exclusive device adopted twice: %+v", as)
 	}
 	// a shared device may be adopted on another host
-	sh := "devices:\n  - name: s0\n    size: 256M\n    shared: true\n"
+	sh := "devices:\n  - name: s0\n    size: 256M\n    shared: true\n    serial: 0xc1ae0001\n"
 	f3, f4 := newVMFake(), newVMFake()
 	dir2 := t.TempDir()
-	srv2 := newServerWith(t, "stateFile: \"-\"\n"+poolConfig(dir2, sh), map[string]qemu.Monitor{"vm1": f3, "vm2": f4})
+	srv2 := newServerWith(t, poolConfig(dir2, sh), map[string]qemu.Monitor{"vm1": f3, "vm2": f4})
 	if _, _, err := srv2.Attach(ctx, "s0", api.AttachRequest{Host: "vm2"}); err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +201,7 @@ func TestAdoptionRespectsExclusive(t *testing.T) {
 // M2: a client that gives up does not turn the detach into a timeout.
 func TestDetachIgnoresClientCancel(t *testing.T) {
 	f := newVMFake()
-	srv := newServerWith(t, "stateFile: \"-\"\n"+poolConfig(t.TempDir(), pooled0), map[string]qemu.Monitor{"vm1": f})
+	srv := newServerWith(t, poolConfig(t.TempDir(), pooled0), map[string]qemu.Monitor{"vm1": f})
 	a, _, err := srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"})
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +214,7 @@ func TestDetachIgnoresClientCancel(t *testing.T) {
 	cctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	da, res, err := srv.Detach(cctx, "pooled0", "vm1", DetachOptions{Wait: true, Timeout: 5 * time.Second})
+	da, res, err := srv.Detach(cctx, "pooled0", "vm1", DetachOptions{Timeout: 5 * time.Second})
 	if err != nil || res != DetachDone || da.State != api.AttachmentDetached {
 		t.Fatalf("detach after client cancel: %v %v %+v", res, err, da)
 	}
@@ -234,103 +235,16 @@ func (s slowAddMon) DeviceAdd(ctx context.Context, d qemu.CXLType3) error {
 }
 
 func TestConcurrentAttachDetachNoRace(t *testing.T) {
-	srv := newServerWith(t, "stateFile: \"-\"\n"+poolConfig(t.TempDir(), pooled0), map[string]qemu.Monitor{"vm1": slowAddMon{newVMFake()}})
-	no := false
-	if _, _, err := srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", Wait: &no}); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 20; i++ {
-		_, _, _ = srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", Wait: &no})
-		_, _, _ = srv.Detach(ctx, "pooled0", "vm1", DetachOptions{Wait: true, Timeout: time.Second})
+	srv := newServerWith(t, poolConfig(t.TempDir(), pooled0), map[string]qemu.Monitor{"vm1": slowAddMon{newVMFake()}})
+	var wg sync.WaitGroup
+	attach := func() { _, _, _ = srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"}) }
+	wg.Go(attach)
+	for range 20 {
+		wg.Go(attach)
+		_, _, _ = srv.Detach(ctx, "pooled0", "vm1", DetachOptions{Timeout: time.Second})
 		time.Sleep(3 * time.Millisecond)
 	}
-}
-
-// M4: the config wins over the state file for shared and labels of config
-// devices, and a non-sharable pool is respected.
-func TestConfigWinsOverState(t *testing.T) {
-	dir := t.TempDir()
-	base := "stateFile: " + filepath.Join(dir, "state.json") + "\n" + poolConfig(dir, "devices:\n  - name: cfg0\n    size: 256M\n    labels: {a: b}\n    shared: ")
-	mons := map[string]qemu.Monitor{"vm1": newVMFake()}
-	srv := newServerWith(t, base+"true\n", mons)
-	if _, err := srv.PatchDevice("cfg0", api.DevicePatch{Labels: map[string]string{"x": "y"}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := srv.Allocate("cfg0", api.AllocationRequest{Owner: "claim-1"}); err != nil {
-		t.Fatal(err)
-	}
-	srv.Stop()
-	srv2 := newServerWith(t, base+"false\n", mons)
-	d, _ := srv2.Device("cfg0")
-	if d.Shared || d.Labels["a"] != "b" || d.Labels["x"] != "" {
-		t.Fatalf("state file overrides the config: shared=%v labels=%v", d.Shared, d.Labels)
-	}
-	if d.Allocation == nil || d.Allocation.Owner != "claim-1" {
-		t.Fatalf("allocation not restored: %+v", d.Allocation)
-	}
-}
-
-// M5: config devices without a serial do not take the serials of dynamic
-// devices in the state file, and keep their serials across restarts.
-func TestStateSerials(t *testing.T) {
-	dir := t.TempDir()
-	base := "stateFile: " + filepath.Join(dir, "state.json") + "\n" + poolConfig(dir, "")
-	mons := map[string]qemu.Monitor{"vm1": newVMFake()}
-	srv := newServerWith(t, base, mons)
-	d, err := srv.CreateDevice(api.DeviceCreate{Name: "dyn0", Size: api.Size(256 << 20)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := srv.Attach(ctx, "dyn0", api.AttachRequest{Host: "vm1"}); err != nil {
-		t.Fatal(err)
-	}
-	srv.Stop()
-	two := "devices:\n  - name: cfg0\n    size: 256M\n  - name: cfg1\n    size: 256M\n"
-	srv2 := newServerWith(t, base+two, mons)
-	d2, err := srv2.Device("dyn0")
-	if err != nil || d2.Serial != d.Serial || len(d2.Attachments) != 1 {
-		t.Fatalf("dynamic device lost or changed: %+v %v", d2, err)
-	}
-	c0, _ := srv2.Device("cfg0")
-	c1, _ := srv2.Device("cfg1")
-	if c0.Serial == d.Serial || c1.Serial == d.Serial || c0.Serial == c1.Serial {
-		t.Fatalf("serial collision: dyn0 %s cfg0 %s cfg1 %s", d.Serial, c0.Serial, c1.Serial)
-	}
-	srv2.Stop()
-	// reordered config devices keep their serials
-	srv3 := newServerWith(t, base+"devices:\n  - name: cfg1\n    size: 256M\n  - name: cfg0\n    size: 256M\n", mons)
-	r0, _ := srv3.Device("cfg0")
-	r1, _ := srv3.Device("cfg1")
-	if r0.Serial != c0.Serial || r1.Serial != c1.Serial {
-		t.Fatalf("config serials changed: cfg0 %s->%s cfg1 %s->%s", c0.Serial, r0.Serial, c1.Serial, r1.Serial)
-	}
-}
-
-// M5: a device with attachments is never dropped from the state silently.
-func TestStateKeepsAttachedDeviceOfRemovedPool(t *testing.T) {
-	dir := t.TempDir()
-	mons := map[string]qemu.Monitor{"vm1": newVMFake()}
-	two := "pools:\n  - name: default\n    dir: " + filepath.Join(dir, "p0") + "\n  - name: other\n    dir: " + filepath.Join(dir, "p1") + "\n"
-	sf := "stateFile: " + filepath.Join(dir, "state.json") + "\n"
-	srv := newServerWith(t, sf+two, mons)
-	if _, err := srv.CreateDevice(api.DeviceCreate{Name: "d1", Size: api.Size(256 << 20), Pool: "other"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := srv.Attach(ctx, "d1", api.AttachRequest{Host: "vm1"}); err != nil {
-		t.Fatal(err)
-	}
-	srv.Stop()
-	srv2 := newServerWith(t, sf+"pools:\n  - name: default\n    dir: "+filepath.Join(dir, "p0")+"\n", mons)
-	d, err := srv2.Device("d1")
-	if err != nil || len(d.Attachments) != 1 {
-		t.Fatalf("attached device of a removed pool dropped: %+v %v", d, err)
-	}
-	if _, _, err := srv2.Detach(ctx, "d1", "vm1", DetachOptions{Wait: true}); err != nil {
-		t.Fatal(err)
-	}
-	if err := srv2.DeleteDevice(ctx, "d1", false); err != nil {
-		t.Fatal(err)
-	}
+	wg.Wait()
 }
 
 // L1: the hotplug counter is seeded from the device ids qemu already has.
@@ -345,7 +259,7 @@ func TestHotplugCounterSeededFromQemu(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: "fcp_pooled0.hp5", Size: 256 << 20, MemPath: filepath.Join(dir, "y.raw")})
-	srv := newServerWith(t, "stateFile: \"-\"\n"+poolConfig(dir, pooled0), map[string]qemu.Monitor{"vm1": f})
+	srv := newServerWith(t, poolConfig(dir, pooled0), map[string]qemu.Monitor{"vm1": f})
 	a, _, err := srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"})
 	if err != nil || a.QemuDeviceID != "fcp_pooled0.hp6" {
 		t.Fatalf("attach: %+v %v", a, err)
@@ -355,7 +269,7 @@ func TestHotplugCounterSeededFromQemu(t *testing.T) {
 // L2: device_del "not found" still checks whether the backend leaked.
 func TestDeviceDelNotFoundChecksLeak(t *testing.T) {
 	f := newVMFake()
-	srv := newServerWith(t, "stateFile: \"-\"\n"+poolConfig(t.TempDir(), pooled0), map[string]qemu.Monitor{"vm1": f})
+	srv := newServerWith(t, poolConfig(t.TempDir(), pooled0), map[string]qemu.Monitor{"vm1": f})
 	a, _, err := srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"})
 	if err != nil {
 		t.Fatal(err)
@@ -367,7 +281,7 @@ func TestDeviceDelNotFoundChecksLeak(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.Release(a.QemuDeviceID)
-	da, _, err := srv.Detach(ctx, "pooled0", "vm1", DetachOptions{Wait: true, Timeout: time.Second})
+	da, _, err := srv.Detach(ctx, "pooled0", "vm1", DetachOptions{Timeout: time.Second})
 	mustCode(t, err, api.CodeConflict)
 	if da.State != api.AttachmentFailed || !strings.Contains(da.Error, "leaked") {
 		t.Fatalf("leak not detected: %+v", da)
@@ -378,8 +292,8 @@ func TestDeviceDelNotFoundChecksLeak(t *testing.T) {
 func TestInterleavedFMW(t *testing.T) {
 	f := newVMFake()
 	f.FMW = []qemu.FMWWindow{{Targets: []string{"cxlhb0", "cxlhb1"}, Size: 1 << 30}}
-	srv := newServerWith(t, "stateFile: \"-\"\n"+poolConfig(t.TempDir(), ""), map[string]qemu.Monitor{"vm1": f})
-	h, _ := srv.Host(ctx, "vm1", true)
+	srv := newServerWith(t, poolConfig(t.TempDir(), ""), map[string]qemu.Monitor{"vm1": f})
+	h := cachedHost(srv, "vm1")
 	if h.HostBridges[0].FMWSize != 512<<20 || h.HostBridges[1].FMWSize != 512<<20 {
 		t.Fatalf("interleaved fmw counted per target: %+v", h.HostBridges)
 	}
@@ -393,7 +307,7 @@ func TestSerialCollisionWithLocalDevice(t *testing.T) {
 	for _, f := range []*qemu.Fake{f1, f2} {
 		f.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendRAM, ID: localObj, Size: 256 << 20, Share: true})
 	}
-	srv := newServerWith(t, "stateFile: \"-\"\n"+poolConfig(t.TempDir(), cfg), map[string]qemu.Monitor{"vm1": f1, "vm2": f2})
+	srv := newServerWith(t, poolConfig(t.TempDir(), cfg), map[string]qemu.Monitor{"vm1": f1, "vm2": f2})
 	_, err := srv.CreateDevice(api.DeviceCreate{Name: "d1", Size: api.Size(256 << 20), Serial: "0xc100e2e0"})
 	mustCode(t, err, api.CodeConflict)
 	// vm1 and vm2 both have the local device with serial 0xc100e2e0
@@ -411,7 +325,7 @@ func TestSerialCollisionWithLocalDevice(t *testing.T) {
 // is free, even if it is on the requested NUMA node.
 func TestReservedSlotBeforeNuma(t *testing.T) {
 	f := newVMFake()
-	srv := newServerWith(t, "stateFile: \"-\"\n"+poolConfig(t.TempDir(), "devices:\n  - name: a\n    size: 256M\n  - name: b\n    size: 256M\n"), map[string]qemu.Monitor{"vm1": f})
+	srv := newServerWith(t, poolConfig(t.TempDir(), "devices:\n  - name: a\n    size: 256M\n    serial: 0xc1ee0001\n  - name: b\n    size: 256M\n    serial: 0xc1ee0002\n"), map[string]qemu.Monitor{"vm1": f})
 	a, _, err := srv.Attach(ctx, "a", api.AttachRequest{Host: "vm1", NumaNode: ptr(1)})
 	if err != nil || a.Slot.Bus != "ds0_hb1" {
 		t.Fatalf("attach a: %+v %v", a, err)
@@ -420,20 +334,5 @@ func TestReservedSlotBeforeNuma(t *testing.T) {
 	b, _, err := srv.Attach(ctx, "b", api.AttachRequest{Host: "vm1", NumaNode: ptr(1)})
 	if err != nil || b.Slot.NumaNode != 0 {
 		t.Fatalf("attach b took the reserved slot: %+v %v", b, err)
-	}
-}
-
-// L10: an allocated device is not deleted without force.
-func TestDeleteAllocatedDevice(t *testing.T) {
-	srv := newServerWith(t, "stateFile: \"-\"\n"+poolConfig(t.TempDir(), ""), map[string]qemu.Monitor{"vm1": newVMFake()})
-	if _, err := srv.CreateDevice(api.DeviceCreate{Name: "d1", Size: api.Size(256 << 20)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := srv.Allocate("d1", api.AllocationRequest{Owner: "claim-1"}); err != nil {
-		t.Fatal(err)
-	}
-	mustCode(t, srv.DeleteDevice(ctx, "d1", false), api.CodeConflict)
-	if err := srv.DeleteDevice(ctx, "d1", true); err != nil {
-		t.Fatal(err)
 	}
 }

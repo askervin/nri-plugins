@@ -65,13 +65,11 @@ The ports hold:
 - empty *pool slots*, where fake-cxl-pool-server hotplugs the devices of
   the pool (`shared0`, serial `0xc1ae0001`, and `pooled0`, serial
   `0xc1ee0001`, below);
-- a *local* device `cxl_memdev1`, serial `0xc100e2e1`: 1G in VM2, 256M in
+- a *local* device `cxl_memdev0`, serial `0xc100e2e1`: 1G in VM2, 256M in
   VM1 and VM0. It is not present at boot; fake-cxl-pool-server knows it as
-  the device `<VM name>.memdev1` of scope `local`, which only its own VM
+  the device `<VM name>.memdev0` of scope `local`, which only its own VM
   can attach. Attached, it is what `cxl.nri.io` publishes as
-  `memdev-c100e2e1`;
-- a statically shared, file-backed device (serial `0xc1ae0000`) that the
-  test `test01-shared-cxl` uses without Kubernetes.
+  `memdev-c100e2e1`.
 
 The VMs reach the host at `192.168.76.2` (the slirp gateway), so
 fake-cxl-pool-controller on VM2 talks to fake-cxl-pool-server on the
@@ -346,24 +344,17 @@ processes of VM1 and VM2 and connects to their QMP sockets:
 ```bash
 cat > "$N/build/fake-cxl-pool-demo.yaml" <<EOF
 listen: 127.0.0.1:9909
-pools:
-  - name: default
-    dir: /tmp/fake-cxl-pool
-    capacity: 8Gi
-    sharable: true
+dir: /tmp/fake-cxl-pool
 devices:
   - name: shared0
     size: 256Mi
     shared: true
-    pool: default
     serial: 0xc1ae0001
   - name: pooled0
     size: 512Mi
     shared: false
-    pool: default
     serial: 0xc1ee0001
 discovery:
-  qemu: true
   interval: 10s
   names: ["$(basename "$VM1")", "$(basename "$VM2")"]
   localDevices: true
@@ -379,19 +370,18 @@ pool devices
 
 ```
 NAME                                  STATE    CONTROL  PID     QEMU                              UUID                                  FREE-SLOTS  ATTACHMENTS  LOCAL-DEVICES
-n4-cxl-shared-1-fedora-43-containerd  running  qmp      396789  11.0.50 v11.0.0-2960-g1238677442  b6a78455-edb1-558d-8cf1-01a259f76e97  6/8         0            2
-n4-cxl-shared-2-fedora-43-containerd  running  qmp      398635  11.0.50 v11.0.0-2960-g1238677442  1b6d55a2-ae4a-52f8-bbba-2e3f9adca1b1  6/8         0            2
-NAME                                          SERIAL      SIZE   SHARED  SCOPE                                                                            STATE  ATTACHED-TO  OWNER
-n4-cxl-shared-1-fedora-43-containerd.memdev1  0xc100e2e1  256Mi  false   local:n4-cxl-shared-1-fedora-43-containerd                                       free   -            -
-n4-cxl-shared-2-fedora-43-containerd.memdev1  0xc100e2e1  1Gi    false   local:n4-cxl-shared-2-fedora-43-containerd                                       free   -            -
-pooled0                                       0xc1ee0001  512Mi  false   pool                                                                             free   -            -
-shared0                                       0xc1ae0001  256Mi  true    pool                                                                             free   -            -
-static-shared0                                0xc1ae0000  256Mi  true    local:n4-cxl-shared-1-fedora-43-containerd,n4-cxl-shared-2-fedora-43-containerd  free   -            -
+n4-cxl-shared-1-fedora-43-containerd  running  qmp      396789  11.0.50 v11.0.0-2960-g1238677442  b6a78455-edb1-558d-8cf1-01a259f76e97  7/8         0            1
+n4-cxl-shared-2-fedora-43-containerd  running  qmp      398635  11.0.50 v11.0.0-2960-g1238677442  1b6d55a2-ae4a-52f8-bbba-2e3f9adca1b1  7/8         0            1
+NAME                                          SERIAL      SIZE   SHARED  PERSISTENT  SCOPE                                       STATE  ATTACHED-TO
+n4-cxl-shared-1-fedora-43-containerd.memdev0  0xc100e2e1  256Mi  false   false       local:n4-cxl-shared-1-fedora-43-containerd  free   -
+n4-cxl-shared-2-fedora-43-containerd.memdev0  0xc100e2e1  1Gi    false   false       local:n4-cxl-shared-2-fedora-43-containerd  free   -
+pooled0                                       0xc1ee0001  512Mi  false   false       pool                                        free   -
+shared0                                       0xc1ae0001  256Mi  true    false       pool                                        free   -
 ```
 
 `pool devices` lists `shared0` and `pooled0` (scope `pool`) and the local
 devices of the VMs (scope `local:<VM name>`), among them
-`n4-cxl-shared-2-fedora-43-containerd.memdev1`.
+`n4-cxl-shared-2-fedora-43-containerd.memdev0`.
 
 Deploy the driver in the cluster: its image into every node, then the
 chart, the pool controller and the helm release on VM2, the control
@@ -458,7 +448,7 @@ device (nothing happens if it is attached already) and wait until the
 driver publishes it:
 
 ```bash
-fake-cxl-pool-client attach "$(hostname).memdev1" --self
+fake-cxl-pool-client attach "$(hostname).memdev0" --self
 until kubectl get resourceslices -o yaml | grep -q 'name: memdev-c100e2e1'; do sleep 1; done
 sudo cxl list -M
 ```
@@ -552,7 +542,7 @@ the driver zeroes it before the container gets it. The container gets the
 device node `/dev/daxX.Y`, maps it, writes and reads. In VM2:
 
 ```bash
-fake-cxl-pool-client attach "$(hostname).memdev1" --self
+fake-cxl-pool-client attach "$(hostname).memdev0" --self
 until kubectl get resourceslices -o yaml | grep -q 'name: memdev-c100e2e1'; do sleep 1; done
 kubectl apply -f - <<'EOF'
 apiVersion: resource.k8s.io/v1
@@ -726,7 +716,7 @@ pool attachments
 
 ```
 ID                                                                                 SLOT                NUMA  QEMU-DEVICE                                           QEMU-OBJECT                                               SERIAL      STATE     ERROR
-n4-cxl-shared-2-fedora-43-containerd.memdev1@n4-cxl-shared-2-fedora-43-containerd  cxlsw_ds3_usrp0hb0  0     fcp_n4-cxl-shared-2-fedora-43-containerd.memdev1.hp1  beram_cxl_memdev1__bus_cxlsw_ds3_usrp0hb0__sn_0xc100e2e1  0xc100e2e1  attached  -
+n4-cxl-shared-2-fedora-43-containerd.memdev0@n4-cxl-shared-2-fedora-43-containerd  cxlsw_ds3_usrp0hb0  0     fcp_n4-cxl-shared-2-fedora-43-containerd.memdev0.hp1  beram_cxl_memdev0__bus_cxlsw_ds3_usrp0hb0__sn_0xc100e2e1  0xc100e2e1  attached  -
 pooled0@n4-cxl-shared-2-fedora-43-containerd                                       cxlsw_ds0_usrp0hb0  0     fcp_pooled0.hp2                                       fcp_pooled0.hp2                                           0xc1ee0001  attached  -
 ```
 
@@ -913,7 +903,7 @@ is pinned to VM2, whose local device it leases first (local memory first,
 then pool memory). In VM2, attach the local device and create the pod:
 
 ```bash
-fake-cxl-pool-client attach "$(hostname).memdev1" --self
+fake-cxl-pool-client attach "$(hostname).memdev0" --self
 kubectl apply -f - <<'EOF'
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaimTemplate
@@ -1366,7 +1356,7 @@ its last region):
 
 ```bash
 sudo fake-cxl-pool-client guest release 0xc100e2e1
-fake-cxl-pool-client detach "$(hostname).memdev1" --self
+fake-cxl-pool-client detach "$(hostname).memdev0" --self
 ```
 
 On the host, check that nothing is attached to VM1 or VM2 any more, and

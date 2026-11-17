@@ -13,9 +13,8 @@
 // limitations under the License.
 
 // cxl-numa-place shows on which NUMA nodes of the host the pages of a
-// file are, and moves them to other nodes: the backing files of
-// fake-cxl-pool devices, which the qemu of every VM that attaches a
-// device maps.
+// file are: the backing files of fake-cxl-pool devices, which the qemu of
+// every VM that attaches a device maps.
 package main
 
 import (
@@ -37,26 +36,15 @@ const usage = `Usage: cxl-numa-place COMMAND [-o table|json] FILE...
 
 Commands:
   where FILE...                 print the resident pages of each file per NUMA node
-  move --nodes N[,M] FILE...    move the resident pages of each file to the nodes
-                                N,M (a list like 2,3 or 2-3) and print where they are;
-                                needs CAP_SYS_NICE (root): it moves pages that other
-                                processes, like qemu, map too (MPOL_MF_MOVE_ALL)
 
-Only the pages of a file that are in memory count and move: holes and pages
-on disk stay as they are. move keeps a page that is on one of the nodes, and
-spreads the others over the nodes in turn by blocks of 2 MiB of the file.
-Sizes are in MiB. Exit codes: 0 ok, 1 error, 2 usage.
+Only the pages of a file that are in memory count: holes and pages on disk
+stay as they are. Sizes are in MiB. Exit codes: 0 ok, 1 error, 2 usage.
 `
 
 // cli is the command line of cxl-numa-place.
 type cli struct {
 	stdout, stderr io.Writer
 	output         string
-	// sysfs is the sysfs directory of the nodes with memory.
-	sysfs string
-	// canMoveAll tells if the process may move pages that other processes
-	// map.
-	canMoveAll func() (bool, error)
 }
 
 type usageError struct{ msg string }
@@ -68,12 +56,7 @@ func usagef(format string, args ...any) error {
 }
 
 func main() {
-	c := &cli{
-		stdout:     os.Stdout,
-		stderr:     os.Stderr,
-		sysfs:      "/sys",
-		canMoveAll: func() (bool, error) { return hasCapSysNice("/proc/self/status") },
-	}
+	c := &cli{stdout: os.Stdout, stderr: os.Stderr}
 	os.Exit(c.run(os.Args[1:]))
 }
 
@@ -104,8 +87,6 @@ func (c *cli) dispatch(args []string) error {
 	switch args[0] {
 	case "where":
 		return c.cmdWhere(args[1:])
-	case "move":
-		return c.cmdMove(args[1:])
 	case "-h", "--help", "help":
 		return flag.ErrHelp
 	default:
@@ -156,43 +137,6 @@ func (c *cli) cmdWhere(args []string) error {
 	var ps []*Placement
 	for _, f := range files {
 		p, err := where(f)
-		if err != nil {
-			return err
-		}
-		ps = append(ps, p)
-	}
-	return c.write(ps)
-}
-
-func (c *cli) cmdMove(args []string) error {
-	fs := c.flagSet("move")
-	nodeList := fs.String("nodes", "", "the target NUMA nodes, like 2,3 or 2-3")
-	files, err := c.parse(fs, args)
-	if err != nil {
-		return err
-	}
-	if *nodeList == "" {
-		return usagef("move: no --nodes")
-	}
-	nodes, err := parseNodeList(*nodeList)
-	if err != nil {
-		return usagef("move --nodes: %v", err)
-	}
-	have, err := memoryNodes(c.sysfs)
-	if err != nil {
-		return err
-	}
-	if err := checkNodes(nodes, have); err != nil {
-		return fmt.Errorf("move --nodes %s: %w", *nodeList, err)
-	}
-	if ok, err := c.canMoveAll(); err != nil {
-		return err
-	} else if !ok {
-		return fmt.Errorf("move needs CAP_SYS_NICE (root): it moves pages that other processes map too (MPOL_MF_MOVE_ALL)")
-	}
-	var ps []*Placement
-	for _, f := range files {
-		p, err := moveFile(f, nodes)
 		if err != nil {
 			return err
 		}

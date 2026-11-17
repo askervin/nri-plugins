@@ -32,18 +32,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc(api.RouteStatus, func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, s.Status())
 	})
-	mux.HandleFunc(api.RoutePools, func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, s.Pools())
-	})
-	mux.HandleFunc(api.RoutePool, func(w http.ResponseWriter, r *http.Request) {
-		p, err := s.Pool(r.PathValue("name"))
-		reply(w, http.StatusOK, p, err)
-	})
 	mux.HandleFunc(api.RouteHosts, func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, s.Hosts(r.Context(), boolQuery(r, "cached")))
-	})
-	mux.HandleFunc(api.RouteHostsRescan, func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusAccepted, s.Rescan(r.Context()))
+		writeJSON(w, http.StatusOK, s.Hosts(r.Context()))
 	})
 	mux.HandleFunc(api.RouteHostsResolve, func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
@@ -51,22 +41,11 @@ func (s *Server) Handler() http.Handler {
 		reply(w, http.StatusOK, h, err)
 	})
 	mux.HandleFunc(api.RouteHost, func(w http.ResponseWriter, r *http.Request) {
-		h, err := s.Host(r.Context(), r.PathValue("name"), boolQuery(r, "cached"))
+		h, err := s.Host(r.Context(), r.PathValue("name"))
 		reply(w, http.StatusOK, h, err)
 	})
 	mux.HandleFunc(api.RouteDevices, func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		f := DeviceFilter{State: q.Get("state"), Host: q.Get("host"), Pool: q.Get("pool"), Scope: q.Get("scope")}
-		if v := q.Get("shared"); v != "" {
-			b, err := strconv.ParseBool(v)
-			if err != nil {
-				writeError(w, api.InvalidArgument("invalid shared=%q", v))
-				return
-			}
-			f.Shared = &b
-		}
-		ds, err := s.Devices(f)
-		reply(w, http.StatusOK, ds, err)
+		writeJSON(w, http.StatusOK, s.Devices(r.URL.Query().Get("scope")))
 	})
 	mux.HandleFunc(api.RouteDevicesCreate, func(w http.ResponseWriter, r *http.Request) {
 		var req api.DeviceCreate
@@ -80,29 +59,8 @@ func (s *Server) Handler() http.Handler {
 		d, err := s.Device(r.PathValue("name"))
 		reply(w, http.StatusOK, d, err)
 	})
-	mux.HandleFunc(api.RouteDevicePatch, func(w http.ResponseWriter, r *http.Request) {
-		var req api.DevicePatch
-		if !decodeJSON(w, r, &req) {
-			return
-		}
-		d, err := s.PatchDevice(r.PathValue("name"), req)
-		reply(w, http.StatusOK, d, err)
-	})
 	mux.HandleFunc(api.RouteDeviceDelete, func(w http.ResponseWriter, r *http.Request) {
 		err := s.DeleteDevice(r.Context(), r.PathValue("name"), boolQuery(r, "force"))
-		reply(w, http.StatusNoContent, nil, err)
-	})
-	mux.HandleFunc(api.RouteAllocationPut, func(w http.ResponseWriter, r *http.Request) {
-		var req api.AllocationRequest
-		if !decodeJSON(w, r, &req) {
-			return
-		}
-		a, err := s.Allocate(r.PathValue("name"), req)
-		reply(w, http.StatusOK, a, err)
-	})
-	mux.HandleFunc(api.RouteAllocationDelete, func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		err := s.ReleaseAllocation(r.PathValue("name"), q.Get("owner"), boolQuery(r, "force"))
 		reply(w, http.StatusNoContent, nil, err)
 	})
 	mux.HandleFunc(api.RouteDeviceAttach, func(w http.ResponseWriter, r *http.Request) {
@@ -120,30 +78,9 @@ func (s *Server) Handler() http.Handler {
 		}
 		reply(w, status, a, err)
 	})
-	mux.HandleFunc(api.RouteDeviceAttachList, func(w http.ResponseWriter, r *http.Request) {
-		name := r.PathValue("name")
-		if _, err := s.Device(name); err != nil {
-			writeError(w, err)
-			return
-		}
-		as, err := s.Attachments(AttachmentFilter{Device: name})
-		reply(w, http.StatusOK, as, err)
-	})
-	mux.HandleFunc(api.RouteDeviceAttachment, func(w http.ResponseWriter, r *http.Request) {
-		a, err := s.DeviceAttachment(r.PathValue("name"), r.PathValue("host"))
-		reply(w, http.StatusOK, a, err)
-	})
 	mux.HandleFunc(api.RouteDeviceDetach, func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		opts := DetachOptions{Wait: true, Owner: q.Get("owner"), Force: boolQuery(r, "force")}
-		if v := q.Get("wait"); v != "" {
-			b, err := strconv.ParseBool(v)
-			if err != nil {
-				writeError(w, api.InvalidArgument("invalid wait=%q", v))
-				return
-			}
-			opts.Wait = b
-		}
+		opts := DetachOptions{Force: boolQuery(r, "force")}
 		if v := q.Get("timeout"); v != "" {
 			t, err := time.ParseDuration(v)
 			if err != nil {
@@ -163,10 +100,6 @@ func (s *Server) Handler() http.Handler {
 		q := r.URL.Query()
 		as, err := s.Attachments(AttachmentFilter{Host: q.Get("host"), Device: q.Get("device")})
 		reply(w, http.StatusOK, as, err)
-	})
-	mux.HandleFunc(api.RouteAttachment, func(w http.ResponseWriter, r *http.Request) {
-		a, err := s.Attachment(r.PathValue("id"))
-		reply(w, http.StatusOK, a, err)
 	})
 	mux.HandleFunc(api.RouteEvents, s.handleEvents)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

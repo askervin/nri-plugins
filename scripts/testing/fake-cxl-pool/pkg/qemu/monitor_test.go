@@ -131,7 +131,7 @@ func TestHMPClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tree.Device("cxl_memdev2.hp3") == nil || tree.HostBridge("cxlhb1").NumaNode != 1 {
+	if treeDevice(tree, "cxl_memdev2.hp3") == nil || tree.HostBridge("cxlhb1").NumaNode != 1 {
 		t.Fatalf("unexpected tree %+v", tree)
 	}
 	err = h.DeviceDel(ctx, "nosuch")
@@ -348,8 +348,6 @@ func (s *fakeQMPServer) serve(c net.Conn) {
 			}
 		case "query-memdev":
 			ret([]map[string]any{{"id": "m0", "size": 268435456, "merge": true, "dump": true, "prealloc": false, "share": true, "host-nodes": []int{}, "policy": "default"}})
-		case "human-monitor-command":
-			ret("bus: main-system-bus\r\n  type System\r\n  dev: pxb-cxl-host, id \"\"\r\n    bus: cxlhb0\r\n      type pxb-cxl-bus\r\n      dev: cxl-rp, id \"cxlrp0hb0\"\r\n        bus: cxlrp0hb0\r\n          type CXL\r\n")
 		default:
 			fail("CommandNotFound", "The command "+cmd+" has not been found")
 		}
@@ -382,8 +380,8 @@ func (s *fakeQMPServer) requests(cmd string) []map[string]json.RawMessage {
 
 func TestQMPClient(t *testing.T) {
 	srv := newFakeQMPServer(t)
+	srv.qom = true
 	q := NewQMP(srv.path, t.Logf)
-	q.IdleTimeout = 50 * time.Millisecond
 	q.PollInterval = time.Second
 	ctx := context.Background()
 	v, err := q.Version(ctx)
@@ -391,7 +389,7 @@ func TestQMPClient(t *testing.T) {
 		t.Fatalf("version %q %v", v, err)
 	}
 	tree, err := q.QueryTree(ctx)
-	if err != nil || len(tree.Ports) != 1 || !tree.Ports[0].IsSlot() {
+	if err != nil || len(tree.Ports) != 4 {
 		t.Fatalf("tree %+v %v", tree, err)
 	}
 	mds, err := q.QueryMemdevs(ctx)
@@ -433,20 +431,8 @@ func TestQMPClient(t *testing.T) {
 	if err := q.DeviceDel(ctx, d.ID); !IsNotFound(err) {
 		t.Fatalf("expected not found, got %v", err)
 	}
-	// the connection is closed when idle
-	deadline := time.Now().Add(2 * time.Second)
-	for srv.closed.Load() < srv.conns.Load() {
-		if time.Now().After(deadline) {
-			t.Fatalf("idle connection was not closed")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	// and reopened on demand
-	if _, err := q.Version(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if srv.conns.Load() < 2 {
-		t.Fatalf("expected a new connection")
+	if n := srv.conns.Load(); n != 1 {
+		t.Fatalf("%d connections, expected one", n)
 	}
 	q.Close()
 }
@@ -530,7 +516,6 @@ func TestQMPTreeFromQOM(t *testing.T) {
 	srv := newFakeQMPServer(t)
 	srv.qom = true
 	q := NewQMP(srv.path, t.Logf)
-	q.IdleTimeout = 0
 	defer q.Close()
 	ctx := context.Background()
 	if err := q.DeviceAdd(ctx, CXLType3{ID: "fcp_d0.hp1", Bus: "ds1", VolatileMemdev: "fcp_d0.hp1", Serial: 0xc1f00001}); err != nil {
@@ -539,9 +524,6 @@ func TestQMPTreeFromQOM(t *testing.T) {
 	tree, err := q.QueryTree(ctx)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if len(srv.requests("human-monitor-command")) != 0 {
-		t.Fatalf("info qtree used although QOM works")
 	}
 	if len(tree.HostBridges) != 1 || tree.HostBridges[0].ID != "cxlhb0" || tree.HostBridges[0].NumaNode != 0 {
 		t.Fatalf("unexpected host bridges %+v", tree.HostBridges)
@@ -558,7 +540,7 @@ func TestQMPTreeFromQOM(t *testing.T) {
 	if p := tree.Port("ds1"); p == nil || p.HostBridge != "cxlhb0" || p.Occupant() != "fcp_d0.hp1" {
 		t.Fatalf("occupied downstream port: %+v", p)
 	}
-	d := tree.Device("fcp_d0.hp1")
+	d := treeDevice(tree, "fcp_d0.hp1")
 	if d == nil || d.Bus != "ds1" || d.Serial != 0xc1f00001 || d.VolatileMemdev != "fcp_d0.hp1" {
 		t.Fatalf("unexpected device %+v", d)
 	}
@@ -574,7 +556,6 @@ func TestQMPTreeFromQOM(t *testing.T) {
 func TestQMPCloseIsFinal(t *testing.T) {
 	srv := newFakeQMPServer(t)
 	q := NewQMP(srv.path, t.Logf)
-	q.IdleTimeout = 0
 	if _, err := q.Version(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -588,7 +569,6 @@ func TestQMPCloseIsFinal(t *testing.T) {
 		t.Fatalf("WaitDeviceDeleted on a closed QMP: %v", err)
 	}
 	q2 := NewQMP(srv.path, t.Logf)
-	q2.IdleTimeout = 0
 	defer q2.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

@@ -73,35 +73,6 @@ func TestRuns(t *testing.T) {
 	}
 }
 
-func TestMovePlan(t *testing.T) {
-	// Blocks of 2 pages: pages 0-1 block 0, 2-3 block 1, 4-5 block 2.
-	pages := []int{0, 1, 2, 3, 4, 5, 9}
-	status := []int32{1, 1, 5, 2, 1, -int32(unix.ENOENT), 2}
-	idx, to := movePlan(pages, status, []int{5, 6}, 2)
-	// Page 2 stays on 5; page 5 has no node; the others go by block:
-	// block 0 to 5, block 1 to 6, block 2 to 5, block 4 (page 9) to 5.
-	wantIdx := []int{0, 1, 3, 4, 6}
-	wantTo := []int32{5, 5, 6, 5, 5}
-	if !reflect.DeepEqual(idx, wantIdx) || !reflect.DeepEqual(to, wantTo) {
-		t.Errorf("movePlan = %v %v, want %v %v", idx, to, wantIdx, wantTo)
-	}
-	if kept := countKept(status, []int{5, 6}); kept != 1 {
-		t.Errorf("countKept = %d, want 1", kept)
-	}
-	if idx, to := movePlan(pages, statuses(len(pages), 5), []int{5, 6}, 2); idx != nil || to != nil {
-		t.Errorf("movePlan of pages on the nodes = %v %v, want nothing", idx, to)
-	}
-}
-
-func TestMoveResultTally(t *testing.T) {
-	r := &MoveResult{Nodes: []int{5, 6}, Kept: 7}
-	r.tally([]int32{5, 6, -int32(unix.EBUSY), 1, -int32(unix.ENOMEM), -int32(unix.EBUSY)}, []int32{5, 6, 5, 6, 6, 5})
-	want := &MoveResult{Nodes: []int{5, 6}, Kept: 7, Moved: 2, Failed: map[string]int{"EBUSY": 2, "ENOMEM": 1, "elsewhere": 1}}
-	if !reflect.DeepEqual(r, want) {
-		t.Errorf("tally = %+v, want %+v", r, want)
-	}
-}
-
 func TestShare(t *testing.T) {
 	for _, tc := range []struct {
 		pages, total int
@@ -121,7 +92,6 @@ func TestShare(t *testing.T) {
 func TestWriteTable(t *testing.T) {
 	a := newPlacement(fakeMap("/pool/llm0.raw", 8<<20), append(statuses(3*mib1, 5), statuses(mib1, 6)...))
 	b := newPlacement(fakeMap("/pool/llm0.lsa", 256<<10), append(statuses(2, 2), -int32(unix.ENOENT)))
-	b.Move = &MoveResult{Nodes: []int{5, 6}, Kept: 1, Moved: 2, Failed: map[string]int{"EBUSY": 1}}
 	var out bytes.Buffer
 	if err := writeTable(&out, []*Placement{a, b}); err != nil {
 		t.Fatal(err)
@@ -130,7 +100,6 @@ func TestWriteTable(t *testing.T) {
 /pool/llm0.raw  8.0       4.0           -              3.0 (75%)  1.0 (25%)  -
 /pool/llm0.lsa  0.2       0.0           2 pages (67%)  -          -          1 page (33%)
 (the E... columns: resident pages without a node, by the error of move_pages)
-/pool/llm0.lsa: to nodes 5-6: moved 2 pages (0.0 MiB), kept 1 page on the nodes, not moved: EBUSY 1
 `
 	if got := out.String(); got != want {
 		t.Errorf("writeTable:\n%s\nwant:\n%s", got, want)

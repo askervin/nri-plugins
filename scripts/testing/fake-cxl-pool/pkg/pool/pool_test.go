@@ -20,30 +20,6 @@ import (
 	"testing"
 )
 
-func TestPoolCapacity(t *testing.T) {
-	p := New("default", t.TempDir(), 1<<30, true)
-	if err := p.Reserve("a", 512<<20); err != nil {
-		t.Fatal(err)
-	}
-	if err := p.Reserve("b", 512<<20); err != nil {
-		t.Fatal(err)
-	}
-	if err := p.Reserve("c", 1); err == nil {
-		t.Fatal("expected capacity error")
-	}
-	if p.Used() != 1<<30 || p.Free() != 0 {
-		t.Fatalf("unexpected used %d free %d", p.Used(), p.Free())
-	}
-	// resizing an existing reservation does not double count
-	if err := p.Reserve("b", 256<<20); err != nil {
-		t.Fatal(err)
-	}
-	p.Unreserve("a")
-	if p.Used() != 256<<20 {
-		t.Fatalf("unexpected used %d", p.Used())
-	}
-}
-
 func TestBackingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "d0.raw")
 	if err := EnsureBackingFile(path, 256<<20); err != nil {

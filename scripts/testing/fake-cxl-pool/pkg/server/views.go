@@ -142,34 +142,15 @@ func (s *Server) deviceViewLocked(d *device) api.Device {
 	for _, a := range atts {
 		v.Attachments = append(v.Attachments, a.Attachment)
 	}
-	if d.Allocation != nil {
-		al := *d.Allocation
-		v.Allocation = &al
-	}
-	if d.Labels != nil {
-		v.Labels = map[string]string{}
-		for k, val := range d.Labels {
-			v.Labels[k] = val
-		}
-	}
 	return v
 }
 
-func (s *Server) poolViewLocked(name string) api.Pool {
-	p := s.pools[name]
-	used := p.Used()
-	return api.Pool{Name: p.Name, Dir: p.Dir, Capacity: p.Capacity, Used: used, Free: p.Capacity - used, Sharable: p.Sharable}
-}
-
-// hostNumaLocked returns the NUMA node of a host bridge.
+// hostNumaLocked returns the NUMA node of a host bridge, -1 if unknown.
 func hostNumaLocked(h *host, hb string) int {
 	if h.tree != nil {
-		if t := h.tree.HostBridge(hb); t != nil && t.NumaNode >= 0 {
+		if t := h.tree.HostBridge(hb); t != nil {
 			return t.NumaNode
 		}
-	}
-	if h.proc != nil {
-		return h.proc.HostBridgeNuma(hb)
 	}
 	return -1
 }
@@ -183,7 +164,7 @@ func (s *Server) slotLocked(h *host, bus string) api.Slot {
 		}
 	}
 	for _, d := range s.devices {
-		if b := d.bindings[h.name]; b != nil && b.Bus == bus {
+		if b := d.localTo(h.name); b != nil && b.Bus == bus {
 			sl.ReservedFor = d.Name
 		}
 	}
@@ -212,19 +193,10 @@ func portSlot(h *host, p *qemu.Port) api.Slot {
 	}
 }
 
-// slotPatternsLocked returns the slot patterns of a host: its own if set
-// (an empty list too), else those of discovery; empty for every slot.
-func (s *Server) slotPatternsLocked(h *host) []string {
-	if h.cfg != nil && h.cfg.Slots != nil {
-		return h.cfg.Slots
-	}
-	return s.cfg.Discovery.Slots
-}
-
-// slotKnownLocked returns true if a slot bus of a host matches the slot
-// patterns of the host, or the host has none.
-func (s *Server) slotKnownLocked(h *host, bus string) bool {
-	pats := s.slotPatternsLocked(h)
+// slotKnownLocked returns true if a slot bus matches the slot patterns of
+// discovery, or there are none.
+func (s *Server) slotKnownLocked(bus string) bool {
+	pats := s.cfg.Discovery.Slots
 	if len(pats) == 0 {
 		return true
 	}
@@ -236,7 +208,7 @@ func (s *Server) slotKnownLocked(h *host, bus string) bool {
 	return false
 }
 
-// slotsLocked returns the slots of a host that match its slot patterns, in
+// slotsLocked returns the slots of a host that match the slot patterns, in
 // natural order.
 func (s *Server) slotsLocked(h *host) []api.Slot {
 	out := []api.Slot{}
@@ -245,7 +217,7 @@ func (s *Server) slotsLocked(h *host) []api.Slot {
 	}
 	var ports []*qemu.Port
 	for i := range h.tree.Ports {
-		if h.tree.Ports[i].IsSlot() && s.slotKnownLocked(h, h.tree.Ports[i].Bus) {
+		if h.tree.Ports[i].IsSlot() && s.slotKnownLocked(h.tree.Ports[i].Bus) {
 			ports = append(ports, &h.tree.Ports[i])
 		}
 	}
@@ -272,7 +244,6 @@ func (s *Server) hostViewLocked(h *host) api.Host {
 		HMP:              h.hmpPath,
 		QemuVersion:      h.version,
 		HotRemoveCapable: h.hotRemove,
-		Source:           h.source,
 		Error:            h.lastErr,
 		HostBridges:      []api.HostBridge{},
 		Slots:            s.slotsLocked(h),
@@ -283,22 +254,10 @@ func (s *Server) hostViewLocked(h *host) api.Host {
 	for _, a := range atts {
 		v.Attachments = append(v.Attachments, a.Attachment)
 	}
-	hbs := map[string]bool{}
 	var hbIDs []string
 	if h.tree != nil {
 		for _, hb := range h.tree.HostBridges {
-			if !hbs[hb.ID] {
-				hbs[hb.ID] = true
-				hbIDs = append(hbIDs, hb.ID)
-			}
-		}
-	}
-	if h.proc != nil {
-		for _, hb := range h.proc.HostBridges {
-			if !hbs[hb.ID] {
-				hbs[hb.ID] = true
-				hbIDs = append(hbIDs, hb.ID)
-			}
+			hbIDs = append(hbIDs, hb.ID)
 		}
 	}
 	sort.Slice(hbIDs, func(i, j int) bool { return naturalLess(hbIDs[i], hbIDs[j]) })
@@ -307,7 +266,7 @@ func (s *Server) hostViewLocked(h *host) api.Host {
 		v.HostBridges = append(v.HostBridges, hb)
 	}
 	for _, d := range sortedDevices(s.devices) {
-		if _, ok := d.bindings[h.name]; ok {
+		if d.localTo(h.name) != nil {
 			v.LocalDevices = append(v.LocalDevices, d.Name)
 		}
 	}

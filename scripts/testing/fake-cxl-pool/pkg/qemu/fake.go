@@ -172,9 +172,6 @@ func (f *Fake) check() error {
 	return nil
 }
 
-// Protocol implements Monitor.
-func (f *Fake) Protocol() string { return "fake" }
-
 // Version implements Monitor.
 func (f *Fake) Version(ctx context.Context) (string, error) {
 	f.mu.Lock()

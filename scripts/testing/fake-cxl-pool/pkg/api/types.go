@@ -25,8 +25,8 @@ const ServerVersion = "fake-cxl-pool/v1.0"
 
 // Status is the server status (GET /api/v1/status).
 type Status struct {
-	// Name is the name of the server, the DRA pool name of
-	// fake-cxl-pool-controller ("" from a server without a name).
+	// Name is the name of the server, the DRA pool name of the fake pool
+	// controller.
 	Name        string     `json:"name"`
 	Version     string     `json:"version"`
 	Qemu        QemuStatus `json:"qemu"`
@@ -40,18 +40,7 @@ type Status struct {
 
 // QemuStatus summarizes the qemu processes the server controls.
 type QemuStatus struct {
-	Discovery bool              `json:"discovery"`
-	Versions  map[string]string `json:"versions,omitempty"` // host name -> qemu version
-}
-
-// Pool is a memory resource: a directory of device backing files.
-type Pool struct {
-	Name     string `json:"name"`
-	Dir      string `json:"dir"`
-	Capacity int64  `json:"capacity"`
-	Used     int64  `json:"used"`
-	Free     int64  `json:"free"`
-	Sharable bool   `json:"sharable"`
+	Versions map[string]string `json:"versions,omitempty"` // host name -> qemu version
 }
 
 // Host states.
@@ -59,12 +48,6 @@ const (
 	HostRunning     = "running"
 	HostStopped     = "stopped"
 	HostUnreachable = "unreachable"
-)
-
-// Host sources.
-const (
-	SourceConfig     = "config"
-	SourceDiscovered = "discovered"
 )
 
 // Host is a memory consumer: a qemu VM.
@@ -81,7 +64,6 @@ type Host struct {
 	// hot-removal from cxl-downstream ports (stock qemu: the device stays
 	// as a zombie and its slot and backend can never be reused).
 	HotRemoveCapable bool         `json:"hotRemoveCapable"`
-	Source           string       `json:"source"`
 	Error            string       `json:"error,omitempty"`
 	HostBridges      []HostBridge `json:"hostBridges"`
 	Slots            []Slot       `json:"slots"`
@@ -146,51 +128,25 @@ type Device struct {
 	Shared bool   `json:"shared"`
 	// Persistent devices are persistent memory with a label storage
 	// area (LSA) file at LSAPath; others are volatile memory.
-	Persistent  bool              `json:"persistent"`
-	Backend     string            `json:"backend"`
-	Path        string            `json:"path,omitempty"`
-	LSAPath     string            `json:"lsaPath,omitempty"`
-	Pool        string            `json:"pool"`
-	Scope       string            `json:"scope"`
-	LocalHost   string            `json:"localHost,omitempty"`
-	LocalHosts  []string          `json:"localHosts,omitempty"`
-	Static      bool              `json:"static,omitempty"`
-	State       string            `json:"state"`
-	Allocation  *Allocation       `json:"allocation"`
-	Attachments []Attachment      `json:"attachments"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	Created     time.Time         `json:"created"`
+	Persistent  bool         `json:"persistent"`
+	Backend     string       `json:"backend"`
+	Path        string       `json:"path,omitempty"`
+	LSAPath     string       `json:"lsaPath,omitempty"`
+	Scope       string       `json:"scope"`
+	LocalHost   string       `json:"localHost,omitempty"`
+	Static      bool         `json:"static,omitempty"`
+	State       string       `json:"state"`
+	Attachments []Attachment `json:"attachments"`
+	Created     time.Time    `json:"created"`
 }
 
 // DeviceCreate is the body of POST /api/v1/devices.
 type DeviceCreate struct {
-	Name       string            `json:"name,omitempty"`
-	Size       Size              `json:"size"`
-	Shared     bool              `json:"shared,omitempty"`
-	Persistent bool              `json:"persistent,omitempty"`
-	Pool       string            `json:"pool,omitempty"`
-	Serial     string            `json:"serial,omitempty"`
-	Labels     map[string]string `json:"labels,omitempty"`
-}
-
-// DevicePatch is the body of PATCH /api/v1/devices/{name}. Labels, when
-// given, replace all labels of the device.
-type DevicePatch struct {
-	Shared *bool             `json:"shared,omitempty"`
-	Labels map[string]string `json:"labels,omitempty"`
-}
-
-// Allocation records the logical owner of a device.
-type Allocation struct {
-	Owner string    `json:"owner"`
-	Note  string    `json:"note,omitempty"`
-	Since time.Time `json:"since"`
-}
-
-// AllocationRequest is the body of PUT /api/v1/devices/{name}/allocation.
-type AllocationRequest struct {
-	Owner string `json:"owner"`
-	Note  string `json:"note,omitempty"`
+	Name       string `json:"name,omitempty"`
+	Size       Size   `json:"size"`
+	Shared     bool   `json:"shared,omitempty"`
+	Persistent bool   `json:"persistent,omitempty"`
+	Serial     string `json:"serial,omitempty"`
 }
 
 // AttachRequest is the body of POST /api/v1/devices/{name}/attachments.
@@ -199,9 +155,7 @@ type AttachRequest struct {
 	Slot     string `json:"slot,omitempty"`
 	NumaNode *int   `json:"numaNode,omitempty"`
 	Owner    string `json:"owner,omitempty"`
-	Wait     *bool  `json:"wait,omitempty"`
 	Timeout  string `json:"timeout,omitempty"`
-	Force    bool   `json:"force,omitempty"`
 	// Exclusive attaches a shared device to this host only: the attach
 	// fails while the device is attached to another host, and attaching it
 	// to another host fails while this attachment is exclusive. An attach

@@ -4,9 +4,8 @@
      "cxl": [
 	      [{"switch": [{"pool-slot": "1G"},
 			   {"pool-slot": "1G"},
-			   {"mem": "256M", "present": false, "shared": true,
-			    "file": "/tmp/fake-cxl-pool/static-shared0.raw", "sn": "0xc1ae0000"},
-			   {"mem": "1G", "present": false}]}],
+			   {"pool-slot": "256M"},
+			   {"mem": "1G", "present": false, "sn": "0xc100e2e1"}]}],
 	      [{"switch": [{"pool-slot": "1G"}, {"pool-slot": "1G"}, {"pool-slot": "1G"}, {"pool-slot": "1G"}]}]
 	    ]}
 ]

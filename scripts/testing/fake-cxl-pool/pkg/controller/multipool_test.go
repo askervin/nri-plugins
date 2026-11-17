@@ -132,11 +132,6 @@ func TestPoolNameFromServer(t *testing.T) {
 		l := e.slices()
 		return len(l) == 1 && l[0].Spec.Pool.Name == "pool-x"
 	})
-	// a server without a name
-	e = newEnvWith(t, func(p *fakePool, _ *Config) { p.name = "" })
-	if e.c.cfg.PoolName != DefaultPoolName {
-		t.Fatalf("pool name of a server without a name: %q", e.c.cfg.PoolName)
-	}
 	// the configured name wins, the server is not asked
 	e = newEnvWith(t, func(p *fakePool, c *Config) { p.name = "pool-x"; c.PoolName = "flag-pool" })
 	if e.c.cfg.PoolName != "flag-pool" || e.pool.statuses != 0 {

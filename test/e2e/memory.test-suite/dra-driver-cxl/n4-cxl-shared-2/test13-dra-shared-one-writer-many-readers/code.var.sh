@@ -179,12 +179,10 @@ pool-server-start "
   - name: shared0
     size: 256Mi
     shared: true
-    pool: default
     serial: $SHARED_SERIAL
   - name: pooled0
     size: 512Mi
     shared: false
-    pool: default
     serial: $POOLED0_SERIAL"
 pool-client-install "$VM2" "$VM1"
 

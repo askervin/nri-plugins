@@ -332,7 +332,6 @@ pool-server-start "
     size: 512Mi
     shared: true
     persistent: true
-    pool: default
     serial: $FS_SERIAL"
 trap 'pool-cleanup; rm -f "$FS_DATA" "$FS_LSA"' EXIT
 pool-client-install "$VM2" "$VM1"

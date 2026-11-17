@@ -3,7 +3,7 @@
 A fake CXL memory pooling and sharing appliance for testing on one host:
 
 - `fake-cxl-pool-server` runs on the host. It owns memory devices (backing
-  files in pool directories) and hotplugs/hot-removes them as `cxl-type3`
+  files in a directory) and hotplugs/hot-removes them as `cxl-type3`
   devices into running qemu VMs over their QMP or HMP monitor sockets, without
   restarting the VMs.
 - `fake-cxl-pool-client` (CLI) and `pkg/client` (Go library) talk to the
@@ -14,9 +14,8 @@ A fake CXL memory pooling and sharing appliance for testing on one host:
   attaches and detaches them as the scheduler allocates and frees claims
   (see [fake-cxl-pool-controller](#fake-cxl-pool-controller)).
 - `cxl-numa-place` runs on the host. It prints on which NUMA nodes the pages
-  of backing files are (`cxl-numa-place where FILE...`) and moves them to
-  other nodes (`sudo cxl-numa-place move --nodes N[,M] FILE...`), the pages
-  that every qemu attaching a device maps.
+  of backing files are (`cxl-numa-place where FILE...`), the pages that
+  every qemu attaching a device maps.
 - `cxl-load` runs on the host. It streams reads and writes over buffers bound
   to the memory of some NUMA nodes from threads pinned to some CPUs, at a
   bandwidth that a pause per block sets, and prints the bandwidth it
@@ -52,15 +51,15 @@ ssh -F test/e2e/<vm>/.ssh-config vagrant@node sudo install /tmp/fake-cxl-pool-cl
 ## Running the server
 
 ```
-bin/fake-cxl-pool-server [-config config.example.yaml] [-listen 127.0.0.1:9909] [-state FILE|-] [-v]
+bin/fake-cxl-pool-server [-config config.example.yaml] [-state FILE|-] [-v]
 ```
 
-Without a config file the server listens on 127.0.0.1:9909, has one pool
-`default` in /tmp/fake-cxl-pool (8Gi), discovers qemu processes every 10s
+Without a config file the server listens on 127.0.0.1:9909, keeps the
+backing files in /tmp/fake-cxl-pool, discovers qemu processes every 10s
 and keeps its state in /tmp/fake-cxl-pool.state.json. `-v` logs every qemu
 command and HTTP request. See [config.example.yaml](config.example.yaml)
-for all keys (name, pools, static devices, static hosts, discovery filters,
-detach timeout).
+for all keys (name, dir, static devices, discovery filters, detach
+timeout).
 
 - `name` (default `fake-cxl-pool`): the name of the server, a DNS label
   (lower-case letters, digits, `-`). `GET /status` and the CLI `status`
@@ -71,14 +70,11 @@ detach timeout).
 - `discovery.names`: the VMs the server is cabled to (path.Match patterns
   on the VM name; default all).
 - `discovery.control: qmp|hmp` (default: QMP if the VM has a QMP socket,
-  else HMP): the monitor protocol of every host without a
-  `hosts[].control` of its own. With `hmp` a VM without an HMP socket gets
-  the error `no monitor socket`.
-- `discovery.slots`, `hosts[].slots` (default: every slot): the CXL slots
-  (ports) the server is cabled to, path.Match patterns on the slot bus name
-  (`"*hb1"`, `"cxlsw_ds[01]_usrp0hb0"`); a host's own patterns override
-  those of discovery, and `slots: []` on a host means every slot of that
-  host. The server knows only matching slots: `hosts NAME`
+  else HMP): the monitor protocol of every host. With `hmp` a VM without
+  an HMP socket gets the error `no monitor socket`.
+- `discovery.slots` (default: every slot): the CXL slots (ports) the
+  server is cabled to, path.Match patterns on the slot bus name (`"*hb1"`,
+  `"cxlsw_ds[01]_usrp0hb0"`). The server knows only matching slots: `hosts NAME`
   lists them, an attach picks one of them, `attach --slot` of another one
   fails (`host "..." has no CXL slot "..."`), and so does the attach of a
   local device whose slot does not match: a server cabled to some ports
@@ -89,13 +85,13 @@ detach timeout).
 ### Serial numbers
 
 The guest finds a device by its serial (`/sys/bus/cxl/devices/memN/serial`),
-so serials are unique over all devices of the server. Devices created
-without a serial get the next free one above the base of their kind:
+so serials are unique over all devices of the server. Every device of the
+configuration has a serial. Devices created over the API without a serial
+get the next free one above the base of their kind:
 `0xc1` = CXL, then `00` = present at boot (the e2e topology's local devices
 are `0xc100e2e0+i`), `ae` = shared pool devices (`sharedSerialBase`,
 default `0xc1ae0000`: `0xc1ae0001`, ...), `ee` = exclusive pool devices
-(`exclusiveSerialBase`, default `0xc1ee0000`: `0xc1ee0001`, ...). The kind
-is decided when the serial is assigned; a later `PATCH shared` keeps it.
+(`exclusiveSerialBase`, default `0xc1ee0000`: `0xc1ee0001`, ...).
 
 ### Persistent devices
 
@@ -103,10 +99,9 @@ A device with `persistent: true` (config, or `"persistent": true` in
 `POST /devices`, or `create --persistent`) is CXL persistent memory. It has
 two files:
 
-- the data file (`<pool dir>/<device>.raw`, or `file:`), of the device size;
+- the data file (`<dir>/<device>.raw`), of the device size;
 - the label storage area (LSA) file, 256 KiB: the data file with its
-  extension replaced by `.lsa` (`llm0.raw` -> `llm0.lsa`; a file without
-  extension gets `.lsa` appended).
+  extension replaced by `.lsa` (`llm0.raw` -> `llm0.lsa`).
 
 Both are created and removed together (a missing one is created again at
 startup and at attach; deleting a device created over the API removes both).
@@ -116,16 +111,13 @@ have `"persistent": false` and no `lsaPath`. Attach adds two
 the LSA `fcp_<device>.hp<N>-lsa` (`size=262144`), and plugs
 `cxl-type3,persistent-memdev=fcp_<device>.hp<N>,lsa=fcp_<device>.hp<N>-lsa`
 instead of `volatile-memdev=`. Detach deletes both objects after
-`device_del`, as does a failed `device_add`. The data backend of a device
-whose size is a multiple of 2 MiB, volatile or persistent, has
-`align=2097152`: qemu maps its file 2 MiB-aligned, so that the host can map
+`device_del`, as does a failed `device_add`. The data backend of a device,
+volatile or persistent, has `align=2097152`: qemu maps its file 2 MiB-aligned, so that the host can map
 it with 2 MiB pages where the file system has them (a tmpfs with `huge=`)
 and qemu runs with transparent huge pages enabled. Every qemu that attaches a
 persistent device maps the same two files, so the namespace labels in the
 LSA are shared by all VMs: a namespace created in one VM appears in the
-others from the labels. A persistent device cannot use a backend
-pre-declared on a qemu command line (`befile_...`): such a backend has no
-LSA.
+others from the labels.
 
 VMs with slirp networking (the e2e VMs) reach the host loopback at
 192.168.76.2, which is the client's default server:
@@ -160,18 +152,15 @@ The server scans `/proc/*/cmdline` for `qemu-system-*`:
   each `object_add` and `device_add` and after the `device_add`: an
   attach during a qemu restart fails (503) and plugs nothing into the new
   qemu.
-- pre-declared backends `beram_<memdev>__bus_<bus>__sn_<serial>` and
-  `befile_...` (test/e2e/lib/topology2qemuopts.py) become *local* devices of
-  that VM (`scope: local`): attach plugs them into their own bus with their
-  own serial and never object-adds or object-deletes them. A `scope: local`
-  device is what the DRA driver `cxl.nri.io` publishes as a device with
-  `source: local`; only `scope: pool` devices are published by
-  fake-cxl-pool-controller. A `befile_`
-  backend whose file is declared in several VMs is one shared device bound to
-  all of them (`localHosts`); if its file is a configured pool device, the
-  pool device is bound to the VM.
+- pre-declared `memory-backend-ram` backends
+  `beram_<memdev>__bus_<bus>__sn_<serial>` (test/e2e/lib/topology2qemuopts.py)
+  become *local* devices of that VM (`scope: local`): attach plugs them into
+  their own bus with their own serial and never object-adds or
+  object-deletes them. A `scope: local` device is what the DRA driver
+  `cxl.nri.io` publishes as a device with `source: local`; only `scope:
+  pool` devices are published by fake-cxl-pool-controller.
 - a host bridge's NUMA node and fixed memory window size come from qemu
-  (`qom-get /machine cxl-fmw`) or from the command line.
+  (its device tree and `qom-get /machine cxl-fmw`).
 - `hotRemoveCapable: false` means stock qemu: it cannot complete hot-removal
   from a `cxl-downstream` port (no power controller); the device stays in
   qemu as a zombie, its slot and backend can never be reused until the VM
@@ -189,14 +178,13 @@ the serial S' of device D: not adopted (another pool server's device?)`.
 
 ```
 fake-cxl-pool-client [--server URL] [-o table|json] COMMAND
-  status | pools [NAME] | hosts [NAME] | whoami | rescan
-  devices [NAME] [--shared] [--free] [--host H]
-  create --size 256Mi [--shared] [--persistent] [--name N] [--pool P] [--serial 0x..] [--label k=v]...
+  status | hosts [NAME] | whoami
+  devices [NAME]
+  create --size 256Mi [--shared] [--persistent] [--name N] [--serial 0x..]
   delete NAME [--force]
-  attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--no-wait] [--timeout 30s] [--force] [--exclusive]
-  detach DEVICE (--self | --host HOST) [--timeout 30s] [--no-wait] [--owner O] [--force]
+  attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--timeout 30s] [--exclusive]
+  detach DEVICE (--self | --host HOST) [--timeout 30s] [--force]
   attachments [--self | --host H] [--device D]
-  allocate DEVICE --owner O [--note TEXT] ; release DEVICE [--owner O] [--force]
   events
   guest wait DEVICE [--timeout 30s]          # prints memN when the serial shows up
   guest memdev DEVICE
@@ -217,7 +205,7 @@ and lower-case hex. Exit codes: 0 ok, 1 error, 2 usage, 3 conflict or
 timeout (the device is still held).
 
 The `devices` table has the columns `NAME SERIAL SIZE SHARED PERSISTENT
-SCOPE STATE ATTACHED-TO OWNER`; `devices NAME` prints `memory: persistent`
+SCOPE STATE ATTACHED-TO`; `devices NAME` prints `memory: persistent`
 (or `volatile`) and, for a persistent device, `lsa: <file>`.
 
 `attach --exclusive` makes an exclusive attachment: no other host can
@@ -279,8 +267,8 @@ the server, the controller and the driver in the e2e VMs. The controller:
 
 - publishes the pool devices of the server (`GET /devices?scope=pool`) as
   cluster-scoped ResourceSlices of the pool named after the server (the
-  `name` of `GET /status`, `fake-cxl-pool` for a server without one;
-  `-pool-name` overrides it), at most 128 devices in a slice, with the
+  `name` of `GET /status`; `-pool-name` overrides it), at most 128 devices
+  in a slice, with the
   node selector `kubernetes.io/hostname In [...]` of the nodes whose VMs
   the server reaches (the Nodes that map to a server host as below; a
   node without the label is not a pool host, log: `node N has no
@@ -470,8 +458,8 @@ several servers.
 Each server has a config file of its own (see "Several pool servers" in
 [config.example.yaml](config.example.yaml)):
 
-- a distinct `name` (the DRA pool name), `listen` port, pool `dir`s and
-  `stateFile`, and `discovery.names` of the VMs it is cabled to;
+- a distinct `name` (the DRA pool name), `listen` port and `dir` (and
+  state file), and `discovery.names` of the VMs it is cabled to;
 - serials unique over all servers of the cluster, because the guests and
   the DRA drivers find a device by its serial: the serial bases
   `sharedSerialBase: 0xc1aeP000` and `exclusiveSerialBase: 0xc1eeP000` for
@@ -501,27 +489,26 @@ this implementation); routes are in [pkg/api/routes.go](pkg/api/routes.go):
 
 ```
 GET    /status
-GET    /pools                     GET /pools/{name}
-GET    /hosts                     GET /hosts/{name|uuid}     POST /hosts/rescan
+GET    /hosts                     GET /hosts/{name|uuid}
 GET    /hosts/resolve?hostname=H&uuid=U
-GET    /devices?shared=&state=&host=&pool=&scope=
-POST   /devices                   GET|PATCH|DELETE /devices/{name}[?force=true]
-PUT    /devices/{name}/allocation DELETE /devices/{name}/allocation[?owner=&force=]
-POST   /devices/{name}/attachments                       {"host": ..., "slot", "numaNode", "owner", "wait", "timeout", "force", "exclusive"}
-GET    /devices/{name}/attachments[/{host}]
-DELETE /devices/{name}/attachments/{host}?wait=&timeout=&owner=&force=
-GET    /attachments?host=&device=  GET /attachments/{device@host}
+GET    /devices?scope=
+POST   /devices                   GET|DELETE /devices/{name}[?force=true]
+POST   /devices/{name}/attachments                       {"host": ..., "slot", "numaNode", "owner", "timeout", "exclusive"}
+DELETE /devices/{name}/attachments/{host}?timeout=&force=
+GET    /attachments?host=&device=
 GET    /events                    (text/event-stream)
 ```
 
-Attach: 201 attached, 200 already attached, 202 attaching (`wait: false`),
-409 sharing/ownership/slot/capacity conflicts, 503 qemu errors. An
+Attach: 201 attached, 200 already attached, 202 still attaching at the
+timeout (another request plugs the device), 409 sharing/slot/capacity
+conflicts, 503 qemu errors. An
 attachment records the `owner` of the attach request that created it
 (fake-cxl-pool-controller filters its own attachments by it); an
 attachment without owner takes the owner of the first attach request that
-has one (200, nothing is plugged again). Detach: 200
-detached, 202 detaching (`wait=false`), 409 the guest did not release the
-device in time (attachment `failed`).
+has one (200, nothing is plugged again). Detach: 200 detached, 202
+detaching (the server could not check yet that the guest released the
+memory), 409 the guest did not release the device in time (attachment
+`failed`); `force=true` forgets a failed attachment.
 
 ## Layout
 
@@ -535,7 +522,7 @@ pkg/controller             DRA pool controller: ResourceSlice publisher, attach/
 pkg/server                 config, state machine, persistence, HTTP handlers
 pkg/qemu                   Monitor interface: QMP (persistent, events, QOM tree), HMP
                            (text protocol, info qtree parser), discovery, fake monitor
-pkg/pool                   pools, backing files, serials
+pkg/pool                   backing files, serials
 pkg/cxl/memctl in nri-plugins  guest side: sysfs + cxl/daxctl
 deploy/                    Kubernetes manifests (controller Deployment + RBAC)
 Dockerfile                 the controller image (make image)

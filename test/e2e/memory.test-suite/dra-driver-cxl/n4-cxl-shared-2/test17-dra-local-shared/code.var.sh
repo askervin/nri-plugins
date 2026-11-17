@@ -35,7 +35,7 @@
 # restarts of the driver, and the region going when the device is no
 # longer shared; at the end the trace of what every component did.
 #
-# The local device is cxl_memdev1 of the topology (1G, host bridge 0),
+# The local device is cxl_memdev0 of the topology (1G, host bridge 0),
 # attached through fake-cxl-pool-server as in test14; all pods run on this
 # VM (VM2), the control plane of the cluster of the test; VM1
 # (n4-cxl-shared-1) and VM0 (n4-cxl-shared-0), its workers, have no local

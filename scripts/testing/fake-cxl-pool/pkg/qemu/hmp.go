@@ -62,9 +62,6 @@ func NewHMP(path string, log Logf) *HMP {
 	return &HMP{Path: path, PollInterval: DefaultPollInterval, Log: log}
 }
 
-// Protocol implements Monitor.
-func (h *HMP) Protocol() string { return ProtoHMP }
-
 // Close implements Monitor. It is final, like QMP.Close.
 func (h *HMP) Close() {
 	h.mu.Lock()

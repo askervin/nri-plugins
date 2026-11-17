@@ -18,10 +18,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"path"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,10 +49,13 @@ type Options struct {
 	// SocketExists tells if a monitor socket exists (default: qemu.IsSocket).
 	SocketExists func(path string) bool
 	// BackgroundPoll is the interval of checking detaching devices in the
-	// background (default 2s), BackgroundMax the maximum time (default 1h).
+	// background (default 2s).
 	BackgroundPoll time.Duration
-	BackgroundMax  time.Duration
 }
+
+// backgroundMax is how long a detaching device is checked in the
+// background.
+const backgroundMax = time.Hour
 
 // Server is the fake-cxl-pool server state.
 type Server struct {
@@ -61,16 +64,11 @@ type Server struct {
 	log     *log.Logger
 	started time.Time
 
-	mu        sync.RWMutex
-	pools     map[string]*pool.Pool
-	poolOrder []string
-	serials   *pool.Serials
-	devices   map[string]*device
-	hosts     map[string]*host
-	atts      map[string]*attachment
-	// overrides are persisted mutable fields of devices that are not
-	// (yet) known, e.g. allocations of local devices of a stopped host.
-	overrides map[string]*deviceOverride
+	mu      sync.RWMutex
+	serials *pool.Serials
+	devices map[string]*device
+	hosts   map[string]*host
+	atts    map[string]*attachment
 
 	// adoptWarned remembers the qemu devices that were not adopted because
 	// their serial is not the device's, or the device is exclusive and
@@ -89,28 +87,31 @@ type device struct {
 	api.Device
 	serial  uint64
 	dynamic bool // created over the API (persisted)
-	// needSerial: a config device without a serial, gets one after the
-	// state file is loaded (keeping the one it had before if possible)
-	needSerial bool
-	// patched: shared/labels changed over the API (persisted for local
-	// devices; config devices always take them from the config)
-	patched bool
-	// bindings are memory backends pre-declared in qemu command lines,
-	// by host name. Attaching to such a host reuses the backend object.
-	bindings map[string]*binding
+	// local is the pre-declared memory backend of a local device, nil
+	// while the qemu command line of its host has none. An attach reuses
+	// the backend object.
+	local *binding
 }
 
 type binding struct {
+	host     string
 	ObjectID string
 	Bus      string
 	Serial   uint64
 }
 
+// localTo returns the binding of a local device to the host, nil if it
+// has none.
+func (d *device) localTo(hostName string) *binding {
+	if d.local == nil || d.local.host != hostName {
+		return nil
+	}
+	return d.local
+}
+
 type host struct {
 	name      string
 	uuid      string
-	source    string
-	cfg       *HostConfig
 	proc      *qemu.Process
 	pid       int
 	startTime uint64
@@ -166,21 +167,16 @@ func New(cfg *Config, opts Options) (*Server, error) {
 	if opts.BackgroundPoll == 0 {
 		opts.BackgroundPoll = 2 * time.Second
 	}
-	if opts.BackgroundMax == 0 {
-		opts.BackgroundMax = time.Hour
-	}
 	s := &Server{
-		cfg:       cfg,
-		opts:      opts,
-		log:       opts.Logger,
-		started:   time.Now(),
-		pools:     map[string]*pool.Pool{},
-		serials:   pool.NewSerials(uint64(*cfg.SharedSerialBase), uint64(*cfg.ExclusiveSerialBase)),
-		devices:   map[string]*device{},
-		hosts:     map[string]*host{},
-		atts:      map[string]*attachment{},
-		overrides: map[string]*deviceOverride{},
-		events:    newBroker(),
+		cfg:     cfg,
+		opts:    opts,
+		log:     opts.Logger,
+		started: time.Now(),
+		serials: pool.NewSerials(uint64(*cfg.SharedSerialBase), uint64(*cfg.ExclusiveSerialBase)),
+		devices: map[string]*device{},
+		hosts:   map[string]*host{},
+		atts:    map[string]*attachment{},
+		events:  newBroker(),
 
 		adoptWarned: map[string]bool{},
 	}
@@ -188,43 +184,23 @@ func New(cfg *Config, opts Options) (*Server, error) {
 		s.opts.NewMonitor = s.newMonitor
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
-	for _, pc := range cfg.Pools {
-		p := pool.New(pc.Name, pc.Dir, int64(pc.Capacity), *pc.Sharable)
-		if err := p.EnsureDir(); err != nil {
-			return nil, fmt.Errorf("pool %q: %w", pc.Name, err)
-		}
-		s.pools[pc.Name] = p
-		s.poolOrder = append(s.poolOrder, pc.Name)
+	if err := os.MkdirAll(cfg.Dir, 0o755); err != nil {
+		return nil, err
 	}
 	for _, dc := range cfg.Devices {
 		if err := s.addStaticDevice(dc); err != nil {
 			return nil, err
 		}
 	}
-	// serials: config devices with explicit serials are registered above,
-	// then the dynamic devices of the state file, and only then the config
-	// devices without a serial get theirs (the persisted one if free)
-	staticSerials, err := s.loadState()
-	if err != nil {
+	if err := s.loadState(); err != nil {
 		return nil, err
 	}
-	for _, d := range sortedDevices(s.devices) {
-		if !d.needSerial {
-			continue
-		}
-		sn, ok := staticSerials[d.Name]
-		if ok {
-			if err := s.serials.Use(sn, d.Name); err != nil {
-				s.logf("device %s: previous serial 0x%x is taken, allocating a new one", d.Name, sn)
-				ok = false
-			}
-		}
-		if !ok {
-			sn = s.serials.NextExcept(d.Name, d.Shared, s.localSerialLocked)
-		}
-		d.serial, d.Serial, d.needSerial = sn, api.FormatSerial(sn), false
-	}
 	return s, nil
+}
+
+// filePath returns the data file of a pool device.
+func (s *Server) filePath(name string) string {
+	return filepath.Join(s.cfg.Dir, name+".raw")
 }
 
 // localSerialLocked returns true if a local device has the serial.
@@ -236,13 +212,8 @@ func (s *Server) localSerialLocked(sn uint64) bool {
 // to any host if "") that has the serial.
 func (s *Server) localDeviceWithSerialLocked(sn uint64, hostName string) *device {
 	for _, d := range s.devices {
-		if d.Scope != api.ScopeLocal {
-			continue
-		}
-		for hn, b := range d.bindings {
-			if b.Serial == sn && (hostName == "" || hn == hostName) {
-				return d
-			}
+		if b := d.local; b != nil && b.Serial == sn && (hostName == "" || b.host == hostName) {
+			return d
 		}
 	}
 	return nil
@@ -254,9 +225,7 @@ func (s *Server) newMonitor(proto, path string) qemu.Monitor {
 		logf = func(format string, args ...any) { s.log.Printf(format, args...) }
 	}
 	if proto == qemu.ProtoQMP {
-		q := qemu.NewQMP(path, logf)
-		q.IdleTimeout = 0 // persistent: qmp.sock is reserved for the server
-		return q
+		return qemu.NewQMP(path, logf)
 	}
 	return qemu.NewHMP(path, logf)
 }
@@ -273,29 +242,12 @@ func (s *Server) addStaticDevice(dc DeviceConfig) error {
 	if err := pool.ValidName(dc.Name); err != nil {
 		return fmt.Errorf("device %q: %w", dc.Name, err)
 	}
-	p, ok := s.pools[dc.Pool]
-	if !ok {
-		return fmt.Errorf("device %q: unknown pool %q", dc.Name, dc.Pool)
-	}
-	if dc.Shared && !p.Sharable {
-		return fmt.Errorf("device %q: pool %q is not sharable", dc.Name, p.Name)
-	}
 	if int64(dc.Size)%CapacityMultiplier != 0 {
 		return fmt.Errorf("device %q: size must be a multiple of %s", dc.Name, api.FormatSize(CapacityMultiplier))
 	}
-	path := dc.File
-	if path == "" {
-		path = p.FilePath(dc.Name)
-	}
-	var sn uint64
-	needSerial := dc.Serial == nil
-	if !needSerial {
-		sn = uint64(*dc.Serial)
-		if err := s.serials.Use(sn, dc.Name); err != nil {
-			return fmt.Errorf("device %q: %w", dc.Name, err)
-		}
-	}
-	if err := p.Reserve(dc.Name, int64(dc.Size)); err != nil {
+	path := s.filePath(dc.Name)
+	sn := uint64(dc.Serial)
+	if err := s.serials.Use(sn, dc.Name); err != nil {
 		return fmt.Errorf("device %q: %w", dc.Name, err)
 	}
 	d := &device{
@@ -307,15 +259,11 @@ func (s *Server) addStaticDevice(dc DeviceConfig) error {
 			Persistent: dc.Persistent,
 			Backend:    api.BackendFile,
 			Path:       path,
-			Pool:       p.Name,
 			Scope:      api.ScopePool,
 			Static:     true,
-			Labels:     dc.Labels,
 			Created:    time.Now().UTC(),
 		},
-		serial:     sn,
-		needSerial: needSerial,
-		bindings:   map[string]*binding{},
+		serial: sn,
 	}
 	if dc.Persistent {
 		d.LSAPath = pool.LSAPath(path)
@@ -343,7 +291,7 @@ func (d *device) ensureFiles() error {
 // Start runs the initial host refresh and the periodic discovery loop.
 func (s *Server) Start() {
 	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
-	s.Refresh(ctx, true)
+	s.Refresh(ctx)
 	cancel()
 	s.mu.Lock()
 	for id, a := range s.atts {
@@ -376,7 +324,7 @@ func (s *Server) Start() {
 				return
 			case <-t.C:
 				ctx, cancel := context.WithTimeout(s.ctx, time.Duration(s.cfg.Discovery.Interval))
-				s.Refresh(ctx, true)
+				s.Refresh(ctx)
 				cancel()
 			}
 		}
@@ -402,28 +350,20 @@ func (s *Server) CloseEvents() {
 	s.events.close()
 }
 
-// Refresh rediscovers qemu processes (if discover is true and discovery
-// is enabled), queries the device tree of every running host, and
-// reconciles attachments with what qemu has.
-func (s *Server) Refresh(ctx context.Context, discover bool) {
+// Refresh rediscovers qemu processes, queries the device tree of every
+// running host, and reconciles attachments with what qemu has.
+func (s *Server) Refresh(ctx context.Context) {
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
-	var procs []*qemu.Process
-	discovered := false
-	if discover && s.cfg.Discovery.QemuEnabled() {
-		var err error
-		procs, err = s.opts.Discover()
-		if err != nil {
-			s.logf("discovery failed: %v", err)
-		} else {
-			discovered = true
-			procs = s.filterProcs(procs)
-		}
+	procs, err := s.opts.Discover()
+	discovered := err == nil
+	if err != nil {
+		s.logf("discovery failed: %v", err)
+	} else {
+		procs = s.filterProcs(procs)
 	}
 	s.mu.Lock()
-	if discover {
-		s.updateHostsLocked(procs, discovered)
-	}
+	s.updateHostsLocked(procs, discovered)
 	var hs []*host
 	for _, h := range s.hosts {
 		if h.mon != nil && h.state != api.HostStopped {
@@ -607,7 +547,7 @@ func (s *Server) filterProcs(procs []*qemu.Process) []*qemu.Process {
 	return out
 }
 
-// updateHostsLocked merges config hosts and discovered processes.
+// updateHostsLocked updates the hosts from the discovered processes.
 func (s *Server) updateHostsLocked(procs []*qemu.Process, discovered bool) {
 	byName := map[string]*qemu.Process{}
 	for _, p := range procs {
@@ -621,26 +561,11 @@ func (s *Server) updateHostsLocked(procs []*qemu.Process, discovered bool) {
 		byName[p.Name] = p
 	}
 	seen := map[string]bool{}
-	for i := range s.cfg.Hosts {
-		hc := &s.cfg.Hosts[i]
-		seen[hc.Name] = true
-		h := s.hosts[hc.Name]
-		if h == nil {
-			h = &host{name: hc.Name, source: api.SourceConfig, state: api.HostUnreachable}
-			s.hosts[hc.Name] = h
-		}
-		h.cfg = hc
-		h.source = api.SourceConfig
-		s.updateHostLocked(h, byName[hc.Name])
-	}
 	for name, p := range byName {
-		if seen[name] {
-			continue
-		}
 		seen[name] = true
 		h := s.hosts[name]
 		if h == nil {
-			h = &host{name: name, source: api.SourceDiscovered, state: api.HostUnreachable}
+			h = &host{name: name, state: api.HostUnreachable}
 			s.hosts[name] = h
 			s.logf("discovered qemu pid %d: host %s", p.PID, name)
 		}
@@ -680,9 +605,6 @@ func (s *Server) updateHostLocked(h *host, p *qemu.Process) {
 	h.pid = p.PID
 	h.startTime = p.StartTime
 	h.uuid = p.UUID
-	if h.cfg != nil && h.cfg.UUID != "" {
-		h.uuid = h.cfg.UUID
-	}
 	if h.state == api.HostStopped {
 		h.state = api.HostUnreachable // until the monitor answers
 	}
@@ -702,14 +624,6 @@ func (s *Server) updateHostLocked(h *host, p *qemu.Process) {
 			break
 		}
 	}
-	if h.cfg != nil {
-		if h.cfg.QMP != "" {
-			qmpPath = h.cfg.QMP
-		}
-		if h.cfg.HMP != "" {
-			hmpPath = h.cfg.HMP
-		}
-	}
 	s.setMonitorLocked(h, qmpPath, hmpPath)
 	if s.cfg.Discovery.LocalDevicesEnabled() {
 		s.updateLocalDevicesLocked(h, p)
@@ -718,19 +632,8 @@ func (s *Server) updateHostLocked(h *host, p *qemu.Process) {
 
 // processGoneLocked handles a host whose qemu process is not running.
 func (s *Server) processGoneLocked(h *host, why string) {
-	if h.pid > 0 || (h.cfg == nil && h.state != api.HostStopped) {
+	if h.pid > 0 || h.state != api.HostStopped {
 		s.hostGoneLocked(h, why)
-	}
-	if h.cfg != nil {
-		// liveness of a config host without a known process comes
-		// from its monitor
-		if h.cfg.UUID != "" {
-			h.uuid = h.cfg.UUID
-		}
-		s.setMonitorLocked(h, h.cfg.QMP, h.cfg.HMP)
-		if h.state == api.HostStopped && h.mon != nil {
-			h.state = api.HostUnreachable
-		}
 	}
 }
 
@@ -754,9 +657,6 @@ func (s *Server) setMonitorLocked(h *host, qmpPath, hmpPath string) {
 	h.qmpPath, h.hmpPath = qmpPath, hmpPath
 	proto, path := "", ""
 	force := s.cfg.Discovery.Control
-	if h.cfg != nil && h.cfg.Control != "" {
-		force = h.cfg.Control
-	}
 	switch {
 	case force == qemu.ProtoHMP:
 		if hmpPath != "" {
@@ -846,59 +746,24 @@ func localDeviceName(hostName, memdev string) string {
 func (s *Server) updateLocalDevicesLocked(h *host, p *qemu.Process) {
 	present := map[string]bool{}
 	for _, lb := range p.LocalBackends() {
-		var d *device
-		if lb.QomType == qemu.MemoryBackendFile && lb.MemPath != "" {
-			// a pre-declared file backend: bind it to the pool device that
-			// has the same file, or make a local device of it
-			for _, cand := range s.devices {
-				if cand.Backend == api.BackendFile && cand.Path != "" && samePath(cand.Path, lb.MemPath) {
-					d = cand
-					break
-				}
-			}
-			if d == nil {
-				name := sanitizeName(strings.TrimSuffix(filepath.Base(lb.MemPath), filepath.Ext(lb.MemPath)))
-				if other, ok := s.devices[name]; ok && other.Path != lb.MemPath {
-					name = name + "." + sanitizeName(h.name)
-				}
-				d = s.devices[name]
-				if d == nil {
-					d = s.newLocalDeviceLocked(name, lb)
-					d.Backend = api.BackendFile
-					d.Path = lb.MemPath
-					d.Shared = true
-				}
-			}
-		} else {
-			name := localDeviceName(h.name, lb.Memdev)
-			d = s.devices[name]
-			if d == nil {
-				d = s.newLocalDeviceLocked(name, lb)
-			}
+		name := localDeviceName(h.name, lb.Memdev)
+		d := s.devices[name]
+		if d == nil {
+			d = s.newLocalDeviceLocked(name, lb)
 		}
 		sn := d.serial
-		if lb.HasSerial && d.Scope == api.ScopeLocal {
+		if lb.HasSerial {
 			sn = lb.Serial
 		}
-		d.bindings[h.name] = &binding{ObjectID: lb.ObjectID, Bus: lb.Bus, Serial: sn}
+		d.local = &binding{host: h.name, ObjectID: lb.ObjectID, Bus: lb.Bus, Serial: sn}
+		d.LocalHost = h.name
 		present[d.Name] = true
-		s.updateLocalHostsLocked(d)
 	}
 	for _, d := range s.devices {
-		if _, ok := d.bindings[h.name]; ok && !present[d.Name] {
-			delete(d.bindings, h.name)
-			s.updateLocalHostsLocked(d)
+		if d.localTo(h.name) != nil && !present[d.Name] {
+			d.local, d.LocalHost = nil, ""
 		}
 	}
-}
-
-func samePath(a, b string) bool {
-	if filepath.Clean(a) == filepath.Clean(b) {
-		return true
-	}
-	ra, err1 := filepath.EvalSymlinks(a)
-	rb, err2 := filepath.EvalSymlinks(b)
-	return err1 == nil && err2 == nil && ra == rb
 }
 
 func (s *Server) newLocalDeviceLocked(name string, lb qemu.LocalBackend) *device {
@@ -907,7 +772,7 @@ func (s *Server) newLocalDeviceLocked(name string, lb qemu.LocalBackend) *device
 	// attach and create time.
 	sn := lb.Serial
 	if !lb.HasSerial {
-		sn = s.serials.NextExcept(name, lb.QomType == qemu.MemoryBackendFile, s.localSerialLocked)
+		sn = s.serials.NextExcept(name, false, s.localSerialLocked)
 	} else if owner, ok := s.serials.Owner(sn); ok {
 		s.logf("WARNING: local device %s has the serial 0x%x of pool device %s: that device cannot be attached to the same VM", name, sn, owner)
 	}
@@ -920,36 +785,11 @@ func (s *Server) newLocalDeviceLocked(name string, lb qemu.LocalBackend) *device
 			Scope:   api.ScopeLocal,
 			Created: time.Now().UTC(),
 		},
-		serial:   sn,
-		bindings: map[string]*binding{},
-	}
-	if ov := s.overrides[name]; ov != nil {
-		ov.apply(d, true)
-		delete(s.overrides, name)
+		serial: sn,
 	}
 	s.devices[name] = d
 	s.debugf("local device %s: object %s", name, lb.ObjectID)
 	return d
-}
-
-func (s *Server) updateLocalHostsLocked(d *device) {
-	if d.Scope != api.ScopeLocal {
-		d.LocalHost, d.LocalHosts = "", nil
-		return
-	}
-	var hs []string
-	for h := range d.bindings {
-		hs = append(hs, h)
-	}
-	sort.Strings(hs)
-	d.LocalHosts = hs
-	d.LocalHost = ""
-	if len(hs) > 0 {
-		d.LocalHost = hs[0]
-	}
-	if len(hs) <= 1 {
-		d.LocalHosts = nil
-	}
 }
 
 var fcpObjectRe = regexp.MustCompile(`^fcp_(.+)\.hp[0-9]+$`)
@@ -1079,7 +919,7 @@ func (s *Server) deviceForObjectLocked(hostName, objID string) *device {
 		return s.devices[m[1]]
 	}
 	for _, d := range s.devices {
-		if b := d.bindings[hostName]; b != nil && b.ObjectID == objID {
+		if b := d.localTo(hostName); b != nil && b.ObjectID == objID {
 			return d
 		}
 	}
@@ -1191,13 +1031,8 @@ func (s *Server) finalizeDetach(ctx context.Context, a *attachment) {
 	var objIDs []string
 	if strings.HasPrefix(a.QemuObjectID, "fcp_") {
 		objIDs = append(objIDs, a.QemuObjectID)
-		lsa := a.QemuLSAObjectID
-		if d := s.devices[a.Device]; lsa == "" && d != nil && d.Persistent {
-			// an attachment recorded without its LSA backend id
-			lsa = qemu.LSAObjectID(a.QemuObjectID)
-		}
-		if lsa != "" {
-			objIDs = append(objIDs, lsa)
+		if a.QemuLSAObjectID != "" {
+			objIDs = append(objIDs, a.QemuLSAObjectID)
 		}
 	}
 	if h != nil {
@@ -1247,7 +1082,7 @@ func (s *Server) startBackgroundWaitLocked(a *attachment, failAfter time.Duratio
 			s.mu.Unlock()
 		}()
 		start := time.Now()
-		deadline := start.Add(s.opts.BackgroundMax)
+		deadline := start.Add(backgroundMax)
 		for time.Now().Before(deadline) {
 			select {
 			case <-s.ctx.Done():

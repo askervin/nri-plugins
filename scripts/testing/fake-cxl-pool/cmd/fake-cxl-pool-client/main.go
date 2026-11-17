@@ -49,18 +49,14 @@ Server URL default: $FAKE_CXL_POOL_SERVER, else ` + api.DefaultServerURL + `
 
 Commands:
   status
-  pools [NAME]
   hosts [NAME]
   whoami                                  resolve this VM (uuid, hostname) to a host
-  rescan                                  rediscover qemu processes
-  devices [NAME] [--shared] [--free] [--host H]
-  create --size 256Mi [--shared] [--persistent] [--name N] [--pool P] [--serial 0x..] [--label k=v]...
+  devices [NAME]
+  create --size 256Mi [--shared] [--persistent] [--name N] [--serial 0x..]
   delete NAME [--force]
-  attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--no-wait] [--timeout 30s] [--force] [--exclusive]
-  detach DEVICE (--self | --host HOST) [--timeout 30s] [--no-wait] [--owner O] [--force]
+  attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--timeout 30s] [--exclusive]
+  detach DEVICE (--self | --host HOST) [--timeout 30s] [--force]
   attachments [--self | --host H] [--device D]
-  allocate DEVICE --owner O [--note TEXT]
-  release DEVICE [--owner O] [--force]
   events                                  stream server events (JSON lines)
 
 Guest commands (run inside the VM, as root; DEVICE is a device name or a serial, 0x... or decimal):
@@ -178,14 +174,10 @@ func (c *cli) dispatch(ctx context.Context, cmd string, args []string) error {
 	switch cmd {
 	case "status":
 		return c.cmdStatus(ctx, args)
-	case "pools":
-		return c.cmdPools(ctx, args)
 	case "hosts":
 		return c.cmdHosts(ctx, args)
 	case "whoami":
 		return c.cmdWhoami(ctx, args)
-	case "rescan":
-		return c.cmdRescan(ctx, args)
 	case "devices":
 		return c.cmdDevices(ctx, args)
 	case "create":
@@ -198,10 +190,6 @@ func (c *cli) dispatch(ctx context.Context, cmd string, args []string) error {
 		return c.cmdDetach(ctx, args)
 	case "attachments":
 		return c.cmdAttachments(ctx, args)
-	case "allocate":
-		return c.cmdAllocate(ctx, args)
-	case "release":
-		return c.cmdRelease(ctx, args)
 	case "events":
 		return c.cmdEvents(ctx, args)
 	case "guest":
@@ -253,7 +241,6 @@ func (c *cli) cmdStatus(ctx context.Context, args []string) error {
 	_, _ = fmt.Fprintf(w, "hosts:\t%d\n", st.Hosts)
 	_, _ = fmt.Fprintf(w, "devices:\t%d\n", st.Devices)
 	_, _ = fmt.Fprintf(w, "attachments:\t%d\n", st.Attachments)
-	_, _ = fmt.Fprintf(w, "discovery:\t%v\n", st.Qemu.Discovery)
 	_, _ = fmt.Fprintf(w, "state file:\t%s\n", dash(st.StateFile))
 	for h, v := range st.Qemu.Versions {
 		_, _ = fmt.Fprintf(w, "qemu %s:\t%s\n", h, v)
@@ -268,36 +255,6 @@ func firstErr(errs ...error) error {
 		}
 	}
 	return nil
-}
-
-func (c *cli) cmdPools(ctx context.Context, args []string) error {
-	fs := c.flagSet("pools")
-	pos, err := parse(fs, args)
-	if err != nil || len(pos) > 1 {
-		return firstErr(err, usagef("pools [NAME]"))
-	}
-	var ps []api.Pool
-	if len(pos) == 1 {
-		p, err := c.client().Pool(ctx, pos[0])
-		if err != nil {
-			return err
-		}
-		ps = []api.Pool{*p}
-	} else if ps, err = c.client().Pools(ctx); err != nil {
-		return err
-	}
-	if c.json() {
-		if len(pos) == 1 {
-			return c.printJSON(ps[0])
-		}
-		return c.printJSON(ps)
-	}
-	w := c.table()
-	_, _ = fmt.Fprintf(w, "NAME\tDIR\tCAPACITY\tUSED\tFREE\tSHARABLE\n")
-	for _, p := range ps {
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%v\n", p.Name, p.Dir, api.FormatSize(p.Capacity), api.FormatSize(p.Used), api.FormatSize(p.Free), p.Sharable)
-	}
-	return w.Flush()
 }
 
 func freeSlots(h api.Host) int {
@@ -357,7 +314,6 @@ func (c *cli) printHost(h api.Host) error {
 	}
 	_, _ = fmt.Fprintf(w, "control:\t%s\n", dash(ctl))
 	_, _ = fmt.Fprintf(w, "qemu:\t%s\n", dash(h.QemuVersion))
-	_, _ = fmt.Fprintf(w, "source:\t%s\n", h.Source)
 	if h.Error != "" {
 		_, _ = fmt.Fprintf(w, "error:\t%s\n", h.Error)
 	}
@@ -396,25 +352,11 @@ func (c *cli) cmdWhoami(ctx context.Context, args []string) error {
 	return c.printHost(*h)
 }
 
-func (c *cli) cmdRescan(ctx context.Context, args []string) error {
-	fs := c.flagSet("rescan")
-	if pos, err := parse(fs, args); err != nil || len(pos) > 0 {
-		return firstErr(err, usagef("rescan takes no arguments"))
-	}
-	if _, err := c.client().Rescan(ctx); err != nil {
-		return err
-	}
-	return c.cmdHosts(ctx, nil)
-}
-
 func (c *cli) cmdDevices(ctx context.Context, args []string) error {
 	fs := c.flagSet("devices")
-	shared := fs.Bool("shared", false, "only shared devices")
-	free := fs.Bool("free", false, "only free devices")
-	host := fs.String("host", "", "only devices attached to or local to the host")
 	pos, err := parse(fs, args)
 	if err != nil || len(pos) > 1 {
-		return firstErr(err, usagef("devices [NAME] [--shared] [--free] [--host H]"))
+		return firstErr(err, usagef("devices [NAME]"))
 	}
 	if len(pos) == 1 {
 		d, err := c.client().Device(ctx, pos[0])
@@ -423,14 +365,7 @@ func (c *cli) cmdDevices(ctx context.Context, args []string) error {
 		}
 		return c.printDevice(*d)
 	}
-	o := client.DeviceListOptions{Host: *host}
-	if *shared {
-		o.Shared = shared
-	}
-	if *free {
-		o.State = api.DeviceFree
-	}
-	ds, err := c.client().Devices(ctx, o)
+	ds, err := c.client().Devices(ctx, "")
 	if err != nil {
 		return err
 	}
@@ -454,21 +389,13 @@ func attachedTo(d api.Device) string {
 
 func (c *cli) printDevices(ds []api.Device) error {
 	w := c.table()
-	_, _ = fmt.Fprintln(w, "NAME\tSERIAL\tSIZE\tSHARED\tPERSISTENT\tSCOPE\tSTATE\tATTACHED-TO\tOWNER")
+	_, _ = fmt.Fprintln(w, "NAME\tSERIAL\tSIZE\tSHARED\tPERSISTENT\tSCOPE\tSTATE\tATTACHED-TO")
 	for _, d := range ds {
-		owner := ""
-		if d.Allocation != nil {
-			owner = d.Allocation.Owner
-		}
 		scope := d.Scope
 		if d.Scope == api.ScopeLocal {
-			lh := d.LocalHost
-			if len(d.LocalHosts) > 1 {
-				lh = strings.Join(d.LocalHosts, ",")
-			}
-			scope += ":" + lh
+			scope += ":" + d.LocalHost
 		}
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%v\t%v\t%s\t%s\t%s\t%s\n", d.Name, d.Serial, api.FormatSize(d.Size), d.Shared, d.Persistent, scope, d.State, dash(attachedTo(d)), dash(owner))
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%v\t%v\t%s\t%s\t%s\n", d.Name, d.Serial, api.FormatSize(d.Size), d.Shared, d.Persistent, scope, d.State, dash(attachedTo(d)))
 	}
 	return w.Flush()
 }
@@ -491,19 +418,12 @@ func (c *cli) printDevice(d api.Device) error {
 	if d.LSAPath != "" {
 		_, _ = fmt.Fprintf(w, "lsa:\t%s\n", d.LSAPath)
 	}
-	_, _ = fmt.Fprintf(w, "pool:\t%s\n", dash(d.Pool))
 	scope := d.Scope
 	if d.Scope == api.ScopeLocal {
-		scope += " (" + strings.Join(append([]string{d.LocalHost}, d.LocalHosts...)[min(1, len(d.LocalHosts)):], ",") + ")"
+		scope += " (" + d.LocalHost + ")"
 	}
 	_, _ = fmt.Fprintf(w, "scope:\t%s\n", scope)
 	_, _ = fmt.Fprintf(w, "state:\t%s\n", d.State)
-	if d.Allocation != nil {
-		_, _ = fmt.Fprintf(w, "owner:\t%s (since %s) %s\n", d.Allocation.Owner, d.Allocation.Since.Format(time.RFC3339), d.Allocation.Note)
-	}
-	for k, v := range d.Labels {
-		_, _ = fmt.Fprintf(w, "label:\t%s=%s\n", k, v)
-	}
 	if len(d.Attachments) > 0 {
 		_, _ = fmt.Fprintf(w, "\nattachments:\n")
 	}
@@ -532,40 +452,22 @@ func (c *cli) printAttachment(a *api.Attachment) error {
 	return c.printAttachments([]api.Attachment{*a})
 }
 
-type labelFlags map[string]string
-
-func (l labelFlags) String() string { return "" }
-func (l labelFlags) Set(v string) error {
-	k, val, ok := strings.Cut(v, "=")
-	if !ok || k == "" {
-		return fmt.Errorf("label must be KEY=VALUE")
-	}
-	l[k] = val
-	return nil
-}
-
 func (c *cli) cmdCreate(ctx context.Context, args []string) error {
 	fs := c.flagSet("create")
 	size := fs.String("size", "", "device size, e.g. 256Mi")
 	shared := fs.Bool("shared", false, "shared device")
 	persistent := fs.Bool("persistent", false, "persistent memory device with a label storage area file")
 	name := fs.String("name", "", "device name (default: generated)")
-	poolName := fs.String("pool", "", "pool name")
 	serial := fs.String("serial", "", "serial number (default: allocated)")
-	labels := labelFlags{}
-	fs.Var(labels, "label", "KEY=VALUE label (repeatable)")
 	pos, err := parse(fs, args)
 	if err != nil || len(pos) > 0 || *size == "" {
-		return firstErr(err, usagef("create --size SIZE [--shared] [--persistent] [--name N] [--pool P] [--serial S]"))
+		return firstErr(err, usagef("create --size SIZE [--shared] [--persistent] [--name N] [--serial S]"))
 	}
 	sz, err := api.ParseSize(*size)
 	if err != nil {
 		return usagef("%v", err)
 	}
-	req := api.DeviceCreate{Name: *name, Size: api.Size(sz), Shared: *shared, Persistent: *persistent, Pool: *poolName, Serial: *serial}
-	if len(labels) > 0 {
-		req.Labels = labels
-	}
+	req := api.DeviceCreate{Name: *name, Size: api.Size(sz), Shared: *shared, Persistent: *persistent, Serial: *serial}
 	d, err := c.client().CreateDevice(ctx, req)
 	if err != nil {
 		return err
@@ -618,26 +520,20 @@ func (c *cli) cmdAttach(ctx context.Context, args []string) error {
 	host := fs.String("host", "", "target host (name or uuid)")
 	slot := fs.String("slot", "", "qemu bus of the slot")
 	numa := fs.Int("numa", -1, "prefer a slot on this NUMA node")
-	owner := fs.String("owner", "", "allocation owner")
-	noWait := fs.Bool("no-wait", false, "do not wait for qemu")
+	owner := fs.String("owner", "", "attachment owner")
 	timeout := fs.String("timeout", "", "qemu timeout (default 30s)")
-	force := fs.Bool("force", false, "ignore the allocation owner")
 	exclusive := fs.Bool("exclusive", false, "shared device: no other host may attach it meanwhile")
 	pos, err := parse(fs, args)
 	if err != nil || len(pos) != 1 {
-		return firstErr(err, usagef("attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--no-wait] [--exclusive]"))
+		return firstErr(err, usagef("attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--exclusive]"))
 	}
 	h, err := c.hostArg(ctx, *host, *self)
 	if err != nil {
 		return err
 	}
-	req := api.AttachRequest{Host: h, Slot: *slot, Owner: *owner, Timeout: *timeout, Force: *force, Exclusive: *exclusive}
+	req := api.AttachRequest{Host: h, Slot: *slot, Owner: *owner, Timeout: *timeout, Exclusive: *exclusive}
 	if *numa >= 0 {
 		req.NumaNode = numa
-	}
-	if *noWait {
-		f := false
-		req.Wait = &f
 	}
 	a, _, err := c.client().Attach(ctx, pos[0], req)
 	if err != nil {
@@ -651,18 +547,16 @@ func (c *cli) cmdDetach(ctx context.Context, args []string) error {
 	self := fs.Bool("self", false, "detach from this VM")
 	host := fs.String("host", "", "host (name or uuid)")
 	timeout := fs.Duration("timeout", 0, "how long to wait for the guest to release the device (default: server's detachTimeout)")
-	noWait := fs.Bool("no-wait", false, "do not wait for qemu to delete the device")
-	owner := fs.String("owner", "", "allocation owner")
-	force := fs.Bool("force", false, "ignore the allocation owner; forget a failed attachment")
+	force := fs.Bool("force", false, "forget a failed attachment")
 	pos, err := parse(fs, args)
 	if err != nil || len(pos) != 1 {
-		return firstErr(err, usagef("detach DEVICE (--self | --host HOST) [--timeout 30s] [--no-wait]"))
+		return firstErr(err, usagef("detach DEVICE (--self | --host HOST) [--timeout 30s] [--force]"))
 	}
 	h, err := c.hostArg(ctx, *host, *self)
 	if err != nil {
 		return err
 	}
-	a, _, err := c.client().Detach(ctx, pos[0], h, client.DetachOptions{NoWait: *noWait, Timeout: *timeout, Owner: *owner, Force: *force})
+	a, _, err := c.client().Detach(ctx, pos[0], h, client.DetachOptions{Timeout: *timeout, Force: *force})
 	if err != nil {
 		if a.ID != "" && !c.json() {
 			err = errors.Join(err, c.printAttachments([]api.Attachment{*a}))
@@ -695,43 +589,6 @@ func (c *cli) cmdAttachments(ctx context.Context, args []string) error {
 		return c.printJSON(as)
 	}
 	return c.printAttachments(as)
-}
-
-func (c *cli) cmdAllocate(ctx context.Context, args []string) error {
-	fs := c.flagSet("allocate")
-	owner := fs.String("owner", "", "owner")
-	note := fs.String("note", "", "note")
-	pos, err := parse(fs, args)
-	if err != nil || len(pos) != 1 || *owner == "" {
-		return firstErr(err, usagef("allocate DEVICE --owner O [--note TEXT]"))
-	}
-	a, err := c.client().Allocate(ctx, pos[0], *owner, *note)
-	if err != nil {
-		return err
-	}
-	if c.json() {
-		return c.printJSON(a)
-	}
-	_, err = fmt.Fprintf(c.stdout, "%s allocated to %s\n", pos[0], a.Owner)
-	return err
-}
-
-func (c *cli) cmdRelease(ctx context.Context, args []string) error {
-	fs := c.flagSet("release")
-	owner := fs.String("owner", "", "owner (checked if given)")
-	force := fs.Bool("force", false, "release even if owned by someone else")
-	pos, err := parse(fs, args)
-	if err != nil || len(pos) != 1 {
-		return firstErr(err, usagef("release DEVICE [--owner O] [--force]"))
-	}
-	if err := c.client().Release(ctx, pos[0], *owner, *force); err != nil {
-		return err
-	}
-	if c.json() {
-		return nil
-	}
-	_, err = fmt.Fprintf(c.stdout, "%s released\n", pos[0])
-	return err
 }
 
 func (c *cli) cmdEvents(ctx context.Context, args []string) error {

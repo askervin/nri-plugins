@@ -27,9 +27,8 @@ func TestExampleConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.Listen != "127.0.0.1:9909" || uint64(*cfg.SharedSerialBase) != 0xc1ae0000 || uint64(*cfg.ExclusiveSerialBase) != 0xc1ee0000 || len(cfg.Devices) != 3 ||
-		uint64(*cfg.Devices[0].Serial) != 0xc1ae0001 || cfg.Devices[1].Size != 512<<20 || cfg.Devices[1].Pool != "default" ||
+		cfg.Devices[0].Serial != 0xc1ae0001 || cfg.Devices[1].Size != 512<<20 || cfg.Dir != "/tmp/fake-cxl-pool" ||
 		time.Duration(cfg.DetachTimeout) != 15*time.Second || time.Duration(cfg.Discovery.Interval) != 10*time.Second ||
-		cfg.Pools[0].Capacity != 8<<30 || !*cfg.Pools[0].Sharable ||
 		cfg.Devices[1].Persistent || !cfg.Devices[2].Persistent || !cfg.Devices[2].Shared ||
 		cfg.Name != "fake-cxl-pool" || cfg.Discovery.Control != "" || cfg.Discovery.Slots != nil {
 		t.Fatalf("unexpected config %+v", cfg)
@@ -59,7 +58,7 @@ func TestExampleConfigSecondServer(t *testing.T) {
 	}
 	if cfg.Name != "pool-b" || cfg.Listen != "127.0.0.1:9910" || uint64(*cfg.SharedSerialBase) != 0xc1ae1000 ||
 		uint64(*cfg.ExclusiveSerialBase) != 0xc1ee1000 || cfg.StateFile != "/tmp/fake-cxl-pool-b.state.json" ||
-		cfg.Pools[0].Dir != "/tmp/fake-cxl-pool-b" || len(cfg.Discovery.Names) != 1 || uint64(*cfg.Devices[0].Serial) != 0xc1ee1001 {
+		cfg.Dir != "/tmp/fake-cxl-pool-b" || len(cfg.Discovery.Names) != 1 || cfg.Devices[0].Serial != 0xc1ee1001 {
 		t.Fatalf("unexpected config %+v", cfg)
 	}
 }

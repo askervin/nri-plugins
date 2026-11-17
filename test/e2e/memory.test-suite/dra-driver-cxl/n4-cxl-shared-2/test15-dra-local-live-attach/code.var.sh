@@ -43,7 +43,7 @@
 # active, leaving nothing behind. At the end the trace summary of what
 # every component did, in order.
 #
-# The local device is cxl_memdev1 of the topology (1G, 8 memory blocks of
+# The local device is cxl_memdev0 of the topology (1G, 8 memory blocks of
 # 128M in the VM), attached through fake-cxl-pool-server as in test14.
 # Sizes are derived from the block size that the VM reports. The pods run
 # on this VM (VM2), the control plane of the cluster of the test, the
@@ -495,7 +495,6 @@ pool-server-start "
   - name: pooled0
     size: 512Mi
     shared: false
-    pool: default
     serial: $POOLED0_SERIAL"
 pool-client-install "$VM2"
 

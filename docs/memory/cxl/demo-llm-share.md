@@ -1124,9 +1124,7 @@ on each node. With latency off and the default pool directory, it shows the
 file spread over the memory nodes, about the same share on each (the
 [pool directory](#the-pool-directory) is interleaved); with the far setup,
 only the far nodes, and with the local setup only the nodes of socket 0.
-(With `move --nodes N file` it can move the pages; this needs root and is
-not part of the demo.) To see the mapping of one qemu you need its process
-id. This finds the qemu of VM1 the way the e2e framework does,
+To see the mapping of one qemu you need its process id. This finds the qemu of VM1 the way the e2e framework does,
 and shows its mapping of the device file:
 
 ```bash

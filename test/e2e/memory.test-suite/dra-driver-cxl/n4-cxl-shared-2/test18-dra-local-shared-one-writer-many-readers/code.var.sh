@@ -45,7 +45,7 @@
 # timings of the writer's request and of the readers after the release,
 # and the trace of what every component did.
 #
-# The local device is cxl_memdev1 of the topology (1G, host bridge 0),
+# The local device is cxl_memdev0 of the topology (1G, host bridge 0),
 # attached through fake-cxl-pool-server as in test14; the pool has the
 # shared device shared0 for the alternative of requests by size. All
 # pods run on this VM (VM2), the control plane of the cluster of the
@@ -336,7 +336,6 @@ pool-server-start "
   - name: shared0
     size: 256Mi
     shared: true
-    pool: default
     serial: $SHARED0_SERIAL"
 pool-client-install "$VM2"
 # The local device attached before the driver runs, with non-zero bytes at

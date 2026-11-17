@@ -522,14 +522,9 @@ pool-server-start() { # script API
             echo "exclusiveSerialBase: 0xc1ee${index,,}000"
         fi
         cat <<EOF
-pools:
-  - name: default
-    dir: $dir
-    capacity: 8G
-    sharable: true
+dir: $dir
 devices:$devices
 discovery:
-  qemu: true
   interval: 10s
   names: [$names]
 EOF

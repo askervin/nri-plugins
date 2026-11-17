@@ -915,7 +915,7 @@ dra-local-find() {
         error "${FUNCNAME[1]}: needs pool.source.sh and fake-cxl-pool-server (pool-server-start)"
     host=$(dra-vm-name "$1")
     pool-host-client "${server[@]}" -o json devices || command-error "cannot list the devices of fake-cxl-pool-server${server[1]:+ ${server[1]}}"
-    found=$(pool-value "$COMMAND_OUTPUT" "chr(10).join(' '.join([d['name'], d['serial'], str(d['size']), next((a['state'] for a in d.get('attachments') or [] if a['host'] == '$host'), 'detached')]) for d in j if d.get('scope') == 'local' and not d.get('shared') and (d.get('localHosts') or [d.get('localHost')]) == ['$host'])")
+    found=$(pool-value "$COMMAND_OUTPUT" "chr(10).join(' '.join([d['name'], d['serial'], str(d['size']), next((a['state'] for a in d.get('attachments') or [] if a['host'] == '$host'), 'detached')]) for d in j if d.get('scope') == 'local' and not d.get('shared') and d.get('localHost') == '$host')")
     [ -n "$found" ] && [ "$(wc -l <<< "$found")" == 1 ] ||
         error "${FUNCNAME[1]}: expected one local, not shared device of $host in fake-cxl-pool-server, found: '$found'"
     read -r DRA_LOCAL_NAME DRA_LOCAL_SERIAL DRA_LOCAL_SIZE DRA_LOCAL_ATTACHMENT <<< "$found"

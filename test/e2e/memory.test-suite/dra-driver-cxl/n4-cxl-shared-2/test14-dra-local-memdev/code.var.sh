@@ -32,7 +32,7 @@
 # change meanwhile: what the device holds is in sysfs, not in its
 # attributes.
 #
-# The local device here is cxl_memdev1 of the topology (1G, host bridge
+# The local device here is cxl_memdev0 of the topology (1G, host bridge
 # 0): 8 memory blocks of 128M in the VM. It is not present at boot: the
 # test attaches it through fake-cxl-pool-server, where it is a device of
 # scope "local" of this VM, and detaches it at the end. Claim sizes are
@@ -288,7 +288,6 @@ pool-server-start "
   - name: pooled0
     size: 512Mi
     shared: false
-    pool: default
     serial: $POOLED0_SERIAL"
 pool-client-install "$VM2"
 

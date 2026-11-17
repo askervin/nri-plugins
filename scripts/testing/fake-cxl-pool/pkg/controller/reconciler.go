@@ -28,7 +28,6 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -377,7 +376,6 @@ func (c *Controller) attach(ctx context.Context, w *want, k attKey, exclusive, e
 	req := api.AttachRequest{
 		Host:      k.host,
 		Owner:     owner,
-		Wait:      ptr.To(true),
 		Timeout:   c.cfg.AttachTimeout.String(),
 		Exclusive: exclusive,
 	}

@@ -385,11 +385,11 @@ RBAC of the controller:
 
 ```yaml
 rules:
-- {apiGroups: [resource.k8s.io], resources: [resourceslices], verbs: [get, list, watch, create, update, patch, delete]}
+- {apiGroups: [resource.k8s.io], resources: [resourceslices], verbs: [list, watch, create, update, delete]}
 - {apiGroups: [resource.k8s.io], resources: [resourceclaims], verbs: [get, list, watch]}
-- {apiGroups: [resource.k8s.io], resources: [resourceclaims/status], verbs: [get, patch, update]}
-- {apiGroups: [resource.k8s.io], resources: [resourceclaims/driver], verbs: ["arbitrary-node:patch", "arbitrary-node:update"], resourceNames: ["cxl-pool.nri.io"]}
-- {apiGroups: [""], resources: [nodes], verbs: [get, list, watch]}
+- {apiGroups: [resource.k8s.io], resources: [resourceclaims/status], verbs: [update]}
+- {apiGroups: [resource.k8s.io], resources: [resourceclaims/driver], verbs: ["arbitrary-node:update"], resourceNames: ["cxl-pool.nri.io"]}
+- {apiGroups: [""], resources: [nodes], verbs: [list, watch]}
 - {apiGroups: [""], resources: [events], verbs: [create, patch]}
 ```
 

@@ -63,31 +63,17 @@ func fileSize(t *testing.T, path string) int64 {
 }
 
 func TestPersistentConfig(t *testing.T) {
-	cfg, err := ParseConfig([]byte("pools: [{name: default, dir: /p}]\ndevices:\n" + llm0Config +
-		"  - name: vol0\n    size: 256Mi\n"))
+	cfg, err := ParseConfig([]byte("dir: /p\ndevices:\n" + llm0Config +
+		"  - name: vol0\n    size: 256Mi\n    serial: 0xc1ee0001\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !cfg.Devices[0].Persistent || cfg.Devices[1].Persistent {
 		t.Fatalf("unexpected persistent flags %+v", cfg.Devices)
 	}
-	for bad, want := range map[string]string{
-		// the LSA of a file with extension .lsa would be the file itself
-		"devices: [{name: a, size: 256Mi, persistent: true, file: /p/a.lsa}]": "would be the data file itself",
-		// two persistent devices with the same LSA
-		"devices: [{name: a, size: 256Mi, persistent: true, file: /p/x.raw}, {name: b, size: 256Mi, persistent: true, file: /p/x.img}]": `is also a file of device "a"`,
-		// an LSA that is the data file of another device
-		"devices: [{name: b, size: 256Mi, file: /p/a.lsa}, {name: a, size: 256Mi, persistent: true}]": `label storage area file /p/a.lsa is also a file of device "b"`,
-		"devices: [{name: a, size: 256Mi, persistent: yes-please}]":                                   "invalid config",
-	} {
-		_, err := ParseConfig([]byte("pools: [{name: default, dir: /p}]\n" + bad))
-		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("%s: expected %q, got %v", bad, want, err)
-		}
-	}
-	// a volatile device may have any file name
-	if _, err := ParseConfig([]byte("pools: [{name: default, dir: /p}]\ndevices: [{name: a, size: 256Mi, file: /p/a.lsa}]")); err != nil {
-		t.Fatal(err)
+	bad := "devices: [{name: a, size: 256Mi, persistent: yes-please, serial: 1}]"
+	if _, err := ParseConfig([]byte(bad)); err == nil || !strings.Contains(err.Error(), "invalid config") {
+		t.Errorf("%s: expected an invalid config, got %v", bad, err)
 	}
 }
 
@@ -210,26 +196,6 @@ func TestPersistentCreateDelete(t *testing.T) {
 	}
 }
 
-func TestPersistentCreateFileClash(t *testing.T) {
-	dir := t.TempDir()
-	// a config device whose data file is the LSA file that a new
-	// persistent device p1 would get
-	srv := newServerWith(t, "stateFile: \"-\"\n"+poolConfig(dir, "devices:\n  - name: clash\n    size: 256Mi\n    file: "+
-		filepath.Join(dir, "pool", "p1.lsa")+"\n"), map[string]qemu.Monitor{"vm1": newVMFake()})
-	_, err := srv.CreateDevice(api.DeviceCreate{Name: "p1", Size: 256 << 20, Persistent: true})
-	mustCode(t, err, api.CodeConflict)
-	if !strings.Contains(err.Error(), `device "clash"`) {
-		t.Fatalf("unexpected error %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "pool", "p1.raw")); !os.IsNotExist(err) {
-		t.Fatalf("data file created for a refused device: %v", err)
-	}
-	// the name, the serial and the capacity are free again
-	if _, err := srv.CreateDevice(api.DeviceCreate{Name: "p1", Size: 256 << 20}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestPersistentAdopt(t *testing.T) {
 	e := newTestEnv(t, llm0Config)
 	f1 := e.fake("vm1")
@@ -241,8 +207,8 @@ func TestPersistentAdopt(t *testing.T) {
 	if err := f1.PlugDevice(qemu.CXLType3{ID: "fcp_llm0.hp7", Bus: "ds0_hb0", PersistentMemdev: "fcp_llm0.hp7", LSA: "fcp_llm0.hp7-lsa", Serial: 0xc1ae0001}); err != nil {
 		t.Fatal(err)
 	}
-	e.srv.Refresh(ctx, true)
-	a, err := e.c.DeviceAttachment(ctx, "llm0", "vm1")
+	e.srv.Refresh(ctx)
+	a, err := e.attachment("llm0", "vm1")
 	if err != nil || !a.Adopted || a.QemuDeviceID != "fcp_llm0.hp7" || a.QemuObjectID != "fcp_llm0.hp7" || a.Serial != "0xc1ae0001" {
 		t.Fatalf("not adopted: %+v %v", a, err)
 	}
@@ -269,36 +235,10 @@ func TestHotplugCounterSeededFromLSA(t *testing.T) {
 	// only the LSA backend of an earlier attach is left (its object-del
 	// failed)
 	f.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: "fcp_pooled0.hp4-lsa", Size: pool.LSASize, MemPath: filepath.Join(dir, "y.lsa")})
-	srv := newServerWith(t, "stateFile: \"-\"\n"+poolConfig(dir, pooled0), map[string]qemu.Monitor{"vm1": f})
+	srv := newServerWith(t, poolConfig(dir, pooled0), map[string]qemu.Monitor{"vm1": f})
 	a, _, err := srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"})
 	if err != nil || a.QemuDeviceID != "fcp_pooled0.hp5" {
 		t.Fatalf("attach: %+v %v", a, err)
-	}
-}
-
-func TestPersistentPreDeclaredBackendRefused(t *testing.T) {
-	dir := t.TempDir()
-	file := filepath.Join(dir, "pool", "static0.raw")
-	e := &testEnv{t: t, dir: dir, fakes: map[string]*qemu.Fake{}, alive: map[int]bool{101: true}}
-	obj := "befile_cxl_memdev0__bus_ds0_hb0__sn_0xc1ae0000"
-	e.procs = append(e.procs, vmCmdline("vm1", 101, "-object", "memory-backend-file,id="+obj+",share=on,mem-path="+file+",size=256M"))
-	f := newVMFake()
-	f.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: obj, Size: 256 << 20, MemPath: file, Share: true})
-	e.fakes["/e2e/vm1/qmp.sock"] = f
-	cfg, err := ParseConfig([]byte(`
-stateFile: "-"
-pools: [{name: default, dir: ` + filepath.Join(dir, "pool") + `}]
-devices: [{name: static0, size: 256M, shared: true, persistent: true, file: ` + file + `, serial: 0xc1ae0000}]
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	e.cfg = cfg
-	e.start()
-	_, _, err = e.c.Attach(ctx, "static0", api.AttachRequest{Host: "vm1"})
-	mustCode(t, err, api.CodeInvalidArgument)
-	if !strings.Contains(err.Error(), "has no label storage area") || len(f.Commands()) != 0 {
-		t.Fatalf("unexpected error %v, qemu commands %v", err, f.Commands())
 	}
 }
 
@@ -313,8 +253,8 @@ func TestPersistentAdoptOtherLSAName(t *testing.T) {
 	if err := f1.PlugDevice(qemu.CXLType3{ID: "fcp_llm0.hp3", Bus: "ds0_hb0", PersistentMemdev: "fcp_llm0.hp3", LSA: "fcp_llm0.labels", Serial: 0xc1ae0001}); err != nil {
 		t.Fatal(err)
 	}
-	e.srv.Refresh(ctx, true)
-	a, err := e.c.DeviceAttachment(ctx, "llm0", "vm1")
+	e.srv.Refresh(ctx)
+	a, err := e.attachment("llm0", "vm1")
 	if err != nil || !a.Adopted || a.QemuLSAObjectID != "fcp_llm0.labels" {
 		t.Fatalf("not adopted with its LSA backend: %+v %v", a, err)
 	}
@@ -327,45 +267,5 @@ func TestPersistentAdoptOtherLSAName(t *testing.T) {
 	}
 	if f1.HasObject("fcp_llm0.labels") {
 		t.Fatalf("LSA backend left in qemu: %s", f1)
-	}
-}
-
-func TestPersistentFinalizeWithoutDevice(t *testing.T) {
-	e := newTestEnv(t, "")
-	if _, err := e.c.CreateDevice(ctx, api.DeviceCreate{Name: "p0", Size: 256 << 20, Persistent: true}); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := e.c.Attach(ctx, "p0", api.AttachRequest{Host: "vm1"}); err != nil {
-		t.Fatal(err)
-	}
-	// the device record is gone (config reload), then qemu deletes the
-	// device: finalize deletes the recorded backends all the same
-	e.srv.mu.Lock()
-	delete(e.srv.devices, "p0")
-	e.srv.mu.Unlock()
-	f1 := e.fake("vm1")
-	if err := f1.DeviceDel(ctx, "fcp_p0.hp1"); err != nil {
-		t.Fatal(err)
-	}
-	e.srv.Refresh(ctx, true)
-	if f1.HasObject("fcp_p0.hp1") || f1.HasObject("fcp_p0.hp1-lsa") {
-		t.Fatalf("backends left in qemu: %v", f1.Commands())
-	}
-}
-
-func TestDataAlign(t *testing.T) {
-	for _, c := range []struct {
-		size int64
-		want uint64
-	}{
-		{512 << 20, 2 << 20}, // pool devices: whole 2 MiB pages
-		{2 << 20, 2 << 20},
-		{256 << 10, 0}, // a label storage area
-		{3 << 20, 0},
-		{0, 0},
-	} {
-		if got := dataAlign(c.size); got != c.want {
-			t.Errorf("dataAlign(%d) = %d, want %d", c.size, got, c.want)
-		}
 	}
 }

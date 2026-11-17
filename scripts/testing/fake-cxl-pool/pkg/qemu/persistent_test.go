@@ -124,7 +124,7 @@ func TestFakePersistentChecks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d := tree.Device("fcp_llm0.hp1"); d == nil || d.PersistentMemdev != "fcp_llm0.hp1" || d.LSA != "fcp_llm0.hp1-lsa" ||
+	if d := treeDevice(tree, "fcp_llm0.hp1"); d == nil || d.PersistentMemdev != "fcp_llm0.hp1" || d.LSA != "fcp_llm0.hp1-lsa" ||
 		d.VolatileMemdev != "" || d.Memdev() != "fcp_llm0.hp1" {
 		t.Fatalf("unexpected tree device %+v", d)
 	}
@@ -152,12 +152,12 @@ func TestParseQtreePersistent(t *testing.T) {
                     volatile-memdev = ""
                     lsa = "/objects/fcp_llm0.hp1-lsa"`, 1)
 	tree := ParseQtree(text)
-	d := tree.Device("cxl_memdev2.hp3")
+	d := treeDevice(tree, "cxl_memdev2.hp3")
 	if d == nil || d.PersistentMemdev != "fcp_llm0.hp1" || d.LSA != "fcp_llm0.hp1-lsa" || d.VolatileMemdev != "" ||
 		d.Memdev() != "fcp_llm0.hp1" {
 		t.Fatalf("unexpected persistent device %+v", d)
 	}
-	v := tree.Device("cxl_memdev1.hp2")
+	v := treeDevice(tree, "cxl_memdev1.hp2")
 	if v == nil || v.PersistentMemdev != "" || v.LSA != "" || v.Memdev() != "beram_cxl_memdev1__bus_cxlsw_ds1_usrp0hb0__sn_0xc100e2e1" {
 		t.Fatalf("unexpected volatile device %+v", v)
 	}
@@ -167,7 +167,6 @@ func TestQMPPersistent(t *testing.T) {
 	srv := newFakeQMPServer(t)
 	srv.qom = true
 	q := NewQMP(srv.path, t.Logf)
-	q.IdleTimeout = 0
 	defer q.Close()
 	ctx := context.Background()
 	for _, b := range []MemoryBackend{pmemData, pmemLSA} {
@@ -202,7 +201,7 @@ func TestQMPPersistent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if td := tree.Device("fcp_llm0.hp1"); td == nil || td.PersistentMemdev != "fcp_llm0.hp1" || td.LSA != "fcp_llm0.hp1-lsa" || td.VolatileMemdev != "" {
+	if td := treeDevice(tree, "fcp_llm0.hp1"); td == nil || td.PersistentMemdev != "fcp_llm0.hp1" || td.LSA != "fcp_llm0.hp1-lsa" || td.VolatileMemdev != "" {
 		t.Fatalf("unexpected QOM tree device %+v", td)
 	}
 	if err := q.DeviceDel(ctx, d.ID); err != nil {

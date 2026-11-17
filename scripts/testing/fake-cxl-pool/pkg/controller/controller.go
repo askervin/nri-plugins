@@ -47,7 +47,6 @@ import (
 // Defaults.
 const (
 	DefaultDriverName    = "cxl-pool.nri.io"
-	DefaultPoolName      = "fake-cxl-pool"
 	DefaultSyncInterval  = 10 * time.Second
 	DefaultAttachTimeout = 60 * time.Second
 	DefaultDetachTimeout = 60 * time.Second
@@ -61,7 +60,7 @@ const (
 )
 
 // Config configures the controller. PoolName "" is the name of the server
-// (GET /status), DefaultPoolName for a server without a name.
+// (GET /status).
 type Config struct {
 	DriverName    string
 	PoolName      string
@@ -208,9 +207,6 @@ func (c *Controller) resolvePoolName(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	c.cfg.PoolName = st.Name
-	if c.cfg.PoolName == "" {
-		c.cfg.PoolName = DefaultPoolName
-	}
 	return true, nil
 }
 

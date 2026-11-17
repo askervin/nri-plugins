@@ -754,7 +754,6 @@ pool-server-start "
     size: 512Mi
     shared: true
     persistent: true
-    pool: default
     serial: $LLM_SERIAL"
 # The files are host RAM (/tmp) and hold the model: remove them on exit,
 # also after a failure.

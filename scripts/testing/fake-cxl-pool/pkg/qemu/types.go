@@ -30,12 +30,8 @@ const (
 )
 
 // Monitor controls one qemu process. Implementations are safe for
-// concurrent use. They do not keep the monitor socket connected while idle,
-// because a qemu socket chardev serves one client at a time: a long-lived
-// connection would block other users of the socket (vm-monitor, vm-qmp).
+// concurrent use.
 type Monitor interface {
-	// Protocol returns ProtoQMP or ProtoHMP.
-	Protocol() string
 	// Version returns the qemu version string.
 	Version(ctx context.Context) (string, error)
 	// ObjectAdd creates a memory backend object.
@@ -50,8 +46,7 @@ type Monitor interface {
 	// WaitDeviceDeleted waits until the device is gone from qemu, or the
 	// context is done.
 	WaitDeviceDeleted(ctx context.Context, id string) error
-	// DeviceExists returns true if the device is in qemu. It uses a short
-	// connection, unlike WaitDeviceDeleted that may keep it open.
+	// DeviceExists returns true if the device is in qemu.
 	DeviceExists(ctx context.Context, id string) (bool, error)
 	// BackendMapped returns true if a CXL HDM decoder still maps the
 	// memory backend into the guest (see BackendMappedIn).
@@ -129,7 +124,7 @@ type Tree struct {
 // TreeHostBridge is a pxb-cxl host bridge.
 type TreeHostBridge struct {
 	ID       string // pxb-cxl id == name of its bus
-	NumaNode int    // -1 if unknown (brief qtree)
+	NumaNode int    // -1 if unknown
 }
 
 // Port kinds.
@@ -206,16 +201,6 @@ func (t *Tree) Port(bus string) *Port {
 	for i := range t.Ports {
 		if t.Ports[i].Bus == bus {
 			return &t.Ports[i]
-		}
-	}
-	return nil
-}
-
-// Device returns the cxl-type3 device by id, nil if not found.
-func (t *Tree) Device(id string) *Type3Device {
-	for i := range t.Type3 {
-		if t.Type3[i].ID == id {
-			return &t.Type3[i]
 		}
 	}
 	return nil

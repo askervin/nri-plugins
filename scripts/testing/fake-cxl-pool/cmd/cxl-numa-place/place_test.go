@@ -89,16 +89,9 @@ func TestWhereSparseFile(t *testing.T) {
 	if len(p.Unlocated) != 0 {
 		t.Errorf("where: unlocated pages %v", p.Unlocated)
 	}
-	have, err := memoryNodes("/sys")
-	if err != nil {
-		t.Fatal(err)
-	}
 	located := 0
-	for n, count := range p.Nodes {
+	for _, count := range p.Nodes {
 		located += count
-		if err := checkNodes([]int{n}, have); err != nil {
-			t.Errorf("where: %d pages on node %d: %v", count, n, err)
-		}
 	}
 	if located != written {
 		t.Errorf("where: %d pages on nodes %v, want %d", located, p.Nodes, written)
@@ -140,31 +133,5 @@ func TestCheckResidencyVisible(t *testing.T) {
 	}
 	if err := checkResidencyVisible(other); err == nil || !strings.Contains(err.Error(), "run as root") {
 		t.Errorf("checkResidencyVisible(%s): %v", other, err)
-	}
-}
-
-func TestMoveFile(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("moving pages with MPOL_MF_MOVE_ALL needs CAP_SYS_NICE (root)")
-	}
-	path := sparseFile(t)
-	before := whereOrSkip(t, path)
-	have, err := memoryNodes("/sys")
-	if err != nil {
-		t.Fatal(err)
-	}
-	target := have[len(have)-1]
-	p, err := moveFile(path, []int{target})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.Move == nil || p.Move.Moved+p.Move.Kept != before.Resident || len(p.Move.Failed) != 0 {
-		t.Errorf("moveFile to node %d: %+v of %d resident pages", target, p.Move, before.Resident)
-	}
-	if p.Nodes[target] != before.Resident {
-		t.Errorf("moveFile to node %d: the pages are on %v", target, p.Nodes)
-	}
-	if got := residentPages(t, path); got != before.Resident {
-		t.Errorf("after moveFile: %d pages in memory, want %d", got, before.Resident)
 	}
 }

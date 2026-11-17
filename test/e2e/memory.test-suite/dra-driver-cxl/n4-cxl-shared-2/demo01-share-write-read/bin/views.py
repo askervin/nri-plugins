@@ -524,8 +524,6 @@ def render_t6_pool(data, state, now=None, stale=False):
                             sep="," if not excl else "")
     else:
         rows.append("  attached: nowhere")
-    if dev.get("allocation"):
-        rows.append("  owner: " + c.short_text(dev["allocation"].get("owner") or "?", state))
     if pool.get("fileError"):
         rows.append("backing file: " + pool["fileError"])
     elif state.get("DEMO_CASE") in ("pool-shared-fs", "llm-share"):

@@ -138,7 +138,6 @@ pool-server-start "
   - name: shared0
     size: 256Mi
     shared: true
-    pool: default
     serial: $SHARED_SERIAL"
 pool-client-install "$VM2" "$VM1"
 
