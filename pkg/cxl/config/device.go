@@ -195,7 +195,7 @@ func (d Device) persistentSection() (string, error) {
 	case d.Access != "" && d.Access != api.AccessDirect && d.Access != api.AccessCached:
 		return "", fmt.Errorf("%sdevice.access: invalid access %q (%s or %s)", errPrefix, d.Access, api.AccessDirect, api.AccessCached)
 	case d.Path != "" && !validFsPath(d.Path):
-		return "", fmt.Errorf("%sdevice.path: invalid path %q (an absolute path outside %s)", errPrefix, d.Path, listAnd(forbiddenPathDirs))
+		return "", fmt.Errorf("%sdevice.path: invalid path %q (an absolute path outside %s)", errPrefix, d.Path, joinList(forbiddenPathDirs, "and"))
 	case d.IsReadOnly() && mode == api.ModeNUMA:
 		return "", errReadOnlyMode()
 	}
@@ -234,12 +234,4 @@ func validFsPath(p string) bool {
 		}
 	}
 	return true
-}
-
-// listAnd returns the values as "a, b and c".
-func listAnd(values []string) string {
-	if len(values) < 2 {
-		return strings.Join(values, "")
-	}
-	return strings.Join(values[:len(values)-1], ", ") + " and " + values[len(values)-1]
 }

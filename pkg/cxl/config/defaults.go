@@ -14,11 +14,7 @@
 
 package config
 
-import (
-	"fmt"
-
-	"sigs.k8s.io/yaml"
-)
+import "fmt"
 
 // Defaults are the defaults of the driver configuration (key defaults):
 // the container settings of every container of the node, overlaid by the
@@ -27,15 +23,11 @@ type Defaults struct {
 	Container *Container `json:"container,omitempty"`
 }
 
-// ParseDefaults returns the defaults in data (YAML or JSON), decoded
-// strictly and validated.
+// ParseDefaults returns the defaults in the JSON data, decoded strictly
+// and validated.
 func ParseDefaults(data []byte) (*Defaults, error) {
-	js, err := yaml.YAMLToJSON(data)
-	if err != nil {
-		return nil, fmt.Errorf("defaults: %w", err)
-	}
 	d := &Defaults{}
-	if err := strictUnmarshal(js, d); err != nil {
+	if err := strictUnmarshal(data, d); err != nil {
 		return nil, fmt.Errorf("defaults: %w", err)
 	}
 	if err := d.Validate(); err != nil {

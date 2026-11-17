@@ -428,7 +428,7 @@ func TestResolveErrors(t *testing.T) {
 		{
 			name:    "not an object",
 			entries: []cfg{claimed(`[1]`).rawParams()},
-			err:     `MemoryConfig: FromClaim config 0: json: cannot unmarshal array into Go value of type struct { APIVersion string "json:\"apiVersion\""; Kind string "json:\"kind\"" }`,
+			err:     `MemoryConfig: FromClaim config 0: not a JSON object`,
 		},
 		{
 			name:    "old kind",
@@ -611,6 +611,24 @@ func TestCheckEntries(t *testing.T) {
 			driver:  pool,
 			err:     `MemoryConfig: container.fencing: set by the driver configuration only (defaults.container.fencing)`,
 		},
+		{
+			name:    "fencing in a claim entry",
+			entries: []cfg{claimed(`"container": {"fencing": "none"}`, "r")},
+			err:     `MemoryConfig: container.fencing: set by the driver configuration only (defaults.container.fencing)`,
+		},
+		{
+			name:    "pool in a class entry",
+			entries: []cfg{class(`"pool": {"opaque": {"a": {}}}`, "r")},
+			err:     `MemoryConfig: pool: only for devices of cxl-pool.nri.io`,
+		},
+		{
+			name: "every other section in pool entries",
+			entries: []cfg{
+				class(`"device": {"mode": "dax"}, "container": {"steering": {"policy": "auto"}}`, "r").of(pool),
+				claimed(`"pool": {"opaque": {"a": {}}}, "container": {"steering": {"policy": "auto"}}`, "r").of(pool),
+			},
+			driver: pool,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			driver := tc.driver
@@ -633,34 +651,6 @@ func TestNoAllocation(t *testing.T) {
 	}
 	if err := CheckEntries(claim, local); !checkErr(err, want) {
 		t.Errorf("CheckEntries: %v", err)
-	}
-}
-
-func TestSourceRules(t *testing.T) {
-	paths := []string{}
-	for _, rule := range sourceRules {
-		paths = append(paths, strings.Join(rule.path, "."))
-	}
-	if want := []string{"container.fencing", "pool"}; !slices.Equal(paths, want) {
-		t.Fatalf("rules for %v, expected %v", paths, want)
-	}
-	for _, tc := range []struct {
-		params  string
-		allowed func(source resourceapi.AllocationConfigSource, driver string) bool
-	}{
-		{`"container": {"fencing": "none"}`, func(resourceapi.AllocationConfigSource, string) bool { return false }},
-		{`"pool": {"opaque": {"a": {}}}`, func(_ resourceapi.AllocationConfigSource, driver string) bool { return driver == pool }},
-		{`"device": {"mode": "dax"}, "container": {"steering": {"policy": "auto"}}`, func(resourceapi.AllocationConfigSource, string) bool { return true }},
-	} {
-		for _, source := range []resourceapi.AllocationConfigSource{resourceapi.AllocationConfigSourceClass, resourceapi.AllocationConfigSourceClaim} {
-			for _, driver := range []string{local, pool} {
-				e := cfg{source: source, driver: driver, requests: []string{"r"}, params: tc.params}
-				err := CheckEntries(testClaim(e), driver)
-				if want := tc.allowed(source, driver); (err == nil) != want {
-					t.Errorf("%s from %s of %s: %v, expected allowed %v", tc.params, source, driver, err, want)
-				}
-			}
-		}
 	}
 }
 

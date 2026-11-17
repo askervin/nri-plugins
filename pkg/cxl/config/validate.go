@@ -72,7 +72,7 @@ func validateSteering(prefix string, s *Steering, effective bool, origins map[st
 	}
 	policy := s.Policy
 	if policy != "" && !slices.Contains(policies, policy) {
-		return fmt.Errorf("%s%s: invalid policy %q (%s)", prefix, FieldPolicy, policy, listOr(policies))
+		return fmt.Errorf("%s%s: invalid policy %q (%s)", prefix, FieldPolicy, policy, joinList(policies, "or"))
 	}
 	minStep, err := parseQuantity(prefix+FieldMinStep, s.MinStep, true)
 	if err != nil {
@@ -171,7 +171,7 @@ func validateWaypoints(path string, wps []Waypoint) error {
 			tat := fmt.Sprintf("%s.targetUsages[%d]", at, j)
 			k := slices.Index(types, tu.MemoryType)
 			if k < 0 {
-				return fmt.Errorf("%s.memoryType: invalid memory type %q (%s)", tat, tu.MemoryType, listOr(types))
+				return fmt.Errorf("%s.memoryType: invalid memory type %q (%s)", tat, tu.MemoryType, joinList(types, "or"))
 			}
 			if seen[k] {
 				return fmt.Errorf("%s.memoryType: %s twice in the waypoint", tat, tu.MemoryType)
@@ -216,10 +216,11 @@ func parseQuantity(path, s string, positive bool) (int64, error) {
 	return q.Value(), nil
 }
 
-// listOr returns the values as "a, b or c".
-func listOr(values []string) string {
+// joinList returns the values as "a, b <last> c", with last "or" or
+// "and".
+func joinList(values []string, last string) string {
 	if len(values) < 2 {
 		return strings.Join(values, "")
 	}
-	return strings.Join(values[:len(values)-1], ", ") + " or " + values[len(values)-1]
+	return strings.Join(values[:len(values)-1], ", ") + " " + last + " " + values[len(values)-1]
 }

@@ -98,7 +98,7 @@ func TestValidateSteering(t *testing.T) {
 	}
 }
 
-func TestListOr(t *testing.T) {
+func TestJoinList(t *testing.T) {
 	for want, values := range map[string][]string{
 		"":             nil,
 		"a":            {"a"},
@@ -106,7 +106,7 @@ func TestListOr(t *testing.T) {
 		"a, b or c":    {"a", "b", "c"},
 		"a, b, c or d": {"a", "b", "c", "d"},
 	} {
-		if got := listOr(values); got != want {
+		if got := joinList(values, "or"); got != want {
 			t.Errorf("%v: %q", values, got)
 		}
 	}

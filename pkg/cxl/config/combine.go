@@ -182,19 +182,10 @@ func (e *Effective) PolicyText() string {
 	return steeringOf(&e.Container).Policy + originText(e.Origins[FieldPolicy])
 }
 
-// containerValues returns the values of the set fields of the container
-// section by field path.
-func containerValues(c *Container) map[string]string {
-	out := map[string]string{}
-	if c == nil {
-		return out
-	}
-	for _, f := range fields {
-		if v, ok := f.value(c); ok {
-			out[f.path] = v
-		}
-	}
-	return out
+// FencingText returns the effective fencing and its origin, such as
+// "allowed-mems (default)" or "none (node default)".
+func (e *Effective) FencingText() string {
+	return e.Container.Fencing + originText(e.Origins[FieldFencing])
 }
 
 // hasField tells whether the field is set in the container section.

@@ -52,39 +52,6 @@ func (r *Resolved) Settings() ResultSettings {
 	return ResultSettings{Container: r.Config.Container, Origins: r.Origins}
 }
 
-// sourceRule tells which config entries may set a field: allowed reports
-// whether an entry of the source for the driver may. A field that is set
-// only by DeviceClasses has allowed = source is FromClass.
-type sourceRule struct {
-	path    []string
-	allowed func(source resourceapi.AllocationConfigSource, driver string) bool
-	reason  string
-}
-
-// sourceRules are the fields that not every config entry may set.
-var sourceRules = []sourceRule{
-	{
-		path:    []string{"container", "fencing"},
-		allowed: func(resourceapi.AllocationConfigSource, string) bool { return false },
-		reason:  "set by the driver configuration only (defaults.container.fencing)",
-	},
-	{
-		path:    []string{"pool"},
-		allowed: func(_ resourceapi.AllocationConfigSource, driver string) bool { return driver != device.DriverName },
-		reason:  "only for devices of " + device.PoolDriverName,
-	},
-}
-
-// containerFields are the paths of the fields of the container section
-// that have origins.
-var containerFields = [][]string{
-	{"container", "steering", "policy"},
-	{"container", "steering", "waypoints"},
-	{"container", "steering", "minStep"},
-	{"container", "steering", "maxStep"},
-	{"container", "fencing"},
-}
-
 // entry is a decoded config entry of an allocation.
 type entry struct {
 	origin string
@@ -186,11 +153,15 @@ func applicableEntries(claim *resourceapi.ResourceClaim, driver, request string)
 }
 
 // decodeEntry returns the parameters of a config entry without apiVersion
-// and kind, and an error if the entry is not a MemoryConfig of
-// APIVersion, has unknown fields or sets a field that its source may not.
+// and kind. It returns an error if the entry is not a MemoryConfig of
+// APIVersion or has unknown fields. Fencing is an error in every entry,
+// and the pool section in an entry of the CXL driver.
 //   - index: the position of the entry among the entries of its source
 func decodeEntry(raw []byte, source resourceapi.AllocationConfigSource, index int, driver string) (map[string]json.RawMessage, error) {
 	where := fmt.Sprintf("%s%s config %d", errPrefix, source, index)
+	if v := bytes.TrimSpace(raw); len(v) == 0 || v[0] != '{' {
+		return nil, fmt.Errorf("%s: not a JSON object", where)
+	}
 	var head struct {
 		APIVersion string `json:"apiVersion"`
 		Kind       string `json:"kind"`
@@ -213,10 +184,11 @@ func decodeEntry(raw []byte, source resourceapi.AllocationConfigSource, index in
 	}
 	delete(params, "apiVersion")
 	delete(params, "kind")
-	for _, rule := range sourceRules {
-		if lookup(params, rule.path) == valueSet && !rule.allowed(source, driver) {
-			return nil, fmt.Errorf("%s%s: %s", errPrefix, strings.Join(rule.path, "."), rule.reason)
-		}
+	if lookup(params, strings.Split(FieldFencing, ".")) == valueSet {
+		return nil, fmt.Errorf("%s%s: set by the driver configuration only (defaults.%s)", errPrefix, FieldFencing, FieldFencing)
+	}
+	if driver == device.DriverName && lookup(params, []string{"pool"}) == valueSet {
+		return nil, fmt.Errorf("%spool: only for devices of %s", errPrefix, device.PoolDriverName)
 	}
 	return params, nil
 }
@@ -270,19 +242,18 @@ func origins(entries []entry, c *Container) map[string]string {
 	if c == nil {
 		return nil
 	}
-	set := containerValues(c)
 	out := map[string]string{}
-	for _, path := range containerFields {
-		field := strings.Join(path, ".")
-		if _, ok := set[field]; !ok {
+	for _, f := range fields {
+		if !hasField(f, c) {
 			continue
 		}
+		path := strings.Split(f.path, ".")
 		for _, e := range entries {
 			switch lookup(e.params, path) {
 			case valueSet:
-				out[field] = e.origin
+				out[f.path] = e.origin
 			case valueNull:
-				delete(out, field)
+				delete(out, f.path)
 			}
 		}
 	}
