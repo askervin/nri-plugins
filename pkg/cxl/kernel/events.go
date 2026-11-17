@@ -15,11 +15,7 @@
 package kernel
 
 import (
-	"bufio"
-	"encoding/json"
-	"os"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/containers/nri-plugins/pkg/udev"
@@ -55,16 +51,14 @@ func (c *Changes) Notify() {
 // UdevEvents watches the uevents of the kernel objects of this package:
 // NUMA nodes (add, remove), memory blocks, CXL devices, dax devices and nd
 // devices. Every event wakes the waits of the Kernels that have it as their
-// Events. The events of the NUMA nodes, memory blocks and CXL devices, and
-// every fake event of the FIFO, also feed a debounced notification
-// (Stable): one signal after the events of a hotplug sequence (CXL device
-// bind -> region creation -> memory onlining -> NUMA node appearance) have
-// been quiet for the stable duration.
+// Events. The events of the NUMA nodes, memory blocks and CXL devices also
+// feed a debounced notification (Stable): one signal after the events of a
+// hotplug sequence (CXL device bind -> region creation -> memory onlining ->
+// NUMA node appearance) have been quiet for the stable duration.
 type UdevEvents struct {
 	monitor        *udev.Monitor
 	stableDuration time.Duration
 	rawEvents      chan *udev.Event
-	fakeEvents     chan *udev.Event
 	stable         chan struct{}
 	stopCh         chan struct{}
 	changes        Changes
@@ -97,7 +91,6 @@ func NewUdevEvents(stableDuration time.Duration) (*UdevEvents, error) {
 		monitor:        m,
 		stableDuration: stableDuration,
 		rawEvents:      make(chan *udev.Event, 64),
-		fakeEvents:     make(chan *udev.Event, 64),
 		stable:         make(chan struct{}, 1),
 		stopCh:         make(chan struct{}),
 	}, nil
@@ -109,21 +102,11 @@ func (w *UdevEvents) logf(format string, args ...any) {
 	}
 }
 
-// Start starts the watch. With a fifoPath it also reads JSON-encoded fake
-// events from that named pipe (created if it does not exist), one object of
-// event properties per line.
-func (w *UdevEvents) Start(fifoPath string) error {
+// Start starts the watch.
+func (w *UdevEvents) Start() {
 	w.monitor.Start(w.rawEvents)
 	go w.dispatch()
-	if fifoPath != "" {
-		if err := ensureFifo(fifoPath); err != nil {
-			return err
-		}
-		go w.fifoReader(fifoPath)
-		w.logf("udev events: reading fake events from FIFO %s", fifoPath)
-	}
 	w.logf("udev events: started (stableDuration=%v)", w.stableDuration)
-	return nil
 }
 
 // Stop stops the watch.
@@ -181,9 +164,6 @@ func (w *UdevEvents) dispatch() {
 			if stableSubsystems[evt.Subsystem] {
 				debounce()
 			}
-		case <-w.fakeEvents:
-			w.changes.Notify()
-			debounce()
 		case <-timerCh:
 			w.signalStable()
 			timer = nil
@@ -195,83 +175,4 @@ func (w *UdevEvents) dispatch() {
 			return
 		}
 	}
-}
-
-// fifoReader reads JSON-encoded udev events from a named pipe, one JSON
-// object per line, opening it again after each writer.
-func (w *UdevEvents) fifoReader(fifoPath string) {
-	for {
-		select {
-		case <-w.stopCh:
-			return
-		default:
-		}
-		// the open blocks until a writer opens the other end
-		f, err := os.OpenFile(fifoPath, os.O_RDONLY, 0)
-		if err != nil {
-			select {
-			case <-w.stopCh:
-				return
-			default:
-			}
-			w.logf("udev events: failed to open FIFO %s: %v", fifoPath, err)
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-		scanner := bufio.NewScanner(f)
-		for scanner.Scan() {
-			select {
-			case <-w.stopCh:
-				_ = f.Close()
-				return
-			default:
-			}
-			line := scanner.Text()
-			if line == "" {
-				continue
-			}
-			evt, err := parseFifoEvent(line)
-			if err != nil {
-				w.logf("udev events: ignoring malformed FIFO event: %v", err)
-				continue
-			}
-			select {
-			case w.fakeEvents <- evt:
-			case <-w.stopCh:
-				_ = f.Close()
-				return
-			}
-		}
-		_ = f.Close()
-	}
-}
-
-// parseFifoEvent returns the udev event of a JSON line of its properties.
-func parseFifoEvent(line string) (*udev.Event, error) {
-	props := map[string]string{}
-	if err := json.Unmarshal([]byte(line), &props); err != nil {
-		return nil, err
-	}
-	return &udev.Event{
-		Action:     props[udev.PropertyAction],
-		Subsystem:  props[udev.PropertySubsystem],
-		Devpath:    props[udev.PropertyDevpath],
-		Seqnum:     props[udev.PropertySeqnum],
-		Properties: props,
-	}, nil
-}
-
-// ensureFifo creates a named pipe at path unless one exists.
-func ensureFifo(path string) error {
-	info, err := os.Stat(path)
-	if err == nil {
-		if info.Mode()&os.ModeNamedPipe != 0 {
-			return nil
-		}
-		return os.ErrExist
-	}
-	if !os.IsNotExist(err) {
-		return err
-	}
-	return syscall.Mkfifo(path, 0o666)
 }

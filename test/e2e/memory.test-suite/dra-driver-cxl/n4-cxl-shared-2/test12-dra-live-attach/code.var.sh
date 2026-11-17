@@ -365,7 +365,7 @@ lend-memory() {
     dra-assert "$CLAIM_JSON" "[quantity(s['capacity']['requests']['memory']) for s in subrequests()] == [$POOLED0_SIZE]"
     # The node is the region of pooled0, onlined as system RAM.
     pool-cxl-wait "$VM2" "lent-$cycle" \
-        "by_serial($POOLED0_SERIAL) is not None and [(r['Node'], r['OnlineSize']) for r in regions if names(r['Memories']) == [by_serial($POOLED0_SERIAL)['Name']]] == [($MEM_NODE, $POOLED0_SIZE)]"
+        "by_serial($POOLED0_SERIAL) is not None and [(r['numaNode'], online_size(r)) for r in regions if sorted(r['memdevs']) == [by_serial($POOLED0_SERIAL)['name']]] == [($MEM_NODE, $POOLED0_SIZE)]"
     # Lent to container main: the node plugin wrote its DRAM nodes and the
     # new node to cpuset.mems of main (through NRI, so that containerd keeps
     # it), and nothing to the other container of the pod.
@@ -496,7 +496,7 @@ share() {
     dra-assert "$CLAIM_JSON" "[s.get('capacity') for s in subrequests()] == [{'requests': {'shares': '1'}}] and quantity(j['status']['allocation']['devices']['results'][0].get('consumedCapacity', {}).get('shares', 0)) == 1"
     # In the VM the device is a devdax region, never system RAM.
     pool-cxl-wait "$VM2" "shared-$cycle" \
-        "by_serial($SHARED_SERIAL) is not None and len(regions) == 1 and regions[0]['Enabled'] and regions[0]['OnlineSize'] == 0"
+        "by_serial($SHARED_SERIAL) is not None and len(regions) == 1 and enabled(regions[0]) and online_size(regions[0]) == 0"
     # The bytes are in the backing file of shared0 on the host.
     pool-host-client -o json devices shared0 || command-error "cannot get shared0"
     shared_file=$(pool-value "$COMMAND_OUTPUT" 'j["path"]')
@@ -748,8 +748,8 @@ spec:
 EOF
 dra-pod-wait "$VM2" claimer Running 120
 pool-cxl-wait "$VM2" claimer \
-    "by_serial($POOLED0_SERIAL) is not None and [r['OnlineSize'] for r in regions if names(r['Memories']) == [by_serial($POOLED0_SERIAL)['Name']]] == [$POOLED0_SIZE]"
-CLAIM_NODE=$(cxl-value "[r['Node'] for r in regions if names(r['Memories']) == [by_serial($POOLED0_SERIAL)['Name']]][0]")
+    "by_serial($POOLED0_SERIAL) is not None and [online_size(r) for r in regions if sorted(r['memdevs']) == [by_serial($POOLED0_SERIAL)['name']]] == [$POOLED0_SIZE]"
+CLAIM_NODE=$(cxl-value "[r['numaNode'] for r in regions if sorted(r['memdevs']) == [by_serial($POOLED0_SERIAL)['name']]][0]")
 dra-json "$VM2" resourceclaim -n "$DRA_NS" pooled-memory
 CLAIMER_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
 dra-kubectl "$VM2" "logs -n $DRA_NS claimer" || command-error "cannot get the log of claimer"

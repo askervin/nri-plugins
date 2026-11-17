@@ -25,7 +25,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
-	"strings"
 	"testing"
 
 	resourcev1 "k8s.io/api/resource/v1"
@@ -35,8 +34,6 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
-
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 )
 
 var update = flag.Bool("update", false, "write the golden files of the scans")
@@ -48,11 +45,9 @@ const (
 	scanBlockSize = 128 * scanMiB
 )
 
-// scanTopology is a node of the characterization of the scans: a sysfs
-// tree under root (with sys and proc) that pkg/cxl's reader and the kernel
-// both read, the kernel on it and the serials of its memdevs.
+// scanTopology is a node of the characterization of the scans: the kernel
+// of a fake node and the serials of its memdevs.
 type scanTopology struct {
-	root    string
 	k       *kernel.Kernel
 	serials []uint64
 }
@@ -102,13 +97,11 @@ func scanCases(serials []uint64) map[string]scanCase {
 // scanTopologies returns the builders of the topologies by name.
 func scanTopologies() map[string]func(t *testing.T) scanTopology {
 	return map[string]func(t *testing.T) scanTopology{
-		"fake-empty":                 scanFakeEmpty,
-		"fake-memdevs":               scanFakeMemdevs,
-		"fake-regions":               scanFakeRegions,
-		"fake-hollow":                scanFakeHollow,
-		"fake-pmem":                  scanFakePmem,
-		"test14-node-four-claims":    scanDump("test14-node-four-claims"),
-		"test14-node-numa-b-deleted": scanDump("test14-node-numa-b-deleted"),
+		"fake-empty":   scanFakeEmpty,
+		"fake-memdevs": scanFakeMemdevs,
+		"fake-regions": scanFakeRegions,
+		"fake-hollow":  scanFakeHollow,
+		"fake-pmem":    scanFakePmem,
 	}
 }
 
@@ -140,8 +133,8 @@ func scanDevices(t *testing.T, top scanTopology, c scanCase) map[string]scanDevi
 }
 
 // TestCharScanTopologies pins the devices that the publisher builds of
-// scans of node topologies (kernel/fake nodes, the sysfs dumps of
-// pkg/cxl/testdata) with a set of configurations: the devices of the
+// scans of node topologies (kernel/fake nodes) with a set of
+// configurations: the devices of the
 // ResourceSlice and the facts of the table that a Prepare reads. The
 // expected devices are in testdata/scan-<topology>.txt, a line per
 // configuration and device (go test -update writes them).
@@ -180,67 +173,12 @@ func TestCharScanTopologies(t *testing.T) {
 	}
 }
 
-// TestCharScanReaders compares the facts of pkg/cxl's reader (cxl-dump's)
-// with those that the publisher takes from the kernel's snapshot on the
-// topologies of TestCharScanTopologies: the memdevs, the regions (hollow,
-// node, size, mode, the memdevs in the order of their endpoints) and the
-// NUMA nodes in the order of their names; memdevs and regions in any order.
-func TestCharScanReaders(t *testing.T) {
-	for name, build := range scanTopologies() {
-		t.Run(name, func(t *testing.T) {
-			top := build(t)
-			old, err := nricxl.DevicesFromSysfs(top.root)
-			mustOK(t, err)
-			snap, err := top.k.ObserveTopology(context.Background())
-			mustOK(t, err)
-			var want, got []string
-			for _, m := range old.MemoryDevices {
-				want = append(want, fmt.Sprintf("%s 0x%x ram %d pmem %d affinity %d enabled %v %s %d:%d", m.Name, m.Serial, m.RamSize, m.PmemSize,
-					m.NodeAffinity, m.Enabled, m.DevName, m.Major, m.Minor))
-			}
-			for _, m := range snap.Memdevs {
-				got = append(got, fmt.Sprintf("%s 0x%x ram %d pmem %d affinity %d enabled %v cxl/%s %d:%d", m.Name, m.Serial, m.RamSize, m.PmemSize,
-					m.NodeAffinity, m.State != kernel.MemdevUnbound, m.Name, m.Major, m.Minor))
-			}
-			for _, r := range old.RegionDevices {
-				line := fmt.Sprintf("%s hollow %v node %d size %d mode %s memdevs", r.Name, r.Hollow, r.Node, r.Size, r.Mode)
-				for _, m := range r.Memories {
-					line += fmt.Sprintf(" 0x%x/%d", m.Serial, m.NodeAffinity)
-				}
-				want = append(want, line)
-			}
-			nodes := regionNodes(snap)
-			for i := range snap.Regions {
-				r := &snap.Regions[i]
-				line := fmt.Sprintf("%s hollow %v node %d size %d mode %s memdevs", r.Name, r.State == kernel.RegionHollow, nodes[r.Name], regionSize(*r), r.Mode)
-				for _, m := range regionMemdevs(snap, r) {
-					line += fmt.Sprintf(" 0x%x/%d", m.Serial, m.NodeAffinity)
-				}
-				got = append(got, line)
-			}
-			slices.Sort(want)
-			slices.Sort(got)
-			// the nodes in their order: that of the nodes of the DRAM
-			for _, n := range old.MemoryNodes {
-				want = append(want, fmt.Sprintf("node %d size %d", n.ID, n.Size))
-			}
-			for _, n := range numaNodesByName(snap) {
-				got = append(got, fmt.Sprintf("node %d size %d", n.ID, n.MemTotal))
-			}
-			if !slices.Equal(got, want) {
-				t.Errorf("the snapshot has\n%s\npkg/cxl's reader\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
-			}
-		})
-	}
-}
-
 // scanFake returns the topology of a fake with the memdevs plugged, after
-// fn changed it, with the files of pkg/cxl's reader that the fake does not
-// write (scanReaderFiles).
+// fn changed it.
 func scanFake(t *testing.T, specs []fake.MemdevSpec, fn func(f *fake.Fake, k *kernel.Kernel)) scanTopology {
 	t.Helper()
 	f := fake.New(t)
-	top := scanTopology{root: filepath.Dir(f.SysRoot()), k: f.Kernel()}
+	top := scanTopology{k: f.Kernel()}
 	for _, s := range specs {
 		f.Plug(s)
 		top.serials = append(top.serials, s.Serial)
@@ -248,7 +186,6 @@ func scanFake(t *testing.T, specs []fake.MemdevSpec, fn func(f *fake.Fake, k *ke
 	if fn != nil {
 		fn(f, top.k)
 	}
-	scanReaderFiles(t, f)
 	return top
 }
 
@@ -350,125 +287,4 @@ func scanFakePmem(t *testing.T) scanTopology {
 		func(f *fake.Fake, k *kernel.Kernel) {
 			scanRegion(t, k, "mem0", kernel.RegionPmem, 512*scanMiB)
 		})
-}
-
-// scanReaderFiles writes the files of the memdevs and of procfs that
-// pkg/cxl's reader reads and the fake does not write: the uevent of every
-// memdev, and /proc/zoneinfo of the online memory blocks (a zone per node
-// and zone type, starting at its first online block) and of the DRAM of
-// nodes 0 and 1.
-func scanReaderFiles(t *testing.T, f *fake.Fake) {
-	t.Helper()
-	mems, _ := filepath.Glob(f.P("bus/cxl/devices/mem*"))
-	for _, p := range mems {
-		name := filepath.Base(p)
-		rel := "bus/cxl/devices/" + name
-		_, minor, _ := strings.Cut(f.Read(rel+"/dev"), ":")
-		uevent := "MAJOR=251\nMINOR=" + minor + "\nDEVNAME=cxl/" + name + "\nDEVTYPE=cxl_memdev"
-		if f.Exists(rel + "/driver") {
-			uevent += "\nDRIVER=cxl_mem"
-		}
-		f.Write(rel+"/uevent", uevent)
-	}
-	type zone struct {
-		node int
-		name string
-	}
-	start, present := map[zone]int64{}, map[zone]int64{}
-	blocks, _ := filepath.Glob(f.P("devices/system/memory/memory[0-9]*"))
-	for _, p := range blocks {
-		n, _ := strconv.Atoi(strings.TrimPrefix(filepath.Base(p), "memory"))
-		rel := "devices/system/memory/" + filepath.Base(p)
-		if f.Read(rel+"/state") != kernel.BlockStateOnline {
-			continue
-		}
-		nodes, _ := filepath.Glob(filepath.Join(p, "node[0-9]*"))
-		if len(nodes) == 0 {
-			continue
-		}
-		node, _ := strconv.Atoi(strings.TrimPrefix(filepath.Base(nodes[0]), "node"))
-		z := zone{node, f.Read(rel + "/valid_zones")}
-		pfn := int64(n) * scanBlockSize >> 12
-		if s, ok := start[z]; !ok || pfn < s {
-			start[z] = pfn
-		}
-		present[z] += scanBlockSize >> 12
-	}
-	zones := []string{"Node 0, zone   Normal", "        present  2097152", "  start_pfn:           1",
-		"Node 1, zone   Normal", "        present  2097152", "  start_pfn:           2097152"}
-	keys := make([]zone, 0, len(start))
-	for z := range start {
-		keys = append(keys, z)
-	}
-	slices.SortFunc(keys, func(a, b zone) int { return int(start[a] - start[b]) })
-	for _, z := range keys {
-		zones = append(zones, fmt.Sprintf("Node %d, zone %8s", z.node, z.name),
-			fmt.Sprintf("        present  %d", present[z]), fmt.Sprintf("  start_pfn:           %d", start[z]))
-	}
-	scanWrite(t, filepath.Join(f.ProcRoot(), "zoneinfo"), strings.Join(zones, "\n"))
-}
-
-// scanWrite writes a file and its directories.
-func scanWrite(t *testing.T, path, data string) {
-	t.Helper()
-	mustOK(t, os.MkdirAll(filepath.Dir(path), 0o755))
-	mustOK(t, os.WriteFile(path, []byte(data+"\n"), 0o644))
-}
-
-// scanDump returns the topology of a sysfs dump of pkg/cxl/testdata,
-// captured by the e2e cxl-dump helper with grep -r: "path:line" for the
-// files of /sys/bus/cxl/devices/* (cxl-sysfs.txt) and of the memory blocks
-// and nodes (memory.txt), and the zones of /proc/zoneinfo. grep -r does not
-// capture symlinks: the uport of endpoint4 links to mem0, the device of a
-// uevent with DRIVER=<driver> links to <driver>, and the dax bus links to
-// the dax devices of the regions; the online file of a memory block comes
-// from its state.
-func scanDump(name string) func(t *testing.T) scanTopology {
-	return func(t *testing.T) scanTopology {
-		root := t.TempDir()
-		dir := filepath.Join("..", "..", "..", "..", "..", "pkg", "cxl", "testdata", name)
-		files := map[string][]string{}
-		for _, file := range []string{"cxl-sysfs.txt", "memory.txt"} {
-			data, err := os.ReadFile(filepath.Join(dir, file))
-			mustOK(t, err)
-			for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-				path, value, ok := strings.Cut(line, ":")
-				if !ok {
-					t.Fatalf("%s/%s: bad line %q", name, file, line)
-				}
-				files[path] = append(files[path], value)
-				if strings.HasSuffix(path, "/state") {
-					online := map[bool]string{true: "1", false: "0"}[strings.HasPrefix(value, "online")]
-					files[filepath.Join(filepath.Dir(path), "online")] = []string{online}
-				}
-			}
-		}
-		zoneinfo, err := os.ReadFile(filepath.Join(dir, "zoneinfo.txt"))
-		mustOK(t, err)
-		files["/proc/zoneinfo"] = []string{strings.TrimSpace(string(zoneinfo))}
-		for path, lines := range files {
-			scanWrite(t, filepath.Join(root, path), strings.Join(lines, "\n"))
-		}
-		link := func(path, target string) {
-			mustOK(t, os.MkdirAll(filepath.Dir(path), 0o755))
-			mustOK(t, os.Symlink(target, path))
-		}
-		devices := filepath.Join(root, "sys/bus/cxl/devices")
-		link(filepath.Join(devices, "endpoint4", "uport"), filepath.Join(devices, "mem0"))
-		for path, lines := range files {
-			for _, l := range lines {
-				if driver, ok := strings.CutPrefix(l, "DRIVER="); ok && filepath.Base(path) == "uevent" {
-					target := filepath.Join(root, "sys/bus/drivers", driver)
-					mustOK(t, os.MkdirAll(target, 0o755))
-					link(filepath.Join(root, filepath.Dir(path), "driver"), target)
-				}
-			}
-		}
-		daxes, _ := filepath.Glob(filepath.Join(devices, "region*", "dax_region*", "dax*.*"))
-		for _, p := range daxes {
-			link(filepath.Join(root, "sys/bus/dax/devices", filepath.Base(p)), p)
-		}
-		return scanTopology{root: root, k: &kernel.Kernel{SysRoot: filepath.Join(root, "sys"), ProcRoot: filepath.Join(root, "proc")},
-			serials: []uint64{0xc100e2e1}}
-	}
 }

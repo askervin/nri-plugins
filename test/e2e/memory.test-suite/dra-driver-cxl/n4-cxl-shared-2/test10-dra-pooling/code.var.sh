@@ -214,10 +214,10 @@ echo "### D: the node makes the memory usable"
 dra-pod-wait "$VM2" pooled-consumer Running 120
 t_running=$EPOCHREALTIME
 pool-cxl-wait "$VM2" pooled0-prepared \
-    "by_serial($POOLED0_SERIAL) is not None and len(regions) == 1 and regions[0]['Enabled'] and regions[0]['OnlineSize'] == $POOLED0_SIZE"
-cxl-assert "names(regions[0]['Memories']) == [by_serial($POOLED0_SERIAL)['Name']]"
-cxl-assert "regions[0]['Node'] >= $CPU_NODES"
-CXL_NODE=$(cxl-value "regions[0]['Node']")
+    "by_serial($POOLED0_SERIAL) is not None and len(regions) == 1 and enabled(regions[0]) and online_size(regions[0]) == $POOLED0_SIZE"
+cxl-assert "sorted(regions[0]['memdevs']) == [by_serial($POOLED0_SERIAL)['name']]"
+cxl-assert "regions[0]['numaNode'] >= $CPU_NODES"
+CXL_NODE=$(cxl-value "regions[0]['numaNode']")
 echo "pooled0 is NUMA node $CXL_NODE of the VM"
 vm-command "numactl -H" || command-error "numactl failed"
 grep -q "^node $CXL_NODE size: 512 MB" <<< "$COMMAND_OUTPUT" ||
@@ -308,8 +308,8 @@ pool-assert "$COMMAND_OUTPUT" "[(a['device'], a['host'], a.get('owner'), a['slot
 echo "pooled1 is in slot $(pool-value "$COMMAND_OUTPUT" "j[0]['slot']['bus']") under host bridge cxlhb1 on NUMA node 1"
 dra-pod-wait "$VM2" pooled-steered Running 120
 pool-cxl-wait "$VM2" pooled1-prepared \
-    "by_serial($POOLED1_SERIAL) is not None and len(regions) == 1 and regions[0]['Enabled'] and regions[0]['OnlineSize'] == $POOLED1_SIZE"
-POOL_NODE=$(cxl-value "regions[0]['Node']")
+    "by_serial($POOLED1_SERIAL) is not None and len(regions) == 1 and enabled(regions[0]) and online_size(regions[0]) == $POOLED1_SIZE"
+POOL_NODE=$(cxl-value "regions[0]['numaNode']")
 if (( POOL_NODE < CPU_NODES )) || [ "$POOL_NODE" == "$CXL_NODE" ]; then
     error "pooled1 is NUMA node $POOL_NODE, expected a CXL node other than $CXL_NODE of host bridge 0"
 fi

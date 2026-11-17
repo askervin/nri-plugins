@@ -74,7 +74,7 @@ LP_OWNER=e2e:test21
 LP_DATA="/tmp/fake-cxl-pool-$LP_SERVER/$LP_DEVICE.raw"
 LP_LSA="/tmp/fake-cxl-pool-$LP_SERVER/$LP_DEVICE.lsa"
 LP="device('$LP_NAME', '$DRA_LOCAL_DRIVER', '$VM2_NAME')"   # dra-py
-LP_REGIONS="[r for r in regions if by_serial($LP_SERIAL) is not None and by_serial($LP_SERIAL)['Name'] in names(r['Memories'])]"   # cxl-py
+LP_REGIONS="[r for r in regions if by_serial($LP_SERIAL) is not None and by_serial($LP_SERIAL)['name'] in sorted(r['memdevs'])]"   # cxl-py
 CLASS=cxl-local-persistent
 FS_PATH="/run/cxl-fs/$LP_HEX"     # the mount in a container without "path"
 MNT_DIRECT="$DRA_LOCAL_MOUNT_DIR/$LP_MOUNT_ID-direct"
@@ -124,7 +124,7 @@ region-wait() {
     # or none (no), 60 s at most. Fail the test on timeout.
     local want="len($LP_REGIONS) == 1"
     [ "$1" == yes ] || want="$LP_REGIONS == []"
-    pool-cxl-wait "$VM2" "lp0-region-$1" "by_serial($LP_SERIAL) is not None and by_serial($LP_SERIAL)['Enabled'] and $want" 60
+    pool-cxl-wait "$VM2" "lp0-region-$1" "by_serial($LP_SERIAL) is not None and enabled(by_serial($LP_SERIAL)) and $want" 60
     echo "VM2: the memdev of $LP_DEVICE is enabled, region: $1"
 }
 
@@ -183,7 +183,7 @@ pool-client-install "$VM2"
 t0=$EPOCHREALTIME
 pool-host-client --pool "$LP_SERVER" -o json attach "$LP_DEVICE" --host "$VM2_NAME" --owner "$LP_OWNER" ||
     command-error "cannot attach $LP_DEVICE to VM2"
-pool-cxl-wait "$VM2" lp0-attached "by_serial($LP_SERIAL) is not None and by_serial($LP_SERIAL)['Enabled'] and by_serial($LP_SERIAL)['PmemSize'] == $LP_SIZE and by_serial($LP_SERIAL)['RamSize'] == 0" 60
+pool-cxl-wait "$VM2" lp0-attached "by_serial($LP_SERIAL) is not None and enabled(by_serial($LP_SERIAL)) and by_serial($LP_SERIAL)['pmemSize'] == $LP_SIZE and by_serial($LP_SERIAL)['ramSize'] == 0" 60
 cxl-assert "$LP_REGIONS == []"
 # The driver publishes a hot-added memdev at once, or holds it back for
 # up to 5 minutes (poolSerials, docs/memory/cxl/local.md).

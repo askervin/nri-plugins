@@ -462,7 +462,7 @@ nothing-left() {
     dra-wait "$VM2" "$label-no-companions" "pods -n $DRA_NS -l $DRA_LEASE_LABEL" "items == []" 90
     dra-wait "$VM2" "$label-no-lease-claims" "resourceclaims -n $DRA_NS" "not any(n.startswith('cxl-lease-') for n in names())" 90
     pool-cxl-wait "$VM2" "$label" \
-        "regions == [] and by_serial($DRA_LOCAL_SERIAL) is not None and by_serial($DRA_LOCAL_SERIAL)['Enabled'] and by_serial($POOLED0_SERIAL) is None" 90
+        "regions == [] and by_serial($DRA_LOCAL_SERIAL) is not None and enabled(by_serial($DRA_LOCAL_SERIAL)) and by_serial($POOLED0_SERIAL) is None" 90
     retry-until --timeout 60 --message "no attachments of the pool controller" \
         '[ -z "$(dra-pool-attachments "$VM2_NAME")" ]' ||
         error "$label: the pool still has attachments: $(dra-pool-attachments "$VM2_NAME")"
@@ -783,7 +783,7 @@ ANY2_UID=$(dra-value "$CLAIM_JSON" "j['metadata']['uid']")
 pool-host-client -o json devices pooled0 || command-error "cannot get pooled0"
 pool-assert "$COMMAND_OUTPUT" "[(a['host'], a.get('owner'), a['state']) for a in j['attachments']] == [('$VM2_NAME', 'k8s:resourceclaim/$ANY2_UID', 'attached')]"
 pool-cxl-wait "$VM2" any-two-regions \
-    "len(regions) == 2 and by_serial($POOLED0_SERIAL) is not None and [(r['Node'], r['OnlineSize']) for r in $LREGIONS] == [($ANY1_NODE, $DRA_LOCAL_SIZE)] and [(r['Node'], r['OnlineSize']) for r in regions if names(r['Memories']) == [by_serial($POOLED0_SERIAL)['Name']]] == [($ANY2_NODE, $POOLED0_SIZE)]"
+    "len(regions) == 2 and by_serial($POOLED0_SERIAL) is not None and [(r['numaNode'], online_size(r)) for r in $LREGIONS] == [($ANY1_NODE, $DRA_LOCAL_SIZE)] and [(r['numaNode'], online_size(r)) for r in regions if sorted(r['memdevs']) == [by_serial($POOLED0_SERIAL)['name']]] == [($ANY2_NODE, $POOLED0_SIZE)]"
 echo "lease $ANY1_LEASE: local node $ANY1_NODE; lease $ANY2_LEASE: pooled0, node $ANY2_NODE"
 # The pool slot of pooled0 is under host bridge 0, like the local device:
 # both regions are on the same NUMA node, which both leases lend, and the

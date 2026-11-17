@@ -318,9 +318,9 @@ for pool in pool-a pool-c; do
     pool-assert "$COMMAND_OUTPUT" "j in (None, [])"
 done
 pool-cxl-wait "$VM0" b-pooled0-prepared \
-    "by_serial($B_POOLED0_SERIAL) is not None and len(regions) == 1 and regions[0]['Enabled'] and regions[0]['OnlineSize'] == $(( 512 << 20 ))"
-cxl-assert "regions[0]['Node'] >= $VM0_CPU_NODES"
-B_NODE=$(cxl-value "regions[0]['Node']")
+    "by_serial($B_POOLED0_SERIAL) is not None and len(regions) == 1 and enabled(regions[0]) and online_size(regions[0]) == $(( 512 << 20 ))"
+cxl-assert "regions[0]['numaNode'] >= $VM0_CPU_NODES"
+B_NODE=$(cxl-value "regions[0]['numaNode']")
 dra-wait-log "$VM2" b-consumer "CXL_${B_POOLED0_HEX}_NODE=$B_NODE" 60
 dra-kubectl "$VM2" "logs -n $DRA_NS b-consumer" || command-error "cannot get the log of b-consumer"
 dra-env-assert b-consumer "$COMMAND_OUTPUT" "$B_POOLED0_HEX" \
@@ -433,7 +433,7 @@ pool-assert "$COMMAND_OUTPUT" "[(a['host'], a['state'], a['slot']['hostBridge'])
 pool-attachments --pool pool-c c-shared0
 pool-assert "$COMMAND_OUTPUT" "[(a['host'], a['state'], a['slot']['hostBridge']) for a in j] == [('$VM0_NAME', 'attached', 'cxlhb1')]"
 pool-cxl-wait "$VM0" two-pools \
-    "by_serial($B_SHARED0_SERIAL) is not None and by_serial($C_SHARED0_SERIAL) is not None and len(regions) == 2 and all(r['OnlineSize'] == 0 for r in regions)"
+    "by_serial($B_SHARED0_SERIAL) is not None and by_serial($C_SHARED0_SERIAL) is not None and len(regions) == 2 and all(online_size(r) == 0 for r in regions)"
 for pool in pool-b pool-c; do
     dev="${pool#pool-}-shared0"
     pool-device-files --pool "$pool" "$dev"

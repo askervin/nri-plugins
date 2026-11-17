@@ -112,8 +112,8 @@ echo "shared0 in VM2: slot $SHARED_SLOT, qemu device $SHARED_QEMU_ID"
 pool-client "$VM2" guest wait shared0 || command-error "shared0 did not show up in VM2"
 VM2_MEM="$COMMAND_OUTPUT"
 pool-cxl-wait "$VM2" shared0-attached "by_serial($SHARED_SERIAL) is not None"
-cxl-assert "by_serial($SHARED_SERIAL)['Name'] == '$VM2_MEM'"
-cxl-assert "by_serial($SHARED_SERIAL)['RamSize'] == $MEM_SIZE"
+cxl-assert "by_serial($SHARED_SERIAL)['name'] == '$VM2_MEM'"
+cxl-assert "by_serial($SHARED_SERIAL)['ramSize'] == $MEM_SIZE"
 cxl-assert 'len(memdevs) == 1 and regions == []'
 vm-command "cxl list -M -u" || command-error "cxl list failed in VM2"
 grep -q "\"serial\":\"$SHARED_SERIAL\"" <<< "${COMMAND_OUTPUT//[[:space:]]/}" ||
@@ -125,8 +125,8 @@ pool-assert "$COMMAND_OUTPUT" "j['state'] == 'attached' and j['host'] == '$VM1_N
 pool-client "$VM1" guest wait shared0 || command-error "shared0 did not show up in VM1"
 VM1_MEM="$COMMAND_OUTPUT"
 pool-cxl-wait "$VM1" shared0-attached "by_serial($SHARED_SERIAL) is not None"
-cxl-assert "by_serial($SHARED_SERIAL)['Name'] == '$VM1_MEM'"
-cxl-assert "by_serial($SHARED_SERIAL)['RamSize'] == $MEM_SIZE"
+cxl-assert "by_serial($SHARED_SERIAL)['name'] == '$VM1_MEM'"
+cxl-assert "by_serial($SHARED_SERIAL)['ramSize'] == $MEM_SIZE"
 cxl-assert 'len(memdevs) == 1 and regions == []'
 pool-client "$VM2" -o json devices shared0 || command-error "cannot get device shared0"
 pool-assert "$COMMAND_OUTPUT" "j['state'] == 'attached'"
@@ -178,11 +178,11 @@ for vm in "$VM2" "$VM1"; do
     [ "$COMMAND_OUTPUT" == "$MEM_SIZE" ] ||
         error "devdax device $dax has $COMMAND_OUTPUT bytes, expected $MEM_SIZE"
     pool-cxl-dump "$vm" devdax
-    cxl-assert 'len(regions) == 1 and regions[0]["Enabled"]'
-    cxl-assert "regions[0]['Size'] == $MEM_SIZE"
-    cxl-assert "names(regions[0]['Memories']) == [by_serial($SHARED_SERIAL)['Name']]"
+    cxl-assert 'len(regions) == 1 and enabled(regions[0])'
+    cxl-assert "size(regions[0]) == $MEM_SIZE"
+    cxl-assert "sorted(regions[0]['memdevs']) == [by_serial($SHARED_SERIAL)['name']]"
     # Shared memory must never be system RAM.
-    cxl-assert 'regions[0]["OnlineSize"] == 0'
+    cxl-assert 'online_size(regions[0]) == 0'
     if [ "$vm" == "$VM2" ]; then VM2_DAX="$dax"; else VM1_DAX="$dax"; fi
 done
 echo "devdax devices: VM2 $VM2_DAX, VM1 $VM1_DAX"
@@ -224,7 +224,7 @@ echo "### G: release shared0 in both VMs, detach it from both"
 for vm in "$VM2" "$VM1"; do
     pool-client "$vm" guest release shared0 || command-error "cannot release shared0 in $(pool-vm-label "$vm")"
     pool-cxl-dump "$vm" shared0-released
-    cxl-assert "regions == [] and not by_serial($SHARED_SERIAL)['Enabled']"
+    cxl-assert "regions == [] and not enabled(by_serial($SHARED_SERIAL))"
 done
 detach-timed shared0 --self
 detach-timed shared0 --host "$VM1_NAME"
@@ -245,7 +245,7 @@ pool-assert "$COMMAND_OUTPUT" "j['state'] == 'attached' and j['slot']['bus'] == 
 pool-assert "$COMMAND_OUTPUT" "j['qemuDeviceId'] != '$SHARED_QEMU_ID'"
 pool-client "$VM2" guest wait shared0 || command-error "shared0 did not show up in VM2 again"
 pool-cxl-wait "$VM2" shared0-reattached "by_serial($SHARED_SERIAL) is not None"
-cxl-assert "by_serial($SHARED_SERIAL)['RamSize'] == $MEM_SIZE"
+cxl-assert "by_serial($SHARED_SERIAL)['ramSize'] == $MEM_SIZE"
 pool-client "$VM2" guest release shared0 || command-error "cannot release shared0 in VM2"
 detach-timed shared0 --self
 pool-cxl-wait "$VM2" shared0-redetached "by_serial($SHARED_SERIAL) is None"

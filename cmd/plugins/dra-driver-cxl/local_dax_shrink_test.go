@@ -62,7 +62,7 @@ func TestRescanDuringDaxShrink(t *testing.T) {
 	pub, err := dra.NewPublisher(dra.PublishOptions{
 		Config:    e.config.publishConfig(),
 		NodeName:  testNode,
-		Scan:      e.config.scanFunc(e.k.Kernel()),
+		Scan:      e.k.Kernel().ObserveTopology,
 		Store:     e.st,
 		Probes:    e.devices.Probes,
 		BlockSize: e.k.Kernel().BlockSize,

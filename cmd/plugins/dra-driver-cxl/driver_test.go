@@ -21,7 +21,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -38,63 +37,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
-	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
-
-	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 )
-
-func TestNewDriverConfigFromString_WithTestability(t *testing.T) {
-	configJSON := `{
-		"testability": {
-			"fakeRegionDevices": [
-				{
-					"Name": "fakeregion0",
-					"Size": 1073741824,
-					"Mode": "ram",
-					"Node": 2,
-					"Memories": [
-						{
-							"Name": "fakemem0",
-							"RamSize": 1073741824,
-							"Serial": 12345,
-							"NodeAffinity": 0
-						}
-					]
-				}
-			]
-		}
-	}`
-
-	cfg, err := newDriverConfigFromString(configJSON)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Testability == nil {
-		t.Fatal("expected non-nil Testability")
-	}
-	if len(cfg.Testability.FakeRegionDevices) != 1 {
-		t.Fatalf("expected 1 fake region, got %d", len(cfg.Testability.FakeRegionDevices))
-	}
-	reg := cfg.Testability.FakeRegionDevices[0]
-	if reg.Name != "fakeregion0" {
-		t.Errorf("expected name fakeregion0, got %s", reg.Name)
-	}
-	if reg.Size != 1073741824 {
-		t.Errorf("expected size 1073741824, got %d", reg.Size)
-	}
-	if reg.Node != 2 {
-		t.Errorf("expected node 2, got %d", reg.Node)
-	}
-	if len(reg.Memories) != 1 {
-		t.Fatalf("expected 1 memory device, got %d", len(reg.Memories))
-	}
-	if reg.Memories[0].Name != "fakemem0" {
-		t.Errorf("expected memory name fakemem0, got %s", reg.Memories[0].Name)
-	}
-	if reg.Memories[0].Serial != 12345 {
-		t.Errorf("expected serial 12345, got %d", reg.Memories[0].Serial)
-	}
-}
 
 func TestNewDriverConfigFromString_WithoutTestability(t *testing.T) {
 	configJSON := `{"ignoreDevices": ["mem0"]}`
@@ -103,204 +46,14 @@ func TestNewDriverConfigFromString_WithoutTestability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Testability != nil {
-		t.Fatalf("expected nil Testability, got %+v", cfg.Testability)
-	}
 	if len(cfg.IgnoreDevices) != 1 || cfg.IgnoreDevices[0] != "mem0" {
 		t.Errorf("expected IgnoreDevices [mem0], got %v", cfg.IgnoreDevices)
 	}
 }
 
 func TestNewDriverConfigFromString_EmptyConfig(t *testing.T) {
-	cfg, err := newDriverConfigFromString("{}")
-	if err != nil {
+	if _, err := newDriverConfigFromString("{}"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Testability != nil {
-		t.Fatalf("expected nil Testability for empty config")
-	}
-}
-
-// fakeRegionConfig is the testability configuration of a fake region of 1
-// GiB on node 2 with one memdev.
-func fakeRegionConfig() *TestabilityConfig {
-	return &TestabilityConfig{FakeRegionDevices: []nricxl.RegionDevice{{
-		Name: "fakeregion0", Size: 1 << 30, Node: 2,
-		Memories: []*nricxl.MemoryDevice{{Name: "fakemem0", RamSize: 1 << 30, Serial: 12345, NodeAffinity: 0}},
-	}}}
-}
-
-// A fake region is added to the snapshot in mode ram, enabled on its node,
-// which its dax device tells, its memdev enabled; the lookups find them.
-func TestInjectFakeDevices_Defaults(t *testing.T) {
-	snap := &kernel.Snapshot{}
-	injectFakeDevices(fakeRegionConfig(), snap)
-	want := kernel.RegionInfo{Name: "fakeregion0", State: kernel.RegionEnabled, Mode: kernel.RegionRAM, NumaNode: 2,
-		Range: kernel.Range{End: 1<<30 - 1}, Memdevs: []string{"fakemem0"}, Serials: []uint64{12345}}
-	if len(snap.Regions) != 1 || !reflect.DeepEqual(snap.Region("fakeregion0"), want) {
-		t.Fatalf("regions %+v", snap.Regions)
-	}
-	if d := snap.DaxDevicesOf("fakeregion0"); len(d) != 1 || d[0].TargetNode != 2 {
-		t.Fatalf("dax devices %+v", snap.DaxDevices)
-	}
-	m := snap.Memdev(12345)
-	if len(snap.Memdevs) != 1 || !reflect.DeepEqual(m, kernel.MemdevInfo{Name: "fakemem0", Serial: 12345, State: kernel.MemdevReady, RamSize: 1 << 30}) {
-		t.Fatalf("memdevs %+v", snap.Memdevs)
-	}
-}
-
-// A fake region keeps its mode and its resource; the keys of pkg/cxl's
-// types that the snapshot has no place for are accepted.
-func TestInjectFakeDevices_PreservesExplicitValues(t *testing.T) {
-	tc := &TestabilityConfig{FakeRegionDevices: []nricxl.RegionDevice{{
-		Name: "fakeregion0", SysfsPath: "/custom/path/fakeregion0", Size: 1 << 30, Resource: 0x850000000, Mode: "pmem", Node: 3,
-		Memories: []*nricxl.MemoryDevice{{Name: "fakemem0", Driver: "custom_driver", DevName: "custom/fakemem0", Major: 251, Minor: 7}},
-	}}}
-	snap := &kernel.Snapshot{}
-	injectFakeDevices(tc, snap)
-	r := snap.Region("fakeregion0")
-	if r.Mode != kernel.RegionPmem || r.Range != (kernel.Range{Start: 0x850000000, End: 0x850000000 + 1<<30 - 1}) || r.NumaNode != 3 {
-		t.Fatalf("region %+v", r)
-	}
-	if m := snap.Memdevs[0]; m.Name != "fakemem0" || m.Major != 251 || m.Minor != 7 || m.State != kernel.MemdevReady {
-		t.Fatalf("memdev %+v", m)
-	}
-}
-
-// A fake region without a node is disabled, without a dax device; a hollow
-// one is hollow.
-func TestInjectFakeDevices_DisabledRegion(t *testing.T) {
-	tc := &TestabilityConfig{FakeRegionDevices: []nricxl.RegionDevice{
-		{Name: "fakeregion0", Size: 1 << 30, Node: -1},
-		{Name: "fakeregion1", Size: 1 << 30, Node: 2, Hollow: true},
-	}}
-	snap := &kernel.Snapshot{}
-	injectFakeDevices(tc, snap)
-	if r := snap.Region("fakeregion0"); r.State != kernel.RegionDisabled || len(snap.DaxDevicesOf("fakeregion0")) != 0 {
-		t.Fatalf("region %+v, dax devices %+v", r, snap.DaxDevices)
-	}
-	if r := snap.Region("fakeregion1"); r.State != kernel.RegionHollow {
-		t.Fatalf("region %+v", r)
-	}
-}
-
-func TestInjectFakeDevices_EmptyConfig(t *testing.T) {
-	snap := &kernel.Snapshot{}
-	injectFakeDevices(&TestabilityConfig{}, snap)
-	if len(snap.Regions) != 0 || len(snap.Memdevs) != 0 || len(snap.DaxDevices) != 0 {
-		t.Errorf("snapshot %+v", snap)
-	}
-}
-
-// The fake regions come after the observed ones, whose lookups still work.
-func TestInjectFakeDevices_AppendsToExistingDevices(t *testing.T) {
-	snap := &kernel.Snapshot{
-		Regions: []kernel.RegionInfo{{Name: "region0", State: kernel.RegionEnabled, NumaNode: 0}},
-		Memdevs: []kernel.MemdevInfo{{Name: "mem0", Serial: 1, State: kernel.MemdevReady}},
-	}
-	snap.Reindex()
-	injectFakeDevices(fakeRegionConfig(), snap)
-	if len(snap.Regions) != 2 || snap.Regions[0].Name != "region0" || snap.Regions[1].Name != "fakeregion0" {
-		t.Fatalf("regions %+v", snap.Regions)
-	}
-	if snap.Region("region0").State != kernel.RegionEnabled || snap.Memdev(1).Name != "mem0" || snap.Memdev(12345).Name != "fakemem0" {
-		t.Fatalf("lookups of %+v", snap)
-	}
-}
-
-func TestInjectFakeDevices_MultipleRegions(t *testing.T) {
-	tc := &TestabilityConfig{FakeRegionDevices: []nricxl.RegionDevice{
-		{Name: "fakeregion0", Size: 1 << 30, Node: 2, Memories: []*nricxl.MemoryDevice{{Name: "fakemem0", RamSize: 1 << 30}}},
-		{Name: "fakeregion1", Size: 2 << 30, Node: 3, Memories: []*nricxl.MemoryDevice{
-			{Name: "fakemem1", RamSize: 1 << 30}, {Name: "fakemem2", RamSize: 1 << 30}}},
-	}}
-	snap := &kernel.Snapshot{}
-	injectFakeDevices(tc, snap)
-	if len(snap.Regions) != 2 || len(snap.Memdevs) != 3 || len(snap.DaxDevices) != 2 {
-		t.Fatalf("snapshot %+v", snap)
-	}
-}
-
-// A fake region is published as a region device on its node, with the
-// affinity of its memdev.
-func TestBuildDevInfos_WithFakeDevices(t *testing.T) {
-	snap := &kernel.Snapshot{}
-	injectFakeDevices(fakeRegionConfig(), snap)
-	devInfos, err := buildDevInfos(&DriverConfig{IgnoreDRAMNodes: true}, snap, nil, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	info, ok := devInfos["fakeregion0-node2"]
-	if len(devInfos) != 1 || !ok || info.Name != "fakeregion0-node2" {
-		t.Fatalf("devices %v", devInfos)
-	}
-	if r, ok := info.Dev.(*device.Region); !ok || !reflect.DeepEqual(*r, device.Region{Name: "fakeregion0", NumaNode: 2, Size: 1 << 30, NodeAffinity: []int{0}}) {
-		t.Fatalf("device %T %+v", info.Dev, info.Dev)
-	}
-}
-
-// The scan of the publisher observes the kernel and adds the fake devices;
-// on a node without the CXL bus it fails.
-func TestScanFunc(t *testing.T) {
-	f := fake.New(t)
-	f.Plug(fake.MemdevSpec{Serial: 0xa0})
-	cfg := &DriverConfig{Testability: fakeRegionConfig()}
-	snap, err := cfg.scanFunc(f.Kernel())(context.Background())
-	noErr(t, err)
-	if len(snap.Memdevs) != 2 || snap.Memdev(0xa0).Name != "mem0" || snap.Region("fakeregion0").State != kernel.RegionEnabled {
-		t.Fatalf("snapshot %+v", snap)
-	}
-	_, err = cfg.scanFunc(&kernel.Kernel{SysRoot: t.TempDir()})(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "bus/cxl/devices: no such file or directory") {
-		t.Fatalf("error %v without the CXL bus", err)
-	}
-}
-
-func TestTestabilityConfig_JSONRoundTrip(t *testing.T) {
-	original := &DriverConfig{
-		IgnoreDevices: []string{"mem0"},
-		Testability: &TestabilityConfig{
-			FakeRegionDevices: []nricxl.RegionDevice{
-				{
-					Name: "fakeregion0",
-					Size: 1 << 30,
-					Node: 2,
-					Mode: "ram",
-					Memories: []*nricxl.MemoryDevice{
-						{
-							Name:         "fakemem0",
-							RamSize:      1 << 30,
-							Serial:       42,
-							NodeAffinity: 0,
-						},
-					},
-				},
-			},
-		},
-	}
-
-	data, err := json.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
-	}
-
-	restored, err := newDriverConfigFromString(string(data))
-	if err != nil {
-		t.Fatalf("unmarshal error: %v", err)
-	}
-
-	if restored.Testability == nil {
-		t.Fatal("expected non-nil Testability after round-trip")
-	}
-	if len(restored.Testability.FakeRegionDevices) != 1 {
-		t.Fatalf("expected 1 fake region after round-trip, got %d", len(restored.Testability.FakeRegionDevices))
-	}
-	reg := restored.Testability.FakeRegionDevices[0]
-	if reg.Name != "fakeregion0" || reg.Size != 1<<30 || reg.Node != 2 {
-		t.Errorf("unexpected region values after round-trip: %+v", reg)
-	}
-	if len(reg.Memories) != 1 || reg.Memories[0].Serial != 42 {
-		t.Errorf("unexpected memory values after round-trip: %+v", reg.Memories)
 	}
 }
 
@@ -354,44 +107,6 @@ func TestDriverConfigKeys(t *testing.T) {
 	}
 	if _, err := newDriverConfigFromString("ignoreDevice: [mem0]"); err == nil {
 		t.Error("an unknown key is accepted")
-	}
-}
-
-func TestNewDriverConfigFromString_YAMLWithTestability(t *testing.T) {
-	configYAML := `
-testability:
-  fakeRegionDevices:
-    - Name: fakeregion0
-      Size: 1073741824
-      Mode: ram
-      Node: 2
-      Memories:
-        - Name: fakemem0
-          RamSize: 1073741824
-          Serial: 12345
-`
-	cfg, err := newDriverConfigFromString(configYAML)
-	if err != nil {
-		t.Fatalf("unexpected error parsing YAML: %v", err)
-	}
-	if cfg.Testability == nil {
-		t.Fatal("expected non-nil Testability")
-	}
-	if len(cfg.Testability.FakeRegionDevices) != 1 {
-		t.Fatalf("expected 1 fake region, got %d", len(cfg.Testability.FakeRegionDevices))
-	}
-	reg := cfg.Testability.FakeRegionDevices[0]
-	if reg.Name != "fakeregion0" {
-		t.Errorf("expected name fakeregion0, got %s", reg.Name)
-	}
-	if reg.Size != 1073741824 {
-		t.Errorf("expected size 1073741824, got %d", reg.Size)
-	}
-	if reg.Node != 2 {
-		t.Errorf("expected node 2, got %d", reg.Node)
-	}
-	if len(reg.Memories) != 1 || reg.Memories[0].Serial != 12345 {
-		t.Errorf("unexpected memory: %+v", reg.Memories)
 	}
 }
 
@@ -807,8 +522,7 @@ func TestFirstListAfterRecovery(t *testing.T) {
 }
 
 // The dead keys ignoreNewMemoryDevices and ignoreNewRegions are accepted
-// with a warning that they have no effect, the keys of the fake regions that
-// have none with one warning naming them; unset, nothing is logged.
+// with a warning that they have no effect.
 func TestDriverConfigDeadKeys(t *testing.T) {
 	logs := captureKlog(t)
 	cfg, err := newDriverConfigFromString("{ignoreNewMemoryDevices: true, ignoreNewRegions: true}")
@@ -820,40 +534,22 @@ func TestDriverConfigDeadKeys(t *testing.T) {
 			t.Errorf("no %q in\n%s", want, out)
 		}
 	}
-	logs = captureKlog(t)
-	(&DriverConfig{Testability: fakeRegionConfig()}).logDeadKeys()
-	if out := logs(); strings.Contains(out, "no effect") {
-		t.Errorf("a warning without the keys:\n%s", out)
-	}
-	// the keys of the fake regions that the observation has no place for
-	cfg, err = newDriverConfigFromString(`{testability: {fakeRegionDevices: [{Name: r0, SysfsPath: /x, OnlineSize: 1, Targets: [d],
-		Memories: [{Name: m0, Driver: d, DevName: n}]}, {Name: r1, Memories: [{Name: m1, SysfsPath: /y}]}]}}`)
-	noErr(t, err)
-	logs = captureKlog(t)
-	cfg.logDeadKeys()
-	want := "testability.fakeRegionDevices: the keys DevName, Driver, OnlineSize, SysfsPath, Targets have no effect and are ignored"
-	if out := logs(); !strings.Contains(out, want) {
-		t.Errorf("no %q in\n%s", want, out)
-	}
 }
 
 // fakeEvents are kernel uevents for tests.
 type fakeEvents struct {
 	kernel.Changes
 	started, stopped bool
-	startErr         error
-	fifo             string
 	stable           chan struct{}
 }
 
-func (f *fakeEvents) Start(fifo string) error { f.started, f.fifo = true, fifo; return f.startErr }
+func (f *fakeEvents) Start()                  { f.started = true }
 func (f *fakeEvents) Stop()                   { f.stopped = true }
 func (f *fakeEvents) Stable() <-chan struct{} { return f.stable }
 
-// One watch of the uevents of the kernel objects, with the fake events of
-// the FIFO, wakes the waits of the engine's kernel and gives the stable
-// signal of the rescans after udevStableDuration; without uevents the waits
-// only poll.
+// One watch of the uevents of the kernel objects wakes the waits of the
+// engine's kernel and gives the stable signal of the rescans after
+// udevStableDuration; without uevents the waits only poll.
 func TestWakeOnUevents(t *testing.T) {
 	old := newKernelEvents
 	t.Cleanup(func() { newKernelEvents = old })
@@ -861,10 +557,10 @@ func TestWakeOnUevents(t *testing.T) {
 	var stable time.Duration
 	newKernelEvents = func(d time.Duration) (kernelEvents, error) { stable = d; return ev, nil }
 	devices := &deviceEngine{k: &kernel.Kernel{}}
-	cfg := &DriverConfig{UdevStableDuration: "1s", Testability: &TestabilityConfig{FakeUdevFifo: "/run/fifo"}}
+	cfg := &DriverConfig{UdevStableDuration: "1s"}
 	got, stop, err := wakeOnUevents(devices, cfg)
 	noErr(t, err)
-	if !ev.started || ev.fifo != "/run/fifo" || stable != time.Second || got != kernelEvents(ev) || devices.k.Events != kernel.Events(ev) {
+	if !ev.started || stable != time.Second || got != kernelEvents(ev) || devices.k.Events != kernel.Events(ev) {
 		t.Fatalf("events %+v, stable %v, kernel events %v", ev, stable, devices.k.Events)
 	}
 	stop()
@@ -877,7 +573,7 @@ func TestWakeOnUevents(t *testing.T) {
 	if _, _, err := wakeOnUevents(devices, &DriverConfig{UdevStableDuration: "-1s", IgnoreNewNodes: true}); err != nil {
 		t.Fatalf("udevStableDuration with ignoreNewNodes: %v", err)
 	}
-	ev = &fakeEvents{startErr: errors.New("no netlink")}
+	newKernelEvents = func(time.Duration) (kernelEvents, error) { return nil, errors.New("no netlink") }
 	devices = &deviceEngine{k: &kernel.Kernel{}}
 	logs := captureKlog(t)
 	got, stop, err = wakeOnUevents(devices, &DriverConfig{})

@@ -12,53 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// cxl-dump prints the CXL topology of the node (kernel.ObserveTopology) as
+// JSON.
 package main
 
 import (
+	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 
-	"github.com/containers/nri-plugins/pkg/cxl"
-	"sigs.k8s.io/yaml"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 func main() {
-	format := flag.String("o", "yaml", "output format: yaml or json")
-	sysfsRoot := flag.String("sysfs-root", os.Getenv("SYSFS_ROOT"), "prefix for sysfs and proc paths, SYSFS_ROOT by default")
-	flag.Parse()
-
-	if *format != "yaml" && *format != "json" {
-		fmt.Fprintf(os.Stderr, "invalid output format %q, expected yaml or json\n", *format)
-		os.Exit(1)
+	if len(os.Args) > 1 {
+		fmt.Fprintln(os.Stderr, "usage: cxl-dump")
+		os.Exit(2)
 	}
-
-	devices, err := cxl.DevicesFromSysfs(*sysfsRoot)
+	snap, err := kernel.New().ObserveTopology(context.Background())
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error reading CXL devices from sysfs:", err)
+		fmt.Fprintln(os.Stderr, "cxl-dump:", err)
 		os.Exit(1)
 	}
-	if err := dump(devices, *format); err != nil {
-		fmt.Fprintln(os.Stderr, "Error dumping CXL devices:", err)
-		os.Exit(1)
-	}
-}
-
-func dump(devices *cxl.Devices, format string) error {
-	var data []byte
-	var err error
-	switch format {
-	case "yaml":
-		data, err = yaml.Marshal(devices)
-	case "json":
-		data, err = json.MarshalIndent(devices, "", "  ")
-	default:
-		err = fmt.Errorf("invalid output format %q, expected yaml or json", format)
-	}
+	data, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
-		return err
+		fmt.Fprintln(os.Stderr, "cxl-dump:", err)
+		os.Exit(1)
 	}
 	fmt.Println(string(data))
-	return nil
 }

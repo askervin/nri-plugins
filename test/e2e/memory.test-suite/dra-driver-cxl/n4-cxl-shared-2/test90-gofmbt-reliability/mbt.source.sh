@@ -2173,7 +2173,7 @@ mbt-teardown() { # script API
             error "mbt-teardown: ${MBT_POOL_SERVER[$p]} still has attachments of its controller: ${left:-the server does not answer}"
     done
     for vm in "${MBT_VMIDS[@]}"; do
-        pool-cxl-wait "${MBT_VMDIR[$vm]}" mbt-released "regions == [] and [m['Serial'] for m in memdevs] == [$MBT_LOCAL_SERIAL]" 120
+        pool-cxl-wait "${MBT_VMDIR[$vm]}" mbt-released "regions == [] and [m['serial'] for m in memdevs] == [$MBT_LOCAL_SERIAL]" 120
         # Persistent devices: no node mount, lease bind or loop device over
         # pmem left, no directory of a lease claim or node mount.
         left=$(mbt-pmem-held "${MBT_VMDIR[$vm]}") || error "mbt-teardown: cannot read the mounts of $vm"
@@ -2237,8 +2237,7 @@ mbt-hollow-regions-remove() { # script API
     # when the driver forgot it (killed in a Prepare, the claim released
     # before kubelet retried it: 04-status-EXEC.txt 14.7 B1) and its
     # memdev was detached. Nothing is behind it, but it keeps its range of
-    # the CXL window and pkg/cxl cannot read the devices while it exists;
-    # cxl destroy-region refuses it ("error locating decoder for
+    # the CXL window while it exists; cxl destroy-region refuses it ("error locating decoder for
     # target0"): delete_region of its root decoder. Never fails.
     dra-vm-command "$1" "for r in /sys/bus/cxl/devices/region[0-9]*; do
     [ -e \"\$r\" ] || continue

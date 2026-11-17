@@ -323,7 +323,7 @@ READER_A_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
     error "the companion claim of reader-a has CDI devices: $(dra-cdi-devices-with "$VM2" "$READER_A_UID")"
 for vm in "$VM2" "$VM1"; do
     pool-cxl-dump "$vm" readers
-    cxl-assert "by_serial($SHARED_SERIAL) is not None and len(regions) == 1 and regions[0]['OnlineSize'] == 0"
+    cxl-assert "by_serial($SHARED_SERIAL) is not None and len(regions) == 1 and online_size(regions[0]) == 0"
 done
 found=$(pool-file-string "$SHARED_FILE" 0)
 [ "$found" == "$TEXT" ] || error "host: $SHARED_FILE has '$found' at 0, expected '$TEXT'"
@@ -409,7 +409,7 @@ dra-json "$VM2" resourceclaim -n "$DRA_NS" "cxl-lease-$DAX_LEASE"
 dra-assert "$COMMAND_OUTPUT" "allocated_node() == '$VM2_NAME' and device_data('pooled0')['shared'] == False"
 # A devdax region, never onlined: no NUMA node, nothing lent.
 pool-cxl-dump "$VM2" pooled0-dax
-cxl-assert "by_serial($POOLED0_SERIAL) is not None and len(regions) == 1 and regions[0]['OnlineSize'] == 0"
+cxl-assert "by_serial($POOLED0_SERIAL) is not None and len(regions) == 1 and online_size(regions[0]) == 0"
 pool-host-client -o json devices pooled0 || command-error "cannot get pooled0"
 POOLED0_FILE=$(pool-value "$COMMAND_OUTPUT" 'j["path"]')
 found=$(pool-file-string "$POOLED0_FILE" 0)
@@ -452,7 +452,7 @@ dra-env-assert dax-claimer "$COMMAND_OUTPUT" "$POOLED0_HEX" \
 grep -xF "before: $TEXT2" <<< "$COMMAND_OUTPUT" ||
     echo "note: dax-claimer found other contents than the lease on VM2 left"
 pool-cxl-dump "$VM1" pooled0-dax
-cxl-assert "by_serial($POOLED0_SERIAL) is not None and len(regions) == 1 and regions[0]['OnlineSize'] == 0"
+cxl-assert "by_serial($POOLED0_SERIAL) is not None and len(regions) == 1 and online_size(regions[0]) == 0"
 found=$(pool-file-string "$POOLED0_FILE" 0)
 [ "$found" == "$TEXT3" ] || error "host: $POOLED0_FILE has '$found' at 0, expected '$TEXT3'"
 dra-delete "$VM2" pod dax-claimer --grace-period=2 --wait=true --timeout=60s

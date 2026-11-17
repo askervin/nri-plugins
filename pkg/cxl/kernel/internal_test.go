@@ -365,28 +365,6 @@ func TestSuperblocksNamespaces(t *testing.T) {
 	}
 }
 
-func TestParseFifoEvent(t *testing.T) {
-	evt, err := parseFifoEvent(`{"ACTION":"add","SUBSYSTEM":"dax","DEVPATH":"/devices/x","SEQNUM":"7"}`)
-	if err != nil || evt.Action != "add" || evt.Subsystem != "dax" || evt.Devpath != "/devices/x" || evt.Seqnum != "7" {
-		t.Fatalf("event %+v %v", evt, err)
-	}
-	if _, err := parseFifoEvent("bogus"); err == nil {
-		t.Fatal("a malformed event accepted")
-	}
-	path := filepath.Join(t.TempDir(), "fifo")
-	if err := ensureFifo(path); err != nil {
-		t.Fatal(err)
-	}
-	if err := ensureFifo(path); err != nil {
-		t.Fatal(err)
-	}
-	file := filepath.Join(t.TempDir(), "file")
-	_ = os.WriteFile(file, nil, 0o644)
-	if err := ensureFifo(file); !errors.Is(err, os.ErrExist) {
-		t.Fatalf("a file as a fifo: %v", err)
-	}
-}
-
 // An error of an operation has its kind and its cause, and the message of
 // the operation.
 func TestKernelError(t *testing.T) {

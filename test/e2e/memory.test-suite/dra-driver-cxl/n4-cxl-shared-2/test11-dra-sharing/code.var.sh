@@ -194,7 +194,7 @@ grep -qx "CXL_CLAIM_${VM1_CLAIM_UID//-/_}_0=1" <<< "$WRITER_LOG" ||
 VM1_DAX=$(dra-env-value "$WRITER_LOG" "CXL_${SHARED_HEX}_DAX")
 # In VM1 the device is a devdax region, never system RAM.
 pool-cxl-wait "$VM1" shared0-writer \
-    "by_serial($SHARED_SERIAL) is not None and len(regions) == 1 and regions[0]['Enabled'] and regions[0]['OnlineSize'] == 0"
+    "by_serial($SHARED_SERIAL) is not None and len(regions) == 1 and enabled(regions[0]) and online_size(regions[0]) == 0"
 pool-vm-command "$VM1" "ls -l $VM1_DAX && basename \$(readlink /sys/bus/dax/devices/${VM1_DAX#/dev/}/driver)" ||
     command-error "no devdax device $VM1_DAX in VM1"
 [ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "device_dax" ] ||
@@ -219,7 +219,7 @@ dra-kubectl "$VM2" "logs -n $DRA_NS reader"
     error "VM2 read '$COMMAND_OUTPUT', expected '$TEXT'"
 echo "VM2 read: '$COMMAND_OUTPUT'"
 pool-cxl-dump "$VM2" shared0-reader
-cxl-assert "len(regions) == 1 and regions[0]['OnlineSize'] == 0"
+cxl-assert "len(regions) == 1 and online_size(regions[0]) == 0"
 # One device, two hosts, each attachment owned by the claim of its node.
 pool-host-client -o json devices shared0 || command-error "cannot get shared0"
 pool-assert "$COMMAND_OUTPUT" "sorted((a['host'], a.get('owner'), a['state']) for a in j['attachments']) == sorted([('$VM1_NAME', 'k8s:resourceclaim/$VM1_CLAIM_UID', 'attached'), ('$VM2_NAME', 'k8s:resourceclaim/$VM2_CLAIM_UID', 'attached')])"

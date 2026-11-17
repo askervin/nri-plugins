@@ -929,7 +929,7 @@ dra-local-device() { # script API
     #
     # Attach the local CXL memory device of the VM of VMDIR (see
     # dra-local-find) through fake-cxl-pool-server NAME (default: the first
-    # started server), unless it is attached, and wait until pkg/cxl sees
+    # started server), unless it is attached, and wait until cxl-dump sees
     # it in the VM. If dra-install runs in the
     # VM, wait also until the node's cxl.nri.io ResourceSlice has its
     # device. Print and set DRA_LOCAL_NAME (the device in the server),
@@ -973,7 +973,7 @@ dra-local-device() { # script API
     fi
     DRA_LOCAL_BLOCK_SIZE=$(dra-block-size "$vmdir") ||
         error "dra-local-device: cannot read the memory block size of $label"
-    DRA_LOCAL_REGIONS="[r for r in regions if by_serial($DRA_LOCAL_SERIAL) is not None and names(r['Memories']) == [by_serial($DRA_LOCAL_SERIAL)['Name']]]"
+    DRA_LOCAL_REGIONS="[r for r in regions if by_serial($DRA_LOCAL_SERIAL) is not None and sorted(r['memdevs']) == [by_serial($DRA_LOCAL_SERIAL)['name']]]"
     echo "dra-local-device $label: $DRA_LOCAL_NAME, serial $DRA_LOCAL_SERIAL ($DRA_LOCAL_HEX), $DRA_LOCAL_SIZE bytes, ResourceSlice device $DRA_LOCAL_DEVICE, memory block size $DRA_LOCAL_BLOCK_SIZE bytes"
 }
 
@@ -981,7 +981,7 @@ dra-local-detach() { # script API
     # Usage: dra-local-detach [--pool NAME] VMDIR
     #
     # Detach the local CXL memory device of the VM of VMDIR (see
-    # dra-local-device) if it is attached, and wait until pkg/cxl does not
+    # dra-local-device) if it is attached, and wait until cxl-dump does not
     # see it any more. While the driver runs on the node, wait first until
     # it has released the regions of the device. Then release what is left of it
     # in the VM (fake-cxl-pool-client guest release: offline, destroy the
@@ -1000,7 +1000,7 @@ dra-local-detach() { # script API
         echo "dra-local-detach $label: $DRA_LOCAL_NAME is not attached"
         return 0
     fi
-    expr="by_serial($DRA_LOCAL_SERIAL) is None or not any(by_serial($DRA_LOCAL_SERIAL)['Name'] in names(r['Memories']) for r in regions)"
+    expr="by_serial($DRA_LOCAL_SERIAL) is None or not any(by_serial($DRA_LOCAL_SERIAL)['name'] in sorted(r['memdevs']) for r in regions)"
     if dra-driver-pod "$vmdir" >/dev/null; then
         pool-cxl-wait "$vmdir" local-released "$expr" 60
     fi
@@ -1217,7 +1217,7 @@ dra-local-node-size() { # script API
     (( bytes % bs == 0 )) || error "dra-local-node-size $label: $bytes bytes are not whole memory blocks of $bs bytes"
     blocks=$(( bytes / bs ))
     dra-node-wait "$vmdir" "$node" "$(( blocks * (bs / 1024) ))" 30
-    pool-cxl-wait "$vmdir" "node-$label" "len($DRA_LOCAL_REGIONS) <= 1 and all(r['OnlineSize'] == $local_bytes for r in $DRA_LOCAL_REGIONS)" 10
+    pool-cxl-wait "$vmdir" "node-$label" "len($DRA_LOCAL_REGIONS) <= 1 and all(online_size(r) == $local_bytes for r in $DRA_LOCAL_REGIONS)" 10
 }
 
 dra-local-slices-none() { # script API
@@ -1225,10 +1225,10 @@ dra-local-slices-none() { # script API
     #
     # Wait until the local device of the VM of VMDIR (see dra-local-device)
     # has no slice and no region: its memdev enabled and no region of it,
-    # neither in pkg/cxl (cxl-dump) nor in sysfs. DRA_MEMDEV is the sysfs
+    # neither in cxl-dump nor in sysfs. DRA_MEMDEV is the sysfs
     # view of the device.
     local vmdir="$1" label="$2"
-    pool-cxl-wait "$vmdir" "$label" "by_serial($DRA_LOCAL_SERIAL) is not None and by_serial($DRA_LOCAL_SERIAL)['Enabled'] and $DRA_LOCAL_REGIONS == []" 60
+    pool-cxl-wait "$vmdir" "$label" "by_serial($DRA_LOCAL_SERIAL) is not None and enabled(by_serial($DRA_LOCAL_SERIAL)) and $DRA_LOCAL_REGIONS == []" 60
     dra-memdev-wait "$vmdir" "$label" "$DRA_LOCAL_SERIAL" "j['memdev'] and j['enabled'] and j['regions'] == []" 10
 }
 
@@ -1524,7 +1524,7 @@ dra-local-shared-wait() { # script API
     # is a shared device that exactly the claims CLAIM-UID use (none: an
     # idle shared device, which keeps its region): the state file of the
     # node plugin has the device with "shared": true and these claims;
-    # pkg/cxl (cxl-dump) sees one region of the device, enabled, nothing of
+    # cxl-dump sees one region of the device, enabled, nothing of
     # it online; in sysfs the memdev is enabled and its one region is the
     # whole device, with one dax device of that size bound to device_dax.
     # DRA_LOCAL_SHARED_REGION and DRA_LOCAL_SHARED_DAX are the region
@@ -1537,7 +1537,7 @@ dra-local-shared-wait() { # script API
         'dra-local-state-shared "$vmdir" "${claims[@]}"' ||
         error "$vmlabel: $DRA_STATE does not have $DRA_LOCAL_SERIAL shared with claims [$*]: $(dra-py eval "$DRA_STATE_JSON" "json.dumps((lambda m: m and dict(m, claims=local_claims(m)))(memdev('$DRA_LOCAL_SERIAL')))")"
     echo "$vmlabel: $DRA_STATE: $DRA_LOCAL_SERIAL shared, claims [$*]"
-    pool-cxl-wait "$vmdir" "$label" "len($DRA_LOCAL_REGIONS) == 1 and ${DRA_LOCAL_REGIONS}[0]['Enabled'] and ${DRA_LOCAL_REGIONS}[0]['OnlineSize'] == 0" 30
+    pool-cxl-wait "$vmdir" "$label" "len($DRA_LOCAL_REGIONS) == 1 and enabled(${DRA_LOCAL_REGIONS}[0]) and online_size(${DRA_LOCAL_REGIONS}[0]) == 0" 30
     dra-memdev-wait "$vmdir" "$label" "$DRA_LOCAL_SERIAL" \
         "j['enabled'] and len(j['regions']) == 1 and j['regions'][0]['size'] == $DRA_LOCAL_SIZE and [(d['size'], d['driver']) for d in dax_slices()] == [($DRA_LOCAL_SIZE, 'device_dax')]" 30
     DRA_LOCAL_SHARED_REGION=$(dra-value "$DRA_MEMDEV" "j['regions'][0]['name']")

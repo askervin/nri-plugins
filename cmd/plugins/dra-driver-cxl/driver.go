@@ -189,7 +189,7 @@ const staleBindPeriod = 60 * time.Second
 // of the kernel package, and their stable signal the rescans.
 type kernelEvents interface {
 	kernel.Events
-	Start(fifoPath string) error
+	Start()
 	Stop()
 	Stable() <-chan struct{}
 }
@@ -206,11 +206,10 @@ var newKernelEvents = func(stableDuration time.Duration) (kernelEvents, error) {
 }
 
 // wakeOnUevents starts the one watch of the uevents of the kernel objects,
-// with the fake events of the FIFO of the configuration, and makes them
-// wake the waits of the kernel of the device engine early (they still
-// poll). It returns the events, nil without them (the waits only poll),
-// and their stop; an invalid udevStableDuration is an error unless
-// ignoreNewNodes is set.
+// and makes them wake the waits of the kernel of the device engine early
+// (they still poll). It returns the events, nil without them (the waits
+// only poll), and their stop; an invalid udevStableDuration is an error
+// unless ignoreNewNodes is set.
 func wakeOnUevents(devices *deviceEngine, driverConfig *DriverConfig) (kernelEvents, func(), error) {
 	var stableDuration time.Duration
 	if !driverConfig.IgnoreNewNodes {
@@ -220,18 +219,12 @@ func wakeOnUevents(devices *deviceEngine, driverConfig *DriverConfig) (kernelEve
 		}
 		stableDuration = d
 	}
-	var fifoPath string
-	if driverConfig.Testability != nil {
-		fifoPath = driverConfig.Testability.FakeUdevFifo
-	}
 	ev, err := newKernelEvents(stableDuration)
-	if err == nil {
-		err = ev.Start(fifoPath)
-	}
 	if err != nil {
 		klog.Errorf("kernel uevents: %v: the waits for kernel objects only poll, and the ResourceSlice is not rescanned on uevents", err)
 		return nil, func() {}, nil
 	}
+	ev.Start()
 	devices.k.Events = ev
 	return ev, ev.Stop, nil
 }
@@ -448,7 +441,7 @@ func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Driver
 		Config:      driverConfig.publishConfig(),
 		NodeName:    cxlFlags.NodeName,
 		Client:      config.Client,
-		Scan:        driverConfig.scanFunc(devices.k),
+		Scan:        devices.k.ObserveTopology,
 		Watcher:     watcher,
 		PoolSerials: func() map[uint64]bool { return fe.pool.Serials() },
 		Store:       st,
@@ -503,7 +496,7 @@ func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Driver
 // devices of the kernel of the engine, the CDI specs of the claims of
 // cxl.nri.io rewritten in the directory cdiRoot.
 func (fe *frontEnds) recover(ctx context.Context, cdiRoot string, driverConfig *DriverConfig, devices *deviceEngine) error {
-	snap, err := driverConfig.scanFunc(devices.k)(ctx)
+	snap, err := devices.k.ObserveTopology(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to detect devices: %v", err)
 	}

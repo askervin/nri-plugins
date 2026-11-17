@@ -319,7 +319,7 @@ pool-cxl-dump-json() {
         cxl-dump-json "$label"
         return
     fi
-    json=$(other-vm-command-q "$vmdir" "cxl-dump -o json") || return 1
+    json=$(other-vm-command-q "$vmdir" "cxl-dump") || return 1
     CXL_DUMP_FILE="$TEST_OUTPUT_DIR/cxl-dump.$label.$(pool-vm-label "$vmdir").json"
     echo "$json" > "$CXL_DUMP_FILE"
 }
@@ -333,10 +333,10 @@ pool-cxl-wait() { # script API
         cxl-wait "$label" "$expression" "$tmo"
         return 0
     fi
-    retry-until --timeout "$tmo" --message "pkg/cxl in $(pool-vm-label "$vmdir"): $expression" \
+    retry-until --timeout "$tmo" --message "cxl-dump in $(pool-vm-label "$vmdir"): $expression" \
         'pool-cxl-dump-json "$vmdir" "$label" && cxl-py assert "$expression" >/dev/null' || {
         pool-cxl-dump "$vmdir" "$label"
-        error "pkg/cxl in $(basename "$vmdir") did not reach the expected state in ${tmo}s: $expression"
+        error "cxl-dump in $(basename "$vmdir") did not show the expected state in ${tmo}s: $expression"
     }
     pool-cxl-dump "$vmdir" "$label"
 }

@@ -306,7 +306,7 @@ echo "### A: the local device is published whole, as a shared device"
 dra-local-device "$VM2"
 LD="$DRA_LOCAL_LD"             # the device in the ResourceSlices (dra-py)
 pool-cxl-dump "$VM2" local-attached
-cxl-assert "by_serial($DRA_LOCAL_SERIAL) is not None and by_serial($DRA_LOCAL_SERIAL)['Enabled'] and by_serial($DRA_LOCAL_SERIAL)['RamSize'] == $DRA_LOCAL_SIZE"
+cxl-assert "by_serial($DRA_LOCAL_SERIAL) is not None and enabled(by_serial($DRA_LOCAL_SERIAL)) and by_serial($DRA_LOCAL_SERIAL)['ramSize'] == $DRA_LOCAL_SIZE"
 # The first claim creates the region.
 cxl-assert "regions == []"
 dra-kubectl "$VM2" "get resourceslices"

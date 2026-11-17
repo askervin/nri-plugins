@@ -302,10 +302,6 @@ func (k *Kernel) observeBlockDevices(s *Snapshot, problem func(string, ...any)) 
 	}
 }
 
-// Reindex builds the indexes of the lookups of the snapshot again, for the
-// objects added to its lists.
-func (s *Snapshot) Reindex() { s.index() }
-
 // index builds the indexes of the lookups of the snapshot.
 func (s *Snapshot) index() {
 	s.byRegion = map[string]int{}

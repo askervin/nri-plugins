@@ -113,7 +113,7 @@ if [ -n "$POOL_SERVER_PID" ]; then
     [ "$DRA_LOCAL_ATTACHMENT" == detached ] || local_attached=1
 fi
 if [ -n "$local_attached" ] && [ "$DEMO_CASE" != wizard ]; then
-    gone="by_serial($DRA_LOCAL_SERIAL) is None or not any(by_serial($DRA_LOCAL_SERIAL)['Name'] in names(r['Memories']) for r in regions)"
+    gone="by_serial($DRA_LOCAL_SERIAL) is None or not any(by_serial($DRA_LOCAL_SERIAL)['name'] in sorted(r['memdevs']) for r in regions)"
     pool-cxl-dump-json "$VM2" before-unconfigure
     if ! cxl-py assert "$gone" >/dev/null && dra-driver-pod "$VM2" >/dev/null; then
         helm_name="$DRA_HELM_RELEASE" helm-reconfigure "$DRA_CHART" "$DRA_HELPER_DIR/dra-driver-cxl.helm-values.yaml"

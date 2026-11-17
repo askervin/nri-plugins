@@ -327,9 +327,9 @@ STEER_MIB=$(( BS / 2 / MiB ))          # what a steered workload touches, within
 FIRST_STEP=$(( BS / 4 ))               # maxStep of first-dram
 FIRST_MIB=$(( (DRAM_REQ + BS / 2) / MiB ))   # first-dram: all of the DRAM quota, half of the CXL quota
 pool-cxl-dump "$VM2" local-attached
-cxl-assert "by_serial($DRA_LOCAL_SERIAL) is not None and by_serial($DRA_LOCAL_SERIAL)['Enabled'] and by_serial($DRA_LOCAL_SERIAL)['RamSize'] == $DRA_LOCAL_SIZE"
+cxl-assert "by_serial($DRA_LOCAL_SERIAL) is not None and enabled(by_serial($DRA_LOCAL_SERIAL)) and by_serial($DRA_LOCAL_SERIAL)['ramSize'] == $DRA_LOCAL_SIZE"
 cxl-assert "regions == []"
-AFFINITY=$(cxl-value "by_serial($DRA_LOCAL_SERIAL)['NodeAffinity']")
+AFFINITY=$(cxl-value "by_serial($DRA_LOCAL_SERIAL)['nodeAffinity']")
 dra-kubectl "$VM2" "get resourceslices"
 dra-json "$VM2" resourceslices
 SLICES="$COMMAND_OUTPUT"
@@ -377,7 +377,7 @@ NUMA_NODE=$(dra-value "$DRA_MEMDEV" "dax_slices('kmem')[0]['node']")
 (( NUMA_NODE >= CPU_NODES )) || error "the NUMA slice is on node $NUMA_NODE, a CPU node"
 echo "the local device is NUMA node $NUMA_NODE of the VM"
 node-size numa-a "$NUMA_A"
-pool-cxl-wait "$VM2" numa-a-region "len($LREGIONS) == 1 and ${LREGIONS}[0]['Node'] == $NUMA_NODE and len(regions) == 1"
+pool-cxl-wait "$VM2" numa-a-region "len($LREGIONS) == 1 and ${LREGIONS}[0]['numaNode'] == $NUMA_NODE and len(regions) == 1"
 dra-local-unchanged "$VM2"
 no-region-device "$COMMAND_OUTPUT"
 numa-env-check numa-a "$NUMA_A"
@@ -452,8 +452,8 @@ slice-check dax-s2 "$SHARED"
     error "dax-s2 has $SLICE_DAX ($SLICE_DEV), dax-s1 $SHARED_DAX ($SHARED_DEV): not the same slice"
 [ "$SHARED_DEV" != "$DAX1_DEV" ] || error "shared-slice and dax-1 have the same device $SHARED_DEV"
 dra-local-slices-wait "$VM2" four-slices "$NUMA_NODE" "numa:$NUMA_A" "dax:$(dra-local-round "$DAX1_REQ")" "numa:$NUMA_B" "dax:$SHARED"
-# pkg/cxl finds the node of a region of several slices.
-pool-cxl-wait "$VM2" four-slices-node "len($LREGIONS) == 1 and ${LREGIONS}[0]['Node'] == $NUMA_NODE" 10
+# cxl-dump finds the node of a region of several slices.
+pool-cxl-wait "$VM2" four-slices-node "len($LREGIONS) == 1 and ${LREGIONS}[0]['numaNode'] == $NUMA_NODE" 10
 # The same offset of both dax slices: what one claim writes, only the
 # pods of that claim see.
 dax-write dax-s1 "$SHARED_DAX" "$TAG: shared-slice"
@@ -524,10 +524,10 @@ dra-local-unchanged "$VM2"
 t0=$EPOCHREALTIME
 dra-delete-pod "$VM2" numa-b
 node-size numa-b-deleted 0
-# The region stays for the dax slices. pkg/cxl finds its node without
+# The region stays for the dax slices. cxl-dump finds its node without
 # any memory online, from the dax devices.
 dra-local-slices-wait "$VM2" without-numa "$NUMA_NODE" "dax:$(dra-local-round "$DAX1_REQ")" "dax:$SHARED"
-pool-cxl-wait "$VM2" without-numa-node "len($LREGIONS) == 1 and ${LREGIONS}[0]['Node'] == $NUMA_NODE" 10
+pool-cxl-wait "$VM2" without-numa-node "len($LREGIONS) == 1 and ${LREGIONS}[0]['numaNode'] == $NUMA_NODE" 10
 dra-local-unchanged "$VM2"
 no-region-device "$COMMAND_OUTPUT"
 dax-read dax-1 "$DAX1_DAX" "$TAG: dax-1"

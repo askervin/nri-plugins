@@ -605,7 +605,7 @@ if [ "$DEMO_CASE" == wizard ]; then
     retry-until --timeout 90 --message "fs0 free and attached nowhere" \
         'pool-host-client -o json devices fs0 >/dev/null && pool-py assert "$COMMAND_OUTPUT" "j[\"state\"] == \"free\" and j[\"attachments\"] in (None, [])"' ||
         error "fs0 is not free after its formatter: $COMMAND_OUTPUT"
-    pool-cxl-wait "$VM2" lp0-no-region "by_serial($LP_SERIAL) is not None and not any(by_serial($LP_SERIAL)['Name'] in names(r['Memories']) for r in regions)" 90
+    pool-cxl-wait "$VM2" lp0-no-region "by_serial($LP_SERIAL) is not None and not any(by_serial($LP_SERIAL)['name'] in sorted(r['memdevs']) for r in regions)" 90
 fi
 
 echo "### demo setup $DEMO_CASE: the trace"
