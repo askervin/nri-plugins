@@ -148,21 +148,6 @@ func (c *Controller) Owner(claimUID types.UID) string {
 	return c.cfg.OwnerPrefix + "resourceclaim/" + string(claimUID)
 }
 
-// allocationNode returns the node of an allocation (bindsToNode:
-// matchFields metadata.name In [node]).
-func allocationNode(a *resourceapi.AllocationResult) string {
-	ns := a.NodeSelector
-	if ns == nil || len(ns.NodeSelectorTerms) == 0 {
-		return ""
-	}
-	for _, f := range ns.NodeSelectorTerms[0].MatchFields {
-		if f.Key == "metadata.name" && len(f.Values) > 0 {
-			return f.Values[0]
-		}
-	}
-	return ""
-}
-
 // reconcile computes desired attachments from the claims and actual ones
 // from the server, attaches missing ones to the hosts of the nodes in hm,
 // writes the claim status, and detaches attachments that no claim wants
@@ -186,7 +171,7 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 		if claim.Status.Allocation == nil {
 			continue
 		}
-		node := allocationNode(claim.Status.Allocation)
+		node := device.AllocationNode(claim.Status.Allocation)
 		for _, r := range claim.Status.Allocation.Devices.Results {
 			if r.Driver != c.cfg.DriverName || r.Pool != c.cfg.PoolName {
 				continue

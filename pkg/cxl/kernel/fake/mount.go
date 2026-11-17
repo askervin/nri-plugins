@@ -26,6 +26,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
@@ -279,7 +280,7 @@ func (m *mountTable) FsMount(source, target, fstype string, readWrite bool, opti
 		// a new superblock: another one of the same image is another cache
 		for _, mi := range m.mounts {
 			if mi.Source != source && m.image(mi.Source) == img {
-				if fstype == kernel.FsXfs && !slices.Contains(options, "nouuid") {
+				if fstype == api.FsTypeXfs && !slices.Contains(options, "nouuid") {
 					return fmt.Errorf("%w: Filesystem has duplicate UUID", syscall.EINVAL)
 				}
 				if readWrite || !mi.SuperReadOnly() {

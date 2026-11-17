@@ -31,7 +31,6 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
-	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
@@ -59,7 +58,7 @@ type scanTopology struct {
 type scanDevice struct {
 	Device resourcev1.Device `json:"device"`
 	Result *state.Result     `json:"result,omitempty"`
-	Memdev *device.Memdev    `json:"memdev,omitempty"`
+	Memdev *Memdev           `json:"memdev,omitempty"`
 }
 
 // scanCase is a configuration of the publisher of a scan.
@@ -118,7 +117,7 @@ func scanDevices(t *testing.T, top scanTopology, c scanCase) map[string]scanDevi
 	for _, d := range resources(devs) {
 		sd := scanDevice{Device: d}
 		switch dev := devs[d.Name].Dev.(type) {
-		case *device.Memdev:
+		case *Memdev:
 			sd.Memdev = dev
 		default:
 			sd.Result = &state.Result{Device: d.Name}

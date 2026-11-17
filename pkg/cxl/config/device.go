@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
@@ -59,17 +60,17 @@ func (d Device) MemdevMode(shared bool) (string, error) {
 	mode := d.Mode
 	switch {
 	case mode == "" && shared:
-		mode = ModeDax
+		mode = api.ModeDax
 	case mode == "":
-		mode = ModeNUMA
-	case mode != ModeNUMA && mode != ModeDax:
-		return "", fmt.Errorf("%sdevice.mode: invalid mode %q (%s or %s)", errPrefix, d.Mode, ModeNUMA, ModeDax)
+		mode = api.ModeNUMA
+	case mode != api.ModeNUMA && mode != api.ModeDax:
+		return "", fmt.Errorf("%sdevice.mode: invalid mode %q (%s or %s)", errPrefix, d.Mode, api.ModeNUMA, api.ModeDax)
 	}
 	switch {
-	case d.IsReadOnly() && mode != ModeDax:
-		return "", fmt.Errorf("%sdevice.readOnly needs mode %s", errPrefix, ModeDax)
-	case shared && mode != ModeDax:
-		return "", fmt.Errorf("%sdevice: a shared device is used as %s only", errPrefix, ModeDax)
+	case d.IsReadOnly() && mode != api.ModeDax:
+		return "", fmt.Errorf("%sdevice.readOnly needs mode %s", errPrefix, api.ModeDax)
+	case shared && mode != api.ModeDax:
+		return "", fmt.Errorf("%sdevice: a shared device is used as %s only", errPrefix, api.ModeDax)
 	case d.Access != "":
 		return "", errNeedsFs("access")
 	case d.Path != "":
@@ -86,8 +87,8 @@ func (d Device) MemdevMode(shared bool) (string, error) {
 //     device.DeviceTypeDRAM
 func (d Device) NUMAOnly(what string) error {
 	mode, err := d.MemdevMode(false)
-	if err == nil && mode != ModeNUMA {
-		err = fmt.Errorf("%sdevice: a %s is used as %s only", errPrefix, what, ModeNUMA)
+	if err == nil && mode != api.ModeNUMA {
+		err = fmt.Errorf("%sdevice: a %s is used as %s only", errPrefix, what, api.ModeNUMA)
 	}
 	return err
 }
@@ -116,10 +117,10 @@ func (d Device) PoolMode(f DeviceFacts) (string, error) {
 		return "", err
 	}
 	switch {
-	case !f.Persistent && persistentMode(mode):
+	case !f.Persistent && api.PersistentMode(mode):
 		return "", fmt.Errorf("%sdevice.mode %s needs a persistent device", errPrefix, mode)
-	case f.Persistent && !persistentMode(mode):
-		return "", fmt.Errorf("%sdevice: a persistent device needs mode %s or %s", errPrefix, ModeBlock, ModeFs)
+	case f.Persistent && !api.PersistentMode(mode):
+		return "", fmt.Errorf("%sdevice: a persistent device needs mode %s or %s", errPrefix, api.ModeBlock, api.ModeFs)
 	case f.Persistent:
 		if err := d.checkWriter(mode, f); err != nil {
 			return "", err
@@ -129,14 +130,14 @@ func (d Device) PoolMode(f DeviceFacts) (string, error) {
 	// volatile memory
 	switch {
 	case mode == "" && f.Shared:
-		mode = ModeDax
+		mode = api.ModeDax
 	case mode == "":
-		mode = ModeNUMA
+		mode = api.ModeNUMA
 	}
 	switch {
-	case f.Shared && mode != ModeDax:
-		return "", fmt.Errorf("%sdevice: a shared device is used as %s only", errPrefix, ModeDax)
-	case d.IsReadOnly() && mode != ModeDax:
+	case f.Shared && mode != api.ModeDax:
+		return "", fmt.Errorf("%sdevice: a shared device is used as %s only", errPrefix, api.ModeDax)
+	case d.IsReadOnly() && mode != api.ModeDax:
 		return "", errReadOnlyMode()
 	}
 	return mode, nil
@@ -160,14 +161,14 @@ func (d Device) checkWriter(mode string, f DeviceFacts) error {
 		return nil
 	}
 	switch {
-	case mode == ModeBlock && !f.Exclusive && f.Local:
-		return fmt.Errorf("%sdevice.mode %s: a persistent local device is writable only exclusively (no %s request)", errPrefix, ModeBlock, device.CapacityShares)
-	case mode == ModeBlock && !f.Exclusive:
-		return fmt.Errorf("%sdevice.mode %s: a shared device is writable only exclusively (no %s request)", errPrefix, ModeBlock, device.CapacityShares)
-	case mode == ModeBlock && !f.SingleHost:
-		return fmt.Errorf("%sdevice.mode %s: other hosts may use the device: it is not written in mode %s", errPrefix, ModeBlock, ModeBlock)
-	case mode == ModeFs && !f.SingleHost && (!FsTypeCluster(d.FsType) || !f.Coherent):
-		return fmt.Errorf("%sdevice.readOnly: false: other hosts may use the device: read-write needs it on this node only (claim status singleHost), or a cluster filesystem (device.fsType %s) on coherent memory", errPrefix, FsTypeGfs2)
+	case mode == api.ModeBlock && !f.Exclusive && f.Local:
+		return fmt.Errorf("%sdevice.mode %s: a persistent local device is writable only exclusively (no %s request)", errPrefix, api.ModeBlock, device.CapacityShares)
+	case mode == api.ModeBlock && !f.Exclusive:
+		return fmt.Errorf("%sdevice.mode %s: a shared device is writable only exclusively (no %s request)", errPrefix, api.ModeBlock, device.CapacityShares)
+	case mode == api.ModeBlock && !f.SingleHost:
+		return fmt.Errorf("%sdevice.mode %s: other hosts may use the device: it is not written in mode %s", errPrefix, api.ModeBlock, api.ModeBlock)
+	case mode == api.ModeFs && !f.SingleHost && (!FsTypeCluster(d.FsType) || !f.Coherent):
+		return fmt.Errorf("%sdevice.readOnly: false: other hosts may use the device: read-write needs it on this node only (claim status singleHost), or a cluster filesystem (device.fsType %s) on coherent memory", errPrefix, api.FsTypeGfs2)
 	}
 	return nil
 }
@@ -178,24 +179,24 @@ func (d Device) checkWriter(mode string, f DeviceFacts) error {
 func (d Device) persistentSection() (string, error) {
 	mode := d.Mode
 	switch mode {
-	case "", ModeNUMA, ModeDax, ModeBlock, ModeFs:
+	case "", api.ModeNUMA, api.ModeDax, api.ModeBlock, api.ModeFs:
 	default:
-		return "", fmt.Errorf("%sdevice.mode: invalid mode %q (%s, %s, %s or %s)", errPrefix, mode, ModeNUMA, ModeDax, ModeBlock, ModeFs)
+		return "", fmt.Errorf("%sdevice.mode: invalid mode %q (%s, %s, %s or %s)", errPrefix, mode, api.ModeNUMA, api.ModeDax, api.ModeBlock, api.ModeFs)
 	}
 	switch {
-	case d.Access != "" && mode != ModeFs:
+	case d.Access != "" && mode != api.ModeFs:
 		return "", errNeedsFs("access")
-	case d.Path != "" && mode != ModeFs:
+	case d.Path != "" && mode != api.ModeFs:
 		return "", errNeedsFs("path")
-	case d.FsType != "" && mode != ModeFs:
+	case d.FsType != "" && mode != api.ModeFs:
 		return "", errNeedsFs("fsType")
-	case d.FsType != "" && !ValidFsType(d.FsType):
+	case d.FsType != "" && !api.ValidFsType(d.FsType):
 		return "", fmt.Errorf(`%sdevice.fsType: invalid filesystem type %q (lower-case letters, digits, "_" and "-")`, errPrefix, d.FsType)
-	case d.Access != "" && d.Access != AccessDirect && d.Access != AccessCached:
-		return "", fmt.Errorf("%sdevice.access: invalid access %q (%s or %s)", errPrefix, d.Access, AccessDirect, AccessCached)
+	case d.Access != "" && d.Access != api.AccessDirect && d.Access != api.AccessCached:
+		return "", fmt.Errorf("%sdevice.access: invalid access %q (%s or %s)", errPrefix, d.Access, api.AccessDirect, api.AccessCached)
 	case d.Path != "" && !validFsPath(d.Path):
 		return "", fmt.Errorf("%sdevice.path: invalid path %q (an absolute path outside %s)", errPrefix, d.Path, listAnd(forbiddenPathDirs))
-	case d.IsReadOnly() && mode == ModeNUMA:
+	case d.IsReadOnly() && mode == api.ModeNUMA:
 		return "", errReadOnlyMode()
 	}
 	return mode, nil
@@ -207,23 +208,18 @@ func (d Device) persistentSection() (string, error) {
 // type and the device is coherent between hosts.
 func ExclusiveHost(resolved MemoryConfig, coherent bool) bool {
 	d := resolved.DeviceSection()
-	return d.Mode == ModeFs && !d.IsReadOnly() && (!FsTypeCluster(d.FsType) || !coherent)
+	return d.Mode == api.ModeFs && !d.IsReadOnly() && (!FsTypeCluster(d.FsType) || !coherent)
 }
 
 // errNeedsFs returns the error of a field of mode fs in another mode.
 func errNeedsFs(field string) error {
-	return fmt.Errorf("%sdevice.%s needs mode %s", errPrefix, field, ModeFs)
+	return fmt.Errorf("%sdevice.%s needs mode %s", errPrefix, field, api.ModeFs)
 }
 
 // errReadOnlyMode returns the error of readOnly of a pool device in a mode
 // without it.
 func errReadOnlyMode() error {
-	return fmt.Errorf("%sdevice.readOnly needs mode %s, %s or %s", errPrefix, ModeDax, ModeBlock, ModeFs)
-}
-
-// persistentMode tells whether a mode is a mode of persistent devices.
-func persistentMode(mode string) bool {
-	return mode == ModeBlock || mode == ModeFs
+	return fmt.Errorf("%sdevice.readOnly needs mode %s, %s or %s", errPrefix, api.ModeDax, api.ModeBlock, api.ModeFs)
 }
 
 // validFsPath tells whether p may be the path of mode fs in a container:

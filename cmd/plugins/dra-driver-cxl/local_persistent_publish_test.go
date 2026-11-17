@@ -24,7 +24,7 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
-	"github.com/containers/nri-plugins/pkg/cxl/device"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
@@ -59,14 +59,14 @@ func TestBuildDevInfosPersistentMemdevs(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("published %v, expected %v", got, want)
 	}
-	if m := devInfos["memdev-b1"].Dev.(*device.Memdev); *m != (device.Memdev{Name: "mem1", Serial: 0xb1, Size: 4 << 30, NodeAffinity: 1, Persistent: true}) {
+	if m := devInfos["memdev-b1"].Dev.(*dra.Memdev); *m != (dra.Memdev{Name: "mem1", Serial: 0xb1, Size: 4 << 30, NodeAffinity: 1, Persistent: true}) {
 		t.Fatalf("persistent memdev %+v", m)
 	}
-	if m := devInfos["memdev-b2"].Dev.(*device.Memdev); !m.Persistent || !m.Shared || m.Size != 4<<30 {
+	if m := devInfos["memdev-b2"].Dev.(*dra.Memdev); !m.Persistent || !m.Shared || m.Size != 4<<30 {
 		t.Fatalf("shared persistent memdev %+v", m)
 	}
 	// RAM and pmem: the RAM, not persistent
-	if m := devInfos["memdev-b8"].Dev.(*device.Memdev); m.Persistent || m.Shared || m.Size != 1<<30 {
+	if m := devInfos["memdev-b8"].Dev.(*dra.Memdev); m.Persistent || m.Shared || m.Size != 1<<30 {
 		t.Fatalf("memdev with RAM and pmem %+v", m)
 	}
 	// idle again: the other sharing is published
@@ -85,7 +85,7 @@ func TestBuildDevInfosPersistentMemdevs(t *testing.T) {
 }
 
 // buildDevInfosHeldOK is buildDevInfosHeld, failing the test on error.
-func buildDevInfosHeldOK(t *testing.T, cfg *DriverConfig, devices *kernel.Snapshot, pool, held map[uint64]bool, local *localSnapshot) map[string]*device.DeviceInfo {
+func buildDevInfosHeldOK(t *testing.T, cfg *DriverConfig, devices *kernel.Snapshot, pool, held map[uint64]bool, local *localSnapshot) map[string]*dra.DeviceInfo {
 	t.Helper()
 	devInfos, err := buildDevInfosHeld(cfg, devices, pool, held, local)
 	noErr(t, err)
@@ -95,7 +95,7 @@ func buildDevInfosHeldOK(t *testing.T, cfg *DriverConfig, devices *kernel.Snapsh
 // A persistent local memdev is published with its shares, shared or not.
 func TestGetResourcesPersistentMemdev(t *testing.T) {
 	for _, shared := range []bool{false, true} {
-		got := localMemdevDevice("memdev-c100f5e1", &device.Memdev{Name: "mem2", Serial: 0xc100f5e1, Size: 4 << 30, NodeAffinity: 0, Shared: shared, Persistent: true})
+		got := localMemdevDevice("memdev-c100f5e1", &dra.Memdev{Name: "mem2", Serial: 0xc100f5e1, Size: 4 << 30, NodeAffinity: 0, Shared: shared, Persistent: true})
 		want := resourcev1.Device{
 			Name: "memdev-c100f5e1",
 			Attributes: map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{

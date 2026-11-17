@@ -19,6 +19,7 @@ import (
 
 	"k8s.io/utils/ptr"
 
+	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
@@ -43,15 +44,15 @@ func TestMemdevMode(t *testing.T) {
 		want   string
 		err    string
 	}{
-		{shared: true, want: ModeDax},
-		{want: ModeNUMA},
-		{dev: Device{Mode: "numa"}, want: ModeNUMA},
-		{dev: Device{Mode: "numa", ReadOnly: rw}, want: ModeNUMA},
-		{dev: Device{ReadOnly: rw}, want: ModeNUMA},
-		{dev: Device{Mode: "dax"}, want: ModeDax},
-		{dev: Device{Mode: "dax", ReadOnly: ro}, want: ModeDax},
-		{dev: Device{ReadOnly: ro}, shared: true, want: ModeDax},
-		{dev: Device{Mode: "dax", ReadOnly: ro}, shared: true, want: ModeDax},
+		{shared: true, want: api.ModeDax},
+		{want: api.ModeNUMA},
+		{dev: Device{Mode: "numa"}, want: api.ModeNUMA},
+		{dev: Device{Mode: "numa", ReadOnly: rw}, want: api.ModeNUMA},
+		{dev: Device{ReadOnly: rw}, want: api.ModeNUMA},
+		{dev: Device{Mode: "dax"}, want: api.ModeDax},
+		{dev: Device{Mode: "dax", ReadOnly: ro}, want: api.ModeDax},
+		{dev: Device{ReadOnly: ro}, shared: true, want: api.ModeDax},
+		{dev: Device{Mode: "dax", ReadOnly: ro}, shared: true, want: api.ModeDax},
 		{dev: Device{Mode: "numa"}, shared: true, err: "MemoryConfig: device: a shared device is used as dax only"},
 		{dev: Device{ReadOnly: ro}, err: "MemoryConfig: device.readOnly needs mode dax"},
 		{dev: Device{Mode: "kmem"}, err: `MemoryConfig: device.mode: invalid mode "kmem" (numa or dax)`},
@@ -167,29 +168,29 @@ func TestPoolMode(t *testing.T) {
 		want string
 		err  string
 	}{
-		{f: volatile, want: ModeNUMA},
-		{f: shared, want: ModeDax},
-		{dev: Device{ReadOnly: rw}, f: volatile, want: ModeNUMA},
-		{dev: Device{Mode: "dax"}, f: volatile, want: ModeDax},
-		{dev: Device{Mode: "dax", ReadOnly: ro}, f: volatile, want: ModeDax},
-		{dev: Device{ReadOnly: ro}, f: shared, want: ModeDax},
-		{dev: Device{Mode: "block"}, f: writer, want: ModeBlock},
-		{dev: Device{Mode: "block"}, f: private, want: ModeBlock},
-		{dev: Device{Mode: "block", ReadOnly: rw}, f: private, want: ModeBlock},
-		{dev: Device{Mode: "block", ReadOnly: ro}, f: reader, want: ModeBlock},
+		{f: volatile, want: api.ModeNUMA},
+		{f: shared, want: api.ModeDax},
+		{dev: Device{ReadOnly: rw}, f: volatile, want: api.ModeNUMA},
+		{dev: Device{Mode: "dax"}, f: volatile, want: api.ModeDax},
+		{dev: Device{Mode: "dax", ReadOnly: ro}, f: volatile, want: api.ModeDax},
+		{dev: Device{ReadOnly: ro}, f: shared, want: api.ModeDax},
+		{dev: Device{Mode: "block"}, f: writer, want: api.ModeBlock},
+		{dev: Device{Mode: "block"}, f: private, want: api.ModeBlock},
+		{dev: Device{Mode: "block", ReadOnly: rw}, f: private, want: api.ModeBlock},
+		{dev: Device{Mode: "block", ReadOnly: ro}, f: reader, want: api.ModeBlock},
 		// mode fs read-only: absent or true
-		{dev: Device{Mode: "fs"}, f: reader, want: ModeFs},
-		{dev: Device{Mode: "fs", ReadOnly: ro}, f: reader, want: ModeFs},
-		{dev: Device{Mode: "fs", ReadOnly: ro, Access: "cached", Path: "/models"}, f: writer, want: ModeFs},
-		{dev: Device{Mode: "fs", ReadOnly: ro, Access: "direct"}, f: private, want: ModeFs},
-		{dev: Device{Mode: "fs", FsType: "xfs"}, f: reader, want: ModeFs},
-		{dev: Device{Mode: "fs", FsType: "my_fs-1"}, f: reader, want: ModeFs},
+		{dev: Device{Mode: "fs"}, f: reader, want: api.ModeFs},
+		{dev: Device{Mode: "fs", ReadOnly: ro}, f: reader, want: api.ModeFs},
+		{dev: Device{Mode: "fs", ReadOnly: ro, Access: "cached", Path: "/models"}, f: writer, want: api.ModeFs},
+		{dev: Device{Mode: "fs", ReadOnly: ro, Access: "direct"}, f: private, want: api.ModeFs},
+		{dev: Device{Mode: "fs", FsType: "xfs"}, f: reader, want: api.ModeFs},
+		{dev: Device{Mode: "fs", FsType: "my_fs-1"}, f: reader, want: api.ModeFs},
 		// mode fs read-write: on this host only, or a cluster filesystem on coherent memory
-		{dev: Device{Mode: "fs", ReadOnly: rw}, f: host, want: ModeFs},
-		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "ext4"}, f: writer, want: ModeFs},
-		{dev: Device{Mode: "fs", ReadOnly: rw, Access: "cached"}, f: private, want: ModeFs},
-		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "gfs2"}, f: coherent, want: ModeFs},
-		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "gfs2"}, f: host, want: ModeFs},
+		{dev: Device{Mode: "fs", ReadOnly: rw}, f: host, want: api.ModeFs},
+		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "ext4"}, f: writer, want: api.ModeFs},
+		{dev: Device{Mode: "fs", ReadOnly: rw, Access: "cached"}, f: private, want: api.ModeFs},
+		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "gfs2"}, f: coherent, want: api.ModeFs},
+		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "gfs2"}, f: host, want: api.ModeFs},
 		// the section alone, in this order
 		{dev: Device{Mode: "ext4", Access: "bogus"}, f: reader, err: `MemoryConfig: device.mode: invalid mode "ext4" (numa, dax, block or fs)`},
 		{dev: Device{Mode: "block", Access: "bogus", Path: "rel", FsType: "Ext4"}, f: reader, err: "MemoryConfig: device.access needs mode fs"},
@@ -252,13 +253,13 @@ func TestPersistentMode(t *testing.T) {
 		want string
 		err  string
 	}{
-		{dev: Device{Mode: "block"}, f: all, want: ModeBlock},
-		{dev: Device{Mode: "block", ReadOnly: ro}, f: share, want: ModeBlock},
-		{dev: Device{Mode: "block", ReadOnly: ro}, f: sharedShare, want: ModeBlock},
-		{dev: Device{Mode: "fs"}, f: sharedShare, want: ModeFs},
-		{dev: Device{Mode: "fs", ReadOnly: rw}, f: share, want: ModeFs},
-		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "btrfs"}, f: all, want: ModeFs},
-		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "gfs2"}, f: sharedCoherent, want: ModeFs},
+		{dev: Device{Mode: "block"}, f: all, want: api.ModeBlock},
+		{dev: Device{Mode: "block", ReadOnly: ro}, f: share, want: api.ModeBlock},
+		{dev: Device{Mode: "block", ReadOnly: ro}, f: sharedShare, want: api.ModeBlock},
+		{dev: Device{Mode: "fs"}, f: sharedShare, want: api.ModeFs},
+		{dev: Device{Mode: "fs", ReadOnly: rw}, f: share, want: api.ModeFs},
+		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "btrfs"}, f: all, want: api.ModeFs},
+		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "gfs2"}, f: sharedCoherent, want: api.ModeFs},
 		{dev: Device{Mode: "dax", FsType: "ext4"}, f: all, err: "MemoryConfig: device.fsType needs mode fs"},
 		{dev: Device{}, f: all, err: "MemoryConfig: device: a persistent device needs mode block or fs"},
 		{dev: Device{Mode: "dax"}, f: share, err: "MemoryConfig: device: a persistent device needs mode block or fs"},
@@ -331,7 +332,7 @@ func TestDeviceSection(t *testing.T) {
 	if got := (&MemoryConfig{}).DeviceSection(); got != (Device{}) {
 		t.Errorf("no device section: %+v", got)
 	}
-	want := Device{Mode: ModeDax, ReadOnly: ro}
+	want := Device{Mode: api.ModeDax, ReadOnly: ro}
 	if got := (&MemoryConfig{Device: &want}).DeviceSection(); got != want {
 		t.Errorf("device section: %+v", got)
 	}

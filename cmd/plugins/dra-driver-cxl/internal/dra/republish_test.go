@@ -188,7 +188,7 @@ func TestUnprepareRepublishesWithoutRescan(t *testing.T) {
 	waitNodeSlice(t, client, envNode, 5*time.Second, device.DRAMDeviceName, device.LeaseDeviceName)
 	e.mustUnprepare(e.local, "u1")
 	waitNodeSlice(t, client, envNode, 2*time.Second, device.DRAMDeviceName, device.LeaseDeviceName, shared)
-	if d := e.pub.Published()[shared]; d == nil || d.Dev.(*device.Memdev).Shared {
+	if d := e.pub.Published()[shared]; d == nil || d.Dev.(*Memdev).Shared {
 		t.Fatalf("published %+v, expected the memdev sliced", d)
 	}
 }

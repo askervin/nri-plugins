@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
@@ -332,6 +333,12 @@ func TestParseFsSignature(t *testing.T) {
 			t.Errorf("%v: %+v", tc.image, s)
 		}
 	}
+	// every filesystem type that the drivers know has its signature
+	for _, name := range api.KnownFsTypes {
+		if s := kernel.ParseFsSignature(fsImage(name)); !slices.Equal(s.Types, []string{name}) {
+			t.Errorf("%s: %+v", name, s)
+		}
+	}
 	// a gfs2 magic without the superblock meta type is not gfs2
 	img := fsImage("gfs2")
 	img[65543] = 2
@@ -353,7 +360,7 @@ func TestReadFsSignature(t *testing.T) {
 	f, k, dev := fsdaxNode(t)
 	f.SetImage(dev, fsImage("erofs"))
 	s, err := k.ReadFsSignature(dev)
-	if err != nil || !slices.Equal(s.Types, []string{kernel.FsErofs}) {
+	if err != nil || !slices.Equal(s.Types, []string{api.FsTypeErofs}) {
 		t.Fatalf("signature %+v %v", s, err)
 	}
 	if head, err := k.ReadHead(dev, 10); err != nil || len(head) != 10 {
@@ -371,7 +378,7 @@ func TestReadFsSignature(t *testing.T) {
 	if ns == nil {
 		t.Fatalf("namespaces after a reboot %+v", nss)
 	}
-	if s, err := k.ReadFsSignature(ns.BlockDevice); err != nil || !slices.Equal(s.Types, []string{kernel.FsErofs}) || ns.Minor == 0 {
+	if s, err := k.ReadFsSignature(ns.BlockDevice); err != nil || !slices.Equal(s.Types, []string{api.FsTypeErofs}) || ns.Minor == 0 {
 		t.Fatalf("after a reboot: %s %d:%d signature %+v %v", ns.BlockDevice, ns.Major, ns.Minor, s, err)
 	}
 	// a new probe gives the block device another name and numbers
@@ -381,7 +388,7 @@ func TestReadFsSignature(t *testing.T) {
 	if ns := kernel.FsdaxNamespace(nss); ns == nil || ns.BlockDevice != renamed || ns.Minor != 9 {
 		t.Fatalf("renamed: %+v", nss)
 	}
-	if s, err := k.ReadFsSignature(renamed); err != nil || !slices.Equal(s.Types, []string{kernel.FsErofs}) {
+	if s, err := k.ReadFsSignature(renamed); err != nil || !slices.Equal(s.Types, []string{api.FsTypeErofs}) {
 		t.Fatalf("renamed signature %+v %v", s, err)
 	}
 }

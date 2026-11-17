@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
@@ -70,7 +71,7 @@ type pmemTestEnv struct {
 func newPmemTestEnv(t *testing.T) *pmemTestEnv {
 	t.Helper()
 	e := &pmemTestEnv{localTestEnv: newLocalTestEnv(t, fakeMemdevSpecPmem(localPmemSerial))}
-	e.config.FsTypes = slices.Clone(config.KnownFsTypes)
+	e.config.FsTypes = slices.Clone(api.KnownFsTypes)
 	return e
 }
 
@@ -671,11 +672,11 @@ func (e *pmemTestEnv) injectMemdev(persistent, shared bool) {
 	e.t.Helper()
 	devs, err := e.allocatable()
 	noErr(e.t, err)
-	m := &device.Memdev{Name: e.memdev(), Serial: localPmemSerial, Size: 512 * mib, NodeAffinity: 0, Shared: shared, Persistent: persistent}
+	m := &dra.Memdev{Name: e.memdev(), Serial: localPmemSerial, Size: 512 * mib, NodeAffinity: 0, Shared: shared, Persistent: persistent}
 	if !persistent {
 		m.BlockSize = localBlockSize
 	}
-	devs[localPmemDeviceName] = &device.DeviceInfo{Name: localPmemDeviceName, Dev: m}
+	devs[localPmemDeviceName] = &dra.DeviceInfo{Name: localPmemDeviceName, Dev: m}
 }
 
 // A memdev in sharedDevices has no block writer and no fs writer but of a

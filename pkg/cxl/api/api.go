@@ -23,6 +23,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -67,6 +68,14 @@ const (
 	// AccessCached is a mode fs mount whose file pages are in the page
 	// cache of the node (dax=never).
 	AccessCached = "cached"
+
+	// The filesystem types that the drivers know (KnownFsTypes).
+	FsTypeErofs    = "erofs"
+	FsTypeSquashfs = "squashfs"
+	FsTypeExt4     = "ext4"
+	FsTypeXfs      = "xfs"
+	FsTypeBtrfs    = "btrfs"
+	FsTypeGfs2     = "gfs2"
 
 	// Operations of a request.
 	OpRequest = "request"
@@ -239,6 +248,20 @@ func ValidName(name string) bool {
 		}
 	}
 	return true
+}
+
+// KnownFsTypes are the filesystem types that the drivers know.
+var KnownFsTypes = []string{FsTypeErofs, FsTypeSquashfs, FsTypeExt4, FsTypeXfs, FsTypeBtrfs, FsTypeGfs2}
+
+// KnownFsType returns true if the drivers know the filesystem type.
+func KnownFsType(name string) bool {
+	return slices.Contains(KnownFsTypes, name)
+}
+
+// PersistentMode tells whether a mode is a mode of persistent memory
+// (ModeBlock, ModeFs).
+func PersistentMode(mode string) bool {
+	return mode == ModeBlock || mode == ModeFs
 }
 
 // ValidFsType returns true if name is a valid filesystem type name: 1 to

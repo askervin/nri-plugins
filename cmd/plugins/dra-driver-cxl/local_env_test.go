@@ -473,7 +473,7 @@ func (e *localTestEnv) rules() []dra.SourceRules {
 }
 
 // allocatable returns the devices of the last scan of the node.
-func (e *localTestEnv) allocatable() (device.DevicesInfo, error) {
+func (e *localTestEnv) allocatable() (dra.DevicesInfo, error) {
 	return e.publisher.Devices(), nil
 }
 

@@ -62,8 +62,8 @@ func poolSlice() *resourcev1.ResourceSlice {
 // local memdev 0xc100f5e1.
 func localResourceSlice() *resourcev1.ResourceSlice {
 	return nodeResourceSlice(envNode,
-		dra.LocalMemdevDevice(dra.MemdevDeviceName(serialSliced), &device.Memdev{Serial: serialSliced, Size: 1 << 30, NodeAffinity: 0, BlockSize: 128 << 20}),
-		dra.LocalMemdevDevice("memdev-c100e2e2", &device.Memdev{Serial: serialShared, Size: 1 << 30, NodeAffinity: 0, Shared: true}),
+		dra.LocalMemdevDevice(dra.MemdevDeviceName(serialSliced), &dra.Memdev{Serial: serialSliced, Size: 1 << 30, NodeAffinity: 0, BlockSize: 128 << 20}),
+		dra.LocalMemdevDevice("memdev-c100e2e2", &dra.Memdev{Serial: serialShared, Size: 1 << 30, NodeAffinity: 0, Shared: true}),
 		persistentLocalDevice())
 }
 
@@ -132,7 +132,7 @@ func persistentPoolSlice() *resourcev1.ResourceSlice {
 func newSlicesBrokerEnv(t *testing.T) *leaseEnv {
 	e := brokerEnv(t)
 	e.addSlices(poolSlice(), localResourceSlice(), persistentPoolSlice(),
-		nodeResourceSlice("node2", dra.LocalMemdevDevice("memdev-c100e2e3", &device.Memdev{Serial: 0xc100e2e3, Size: 1 << 30, NodeAffinity: -1, Shared: true}),
+		nodeResourceSlice("node2", dra.LocalMemdevDevice("memdev-c100e2e3", &dra.Memdev{Serial: 0xc100e2e3, Size: 1 << 30, NodeAffinity: -1, Shared: true}),
 			persistentLocalDeviceOf("0xc100f5e2")))
 	return e
 }
@@ -309,7 +309,7 @@ func companionConfigsOf(c *resourcev1.ResourceClaim) []opaqueConfig {
 // same serial, whatever the order of the ResourceSlices.
 func TestSerialOfThisNode(t *testing.T) {
 	e := newSlicesBrokerEnv(t)
-	e.addSlices(nodeResourceSlice("node0", dra.LocalMemdevDevice("memdev-c100e2e2", &device.Memdev{Serial: serialShared, Size: 256 << 20, NodeAffinity: -1, Shared: true})))
+	e.addSlices(nodeResourceSlice("node0", dra.LocalMemdevDevice("memdev-c100e2e2", &dra.Memdev{Serial: serialShared, Size: 256 << 20, NodeAffinity: -1, Shared: true})))
 	dev, err := e.b.deviceBySerial(serialShared)
 	mustOK(t, err)
 	if dev == nil || dev.node != envNode || dev.driver != device.DriverName {

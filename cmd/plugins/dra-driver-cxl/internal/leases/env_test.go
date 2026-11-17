@@ -54,7 +54,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
-	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -257,7 +256,7 @@ func (e *leaseEnv) boot() {
 		Records:     map[state.Source]string{state.SourcePool: filepath.Join(e.dir, store.FileName)},
 		Sources:     []state.Source{state.SourcePool, state.SourceLocal},
 		LeaseFsRoot: LeaseFsRoot(e.dir),
-		FsTypes:     config.KnownFsTypes,
+		FsTypes:     api.KnownFsTypes,
 		Filesystems: e.filesystems,
 		Shared:      func(serial state.Serial) bool { return e.isShared(uint64(serial)) },
 		Revoke:      e.revoke,

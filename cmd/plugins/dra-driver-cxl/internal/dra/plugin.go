@@ -259,7 +259,7 @@ func (p *Plugin) commit(ctx context.Context, fn func(doc *store.Document) error)
 // allocatable returns the devices of the last publication of the node's
 // ResourceSlice (the scheduler allocated from it), nil for a driver that
 // does not publish.
-func (p *Plugin) allocatable() device.DevicesInfo {
+func (p *Plugin) allocatable() DevicesInfo {
 	if p.publisher == nil || !p.rules.Publishes {
 		return nil
 	}

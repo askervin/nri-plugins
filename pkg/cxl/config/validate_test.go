@@ -17,6 +17,8 @@ package config
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/containers/nri-plugins/pkg/cxl/api"
 )
 
 func TestValidateSteering(t *testing.T) {
@@ -118,7 +120,7 @@ func TestCompact(t *testing.T) {
 	}{
 		{nilConfig, `{}`},
 		{&MemoryConfig{APIVersion: APIVersion, Kind: Kind}, `{}`},
-		{&MemoryConfig{APIVersion: APIVersion, Kind: Kind, Device: &Device{Mode: ModeDax}}, `{"device":{"mode":"dax"}}`},
+		{&MemoryConfig{APIVersion: APIVersion, Kind: Kind, Device: &Device{Mode: api.ModeDax}}, `{"device":{"mode":"dax"}}`},
 		{&MemoryConfig{Pool: &Pool{Opaque: map[string]json.RawMessage{"k": json.RawMessage(`{ "a": 1 }`)}}}, `{"pool":{"opaque":{"k":{"a":1}}}}`},
 	} {
 		if got := tc.c.Compact(); got != tc.want {

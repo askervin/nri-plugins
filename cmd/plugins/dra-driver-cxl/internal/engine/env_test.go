@@ -29,7 +29,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
-	"github.com/containers/nri-plugins/pkg/cxl/config"
+	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
@@ -147,7 +147,7 @@ func (v *env) startEngine() {
 		},
 		Sources:     v.sources,
 		LeaseFsRoot: filepath.Join(v.dir, localDriver, "lease-fs"),
-		FsTypes:     []string{config.FsTypeErofs, config.FsTypeExt4, config.FsTypeXfs},
+		FsTypes:     []string{api.FsTypeErofs, api.FsTypeExt4, api.FsTypeXfs},
 		Filesystems: filepath.Join(v.dir, "filesystems"),
 		Fence: func(_ context.Context, node int) {
 			v.fenceMu.Lock()

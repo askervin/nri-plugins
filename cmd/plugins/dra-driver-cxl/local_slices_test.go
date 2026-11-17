@@ -433,7 +433,7 @@ func TestLocalLargeBlocks(t *testing.T) {
 	if dev == nil {
 		t.Fatalf("not published: %v", e.publisher.Devices())
 	}
-	if p := localMemdevDevice(dev.Name, dev.Dev.(*device.Memdev)).Capacity[device.CapacityMemory].RequestPolicy; p == nil ||
+	if p := localMemdevDevice(dev.Name, dev.Dev.(*dra.Memdev)).Capacity[device.CapacityMemory].RequestPolicy; p == nil ||
 		p.Default.String() != "1536Mi" || p.ValidRange.Step.String() != "512Mi" {
 		t.Fatalf("request policy %+v", p)
 	}
@@ -729,10 +729,10 @@ func TestLocalRegionErrors(t *testing.T) {
 	_ = e.prepareFails(localClaim("u1", localBlockSize, memoryConfig("ram", false, "")), `invalid mode "ram"`)
 	devs := e.publisher.Devices()
 	info := *devs[localDeviceName]
-	memdev := *info.Dev.(*device.Memdev)
+	memdev := *info.Dev.(*dra.Memdev)
 	memdev.Size = 0
 	info.Dev = &memdev
-	e.publisher.SetDevices(device.DevicesInfo{localDeviceName: &info})
+	e.publisher.SetDevices(dra.DevicesInfo{localDeviceName: &info})
 	_ = e.prepareFails(localClaim("u1", 0), "size 0")
 	e.publisher.SetDevices(devs)
 	// local memdevs not managed
@@ -1013,7 +1013,7 @@ func TestLocalAliasedRegion(t *testing.T) {
 		t.Fatalf("region %v: %v", r, err)
 	}
 	e.rescan()
-	if d := e.publisher.Devices()[localDeviceName]; d == nil || d.Dev.(*device.Memdev).Size != half {
+	if d := e.publisher.Devices()[localDeviceName]; d == nil || d.Dev.(*dra.Memdev).Size != half {
 		t.Fatalf("published %+v", d)
 	}
 	e.restart()

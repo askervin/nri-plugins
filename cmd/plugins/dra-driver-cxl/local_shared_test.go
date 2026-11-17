@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -360,7 +361,7 @@ func TestPublishSharedLocalMemdev(t *testing.T) {
 	small.RamSize = 64 * mib
 	devs, err := buildDevInfos(e.config, &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{small}}, nil, &localSnapshot{})
 	noErr(t, err)
-	if m, ok := devs[localDeviceName].Dev.(*device.Memdev); !ok || !m.Shared || m.Size != 64*mib {
+	if m, ok := devs[localDeviceName].Dev.(*dra.Memdev); !ok || !m.Shared || m.Size != 64*mib {
 		t.Fatalf("small shared memdev %+v", devs[localDeviceName])
 	}
 }

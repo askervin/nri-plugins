@@ -75,10 +75,10 @@ type Publisher struct {
 
 	// mu guards the fields below up to triggerMu: a leaf lock.
 	mu      sync.Mutex
-	devices device.DevicesInfo
+	devices DevicesInfo
 	// published is the table of the last publication, nil before the
 	// first.
-	published  device.DevicesInfo
+	published  DevicesInfo
 	generation uint64
 	names      []string
 	slices     *nodeResourceSlices // nil before Start
@@ -151,7 +151,7 @@ func NewPublisher(opts PublishOptions) (*Publisher, error) {
 	if opts.Store == nil || opts.Scan == nil {
 		return nil, errors.New("the publisher needs the state store and the scan of the devices")
 	}
-	return &Publisher{opts: opts, devices: device.DevicesInfo{}, trigger: make(chan struct{}, 1)}, nil
+	return &Publisher{opts: opts, devices: DevicesInfo{}, trigger: make(chan struct{}, 1)}, nil
 }
 
 // SetConfig sets the configuration of the next scans.
@@ -180,7 +180,7 @@ func (p *Publisher) SetOnError(onError func(ctx context.Context, err error, msg 
 
 // Published returns the devices of the last publication, by name, those of
 // the last scan before the first publication.
-func (p *Publisher) Published() device.DevicesInfo {
+func (p *Publisher) Published() DevicesInfo {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.published == nil {
@@ -190,14 +190,14 @@ func (p *Publisher) Published() device.DevicesInfo {
 }
 
 // Devices returns the devices of the last scan, by name.
-func (p *Publisher) Devices() device.DevicesInfo {
+func (p *Publisher) Devices() DevicesInfo {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.devices
 }
 
 // SetDevices sets the devices of the table, as a scan does.
-func (p *Publisher) SetDevices(devs device.DevicesInfo) {
+func (p *Publisher) SetDevices(devs DevicesInfo) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.setLocked(devs)
@@ -205,7 +205,7 @@ func (p *Publisher) SetDevices(devs device.DevicesInfo) {
 
 // setLocked sets the devices of the table and counts a change of them.
 // Called with p.mu held.
-func (p *Publisher) setLocked(devs device.DevicesInfo) {
+func (p *Publisher) setLocked(devs DevicesInfo) {
 	names := slices.Sorted(maps.Keys(devs))
 	if !slices.Equal(names, p.names) || !sameDevices(p.devices, devs) {
 		p.generation++
@@ -214,7 +214,7 @@ func (p *Publisher) setLocked(devs device.DevicesInfo) {
 }
 
 // sameDevices tells whether two tables publish the same devices.
-func sameDevices(a, b device.DevicesInfo) bool {
+func sameDevices(a, b DevicesInfo) bool {
 	if len(a) != len(b) {
 		return false
 	}
@@ -246,7 +246,7 @@ func (p *Publisher) Resources() resourceslice.DriverResources {
 
 // resourcesOf returns the resources of the node's ResourceSlice of the
 // devices of a table, sorted by name.
-func (p *Publisher) resourcesOf(devs device.DevicesInfo) resourceslice.DriverResources {
+func (p *Publisher) resourcesOf(devs DevicesInfo) resourceslice.DriverResources {
 	return resourceslice.DriverResources{
 		Pools: map[string]resourceslice.Pool{
 			p.opts.NodeName: {Slices: []resourceslice.Slice{{Devices: resources(devs)}}},
@@ -404,7 +404,7 @@ func (p *Publisher) publish(ctx context.Context) error {
 // scan returns the devices to publish of a scan of the node: the serials of
 // the pool driver's devices and of the pool slices noted, the memdevs held
 // or remembered as pool devices left out.
-func (p *Publisher) scan(ctx context.Context) (device.DevicesInfo, error) {
+func (p *Publisher) scan(ctx context.Context) (DevicesInfo, error) {
 	cfg, poolSerials := p.ScanInput(ctx)
 	return p.scanWith(ctx, cfg, poolSerials)
 }
@@ -425,7 +425,7 @@ func (p *Publisher) ScanWith(ctx context.Context, cfg PublishConfig, poolSerials
 
 // scanWith returns the devices to publish of a scan of the node with the
 // configuration and the pool serials of ScanInput.
-func (p *Publisher) scanWith(ctx context.Context, cfg PublishConfig, poolSerials map[uint64]bool) (device.DevicesInfo, error) {
+func (p *Publisher) scanWith(ctx context.Context, cfg PublishConfig, poolSerials map[uint64]bool) (DevicesInfo, error) {
 	snap, err := p.opts.Scan(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to detect devices: %v", err)
@@ -717,9 +717,9 @@ func regionMemdevs(snap *kernel.Snapshot, r *kernel.RegionInfo) []kernel.MemdevI
 // devices, neither they nor their regions are published. Regions on memdevs
 // that the device engine uses (local) are skipped too: the engine created
 // them, and the memdevs are published as memdev devices.
-func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held map[uint64]bool, local *LocalSnapshot) device.DevicesInfo {
+func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held map[uint64]bool, local *LocalSnapshot) DevicesInfo {
 	cxlNodes := make(map[int]bool)
-	devInfos := make(map[string]*device.DeviceInfo)
+	devInfos := make(map[string]*DeviceInfo)
 	nodes := regionNodes(snap)
 	for i := range snap.Regions {
 		r := &snap.Regions[i]
@@ -737,12 +737,12 @@ func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held ma
 			klog.V(4).Infof("- ignoring region device %q: %s", r.Name, reason)
 			continue
 		}
-		dev := &device.Region{Name: r.Name, NumaNode: node, Size: regionSize(*r)}
+		dev := &Region{Name: r.Name, NumaNode: node, Size: regionSize(*r)}
 		for _, m := range mems {
 			dev.NodeAffinity = append(dev.NodeAffinity, m.NodeAffinity)
 		}
 		name := fmt.Sprintf("%s-node%d", r.Name, node)
-		devInfos[name] = &device.DeviceInfo{Name: name, Dev: dev}
+		devInfos[name] = &DeviceInfo{Name: name, Dev: dev}
 	}
 	if cfg.ManageMemdevs {
 		addLocalMemdevs(devInfos, cfg, snap, poolSerials, held, local)
@@ -751,9 +751,9 @@ func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held ma
 		addDRAM(devInfos, cfg, snap, cxlNodes)
 	}
 	if cfg.PublishLeaseDevice {
-		devInfos[device.LeaseDeviceName] = &device.DeviceInfo{
+		devInfos[device.LeaseDeviceName] = &DeviceInfo{
 			Name: device.LeaseDeviceName,
-			Dev:  &device.LeaseToken{},
+			Dev:  &LeaseToken{},
 		}
 	}
 	return devInfos
@@ -794,8 +794,8 @@ func regionIgnoreReason(cfg PublishConfig, r *kernel.RegionInfo, node int, mems 
 
 // addDRAM adds the DRAM device of the memory nodes that are not CXL nodes
 // to devInfos.
-func addDRAM(devInfos device.DevicesInfo, cfg PublishConfig, snap *kernel.Snapshot, cxlNodes map[int]bool) {
-	dramDev := &device.DRAM{}
+func addDRAM(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snapshot, cxlNodes map[int]bool) {
+	dramDev := &DRAM{}
 	for _, node := range numaNodesByName(snap) {
 		if cxlNodes[node.ID] {
 			continue
@@ -816,7 +816,7 @@ func addDRAM(devInfos device.DevicesInfo, cfg PublishConfig, snap *kernel.Snapsh
 		klog.V(4).Infof("discovered DRAM memory on node %d: size %d bytes", node.ID, node.MemTotal)
 	}
 	if dramDev.Size > 0 {
-		devInfos[device.DRAMDeviceName] = &device.DeviceInfo{
+		devInfos[device.DRAMDeviceName] = &DeviceInfo{
 			Name: device.DRAMDeviceName,
 			Dev:  any(dramDev),
 		}
@@ -929,7 +929,7 @@ func logSharedRefusal(memDev *kernel.MemdevInfo, reason string) {
 // is enabled, its RAM capacity is sure to hold a whole memory block, it has
 // no regions but the engine's and no claims that use it shared or
 // persistent.
-func addLocalMemdevs(devInfos device.DevicesInfo, cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held map[uint64]bool, local *LocalSnapshot) {
+func addLocalMemdevs(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held map[uint64]bool, local *LocalSnapshot) {
 	bs := uint64(0)
 	if local != nil {
 		bs = local.BlockSize
@@ -963,9 +963,9 @@ func addLocalMemdevs(devInfos device.DevicesInfo, cfg PublishConfig, snap *kerne
 			continue
 		}
 		name := MemdevDeviceName(memDev.Serial)
-		devInfos[name] = &device.DeviceInfo{
+		devInfos[name] = &DeviceInfo{
 			Name: name,
-			Dev: &device.Memdev{
+			Dev: &Memdev{
 				Name:         memDev.Name,
 				Serial:       memDev.Serial,
 				Size:         size,
@@ -1025,7 +1025,7 @@ func memdevUsableSize(cfg PublishConfig, memDev *kernel.MemdevInfo, local *Local
 // the engine did not create or claims that use it as slices.
 //   - regions: the regions on the memdev
 //   - bs: the memory block size, 0 if unknown
-func addSharedMemdev(devInfos device.DevicesInfo, memDev *kernel.MemdevInfo, size uint64, regions []string, local *LocalSnapshot, bs uint64) {
+func addSharedMemdev(devInfos DevicesInfo, memDev *kernel.MemdevInfo, size uint64, regions []string, local *LocalSnapshot, bs uint64) {
 	use, used := local.Use(memDev.Serial)
 	reason := ""
 	switch {
@@ -1045,9 +1045,9 @@ func addSharedMemdev(devInfos device.DevicesInfo, memDev *kernel.MemdevInfo, siz
 		return
 	}
 	name := MemdevDeviceName(memDev.Serial)
-	devInfos[name] = &device.DeviceInfo{
+	devInfos[name] = &DeviceInfo{
 		Name: name,
-		Dev: &device.Memdev{
+		Dev: &Memdev{
 			Name:         memDev.Name,
 			Serial:       memDev.Serial,
 			Size:         size,
@@ -1067,7 +1067,7 @@ func addSharedMemdev(devInfos device.DevicesInfo, memDev *kernel.MemdevInfo, siz
 //   - shared: sharedDevices lists the memdev, which is neither ignored nor
 //     a pool device
 //   - regions: the regions on the memdev
-func addPersistentMemdev(devInfos device.DevicesInfo, cfg PublishConfig, memDev *kernel.MemdevInfo, shared bool, poolSerials, held map[uint64]bool, regions []string, local *LocalSnapshot) {
+func addPersistentMemdev(devInfos DevicesInfo, cfg PublishConfig, memDev *kernel.MemdevInfo, shared bool, poolSerials, held map[uint64]bool, regions []string, local *LocalSnapshot) {
 	use, used := local.Use(memDev.Serial)
 	reason := memdevMatches(cfg.IgnoreDevices, memDev)
 	switch {
@@ -1093,9 +1093,9 @@ func addPersistentMemdev(devInfos device.DevicesInfo, cfg PublishConfig, memDev 
 		return
 	}
 	name := MemdevDeviceName(memDev.Serial)
-	devInfos[name] = &device.DeviceInfo{
+	devInfos[name] = &DeviceInfo{
 		Name: name,
-		Dev: &device.Memdev{
+		Dev: &Memdev{
 			Name:         memDev.Name,
 			Serial:       memDev.Serial,
 			Size:         memDev.PmemSize,
@@ -1123,7 +1123,7 @@ func MemdevDeviceName(serial uint64) string {
 
 // resources returns the devices of the node's ResourceSlice of the table,
 // sorted by name.
-func resources(devs device.DevicesInfo) []resourcev1.Device {
+func resources(devs DevicesInfo) []resourcev1.Device {
 	out := []resourcev1.Device{}
 	for _, name := range slices.Sorted(maps.Keys(devs)) {
 		allocatable := devs[name]
@@ -1131,13 +1131,13 @@ func resources(devs device.DevicesInfo) []resourcev1.Device {
 			continue
 		}
 		switch dev := allocatable.Dev.(type) {
-		case *device.Region:
+		case *Region:
 			out = append(out, regionDevice(name, dev))
-		case *device.DRAM:
+		case *DRAM:
 			out = append(out, dramDevice(name, dev))
-		case *device.Memdev:
+		case *Memdev:
 			out = append(out, LocalMemdevDevice(name, dev))
-		case *device.LeaseToken:
+		case *LeaseToken:
 			out = append(out, leaseDevice(name))
 		default:
 			klog.Warningf("unexpected device type in state.Allocatable: %T", dev)
@@ -1172,7 +1172,7 @@ func memoryCapacity(size uint64) map[resourcev1.QualifiedName]resourcev1.DeviceC
 }
 
 // regionDevice returns the ResourceSlice device of a region.
-func regionDevice(name string, dev *device.Region) resourcev1.Device {
+func regionDevice(name string, dev *Region) resourcev1.Device {
 	attrs := map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
 		device.AttrType:   {StringValue: ptr(device.DeviceTypeRegion)},
 		device.AttrSource: {StringValue: ptr(api.SourceLocal)},
@@ -1193,7 +1193,7 @@ func regionDevice(name string, dev *device.Region) resourcev1.Device {
 
 // regionNodeAffinity returns the CPU NUMA node of the memdevs of a region,
 // and whether they all have the same known one.
-func regionNodeAffinity(dev *device.Region) (int, bool) {
+func regionNodeAffinity(dev *Region) (int, bool) {
 	affinity := -1
 	for _, a := range dev.NodeAffinity {
 		switch {
@@ -1209,7 +1209,7 @@ func regionNodeAffinity(dev *device.Region) (int, bool) {
 }
 
 // dramDevice returns the ResourceSlice device of the DRAM of the node.
-func dramDevice(name string, dev *device.DRAM) resourcev1.Device {
+func dramDevice(name string, dev *DRAM) resourcev1.Device {
 	return resourcev1.Device{
 		Name: name,
 		Attributes: map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
@@ -1225,7 +1225,7 @@ func dramDevice(name string, dev *device.DRAM) resourcev1.Device {
 }
 
 // LocalMemdevDevice returns the ResourceSlice device of a local memdev.
-func LocalMemdevDevice(name string, dev *device.Memdev) resourcev1.Device {
+func LocalMemdevDevice(name string, dev *Memdev) resourcev1.Device {
 	if dev.Persistent || dev.Shared {
 		return sharedMemdevDevice(name, dev)
 	}
@@ -1262,7 +1262,7 @@ func LocalMemdevDevice(name string, dev *device.Memdev) resourcev1.Device {
 // that a claim that requests no shares has the device exclusively; no
 // memory capacity and nothing node allocatable, as its memory is never
 // onlined.
-func sharedMemdevDevice(name string, dev *device.Memdev) resourcev1.Device {
+func sharedMemdevDevice(name string, dev *Memdev) resourcev1.Device {
 	attrs := map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
 		device.AttrType:       {StringValue: ptr(device.DeviceTypeMemdev)},
 		device.AttrSource:     {StringValue: ptr(api.SourceLocal)},

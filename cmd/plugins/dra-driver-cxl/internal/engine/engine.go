@@ -27,7 +27,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
-	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
@@ -247,7 +246,7 @@ func New(opts Options) (*Engine, error) {
 		opts.Kernel.Sys = &c
 	}
 	if opts.FsTypes == nil {
-		opts.FsTypes = []string{config.FsTypeErofs}
+		opts.FsTypes = []string{api.FsTypeErofs}
 	}
 	if opts.Filesystems == "" {
 		opts.Filesystems = "/proc/filesystems"

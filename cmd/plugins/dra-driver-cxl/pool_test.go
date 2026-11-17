@@ -31,6 +31,7 @@ import (
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -157,6 +158,7 @@ func TestPoolPrepareSharedTwoClaims(t *testing.T) {
 	shareID := types.UID("share-1")
 	c1 := poolClaim("u1", "c1", "shared0", sharedData)
 	c1.Status.Allocation.Devices.Results[0].ShareID = &shareID
+	c1.Status.Devices[1].ShareID = ptr(string(shareID))
 	res := prepare(t, p, c1)
 	noErr(t, res.Err)
 	if !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl-pool=claim-u1-0"}) || res.Devices[0].ShareID == nil || *res.Devices[0].ShareID != shareID {
@@ -288,7 +290,7 @@ func TestBuildDevInfosSkipsPoolDevices(t *testing.T) {
 	if _, ok := devInfos["region1-node3"]; ok {
 		t.Fatal("pool region published")
 	}
-	dram, ok := devInfos["dram"].Dev.(*device.DRAM)
+	dram, ok := devInfos["dram"].Dev.(*dra.DRAM)
 	if !ok || !slices.Equal(dram.Nodes, []int{0}) {
 		t.Fatalf("pool node counted as DRAM: %+v", devInfos["dram"])
 	}

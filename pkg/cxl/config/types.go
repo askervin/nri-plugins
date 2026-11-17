@@ -61,16 +61,6 @@ const (
 var policies = []string{PolicyNone, PolicyAuto, PolicyFirstDRAM, PolicyFirstCXL,
 	PolicyStartInterleaved, PolicyEndInterleaved, PolicyWaypoints}
 
-// The values of device.mode and device.access.
-const (
-	ModeNUMA     = api.ModeNUMA
-	ModeDax      = api.ModeDax
-	ModeBlock    = api.ModeBlock
-	ModeFs       = api.ModeFs
-	AccessDirect = api.AccessDirect
-	AccessCached = api.AccessCached
-)
-
 // The values of container.fencing.
 const (
 	// FencingAllowedMems keeps the CXL nodes of the driver out of
@@ -133,7 +123,7 @@ type Device struct {
 // set, else true for mode fs and false for the other modes.
 func (d Device) IsReadOnly() bool {
 	if d.ReadOnly == nil {
-		return d.Mode == ModeFs
+		return d.Mode == api.ModeFs
 	}
 	return *d.ReadOnly
 }

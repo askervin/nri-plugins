@@ -348,8 +348,9 @@ status:
       coherent: true             # only for a coherent device
 ```
 
-The node plugin matches the entry by (driver, pool, device): several
-pools under one driver need no change. It reads
+The node plugin matches the entry by (driver, pool, device), and by
+`shareID` for a result that has one: several pools under one driver
+need no change. It reads
 only `serial`, `shared`, `size`, `exclusive`, `persistent`, `singleHost`
 and `coherent` from `data`; a missing `exclusive`, `persistent`,
 `singleHost` or `coherent` is `false`:

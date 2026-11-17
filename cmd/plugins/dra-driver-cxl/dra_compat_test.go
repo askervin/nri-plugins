@@ -24,7 +24,6 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -49,8 +48,8 @@ var (
 )
 
 var (
-	poolDataFor         = provenance.StatusData
-	parsePoolDeviceData = provenance.ParseDeviceData
+	poolDataFor         = device.PoolStatus
+	parsePoolDeviceData = device.ParsePoolStatusData
 )
 
 // lendOf returns the lend of a companion claim as the pool driver gives it
@@ -70,13 +69,13 @@ func lendOf(doc *store.Document, prep *state.Preparation) *lendRecord {
 // buildDevInfos returns the devices that the publisher publishes of the
 // observation of the node with the configuration, the pool serials and the
 // uses of the local memdevs.
-func buildDevInfos(cfg *DriverConfig, detected *kernel.Snapshot, poolSerials map[uint64]bool, local *localSnapshot) (device.DevicesInfo, error) {
+func buildDevInfos(cfg *DriverConfig, detected *kernel.Snapshot, poolSerials map[uint64]bool, local *localSnapshot) (dra.DevicesInfo, error) {
 	return dra.BuildDevices(cfg.publishConfig(), detected, poolSerials, nil, local), nil
 }
 
 // buildDevInfosHeld is buildDevInfos with the serials of the new memdevs
 // that are held.
-func buildDevInfosHeld(cfg *DriverConfig, detected *kernel.Snapshot, poolSerials, held map[uint64]bool, local *localSnapshot) (device.DevicesInfo, error) {
+func buildDevInfosHeld(cfg *DriverConfig, detected *kernel.Snapshot, poolSerials, held map[uint64]bool, local *localSnapshot) (dra.DevicesInfo, error) {
 	return dra.BuildDevices(cfg.publishConfig(), detected, poolSerials, held, local), nil
 }
 

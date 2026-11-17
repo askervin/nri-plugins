@@ -39,10 +39,9 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/engine"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
-	"github.com/containers/nri-plugins/pkg/cxl/config"
+	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -157,7 +156,7 @@ func (e *poolTestEnv) driver(t *testing.T) *dra.Plugin {
 		PoolDataDir:   e.dir,
 		LeaseFsRoot:   e.leaseFsRoot,
 		StateFile:     filepath.Join(e.dir, store.FileName),
-		FsTypes:       config.KnownFsTypes,
+		FsTypes:       api.KnownFsTypes,
 		Filesystems:   e.filesystems,
 		Fence:         e.fence,
 		PoolTimeout:   e.timeout,
@@ -353,7 +352,7 @@ func (e *poolTestEnv) onlineBlocks(region string) int {
 // a pool device with the status data: of a shared device all of its
 // shares (exclusive) or one, nil otherwise.
 func poolConsumed(data string) map[resourceapi.QualifiedName]resource.Quantity {
-	d, err := provenance.ParseDeviceData([]byte(data))
+	d, err := device.ParsePoolStatusData([]byte(data))
 	switch {
 	case err != nil || !d.Shared:
 		return nil

@@ -45,7 +45,7 @@ func TestCharIgnoreRegions(t *testing.T) {
 	if got := pubNames(devs); !slices.Equal(got, []string{"dram", "region1-node3"}) {
 		t.Fatalf("published %v", got)
 	}
-	if dram := devs[device.DRAMDeviceName].Dev.(*device.DRAM); !slices.Equal(dram.Nodes, []int{0}) {
+	if dram := devs[device.DRAMDeviceName].Dev.(*DRAM); !slices.Equal(dram.Nodes, []int{0}) {
 		t.Fatalf("DRAM nodes %v: the node of an ignored region is not DRAM", dram.Nodes)
 	}
 	wantLogLineText(t, logs(), `- ignoring region device "region0": region name "region0"`)
@@ -82,12 +82,12 @@ func TestCharIgnoreNodes(t *testing.T) {
 // them.
 func TestCharPublishOrder(t *testing.T) {
 	names := []string{"memdev-a5", device.DRAMDeviceName, "memdev-a1", "region0-node2", device.LeaseDeviceName}
-	devs := device.DevicesInfo{
-		"memdev-a5":            {Name: "memdev-a5", Dev: &device.Memdev{Name: "mem5", Serial: 0xa5, Size: 1 << 30, NodeAffinity: -1, BlockSize: pubBlockSize}},
-		device.DRAMDeviceName:  {Name: device.DRAMDeviceName, Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}},
-		"memdev-a1":            {Name: "memdev-a1", Dev: &device.Memdev{Name: "mem1", Serial: 0xa1, Size: 1 << 30, NodeAffinity: -1, BlockSize: pubBlockSize}},
-		"region0-node2":        {Name: "region0-node2", Dev: &device.Region{Name: "region0", Size: 1 << 30, NumaNode: 2}},
-		device.LeaseDeviceName: {Name: device.LeaseDeviceName, Dev: &device.LeaseToken{}},
+	devs := DevicesInfo{
+		"memdev-a5":            {Name: "memdev-a5", Dev: &Memdev{Name: "mem5", Serial: 0xa5, Size: 1 << 30, NodeAffinity: -1, BlockSize: pubBlockSize}},
+		device.DRAMDeviceName:  {Name: device.DRAMDeviceName, Dev: &DRAM{Nodes: []int{0}, Size: 1 << 30}},
+		"memdev-a1":            {Name: "memdev-a1", Dev: &Memdev{Name: "mem1", Serial: 0xa1, Size: 1 << 30, NodeAffinity: -1, BlockSize: pubBlockSize}},
+		"region0-node2":        {Name: "region0-node2", Dev: &Region{Name: "region0", Size: 1 << 30, NumaNode: 2}},
+		device.LeaseDeviceName: {Name: device.LeaseDeviceName, Dev: &LeaseToken{}},
 	}
 	p := pubPublisher(t, PublishOptions{NodeName: pubNode})
 	p.SetDevices(devs)
@@ -134,7 +134,7 @@ func TestCharPersistentCapacityOfRAMMemdev(t *testing.T) {
 	if !ok {
 		t.Fatalf("published %v", pubNames(devs))
 	}
-	md, ok := dev.Dev.(*device.Memdev)
+	md, ok := dev.Dev.(*Memdev)
 	if !ok || md.Persistent || md.Size != pubRegionSize || md.BlockSize != pubBlockSize {
 		t.Fatalf("memdev %+v", dev.Dev)
 	}

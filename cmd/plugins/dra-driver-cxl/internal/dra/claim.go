@@ -26,7 +26,6 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/engine"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
@@ -157,11 +156,6 @@ func defaultFsPath(key string) string {
 	return defaultFsPathDir + "/" + key
 }
 
-// persistentMode tells whether a mode is a mode of persistent devices.
-func persistentMode(mode string) bool {
-	return mode == api.ModeBlock || mode == api.ModeFs
-}
-
 // LocalConfig is what cxl.nri.io needs of the driver configuration to map
 // the allocation results on local memdevs.
 type LocalConfig struct {
@@ -213,14 +207,14 @@ func (p *Plugin) validateLocal(claim *resourcev1.ResourceClaim) (*prepare, error
 // localMemdevResults returns the number of allocation results of a claim on
 // local memdevs of the node, and the number of all its results on devices
 // of the node.
-func (p *Plugin) localMemdevResults(claim *resourcev1.ResourceClaim, allocatable device.DevicesInfo) (local, all int) {
+func (p *Plugin) localMemdevResults(claim *resourcev1.ResourceClaim, allocatable DevicesInfo) (local, all int) {
 	for _, r := range claim.Status.Allocation.Devices.Results {
 		if r.Driver != p.rules.Name || r.Pool != p.nodeName {
 			continue
 		}
 		all++
 		if d := allocatable[r.Device]; d != nil {
-			if _, ok := d.Dev.(*device.Memdev); ok {
+			if _, ok := d.Dev.(*Memdev); ok {
 				local++
 			}
 		}
@@ -232,7 +226,7 @@ func (p *Plugin) localMemdevResults(claim *resourcev1.ResourceClaim, allocatable
 // of a claim of cxl.nri.io: one for every allocation result of the driver on
 // the node, as the MemoryConfig of the result (resolved) says, of the
 // devices allocatable.
-func (p *Plugin) localResults(claim *resourcev1.ResourceClaim, pr *prepare, allocatable device.DevicesInfo, resolved map[int]*config.Resolved) error {
+func (p *Plugin) localResults(claim *resourcev1.ResourceClaim, pr *prepare, allocatable DevicesInfo, resolved map[int]*config.Resolved) error {
 	// the env keys of the memdevs, as the CDI spec counts them
 	keys := envKeys{}
 	fs := 0
@@ -258,7 +252,7 @@ func (p *Plugin) localResults(claim *resourcev1.ResourceClaim, pr *prepare, allo
 		cfg := res.Config.DeviceSection()
 		var err error
 		switch d := dev.Dev.(type) {
-		case *device.Memdev:
+		case *Memdev:
 			key := keys.next(api.Key(d.Serial, 1))
 			var req engine.GrantRequest
 			if req, err = p.memdevRequest(pr, r, n, key, d, cfg); err == nil {
@@ -300,7 +294,7 @@ func otherResult(res *state.Result, r *resourcev1.DeviceRequestAllocationResult,
 		consumed = q.Value()
 	}
 	switch d := dev.(type) {
-	case *device.Region:
+	case *Region:
 		if err := cfg.NUMAOnly(device.DeviceTypeRegion); err != nil {
 			return err
 		}
@@ -311,12 +305,12 @@ func otherResult(res *state.Result, r *resourcev1.DeviceRequestAllocationResult,
 			}
 		}
 		res.Kind, res.Region = state.ResultRegion, reg
-	case *device.DRAM:
+	case *DRAM:
 		if err := cfg.NUMAOnly(device.DeviceTypeDRAM); err != nil {
 			return err
 		}
 		res.Kind, res.DRAM = state.ResultDRAM, &state.DRAMResult{NumaNodes: slices.Clone(d.Nodes), Size: d.Size, Consumed: consumed}
-	case *device.LeaseToken:
+	case *LeaseToken:
 		if err := cfg.CheckLease(); err != nil {
 			return err
 		}
@@ -332,7 +326,7 @@ func otherResult(res *state.Result, r *resourcev1.DeviceRequestAllocationResult,
 // sliced memdev (mode numa or dax), the device of a shared one (mode dax),
 // or a use of a persistent one (mode block or fs, the default path of mode
 // fs by the env key of the result).
-func (p *Plugin) memdevRequest(pr *prepare, r *resourcev1.DeviceRequestAllocationResult, n int, key string, dev *device.Memdev, cfg config.Device) (engine.GrantRequest, error) {
+func (p *Plugin) memdevRequest(pr *prepare, r *resourcev1.DeviceRequestAllocationResult, n int, key string, dev *Memdev, cfg config.Device) (engine.GrantRequest, error) {
 	req := engine.GrantRequest{
 		Ref:       state.GrantRef{Claim: pr.uid, Result: n},
 		ClaimName: pr.claimName,
@@ -390,7 +384,7 @@ func (p *Plugin) memdevRequest(pr *prepare, r *resourcev1.DeviceRequestAllocatio
 // persistentRequest sets the request of an allocation result on a local
 // memdev of persistent memory by the device settings cfg, its facts as the
 // configuration and the allocation give them.
-func (p *Plugin) persistentRequest(pr *prepare, req *engine.GrantRequest, r *resourcev1.DeviceRequestAllocationResult, key string, dev *device.Memdev, cfg config.Device) error {
+func (p *Plugin) persistentRequest(pr *prepare, req *engine.GrantRequest, r *resourcev1.DeviceRequestAllocationResult, key string, dev *Memdev, cfg config.Device) error {
 	fail := func(err error) error {
 		return pr.claimError(fmt.Errorf("request %s: %w", r.Request, err))
 	}
@@ -427,7 +421,7 @@ func (p *Plugin) persistentRequest(pr *prepare, req *engine.GrantRequest, r *res
 // poolFacts returns the facts of a pool device of its status data (the
 // contract of the pool): a device that is not shared has one claim at most,
 // and no other host while it is allocated.
-func poolFacts(d *provenance.DeviceData) config.DeviceFacts {
+func poolFacts(d *device.PoolDevice) config.DeviceFacts {
 	single := d.Exclusive || !d.Shared
 	return config.DeviceFacts{
 		Persistent: d.Persistent,
@@ -484,7 +478,7 @@ func (p *Plugin) poolResults(claim *resourcev1.ResourceClaim, pr *prepare, resol
 		if r.Driver != p.rules.Name {
 			continue
 		}
-		data, err := provenance.StatusData(claim, r)
+		data, err := device.PoolStatus(claim, r)
 		if err != nil {
 			return err
 		}
@@ -525,7 +519,7 @@ func (p *Plugin) poolResults(claim *resourcev1.ResourceClaim, pr *prepare, resol
 
 // poolRequest returns the request to the engine of the allocation result n
 // of a Prepare of a claim, with its parsed status data and what it asks.
-func poolRequest(pr *prepare, n int, r *resourcev1.DeviceRequestAllocationResult, data *provenance.DeviceData, asked state.Asked) engine.GrantRequest {
+func poolRequest(pr *prepare, n int, r *resourcev1.DeviceRequestAllocationResult, data *device.PoolDevice, asked state.Asked) engine.GrantRequest {
 	return engine.GrantRequest{
 		Ref:        state.GrantRef{Claim: pr.uid, Result: n},
 		ClaimName:  pr.claimName,
@@ -586,14 +580,14 @@ func (p *Plugin) preparedGrant(serial uint64, exceptUID string) *state.Grant {
 // exclusive, or in another mode. Read-only may differ: it is a property of
 // the CDI device node, not of the region. Modes block and fs, and fs with
 // either access, are compatible: they share one pmem region.
-func (p *Plugin) checkSamePreparation(data *provenance.DeviceData, asked state.Asked, exceptUID string) error {
+func (p *Plugin) checkSamePreparation(data *device.PoolDevice, asked state.Asked, exceptUID string) error {
 	other := p.preparedGrant(data.Serial, exceptUID)
 	switch {
 	case other == nil:
 		return nil
 	case other.Asked.Shared != data.Shared:
 		return fmt.Errorf("shared=%v, but another claim prepared it with shared=%v", data.Shared, other.Asked.Shared)
-	case other.Asked.Mode != asked.Mode && (!persistentMode(string(other.Asked.Mode)) || !persistentMode(string(asked.Mode))):
+	case other.Asked.Mode != asked.Mode && (!api.PersistentMode(string(other.Asked.Mode)) || !api.PersistentMode(string(asked.Mode))):
 		return fmt.Errorf("mode %s, but another claim prepared it in mode %s", asked.Mode, other.Asked.Mode)
 	}
 	return nil

@@ -13,12 +13,17 @@
 // limitations under the License.
 
 // Package device has the Kubernetes-facing names of the CXL DRA driver:
-// driver, device, attribute, capacity, DeviceClass, config, label and CDI
-// names, and the devices that cxl.nri.io publishes.
+// driver, device, attribute, capacity, DeviceClass, label and CDI names,
+// and the contract between the pool driver and a pool controller.
 package device
 
 import (
+	"encoding/json"
+	"fmt"
+
 	resourcev1 "k8s.io/api/resource/v1"
+
+	"github.com/containers/nri-plugins/pkg/cxl/api"
 )
 
 const (
@@ -42,7 +47,7 @@ const (
 	PoolCDISpecName = "cxl-pool"
 
 	// DriverName is the DRA driver of the devices attached to a node.
-	DriverName = CDIClass + "." + CDIVendor
+	DriverName = "cxl.nri.io"
 	// PoolDriverName is the default DRA driver name of the pool driver,
 	// which prepares CXL memory devices hotplugged from a memory pool.
 	// See docs/memory/cxl/pool.md.
@@ -103,11 +108,6 @@ const (
 	ClassDRAM           = "cxl-dram"
 	ClassLease          = "cxl-lease"
 
-	// DeviceConfigKind is the kind of the opaque configuration of how a
-	// device is prepared (mode, readOnly, access, path), apiVersion
-	// <driver>/v1alpha1.
-	DeviceConfigKind = "DeviceConfig"
-
 	// LeaseDeviceName is the name of the lease device.
 	LeaseDeviceName = "lease"
 	// MemdevDevicePrefix is the prefix of the device names of local
@@ -121,68 +121,120 @@ const (
 	RequesterUIDLabel   = "cxl.nri.io/requester-uid"
 	NodeLabel           = "cxl.nri.io/node"
 	RequesterAnnotation = "cxl.nri.io/requester" // <namespace>/<pod>/<container>
-
-	// PreparedClaimsFileName is the file of the prepared claims in the
-	// plugin data directory of DriverName.
-	PreparedClaimsFileName = "preparedClaims.json"
 )
 
-// DeviceInfo is an internal structure type to store info about discovered device.
-type DeviceInfo struct {
-	// UID is a unique identifier on node, used in ResourceSlice K8s API object as RFC1123-compliant identifier.
-	UID       string `json:"uid"`
-	Name      string `json:"name"`
-	Dev       any
-	SysfsPath string `json:"sysfs"`
+// The contract between the pool driver and a pool controller
+// (docs/memory/cxl/pool.md): the controller attaches the device of an
+// allocation result of the driver to the host of the node of the
+// allocation, and writes the condition AttachedCondition and the status
+// data into the entry of the result in claim.status.devices, or the
+// condition AttachFailedCondition.
+
+// AttachedCondition returns the condition of a device that the pool
+// controller of the driver attached for the claim.
+func AttachedCondition(driver string) string {
+	return driver + "/Attached"
 }
 
-// DRAM is the Dev of the DRAM device.
-type DRAM struct {
-	Nodes []int
-	Size  uint64
+// AttachFailedCondition returns the condition of a device that the pool
+// controller of the driver could not attach for the claim.
+func AttachFailedCondition(driver string) string {
+	return driver + "/AttachFailed"
 }
 
-// Region is the Dev of a region device (DeviceTypeRegion).
-type Region struct {
-	Name     string // regionN
-	NumaNode int    // NUMA node of its memory
-	Size     uint64 // bytes
-	// NodeAffinity are the CPU NUMA nodes of its memdevs, -1 for one not
-	// known.
-	NodeAffinity []int
+// PoolStatusData is the JSON of the status data of a pool device. Serial,
+// shared and size are required: Shared and Size are pointers, so that a
+// reader tells a missing key from false or 0. The flags are false when
+// missing:
+//   - Exclusive: the claim has all shares of a shared device
+//   - Persistent: the device has persistent memory
+//   - SingleHost: no other host has the device while the claim is
+//     allocated
+//   - Coherent: the writes of other hosts are visible without cache
+//     maintenance
+type PoolStatusData struct {
+	Serial     string  `json:"serial"`
+	Shared     *bool   `json:"shared"`
+	Size       *uint64 `json:"size"`
+	Exclusive  bool    `json:"exclusive,omitempty"`
+	Persistent bool    `json:"persistent,omitempty"`
+	SingleHost bool    `json:"singleHost,omitempty"`
+	Coherent   bool    `json:"coherent,omitempty"`
 }
 
-// Memdev is the Dev of a local memdev device (DeviceTypeMemdev).
-type Memdev struct {
-	Name         string // memN
-	Serial       uint64
-	Size         uint64 // RAM capacity, bytes (persistent capacity of a persistent memdev)
-	NodeAffinity int    // CPU NUMA node of the memdev, -1 if unknown
-	BlockSize    uint64 // memory block size, bytes: slices are multiples of it
-	Shared       bool   // published shared: one devdax device for all claims
-	// Persistent is true for a memdev of persistent memory: modes block
-	// and fs, one pmem region for all claims.
+// PoolDevice is the parsed status data of a pool device.
+type PoolDevice struct {
+	Serial     uint64
+	Shared     bool
+	Size       uint64
+	Exclusive  bool
 	Persistent bool
+	SingleHost bool
+	Coherent   bool
 }
 
-// LeaseToken is the Dev of the lease device: it has no hardware, no
-// capacity and can be allocated any number of times.
-type LeaseToken struct{}
-
-// DeepCopy returns a copy of the device info.
-func (g *DeviceInfo) DeepCopy() *DeviceInfo {
-	di := *g
-	return &di
-}
-
-// DevicesInfo is a dictionary with DeviceInfo.uid being the key.
-type DevicesInfo map[string]*DeviceInfo
-
-// DeepCopy returns a copy of the devices.
-func (g *DevicesInfo) DeepCopy() DevicesInfo {
-	devicesInfoCopy := DevicesInfo{}
-	for duid, device := range *g {
-		devicesInfoCopy[duid] = device.DeepCopy()
+// ParsePoolStatusData returns the pool device of the JSON of its status
+// data, an error if the JSON does not parse or a required key is missing.
+func ParsePoolStatusData(raw []byte) (*PoolDevice, error) {
+	var d PoolStatusData
+	if err := json.Unmarshal(raw, &d); err != nil {
+		return nil, fmt.Errorf("invalid device data %s: %w", string(raw), err)
 	}
-	return devicesInfoCopy
+	if d.Serial == "" || d.Shared == nil || d.Size == nil {
+		return nil, fmt.Errorf("device data %s: serial, shared and size are required", string(raw))
+	}
+	serial, err := api.ParseSerial(d.Serial)
+	if err != nil {
+		return nil, fmt.Errorf("device data: %w", err)
+	}
+	return &PoolDevice{Serial: serial, Shared: *d.Shared, Size: *d.Size, Exclusive: d.Exclusive, Persistent: d.Persistent,
+		SingleHost: d.SingleHost, Coherent: d.Coherent}, nil
+}
+
+// PoolStatus returns the pool device of the status data of an allocation
+// result of a claim (its entry of StatusOf), an error if the result has no
+// entry, or one without data or with data that does not parse.
+func PoolStatus(claim *resourcev1.ResourceClaim, r *resourcev1.DeviceRequestAllocationResult) (*PoolDevice, error) {
+	st := StatusOf(claim, r)
+	if st == nil {
+		return nil, fmt.Errorf("claim status has no entry for device %s/%s (not attached by the pool controller yet?)", r.Pool, r.Device)
+	}
+	if st.Data == nil || len(st.Data.Raw) == 0 {
+		return nil, fmt.Errorf("status of device %s/%s has no data (written by the pool controller with the Attached condition)", r.Pool, r.Device)
+	}
+	return ParsePoolStatusData(st.Data.Raw)
+}
+
+// StatusOf returns the entry of claim.status.devices of an allocation
+// result, nil if the claim has none. The entry has the driver, the pool and
+// the device of the result, and its share id if the result has one.
+func StatusOf(claim *resourcev1.ResourceClaim, r *resourcev1.DeviceRequestAllocationResult) *resourcev1.AllocatedDeviceStatus {
+	for i := range claim.Status.Devices {
+		st := &claim.Status.Devices[i]
+		if st.Driver != r.Driver || st.Pool != r.Pool || st.Device != r.Device {
+			continue
+		}
+		if r.ShareID != nil && (st.ShareID == nil || *st.ShareID != string(*r.ShareID)) {
+			continue
+		}
+		return st
+	}
+	return nil
+}
+
+// AllocationNode returns the node of an allocation that binds to one node:
+// a node selector of one term with one matchFields value of metadata.name,
+// as the scheduler writes for a device of a ResourceSlice of the node. It
+// returns "" for another allocation.
+func AllocationNode(a *resourcev1.AllocationResult) string {
+	ns := a.NodeSelector
+	if ns == nil || len(ns.NodeSelectorTerms) != 1 {
+		return ""
+	}
+	for _, f := range ns.NodeSelectorTerms[0].MatchFields {
+		if f.Key == "metadata.name" && len(f.Values) == 1 {
+			return f.Values[0]
+		}
+	}
+	return ""
 }

@@ -396,7 +396,7 @@ func (w *Watcher) claimEvidence(ctx context.Context) (*claimEvidence, error) {
 	for i := range claims {
 		c := &claims[i]
 		a := c.Status.Allocation
-		if a == nil || allocationNode(a) != w.opts.NodeName {
+		if a == nil || device.AllocationNode(a) != w.opts.NodeName {
 			continue
 		}
 		attaching := false
@@ -405,8 +405,8 @@ func (w *Watcher) claimEvidence(ctx context.Context) (*claimEvidence, error) {
 			if r.Driver != w.opts.Driver {
 				continue
 			}
-			if serial, err := StatusSerial(c, r); err == nil {
-				ev.serials[serial] = r.Driver + "/" + r.Pool
+			if data, err := device.PoolStatus(c, r); err == nil {
+				ev.serials[data.Serial] = r.Driver + "/" + r.Pool
 			} else if !attachFailed(c, r) {
 				attaching = true
 			}
@@ -419,42 +419,11 @@ func (w *Watcher) claimEvidence(ctx context.Context) (*claimEvidence, error) {
 	return ev, nil
 }
 
-// StatusSerial returns the serial of the status data that the pool
-// controller wrote for an allocation result of a claim (the entry of
-// status.devices matched by driver, pool and device), and an error if it
-// has none or it does not parse.
-func StatusSerial(c *resourcev1.ResourceClaim, r *resourcev1.DeviceRequestAllocationResult) (uint64, error) {
-	data, err := StatusData(c, r)
-	if err != nil {
-		return 0, err
-	}
-	return data.Serial, nil
-}
-
-// allocationNode returns the node of an allocation that binds to a node
-// (matchFields metadata.name In [node]), "" for another one.
-func allocationNode(a *resourcev1.AllocationResult) string {
-	ns := a.NodeSelector
-	if ns == nil || len(ns.NodeSelectorTerms) != 1 {
-		return ""
-	}
-	for _, f := range ns.NodeSelectorTerms[0].MatchFields {
-		if f.Key == "metadata.name" && len(f.Values) == 1 {
-			return f.Values[0]
-		}
-	}
-	return ""
-}
-
 // attachFailed tells whether the status of a result of a pool claim has
-// the condition <driver>/AttachFailed True: nothing was attached for it.
+// the condition AttachFailed True: nothing was attached for it.
 func attachFailed(c *resourcev1.ResourceClaim, r *resourcev1.DeviceRequestAllocationResult) bool {
-	for _, st := range c.Status.Devices {
-		if st.Driver == r.Driver && st.Pool == r.Pool && st.Device == r.Device {
-			return meta.IsStatusConditionPresentAndEqual(st.Conditions, r.Driver+"/AttachFailed", metav1.ConditionTrue)
-		}
-	}
-	return false
+	st := device.StatusOf(c, r)
+	return st != nil && meta.IsStatusConditionPresentAndEqual(st.Conditions, device.AttachFailedCondition(r.Driver), metav1.ConditionTrue)
 }
 
 // Flags are the command line flags of the provenance records.

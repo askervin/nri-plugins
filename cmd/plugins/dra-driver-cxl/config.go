@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 )
 
@@ -144,7 +145,7 @@ func (c *DriverConfig) validate() error {
 		return err
 	}
 	for _, t := range c.FsTypes {
-		if !config.ValidFsType(t) {
+		if !api.ValidFsType(t) {
 			return fmt.Errorf(`fsTypes: invalid filesystem type %q (lower-case letters, digits, "_" and "-")`, t)
 		}
 	}
@@ -162,7 +163,7 @@ func (c *DriverConfig) validate() error {
 // defaultFsTypes are the filesystem types that mode fs mounts when the
 // configuration has no fsTypes: erofs only, the type that is designed for
 // images from untrusted writers.
-var defaultFsTypes = []string{config.FsTypeErofs}
+var defaultFsTypes = []string{api.FsTypeErofs}
 
 // fsTypes returns the filesystem types that mode fs mounts on the node:
 // FsTypes, defaultFsTypes when it is not set.

@@ -19,6 +19,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
@@ -39,8 +40,8 @@ func fsType(s kernel.FsSignature, serial, dev, declared string) (string, error) 
 	case len(s.Types) > 1:
 		return "", fmt.Errorf("%s%s has signatures of several filesystems (%s): set device.fsType", prefix, dev, strings.Join(s.Types, ", "))
 	case declared == "":
-		return "", fmt.Errorf("%s%s has no filesystem of a type that the plugin knows (%s): set device.fsType", prefix, dev, listOr(config.KnownFsTypes))
-	case config.KnownFsType(declared):
+		return "", fmt.Errorf("%s%s has no filesystem of a type that the plugin knows (%s): set device.fsType", prefix, dev, listOr(api.KnownFsTypes))
+	case api.KnownFsType(declared):
 		return "", fmt.Errorf("%s%s has no filesystem of type %s (no signature of a type that the plugin knows)", prefix, dev, declared)
 	}
 	return declared, nil

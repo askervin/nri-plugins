@@ -26,6 +26,7 @@ import (
 
 	resourcev1 "k8s.io/api/resource/v1"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -155,7 +156,7 @@ func wantLocalCreating(t *testing.T, e *localTestEnv, creating string) {
 
 // localPublished returns the local memdev as a scan publishes it now, with
 // the regions that are on it in the kernel, nil if it is not published.
-func localPublished(e *localTestEnv) *device.Memdev {
+func localPublished(e *localTestEnv) *dra.Memdev {
 	e.t.Helper()
 	devs := &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{e.memdevs[localSerial]}}
 	for _, r := range e.regions(localSerial) {
@@ -164,7 +165,7 @@ func localPublished(e *localTestEnv) *device.Memdev {
 	infos, err := buildDevInfos(e.config, devs, e.poolSerials, e.localSnapshot())
 	noErr(e.t, err)
 	if d := infos[localDeviceName]; d != nil {
-		m, _ := d.Dev.(*device.Memdev)
+		m, _ := d.Dev.(*dra.Memdev)
 		return m
 	}
 	return nil

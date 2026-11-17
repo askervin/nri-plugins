@@ -25,6 +25,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/util/retry"
+
+	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
 // Condition reasons.
@@ -43,8 +45,8 @@ const (
 	EventDetached     = "Detached"
 )
 
-func (c *Controller) condAttached() string { return c.cfg.DriverName + "/Attached" }
-func (c *Controller) condFailed() string   { return c.cfg.DriverName + "/AttachFailed" }
+func (c *Controller) condAttached() string { return device.AttachedCondition(c.cfg.DriverName) }
+func (c *Controller) condFailed() string   { return device.AttachFailedCondition(c.cfg.DriverName) }
 
 // DeviceData is the data of a claim status device entry, read by the node
 // plugin (serial, shared and size are required there). Exclusive: the
@@ -65,22 +67,10 @@ type DeviceData struct {
 	Coherent     bool   `json:"coherent,omitempty"`
 }
 
-// deviceStatus returns the status entry of a result, matched by driver,
-// pool and device, or nil.
-func deviceStatus(claim *resourceapi.ResourceClaim, r resourceapi.DeviceRequestAllocationResult) *resourceapi.AllocatedDeviceStatus {
-	for i := range claim.Status.Devices {
-		e := &claim.Status.Devices[i]
-		if e.Driver == r.Driver && e.Pool == r.Pool && e.Device == r.Device {
-			return e
-		}
-	}
-	return nil
-}
-
 // hasCondition returns the condition of the status entry of a result if it
 // is True.
 func hasCondition(claim *resourceapi.ResourceClaim, r resourceapi.DeviceRequestAllocationResult, condType string) *metav1.Condition {
-	e := deviceStatus(claim, r)
+	e := device.StatusOf(claim, &r)
 	if e == nil {
 		return nil
 	}
@@ -98,7 +88,7 @@ func attachedUpToDate(claim *resourceapi.ResourceClaim, r resourceapi.DeviceRequ
 	if old == nil || old.Reason != cond.Reason || old.Message != cond.Message {
 		return false
 	}
-	e := deviceStatus(claim, r)
+	e := device.StatusOf(claim, &r)
 	var oldData DeviceData
 	return e.Data != nil && json.Unmarshal(e.Data.Raw, &oldData) == nil && oldData == data
 }
@@ -109,7 +99,8 @@ func hasResult(claim *resourceapi.ResourceClaim, r resourceapi.DeviceRequestAllo
 		return false
 	}
 	for _, x := range claim.Status.Allocation.Devices.Results {
-		if x.Driver == r.Driver && x.Pool == r.Pool && x.Device == r.Device && x.Request == r.Request {
+		if x.Driver == r.Driver && x.Pool == r.Pool && x.Device == r.Device && x.Request == r.Request &&
+			(r.ShareID == nil || x.ShareID != nil && *x.ShareID == *r.ShareID) {
 			return true
 		}
 	}
@@ -147,7 +138,7 @@ func (c *Controller) setClaimDeviceStatus(ctx context.Context, claim *resourceap
 		if fresh.UID != claim.UID || !hasResult(fresh, r) {
 			return nil
 		}
-		e := deviceStatus(fresh, r)
+		e := device.StatusOf(fresh, &r)
 		if e == nil {
 			fresh.Status.Devices = append(fresh.Status.Devices, resourceapi.AllocatedDeviceStatus{
 				Driver: r.Driver, Pool: r.Pool, Device: r.Device,

@@ -126,7 +126,7 @@ func pubPublisher(t *testing.T, opts PublishOptions) *Publisher {
 func pubNoScan(context.Context) (*kernel.Snapshot, error) { return &kernel.Snapshot{}, nil }
 
 // pubNames returns the names of the devices, sorted.
-func pubNames(devs device.DevicesInfo) []string {
+func pubNames(devs DevicesInfo) []string {
 	return slices.Sorted(maps.Keys(devs))
 }
 
@@ -216,10 +216,10 @@ func TestBuildDevInfosLocalMemdevs(t *testing.T) {
 			t.Fatalf("device %s named %s", name, d.Name)
 		}
 	}
-	if m, ok := devInfos["memdev-a1"].Dev.(*device.Memdev); !ok || *m != (device.Memdev{Name: "mem1", Serial: 0xa1, Size: 1 << 30, NodeAffinity: 1, BlockSize: pubBlockSize}) {
+	if m, ok := devInfos["memdev-a1"].Dev.(*Memdev); !ok || *m != (Memdev{Name: "mem1", Serial: 0xa1, Size: 1 << 30, NodeAffinity: 1, BlockSize: pubBlockSize}) {
 		t.Fatalf("free memdev %+v", devInfos["memdev-a1"].Dev)
 	}
-	if _, ok := devInfos["memdev-a5"].Dev.(*device.Memdev); !ok {
+	if _, ok := devInfos["memdev-a5"].Dev.(*Memdev); !ok {
 		t.Fatalf("used memdev %+v", devInfos["memdev-a5"].Dev)
 	}
 	// memdevs smaller than a block, or an unknown block size: none
@@ -234,7 +234,7 @@ func TestBuildDevInfosLocalMemdevs(t *testing.T) {
 	if _, ok := devInfos["memdev-a1"]; ok {
 		t.Fatal("a memdev of one large block published")
 	}
-	m, ok := devInfos["memdev-a5"].Dev.(*device.Memdev)
+	m, ok := devInfos["memdev-a5"].Dev.(*Memdev)
 	if !ok {
 		t.Fatalf("used memdev %+v", devInfos["memdev-a5"])
 	}
@@ -246,7 +246,7 @@ func TestBuildDevInfosLocalMemdevs(t *testing.T) {
 		t.Fatalf("published %v without a block size", got)
 	}
 	// the node of the plugin's region is not DRAM
-	if dram, ok := devInfos["dram"].Dev.(*device.DRAM); !ok || !slices.Equal(dram.Nodes, []int{0}) {
+	if dram, ok := devInfos["dram"].Dev.(*DRAM); !ok || !slices.Equal(dram.Nodes, []int{0}) {
 		t.Fatalf("DRAM %+v", devInfos["dram"].Dev)
 	}
 
@@ -299,7 +299,7 @@ func TestGetResourcesLocalMemdev(t *testing.T) {
 		t.Fatalf("request policy %v %v %v", p.Default, p.ValidRange.Min, p.ValidRange.Step)
 	}
 	// no nodeAffinity when unknown
-	d := LocalMemdevDevice("x", &device.Memdev{Size: pubRegionSize, NodeAffinity: -1, BlockSize: pubBlockSize})
+	d := LocalMemdevDevice("x", &Memdev{Size: pubRegionSize, NodeAffinity: -1, BlockSize: pubBlockSize})
 	if _, ok := d.Attributes["nodeAffinity"]; ok {
 		t.Fatalf("memdev %+v", d)
 	}
@@ -350,7 +350,7 @@ func TestGetResourcesRegionDRAMLease(t *testing.T) {
 	if l := got["lease"]; l.Capacity != nil || !*l.AllowMultipleAllocations {
 		t.Errorf("lease device %+v", l)
 	}
-	if _, ok := regionNodeAffinity(&device.Region{NodeAffinity: []int{-1}}); ok {
+	if _, ok := regionNodeAffinity(&Region{NodeAffinity: []int{-1}}); ok {
 		t.Error("an unknown affinity is published")
 	}
 }
@@ -359,7 +359,7 @@ func TestGetResourcesRegionDRAMLease(t *testing.T) {
 // Prepare records: that of their names.
 func TestDRAMNodeOrder(t *testing.T) {
 	devs := BuildDevices(PublishConfig{}, &kernel.Snapshot{NumaNodes: pubNodes(0, 1, 2, 10)}, nil, nil, nil)
-	if dram, ok := devs["dram"].Dev.(*device.DRAM); !ok || !slices.Equal(dram.Nodes, []int{0, 1, 10, 2}) {
+	if dram, ok := devs["dram"].Dev.(*DRAM); !ok || !slices.Equal(dram.Nodes, []int{0, 1, 10, 2}) {
 		t.Fatalf("DRAM %+v", devs["dram"].Dev)
 	}
 }
@@ -416,7 +416,7 @@ func TestBuildDevInfosHollowRegion(t *testing.T) {
 	if devInfos["region0-node2"] == nil || devInfos["region1-node3"] != nil || len(devInfos) != 2 {
 		t.Fatalf("devices %v", pubNames(devInfos))
 	}
-	if dram, ok := devInfos["dram"].Dev.(*device.DRAM); !ok || !slices.Equal(dram.Nodes, []int{0}) {
+	if dram, ok := devInfos["dram"].Dev.(*DRAM); !ok || !slices.Equal(dram.Nodes, []int{0}) {
 		t.Fatalf("DRAM %+v", devInfos["dram"])
 	}
 
@@ -469,7 +469,7 @@ func TestSharedLocalPrecedence(t *testing.T) {
 	devInfos := BuildDevices(cfg, devices, pool, nil, local)
 	shared := map[string]bool{}
 	for name, d := range devInfos {
-		if m, ok := d.Dev.(*device.Memdev); ok {
+		if m, ok := d.Dev.(*Memdev); ok {
 			shared[name] = m.Shared
 		}
 	}
@@ -499,7 +499,7 @@ func TestSharedLocalPrecedence(t *testing.T) {
 	local.Uses[0xa9] = LocalUse{Shared: true, Claims: []string{}}
 	devInfos = BuildDevices(cfg, devices, pool, nil, local)
 	for name, s := range map[string]bool{"memdev-a8": true, "memdev-a9": false} {
-		if m, ok := devInfos[name].Dev.(*device.Memdev); !ok || m.Shared != s {
+		if m, ok := devInfos[name].Dev.(*Memdev); !ok || m.Shared != s {
 			t.Errorf("%s: %+v, expected shared %v", name, devInfos[name], s)
 		}
 	}

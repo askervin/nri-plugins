@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
@@ -320,7 +321,7 @@ func TestPrepareLocalLendErrors(t *testing.T) {
 	// only local memdevs are lent
 	devs, err := e.allocatable()
 	noErr(t, err)
-	devs["dram"] = &device.DeviceInfo{Name: "dram", Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}}
+	devs["dram"] = &dra.DeviceInfo{Name: "dram", Dev: &dra.DRAM{Nodes: []int{0}, Size: 1 << 30}}
 	claim := localCompanion("u4", 64*mib)
 	claim.Status.Allocation.Devices.Results[0].Device = "dram"
 	wantErr(t, e.prepare(claim), "the companion claim of lease l1 needs memdev devices only")
@@ -556,7 +557,7 @@ func TestPrepareLocalFailsAfterCheck(t *testing.T) {
 
 // injectDevices adds devices of regions, DRAM or the lease device to the
 // devices of the scan of the node state of the env.
-func injectDevices(e *localTestEnv, infos ...*device.DeviceInfo) {
+func injectDevices(e *localTestEnv, infos ...*dra.DeviceInfo) {
 	e.t.Helper()
 	devs, err := e.allocatable()
 	noErr(e.t, err)
@@ -570,8 +571,8 @@ func TestPrepareRegionDRAMNUMAOnly(t *testing.T) {
 	e := newLocalTestEnv(t)
 	e.start()
 	injectDevices(e,
-		&device.DeviceInfo{Name: "region0-node2", Dev: &device.Region{Name: "region0", NumaNode: 2, Size: 1 << 30}},
-		&device.DeviceInfo{Name: "dram", Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}})
+		&dra.DeviceInfo{Name: "region0-node2", Dev: &dra.Region{Name: "region0", NumaNode: 2, Size: 1 << 30}},
+		&dra.DeviceInfo{Name: "dram", Dev: &dra.DRAM{Nodes: []int{0}, Size: 1 << 30}})
 	var unprefixed []string
 	for _, tc := range []struct{ dev, params, err string }{
 		{"region0-node2", localDaxConfig, "claim demo/claim-u1: request mem: MemoryConfig: device: a region is used as numa only"},
@@ -678,9 +679,9 @@ func TestPrepareMemoryConfig(t *testing.T) {
 	leases := &fakeLeaseClaims{st: e.st}
 	e.s.SetLeases(leases)
 	injectDevices(e,
-		&device.DeviceInfo{Name: "region5-node4", Dev: &device.Region{Name: "region5", NumaNode: 4, Size: 1 << 30}},
-		&device.DeviceInfo{Name: "dram", Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}},
-		&device.DeviceInfo{Name: device.LeaseDeviceName, Dev: &device.LeaseToken{}})
+		&dra.DeviceInfo{Name: "region5-node4", Dev: &dra.Region{Name: "region5", NumaNode: 4, Size: 1 << 30}},
+		&dra.DeviceInfo{Name: "dram", Dev: &dra.DRAM{Nodes: []int{0}, Size: 1 << 30}},
+		&dra.DeviceInfo{Name: device.LeaseDeviceName, Dev: &dra.LeaseToken{}})
 	const (
 		class = resourcev1.AllocationConfigSourceClass
 		claim = resourcev1.AllocationConfigSourceClaim

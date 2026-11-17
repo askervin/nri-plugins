@@ -17,21 +17,13 @@ package kernel
 import (
 	"bytes"
 	"encoding/binary"
+
+	"github.com/containers/nri-plugins/pkg/cxl/api"
 )
 
 // The filesystem of a block device of a persistent device is known by the
 // signatures of the known types in its first FsProbeBytes
 // (docs/memory/cxl/usage.md "Persistent memory").
-
-// The filesystem types that the probe knows, as the kernel names them.
-const (
-	FsErofs    = "erofs"
-	FsSquashfs = "squashfs"
-	FsExt4     = "ext4"
-	FsXfs      = "xfs"
-	FsBtrfs    = "btrfs"
-	FsGfs2     = "gfs2"
-)
 
 const (
 	// FsProbeBytes is how much of a block device the probe reads.
@@ -75,27 +67,27 @@ func ParseFsSignature(head []byte) FsSignature {
 	}
 	var s FsSignature
 	if v, ok := le32(1024); ok && v == 0xE0F5E1E2 {
-		s.Types = append(s.Types, FsErofs)
+		s.Types = append(s.Types, api.FsTypeErofs)
 	}
 	if at(0, "hsqs") {
-		s.Types = append(s.Types, FsSquashfs)
+		s.Types = append(s.Types, api.FsTypeSquashfs)
 	}
 	if len(head) >= 1082 && binary.LittleEndian.Uint16(head[1080:]) == 0xEF53 {
-		s.Types = append(s.Types, FsExt4)
+		s.Types = append(s.Types, api.FsTypeExt4)
 		if v, ok := le32(1024 + 0x60); ok && v&0x4 != 0 {
 			s.Ext4NeedsRecovery = true
 		}
 	}
 	if at(0, "XFSB") {
-		s.Types = append(s.Types, FsXfs)
+		s.Types = append(s.Types, api.FsTypeXfs)
 	}
 	if at(65600, "_BHRfS_M") {
-		s.Types = append(s.Types, FsBtrfs)
+		s.Types = append(s.Types, api.FsTypeBtrfs)
 	}
 	magic, ok1 := be32(gfs2SuperOffset)
 	meta, ok2 := be32(gfs2SuperOffset + 4)
 	if ok1 && ok2 && magic == 0x01161970 && meta == 1 {
-		s.Types = append(s.Types, FsGfs2)
+		s.Types = append(s.Types, api.FsTypeGfs2)
 		if off := gfs2SuperOffset + 96; off < len(head) {
 			proto := head[off:min(off+64, len(head))]
 			if i := bytes.IndexByte(proto, 0); i >= 0 {

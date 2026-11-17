@@ -590,7 +590,7 @@ func (e *Engine) nodeMount(req *GrantRequest, u *use, typ, access, mnt string, w
 // mountFresh mounts the node mount mnt that is not mounted (mountNode),
 // refusing an ext4 that needs recovery when no use writes.
 func (e *Engine) mountFresh(source state.Source, serial state.Serial, dev, access, typ, mnt string, writer bool, explained []string, sig *signature) (string, error) {
-	if !writer && typ == config.FsTypeExt4 {
+	if !writer && typ == api.FsTypeExt4 {
 		sg, err := sig.get()
 		if err != nil {
 			return "", err
@@ -1311,7 +1311,7 @@ func isLeaseBind(mi, node *kernel.MountInfo, readOnly bool) bool {
 // leaseBindType tells whether a mount may be a lease bind: of a block
 // device, of a filesystem type that mode fs mounts.
 func (e *Engine) leaseBindType(mi *kernel.MountInfo) bool {
-	return strings.HasPrefix(mi.Source, e.devRoot()+"/") && (config.KnownFsType(mi.FsType) || slices.Contains(e.opts.FsTypes, mi.FsType))
+	return strings.HasPrefix(mi.Source, e.devRoot()+"/") && (api.KnownFsType(mi.FsType) || slices.Contains(e.opts.FsTypes, mi.FsType))
 }
 
 // unbind unmounts a lease bind target, never detaching it, and removes its

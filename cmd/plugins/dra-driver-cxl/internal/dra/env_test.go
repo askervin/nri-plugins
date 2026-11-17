@@ -47,7 +47,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
-	"github.com/containers/nri-plugins/pkg/cxl/config"
+	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -163,7 +163,7 @@ func newDriverEnv(t *testing.T, localSpecs []fake.MemdevSpec, poolSpecs ...fake.
 		filesystems: filepath.Join(dir, "filesystems"),
 		memdevs:     map[uint64]kernel.MemdevInfo{},
 		shared:      map[uint64]bool{},
-		fsTypes:     slices.Clone(config.KnownFsTypes),
+		fsTypes:     slices.Clone(api.KnownFsTypes),
 	}
 	for _, d := range []string{e.dir, e.poolDir, e.cdiDir} {
 		mustOK(t, os.MkdirAll(d, 0o755))

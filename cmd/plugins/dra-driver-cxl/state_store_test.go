@@ -27,6 +27,7 @@ import (
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -75,7 +76,7 @@ func TestStartOnALostStore(t *testing.T) {
 	noErr(t, err)
 	defer b.Stop()
 
-	fe.publisher.SetDevices(device.DevicesInfo{"dram": {Name: "dram", Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}}})
+	fe.publisher.SetDevices(dra.DevicesInfo{"dram": {Name: "dram", Dev: &dra.DRAM{Nodes: []int{0}, Size: 1 << 30}}})
 	claim := &resourcev1.ResourceClaim{
 		ObjectMeta: metav1.ObjectMeta{UID: "u1", Name: "c", Namespace: "ns"},
 		Status: resourcev1.ResourceClaimStatus{Allocation: &resourcev1.AllocationResult{Devices: resourcev1.DeviceAllocationResult{
