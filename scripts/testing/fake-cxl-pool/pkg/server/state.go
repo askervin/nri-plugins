@@ -22,6 +22,7 @@ import (
 	"sort"
 	"time"
 
+	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 )
 
@@ -82,7 +83,7 @@ func (s *Server) loadState() error {
 			s.logf("state: device %s is also in the config, using the config", pd.Name)
 			continue
 		}
-		sn, err := api.ParseSerial(pd.Serial)
+		sn, err := cxlapi.ParseSerial(pd.Serial)
 		if err != nil {
 			sn = s.serials.Next(pd.Name, pd.Shared)
 			s.logf("ERROR: state: device %s: %v; kept with the new serial 0x%x", pd.Name, err, sn)
@@ -92,7 +93,7 @@ func (s *Server) loadState() error {
 		d := &device{
 			Device: api.Device{
 				Name:       pd.Name,
-				Serial:     api.FormatSerial(sn),
+				Serial:     cxlapi.FormatSerial(sn),
 				Size:       pd.Size,
 				Shared:     pd.Shared,
 				Persistent: pd.Persistent,

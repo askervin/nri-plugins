@@ -78,16 +78,6 @@ func TestSize(t *testing.T) {
 }
 
 func TestSerial(t *testing.T) {
-	for _, s := range []string{"0xc1ee0001", "0XC1EE0001", "3253600257"} {
-		if v, err := ParseSerial(s); err != nil || v != 0xc1ee0001 || FormatSerial(v) != "0xc1ee0001" {
-			t.Errorf("ParseSerial(%q) = 0x%x, %v", s, v, err)
-		}
-	}
-	for _, bad := range []string{"", "c1ee0001", "0x", "-1"} {
-		if _, err := ParseSerial(bad); err == nil {
-			t.Errorf("ParseSerial(%q) accepted", bad)
-		}
-	}
 	var v struct{ A, B Serial }
 	if err := json.Unmarshal([]byte(`{"A": "0xC1EE0001", "B": 3253600257}`), &v); err != nil || v.A != 0xc1ee0001 || v.B != 0xc1ee0001 {
 		t.Fatalf("unmarshal: %+v %v", v, err)

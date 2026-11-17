@@ -24,7 +24,6 @@ import (
 
 	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
-	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 )
 
 // The guest commands prepare and release hotplugged CXL memory in the VM
@@ -187,13 +186,13 @@ func (c *cli) cmdGuest(ctx context.Context, args []string) error {
 // serial of the device named dev.
 func (c *cli) deviceSerial(ctx context.Context, dev string) (uint64, error) {
 	if strings.HasPrefix(dev, "0x") || strings.HasPrefix(dev, "0X") || isDecimal(dev) {
-		return api.ParseSerial(dev)
+		return cxlapi.ParseSerial(dev)
 	}
 	d, err := c.client().Device(ctx, dev)
 	if err != nil {
 		return 0, err
 	}
-	return api.ParseSerial(d.Serial)
+	return cxlapi.ParseSerial(d.Serial)
 }
 
 // isDecimal tells whether s is a non-empty string of decimal digits.

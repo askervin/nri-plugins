@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"time"
 
+	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu"
 )
@@ -143,7 +144,7 @@ func (s *Server) CreateDevice(req api.DeviceCreate) (api.Device, error) {
 	}
 	var sn uint64
 	if req.Serial != "" {
-		v, err := api.ParseSerial(req.Serial)
+		v, err := cxlapi.ParseSerial(req.Serial)
 		if err != nil {
 			return api.Device{}, api.InvalidArgument("%v", err)
 		}
@@ -161,7 +162,7 @@ func (s *Server) CreateDevice(req api.DeviceCreate) (api.Device, error) {
 	d := &device{
 		Device: api.Device{
 			Name:       name,
-			Serial:     api.FormatSerial(sn),
+			Serial:     cxlapi.FormatSerial(sn),
 			Size:       size,
 			Shared:     req.Shared,
 			Persistent: req.Persistent,
@@ -544,7 +545,7 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 			ID:              api.AttachmentID(d.Name, h.name),
 			Device:          d.Name,
 			Host:            h.name,
-			Serial:          api.FormatSerial(serial),
+			Serial:          cxlapi.FormatSerial(serial),
 			Slot:            s.slotLocked(h, bus),
 			QemuDeviceID:    qemuID,
 			QemuObjectID:    objID,

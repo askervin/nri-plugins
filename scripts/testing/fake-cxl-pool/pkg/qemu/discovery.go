@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 
+	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 )
 
@@ -216,7 +217,7 @@ func ParseLocalBackendID(id string) (LocalBackend, bool) {
 		return LocalBackend{}, false
 	}
 	lb := LocalBackend{ObjectID: id, Memdev: m[1], Bus: m[2]}
-	if sn, err := api.ParseSerial(m[3]); err == nil {
+	if sn, err := cxlapi.ParseSerial(m[3]); err == nil {
 		lb.Serial, lb.HasSerial = sn, true
 	}
 	return lb, true

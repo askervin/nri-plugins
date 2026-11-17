@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu"
 )
@@ -253,7 +254,7 @@ func (s *Server) addStaticDevice(dc DeviceConfig) error {
 	d := &device{
 		Device: api.Device{
 			Name:       dc.Name,
-			Serial:     api.FormatSerial(sn),
+			Serial:     cxlapi.FormatSerial(sn),
 			Size:       int64(dc.Size),
 			Shared:     dc.Shared,
 			Persistent: dc.Persistent,
@@ -747,7 +748,7 @@ func (s *Server) newLocalDeviceLocked(name string, lb qemu.LocalBackend) *device
 	d := &device{
 		Device: api.Device{
 			Name:    name,
-			Serial:  api.FormatSerial(sn),
+			Serial:  cxlapi.FormatSerial(sn),
 			Size:    lb.Size,
 			Backend: api.BackendRAM,
 			Scope:   api.ScopeLocal,
@@ -812,7 +813,7 @@ func (s *Server) reconcile(ctx context.Context, hs []*host) {
 				if !s.adoptWarned[key] {
 					s.adoptWarned[key] = true
 					s.logf("WARNING: host %s has qemu device %s with serial %s, not the serial %s of device %s: not adopted (another pool server's device?)",
-						h.name, t3.ID, api.FormatSerial(t3.Serial), d.Serial, d.Name)
+						h.name, t3.ID, cxlapi.FormatSerial(t3.Serial), d.Serial, d.Name)
 				}
 				continue
 			}
@@ -832,7 +833,7 @@ func (s *Server) reconcile(ctx context.Context, hs []*host) {
 				ID:              id,
 				Device:          d.Name,
 				Host:            h.name,
-				Serial:          api.FormatSerial(t3.Serial),
+				Serial:          cxlapi.FormatSerial(t3.Serial),
 				Slot:            s.slotLocked(h, t3.Bus),
 				QemuDeviceID:    t3.ID,
 				QemuObjectID:    t3.Memdev(),

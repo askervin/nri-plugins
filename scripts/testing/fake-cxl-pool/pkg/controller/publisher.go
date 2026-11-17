@@ -29,6 +29,7 @@ import (
 	"k8s.io/dynamic-resource-allocation/resourceslice"
 	"k8s.io/utils/ptr"
 
+	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 )
@@ -103,12 +104,12 @@ func (c *Controller) buildDevices(ds []api.Device) ([]resourceapi.Device, map[st
 			c.debugf("device %s: state %s, not published", d.Name, d.State)
 			continue
 		}
-		sn, err := api.ParseSerial(d.Serial)
+		sn, err := cxlapi.ParseSerial(d.Serial)
 		if err != nil {
 			c.warnName(d.Name, "device %s: %v, not published", d.Name, err)
 			continue
 		}
-		d.Serial = api.FormatSerial(sn)
+		d.Serial = cxlapi.FormatSerial(sn)
 		name := DeviceName(d.Name)
 		if name == "" {
 			c.warnName(d.Name, "device %s: no valid DNS label in the name, not published", d.Name)

@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 )
 
 // Size is a byte count that unmarshals from a JSON number or from a string
@@ -112,33 +114,6 @@ func FormatSize(v int64) string {
 	return strconv.FormatInt(v, 10)
 }
 
-// ParseSerial parses a device serial number: 0x-hex or decimal.
-func ParseSerial(s string) (uint64, error) {
-	str := strings.TrimSpace(s)
-	if str == "" {
-		return 0, fmt.Errorf("empty serial")
-	}
-	var (
-		v   uint64
-		err error
-	)
-	if strings.HasPrefix(str, "0x") || strings.HasPrefix(str, "0X") {
-		v, err = strconv.ParseUint(str[2:], 16, 64)
-	} else {
-		v, err = strconv.ParseUint(str, 10, 64)
-	}
-	if err != nil {
-		return 0, fmt.Errorf("invalid serial %q", s)
-	}
-	return v, nil
-}
-
-// FormatSerial formats a serial number the way Linux shows it in
-// /sys/bus/cxl/devices/memN/serial.
-func FormatSerial(v uint64) string {
-	return fmt.Sprintf("0x%x", v)
-}
-
 // Serial is a serial number that unmarshals from a JSON number or string
 // (YAML configs may have unquoted 0x... numbers). It marshals as a string.
 type Serial uint64
@@ -151,7 +126,7 @@ func (s *Serial) UnmarshalJSON(b []byte) error {
 		if err := json.Unmarshal(b, &str); err != nil {
 			return err
 		}
-		v, err := ParseSerial(str)
+		v, err := cxlapi.ParseSerial(str)
 		if err != nil {
 			return err
 		}
@@ -168,7 +143,7 @@ func (s *Serial) UnmarshalJSON(b []byte) error {
 
 // MarshalJSON implements json.Marshaler.
 func (s Serial) MarshalJSON() ([]byte, error) {
-	return json.Marshal(FormatSerial(uint64(s)))
+	return json.Marshal(cxlapi.FormatSerial(uint64(s)))
 }
 
 // Duration is a time.Duration that (un)marshals as a string like "30s".
