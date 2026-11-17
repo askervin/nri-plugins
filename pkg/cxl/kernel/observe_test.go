@@ -17,8 +17,11 @@ package kernel_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -328,12 +331,12 @@ func TestObserveTopology(t *testing.T) {
 func TestObserveTopologyFacts(t *testing.T) {
 	ctx := context.Background()
 	for name, change := range map[string]func(f *fake.Fake){
-		"serial 0":   func(f *fake.Fake) { f.Write("bus/cxl/devices/mem0/serial", "0") },
-		"numa_node":  func(f *fake.Fake) { f.Remove("bus/cxl/devices/mem0/numa_node") },
-		"ram size":   func(f *fake.Fake) { f.Write("bus/cxl/devices/mem0/ram/size", "bogus") },
-		"mode":       func(f *fake.Fake) { f.Remove("bus/cxl/devices/region0/mode") },
-		"meminfo":    func(f *fake.Fake) { f.Remove("devices/system/node/node1/meminfo") },
-		"block size": func(f *fake.Fake) { f.Remove("devices/system/memory/block_size_bytes") },
+		"serial without 0x": func(f *fake.Fake) { f.Write("bus/cxl/devices/mem0/serial", "c1f00001") },
+		"numa_node":         func(f *fake.Fake) { f.Remove("bus/cxl/devices/mem0/numa_node") },
+		"ram size":          func(f *fake.Fake) { f.Write("bus/cxl/devices/mem0/ram/size", "bogus") },
+		"mode":              func(f *fake.Fake) { f.Remove("bus/cxl/devices/region0/mode") },
+		"meminfo":           func(f *fake.Fake) { f.Remove("devices/system/node/node1/meminfo") },
+		"block size":        func(f *fake.Fake) { f.Remove("devices/system/memory/block_size_bytes") },
 	} {
 		f, k := newNode(t)
 		createRegion(t, k, "mem0", kernel.RegionRAM, 0)
@@ -346,6 +349,47 @@ func TestObserveTopologyFacts(t *testing.T) {
 			t.Errorf("%s: full observation %+v, %v", name, s, err)
 		}
 	}
-	_, err := (&kernel.Kernel{SysRoot: t.TempDir()}).ObserveTopology(ctx)
-	wantErr(t, err, nil, "bus/cxl/devices: no such file or directory")
+}
+
+// A node without the CXL bus has no memdevs and no regions, but its NUMA
+// nodes.
+func TestObserveTopologyWithoutCXLBus(t *testing.T) {
+	f := fake.New(t)
+	f.Remove("bus/cxl")
+	k := f.Kernel()
+	s, err := k.ObserveTopology(context.Background())
+	if err != nil || len(s.Memdevs) != 0 || len(s.Regions) != 0 || len(s.NumaNodes) == 0 || k.HasCXLBus() {
+		t.Fatalf("snapshot %+v, %v, bus %v", s, err, k.HasCXLBus())
+	}
+	if !fake.New(t).Kernel().HasCXLBus() {
+		t.Fatal("no CXL bus in a fake")
+	}
+}
+
+// A memdev without a device serial number (serial 0x0) cannot be told
+// from another one: the observations leave it out with one warning, and
+// FindMemdev finds no memdev of serial 0.
+func TestMemdevWithoutSerial(t *testing.T) {
+	f, k := newNode(t)
+	f.Plug(fake.MemdevSpec{Serial: 0})
+	var logs []string
+	k.Logf = func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
+	ctx := context.Background()
+	for range 2 {
+		s, err := k.ObserveTopology(ctx)
+		noErr(t, err)
+		if len(s.Memdevs) != 1 || s.Memdevs[0].Serial != serial0 {
+			t.Fatalf("memdevs %+v", s.Memdevs)
+		}
+		if s, err := k.Observe(ctx); err != nil || len(s.Memdevs) != 1 {
+			t.Fatalf("full observation %+v %v", s, err)
+		}
+	}
+	want := "mem1: warning: serial 0, no device serial number: left out of the observations, it cannot be told from another memdev"
+	if !slices.Equal(logs, []string{want}) {
+		t.Fatalf("logs %q, expected %q once", logs, want)
+	}
+	if name, err := k.FindMemdev(0); !errors.Is(err, kernel.ErrNotFound) {
+		t.Fatalf("memdev %q %v of serial 0", name, err)
+	}
 }

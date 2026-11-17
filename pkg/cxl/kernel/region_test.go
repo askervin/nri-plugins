@@ -66,6 +66,30 @@ func TestCreateRegionNoted(t *testing.T) {
 	}
 }
 
+// A region of one memdev takes a root decoder of its host bridge alone: a
+// root decoder that interleaves host bridges, or that lists two of them,
+// is passed over (cxl create-region of one memdev fails there with EINVAL).
+func TestRootDecoderNotInterleaved(t *testing.T) {
+	f, k := newNode(t)
+	root := "devices/platform/ACPI0017:00/root0/"
+	f.Write(root+"decoder0.0/target_list", "12,24")
+	f.Write(root+"decoder0.0/interleave_ways", "2")
+	if d, err := k.RootDecoder("mem0", kernel.RegionRAM); !errors.Is(err, kernel.ErrNotFound) {
+		t.Fatalf("root decoder %q %v, expected none", d, err)
+	}
+	for attr, v := range map[string]string{"devtype": "cxl_decoder_root", "target_list": "12", "interleave_ways": "1", "cap_ram": "1", "cap_pmem": "0"} {
+		f.Write(root+"decoder0.4/"+attr, v)
+	}
+	f.LinkTo("bus/cxl/devices/decoder0.4", root+"decoder0.4")
+	if d, err := k.RootDecoder("mem0", kernel.RegionRAM); err != nil || d != "decoder0.4" {
+		t.Fatalf("root decoder %q %v, expected decoder0.4", d, err)
+	}
+	f.Write(root+"decoder0.0/interleave_ways", "1")
+	if d, err := k.RootDecoder("mem0", kernel.RegionRAM); err != nil || d != "decoder0.4" {
+		t.Fatalf("root decoder %q %v of one way and two targets, expected decoder0.4", d, err)
+	}
+}
+
 // Regions get the lowest free name and the lowest free addresses of their
 // window; a size is a multiple of 256 MiB.
 func TestCreateRegionSizes(t *testing.T) {

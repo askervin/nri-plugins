@@ -152,6 +152,7 @@ func (f *Fake) addWindow(w Window) {
 	dir := rootPath + "/" + w.Decoder
 	f.Write(dir+"/devtype", "cxl_decoder_root")
 	f.Write(dir+"/target_list", itoa(w.HostBridge))
+	f.Write(dir+"/interleave_ways", "1")
 	f.Write(dir+"/start", fmt.Sprintf("0x%x", w.Base))
 	f.Write(dir+"/size", fmt.Sprintf("0x%x", w.Size))
 	f.Write(dir+"/cap_ram", map[bool]string{true: "1", false: "0"}[w.Type == kernel.RegionRAM])

@@ -417,6 +417,37 @@ func TestResizeDaxDeviceExcludesMappingReads(t *testing.T) {
 	}
 }
 
+// A size write to a dax device waits for the delete of a dax device and
+// for cxl disable-region and destroy-region: the kernel would hold
+// dax_region_rwsem across the removal of the device while the size write
+// to it waits for the rwsem inside the attribute (drivers/dax/bus.c).
+func TestDaxRemovalsExcludeSizeWrites(t *testing.T) {
+	f, k := sliceNode(t)
+	ctx := context.Background()
+	noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 128*mib))
+	other, err := k.CreateDaxDevice(ctx, "region0", 128*mib)
+	noErr(t, err)
+	returned := map[string]bool{}
+	var done []<-chan struct{}
+	resizeDuring := func(what string) func() {
+		return func() {
+			r, d := during(func() { _ = k.ResizeDaxDevice(ctx, "dax0.0", 64*mib) })
+			returned[what], done = r, append(done, d)
+		}
+	}
+	f.Before("write bus/cxl/devices/region0/dax_region0/dax_region/delete "+other, resizeDuring("delete"))
+	noErr(t, k.DeleteDaxDevice(ctx, "region0", other))
+	f.Before("cxl disable-region region0", resizeDuring("disable-region"))
+	f.Before("cxl destroy-region region0", resizeDuring("destroy-region"))
+	noErr(t, k.ReleaseRegion(ctx, "region0"))
+	for _, d := range done {
+		<-d
+	}
+	if len(done) != 3 || returned["delete"] || returned["disable-region"] || returned["destroy-region"] {
+		t.Fatalf("size writes during the removals: %d, returned %v", len(done), returned)
+	}
+}
+
 // The topology reads no mapping of a dax device: a scan during a write of
 // the size of a dax device does not wait for it, while a full observation,
 // which reads the memory of the dax devices, waits and has the memory

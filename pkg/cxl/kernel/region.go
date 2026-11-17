@@ -332,9 +332,10 @@ func (k *Kernel) RegionRootDecoder(region string) (string, error) {
 	return parent, nil
 }
 
-// RootDecoder returns the root decoder whose target list has the host
-// bridge of the memdev and that can map regions of the type (RegionRAM or
-// RegionPmem), the first one in natural order.
+// RootDecoder returns the root decoder whose target list is the host bridge
+// of the memdev alone and that can map regions of the type (RegionRAM or
+// RegionPmem), the first one in natural order. A root decoder that
+// interleaves host bridges does not take a region of one memdev.
 func (k *Kernel) RootDecoder(memdev, regionType string) (string, error) {
 	capAttr := ""
 	switch regionType {
@@ -357,11 +358,12 @@ func (k *Kernel) RootDecoder(memdev, regionType string) (string, error) {
 		if v, err := ReadTrim(k.cxlDev(d, capAttr)); err == nil && v != "1" {
 			continue
 		}
+		if ways, err := ReadTrim(k.cxlDev(d, "interleave_ways")); err != nil || ways != "1" {
+			continue
+		}
 		tl, _ := ReadTrim(k.cxlDev(d, "target_list"))
-		for _, t := range strings.Split(tl, ",") {
-			if n, err := strconv.Atoi(strings.TrimSpace(t)); err == nil && n == uid {
-				return d, nil
-			}
+		if n, err := strconv.Atoi(strings.TrimSpace(tl)); err == nil && n == uid {
+			return d, nil
 		}
 	}
 	return "", errorf(ErrNotFound, "no root decoder for %s regions targets host bridge %d of %s", regionType, uid, memdev)
@@ -483,7 +485,7 @@ func (k *Kernel) DisableRegion(ctx context.Context, region string) error {
 	if !exists(k.cxlDev(region)) {
 		return nil
 	}
-	if _, err := k.exec(ctx, "cxl", "disable-region", region); err != nil {
+	if err := k.regionCommand(ctx, "disable-region", region); err != nil {
 		return err
 	}
 	return nil
@@ -511,11 +513,20 @@ func (k *Kernel) DestroyRegion(ctx context.Context, region string) error {
 	if online := k.onlineRegionBlocks(region); len(online) > 0 {
 		return errorf(ErrBusyOnline, "%s: memory blocks %v are online (the kernel could not remove them, see dmesg): not destroying the region, the memory would read garbage", region, online)
 	}
-	if _, err := k.exec(ctx, "cxl", "destroy-region", region); err != nil {
+	if err := k.regionCommand(ctx, "destroy-region", region); err != nil {
 		return err
 	}
 	k.logf("destroyed %s", region)
 	return nil
+}
+
+// regionCommand runs cxl disable-region or destroy-region of the region
+// holding daxBus: the command removes the dax devices of a ram region.
+func (k *Kernel) regionCommand(ctx context.Context, command, region string) error {
+	daxBus.Lock()
+	defer daxBus.Unlock()
+	_, err := k.exec(ctx, "cxl", command, region)
+	return err
 }
 
 // checkNotLocked returns an error of kind ErrForeign if the platform locked
@@ -584,14 +595,14 @@ func (k *Kernel) releaseRegion(ctx context.Context, region string, above func() 
 			return nil, fmt.Errorf("%s: cannot offline memory (in use?): %w", region, err)
 		}
 	}
-	if _, err := k.exec(ctx, "cxl", "disable-region", region); err != nil {
+	if err := k.regionCommand(ctx, "disable-region", region); err != nil {
 		return nil, err
 	}
 	if online := k.onlineRegionBlocks(region); len(online) > 0 {
 		return nil, errorf(ErrBusyOnline, "%s: memory blocks %v are online after disabling it (the kernel could not remove them, see dmesg): not destroying the region, the memory would read garbage", region, online)
 	}
 	destroy := func() error {
-		if _, err := k.exec(ctx, "cxl", "destroy-region", region); err != nil {
+		if err := k.regionCommand(ctx, "destroy-region", region); err != nil {
 			return err
 		}
 		k.logf("destroyed %s", region)

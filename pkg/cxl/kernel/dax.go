@@ -56,17 +56,22 @@ import (
 // still adding the memory blocks (WaitDaxBlocks), device_dax has not added
 // the character device yet (the opens of Sys retry ENXIO).
 
-// daxMappings orders, in this process, the sysfs writes that may remove a
-// mappingN of a dax device (size, mapping) against the reads of the
-// mappings: the kernel removes a mapping with dax_region_rwsem held and
-// waits for the readers inside its files, while a reader of mappingN/start
-// or end waits for that rwsem inside the file (drivers/dax/bus.c), and
-// neither would end. The writes hold it exclusively and the reads shared,
-// each around its sysfs operations only: a leaf lock. It is not reentrant:
-// writeDax, the only exclusive holder, runs nothing but the one write of
-// WriteFile under it, and DaxDeviceRanges, the only shared holder, calls
-// nothing that takes it again.
-var daxMappings sync.RWMutex
+// daxBus orders, in this process, the operations of the dax bus that the
+// kernel could deadlock on (drivers/dax/bus.c):
+//   - a size or mapping write that removes a mappingN of a dax device holds
+//     dax_region_rwsem and waits for the readers inside the files of the
+//     mapping, while a reader of mappingN/start or end waits for that rwsem
+//     inside the file;
+//   - the delete of a dax device, and cxl disable-region and destroy-region
+//     of its region, hold dax_region_rwsem across the removal of the device,
+//     while a size or mapping write to the device waits for that rwsem
+//     inside the attribute.
+//
+// The size and mapping writes, the delete write and the two region
+// commands hold it exclusively, the reads of the mappings shared, each
+// around its one sysfs operation or command only: a leaf lock. It is not
+// reentrant: no holder calls anything that takes it again.
+var daxBus sync.RWMutex
 
 // Dax drivers.
 const (
@@ -304,8 +309,8 @@ func (k *Kernel) DaxDeviceSize(dax string) (uint64, error) {
 // before 5.10) the device has one range from its resource and size. A
 // device of size 0 has none.
 func (k *Kernel) DaxDeviceRanges(dax string) ([]Range, error) {
-	daxMappings.RLock()
-	defer daxMappings.RUnlock()
+	daxBus.RLock()
+	defer daxBus.RUnlock()
 	dirs, _ := filepath.Glob(k.daxDev(dax, "mapping[0-9]*"))
 	if len(dirs) == 0 {
 		size, err := k.DaxDeviceSize(dax)
@@ -533,11 +538,17 @@ func (k *Kernel) ResizeDaxDevice(ctx context.Context, dax string, size uint64) e
 }
 
 // writeDax writes the value to a sysfs attribute of a dax device that may
-// remove a mapping of the device, exclusively of the reads of mappings.
+// remove a mapping of the device, holding daxBus.
 func (k *Kernel) writeDax(dax, attr, val string) error {
-	daxMappings.Lock()
-	defer daxMappings.Unlock()
-	return k.writeFile(k.daxDev(dax, attr), val)
+	return k.writeDaxBus(k.daxDev(dax, attr), val)
+}
+
+// writeDaxBus writes the value to a sysfs attribute holding daxBus
+// exclusively.
+func (k *Kernel) writeDaxBus(path, val string) error {
+	daxBus.Lock()
+	defer daxBus.Unlock()
+	return k.writeFile(path, val)
 }
 
 // CreateDaxDevice creates a dax device of size bytes in the dax region of a
@@ -630,7 +641,7 @@ func (k *Kernel) DeleteDaxDevice(ctx context.Context, region, dax string) error 
 	if strings.HasSuffix(dax, ".0") {
 		return nil
 	}
-	if err := k.writeFile(filepath.Join(k.daxRegionDir(region), "delete"), dax); err != nil {
+	if err := k.writeDaxBus(filepath.Join(k.daxRegionDir(region), "delete"), dax); err != nil {
 		return fmt.Errorf("%s: delete %s: %w", region, dax, err)
 	}
 	k.logf("%s: deleted %s", region, dax)

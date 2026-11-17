@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"sync"
 )
 
 // Snapshot is one observation of the CXL kernel objects of the node. The
@@ -125,12 +126,13 @@ func (k *Kernel) Observe(ctx context.Context) (*Snapshot, error) {
 // of the node, read from sysfs only: it opens no device and reads no
 // mounts or mappings of dax devices, and the snapshot has no ports, dax
 // regions, pmem, block devices, mounts, boot id, or memory ranges and
-// memory blocks of dax devices. Its error is that of reading the CXL bus,
-// of a memdev, a region or a NUMA node of which a fact cannot be read, of
-// a serial that is not 0x<hex>, of a memory block size that cannot be read
-// on a node with regions, or the error of the context when it ends.
+// memory blocks of dax devices. A node without the CXL bus has no memdevs
+// and no regions. Its error is that of reading the CXL bus, of a memdev, a
+// region or a NUMA node of which a fact cannot be read, of a serial that
+// is not 0x<hex>, of a memory block size that cannot be read on a node
+// with regions, or the error of the context when it ends.
 func (k *Kernel) ObserveTopology(ctx context.Context) (*Snapshot, error) {
-	if _, err := os.ReadDir(k.cxlDev()); err != nil {
+	if _, err := os.ReadDir(k.cxlDev()); err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
 	var errs []error
@@ -176,6 +178,10 @@ func (k *Kernel) observeSysfs(ctx context.Context, s *Snapshot, problem func(str
 			k.factErr(err)
 			continue
 		}
+		if m.Serial == 0 {
+			k.warnNoSerial(name)
+			continue
+		}
 		s.Memdevs = append(s.Memdevs, m)
 		if full {
 			k.observePorts(s, m.Endpoint, seenPort, problem)
@@ -199,6 +205,24 @@ func (k *Kernel) observeSysfs(ctx context.Context, s *Snapshot, problem func(str
 	}
 	s.NumaNodes = k.NumaNodes()
 	return nil
+}
+
+// noSerial are the sysfs directories of the memdevs without a device serial
+// number that the observations of the process left out and warned of.
+var noSerial sync.Map
+
+// warnNoSerial logs once per memdev that the observations leave out the
+// memdev name, which has no device serial number (serial 0).
+func (k *Kernel) warnNoSerial(name string) {
+	if _, warned := noSerial.LoadOrStore(k.cxlDev(name), true); !warned {
+		k.logf("%s: warning: serial 0, no device serial number: left out of the observations, it cannot be told from another memdev", name)
+	}
+}
+
+// HasCXLBus tells whether the node has the CXL bus (/sys/bus/cxl/devices).
+// A node without it has no memdevs, ports or regions.
+func (k *Kernel) HasCXLBus() bool {
+	return exists(k.cxlDev())
 }
 
 // observePorts adds the ports of the decoder path of the endpoint ep ("" for

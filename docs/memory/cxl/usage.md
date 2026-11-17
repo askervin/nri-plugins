@@ -40,7 +40,10 @@ recovers.
 - cgroup v2.
 - Kernel with CXL regions (`CONFIG_CXL_REGION`), `CONFIG_DEV_DAX`,
   `CONFIG_DEV_DAX_KMEM`, `CONFIG_MEMORY_HOTREMOVE`, and `CONFIG_FS_DAX` for
-  mode `dax` (without it every devdax `mmap` fails).
+  mode `dax` (without it every devdax `mmap` fails). The CXL and dax
+  modules are loaded on CXL nodes: a node without `/sys/bus/cxl` has no
+  memdevs or regions, and the driver publishes its DRAM and the lease
+  device only.
 - For devices of persistent memory (pool devices and persistent local
   memdevs, modes `block` and `fs`): `CONFIG_CXL_PMEM`, `CONFIG_LIBNVDIMM`,
   `CONFIG_BLK_DEV_PMEM`, `CONFIG_ND_PFN` and `CONFIG_FS_DAX`; for mode

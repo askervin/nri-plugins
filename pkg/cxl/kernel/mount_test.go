@@ -187,6 +187,40 @@ func TestSetBlockDeviceReadOnly(t *testing.T) {
 	}
 }
 
+// A btrfs superblock has an anonymous device number: its mounts are
+// matched by their source. A mounted btrfs that lists the device in sysfs
+// without a mount of it found is a read-write superblock of the device.
+// The guard of SetBlockDeviceReadOnly sees both.
+func TestBtrfsSuperblocks(t *testing.T) {
+	f, k, dev := fsdaxNode(t)
+	noErr(t, setRO(k, dev, false))
+	target := mountPoint(t, "btrfs")
+	noErr(t, k.FsMount(dev, target, "btrfs", true, nil))
+	sbs, err := k.Superblocks(dev)
+	noErr(t, err)
+	if len(sbs) != 1 || sbs[0].Device != dev || !strings.HasPrefix(sbs[0].DevNum, "0:") || sbs[0].ReadOnly {
+		t.Fatalf("superblocks %+v", sbs)
+	}
+	wantErr(t, setRO(k, dev, true), kernel.ErrEBUSY, "not making "+dev+" read-only: "+dev+" is mounted read-write in pid 1 at "+target)
+	noErr(t, k.Unmount(target))
+
+	// a btrfs of another device is not one of dev
+	f.AddForeign(300, "/dev/sdz", "/mnt/other", "btrfs", false)
+	if sbs, err := k.Superblocks(dev); err != nil || len(sbs) != 0 {
+		t.Fatalf("superblocks %+v %v", sbs, err)
+	}
+	// a mounted btrfs that lists dev, its mount not found by its source
+	f.AddForeign(301, "/dev/disk/by-label/x", "/mnt/x", "btrfs", true)
+	f.Write("fs/btrfs/e9a4c1d2/devices/"+filepath.Base(dev), "")
+	sbs, err = k.Superblocks(dev)
+	noErr(t, err)
+	want := []kernel.Superblock{{Device: dev, Source: dev, FsType: "btrfs", Where: "btrfs e9a4c1d2, no mount of it found"}}
+	if !reflect.DeepEqual(sbs, want) {
+		t.Fatalf("superblocks %+v, want %+v", sbs, want)
+	}
+	wantErr(t, setRO(k, dev, true), kernel.ErrEBUSY, "is mounted read-write in btrfs e9a4c1d2")
+}
+
 // What holds a block device: a loop device over it (also one that a
 // restarted container set up, whose backing sysfs shows as "/pmem0"), an
 // exclusive open that fails; not a device that is gone (the driver's

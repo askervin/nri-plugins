@@ -72,7 +72,10 @@ type mountTable struct {
 	reconfErr map[string]error    // target -> error of Reconfigure
 	// foreign are mounts in other mount namespaces (a container's), which
 	// the process does not see, by the pid of a process in them
-	foreign    map[int][]kernel.MountInfo
+	foreign map[int][]kernel.MountInfo
+	// anon are the anonymous device numbers of the btrfs superblocks by
+	// source
+	anon       map[string]string
 	violations []string
 }
 
@@ -96,6 +99,7 @@ func newMountTable(f *Fake) *mountTable {
 		writing:   map[string]bool{},
 		reconfErr: map[string]error{},
 		foreign:   map[int][]kernel.MountInfo{},
+		anon:      map[string]string{},
 	}
 }
 
@@ -138,9 +142,16 @@ func (m *mountTable) allMounts() []kernel.MountInfo {
 	return all
 }
 
-// devNum returns the major:minor of the superblock of a source. Called
-// with m.mu held.
-func (m *mountTable) devNum(source string) string {
+// devNum returns the major:minor of the superblock of a source of the
+// type: an anonymous device number (major 0) for btrfs, as the kernel gives
+// it, else the number of the block device. Called with m.mu held.
+func (m *mountTable) devNum(source, fstype string) string {
+	if fstype == api.FsTypeBtrfs {
+		if _, ok := m.anon[source]; !ok {
+			m.anon[source] = "0:" + strconv.Itoa(40+len(m.anon))
+		}
+		return m.anon[source]
+	}
 	if strings.HasPrefix(filepath.Base(source), "loop") {
 		if n, err := strconv.Atoi(strings.TrimPrefix(filepath.Base(source), "loop")); err == nil {
 			return "7:" + strconv.Itoa(n)
@@ -237,7 +248,7 @@ func (m *mountTable) Mount(source, target, fstype string, flags uintptr, data st
 			opts = mi.SuperOpts
 		}
 	}
-	m.mounts = append(m.mounts, kernel.MountInfo{DevNum: m.devNum(source), Root: "/", Target: filepath.Clean(target), FsType: fstype,
+	m.mounts = append(m.mounts, kernel.MountInfo{DevNum: m.devNum(source, fstype), Root: "/", Target: filepath.Clean(target), FsType: fstype,
 		Source: source, SuperOpts: slices.Clone(opts), MountFlags: []string{"ro", "nosuid", "nodev"}})
 	m.render()
 	m.cut(target)
@@ -293,7 +304,7 @@ func (m *mountTable) FsMount(source, target, fstype string, readWrite bool, opti
 			opts = o
 		}
 	}
-	m.mounts = append(m.mounts, kernel.MountInfo{DevNum: m.devNum(source), Root: "/", Target: filepath.Clean(target), FsType: fstype,
+	m.mounts = append(m.mounts, kernel.MountInfo{DevNum: m.devNum(source, fstype), Root: "/", Target: filepath.Clean(target), FsType: fstype,
 		Source: source, SuperOpts: slices.Clone(opts), MountFlags: []string{"rw", "nosuid", "nodev"}})
 	m.render()
 	m.cut(target)
@@ -731,7 +742,7 @@ func (f *Fake) AddForeign(pid int, source, target, fstype string, readOnly bool)
 	m := f.mnt
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.foreign[pid] = append(m.foreign[pid], kernel.MountInfo{DevNum: m.devNum(source), Root: "/", Target: target, FsType: fstype, Source: source,
+	m.foreign[pid] = append(m.foreign[pid], kernel.MountInfo{DevNum: m.devNum(source, fstype), Root: "/", Target: target, FsType: fstype, Source: source,
 		SuperOpts: []string{map[bool]string{true: "ro", false: "rw"}[readOnly]}, MountFlags: []string{"ro", "nosuid", "nodev"}})
 	m.render()
 }

@@ -20,10 +20,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/containers/nri-plugins/pkg/cxl/api"
 )
 
 // Superblock and Mount: the filesystem of a block device (/dev/pmemK, or a
@@ -216,7 +220,10 @@ func (k *Kernel) blockDevNum(dev string) (string, error) {
 // with a mount: it scans the mountinfo of a process of each mount namespace
 // of the node for the mounts whose device number is that of dev or of a
 // loop device over it (by sysfs: the dev file of the block device, the
-// backing of the loop devices).
+// backing of the loop devices). A btrfs superblock has an anonymous device
+// number: its mounts are matched by their source, and a btrfs that lists
+// one of the devices in sysfs without such a mount is a read-write
+// superblock of the device.
 func (k *Kernel) Superblocks(dev string) ([]Superblock, error) {
 	devs := map[string]string{} // major:minor -> device node
 	num, err := k.blockDevNum(dev)
@@ -268,6 +275,9 @@ func (k *Kernel) superblocksOf(devs map[string]string) ([]Superblock, error) {
 		seenNS[ns] = true
 		for _, mi := range mounts {
 			d, ok := devs[mi.DevNum]
+			if !ok && strings.HasPrefix(mi.DevNum, "0:") {
+				d, ok = sourceDevice(mi.Source, devs)
+			}
 			if !ok || seen[mi.DevNum] {
 				continue
 			}
@@ -276,7 +286,37 @@ func (k *Kernel) superblocksOf(devs map[string]string) ([]Superblock, error) {
 				ReadOnly: mi.SuperReadOnly(), Where: "pid " + pid + " at " + mi.Target})
 		}
 	}
-	return out, nil
+	return append(out, k.unmatchedBtrfs(devs, out)...), nil
+}
+
+// sourceDevice returns the device node of devs that the source of a mount
+// names, and whether there is one.
+func sourceDevice(source string, devs map[string]string) (string, bool) {
+	for _, d := range devs {
+		if SameDevice(source, d) {
+			return d, true
+		}
+	}
+	return "", false
+}
+
+// unmatchedBtrfs returns a read-write superblock for each device node of
+// devs that a mounted btrfs lists (/sys/fs/btrfs/<fsid>/devices/<name>) and
+// that has no superblock in found: the RO state of that btrfs is not known.
+func (k *Kernel) unmatchedBtrfs(devs map[string]string, found []Superblock) []Superblock {
+	var out []Superblock
+	for _, d := range slices.Sorted(maps.Values(devs)) {
+		if slices.ContainsFunc(found, func(sb Superblock) bool { return sb.Device == d }) {
+			continue
+		}
+		m, _ := filepath.Glob(filepath.Join(k.sysRoot(), "fs", "btrfs", "*", "devices", filepath.Base(d)))
+		if len(m) == 0 {
+			continue
+		}
+		fsid := filepath.Base(filepath.Dir(filepath.Dir(m[0])))
+		out = append(out, Superblock{Device: d, Source: d, FsType: api.FsTypeBtrfs, Where: "btrfs " + fsid + ", no mount of it found"})
+	}
+	return out
 }
 
 // Holder returns what holds a block device, "" if nothing does: a loop

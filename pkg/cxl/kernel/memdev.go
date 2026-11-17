@@ -131,8 +131,12 @@ func (k *Kernel) memdevSerial(name string) (uint64, error) {
 }
 
 // FindMemdev returns the name memN of the memdev with the serial, an error
-// of kind ErrNotFound if there is none.
+// of kind ErrNotFound if there is none. No memdev has the serial 0: a
+// memdev without a device serial number cannot be told from another one.
 func (k *Kernel) FindMemdev(serial uint64) (string, error) {
+	if serial == 0 {
+		return "", errorf(ErrNotFound, "no CXL memory device with the serial 0x0: a memdev without a device serial number is not used")
+	}
 	for _, name := range k.memdevNames() {
 		if v, err := k.memdevSerial(name); err == nil && v == serial {
 			return name, nil

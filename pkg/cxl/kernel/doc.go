@@ -40,9 +40,10 @@
 //
 // Waits are polls with a deadline, woken early by kernel events (Events).
 //
-// The package is stateless and takes no locks: a Kernel holds configuration
-// only and every call reads sysfs afresh. The serialization of the kernel
-// operations of a process is its caller's.
+// A Kernel holds configuration only, and every call reads sysfs afresh. The
+// package has one lock, daxBus (dax.go): it orders the operations of the
+// dax bus that the kernel could deadlock on. The caller serializes the
+// other kernel operations of a process.
 //
 // Names: the observation of an object that the driver also keeps a record of
 // has the suffix Info (MemdevInfo, RegionInfo, DaxDeviceInfo, MountInfo);
