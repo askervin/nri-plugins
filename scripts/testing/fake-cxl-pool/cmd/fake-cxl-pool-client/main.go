@@ -28,7 +28,6 @@ import (
 	"os/signal"
 	"strings"
 	"text/tabwriter"
-	"time"
 
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
