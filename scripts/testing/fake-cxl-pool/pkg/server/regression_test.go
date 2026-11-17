@@ -28,20 +28,21 @@ import (
 
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu"
+	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu/fake"
 )
 
 // gatedMon blocks the first QueryTree after arm() until release(), after it
 // has taken its snapshot: a refresh with a stale tree.
 type gatedMon struct {
-	*qemu.Fake
+	*fake.Qemu
 	mu    sync.Mutex
 	armed bool
 	snap  chan struct{}
 	gate  chan struct{}
 }
 
-func newGatedMon(f *qemu.Fake) *gatedMon {
-	return &gatedMon{Fake: f, snap: make(chan struct{}), gate: make(chan struct{})}
+func newGatedMon(f *fake.Qemu) *gatedMon {
+	return &gatedMon{Qemu: f, snap: make(chan struct{}), gate: make(chan struct{})}
 }
 
 func (g *gatedMon) arm() {
@@ -51,7 +52,7 @@ func (g *gatedMon) arm() {
 }
 
 func (g *gatedMon) QueryTree(ctx context.Context) (*qemu.Tree, error) {
-	t, err := g.Fake.QueryTree(ctx)
+	t, err := g.Qemu.QueryTree(ctx)
 	g.mu.Lock()
 	armed := g.armed
 	g.armed = false
@@ -79,7 +80,7 @@ func newServerWith(t *testing.T, cfgText string, mons map[string]qemu.Monitor) *
 		}
 	}
 	srv, err := New(cfg, Options{
-		Logger:       log.New(testWriter{t}, "", 0),
+		Logger:       log.New(t.Output(), "", 0),
 		Verbose:      true,
 		Discover:     func() ([]*qemu.Process, error) { return procs, nil },
 		ProcessAlive: func(int, uint64) bool { return true },
@@ -89,8 +90,8 @@ func newServerWith(t *testing.T, cfgText string, mons map[string]qemu.Monitor) *
 					return m
 				}
 			}
-			f := qemu.NewFake(nil, nil)
-			f.Unreachable = true
+			f := fake.NewQemu(nil, nil)
+			f.SetUnreachable(true)
 			return f
 		},
 		SocketExists:   func(p string) bool { return strings.HasSuffix(p, "qmp.sock") },
@@ -227,11 +228,11 @@ func TestDetachIgnoresClientCancel(t *testing.T) {
 }
 
 // M3: concurrent attach/detach of an attaching device (run with -race).
-type slowAddMon struct{ *qemu.Fake }
+type slowAddMon struct{ *fake.Qemu }
 
 func (s slowAddMon) DeviceAdd(ctx context.Context, d qemu.CXLType3) error {
 	time.Sleep(30 * time.Millisecond)
-	return s.Fake.DeviceAdd(ctx, d)
+	return s.Qemu.DeviceAdd(ctx, d)
 }
 
 func TestConcurrentAttachDetachNoRace(t *testing.T) {
@@ -275,7 +276,7 @@ func TestDeviceDelNotFoundChecksLeak(t *testing.T) {
 		t.Fatal(err)
 	}
 	// surprise removal behind the server, memory kept online in the guest
-	f.LeakOnRelease = true
+	f.SetLeakOnRelease(true)
 	f.Hold(a.QemuDeviceID)
 	if err := f.DeviceDel(ctx, a.QemuDeviceID); err != nil {
 		t.Fatal(err)
@@ -291,7 +292,7 @@ func TestDeviceDelNotFoundChecksLeak(t *testing.T) {
 // L3: an interleaved window is shared by its targets.
 func TestInterleavedFMW(t *testing.T) {
 	f := newVMFake()
-	f.FMW = []qemu.FMWWindow{{Targets: []string{"cxlhb0", "cxlhb1"}, Size: 1 << 30}}
+	f.SetFMW([]qemu.FMWWindow{{Targets: []string{"cxlhb0", "cxlhb1"}, Size: 1 << 30}})
 	srv := newServerWith(t, poolConfig(t.TempDir(), ""), map[string]qemu.Monitor{"vm1": f})
 	h := cachedHost(srv, "vm1")
 	if h.HostBridges[0].FMWSize != 512<<20 || h.HostBridges[1].FMWSize != 512<<20 {
@@ -304,7 +305,7 @@ func TestInterleavedFMW(t *testing.T) {
 func TestSerialCollisionWithLocalDevice(t *testing.T) {
 	cfg := "devices:\n  - name: cfg0\n    size: 256M\n    serial: 0xc100e2e0\n"
 	f1, f2 := newVMFake(), newVMFake()
-	for _, f := range []*qemu.Fake{f1, f2} {
+	for _, f := range []*fake.Qemu{f1, f2} {
 		f.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendRAM, ID: localObj, Size: 256 << 20, Share: true})
 	}
 	srv := newServerWith(t, poolConfig(t.TempDir(), cfg), map[string]qemu.Monitor{"vm1": f1, "vm2": f2})
@@ -326,12 +327,12 @@ func TestSerialCollisionWithLocalDevice(t *testing.T) {
 func TestReservedSlotBeforeNuma(t *testing.T) {
 	f := newVMFake()
 	srv := newServerWith(t, poolConfig(t.TempDir(), "devices:\n  - name: a\n    size: 256M\n    serial: 0xc1ee0001\n  - name: b\n    size: 256M\n    serial: 0xc1ee0002\n"), map[string]qemu.Monitor{"vm1": f})
-	a, _, err := srv.Attach(ctx, "a", api.AttachRequest{Host: "vm1", NumaNode: ptr(1)})
+	a, _, err := srv.Attach(ctx, "a", api.AttachRequest{Host: "vm1", NumaNode: new(1)})
 	if err != nil || a.Slot.Bus != "ds0_hb1" {
 		t.Fatalf("attach a: %+v %v", a, err)
 	}
 	// only ds1_hb1 (reserved for vm1.memdev0) is left on node 1
-	b, _, err := srv.Attach(ctx, "b", api.AttachRequest{Host: "vm1", NumaNode: ptr(1)})
+	b, _, err := srv.Attach(ctx, "b", api.AttachRequest{Host: "vm1", NumaNode: new(1)})
 	if err != nil || b.Slot.NumaNode != 0 {
 		t.Fatalf("attach b took the reserved slot: %+v %v", b, err)
 	}

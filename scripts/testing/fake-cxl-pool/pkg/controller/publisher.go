@@ -88,7 +88,8 @@ func (c *Controller) convertDevice(name string, d api.Device) resourceapi.Device
 }
 
 // buildDevices converts the pool devices of the server. Quarantined
-// devices (state error) are left out, names are sanitized, duplicates
+// devices (state error) and devices without a valid serial are left out,
+// serials get the form 0x<lower-case hex>, names are sanitized, duplicates
 // skipped. It returns the devices and the map published name -> device.
 func (c *Controller) buildDevices(ds []api.Device) ([]resourceapi.Device, map[string]api.Device) {
 	sort.Slice(ds, func(i, j int) bool { return ds[i].Name < ds[j].Name })
@@ -102,6 +103,12 @@ func (c *Controller) buildDevices(ds []api.Device) ([]resourceapi.Device, map[st
 			c.debugf("device %s: state %s, not published", d.Name, d.State)
 			continue
 		}
+		sn, err := api.ParseSerial(d.Serial)
+		if err != nil {
+			c.warnName(d.Name, "device %s: %v, not published", d.Name, err)
+			continue
+		}
+		d.Serial = api.FormatSerial(sn)
 		name := DeviceName(d.Name)
 		if name == "" {
 			c.warnName(d.Name, "device %s: no valid DNS label in the name, not published", d.Name)

@@ -81,63 +81,6 @@ func TestObjectAddAlign(t *testing.T) {
 	}
 }
 
-func TestFakePersistentChecks(t *testing.T) {
-	ctx := context.Background()
-	f := NewFake(map[string]int{"hb0": 0}, map[string]string{"ds0": "hb0", "ds1": "hb0"})
-	for _, b := range []MemoryBackend{pmemData, pmemLSA, {QomType: MemoryBackendFile, ID: "other", Size: 1 << 28, MemPath: "/x", Share: true}} {
-		if err := f.ObjectAdd(ctx, b); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, tc := range []struct {
-		d    CXLType3
-		want string
-	}{
-		{CXLType3{ID: "a", Bus: "ds0", Serial: 1}, "at least one memdev property must be set"},
-		{CXLType3{ID: "b", Bus: "ds0", PersistentMemdev: "fcp_llm0.hp1", Serial: 1}, "lsa property must be set for persistent devices"},
-		{CXLType3{ID: "c", Bus: "ds0", PersistentMemdev: "nosuch", LSA: "fcp_llm0.hp1-lsa", Serial: 1}, "Property 'cxl-type3.persistent-memdev' can't find value 'nosuch'"},
-		{CXLType3{ID: "d", Bus: "ds0", PersistentMemdev: "fcp_llm0.hp1", LSA: "nosuch", Serial: 1}, "Property 'cxl-type3.lsa' can't find value 'nosuch'"},
-		{CXLType3{ID: "e", Bus: "ds0", PersistentMemdev: "fcp_llm0.hp1", LSA: "fcp_llm0.hp1", Serial: 1}, "memory backend fcp_llm0.hp1 can't be used multiple times."},
-	} {
-		if err := f.DeviceAdd(ctx, tc.d); err == nil || !strings.Contains(err.Error(), tc.want) {
-			t.Fatalf("device_add %+v: expected %q, got %v", tc.d, tc.want, err)
-		}
-	}
-	if err := f.DeviceAdd(ctx, pmemDev); err != nil {
-		t.Fatal(err)
-	}
-	// both backends are in use now
-	for _, d := range []CXLType3{
-		{ID: "f", Bus: "ds1", PersistentMemdev: "other", LSA: "fcp_llm0.hp1-lsa", Serial: 2},
-		{ID: "g", Bus: "ds1", VolatileMemdev: "fcp_llm0.hp1", Serial: 2},
-	} {
-		if err := f.DeviceAdd(ctx, d); err == nil || !strings.Contains(err.Error(), "can't be used multiple times") {
-			t.Fatalf("device_add %+v of a busy backend: %v", d, err)
-		}
-	}
-	for _, id := range []string{pmemData.ID, pmemLSA.ID} {
-		if err := f.ObjectDel(ctx, id); err == nil || !strings.Contains(err.Error(), "is in use") {
-			t.Fatalf("object_del %s of a busy backend: %v", id, err)
-		}
-	}
-	tree, err := f.QueryTree(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d := treeDevice(tree, "fcp_llm0.hp1"); d == nil || d.PersistentMemdev != "fcp_llm0.hp1" || d.LSA != "fcp_llm0.hp1-lsa" ||
-		d.VolatileMemdev != "" || d.Memdev() != "fcp_llm0.hp1" {
-		t.Fatalf("unexpected tree device %+v", d)
-	}
-	if err := f.DeviceDel(ctx, pmemDev.ID); err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []string{pmemData.ID, pmemLSA.ID} {
-		if err := f.ObjectDel(ctx, id); err != nil {
-			t.Fatalf("object_del %s after device_del: %v", id, err)
-		}
-	}
-}
-
 func TestParseQtreePersistent(t *testing.T) {
 	text := CleanHMPOutput(rawSession(t, "hmp-raw-info-qtree-full-crio.txt"))
 	old := `                    memdev = ""

@@ -24,6 +24,7 @@ import (
 
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu"
+	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu/fake"
 )
 
 func TestServerName(t *testing.T) {
@@ -117,7 +118,7 @@ func TestSlotPatterns(t *testing.T) {
 	}
 	// the automatic choice takes matching slots only, NUMA preference
 	// notwithstanding
-	a, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", NumaNode: ptr(1)})
+	a, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", NumaNode: new(1)})
 	if err != nil || a.Slot.HostBridge != "cxlhb0" {
 		t.Fatalf("pooled0: %+v %v", a, err)
 	}
@@ -133,7 +134,7 @@ func TestSlotPatterns(t *testing.T) {
 
 func TestAdoptionChecksSerial(t *testing.T) {
 	e := newTestEnv(t, "")
-	plug := func(f *qemu.Fake, id string, serial uint64) {
+	plug := func(f *fake.Qemu, id string, serial uint64) {
 		t.Helper()
 		dev, _, _ := strings.Cut(strings.TrimPrefix(id, "fcp_"), ".")
 		d, err := e.c.Device(ctx, dev)

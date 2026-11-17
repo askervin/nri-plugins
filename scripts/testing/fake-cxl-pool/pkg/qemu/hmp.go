@@ -27,24 +27,7 @@ import (
 	"time"
 )
 
-// Logf is a printf-like logging function. A nil Logf discards.
-type Logf func(format string, args ...any)
-
-func (l Logf) printf(format string, args ...any) {
-	if l != nil {
-		l(format, args...)
-	}
-}
-
-const (
-	// DefaultCommandTimeout limits a monitor command when the context
-	// has no deadline.
-	DefaultCommandTimeout = 10 * time.Second
-	// DefaultPollInterval is the interval of polling the device tree
-	// while waiting for a device to be deleted over HMP.
-	DefaultPollInterval = 500 * time.Millisecond
-	hmpPrompt           = "(qemu) "
-)
+const hmpPrompt = "(qemu) "
 
 // HMP is a Monitor that talks to the human monitor (readline mode) over a
 // unix socket. Every command uses a new connection, like vm-monitor in
@@ -69,13 +52,6 @@ func (h *HMP) Close() {
 	h.closed = true
 }
 
-func withDefaultTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
-	if _, ok := ctx.Deadline(); ok {
-		return context.WithCancel(ctx)
-	}
-	return context.WithTimeout(ctx, DefaultCommandTimeout)
-}
-
 // Command runs one HMP command line and returns its output with the
 // readline echo, terminal escapes, carriage returns and the prompt removed.
 // An output line starting with "Error:" makes it return an *Error.
@@ -95,12 +71,18 @@ func (h *HMP) Command(ctx context.Context, line string) (string, error) {
 	if !strings.HasPrefix(line, "info ") {
 		h.Log.printf("hmp %s: %q: %q", h.Path, line, out)
 	}
+	return out, hmpError(out, line)
+}
+
+// hmpError returns an *Error for the first line of the output of an HMP
+// command line that starts with "Error: ", nil if there is none.
+func hmpError(out, line string) error {
 	for _, l := range strings.Split(out, "\n") {
 		if desc, ok := strings.CutPrefix(l, "Error: "); ok {
-			return out, &Error{Desc: desc, Command: line}
+			return &Error{Desc: desc, Command: line}
 		}
 	}
-	return out, nil
+	return nil
 }
 
 func (h *HMP) command(ctx context.Context, line string) (string, error) {
@@ -122,8 +104,7 @@ func (h *HMP) command(ctx context.Context, line string) (string, error) {
 			n, err := conn.Read(chunk)
 			buf.Write(chunk[:n])
 			if err != nil {
-				var ne net.Error
-				if ctx.Err() != nil || (errors.As(err, &ne) && ne.Timeout()) {
+				if ne, ok := errors.AsType[net.Error](err); ctx.Err() != nil || (ok && ne.Timeout()) {
 					return fmt.Errorf("hmp %s: no prompt: %w (is another client connected?)", h.Path, context.DeadlineExceeded)
 				}
 				return fmt.Errorf("hmp %s: read: %w", h.Path, err)

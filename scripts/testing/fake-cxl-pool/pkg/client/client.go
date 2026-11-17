@@ -121,8 +121,8 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 
 // ErrorObject decodes the object attached to an *api.Error into v.
 func ErrorObject(err error, v any) bool {
-	var e *api.Error
-	if !errors.As(err, &e) || e.Object == nil {
+	e, ok := errors.AsType[*api.Error](err)
+	if !ok || e.Object == nil {
 		return false
 	}
 	b, merr := json.Marshal(e.Object)

@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package qemu
+// Package fake has an in-memory qemu for the unit tests of the users of
+// package qemu.
+package fake
 
 import (
 	"context"
@@ -22,51 +24,46 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu"
 )
 
-// Fake is an in-memory Monitor for unit tests. It models the parts of qemu
-// and of the guest that matter for hotplug: device and object id
+// Qemu is an in-memory qemu.Monitor for unit tests. It models the parts of
+// qemu and of the guest that matter for hotplug: device and object id
 // uniqueness, busy backends, slot occupancy and a guest that holds a device
 // until it is released.
-type Fake struct {
+type Qemu struct {
 	mu          sync.Mutex
-	VersionStr  string
-	hostBridges []TreeHostBridge
-	ports       []Port
-	objects     map[string]MemoryBackend
-	devices     map[string]CXLType3
+	version     string
+	hostBridges []qemu.TreeHostBridge
+	ports       []qemu.Port
+	objects     map[string]qemu.MemoryBackend
+	devices     map[string]qemu.CXLType3
 	usedIDs     map[string]bool // qemu never reuses a device id
 	mapped      map[string]bool // backend in use by a device
 	pendingDel  map[string]bool
 	held        map[string]bool // guest holds the device: device_del does not complete
-	// Stock emulates unpatched qemu: a deleted cxl-type3 stays in the tree
-	// forever (and its backend stays mapped).
-	Stock bool
-	// FailDeviceAdd, if set, is returned by the next DeviceAdd.
-	FailDeviceAdd error
-	// Unreachable makes every call fail.
-	Unreachable bool
-	Log         []string
+	stock       bool
+	failAdd     error
+	unreachable bool
+	log         []string
 	deletedCh   map[string]chan struct{}
 	// leaked backends stay mapped after their device is gone (the guest
 	// kept the memory online)
-	leaked map[string]bool
-	// LeakOnRelease makes Release of a held device remove the device but
-	// leave its backend mapped (patched qemu, guest memory stuck online).
-	LeakOnRelease bool
-	// FMW are the fixed memory windows reported by QomGet /machine cxl-fmw.
-	FMW []FMWWindow
+	leaked        map[string]bool
+	leakOnRelease bool
+	fmw           []qemu.FMWWindow
 	// noSerial are the devices plugged without a serial property
 	noSerial map[string]bool
 }
 
-// NewFake returns a fake monitor with the given host bridges (id ->
+// NewQemu returns a fake monitor with the given host bridges (id ->
 // numa node) and slots (bus -> host bridge, all downstream ports).
-func NewFake(hostBridges map[string]int, slots map[string]string) *Fake {
-	f := &Fake{
-		VersionStr: "11.1.1 fake",
-		objects:    map[string]MemoryBackend{},
-		devices:    map[string]CXLType3{},
+func NewQemu(hostBridges map[string]int, slots map[string]string) *Qemu {
+	f := &Qemu{
+		version:    "11.1.1 fake",
+		objects:    map[string]qemu.MemoryBackend{},
+		devices:    map[string]qemu.CXLType3{},
 		usedIDs:    map[string]bool{},
 		mapped:     map[string]bool{},
 		pendingDel: map[string]bool{},
@@ -76,31 +73,69 @@ func NewFake(hostBridges map[string]int, slots map[string]string) *Fake {
 		noSerial:   map[string]bool{},
 	}
 	for id, numa := range hostBridges {
-		f.hostBridges = append(f.hostBridges, TreeHostBridge{ID: id, NumaNode: numa})
+		f.hostBridges = append(f.hostBridges, qemu.TreeHostBridge{ID: id, NumaNode: numa})
 	}
 	sort.Slice(f.hostBridges, func(i, j int) bool { return f.hostBridges[i].ID < f.hostBridges[j].ID })
 	for bus, hb := range slots {
-		f.ports = append(f.ports, Port{Bus: bus, Kind: PortDownstream, HostBridge: hb})
+		f.ports = append(f.ports, qemu.Port{Bus: bus, Kind: qemu.PortDownstream, HostBridge: hb})
 	}
 	sort.Slice(f.ports, func(i, j int) bool { return f.ports[i].Bus < f.ports[j].Bus })
 	return f
 }
 
+// SetStock makes the fake emulate unpatched qemu: a deleted cxl-type3
+// stays in the tree forever (and its backend stays mapped).
+func (f *Qemu) SetStock(on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stock = on
+}
+
+// FailNextDeviceAdd makes the next DeviceAdd return err.
+func (f *Qemu) FailNextDeviceAdd(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failAdd = err
+}
+
+// SetUnreachable makes every call fail.
+func (f *Qemu) SetUnreachable(on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unreachable = on
+}
+
+// SetLeakOnRelease makes Release of a held device remove the device but
+// leave its backend mapped (patched qemu, guest memory stuck online).
+func (f *Qemu) SetLeakOnRelease(on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.leakOnRelease = on
+}
+
+// SetFMW sets the fixed memory windows that QomGet /machine cxl-fmw
+// reports.
+func (f *Qemu) SetFMW(ws []qemu.FMWWindow) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fmw = ws
+}
+
 // AddObject pre-declares a memory backend (like -object on the command line).
-func (f *Fake) AddObject(b MemoryBackend) {
+func (f *Qemu) AddObject(b qemu.MemoryBackend) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.objects[b.ID] = b
 }
 
 // PlugDevice plugs a device as if done by someone else (or at boot).
-func (f *Fake) PlugDevice(d CXLType3) error {
+func (f *Qemu) PlugDevice(d qemu.CXLType3) error {
 	return f.DeviceAdd(context.Background(), d)
 }
 
 // PlugDeviceWithoutSerial plugs a device like PlugDevice, but the device
 // tree shows it without a serial (device_add without serial=).
-func (f *Fake) PlugDeviceWithoutSerial(d CXLType3) error {
+func (f *Qemu) PlugDeviceWithoutSerial(d qemu.CXLType3) error {
 	d.Serial = 0
 	if err := f.DeviceAdd(context.Background(), d); err != nil {
 		return err
@@ -113,27 +148,27 @@ func (f *Fake) PlugDeviceWithoutSerial(d CXLType3) error {
 
 // Hold makes the guest hold the device: device_del will not complete until
 // Release.
-func (f *Fake) Hold(id string) {
+func (f *Qemu) Hold(id string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.held[id] = true
 }
 
 // Release releases a device in the guest. A pending device_del completes.
-func (f *Fake) Release(id string) {
+func (f *Qemu) Release(id string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.held, id)
 	if f.pendingDel[id] {
-		if f.LeakOnRelease {
+		if f.leakOnRelease {
 			f.leaked[f.devices[id].Memdev()] = true
 		}
 		f.completeDelLocked(id)
 	}
 }
 
-// BackendMapped implements Monitor.
-func (f *Fake) BackendMapped(ctx context.Context, objID string) (bool, error) {
+// BackendMapped implements qemu.Monitor.
+func (f *Qemu) BackendMapped(ctx context.Context, objID string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.check(); err != nil {
@@ -143,7 +178,7 @@ func (f *Fake) BackendMapped(ctx context.Context, objID string) (bool, error) {
 }
 
 // HasDevice returns true if the device is plugged.
-func (f *Fake) HasDevice(id string) bool {
+func (f *Qemu) HasDevice(id string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	_, ok := f.devices[id]
@@ -151,7 +186,7 @@ func (f *Fake) HasDevice(id string) bool {
 }
 
 // HasObject returns true if the object exists.
-func (f *Fake) HasObject(id string) bool {
+func (f *Qemu) HasObject(id string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	_, ok := f.objects[id]
@@ -159,88 +194,88 @@ func (f *Fake) HasObject(id string) bool {
 }
 
 // Commands returns the log of mutating commands.
-func (f *Fake) Commands() []string {
+func (f *Qemu) Commands() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]string(nil), f.Log...)
+	return append([]string(nil), f.log...)
 }
 
-func (f *Fake) check() error {
-	if f.Unreachable {
+func (f *Qemu) check() error {
+	if f.unreachable {
 		return fmt.Errorf("fake monitor unreachable")
 	}
 	return nil
 }
 
-// Version implements Monitor.
-func (f *Fake) Version(ctx context.Context) (string, error) {
+// Version implements qemu.Monitor.
+func (f *Qemu) Version(ctx context.Context) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.check(); err != nil {
 		return "", err
 	}
-	return f.VersionStr, nil
+	return f.version, nil
 }
 
-// ObjectAdd implements Monitor.
-func (f *Fake) ObjectAdd(ctx context.Context, b MemoryBackend) error {
+// ObjectAdd implements qemu.Monitor.
+func (f *Qemu) ObjectAdd(ctx context.Context, b qemu.MemoryBackend) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.check(); err != nil {
 		return err
 	}
-	f.Log = append(f.Log, HMPObjectAdd(b))
+	f.log = append(f.log, qemu.HMPObjectAdd(b))
 	if _, ok := f.objects[b.ID]; ok {
-		return &Error{Command: "object_add", Desc: fmt.Sprintf("attempt to add duplicate property '%s' to object (type 'container')", b.ID)}
+		return &qemu.Error{Command: "object_add", Desc: fmt.Sprintf("attempt to add duplicate property '%s' to object (type 'container')", b.ID)}
 	}
 	f.objects[b.ID] = b
 	return nil
 }
 
-// ObjectDel implements Monitor.
-func (f *Fake) ObjectDel(ctx context.Context, id string) error {
+// ObjectDel implements qemu.Monitor.
+func (f *Qemu) ObjectDel(ctx context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.check(); err != nil {
 		return err
 	}
-	f.Log = append(f.Log, "object_del "+id)
+	f.log = append(f.log, "object_del "+id)
 	if _, ok := f.objects[id]; !ok {
-		return &Error{Command: "object_del", Desc: fmt.Sprintf("object '%s' not found", id)}
+		return &qemu.Error{Command: "object_del", Desc: fmt.Sprintf("object '%s' not found", id)}
 	}
 	if f.mapped[id] {
-		return &Error{Command: "object_del", Desc: fmt.Sprintf("object '%s' is in use, can not be deleted", id)}
+		return &qemu.Error{Command: "object_del", Desc: fmt.Sprintf("object '%s' is in use, can not be deleted", id)}
 	}
 	delete(f.objects, id)
 	return nil
 }
 
-// DeviceAdd implements Monitor.
-func (f *Fake) DeviceAdd(ctx context.Context, d CXLType3) error {
+// DeviceAdd implements qemu.Monitor.
+func (f *Qemu) DeviceAdd(ctx context.Context, d qemu.CXLType3) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.check(); err != nil {
 		return err
 	}
-	f.Log = append(f.Log, HMPDeviceAdd(d))
-	if err := f.FailDeviceAdd; err != nil {
-		f.FailDeviceAdd = nil
+	f.log = append(f.log, qemu.HMPDeviceAdd(d))
+	if err := f.failAdd; err != nil {
+		f.failAdd = nil
 		return err
 	}
 	if f.usedIDs[d.ID] {
-		return &Error{Command: "device_add", Desc: fmt.Sprintf("Duplicate device ID '%s'", d.ID)}
+		return &qemu.Error{Command: "device_add", Desc: fmt.Sprintf("Duplicate device ID '%s'", d.ID)}
 	}
-	var port *Port
+	var port *qemu.Port
 	for i := range f.ports {
 		if f.ports[i].Bus == d.Bus {
 			port = &f.ports[i]
 		}
 	}
 	if port == nil {
-		return &Error{Command: "device_add", Desc: fmt.Sprintf("Bus '%s' not found", d.Bus)}
+		return &qemu.Error{Command: "device_add", Desc: fmt.Sprintf("Bus '%s' not found", d.Bus)}
 	}
 	if len(port.Children) > 0 {
-		return &Error{Command: "device_add", Desc: "PCI: slot 0 function 0 already occupied by cxl-type3, new func cxl-type3 cannot be exposed to guest."}
+		return &qemu.Error{Command: "device_add", Desc: "PCI: slot 0 function 0 already occupied by cxl-type3, new func cxl-type3 cannot be exposed to guest."}
 	}
 	backends, err := f.checkBackendsLocked(d)
 	if err != nil {
@@ -251,19 +286,19 @@ func (f *Fake) DeviceAdd(ctx context.Context, d CXLType3) error {
 		f.mapped[b] = true
 	}
 	f.devices[d.ID] = d
-	port.Children = []TreeDevice{{Driver: "cxl-type3", ID: d.ID}}
+	port.Children = []qemu.TreeDevice{{Driver: "cxl-type3", ID: d.ID}}
 	f.deletedCh[d.ID] = make(chan struct{})
 	return nil
 }
 
 // checkBackendsLocked returns the backend object ids of a cxl-type3, or
 // the error qemu gives for missing, unknown or busy backends.
-func (f *Fake) checkBackendsLocked(d CXLType3) ([]string, error) {
+func (f *Qemu) checkBackendsLocked(d qemu.CXLType3) ([]string, error) {
 	if d.VolatileMemdev == "" && d.PersistentMemdev == "" {
-		return nil, &Error{Command: "device_add", Desc: "at least one memdev property must be set"}
+		return nil, &qemu.Error{Command: "device_add", Desc: "at least one memdev property must be set"}
 	}
 	if d.PersistentMemdev != "" && d.LSA == "" {
-		return nil, &Error{Command: "device_add", Desc: "lsa property must be set for persistent devices"}
+		return nil, &qemu.Error{Command: "device_add", Desc: "lsa property must be set for persistent devices"}
 	}
 	var backends []string
 	for _, p := range []struct{ prop, id string }{
@@ -275,29 +310,29 @@ func (f *Fake) checkBackendsLocked(d CXLType3) ([]string, error) {
 			continue
 		}
 		if _, ok := f.objects[p.id]; !ok {
-			return nil, &Error{Command: "device_add", Desc: fmt.Sprintf("Property 'cxl-type3.%s' can't find value '%s'", p.prop, p.id)}
+			return nil, &qemu.Error{Command: "device_add", Desc: fmt.Sprintf("Property 'cxl-type3.%s' can't find value '%s'", p.prop, p.id)}
 		}
 		if f.mapped[p.id] || slices.Contains(backends, p.id) {
-			return nil, &Error{Command: "device_add", Desc: fmt.Sprintf("memory backend %s can't be used multiple times.", p.id)}
+			return nil, &qemu.Error{Command: "device_add", Desc: fmt.Sprintf("memory backend %s can't be used multiple times.", p.id)}
 		}
 		backends = append(backends, p.id)
 	}
 	return backends, nil
 }
 
-// DeviceDel implements Monitor.
-func (f *Fake) DeviceDel(ctx context.Context, id string) error {
+// DeviceDel implements qemu.Monitor.
+func (f *Qemu) DeviceDel(ctx context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.check(); err != nil {
 		return err
 	}
-	f.Log = append(f.Log, "device_del "+id)
+	f.log = append(f.log, "device_del "+id)
 	if _, ok := f.devices[id]; !ok {
-		return &Error{Command: "device_del", Class: "DeviceNotFound", Desc: fmt.Sprintf("Device '%s' not found", id)}
+		return &qemu.Error{Command: "device_del", Class: "DeviceNotFound", Desc: fmt.Sprintf("Device '%s' not found", id)}
 	}
 	if f.pendingDel[id] {
-		return &Error{Command: "device_del", Desc: fmt.Sprintf("Device %s is already in the process of unplug", id)}
+		return &qemu.Error{Command: "device_del", Desc: fmt.Sprintf("Device %s is already in the process of unplug", id)}
 	}
 	f.pendingDel[id] = true
 	if !f.held[id] {
@@ -306,8 +341,8 @@ func (f *Fake) DeviceDel(ctx context.Context, id string) error {
 	return nil
 }
 
-func (f *Fake) completeDelLocked(id string) {
-	if f.Stock {
+func (f *Qemu) completeDelLocked(id string) {
+	if f.stock {
 		// the guest has released it, but qemu keeps the device
 		return
 	}
@@ -330,9 +365,9 @@ func (f *Fake) completeDelLocked(id string) {
 	}
 }
 
-// QomGet implements Monitor for /machine cxl-fmw and
+// QomGet implements qemu.Monitor for /machine cxl-fmw and
 // power_controller_present of ports.
-func (f *Fake) QomGet(ctx context.Context, path, property string) (json.RawMessage, error) {
+func (f *Qemu) QomGet(ctx context.Context, path, property string) (json.RawMessage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.check(); err != nil {
@@ -340,19 +375,19 @@ func (f *Fake) QomGet(ctx context.Context, path, property string) (json.RawMessa
 	}
 	switch {
 	case path == "/machine" && property == "cxl-fmw":
-		b, _ := json.Marshal(f.FMW)
+		b, _ := json.Marshal(f.fmw)
 		return b, nil
 	case property == "power_controller_present":
-		if f.Stock {
-			return nil, &Error{Command: "qom-get", Desc: "Property 'cxl-downstream.power_controller_present' not found"}
+		if f.stock {
+			return nil, &qemu.Error{Command: "qom-get", Desc: "Property 'cxl-downstream.power_controller_present' not found"}
 		}
 		return json.RawMessage("true"), nil
 	}
-	return nil, &Error{Command: "qom-get", Desc: fmt.Sprintf("Property '%s' not found", property)}
+	return nil, &qemu.Error{Command: "qom-get", Desc: fmt.Sprintf("Property '%s' not found", property)}
 }
 
-// DeviceExists implements Monitor.
-func (f *Fake) DeviceExists(ctx context.Context, id string) (bool, error) {
+// DeviceExists implements qemu.Monitor.
+func (f *Qemu) DeviceExists(ctx context.Context, id string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.check(); err != nil {
@@ -362,8 +397,8 @@ func (f *Fake) DeviceExists(ctx context.Context, id string) (bool, error) {
 	return ok, nil
 }
 
-// WaitDeviceDeleted implements Monitor.
-func (f *Fake) WaitDeviceDeleted(ctx context.Context, id string) error {
+// WaitDeviceDeleted implements qemu.Monitor.
+func (f *Qemu) WaitDeviceDeleted(ctx context.Context, id string) error {
 	f.mu.Lock()
 	_, ok := f.devices[id]
 	ch := f.deletedCh[id]
@@ -379,46 +414,46 @@ func (f *Fake) WaitDeviceDeleted(ctx context.Context, id string) error {
 	}
 }
 
-// QueryMemdevs implements Monitor.
-func (f *Fake) QueryMemdevs(ctx context.Context) ([]Memdev, error) {
+// QueryMemdevs implements qemu.Monitor.
+func (f *Qemu) QueryMemdevs(ctx context.Context) ([]qemu.Memdev, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.check(); err != nil {
 		return nil, err
 	}
-	var out []Memdev
+	var out []qemu.Memdev
 	for _, o := range f.objects {
-		out = append(out, Memdev{ID: o.ID, Size: o.Size, Share: o.Share})
+		out = append(out, qemu.Memdev{ID: o.ID, Size: o.Size, Share: o.Share})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
 }
 
-// QueryTree implements Monitor.
-func (f *Fake) QueryTree(ctx context.Context) (*Tree, error) {
+// QueryTree implements qemu.Monitor.
+func (f *Qemu) QueryTree(ctx context.Context) (*qemu.Tree, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.check(); err != nil {
 		return nil, err
 	}
-	t := &Tree{HostBridges: append([]TreeHostBridge(nil), f.hostBridges...)}
+	t := &qemu.Tree{HostBridges: append([]qemu.TreeHostBridge(nil), f.hostBridges...)}
 	for _, p := range f.ports {
-		p.Children = append([]TreeDevice(nil), p.Children...)
+		p.Children = append([]qemu.TreeDevice(nil), p.Children...)
 		t.Ports = append(t.Ports, p)
 	}
 	for _, d := range f.devices {
-		t.Type3 = append(t.Type3, Type3Device{ID: d.ID, Bus: d.Bus, VolatileMemdev: d.VolatileMemdev,
+		t.Type3 = append(t.Type3, qemu.Type3Device{ID: d.ID, Bus: d.Bus, VolatileMemdev: d.VolatileMemdev,
 			PersistentMemdev: d.PersistentMemdev, LSA: d.LSA, Serial: d.Serial, HasSerial: !f.noSerial[d.ID]})
 	}
 	sort.Slice(t.Type3, func(i, j int) bool { return t.Type3[i].ID < t.Type3[j].ID })
 	return t, nil
 }
 
-// Close implements Monitor.
-func (f *Fake) Close() {}
+// Close implements qemu.Monitor.
+func (f *Qemu) Close() {}
 
 // String summarizes the fake state.
-func (f *Fake) String() string {
+func (f *Qemu) String() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var ids []string
@@ -429,8 +464,4 @@ func (f *Fake) String() string {
 	return "fake{devices: " + strings.Join(ids, ",") + "}"
 }
 
-var (
-	_ Monitor = (*Fake)(nil)
-	_ Monitor = (*HMP)(nil)
-	_ Monitor = (*QMP)(nil)
-)
+var _ qemu.Monitor = (*Qemu)(nil)

@@ -20,8 +20,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strings"
 	"syscall"
 )
 
@@ -48,20 +46,4 @@ func dialUnix(ctx context.Context, path string) (net.Conn, error) {
 		return nil, fmt.Errorf("socket name too long: %s", path)
 	}
 	return d.DialContext(ctx, "unix", short)
-}
-
-// BackendMappedIn tells if "info mtree" output shows a CXL direct mapping
-// alias of the memory backend. Such an alias exists while an HDM decoder of
-// a cxl-type3 device that uses the backend is committed. If it is still
-// there after the device is gone from the device tree, the guest did not
-// release the memory: qemu cannot finalize the device (no DEVICE_DELETED)
-// and the backend stays mapped into the guest until qemu restarts.
-func BackendMappedIn(mtree, objID string) bool {
-	re := regexp.MustCompile(`alias cxl-direct-mapping-alias-\d+ @` + regexp.QuoteMeta(objID) + `( |$)`)
-	for _, l := range strings.Split(mtree, "\n") {
-		if re.MatchString(strings.TrimRight(l, "\r")) {
-			return true
-		}
-	}
-	return false
 }

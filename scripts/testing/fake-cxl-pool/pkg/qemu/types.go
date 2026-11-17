@@ -21,7 +21,33 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 )
+
+// Logf is a printf-like logging function. A nil Logf discards.
+type Logf func(format string, args ...any)
+
+func (l Logf) printf(format string, args ...any) {
+	if l != nil {
+		l(format, args...)
+	}
+}
+
+const (
+	// DefaultCommandTimeout limits a monitor command when the context
+	// has no deadline.
+	DefaultCommandTimeout = 10 * time.Second
+	// DefaultPollInterval is the interval of polling the device tree
+	// while waiting for a device to be deleted over HMP.
+	DefaultPollInterval = 500 * time.Millisecond
+)
+
+func withDefaultTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, DefaultCommandTimeout)
+}
 
 // Monitor protocols.
 const (
@@ -247,8 +273,8 @@ func (e *Error) Error() string {
 // IsNotFound returns true if err is a qemu error about a missing device or
 // object.
 func IsNotFound(err error) bool {
-	var e *Error
-	if !errors.As(err, &e) {
+	e, ok := errors.AsType[*Error](err)
+	if !ok {
 		return false
 	}
 	return e.Class == "DeviceNotFound" || strings.Contains(e.Desc, "not found")
@@ -257,8 +283,8 @@ func IsNotFound(err error) bool {
 // IsUnplugInProgress returns true if err tells that device_del of the
 // device is already pending.
 func IsUnplugInProgress(err error) bool {
-	var e *Error
-	if !errors.As(err, &e) {
+	e, ok := errors.AsType[*Error](err)
+	if !ok {
 		return false
 	}
 	return strings.Contains(e.Desc, "in progress") || strings.Contains(e.Desc, "process of unplug")
@@ -309,3 +335,8 @@ func HotRemoveCapable(ctx context.Context, m Monitor, t *Tree) (bool, error) {
 	}
 	return true, nil
 }
+
+var (
+	_ Monitor = (*HMP)(nil)
+	_ Monitor = (*QMP)(nil)
+)

@@ -641,11 +641,28 @@ func TestDuplicateNamesSkipped(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
 	devs, byName := e.c.buildDevices([]api.Device{
-		{Name: "a.b", Scope: api.ScopePool, Size: 256 << 20},
-		{Name: "a-b", Scope: api.ScopePool, Size: 256 << 20},
+		{Name: "a.b", Scope: api.ScopePool, Serial: "0xc1ee0001", Size: 256 << 20},
+		{Name: "a-b", Scope: api.ScopePool, Serial: "0xc1ee0002", Size: 256 << 20},
 	})
 	if len(devs) != 1 || byName["a-b"].Name != "a-b" {
 		t.Fatalf("unexpected devices %v %v", deviceNames(devs), byName)
+	}
+}
+
+// A published serial is 0x and lower-case hex. A device without a valid
+// serial is not published.
+func TestPublishedSerial(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	devs, _ := e.c.buildDevices([]api.Device{
+		{Name: "dec", Scope: api.ScopePool, Serial: "3253600257", Size: 256 << 20},
+		{Name: "bad", Scope: api.ScopePool, Serial: "zz", Size: 256 << 20},
+	})
+	if len(devs) != 1 || devs[0].Name != "dec" || *devs[0].Attributes["serial"].StringValue != "0xc1ee0001" {
+		t.Fatalf("unexpected devices %+v", devs)
+	}
+	if !strings.Contains(e.logs.String(), `device bad: invalid serial "zz", not published`) {
+		t.Fatalf("no warning of the invalid serial in the log")
 	}
 }
 

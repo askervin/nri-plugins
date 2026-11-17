@@ -15,9 +15,12 @@
 package controller
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -241,7 +244,7 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 	// the attachment of one node lets the new attachments of the other
 	// nodes in, in the same reconcile.
 	failures := map[attKey]failure{}
-	keys := sortedKeys(desired)
+	keys := slices.SortedFunc(maps.Keys(desired), cmpAttKey)
 	sort.SliceStable(keys, func(i, j int) bool {
 		_, ei := actual[keys[i]]
 		_, ej := actual[keys[j]]
@@ -293,7 +296,7 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 
 	// 5. detach
 	seen := map[string]bool{}
-	for _, k := range sortedKeys(actual) {
+	for _, k := range slices.SortedFunc(maps.Keys(actual), cmpAttKey) {
 		a := actual[k]
 		seen[a.ID] = true
 		if _, ok := desired[k]; ok {
@@ -354,18 +357,9 @@ func (c *Controller) logConfigError(w *want) string {
 	return id
 }
 
-func sortedKeys[V any](m map[attKey]V) []attKey {
-	ks := make([]attKey, 0, len(m))
-	for k := range m {
-		ks = append(ks, k)
-	}
-	sort.Slice(ks, func(i, j int) bool {
-		if ks[i].device != ks[j].device {
-			return ks[i].device < ks[j].device
-		}
-		return ks[i].host < ks[j].host
-	})
-	return ks
+// cmpAttKey orders attachment keys by device, then by host.
+func cmpAttKey(a, b attKey) int {
+	return cmp.Or(strings.Compare(a.device, b.device), strings.Compare(a.host, b.host))
 }
 
 // attach attaches the device of a desired key (exists: it is attached

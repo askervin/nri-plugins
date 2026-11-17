@@ -29,10 +29,11 @@ import (
 	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu"
+	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu/fake"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/server"
 )
 
-func newTestServer(t *testing.T) (string, *qemu.Fake) {
+func newTestServer(t *testing.T) (string, *fake.Qemu) {
 	t.Helper()
 	dir := t.TempDir()
 	cfg, err := server.ParseConfig([]byte("dir: " + filepath.Join(dir, "pool")))
@@ -40,7 +41,7 @@ func newTestServer(t *testing.T) (string, *qemu.Fake) {
 		t.Fatal(err)
 	}
 	cfg.StateFile = "-"
-	fake := qemu.NewFake(map[string]int{"cxlhb0": 0}, map[string]string{"ds0": "cxlhb0", "ds1": "cxlhb0"})
+	q := fake.NewQemu(map[string]int{"cxlhb0": 0}, map[string]string{"ds0": "cxlhb0", "ds1": "cxlhb0"})
 	p := qemu.ParseCmdline([]string{"qemu-system-x86_64", "-uuid", "11111111-2222-3333-4444-555555555555",
 		"-drive", "file=/e2e/vm1/.vagrant/machines/vm1/qemu/x/linked-box.img", "-qmp", "unix:/e2e/vm1/qmp.sock,server,nowait"})
 	p.PID = 42
@@ -48,7 +49,7 @@ func newTestServer(t *testing.T) (string, *qemu.Fake) {
 		Logger:       log.New(io.Discard, "", 0),
 		Discover:     func() ([]*qemu.Process, error) { return []*qemu.Process{p}, nil },
 		ProcessAlive: func(int, uint64) bool { return true },
-		NewMonitor:   func(string, string) qemu.Monitor { return fake },
+		NewMonitor:   func(string, string) qemu.Monitor { return q },
 		SocketExists: func(string) bool { return true },
 	})
 	if err != nil {
@@ -57,7 +58,7 @@ func newTestServer(t *testing.T) (string, *qemu.Fake) {
 	srv.Start()
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(func() { hs.Close(); srv.Stop() })
-	return hs.URL, fake
+	return hs.URL, q
 }
 
 func runCLI(t *testing.T, url string, args ...string) (int, string, string) {
@@ -68,7 +69,7 @@ func runCLI(t *testing.T, url string, args ...string) (int, string, string) {
 }
 
 func TestCLI(t *testing.T) {
-	url, fake := newTestServer(t)
+	url, q := newTestServer(t)
 	if rc, _, _ := runCLI(t, url); rc != exitUsage {
 		t.Fatalf("no command: rc %d", rc)
 	}
@@ -113,7 +114,7 @@ func TestCLI(t *testing.T) {
 		t.Fatalf("devices s0: %d\n%s", rc, out)
 	}
 	// the guest holds the device: detach times out with exit code 3
-	fake.Hold(a.QemuDeviceID)
+	q.Hold(a.QemuDeviceID)
 	rc, out, errs := runCLI(t, url, "detach", "s0", "--host", "vm1", "--timeout", "50ms")
 	if rc != exitConflict || !strings.Contains(errs, "did not release") || !strings.Contains(out, "failed") {
 		t.Fatalf("detach held: %d\n%s\n%s", rc, out, errs)

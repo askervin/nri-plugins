@@ -74,7 +74,7 @@ type DeviceConfig struct {
 	Size   api.Size `json:"size"`
 	Shared bool     `json:"shared,omitempty"`
 	// Persistent makes the device persistent memory with a label storage
-	// area file next to the data file (see pool.LSAPath).
+	// area file next to the data file (see lsaPath).
 	Persistent bool       `json:"persistent,omitempty"`
 	Serial     api.Serial `json:"serial"`
 }

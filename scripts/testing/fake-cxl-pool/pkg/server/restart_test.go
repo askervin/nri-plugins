@@ -27,6 +27,7 @@ import (
 
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu"
+	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu/fake"
 )
 
 // socketMonitor is the monitor of a socket path: every call goes to the
@@ -43,8 +44,8 @@ func (m *socketMonitor) qemu() qemu.Monitor {
 	if f, ok := m.e.fakes[m.path]; ok {
 		return f
 	}
-	f := qemu.NewFake(nil, nil)
-	f.Unreachable = true
+	f := fake.NewQemu(nil, nil)
+	f.SetUnreachable(true)
 	return f
 }
 
@@ -147,7 +148,7 @@ func (e *testEnv) stopQemu() {
 
 // startQemu starts a new qemu of vm1 (pid 201) on the sockets of the old
 // one. Discovery has not seen it yet.
-func (e *testEnv) startQemu() *qemu.Fake {
+func (e *testEnv) startQemu() *fake.Qemu {
 	f := newVMFake()
 	f.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendRAM, ID: localObj, Size: 256 << 20, Share: true})
 	e.mu.Lock()
@@ -164,7 +165,7 @@ func (e *testEnv) startQemu() *qemu.Fake {
 
 // checkStopped checks that vm1 stopped because its qemu process 101 is
 // gone: no attachment left, none finalized into the new qemu f.
-func (e *testEnv) checkStopped(f *qemu.Fake) {
+func (e *testEnv) checkStopped(f *fake.Qemu) {
 	e.t.Helper()
 	if h := cachedHost(e.srv, "vm1"); h.State == api.HostRunning || h.PID != 0 || len(h.Attachments) != 0 {
 		e.t.Fatalf("vm1 not stopped: %+v", h)

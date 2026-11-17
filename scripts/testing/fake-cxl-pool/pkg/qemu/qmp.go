@@ -262,12 +262,7 @@ func (q *QMP) HumanMonitorCommand(ctx context.Context, line string) (string, err
 		return "", err
 	}
 	out = strings.ReplaceAll(out, "\r", "")
-	for _, l := range strings.Split(out, "\n") {
-		if desc, ok := strings.CutPrefix(l, "Error: "); ok {
-			return out, &Error{Desc: desc, Command: line}
-		}
-	}
-	return out, nil
+	return out, hmpError(out, line)
 }
 
 // Version implements Monitor.
@@ -360,10 +355,15 @@ func (q *QMP) QueryTree(ctx context.Context) (*Tree, error) {
 // QomGet implements Monitor.
 func (q *QMP) QomGet(ctx context.Context, path, property string) (json.RawMessage, error) {
 	var raw json.RawMessage
-	if err := q.Execute(ctx, "qom-get", map[string]any{"path": path, "property": property}, &raw); err != nil {
+	if err := q.qomGet(ctx, path, property, &raw); err != nil {
 		return nil, err
 	}
 	return raw, nil
+}
+
+// qomGet unmarshals the value of a QOM property into v.
+func (q *QMP) qomGet(ctx context.Context, path, property string, v any) error {
+	return q.Execute(ctx, "qom-get", map[string]any{"path": path, "property": property}, v)
 }
 
 type qomItem struct {
@@ -395,7 +395,7 @@ func (q *QMP) queryTreeQOM(ctx context.Context) (*Tree, error) {
 	}
 	getString := func(path, prop string) (string, error) {
 		var s string
-		err := q.Execute(ctx, "qom-get", map[string]any{"path": path, "property": prop}, &s)
+		err := q.qomGet(ctx, path, prop, &s)
 		return s, err
 	}
 	id := func(path string) string {
@@ -416,7 +416,7 @@ func (q *QMP) queryTreeQOM(ctx context.Context) (*Tree, error) {
 		if drv == "pxb-cxl" {
 			hb := TreeHostBridge{ID: id(p), NumaNode: -1}
 			var n int
-			if err := q.Execute(ctx, "qom-get", map[string]any{"path": p, "property": "numa_node"}, &n); err == nil {
+			if err := q.qomGet(ctx, p, "numa_node", &n); err == nil {
 				hb.NumaNode = numaOrUnknown(n)
 			}
 			t.HostBridges = append(t.HostBridges, hb)
@@ -462,7 +462,7 @@ func (q *QMP) queryTreeQOM(ctx context.Context) (*Tree, error) {
 		case "cxl-type3":
 			d := Type3Device{ID: id(p), Bus: parent[p]}
 			var sn uint64
-			if err := q.Execute(ctx, "qom-get", map[string]any{"path": p, "property": "sn"}, &sn); err == nil {
+			if err := q.qomGet(ctx, p, "sn", &sn); err == nil {
 				d.Serial, d.HasSerial = sn, true
 			}
 			if v, err := getString(p, "volatile-memdev"); err == nil {
@@ -491,7 +491,7 @@ func (q *QMP) DeviceExists(ctx context.Context, id string) (bool, error) {
 		return false, nil
 	}
 	var typ string
-	err := q.Execute(ctx, "qom-get", map[string]any{"path": "/machine/peripheral/" + id, "property": "type"}, &typ)
+	err := q.qomGet(ctx, "/machine/peripheral/"+id, "type", &typ)
 	if err != nil {
 		if IsNotFound(err) {
 			return false, nil

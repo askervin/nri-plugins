@@ -17,6 +17,7 @@
 package api
 
 import (
+	"strings"
 	"time"
 )
 
@@ -69,6 +70,12 @@ type Host struct {
 	Slots            []Slot       `json:"slots"`
 	Attachments      []Attachment `json:"attachments"`
 	LocalDevices     []string     `json:"localDevices"`
+}
+
+// NormUUID returns a uuid in lower case without dashes, so that a SMBIOS
+// uuid matches /etc/machine-id and the systemUUID of a Node.
+func NormUUID(u string) string {
+	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(u), "-", ""))
 }
 
 // HostBridge is a CXL host bridge (pxb-cxl) of a host.

@@ -220,8 +220,8 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeError(w http.ResponseWriter, err error) {
-	var e *api.Error
-	if !errors.As(err, &e) {
+	e, ok := errors.AsType[*api.Error](err)
+	if !ok {
 		e = &api.Error{Code: api.CodeInternal, Message: err.Error()}
 	}
 	writeJSON(w, e.HTTPStatus(), e)

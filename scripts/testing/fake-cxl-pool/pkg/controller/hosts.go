@@ -35,11 +35,6 @@ type hostMap struct {
 	unlabeled []string
 }
 
-// normUUID returns a uuid in lower case without dashes.
-func normUUID(u string) string {
-	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(u)), "-", "")
-}
-
 // mapHosts finds the host of each node: the host whose uuid equals the
 // node's systemUUID (lower case, without dashes), else the host whose name
 // is the node name. A host maps to one node at most. A node without a host
@@ -49,11 +44,11 @@ func mapHosts(hosts []api.Host, nodes []*corev1.Node) hostMap {
 	hm := hostMap{nodeHost: map[string]api.Host{}, hostNode: map[string]string{}, hostnames: map[string]string{}}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
 	for _, n := range nodes {
-		uuid := normUUID(n.Status.NodeInfo.SystemUUID)
+		uuid := api.NormUUID(n.Status.NodeInfo.SystemUUID)
 		var found *api.Host
 		if uuid != "" {
 			for i := range hosts {
-				if normUUID(hosts[i].UUID) == uuid {
+				if api.NormUUID(hosts[i].UUID) == uuid {
 					found = &hosts[i]
 					break
 				}

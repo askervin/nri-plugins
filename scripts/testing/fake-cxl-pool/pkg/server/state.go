@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
-	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/pool"
 )
 
 // persistedState is the content of the state file.
@@ -106,9 +105,9 @@ func (s *Server) loadState() error {
 			dynamic: true,
 		}
 		if pd.Persistent {
-			d.LSAPath = pool.LSAPath(pd.Path)
+			d.LSAPath = lsaPath(pd.Path)
 		}
-		if err := d.ensureFiles(); err != nil {
+		if err := ensureFiles(d.Path, d.LSAPath, d.Size); err != nil {
 			s.logf("state: device %s: %v", pd.Name, err)
 		}
 		s.devices[pd.Name] = d

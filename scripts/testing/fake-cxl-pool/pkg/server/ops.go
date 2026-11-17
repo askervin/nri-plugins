@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
-	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/pool"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu"
 )
 
@@ -136,7 +135,7 @@ func (s *Server) CreateDevice(req api.DeviceCreate) (api.Device, error) {
 			}
 		}
 	}
-	if err := pool.ValidName(name); err != nil {
+	if err := validName(name); err != nil {
 		return api.Device{}, api.InvalidArgument("%v", err)
 	}
 	if _, ok := s.devices[name]; ok {
@@ -175,9 +174,9 @@ func (s *Server) CreateDevice(req api.DeviceCreate) (api.Device, error) {
 		dynamic: true,
 	}
 	if req.Persistent {
-		d.LSAPath = pool.LSAPath(path)
+		d.LSAPath = lsaPath(path)
 	}
-	if err := d.ensureFiles(); err != nil {
+	if err := ensureFiles(d.Path, d.LSAPath, d.Size); err != nil {
 		s.serials.Release(sn)
 		removeDeviceFiles(d, s.logf)
 		return api.Device{}, api.Internal("cannot create backing file: %v", err)
@@ -192,19 +191,6 @@ func (s *Server) CreateDevice(req api.DeviceCreate) (api.Device, error) {
 	v := s.deviceViewLocked(d)
 	s.events.publish(api.EventDeviceUpdated, v)
 	return v, nil
-}
-
-// removeDeviceFiles removes the backing files of a device: the data file
-// and the label storage area file.
-func removeDeviceFiles(d *device, logf func(string, ...any)) {
-	for _, f := range []string{d.Path, d.LSAPath} {
-		if f == "" {
-			continue
-		}
-		if err := pool.RemoveBackingFile(f); err != nil {
-			logf("device %s: cannot remove %s: %v", d.Name, f, err)
-		}
-	}
 }
 
 // DeleteDevice deletes a device created over the API and its backing files.
@@ -546,7 +532,7 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 	}
 	t3 := qemu.CXLType3{ID: qemuID, Bus: bus, Serial: serial}
 	if d.Persistent {
-		lsa := qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: qemu.LSAObjectID(objID), Size: pool.LSASize, MemPath: d.LSAPath, Share: true}
+		lsa := qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: qemu.LSAObjectID(objID), Size: lsaSize, MemPath: d.LSAPath, Share: true}
 		backends = append(backends, lsa)
 		t3.PersistentMemdev, t3.LSA = objID, lsa.ID
 	} else {
@@ -581,7 +567,7 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 	}
 	s.saveStateLocked()
 	s.publishAttachmentLocked(a)
-	files := device{Device: api.Device{Name: d.Name, Size: d.Size, Path: d.Path, LSAPath: d.LSAPath}}
+	path, lsa, size := d.Path, d.LSAPath, d.Size
 	s.mu.Unlock()
 	h.opMu.Unlock()
 
@@ -591,7 +577,7 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 		defer h.opMu.Unlock()
 		var err error
 		if len(backends) > 0 {
-			err = files.ensureFiles()
+			err = ensureFiles(path, lsa, size)
 		}
 		// Before every command and after the device_add: the qemu of the
 		// host still runs. A qemu that restarted after the tree was read

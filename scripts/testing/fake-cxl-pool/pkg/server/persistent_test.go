@@ -26,7 +26,6 @@ import (
 
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/client"
-	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/pool"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu"
 )
 
@@ -139,7 +138,7 @@ func TestPersistentAttachDetach(t *testing.T) {
 func TestPersistentDeviceAddFailure(t *testing.T) {
 	e := newTestEnv(t, llm0Config)
 	f1 := e.fake("vm1")
-	f1.FailDeviceAdd = &qemu.Error{Command: "device_add", Desc: "something broke"}
+	f1.FailNextDeviceAdd(&qemu.Error{Command: "device_add", Desc: "something broke"})
 	_, _, err := e.c.Attach(ctx, "llm0", api.AttachRequest{Host: "vm1"})
 	mustCode(t, err, api.CodeUnavailable)
 	got := f1.Commands()
@@ -203,7 +202,7 @@ func TestPersistentAdopt(t *testing.T) {
 	lsa := filepath.Join(e.dir, "pool", "llm0.lsa")
 	// a previous server run (state lost) attached llm0
 	f1.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: "fcp_llm0.hp7", Size: 512 << 20, MemPath: data, Share: true})
-	f1.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: "fcp_llm0.hp7-lsa", Size: pool.LSASize, MemPath: lsa, Share: true})
+	f1.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: "fcp_llm0.hp7-lsa", Size: lsaSize, MemPath: lsa, Share: true})
 	if err := f1.PlugDevice(qemu.CXLType3{ID: "fcp_llm0.hp7", Bus: "ds0_hb0", PersistentMemdev: "fcp_llm0.hp7", LSA: "fcp_llm0.hp7-lsa", Serial: 0xc1ae0001}); err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +233,7 @@ func TestHotplugCounterSeededFromLSA(t *testing.T) {
 	f := newVMFake()
 	// only the LSA backend of an earlier attach is left (its object-del
 	// failed)
-	f.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: "fcp_pooled0.hp4-lsa", Size: pool.LSASize, MemPath: filepath.Join(dir, "y.lsa")})
+	f.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: "fcp_pooled0.hp4-lsa", Size: lsaSize, MemPath: filepath.Join(dir, "y.lsa")})
 	srv := newServerWith(t, poolConfig(dir, pooled0), map[string]qemu.Monitor{"vm1": f})
 	a, _, err := srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"})
 	if err != nil || a.QemuDeviceID != "fcp_pooled0.hp5" {
@@ -249,7 +248,7 @@ func TestPersistentAdoptOtherLSAName(t *testing.T) {
 	lsa := filepath.Join(e.dir, "pool", "llm0.lsa")
 	// a hand hotplug whose LSA backend does not follow the -lsa naming
 	f1.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: "fcp_llm0.hp3", Size: 512 << 20, MemPath: data, Share: true})
-	f1.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: "fcp_llm0.labels", Size: pool.LSASize, MemPath: lsa, Share: true})
+	f1.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: "fcp_llm0.labels", Size: lsaSize, MemPath: lsa, Share: true})
 	if err := f1.PlugDevice(qemu.CXLType3{ID: "fcp_llm0.hp3", Bus: "ds0_hb0", PersistentMemdev: "fcp_llm0.hp3", LSA: "fcp_llm0.labels", Serial: 0xc1ae0001}); err != nil {
 		t.Fatal(err)
 	}

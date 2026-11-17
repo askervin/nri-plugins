@@ -31,6 +31,7 @@ import (
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/client"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu"
+	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu/fake"
 )
 
 type testEnv struct {
@@ -41,7 +42,7 @@ type testEnv struct {
 	hs     *httptest.Server
 	c      *client.Client
 	mu     sync.Mutex
-	fakes  map[string]*qemu.Fake // by monitor socket path
+	fakes  map[string]*fake.Qemu // by monitor socket path
 	procs  []*qemu.Process
 	alive  map[int]bool
 	logbuf *lockedBuf
@@ -54,7 +55,7 @@ type testEnv struct {
 	// of that name of a socketMonitor of vm1 ("object_add", "device_add")
 	// or after a "liveness check" of it; restarted is the new qemu
 	restartAt string
-	restarted *qemu.Fake
+	restarted *fake.Qemu
 }
 
 // lockedBuf is a log buffer that tests read while the server writes.
@@ -95,12 +96,12 @@ func vmCmdline(name string, pid int, extra ...string) *qemu.Process {
 	return p
 }
 
-func newVMFake() *qemu.Fake {
-	f := qemu.NewFake(map[string]int{"cxlhb0": 0, "cxlhb1": 1}, map[string]string{
+func newVMFake() *fake.Qemu {
+	f := fake.NewQemu(map[string]int{"cxlhb0": 0, "cxlhb1": 1}, map[string]string{
 		"ds0_hb0": "cxlhb0", "ds1_hb0": "cxlhb0",
 		"ds0_hb1": "cxlhb1", "ds1_hb1": "cxlhb1",
 	})
-	f.FMW = []qemu.FMWWindow{{Targets: []string{"cxlhb0"}, Size: 4 << 30}, {Targets: []string{"cxlhb1"}, Size: 4 << 30}}
+	f.SetFMW([]qemu.FMWWindow{{Targets: []string{"cxlhb0"}, Size: 4 << 30}, {Targets: []string{"cxlhb1"}, Size: 4 << 30}})
 	return f
 }
 
@@ -109,7 +110,7 @@ const localObj = "beram_cxl_memdev0__bus_ds1_hb1__sn_0xc100e2e0"
 func newTestEnv(t *testing.T, extraConfig string) *testEnv {
 	t.Helper()
 	dir := t.TempDir()
-	e := &testEnv{t: t, dir: dir, fakes: map[string]*qemu.Fake{}, alive: map[int]bool{}, logbuf: &lockedBuf{}}
+	e := &testEnv{t: t, dir: dir, fakes: map[string]*fake.Qemu{}, alive: map[int]bool{}, logbuf: &lockedBuf{}}
 	vm1 := vmCmdline("vm1", 101, "-uuid", "6BA7B810-9DAD-11D1-80B4-00C04FD430C8",
 		"-object", "memory-backend-ram,id="+localObj+",share=on,size=256M")
 	vm2 := vmCmdline("vm2", 102)
@@ -148,7 +149,7 @@ func (e *testEnv) start() {
 		e.logbuf = &lockedBuf{}
 	}
 	opts := Options{
-		Logger:  log.New(io.MultiWriter(testWriter{e.t}, e.logbuf), "", 0),
+		Logger:  log.New(io.MultiWriter(e.t.Output(), e.logbuf), "", 0),
 		Verbose: true,
 		Discover: func() ([]*qemu.Process, error) {
 			e.mu.Lock()
@@ -174,8 +175,8 @@ func (e *testEnv) start() {
 			if f, ok := e.fakes[path]; ok {
 				return f
 			}
-			f := qemu.NewFake(nil, nil)
-			f.Unreachable = true
+			f := fake.NewQemu(nil, nil)
+			f.SetUnreachable(true)
 			return f
 		},
 		SocketExists: func(path string) bool {
@@ -207,7 +208,7 @@ func (e *testEnv) stop() {
 	}
 }
 
-func (e *testEnv) fake(host string) *qemu.Fake { return e.fakes["/e2e/"+host+"/qmp.sock"] }
+func (e *testEnv) fake(host string) *fake.Qemu { return e.fakes["/e2e/"+host+"/qmp.sock"] }
 
 // attachment returns the attachment of a device to a host.
 func (e *testEnv) attachment(device, host string) (*api.Attachment, error) {
@@ -248,16 +249,7 @@ func cachedHost(s *Server, name string) api.Host {
 	return s.hostViewLocked(s.hosts[name])
 }
 
-type testWriter struct{ t *testing.T }
-
-func (w testWriter) Write(b []byte) (int, error) {
-	w.t.Log(strings.TrimRight(string(b), "\n"))
-	return len(b), nil
-}
-
 var ctx = context.Background()
-
-func ptr[T any](v T) *T { return &v }
 
 func mustCode(t *testing.T, err error, code string) {
 	t.Helper()
@@ -399,7 +391,7 @@ func TestAttachDetachExclusive(t *testing.T) {
 	_, _, err = e.c.Detach(ctx, "pooled0", "vm1", client.DetachOptions{})
 	mustCode(t, err, api.CodeNotFound)
 	// attach again: a new qemu id
-	a3, status, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm2", NumaNode: ptr(1)})
+	a3, status, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm2", NumaNode: new(1)})
 	if err != nil || status != 201 || a3.QemuDeviceID != "fcp_pooled0.hp1" || a3.Slot.NumaNode != 1 || a3.Slot.Bus != "ds0_hb1" {
 		t.Fatalf("attach to vm2: %d %v %+v", status, err, a3)
 	}
@@ -553,7 +545,7 @@ func TestDetachGuestHolds(t *testing.T) {
 func TestStockQemuZombie(t *testing.T) {
 	e := newTestEnv(t, "")
 	f1 := e.fake("vm1")
-	f1.Stock = true
+	f1.SetStock(true)
 	if _, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"}); err != nil {
 		t.Fatal(err)
 	}
@@ -594,7 +586,7 @@ func TestSlotSelection(t *testing.T) {
 	_, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", Slot: "ds0_hb0"})
 	mustCode(t, err, api.CodeConflict)
 	// numa 0 is full now: falls back to numa 1, avoiding the local device slot
-	a, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", NumaNode: ptr(0)})
+	a, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", NumaNode: new(0)})
 	if err != nil || a.Slot.Bus != "ds0_hb1" {
 		t.Fatalf("fallback slot: %+v %v", a, err)
 	}
@@ -651,7 +643,7 @@ func TestLocalDevice(t *testing.T) {
 func TestDeviceAddFailure(t *testing.T) {
 	e := newTestEnv(t, "")
 	f1 := e.fake("vm1")
-	f1.FailDeviceAdd = &qemu.Error{Command: "device_add", Desc: "something broke"}
+	f1.FailNextDeviceAdd(&qemu.Error{Command: "device_add", Desc: "something broke"})
 	a, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"})
 	mustCode(t, err, api.CodeUnavailable)
 	if !strings.Contains(err.Error(), "something broke") || a.State != api.AttachmentFailed {
@@ -860,7 +852,7 @@ func TestLeakedDetach(t *testing.T) {
 		t.Fatal(err)
 	}
 	f1 := e.fake("vm1")
-	f1.LeakOnRelease = true
+	f1.SetLeakOnRelease(true)
 	f1.Hold(a.QemuDeviceID)
 	_, _, err = e.c.Detach(ctx, "pooled0", "vm1", client.DetachOptions{Timeout: 50 * time.Millisecond})
 	mustCode(t, err, api.CodeConflict)
@@ -948,8 +940,8 @@ func TestFMWCapacityAndHotRemove(t *testing.T) {
 	e.stop()
 	f1 := e.fake("vm1")
 	// 512M window on cxlhb0, 256M on cxlhb1 (as reported by qemu)
-	f1.FMW = []qemu.FMWWindow{{Targets: []string{"cxlhb0"}, Size: 512 << 20}, {Targets: []string{"cxlhb1"}, Size: 256 << 20}}
-	e.fake("vm2").Stock = true
+	f1.SetFMW([]qemu.FMWWindow{{Targets: []string{"cxlhb0"}, Size: 512 << 20}, {Targets: []string{"cxlhb1"}, Size: 256 << 20}})
+	e.fake("vm2").SetStock(true)
 	e.start()
 	h1, _ := e.c.Host(ctx, "vm1")
 	h2, _ := e.c.Host(ctx, "vm2")
@@ -960,14 +952,14 @@ func TestFMWCapacityAndHotRemove(t *testing.T) {
 		t.Fatalf("fmw from qemu not used: %+v", h1.HostBridges)
 	}
 	// pooled0 (512M) fills cxlhb0
-	a, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", NumaNode: ptr(0)})
+	a, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", NumaNode: new(0)})
 	if err != nil || a.Slot.HostBridge != "cxlhb0" {
 		t.Fatalf("attach: %+v %v", a, err)
 	}
 	// shared0 (256M) does not fit under cxlhb0 any more
 	_, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", Slot: "ds1_hb0"})
 	mustCode(t, err, api.CodeConflict)
-	a, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", NumaNode: ptr(0)})
+	a, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", NumaNode: new(0)})
 	if err != nil || a.Slot.HostBridge != "cxlhb1" {
 		t.Fatalf("attach falls back to cxlhb1: %+v %v", a, err)
 	}
@@ -984,7 +976,7 @@ func TestFMWCapacityAndHotRemove(t *testing.T) {
 func TestZombieNotAdopted(t *testing.T) {
 	e := newTestEnv(t, "")
 	f1 := e.fake("vm1")
-	f1.Stock = true
+	f1.SetStock(true)
 	a, _, err := e.c.Attach(ctx, "vm1.memdev0", api.AttachRequest{Host: "vm1"})
 	if err != nil {
 		t.Fatal(err)

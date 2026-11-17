@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package pool
+package server
 
 import (
 	"os"
@@ -22,7 +22,7 @@ import (
 
 func TestBackingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "d0.raw")
-	if err := EnsureBackingFile(path, 256<<20); err != nil {
+	if err := ensureBackingFile(path, 256<<20); err != nil {
 		t.Fatal(err)
 	}
 	st, err := os.Stat(path)
@@ -30,62 +30,28 @@ func TestBackingFile(t *testing.T) {
 		t.Fatalf("unexpected file %v %v", st, err)
 	}
 	// a larger existing file is kept
-	if err := EnsureBackingFile(path, 1<<20); err != nil {
+	if err := ensureBackingFile(path, 1<<20); err != nil {
 		t.Fatal(err)
 	}
 	if st, _ := os.Stat(path); st.Size() != 256<<20 {
 		t.Fatalf("file was shrunk")
 	}
-	if err := RemoveBackingFile(path); err != nil {
+	if err := removeBackingFile(path); err != nil {
 		t.Fatal(err)
 	}
-	if err := RemoveBackingFile(path); err != nil {
+	if err := removeBackingFile(path); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestSerials(t *testing.T) {
-	s := NewSerials(0xc1ae0000, 0xc1ee0000)
-	if err := s.Use(0xc1ee0001, "a"); err != nil {
-		t.Fatal(err)
-	}
-	if sn := s.Next("b", false); sn != 0xc1ee0002 {
-		t.Fatalf("unexpected serial 0x%x", sn)
-	}
-	if sn := s.Next("s", true); sn != 0xc1ae0001 {
-		t.Fatalf("unexpected shared serial 0x%x", sn)
-	}
-	if err := s.Use(0xc1ee0002, "c"); err == nil {
-		t.Fatal("expected conflict")
-	}
-	if err := s.Use(0xc1ae0001, "c"); err == nil {
-		t.Fatal("expected conflict across kinds")
-	}
-	// uniqueness is over all serials: an explicit exclusive-looking serial
-	// on a shared device blocks it for the exclusive allocator too
-	if err := s.Use(0xc1ee0003, "s2"); err != nil {
-		t.Fatal(err)
-	}
-	if sn := s.Next("e", false); sn != 0xc1ee0004 {
-		t.Fatalf("unexpected serial 0x%x", sn)
-	}
-	s.Release(0xc1ee0001)
-	if sn := s.Next("d", false); sn != 0xc1ee0001 {
-		t.Fatalf("unexpected serial 0x%x", sn)
-	}
-	if sn := s.NextExcept("x", true, func(sn uint64) bool { return sn == 0xc1ae0002 }); sn != 0xc1ae0003 {
-		t.Fatalf("unexpected serial 0x%x", sn)
 	}
 }
 
 func TestValidName(t *testing.T) {
 	for _, n := range []string{"dev0", "shared0", "n4-cxl-fedora-43-containerd.memdev3", "a"} {
-		if err := ValidName(n); err != nil {
+		if err := validName(n); err != nil {
 			t.Errorf("%q: %v", n, err)
 		}
 	}
 	for _, n := range []string{"", "Dev0", "a_b", "-a", "a@b", "a/b"} {
-		if err := ValidName(n); err == nil {
+		if err := validName(n); err == nil {
 			t.Errorf("%q: expected error", n)
 		}
 	}
@@ -98,8 +64,8 @@ func TestLSAPathRule(t *testing.T) {
 		"/pool/a.b/llm0.img": "/pool/a.b/llm0.lsa",
 		"/pool/llm0.x.raw":   "/pool/llm0.x.lsa",
 	} {
-		if got := LSAPath(in); got != want {
-			t.Errorf("LSAPath(%q) = %q, want %q", in, got, want)
+		if got := lsaPath(in); got != want {
+			t.Errorf("lsaPath(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

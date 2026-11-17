@@ -22,13 +22,13 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
-	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/pool"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu"
 )
 
@@ -65,7 +65,7 @@ type Server struct {
 	started time.Time
 
 	mu      sync.RWMutex
-	serials *pool.Serials
+	serials *serials
 	devices map[string]*device
 	hosts   map[string]*host
 	atts    map[string]*attachment
@@ -172,7 +172,7 @@ func New(cfg *Config, opts Options) (*Server, error) {
 		opts:    opts,
 		log:     opts.Logger,
 		started: time.Now(),
-		serials: pool.NewSerials(uint64(*cfg.SharedSerialBase), uint64(*cfg.ExclusiveSerialBase)),
+		serials: newSerials(uint64(*cfg.SharedSerialBase), uint64(*cfg.ExclusiveSerialBase)),
 		devices: map[string]*device{},
 		hosts:   map[string]*host{},
 		atts:    map[string]*attachment{},
@@ -239,7 +239,7 @@ func (s *Server) debugf(format string, args ...any) {
 }
 
 func (s *Server) addStaticDevice(dc DeviceConfig) error {
-	if err := pool.ValidName(dc.Name); err != nil {
+	if err := validName(dc.Name); err != nil {
 		return fmt.Errorf("device %q: %w", dc.Name, err)
 	}
 	if int64(dc.Size)%CapacityMultiplier != 0 {
@@ -266,25 +266,12 @@ func (s *Server) addStaticDevice(dc DeviceConfig) error {
 		serial: sn,
 	}
 	if dc.Persistent {
-		d.LSAPath = pool.LSAPath(path)
+		d.LSAPath = lsaPath(path)
 	}
-	if err := d.ensureFiles(); err != nil {
+	if err := ensureFiles(d.Path, d.LSAPath, d.Size); err != nil {
 		return fmt.Errorf("device %q: %w", dc.Name, err)
 	}
 	s.devices[d.Name] = d
-	return nil
-}
-
-// ensureFiles creates the backing files of a file device if they are
-// missing: the data file and, of a persistent device, its label storage
-// area file.
-func (d *device) ensureFiles() error {
-	if err := pool.EnsureBackingFile(d.Path, d.Size); err != nil {
-		return err
-	}
-	if d.LSAPath != "" {
-		return pool.EnsureBackingFile(d.LSAPath, pool.LSASize)
-	}
 	return nil
 }
 
@@ -313,9 +300,7 @@ func (s *Server) Start() {
 		}
 	}
 	s.mu.Unlock()
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.wg.Go(func() {
 		t := time.NewTicker(time.Duration(s.cfg.Discovery.Interval))
 		defer t.Stop()
 		for {
@@ -328,7 +313,7 @@ func (s *Server) Start() {
 				cancel()
 			}
 		}
-	}()
+	})
 }
 
 // Stop stops background work and closes monitors.
@@ -384,7 +369,7 @@ func (s *Server) refreshTrees(ctx context.Context, names ...string) {
 		if h.mon == nil || h.state == api.HostStopped {
 			continue
 		}
-		if len(names) > 0 && !contains(names, h.name) {
+		if len(names) > 0 && !slices.Contains(names, h.name) {
 			continue
 		}
 		hs = append(hs, h)
@@ -394,15 +379,6 @@ func (s *Server) refreshTrees(ctx context.Context, names ...string) {
 	s.reconcile(ctx, hs)
 }
 
-func contains(l []string, s string) bool {
-	for _, x := range l {
-		if x == s {
-			return true
-		}
-	}
-	return false
-}
-
 // queryHosts reads version and tree of the hosts in parallel.
 func (s *Server) queryHosts(ctx context.Context, hs []*host) {
 	var wg sync.WaitGroup
@@ -410,9 +386,7 @@ func (s *Server) queryHosts(ctx context.Context, hs []*host) {
 		s.mu.RLock()
 		mon, needVersion, gen := h.mon, h.version == "", h.gen
 		s.mu.RUnlock()
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			qctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 			var (
@@ -489,7 +463,7 @@ func (s *Server) queryHosts(ctx context.Context, hs []*host) {
 				s.seedCounterLocked(h, md.ID)
 			}
 			s.storeTreeLocked(h, tree, gen, false)
-		}()
+		})
 	}
 	wg.Wait()
 }
@@ -721,12 +695,6 @@ func (s *Server) hostGoneLocked(h *host, why string) {
 // serves one client at a time; the server keeps qmp.sock connected).
 var reservedSockets = map[string]bool{"qmp-e2e.sock": true}
 
-// normUUID normalizes a uuid for comparison: lowercase without dashes, so
-// that a SMBIOS uuid matches /etc/machine-id and kubelet's systemUUID.
-func normUUID(u string) string {
-	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(u), "-", ""))
-}
-
 var nonNameChars = regexp.MustCompile(`[^a-z0-9.-]+`)
 
 func sanitizeName(s string) string {
@@ -956,7 +924,7 @@ func (s *Server) completeDetach(ctx context.Context, a *attachment) completeResu
 			return completeUnknown
 		}
 		mapped := false
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			mctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			m, err := mon.BackendMapped(mctx, a.QemuObjectID)
 			cancel()
@@ -1073,9 +1041,7 @@ func (s *Server) startBackgroundWaitLocked(a *attachment, failAfter time.Duratio
 		return
 	}
 	a.bgWaiting = true
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.wg.Go(func() {
 		defer func() {
 			s.mu.Lock()
 			a.bgWaiting = false
@@ -1123,7 +1089,7 @@ func (s *Server) startBackgroundWaitLocked(a *attachment, failAfter time.Duratio
 			}
 		}
 		s.logf("attachment %s: stopped waiting for qemu device %s to be deleted", a.ID, a.QemuDeviceID)
-	}()
+	})
 }
 
 // publishAttachmentLocked is called on every change of an attachment: it
@@ -1143,9 +1109,9 @@ func (s *Server) lookupHostLocked(ref string) *host {
 	if h := s.hosts[ref]; h != nil {
 		return h
 	}
-	nref := normUUID(ref)
+	nref := api.NormUUID(ref)
 	for _, h := range s.hosts {
-		if h.uuid != "" && normUUID(h.uuid) == nref {
+		if h.uuid != "" && api.NormUUID(h.uuid) == nref {
 			return h
 		}
 	}
@@ -1154,9 +1120,9 @@ func (s *Server) lookupHostLocked(ref string) *host {
 
 // resolveHostLocked implements GET /hosts/resolve.
 func (s *Server) resolveHostLocked(hostname, uuid string) *host {
-	if nu := normUUID(uuid); nu != "" {
+	if nu := api.NormUUID(uuid); nu != "" {
 		for _, h := range s.hosts {
-			if h.uuid != "" && normUUID(h.uuid) == nu {
+			if h.uuid != "" && api.NormUUID(h.uuid) == nu {
 				return h
 			}
 		}

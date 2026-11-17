@@ -519,10 +519,10 @@ cmd/fake-cxl-pool-controller  DRA pool controller (cxl-pool.nri.io) main
 pkg/api                    JSON types, routes, errors, size/serial units
 pkg/client                 Go client library
 pkg/controller             DRA pool controller: ResourceSlice publisher, attach/detach reconciler
-pkg/server                 config, state machine, persistence, HTTP handlers
+pkg/server                 config, state machine, persistence, backing files, serials, HTTP handlers
 pkg/qemu                   Monitor interface: QMP (persistent, events, QOM tree), HMP
-                           (text protocol, info qtree parser), discovery, fake monitor
-pkg/pool                   backing files, serials
+                           (text protocol, info qtree parser), discovery
+pkg/qemu/fake              in-memory qemu for unit tests
 pkg/cxl/memctl in nri-plugins  guest side: sysfs + cxl/daxctl
 deploy/                    Kubernetes manifests (controller Deployment + RBAC)
 Dockerfile                 the controller image (make image)
