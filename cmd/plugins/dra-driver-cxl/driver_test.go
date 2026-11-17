@@ -287,7 +287,7 @@ func TestDriverRules(t *testing.T) {
 	}
 	uid := func(driver string) string { return "u-" + driver }
 	for _, boot := range []string{"b0", "b1"} {
-		st, closeStore, err := openDriverStore(ctx, config, flags, kernelAt(dir), boot, rules)
+		st, closeStore, err := openDriverStore(ctx, config, flags, boot)
 		noErr(t, err)
 		if boot == "b0" {
 			noErr(t, st.Commit(ctx, store.Durable, func(doc *store.Document) error {
@@ -323,7 +323,7 @@ func TestNewLocalHelper(t *testing.T) {
 		flags := &CXLFlags{CDIRoot: filepath.Join(dir, "cdi"), NodeName: testNode}
 		config := &pluginConfig{Flags: flags, KubeletPluginDir: dir}
 		rules := newDriverRules(config, flags)
-		st, closeStore, err := openDriverStore(ctx, config, flags, kernelAt(dir), "boot-1", rules)
+		st, closeStore, err := openDriverStore(ctx, config, flags, "boot-1")
 		noErr(t, err)
 		devices, err := newDriverDevices(config, flags, cfg, kernelAt(dir), nil, st, rules)
 		if err == nil {
@@ -484,7 +484,7 @@ func TestFirstListAfterRecovery(t *testing.T) {
 	flags := &CXLFlags{CDIRoot: filepath.Join(dir, "cdi"), NodeName: testNode}
 	config := &pluginConfig{Flags: flags, KubeletPluginDir: dir}
 	rules := newDriverRules(config, flags)
-	st, closeStore, err := openDriverStore(ctx, config, flags, kernelAt(dir), "boot-1", rules)
+	st, closeStore, err := openDriverStore(ctx, config, flags, "boot-1")
 	noErr(t, err)
 	defer closeStore()
 	devices, err := newDriverDevices(config, flags, &DriverConfig{}, kernelAt(dir), nil, st, rules)

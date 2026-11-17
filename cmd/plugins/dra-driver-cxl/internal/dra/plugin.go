@@ -78,7 +78,7 @@ type Plugin struct {
 	st       *store.Store
 	engine   *engine.Engine
 	nodeName string
-	devRoot  string
+	roots    roots
 	lender   *Lender
 	local    LocalConfig
 	onShared func(serial uint64)
@@ -109,9 +109,10 @@ type Options struct {
 	// Store keeps the records, Engine realises the grants.
 	Store  *store.Store
 	Engine *engine.Engine
-	// NodeName is the node of the driver, DevRoot the directory of the
-	// device nodes.
-	NodeName, DevRoot string
+	// NodeName is the node of the driver. SysRoot and DevRoot are the
+	// sysfs mount point and the directory of the device nodes in the paths
+	// of the results, "/sys" and "/dev" if "".
+	NodeName, SysRoot, DevRoot string
 	// CDI is the CDI cache that the spec of the driver is written with,
 	// nil for none.
 	CDI *cdiapi.Cache
@@ -138,15 +139,12 @@ func New(opts Options) (*Plugin, error) {
 	if opts.Rules.Publishes && opts.Publisher == nil {
 		return nil, fmt.Errorf("%s: the plugin publishes and needs the publisher", opts.Rules.Name)
 	}
-	if opts.DevRoot == "" {
-		opts.DevRoot = "/dev"
-	}
 	return &Plugin{
 		rules:      opts.Rules,
 		st:         opts.Store,
 		engine:     opts.Engine,
 		nodeName:   opts.NodeName,
-		devRoot:    opts.DevRoot,
+		roots:      newRoots(opts.SysRoot, opts.DevRoot),
 		cdi:        opts.CDI,
 		local:      opts.Local,
 		onShared:   opts.OnShared,
@@ -503,13 +501,11 @@ func (p *Plugin) lendCompanion(ctx context.Context, pr *prepare) error {
 	if pr.lend == nil {
 		return nil
 	}
-	info, err := claimInfoOf(p.st.Snapshot(), p.preparation(pr.uid), p.st.ResultOptions())
-	if err == nil {
-		for _, d := range info.Devices {
-			if node := deviceNumaNode(&d); node >= 0 {
-				if err = p.engine.RecordLend(ctx, state.GrantRef{Claim: pr.uid, Result: d.Result}, node); err != nil {
-					break
-				}
+	var err error
+	for _, d := range claimInfo(p.st.Snapshot(), p.preparation(pr.uid), p.roots).Devices {
+		if node := deviceNumaNode(&d); node >= 0 {
+			if err = p.engine.RecordLend(ctx, state.GrantRef{Claim: pr.uid, Result: d.Result}, node); err != nil {
+				break
 			}
 		}
 	}
@@ -530,23 +526,14 @@ func (p *Plugin) lendAndDevices(prep *state.Preparation) (*lend.Lend, []state.De
 	if prep == nil {
 		return nil, nil
 	}
-	doc := p.st.Snapshot()
-	lend, err := lendOf(doc, prep)
-	if err != nil {
-		klog.Errorf("%s: claim %s: %v", p.rules.Name, prep.ClaimName, err)
-	}
-	info, err := claimInfoOf(doc, prep, p.st.ResultOptions())
-	if err != nil {
-		klog.Errorf("%s: claim %s: %v", p.rules.Name, prep.ClaimName, err)
-		return lend, nil
-	}
+	info := claimInfo(p.st.Snapshot(), prep, p.roots)
 	devs := []state.DeviceInfo{}
 	for _, d := range info.Devices {
 		if d.DeviceType == device.DeviceTypeMemdev {
 			devs = append(devs, d)
 		}
 	}
-	return lend, devs
+	return info.Lend, devs
 }
 
 // failedPrepare commits the preparation of a Prepare that failed after its
@@ -584,8 +571,7 @@ func (p *Plugin) rollback(ctx context.Context, uid, claimName string, failed fun
 		return
 	}
 	if prep.Lease != "" {
-		lend, _ := lendOf(p.st.Snapshot(), prep)
-		if err := p.lender.Revoke(rctx, lend, claimName); err != nil {
+		if err := p.lender.Revoke(rctx, lendOf(p.st.Snapshot(), prep), claimName); err != nil {
 			p.rules.voice.rollbackError(rollbackRevoke, uid, claimName, err)
 		}
 	}
@@ -773,11 +759,7 @@ func (p *Plugin) revokeLends(ctx context.Context, prep *state.Preparation, compa
 	if !companion || prep.State == state.PreparationStale {
 		return nil
 	}
-	lend, err := lendOf(p.st.Snapshot(), prep)
-	if err != nil {
-		return err
-	}
-	return p.lender.Revoke(ctx, lend, prep.ClaimName)
+	return p.lender.Revoke(ctx, lendOf(p.st.Snapshot(), prep), prep.ClaimName)
 }
 
 // generation returns the generation of the document of the store: it
@@ -848,16 +830,12 @@ func (p *Plugin) ClaimInfo(uid string) *ClaimInfo {
 	if prep == nil || !prep.Prepared() {
 		return nil
 	}
-	info, err := claimInfoOf(p.st.Snapshot(), prep, p.st.ResultOptions())
-	if err != nil {
-		klog.Errorf("%s: claim %s: %v", p.rules.Name, prep.ClaimName, err)
-		return nil
-	}
-	return info
+	return claimInfo(p.st.Snapshot(), prep, p.roots)
 }
 
 // PreparedResult returns the claim name and the prepared device of the
-// allocation result n of a prepared claim, and false if there is none.
+// allocation result n of a prepared claim, and false if there is none
+// (also for a nil plugin).
 func (p *Plugin) PreparedResult(uid string, n int) (string, state.DeviceInfo, bool) {
 	info := p.ClaimInfo(uid)
 	if info == nil {
@@ -869,32 +847,6 @@ func (p *Plugin) PreparedResult(uid string, n int) (string, state.DeviceInfo, bo
 		}
 	}
 	return "", state.DeviceInfo{}, false
-}
-
-// PoolDevices returns the devices of a preparation of the claim uid in any
-// state, nil without a record.
-func (p *Plugin) PoolDevices(uid string) []store.PoolDevice {
-	prep := p.preparation(uid)
-	if prep == nil {
-		return nil
-	}
-	devs, err := poolDevicesOf(p.st.Snapshot(), prep, p.st.ResultOptions())
-	if err != nil {
-		klog.Errorf("%s: claim %s: %v", p.rules.Name, prep.ClaimName, err)
-	}
-	return devs
-}
-
-// ClaimResults returns the devices of a prepared claim of the pool driver
-// (PoolDevices); nil for a nil plugin and a claim that is not prepared.
-func (p *Plugin) ClaimResults(uid string) []store.PoolDevice {
-	if p == nil {
-		return nil
-	}
-	if prep := p.preparation(uid); prep == nil || !prep.Prepared() {
-		return nil
-	}
-	return p.PoolDevices(uid)
 }
 
 // Recovered logs what the recovery of the engine (rec, nil for a LOST
@@ -980,7 +932,7 @@ func (p *Plugin) writeCDI(pending string) error {
 	}
 	p.cdiMu.Lock()
 	defer p.cdiMu.Unlock()
-	spec, err := buildCDISpec(p.st.Snapshot(), p.rules.Name, p.rules.CDIKind, p.st.ResultOptions(), pending, p.rules.CDIUnpreparing)
+	spec, err := buildCDISpec(p.st.Snapshot(), p.rules.Name, p.rules.CDIKind, p.roots, pending, p.rules.CDIUnpreparing)
 	if err != nil {
 		return err
 	}

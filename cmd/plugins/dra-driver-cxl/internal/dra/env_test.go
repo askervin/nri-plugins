@@ -237,8 +237,7 @@ func (e *driverEnv) start() {
 	ctx := context.Background()
 	local := LocalRules(filepath.Join(e.dir, "mounts"))
 	pool := PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, "mounts"), e.stateFile())
-	st, err := store.Open(ctx, store.Options{Dir: e.dir, PoolDriver: pool.Name, BootID: e.k.BootID(),
-		SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot(), WriteFault: e.writeFault})
+	st, err := store.Open(ctx, store.Options{Dir: e.dir, BootID: e.k.BootID(), WriteFault: e.writeFault})
 	mustOK(t, err)
 	e.st = st
 	e.eng, err = engine.New(engine.Options{
@@ -278,6 +277,7 @@ func (e *driverEnv) start() {
 		Store:    st,
 		Engine:   e.eng,
 		NodeName: envNode,
+		SysRoot:  e.k.SysRoot(),
 		DevRoot:  e.k.DevRoot(),
 		CDI:      e.cache,
 		Local: LocalConfig{Managed: true, UsableSize: func(string, uint64) uint64 { return 0 },
@@ -291,7 +291,7 @@ func (e *driverEnv) start() {
 	})
 	mustOK(t, err)
 	e.pool, err = New(Options{Rules: pool, Store: st, Engine: e.eng, NodeName: envNode,
-		DevRoot: e.k.DevRoot(), CDI: e.cache, Publisher: e.pub})
+		SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot(), CDI: e.cache, Publisher: e.pub})
 	mustOK(t, err)
 	if e.lent {
 		e.local.Lender().Set(e.nodeLender(), e.hooks)
@@ -502,6 +502,16 @@ func (e *driverEnv) mustUnprepare(p *Plugin, uid string) {
 // records returns the records of the store.
 func (e *driverEnv) records() *state.Records {
 	return &e.st.Snapshot().Records
+}
+
+// devices returns the devices of the preparation of the claim uid of the
+// plugin in any state, nil without a record.
+func (e *driverEnv) devices(p *Plugin, uid string) []state.DeviceInfo {
+	prep := e.preparation(p, uid)
+	if prep == nil {
+		return nil
+	}
+	return claimInfo(e.st.Snapshot(), prep, p.roots).Devices
 }
 
 // preparation returns the preparation of the claim uid of the plugin, nil

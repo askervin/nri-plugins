@@ -42,6 +42,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
+	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -145,8 +146,7 @@ func (e *poolTestEnv) driver(t *testing.T) *dra.Plugin {
 		_ = e.st.Close()
 	}
 	rules := dra.PoolRules(device.PoolDriverName, filepath.Join(e.dir, mountsDirName), filepath.Join(e.dir, store.FileName))
-	e.st, err = store.Open(context.Background(), store.Options{Dir: e.dir, PoolDriver: device.PoolDriverName,
-		BootID: e.k.BootID()})
+	e.st, err = store.Open(context.Background(), store.Options{Dir: e.dir, BootID: e.k.BootID()})
 	noErr(t, err)
 	devices, err := newDeviceEngine(deviceConfig{
 		Kernel:        e.k.Kernel(),
@@ -170,6 +170,7 @@ func (e *poolTestEnv) driver(t *testing.T) *dra.Plugin {
 		Rules:   rules,
 		Store:   e.st,
 		Engine:  devices.Engine,
+		SysRoot: e.k.SysRoot(),
 		DevRoot: e.k.DevRoot(),
 		CDI:     cache,
 	})
@@ -194,21 +195,70 @@ func (e *poolTestEnv) preparation(uid string) *state.Preparation {
 	return e.records().Preparation(device.PoolDriverName, uid)
 }
 
-// device returns the device of the result n of the claim uid as the pool
-// driver gives it (PoolDevices), failing the test without one.
-func (e *poolTestEnv) device(p *dra.Plugin, uid string, n int) preparedPoolDevice {
+// poolDevice is what the tests of the pool driver check of the device of
+// a result of a claim in any state: the records of its grant (Size the
+// size it got, else the one it asked), its memdev and region, and the
+// settings of the result.
+type poolDevice struct {
+	Serial                state.Serial
+	Mode                  string
+	ReadOnly, Persistent  bool
+	Size                  uint64
+	Memdev, Region        string
+	DaxDevice             string
+	DaxMajor, DaxMinor    int
+	NumaNode              int
+	NdRegion, Namespace   string
+	BlockDevice           string
+	BlockMajor            int
+	Access, Path, FsType  string
+	NodeMount, LoopDevice string
+	ResultSettings        config.ResultSettings
+}
+
+// device returns the device of the result n of the claim uid, failing the
+// test without one.
+func (e *poolTestEnv) device(p *dra.Plugin, uid string, n int) poolDevice {
 	e.t.Helper()
-	prep := e.preparation(uid)
-	if prep == nil {
-		e.t.Fatalf("claim %s has no record", uid)
+	r := e.records()
+	prep := r.Preparation(p.Name(), uid)
+	if prep == nil || prep.Result(n) == nil || prep.Result(n).Grant == nil {
+		e.t.Fatalf("claim %s has no grant of result %d", uid, n)
 	}
-	for _, d := range p.PoolDevices(uid) {
-		if d.Result == n {
-			return d
+	g := r.Grant(*prep.Result(n).Grant)
+	if g == nil {
+		e.t.Fatalf("claim %s: the grant of result %d has no record", uid, n)
+	}
+	d := poolDevice{Serial: g.Serial, Mode: string(g.Asked.Mode), ReadOnly: g.Asked.ReadOnly, Size: g.Got.Size,
+		Region: string(g.Got.Region), NumaNode: state.NumaNodeOf(g.Got.NumaNode), Namespace: g.Got.Namespace,
+		Access: string(g.Got.Mount), ResultSettings: prep.Result(n).Settings}
+	if d.Size == 0 {
+		d.Size = g.Asked.Size
+	}
+	if m := r.Memdev(g.Serial); m != nil {
+		d.Memdev = m.Name
+	}
+	dev := r.DaxDevOf(g)
+	d.DaxMajor, d.DaxMinor = dev.Major, dev.Minor
+	if g.Asked.Mode == state.ModeDax && g.Got.Dax != "" {
+		d.DaxDevice = filepath.Join(e.k.DevRoot(), g.Got.Dax)
+	}
+	if g.Asked.Mode == state.ModeBlock || g.Asked.Mode == state.ModeFs {
+		d.Persistent = true
+		if reg := r.Region(g.Got.Region); reg != nil && reg.Pmem != nil {
+			d.NdRegion = reg.Pmem.NdRegion
+		}
+		if bd := g.Got.BlockDevice; bd != nil {
+			d.BlockDevice, d.BlockMajor = bd.Name, bd.Dev.Major
 		}
 	}
-	e.t.Fatalf("claim %s has no device of result %d", uid, n)
-	return preparedPoolDevice{}
+	if g.Asked.Mode == state.ModeFs {
+		d.Path = g.Asked.Path
+		if m := r.MountOf(g); m != nil {
+			d.NodeMount, d.LoopDevice, d.FsType = m.Path, m.Loop, m.FsType
+		}
+	}
+	return d
 }
 
 // cdiSpec returns the pool CDI spec on disk, nil if there is none.

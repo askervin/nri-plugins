@@ -16,6 +16,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"slices"
@@ -150,6 +151,7 @@ func TestPoolPrepareExclusive(t *testing.T) {
 
 func TestPoolPrepareSharedTwoClaims(t *testing.T) {
 	e := newPoolTestEnv(t)
+	dax0 := filepath.Join(e.k.DevRoot(), "dax0.0")
 	memdev := e.plug(0xc1ae0001)
 	p := e.driver(t)
 
@@ -174,12 +176,12 @@ func TestPoolPrepareSharedTwoClaims(t *testing.T) {
 		t.Fatalf("dax0.0 bound to %q", d)
 	}
 	sharedEnv := func(uid string) []string {
-		return []string{"CXL_C1AE0001_DAX=/dev/dax0.0", "CXL_C1AE0001_MODE=dax", "CXL_C1AE0001_READONLY=0",
+		return []string{"CXL_C1AE0001_DAX=" + dax0, "CXL_C1AE0001_MODE=dax", "CXL_C1AE0001_READONLY=0",
 			"CXL_C1AE0001_SERIAL=0xc1ae0001", "CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=268435456", "CXL_CLAIM_" + uid + "_0=1"}
 	}
 	cd := e.wantCDIDevice(t, "claim-u1-0", sharedEnv("u1"))
 	dev := e.device(p, "u1", 0)
-	wantNodes := []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: int64(dev.DaxMajor), Minor: int64(dev.DaxMinor)}}
+	wantNodes := []*cdiSpecs.DeviceNode{{Path: dax0, Type: "c", Major: int64(dev.DaxMajor), Minor: int64(dev.DaxMinor)}}
 	if dev.DaxMajor == 0 || !reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, wantNodes) {
 		t.Fatalf("unexpected device nodes %+v", cd.ContainerEdits.DeviceNodes)
 	}
@@ -319,6 +321,7 @@ func withConfig(c *resourceapi.ResourceClaim, source resourceapi.AllocationConfi
 
 func TestPoolPrepareExclusiveDax(t *testing.T) {
 	e := newPoolTestEnv(t)
+	dax0 := filepath.Join(e.k.DevRoot(), "dax0.0")
 	memdev := e.plug(0xc1ee0001)
 	p := e.driver(t)
 
@@ -334,16 +337,16 @@ func TestPoolPrepareExclusiveDax(t *testing.T) {
 	if n := e.onlineBlocks("region0"); n != 0 {
 		t.Fatalf("%d blocks of a dax device online", n) // a dax device is never onlined
 	}
-	cd := e.wantCDIDevice(t, "claim-u1-0", []string{"CXL_C1EE0001_DAX=/dev/dax0.0", "CXL_C1EE0001_MODE=dax", "CXL_C1EE0001_READONLY=0",
+	cd := e.wantCDIDevice(t, "claim-u1-0", []string{"CXL_C1EE0001_DAX=" + dax0, "CXL_C1EE0001_MODE=dax", "CXL_C1EE0001_READONLY=0",
 		"CXL_C1EE0001_SERIAL=0xc1ee0001", "CXL_C1EE0001_SHARED=0", "CXL_C1EE0001_SIZE=268435456", "CXL_CLAIM_u1_0=1"})
 	d := e.device(p, "u1", 0)
 	major, minor, err := e.k.Kernel().DaxDevNumbers("dax0.0")
 	noErr(t, err)
-	wantNodes := []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: int64(major), Minor: int64(minor)}}
+	wantNodes := []*cdiSpecs.DeviceNode{{Path: dax0, Type: "c", Major: int64(major), Minor: int64(minor)}}
 	if !reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, wantNodes) {
 		t.Fatalf("unexpected device nodes %+v", cd.ContainerEdits.DeviceNodes)
 	}
-	if d.Mode != api.ModeDax || d.NumaNode != -1 || d.DaxDevice != "/dev/dax0.0" || d.DaxMajor != major || d.DaxMinor != minor {
+	if d.Mode != api.ModeDax || d.NumaNode != -1 || d.DaxDevice != dax0 || d.DaxMajor != major || d.DaxMinor != minor {
 		t.Fatalf("prepared device %+v", d)
 	}
 
@@ -358,6 +361,7 @@ func TestPoolPrepareExclusiveDax(t *testing.T) {
 
 func TestPoolReadOnlyCDIDevices(t *testing.T) {
 	e := newPoolTestEnv(t)
+	dax0 := filepath.Join(e.k.DevRoot(), "dax0.0")
 	memdev := e.plug(0xc1ae0001)
 	p := e.driver(t)
 
@@ -366,10 +370,10 @@ func TestPoolReadOnlyCDIDevices(t *testing.T) {
 	if !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl-pool=claim-u1-0"}) {
 		t.Fatalf("unexpected device %+v", res.Devices[0])
 	}
-	ro := e.wantCDIDevice(t, "claim-u1-0", []string{"CXL_C1AE0001_DAX=/dev/dax0.0", "CXL_C1AE0001_MODE=dax", "CXL_C1AE0001_READONLY=1",
+	ro := e.wantCDIDevice(t, "claim-u1-0", []string{"CXL_C1AE0001_DAX=" + dax0, "CXL_C1AE0001_MODE=dax", "CXL_C1AE0001_READONLY=1",
 		"CXL_C1AE0001_SERIAL=0xc1ae0001", "CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=268435456", "CXL_CLAIM_u1_0=1"})
 	d := e.device(p, "u1", 0)
-	wantNodes := []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: int64(d.DaxMajor), Minor: int64(d.DaxMinor), Permissions: "r"}}
+	wantNodes := []*cdiSpecs.DeviceNode{{Path: dax0, Type: "c", Major: int64(d.DaxMajor), Minor: int64(d.DaxMinor), Permissions: "r"}}
 	if !reflect.DeepEqual(ro.ContainerEdits.DeviceNodes, wantNodes) {
 		t.Fatalf("unexpected read-only device nodes %+v", ro.ContainerEdits.DeviceNodes)
 	}
@@ -384,7 +388,7 @@ func TestPoolReadOnlyCDIDevices(t *testing.T) {
 	if n := strings.Count(e.commands(), "create-region"); n != 1 {
 		t.Fatalf("region created %d times", n)
 	}
-	rw := e.wantCDIDevice(t, "claim-u2-0", []string{"CXL_C1AE0001_DAX=/dev/dax0.0", "CXL_C1AE0001_MODE=dax", "CXL_C1AE0001_READONLY=0",
+	rw := e.wantCDIDevice(t, "claim-u2-0", []string{"CXL_C1AE0001_DAX=" + dax0, "CXL_C1AE0001_MODE=dax", "CXL_C1AE0001_READONLY=0",
 		"CXL_C1AE0001_SERIAL=0xc1ae0001", "CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=268435456", "CXL_CLAIM_u2_0=1"})
 	if rw.ContainerEdits.DeviceNodes[0].Permissions != "" {
 		t.Fatalf("read-write device node %+v", rw.ContainerEdits.DeviceNodes[0])
@@ -438,6 +442,7 @@ func TestPoolConfigErrors(t *testing.T) {
 // serial has the key <HEX>_2) and device node; none of a companion claim.
 func TestPoolCDISpecKeys(t *testing.T) {
 	e := newPoolTestEnv(t)
+	dax0 := filepath.Join(e.k.DevRoot(), "dax0.0")
 	e.plug(0xc1ae0001)
 	e.plug(0xc1ee0001)
 	p := e.driver(t)
@@ -454,14 +459,14 @@ func TestPoolCDISpecKeys(t *testing.T) {
 	node := e.device(p, "u1", 3).NumaNode
 	want := []cdiSpecs.Device{
 		{Name: "claim-u1-0", ContainerEdits: cdiSpecs.ContainerEdits{
-			Env: []string{"CXL_C1AE0001_DAX=/dev/dax0.0", "CXL_C1AE0001_MODE=dax", "CXL_C1AE0001_READONLY=0", "CXL_C1AE0001_SERIAL=0xc1ae0001",
+			Env: []string{"CXL_C1AE0001_DAX=" + dax0, "CXL_C1AE0001_MODE=dax", "CXL_C1AE0001_READONLY=0", "CXL_C1AE0001_SERIAL=0xc1ae0001",
 				"CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=268435456", "CXL_CLAIM_u1_0=1"},
-			DeviceNodes: []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: int64(dax.DaxMajor), Minor: int64(dax.DaxMinor)}},
+			DeviceNodes: []*cdiSpecs.DeviceNode{{Path: dax0, Type: "c", Major: int64(dax.DaxMajor), Minor: int64(dax.DaxMinor)}},
 		}},
 		{Name: "claim-u1-1", ContainerEdits: cdiSpecs.ContainerEdits{
-			Env: []string{"CXL_C1AE0001_2_DAX=/dev/dax0.0", "CXL_C1AE0001_2_MODE=dax", "CXL_C1AE0001_2_READONLY=1", "CXL_C1AE0001_2_SERIAL=0xc1ae0001",
+			Env: []string{"CXL_C1AE0001_2_DAX=" + dax0, "CXL_C1AE0001_2_MODE=dax", "CXL_C1AE0001_2_READONLY=1", "CXL_C1AE0001_2_SERIAL=0xc1ae0001",
 				"CXL_C1AE0001_2_SHARED=1", "CXL_C1AE0001_2_SIZE=268435456", "CXL_CLAIM_u1_1=1"},
-			DeviceNodes: []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: int64(dax.DaxMajor), Minor: int64(dax.DaxMinor), Permissions: "r"}},
+			DeviceNodes: []*cdiSpecs.DeviceNode{{Path: dax0, Type: "c", Major: int64(dax.DaxMajor), Minor: int64(dax.DaxMinor), Permissions: "r"}},
 		}},
 		{Name: "claim-u1-3", ContainerEdits: cdiSpecs.ContainerEdits{
 			Env: []string{"CXL_C1EE0001_MODE=numa", "CXL_C1EE0001_NODE=" + strconv.Itoa(node), "CXL_C1EE0001_SERIAL=0xc1ee0001", "CXL_C1EE0001_SHARED=0",
@@ -537,17 +542,16 @@ func TestPoolPrepareMemoryConfig(t *testing.T) {
 	if d := e.device(p, "u1", 0); d.Mode != api.ModeNUMA || d.NumaNode != 2 || !reflect.DeepEqual(d.ResultSettings, want) {
 		t.Fatalf("prepared device %+v", d)
 	}
-	got := p.ClaimResults("u1")
-	if len(got) != 1 || got[0].Result != 0 || got[0].Request != "mem" || got[0].Mode != api.ModeNUMA || got[0].NumaNode != 2 ||
-		got[0].Size != 256<<20 || !reflect.DeepEqual(got[0].ResultSettings, want) {
-		t.Fatalf("claim results %+v", got)
+	if _, got, ok := p.PreparedResult("u1", 0); !ok || got.Result != 0 || got.RequestName != "mem" || got.Mode != api.ModeNUMA ||
+		!reflect.DeepEqual(got.NUMANodes, []int{2}) || got.ConsumedBytes != 256<<20 || !reflect.DeepEqual(got.ResultSettings, want) {
+		t.Fatalf("prepared result %+v", got)
 	}
 	e.wantCDIDevice(t, "claim-u1-0", []string{"CXL_C1EE0001_MODE=numa", "CXL_C1EE0001_NODE=2", "CXL_C1EE0001_SERIAL=0xc1ee0001",
 		"CXL_C1EE0001_SHARED=0", "CXL_C1EE0001_SIZE=268435456", "CXL_CLAIM_u1_0=1"})
 
 	// the NRI plugin steers a container that uses the result: the plan
 	// of policy auto of a CXL node is first-cxl, of the quota of the result
-	ctr, err := createdContainer(t, e.st, nil, p, "u1", 0)
+	ctr, err := createdContainer(t, e.st, p, "u1", 0)
 	noErr(t, err)
 	if ctr.Management != containers.ManagementSteered || ctr.Steering != "auto from class cxl-pool" || ctr.Claimed.String() != "2" ||
 		ctr.Plan == nil || ctr.Plan.String() != "waypoints=[[2:268435456]] minStep=67108864 maxStep=67108864" {
@@ -556,8 +560,8 @@ func TestPoolPrepareMemoryConfig(t *testing.T) {
 
 	// the settings survive a restart of the driver
 	p = e.driver(t)
-	if got := p.ClaimResults("u1"); len(got) != 1 || !reflect.DeepEqual(got[0].ResultSettings, want) {
-		t.Fatalf("claim results after a restart %+v", got)
+	if _, got, ok := p.PreparedResult("u1", 0); !ok || !reflect.DeepEqual(got.ResultSettings, want) {
+		t.Fatalf("prepared result after a restart %+v", got)
 	}
 	noErr(t, unprepare(t, p, "u1"))
 	e.wantClean(t, p)

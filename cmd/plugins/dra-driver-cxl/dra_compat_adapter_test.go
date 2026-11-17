@@ -18,7 +18,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 )
 
 // The names of the front-end (internal/dra) as the tests use them.
@@ -26,8 +25,6 @@ import (
 type (
 	// PreparedDeviceInfo is a device of a prepared claim of cxl.nri.io.
 	PreparedDeviceInfo = state.DeviceInfo
-	// preparedPoolDevice is a device of a prepared pool claim.
-	preparedPoolDevice = store.PoolDevice
 	// lendRecord is the lend of a companion claim.
 	lendRecord = lend.Lend
 	// lentDevice is a memdev of a companion claim as the lease broker gets

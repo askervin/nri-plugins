@@ -26,9 +26,7 @@ import (
 // requests of the claims of the slots, as the DRA drivers do, over the
 // store and the engine of each start of the process.
 type CoreFront interface {
-	// TuneStore and TuneEngine change the options of the store and of the
-	// engine of every start.
-	TuneStore(o *store.Options)
+	// TuneEngine changes the options of the engine of every start.
 	TuneEngine(o *Options)
 	// Started starts the front-end over the store and the engine of a
 	// start whose recovery returned rec.

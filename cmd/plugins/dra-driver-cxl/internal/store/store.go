@@ -186,18 +186,12 @@ type Options struct {
 	// Dir is the plugin data directory of cxl.nri.io: the document and its
 	// lock.
 	Dir string
-	// PoolDriver is the name of the pool driver.
-	PoolDriver string
 	// BootID is the running boot id. It is required: without it a
 	// document of another boot would be taken as of this boot.
 	BootID string
 	// NewState makes a new document when neither the document nor the
 	// previous one decodes.
 	NewState bool
-	// SysRoot and DevRoot are the sysfs mount point and the directory of
-	// the device nodes in the paths of the results (ResultOptions), "/sys"
-	// and "/dev" if "".
-	SysRoot, DevRoot string
 	// AfterCommit is called after every commit that succeeded, a Durable
 	// one once it is written, in the goroutine of Commit; nil for none.
 	// Only tests set it. It must not commit or call the engine: the caller
@@ -276,12 +270,6 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 	}
 	if opts.files == nil {
 		opts.files = osFiles{}
-	}
-	if opts.SysRoot == "" {
-		opts.SysRoot = "/sys"
-	}
-	if opts.DevRoot == "" {
-		opts.DevRoot = "/dev"
 	}
 	if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
 		return nil, err

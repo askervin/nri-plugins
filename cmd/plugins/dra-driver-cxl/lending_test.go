@@ -16,7 +16,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -238,21 +237,6 @@ func TestCompanionLenderLendRevoke(t *testing.T) {
 // numaLent returns a memdev of a companion claim in mode numa on node.
 func numaLent(node int) lentDevice {
 	return lentDevice{DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA, NUMANodes: []int{node}}
-}
-
-func TestLendRecordJSON(t *testing.T) {
-	enc := `{"lease":"000000a1","pod":{"namespace":"demo","name":"borrower","uid":"pod-uid-1"},"container":"app","nodes":[2]}`
-	var rec lendRecord
-	noErr(t, json.Unmarshal([]byte(enc), &rec))
-	want := lendRecord{Lease: "000000a1", Pod: podRef{Namespace: testNS, Name: testPod, UID: testPodUID}, Container: testCtr, NumaNodes: []int{2}}
-	if !reflect.DeepEqual(rec, want) {
-		t.Fatalf("loaded %+v", rec)
-	}
-	data, err := json.Marshal(&rec)
-	noErr(t, err)
-	if string(data) != enc {
-		t.Fatalf("encoded %s", data)
-	}
 }
 
 // withDriverConfig appends an opaque config of driver to a claim's

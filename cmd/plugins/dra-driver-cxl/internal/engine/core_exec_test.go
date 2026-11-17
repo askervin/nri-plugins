@@ -86,7 +86,7 @@ func newCoreExec(t *testing.T, log io.Writer, newFront func(f *fake.Fake, dir st
 	x.v = v
 	if newFront != nil {
 		x.front = newFront(v.f, v.dir)
-		v.storeCuts, v.tuneStore = true, x.front.TuneStore
+		v.storeCuts = true
 	}
 	for _, d := range coreMemdevs {
 		v.f.Plug(d.spec)

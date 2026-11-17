@@ -169,8 +169,7 @@ func (e *localTestEnv) start() *dra.Plugin {
 		_ = e.st.Close()
 	}
 	var err error
-	e.st, err = store.Open(context.Background(), store.Options{Dir: e.dir, PoolDriver: device.PoolDriverName,
-		BootID: e.k.BootID(), SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot()})
+	e.st, err = store.Open(context.Background(), store.Options{Dir: e.dir, BootID: e.k.BootID()})
 	noErr(t, err)
 	e.devices, err = newDeviceEngine(deviceConfig{
 		Kernel:          e.k.Kernel(),
@@ -230,6 +229,7 @@ func (e *localTestEnv) start() *dra.Plugin {
 		Store:     e.st,
 		Engine:    e.devices.Engine,
 		NodeName:  testNode,
+		SysRoot:   e.k.SysRoot(),
 		DevRoot:   e.k.DevRoot(),
 		CDI:       cache,
 		Local:     e.config.localConfig(),
@@ -486,6 +486,7 @@ func (e *localTestEnv) unmanaged() {
 		Store:     e.st,
 		Engine:    e.devices.Engine,
 		NodeName:  testNode,
+		SysRoot:   e.k.SysRoot(),
 		DevRoot:   e.k.DevRoot(),
 		Local:     local,
 		OnShared:  e.devices.addShared,
@@ -503,15 +504,29 @@ func (e *localTestEnv) localSnapshot() *dra.LocalSnapshot {
 	return e.publisher.LocalSnapshot()
 }
 
-// prepared returns the PrepareResults that kubelet gets of the prepared
-// claims of cxl.nri.io in the records, by UID.
+// prepared returns the devices that kubelet gets of the prepared claims of
+// cxl.nri.io in the records, by UID: the CDI devices of each result, none
+// of a companion claim.
 func (e *localTestEnv) prepared() map[string]kubeletplugin.PrepareResult {
 	r := e.records()
 	out := map[string]kubeletplugin.PrepareResult{}
 	for i := range r.Preparations {
-		if p := &r.Preparations[i]; p.Driver == device.DriverName && p.Prepared() {
-			out[p.UID] = store.PrepareResult(p, device.CDIKind)
+		p := &r.Preparations[i]
+		if p.Driver != device.DriverName || !p.Prepared() {
+			continue
 		}
+		res := kubeletplugin.PrepareResult{Devices: []kubeletplugin.Device{}}
+		for _, rr := range p.Results {
+			d := kubeletplugin.Device{Requests: []string{rr.Request}, PoolName: rr.Pool, DeviceName: rr.Device}
+			if p.Lease == "" {
+				d.CDIDeviceIDs = []string{device.CDIKind + "=" + dra.ClaimCDIDeviceName(p.UID, rr.Index)}
+				if rr.Kind == state.ResultLeaseClaim {
+					d.CDIDeviceIDs = append(d.CDIDeviceIDs, device.CDIKind+"=lease-"+p.UID)
+				}
+			}
+			res.Devices = append(res.Devices, d)
+		}
+		out[p.UID] = res
 	}
 	return out
 }

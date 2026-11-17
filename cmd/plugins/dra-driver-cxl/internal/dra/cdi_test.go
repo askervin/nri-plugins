@@ -76,7 +76,7 @@ func TestClaimsCDISpec(t *testing.T) {
 			"CXL_CLAIM_u1_2=1", "CXL_REGION0_MODE=numa", "CXL_REGION0_NODE=2", "CXL_REGION0_SIZE=67108864"}}},
 		{Name: "claim-u2-0", ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{"CXL_CLAIM_u2_0=1"}}},
 	}
-	spec, err := buildCDISpec(e.st.Snapshot(), device.DriverName, device.CDIKind, e.st.ResultOptions(), "", true)
+	spec, err := buildCDISpec(e.st.Snapshot(), device.DriverName, device.CDIKind, e.local.roots, "", true)
 	mustOK(t, err)
 	if spec.Kind != "nri.io/cxl" || !reflect.DeepEqual(spec.Devices, want) {
 		t.Fatalf("CDI spec %+v", spec)
@@ -118,7 +118,7 @@ func TestCDISpecOfClaims(t *testing.T) {
 		doc.Preparation(driver, uid).State = s
 	}
 	names := func(p *Plugin, pending string) []string {
-		spec, err := buildCDISpec(doc, p.Name(), p.Rules().CDIKind, e.st.ResultOptions(), pending, p.Rules().CDIUnpreparing)
+		spec, err := buildCDISpec(doc, p.Name(), p.Rules().CDIKind, p.roots, pending, p.Rules().CDIUnpreparing)
 		mustOK(t, err)
 		var out []string
 		for _, d := range spec.Devices {
@@ -339,7 +339,7 @@ func TestCDISpecOfIncompleteDevices(t *testing.T) {
 	doc.Grant(state.GrantRef{Claim: "f"}).Got.Mount = ""
 	doc.Grant(state.GrantRef{Claim: "d"}).Got.Dax = ""
 	build := func(pending string) (*cdiSpecs.Spec, error) {
-		return buildCDISpec(doc, device.DriverName, device.CDIKind, e.st.ResultOptions(), pending, true)
+		return buildCDISpec(doc, device.DriverName, device.CDIKind, e.local.roots, pending, true)
 	}
 	spec, err := build("")
 	wantErrText(t, err, "claim demo/claim-f: result 0: no node mount")

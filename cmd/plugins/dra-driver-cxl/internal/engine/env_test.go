@@ -82,10 +82,8 @@ type env struct {
 	// grants realised and its preparation PREPARED, nil for nothing.
 	beforePrepared func()
 	// storeCuts counts the commits of cutAt at the store (every commit)
-	// instead of at the engine; tuneStore changes the options of every
-	// store that the node opens, nil for none.
+	// instead of at the engine.
 	storeCuts bool
-	tuneStore func(o *store.Options)
 }
 
 // newEnv returns a node with the memdevs of specs plugged.
@@ -109,9 +107,6 @@ func newEnv(t *testing.T, specs ...fake.MemdevSpec) *env {
 func (v *env) open() {
 	v.t.Helper()
 	opts := store.Options{Dir: filepath.Join(v.dir, "state"), BootID: v.f.BootID()}
-	if v.tuneStore != nil {
-		v.tuneStore(&opts)
-	}
 	if v.storeCuts {
 		opts.AfterCommit = v.committed
 	}

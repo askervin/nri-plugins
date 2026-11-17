@@ -208,8 +208,8 @@ func TestPoolUnfinishedNodes(t *testing.T) {
 	p = e.driver(t)
 	uid := "uid-cxl-lease-l1"
 	node := state.NumaNodeOf(e.records().Region("region0").NumaNode)
-	if node < 0 || !slices.Equal(poolNumaNodes(p), []int{node}) || p.ClaimResults(uid) != nil {
-		t.Fatalf("numa nodes %v (region on %d), results %v", poolNumaNodes(p), node, p.ClaimResults(uid))
+	if node < 0 || !slices.Equal(poolNumaNodes(p), []int{node}) || p.ClaimInfo(uid) != nil {
+		t.Fatalf("numa nodes %v (region on %d), results %v", poolNumaNodes(p), node, p.ClaimInfo(uid))
 	}
 	p.Lender().Set(newFakeLender(), hooks)
 	noErr(t, unprepare(t, p, uid))
@@ -236,7 +236,7 @@ func TestPoolCompanionRevoke(t *testing.T) {
 		t.Fatalf("lender calls:\n%s", lender.callLog())
 	}
 	// the lend recorded with the node of the memory of the device
-	if rec, node := lendOf(e.st.Snapshot(), e.preparation(uid)), e.k.Kernel().TargetNode("dax0.0"); rec == nil || rec.Lease != "l1" ||
+	if rec, node := lendOf(p, uid), e.k.Kernel().TargetNode("dax0.0"); rec == nil || rec.Lease != "l1" ||
 		node < 0 || !slices.Equal(rec.NumaNodes, []int{node}) {
 		t.Fatalf("lend %+v, the memory on node %d", rec, node)
 	}

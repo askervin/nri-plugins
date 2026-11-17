@@ -37,7 +37,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -236,12 +235,9 @@ func TestPoolNumaLease(t *testing.T) {
 	numaEnv := map[string]string{"CXL_C1EE0001_MODE": "numa", "CXL_C1EE0001_NODE": "2", "CXL_C1EE0001_SERIAL": "0xc1ee0001",
 		"CXL_C1EE0001_SHARED": "0", "CXL_C1EE0001_SIZE": "268435456"}
 	wantResponse(t, <-ch, api.Response{State: api.StateReady, Source: "pool", Mode: "numa", Node: ptr(2), Size: 268435456, Serial: "0xc1ee0001", Env: numaEnv})
-	doc := e.st.Snapshot()
-	if p := doc.Preparation(device.PoolDriverName, string(alloc.UID)); p == nil {
-		t.Fatal("no preparation of the companion claim")
-	} else if data, _ := store.PoolLendContent(doc, p); !strings.Contains(string(data), `"lease":"000000a1"`) ||
-		!strings.Contains(string(data), `"nodes":[2]`) {
-		t.Fatalf("lend not in the results of the pool claim: %s", data)
+	if info := e.pool.ClaimInfo(string(alloc.UID)); info == nil || info.Lend == nil || info.Lend.Lease != "000000a1" ||
+		!slices.Equal(info.Lend.NumaNodes, []int{2}) {
+		t.Fatalf("lend not in the results of the pool claim: %+v", info)
 	}
 	if l := e.stored("000000a1"); l == nil || l.Lend == nil || state.NumaNodeOf(l.Lend.NumaNode) != 2 {
 		t.Fatalf("the lease's lend %+v", l)

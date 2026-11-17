@@ -92,16 +92,16 @@ func nriClaims() claimTable {
 // nriPoolResults are prepared results of pool claims: pool result 0 a numa
 // device on node 3, result 1 a dax device; poolauto a numa device on node 3
 // that opts in with policy auto.
-func nriPoolResults() map[string][]store.PoolDevice {
-	return map[string][]store.PoolDevice{
-		"pool": {
-			{Result: 0, Request: "numa", Mode: cxlapi.ModeNUMA, NumaNode: 3, Size: 256 << 20},
-			{Result: 1, Request: "dax", Mode: cxlapi.ModeDax, NumaNode: -1, Size: 256 << 20},
-		},
-		"poolauto": {
-			{Result: 0, Request: "mem", Mode: cxlapi.ModeNUMA, NumaNode: 3, Size: 256 << 20,
+func nriPoolResults() claimTable {
+	return claimTable{
+		"pool": {ClaimName: "ns/pool", Devices: []state.DeviceInfo{
+			{Result: 0, RequestName: "numa", DeviceType: device.DeviceTypeMemdev, Mode: cxlapi.ModeNUMA, NUMANodes: []int{3}, ConsumedBytes: 256 << 20},
+			{Result: 1, RequestName: "dax", DeviceType: device.DeviceTypeMemdev, Mode: cxlapi.ModeDax, ConsumedBytes: 256 << 20},
+		}},
+		"poolauto": {ClaimName: "ns/poolauto", Devices: []state.DeviceInfo{
+			{Result: 0, RequestName: "mem", DeviceType: device.DeviceTypeMemdev, Mode: cxlapi.ModeNUMA, NUMANodes: []int{3}, ConsumedBytes: 256 << 20,
 				ResultSettings: claimSettings("poolauto", "mem", config.Steering{Policy: config.PolicyAuto})},
-		},
+		}},
 	}
 }
 
@@ -137,7 +137,7 @@ func newDecider(t *testing.T, defaults config.Container) *Plugin {
 	t.Helper()
 	e := newEnvWith(t, envOptions{fencing: defaults.Fencing, defaults: defaults})
 	e.local.set(nriClaims())
-	e.setPool(nriPoolResults())
+	e.pool.set(nriPoolResults())
 	return e.p
 }
 
@@ -199,7 +199,7 @@ func TestContainerResults(t *testing.T) {
 func TestForeignClaimMarker(t *testing.T) {
 	e := newEnvWith(t, envOptions{})
 	e.local.set(nriClaims())
-	e.setPool(nriPoolResults())
+	e.pool.set(nriPoolResults())
 	noErr(t, e.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
 		doc.Preparations = append(doc.Preparations,
 			state.Preparation{UID: "split", Driver: device.DriverName, ClaimName: "other/split", State: state.PreparationPrepared},
@@ -210,7 +210,7 @@ func TestForeignClaimMarker(t *testing.T) {
 	}))
 	refs := []resultRef{{"split", 0}, {"lease", 0}, {"pool", 0}}
 	logs := captureKlog(t)
-	if got := e.p.results(testPod("p"), "ns/pod-p/ctr", refs); len(got) != 1 || !got[0].pool {
+	if got := e.p.results(testPod("p"), "ns/pod-p/ctr", refs); len(got) != 1 || !reflect.DeepEqual(got[0].numaNodes, []int{3}) {
 		t.Fatalf("results %+v of another pod's claims", got)
 	}
 	for _, want := range []string{"ignoring the marker of claim split: the claim other/split is not of namespace ns",
@@ -308,7 +308,7 @@ func TestManage(t *testing.T) {
 func TestCreateContainerManagement(t *testing.T) {
 	e := newFenceEnv(t, "0-1", 2)
 	e.local.set(nriClaims())
-	e.setPool(nriPoolResults())
+	e.pool.set(nriPoolResults())
 	pod := testPod("u1")
 	management := func(id string) Management { return e.record(id).Management }
 
@@ -349,7 +349,7 @@ func TestCreateContainerManagement(t *testing.T) {
 func TestCharCreateContainerLogLines(t *testing.T) {
 	e := newFenceEnv(t, "0-1", 2)
 	e.local.set(nriClaims())
-	e.setPool(nriPoolResults())
+	e.pool.set(nriPoolResults())
 	logs := captureKlog(t)
 	pod := testPod("u1")
 

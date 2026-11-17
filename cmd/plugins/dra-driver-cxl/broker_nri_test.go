@@ -52,14 +52,13 @@ func TestCreateContainerDoesNotWaitForTheBroker(t *testing.T) {
 	var armed atomic.Bool
 	entered, unblock := make(chan struct{}), make(chan struct{})
 	var st *store.Store
-	st, err := store.Open(ctx, store.Options{Dir: local, PoolDriver: device.PoolDriverName, BootID: "boot-1",
-		SysRoot: "/sys", DevRoot: "/dev", AfterCommit: func() {
-			// the commit of the lease claim, held until the test ends
-			if st.Snapshot().LeaseClaim("lc1") != nil && armed.CompareAndSwap(true, false) {
-				close(entered)
-				<-unblock
-			}
-		}})
+	st, err := store.Open(ctx, store.Options{Dir: local, BootID: "boot-1", AfterCommit: func() {
+		// the commit of the lease claim, held until the test ends
+		if st.Snapshot().LeaseClaim("lc1") != nil && armed.CompareAndSwap(true, false) {
+			close(entered)
+			<-unblock
+		}
+	}})
 	noErr(t, err)
 	defer func() { noErr(t, st.Close()) }()
 	noErr(t, st.Commit(ctx, store.Durable, func(doc *store.Document) error {

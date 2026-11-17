@@ -69,7 +69,7 @@ func TestLocalSlicedNUMA(t *testing.T) {
 	info := e.local.ClaimInfo("u1")
 	want := state.DeviceInfo{RequestName: "mem", DeviceName: localDev, DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA,
 		SysfsPath: e.k.P("bus/cxl/devices/region0"), NUMANodes: []int{node}, NodeAffinities: []int{0},
-		TotalBytes: uint64(envBlockSize), ConsumedBytes: envBlockSize, Serial: "0xc100e2e1"}
+		TotalBytes: uint64(envBlockSize), ConsumedBytes: envBlockSize, Serial: serialSliced}
 	if info == nil || info.ClaimName != envNS+"/claim-u1" || len(info.Devices) != 1 ||
 		!reflect.DeepEqual(info.Devices[0], want) {
 		t.Fatalf("claim info %+v, expected device %+v", info, want)
@@ -172,7 +172,7 @@ func TestLocalPersistentBlock(t *testing.T) {
 		t.Fatalf("no namespace made:\n%s", e.commands())
 	}
 	w := e.local.ClaimInfo("w1").Devices[0]
-	if !w.Persistent || w.Mode != api.ModeBlock || w.BlockDevice == "" || w.Namespace == "" || w.ReadOnly {
+	if !w.Persistent || w.Mode != api.ModeBlock || w.BlockDevice == "" || w.ReadOnly {
 		t.Fatalf("device info %+v", w)
 	}
 	cd := e.cdiDevice(e.local, "claim-w1-0")

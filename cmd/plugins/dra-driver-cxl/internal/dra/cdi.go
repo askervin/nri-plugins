@@ -112,7 +112,7 @@ func cdiClaims(prep *state.Preparation, pending string, unpreparing bool) bool {
 // buildCDISpec returns the CDI spec of the kind of the claims of the driver
 // in doc that cdiClaims takes, and an error for a PREPARED or pending claim
 // with a device of mode fs that has no node mount.
-func buildCDISpec(doc *store.Document, driver, kind string, opts store.ResultOptions, pending string, unpreparing bool) (*cdiSpecs.Spec, error) {
+func buildCDISpec(doc *store.Document, driver, kind string, rs roots, pending string, unpreparing bool) (*cdiSpecs.Spec, error) {
 	spec := &cdiSpecs.Spec{Kind: kind}
 	byUID := map[string]*state.Preparation{}
 	for i := range doc.Preparations {
@@ -123,11 +123,7 @@ func buildCDISpec(doc *store.Document, driver, kind string, opts store.ResultOpt
 	}
 	var errs []error
 	for _, uid := range slices.Sorted(maps.Keys(byUID)) {
-		info, err := claimInfoOf(doc, byUID[uid], opts)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("claim %s: %w", byUID[uid].ClaimName, err))
-			continue
-		}
+		info := claimInfo(doc, byUID[uid], rs)
 		keys := envKeys{}
 		for i := range info.Devices {
 			d := &info.Devices[i]

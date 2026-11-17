@@ -61,7 +61,7 @@ func TestPrepareLocalNUMA(t *testing.T) {
 	e.wantDeviceInfo("u1", PreparedDeviceInfo{
 		RequestName: "mem", DeviceName: localDeviceName, DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA,
 		SysfsPath: e.k.P("bus/cxl/devices/region0"), NUMANodes: []int{node}, NodeAffinities: []int{0},
-		TotalBytes: localBlockSize, ConsumedBytes: localBlockSize, Serial: "0xc100e2e1",
+		TotalBytes: localBlockSize, ConsumedBytes: localBlockSize, Serial: localSerial,
 	})
 	wantNUMABlocks(e, 74)
 	e.wantCDIDevice("claim-u1-0", []string{"CXL_C100E2E1_MODE=numa", "CXL_C100E2E1_NODE=" + strconv.Itoa(node), "CXL_C100E2E1_SERIAL=0xc100e2e1",

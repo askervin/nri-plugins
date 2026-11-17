@@ -245,7 +245,7 @@ func (localVoice) prepared(p *Plugin, pr *prepare) {
 			if g.Asked.Mode == state.ModeNUMA {
 				node = state.NumaNodeOf(g.Got.NumaNode)
 			} else if g.Got.Dax != "" {
-				daxDevice = filepath.Join(p.devRoot, g.Got.Dax)
+				daxDevice = filepath.Join(p.roots.dev, g.Got.Dax)
 			}
 			klog.Infof("local: memdev %s (serial 0x%x) %s: claim %s request %s: slice %s mode %s size %d node %d%s",
 				memdev, s, region, pr.uid, request, g.Got.Dax, g.Asked.Mode, g.Got.Size, node, strings.TrimRight(" "+daxDevice, " "))
@@ -364,26 +364,36 @@ func (poolVoice) deviceError(req *engine.GrantRequest, _ string, err error) erro
 	return fmt.Errorf("device %s serial 0x%x: %w", req.Device, uint64(req.Serial), err)
 }
 
-// prepared logs the devices of a claim as prepared.
+// prepared logs the devices of a claim as prepared, from the records of
+// their grants.
 func (v poolVoice) prepared(p *Plugin, pr *prepare) {
-	prep := p.preparation(pr.uid)
-	if prep == nil {
-		return
-	}
-	devs, err := poolDevicesOf(p.st.Snapshot(), prep, p.st.ResultOptions())
-	if err != nil {
-		klog.Errorf("%s: claim %s: %v", v.name, prep.ClaimName, err)
-	}
-	for i := range devs {
-		d := &devs[i]
-		if d.Persistent {
+	r := p.records()
+	for i := range pr.reqs {
+		req := &pr.reqs[i]
+		g := r.Grant(req.Ref)
+		if g == nil {
+			continue
+		}
+		memdev, s, mode := "", uint64(g.Serial), g.Asked.Mode
+		if m := r.Memdev(g.Serial); m != nil {
+			memdev = m.Name
+		}
+		if mode == state.ModeBlock || mode == state.ModeFs {
+			block, nodeMount, loop, fsType := "", "", "", ""
+			if bd := g.Got.BlockDevice; bd != nil {
+				block = bd.Name
+			}
+			if m := r.MountOf(g); m != nil {
+				nodeMount, loop, fsType = m.Path, m.Loop, m.FsType
+			}
 			klog.Infof("%s: claim %s: prepared %s (serial 0x%x, shared %v, mode %s, read-only %v) as %s %s namespace %s block %s access %q fs %q mount %q loop %q",
-				v.name, pr.claimName, d.Device, d.Serial, d.Shared, d.Mode, d.ReadOnly, d.Memdev, d.Region,
-				d.Namespace, d.BlockDevice, d.Access, d.FsType, d.NodeMount, d.LoopDevice)
+				v.name, pr.claimName, req.Device, s, sharedGrant(g), mode, g.Asked.ReadOnly, memdev, g.Got.Region,
+				g.Got.Namespace, block, g.Got.Mount, fsType, nodeMount, loop)
 			continue
 		}
 		klog.Infof("%s: claim %s: prepared %s (serial 0x%x, shared %v, mode %s, read-only %v) as %s %s dax %s node %d",
-			v.name, pr.claimName, d.Device, d.Serial, d.Shared, d.Mode, d.ReadOnly, d.Memdev, d.Region, d.Dax, d.NumaNode)
+			v.name, pr.claimName, req.Device, s, sharedGrant(g), mode, g.Asked.ReadOnly, memdev, g.Got.Region, g.Got.Dax,
+			state.NumaNodeOf(g.Got.NumaNode))
 	}
 }
 

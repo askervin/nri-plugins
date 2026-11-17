@@ -24,25 +24,18 @@ import (
 	"k8s.io/utils/cpuset"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
 	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
-// LocalResults are the prepared claims of cxl.nri.io.
-type LocalResults interface {
+// Results are the prepared claims of a DRA driver.
+type Results interface {
 	// PreparedResult returns the claim name and the prepared device of
 	// the allocation result n of a prepared claim, and false if there is
 	// none.
 	PreparedResult(uid string, n int) (string, state.DeviceInfo, bool)
-}
-
-// PoolResults are the prepared claims of the pool driver.
-type PoolResults interface {
-	// ClaimResults returns the devices of a prepared claim.
-	ClaimResults(uid string) []store.PoolDevice
 }
 
 // resultRef is an allocation result of a claim: the claim UID and the
@@ -55,9 +48,7 @@ type resultRef struct {
 // result is a prepared allocation result of either driver that a container
 // uses.
 type result struct {
-	// pool: a device of the pool driver.
-	pool bool
-	// deviceType is the device type of a result of cxl.nri.io.
+	// deviceType is the device type of the result.
 	deviceType string
 	mode       string
 	numaNodes  []int
@@ -69,7 +60,7 @@ type result struct {
 // numaCXL tells whether the result has CXL memory in mode numa: a numa
 // slice of a local memdev, a region or a pool device in mode numa.
 func (r *result) numaCXL() bool {
-	return r.mode == cxlapi.ModeNUMA && (r.pool || r.deviceType == device.DeviceTypeMemdev || r.deviceType == device.DeviceTypeRegion)
+	return r.mode == cxlapi.ModeNUMA && (r.deviceType == device.DeviceTypeMemdev || r.deviceType == device.DeviceTypeRegion)
 }
 
 // decision is the management of the memory of a container that the
@@ -117,11 +108,7 @@ func (p *Plugin) results(pod *api.PodSandbox, ctrName string, refs []resultRef) 
 			klog.Warningf("NRI CreateContainer: ctr=%s: ignoring the marker of claim %s: %s", ctrName, ref.uid, why)
 			continue
 		}
-		if r, ok := p.localResult(ctrName, ref); ok {
-			out = append(out, r)
-			continue
-		}
-		if r, ok := p.poolResult(ctrName, ref); ok {
+		if r, ok := p.result(ctrName, ref); ok {
 			out = append(out, r)
 			continue
 		}
@@ -154,43 +141,22 @@ func (p *Plugin) foreignClaim(pod *api.PodSandbox, uid string) string {
 	return ""
 }
 
-// localResult returns the prepared result ref of cxl.nri.io, and false if
-// there is none.
-func (p *Plugin) localResult(ctrName string, ref resultRef) (result, bool) {
-	if p.opts.Local == nil {
-		return result{}, false
+// result returns the prepared result ref of a driver, and false if there
+// is none.
+func (p *Plugin) result(ctrName string, ref resultRef) (result, bool) {
+	for _, drv := range p.opts.Results {
+		claim, d, ok := drv.PreparedResult(ref.uid, ref.n)
+		if !ok {
+			continue
+		}
+		klog.V(5).Infof("NRI CreateContainer: ctr=%s claim=%s (%s) result %d: name=%s type=%s mode=%s sysfs=%s numa=%v affinities=%v total=%s consumed=%s request=%s",
+			ctrName, ref.uid, claim, ref.n,
+			d.DeviceName, d.DeviceType, d.Mode, d.SysfsPath, d.NUMANodes, d.NodeAffinities,
+			formatBytes(d.TotalBytes), formatBytes(uint64(d.ConsumedBytes)), d.RequestName)
+		return result{deviceType: d.DeviceType, mode: d.Mode, numaNodes: nonNegative(d.NUMANodes), bytes: d.ConsumedBytes,
+			settings: d.ResultSettings}, true
 	}
-	claim, d, ok := p.opts.Local.PreparedResult(ref.uid, ref.n)
-	if !ok {
-		return result{}, false
-	}
-	klog.V(5).Infof("NRI CreateContainer: ctr=%s claim=%s (%s) result %d: name=%s type=%s mode=%s sysfs=%s numa=%v affinities=%v total=%s consumed=%s request=%s",
-		ctrName, ref.uid, claim, ref.n,
-		d.DeviceName, d.DeviceType, d.Mode, d.SysfsPath, d.NUMANodes, d.NodeAffinities,
-		formatBytes(d.TotalBytes), formatBytes(uint64(d.ConsumedBytes)), d.RequestName)
-	return result{deviceType: d.DeviceType, mode: d.Mode, numaNodes: nonNegative(d.NUMANodes), bytes: d.ConsumedBytes,
-		settings: d.ResultSettings}, true
-}
-
-// poolResult returns the prepared result ref of the pool driver, and false
-// if there is none.
-func (p *Plugin) poolResult(ctrName string, ref resultRef) (result, bool) {
-	if p.opts.Pool == nil {
-		return result{}, false
-	}
-	results := p.opts.Pool.ClaimResults(ref.uid)
-	i := slices.IndexFunc(results, func(r store.PoolDevice) bool { return r.Result == ref.n })
-	if i < 0 {
-		return result{}, false
-	}
-	r := results[i]
-	klog.V(5).Infof("NRI CreateContainer: ctr=%s claim=%s result %d: pool device mode=%s node=%d size=%s request=%s",
-		ctrName, ref.uid, ref.n, r.Mode, r.NumaNode, formatBytes(r.Size), r.Request)
-	out := result{pool: true, mode: r.Mode, bytes: int64(r.Size), settings: r.ResultSettings}
-	if r.NumaNode >= 0 {
-		out.numaNodes = []int{r.NumaNode}
-	}
-	return out, true
+	return result{}, false
 }
 
 // decide returns the management of the memory of a container that uses

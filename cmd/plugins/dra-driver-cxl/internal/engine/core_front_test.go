@@ -108,13 +108,6 @@ func (fe *frontEnd) cdiDir() string {
 	return filepath.Join(fe.dir, "cdi")
 }
 
-// TuneStore sets the pool driver and the roots of the device paths of the
-// store.
-func (fe *frontEnd) TuneStore(o *store.Options) {
-	o.PoolDriver = device.PoolDriverName
-	o.SysRoot, o.DevRoot = fe.f.SysRoot(), fe.f.DevRoot()
-}
-
 // TuneEngine sets the revoke of the lends of companion grants of the engine
 // and notes its directories.
 func (fe *frontEnd) TuneEngine(o *engine.Options) {
@@ -146,13 +139,13 @@ func (fe *frontEnd) Started(st *store.Store, e *engine.Engine, rec *engine.Recov
 	pool := dra.PoolRules(device.PoolDriverName, fe.mountsDirs[state.SourcePool], store.FileName)
 	fe.st = st
 	fe.local, err = dra.New(dra.Options{Rules: local, Store: st, Engine: e, NodeName: frontNode,
-		DevRoot: fe.f.DevRoot(), CDI: cache, Publisher: pub, Local: dra.LocalConfig{Managed: true,
+		SysRoot: fe.f.SysRoot(), DevRoot: fe.f.DevRoot(), CDI: cache, Publisher: pub, Local: dra.LocalConfig{Managed: true,
 			UsableSize: func(string, uint64) uint64 { return 0 }, Coherent: func(string, uint64) bool { return false }}})
 	if err != nil {
 		return err
 	}
 	fe.pool, err = dra.New(dra.Options{Rules: pool, Store: st, Engine: e, NodeName: frontNode,
-		DevRoot: fe.f.DevRoot(), CDI: cache, Publisher: pub})
+		SysRoot: fe.f.SysRoot(), DevRoot: fe.f.DevRoot(), CDI: cache, Publisher: pub})
 	if err != nil {
 		return err
 	}

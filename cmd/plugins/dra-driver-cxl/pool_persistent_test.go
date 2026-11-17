@@ -317,11 +317,11 @@ func TestPoolLeaseBind(t *testing.T) {
 		t.Fatalf("bind %+v", mi)
 	}
 	// recorded in the lend
-	if rec := lendOf(e.st.Snapshot(), e.preparation(uid)); rec.FsDir != hooks.fsDir || rec.Name != "models" || !slices.Equal(rec.Mounts, []string{target}) {
+	if rec := lendOf(p, uid); rec == nil || rec.FsDir != hooks.fsDir || rec.Name != "models" || !slices.Equal(rec.Mounts, []string{target}) {
 		t.Fatalf("lend record %+v", rec)
 	}
 	// the broker gets the access and the node mount
-	if d := hooks.devs[0]; d.Mode != api.ModeFs || d.Access != api.AccessDirect || d.NodeMount != direct || d.BlockDevice != e.pmem || d.Serial != "0xc1ae0001" ||
+	if d := hooks.devs[0]; d.Mode != api.ModeFs || d.Access != api.AccessDirect || d.NodeMount != direct || d.BlockDevice != e.pmem || d.Serial != 0xc1ae0001 ||
 		d.TotalBytes != fakePmemBytes || !d.ReadOnly || len(d.NUMANodes) != 0 || hooks.source != state.SourcePool {
 		t.Fatalf("lent device %+v", d)
 	}

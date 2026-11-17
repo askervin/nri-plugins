@@ -101,8 +101,9 @@ func TestFencePoolBeforeOnline(t *testing.T) {
 	if e.onlineBlocks("region0") == 0 {
 		t.Fatal("the memory of the region is not online")
 	}
-	if got := p.ClaimResults("u1"); len(got) != 1 || got[0].NumaNode != 2 || got[0].Mode != cxlapi.ModeNUMA || got[0].Result != 0 || got[0].Size != 256<<20 {
-		t.Fatalf("claim results %+v", got)
+	if _, d, ok := p.PreparedResult("u1", 0); !ok || !reflect.DeepEqual(d.NUMANodes, []int{2}) || d.Mode != cxlapi.ModeNUMA || d.Result != 0 ||
+		d.ConsumedBytes != 256<<20 {
+		t.Fatalf("prepared result %+v", d)
 	}
 	if got := poolNumaNodes(p); !reflect.DeepEqual(got, []int{2}) {
 		t.Fatalf("numa nodes %v", got)
@@ -112,11 +113,11 @@ func TestFencePoolBeforeOnline(t *testing.T) {
 		t.Fatalf("prepared nodes after a restart %s", got)
 	}
 	noErr(t, unprepare(t, p, "u1"))
-	if got := p.ClaimResults("u1"); got != nil {
-		t.Fatalf("claim results %v after unprepare", got)
+	if _, d, ok := p.PreparedResult("u1", 0); ok {
+		t.Fatalf("prepared result %+v after unprepare", d)
 	}
 	var none *dra.Plugin
-	if none.ClaimResults("u1") != nil || poolNumaNodes(none) != nil {
+	if _, _, ok := none.PreparedResult("u1", 0); ok || poolNumaNodes(none) != nil {
 		t.Fatal("nodes of a disabled pool driver")
 	}
 
@@ -190,13 +191,13 @@ func TestShutdownStopsNRIFirst(t *testing.T) {
 // createdContainer returns the record of a container <namespace>/pod/ctr
 // (the namespace of the claim, demo without a preparation) whose env has
 // the markers of the results of the claim uid, as an NRI plugin with the
-// prepared claims local and pool creates it, and the error of its
+// prepared claims of the driver drv creates it, and the error of its
 // creation.
-func createdContainer(t *testing.T, st *store.Store, local containers.LocalResults, pool containers.PoolResults, uid string, results ...int) (containers.Container, error) {
+func createdContainer(t *testing.T, st *store.Store, drv containers.Results, uid string, results ...int) (containers.Container, error) {
 	t.Helper()
 	p, err := containers.New(containers.Options{Store: st, SysRoot: t.TempDir()})
 	noErr(t, err)
-	p.SetResults(local, pool)
+	p.SetResults(drv)
 	pod := &nriapi.PodSandbox{Id: "sb", Uid: "pod-uid", Namespace: "demo", Name: "pod"}
 	for _, prep := range st.Snapshot().Preparations {
 		if prep.UID == uid {

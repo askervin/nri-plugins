@@ -94,15 +94,15 @@ func TestPoolNUMA(t *testing.T) {
 func TestPoolDaxAndShared(t *testing.T) {
 	e := newDriverEnv(t, nil, poolSpec(serialPoolX), fake.MemdevSpec{Serial: serialPoolS, HostBridge: 24})
 	e.mustPrepare(e.pool, poolClaim("x1", "pooled0", poolExclusiveData, cfgDax))
-	x := e.pool.PoolDevices("x1")[0]
+	x := e.devices(e.pool, "x1")[0]
 	cd := e.cdiDevice(e.pool, "claim-x1-0")
-	if x.Mode != api.ModeDax || x.DaxDevice == "" || x.NumaNode != -1 || cd == nil ||
+	if x.Mode != api.ModeDax || x.DaxDevice == "" || len(x.NUMANodes) != 0 || cd == nil ||
 		!reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, []*cdiSpecs.DeviceNode{DaxDeviceNode(x.DaxDevice, x.DaxMajor, x.DaxMinor, false)}) {
 		t.Fatalf("device %+v, CDI device %+v", x, cd)
 	}
 	e.mustPrepare(e.pool, poolClaim("s1", "shared0", poolSharedData))
 	e.mustPrepare(e.pool, poolClaim("s2", "shared0", poolSharedData, cfgDaxRO))
-	s1, s2 := e.pool.PoolDevices("s1")[0], e.pool.PoolDevices("s2")[0]
+	s1, s2 := e.devices(e.pool, "s1")[0], e.devices(e.pool, "s2")[0]
 	if !s1.Shared || s1.Mode != api.ModeDax || s1.DaxDevice != s2.DaxDevice || s1.ReadOnly || !s2.ReadOnly {
 		t.Fatalf("shared devices %+v %+v", s1, s2)
 	}
@@ -130,9 +130,9 @@ func TestPoolPersistent(t *testing.T) {
 	if !strings.Contains(e.commands(), "ndctl create-namespace") {
 		t.Fatalf("no namespace made:\n%s", e.commands())
 	}
-	w := e.pool.PoolDevices("w1")[0]
+	w := e.devices(e.pool, "w1")[0]
 	cd := e.cdiDevice(e.pool, "claim-w1-0")
-	if !w.Persistent || w.Mode != api.ModeBlock || w.BlockDevice == "" || w.NdRegion == "" || cd == nil ||
+	if !w.Persistent || w.Mode != api.ModeBlock || w.BlockDevice == "" || cd == nil ||
 		!reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, []*cdiSpecs.DeviceNode{BlockDeviceNode(w.BlockDevice, w.BlockMajor, w.BlockMinor, false)}) {
 		t.Fatalf("device %+v, CDI device %+v", w, cd)
 	}
@@ -142,7 +142,7 @@ func TestPoolPersistent(t *testing.T) {
 	e.formatPmemAgain(serialPoolP, "erofs")
 	e.mustPrepare(e.pool, poolClaim("r1", "llm0", poolPmemData, cfgFsRO))
 	e.mustPrepare(e.pool, poolClaim("r2", "llm0", poolPmemData, cfgFsRO))
-	r1, r2 := e.pool.PoolDevices("r1")[0], e.pool.PoolDevices("r2")[0]
+	r1, r2 := e.devices(e.pool, "r1")[0], e.devices(e.pool, "r2")[0]
 	mnt := filepath.Join(e.poolDir, "mounts", "c1af0001-direct")
 	if r1.Mode != api.ModeFs || r1.NodeMount != mnt || r2.NodeMount != mnt || r1.FsType != "erofs" || r1.Access != api.AccessDirect ||
 		r1.Path != "/run/cxl-fs/C1AF0001" || !r1.ReadOnly {
@@ -215,10 +215,10 @@ func TestPoolRollbackKept(t *testing.T) {
 	if prep == nil || prep.State != state.PreparationKept || len(prep.Results) != 1 || prep.Results[0].Index != 0 {
 		t.Fatalf("preparation %+v", prep)
 	}
-	if devs := e.pool.PoolDevices("u1"); len(devs) != 1 || devs[0].Serial != serialPoolX {
+	if devs := e.devices(e.pool, "u1"); len(devs) != 1 || devs[0].Serial != serialPoolX {
 		t.Fatalf("devices %+v", devs)
 	}
-	if e.pool.ClaimResults("u1") != nil || e.pool.ClaimInfo("u1") != nil {
+	if _, _, ok := e.pool.PreparedResult("u1", 0); ok || e.pool.ClaimInfo("u1") != nil {
 		t.Fatal("results of a KEPT claim")
 	}
 	// the foreign region goes; the Unprepare forgets its record
@@ -253,7 +253,7 @@ func TestPoolSchedulerHold(t *testing.T) {
 	wantErrText(t, e.prepare(e.pool, xdax).Err, "cxl-pool.nri.io: preparing claim demo/claim-xdax: ")
 	e.wantNoCommands("a Prepare without status data")
 	e.mustPrepare(e.pool, setPoolData(xdax, "pooled0", poolExclusiveData))
-	if d := e.pool.PoolDevices("xdax"); len(d) != 1 || d[0].Mode != api.ModeDax {
+	if d := e.devices(e.pool, "xdax"); len(d) != 1 || d[0].Mode != api.ModeDax {
 		t.Fatalf("devices %+v", d)
 	}
 	e.mustUnprepare(e.pool, "xdax")

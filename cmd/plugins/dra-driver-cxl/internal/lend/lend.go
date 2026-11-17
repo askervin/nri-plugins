@@ -32,18 +32,18 @@ import (
 // Lend is the lend of a companion claim: the lease and its requester, the
 // NUMA nodes lent and the lease binds, as the results of the claim give it.
 type Lend struct {
-	Lease     string       `json:"lease"`
-	Pod       state.PodRef `json:"pod"`
-	Container string       `json:"container"`
-	NumaNodes []int        `json:"nodes,omitempty"` // lent NUMA nodes
+	Lease     string
+	Pod       state.PodRef
+	Container string
+	NumaNodes []int // lent NUMA nodes
 	// FsDir is the host directory of the mounts of the fs leases of the
-	// lease claim, "" for other leases and for a lease claim without it.
-	FsDir string `json:"fsDir,omitempty"`
+	// lease claim, "" for other leases.
+	FsDir string
 	// Name is the mount point of an fs lease in FsDir.
-	Name string `json:"name,omitempty"`
+	Name string
 	// Mounts are the host paths of the binds of the node mounts of the fs
 	// devices in FsDir.
-	Mounts []string `json:"mounts,omitempty"`
+	Mounts []string
 }
 
 // LeaseHooks is what a driver tells the lease broker about companion

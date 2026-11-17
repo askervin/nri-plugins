@@ -61,7 +61,7 @@ var numaDevice = preparedDev(serialPoolX, 1<<28, api.ModeNUMA, 2)
 // broker: its serial, size, mode and the NUMA node of mode numa (-1 for
 // none).
 func preparedDev(serial, size uint64, mode string, node int) state.DeviceInfo {
-	d := state.DeviceInfo{DeviceType: device.DeviceTypeMemdev, Serial: api.FormatSerial(serial), TotalBytes: size, Mode: mode,
+	d := state.DeviceInfo{DeviceType: device.DeviceTypeMemdev, Serial: state.Serial(serial), TotalBytes: size, Mode: mode,
 		Persistent: mode == api.ModeBlock || mode == api.ModeFs}
 	if node >= 0 {
 		d.NUMANodes = []int{node}

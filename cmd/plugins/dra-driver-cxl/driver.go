@@ -319,18 +319,11 @@ func (c *pluginConfig) stateFile() string {
 
 // openDriverStore opens the state store in the plugin data directory of
 // cxl.nri.io, and returns it and its close.
-func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFlags, k *kernel.Kernel, bootID string, rules driverRules) (*store.Store, func(), error) {
+func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFlags, bootID string) (*store.Store, func(), error) {
 	// a driver pod that still runs holds the lock: wait for its exit
 	ctx, cancel := context.WithTimeout(ctx, storeLockWait)
 	defer cancel()
-	st, err := store.Open(ctx, store.Options{
-		Dir:        config.KubeletPluginDir,
-		PoolDriver: cxlFlags.PoolDriverName,
-		BootID:     bootID,
-		NewState:   cxlFlags.NewState,
-		SysRoot:    k.SysRoot,
-		DevRoot:    k.DevRoot,
-	})
+	st, err := store.Open(ctx, store.Options{Dir: config.KubeletPluginDir, BootID: bootID, NewState: cxlFlags.NewState})
 	if err != nil {
 		return nil, nil, fmt.Errorf("state store: %w", err)
 	}
@@ -432,6 +425,7 @@ func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Driver
 			Store:     st,
 			Engine:    devices.Engine,
 			NodeName:  cxlFlags.NodeName,
+			SysRoot:   devices.k.SysRoot,
 			DevRoot:   devices.k.DevRoot,
 			Publisher: fe.publisher,
 		})
@@ -446,6 +440,7 @@ func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Driver
 		Store:     st,
 		Engine:    devices.Engine,
 		NodeName:  cxlFlags.NodeName,
+		SysRoot:   devices.k.SysRoot,
 		DevRoot:   devices.k.DevRoot,
 		Local:     driverConfig.localConfig(),
 		OnShared:  devices.addShared,

@@ -20,8 +20,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state/statetest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -102,28 +102,24 @@ func TestSerials(t *testing.T) {
 		t.Fatalf("serials %v %v", e.local.Serials(), e.pool.Serials())
 	}
 	var none *Plugin
-	if none.Serials() != nil || none.Name() != "" || none.Lender() != nil || none.ClaimInfo("x") != nil || none.ClaimResults("x") != nil {
+	if _, _, ok := none.PreparedResult("x", 0); none.Serials() != nil || none.Name() != "" || none.Lender() != nil || none.ClaimInfo("x") != nil || ok {
 		t.Fatal("a nil plugin")
 	}
 }
 
-// The readers of the prepared claims: ClaimResults of the pool driver for
-// the NRI plugin, PreparedResult and ClaimInfo of prepared claims only,
-// PoolDevices of a record in any state.
+// The readers of the prepared claims, of either driver: PreparedResult
+// and ClaimInfo of prepared claims only.
 func TestClaimReaders(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, poolSpec(serialPoolX))
 	e.mustPrepare(e.pool, poolClaim("p1", "pooled0", poolExclusiveData))
 	e.mustPrepare(e.local, localClaim("l1", localDev, envBlockSize))
-	devs := e.pool.PoolDevices("p1")
-	if got := e.pool.ClaimResults("p1"); !reflect.DeepEqual(got, devs) || len(got) != 1 || got[0].Result != 0 || got[0].Request != "mem" ||
-		got[0].Mode != api.ModeNUMA || got[0].NumaNode != 2 || got[0].Size != 256<<20 {
-		t.Fatalf("results %+v", got)
+	name, d, ok := e.pool.PreparedResult("p1", 0)
+	if !ok || name != "demo/claim-p1" || d.Result != 0 || d.RequestName != "mem" || d.DeviceName != "pooled0" || d.Serial != serialPoolX ||
+		d.DeviceType != device.DeviceTypeMemdev || d.Mode != api.ModeNUMA || !slices.Equal(d.NUMANodes, []int{2}) || d.ConsumedBytes != 256<<20 ||
+		d.SysfsPath != e.k.P("bus/cxl/devices/region0") || d.NodeAffinities != nil {
+		t.Fatalf("pool result %q %+v %v", name, d, ok)
 	}
-	if len(devs) != 1 || devs[0].Result != 0 || devs[0].Request != "mem" || devs[0].Device != "pooled0" || devs[0].Pool != envPool ||
-		devs[0].Serial != serialPoolX || devs[0].Memdev != "mem1" || devs[0].Region != "region0" || devs[0].NumaNode != 2 || devs[0].Mode != api.ModeNUMA {
-		t.Fatalf("pool devices %+v", devs)
-	}
-	name, d, ok := e.local.PreparedResult("l1", 0)
+	name, d, ok = e.local.PreparedResult("l1", 0)
 	if !ok || name != "demo/claim-l1" || d.DeviceName != localDev || d.Result != 0 {
 		t.Fatalf("prepared result %q %+v %v", name, d, ok)
 	}
@@ -135,61 +131,72 @@ func TestClaimReaders(t *testing.T) {
 			t.Fatalf("a prepared result of %s of cxl.nri.io", uid)
 		}
 	}
-	if e.pool.ClaimInfo("p1") == nil || e.local.ClaimInfo("p1") != nil || e.pool.ClaimResults("x") != nil || e.pool.PoolDevices("x") != nil {
+	if e.pool.ClaimInfo("p1") == nil || e.local.ClaimInfo("p1") != nil || e.pool.ClaimInfo("x") != nil {
 		t.Fatal("the readers of a claim of another driver or of none")
 	}
 	e.mustUnprepare(e.pool, "p1")
 	e.mustUnprepare(e.local, "l1")
-	if e.pool.ClaimResults("p1") != nil || e.pool.PoolDevices("p1") != nil || e.local.ClaimInfo("l1") != nil {
+	if _, _, ok := e.pool.PreparedResult("p1", 0); ok || e.local.ClaimInfo("l1") != nil {
 		t.Fatal("the readers of an unprepared claim")
 	}
 }
 
-// jsonTags returns the json tags of the fields of a struct type in order,
-// "inline <type>" for an embedded struct without one.
-func jsonTags(t reflect.Type) []string {
-	var out []string
-	for i := range t.NumField() {
-		f := t.Field(i)
-		tag, ok := f.Tag.Lookup("json")
-		if f.Anonymous && !ok {
-			out = append(out, "inline "+f.Type.String())
-			continue
-		}
-		out = append(out, tag)
+// The devices of the results of every kind, derived from the records of
+// both drivers with the roots of the paths: a region with its sysfs path
+// and CPU NUMA affinity, a shared dax slice with its device node and the
+// NUMA affinity of its local memdev, DRAM, the lease device, a persistent
+// fs device, a pool device without an affinity, a result whose grant is
+// gone, and the lend of a companion claim.
+func TestDeviceInfo(t *testing.T) {
+	doc := &store.Document{Schema: store.Schema, BootID: statetest.BootID, Records: statetest.Records()}
+	if rs := newRoots("", ""); rs != (roots{sys: "/sys", dev: "/dev"}) {
+		t.Errorf("default roots %+v", rs)
 	}
-	return out
-}
-
-// The JSON of state.DeviceInfo, ClaimInfo, store.PoolDevice and Lend is
-// that of the structs of the state files before the store:
-// PreparedDeviceInfo, PreparedClaimInfo, preparedPoolDevice and lendRecord.
-func TestShapes(t *testing.T) {
-	for _, tc := range []struct {
-		v    any
-		want []string
-	}{
-		{state.DeviceInfo{}, []string{"requestName", "deviceName", "result", "deviceType", "mode,omitempty", "sysfsPath,omitempty", "numaNodes",
-			"nodeAffinities,omitempty", "totalBytes", "consumedBytes", "serial,omitempty", "region,omitempty", "daxDevice,omitempty",
-			"daxMajor,omitempty", "daxMinor,omitempty", "readOnly,omitempty", "shared,omitempty", "persistent,omitempty",
-			"namespace,omitempty", "blockDevice,omitempty", "blockMajor,omitempty", "blockMinor,omitempty", "access,omitempty",
-			"path,omitempty", "nodeMount,omitempty", "loopDevice,omitempty", "fsType,omitempty", "inline config.ResultSettings"}},
-		{ClaimInfo{}, []string{"claimName", "devices", "lend,omitempty"}},
-		{store.PoolDevice{}, []string{"result", "request", "device", "pool", "serial", "shared", "size", "mode", "readOnly,omitempty", "memdev",
-			"region", "dax", "daxDevice,omitempty", "daxMajor,omitempty", "daxMinor,omitempty", "node", "persistent,omitempty",
-			"ndRegion,omitempty", "namespace,omitempty", "blockDevice,omitempty", "blockMajor,omitempty", "blockMinor,omitempty",
-			"access,omitempty", "fsType,omitempty", "path,omitempty", "nodeMount,omitempty", "loopDevice,omitempty",
-			"inline config.ResultSettings"}},
-		{lend.Lend{}, []string{"lease", "pod", "container", "nodes,omitempty", "fsDir,omitempty", "name,omitempty", "mounts,omitempty"}},
-		{state.PodRef{}, []string{"namespace", "name", "uid"}},
-	} {
-		typ := reflect.TypeOf(tc.v)
-		if got := jsonTags(typ); !slices.Equal(got, tc.want) {
-			t.Errorf("%s: json tags\n%q\nexpected\n%q", typ, got, tc.want)
+	rs := newRoots("/host/sys", "/host/dev")
+	info := func(driver, uid string) *ClaimInfo {
+		t.Helper()
+		p := doc.Preparation(driver, uid)
+		if p == nil {
+			t.Fatalf("no preparation %s", uid)
 		}
+		return claimInfo(doc, p, rs)
 	}
-	if typ := reflect.TypeOf(ClaimInfo{}); typ.Field(1).Type.Elem() != reflect.TypeOf(state.DeviceInfo{}) ||
-		typ.Field(2).Type.Elem() != reflect.TypeOf(lend.Lend{}) || reflect.TypeOf(lend.Lend{}).Field(1).Type != reflect.TypeOf(state.PodRef{}) {
-		t.Fatal("the types of the fields of ClaimInfo or Lend")
+	mixed := info(statetest.LocalDriver, statetest.ClaimMixed)
+	if mixed.ClaimName != "demo/c-mixed" || mixed.Lend != nil || len(mixed.Devices) != 3 {
+		t.Fatalf("claim %+v", mixed)
+	}
+	region, shared, dram := mixed.Devices[0], mixed.Devices[1], mixed.Devices[2]
+	if region.DeviceType != device.DeviceTypeRegion || region.Mode != api.ModeNUMA || region.Region != "region5" ||
+		region.SysfsPath != "/host/sys/bus/cxl/devices/region5" || !slices.Equal(region.NUMANodes, []int{5}) ||
+		!slices.Equal(region.NodeAffinities, []int{1}) || region.TotalBytes != 2<<30 || region.ConsumedBytes != 1<<30 {
+		t.Errorf("region %+v", region)
+	}
+	if shared.Result != 1 || shared.DeviceType != device.DeviceTypeMemdev || shared.Mode != api.ModeDax || shared.Serial != 0xc100e2e2 ||
+		shared.DaxDevice != "/host/dev/dax1.0" || shared.DaxMajor != 252 || shared.DaxMinor != 4 || !shared.ReadOnly || !shared.Shared ||
+		!slices.Equal(shared.NodeAffinities, []int{0}) || shared.SysfsPath != "/host/sys/bus/cxl/devices/region1" {
+		t.Errorf("shared slice %+v", shared)
+	}
+	if dram.DeviceType != device.DeviceTypeDRAM || !slices.Equal(dram.NUMANodes, []int{0, 1}) || dram.TotalBytes != 64<<30 {
+		t.Errorf("DRAM %+v", dram)
+	}
+	if d := info(statetest.LocalDriver, statetest.ClaimLease).Devices[0]; d.DeviceType != device.DeviceTypeLease || d.Mode != "" {
+		t.Errorf("lease device %+v", d)
+	}
+	if d := info(statetest.LocalDriver, statetest.ClaimFs).Devices[0]; !d.Persistent || d.Mode != api.ModeFs || d.BlockDevice != "/dev/pmem7" ||
+		d.Access != api.AccessDirect || d.NodeMount == "" || d.FsType != "erofs" || !d.ReadOnly {
+		t.Errorf("persistent fs device %+v", d)
+	}
+	if d := info(statetest.PoolDriver, statetest.ClaimPoolNUMA).Devices[0]; d.DeviceType != device.DeviceTypeMemdev || d.Serial != 0xc1ae2003 ||
+		!slices.Equal(d.NUMANodes, []int{4}) || d.NodeAffinities != nil || d.SysfsPath != "/host/sys/bus/cxl/devices/region4" {
+		t.Errorf("pool device %+v", d)
+	}
+	companion := info(statetest.LocalDriver, statetest.ClaimCompanion)
+	if l := companion.Lend; l == nil || l.Lease != statetest.LeaseNUMA || l.Container != "main" || !slices.Equal(l.NumaNodes, []int{2}) {
+		t.Errorf("lend %+v", companion.Lend)
+	}
+	doc.Grants = slices.DeleteFunc(doc.Grants, func(g state.Grant) bool { return g.Ref.Claim == statetest.ClaimDax })
+	if d := info(statetest.LocalDriver, statetest.ClaimDax).Devices[0]; d.DeviceType != device.DeviceTypeMemdev || d.RequestName != "mem" ||
+		d.Serial != 0 || d.Mode != "" || d.DaxDevice != "" {
+		t.Errorf("a result whose grant is gone %+v", d)
 	}
 }

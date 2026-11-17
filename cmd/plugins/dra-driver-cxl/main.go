@@ -320,7 +320,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	}
 	klog.Infof("boot id %s", bootID)
 	rules := newDriverRules(config, cxlFlags)
-	st, closeStore, err := openDriverStore(ctx, config, cxlFlags, k, bootID, rules)
+	st, closeStore, err := openDriverStore(ctx, config, cxlFlags, bootID)
 	if err != nil {
 		return nil, err
 	}

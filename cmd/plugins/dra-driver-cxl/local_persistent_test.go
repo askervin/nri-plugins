@@ -246,6 +246,16 @@ func (e *pmemTestEnv) infoOf(uid string) PreparedDeviceInfo {
 	return info.Devices[0]
 }
 
+// loopOf returns the loop device of the node mount of the first grant of
+// a claim, "" for none.
+func (e *pmemTestEnv) loopOf(uid string) string {
+	e.t.Helper()
+	if m := e.records().MountOf(e.grant(uid, 0)); m != nil {
+		return m.Loop
+	}
+	return ""
+}
+
 // mountCallsSince returns the system calls of the mount table after the
 // first n but the reads of superblocks.
 func (e *pmemTestEnv) mountCallsSince(n int) []string {
@@ -355,7 +365,7 @@ func TestLocalPersistentLifeCycle(t *testing.T) {
 		t.Fatal("the block device of a writer is read-only")
 	}
 	info := e.infoOf("w1")
-	if !info.Persistent || info.Mode != api.ModeBlock || info.BlockDevice != pmem || info.Namespace != "namespace0.0" || info.TotalBytes != fakePmemBytes || info.ReadOnly {
+	if !info.Persistent || info.Mode != api.ModeBlock || info.BlockDevice != pmem || e.grant("w1", 0).Got.Namespace != "namespace0.0" || info.TotalBytes != fakePmemBytes || info.ReadOnly {
 		t.Fatalf("prepared %+v", info)
 	}
 	// the writer writes an ext4
@@ -955,7 +965,7 @@ func TestPersistentWritersAndReaders(t *testing.T) {
 	direct := e.nodeMount("direct")
 	n := len(e.k.MountCalls(""))
 	e.mustPrepare(pmemClaim("a", localPmemShare, localPmemFsRW))
-	if a := e.infoOf("a"); a.Access != api.AccessDirect || a.FsType != "ext4" || a.NodeMount != direct || a.LoopDevice != "" || a.ReadOnly {
+	if a := e.infoOf("a"); a.Access != api.AccessDirect || a.FsType != "ext4" || a.NodeMount != direct || e.loopOf("a") != "" || a.ReadOnly {
 		t.Fatalf("use %+v", a)
 	}
 	e.wantMountCalls(n, "fsmount "+pmem+" "+direct+" ext4 rw dax=always")
@@ -1003,7 +1013,7 @@ func TestPersistentUpgradeFails(t *testing.T) {
 	e.start()
 	cached := e.nodeMount("cached")
 	e.mustPrepare(pmemClaim("r", localPmemShare, pmemFsConfig(true, api.AccessCached, "")))
-	loop := e.infoOf("r").LoopDevice
+	loop := e.loopOf("r")
 	if c := e.k.MountCalls("fsmount"); loop == "" || !slices.Equal(c, []string{"fsmount " + loop + " " + cached + " xfs ro dax=never,nouuid"}) {
 		t.Fatalf("mounts %q, loop device %q", c, loop)
 	}

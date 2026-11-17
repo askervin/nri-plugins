@@ -146,7 +146,7 @@ func TestPoolOtherBoot(t *testing.T) {
 	p = e.driver(t)
 	for _, uid := range []string{"u1", "u2"} {
 		prep := e.preparation(uid)
-		if prep == nil || prep.State != state.PreparationStale || p.ClaimResults(uid) != nil {
+		if prep == nil || prep.State != state.PreparationStale || p.ClaimInfo(uid) != nil {
 			t.Fatalf("claim %s: %+v", uid, prep)
 		}
 	}

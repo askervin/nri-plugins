@@ -186,10 +186,10 @@ func TestCompanionLendNUMA(t *testing.T) {
 		p := e.pool
 		pool, source := envPool, state.SourcePool
 		want := state.DeviceInfo{RequestName: "mem", DeviceName: "pooled0", DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA,
-			Serial: api.FormatSerial(serialPoolX), TotalBytes: 256 << 20, ConsumedBytes: 256 << 20, NUMANodes: []int{2}}
+			Serial: serialPoolX, TotalBytes: 256 << 20, ConsumedBytes: 256 << 20, NUMANodes: []int{2}}
 		if local {
 			p, pool, source = e.local, envNode, state.SourceLocal
-			want.DeviceName, want.Serial, want.TotalBytes, want.ConsumedBytes = localDev, api.FormatSerial(serialSliced), uint64(envBlockSize), envBlockSize
+			want.DeviceName, want.Serial, want.TotalBytes, want.ConsumedBytes = localDev, serialSliced, uint64(envBlockSize), envBlockSize
 		}
 		t.Run(p.Name(), func(t *testing.T) {
 			e.t = t

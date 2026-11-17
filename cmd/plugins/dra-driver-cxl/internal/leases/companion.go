@@ -479,8 +479,7 @@ func (b *Broker) PreparedStep(id string, source state.Source, devs []state.Devic
 // what the lease lends: the NUMA node of a numa lease, the bind of an fs
 // lease in the filesystem directory of its lease claim under fsRoot.
 func gotOf(r *state.Records, l *state.Lease, source state.Source, d *state.DeviceInfo, fsRoot string) (*state.LeaseGot, *state.Lend) {
-	serial, _ := api.ParseSerial(d.Serial)
-	g := &state.LeaseGot{Source: source, Serial: state.Serial(serial), Bytes: d.TotalBytes}
+	g := &state.LeaseGot{Source: source, Serial: d.Serial, Bytes: d.TotalBytes}
 	if persistent(state.Mode(d.Mode)) {
 		// the attribute shared of the device, whatever the share
 		g.SharedDevice = d.Shared

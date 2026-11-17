@@ -212,7 +212,7 @@ func TestNew(t *testing.T) {
 	}
 	p, err := New(Options{Rules: PoolRules("other.nri.io", "", ""), Store: e.st, Engine: e.eng})
 	mustOK(t, err)
-	if p.Name() != "other.nri.io" || p.Engine() != e.eng || p.devRoot != "/dev" || p.Records() == nil || p.Rules().Source != state.SourcePool {
+	if p.Name() != "other.nri.io" || p.Engine() != e.eng || p.roots != (roots{sys: "/sys", dev: "/dev"}) || p.Records() == nil || p.Rules().Source != state.SourcePool {
 		t.Fatalf("plugin %+v", p)
 	}
 }

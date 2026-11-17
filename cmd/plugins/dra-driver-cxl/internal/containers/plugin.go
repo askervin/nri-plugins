@@ -48,10 +48,8 @@ type Options struct {
 	// SysRoot is the root of the sysfs mount: the NUMA nodes with memory
 	// are in <SysRoot>/sys/devices/system/node.
 	SysRoot string
-	// Local and Pool are the prepared claims of cxl.nri.io and of the pool
-	// driver, nil for none.
-	Local LocalResults
-	Pool  PoolResults
+	// Results are the prepared claims of the DRA drivers.
+	Results []Results
 }
 
 // Connection are the NRI settings of the plugin: its name and index in
@@ -199,11 +197,11 @@ func (p *Plugin) Start(ctx context.Context, c Connection) error {
 	return nil
 }
 
-// SetResults sets the prepared claims of cxl.nri.io and of the pool driver
-// (nil for none) that the containers use. Not guarded: it comes before
-// Start, and the NRI events read them without the table mutex.
-func (p *Plugin) SetResults(local LocalResults, pool PoolResults) {
-	p.opts.Local, p.opts.Pool = local, pool
+// SetResults sets the prepared claims of the DRA drivers that the
+// containers use. Not guarded: it comes before Start, and the NRI events
+// read them without the table mutex.
+func (p *Plugin) SetResults(results ...Results) {
+	p.opts.Results = results
 }
 
 // Fencing tells whether the plugin fences the CXL nodes of the driver:

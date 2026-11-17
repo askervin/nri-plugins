@@ -94,7 +94,7 @@ func TestLendToUnsteeredNUMAClaim(t *testing.T) {
 func TestSynchronizeManagement(t *testing.T) {
 	e := newFenceEnv(t, "0-1", 2)
 	e.local.set(nriClaims())
-	e.setPool(nriPoolResults())
+	e.pool.set(nriPoolResults())
 	ctx := context.Background()
 	p1 := testPod("u1")
 	var ctrs []*api.Container
@@ -160,7 +160,7 @@ func TestSynchronizeReleasesSteering(t *testing.T) {
 	e.p.Seed([]int{2, 3})
 	e.hasMemory("0-3")
 	e.local.set(nriClaims())
-	e.setPool(nriPoolResults())
+	e.pool.set(nriPoolResults())
 	t.Cleanup(e.p.Stop)
 	ctx := context.Background()
 	p1 := testPod("u1")

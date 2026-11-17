@@ -394,7 +394,7 @@ func TestPrepareSharedLocal(t *testing.T) {
 	e.wantDeviceInfo("u1", PreparedDeviceInfo{
 		RequestName: "mem", DeviceName: localDeviceName, DeviceType: device.DeviceTypeMemdev, Mode: api.ModeDax, Shared: true,
 		SysfsPath: e.k.P("bus/cxl/devices/region0"), NodeAffinities: []int{0},
-		TotalBytes: localRegionSize, ConsumedBytes: localRegionSize, Serial: "0xc100e2e1",
+		TotalBytes: localRegionSize, ConsumedBytes: localRegionSize, Serial: localSerial,
 		DaxDevice: daxDev, DaxMajor: 252, DaxMinor: 0,
 	})
 	e.wantCDIDevice("claim-u1-0",

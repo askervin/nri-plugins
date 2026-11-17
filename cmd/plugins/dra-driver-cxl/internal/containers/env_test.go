@@ -160,8 +160,7 @@ type env struct {
 	gone  chan event
 	start chan event
 	// local and pool are the prepared claims of the drivers.
-	local claimTable
-	pool  map[string][]store.PoolDevice
+	local, pool claimTable
 }
 
 // envOptions are the settings of a test env.
@@ -215,12 +214,12 @@ func newEnvWith(t *testing.T, o envOptions) *env {
 		gone:  make(chan event, 16),
 		start: make(chan event, 16),
 		local: claimTable{},
-		pool:  map[string][]store.PoolDevice{},
+		pool:  claimTable{},
 	}
 	e.st = openStore(t, filepath.Join(root, "state"), o)
 	defaults := o.defaults
 	defaults.Fencing = o.fencing
-	p, err := New(Options{Defaults: defaults, Store: e.st, Leases: !o.noLeases, SysRoot: root, Local: e.local, Pool: poolTable(e.pool)})
+	p, err := New(Options{Defaults: defaults, Store: e.st, Leases: !o.noLeases, SysRoot: root, Results: []Results{e.local, e.pool}})
 	noErr(t, err)
 	e.p = p
 	p.connect(e.stub)
@@ -585,10 +584,10 @@ func (e *env) readyFence() {
 	e.expectUpdates()
 }
 
-// claimTable is the prepared claims of cxl.nri.io by uid.
+// claimTable is the prepared claims of a driver by uid.
 type claimTable map[string]*dra.ClaimInfo
 
-// PreparedResult implements LocalResults.
+// PreparedResult implements Results.
 func (c claimTable) PreparedResult(uid string, n int) (string, state.DeviceInfo, bool) {
 	info := c[uid]
 	if info == nil {
@@ -609,24 +608,6 @@ func (c claimTable) set(claims claimTable) {
 	}
 	for uid, info := range claims {
 		c[uid] = info
-	}
-}
-
-// poolTable is the prepared claims of the pool driver by uid.
-type poolTable map[string][]store.PoolDevice
-
-// ClaimResults implements PoolResults.
-func (p poolTable) ClaimResults(uid string) []store.PoolDevice {
-	return p[uid]
-}
-
-// setPool replaces the pool claims of the env.
-func (e *env) setPool(results map[string][]store.PoolDevice) {
-	for uid := range e.pool {
-		delete(e.pool, uid)
-	}
-	for uid, r := range results {
-		e.pool[uid] = r
 	}
 }
 

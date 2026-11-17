@@ -15,9 +15,11 @@
 package dra
 
 import (
-	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"slices"
 
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	"k8s.io/utils/cpuset"
 
@@ -29,62 +31,192 @@ import (
 )
 
 // The results of a preparation as the readers of the claims get them,
-// derived from the records by the store (one derivation for kubelet, the
-// CDI spec, the lease broker and the NRI plugin): the PrepareResult of
-// kubelet, state.DeviceInfo per result (of either driver), store.PoolDevice
-// per result of a pool claim.
+// derived from the records of either driver: the PrepareResult of kubelet,
+// a state.DeviceInfo per result for the CDI spec, the lease broker and the
+// NRI plugin, and the lend of a companion claim.
 
 // ClaimInfo is a prepared claim with its devices.
 type ClaimInfo struct {
-	ClaimName string             `json:"claimName"` // namespace/name
-	Devices   []state.DeviceInfo `json:"devices"`
+	ClaimName string // namespace/name
+	Devices   []state.DeviceInfo
 	// Lend is the lend of a companion claim.
-	Lend *lend.Lend `json:"lend,omitempty"`
+	Lend *lend.Lend
 }
 
-// claimInfoOf returns a preparation in any state with its devices.
-func claimInfoOf(doc *store.Document, prep *state.Preparation, opts store.ResultOptions) (*ClaimInfo, error) {
-	data, err := store.ClaimInfoContent(doc, prep, opts)
-	if err != nil {
-		return nil, err
-	}
-	info := &ClaimInfo{}
-	if err := json.Unmarshal(data, info); err != nil {
-		return nil, err
-	}
-	return info, nil
+// roots are the directories in the paths of the results: the sysfs mount
+// point and the directory of the device nodes.
+type roots struct {
+	sys, dev string
 }
 
-// poolDevicesOf returns the devices of a preparation of the pool driver in
-// any state.
-func poolDevicesOf(doc *store.Document, prep *state.Preparation, opts store.ResultOptions) ([]store.PoolDevice, error) {
-	data, err := store.PoolDevicesContent(doc, prep, opts)
-	if err != nil {
-		return nil, err
+// newRoots returns the roots sys and dev, "/sys" and "/dev" for "".
+func newRoots(sys, dev string) roots {
+	if sys == "" {
+		sys = "/sys"
 	}
-	var devs []store.PoolDevice
-	if err := json.Unmarshal(data, &devs); err != nil {
-		return nil, err
+	if dev == "" {
+		dev = "/dev"
 	}
-	return devs, nil
-}
-
-// lendOf returns the lend of a companion claim: the lease and its
-// requester, the NUMA nodes lent and the lease binds; nil for another
-// claim.
-func lendOf(doc *store.Document, prep *state.Preparation) (*lend.Lend, error) {
-	var rec *lend.Lend
-	data, err := store.PoolLendContent(doc, prep)
-	if err == nil {
-		err = json.Unmarshal(data, &rec)
-	}
-	return rec, err
+	return roots{sys: sys, dev: dev}
 }
 
 // prepareResult returns the PrepareResult of a preparation for kubelet,
-// with the CDI devices of the CDI kind kind.
-func prepareResult(prep *state.Preparation, kind string) kubeletplugin.PrepareResult {
-	return store.PrepareResult(prep, kind)
+// with CDI devices of the CDI kind kind; a companion claim has no CDI
+// devices.
+func prepareResult(p *state.Preparation, kind string) kubeletplugin.PrepareResult {
+	res := kubeletplugin.PrepareResult{Devices: []kubeletplugin.Device{}}
+	for _, r := range p.Results {
+		d := kubeletplugin.Device{
+			Requests:   []string{r.Request},
+			PoolName:   r.Pool,
+			DeviceName: r.Device,
+		}
+		if p.Lease == "" {
+			d.CDIDeviceIDs = []string{kind + "=" + ClaimCDIDeviceName(p.UID, r.Index)}
+			if r.Kind == state.ResultLeaseClaim {
+				d.CDIDeviceIDs = append(d.CDIDeviceIDs, device.CDIKind+"=lease-"+p.UID)
+			}
+		}
+		if r.ShareID != "" {
+			id := types.UID(r.ShareID)
+			d.ShareID = &id
+		}
+		res.Devices = append(res.Devices, d)
+	}
+	return res
+}
+
+// claimInfo returns a preparation in any state with its devices and its
+// lend.
+func claimInfo(doc *store.Document, p *state.Preparation, rs roots) *ClaimInfo {
+	info := &ClaimInfo{ClaimName: p.ClaimName, Devices: []state.DeviceInfo{}, Lend: lendOf(doc, p)}
+	for i := range p.Results {
+		info.Devices = append(info.Devices, deviceInfo(doc, &p.Results[i], rs))
+	}
+	return info
+}
+
+// deviceInfo returns a result of a preparation as a state.DeviceInfo; a
+// result whose grant is gone gives only its result fields.
+func deviceInfo(doc *store.Document, r *state.Result, rs roots) state.DeviceInfo {
+	d := state.DeviceInfo{RequestName: r.Request, DeviceName: r.Device, Result: r.Index, ResultSettings: r.Settings}
+	switch r.Kind {
+	case state.ResultRegion:
+		d.DeviceType, d.Mode = device.DeviceTypeRegion, api.ModeNUMA
+		d.Region = r.Region.Name
+		d.SysfsPath = regionPath(rs, r.Region.Name)
+		d.NUMANodes = []int{r.Region.NumaNode}
+		d.NodeAffinities = slices.Clone(r.Region.NumaAffinity)
+		d.TotalBytes, d.ConsumedBytes = r.Region.Size, r.Region.Consumed
+	case state.ResultDRAM:
+		d.DeviceType, d.Mode = device.DeviceTypeDRAM, api.ModeNUMA
+		d.NUMANodes = slices.Clone(r.DRAM.NumaNodes)
+		d.TotalBytes, d.ConsumedBytes = r.DRAM.Size, r.DRAM.Consumed
+	case state.ResultLeaseClaim:
+		d.DeviceType = device.DeviceTypeLease
+		d.ConsumedBytes = r.LeaseClaim.Consumed
+	case state.ResultGrant:
+		d.DeviceType = device.DeviceTypeMemdev
+		if g := doc.Grant(*r.Grant); g != nil {
+			grantInfo(doc, g, &d, rs)
+		}
+	}
+	return d
+}
+
+// grantInfo sets what a grant got in the device info of its result.
+func grantInfo(doc *store.Document, g *state.Grant, d *state.DeviceInfo, rs roots) {
+	d.Mode = string(g.Asked.Mode)
+	d.Serial = g.Serial
+	d.SysfsPath = regionPath(rs, string(g.Got.Region))
+	d.TotalBytes, d.ConsumedBytes = g.Got.Size, int64(g.Got.Size)
+	d.NodeAffinities = numaAffinity(doc, g)
+	d.Shared = sharedGrant(g)
+	switch g.Asked.Mode {
+	case state.ModeNUMA:
+		if g.Got.NumaNode != nil {
+			d.NUMANodes = []int{*g.Got.NumaNode}
+		}
+	case state.ModeDax:
+		if g.Got.Dax != "" {
+			dev := doc.DaxDevOf(g)
+			d.DaxDevice = filepath.Join(rs.dev, g.Got.Dax)
+			d.DaxMajor, d.DaxMinor = dev.Major, dev.Minor
+		}
+		d.ReadOnly = g.Asked.ReadOnly
+	case state.ModeBlock, state.ModeFs:
+		d.Persistent = true
+		d.ReadOnly = g.Asked.ReadOnly
+		if bd := g.Got.BlockDevice; bd != nil {
+			d.BlockDevice, d.BlockMajor, d.BlockMinor = bd.Name, bd.Dev.Major, bd.Dev.Minor
+		}
+		if g.Asked.Mode == state.ModeFs {
+			d.Access, d.Path = string(g.Got.Mount), g.Asked.Path
+			if m := doc.MountOf(g); m != nil {
+				d.NodeMount, d.FsType = m.Path, m.FsType
+			}
+		}
+	}
+}
+
+// sharedGrant tells whether a grant maps its memdev shared.
+func sharedGrant(g *state.Grant) bool {
+	return g.Asked.Shared || g.Asked.Kind == state.KindShared
+}
+
+// numaAffinity returns the CPU NUMA nodes of the local memdev of a grant,
+// nil if they are not known.
+func numaAffinity(doc *store.Document, g *state.Grant) []int {
+	if g.Asked.Source != state.SourceLocal {
+		return nil
+	}
+	if m := doc.Memdev(g.Serial); m != nil && m.Facts.NumaAffinity != nil {
+		return []int{*m.Facts.NumaAffinity}
+	}
+	return nil
+}
+
+// regionPath returns the sysfs path of a CXL region, "" for none.
+func regionPath(rs roots, name string) string {
+	if name == "" {
+		return ""
+	}
+	return filepath.Join(rs.sys, "bus", "cxl", "devices", name)
+}
+
+// lendOf returns the lend of a companion claim, nil for another claim: the
+// lease and the requester of the first grant with a lend, the lent NUMA
+// nodes of its grants in their order, and their lease binds.
+func lendOf(doc *store.Document, p *state.Preparation) *lend.Lend {
+	if p.Lease == "" {
+		return nil
+	}
+	v := &lend.Lend{Lease: p.Lease}
+	identity := false
+	for _, r := range p.Results {
+		if r.Grant == nil {
+			continue
+		}
+		g := doc.Grant(*r.Grant)
+		if g == nil {
+			continue
+		}
+		l := g.Got.Lend
+		if l == nil {
+			l = g.Intent.Lend
+		}
+		if l != nil && !identity {
+			v.Pod, v.Container, v.FsDir, v.Name = l.Pod, l.Container, l.FsDir, l.Name
+			identity = true
+		}
+		if g.Got.Lend != nil && g.Got.Lend.NumaNode != nil {
+			v.NumaNodes = append(v.NumaNodes, *g.Got.Lend.NumaNode)
+		}
+		if b := g.Got.Bind; b != nil && (b.State == state.BindBound || b.State == state.BindStale) && !slices.Contains(v.Mounts, b.Target) {
+			v.Mounts = append(v.Mounts, b.Target)
+		}
+	}
+	return v
 }
 
 // deviceMemory returns what a prepared memory device gives a container,
@@ -99,11 +231,10 @@ func deviceMemory(d *state.DeviceInfo, keys envKeys) (api.Memory, bool) {
 	}
 	switch d.DeviceType {
 	case device.DeviceTypeMemdev:
-		serial, err := api.ParseSerial(d.Serial)
-		if err != nil {
+		if d.Serial == 0 {
 			return m, false
 		}
-		m.Key, m.Serial, m.Size = keys.next(api.Key(serial, 1)), d.Serial, d.TotalBytes
+		m.Key, m.Serial, m.Size = keys.next(api.Key(uint64(d.Serial), 1)), d.Serial.String(), d.TotalBytes
 		m.Dax, m.ReadOnly, m.Shared = d.DaxDevice, d.ReadOnly, d.Shared
 		switch {
 		case d.Persistent && d.Mode == api.ModeBlock:

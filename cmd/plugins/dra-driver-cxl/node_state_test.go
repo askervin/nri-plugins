@@ -114,7 +114,7 @@ func TestPrepareLocalDax(t *testing.T) {
 	e.wantDeviceInfo("u2", PreparedDeviceInfo{
 		RequestName: "mem", DeviceName: localDeviceName, DeviceType: device.DeviceTypeMemdev, Mode: api.ModeDax,
 		SysfsPath: e.k.P("bus/cxl/devices/region0"), NodeAffinities: []int{0},
-		TotalBytes: localBlockSize, ConsumedBytes: localBlockSize, Serial: "0xc100e2e1",
+		TotalBytes: localBlockSize, ConsumedBytes: localBlockSize, Serial: localSerial,
 		DaxDevice: dax1, DaxMajor: major, DaxMinor: minor1, ReadOnly: true,
 	})
 	e.wantCDIDevice("claim-u2-0",
@@ -259,7 +259,7 @@ func TestPrepareLocalLend(t *testing.T) {
 	wantLog(t, lender.callLog(), "lend pod-uid-1/app "+strconv.Itoa(node))
 	wantLog(t, hooks.log(), "lending l1 cxl-lease-l1\nprepared l1")
 	if d := hooks.devs; hooks.source != state.SourceLocal || len(d) != 1 || !reflect.DeepEqual(d[0], e.s.ClaimInfo("u1").Devices[0]) ||
-		d[0].RequestName != "mem" || d[0].DeviceName != localDeviceName || d[0].Serial != "0xc100e2e1" || d[0].TotalBytes != localBlockSize ||
+		d[0].RequestName != "mem" || d[0].DeviceName != localDeviceName || d[0].Serial != localSerial || d[0].TotalBytes != localBlockSize ||
 		d[0].Mode != api.ModeNUMA || !slices.Equal(d[0].NUMANodes, []int{node}) {
 		t.Fatalf("lent devices %+v of %q", hooks.devs, hooks.source)
 	}
@@ -742,13 +742,13 @@ func TestPrepareMemoryConfig(t *testing.T) {
 		{[]int{0, 1}, "steered " + strconv.Itoa(node) + ",4 auto from class cxl-region"},
 		{[]int{3}, "fenced  auto from class cxl-lease"},
 	} {
-		c, err := createdContainer(t, e.st, e.s, nil, "u1", tc.results...)
+		c, err := createdContainer(t, e.st, e.s, "u1", tc.results...)
 		noErr(t, err)
 		if got := strings.ToLower(string(c.Management)) + " " + c.Claimed.String() + " " + c.Steering; got != tc.want {
 			t.Errorf("results %v: %q, expected %q", tc.results, got, tc.want)
 		}
 	}
-	_, err := createdContainer(t, e.st, e.s, nil, "u1", 1, 2)
+	_, err := createdContainer(t, e.st, e.s, "u1", 1, 2)
 	wantErr(t, err, "container demo/pod/ctr: container.steering.policy: class cxl-region says auto, claim demo/claim-u1 request dram says first-dram")
 	noErr(t, leases.CloseClaim(context.Background(), "u1"))
 	e.mustUnprepare("u1")

@@ -16,7 +16,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 
 	resourceapi "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -25,7 +24,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
@@ -52,18 +50,13 @@ var (
 	parsePoolDeviceData = device.ParsePoolStatusData
 )
 
-// lendOf returns the lend of a companion claim as the pool driver gives it
-// (PoolLendContent), nil for another claim.
-func lendOf(doc *store.Document, prep *state.Preparation) *lendRecord {
-	var rec *lendRecord
-	data, err := store.PoolLendContent(doc, prep)
-	if err == nil {
-		err = json.Unmarshal(data, &rec)
+// lendOf returns the lend of the prepared companion claim uid of the
+// driver p, nil for another claim.
+func lendOf(p *dra.Plugin, uid string) *lendRecord {
+	if info := p.ClaimInfo(uid); info != nil {
+		return info.Lend
 	}
-	if err != nil {
-		panic(err)
-	}
-	return rec
+	return nil
 }
 
 // buildDevInfos returns the devices that the publisher publishes of the

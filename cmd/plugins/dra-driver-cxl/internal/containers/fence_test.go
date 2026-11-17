@@ -28,9 +28,9 @@ import (
 	"k8s.io/utils/cpuset"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
+	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
 func TestFenceNodes(t *testing.T) {
@@ -146,7 +146,9 @@ func TestFenceWantMems(t *testing.T) {
 func TestFenceCreateContainer(t *testing.T) {
 	e := newFenceEnv(t, "0-2")
 	e.local.set(fenceClaims())
-	e.setPool(map[string][]store.PoolDevice{"pool": {{Mode: cxlapi.ModeNUMA, NumaNode: 3, Size: 1 << 30}}})
+	e.pool.set(claimTable{"pool": {ClaimName: "ns/pool", Devices: []state.DeviceInfo{
+		{DeviceType: device.DeviceTypeMemdev, Mode: cxlapi.ModeNUMA, NUMANodes: []int{3}, ConsumedBytes: 1 << 30},
+	}}})
 	pod := testPod("u1")
 
 	// nothing fenced: no adjustment

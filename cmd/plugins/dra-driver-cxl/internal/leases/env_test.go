@@ -242,9 +242,8 @@ func (e *leaseEnv) boot() {
 	ctx := context.Background()
 	local := dra.LocalRules(filepath.Join(e.dir, "mounts"))
 	pool := dra.PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, "mounts"), filepath.Join(e.dir, store.FileName))
-	st, err := store.Open(ctx, store.Options{Dir: e.dir, PoolDriver: pool.Name, BootID: e.k.BootID(),
-		SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot(),
-		NewState: e.newState, AfterCommit: e.afterCommit, WriteFault: e.writeFault})
+	st, err := store.Open(ctx, store.Options{Dir: e.dir, BootID: e.k.BootID(), NewState: e.newState,
+		AfterCommit: e.afterCommit, WriteFault: e.writeFault})
 	mustOK(t, err)
 	e.st = st
 	e.eng, err = engine.New(engine.Options{
@@ -281,12 +280,12 @@ func (e *leaseEnv) boot() {
 	})
 	mustOK(t, err)
 	e.local, err = dra.New(dra.Options{Rules: local, Store: st, Engine: e.eng, NodeName: envNode,
-		DevRoot: e.k.DevRoot(), CDI: e.cache, Publisher: e.pub,
+		SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot(), CDI: e.cache, Publisher: e.pub,
 		Local: dra.LocalConfig{Managed: true, UsableSize: func(string, uint64) uint64 { return 0 },
 			Coherent: func(string, uint64) bool { return false }}})
 	mustOK(t, err)
 	e.pool, err = dra.New(dra.Options{Rules: pool, Store: st, Engine: e.eng, NodeName: envNode,
-		DevRoot: e.k.DevRoot(), CDI: e.cache})
+		SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot(), CDI: e.cache})
 	mustOK(t, err)
 	e.pool.Recovered(rec, filepath.Join(e.dir, store.FileName))
 	e.local.Recovered(rec, "")
