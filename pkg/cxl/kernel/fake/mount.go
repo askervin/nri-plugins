@@ -16,6 +16,7 @@ package fake
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"maps"
 	"os"
@@ -26,23 +27,27 @@ import (
 	"sync"
 	"syscall"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 // mountTable is the mount table, the loop devices and the block devices of
 // the node: the Sys of the fake. Like the kernel it gives a second mount of
-// a source the superblock (and the super options) of the first one,
-// changes the superblock of every mount of a source at a reconfigure,
-// removes an autoclear loop device with its last mount, refuses a
-// read-write superblock on a read-only block device, and makes a read-only
-// mount of a dirty filesystem on a read-only device fail with EROFS. It
-// records the violations of the rules of persistent devices: a block
-// device made read-only under a read-write superblock, a read-only mount of
-// a writable filesystem type on a writable block device, two superblocks of
-// one image of which one is read-write. The mounts are rendered into the
-// mountinfo files of the procfs of the fake: the mount namespace of the
-// process (self and pid 1), and those of other processes (AddForeign).
+// a block device the superblock (and the super options) of the first one,
+// refuses it with EBUSY when it would change the read-only state of the
+// superblock, changes the superblock of every mount of a source at a
+// reconfigure, removes an autoclear loop device with its last mount,
+// refuses a read-write superblock on a read-only block device, and makes a
+// read-only mount of a dirty filesystem on a read-only device fail with
+// EROFS. It records the violations of the rules of persistent devices: a
+// block device made read-only under a read-write superblock, a read-only
+// mount of a writable filesystem type on a writable block device, two
+// superblocks of one image of which one is read-write; and those of the
+// deletion of regions (Fake.deleteRegion). The mounts are rendered into
+// the mountinfo files of the procfs of the fake: the mount namespace of
+// the process (self and pid 1), and those of other processes (AddForeign).
 type mountTable struct {
 	f  *Fake
 	mu sync.Mutex
@@ -119,6 +124,21 @@ func (m *mountTable) image(source string) string {
 		return kernel.DevPath(b)
 	}
 	return source
+}
+
+// superblock returns a mount of the superblock of a block device source,
+// nil if it has none (a source that is not a path, such as tmpfs, gets a
+// new superblock for every mount). Called with m.mu held.
+func (m *mountTable) superblock(source string) *kernel.MountInfo {
+	if !strings.HasPrefix(source, "/") {
+		return nil
+	}
+	for _, mi := range m.allMounts() {
+		if mi.Source == source {
+			return &mi
+		}
+	}
+	return nil
 }
 
 // rwSuper returns a mount with a read-write superblock on a source that
@@ -243,10 +263,11 @@ func (m *mountTable) Mount(source, target, fstype string, flags uintptr, data st
 	if o, ok := m.superOpts[source]; ok {
 		opts = o
 	}
-	for _, mi := range m.mounts {
-		if mi.Source == source {
-			opts = mi.SuperOpts
+	if mi := m.superblock(source); mi != nil {
+		if mi.SuperReadOnly() != (flags&syscall.MS_RDONLY != 0) {
+			return fmt.Errorf("%w: Can't mount, would change RO state", syscall.EBUSY)
 		}
+		opts = mi.SuperOpts
 	}
 	m.mounts = append(m.mounts, kernel.MountInfo{DevNum: m.devNum(source, fstype), Root: "/", Target: filepath.Clean(target), FsType: fstype,
 		Source: source, SuperOpts: slices.Clone(opts), MountFlags: []string{"ro", "nosuid", "nodev"}})
@@ -282,10 +303,11 @@ func (m *mountTable) FsMount(source, target, fstype string, readWrite bool, opti
 		m.violate("fsmount of %s at %s read-only on a writable block device", source, target)
 	}
 	var opts []string
-	for _, mi := range m.mounts {
-		if mi.Source == source {
-			opts = mi.SuperOpts
+	if mi := m.superblock(source); mi != nil {
+		if mi.SuperReadOnly() == readWrite {
+			return fmt.Errorf("%w: Can't mount, would change RO state", syscall.EBUSY)
 		}
+		opts = mi.SuperOpts
 	}
 	if opts == nil {
 		// a new superblock: another one of the same image is another cache
@@ -563,12 +585,7 @@ func (m *mountTable) LoopRdevice(path string) (uint64, error) {
 	if !ok || err1 != nil || err2 != nil {
 		return 0, nil
 	}
-	return mkdev(major, minor), nil
-}
-
-// mkdev returns the Linux device number of major:minor.
-func mkdev(major, minor uint64) uint64 {
-	return (minor & 0xff) | ((major & 0xfff) << 8) | ((minor &^ 0xff) << 12) | ((major &^ 0xfff) << 32)
+	return unix.Mkdev(uint32(major), uint32(minor)), nil
 }
 
 func (m *mountTable) ZeroDax(ctx context.Context, major, minor int, size, align uint64) error {
@@ -586,7 +603,7 @@ func (m *mountTable) OpenDax(ctx context.Context, major, minor int, readOnly boo
 	return nil, fmt.Errorf("no private node of %d:%d in the fake: %w", major, minor, syscall.ENXIO)
 }
 
-func (m *mountTable) ProbeDax(major, minor int, size uint64) (*kernel.Aliasing, error) {
+func (m *mountTable) ProbeDax(ctx context.Context, major, minor int, size uint64) (*kernel.Aliasing, error) {
 	f := m.f
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -636,6 +653,44 @@ func (m *mountTable) reboot() {
 	m.ro = map[string]bool{}
 	m.holders = map[string]string{}
 	m.render()
+}
+
+// FsImage returns the head of a block device with the signatures of the
+// filesystem types (none for ""): erofs, squashfs, ext4 (ext4-dirty: needs
+// recovery), xfs, btrfs, gfs2 (lock_dlm), gfs2-nolock (lock_nolock).
+func FsImage(types ...string) []byte {
+	img := make([]byte, kernel.FsProbeBytes)
+	for _, t := range types {
+		switch t {
+		case "":
+		case "erofs":
+			binary.LittleEndian.PutUint32(img[1024:], 0xE0F5E1E2)
+		case "squashfs":
+			copy(img, "hsqs")
+		case "ext4", "ext4-dirty":
+			binary.LittleEndian.PutUint16(img[1080:], 0xEF53)
+			if t == "ext4-dirty" {
+				binary.LittleEndian.PutUint32(img[1024+0x60:], 0x4|0x2)
+			} else {
+				binary.LittleEndian.PutUint32(img[1024+0x60:], 0x2)
+			}
+		case "xfs":
+			copy(img, "XFSB")
+		case "btrfs":
+			copy(img[65600:], "_BHRfS_M")
+		case "gfs2", "gfs2-nolock":
+			binary.BigEndian.PutUint32(img[65536:], 0x01161970)
+			binary.BigEndian.PutUint32(img[65540:], 1)
+			proto := "lock_dlm"
+			if t == "gfs2-nolock" {
+				proto = "lock_nolock"
+			}
+			copy(img[65536+96:], proto+"\x00")
+		default:
+			panic("FsImage: unknown type " + t)
+		}
+	}
+	return img
 }
 
 // SetImage sets the head of the block device dev (and of the data of its
@@ -797,7 +852,8 @@ func (f *Fake) IsReadOnly(dev string) bool {
 	return m.ro[dev]
 }
 
-// Violations returns the violations of the rules of persistent devices.
+// Violations returns the violations of the rules of persistent devices and
+// of the deletion of regions.
 func (f *Fake) Violations() []string {
 	m := f.mnt
 	m.mu.Lock()

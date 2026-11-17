@@ -26,10 +26,8 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
-var errorsIs = errors.Is
-
 // A memdev is found by its serial, waited for, and its host bridge and root
-// decoders found (memctl TestFindAndWait).
+// decoders found.
 func TestFindAndWaitMemdev(t *testing.T) {
 	f := fake.New(t)
 	k := f.Kernel()
@@ -71,34 +69,19 @@ func TestFindAndWaitMemdev(t *testing.T) {
 }
 
 // The uid of a host bridge in the target_list of root decoders is its ACPI
-// _UID, which differs from the bus number of its PCI root on real hardware
-// (memctl TestHostBridgeUIDNotBusNumber): the dport of the CXL root that
-// links to the PCI root tells it, else firmware_node/uid, else the bus.
+// _UID, which differs from the bus number of its PCI root on real hardware:
+// the dport of the CXL root that links to the PCI root tells it, and
+// without such a dport there is none.
 func TestHostBridgeUIDNotBusNumber(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		setup func(f *fake.Fake)
-		want  int
-	}{
-		{"dport", func(f *fake.Fake) {}, 12},
-		{"firmware_node", func(f *fake.Fake) {
-			f.Remove("devices/platform/ACPI0017:00/root0/dport12")
-			f.Write("devices/pci0000:0c/firmware_node/uid", "35")
-		}, 35},
-		{"bus number", func(f *fake.Fake) {
-			f.Remove("devices/platform/ACPI0017:00/root0/dport12")
-		}, 0x0c},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f, k := newNode(t)
-			tc.setup(f)
-			if uid, err := k.HostBridgeUID("mem0"); err != nil || uid != tc.want {
-				t.Fatalf("uid %d %v, expected %d", uid, err, tc.want)
-			}
-		})
+	f, k := newNode(t)
+	if uid, err := k.HostBridgeUID("mem0"); err != nil || uid != 12 {
+		t.Fatalf("uid %d %v, expected 12", uid, err)
 	}
+	f.Remove("devices/platform/ACPI0017:00/root0/dport12")
+	_, err := k.HostBridgeUID("mem0")
+	wantErr(t, err, kernel.ErrNotFound, "no dport of the CXL root links to")
 	// a memdev under host bridge 24 gets its decoder
-	f := fake.New(t)
+	f = fake.New(t)
 	f.Plug(fake.MemdevSpec{Serial: serial0, HostBridge: 24})
 	if d, err := f.Kernel().RootDecoder("mem0", kernel.RegionRAM); err != nil || d != "decoder0.1" {
 		t.Fatalf("root decoder %q %v", d, err)
@@ -158,7 +141,7 @@ func TestMemdevStates(t *testing.T) {
 	}
 }
 
-// Persistent and RAM capacity of a memdev (memctl TestPersistent).
+// Persistent and RAM capacity of a memdev.
 func TestMemdevCapacity(t *testing.T) {
 	f := fake.New(t)
 	k := f.Kernel()
@@ -173,10 +156,6 @@ func TestMemdevCapacity(t *testing.T) {
 	f.Write(dir+"/pmem/size", "0x0")
 	if p, err := k.Persistent("mem0"); err != nil || p {
 		t.Fatalf("memdev without pmem: %v %v", p, err)
-	}
-	f.Remove(dir + "/pmem")
-	if p, err := k.Persistent("mem0"); err != nil || p {
-		t.Fatalf("memdev without a pmem directory: %v %v", p, err)
 	}
 	f.Write(dir+"/pmem/size", "bogus")
 	if _, err := k.Persistent("mem0"); err == nil {

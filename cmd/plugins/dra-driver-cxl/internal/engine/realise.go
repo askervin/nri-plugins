@@ -817,24 +817,14 @@ func addressRanges(ranges []kernel.Range) []state.AddressRange {
 func (e *Engine) offlineSettled(ctx context.Context, req *GrantRequest, blocks []int) error {
 	deadline := time.Now().Add(e.opts.Timeouts.Offline)
 	for {
-		if err := e.locked(func() error { return e.k.OfflineBlocks(ctx, blocks, 0, 0) }); err != nil {
+		if err := e.locked(func() error { return e.k.OfflineBlocks(blocks) }); err != nil {
 			return err
 		}
 		onlined := -1
 		err := e.waiting(req.Serial, state.TriggerPrepare, func() error {
-			stable := time.Now().Add(e.opts.Timeouts.OfflineSettle)
-			for time.Now().Before(stable) {
-				if err := sleepCtx(ctx, e.pollInterval()); err != nil {
-					return err
-				}
-				for _, b := range blocks {
-					if e.k.MemoryBlock(b).State == kernel.BlockOnline {
-						onlined = b
-						return nil
-					}
-				}
-			}
-			return nil
+			var err error
+			onlined, err = e.k.StayedOffline(ctx, blocks, e.opts.Timeouts.OfflineSettle)
+			return err
 		})
 		if err != nil || onlined < 0 {
 			return err

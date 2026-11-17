@@ -43,7 +43,7 @@ func sliceNode(t *testing.T) (*fake.Fake, *kernel.Kernel) {
 }
 
 // A region is sliced into dax devices, which are bound, deleted, and
-// recognized by their state (memctl TestDaxSlices, TestDaxDriverSysfs).
+// recognized by their state.
 func TestDaxSlices(t *testing.T) {
 	f, k := sliceNode(t)
 	ctx := context.Background()
@@ -120,8 +120,7 @@ func TestDaxSlices(t *testing.T) {
 }
 
 // First-fit placement of a slice that grows across gaps: a device of two
-// ranges, its whole memory blocks, and the gaps of the region (memctl
-// TestDaxDeviceRanges).
+// ranges, its whole memory blocks, and the gaps of the region.
 func TestDaxDeviceRanges(t *testing.T) {
 	f, k := sliceNode(t)
 	ctx := context.Background()
@@ -189,7 +188,7 @@ func TestDaxDeviceRanges(t *testing.T) {
 
 // A dax device is placed explicitly, and the placement checked: memory that
 // is taken fails (ErrNoRoom), a length that the kernel ignores deletes the
-// device (memctl TestCreateDaxDeviceRanges).
+// device.
 func TestCreateDaxDeviceRanges(t *testing.T) {
 	f, k := sliceNode(t)
 	ctx := context.Background()
@@ -238,13 +237,13 @@ func TestCreateDaxDeviceRanges(t *testing.T) {
 }
 
 // kmem is never unbound from memory that is online: the kernel could not
-// remove it (memctl TestUnbindKmemOnline).
+// remove it.
 func TestUnbindKmemOnline(t *testing.T) {
 	f, k := newNode(t)
 	ctx := context.Background()
 	createRegion(t, k, "mem0", kernel.RegionRAM, 0)
 	noErr(t, k.OnlineBlocks([]int{74, 75}, true))
-	noErr(t, k.OfflineBlocks(ctx, []int{74}, 0, 0))
+	noErr(t, k.OfflineBlocks([]int{74}))
 	err := k.UnbindDax(ctx, "dax0.0")
 	wantErr(t, err, kernel.ErrBusyOnline, "dax0.0: memory blocks [75] are not offline, kmem keeps it")
 	if f.DaxDriver("dax0.0") != kernel.DriverKmem {
@@ -256,7 +255,7 @@ func TestUnbindKmemOnline(t *testing.T) {
 	if err := k.ResizeDaxDevice(ctx, "dax0.0", 0); !errors.Is(err, kernel.ErrBusyOnline) || f.DaxSize("dax0.0") != 256*mib {
 		t.Fatalf("resize of online kmem memory: %v", err)
 	}
-	noErr(t, k.OfflineBlocks(ctx, []int{75}, 0, 0))
+	noErr(t, k.OfflineBlocks([]int{75}))
 	noErr(t, k.UnbindDax(ctx, "dax0.0"))
 	if f.DaxDriver("dax0.0") != "" {
 		t.Fatal("dax0.0 still bound")
@@ -273,8 +272,7 @@ func TestUnbindKmemOnline(t *testing.T) {
 
 // BindDax binds by sysfs only: kmem with bind (a new_id would make it take
 // every unbound dax device of the CXL regions), device_dax with new_id and
-// bind, the id of the driver removed after every bind (memctl
-// TestSetDaxDriverSysfs, TestDaxDriverSysfs).
+// bind, the id of the driver removed after every bind.
 func TestBindDaxWrites(t *testing.T) {
 	f, k := newNode(t)
 	ctx := context.Background()
@@ -301,13 +299,11 @@ func TestBindDaxWrites(t *testing.T) {
 	}
 }
 
-// Whoever writes a new_id of a dax driver makes the kernel attach
-// the driver to every unbound dax device whose name it has as an id. A
-// slice that UnbindDax had just unbound to resize it was taken back by
-// device_dax when another Prepare bound its device at that moment, and the
-// resize failed with EBUSY. No id is left after a bind, and UnbindDax
-// removes the id first, also one that another tool left (memctl
-// TestDaxIDsNotLeft without daxctl).
+// Whoever writes a new_id of a dax driver makes the kernel attach the
+// driver to every unbound dax device whose name it has as an id. A bind of
+// another device between UnbindDax and the size write does not take the
+// device back: no id is left after a bind, and UnbindDax removes the id
+// first, also one that another tool left.
 func TestDaxIDsNotLeft(t *testing.T) {
 	for _, left := range []bool{false, true} {
 		f, k := sliceNode(t)
@@ -346,7 +342,7 @@ func TestDaxIDsNotLeft(t *testing.T) {
 
 // The dax devices of a region of the kernel: daxN.0 of a new ram region is
 // bound to kmem by the kernel with its blocks added offline, which appear
-// after the driver link (memctl TestRegionNUMAWaitsForBlocks).
+// after the driver link.
 func TestDaxDefaultKmem(t *testing.T) {
 	f, k := newNode(t)
 	f.NoKmemBlocks = true
@@ -483,7 +479,8 @@ func TestObserveTopologyDuringDaxWrite(t *testing.T) {
 // The mappings of a dax device that the size writes of another goroutine
 // change are read before or after each write, never in between: its
 // memory is none or all of the first slice; the observations of the node
-// run beside them without an error.
+// run beside them without an error. The readers run until the writer has
+// made its changes a number of times.
 func TestDaxMappingsRace(t *testing.T) {
 	f, k := sliceNode(t)
 	ctx := context.Background()
@@ -493,9 +490,7 @@ func TestDaxMappingsRace(t *testing.T) {
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	loop := func(fn func() error) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for {
 				select {
 				case <-stop:
@@ -507,21 +502,8 @@ func TestDaxMappingsRace(t *testing.T) {
 					return
 				}
 			}
-		}()
+		})
 	}
-	loop(func() error {
-		if err := k.ResizeDaxDevice(ctx, "dax0.0", 128*mib); err != nil {
-			return err
-		}
-		dax, err := k.CreateDaxDeviceRanges(ctx, "region0", second)
-		if err != nil {
-			return err
-		}
-		if err := k.DeleteDaxDevice(ctx, "region0", dax); err != nil {
-			return err
-		}
-		return k.ResizeDaxDevice(ctx, "dax0.0", 0)
-	})
 	loop(func() error {
 		got, err := k.DaxDeviceRanges("dax0.0")
 		if err != nil || (got != nil && !reflect.DeepEqual(got, first)) {
@@ -531,7 +513,13 @@ func TestDaxMappingsRace(t *testing.T) {
 	})
 	loop(func() error { _, err := k.Observe(ctx); return err })
 	loop(func() error { _, err := k.ObserveTopology(ctx); return err })
-	time.Sleep(2 * time.Second)
+	for range 100 {
+		noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 128*mib))
+		dax, err := k.CreateDaxDeviceRanges(ctx, "region0", second)
+		noErr(t, err)
+		noErr(t, k.DeleteDaxDevice(ctx, "region0", dax))
+		noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 0))
+	}
 	close(stop)
 	wg.Wait()
 	if s := f.DaxSize("dax0.0"); s != 0 && s != 128*mib {

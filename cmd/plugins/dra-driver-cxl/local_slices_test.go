@@ -830,7 +830,7 @@ func TestLocalStateAndReconcile(t *testing.T) {
 
 	// restart: the region is gone (destroyed by another, or a reboot)
 	e.mustPrepare(localClaim("u1", localBlockSize))
-	noErr(t, k.OfflineBlocks(ctx, []int{74}, 0, 0))
+	noErr(t, k.OfflineBlocks([]int{74}))
 	noErr(t, k.ReleaseRegion(ctx, "region0"))
 	e.restart()
 	if r := e.records().Region("region0"); r != nil || len(e.regions(localSerial)) != 0 {

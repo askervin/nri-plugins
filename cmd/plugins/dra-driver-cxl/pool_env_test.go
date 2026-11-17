@@ -125,7 +125,7 @@ func (e *poolTestEnv) formatPmem(memdev string, types ...string) string {
 	ns, err := k.CreateFsdaxNamespace(ctx, nd, "")
 	noErr(e.t, err)
 	if len(types) > 0 {
-		e.k.SetImage(ns.BlockDevice, fsImage(types...))
+		e.k.SetImage(ns.BlockDevice, fake.FsImage(types...))
 	}
 	noErr(e.t, k.ReleaseRegion(ctx, region))
 	// the commands of the writer are not the driver's
@@ -542,7 +542,7 @@ func (e *poolTestEnv) setImage(memdev string, types ...string) {
 	if ns == nil {
 		e.t.Fatalf("%s has no fsdax namespace", memdev)
 	}
-	e.k.SetImage(ns.BlockDevice, fsImage(types...))
+	e.k.SetImage(ns.BlockDevice, fake.FsImage(types...))
 	noErr(e.t, k.ReleaseRegion(ctx, region))
 	e.base = e.k.Commands()
 }

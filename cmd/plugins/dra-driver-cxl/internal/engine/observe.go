@@ -239,7 +239,7 @@ func UnknownTransitions(prev, cur *kernel.Snapshot) []string {
 
 // diff adds the changes of the objects from prev to cur that the table does
 // not have; an object that is missing has the state absent.
-func diff[T any, S comparable](out *[]string, kind string, table kernel.Table[S], absent S, prev, cur []T, key func(T) (string, S)) {
+func diff[T any, S comparable](out *[]string, kind string, table fsm.Table[S], absent S, prev, cur []T, key func(T) (string, S)) {
 	states := map[string][2]S{}
 	for _, o := range prev {
 		name, s := key(o)

@@ -15,11 +15,12 @@
 package kernel
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -88,21 +89,23 @@ func parseDevNumbers(name, v string) (major, minor int, err error) {
 
 var trailingNum = regexp.MustCompile(`^(.*?)(\d+)$`)
 
-// NatLess orders names with the same prefix by their trailing numbers
-// (region2 before region10), others lexically.
-func NatLess(a, b string) bool {
+// NatCompare compares names in natural order: names with the same prefix by
+// their trailing numbers (region2 before region10), others lexically.
+func NatCompare(a, b string) int {
 	ma, mb := trailingNum.FindStringSubmatch(a), trailingNum.FindStringSubmatch(b)
 	if ma != nil && mb != nil && ma[1] == mb[1] {
 		na, _ := strconv.Atoi(ma[2])
 		nb, _ := strconv.Atoi(mb[2])
-		return na < nb
+		if c := cmp.Compare(na, nb); c != 0 {
+			return c
+		}
 	}
-	return a < b
+	return strings.Compare(a, b)
 }
 
 // sortNat sorts names in natural order.
 func sortNat(names []string) {
-	sort.Slice(names, func(i, j int) bool { return NatLess(names[i], names[j]) })
+	slices.SortFunc(names, NatCompare)
 }
 
 // hasDriver tells whether a device directory has a bound driver.

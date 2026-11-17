@@ -17,7 +17,6 @@ package dra
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -995,27 +994,11 @@ func (e *driverEnv) formatPmem(serial uint64, typ string) string {
 	ns, err := k.CreateFsdaxNamespace(ctx, nd, "")
 	mustOK(e.t, err)
 	if typ != "" {
-		e.k.SetImage(ns.BlockDevice, fsImage(typ))
+		e.k.SetImage(ns.BlockDevice, fake.FsImage(typ))
 	}
 	mustOK(e.t, k.ReleaseRegion(ctx, region))
 	e.mark()
 	return ns.BlockDevice
-}
-
-// fsImage returns the head of a block device with the signature of a
-// filesystem type: erofs or ext4.
-func fsImage(typ string) []byte {
-	img := make([]byte, kernel.FsProbeBytes)
-	switch typ {
-	case "erofs":
-		binary.LittleEndian.PutUint32(img[1024:], 0xE0F5E1E2)
-	case "ext4":
-		binary.LittleEndian.PutUint16(img[1080:], 0xEF53)
-		binary.LittleEndian.PutUint32(img[1024+0x60:], 0x2)
-	default:
-		panic("fsImage: unknown type " + typ)
-	}
-	return img
 }
 
 // mustOK fails the test on an error.

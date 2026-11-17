@@ -20,7 +20,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -50,7 +49,7 @@ func (f *Fake) makeDaxRegion(region string) {
 		f.tb.Fatal(err)
 	}
 	attrs := daxRegionRel(region) + "/dax_region"
-	f.Write(attrs+"/align", itoa(DaxAlign))
+	f.Write(attrs+"/align", strconv.Itoa(DaxAlign))
 	f.Write(attrs+"/create", "")
 	f.Write(attrs+"/delete", "")
 	f.Write(attrs+"/seed", "")
@@ -70,10 +69,10 @@ func (f *Fake) makeDaxRegion(region string) {
 func (f *Fake) newDax(region, dax string, node int) {
 	d := daxRegionRel(region) + "/" + dax
 	f.Write(d+"/size", "0")
-	f.Write(d+"/target_node", itoa(node))
+	f.Write(d+"/target_node", strconv.Itoa(node))
 	f.Write(d+"/dev", fmt.Sprintf("%d:%d", daxMajor, f.allocDaxMinor()))
 	f.Write(d+"/resource", "0x0")
-	f.Write(d+"/align", itoa(DaxAlign))
+	f.Write(d+"/align", strconv.Itoa(DaxAlign))
 	real, _ := filepath.EvalSymlinks(f.P(d))
 	rel, _ := filepath.Rel(f.SysRoot(), real)
 	f.LinkTo("bus/dax/devices/"+dax, rel)
@@ -115,7 +114,7 @@ func (f *Fake) daxNames(region string) []string {
 	for _, p := range m {
 		out = append(out, filepath.Base(p))
 	}
-	sort.Slice(out, func(i, j int) bool { return kernel.NatLess(out[i], out[j]) })
+	slices.SortFunc(out, kernel.NatCompare)
 	return out
 }
 
@@ -281,8 +280,8 @@ func (f *Fake) daxCreate(dir, val string) error {
 	prefix := "dax" + strings.TrimPrefix(region, "region") + "."
 	dax := ""
 	for id := 0; ; id++ {
-		if !f.DaxExists(prefix + itoa(id)) {
-			dax = prefix + itoa(id)
+		if !f.DaxExists(prefix + strconv.Itoa(id)) {
+			dax = prefix + strconv.Itoa(id)
 			break
 		}
 	}
@@ -352,9 +351,9 @@ func (f *Fake) daxResize(dax, val string) error {
 	return nil
 }
 
-// daxMap writes the mapping "0x<start>-0x<end>" of an unbound dax device:
-// memory that is taken or outside the region fails with ENOMEM, a length
-// that is not a multiple of the align is ignored.
+// daxMap writes the mapping "0x<start>-0x<end>" of a dax device, bound or
+// not: memory that is taken or outside the region fails with ENOMEM, a
+// length that is not a multiple of the align is ignored.
 func (f *Fake) daxMap(dax, val string) error {
 	s, e, ok := strings.Cut(val, "-")
 	start, err1 := kernel.ParseHex(s)
@@ -365,8 +364,6 @@ func (f *Fake) daxMap(dax, val string) error {
 		return syscall.ENXIO
 	case !ok || err1 != nil || err2 != nil || end < start:
 		return syscall.EINVAL
-	case f.daxDriverOf(dax) != "":
-		return syscall.EBUSY
 	case (end-start+1)%DaxAlign != 0:
 		return nil
 	}
@@ -383,10 +380,12 @@ func (f *Fake) daxMap(dax, val string) error {
 }
 
 // daxDriverAttr does what the kernel does for an attribute of a dax driver
-// (drivers/dax/bus.c): unbind; bind, which fails for a bound device and
-// for one of size 0 (dax_bus_probe); new_id adds the id and attaches the
-// driver to every unbound device that it matches (driver_attach); remove_id
-// removes the id (a name that is not one is ignored).
+// (drivers/dax/bus.c): unbind; bind, which fails for a device that the
+// driver does not match (device_dax matches the device of a CXL region only
+// by its id, kmem by its type), for a bound device and for one of size 0
+// (dax_bus_probe); new_id adds the id and attaches the driver to every
+// unbound device that it matches (driver_attach); remove_id removes the id
+// (a name that is not one is ignored).
 func (f *Fake) daxDriverAttr(driver, attr, dax string) error {
 	switch attr {
 	case "unbind":
@@ -396,7 +395,7 @@ func (f *Fake) daxDriverAttr(driver, attr, dax string) error {
 		f.setDaxDriver(dax, "")
 	case "bind":
 		switch {
-		case !f.DaxExists(dax):
+		case !f.DaxExists(dax), driver != kernel.DriverKmem && !f.HasDaxID(driver, dax):
 			return syscall.ENODEV
 		case f.daxDriverOf(dax) != "":
 			return syscall.EBUSY
@@ -452,7 +451,7 @@ func (f *Fake) attach(driver string) {
 
 // blockRel returns the sysfs directory of memory block n, relative.
 func blockRel(n int) string {
-	return "devices/system/memory/memory" + itoa(n)
+	return "devices/system/memory/memory" + strconv.Itoa(n)
 }
 
 // blockSize returns the memory block size of the fake.
@@ -501,7 +500,7 @@ func (f *Fake) addBlocks(dax string) {
 		f.Write(blockRel(b)+"/state", kernel.BlockStateOffline)
 		f.Write(blockRel(b)+"/valid_zones", "Normal Movable")
 		f.Write(blockRel(b)+"/online", "0")
-		f.mkdir(blockRel(b) + "/node" + itoa(nodeOf(uint64(b)*bs)))
+		f.mkdir(blockRel(b) + "/node" + strconv.Itoa(nodeOf(uint64(b)*bs)))
 		f.udevOnline(b)
 	}
 	f.updateNodes()
@@ -525,7 +524,7 @@ func (f *Fake) AddBlocks(blocks ...int) {
 		f.Write(blockRel(b)+"/state", kernel.BlockStateOffline)
 		f.Write(blockRel(b)+"/valid_zones", "Normal Movable")
 		f.Write(blockRel(b)+"/online", "0")
-		f.mkdir(blockRel(b) + "/node" + itoa(nodeOf(uint64(b)*bs)))
+		f.mkdir(blockRel(b) + "/node" + strconv.Itoa(nodeOf(uint64(b)*bs)))
 	}
 	f.updateNodes()
 }
@@ -561,10 +560,10 @@ func (f *Fake) setBlock(n int, state string) {
 	}
 }
 
-// blockWrite writes the state of a memory block: online_movable of a block
-// that is online is EINVAL; an offline that a test made fail with EBUSY
-// (FailWrite) leaves it online; a udev rule may online it again after an
-// offline (AutoOnline).
+// blockWrite writes the state of a memory block: an online of a block that
+// is online and an offline of one that is offline are EINVAL; an offline
+// that a test made fail with EBUSY (FailWrite) leaves it online; a udev
+// rule may online it again after an offline (AutoOnline).
 func (f *Fake) blockWrite(dir, val string) error {
 	n, err := strconv.Atoi(strings.TrimPrefix(dir, "devices/system/memory/memory"))
 	if err != nil || !f.Exists(dir+"/state") {
@@ -573,10 +572,11 @@ func (f *Fake) blockWrite(dir, val string) error {
 	cur := f.Read(dir + "/state")
 	switch val {
 	case kernel.BlockStateOffline:
-		if cur != kernel.BlockStateOffline {
-			f.setBlock(n, val)
-			f.udevOnline(n)
+		if cur == kernel.BlockStateOffline {
+			return syscall.EINVAL
 		}
+		f.setBlock(n, val)
+		f.udevOnline(n)
 	case kernel.BlockStateOnline, kernel.BlockStateOnlineMovable, kernel.BlockStateOnlineKernel:
 		if cur != kernel.BlockStateOffline {
 			return syscall.EINVAL
@@ -601,15 +601,13 @@ func (f *Fake) udevOnline(n int) {
 	if !again {
 		return
 	}
-	f.probes.Add(1)
-	go func() {
-		defer f.probes.Done()
+	f.probes.Go(func() {
 		time.Sleep(2 * time.Millisecond)
 		if f.Read(blockRel(n)+"/state") == kernel.BlockStateOffline {
 			f.setBlock(n, kernel.BlockStateOnline)
 			f.updateNodes()
 		}
-	}()
+	})
 }
 
 // updateNodes writes has_memory and the MemTotal of the NUMA nodes of the
@@ -636,7 +634,7 @@ func (f *Fake) updateNodes() {
 	slices.Sort(nodes)
 	var s []string
 	for _, n := range nodes {
-		s = append(s, itoa(n))
+		s = append(s, strconv.Itoa(n))
 	}
 	f.Write("devices/system/node/has_memory", strings.Join(s, ","))
 }

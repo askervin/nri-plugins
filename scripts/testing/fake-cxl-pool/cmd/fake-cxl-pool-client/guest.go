@@ -293,11 +293,31 @@ func (c *cli) createRegion(ctx context.Context, memdev, mode, decoder string) er
 		if err != nil {
 			return err
 		}
-		if err := k.OfflineBlocks(ctx, blocks, settleOffline, offlineTimeout); err != nil {
+		if err := c.offlineSettled(ctx, blocks); err != nil {
 			return err
 		}
 	}
 	return k.BindDax(ctx, dax, kernel.DriverDeviceDax)
+}
+
+// offlineSettled offlines memory blocks until they stay offline for
+// settleOffline, offlineTimeout at most.
+func (c *cli) offlineSettled(ctx context.Context, blocks []int) error {
+	k := c.kernel()
+	deadline := time.Now().Add(offlineTimeout)
+	for {
+		if err := k.OfflineBlocks(blocks); err != nil {
+			return err
+		}
+		b, err := k.StayedOffline(ctx, blocks, settleOffline)
+		if err != nil || b < 0 {
+			return err
+		}
+		c.logf("memory%d: online again after offlining it (auto-onlined by udev?)", b)
+		if time.Now().After(deadline) {
+			return fmt.Errorf("memory blocks %v keep coming online after offlining them: is a udev rule onlining hot-added memory?", blocks)
+		}
+	}
 }
 
 // regionInfo returns the first region of the memdev with the serial, its

@@ -44,8 +44,7 @@ func pmemNode(t *testing.T) (*fake.Fake, *kernel.Kernel) {
 
 // A writer creates the fsdax namespace in a new region; the labels outlive
 // the region, and a reader finds the namespace from them after the probe
-// of the region, the namespace and its pfn device (memctl
-// TestPmemWriterThenReader).
+// of the region, the namespace and its pfn device.
 func TestPmemWriterThenReader(t *testing.T) {
 	f, k := pmemNode(t)
 	f.PmemDelay = 10 * time.Millisecond
@@ -97,8 +96,7 @@ func TestPmemWriterThenReader(t *testing.T) {
 
 // The probe of an nd region and its namespaces in the order of the kernel:
 // every partial state is PROBING; the pfn mode is read last, and an
-// attribute that cannot be read is a probe in progress (memctl
-// TestNamespacesWaitForProbe, TestNamespacesPfnModeUnreadable).
+// attribute that cannot be read is a probe in progress.
 func TestNamespacesWaitForProbe(t *testing.T) {
 	f, k := pmemNode(t)
 	f.Write(ndRegion0+"/size", itoa(pmemNsBytes))
@@ -204,15 +202,14 @@ func TestNamespacesWaitForProbe(t *testing.T) {
 	f.Write(ns+"/size", itoa(pmemNsBytes))
 	f.Remove(ndRegion0 + "/dax0.1/driver")
 	_, err := k.Namespaces(ctxTimeout(t, 20*time.Millisecond), "region0")
-	wantErr(t, err, kernel.ErrProbing, "region0: namespaces still probing (namespace0.0: no ")
+	wantErr(t, err, nil, "region0: namespaces still probing (namespace0.0: no ")
 	if !strings.Contains(err.Error(), "bus/nd/devices/dax0.1/driver): context deadline exceeded") {
 		t.Fatalf("error %q", err)
 	}
 }
 
 // ndctl create-namespace -f is never run over a region that is probing or
-// has an fsdax namespace: it would destroy what a writer formatted (memctl
-// TestCreateFsdaxNamespaceRefuses, TestCreatePmemRegionErrors).
+// has an fsdax namespace: it would destroy what a writer formatted.
 func TestCreateFsdaxNamespaceRefuses(t *testing.T) {
 	f, k := pmemNode(t)
 	ctx := ctxTimeout(t, 5*time.Second)
@@ -221,15 +218,15 @@ func TestCreateFsdaxNamespaceRefuses(t *testing.T) {
 	f.Fsdax(r, "pfn0.1")
 	f.Write(ndRegion0+"/pfn0.1/mode", "pmem")
 	_, err := k.CreateFsdaxNamespace(ctx, "region0", "namespace0.0")
-	wantErr(t, err, kernel.ErrExists, `region0: not creating an fsdax namespace: namespace0.0 is one already (map "dev")`)
+	wantErr(t, err, nil, `region0: not creating an fsdax namespace: namespace0.0 is one already (map "dev")`)
 	// its mode cannot be read
 	f.Remove(ndRegion0 + "/pfn0.1/mode")
 	_, err = k.CreateFsdaxNamespace(ctx, "region0", "namespace0.0")
-	wantErr(t, err, kernel.ErrProbing, "region0: not creating an fsdax namespace: the namespaces are still probing (namespace0.0: cannot read ")
+	wantErr(t, err, nil, "region0: not creating an fsdax namespace: the namespaces are still probing (namespace0.0: cannot read ")
 	// the region is not bound
 	f.Remove(ndRegion0 + "/driver")
 	_, err = k.CreateFsdaxNamespace(ctx, "region0", "")
-	wantErr(t, err, kernel.ErrProbing, "the namespaces are still probing")
+	wantErr(t, err, nil, "the namespaces are still probing")
 	if strings.Contains(f.Commands(), "ndctl") {
 		t.Fatalf("ndctl ran:\n%s", f.Commands())
 	}
@@ -290,7 +287,7 @@ func TestFsdaxNamespaceInTwoSteps(t *testing.T) {
 		t.Fatalf("namespace %+v", ns)
 	}
 	_, err = k.StartFsdaxNamespace(ctx, nd, "")
-	wantErr(t, err, kernel.ErrExists, "is one already")
+	wantErr(t, err, nil, "is one already")
 	short, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 	if _, err := k.WaitFsdaxNamespace(short, nd, "namespace9.9"); err == nil || !strings.Contains(err.Error(), "has no fsdax block device") {

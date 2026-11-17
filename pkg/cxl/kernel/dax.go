@@ -21,11 +21,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
 // DaxRegion and DaxDevice: the dax region of an enabled ram region
@@ -104,20 +106,13 @@ func (s DaxState) String() string { return stateText(daxStateNames, int(s)) }
 // MarshalText returns the name of the state.
 func (s DaxState) MarshalText() ([]byte, error) { return []byte(s.String()), nil }
 
-// UnmarshalText sets the state of its name.
-func (s *DaxState) UnmarshalText(text []byte) error {
-	v, err := parseState(daxStateNames, text)
-	*s = DaxState(v)
-	return err
-}
-
 // DaxTransitions are the changes of the state of a dax device.
-var DaxTransitions = Table[DaxState]{
+var DaxTransitions = fsm.Table[DaxState]{
 	Object:   "DaxDeviceInfo",
 	Field:    "State",
 	Observed: true,
 	States:   list(DaxAbsent, DaxSeed, DaxUnbound, DaxDeviceDax, DaxKmem, DaxOther),
-	Rows: []Transition[DaxState]{
+	Rows: []fsm.Transition[DaxState]{
 		{From: list(DaxAbsent), To: DaxKmem, When: "CreateRegion (ram) or EnableRegion: the kernel binds daxN.0 over the whole region to kmem",
 			Effects: "its memory blocks added, offline"},
 		{From: list(DaxAbsent), To: DaxSeed, When: "CreateDaxDevice (dax_region/create)", Guard: "room in the dax region"},
@@ -305,9 +300,8 @@ func (k *Kernel) DaxDeviceSize(dax string) (uint64, error) {
 }
 
 // DaxDeviceRanges returns the physical address ranges of the memory of a
-// dax device (its mappingN), in address order. Without mappings (kernels
-// before 5.10) the device has one range from its resource and size. A
-// device of size 0 has none.
+// dax device (its mappingN), in address order. A device of size 0 has
+// none; a device with memory and no mapping is an error.
 func (k *Kernel) DaxDeviceRanges(dax string) ([]Range, error) {
 	daxBus.RLock()
 	defer daxBus.RUnlock()
@@ -317,11 +311,7 @@ func (k *Kernel) DaxDeviceRanges(dax string) ([]Range, error) {
 		if err != nil || size == 0 {
 			return nil, err
 		}
-		start, err := ReadUint(k.daxDev(dax, "resource"))
-		if err != nil {
-			return nil, err
-		}
-		return []Range{{Start: start, End: start + size - 1}}, nil
+		return nil, fmt.Errorf("%s has %d bytes and no mappings", dax, size)
 	}
 	out := make([]Range, 0, len(dirs))
 	for _, dir := range dirs {
@@ -335,7 +325,7 @@ func (k *Kernel) DaxDeviceRanges(dax string) ([]Range, error) {
 		}
 		out = append(out, Range{Start: start, End: end})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Start < out[j].Start })
+	slices.SortFunc(out, compareStart)
 	return out, nil
 }
 
@@ -428,7 +418,7 @@ func (k *Kernel) RegionFreeGaps(region string) ([]Range, error) {
 		}
 		used = append(used, ranges...)
 	}
-	sort.Slice(used, func(i, j int) bool { return used[i].Start < used[j].Start })
+	slices.SortFunc(used, compareStart)
 	var gaps []Range
 	next := rr.Start
 	for _, u := range used {
@@ -448,7 +438,7 @@ func (k *Kernel) RegionFreeGaps(region string) ([]Range, error) {
 // noRoom returns err with the kind ErrNoRoom when its cause says that the
 // dax region has no room (ENOSPC, ENOMEM), else err.
 func noRoom(err error) error {
-	if errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.ENOMEM) {
+	if errors.Is(err, unix.ENOSPC) || errors.Is(err, unix.ENOMEM) {
 		return &kernelError{kind: ErrNoRoom, msg: err.Error(), err: errors.Unwrap(err)}
 	}
 	return err
@@ -486,13 +476,9 @@ func (k *Kernel) UnbindDax(ctx context.Context, dax string) error {
 	return nil
 }
 
-// RemoveDaxID removes the name of a dax device from the ids of a dax driver
+// removeDaxID removes the name of a dax device from the ids of a dax driver
 // (remove_id; the kernel ignores a name that is not an id). A failure is
 // logged only: the device is bound or unbound as asked anyway.
-func (k *Kernel) RemoveDaxID(driver, dax string) {
-	k.removeDaxID(driver, dax)
-}
-
 func (k *Kernel) removeDaxID(driver, dax string) {
 	if err := k.writeFile(k.daxDriver(driver, "remove_id"), dax); err != nil {
 		k.logf("%s: remove_id %s: %v", driver, dax, err)
@@ -580,7 +566,7 @@ func (k *Kernel) CreateDaxDeviceRanges(ctx context.Context, region string, range
 		return "", fmt.Errorf("%s: a dax device without memory", region)
 	}
 	want := slices.Clone(ranges)
-	sort.Slice(want, func(i, j int) bool { return want[i].Start < want[j].Start })
+	slices.SortFunc(want, compareStart)
 	dax, err := k.newDaxDevice(region)
 	if err != nil {
 		return "", err

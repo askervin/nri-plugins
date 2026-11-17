@@ -63,8 +63,7 @@ func above(t *testing.T, k *kernel.Kernel, memdev string) []string {
 
 // TestDecoderHoles: a region destroyed below newer regions leaves a hole in
 // every port that they share; the ports refuse new regions until the
-// regions above go, and then the kernel reaps the hole (memctl
-// TestDecoderHoles, TestCreateRegionExplainsDecoderHole).
+// regions above go, and then the kernel reaps the hole.
 func TestDecoderHoles(t *testing.T) {
 	f, k := stackNode(t)
 	ctx := context.Background()
@@ -84,9 +83,6 @@ func TestDecoderHoles(t *testing.T) {
 	}
 	if got := want[1].String(); got != "port3 has 3 committed decoders, decoder3.1 without a region below region2" {
 		t.Errorf("String() = %q", got)
-	}
-	if got, err := observe(t, k).DecoderHoles(serial1); err != nil || !reflect.DeepEqual(got, want) {
-		t.Fatalf("snapshot holes %+v %v", got, err)
 	}
 	// a new region of either memdev is refused with the hole explained
 	_, err := k.CreateRegion(ctx, kernel.CreateRegionRequest{Memdev: "mem1", Decoder: "decoder0.0", Type: kernel.RegionRAM})
@@ -144,17 +140,13 @@ func TestDecoderHoleInEndpoint(t *testing.T) {
 }
 
 // TestRegionsAbove: the regions of other memdevs above those of a memdev in
-// its ports, none when its regions are on top or it has none (memctl
-// TestRegionsAbove).
+// its ports, none when its regions are on top or it has none.
 func TestRegionsAbove(t *testing.T) {
 	f, k := stackNode(t)
 	for serial, want := range map[uint64][]string{serial0: {"region1"}, serial1: {"region2"}} {
 		name := f.Memdev(serial)
 		if got := above(t, k, name); !reflect.DeepEqual(got, want) {
 			t.Errorf("RegionsAbove(%s) = %v, want %v", name, got, want)
-		}
-		if got, err := observe(t, k).RegionsAbove(serial); err != nil || !reflect.DeepEqual(got, want) {
-			t.Errorf("snapshot: RegionsAbove(%s) = %v %v, want %v", name, got, err, want)
 		}
 	}
 	ctx := context.Background()
@@ -196,13 +188,6 @@ func TestDecoderUnreadable(t *testing.T) {
 			}
 			if h, err := k.DecoderHoles("mem0"); err == nil || h != nil {
 				t.Fatalf("DecoderHoles %v %v", h, err)
-			}
-			s := observe(t, k)
-			if a, err := s.RegionsAbove(serial0); err == nil || a != nil || len(s.Errors) == 0 {
-				t.Fatalf("snapshot RegionsAbove %v %v, errors %v", a, err, s.Errors)
-			}
-			if _, err := s.DecoderHoles(serial0); err == nil {
-				t.Fatal("snapshot DecoderHoles without an error")
 			}
 			before := f.Commands()
 			if _, err := k.ReleaseRegionInOrder(context.Background(), "mem0", "region0"); err == nil || f.Commands() != before {

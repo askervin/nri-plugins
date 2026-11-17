@@ -21,7 +21,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"sync"
 )
 
@@ -30,33 +29,22 @@ import (
 // not be read is left out and named in Errors. Its lookups only read it: a
 // Snapshot of Observe has indexes, others are scanned.
 type Snapshot struct {
-	// BootID is the boot id of the running kernel, "" if it cannot be
-	// read.
-	BootID string `json:"bootID"`
 	// BlockSize is the memory block size in bytes, 0 if it cannot be read.
 	BlockSize uint64 `json:"blockSize"`
 	// Memdevs are the memdevs that are present.
 	Memdevs []MemdevInfo `json:"memdevs,omitempty"`
-	// Ports are the ports of the decoder paths of the memdevs, each once,
-	// in the order of the paths.
-	Ports []Port `json:"ports,omitempty"`
 	// Regions are all regions, hollow ones too.
 	Regions []RegionInfo `json:"regions,omitempty"`
-	// DaxRegions are the dax regions of the regions, DaxDevices their dax
-	// devices.
-	DaxRegions []DaxRegion     `json:"daxRegions,omitempty"`
+	// DaxDevices are the dax devices of the regions.
 	DaxDevices []DaxDeviceInfo `json:"daxDevices,omitempty"`
 	Blocks     []MemoryBlock   `json:"blocks,omitempty"`
 	NumaNodes  []NumaNode      `json:"numaNodes,omitempty"`
 	Pmem       []NdRegion      `json:"pmem,omitempty"`
 	Devices    []BlockDevice   `json:"blockDevices,omitempty"`
 	Mounts     []MountInfo     `json:"mounts,omitempty"`
-	Supers     []Superblock    `json:"superblocks,omitempty"`
-	Loops      []LoopDevice    `json:"loops,omitempty"`
 	Errors     []string        `json:"errors,omitempty"`
 	byRegion   map[string]int  // index of Regions by name
 	byDax      map[string]int  // index of DaxDevices by name
-	byPort     map[string]int  // index of Ports by name
 	byBlock    map[int]int     // index of Blocks by index
 	bySerial   map[uint64]int  // index of Memdevs by serial
 	byDevice   map[string]int  // index of Devices by /dev path
@@ -93,10 +81,6 @@ func (k *Kernel) Observe(ctx context.Context) (*Snapshot, error) {
 	problem := func(format string, args ...any) {
 		s.Errors = append(s.Errors, fmt.Sprintf(format, args...))
 	}
-	var err error
-	if s.BootID, err = k.BootID(); err != nil {
-		problem("boot id: %v", err)
-	}
 	if err := k.observeSysfs(ctx, s, problem, true); err != nil {
 		return nil, err
 	}
@@ -106,17 +90,6 @@ func (k *Kernel) Observe(ctx context.Context) (*Snapshot, error) {
 	} else {
 		problem("mounts: %v", err)
 	}
-	if len(s.Devices) > 0 {
-		devs := map[string]string{}
-		for _, d := range s.Devices {
-			devs[strconv.Itoa(d.Major)+":"+strconv.Itoa(d.Minor)] = d.Path
-		}
-		if sbs, err := k.superblocksOf(devs); err == nil {
-			s.Supers = sbs
-		} else {
-			problem("superblocks: %v", err)
-		}
-	}
 	s.index()
 	return s, ctx.Err()
 }
@@ -124,13 +97,12 @@ func (k *Kernel) Observe(ctx context.Context) (*Snapshot, error) {
 // ObserveTopology returns a snapshot of the memory block size, the memdevs,
 // the regions with their dax devices and memory blocks, and the NUMA nodes
 // of the node, read from sysfs only: it opens no device and reads no
-// mounts or mappings of dax devices, and the snapshot has no ports, dax
-// regions, pmem, block devices, mounts, boot id, or memory ranges and
-// memory blocks of dax devices. A node without the CXL bus has no memdevs
-// and no regions. Its error is that of reading the CXL bus, of a memdev, a
-// region or a NUMA node of which a fact cannot be read, of a serial that
-// is not 0x<hex>, of a memory block size that cannot be read on a node
-// with regions, or the error of the context when it ends.
+// mounts or mappings of dax devices, and the snapshot has no pmem, block
+// devices, mounts, or memory ranges and memory blocks of dax devices. A
+// node without the CXL bus has no memdevs and no regions. Its error is
+// that of reading the CXL bus, of a memdev, a region or a NUMA node of
+// which a fact cannot be read, of a memory block size that cannot be read
+// on a node with regions, or the error of the context when it ends.
 func (k *Kernel) ObserveTopology(ctx context.Context) (*Snapshot, error) {
 	if _, err := os.ReadDir(k.cxlDev()); err != nil && !os.IsNotExist(err) {
 		return nil, err
@@ -157,9 +129,8 @@ func (k *Kernel) ObserveTopology(ctx context.Context) (*Snapshot, error) {
 
 // observeSysfs adds the memory block size, the memdevs, the regions with
 // their dax devices and memory blocks, and the NUMA nodes to the snapshot
-// s, and with full the ports of the memdevs, the dax regions, the nd
-// regions and the memory of the dax devices. Its error is the error of the
-// context when it ends.
+// s, and with full the nd regions and the memory of the dax devices. Its
+// error is the error of the context when it ends.
 func (k *Kernel) observeSysfs(ctx context.Context, s *Snapshot, problem func(string, ...any), full bool) error {
 	var err error
 	if s.BlockSize, err = k.BlockSize(); err != nil {
@@ -170,7 +141,6 @@ func (k *Kernel) observeSysfs(ctx context.Context, s *Snapshot, problem func(str
 	for ep, memdev := range t.memdevOfEndpoint {
 		endpoints[memdev] = ep
 	}
-	seenPort := map[string]bool{}
 	for _, name := range k.memdevNames() {
 		m, err := k.memdev(name, endpoints)
 		if err != nil {
@@ -183,9 +153,6 @@ func (k *Kernel) observeSysfs(ctx context.Context, s *Snapshot, problem func(str
 			continue
 		}
 		s.Memdevs = append(s.Memdevs, m)
-		if full {
-			k.observePorts(s, m.Endpoint, seenPort, problem)
-		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -225,38 +192,10 @@ func (k *Kernel) HasCXLBus() bool {
 	return exists(k.cxlDev())
 }
 
-// observePorts adds the ports of the decoder path of the endpoint ep ("" for
-// none) that are not seen yet to the snapshot s.
-func (k *Kernel) observePorts(s *Snapshot, ep string, seen map[string]bool, problem func(string, ...any)) {
-	if ep == "" {
-		return
-	}
-	for _, dir := range k.endpointPorts(ep) {
-		name := filepath.Base(dir)
-		if seen[name] {
-			continue
-		}
-		seen[name] = true
-		p, err := readPort(dir)
-		if err != nil {
-			problem("%s: %v", name, err)
-			continue
-		}
-		s.Ports = append(s.Ports, p)
-	}
-}
-
 // observeRegion adds the dax devices and the memory blocks of the region r
-// to the snapshot s, and with full its dax region, its nd region and the
-// memory of its dax devices.
+// to the snapshot s, and with full its nd region and the memory of its dax
+// devices.
 func (k *Kernel) observeRegion(s *Snapshot, r RegionInfo, problem func(string, ...any), full bool) {
-	if r.DaxRegion != "" && full {
-		if d, err := k.DaxRegion(r.Name); err == nil {
-			s.DaxRegions = append(s.DaxRegions, d)
-		} else {
-			problem("%s: dax region: %v", r.Name, err)
-		}
-	}
 	if r.DaxRegion != "" {
 		for _, dax := range k.DaxDevices(r.Name) {
 			if d, err := k.daxDevice(dax, full); err == nil {
@@ -310,7 +249,6 @@ func (k *Kernel) observeBlockDevices(s *Snapshot, problem func(string, ...any)) 
 		if backing == "" {
 			continue
 		}
-		s.Loops = append(s.Loops, l)
 		d := BlockDevice{Path: filepath.Join(k.devRoot(), l.Name), Backing: backing}
 		if ma, mi, err := parseDevNumbers(l.Name, l.DevNum); err == nil {
 			d.Major, d.Minor = ma, mi
@@ -336,10 +274,6 @@ func (s *Snapshot) index() {
 	for i, d := range s.DaxDevices {
 		s.byDax[d.Name] = i
 	}
-	s.byPort = map[string]int{}
-	for i, p := range s.Ports {
-		s.byPort[p.Name] = i
-	}
 	s.byBlock = map[int]int{}
 	for i, b := range s.Blocks {
 		s.byBlock[b.Index] = i
@@ -354,9 +288,8 @@ func (s *Snapshot) index() {
 	}
 }
 
-// find returns the index of the entry of a lookup: from the index that
-// Observe built, else by a scan (a Snapshot that Observe did not make, such
-// as a decoded one, is read without being written).
+// find returns the index of the entry of a lookup: from the index that the
+// observation built, else by a scan (a Snapshot literal has no index).
 func find[K comparable](idx map[K]int, n int, key K, keyOf func(int) K) (int, bool) {
 	if idx != nil {
 		i, ok := idx[key]
@@ -440,68 +373,6 @@ func (s *Snapshot) OnlineBlocks(blocks []int) []int {
 	return out
 }
 
-// Port returns the port with the name, false if the snapshot has none.
-func (s *Snapshot) Port(name string) (Port, bool) {
-	if i, ok := find(s.byPort, len(s.Ports), name, func(i int) string { return s.Ports[i].Name }); ok {
-		return s.Ports[i], true
-	}
-	return Port{Name: name}, false
-}
-
-// pathPort returns a port of the decoder path of a memdev, an error if
-// the snapshot could not read it.
-func (s *Snapshot) pathPort(name string) (Port, error) {
-	p, ok := s.Port(name)
-	if !ok {
-		return p, fmt.Errorf("the decoders of %s could not be read", name)
-	}
-	return p, nil
-}
-
-// DecoderHoles returns the holes in the ports of the decoder path of the
-// memdev with the serial (see Kernel.DecoderHoles); a port that the
-// snapshot could not read is an error.
-func (s *Snapshot) DecoderHoles(serial uint64) ([]DecoderHole, error) {
-	var holes []DecoderHole
-	for _, name := range s.Memdev(serial).Ports {
-		p, err := s.pathPort(name)
-		if err != nil {
-			return nil, err
-		}
-		if h, ok := p.Hole(); ok {
-			holes = append(holes, h)
-		}
-	}
-	return holes, nil
-}
-
-// RegionsAbove returns the regions of other memdevs above those of the
-// memdev with the serial in the ports of its decoder path (see
-// Kernel.RegionsAbove); a port that the snapshot could not read is an
-// error, never "nothing above".
-func (s *Snapshot) RegionsAbove(serial uint64) ([]string, error) {
-	m := s.Memdev(serial)
-	if len(m.Regions) == 0 {
-		return nil, nil
-	}
-	var above []string
-	for _, name := range m.Ports {
-		if !portDirRe.MatchString(name) {
-			continue
-		}
-		p, err := s.pathPort(name)
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range p.Above(m.Regions) {
-			if !slices.Contains(above, r) {
-				above = append(above, r)
-			}
-		}
-	}
-	return above, nil
-}
-
 // NumaNode returns the NUMA node with the id, false if the snapshot has
 // none.
 func (s *Snapshot) NumaNode(id int) (NumaNode, bool) {
@@ -513,17 +384,6 @@ func (s *Snapshot) NumaNode(id int) (NumaNode, bool) {
 	return NumaNode{ID: id}, false
 }
 
-// NdRegionOf returns the nd region of a CXL region, in state NdAbsent if
-// the snapshot has none.
-func (s *Snapshot) NdRegionOf(region string) NdRegion {
-	for _, nd := range s.Pmem {
-		if nd.Region == region {
-			return nd
-		}
-	}
-	return NdRegion{Region: region, State: NdAbsent}
-}
-
 // BlockDevice returns the block device with the /dev path, false if the
 // snapshot has none.
 func (s *Snapshot) BlockDevice(path string) (BlockDevice, bool) {
@@ -531,20 +391,4 @@ func (s *Snapshot) BlockDevice(path string) (BlockDevice, bool) {
 		return s.Devices[i], true
 	}
 	return BlockDevice{Path: path}, false
-}
-
-// SuperblocksOf returns the superblocks on the block device dev and on the
-// loop devices over it.
-func (s *Snapshot) SuperblocksOf(dev string) []Superblock {
-	var out []Superblock
-	for _, sb := range s.Supers {
-		if sb.Device == dev {
-			out = append(out, sb)
-			continue
-		}
-		if d, ok := s.BlockDevice(sb.Device); ok && d.Backing == dev {
-			out = append(out, sb)
-		}
-	}
-	return out
 }

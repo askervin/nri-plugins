@@ -327,7 +327,7 @@ func openDaxNode(ctx context.Context, node string, readOnly bool) (*os.File, err
 // /dev/daxX.Y, and a device node can be opened only on a filesystem without
 // nodev: DevRoot, a devtmpfs, not a tmpfs).
 func (s *SysCalls) OpenDax(ctx context.Context, major, minor int, readOnly bool) (*os.File, error) {
-	dir, err := os.MkdirTemp(s.devRoot(), ".cxl-dax-")
+	dir, err := os.MkdirTemp(s.devRoot(), daxNodeDirPrefix)
 	if err != nil {
 		return nil, err
 	}
@@ -340,7 +340,7 @@ func (s *SysCalls) OpenDax(ctx context.Context, major, minor int, readOnly bool)
 }
 
 // zeroChunk is the size of the windows in which a dax device is zeroed.
-const zeroChunk = 64 << 20
+var zeroChunk uint64 = 64 << 20
 
 func (s *SysCalls) ZeroDax(ctx context.Context, major, minor int, size, align uint64) error {
 	f, err := s.OpenDax(ctx, major, minor, false)
@@ -352,9 +352,9 @@ func (s *SysCalls) ZeroDax(ctx context.Context, major, minor int, size, align ui
 }
 
 // ZeroFile writes zeros to the first size bytes of a file through shared
-// mappings of at most 64 MiB, rounded up to a multiple of align.
+// mappings of at most zeroChunk bytes, rounded up to a multiple of align.
 func ZeroFile(f *os.File, size, align uint64) error {
-	chunk := uint64(zeroChunk)
+	chunk := zeroChunk
 	if align > 0 && chunk%align != 0 {
 		chunk = (chunk/align + 1) * align
 	}
@@ -372,11 +372,11 @@ func ZeroFile(f *os.File, size, align uint64) error {
 	return nil
 }
 
-func (s *SysCalls) ProbeDax(major, minor int, size uint64) (*Aliasing, error) {
+func (s *SysCalls) ProbeDax(ctx context.Context, major, minor int, size uint64) (*Aliasing, error) {
 	if !cacheFlushSupported {
 		return nil, ErrProbeUnsupported
 	}
-	f, err := s.OpenDax(context.Background(), major, minor, false)
+	f, err := s.OpenDax(ctx, major, minor, false)
 	if err != nil {
 		return nil, err
 	}

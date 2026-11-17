@@ -79,11 +79,9 @@ func (f *Fake) makeNdRegion(region string) {
 		f.probeNdRegion(region, serial, n)
 		return
 	}
-	f.probes.Add(1)
-	go func() {
-		defer f.probes.Done()
+	f.probes.Go(func() {
 		f.probeNdRegion(region, serial, n)
-	}()
+	})
 }
 
 // probeNdRegion makes the nd region and its namespace appear as the kernel

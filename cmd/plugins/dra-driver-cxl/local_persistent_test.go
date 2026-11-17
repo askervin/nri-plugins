@@ -359,7 +359,7 @@ func TestLocalPersistentLifeCycle(t *testing.T) {
 		t.Fatalf("prepared %+v", info)
 	}
 	// the writer writes an ext4
-	e.k.SetImage(pmem, fsImage("ext4"))
+	e.k.SetImage(pmem, fake.FsImage("ext4"))
 	e.mustUnprepare("w1")
 	e.wantRegions(3, 3)
 	if e.used() || e.published() == nil {

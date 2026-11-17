@@ -32,7 +32,7 @@ import (
 type scenario[S comparable] func(t *testing.T) (from, to S)
 
 // rowTo returns the state that row i of a table goes to.
-func rowTo[S comparable](table kernel.Table[S], i int) S {
+func rowTo[S comparable](table fsm.Table[S], i int) S {
 	if table.Rows[i].Stays {
 		return table.Rows[i].From[0]
 	}
@@ -42,7 +42,7 @@ func rowTo[S comparable](table kernel.Table[S], i int) S {
 // rowKey returns the key of the scenario of a row: from->to, and #N for the
 // N-th row (from 0) with the same states. A row of a kernel table has one
 // from state.
-func rowKey[S comparable](table kernel.Table[S], i int) string {
+func rowKey[S comparable](table fsm.Table[S], i int) string {
 	n := 0
 	for j := range table.Rows[:i] {
 		if table.Rows[j].From[0] == table.Rows[i].From[0] && rowTo(table, j) == rowTo(table, i) {
@@ -54,7 +54,7 @@ func rowKey[S comparable](table kernel.Table[S], i int) string {
 
 // checkTable runs the scenario of every row of a table: each row has one,
 // and the scenario observes the transition of its row.
-func checkTable[S comparable](t *testing.T, name string, table kernel.Table[S], scenarios map[string]scenario[S]) {
+func checkTable[S comparable](t *testing.T, name string, table fsm.Table[S], scenarios map[string]scenario[S]) {
 	t.Helper()
 	if !table.Observed || table.Field != "State" || len(table.States) == 0 {
 		t.Errorf("%s: table %s.%s, observed %v, states %v", name, table.Object, table.Field, table.Observed, table.States)
@@ -88,9 +88,9 @@ func checkTable[S comparable](t *testing.T, name string, table kernel.Table[S], 
 }
 
 func TestTable(t *testing.T) {
-	table := kernel.Table[kernel.RegionState]{
+	table := fsm.Table[kernel.RegionState]{
 		Object: "RegionInfo", Field: "State", Observed: true,
-		Rows: []kernel.Transition[kernel.RegionState]{{From: []kernel.RegionState{kernel.RegionDisabled}, To: kernel.RegionEnabled}},
+		Rows: []fsm.Transition[kernel.RegionState]{{From: []kernel.RegionState{kernel.RegionDisabled}, To: kernel.RegionEnabled}},
 	}
 	if !table.Allows(kernel.RegionDisabled, kernel.RegionEnabled, fsm.AnyTrigger) ||
 		table.Allows(kernel.RegionEnabled, kernel.RegionDisabled, fsm.AnyTrigger) {
@@ -98,7 +98,7 @@ func TestTable(t *testing.T) {
 	}
 	noErr(t, table.Check(kernel.RegionHollow, kernel.RegionHollow, fsm.AnyTrigger))
 	err := table.Check(kernel.RegionEnabled, kernel.RegionHollow, fsm.AnyTrigger)
-	if !errors.Is(err, kernel.ErrTransition) || err.Error() != "RegionInfo.State: ENABLED -> HOLLOW: transition not in the table" {
+	if !errors.Is(err, fsm.ErrTransition) || err.Error() != "RegionInfo.State: ENABLED -> HOLLOW: transition not in the table" {
 		t.Fatalf("error %v", err)
 	}
 	tables := 0
@@ -113,13 +113,9 @@ func TestTable(t *testing.T) {
 	if tables != 6 {
 		t.Errorf("%d tables in the catalogue", tables)
 	}
-	// the names of the states, in JSON too
-	var s kernel.DaxState
-	if b, err := json.Marshal(kernel.DaxKmem); err != nil || string(b) != `"KMEM"` || json.Unmarshal(b, &s) != nil || s != kernel.DaxKmem {
-		t.Fatalf("%s %v %v", b, err, s)
-	}
-	if err := json.Unmarshal([]byte(`"BOGUS"`), &s); err == nil {
-		t.Fatal("an unknown state accepted")
+	// the names of the states, in JSON too (cxl-dump)
+	if b, err := json.Marshal(kernel.DaxKmem); err != nil || string(b) != `"KMEM"` {
+		t.Fatalf("%s %v", b, err)
 	}
 	if kernel.MemdevState(9).String() != "state(9)" {
 		t.Fatal(kernel.MemdevState(9).String())
@@ -545,7 +541,7 @@ func TestBlockTransitions(t *testing.T) {
 			_, k := kmem(t)
 			noErr(t, k.OnlineBlocks([]int{block}, true))
 			from := state(k)
-			noErr(t, k.OfflineBlocks(ctx, []int{block}, 0, 0))
+			noErr(t, k.OfflineBlocks([]int{block}))
 			return from, state(k)
 		},
 		"ONLINE->ABSENT#0": func(t *testing.T) (kernel.BlockState, kernel.BlockState) {

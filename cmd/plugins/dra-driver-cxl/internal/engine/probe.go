@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"time"
 
+	"context"
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
@@ -123,7 +124,7 @@ func (e *Engine) usableSize(req *GrantRequest) uint64 {
 // memory aliases (0 when it does not, or when the architecture has no
 // probe), and an error when the probe found memory that does not hold what
 // was written.
-func (e *Engine) probeRegion(req *GrantRequest, memdev, region, dax string) (uint64, error) {
+func (e *Engine) probeRegion(ctx context.Context, req *GrantRequest, memdev, region, dax string) (uint64, error) {
 	if !e.opts.ProbeAddressing {
 		return 0, nil
 	}
@@ -136,7 +137,7 @@ func (e *Engine) probeRegion(req *GrantRequest, memdev, region, dax string) (uin
 	var res *kernel.Aliasing
 	err = e.waiting(req.Serial, state.TriggerPrepare, func() error {
 		var err error
-		res, err = e.k.ProbeAliasing(dax)
+		res, err = e.k.ProbeAliasing(ctx, dax)
 		return err
 	})
 	if errors.Is(err, kernel.ErrProbeUnsupported) {

@@ -27,18 +27,6 @@ import (
 // is a fact that the design does not know (Table.Check with
 // fsm.AnyTrigger).
 
-// Transition is one change of the state of a kernel object: When says what
-// makes it, an operation of this package or a kernel event.
-type Transition[S comparable] = fsm.Transition[S]
-
-// Table is the observed transitions of the state of one kind of kernel
-// object.
-type Table[S comparable] = fsm.Table[S]
-
-// ErrTransition is the kind of the error of a change of state that a Table
-// does not have.
-var ErrTransition = fsm.ErrTransition
-
 // ObjectTables is a kind of kernel object, by the name that its header
 // comment gives it, with the transition tables of its states.
 type ObjectTables struct {
@@ -75,14 +63,4 @@ func stateText(names []string, s int) string {
 		return names[s]
 	}
 	return fmt.Sprintf("state(%d)", s)
-}
-
-// parseState returns the state with the name.
-func parseState(names []string, text []byte) (int, error) {
-	for i, n := range names {
-		if n == string(text) {
-			return i, nil
-		}
-	}
-	return 0, fmt.Errorf("unknown state %q", text)
 }

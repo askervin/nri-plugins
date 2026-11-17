@@ -185,7 +185,7 @@ func (e *driverEnv) formatPmemAgain(serial uint64, typ string) {
 	if ns == nil {
 		e.t.Fatalf("%s has no fsdax namespace", memdev)
 	}
-	e.k.SetImage(ns.BlockDevice, fsImage(typ))
+	e.k.SetImage(ns.BlockDevice, fake.FsImage(typ))
 	mustOK(e.t, k.ReleaseRegion(ctx, region))
 	e.mark()
 }

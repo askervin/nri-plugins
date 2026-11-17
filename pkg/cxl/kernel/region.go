@@ -23,6 +23,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
 // Region: a CXL region regionN (/sys/bus/cxl/devices/regionN, a child of
@@ -81,20 +83,13 @@ func (s RegionState) String() string { return stateText(regionStateNames, int(s)
 // MarshalText returns the name of the state.
 func (s RegionState) MarshalText() ([]byte, error) { return []byte(s.String()), nil }
 
-// UnmarshalText sets the state of its name.
-func (s *RegionState) UnmarshalText(text []byte) error {
-	v, err := parseState(regionStateNames, text)
-	*s = RegionState(v)
-	return err
-}
-
 // RegionTransitions are the changes of the state of a region.
-var RegionTransitions = Table[RegionState]{
+var RegionTransitions = fsm.Table[RegionState]{
 	Object:   "RegionInfo",
 	Field:    "State",
 	Observed: true,
 	States:   list(RegionAbsent, RegionHollow, RegionDisabled, RegionEnabled),
-	Rows: []Transition[RegionState]{
+	Rows: []fsm.Transition[RegionState]{
 		{From: list(RegionAbsent), To: RegionEnabled, When: "CreateRegion",
 			Guard:   "the memdev READY; no hole in its ports; room in the root decoder",
 			Effects: "the region is pushed on the decoder stack of every port to the endpoint; ram: a dax region with daxN.0 bound to kmem, its memory blocks added; pmem: an nd region probing"},
@@ -378,9 +373,8 @@ func nextRegionAttr(regionType string) string {
 	return "create_ram_region"
 }
 
-// NextRegionName returns the name of the region that the next cxl
-// create-region of the type creates under the root decoder (its
-// create_ram_region or create_pmem_region).
+// NextRegionName returns the name that the root decoder offers for its next
+// region of the type (its create_ram_region or create_pmem_region).
 func (k *Kernel) NextRegionName(decoder, regionType string) (string, error) {
 	return ReadTrim(k.cxlDev(decoder, nextRegionAttr(regionType)))
 }
@@ -391,8 +385,10 @@ func (k *Kernel) NextRegionName(decoder, regionType string) (string, error) {
 //   - Type: RegionRAM or RegionPmem
 //   - Size: the bytes of the memdev's capacity that the region maps, a
 //     multiple of 256 MiB, the alignment of CXL regions; 0 maps all of it
-//   - Note: called before cxl create-region with the name of the region it
-//     will create ("" if it cannot be read): an error creates nothing
+//   - Note: called before cxl create-region with the name that the root
+//     decoder offers for the region ("" if it cannot be read): an error
+//     creates nothing; the created region may get another name (a creation
+//     of another process), and CreateRegion returns that one
 type CreateRegionRequest struct {
 	Memdev  string
 	Decoder string
@@ -429,8 +425,6 @@ func (k *Kernel) CreateRegion(ctx context.Context, req CreateRegionRequest) (str
 	region := ""
 	if m := regionNameRe.FindStringSubmatch(out); m != nil {
 		region = m[1]
-	} else if rs := k.Regions(req.Memdev); len(rs) > 0 {
-		region = rs[0]
 	} else {
 		return "", fmt.Errorf("cxl create-region did not report a region: %s", out)
 	}
@@ -492,10 +486,10 @@ func (k *Kernel) DisableRegion(ctx context.Context, region string) error {
 }
 
 // DestroyRegion destroys a disabled region (cxl destroy-region). A region
-// that does not exist is not an error. Errors: ErrForeign for a locked
-// region, ErrBusyOnline when memory blocks of the region are online, an
-// error for an enabled region (DisableRegion first) and for a hollow one,
-// which only DeleteHollowRegion removes.
+// that does not exist is not an error. Errors: ErrBusyOnline when memory
+// blocks of the region are online, an error for a locked region, for an
+// enabled region (DisableRegion first) and for a hollow one, which only
+// DeleteHollowRegion removes.
 func (k *Kernel) DestroyRegion(ctx context.Context, region string) error {
 	state := regionState(k.cxlDev(region))
 	if state == RegionAbsent {
@@ -529,11 +523,10 @@ func (k *Kernel) regionCommand(ctx context.Context, command, region string) erro
 	return err
 }
 
-// checkNotLocked returns an error of kind ErrForeign if the platform locked
-// the region.
+// checkNotLocked returns an error if the platform locked the region.
 func (k *Kernel) checkNotLocked(region string) error {
 	if regionLocked(k.cxlDev(region)) {
-		return errorf(ErrForeign, "%s is locked: the platform keeps it", region)
+		return fmt.Errorf("%s is locked: the platform keeps it", region)
 	}
 	return nil
 }
@@ -630,15 +623,14 @@ func (k *Kernel) releaseRegion(ctx context.Context, region string, above func() 
 // (CreateRegionRequest.Note) tells the region of the caller. A region with
 // memory blocks that are not offline is not deleted (ErrBusyOnline): kmem
 // keeps that memory until a reboot, and the region stays with it. A region
-// that is not hollow is not deleted (ErrNotHollow). A missing region is not
-// an error.
+// that is not hollow is not deleted. A missing region is not an error.
 func (k *Kernel) DeleteHollowRegion(region string) error {
 	dir := k.cxlDev(region)
 	if _, err := os.Stat(dir); err != nil {
 		return nil
 	}
 	if !regionHollow(dir) {
-		return errorf(ErrNotHollow, "%s is not hollow: it is committed or has a target decoder", region)
+		return fmt.Errorf("%s is not hollow: it is committed or has a target decoder", region)
 	}
 	if online := k.onlineRegionBlocks(region); len(online) > 0 {
 		return errorf(ErrBusyOnline, "%s: memory blocks %v of its address range are not offline (kmem keeps them until a reboot): not deleting it", region, online)

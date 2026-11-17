@@ -16,7 +16,6 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"maps"
@@ -608,49 +607,12 @@ func (e *localTestEnv) formatPmem(serial uint64, types ...string) string {
 	ns, err := k.CreateFsdaxNamespace(ctx, nd, "")
 	noErr(e.t, err)
 	if len(types) > 0 {
-		e.k.SetImage(ns.BlockDevice, fsImage(types...))
+		e.k.SetImage(ns.BlockDevice, fake.FsImage(types...))
 	}
 	noErr(e.t, k.ReleaseRegion(ctx, region))
 	// the commands of the writer are not the driver's
 	e.base = e.k.Commands()
 	return ns.BlockDevice
-}
-
-// fsImage returns the head of a block device with the signatures of the
-// filesystem types: ext4-dirty is an ext4 that needs recovery, gfs2-nolock
-// a gfs2 without a cluster lock.
-func fsImage(types ...string) []byte {
-	img := make([]byte, kernel.FsProbeBytes)
-	for _, t := range types {
-		switch t {
-		case "erofs":
-			binary.LittleEndian.PutUint32(img[1024:], 0xE0F5E1E2)
-		case "squashfs":
-			copy(img, "hsqs")
-		case "ext4", "ext4-dirty":
-			binary.LittleEndian.PutUint16(img[1080:], 0xEF53)
-			if t == "ext4-dirty" {
-				binary.LittleEndian.PutUint32(img[1024+0x60:], 0x4|0x2)
-			} else {
-				binary.LittleEndian.PutUint32(img[1024+0x60:], 0x2)
-			}
-		case "xfs":
-			copy(img, "XFSB")
-		case "btrfs":
-			copy(img[65600:], "_BHRfS_M")
-		case "gfs2", "gfs2-nolock":
-			binary.BigEndian.PutUint32(img[65536:], 0x01161970)
-			binary.BigEndian.PutUint32(img[65540:], 1)
-			proto := "lock_dlm"
-			if t == "gfs2-nolock" {
-				proto = "lock_nolock"
-			}
-			copy(img[65536+96:], proto+"\x00")
-		default:
-			panic("fsImage: unknown type " + t)
-		}
-	}
-	return img
 }
 
 // makeOpaqueConfig returns an allocation config of the driver with config

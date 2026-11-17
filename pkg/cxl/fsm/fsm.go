@@ -109,15 +109,6 @@ func (e *TransitionError) Is(target error) bool {
 	return target == ErrTransition
 }
 
-// Find returns the first row of the table that takes from to to on
-// trigger, and whether there is one; AnyTrigger matches every row.
-func (t *Table[S]) Find(from, to S, trigger Trigger) (*Transition[S], bool) {
-	if i := t.row(from, to, trigger); i >= 0 {
-		return &t.Rows[i], true
-	}
-	return nil, false
-}
-
 // row returns the index of the first row that takes from to to on
 // trigger, -1 if there is none.
 func (t *Table[S]) row(from, to S, trigger Trigger) int {

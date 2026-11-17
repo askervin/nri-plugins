@@ -710,7 +710,7 @@ States: ABSENT, UNBOUND, BOUND, READY.
 | ABSENT | UNBOUND | hot-add (the pool attaches the device), boot | - | the probe of cxl_mem starts |
 | ABSENT | BOUND | hot-add, observed after the probe bound cxl_mem | - | - |
 | ABSENT | READY | hot-add, observed after the probe finished | - | - |
-| UNBOUND | BOUND | EnableMemdev, the probe of cxl_mem | - | the endpoint port is added asynchronously (add_dev() fails until then) |
+| UNBOUND | BOUND | observed during the probe of cxl_mem (EnableMemdev, hot-add) | - | the probe adds the endpoint port (add_dev() fails until then) |
 | UNBOUND | READY | EnableMemdev, observed after the probe finished | - | - |
 | BOUND | READY | the endpoint port added | - | regions can be created |
 | BOUND | UNBOUND | DisableMemdev | - | - |
@@ -830,7 +830,7 @@ MemoryBlock: a memory block memoryN (/sys/devices/system/memory).
 
 **Invariants.** Kmem adds only the blocks that lie wholly in the memory of a dax device; a region or a dax device has online memory iff one of those blocks is online.
 
-**Waits.** The blocks of a kmem dax device appear asynchronously after the driver link (WaitDaxBlocks); a udev rule may online hot-added blocks again after they were offlined (OfflineBlocks with a settle time).
+**Waits.** The blocks of a kmem dax device appear asynchronously after the driver link (WaitDaxBlocks); a udev rule may online hot-added blocks again after they were offlined (StayedOffline).
 
 ### MemoryBlock.State
 
@@ -840,14 +840,14 @@ States: ABSENT, OFFLINE, ONLINE.
 |:-----|:---|:--------|:------|:--------|
 | ABSENT | OFFLINE | kmem bound to the dax device of its memory (BindDax, or the kernel's default binding of a new ram region) | auto_online_blocks offline | - |
 | ABSENT | ONLINE | kmem bound, with auto_online_blocks or a udev rule onlining hot-added memory | - | - |
-| OFFLINE | ONLINE | OnlineBlocks, or a udev rule (OfflineBlocks offlines it again within its settle time) | online_movable: not online in another zone | - |
+| OFFLINE | ONLINE | OnlineBlocks, or a udev rule (StayedOffline tells it within its settle time) | online_movable: not online in another zone | - |
 | ONLINE | OFFLINE | OfflineBlocks | its pages can be moved (EBUSY otherwise) | - |
 | OFFLINE | ABSENT | kmem unbound (UnbindDax, DeleteDaxDevice), DisableRegion, hot-remove of its memdev | - | - |
 | ONLINE | ABSENT | ReleaseRegion (offline, then disable), observed across it; a numa slice release (OfflineBlocks, then UnbindDax) | its pages can be moved | - |
 
 ## NumaNode (kernel)
 
-NumaNode: a NUMA node nodeN (/sys/devices/system/node). Nodes exist from boot (one per CFMWS window for CXL memory); the driver never creates one. States: has memory or not (has_memory); MemTotal is the sum of its online memory.
+NumaNode: a NUMA node nodeN (/sys/devices/system/node). The NUMA node of a CFMWS window is fixed at boot; its nodeN directory exists while it has memory blocks. States: has memory or not (has_memory); MemTotal is the sum of its online memory.
 
 ## NdRegion, Namespace and BlockDevice (kernel)
 
@@ -922,6 +922,6 @@ LoopDevice: a loop device /dev/loopN over a block device, the device of a cached
 
 **Identity.** Its name; its backing is identified by the device number of the backing (LOOP_GET_STATUS64 lo_rdevice): the path in sysfs (loop/backing_file) is the path of the backing file as the reader sees it, relative to the root of a mount that the reader may not see ("/pmem1" for "/dev/pmem1" after a restart of the driver container).
 
-**States.** CONFIGURED (held by the fd of AttachLoop), MOUNTED (the fd closed, held by its mount), CLEARED (the kernel clears an autoclear loop device at its last close; ClearLoop clears it before a mount). The loop driver does not hold its backing exclusively: Holder lists loop devices by backing.
+**States.** CONFIGURED (held by the fd of AttachLoop), MOUNTED (the fd closed, held by its mount), CLEARED (the kernel clears an autoclear loop device at its last close; Loop.Release with detach clears it before a mount). The loop driver does not hold its backing exclusively: Holder lists loop devices by backing.
 
 **Waits.** None; AttachLoop retries LOOP_CONFIGURE when another process took the free device first.

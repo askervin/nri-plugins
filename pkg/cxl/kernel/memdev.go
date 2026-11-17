@@ -23,6 +23,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
 // Memdev: a CXL memory device memN (/sys/bus/cxl/devices/memN).
@@ -59,26 +61,19 @@ func (s MemdevState) String() string { return stateText(memdevStateNames, int(s)
 // MarshalText returns the name of the state.
 func (s MemdevState) MarshalText() ([]byte, error) { return []byte(s.String()), nil }
 
-// UnmarshalText sets the state of its name.
-func (s *MemdevState) UnmarshalText(text []byte) error {
-	v, err := parseState(memdevStateNames, text)
-	*s = MemdevState(v)
-	return err
-}
-
 // MemdevTransitions are the changes of the state of a memdev.
-var MemdevTransitions = Table[MemdevState]{
+var MemdevTransitions = fsm.Table[MemdevState]{
 	Object:   "MemdevInfo",
 	Field:    "State",
 	Observed: true,
 	States:   list(MemdevAbsent, MemdevUnbound, MemdevBound, MemdevReady),
-	Rows: []Transition[MemdevState]{
+	Rows: []fsm.Transition[MemdevState]{
 		{From: list(MemdevAbsent), To: MemdevUnbound, When: "hot-add (the pool attaches the device), boot",
 			Effects: "the probe of cxl_mem starts"},
 		{From: list(MemdevAbsent), To: MemdevBound, When: "hot-add, observed after the probe bound cxl_mem"},
 		{From: list(MemdevAbsent), To: MemdevReady, When: "hot-add, observed after the probe finished"},
-		{From: list(MemdevUnbound), To: MemdevBound, When: "EnableMemdev, the probe of cxl_mem",
-			Effects: "the endpoint port is added asynchronously (add_dev() fails until then)"},
+		{From: list(MemdevUnbound), To: MemdevBound, When: "observed during the probe of cxl_mem (EnableMemdev, hot-add)",
+			Effects: "the probe adds the endpoint port (add_dev() fails until then)"},
 		{From: list(MemdevUnbound), To: MemdevReady, When: "EnableMemdev, observed after the probe finished"},
 		{From: list(MemdevBound), To: MemdevReady, When: "the endpoint port added", Effects: "regions can be created"},
 		{From: list(MemdevBound), To: MemdevUnbound, When: "DisableMemdev"},
@@ -127,7 +122,7 @@ func (k *Kernel) memdevSerial(name string) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return strconv.ParseUint(strings.TrimPrefix(s, "0x"), 16, 64)
+	return ParseHex(s)
 }
 
 // FindMemdev returns the name memN of the memdev with the serial, an error
@@ -165,9 +160,6 @@ func (k *Kernel) memdev(name string, endpoints map[string]string) (MemdevInfo, e
 	serial, err := k.memdevSerial(name)
 	if err != nil {
 		return MemdevInfo{}, fmt.Errorf("%s: serial: %w", name, err)
-	}
-	if s, _ := ReadTrim(k.cxlDev(name, "serial")); k.fact != nil && !strings.HasPrefix(s, "0x") {
-		k.factErr(fmt.Errorf("%s: serial %q is not 0x<hex>", name, s))
 	}
 	m := MemdevInfo{Name: name, Serial: serial, State: MemdevUnbound, NodeAffinity: -1}
 	numa, err := ReadTrim(k.cxlDev(name, "numa_node"))
@@ -255,23 +247,19 @@ func (k *Kernel) RamSize(memdev string) (uint64, error) {
 // Persistent tells whether a memdev has persistent memory capacity.
 func (k *Kernel) Persistent(memdev string) (bool, error) {
 	size, err := ReadUint(k.cxlDev(memdev, "pmem", "size"))
-	if os.IsNotExist(err) {
-		return false, nil
-	}
 	if err != nil {
 		return false, err
 	}
 	return size > 0, nil
 }
 
-var pciRootRe = regexp.MustCompile(`^(.*/pci([0-9a-f]{4}):([0-9a-f]{2}))/`)
+var pciRootRe = regexp.MustCompile(`^(.*/pci[0-9a-f]{4}:[0-9a-f]{2})/`)
 
 // HostBridgeUID returns the uid of the host bridge of a memdev, as root
-// decoders list it in target_list: N of the dportN of a CXL root port that
-// links to the PCI root of the memdev, else the ACPI _UID of the PCI root
-// (firmware_node/uid), else the bus number of the PCI root. The ACPI _UID
-// equals the bus number with qemu pxb-cxl (bus_nr) but not on real
-// hardware, where host bridge pci0000:63 can have the uid 35.
+// decoders list it in target_list: N of the dportN of the CXL root that
+// links to the PCI root of the memdev, an error of kind ErrNotFound if no
+// dport does. The uid is the ACPI _UID of the host bridge, which differs
+// from the bus number of its PCI root on real hardware.
 func (k *Kernel) HostBridgeUID(memdev string) (int, error) {
 	real, err := filepath.EvalSymlinks(k.cxlDev(memdev))
 	if err != nil {
@@ -292,18 +280,12 @@ func (k *Kernel) HostBridgeUID(memdev string) (int, error) {
 			return v, nil
 		}
 	}
-	if s, err := ReadTrim(filepath.Join(pciRoot, "firmware_node", "uid")); err == nil {
-		if v, err := strconv.Atoi(s); err == nil {
-			return v, nil
-		}
-	}
-	v, _ := strconv.ParseInt(m[3], 16, 32)
-	return int(v), nil
+	return 0, errorf(ErrNotFound, "no dport of the CXL root links to %s, the PCI root of %s", pciRoot, memdev)
 }
 
 // EnableMemdev binds cxl_mem to a memdev without a driver (cxl
-// enable-memdev). A memdev with a driver is left as it is. Its endpoint
-// port appears asynchronously (WaitMemdev).
+// enable-memdev): the endpoint port exists when it returns. A memdev with
+// a driver is left as it is.
 func (k *Kernel) EnableMemdev(ctx context.Context, memdev string) error {
 	if hasDriver(k.cxlDev(memdev)) {
 		return nil

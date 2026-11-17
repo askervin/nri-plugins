@@ -170,7 +170,7 @@ func (e *Engine) localRegion(ctx context.Context, req *GrantRequest, memdev stri
 		if err != nil || !fresh {
 			return region, whole, err
 		}
-		aliased, err := e.probeRegion(req, memdev, region, whole)
+		aliased, err := e.probeRegion(ctx, req, memdev, region, whole)
 		if err != nil || aliased == 0 {
 			return region, whole, err
 		}

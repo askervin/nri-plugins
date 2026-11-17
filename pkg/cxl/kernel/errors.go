@@ -20,7 +20,8 @@ import (
 	"io/fs"
 	"slices"
 	"strings"
-	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // The kinds of the errors of the operations. An error of an operation
@@ -36,25 +37,9 @@ var (
 	// ErrBusyOnline: memory blocks are online that the operation needs
 	// offline (kmem keeps online memory until a reboot).
 	ErrBusyOnline = errors.New("memory blocks online")
-	// ErrNotHollow: the region is not hollow.
-	ErrNotHollow = errors.New("region not hollow")
-	// ErrProbing: the nd region or a namespace has not finished probing.
-	ErrProbing = errors.New("still probing")
-	// ErrForeign: the object belongs to the platform or to someone else:
-	// a locked region, a mount of another source at a target.
-	ErrForeign = errors.New("foreign object")
 	// ErrNoRoom: the dax region, the root decoder or the port has no room
 	// for the object.
 	ErrNoRoom = errors.New("no room")
-	// ErrExists: the object that the operation would create exists already
-	// (an fsdax namespace).
-	ErrExists = errors.New("exists already")
-	// ErrEBUSY is the kernel's EBUSY anywhere in the chain of an error: an
-	// unmount of a mount in use, an offline of pinned memory, a resize of
-	// a bound dax device, a reconfigure to read-only with a file open for
-	// writing, a block device made read-only under a read-write
-	// superblock.
-	ErrEBUSY error = syscall.EBUSY
 )
 
 // kernelError is an error of a kind with the message of the operation.
@@ -139,5 +124,5 @@ func newErrDecoderHole(holes []DecoderHole, err error) error {
 
 // isGone tells whether err says that a device or a file does not exist.
 func isGone(err error) bool {
-	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENXIO) || errors.Is(err, syscall.ENODEV)
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, unix.ENXIO) || errors.Is(err, unix.ENODEV)
 }

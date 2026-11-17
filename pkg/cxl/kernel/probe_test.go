@@ -15,7 +15,6 @@
 package kernel_test
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -25,13 +24,12 @@ import (
 )
 
 // The private dax device nodes that a stopped zeroing or probe left under
-// DevRoot are removed, of this package and of older drivers; other
-// directories stay.
+// DevRoot are removed; other directories stay.
 func TestRemoveDaxNodeDirs(t *testing.T) {
 	dev := t.TempDir()
 	k := &kernel.Kernel{DevRoot: dev}
-	left := []string{".cxl-dax-1", ".cxl-local-zero-2", ".cxl-probe-3"}
-	for _, d := range append(slices.Clone(left), "dax0.0-dir", ".cxl-other") {
+	left := []string{".cxl-dax-1", ".cxl-dax-2"}
+	for _, d := range append(slices.Clone(left), "dax0.0-dir", ".cxl-other", ".cxl-probe-3") {
 		if err := os.MkdirAll(filepath.Join(dev, d, "sub"), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -55,15 +53,5 @@ func TestRemoveDaxNodeDirs(t *testing.T) {
 	}
 	if removed, err := k.RemoveDaxNodeDirs(); err != nil || len(removed) != 0 {
 		t.Fatalf("removed again %v, %v", removed, err)
-	}
-}
-
-// The error of a zeroing names the dax device once and has the error of
-// the writes.
-func TestZeroError(t *testing.T) {
-	cause := errors.New("no mmap")
-	err := error(&kernel.ZeroError{Dax: "dax0.1", Err: cause})
-	if err.Error() != "zeroing dax0.1: no mmap" || !errors.Is(err, cause) {
-		t.Fatalf("error %v", err)
 	}
 }

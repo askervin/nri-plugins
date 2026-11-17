@@ -21,12 +21,13 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
-// block_size_bytes is hex without 0x: "8000000" is 128 MiB (memctl
-// TestMemoryBlockSize).
+// block_size_bytes is hex without 0x: "8000000" is 128 MiB.
 func TestBlockSize(t *testing.T) {
 	f := fake.New(t)
 	k := f.Kernel()
@@ -55,8 +56,7 @@ func TestBlockSize(t *testing.T) {
 	}
 }
 
-// The ranges of memory and the blocks that lie wholly in them (memctl
-// TestRange).
+// The ranges of memory and the blocks that lie wholly in them.
 func TestRange(t *testing.T) {
 	r := kernel.Range{Start: 0x250000000, End: 0x257ffffff}
 	if r.Size() != bs || !r.Aligned(bs) || r.String() != "0x250000000-0x257ffffff" {
@@ -80,8 +80,7 @@ func TestRange(t *testing.T) {
 }
 
 // Onlining movable refuses a block online in another zone (auto-onlined
-// into ZONE_NORMAL, never removable); the NUMA node gets the memory (memctl
-// TestRegionNUMAOnlineRelease, TestBlocksNodeAndReleaseRegion).
+// into ZONE_NORMAL, never removable); the NUMA node gets the memory.
 func TestOnlineBlocks(t *testing.T) {
 	f, k := newNode(t)
 	createRegion(t, k, "mem0", kernel.RegionRAM, 0)
@@ -116,32 +115,30 @@ func TestOnlineBlocks(t *testing.T) {
 	}
 	// a block that cannot be offlined: EBUSY
 	f.FailWrite("devices/system/memory/memory74/state", syscall.EBUSY)
-	wantErr(t, k.OfflineBlocks(context.Background(), []int{74, 75}, 0, 0), kernel.ErrEBUSY, "memory74: offline")
+	wantErr(t, k.OfflineBlocks([]int{74, 75}), unix.EBUSY, "memory74: offline")
 }
 
 // A udev rule onlines the blocks that kmem adds, also after they were
-// offlined: OfflineBlocks offlines them again until they stay offline for
-// the settle time, and gives up at its timeout (memctl
-// TestRegionDaxReofflinesAutoOnlined).
-func TestOfflineBlocksSettle(t *testing.T) {
+// offlined: StayedOffline returns the block that came online, -1 when the
+// blocks stayed offline for the settle time, and the error of a context
+// that ends.
+func TestStayedOffline(t *testing.T) {
 	f, k := newNode(t)
 	f.AutoOnline = 2
 	createRegion(t, k, "mem0", kernel.RegionRAM, 0)
 	ctx := context.Background()
-	noErr(t, k.OfflineBlocks(ctx, []int{74, 75}, 50*time.Millisecond, 10*time.Second))
-	for _, b := range []int{74, 75} {
-		if st := f.BlockState(b); st != kernel.BlockStateOffline {
-			t.Fatalf("memory%d %q after the settle", b, st)
+	blocks := []int{74, 75}
+	for range 2 {
+		noErr(t, k.OfflineBlocks(blocks))
+		if b, err := k.StayedOffline(ctx, blocks, time.Second); err != nil || b < 0 {
+			t.Fatalf("block %d %v, expected one online again", b, err)
 		}
 	}
-	// a rule that never stops
-	f, k = newNode(t)
-	f.AutoOnline = 1000
-	createRegion(t, k, "mem0", kernel.RegionRAM, 0)
-	err := k.OfflineBlocks(ctx, []int{74, 75}, 20*time.Millisecond, 50*time.Millisecond)
-	wantErr(t, err, kernel.ErrBusyOnline, "keep coming online after offlining them")
-	// the context ends the settle
-	err = k.OfflineBlocks(ctxTimeout(t, 10*time.Millisecond), []int{74, 75}, time.Second, 10*time.Second)
+	noErr(t, k.OfflineBlocks(blocks))
+	if b, err := k.StayedOffline(ctx, blocks, 50*time.Millisecond); err != nil || b != -1 {
+		t.Fatalf("block %d %v, expected none", b, err)
+	}
+	_, err := k.StayedOffline(ctxTimeout(t, 10*time.Millisecond), blocks, time.Second)
 	wantErr(t, err, context.DeadlineExceeded, "")
 }
 

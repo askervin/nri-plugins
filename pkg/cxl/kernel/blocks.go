@@ -15,6 +15,7 @@
 package kernel
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
@@ -22,6 +23,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
 // MemoryBlock: a memory block memoryN (/sys/devices/system/memory).
@@ -39,7 +42,7 @@ import (
 // blocks is online.
 // Waits: the blocks of a kmem dax device appear asynchronously after the
 // driver link (WaitDaxBlocks); a udev rule may online hot-added blocks again
-// after they were offlined (OfflineBlocks with a settle time).
+// after they were offlined (StayedOffline).
 
 // Block state words of memoryN/state.
 const (
@@ -68,24 +71,17 @@ func (s BlockState) String() string { return stateText(blockStateNames, int(s)) 
 // MarshalText returns the name of the state.
 func (s BlockState) MarshalText() ([]byte, error) { return []byte(s.String()), nil }
 
-// UnmarshalText sets the state of its name.
-func (s *BlockState) UnmarshalText(text []byte) error {
-	v, err := parseState(blockStateNames, text)
-	*s = BlockState(v)
-	return err
-}
-
 // BlockTransitions are the changes of the state of a memory block.
-var BlockTransitions = Table[BlockState]{
+var BlockTransitions = fsm.Table[BlockState]{
 	Object:   "MemoryBlock",
 	Field:    "State",
 	Observed: true,
 	States:   list(BlockAbsent, BlockOffline, BlockOnline),
-	Rows: []Transition[BlockState]{
+	Rows: []fsm.Transition[BlockState]{
 		{From: list(BlockAbsent), To: BlockOffline, When: "kmem bound to the dax device of its memory (BindDax, or the kernel's default binding of a new ram region)",
 			Guard: "auto_online_blocks offline"},
 		{From: list(BlockAbsent), To: BlockOnline, When: "kmem bound, with auto_online_blocks or a udev rule onlining hot-added memory"},
-		{From: list(BlockOffline), To: BlockOnline, When: "OnlineBlocks, or a udev rule (OfflineBlocks offlines it again within its settle time)",
+		{From: list(BlockOffline), To: BlockOnline, When: "OnlineBlocks, or a udev rule (StayedOffline tells it within its settle time)",
 			Guard: "online_movable: not online in another zone"},
 		{From: list(BlockOnline), To: BlockOffline, When: "OfflineBlocks",
 			Guard: "its pages can be moved (EBUSY otherwise)"},
@@ -110,6 +106,11 @@ type MemoryBlock struct {
 type Range struct {
 	Start uint64 `json:"start"`
 	End   uint64 `json:"end"`
+}
+
+// compareStart orders ranges by their start.
+func compareStart(a, b Range) int {
+	return cmp.Compare(a.Start, b.Start)
 }
 
 // Size returns the number of bytes in the range.
@@ -305,46 +306,34 @@ func (k *Kernel) OnlineBlocks(blocks []int, movable bool) error {
 	return k.setBlocksState(blocks, state)
 }
 
-// OfflineBlocks offlines memory blocks. With settle > 0 it then waits until
-// all of them have stayed offline for settle: a udev rule (for instance
-// 40-redhat.rules of RHEL and its derivatives) may online hot-added blocks
-// after they were offlined, whatever auto_online_blocks says. Blocks that
-// come online are offlined again until timeout (ErrBusyOnline then). A
-// block whose memory the kernel cannot move fails with EBUSY (ErrEBUSY).
-func (k *Kernel) OfflineBlocks(ctx context.Context, blocks []int, settle, timeout time.Duration) error {
-	if settle <= 0 {
-		return k.setBlocksState(blocks, BlockStateOffline)
-	}
-	deadline := time.Now().Add(timeout)
-	for {
-		if err := k.setBlocksState(blocks, BlockStateOffline); err != nil {
-			return err
-		}
-		stable := time.Now().Add(settle)
-		onlined := false
-		for !onlined && time.Now().Before(stable) {
-			if err := sleep(ctx, k.pollInterval()); err != nil {
-				return err
-			}
-			if online := k.onlineBlocks(blocks); len(online) > 0 {
-				st, _ := ReadTrim(k.block(online[0], "state"))
-				k.logf("memory%d: %s again after offlining it (auto-onlined by udev?)", online[0], st)
-				onlined = true
-			}
-		}
-		if !onlined {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return errorf(ErrBusyOnline, "memory blocks %v keep coming online after offlining them: is a udev rule onlining hot-added memory?", blocks)
-		}
-	}
+// OfflineBlocks offlines memory blocks, skipping blocks that are offline
+// already. A block whose memory the kernel cannot move fails with EBUSY.
+func (k *Kernel) OfflineBlocks(blocks []int) error {
+	return k.setBlocksState(blocks, BlockStateOffline)
 }
 
-// NumaNode: a NUMA node nodeN (/sys/devices/system/node). Nodes exist from
-// boot (one per CFMWS window for CXL memory); the driver never creates
-// one. States: has memory or not (has_memory); MemTotal is the sum of its
-// online memory.
+// StayedOffline waits until memory blocks have stayed offline for settle
+// and returns -1, or returns a block that came online before: a udev rule
+// (for instance 40-redhat.rules of RHEL and its derivatives) may online
+// hot-added blocks after they were offlined, whatever auto_online_blocks
+// says.
+func (k *Kernel) StayedOffline(ctx context.Context, blocks []int, settle time.Duration) (int, error) {
+	stable := time.Now().Add(settle)
+	for time.Now().Before(stable) {
+		if err := sleep(ctx, k.pollInterval()); err != nil {
+			return -1, err
+		}
+		if online := k.onlineBlocks(blocks); len(online) > 0 {
+			return online[0], nil
+		}
+	}
+	return -1, nil
+}
+
+// NumaNode: a NUMA node nodeN (/sys/devices/system/node). The NUMA node of
+// a CFMWS window is fixed at boot; its nodeN directory exists while it has
+// memory blocks. States: has memory or not (has_memory); MemTotal is the
+// sum of its online memory.
 
 // NumaNode is the observation of a NUMA node.
 type NumaNode struct {

@@ -21,7 +21,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -90,17 +89,17 @@ var errOtherNode = errors.New("not the char device")
 // nodeNotYet tells whether an open failed because the device node is not
 // there yet: ENOENT or ENXIO.
 func nodeNotYet(err error) bool {
-	return errors.Is(err, syscall.ENXIO) || errors.Is(err, syscall.ENOENT)
+	return errors.Is(err, unix.ENXIO) || errors.Is(err, unix.ENOENT)
 }
 
 // openDeviceNode opens the device node path, which must be the char device
 // major:minor when check is set.
 func openDeviceNode(path string, readOnly bool, major, minor int, check bool) (*os.File, error) {
 	if check {
-		var st syscall.Stat_t
-		if err := syscall.Stat(path, &st); err == nil {
+		var st unix.Stat_t
+		if err := unix.Stat(path, &st); err == nil {
 			rdev := uint64(st.Rdev)
-			if st.Mode&syscall.S_IFMT != syscall.S_IFCHR || int(unix.Major(rdev)) != major || int(unix.Minor(rdev)) != minor {
+			if st.Mode&unix.S_IFMT != unix.S_IFCHR || int(unix.Major(rdev)) != major || int(unix.Minor(rdev)) != minor {
 				return nil, fmt.Errorf("%s is %w %d:%d yet", path, errOtherNode, major, minor)
 			}
 		}

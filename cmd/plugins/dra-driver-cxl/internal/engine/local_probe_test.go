@@ -296,7 +296,7 @@ func TestLocalUsableSize(t *testing.T) {
 func TestLocalRemoveDaxNodeDirs(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
 	var dirs []string
-	for _, name := range []string{".cxl-dax-123", ".cxl-local-zero-4", ".cxl-probe-5"} {
+	for _, name := range []string{".cxl-dax-123", ".cxl-dax-4"} {
 		dir := filepath.Join(v.f.DevRoot(), name)
 		if err := os.MkdirAll(filepath.Join(dir, "dax0.0"), 0o755); err != nil {
 			t.Fatal(err)

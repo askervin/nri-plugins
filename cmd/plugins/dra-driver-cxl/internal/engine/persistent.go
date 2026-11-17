@@ -191,14 +191,6 @@ func blockDeviceOf(uses []use) string {
 	return ""
 }
 
-// roWord returns "read-only" or "read-write".
-func roWord(readOnly bool) string {
-	if readOnly {
-		return "read-only"
-	}
-	return "read-write"
-}
-
 // devRoot returns the directory of the device nodes.
 func (e *Engine) devRoot() string {
 	if e.k.DevRoot != "" {
@@ -884,7 +876,7 @@ func (e *Engine) setReadOnly(source state.Source, serial state.Serial, dev strin
 		return fmt.Errorf("device %s: %w", s, err)
 	}
 	if changed {
-		e.logf(source, "device %s: %s %s", s, dev, roWord(readOnly))
+		e.logf(source, "device %s: %s %s", s, dev, kernel.RoWord(readOnly))
 	}
 	return nil
 }
@@ -1280,7 +1272,7 @@ func (e *Engine) verifyBind(u *use, target string, node *kernel.MountInfo) error
 	s := serialText(u.serial)
 	mi, err := e.k.Mounted(target)
 	if err == nil && (mi == nil || !isLeaseBind(mi, node, u.readOnly)) {
-		err = fmt.Errorf("device %s: the bind of %s at %s is not a %s nosuid nodev %s mount", s, u.nodeMount, target, roWord(u.readOnly), node.FsType)
+		err = fmt.Errorf("device %s: the bind of %s at %s is not a %s nosuid nodev %s mount", s, u.nodeMount, target, kernel.RoWord(u.readOnly), node.FsType)
 	}
 	if err == nil {
 		return nil

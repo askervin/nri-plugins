@@ -37,9 +37,17 @@
 //     namespaces from the labels of the memdev, which outlive the region;
 //   - one superblock per block device, mounts in several mount namespaces,
 //     autoclear loop devices, the read-only flag of block devices, and the
-//     violations of the rules of persistent devices (Violations);
+//     violations of the rules of persistent devices and of the deletion of
+//     regions (Violations);
 //   - a reboot: a new boot id, no region, dax device, memory block, mount
 //     or loop device of the old boot, new device numbers, labels kept.
+//
+// It does not model the locks of the dax bus (nothing blocks), the
+// alignment of kmem to memory blocks beyond whole blocks, the endpoint
+// decoder order check of cxl destroy-region, the region ids cached per
+// root decoder (every decoder offers the lowest free id), or NUMA node
+// directories that come and go with memory (those of the windows always
+// exist).
 //
 // Its hooks are those of the tests of the driver: a command or a sysfs
 // write that fails (FailCommand, FailWrite), a function that runs before
@@ -53,24 +61,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
-
-// TB is the part of testing.TB that the fake uses.
-type TB interface {
-	Helper()
-	Fatal(args ...any)
-	Fatalf(format string, args ...any)
-	Errorf(format string, args ...any)
-	Logf(format string, args ...any)
-	TempDir() string
-	Cleanup(func())
-}
 
 // ErrCut is the panic of a process stop (CutBefore, CutAfter, CutMount,
 // CutProbe): the test recovers it and starts the code again on the same
@@ -80,7 +77,7 @@ var ErrCut = errors.New("killed")
 // Fake is the fake kernel of a node. Its fields configure the kernel's
 // behaviour; set them before the code under test runs.
 type Fake struct {
-	tb   TB
+	tb   testing.TB
 	root string
 	tmp  string
 
@@ -132,7 +129,7 @@ type Fake struct {
 // New returns a fake kernel with an empty node: memory blocks of 128 MiB,
 // NUMA nodes 0 and 1 of DRAM, and the CXL root with two host bridges (uids
 // 12 and 24) and their windows (see Window).
-func New(tb TB) *Fake {
+func New(tb testing.TB) *Fake {
 	f := &Fake{
 		tb:         tb,
 		root:       tb.TempDir(),
@@ -560,4 +557,3 @@ func (f *Fake) writeProc(rel, val string) {
 }
 
 // itoa is strconv.Itoa.
-func itoa(i int) string { return strconv.Itoa(i) }

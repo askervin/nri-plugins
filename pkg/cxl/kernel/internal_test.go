@@ -17,11 +17,9 @@ package kernel
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
-	"syscall"
 	"testing"
 	"time"
 	"unsafe"
@@ -57,8 +55,7 @@ func aliasedMapping(t *testing.T, size, n int) []byte {
 	return all
 }
 
-// The address line probe on plain memory and on memory that aliases
-// (memctl TestProbeAliasing).
+// The address line probe on plain memory and on memory that aliases.
 func TestProbeMemory(t *testing.T) {
 	if !cacheFlushSupported {
 		t.Skip(ErrProbeUnsupported)
@@ -89,8 +86,7 @@ func TestProbeMemory(t *testing.T) {
 }
 
 // The character device of a dax device is opened again while it is not
-// there yet (ENXIO), other errors are returned at once (memctl
-// TestOpenDaxNode).
+// there yet (ENXIO), other errors are returned at once.
 func TestOpenDaxNode(t *testing.T) {
 	node := filepath.Join(t.TempDir(), "dax0.0")
 	if err := os.WriteFile(node, nil, 0o600); err != nil {
@@ -136,15 +132,17 @@ func TestOpenDaxNode(t *testing.T) {
 	}
 }
 
-// Zeroing writes zeros through windows that are multiples of the align
-// (the driver's TestZeroFile).
+// Zeroing writes zeros through windows that are multiples of the align.
 func TestZeroFile(t *testing.T) {
 	f, err := os.Create(filepath.Join(t.TempDir(), "dax"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = f.Close() }()
-	size := uint64(3*zeroChunk + 4096)
+	oldChunk := zeroChunk
+	t.Cleanup(func() { zeroChunk = oldChunk })
+	zeroChunk = 1 << 20
+	size := 3*zeroChunk + 4096
 	data := make([]byte, size)
 	for i := range data {
 		data[i] = 0xa5
@@ -186,12 +184,6 @@ func TestUnescapeMountInfo(t *testing.T) {
 }
 
 func TestDevNumbers(t *testing.T) {
-	for _, n := range [][2]uint32{{259, 1}, {7, 300}, {4095, 1 << 19}, {5000, 3}} {
-		dev := unix.Mkdev(n[0], n[1])
-		if devMajor(dev) != n[0] || devMinor(dev) != n[1] {
-			t.Errorf("%d:%d: %d:%d", n[0], n[1], devMajor(dev), devMinor(dev))
-		}
-	}
 	if _, _, err := parseDevNumbers("x", "259"); err == nil {
 		t.Error("numbers without a colon accepted")
 	}
@@ -216,7 +208,7 @@ func (s *loopSys) LoopRdevice(loop string) (uint64, error) {
 
 // The backing of a loop device set up in another mount namespace: by its
 // device number, else the path that sysfs shows, which is taken as a path
-// under /dev (the driver's TestSysMounterLoopBackingAfterRestart).
+// under /dev.
 func TestLoopBackingFile(t *testing.T) {
 	root := t.TempDir()
 	write := func(rel, val string) {
@@ -264,7 +256,7 @@ func TestLoopBackingFile(t *testing.T) {
 // The holders of a block device: a loop device over it, not those over files
 // named like it; the exclusive open of the system says nothing holds a
 // device that is gone or a plain file; the backing of a loop device whose
-// ioctl fails is the path in sysfs (the driver's TestSysMounterHolder).
+// ioctl fails is the path in sysfs.
 func TestHolderLoops(t *testing.T) {
 	root := t.TempDir()
 	devRoot := filepath.Join(root, "dev")
@@ -313,8 +305,7 @@ func TestHolderLoops(t *testing.T) {
 // The superblocks of a block device and of the loop devices over it are
 // read from the mountinfo of one process per mount namespace: a loop over
 // another file is not one, a second process of a namespace already read is
-// not read, a superblock only in another namespace is one (the driver's
-// TestSysMounterSuperblocks).
+// not read, a superblock only in another namespace is one.
 func TestSuperblocksNamespaces(t *testing.T) {
 	root := t.TempDir()
 	sys, proc := filepath.Join(root, "sys"), filepath.Join(root, "proc")
@@ -362,21 +353,5 @@ func TestSuperblocksNamespaces(t *testing.T) {
 	}
 	if _, err := k.Superblocks("/dev/pmem9"); err == nil {
 		t.Fatal("no error for a device without a number")
-	}
-}
-
-// An error of an operation has its kind and its cause, and the message of
-// the operation.
-func TestKernelError(t *testing.T) {
-	err := errorf(ErrNoRoom, "dax0.1: set size %d: %w", 4096, syscall.ENOSPC)
-	if !errors.Is(err, ErrNoRoom) || !errors.Is(err, syscall.ENOSPC) || errors.Is(err, ErrBusyOnline) ||
-		err.Error() != "dax0.1: set size 4096: no space left on device" {
-		t.Fatalf("error %q", err)
-	}
-	if !isGone(fmt.Errorf("x: %w", os.ErrNotExist)) || !isGone(syscall.ENXIO) || isGone(syscall.EBUSY) {
-		t.Fatal("isGone")
-	}
-	if newErrDecoderHole(nil, err) != nil {
-		t.Fatal("a hole without holes")
 	}
 }

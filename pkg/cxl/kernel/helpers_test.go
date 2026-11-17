@@ -16,6 +16,7 @@ package kernel_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -67,7 +68,7 @@ func wantErr(t *testing.T, err, kind error, want string) {
 	switch {
 	case err == nil:
 		t.Fatalf("expected an error with %q, got none", want)
-	case kind != nil && !errorsIs(err, kind):
+	case kind != nil && !errors.Is(err, kind):
 		t.Fatalf("error %q is not of kind %v", err, kind)
 	case !strings.Contains(err.Error(), want):
 		t.Fatalf("error %q does not have %q", err, want)

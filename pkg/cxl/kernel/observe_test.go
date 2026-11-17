@@ -80,8 +80,8 @@ func TestObserve(t *testing.T) {
 	if len(s.Errors) != 0 {
 		t.Fatalf("errors %v", s.Errors)
 	}
-	if s.BootID != f.BootID() || s.BlockSize != bs {
-		t.Fatalf("boot %q block size %d", s.BootID, s.BlockSize)
+	if s.BlockSize != bs {
+		t.Fatalf("block size %d", s.BlockSize)
 	}
 	for serial, want := range map[uint64]kernel.MemdevState{serial0: kernel.MemdevReady, serial1: kernel.MemdevReady,
 		serial2: kernel.MemdevUnbound, 0x99: kernel.MemdevAbsent} {
@@ -121,8 +121,8 @@ func TestObserve(t *testing.T) {
 			}
 		}
 	}
-	if ds := s.DaxDevicesOf("region0"); len(ds) != 2 || len(s.DaxRegions) != 1 || s.DaxRegions[0].Available != gib-2*bs {
-		t.Errorf("dax devices %+v, regions %+v", ds, s.DaxRegions)
+	if ds := s.DaxDevicesOf("region0"); len(ds) != 2 {
+		t.Errorf("dax devices %+v", ds)
 	}
 	if b := s.Block(74); b.State != kernel.BlockOnline || b.NumaNode != 2 || b.Zones != "Movable" {
 		t.Errorf("memory74 %+v", b)
@@ -136,28 +136,16 @@ func TestObserve(t *testing.T) {
 	if n, ok := s.NumaNode(2); !ok || !n.HasMemory || n.MemTotal != bs {
 		t.Errorf("node 2 %+v", n)
 	}
-	if p, ok := s.Port("port2"); !ok || p.Committed != 1 || p.Decoders[0].Region != "region1" {
-		t.Errorf("port2 %+v", p)
-	}
-	if _, ok := s.Port("port9"); ok {
-		t.Error("port9 found")
-	}
-	nd := s.NdRegionOf("region1")
-	if nd.State != kernel.NdSettled || len(nd.Namespaces) != 1 || nd.Namespaces[0].State != kernel.NsFsdax {
-		t.Errorf("nd region %+v", nd)
-	}
-	if nd := s.NdRegionOf("region0"); nd.State != kernel.NdAbsent {
-		t.Errorf("nd region of a ram region %+v", nd)
+	if len(s.Pmem) != 1 || s.Pmem[0].Region != "region1" || s.Pmem[0].State != kernel.NdSettled || len(s.Pmem[0].Namespaces) != 1 ||
+		s.Pmem[0].Namespaces[0].State != kernel.NsFsdax {
+		t.Errorf("nd regions %+v", s.Pmem)
 	}
 	if d, ok := s.BlockDevice(dev); !ok || d.Namespace != "namespace1.0" || d.Major != 259 || d.ReadOnly {
 		t.Errorf("block device %+v", d)
 	}
 	loop := f.DevRoot() + "/loop0"
-	if d, ok := s.BlockDevice(loop); !ok || d.Backing != dev || !d.ReadOnly || len(s.Loops) != 1 {
-		t.Errorf("loop device %+v, loops %+v", d, s.Loops)
-	}
-	if sbs := s.SuperblocksOf(dev); len(sbs) != 2 || sbs[0].ReadOnly || !sbs[1].ReadOnly || sbs[1].Device != loop {
-		t.Errorf("superblocks %+v", sbs)
+	if d, ok := s.BlockDevice(loop); !ok || d.Backing != dev || !d.ReadOnly {
+		t.Errorf("loop device %+v", d)
 	}
 	if len(s.Mounts) != 2 {
 		t.Errorf("mounts %+v", s.Mounts)
@@ -243,11 +231,11 @@ func TestProbeAndZero(t *testing.T) {
 	noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 256*mib))
 	noErr(t, k.BindDax(ctx, "dax0.0", kernel.DriverDeviceDax))
 	f.Aliasing = &kernel.Aliasing{Offset: 64 * mib, Garbage: -1}
-	a, err := k.ProbeAliasing("dax0.0")
+	a, err := k.ProbeAliasing(ctx, "dax0.0")
 	if err != nil || a.Offset != 64*mib {
 		t.Fatalf("probe %s %v", a, err)
 	}
-	if a, err := k.ProbeAliasing("dax0.0"); err != nil || a.Offset != 0 || a.String() != "no aliasing" {
+	if a, err := k.ProbeAliasing(ctx, "dax0.0"); err != nil || a.Offset != 0 || a.String() != "no aliasing" {
 		t.Fatalf("second probe %s %v", a, err)
 	}
 	noErr(t, k.Zero(ctx, "dax0.0"))
@@ -260,7 +248,7 @@ func TestProbeAndZero(t *testing.T) {
 	d, err := k.CreateDaxDevice(ctx, "region0", 2*mib)
 	noErr(t, err)
 	noErr(t, k.ResizeDaxDevice(ctx, d, 0))
-	if a, err := k.ProbeAliasing(d); err != nil || a.Offset != 0 || len(f.Probed()) != 2 {
+	if a, err := k.ProbeAliasing(ctx, d); err != nil || a.Offset != 0 || len(f.Probed()) != 2 {
 		t.Fatalf("probe of an empty device %s %v", a, err)
 	}
 	f.ZeroErr = syscall.EIO
@@ -273,9 +261,9 @@ func TestProbeAndZero(t *testing.T) {
 				t.Fatalf("recovered %v", r)
 			}
 		}()
-		_, _ = k.ProbeAliasing("dax0.0")
+		_, _ = k.ProbeAliasing(ctx, "dax0.0")
 	}()
-	if _, err := k.ProbeAliasing("dax9.9"); err == nil {
+	if _, err := k.ProbeAliasing(ctx, "dax9.9"); err == nil {
 		t.Fatal("probe of a missing device")
 	}
 }
@@ -304,7 +292,7 @@ func TestObserveTopology(t *testing.T) {
 	k.DevRoot = filepath.Join(t.TempDir(), "none")
 	s, err := k.ObserveTopology(context.Background())
 	noErr(t, err)
-	if len(s.Errors) != 0 || s.BootID != "" || len(s.Ports)+len(s.DaxRegions)+len(s.Pmem)+len(s.Devices)+len(s.Loops)+len(s.Mounts)+len(s.Supers) != 0 {
+	if len(s.Errors) != 0 || len(s.Pmem)+len(s.Devices)+len(s.Mounts) != 0 {
 		t.Fatalf("topology %+v", s)
 	}
 	for what, eq := range map[string]bool{
@@ -324,19 +312,17 @@ func TestObserveTopology(t *testing.T) {
 }
 
 // The topology is an error where a fact cannot be read that the full
-// observation tolerates: a serial that is not 0x<hex> (the "0" of a memdev
-// without a serial number), a memdev without its NUMA node or capacity, a
+// observation tolerates: a memdev without its NUMA node or capacity, a
 // region without its mode, a NUMA node without its meminfo, the memory
-// block size on a node with a region, the CXL bus.
+// block size on a node with a region.
 func TestObserveTopologyFacts(t *testing.T) {
 	ctx := context.Background()
 	for name, change := range map[string]func(f *fake.Fake){
-		"serial without 0x": func(f *fake.Fake) { f.Write("bus/cxl/devices/mem0/serial", "c1f00001") },
-		"numa_node":         func(f *fake.Fake) { f.Remove("bus/cxl/devices/mem0/numa_node") },
-		"ram size":          func(f *fake.Fake) { f.Write("bus/cxl/devices/mem0/ram/size", "bogus") },
-		"mode":              func(f *fake.Fake) { f.Remove("bus/cxl/devices/region0/mode") },
-		"meminfo":           func(f *fake.Fake) { f.Remove("devices/system/node/node1/meminfo") },
-		"block size":        func(f *fake.Fake) { f.Remove("devices/system/memory/block_size_bytes") },
+		"numa_node":  func(f *fake.Fake) { f.Remove("bus/cxl/devices/mem0/numa_node") },
+		"ram size":   func(f *fake.Fake) { f.Write("bus/cxl/devices/mem0/ram/size", "bogus") },
+		"mode":       func(f *fake.Fake) { f.Remove("bus/cxl/devices/region0/mode") },
+		"meminfo":    func(f *fake.Fake) { f.Remove("devices/system/node/node1/meminfo") },
+		"block size": func(f *fake.Fake) { f.Remove("devices/system/memory/block_size_bytes") },
 	} {
 		f, k := newNode(t)
 		createRegion(t, k, "mem0", kernel.RegionRAM, 0)

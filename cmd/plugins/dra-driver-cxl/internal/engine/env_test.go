@@ -16,7 +16,6 @@ package engine
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -526,26 +525,10 @@ func (v *env) formatPmem(memdev string, typ string) {
 	if err != nil {
 		v.t.Fatal(err)
 	}
-	v.f.SetImage(ns.BlockDevice, fsImage(typ))
+	v.f.SetImage(ns.BlockDevice, fake.FsImage(typ))
 	if err := k.ReleaseRegion(ctx, region); err != nil {
 		v.t.Fatal(err)
 	}
-}
-
-// fsImage returns the head of a block device with the signature of a
-// filesystem type.
-func fsImage(typ string) []byte {
-	img := make([]byte, kernel.FsProbeBytes)
-	switch typ {
-	case "erofs":
-		binary.LittleEndian.PutUint32(img[1024:], 0xE0F5E1E2)
-	case "ext4":
-		binary.LittleEndian.PutUint16(img[1080:], 0xEF53)
-		binary.LittleEndian.PutUint32(img[1024+0x60:], 0x2)
-	case "xfs":
-		copy(img, "XFSB")
-	}
-	return img
 }
 
 // errBusy is the error of a busy device.

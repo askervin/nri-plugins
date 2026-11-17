@@ -19,6 +19,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 // LoopDevice: a loop device /dev/loopN over a block device, the device of a
@@ -32,8 +34,9 @@ import (
 // for "/dev/pmem1" after a restart of the driver container).
 // States: CONFIGURED (held by the fd of AttachLoop), MOUNTED (the fd closed,
 // held by its mount), CLEARED (the kernel clears an autoclear loop device at
-// its last close; ClearLoop clears it before a mount). The loop driver does
-// not hold its backing exclusively: Holder lists loop devices by backing.
+// its last close; Loop.Release with detach clears it before a mount). The
+// loop driver does not hold its backing exclusively: Holder lists loop
+// devices by backing.
 // Waits: none; AttachLoop retries LOOP_CONFIGURE when another process took
 // the free device first.
 
@@ -109,7 +112,7 @@ func (k *Kernel) loopBackingDevice(loop string) (string, error) {
 	if rdev == 0 {
 		return "", nil
 	}
-	major, minor := devMajor(rdev), devMinor(rdev)
+	major, minor := unix.Major(rdev), unix.Minor(rdev)
 	uevent := filepath.Join(k.sysRoot(), "dev", "block", fmt.Sprintf("%d:%d", major, minor), "uevent")
 	data, err := os.ReadFile(uevent)
 	if err != nil {
@@ -121,15 +124,6 @@ func (k *Kernel) loopBackingDevice(loop string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no DEVNAME in %s", uevent)
-}
-
-// devMajor and devMinor split a Linux device number.
-func devMajor(dev uint64) uint32 {
-	return uint32((dev&0x00000000000fff00)>>8) | uint32((dev&0xfffff00000000000)>>32)
-}
-
-func devMinor(dev uint64) uint32 {
-	return uint32((dev&0x00000000000000ff)>>0) | uint32((dev&0x00000ffffff00000)>>12)
 }
 
 // DevPath returns the path of the backing file of a loop device as a path
@@ -153,10 +147,4 @@ func SameDevice(backing, dev string) bool {
 // or block device backing (see Sys.AttachLoop).
 func (k *Kernel) AttachLoop(backing string, writable bool) (Loop, error) {
 	return k.sys().AttachLoop(backing, writable)
-}
-
-// ClearLoop clears the backing of a loop device that is not mounted and
-// closes it.
-func (k *Kernel) ClearLoop(loop Loop) error {
-	return loop.Release(true)
 }

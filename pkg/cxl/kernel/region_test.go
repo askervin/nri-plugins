@@ -24,6 +24,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
@@ -128,8 +130,7 @@ func TestCreateRegionSizes(t *testing.T) {
 
 // A region is ENABLED with a dax region and daxN.0 bound to kmem after its
 // creation, DISABLED after cxl disable-region (its dax devices gone, its
-// decoders committed), ENABLED again by EnableRegion (memctl
-// TestEnableRegion).
+// decoders committed), ENABLED again by EnableRegion.
 func TestRegionEnableDisable(t *testing.T) {
 	f, k := newNode(t)
 	ctx := context.Background()
@@ -179,9 +180,7 @@ func TestRegionEnableDisable(t *testing.T) {
 
 // Releasing a region offlines its memory, disables and destroys it; a
 // region whose memory is online after it is disabled (the kernel could not
-// remove it) is never destroyed, its memory would read garbage (memctl
-// TestRegionNUMAOnlineRelease, TestBlocksNodeAndReleaseRegion,
-// TestReleaseRegionOnlineWithoutKmem).
+// remove it) is never destroyed, its memory would read garbage.
 func TestReleaseRegion(t *testing.T) {
 	f, k := newNode(t)
 	ctx := context.Background()
@@ -231,7 +230,7 @@ func TestReleaseRegion(t *testing.T) {
 	noErr(t, k.OnlineBlocks([]int{74, 75}, true))
 	f.FailWrite("devices/system/memory/memory74/state", syscall.EBUSY)
 	err = k.ReleaseRegion(ctx, r)
-	wantErr(t, err, kernel.ErrEBUSY, "region0: cannot offline memory (in use?): memory74: offline")
+	wantErr(t, err, unix.EBUSY, "region0: cannot offline memory (in use?): memory74: offline")
 }
 
 // A memory block whose state cannot be read after disable-region counts as
@@ -268,11 +267,10 @@ func TestLockedRegion(t *testing.T) {
 		t.Fatal("region not locked")
 	}
 	before := f.Commands()
-	wantErr(t, k.ReleaseRegion(ctx, r), kernel.ErrForeign, "region0 is locked")
-	if _, err := k.ReleaseRegionInOrder(ctx, "mem0", r); !errors.Is(err, kernel.ErrForeign) {
-		t.Fatalf("in order: %v", err)
-	}
-	wantErr(t, k.DestroyRegion(ctx, r), kernel.ErrForeign, "locked")
+	wantErr(t, k.ReleaseRegion(ctx, r), nil, "region0 is locked")
+	_, err := k.ReleaseRegionInOrder(ctx, "mem0", r)
+	wantErr(t, err, nil, "region0 is locked")
+	wantErr(t, k.DestroyRegion(ctx, r), nil, "locked")
 	if f.Commands() != before {
 		t.Fatalf("commands on a locked region:\n%s", f.CommandsSince(before))
 	}
@@ -286,7 +284,7 @@ func TestDeleteHollowRegion(t *testing.T) {
 	ctx := context.Background()
 	r := createRegion(t, k, "mem0", kernel.RegionRAM, 0)
 	noErr(t, k.OnlineBlocks([]int{75}, true))
-	wantErr(t, k.DeleteHollowRegion(r), kernel.ErrNotHollow, "region0 is not hollow: it is committed or has a target decoder")
+	wantErr(t, k.DeleteHollowRegion(r), nil, "region0 is not hollow: it is committed or has a target decoder")
 	f.Unplug(serial0)
 	if !k.HollowRegion(r) || k.HollowRegion("region9") {
 		t.Fatalf("hollow: %s %v, region9 %v", r, k.HollowRegion(r), k.HollowRegion("region9"))
@@ -334,7 +332,7 @@ func TestDeleteHollowRegion(t *testing.T) {
 }
 
 // A region that does not start at a block boundary has only the blocks
-// that lie wholly in it (memctl TestRegionBlocksMisaligned).
+// that lie wholly in it.
 func TestRegionBlocksMisaligned(t *testing.T) {
 	f, k := newNode(t)
 	r := createRegion(t, k, "mem0", kernel.RegionRAM, 0)

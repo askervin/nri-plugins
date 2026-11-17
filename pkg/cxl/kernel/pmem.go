@@ -21,9 +21,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
 // NdRegion, Namespace and BlockDevice: the persistent memory chain of an
@@ -80,20 +82,13 @@ func (s NdRegionState) String() string { return stateText(ndRegionStateNames, in
 // MarshalText returns the name of the state.
 func (s NdRegionState) MarshalText() ([]byte, error) { return []byte(s.String()), nil }
 
-// UnmarshalText sets the state of its name.
-func (s *NdRegionState) UnmarshalText(text []byte) error {
-	v, err := parseState(ndRegionStateNames, text)
-	*s = NdRegionState(v)
-	return err
-}
-
 // NdRegionTransitions are the changes of the state of an nd region.
-var NdRegionTransitions = Table[NdRegionState]{
+var NdRegionTransitions = fsm.Table[NdRegionState]{
 	Object:   "NdRegion",
 	Field:    "State",
 	Observed: true,
 	States:   list(NdAbsent, NdProbing, NdSettled),
-	Rows: []Transition[NdRegionState]{
+	Rows: []fsm.Transition[NdRegionState]{
 		{From: list(NdAbsent), To: NdProbing, When: "CreateRegion (pmem), EnableRegion", Effects: "the namespaces of the labels are registered"},
 		{From: list(NdProbing), To: NdSettled, When: "the probe of the region and of its namespaces finished"},
 		{From: list(NdAbsent), To: NdSettled, When: "CreateRegion (pmem), observed after the probe finished"},
@@ -131,20 +126,13 @@ func (s NamespaceState) String() string { return stateText(namespaceStateNames, 
 // MarshalText returns the name of the state.
 func (s NamespaceState) MarshalText() ([]byte, error) { return []byte(s.String()), nil }
 
-// UnmarshalText sets the state of its name.
-func (s *NamespaceState) UnmarshalText(text []byte) error {
-	v, err := parseState(namespaceStateNames, text)
-	*s = NamespaceState(v)
-	return err
-}
-
 // NamespaceTransitions are the changes of the state of a namespace.
-var NamespaceTransitions = Table[NamespaceState]{
+var NamespaceTransitions = fsm.Table[NamespaceState]{
 	Object:   "Namespace",
 	Field:    "State",
 	Observed: true,
 	States:   list(NsAbsent, NsProbing, NsSeed, NsRaw, NsFsdax, NsSector, NsDevdax),
-	Rows: []Transition[NamespaceState]{
+	Rows: []fsm.Transition[NamespaceState]{
 		{From: list(NsAbsent), To: NsProbing, When: "the probe of the nd region registers it (from the labels, or the seed)"},
 		{From: list(NsProbing), To: NsSeed, When: "its probe finished without labels"},
 		{From: list(NsProbing), To: NsRaw, When: "its probe finished without a holder"},
@@ -250,7 +238,7 @@ func (k *Kernel) WaitNdRegion(ctx context.Context, region string) (string, error
 // directory, "" if it has none.
 func blockDeviceOf(dir string) string {
 	m, _ := filepath.Glob(filepath.Join(dir, "block", "*"))
-	sort.Strings(m)
+	slices.Sort(m)
 	if len(m) == 0 {
 		return ""
 	}
@@ -466,7 +454,7 @@ func (k *Kernel) ProbeNamespaces(ndregion string) ([]Namespace, string, error) {
 
 // Namespaces returns the namespaces with memory of an nd region, after
 // waiting until the region and its namespaces have finished probing (an
-// error of kind ErrProbing when the context ends first).
+// error when the context ends first).
 func (k *Kernel) Namespaces(ctx context.Context, ndregion string) ([]Namespace, error) {
 	var out []Namespace
 	var why string
@@ -476,7 +464,7 @@ func (k *Kernel) Namespaces(ctx context.Context, ndregion string) ([]Namespace, 
 		return why == "", err
 	})
 	if err != nil && ctx.Err() != nil {
-		return nil, errorf(ErrProbing, "%s: namespaces still probing (%s): %w", ndregion, why, err)
+		return nil, fmt.Errorf("%s: namespaces still probing (%s): %w", ndregion, why, err)
 	}
 	return out, err
 }
@@ -500,19 +488,19 @@ func (k *Kernel) CreateFsdaxNamespace(ctx context.Context, ndregion, existing st
 // one), and returns the name of the namespace; its block device appears
 // asynchronously (WaitFsdaxNamespace). This writes the labels of the
 // region, and destroys what the reconfigured namespace had: it is refused
-// unless the region has finished probing (ErrProbing) and has no fsdax
-// namespace (ErrExists), which a writer may have formatted.
+// unless the region has finished probing and has no fsdax namespace, which
+// a writer may have formatted.
 func (k *Kernel) StartFsdaxNamespace(ctx context.Context, ndregion, existing string) (string, error) {
 	nss, why, err := k.ProbeNamespaces(ndregion)
 	if err != nil {
 		return "", err
 	}
 	if why != "" {
-		return "", errorf(ErrProbing, "%s: not creating an fsdax namespace: the namespaces are still probing (%s)", ndregion, why)
+		return "", fmt.Errorf("%s: not creating an fsdax namespace: the namespaces are still probing (%s)", ndregion, why)
 	}
 	for _, ns := range nss {
 		if ns.Mode == NamespaceFsdax {
-			return "", errorf(ErrExists, "%s: not creating an fsdax namespace: %s is one already (map %q)", ndregion, ns.Name, ns.Map)
+			return "", fmt.Errorf("%s: not creating an fsdax namespace: %s is one already (map %q)", ndregion, ns.Name, ns.Map)
 		}
 	}
 	args := []string{"create-namespace", "-f", "-r", ndregion, "-m", NamespaceFsdax, "-M", MapMem}

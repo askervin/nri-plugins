@@ -27,6 +27,8 @@ import (
 	"strconv"
 	"strings"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 )
 
@@ -188,23 +190,6 @@ func (k *Kernel) Mounted(target string) (*MountInfo, error) {
 	return FindMount(mounts, target), nil
 }
 
-// MountsUnder returns the mounts of the mount namespace of the process
-// whose target is dir or below it, in the order of mountinfo.
-func (k *Kernel) MountsUnder(dir string) ([]MountInfo, error) {
-	mounts, err := k.Mounts()
-	if err != nil {
-		return nil, err
-	}
-	dir = filepath.Clean(dir)
-	var out []MountInfo
-	for _, m := range mounts {
-		if m.Target == dir || strings.HasPrefix(m.Target, dir+"/") {
-			out = append(out, m)
-		}
-	}
-	return out, nil
-}
-
 // blockDevNum returns the major:minor of a block device (/dev/<name>) from
 // sysfs.
 func (k *Kernel) blockDevNum(dev string) (string, error) {
@@ -330,7 +315,7 @@ func (k *Kernel) Holder(dev string) (string, error) {
 	}
 	err := k.sys().OpenExclusive(dev)
 	switch {
-	case errors.Is(err, ErrEBUSY):
+	case errors.Is(err, unix.EBUSY):
 		return "in use", nil
 	case isGone(err):
 		return "", nil // the device is gone
@@ -356,16 +341,11 @@ func (k *Kernel) ReadHead(dev string, n int) ([]byte, error) {
 	return buf[:got], nil
 }
 
-// ReadOnly returns the read-only flag of a block device (BLKROGET).
-func (k *Kernel) ReadOnly(dev string) (bool, error) {
-	return k.sys().ReadOnly(dev)
-}
-
 // SetBlockDeviceReadOnly sets the read-only flag of the block device dev
 // (BLKROSET) when it differs, and tells whether it changed it; the caller
 // logs the change. A block device is never made read-only while a
 // read-write superblock is on it, or on a loop device over it, in any mount
-// namespace (ErrEBUSY), nor when its superblocks cannot be read. A block
+// namespace (EBUSY), nor when its superblocks cannot be read. A block
 // device that is gone is not an error.
 func (k *Kernel) SetBlockDeviceReadOnly(dev string, readOnly bool) (bool, error) {
 	if dev == "" {
@@ -388,7 +368,7 @@ func (k *Kernel) SetBlockDeviceReadOnly(dev string, readOnly bool) (bool, error)
 		}
 		for _, sb := range sbs {
 			if !sb.ReadOnly {
-				return false, errorf(ErrEBUSY, "not making %s read-only: %s is mounted read-write in %s", dev, sb.Source, sb.Where)
+				return false, errorf(unix.EBUSY, "not making %s read-only: %s is mounted read-write in %s", dev, sb.Source, sb.Where)
 			}
 		}
 	}
@@ -396,13 +376,13 @@ func (k *Kernel) SetBlockDeviceReadOnly(dev string, readOnly bool) (bool, error)
 		if isGone(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("making %s %s: %w", dev, roWord(readOnly), err)
+		return false, fmt.Errorf("making %s %s: %w", dev, RoWord(readOnly), err)
 	}
 	return true, nil
 }
 
-// roWord returns "read-only" or "read-write".
-func roWord(readOnly bool) string {
+// RoWord returns "read-only" or "read-write".
+func RoWord(readOnly bool) string {
 	if readOnly {
 		return "read-only"
 	}
@@ -424,7 +404,7 @@ func (k *Kernel) FsMount(source, target, fstype string, readWrite bool, options 
 
 // Reconfigure makes the superblock of the mount at target read-write or
 // read-only: every mount of the superblock changes. A reconfiguration to
-// read-only while a file is open for writing fails with EBUSY (ErrEBUSY).
+// read-only while a file is open for writing fails with EBUSY.
 func (k *Kernel) Reconfigure(target string, readWrite bool) error {
 	return k.sys().Reconfigure(target, readWrite)
 }
@@ -442,8 +422,8 @@ func (k *Kernel) BindReadOnly(source, target string) error {
 	return k.sys().BindReadOnly(source, target)
 }
 
-// Unmount unmounts target, never detached: a mount in use fails with EBUSY
-// (ErrEBUSY).
+// Unmount unmounts target, never detached: a mount in use fails with
+// EBUSY.
 func (k *Kernel) Unmount(target string) error {
 	return k.sys().Unmount(target)
 }

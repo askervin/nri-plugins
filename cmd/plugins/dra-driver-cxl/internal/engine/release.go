@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
@@ -600,7 +601,7 @@ func (e *Engine) releaseBind(ctx context.Context, g *state.Grant, trigger state.
 	err := e.unbind(g.Asked.Source, bindWhat(g), b.Target)
 	to := state.BindAbsent
 	if err != nil {
-		if b.State == state.BindStale || !errors.Is(err, kernel.ErrEBUSY) {
+		if b.State == state.BindStale || !errors.Is(err, unix.EBUSY) {
 			return err
 		}
 		to = state.BindStale
@@ -1115,7 +1116,7 @@ func (e *Engine) offlineDax(ctx context.Context, p *localPart) error {
 		blocks, err = e.k.DaxDeviceBlocks(p.dax, bs)
 	}
 	if err == nil {
-		err = e.locked(func() error { return e.k.OfflineBlocks(ctx, blocks, 0, 0) })
+		err = e.locked(func() error { return e.k.OfflineBlocks(blocks) })
 	}
 	if err != nil {
 		return fmt.Errorf("memdev %s (serial %s): releasing slice %s: cannot offline its memory (in use?): %w", p.memdev, serialText(p.serial), p.dax, err)

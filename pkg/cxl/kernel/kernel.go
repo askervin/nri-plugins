@@ -102,8 +102,9 @@ type Sys interface {
 	// context ends the wait for the character device.
 	ZeroDax(ctx context.Context, major, minor int, size, align uint64) error
 	// ProbeDax runs the address line probe (see ProbeAliasing) on the
-	// first size bytes of the dax character device major:minor.
-	ProbeDax(major, minor int, size uint64) (*Aliasing, error)
+	// first size bytes of the dax character device major:minor. The
+	// context ends the wait for the character device.
+	ProbeDax(ctx context.Context, major, minor int, size uint64) (*Aliasing, error)
 	// OpenDax opens the dax character device major:minor, read-only or
 	// read-write, through a private device node that is removed again at
 	// once. The context ends the wait for the character device.

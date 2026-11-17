@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/bits"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -59,8 +60,9 @@ var probeBases = []uint64{0, 3 * probePage, 5 << 20, 7<<30 + 5*probePage, 33<<30
 // lines are flushed), so that a dirty line of an aliased address cannot
 // hide the aliasing. The probe overwrites 16 bytes at a few hundred
 // offsets: run it before the memory is in use. Takes milliseconds. A device
-// of size 0 has no aliasing.
-func (k *Kernel) ProbeAliasing(dax string) (*Aliasing, error) {
+// of size 0 has no aliasing. The context ends the wait for the character
+// device.
+func (k *Kernel) ProbeAliasing(ctx context.Context, dax string) (*Aliasing, error) {
 	size, err := k.DaxDeviceSize(dax)
 	if err != nil {
 		return nil, err
@@ -72,7 +74,7 @@ func (k *Kernel) ProbeAliasing(dax string) (*Aliasing, error) {
 	if err != nil {
 		return nil, err
 	}
-	a, err := k.sys().ProbeDax(major, minor, size)
+	a, err := k.sys().ProbeDax(ctx, major, minor, size)
 	if err != nil && !errors.Is(err, ErrProbeUnsupported) {
 		return nil, fmt.Errorf("probing %s: %w", dax, err)
 	}
@@ -119,28 +121,26 @@ func (k *Kernel) Zero(ctx context.Context, dax string) error {
 	return nil
 }
 
-// daxNodeDirs are the patterns of the temporary directories of private dax
-// device nodes under DevRoot: of this package, and of older drivers.
-var daxNodeDirs = []string{".cxl-dax-*", ".cxl-local-zero-*", ".cxl-probe-*"}
+// daxNodeDirPrefix is the prefix of the temporary directories of private dax
+// device nodes under DevRoot.
+const daxNodeDirPrefix = ".cxl-dax-"
 
 // RemoveDaxNodeDirs removes the temporary directories of private dax device
 // nodes under DevRoot that a process stopped in a zeroing or a probe left,
 // and returns those that it removed.
 func (k *Kernel) RemoveDaxNodeDirs() ([]string, error) {
+	dirs, err := filepath.Glob(filepath.Join(k.devRoot(), daxNodeDirPrefix+"*"))
+	if err != nil {
+		return nil, err
+	}
 	var removed []string
 	var errs []error
-	for _, pattern := range daxNodeDirs {
-		dirs, err := filepath.Glob(filepath.Join(k.DevRoot, pattern))
-		if err != nil {
-			return removed, err
+	for _, dir := range dirs {
+		if err := os.RemoveAll(dir); err != nil {
+			errs = append(errs, err)
+			continue
 		}
-		for _, dir := range dirs {
-			if err := os.RemoveAll(dir); err != nil {
-				errs = append(errs, err)
-				continue
-			}
-			removed = append(removed, dir)
-		}
+		removed = append(removed, dir)
 	}
 	return removed, errors.Join(errs...)
 }
@@ -192,18 +192,9 @@ func (a *Aliasing) String() string {
 		return "not probed"
 	case a.Offset != 0:
 		return fmt.Sprintf("offsets %#x and %#x reach the same memory (address bit %d is ignored): only the first %d bytes are distinct",
-			a.Base, a.Base+a.Offset, bitIndex(a.Offset), a.Offset)
+			a.Base, a.Base+a.Offset, bits.TrailingZeros64(a.Offset), a.Offset)
 	case a.Garbage >= 0:
 		return fmt.Sprintf("no aliasing, but offset %#x did not read back what was written", a.Garbage)
 	}
 	return "no aliasing"
-}
-
-func bitIndex(p uint64) int {
-	n := 0
-	for p > 1 {
-		p >>= 1
-		n++
-	}
-	return n
 }

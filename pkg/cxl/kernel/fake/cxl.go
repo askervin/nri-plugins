@@ -73,11 +73,6 @@ var windows = []Window{
 	{Decoder: "decoder0.3", HostBridge: 24, Type: kernel.RegionPmem, Base: 0x1050000000, Size: 0x400000000, Node: 5},
 }
 
-// Windows returns the root decoders of the fake.
-func Windows() []Window {
-	return slices.Clone(windows)
-}
-
 // window returns the window of a root decoder.
 func window(decoder string) (Window, bool) {
 	for _, w := range windows {
@@ -115,12 +110,12 @@ type MemdevSpec struct {
 
 // addHostBridge adds the host bridge with the uid on the PCI root of bus.
 func (f *Fake) addHostBridge(uid, bus int) {
-	port := "port" + itoa(f.nextPort)
+	port := "port" + strconv.Itoa(f.nextPort)
 	f.nextPort++
 	f.hostBridge[uid] = port
 	pci := fmt.Sprintf("devices/pci0000:%02x", bus)
 	f.mkdir(pci)
-	f.LinkTo(rootPath+"/dport"+itoa(uid), pci)
+	f.LinkTo(rootPath+"/dport"+strconv.Itoa(uid), pci)
 	dir := rootPath + "/" + port
 	f.Write(dir+"/decoders_committed", "0")
 	for i := 0; i < portDecoders; i++ {
@@ -136,7 +131,7 @@ func (f *Fake) switchPort(uid int) string {
 	if m, _ := filepath.Glob(f.P(hb + "/port*")); len(m) > 0 {
 		return hb + "/" + filepath.Base(m[0])
 	}
-	port := "port" + itoa(f.nextPort)
+	port := "port" + strconv.Itoa(f.nextPort)
 	f.nextPort++
 	dir := hb + "/" + port
 	f.Write(dir+"/decoders_committed", "0")
@@ -151,7 +146,7 @@ func (f *Fake) switchPort(uid int) string {
 func (f *Fake) addWindow(w Window) {
 	dir := rootPath + "/" + w.Decoder
 	f.Write(dir+"/devtype", "cxl_decoder_root")
-	f.Write(dir+"/target_list", itoa(w.HostBridge))
+	f.Write(dir+"/target_list", strconv.Itoa(w.HostBridge))
 	f.Write(dir+"/interleave_ways", "1")
 	f.Write(dir+"/start", fmt.Sprintf("0x%x", w.Base))
 	f.Write(dir+"/size", fmt.Sprintf("0x%x", w.Size))
@@ -179,8 +174,8 @@ func (f *Fake) nextRegionNames() {
 // nextRegionName returns the lowest region name that is free.
 func (f *Fake) nextRegionName() string {
 	for id := 0; ; id++ {
-		if !f.Exists("bus/cxl/devices/region"+itoa(id)) && !f.Exists("bus/nd/devices/region"+itoa(id)) {
-			return "region" + itoa(id)
+		if !f.Exists("bus/cxl/devices/region"+strconv.Itoa(id)) && !f.Exists("bus/nd/devices/region"+strconv.Itoa(id)) {
+			return "region" + strconv.Itoa(id)
 		}
 	}
 }
@@ -229,8 +224,8 @@ func (f *Fake) Plug(spec MemdevSpec) string {
 // path does not exist, without the directory.
 func (f *Fake) freeName(prefix string, first int) string {
 	for id := first; ; id++ {
-		if !f.Exists(prefix + itoa(id)) {
-			return filepath.Base(prefix + itoa(id))
+		if !f.Exists(prefix + strconv.Itoa(id)) {
+			return filepath.Base(prefix + strconv.Itoa(id))
 		}
 	}
 }
@@ -243,9 +238,7 @@ func (f *Fake) bind(m *memdev) {
 		f.addEndpoint(m)
 		return
 	}
-	f.probes.Add(1)
-	go func() {
-		defer f.probes.Done()
+	f.probes.Go(func() {
 		time.Sleep(f.EndpointDelay)
 		f.mu.Lock()
 		plugged := f.memdevs[m.spec.Serial] == m && m.name != ""
@@ -253,7 +246,7 @@ func (f *Fake) bind(m *memdev) {
 		if plugged && f.Exists(m.path+"/driver") {
 			f.addEndpoint(m)
 		}
-	}()
+	})
 }
 
 // addEndpoint adds the endpoint port of a memdev.
@@ -263,10 +256,10 @@ func (f *Fake) addEndpoint(m *memdev) {
 		parent = f.switchPort(m.spec.HostBridge)
 	}
 	id := f.nextEP
-	for f.Exists("bus/cxl/devices/endpoint" + itoa(id)) {
+	for f.Exists("bus/cxl/devices/endpoint" + strconv.Itoa(id)) {
 		id++
 	}
-	ep := "endpoint" + itoa(id)
+	ep := "endpoint" + strconv.Itoa(id)
 	dir := parent + "/" + ep
 	f.Write(dir+"/decoders_committed", "0")
 	for i := 0; i < portDecoders; i++ {
@@ -360,7 +353,7 @@ func (f *Fake) Unplug(serial uint64) {
 		return
 	}
 	if ep, id := f.endpointOf(m); ep != "" {
-		prefix := "decoder" + itoa(id) + "."
+		prefix := "decoder" + strconv.Itoa(id) + "."
 		for _, r := range f.regionNames() {
 			for _, t := range f.targets(r) {
 				if strings.HasPrefix(t, prefix) {
@@ -511,7 +504,7 @@ func (f *Fake) SetStack(port string, regions ...string) {
 		}
 		f.Write(fmt.Sprintf("%s/decoder%s.%d/region", dir, id, i), r)
 	}
-	f.Write(dir+"/decoders_committed", itoa(len(regions)))
+	f.Write(dir+"/decoders_committed", strconv.Itoa(len(regions)))
 }
 
 // releaseDecoders releases the decoders of a region in every port: a region
@@ -533,7 +526,7 @@ func (f *Fake) releaseDecoders(region string) {
 		for n > 0 && regions[n-1] == "" {
 			n--
 		}
-		f.Write(rel+"/decoders_committed", itoa(n))
+		f.Write(rel+"/decoders_committed", strconv.Itoa(n))
 	}
 }
 
@@ -625,7 +618,7 @@ func (f *Fake) createRegion(args []string) (string, error) {
 			f.Write(fmt.Sprintf("%s/decoder%s.%d/mode", dir, id, k), typ)
 			target = fmt.Sprintf("decoder%s.%d", id, k)
 		}
-		f.Write(dir+"/decoders_committed", itoa(k+1))
+		f.Write(dir+"/decoders_committed", strconv.Itoa(k+1))
 	}
 	dir := rootPath + "/" + decoder + "/" + next
 	for file, value := range map[string]string{
@@ -738,11 +731,32 @@ func (f *Fake) enableRegion(region string) error {
 	return nil
 }
 
-// disableRegion runs cxl disable-region: the decoders stay committed.
+// disableRegion runs cxl disable-region: it offlines the memory of the
+// kmem devices of the region first and fails if it cannot (an offline that
+// a test made fail, FailWrite); the decoders stay committed.
 func (f *Fake) disableRegion(region string) error {
 	if !f.Exists("bus/cxl/devices/" + region) {
 		return fmt.Errorf("cxl region: cmd_disable_region: %s: no such region", region)
 	}
+	for _, dax := range f.daxNames(region) {
+		if f.daxDriverOf(dax) != kernel.DriverKmem {
+			continue
+		}
+		for _, b := range f.blocksOf(dax) {
+			rel := blockRel(b)
+			if !f.Exists(rel+"/state") || f.Read(rel+"/state") == kernel.BlockStateOffline {
+				continue
+			}
+			f.mu.Lock()
+			err := takeErr(f.failWr, rel+"/state")
+			f.mu.Unlock()
+			if err != nil {
+				return fmt.Errorf("cxl region: disable_region: %s: unable to offline %s: %w", region, dax, err)
+			}
+			f.setBlock(b, kernel.BlockStateOffline)
+		}
+	}
+	f.updateNodes()
 	f.takeDown(region)
 	return nil
 }
@@ -777,15 +791,22 @@ func (f *Fake) removeRegion(region string) {
 }
 
 // deleteRegion does what writing a region to the delete_region of a root
-// decoder does: it deletes a region under the decoder that is not bound.
+// decoder does: it deletes a region under the decoder, bound or not, and
+// releases its decoders. The package deletes only hollow regions: the
+// deletion of another one is a violation (Violations).
 func (f *Fake) deleteRegion(decoder, region string) error {
 	f.record("delete_region " + decoder + " " + region)
 	real, err := filepath.EvalSymlinks(f.P("bus/cxl/devices/" + region))
 	if err != nil || filepath.Base(filepath.Dir(real)) != decoder {
 		return syscall.ENODEV
 	}
+	if len(f.targets(region)) > 0 {
+		f.mnt.mu.Lock()
+		f.mnt.violate("delete_region of %s, which is not hollow", region)
+		f.mnt.mu.Unlock()
+	}
 	if f.Exists("bus/cxl/devices/" + region + "/driver") {
-		return syscall.EBUSY
+		f.takeDown(region)
 	}
 	f.releaseDecoders(region)
 	f.removeRegion(region)
