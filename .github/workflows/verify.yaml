@@ -81,7 +81,7 @@ jobs:
         with:
           go-version-file: go.mod
       - run: |
-          go test -short -race \
+          go test -race \
               ./cmd/cxl-request/... \
               ./cmd/plugins/dra-driver-cxl/... \
               ./pkg/cgmemnotify/... \
