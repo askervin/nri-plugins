@@ -1859,6 +1859,13 @@ print(vm_uuid)' "$vmname") || error "cannot create UUID for VM $vmname"
              "Its qemu is QEMU_BIN in $vagrantdir/env." >&2
     fi
 
+    # The VM network of the topology, if it has one, goes into the env file
+    # and its NO_PROXY.
+    if [ -n "$vm_network" ]; then
+        vm-vmnet-record "$vagrantdir" "$vm_network" ||
+            error "cannot record VM network $vm_network in $vagrantdir/env"
+    fi
+
     # Reads the env file, so it has to come after that file is written.
     vm-write-ansible-vars "$vagrantdir"
 
@@ -1881,8 +1888,6 @@ print(vm_uuid)' "$vmname") || error "cannot create UUID for VM $vmname"
     # The NIC of the VM network of the topology, if it has one. An existing
     # VM gets it at its next start (vm-vmnet-ensure restarts it).
     if [ -n "$vm_network" ]; then
-        vm-vmnet-record "$vagrantdir" "$vm_network" ||
-            error "cannot record VM network $vm_network in $vagrantdir/env"
         vm-vmnet-patch-vagrantfile "$vagrantdir/Vagrantfile.erb" "$vagrantdir" ||
             error "cannot add the NIC of VM network $vm_network to $vagrantdir/Vagrantfile.erb"
         vm-vmnet-patch-vagrantfile "$vagrantdir/Vagrantfile" "$vagrantdir" ||

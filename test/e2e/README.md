@@ -898,6 +898,10 @@ Each argument is a cluster: VM names or output directories, the control
 plane first. A cluster that has its shape is left alone, which is quick.
 The others are rebuilt with `kubeadm reset`, `kubeadm init` and `kubeadm
 join`, which loses all cluster state: deploy what the test needs after it.
+`kubeadm init` takes the configuration that provisioning wrote in the
+control plane VM, `/root/kubeadm-config.yaml`. So the rebuilt cluster keeps
+its feature gates and kubelet settings. `vm-k8s-reinit` and
+`vm-vmnet-ensure` refuse to run against a host which is not a VM.
 Pods run on every node, and every node has the admin kubeconfig. Rebuilding
 is slow: two single-node clusters take several times longer than one
 cluster of two nodes. So a test suite makes its shape once, in one test,

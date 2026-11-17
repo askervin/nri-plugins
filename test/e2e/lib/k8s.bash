@@ -16,8 +16,12 @@
 # This file is sourced by lib/test.bash. The helpers take VMDIR, the output
 # directory of a VM ($OUTPUT_DIR for the VM of the test), or a VM name,
 # which is the name of its directory next to $OUTPUT_DIR.
+#
+# The helpers that reshape networks and clusters work on VMs only. They
+# refuse to run against a host which is not a VM (vm-hw-mode).
 
-K8S_POD_CIDR="${K8S_POD_CIDR:-10.217.0.0/16}"
+K8S_KUBEADM_CONFIG=/root/kubeadm-config.yaml
+K8S_REINIT_CONFIG=/root/kubeadm-reinit.yaml
 K8S_REINIT_TIMEOUT="${K8S_REINIT_TIMEOUT:-600}"
 K8S_CNI_FILE=/etc/cni/net.d/10-bridge.conf
 K8S_CNI_TEMPLATE="$nri_resource_policy_src/test/e2e/files/10-bridge.conf.in"
@@ -171,6 +175,16 @@ vmdir-restart() { # script API
     vmdir-up "$vmdir"
 }
 
+vm-k8s-refuse-hw() {
+    # Usage: vm-k8s-refuse-hw WHAT
+    #
+    # Fail the test, naming WHAT, if the run targets a host which is not a
+    # VM.
+    vm-hw-mode || return 0
+    error "$1 reshapes the network and the Kubernetes cluster of VMs.
+$(vm-hw-address) is not a VM. Run this on VMs of its own."
+}
+
 ###
 ### VM network in the VM
 ###
@@ -187,6 +201,7 @@ vm-vmnet-ensure() { # script API
     # containerd (kubectl would send requests for those addresses to the
     # proxy otherwise, and kubeadm copies NO_PROXY into the control plane).
     local vmdir="$1" network="${2:-$vm_network}" name mac ip cidr
+    vm-k8s-refuse-hw vm-vmnet-ensure
     name="$(basename "$vmdir")"
     [ -n "$network" ] ||
         error "vm-vmnet-ensure: no VM network for $name: set vm_network (vm_network.var.sh of the topology)"
@@ -345,10 +360,12 @@ vm-k8s-reinit() { # script API
     # vm-vmnet-ensure): the nodes use their VM network addresses, and every
     # node has a bridge CNI subnet of its own, its pod CIDR, with routes to
     # the subnets of the other nodes. A single-node cluster is what
-    # provisioning makes: the slirp address and the whole $K8S_POD_CIDR.
-    # Every node gets the admin kubeconfig as /root/.kube/config and
-    # ~vagrant/.kube/config. Takes a few minutes per rebuilt cluster,
-    # seconds if every cluster has its shape.
+    # provisioning makes: the slirp address and the whole pod subnet. Every
+    # cluster gets the kubeadm configuration that provisioning wrote in the
+    # control plane VM ($K8S_KUBEADM_CONFIG): its feature gates and kubelet
+    # settings. Every node gets the admin kubeconfig as /root/.kube/config
+    # and as .kube/config of the login user. Takes a few minutes per rebuilt
+    # cluster, seconds if every cluster has its shape.
     #
     # Examples:
     #   vm-k8s-reinit "$OUTPUT_DIR"                    # the VM of the test alone
@@ -363,6 +380,7 @@ vm-k8s-reinit() { # script API
         esac
     done
     [ $# -gt 0 ] || error "vm-k8s-reinit: no clusters"
+    vm-k8s-refuse-hw vm-k8s-reinit
     for cluster in "$@"; do
         mapfile -t dirs < <(vm-k8s-cluster-dirs "$cluster")
         [ "${#dirs[@]}" -gt 0 ] || error "vm-k8s-reinit: empty cluster \"$cluster\""
@@ -436,6 +454,26 @@ vm-k8s-rebuild() {
         error "vm-k8s-reinit: cluster \"$cluster\" is not in shape after the rebuild: $why"
 }
 
+vm-k8s-kubeadm-value() {
+    # Usage: vm-k8s-kubeadm-value VMDIR KEY
+    #
+    # Print the value of KEY, for instance criSocket or podSubnet, in
+    # $K8S_KUBEADM_CONFIG of the VM of VMDIR. Return 1 if the VM has no such
+    # file or the file has no KEY.
+    local value
+    value=$(vmdir-command-q "$1" "cat $K8S_KUBEADM_CONFIG" 2>/dev/null |
+                sed -n "s/^ *$2: *\"\{0,1\}\([^\"]*\)\"\{0,1\} *\$/\1/p" | head -n 1)
+    [ -n "$value" ] && echo "$value"
+}
+
+vm-k8s-kubeadm-error() {
+    # Usage: vm-k8s-kubeadm-error VMDIR KEY
+    #
+    # Fail the test: the VM of VMDIR has no KEY in $K8S_KUBEADM_CONFIG.
+    error "vm-k8s-reinit: $(basename "$1") has no $2 in $K8S_KUBEADM_CONFIG.
+Provisioning writes that file: provision the VM again."
+}
+
 vm-k8s-reset-node() {
     # Usage: vm-k8s-reset-node VMDIR
     #
@@ -444,12 +482,14 @@ vm-k8s-reset-node() {
     # unmounts in /var/lib/kubelet), iptables rules, the CNI bridge and IP
     # leases, kubeconfigs. Stop the CXL pool controller of the e2e tests
     # first, a systemd unit that uses the cluster.
-    local vmdir="$1"
+    local vmdir="$1" sock subnet
+    sock=$(vm-k8s-kubeadm-value "$vmdir" criSocket) || vm-k8s-kubeadm-error "$vmdir" criSocket
+    subnet=$(vm-k8s-kubeadm-value "$vmdir" podSubnet) || vm-k8s-kubeadm-error "$vmdir" podSubnet
     # The CXL DRA driver of the e2e tests runs in a pod: kubeadm reset
     # removes its container before the kubelet state is removed, and its
     # helm release goes with the cluster state.
     vmdir-command "$vmdir" "systemctl stop fake-cxl-pool-controller 2>/dev/null; systemctl reset-failed fake-cxl-pool-controller 2>/dev/null
-kubeadm reset -f --cleanup-tmp-dir --cri-socket unix://${k8scri_sock:-/var/run/containerd/containerd.sock} 2>&1 | grep -v '^W[0-9]' | tail -n 5
+kubeadm reset -f --cleanup-tmp-dir --cri-socket $sock 2>&1 | grep -v '^W[0-9]' | tail -n 5
 rc=\${PIPESTATUS[0]}
 systemctl stop kubelet
 for m in \$(findmnt -rn -o TARGET | grep '^/var/lib/kubelet/' | sort -r); do umount -l \"\$m\"; done
@@ -459,9 +499,9 @@ ip link del cni0 2>/dev/null
 rm -rf /var/lib/cni/networks/*
 # no pod network until the subnet of the node in the new cluster is known
 [ ! -f $K8S_CNI_FILE ] || mv -f $K8S_CNI_FILE $K8S_CNI_FILE.off
-rm -f /root/.kube/config /home/vagrant/.kube/config
+rm -f /root/.kube/config \"\$(getent passwd \"\$SUDO_USER\" | cut -d: -f6)/.kube/config\"
 nmcli -t -f NAME con show | grep -qx $K8S_NM_PROFILE && nmcli con modify $K8S_NM_PROFILE ipv4.routes '' && nmcli con up $K8S_NM_PROFILE >/dev/null
-ip route | grep '^${K8S_POD_CIDR%.*.*}\\.' | grep -v 'dev cni0' | while read -r r; do ip route del \$r; done
+ip route | grep '^${subnet%.*.*}\\.' | grep -v 'dev cni0' | while read -r r; do ip route del \$r; done
 exit \$rc" || command-error "vm-k8s-reinit: kubeadm reset failed in $(basename "$vmdir")"
 }
 
@@ -503,23 +543,66 @@ vm-k8s-kubeconfig() {
     # Usage: vm-k8s-kubeconfig VMDIR FILE
     #
     # Install the admin kubeconfig FILE of the VM of VMDIR as the
-    # kubeconfig of root and vagrant.
-    vmdir-command "$1" "mkdir -p /root/.kube /home/vagrant/.kube && cp $2 /root/.kube/config && cp $2 /home/vagrant/.kube/config && chown -R vagrant:vagrant /home/vagrant/.kube && chmod 600 /root/.kube/config /home/vagrant/.kube/config" ||
+    # kubeconfig of root and of the login user.
+    vmdir-command "$1" "set -e
+home=\$(getent passwd \"\$SUDO_USER\" | cut -d: -f6)
+[ -n \"\$home\" ]
+mkdir -p /root/.kube \"\$home/.kube\"
+cp $2 /root/.kube/config
+cp $2 \"\$home/.kube/config\"
+chown -R \"\$SUDO_USER\": \"\$home/.kube\"
+chmod 600 /root/.kube/config \"\$home/.kube/config\"" ||
         command-error "vm-k8s-reinit: cannot install the kubeconfig in $(basename "$1")"
+}
+
+vm-k8s-init-config() {
+    # Usage: vm-k8s-init-config CPDIR [IP]
+    #
+    # Write $K8S_REINIT_CONFIG in the VM of CPDIR. It is $K8S_KUBEADM_CONFIG
+    # of the VM with a new InitConfiguration. The node in it has the name of
+    # the VM. The CRI socket stays. The API server address is IP if given.
+    local cp="$1" ip="$2" name config sock tmp
+    name="$(basename "$cp")"
+    sock=$(vm-k8s-kubeadm-value "$cp" criSocket) || vm-k8s-kubeadm-error "$cp" criSocket
+    config=$(vmdir-command-q "$cp" "cat $K8S_KUBEADM_CONFIG") ||
+        error "vm-k8s-reinit: cannot read $K8S_KUBEADM_CONFIG in $name"
+    tmp=$(mktemp) || error "mktemp failed"
+    {
+        printf 'apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n'
+        printf 'nodeRegistration:\n  name: %s\n  criSocket: "%s"\n' "$name" "$sock"
+        if [ -n "$ip" ]; then
+            printf 'localAPIEndpoint:\n  advertiseAddress: %s\n' "$ip"
+        fi
+        # The other documents: ClusterConfiguration and KubeletConfiguration.
+        awk 'function flush() {
+                 if (doc !~ /(^|\n)kind: *InitConfiguration *\n/ && doc ~ /[^ \n]/) printf "---\n%s", doc
+                 doc = ""
+             }
+             /^---/ { flush(); next }
+             { doc = doc $0 "\n" }
+             END { flush() }' <<< "$config"
+    } > "$tmp"
+    vmdir-put-file "$cp" "$tmp" "$K8S_REINIT_CONFIG"
+    rm -f "$tmp"
+    vmdir-command "$cp" "cat $K8S_REINIT_CONFIG" ||
+        command-error "vm-k8s-reinit: cannot read $K8S_REINIT_CONFIG in $name"
 }
 
 vm-k8s-init-cp() {
     # Usage: vm-k8s-init-cp CPDIR [IP]
     #
-    # kubeadm init in the VM of CPDIR, with node address and API server
-    # address IP if given (a multi-node cluster). Set K8S_JOIN_COMMAND.
+    # kubeadm init in the VM of CPDIR from its kubeadm configuration, with
+    # node address and API server address IP if given (a multi-node
+    # cluster). Set K8S_JOIN_COMMAND.
     local cp="$1" ip="$2" name subnet
     name="$(basename "$cp")"
+    vm-k8s-init-config "$cp" "$ip"
     vm-k8s-kubelet-node-ip "$cp" "$ip"
     if [ -z "$ip" ]; then
-        vm-k8s-cni-write "$cp" "$K8S_POD_CIDR"
+        subnet=$(vm-k8s-kubeadm-value "$cp" podSubnet) || vm-k8s-kubeadm-error "$cp" podSubnet
+        vm-k8s-cni-write "$cp" "$subnet"
     fi
-    vmdir-command "$cp" "kubeadm init --pod-network-cidr=$K8S_POD_CIDR --node-name=$name ${ip:+--apiserver-advertise-address=$ip} --cri-socket unix://${k8scri_sock:-/var/run/containerd/containerd.sock} 2>&1 | grep -v '^W[0-9]' | tail -n 25; exit \${PIPESTATUS[0]}" || {
+    vmdir-command "$cp" "kubeadm init --config $K8S_REINIT_CONFIG 2>&1 | grep -v '^W[0-9]' | tail -n 25; exit \${PIPESTATUS[0]}" || {
         vmdir-command "$cp" "journalctl -u kubelet --no-pager -n 50"
         command-error "vm-k8s-reinit: kubeadm init failed in $name"
     }
@@ -543,10 +626,11 @@ vm-k8s-join-worker() {
     # kubeadm join the VM of VMDIR to the cluster of CPDIR as a worker
     # with node address IP, give it the admin kubeconfig of the cluster and
     # the bridge CNI subnet of its pod CIDR.
-    local vmdir="$1" cp="$2" join="$3" ip="$4" name tmp subnet
+    local vmdir="$1" cp="$2" join="$3" ip="$4" name tmp subnet sock
     name="$(basename "$vmdir")"
+    sock=$(vm-k8s-kubeadm-value "$vmdir" criSocket) || vm-k8s-kubeadm-error "$vmdir" criSocket
     vm-k8s-kubelet-node-ip "$vmdir" "$ip"
-    vmdir-command "$vmdir" "$join --node-name=$name --cri-socket unix://${k8scri_sock:-/var/run/containerd/containerd.sock} 2>&1 | grep -v '^W[0-9]' | tail -n 15; exit \${PIPESTATUS[0]}" || {
+    vmdir-command "$vmdir" "$join --node-name=$name --cri-socket $sock 2>&1 | grep -v '^W[0-9]' | tail -n 15; exit \${PIPESTATUS[0]}" || {
         vmdir-command "$vmdir" "journalctl -u kubelet --no-pager -n 50"
         command-error "vm-k8s-reinit: kubeadm join failed in $name"
     }
