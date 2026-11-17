@@ -20,7 +20,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"time"
 
 	"github.com/containerd/nri/pkg/api"
 	"k8s.io/klog/v2"
@@ -43,8 +42,10 @@ import (
 // changed across the restart), and leaves the memory.high of the others
 // alone.
 
-// steeredCommitWait bounds a commit of the Steered records.
-const steeredCommitWait = 5 * time.Second
+// steeredCommitWait bounds the wait of a commit of the Steered records in
+// the queue of the store. The commits run inside NRI handlers, so the
+// bound is below the default timeout of an NRI request.
+const steeredCommitWait = api.DefaultPluginRequestTimeout / 2
 
 // startManager starts a steering manager: its first step writes the
 // cgroup (a variable for tests).
@@ -110,7 +111,11 @@ func (p *Plugin) startSteering(c *Container, ctr *api.Container, plan *cgmpolmgr
 		p.notSteered(c, false)
 		return
 	}
-	p.addSteered(c.ID, dir)
+	if err := p.addSteered(c.ID, dir); err != nil {
+		klog.Warningf("NRI StartContainer: ctr=%s: failed to record memory steering: %v", name, err)
+		p.notSteered(c, false)
+		return
+	}
 	if err := startManager(mgr); err != nil {
 		klog.Warningf("NRI StartContainer: ctr=%s: failed to start memory steering: %v", name, err)
 		p.notSteered(c, true)
@@ -236,42 +241,47 @@ func (p *Plugin) steeredDir(id string) (string, bool) {
 
 // addSteered commits the Steered record of the container id whose cgroup
 // dir a manager writes.
-func (p *Plugin) addSteered(id, dir string) {
-	p.commitSteered(func(records []state.Steered) []state.Steered {
+func (p *Plugin) addSteered(id, dir string) error {
+	return p.commitSteered(func(records []state.Steered) []state.Steered {
 		records = slices.DeleteFunc(records, func(s state.Steered) bool { return s.Container == id })
 		return append(records, state.Steered{Container: id, CgroupDir: dir})
 	})
 }
 
 // removeSteered commits the removal of the Steered records of the
-// containers ids; the store writes nothing when it has none of them.
+// containers ids; the store writes nothing when it has none of them. A
+// failed commit is logged.
 func (p *Plugin) removeSteered(ids ...string) {
-	p.commitSteered(func(records []state.Steered) []state.Steered {
+	err := p.commitSteered(func(records []state.Steered) []state.Steered {
 		return slices.DeleteFunc(records, func(s state.Steered) bool { return slices.Contains(ids, s.Container) })
 	})
+	if err != nil {
+		klog.Warningf("NRI: steering record: %v", err)
+	}
 }
 
 // syncSteered commits the Steered records of the containers keep only (the
-// managers of this process): from now on the records are the plugin's.
+// managers of this process): from now on the records are the plugin's. A
+// failed commit is logged.
 func (p *Plugin) syncSteered(keep []string) {
-	p.commitSteered(func(records []state.Steered) []state.Steered {
+	err := p.commitSteered(func(records []state.Steered) []state.Steered {
 		return slices.DeleteFunc(records, func(s state.Steered) bool { return !slices.Contains(keep, s.Container) })
 	})
+	if err != nil {
+		klog.Warningf("NRI: steering record: %v", err)
+	}
 	p.mu.Lock()
 	p.legacy = false
 	p.mu.Unlock()
 }
 
-// commitSteered commits the change of the Steered records durably, waiting
-// at most steeredCommitWait; an error is logged.
-func (p *Plugin) commitSteered(change func([]state.Steered) []state.Steered) {
+// commitSteered commits the change of the Steered records durably; the
+// commit waits at most steeredCommitWait in the queue of the store.
+func (p *Plugin) commitSteered(change func([]state.Steered) []state.Steered) error {
 	ctx, cancel := context.WithTimeout(context.Background(), steeredCommitWait)
 	defer cancel()
-	err := p.opts.Store.Commit(ctx, store.Durable, func(doc *store.Document) error {
+	return p.opts.Store.Commit(ctx, store.Durable, func(doc *store.Document) error {
 		doc.Steered = change(slices.Clone(doc.Steered))
 		return nil
 	})
-	if err != nil {
-		klog.Warningf("NRI: steering record: %v", err)
-	}
 }

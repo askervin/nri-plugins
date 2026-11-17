@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -117,7 +118,8 @@ const (
 	Durable Durability = iota
 	// Lazy commits return once the change is applied; it is written with
 	// its group and lost if that write fails. Snapshot shows the change
-	// once its group is written.
+	// once its group is written. Only a change that a later pass makes
+	// again may be lazy.
 	Lazy
 )
 
@@ -243,8 +245,9 @@ type Options struct {
 //
 // Locks and waits: mu guards the document pointer, the pending commits
 // and closed, and is never held across a write; the writer goroutine
-// applies the pure commit functions; a Durable commit waits for its group's
-// write or the end of its context.
+// applies the pure commit functions. A commit that the writer has not
+// taken is withdrawn when its context ends. A taken commit waits for its
+// outcome.
 type Store struct {
 	opts   Options
 	files  fileOps
@@ -443,10 +446,17 @@ func (s *Store) Lost() error {
 	return s.lost
 }
 
-// Commit applies fn to the document and returns the error of fn, or for a
-// Durable commit the error of writing the document with the change. A
-// failed write leaves the snapshot as it was: the store never shows what
-// is not on disk. A wait that ctx ends does not withdraw fn.
+// Commit applies fn to the document. A Durable commit returns nil once
+// the document with the change is on disk and is the snapshot. A Lazy
+// commit returns nil once fn is applied to the group that the writer
+// writes next; the snapshot shows the change after that write, and a
+// failed write loses it. An error means that the store has not applied the
+// change and never will: the error of fn as it is, a *LostError,
+// ErrClosed, the error of the write of the group, or ctx.Err() when ctx
+// ended before the writer took the commit. ctx bounds only that wait in the
+// queue: Commit never returns while fn may still run. One limit: after a
+// failed sync of the directory, state.json may hold the failed change
+// until the next write.
 func (s *Store) Commit(ctx context.Context, d Durability, fn Func) error {
 	err := s.commit(ctx, d, fn)
 	if err == nil && s.opts.AfterCommit != nil {
@@ -469,20 +479,32 @@ func (s *Store) commit(ctx context.Context, d Durability, fn Func) error {
 	s.pending = append(s.pending, req)
 	s.mu.Unlock()
 	s.signal()
+	var err error
 	select {
-	case err := <-req.applied:
-		if err != nil || d == Lazy {
-			return err
+	case err = <-req.applied:
+	case <-ctx.Done():
+		if s.withdraw(req) {
+			return ctx.Err()
 		}
-	case <-ctx.Done():
-		return ctx.Err()
+		err = <-req.applied
 	}
-	select {
-	case err := <-req.written:
+	if err != nil || d == Lazy {
 		return err
-	case <-ctx.Done():
-		return ctx.Err()
 	}
+	return <-req.written
+}
+
+// withdraw removes req from the pending commits and reports whether it was
+// there: false once the writer has taken it.
+func (s *Store) withdraw(req *request) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := slices.Index(s.pending, req)
+	if i < 0 {
+		return false
+	}
+	s.pending = slices.Delete(s.pending, i, i+1)
+	return true
 }
 
 // Close writes the pending commits, stops the writer and unlocks the

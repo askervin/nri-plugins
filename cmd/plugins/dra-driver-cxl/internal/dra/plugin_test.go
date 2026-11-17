@@ -15,9 +15,13 @@
 package dra
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -28,6 +32,54 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
+
+// A PREPARED commit whose write the disk stalls beyond commitTimeout is
+// waited for and decides the record: the Prepare returns the device of the
+// claim, the claim is PREPARED with its grant, and a Prepare again returns
+// the same result.
+func TestPreparedCommitWaitsForItsWrite(t *testing.T) {
+	defer func(d time.Duration) { commitTimeout = d }(commitTimeout)
+	commitTimeout = 200 * time.Millisecond
+	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()})
+	claim := localClaim("u1", localDev, envBlockSize, cfgDax)
+	// the first write after the CDI spec names the claim's device is the
+	// write of PREPARED
+	inSpec := func() bool {
+		m, _ := filepath.Glob(filepath.Join(e.cdiDir, device.ClaimsCDISpecName+".*"))
+		if len(m) != 1 {
+			return false
+		}
+		data, _ := os.ReadFile(m[0])
+		return bytes.Contains(data, []byte("claim-u1-0"))
+	}
+	var stall func() error
+	stall = func() error {
+		if !inSpec() {
+			e.mu.Lock()
+			e.onWrite = stall
+			e.mu.Unlock()
+			return nil
+		}
+		time.Sleep(3 * commitTimeout)
+		return nil
+	}
+	e.mu.Lock()
+	e.onWrite = stall
+	e.mu.Unlock()
+	res := e.prepare(e.local, claim)
+	if res.Err != nil || len(res.Devices) != 1 {
+		t.Fatalf("Prepare with a stalled write: %v, devices %+v", res.Err, res.Devices)
+	}
+	e.wantState(e.local, "u1", state.PreparationPrepared)
+	if prep := e.preparation(e.local, "u1"); len(grantRefs(e.records(), prep)) != 1 {
+		t.Fatalf("preparation %+v, grants %+v", prep, e.records().Grants)
+	}
+	if again := e.prepare(e.local, claim); again.Err != nil || !reflect.DeepEqual(again.Devices, res.Devices) {
+		t.Fatalf("Prepare again: %v, devices %+v", again.Err, again.Devices)
+	}
+	e.mustUnprepare(e.local, "u1")
+	e.wantClean()
+}
 
 // Two Prepares of one claim serialize on its lock, the Prepare of another
 // claim does not wait for them.

@@ -179,6 +179,8 @@ type envOptions struct {
 	leases []state.Lease
 	// noLeases: no lease broker, the leases do not seed lends.
 	noLeases bool
+	// writeFault is the store's WriteFault after the start.
+	writeFault func() error
 }
 
 // newEnv returns a plugin in mode fencing none, with the nodes with memory
@@ -265,7 +267,7 @@ func openStore(t *testing.T, dir string, o envOptions) *store.Store {
 		}))
 		noErr(t, st.Close())
 	}
-	st := open(store.Options{NewState: o.origin == store.NewState})
+	st := open(store.Options{NewState: o.origin == store.NewState, WriteFault: o.writeFault})
 	if st.Origin() != o.origin {
 		t.Fatalf("store origin %v, expected %v", st.Origin(), o.origin)
 	}

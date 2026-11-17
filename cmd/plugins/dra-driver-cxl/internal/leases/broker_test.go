@@ -1323,8 +1323,8 @@ func TestStopKeepsWaitingLease(t *testing.T) {
 }
 
 // A commit of the broker's records waits at most Timeouts.Persist for a
-// stalled store, without the broker's mutex: the error is returned, the
-// change is applied later.
+// stalled store, without the broker's mutex: the error is returned, and
+// the change never happens.
 func TestPersistBounded(t *testing.T) {
 	e := brokerEnv(t)
 	e.opts = func(o *Options) { o.Timeouts.Persist = 50 * time.Millisecond }
@@ -1353,7 +1353,12 @@ func TestPersistBounded(t *testing.T) {
 			if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 5*time.Second {
 				t.Fatalf("commit to a stalled store: %v after %v", err, time.Since(start))
 			}
-			e.waitStored("0000late", func(l *state.Lease) bool { return l != nil })
+			// the store applies the commits in order: the withdrawn one
+			// would be in the snapshot when the next one returns
+			mustOK(t, e.st.Commit(context.Background(), store.Durable, func(*store.Document) error { return nil }))
+			if l := e.st.Snapshot().Lease("0000late"); l != nil {
+				t.Fatalf("the change of a failed commit is in the store: %+v", l)
+			}
 			return
 		default:
 		}

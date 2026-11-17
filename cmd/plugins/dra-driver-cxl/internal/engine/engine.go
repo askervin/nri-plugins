@@ -443,9 +443,8 @@ func (e *Engine) records() *state.Records {
 	return &e.store.Snapshot().Records
 }
 
-// commit applies fn to the records in one durable commit. The commit is
-// bounded by the rollback timeout, not by ctx: a commit that the store
-// applied is not withdrawn when ctx ends.
+// commit applies fn to the records in one durable commit. The rollback
+// timeout, not ctx, bounds its wait in the queue of the store.
 func (e *Engine) commit(ctx context.Context, fn func(r *state.Records) error) error {
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), e.opts.Timeouts.Rollback)
 	defer cancel()

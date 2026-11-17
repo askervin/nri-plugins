@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
@@ -466,9 +467,18 @@ func TestCharSynchronizeSteeringLog(t *testing.T) {
 
 // TestSteeredRecordBeforeStart checks that the Steered record of a
 // container is in the store when its manager starts to write its cgroup,
-// and that a Start that fails leaves no record.
+// that a Start that fails leaves no record, and that no manager starts
+// when the commit of the record fails.
 func TestSteeredRecordBeforeStart(t *testing.T) {
-	e := newFenceEnv(t, "0-3", 2)
+	var failWrites atomic.Bool
+	e := newEnvWith(t, envOptions{writeFault: func() error {
+		if failWrites.Load() {
+			return errors.New("disk failure")
+		}
+		return nil
+	}})
+	e.p.Seed([]int{2})
+	e.hasMemory("0-3")
 	e.local.set(nriClaims())
 	e.readyFence()
 	t.Cleanup(e.p.Stop)
@@ -511,6 +521,28 @@ func TestSteeredRecordBeforeStart(t *testing.T) {
 	}
 	if c := e.record("c2"); c.Management != ManagementFenced {
 		t.Fatalf("management %s after a failed start", c.Management)
+	}
+
+	started := false
+	startManager = func(*cgmpolmgr.Manager) error {
+		started = true
+		return nil
+	}
+	cg3 := e.proc(103, "kubepods/u1/c3", "0-3", "")
+	steerable(t, cg3, "max")
+	c3 := withClaims(testCtr(pod, "c3", "app3", 103), "auto")
+	e.createMems(pod, c3)
+	failWrites.Store(true)
+	e.startCtr(pod, c3)
+	failWrites.Store(false)
+	if started || len(e.managers()) != 1 {
+		t.Fatalf("a manager started without its Steered record: managers %v", e.managers())
+	}
+	if c := e.record("c3"); c.Management != ManagementFenced {
+		t.Fatalf("management %s after a failed commit of the record", c.Management)
+	}
+	if got := e.steered(); !reflect.DeepEqual(got, map[string]string{"c1": cg1}) {
+		t.Fatalf("steering records %v after a failed commit, expected c1", got)
 	}
 }
 

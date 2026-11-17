@@ -17,11 +17,11 @@ package dra
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -365,11 +365,11 @@ func TestCompanionUnfinishedRevoke(t *testing.T) {
 
 // stepHooks are fakeHooks whose OnPrepared the driver commits with the
 // companion's PREPARED (PreparedStepper), and whose write the disk stalls
-// until the lend is told failed (or 5 s).
+// for stall and then fails with fault (nil: succeeds).
 type stepHooks struct {
 	*fakeHooks
-	once    sync.Once
-	release chan struct{}
+	stall time.Duration
+	fault error
 }
 
 // PreparedStep stalls the next write of the store and returns a change of
@@ -377,46 +377,49 @@ type stepHooks struct {
 func (h *stepHooks) PreparedStep(id string, _ state.Source, _ []state.DeviceInfo) (func(*state.Records), func()) {
 	h.e.mu.Lock()
 	h.e.onWrite = func() error {
-		select {
-		case <-h.release:
-		case <-time.After(5 * time.Second):
-		}
-		return nil
+		time.Sleep(h.stall)
+		return h.fault
 	}
 	h.e.mu.Unlock()
 	return func(*state.Records) {}, func() { h.e.event("after %s", id) }
 }
 
-// OnLendFailed records the error and ends the stall of the write.
-func (h *stepHooks) OnLendFailed(id string, err error) {
-	h.fakeHooks.OnLendFailed(id, err)
-	h.once.Do(func() { close(h.release) })
-}
-
-// A joint commit of a companion's PREPARED and its lease's READY whose wait
-// ends before its write (a stalled disk) fails the Prepare and tells the
-// broker that the lend failed, in both drivers: the write may still come
-// with the lease READY, and the failure is ordered after it.
+// A joint commit of a companion's PREPARED and its lease's READY whose
+// write the disk stalls beyond commitTimeout is waited for in both drivers,
+// and its write decides: a write that succeeds prepares the claim and tells
+// the broker after it, a write that fails fails the Prepare and rolls it
+// back without telling the broker that the claim is prepared.
 func TestCompanionLateJointCommit(t *testing.T) {
 	defer func(d time.Duration) { commitTimeout = d }(commitTimeout)
 	commitTimeout = 200 * time.Millisecond
-	for _, local := range []bool{true, false} {
-		e := lendEnv(t)
-		p := e.pool
-		if local {
-			p = e.local
-		}
-		t.Run(p.Name(), func(t *testing.T) {
-			e.t = t
-			e.lend(&fakeNodes{e: e}, &stepHooks{fakeHooks: &fakeHooks{e: e}, release: make(chan struct{})})
-			claim := e.companionOf(p)
-			res, err := p.PrepareResourceClaims(context.Background(), []*resourcev1.ResourceClaim{claim})
-			mustOK(t, err)
-			events := e.takeEvents()
-			failed := slices.ContainsFunc(events, func(ev string) bool { return strings.HasPrefix(ev, "failed l1: ") })
-			if res[claim.UID].Err == nil || !failed || slices.Contains(events, "after l1") {
-				t.Fatalf("Prepare %v, calls:\n%s", res[claim.UID].Err, strings.Join(events, "\n"))
+	for _, fault := range []error{nil, errors.New("disk failure")} {
+		for _, local := range []bool{true, false} {
+			e := lendEnv(t)
+			p := e.pool
+			if local {
+				p = e.local
 			}
-		})
+			t.Run(fmt.Sprintf("%s, write error %v", p.Name(), fault), func(t *testing.T) {
+				e.t = t
+				e.lend(&fakeNodes{e: e}, &stepHooks{fakeHooks: &fakeHooks{e: e}, stall: 3 * commitTimeout, fault: fault})
+				claim := e.companionOf(p)
+				res, err := p.PrepareResourceClaims(context.Background(), []*resourcev1.ResourceClaim{claim})
+				mustOK(t, err)
+				events := e.takeEvents()
+				if fault == nil {
+					if res[claim.UID].Err != nil || !slices.Contains(events, "after l1") {
+						t.Fatalf("Prepare %v, calls:\n%s", res[claim.UID].Err, strings.Join(events, "\n"))
+					}
+					e.wantState(p, "c1", state.PreparationPrepared)
+					return
+				}
+				if res[claim.UID].Err == nil || slices.Contains(events, "after l1") {
+					t.Fatalf("Prepare %v, calls:\n%s", res[claim.UID].Err, strings.Join(events, "\n"))
+				}
+				if got := e.stateOf(p, "c1"); got == state.PreparationPrepared {
+					t.Fatalf("claim %s after a failed write of PREPARED", got)
+				}
+			})
+		}
 	}
 }

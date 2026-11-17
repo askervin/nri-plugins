@@ -49,12 +49,12 @@ import (
 // Locks and waits: the kubelet helper serializes the Prepares and
 // Unprepares of a driver; the store serializes the commits.
 
-// commitTimeout bounds a commit of the records of the claims, which the end
-// of a request does not withdraw.
+// commitTimeout bounds the wait of a commit of the records of the claims
+// in the queue of the store.
 var commitTimeout = time.Minute
 
-// commit applies fn to the document of the store in one durable commit,
-// bounded by commitTimeout, not by ctx.
+// commit applies fn to the document of the store in one durable commit.
+// commitTimeout, not ctx, bounds its wait in the queue.
 func commit(ctx context.Context, st *store.Store, fn func(doc *store.Document) error) error {
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitTimeout)
 	defer cancel()

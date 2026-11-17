@@ -403,12 +403,9 @@ func (p *Plugin) finish(ctx context.Context, pr *prepare) kubeletplugin.PrepareR
 		})
 	}
 	if err != nil {
-		// a commit whose wait ended may still be written with the lease
-		// READY: the lease is failed after it
-		late := pr.lend != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled))
 		err = v.finishFailure(pr.claimName, err)
 		p.rollback(ctx, pr.uid, pr.claimName, func() {
-			if pr.lend != nil && (p.rules.FailLeaseOnFinish || late) {
+			if pr.lend != nil && p.rules.FailLeaseOnFinish {
 				p.lender.Failed(pr.lend.Lease, err)
 			}
 		})

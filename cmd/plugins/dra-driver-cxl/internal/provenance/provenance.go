@@ -453,8 +453,7 @@ func (w *Watcher) commit(d store.Durability, fn func(r *state.Records) error) er
 // step are logged once the store applied it, a lazy step's before its
 // write. A failed commit changes nothing: the dry run is returned without
 // its lines and effects, and the watch scans again at each tick until a
-// step of the kind is committed. A durable commit whose wait ends is failed
-// although the store may still write it later: its lines are not logged.
+// step of the kind is committed.
 func (w *Watcher) commitStep(kind string, now time.Time, r0 *state.Records, fn stepFunc) (*step, bool) {
 	dry := &step{now: now}
 	work := sections(r0)

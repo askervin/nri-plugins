@@ -302,6 +302,83 @@ func TestGroupCommit(t *testing.T) {
 	}
 }
 
+// stallWrite makes the next write of the document wait until release is
+// closed and then fail with fault (nil: succeed); blocked is closed when
+// the write waits.
+func stallWrite(files *hookFiles, fault error) (release, blocked chan struct{}) {
+	release, blocked = make(chan struct{}), make(chan struct{})
+	var stalled atomic.Bool
+	files.setHook(func(op, name string) error {
+		if op != "write" || filepath.Base(name) != FileName+".tmp" || stalled.Swap(true) {
+			return nil
+		}
+		close(blocked)
+		<-release
+		return fault
+	})
+	return release, blocked
+}
+
+// A commit whose context ends while it waits in the queue is withdrawn: it
+// fails with the error of the context, and neither the snapshot nor the
+// file ever shows it. A commit whose context ends while the writer writes
+// it returns the outcome of that write.
+func TestCommitWhoseContextEnds(t *testing.T) {
+	t.Run("withdrawn", func(t *testing.T) {
+		dir := t.TempDir()
+		files := &hookFiles{base: osFiles{}}
+		s := open(t, dir, files, nil)
+		release, blocked := stallWrite(files, nil)
+		first := make(chan error, 1)
+		go func() { first <- s.Commit(context.Background(), Durable, addSteered("first")) }()
+		<-blocked
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		if err := s.Commit(ctx, Durable, addSteered("withdrawn")); !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("Commit of a request in the queue: %v, want the deadline", err)
+		}
+		close(release)
+		if err := <-first; err != nil {
+			t.Fatal(err)
+		}
+		if got := steered(s.Snapshot()); !slices.Equal(got, []string{"first"}) {
+			t.Errorf("snapshot %v, want the withdrawn commit left out", got)
+		}
+		closeStore(t, s)
+		if got := steered(reload(t, dir)); !slices.Equal(got, []string{"first"}) {
+			t.Errorf("reloaded %v, want the withdrawn commit left out", got)
+		}
+	})
+	for _, fault := range []error{nil, errors.New("disk failure")} {
+		t.Run(fmt.Sprintf("taken, write error %v", fault), func(t *testing.T) {
+			files := &hookFiles{base: osFiles{}}
+			s := open(t, t.TempDir(), files, nil)
+			defer closeStore(t, s)
+			release, blocked := stallWrite(files, fault)
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() { done <- s.Commit(ctx, Durable, addSteered("taken")) }()
+			<-blocked
+			cancel()
+			select {
+			case err := <-done:
+				close(release)
+				t.Fatalf("Commit returned %v while the writer wrote it", err)
+			case <-time.After(50 * time.Millisecond):
+			}
+			close(release)
+			err := <-done
+			want := []string{"taken"}
+			if fault != nil {
+				want = nil
+			}
+			if !errors.Is(err, fault) || !slices.Equal(steered(s.Snapshot()), want) {
+				t.Errorf("Commit %v, snapshot %v; want error %v and %v", err, steered(s.Snapshot()), fault, want)
+			}
+		})
+	}
+}
+
 // writeSteps are the operations of a write of the document after the
 // first one, in order.
 var writeSteps = []string{

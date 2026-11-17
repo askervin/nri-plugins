@@ -23,12 +23,14 @@
 // group once (a synced temporary file, the current file linked to
 // state.json.prev, a rename, a synced directory) before readers see it.
 // Durable commits wait for that write, lazy ones only for their
-// application. A failed write discards the group: the snapshot is never
-// ahead of the disk. A failed sync of the directory is the one case where
-// the disk may be ahead: the discarded group may be visible in state.json,
-// and the next write links it to state.json.prev with its generation; this
-// is harmless because a record is committed before the kernel objects it
-// names are made.
+// application. A commit whose context ends before the writer takes it is
+// withdrawn. A taken commit waits for its outcome. So a failed commit
+// means that the change did not happen. A failed write discards the
+// group: the snapshot is never ahead of the disk. A failed sync of the
+// directory is the one case where the disk may be ahead: the discarded
+// group may be visible in state.json, and the next write links it to
+// state.json.prev with its generation; this is harmless because a record
+// is committed before the kernel objects it names are made.
 //
 // The document is decoded strictly: an unknown field, another schema, data
 // after the document or a state that a stored record may not have make it
