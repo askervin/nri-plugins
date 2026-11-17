@@ -59,7 +59,7 @@ func (c *cli) cmdGuest(ctx context.Context, args []string) error {
 	sub, args := args[0], args[1:]
 	switch sub {
 	case "-h", "-help", "--help", "help":
-		fmt.Fprint(c.stdout, usage)
+		_, _ = fmt.Fprint(c.stdout, usage)
 		return nil
 	case "wait":
 		fs := c.flagSet("guest wait")
@@ -78,7 +78,7 @@ func (c *cli) cmdGuest(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(c.stdout, m)
+		_, _ = fmt.Fprintln(c.stdout, m)
 		return nil
 	case "memdev":
 		fs := c.flagSet("guest memdev")
@@ -90,11 +90,11 @@ func (c *cli) cmdGuest(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(c.stdout, m)
+		_, _ = fmt.Fprintln(c.stdout, m)
 		return nil
 	case "region":
 		if len(args) > 0 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
-			fmt.Fprint(c.stdout, usage)
+			_, _ = fmt.Fprint(c.stdout, usage)
 			return nil
 		}
 		if len(args) == 0 || args[0] != "create" {
@@ -165,7 +165,7 @@ func (c *cli) cmdGuest(ctx context.Context, args []string) error {
 		m, _, err := c.guestMemdev(ctx, pos[0])
 		if errors.Is(err, kernel.ErrNotFound) {
 			if !c.json() {
-				fmt.Fprintf(c.stdout, "%s: not present, nothing to release\n", pos[0])
+				_, _ = fmt.Fprintf(c.stdout, "%s: not present, nothing to release\n", pos[0])
 			}
 			return nil
 		}
@@ -176,7 +176,7 @@ func (c *cli) cmdGuest(ctx context.Context, args []string) error {
 			return err
 		}
 		if !c.json() {
-			fmt.Fprintf(c.stdout, "%s: released\n", m)
+			_, _ = fmt.Fprintf(c.stdout, "%s: released\n", m)
 		}
 		return nil
 	}
@@ -206,12 +206,12 @@ func (c *cli) printRegionInfo(ri *regionInfo) error {
 		return c.printJSON(ri)
 	}
 	w := c.table()
-	fmt.Fprintln(w, "MEMDEV\tREGION\tDAX\tDRIVER\tMODE\tNODE\tDEVICE\tBLOCKS")
+	_, _ = fmt.Fprintln(w, "MEMDEV\tREGION\tDAX\tDRIVER\tMODE\tNODE\tDEVICE\tBLOCKS")
 	blocks := ""
 	if n := len(ri.Blocks); n > 0 {
 		blocks = fmt.Sprintf("memory%d..memory%d", ri.Blocks[0], ri.Blocks[n-1])
 	}
-	fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", ri.Memdev, ri.Region, dash(ri.Dax), dash(ri.Driver), dash(ri.Mode), ri.Node, dash(ri.Device), dash(blocks))
+	_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", ri.Memdev, ri.Region, dash(ri.Dax), dash(ri.Driver), dash(ri.Mode), ri.Node, dash(ri.Device), dash(blocks))
 	return w.Flush()
 }
 
@@ -229,7 +229,7 @@ func (c *cli) kernel() *kernel.Kernel {
 // logf writes a line to stderr with -v.
 func (c *cli) logf(format string, args ...any) {
 	if c.verbose {
-		fmt.Fprintf(c.stderr, format+"\n", args...)
+		_, _ = fmt.Fprintf(c.stderr, format+"\n", args...)
 	}
 }
 
