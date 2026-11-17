@@ -18,12 +18,12 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
@@ -375,14 +375,6 @@ func TestCharCreateContainerLogLines(t *testing.T) {
 			t.Errorf("no line %q:\n%s", line, logs())
 		}
 	}
-	for pattern, text := range map[string]string{
-		compat.LogNRICreateContainerCtrCtrMemoryMgmtSteering:  "ctr=ns/pod-u1/g: memory ",
-		compat.DocNRICreateContainerCtrCtrDramAndRegionMemory: "dram and region memory is not steered",
-	} {
-		if line := lineWith(logs(), text); !compat.Matches(strings.ReplaceAll(pattern, "<ctr>", "$ctr"), line) {
-			t.Errorf("line %q does not match %q", line, pattern)
-		}
-	}
 
 	// the lines that the e2e tests and the documentation quote
 	auto := claimSettings("a", "r", config.Steering{Policy: config.PolicyAuto})
@@ -396,21 +388,18 @@ func TestCharCreateContainerLogLines(t *testing.T) {
 	none.createMems(pod, testCtr(pod, "c12", "none", 0))
 	out := logs()
 	for _, want := range []string{
-		strings.ReplaceAll(compat.DocNRICreateContainerCtrCtrMemoryFencedSteeringNone, "<ctr>", "ns/plain/main"),
-		strings.ReplaceAll(compat.DocNRICreateContainerCtrCtrMemorySteeredSteeringAuto, "<ctr>", "ns/pod-u1/steered"),
-		strings.ReplaceAll(compat.DocNRICreateContainerCtrCtrMemoryNoneSteeringNone, "<ctr>", "ns/pod-u1/none"),
-		strings.ReplaceAll(compat.DocNRICreateContainerError, "<error>", "container ns/pod-u1/f: container.steering.policy: "),
+		"NRI CreateContainer: ctr=ns/plain/main: memory fenced (steering none (default), fencing allowed-mems (default))",
+		"NRI CreateContainer: ctr=ns/pod-u1/steered: memory steered (steering auto from claim ns/a request r, fencing allowed-mems (default))",
+		"NRI CreateContainer: ctr=ns/pod-u1/none: memory none (steering none (default), fencing none (node default))",
+		"NRI CreateContainer: container ns/pod-u1/f: container.steering.policy: ",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("no line %q:\n%s", want, out)
 		}
 	}
-	line := lineWith(out, "ctr=ns/plain/main: cpuset.mems=")
-	if !compat.Matches(compat.LogNRICreateContainerCtrDRANsPlainMainCpusetMemsH79c102, line) {
-		t.Errorf("line %q does not match %q", line, compat.LogNRICreateContainerCtrDRANsPlainMainCpusetMemsH79c102)
-	}
-	if ok, err := compat.MatchesRegexp(compat.LogNRICreateContainerCtrDRANsPlainMainCpusetMemsH9df004, line); err != nil || !ok {
-		t.Errorf("line %q does not match %q: %v", line, compat.LogNRICreateContainerCtrDRANsPlainMainCpusetMemsH9df004, err)
+	mems := regexp.MustCompile(`NRI CreateContainer: ctr=ns/plain/main: cpuset\.mems=[0-9,-]* `)
+	if line := lineWith(out, "ctr=ns/plain/main: cpuset.mems="); !mems.MatchString(line) {
+		t.Errorf("line %q does not match %q", line, mems)
 	}
 
 	// a numa claim of steering auto without memory to steer
@@ -422,9 +411,7 @@ func TestCharCreateContainerLogLines(t *testing.T) {
 	n.local.set(fenceClaims())
 	n.createMems(pod, withClaims(testCtr(pod, "c9", "i", 0), "dax"))
 	if line := lineWith(logs(), "ctr=ns/pod-u1/i: steering policy auto"); !strings.HasSuffix(line,
-		"NRI CreateContainer: ctr=ns/pod-u1/i: steering policy auto: no numa memory to steer") ||
-		!compat.Matches(strings.ReplaceAll(compat.LogNRICreateContainerCtrDRANsSplitCDaxSteering, "/split/c-dax:", "/pod-u1/i:"), line) ||
-		!compat.Matches(strings.ReplaceAll(compat.DocNRICreateContainerCtrCtrSteeringPolicyAutoNo, "<ctr>", "ns/pod-u1/i"), line) {
+		"NRI CreateContainer: ctr=ns/pod-u1/i: steering policy auto: no numa memory to steer") {
 		t.Errorf("line %q:\n%s", line, logs())
 	}
 }

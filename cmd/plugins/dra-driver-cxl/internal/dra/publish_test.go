@@ -32,7 +32,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -177,13 +176,11 @@ func wantLogLineText(t *testing.T, log, text string) {
 	t.Fatalf("no log line ends with %q:\n%s", text, log)
 }
 
-// logMatches returns the number of lines of the log that match, by
-// compat.Matches, the template with the replacements of the replacer.
-func logMatches(log, template string, replace ...string) int {
-	template = strings.NewReplacer(replace...).Replace(template)
+// logMatches returns the number of lines of the log that contain text.
+func logMatches(log, text string) int {
 	n := 0
 	for _, line := range strings.Split(log, "\n") {
-		if compat.Matches(template, line) {
+		if strings.Contains(line, text) {
 			n++
 		}
 	}
@@ -529,10 +526,10 @@ func TestSharedRefusalLogged(t *testing.T) {
 		t.Fatalf("published %v", pubNames(devs))
 	}
 	out := logs()
-	if n := logMatches(out, compat.DocNotPublishingMemoryDeviceMemNAsAShared, "<memN>", "mem-refused", "<reason>", heldReason); n != 1 {
+	if n := logMatches(out, `- not publishing memory device "mem-refused" as a shared local device: `+heldReason); n != 1 {
 		t.Fatalf("%d lines of the held refusal:\n%s", n, out)
 	}
-	if n := logMatches(out, compat.DocNotPublishingMemoryDeviceMemNAsAShared, "<memN>", "mem-refused", "<reason>", "pool device"); n != 1 {
+	if n := logMatches(out, `- not publishing memory device "mem-refused" as a shared local device: pool device`); n != 1 {
 		t.Fatalf("%d lines of the pool refusal:\n%s", n, out)
 	}
 }
@@ -564,7 +561,7 @@ func TestPersistentMemdevRefusals(t *testing.T) {
 		if devs := BuildDevices(cfg, detected, tc.pool, tc.held, local); len(devs) != 0 {
 			t.Fatalf("%s: published %v", tc.reason, pubNames(devs))
 		}
-		if n := logMatches(logs(), compat.DocNotPublishingMemoryDeviceMemNAsAPersistent, "<memN>", "mem3", "<reason>", tc.reason); n != 1 {
+		if n := logMatches(logs(), `- not publishing memory device "mem3" as a persistent local memory device: `+tc.reason); n != 1 {
 			t.Fatalf("%d lines with %q:\n%s", n, tc.reason, logs())
 		}
 	}
@@ -630,17 +627,7 @@ func TestRescanBeforeStart(t *testing.T) {
 	if len(list.Items) != 0 {
 		t.Fatalf("published before the start: %+v", list.Items)
 	}
-	published := func() int {
-		n := 0
-		for _, line := range strings.Split(logs(), "\n") {
-			if ok, err := compat.MatchesRegexp(compat.LogRescanAndPublishPublishedUpdatedResources, line); err != nil {
-				t.Fatal(err)
-			} else if ok {
-				n++
-			}
-		}
-		return n
-	}
+	published := func() int { return logMatches(logs(), "rescanAndPublish: published updated resources") }
 	if n := published(); n != 0 {
 		t.Fatalf("%d lines of a publish before the start:\n%s", n, logs())
 	}

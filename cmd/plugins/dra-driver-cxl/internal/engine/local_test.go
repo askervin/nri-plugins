@@ -25,7 +25,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -428,10 +427,9 @@ func TestLocalKindIdleReleasedFirst(t *testing.T) {
 // stepTime is the time of a step in a log line.
 var stepTime = regexp.MustCompile(`in [0-9]+\.[0-9]+ms`)
 
-// wantDocLines fails the test unless every doc line, with the replacements
-// (old, new pairs) applied, is a message of the log; the times of the
-// steps are left out ("in <t>").
-func wantDocLines(t *testing.T, logs string, repl []string, docs ...string) {
+// wantMessages fails the test unless every wanted line is a message of the
+// log; "in <t>" in a wanted line stands for the time of a step.
+func wantMessages(t *testing.T, logs string, want ...string) {
 	t.Helper()
 	var msgs []string
 	for _, l := range strings.Split(logs, "\n") {
@@ -439,10 +437,9 @@ func wantDocLines(t *testing.T, logs string, repl []string, docs ...string) {
 			msgs = append(msgs, stepTime.ReplaceAllString(msg, "in <t>"))
 		}
 	}
-	r := strings.NewReplacer(repl...)
-	for _, d := range docs {
-		if want := stepTime.ReplaceAllString(r.Replace(d), "in <t>"); !slices.Contains(msgs, want) {
-			t.Errorf("no %q in\n  %s", want, strings.Join(msgs, "\n  "))
+	for _, w := range want {
+		if !slices.Contains(msgs, w) {
+			t.Errorf("no %q in\n  %s", w, strings.Join(msgs, "\n  "))
 		}
 	}
 }
@@ -454,8 +451,7 @@ func wantDocLines(t *testing.T, logs string, repl []string, docs ...string) {
 // released with the claims left, kept at a start and kept idle below a
 // newer region.
 func TestLocalLogLines(t *testing.T) {
-	memdev := []string{"mem1", "mem0", "0xc100e2e1", "0x11"}
-	with := func(repl ...string) []string { return append(slices.Clone(memdev), repl...) }
+	const memdev = "local: memdev mem0 (serial 0x11): "
 	t.Run("sliced", func(t *testing.T) {
 		v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
 		logs := captureKlog(t)
@@ -464,19 +460,17 @@ func TestLocalLogLines(t *testing.T) {
 		v.mustUnprepare(localDriver, "n")
 		v.mustUnprepare(localDriver, "d")
 		out := logs()
-		wantDocLines(t, out, memdev, compat.DocLocalMemdevMem1Serial0xc100e2e1CreatedRegion0Devdax,
-			compat.DocLocalMemdevMem1Serial0xc100e2e1ReleasedRegion0In)
-		wantDocLines(t, out, with("<uid>", "d"), compat.DocLocalMemdevMem1Serial0xc100e2e1ClaimUidZeroed,
-			"local: memdev mem1 (serial 0xc100e2e1): claim <uid>: created slice dax0.0 mode dax size 134217728 at [0x250000000-0x257ffffff] in <t>",
-			"local: memdev mem1 (serial 0xc100e2e1): claim <uid>: deleted slice dax0.0 mode dax size 134217728 in <t>")
-		wantDocLines(t, out, with("<uid>", "n"), compat.DocLocalMemdevMem1Serial0xc100e2e1ClaimUidCreated,
-			compat.DocLocalMemdevMem1Serial0xc100e2e1ClaimUidOnlined, compat.DocLocalMemdevMem1Serial0xc100e2e1ClaimUidOfflined,
-			compat.DocLocalMemdevMem1Serial0xc100e2e1ClaimUidDeleted,
-			"local: memdev mem1 (serial 0xc100e2e1): claim <uid>: slice of 104857600 bytes rounded up to 134217728 (memory block size 134217728, align 2097152)")
-		rounded := logLine(out, "rounded up to")
-		if ok, err := compat.MatchesRegexp(compat.LogLocalDoesNotStartAtAMemoryBlock, rounded); err != nil || !ok {
-			t.Errorf("line %q does not match the e2e tests (%v)", rounded, err)
-		}
+		wantMessages(t, out,
+			memdev+"created region0 (devdax, dax dax0.0, node 2) in <t>",
+			memdev+"released region0 in <t>",
+			memdev+"claim d: zeroed slice dax0.0 mode dax size 134217728 in <t>",
+			memdev+"claim d: created slice dax0.0 mode dax size 134217728 at [0x250000000-0x257ffffff] in <t>",
+			memdev+"claim d: deleted slice dax0.0 mode dax size 134217728 in <t>",
+			memdev+"claim n: created slice dax0.1 mode numa size 134217728 at [0x258000000-0x25fffffff] in <t>",
+			memdev+"claim n: onlined slice dax0.1 mode numa size 134217728 blocks [75] node 2 in <t>",
+			memdev+"claim n: offlined slice dax0.1 mode numa size 134217728 blocks [75] in <t>",
+			memdev+"claim n: deleted slice dax0.1 mode numa size 134217728 in <t>",
+			memdev+"claim n: slice of 104857600 bytes rounded up to 134217728 (memory block size 134217728, align 2097152)")
 	})
 	t.Run("shared", func(t *testing.T) {
 		v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
@@ -487,15 +481,13 @@ func TestLocalLogLines(t *testing.T) {
 		v.mustUnprepare(localDriver, "s1")
 		v.mustUnprepare(localDriver, "s2")
 		out := logs()
-		wantDocLines(t, out, memdev, compat.DocLocalMemdevMem1Serial0xc100e2e1ZeroedNewShared,
-			compat.DocLocalMemdevMem1Serial0xc100e2e1KeepingRegion0And)
-		wantDocLines(t, out, with("<uid>", "s1", "<uids>", "s2"), compat.DocLocalMemdevMem1Serial0xc100e2e1ClaimUidReleased)
-		wantDocLines(t, out, with("<uid>", "s2", "<uids>", ""), compat.DocLocalMemdevMem1Serial0xc100e2e1ClaimUidReleased)
-		if n := strings.Count(out, compat.LogZeroedNewShared); n != 1 {
-			t.Errorf("%d lines %q", n, compat.LogZeroedNewShared)
-		}
-		if zeroed := logLine(out, compat.LogZeroedNewShared); !compat.Matches(compat.LogZeroedNewSharedSharedDaxSizeDRALocalSizeIn, zeroed) {
-			t.Errorf("line %q does not match the e2e tests", zeroed)
+		wantMessages(t, out,
+			memdev+"zeroed new shared dax0.0 size 1073741824 in <t>",
+			memdev+"keeping region0 and dax0.0 of the idle shared device",
+			memdev+"claim s1: released shared dax0.0, claims left [s2]",
+			memdev+"claim s2: released shared dax0.0, claims left []")
+		if n := strings.Count(out, "zeroed new shared "); n != 1 {
+			t.Errorf("%d lines of the zeroing", n)
 		}
 		releaseIdleShared(v)
 		v.clean("released")
@@ -503,8 +495,8 @@ func TestLocalLogLines(t *testing.T) {
 	t.Run("persistent", func(t *testing.T) {
 		v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib}, fake.MemdevSpec{Serial: serialB})
 		v.formatPmem("mem0", "ext4")
-		pmem := []string{"mem1", "mem0", "0xc100f5e1", "0x91", "/dev/pmem1", filepath.Join(v.f.DevRoot(), "pmem0"), "region2", "region1",
-			"region1", "region0"}
+		pmem := filepath.Join(v.f.DevRoot(), "pmem0")
+		const memdev = "local: memdev mem0 (serial 0x91): "
 		logs := captureKlog(t)
 		v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
 		v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFs, true, ""))
@@ -513,9 +505,10 @@ func TestLocalLogLines(t *testing.T) {
 		above := rawRegion(t, v, "mem1")
 		v.mustUnprepare(localDriver, "r")
 		out := logs()
-		wantDocLines(t, out, append(slices.Clone(pmem), "<uid>", "w", "<uids>", "r"), compat.DocLocalMemdevMem1Serial0xc100f5e1ClaimUidReleased)
-		wantDocLines(t, out, append(slices.Clone(pmem), "<uids>", "r"), compat.DocLocalMemdevMem1Serial0xc100f5e1KeepingPersistentRegion1)
-		wantDocLines(t, out, pmem, compat.DocLocalMemdevMem1Serial0xc100f5e1KeepingRegion1Of)
+		wantMessages(t, out,
+			memdev+"claim w: released persistent "+pmem+", claims left [r]",
+			memdev+"keeping persistent region0, claims [r]",
+			memdev+"keeping region0 of the idle persistent device: region1 lie above it, its release would leave a hole in the decoders of their ports")
 		if strings.Contains(out, "claim r: released persistent") {
 			t.Errorf("the release of the last claim says the claims left:\n%s", out)
 		}
@@ -528,8 +521,7 @@ func TestLocalLogLines(t *testing.T) {
 		v.formatPmem("mem0", "ext4")
 		logs := captureKlog(t)
 		v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
-		wantDocLines(t, logs(), []string{"mem1", "mem0", "0xc100f5e1", "0x91", "region1", "region0"},
-			compat.DocLocalMemdevMem1Serial0xc100f5e1CreatedRegion1Pmem)
+		wantMessages(t, logs(), "local: memdev mem0 (serial 0x91): created region0 (pmem, nvdimm region0) in <t>")
 		v.mustUnprepare(localDriver, "w")
 		v.clean("unprepared")
 	})

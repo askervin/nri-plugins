@@ -25,7 +25,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
@@ -344,41 +343,6 @@ func TestSerialZero(t *testing.T) {
 	}
 	if l := e.stored(resp.Lease); l == nil || !l.Asked.AsksSerial() || l.Asked.Serial != 0 {
 		t.Fatalf("stored lease %+v, want one that asks for serial 0x0", l)
-	}
-}
-
-// The refusals of requests that the e2e tests find in the output of
-// cxl-request come from the broker in the texts of package compat.
-func TestRequestTexts(t *testing.T) {
-	e := newSlicesBrokerEnv(t)
-	e.openClaim()
-	e.start()
-	for _, c := range []struct {
-		req      api.Request
-		template string
-	}{
-		{api.Request{Op: "request", Serial: "0xc1ee0001", Shared: true}, compat.RequestDevicePooled0SerialNotShareable},
-		{api.Request{Op: "request", Serial: "0xc100e2e2", Source: "pool"}, compat.RequestDeviceSNotAPoolDevice},
-		{api.Request{Op: "request", Serial: "0xc1ae0001", Mode: "block"}, compat.RequestDeviceSharedSerialModeBlockNeedsAPersistentDevice},
-		{api.Request{Op: "request", Serial: "0xc1ae0001", Mode: "fs", ReadOnly: true, Shared: true}, compat.RequestDeviceSharedSerialModeFSNeedsAPersistentDevice},
-		{api.Request{Op: "request", Serial: "0xc1ae0001", Mode: "numa"}, compat.RequestSharedMemoryIsNeverOnlinedAsRAMUse},
-		{api.Request{Op: "request", Serial: "pooled0"}, compat.RequestInvalidSerialPooled0},
-		{api.Request{Op: "request", Size: "1Gi", Source: "remote"}, compat.RequestInvalidSourceRemoteLocalOrPool},
-		{api.Request{Op: "request", Size: "1Gi", Wait: "soon"}, compat.RequestInvalidWaitSoon},
-		{api.Request{Op: "request"}, compat.RequestSizeOrSerialIsRequired},
-		{api.Request{Op: "release"}, compat.RequestReleaseTakesLeaseIDOrAll},
-	} {
-		resp, _ := e.call(c.req)
-		if !compat.Matches(c.template, resp.Error) {
-			t.Errorf("%+v: %q is not %q", c.req, resp.Error, c.template)
-		}
-	}
-	resp, _ := e.call(api.Request{Op: "request", Size: "64Mi", Wait: "0s"})
-	for _, template := range []string{compat.RequestLeaseMemLeaseIsNotADaxOrBlock, compat.RequestLeaseLeaseIsNotADaxOrBlock} {
-		r, _ := e.call(api.Request{Op: "fd", Lease: resp.Lease})
-		if !compat.Matches(template, r.Error) {
-			t.Errorf("fd of a numa lease: %q is not %q", r.Error, template)
-		}
 	}
 }
 

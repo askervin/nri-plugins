@@ -43,7 +43,6 @@ import (
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/engine"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
@@ -1069,28 +1068,22 @@ type logWriter func(p []byte) (int, error)
 
 func (f logWriter) Write(p []byte) (int, error) { return f(p) }
 
-// logLines returns the lines of a log that match the template of package
-// compat (compat.Matches) with the placeholders <name> of a documented
-// line replaced by the values of subst (name, value pairs).
-func logLines(log, template string, subst ...string) []string {
-	for i := 0; i+1 < len(subst); i += 2 {
-		template = strings.ReplaceAll(template, "<"+subst[i]+">", subst[i+1])
-	}
+// logLines returns the lines of a log that contain text.
+func logLines(log, text string) []string {
 	var out []string
 	for _, line := range strings.Split(log, "\n") {
-		if compat.Matches(template, line) {
+		if strings.Contains(line, text) {
 			out = append(out, line)
 		}
 	}
 	return out
 }
 
-// wantLogLine fails the test unless the log has a line of the template
-// (logLines).
-func wantLogLine(t *testing.T, log, template string, subst ...string) {
+// wantLogLine fails the test unless a line of the log contains text.
+func wantLogLine(t *testing.T, log, text string) {
 	t.Helper()
-	if len(logLines(log, template, subst...)) == 0 {
-		t.Fatalf("no line %q (%q) in\n%s", template, subst, log)
+	if len(logLines(log, text)) == 0 {
+		t.Fatalf("no line %q in\n%s", text, log)
 	}
 }
 

@@ -20,7 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 )
@@ -113,7 +112,7 @@ func TestFailedCommitHold(t *testing.T) {
 		t.Fatal("a hold without its commit")
 	}
 	out := logs()
-	if n := countLogLines(out, compat.LogPoolSerialsHoldingBackNewMemdev); n != 0 {
+	if n := countLogLines(out, holdingBack); n != 0 {
 		t.Fatalf("%d lines of a hold not committed:\n%s", n, out)
 	}
 	wantLogLine(t, out, "pool serials: writing "+e.name()+": "+errDisk.Error())
@@ -127,7 +126,7 @@ func TestFailedCommitHold(t *testing.T) {
 	if since := e.held(otherLocalSerial); !since.Equal(e.now()) {
 		t.Fatalf("held since %v, expected %v", since, e.now())
 	}
-	wantLogLine(t, logs(), compat.LogPoolSerialsHoldingBackNewMemdev+" mem0 (serial 0xa1)")
+	wantLogLine(t, logs(), holdingBack+" mem0 (serial 0xa1)")
 	if !e.w.Holding() || e.w.retrying() {
 		t.Fatalf("holding %v, retrying %v", e.w.Holding(), e.w.retrying())
 	}

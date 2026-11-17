@@ -26,7 +26,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 )
@@ -200,7 +199,7 @@ func TestLostStore(t *testing.T) {
 	}
 	e.plug(localSerial)
 	e.wantHeld("lost records", localSerial)
-	wantLogLine(t, logs(), fmt.Sprintf(compat.LogPoolSerialsHoldingBackNewMemdev+" mem0 (serial 0xc100e2e1): it may be a pool device: "+
+	wantLogLine(t, logs(), fmt.Sprintf(holdingBack+" mem0 (serial 0xc100e2e1): it may be a pool device: "+
 		"the remembered pool serials are lost (%s)", lost))
 	if reason := e.watched(localSerial).HeldReason; reason != state.HeldLost {
 		t.Fatalf("held reason %q", reason)

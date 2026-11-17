@@ -26,7 +26,6 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -73,7 +72,7 @@ func TestPersistentBlockWriter(t *testing.T) {
 func TestPersistentReaderNeedsNamespace(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib})
 	err := v.prepare(poolDriver, "r1", fsGrant("r1", true, ""))
-	if err == nil || !strings.Contains(err.Error(), compat.OracleRefusedNoNS) {
+	if err == nil || !strings.Contains(err.Error(), "no fsdax namespace") {
 		t.Fatalf("error %v", err)
 	}
 	v.check("refused")
@@ -138,7 +137,8 @@ func TestPersistentP9D(t *testing.T) {
 	v.mustPrepare(poolDriver, "r", fsGrant("r", true, state.AccessDirect))
 	n := mountCalls(v)
 	err := v.prepare(poolDriver, "w", fsGrant("w", false, state.AccessCached))
-	want := strings.ReplaceAll(compat.EventDeviceFSSerialItIsMountedWithAccessDirect, "$FS_SERIAL", api.FormatSerial(serialP))
+	want := "device " + api.FormatSerial(serialP) + ": it is mounted with access direct only on this node: " +
+		"a read-write claim with access cached would mount it a second time"
 	if err == nil || err.Error() != want {
 		t.Fatalf("error %v, want %q", err, want)
 	}
@@ -268,11 +268,7 @@ func TestPersistentBind(t *testing.T) {
 // The log lines of the node mounts and of the read-only flags of the block
 // devices, each once and in order, with the driver's name first.
 func TestPersistentLogLines(t *testing.T) {
-	serial := strings.TrimPrefix(api.FormatSerial(serialP), "0x")
 	prefix := poolDriver + ": device " + api.FormatSerial(serialP) + ": "
-	doc := func(line string, placeholders ...string) string {
-		return strings.NewReplacer(append([]string{"<serial>", serial}, placeholders...)...).Replace(line)
-	}
 	wantLines := func(t *testing.T, logs string, want ...string) {
 		t.Helper()
 		if got := linesWithPrefix(logs, prefix); !slices.Equal(got, want) {
@@ -286,37 +282,30 @@ func TestPersistentLogLines(t *testing.T) {
 		v.mustPrepare(poolDriver, "w", fsGrant("w", false, ""))
 		v.mustUnprepare(poolDriver, "w")
 		pmem := v.f.DevRoot() + "/pmem0"
-		mounted := doc(compat.DocCXLPoolNRIIoDevice0xSerialMounted,
-			"<source>", pmem, "<mnt>", direct, "<type>", "ext4", "ro|rw", "rw", "<data>", "dax=always")
-		e2e := strings.NewReplacer("$PMEM", pmem, "$MNT_DIRECT", direct).Replace(compat.LogMountedPmemAtMntDirectExt4RwDaxAlways)
-		if !strings.HasSuffix(mounted, ": "+e2e) {
-			t.Fatalf("line %q does not end with %q", mounted, e2e)
-		}
-		wantLines(t, logs(), mounted, doc(compat.DocCXLPoolNRIIoDevice0xSerialUnmounted, "<mnt>", direct))
+		wantLines(t, logs(),
+			prefix+"mounted "+pmem+" at "+direct+" (ext4, rw, dax=always)",
+			prefix+"unmounted "+direct)
 	})
 	t.Run("cached reader and writer", func(t *testing.T) {
 		v := pmemEnv(t, "ext4")
 		logs := captureKlog(t)
 		cached := filepath.Join(v.dir, poolDriver, "mounts", "91-cached")
 		pmem, loop := v.f.DevRoot()+"/pmem0", v.f.DevRoot()+"/loop0"
-		pmemRO := doc(compat.DocCXLPoolNRIIoDevice0xSerialDevH3d032c, "/dev/pmemK", pmem)
-		loopRW := doc(compat.DocCXLPoolNRIIoDevice0xSerialDevH11871f, "/dev/loopN", loop)
 		v.mustPrepare(poolDriver, "r", fsGrant("r", true, state.AccessCached))
 		v.mustPrepare(poolDriver, "w", fsGrant("w", false, state.AccessCached))
 		v.mustUnprepare(poolDriver, "w")
 		v.mustUnprepare(poolDriver, "r")
 		wantLines(t, logs(),
-			pmemRO,
+			prefix+pmem+" read-only",
 			prefix+loop+" read-only",
-			doc(compat.DocCXLPoolNRIIoDevice0xSerialMounted,
-				"<source>", loop, "<mnt>", cached, "<type>", "ext4", "ro|rw", "ro", "<data>", "dax=never"),
+			prefix+"mounted "+loop+" at "+cached+" (ext4, ro, dax=never)",
 			prefix+pmem+" read-write",
-			loopRW,
-			doc(compat.DocCXLPoolNRIIoDevice0xSerialRemountedH6128ac, "<mnt>", cached),
-			doc(compat.DocCXLPoolNRIIoDevice0xSerialRemountedH548a27, "<mnt>", cached),
+			prefix+loop+" read-write",
+			prefix+"remounted "+cached+" read-write",
+			prefix+"remounted "+cached+" read-only",
 			prefix+loop+" read-only",
-			pmemRO,
-			doc(compat.DocCXLPoolNRIIoDevice0xSerialUnmounted, "<mnt>", cached))
+			prefix+pmem+" read-only",
+			prefix+"unmounted "+cached)
 	})
 }
 
@@ -431,7 +420,8 @@ func TestPersistentReleasingUses(t *testing.T) {
 		if err := v.unprepare(localDriver, "w"); err == nil || !strings.Contains(err.Error(), "remounting "+direct+" read-only: device or resource busy") {
 			t.Fatalf("error %v", err)
 		}
-		other := strings.ReplaceAll(compat.EventDeviceFSSerialItIsMountedReadWriteWith, "$FS_SERIAL", api.FormatSerial(serialP))
+		other := "device " + api.FormatSerial(serialP) + ": it is mounted read-write with access direct on this node: " +
+			"access cached would mount it a second time"
 		refused(t, v, localPmemReq("c", 0, state.ModeFs, true, state.AccessCached), other)
 		refused(t, v, localPmemReq("w2", 0, state.ModeFs, false, state.AccessCached), other)
 		// a reader of the node mount: as it is, read-write

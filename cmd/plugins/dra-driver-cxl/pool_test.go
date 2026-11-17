@@ -17,6 +17,7 @@ package main
 import (
 	"os"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -29,7 +30,6 @@ import (
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
@@ -100,14 +100,8 @@ func TestPoolPrepareExclusive(t *testing.T) {
 	res := prepare(t, p, poolClaim("u1", "c1", "pooled0", exclusiveData))
 	noErr(t, res.Err)
 	// the line that test10 waits for
-	prepared := false
-	for _, line := range strings.Split(logs(), "\n") {
-		ok, err := compat.MatchesRegexp(compat.LogDRAPoolDriverClaimPreparedPooled0, line)
-		noErr(t, err)
-		prepared = prepared || ok
-	}
-	if !prepared {
-		t.Fatalf("no line %q in\n%s", compat.LogDRAPoolDriverClaimPreparedPooled0, logs())
+	if prepared := regexp.MustCompile(`cxl-pool\.nri\.io: claim .*: prepared pooled0`); !prepared.MatchString(logs()) {
+		t.Fatalf("no line %q in\n%s", prepared, logs())
 	}
 	want := []kubeletplugin.Device{{ // the cxl.nri.io result is not ours
 		Requests:     []string{"mem"},

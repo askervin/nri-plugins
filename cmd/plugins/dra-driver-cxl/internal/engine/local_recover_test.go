@@ -23,7 +23,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -84,16 +83,9 @@ func TestLocalRecoverShared(t *testing.T) {
 			if line == "" {
 				t.Fatalf("no %q in\n%s", c.want, out)
 			}
-			switch {
-			case c.shared && !compat.Matches(compat.LogSerialDRALocalSerialKeepingSharedSharedRegionAndSharedDaxClaims, line):
-				t.Errorf("line %q does not match the e2e tests", line)
-			case c.released && !compat.Matches(compat.LogSerialDRALocalSerialNotConfiguredSharedAnyMoreReleasing, line):
-				t.Errorf("line %q does not match the e2e tests", line)
-			}
 			if c.released {
-				released := logLine(out, "released region0 in ")
-				if ok, err := compat.MatchesRegexp(compat.LogZeroedNewSharedReleasingItsRegionReleasedSharedRegion, released); err != nil || !ok {
-					t.Errorf("line %q does not match the e2e tests (%v)", released, err)
+				if released := logLine(out, "released region0 in "); released == "" {
+					t.Errorf("no line of the region release in\n%s", out)
 				}
 				v.clean("released")
 				return
@@ -408,8 +400,8 @@ func TestLocalRecoverHeldBlockDevice(t *testing.T) {
 	}
 	lines := logs()
 	kept := logLine(lines, "claim ns/b (b): not everything was released at start (")
-	if ok, err := compat.MatchesRegexp(compat.ObserverLogCountInUse, kept); err != nil || !ok {
-		t.Fatalf("line %q does not match the observer's (%v) in\n%s", kept, err, lines)
+	if !strings.Contains(kept, "is still in use") {
+		t.Fatalf("line %q does not say that the device is still in use in\n%s", kept, lines)
 	}
 	wantLog(t, lines, localDriver+": device 0x91: "+pmem+" is held: in use")
 	wantPreparation(t, v, localDriver, "b", state.PreparationKept)

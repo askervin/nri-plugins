@@ -27,7 +27,6 @@ import (
 	"github.com/containerd/nri/pkg/api"
 	"k8s.io/utils/cpuset"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
@@ -849,8 +848,7 @@ func TestCharFenceLogLines(t *testing.T) {
 	}
 	n.p.Seed([]int{2})
 	line := lineWith(logs(), "of prepared claims")
-	if line == "" || !compat.Matches(compat.LogNRIFenceFencingCXLNodesNumaNodeOfPrepared, line) ||
-		!strings.HasSuffix(line, "NRI fence: fencing CXL nodes 2 of prepared claims") {
+	if !strings.HasSuffix(line, "NRI fence: fencing CXL nodes 2 of prepared claims") {
 		t.Fatalf("seed line %q:\n%s", line, logs())
 	}
 }

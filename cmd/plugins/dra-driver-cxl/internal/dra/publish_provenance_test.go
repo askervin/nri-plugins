@@ -35,7 +35,6 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
@@ -314,10 +313,10 @@ func TestPoolSerialsSliceDeleted(t *testing.T) {
 	if e.w.Holding() {
 		t.Fatal("a remembered pool device is held back as a new memdev")
 	}
-	if n := logMatches(logs(), compat.LogDiscoveredLocalMemoryDeviceMemdevPooled0Serial, "${POOLED0_SERIAL#0x}", "c1ae2001"); n != 0 {
+	if n := logMatches(logs(), "discovered local memory device memdev-c1ae2001"); n != 0 {
 		t.Fatalf("the pool device was published as a local one:\n%s", logs())
 	}
-	if n := logMatches(logs(), compat.LogDiscoveredLocalMemoryDeviceMemdevPooled0Serial, "${POOLED0_SERIAL#0x}", "c100e2e1"); n == 0 {
+	if n := logMatches(logs(), "discovered local memory device memdev-c100e2e1"); n == 0 {
 		t.Fatalf("no line of the local memdev:\n%s", logs())
 	}
 	// the store has the pool serials and the local memdev
@@ -373,8 +372,7 @@ func TestPoolSerialsNewMemdevHeldBack(t *testing.T) {
 		t.Fatal("the new memdev is not held back")
 	}
 	out := logs()
-	if logMatches(out, compat.LogPoolSerialsHoldingBackNewMemdev) != 1 ||
-		logMatches(out, strings.TrimSuffix(compat.DocPoolSerialsHoldingBackNewMemdev, " ...")) != 1 {
+	if logMatches(out, "pool serials: holding back new memdev") != 1 {
 		t.Fatalf("no line of the hold:\n%s", out)
 	}
 	e.advance(provenance.HoldBack / 2)

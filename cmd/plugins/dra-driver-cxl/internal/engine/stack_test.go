@@ -21,7 +21,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -70,7 +69,7 @@ func TestStackBlockedUntilHoleClears(t *testing.T) {
 
 	err := v.prepare(poolDriver, "xnuma-b", poolReq("xnuma-b", 0, serialB, state.ModeNUMA, state.KindExclusive))
 	var hole *kernel.ErrDecoderHole
-	if !errors.As(err, &hole) || !strings.Contains(err.Error(), compat.OracleBlockedText) {
+	if !errors.As(err, &hole) || !strings.Contains(err.Error(), "CXL decoders released out of order") {
 		t.Fatalf("error %v", err)
 	}
 	v.check("blocked")
@@ -152,7 +151,7 @@ func TestStackLocalSlicedHole(t *testing.T) {
 	} {
 		err := v.prepare(c.driver, c.req.Ref.Claim, c.req)
 		var hole *kernel.ErrDecoderHole
-		if !errors.As(err, &hole) || !strings.Contains(err.Error(), compat.OracleBlockedText) {
+		if !errors.As(err, &hole) || !strings.Contains(err.Error(), "CXL decoders released out of order") {
 			t.Fatalf("%s: error %v", c.req.Ref.Claim, err)
 		}
 		v.check("blocked " + c.req.Ref.Claim)

@@ -27,7 +27,6 @@ import (
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -125,8 +124,8 @@ func TestLocalSharedDax(t *testing.T) {
 	e.mustPrepare(e.local, localClaim("w1", localDev, -device.SharesUnlimited, cfgDax))
 	e.mustPrepare(e.local, localClaim("r1", localDev, -1, cfgDaxRO))
 	log := logs()
-	wantLogLine(t, log, compat.DocLocalMemdevMem1Serial0xc100e2e1ClaimUidRequest, "uid", "w1")
-	lines := logLines(log, compat.LogClaimClaimUidRequestMemSharedSharedDaxSizeDRALocalSize)
+	wantLogLine(t, log, "local: memdev mem1 (serial 0xc100e2e1): claim w1 request mem: shared dax0.0 size 1073741824 read-only false exclusive")
+	lines := logLines(log, "read-only true 1 share")
 	if len(lines) != 1 || !strings.Contains(lines[0], "claim r1 request mem: shared dax0.0 size 1073741824 read-only true 1 share") {
 		t.Fatalf("shared lines %q", lines)
 	}
@@ -211,8 +210,8 @@ func TestLocalPersistentFs(t *testing.T) {
 		w.Path != "/run/cxl-fs/C100F5E1" || w.ReadOnly || r.NodeMount != w.NodeMount || !r.ReadOnly {
 		t.Fatalf("device infos %+v %+v", w, r)
 	}
-	doc := strings.ReplaceAll(compat.DocLocalMemdevMem1Serial0xc100f5e1Region1ClaimUid, "/dev/pmem1", w.BlockDevice)
-	wantLogLine(t, logs(), doc, "uid", "w1")
+	wantLogLine(t, logs(), "local: memdev mem1 (serial 0xc100f5e1) region1: claim w1 request mem: persistent "+w.BlockDevice+
+		` mode fs read-only false access "direct" fs "ext4"`)
 	for _, c := range []struct {
 		uid      string
 		readOnly bool

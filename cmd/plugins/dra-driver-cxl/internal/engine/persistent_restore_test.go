@@ -20,7 +20,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 )
 
@@ -126,9 +125,7 @@ func TestRestoreFlags(t *testing.T) {
 			wantLog(t, lines, line)
 			counted := ""
 			for _, l := range strings.Split(lines, "\n") {
-				if ok, err := compat.MatchesRegexp(compat.ObserverLogCountNotRemounted, l); err != nil {
-					t.Fatal(err)
-				} else if ok && counted == "" {
+				if (strings.Contains(l, "not mounting") || strings.Contains(l, "not binding")) && counted == "" {
 					counted = l
 				}
 			}

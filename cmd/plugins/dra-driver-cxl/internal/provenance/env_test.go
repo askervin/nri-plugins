@@ -403,6 +403,10 @@ type writerFunc func(p []byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
+// holdingBack begins the log line of a new memdev that the watcher holds
+// back.
+const holdingBack = "pool serials: holding back new memdev"
+
 // wantLogLine fails the test unless a line of the log contains text.
 func wantLogLine(t *testing.T, log, text string) {
 	t.Helper()

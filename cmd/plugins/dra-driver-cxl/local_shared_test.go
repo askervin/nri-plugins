@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -29,7 +30,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -115,36 +115,24 @@ func wantDax(t *testing.T, e *localTestEnv, dax string, size uint64, driver stri
 	}
 }
 
-// logLines returns the lines of logs that match the constant template of
-// compat (no regular expression).
-func logLines(logs, template string) []string {
-	var out []string
-	for _, line := range strings.Split(logs, "\n") {
-		if compat.Matches(template, line) {
-			out = append(out, line)
-		}
-	}
-	return out
-}
-
-// wantLogLine fails the test unless a line of logs matches the constant
-// template of compat.
-func wantLogLine(t *testing.T, logs, template string) {
+// wantLogLine fails the test unless a line of logs contains text.
+func wantLogLine(t *testing.T, logs, text string) {
 	t.Helper()
-	if len(logLines(logs, template)) == 0 {
-		t.Fatalf("no line %q in\n%s", template, logs)
+	if !strings.Contains(logs, text) {
+		t.Fatalf("no line %q in\n%s", text, logs)
 	}
 }
 
-// regexpLines returns the lines of logs that match the regular expression
-// constant pattern of compat.
-func regexpLines(t *testing.T, logs, pattern string) []string {
-	t.Helper()
+// zeroedOrReleased matches the log lines of the shared region zeroed or
+// released.
+var zeroedOrReleased = regexp.MustCompile(`zeroed new shared |releasing its region|released region0`)
+
+// zeroedOrReleasedLines returns the lines of logs that zeroedOrReleased
+// matches.
+func zeroedOrReleasedLines(logs string) []string {
 	var out []string
 	for _, line := range strings.Split(logs, "\n") {
-		ok, err := compat.MatchesRegexp(pattern, line)
-		noErr(t, err)
-		if ok {
+		if zeroedOrReleased.MatchString(line) {
 			out = append(out, line)
 		}
 	}
@@ -202,10 +190,10 @@ func TestLocalSharedClaims(t *testing.T) {
 		t.Fatalf("memdev %+v", m)
 	}
 	lines := logs()
-	wantLogLine(t, lines, compat.LogZeroedNewSharedSharedDaxSizeDRALocalSizeIn)
-	wantLogLine(t, lines, compat.LogClaimWriterUidRequestMemSharedSharedDaxSizeDRALocalSize)
-	wantLogLine(t, lines, compat.LogClaimClaimUidRequestMemSharedSharedDaxSizeDRALocalSize)
-	if got := regexpLines(t, lines, compat.LogZeroedNewSharedReleasingItsRegionReleasedSharedRegion); len(got) != 1 {
+	wantLogLine(t, lines, "zeroed new shared dax0.0 size 1073741824 in ")
+	wantLogLine(t, lines, "claim u1 request mem: shared dax0.0 size 1073741824 read-only false exclusive")
+	wantLogLine(t, lines, "claim u2 request mem: shared dax0.0 size 1073741824 read-only true 1 share")
+	if got := zeroedOrReleasedLines(lines); len(got) != 1 {
 		t.Fatalf("lines of the zeroing and the release %q", got)
 	}
 
@@ -290,10 +278,7 @@ func TestLocalSharedReconcile(t *testing.T) {
 		t.Fatalf("the region of the cut claim is left: %v", rs)
 	}
 	lines := logs()
-	wantLogLine(t, lines, compat.LogSerialDRALocalSerialKeepingSharedSharedRegionAndSharedDaxClaims)
-	if got := logLines(lines, compat.LogSerialDRALocalSerialKeepingSharedSharedRegionAndSharedDaxClaims); !strings.HasSuffix(got[0], "keeping shared region0 and dax0.0, claims [u2]") {
-		t.Fatalf("line %q", got[0])
-	}
+	wantLogLine(t, lines, "(serial 0xc100e2e1): keeping shared region0 and dax0.0, claims [u2]\n")
 
 	// configured shared, no claims: kept idle
 	e.mustUnprepare("u2")
@@ -302,7 +287,7 @@ func TestLocalSharedReconcile(t *testing.T) {
 	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{}})
 	e.mustPrepare(localClaim("u3", -1))
 	wantLocalRegionCount(t, e, 1, 0)
-	if got := regexpLines(t, logs()[n:], compat.LogZeroedNewSharedReleasingItsRegionReleasedSharedRegion); len(got) > 0 {
+	if got := zeroedOrReleasedLines(logs()[n:]); len(got) > 0 {
 		t.Fatalf("the kept device was zeroed or released: %q", got)
 	}
 
@@ -330,8 +315,8 @@ func TestLocalSharedReconcile(t *testing.T) {
 	wantReleasedLast(t, e, "region0")
 	wantSharedUse(t, e, nil)
 	lines = logs()[n:]
-	wantLogLine(t, lines, compat.LogSerialDRALocalSerialNotConfiguredSharedAnyMoreReleasing)
-	if got := regexpLines(t, lines, compat.LogZeroedNewSharedReleasingItsRegionReleasedSharedRegion); len(got) == 0 {
+	wantLogLine(t, lines, "(serial 0xc100e2e1): not configured shared any more, releasing its region")
+	if got := zeroedOrReleasedLines(lines); len(got) == 0 {
 		t.Fatalf("no line of the release in\n%s", lines)
 	}
 }
@@ -563,7 +548,7 @@ func TestLocalSharedRegionGone(t *testing.T) {
 	noErr(t, prepareOn(context.Background(), e.s, sharedClaim("u2", "1")))
 	e.check("prepared u2")
 	// the other claims of the device: none
-	if want := strings.NewReplacer("mem1", "mem0", "[<uids>]", "[]").Replace(compat.DocLocalMemdevMem1Serial0xc100e2e1Region0OfThe); !strings.Contains(logs(), want) {
+	if want := "local: memdev mem0 (serial 0xc100e2e1): region0 of the shared device is gone, forgetting it and its claims []"; !strings.Contains(logs(), want) {
 		t.Fatalf("no %q in\n%s", want, logs())
 	}
 	wantLocalRegionCount(t, e, 2, 1)

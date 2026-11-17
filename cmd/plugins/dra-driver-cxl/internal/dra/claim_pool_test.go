@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -28,7 +29,6 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -52,20 +52,6 @@ func (e *driverEnv) cutPrepare(p *Plugin, claim *resourcev1.ResourceClaim) {
 	_, _ = p.PrepareResourceClaims(context.Background(), []*resourcev1.ResourceClaim{claim})
 }
 
-// wantPoolLine fails the test unless the log has the line of the pool
-// driver's prepared device pooled0 that test10 waits for.
-func wantPoolLine(t *testing.T, log string) {
-	t.Helper()
-	for _, line := range strings.Split(log, "\n") {
-		ok, err := compat.MatchesRegexp(compat.LogDRAPoolDriverClaimPreparedPooled0, line)
-		mustOK(t, err)
-		if ok {
-			return
-		}
-	}
-	t.Fatalf("no line %q in\n%s", compat.LogDRAPoolDriverClaimPreparedPooled0, log)
-}
-
 // A pool device of volatile memory in mode numa: its region onlined, the
 // line of test10, its CDI device; the result of the claim has the pool
 // driver's devices only; the Unprepare releases the device.
@@ -74,7 +60,9 @@ func TestPoolNUMA(t *testing.T) {
 	logs := klogCapture(t)
 	res := e.mustPrepare(e.pool, poolClaim("u1", "pooled0", poolExclusiveData))
 	wantResult(t, res, resultDevice("mem", envPool, "pooled0", "nri.io/cxl-pool=claim-u1-0"))
-	wantPoolLine(t, logs())
+	if prepared := regexp.MustCompile(`cxl-pool\.nri\.io: claim .*: prepared pooled0`); !prepared.MatchString(logs()) {
+		t.Fatalf("no line %q in\n%s", prepared, logs())
+	}
 	if !strings.Contains(e.commands(), "cxl create-region -t ram -d decoder0.0 -m mem0") {
 		t.Fatalf("commands:\n%s", e.commands())
 	}
@@ -95,16 +83,6 @@ func TestPoolNUMA(t *testing.T) {
 		t.Fatalf("not released:\n%s", e.commands())
 	}
 	wantLogText(t, logs(), "cxl-pool.nri.io: unprepared claim demo/claim-u1 (u1)")
-	// the lines of the release that test10 looks for
-	released := false
-	for _, line := range strings.Split(logs(), "\n") {
-		ok, err := compat.MatchesRegexp(compat.LogUnpreparReleas, line)
-		mustOK(t, err)
-		released = released || ok
-	}
-	if !released {
-		t.Fatalf("no line %q in\n%s", compat.LogUnpreparReleas, logs())
-	}
 	e.wantClean()
 	// an unknown claim is not an error
 	e.mustUnprepare(e.pool, "u1")

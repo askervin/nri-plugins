@@ -28,7 +28,6 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -101,7 +100,7 @@ func TestPoolSlicesFirstListFails(t *testing.T) {
 		"until a list succeeds")
 	e.plug(localSerial)
 	e.wantHeld("never listed", localSerial)
-	wantLogLine(t, logs(), compat.LogPoolSerialsHoldingBackNewMemdev+" mem0 (serial 0xc100e2e1): it may be a pool device: the ResourceSlices "+
+	wantLogLine(t, logs(), holdingBack+" mem0 (serial 0xc100e2e1): it may be a pool device: the ResourceSlices "+
 		"of pool controllers were never listed")
 	e.advance(2 * HoldBack)
 	e.wantHeld("never listed, later", localSerial)
@@ -123,7 +122,7 @@ func TestHeldUntilPoolBack(t *testing.T) {
 	e.publish()
 	e.plug(otherLocalSerial)
 	e.wantHeld("pool-c missing", otherLocalSerial)
-	wantLogLine(t, logs(), compat.LogPoolSerialsHoldingBackNewMemdev+" mem0 (serial 0xa1): it may be a pool device: pools without "+
+	wantLogLine(t, logs(), holdingBack+" mem0 (serial 0xa1): it may be a pool device: pools without "+
 		"ResourceSlices: "+poolC)
 	since := e.held(otherLocalSerial)
 	e.advance(time.Minute)
@@ -131,7 +130,7 @@ func TestHeldUntilPoolBack(t *testing.T) {
 	if got := e.held(otherLocalSerial); !got.Equal(since) {
 		t.Fatalf("held since %v, expected %v", got, since)
 	}
-	if n := countLogLines(logs(), compat.LogPoolSerialsHoldingBackNewMemdev+" mem0"); n != 1 {
+	if n := countLogLines(logs(), holdingBack+" mem0"); n != 1 {
 		t.Fatalf("%d lines of the hold, expected 1", n)
 	}
 	e.publish("0xc1ee2001")
@@ -290,7 +289,7 @@ func TestClaimEvidence(t *testing.T) {
 	e.claim("attaching", testNode, "c-pooled0", "")
 	e.plug(otherLocalSerial)
 	e.wantHeld("attach in flight", otherLocalSerial)
-	wantLogLine(t, logs(), compat.LogPoolSerialsHoldingBackNewMemdev+" mem2 (serial 0xa1): it may be a pool device: pool claims of the "+
+	wantLogLine(t, logs(), holdingBack+" mem2 (serial 0xa1): it may be a pool device: pool claims of the "+
 		"node are not attached yet: "+testNS+"/attaching")
 	e.advance(2 * HoldBack)
 	e.wantHeld("attach in flight, later", otherLocalSerial)
@@ -306,7 +305,7 @@ func TestClaimEvidence(t *testing.T) {
 	e.wantHeld("claims not listable", 0xa2)
 	out := logs()
 	wantLogLine(t, out, "pool serials: listing the pool claims of the node: apiserver unavailable")
-	wantLogLine(t, out, compat.LogPoolSerialsHoldingBackNewMemdev+" mem3 (serial 0xa2): it may be a pool device: the pool claims of the "+
+	wantLogLine(t, out, holdingBack+" mem3 (serial 0xa2): it may be a pool device: the pool claims of the "+
 		"node cannot be listed")
 	e.advance(HoldBack)
 	e.wantHeld("claims not listable, held for long enough")

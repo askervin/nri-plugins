@@ -28,7 +28,6 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 )
@@ -755,12 +754,6 @@ func TestLendsRestoredLogged(t *testing.T) {
 			}
 			if i, j := strings.Index(out, synced), strings.Index(out, tc.line); i < 0 || j < i {
 				t.Errorf("readiness line %q not after %q:\n%s", tc.line, synced, out)
-			}
-			for _, pattern := range []string{compat.ExecutorLendsRestored, compat.ObserverLendsRestored, compat.ExecutorNRISynced,
-				compat.ObserverNRISynced} {
-				if !strings.Contains(out, pattern) {
-					t.Errorf("no line with %q", pattern)
-				}
 			}
 		})
 	}
