@@ -513,3 +513,70 @@ func TestSteeredRecordBeforeStart(t *testing.T) {
 		t.Fatalf("management %s after a failed start", c.Management)
 	}
 }
+
+func TestCgmPolicy(t *testing.T) {
+	dram := cgmpolmgr.MemoryTypes{DRAMNodes: []int{0}, DRAMQuota: 1 << 30}
+	cxl := cgmpolmgr.MemoryTypes{CXLNodes: []int{2}, CXLQuota: 1 << 30}
+	both := cgmpolmgr.MemoryTypes{DRAMNodes: []int{0}, CXLNodes: []int{2}, DRAMQuota: 1 << 30, CXLQuota: 1 << 30}
+	for _, tc := range []struct {
+		name  string
+		s     *config.Steering
+		mem   cgmpolmgr.MemoryTypes
+		want  cgmpolmgr.Policy
+		steer bool
+	}{
+		{name: "nil", s: nil, mem: both},
+		{name: "no policy", s: &config.Steering{}, mem: both},
+		{name: "none", s: &config.Steering{Policy: config.PolicyNone}, mem: both},
+		{name: "no memory", s: &config.Steering{Policy: config.PolicyAuto}},
+		{name: "auto CXL only", s: &config.Steering{Policy: config.PolicyAuto}, mem: cxl, want: cgmpolmgr.Policy{MemoryUseOrder: "first-cxl"}, steer: true},
+		{name: "auto DRAM only", s: &config.Steering{Policy: config.PolicyAuto}, mem: dram, want: cgmpolmgr.Policy{MemoryUseOrder: "first-dram"}, steer: true},
+		{name: "auto both", s: &config.Steering{Policy: config.PolicyAuto, MaxStep: "1Gi"}, mem: both,
+			want: cgmpolmgr.Policy{MemoryUseOrder: "start-interleaved", MaxStep: "1Gi"}, steer: true},
+		{name: "first-dram", s: &config.Steering{Policy: config.PolicyFirstDRAM, MinStep: "64Mi"}, mem: cxl,
+			want: cgmpolmgr.Policy{MemoryUseOrder: "first-dram", MinStep: "64Mi"}, steer: true},
+		{name: "first-cxl", s: &config.Steering{Policy: config.PolicyFirstCXL}, mem: both, want: cgmpolmgr.Policy{MemoryUseOrder: "first-cxl"}, steer: true},
+		{name: "start-interleaved", s: &config.Steering{Policy: config.PolicyStartInterleaved}, mem: both, want: cgmpolmgr.Policy{MemoryUseOrder: "start-interleaved"}, steer: true},
+		{name: "end-interleaved", s: &config.Steering{Policy: config.PolicyEndInterleaved}, mem: both, want: cgmpolmgr.Policy{MemoryUseOrder: "end-interleaved"}, steer: true},
+		{
+			name: "waypoints",
+			s: &config.Steering{Policy: config.PolicyWaypoints, MinStep: "64Mi", MaxStep: "1Gi", Waypoints: []config.Waypoint{
+				{TargetUsages: []config.TargetUsage{{MemoryType: config.MemoryTypeDRAM, Usage: "512Mi"}}},
+				{TargetUsages: []config.TargetUsage{{MemoryType: config.MemoryTypeDRAM, Usage: "1Gi"}, {MemoryType: config.MemoryTypeCXL, Usage: "1Gi"}}},
+			}},
+			mem: both,
+			want: cgmpolmgr.Policy{MemoryUseOrder: "waypoints", MinStep: "64Mi", MaxStep: "1Gi", MemoryUseWaypoints: []cgmpolmgr.MemoryUseWaypoint{
+				{TargetUsages: []cgmpolmgr.MemoryUseWaypointEntry{{MemoryType: "DRAM", Usage: "512Mi"}}},
+				{TargetUsages: []cgmpolmgr.MemoryUseWaypointEntry{{MemoryType: "DRAM", Usage: "1Gi"}, {MemoryType: "CXL", Usage: "1Gi"}}},
+			}},
+			steer: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, steer := cgmPolicy(tc.s, tc.mem)
+			if steer != tc.steer || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %+v %v, expected %+v %v", got, steer, tc.want, tc.steer)
+			}
+			if !steer {
+				return
+			}
+			if err := got.Validate(); err != nil {
+				t.Errorf("cgmpolmgr refuses %+v: %v", got, err)
+			}
+			if _, err := got.Plan(tc.mem); err != nil {
+				t.Errorf("no plan for %+v: %v", got, err)
+			}
+		})
+	}
+}
+
+func TestPolicyNames(t *testing.T) {
+	// every policy but none and auto is a memory use order of cgmpolmgr
+	for _, p := range []string{config.PolicyNone, config.PolicyAuto, config.PolicyFirstDRAM, config.PolicyFirstCXL,
+		config.PolicyStartInterleaved, config.PolicyEndInterleaved, config.PolicyWaypoints} {
+		_, err := cgmpolmgr.ParseMemoryUseOrder(p)
+		if want := p != config.PolicyNone && p != config.PolicyAuto; (err == nil) != want {
+			t.Errorf("%s: %v", p, err)
+		}
+	}
+}

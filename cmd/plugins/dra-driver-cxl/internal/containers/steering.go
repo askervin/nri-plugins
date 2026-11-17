@@ -28,6 +28,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
+	"github.com/containers/nri-plugins/pkg/cxl/config"
 )
 
 // The steering of the memory of containers by pkg/cgmpolmgr: a manager of
@@ -56,6 +57,36 @@ func (klogLogger) Debugf(format string, args ...any) { klog.V(4).Infof(format, a
 func (klogLogger) Infof(format string, args ...any)  { klog.Infof(format, args...) }
 func (klogLogger) Warnf(format string, args ...any)  { klog.Warningf(format, args...) }
 func (klogLogger) Errorf(format string, args ...any) { klog.Errorf(format, args...) }
+
+// cgmPolicy returns the cgmpolmgr policy of the steering for the memory
+// types, and false when the policy is none or there are neither DRAM nor
+// CXL nodes. Policy auto is first-cxl for CXL nodes only, first-dram for
+// DRAM nodes only, and start-interleaved for both.
+func cgmPolicy(s *config.Steering, mem cgmpolmgr.MemoryTypes) (cgmpolmgr.Policy, bool) {
+	if s == nil || s.Policy == "" || s.Policy == config.PolicyNone || (len(mem.DRAMNodes) == 0 && len(mem.CXLNodes) == 0) {
+		return cgmpolmgr.Policy{}, false
+	}
+	order := s.Policy
+	if order == config.PolicyAuto {
+		switch {
+		case len(mem.CXLNodes) == 0:
+			order = cgmpolmgr.MemoryUseFirstDRAM.String()
+		case len(mem.DRAMNodes) == 0:
+			order = cgmpolmgr.MemoryUseFirstCXL.String()
+		default:
+			order = cgmpolmgr.MemoryUseStartInterleaved.String()
+		}
+	}
+	pol := cgmpolmgr.Policy{MemoryUseOrder: order, MinStep: s.MinStep, MaxStep: s.MaxStep}
+	for _, wp := range s.Waypoints {
+		cwp := cgmpolmgr.MemoryUseWaypoint{}
+		for _, tu := range wp.TargetUsages {
+			cwp.TargetUsages = append(cwp.TargetUsages, cgmpolmgr.MemoryUseWaypointEntry{MemoryType: tu.MemoryType, Usage: tu.Usage})
+		}
+		pol.MemoryUseWaypoints = append(pol.MemoryUseWaypoints, cwp)
+	}
+	return pol, true
+}
 
 // startSteering starts steering the memory of a container whose task the
 // runtime has created along its plan, recorded in the store before the

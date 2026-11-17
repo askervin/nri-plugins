@@ -18,8 +18,6 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
-
-	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
 )
 
 const (
@@ -292,71 +290,5 @@ func TestResultSettingsJSON(t *testing.T) {
 	}
 	if data, _ := json.Marshal(ResultSettings{}); string(data) != `{}` {
 		t.Errorf("empty settings %s", data)
-	}
-}
-
-func TestCgmPolicy(t *testing.T) {
-	dram := cgmpolmgr.MemoryTypes{DRAMNodes: []int{0}, DRAMQuota: 1 << 30}
-	cxl := cgmpolmgr.MemoryTypes{CXLNodes: []int{2}, CXLQuota: 1 << 30}
-	both := cgmpolmgr.MemoryTypes{DRAMNodes: []int{0}, CXLNodes: []int{2}, DRAMQuota: 1 << 30, CXLQuota: 1 << 30}
-	for _, tc := range []struct {
-		name  string
-		s     *Steering
-		mem   cgmpolmgr.MemoryTypes
-		want  cgmpolmgr.Policy
-		steer bool
-	}{
-		{name: "nil", s: nil, mem: both},
-		{name: "no policy", s: &Steering{}, mem: both},
-		{name: "none", s: &Steering{Policy: PolicyNone}, mem: both},
-		{name: "no memory", s: &Steering{Policy: PolicyAuto}},
-		{name: "auto CXL only", s: &Steering{Policy: PolicyAuto}, mem: cxl, want: cgmpolmgr.Policy{MemoryUseOrder: "first-cxl"}, steer: true},
-		{name: "auto DRAM only", s: &Steering{Policy: PolicyAuto}, mem: dram, want: cgmpolmgr.Policy{MemoryUseOrder: "first-dram"}, steer: true},
-		{name: "auto both", s: &Steering{Policy: PolicyAuto, MaxStep: "1Gi"}, mem: both,
-			want: cgmpolmgr.Policy{MemoryUseOrder: "start-interleaved", MaxStep: "1Gi"}, steer: true},
-		{name: "first-dram", s: &Steering{Policy: PolicyFirstDRAM, MinStep: "64Mi"}, mem: cxl,
-			want: cgmpolmgr.Policy{MemoryUseOrder: "first-dram", MinStep: "64Mi"}, steer: true},
-		{name: "first-cxl", s: &Steering{Policy: PolicyFirstCXL}, mem: both, want: cgmpolmgr.Policy{MemoryUseOrder: "first-cxl"}, steer: true},
-		{name: "start-interleaved", s: &Steering{Policy: PolicyStartInterleaved}, mem: both, want: cgmpolmgr.Policy{MemoryUseOrder: "start-interleaved"}, steer: true},
-		{name: "end-interleaved", s: &Steering{Policy: PolicyEndInterleaved}, mem: both, want: cgmpolmgr.Policy{MemoryUseOrder: "end-interleaved"}, steer: true},
-		{
-			name: "waypoints",
-			s: &Steering{Policy: PolicyWaypoints, MinStep: "64Mi", MaxStep: "1Gi", Waypoints: []Waypoint{
-				{TargetUsages: []TargetUsage{{MemoryTypeDRAM, "512Mi"}}},
-				{TargetUsages: []TargetUsage{{MemoryTypeDRAM, "1Gi"}, {MemoryTypeCXL, "1Gi"}}},
-			}},
-			mem: both,
-			want: cgmpolmgr.Policy{MemoryUseOrder: "waypoints", MinStep: "64Mi", MaxStep: "1Gi", MemoryUseWaypoints: []cgmpolmgr.MemoryUseWaypoint{
-				{TargetUsages: []cgmpolmgr.MemoryUseWaypointEntry{{MemoryType: "DRAM", Usage: "512Mi"}}},
-				{TargetUsages: []cgmpolmgr.MemoryUseWaypointEntry{{MemoryType: "DRAM", Usage: "1Gi"}, {MemoryType: "CXL", Usage: "1Gi"}}},
-			}},
-			steer: true,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, steer := tc.s.CgmPolicy(tc.mem)
-			if steer != tc.steer || !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("got %+v %v, expected %+v %v", got, steer, tc.want, tc.steer)
-			}
-			if !steer {
-				return
-			}
-			if err := got.Validate(); err != nil {
-				t.Errorf("cgmpolmgr refuses %+v: %v", got, err)
-			}
-			if _, err := got.Plan(tc.mem); err != nil {
-				t.Errorf("no plan for %+v: %v", got, err)
-			}
-		})
-	}
-}
-
-func TestPolicyNames(t *testing.T) {
-	// every policy but none and auto is a memory use order of cgmpolmgr
-	for _, p := range policies {
-		_, err := cgmpolmgr.ParseMemoryUseOrder(p)
-		if want := p != PolicyNone && p != PolicyAuto; (err == nil) != want {
-			t.Errorf("%s: %v", p, err)
-		}
 	}
 }

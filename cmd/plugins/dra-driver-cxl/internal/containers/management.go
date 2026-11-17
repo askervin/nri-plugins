@@ -210,7 +210,7 @@ func (p *Plugin) decide(ctrName string, results []result, plan bool) (*decision,
 		return nil, fmt.Errorf("container %s: %w", ctrName, err)
 	}
 	d := &decision{management: ManagementNone, eff: eff, claimed: claimedNodes(results), mem: steeredMemory(results)}
-	if pol, ok := eff.Container.Steering.CgmPolicy(d.mem); ok {
+	if pol, ok := cgmPolicy(eff.Container.Steering, d.mem); ok {
 		d.management, d.policy = ManagementSteered, pol.MemoryUseOrder
 		if plan {
 			if d.plan, err = pol.Plan(d.mem); err != nil {
