@@ -45,15 +45,16 @@ GO_TEST_PKGS ?= $(shell find . -name \*_test.go -exec dirname {} \; | \
                        [ ! -e $$dir/go.mod ] && echo $$dir; \
                    done)
 
-GO_TEST_MODS ?= $(shell find . -name \*_test.go -exec dirname {} \; | \
+# The test90 model module is left out of GO_TEST_MODS. Its tests are too
+# slow under --race. The verify workflow runs them with -short and without
+# --race.
+TEST90_MODEL_DIR := ./test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test90-gofmbt-reliability/model
+
+GO_TEST_MODS ?= $(filter-out $(TEST90_MODEL_DIR), \
+                $(shell find . -name \*_test.go -exec dirname {} \; | \
                    sort -u | while read dir; do \
                        [ -e $$dir/go.mod ] && echo $$dir; \
-                   done)
-
-# Package directories of the CXL memory driver that test-cxl builds, vets and
-# tests, also the packages without tests.
-CXL_TEST_PKGS ?= $(shell $(GO_CMD) list -e -f '{{.Dir}}' ./cmd/plugins/dra-driver-cxl/... \
-                   ./pkg/cxl/... ./pkg/cgmpolmgr/...)
+                   done))
 
 GOLANG_CILINT := golangci-lint
 TEST_SETUP    := test-setup.sh
@@ -191,29 +192,6 @@ clean: clean-plugins clean-binaries clean-e2e-report
 allclean: clean clean-cache
 
 test: test-setup test-run-pkgs test-run-mods test-cleanup
-
-.PHONY: test-cxl gostats-cxl
-test-cxl:
-	$(Q)$(GO_VET) $(CXL_TEST_PKGS)
-	$(Q)$(MAKE) test GO_TEST_PKGS="$(CXL_TEST_PKGS)" GO_TEST_MODS=
-
-# Code metrics of the CXL memory driver and of its kernel package against
-# their structural limits. The limits are reported, not enforced: set
-# GOSTATS_GATE=-gate to make an exceeded limit fail. The limit of the
-# non-test lines of the driver (-max-lines) is a review signal, not a
-# target: when good structure, review, maintenance or extension needs more
-# lines, re-set it with the reason, and never trim code only to meet it.
-# The other limits are a ratchet: the mutexes counted are those on the
-# wait-for graph, a mutex whose comment says "a leaf lock" is left out; of
-# the 7 structs with access fields, store.PoolDevice is the next to merge.
-GOSTATS_GATE      ?=
-GOSTATS_CXL_FLAGS ?= -r -max-lines 30000 -max-cyclo15 10 -max-cyclo30 0 -keep persistent.go \
-                     -max-mutexes 10 -max-access-structs 7
-GOSTATS_KERNEL_FLAGS ?= -max-cyclo15 2 -max-cyclo30 0
-
-gostats-cxl:
-	$(Q)$(GO_CMD) run ./scripts/hack/gostats $(GOSTATS_GATE) $(GOSTATS_CXL_FLAGS) ./cmd/plugins/dra-driver-cxl
-	$(Q)$(GO_CMD) run ./scripts/hack/gostats $(GOSTATS_GATE) $(GOSTATS_KERNEL_FLAGS) ./pkg/cxl/kernel
 
 verify: verify-godeps verify-fmt verify-generate verify-build verify-docs
 

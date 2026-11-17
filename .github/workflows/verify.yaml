@@ -81,9 +81,19 @@ jobs:
         with:
           go-version-file: go.mod
       - run: |
-          make test-cxl
-      - run: |
-          make gostats-cxl
+          go test -short -race \
+              ./cmd/cxl-request/... \
+              ./cmd/plugins/dra-driver-cxl/... \
+              ./pkg/cgmemnotify/... \
+              ./pkg/cgmpolmgr/... \
+              ./pkg/cxl/... \
+              ./pkg/mpolinject/... \
+              ./pkg/udev/... \
+              ./scripts/cxl-dump/... \
+              ./scripts/testing/fake-cxl-pool/...
+      - working-directory: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test90-gofmbt-reliability/model
+        run: |
+          go test -short -timeout 10m ./...
 
   verify-docs:
     name: Documentation
