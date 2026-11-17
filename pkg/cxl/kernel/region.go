@@ -402,10 +402,10 @@ type CreateRegionRequest struct {
 var regionNameRe = regexp.MustCompile(`"region"\s*:\s*"(region\d+)"`)
 
 // CreateRegion creates a region (cxl create-region) and returns its name.
-// The read of its name, Note and cxl create-region run in Serialize. The
-// dax region or the nd region of the region appears asynchronously. Errors:
-// ErrDecoderHole when a port of the memdev has a hole, ErrEndpointNotReady
-// when the memdev has no endpoint port, the error of Note as it is.
+// The dax region or the nd region of the region appears asynchronously.
+// Errors: ErrDecoderHole when a port of the memdev has a hole,
+// ErrEndpointNotReady when the memdev has no endpoint port, the error of
+// Note as it is.
 func (k *Kernel) CreateRegion(ctx context.Context, req CreateRegionRequest) (string, error) {
 	if req.Type != RegionRAM && req.Type != RegionPmem {
 		return "", fmt.Errorf("invalid region type %q (%s or %s)", req.Type, RegionRAM, RegionPmem)
@@ -414,25 +414,15 @@ func (k *Kernel) CreateRegion(ctx context.Context, req CreateRegionRequest) (str
 	if req.Size > 0 {
 		args = append(args, "-s", strconv.FormatUint(req.Size, 10))
 	}
-	var noteErr, err error
-	var out string
-	serr := k.serialize(func() error {
-		if req.Note != nil {
-			next, _ := k.NextRegionName(req.Decoder, req.Type)
-			if noteErr = req.Note(next); noteErr != nil {
-				return noteErr
-			}
+	if req.Note != nil {
+		next, _ := k.NextRegionName(req.Decoder, req.Type)
+		if err := req.Note(next); err != nil {
+			return "", err
 		}
-		out, err = k.exec(ctx, "cxl", args...)
-		return err
-	})
-	switch {
-	case noteErr != nil:
-		return "", noteErr
-	case err != nil:
+	}
+	out, err := k.exec(ctx, "cxl", args...)
+	if err != nil {
 		return "", k.explainCreateRegion(req.Memdev, err)
-	case serr != nil:
-		return "", serr
 	}
 	region := ""
 	if m := regionNameRe.FindStringSubmatch(out); m != nil {
@@ -567,8 +557,7 @@ func (k *Kernel) ReleaseRegion(ctx context.Context, region string) error {
 // region stays: as it was if they were there before the release, disabled
 // if they came during it. Decoders that cannot be read are an error, before
 // the release (the region untouched) or after its disable (the region
-// disabled). The check after cxl disable-region and cxl destroy-region run
-// in Serialize. A missing region is not an error.
+// disabled). A missing region is not an error.
 func (k *Kernel) ReleaseRegionInOrder(ctx context.Context, memdev, region string) ([]string, error) {
 	above, err := k.RegionsAbove(memdev)
 	if err != nil || len(above) > 0 {
@@ -578,8 +567,8 @@ func (k *Kernel) ReleaseRegionInOrder(ctx context.Context, memdev, region string
 }
 
 // releaseRegion releases a region (ReleaseRegion). With above (nil: none),
-// the region is destroyed only if above, called after cxl disable-region in
-// Serialize, returns no region and no error; else it returns them.
+// the region is destroyed only if above, called after cxl disable-region,
+// returns no region and no error; else it returns them.
 func (k *Kernel) releaseRegion(ctx context.Context, region string, above func() ([]string, error)) ([]string, error) {
 	if _, err := os.Stat(k.cxlDev(region)); err != nil {
 		return nil, nil
@@ -591,7 +580,7 @@ func (k *Kernel) releaseRegion(ctx context.Context, region string, above func() 
 	// dax devices: a failed driver switch can leave blocks added and
 	// online without kmem.
 	if blocks, err := k.RegionBlocks(region); err == nil && len(blocks) > 0 {
-		if err := k.SetBlocksState(blocks, BlockStateOffline); err != nil {
+		if err := k.setBlocksState(blocks, BlockStateOffline); err != nil {
 			return nil, fmt.Errorf("%s: cannot offline memory (in use?): %w", region, err)
 		}
 	}
@@ -611,60 +600,50 @@ func (k *Kernel) releaseRegion(ctx context.Context, region string, above func() 
 	if above == nil {
 		return nil, destroy()
 	}
-	var rs []string
-	err := k.serialize(func() error {
-		var err error
-		if rs, err = above(); err != nil {
-			return fmt.Errorf("not destroying disabled %s: %w", region, err)
-		}
-		if len(rs) > 0 {
-			k.logf("not destroying disabled %s: %s came above it in the decoders", region, strings.Join(rs, ", "))
-			return nil
-		}
-		return destroy()
-	})
+	rs, err := above()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("not destroying disabled %s: %w", region, err)
 	}
-	return rs, nil
+	if len(rs) > 0 {
+		k.logf("not destroying disabled %s: %s came above it in the decoders", region, strings.Join(rs, ", "))
+		return rs, nil
+	}
+	return nil, destroy()
 }
 
 // DeleteHollowRegion deletes a hollow region by writing its name to the
 // delete_region attribute of its root decoder, which is what cxl
 // destroy-region does last, after the target decoders that a hollow region
-// does not have. It runs in Serialize: the region is then not one that a
-// cxl create-region of the process is setting up; one that another process
-// sets up is hollow too for a moment, and only the name noted before a
-// creation (CreateRegionRequest.Note) tells the region of the process. A
-// region with memory blocks that are not
-// offline is not deleted (ErrBusyOnline): kmem keeps that memory until a
-// reboot, and the region stays with it. A region that is not hollow is not
-// deleted (ErrNotHollow). A missing region is not an error.
+// does not have. A region that a cxl create-region sets up is hollow too
+// for a moment: only the name noted before a creation
+// (CreateRegionRequest.Note) tells the region of the caller. A region with
+// memory blocks that are not offline is not deleted (ErrBusyOnline): kmem
+// keeps that memory until a reboot, and the region stays with it. A region
+// that is not hollow is not deleted (ErrNotHollow). A missing region is not
+// an error.
 func (k *Kernel) DeleteHollowRegion(region string) error {
-	return k.serialize(func() error {
-		dir := k.cxlDev(region)
-		if _, err := os.Stat(dir); err != nil {
-			return nil
-		}
-		if !regionHollow(dir) {
-			return errorf(ErrNotHollow, "%s is not hollow: it is committed or has a target decoder", region)
-		}
-		if online := k.onlineRegionBlocks(region); len(online) > 0 {
-			return errorf(ErrBusyOnline, "%s: memory blocks %v of its address range are not offline (kmem keeps them until a reboot): not deleting it", region, online)
-		}
-		decoder, err := k.RegionRootDecoder(region)
-		if err != nil {
-			return err
-		}
-		res, _ := ReadTrim(filepath.Join(dir, "resource"))
-		attr := k.cxlDev(decoder, "delete_region")
-		if err := k.writeFile(attr, region); err != nil {
-			return fmt.Errorf("%s: deleting hollow %s: %w", attr, region, err)
-		}
-		if _, err := os.Stat(dir); err == nil {
-			return fmt.Errorf("%s: %s still exists after its deletion", attr, region)
-		}
-		k.logf("deleted hollow %s (resource %s) through %s", region, res, attr)
+	dir := k.cxlDev(region)
+	if _, err := os.Stat(dir); err != nil {
 		return nil
-	})
+	}
+	if !regionHollow(dir) {
+		return errorf(ErrNotHollow, "%s is not hollow: it is committed or has a target decoder", region)
+	}
+	if online := k.onlineRegionBlocks(region); len(online) > 0 {
+		return errorf(ErrBusyOnline, "%s: memory blocks %v of its address range are not offline (kmem keeps them until a reboot): not deleting it", region, online)
+	}
+	decoder, err := k.RegionRootDecoder(region)
+	if err != nil {
+		return err
+	}
+	res, _ := ReadTrim(filepath.Join(dir, "resource"))
+	attr := k.cxlDev(decoder, "delete_region")
+	if err := k.writeFile(attr, region); err != nil {
+		return fmt.Errorf("%s: deleting hollow %s: %w", attr, region, err)
+	}
+	if _, err := os.Stat(dir); err == nil {
+		return fmt.Errorf("%s: %s still exists after its deletion", attr, region)
+	}
+	k.logf("deleted hollow %s (resource %s) through %s", region, res, attr)
+	return nil
 }

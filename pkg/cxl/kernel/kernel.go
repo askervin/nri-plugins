@@ -49,14 +49,6 @@ type Kernel struct {
 	Debugf func(format string, args ...any)
 	// PollInterval is the interval of the polls of the waits.
 	PollInterval time.Duration
-	// Serialize is optional: it runs fn exclusively of the region
-	// creations of the caller (nil: fn runs as it is). It is called around
-	// three sections only: the read of the next region name, Note and cxl
-	// create-region of CreateRegion; the second check and cxl
-	// destroy-region of ReleaseRegionInOrder; and DeleteHollowRegion. A
-	// caller that holds its own lock around these calls leaves it nil; it
-	// must never be a lock that the caller holds already.
-	Serialize func(fn func() error) error
 
 	// fact gets the errors of reading the facts of objects that the
 	// observations tolerate (ObserveTopology does not); nil ignores them.
@@ -145,16 +137,16 @@ func New() *Kernel {
 		SysRoot:      "/sys",
 		ProcRoot:     "/proc",
 		DevRoot:      "/dev",
-		Exec:         RunCommand,
+		Exec:         runCommand,
 		WriteFile:    writeSysfs,
 		Sys:          &SysCalls{DevRoot: "/dev"},
 		PollInterval: defaultPollInterval,
 	}
 }
 
-// RunCommand runs a command and returns its combined output. Its error has
+// runCommand runs a command and returns its combined output. Its error has
 // the command, the error and the output.
-func RunCommand(ctx context.Context, name string, args ...string) (string, error) {
+func runCommand(ctx context.Context, name string, args ...string) (string, error) {
 	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
@@ -199,15 +191,7 @@ func (k *Kernel) exec(ctx context.Context, name string, args ...string) (string,
 	if k.Exec != nil {
 		return k.Exec(ctx, name, args...)
 	}
-	return RunCommand(ctx, name, args...)
-}
-
-// serialize runs fn through Serialize.
-func (k *Kernel) serialize(fn func() error) error {
-	if k.Serialize != nil {
-		return k.Serialize(fn)
-	}
-	return fn()
+	return runCommand(ctx, name, args...)
 }
 
 // sys returns the system calls of the Kernel; SysCalls without a Logf of

@@ -20,7 +20,6 @@ import (
 	"os"
 	"reflect"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -30,21 +29,13 @@ import (
 )
 
 // The name of the next region of the root decoder is noted before cxl
-// create-region runs, in Serialize; an error of the note creates nothing
-// (memctl TestCreateRegionNoted).
+// create-region runs; an error of the note creates nothing.
 func TestCreateRegionNoted(t *testing.T) {
 	f, k := newNode(t)
-	var mu sync.Mutex
-	k.Serialize = func(fn func() error) error {
-		mu.Lock()
-		defer mu.Unlock()
-		return fn()
-	}
 	var notes []string
 	note := func(next string) error {
-		if mu.TryLock() {
-			mu.Unlock()
-			t.Error("the note before the creation outside Serialize")
+		if strings.Contains(f.Commands(), "create-region") {
+			t.Error("the note after cxl create-region")
 		}
 		notes = append(notes, next)
 		return nil
@@ -135,7 +126,7 @@ func TestRegionEnableDisable(t *testing.T) {
 	if info, _ := k.Region(r); info.State != kernel.RegionDisabled || info.DaxRegion != "" || !info.Committed || info.NumaNode != -1 {
 		t.Fatalf("disabled region %+v", info)
 	}
-	if _, _, _, err := k.DaxRegionInfo(r); err == nil {
+	if _, err := k.DaxRegion(r); err == nil {
 		t.Fatal("a disabled region has a dax region")
 	}
 	noErr(t, k.DestroyRegion(ctx, "region9"))
@@ -265,15 +256,9 @@ func TestLockedRegion(t *testing.T) {
 
 // A region whose memdev was removed is hollow; cxl destroy-region refuses
 // it, the delete_region of its root decoder deletes it unless memory of its
-// range is online (memctl TestHollowRegion).
+// range is online.
 func TestDeleteHollowRegion(t *testing.T) {
 	f, k := newNode(t)
-	var mu sync.Mutex
-	k.Serialize = func(fn func() error) error {
-		mu.Lock()
-		defer mu.Unlock()
-		return fn()
-	}
 	ctx := context.Background()
 	r := createRegion(t, k, "mem0", kernel.RegionRAM, 0)
 	noErr(t, k.OnlineBlocks([]int{75}, true))
@@ -292,12 +277,6 @@ func TestDeleteHollowRegion(t *testing.T) {
 	wantErr(t, k.DestroyRegion(ctx, r), nil, "is hollow")
 	wantErr(t, k.DeleteHollowRegion(r), kernel.ErrBusyOnline, "memory blocks [75] of its address range are not offline")
 	f.SetBlockState(75, kernel.BlockStateOffline)
-	f.Before("write devices/platform/ACPI0017:00/root0/decoder0.0/delete_region", func() {
-		if mu.TryLock() {
-			mu.Unlock()
-			t.Error("delete_region outside Serialize")
-		}
-	})
 	noErr(t, k.DeleteHollowRegion(r))
 	if !strings.HasSuffix(f.Commands(), "delete_region decoder0.0 region0") || k.HollowRegion(r) {
 		t.Fatalf("not deleted:\n%s", f.Commands())
@@ -305,19 +284,8 @@ func TestDeleteHollowRegion(t *testing.T) {
 	// gone: not an error
 	noErr(t, k.DeleteHollowRegion(r))
 
-	// a region that a creation is setting up (it holds Serialize) is
-	// looked at after the creation: it has its target then
-	h := f.HollowRegion("decoder0.0", 256*mib)
-	mu.Lock()
-	done := make(chan error, 1)
-	go func() { done <- k.DeleteHollowRegion(h) }()
-	time.Sleep(20 * time.Millisecond)
-	f.Write("bus/cxl/devices/"+h+"/target0", "decoder4.0")
-	mu.Unlock()
-	wantErr(t, <-done, kernel.ErrNotHollow, "not hollow")
-
 	// a region without an address range yet (resource all ones, size 0)
-	h = f.HollowRegion("decoder0.1", 256*mib)
+	h := f.HollowRegion("decoder0.1", 256*mib)
 	f.Write("bus/cxl/devices/"+h+"/resource", "0xffffffffffffffff")
 	f.Write("bus/cxl/devices/"+h+"/size", "0x0")
 	noErr(t, k.DeleteHollowRegion(h))

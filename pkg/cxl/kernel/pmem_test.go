@@ -51,7 +51,7 @@ func TestPmemWriterThenReader(t *testing.T) {
 	f.PmemDelay = 10 * time.Millisecond
 	ctx := ctxTimeout(t, 5*time.Second)
 	r := createRegion(t, k, "mem0", kernel.RegionPmem, 0)
-	if !strings.Contains(f.Commands(), "cxl create-region -t pmem -d decoder0.2 -m mem0") || !k.IsPmemRegion(r) {
+	if info, _ := k.Region(r); !strings.Contains(f.Commands(), "cxl create-region -t pmem -d decoder0.2 -m mem0") || info.Mode != kernel.RegionPmem {
 		t.Fatalf("commands:\n%s", f.Commands())
 	}
 	nd, err := k.WaitNdRegion(ctx, r)

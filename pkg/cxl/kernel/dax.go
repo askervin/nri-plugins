@@ -294,16 +294,6 @@ func (k *Kernel) DaxDevNumbers(dax string) (major, minor int, err error) {
 	return parseDevNumbers(dax, v)
 }
 
-// DaxRegionInfo returns the free bytes and the allocation alignment of the
-// dax region of a region, and the dax devices of the region.
-func (k *Kernel) DaxRegionInfo(region string) (available, align uint64, devices []string, err error) {
-	d, err := k.DaxRegion(region)
-	if err != nil {
-		return 0, 0, nil, err
-	}
-	return d.Available, d.Align, d.Devices, nil
-}
-
 // DaxDeviceSize returns the size of a dax device in bytes.
 func (k *Kernel) DaxDeviceSize(dax string) (uint64, error) {
 	return ReadUint(k.daxDev(dax, "size"))

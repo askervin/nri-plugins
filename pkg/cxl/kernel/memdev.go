@@ -155,19 +155,6 @@ func (k *Kernel) Memdev(serial uint64) MemdevInfo {
 	return m
 }
 
-// Memdevs returns the memdevs that are present, in natural order of their
-// names.
-func (k *Kernel) Memdevs() []MemdevInfo {
-	endpoints := k.endpoints()
-	var out []MemdevInfo
-	for _, name := range k.memdevNames() {
-		if m, err := k.memdev(name, endpoints); err == nil {
-			out = append(out, m)
-		}
-	}
-	return out
-}
-
 // memdev returns the observation of the memdev name; endpoints maps memdev
 // names to their endpoints.
 func (k *Kernel) memdev(name string, endpoints map[string]string) (MemdevInfo, error) {

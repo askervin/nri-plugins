@@ -36,7 +36,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
-	"github.com/containers/nri-plugins/pkg/cxl/memctl"
 )
 
 type driver struct {
@@ -343,8 +342,8 @@ func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFla
 			return nil, nil, fmt.Errorf("pool driver data directory: %w", err)
 		}
 	}
-	mem := newMemctl(sysfsRoot)
-	sysRoot := mem.SysRoot
+	k := newKernel(sysfsRoot)
+	sysRoot := k.SysRoot
 	for _, w := range cxlFlags.Store.Warnings() {
 		klog.Warning(w)
 	}
@@ -359,7 +358,7 @@ func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFla
 		NewState:        cxlFlags.Store.NewState,
 		DiscardOldState: cxlFlags.Store.DiscardOldState,
 		SysRoot:         sysRoot,
-		DevRoot:         mem.DevRoot,
+		DevRoot:         k.DevRoot,
 		RegionExists: func(name string) bool {
 			_, err := os.Stat(filepath.Join(sysRoot, "bus", "cxl", "devices", name))
 			return err == nil
@@ -382,7 +381,7 @@ func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFla
 // node mounts of each source in the MountsDir of its rules.
 func newDriverDevices(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, sysfsRoot string, fence func(ctx context.Context, node int), st *store.Store, rules driverRules) (*deviceEngine, error) {
 	cfg := deviceConfig{
-		Kernel:          systemKernel(newMemctl(sysfsRoot)),
+		Kernel:          newKernel(sysfsRoot),
 		Store:           st,
 		MountsDirs:      dra.MountsDirs(rules.all()...),
 		LeaseFsRoot:     leases.LeaseFsRoot(config.KubeletPluginDir),
@@ -567,26 +566,11 @@ func localPoolGuard(pool *dra.Plugin, watcher *provenance.Watcher) func(ctx cont
 	}
 }
 
-// systemKernel returns the kernel of the device engine on the sysfs and
-// device roots, commands and sysfs writes of mem; the engine holds its
-// lock around each call.
-func systemKernel(mem *memctl.Manager) *kernel.Kernel {
-	return &kernel.Kernel{
-		SysRoot:      mem.SysRoot,
-		DevRoot:      mem.DevRoot,
-		Exec:         mem.Exec,
-		WriteFile:    mem.WriteFile,
-		Sys:          &kernel.SysCalls{DevRoot: mem.DevRoot},
-		PollInterval: mem.PollInterval,
-	}
-}
-
-// newMemctl returns a memctl manager for the sysfs under sysfsRoot.
-func newMemctl(sysfsRoot string) *memctl.Manager {
-	mem := memctl.New()
-	mem.SysRoot = sysfsRoot + "/sys"
-	mem.Logf = func(format string, args ...any) { klog.Infof("memctl: "+format, args...) }
-	return mem
+// newKernel returns the kernel of the node with its sysfs under sysfsRoot.
+func newKernel(sysfsRoot string) *kernel.Kernel {
+	k := kernel.New()
+	k.SysRoot = sysfsRoot + "/sys"
+	return k
 }
 
 // startPoolDriver registers the pool driver as a second kubelet plugin

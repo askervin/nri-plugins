@@ -265,12 +265,12 @@ func (k *Kernel) BlocksNode(blocks []int) int {
 	return -1
 }
 
-// SetBlocksState onlines (BlockStateOnline, BlockStateOnlineMovable,
+// setBlocksState onlines (BlockStateOnline, BlockStateOnlineMovable,
 // BlockStateOnlineKernel) or offlines (BlockStateOffline) memory blocks,
 // skipping blocks that are already there, stopping at the first block that
 // fails. A block that is online in another zone than Movable is an error
 // with BlockStateOnlineMovable.
-func (k *Kernel) SetBlocksState(blocks []int, state string) error {
+func (k *Kernel) setBlocksState(blocks []int, state string) error {
 	want := strings.TrimSuffix(strings.TrimSuffix(state, "_movable"), "_kernel")
 	for _, b := range blocks {
 		cur, err := ReadTrim(k.block(b, "state"))
@@ -302,7 +302,7 @@ func (k *Kernel) OnlineBlocks(blocks []int, movable bool) error {
 	if movable {
 		state = BlockStateOnlineMovable
 	}
-	return k.SetBlocksState(blocks, state)
+	return k.setBlocksState(blocks, state)
 }
 
 // OfflineBlocks offlines memory blocks. With settle > 0 it then waits until
@@ -313,11 +313,11 @@ func (k *Kernel) OnlineBlocks(blocks []int, movable bool) error {
 // block whose memory the kernel cannot move fails with EBUSY (ErrEBUSY).
 func (k *Kernel) OfflineBlocks(ctx context.Context, blocks []int, settle, timeout time.Duration) error {
 	if settle <= 0 {
-		return k.SetBlocksState(blocks, BlockStateOffline)
+		return k.setBlocksState(blocks, BlockStateOffline)
 	}
 	deadline := time.Now().Add(timeout)
 	for {
-		if err := k.SetBlocksState(blocks, BlockStateOffline); err != nil {
+		if err := k.setBlocksState(blocks, BlockStateOffline); err != nil {
 			return err
 		}
 		stable := time.Now().Add(settle)

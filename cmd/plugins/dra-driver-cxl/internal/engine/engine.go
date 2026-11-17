@@ -94,8 +94,7 @@ type Engine struct {
 
 // Options configure an Engine.
 type Options struct {
-	// Kernel observes and changes the kernel objects. Its Serialize stays
-	// nil: the engine holds its lock around each call.
+	// Kernel observes and changes the kernel objects.
 	Kernel *kernel.Kernel
 	// Store keeps the records.
 	Store *store.Store
@@ -213,10 +212,9 @@ func (t Timeouts) withDefaults() Timeouts {
 	return t
 }
 
-// KernelLogf logs what package kernel does, as the driver logged memctl's
-// steps.
+// KernelLogf logs what package kernel does.
 func KernelLogf(format string, args ...any) {
-	klog.InfofDepth(1, "memctl: "+format, args...)
+	klog.InfofDepth(1, "kernel: "+format, args...)
 }
 
 // kernelDebugf logs the details of package kernel's lookups at debug level.
@@ -236,9 +234,6 @@ func sysWarningf(format string, args ...any) {
 func New(opts Options) (*Engine, error) {
 	if opts.Kernel == nil || opts.Store == nil {
 		return nil, errors.New("engine: a kernel and a store are required")
-	}
-	if opts.Kernel.Serialize != nil {
-		return nil, errors.New("engine: the kernel's Serialize must be nil: the engine holds its own lock")
 	}
 	if opts.Kernel.Logf == nil {
 		opts.Kernel.Logf = KernelLogf

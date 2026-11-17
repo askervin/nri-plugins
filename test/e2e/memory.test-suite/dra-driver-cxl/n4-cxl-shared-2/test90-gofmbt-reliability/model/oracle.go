@@ -755,7 +755,7 @@ func (k *checker) checkPods() {
 }
 
 // blockedText is the driver's message of a Prepare refused by a decoder
-// hole (pkg/cxl/memctl/decoders.go).
+// hole (pkg/cxl/kernel/errors.go).
 const blockedText = "CXL decoders released out of order"
 
 // checkBlocked: a pod whose Prepare a decoder hole refuses (A9): Pending,

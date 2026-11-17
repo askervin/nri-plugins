@@ -30,7 +30,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/containers/nri-plugins/pkg/cxl/memctl"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/client"
 )
@@ -81,6 +81,8 @@ type cli struct {
 	stderr  io.Writer
 	c       *client.Client
 	verbose bool
+	// k is the kernel of the guest commands, kernel.New() if nil.
+	k *kernel.Kernel
 }
 
 type usageError struct{ msg string }
@@ -740,183 +742,4 @@ func (c *cli) cmdEvents(ctx context.Context, args []string) error {
 		return nil
 	}
 	return err
-}
-
-// deviceSerial returns the serial in dev (0x hex or decimal), or else the
-// serial of the device named dev.
-func (c *cli) deviceSerial(ctx context.Context, dev string) (uint64, error) {
-	if strings.HasPrefix(dev, "0x") || strings.HasPrefix(dev, "0X") || isDecimal(dev) {
-		return api.ParseSerial(dev)
-	}
-	d, err := c.client().Device(ctx, dev)
-	if err != nil {
-		return 0, err
-	}
-	return api.ParseSerial(d.Serial)
-}
-
-// isDecimal tells whether s is a non-empty string of decimal digits.
-func isDecimal(s string) bool {
-	return s != "" && strings.Trim(s, "0123456789") == ""
-}
-
-func (c *cli) newGuest() *memctl.Manager {
-	g := memctl.New()
-	if c.verbose {
-		g.Logf = func(format string, args ...any) { fmt.Fprintf(c.stderr, format+"\n", args...) }
-	}
-	return g
-}
-
-func (c *cli) guestMemdev(ctx context.Context, g *memctl.Manager, dev string) (string, error) {
-	sn, err := c.deviceSerial(ctx, dev)
-	if err != nil {
-		return "", err
-	}
-	return g.FindMemdev(sn)
-}
-
-func (c *cli) printRegionInfo(ri *memctl.RegionInfo) error {
-	if c.json() {
-		return c.printJSON(ri)
-	}
-	w := c.table()
-	fmt.Fprintln(w, "MEMDEV\tREGION\tDAX\tDRIVER\tMODE\tNODE\tDEVICE\tBLOCKS")
-	blocks := ""
-	if n := len(ri.Blocks); n > 0 {
-		blocks = fmt.Sprintf("memory%d..memory%d", ri.Blocks[0], ri.Blocks[n-1])
-	}
-	fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", ri.Memdev, ri.Region, dash(ri.Dax), dash(ri.Driver), dash(ri.Mode), ri.Node, dash(ri.Device), dash(blocks))
-	return w.Flush()
-}
-
-func (c *cli) cmdGuest(ctx context.Context, args []string) error {
-	if len(args) == 0 {
-		return usagef("guest wait|memdev|region|online|info|release ...")
-	}
-	sub, args := args[0], args[1:]
-	switch sub {
-	case "-h", "-help", "--help", "help":
-		fmt.Fprint(c.stdout, usage)
-		return nil
-	}
-	g := c.newGuest()
-	switch sub {
-	case "wait":
-		fs := c.flagSet("guest wait")
-		timeout := fs.Duration("timeout", 30*time.Second, "timeout")
-		pos, err := parse(fs, args)
-		if err != nil || len(pos) != 1 {
-			return firstErr(err, usagef("guest wait DEVICE [--timeout 30s]"))
-		}
-		sn, err := c.deviceSerial(ctx, pos[0])
-		if err != nil {
-			return err
-		}
-		wctx, cancel := context.WithTimeout(ctx, *timeout)
-		defer cancel()
-		m, err := g.WaitMemdev(wctx, sn)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintln(c.stdout, m)
-		return nil
-	case "memdev":
-		fs := c.flagSet("guest memdev")
-		pos, err := parse(fs, args)
-		if err != nil || len(pos) != 1 {
-			return firstErr(err, usagef("guest memdev DEVICE"))
-		}
-		m, err := c.guestMemdev(ctx, g, pos[0])
-		if err != nil {
-			return err
-		}
-		fmt.Fprintln(c.stdout, m)
-		return nil
-	case "region":
-		if len(args) > 0 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
-			fmt.Fprint(c.stdout, usage)
-			return nil
-		}
-		if len(args) == 0 || args[0] != "create" {
-			return usagef("guest region create DEVICE --mode numa|dax [--decoder decoderX.Y]")
-		}
-		fs := c.flagSet("guest region create")
-		mode := fs.String("mode", "", "numa or dax")
-		decoder := fs.String("decoder", "", "root decoder (default: the one of the device's host bridge)")
-		timeout := fs.Duration("timeout", 30*time.Second, "timeout")
-		pos, err := parse(fs, args[1:])
-		if err != nil || len(pos) != 1 || *mode == "" {
-			return firstErr(err, usagef("guest region create DEVICE --mode numa|dax [--decoder decoderX.Y]"))
-		}
-		if err := memctl.ValidMode(*mode); err != nil {
-			return usagef("%v", err)
-		}
-		m, err := c.guestMemdev(ctx, g, pos[0])
-		if err != nil {
-			return err
-		}
-		rctx, cancel := context.WithTimeout(ctx, *timeout)
-		defer cancel()
-		ri, err := g.CreateRegion(rctx, m, *mode, *decoder)
-		if err != nil {
-			return err
-		}
-		return c.printRegionInfo(ri)
-	case "online":
-		fs := c.flagSet("guest online")
-		movable := fs.Bool("movable", false, "online_movable")
-		pos, err := parse(fs, args)
-		if err != nil || len(pos) != 1 {
-			return firstErr(err, usagef("guest online DEVICE [--movable]"))
-		}
-		m, err := c.guestMemdev(ctx, g, pos[0])
-		if err != nil {
-			return err
-		}
-		ri, err := g.Online(m, *movable)
-		if err != nil {
-			return err
-		}
-		return c.printRegionInfo(ri)
-	case "info":
-		fs := c.flagSet("guest info")
-		pos, err := parse(fs, args)
-		if err != nil || len(pos) != 1 {
-			return firstErr(err, usagef("guest info DEVICE"))
-		}
-		m, err := c.guestMemdev(ctx, g, pos[0])
-		if err != nil {
-			return err
-		}
-		ri, err := g.Info(m)
-		if err != nil {
-			ri = &memctl.RegionInfo{Memdev: m, Node: -1}
-		}
-		return c.printRegionInfo(ri)
-	case "release":
-		fs := c.flagSet("guest release")
-		pos, err := parse(fs, args)
-		if err != nil || len(pos) != 1 {
-			return firstErr(err, usagef("guest release DEVICE"))
-		}
-		m, err := c.guestMemdev(ctx, g, pos[0])
-		if errors.Is(err, memctl.ErrNotFound) {
-			if !c.json() {
-				fmt.Fprintf(c.stdout, "%s: not present, nothing to release\n", pos[0])
-			}
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if err := g.Release(ctx, m); err != nil {
-			return err
-		}
-		if !c.json() {
-			fmt.Fprintf(c.stdout, "%s: released\n", m)
-		}
-		return nil
-	}
-	return usagef("unknown guest command %q", sub)
 }

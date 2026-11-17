@@ -217,19 +217,6 @@ func FsdaxNamespace(namespaces []Namespace) *Namespace {
 	return nil
 }
 
-// isPmemRegion tells whether a CXL region is a region of persistent memory
-// (it has a pmem_regionN).
-func (k *Kernel) isPmemRegion(region string) bool {
-	m, _ := filepath.Glob(k.cxlDev(region, "pmem_region*"))
-	return len(m) > 0
-}
-
-// IsPmemRegion tells whether a CXL region is a region of persistent memory
-// (it has a pmem_regionN).
-func (k *Kernel) IsPmemRegion(region string) bool {
-	return k.isPmemRegion(region)
-}
-
 // NdRegionOf returns the nd region of a CXL region of persistent memory:
 // the nd region with the id of the CXL region.
 func (k *Kernel) NdRegionOf(region string) (string, error) {

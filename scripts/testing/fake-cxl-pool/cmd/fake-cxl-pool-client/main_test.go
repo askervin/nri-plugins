@@ -26,7 +26,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/containers/nri-plugins/pkg/cxl/memctl"
+	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/server"
@@ -165,10 +165,10 @@ func TestGuestRegionMode(t *testing.T) {
 			t.Fatalf("region create --mode %s: rc %d stderr %q", mode, rc, errs)
 		}
 	}
-	for _, mode := range []string{memctl.ModeNUMA, memctl.ModeDax} {
+	for _, mode := range []string{cxlapi.ModeNUMA, cxlapi.ModeDax} {
 		var out, errb bytes.Buffer
 		c := &cli{output: "json", stdout: &out, stderr: &errb}
-		if err := c.printRegionInfo(&memctl.RegionInfo{Memdev: "mem0", Region: "region0", Mode: mode, Node: 2}); err != nil {
+		if err := c.printRegionInfo(&regionInfo{Memdev: "mem0", Region: "region0", Mode: mode, Node: 2}); err != nil {
 			t.Fatal(err)
 		}
 		var got map[string]any

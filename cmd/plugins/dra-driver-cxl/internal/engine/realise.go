@@ -448,7 +448,6 @@ func (e *Engine) useRegion(ctx context.Context, req *GrantRequest, memdev string
 	switch reg.State {
 	case state.RegionOwned:
 		if req.Asked.Source == state.SourcePool {
-			// memctl's line of the pool's reuse
 			e.k.Logf("%s: reusing %s", memdev, name)
 		}
 	case state.RegionKept:

@@ -19,7 +19,6 @@ import (
 	"errors"
 	"reflect"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -227,8 +226,7 @@ func TestDecoderUnreadable(t *testing.T) {
 // memdev lies above it in the host bridge and the switch, and not touched
 // when one does; a region that comes above it during the release (a
 // creation between the first check and cxl destroy-region) keeps it
-// disabled. The check after cxl disable-region and cxl destroy-region run
-// in Serialize (memctl TestReleaseRegionInOrder).
+// disabled.
 func TestReleaseRegionInOrder(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -253,20 +251,8 @@ func TestReleaseRegionInOrder(t *testing.T) {
 			f.Plug(fake.MemdevSpec{Serial: serial0, Switch: true})
 			f.Plug(fake.MemdevSpec{Serial: serial1, Switch: true})
 			k := f.Kernel()
-			var mu sync.Mutex
-			k.Serialize = func(fn func() error) error {
-				mu.Lock()
-				defer mu.Unlock()
-				return fn()
-			}
 			createRegion(t, k, "mem0", kernel.RegionRAM, 0)
 			tc.setup(t, f, k)
-			f.Before("cxl destroy-region", func() {
-				if mu.TryLock() {
-					mu.Unlock()
-					t.Error("cxl destroy-region outside Serialize")
-				}
-			})
 			before := f.Commands()
 			got, err := k.ReleaseRegionInOrder(ctx, "mem0", "region0")
 			noErr(t, err)

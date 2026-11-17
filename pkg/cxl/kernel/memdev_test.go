@@ -68,9 +68,6 @@ func TestFindAndWaitMemdev(t *testing.T) {
 	if _, err := k.RootDecoder("mem0", "volatile"); err == nil {
 		t.Fatal("invalid region type accepted")
 	}
-	if ms := k.Memdevs(); len(ms) != 1 || ms[0].Serial != serial0 {
-		t.Fatalf("memdevs %+v", ms)
-	}
 }
 
 // The uid of a host bridge in the target_list of root decoders is its ACPI

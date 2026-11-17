@@ -42,9 +42,7 @@
 //
 // The package is stateless and takes no locks: a Kernel holds configuration
 // only and every call reads sysfs afresh. The serialization of the kernel
-// operations of a process is its caller's: it holds its own lock around the
-// calls, or gives the package the optional Kernel.Serialize, which the
-// package calls around the three sections that it names.
+// operations of a process is its caller's.
 //
 // Names: the observation of an object that the driver also keeps a record of
 // has the suffix Info (MemdevInfo, RegionInfo, DaxDeviceInfo, MountInfo);
