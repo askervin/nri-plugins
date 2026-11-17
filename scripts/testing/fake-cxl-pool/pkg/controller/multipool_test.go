@@ -33,6 +33,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
@@ -86,7 +87,8 @@ func TestPublishNodeSelector(t *testing.T) {
 	e.sync()
 	e.waitSelector("kubernetes.io/hostname In [h-node1 h-node2 h-node3]")
 
-	// a node without a hostname label appears, with a host of its name
+	// a node without a hostname label, with a host of its name, is not
+	// a pool host: the node selector cannot select it
 	n := node("vm5", "")
 	n.Labels = nil
 	if _, err := e.kube.CoreV1().Nodes().Create(e.ctx, n, metav1.CreateOptions{}); err != nil {
@@ -96,8 +98,8 @@ func TestPublishNodeSelector(t *testing.T) {
 	e.setHosts(append(hosts, api.Host{Name: "vm5", State: api.HostRunning}))
 	e.sync()
 	e.sync()
-	e.waitSelector("kubernetes.io/hostname In [h-node1 h-node2 h-node3 vm5]")
-	if c := strings.Count(e.logs.String(), "node vm5 has no kubernetes.io/hostname label, using its name"); c != 1 {
+	e.waitSelector("kubernetes.io/hostname In [h-node1 h-node2 h-node3]")
+	if c := strings.Count(e.logs.String(), "node vm5 has no kubernetes.io/hostname label: not a pool host"); c != 1 {
 		t.Fatalf("label warning logged %d times", c)
 	}
 
@@ -139,6 +141,17 @@ func TestPoolNameFromServer(t *testing.T) {
 	e = newEnvWith(t, func(p *fakePool, c *Config) { p.name = "pool-x"; c.PoolName = "flag-pool" })
 	if e.c.cfg.PoolName != "flag-pool" || e.pool.statuses != 0 {
 		t.Fatalf("pool name %q, %d status requests", e.c.cfg.PoolName, e.pool.statuses)
+	}
+}
+
+// Run stops without an error when it is cancelled while it starts.
+func TestRunCancelledAtStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c := New(Config{PoolName: "pool-x", Logger: log.New(testWriter{t}, "", 0)}, fake.NewClientset(), client.New("http://127.0.0.1:1"), nil)
+	if err := c.Run(ctx); err != nil {
+		t.Fatalf("Run cancelled at start: %v", err)
 	}
 }
 

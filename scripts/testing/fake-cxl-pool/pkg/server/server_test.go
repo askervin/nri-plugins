@@ -15,9 +15,11 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"io"
 	"log"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -840,6 +842,58 @@ func TestEvents(t *testing.T) {
 			}
 		case <-ectx.Done():
 			t.Fatal("no attachment.updated event")
+		}
+	}
+}
+
+// An open event stream does not hold up the shutdown of the HTTP server.
+func TestShutdownWithEventStream(t *testing.T) {
+	e := newTestEnv(t, "")
+	hs := httptest.NewUnstartedServer(e.srv.Handler())
+	hs.Config.RegisterOnShutdown(e.srv.CloseEvents)
+	hs.Start()
+	defer hs.Close()
+	resp, err := http.Get(hs.URL + api.PathEvents())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if line, err := bufio.NewReader(resp.Body).ReadString('\n'); err != nil || line != ": fake-cxl-pool events\n" {
+		t.Fatalf("event stream: %q %v", line, err)
+	}
+	sctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := hs.Config.Shutdown(sctx); err != nil {
+		t.Fatalf("shutdown with an open event stream: %v", err)
+	}
+}
+
+// The background waiter of a detach and a reconcile that finds the
+// device leaked do not race (run with -race).
+func TestLeakedWhileWaiting(t *testing.T) {
+	e := newTestEnv(t, "")
+	a, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.fake("vm1").Hold(a.QemuDeviceID)
+	// the detach times out, the background waiter polls the device
+	_, _, err = e.c.Detach(ctx, "pooled0", "vm1", client.DetachOptions{Timeout: 50 * time.Millisecond})
+	mustCode(t, err, api.CodeConflict)
+	e.srv.mu.RLock()
+	att := e.srv.atts[a.ID]
+	e.srv.mu.RUnlock()
+	time.Sleep(100 * time.Millisecond)
+	e.srv.markLeaked(att)
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		e.srv.mu.RLock()
+		waiting := att.bgWaiting
+		e.srv.mu.RUnlock()
+		if !waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the background waiter of a leaked attachment did not end")
 		}
 	}
 }

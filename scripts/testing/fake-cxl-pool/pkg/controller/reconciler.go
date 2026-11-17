@@ -444,6 +444,10 @@ func (c *Controller) writeStatus(ctx context.Context, w *want, actual map[attKey
 	default:
 		if x, ok := failures[w.key()]; ok && (w.exclusive || !x.exclusiveOnly) {
 			f = &x
+		} else if a, ok := actual[w.key()]; ok && a.State == api.AttachmentFailed {
+			// The server keeps a failed attachment until its qemu device
+			// is gone or a forced detach forgets it.
+			f = &failure{reason: ReasonAttachError, message: fmt.Sprintf("attachment %s failed: %s", a.ID, a.Error)}
 		}
 	}
 	if f != nil {
@@ -518,7 +522,10 @@ func (c *Controller) detach(ctx context.Context, a api.Attachment, hm hostMap, c
 		c.debugf("detach %s: still attaching, later", a.ID)
 		return
 	case api.AttachmentDetaching:
-		c.logf("detach %s: still detaching (has the guest released the device?)", a.ID)
+		if c.attLogged[a.ID] != a.State {
+			c.attLogged[a.ID] = a.State
+			c.logf("detach %s: still detaching (has the guest released the device?)", a.ID)
+		}
 		return
 	case api.AttachmentFailed:
 		if st := a.State + ": " + a.Error; c.attLogged[a.ID] != st {

@@ -277,14 +277,16 @@ is [docs/memory/cxl/pool.md](../../../docs/memory/cxl/pool.md).
 [docs/memory/cxl/e2e.md](../../../docs/memory/cxl/e2e.md) shows how to run
 the server, the controller and the driver in the e2e VMs. The controller:
 
-- publishes the pool devices of the server (`GET /devices?scope=pool`) as one
-  cluster-scoped ResourceSlice of the pool named after the server (the
+- publishes the pool devices of the server (`GET /devices?scope=pool`) as
+  cluster-scoped ResourceSlices of the pool named after the server (the
   `name` of `GET /status`, `fake-cxl-pool` for a server without one;
-  `-pool-name` overrides it), with the node selector
-  `kubernetes.io/hostname In [...]` of the nodes whose VMs the server
-  reaches (the Nodes that map to a server host as below; a node without
-  the label by its name), so that the scheduler allocates the devices on
-  those nodes only. While no node is reachable, nothing is published (log:
+  `-pool-name` overrides it), at most 128 devices in a slice, with the
+  node selector `kubernetes.io/hostname In [...]` of the nodes whose VMs
+  the server reaches (the Nodes that map to a server host as below; a
+  node without the label is not a pool host, log: `node N has no
+  kubernetes.io/hostname label: not a pool host`), so that the scheduler
+  allocates the devices on those nodes only. While no node is reachable,
+  nothing is published (log:
   `pool <name>: no node of the cluster is a host of the server, publishing
   nothing`; then `publishing pool <name> for nodes [...]: ...` again).
   Every device has the attributes `type: memdev`, `source: pool`, `serial`,
@@ -314,9 +316,10 @@ the server, the controller and the driver in the e2e VMs. The controller:
   true) into
   `claim.status.devices[]`, which releases the
   scheduler's binding wait and tells the node plugin which memdev to wait
-  for. A node that is not a pool host, a 409 or another error gives
-  `AttachFailed=True` (reason `NoHost`, `Conflict`, `Timeout`,
-  `AttachError`), and the scheduler allocates again.
+  for. A node that is not a pool host, a 409, a failed attachment of the
+  device on the host or another error gives `AttachFailed=True` (reason
+  `NoHost`, `Conflict`, `Timeout`, `AttachError`), and the scheduler
+  allocates again.
 - attaches where the claim says: `pool.opaque.fake-cxl-pool` of the
   claim's `MemoryConfig` (below).
 - attaches exclusively (`AttachRequest.exclusive`) for a claim that

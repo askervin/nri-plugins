@@ -469,7 +469,16 @@ func TestQMPWaitTimeout(t *testing.T) {
 	if err := q.WaitDeviceDeleted(wctx, d.ID); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected timeout, got %v", err)
 	}
-	q.Close()
+	// a Close ends a wait at once
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		q.Close()
+	}()
+	wctx, cancel = context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := q.WaitDeviceDeleted(wctx, d.ID); !errors.Is(err, ErrClosed) || wctx.Err() != nil {
+		t.Fatalf("wait during a Close: %v (context %v)", err, wctx.Err())
+	}
 }
 
 func TestDialLongPath(t *testing.T) {

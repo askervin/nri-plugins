@@ -639,8 +639,12 @@ func (q *QMP) WaitDeviceDeleted(ctx context.Context, id string) error {
 		interval = 2 * time.Second
 	}
 	for {
-		if ok, err := q.DeviceExists(ctx, id); err == nil && !ok {
+		ok, err := q.DeviceExists(ctx, id)
+		if err == nil && !ok {
 			return nil
+		}
+		if errors.Is(err, ErrClosed) {
+			return err
 		}
 		select {
 		case <-ch:

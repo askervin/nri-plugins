@@ -41,6 +41,11 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+// run runs the controller until a signal and returns the exit code.
+func run() int {
 	var cfg controller.Config
 	server := flag.String("server", client.DefaultURL(), "fake-cxl-pool server URL (env FAKE_CXL_POOL_SERVER)")
 	kubeconfig := flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "kubeconfig file (env KUBECONFIG; \"\": in-cluster config)")
@@ -59,7 +64,7 @@ func main() {
 	flag.Parse()
 	if flag.NArg() > 0 {
 		flag.Usage()
-		os.Exit(2)
+		return 2
 	}
 	logger := log.New(os.Stderr, "fake-cxl-pool-controller: ", log.LstdFlags|log.Lmicroseconds)
 	cfg.Logger = logger
@@ -74,11 +79,13 @@ func main() {
 		rc, err = clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	}
 	if err != nil {
-		logger.Fatalf("kubernetes client config: %v", err)
+		logger.Printf("kubernetes client config: %v", err)
+		return 1
 	}
 	kube, err := kubernetes.NewForConfig(rc)
 	if err != nil {
-		logger.Fatalf("kubernetes client: %v", err)
+		logger.Printf("kubernetes client: %v", err)
+		return 1
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -91,7 +98,9 @@ func main() {
 
 	c := controller.New(cfg, kube, client.New(*server), recorder)
 	if err := c.Run(ctx); err != nil {
-		logger.Fatalf("%v", err)
+		logger.Printf("%v", err)
+		return 1
 	}
 	logger.Printf("stopped")
+	return 0
 }

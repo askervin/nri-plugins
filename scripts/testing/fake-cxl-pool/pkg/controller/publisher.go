@@ -126,21 +126,12 @@ func (c *Controller) warnName(device, format string, args ...any) {
 }
 
 // nodeSelector returns the node selector of the nodes that are hosts of
-// the server: kubernetes.io/hostname In [their hostname labels, sorted],
-// the node name for a node without the label. nil if there is no such
-// node.
+// the server: kubernetes.io/hostname In [their hostname labels, sorted].
+// nil if there is no such node.
 func (c *Controller) nodeSelector(hm hostMap) *corev1.NodeSelector {
 	values := make([]string, 0, len(hm.nodeHost))
 	for n := range hm.nodeHost {
-		v, ok := hm.hostnames[n]
-		if !ok {
-			if !c.noLabel[n] {
-				c.noLabel[n] = true
-				c.logf("node %s has no %s label, using its name", n, corev1.LabelHostname)
-			}
-			v = n
-		}
-		values = append(values, v)
+		values = append(values, hm.hostnames[n])
 	}
 	if len(values) == 0 {
 		return nil
@@ -156,12 +147,22 @@ func (c *Controller) nodeSelector(hm hostMap) *corev1.NodeSelector {
 }
 
 // driverResources returns the pool of the devices for the nodes of the
-// node selector, no pool if the selector is nil.
+// node selector, no pool if the selector is nil. The pool has a slice for
+// every resourceapi.ResourceSliceMaxDevices devices, and one slice if it has
+// no devices.
 func (c *Controller) driverResources(devs []resourceapi.Device, sel *corev1.NodeSelector) *resourceslice.DriverResources {
 	res := &resourceslice.DriverResources{Pools: map[string]resourceslice.Pool{}}
-	if sel != nil {
-		res.Pools[c.cfg.PoolName] = resourceslice.Pool{NodeSelector: sel, Slices: []resourceslice.Slice{{Devices: devs}}}
+	if sel == nil {
+		return res
 	}
+	pool := resourceslice.Pool{NodeSelector: sel}
+	for chunk := range slices.Chunk(devs, resourceapi.ResourceSliceMaxDevices) {
+		pool.Slices = append(pool.Slices, resourceslice.Slice{Devices: chunk})
+	}
+	if len(pool.Slices) == 0 {
+		pool.Slices = []resourceslice.Slice{{Devices: devs}}
+	}
+	res.Pools[c.cfg.PoolName] = pool
 	return res
 }
 

@@ -397,6 +397,11 @@ func (s *Server) Stop() {
 	s.saveStateLocked()
 }
 
+// CloseEvents ends every event stream, and every later one.
+func (s *Server) CloseEvents() {
+	s.events.close()
+}
+
 // Refresh rediscovers qemu processes (if discover is true and discovery
 // is enabled), queries the device tree of every running host, and
 // reconciles attachments with what qemu has.
@@ -1253,12 +1258,13 @@ func (s *Server) startBackgroundWaitLocked(a *attachment, failAfter time.Duratio
 			cur := s.atts[a.ID]
 			h := s.hosts[a.Host]
 			active := a.State == api.AttachmentDetaching || (a.State == api.AttachmentFailed && a.unplugPending)
+			leaked := a.leaked
 			var mon qemu.Monitor
 			if h != nil {
 				mon = h.mon
 			}
 			s.mu.RUnlock()
-			if cur != a || !active || a.leaked {
+			if cur != a || !active || leaked {
 				return
 			}
 			if mon == nil {

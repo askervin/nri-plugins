@@ -236,6 +236,9 @@ func (c *Controller) Run(ctx context.Context) error {
 		c.logf("driver %s, pool %s, server %s, sync interval %s, config key %s", c.cfg.DriverName, c.cfg.PoolName, c.pool.BaseURL, c.cfg.SyncInterval, c.cfg.ConfigKey)
 	}
 	if err := c.start(ctx); err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		return err
 	}
 	defer c.factory.Shutdown()

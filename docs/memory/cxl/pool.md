@@ -52,12 +52,13 @@ default in v1.37. Pool devices do not use `nodeAllocatableResources`.
 
 ## What the pool controller publishes
 
-One cluster-scoped ResourceSlice (no node name) per pool under driver
-`cxl-pool.nri.io`. A cluster that spans several pools has one controller
-per pool, each publishing its own pool name under the same driver; the
-reference controller names the pool after its server and confines itself
-to that pool (resourceslice `Options.ReconcilePoolWithName`: without it, a
-controller removes the slices of pools it does not know).
+Cluster-scoped ResourceSlices (no node name) of the pool under driver
+`cxl-pool.nri.io`, at most 128 devices in a slice. A cluster that spans
+several pools has one controller per pool, each publishing its own pool
+name under the same driver; the reference controller names the pool after
+its server and confines itself to that pool (resourceslice
+`Options.ReconcilePoolWithName`: without it, a controller removes the
+slices of pools it does not know).
 
 ```yaml
 apiVersion: resource.k8s.io/v1

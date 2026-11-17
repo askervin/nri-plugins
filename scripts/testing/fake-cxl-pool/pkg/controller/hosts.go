@@ -28,11 +28,11 @@ import (
 
 // hostMap maps the Nodes of this cluster to pool hosts (qemu VMs).
 type hostMap struct {
-	nodeHost map[string]api.Host // node name -> host
-	hostNode map[string]string   // host name -> node name
-	// hostnames: node name -> kubernetes.io/hostname label of the nodes
-	// in nodeHost that have one
-	hostnames map[string]string
+	nodeHost  map[string]api.Host // node name -> host
+	hostNode  map[string]string   // host name -> node name
+	hostnames map[string]string   // node name -> kubernetes.io/hostname label
+	// unlabeled are the nodes that have a host but no hostname label
+	unlabeled []string
 }
 
 // normUUID returns a uuid in lower case without dashes.
@@ -42,8 +42,9 @@ func normUUID(u string) string {
 
 // mapHosts finds the host of each node: the host whose uuid equals the
 // node's systemUUID (lower case, without dashes), else the host whose name
-// is the node name. A host maps to one node at most; a node without a host
-// is not a pool host.
+// is the node name. A host maps to one node at most. A node without a host
+// is not a pool host, nor is a node without a kubernetes.io/hostname label:
+// the node selector of the pool selects nodes by that label.
 func mapHosts(hosts []api.Host, nodes []*corev1.Node) hostMap {
 	hm := hostMap{nodeHost: map[string]api.Host{}, hostNode: map[string]string{}, hostnames: map[string]string{}}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
@@ -72,11 +73,14 @@ func mapHosts(hosts []api.Host, nodes []*corev1.Node) hostMap {
 		if _, taken := hm.hostNode[found.Name]; taken {
 			continue
 		}
+		v := n.Labels[corev1.LabelHostname]
+		if v == "" {
+			hm.unlabeled = append(hm.unlabeled, n.Name)
+			continue
+		}
 		hm.nodeHost[n.Name] = *found
 		hm.hostNode[found.Name] = n.Name
-		if v := n.Labels[corev1.LabelHostname]; v != "" {
-			hm.hostnames[n.Name] = v
-		}
+		hm.hostnames[n.Name] = v
 	}
 	return hm
 }
@@ -93,6 +97,12 @@ func (c *Controller) mapNodes(ctx context.Context) (hostMap, error) {
 		return hostMap{}, err
 	}
 	hm := mapHosts(hosts, nodes)
+	for _, n := range hm.unlabeled {
+		if !c.noLabel[n] {
+			c.noLabel[n] = true
+			c.logf("node %s has no %s label: not a pool host", n, corev1.LabelHostname)
+		}
+	}
 	if s := hm.String(); s != c.hostMapStr {
 		c.logf("pool hosts of nodes: %s", s)
 		c.hostMapStr = s

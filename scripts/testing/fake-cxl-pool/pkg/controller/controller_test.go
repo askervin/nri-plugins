@@ -23,8 +23,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,8 +35,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 
@@ -303,6 +307,14 @@ func newEnvWith(t *testing.T, setup func(*fakePool, *Config)) *env {
 		node("node2", "00000000-0000-0000-0000-000000000002"),
 		node("node3", "00000000-0000-0000-0000-000000000003"),
 	)
+	// the API server names a slice after its GenerateName, the fake does not
+	var slices atomic.Int32
+	kube.PrependReactor("create", "resourceslices", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		if rs := a.(k8stesting.CreateAction).GetObject().(*resourceapi.ResourceSlice); rs.Name == "" {
+			rs.Name = rs.GenerateName + strconv.Itoa(int(slices.Add(1)))
+		}
+		return false, nil, nil
+	})
 	rec := record.NewFakeRecorder(100)
 	logs := &lockedBuf{}
 	cfg := Config{
@@ -580,6 +592,31 @@ func TestPublish(t *testing.T) {
 	}
 }
 
+// A pool of more devices than a ResourceSlice takes has several slices.
+func TestPublishManyDevices(t *testing.T) {
+	t.Parallel()
+	n := resourceapi.ResourceSliceMaxDevices + 1
+	e := newEnvWith(t, func(p *fakePool, _ *Config) {
+		p.devices = map[string]api.Device{}
+		for i := range n {
+			name := fmt.Sprintf("d%03d", i)
+			p.devices[name] = api.Device{Name: name, Serial: fmt.Sprintf("0xc1ee%04x", i+1), Size: 256 << 20, Scope: api.ScopePool, State: api.DeviceFree}
+		}
+	})
+	e.sync()
+	e.eventually("two ResourceSlices", func() bool { return len(e.slices()) == 2 })
+	devs := 0
+	for _, s := range e.slices() {
+		if s.Spec.Pool.Name != DefaultPoolName || s.Spec.Pool.ResourceSliceCount != 2 || len(s.Spec.Devices) > resourceapi.ResourceSliceMaxDevices {
+			t.Fatalf("unexpected slice: pool %+v, %d devices", s.Spec.Pool, len(s.Spec.Devices))
+		}
+		devs += len(s.Spec.Devices)
+	}
+	if devs != n {
+		t.Fatalf("%d devices published, expected %d", devs, n)
+	}
+}
+
 func TestDeviceName(t *testing.T) {
 	t.Parallel()
 	for in, want := range map[string]string{
@@ -732,8 +769,12 @@ func TestDetachOnDeallocation(t *testing.T) {
 	e.pool.mu.Unlock()
 	e.sync()
 	e.sync()
+	e.sync()
 	if _, det := e.pool.calls(); len(det) != 1 {
 		t.Fatalf("unexpected detach requests %v", det)
+	}
+	if n := strings.Count(e.logs.String(), "detach pooled0@node2: still detaching"); n != 1 {
+		t.Fatalf("still detaching logged %d times", n)
 	}
 	// the server gave up the device_del and reports it attached again: retried
 	e.pool.mu.Lock()
@@ -748,6 +789,23 @@ func TestDetachOnDeallocation(t *testing.T) {
 	}
 	if ev := e.events(); len(ev) != 1 || !strings.HasPrefix(ev[0], "Normal Detached pooled0 detached from node2") {
 		t.Fatalf("unexpected events %v", ev)
+	}
+}
+
+// A failed attachment of a device that a claim wants fails the claim.
+func TestFailedAttachmentFailsClaim(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	e.pool.addAttachment(api.Attachment{Device: "pooled0", Host: "vm1", Owner: e.c.Owner("uid-old"),
+		State: api.AttachmentFailed, Error: "guest did not release the device"})
+	e.createClaim("c1", "pooled0", "node1", "")
+	e.sync()
+	cond, _ := e.condition("c1", "cxl-pool.nri.io/AttachFailed")
+	if cond == nil || cond.Reason != ReasonAttachError || cond.Message != "attachment pooled0@vm1 failed: guest did not release the device" {
+		t.Fatalf("unexpected condition %+v", cond)
+	}
+	if att, det := e.pool.calls(); len(att) != 0 || len(det) != 0 {
+		t.Fatalf("unexpected requests %v %v", att, det)
 	}
 }
 

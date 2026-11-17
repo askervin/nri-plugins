@@ -201,7 +201,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-ping.C:
 			_, err = fmt.Fprintf(w, ": ping\n\n")
-		case ev := <-ch:
+		case ev, ok := <-ch:
+			if !ok {
+				return
+			}
 			b, merr := json.Marshal(ev)
 			if merr != nil {
 				continue

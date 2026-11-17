@@ -95,6 +95,8 @@ func main() {
 	logger.Printf("fake-cxl-pool-server %s listening on http://%s (state file %s%s)", cfg.Name, l.Addr(), cfg.StateFile, discoveryInfo(&cfg.Discovery))
 	srv.Start()
 	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	// Shutdown waits for every request, an event stream too.
+	hs.RegisterOnShutdown(srv.CloseEvents)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

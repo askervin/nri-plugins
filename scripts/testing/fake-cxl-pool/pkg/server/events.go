@@ -23,19 +23,25 @@ import (
 
 // broker fans out events to subscribers. Slow subscribers lose events.
 type broker struct {
-	mu   sync.Mutex
-	subs map[chan api.Event]bool
+	mu     sync.Mutex
+	subs   map[chan api.Event]bool
+	closed bool
 }
 
 func newBroker() *broker {
 	return &broker{subs: map[chan api.Event]bool{}}
 }
 
+// subscribe returns a new channel of events, a closed one after close.
 func (b *broker) subscribe() chan api.Event {
 	ch := make(chan api.Event, 64)
 	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		close(ch)
+		return ch
+	}
 	b.subs[ch] = true
-	b.mu.Unlock()
 	return ch
 }
 
@@ -43,6 +49,17 @@ func (b *broker) unsubscribe(ch chan api.Event) {
 	b.mu.Lock()
 	delete(b.subs, ch)
 	b.mu.Unlock()
+}
+
+// close closes the channel of every subscriber.
+func (b *broker) close() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.closed = true
+	for ch := range b.subs {
+		close(ch)
+		delete(b.subs, ch)
+	}
 }
 
 func (b *broker) publish(typ string, obj any) {
