@@ -94,7 +94,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	if err != nil {
 		return 0, &api.Error{Code: api.CodeUnavailable, Message: fmt.Sprintf("cannot reach fake-cxl-pool server: %v", err)}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return resp.StatusCode, err
@@ -400,7 +400,7 @@ func (c *Client) Events(ctx context.Context, fn func(Event) error) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("events: %s", resp.Status)
 	}

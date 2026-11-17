@@ -271,12 +271,12 @@ func (s *Server) saveStateLocked() {
 	_, werr := tmp.Write(append(b, '\n'))
 	cerr := tmp.Close()
 	if werr != nil || cerr != nil {
-		os.Remove(tmp.Name())
+		_ = os.Remove(tmp.Name())
 		s.logf("state: write %s: %v %v", tmp.Name(), werr, cerr)
 		return
 	}
 	if err := os.Rename(tmp.Name(), s.cfg.StateFile); err != nil {
-		os.Remove(tmp.Name())
+		_ = os.Remove(tmp.Name())
 		s.logf("state: %v", err)
 	}
 }

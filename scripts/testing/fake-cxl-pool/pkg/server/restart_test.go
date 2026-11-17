@@ -84,7 +84,7 @@ func (m *socketMonitor) QueryMemdevs(ctx context.Context) ([]qemu.Memdev, error)
 func (m *socketMonitor) QueryTree(ctx context.Context) (*qemu.Tree, error) {
 	return m.qemu().QueryTree(ctx)
 }
-func (m *socketMonitor) Close() error { return nil }
+func (m *socketMonitor) Close() {}
 
 // restartAt restarts the qemu of vm1 after the call of a monitor of vm1 if
 // the test asks for it there (restartIf).

@@ -418,7 +418,7 @@ func (f *Fake) QueryTree(ctx context.Context) (*Tree, error) {
 }
 
 // Close implements Monitor.
-func (f *Fake) Close() error { return nil }
+func (f *Fake) Close() {}
 
 // String summarizes the fake state.
 func (f *Fake) String() string {

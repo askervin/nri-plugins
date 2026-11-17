@@ -8,8 +8,6 @@
 #                   bin/cxl-load
 #   make image      build the image of the controller (Dockerfile) with docker
 #                   and save it to bin/fake-cxl-pool-controller-image.tar
-#   make test       unit tests
-#   make lint       go vet and gofmt check
 
 GO      ?= go
 PKG     := github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool
@@ -51,15 +49,8 @@ image: $(BINDIR)/fake-cxl-pool-controller
 	echo $$ref > $(CONTROLLER_IMAGE_REF); \
 	echo "$(CONTROLLER_IMAGE_TAR): $(CONTROLLER_IMAGE) $$ref"
 
-test:
-	$(GO) test -race $(PKG)/...
-
-lint:
-	$(GO) vet $(PKG)/...
-	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "gofmt needed: $$out"; exit 1; fi
-
 clean:
 	rm -rf $(BINDIR)
 
-.PHONY: all image test lint clean FORCE
+.PHONY: all image clean FORCE
 FORCE:

@@ -1332,5 +1332,3 @@ func (s *Server) resolveHostLocked(hostname, uuid string) *host {
 	}
 	return nil
 }
-
-func (s *Server) stateFilePath() string { return s.cfg.StateFile }

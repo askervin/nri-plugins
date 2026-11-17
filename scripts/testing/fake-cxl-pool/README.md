@@ -34,13 +34,11 @@ VMs, same serial in every VM, used as devdax only). Independently of that, a
 device is *volatile* (default) or *persistent* (persistent memory with a
 label storage area, see [Persistent devices](#persistent-devices)).
 
-## Build and test
+## Build
 
 ```
 make -C scripts/testing/fake-cxl-pool          # bin/fake-cxl-pool-{server,client,controller}, bin/cxl-numa-place, bin/cxl-load
 make -C scripts/testing/fake-cxl-pool image    # the controller image, bin/fake-cxl-pool-controller-image.tar
-make -C scripts/testing/fake-cxl-pool test     # unit tests (go test -race)
-make -C scripts/testing/fake-cxl-pool lint     # go vet + gofmt
 ```
 
 The client and the controller are built static for amd64

@@ -63,7 +63,7 @@ type Monitor interface {
 	// QueryTree returns the CXL topology of the qemu device tree.
 	QueryTree(ctx context.Context) (*Tree, error)
 	// Close releases the monitor.
-	Close() error
+	Close()
 }
 
 // Memory backend object types.

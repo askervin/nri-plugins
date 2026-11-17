@@ -186,27 +186,32 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, ": fake-cxl-pool events\n\n")
+	if _, err := fmt.Fprintf(w, ": fake-cxl-pool events\n\n"); err != nil {
+		return
+	}
 	fl.Flush()
 	ping := time.NewTicker(15 * time.Second)
 	defer ping.Stop()
 	for {
+		var err error
 		select {
 		case <-r.Context().Done():
 			return
 		case <-s.ctx.Done():
 			return
 		case <-ping.C:
-			fmt.Fprintf(w, ": ping\n\n")
-			fl.Flush()
+			_, err = fmt.Fprintf(w, ": ping\n\n")
 		case ev := <-ch:
-			b, err := json.Marshal(ev)
-			if err != nil {
+			b, merr := json.Marshal(ev)
+			if merr != nil {
 				continue
 			}
-			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, b)
-			fl.Flush()
+			_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, b)
 		}
+		if err != nil {
+			return
+		}
+		fl.Flush()
 	}
 }
 

@@ -17,6 +17,7 @@
 package pool
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -119,7 +120,7 @@ func (p *Pool) EnsureDir() error {
 // EnsureBackingFile creates the backing file (and its directory) if it is
 // missing, and extends it (sparse) if it is smaller than size. An existing
 // larger file is left as is: qemu maps only size bytes of it.
-func EnsureBackingFile(path string, size int64) error {
+func EnsureBackingFile(path string, size int64) (err error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -127,7 +128,7 @@ func EnsureBackingFile(path string, size int64) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { err = errors.Join(err, f.Close()) }()
 	st, err := f.Stat()
 	if err != nil {
 		return err

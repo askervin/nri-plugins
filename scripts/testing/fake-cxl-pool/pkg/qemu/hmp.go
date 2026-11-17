@@ -66,11 +66,10 @@ func NewHMP(path string, log Logf) *HMP {
 func (h *HMP) Protocol() string { return ProtoHMP }
 
 // Close implements Monitor. It is final, like QMP.Close.
-func (h *HMP) Close() error {
+func (h *HMP) Close() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.closed = true
-	return nil
 }
 
 func withDefaultTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -112,7 +111,7 @@ func (h *HMP) command(ctx context.Context, line string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("hmp connect %s: %w", h.Path, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if dl, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(dl)
 	}

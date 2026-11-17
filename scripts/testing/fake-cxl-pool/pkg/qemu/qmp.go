@@ -183,14 +183,14 @@ func (q *QMP) dial(ctx context.Context) (*qmpConn, error) {
 	select {
 	case <-c.greeting:
 	case <-c.done:
-		nc.Close()
+		_ = nc.Close()
 		return nil, fmt.Errorf("qmp %s: no greeting: %v", q.Path, c.err)
 	case <-ctx.Done():
-		nc.Close()
+		_ = nc.Close()
 		return nil, fmt.Errorf("qmp %s: no greeting: %w (is another client connected?)", q.Path, ctx.Err())
 	}
 	if _, err := c.execute(ctx, "qmp_capabilities", nil); err != nil {
-		nc.Close()
+		_ = nc.Close()
 		return nil, fmt.Errorf("qmp %s: capabilities negotiation: %w", q.Path, err)
 	}
 	return c, nil
@@ -238,7 +238,7 @@ func (q *QMP) acquire(ctx context.Context) (*qmpConn, func(), error) {
 	if q.conn != nil {
 		select {
 		case <-q.conn.done:
-			q.conn.c.Close()
+			_ = q.conn.c.Close()
 			q.conn = nil
 		default:
 		}
@@ -277,7 +277,7 @@ func (q *QMP) armIdleLocked() {
 		q.mu.Lock()
 		defer q.mu.Unlock()
 		if q.users == 0 && q.conn == c {
-			c.c.Close()
+			_ = c.c.Close()
 			q.conn = nil
 		}
 	})
@@ -655,7 +655,7 @@ func (q *QMP) WaitDeviceDeleted(ctx context.Context, id string) error {
 // Close implements Monitor. It is final: a closed monitor never connects
 // again, so that a goroutine that still holds it cannot take the socket from
 // the monitor that replaces it.
-func (q *QMP) Close() error {
+func (q *QMP) Close() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.closed = true
@@ -664,8 +664,7 @@ func (q *QMP) Close() error {
 		q.idleTimer = nil
 	}
 	if q.conn != nil {
-		q.conn.c.Close()
+		_ = q.conn.c.Close()
 		q.conn = nil
 	}
-	return nil
 }

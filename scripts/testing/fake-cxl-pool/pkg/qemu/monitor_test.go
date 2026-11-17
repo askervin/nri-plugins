@@ -47,7 +47,7 @@ func newFakeHMPServer(t *testing.T, handler func(string) string) *fakeHMPServer 
 		t.Fatal(err)
 	}
 	s.l = l
-	t.Cleanup(func() { l.Close() })
+	t.Cleanup(func() { _ = l.Close() })
 	go func() {
 		for {
 			c, err := l.Accept()
@@ -61,7 +61,7 @@ func newFakeHMPServer(t *testing.T, handler func(string) string) *fakeHMPServer 
 }
 
 func (s *fakeHMPServer) serve(c net.Conn) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	_, _ = c.Write([]byte("QEMU 11.1.1 monitor - type 'help' for more information\r\n(qemu) "))
 	r := bufio.NewReader(c)
 	for {
@@ -173,7 +173,7 @@ func TestHMPBusySocketTimesOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 	h := NewHMP(path, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -202,7 +202,7 @@ func newFakeQMPServer(t *testing.T) *fakeQMPServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { l.Close() })
+	t.Cleanup(func() { _ = l.Close() })
 	go func() {
 		for {
 			c, err := l.Accept()
@@ -218,7 +218,7 @@ func newFakeQMPServer(t *testing.T) *fakeQMPServer {
 }
 
 func (s *fakeQMPServer) serve(c net.Conn) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	var wmu sync.Mutex
 	send := func(v any) {
 		b, _ := json.Marshal(v)
@@ -479,7 +479,7 @@ func TestDialLongPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 	long := filepath.Join(base, strings.Repeat("d", 60), strings.Repeat("e", 60))
 	if err := os.MkdirAll(long, 0o755); err != nil {
 		t.Fatal(err)
@@ -495,14 +495,14 @@ func TestDialLongPath(t *testing.T) {
 		c, err := l.Accept()
 		if err == nil {
 			_, _ = c.Write([]byte("hi"))
-			c.Close()
+			_ = c.Close()
 		}
 	}()
 	c, err := dialUnix(context.Background(), longPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	b := make([]byte, 2)
 	if _, err := io.ReadFull(c, b); err != nil || string(b) != "hi" {
 		t.Fatalf("read %q %v", b, err)

@@ -104,15 +104,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := c.flagSet("fake-cxl-pool-client")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprint(stdout, usage)
+			_, _ = fmt.Fprint(stdout, usage)
 			return exitOK
 		}
-		fmt.Fprintf(stderr, "error: %v\n\n%s", err, usage)
+		_, _ = fmt.Fprintf(stderr, "error: %v\n\n%s", err, usage)
 		return exitUsage
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		fmt.Fprint(stderr, usage)
+		_, _ = fmt.Fprint(stderr, usage)
 		return exitUsage
 	}
 	err := c.dispatch(ctx, rest[0], rest[1:])
@@ -125,14 +125,14 @@ func (c *cli) exitCode(err error) int {
 	}
 	var ue *usageError
 	if errors.As(err, &ue) {
-		fmt.Fprintf(c.stderr, "error: %s\n\n%s", ue.msg, usage)
+		_, _ = fmt.Fprintf(c.stderr, "error: %s\n\n%s", ue.msg, usage)
 		return exitUsage
 	}
 	if errors.Is(err, flag.ErrHelp) {
-		fmt.Fprint(c.stdout, usage)
+		_, _ = fmt.Fprint(c.stdout, usage)
 		return exitOK
 	}
-	fmt.Fprintf(c.stderr, "error: %v\n", err)
+	_, _ = fmt.Fprintf(c.stderr, "error: %v\n", err)
 	if api.IsCode(err, api.CodeConflict) || errors.Is(err, context.DeadlineExceeded) {
 		return exitConflict
 	}
@@ -207,8 +207,8 @@ func (c *cli) dispatch(ctx context.Context, cmd string, args []string) error {
 	case "guest":
 		return c.cmdGuest(ctx, args)
 	case "help", "-h", "--help":
-		fmt.Fprint(c.stdout, usage)
-		return nil
+		_, err := fmt.Fprint(c.stdout, usage)
+		return err
 	}
 	return usagef("unknown command %q", cmd)
 }
@@ -221,6 +221,7 @@ func (c *cli) printJSON(v any) error {
 	return enc.Encode(v)
 }
 
+// table returns a tabwriter on stdout. Its writes fail only at its Flush.
 func (c *cli) table() *tabwriter.Writer {
 	return tabwriter.NewWriter(c.stdout, 0, 4, 2, ' ', 0)
 }
@@ -245,17 +246,17 @@ func (c *cli) cmdStatus(ctx context.Context, args []string) error {
 		return c.printJSON(st)
 	}
 	w := c.table()
-	fmt.Fprintf(w, "name:\t%s\n", dash(st.Name))
-	fmt.Fprintf(w, "server:\t%s\n", c.client().BaseURL)
-	fmt.Fprintf(w, "version:\t%s\n", st.Version)
-	fmt.Fprintf(w, "uptime:\t%s\n", st.Uptime)
-	fmt.Fprintf(w, "hosts:\t%d\n", st.Hosts)
-	fmt.Fprintf(w, "devices:\t%d\n", st.Devices)
-	fmt.Fprintf(w, "attachments:\t%d\n", st.Attachments)
-	fmt.Fprintf(w, "discovery:\t%v\n", st.Qemu.Discovery)
-	fmt.Fprintf(w, "state file:\t%s\n", dash(st.StateFile))
+	_, _ = fmt.Fprintf(w, "name:\t%s\n", dash(st.Name))
+	_, _ = fmt.Fprintf(w, "server:\t%s\n", c.client().BaseURL)
+	_, _ = fmt.Fprintf(w, "version:\t%s\n", st.Version)
+	_, _ = fmt.Fprintf(w, "uptime:\t%s\n", st.Uptime)
+	_, _ = fmt.Fprintf(w, "hosts:\t%d\n", st.Hosts)
+	_, _ = fmt.Fprintf(w, "devices:\t%d\n", st.Devices)
+	_, _ = fmt.Fprintf(w, "attachments:\t%d\n", st.Attachments)
+	_, _ = fmt.Fprintf(w, "discovery:\t%v\n", st.Qemu.Discovery)
+	_, _ = fmt.Fprintf(w, "state file:\t%s\n", dash(st.StateFile))
 	for h, v := range st.Qemu.Versions {
-		fmt.Fprintf(w, "qemu %s:\t%s\n", h, v)
+		_, _ = fmt.Fprintf(w, "qemu %s:\t%s\n", h, v)
 	}
 	return w.Flush()
 }
@@ -292,9 +293,9 @@ func (c *cli) cmdPools(ctx context.Context, args []string) error {
 		return c.printJSON(ps)
 	}
 	w := c.table()
-	fmt.Fprintln(w, "NAME\tDIR\tCAPACITY\tUSED\tFREE\tSHARABLE")
+	_, _ = fmt.Fprintf(w, "NAME\tDIR\tCAPACITY\tUSED\tFREE\tSHARABLE\n")
 	for _, p := range ps {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%v\n", p.Name, p.Dir, api.FormatSize(p.Capacity), api.FormatSize(p.Used), api.FormatSize(p.Free), p.Sharable)
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%v\n", p.Name, p.Dir, api.FormatSize(p.Capacity), api.FormatSize(p.Used), api.FormatSize(p.Free), p.Sharable)
 	}
 	return w.Flush()
 }
@@ -330,9 +331,9 @@ func (c *cli) cmdHosts(ctx context.Context, args []string) error {
 		return c.printJSON(hs)
 	}
 	w := c.table()
-	fmt.Fprintln(w, "NAME\tSTATE\tCONTROL\tPID\tQEMU\tUUID\tFREE-SLOTS\tATTACHMENTS\tLOCAL-DEVICES")
+	_, _ = fmt.Fprintf(w, "NAME\tSTATE\tCONTROL\tPID\tQEMU\tUUID\tFREE-SLOTS\tATTACHMENTS\tLOCAL-DEVICES\n")
 	for _, h := range hs {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%d/%d\t%d\t%d\n", h.Name, h.State, dash(h.Control), h.PID,
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%d/%d\t%d\t%d\n", h.Name, h.State, dash(h.Control), h.PID,
 			dash(h.QemuVersion), dash(h.UUID), freeSlots(h), len(h.Slots), len(h.Attachments), len(h.LocalDevices))
 	}
 	return w.Flush()
@@ -343,10 +344,10 @@ func (c *cli) printHost(h api.Host) error {
 		return c.printJSON(h)
 	}
 	w := c.table()
-	fmt.Fprintf(w, "name:\t%s\n", h.Name)
-	fmt.Fprintf(w, "uuid:\t%s\n", dash(h.UUID))
-	fmt.Fprintf(w, "state:\t%s\n", h.State)
-	fmt.Fprintf(w, "pid:\t%d\n", h.PID)
+	_, _ = fmt.Fprintf(w, "name:\t%s\n", h.Name)
+	_, _ = fmt.Fprintf(w, "uuid:\t%s\n", dash(h.UUID))
+	_, _ = fmt.Fprintf(w, "state:\t%s\n", h.State)
+	_, _ = fmt.Fprintf(w, "pid:\t%d\n", h.PID)
 	ctl := h.Control
 	switch h.Control {
 	case "qmp":
@@ -354,30 +355,29 @@ func (c *cli) printHost(h api.Host) error {
 	case "hmp":
 		ctl += " " + h.HMP
 	}
-	fmt.Fprintf(w, "control:\t%s\n", dash(ctl))
-	fmt.Fprintf(w, "qemu:\t%s\n", dash(h.QemuVersion))
-	fmt.Fprintf(w, "source:\t%s\n", h.Source)
+	_, _ = fmt.Fprintf(w, "control:\t%s\n", dash(ctl))
+	_, _ = fmt.Fprintf(w, "qemu:\t%s\n", dash(h.QemuVersion))
+	_, _ = fmt.Fprintf(w, "source:\t%s\n", h.Source)
 	if h.Error != "" {
-		fmt.Fprintf(w, "error:\t%s\n", h.Error)
+		_, _ = fmt.Fprintf(w, "error:\t%s\n", h.Error)
 	}
-	fmt.Fprintf(w, "local devices:\t%s\n", dash(strings.Join(h.LocalDevices, " ")))
-	w.Flush()
-	fmt.Fprintln(c.stdout, "\nhost bridges:")
-	w = c.table()
-	fmt.Fprintln(w, "ID\tNUMA\tFMW-SIZE\tATTACHED")
+	_, _ = fmt.Fprintf(w, "local devices:\t%s\n", dash(strings.Join(h.LocalDevices, " ")))
+	// A line without a tab ends a table of w.
+	_, _ = fmt.Fprintf(w, "\nhost bridges:\nID\tNUMA\tFMW-SIZE\tATTACHED\n")
 	for _, hb := range h.HostBridges {
-		fmt.Fprintf(w, "%s\t%d\t%s\t%s\n", hb.ID, hb.NumaNode, api.FormatSize(hb.FMWSize), api.FormatSize(hb.AttachedBytes))
+		_, _ = fmt.Fprintf(w, "%s\t%d\t%s\t%s\n", hb.ID, hb.NumaNode, api.FormatSize(hb.FMWSize), api.FormatSize(hb.AttachedBytes))
 	}
-	w.Flush()
-	fmt.Fprintln(c.stdout, "\nslots:")
-	w = c.table()
-	fmt.Fprintln(w, "BUS\tKIND\tHOST-BRIDGE\tNUMA\tDEVICE\tATTACHMENT\tRESERVED-FOR")
+	_, _ = fmt.Fprintf(w, "\nslots:\nBUS\tKIND\tHOST-BRIDGE\tNUMA\tDEVICE\tATTACHMENT\tRESERVED-FOR\n")
 	for _, s := range h.Slots {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n", s.Bus, s.Kind, s.HostBridge, s.NumaNode, dash(s.Device), dash(s.Attachment), dash(s.ReservedFor))
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n", s.Bus, s.Kind, s.HostBridge, s.NumaNode, dash(s.Device), dash(s.Attachment), dash(s.ReservedFor))
 	}
-	w.Flush()
 	if len(h.Attachments) > 0 {
-		fmt.Fprintln(c.stdout, "\nattachments:")
+		_, _ = fmt.Fprintf(w, "\nattachments:\n")
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	if len(h.Attachments) > 0 {
 		return c.printAttachments(h.Attachments)
 	}
 	return nil
@@ -454,7 +454,7 @@ func attachedTo(d api.Device) string {
 
 func (c *cli) printDevices(ds []api.Device) error {
 	w := c.table()
-	fmt.Fprintln(w, "NAME\tSERIAL\tSIZE\tSHARED\tPERSISTENT\tSCOPE\tSTATE\tATTACHED-TO\tOWNER")
+	_, _ = fmt.Fprintln(w, "NAME\tSERIAL\tSIZE\tSHARED\tPERSISTENT\tSCOPE\tSTATE\tATTACHED-TO\tOWNER")
 	for _, d := range ds {
 		owner := ""
 		if d.Allocation != nil {
@@ -468,7 +468,7 @@ func (c *cli) printDevices(ds []api.Device) error {
 			}
 			scope += ":" + lh
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%v\t%v\t%s\t%s\t%s\t%s\n", d.Name, d.Serial, api.FormatSize(d.Size), d.Shared, d.Persistent, scope, d.State, dash(attachedTo(d)), dash(owner))
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%v\t%v\t%s\t%s\t%s\t%s\n", d.Name, d.Serial, api.FormatSize(d.Size), d.Shared, d.Persistent, scope, d.State, dash(attachedTo(d)), dash(owner))
 	}
 	return w.Flush()
 }
@@ -478,35 +478,39 @@ func (c *cli) printDevice(d api.Device) error {
 		return c.printJSON(d)
 	}
 	w := c.table()
-	fmt.Fprintf(w, "name:\t%s\n", d.Name)
-	fmt.Fprintf(w, "serial:\t%s\n", d.Serial)
-	fmt.Fprintf(w, "size:\t%s\n", api.FormatSize(d.Size))
-	fmt.Fprintf(w, "shared:\t%v\n", d.Shared)
+	_, _ = fmt.Fprintf(w, "name:\t%s\n", d.Name)
+	_, _ = fmt.Fprintf(w, "serial:\t%s\n", d.Serial)
+	_, _ = fmt.Fprintf(w, "size:\t%s\n", api.FormatSize(d.Size))
+	_, _ = fmt.Fprintf(w, "shared:\t%v\n", d.Shared)
 	memory := "volatile"
 	if d.Persistent {
 		memory = "persistent"
 	}
-	fmt.Fprintf(w, "memory:\t%s\n", memory)
-	fmt.Fprintf(w, "backend:\t%s %s\n", d.Backend, d.Path)
+	_, _ = fmt.Fprintf(w, "memory:\t%s\n", memory)
+	_, _ = fmt.Fprintf(w, "backend:\t%s %s\n", d.Backend, d.Path)
 	if d.LSAPath != "" {
-		fmt.Fprintf(w, "lsa:\t%s\n", d.LSAPath)
+		_, _ = fmt.Fprintf(w, "lsa:\t%s\n", d.LSAPath)
 	}
-	fmt.Fprintf(w, "pool:\t%s\n", dash(d.Pool))
+	_, _ = fmt.Fprintf(w, "pool:\t%s\n", dash(d.Pool))
 	scope := d.Scope
 	if d.Scope == api.ScopeLocal {
 		scope += " (" + strings.Join(append([]string{d.LocalHost}, d.LocalHosts...)[min(1, len(d.LocalHosts)):], ",") + ")"
 	}
-	fmt.Fprintf(w, "scope:\t%s\n", scope)
-	fmt.Fprintf(w, "state:\t%s\n", d.State)
+	_, _ = fmt.Fprintf(w, "scope:\t%s\n", scope)
+	_, _ = fmt.Fprintf(w, "state:\t%s\n", d.State)
 	if d.Allocation != nil {
-		fmt.Fprintf(w, "owner:\t%s (since %s) %s\n", d.Allocation.Owner, d.Allocation.Since.Format(time.RFC3339), d.Allocation.Note)
+		_, _ = fmt.Fprintf(w, "owner:\t%s (since %s) %s\n", d.Allocation.Owner, d.Allocation.Since.Format(time.RFC3339), d.Allocation.Note)
 	}
 	for k, v := range d.Labels {
-		fmt.Fprintf(w, "label:\t%s=%s\n", k, v)
+		_, _ = fmt.Fprintf(w, "label:\t%s=%s\n", k, v)
 	}
-	w.Flush()
 	if len(d.Attachments) > 0 {
-		fmt.Fprintln(c.stdout, "\nattachments:")
+		_, _ = fmt.Fprintf(w, "\nattachments:\n")
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	if len(d.Attachments) > 0 {
 		return c.printAttachments(d.Attachments)
 	}
 	return nil
@@ -514,9 +518,9 @@ func (c *cli) printDevice(d api.Device) error {
 
 func (c *cli) printAttachments(as []api.Attachment) error {
 	w := c.table()
-	fmt.Fprintln(w, "ID\tSLOT\tNUMA\tQEMU-DEVICE\tQEMU-OBJECT\tSERIAL\tSTATE\tERROR")
+	_, _ = fmt.Fprintln(w, "ID\tSLOT\tNUMA\tQEMU-DEVICE\tQEMU-OBJECT\tSERIAL\tSTATE\tERROR")
 	for _, a := range as {
-		fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n", a.ID, a.Slot.Bus, a.Slot.NumaNode, a.QemuDeviceID, a.QemuObjectID, a.Serial, a.State, dash(a.Error))
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n", a.ID, a.Slot.Bus, a.Slot.NumaNode, a.QemuDeviceID, a.QemuObjectID, a.Serial, a.State, dash(a.Error))
 	}
 	return w.Flush()
 }
@@ -582,10 +586,11 @@ func (c *cli) cmdDelete(ctx context.Context, args []string) error {
 	if err := c.client().DeleteDevice(ctx, pos[0], *force); err != nil {
 		return err
 	}
-	if !c.json() {
-		fmt.Fprintf(c.stdout, "deleted %s\n", pos[0])
+	if c.json() {
+		return nil
 	}
-	return nil
+	_, err = fmt.Fprintf(c.stdout, "deleted %s\n", pos[0])
+	return err
 }
 
 // hostArg returns the host of --host or --self.
@@ -660,7 +665,7 @@ func (c *cli) cmdDetach(ctx context.Context, args []string) error {
 	a, _, err := c.client().Detach(ctx, pos[0], h, client.DetachOptions{NoWait: *noWait, Timeout: *timeout, Owner: *owner, Force: *force})
 	if err != nil {
 		if a.ID != "" && !c.json() {
-			c.printAttachments([]api.Attachment{*a})
+			err = errors.Join(err, c.printAttachments([]api.Attachment{*a}))
 		}
 		return err
 	}
@@ -707,8 +712,8 @@ func (c *cli) cmdAllocate(ctx context.Context, args []string) error {
 	if c.json() {
 		return c.printJSON(a)
 	}
-	fmt.Fprintf(c.stdout, "%s allocated to %s\n", pos[0], a.Owner)
-	return nil
+	_, err = fmt.Fprintf(c.stdout, "%s allocated to %s\n", pos[0], a.Owner)
+	return err
 }
 
 func (c *cli) cmdRelease(ctx context.Context, args []string) error {
@@ -722,10 +727,11 @@ func (c *cli) cmdRelease(ctx context.Context, args []string) error {
 	if err := c.client().Release(ctx, pos[0], *owner, *force); err != nil {
 		return err
 	}
-	if !c.json() {
-		fmt.Fprintf(c.stdout, "%s released\n", pos[0])
+	if c.json() {
+		return nil
 	}
-	return nil
+	_, err = fmt.Fprintf(c.stdout, "%s released\n", pos[0])
+	return err
 }
 
 func (c *cli) cmdEvents(ctx context.Context, args []string) error {

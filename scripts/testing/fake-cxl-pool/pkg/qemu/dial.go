@@ -42,7 +42,7 @@ func dialUnix(ctx context.Context, path string) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 	short := fmt.Sprintf("/proc/self/fd/%d/%s", dir.Fd(), filepath.Base(path))
 	if len(short) > maxSunPath {
 		return nil, fmt.Errorf("socket name too long: %s", path)
