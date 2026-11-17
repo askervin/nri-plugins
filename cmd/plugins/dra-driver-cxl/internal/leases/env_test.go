@@ -280,12 +280,12 @@ func (e *leaseEnv) boot() {
 		BlockSize: e.k.Kernel().BlockSize,
 	})
 	mustOK(t, err)
-	e.local, err = dra.New(dra.Options{Rules: local, Store: st, Engine: e.eng, NodeName: envNode, BootID: e.k.BootID(),
+	e.local, err = dra.New(dra.Options{Rules: local, Store: st, Engine: e.eng, NodeName: envNode,
 		DevRoot: e.k.DevRoot(), CDI: e.cache, Publisher: e.pub,
 		Local: dra.LocalConfig{Managed: true, UsableSize: func(string, uint64) uint64 { return 0 },
 			Coherent: func(string, uint64) bool { return false }}})
 	mustOK(t, err)
-	e.pool, err = dra.New(dra.Options{Rules: pool, Store: st, Engine: e.eng, NodeName: envNode, BootID: e.k.BootID(),
+	e.pool, err = dra.New(dra.Options{Rules: pool, Store: st, Engine: e.eng, NodeName: envNode,
 		DevRoot: e.k.DevRoot(), CDI: e.cache})
 	mustOK(t, err)
 	e.pool.Recovered(rec, filepath.Join(e.dir, store.FileName))

@@ -21,7 +21,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
 	coreclientset "k8s.io/client-go/kubernetes"
@@ -43,8 +42,7 @@ type driver struct {
 	client coreclientset.Interface
 	config *DriverConfig
 	// nri is the NRI plugin, nil when NRI did not start.
-	nri       *containers.Plugin
-	sysfsRoot string
+	nri *containers.Plugin
 	// local is cxl.nri.io, pool the pool driver (nil when it is
 	// disabled), publisher the publisher of the node's ResourceSlice,
 	// watcher the watcher of the pool devices (nil without a client).
@@ -69,27 +67,21 @@ type leaseBroker interface {
 	Stop()
 }
 
-// loadDriverConfig returns the configuration of the flags (-c or -f) and
-// the sysfs root of --sysfs, and logs the container defaults and the
-// filesystem types; a "/sys" suffix is trimmed from the flag.
-func loadDriverConfig(cxlFlags *CXLFlags) (*DriverConfig, string, error) {
+// loadDriverConfig returns the configuration of the flags (-c or -f), and
+// logs the container defaults and the filesystem types.
+func loadDriverConfig(cxlFlags *CXLFlags) (*DriverConfig, error) {
 	configStr, err := resolveConfigStr(cxlFlags)
 	if err != nil {
-		return nil, "", fmt.Errorf("resolveConfigStr: %w", err)
+		return nil, fmt.Errorf("resolveConfigStr: %w", err)
 	}
 	driverConfig, err := newDriverConfigFromString(configStr)
 	if err != nil {
-		return nil, "", fmt.Errorf("newDriverConfigFromString: %w", err)
-	}
-	// Trim "/sys" suffix if present in SysfsRoot
-	sysfsRoot := cxlFlags.SysfsRoot
-	if len(sysfsRoot) >= 4 && sysfsRoot[len(sysfsRoot)-4:] == "/sys" {
-		cxlFlags.SysfsRoot = sysfsRoot[:len(sysfsRoot)-4]
+		return nil, fmt.Errorf("newDriverConfigFromString: %w", err)
 	}
 	driverConfig.logDefaults()
 	driverConfig.logFsTypes()
 	driverConfig.logDeadKeys()
-	return driverConfig, sysfsRoot, nil
+	return driverConfig, nil
 }
 
 // newBroker returns the lease broker of the lease claims and the leases of
@@ -328,7 +320,7 @@ func (c *pluginConfig) stateFile() string {
 // openDriverStore opens the state store in the plugin data directory of
 // cxl.nri.io with the state files of the pool driver in its own, and
 // returns it and its close.
-func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot, bootID string, rules driverRules) (*store.Store, func(), error) {
+func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFlags, k *kernel.Kernel, bootID string, rules driverRules) (*store.Store, func(), error) {
 	poolDir := ""
 	if cxlFlags.PoolDriverName != "" {
 		poolDir = filepath.Join(filepath.Dir(config.KubeletPluginDir), cxlFlags.PoolDriverName)
@@ -336,7 +328,6 @@ func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFla
 			return nil, nil, fmt.Errorf("pool driver data directory: %w", err)
 		}
 	}
-	k := newKernel(sysfsRoot)
 	sysRoot := k.SysRoot
 	for _, w := range cxlFlags.Store.Warnings() {
 		klog.Warning(w)
@@ -369,13 +360,13 @@ func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFla
 }
 
 // newDriverDevices returns the device engine of the drivers over the
-// kernel of the sysfs under sysfsRoot and the records of the store st: of
+// kernel k and the records of the store st: of
 // the pool driver unless it is disabled (empty --pool-driver-name), of the
 // local memdevs unless they are not managed (manageMemdevs: false); the
 // node mounts of each source in the MountsDir of its rules.
-func newDriverDevices(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, sysfsRoot string, fence func(ctx context.Context, node int), st *store.Store, rules driverRules) (*deviceEngine, error) {
+func newDriverDevices(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, k *kernel.Kernel, fence func(ctx context.Context, node int), st *store.Store, rules driverRules) (*deviceEngine, error) {
 	cfg := deviceConfig{
-		Kernel:          newKernel(sysfsRoot),
+		Kernel:          k,
 		Store:           st,
 		MountsDirs:      dra.MountsDirs(rules.all()...),
 		LeaseFsRoot:     leases.LeaseFsRoot(config.KubeletPluginDir),
@@ -436,7 +427,7 @@ type frontEnds struct {
 // ResourceSlice of the devices of the kernel of the engine, and the pool
 // driver unless it is disabled (rules.pool nil). The Prepares and
 // Unprepares of both have the publisher rescan.
-func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, bootID string, st *store.Store, devices *deviceEngine, watcher *provenance.Watcher, rules driverRules) (*frontEnds, error) {
+func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, st *store.Store, devices *deviceEngine, watcher *provenance.Watcher, rules driverRules) (*frontEnds, error) {
 	fe := &frontEnds{watcher: watcher, stateFile: config.stateFile()}
 	publisher, err := dra.NewPublisher(dra.PublishOptions{
 		Config:      driverConfig.publishConfig(),
@@ -459,7 +450,6 @@ func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Driver
 			Store:     st,
 			Engine:    devices.Engine,
 			NodeName:  cxlFlags.NodeName,
-			BootID:    bootID,
 			DevRoot:   devices.k.DevRoot,
 			Publisher: fe.publisher,
 		})
@@ -474,7 +464,6 @@ func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Driver
 		Store:     st,
 		Engine:    devices.Engine,
 		NodeName:  cxlFlags.NodeName,
-		BootID:    bootID,
 		DevRoot:   devices.k.DevRoot,
 		Local:     driverConfig.localConfig(),
 		OnShared:  devices.addShared,
@@ -590,13 +579,6 @@ func fenceSeed(ctx context.Context, st *store.Store, k *kernel.Kernel, drivers .
 	return nodes, nil
 }
 
-// newKernel returns the kernel of the node with its sysfs under sysfsRoot.
-func newKernel(sysfsRoot string) *kernel.Kernel {
-	k := kernel.New()
-	k.SysRoot = sysfsRoot + "/sys"
-	return k
-}
-
 // startPoolDriver registers the pool driver as a second kubelet plugin
 // (nothing if pool is nil). The start removed all old CDI specs of both
 // drivers, so the pool driver writes its own again first.
@@ -684,17 +666,3 @@ func (d *driver) Shutdown(ctx context.Context) error {
 
 	return nil
 }
-
-// readBootID returns the boot id of the running kernel, "" if it cannot be
-// read.
-func readBootID(sysfsRoot string) string {
-	b, err := os.ReadFile(filepath.Join(sysfsRoot, "/", bootIDFile))
-	if err != nil {
-		klog.Warningf("cannot read the boot id: %v; the claims, slices and leases of an earlier boot are taken as those of this one", err)
-		return ""
-	}
-	return strings.TrimSpace(string(b))
-}
-
-// bootIDFile identifies the running kernel (under the sysfs root).
-const bootIDFile = "proc/sys/kernel/random/boot_id"

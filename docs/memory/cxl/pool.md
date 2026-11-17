@@ -798,9 +798,8 @@ another host has the device. See [leases.md](leases.md).
   disable-memdev`) before the controller detaches it, also when the
   device was away at a start. The record of a Prepare that did not
   finish in another boot loses the region names and lent nodes of that
-  boot and is kept the same way. Every claim is taken as prepared in
-  this boot when the plugin cannot read the boot id: then only the node mount
-  check above keeps the claims of mode `fs` from the old boot's devices.
+  boot and is kept the same way. The plugin does not start when it
+  cannot read the boot id.
 - Plugin stopped in a Prepare (killed, crashed, or exited on the loss of
   NRI): before a Prepare touches a device it records the claim and the
   device in the state of the plugin

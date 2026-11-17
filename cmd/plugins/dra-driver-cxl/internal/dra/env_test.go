@@ -278,7 +278,6 @@ func (e *driverEnv) start() {
 		Store:    st,
 		Engine:   e.eng,
 		NodeName: envNode,
-		BootID:   e.k.BootID(),
 		DevRoot:  e.k.DevRoot(),
 		CDI:      e.cache,
 		Local: LocalConfig{Managed: true, UsableSize: func(string, uint64) uint64 { return 0 },
@@ -291,7 +290,7 @@ func (e *driverEnv) start() {
 		Publisher: e.pub,
 	})
 	mustOK(t, err)
-	e.pool, err = New(Options{Rules: pool, Store: st, Engine: e.eng, NodeName: envNode, BootID: e.k.BootID(),
+	e.pool, err = New(Options{Rules: pool, Store: st, Engine: e.eng, NodeName: envNode,
 		DevRoot: e.k.DevRoot(), CDI: e.cache, Publisher: e.pub})
 	mustOK(t, err)
 	if e.lent {

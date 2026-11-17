@@ -216,7 +216,7 @@ func createdContainer(t *testing.T, st *store.Store, local containers.LocalResul
 // plugin's with fencing allowed-mems (also before NRI connects: the node is
 // recorded), none with fencing none.
 func TestFenceOf(t *testing.T) {
-	st, err := store.Open(context.Background(), store.Options{Dir: t.TempDir()})
+	st, err := store.Open(context.Background(), store.Options{Dir: t.TempDir(), BootID: "boot-1"})
 	noErr(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	for _, fencing := range []string{"", config.FencingAllowedMems, config.FencingNone} {

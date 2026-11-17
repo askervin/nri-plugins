@@ -309,7 +309,7 @@ func TestLeaseWaitDefault(t *testing.T) {
 	e.waitState(resp.Lease, state.LeaseNone)
 	e.wantGone(CompanionName(resp.Lease))
 
-	st, err := store.Open(context.Background(), store.Options{Dir: t.TempDir()})
+	st, err := store.Open(context.Background(), store.Options{Dir: t.TempDir(), BootID: "boot-1"})
 	mustOK(t, err)
 	defer func() { _ = st.Close() }()
 	b, err := New(Options{Store: st, DataDir: t.TempDir(), NodeName: envNode})

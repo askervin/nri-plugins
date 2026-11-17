@@ -237,7 +237,7 @@ func openStore(t *testing.T, dir string, o envOptions) *store.Store {
 	ctx := context.Background()
 	open := func(opts store.Options) *store.Store {
 		t.Helper()
-		opts.Dir = dir
+		opts.Dir, opts.BootID = dir, "boot-1"
 		st, err := store.Open(ctx, opts)
 		noErr(t, err)
 		return st

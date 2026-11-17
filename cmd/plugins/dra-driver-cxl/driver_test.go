@@ -287,7 +287,7 @@ func TestDriverRules(t *testing.T) {
 	}
 	uid := func(driver string) string { return "u-" + driver }
 	for _, boot := range []string{"b0", "b1"} {
-		st, closeStore, err := openDriverStore(ctx, config, flags, dir, boot, rules)
+		st, closeStore, err := openDriverStore(ctx, config, flags, kernelAt(dir), boot, rules)
 		noErr(t, err)
 		if boot == "b0" {
 			noErr(t, st.Commit(ctx, store.Durable, func(doc *store.Document) error {
@@ -327,12 +327,12 @@ func TestNewLocalHelper(t *testing.T) {
 		flags := &CXLFlags{CDIRoot: filepath.Join(dir, "cdi"), NodeName: testNode}
 		config := &pluginConfig{Flags: flags, KubeletPluginDir: dir}
 		rules := newDriverRules(config, flags)
-		st, closeStore, err := openDriverStore(ctx, config, flags, dir, "", rules)
+		st, closeStore, err := openDriverStore(ctx, config, flags, kernelAt(dir), "boot-1", rules)
 		noErr(t, err)
-		devices, err := newDriverDevices(config, flags, cfg, dir, nil, st, rules)
+		devices, err := newDriverDevices(config, flags, cfg, kernelAt(dir), nil, st, rules)
 		if err == nil {
 			var fe *frontEnds
-			if fe, err = newFrontEnds(config, flags, cfg, "", st, devices, nil, rules); err == nil {
+			if fe, err = newFrontEnds(config, flags, cfg, st, devices, nil, rules); err == nil {
 				if err = fe.recover(ctx, flags.CDIRoot, cfg, devices); err == nil {
 					return fe, devices, dir, closeStore
 				}
@@ -378,7 +378,7 @@ func TestPrepareWaitsForNRI(t *testing.T) {
 	const why = "NRI not synchronized yet: context deadline exceeded: the containers of the claims would be created before the NRI plugin sees them; kubelet retries the Prepare"
 	newNRI := func(t *testing.T) *containers.Plugin {
 		t.Helper()
-		st, err := store.Open(ctx, store.Options{Dir: t.TempDir()})
+		st, err := store.Open(ctx, store.Options{Dir: t.TempDir(), BootID: "boot-1"})
 		noErr(t, err)
 		t.Cleanup(func() { _ = st.Close() })
 		p, err := containers.New(containers.Options{Store: st, SysRoot: t.TempDir()})
@@ -497,10 +497,10 @@ func TestFirstListAfterRecovery(t *testing.T) {
 	flags := &CXLFlags{CDIRoot: filepath.Join(dir, "cdi"), NodeName: testNode}
 	config := &pluginConfig{Flags: flags, KubeletPluginDir: dir}
 	rules := newDriverRules(config, flags)
-	st, closeStore, err := openDriverStore(ctx, config, flags, dir, "", rules)
+	st, closeStore, err := openDriverStore(ctx, config, flags, kernelAt(dir), "boot-1", rules)
 	noErr(t, err)
 	defer closeStore()
-	devices, err := newDriverDevices(config, flags, &DriverConfig{}, dir, nil, st, rules)
+	devices, err := newDriverDevices(config, flags, &DriverConfig{}, kernelAt(dir), nil, st, rules)
 	noErr(t, err)
 	lists, guarded := 0, 0
 	watcher := provenance.New(provenance.Options{Store: st, NodeName: testNode, Name: "poolSerials.json",
@@ -513,7 +513,7 @@ func TestFirstListAfterRecovery(t *testing.T) {
 			devices.mu.Unlock()
 			return nil, nil
 		}})
-	fe, err := newFrontEnds(config, flags, &DriverConfig{}, "", st, devices, watcher, rules)
+	fe, err := newFrontEnds(config, flags, &DriverConfig{}, st, devices, watcher, rules)
 	noErr(t, err)
 	noErr(t, fe.recover(ctx, flags.CDIRoot, &DriverConfig{}, devices))
 	if lists == 0 || guarded != lists {

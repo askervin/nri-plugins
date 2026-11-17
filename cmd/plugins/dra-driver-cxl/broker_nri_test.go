@@ -76,9 +76,9 @@ func TestCreateContainerDoesNotWaitForTheBroker(t *testing.T) {
 	nri, err := containers.New(containers.Options{Defaults: config.Container{Fencing: config.FencingNone}, Store: st, Leases: true,
 		SysRoot: root})
 	noErr(t, err)
-	devices, err := newDriverDevices(cfg, flags, &DriverConfig{}, root, fenceOf(nri), st, rules)
+	devices, err := newDriverDevices(cfg, flags, &DriverConfig{}, kernelAt(root), fenceOf(nri), st, rules)
 	noErr(t, err)
-	fe, err := newFrontEnds(cfg, flags, &DriverConfig{}, "boot-1", st, devices, nil, rules)
+	fe, err := newFrontEnds(cfg, flags, &DriverConfig{}, st, devices, nil, rules)
 	noErr(t, err)
 	noErr(t, fe.recover(ctx, flags.CDIRoot, &DriverConfig{}, devices))
 	cache, err := cdiapi.NewCache(cdiapi.WithSpecDirs(flags.CDIRoot), cdiapi.WithAutoRefresh(false))

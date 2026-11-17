@@ -145,13 +145,13 @@ func (fe *frontEnd) Started(st *store.Store, e *engine.Engine, rec *engine.Recov
 	local := dra.LocalRules(fe.mountsDirs[state.SourceLocal])
 	pool := dra.PoolRules(device.PoolDriverName, fe.mountsDirs[state.SourcePool], store.FileName)
 	fe.st = st
-	fe.local, err = dra.New(dra.Options{Rules: local, Store: st, Engine: e, NodeName: frontNode, BootID: fe.f.BootID(),
+	fe.local, err = dra.New(dra.Options{Rules: local, Store: st, Engine: e, NodeName: frontNode,
 		DevRoot: fe.f.DevRoot(), CDI: cache, Publisher: pub, Local: dra.LocalConfig{Managed: true,
 			UsableSize: func(string, uint64) uint64 { return 0 }, Coherent: func(string, uint64) bool { return false }}})
 	if err != nil {
 		return err
 	}
-	fe.pool, err = dra.New(dra.Options{Rules: pool, Store: st, Engine: e, NodeName: frontNode, BootID: fe.f.BootID(),
+	fe.pool, err = dra.New(dra.Options{Rules: pool, Store: st, Engine: e, NodeName: frontNode,
 		DevRoot: fe.f.DevRoot(), CDI: cache, Publisher: pub})
 	if err != nil {
 		return err

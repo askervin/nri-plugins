@@ -37,6 +37,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/version"
 )
 
@@ -63,7 +64,6 @@ type CXLFlags struct {
 	KubeAPIBurst int
 	CDIRoot      string
 
-	SysfsRoot  string
 	ConfigStr  string
 	ConfigFile string
 	NRIName    string
@@ -116,7 +116,6 @@ var flagEnvs = []struct{ flag, env string }{
 	{"kube-api-qps", "KUBE_API_QPS"},
 	{"kube-api-burst", "KUBE_API_BURST"},
 	{"cdi-root", "CDI_ROOT"},
-	{"sysfs", "SYSFS_ROOT"},
 	{"config-str", "CONFIG_STR"},
 	{"nri-name", "NRI_PLUGIN_NAME"},
 	{"nri-idx", "NRI_PLUGIN_IDX"},
@@ -148,7 +147,6 @@ func parseFlags(fs *flag.FlagSet, args []string, lookupEnv func(string) (string,
 	fs.Float64Var(&f.KubeAPIQPS, "kube-api-qps", defaultKubeAPIQPS, "QPS of the Kubernetes API client")
 	fs.IntVar(&f.KubeAPIBurst, "kube-api-burst", defaultKubeAPIBurst, "burst of the Kubernetes API client")
 	fs.StringVar(&f.CDIRoot, "cdi-root", defaultCDIRoot, "directory of the generated CDI specs")
-	fs.StringVar(&f.SysfsRoot, "sysfs", "", "root of the sysfs to use, empty for the host's /sys")
 	fs.StringVar(&f.ConfigStr, "config-str", "", "driver configuration as a JSON or YAML string")
 	fs.StringVar(&f.ConfigStr, "c", "", "shorthand for --config-str")
 	fs.StringVar(&f.ConfigFile, "config-file", "", "path to a JSON or YAML configuration file (mutually exclusive with -c)")
@@ -304,7 +302,7 @@ func installLeaseCLI(src, dst string) (retErr error) {
 //     of the cpuset.mems of the fenced containers.
 func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	cxlFlags := config.Flags
-	driverConfig, sysfsRoot, err := loadDriverConfig(cxlFlags)
+	driverConfig, err := loadDriverConfig(cxlFlags)
 	if err != nil {
 		return nil, err
 	}
@@ -313,13 +311,16 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	// another boot are not prepared: nothing of what their Prepares made
 	// survives a reboot. The records of both drivers are kept in the state
 	// store (state.json); the store drops or marks stale what is of another
-	// boot before they are read.
-	bootID := readBootID(sysfsRoot)
-	if bootID != "" {
-		klog.Infof("boot id %s", bootID)
+	// boot before they are read. Without the boot id the driver does not
+	// start: it could not tell the records of another boot.
+	k := kernel.New()
+	bootID, err := k.BootID()
+	if err != nil {
+		return nil, fmt.Errorf("the boot id of the running kernel: %w", err)
 	}
+	klog.Infof("boot id %s", bootID)
 	rules := newDriverRules(config, cxlFlags)
-	st, closeStore, err := openDriverStore(ctx, config, cxlFlags, sysfsRoot, bootID, rules)
+	st, closeStore, err := openDriverStore(ctx, config, cxlFlags, k, bootID, rules)
 	if err != nil {
 		return nil, err
 	}
@@ -337,12 +338,11 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	// region devices. The provenance of the serials is remembered across
 	// restarts: a pool device on the node is never a local memdev, also
 	// while the pool controller has deleted its ResourceSlices.
-	nri, err := containers.New(containers.Options{Defaults: driverConfig.containerDefaults(), Store: st, Leases: cxlFlags.Leases,
-		SysRoot: sysfsRoot})
+	nri, err := containers.New(containers.Options{Defaults: driverConfig.containerDefaults(), Store: st, Leases: cxlFlags.Leases})
 	if err != nil {
 		return nil, err
 	}
-	devices, err := newDriverDevices(config, cxlFlags, driverConfig, sysfsRoot, fenceOf(nri), st, rules)
+	devices, err := newDriverDevices(config, cxlFlags, driverConfig, k, fenceOf(nri), st, rules)
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +354,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	// the pool driver, pool devices
 	driverConfig.PublishLeaseDevice = cxlFlags.Leases
 	watcher := newWatcher(config, cxlFlags, st)
-	fe, err := newFrontEnds(config, cxlFlags, driverConfig, bootID, st, devices, watcher, rules)
+	fe, err := newFrontEnds(config, cxlFlags, driverConfig, st, devices, watcher, rules)
 	if err != nil {
 		return nil, err
 	}
@@ -377,7 +377,6 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	d := &driver{
 		client:     config.Client,
 		config:     driverConfig,
-		sysfsRoot:  sysfsRoot,
 		local:      fe.local,
 		pool:       fe.pool,
 		publisher:  fe.publisher,

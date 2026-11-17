@@ -64,9 +64,9 @@ func TestStartOnALostStore(t *testing.T) {
 	flags := &CXLFlags{PoolDriverName: device.PoolDriverName, PoolPrepareTimeout: time.Second, CDIRoot: filepath.Join(root, "cdi"), NodeName: "n1"}
 	config := &pluginConfig{Flags: flags, KubeletPluginDir: local}
 	rules := newDriverRules(config, flags)
-	devices, err := newDriverDevices(config, flags, &DriverConfig{}, root, nil, st, rules)
+	devices, err := newDriverDevices(config, flags, &DriverConfig{}, kernelAt(root), nil, st, rules)
 	noErr(t, err)
-	fe, err := newFrontEnds(config, flags, &DriverConfig{}, "boot-1", st, devices, nil, rules)
+	fe, err := newFrontEnds(config, flags, &DriverConfig{}, st, devices, nil, rules)
 	noErr(t, err)
 	noErr(t, fe.recover(ctx, filepath.Join(root, "cdi"), &DriverConfig{}, devices))
 	p, ns := fe.pool, fe.local

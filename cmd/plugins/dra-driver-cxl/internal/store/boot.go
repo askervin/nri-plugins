@@ -24,13 +24,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 )
 
-// otherBoot tells whether a record of the boot recorded is of another boot
-// than the running one. A record without a boot id, and every record when
-// the running boot id is unknown, are of this boot.
-func otherBoot(recorded, running string) bool {
-	return recorded != "" && running != "" && recorded != running
-}
-
 // applyBoot changes the records of doc as a load in the boot running
 // requires, and returns whether it changed the document. Nothing of a
 // record of another boot exists in the kernel any more: its preparations
@@ -42,30 +35,19 @@ func otherBoot(recorded, running string) bool {
 // companions); lease claims, provenance and steering records are kept. A
 // preparation without a boot id is of the boot of the document.
 func applyBoot(doc *Document, running string) (bool, error) {
-	if running == "" {
-		return false, nil
-	}
 	changed, err := stalePreparations(doc, running)
-	if err != nil {
+	if err != nil || doc.BootID == running {
 		return changed, err
 	}
-	if otherBoot(doc.BootID, running) {
-		dropped, err := dropOtherBoot(doc, running)
-		if err != nil {
-			return changed, err
-		}
-		changed = changed || dropped
+	if err := dropOtherBoot(doc, running); err != nil {
+		return changed, err
 	}
-	if doc.BootID != running {
-		doc.BootID = running
-		changed = true
-	}
-	return changed, nil
+	doc.BootID = running
+	return true, nil
 }
 
 // stalePreparations makes the preparations of another boot than running
-// PREPARED_STALE, and gives the preparations without a boot id of this boot the running one.
-// It returns whether it changed the document.
+// PREPARED_STALE. It returns whether it changed the document.
 func stalePreparations(doc *Document, running string) (bool, error) {
 	changed := false
 	kept := doc.Preparations[:0]
@@ -76,14 +58,10 @@ func stalePreparations(doc *Document, running string) (bool, error) {
 			boot = doc.BootID
 		}
 		switch {
-		case !otherBoot(boot, running):
-			if p.BootID == "" {
-				p.BootID = running
-				changed = true
-			}
+		case boot == running:
 			kept = append(kept, p)
 			continue
-		case p.State == state.PreparationStale && !otherBoot(doc.BootID, running):
+		case p.State == state.PreparationStale && doc.BootID == running:
 			kept = append(kept, p)
 			continue
 		case p.State != state.PreparationStale:
@@ -186,28 +164,27 @@ func namedGrants(doc *Document) map[state.GrantRef]bool {
 	return named
 }
 
-// dropOtherBoot drops the leases and the memdev and region records of a
-// document of another boot than running, and returns whether it dropped
-// one.
-func dropOtherBoot(doc *Document, running string) (bool, error) {
+// dropOtherBoot drops the leases, the memdev and region records and the
+// grants of no claim of a document of another boot than running.
+func dropOtherBoot(doc *Document, running string) error {
 	if err := checkDrops(doc); err != nil {
-		return false, err
+		return err
 	}
 	named := namedGrants(doc)
 	grants := slices.DeleteFunc(slices.Clone(doc.Grants), func(g state.Grant) bool { return !named[g.Ref] })
 	for i := range doc.Grants {
 		if g := &doc.Grants[i]; !named[g.Ref] {
 			if err := state.GrantTable.Check(g.State, state.GrantReleased, state.TriggerLoad); err != nil {
-				return false, err
+				return err
 			}
 		}
 	}
 	unnamed := len(doc.Grants) - len(grants)
 	if len(doc.Leases) == 0 && len(doc.Memdevs) == 0 && len(doc.Regions) == 0 && unnamed == 0 {
-		return false, nil
+		return nil
 	}
 	klog.Warningf("store: the document is of boot %s, this is %s: dropping %d leases, %d memdevs, %d regions and %d grants of no claim",
 		doc.BootID, running, len(doc.Leases), len(doc.Memdevs), len(doc.Regions), unnamed)
 	doc.Leases, doc.Memdevs, doc.Regions, doc.Grants = nil, nil, nil, grants
-	return true, nil
+	return nil
 }

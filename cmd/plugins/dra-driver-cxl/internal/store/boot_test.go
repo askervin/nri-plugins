@@ -158,36 +158,6 @@ func TestBootOfThisBoot(t *testing.T) {
 	}
 }
 
-func TestBootUnknown(t *testing.T) {
-	doc := fixture(statetest.BootID)
-	orig := doc.Clone()
-	if changed, err := applyBoot(doc, ""); err != nil || changed || !reflect.DeepEqual(doc, orig) {
-		t.Errorf("an unknown running boot changed the document: %v %v", changed, err)
-	}
-}
-
-func TestBootWithoutBootID(t *testing.T) {
-	doc := fixture("")
-	for i := range doc.Preparations {
-		if doc.Preparations[i].UID == statetest.ClaimDax {
-			doc.Preparations[i].BootID = ""
-		}
-	}
-	changed, err := applyBoot(doc, statetest.BootID)
-	if err != nil || !changed {
-		t.Errorf("changed %v, %v", changed, err)
-	}
-	if doc.BootID != statetest.BootID {
-		t.Errorf("document boot %q", doc.BootID)
-	}
-	if p := doc.Preparation(statetest.LocalDriver, statetest.ClaimDax); p.BootID != statetest.BootID || p.State != state.PreparationPrepared {
-		t.Errorf("a preparation without a boot id: %s %s", p.BootID, p.State)
-	}
-	if len(doc.Memdevs) == 0 || len(doc.Leases) == 0 {
-		t.Errorf("a document without a boot id lost its records")
-	}
-}
-
 func TestOpenAppliesTheBoot(t *testing.T) {
 	dir := t.TempDir()
 	s := open(t, dir, nil, func(o *Options) { o.BootID = statetest.BootID })

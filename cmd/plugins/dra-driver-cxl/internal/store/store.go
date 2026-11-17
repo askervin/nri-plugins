@@ -63,8 +63,8 @@ var (
 )
 
 // Document is the one persistent document of the driver: every record it
-// remembers. The store owns Schema and Generation, and BootID when it
-// knows the running boot; commits change the records.
+// remembers. The store owns Schema, Generation and BootID; commits change
+// the records.
 type Document struct {
 	Schema int `json:"schema"`
 	// Generation counts the writes of the document.
@@ -191,8 +191,8 @@ type Options struct {
 	PoolDir string
 	// PoolDriver is the name of the pool driver.
 	PoolDriver string
-	// BootID is the running boot id, "" if it is unknown: then the
-	// commits give the document its boot id.
+	// BootID is the running boot id. It is required: without it a
+	// document of another boot would be taken as of this boot.
 	BootID string
 	// NewState makes a new document when neither the document nor the
 	// previous one decodes.
@@ -279,8 +279,12 @@ type request struct {
 // requires. A store whose document and previous document do not decode is
 // returned in LOST mode (Lost) unless opts.NewState. Open waits for a lock
 // held by another process until ctx ends and then returns ErrLocked: the
-// caller bounds ctx and exits on the error.
+// caller bounds ctx and exits on the error. Open fails without the running
+// boot id.
 func Open(ctx context.Context, opts Options) (*Store, error) {
+	if opts.BootID == "" {
+		return nil, errors.New("store: the boot id of the running kernel is unknown")
+	}
 	if opts.files == nil {
 		opts.files = osFiles{}
 	}
@@ -562,10 +566,7 @@ func (s *Store) commitGroup(cur *Document, group []*request) {
 			req.applied <- err
 			continue
 		}
-		next.Schema, next.Generation = cur.Schema, cur.Generation
-		if s.opts.BootID != "" {
-			next.BootID = cur.BootID
-		}
+		next.Schema, next.Generation, next.BootID = cur.Schema, cur.Generation, cur.BootID
 		work = next
 		req.ok = true
 		ok++
@@ -577,7 +578,7 @@ func (s *Store) commitGroup(cur *Document, group []*request) {
 	var err error
 	work.Sort()
 	work.dropEmpty()
-	if !reflect.DeepEqual(work.Records, cur.Records) || work.BootID != cur.BootID {
+	if !reflect.DeepEqual(work.Records, cur.Records) {
 		work.Generation = cur.Generation + 1
 		if err = s.write(work); err == nil {
 			s.mu.Lock()

@@ -188,7 +188,7 @@ func TestCDISpecsOfALostStore(t *testing.T) {
 		t.Fatal("the store is not lost")
 	}
 	for _, p := range []*Plugin{e.local, e.pool} {
-		lost, err := New(Options{Rules: p.Rules(), Store: st, Engine: e.eng, NodeName: envNode, BootID: e.k.BootID(),
+		lost, err := New(Options{Rules: p.Rules(), Store: st, Engine: e.eng, NodeName: envNode,
 			CDI: e.cache, Publisher: e.pub})
 		mustOK(t, err)
 		mustOK(t, lost.WriteCDI())

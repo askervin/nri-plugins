@@ -78,7 +78,6 @@ type Plugin struct {
 	st       *store.Store
 	engine   *engine.Engine
 	nodeName string
-	bootID   string
 	devRoot  string
 	lender   *Lender
 	local    LocalConfig
@@ -110,9 +109,9 @@ type Options struct {
 	// Store keeps the records, Engine realises the grants.
 	Store  *store.Store
 	Engine *engine.Engine
-	// NodeName is the node of the driver, BootID the running boot ("":
-	// unknown), DevRoot the directory of the device nodes.
-	NodeName, BootID, DevRoot string
+	// NodeName is the node of the driver, DevRoot the directory of the
+	// device nodes.
+	NodeName, DevRoot string
 	// CDI is the CDI cache that the spec of the driver is written with,
 	// nil for none.
 	CDI *cdiapi.Cache
@@ -147,7 +146,6 @@ func New(opts Options) (*Plugin, error) {
 		st:         opts.Store,
 		engine:     opts.Engine,
 		nodeName:   opts.NodeName,
-		bootID:     opts.BootID,
 		devRoot:    opts.DevRoot,
 		cdi:        opts.CDI,
 		local:      opts.Local,
@@ -346,7 +344,7 @@ func (p *Plugin) commitPreparing(ctx context.Context, pr *prepare) error {
 		lease = pr.lend.Lease
 	}
 	return p.commit(ctx, func(doc *store.Document) error {
-		return preparing(doc, p.rules.Name, pr.uid, pr.claimName, p.bootID, lease, pr.results)
+		return preparing(doc, p.rules.Name, pr.uid, pr.claimName, lease, pr.results)
 	})
 }
 

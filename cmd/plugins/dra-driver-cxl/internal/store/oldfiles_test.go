@@ -108,7 +108,7 @@ func TestOldFilesRefusedWithTheirRegions(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(local, "localDevices.json")); err != nil {
 		t.Errorf("a refusal moved the file: %v", err)
 	}
-	_, err = Open(context.Background(), Options{Dir: local, PoolDir: pool, RegionExists: exists})
+	_, err = Open(context.Background(), Options{Dir: local, PoolDir: pool, BootID: "boot-1", RegionExists: exists})
 	if !errors.As(err, &oe) {
 		t.Errorf("Open: %v, want an *OldStateError", err)
 	}
@@ -148,7 +148,7 @@ func TestOldFilesListShaped(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(local, "localDevices.json")); err != nil {
 			t.Errorf("a refusal moved the file: %v", err)
 		}
-		_, err = Open(context.Background(), Options{Dir: local, RegionExists: exists})
+		_, err = Open(context.Background(), Options{Dir: local, BootID: "boot-1", RegionExists: exists})
 		if !errors.As(err, &oe) {
 			t.Errorf("Open: %v, want an *OldStateError", err)
 		}

@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -927,7 +926,7 @@ func TestLocalSliceFailures(t *testing.T) {
 
 // The records of another boot and a memdev whose cut creation left no
 // region are dropped without commands, the claims of another boot kept
-// PREPARED_STALE; an unknown boot keeps them all.
+// PREPARED_STALE.
 func TestLocalStateOfAnotherBoot(t *testing.T) {
 	e := newSliceTestEnv(t)
 	e.start()
@@ -938,13 +937,7 @@ func TestLocalStateOfAnotherBoot(t *testing.T) {
 	}
 	cmds := e.k.Commands()
 
-	// an unknown boot keeps the records, another boot forgets the memdev's
-	bootID := filepath.Join(e.k.ProcRoot(), "sys/kernel/random/boot_id")
-	boot := e.k.BootID()
-	noErr(t, os.WriteFile(bootID, []byte("\n"), 0o644))
-	e.restart()
-	e.wantUsed(true)
-	noErr(t, os.WriteFile(bootID, []byte(boot+"\n"), 0o644))
+	// another boot forgets the memdev's records
 	e.reboot()
 	e.wantUsed(false)
 	if now := e.k.Commands(); now != cmds {

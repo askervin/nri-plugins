@@ -170,7 +170,6 @@ func (e *poolTestEnv) driver(t *testing.T) *dra.Plugin {
 		Rules:   rules,
 		Store:   e.st,
 		Engine:  devices.Engine,
-		BootID:  e.k.BootID(),
 		DevRoot: e.k.DevRoot(),
 		CDI:     cache,
 	})
@@ -448,6 +447,13 @@ func noErr(t *testing.T, err error) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+// kernelAt returns the kernel of the node with its sysfs in root/sys.
+func kernelAt(root string) *kernel.Kernel {
+	k := kernel.New()
+	k.SysRoot = filepath.Join(root, "sys")
+	return k
 }
 
 // errCut is the panic of a process stop of the fake (fake.ErrCut).

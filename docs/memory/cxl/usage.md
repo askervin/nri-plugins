@@ -1874,7 +1874,6 @@ variable when it is set. Both `-flag` and `--flag` work.
 | `--kube-api-qps` | `KUBE_API_QPS` | `5` | queries per second of the Kubernetes API client |
 | `--kube-api-burst` | `KUBE_API_BURST` | `10` | burst of the Kubernetes API client |
 | `--cdi-root` | `CDI_ROOT` | `/etc/cdi` | where the CDI spec files are written |
-| `--sysfs` | `SYSFS_ROOT` | (empty: the host's `/sys`) | sysfs mount point, for testing |
 | `--config-str`, `-c` | `CONFIG_STR` | (empty) | the [configuration](#configuration-file) as a JSON or YAML string |
 | `--config-file`, `-f` | | | the configuration file, JSON or YAML; not together with `-c` |
 | `--nri-name` | `NRI_PLUGIN_NAME` | `dra-driver-cxl` | NRI plugin name |
