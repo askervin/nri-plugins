@@ -910,6 +910,44 @@ func TestSharedTwoClaimsOneNode(t *testing.T) {
 	}
 }
 
+// Two shares of one device in one claim use one attachment. Each result
+// has a status entry of its own, found by its share id.
+func TestSharedTwoSharesOneClaim(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	c := e.createClaimShares("t", "shared0", "node1", "share-1", 1)
+	second := c.Status.Allocation.Devices.Results[1]
+	second.Request, second.ShareID = "mem2", ptr.To(types.UID("share-2"))
+	c.Status.Allocation.Devices.Results = append(c.Status.Allocation.Devices.Results, second)
+	if _, err := e.kube.ResourceV1().ResourceClaims("default").UpdateStatus(e.ctx, c, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	e.waitLister("t", func(c *resourceapi.ResourceClaim) bool { return len(c.Status.Allocation.Devices.Results) == 3 })
+	e.sync()
+	if att, _ := e.pool.calls(); len(att) != 1 || att[0] != "shared0@vm1 k8s:resourceclaim/uid-t" {
+		t.Fatalf("unexpected attach requests %v", att)
+	}
+	c = e.claim("t")
+	for _, r := range c.Status.Allocation.Devices.Results[1:] {
+		st := device.StatusOf(c, &r)
+		if st == nil || hasCondition(c, r, condAttached) == nil {
+			t.Fatalf("share %s: status %+v", *r.ShareID, st)
+		}
+		pd, err := device.PoolStatus(c, &r)
+		if err != nil || !pd.Shared || pd.Exclusive {
+			t.Fatalf("share %s: data %+v %v", *r.ShareID, pd, err)
+		}
+	}
+	if n := len(c.Status.Devices); n != 2 {
+		t.Fatalf("%d status entries, expected 2: %+v", n, c.Status.Devices)
+	}
+	e.deallocate("t")
+	e.sync()
+	if _, det := e.pool.calls(); len(det) != 1 || det[0] != "shared0@vm1" {
+		t.Fatalf("unexpected detach requests %v", det)
+	}
+}
+
 // (8) other owners and foreign hosts
 func TestForeignAttachmentsKept(t *testing.T) {
 	t.Parallel()

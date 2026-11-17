@@ -95,12 +95,11 @@ func firstShared(ws []*want) *want {
 	return nil
 }
 
-// coherent reports whether the hardware keeps the memory of a pool device
-// coherent between the hosts that share it: the devices of fake-cxl-pool
-// are qemu memory backends that every host maps from the same host memory.
-func (c *Controller) coherent(string) bool {
-	return true
-}
+// devicesCoherent tells that the hardware keeps the memory of every pool
+// device coherent between the hosts that share it: the devices of
+// fake-cxl-pool are qemu memory backends that every host maps from the
+// same host memory.
+const devicesCoherent = true
 
 // writerResult reports whether an allocation result of a shared device
 // with the resolved MemoryConfig makes its attachment exclusive to the
@@ -111,7 +110,7 @@ func (c *Controller) writerResult(r *resourceapi.DeviceRequestAllocationResult, 
 	if !ok || !d.Shared || res == nil {
 		return false
 	}
-	return config.ExclusiveHost(res.Config, c.coherent(r.Device))
+	return config.ExclusiveHost(res.Config, devicesCoherent)
 }
 
 // anyExclusive reports whether one of the wants of an attachment is
@@ -470,7 +469,7 @@ func (c *Controller) writeStatus(ctx context.Context, w *want, actual map[attKey
 			Exclusive:  w.allShares,
 			Persistent: d.Persistent,
 			SingleHost: w.exclusive && a.Exclusive,
-			Coherent:   c.coherent(w.result.Device),
+			Coherent:   devicesCoherent,
 		},
 		Host:         a.Host,
 		HostUUID:     w.host.UUID,

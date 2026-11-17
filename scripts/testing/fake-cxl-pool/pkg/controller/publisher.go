@@ -64,7 +64,7 @@ func (c *Controller) convertDevice(name string, d api.Device) resourceapi.Device
 			device.AttrPersistent: {BoolValue: ptr.To(d.Persistent)},
 			device.AttrSize:       {IntValue: ptr.To(d.Size)},
 			// a missing coherent attribute is false
-			device.AttrCoherent: {BoolValue: ptr.To(c.coherent(name))},
+			device.AttrCoherent: {BoolValue: ptr.To(devicesCoherent)},
 		},
 		BindsToNode:              ptr.To(true),
 		BindingConditions:        []string{c.condAttached()},
