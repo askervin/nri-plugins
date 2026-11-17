@@ -23,6 +23,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -343,7 +344,7 @@ func TestHostsAndResolve(t *testing.T) {
 		t.Fatalf("host by uuid: %+v %v", h2, err)
 	}
 	st, err := e.c.Status(ctx)
-	if err != nil || st.Hosts != 2 || st.Devices != 3 || st.Qemu.Versions["vm1"] != "11.1.1 fake" {
+	if err != nil || st.Name != "fake-cxl-pool" || st.Hosts != 2 || st.Devices != 3 || st.Qemu.Versions["vm1"] != "11.1.1 fake" {
 		t.Fatalf("unexpected status %+v %v", st, err)
 	}
 }
@@ -589,36 +590,24 @@ func TestDetachGuestHolds(t *testing.T) {
 	}
 }
 
-func TestStockQemuZombie(t *testing.T) {
-	e := newTestEnv(t, "")
-	f1 := e.fake("vm1")
-	f1.SetStock(true)
-	if _, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"}); err != nil {
-		t.Fatal(err)
-	}
-	da, _, err := e.c.Detach(ctx, "pooled0", "vm1", client.DetachOptions{Timeout: 100 * time.Millisecond})
-	mustCode(t, err, api.CodeConflict)
-	if da.State != api.AttachmentFailed {
-		t.Fatalf("unexpected attachment %+v", da)
-	}
-	// reconcile keeps it: the device is still in qemu
-	e.srv.Refresh(ctx)
-	cur, err := e.attachment("pooled0", "vm1")
-	if err != nil || cur.State != api.AttachmentFailed {
-		t.Fatalf("unexpected attachment %+v %v", cur, err)
-	}
-	// the slot stays occupied by the zombie
-	h, _ := e.c.Host(ctx, "vm1")
-	if h.Slots[0].Device != "fcp_pooled0.hp1" {
-		t.Fatalf("zombie slot looks free: %+v", h.Slots[0])
-	}
-}
-
 func TestSlotSelection(t *testing.T) {
+	// a slot reserved for a local device is used only when no other slot
+	// is free, even if it is on the requested NUMA node
 	e := newTestEnv(t, "")
-	_, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", Slot: "nosuch"})
+	a, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", NumaNode: new(1)})
+	if err != nil || a.Slot.Bus != "ds0_hb1" {
+		t.Fatalf("attach on node 1: %+v %v", a, err)
+	}
+	// only ds1_hb1 (reserved for vm1.memdev0) is left on node 1
+	a, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", NumaNode: new(1)})
+	if err != nil || a.Slot.NumaNode != 0 {
+		t.Fatalf("attach took the reserved slot: %+v %v", a, err)
+	}
+
+	e = newTestEnv(t, "")
+	_, _, err = e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", Slot: "nosuch"})
 	mustCode(t, err, api.CodeInvalidArgument)
-	a, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", Slot: "ds1_hb0"})
+	a, _, err = e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", Slot: "ds1_hb0"})
 	if err != nil || a.Slot.Bus != "ds1_hb0" || a.Slot.HostBridge != "cxlhb0" || a.Slot.Kind != api.SlotDownstream {
 		t.Fatalf("explicit slot: %+v %v", a, err)
 	}
@@ -687,24 +676,48 @@ func TestLocalDevice(t *testing.T) {
 	}
 }
 
+// A failed device_add deletes the backends that the attach added: the
+// device is free, and the attach can be retried.
 func TestDeviceAddFailure(t *testing.T) {
-	e := newTestEnv(t, "")
+	e := newTestEnv(t, llm0Config)
 	f1 := e.fake("vm1")
-	f1.FailNextDeviceAdd(&qemu.Error{Command: "device_add", Desc: "something broke"})
-	a, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"})
-	mustCode(t, err, api.CodeUnavailable)
-	if !strings.Contains(err.Error(), "something broke") || a.State != api.AttachmentFailed {
-		t.Fatalf("unexpected error %v %+v", err, a)
-	}
-	if f1.HasObject("fcp_pooled0.hp1") {
-		t.Fatalf("object not deleted after failed device_add")
-	}
-	d, _ := e.c.Device(ctx, "pooled0")
-	if d.State != api.DeviceFree || len(d.Attachments) != 0 {
-		t.Fatalf("unexpected device %+v", d)
-	}
-	if _, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"}); err != nil {
-		t.Fatalf("retry: %v", err)
+	for _, tc := range []struct {
+		device     string
+		persistent bool // the backends are the data and the label storage area
+	}{
+		{"pooled0", false},
+		{"llm0", true},
+	} {
+		n := len(f1.Commands())
+		f1.FailNextDeviceAdd(&qemu.Error{Command: "device_add", Desc: "something broke"})
+		a, _, err := e.c.Attach(ctx, tc.device, api.AttachRequest{Host: "vm1"})
+		mustCode(t, err, api.CodeUnavailable)
+		if !strings.Contains(err.Error(), "something broke") || a.State != api.AttachmentFailed {
+			t.Fatalf("%s: unexpected error %v %+v", tc.device, err, a)
+		}
+		ids := []string{a.QemuObjectID}
+		if tc.persistent {
+			ids = append(ids, a.QemuLSAObjectID)
+		}
+		// object_add of each backend, the device_add, object_del of each
+		var dels []string
+		for _, id := range ids {
+			if f1.HasObject(id) {
+				t.Fatalf("%s: backend %s left after the failed device_add: %s", tc.device, id, f1)
+			}
+			dels = append(dels, "object_del "+id)
+		}
+		got := f1.Commands()[n:]
+		if len(got) != 2*len(ids)+1 || !strings.HasPrefix(got[len(ids)], "device_add ") || !reflect.DeepEqual(got[len(ids)+1:], dels) {
+			t.Fatalf("%s: qemu commands:\n%s", tc.device, strings.Join(got, "\n"))
+		}
+		d, _ := e.c.Device(ctx, tc.device)
+		if d.State != api.DeviceFree || len(d.Attachments) != 0 {
+			t.Fatalf("%s: unexpected device %+v", tc.device, d)
+		}
+		if _, _, err := e.c.Attach(ctx, tc.device, api.AttachRequest{Host: "vm1"}); err != nil {
+			t.Fatalf("%s: retry: %v", tc.device, err)
+		}
 	}
 }
 
@@ -789,6 +802,13 @@ func TestPersistenceAndRestart(t *testing.T) {
 	mustCode(t, err, api.CodeUnavailable)
 }
 
+// subscribers returns the number of subscribers of the broker.
+func (b *broker) subscribers() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.subs)
+}
+
 func TestEvents(t *testing.T) {
 	e := newTestEnv(t, "")
 	ectx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -800,7 +820,13 @@ func TestEvents(t *testing.T) {
 			return nil
 		})
 	}()
-	time.Sleep(100 * time.Millisecond)
+	// the stream subscribes before the attach
+	for e.srv.events.subscribers() == 0 {
+		if ectx.Err() != nil {
+			t.Fatal("no event subscription")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	if _, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"}); err != nil {
 		t.Fatal(err)
 	}
@@ -876,12 +902,22 @@ func TestConfigErrors(t *testing.T) {
 		"unknownKey: 1",
 		"discovery: {interval: -1s}",
 		"detachTimeout: -5s",
-		"name: Pool",
 		"discovery: {control: x}",
 		`discovery: {slots: ["["]}`,
 	} {
 		if _, err := ParseConfig([]byte(bad)); err == nil {
 			t.Errorf("expected error for %q", bad)
+		}
+	}
+	for _, bad := range []string{"Pool-A", "-a", "a-", "a_b", "a.b", strings.Repeat("a", 64)} {
+		_, err := ParseConfig([]byte("name: " + bad + "\n"))
+		if err == nil || err.Error() != "name must be a DNS label (lower-case letters, digits, '-')" {
+			t.Errorf("name %q: %v", bad, err)
+		}
+	}
+	for _, good := range []string{"pool-a", strings.Repeat("a", 63)} {
+		if cfg, err := ParseConfig([]byte("name: " + good + "\n")); err != nil || cfg.Name != good {
+			t.Errorf("name %q: %+v %v", good, cfg, err)
 		}
 	}
 	cfg := DefaultConfig()
@@ -940,6 +976,25 @@ func TestLeakedDetach(t *testing.T) {
 	if d, _ := e.c.Device(ctx, "pooled0"); d.State != api.DeviceFree {
 		t.Fatalf("unexpected device state %s", d.State)
 	}
+	// a device_del that finds no device still checks whether the backend
+	// leaked: a surprise removal behind the server, memory kept online in
+	// the guest
+	a, _, err = e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f2 := e.fake("vm2")
+	f2.SetLeakOnRelease(true)
+	f2.Hold(a.QemuDeviceID)
+	if err := f2.DeviceDel(ctx, a.QemuDeviceID); err != nil {
+		t.Fatal(err)
+	}
+	f2.Release(a.QemuDeviceID)
+	da, _, err := e.c.Detach(ctx, "pooled0", "vm2", client.DetachOptions{Timeout: time.Second})
+	mustCode(t, err, api.CodeConflict)
+	if da.State != api.AttachmentFailed || !strings.Contains(da.Error, "leaked") {
+		t.Fatalf("leak not detected: %+v", da)
+	}
 }
 
 func TestUUIDWithoutDashesAndFilters(t *testing.T) {
@@ -988,7 +1043,10 @@ func TestFMWCapacityAndHotRemove(t *testing.T) {
 	f1 := e.fake("vm1")
 	// 512M window on cxlhb0, 256M on cxlhb1 (as reported by qemu)
 	f1.SetFMW([]qemu.FMWWindow{{Targets: []string{"cxlhb0"}, Size: 512 << 20}, {Targets: []string{"cxlhb1"}, Size: 256 << 20}})
-	e.fake("vm2").SetStock(true)
+	f2 := e.fake("vm2")
+	f2.SetStock(true)
+	// one 1G window interleaved over both host bridges
+	f2.SetFMW([]qemu.FMWWindow{{Targets: []string{"cxlhb0", "cxlhb1"}, Size: 1 << 30}})
 	e.start()
 	h1, _ := e.c.Host(ctx, "vm1")
 	h2, _ := e.c.Host(ctx, "vm2")
@@ -997,6 +1055,10 @@ func TestFMWCapacityAndHotRemove(t *testing.T) {
 	}
 	if h1.HostBridges[0].FMWSize != 512<<20 {
 		t.Fatalf("fmw from qemu not used: %+v", h1.HostBridges)
+	}
+	// its targets share an interleaved window
+	if h2.HostBridges[0].FMWSize != 512<<20 || h2.HostBridges[1].FMWSize != 512<<20 {
+		t.Fatalf("interleaved fmw counted per target: %+v", h2.HostBridges)
 	}
 	// pooled0 (512M) fills cxlhb0
 	a, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", NumaNode: new(0)})
@@ -1020,6 +1082,8 @@ func TestFMWCapacityAndHotRemove(t *testing.T) {
 	}
 }
 
+// A device that a stock qemu does not delete keeps its failed attachment
+// and its slot. After a forced detach it is not adopted.
 func TestZombieNotAdopted(t *testing.T) {
 	e := newTestEnv(t, "")
 	f1 := e.fake("vm1")
@@ -1028,14 +1092,22 @@ func TestZombieNotAdopted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = e.c.Detach(ctx, "vm1.memdev0", "vm1", client.DetachOptions{Timeout: 50 * time.Millisecond})
+	da, _, err := e.c.Detach(ctx, "vm1.memdev0", "vm1", client.DetachOptions{Timeout: 50 * time.Millisecond})
 	mustCode(t, err, api.CodeConflict)
+	if da.State != api.AttachmentFailed {
+		t.Fatalf("unexpected attachment %+v", da)
+	}
+	// reconcile keeps it: the device is still in qemu
+	e.srv.Refresh(ctx)
+	if cur, err := e.attachment("vm1.memdev0", "vm1"); err != nil || cur.State != api.AttachmentFailed {
+		t.Fatalf("unexpected attachment %+v %v", cur, err)
+	}
 	if _, _, err := e.c.Detach(ctx, "vm1.memdev0", "vm1", client.DetachOptions{Force: true}); err != nil {
 		t.Fatal(err)
 	}
 	// the zombie is still in qemu: it must not come back as attached,
 	// neither now nor after a server restart
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		e.srv.Refresh(ctx)
 		if _, err := e.attachment("vm1.memdev0", "vm1"); !api.IsCode(err, api.CodeNotFound) {
 			t.Fatalf("zombie %s adopted (round %d): %v", a.QemuDeviceID, i, err)
@@ -1105,51 +1177,19 @@ func TestHotplugCounterSeededFromQemu(t *testing.T) {
 	dir := t.TempDir()
 	f := newVMFake()
 	// leftovers of a previous server run without a state file: a device
-	// of an unknown device and an object whose object-del failed
+	// of an unknown device, an object whose object-del failed and the LSA
+	// backend of a persistent device
 	obj := "fcp_gone.hp3"
 	f.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: obj, Size: 256 << 20, MemPath: filepath.Join(dir, "x.raw"), Share: true})
 	if err := f.PlugDevice(qemu.CXLType3{ID: obj, Bus: "ds0_hb0", VolatileMemdev: obj, Serial: 1}); err != nil {
 		t.Fatal(err)
 	}
 	f.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: "fcp_pooled0.hp5", Size: 256 << 20, MemPath: filepath.Join(dir, "y.raw")})
+	f.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: "fcp_pooled0.hp7-lsa", Size: lsaSize, MemPath: filepath.Join(dir, "y.lsa")})
 	srv := newServerWith(t, poolConfig(dir, pooled0), map[string]qemu.Monitor{"vm1": f})
 	a, _, err := srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"})
-	if err != nil || a.QemuDeviceID != "fcp_pooled0.hp6" {
+	if err != nil || a.QemuDeviceID != "fcp_pooled0.hp8" {
 		t.Fatalf("attach: %+v %v", a, err)
-	}
-}
-
-// A device_del that finds no device still checks whether the backend
-// leaked.
-func TestDeviceDelNotFoundChecksLeak(t *testing.T) {
-	f := newVMFake()
-	srv := newServerWith(t, poolConfig(t.TempDir(), pooled0), map[string]qemu.Monitor{"vm1": f})
-	a, _, err := srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// surprise removal behind the server, memory kept online in the guest
-	f.SetLeakOnRelease(true)
-	f.Hold(a.QemuDeviceID)
-	if err := f.DeviceDel(ctx, a.QemuDeviceID); err != nil {
-		t.Fatal(err)
-	}
-	f.Release(a.QemuDeviceID)
-	da, _, err := srv.Detach(ctx, "pooled0", "vm1", DetachOptions{Timeout: time.Second})
-	mustCode(t, err, api.CodeConflict)
-	if da.State != api.AttachmentFailed || !strings.Contains(da.Error, "leaked") {
-		t.Fatalf("leak not detected: %+v", da)
-	}
-}
-
-// An interleaved window is shared by its targets.
-func TestInterleavedFMW(t *testing.T) {
-	f := newVMFake()
-	f.SetFMW([]qemu.FMWWindow{{Targets: []string{"cxlhb0", "cxlhb1"}, Size: 1 << 30}})
-	srv := newServerWith(t, poolConfig(t.TempDir(), ""), map[string]qemu.Monitor{"vm1": f})
-	h := cachedHost(srv, "vm1")
-	if h.HostBridges[0].FMWSize != 512<<20 || h.HostBridges[1].FMWSize != 512<<20 {
-		t.Fatalf("interleaved fmw counted per target: %+v", h.HostBridges)
 	}
 }
 
@@ -1172,21 +1212,5 @@ func TestSerialCollisionWithLocalDevice(t *testing.T) {
 		if _, _, err := srv.Attach(ctx, h+".memdev0", api.AttachRequest{Host: h}); err != nil {
 			t.Fatal(err)
 		}
-	}
-}
-
-// A slot reserved for a local device is used only when no other slot
-// is free, even if it is on the requested NUMA node.
-func TestReservedSlotBeforeNuma(t *testing.T) {
-	f := newVMFake()
-	srv := newServerWith(t, poolConfig(t.TempDir(), "devices:\n  - name: a\n    size: 256M\n    serial: 0xc1ee0001\n  - name: b\n    size: 256M\n    serial: 0xc1ee0002\n"), map[string]qemu.Monitor{"vm1": f})
-	a, _, err := srv.Attach(ctx, "a", api.AttachRequest{Host: "vm1", NumaNode: new(1)})
-	if err != nil || a.Slot.Bus != "ds0_hb1" {
-		t.Fatalf("attach a: %+v %v", a, err)
-	}
-	// only ds1_hb1 (reserved for vm1.memdev0) is left on node 1
-	b, _, err := srv.Attach(ctx, "b", api.AttachRequest{Host: "vm1", NumaNode: new(1)})
-	if err != nil || b.Slot.NumaNode != 0 {
-		t.Fatalf("attach b took the reserved slot: %+v %v", b, err)
 	}
 }

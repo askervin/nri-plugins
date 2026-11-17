@@ -61,11 +61,12 @@ func (g *gatedMon) QueryTree(ctx context.Context) (*qemu.Tree, error) {
 }
 
 // A refresh whose tree was read before an attach completed does not drop
-// the new attachment.
+// the new attachment, and opens no window for attaching the exclusive
+// device to a second host.
 func TestStaleTreeKeepsNewAttachment(t *testing.T) {
 	f := newVMFake()
 	g := newGatedMon(f)
-	srv := newServerWith(t, poolConfig(t.TempDir(), pooled0), map[string]qemu.Monitor{"vm1": g})
+	srv := newServerWith(t, poolConfig(t.TempDir(), pooled0), map[string]qemu.Monitor{"vm1": g, "vm2": newVMFake()})
 	g.arm()
 	done := make(chan struct{})
 	go func() { srv.Hosts(ctx); close(done) }() // GET /hosts
@@ -84,24 +85,7 @@ func TestStaleTreeKeepsNewAttachment(t *testing.T) {
 	if d, _ := srv.Device("pooled0"); d.State != api.DeviceAttached {
 		t.Fatalf("device state %s", d.State)
 	}
-}
-
-// The stale tree opens no window for attaching an exclusive device to a
-// second host.
-func TestStaleTreeNoDoubleExclusiveAttach(t *testing.T) {
-	g1 := newGatedMon(newVMFake())
-	srv := newServerWith(t, poolConfig(t.TempDir(), pooled0),
-		map[string]qemu.Monitor{"vm1": g1, "vm2": newVMFake()})
-	g1.arm()
-	done := make(chan struct{})
-	go func() { srv.refreshTrees(ctx, "vm1"); close(done) }()
-	<-g1.snap
-	if _, _, err := srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"}); err != nil {
-		t.Fatal(err)
-	}
-	close(g1.gate)
-	<-done
-	_, _, err := srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm2"})
+	_, _, err = srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm2"})
 	mustCode(t, err, api.CodeConflict)
 	srv.refreshTrees(ctx)
 	as, _ := srv.Attachments(AttachmentFilter{Device: "pooled0"})

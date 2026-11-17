@@ -19,7 +19,9 @@ import (
 	"testing"
 )
 
-func TestFormatSize(t *testing.T) {
+// FormatSize writes sizes in the largest binary unit, ParseSize reads them
+// and the other spellings, and Size takes JSON numbers and strings.
+func TestSize(t *testing.T) {
 	for _, tc := range []struct {
 		v    int64
 		want string
@@ -31,40 +33,34 @@ func TestFormatSize(t *testing.T) {
 		{256 << 20, "256Mi"},
 		{1 << 30, "1Gi"},
 		{1536 << 20, "1536Mi"},
+		{3 << 30, "3Gi"},
 		{2 << 40, "2Ti"},
 		{-(256 << 20), "-256Mi"},
 	} {
 		if got := FormatSize(tc.v); got != tc.want {
 			t.Errorf("FormatSize(%d) = %q, expected %q", tc.v, got, tc.want)
 		}
+		if tc.v < 0 {
+			continue
+		}
+		if got, err := ParseSize(tc.want); err != nil || got != tc.v {
+			t.Errorf("ParseSize(%q) = %d, %v, expected %d", tc.want, got, err, tc.v)
+		}
 	}
-}
-
-// ParseSize reads what FormatSize writes, and the other spellings.
-func TestParseSize(t *testing.T) {
 	for _, tc := range []struct {
 		s    string
 		want int64
 	}{
-		{"256Mi", 256 << 20},
 		{"256M", 256 << 20},
 		{"256MiB", 256 << 20},
 		{"256MB", 256 << 20},
 		{"268435456", 256 << 20},
 		{"0x10000000", 256 << 20},
-		{"1Gi", 1 << 30},
 		{"1g", 1 << 30},
-		{"2Ti", 2 << 40},
 		{"4Ki", 4 << 10},
-		{"0", 0},
 	} {
 		if got, err := ParseSize(tc.s); err != nil || got != tc.want {
 			t.Errorf("ParseSize(%q) = %d, %v, expected %d", tc.s, got, err, tc.want)
-		}
-	}
-	for _, v := range []int64{0, 1536, 256 << 20, 3 << 30, 5 << 40} {
-		if got, err := ParseSize(FormatSize(v)); err != nil || got != v {
-			t.Errorf("ParseSize(FormatSize(%d)) = %d, %v", v, got, err)
 		}
 	}
 	for _, bad := range []string{"", "M", "-1M", "256Xi", "0xzz", "9000000000T"} {
@@ -72,10 +68,6 @@ func TestParseSize(t *testing.T) {
 			t.Errorf("ParseSize(%q) accepted", bad)
 		}
 	}
-}
-
-// Sizes unmarshal from numbers and strings and marshal as numbers.
-func TestSizeJSON(t *testing.T) {
 	var v struct{ A, B Size }
 	if err := json.Unmarshal([]byte(`{"A": "256Mi", "B": 268435456}`), &v); err != nil || v.A != 256<<20 || v.B != 256<<20 {
 		t.Fatalf("unmarshal: %+v %v", v, err)

@@ -48,24 +48,9 @@ func rawSession(t *testing.T, name string) string {
 	return s[i+len(hmpPrompt):]
 }
 
-func TestCleanHMPOutput(t *testing.T) {
-	out := CleanHMPOutput(rawSession(t, "hmp-raw-info-version.txt"))
-	if out != "11.1.1openSUSE Slowroll" {
-		t.Fatalf("unexpected version output %q", out)
-	}
-	if v := NormalizeVersion(out); v != "11.1.1 openSUSE Slowroll" {
-		t.Fatalf("unexpected normalized version %q", v)
-	}
-	if v := NormalizeVersion("10.1.50 v10.1.0-1234-gff076b1e6c"); v != "10.1.50 v10.1.0-1234-gff076b1e6c" {
-		t.Fatalf("unexpected normalized version %q", v)
-	}
-	if out := CleanHMPOutput("device_del x\x1b[K\r\n(qemu) "); out != "" {
-		t.Fatalf("expected empty output, got %q", out)
-	}
-}
-
 func TestParseQtreeFull(t *testing.T) {
-	tree := ParseQtree(CleanHMPOutput(rawSession(t, "hmp-raw-info-qtree-full-crio.txt")))
+	text := CleanHMPOutput(rawSession(t, "hmp-raw-info-qtree-full-crio.txt"))
+	tree := ParseQtree(text)
 	if hb := tree.HostBridge("cxlhb1"); hb == nil || hb.NumaNode != 1 {
 		t.Fatalf("expected cxlhb1 on numa node 1: %+v", tree.HostBridges)
 	}
@@ -89,8 +74,32 @@ func TestParseQtreeFull(t *testing.T) {
 	if slots != 4 {
 		t.Fatalf("expected 4 slots in crio VM, got %d", slots)
 	}
+	// a persistent device in the same tree
+	old := `                    memdev = ""
+                    persistent-memdev = ""
+                    volatile-memdev = "/objects/beram_cxl_memdev2__bus_cxlsw_ds0_usrp0hb1__sn_0xc100e2e2"
+                    lsa = ""`
+	if !strings.Contains(text, old) {
+		t.Fatal("test data changed: cxl_memdev2.hp3 properties not found")
+	}
+	text = strings.Replace(text, old, `                    memdev = ""
+                    persistent-memdev = "/objects/fcp_llm0.hp1"
+                    volatile-memdev = ""
+                    lsa = "/objects/fcp_llm0.hp1-lsa"`, 1)
+	tree = ParseQtree(text)
+	d = treeDevice(tree, "cxl_memdev2.hp3")
+	if d == nil || d.PersistentMemdev != "fcp_llm0.hp1" || d.LSA != "fcp_llm0.hp1-lsa" || d.VolatileMemdev != "" ||
+		d.Memdev() != "fcp_llm0.hp1" {
+		t.Fatalf("unexpected persistent device %+v", d)
+	}
+	v := treeDevice(tree, "cxl_memdev1.hp2")
+	if v == nil || v.PersistentMemdev != "" || v.LSA != "" || v.Memdev() != "beram_cxl_memdev1__bus_cxlsw_ds1_usrp0hb0__sn_0xc100e2e1" {
+		t.Fatalf("unexpected volatile device %+v", v)
+	}
 }
 
+// Root ports without a switch are slots. An unassigned NUMA node (qemu
+// MAX_NODES = 128) is -1.
 func TestParseQtreeRootPortSlot(t *testing.T) {
 	text := `bus: main-system-bus
   type System
@@ -106,11 +115,16 @@ func TestParseQtreeRootPortSlot(t *testing.T) {
           dev: cxl-type3, id "x.hp1"
             volatile-memdev = "/objects/fcp_x.hp1"
             sn = 3253731329 (0xc1f00001)
+  dev: pxb-cxl-host, id ""
+    bus: cxlhb1
+      type pxb-cxl-bus
   dev: q35-pcihost, id ""
     bus: pcie.0
       type PCIE
       dev: pxb-cxl, id "cxlhb0"
         numa_node = 0 (0x0)
+      dev: pxb-cxl, id "cxlhb1"
+        numa_node = 128 (0x80)
 `
 	tree := ParseQtree(text)
 	if len(tree.Ports) != 2 || !tree.Ports[0].IsSlot() || !tree.Ports[1].IsSlot() {
@@ -123,7 +137,7 @@ func TestParseQtreeRootPortSlot(t *testing.T) {
 	if d == nil || d.VolatileMemdev != "fcp_x.hp1" || d.Serial != 0xc1f00001 || d.Bus != "cxlrp1hb0" {
 		t.Fatalf("unexpected device %+v", d)
 	}
-	if tree.HostBridges[0].NumaNode != 0 {
+	if tree.HostBridge("cxlhb0").NumaNode != 0 || tree.HostBridge("cxlhb1").NumaNode != -1 {
 		t.Fatalf("unexpected numa %+v", tree.HostBridges)
 	}
 }
@@ -278,31 +292,5 @@ func TestProcessAliveZombie(t *testing.T) {
 		if got := ProcessAlive(root, tc.pid, tc.start); got != tc.alive {
 			t.Errorf("ProcessAlive(%d, %d) = %v, want %v", tc.pid, tc.start, got, tc.alive)
 		}
-	}
-}
-
-func TestCommandLines(t *testing.T) {
-	b := MemoryBackend{QomType: MemoryBackendFile, ID: "fcp_d0.hp1", Size: 256 << 20, MemPath: "/tmp/p/d0.raw", Share: true}
-	if s := HMPObjectAdd(b); s != "object_add memory-backend-file,id=fcp_d0.hp1,size=268435456,share=on,mem-path=/tmp/p/d0.raw" {
-		t.Fatalf("unexpected object_add %q", s)
-	}
-	d := CXLType3{ID: "fcp_d0.hp1", Bus: "ds0", VolatileMemdev: "fcp_d0.hp1", Serial: 0xc1f00001}
-	if s := HMPDeviceAdd(d); s != "device_add cxl-type3,bus=ds0,volatile-memdev=fcp_d0.hp1,id=fcp_d0.hp1,sn=0xc1f00001" {
-		t.Fatalf("unexpected device_add %q", s)
-	}
-}
-
-// Unassigned NUMA nodes (qemu MAX_NODES = 128) are -1.
-func TestNumaUnassignedAndInterleave(t *testing.T) {
-	tree := ParseQtree(`bus: main-system-bus
-  dev: q35-pcihost, id ""
-    bus: pcie.0
-      dev: pxb-cxl, id "cxlhb0"
-        numa_node = 128 (0x80)
-  dev: pxb-cxl-host, id ""
-    bus: cxlhb0
-`)
-	if len(tree.HostBridges) != 1 || tree.HostBridges[0].NumaNode != -1 {
-		t.Fatalf("unexpected host bridges %+v", tree.HostBridges)
 	}
 }

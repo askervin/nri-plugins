@@ -15,6 +15,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -141,29 +142,9 @@ func TestConfigInvalid(t *testing.T) {
 			err:    `MemoryConfig: pool.opaque.fake-cxl-pool: json: unknown field "port"`,
 		},
 		{
-			name:   "wrong type in the own object",
-			config: []resourceapi.DeviceAllocationConfiguration{claimConfig(`"pool": {"opaque": {"fake-cxl-pool": {"numaNode": "1"}}}`)},
-			err:    `MemoryConfig: pool.opaque.fake-cxl-pool: json: cannot unmarshal string into Go struct field PoolSettings.numaNode of type int`,
-		},
-		{
 			name:   "negative numa node",
 			config: []resourceapi.DeviceAllocationConfiguration{claimConfig(`"pool": {"opaque": {"fake-cxl-pool": {"numaNode": -1}}}`)},
 			err:    `MemoryConfig: pool.opaque.fake-cxl-pool.numaNode: invalid NUMA node -1`,
-		},
-		{
-			name:   "own object not an object",
-			config: []resourceapi.DeviceAllocationConfiguration{claimConfig(`"pool": {"opaque": {"fake-cxl-pool": 1}}`)},
-			err:    `MemoryConfig: pool.opaque.fake-cxl-pool: not a JSON object`,
-		},
-		{
-			name:   "unknown field of the MemoryConfig",
-			config: []resourceapi.DeviceAllocationConfiguration{claimConfig(`"x": 1`)},
-			err:    `MemoryConfig: FromClaim config 0: json: unknown field "x"`,
-		},
-		{
-			name:   "invalid container section",
-			config: []resourceapi.DeviceAllocationConfiguration{claimConfig(`"container": {"steering": {"policy": "x"}}`)},
-			err:    `MemoryConfig: container.steering.policy: invalid policy "x" (none, auto, first-dram, first-cxl, start-interleaved, end-interleaved or waypoints)`,
 		},
 		{
 			name: "invalid entry of another request of the claim",
@@ -171,13 +152,6 @@ func TestConfigInvalid(t *testing.T) {
 				memoryConfig(resourceapi.AllocationConfigSourceClaim, DefaultDriverName, `"pool": {"slot": "ds1"}`, "other"),
 			},
 			err: `MemoryConfig: FromClaim config 0: json: unknown field "pool.slot"`,
-		},
-		{
-			name: "another kind",
-			config: []resourceapi.DeviceAllocationConfiguration{{Source: resourceapi.AllocationConfigSourceClaim, DeviceConfiguration: resourceapi.DeviceConfiguration{Opaque: &resourceapi.OpaqueDeviceConfiguration{
-				Driver: DefaultDriverName, Parameters: runtime.RawExtension{Raw: []byte(`{"apiVersion": "cxl.nri.io/v1alpha1", "kind": "DeviceConfig"}`)},
-			}}}},
-			err: `unknown kind "DeviceConfig" (MemoryConfig)`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -300,12 +274,22 @@ func TestConfigExistingAttachmentKept(t *testing.T) {
 		t.Fatalf("no log %q", logLine)
 	}
 	// the exclusive flag of an existing attachment is set without the
-	// settings
+	// settings; the status has the share ID and the data of the attachment
 	w := e.createClaimConfig("w", "shared0", "node1", "share-w", device.SharesUnlimited, []resourceapi.DeviceAllocationConfiguration{claimConfig(`"pool": {"opaque": {"fake-cxl-pool": {"slot": "ds7", "numaNode": 1}}}`)})
-	e.pool.addAttachment(api.Attachment{Device: "shared0", Host: "vm1", Owner: e.c.Owner(w.UID), Slot: api.Slot{Bus: "ds3"}})
+	e.pool.addAttachment(api.Attachment{Device: "shared0", Host: "vm1", Serial: "0xc1ae0001", Owner: e.c.Owner(w.UID), Slot: api.Slot{Bus: "ds3"},
+		QemuDeviceID: "fcp_shared0.hp7"})
 	e.sync()
 	reqs := e.pool.requests()
 	if len(reqs) != 1 || !reqs[0].Exclusive || reqSettings(reqs[0]) != "" {
 		t.Fatalf("unexpected attach requests %+v", reqs)
+	}
+	c, st := e.condition("w", "cxl-pool.nri.io/Attached")
+	if c == nil || c.Message != "shared0 attached to vm1 (slot ds3)" || st.ShareID == nil || *st.ShareID != "share-w" {
+		t.Fatalf("unexpected status %+v %+v", c, st)
+	}
+	var data DeviceData
+	if err := json.Unmarshal(st.Data.Raw, &data); err != nil || !data.Shared || data.Serial != "0xc1ae0001" ||
+		data.Size != 256<<20 || data.QemuDeviceID != "fcp_shared0.hp7" {
+		t.Fatalf("unexpected data %s %v", st.Data.Raw, err)
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -152,16 +153,21 @@ func TestHMPClient(t *testing.T) {
 	if err := h.WaitDeviceDeleted(wctx, "fcp_d0.hp1"); err != nil {
 		t.Fatal(err)
 	}
-	cmds := srv.commands()
-	want := "device_add cxl-type3,bus=ds0,volatile-memdev=fcp_d0.hp1,id=fcp_d0.hp1,sn=0xc1f00001"
-	found := false
-	for _, c := range cmds {
-		if c == want {
-			found = true
-		}
+	if err := h.ObjectDel(ctx, "fcp_d0.hp1"); err != nil {
+		t.Fatal(err)
 	}
-	if !found {
-		t.Fatalf("device_add not seen: %v", cmds)
+	// a command without output
+	if out, err := h.Command(ctx, "object_del x"); err != nil || out != "" {
+		t.Fatalf("object_del output %q %v", out, err)
+	}
+	cmds := strings.Join(srv.commands(), "\n")
+	for _, want := range []string{
+		"device_add cxl-type3,bus=ds0,volatile-memdev=fcp_d0.hp1,id=fcp_d0.hp1,sn=0xc1f00001",
+		"object_del fcp_d0.hp1",
+	} {
+		if !strings.Contains(cmds, want) {
+			t.Fatalf("%q not seen: %v", want, cmds)
+		}
 	}
 }
 
@@ -549,6 +555,37 @@ func TestQMPTreeFromQOM(t *testing.T) {
 		// the fake has no power_controller_present: like stock qemu
 		t.Fatalf("hot remove capable: %v %v", ok, err)
 	}
+	// a persistent device: its two backends are deleted after the device
+	for _, b := range []MemoryBackend{pmemData, pmemLSA} {
+		if err := q.ObjectAdd(ctx, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := q.DeviceAdd(ctx, pmemDev); err != nil {
+		t.Fatal(err)
+	}
+	if tree, err = q.QueryTree(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if d := treeDevice(tree, "fcp_llm0.hp1"); d == nil || d.PersistentMemdev != "fcp_llm0.hp1" || d.LSA != "fcp_llm0.hp1-lsa" || d.VolatileMemdev != "" {
+		t.Fatalf("unexpected persistent device %+v", d)
+	}
+	if err := q.DeviceDel(ctx, pmemDev.ID); err != nil {
+		t.Fatal(err)
+	}
+	wctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err := q.WaitDeviceDeleted(wctx, pmemDev.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{pmemData.ID, pmemLSA.ID} {
+		if err := q.ObjectDel(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(srv.requests("object-del")); n != 2 {
+		t.Fatalf("%d object-del requests", n)
+	}
 }
 
 // Close is final: a goroutine that still holds a closed monitor does not
@@ -579,5 +616,66 @@ func TestQMPCloseIsFinal(t *testing.T) {
 	h.Close()
 	if _, err := h.Version(context.Background()); !errors.Is(err, ErrClosed) {
 		t.Fatalf("closed HMP: %v", err)
+	}
+}
+
+var (
+	pmemData = MemoryBackend{QomType: MemoryBackendFile, ID: "fcp_llm0.hp1", Size: 512 << 20, MemPath: "/pool/llm0.raw", Share: true}
+	pmemLSA  = MemoryBackend{QomType: MemoryBackendFile, ID: "fcp_llm0.hp1-lsa", Size: 256 << 10, MemPath: "/pool/llm0.lsa", Share: true}
+	pmemDev  = CXLType3{ID: "fcp_llm0.hp1", Bus: "ds0", PersistentMemdev: "fcp_llm0.hp1", LSA: "fcp_llm0.hp1-lsa", Serial: 0xc1ae0001}
+)
+
+// The HMP command lines and the QMP arguments of object_add and
+// device_add.
+func TestMonitorCommands(t *testing.T) {
+	if LSAObjectID("fcp_llm0.hp1") != "fcp_llm0.hp1-lsa" {
+		t.Fatalf("LSA id %q", LSAObjectID("fcp_llm0.hp1"))
+	}
+	aligned := pmemData
+	aligned.Align = HugePageAlign
+	for _, tc := range []struct {
+		b   MemoryBackend
+		hmp string
+		qmp map[string]any
+	}{
+		{aligned, "object_add memory-backend-file,id=fcp_llm0.hp1,size=536870912,share=on,mem-path=/pool/llm0.raw,align=2097152",
+			map[string]any{"qom-type": MemoryBackendFile, "id": "fcp_llm0.hp1", "size": uint64(512 << 20), "share": true,
+				"mem-path": "/pool/llm0.raw", "align": uint64(2 << 20)}},
+		{pmemLSA, "object_add memory-backend-file,id=fcp_llm0.hp1-lsa,size=262144,share=on,mem-path=/pool/llm0.lsa",
+			map[string]any{"qom-type": MemoryBackendFile, "id": "fcp_llm0.hp1-lsa", "size": uint64(256 << 10), "share": true,
+				"mem-path": "/pool/llm0.lsa"}},
+		// a RAM backend has no file mapping to align
+		{MemoryBackend{QomType: MemoryBackendRAM, ID: "m", Size: 2 << 20, Share: true, Align: HugePageAlign},
+			"object_add memory-backend-ram,id=m,size=2097152,share=on",
+			map[string]any{"qom-type": MemoryBackendRAM, "id": "m", "size": uint64(2 << 20), "share": true}},
+	} {
+		if got := HMPObjectAdd(tc.b); got != tc.hmp {
+			t.Errorf("HMP object_add of %s: %s", tc.b.ID, got)
+		}
+		if got := QMPObjectAddArgs(tc.b); !reflect.DeepEqual(got, tc.qmp) {
+			t.Errorf("QMP object-add of %s: %v", tc.b.ID, got)
+		}
+	}
+	vol := CXLType3{ID: "fcp_d0.hp1", Bus: "ds0", VolatileMemdev: "fcp_d0.hp1", Serial: 1}
+	for _, tc := range []struct {
+		d   CXLType3
+		hmp string
+		qmp map[string]any
+	}{
+		{pmemDev, "device_add cxl-type3,bus=ds0,persistent-memdev=fcp_llm0.hp1,lsa=fcp_llm0.hp1-lsa,id=fcp_llm0.hp1,sn=0xc1ae0001",
+			map[string]any{"driver": "cxl-type3", "bus": "ds0", "persistent-memdev": "fcp_llm0.hp1", "lsa": "fcp_llm0.hp1-lsa",
+				"id": "fcp_llm0.hp1", "sn": uint64(0xc1ae0001)}},
+		{vol, "device_add cxl-type3,bus=ds0,volatile-memdev=fcp_d0.hp1,id=fcp_d0.hp1,sn=0x1",
+			map[string]any{"driver": "cxl-type3", "bus": "ds0", "volatile-memdev": "fcp_d0.hp1", "id": "fcp_d0.hp1", "sn": uint64(1)}},
+	} {
+		if got := HMPDeviceAdd(tc.d); got != tc.hmp {
+			t.Errorf("HMP device_add of %s: %s", tc.d.ID, got)
+		}
+		if got := QMPDeviceAddArgs(tc.d); !reflect.DeepEqual(got, tc.qmp) {
+			t.Errorf("QMP device_add of %s: %v", tc.d.ID, got)
+		}
+	}
+	if pmemDev.Memdev() != "fcp_llm0.hp1" || vol.Memdev() != "fcp_d0.hp1" {
+		t.Fatal("wrong Memdev")
 	}
 }

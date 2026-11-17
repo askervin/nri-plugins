@@ -72,12 +72,6 @@ func TestMemoryNodes(t *testing.T) {
 	}
 }
 
-func TestPinThreadRefusesHighCPU(t *testing.T) {
-	if err := pinThread(cpuSetBits); err == nil || !strings.Contains(err.Error(), "above the") {
-		t.Errorf("pinThread(%d): error %v", cpuSetBits, err)
-	}
-}
-
 // numaNode returns a NUMA node with memory on which a bound mapping works
 // here, or skips the test.
 func numaNode(t *testing.T) int {

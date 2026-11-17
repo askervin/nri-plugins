@@ -33,13 +33,9 @@ func TestIsWriteBlock(t *testing.T) {
 			}
 		}
 	}
-}
-
-func TestIsWriteBlockSpread(t *testing.T) {
 	// 25% is one block in four, never two in a row.
-	for n := 0; n < 400; n++ {
-		want := n%4 == 3
-		if got := isWriteBlock(n, 25); got != want {
+	for n := range 400 {
+		if got, want := isWriteBlock(n, 25), n%4 == 3; got != want {
 			t.Errorf("isWriteBlock(%d, 25) = %v, want %v", n, got, want)
 		}
 	}
@@ -93,18 +89,16 @@ func TestWriteWords(t *testing.T) {
 func BenchmarkReadWords(b *testing.B) {
 	w := make([]uint64, 32<<10)
 	b.SetBytes(int64(len(w) * wordSize))
-	var sink uint64
-	for range b.N {
-		sink += readWords(w)
+	for b.Loop() {
+		readWords(w)
 	}
-	_ = sink
 }
 
 func BenchmarkWriteWords(b *testing.B) {
 	w := make([]uint64, 32<<10)
 	b.SetBytes(int64(len(w) * wordSize))
 	var v uint64
-	for range b.N {
+	for b.Loop() {
 		v = writeWords(w, v)
 	}
 }

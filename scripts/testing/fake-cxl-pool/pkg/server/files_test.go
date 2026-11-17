@@ -42,6 +42,17 @@ func TestBackingFile(t *testing.T) {
 	if err := removeBackingFile(path); err != nil {
 		t.Fatal(err)
 	}
+	// the label storage area file of a data file
+	for in, want := range map[string]string{
+		"/pool/llm0.raw":     "/pool/llm0.lsa",
+		"/pool/llm0":         "/pool/llm0.lsa",
+		"/pool/a.b/llm0.img": "/pool/a.b/llm0.lsa",
+		"/pool/llm0.x.raw":   "/pool/llm0.x.lsa",
+	} {
+		if got := lsaPath(in); got != want {
+			t.Errorf("lsaPath(%q) = %q, want %q", in, got, want)
+		}
+	}
 }
 
 func TestValidName(t *testing.T) {
@@ -53,19 +64,6 @@ func TestValidName(t *testing.T) {
 	for _, n := range []string{"", "Dev0", "a_b", "-a", "a@b", "a/b"} {
 		if err := validName(n); err == nil {
 			t.Errorf("%q: expected error", n)
-		}
-	}
-}
-
-func TestLSAPathRule(t *testing.T) {
-	for in, want := range map[string]string{
-		"/pool/llm0.raw":     "/pool/llm0.lsa",
-		"/pool/llm0":         "/pool/llm0.lsa",
-		"/pool/a.b/llm0.img": "/pool/a.b/llm0.lsa",
-		"/pool/llm0.x.raw":   "/pool/llm0.x.lsa",
-	} {
-		if got := lsaPath(in); got != want {
-			t.Errorf("lsaPath(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

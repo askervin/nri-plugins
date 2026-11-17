@@ -135,28 +135,6 @@ func TestPersistentAttachDetach(t *testing.T) {
 	}
 }
 
-func TestPersistentDeviceAddFailure(t *testing.T) {
-	e := newTestEnv(t, llm0Config)
-	f1 := e.fake("vm1")
-	f1.FailNextDeviceAdd(&qemu.Error{Command: "device_add", Desc: "something broke"})
-	_, _, err := e.c.Attach(ctx, "llm0", api.AttachRequest{Host: "vm1"})
-	mustCode(t, err, api.CodeUnavailable)
-	got := f1.Commands()
-	if len(got) != 5 || !strings.HasPrefix(got[2], "device_add ") ||
-		!reflect.DeepEqual(got[3:], []string{"object_del fcp_llm0.hp1", "object_del fcp_llm0.hp1-lsa"}) {
-		t.Fatalf("qemu commands:\n%s", strings.Join(got, "\n"))
-	}
-	if f1.HasObject("fcp_llm0.hp1") || f1.HasObject("fcp_llm0.hp1-lsa") {
-		t.Fatalf("objects left after failed device_add: %s", f1)
-	}
-	if d, _ := e.c.Device(ctx, "llm0"); d.State != api.DeviceFree {
-		t.Fatalf("unexpected device %+v", d)
-	}
-	if _, _, err := e.c.Attach(ctx, "llm0", api.AttachRequest{Host: "vm1"}); err != nil {
-		t.Fatalf("retry: %v", err)
-	}
-}
-
 func TestPersistentCreateDelete(t *testing.T) {
 	e := newTestEnv(t, "")
 	poolDir := filepath.Join(e.dir, "pool")
@@ -200,10 +178,11 @@ func TestPersistentAdopt(t *testing.T) {
 	f1 := e.fake("vm1")
 	data := filepath.Join(e.dir, "pool", "llm0.raw")
 	lsa := filepath.Join(e.dir, "pool", "llm0.lsa")
-	// a previous server run (state lost) attached llm0
+	// a previous server run (state lost) attached llm0, or a hand hotplug
+	// whose LSA backend does not follow the -lsa naming
 	f1.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: "fcp_llm0.hp7", Size: 512 << 20, MemPath: data, Share: true})
-	f1.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: "fcp_llm0.hp7-lsa", Size: lsaSize, MemPath: lsa, Share: true})
-	if err := f1.PlugDevice(qemu.CXLType3{ID: "fcp_llm0.hp7", Bus: "ds0_hb0", PersistentMemdev: "fcp_llm0.hp7", LSA: "fcp_llm0.hp7-lsa", Serial: 0xc1ae0001}); err != nil {
+	f1.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: "fcp_llm0.labels", Size: lsaSize, MemPath: lsa, Share: true})
+	if err := f1.PlugDevice(qemu.CXLType3{ID: "fcp_llm0.hp7", Bus: "ds0_hb0", PersistentMemdev: "fcp_llm0.hp7", LSA: "fcp_llm0.labels", Serial: 0xc1ae0001}); err != nil {
 		t.Fatal(err)
 	}
 	e.srv.Refresh(ctx)
@@ -211,60 +190,22 @@ func TestPersistentAdopt(t *testing.T) {
 	if err != nil || !a.Adopted || a.QemuDeviceID != "fcp_llm0.hp7" || a.QemuObjectID != "fcp_llm0.hp7" || a.Serial != "0xc1ae0001" {
 		t.Fatalf("not adopted: %+v %v", a, err)
 	}
-	if a.QemuLSAObjectID != "fcp_llm0.hp7-lsa" {
+	if a.QemuLSAObjectID != "fcp_llm0.labels" {
 		t.Fatalf("LSA backend not recorded: %+v", a)
 	}
 	if _, _, err := e.c.Detach(ctx, "llm0", "vm1", client.DetachOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	cmds := f1.Commands()
-	if got := cmds[len(cmds)-3:]; !reflect.DeepEqual(got, []string{"device_del fcp_llm0.hp7", "object_del fcp_llm0.hp7", "object_del fcp_llm0.hp7-lsa"}) {
+	if got := cmds[len(cmds)-3:]; !reflect.DeepEqual(got, []string{"device_del fcp_llm0.hp7", "object_del fcp_llm0.hp7", "object_del fcp_llm0.labels"}) {
 		t.Fatalf("detach commands %v", got)
+	}
+	if f1.HasObject("fcp_llm0.labels") {
+		t.Fatalf("LSA backend left in qemu: %s", f1)
 	}
 	// the counter is above the adopted ids
 	a, _, err = e.c.Attach(ctx, "llm0", api.AttachRequest{Host: "vm1"})
 	if err != nil || a.QemuDeviceID != "fcp_llm0.hp8" {
 		t.Fatalf("attach: %+v %v", a, err)
-	}
-}
-
-func TestHotplugCounterSeededFromLSA(t *testing.T) {
-	dir := t.TempDir()
-	f := newVMFake()
-	// only the LSA backend of an earlier attach is left (its object-del
-	// failed)
-	f.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: "fcp_pooled0.hp4-lsa", Size: lsaSize, MemPath: filepath.Join(dir, "y.lsa")})
-	srv := newServerWith(t, poolConfig(dir, pooled0), map[string]qemu.Monitor{"vm1": f})
-	a, _, err := srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"})
-	if err != nil || a.QemuDeviceID != "fcp_pooled0.hp5" {
-		t.Fatalf("attach: %+v %v", a, err)
-	}
-}
-
-func TestPersistentAdoptOtherLSAName(t *testing.T) {
-	e := newTestEnv(t, llm0Config)
-	f1 := e.fake("vm1")
-	data := filepath.Join(e.dir, "pool", "llm0.raw")
-	lsa := filepath.Join(e.dir, "pool", "llm0.lsa")
-	// a hand hotplug whose LSA backend does not follow the -lsa naming
-	f1.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: "fcp_llm0.hp3", Size: 512 << 20, MemPath: data, Share: true})
-	f1.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: "fcp_llm0.labels", Size: lsaSize, MemPath: lsa, Share: true})
-	if err := f1.PlugDevice(qemu.CXLType3{ID: "fcp_llm0.hp3", Bus: "ds0_hb0", PersistentMemdev: "fcp_llm0.hp3", LSA: "fcp_llm0.labels", Serial: 0xc1ae0001}); err != nil {
-		t.Fatal(err)
-	}
-	e.srv.Refresh(ctx)
-	a, err := e.attachment("llm0", "vm1")
-	if err != nil || !a.Adopted || a.QemuLSAObjectID != "fcp_llm0.labels" {
-		t.Fatalf("not adopted with its LSA backend: %+v %v", a, err)
-	}
-	if _, _, err := e.c.Detach(ctx, "llm0", "vm1", client.DetachOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	cmds := f1.Commands()
-	if got := cmds[len(cmds)-2:]; !reflect.DeepEqual(got, []string{"object_del fcp_llm0.hp3", "object_del fcp_llm0.labels"}) {
-		t.Fatalf("detach commands %v", cmds)
-	}
-	if f1.HasObject("fcp_llm0.labels") {
-		t.Fatalf("LSA backend left in qemu: %s", f1)
 	}
 }

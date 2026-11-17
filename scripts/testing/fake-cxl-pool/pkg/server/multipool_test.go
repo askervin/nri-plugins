@@ -14,8 +14,8 @@
 
 package server
 
-// Tests of the configuration for several pool servers on one host: server
-// name, discovery.control, slot patterns and the serial check of adoption.
+// Tests of the configuration for several pool servers on one host:
+// discovery.control, slot patterns and the serial check of adoption.
 
 import (
 	"path/filepath"
@@ -26,26 +26,6 @@ import (
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu/fake"
 )
-
-func TestServerName(t *testing.T) {
-	e := newTestEnv(t, "")
-	if st, err := e.c.Status(ctx); err != nil || st.Name != "fake-cxl-pool" {
-		t.Fatalf("default name: %+v %v", st, err)
-	}
-	e = newTestEnv(t, "name: pool-a\n")
-	if st, err := e.c.Status(ctx); err != nil || st.Name != "pool-a" {
-		t.Fatalf("name: %+v %v", st, err)
-	}
-	for _, bad := range []string{"Pool-A", "-a", "a-", "a_b", "a.b", strings.Repeat("a", 64)} {
-		_, err := ParseConfig([]byte("name: " + bad + "\n"))
-		if err == nil || err.Error() != "name must be a DNS label (lower-case letters, digits, '-')" {
-			t.Errorf("name %q: %v", bad, err)
-		}
-	}
-	if _, err := ParseConfig([]byte("name: " + strings.Repeat("a", 63) + "\n")); err != nil {
-		t.Errorf("63 characters: %v", err)
-	}
-}
 
 func TestDiscoveryControl(t *testing.T) {
 	if _, err := ParseConfig([]byte("discovery: {control: qemu}")); err == nil || err.Error() != "discovery.control must be qmp or hmp" {

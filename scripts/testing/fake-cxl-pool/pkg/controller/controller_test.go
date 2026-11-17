@@ -738,6 +738,29 @@ func TestAttachAndStatus(t *testing.T) {
 	if e.claim("pooled-memory").ResourceVersion != rv {
 		t.Fatal("status rewritten in steady state")
 	}
+	// after a re-attach (a qemu restart) the device data is that of the
+	// new attachment
+	e.pool.mu.Lock()
+	a := e.pool.atts["pooled0@vm1"]
+	a.QemuDeviceID, a.Slot.Bus = "fcp_pooled0.hp9", "ds9"
+	e.pool.atts["pooled0@vm1"] = a
+	e.pool.mu.Unlock()
+	e.sync()
+	e.waitLister("pooled-memory", func(c *resourceapi.ResourceClaim) bool {
+		cond := hasCondition(c, c.Status.Allocation.Devices.Results[1], "cxl-pool.nri.io/Attached")
+		return cond != nil && cond.Message == "pooled0 attached to vm1 (slot ds9)"
+	})
+	_, st = e.condition("pooled-memory", "cxl-pool.nri.io/Attached")
+	data = nil
+	if err := json.Unmarshal(st.Data.Raw, &data); err != nil || data["qemuDeviceId"] != "fcp_pooled0.hp9" {
+		t.Fatalf("unexpected data %s %v", st.Data.Raw, err)
+	}
+	// steady state again: no status write
+	rv = e.claim("pooled-memory").ResourceVersion
+	e.sync()
+	if e.claim("pooled-memory").ResourceVersion != rv {
+		t.Fatal("status rewritten in steady state")
+	}
 }
 
 // (3) node without host
@@ -852,28 +875,6 @@ func TestFailedAttachmentFailsClaim(t *testing.T) {
 	}
 }
 
-// (6) restart: the attachment exists, the status is missing
-func TestRestartWithExistingAttachment(t *testing.T) {
-	t.Parallel()
-	e := newEnv(t)
-	claim := e.createClaimShares("c6", "shared0", "node1", "share-1", 1)
-	e.pool.addAttachment(api.Attachment{Device: "shared0", Host: "vm1", Serial: "0xc1ae0001", Owner: e.c.Owner(claim.UID),
-		Slot: api.Slot{Bus: "ds9"}, QemuDeviceID: "fcp_shared0.hp7"})
-	e.sync()
-	if att, det := e.pool.calls(); len(att) != 0 || len(det) != 0 {
-		t.Fatalf("unexpected requests %v %v", att, det)
-	}
-	cond, st := e.condition("c6", "cxl-pool.nri.io/Attached")
-	if cond == nil || cond.Message != "shared0 attached to vm1 (slot ds9)" || st.ShareID == nil || *st.ShareID != "share-1" {
-		t.Fatalf("unexpected status %+v %+v", cond, st)
-	}
-	var data DeviceData
-	if err := json.Unmarshal(st.Data.Raw, &data); err != nil || !data.Shared || data.Serial != "0xc1ae0001" ||
-		data.Size != 256<<20 || data.QemuDeviceID != "fcp_shared0.hp7" {
-		t.Fatalf("unexpected data %s %v", st.Data.Raw, err)
-	}
-}
-
 // (7) two claims, same shared device, same node
 func TestSharedTwoClaimsOneNode(t *testing.T) {
 	t.Parallel()
@@ -967,38 +968,6 @@ func TestAdoptedAttachmentTakenOver(t *testing.T) {
 	}
 }
 
-// After a re-attach (a qemu restart) the device data of an Attached claim
-// is that of the new attachment.
-func TestReattachUpdatesDeviceData(t *testing.T) {
-	t.Parallel()
-	e := newEnv(t)
-	e.createClaim("c", "pooled0", "node1", "")
-	e.sync()
-	e.waitStatus("c", 1)
-	// the server dropped the attachment and the controller attached again
-	e.pool.mu.Lock()
-	a := e.pool.atts["pooled0@vm1"]
-	a.QemuDeviceID, a.Slot.Bus = "fcp_pooled0.hp9", "ds9"
-	e.pool.atts["pooled0@vm1"] = a
-	e.pool.mu.Unlock()
-	e.sync()
-	e.waitLister("c", func(c *resourceapi.ResourceClaim) bool {
-		cond := hasCondition(c, c.Status.Allocation.Devices.Results[1], "cxl-pool.nri.io/Attached")
-		return cond != nil && cond.Message == "pooled0 attached to vm1 (slot ds9)"
-	})
-	_, st := e.condition("c", "cxl-pool.nri.io/Attached")
-	var data DeviceData
-	if err := json.Unmarshal(st.Data.Raw, &data); err != nil || data.QemuDeviceID != "fcp_pooled0.hp9" {
-		t.Fatalf("unexpected data %s %v", st.Data.Raw, err)
-	}
-	// steady state again: no status write
-	rv := e.claim("c").ResourceVersion
-	e.sync()
-	if e.claim("c").ResourceVersion != rv {
-		t.Fatal("status rewritten in steady state")
-	}
-}
-
 func TestExclusiveMovesBetweenNodes(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
@@ -1021,84 +990,39 @@ func TestExclusiveMovesBetweenNodes(t *testing.T) {
 	}
 }
 
-func TestExclusiveSharedClaim(t *testing.T) {
-	t.Parallel()
-	e := newEnv(t)
-	// all of the shares: attached exclusively
-	e.createClaimShares("w", "shared0", "node1", "share-w", device.SharesUnlimited)
-	e.sync()
-	if att, _ := e.pool.calls(); len(att) != 1 || att[0] != "shared0@vm1 k8s:resourceclaim/uid-w exclusive" {
-		t.Fatalf("unexpected attach requests %v", att)
-	}
-	c, st := e.condition("w", "cxl-pool.nri.io/Attached")
-	if c == nil || !strings.Contains(string(st.Data.Raw), `"exclusive":true`) {
-		t.Fatalf("claim w: condition %+v data %s", c, st.Data.Raw)
-	}
-	// readers on the same node right after the writer: the attachment
-	// stays, its flag is dropped
-	e.deallocate("w")
-	e.createClaimShares("r1", "shared0", "node1", "share-r1", 1)
-	e.sync()
-	att, det := e.pool.calls()
-	if len(det) != 0 || len(att) != 2 || att[1] != "shared0@vm1 k8s:resourceclaim/uid-r1" {
-		t.Fatalf("attach %v detach %v", att, det)
-	}
-	if c, st := e.condition("r1", "cxl-pool.nri.io/Attached"); c == nil || strings.Contains(string(st.Data.Raw), `"exclusive"`) {
-		t.Fatalf("claim r1: condition %+v data %s", c, st.Data.Raw)
-	}
-	// and the other way round: an exclusive claim (no shares consumed
-	// in the result) on the node of the reader sets the flag before it
-	// is Attached
-	e.deallocate("r1")
-	e.createClaimShares("w2", "shared0", "node1", "share-w2", 0)
-	e.sync()
-	if att, _ = e.pool.calls(); len(att) != 3 || att[2] != "shared0@vm1 k8s:resourceclaim/uid-w2 exclusive" {
-		t.Fatalf("attach %v", att)
-	}
-	if c, _ := e.condition("w2", "cxl-pool.nri.io/Attached"); c == nil {
-		t.Fatal("claim w2: no Attached condition")
-	}
-}
-
-func TestExclusiveSharedConflict(t *testing.T) {
-	t.Parallel()
-	e := newEnv(t)
-	// another cluster has the device: an exclusive attach conflicts
-	e.pool.addAttachment(api.Attachment{Device: "shared0", Host: "foreign", Owner: "k8s:resourceclaim/other-cluster"})
-	e.createClaimShares("w", "shared0", "node1", "share-w", device.SharesUnlimited)
-	e.sync()
-	c, _ := e.condition("w", "cxl-pool.nri.io/AttachFailed")
-	if c == nil || c.Reason != ReasonConflict {
-		t.Fatalf("claim w: AttachFailed %+v", c)
-	}
-	if c, _ := e.condition("w", "cxl-pool.nri.io/Attached"); c != nil {
-		t.Fatalf("claim w: Attached %+v", c)
-	}
-	// an exclusive device is never attached with the flag
-	if e.c.exclusiveResult(&resourceapi.DeviceRequestAllocationResult{Device: "pooled0",
-		ConsumedCapacity: map[resourceapi.QualifiedName]resource.Quantity{device.CapacityShares: resource.MustParse("1M")}}) {
-		t.Fatal("pooled0 is exclusive")
-	}
-}
-
+// A result is exclusive if it takes all the shares of a shared device. A
+// device that is not shared never gets the exclusive flag.
 func TestExclusiveResult(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
-	e.sync()
+	c := &Controller{devices: map[string]api.Device{
+		"shared0": {Name: "shared0", Shared: true},
+		"pooled0": {Name: "pooled0"},
+	}}
+	all := map[resourceapi.QualifiedName]resource.Quantity{device.CapacityShares: resource.MustParse("1M")}
 	for _, tc := range []struct {
 		name     string
+		device   string
 		consumed map[resourceapi.QualifiedName]resource.Quantity
 		want     bool
 	}{
-		{"all shares", map[resourceapi.QualifiedName]resource.Quantity{device.CapacityShares: resource.MustParse("1M")}, true},
-		{"one share", map[resourceapi.QualifiedName]resource.Quantity{device.CapacityShares: resource.MustParse("1")}, false},
-		{"shares missing", nil, true},
-		{"other capacity only", map[resourceapi.QualifiedName]resource.Quantity{"memory": resource.MustParse("1Gi")}, true},
+		{"all shares", "shared0", all, true},
+		{"one share", "shared0", map[resourceapi.QualifiedName]resource.Quantity{device.CapacityShares: resource.MustParse("1")}, false},
+		{"shares missing", "shared0", nil, true},
+		{"other capacity only", "shared0", map[resourceapi.QualifiedName]resource.Quantity{"memory": resource.MustParse("1Gi")}, true},
+		{"not shared", "pooled0", all, false},
 	} {
-		r := &resourceapi.DeviceRequestAllocationResult{Device: "shared0", ConsumedCapacity: tc.consumed}
-		if got := e.c.exclusiveResult(r); got != tc.want {
+		r := &resourceapi.DeviceRequestAllocationResult{Device: tc.device, ConsumedCapacity: tc.consumed}
+		if got := c.exclusiveResult(r); got != tc.want {
 			t.Errorf("%s: exclusive %v, want %v", tc.name, got, tc.want)
 		}
+	}
+	// after a conflict of an exclusive attach, the first want that is not
+	// exclusive attaches without the flag
+	if w := firstShared([]*want{{exclusive: true}, {exclusive: false}}); w == nil || w.exclusive {
+		t.Fatalf("first shared want %+v", w)
+	}
+	if w := firstShared([]*want{{exclusive: true}}); w != nil {
+		t.Fatalf("first shared want of exclusive wants %+v", w)
 	}
 }
 

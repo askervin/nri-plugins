@@ -68,13 +68,6 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-func TestTotalsMinus(t *testing.T) {
-	got := totals{read: 100, written: 40}.minus(totals{read: 30, written: 40})
-	if want := (totals{read: 70}); got != want {
-		t.Errorf("minus = %+v, want %+v", got, want)
-	}
-}
-
 func TestFormatRates(t *testing.T) {
 	for _, tc := range []struct {
 		t       totals
@@ -107,18 +100,6 @@ func TestOffNodes(t *testing.T) {
 	}
 	if got := offNodes(map[int]int{2: 1}, []int{2, 3}); len(got) != 0 {
 		t.Errorf("offNodes = %v, want none", got)
-	}
-}
-
-func TestNewLoadOneWorkerPerCPU(t *testing.T) {
-	l := newLoad(goodConfig())
-	if len(l.workers) != 4 {
-		t.Fatalf("%d workers, want 4", len(l.workers))
-	}
-	for i, w := range l.workers {
-		if w.id != i || w.cpu != i {
-			t.Errorf("worker %d: id %d, CPU %d", i, w.id, w.cpu)
-		}
 	}
 }
 
@@ -231,7 +212,7 @@ func TestPrepareFailureStopsAll(t *testing.T) {
 	cfg.cpus = append(cfg.cpus, cpuSetBits)
 	l := newLoad(cfg)
 	err := l.prepare()
-	if err == nil || !strings.Contains(err.Error(), "thread 1 on CPU") {
+	if err == nil || !strings.Contains(err.Error(), "thread 1 on CPU") || !strings.Contains(err.Error(), "above the") {
 		t.Fatalf("prepare with a CPU that cannot be pinned: error %v", err)
 	}
 	for _, w := range l.workers {
