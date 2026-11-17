@@ -79,10 +79,22 @@ func TestRange(t *testing.T) {
 	}
 }
 
-// Onlining movable refuses a block online in another zone (auto-onlined
-// into ZONE_NORMAL, never removable); the NUMA node gets the memory.
+// DRAM nodes have memory from boot. The node of a window gets memory when
+// its blocks go online. Onlining movable refuses a block online in another
+// zone (auto-onlined into ZONE_NORMAL, never removable).
 func TestOnlineBlocks(t *testing.T) {
 	f, k := newNode(t)
+	nodes := k.NumaNodes()
+	if len(nodes) != 6 || !nodes[0].HasMemory || nodes[0].MemTotal != 8<<30 || nodes[2].HasMemory {
+		t.Fatalf("nodes %+v", nodes)
+	}
+	// has_memory is a list of ranges and numbers: an item that is no
+	// number is left out
+	f.Write("devices/system/node/has_memory", "0-1, 3,x")
+	if nodes := k.NumaNodes(); !nodes[1].HasMemory || nodes[2].HasMemory || !nodes[3].HasMemory {
+		t.Fatalf("nodes of has_memory 0-1, 3,x: %+v", nodes)
+	}
+	f.Write("devices/system/node/has_memory", "0-1")
 	createRegion(t, k, "mem0", kernel.RegionRAM, 0)
 	if n, ok := observe(t, k).NumaNode(2); !ok || n.HasMemory || n.MemTotal != 0 {
 		t.Fatalf("node 2 before online %+v", n)
@@ -140,14 +152,4 @@ func TestStayedOffline(t *testing.T) {
 	}
 	_, err := k.StayedOffline(ctxTimeout(t, 10*time.Millisecond), blocks, time.Second)
 	wantErr(t, err, context.DeadlineExceeded, "")
-}
-
-// The NUMA nodes: DRAM nodes have memory from boot; the node of a window
-// has none until blocks of its memory are online.
-func TestNumaNodes(t *testing.T) {
-	_, k := newNode(t)
-	nodes := k.NumaNodes()
-	if len(nodes) != 6 || !nodes[0].HasMemory || nodes[0].MemTotal != 8<<30 || nodes[2].HasMemory {
-		t.Fatalf("nodes %+v", nodes)
-	}
 }

@@ -75,6 +75,11 @@ type Table[S comparable] struct {
 	Refused  []Refusal[S]
 }
 
+// List returns its arguments as a slice: the states of a row or a table.
+func List[S any](values ...S) []S {
+	return values
+}
+
 // ErrTransition is the kind of the error of a transition that is not in a
 // table.
 var ErrTransition = errors.New("transition not in the table")

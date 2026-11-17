@@ -363,22 +363,6 @@ func TestDaxDefaultKmem(t *testing.T) {
 
 func itoa(n uint64) string { return strconv.FormatUint(n, 10) }
 
-// during runs read in a goroutine and returns whether it returned within
-// 200 ms, and a channel that is closed when it has returned.
-func during(read func()) (bool, <-chan struct{}) {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		read()
-	}()
-	select {
-	case <-done:
-		return true, done
-	case <-time.After(200 * time.Millisecond):
-		return false, done
-	}
-}
-
 // A read of the mappings of a dax device waits for a write of the size or
 // of a mapping of a dax device, which may remove a mapping: the kernel
 // would wait for the reader inside the files of the mapping while the
@@ -393,7 +377,7 @@ func TestResizeDaxDeviceExcludesMappingReads(t *testing.T) {
 	var returned bool
 	var done <-chan struct{}
 	f.Before("write bus/dax/devices/dax0.0/size 0", func() {
-		returned, done = during(func() { got, _ = k.DaxDeviceRanges("dax0.0") })
+		returned, done = fake.ReadWithin(func() { got, _ = k.DaxDeviceRanges("dax0.0") })
 	})
 	noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 0))
 	<-done
@@ -402,7 +386,7 @@ func TestResizeDaxDeviceExcludesMappingReads(t *testing.T) {
 	}
 	noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 128*mib))
 	f.Before("write bus/dax/devices/dax0.1/mapping", func() {
-		returned, done = during(func() { got, _ = k.DaxDeviceRanges("dax0.0") })
+		returned, done = fake.ReadWithin(func() { got, _ = k.DaxDeviceRanges("dax0.0") })
 	})
 	second := kernel.Range{Start: window0 + 256*mib, End: window0 + 384*mib - 1}
 	dax, err := k.CreateDaxDeviceRanges(ctx, "region0", []kernel.Range{second})
@@ -427,7 +411,7 @@ func TestDaxRemovalsExcludeSizeWrites(t *testing.T) {
 	var done []<-chan struct{}
 	resizeDuring := func(what string) func() {
 		return func() {
-			r, d := during(func() { _ = k.ResizeDaxDevice(ctx, "dax0.0", 64*mib) })
+			r, d := fake.ReadWithin(func() { _ = k.ResizeDaxDevice(ctx, "dax0.0", 64*mib) })
 			returned[what], done = r, append(done, d)
 		}
 	}
@@ -457,8 +441,8 @@ func TestObserveTopologyDuringDaxWrite(t *testing.T) {
 	var topReturned, fullReturned bool
 	var topDone, fullDone <-chan struct{}
 	f.Before("write bus/dax/devices/dax0.0/size 0", func() {
-		fullReturned, fullDone = during(func() { full, fullErr = k.Observe(ctx) })
-		topReturned, topDone = during(func() { top, topErr = k.ObserveTopology(ctx) })
+		fullReturned, fullDone = fake.ReadWithin(func() { full, fullErr = k.Observe(ctx) })
+		topReturned, topDone = fake.ReadWithin(func() { top, topErr = k.ObserveTopology(ctx) })
 	})
 	noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 0))
 	<-topDone

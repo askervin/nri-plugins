@@ -253,7 +253,7 @@ func (k *Kernel) observeBlockDevices(s *Snapshot, problem func(string, ...any)) 
 		if ma, mi, err := parseDevNumbers(l.Name, l.DevNum); err == nil {
 			d.Major, d.Minor = ma, mi
 		}
-		if sectors, err := ReadUint(filepath.Join(k.sysRoot(), "block", l.Name, "size")); err == nil {
+		if sectors, err := ReadUint(k.blockDev(l.Name, "size")); err == nil {
 			d.Size = sectors * 512
 		}
 		var err error

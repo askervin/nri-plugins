@@ -292,8 +292,8 @@ func (s *SysCalls) LoopRdevice(path string) (uint64, error) {
 
 // A dax device that the kernel binds to device_dax has its driver link
 // before device_dax has added its character device: until then an open
-// fails with ENXIO. The opens try again every daxOpenInterval for
-// daxOpenTimeout.
+// fails with ENXIO. ZeroDax and ProbeDax try again every daxOpenInterval
+// for daxOpenTimeout.
 var (
 	daxOpenTimeout  = 5 * time.Second
 	daxOpenInterval = 10 * time.Millisecond
@@ -302,14 +302,14 @@ var (
 )
 
 // openDaxNode opens the device node of a dax device read-only or for
-// reading and writing, trying again while the character device is not
-// there yet, until daxOpenTimeout or the end of the context.
-func openDaxNode(ctx context.Context, node string, readOnly bool) (*os.File, error) {
+// reading and writing. It tries again while the character device is not
+// there yet, until wait has passed or the context ends.
+func openDaxNode(ctx context.Context, node string, readOnly bool, wait time.Duration) (*os.File, error) {
 	flag := os.O_RDWR
 	if readOnly {
 		flag = os.O_RDONLY
 	}
-	deadline := time.Now().Add(daxOpenTimeout)
+	deadline := time.Now().Add(wait)
 	for {
 		f, err := openFile(node, flag, 0)
 		notYet := errors.Is(err, unix.ENXIO) || errors.Is(err, unix.ENODEV)
@@ -322,11 +322,16 @@ func openDaxNode(ctx context.Context, node string, readOnly bool) (*os.File, err
 	}
 }
 
-// OpenDax opens the dax character device through a private device node in
-// a temporary directory under DevRoot (the container may have no
-// /dev/daxX.Y, and a device node can be opened only on a filesystem without
-// nodev: DevRoot, a devtmpfs, not a tmpfs).
-func (s *SysCalls) OpenDax(ctx context.Context, major, minor int, readOnly bool) (*os.File, error) {
+func (s *SysCalls) OpenDax(major, minor int, readOnly bool) (*os.File, error) {
+	return s.openDax(context.Background(), major, minor, readOnly, 0)
+}
+
+// openDax opens the dax character device major:minor through a private
+// device node in a temporary directory under DevRoot. It tries again for
+// wait while the character device is not there yet. The container may have
+// no /dev/daxX.Y. A device node can be opened only on a filesystem without
+// nodev: DevRoot is a devtmpfs, not a tmpfs.
+func (s *SysCalls) openDax(ctx context.Context, major, minor int, readOnly bool, wait time.Duration) (*os.File, error) {
 	dir, err := os.MkdirTemp(s.devRoot(), daxNodeDirPrefix)
 	if err != nil {
 		return nil, err
@@ -336,14 +341,14 @@ func (s *SysCalls) OpenDax(ctx context.Context, major, minor int, readOnly bool)
 	if err := unix.Mknod(node, unix.S_IFCHR|0o600, int(unix.Mkdev(uint32(major), uint32(minor)))); err != nil {
 		return nil, fmt.Errorf("mknod %d:%d: %w", major, minor, err)
 	}
-	return openDaxNode(ctx, node, readOnly)
+	return openDaxNode(ctx, node, readOnly, wait)
 }
 
 // zeroChunk is the size of the windows in which a dax device is zeroed.
 var zeroChunk uint64 = 64 << 20
 
 func (s *SysCalls) ZeroDax(ctx context.Context, major, minor int, size, align uint64) error {
-	f, err := s.OpenDax(ctx, major, minor, false)
+	f, err := s.openDax(ctx, major, minor, false, daxOpenTimeout)
 	if err != nil {
 		return err
 	}
@@ -376,7 +381,7 @@ func (s *SysCalls) ProbeDax(ctx context.Context, major, minor int, size uint64) 
 	if !cacheFlushSupported {
 		return nil, ErrProbeUnsupported
 	}
-	f, err := s.OpenDax(ctx, major, minor, false)
+	f, err := s.openDax(ctx, major, minor, false, daxOpenTimeout)
 	if err != nil {
 		return nil, err
 	}

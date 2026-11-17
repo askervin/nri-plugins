@@ -193,11 +193,11 @@ func (k *Kernel) Mounted(target string) (*MountInfo, error) {
 // blockDevNum returns the major:minor of a block device (/dev/<name>) from
 // sysfs.
 func (k *Kernel) blockDevNum(dev string) (string, error) {
-	num, err := os.ReadFile(filepath.Join(k.sysRoot(), "class", "block", filepath.Base(dev), "dev"))
+	num, err := ReadTrim(k.blockDev(filepath.Base(dev), "dev"))
 	if err != nil {
 		return "", fmt.Errorf("the device number of %s: %w", dev, err)
 	}
-	return strings.TrimSpace(string(num)), nil
+	return num, nil
 }
 
 // Superblocks returns the superblocks of the node on the block device dev
@@ -221,11 +221,11 @@ func (k *Kernel) Superblocks(dev string) ([]Superblock, error) {
 		if err != nil || !SameDevice(backing, dev) {
 			continue
 		}
-		n, err := os.ReadFile(filepath.Join(k.sysRoot(), "block", loop, "dev"))
+		n, err := k.blockDevNum(loop)
 		if err != nil {
-			return nil, fmt.Errorf("the device number of %s: %w", loop, err)
+			return nil, err
 		}
-		devs[strings.TrimSpace(string(n))] = filepath.Join(k.devRoot(), loop)
+		devs[n] = filepath.Join(k.devRoot(), loop)
 	}
 	return k.superblocksOf(devs)
 }

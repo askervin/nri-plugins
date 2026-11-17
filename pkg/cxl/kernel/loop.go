@@ -53,7 +53,7 @@ type LoopDevice struct {
 
 // loopNames returns the names of the loop devices with a backing file.
 func (k *Kernel) loopNames() []string {
-	m, _ := filepath.Glob(filepath.Join(k.sysRoot(), "block", "loop*", "loop", "backing_file"))
+	m, _ := filepath.Glob(k.blockDev("loop*", "loop", "backing_file"))
 	out := make([]string, 0, len(m))
 	for _, p := range m {
 		out = append(out, filepath.Base(filepath.Dir(filepath.Dir(p))))
@@ -67,7 +67,7 @@ func (k *Kernel) LoopDevices() []LoopDevice {
 	var out []LoopDevice
 	for _, loop := range k.loopNames() {
 		l := LoopDevice{Name: loop}
-		if n, err := ReadTrim(filepath.Join(k.sysRoot(), "block", loop, "dev")); err == nil {
+		if n, err := k.blockDevNum(loop); err == nil {
 			l.DevNum = n
 		}
 		l.Backing, _ = k.LoopBackingFile(loop)
@@ -82,7 +82,7 @@ func (k *Kernel) LoopDevices() []LoopDevice {
 // path in sysfs when the device number cannot be found, and for a backing
 // file that is not a block device.
 func (k *Kernel) LoopBackingFile(loop string) (string, error) {
-	b, err := os.ReadFile(filepath.Join(k.sysRoot(), "block", filepath.Base(loop), "loop", "backing_file"))
+	b, err := os.ReadFile(k.blockDev(filepath.Base(loop), "loop", "backing_file"))
 	if os.IsNotExist(err) {
 		return "", nil
 	}

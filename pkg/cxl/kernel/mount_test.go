@@ -40,6 +40,7 @@ const mountInfoSample = `22 1 0:21 / / rw,relatime shared:1 - btrfs /dev/vda3 rw
 313 22 259:0 /sub\040dir /mnt/sub ro,nosuid,nodev,relatime shared:150 - erofs /dev/pmem0 ro,user_xattr,acl,dax=always
 311 22 0:41 / /mnt/stacked rw,relatime - tmpfs first rw
 312 311 0:42 / /mnt/stacked rw,relatime master:3 - tmpfs second rw,size=1k
+314 22 0:43 / /mnt/back\134slash\04 rw,relatime - tmpfs x\999 rw
 `
 
 // The mounts of a mountinfo: escaped fields, binds of subdirectories,
@@ -47,7 +48,7 @@ const mountInfoSample = `22 1 0:21 / / rw,relatime shared:1 - btrfs /dev/vda3 rw
 func TestParseMountInfo(t *testing.T) {
 	mounts, err := kernel.ParseMountInfo(strings.NewReader(mountInfoSample))
 	noErr(t, err)
-	if len(mounts) != 8 {
+	if len(mounts) != 9 {
 		t.Fatalf("%d mounts", len(mounts))
 	}
 	want := kernel.MountInfo{
@@ -74,6 +75,10 @@ func TestParseMountInfo(t *testing.T) {
 	}
 	if mi := kernel.FindMount(mounts, "/mnt/stacked"); mi == nil || mi.Source != "second" {
 		t.Fatalf("stacked mount: %+v", mi)
+	}
+	// a short escape and one that is no octal number stay as they are
+	if mi := kernel.FindMount(mounts, `/mnt/back\slash\04`); mi == nil || mi.Source != `x\999` {
+		t.Fatalf("escaped backslash: %+v", mi)
 	}
 	if kernel.FindMount(mounts, "/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts") != nil {
 		t.Fatal("a parent directory is not a mount")

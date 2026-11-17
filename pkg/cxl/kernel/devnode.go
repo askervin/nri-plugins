@@ -56,7 +56,7 @@ func (k *Kernel) OpenDevice(ctx context.Context, path string, readOnly bool) (*o
 			return nil, err
 		}
 		if time.Now().After(deadline) {
-			return k.openPrivateDax(ctx, path, readOnly, major, minor, numErr, err)
+			return k.openPrivateDax(path, readOnly, major, minor, numErr, err)
 		}
 		if serr := sleep(ctx, deviceNodePoll); serr != nil {
 			return nil, err
@@ -67,14 +67,14 @@ func (k *Kernel) OpenDevice(ctx context.Context, path string, readOnly bool) (*o
 // openPrivateDax opens the char device major:minor (numErr: their read
 // failed) of the dax device of path through a private node, after the wait
 // for its node ended with lastErr; a block device path fails with lastErr.
-func (k *Kernel) openPrivateDax(ctx context.Context, path string, readOnly bool, major, minor int, numErr, lastErr error) (*os.File, error) {
+func (k *Kernel) openPrivateDax(path string, readOnly bool, major, minor int, numErr, lastErr error) (*os.File, error) {
 	if !strings.HasPrefix(filepath.Base(path), "dax") {
 		return nil, lastErr
 	}
 	if numErr != nil {
 		return nil, fmt.Errorf("%w (and %v)", lastErr, numErr)
 	}
-	f, err := k.sys().OpenDax(ctx, major, minor, readOnly)
+	f, err := k.sys().OpenDax(major, minor, readOnly)
 	if err != nil {
 		return nil, fmt.Errorf("%w; opening private node %d:%d: %v", lastErr, major, minor, err)
 	}

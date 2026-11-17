@@ -63,7 +63,8 @@ func above(t *testing.T, k *kernel.Kernel, memdev string) []string {
 
 // TestDecoderHoles: a region destroyed below newer regions leaves a hole in
 // every port that they share; the ports refuse new regions until the
-// regions above go, and then the kernel reaps the hole.
+// regions above go, and then the kernel reaps the hole. The endpoint port
+// of a memdev with two regions names a hole too.
 func TestDecoderHoles(t *testing.T) {
 	f, k := stackNode(t)
 	ctx := context.Background()
@@ -110,23 +111,21 @@ func TestDecoderHoles(t *testing.T) {
 	if h := holes(t, k, "mem9"); h != nil {
 		t.Fatalf("unknown memdev: holes %+v", h)
 	}
-}
 
-// A hole in the endpoint port of a memdev with two regions is a hole of its
-// decoder path too: the endpoint names it.
-func TestDecoderHoleInEndpoint(t *testing.T) {
-	f := fake.New(t)
+	// a hole in the endpoint port of a memdev with two regions is a hole
+	// of its decoder path too: the endpoint names it
+	f = fake.New(t)
 	f.Plug(fake.MemdevSpec{Serial: serial0, Ram: gib})
-	k := f.Kernel()
+	k = f.Kernel()
 	createRegion(t, k, "mem0", kernel.RegionRAM, 256*mib)
 	createRegion(t, k, "mem0", kernel.RegionRAM, 256*mib)
-	noErr(t, k.ReleaseRegion(context.Background(), "region0"))
-	want := []kernel.DecoderHole{
+	noErr(t, k.ReleaseRegion(ctx, "region0"))
+	want = []kernel.DecoderHole{
 		{Port: "port1", Committed: 2, Free: []string{"decoder1.0"}, Blocking: []string{"region1"}},
 		{Port: "endpoint4", Committed: 2, Free: []string{"decoder4.0"}, Blocking: []string{"region1"}},
 	}
 	if got := holes(t, k, "mem0"); !reflect.DeepEqual(got, want) {
-		t.Fatalf("holes %+v, want %+v", got, want)
+		t.Fatalf("holes in the endpoint %+v, want %+v", got, want)
 	}
 	ports, err := k.Ports("mem0")
 	if err != nil || len(ports) != 2 || ports[1].Name != "endpoint4" || ports[1].Decoders[1].Region != "region1" {
@@ -169,8 +168,8 @@ func TestRegionsAbove(t *testing.T) {
 }
 
 // A decoder that cannot be read is an error of the decoder path, never
-// "nothing above": RegionsAbove, DecoderHoles and the snapshot say so, and
-// the release in order touches nothing.
+// "nothing above": RegionsAbove and DecoderHoles say so, and the release in
+// order touches nothing.
 func TestDecoderUnreadable(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

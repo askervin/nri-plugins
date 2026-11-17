@@ -246,30 +246,9 @@ func TestCreateFsdaxNamespaceRefuses(t *testing.T) {
 	wantErr(t, err, nil, "region3: no nvdimm region appeared")
 }
 
-// The namespace that a writer reconfigures is named (-e).
-func TestCreateFsdaxNamespaceReconfigures(t *testing.T) {
-	f, k := pmemNode(t)
-	ctx := ctxTimeout(t, 5*time.Second)
-	createRegion(t, k, "mem0", kernel.RegionPmem, 0)
-	_, err := k.CreateFsdaxNamespace(ctx, "region0", "namespace0.0")
-	noErr(t, err)
-	if !strings.Contains(f.Commands(), "ndctl create-namespace -f -r region0 -m fsdax -M mem -e namespace0.0") {
-		t.Fatalf("commands:\n%s", f.Commands())
-	}
-	if !f.Labels(serial0) {
-		t.Fatal("no labels")
-	}
-	if major, minor, size, err := k.BlockDeviceInfo("pmem0"); err != nil || major != 259 || minor != 0 || size != pmemBlockBytes {
-		t.Fatalf("block device %d:%d %d %v", major, minor, size, err)
-	}
-	f.Write("class/block/pmem0/dev", "bogus")
-	if _, _, _, err := k.BlockDeviceInfo("pmem0"); err == nil {
-		t.Fatal("bogus device numbers accepted")
-	}
-}
-
 // An fsdax namespace in two steps: ndctl returns the name, the wait gives
-// the namespace with its block device.
+// the namespace with its block device. The namespace that a writer
+// reconfigures is named (-e).
 func TestFsdaxNamespaceInTwoSteps(t *testing.T) {
 	f, k := pmemNode(t)
 	f.PmemDelay = 20 * time.Millisecond
@@ -279,12 +258,18 @@ func TestFsdaxNamespaceInTwoSteps(t *testing.T) {
 	noErr(t, err)
 	_, err = k.Namespaces(ctx, nd)
 	noErr(t, err)
-	name, err := k.StartFsdaxNamespace(ctx, nd, "")
+	name, err := k.StartFsdaxNamespace(ctx, nd, "namespace0.0")
 	noErr(t, err)
+	if !strings.Contains(f.Commands(), "ndctl create-namespace -f -r region0 -m fsdax -M mem -e namespace0.0") {
+		t.Fatalf("commands:\n%s", f.Commands())
+	}
 	ns, err := k.WaitFsdaxNamespace(ctx, nd, name)
 	noErr(t, err)
-	if ns.Name != name || ns.Mode != kernel.NamespaceFsdax || ns.BlockDevice == "" {
+	if ns.Name != name || ns.Mode != kernel.NamespaceFsdax || ns.BlockDevice == "" || !f.Labels(serial0) {
 		t.Fatalf("namespace %+v", ns)
+	}
+	if major, minor, size, err := k.BlockDeviceInfo("pmem0"); err != nil || major != 259 || minor != 0 || size != pmemBlockBytes {
+		t.Fatalf("block device %d:%d %d %v", major, minor, size, err)
 	}
 	_, err = k.StartFsdaxNamespace(ctx, nd, "")
 	wantErr(t, err, nil, "is one already")
@@ -292,5 +277,9 @@ func TestFsdaxNamespaceInTwoSteps(t *testing.T) {
 	defer cancel()
 	if _, err := k.WaitFsdaxNamespace(short, nd, "namespace9.9"); err == nil || !strings.Contains(err.Error(), "has no fsdax block device") {
 		t.Fatalf("waiting for a missing namespace: %v", err)
+	}
+	f.Write("class/block/pmem0/dev", "bogus")
+	if _, _, _, err := k.BlockDeviceInfo("pmem0"); err == nil {
+		t.Fatal("bogus device numbers accepted")
 	}
 }

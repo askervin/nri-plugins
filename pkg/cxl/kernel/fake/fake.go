@@ -557,3 +557,19 @@ func (f *Fake) writeProc(rel, val string) {
 }
 
 // itoa is strconv.Itoa.
+
+// ReadWithin runs read in a goroutine. It returns true if read returned
+// within 200 ms, and a channel that is closed when read has returned.
+func ReadWithin(read func()) (bool, <-chan struct{}) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		read()
+	}()
+	select {
+	case <-done:
+		return true, done
+	case <-time.After(200 * time.Millisecond):
+		return false, done
+	}
+}

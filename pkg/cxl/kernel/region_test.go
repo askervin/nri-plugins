@@ -180,7 +180,8 @@ func TestRegionEnableDisable(t *testing.T) {
 
 // Releasing a region offlines its memory, disables and destroys it; a
 // region whose memory is online after it is disabled (the kernel could not
-// remove it) is never destroyed, its memory would read garbage.
+// remove it) is never destroyed, its memory would read garbage. A block
+// whose state cannot be read counts as online.
 func TestReleaseRegion(t *testing.T) {
 	f, k := newNode(t)
 	ctx := context.Background()
@@ -214,6 +215,25 @@ func TestReleaseRegion(t *testing.T) {
 		t.Fatalf("region not destroyed:\n%s", f.Commands())
 	}
 
+	// a block whose state cannot be read after disable-region counts as
+	// online
+	r = createRegion(t, k, "mem0", kernel.RegionRAM, 0)
+	state := f.P("devices/system/memory/memory75/state")
+	f.After("cxl disable-region "+r, func() {
+		f.SetBlockState(75, kernel.BlockStateOnline)
+		noErr(t, os.Remove(state))
+		noErr(t, os.Mkdir(state, 0o755))
+	})
+	before = f.Commands()
+	err = k.ReleaseRegion(ctx, r)
+	wantErr(t, err, kernel.ErrBusyOnline, "memory blocks [75] are online after disabling it")
+	if cmds := f.CommandsSince(before); strings.Contains(cmds, "destroy-region") {
+		t.Fatalf("destroyed with a block of unknown state:\n%s", cmds)
+	}
+	noErr(t, os.Remove(state))
+	f.SetBlockState(75, kernel.BlockStateOffline)
+	noErr(t, k.DestroyRegion(ctx, r))
+
 	// kmem could not remove memory75, and it is online again
 	r = createRegion(t, k, "mem0", kernel.RegionRAM, 0)
 	f.After("cxl disable-region "+r, func() { f.SetBlockState(75, kernel.BlockStateOnline) })
@@ -231,30 +251,6 @@ func TestReleaseRegion(t *testing.T) {
 	f.FailWrite("devices/system/memory/memory74/state", syscall.EBUSY)
 	err = k.ReleaseRegion(ctx, r)
 	wantErr(t, err, unix.EBUSY, "region0: cannot offline memory (in use?): memory74: offline")
-}
-
-// A memory block whose state cannot be read after disable-region counts as
-// online: the release is refused and the region is not destroyed.
-func TestReleaseRegionUnreadableBlock(t *testing.T) {
-	f, k := newNode(t)
-	ctx := context.Background()
-	r := createRegion(t, k, "mem0", kernel.RegionRAM, 0)
-	state := f.P("devices/system/memory/memory75/state")
-	f.After("cxl disable-region "+r, func() {
-		// kmem could not remove the block, its state does not read
-		f.SetBlockState(75, kernel.BlockStateOnline)
-		noErr(t, os.Remove(state))
-		noErr(t, os.Mkdir(state, 0o755))
-	})
-	before := f.Commands()
-	err := k.ReleaseRegion(ctx, r)
-	wantErr(t, err, kernel.ErrBusyOnline, "memory blocks [75] are online after disabling it")
-	if cmds := f.CommandsSince(before); strings.Contains(cmds, "destroy-region") {
-		t.Fatalf("destroyed with a block of unknown state:\n%s", cmds)
-	}
-	noErr(t, os.Remove(state))
-	f.SetBlockState(75, kernel.BlockStateOffline)
-	noErr(t, k.DestroyRegion(ctx, r))
 }
 
 // A locked region is never destroyed (ErrForeign).

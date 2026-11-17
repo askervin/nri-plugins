@@ -599,7 +599,7 @@ func (m *mountTable) ZeroDax(ctx context.Context, major, minor int, size, align 
 	return nil
 }
 
-func (m *mountTable) OpenDax(ctx context.Context, major, minor int, readOnly bool) (*os.File, error) {
+func (m *mountTable) OpenDax(major, minor int, readOnly bool) (*os.File, error) {
 	return nil, fmt.Errorf("no private node of %d:%d in the fake: %w", major, minor, syscall.ENXIO)
 }
 

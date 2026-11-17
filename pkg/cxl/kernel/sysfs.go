@@ -145,6 +145,12 @@ func (k *Kernel) ndDev(p ...string) string {
 	return filepath.Join(append([]string{k.sysRoot(), "bus", "nd", "devices"}, p...)...)
 }
 
+// blockDev returns the path of a block device in sysfs
+// (/sys/class/block/<name>), or of a file p in it.
+func (k *Kernel) blockDev(name string, p ...string) string {
+	return filepath.Join(append([]string{k.sysRoot(), "class", "block", name}, p...)...)
+}
+
 func (k *Kernel) block(n int, p ...string) string {
 	return filepath.Join(append([]string{k.sysRoot(), "devices", "system", "memory", "memory" + strconv.Itoa(n)}, p...)...)
 }

@@ -87,15 +87,15 @@ var NdRegionTransitions = fsm.Table[NdRegionState]{
 	Object:   "NdRegion",
 	Field:    "State",
 	Observed: true,
-	States:   list(NdAbsent, NdProbing, NdSettled),
+	States:   fsm.List(NdAbsent, NdProbing, NdSettled),
 	Rows: []fsm.Transition[NdRegionState]{
-		{From: list(NdAbsent), To: NdProbing, When: "CreateRegion (pmem), EnableRegion", Effects: "the namespaces of the labels are registered"},
-		{From: list(NdProbing), To: NdSettled, When: "the probe of the region and of its namespaces finished"},
-		{From: list(NdAbsent), To: NdSettled, When: "CreateRegion (pmem), observed after the probe finished"},
-		{From: list(NdSettled), To: NdProbing, When: "CreateFsdaxNamespace (ndctl create-namespace)",
+		{From: fsm.List(NdAbsent), To: NdProbing, When: "CreateRegion (pmem), EnableRegion", Effects: "the namespaces of the labels are registered"},
+		{From: fsm.List(NdProbing), To: NdSettled, When: "the probe of the region and of its namespaces finished"},
+		{From: fsm.List(NdAbsent), To: NdSettled, When: "CreateRegion (pmem), observed after the probe finished"},
+		{From: fsm.List(NdSettled), To: NdProbing, When: "CreateFsdaxNamespace (ndctl create-namespace)",
 			Guard: "SETTLED, no fsdax namespace", Effects: "the labels written; a pfn device and a block device probed"},
-		{From: list(NdProbing), To: NdAbsent, When: "DisableRegion, DestroyRegion, hot-remove of its memdev"},
-		{From: list(NdSettled), To: NdAbsent, When: "DisableRegion, DestroyRegion, hot-remove of its memdev", Effects: "labels and data stay"},
+		{From: fsm.List(NdProbing), To: NdAbsent, When: "DisableRegion, DestroyRegion, hot-remove of its memdev"},
+		{From: fsm.List(NdSettled), To: NdAbsent, When: "DisableRegion, DestroyRegion, hot-remove of its memdev", Effects: "labels and data stay"},
 	},
 }
 
@@ -131,30 +131,30 @@ var NamespaceTransitions = fsm.Table[NamespaceState]{
 	Object:   "Namespace",
 	Field:    "State",
 	Observed: true,
-	States:   list(NsAbsent, NsProbing, NsSeed, NsRaw, NsFsdax, NsSector, NsDevdax),
+	States:   fsm.List(NsAbsent, NsProbing, NsSeed, NsRaw, NsFsdax, NsSector, NsDevdax),
 	Rows: []fsm.Transition[NamespaceState]{
-		{From: list(NsAbsent), To: NsProbing, When: "the probe of the nd region registers it (from the labels, or the seed)"},
-		{From: list(NsProbing), To: NsSeed, When: "its probe finished without labels"},
-		{From: list(NsProbing), To: NsRaw, When: "its probe finished without a holder"},
-		{From: list(NsProbing), To: NsFsdax, When: "its pfn device probed with its block device and mode"},
-		{From: list(NsProbing), To: NsSector, When: "its btt device probed with its block device"},
-		{From: list(NsProbing), To: NsDevdax, When: "its dax device probed"},
-		{From: list(NsSeed), To: NsProbing, When: "CreateFsdaxNamespace", Effects: "labels written"},
-		{From: list(NsRaw), To: NsProbing, When: "CreateFsdaxNamespace of the existing namespace", Effects: "its content destroyed"},
-		{From: list(NsProbing), To: NsAbsent, When: "DisableRegion, DestroyRegion"},
-		{From: list(NsSeed), To: NsAbsent, When: "DisableRegion, DestroyRegion"},
-		{From: list(NsRaw), To: NsAbsent, When: "DisableRegion, DestroyRegion"},
-		{From: list(NsFsdax), To: NsAbsent, When: "DisableRegion, DestroyRegion", Effects: "its labels stay"},
-		{From: list(NsSector), To: NsAbsent, When: "DisableRegion, DestroyRegion"},
-		{From: list(NsDevdax), To: NsAbsent, When: "DisableRegion, DestroyRegion"},
+		{From: fsm.List(NsAbsent), To: NsProbing, When: "the probe of the nd region registers it (from the labels, or the seed)"},
+		{From: fsm.List(NsProbing), To: NsSeed, When: "its probe finished without labels"},
+		{From: fsm.List(NsProbing), To: NsRaw, When: "its probe finished without a holder"},
+		{From: fsm.List(NsProbing), To: NsFsdax, When: "its pfn device probed with its block device and mode"},
+		{From: fsm.List(NsProbing), To: NsSector, When: "its btt device probed with its block device"},
+		{From: fsm.List(NsProbing), To: NsDevdax, When: "its dax device probed"},
+		{From: fsm.List(NsSeed), To: NsProbing, When: "CreateFsdaxNamespace", Effects: "labels written"},
+		{From: fsm.List(NsRaw), To: NsProbing, When: "CreateFsdaxNamespace of the existing namespace", Effects: "its content destroyed"},
+		{From: fsm.List(NsProbing), To: NsAbsent, When: "DisableRegion, DestroyRegion"},
+		{From: fsm.List(NsSeed), To: NsAbsent, When: "DisableRegion, DestroyRegion"},
+		{From: fsm.List(NsRaw), To: NsAbsent, When: "DisableRegion, DestroyRegion"},
+		{From: fsm.List(NsFsdax), To: NsAbsent, When: "DisableRegion, DestroyRegion", Effects: "its labels stay"},
+		{From: fsm.List(NsSector), To: NsAbsent, When: "DisableRegion, DestroyRegion"},
+		{From: fsm.List(NsDevdax), To: NsAbsent, When: "DisableRegion, DestroyRegion"},
 		// changes that one call makes between two observations
-		{From: list(NsSeed), To: NsFsdax, When: "CreateFsdaxNamespace (it returns with the block device), observed across it"},
-		{From: list(NsRaw), To: NsFsdax, When: "CreateFsdaxNamespace of the existing namespace, observed across it", Effects: "its content destroyed"},
-		{From: list(NsAbsent), To: NsSeed, When: "the probe of a new nd region without labels, observed after it finished (Namespaces)"},
-		{From: list(NsAbsent), To: NsRaw, When: "the probe of a new nd region, observed after it finished"},
-		{From: list(NsAbsent), To: NsFsdax, When: "the probe of a new nd region with the labels of an fsdax namespace, observed after it finished"},
-		{From: list(NsAbsent), To: NsSector, When: "the probe of a new nd region, observed after it finished"},
-		{From: list(NsAbsent), To: NsDevdax, When: "the probe of a new nd region, observed after it finished"},
+		{From: fsm.List(NsSeed), To: NsFsdax, When: "CreateFsdaxNamespace (it returns with the block device), observed across it"},
+		{From: fsm.List(NsRaw), To: NsFsdax, When: "CreateFsdaxNamespace of the existing namespace, observed across it", Effects: "its content destroyed"},
+		{From: fsm.List(NsAbsent), To: NsSeed, When: "the probe of a new nd region without labels, observed after it finished (Namespaces)"},
+		{From: fsm.List(NsAbsent), To: NsRaw, When: "the probe of a new nd region, observed after it finished"},
+		{From: fsm.List(NsAbsent), To: NsFsdax, When: "the probe of a new nd region with the labels of an fsdax namespace, observed after it finished"},
+		{From: fsm.List(NsAbsent), To: NsSector, When: "the probe of a new nd region, observed after it finished"},
+		{From: fsm.List(NsAbsent), To: NsDevdax, When: "the probe of a new nd region, observed after it finished"},
 	},
 }
 
@@ -361,15 +361,14 @@ func (k *Kernel) probeNamespaceWhy(name string) (Namespace, string, error) {
 // BlockDeviceInfo returns the device numbers and the size in bytes of a
 // block device (/sys/class/block/<name>).
 func (k *Kernel) BlockDeviceInfo(name string) (major, minor int, size uint64, err error) {
-	dir := filepath.Join(k.sysRoot(), "class", "block", name)
-	v, err := ReadTrim(filepath.Join(dir, "dev"))
+	v, err := ReadTrim(k.blockDev(name, "dev"))
 	if err != nil {
 		return 0, 0, 0, err
 	}
 	if major, minor, err = parseDevNumbers(name, v); err != nil {
 		return 0, 0, 0, err
 	}
-	sectors, err := ReadUint(filepath.Join(dir, "size"))
+	sectors, err := ReadUint(k.blockDev(name, "size"))
 	if err != nil {
 		return 0, 0, 0, err
 	}

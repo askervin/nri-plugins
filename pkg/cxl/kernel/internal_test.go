@@ -25,6 +25,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/containers/nri-plugins/pkg/udev"
 )
 
 // aliasedMapping maps the same size bytes of a memfd n times in a row: the
@@ -86,15 +88,17 @@ func TestProbeMemory(t *testing.T) {
 }
 
 // The character device of a dax device is opened again while it is not
-// there yet (ENXIO), other errors are returned at once.
+// there yet (ENXIO), until the wait has passed or the context ends. Other
+// errors are returned at once. Without a wait the node is opened once.
 func TestOpenDaxNode(t *testing.T) {
 	node := filepath.Join(t.TempDir(), "dax0.0")
 	if err := os.WriteFile(node, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	oldOpen, oldTimeout, oldInterval := openFile, daxOpenTimeout, daxOpenInterval
-	t.Cleanup(func() { openFile, daxOpenTimeout, daxOpenInterval = oldOpen, oldTimeout, oldInterval })
-	daxOpenTimeout, daxOpenInterval = time.Second, time.Millisecond
+	oldOpen, oldInterval := openFile, daxOpenInterval
+	t.Cleanup(func() { openFile, daxOpenInterval = oldOpen, oldInterval })
+	daxOpenInterval = time.Millisecond
+	ctx := context.Background()
 	fails := 0
 	openFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
 		if fails < 3 {
@@ -103,7 +107,7 @@ func TestOpenDaxNode(t *testing.T) {
 		}
 		return os.OpenFile(name, flag, perm)
 	}
-	f, err := openDaxNode(context.Background(), node, false)
+	f, err := openDaxNode(ctx, node, false, time.Second)
 	if err != nil || fails != 3 {
 		t.Fatalf("open after ENXIO: %v, %d fails", err, fails)
 	}
@@ -113,21 +117,25 @@ func TestOpenDaxNode(t *testing.T) {
 		calls++
 		return nil, &os.PathError{Op: "open", Path: name, Err: unix.EACCES}
 	}
-	if _, err := openDaxNode(context.Background(), node, false); !errors.Is(err, unix.EACCES) || calls != 1 {
+	if _, err := openDaxNode(ctx, node, false, time.Second); !errors.Is(err, unix.EACCES) || calls != 1 {
 		t.Fatalf("expected EACCES at once, got %v after %d calls", err, calls)
 	}
-	daxOpenTimeout = 20 * time.Millisecond
+	calls = 0
 	openFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
+		calls++
 		return nil, &os.PathError{Op: "open", Path: name, Err: unix.ENXIO}
 	}
-	if _, err := openDaxNode(context.Background(), node, false); !errors.Is(err, unix.ENXIO) {
-		t.Fatalf("expected ENXIO after the timeout, got %v", err)
+	if _, err := openDaxNode(ctx, node, false, 20*time.Millisecond); !errors.Is(err, unix.ENXIO) || calls < 2 {
+		t.Fatalf("expected ENXIO after the wait, got %v after %d calls", err, calls)
+	}
+	calls = 0
+	if _, err := openDaxNode(ctx, node, false, 0); !errors.Is(err, unix.ENXIO) || calls != 1 {
+		t.Fatalf("expected ENXIO at once without a wait, got %v after %d calls", err, calls)
 	}
 	// the context ends the retries
-	daxOpenTimeout = time.Hour
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
 	defer cancel()
-	if _, err := openDaxNode(ctx, node, false); !errors.Is(err, unix.ENXIO) {
+	if _, err := openDaxNode(ctx, node, false, time.Hour); !errors.Is(err, unix.ENXIO) {
 		t.Fatalf("expected ENXIO at the end of the context, got %v", err)
 	}
 }
@@ -175,23 +183,6 @@ func TestZeroFile(t *testing.T) {
 	}
 }
 
-func TestUnescapeMountInfo(t *testing.T) {
-	for in, out := range map[string]string{`a\040b`: "a b", `\134x`: `\x`, `tail\04`: `tail\04`, `x\999`: `x\999`, "plain": "plain"} {
-		if got := unescapeMountInfo(in); got != out {
-			t.Errorf("unescape %q: %q, expected %q", in, got, out)
-		}
-	}
-}
-
-func TestDevNumbers(t *testing.T) {
-	if _, _, err := parseDevNumbers("x", "259"); err == nil {
-		t.Error("numbers without a colon accepted")
-	}
-	if got := parseList("0-2,5, 7-8,x"); !reflect.DeepEqual(got, []int{0, 1, 2, 5, 7, 8}) {
-		t.Errorf("parseList %v", got)
-	}
-}
-
 // loopSys is a Sys whose loop devices have backings of the device numbers
 // of rdev.
 type loopSys struct {
@@ -206,10 +197,13 @@ func (s *loopSys) LoopRdevice(loop string) (uint64, error) {
 	return 0, unix.ENXIO
 }
 
-// The backing of a loop device set up in another mount namespace: by its
-// device number, else the path that sysfs shows, which is taken as a path
-// under /dev.
-func TestLoopBackingFile(t *testing.T) {
+// The holders of a block device: a loop device over it, not those over files
+// named like it. The exclusive open of the system says that nothing holds a
+// device that is gone or a plain file. The backing of a loop device is the
+// block device of its device number, also for a loop device set up in
+// another mount namespace. Without the device number it is the path that
+// sysfs shows, taken as a path under /dev.
+func TestHolderLoops(t *testing.T) {
 	root := t.TempDir()
 	write := func(rel, val string) {
 		t.Helper()
@@ -221,12 +215,49 @@ func TestLoopBackingFile(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("block/loop0/loop/backing_file", "/pmem1")
-	write("dev/block/259:1/uevent", "MAJOR=259\nMINOR=1\nDEVNAME=pmem1\nDEVTYPE=disk")
-	write("block/loop1/loop/backing_file", "/var/lib/images/a.img")
+	loop := func(name, backing string) {
+		t.Helper()
+		write("class/block/"+name+"/loop/backing_file", backing)
+	}
 	devRoot := filepath.Join(root, "dev")
-	sys := &loopSys{rdev: map[string]uint64{filepath.Join(devRoot, "loop0"): unix.Mkdev(259, 1), filepath.Join(devRoot, "loop1"): 0}}
+	sys := &loopSys{rdev: map[string]uint64{}}
 	k := &Kernel{SysRoot: root, DevRoot: devRoot, Sys: sys}
+	pmem0 := filepath.Join(devRoot, "pmem0")
+	loop("loop2", "/var/tmp/pmem0")    // a file named like the device
+	loop("loop3", "/dev/disk/x/pmem0") // not in /dev
+	if h, err := k.Holder(pmem0); err != nil || h != "" {
+		t.Fatalf("holder %q %v of a missing device", h, err)
+	}
+	loop("loop4", "/dev/pmem0")
+	if h, err := k.Holder(pmem0); err != nil || h != "loop4" {
+		t.Fatalf("holder %q %v", h, err)
+	}
+	if b, err := k.LoopBackingFile("/dev/loop4"); err != nil || b != "/dev/pmem0" {
+		t.Fatalf("backing file %q %v", b, err)
+	}
+	if b, err := k.LoopBackingFile("/dev/loop9"); err != nil || b != "" {
+		t.Fatalf("backing file of a missing loop device %q %v", b, err)
+	}
+	// a file that can be opened exclusively has no holder
+	plain := filepath.Join(root, "plain")
+	if err := os.WriteFile(plain, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if h, err := k.Holder(plain); err != nil || h != "" {
+		t.Fatalf("holder %q %v", h, err)
+	}
+	for backing, want := range map[string]bool{"/dev/pmem0": true, "/dev/x/pmem0": false, "/tmp/pmem0": false, "pmem0": false} {
+		if got := SameDevice(backing, "/dev/pmem0"); got != want {
+			t.Errorf("SameDevice(%q) = %v", backing, got)
+		}
+	}
+	// loop0 is over a block device that sysfs shows by another path,
+	// loop1 over a file
+	loop("loop0", "/pmem1")
+	write("dev/block/259:1/uevent", "MAJOR=259\nMINOR=1\nDEVNAME=pmem1\nDEVTYPE=disk")
+	loop("loop1", "/var/lib/images/a.img")
+	sys.rdev[filepath.Join(devRoot, "loop0")] = unix.Mkdev(259, 1)
+	sys.rdev[filepath.Join(devRoot, "loop1")] = 0
 	pmem1 := filepath.Join(devRoot, "pmem1")
 	if b, err := k.LoopBackingFile("/dev/loop0"); err != nil || b != pmem1 {
 		t.Fatalf("backing of loop0 %q %v, expected %s", b, err, pmem1)
@@ -250,55 +281,6 @@ func TestLoopBackingFile(t *testing.T) {
 	write("dev/block/259:1/uevent", "MAJOR=259\nMINOR=1")
 	if b, err := k.LoopBackingFile("/dev/loop0"); err != nil || b != "/pmem1" {
 		t.Fatalf("backing of loop0 %q %v", b, err)
-	}
-}
-
-// The holders of a block device: a loop device over it, not those over files
-// named like it; the exclusive open of the system says nothing holds a
-// device that is gone or a plain file; the backing of a loop device whose
-// ioctl fails is the path in sysfs.
-func TestHolderLoops(t *testing.T) {
-	root := t.TempDir()
-	devRoot := filepath.Join(root, "dev")
-	k := &Kernel{SysRoot: root, DevRoot: devRoot, Sys: &loopSys{}}
-	loop := func(name, backing string) {
-		t.Helper()
-		dir := filepath.Join(root, "block", name, "loop")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "backing_file"), []byte(backing+"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	pmem0 := filepath.Join(devRoot, "pmem0")
-	loop("loop2", "/var/tmp/pmem0")    // a file named like the device
-	loop("loop3", "/dev/disk/x/pmem0") // not in /dev
-	if h, err := k.Holder(pmem0); err != nil || h != "" {
-		t.Fatalf("holder %q %v of a missing device", h, err)
-	}
-	loop("loop4", "/dev/pmem0")
-	if h, err := k.Holder(pmem0); err != nil || h != "loop4" {
-		t.Fatalf("holder %q %v", h, err)
-	}
-	if b, err := k.LoopBackingFile("/dev/loop4"); err != nil || b != "/dev/pmem0" {
-		t.Fatalf("backing file %q %v", b, err)
-	}
-	if b, err := k.LoopBackingFile("/dev/loop9"); err != nil || b != "" {
-		t.Fatalf("backing file of a missing loop device %q %v", b, err)
-	}
-	// a file that can be opened exclusively has no holder
-	file := filepath.Join(root, "pmem1")
-	if err := os.WriteFile(file, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if h, err := k.Holder(file); err != nil || h != "" {
-		t.Fatalf("holder %q %v", h, err)
-	}
-	for backing, want := range map[string]bool{"/dev/pmem0": true, "/dev/x/pmem0": false, "/tmp/pmem0": false, "pmem0": false} {
-		if got := SameDevice(backing, "/dev/pmem0"); got != want {
-			t.Errorf("SameDevice(%q) = %v", backing, got)
-		}
 	}
 }
 
@@ -330,10 +312,10 @@ func TestSuperblocksNamespaces(t *testing.T) {
 		}
 	}
 	write(filepath.Join(sys, "class/block/pmem0/dev"), "259:0\n")
-	write(filepath.Join(sys, "block/loop3/loop/backing_file"), "/dev/pmem0\n")
-	write(filepath.Join(sys, "block/loop3/dev"), "7:3\n")
-	write(filepath.Join(sys, "block/loop4/loop/backing_file"), "/var/tmp/img\n")
-	write(filepath.Join(sys, "block/loop4/dev"), "7:4\n")
+	write(filepath.Join(sys, "class/block/loop3/loop/backing_file"), "/dev/pmem0\n")
+	write(filepath.Join(sys, "class/block/loop3/dev"), "7:3\n")
+	write(filepath.Join(sys, "class/block/loop4/loop/backing_file"), "/var/tmp/img\n")
+	write(filepath.Join(sys, "class/block/loop4/dev"), "7:4\n")
 	process("100", "1", "301 22 259:0 / /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct rw,nosuid,nodev shared:150 - ext4 /dev/pmem0 rw,dax=always\n"+
 		"302 22 7:4 / /mnt/img rw - ext4 /dev/loop4 rw\n")
 	process("200", "1", "301 22 259:0 / /other ro - ext4 /dev/pmem0 ro\n") // the same namespace: not read
@@ -354,4 +336,67 @@ func TestSuperblocksNamespaces(t *testing.T) {
 	if _, err := k.Superblocks("/dev/pmem9"); err == nil {
 		t.Fatal("no error for a device without a number")
 	}
+}
+
+// newDispatch returns UdevEvents without a monitor whose dispatch runs, and
+// a channel that is closed when dispatch returns.
+func newDispatch(stable time.Duration) (*UdevEvents, <-chan struct{}) {
+	w := &UdevEvents{
+		stableDuration: stable,
+		rawEvents:      make(chan *udev.Event, 64),
+		stable:         make(chan struct{}, 1),
+		stopCh:         make(chan struct{}),
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.dispatch()
+	}()
+	return w, done
+}
+
+// Every event wakes the waits. The events of NUMA nodes, memory blocks and
+// CXL devices give one Stable after they have been quiet for the stable
+// duration, other events none. Stop and the end of the events end the
+// dispatch.
+func TestUdevEventsDispatch(t *testing.T) {
+	const stable = 100 * time.Millisecond
+	event := func(w *UdevEvents, subsystem string) { w.rawEvents <- &udev.Event{Subsystem: subsystem} }
+	within := func(ch <-chan struct{}, what string) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("no %s", what)
+		}
+	}
+	w, done := newDispatch(stable)
+	changed := w.Changed()
+	event(w, "dax")
+	within(changed, "wake at a dax event")
+	// a second event restarts the quiet time of the first
+	event(w, "memory")
+	time.Sleep(stable / 2)
+	last := time.Now()
+	event(w, "node")
+	within(w.Stable(), "stable signal")
+	if d := time.Since(last); d < stable {
+		t.Fatalf("stable signal %v after the last event, expected at least %v", d, stable)
+	}
+	event(w, "dax")
+	event(w, "nd")
+	select {
+	case <-w.Stable():
+		t.Fatal("stable signal after dax and nd events")
+	case <-time.After(2 * stable):
+	}
+	close(w.stopCh)
+	within(done, "end of dispatch at Stop")
+
+	// without a stable duration every event signals
+	w, done = newDispatch(0)
+	event(w, "cxl")
+	within(w.Stable(), "stable signal at once")
+	close(w.rawEvents)
+	within(done, "end of dispatch at the end of the events")
 }

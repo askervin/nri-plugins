@@ -51,11 +51,6 @@ func Catalogue() []ObjectTables {
 	}
 }
 
-// list returns its arguments as a slice.
-func list[S any](values ...S) []S {
-	return values
-}
-
 // stateText returns the name of a state, or "state(n)" for a value without
 // a name.
 func stateText(names []string, s int) string {
