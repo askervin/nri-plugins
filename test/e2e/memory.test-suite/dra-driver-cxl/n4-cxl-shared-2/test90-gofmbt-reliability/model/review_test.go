@@ -252,7 +252,7 @@ func TestReviewR10Truncated(t *testing.T) {
 	wantVerdict(t, v, VFail, "not all enumerated")
 }
 
-// A13: panics, slices, leases.json.
+// A13: panics, slices, the leases of state.json.
 func TestReviewA13Checks(t *testing.T) {
 	s := revState(t, "full", false, "create lease@vm1#0", "create xnuma-a@vm1#0", "settle", "lease-get lease@vm1#0 numa", "settle")
 	o := observation(t, s)
@@ -271,9 +271,9 @@ func TestReviewA13Checks(t *testing.T) {
 	v, _ = checkState(s, o, "")
 	wantVerdict(t, v, VWait, "vm2: cxl.nri.io slice without memdev-c100e2e1")
 	o = observation(t, s)
-	o.VMs["vm1"].State.Leases = []byte(`{"claims":{},"leases":{}}`)
+	o.VMs["vm1"].State.LeaseClaims, o.VMs["vm1"].State.Leases = []string{}, []ObsStoredLease{}
 	v, _ = checkState(s, o, "")
-	wantVerdict(t, v, VWait, "vm1: leases.json has lease claims [], want")
+	wantVerdict(t, v, VWait, "vm1: state.json has lease claims [], want")
 	// missing fields are notes, not differences
 	o = observation(t, s)
 	o.Slices = nil

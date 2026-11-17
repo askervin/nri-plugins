@@ -322,7 +322,6 @@ The plugin refuses further requests that only it can judge:
 | the serial of a device of persistent memory (local or pool) without `--mode block` or `--mode fs` | `device 0x...: a persistent device needs mode block or fs` |
 | `--mode numa` with the serial of a shared device | `shared memory is never onlined as RAM: use mode dax` |
 | `--source pool`, or the serial of a pool device, while the pool driver is disabled (a request without `--source` is served by local devices then) | `pool driver disabled (--pool-driver-name)` |
-| `--mode fs` in a container of a lease claim that a driver without mode `fs` prepared (its containers have no `/run/cxl/fs`) | `lease claim <ns>/<name> has no filesystem directory (prepared by an older driver): recreate the pod` |
 | `--mode fs` with the `--name` (or default name) of another lease of the lease claim, in any state | `name "..." is in use by lease <id>` |
 | any request while NRI is not connected | `lending unavailable: NRI not connected` |
 | `fd` on a lease in mode `numa` or `fs` | `lease <id> is not a dax or block lease; use env` |
@@ -741,9 +740,6 @@ and cannot make it the companion of a lease it did not request.
 - The filesystem of an `fs` lease is visible in every container of the
   lease claim that has `/run/cxl/fs` (every container that lists the
   claim), not only in the requesting one.
-- A container created before its lease claim was prepared by a driver
-  with mode `fs` has no `/run/cxl/fs` and cannot get an `fs` lease
-  (`lease claim ... has no filesystem directory ...`): recreate the pod.
 - User-namespaced pods are untested with `fs` leases.
 
 - Memory limits: lent memory counts against the container's `memory.max`

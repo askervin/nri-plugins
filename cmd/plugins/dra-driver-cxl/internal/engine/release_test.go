@@ -231,7 +231,7 @@ func TestReleaseBindOfAnotherClaim(t *testing.T) {
 		reg := r.Region(g.Got.Region)
 		m := reg.Mount(g.Got.Mount)
 		m.Users = append(m.Users, g.Ref)
-		r.Preparations = append(r.Preparations, state.Preparation{UID: "d", Driver: poolDriver, BootID: v.f.BootID(),
+		r.Preparations = append(r.Preparations, state.Preparation{UID: "d", Driver: poolDriver,
 			State: state.PreparationPrepared, Results: []state.Result{grantResult("d", 0)}})
 		return nil
 	}); err != nil {

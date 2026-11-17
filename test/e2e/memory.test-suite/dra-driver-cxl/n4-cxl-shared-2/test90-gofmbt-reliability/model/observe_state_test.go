@@ -18,34 +18,22 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"flag"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 )
 
+// updateObserved makes TestObserverReadsStateJSON write the observations
+// of the fixtures into their observed.json.
+var updateObserved = flag.Bool("update-observed", false, "write testdata/observe/*/observed.json")
+
 // observedParts are the parts of a VM observation that mbt-observe.py
 // takes from the driver's state.
 type observedParts struct {
 	State      *ObsDriverState          `json:"state"`
 	PoolClaims map[string]*ObsPoolClaim `json:"poolClaims"`
-}
-
-// observedLeases is the part state.leases with the fields that
-// checkLeaseStore decodes.
-type observedLeases struct {
-	Claims map[string]struct {
-		UID string `json:"uid"`
-	} `json:"claims"`
-	Leases map[string]struct {
-		ID    string `json:"id"`
-		Mode  string `json:"mode"`
-		State string `json:"state"`
-		Node  int    `json:"node"`
-		Pod   struct {
-			Name string `json:"name"`
-		} `json:"pod"`
-	} `json:"leases"`
 }
 
 // decodeStrictly decodes data into v, refusing unknown fields.
@@ -56,7 +44,7 @@ func decodeStrictly(data []byte, v any) error {
 }
 
 // canonical returns data re-encoded with sorted keys.
-func canonical(t *testing.T, data json.RawMessage) string {
+func canonical(t *testing.T, data []byte) string {
 	t.Helper()
 	var v any
 	if err := json.Unmarshal(data, &v); err != nil {
@@ -69,11 +57,10 @@ func canonical(t *testing.T, data json.RawMessage) string {
 	return string(out)
 }
 
-// TestObserverReadsStateJSON runs mbt-observe.py over the fixture pairs
-// of testdata/observe (a state.json and the five views of it, as the
-// driver's store writes them): the parts that it derives from state.json
-// are those that it read from the views, and they carry exactly the
-// fields of the model's observation types.
+// TestObserverReadsStateJSON runs mbt-observe.py over the fixtures of
+// testdata/observe (a state.json of the driver each): the parts that it
+// derives from state.json are those of the fixture's observed.json, and
+// they carry exactly the fields of the model's observation types.
 func TestObserverReadsStateJSON(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {
@@ -81,77 +68,86 @@ func TestObserverReadsStateJSON(t *testing.T) {
 	}
 	dirs, err := filepath.Glob(filepath.Join("testdata", "observe", "*"))
 	if err != nil || len(dirs) == 0 {
-		t.Fatalf("no fixture pairs in testdata/observe: %v", err)
+		t.Fatalf("no fixtures in testdata/observe: %v", err)
 	}
 	// testdata/mbt-observe.py links the observer into the module: go
 	// test caches a result only over the files of the module that the
 	// test opens, and these are the files that python reads
-	pairs, observer := filepath.Join("testdata", "observe-pairs.py"), filepath.Join("testdata", "mbt-observe.py")
-	inputs, err := filepath.Glob(filepath.Join("testdata", "observe", "*", "*.json"))
+	script, observer := filepath.Join("testdata", "observe-state.py"), filepath.Join("testdata", "mbt-observe.py")
+	inputs, err := filepath.Glob(filepath.Join("testdata", "observe", "*", "state.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range append(inputs, pairs, observer) {
+	for _, path := range append(inputs, script, observer) {
 		if _, err := os.ReadFile(path); err != nil {
 			t.Fatal(err)
 		}
 	}
-	args := append([]string{"-I", "-B", pairs, observer}, dirs...)
+	args := append([]string{"-I", "-B", script, observer}, dirs...)
 	cmd := exec.Command(python, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("observe-pairs.py: %v\n%s", err, stderr.String())
+		t.Fatalf("observe-state.py: %v\n%s", err, stderr.String())
 	}
 	seen := 0
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	sc.Buffer(nil, 16<<20)
 	for sc.Scan() {
-		var pair struct {
-			Dir    string          `json:"dir"`
-			Views  json.RawMessage `json:"views"`
-			State  json.RawMessage `json:"state"`
-			Errors []string        `json:"errors"`
+		var obs struct {
+			Dir      string          `json:"dir"`
+			Observed json.RawMessage `json:"observed"`
+			Errors   []string        `json:"errors"`
 		}
-		if err := json.Unmarshal(sc.Bytes(), &pair); err != nil {
+		if err := json.Unmarshal(sc.Bytes(), &obs); err != nil {
 			t.Fatal(err)
 		}
 		seen++
-		if len(pair.Errors) > 0 {
-			t.Errorf("%s: errors %v", pair.Dir, pair.Errors)
+		if len(obs.Errors) > 0 {
+			t.Errorf("%s: errors %v", obs.Dir, obs.Errors)
 		}
-		if views, st := canonical(t, pair.Views), canonical(t, pair.State); views != st {
-			t.Errorf("%s: from state.json\n%s\nfrom the views\n%s", pair.Dir, st, views)
+		path := filepath.Join(obs.Dir, "observed.json")
+		if *updateObserved {
+			var indented bytes.Buffer
+			if err := json.Indent(&indented, obs.Observed, "", "  "); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, append(indented.Bytes(), '\n'), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := canonical(t, obs.Observed); got != canonical(t, want) {
+			t.Errorf("%s: from state.json\n%s\nexpected (%s)\n%s", obs.Dir, got, path, canonical(t, want))
 		}
 		var parts observedParts
-		if err := decodeStrictly(pair.State, &parts); err != nil {
-			t.Errorf("%s: the parts do not decode into the observation types: %v", pair.Dir, err)
+		if err := decodeStrictly(obs.Observed, &parts); err != nil {
+			t.Errorf("%s: the parts do not decode into the observation types: %v", obs.Dir, err)
 			continue
 		}
 		if parts.State == nil || parts.State.Leases == nil {
-			t.Errorf("%s: no state, or no leases", pair.Dir)
+			t.Errorf("%s: no state, or no leases", obs.Dir)
 			continue
 		}
-		var leases observedLeases
-		if err := decodeStrictly(parts.State.Leases, &leases); err != nil {
-			t.Errorf("%s: state.leases does not decode into the fields of checkLeaseStore: %v", pair.Dir, err)
-		}
-		if filepath.Base(pair.Dir) == "records" {
-			checkRichParts(t, &parts, &leases)
+		if filepath.Base(obs.Dir) == "records" {
+			checkRichParts(t, &parts)
 		}
 	}
 	if err := sc.Err(); err != nil {
 		t.Fatal(err)
 	}
 	if seen != len(dirs) {
-		t.Errorf("%d observations of %d fixture pairs", seen, len(dirs))
+		t.Errorf("%d observations of %d fixtures", seen, len(dirs))
 	}
 }
 
 // checkRichParts checks that the parts of the fixture of every kind of
 // record have something of each part.
-func checkRichParts(t *testing.T, parts *observedParts, leases *observedLeases) {
+func checkRichParts(t *testing.T, parts *observedParts) {
 	t.Helper()
 	st := parts.State
 	lend, block := false, false
@@ -162,15 +158,14 @@ func checkRichParts(t *testing.T, parts *observedParts, leases *observedLeases) 
 		}
 	}
 	uses := 0
-	if st.LocalDevices != nil {
-		for i := range st.LocalDevices.Devices {
-			for uid := range st.LocalDevices.Devices[i].Claims {
-				uses += st.LocalDevices.Devices[i].slices(uid)
-			}
+	for _, m := range st.LocalMemdevs {
+		for _, n := range m.Claims {
+			uses += n
 		}
 	}
-	if len(st.Prepared) == 0 || len(st.Pool) == 0 || uses == 0 || len(leases.Claims) == 0 || len(leases.Leases) == 0 || !lend || !block {
-		t.Errorf("records: prepared %v, pool %v, %d local slices, %d lease claims, %d leases, a lend %v, a block device %v",
-			st.Prepared, st.Pool, uses, len(leases.Claims), len(leases.Leases), lend, block)
+	local, pool := st.Prepared[localDriver], st.Prepared[poolDriver]
+	if len(local) == 0 || len(pool) == 0 || uses == 0 || len(st.LeaseClaims) == 0 || len(st.Leases) == 0 || !lend || !block {
+		t.Errorf("records: prepared %v and %v, %d local slices, %d lease claims, %d leases, a lend %v, a block device %v",
+			local, pool, uses, len(st.LeaseClaims), len(st.Leases), lend, block)
 	}
 }

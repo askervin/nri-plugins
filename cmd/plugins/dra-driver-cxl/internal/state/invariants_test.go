@@ -47,7 +47,7 @@ func TestGrantResultWithoutItsGrant(t *testing.T) {
 		r := statetest.Records()
 		ref := state.GrantRef{Claim: "cut"}
 		r.Preparations = append(r.Preparations, state.Preparation{UID: "cut", Driver: statetest.PoolDriver, ClaimName: "demo/c-cut",
-			BootID: statetest.BootID, State: tc.state,
+			State:   tc.state,
 			Results: []state.Result{{Kind: state.ResultGrant, Request: "mem", Grant: &ref}}})
 		var got []state.Violation
 		for _, v := range state.Check(&r) {
@@ -141,13 +141,6 @@ func TestInvariantViolations(t *testing.T) {
 			invariant: "records", text: "lease claim " + statetest.ClaimLease + " has no record",
 		},
 		{
-			name: "a read-write mount without a writer",
-			change: func(r *state.Records) {
-				r.Region("region2").Mount(state.AccessDirect).State = state.MountedRW
-			},
-			invariant: "records", text: "writer false",
-		},
-		{
 			name:      "a lease that lends while pending",
 			change:    func(r *state.Records) { r.Lease(statetest.LeaseNUMA).State = state.LeasePending },
 			invariant: "records", text: "lends while PENDING",
@@ -156,9 +149,9 @@ func TestInvariantViolations(t *testing.T) {
 			name: "a region of ours still being created between requests",
 			change: func(r *state.Records) {
 				reg := r.Region("region4")
-				reg.State = state.RegionCreating
+				reg.State = state.RegionNoted
 			},
-			invariant: "users", text: "CREATING between requests",
+			invariant: "users", text: "NOTED between requests",
 		},
 		{
 			name: "a result of kind grant without its grant",

@@ -40,8 +40,6 @@ type ClaimInfo struct {
 	Devices   []state.DeviceInfo `json:"devices"`
 	// Lend is the lend of a companion claim.
 	Lend *lend.Lend `json:"lend,omitempty"`
-	// BootID is the boot id of the kernel that the claim was prepared in.
-	BootID string `json:"bootID,omitempty"`
 }
 
 // claimInfoOf returns a preparation in any state with its devices.

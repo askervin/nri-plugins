@@ -30,11 +30,8 @@ import (
 // (a configured shared device; a persistent device below newer regions; a
 // region that a rollback or the recovery kept below newer regions). GONE:
 // the memdev is absent while grants exist (a pool device detached under us, a local hot-remove).
-// Busy (in memory only, MemdevBusyTable): a wait or zeroing of the memdev is
-// in progress outside the engine lock; other requests for the memdev queue.
 //
-// Transitions: MemdevTable and MemdevBusyTable below; a transition not in
-// them is refused.
+// Transitions: MemdevTable below; a transition not in it is refused.
 //
 // Invariants: Regions name Region records that target the serial; Grants
 // name the grant records of the serial; a memdev in the store is not
@@ -45,7 +42,7 @@ import (
 // binds do not survive a reboot.
 //
 // Locks and waits: the engine's per-memdev request queue; kernel commands
-// under the engine lock; waits outside it with Busy set.
+// under the engine lock; waits outside it.
 type Memdev struct {
 	Serial  Serial      `json:"serial"`
 	Name    string      `json:"name,omitempty"`
@@ -65,20 +62,14 @@ type Memdev struct {
 // MemdevFacts are what the driver knows of a memdev from the kernel, the
 // configuration and the pool.
 type MemdevFacts struct {
-	// Ram and Pmem are the volatile and persistent capacities in bytes.
-	Ram  uint64 `json:"ram,omitempty"`
-	Pmem uint64 `json:"pmem,omitempty"`
 	// Usable is the number of bytes the driver uses, 0 for all of it (the
 	// configured usable size and the address line probe).
 	Usable     uint64 `json:"usable,omitempty"`
 	Shared     bool   `json:"shared,omitempty"`
 	Persistent bool   `json:"persistent,omitempty"`
 	Coherent   bool   `json:"coherent,omitempty"`
-	// BlockSize is the memory block size of the system.
-	BlockSize uint64 `json:"blockSize,omitempty"`
 	// NumaAffinity is the CPU NUMA node of the memdev.
-	NumaAffinity *int   `json:"numaAffinity,omitempty"`
-	HostBridge   string `json:"hostBridge,omitempty"`
+	NumaAffinity *int `json:"numaAffinity,omitempty"`
 }
 
 // StalePath is a lease bind whose unmount failed busy.
@@ -114,7 +105,7 @@ var MemdevTable = Table[MemdevState]{
 			From: list(MemdevUnused), To: MemdevActive, Triggers: list(TriggerPrepare),
 			When:  "the first grant of the serial is JOURNALED",
 			Guard: "provenance allows the source",
-			Effects: "commit (d) with the facts (ram, pmem, usable, shared, persistent, block size, host bridge); " +
+			Effects: "commit (d) with the facts (usable, shared, persistent, coherent, NUMA affinity); " +
 				"pool: provenance POOL in the same commit",
 		},
 		{
@@ -176,26 +167,6 @@ var MemdevTable = Table[MemdevState]{
 	},
 	Refused: []Refusal[MemdevState]{
 		{From: list(MemdevUnused), To: list(MemdevIdleKept), Why: "a kept region always had a grant or a cut first"},
-	},
-}
-
-// MemdevBusyTable is the transition table of the Busy flag of a memdev,
-// held by the engine in memory.
-var MemdevBusyTable = Table[bool]{
-	Object: "Memdev",
-	Field:  "Busy",
-	States: list(false, true),
-	Rows: []Transition[bool]{
-		{
-			From: list(false), To: true, Triggers: list(TriggerPrepare, TriggerUnprepare, TriggerRecover),
-			When:    "a wait (memdev appearance, nd settle, holder) or zeroing starts outside the engine lock",
-			Effects: "other requests for the memdev queue",
-		},
-		{
-			From: list(true), To: false, Triggers: list(TriggerPrepare, TriggerUnprepare, TriggerRecover),
-			When:    "the wait or zeroing ends (success, timeout or error)",
-			Effects: "the queue proceeds",
-		},
 	},
 }
 

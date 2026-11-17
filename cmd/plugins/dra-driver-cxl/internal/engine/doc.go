@@ -27,8 +27,7 @@
 // can finish (PrepareGrants, ReleaseGrants, Recover). The release of a
 // region follows Policy. The engine serializes its kernel work: one request
 // per memdev at a time (a queue per memdev), and one engine lock around each
-// short kernel call; waits and zeroing run outside the lock with the
-// memdev's Busy flag set.
+// short kernel call; waits and zeroing run outside the lock.
 //
 // The transitions of the records are the tables of package state,
 // rendered into docs/memory/cxl/states.md; the invariants of the records and

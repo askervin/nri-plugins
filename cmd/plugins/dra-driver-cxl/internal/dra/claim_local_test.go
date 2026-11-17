@@ -70,7 +70,7 @@ func TestLocalSlicedNUMA(t *testing.T) {
 	want := state.DeviceInfo{RequestName: "mem", DeviceName: localDev, DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA,
 		SysfsPath: e.k.P("bus/cxl/devices/region0"), NUMANodes: []int{node}, NodeAffinities: []int{0},
 		TotalBytes: uint64(envBlockSize), ConsumedBytes: envBlockSize, Serial: "0xc100e2e1"}
-	if info == nil || info.ClaimName != envNS+"/claim-u1" || info.BootID != e.k.BootID() || len(info.Devices) != 1 ||
+	if info == nil || info.ClaimName != envNS+"/claim-u1" || len(info.Devices) != 1 ||
 		!reflect.DeepEqual(info.Devices[0], want) {
 		t.Fatalf("claim info %+v, expected device %+v", info, want)
 	}

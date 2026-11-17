@@ -1,5 +1,5 @@
 {
-  "schema": 2,
+  "schema": 1,
   "generation": 7,
   "bootID": "boot-2",
   "grants": [
@@ -214,9 +214,7 @@
       "uid": "11111111-0000-0000-0000-000000000001",
       "driver": "cxl.nri.io",
       "claimName": "demo/c-numa",
-      "bootID": "boot-1",
       "state": "PREPARED_STALE",
-      "reason": "prepared in another boot (boot-1, this is boot-2)",
       "results": [
         {
           "index": 0,
@@ -245,9 +243,7 @@
       "uid": "11111111-0000-0000-0000-000000000002",
       "driver": "cxl.nri.io",
       "claimName": "demo/c-dax",
-      "bootID": "boot-1",
       "state": "PREPARED_STALE",
-      "reason": "prepared in another boot (boot-1, this is boot-2)",
       "results": [
         {
           "index": 0,
@@ -266,9 +262,7 @@
       "uid": "11111111-0000-0000-0000-000000000003",
       "driver": "cxl.nri.io",
       "claimName": "demo/c-shared",
-      "bootID": "boot-1",
       "state": "PREPARED_STALE",
-      "reason": "its Prepare did not finish in another boot (boot-1)",
       "results": [
         {
           "index": 0,
@@ -287,9 +281,7 @@
       "uid": "11111111-0000-0000-0000-000000000004",
       "driver": "cxl.nri.io",
       "claimName": "demo/c-mixed",
-      "bootID": "boot-1",
       "state": "PREPARED_STALE",
-      "reason": "prepared in another boot (boot-1, this is boot-2)",
       "results": [
         {
           "index": 0,
@@ -338,9 +330,7 @@
       "uid": "11111111-0000-0000-0000-000000000005",
       "driver": "cxl.nri.io",
       "claimName": "demo/c-kept",
-      "bootID": "boot-1",
       "state": "PREPARED_STALE",
-      "reason": "its Prepare did not finish in another boot (boot-1)",
       "results": [
         {
           "index": 0,
@@ -359,9 +349,7 @@
       "uid": "11111111-0000-0000-0000-000000000006",
       "driver": "cxl.nri.io",
       "claimName": "demo/c-fs",
-      "bootID": "boot-1",
       "state": "PREPARED_STALE",
-      "reason": "its Prepare did not finish in another boot (boot-1)",
       "results": [
         {
           "index": 0,
@@ -380,9 +368,7 @@
       "uid": "11111111-0000-0000-0000-000000000007",
       "driver": "cxl.nri.io",
       "claimName": "demo/c-lease",
-      "bootID": "boot-1",
       "state": "PREPARED_STALE",
-      "reason": "prepared in another boot (boot-1, this is boot-2)",
       "results": [
         {
           "index": 0,
@@ -400,9 +386,7 @@
       "uid": "11111111-0000-0000-0000-000000000008",
       "driver": "cxl.nri.io",
       "claimName": "demo/c-stale",
-      "bootID": "boot-0",
       "state": "PREPARED_STALE",
-      "reason": "its Prepare did not finish in another boot (boot-0)",
       "results": [
         {
           "index": 0,
@@ -421,10 +405,8 @@
       "uid": "22222222-0000-0000-0000-000000000001",
       "driver": "cxl.nri.io",
       "claimName": "demo/cxl-lease-0a1b2c3d",
-      "bootID": "boot-1",
       "state": "PREPARED_STALE",
       "lease": "0a1b2c3d",
-      "reason": "prepared in another boot (boot-1, this is boot-2)",
       "results": [
         {
           "index": 0,
@@ -443,9 +425,7 @@
       "uid": "33333333-0000-0000-0000-000000000001",
       "driver": "cxl-pool.nri.io",
       "claimName": "demo/c-pnuma",
-      "bootID": "boot-1",
       "state": "PREPARED_STALE",
-      "reason": "prepared in another boot (boot-1, this is boot-2)",
       "results": [
         {
           "index": 0,
@@ -464,9 +444,7 @@
       "uid": "33333333-0000-0000-0000-000000000002",
       "driver": "cxl-pool.nri.io",
       "claimName": "demo/c-pfs",
-      "bootID": "boot-1",
       "state": "PREPARED_STALE",
-      "reason": "prepared in another boot (boot-1, this is boot-2)",
       "results": [
         {
           "index": 0,
@@ -486,9 +464,7 @@
       "uid": "33333333-0000-0000-0000-000000000003",
       "driver": "cxl-pool.nri.io",
       "claimName": "demo/c-pdax",
-      "bootID": "boot-1",
       "state": "PREPARED_STALE",
-      "reason": "prepared in another boot (boot-1, this is boot-2)",
       "results": [
         {
           "index": 0,
@@ -508,10 +484,8 @@
       "uid": "44444444-0000-0000-0000-000000000001",
       "driver": "cxl-pool.nri.io",
       "claimName": "demo/cxl-lease-1b2c3d4e",
-      "bootID": "boot-1",
       "state": "PREPARED_STALE",
       "lease": "1b2c3d4e",
-      "reason": "its Prepare did not finish in another boot (boot-1)",
       "results": [
         {
           "index": 0,
@@ -540,7 +514,6 @@
           "uid": "55555555-0000-0000-0000-000000000001"
         }
       ],
-      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/11111111-0000-0000-0000-000000000007",
       "state": "OPEN"
     }
   ],
@@ -564,22 +537,19 @@
       "serial": "0xc1ae2002",
       "state": "POOL",
       "pool": "cxl-pool.nri.io/pool-c",
-      "lastSeen": "2026-11-05T12:00:00Z",
-      "lastObserved": "2026-11-05T12:00:00Z"
+      "lastSeen": "2026-11-05T12:00:00Z"
     },
     {
       "serial": "0xc1ae2003",
       "state": "POOL",
       "pool": "cxl-pool.nri.io/pool-a",
-      "lastSeen": "2026-11-05T12:00:00Z",
-      "lastObserved": "2026-11-05T12:00:00Z"
+      "lastSeen": "2026-11-05T12:00:00Z"
     },
     {
       "serial": "0xc1ae2004",
       "state": "POOL",
       "pool": "cxl-pool.nri.io/pool-b",
-      "lastSeen": "2026-11-05T12:00:00Z",
-      "lastObserved": "2026-11-05T12:00:00Z"
+      "lastSeen": "2026-11-05T12:00:00Z"
     },
     {
       "serial": "0xc1ae2005",

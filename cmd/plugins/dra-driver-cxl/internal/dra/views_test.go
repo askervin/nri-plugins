@@ -174,7 +174,7 @@ func TestShapes(t *testing.T) {
 			"daxMajor,omitempty", "daxMinor,omitempty", "readOnly,omitempty", "shared,omitempty", "persistent,omitempty",
 			"namespace,omitempty", "blockDevice,omitempty", "blockMajor,omitempty", "blockMinor,omitempty", "access,omitempty",
 			"path,omitempty", "nodeMount,omitempty", "loopDevice,omitempty", "fsType,omitempty", "inline config.ResultSettings"}},
-		{ClaimInfo{}, []string{"claimName", "devices", "lend,omitempty", "bootID,omitempty"}},
+		{ClaimInfo{}, []string{"claimName", "devices", "lend,omitempty"}},
 		{store.PoolDevice{}, []string{"result", "request", "device", "pool", "serial", "shared", "size", "mode", "readOnly,omitempty", "memdev",
 			"region", "dax", "daxDevice,omitempty", "daxMajor,omitempty", "daxMinor,omitempty", "node", "persistent,omitempty",
 			"ndRegion,omitempty", "namespace,omitempty", "blockDevice,omitempty", "blockMajor,omitempty", "blockMinor,omitempty",

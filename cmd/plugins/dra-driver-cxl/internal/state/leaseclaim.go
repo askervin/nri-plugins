@@ -16,9 +16,9 @@ package state
 
 // LeaseClaim is a claim on the lease device, prepared by cxl.nri.io for a
 // pod: its lease socket, its directories and the pods it is reserved for.
-// It owns <data dir>/leases/<uid>/cxl.sock, <data dir>/leases/<uid>/fs and,
-// with FsDir, <data dir>/lease-fs/<uid>; the CDI device lease-<uid> gives
-// them to the claim's containers.
+// It owns <data dir>/leases/<uid>/cxl.sock, <data dir>/leases/<uid>/fs and
+// <data dir>/lease-fs/<uid>; the CDI device lease-<uid> gives them to the
+// claim's containers.
 //
 // Identity: UID, the claim UID (also the socket directory and the CDI
 // device name); Namespace and Name of the claim.
@@ -50,10 +50,7 @@ type LeaseClaim struct {
 	Name      string `json:"name"`
 	// Pods are the pods of reservedFor at the Prepare, refreshed when a
 	// peer's pod is unknown.
-	Pods []PodRef `json:"pods"`
-	// FsDir is <data dir>/lease-fs/<uid>, "" for a claim prepared by a
-	// driver without fs leases.
-	FsDir string          `json:"fsDir,omitempty"`
+	Pods  []PodRef        `json:"pods"`
 	State LeaseClaimState `json:"state"`
 }
 
@@ -79,7 +76,7 @@ var LeaseClaimTable = Table[LeaseClaimState]{
 		{
 			From: list(LeaseClaimNone), To: LeaseClaimOpen, Triggers: list(TriggerPrepare),
 			When: "a Prepare of a claim with a lease result (OpenClaim)",
-			Effects: "commit (d), a failed one fails the Prepare; CDI device lease-<uid>; FsDir made; the socket " +
+			Effects: "commit (d), a failed one fails the Prepare; CDI device lease-<uid>; its lease-fs directory made; the socket " +
 				"created in a private directory and renamed",
 		},
 		{

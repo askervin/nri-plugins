@@ -131,7 +131,7 @@ func TestLeaseClaimSocketAndCDI(t *testing.T) {
 	if l := e.st.Snapshot().Leases; len(l) != 0 {
 		t.Fatalf("lease records %+v", l)
 	}
-	if lc := e.st.Snapshot().LeaseClaim(envLeaseClaim); lc == nil || lc.FsDir != fsDir || lc.State != state.LeaseClaimOpen ||
+	if lc := e.st.Snapshot().LeaseClaim(envLeaseClaim); lc == nil || lc.State != state.LeaseClaimOpen ||
 		!reflect.DeepEqual(lc.Pods, []state.PodRef{requester.Pod}) {
 		t.Fatalf("lease claim record %+v", lc)
 	}
@@ -998,7 +998,7 @@ func TestCloseClaimWaitsForRemoval(t *testing.T) {
 	}
 	e.b.mu.Lock()
 	e.b.removing["lc3"] = make(chan struct{})
-	err := e.b.listen("lc3", "")
+	err := e.b.listen("lc3")
 	e.b.mu.Unlock()
 	if err == nil || err.Error() != "the directories of lease claim lc3 are being removed, retry" {
 		t.Fatalf("listen during a removal: %v", err)
@@ -1063,34 +1063,11 @@ func TestRemoveFsDirMountsError(t *testing.T) {
 	}
 }
 
-// A lease claim prepared without a filesystem directory has no fs leases
-// and no /run/cxl/fs, also after OpenClaim again; the lease-fs directories
-// of claims without a record are removed at the start and by the
-// reconcile, unless a mount is in them.
+// The lease-fs directories of claims without a record are removed at the
+// start and by the reconcile, unless a mount is in them.
 func TestFsLeaseClaims(t *testing.T) {
 	e := brokerEnv(t)
 	e.openClaim()
-	e.start()
-	e.edit(func(r *state.Records) { r.LeaseClaim(envLeaseClaim).FsDir = "" })
-	e.openClaim()
-	lc := e.claim(envLeaseClaim)
-	dev := e.b.cdiDevice(lc)
-	fsDir := lc.FsDir
-	if fsDir != "" || len(dev.ContainerEdits.Mounts) != 2 || dev.ContainerEdits.Mounts[1].ContainerPath != "/usr/local/bin/cxl-request" {
-		t.Fatalf("FsDir %q, CDI mounts %+v", fsDir, dev.ContainerEdits.Mounts)
-	}
-	r, _ := e.call(api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "fs"})
-	if r.Error != "lease claim demo/lease has no filesystem directory (prepared by an older driver): recreate the pod" {
-		t.Fatalf("fs lease of an old lease claim %+v", r)
-	}
-	if l, _ := e.client.ResourceV1().ResourceClaims(envNS).List(context.Background(), metav1.ListOptions{}); len(l.Items) != 1 || e.numLeases() != 0 {
-		t.Fatalf("objects for a refused request: %d claims, %d leases", len(l.Items), e.numLeases())
-	}
-	r, _ = e.call(api.Request{Op: api.OpRequest, Size: "64Mi", Wait: "0s"})
-	if r.Error != "" || r.State != api.StatePending {
-		t.Fatalf("numa lease of an old lease claim %+v", r)
-	}
-
 	root := filepath.Join(e.dir, "lease-fs")
 	var mu atomicMounts
 	e.opts = func(o *Options) { o.Mounts = mu.get }
@@ -1588,7 +1565,7 @@ func TestGotOfPrepared(t *testing.T) {
 		})), state.LeaseGot{Source: state.SourcePool, Serial: serialPoolP, SharedDevice: true, Bytes: pmemBytes, Access: state.Access(api.AccessDirect),
 			FsType: "ext4", Path: api.FsDir + "/data"}, nil},
 	} {
-		got, lend := gotOf(&state.Records{}, &state.Lease{Asked: tc.asked}, state.SourcePool, &tc.dev)
+		got, lend := gotOf(&state.Records{}, &state.Lease{Asked: tc.asked}, state.SourcePool, &tc.dev, "/lease-fs")
 		if !reflect.DeepEqual(*got, tc.got) || !reflect.DeepEqual(lend, tc.lend) {
 			t.Errorf("%s: got %+v, lend %+v; expected %+v, %+v", name, *got, lend, tc.got, tc.lend)
 		}

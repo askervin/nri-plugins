@@ -97,38 +97,38 @@ func Records() state.Records {
 		Memdevs: []state.Memdev{
 			{
 				Serial: SerialLocal, Name: "mem0", Source: state.SourceLocal, State: state.MemdevActive,
-				Facts:   state.MemdevFacts{Ram: gi, BlockSize: 128 * mi, NumaAffinity: node(0)},
+				Facts:   state.MemdevFacts{NumaAffinity: node(0)},
 				Regions: []state.RegionRef{"region0"},
 				Grants:  []state.GrantRef{ref(ClaimNUMA, 0), ref(ClaimDax, 0), ref(ClaimKept, 0), ref(ClaimCompanion, 0)},
 			},
 			{
 				Serial: SerialShared, Name: "mem1", Source: state.SourceLocal, State: state.MemdevActive,
-				Facts:   state.MemdevFacts{Ram: 512 * mi, Shared: true, BlockSize: 128 * mi, NumaAffinity: node(0)},
+				Facts:   state.MemdevFacts{Shared: true, NumaAffinity: node(0)},
 				Regions: []state.RegionRef{"region1"},
 				Grants:  []state.GrantRef{ref(ClaimShared, 0), ref(ClaimMixed, 1)},
 			},
 			{
 				Serial: SerialPersistent, Name: "mem2", Source: state.SourceLocal, State: state.MemdevActive,
-				Facts:   state.MemdevFacts{Pmem: gi, Persistent: true, BlockSize: 128 * mi},
+				Facts:   state.MemdevFacts{Persistent: true},
 				Regions: []state.RegionRef{"region2"},
 				Grants:  []state.GrantRef{ref(ClaimFs, 0)},
 			},
 			{
 				Serial: SerialPoolFs, Name: "mem3", Source: state.SourcePool, State: state.MemdevActive,
-				Facts:   state.MemdevFacts{Pmem: gi, Persistent: true, Shared: true, BlockSize: 128 * mi},
+				Facts:   state.MemdevFacts{Persistent: true, Shared: true},
 				Regions: []state.RegionRef{"region3"},
 				Stale:   []state.StalePath{{Path: bindTarget, Kind: state.StaleBind}},
 				Grants:  []state.GrantRef{ref(ClaimPoolFs, 0), ref(ClaimPoolLeaseC, 0)},
 			},
 			{
 				Serial: SerialPoolNUMA, Name: "mem4", Source: state.SourcePool, State: state.MemdevActive,
-				Facts:   state.MemdevFacts{Ram: gi, BlockSize: 128 * mi},
+				Facts:   state.MemdevFacts{},
 				Regions: []state.RegionRef{"region4"},
 				Grants:  []state.GrantRef{ref(ClaimPoolNUMA, 0)},
 			},
 			{
 				Serial: SerialPoolDax, Name: "mem5", Source: state.SourcePool, State: state.MemdevActive,
-				Facts:   state.MemdevFacts{Ram: gi, Shared: true, BlockSize: 128 * mi},
+				Facts:   state.MemdevFacts{Shared: true},
 				Regions: []state.RegionRef{"region6"},
 				Grants:  []state.GrantRef{ref(ClaimPoolDax, 0)},
 			},
@@ -142,7 +142,6 @@ func Records() state.Records {
 					{
 						Name: "dax0.1", Dev: state.DevNumbers{Major: 252, Minor: 1}, Size: 128 * mi, Driver: state.DriverKmem,
 						State: state.DaxKmemOnline, Users: []state.GrantRef{ref(ClaimNUMA, 0)},
-						Ranges: []state.AddressRange{{Start: 0x1080000000, End: 0x1087ffffff}},
 					},
 					{
 						Name: "dax0.2", Dev: state.DevNumbers{Major: 252, Minor: 2}, Size: 128 * mi, Driver: state.DriverDeviceDax,
@@ -297,19 +296,19 @@ func Records() state.Records {
 		},
 		Preparations: []state.Preparation{
 			{
-				UID: ClaimNUMA, Driver: LocalDriver, ClaimName: "demo/c-numa", BootID: BootID, State: state.PreparationPrepared,
+				UID: ClaimNUMA, Driver: LocalDriver, ClaimName: "demo/c-numa", State: state.PreparationPrepared,
 				Results: []state.Result{withSettings(grantResult(ClaimNUMA, 0, "mem", Node, "memdev-c100e2e1"), steer)},
 			},
 			{
-				UID: ClaimDax, Driver: LocalDriver, ClaimName: "demo/c-dax", BootID: BootID, State: state.PreparationPrepared,
+				UID: ClaimDax, Driver: LocalDriver, ClaimName: "demo/c-dax", State: state.PreparationPrepared,
 				Results: []state.Result{grantResult(ClaimDax, 0, "mem", Node, "memdev-c100e2e1")},
 			},
 			{
-				UID: ClaimShared, Driver: LocalDriver, ClaimName: "demo/c-shared", BootID: BootID, State: state.PreparationUnpreparing,
+				UID: ClaimShared, Driver: LocalDriver, ClaimName: "demo/c-shared", State: state.PreparationUnpreparing,
 				Results: []state.Result{grantResult(ClaimShared, 0, "mem", Node, "memdev-c100e2e2")},
 			},
 			{
-				UID: ClaimMixed, Driver: LocalDriver, ClaimName: "demo/c-mixed", BootID: BootID, State: state.PreparationPrepared,
+				UID: ClaimMixed, Driver: LocalDriver, ClaimName: "demo/c-mixed", State: state.PreparationPrepared,
 				Results: []state.Result{
 					{
 						Index: 0, Kind: state.ResultRegion, Request: "region", Pool: Node, Device: "region5-node5",
@@ -323,49 +322,49 @@ func Records() state.Records {
 				},
 			},
 			{
-				UID: ClaimKept, Driver: LocalDriver, ClaimName: "demo/c-kept", BootID: BootID, State: state.PreparationKept,
+				UID: ClaimKept, Driver: LocalDriver, ClaimName: "demo/c-kept", State: state.PreparationKept,
 				Results: []state.Result{grantResult(ClaimKept, 0, "mem", Node, "memdev-c100e2e1")},
 			},
 			{
-				UID: ClaimFs, Driver: LocalDriver, ClaimName: "demo/c-fs", BootID: BootID, State: state.PreparationUnrestored,
+				UID: ClaimFs, Driver: LocalDriver, ClaimName: "demo/c-fs", State: state.PreparationUnrestored,
 				Results: []state.Result{grantResult(ClaimFs, 0, "pmem", Node, "memdev-c1ae2001")},
 			},
 			{
-				UID: ClaimLease, Driver: LocalDriver, ClaimName: "demo/c-lease", BootID: BootID, State: state.PreparationPrepared,
+				UID: ClaimLease, Driver: LocalDriver, ClaimName: "demo/c-lease", State: state.PreparationPrepared,
 				Results: []state.Result{{
 					Index: 0, Kind: state.ResultLeaseClaim, Request: "lease", Pool: Node, Device: "lease",
 					LeaseClaim: &state.LeaseClaimResult{UID: ClaimLease},
 				}},
 			},
 			{
-				UID: ClaimStale, Driver: LocalDriver, ClaimName: "demo/c-stale", BootID: "boot-0", State: state.PreparationStale,
+				UID: ClaimStale, Driver: LocalDriver, ClaimName: "demo/c-stale", State: state.PreparationStale,
 				Results: []state.Result{grantResult(ClaimStale, 0, "mem", Node, "memdev-c100e2e9")},
 			},
 			{
-				UID: ClaimCompanion, Driver: LocalDriver, ClaimName: "demo/cxl-lease-" + LeaseNUMA, BootID: BootID,
+				UID: ClaimCompanion, Driver: LocalDriver, ClaimName: "demo/cxl-lease-" + LeaseNUMA,
 				State: state.PreparationPrepared, Lease: LeaseNUMA,
 				Results: []state.Result{grantResult(ClaimCompanion, 0, "memory", Node, "memdev-c100e2e1")},
 			},
 			{
-				UID: ClaimPoolNUMA, Driver: PoolDriver, ClaimName: "demo/c-pnuma", BootID: BootID, State: state.PreparationPrepared,
+				UID: ClaimPoolNUMA, Driver: PoolDriver, ClaimName: "demo/c-pnuma", State: state.PreparationPrepared,
 				Results: []state.Result{grantResult(ClaimPoolNUMA, 0, "mem", "pool-a", "pooled3")},
 			},
 			{
-				UID: ClaimPoolFs, Driver: PoolDriver, ClaimName: "demo/c-pfs", BootID: BootID, State: state.PreparationPrepared,
+				UID: ClaimPoolFs, Driver: PoolDriver, ClaimName: "demo/c-pfs", State: state.PreparationPrepared,
 				Results: []state.Result{withShare(grantResult(ClaimPoolFs, 0, "mem", "pool-c", "pooled2"), "aaaaaaaa-0000-0000-0000-000000000001")},
 			},
 			{
-				UID: ClaimPoolDax, Driver: PoolDriver, ClaimName: "demo/c-pdax", BootID: BootID, State: state.PreparationPrepared,
+				UID: ClaimPoolDax, Driver: PoolDriver, ClaimName: "demo/c-pdax", State: state.PreparationPrepared,
 				Results: []state.Result{withShare(grantResult(ClaimPoolDax, 0, "mem", "pool-b", "pooled4"), "aaaaaaaa-0000-0000-0000-000000000002")},
 			},
 			{
-				UID: ClaimPoolLeaseC, Driver: PoolDriver, ClaimName: "demo/cxl-lease-" + LeaseFs, BootID: BootID,
+				UID: ClaimPoolLeaseC, Driver: PoolDriver, ClaimName: "demo/cxl-lease-" + LeaseFs,
 				State: state.PreparationUnpreparing, Lease: LeaseFs,
 				Results: []state.Result{withShare(grantResult(ClaimPoolLeaseC, 0, "memory", "pool-c", "pooled2"), "aaaaaaaa-0000-0000-0000-000000000003")},
 			},
 		},
 		LeaseClaims: []state.LeaseClaim{{
-			UID: ClaimLease, Namespace: "demo", Name: "c-lease", Pods: []state.PodRef{requester}, FsDir: fsDir,
+			UID: ClaimLease, Namespace: "demo", Name: "c-lease", Pods: []state.PodRef{requester},
 			State: state.LeaseClaimOpen,
 		}},
 		Leases: []state.Lease{
@@ -390,9 +389,9 @@ func Records() state.Records {
 			{Serial: SerialLocal, State: state.ProvenanceLocal, LastSeen: created},
 			{Serial: SerialShared, State: state.ProvenanceLocal, LastSeen: created},
 			{Serial: SerialPersistent, State: state.ProvenanceLocal, LastSeen: created},
-			{Serial: SerialPoolFs, State: state.ProvenancePool, Pool: PoolDriver + "/pool-c", LastSeen: created, LastObserved: created},
-			{Serial: SerialPoolNUMA, State: state.ProvenancePool, Pool: PoolDriver + "/pool-a", LastSeen: created, LastObserved: created},
-			{Serial: SerialPoolDax, State: state.ProvenancePool, Pool: PoolDriver + "/pool-b", LastSeen: created, LastObserved: created},
+			{Serial: SerialPoolFs, State: state.ProvenancePool, Pool: PoolDriver + "/pool-c", LastSeen: created},
+			{Serial: SerialPoolNUMA, State: state.ProvenancePool, Pool: PoolDriver + "/pool-a", LastSeen: created},
+			{Serial: SerialPoolDax, State: state.ProvenancePool, Pool: PoolDriver + "/pool-b", LastSeen: created},
 			{Serial: SerialHeld, State: state.ProvenanceHeld, HeldSince: created, HeldReason: state.HeldNeverListed},
 		},
 		Steered: []state.Steered{{Container: "c0ffee", CgroupDir: "/sys/fs/cgroup/kubepods.slice/c0ffee"}},

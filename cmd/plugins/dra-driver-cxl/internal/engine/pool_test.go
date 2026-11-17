@@ -343,7 +343,7 @@ func TestPoolRollbackRevokesLend(t *testing.T) {
 	companion.Lend = &state.GrantLend{Lease: "0123abcd", Pod: state.PodRef{UID: "p1", Namespace: "ns", Name: "pod"}, Container: "ctr"}
 	if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
 		doc.Preparations = append(doc.Preparations, state.Preparation{UID: "c", Driver: poolDriver, ClaimName: "ns/c", Lease: "0123abcd",
-			BootID: v.f.BootID(), State: state.PreparationPreparing, Results: []state.Result{grantResult("c", 0), grantResult("c", 1)}})
+			State: state.PreparationPreparing, Results: []state.Result{grantResult("c", 0), grantResult("c", 1)}})
 		return nil
 	}); err != nil {
 		t.Fatal(err)

@@ -15,8 +15,6 @@
 package store
 
 import (
-	"fmt"
-	"reflect"
 	"slices"
 
 	"k8s.io/klog/v2"
@@ -32,72 +30,44 @@ import (
 // Got and Intent only the lease and requester of a lend and the target of a
 // lease bind; the memdev and region records, the grants that no preparation names and
 // the leases are dropped (the first reconcile deletes the leases'
-// companions); lease claims, provenance and steering records are kept. A
-// preparation without a boot id is of the boot of the document.
+// companions); lease claims, provenance and steering records are kept.
 func applyBoot(doc *Document, running string) (bool, error) {
-	changed, err := stalePreparations(doc, running)
-	if err != nil || doc.BootID == running {
-		return changed, err
+	if doc.BootID == running {
+		return false, nil
+	}
+	if err := stalePreparations(doc, running); err != nil {
+		return false, err
 	}
 	if err := dropOtherBoot(doc, running); err != nil {
-		return changed, err
+		return false, err
 	}
 	doc.BootID = running
 	return true, nil
 }
 
-// stalePreparations makes the preparations of another boot than running
-// PREPARED_STALE. It returns whether it changed the document.
-func stalePreparations(doc *Document, running string) (bool, error) {
-	changed := false
-	kept := doc.Preparations[:0]
+// stalePreparations makes the preparations of a document of another boot
+// than running PREPARED_STALE; a stale one stays as it is.
+func stalePreparations(doc *Document, running string) error {
 	for i := range doc.Preparations {
-		p := doc.Preparations[i]
-		boot := p.BootID
-		if boot == "" {
-			boot = doc.BootID
-		}
-		switch {
-		case boot == running:
-			kept = append(kept, p)
+		p := &doc.Preparations[i]
+		if p.State == state.PreparationStale {
 			continue
-		case p.State == state.PreparationStale && doc.BootID == running:
-			kept = append(kept, p)
-			continue
-		case p.State != state.PreparationStale:
-			klog.Warningf("store: claim %s (%s) of %s was prepared in boot %s, this is %s: not prepared any more",
-				p.ClaimName, p.UID, p.Driver, boot, running)
 		}
-		p.Reason = staleReason(&p, boot, running)
+		klog.Warningf("store: claim %s (%s) of %s was prepared in boot %s, this is %s: not prepared any more",
+			p.ClaimName, p.UID, p.Driver, doc.BootID, running)
 		if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationStale, state.TriggerLoad); err != nil {
-			return changed, err
+			return err
 		}
-		changed = true
-		cleared, err := clearGrants(doc, &p)
-		if err != nil {
-			return changed, err
+		if err := clearGrants(doc, p); err != nil {
+			return err
 		}
-		changed = changed || cleared
-		kept = append(kept, p)
 	}
-	doc.Preparations = kept
-	return changed, nil
-}
-
-// staleReason returns why a preparation of the boot boot is not prepared
-// in the boot running, in the words of the pool driver's records.
-func staleReason(p *state.Preparation, boot, running string) string {
-	if p.State == state.PreparationPrepared {
-		return fmt.Sprintf("prepared in another boot (%s, this is %s)", boot, running)
-	}
-	return fmt.Sprintf("its Prepare did not finish in another boot (%s)", boot)
+	return nil
 }
 
 // clearGrants clears Got and Intent of the grants of a stale preparation
-// but the lease and requester of a lend and the target of a lease bind,
-// and returns whether it changed one.
-func clearGrants(doc *Document, p *state.Preparation) (bool, error) {
-	changed := false
+// but the lease and requester of a lend and the target of a lease bind.
+func clearGrants(doc *Document, p *state.Preparation) error {
 	for _, res := range p.Results {
 		if res.Grant == nil {
 			continue
@@ -107,7 +77,7 @@ func clearGrants(doc *Document, p *state.Preparation) (bool, error) {
 			continue
 		}
 		if err := state.GrantTable.Check(g.State, g.State, state.TriggerLoad); err != nil {
-			return changed, err
+			return err
 		}
 		kept := state.Intent{BindTarget: g.Intent.BindTarget, Lend: g.Intent.Lend}
 		if kept.Lend == nil {
@@ -121,13 +91,9 @@ func clearGrants(doc *Document, p *state.Preparation) (bool, error) {
 			l.NumaNode = nil
 			kept.Lend = &l
 		}
-		if g.Got == (state.Got{}) && reflect.DeepEqual(g.Intent, kept) {
-			continue
-		}
 		g.Got, g.Intent = state.Got{}, kept
-		changed = true
 	}
-	return changed, nil
+	return nil
 }
 
 // checkDrops returns the error of the first lease, memdev or region record

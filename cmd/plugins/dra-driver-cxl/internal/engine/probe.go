@@ -134,12 +134,7 @@ func (e *Engine) probeRegion(ctx context.Context, req *GrantRequest, memdev, reg
 	if err != nil {
 		return 0, err
 	}
-	var res *kernel.Aliasing
-	err = e.waiting(req.Serial, state.TriggerPrepare, func() error {
-		var err error
-		res, err = e.k.ProbeAliasing(ctx, dax)
-		return err
-	})
+	res, err := e.k.ProbeAliasing(ctx, dax)
 	if errors.Is(err, kernel.ErrProbeUnsupported) {
 		klog.V(4).Infof("local: memdev %s (serial %s): %v", memdev, s, err)
 		return 0, nil
@@ -159,7 +154,7 @@ func (e *Engine) probeRegion(ctx context.Context, req *GrantRequest, memdev, reg
 		return 0, fmt.Errorf("memdev %s (serial %s): %s: %s: less than 256 MiB is usable", memdev, s, region, res)
 	}
 	klog.Warningf("local: memdev %s (serial %s): %s: %s; using only the first %d bytes of the memdev from now on", memdev, s, region, res, usable)
-	if err := e.saveProbe(req.Serial, state.Probe{UsableSize: usable, Result: res.String(), Region: region, Size: size, Time: time.Now()}); err != nil {
+	if err := e.saveProbe(req.Serial, state.Probe{UsableSize: usable, Result: res.String(), Region: region, Time: time.Now()}); err != nil {
 		klog.Errorf("local: saving the probe result: %v", err)
 	}
 	return usable, nil

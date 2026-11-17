@@ -859,7 +859,7 @@ func (e *Engine) releaseIdle(ctx context.Context, m state.Memdev, call *releaseC
 		return &releaseError{serial: m.Serial, err: err}
 	}
 	if dev := e.currentBlockDevice(m.Serial); dev != "" {
-		if err := e.waitNoHolder(ctx, m.Source, m.Serial, dev, call.holderDeadline(""), call.trigger); err != nil {
+		if err := e.waitNoHolder(ctx, m.Source, m.Serial, dev, call.holderDeadline("")); err != nil {
 			return &releaseError{serial: m.Serial, held: true, err: err}
 		}
 	}
@@ -1034,7 +1034,6 @@ func leftMount(m *state.Mount, writer bool, trigger state.Trigger) (bool, error)
 	case len(m.Users) == 0:
 		return true, state.Apply(&state.MountTable, &m.State, state.MountAbsent, trigger)
 	case m.State == state.MountedRW && !writer:
-		m.Writer = false
 		return false, state.Apply(&state.MountTable, &m.State, state.MountedRO, trigger)
 	case m.State == state.MountedRO || m.State == state.MountedRW:
 		return false, state.Apply(&state.MountTable, &m.State, m.State, trigger)
@@ -1128,8 +1127,8 @@ func (e *Engine) offlineDax(ctx context.Context, p *localPart) error {
 }
 
 // releasedDax records the own dax device of a grant deleted: a device that
-// a cut Prepare made goes (CREATING -> ABSENT), another one RELEASING, then
-// the seed (daxN.0) or gone.
+// a cut Prepare made goes (CREATING -> ABSENT), another one becomes the
+// seed (daxN.0) or goes.
 func releasedDax(r *state.Records, ref state.GrantRef, region state.RegionRef, dax string, trigger state.Trigger) error {
 	reg := r.Region(region)
 	d := reg.DaxDevice(dax)
@@ -1143,12 +1142,9 @@ func releasedDax(r *state.Records, ref state.GrantRef, region state.RegionRef, d
 		removeRecord(&reg.DaxDevices, func(x *state.DaxDevice) bool { return x.Name == dax })
 		return nil
 	}
-	if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxReleasing, trigger); err != nil {
-		return err
-	}
 	d.Users = nil
 	if strings.HasSuffix(dax, ".0") {
-		d.Driver, d.Size, d.Ranges, d.Dev = "", 0, nil, state.DevNumbers{}
+		d.Driver, d.Size, d.Dev = "", 0, state.DevNumbers{}
 		return state.Apply(&state.DaxDeviceTable, &d.State, state.DaxSeed, trigger)
 	}
 	if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxAbsent, trigger); err != nil {
@@ -1187,7 +1183,7 @@ func (e *Engine) releaseMemdev(ctx context.Context, g *state.Grant, call *releas
 		return forClaim, e.keepMemdev(ctx, serial, trigger, forClaim)
 	}
 	if dev := e.blockDeviceOf(g, call); dev != "" {
-		if err := e.waitNoHolder(ctx, source, serial, dev, call.holderDeadline(g.Ref.Claim), trigger); err != nil {
+		if err := e.waitNoHolder(ctx, source, serial, dev, call.holderDeadline(g.Ref.Claim)); err != nil {
 			return false, &releaseError{serial: serial, held: true, err: err}
 		}
 	}
@@ -1375,20 +1371,12 @@ func (e *Engine) claimNameOf(ref state.GrantRef) string {
 }
 
 // dropRegion removes a region of ours that is destroyed or gone from the
-// records (its dax devices RELEASING -> ABSENT, the region -> NONE) and
-// from its memdevs.
+// records (the region -> NONE, its dax devices with it) and from its
+// memdevs.
 func dropRegion(r *state.Records, ref state.RegionRef, trigger state.Trigger) error {
 	reg := r.Region(ref)
 	if reg == nil {
 		return nil
-	}
-	for i := range reg.DaxDevices {
-		d := &reg.DaxDevices[i]
-		if d.State != state.DaxReleasing && d.State != state.DaxSeed && d.State != state.DaxCreating {
-			if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxReleasing, trigger); err != nil {
-				return err
-			}
-		}
 	}
 	if err := state.Apply(&state.RegionTable, &reg.State, state.RegionNone, trigger); err != nil {
 		return err

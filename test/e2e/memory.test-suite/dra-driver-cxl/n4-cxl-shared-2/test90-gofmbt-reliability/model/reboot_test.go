@@ -409,7 +409,7 @@ func TestNodeRebootBootID(t *testing.T) {
 	v, _ = checkState(p, o, "")
 	wantVerdict(t, v, VFail, "as before its node-reboot")
 	o.VMs["vm1"].BootID = "boot-vm1-7"
-	o.VMs["vm1"].State.LocalDevices.BootID = "boot-vm1-7"
+	o.VMs["vm1"].State.BootID = "boot-vm1-7"
 	v, rs = checkState(p, o, "")
 	wantVerdict(t, v, VOK, "ok")
 	if rs.Drv[VM1].Boot != "boot-vm1-7" || rs.Drv[VM1].BootBefore != "" {

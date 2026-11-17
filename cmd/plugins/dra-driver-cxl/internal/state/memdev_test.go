@@ -22,10 +22,6 @@ func TestMemdevTable(t *testing.T) {
 	checkTable(t, &MemdevTable)
 }
 
-func TestMemdevBusyTable(t *testing.T) {
-	checkTable(t, &MemdevBusyTable)
-}
-
 func TestMemdevNeverKeptWithoutAGrant(t *testing.T) {
 	for _, tr := range Triggers {
 		if MemdevTable.Allows(MemdevUnused, MemdevIdleKept, tr) {

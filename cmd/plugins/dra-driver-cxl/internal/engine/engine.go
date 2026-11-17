@@ -36,8 +36,7 @@ import (
 // Identity: one per process.
 //
 // States: the records of the store (Memdev, Region, Grant) and, in memory,
-// the Busy flag of each memdev (state.MemdevBusyTable) and the last kernel
-// observation.
+// the last kernel observation.
 //
 // Transitions: the tables of package state, applied in store commits.
 //
@@ -51,8 +50,7 @@ import (
 // and the engine lock around each short kernel call and the durable commit
 // of the note that must precede it, never across a wait. Waits (a pool
 // memdev to appear, an nd region to settle, a holder to go, memory blocks
-// to stay offline) and zeroing run outside the lock with Busy set. The
-// lock order is queue -> engine lock -> store commit.
+// to stay offline) and zeroing run outside the lock. The lock order is queue -> engine lock -> store commit.
 type Engine struct {
 	k     *kernel.Kernel
 	store *store.Store
@@ -61,11 +59,10 @@ type Engine struct {
 	// mu is the engine lock.
 	mu sync.Mutex
 
-	// qmu guards queues, busy, last, unknown, orphanBinds, running,
+	// qmu guards queues, last, unknown, orphanBinds, running,
 	// started, observed, hollowLogged, devices and probes: a leaf lock.
 	qmu    sync.Mutex
 	queues map[state.Serial]chan struct{}
-	busy   map[state.Serial]bool
 	last   *kernel.Snapshot
 	// unknown are the latest changes of kernel objects that no row of
 	// their tables has, as Observe logged them, until UnknownSeen.
@@ -261,7 +258,6 @@ func New(opts Options) (*Engine, error) {
 		store:        opts.Store,
 		opts:         opts,
 		queues:       map[state.Serial]chan struct{}{},
-		busy:         map[state.Serial]bool{},
 		hollowLogged: map[string]bool{},
 		devices:      map[state.GrantRef]string{},
 		probes:       probes,
@@ -400,41 +396,9 @@ func (e *Engine) locked(fn func() error) error {
 	return fn()
 }
 
-// waiting runs fn, a wait or zeroing of the memdev with the serial,
-// outside the engine lock with the memdev Busy.
-func (e *Engine) waiting(serial state.Serial, trigger state.Trigger, fn func() error) error {
-	e.setBusy(serial, true, trigger)
-	defer e.setBusy(serial, false, trigger)
-	return fn()
-}
-
-// setBusy sets the Busy flag of the memdev with the serial.
-func (e *Engine) setBusy(serial state.Serial, busy bool, trigger state.Trigger) {
-	e.qmu.Lock()
-	defer e.qmu.Unlock()
-	b := e.busy[serial]
-	if err := state.Apply(&state.MemdevBusyTable, &b, busy, trigger); err != nil {
-		klog.Errorf("engine: memdev %s: %v", serial, err)
-		return
-	}
-	if b {
-		e.busy[serial] = true
-	} else {
-		delete(e.busy, serial)
-	}
-}
-
 // Timeouts returns the bounds of the waits of the engine.
 func (e *Engine) Timeouts() Timeouts {
 	return e.opts.Timeouts
-}
-
-// Busy tells whether a wait or zeroing of the memdev with the serial is in
-// progress.
-func (e *Engine) Busy(serial state.Serial) bool {
-	e.qmu.Lock()
-	defer e.qmu.Unlock()
-	return e.busy[serial]
 }
 
 // records returns the records of the last written document; the caller

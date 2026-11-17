@@ -36,12 +36,12 @@ func TestMountTable(t *testing.T) {
 
 func TestRegionIsNotedBeforeCreation(t *testing.T) {
 	for _, tr := range Triggers {
-		if RegionTable.Allows(RegionNone, RegionCreating, tr) || RegionTable.Allows(RegionNone, RegionOwned, tr) {
+		if RegionTable.Allows(RegionNone, RegionOwned, tr) {
 			t.Errorf("a region is created without its note on %s", tr)
 		}
 	}
 	s := RegionNone
-	for i, to := range []RegionState{RegionNoted, RegionCreating, RegionOwned, RegionKept, RegionOwned, RegionNone} {
+	for i, to := range []RegionState{RegionNoted, RegionOwned, RegionKept, RegionOwned, RegionNone} {
 		on := TriggerPrepare
 		if to == RegionKept || to == RegionNone {
 			on = TriggerUnprepare

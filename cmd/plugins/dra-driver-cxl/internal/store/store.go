@@ -46,7 +46,7 @@ const (
 	LockName = "state.lock"
 	// Schema is the schema of the document; a document of another schema
 	// does not decode.
-	Schema = 2
+	Schema = 1
 
 	// lockPoll is how often Open tries to lock the document again.
 	lockPoll = 100 * time.Millisecond

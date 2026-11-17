@@ -54,7 +54,7 @@ func (e *Engine) realiseLocalShared(ctx context.Context, req *GrantRequest, memd
 		start := time.Now()
 		size, err := e.k.DaxDeviceSize(dax)
 		if err == nil {
-			err = e.waiting(req.Serial, state.TriggerPrepare, func() error { return e.k.Zero(ctx, dax) })
+			err = e.k.Zero(ctx, dax)
 		}
 		if ze := (*kernel.ZeroError)(nil); errors.As(err, &ze) {
 			// the zeroing is named once
@@ -330,7 +330,7 @@ func (e *Engine) checkLocalKind(ctx context.Context, req *GrantRequest) error {
 // when nothing holds its block device.
 func (e *Engine) releaseOtherKind(ctx context.Context, m *state.Memdev, memdev string) error {
 	if dev := e.currentBlockDevice(m.Serial); m.Facts.Persistent && dev != "" {
-		if err := e.waitNoHolder(ctx, m.Source, m.Serial, dev, time.Now(), state.TriggerPrepare); err != nil {
+		if err := e.waitNoHolder(ctx, m.Source, m.Serial, dev, time.Now()); err != nil {
 			return &releaseError{serial: m.Serial, held: true, err: err}
 		}
 	}
@@ -442,7 +442,7 @@ func (e *Engine) addPart(ctx context.Context, req *GrantRequest, memdev, region 
 	ranges, _ := e.k.DaxDeviceRanges(aligned)
 	info, _ := e.k.DaxDevice(aligned)
 	dev := state.DevNumbers{Major: info.Major, Minor: info.Minor}
-	if err := e.commit(ctx, func(r *state.Records) error { return sizedPart(r, req.Ref, region, aligned, size, ranges, dev) }); err != nil {
+	if err := e.commit(ctx, func(r *state.Records) error { return sizedPart(r, req.Ref, region, aligned, size, dev) }); err != nil {
 		return "", 0, err
 	}
 	klog.Infof("local: memdev %s (serial %s): claim %s: created slice %s mode %s size %d at %v in %s",
@@ -486,14 +486,14 @@ func (e *Engine) partRoom(req *GrantRequest, memdev, region string, bs uint64) (
 
 // sizedPart records the dax device of a part placed: SIZED, with its
 // size, memory and numbers, the grant its user.
-func sizedPart(r *state.Records, ref state.GrantRef, region, dax string, size uint64, ranges []kernel.Range, dev state.DevNumbers) error {
+func sizedPart(r *state.Records, ref state.GrantRef, region, dax string, size uint64, dev state.DevNumbers) error {
 	d := r.Region(state.RegionRef(region)).DaxDevice(dax)
 	if d.State == state.DaxCreating {
 		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxSized, state.TriggerPrepare); err != nil {
 			return err
 		}
 	}
-	d.Size, d.Ranges, d.Users, d.Dev = size, addressRanges(ranges), []state.GrantRef{ref}, dev
+	d.Size, d.Users, d.Dev = size, []state.GrantRef{ref}, dev
 	return nil
 }
 
@@ -577,7 +577,7 @@ func deletedPart(r *state.Records, ref state.GrantRef, region, dax string) error
 	}
 	d.Users = nil
 	if strings.HasSuffix(dax, ".0") {
-		d.Size, d.Ranges = 0, nil
+		d.Size = 0
 		return state.Apply(&state.DaxDeviceTable, &d.State, state.DaxSeed, state.TriggerPrepare)
 	}
 	if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxAbsent, state.TriggerPrepare); err != nil {
@@ -625,7 +625,7 @@ func (e *Engine) onlinePart(ctx context.Context, req *GrantRequest, memdev, regi
 	}); err != nil {
 		return -1, err
 	}
-	if err := e.waiting(req.Serial, state.TriggerPrepare, func() error { return e.k.WaitDaxBlocks(ctx, dax) }); err != nil {
+	if err := e.k.WaitDaxBlocks(ctx, dax); err != nil {
 		return -1, err
 	}
 	blocks, err := e.k.DaxDeviceBlocks(dax, bs)
@@ -666,7 +666,7 @@ func (e *Engine) bindPart(ctx context.Context, req *GrantRequest, memdev, region
 		return err
 	}
 	start := time.Now()
-	if err := e.waiting(req.Serial, state.TriggerPrepare, func() error { return e.k.Zero(ctx, dax) }); err != nil {
+	if err := e.k.Zero(ctx, dax); err != nil {
 		// "zeroing daxN.M: ..."
 		return err
 	}

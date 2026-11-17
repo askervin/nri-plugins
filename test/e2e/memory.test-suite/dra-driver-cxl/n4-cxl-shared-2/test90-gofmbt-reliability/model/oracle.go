@@ -904,25 +904,8 @@ func (k *checker) checkLeaseStore(v VM, ov *ObsVM) {
 	if ov.State == nil {
 		return
 	}
-	raw := bytes.TrimSpace(ov.State.Leases)
-	if len(raw) == 0 || string(raw) == "null" {
-		k.notef("vms.%s.state.leases not observed: no check of leases.json", v)
-		return
-	}
-	var store struct {
-		Claims map[string]json.RawMessage `json:"claims"`
-		Leases map[string]struct {
-			ID    string `json:"id"`
-			Mode  string `json:"mode"`
-			State string `json:"state"`
-			Node  int    `json:"node"`
-			Pod   struct {
-				Name string `json:"name"`
-			} `json:"pod"`
-		} `json:"leases"`
-	}
-	if err := json.Unmarshal(raw, &store); err != nil {
-		k.waitf("%s: leases.json: %v", v, err)
+	if ov.State.LeaseClaims == nil || ov.State.Leases == nil {
+		k.notef("vms.%s.state.leases not observed: no check of the leases of state.json", v)
 		return
 	}
 	want := map[string]bool{} // lease claims of running lease pods
@@ -937,40 +920,37 @@ func (k *checker) checkLeaseStore(v VM, ov *ObsVM) {
 		}
 		byPod[p.Name] = i
 	}
-	got := map[string]bool{}
-	for uid := range store.Claims {
-		got[uid] = true
-	}
-	if !sameSet(got, want) {
-		k.waitf("%s: leases.json has lease claims %v, want %v", v, sortedKeys(got), sortedKeys(want))
+	if got := setOf(ov.State.LeaseClaims); !sameSet(got, want) {
+		k.waitf("%s: state.json has lease claims %v, want %v", v, sortedKeys(got), sortedKeys(want))
 	}
 	held := map[int]bool{}
-	for id, l := range store.Leases {
-		i, ok := byPod[l.Pod.Name]
+	for _, l := range ov.State.Leases {
+		id := l.ID
+		i, ok := byPod[l.Pod]
 		switch {
 		case !ok:
-			k.waitf("%s: leases.json: lease %s of pod %s, no lease pod of the model holds it", v, id, l.Pod.Name)
+			k.waitf("%s: state.json: lease %s of pod %s, no lease pod of the model holds it", v, id, l.Pod)
 			continue
 		case k.rs.Slots[i].Lease == LeaseBusy:
 			if l.State != "Releasing" && l.State != "Ready" {
-				k.waitf("%s: leases.json: lease %s of %s %s, want Releasing (held)", v, id, k.rs.slot(i).Name, l.State)
+				k.waitf("%s: state.json: lease %s of %s %s, want Releasing (held)", v, id, k.rs.slot(i).Name, l.State)
 			}
 		case k.rs.Slots[i].Lease != LeaseHeld:
-			k.waitf("%s: leases.json: lease %s (%s) of %s, want none", v, id, l.State, k.rs.slot(i).Name)
+			k.waitf("%s: state.json: lease %s (%s) of %s, want none", v, id, l.State, k.rs.slot(i).Name)
 			continue
 		case l.State != "Ready":
-			k.waitf("%s: leases.json: lease %s of %s %s, want Ready", v, id, k.rs.slot(i).Name, l.State)
+			k.waitf("%s: state.json: lease %s of %s %s, want Ready", v, id, k.rs.slot(i).Name, l.State)
 		case !leaseModeIs(l.Mode, k.rs.Slots[i].LeaseMode):
-			k.waitf("%s: leases.json: lease %s of %s mode %s, want %s", v, id, k.rs.slot(i).Name, l.Mode, k.rs.Slots[i].LeaseMode)
+			k.waitf("%s: state.json: lease %s of %s mode %s, want %s", v, id, k.rs.slot(i).Name, l.Mode, k.rs.Slots[i].LeaseMode)
 		}
 		if lid := k.rs.LeaseIDs[i]; lid != "" && lid != id {
-			k.waitf("%s: leases.json: lease %s of %s, want %s", v, id, k.rs.slot(i).Name, lid)
+			k.waitf("%s: state.json: lease %s of %s, want %s", v, id, k.rs.slot(i).Name, lid)
 		}
 		held[i] = true
 	}
 	for _, i := range byPod {
 		if (k.rs.Slots[i].Lease == LeaseHeld || k.rs.Slots[i].Lease == LeaseBusy) && !held[i] {
-			k.waitf("%s: leases.json has no lease of %s", v, k.rs.slot(i).Name)
+			k.waitf("%s: state.json has no lease of %s", v, k.rs.slot(i).Name)
 		}
 	}
 }
@@ -1841,66 +1821,59 @@ func (k *checker) checkStateFiles(v VM, ov *ObsVM, pr *vmPred) {
 		k.waitf("%s: driver state not observed", v)
 		return
 	}
-	prep, info := setOf(st.Prepared), setOf(st.Info)
-	if !sameSet(prep, info) {
-		k.waitf("%s: preparedClaims.json %v != preparedClaimsInfo.json %v", v, sortedKeys(prep), sortedKeys(info))
-	}
+	prep := setOf(st.Prepared[localDriver])
 	for uid := range pr.localUIDs {
 		if !prep[uid] {
-			k.waitf("%s: claim %s not in preparedClaims.json", v, uid)
+			k.waitf("%s: state.json: claim %s of %s is not prepared", v, uid, localDriver)
 		}
 	}
 	if want := len(pr.localUIDs) + pr.leases; len(prep) != want {
-		k.waitf("%s: %d claims in preparedClaims.json, want %d (%d of pods, %d companions)", v, len(prep), want, len(pr.localUIDs), pr.leases)
+		k.waitf("%s: state.json: %d prepared claims of %s, want %d (%d of pods, %d companions)", v, len(prep), localDriver, want, len(pr.localUIDs), pr.leases)
 	}
 	// (the companions of persistent leases are there too, by count:
 	// the model does not know their claims)
-	prepPool := setOf(st.Pool)
+	prepPool := setOf(st.Prepared[poolDriver])
 	missing := false
 	for uid := range pr.poolUIDs {
 		missing = missing || !prepPool[uid]
 	}
 	if missing || len(prepPool) != len(pr.poolUIDs)+pr.pcomp {
 		if pr.pcomp == 0 {
-			k.waitf("%s: preparedPoolClaims.json %v, want %v", v, sortedKeys(prepPool), sortedKeys(pr.poolUIDs))
+			k.waitf("%s: state.json: prepared claims of %s %v, want %v", v, poolDriver, sortedKeys(prepPool), sortedKeys(pr.poolUIDs))
 		} else {
-			k.waitf("%s: preparedPoolClaims.json %v, want %v and %d companions", v, sortedKeys(prepPool), sortedKeys(pr.poolUIDs), pr.pcomp)
+			k.waitf("%s: state.json: prepared claims of %s %v, want %v and %d companions", v, poolDriver, sortedKeys(prepPool), sortedKeys(pr.poolUIDs), pr.pcomp)
 		}
 	}
-	if ld := st.LocalDevices; ld != nil {
-		if ov.BootID != "" && ld.BootID != "" && ld.BootID != ov.BootID {
-			k.waitf("%s: localDevices.json of boot %s, the VM runs %s", v, ld.BootID, ov.BootID)
-		}
+	if ov.BootID != "" && st.BootID != "" && st.BootID != ov.BootID {
+		k.waitf("%s: state.json of boot %s, the VM runs %s", v, st.BootID, ov.BootID)
+	}
+	if len(st.UnusedDax) > 0 {
+		k.waitf("%s: state.json: dax devices %v of local memdevs without a user", v, st.UnusedDax)
+	}
+	if st.LocalMemdevs != nil {
 		n := pr.slicesN + pr.slicesD
 		found := false
-		for j := range ld.Devices {
-			dev := &ld.Devices[j]
-			serial, ok := dev.serial()
-			if !ok || serial != localSerial {
-				k.waitf("%s: localDevices.json has device %s", v, string(dev.Serial))
+		for j := range st.LocalMemdevs {
+			m := &st.LocalMemdevs[j]
+			if serial, ok := parseSerial(m.Serial); !ok || serial != localSerial {
+				k.waitf("%s: state.json has local memdev %s", v, m.Serial)
 				continue
 			}
 			found = true
-			claims := 0
-			for uid := range dev.Claims {
-				if uid == "-" {
-					k.waitf("%s: localDevices.json: orphan slices (owner -)", v)
-					continue
-				}
-				claims++
+			for uid, s := range m.Claims {
 				if !prep[uid] {
-					k.waitf("%s: localDevices.json: claim %s is not prepared", v, uid)
+					k.waitf("%s: state.json: claim %s of the local memdev is not prepared", v, uid)
 				}
-				if s := dev.slices(uid); s != 1 {
-					k.waitf("%s: localDevices.json: claim %s has %d slices, want 1", v, uid, s)
+				if s != 1 {
+					k.waitf("%s: state.json: claim %s has %d slices of the local memdev, want 1", v, uid, s)
 				}
 			}
-			if claims != n {
-				k.waitf("%s: localDevices.json: %d claims, want %d", v, claims, n)
+			if len(m.Claims) != n {
+				k.waitf("%s: state.json: %d claims of the local memdev, want %d", v, len(m.Claims), n)
 			}
 		}
 		if !found && n > 0 {
-			k.waitf("%s: localDevices.json has no local memdev, want %d slices", v, n)
+			k.waitf("%s: state.json has no local memdev, want %d slices", v, n)
 		}
 	}
 	if ov.CDI == nil {

@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
@@ -358,7 +359,7 @@ func (b *Broker) CompanionSpecHash(id string) (string, bool) {
 // LENDING and returns the lend of the requester's container, with the
 // filesystem directory of the lease claim and the name of an fs lease.
 func (b *Broker) OnLending(id string, claim *resourcev1.ResourceClaim) (*lend.Lend, error) {
-	l, rec, err := lending(b.records(), id, claim)
+	l, rec, err := b.lending(b.records(), id, claim)
 	switch {
 	case err != nil:
 		return nil, err
@@ -368,7 +369,7 @@ func (b *Broker) OnLending(id string, claim *resourcev1.ResourceClaim) (*lend.Le
 		return rec, nil
 	}
 	err = b.commit(func(r *state.Records) error {
-		l, cur, err := lending(r, id, claim)
+		l, cur, err := b.lending(r, id, claim)
 		if err != nil {
 			return err
 		}
@@ -389,7 +390,7 @@ func (b *Broker) OnLending(id string, claim *resourcev1.ResourceClaim) (*lend.Le
 // lending returns the lease id of the records whose companion the claim is,
 // if it is CREATING, PENDING, LENDING or READY, and the lend of the
 // requester's container.
-func lending(r *state.Records, id string, claim *resourcev1.ResourceClaim) (*state.Lease, *lend.Lend, error) {
+func (b *Broker) lending(r *state.Records, id string, claim *resourcev1.ResourceClaim) (*state.Lease, *lend.Lend, error) {
 	l := r.Lease(id)
 	if l == nil || claim.Name != CompanionName(id) || claim.Namespace != l.Pod.Namespace || !ownedBy(claim, l.Pod.UID) {
 		return nil, nil, fmt.Errorf("claim %s/%s: not the companion of lease %s", claim.Namespace, claim.Name, id)
@@ -402,7 +403,7 @@ func lending(r *state.Records, id string, claim *resourcev1.ResourceClaim) (*sta
 	rec := &lend.Lend{Lease: id, Pod: l.Pod, Container: l.Container}
 	if l.Asked.Mode == state.ModeFs {
 		if lc := r.LeaseClaim(l.Claim); lc != nil {
-			rec.FsDir = lc.FsDir
+			rec.FsDir = b.leaseFsDir(lc.UID)
 		}
 		rec.Name = l.Asked.Name
 	}
@@ -449,7 +450,7 @@ func (b *Broker) PreparedStep(id string, source state.Source, devs []state.Devic
 			return
 		}
 		if apply(l, state.LeaseReady, state.TriggerOnPrepared) {
-			l.Got, l.Lend = gotOf(r, l, source, &d)
+			l.Got, l.Lend = gotOf(r, l, source, &d, LeaseFsRoot(b.opts.DataDir))
 			l.Error = ""
 			cp := l.Clone()
 			ready = &cp
@@ -476,8 +477,8 @@ func (b *Broker) PreparedStep(id string, source state.Source, devs []state.Devic
 
 // gotOf returns what the prepared device gives a lease of the records and
 // what the lease lends: the NUMA node of a numa lease, the bind of an fs
-// lease in the filesystem directory of its lease claim.
-func gotOf(r *state.Records, l *state.Lease, source state.Source, d *state.DeviceInfo) (*state.LeaseGot, *state.Lend) {
+// lease in the filesystem directory of its lease claim under fsRoot.
+func gotOf(r *state.Records, l *state.Lease, source state.Source, d *state.DeviceInfo, fsRoot string) (*state.LeaseGot, *state.Lend) {
 	serial, _ := api.ParseSerial(d.Serial)
 	g := &state.LeaseGot{Source: source, Serial: state.Serial(serial), Bytes: d.TotalBytes}
 	if persistent(state.Mode(d.Mode)) {
@@ -493,7 +494,7 @@ func gotOf(r *state.Records, l *state.Lease, source state.Source, d *state.Devic
 		g.Access, g.FsType, g.Path = state.Access(d.Access), d.FsType, api.FsDir+"/"+l.Asked.Name
 		fsDir := ""
 		if lc := r.LeaseClaim(l.Claim); lc != nil {
-			fsDir = lc.FsDir
+			fsDir = filepath.Join(fsRoot, lc.UID)
 		}
 		if target := fsBindTarget(fsDir, l.Asked.Name); target != "" {
 			return g, &state.Lend{BindTarget: target}

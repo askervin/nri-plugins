@@ -62,10 +62,10 @@ func commit(ctx context.Context, st *store.Store, fn func(doc *store.Document) e
 }
 
 // preparing commits the preparation of the claim uid of the driver
-// PREPARING with its results, of the boot of the document, and of the
-// lease of a companion claim ("" for another): a new one, a Prepare again
-// of a claim whose Prepare did not finish or that its rollback kept, or of
-// a claim of another boot, whose grants are dropped in the same commit.
+// PREPARING with its results and the lease of a companion claim ("" for
+// another): a new one, a Prepare again of a claim whose Prepare did not
+// finish or that its rollback kept, or of a claim of another boot, whose
+// grants are dropped in the same commit.
 func preparing(doc *store.Document, driver, uid, claimName, lease string, results []state.Result) error {
 	prep := doc.Preparation(driver, uid)
 	if prep == nil {
@@ -79,9 +79,8 @@ func preparing(doc *store.Document, driver, uid, claimName, lease string, result
 				dropGrant(&doc.Records, *res.Grant)
 			}
 		}
-		prep.Reason = ""
 	}
-	prep.ClaimName, prep.BootID, prep.Results, prep.Lease = claimName, doc.BootID, slices.Clone(results), lease
+	prep.ClaimName, prep.Results, prep.Lease = claimName, slices.Clone(results), lease
 	return state.Apply(&state.PreparationTable, &prep.State, state.PreparationPreparing, state.TriggerPrepare)
 }
 

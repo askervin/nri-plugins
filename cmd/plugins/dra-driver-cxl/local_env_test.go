@@ -408,7 +408,7 @@ func (e *localTestEnv) localRegion(serial uint64) (region, creating, dax string)
 		return "", reg.Name, ""
 	case reg.State == state.RegionOwned || reg.State == state.RegionKept:
 		region = reg.Name
-	case reg.State == state.RegionNoted || reg.State == state.RegionCreating:
+	case reg.State == state.RegionNoted:
 		creating = reg.NotedName
 	}
 	if reg.SetUp {

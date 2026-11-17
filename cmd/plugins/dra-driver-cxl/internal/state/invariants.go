@@ -70,7 +70,7 @@ var DocumentInvariants = []Invariant{
 			"commit) and of a PREPARED_STALE one (a reboot cut that Prepare or Unprepare). A PREPARED preparation's grants are " +
 			"REALISED, a PREPARED_UNRESTORED one's REALISED or REALISED_UNRESTORED, and the lease claim of their " +
 			"lease results exists unless the claim's Unprepare runs (it closes the lease claim before the " +
-			"preparation turns UNPREPARING; the engine leaves this rule to the lease broker). A node mount is MOUNTED_RW iff a writer uses it. A lease lends only while READY, " +
+			"preparation turns UNPREPARING; the engine leaves this rule to the lease broker). A lease lends only while READY, " +
 			"releasing or FAILED.",
 		check: checkRecords,
 	},
@@ -120,7 +120,7 @@ func CheckStates(r *Records) error {
 // are defined next to their tables.
 var (
 	memdevStored     = list(MemdevActive, MemdevIdleKept, MemdevGone)
-	daxDeviceStored  = list(DaxCreating, DaxSized, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline, DaxReleasing, DaxSeed)
+	daxDeviceStored  = list(DaxCreating, DaxSized, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline, DaxSeed)
 	mountStored      = list(MountedRO, MountedRW, MountForeign, MountUnrestored)
 	bindStored       = list(BindAbsent, BindBound, BindStale)
 	leaseClaimStored = list(LeaseClaimOpen, LeaseClaimOpenNoListener, LeaseClaimClosing)
@@ -141,7 +141,7 @@ func checkRecords(r *Records, add addFunc) {
 	for i := range r.Preparations {
 		checkPreparation(r, &r.Preparations[i], add)
 	}
-	checkWritersAndLends(r, add)
+	checkLends(r, add)
 }
 
 // stored adds the records of a section whose state is not one of stored.
@@ -403,17 +403,8 @@ func resultKindSet(res *Result) bool {
 	return false
 }
 
-// checkWritersAndLends adds the node mounts whose state and writer
-// disagree and the leases that lend in a state that does not.
-func checkWritersAndLends(r *Records, add addFunc) {
-	for i := range r.Regions {
-		reg := &r.Regions[i]
-		for _, m := range reg.Mounts {
-			if (m.State == MountedRW) != m.Writer {
-				add(regionID(reg), "mount %s is %s with writer %v", m.Path, m.State, m.Writer)
-			}
-		}
-	}
+// checkLends adds the leases that lend in a state that does not lend.
+func checkLends(r *Records, add addFunc) {
 	for _, l := range r.Leases {
 		if l.Lend != nil && !slices.Contains(lendingLeases, l.State) {
 			add("lease "+l.ID, "lends while %s", l.State)
@@ -429,7 +420,7 @@ func checkUsers(r *Records, add addFunc) {
 		if !reg.Ours() {
 			continue
 		}
-		if reg.State == RegionNoted || reg.State == RegionCreating {
+		if reg.State == RegionNoted {
 			add(regionID(reg), "%s between requests", reg.State)
 		}
 		if reg.State == RegionHollowOwned {
@@ -474,13 +465,13 @@ func (r *Records) UnfinishedUser(d *DaxDevice) bool {
 }
 
 // RegionInMaking tells whether the region reg of the local memdev m is
-// still being made for a Prepare: NOTED or CREATING, or a ram region OWNED
+// still being made for a Prepare: NOTED, or a ram region OWNED
 // while every grant of the memdev is of a Prepare that did not finish
 // (JOURNALED, REALISING) and got no part of it yet (it is set up, probed and
 // zeroed before its first part).
 func (r *Records) RegionInMaking(m *Memdev, reg *Region) bool {
 	switch {
-	case reg.State == RegionNoted || reg.State == RegionCreating:
+	case reg.State == RegionNoted:
 		return true
 	case reg.State != RegionOwned || reg.Mode != RegionRam || len(m.Grants) == 0:
 		return false

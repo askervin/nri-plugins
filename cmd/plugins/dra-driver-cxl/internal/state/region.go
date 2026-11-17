@@ -29,8 +29,8 @@ import (
 // created (RegionRef).
 //
 // States: RegionState. NONE: no record. NOTED: the name that cxl
-// create-region will give is committed before it runs. CREATING:
-// create-region runs. OWNED: ours, enabled. KEPT: ours, disabled, kept
+// create-region will give is committed before it runs. OWNED: ours,
+// enabled. KEPT: ours, disabled, kept
 // below newer regions of another memdev (its release would leave a decoder
 // hole) or for a claim whose Prepare did not finish. HOLLOW_OWNED: ours,
 // hollow (its memdev went or create-region was cut), deleted when its
@@ -58,10 +58,8 @@ type Region struct {
 	Mode      RegionMode  `json:"mode"`
 	Targets   []Serial    `json:"targets"`
 	Owner     RegionOwner `json:"owner"`
-	// Locked is a region that the firmware committed and locked.
-	Locked bool        `json:"locked,omitempty"`
-	State  RegionState `json:"state"`
-	SetUp  bool        `json:"setUp,omitempty"`
+	State     RegionState `json:"state"`
+	SetUp     bool        `json:"setUp,omitempty"`
 	// Zeroed is a region whose memory was zeroed once (a new shared
 	// local region).
 	Zeroed bool `json:"zeroed,omitempty"`
@@ -97,7 +95,6 @@ type RegionState string
 const (
 	RegionNone        RegionState = "NONE"
 	RegionNoted       RegionState = "NOTED"
-	RegionCreating    RegionState = "CREATING"
 	RegionOwned       RegionState = "OWNED"
 	RegionKept        RegionState = "KEPT"
 	RegionHollowOwned RegionState = "HOLLOW_OWNED"
@@ -121,8 +118,8 @@ type Pmem struct {
 // States: DaxDeviceState. ABSENT: no device. CREATING: dax_region/create
 // written, the name read back. SIZED: sized, unbound. DEVICE_DAX: bound to
 // device_dax. KMEM_OFFLINE, KMEM_ONLINE: bound to kmem, its memory blocks
-// offline or online (movable). RELEASING: being offlined, unbound and
-// deleted. SEED: daxN.0 at size 0, which the kernel never deletes.
+// offline or online (movable). SEED: daxN.0 at size 0, which the kernel
+// never deletes.
 //
 // Transitions: DaxDeviceTable below; a transition not in it is refused.
 //
@@ -139,19 +136,12 @@ type DaxDevice struct {
 	Name   string         `json:"name"`
 	Dev    DevNumbers     `json:"dev,omitzero"`
 	Size   uint64         `json:"size,omitempty"`
-	Ranges []AddressRange `json:"ranges,omitempty"`
 	Driver DaxDriver      `json:"driver,omitempty"`
 	State  DaxDeviceState `json:"state"`
 	Users  []GrantRef     `json:"users,omitempty"`
 	// Whole is the device of the whole region (the seed of a sliced
 	// region, the shared device of a shared memdev).
 	Whole bool `json:"whole,omitempty"`
-}
-
-// AddressRange is a range of physical addresses, End included.
-type AddressRange struct {
-	Start uint64 `json:"start"`
-	End   uint64 `json:"end"`
 }
 
 // DaxDriver is the driver of a dax device, "" for none.
@@ -172,7 +162,6 @@ const (
 	DaxDeviceDax   DaxDeviceState = "DEVICE_DAX"
 	DaxKmemOffline DaxDeviceState = "KMEM_OFFLINE"
 	DaxKmemOnline  DaxDeviceState = "KMEM_ONLINE"
-	DaxReleasing   DaxDeviceState = "RELEASING"
 	DaxSeed        DaxDeviceState = "SEED"
 )
 
@@ -190,8 +179,8 @@ const (
 //
 // Transitions: MountTable below; a transition not in it is refused.
 //
-// Invariants: MOUNTED_RW iff Writer; the block device is read-only iff no
-// writer grant uses the region.
+// Invariants: the block device is read-only iff no writer grant uses the
+// region.
 //
 // Persistence: intent (the path in a grant's Intent before the mount) and
 // fact.
@@ -203,10 +192,8 @@ type Mount struct {
 	Path   string     `json:"path"`
 	State  MountState `json:"state"`
 	// Loop is the loop device of a cached mount.
-	Loop   string `json:"loop,omitempty"`
-	FsType string `json:"fsType,omitempty"`
-	// Writer is a mount that a writer grant uses.
-	Writer bool       `json:"writer,omitempty"`
+	Loop   string     `json:"loop,omitempty"`
+	FsType string     `json:"fsType,omitempty"`
 	Users  []GrantRef `json:"users,omitempty"`
 }
 
@@ -222,13 +209,13 @@ const (
 )
 
 // regionStored are the states of a region record in the store.
-var regionStored = list(RegionNoted, RegionCreating, RegionOwned, RegionKept, RegionHollowOwned, RegionForeign)
+var regionStored = list(RegionNoted, RegionOwned, RegionKept, RegionHollowOwned, RegionForeign)
 
 // RegionTable is the transition table of Region.State.
 var RegionTable = Table[RegionState]{
 	Object: "Region",
 	Field:  "State",
-	States: list(RegionNone, RegionNoted, RegionCreating, RegionOwned, RegionKept, RegionHollowOwned, RegionForeign),
+	States: list(RegionNone, RegionNoted, RegionOwned, RegionKept, RegionHollowOwned, RegionForeign),
 	Rows: []Transition[RegionState]{
 		{
 			From: list(RegionNone), To: RegionNoted, Triggers: list(TriggerPrepare),
@@ -237,30 +224,25 @@ var RegionTable = Table[RegionState]{
 			Effects: "commit (d) of NotedName before cxl create-region",
 		},
 		{
-			From: list(RegionNoted), To: RegionCreating, Triggers: list(TriggerPrepare),
-			When:    "cxl create-region started",
-			Effects: "kernel command (engine lock held for the command)",
-		},
-		{
-			From: list(RegionCreating), To: RegionOwned, Triggers: list(TriggerPrepare),
-			When:    "create-region returned; the region's targets are this memdev",
+			From: list(RegionNoted), To: RegionOwned, Triggers: list(TriggerPrepare),
+			When:    "cxl create-region returned (engine lock held for the command); the region's targets are this memdev",
 			Guard:   "the name is NotedName, or the created name read again",
 			Effects: "commit (d) of Name and Mode",
 		},
 		{
-			From: list(RegionNoted, RegionCreating), To: RegionNone, Triggers: list(TriggerPrepare, TriggerRecover),
+			From: list(RegionNoted), To: RegionNone, Triggers: list(TriggerPrepare, TriggerRecover),
 			When: "create-region failed with nothing created (decoder hole; endpoint not ready: retried once after " +
 				"3 s); or the recovery finds no region of the noted name",
 			Guard:   "no region of the noted name exists",
 			Effects: "commit (d) clearing the note",
 		},
 		{
-			From: list(RegionNoted, RegionCreating), To: RegionOwned, Triggers: list(TriggerRecover),
+			From: list(RegionNoted), To: RegionOwned, Triggers: list(TriggerRecover),
 			When:    "the recovery finds a region of the noted name whose targets are this memdev",
 			Effects: "commit (d) of Name",
 		},
 		{
-			From: list(RegionNoted, RegionCreating), To: RegionHollowOwned, Triggers: list(TriggerRecover),
+			From: list(RegionNoted), To: RegionHollowOwned, Triggers: list(TriggerRecover),
 			When:    "the recovery finds a hollow region of the noted name",
 			Effects: "the memdev's Hollow gets the name; commit (l)",
 		},
@@ -322,10 +304,10 @@ var RegionTable = Table[RegionState]{
 		},
 	},
 	Refused: []Refusal[RegionState]{
-		{From: list(RegionNone), To: list(RegionCreating), Why: "no creation without the note"},
+		{From: list(RegionNone), To: list(RegionOwned), Why: "no creation without the note"},
 		{
 			From: list(RegionForeign),
-			To:   list(RegionNoted, RegionCreating, RegionOwned, RegionKept, RegionHollowOwned),
+			To:   list(RegionNoted, RegionOwned, RegionKept, RegionHollowOwned),
 			Why:  "a foreign region never becomes ours",
 		},
 	},
@@ -359,7 +341,7 @@ var daxBound = list(DaxDeviceDax, DaxKmemOffline, DaxKmemOnline)
 var DaxDeviceTable = Table[DaxDeviceState]{
 	Object: "DaxDevice",
 	Field:  "State",
-	States: list(DaxAbsent, DaxCreating, DaxSized, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline, DaxReleasing, DaxSeed),
+	States: list(DaxAbsent, DaxCreating, DaxSized, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline, DaxSeed),
 	Rows: []Transition[DaxDeviceState]{
 		{
 			From: list(DaxAbsent), To: DaxCreating, Triggers: list(TriggerPrepare),
@@ -404,9 +386,10 @@ var DaxDeviceTable = Table[DaxDeviceState]{
 			Effects: "commit (d); a part: Users the grant, no longer the Whole device",
 		},
 		{
-			From: list(DaxSized), To: DaxSeed, Triggers: list(TriggerPrepare),
-			When:    "daxN.0 resized to 0: the seed of a sliced region",
-			Effects: "commit (d)",
+			From: list(DaxSized, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline), To: DaxSeed, Triggers: releasers,
+			When: "daxN.0 resized to 0: the seed of a sliced region; or daxN.0 released with Users empty and not " +
+				"kept: the kernel keeps it at size 0",
+			Effects: "kmem: blocks offlined (EBUSY: stays, error up); unbound; resized to 0; commit (d)",
 		},
 		{
 			From: list(DaxSeed), To: DaxSized, Triggers: list(TriggerPrepare),
@@ -439,26 +422,17 @@ var DaxDeviceTable = Table[DaxDeviceState]{
 			Effects: "Users gets the grant or loses it; commit (d)",
 		},
 		{
-			From: list(DaxSized, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline), To: DaxReleasing, Triggers: releasers,
-			When:    "Users empty and not kept (the Whole device of a configured shared memdev stays)",
-			Effects: "kmem: blocks offlined (EBUSY: stays, error up); unbound; resized to 0",
-		},
-		{
-			From: list(DaxReleasing), To: DaxAbsent, Triggers: releasers,
-			When:    "delete written",
-			Effects: "commit (d)",
-		},
-		{
-			From: list(DaxReleasing), To: DaxSeed, Triggers: releasers,
-			When:    "daxN.0 released: the kernel keeps it at size 0",
-			Effects: "commit (d)",
+			From: list(DaxSized, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline), To: DaxAbsent,
+			Triggers: list(TriggerUnprepare, TriggerPrepare),
+			When:     "Users empty and not kept (the Whole device of a configured shared memdev stays)",
+			Effects:  "kmem: blocks offlined (EBUSY: stays, error up); unbound; resized to 0; delete written; commit (d)",
 		},
 		{
 			From:     list(DaxCreating, DaxSized, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline),
 			To:       DaxAbsent,
 			Triggers: list(TriggerRecover),
 			When: "the recovery deletes a dax device of a region of ours without users and not the kept Whole " +
-				"device",
+				"device, or releases the device of a grant that it releases",
 			Guard:   "blocks offline first",
 			Effects: "deleted",
 		},

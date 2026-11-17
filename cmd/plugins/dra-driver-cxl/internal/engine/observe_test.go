@@ -131,9 +131,10 @@ func TestQueuesPerMemdev(t *testing.T) {
 		_, err := v.e.PrepareGrants(context.Background(), []GrantRequest{poolReq("wait", 0, serialA, state.ModeDax, state.KindExclusive)})
 		done <- err
 	}()
-	for deadline := time.Now().Add(5 * time.Second); !v.e.Busy(serialA); {
+	// the grant is JOURNALED before the request waits for its memdev
+	for deadline := time.Now().Add(5 * time.Second); v.records().Grant(state.GrantRef{Claim: "wait"}) == nil; {
 		if time.Now().After(deadline) {
-			t.Fatal("the waiting memdev is not busy")
+			t.Fatal("the request of the missing memdev journaled no grant")
 		}
 		time.Sleep(time.Millisecond)
 	}

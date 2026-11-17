@@ -39,9 +39,8 @@ import (
 // and LOCAL serials with Pool and LastSeen (committed at most hourly when
 // only LastSeen changed), and of HELD serials with HeldSince and HeldReason
 // (committed durably when the hold starts, ends or changes its reason), kept
-// across restarts and reboots: a hold goes on from its HeldSince.
-// LastObserved and the absence of a serial are kept in memory only: a
-// restart observes them anew.
+// across restarts and reboots: a hold goes on from its HeldSince. The
+// absence of a serial is kept in memory only: a restart observes it anew.
 //
 // Locks and waits: the provenance watcher is the only writer.
 type Provenance struct {
@@ -53,10 +52,6 @@ type Provenance struct {
 	// LastSeen is when the serial was last seen in a pool ResourceSlice,
 	// prepared or on the node.
 	LastSeen time.Time `json:"lastSeen,omitzero"`
-	// LastObserved is the last observation that the absence of the serial
-	// counts over: absence counts only over observations at most 5 min
-	// apart.
-	LastObserved time.Time `json:"lastObserved,omitzero"`
 	// HeldSince is when the hold started, or when its reason last turned
 	// from one without expiry to one with: the expiry counts from it.
 	HeldSince  time.Time  `json:"heldSince,omitzero"`

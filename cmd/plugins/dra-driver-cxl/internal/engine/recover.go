@@ -383,8 +383,7 @@ func syncForeign(r *state.Records, seen map[string]kernel.RegionInfo, names []st
 		if ri.State == kernel.RegionAbsent || r.Region(state.RegionRef(name)) != nil {
 			continue
 		}
-		reg := state.Region{Name: name, Mode: state.RegionMode(ri.Mode), Owner: state.OwnerForeign, Locked: ri.Locked,
-			State: state.RegionNone}
+		reg := state.Region{Name: name, Mode: state.RegionMode(ri.Mode), Owner: state.OwnerForeign, State: state.RegionNone}
 		for _, serial := range ri.Serials {
 			reg.Targets = append(reg.Targets, state.Serial(serial))
 		}
@@ -448,7 +447,7 @@ func regionsSeen(r *state.Records, seen map[state.RegionRef]regionSeen) ([]state
 			continue
 		}
 		switch reg.State {
-		case state.RegionNoted, state.RegionCreating:
+		case state.RegionNoted:
 			if err := recoverNoted(r, reg, k); err != nil {
 				return nil, err
 			}
@@ -950,7 +949,6 @@ func grantUnrestored(r *state.Records, ref state.GrantRef, why error) error {
 			if err := state.Apply(&state.MountTable, &m.State, to, state.TriggerRecover); err != nil {
 				return err
 			}
-			m.Writer = false
 		}
 	}
 	if p := r.PreparationOf(ref); p != nil && p.State == state.PreparationPrepared {
@@ -976,7 +974,7 @@ func grantRestored(r *state.Records, ref state.GrantRef) error {
 	}
 	want := state.MountedRO
 	if mountWriter(r, m) {
-		want, m.Writer = state.MountedRW, true
+		want = state.MountedRW
 	}
 	return state.Apply(&state.MountTable, &m.State, want, state.TriggerRecover)
 }
@@ -1628,7 +1626,7 @@ func (e *Engine) remountGrant(ctx context.Context, req *GrantRequest) error {
 		if m.State == state.MountUnrestored {
 			want := state.MountedRO
 			if mountWriter(r, m) {
-				want, m.Writer = state.MountedRW, true
+				want = state.MountedRW
 			}
 			if err := state.Apply(&state.MountTable, &m.State, want, state.TriggerPrepare); err != nil {
 				return err

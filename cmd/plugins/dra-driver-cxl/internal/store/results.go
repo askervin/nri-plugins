@@ -59,7 +59,6 @@ type claimInfo struct {
 	ClaimName string             `json:"claimName"`
 	Devices   []state.DeviceInfo `json:"devices"`
 	Lend      *lendInfo          `json:"lend,omitempty"`
-	BootID    string             `json:"bootID,omitempty"`
 }
 
 // PoolDevice is a device of a pool claim: one allocation result of the
@@ -365,7 +364,7 @@ func PoolDevicesContent(doc *Document, p *state.Preparation, opts ResultOptions)
 // JSON, in any state.
 func ClaimInfoContent(doc *Document, p *state.Preparation, opts ResultOptions) ([]byte, error) {
 	opts = opts.withDefaults()
-	info := claimInfo{ClaimName: p.ClaimName, Devices: []state.DeviceInfo{}, Lend: lendOf(doc, p), BootID: p.BootID}
+	info := claimInfo{ClaimName: p.ClaimName, Devices: []state.DeviceInfo{}, Lend: lendOf(doc, p)}
 	for _, r := range results(p) {
 		info.Devices = append(info.Devices, deviceInfo(doc, r, opts))
 	}

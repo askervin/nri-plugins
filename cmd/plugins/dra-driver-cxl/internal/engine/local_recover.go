@@ -209,7 +209,7 @@ func (e *Engine) releaseIdleQueued(ctx context.Context, m *state.Memdev, decisio
 		return err
 	}
 	if dev := e.currentBlockDevice(m.Serial); m.Facts.Persistent && dev != "" {
-		if err := e.waitNoHolder(ctx, m.Source, m.Serial, dev, time.Now(), trigger); err != nil {
+		if err := e.waitNoHolder(ctx, m.Source, m.Serial, dev, time.Now()); err != nil {
 			klog.Warningf("local: memdev %s (serial %s): keeping %s of the idle persistent device: %v", memdev, serialText(m.Serial), region, err)
 			return nil
 		}

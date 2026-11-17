@@ -107,9 +107,12 @@ func (p *ObsPod) dualClaims() (pool, local *ObsClaim, ok bool) {
 	return b, a, true
 }
 
-// localDriver is the DRA driver of local claims (pool claims are
-// cxl-pool.nri.io's).
-const localDriver = "cxl.nri.io"
+// localDriver is the DRA driver of local claims, poolDriver that of pool
+// claims.
+const (
+	localDriver = "cxl.nri.io"
+	poolDriver  = "cxl-pool.nri.io"
+)
 
 // claimAllocated: a claim of the pod is allocated (a dnuma pod: one of
 // its two).
@@ -447,62 +450,33 @@ type ObsNode struct {
 }
 
 // ObsDriverState is what the observer derives from the driver's
-// state.json: the prepared claims of cxl.nri.io (Prepared, Info) and of the
-// pool driver (Pool) by UID, the local memdevs and the leases.
+// state.json: the boot of the records, the UIDs of the prepared claims by
+// driver, the local memdevs, the dax devices of local memdevs that no
+// grant uses, the lease claims and the leases. A part that is not observed
+// is nil.
 type ObsDriverState struct {
-	Prepared     []string         `json:"prepared"`
-	Info         []string         `json:"info"`
-	Pool         []string         `json:"pool"`
-	LocalDevices *ObsLocalDevices `json:"localDevices"`
-	Leases       json.RawMessage  `json:"leases"`
+	BootID       string              `json:"bootID"`
+	Prepared     map[string][]string `json:"prepared"`
+	LocalMemdevs []ObsLocalMemdev    `json:"localMemdevs"`
+	UnusedDax    []string            `json:"unusedDax"`
+	LeaseClaims  []string            `json:"leaseClaims"`
+	Leases       []ObsStoredLease    `json:"leases"`
 }
 
-type ObsLocalDevices struct {
-	BootID  string           `json:"bootID"`
-	Devices []ObsLocalDevice `json:"devices"`
+// ObsLocalMemdev is a local memdev of state.json: its serial (0x hex text)
+// and per claim UID the number of its grants that use the memdev.
+type ObsLocalMemdev struct {
+	Serial string         `json:"serial"`
+	Claims map[string]int `json:"claims"`
 }
 
-// ObsLocalDevice is a local memdev of state.json. The observer writes the
-// serial as 0x hex text; a number and serialHex are accepted too.
-type ObsLocalDevice struct {
-	Serial    json.RawMessage            `json:"serial"`
-	SerialHex string                     `json:"serialHex"`
-	Region    string                     `json:"region"`
-	Claims    map[string]json.RawMessage `json:"claims"`
-}
-
-func (d *ObsLocalDevice) serial() (uint64, bool) {
-	if d.SerialHex != "" {
-		if v, ok := parseSerial(d.SerialHex); ok {
-			return v, true
-		}
-	}
-	raw := bytes.TrimSpace(d.Serial)
-	if len(raw) == 0 {
-		return 0, false
-	}
-	if raw[0] == '"' {
-		var s string
-		if json.Unmarshal(raw, &s) != nil {
-			return 0, false
-		}
-		if strings.HasPrefix(strings.ToLower(s), "0x") {
-			return parseSerial(s)
-		}
-		v, err := strconv.ParseUint(s, 10, 64)
-		return v, err == nil
-	}
-	v, err := strconv.ParseUint(string(raw), 10, 64)
-	return v, err == nil
-}
-
-// slices returns the number of slices of a claim of the device.
-func (d *ObsLocalDevice) slices(uid string) int {
-	var list []json.RawMessage
-	if json.Unmarshal(d.Claims[uid], &list) != nil {
-		return 0
-	}
-	return len(list)
+// ObsStoredLease is a lease of state.json: its id, mode, state (the
+// protocol's name) and the name of its pod.
+type ObsStoredLease struct {
+	ID    string `json:"id"`
+	Mode  string `json:"mode"`
+	State string `json:"state"`
+	Pod   string `json:"pod"`
 }
 
 type ObsContainer struct {

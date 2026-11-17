@@ -773,7 +773,7 @@ func (s *sim) observeVM(v VM) *ObsVM {
 	mem := map[int]uint64{}
 	var poolMode [nDevs]int
 	var prepared, pool, claimsCDI, poolCDI, leasesCDI []string
-	localClaims := map[string]json.RawMessage{}
+	localClaims := map[string]int{}
 	kmem, ddax := "kmem", "device_dax"
 	var localDax []ObsDax
 	cxlDevs := []ObsCXLDev{}
@@ -781,7 +781,7 @@ func (s *sim) observeVM(v VM) *ObsVM {
 	// (the slice of slot k-1, or of the companion of the lease of slot
 	// k-1-len(Slots))
 	slice := func(uid string, numa bool, k int) {
-		localClaims[uid] = json.RawMessage(`[{"request":"c0","size":134217728}]`)
+		localClaims[uid] = 1
 		if numa {
 			localDax = append(localDax, ObsDax{Name: simDaxName(localNo, k), Size: blockSize, Driver: &kmem, Online: blockSize})
 			mem[cfg.bridgeNode(HB0)] += blockSize
@@ -922,20 +922,21 @@ func (s *sim) observeVM(v VM) *ObsVM {
 		cxlDevs = append(cxlDevs, simCXLDev(simDaxName(no, 0), "dax", simDaxDev(no, 0), dev.Serial))
 		ov.Regions = append(ov.Regions, r)
 	}
-	ld := &ObsLocalDevices{BootID: ov.BootID, Devices: []ObsLocalDevice{}}
+	memdevs := []ObsLocalMemdev{}
 	if len(localDax) > 0 {
 		node := cfg.bridgeNode(HB0)
 		dax := append([]ObsDax{{Name: simDaxName(localNo, 0), Size: 0, Driver: &ddax}}, localDax...)
 		region := fmt.Sprintf("region%d", localNo)
 		ov.Regions = append(ov.Regions, ObsRegion{Name: region, Serials: []string{formatSerial(localSerial)}, Mode: "ram",
 			Size: uint64(cfg.LocalBlocks[v]) * blockSize, Node: &node, Dax: dax})
-		ld.Devices = append(ld.Devices, ObsLocalDevice{Serial: json.RawMessage(strconv.FormatUint(localSerial, 10)),
-			SerialHex: "c100e2e1", Region: region, Claims: localClaims})
+		memdevs = append(memdevs, ObsLocalMemdev{Serial: formatSerial(localSerial), Claims: localClaims})
 	}
 	for _, n := range cfg.cxlNodes() {
 		ov.Nodes[strconv.Itoa(n)] = ObsNode{MemTotal: mem[n]}
 	}
-	ov.State = &ObsDriverState{Prepared: prepared, Info: append([]string(nil), prepared...), Pool: pool, LocalDevices: ld, Leases: s.leaseStore(v)}
+	claims, leases := s.leaseStore(v)
+	ov.State = &ObsDriverState{BootID: ov.BootID, Prepared: map[string][]string{localDriver: prepared, poolDriver: pool},
+		LocalMemdevs: memdevs, UnusedDax: []string{}, LeaseClaims: claims, Leases: leases}
 	ctr, yes := fmt.Sprintf("drv-%s-%d", v, st.Drv[v].Inc), true
 	mode := st.Fence.String()
 	ov.DriverLog = &ObsDriverLog{Container: &ctr, LendsRestored: &yes, Sockets: &yes, Fencing: &mode, NRISynced: &yes}
@@ -970,44 +971,27 @@ func (s *sim) observeVM(v VM) *ObsVM {
 	return ov
 }
 
-// leaseStore is the leases of state.json of a VM.
-func (s *sim) leaseStore(v VM) json.RawMessage {
+// leaseStore returns the lease claims and the leases of state.json of a
+// VM.
+func (s *sim) leaseStore(v VM) ([]string, []ObsStoredLease) {
 	st := s.truth
-	type lease struct {
-		ID    string `json:"id"`
-		Mode  string `json:"mode"`
-		State string `json:"state"`
-		Node  int    `json:"node"`
-		Pod   struct {
-			Name string `json:"name"`
-		} `json:"pod"`
-	}
-	store := struct {
-		Claims map[string]any   `json:"claims"`
-		Leases map[string]lease `json:"leases"`
-	}{map[string]any{}, map[string]lease{}}
+	claims, leases := []string{}, []ObsStoredLease{}
 	for i := range st.Slots {
 		ss := &st.Slots[i]
 		sl := st.slot(i)
 		if !sl.Kind.leaseKind() || sl.VM != v || ss.Phase != Running {
 			continue
 		}
-		store.Claims[claimUID(sl, ss.Gen)] = map[string]string{"uid": claimUID(sl, ss.Gen)}
+		claims = append(claims, claimUID(sl, ss.Gen))
 		if ss.Lease == LeaseHeld || ss.Lease == LeaseBusy {
 			state := "Ready"
 			if ss.Lease == LeaseBusy {
 				state = "Releasing"
 			}
-			l := lease{ID: st.LeaseIDs[i], Mode: ss.LeaseMode.String(), State: state, Node: -1}
-			if ss.LeaseMode == ModeNuma {
-				l.Node = s.cfg.bridgeNode(HB0)
-			}
-			l.Pod.Name = podName(sl, ss.Gen)
-			store.Leases[st.LeaseIDs[i]] = l
+			leases = append(leases, ObsStoredLease{ID: st.LeaseIDs[i], Mode: ss.LeaseMode.String(), State: state, Pod: podName(sl, ss.Gen)})
 		}
 	}
-	js, _ := json.Marshal(store)
-	return js
+	return claims, leases
 }
 
 func nodeListString(nodes map[int]bool) string {

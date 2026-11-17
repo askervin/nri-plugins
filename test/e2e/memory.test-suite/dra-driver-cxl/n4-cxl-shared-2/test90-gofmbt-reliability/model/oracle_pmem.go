@@ -636,13 +636,13 @@ func (k *checker) checkPoolClaims(v VM, ov *ObsVM, blockdevs map[DevID]string) {
 		}
 		pc, ok := claims[p.Claim.UID]
 		if !ok {
-			k.waitf("%s: preparedPoolClaims.json has no claim of %s", v, sl.Name)
+			k.waitf("%s: state.json: no prepared pool claim of %s", v, sl.Name)
 			continue
 		}
 		bd := blockdevs[sl.Dev]
 		for _, d := range pc.Devices {
 			if d.BlockDevice != nil && bd != "" && *d.BlockDevice != bd {
-				k.waitf("%s: preparedPoolClaims.json: %s on %s, the namespace's is %s", v, sl.Name, *d.BlockDevice, bd)
+				k.waitf("%s: state.json: the pool claim of %s on %s, the namespace's is %s", v, sl.Name, *d.BlockDevice, bd)
 			}
 		}
 	}

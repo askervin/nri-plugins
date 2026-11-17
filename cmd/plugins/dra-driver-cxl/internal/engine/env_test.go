@@ -303,7 +303,7 @@ func (v *env) prepare(driver, uid string, reqs ...GrantRequest) error {
 		p := doc.Preparation(driver, uid)
 		if p == nil {
 			doc.Preparations = append(doc.Preparations, state.Preparation{UID: uid, Driver: driver, ClaimName: "ns/" + uid,
-				BootID: v.f.BootID(), State: state.PreparationUnknown})
+				State: state.PreparationUnknown})
 			p = &doc.Preparations[len(doc.Preparations)-1]
 		}
 		if p.State == state.PreparationStale {
@@ -320,7 +320,6 @@ func (v *env) prepare(driver, uid string, reqs ...GrantRequest) error {
 				p.Results = append(p.Results, grantResult(uid, reqs[i].Ref.Result))
 			}
 		}
-		p.BootID = v.f.BootID()
 		if p.State == state.PreparationPreparing {
 			return state.Apply(&state.PreparationTable, &p.State, state.PreparationPreparing, state.TriggerPrepare)
 		}

@@ -142,15 +142,14 @@ func reservedPods(claim *resourcev1.ResourceClaim) []state.PodRef {
 
 // OpenClaim records a claim on the lease device, writes its CDI device and
 // starts its socket. Idempotent: an open claim gets the pods of its
-// reservedFor and keeps its FsDir (containers created from the old CDI
-// device keep their mounts).
+// reservedFor.
 func (b *Broker) OpenClaim(claim *resourcev1.ResourceClaim) error {
 	uid := string(claim.UID)
 	var lc state.LeaseClaim
 	err := b.commit(func(r *state.Records) error {
 		cur := r.LeaseClaim(uid)
 		if cur == nil {
-			r.LeaseClaims = append(r.LeaseClaims, state.LeaseClaim{UID: uid, State: state.LeaseClaimNone, FsDir: b.leaseFsDir(uid)})
+			r.LeaseClaims = append(r.LeaseClaims, state.LeaseClaim{UID: uid, State: state.LeaseClaimNone})
 			cur = &r.LeaseClaims[len(r.LeaseClaims)-1]
 		}
 		was := cur.State
@@ -169,7 +168,7 @@ func (b *Broker) OpenClaim(claim *resourcev1.ResourceClaim) error {
 	if err := b.writeCDISpec(); err != nil {
 		return err
 	}
-	if err := b.listen(uid, lc.FsDir); err != nil {
+	if err := b.listen(uid); err != nil {
 		return err
 	}
 	klog.Infof("lease broker: claim %s/%s (%s): lease socket %s for pods %v",
@@ -192,7 +191,7 @@ func (b *Broker) recoverClaims() {
 		if lc.State == state.LeaseClaimClosing {
 			to[lc.UID] = state.LeaseClaimClosing
 		}
-		if err := b.listen(lc.UID, lc.FsDir); err != nil {
+		if err := b.listen(lc.UID); err != nil {
 			klog.Errorf("lease broker: lease claim %s: %v", lc.UID, err)
 			if to[lc.UID] != state.LeaseClaimClosing {
 				to[lc.UID] = state.LeaseClaimOpenNoListener
@@ -472,8 +471,9 @@ func (b *Broker) sweepFsDirs(trigger state.Trigger) {
 }
 
 // listen starts the socket of a lease claim if it is not running, with the
-// directories of its fsDir, unless the broker stops. Called with b.mu held.
-func (b *Broker) listen(uid, fsDir string) error {
+// directories of its fs leases, unless the broker stops. Called with b.mu
+// held.
+func (b *Broker) listen(uid string) error {
 	switch {
 	case b.listeners[uid] != nil:
 		return nil
@@ -490,7 +490,7 @@ func (b *Broker) listen(uid, fsDir string) error {
 	if err := os.Chmod(dir, 0755); err != nil {
 		return err
 	}
-	if err := b.makeFsDirs(uid, fsDir); err != nil {
+	if err := b.makeFsDirs(uid); err != nil {
 		return err
 	}
 	// The socket is made and given its mode where no container can
@@ -528,12 +528,10 @@ func (b *Broker) listen(uid, fsDir string) error {
 	return nil
 }
 
-// makeFsDirs creates, for a lease claim with its lease-fs directory fsDir,
-// the mount point of api.FsDir in its socket directory and fsDir.
-func (b *Broker) makeFsDirs(uid, fsDir string) error {
-	if fsDir == "" {
-		return nil
-	}
+// makeFsDirs creates, for the lease claim uid, the mount point of
+// api.FsDir in its socket directory and its lease-fs directory.
+func (b *Broker) makeFsDirs(uid string) error {
+	fsDir := b.leaseFsDir(uid)
 	mp := filepath.Join(b.leaseDir(uid), leaseFsMountPoint)
 	if err := mkdirNoFollow(mp); err != nil {
 		return err
@@ -599,16 +597,12 @@ func (b *Broker) cdiDevice(lc *state.LeaseClaim) cdiSpecs.Device {
 			Options:       []string{"rbind", "ro"},
 		}},
 	}
-	// The containers of a claim prepared without FsDir were created
-	// without this mount: their CDI device stays as it was.
-	if lc.FsDir != "" {
-		edits.Mounts = append(edits.Mounts, &cdiSpecs.Mount{
-			HostPath:      lc.FsDir,
-			ContainerPath: api.FsDir,
-			Type:          "bind",
-			Options:       []string{"rbind", "ro", "rslave"},
-		})
-	}
+	edits.Mounts = append(edits.Mounts, &cdiSpecs.Mount{
+		HostPath:      b.leaseFsDir(claimUID),
+		ContainerPath: api.FsDir,
+		Type:          "bind",
+		Options:       []string{"rbind", "ro", "rslave"},
+	})
 	// A missing bind mount source fails the container creation, so the
 	// CLI is mounted only if it exists. The socket works without it.
 	if b.opts.CLI != "" {

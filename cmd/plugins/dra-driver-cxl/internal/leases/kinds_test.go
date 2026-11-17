@@ -655,7 +655,7 @@ func TestFsLease(t *testing.T) {
 		got(l).Path != "/run/cxl/fs/models" || !l.Asked.ReadOnly {
 		t.Fatalf("lease after a restart %+v", l)
 	}
-	if lc := e.claim(envLeaseClaim); lc == nil || lc.FsDir != fsDir {
+	if lc := e.claim(envLeaseClaim); lc == nil {
 		t.Fatalf("lease claim after a restart %+v", lc)
 	}
 	list, _ := e.call(api.Request{Op: api.OpList})

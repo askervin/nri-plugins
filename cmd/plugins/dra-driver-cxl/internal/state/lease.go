@@ -179,7 +179,7 @@ var LeaseTable = Table[LeaseState]{
 		{
 			From: list(LeaseNone), To: LeaseCreating, Triggers: list(TriggerRequest),
 			When:    "a request on a lease claim's socket: authenticated, validated, the serial resolved, the id chosen",
-			Guard:   "an fs lease: its lease claim has FsDir and the name is unused",
+			Guard:   "an fs lease: the name is unused",
 			Effects: "commit (d) before any API object exists; a failed commit refuses the request",
 		},
 		{

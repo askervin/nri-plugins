@@ -210,8 +210,7 @@
             "container.steering.policy": "claim"
           }
         }
-      ],
-      "bootID": "boot-1"
+      ]
     },
     "result": {
       "Err": null,
@@ -254,8 +253,7 @@
           "daxMinor": 2,
           "readOnly": true
         }
-      ],
-      "bootID": "boot-1"
+      ]
     },
     "result": {
       "Err": null,
@@ -298,8 +296,7 @@
           "daxMinor": 4,
           "shared": true
         }
-      ],
-      "bootID": "boot-1"
+      ]
     },
     "result": {
       "Err": null,
@@ -373,8 +370,7 @@
           "totalBytes": 68719476736,
           "consumedBytes": 0
         }
-      ],
-      "bootID": "boot-1"
+      ]
     },
     "result": {
       "Err": null,
@@ -436,8 +432,7 @@
           "consumedBytes": 0,
           "serial": "0xc100e2e1"
         }
-      ],
-      "bootID": "boot-1"
+      ]
     },
     "result": {
       "Err": null,
@@ -482,8 +477,7 @@
           "nodeMount": "/var/lib/kubelet/plugins/cxl.nri.io/mounts/c1ae2001-direct",
           "fsType": "erofs"
         }
-      ],
-      "bootID": "boot-1"
+      ]
     },
     "result": {
       "Err": null,
@@ -516,8 +510,7 @@
           "totalBytes": 0,
           "consumedBytes": 0
         }
-      ],
-      "bootID": "boot-1"
+      ]
     },
     "result": {
       "Err": null,
@@ -553,8 +546,7 @@
           "consumedBytes": 0,
           "serial": "0xc100e2e9"
         }
-      ],
-      "bootID": "boot-0"
+      ]
     },
     "result": {
       "Err": null,
@@ -607,8 +599,7 @@
         "nodes": [
           2
         ]
-      },
-      "bootID": "boot-1"
+      }
     },
     "result": {
       "Err": null,

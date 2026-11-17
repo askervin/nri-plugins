@@ -74,22 +74,18 @@ Where the data comes from:
                 start and size
   nodes         /sys/devices/system/node/nodeN/meminfo MemTotal
   state         the records of the driver's document
-                /var/lib/kubelet/plugins/cxl.nri.io/state.json (schema
-                2; every part is null without it): "prepared" and
-                "info" the UIDs of the claims of cxl.nri.io that kubelet
-                may take as prepared (PREPARED, PREPARED_UNRESTORED,
-                UNPREPARING), "pool" those of cxl-pool.nri.io;
-                "localDevices" the boot id and per local memdev its
-                serial, region (its first region of the driver once that
-                one is KEPT, or OWNED and made; else "") and per claim
-                UID its uses (request, region, mode, size, dax), null
-                for a claim whose grant holds the region without a use
-                yet, "-" for the dax devices of the memdev's regions
-                that no grant uses; "leases" the lease claims by UID and
-                the leases by
-                id: mode, state (Creating, Pending, Lending, Ready,
-                Releasing, Failed), node (of the lend, -1 for none) and
-                pod name
+                /var/lib/kubelet/plugins/cxl.nri.io/state.json (every
+                part is null without it): "bootID" the boot of the
+                records; "prepared" by driver the UIDs of the claims
+                that kubelet may take as prepared (PREPARED,
+                PREPARED_UNRESTORED, UNPREPARING); "localMemdevs" per
+                local memdev its serial and per claim UID the number of
+                its grants that use the memdev (0 for a grant that holds
+                the region without a use yet); "unusedDax" the dax
+                devices of the regions of local memdevs that no grant
+                uses; "leaseClaims" the UIDs of the lease claims;
+                "leases" by id: mode, state (Creating, Pending, Lending,
+                Ready, Releasing, Failed) and pod name
   cdi           /etc/cdi/* and /var/run/cdi/*: file -> device names
   containers    crictl ps (running containers of NS) and crictl inspect:
                 the cgroup v2 directory of each container is that of its
@@ -902,7 +898,7 @@ def driver_log(errors):
 
 
 ###
-### The driver's state: the records of state.json (schema 2)
+### The driver's state: the records of the driver's document state.json
 ###
 
 STATE_FILE = LOCAL_DIR + "/state.json"
@@ -921,17 +917,6 @@ LEASE_STATES = {"CREATING": "Creating", "PENDING": "Pending", "LENDING": "Lendin
 def grant_key(ref):
     """The claim UID and result index of a grant reference, None for none."""
     return None if ref is None else (ref.get("claim"), ref.get("result"))
-
-
-def result_of(p, n):
-    """The first result of preparation p with the index n, None if none."""
-    return next((r for r in p.get("results") or [] if r.get("index") == n), None)
-
-
-def results_of(p):
-    """The results of preparation p that are allocation results (a negative
-    index is a use of a memdev that no allocation result names)."""
-    return [r for r in p.get("results") or [] if (r.get("index") or 0) >= 0]
 
 
 class Records:
@@ -957,17 +942,6 @@ class Records:
         return [p for p in self.doc.get("preparations") or []
                 if p.get("driver") == driver and p.get("state") in PREPARED]
 
-    def request_of(self, ref):
-        """The request of the allocation result of the grant ref, "" if no
-        preparation names the grant."""
-        for p in self.doc.get("preparations") or []:
-            if p.get("uid") != ref.get("claim"):
-                continue
-            r = result_of(p, ref.get("result"))
-            if r is not None and grant_key(r.get("grant")) == grant_key(ref):
-                return r.get("request") or ""
-        return ""
-
     def mount_of(self, g):
         """The node mount of grant g in its region, None if it has none."""
         got = g.get("got") or {}
@@ -976,6 +950,10 @@ class Records:
             return None
         return next((m for m in reg.get("mounts") or [] if m.get("access") == got["mount"]), None)
 
+    def local_memdevs(self):
+        """The memdev records of the local memdevs."""
+        return [m for m in self.doc.get("memdevs") or [] if m.get("source") == "local"]
+
 
 def prepared_uids(recs, driver):
     """The UIDs of the claims of driver that kubelet may take as prepared,
@@ -983,48 +961,12 @@ def prepared_uids(recs, driver):
     return sorted({p.get("uid") for p in recs.prepared(driver)})
 
 
-def set_up_for_first_part(recs, m, reg):
-    """Whether the OWNED region reg of the local memdev m is a ram region
-    still set up for the Prepares of its memdev: every grant of m is of an
-    unfinished Prepare that got no part of it yet."""
-    if reg.get("mode") != "ram" or not m.get("grants"):
-        return False
-    for ref in m["grants"]:
-        g = recs.grant(ref)
-        if g is None or g.get("state") not in GRANT_UNFINISHED or (g.get("got") or {}).get("dax"):
-            return False
-    return True
-
-
-def local_region(recs, m, regions):
-    """The name of the region of a local memdev: its first region of the
-    driver once that one is made (KEPT, or OWNED and not set up for its
-    first part any more), else ""."""
-    if not regions:
-        return ""
-    reg = regions[0]
-    st = reg.get("state")
-    if st == "KEPT" or (st == "OWNED" and not set_up_for_first_part(recs, m, reg)):
-        return reg.get("name") or ""
-    return ""
-
-
-def use_entry(request, region, mode, size, dax):
-    """A use of a local memdev: request, region, mode, size and dax (null
-    for none)."""
-    return {"request": request, "region": region, "mode": mode, "size": size, "dax": dax or None}
-
-
-def local_devices(recs):
-    """The local memdevs: per memdev its serial, region and per claim UID
-    its uses (null: its grant holds the region without a use yet; "-": the
-    dax devices of the memdev's regions that no grant uses)."""
-    devices = []
-    for m in recs.doc.get("memdevs") or []:
-        if m.get("source") != "local":
-            continue
-        regions = [r for r in (recs.region(ref) for ref in m.get("regions") or [])
-                   if r is not None and r.get("owner") == "ours"]
+def local_memdevs(recs):
+    """The local memdevs: per memdev its serial and per claim UID the
+    number of its grants that use the memdev (0: its grants hold the
+    region without a use yet)."""
+    out = []
+    for m in recs.local_memdevs():
         claims = {}
         for ref in m.get("grants") or []:
             g = recs.grant(ref)
@@ -1032,55 +974,59 @@ def local_devices(recs):
                 continue
             uid = ref.get("claim")
             if g.get("state") in GRANT_USES:
-                asked, got = g.get("asked") or {}, g.get("got") or {}
-                use = use_entry(recs.request_of(ref), got.get("region") or "", asked.get("mode") or "",
-                                got.get("size") or 0, got.get("dax"))
-                claims[uid] = (claims.get(uid) or []) + [use]
+                claims[uid] = claims.get(uid, 0) + 1
             elif g.get("state") in GRANT_UNFINISHED:
-                claims.setdefault(uid, None)
-        for reg in regions:
+                claims.setdefault(uid, 0)
+        out.append({"serial": serial_text(m["serial"]) if m.get("serial") is not None else None, "claims": claims})
+    return out
+
+
+def unused_dax(recs):
+    """The dax devices of the regions of ours on local memdevs that no
+    grant uses, but the whole device and the seed, sorted."""
+    out = set()
+    for m in recs.local_memdevs():
+        for ref in m.get("regions") or []:
+            reg = recs.region(ref)
+            if reg is None or reg.get("owner") != "ours":
+                continue
             for d in reg.get("daxDevices") or []:
-                if d.get("whole") or d.get("state") == "SEED" or d.get("users"):
-                    continue
-                mode = "numa" if d.get("driver") == "kmem" else "dax"
-                use = use_entry("", reg.get("name") or "", mode, d.get("size") or 0, d.get("name"))
-                claims["-"] = (claims.get("-") or []) + [use]
-        devices.append({
-            "serial": serial_text(m["serial"]) if m.get("serial") is not None else None,
-            "region": local_region(recs, m, regions),
-            "claims": claims,
-        })
-    return {"bootID": recs.doc.get("bootID") or "", "devices": devices}
+                if not (d.get("whole") or d.get("state") == "SEED" or d.get("users")):
+                    out.add(d.get("name"))
+    return sorted(out)
 
 
-def lease_store(recs):
-    """The lease claims by UID and the leases by id: mode, state (the
-    protocol's name), NUMA node of the lend (-1 for none) and pod name."""
-    claims = {c.get("uid"): {"uid": c.get("uid")} for c in recs.doc.get("leaseClaims") or []}
-    leases = {}
+def lease_claims(recs):
+    """The UIDs of the lease claims, sorted."""
+    return sorted({c.get("uid") for c in recs.doc.get("leaseClaims") or []})
+
+
+def leases(recs):
+    """The leases sorted by id: id, mode, state (the protocol's name) and
+    pod name."""
+    out = []
     for l in recs.doc.get("leases") or []:
-        lend = l.get("lend")
-        node = -1 if lend is None or lend.get("numaNode") is None else lend["numaNode"]
-        leases[l.get("id")] = {"id": l.get("id"), "mode": (l.get("asked") or {}).get("mode") or "",
-                               "state": LEASE_STATES.get(l.get("state"), ""), "node": node,
-                               "pod": {"name": (l.get("pod") or {}).get("name") or ""}}
-    return {"claims": claims, "leases": leases}
+        out.append({"id": l.get("id"), "mode": (l.get("asked") or {}).get("mode") or "",
+                    "state": LEASE_STATES.get(l.get("state"), ""), "pod": (l.get("pod") or {}).get("name") or ""})
+    return sorted(out, key=lambda l: l["id"] or "")
 
 
 def driver_state(doc, errors):
-    """The part "state": the prepared claims of cxl.nri.io by UID ("prepared"
-    and "info"), those of the pool driver ("pool"), the local memdevs and
-    the leases of the document; a part is null without a document."""
-    out = dict.fromkeys(("prepared", "info", "pool", "localDevices", "leases"))
+    """The part "state": the boot of the records, the prepared claims by
+    driver, the local memdevs, the unused dax devices, the lease claims
+    and the leases of the document; a part is null without a document."""
+    keys = ("bootID", "prepared", "localMemdevs", "unusedDax", "leaseClaims", "leases")
+    out = dict.fromkeys(keys)
     if doc is None:
         return out
     recs = Records(doc)
     parts = [
-        ("prepared", lambda: prepared_uids(recs, LOCAL_DRIVER)),
-        ("info", lambda: prepared_uids(recs, LOCAL_DRIVER)),
-        ("pool", lambda: prepared_uids(recs, POOL_DRIVER)),
-        ("localDevices", lambda: local_devices(recs)),
-        ("leases", lambda: lease_store(recs)),
+        ("bootID", lambda: doc.get("bootID") or ""),
+        ("prepared", lambda: {d: prepared_uids(recs, d) for d in (LOCAL_DRIVER, POOL_DRIVER)}),
+        ("localMemdevs", lambda: local_memdevs(recs)),
+        ("unusedDax", lambda: unused_dax(recs)),
+        ("leaseClaims", lambda: lease_claims(recs)),
+        ("leases", lambda: leases(recs)),
     ]
     for key, fn in parts:
         try:
@@ -1130,7 +1076,7 @@ def lend_of(recs, p):
     v = {"lease": p["lease"], "pod": {"namespace": "", "name": "", "uid": ""}, "container": "",
          "fsDir": None, "name": None, "mounts": None}
     identity, mounts = False, []
-    for r in results_of(p):
+    for r in p.get("results") or []:
         g = recs.grant(r.get("grant"))
         if g is None:
             continue
@@ -1157,7 +1103,7 @@ def pool_claims(doc):
     recs = Records(doc)
     out = {}
     for p in recs.prepared(POOL_DRIVER):
-        devs = [pool_device(recs, r) for r in results_of(p) if r.get("kind") == "grant"]
+        devs = [pool_device(recs, r) for r in p.get("results") or [] if r.get("kind") == "grant"]
         out[p.get("uid")] = {"claimName": p.get("claimName") or "", "devices": devs, "lend": lend_of(recs, p)}
     return out
 

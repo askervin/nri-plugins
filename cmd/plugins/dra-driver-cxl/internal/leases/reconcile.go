@@ -122,7 +122,7 @@ func (b *Broker) listenAgain() {
 		if lc.State != state.LeaseClaimOpenNoListener && (lc.State != state.LeaseClaimOpen || b.listeners[lc.UID] != nil) {
 			continue
 		}
-		if err := b.listen(lc.UID, lc.FsDir); err != nil {
+		if err := b.listen(lc.UID); err != nil {
 			klog.Warningf("lease broker: lease claim %s: listening again: %v", lc.UID, err)
 			continue
 		}

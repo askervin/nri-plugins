@@ -263,16 +263,12 @@ func (e *Engine) pmemChain(ctx context.Context, req *GrantRequest, memdev string
 	if err != nil {
 		return "", nil, err
 	}
-	var nd string
-	var nss []kernel.Namespace
-	if err := e.waiting(req.Serial, state.TriggerPrepare, func() error {
-		var err error
-		if nd, err = e.k.WaitNdRegion(wctx, region); err != nil {
-			return err
-		}
-		nss, err = e.k.Namespaces(wctx, nd)
-		return err
-	}); err != nil {
+	nd, err := e.k.WaitNdRegion(wctx, region)
+	if err != nil {
+		return "", nil, err
+	}
+	nss, err := e.k.Namespaces(wctx, nd)
+	if err != nil {
 		return "", nil, err
 	}
 	if req.Asked.Source == state.SourceLocal {
@@ -350,13 +346,7 @@ func (e *Engine) pmemNamespace(ctx context.Context, req *GrantRequest, nd string
 	}); err != nil {
 		return nil, err
 	}
-	var ns *kernel.Namespace
-	err := e.waiting(req.Serial, state.TriggerPrepare, func() error {
-		var err error
-		ns, err = e.k.WaitFsdaxNamespace(ctx, nd, name)
-		return err
-	})
-	return ns, err
+	return e.k.WaitFsdaxNamespace(ctx, nd, name)
 }
 
 // prepareUse returns the use of a grant of the block device dev prepared
@@ -638,7 +628,7 @@ func (e *Engine) recordUse(ctx context.Context, req *GrantRequest, region string
 		if err := state.Apply(&state.MountTable, &m.State, want, state.TriggerPrepare); err != nil {
 			return err
 		}
-		m.Path, m.Loop, m.FsType, m.Writer = u.nodeMount, u.loop, u.fsType, writer
+		m.Path, m.Loop, m.FsType = u.nodeMount, u.loop, u.fsType
 		m.Users = addRef(m.Users, req.Ref)
 		g := r.Grant(req.Ref)
 		g.Got.Mount = state.Access(u.access)
@@ -1041,7 +1031,7 @@ func (e *Engine) verified(source state.Source, serial state.Serial, dev string) 
 
 // waitNoHolder waits until the deadline until nothing holds the block
 // device of a persistent memdev: no mount, no loop device, no exclusive
-// open, outside the engine lock with the memdev Busy.
+// open, outside the engine lock.
 //
 // This check is what keeps a region with a live superblock from being
 // released, and it must stay: an umount succeeds while a bind of the same
@@ -1049,28 +1039,26 @@ func (e *Engine) verified(source state.Source, serial state.Serial, dev string) 
 // point in another mount namespace succeeds and detaches those mounts
 // lazily, so a lease bind can be gone from the driver's view and still hold
 // the device.
-func (e *Engine) waitNoHolder(ctx context.Context, source state.Source, serial state.Serial, dev string, deadline time.Time, trigger state.Trigger) error {
+func (e *Engine) waitNoHolder(ctx context.Context, source state.Source, serial state.Serial, dev string, deadline time.Time) error {
 	s := serialText(serial)
-	return e.waiting(serial, trigger, func() error {
-		for {
-			holder, err := e.k.Holder(dev)
-			if err != nil {
-				return err
-			}
-			if holder == "" {
-				return nil
-			}
-			if !time.Now().Before(deadline) {
-				e.warnf(source, "device %s: %s is held: %s", s, dev, holder)
-				return fmt.Errorf("device %s: %s is still in use", s, dev)
-			}
-			select {
-			case <-ctx.Done():
-				return fmt.Errorf("device %s: %s is still in use: %w", s, dev, ctx.Err())
-			case <-time.After(holderPoll):
-			}
+	for {
+		holder, err := e.k.Holder(dev)
+		if err != nil {
+			return err
 		}
-	})
+		if holder == "" {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			e.warnf(source, "device %s: %s is held: %s", s, dev, holder)
+			return fmt.Errorf("device %s: %s is still in use", s, dev)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("device %s: %s is still in use: %w", s, dev, ctx.Err())
+		case <-time.After(holderPoll):
+		}
+	}
 }
 
 // checkUseBlockDevice returns an error if blockDev is not the block device

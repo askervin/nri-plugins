@@ -48,7 +48,7 @@ func Catalogue() []Object {
 		{Name: "Preparation", Tables: []TableText{PreparationTable.Text()}},
 		{Name: "Grant", Tables: []TableText{GrantTable.Text()}},
 		{Name: "Bind", Tables: []TableText{BindTable.Text()}},
-		{Name: "Memdev", Tables: []TableText{MemdevTable.Text(), MemdevBusyTable.Text()}},
+		{Name: "Memdev", Tables: []TableText{MemdevTable.Text()}},
 		{Name: "Region", Tables: []TableText{RegionTable.Text(), RegionSetUpTable.Text()}},
 		{Name: "DaxDevice", Tables: []TableText{DaxDeviceTable.Text()}},
 		{Name: "Mount", Tables: []TableText{MountTable.Text()}},
@@ -216,7 +216,6 @@ func (r *Region) Clone() Region {
 	c.NumaNode = clonePtr(r.NumaNode)
 	c.DaxDevices = cloneEach(r.DaxDevices, func(d *DaxDevice) DaxDevice {
 		dc := *d
-		dc.Ranges = slices.Clone(d.Ranges)
 		dc.Users = slices.Clone(d.Users)
 		return dc
 	})

@@ -189,7 +189,7 @@ func TestRecoverClaimKeptInPart(t *testing.T) {
 	below := poolReq("c", 1, serialA, state.ModeDax, state.KindExclusive)
 	if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
 		doc.Preparations = append(doc.Preparations, state.Preparation{UID: "c", Driver: poolDriver, ClaimName: "ns/c",
-			BootID: v.f.BootID(), State: state.PreparationPreparing, Results: []state.Result{grantResult("c", 0), grantResult("c", 1)}})
+			State: state.PreparationPreparing, Results: []state.Result{grantResult("c", 0), grantResult("c", 1)}})
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -292,7 +292,7 @@ func TestRecoverRealisedOfPreparing(t *testing.T) {
 		req GrantRequest
 	}{{"plain", poolReq("plain", 0, serialA, state.ModeNUMA, state.KindExclusive)}, {"comp", companion}} {
 		if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
-			doc.Preparations = append(doc.Preparations, state.Preparation{UID: c.uid, Driver: poolDriver, BootID: v.f.BootID(),
+			doc.Preparations = append(doc.Preparations, state.Preparation{UID: c.uid, Driver: poolDriver,
 				State: state.PreparationPreparing, Results: []state.Result{grantResult(c.uid, 0)}})
 			return nil
 		}); err != nil {
@@ -572,7 +572,7 @@ func TestRecoverRestored(t *testing.T) {
 func TestRecoverRealisedKeptInOrder(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib}, fake.MemdevSpec{Serial: serialB})
 	if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
-		doc.Preparations = append(doc.Preparations, state.Preparation{UID: "n", Driver: localDriver, BootID: v.f.BootID(),
+		doc.Preparations = append(doc.Preparations, state.Preparation{UID: "n", Driver: localDriver,
 			State: state.PreparationPreparing, Results: []state.Result{grantResult("n", 0)}})
 		return nil
 	}); err != nil {
@@ -698,9 +698,9 @@ func TestRecoverOtherSources(t *testing.T) {
 	}
 	fsRef := state.GrantRef{Claim: "lfs"}
 	if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
-		doc.Preparations = append(doc.Preparations, state.Preparation{UID: "l", Driver: localDriver, BootID: v.f.BootID(),
+		doc.Preparations = append(doc.Preparations, state.Preparation{UID: "l", Driver: localDriver,
 			State: state.PreparationPreparing, Results: []state.Result{grantResult("l", 0)}},
-			state.Preparation{UID: "lfs", Driver: localDriver, BootID: v.f.BootID(),
+			state.Preparation{UID: "lfs", Driver: localDriver,
 				State: state.PreparationPrepared, Results: []state.Result{grantResult("lfs", 0)}})
 		doc.Memdevs = append(doc.Memdevs, state.Memdev{Serial: serialL, Source: state.SourceLocal, State: state.MemdevActive,
 			Grants: []state.GrantRef{ref, fsRef}, Regions: []state.RegionRef{"region7"},
@@ -858,7 +858,7 @@ func TestRecoverClaimLines(t *testing.T) {
 	} {
 		if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
 			doc.Preparations = append(doc.Preparations, state.Preparation{UID: c.uid, Driver: poolDriver, ClaimName: "ns/" + c.uid,
-				BootID: v.f.BootID(), State: state.PreparationPreparing, Results: []state.Result{grantResult(c.uid, 0)}})
+				State: state.PreparationPreparing, Results: []state.Result{grantResult(c.uid, 0)}})
 			return nil
 		}); err != nil {
 			t.Fatal(err)

@@ -247,18 +247,6 @@ func journalMemdev(r *state.Records, req *GrantRequest) error {
 // request knows.
 func mergeFacts(old, req state.MemdevFacts) state.MemdevFacts {
 	out := req
-	if out.BlockSize == 0 {
-		out.BlockSize = old.BlockSize
-	}
-	if out.Ram == 0 {
-		out.Ram = old.Ram
-	}
-	if out.Pmem == 0 {
-		out.Pmem = old.Pmem
-	}
-	if out.HostBridge == "" {
-		out.HostBridge = old.HostBridge
-	}
 	if out.NumaAffinity == nil {
 		out.NumaAffinity = old.NumaAffinity
 	}
@@ -323,25 +311,17 @@ func (e *Engine) memdevOf(ctx context.Context, req *GrantRequest) (string, error
 	if req.Asked.Source != state.SourcePool {
 		return e.k.FindMemdev(serial)
 	}
-	var name string
-	err := e.waiting(req.Serial, state.TriggerPrepare, func() error {
-		if found, err := e.k.FindMemdev(serial); err == nil {
-			wctx, cancel := context.WithTimeout(ctx, e.opts.Timeouts.ProbeGrace)
-			defer cancel()
-			if n, err := e.k.WaitMemdev(wctx, serial, kernel.MemdevBound); err == nil {
-				name = n
-			} else {
-				name = found
-			}
-			return nil
-		}
-		wctx, cancel := context.WithTimeout(ctx, e.opts.Timeouts.Memdev)
+	if found, err := e.k.FindMemdev(serial); err == nil {
+		wctx, cancel := context.WithTimeout(ctx, e.opts.Timeouts.ProbeGrace)
 		defer cancel()
-		n, err := e.k.WaitMemdev(wctx, serial, kernel.MemdevBound)
-		name = n
-		return err
-	})
-	return name, err
+		if n, err := e.k.WaitMemdev(wctx, serial, kernel.MemdevBound); err == nil {
+			return n, nil
+		}
+		return found, nil
+	}
+	wctx, cancel := context.WithTimeout(ctx, e.opts.Timeouts.Memdev)
+	defer cancel()
+	return e.k.WaitMemdev(wctx, serial, kernel.MemdevBound)
 }
 
 // ownRegion returns the region of ours of the memdev of the grant that a
@@ -570,16 +550,12 @@ func createdRegion(r *state.Records, req *GrantRequest, noted, created string, m
 	if reg == nil {
 		return fmt.Errorf("region %s has no record", noted)
 	}
-	if err := state.Apply(&state.RegionTable, &reg.State, state.RegionCreating, state.TriggerPrepare); err != nil {
-		return err
-	}
 	if err := state.Apply(&state.RegionTable, &reg.State, state.RegionOwned, state.TriggerPrepare); err != nil {
 		return err
 	}
 	reg.Name, reg.NotedName = created, ""
 	reg.NumaNode = state.NumaNodePtr(ri.NumaNode)
 	reg.Size = ri.Range.Size()
-	reg.Locked = ri.Locked
 	if m := r.Memdev(req.Serial); m != nil {
 		m.Regions = addRef(removeRef(m.Regions, state.RegionRef(noted)), state.RegionRef(created))
 	}
@@ -652,27 +628,21 @@ func (e *Engine) wholeDevice(ctx context.Context, req *GrantRequest, region, dri
 }
 
 // waitWhole returns the first dax device of a region, outside the engine
-// lock with the memdev Busy: of a new region once it is bound to a driver
+// lock: of a new region once it is bound to a driver
 // and kmem added its memory blocks, of a region set up again (again) once it
 // exists.
 func (e *Engine) waitWhole(ctx context.Context, req *GrantRequest, region string, again bool) (string, error) {
 	var dax string
-	err := e.waiting(req.Serial, state.TriggerPrepare, func() error {
-		var err error
-		if again {
-			dax, err = e.firstDax(ctx, region)
-		} else {
-			dax, err = e.k.WaitDaxRegion(ctx, region)
-		}
-		if err != nil {
-			return err
-		}
-		if e.k.DaxDriver(dax) == kernel.DriverKmem {
-			return e.k.WaitRegionBlocks(ctx, region)
-		}
-		return nil
-	})
-	return dax, err
+	var err error
+	if again {
+		dax, err = e.firstDax(ctx, region)
+	} else {
+		dax, err = e.k.WaitDaxRegion(ctx, region)
+	}
+	if err != nil || e.k.DaxDriver(dax) != kernel.DriverKmem {
+		return dax, err
+	}
+	return dax, e.k.WaitRegionBlocks(ctx, region)
 }
 
 // switchWhole binds the first dax device of a region to driver: from kmem
@@ -696,7 +666,7 @@ func (e *Engine) switchWhole(ctx context.Context, req *GrantRequest, region, dax
 	if driver != kernel.DriverKmem {
 		return nil
 	}
-	return e.waiting(req.Serial, state.TriggerPrepare, func() error { return e.k.WaitRegionBlocks(ctx, region) })
+	return e.k.WaitRegionBlocks(ctx, region)
 }
 
 // firstDax returns the first dax device of a region that is enabled again,
@@ -767,7 +737,7 @@ func (e *Engine) commitWhole(ctx context.Context, req *GrantRequest, region, dax
 			return err
 		}
 		d.Whole = true
-		d.Size, d.Dev, d.Ranges = info.Size, state.DevNumbers{Major: info.Major, Minor: info.Minor}, addressRanges(info.Ranges)
+		d.Size, d.Dev = info.Size, state.DevNumbers{Major: info.Major, Minor: info.Minor}
 		if !reg.SetUp {
 			return state.Apply(&state.RegionSetUpTable, &reg.SetUp, true, state.TriggerPrepare)
 		}
@@ -801,15 +771,6 @@ func bindRecord(d *state.DaxDevice, driver string) error {
 	return nil
 }
 
-// addressRanges returns kernel ranges as record ranges.
-func addressRanges(ranges []kernel.Range) []state.AddressRange {
-	var out []state.AddressRange
-	for _, r := range ranges {
-		out = append(out, state.AddressRange{Start: r.Start, End: r.End})
-	}
-	return out
-}
-
 // offlineSettled offlines memory blocks under the engine lock and waits,
 // outside it, until they stayed offline for Timeouts.OfflineSettle: a udev
 // rule may online hot-added blocks after they were offlined. Blocks that
@@ -820,12 +781,7 @@ func (e *Engine) offlineSettled(ctx context.Context, req *GrantRequest, blocks [
 		if err := e.locked(func() error { return e.k.OfflineBlocks(blocks) }); err != nil {
 			return err
 		}
-		onlined := -1
-		err := e.waiting(req.Serial, state.TriggerPrepare, func() error {
-			var err error
-			onlined, err = e.k.StayedOffline(ctx, blocks, e.opts.Timeouts.OfflineSettle)
-			return err
-		})
+		onlined, err := e.k.StayedOffline(ctx, blocks, e.opts.Timeouts.OfflineSettle)
 		if err != nil || onlined < 0 {
 			return err
 		}

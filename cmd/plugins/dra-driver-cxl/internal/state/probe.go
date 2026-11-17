@@ -42,9 +42,8 @@ type Probe struct {
 	UsableSize uint64 `json:"usableSize"`
 	// Result describes the aliasing.
 	Result string `json:"result"`
-	// Region is the region that was probed, and Size its size.
+	// Region is the region that was probed.
 	Region string `json:"region"`
-	Size   uint64 `json:"size"`
 	// Time is when the probe ran.
 	Time time.Time `json:"time"`
 }

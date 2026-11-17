@@ -48,7 +48,7 @@ func TestPoolCutPrepareAtStart(t *testing.T) {
 	if prep := e.preparation("u1"); prep == nil || prep.State != state.PreparationPreparing {
 		t.Fatalf("preparation %+v", prep)
 	}
-	if prep := e.unfinished("u1"); prep == nil || prep.ClaimName != "default/c1" || len(prep.Results) != 1 || prep.Reason != "" {
+	if prep := e.unfinished("u1"); prep == nil || prep.ClaimName != "default/c1" || len(prep.Results) != 1 {
 		t.Fatalf("record of the claim %+v", prep)
 	}
 	if rs := e.k.Kernel().Regions(memdev); len(rs) != 0 {
@@ -88,7 +88,7 @@ func TestPoolKeptRecord(t *testing.T) {
 	}
 	prep := e.unfinished("u1")
 	g := e.grant("u1", 0)
-	if prep == nil || prep.ClaimName != "default/c1" || len(prep.Results) != 1 || prep.Reason != "" || g == nil || g.Serial != 0xc1ee0001 ||
+	if prep == nil || prep.ClaimName != "default/c1" || len(prep.Results) != 1 || g == nil || g.Serial != 0xc1ee0001 ||
 		g.Intent.Region != "region0" {
 		t.Fatalf("record of the kept claim %+v, grant %+v", prep, g)
 	}
@@ -149,9 +149,6 @@ func TestPoolOtherBoot(t *testing.T) {
 		if prep == nil || prep.State != state.PreparationStale || p.ClaimResults(uid) != nil {
 			t.Fatalf("claim %s: %+v", uid, prep)
 		}
-		if !strings.HasPrefix(prep.Reason, "prepared in another boot") {
-			t.Fatalf("record of %s: %+v", uid, prep)
-		}
 	}
 	if e.cdiSpec(t) != nil {
 		t.Fatalf("CDI spec of the claims of another boot %+v", e.cdiSpec(t))
@@ -166,7 +163,7 @@ func TestPoolOtherBoot(t *testing.T) {
 	// boot uses
 	logs := captureKlog(t)
 	noErr(t, unprepare(t, p, "u2"))
-	if want := "unpreparing claim default/c2 (u2), not prepared any more (prepared in another boot"; !strings.Contains(logs(), want) {
+	if want := "unpreparing claim default/c2 (u2), not prepared any more (prepared in another boot)"; !strings.Contains(logs(), want) {
 		t.Fatalf("no %q in\n%s", want, logs())
 	}
 	e.wantCommand(t, "cxl disable-memdev "+memdev)

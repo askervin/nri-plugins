@@ -43,7 +43,7 @@ func TestBootOfAnotherBoot(t *testing.T) {
 			t.Errorf("preparation %s %s after a reboot", p.UID, p.State)
 		}
 		o := orig.Preparation(p.Driver, p.UID)
-		if p.BootID != o.BootID || !reflect.DeepEqual(p.Results, o.Results) {
+		if !reflect.DeepEqual(p.Results, o.Results) {
 			t.Errorf("preparation %s changed beyond its state", p.UID)
 		}
 	}
@@ -108,7 +108,7 @@ func TestBootOfACutPrepareThatTheRecoveryReleased(t *testing.T) {
 	ref := state.GrantRef{Claim: "cut"}
 	results := []state.Result{{Kind: state.ResultGrant, Request: "mem", Grant: &ref}}
 	doc.Preparations = append(doc.Preparations, state.Preparation{UID: "cut", Driver: statetest.PoolDriver, ClaimName: "demo/c-cut",
-		BootID: statetest.BootID, State: state.PreparationPreparing, Results: results})
+		State: state.PreparationPreparing, Results: results})
 	for _, v := range state.Check(&doc.Records) {
 		t.Errorf("before the reboot: %s", v)
 	}

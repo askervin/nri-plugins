@@ -362,19 +362,9 @@ func deviceSerial(d *resourcev1.Device, driver string) (uint64, bool) {
 
 // fsLeaseOptions chooses the id of a new lease of the records by newID and,
 // for an fs lease, its name: the requested one, or the id. An fs lease
-// needs a lease claim with a filesystem directory, and a name that no other
-// lease of the claim has.
+// needs a name that no other lease of the claim has.
 func fsLeaseOptions(r *state.Records, l *state.Lease, req *api.Request, newID func() string) error {
 	fs := l.Asked.Mode == state.ModeFs
-	if fs {
-		if lc := r.LeaseClaim(l.Claim); lc == nil || lc.FsDir == "" {
-			ns, name := l.Pod.Namespace, l.Claim
-			if lc != nil {
-				ns, name = lc.Namespace, lc.Name
-			}
-			return fmt.Errorf("lease claim %s/%s has no filesystem directory (prepared by an older driver): recreate the pod", ns, name)
-		}
-	}
 	// a default name never clashes with a name that a request chose
 	for l.ID == "" || r.Lease(l.ID) != nil || (fs && req.Name == "" && nameUser(r, l.Claim, l.ID) != nil) {
 		l.ID = newID()

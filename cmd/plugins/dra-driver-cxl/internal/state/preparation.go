@@ -46,8 +46,8 @@ import (
 // companion claim (Lease set) gives no CDI devices.
 //
 // Persistence: intent and fact; committed durably before kubelet gets a
-// response. BootID is the boot of the Prepare: a record of another boot is
-// PREPARED_STALE after the load.
+// response. A record of a document of another boot is PREPARED_STALE after
+// the load.
 //
 // Locks and waits: the kubelet helper serializes Prepare and Unprepare per
 // driver; the record is changed only by store commits.
@@ -55,12 +55,9 @@ type Preparation struct {
 	UID       string           `json:"uid"`
 	Driver    string           `json:"driver"`
 	ClaimName string           `json:"claimName"`
-	BootID    string           `json:"bootID,omitempty"`
 	State     PreparationState `json:"state"`
 	// Lease is the lease id of a companion claim, "" for other claims.
-	Lease string `json:"lease,omitempty"`
-	// Reason tells why a preparation is PREPARED_STALE.
-	Reason  string   `json:"reason,omitempty"`
+	Lease   string   `json:"lease,omitempty"`
 	Results []Result `json:"results"`
 }
 
@@ -221,7 +218,7 @@ var PreparationTable = Table[PreparationState]{
 		},
 		{
 			From: preparationStored, To: PreparationStale, Triggers: list(TriggerLoad),
-			When: "the record's boot id differs from the running boot",
+			When: "the document's boot id differs from the running boot",
 			Effects: "commit (l): grants keep Serial, Source and Asked, Got and Intent cleared; no CDI device; " +
 				"nothing released at start",
 		},

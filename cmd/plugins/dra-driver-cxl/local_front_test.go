@@ -53,9 +53,6 @@ func TestPrepareLocalNUMA(t *testing.T) {
 	if len(res.Devices) != 1 || !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl=claim-u1-0"}) {
 		t.Fatalf("prepared %+v", res.Devices)
 	}
-	if boot := e.s.ClaimInfo("u1").BootID; boot != e.k.BootID() {
-		t.Fatalf("prepared in boot %q", boot)
-	}
 	// the node of the memory of the region in the kernel
 	node := localRegionNode(e)
 	if g := e.grant("u1", 0); state.NumaNodeOf(g.Got.NumaNode) != node {

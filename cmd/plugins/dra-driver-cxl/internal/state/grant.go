@@ -343,7 +343,7 @@ var BindTable = Table[BindState]{
 		{
 			From: list(BindAbsent), To: BindBound, Triggers: list(TriggerPrepare),
 			When:  "companion Prepare of an fs lease, after the node mount exists",
-			Guard: "the lease claim has FsDir; the name is unused; the node mount is mounted",
+			Guard: "the name is unused; the node mount is mounted",
 			Effects: "plain bind of a read-only node mount, or a read-only bind of a writable type; verified; " +
 				"commit (d) of the target in Got",
 		},

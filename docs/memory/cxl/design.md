@@ -92,7 +92,7 @@ A region maps the memory of one or more memdevs into the address space
 of the host. The driver keeps a [Region](states.md#region) record of
 every region on the memdevs it uses. A region of its own goes through
 the [states](states.md#regionstate) NOTED (the name that
-`cxl create-region` will give is written down first), CREATING, OWNED,
+`cxl create-region` will give is written down first), OWNED,
 KEPT (disabled and kept: its release would leave a hole in the decoders
 of a port, or it waits for the claim whose Prepare did not finish) and
 HOLLOW_OWNED (its memdev went; deleted when its memory is offline). A

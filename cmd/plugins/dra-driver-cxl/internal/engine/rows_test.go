@@ -30,7 +30,6 @@ var engineTables = []fsm.TableText{
 	state.GrantTable.Text(),
 	state.BindTable.Text(),
 	state.MemdevTable.Text(),
-	state.MemdevBusyTable.Text(),
 	state.RegionTable.Text(),
 	state.RegionSetUpTable.Text(),
 	state.DaxDeviceTable.Text(),
@@ -45,7 +44,7 @@ var notDriven = map[string]string{
 	"Grant.State JOURNALED,REALISING,REALISED,REALISED_UNRESTORED,RELEASING -> RELEASED on load": "the store's load of " +
 		"a document of another boot",
 	"Memdev.State ACTIVE,IDLE_KEPT,GONE -> UNUSED on load": "the store's load of a document of another boot",
-	"Region.State NOTED,CREATING,OWNED,KEPT,HOLLOW_OWNED,FOREIGN -> NONE on load": "the store's load of a document of " +
+	"Region.State NOTED,OWNED,KEPT,HOLLOW_OWNED,FOREIGN -> NONE on load": "the store's load of a document of " +
 		"another boot",
 }
 

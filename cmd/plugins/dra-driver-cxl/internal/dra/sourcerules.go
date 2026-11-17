@@ -433,11 +433,7 @@ func (v poolVoice) notPrepared(uid string) {
 func (v poolVoice) unfinished(prep *state.Preparation, serials []string) {
 	what := "whose Prepare did not finish"
 	if prep.State == state.PreparationStale {
-		reason := prep.Reason
-		if reason == "" {
-			reason = "not prepared"
-		}
-		what = "not prepared any more (" + reason + ")"
+		what = "not prepared any more (prepared in another boot)"
 	}
 	klog.Infof("%s: unpreparing claim %s (%s), %s: releasing devices %s", v.name, prep.ClaimName, prep.UID, what, strings.Join(serials, ", "))
 }

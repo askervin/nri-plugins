@@ -111,7 +111,7 @@ func TestStackRecoveryTopMostFirst(t *testing.T) {
 		serial uint64
 	}{{"b", serialB}, {"c", serialC}} {
 		if err := v.st.Commit(context.Background(), 0, func(doc *storeDocument) error {
-			doc.Preparations = append(doc.Preparations, state.Preparation{UID: c.uid, Driver: poolDriver, BootID: v.f.BootID(),
+			doc.Preparations = append(doc.Preparations, state.Preparation{UID: c.uid, Driver: poolDriver,
 				State: state.PreparationPreparing, Results: []state.Result{grantResult(c.uid, 0)}})
 			return nil
 		}); err != nil {
@@ -232,7 +232,7 @@ func TestStackLocalRecoveryTopMostFirst(t *testing.T) {
 			drivers := map[string]string{"l": localDriver, "b": poolDriver}
 			for _, uid := range c.order {
 				if err := v.st.Commit(context.Background(), 0, func(doc *storeDocument) error {
-					doc.Preparations = append(doc.Preparations, state.Preparation{UID: uid, Driver: drivers[uid], BootID: v.f.BootID(),
+					doc.Preparations = append(doc.Preparations, state.Preparation{UID: uid, Driver: drivers[uid],
 						State: state.PreparationPreparing, Results: []state.Result{grantResult(uid, 0)}})
 					return nil
 				}); err != nil {

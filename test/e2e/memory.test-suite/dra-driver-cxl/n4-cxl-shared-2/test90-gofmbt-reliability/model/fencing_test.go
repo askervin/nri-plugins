@@ -342,9 +342,10 @@ func TestDualOccupancy(t *testing.T) {
 	wantVerdict(t, v, VFail, "want its two (A39)")
 	// its local claim in state.json, its pool claim in the pool's
 	o = observation(t, s)
-	o.VMs["vm1"].State.Prepared = slices.DeleteFunc(o.VMs["vm1"].State.Prepared, func(u string) bool { return strings.HasSuffix(u, "-local") })
+	st := o.VMs["vm1"].State
+	st.Prepared[localDriver] = slices.DeleteFunc(st.Prepared[localDriver], func(u string) bool { return strings.HasSuffix(u, "-local") })
 	v, _ = checkState(s, o, "")
-	wantVerdict(t, v, VWait, "preparedClaims.json")
+	wantVerdict(t, v, VWait, "of cxl.nri.io is not prepared")
 	// MemTotal of both nodes
 	o = observation(t, s)
 	o.VMs["vm1"].Nodes["3"] = ObsNode{MemTotal: 0}

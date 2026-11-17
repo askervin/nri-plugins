@@ -187,11 +187,10 @@ func TestOracleDeviations(t *testing.T) {
 			}
 		}, VWait, "on node 2, want 3 (--node-hb1)"},
 		// O4
-		{"prepared != info", func(o *Observation) { o.VMs["vm0"].State.Info = nil }, VWait, "preparedClaims.json"},
-		{"pool claims", func(o *Observation) { o.VMs["vm1"].State.Pool = nil }, VWait, "preparedPoolClaims.json"},
-		{"orphan slices", func(o *Observation) {
-			o.VMs["vm0"].State.LocalDevices.Devices[0].Claims["-"] = json.RawMessage(`[{}]`)
-		}, VWait, "orphan slices"},
+		{"pool claims", func(o *Observation) { o.VMs["vm1"].State.Prepared[poolDriver] = nil }, VWait, "prepared claims of cxl-pool.nri.io"},
+		{"unused dax devices", func(o *Observation) {
+			o.VMs["vm0"].State.UnusedDax = []string{"dax9.1"}
+		}, VWait, "dax devices [dax9.1] of local memdevs without a user"},
 		{"cdi", func(o *Observation) { o.VMs["vm2"].CDI["/etc/cdi/cxl-pool.yaml"] = nil }, VWait, "cxl-pool.yaml"},
 		{"state unreadable", func(o *Observation) {
 			o.VMs["vm2"].State = nil
@@ -434,16 +433,7 @@ func TestParseObservedFile(t *testing.T) {
 	}
 }
 
-func TestLocalDeviceSerial(t *testing.T) {
-	for _, js := range []string{`{"serial":3238060769}`, `{"serial":"0xc100e2e1"}`, `{"serial":"3238060769"}`, `{"serialHex":"c100e2e1"}`} {
-		var d ObsLocalDevice
-		if err := json.Unmarshal([]byte(js), &d); err != nil {
-			t.Fatal(err)
-		}
-		if v, ok := d.serial(); !ok || v != localSerial {
-			t.Fatalf("%s: %x %v", js, v, ok)
-		}
-	}
+func TestInspectLeases(t *testing.T) {
 	in := &ObsInspect{Leases: json.RawMessage(`{"leases":[{"lease":"L1","state":"Ready"}]}`)}
 	if ls, ok := in.leases(); !ok || len(ls) != 1 || ls[0].Lease != "L1" {
 		t.Fatalf("leases %v %v", ls, ok)

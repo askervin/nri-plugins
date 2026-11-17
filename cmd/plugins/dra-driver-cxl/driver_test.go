@@ -293,7 +293,7 @@ func TestDriverRules(t *testing.T) {
 			noErr(t, st.Commit(ctx, store.Durable, func(doc *store.Document) error {
 				for _, driver := range []string{device.DriverName, device.PoolDriverName} {
 					doc.Preparations = append(doc.Preparations, state.Preparation{UID: uid(driver), Driver: driver,
-						ClaimName: "ns/c", BootID: boot, State: state.PreparationPrepared})
+						ClaimName: "ns/c", State: state.PreparationPrepared})
 				}
 				return nil
 			}))

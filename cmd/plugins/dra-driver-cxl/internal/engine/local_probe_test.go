@@ -88,10 +88,10 @@ func TestLocalProbeAliasing(t *testing.T) {
 	if keys := slices.Sorted(maps.Keys(file)); !slices.Equal(keys, []string{"11"}) {
 		t.Fatalf("probes file %s", data)
 	}
-	if fields := slices.Sorted(maps.Keys(file["11"])); !slices.Equal(fields, []string{"region", "result", "size", "time", "usableSize"}) {
+	if fields := slices.Sorted(maps.Keys(file["11"])); !slices.Equal(fields, []string{"region", "result", "time", "usableSize"}) {
 		t.Fatalf("probe %s", data)
 	}
-	if p := v.e.Probes()[serialL]; p.UsableSize != 512*mib || p.Region != "region0" || p.Size != gib || p.Result != res.String() || p.Time.IsZero() {
+	if p := v.e.Probes()[serialL]; p.UsableSize != 512*mib || p.Region != "region0" || p.Result != res.String() || p.Time.IsZero() {
 		t.Fatalf("probe %+v", p)
 	}
 	v.mustUnprepare(localDriver, "n")
