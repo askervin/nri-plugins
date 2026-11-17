@@ -21,18 +21,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 )
 
-// The names of the front-end (internal/dra) as the tests use them, and the
-// state files of earlier versions that the tests of the start write.
-
-const (
-	// localStateFileName is the state file of the local memdevs of an
-	// earlier version in the plugin data directory of cxl.nri.io.
-	localStateFileName = "localDevices.json"
-	// preparedClaimsInfoFileName is the view of the prepared claims of
-	// cxl.nri.io with their devices of an earlier version in its plugin
-	// data directory.
-	preparedClaimsInfoFileName = "preparedClaimsInfo.json"
-)
+// The names of the front-end (internal/dra) as the tests use them.
 
 type (
 	// PreparedDeviceInfo is a device of a prepared claim of cxl.nri.io.

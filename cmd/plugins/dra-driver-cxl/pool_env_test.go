@@ -145,7 +145,7 @@ func (e *poolTestEnv) driver(t *testing.T) *dra.Plugin {
 		_ = e.st.Close()
 	}
 	rules := dra.PoolRules(device.PoolDriverName, filepath.Join(e.dir, mountsDirName), filepath.Join(e.dir, store.FileName))
-	e.st, err = store.Open(context.Background(), store.Options{Dir: e.dir, PoolDir: e.dir, PoolDriver: device.PoolDriverName,
+	e.st, err = store.Open(context.Background(), store.Options{Dir: e.dir, PoolDriver: device.PoolDriverName,
 		BootID: e.k.BootID()})
 	noErr(t, err)
 	devices, err := newDeviceEngine(deviceConfig{

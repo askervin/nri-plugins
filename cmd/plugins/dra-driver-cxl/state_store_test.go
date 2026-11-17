@@ -54,7 +54,7 @@ func TestStartOnALostStore(t *testing.T) {
 		noErr(t, os.WriteFile(filepath.Join(root, "cdi", name+".yaml"), []byte(specs[name]), 0o600))
 	}
 	ctx := context.Background()
-	st, err := store.Open(ctx, store.Options{Dir: local, PoolDir: pool, PoolDriver: device.PoolDriverName, BootID: "boot-1", SysRoot: "/sys", DevRoot: "/dev"})
+	st, err := store.Open(ctx, store.Options{Dir: local, PoolDriver: device.PoolDriverName, BootID: "boot-1", SysRoot: "/sys", DevRoot: "/dev"})
 	noErr(t, err)
 	defer func() { noErr(t, st.Close()) }()
 	if st.Lost() == nil {

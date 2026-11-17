@@ -35,7 +35,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/version"
@@ -95,8 +94,9 @@ type CXLFlags struct {
 	// a pod.
 	LeaseLimits leases.Limits
 
-	// Store are the flags of the state store (state.json).
-	Store store.Flags
+	// NewState starts with a new state.json when neither state.json nor
+	// state.json.prev can be read.
+	NewState bool
 	// Provenance are the flags of the provenance records of the serials.
 	Provenance provenance.Flags
 }
@@ -164,7 +164,7 @@ func parseFlags(fs *flag.FlagSet, args []string, lookupEnv func(string) (string,
 	fs.IntVar(&f.LeaseLimits.Connections, "lease-max-connections", leases.DefaultMaxConnections, "open connections of the lease socket of a lease claim")
 	fs.DurationVar(&f.LeaseLimits.Idle, "lease-idle-timeout", leases.DefaultIdle, "how long a connection of a lease socket may stay without a request")
 	fs.IntVar(&f.LeaseLimits.LeasesPerPod, "lease-max-per-pod", leases.DefaultMaxLeasesPerPod, "leases of the containers of a pod")
-	f.Store.Register(fs)
+	fs.BoolVar(&f.NewState, "new-state", false, "start with a new state.json when neither state.json nor state.json.prev can be read")
 	f.Provenance.Register(fs)
 	for _, fe := range flagEnvs {
 		fs.Lookup(fe.flag).Usage += " (env " + fe.env + ")"

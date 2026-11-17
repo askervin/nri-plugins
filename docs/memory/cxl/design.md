@@ -380,9 +380,6 @@ may exist and finishes or undoes it. The start goes in this order:
 
 1. Read the boot id and open the store: lock `state.lock`, read
    `state.json` (or `state.json.prev` when `state.json` cannot be read).
-   At a first start, the state files of an older version are moved
-   aside, or the start is refused when they name regions that exist
-   ([usage.md](usage.md#upgrade)).
 2. Recovery, phase 1, before NRI and before kubelet can call: observe
    the kernel; mount again the node mounts of the prepared claims, found
    by the identity of their block device, and verify their dax and block
@@ -444,9 +441,8 @@ starts it once with `--new-state` to begin with a new document
 ## Files on the node
 
 Only the driver writes its files; do not edit them, and do not copy
-them to another node. The flags `--forget-pool-serial`,
-`--discard-old-state` and `--new-state` are the changes that an operator
-makes. [usage.md](usage.md#files-on-the-node) lists every file with its
+them to another node. The flags `--forget-pool-serial` and
+`--new-state` are the changes that an operator makes. [usage.md](usage.md#files-on-the-node) lists every file with its
 path.
 
 - `state.json` in the plugin data directory of `cxl.nri.io` is the one
@@ -468,11 +464,6 @@ path.
 - `state.lock` is locked by the running driver, so that a second
   process (the new pod of a rolling update) waits for the first one to
   exit.
-- The view files of earlier versions (`preparedClaims.json`,
-  `preparedClaimsInfo.json`, `localDevices.json`, `leases.json`, and
-  `preparedPoolClaims.json` of the pool driver), marked with
-  `"viewOf": "state.json"`, are removed at start; the driver writes no
-  views. Tests and operators read `state.json`.
 - `localProbes.json` holds the results of the address line probe, facts
   about the hardware that outlive every state of the driver.
 - `leases/<claim uid>/cxl.sock` are the lease sockets and

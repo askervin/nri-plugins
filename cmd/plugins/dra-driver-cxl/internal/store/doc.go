@@ -38,6 +38,5 @@
 // build start LOST: drain the node's claims before a rollback. When neither
 // state.json nor state.json.prev decodes the store is LOST and refuses
 // every commit. At a load of another boot the records are changed as a
-// reboot requires. At the start the store removes the view files of the
-// document that earlier versions wrote (marked with "viewOf": "state.json").
+// reboot requires.
 package store

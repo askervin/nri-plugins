@@ -237,7 +237,7 @@ func (e *driverEnv) start() {
 	ctx := context.Background()
 	local := LocalRules(filepath.Join(e.dir, "mounts"))
 	pool := PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, "mounts"), e.stateFile())
-	st, err := store.Open(ctx, store.Options{Dir: e.dir, PoolDir: e.poolDir, PoolDriver: pool.Name, BootID: e.k.BootID(),
+	st, err := store.Open(ctx, store.Options{Dir: e.dir, PoolDriver: pool.Name, BootID: e.k.BootID(),
 		SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot(), WriteFault: e.writeFault})
 	mustOK(t, err)
 	e.st = st

@@ -186,9 +186,6 @@ type Options struct {
 	// Dir is the plugin data directory of cxl.nri.io: the document and its
 	// lock.
 	Dir string
-	// PoolDir is the plugin data directory of the pool driver, "" without
-	// a pool driver.
-	PoolDir string
 	// PoolDriver is the name of the pool driver.
 	PoolDriver string
 	// BootID is the running boot id. It is required: without it a
@@ -197,11 +194,6 @@ type Options struct {
 	// NewState makes a new document when neither the document nor the
 	// previous one decodes.
 	NewState bool
-	// RegionExists tells whether a CXL region of the name exists on the
-	// node (nil: none exists), and DiscardOldState whether the old state
-	// files are moved aside also when they name one.
-	RegionExists    func(name string) bool
-	DiscardOldState bool
 	// SysRoot and DevRoot are the sysfs mount point and the directory of
 	// the device nodes in the paths of the results (ResultOptions), "/sys"
 	// and "/dev" if "".
@@ -240,8 +232,7 @@ type Options struct {
 // Invariants: the snapshot is never ahead of the disk for a Durable commit:
 // a failed write leaves it as it was; Generation grows by one per write.
 //
-// Persistence: state.json and the previous document in state.json.prev. At
-// the start it removes the view files that earlier versions wrote.
+// Persistence: state.json and the previous document in state.json.prev.
 //
 // Locks and waits: mu guards the document pointer, the pending commits
 // and closed, and is never held across a write; the writer goroutine
@@ -274,9 +265,7 @@ type request struct {
 }
 
 // Open locks and loads the document in opts.Dir and starts its writer.
-// A first start handles the old state files (HandleOldFiles) before it
-// creates the document. A document of another boot is changed as a reboot
-// requires. A store whose document and previous document do not decode is
+// A document of another boot is changed as a reboot requires. A store whose document and previous document do not decode is
 // returned in LOST mode (Lost) unless opts.NewState. Open waits for a lock
 // held by another process until ctx ends and then returns ErrLocked: the
 // caller bounds ctx and exits on the error. Open fails without the running
@@ -294,13 +283,8 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 	if opts.DevRoot == "" {
 		opts.DevRoot = "/dev"
 	}
-	for _, dir := range []string{opts.Dir, opts.PoolDir} {
-		if dir == "" {
-			continue
-		}
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, err
-		}
+	if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
+		return nil, err
 	}
 	lock, err := lockFile(ctx, filepath.Join(opts.Dir, LockName))
 	if err != nil {
@@ -335,7 +319,6 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 		}
 	}
 	s.doc = doc
-	s.removeViews()
 	go s.writer()
 	return s, nil
 }
@@ -356,13 +339,6 @@ func (s *Store) load() (*Document, bool, error) {
 	prevMissing := errors.Is(prevErr, os.ErrNotExist)
 	switch {
 	case stateMissing && prevMissing:
-		moved, err := HandleOldFiles(s.opts.Dir, s.opts.PoolDir, s.opts.RegionExists, s.opts.DiscardOldState)
-		if err != nil {
-			return nil, false, err
-		}
-		for _, m := range moved {
-			klog.Warningf("store: old state file %s moved aside to %s%s", m, m, OldSuffix)
-		}
 		klog.Infof("store: no %s: starting with a new document", path)
 		s.origin = New
 		return &Document{Schema: Schema, BootID: s.opts.BootID}, true, nil

@@ -111,7 +111,7 @@ func (fe *frontEnd) cdiDir() string {
 // TuneStore sets the pool driver and the roots of the device paths of the
 // store.
 func (fe *frontEnd) TuneStore(o *store.Options) {
-	o.PoolDir, o.PoolDriver = filepath.Join(fe.dir, device.PoolDriverName), device.PoolDriverName
+	o.PoolDriver = device.PoolDriverName
 	o.SysRoot, o.DevRoot = fe.f.SysRoot(), fe.f.DevRoot()
 }
 

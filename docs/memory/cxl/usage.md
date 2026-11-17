@@ -1889,8 +1889,6 @@ variable when it is set. Both `-flag` and `--flag` work.
 | `--lease-max-connections` | `LEASE_MAX_CONNECTIONS` | `64` | open connections of the lease socket of one lease claim; one more is closed at once |
 | `--lease-idle-timeout` | `LEASE_IDLE_TIMEOUT` | `10m0s` | how long a connection of a lease socket may stay without a request before the plugin closes it |
 | `--lease-max-per-pod` | `LEASE_MAX_PER_POD` | `64` | leases of the containers of one pod; a request beyond it is refused |
-| `--compat-views` | | `false` | deprecated, no effect: accepted, logged with a warning when `true`; the plugin writes no view files of `state.json` ([Files on the node](#files-on-the-node)) |
-| `--discard-old-state` | | `false` | at a first start (no `state.json`), start although state files of an older plugin name CXL regions that exist: the files are moved aside, the regions are left as they are ([Upgrade](#upgrade)) |
 | `--new-state` | | `false` | start with a new `state.json` when neither `state.json` nor `state.json.prev` can be read ([Upgrade](#upgrade)) |
 | `--forget-pool-serial` | | (none) | serial (`0x<hex>` or decimal) whose remembered provenance (pool device or local memdev) is removed at start, so that a memdev of it is new again; repeatable, or a comma-separated list ([local.md](local.md#what-the-plugin-publishes)) |
 
@@ -1975,8 +1973,8 @@ The plugin keeps the records of both drivers in one document,
 before it acts on what a record says
 ([design.md](design.md#files-on-the-node)). Only the plugin writes the
 files below: do not edit them, and do not copy them to another node. The
-flags `--forget-pool-serial`, `--discard-old-state` and `--new-state`
-are the changes that an operator makes to them. `D` is
+flags `--forget-pool-serial` and `--new-state` are the changes that an
+operator makes to them. `D` is
 `/var/lib/kubelet/plugins/cxl.nri.io`, `P` the plugin data directory of
 the pool driver, `/var/lib/kubelet/plugins/cxl-pool.nri.io`.
 
@@ -1988,9 +1986,7 @@ the pool driver, `/var/lib/kubelet/plugins/cxl-pool.nri.io`.
 | `D/state.json.bad` | a `state.json` that could not be read, moved aside when the plugin started from `state.json.prev`; kept for diagnosis |
 | `D/state.json.lost`, `D/state.json.prev.lost` | the documents that could not be read, moved aside by `--new-state`; kept for diagnosis |
 | `D/state.lock` | locked by the running plugin, with its holder (`pid <pid> host <host>`): a second plugin on the node, such as the new pod of a rolling update, waits up to 2 minutes for it and then exits |
-| `D/<file>.old`, `P/<file>.old` | a state file of an older plugin, moved aside at the first start ([Upgrade](#upgrade)) |
-| `D/preparedClaims.json`, `D/preparedClaimsInfo.json`, `D/localDevices.json`, `D/leases.json`, `P/preparedPoolClaims.json` | views of `state.json` that earlier versions wrote, marked with `"viewOf": "state.json"` (in every value of the three files of prepared claims, else at the top). The plugin writes none and removes those it finds at start, logging `store: removed the view <file> of an earlier version`; a file of the same name without the marker is a state file of an older plugin ([Upgrade](#upgrade)) |
-| `D/localProbes.json` | the usable size of every local memdev whose memory aliases, by serial ([local.md](local.md#broken-and-aliased-memory)): a fact about the hardware, not part of the document; it is kept across restarts, reboots and `--discard-old-state`. Delete it, with the plugin stopped, to probe every memdev again |
+| `D/localProbes.json` | the usable size of every local memdev whose memory aliases, by serial ([local.md](local.md#broken-and-aliased-memory)): a fact about the hardware, not part of the document; it is kept across restarts, reboots and `--new-state`. Delete it, with the plugin stopped, to probe every memdev again |
 | `D/leases/<claim uid>/cxl.sock` | the lease socket of a lease claim; the directory is the container's `/run/cxl` ([leases.md](leases.md#opting-in)) |
 | `D/lease-fs/<claim uid>/<name>` | the bind of the node mount of an `fs` lease; the directory of the claim is the container's `/run/cxl/fs` ([leases.md](leases.md#opting-in)) |
 | `D/cxl-request` | the lease CLI that the plugin of the Helm chart copies from its image (`--lease-cli-source`) |
@@ -2009,40 +2005,11 @@ The flags of the files are no values of the Helm chart: add one to the
 `args` of the container of the DaemonSet
 (`kubectl -n kube-system edit daemonset nri-dra-driver-cxl`), and remove
 it again when the plugin has started. The DaemonSet passes it on every
-node; `--discard-old-state` acts only at a first start, `--new-state`
-only when no document can be read, and `--forget-pool-serial` only on
+node; `--new-state` acts only when no document can be read, and `--forget-pool-serial` only on
 the nodes that remember the serial, but on them at every start while it
 is given.
 
 ### Upgrade
-
-The plugin reads `state.json` only. At its first start on a node (no
-`state.json`, no `state.json.prev`) it looks for the state files of an
-older plugin that hold records: `preparedClaims.json`,
-`preparedClaimsInfo.json`, `localDevices.json`, `poolSerials.json`,
-`leases.json` and `steeredContainers.json` in `D`,
-`preparedPoolClaims.json` and `preparingPoolClaims.json` in `P` (a view
-of `state.json` that an earlier version wrote holds none, and is removed).
-It does not import them:
-
-- When no record of them names a CXL region that exists on the node, it
-  moves them aside and starts with a new document, logging
-  `store: old state file <file> moved aside to <file>.old`.
-- Otherwise it refuses to start:
-  `old state files found; drain the node's claims or start with --discard-old-state: <files> (regions <regions>)`.
-
-So drain the node's claims before the upgrade: delete (or move) the pods
-with claims of the drivers on the node, or cordon and drain it, and wait
-until kubelet has unprepared their claims, so that the old plugin
-releases its regions. With `--discard-old-state` the plugin moves the
-files aside also when their regions exist, and starts without knowing
-them: it has no record of their claims, and their regions are
-foreign to it (published as `region` devices when they are online RAM,
-their memdevs not published, never touched). Destroy such regions with
-`cxl disable-region` and `cxl destroy-region` when nothing uses them.
-The remembered pool serials of `poolSerials.json` are not carried over
-either: upgrade while the pool controllers run and publish their
-ResourceSlices ([local.md](local.md#what-the-plugin-publishes)).
 
 A `state.json` that the plugin cannot read, because it was written by a
 plugin of another schema (an older or a newer one) or it is damaged, is
@@ -2056,6 +2023,5 @@ companion), and holds back every new memdev for up to 5 minutes in its
 first hour (the remembered pool serials are lost). It does
 not crash or restart. Drain the node's claims and start it once with
 `--new-state`: it moves both files aside (`.lost`) and starts with a new
-document, and what the lost records named is foreign to it, as with
-`--discard-old-state`. A downgrade is not supported: an older plugin does
+document, and what the lost records named is foreign to it. A downgrade is not supported: an older plugin does
 not read `state.json`.

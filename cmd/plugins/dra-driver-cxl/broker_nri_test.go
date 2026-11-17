@@ -44,7 +44,7 @@ import (
 // read from the store.
 func TestCreateContainerDoesNotWaitForTheBroker(t *testing.T) {
 	root := t.TempDir()
-	local, pool := filepath.Join(root, device.DriverName), filepath.Join(root, device.PoolDriverName)
+	local := filepath.Join(root, device.DriverName)
 	for _, d := range []string{"sys/bus/cxl/devices", "sys/devices/system/node", "cdi", device.DriverName} {
 		noErr(t, os.MkdirAll(filepath.Join(root, d), 0o755))
 	}
@@ -52,7 +52,7 @@ func TestCreateContainerDoesNotWaitForTheBroker(t *testing.T) {
 	var armed atomic.Bool
 	entered, unblock := make(chan struct{}), make(chan struct{})
 	var st *store.Store
-	st, err := store.Open(ctx, store.Options{Dir: local, PoolDir: pool, PoolDriver: device.PoolDriverName, BootID: "boot-1",
+	st, err := store.Open(ctx, store.Options{Dir: local, PoolDriver: device.PoolDriverName, BootID: "boot-1",
 		SysRoot: "/sys", DevRoot: "/dev", AfterCommit: func() {
 			// the commit of the lease claim, held until the test ends
 			if st.Snapshot().LeaseClaim("lc1") != nil && armed.CompareAndSwap(true, false) {

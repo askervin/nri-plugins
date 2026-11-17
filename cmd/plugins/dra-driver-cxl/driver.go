@@ -318,36 +318,18 @@ func (c *pluginConfig) stateFile() string {
 }
 
 // openDriverStore opens the state store in the plugin data directory of
-// cxl.nri.io with the state files of the pool driver in its own, and
-// returns it and its close.
+// cxl.nri.io, and returns it and its close.
 func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFlags, k *kernel.Kernel, bootID string, rules driverRules) (*store.Store, func(), error) {
-	poolDir := ""
-	if cxlFlags.PoolDriverName != "" {
-		poolDir = filepath.Join(filepath.Dir(config.KubeletPluginDir), cxlFlags.PoolDriverName)
-		if err := os.MkdirAll(poolDir, 0750); err != nil {
-			return nil, nil, fmt.Errorf("pool driver data directory: %w", err)
-		}
-	}
-	sysRoot := k.SysRoot
-	for _, w := range cxlFlags.Store.Warnings() {
-		klog.Warning(w)
-	}
 	// a driver pod that still runs holds the lock: wait for its exit
 	ctx, cancel := context.WithTimeout(ctx, storeLockWait)
 	defer cancel()
 	st, err := store.Open(ctx, store.Options{
-		Dir:             config.KubeletPluginDir,
-		PoolDir:         poolDir,
-		PoolDriver:      cxlFlags.PoolDriverName,
-		BootID:          bootID,
-		NewState:        cxlFlags.Store.NewState,
-		DiscardOldState: cxlFlags.Store.DiscardOldState,
-		SysRoot:         sysRoot,
-		DevRoot:         k.DevRoot,
-		RegionExists: func(name string) bool {
-			_, err := os.Stat(filepath.Join(sysRoot, "bus", "cxl", "devices", name))
-			return err == nil
-		},
+		Dir:        config.KubeletPluginDir,
+		PoolDriver: cxlFlags.PoolDriverName,
+		BootID:     bootID,
+		NewState:   cxlFlags.NewState,
+		SysRoot:    k.SysRoot,
+		DevRoot:    k.DevRoot,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("state store: %w", err)

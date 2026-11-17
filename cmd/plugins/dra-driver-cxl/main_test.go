@@ -27,7 +27,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
@@ -60,7 +59,6 @@ func TestParseFlagsDefaults(t *testing.T) {
 		LeaseWait:           120 * time.Second,
 		LeaseCompanionImage: "registry.k8s.io/pause:3.10",
 		LeaseLimits:         leases.Limits{Connections: 64, Idle: 10 * time.Minute, LeasesPerPod: 64},
-		Store:               store.Flags{},
 	}
 	if !reflect.DeepEqual(f, want) {
 		t.Fatalf("flags\n%+v, expected\n%+v", f, want)
@@ -114,7 +112,6 @@ func TestParseFlagsEnvironment(t *testing.T) {
 		LeaseWait:           5 * time.Second,
 		LeaseCompanionImage: "pause:test",
 		LeaseLimits:         leases.Limits{Connections: 8, Idle: time.Hour, LeasesPerPod: 4},
-		Store:               store.Flags{},
 	}
 	if !reflect.DeepEqual(f, want) {
 		t.Fatalf("flags\n%+v, expected\n%+v", f, want)
@@ -135,12 +132,12 @@ func TestParseFlagsEnvironment(t *testing.T) {
 }
 
 func TestParseFlagsStore(t *testing.T) {
-	f, err := testParseFlags([]string{"--compat-views=false", "--discard-old-state", "--new-state"}, map[string]string{"NODE_NAME": "n1"})
+	f, err := testParseFlags([]string{"--new-state"}, map[string]string{"NODE_NAME": "n1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (store.Flags{DiscardOldState: true, NewState: true}); f.Store != want {
-		t.Fatalf("store flags %+v, expected %+v", f.Store, want)
+	if !f.NewState {
+		t.Fatalf("flags %+v, expected NewState", f)
 	}
 }
 

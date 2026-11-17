@@ -123,11 +123,6 @@ helm install my-dra-driver-cxl nri-plugins/nri-dra-driver-cxl --namespace kube-s
 
 ## Upgrading the Chart
 
-On a node whose driver keeps the state files of earlier versions (no
-`state.json` yet), drain the claims of the drivers before the upgrade:
-the new driver does not import those files, and refuses to start while
-they name CXL regions that exist
-([Upgrade](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#upgrade)).
 `cxl-local` and `cxl-local-shared` test the attribute `persistent`, which
 the ResourceSlices of an older driver lack, so claims of these classes do
 not allocate until the new driver has published its ResourceSlices again:

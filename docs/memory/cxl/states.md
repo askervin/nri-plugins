@@ -502,7 +502,7 @@ Probe is the result of the address line probe of a local memdev whose memory ali
 
 **Invariants.** UsableSize is a positive multiple of 256 MiB.
 
-**Persistence.** &lt;plugin data dir>/localProbes.json, not the document: it survives a reboot, the e2e state cleanup and --discard-old-state, so that no start probes a memdev again.
+**Persistence.** &lt;plugin data dir>/localProbes.json, not the document: it survives a reboot and a new document, so that no start probes a memdev again.
 
 **Locks and waits.** Written by the engine in the queue of the memdev.
 

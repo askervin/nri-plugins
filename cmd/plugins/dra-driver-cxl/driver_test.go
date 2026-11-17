@@ -312,17 +312,13 @@ func TestDriverRules(t *testing.T) {
 
 func TestNewLocalHelper(t *testing.T) {
 	ctx := context.Background()
-	// start starts the local part of the driver on a node of its own with
-	// the old state file old ("" for none); the store is closed by the
-	// returned function
-	start := func(cfg *DriverConfig, old string) (*frontEnds, *deviceEngine, string, func()) {
+	// start starts the local part of the driver on a node of its own; the
+	// store is closed by the returned function
+	start := func(cfg *DriverConfig) (*frontEnds, *deviceEngine, string, func()) {
 		t.Helper()
 		dir := t.TempDir()
 		for _, d := range []string{"sys/bus/cxl/devices", "sys/devices/system/node", "cdi"} {
 			noErr(t, os.MkdirAll(filepath.Join(dir, d), 0o755))
-		}
-		if old != "" {
-			noErr(t, os.WriteFile(filepath.Join(dir, localStateFileName), []byte(old), 0o600))
 		}
 		flags := &CXLFlags{CDIRoot: filepath.Join(dir, "cdi"), NodeName: testNode}
 		config := &pluginConfig{Flags: flags, KubeletPluginDir: dir}
@@ -342,30 +338,21 @@ func TestNewLocalHelper(t *testing.T) {
 		t.Fatal(err)
 		return nil, nil, "", nil
 	}
-	fe, _, _, stop := start(&DriverConfig{ManageMemdevs: ptr(false)}, "")
+	fe, _, _, stop := start(&DriverConfig{ManageMemdevs: ptr(false)})
 	stop()
 	if fe.publisher.LocalSnapshot() != nil {
 		t.Fatalf("unmanaged memdevs: %+v", fe.publisher.LocalSnapshot())
 	}
-	// the state of a memdev that is gone is not used at start
-	old := `[{"serial":3238060769,"serialHex":"c100e2e1","memdev":"mem0","region":"region0","node":2,"claims":{"u1":[{"request":"mem","region":"region0","mode":"numa","size":2097152,"dax":"dax0.1"}]}}]`
-	fe, devices, dir, stop := start(&DriverConfig{}, old)
+	fe, devices, dir, stop := start(&DriverConfig{})
 	defer stop()
 	if snap := fe.publisher.LocalSnapshot(); snap == nil || len(snap.Uses) != 0 {
-		t.Fatalf("uses %+v of a gone memdev", snap)
+		t.Fatalf("uses %+v without memdevs", snap)
 	}
 	if devices.k.SysRoot != dir+"/sys" {
 		t.Fatalf("local devices on %s", devices.k.SysRoot)
 	}
-	for _, name := range []string{"state.json", localStateFileName + ".old"} {
-		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, name := range []string{localStateFileName, preparedClaimsInfoFileName} {
-		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
-			t.Fatalf("the driver wrote %s", name)
-		}
+	if _, err := os.Stat(filepath.Join(dir, "state.json")); err != nil {
+		t.Fatal(err)
 	}
 }
 
