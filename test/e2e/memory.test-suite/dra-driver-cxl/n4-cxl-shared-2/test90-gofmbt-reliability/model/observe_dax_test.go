@@ -22,13 +22,11 @@ import (
 	"testing"
 )
 
-// TestObserverDaxReads runs testdata/observe-dax.py: mbt-observe.py counts
-// the online memory of a dax device of one range from its resource and
-// size without reading its mappingN files, which a reader can hold against
-// a shrink of the device by the driver, and that of several ranges from
-// the mappings, with the same online bytes; its stacks of a slow
-// observation have the marker that the executor looks for, the kernel
-// stacks and the Python stacks.
+// TestObserverDaxReads runs testdata/observe-dax.py. mbt-observe.py counts
+// the online memory of a dax device from the ranges in /proc/iomem. It
+// opens no mappingN file of a dax device. Its stacks of a slow observation
+// have the marker that the executor looks for, the kernel stacks and the
+// Python stacks.
 func TestObserverDaxReads(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {

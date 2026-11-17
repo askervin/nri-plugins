@@ -60,9 +60,8 @@ Where the data comes from:
                 target_node of its dax devices; dax = the dax devices of
                 its dax region with a size (the zero-size seed device is
                 left out): size, driver (kmem, device_dax or null), online
-                = bytes of its memory blocks that are online (the memory of
-                a device of one range from its resource and size, of
-                several ranges from its mappingN)
+                = bytes of its memory blocks that are online (its ranges
+                are the /proc/iomem resources with the name of the device)
   ports         /sys/bus/cxl/devices/portN and endpointN with
                 decoders_committed > 0: kind (hostbridge: a port right
                 under rootR; switch: a port below one; endpoint), hb (the
@@ -270,6 +269,7 @@ import time
 
 CXL = "/sys/bus/cxl/devices"
 DAX = "/sys/bus/dax/devices"
+IOMEM = "/proc/iomem"
 ND = "/sys/bus/nd/devices"
 NODES = "/sys/devices/system/node"
 MEMORY = "/sys/devices/system/memory"
@@ -372,29 +372,30 @@ def memdevs(errors):
     return out
 
 
-def online_bytes(dax, bs):
-    """Bytes of the memory blocks of dax device dax (daxX.Y) that are
-    online. The memory of a device of one range (one mappingN, none before
-    kernel 5.10) is its resource and size: a reader inside a mappingN file
-    stops a shrink of the device by the driver until the reader exits (the
-    kernel removes the mapping holding the rwsem that the reader waits for,
-    and waits for the reader, drivers/dax/bus.c). A device of several
-    ranges is read from its mappingN files, which can hold a shrink the
-    same way until the observer ends."""
-    base = DAX + "/" + dax
-    maps = sorted(glob.glob(base + "/mapping[0-9]*"), key=natkey)
-    ranges = []
-    for m in maps if len(maps) > 1 else []:
-        try:
-            ranges.append((int(read(m + "/start"), 0), int(read(m + "/end"), 0)))
-        except (OSError, ValueError):
+def dax_ranges():
+    """Return dax device name (daxX.Y) -> its (start, end) ranges in
+    /proc/iomem.
+
+    The dax drivers request one iomem resource per range of a device. The
+    resource has the name of the device. The observer reads no mappingN
+    file of a dax device. A read of such a file can deadlock with a dax
+    size write of the driver (drivers/dax/bus.c)."""
+    out = {}
+    for line in read(IOMEM).splitlines():
+        span, sep, name = line.strip().partition(" : ")
+        if not sep or not re.fullmatch(r"dax\d+\.\d+", name):
             continue
-    if not ranges:
-        start = int(read(base + "/resource"), 0)
-        size = int(read(base + "/size"), 0)
-        if size <= 0:
-            return 0
-        ranges = [(start, start + size - 1)]
+        start, _, end = span.partition("-")
+        start, end = int(start, 16), int(end, 16)
+        if end == 0:
+            raise ValueError("%s has no addresses: not read as root" % IOMEM)
+        out.setdefault(name, []).append((start, end))
+    return out
+
+
+def online_bytes(ranges, bs):
+    """Bytes of the online memory blocks inside ranges, a list of
+    (start, end)."""
     online = 0
     for start, end in ranges:
         for b in range(start // bs, end // bs + 1):
@@ -406,7 +407,7 @@ def online_bytes(dax, bs):
     return online
 
 
-def dax_devices(region_path, bs, errors):
+def dax_devices(region_path, bs, iomem, errors):
     out = []
     for dr in sorted(glob.glob(region_path + "/dax_region[0-9]*"), key=natkey):
         for d in sorted(glob.glob(dr + "/dax[0-9]*.[0-9]*"), key=natkey):
@@ -427,10 +428,8 @@ def dax_devices(region_path, bs, errors):
                 entry["node"] = int(read(d + "/target_node"))
             except (OSError, ValueError):
                 pass
-            try:
-                entry["online"] = online_bytes(name, bs) if bs else None
-            except (OSError, ValueError) as e:
-                errors.append("dax %s: online: %s" % (name, e))
+            if bs and iomem is not None:
+                entry["online"] = online_bytes(iomem.get(name, []), bs)
             out.append(entry)
     return out
 
@@ -448,6 +447,11 @@ def regions(errors):
     except (OSError, ValueError) as e:
         errors.append("block size: %s" % e)
         bs = 0
+    try:
+        iomem = dax_ranges()
+    except (OSError, ValueError) as e:
+        errors.append("iomem: %s" % e)
+        iomem = None
     out = []
     for p in sorted(glob.glob(CXL + "/region[0-9]*"), key=natkey):
         name = os.path.basename(p)
@@ -470,7 +474,7 @@ def regions(errors):
             mem = eps.get(m.group(1)) if m else None
             if mem:
                 r["serials"].append(serials.get(mem, mem))
-        r["dax"] = dax_devices(p, bs, errors)
+        r["dax"] = dax_devices(p, bs, iomem, errors)
         nodes = sorted(set(d["node"] for d in r["dax"] if d["node"] is not None))
         if nodes:
             r["node"] = nodes[0]

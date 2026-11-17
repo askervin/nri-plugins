@@ -46,18 +46,17 @@ cxl-dump() { # script API
     # Usage: cxl-dump LABEL
     #
     # Run cxl-dump in the VM and store what pkg/cxl found as
-    # $TEST_OUTPUT_DIR/cxl-dump.LABEL.json. Store the sysfs and proc files
-    # behind it next to the dump, too, so that a failed assertion can be
-    # debugged, and so that the files can be used as pkg/cxl unit test data.
+    # $TEST_OUTPUT_DIR/cxl-dump.LABEL.json. Store the zone and memory block
+    # files of the VM next to the dump, too. They help to debug a failed
+    # assertion.
     local label="$1"
     [ -n "$label" ] || error "cxl-dump: missing LABEL"
 
     cxl-dump-json "$label" || error "cxl-dump: running cxl-dump in the VM failed"
 
-    # Sort the sysfs files by the depth of their path, so that the files of a
-    # device come before the files of the devices below it.
-    vm-command-q "grep -sIr '' /sys/bus/cxl/devices/* | awk '{p=\$0; sub(/:.*/, \"\", p); n=gsub(/\//, \"/\", p); print n \"\t\" \$0}' | sort -k1,1n -k2 | cut -f2-" \
-        > "$TEST_OUTPUT_DIR/cxl-sysfs.$label.txt"
+    # Read no file below /sys/bus/cxl/devices here. A recursive read there
+    # reaches the mappingN files of dax devices. A read of such a file can
+    # deadlock with a dax size write of the driver.
     vm-command-q "cat /proc/zoneinfo" > "$TEST_OUTPUT_DIR/zoneinfo.$label.txt"
     vm-command-q "grep -s '' /sys/devices/system/memory/block_size_bytes /sys/devices/system/memory/memory*/state; grep -H MemTotal /sys/devices/system/node/node*/meminfo" \
         > "$TEST_OUTPUT_DIR/memory.$label.txt"

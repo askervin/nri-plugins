@@ -255,6 +255,14 @@ block_bytes() { # memory block size of TARGET in bytes
     t 'echo $((0x$(cat /sys/devices/system/memory/block_size_bytes)))'
 }
 
+dax_span() { # Usage: dax_span DEV -- first and last address of dax device DEV on TARGET
+    # The last address is start + size - 1. It holds for a device of one
+    # range only. The function reads no mappingN file of the device. A read
+    # of such a file can deadlock with a dax size write of the driver.
+    local sys="/sys/bus/dax/devices/${1#/dev/}"
+    t "r=\$(cat $sys/resource) && s=\$(cat $sys/size) && printf '%#x %#x\n' \$r \$((r + s - 1))"
+}
+
 driver_log() { # Usage: driver_log [SINCE] -- log of the driver
     k logs -n kube-system -l "$DRA_POD_LABEL" --tail=-1 ${1:+--since=$1}
 }

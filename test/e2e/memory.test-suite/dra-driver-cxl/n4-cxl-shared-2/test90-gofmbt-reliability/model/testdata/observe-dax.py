@@ -3,11 +3,11 @@
 
 Usage: observe-dax.py MBT_OBSERVE MBT_SOURCE
 
-On a sysfs tree in a temporary directory: online_bytes of MBT_OBSERVE
-counts the online memory blocks of a dax device of one range, of several
-ranges and of none (a kernel before 5.10) as the ranges of its mappingN
-give them, and reads no mappingN file of a device of one range or none.
-Then arm_stacks writes STACKS_MARKER, the kernel stacks of the threads of
+On a sysfs tree and an iomem file in a temporary directory: dax_devices
+of MBT_OBSERVE counts the online memory blocks of a dax device of one
+range, of several ranges and of no driver as /proc/iomem gives the ranges,
+and opens no mappingN file. dax_ranges refuses an iomem file without
+addresses. Then arm_stacks writes STACKS_MARKER, the kernel stacks of the threads of
 the process and the Python stacks of its threads to stderr, nothing once
 cancelled; the stacks of a child blocked in a read of a pipe name the
 call and the pipe; and the executor MBT_SOURCE (mbt.source.sh) looks for
@@ -30,13 +30,14 @@ BS = 128 << 20
 START = 0x250000000
 
 # the dax devices: their ranges (start block, blocks) in mapping order, and
-# whether the kernel has mappingN files
+# their driver
 DEVICES = {
-    "dax0.0": ([(0, 2)], True),
-    "dax0.1": ([(2, 1), (5, 2)], True),
-    "dax0.2": ([(3, 2)], False),
+    "dax0.0": ([(0, 2)], "kmem"),
+    "dax0.1": ([(2, 1), (5, 2)], "kmem"),
+    "dax0.2": ([(3, 2)], None),
+    "dax0.10": ([(7, 1)], "kmem"),
 }
-ONLINE = {0, 2, 3, 6}
+ONLINE = {0, 2, 6, 7}
 
 
 def load(path):
@@ -54,51 +55,66 @@ def write(path, text):
 
 
 def sysfs(root):
-    """Write the dax devices and memory blocks of DEVICES and ONLINE under
-    root; return the online bytes of each device."""
+    """Write the region, dax devices, memory blocks and iomem file of
+    DEVICES and ONLINE under root; return the region path and the online
+    bytes of each device."""
+    region = os.path.join(root, "cxl", "region0")
+    end = START + 8 * BS - 1
+    iomem = ["%x-%x : CXL Window 0" % (START, end), "  %x-%x : region0" % (START, end)]
     want = {}
-    for name, (ranges, mapped) in DEVICES.items():
-        d = os.path.join(root, "dax", name)
+    for name, (ranges, driver) in DEVICES.items():
+        d = os.path.join(region, "dax_region0", name)
         size = 0
         want[name] = 0
         for i, (first, n) in enumerate(ranges):
             start, end = START + first * BS, START + (first + n) * BS - 1
-            if mapped:
-                write("%s/mapping%d/start" % (d, i), "%#x" % start)
-                write("%s/mapping%d/end" % (d, i), "%#x" % end)
+            write("%s/mapping%d/start" % (d, i), "%#x" % start)
+            write("%s/mapping%d/end" % (d, i), "%#x" % end)
             size += n * BS
-            want[name] += BS * len(ONLINE & set(range(first, first + n)))
+            if driver:
+                iomem.append("    %x-%x : %s" % (start, end, name))
+                iomem.append("      %x-%x : System RAM (%s)" % (start, end, driver))
+                want[name] += BS * len(ONLINE & set(range(first, first + n)))
         write(d + "/size", str(size))
         write(d + "/resource", "%#x" % (START + ranges[0][0] * BS))
+        write(d + "/target_node", "2")
+        if driver:
+            os.symlink("../../../../bus/dax/drivers/" + driver, d + "/driver")
     for b in range(START // BS, START // BS + 8):
         state = "online" if b - START // BS in ONLINE else "offline"
         write(os.path.join(root, "memory", "memory%d" % b, "state"), state)
-    return want
+    write(os.path.join(root, "iomem"), "\n".join(iomem))
+    return region, want
 
 
 def check_online_bytes(obs, failures):
     with tempfile.TemporaryDirectory() as root:
-        want = sysfs(root)
-        obs.DAX, obs.MEMORY = os.path.join(root, "dax"), os.path.join(root, "memory")
-        plain = obs.read
-        for name, (ranges, _) in DEVICES.items():
-            seen = []
+        region, want = sysfs(root)
+        obs.MEMORY, obs.IOMEM = os.path.join(root, "memory"), os.path.join(root, "iomem")
+        opened = []
 
-            def read(path):
-                seen.append(path)
-                return plain(path)
-            obs.read = read
-            try:
-                got = obs.online_bytes(name, BS)
-            finally:
-                obs.read = plain
-            if got != want[name]:
-                failures.append("%s: online %d, expected %d" % (name, got, want[name]))
-            mappings = [p for p in seen if "/mapping" in p]
-            if len(ranges) == 1 and mappings:
-                failures.append("%s of one range: read %s" % (name, mappings))
-            if len(ranges) > 1 and len(mappings) != 2 * len(ranges):
-                failures.append("%s of %d ranges: read %s" % (name, len(ranges), mappings))
+        def tracked_open(path, *args, **kwargs):
+            opened.append(path)
+            return open(path, *args, **kwargs)
+        obs.open = tracked_open
+        try:
+            errors = []
+            got = {d["name"]: d["online"] for d in obs.dax_devices(region, BS, obs.dax_ranges(), errors)}
+        finally:
+            del obs.open
+        if errors:
+            failures.append("dax_devices: errors %s" % errors)
+        if got != want:
+            failures.append("online %s, expected %s" % (got, want))
+        mappings = [p for p in opened if "/mapping" in p]
+        if mappings:
+            failures.append("opened %s" % mappings)
+        write(obs.IOMEM, "00000000-00000000 : dax0.0")
+        try:
+            ranges = obs.dax_ranges()
+            failures.append("an iomem file without addresses gives %s" % ranges)
+        except ValueError:
+            pass
 
 
 def stderr_of(fn, seconds):

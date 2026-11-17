@@ -123,7 +123,9 @@ kn delete resourceclaim dax-shared --wait=true --timeout=300s >/dev/null
 wait_pod new Running 300
 NEW_DAX=$(pod_env_value new DAX)
 echo "  new: $NEW_DAX"
-t "daxctl list -d ${NEW_DAX#/dev/} 2>/dev/null; cat /sys/bus/dax/devices/${NEW_DAX#/dev/}/mapping*/start 2>/dev/null; cat /sys/bus/dax/devices/${DAX#/dev/}/mapping*/start 2>/dev/null" | sed 's/^/    /'
+t "daxctl list -d ${NEW_DAX#/dev/} 2>/dev/null" | sed 's/^/    /'
+echo "    $NEW_DAX at $(dax_span "$NEW_DAX" 2>/dev/null)"
+echo "    $DAX at $(dax_span "$DAX" 2>/dev/null)"
 out=$(pexec new python3 /tools/dax-pattern.py zero "$NEW_DAX" 2>&1)
 echo "    new: $out"
 check "new: the new slice $NEW_DAX is all zeroes (no data of dax-shared)" grep -q "non-zero MiB 0 " <<< "$out"

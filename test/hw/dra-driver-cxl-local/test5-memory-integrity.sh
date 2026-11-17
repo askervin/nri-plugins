@@ -51,8 +51,8 @@ wait_pod whole Running 600 || fail "pod whole is not Running"
 DAX=$(pod_env_value whole DAX)
 SIZE=$(pod_env_value whole SIZE)
 echo "  whole: $DAX, $((SIZE >> 30)) GiB"
-t "cat /sys/bus/cxl/devices/region*/resource /sys/bus/cxl/devices/region*/size /sys/bus/dax/devices/${DAX#/dev/}/mapping*/start /sys/bus/dax/devices/${DAX#/dev/}/mapping*/end" | tr '\n' ' ' | sed 's/^/  region start, size, slice start, end: /'
-echo
+region=$(t "cat /sys/bus/cxl/devices/region*/resource /sys/bus/cxl/devices/region*/size" | tr '\n' ' ')
+echo "  region start, size, slice start, end: $region$(dax_span "$DAX")"
 out=$(pexec whole python3 /tools/dax-scan.py 0x77 2>&1)
 echo "$out" | sed 's/^/    /'
 check "every page of the slice holds what was written (no aliasing)" grep -q "^bad pages 0 " <<< "$out"
@@ -67,9 +67,11 @@ wait_pod filler Running 600
 { claim_yaml c cxl-local memory=2Gi mode=dax; echo ---; pod_yaml c claim=c; } | kapply
 wait_pod c Running 300
 for p in a filler c; do
-    d=$(pod_env_value "$p" DAX)
-    echo "  $p: $d at $(t "cat /sys/bus/dax/devices/${d#/dev/}/mapping*/start | tr '\n' ' '")"
+    echo "  $p: $(pod_env_value "$p" DAX)"
 done
+# The driver logs the ranges of every slice it creates. A slice may have
+# several ranges, so its resource and size do not give its placement.
+driver_log 15m | grep -E "created slice" | sed 's/^[^]]*] //; s/^/    /' | tail -n 3
 DA=$(pod_env_value a DAX)
 DC=$(pod_env_value c DAX)
 pexec a python3 /tools/dax-pattern.py write "$DA" 0xaaaa | sed 's/^/    a: /'

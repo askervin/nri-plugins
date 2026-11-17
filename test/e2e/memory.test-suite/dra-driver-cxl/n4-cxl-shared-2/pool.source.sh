@@ -307,8 +307,6 @@ pool-cxl-dump() { # script API
     fi
     suffix="$(pool-vm-label "$vmdir")"
     pool-cxl-dump-json "$vmdir" "$label" || error "pool-cxl-dump: running cxl-dump in $(basename "$vmdir") failed"
-    other-vm-command-q "$vmdir" "grep -sIr '' /sys/bus/cxl/devices/* | awk '{p=\$0; sub(/:.*/, \"\", p); n=gsub(/\//, \"/\", p); print n \"\t\" \$0}' | sort -k1,1n -k2 | cut -f2-" \
-        > "$TEST_OUTPUT_DIR/cxl-sysfs.$label.$suffix.txt"
     other-vm-command-q "$vmdir" "grep -s '' /sys/devices/system/memory/block_size_bytes /sys/devices/system/memory/memory*/state; grep -H MemTotal /sys/devices/system/node/node*/meminfo" \
         > "$TEST_OUTPUT_DIR/memory.$label.$suffix.txt"
     echo "cxl-dump $label ($suffix): $(cxl-value 'summary()')"
