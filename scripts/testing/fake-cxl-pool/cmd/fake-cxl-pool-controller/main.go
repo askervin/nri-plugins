@@ -36,6 +36,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/record"
 
+	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/client"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/controller"
 )
@@ -49,7 +50,7 @@ func run() int {
 	var cfg controller.Config
 	server := flag.String("server", client.DefaultURL(), "fake-cxl-pool server URL (env FAKE_CXL_POOL_SERVER)")
 	kubeconfig := flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "kubeconfig file (env KUBECONFIG; \"\": in-cluster config)")
-	flag.StringVar(&cfg.DriverName, "driver-name", controller.DefaultDriverName, "DRA driver name")
+	flag.StringVar(&cfg.DriverName, "driver-name", device.PoolDriverName, "DRA driver name")
 	flag.StringVar(&cfg.PoolName, "pool-name", "", "DRA pool name of the published devices (default: the name of the server)")
 	flag.DurationVar(&cfg.SyncInterval, "sync-interval", controller.DefaultSyncInterval, "interval of full reconciles")
 	flag.DurationVar(&cfg.AttachTimeout, "attach-timeout", controller.DefaultAttachTimeout, "attach request timeout")

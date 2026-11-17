@@ -463,17 +463,19 @@ func (c *Controller) writeStatus(ctx context.Context, w *want, actual map[attKey
 		serial = d.Serial
 	}
 	data := DeviceData{
-		Serial:       strings.ToLower(serial),
-		Shared:       d.Shared,
-		Persistent:   d.Persistent,
-		Size:         d.Size,
+		PoolStatusData: device.PoolStatusData{
+			Serial:     strings.ToLower(serial),
+			Shared:     new(d.Shared),
+			Size:       new(uint64(d.Size)),
+			Exclusive:  w.allShares,
+			Persistent: d.Persistent,
+			SingleHost: w.exclusive && a.Exclusive,
+			Coherent:   c.coherent(w.result.Device),
+		},
 		Host:         a.Host,
 		HostUUID:     w.host.UUID,
 		Attachment:   a.ID,
 		QemuDeviceID: a.QemuDeviceID,
-		Exclusive:    w.allShares,
-		SingleHost:   w.exclusive && a.Exclusive,
-		Coherent:     c.coherent(w.result.Device),
 	}
 	cond := metav1.Condition{
 		Type:    c.condAttached(),

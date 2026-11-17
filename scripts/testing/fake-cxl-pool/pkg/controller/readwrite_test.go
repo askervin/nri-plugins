@@ -27,9 +27,9 @@ import (
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 )
 
-const (
-	condAttached = DefaultDriverName + "/Attached"
-	condFailed   = DefaultDriverName + "/AttachFailed"
+var (
+	condAttached = device.AttachedCondition(device.PoolDriverName)
+	condFailed   = device.AttachFailedCondition(device.PoolDriverName)
 )
 
 // The device sections of read-only and read-write fs claims.

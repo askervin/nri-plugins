@@ -40,13 +40,13 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/dynamic-resource-allocation/resourceslice"
 
+	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/client"
 )
 
 // Defaults.
 const (
-	DefaultDriverName    = "cxl-pool.nri.io"
 	DefaultSyncInterval  = 10 * time.Second
 	DefaultAttachTimeout = 60 * time.Second
 	DefaultDetachTimeout = 60 * time.Second
@@ -81,7 +81,7 @@ type Config struct {
 
 func (c *Config) complete() {
 	if c.DriverName == "" {
-		c.DriverName = DefaultDriverName
+		c.DriverName = device.PoolDriverName
 	}
 	if c.SyncInterval <= 0 {
 		c.SyncInterval = DefaultSyncInterval

@@ -46,7 +46,7 @@ func memoryConfig(source resourceapi.AllocationConfigSource, driver, body string
 
 // claimConfig is a claim entry of the pool driver for all requests.
 func claimConfig(body string) resourceapi.DeviceAllocationConfiguration {
-	return memoryConfig(resourceapi.AllocationConfigSourceClaim, DefaultDriverName, body)
+	return memoryConfig(resourceapi.AllocationConfigSourceClaim, device.PoolDriverName, body)
 }
 
 func (p *fakePool) requests() []api.AttachRequest {
@@ -85,9 +85,9 @@ func TestConfigSettingsPassed(t *testing.T) {
 			config: []resourceapi.DeviceAllocationConfiguration{
 				claimConfig(`"device": {"mode": "dax"}, "pool": {"opaque": {"fake-cxl-pool": {"slot": "ds7", "numaNode": 1}, "vendor-x": {"port": 3, "qos": "high"}}}`),
 				// class entries come first whatever the list order
-				memoryConfig(resourceapi.AllocationConfigSourceClass, DefaultDriverName, `"pool": {"opaque": {"fake-cxl-pool": {"numaNode": 0, "slot": "ds2"}}}`),
+				memoryConfig(resourceapi.AllocationConfigSourceClass, device.PoolDriverName, `"pool": {"opaque": {"fake-cxl-pool": {"numaNode": 0, "slot": "ds2"}}}`),
 				// another request, another driver
-				memoryConfig(resourceapi.AllocationConfigSourceClaim, DefaultDriverName, `"pool": {"opaque": {"fake-cxl-pool": {"numaNode": 5}}}`, "other"),
+				memoryConfig(resourceapi.AllocationConfigSourceClaim, device.PoolDriverName, `"pool": {"opaque": {"fake-cxl-pool": {"numaNode": 5}}}`, "other"),
 				memoryConfig(resourceapi.AllocationConfigSourceClaim, device.DriverName, `"device": {"mode": "dax"}`),
 				{Source: resourceapi.AllocationConfigSourceClaim, DeviceConfiguration: resourceapi.DeviceConfiguration{Opaque: &resourceapi.OpaqueDeviceConfiguration{
 					Driver: "other.example.com", Parameters: runtime.RawExtension{Raw: []byte(`{"anything": true}`)},
@@ -98,7 +98,7 @@ func TestConfigSettingsPassed(t *testing.T) {
 		},
 		{
 			name:   "null removes the setting of the class",
-			config: []resourceapi.DeviceAllocationConfiguration{memoryConfig(resourceapi.AllocationConfigSourceClass, DefaultDriverName, `"pool": {"opaque": {"fake-cxl-pool": {"numaNode": 0, "slot": "ds2"}}}`), claimConfig(`"pool": {"opaque": {"fake-cxl-pool": {"slot": null}}}`)},
+			config: []resourceapi.DeviceAllocationConfiguration{memoryConfig(resourceapi.AllocationConfigSourceClass, device.PoolDriverName, `"pool": {"opaque": {"fake-cxl-pool": {"numaNode": 0, "slot": "ds2"}}}`), claimConfig(`"pool": {"opaque": {"fake-cxl-pool": {"slot": null}}}`)},
 			want:   "numa node 0",
 			slot:   "ds1",
 		},
@@ -149,7 +149,7 @@ func TestConfigInvalid(t *testing.T) {
 		{
 			name: "invalid entry of another request of the claim",
 			config: []resourceapi.DeviceAllocationConfiguration{
-				memoryConfig(resourceapi.AllocationConfigSourceClaim, DefaultDriverName, `"pool": {"slot": "ds1"}`, "other"),
+				memoryConfig(resourceapi.AllocationConfigSourceClaim, device.PoolDriverName, `"pool": {"slot": "ds1"}`, "other"),
 			},
 			err: `MemoryConfig: FromClaim config 0: json: unknown field "pool.slot"`,
 		},
@@ -287,9 +287,12 @@ func TestConfigExistingAttachmentKept(t *testing.T) {
 	if c == nil || c.Message != "shared0 attached to vm1 (slot ds3)" || st.ShareID == nil || *st.ShareID != "share-w" {
 		t.Fatalf("unexpected status %+v %+v", c, st)
 	}
+	pd, err := device.ParsePoolStatusData(st.Data.Raw)
+	if err != nil || !pd.Shared || pd.Serial != 0xc1ae0001 || pd.Size != 256<<20 {
+		t.Fatalf("unexpected data %s %v", st.Data.Raw, err)
+	}
 	var data DeviceData
-	if err := json.Unmarshal(st.Data.Raw, &data); err != nil || !data.Shared || data.Serial != "0xc1ae0001" ||
-		data.Size != 256<<20 || data.QemuDeviceID != "fcp_shared0.hp7" {
+	if err := json.Unmarshal(st.Data.Raw, &data); err != nil || data.QemuDeviceID != "fcp_shared0.hp7" {
 		t.Fatalf("unexpected data %s %v", st.Data.Raw, err)
 	}
 }

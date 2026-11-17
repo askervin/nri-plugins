@@ -57,12 +57,12 @@ func (c *Controller) convertDevice(name string, d api.Device) resourceapi.Device
 	rd := resourceapi.Device{
 		Name: name,
 		Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
-			"type":       {StringValue: ptr.To("memdev")},
-			"source":     {StringValue: ptr.To("pool")},
-			"serial":     {StringValue: ptr.To(strings.ToLower(d.Serial))},
-			"shared":     {BoolValue: ptr.To(d.Shared)},
-			"persistent": {BoolValue: ptr.To(d.Persistent)},
-			"size":       {IntValue: ptr.To(d.Size)},
+			device.AttrType:       {StringValue: ptr.To(device.DeviceTypeMemdev)},
+			device.AttrSource:     {StringValue: ptr.To(cxlapi.SourcePool)},
+			device.AttrSerial:     {StringValue: ptr.To(strings.ToLower(d.Serial))},
+			device.AttrShared:     {BoolValue: ptr.To(d.Shared)},
+			device.AttrPersistent: {BoolValue: ptr.To(d.Persistent)},
+			device.AttrSize:       {IntValue: ptr.To(d.Size)},
 			// a missing coherent attribute is false
 			device.AttrCoherent: {BoolValue: ptr.To(c.coherent(name))},
 		},
@@ -82,7 +82,7 @@ func (c *Controller) convertDevice(name string, d api.Device) resourceapi.Device
 		}
 	} else {
 		rd.Capacity = map[resourceapi.QualifiedName]resourceapi.DeviceCapacity{
-			"memory": {Value: *resource.NewQuantity(d.Size, resource.BinarySI)},
+			device.CapacityMemory: {Value: *resource.NewQuantity(d.Size, resource.BinarySI)},
 		}
 	}
 	return rd

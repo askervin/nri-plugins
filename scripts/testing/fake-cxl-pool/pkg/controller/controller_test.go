@@ -397,9 +397,9 @@ func (e *env) createClaimShares(name, devName, nodeName string, shareID string, 
 func (e *env) createClaimConfig(name, devName, nodeName string, shareID string, shares int64, config []resourceapi.DeviceAllocationConfiguration) *resourceapi.ResourceClaim {
 	e.t.Helper()
 	r := resourceapi.DeviceRequestAllocationResult{
-		Request: "mem", Driver: DefaultDriverName, Pool: testPoolName, Device: devName,
-		BindingConditions:        []string{DefaultDriverName + "/Attached"},
-		BindingFailureConditions: []string{DefaultDriverName + "/AttachFailed"},
+		Request: "mem", Driver: device.PoolDriverName, Pool: testPoolName, Device: devName,
+		BindingConditions:        []string{condAttached},
+		BindingFailureConditions: []string{condFailed},
 	}
 	if shareID != "" {
 		r.ShareID = ptr.To(types.UID(shareID))
@@ -506,7 +506,7 @@ func (e *env) condition(name, condType string) (*metav1.Condition, *resourceapi.
 	c := e.claim(name)
 	for i := range c.Status.Devices {
 		d := &c.Status.Devices[i]
-		if d.Driver == DefaultDriverName && d.Pool == testPoolName {
+		if d.Driver == device.PoolDriverName && d.Pool == testPoolName {
 			return meta.FindStatusCondition(d.Conditions, condType), d
 		}
 	}
@@ -542,7 +542,7 @@ func TestPublish(t *testing.T) {
 	e.eventually("ResourceSlice", func() bool { return len(e.slices()) == 1 })
 	slice := e.slices()[0]
 	s := slice.Spec
-	if s.Driver != DefaultDriverName || s.Pool.Name != testPoolName || s.Pool.ResourceSliceCount != 1 ||
+	if s.Driver != device.PoolDriverName || s.Pool.Name != testPoolName || s.Pool.ResourceSliceCount != 1 ||
 		s.AllNodes != nil || s.NodeName != nil || s.PerDeviceNodeSelection != nil {
 		t.Fatalf("unexpected slice spec %+v", s)
 	}

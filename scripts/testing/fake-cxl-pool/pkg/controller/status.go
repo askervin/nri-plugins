@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"reflect"
 
 	resourceapi "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -48,23 +49,14 @@ const (
 func (c *Controller) condAttached() string { return device.AttachedCondition(c.cfg.DriverName) }
 func (c *Controller) condFailed() string   { return device.AttachFailedCondition(c.cfg.DriverName) }
 
-// DeviceData is the data of a claim status device entry, read by the node
-// plugin (serial, shared and size are required there). Exclusive: the
-// result has all shares of a shared device. SingleHost: the attachment is
-// exclusive to the host for this claim. Coherent: the memory of the device
-// is coherent between hosts.
+// DeviceData is the status data of an attached device: the pool contract
+// that the node plugin reads, and the attachment of the pool server.
 type DeviceData struct {
-	Serial       string `json:"serial"`
-	Shared       bool   `json:"shared"`
-	Persistent   bool   `json:"persistent,omitempty"`
-	Size         int64  `json:"size"`
+	device.PoolStatusData
 	Host         string `json:"host"`
 	HostUUID     string `json:"hostUUID,omitempty"`
 	Attachment   string `json:"attachment"`
 	QemuDeviceID string `json:"qemuDeviceId"`
-	Exclusive    bool   `json:"exclusive,omitempty"`
-	SingleHost   bool   `json:"singleHost,omitempty"`
-	Coherent     bool   `json:"coherent,omitempty"`
 }
 
 // hasCondition returns the condition of the status entry of a result if it
@@ -90,7 +82,7 @@ func attachedUpToDate(claim *resourceapi.ResourceClaim, r resourceapi.DeviceRequ
 	}
 	e := device.StatusOf(claim, &r)
 	var oldData DeviceData
-	return e.Data != nil && json.Unmarshal(e.Data.Raw, &oldData) == nil && oldData == data
+	return e.Data != nil && json.Unmarshal(e.Data.Raw, &oldData) == nil && reflect.DeepEqual(oldData, data)
 }
 
 // hasResult returns true if the claim is still allocated with the result.
