@@ -59,6 +59,7 @@ func reqSettings(r api.AttachRequest) string {
 }
 
 func TestConfigSettingsPassed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		key    string // -config-key, "" for the default
@@ -111,6 +112,7 @@ func TestConfigSettingsPassed(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			e := newEnvWith(t, func(_ *fakePool, c *Config) { c.ConfigKey = tc.key })
 			e.createClaimConfig("c", "pooled0", "node1", "", 0, tc.config)
 			e.sync()
@@ -127,6 +129,7 @@ func TestConfigSettingsPassed(t *testing.T) {
 }
 
 func TestConfigInvalid(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		config []resourceapi.DeviceAllocationConfiguration
@@ -178,6 +181,7 @@ func TestConfigInvalid(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			e := newEnv(t)
 			e.createClaimConfig("c", "pooled0", "node1", "", 0, tc.config)
 			e.sync()
@@ -220,6 +224,7 @@ func TestConfigInvalid(t *testing.T) {
 }
 
 func TestConfigInvalidNotHalfAttached(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	// the device of the invalid claim is attached (an earlier controller,
 	// say) without an Attached condition: detached
@@ -235,6 +240,7 @@ func TestConfigInvalidNotHalfAttached(t *testing.T) {
 }
 
 func TestConfigInvalidSharedWithValid(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.createClaimConfig("a", "shared0", "node1", "share-a", 1, nil)
 	e.createClaimConfig("b", "shared0", "node1", "share-b", 1, []resourceapi.DeviceAllocationConfiguration{claimConfig(`"pool": {"opaque": {"fake-cxl-pool": {"slot": 1}}}`)})
@@ -255,6 +261,7 @@ func TestConfigInvalidSharedWithValid(t *testing.T) {
 }
 
 func TestConfigInvalidAttachedKept(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.createClaim("c", "pooled0", "node1", "")
 	e.sync()
@@ -285,6 +292,7 @@ func TestConfigInvalidAttachedKept(t *testing.T) {
 }
 
 func TestConfigExistingAttachmentKept(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	// attached in another slot: no reattach
 	claim := e.createClaimConfig("c", "pooled0", "node1", "", 0, []resourceapi.DeviceAllocationConfiguration{claimConfig(`"pool": {"opaque": {"fake-cxl-pool": {"slot": "ds7"}}}`)})

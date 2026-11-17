@@ -75,6 +75,7 @@ func (e *env) setHosts(hosts []api.Host) {
 }
 
 func TestPublishNodeSelector(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.sync()
 	e.waitSelector("kubernetes.io/hostname In [h-node1 h-node2]")
@@ -119,6 +120,7 @@ func TestPublishNodeSelector(t *testing.T) {
 }
 
 func TestPoolNameFromServer(t *testing.T) {
+	t.Parallel()
 	e := newEnvWith(t, func(p *fakePool, _ *Config) { p.name = "pool-x" })
 	if e.c.cfg.PoolName != "pool-x" {
 		t.Fatalf("pool name %q", e.c.cfg.PoolName)
@@ -141,6 +143,7 @@ func TestPoolNameFromServer(t *testing.T) {
 }
 
 func TestRunPoolName(t *testing.T) {
+	t.Parallel()
 	e := newEnvWith(t, func(p *fakePool, _ *Config) { p.name = "pool-x" })
 	// a controller of its own: Run starts its informers
 	logs := &lockedBuf{}

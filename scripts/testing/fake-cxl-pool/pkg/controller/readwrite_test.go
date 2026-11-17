@@ -123,6 +123,7 @@ func (e *env) exclusiveAttachment(host string) (bool, bool) {
 // attachment of its node exclusive; readers and writers of that node
 // share it; claims of other nodes Conflict until the writers are gone.
 func TestReadWriteFsExclusive(t *testing.T) {
+	t.Parallel()
 	e := newFsEnv(t)
 	e.share("rw-a", "node1", rwFs)
 	e.sync()
@@ -180,6 +181,7 @@ func TestReadWriteFsExclusive(t *testing.T) {
 // A writer that joins readers of two nodes fails alone: making the
 // existing attachment exclusive conflicts, the readers keep theirs.
 func TestReadWriteFsJoinsReadersOfTwoNodes(t *testing.T) {
+	t.Parallel()
 	e := newFsEnv(t)
 	e.share("ro-1", "node1", roFs)
 	e.share("ro-2", "node2", roFs)
@@ -230,6 +232,7 @@ func TestReadWriteFsJoinsReadersOfTwoNodes(t *testing.T) {
 // Attached, the writer fails alone, and gets the attachment exclusively
 // when the other node's claim is gone.
 func TestReadWriteFsNewAttachmentReaderAndWriter(t *testing.T) {
+	t.Parallel()
 	e := newFsEnv(t)
 	e.share("ro-1", "node1", roFs)
 	e.sync()
@@ -279,6 +282,7 @@ func TestReadWriteFsNewAttachmentReaderAndWriter(t *testing.T) {
 // A new attachment that conflicts also without the exclusive flag fails
 // every want of its key.
 func TestReadWriteFsNewAttachmentConflict(t *testing.T) {
+	t.Parallel()
 	e := newFsEnv(t)
 	e.pool.addAttachment(api.Attachment{Device: "fs0", Host: "foreign", Owner: "k8s:resourceclaim/other-cluster", Exclusive: true})
 	e.share("rw-1", "node1", rwFs)
@@ -297,6 +301,7 @@ func TestReadWriteFsNewAttachmentConflict(t *testing.T) {
 // all shares stay exclusive with singleHost; a device that is not shared
 // never gets the exclusive flag.
 func TestReadWriteFsClusterAndExclusive(t *testing.T) {
+	t.Parallel()
 	e := newFsEnv(t)
 	e.share("gfs-1", "node1", rwGfs2)
 	e.share("gfs-2", "node2", rwGfs2)
@@ -353,6 +358,7 @@ func (e *env) setConfig(name string, cfg []resourceapi.DeviceAllocationConfigura
 // An attached writer whose MemoryConfig cannot be resolved any more keeps
 // the exclusive flag of its attachment.
 func TestReadWriteFsUnresolvedWriterKeepsExclusive(t *testing.T) {
+	t.Parallel()
 	e := newFsEnv(t)
 	e.share("rw-a", "node1", rwFs)
 	e.sync()
@@ -389,6 +395,7 @@ func TestReadWriteFsUnresolvedWriterKeepsExclusive(t *testing.T) {
 // The resolved MemoryConfig comes with an error of the controller's own
 // object, so that the device section still decides the exclusive flag.
 func TestPoolSettingsErrorKeepsResolved(t *testing.T) {
+	t.Parallel()
 	e := newFsEnv(t)
 	claim := e.createClaimConfig("rw-n", "fs0", "node1", "share-rw-n", 1, []resourceapi.DeviceAllocationConfiguration{
 		claimConfig(`"device": {"mode": "fs", "readOnly": false}, "pool": {"opaque": {"fake-cxl-pool": {"numaNode": -1}}}`)})
@@ -408,6 +415,7 @@ func TestPoolSettingsErrorKeepsResolved(t *testing.T) {
 // When the attach without the exclusive flag gets no answer, the claims
 // that do not need the flag wait: they are not refused.
 func TestReadWriteFsFallbackNoAnswer(t *testing.T) {
+	t.Parallel()
 	e := newFsEnv(t)
 	e.share("ro-1", "node1", roFs)
 	e.sync()

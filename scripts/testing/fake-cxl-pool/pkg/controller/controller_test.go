@@ -498,6 +498,7 @@ func (e *env) slices() []resourceapi.ResourceSlice {
 
 // (1) publish
 func TestPublish(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.sync()
 	e.eventually("ResourceSlice", func() bool { return len(e.slices()) == 1 })
@@ -580,6 +581,7 @@ func TestPublish(t *testing.T) {
 }
 
 func TestDeviceName(t *testing.T) {
+	t.Parallel()
 	for in, want := range map[string]string{
 		"pooled0":                      "pooled0",
 		"Shared_0":                     "shared-0",
@@ -595,6 +597,7 @@ func TestDeviceName(t *testing.T) {
 }
 
 func TestDuplicateNamesSkipped(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	devs, byName := e.c.buildDevices([]api.Device{
 		{Name: "a.b", Scope: api.ScopePool, Size: 256 << 20},
@@ -606,6 +609,7 @@ func TestDuplicateNamesSkipped(t *testing.T) {
 }
 
 func TestMapHosts(t *testing.T) {
+	t.Parallel()
 	hm := mapHosts(newFakePool().hosts, []*corev1.Node{
 		node("node1", "B6A78455EDB1558D8CF101A259F76E97"),
 		node("node2", "x"),
@@ -619,6 +623,7 @@ func TestMapHosts(t *testing.T) {
 
 // (2) allocated claim on a known node
 func TestAttachAndStatus(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	claim := e.createClaim("pooled-memory", "pooled0", "node1", "")
 	e.sync()
@@ -657,6 +662,7 @@ func TestAttachAndStatus(t *testing.T) {
 
 // (3) node without host
 func TestNoHost(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.createClaim("c3", "pooled0", "node3", "")
 	e.sync()
@@ -680,6 +686,7 @@ func TestNoHost(t *testing.T) {
 
 // (4) attach 409
 func TestAttachConflict(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.pool.mu.Lock()
 	e.pool.attachErr["pooled0"] = api.CodeConflict
@@ -709,6 +716,7 @@ func TestAttachConflict(t *testing.T) {
 
 // (5) allocation removed
 func TestDetachOnDeallocation(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.createClaim("c5", "pooled0", "node2", "")
 	e.sync()
@@ -745,6 +753,7 @@ func TestDetachOnDeallocation(t *testing.T) {
 
 // (6) restart: the attachment exists, the status is missing
 func TestRestartWithExistingAttachment(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	claim := e.createClaimShares("c6", "shared0", "node1", "share-1", 1)
 	e.pool.addAttachment(api.Attachment{Device: "shared0", Host: "vm1", Serial: "0xc1ae0001", Owner: e.c.Owner(claim.UID),
@@ -766,6 +775,7 @@ func TestRestartWithExistingAttachment(t *testing.T) {
 
 // (7) two claims, same shared device, same node
 func TestSharedTwoClaimsOneNode(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.createClaimShares("a", "shared0", "node1", "share-a", 1)
 	e.createClaimShares("b", "shared0", "node1", "share-b", 1)
@@ -800,6 +810,7 @@ func TestSharedTwoClaimsOneNode(t *testing.T) {
 
 // (8) other owners and foreign hosts
 func TestForeignAttachmentsKept(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.pool.addAttachment(api.Attachment{Device: "pooled0", Host: "vm1", Owner: "manual"})
 	e.pool.addAttachment(api.Attachment{Device: "shared0", Host: "vm1", Owner: "", Adopted: true})
@@ -820,6 +831,7 @@ func TestForeignAttachmentsKept(t *testing.T) {
 // controller takes it over where it is and detaches it when the claim
 // goes.
 func TestAdoptedAttachmentTakenOver(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	claim := e.createClaimConfig("c", "pooled0", "node1", "", 0, []resourceapi.DeviceAllocationConfiguration{
 		claimConfig(`"pool": {"opaque": {"fake-cxl-pool": {"slot": "ds7"}}}`)})
@@ -858,6 +870,7 @@ func TestAdoptedAttachmentTakenOver(t *testing.T) {
 // R5 of 12-findings-reboot.txt: after a re-attach (a qemu restart) the
 // device data of an Attached claim is that of the new attachment.
 func TestReattachUpdatesDeviceData(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.createClaim("c", "pooled0", "node1", "")
 	e.sync()
@@ -887,6 +900,7 @@ func TestReattachUpdatesDeviceData(t *testing.T) {
 }
 
 func TestExclusiveMovesBetweenNodes(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.createClaim("m", "pooled0", "node1", "")
 	e.sync()
@@ -908,6 +922,7 @@ func TestExclusiveMovesBetweenNodes(t *testing.T) {
 }
 
 func TestExclusiveSharedClaim(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	// all of the shares: attached exclusively
 	e.createClaimShares("w", "shared0", "node1", "share-w", device.SharesUnlimited)
@@ -946,6 +961,7 @@ func TestExclusiveSharedClaim(t *testing.T) {
 }
 
 func TestExclusiveSharedConflict(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	// another cluster has the device: an exclusive attach conflicts
 	e.pool.addAttachment(api.Attachment{Device: "shared0", Host: "foreign", Owner: "k8s:resourceclaim/other-cluster"})
@@ -966,6 +982,7 @@ func TestExclusiveSharedConflict(t *testing.T) {
 }
 
 func TestExclusiveResult(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.sync()
 	for _, tc := range []struct {
@@ -986,6 +1003,7 @@ func TestExclusiveResult(t *testing.T) {
 }
 
 func TestPersistentAttributeAndStatus(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.pool.mu.Lock()
 	e.pool.devices["llm0"] = api.Device{Name: "llm0", Serial: "0xc1ae0002", Size: 512 << 20, Shared: true, Persistent: true,
