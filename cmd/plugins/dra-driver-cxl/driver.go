@@ -20,6 +20,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -494,7 +495,8 @@ func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Driver
 // the engine (before any scan: the regions of the drivers are never
 // published as region devices), the local guard, the first scan of the
 // devices of the kernel of the engine, the CDI specs of the claims of
-// cxl.nri.io rewritten in the directory cdiRoot.
+// cxl.nri.io rewritten in the directory cdiRoot (kept as they are on a
+// lost store).
 func (fe *frontEnds) recover(ctx context.Context, cdiRoot string, driverConfig *DriverConfig, devices *deviceEngine) error {
 	snap, err := devices.k.ObserveTopology(ctx)
 	if err != nil {
@@ -536,10 +538,13 @@ func (fe *frontEnds) recover(ctx context.Context, cdiRoot string, driverConfig *
 		return fmt.Errorf("failed to create new NodeState: unable to refresh the CDI registry: %v", err)
 	}
 	cache := cdiapi.GetDefaultCache()
-	if err := dra.RemoveCXLSpecs(cache); err != nil {
-		return fmt.Errorf("failed to create new NodeState: %v", err)
+	// a lost store does not know the prepared claims: their specs stay
+	if devices.st.Lost() == nil {
+		if err := dra.RemoveCXLSpecs(cache); err != nil {
+			return fmt.Errorf("failed to create new NodeState: %v", err)
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
-	time.Sleep(250 * time.Millisecond)
 	fe.local.SetCDI(cache)
 	fe.pool.SetCDI(cache)
 	// The CDI specs of the claims prepared before a restart.
@@ -560,6 +565,29 @@ func localPoolGuard(pool *dra.Plugin, watcher *provenance.Watcher) func(ctx cont
 		}
 		return watcher.CheckLocal(ctx, serial)
 	}
+}
+
+// fenceSeed returns the NUMA nodes that the NRI plugin fences from the
+// start: those of the prepared claims of the drivers. A lost store does not
+// know the claims, so then they are the NUMA nodes of every online memory
+// block of a CXL region.
+func fenceSeed(ctx context.Context, st *store.Store, k *kernel.Kernel, drivers ...string) ([]int, error) {
+	if st.Lost() == nil {
+		return dra.NumaNodes(&st.Snapshot().Records, drivers...), nil
+	}
+	snap, err := k.ObserveTopology(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("the NUMA nodes of CXL memory to fence: %w", err)
+	}
+	var nodes []int
+	for _, b := range snap.Blocks {
+		if b.State == kernel.BlockOnline && b.NumaNode >= 0 && !slices.Contains(nodes, b.NumaNode) {
+			nodes = append(nodes, b.NumaNode)
+		}
+	}
+	slices.Sort(nodes)
+	klog.Warningf("the driver state is lost: fencing the NUMA nodes %v of online CXL memory", nodes)
+	return nodes, nil
 }
 
 // newKernel returns the kernel of the node with its sysfs under sysfsRoot.

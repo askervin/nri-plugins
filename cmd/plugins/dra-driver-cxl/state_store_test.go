@@ -36,8 +36,8 @@ import (
 // On a store in LOST mode the driver starts (no crash loop): the device
 // engine recovers nothing, the pool driver, the node state and the lease
 // broker start empty, the first Prepare fails with the text of the lost
-// state, and nothing is written: the document stays as it is and no other
-// JSON file appears.
+// state, and nothing is written: the document and the CDI specs stay as
+// they are and no other JSON file appears.
 func TestStartOnALostStore(t *testing.T) {
 	root := t.TempDir()
 	local, pool := filepath.Join(root, device.DriverName), filepath.Join(root, device.PoolDriverName)
@@ -45,6 +45,13 @@ func TestStartOnALostStore(t *testing.T) {
 	noErr(t, os.WriteFile(filepath.Join(local, store.FileName), []byte("{"), 0o600))
 	for _, d := range []string{"sys/bus/cxl/devices", "sys/devices/system/node", "cdi"} {
 		noErr(t, os.MkdirAll(filepath.Join(root, d), 0o755))
+	}
+	// the CDI specs of claims prepared before the store was lost
+	specs := map[string]string{}
+	for name, kind := range map[string]string{device.ClaimsCDISpecName: device.CDIKind, device.PoolCDISpecName: device.PoolCDIKind,
+		device.LeasesCDISpecName: device.CDIKind} {
+		specs[name] = "cdiVersion: 0.6.0\nkind: " + kind + "\ndevices:\n- name: claim-u0-0\n  containerEdits:\n    env: [A=1]\n"
+		noErr(t, os.WriteFile(filepath.Join(root, "cdi", name+".yaml"), []byte(specs[name]), 0o600))
 	}
 	ctx := context.Background()
 	st, err := store.Open(ctx, store.Options{Dir: local, PoolDir: pool, PoolDriver: device.PoolDriverName, BootID: "boot-1", SysRoot: "/sys", DevRoot: "/dev"})
@@ -92,6 +99,11 @@ func TestStartOnALostStore(t *testing.T) {
 	noErr(t, unprepareOn(ctx, ns, "u1"))
 	if data, err := os.ReadFile(filepath.Join(local, store.FileName)); err != nil || string(data) != "{" {
 		t.Errorf("the lost document was rewritten: %q %v", data, err)
+	}
+	for name, want := range specs {
+		if data, err := os.ReadFile(filepath.Join(root, "cdi", name+".yaml")); err != nil || string(data) != want {
+			t.Errorf("CDI spec %s changed in LOST mode: %q %v", name, data, err)
+		}
 	}
 	for _, dir := range []string{local, pool} {
 		files, err := filepath.Glob(filepath.Join(dir, "*.json"))

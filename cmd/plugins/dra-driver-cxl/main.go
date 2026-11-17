@@ -33,7 +33,6 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
@@ -365,7 +364,12 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 
 	// 3. Not the nodes of the claims of another boot: they have no memory
 	// online, their Prepares again fence the nodes before they online it.
-	nri.Seed(dra.NumaNodes(&st.Snapshot().Records, fe.local.Name(), fe.pool.Name()))
+	// A lost store fences every node of online CXL memory.
+	seed, err := fenceSeed(ctx, st, devices.k, fe.local.Name(), fe.pool.Name())
+	if err != nil {
+		return nil, err
+	}
+	nri.Seed(seed)
 	// fe.pool is a nil *dra.Plugin without the pool driver: its readers
 	// are nil-receiver safe (no pool results)
 	nri.SetResults(fe.local, fe.pool)

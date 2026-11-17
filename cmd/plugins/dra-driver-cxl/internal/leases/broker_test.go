@@ -1118,11 +1118,15 @@ func TestFsLeaseClaims(t *testing.T) {
 }
 
 // A lost store: the broker starts without lease claims and leases, keeps
-// every directory of lease claims, and refuses to open a lease claim with
-// the text of the lost state.
+// every directory of lease claims, the companions of the node and the CDI
+// spec of the lease claims, and refuses to open a lease claim with the
+// text of the lost state.
 func TestLostStore(t *testing.T) {
 	e := brokerEnv(t)
 	e.openClaim()
+	e.start()
+	id := e.readyNUMA()
+	spec := e.cdiSpec(device.LeasesCDISpecName)
 	e.b.Stop()
 	_ = e.st.Close()
 	mustOK(t, os.WriteFile(filepath.Join(e.dir, store.FileName), []byte("{"), 0o600))
@@ -1140,6 +1144,11 @@ func TestLostStore(t *testing.T) {
 		if _, err := os.Stat(d); err != nil {
 			t.Fatalf("directory of a lease claim removed with a lost store: %v", err)
 		}
+	}
+	// the companion of the node and the CDI spec of the lease claims stay
+	e.waitClaim(CompanionName(id))
+	if got := e.cdiSpec(device.LeasesCDISpecName); spec == nil || !reflect.DeepEqual(got, spec) {
+		t.Fatalf("CDI spec of the lease claims %+v, was %+v", got, spec)
 	}
 	wantErrText(t, e.b.OpenClaim(leaseClaimObj()), "--new-state")
 

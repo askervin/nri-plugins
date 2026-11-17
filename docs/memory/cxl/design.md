@@ -434,8 +434,10 @@ this boot uses.
 When neither `state.json` nor `state.json.prev` can be read, the driver
 starts LOST instead of crash-looping: it writes nothing, releases
 nothing, recovers nothing, fails every Prepare with the error of the
-loss, starts the lease broker without leases, and holds back new
-memdevs, since it does not know which are pool devices. An operator
+loss, keeps the CDI specs, fences every NUMA node of online CXL memory,
+starts the lease broker without leases (it deletes no companion), and
+holds back new memdevs, since it does not know which are pool devices.
+An operator
 starts it once with `--new-state` to begin with a new document
 ([usage.md](usage.md#upgrade)).
 

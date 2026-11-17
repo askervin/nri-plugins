@@ -974,9 +974,10 @@ func logLoaded(r *state.Records, name, from string) {
 
 // writeCDI writes the CDI spec of the prepared claims of the driver and of
 // the claim pending whose Prepare is finishing ("": none), or removes it
-// when there are none; nothing without a CDI cache.
+// when there are none; nothing without a CDI cache, and nothing on a lost
+// store, whose prepared claims are unknown.
 func (p *Plugin) writeCDI(pending string) error {
-	if p.cdi == nil {
+	if p.cdi == nil || p.st.Lost() != nil {
 		return nil
 	}
 	p.cdiMu.Lock()

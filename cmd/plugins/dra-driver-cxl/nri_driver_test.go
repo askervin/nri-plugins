@@ -38,6 +38,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
+	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
 // fenceRecorder is the fence of the device engine of a test: it records
@@ -241,6 +242,37 @@ func TestFenceOf(t *testing.T) {
 		if nri.Fencing() != (dc.fencing() == config.FencingAllowedMems) {
 			t.Fatalf("config %q: plugin fencing %v, driver %s", cfg, nri.Fencing(), dc.fencing())
 		}
+	}
+}
+
+// TestFenceSeed checks the NUMA nodes that the NRI plugin fences from the
+// start: those of the prepared numa claims, and on a lost store, which does
+// not know the claims, every NUMA node of online CXL memory.
+func TestFenceSeed(t *testing.T) {
+	ctx := context.Background()
+	e := newLocalTestEnv(t)
+	e.start()
+	e.mustPrepare(localClaim("u1", 64*mib))
+	want := dra.NumaNodes(e.records(), device.DriverName)
+	if len(want) != 1 {
+		t.Fatalf("NUMA nodes of the prepared claim %v", want)
+	}
+	got, err := fenceSeed(ctx, e.st, e.k.Kernel(), device.DriverName, device.PoolDriverName)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("fence seed %v (%v), want %v", got, err, want)
+	}
+	noErr(t, e.st.Close())
+	for _, name := range []string{store.FileName, store.PrevName} {
+		noErr(t, os.WriteFile(filepath.Join(e.dir, name), []byte("{"), 0o600))
+	}
+	e.st, err = store.Open(ctx, store.Options{Dir: e.dir, BootID: e.k.BootID()})
+	noErr(t, err)
+	if e.st.Lost() == nil {
+		t.Fatal("the store is not lost")
+	}
+	got, err = fenceSeed(ctx, e.st, e.k.Kernel(), device.DriverName, device.PoolDriverName)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("fence seed of a lost store %v (%v), want %v", got, err, want)
 	}
 }
 

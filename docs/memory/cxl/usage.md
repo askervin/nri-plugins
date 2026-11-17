@@ -2051,9 +2051,10 @@ replaced by `state.json.prev` when that one can be read. When neither
 can be read, the plugin starts LOST: it logs
 `store: the driver state is lost: state.json: <error>; state.json.prev: <error>; start the driver with --new-state to create a new one`,
 writes nothing, releases nothing, recovers nothing at start, fails every
-Prepare with that error, starts the lease broker without leases, and
-holds back every new memdev for up to 5 minutes in its first hour (the
-remembered pool serials are lost). It does
+Prepare with that error, keeps the CDI specs, fences every NUMA node of
+online CXL memory, starts the lease broker without leases (it deletes no
+companion), and holds back every new memdev for up to 5 minutes in its
+first hour (the remembered pool serials are lost). It does
 not crash or restart. Drain the node's claims and start it once with
 `--new-state`: it moves both files aside (`.lost`) and starts with a new
 document, and what the lost records named is foreign to it, as with

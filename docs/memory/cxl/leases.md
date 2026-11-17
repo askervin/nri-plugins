@@ -634,7 +634,8 @@ and cannot make it the companion of a lease it did not request.
   records the lend with the claim's grant, so it can revoke after a
   restart ([design.md](design.md#leases-and-lease-claims)). A state that
   cannot be read makes the plugin start LOST, with an empty lease table
-  ([usage.md](usage.md#upgrade)).
+  ([usage.md](usage.md#upgrade)). It then deletes no companion pod or
+  claim and keeps the CDI spec of the lease claims.
 - Requester container stops: if the pod is being deleted, finished, gone
   or has restartPolicy Never, its leases are released. Otherwise they
   are kept, and the restarted container is created with the nodes of its

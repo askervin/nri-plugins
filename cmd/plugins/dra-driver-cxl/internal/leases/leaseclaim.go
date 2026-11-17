@@ -627,10 +627,11 @@ func (b *Broker) cdiDevice(lc *state.LeaseClaim) cdiSpecs.Device {
 }
 
 // writeCDISpec writes the CDI spec of the lease claims of the records, or
-// removes it when there are none. Called with b.mu held: the writes of the
-// spec are serialized, each of the latest records.
+// removes it when there are none; nothing on a lost store, whose lease
+// claims are unknown. Called with b.mu held: the writes of the spec are
+// serialized, each of the latest records.
 func (b *Broker) writeCDISpec() error {
-	if b.opts.CDI == nil {
+	if b.opts.CDI == nil || b.st.Lost() != nil {
 		return nil
 	}
 	spec := &cdiSpecs.Spec{Kind: device.CDIKind}

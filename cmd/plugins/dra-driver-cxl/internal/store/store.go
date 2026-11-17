@@ -425,7 +425,8 @@ func decodeDocument(data []byte) (*Document, error) {
 }
 
 // Snapshot returns the last written document. The caller must not change
-// it.
+// it. The snapshot of a LOST store is an empty document: its records are
+// unknown, not absent, so a missing record means nothing there.
 func (s *Store) Snapshot() *Document {
 	s.mu.Lock()
 	defer s.mu.Unlock()

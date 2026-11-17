@@ -247,9 +247,14 @@ func (b *Broker) relendContainer(podUID, container string) {
 
 // deleteOrphans deletes the companion pods and claims of this node that
 // have no lease: the objects with the node and lease labels whose name is
-// cxl-lease-<lease label>.
+// cxl-lease-<lease label>. A lost store does not know the leases of the
+// node, so nothing is deleted then.
 func (b *Broker) deleteOrphans() {
 	if b.opts.Client == nil {
+		return
+	}
+	if b.st.Lost() != nil {
+		klog.V(3).Infof("lease broker: the lease table was not decoded, keeping the companions of the node")
 		return
 	}
 	ctx, cancel := b.apiContext()

@@ -15,7 +15,9 @@
 package dra
 
 import (
+	"context"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -152,6 +154,48 @@ func TestCDISpecOfClaims(t *testing.T) {
 		e.mustUnprepare(e.pool, uid)
 	}
 	e.wantClean()
+}
+
+// The drivers on a LOST store write and remove no CDI spec: the records of
+// the prepared claims are unknown, not absent.
+func TestCDISpecsOfALostStore(t *testing.T) {
+	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, fake.MemdevSpec{Serial: serialPoolS, HostBridge: 24})
+	e.mustPrepare(e.local, localClaim("a", device.DRAMDeviceName, 64*mib))
+	e.mustPrepare(e.pool, poolClaim("p1", "shared0", poolSharedData))
+	files := func() map[string]string {
+		out := map[string]string{}
+		m, err := filepath.Glob(filepath.Join(e.cdiDir, "*"))
+		mustOK(t, err)
+		for _, f := range m {
+			data, err := os.ReadFile(f)
+			mustOK(t, err)
+			out[filepath.Base(f)] = string(data)
+		}
+		return out
+	}
+	before := files()
+	if len(before) != 2 {
+		t.Fatalf("CDI specs %v", slices.Collect(maps.Keys(before)))
+	}
+	_ = e.st.Close()
+	for _, name := range []string{store.FileName, store.PrevName} {
+		mustOK(t, os.WriteFile(filepath.Join(e.dir, name), []byte("{"), 0o600))
+	}
+	st, err := store.Open(context.Background(), store.Options{Dir: e.dir, BootID: e.k.BootID()})
+	mustOK(t, err)
+	e.st = st
+	if st.Lost() == nil {
+		t.Fatal("the store is not lost")
+	}
+	for _, p := range []*Plugin{e.local, e.pool} {
+		lost, err := New(Options{Rules: p.Rules(), Store: st, Engine: e.eng, NodeName: envNode, BootID: e.k.BootID(),
+			CDI: e.cache, Publisher: e.pub})
+		mustOK(t, err)
+		mustOK(t, lost.WriteCDI())
+	}
+	if after := files(); !maps.Equal(after, before) {
+		t.Fatalf("CDI specs changed on a lost store:\n%v\nwas\n%v", after, before)
+	}
 }
 
 // writeCDISpec writes a spec of devices and removes the spec file of no
