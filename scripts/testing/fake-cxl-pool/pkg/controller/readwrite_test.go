@@ -15,7 +15,6 @@
 package controller
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"slices"
@@ -23,7 +22,6 @@ import (
 	"testing"
 
 	resourceapi "k8s.io/api/resource/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
@@ -341,30 +339,14 @@ func TestReadWriteFsClusterAndExclusive(t *testing.T) {
 	}
 }
 
-// setConfig replaces the config entries of the allocation of a claim.
-func (e *env) setConfig(name string, cfg []resourceapi.DeviceAllocationConfiguration) {
-	e.t.Helper()
-	c := e.claim(name)
-	c.Status.Allocation.Devices.Config = cfg
-	if _, err := e.kube.ResourceV1().ResourceClaims("default").UpdateStatus(e.ctx, c, metav1.UpdateOptions{}); err != nil {
-		e.t.Fatal(err)
-	}
-	e.waitLister(name, func(c *resourceapi.ResourceClaim) bool {
-		got := c.Status.Allocation.Devices.Config
-		return len(got) == len(cfg) && bytes.Equal(got[0].Opaque.Parameters.Raw, cfg[0].Opaque.Parameters.Raw)
-	})
-}
-
-// An attached writer whose MemoryConfig cannot be resolved any more keeps
-// the exclusive flag of its attachment.
+// An attached writer whose MemoryConfig the controller cannot resolve
+// keeps the exclusive flag of its attachment.
 func TestReadWriteFsUnresolvedWriterKeepsExclusive(t *testing.T) {
 	t.Parallel()
 	e := newFsEnv(t)
-	e.share("rw-a", "node1", rwFs)
-	e.sync()
-	e.wantAttached("rw-a", true)
-	e.waitStatus("rw-a", 1)
-	e.setConfig("rw-a", []resourceapi.DeviceAllocationConfiguration{claimConfig(`"device": {"mode": "fs", "readOnly": false, "bogus": 1}`)})
+	e.share("rw-a", "node1", []resourceapi.DeviceAllocationConfiguration{claimConfig(`"device": {"mode": "fs", "readOnly": false, "bogus": 1}`)})
+	e.pool.addAttachment(api.Attachment{Device: "fs0", Host: "vm1", Owner: e.c.Owner("uid-rw-a"), Exclusive: true, Slot: api.Slot{Bus: "ds9"}})
+	e.markAttached("rw-a")
 	e.share("ro-c", "node1", roFs)
 	e.sync()
 	if !strings.Contains(e.logs.String(), `request mem device fs0: invalid configuration: `) || !strings.Contains(e.logs.String(), "(attached already, kept)") {

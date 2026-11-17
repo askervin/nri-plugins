@@ -551,8 +551,8 @@ func TestQMPTreeFromQOM(t *testing.T) {
 	}
 }
 
-// Review M1: Close is final; a goroutine that still holds a closed monitor
-// must not redial and take the socket from the replacement monitor.
+// Close is final: a goroutine that still holds a closed monitor does not
+// redial and take the socket from the replacement monitor.
 func TestQMPCloseIsFinal(t *testing.T) {
 	srv := newFakeQMPServer(t)
 	q := NewQMP(srv.path, t.Logf)

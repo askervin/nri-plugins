@@ -249,6 +249,53 @@ func cachedHost(s *Server, name string) api.Host {
 	return s.hostViewLocked(s.hosts[name])
 }
 
+// newServerWith starts a server without a state file for the config
+// whose hosts vm1 (and vm2) use the given monitors.
+func newServerWith(t *testing.T, cfgText string, mons map[string]qemu.Monitor) *Server {
+	t.Helper()
+	cfg, err := ParseConfig([]byte(cfgText))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.StateFile = "-"
+	var procs []*qemu.Process
+	for i, n := range []string{"vm1", "vm2"} {
+		if mons[n] != nil {
+			procs = append(procs, vmCmdline(n, 101+i, "-object", "memory-backend-ram,id="+localObj+",share=on,size=256M"))
+		}
+	}
+	srv, err := New(cfg, Options{
+		Logger:       log.New(t.Output(), "", 0),
+		Verbose:      true,
+		Discover:     func() ([]*qemu.Process, error) { return procs, nil },
+		ProcessAlive: func(int, uint64) bool { return true },
+		NewMonitor: func(proto, path string) qemu.Monitor {
+			for n, m := range mons {
+				if strings.Contains(path, "/"+n+"/") {
+					return m
+				}
+			}
+			f := fake.NewQemu(nil, nil)
+			f.SetUnreachable(true)
+			return f
+		},
+		SocketExists:   func(p string) bool { return strings.HasSuffix(p, "qmp.sock") },
+		BackgroundPoll: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.Start()
+	t.Cleanup(srv.Stop)
+	return srv
+}
+
+func poolConfig(dir, extra string) string {
+	return "dir: " + filepath.Join(dir, "pool") + "\n" + extra
+}
+
+const pooled0 = "devices:\n  - name: pooled0\n    size: 256M\n    serial: 0xc1ee0001\n"
+
 var ctx = context.Background()
 
 func mustCode(t *testing.T, err error, code string) {
@@ -999,5 +1046,147 @@ func TestZombieNotAdopted(t *testing.T) {
 		}
 		e.stop()
 		e.start()
+	}
+}
+
+// A client that gives up does not turn the detach into a timeout.
+func TestDetachIgnoresClientCancel(t *testing.T) {
+	f := newVMFake()
+	srv := newServerWith(t, poolConfig(t.TempDir(), pooled0), map[string]qemu.Monitor{"vm1": f})
+	a, _, err := srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Hold(a.QemuDeviceID)
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		f.Release(a.QemuDeviceID)
+	}()
+	cctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	da, res, err := srv.Detach(cctx, "pooled0", "vm1", DetachOptions{Timeout: 5 * time.Second})
+	if err != nil || res != DetachDone || da.State != api.AttachmentDetached {
+		t.Fatalf("detach after client cancel: %v %v %+v", res, err, da)
+	}
+	if time.Since(start) < 250*time.Millisecond {
+		t.Fatalf("detach returned before the guest released the device")
+	}
+	if f.HasObject(a.QemuObjectID) {
+		t.Fatalf("object-del skipped")
+	}
+}
+
+// slowAddMon is a fake qemu whose device_add takes a while.
+type slowAddMon struct{ *fake.Qemu }
+
+func (s slowAddMon) DeviceAdd(ctx context.Context, d qemu.CXLType3) error {
+	time.Sleep(30 * time.Millisecond)
+	return s.Qemu.DeviceAdd(ctx, d)
+}
+
+// Concurrent attaches and detaches of an attaching device do not race
+// (run with -race).
+func TestConcurrentAttachDetachNoRace(t *testing.T) {
+	srv := newServerWith(t, poolConfig(t.TempDir(), pooled0), map[string]qemu.Monitor{"vm1": slowAddMon{newVMFake()}})
+	var wg sync.WaitGroup
+	attach := func() { _, _, _ = srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"}) }
+	wg.Go(attach)
+	for range 20 {
+		wg.Go(attach)
+		_, _, _ = srv.Detach(ctx, "pooled0", "vm1", DetachOptions{Timeout: time.Second})
+		time.Sleep(3 * time.Millisecond)
+	}
+	wg.Wait()
+}
+
+// The hotplug counter is seeded from the device ids qemu already has.
+func TestHotplugCounterSeededFromQemu(t *testing.T) {
+	dir := t.TempDir()
+	f := newVMFake()
+	// leftovers of a previous server run without a state file: a device
+	// of an unknown device and an object whose object-del failed
+	obj := "fcp_gone.hp3"
+	f.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: obj, Size: 256 << 20, MemPath: filepath.Join(dir, "x.raw"), Share: true})
+	if err := f.PlugDevice(qemu.CXLType3{ID: obj, Bus: "ds0_hb0", VolatileMemdev: obj, Serial: 1}); err != nil {
+		t.Fatal(err)
+	}
+	f.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: "fcp_pooled0.hp5", Size: 256 << 20, MemPath: filepath.Join(dir, "y.raw")})
+	srv := newServerWith(t, poolConfig(dir, pooled0), map[string]qemu.Monitor{"vm1": f})
+	a, _, err := srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"})
+	if err != nil || a.QemuDeviceID != "fcp_pooled0.hp6" {
+		t.Fatalf("attach: %+v %v", a, err)
+	}
+}
+
+// A device_del that finds no device still checks whether the backend
+// leaked.
+func TestDeviceDelNotFoundChecksLeak(t *testing.T) {
+	f := newVMFake()
+	srv := newServerWith(t, poolConfig(t.TempDir(), pooled0), map[string]qemu.Monitor{"vm1": f})
+	a, _, err := srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// surprise removal behind the server, memory kept online in the guest
+	f.SetLeakOnRelease(true)
+	f.Hold(a.QemuDeviceID)
+	if err := f.DeviceDel(ctx, a.QemuDeviceID); err != nil {
+		t.Fatal(err)
+	}
+	f.Release(a.QemuDeviceID)
+	da, _, err := srv.Detach(ctx, "pooled0", "vm1", DetachOptions{Timeout: time.Second})
+	mustCode(t, err, api.CodeConflict)
+	if da.State != api.AttachmentFailed || !strings.Contains(da.Error, "leaked") {
+		t.Fatalf("leak not detected: %+v", da)
+	}
+}
+
+// An interleaved window is shared by its targets.
+func TestInterleavedFMW(t *testing.T) {
+	f := newVMFake()
+	f.SetFMW([]qemu.FMWWindow{{Targets: []string{"cxlhb0", "cxlhb1"}, Size: 1 << 30}})
+	srv := newServerWith(t, poolConfig(t.TempDir(), ""), map[string]qemu.Monitor{"vm1": f})
+	h := cachedHost(srv, "vm1")
+	if h.HostBridges[0].FMWSize != 512<<20 || h.HostBridges[1].FMWSize != 512<<20 {
+		t.Fatalf("interleaved fmw counted per target: %+v", h.HostBridges)
+	}
+}
+
+// A pool device cannot have the serial of a local device of the host it is
+// attached to.
+func TestSerialCollisionWithLocalDevice(t *testing.T) {
+	cfg := "devices:\n  - name: cfg0\n    size: 256M\n    serial: 0xc100e2e0\n"
+	f1, f2 := newVMFake(), newVMFake()
+	for _, f := range []*fake.Qemu{f1, f2} {
+		f.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendRAM, ID: localObj, Size: 256 << 20, Share: true})
+	}
+	srv := newServerWith(t, poolConfig(t.TempDir(), cfg), map[string]qemu.Monitor{"vm1": f1, "vm2": f2})
+	_, err := srv.CreateDevice(api.DeviceCreate{Name: "d1", Size: api.Size(256 << 20), Serial: "0xc100e2e0"})
+	mustCode(t, err, api.CodeConflict)
+	// vm1 and vm2 both have the local device with serial 0xc100e2e0
+	_, _, err = srv.Attach(ctx, "cfg0", api.AttachRequest{Host: "vm1"})
+	mustCode(t, err, api.CodeConflict)
+	// local devices of different hosts may share a serial
+	for _, h := range []string{"vm1", "vm2"} {
+		if _, _, err := srv.Attach(ctx, h+".memdev0", api.AttachRequest{Host: h}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A slot reserved for a local device is used only when no other slot
+// is free, even if it is on the requested NUMA node.
+func TestReservedSlotBeforeNuma(t *testing.T) {
+	f := newVMFake()
+	srv := newServerWith(t, poolConfig(t.TempDir(), "devices:\n  - name: a\n    size: 256M\n    serial: 0xc1ee0001\n  - name: b\n    size: 256M\n    serial: 0xc1ee0002\n"), map[string]qemu.Monitor{"vm1": f})
+	a, _, err := srv.Attach(ctx, "a", api.AttachRequest{Host: "vm1", NumaNode: new(1)})
+	if err != nil || a.Slot.Bus != "ds0_hb1" {
+		t.Fatalf("attach a: %+v %v", a, err)
+	}
+	// only ds1_hb1 (reserved for vm1.memdev0) is left on node 1
+	b, _, err := srv.Attach(ctx, "b", api.AttachRequest{Host: "vm1", NumaNode: new(1)})
+	if err != nil || b.Slot.NumaNode != 0 {
+		t.Fatalf("attach b took the reserved slot: %+v %v", b, err)
 	}
 }

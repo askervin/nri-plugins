@@ -507,7 +507,7 @@ func (c *Controller) updateStatus(ctx context.Context, w *want, cond metav1.Cond
 // detach detaches an attachment that no claim wants. Only attachments in
 // state attached get a detach request: a "detaching" one is waited for by
 // the server (the guest has not released the device yet), a "failed" one
-// is left alone (D14).
+// is left alone.
 func (c *Controller) detach(ctx context.Context, a api.Attachment, hm hostMap, claims []*resourceapi.ResourceClaim) {
 	switch a.State {
 	case api.AttachmentAttaching:

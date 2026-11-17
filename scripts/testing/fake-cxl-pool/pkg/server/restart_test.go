@@ -14,8 +14,7 @@
 
 package server
 
-// Tests of qemu restarts that a monitor sees before discovery does
-// (plan-13-gofmbt/bug-16-pool-qemu-restart-adopts-attachments.txt).
+// Tests of qemu restarts that a monitor sees before discovery does.
 
 import (
 	"context"
@@ -184,8 +183,7 @@ func (e *testEnv) checkStopped(f *fake.Qemu) {
 // A restarted qemu answers on the socket of the old one before discovery
 // has seen its new pid: its tree is not the old process's, the host stops
 // at once. An attachment made into the new qemu keeps its owner, and
-// discovery does not drop it as the old qemu's (it was adopted without
-// owner after "qemu restarted", and never detached).
+// discovery does not drop it as the old qemu's.
 func TestQemuRestartSeenByMonitorFirst(t *testing.T) {
 	for _, control := range []string{qemu.ProtoQMP, qemu.ProtoHMP} {
 		t.Run(control, func(t *testing.T) {
@@ -232,9 +230,7 @@ func TestQemuRestartSeenByMonitorFirst(t *testing.T) {
 // a check and the next command would need a new qemu that listens within
 // microseconds of the exit of the old one.) After discovery the attach
 // plugs the device into the new qemu with its owner, and nothing is
-// adopted (bug-16 review). Before, the device went into the new qemu as
-// attached, and the next discovery dropped it and adopted it without
-// owner.
+// adopted.
 func TestQemuRestartDuringAttach(t *testing.T) {
 	for _, at := range []string{"liveness check", "object_add", "device_add"} {
 		for _, control := range []string{qemu.ProtoQMP, qemu.ProtoHMP} {

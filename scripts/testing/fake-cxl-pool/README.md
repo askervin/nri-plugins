@@ -438,9 +438,9 @@ a device is never moved while it may be in use. Its `Attached` message
 names its slot, and a slot other than the configured one is logged
 (`... attachment <id> is in slot <bus>, not in the configured slot <slot>:
 kept`). For the same reason, a result that is `Attached` already keeps its
-attachment when the controller finds its configuration invalid (attached
-by a controller of another version, say); the log line then ends with
-` (attached already, kept)`.
+attachment when the controller finds its configuration invalid (the
+validation rules of the controller changed after the attach, say); the
+log line then ends with ` (attached already, kept)`.
 
 The contract for other pool controllers is
 [Configuration of a pool controller](../../../docs/memory/cxl/pool.md#configuration-of-a-pool-controller).
@@ -484,8 +484,7 @@ as `fake-cxl-pool-controller-<name>`, all without `-pool-name`.
 
 Base URL `http://HOST:9909/api/v1`, JSON, errors as
 `{"error": "...", "code": "NotFound|Conflict|InvalidArgument|Unavailable|Internal"}`.
-The authoritative spec is plan/20-rest-api.md (also lists the deviations of
-this implementation); routes are in [pkg/api/routes.go](pkg/api/routes.go):
+The routes are in [pkg/api/routes.go](pkg/api/routes.go):
 
 ```
 GET    /status

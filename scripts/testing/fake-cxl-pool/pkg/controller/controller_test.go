@@ -477,6 +477,28 @@ func (e *env) claim(name string) *resourceapi.ResourceClaim {
 	return c
 }
 
+// markAttached writes an Attached condition into the status entry of the
+// pool result of a claim, as the controller writes it after an attach.
+func (e *env) markAttached(name string) {
+	e.t.Helper()
+	c := e.claim(name)
+	r := c.Status.Allocation.Devices.Results[1]
+	st := resourceapi.AllocatedDeviceStatus{Driver: r.Driver, Pool: r.Pool, Device: r.Device, Conditions: []metav1.Condition{{
+		Type: condAttached, Status: metav1.ConditionTrue, Reason: ReasonAttached, Message: r.Device + " attached", LastTransitionTime: metav1.Now(),
+	}}}
+	if r.ShareID != nil {
+		id := string(*r.ShareID)
+		st.ShareID = &id
+	}
+	c.Status.Devices = append(c.Status.Devices, st)
+	if _, err := e.kube.ResourceV1().ResourceClaims("default").UpdateStatus(e.ctx, c, metav1.UpdateOptions{}); err != nil {
+		e.t.Fatal(err)
+	}
+	e.waitLister(name, func(c *resourceapi.ResourceClaim) bool {
+		return hasCondition(c, c.Status.Allocation.Devices.Results[1], condAttached) != nil
+	})
+}
+
 // condition returns a condition of the pool device status entry, and the
 // entry.
 func (e *env) condition(name, condType string) (*metav1.Condition, *resourceapi.AllocatedDeviceStatus) {
@@ -905,10 +927,9 @@ func TestForeignAttachmentsKept(t *testing.T) {
 	}
 }
 
-// bug-16: the server adopted the device of a claim without owner (the
-// controller's own attachment, dropped after a qemu restart): the
-// controller takes it over where it is and detaches it when the claim
-// goes.
+// The server adopted the device of a claim as an attachment without
+// owner, for instance after a qemu restart: the controller takes it over
+// where it is and detaches it when the claim goes.
 func TestAdoptedAttachmentTakenOver(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
@@ -946,8 +967,8 @@ func TestAdoptedAttachmentTakenOver(t *testing.T) {
 	}
 }
 
-// R5 of 12-findings-reboot.txt: after a re-attach (a qemu restart) the
-// device data of an Attached claim is that of the new attachment.
+// After a re-attach (a qemu restart) the device data of an Attached claim
+// is that of the new attachment.
 func TestReattachUpdatesDeviceData(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)

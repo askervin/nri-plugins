@@ -226,8 +226,8 @@ func TestConfigInvalid(t *testing.T) {
 func TestConfigInvalidNotHalfAttached(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	// the device of the invalid claim is attached (an earlier controller,
-	// say) without an Attached condition: detached
+	// the device of the invalid claim is attached without an Attached
+	// condition: detached
 	claim := e.createClaimConfig("c", "pooled0", "node1", "", 0, []resourceapi.DeviceAllocationConfiguration{claimConfig(`"pool": {"opaque": {"fake-cxl-pool": {"port": 3}}}`)})
 	e.pool.addAttachment(api.Attachment{Device: "pooled0", Host: "vm1", Owner: e.c.Owner(claim.UID), Slot: api.Slot{Bus: "ds9"}})
 	e.sync()
@@ -260,26 +260,17 @@ func TestConfigInvalidSharedWithValid(t *testing.T) {
 	}
 }
 
+// A result that is Attached keeps its attachment when the controller
+// refuses its configuration: a device in use is never detached.
 func TestConfigInvalidAttachedKept(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	e.createClaim("c", "pooled0", "node1", "")
-	e.sync()
-	e.waitStatus("c", 1)
-	e.waitLister("c", func(c *resourceapi.ResourceClaim) bool {
-		return hasCondition(c, c.Status.Allocation.Devices.Results[1], "cxl-pool.nri.io/Attached") != nil
-	})
-	// a configuration that this controller refuses for a device in use
-	// (a controller of another version, say): kept, logged once
-	c := e.claim("c")
-	c.Status.Allocation.Devices.Config = []resourceapi.DeviceAllocationConfiguration{claimConfig(`"pool": {"opaque": {"fake-cxl-pool": {"port": 3}}}`)}
-	if _, err := e.kube.ResourceV1().ResourceClaims("default").UpdateStatus(e.ctx, c, metav1.UpdateOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	e.waitLister("c", func(c *resourceapi.ResourceClaim) bool { return len(c.Status.Allocation.Devices.Config) == 1 })
+	claim := e.createClaimConfig("c", "pooled0", "node1", "", 0, []resourceapi.DeviceAllocationConfiguration{claimConfig(`"pool": {"opaque": {"fake-cxl-pool": {"port": 3}}}`)})
+	e.pool.addAttachment(api.Attachment{Device: "pooled0", Host: "vm1", Owner: e.c.Owner(claim.UID), Slot: api.Slot{Bus: "ds9"}})
+	e.markAttached("c")
 	e.sync()
 	e.sync()
-	if att, det := e.pool.calls(); len(att) != 1 || len(det) != 0 {
+	if att, det := e.pool.calls(); len(att) != 0 || len(det) != 0 {
 		t.Fatalf("attach %v detach %v", att, det)
 	}
 	if c, _ := e.condition("c", "cxl-pool.nri.io/Attached"); c == nil {

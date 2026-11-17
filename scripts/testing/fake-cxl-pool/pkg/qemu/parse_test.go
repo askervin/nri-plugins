@@ -292,7 +292,7 @@ func TestCommandLines(t *testing.T) {
 	}
 }
 
-// Review L3, L4: unassigned NUMA nodes (qemu MAX_NODES = 128) are -1.
+// Unassigned NUMA nodes (qemu MAX_NODES = 128) are -1.
 func TestNumaUnassignedAndInterleave(t *testing.T) {
 	tree := ParseQtree(`bus: main-system-bus
   dev: q35-pcihost, id ""
