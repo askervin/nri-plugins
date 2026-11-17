@@ -193,6 +193,9 @@ func finishScenario(t *testing.T, s cutScenario, v *env, what string) {
 // records name exists or is resolved), and the claims are released then
 // without anything left.
 func TestCutAtEveryCommit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test in short mode.")
+	}
 	cutAtEveryCommit(t, cutScenarios)
 }
 
@@ -256,6 +259,9 @@ var cutActions = []string{
 // A process stop before or after a kernel action: the start recovers, and
 // the claims are released then without anything left.
 func TestCutAtKernelActions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test in short mode.")
+	}
 	cutAtActions(t, cutScenarios, cutActions)
 }
 
@@ -496,6 +502,9 @@ var localCutActions = []string{
 // invariants accept, and the claims are released then without anything
 // left.
 func TestLocalCutAtEveryCommit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test in short mode.")
+	}
 	cutAtEveryCommit(t, localCutScenarios)
 }
 
@@ -504,5 +513,8 @@ func TestLocalCutAtEveryCommit(t *testing.T) {
 // the start recovers, and the claims are released then without anything
 // left.
 func TestLocalCutAtKernelActions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test in short mode.")
+	}
 	cutAtActions(t, localCutScenarios, localCutActions)
 }

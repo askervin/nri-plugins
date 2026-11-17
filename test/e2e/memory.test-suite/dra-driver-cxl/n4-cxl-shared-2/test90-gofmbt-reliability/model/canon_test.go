@@ -202,6 +202,9 @@ func (c *canonWalk) compare(path string, x, y *State, d int) {
 }
 
 func TestCanonicalKeyComplete(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test in short mode.")
+	}
 	type run struct {
 		profile    string
 		online     bool

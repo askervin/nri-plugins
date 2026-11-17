@@ -103,6 +103,9 @@ func runScript(t *testing.T, cfg *Config, script string, seed int64) {
 
 // TestGenerateAgainstSim executes generated scripts on the simulated SUT.
 func TestGenerateAgainstSim(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test in short mode.")
+	}
 	for _, tc := range []struct {
 		profile string
 		seed    int64
@@ -269,6 +272,9 @@ func TestMainCommands(t *testing.T) {
 }
 
 func TestExperimentQuick(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test in short mode.")
+	}
 	var out, errb bytes.Buffer
 	if code := runExperiment([]string{"--profile", "tiny", "--exp", "all", "--steps", "30", "--max-depth", "2", "--seed", "3",
 		"--mixes", "C1x3,C2x2,C3;all", "--uncovered"}, &out, &errb); code != 0 {

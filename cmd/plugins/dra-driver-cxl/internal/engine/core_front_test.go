@@ -65,6 +65,9 @@ const (
 // and the process stopped at every commit of the store. The flags of
 // TestCoreModel plan and replay a run.
 func TestFrontModel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test in short mode.")
+	}
 	engine.RunCoreModel(t, func(f *fake.Fake, dir string) engine.CoreFront { return newFrontEnd(t, f, dir) })
 }
 

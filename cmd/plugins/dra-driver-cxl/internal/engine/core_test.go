@@ -57,6 +57,9 @@ var (
 // teardown leaves nothing. -core.seed, -core.steps, -core.duration,
 // -core.depth plan a run; -core.replay runs a steps file again.
 func TestCoreModel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test in short mode.")
+	}
 	r := newCoreRun(t, nil)
 	if *coreReplay != "" {
 		r.replay(*coreReplay)
