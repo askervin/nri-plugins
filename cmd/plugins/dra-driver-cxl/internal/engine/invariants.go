@@ -24,17 +24,17 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
-// Invariant is a predicate over the records and a kernel snapshot, taken
+// invariant is a predicate over the records and a kernel snapshot, taken
 // between requests.
-type Invariant struct {
+type invariant struct {
 	Name  string
 	Text  string
 	check func(c *checker)
 }
 
-// CheckOptions are what the invariants need besides the records and the
+// checkOptions are what the invariants need besides the records and the
 // snapshot.
-type CheckOptions struct {
+type checkOptions struct {
 	// Sources are the sources whose records the engine owns, nil for all.
 	Sources []state.Source
 	// MountsDirs are the directories of the node mounts of the sources:
@@ -47,10 +47,10 @@ type CheckOptions struct {
 	Fenced []int
 }
 
-// Invariants are the invariants of the records and the kernel together
+// invariants are the invariants of the records and the kernel together
 // (I1-I10, I12 of the design; I11 is the containers'); the document
 // invariants of package state are checked with them.
-var Invariants = []Invariant{
+var invariants = []invariant{
 	{Name: "I1", Text: "Every region of ours is exactly one Region record in state OWNED, KEPT or HOLLOW_OWNED that the " +
 		"kernel has on the memdevs of its Targets (enabled when OWNED, or disabled while a grant of it is RELEASING; " +
 		"hollow or gone when HOLLOW_OWNED); a region on a memdev of ours that no record names is FOREIGN.", check: checkI1},
@@ -80,7 +80,7 @@ var Invariants = []Invariant{
 type checker struct {
 	r    *state.Records
 	s    *kernel.Snapshot
-	opts CheckOptions
+	opts checkOptions
 	inv  string
 	out  []state.Violation
 }
@@ -102,17 +102,17 @@ func (c *checker) memdevOwned(serial state.Serial) bool {
 	return m != nil && c.owned(m.Source)
 }
 
-// Check returns the violations of the document invariants, but the lease
-// claims one, and of Invariants by the records r and the kernel snapshot
+// check returns the violations of the document invariants, but the lease
+// claims one, and of invariants by the records r and the kernel snapshot
 // s, of the records of the sources that the engine owns.
-func Check(r *state.Records, s *kernel.Snapshot, opts CheckOptions) []state.Violation {
+func check(r *state.Records, s *kernel.Snapshot, opts checkOptions) []state.Violation {
 	c := &checker{r: r, s: s, opts: opts}
 	for _, v := range state.Check(r) {
 		if v.Invariant != state.InvariantLeaseClaims && (v.Source == "" || c.owned(v.Source)) {
 			c.out = append(c.out, v)
 		}
 	}
-	for _, inv := range Invariants {
+	for _, inv := range invariants {
 		c.inv = inv.Name
 		inv.check(c)
 	}
@@ -504,5 +504,5 @@ func (e *Engine) Check(snap *kernel.Snapshot, sources []state.Source, fenced []i
 			dirs = append(dirs, d)
 		}
 	}
-	return Check(e.records(), snap, CheckOptions{Sources: sources, MountsDirs: dirs, LeaseFsRoot: e.opts.LeaseFsRoot, Fenced: fenced})
+	return check(e.records(), snap, checkOptions{Sources: sources, MountsDirs: dirs, LeaseFsRoot: e.opts.LeaseFsRoot, Fenced: fenced})
 }

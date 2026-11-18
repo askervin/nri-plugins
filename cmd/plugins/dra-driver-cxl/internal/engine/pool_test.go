@@ -176,7 +176,7 @@ func TestPoolForeignRegion(t *testing.T) {
 	before := v.f.Commands()
 	err := v.prepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindExclusive))
 	const refusal = "memdev mem0 has region region0 that the plugin did not create"
-	if !errors.Is(err, ErrForeignRegion) || !strings.Contains(err.Error(), refusal) {
+	if !errors.Is(err, errForeignRegion) || !strings.Contains(err.Error(), refusal) {
 		t.Fatalf("error %v", err)
 	}
 	if reason != refusal {
@@ -198,7 +198,7 @@ func TestPoolForeignRegion(t *testing.T) {
 
 	// gone at the next Prepare, which creates a region of the name
 	foreign()
-	if err := v.prepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindExclusive)); !errors.Is(err, ErrForeignRegion) {
+	if err := v.prepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindExclusive)); !errors.Is(err, errForeignRegion) {
 		t.Fatalf("error %v", err)
 	}
 	wantForeign("refused again", 1)
@@ -326,7 +326,7 @@ func TestPoolRollbackReturnsKept(t *testing.T) {
 	v.f.FailCommand("cxl disable-memdev", errBusy)
 	b := poolReq("c", 1, serialB, state.ModeDax, state.KindExclusive)
 	kept, err := v.e.PrepareGrants(context.Background(), []GrantRequest{poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive), b})
-	if !errors.Is(err, ErrForeignRegion) {
+	if !errors.Is(err, errForeignRegion) {
 		t.Fatalf("error %v", err)
 	}
 	if len(kept) != 1 || kept[0].Ref != (state.GrantRef{Claim: "c"}) || kept[0].State != state.GrantReleasing {

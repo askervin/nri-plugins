@@ -303,7 +303,7 @@ func errClass(err error) string {
 		return ""
 	case errors.As(err, &hole):
 		return "hole"
-	case errors.Is(err, ErrForeignRegion):
+	case errors.Is(err, errForeignRegion):
 		return "refused"
 	}
 	return "failed"

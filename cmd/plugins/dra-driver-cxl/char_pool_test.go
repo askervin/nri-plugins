@@ -31,7 +31,7 @@ import (
 // driver and fails then, with an error that names the serial and wraps
 // context.DeadlineExceeded. The claim is PREPARING with its grant during
 // the wait; the failed Prepare touches no device and forgets the claim, and its
-// Unprepare is no error. A timeout of 0 or less is 30 s.
+// Unprepare is no error.
 func TestCharPoolPrepareTimeout(t *testing.T) {
 	const timeout = 300 * time.Millisecond
 	e := newPoolTestEnv(t)
@@ -111,15 +111,5 @@ wait:
 	e.wantClean(t, p)
 	if cmds := e.commands(); cmds != "" {
 		t.Fatalf("commands of the Unprepare:\n%s", cmds)
-	}
-
-	// a timeout of 0 or less is the default of 30 s
-	for _, d := range []time.Duration{0, -time.Second} {
-		e := newPoolTestEnv(t)
-		e.timeout = d
-		p := e.driver(t)
-		if got := p.Engine().Timeouts().Memdev; got != 30*time.Second {
-			t.Fatalf("prepare timeout %v of the pool driver of timeout %v, expected 30s", got, d)
-		}
 	}
 }

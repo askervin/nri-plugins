@@ -535,7 +535,7 @@ func TestLocalSettle(t *testing.T) {
 		v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib})
 		v.formatPmem("mem0", "ext4")
 		v.configure(func(o *Options) { o.Timeouts.LocalSettle = 50 * time.Millisecond })
-		if got := v.e.Timeouts(); got.LocalSettle != 50*time.Millisecond || got.Settle != 5*time.Second {
+		if got := v.e.opts.Timeouts; got.LocalSettle != 50*time.Millisecond || got.Settle != 5*time.Second {
 			t.Fatalf("timeouts %+v", got)
 		}
 		v.f.PmemDelay = 200 * time.Millisecond

@@ -28,10 +28,10 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
-// ErrForeignRegion is the kind of the error of a grant on a memdev with a
+// errForeignRegion is the kind of the error of a grant on a memdev with a
 // region that no record of the driver names: the driver never uses or
 // touches it.
-var ErrForeignRegion = errors.New("a region that the plugin did not create")
+var errForeignRegion = errors.New("a region that the plugin did not create")
 
 // foreignRegionError is the error of a grant on the memdev with a region
 // that no record names.
@@ -46,7 +46,7 @@ func (e *foreignRegionError) Error() string {
 
 // Is tells whether target is ErrForeignRegion.
 func (e *foreignRegionError) Is(target error) bool {
-	return target == ErrForeignRegion
+	return target == errForeignRegion
 }
 
 // ownRegion returns the region of ours of the memdev of the grant that a

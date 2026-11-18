@@ -197,7 +197,7 @@ func (e *Engine) setUpLocal(ctx context.Context, req *GrantRequest, memdev strin
 	}
 	start := time.Now()
 	region, err := e.ensureRegion(ctx, req, memdev, state.RegionRam, usable)
-	if err != nil && !errors.Is(err, ErrForeignRegion) {
+	if err != nil && !errors.Is(err, errForeignRegion) {
 		err = fmt.Errorf("memdev %s (serial %s): %w", memdev, s, err)
 	}
 	if err != nil {

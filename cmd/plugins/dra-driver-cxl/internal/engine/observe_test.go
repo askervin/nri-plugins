@@ -39,7 +39,7 @@ func TestUnknownTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lines := UnknownTransitions(before, after); len(lines) > 0 {
+	if lines := unknownTransitions(before, after); len(lines) > 0 {
 		t.Fatalf("documented changes reported: %v", lines)
 	}
 	// a memdev that loses its endpoint port without being disabled
@@ -48,7 +48,7 @@ func TestUnknownTransitions(t *testing.T) {
 	bad.Memdevs[0].State = kernel.MemdevBound
 	bad.DaxDevices = append([]kernel.DaxDeviceInfo(nil), after.DaxDevices...)
 	bad.DaxDevices[0].State = kernel.DaxOther
-	lines := UnknownTransitions(after, &bad)
+	lines := unknownTransitions(after, &bad)
 	want := []string{
 		"memdev 0xa1: MemdevInfo.State: READY -> BOUND: transition not in the table",
 		"dax device dax0.0: DaxDeviceInfo.State: KMEM -> OTHER: transition not in the table",

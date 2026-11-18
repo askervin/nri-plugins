@@ -46,7 +46,7 @@ func (e *Engine) Observe(ctx context.Context) (*kernel.Snapshot, error) {
 	e.last, e.observed = snap, e.started
 	e.qmu.Unlock()
 	if prev != nil {
-		lines := UnknownTransitions(prev, snap)
+		lines := unknownTransitions(prev, snap)
 		for _, line := range lines {
 			klog.V(4).Info(UnknownTransition + line)
 		}
@@ -157,7 +157,7 @@ func (e *Engine) verify(ctx context.Context, refs []state.GrantRef, trigger stat
 	if err := e.forgetGoneForeign(ctx, snap, trigger); err != nil {
 		klog.Errorf("engine: %v", err)
 	}
-	c := &checker{r: e.records(), s: snap, opts: CheckOptions{Sources: e.opts.Sources}, inv: "I3"}
+	c := &checker{r: e.records(), s: snap, opts: checkOptions{Sources: e.opts.Sources}, inv: "I3"}
 	for _, ref := range refs {
 		if g := c.r.Grant(ref); g != nil && g.State == state.GrantRealised {
 			checkI3Grant(c, g)
@@ -196,10 +196,10 @@ func (e *Engine) logHollow(snap *kernel.Snapshot) {
 	}
 }
 
-// UnknownTransitions returns the changes of the states of the kernel
+// unknownTransitions returns the changes of the states of the kernel
 // objects from prev to cur that the kernel's tables do not have, in words:
 // "<table> <object>: FROM -> TO: transition not in the table".
-func UnknownTransitions(prev, cur *kernel.Snapshot) []string {
+func unknownTransitions(prev, cur *kernel.Snapshot) []string {
 	var out []string
 	add := func(name string, err error) {
 		if err != nil {

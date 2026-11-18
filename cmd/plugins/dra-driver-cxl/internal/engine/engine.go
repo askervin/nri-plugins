@@ -224,8 +224,8 @@ func (t Timeouts) withDefaults() Timeouts {
 	return t
 }
 
-// KernelLogf logs what package kernel does.
-func KernelLogf(format string, args ...any) {
+// kernelLogf logs what package kernel does.
+func kernelLogf(format string, args ...any) {
 	klog.InfofDepth(1, "kernel: "+format, args...)
 }
 
@@ -241,14 +241,14 @@ func sysWarningf(format string, args ...any) {
 }
 
 // New returns an engine over the kernel and the store of opts. A kernel
-// without Logf logs through KernelLogf, its lookups' details at klog V(3),
+// without Logf logs through kernelLogf, its lookups' details at klog V(3),
 // the unexpected findings of its system calls as warnings.
 func New(opts Options) (*Engine, error) {
 	if opts.Kernel == nil || opts.Store == nil {
 		return nil, errors.New("engine: a kernel and a store are required")
 	}
 	if opts.Kernel.Logf == nil {
-		opts.Kernel.Logf = KernelLogf
+		opts.Kernel.Logf = kernelLogf
 	}
 	if opts.Kernel.Debugf == nil {
 		opts.Kernel.Debugf = kernelDebugf
@@ -410,11 +410,6 @@ func (e *Engine) locked(fn func() error) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return fn()
-}
-
-// Timeouts returns the bounds of the waits of the engine.
-func (e *Engine) Timeouts() Timeouts {
-	return e.opts.Timeouts
 }
 
 // records returns the records of the last written document; the caller
