@@ -204,9 +204,9 @@ func (b *Broker) serialOptions(a *state.LeaseAsked, req *api.Request) error {
 		return err
 	}
 	switch {
-	case persistent(a.Mode) && !dev.persistent:
+	case api.PersistentMode(string(a.Mode)) && !dev.persistent:
 		return fmt.Errorf("device %s: mode %s needs a persistent device", text, a.Mode)
-	case !persistent(a.Mode) && dev.persistent:
+	case !api.PersistentMode(string(a.Mode)) && dev.persistent:
 		return fmt.Errorf("device %s: a persistent device needs mode %s or %s", text, api.ModeBlock, api.ModeFs)
 	case !dev.shared:
 		a.DeviceSource = deviceSourceOf(dev, req)
@@ -238,11 +238,6 @@ func (b *Broker) deviceRefusal(dev *publishedDevice, a *state.LeaseAsked, req *a
 		return fmt.Errorf("device %s: a local device of node %s, not of this node", text, dev.node)
 	}
 	return nil
-}
-
-// persistent tells whether a mode is a mode of persistent devices.
-func persistent(mode state.Mode) bool {
-	return mode == state.ModeBlock || mode == state.ModeFs
 }
 
 // deviceSourceOf returns the source of a device in a ResourceSlice when the

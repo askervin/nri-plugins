@@ -184,7 +184,7 @@ func memory(l *state.Lease) (api.Memory, bool) {
 	}
 	// a persistent device: its attribute shared, whatever the share
 	shared := l.Asked.Shared || sharedDevice(l)
-	if persistent(l.Asked.Mode) {
+	if api.PersistentMode(string(l.Asked.Mode)) {
 		shared = sharedDevice(l)
 	}
 	m := api.Memory{

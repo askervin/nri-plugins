@@ -253,7 +253,7 @@ func (b *Broker) companionDevices(l *state.Lease, source state.Source) (*resourc
 	switch {
 	case source == state.SourcePool:
 		driver, class = b.opts.PoolDriver, poolClass(l)
-	case persistent(l.Asked.Mode):
+	case api.PersistentMode(string(l.Asked.Mode)):
 		class, shares = device.ClassLocalPersistent, true
 	case deviceShares(l):
 		class = device.ClassLocalShared
@@ -303,7 +303,7 @@ func deviceShares(l *state.Lease) bool {
 // poolClass returns the DeviceClass of the pool device of a lease.
 func poolClass(l *state.Lease) string {
 	switch {
-	case persistent(l.Asked.Mode):
+	case api.PersistentMode(string(l.Asked.Mode)):
 		return device.ClassPoolPersistent
 	case deviceShares(l):
 		return device.ClassPoolShared
@@ -480,7 +480,7 @@ func (b *Broker) PreparedStep(id string, source state.Source, devs []state.Devic
 // lease in the filesystem directory of its lease claim under fsRoot.
 func gotOf(r *state.Records, l *state.Lease, source state.Source, d *state.DeviceInfo, fsRoot string) (*state.LeaseGot, *state.Lend) {
 	g := &state.LeaseGot{Source: source, Serial: d.Serial, Bytes: d.TotalBytes}
-	if persistent(state.Mode(d.Mode)) {
+	if api.PersistentMode(d.Mode) {
 		// the attribute shared of the device, whatever the share
 		g.SharedDevice = d.Shared
 	} else {
