@@ -338,7 +338,7 @@ func TestLocalPersistentLifeCycle(t *testing.T) {
 	// the configuration rules, before the device is touched
 	before := e.commands()
 	wantErr(t, e.prepare(pmemClaim("w0", localPmemShare, localPmemBlockRW)),
-		"claim demo/claim-w0: request mem: MemoryConfig: device.mode block: a persistent local device is writable only exclusively (no shares request)")
+		"claim demo/claim-w0: request mem: MemoryConfig: device.mode block: the device is writable only exclusively (no shares request)")
 	wantErr(t, e.prepare(pmemClaim("w0", localPmemShare)), "MemoryConfig: device: a persistent device needs mode block or fs")
 	wantErr(t, e.prepare(pmemClaim("w0", "0", localPmemBlockRW)), "device 0xc100f5e1: consumed shares \"0\" is less than 1")
 	claim := pmemClaim("w0", "", localPmemBlockRW)

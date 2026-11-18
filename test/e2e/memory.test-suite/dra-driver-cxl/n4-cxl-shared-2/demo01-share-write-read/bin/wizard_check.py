@@ -136,7 +136,7 @@ REFUSED = [
     ("--mode numa --read-only", "rw", "readOnly needs mode dax, block or fs"),
     ("--memory persistent --sharing shared --mode block --read-write", "rw", "writable in mode block only exclusively"),
     ("--source pool --memory persistent --sharing shared --mode block --read-write", "rw",
-     "a shared device is writable in mode block only exclusively"),
+     "the device is writable in mode block only exclusively"),
     ("--memory persistent --read-write --fs-type erofs", "fs_type", "erofs is a read-only filesystem"),
     ("--memory persistent --fs-type btrfs --access direct", "access", "btrfs has no DAX"),
     ("--memory persistent --fs-type squashfs", "fs_type", "not allowed on this node"),

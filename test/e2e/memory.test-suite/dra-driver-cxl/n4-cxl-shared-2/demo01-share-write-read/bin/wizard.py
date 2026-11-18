@@ -375,10 +375,8 @@ def rw_reason(a, ctx):
     """Return None if the answers A may be read-write, else why not."""
     mode, d = a.get("mode"), device_of(a, ctx)
     if mode == "block":
-        local = "local" in sources(a) and (a["source"] == "local" or (d and d["source"] == "local"))
         if is_shared(a):
-            return ("a persistent local device is writable in mode block only exclusively (no shares request)" if local
-                    else "a shared device is writable in mode block only exclusively (no shares request)")
+            return "the device is writable in mode block only exclusively (no shares request)"
         if d and d["source"] == "local" and d["shared"]:
             return "other hosts may use the device (sharedDevices): it is not written in mode block"
     if mode == "fs" and d and d["source"] == "local" and d["shared"]:

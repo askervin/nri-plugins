@@ -48,8 +48,6 @@ type DeviceFacts struct {
 	// maintenance (status data coherent of a pool device, memdevSettings
 	// coherent of a local memdev).
 	Coherent bool
-	// Local: the device is a local memdev.
-	Local bool
 }
 
 // MemdevMode returns the mode of a slice of a local memdev of volatile
@@ -161,10 +159,8 @@ func (d Device) checkWriter(mode string, f DeviceFacts) error {
 		return nil
 	}
 	switch {
-	case mode == api.ModeBlock && !f.Exclusive && f.Local:
-		return fmt.Errorf("%sdevice.mode %s: a persistent local device is writable only exclusively (no %s request)", errPrefix, api.ModeBlock, device.CapacityShares)
 	case mode == api.ModeBlock && !f.Exclusive:
-		return fmt.Errorf("%sdevice.mode %s: a shared device is writable only exclusively (no %s request)", errPrefix, api.ModeBlock, device.CapacityShares)
+		return fmt.Errorf("%sdevice.mode %s: the device is writable only exclusively (no %s request)", errPrefix, api.ModeBlock, device.CapacityShares)
 	case mode == api.ModeBlock && !f.SingleHost:
 		return fmt.Errorf("%sdevice.mode %s: other hosts may use the device: it is not written in mode %s", errPrefix, api.ModeBlock, api.ModeBlock)
 	case mode == api.ModeFs && !f.SingleHost && (!FsTypeCluster(d.FsType) || !f.Coherent):

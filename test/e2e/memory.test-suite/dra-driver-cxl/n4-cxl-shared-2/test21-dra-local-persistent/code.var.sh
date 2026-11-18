@@ -83,7 +83,7 @@ PAUSE_IMAGE=registry.k8s.io/pause:3.10   # the image of the companion pods of le
 TAG="dra-local-persistent $(date +%Y-%m-%dT%H:%M:%S.%N)"
 TEXT_EXT4="$TAG: the ext4 image"
 TEXT_C="$TAG: c.txt, written by fs-rw"
-F1_LOCAL="MemoryConfig: device.mode block: a persistent local device is writable only exclusively (no shares request)"
+F1_LOCAL="MemoryConfig: device.mode block: the device is writable only exclusively (no shares request)"
 P4_DEFAULT="filesystem type ext4 is not allowed on this node (fsTypes: erofs)"
 # local-pmem has no pool controller, also when dra-install runs again.
 DRA_UNCONTROLLED_POOLS=("$LP_SERVER")

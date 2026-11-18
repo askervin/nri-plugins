@@ -401,7 +401,6 @@ func (p *Plugin) persistentRequest(pr *prepare, req *engine.GrantRequest, r *res
 		Exclusive:  shares >= device.SharesUnlimited,
 		SingleHost: !dev.Shared,
 		Coherent:   p.local.Coherent(dev.Name, dev.Serial),
-		Local:      true,
 	}
 	mode, err := cfg.PersistentMode(facts)
 	if err != nil {

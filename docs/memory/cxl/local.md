@@ -671,7 +671,7 @@ and the device has no default mode:
 | a specific device | add `selectors: [{cel: {expression: 'device.attributes["cxl.nri.io"].serial == "0xc100f5e1"'}}]` |
 
 A writable `block` claim with a `shares` request fails its Prepare with
-`MemoryConfig: device.mode block: a persistent local device is writable only exclusively (no shares request)`.
+`MemoryConfig: device.mode block: the device is writable only exclusively (no shares request)`.
 [local-persistent-fs.yaml](blob:/deployment/samples/dra-driver-cxl/local-persistent-fs.yaml)
 has a writer and a reader. A running container leases the device with
 `cxl-request request --source local --serial 0xc100f5e1 --mode fs`

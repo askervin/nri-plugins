@@ -156,7 +156,7 @@ func TestPoolMode(t *testing.T) {
 	coherent := DeviceFacts{Shared: true, Persistent: true, Coherent: true}
 	private := DeviceFacts{Persistent: true, Exclusive: true, SingleHost: true}
 	const (
-		f1     = "MemoryConfig: device.mode block: a shared device is writable only exclusively (no shares request)"
+		f1     = "MemoryConfig: device.mode block: the device is writable only exclusively (no shares request)"
 		f2     = "MemoryConfig: device.mode block: other hosts may use the device: it is not written in mode block"
 		f3     = "MemoryConfig: device.readOnly: false: other hosts may use the device: read-write needs it on this node only (claim status singleHost), or a cluster filesystem (device.fsType gfs2) on coherent memory"
 		badFs  = `MemoryConfig: device.fsType: invalid filesystem type "Ext4" (lower-case letters, digits, "_" and "-")`
@@ -236,14 +236,14 @@ func TestPoolMode(t *testing.T) {
 
 func TestPersistentMode(t *testing.T) {
 	// a local persistent memdev that is not in sharedDevices: all shares, a share
-	all := DeviceFacts{Local: true, Exclusive: true, SingleHost: true}
-	share := DeviceFacts{Local: true, SingleHost: true}
+	all := DeviceFacts{Exclusive: true, SingleHost: true}
+	share := DeviceFacts{SingleHost: true}
 	// a local persistent memdev in sharedDevices
-	sharedAll := DeviceFacts{Local: true, Shared: true, Exclusive: true}
-	sharedShare := DeviceFacts{Local: true, Shared: true}
-	sharedCoherent := DeviceFacts{Local: true, Shared: true, Coherent: true}
+	sharedAll := DeviceFacts{Shared: true, Exclusive: true}
+	sharedShare := DeviceFacts{Shared: true}
+	sharedCoherent := DeviceFacts{Shared: true, Coherent: true}
 	const (
-		f1 = "MemoryConfig: device.mode block: a persistent local device is writable only exclusively (no shares request)"
+		f1 = "MemoryConfig: device.mode block: the device is writable only exclusively (no shares request)"
 		f2 = "MemoryConfig: device.mode block: other hosts may use the device: it is not written in mode block"
 		f3 = "MemoryConfig: device.readOnly: false: other hosts may use the device: read-write needs it on this node only (claim status singleHost), or a cluster filesystem (device.fsType gfs2) on coherent memory"
 	)
@@ -266,7 +266,7 @@ func TestPersistentMode(t *testing.T) {
 		{dev: Device{Mode: "block"}, f: share, err: f1},
 		{dev: Device{Mode: "block", ReadOnly: rw}, f: sharedShare, err: f1},
 		{dev: Device{Mode: "block"}, f: sharedAll, err: f2},
-		{dev: Device{Mode: "block"}, f: DeviceFacts{Local: true, Shared: true, Exclusive: true, Coherent: true}, err: f2},
+		{dev: Device{Mode: "block"}, f: DeviceFacts{Shared: true, Exclusive: true, Coherent: true}, err: f2},
 		{dev: Device{Mode: "fs", ReadOnly: rw}, f: sharedAll, err: f3},
 		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "gfs2"}, f: sharedShare, err: f3},
 		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "xfs"}, f: sharedCoherent, err: f3},

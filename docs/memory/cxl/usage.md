@@ -863,10 +863,8 @@ status data `persistent`, `shared`, `exclusive`, `singleHost` and
 - `MemoryConfig: device.mode block needs a persistent device` (or `fs`)
 - `MemoryConfig: device: a persistent device needs mode block or fs` (no
   mode, `numa` or `dax` on a persistent device)
-- `MemoryConfig: device.mode block: a shared device is writable only exclusively (no shares request)`
-  (a writable `block` claim of a shared device with a `shares` request;
-  of a persistent local memdev
-  `MemoryConfig: device.mode block: a persistent local device is writable only exclusively (no shares request)`)
+- `MemoryConfig: device.mode block: the device is writable only exclusively (no shares request)`
+  (a writable `block` claim with a `shares` request)
 - `MemoryConfig: device.mode block: other hosts may use the device: it is not written in mode block`
   (a writable `block` claim of a persistent local memdev in
   `sharedDevices`, which no pool controller keeps from other hosts)
