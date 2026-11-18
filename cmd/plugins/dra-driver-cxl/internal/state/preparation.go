@@ -182,7 +182,7 @@ var PreparationTable = Table[PreparationState]{
 		},
 		{
 			From: fsm.List(PreparationPreparing), Stays: true, Triggers: fsm.List(TriggerRecover),
-			When:    "recovery phase 1 of a cut Prepare: leftovers released, the record stays for kubelet's retry",
+			When:    "the recovery of a cut Prepare: leftovers released, the record stays for kubelet's retry",
 			Effects: "commit (d) of the grants back to JOURNALED or RELEASED",
 		},
 		{

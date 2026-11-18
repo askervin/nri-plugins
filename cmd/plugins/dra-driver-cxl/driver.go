@@ -133,18 +133,6 @@ func wireLenders(nri *containers.Plugin, broker *leases.Broker, fe *frontEnds) l
 	return lender
 }
 
-// recoverCompanions keeps the numa companions of the pool driver whose
-// Prepare did not finish for kubelet's Unprepare (which revokes, then
-// releases) and Prepare again (engine.RecoverCompanions).
-func recoverCompanions(fe *frontEnds, devices *deviceEngine) {
-	if fe.pool == nil {
-		return
-	}
-	for _, ref := range devices.RecoverCompanions() {
-		klog.V(3).Infof("%s: grant %s of a companion claim is kept for its Unprepare", fe.pool.Name(), ref)
-	}
-}
-
 // startPlugins registers the kubelet plugins of cxl.nri.io and of the pool
 // driver, starts the publisher of the node's ResourceSlice and the watcher
 // of the pool devices.
@@ -471,7 +459,7 @@ func (fe *frontEnds) recover(ctx context.Context, cdiRoot string, driverConfig *
 	if !devices.k.HasCXLBus() {
 		klog.Warningf("no CXL bus in %s: the node has no CXL memdevs or regions (are the CXL modules loaded?)", devices.k.SysRoot)
 	}
-	// phase 1 knows the pool serials of the records: those that the pool
+	// the recovery knows the pool serials of the records: those that the pool
 	// driver prepares and the remembered ones
 	known := map[uint64]bool{}
 	maps.Copy(known, fe.pool.Serials())
@@ -486,8 +474,8 @@ func (fe *frontEnds) recover(ctx context.Context, cdiRoot string, driverConfig *
 	}
 	fe.pool.Recovered(rec, fe.stateFile)
 	devices.setGuard(localPoolGuard(fe.pool, fe.watcher))
-	// the first list of the pool ResourceSlices, after phase 1: it gates
-	// the publication of local memdevs
+	// the first list of the pool ResourceSlices, after the recovery: it
+	// gates the publication of local memdevs
 	cfg, poolSerials := fe.publisher.ScanInput(ctx)
 	devices.setShared(dra.SharedSerials(cfg, snap.Memdevs, poolSerials))
 	if driverConfig.manageMemdevs() {

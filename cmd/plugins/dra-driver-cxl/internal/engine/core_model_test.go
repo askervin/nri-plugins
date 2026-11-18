@@ -970,7 +970,7 @@ func numaCompanionSlot(i int) bool {
 }
 
 // keptCompanion returns the states of a numa companion of a cut Prepare
-// that a start keeps for phase 2 (5.6; "stay KEPT": its preparation
+// that a start keeps for kubelet (5.6; "stay KEPT": its preparation
 // PREPARING or KEPT): its grant as the cut left it, journaled, realising,
 // realised or releasing (a cut rollback or release of the claim, which D-70
 // calls a cut Prepare), a user of its dax device or not yet, its memory
@@ -1551,7 +1551,7 @@ func (w *coreState) rebooted() {
 }
 
 // restarted returns the states after a start of the process (03-design 5.6
-// phase 1 in its order; 03a T1-T4 on a-recover): memdevs absent at load are
+// in its order; 03a T1-T4 on a-recover): memdevs absent at load are
 // GONE (T3); a region of ours recorded but gone is forgotten; the grants of
 // cut Prepares (PREPARING) and the kept grants of KEPT claims are released
 // per the recovery column of the release policy (releaseKept, releaseCut);
@@ -1647,7 +1647,7 @@ func (w *coreState) releaseKept() []*coreState {
 		for i, ss := range w.slots {
 			if coreSlots[i].md == md && ss.prep == state.PreparationKept && ss.grant == state.GrantJournaled && w.mds[md].plugged &&
 				!numaCompanionSlot(i) {
-				// (numa companions are kept for phase 2, 5.6)
+				// (numa companions are kept for kubelet, 5.6)
 				kept = append(kept, i)
 			}
 		}

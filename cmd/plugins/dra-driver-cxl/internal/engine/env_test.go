@@ -223,7 +223,7 @@ func (v *env) cutAfter(n int) {
 }
 
 // restart stops the process (the store closed) and starts it again: a new
-// store and engine, and the first phase of the recovery.
+// store and engine, and the recovery.
 func (v *env) restart() *Recovered {
 	v.t.Helper()
 	_ = v.st.Close()
@@ -437,7 +437,8 @@ func (v *env) mount(uid string, n int) *state.Mount {
 	return m
 }
 
-// failing the test without one.
+// grant returns the grant of the result n of the claim uid, failing the
+// test without one.
 func (v *env) grant(uid string, n int) *state.Grant {
 	v.t.Helper()
 	g := v.records().Grant(state.GrantRef{Claim: uid, Result: n})
@@ -445,6 +446,19 @@ func (v *env) grant(uid string, n int) *state.Grant {
 		v.t.Fatalf("no grant %s/%d", uid, n)
 	}
 	return g
+}
+
+// mustKeepCut fails the test unless the recovery kept the grant of the cut
+// Prepare of the claim uid as it was, with its preparation PREPARING, for
+// kubelet's Unprepare or Prepare again.
+func (v *env) mustKeepCut(uid string) {
+	v.t.Helper()
+	r := v.records()
+	ref := state.GrantRef{Claim: uid}
+	g, p := r.Grant(ref), r.PreparationOf(ref)
+	if g == nil || !cutGrant(r, g) || p == nil || p.State != state.PreparationPreparing {
+		v.t.Fatalf("the cut grant of %s: %+v of %+v", uid, g, p)
+	}
 }
 
 // noRecords fails the test when the store has a memdev, region or grant

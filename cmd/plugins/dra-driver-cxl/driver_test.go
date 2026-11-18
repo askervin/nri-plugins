@@ -472,8 +472,8 @@ func TestEveryPeriod(t *testing.T) {
 	}
 }
 
-// The first list of the pool ResourceSlices runs after phase 1 of the
-// recovery: when it runs, the engine has recovered its records and
+// The first list of the pool ResourceSlices runs after the recovery: when
+// it runs, the engine has recovered its records and
 // the local guard is set.
 func TestFirstListAfterRecovery(t *testing.T) {
 	ctx := context.Background()

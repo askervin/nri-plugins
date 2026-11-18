@@ -30,7 +30,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
-// Recovered is what the first phase of the recovery did.
+// Recovered is what the recovery did.
 type Recovered struct {
 	// Released are the grants of Prepares that a process stop cut whose
 	// objects were released.
@@ -42,10 +42,6 @@ type Recovered struct {
 	// Absent are the grants of cut Prepares whose memdev is absent, kept
 	// for kubelet's Unprepare.
 	Absent []state.GrantRef
-	// Companions are the grants of cut Prepares of companion claims of mode
-	// numa, kept for kubelet's Unprepare (which revokes, then releases)
-	// and Prepare again (which reuses).
-	Companions []state.GrantRef
 	// Unrestored are the realised grants whose objects did not verify
 	// (no CDI device for their claims), Restored those that verify again.
 	Unrestored, Restored []state.GrantRef
@@ -55,9 +51,9 @@ type Recovered struct {
 	Why map[state.GrantRef]error
 }
 
-// Recover is the first phase of the recovery at the start of the process,
-// before NRI and kubelet: the records of the store (of this boot, as the
-// store left them at its load) are matched with the kernel, in this order:
+// Recover is the recovery at the start of the process, before NRI and
+// kubelet: the records of the store (of this boot, as the store left them
+// at its load) are matched with the kernel, in this order:
 //   - memdevs that are absent are GONE (their grants kept for kubelet's
 //     Unprepare), noted regions are those of their name that exist on
 //     their memdev (OWNED, HOLLOW_OWNED) or none, owned regions that are
@@ -70,10 +66,11 @@ type Recovered struct {
 //   - the grants of Prepares that a process stop cut (JOURNALED, REALISING,
 //     and the REALISED and RELEASING grants of PREPARING preparations: a
 //     rollback that a stop cut; not of PREPARED_STALE ones), but those of
-//     companion claims of mode numa and those of absent memdevs, are
-//     released per Policy (ReleaseRecovery), the top-most region first
-//     across memdevs, with a holder deadline per claim; a kept one makes
-//     its preparation KEPT;
+//     companion claims of mode numa (kept for kubelet's Unprepare, which
+//     revokes, then releases, and Prepare again, which reuses) and those of
+//     absent memdevs, are released per Policy (ReleaseRecovery), the
+//     top-most region first across memdevs, with a holder deadline per
+//     claim; a kept one makes its preparation KEPT;
 //   - the node mounts and lease binds under the driver's directories that
 //     no realised grant of a prepared claim lists are unmounted, the dax
 //     devices of our regions that no record names deleted, our hollow
@@ -155,21 +152,6 @@ func dropUnused(r *state.Records, owns func(state.Source) bool) error {
 	}
 	removeRecord(&r.Memdevs, func(m *state.Memdev) bool { return m.State == state.MemdevUnused })
 	return nil
-}
-
-// RecoverCompanions is the second phase of the recovery, once the lenders
-// are wired: the grants of cut Prepares of companion claims of mode numa
-// stay as they are for kubelet's Unprepare and Prepare again; it returns
-// them.
-func (e *Engine) RecoverCompanions() []state.GrantRef {
-	var out []state.GrantRef
-	r := e.records()
-	for i := range r.Grants {
-		if g := &r.Grants[i]; cutGrant(r, g) && numaCompanion(g) && e.owns(g.Asked.Source) {
-			out = append(out, g.Ref)
-		}
-	}
-	return out
 }
 
 // numaCompanion tells whether a grant is one of a companion claim of mode
@@ -487,8 +469,8 @@ type cutClaims struct {
 }
 
 // cutClaims returns the cut claims that the recovery releases; the grants
-// of numa companions are in out.Companions, those of memdevs that are
-// gone in out.Absent.
+// of numa companions stay (logged), those of memdevs that are gone are in
+// out.Absent.
 func (e *Engine) cutClaims(out *Recovered) *cutClaims {
 	c := &cutClaims{bySerial: map[state.Serial][]state.GrantRef{}, left: map[string][]state.GrantRef{},
 		above: map[string][]string{}, errs: map[string][]error{}}
@@ -501,7 +483,6 @@ func (e *Engine) cutClaims(out *Recovered) *cutClaims {
 		}
 		switch m := r.Memdev(g.Serial); {
 		case numaCompanion(g):
-			out.Companions = append(out.Companions, g.Ref)
 			if !companions[g.Ref.Claim] {
 				companions[g.Ref.Claim] = true
 				e.logf(g.Asked.Source, "claim %s (%s) is a companion claim: its Unprepare releases its devices, its Prepare again reuses them",

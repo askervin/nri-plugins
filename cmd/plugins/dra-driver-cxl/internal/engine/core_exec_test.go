@@ -470,7 +470,7 @@ func (x *coreExec) request(ca *coreAction, start *coreState, arm *coreArm) coreO
 }
 
 // start stops the process and starts it again: the store opened, a new
-// engine, the first phase of the recovery. With j > 0 the recovery stops
+// engine, the recovery. With j > 0 the recovery stops
 // after its j-th commit and the process starts once more.
 func (x *coreExec) start(j int) error {
 	v := x.v

@@ -614,10 +614,8 @@ func TestLocalCutCompanionPart(t *testing.T) {
 		if !v.cut(func() { _ = v.prepare(localDriver, "comp", companion()) }) {
 			t.Fatal("not cut")
 		}
-		out := v.restart()
-		if !slices.Equal(out.Companions, []state.GrantRef{ref}) {
-			t.Fatalf("recovered %+v", out)
-		}
+		v.restart()
+		v.mustKeepCut(ref.Claim)
 		dax := v.grant("comp", 0).Got.Dax
 		devices := v.f.Kernel().DaxDevices("region0")
 		logs := captureKlog(t)
@@ -643,10 +641,8 @@ func TestLocalCutCompanionPart(t *testing.T) {
 		if !v.cut(func() { _ = v.prepare(localDriver, "comp", companion()) }) {
 			t.Fatal("not cut")
 		}
-		out := v.restart()
-		if !slices.Equal(out.Companions, []state.GrantRef{ref}) {
-			t.Fatalf("recovered %+v", out)
-		}
+		v.restart()
+		v.mustKeepCut(ref.Claim)
 		dax := v.grant("comp", 0).Got.Dax
 		if dax == "" || v.f.DaxDriver(dax) != kernel.DriverKmem {
 			t.Fatalf("the cut part %q (%s)", dax, v.f.DaxDriver(dax))
@@ -680,9 +676,8 @@ func TestLocalCutCompanionHoldsNoNewRegion(t *testing.T) {
 			if !v.cut(func() { _ = v.prepare(localDriver, "comp", req) }) {
 				t.Fatal("not cut")
 			}
-			if out := v.restart(); !slices.Equal(out.Companions, []state.GrantRef{{Claim: "comp"}}) {
-				t.Fatalf("recovered %+v", out)
-			}
+			v.restart()
+			v.mustKeepCut("comp")
 			if cut {
 				v.f.CutAfter("cxl create-region")
 				if !v.cut(func() { _ = v.prepare(localDriver, "n", sliceReq("n", 0, state.ModeDax, 256*mib)) }) {
@@ -727,9 +722,8 @@ func TestLocalCutCompanionRegionReleaseFails(t *testing.T) {
 			if !v.cut(func() { _ = v.prepare(localDriver, "comp", req) }) {
 				t.Fatal("not cut")
 			}
-			if out := v.restart(); !slices.Equal(out.Companions, []state.GrantRef{{Claim: "comp"}}) {
-				t.Fatalf("recovered %+v", out)
-			}
+			v.restart()
+			v.mustKeepCut("comp")
 			v.f.FailCommand(map[bool]string{false: "cxl disable-region", true: "cxl destroy-region"}[setUp], errors.New("failed"))
 			if err := v.unprepare(localDriver, "comp"); err == nil {
 				t.Fatal("the release did not fail")
@@ -763,9 +757,8 @@ func TestLocalCutCompanionEnabledRegion(t *testing.T) {
 	if !v.cut(func() { _ = v.prepare(localDriver, "comp", req) }) {
 		t.Fatal("not cut")
 	}
-	if out := v.restart(); !slices.Equal(out.Companions, []state.GrantRef{{Claim: "comp"}}) {
-		t.Fatalf("recovered %+v", out)
-	}
+	v.restart()
+	v.mustKeepCut("comp")
 	v.mustUnprepare(localDriver, "comp")
 	v.mustUnprepare(localDriver, "n")
 	v.clean("unprepared")
@@ -791,9 +784,8 @@ func TestLocalCutCompanionCreatingPart(t *testing.T) {
 	if !v.cut(func() { _ = v.prepare(localDriver, "comp", req) }) {
 		t.Fatal("not cut")
 	}
-	if out := v.restart(); !slices.Equal(out.Companions, []state.GrantRef{{Claim: "comp"}}) {
-		t.Fatalf("recovered %+v", out)
-	}
+	v.restart()
+	v.mustKeepCut("comp")
 	v.mustUnprepare(localDriver, "comp")
 	v.mustUnprepare(localDriver, "n")
 	v.clean("unprepared")

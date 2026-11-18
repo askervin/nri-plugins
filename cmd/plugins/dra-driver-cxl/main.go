@@ -289,13 +289,12 @@ func installLeaseCLI(src, dst string) (retErr error) {
 // newDriver returns the driver of the configuration of config, started in
 // the order of its start-up:
 //  1. the boot id and the state store;
-//  2. the device engine and the first phase of its recovery, with the first
-//     list of the pool devices, the first scan and the CDI specs of the
-//     prepared claims of cxl.nri.io;
+//  2. the device engine and its recovery, with the first list of the pool
+//     devices, the first scan and the CDI specs of the prepared claims of
+//     cxl.nri.io;
 //  3. the fence of the NRI plugin seeded with the NUMA nodes of the claims;
 //  4. the lease broker loaded, the sockets of its lease claims made again;
-//  5. the NRI plugin started, the lenders wired and the second phase of the
-//     recovery (the numa companions whose Prepare did not finish);
+//  5. the NRI plugin started and the lenders wired;
 //  6. the kubelet plugins of cxl.nri.io and of the pool driver registered,
 //     the first publication of the node's ResourceSlice, the watchers, the
 //     periodic pass over the stale lease binds and the periodic repair pass
@@ -407,7 +406,6 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	// synchronizes.
 	d.nri = startNRI(ctx, nri, cxlFlags, fe, broker != nil)
 	lender := wireLenders(d.nri, broker, fe)
-	recoverCompanions(fe, devices)
 
 	// 6. The kubelet plugins, the publisher and the watchers.
 	if err := d.startPlugins(ctx, config, fe, watcher); err != nil {

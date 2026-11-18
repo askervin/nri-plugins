@@ -128,7 +128,6 @@ func TestPoolCutCompanionKept(t *testing.T) {
 		t.Fatalf("preparation %+v", prep)
 	}
 	p.Lender().Set(lender, hooks)
-	p.Engine().RecoverCompanions()
 	noErr(t, unprepare(t, p, "uid-cxl-lease-l1"))
 	e.wantClean(t, p)
 }

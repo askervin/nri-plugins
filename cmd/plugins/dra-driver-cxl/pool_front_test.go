@@ -256,7 +256,6 @@ func TestPoolCompanionRevoke(t *testing.T) {
 		t.Fatal("the companion is gone")
 	}
 	p.Lender().Set(lender, hooks)
-	p.Engine().RecoverCompanions()
 	noErr(t, unprepare(t, p, uid))
 	if got := lender.revokes(); !slices.Equal(got, []bool{true, true}) {
 		t.Fatalf("revokes with the memory online: %v", got)

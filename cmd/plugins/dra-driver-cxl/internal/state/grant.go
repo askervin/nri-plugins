@@ -305,13 +305,13 @@ var GrantTable = Table[GrantState]{
 		},
 		{
 			From: fsm.List(GrantJournaled, GrantRealising), To: GrantJournaled, Triggers: fsm.List(TriggerRecover),
-			When:    "recovery phase 1 of a cut Prepare kept the region (region KEPT)",
+			When:    "the recovery of a cut Prepare kept the region (region KEPT)",
 			Guard:   "Policy (trigger recovery) says keep",
-			Effects: "commit (d); a numa companion's lend is left to phase 2 and kubelet",
+			Effects: "commit (d); a numa companion's lend is left to kubelet",
 		},
 		{
 			From: fsm.List(GrantJournaled, GrantRealising), To: GrantReleased, Triggers: fsm.List(TriggerRecover),
-			When:    "recovery phase 1 of a cut Prepare released the objects named by Got and by Intent",
+			When:    "the recovery of a cut Prepare released the objects named by Got and by Intent",
 			Guard:   "Policy (trigger recovery) says destroy",
 			Effects: "commit (d)",
 		},

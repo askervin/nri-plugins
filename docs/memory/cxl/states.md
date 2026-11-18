@@ -46,7 +46,7 @@ States: UNKNOWN, PREPARING, PREPARED, PREPARED_UNRESTORED, PREPARED_STALE, UNPRE
 | PREPARING | PREPARED | `a-prepare`: every result realised, CDI spec written | all grants REALISED | commit (d) jointly with lease READY (companion) or lease claim OPEN (lease result); kubelet gets the result |
 | PREPARING | UNKNOWN | `a-prepare`, `a-unprepare`: the Prepare failed and its rollback released everything; or an Unprepare released everything recorded | no KEPT region, no Stale entry | commit (d) removing the record; kubelet gets the error (Prepare) or nil (Unprepare) |
 | PREPARING | KEPT | `a-prepare`, `a-recover`: the Prepare failed and its rollback kept a region (in-order release refused); or the recovery kept a cut region below newer regions | Policy says keep | commit (d); error to kubelet (retry) or nothing (recovery) |
-| PREPARING | (unchanged) | `a-recover`: recovery phase 1 of a cut Prepare: leftovers released, the record stays for kubelet's retry | - | commit (d) of the grants back to JOURNALED or RELEASED |
+| PREPARING | (unchanged) | `a-recover`: the recovery of a cut Prepare: leftovers released, the record stays for kubelet's retry | - | commit (d) of the grants back to JOURNALED or RELEASED |
 | PREPARING | (unchanged) | `a-prepare`: Prepare retried by kubelet: continues per result | REALISED grants that verify are reused | as the first Prepare |
 | PREPARED | (unchanged) | `a-prepare`: Prepare again (kubelet restart, companion re-announce) | - | no commit; companion: OnLending and OnPrepared announced again |
 | PREPARED | PREPARED_UNRESTORED | `a-recover`: a grant's objects do not verify (mount, dax or block identity) | - | commit (l); no CDI device for the claim; logged |
@@ -108,8 +108,8 @@ States: REQUESTED, JOURNALED, REALISING, REALISED, REALISED_UNRESTORED, RELEASIN
 | REALISED_UNRESTORED | REALISED | `a-prepare`, `a-recover`: Prepare again, or the recovery at a restart, verifies or mounts again | - | commit (d) |
 | REALISED_UNRESTORED | RELEASING | `a-unprepare`, `a-prepare`, `a-recover`: an Unprepare or a rollback | - | commit (d); nothing of Got to undo beyond what verifies |
 | JOURNALED, REALISING, REALISED, REALISED_UNRESTORED, RELEASING | (unchanged) | `load`: the preparation became PREPARED_STALE at the load | - | Got and Intent cleared, nothing released at start; commit (l) |
-| JOURNALED, REALISING | JOURNALED | `a-recover`: recovery phase 1 of a cut Prepare kept the region (region KEPT) | Policy (trigger recovery) says keep | commit (d); a numa companion's lend is left to phase 2 and kubelet |
-| JOURNALED, REALISING | RELEASED | `a-recover`: recovery phase 1 of a cut Prepare released the objects named by Got and by Intent | Policy (trigger recovery) says destroy | commit (d) |
+| JOURNALED, REALISING | JOURNALED | `a-recover`: the recovery of a cut Prepare kept the region (region KEPT) | Policy (trigger recovery) says keep | commit (d); a numa companion's lend is left to kubelet |
+| JOURNALED, REALISING | RELEASED | `a-recover`: the recovery of a cut Prepare released the objects named by Got and by Intent | Policy (trigger recovery) says destroy | commit (d) |
 | JOURNALED, REALISING, REALISED, REALISED_UNRESTORED | RELEASED | `a-prepare`, `a-unprepare`: a Prepare again or an Unprepare of a PREPARED_STALE preparation (a RELEASING grant goes by the release row) | the preparation is PREPARED_STALE | dropped in the commit (d) of the preparation; an Unprepare releases by serial first |
 | JOURNALED, REALISING, REALISED, REALISED_UNRESTORED, RELEASING | RELEASED | `load`: its preparation of another boot is dropped at the load (the driver drops such records) | - | dropped with the preparation, commit (l) |
 

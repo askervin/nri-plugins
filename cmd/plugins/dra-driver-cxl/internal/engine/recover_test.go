@@ -343,12 +343,10 @@ func TestRecoverRealisedOfPreparing(t *testing.T) {
 		}
 	}
 	out := v.restart()
-	if !slices.Equal(out.Released, []state.GrantRef{{Claim: "plain"}}) || !slices.Equal(out.Companions, []state.GrantRef{{Claim: "comp"}}) {
+	if !slices.Equal(out.Released, []state.GrantRef{{Claim: "plain"}}) {
 		t.Fatalf("recovered %+v", out)
 	}
-	if got := v.e.RecoverCompanions(); !slices.Equal(got, out.Companions) {
-		t.Fatalf("phase 2 %v", got)
-	}
+	v.mustKeepCut("comp")
 	if g := v.grant("comp", 0); g.State != state.GrantRealised {
 		t.Fatalf("companion %s", g.State)
 	}
