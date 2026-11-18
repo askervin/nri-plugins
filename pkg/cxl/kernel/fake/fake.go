@@ -153,6 +153,7 @@ func New(tb testing.TB) *Fake {
 	tb.Cleanup(f.probes.Wait)
 	f.mnt = newMountTable(f)
 	f.boot()
+	f.writeProc("filesystems", "nodev\tproc\nnodev\ttmpfs\n\text4\n\txfs\n\terofs\n\tbtrfs\n\tsquashfs\n\tgfs2\n")
 	f.Write("devices/system/memory/block_size_bytes", "8000000")
 	for n, kb := range map[int]uint64{0: 8 << 20, 1: 8 << 20} {
 		f.Write(fmt.Sprintf("devices/system/node/node%d/meminfo", n), fmt.Sprintf("Node %d MemTotal:       %d kB", n, kb))

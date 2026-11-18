@@ -126,9 +126,6 @@ type Options struct {
 	// FsTypes are the filesystem types that mode fs may mount, nil for
 	// erofs only.
 	FsTypes []string
-	// Filesystems is the list of the filesystem types of the kernel, ""
-	// for /proc/filesystems.
-	Filesystems string
 	// Fence fences a NUMA node before memory of it goes online, nil for
 	// no fencing; it returns once the node is fenced or the fence is not
 	// ready, or when its context (Timeouts.Fence) ends.
@@ -260,9 +257,6 @@ func New(opts Options) (*Engine, error) {
 	}
 	if opts.FsTypes == nil {
 		opts.FsTypes = []string{api.FsTypeErofs}
-	}
-	if opts.Filesystems == "" {
-		opts.Filesystems = "/proc/filesystems"
 	}
 	opts.Timeouts = opts.Timeouts.withDefaults()
 	probes, err := loadProbes(opts.ProbesFile)

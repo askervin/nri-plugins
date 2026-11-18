@@ -17,6 +17,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -281,7 +282,11 @@ func TestRecoverLoopRecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 	// another loop device takes the number of the old one
-	if _, err := k.AttachLoop(filepath.Join(v.dir, "filesystems"), false); err != nil {
+	other := filepath.Join(v.dir, "other")
+	if err := os.WriteFile(other, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.AttachLoop(other, false); err != nil {
 		t.Fatal(err)
 	}
 	v.restart()

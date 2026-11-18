@@ -60,7 +60,6 @@ type poolTestEnv struct {
 	dir         string
 	cdiDir      string
 	leaseFsRoot string // of the pool driver, "" for none
-	filesystems string
 	timeout     time.Duration
 	holderWait  time.Duration
 	// fence fences the NUMA nodes, nil for none.
@@ -74,16 +73,14 @@ type poolTestEnv struct {
 func newPoolTestEnv(t *testing.T) *poolTestEnv {
 	dir := t.TempDir()
 	e := &poolTestEnv{
-		t:           t,
-		k:           fake.New(t),
-		dir:         filepath.Join(dir, device.PoolDriverName),
-		cdiDir:      filepath.Join(dir, "cdi"),
-		filesystems: filepath.Join(dir, "filesystems"),
-		timeout:     200 * time.Millisecond,
-		holderWait:  50 * time.Millisecond,
+		t:          t,
+		k:          fake.New(t),
+		dir:        filepath.Join(dir, device.PoolDriverName),
+		cdiDir:     filepath.Join(dir, "cdi"),
+		timeout:    200 * time.Millisecond,
+		holderWait: 50 * time.Millisecond,
 	}
 	noErr(t, os.MkdirAll(e.dir, 0o755))
-	noErr(t, os.WriteFile(e.filesystems, []byte("nodev\tproc\nnodev\ttmpfs\n\text4\n\txfs\n\terofs\n\tbtrfs\n\tsquashfs\n\tgfs2\n"), 0o644))
 	t.Cleanup(func() {
 		if e.st != nil {
 			_ = e.st.Close()
@@ -155,7 +152,6 @@ func (e *poolTestEnv) driver(t *testing.T) *dra.Plugin {
 		PoolDataDir:   e.dir,
 		LeaseFsRoot:   e.leaseFsRoot,
 		FsTypes:       api.KnownFsTypes,
-		Filesystems:   e.filesystems,
 		Fence:         e.fence,
 		PoolTimeout:   e.timeout,
 		HolderWait:    e.holderWait,

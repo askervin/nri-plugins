@@ -107,7 +107,7 @@ type driverEnv struct {
 	k *fake.Fake
 	// dir is the plugin data directory of cxl.nri.io and of the store,
 	// poolDir that of the pool driver.
-	dir, poolDir, cdiDir, filesystems string
+	dir, poolDir, cdiDir string
 
 	st    *store.Store
 	eng   *engine.Engine
@@ -154,20 +154,18 @@ func newDriverEnv(t *testing.T, localSpecs []fake.MemdevSpec, poolSpecs ...fake.
 	t.Helper()
 	dir := t.TempDir()
 	e := &driverEnv{
-		t:           t,
-		k:           fake.New(t),
-		dir:         filepath.Join(dir, device.DriverName),
-		poolDir:     filepath.Join(dir, device.PoolDriverName),
-		cdiDir:      filepath.Join(dir, "cdi"),
-		filesystems: filepath.Join(dir, "filesystems"),
-		memdevs:     map[uint64]kernel.MemdevInfo{},
-		shared:      map[uint64]bool{},
-		fsTypes:     slices.Clone(api.KnownFsTypes),
+		t:       t,
+		k:       fake.New(t),
+		dir:     filepath.Join(dir, device.DriverName),
+		poolDir: filepath.Join(dir, device.PoolDriverName),
+		cdiDir:  filepath.Join(dir, "cdi"),
+		memdevs: map[uint64]kernel.MemdevInfo{},
+		shared:  map[uint64]bool{},
+		fsTypes: slices.Clone(api.KnownFsTypes),
 	}
 	for _, d := range []string{e.dir, e.poolDir, e.cdiDir} {
 		mustOK(t, os.MkdirAll(d, 0o755))
 	}
-	mustOK(t, os.WriteFile(e.filesystems, []byte("nodev\tproc\nnodev\ttmpfs\n\text4\n\txfs\n\terofs\n\tbtrfs\n\tsquashfs\n\tgfs2\n"), 0o644))
 	for _, s := range localSpecs {
 		e.plugLocal(s)
 	}
@@ -248,7 +246,6 @@ func (e *driverEnv) start() {
 		Sources:     []state.Source{state.SourcePool, state.SourceLocal},
 		LeaseFsRoot: e.leaseFsRoot(),
 		FsTypes:     e.fsTypes,
-		Filesystems: e.filesystems,
 		Shared:      func(serial state.Serial) bool { return e.isShared(uint64(serial)) },
 		Revoke:      e.revoke,
 		Timeouts: engine.Timeouts{Memdev: 300 * time.Millisecond, ProbeGrace: 20 * time.Millisecond, RegionRetry: 10 * time.Millisecond,

@@ -110,7 +110,7 @@ type leaseEnv struct {
 	k *fake.Fake
 	// dir is the plugin data directory of cxl.nri.io, of the broker and
 	// of the store; poolDir that of the pool driver.
-	dir, poolDir, cdiDir, cli, filesystems string
+	dir, poolDir, cdiDir, cli string
 
 	client *k8sfake.Clientset
 	ctrs   *fakeContainers
@@ -153,24 +153,22 @@ func newLeaseEnv(t *testing.T, local []fake.MemdevSpec, pool ...fake.MemdevSpec)
 	t.Helper()
 	dir := t.TempDir()
 	e := &leaseEnv{
-		t:           t,
-		k:           fake.New(t),
-		dir:         filepath.Join(dir, device.DriverName),
-		poolDir:     filepath.Join(dir, device.PoolDriverName),
-		cdiDir:      filepath.Join(dir, "cdi"),
-		cli:         filepath.Join(dir, "cxl-request"),
-		filesystems: filepath.Join(dir, "filesystems"),
-		client:      k8sfake.NewClientset(requesterPod(), leaseClaimObj()),
-		memdevs:     map[uint64]kernel.MemdevInfo{},
-		shared:      map[uint64]bool{},
-		prepared:    map[string]string{},
+		t:        t,
+		k:        fake.New(t),
+		dir:      filepath.Join(dir, device.DriverName),
+		poolDir:  filepath.Join(dir, device.PoolDriverName),
+		cdiDir:   filepath.Join(dir, "cdi"),
+		cli:      filepath.Join(dir, "cxl-request"),
+		client:   k8sfake.NewClientset(requesterPod(), leaseClaimObj()),
+		memdevs:  map[uint64]kernel.MemdevInfo{},
+		shared:   map[uint64]bool{},
+		prepared: map[string]string{},
 	}
 	e.ctrs = newFakeContainers(requester)
 	for _, d := range []string{e.dir, e.poolDir, e.cdiDir} {
 		mustOK(t, os.MkdirAll(d, 0o755))
 	}
 	mustOK(t, os.WriteFile(e.cli, []byte("#!/bin/true\n"), 0o755))
-	mustOK(t, os.WriteFile(e.filesystems, []byte("nodev\tproc\n\text4\n\txfs\n\terofs\n"), 0o644))
 	for _, s := range local {
 		e.plugLocal(s)
 	}
@@ -253,7 +251,6 @@ func (e *leaseEnv) boot() {
 		Sources:     []state.Source{state.SourcePool, state.SourceLocal},
 		LeaseFsRoot: LeaseFsRoot(e.dir),
 		FsTypes:     api.KnownFsTypes,
-		Filesystems: e.filesystems,
 		Shared:      func(serial state.Serial) bool { return e.isShared(uint64(serial)) },
 		Revoke:      e.revoke,
 		Timeouts: engine.Timeouts{Memdev: 300 * time.Millisecond, ProbeGrace: 20 * time.Millisecond, RegionRetry: 10 * time.Millisecond,

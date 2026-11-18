@@ -85,7 +85,6 @@ type localTestEnv struct {
 	// poolDir that of the pool driver.
 	dir, poolDir string
 	cdiDir       string
-	filesystems  string
 	// config is the configuration of the driver; shared the serials of
 	// the local memdevs it declares shared; poolSerials those of pool
 	// devices, which the local guard refuses.
@@ -117,7 +116,6 @@ func newLocalTestEnv(t *testing.T, specs ...fake.MemdevSpec) *localTestEnv {
 		dir:         filepath.Join(dir, device.DriverName),
 		poolDir:     filepath.Join(dir, device.PoolDriverName),
 		cdiDir:      filepath.Join(dir, "cdi"),
-		filesystems: filepath.Join(dir, "filesystems"),
 		config:      &DriverConfig{IgnoreDRAMNodes: true},
 		shared:      map[uint64]bool{},
 		poolSerials: map[uint64]bool{},
@@ -127,7 +125,6 @@ func newLocalTestEnv(t *testing.T, specs ...fake.MemdevSpec) *localTestEnv {
 	for _, d := range []string{e.dir, e.poolDir, e.cdiDir} {
 		noErr(t, os.MkdirAll(d, 0o755))
 	}
-	noErr(t, os.WriteFile(e.filesystems, []byte("nodev\tproc\nnodev\ttmpfs\n\text4\n\txfs\n\terofs\n\tbtrfs\n\tsquashfs\n\tgfs2\n"), 0o644))
 	e.plug(fake.MemdevSpec{Serial: localSerial, Ram: localRegionSize})
 	for _, s := range specs {
 		e.plug(s)
@@ -180,7 +177,6 @@ func (e *localTestEnv) start() *dra.Plugin {
 		LocalDir:        e.dir,
 		LeaseFsRoot:     filepath.Join(e.dir, leaseFsDirName),
 		FsTypes:         e.config.fsTypes(),
-		Filesystems:     e.filesystems,
 		Fence:           e.fence,
 		ProbeAddressing: e.config.verifyAddressing(),
 		PoolTimeout:     200 * time.Millisecond,

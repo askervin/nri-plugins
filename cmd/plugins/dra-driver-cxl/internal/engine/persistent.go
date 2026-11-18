@@ -594,17 +594,11 @@ func errNeedsRecovery(serial, fsType, dev string) error {
 // nodevType tells whether the kernel lists the filesystem type as one
 // without a block device.
 func (e *Engine) nodevType(source state.Source, fsType string) bool {
-	data, err := os.ReadFile(e.opts.Filesystems)
+	nodev, err := e.k.NodevFsType(fsType)
 	if err != nil {
 		klog.V(3).Infof("%s: %v", e.driver(source), err)
-		return false
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if f := strings.Fields(line); len(f) == 2 && f[0] == "nodev" && f[1] == fsType {
-			return true
-		}
-	}
-	return false
+	return nodev
 }
 
 // recordUse records the node mount of a use of mode fs in its region: a

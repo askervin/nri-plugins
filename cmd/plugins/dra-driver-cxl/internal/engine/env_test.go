@@ -20,7 +20,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -98,10 +97,6 @@ func newEnv(t *testing.T, specs ...fake.MemdevSpec) *env {
 	for _, s := range specs {
 		v.f.Plug(s)
 	}
-	fs := filepath.Join(v.dir, "filesystems")
-	if err := os.WriteFile(fs, []byte("nodev\tproc\nnodev\ttmpfs\n\text4\n\txfs\n\terofs\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	v.open()
 	t.Cleanup(func() { _ = v.st.Close() })
 	return v
@@ -147,7 +142,6 @@ func (v *env) startEngine() {
 		Sources:     v.sources,
 		LeaseFsRoot: filepath.Join(v.dir, localDriver, "lease-fs"),
 		FsTypes:     []string{api.FsTypeErofs, api.FsTypeExt4, api.FsTypeXfs},
-		Filesystems: filepath.Join(v.dir, "filesystems"),
 		Fence: func(_ context.Context, node int) {
 			v.fenceMu.Lock()
 			defer v.fenceMu.Unlock()

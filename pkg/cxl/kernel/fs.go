@@ -17,6 +17,9 @@ package kernel
 import (
 	"bytes"
 	"encoding/binary"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 )
@@ -107,4 +110,19 @@ func (k *Kernel) ReadFsSignature(dev string) (FsSignature, error) {
 		return FsSignature{}, err
 	}
 	return ParseFsSignature(head), nil
+}
+
+// NodevFsType tells whether the kernel lists the filesystem type as one
+// that mounts no block device ("nodev" in /proc/filesystems).
+func (k *Kernel) NodevFsType(fsType string) (bool, error) {
+	data, err := os.ReadFile(filepath.Join(k.procRoot(), "filesystems"))
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if f := strings.Fields(line); len(f) == 2 && f[0] == "nodev" && f[1] == fsType {
+			return true, nil
+		}
+	}
+	return false, nil
 }

@@ -71,11 +71,8 @@ type deviceConfig struct {
 	// sources (dra.MountsDirs of the drivers' rules); one for each source
 	// of the engine.
 	MountsDirs map[state.Source]string
-	// FsTypes are the filesystem types that mode fs mounts; Filesystems
-	// the list of the filesystem types of the kernel, "" for
-	// /proc/filesystems.
-	FsTypes     []string
-	Filesystems string
+	// FsTypes are the filesystem types that mode fs mounts.
+	FsTypes []string
 	// Fence gets the NUMA nodes of memory before it goes online, nil for
 	// none.
 	Fence func(ctx context.Context, node int)
@@ -143,7 +140,6 @@ func newDeviceEngine(cfg deviceConfig) (*deviceEngine, error) {
 		MountsDirs:      map[state.Source]string{},
 		LeaseFsRoot:     cfg.LeaseFsRoot,
 		FsTypes:         cfg.FsTypes,
-		Filesystems:     cfg.Filesystems,
 		LocalGuard:      d.localGuard,
 		Shared:          d.isShared,
 		Revoke:          d.revoke,

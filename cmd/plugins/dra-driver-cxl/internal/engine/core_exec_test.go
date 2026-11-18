@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -93,10 +92,6 @@ func newCoreExec(t *testing.T, log io.Writer, newFront func(f *fake.Fake, dir st
 	}
 	for _, serial := range []uint64{serialQ, serialP} {
 		v.formatPmem(v.f.Memdev(serial), "ext4")
-	}
-	fs := filepath.Join(v.dir, "filesystems")
-	if err := os.WriteFile(fs, []byte("nodev\tproc\nnodev\ttmpfs\n\text4\n\txfs\n\terofs\n"), 0o644); err != nil {
-		t.Fatal(err)
 	}
 	k := v.f.Kernel()
 	x.ports = [2]string{k.Memdev(serialA).Ports[0], k.Memdev(serialC).Ports[0]}
