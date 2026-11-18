@@ -52,14 +52,15 @@ const (
 	maxUnbinds = 8
 )
 
-// use is a grant of mode block or fs of a persistent memdev, as the rules of
-// one node see it.
-type use struct {
+// pmemGrant is a grant of mode block or fs of a persistent memdev, as the
+// rules of one node see it: the engine's one view of such a grant, also of
+// the grant being prepared before its records have a node mount.
+type pmemGrant struct {
 	ref    state.GrantRef
 	source state.Source
 	serial state.Serial
 	mode   state.Mode
-	// readOnly is the effective read-only setting: a use with readOnly
+	// readOnly is the effective read-only setting: a grant with readOnly
 	// false writes the device.
 	readOnly bool
 	// access and fsType are those of the node mount of mode fs.
@@ -72,14 +73,14 @@ type use struct {
 	loop        string
 }
 
-// writer tells whether the use writes the device.
-func (u *use) writer() bool {
+// writer tells whether the grant writes the device.
+func (u *pmemGrant) writer() bool {
 	return !u.readOnly
 }
 
-// useOf returns a grant as a use.
-func useOf(r *state.Records, g *state.Grant) use {
-	u := use{ref: g.Ref, source: g.Asked.Source, serial: g.Serial, mode: g.Asked.Mode, readOnly: g.Asked.ReadOnly}
+// pmemGrantOf returns the pmemGrant of a grant.
+func pmemGrantOf(r *state.Records, g *state.Grant) pmemGrant {
+	u := pmemGrant{ref: g.Ref, source: g.Asked.Source, serial: g.Serial, mode: g.Asked.Mode, readOnly: g.Asked.ReadOnly}
 	if m := r.MountOf(g); m != nil {
 		u.access, u.fsType, u.nodeMount, u.loop = string(m.Access), m.FsType, m.Path, m.Loop
 	}
@@ -98,20 +99,20 @@ func mountPathOf(r *state.Records, g *state.Grant) string {
 	return ""
 }
 
-// prepared tells whether a grant counts as a use of its device on the
-// node: realised, or realised before a start that did not verify it.
+// prepared tells whether a grant counts on the node: realised, or realised
+// before a start that did not verify it.
 func prepared(g *state.Grant) bool {
 	return g.State == state.GrantRealised || g.State == state.GrantUnrestored
 }
 
-// usesOf returns the uses of the memdev with the serial by the prepared
-// grants other than except, and by the grants whose release in an
-// Unprepare failed (RELEASING, of an UNPREPARING claim): they keep what
+// pmemGrants returns the prepared grants of the memdev with the serial
+// other than except, and the grants of it whose release in an Unprepare
+// failed (RELEASING, of an UNPREPARING claim): they keep what
 // they still have until kubelet's retry of the Unprepare, one of mode fs
 // only while its node mount lists it. The grants of claims of another boot
 // (PREPARED_STALE) have nothing of this boot.
-func usesOf(r *state.Records, serial state.Serial, except ...state.GrantRef) []use {
-	var out []use
+func pmemGrants(r *state.Records, serial state.Serial, except ...state.GrantRef) []pmemGrant {
+	var out []pmemGrant
 	for i := range r.Grants {
 		g := &r.Grants[i]
 		if g.Serial != serial || (!prepared(g) && !unpreparing(r, g)) || slices.Contains(except, g.Ref) ||
@@ -119,7 +120,7 @@ func usesOf(r *state.Records, serial state.Serial, except ...state.GrantRef) []u
 			unpreparing(r, g) && g.Asked.Mode == state.ModeFs && !mounted(r, g) {
 			continue
 		}
-		out = append(out, useOf(r, g))
+		out = append(out, pmemGrantOf(r, g))
 	}
 	return out
 }
@@ -147,20 +148,20 @@ func unpreparing(r *state.Records, g *state.Grant) bool {
 	return p != nil && p.State == state.PreparationUnpreparing
 }
 
-// firstWriter returns the first use that writes, nil if none does.
-func firstWriter(uses []use) *use {
-	for i := range uses {
-		if uses[i].writer() {
-			return &uses[i]
+// firstWriter returns the first grant that writes, nil if none does.
+func firstWriter(grants []pmemGrant) *pmemGrant {
+	for i := range grants {
+		if grants[i].writer() {
+			return &grants[i]
 		}
 	}
 	return nil
 }
 
-// fsAccesses returns the accesses of the uses of mode fs, sorted.
-func fsAccesses(uses []use) []string {
+// fsAccesses returns the accesses of the grants of mode fs, sorted.
+func fsAccesses(grants []pmemGrant) []string {
 	var out []string
-	for _, u := range uses {
+	for _, u := range grants {
 		if u.mode == state.ModeFs && !slices.Contains(out, u.access) {
 			out = append(out, u.access)
 		}
@@ -169,10 +170,10 @@ func fsAccesses(uses []use) []string {
 	return out
 }
 
-// nodeMounts returns the node mounts of the uses, sorted.
-func nodeMounts(uses []use) []string {
+// nodeMounts returns the node mounts of the grants, sorted.
+func nodeMounts(grants []pmemGrant) []string {
 	var out []string
-	for _, u := range uses {
+	for _, u := range grants {
 		if u.nodeMount != "" && !slices.Contains(out, u.nodeMount) {
 			out = append(out, u.nodeMount)
 		}
@@ -181,9 +182,9 @@ func nodeMounts(uses []use) []string {
 	return out
 }
 
-// blockDeviceOf returns the first block device of the uses, "" if none.
-func blockDeviceOf(uses []use) string {
-	for _, u := range uses {
+// blockDeviceOf returns the first block device of the grants, "" if none.
+func blockDeviceOf(grants []pmemGrant) string {
+	for _, u := range grants {
 		if u.blockDevice != "" {
 			return u.blockDevice
 		}
@@ -215,22 +216,22 @@ func (e *Engine) nodeMountPath(source state.Source, serial state.Serial, access 
 
 // realisePersistent realises a grant of mode block or fs: the pmem region
 // of the memdev with its nd region, the fsdax namespace (which only a
-// writable block grant creates), then the use of the device next to the
-// other uses on the node, and the lease bind of a companion grant.
+// writable block grant creates), then the grant on the device next to the
+// other grants on the node, and the lease bind of a companion grant.
 func (e *Engine) realisePersistent(ctx context.Context, req *GrantRequest, memdev string) error {
 	region, ns, err := e.pmemChain(ctx, req, memdev)
 	if err != nil {
 		return err
 	}
 	dev := &state.BlockDevice{Name: ns.BlockDevice, Dev: state.DevNumbers{Major: ns.Major, Minor: ns.Minor}}
-	others := usesOf(e.records(), req.Serial, req.Ref)
-	u, err := e.prepareUse(ctx, req, ns.BlockDevice, others)
+	others := pmemGrants(e.records(), req.Serial, req.Ref)
+	u, err := e.preparePmemGrant(ctx, req, ns.BlockDevice, others)
 	if err != nil {
 		return err
 	}
 	got := state.Got{Region: state.RegionRef(region), Namespace: ns.Name, BlockDevice: dev, Size: ns.Size,
 		Mount: state.Access(u.access)}
-	if err := e.recordUse(ctx, req, region, u, u.writer() || firstWriter(others) != nil); err != nil {
+	if err := e.recordNodeMount(ctx, req, region, u, u.writer() || firstWriter(others) != nil); err != nil {
 		return err
 	}
 	if err := e.bindCompanion(ctx, req, u, &got); err != nil {
@@ -298,7 +299,7 @@ func (e *Engine) pmemChain(ctx context.Context, req *GrantRequest, memdev string
 
 // bindCompanion binds the lease of a companion grant of mode fs at its
 // target and sets what got records of the bind and the lend.
-func (e *Engine) bindCompanion(ctx context.Context, req *GrantRequest, u use, got *state.Got) error {
+func (e *Engine) bindCompanion(ctx context.Context, req *GrantRequest, u pmemGrant, got *state.Got) error {
 	if req.BindTarget == "" || req.Asked.Mode != state.ModeFs {
 		return nil
 	}
@@ -349,15 +350,15 @@ func (e *Engine) pmemNamespace(ctx context.Context, req *GrantRequest, nd string
 	return e.k.WaitFsdaxNamespace(ctx, nd, name)
 }
 
-// prepareUse returns the use of a grant of the block device dev prepared
-// next to others, the other uses of the device on the node: mode block
+// preparePmemGrant returns a grant of the block device dev prepared next
+// to others, the other grants of the device on the node: mode block
 // gets the read-only flag of the block device, mode fs the node mount of
 // its type and access, mounted, reused or made read-write. On error nothing
 // of the device changed but what cannot be undone, which is logged.
-func (e *Engine) prepareUse(ctx context.Context, req *GrantRequest, dev string, others []use) (use, error) {
-	u := use{ref: req.Ref, source: req.Asked.Source, serial: req.Serial, mode: req.Asked.Mode, readOnly: req.Asked.ReadOnly, blockDevice: dev}
+func (e *Engine) preparePmemGrant(ctx context.Context, req *GrantRequest, dev string, others []pmemGrant) (pmemGrant, error) {
+	u := pmemGrant{ref: req.Ref, source: req.Asked.Source, serial: req.Serial, mode: req.Asked.Mode, readOnly: req.Asked.ReadOnly, blockDevice: dev}
 	s := serialText(req.Serial)
-	blockWriter := slices.ContainsFunc(others, func(o use) bool { return o.mode == state.ModeBlock && o.writer() })
+	blockWriter := slices.ContainsFunc(others, func(o pmemGrant) bool { return o.mode == state.ModeBlock && o.writer() })
 	if blockWriter || (req.Asked.Mode == state.ModeBlock && !req.Asked.ReadOnly && len(others) > 0) {
 		return u, fmt.Errorf("device %s: mode block read-write needs the device alone on this node", s)
 	}
@@ -374,10 +375,10 @@ func (e *Engine) prepareUse(ctx context.Context, req *GrantRequest, dev string, 
 	return e.prepareFs(ctx, req, u, others)
 }
 
-// prepareFs prepares the use u of mode fs (prepareUse): the type of the
-// filesystem, the rules of the type and of one node, then the node mount of
-// the access mounted, reused, made read-write or read-only.
-func (e *Engine) prepareFs(ctx context.Context, req *GrantRequest, u use, others []use) (use, error) {
+// prepareFs prepares the grant u of mode fs (preparePmemGrant): the type
+// of the filesystem, the rules of the type and of one node, then the node
+// mount of the access mounted, reused, made read-write or read-only.
+func (e *Engine) prepareFs(ctx context.Context, req *GrantRequest, u pmemGrant, others []pmemGrant) (pmemGrant, error) {
 	source, serial, dev := req.Asked.Source, req.Serial, u.blockDevice
 	sig := &signature{e: e, serial: serialText(serial), dev: dev}
 	typ, err := e.fsTypeOf(req, dev, sig)
@@ -515,9 +516,9 @@ func checkCluster(req *GrantRequest, typ string, sig *signature) error {
 }
 
 // checkNodeRules returns an error if a grant of the access breaks the rules
-// of one node next to the other uses of the device: one access with a
+// of one node next to the other grants of the device: one access with a
 // writer, a writer only with one access.
-func checkNodeRules(req *GrantRequest, access string, others []use) error {
+func checkNodeRules(req *GrantRequest, access string, others []pmemGrant) error {
 	s := serialText(req.Serial)
 	other := firstWriter(others)
 	accesses := fsAccesses(others)
@@ -535,11 +536,11 @@ func checkNodeRules(req *GrantRequest, access string, others []use) error {
 	return nil
 }
 
-// nodeMount returns the loop device of the node mount mnt of a use after it
-// mounted it, or checked and reused the mount there: made read-write for a
-// use that writes, read-only when no use writes (a read-write superblock
-// that a failed release left).
-func (e *Engine) nodeMount(req *GrantRequest, u *use, typ, access, mnt string, writer bool, others []use, sig *signature) (string, error) {
+// nodeMount returns the loop device of the node mount mnt of a grant after
+// it mounted it, or checked and reused the mount there: made read-write for
+// a grant that writes, read-only when no grant writes (a read-write
+// superblock that a failed release left).
+func (e *Engine) nodeMount(req *GrantRequest, u *pmemGrant, typ, access, mnt string, writer bool, others []pmemGrant, sig *signature) (string, error) {
 	source, serial, dev := req.Asked.Source, req.Serial, u.blockDevice
 	mi, err := e.k.Mounted(mnt)
 	if err != nil {
@@ -570,7 +571,7 @@ func (e *Engine) nodeMount(req *GrantRequest, u *use, typ, access, mnt string, w
 }
 
 // mountFresh mounts the node mount mnt that is not mounted (mountNode),
-// refusing an ext4 that needs recovery when no use writes.
+// refusing an ext4 that needs recovery when no grant writes.
 func (e *Engine) mountFresh(source state.Source, serial state.Serial, dev, access, typ, mnt string, writer bool, explained []string, sig *signature) (string, error) {
 	if !writer && typ == api.FsTypeExt4 {
 		sg, err := sig.get()
@@ -601,10 +602,11 @@ func (e *Engine) nodevType(source state.Source, fsType string) bool {
 	return nodev
 }
 
-// recordUse records the node mount of a use of mode fs in its region: a
-// new mount (ABSENT -> MOUNTED_RO or MOUNTED_RW), the grant a user of an
-// existing one, read-write iff writer (a use of the device writes).
-func (e *Engine) recordUse(ctx context.Context, req *GrantRequest, region string, u use, writer bool) error {
+// recordNodeMount records the node mount of a grant of mode fs in its
+// region: a new mount (ABSENT -> MOUNTED_RO or MOUNTED_RW), the grant a
+// user of an existing one, read-write iff writer (a grant of the device
+// writes).
+func (e *Engine) recordNodeMount(ctx context.Context, req *GrantRequest, region string, u pmemGrant, writer bool) error {
 	if u.nodeMount == "" {
 		return nil
 	}
@@ -868,7 +870,8 @@ func (e *Engine) setReadOnly(source state.Source, serial state.Serial, dev strin
 // checkUnexplained returns an error if the block device dev of the memdev
 // with the serial, or a loop device over it, has a superblock anywhere on
 // the node that is not that of one of the node mounts explained (the node
-// mounts of the uses of the device), or if its superblocks cannot be read.
+// mounts of the grants of the device), or if its superblocks cannot be
+// read.
 func (e *Engine) checkUnexplained(serial state.Serial, dev string, explained []string) error {
 	s := serialText(serial)
 	sbs, err := e.k.Superblocks(dev)
@@ -964,13 +967,14 @@ func (e *Engine) unmountNode(source state.Source, serial state.Serial, mnt strin
 	return nil
 }
 
-// releaseUses releases the uses gone of the memdev with the serial while
-// the uses remaining stay: the node mounts that no remaining use has are
-// unmounted, the superblock of a node mount whose remaining uses have no
-// writer is made read-only, and so are the block devices when no writer
-// remains (the block device of the remaining uses only when it is the one
-// of the region now). An error (a busy unmount or downgrade) stops it.
-func (e *Engine) releaseUses(source state.Source, serial state.Serial, gone, remaining []use) error {
+// releasePmemGrants releases the grants gone of the memdev with the serial
+// while the grants remaining stay: the node mounts that no remaining grant
+// has are unmounted, the superblock of a node mount whose remaining grants
+// have no writer is made read-only, and so are the block devices when no
+// writer remains (the block device of the remaining grants only when it is
+// the one of the region now). An error (a busy unmount or downgrade) stops
+// it.
+func (e *Engine) releasePmemGrants(source state.Source, serial state.Serial, gone, remaining []pmemGrant) error {
 	used := nodeMounts(remaining)
 	for _, mnt := range nodeMounts(gone) {
 		if slices.Contains(used, mnt) {
@@ -1016,7 +1020,7 @@ func (e *Engine) verified(source state.Source, serial state.Serial, dev string) 
 	if dev == "" {
 		return dev
 	}
-	if err := e.checkUseBlockDevice(serial, dev); err != nil {
+	if err := e.checkRecordedBlockDevice(serial, dev); err != nil {
 		e.warnf(source, "device %s: not changing the read-only flag of %s: %v", serialText(serial), dev, err)
 		return ""
 	}
@@ -1055,10 +1059,10 @@ func (e *Engine) waitNoHolder(ctx context.Context, source state.Source, serial s
 	}
 }
 
-// checkUseBlockDevice returns an error if blockDev is not the block device
-// of the fsdax namespace of the region of the memdev with the serial now,
-// as a prepared grant recorded it.
-func (e *Engine) checkUseBlockDevice(serial state.Serial, blockDev string) error {
+// checkRecordedBlockDevice returns an error if blockDev, as a prepared
+// grant recorded it, is not the block device of the fsdax namespace of the
+// region of the memdev with the serial now.
+func (e *Engine) checkRecordedBlockDevice(serial state.Serial, blockDev string) error {
 	r := e.records()
 	for i := range r.Grants {
 		g := &r.Grants[i]
@@ -1140,7 +1144,7 @@ func (e *Engine) currentBlockDevice(serial state.Serial) string {
 	return ""
 }
 
-// releaseMount releases the uses of the block device or node mount of the
+// releaseMount releases the block device or node mount of the
 // persistent grants of the call on the memdev of a grant next to the other
 // grants of the memdev, once, and removes those grants from the users of
 // their node mount in one commit. The node mount of a grant that a cut
@@ -1150,12 +1154,12 @@ func (e *Engine) releaseMount(ctx context.Context, g *state.Grant, call *release
 	if g.Asked.Kind != state.KindPersistent {
 		return nil
 	}
-	if err, done := call.uses[g.Serial]; done {
+	if err, done := call.released[g.Serial]; done {
 		return err
 	}
 	r := e.records()
-	var remaining []use
-	for _, u := range usesOf(r, g.Serial, g.Ref) {
+	var remaining []pmemGrant
+	for _, u := range pmemGrants(r, g.Serial, g.Ref) {
 		if !call.refs[u.ref] {
 			remaining = append(remaining, u)
 		}
@@ -1164,26 +1168,26 @@ func (e *Engine) releaseMount(ctx context.Context, g *state.Grant, call *release
 	for _, o := range callGrants(r, g, call) {
 		refs = append(refs, o.Ref)
 	}
-	err := e.releaseUses(g.Asked.Source, g.Serial, e.goneUses(r, g, call), remaining)
+	err := e.releasePmemGrants(g.Asked.Source, g.Serial, e.gonePmemGrants(r, g, call), remaining)
 	if err != nil {
 		err = fmt.Errorf("releasing %s (serial %s): %w", e.deviceNameOf(g.Ref), serialText(g.Serial), err)
 	}
-	call.uses[g.Serial] = err
+	call.released[g.Serial] = err
 	if err != nil {
 		return err
 	}
 	return e.commit(ctx, func(r *state.Records) error { return leaveMount(r, refs, firstWriter(remaining) != nil, call.trigger) })
 }
 
-// goneUses returns the uses of the block device or node mount that the
-// grants of a release call on the memdev of g give up, g first: none of a
-// node mount that is not ours (UNRESTORED, FOREIGN).
-func (e *Engine) goneUses(r *state.Records, g *state.Grant, call *releaseCall) []use {
-	var gone []use
+// gonePmemGrants returns the grants of a release call on the memdev of g, g
+// first, that give up a block device or node mount: none of a node mount
+// that is not ours (UNRESTORED, FOREIGN).
+func (e *Engine) gonePmemGrants(r *state.Records, g *state.Grant, call *releaseCall) []pmemGrant {
+	var gone []pmemGrant
 	for _, o := range callGrants(r, g, call) {
-		u := useOf(r, o)
+		u := pmemGrantOf(r, o)
 		if u.nodeMount == "" {
-			u = e.cutMountUse(o, u)
+			u = e.withCutMount(o, u)
 		}
 		if o.Got.BlockDevice == nil && u.nodeMount == "" {
 			continue
@@ -1213,10 +1217,10 @@ func callGrants(r *state.Records, g *state.Grant, call *releaseCall) []*state.Gr
 	return grants
 }
 
-// cutMountUse returns the use u of a grant of a cut Prepare with the node
-// mount of its intent, when a mount of the block device of its region is
-// there (the mount is made before the grant records it).
-func (e *Engine) cutMountUse(g *state.Grant, u use) use {
+// withCutMount returns u, the pmemGrant of a grant g of a cut Prepare, with
+// the node mount of its intent when a mount of the block device of its
+// region is there (the mount is made before the grant records it).
+func (e *Engine) withCutMount(g *state.Grant, u pmemGrant) pmemGrant {
 	if g.Intent.MountPath == "" {
 		return u
 	}

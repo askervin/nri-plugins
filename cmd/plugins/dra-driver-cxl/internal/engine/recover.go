@@ -375,7 +375,7 @@ func (e *Engine) restoreBinds(ctx context.Context) {
 			p.State == state.PreparationUnpreparing || !e.owns(g.Asked.Source) {
 			continue
 		}
-		u := useOf(r, g)
+		u := pmemGrantOf(r, g)
 		mi, err := e.k.Mounted(b.Target)
 		if err != nil || mi != nil {
 			continue

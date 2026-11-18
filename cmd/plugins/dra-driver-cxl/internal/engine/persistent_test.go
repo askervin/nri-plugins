@@ -261,13 +261,13 @@ func TestPersistentLogLines(t *testing.T) {
 	})
 }
 
-// A use of a local persistent memdev whose release failed stays a use of
-// the device until its release is done: the node mount of a reader whose
+// A grant of a local persistent memdev whose release failed holds the
+// device until its release is done: the node mount of a reader whose
 // unmount is busy, the read-write superblock of a writer whose downgrade is
 // busy. The rules of one node refuse the Prepares of other claims next to
 // it, which mount and change nothing; a reader of its node mount reuses it
 // as it is.
-func TestPersistentReleasingUses(t *testing.T) {
+func TestPersistentReleasingGrants(t *testing.T) {
 	refused := func(t *testing.T, v *env, req GrantRequest, want string) {
 		t.Helper()
 		n := mountCalls(v)
@@ -327,7 +327,7 @@ func TestPersistentReleasingUses(t *testing.T) {
 // A claim of mode fs of another boot (PREPARED_STALE) has nothing mounted:
 // the one-node rules do not count it, a new reader next to a stale writer
 // and a new writer next to a stale reader are prepared.
-func TestPersistentStaleClaimIsNoUse(t *testing.T) {
+func TestPersistentStaleGrantHoldsNothing(t *testing.T) {
 	for _, c := range []struct {
 		name         string
 		stale, newer bool
@@ -358,7 +358,7 @@ func TestPersistentStaleClaimIsNoUse(t *testing.T) {
 // nothing mounted: the one-node rules do not count it, a reader is
 // prepared next to it; the retry of the Unprepare leaves the reader's
 // mount.
-func TestPersistentFailedReleaseWithoutMountIsNoUse(t *testing.T) {
+func TestPersistentUnmountedGrantHoldsNothing(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib})
 	v.formatPmem("mem0", "ext4")
 	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))

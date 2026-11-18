@@ -33,9 +33,9 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
-// bindGrant binds the node mount of the use of mode fs of a companion grant
-// at its bind target, or finds it bound there, its intent named first.
-func (e *Engine) bindGrant(ctx context.Context, req *GrantRequest, u use) error {
+// bindGrant binds the node mount of a companion grant of mode fs at its
+// bind target, or finds it bound there, its intent named first.
+func (e *Engine) bindGrant(ctx context.Context, req *GrantRequest, u pmemGrant) error {
 	if !api.ValidName(filepath.Base(req.BindTarget)) {
 		return fmt.Errorf("grant %s: invalid name %q", req.Ref, filepath.Base(req.BindTarget))
 	}
@@ -84,17 +84,17 @@ func (e *Engine) bindUsed(target string, except state.GrantRef) bool {
 	return false
 }
 
-// bindLease binds the node mount of an fs use at target and reports
-// whether the bind was there already: read-only binds of writable types by
-// a clone with the read-only attribute, others by MS_BIND, so that the
-// bind and its propagated copies have the flags of the node mount. The bind
-// must be a mount of the root of the node mount of its type with the flags
-// ro (rw for a use that writes), nosuid and nodev; a new bind without them
-// is unmounted again; another mount at the target, or one that otherBind
-// says is the bind of another prepared grant, is neither used nor
+// bindLease binds the node mount of a grant of mode fs at target and
+// reports whether the bind was there already: read-only binds of writable
+// types by a clone with the read-only attribute, others by MS_BIND, so that
+// the bind and its propagated copies have the flags of the node mount. The
+// bind must be a mount of the root of the node mount of its type with the
+// flags ro (rw for a grant that writes), nosuid and nodev; a new bind
+// without them is unmounted again; another mount at the target, or one that
+// otherBind says is the bind of another prepared grant, is neither used nor
 // unmounted. A new bind that fails the check and cannot be unmounted is
 // recorded as stale.
-func (e *Engine) bindLease(u *use, target string, otherBind func(string) bool) (bool, error) {
+func (e *Engine) bindLease(u *pmemGrant, target string, otherBind func(string) bool) (bool, error) {
 	s := serialText(u.serial)
 	node, err := e.k.Mounted(u.nodeMount)
 	switch {
@@ -127,9 +127,9 @@ func (e *Engine) bindLease(u *use, target string, otherBind func(string) bool) (
 }
 
 // checkExistingBind returns an error unless the mount mi at target is the
-// lease bind of the node mount node of the use, and of no other prepared
+// lease bind of the node mount node of the grant, and of no other prepared
 // grant (otherBind).
-func checkExistingBind(u *use, target string, mi, node *kernel.MountInfo, otherBind func(string) bool) error {
+func checkExistingBind(u *pmemGrant, target string, mi, node *kernel.MountInfo, otherBind func(string) bool) error {
 	s := serialText(u.serial)
 	switch {
 	case !isLeaseBind(mi, node, u.readOnly):
@@ -142,8 +142,8 @@ func checkExistingBind(u *use, target string, mi, node *kernel.MountInfo, otherB
 
 // verifyBind returns an error, after it unmounted the new bind at target
 // again (or recorded it stale when that fails), when the bind is not the
-// lease bind of the node mount node of the use.
-func (e *Engine) verifyBind(u *use, target string, node *kernel.MountInfo) error {
+// lease bind of the node mount node of the grant.
+func (e *Engine) verifyBind(u *pmemGrant, target string, node *kernel.MountInfo) error {
 	s := serialText(u.serial)
 	mi, err := e.k.Mounted(target)
 	if err == nil && (mi == nil || !isLeaseBind(mi, node, u.readOnly)) {

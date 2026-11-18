@@ -101,12 +101,12 @@ type restoredSerial struct {
 // memdev with the serial and returns what it found; why gets the reasons of
 // the grants that stay unrestored too.
 func (e *Engine) restoreSerial(serial state.Serial, why map[state.GrantRef]error) restoredSerial {
-	uses := e.preparedUses(serial)
-	writer := firstWriter(uses) != nil || firstWriter(e.unpreparedUses(serial)) != nil
+	grants := e.preparedPmemGrants(serial)
+	writer := firstWriter(grants) != nil || firstWriter(e.unpreparingPmemGrants(serial)) != nil
 	badWhy := map[state.GrantRef]error{}
 	var rs restoredSerial
 	rs.bad = e.checkBlocks(serial, badWhy)
-	byMount := e.restoreMounts(uses, writer, rs.bad)
+	byMount := e.restoreMounts(grants, writer, rs.bad)
 	rs.failed, rs.restored = e.classifyRestored(serial, byMount, why)
 	for ref, err := range badWhy {
 		why[ref] = err
@@ -119,11 +119,11 @@ func (e *Engine) restoreSerial(serial state.Serial, why map[state.GrantRef]error
 			delete(rs.bad, ref)
 		}
 	}
-	if dev := blockDeviceOf(uses); dev != "" && e.checkUseBlockDevice(serial, dev) == nil {
-		e.restoreFlags(serial, dev, uses, writer)
+	if dev := blockDeviceOf(grants); dev != "" && e.checkRecordedBlockDevice(serial, dev) == nil {
+		e.restoreFlags(serial, dev, grants, writer)
 	}
 	rs.loops = map[string]string{}
-	for _, u := range uses {
+	for _, u := range grants {
 		if rm, ok := byMount[u.nodeMount]; ok && rm.err == nil && rm.loop != u.loop && u.access == api.AccessCached {
 			e.logf(u.source, "device %s: %s is on %s now, not %s", serialText(serial), u.nodeMount, rm.loop, u.loop)
 			rs.loops[u.nodeMount] = rm.loop
@@ -146,7 +146,7 @@ func blockChecked(g *state.Grant) bool {
 // checkBlocks returns the realised and unrestored grants of prepared claims
 // of the persistent memdev with the serial whose block device is verified
 // (blockChecked) when it is not the one of the fsdax namespace of its
-// region now: those uses have no CDI device then; why gets the reason.
+// region now: those grants have no CDI device then; why gets the reason.
 func (e *Engine) checkBlocks(serial state.Serial, why map[state.GrantRef]error) map[state.GrantRef]error {
 	r := e.records()
 	var grants []*state.Grant
@@ -220,13 +220,13 @@ func remounted(r *state.Records, loops map[string]string) {
 	}
 }
 
-// preparedUses returns the uses of the memdev with the serial by the grants
-// of PREPARED and PREPARED_UNRESTORED preparations: those that a start
+// preparedPmemGrants returns the grants of the memdev with the serial of
+// PREPARED and PREPARED_UNRESTORED preparations: those that a start
 // restores (not the grants of cut Prepares, not those being unprepared).
-func (e *Engine) preparedUses(serial state.Serial) []use {
+func (e *Engine) preparedPmemGrants(serial state.Serial) []pmemGrant {
 	r := e.records()
-	var out []use
-	for _, u := range usesOf(r, serial) {
+	var out []pmemGrant
+	for _, u := range pmemGrants(r, serial) {
 		if p := r.PreparationOf(u.ref); p != nil && (p.State == state.PreparationPrepared || p.State == state.PreparationUnrestored) {
 			out = append(out, u)
 		}
@@ -234,17 +234,17 @@ func (e *Engine) preparedUses(serial state.Serial) []use {
 	return out
 }
 
-// unpreparedUses returns the uses of the memdev with the serial by the
-// grants of claims whose Unprepare did not finish (UNPREPARING) that still
-// use their node mount: a start leaves them as they are, and a writer of
+// unpreparingPmemGrants returns the grants of the memdev with the serial
+// of claims whose Unprepare did not finish (UNPREPARING) that still use
+// their node mount: a start leaves them as they are, and a writer of
 // them keeps the device read-write until kubelet's retry of the Unprepare.
-func (e *Engine) unpreparedUses(serial state.Serial) []use {
+func (e *Engine) unpreparingPmemGrants(serial state.Serial) []pmemGrant {
 	r := e.records()
 	if m := r.Memdev(serial); m == nil {
 		return nil
 	}
-	var out []use
-	for _, u := range usesOf(r, serial) {
+	var out []pmemGrant
+	for _, u := range pmemGrants(r, serial) {
 		if p := r.PreparationOf(u.ref); p != nil && p.State == state.PreparationUnpreparing {
 			out = append(out, u)
 		}
@@ -252,34 +252,34 @@ func (e *Engine) unpreparedUses(serial state.Serial) []use {
 	return out
 }
 
-// restoreMounts restores the node mount of each of the uses and returns why
-// each that is not mounted afterwards is not, by node mount. The error of a
-// node mount whose uses are all on a block device that changed (bad) is not
-// logged: the block device's is.
-func (e *Engine) restoreMounts(uses []use, writer bool, bad map[state.GrantRef]error) map[string]restoredMount {
+// restoreMounts restores the node mount of each of the grants and returns
+// why each that is not mounted afterwards is not, by node mount. The error
+// of a node mount whose grants are all on a block device that changed (bad)
+// is not logged: the block device's is.
+func (e *Engine) restoreMounts(grants []pmemGrant, writer bool, bad map[state.GrantRef]error) map[string]restoredMount {
 	byMount := map[string]restoredMount{}
-	for _, mnt := range nodeMounts(uses) {
-		i := slices.IndexFunc(uses, func(u use) bool { return u.nodeMount == mnt })
-		loop, err := e.restoreNodeMount(&uses[i], writer, nodeMounts(uses))
-		quiet := !slices.ContainsFunc(uses, func(u use) bool { return u.nodeMount == mnt && bad[u.ref] == nil })
+	for _, mnt := range nodeMounts(grants) {
+		i := slices.IndexFunc(grants, func(u pmemGrant) bool { return u.nodeMount == mnt })
+		loop, err := e.restoreNodeMount(&grants[i], writer, nodeMounts(grants))
+		quiet := !slices.ContainsFunc(grants, func(u pmemGrant) bool { return u.nodeMount == mnt && bad[u.ref] == nil })
 		switch {
 		case err != nil && errors.Is(err, errForeignMount):
-			e.errorf(uses[i].source, "%v: it is never used or unmounted by the driver", err)
+			e.errorf(grants[i].source, "%v: it is never used or unmounted by the driver", err)
 		case err != nil && !quiet:
-			e.errorf(uses[i].source, "claim %s: %v", e.claimNameOf(uses[i].ref), err)
+			e.errorf(grants[i].source, "claim %s: %v", e.claimNameOf(grants[i].ref), err)
 		}
 		byMount[mnt] = restoredMount{loop: loop, err: err}
 	}
 	return byMount
 }
 
-// checkRestoredMount checks what is mounted at the node mount of the use u
-// at a start, mi, and returns the loop device of a cached one and whether
+// checkRestoredMount checks what is mounted at the node mount of the grant
+// u at a start, mi, and returns the loop device of a cached one and whether
 // it verifies: an error of kind errForeignMount when it is not the device
 // of the grants; the device of the grants with other options or another
 // type, or a mount whose device cannot be told, is logged and stays theirs
 // as it is (released with them).
-func (e *Engine) checkRestoredMount(u *use, mi *kernel.MountInfo) (string, bool, error) {
+func (e *Engine) checkRestoredMount(u *pmemGrant, mi *kernel.MountInfo) (string, bool, error) {
 	ok, err := e.isDeviceMount(mi, u.blockDevice, u.access)
 	if err == nil && !ok {
 		_, cerr := e.checkNodeMount(u.serial, u.blockDevice, u.access, u.fsType, mi)
@@ -338,12 +338,12 @@ func (e *Engine) classifyRestored(serial state.Serial, byMount map[string]restor
 }
 
 // restoreFlags sets the read-only flags of the block device dev and of the
-// loop devices of the node mounts of the uses as the uses derive. Errors
-// are logged: the next Prepare or release of the device tries again.
-func (e *Engine) restoreFlags(serial state.Serial, dev string, uses []use, writer bool) {
-	source := uses[0].source
+// loop devices of the node mounts of the grants as the grants derive.
+// Errors are logged: the next Prepare or release of the device tries again.
+func (e *Engine) restoreFlags(serial state.Serial, dev string, grants []pmemGrant, writer bool) {
+	source := grants[0].source
 	var loops []string
-	for _, mnt := range nodeMounts(uses) {
+	for _, mnt := range nodeMounts(grants) {
 		if mi, err := e.k.Mounted(mnt); err == nil && mi != nil && e.loopOf(mi) != "" && !isReadOnlyType(mi.FsType) {
 			loops = append(loops, e.loopOf(mi))
 		}
@@ -365,20 +365,20 @@ func (e *Engine) restoreFlags(serial state.Serial, dev string, uses []use, write
 	}
 }
 
-// restoreNodeMount returns the loop device of the node mount of a use after
-// it mounted it again when it is missing and its block device is the one
-// prepared, or checked the mount there; an existing superblock is made
+// restoreNodeMount returns the loop device of the node mount of a grant
+// after it mounted it again when it is missing and its block device is the
+// one prepared, or checked the mount there; an existing superblock is made
 // read-write for a writer of the device or read-only without one, a failure
-// of that is logged. explained are the node mounts of the uses of the
+// of that is logged. explained are the node mounts of the grants of the
 // device.
-func (e *Engine) restoreNodeMount(u *use, writer bool, explained []string) (string, error) {
+func (e *Engine) restoreNodeMount(u *pmemGrant, writer bool, explained []string) (string, error) {
 	mi, err := e.k.Mounted(u.nodeMount)
 	if err != nil {
 		return "", err
 	}
 	if mi == nil {
 		e.logf(u.source, "device %s: %s is not mounted, mounting it again", serialText(u.serial), u.nodeMount)
-		if err := e.checkUseBlockDevice(u.serial, u.blockDevice); err != nil {
+		if err := e.checkRecordedBlockDevice(u.serial, u.blockDevice); err != nil {
 			e.removeMountDir(u.source, u.nodeMount)
 			return "", fmt.Errorf("not mounting %s again: %w", u.nodeMount, err)
 		}
@@ -501,7 +501,7 @@ func allRealised(r *state.Records, p *state.Preparation) bool {
 // mounted); an error names why it stays unrestored.
 func (e *Engine) restoreGrant(ctx context.Context, req *GrantRequest) error {
 	if err := e.blockError(e.records().Grant(req.Ref)); err != nil {
-		// the uses of a device whose block device changed stay
+		// the grants of a device whose block device changed stay
 		// unrestored
 		return err
 	}
@@ -512,19 +512,19 @@ func (e *Engine) restoreGrant(ctx context.Context, req *GrantRequest) error {
 // and makes it REALISED (restoreGrant).
 func (e *Engine) remountGrant(ctx context.Context, req *GrantRequest) error {
 	g := e.records().Grant(req.Ref)
-	uses := e.preparedUses(g.Serial)
-	i := slices.IndexFunc(uses, func(u use) bool { return u.ref == g.Ref })
-	if i < 0 || uses[i].nodeMount == "" {
+	grants := e.preparedPmemGrants(g.Serial)
+	i := slices.IndexFunc(grants, func(u pmemGrant) bool { return u.ref == g.Ref })
+	if i < 0 || grants[i].nodeMount == "" {
 		if err := e.verifyGrant(g); err != nil {
 			return err
 		}
 	}
 	loop := ""
-	if i >= 0 && uses[i].nodeMount != "" {
-		l, err := e.restoreNodeMount(&uses[i], firstWriter(uses) != nil, nodeMounts(uses))
+	if i >= 0 && grants[i].nodeMount != "" {
+		l, err := e.restoreNodeMount(&grants[i], firstWriter(grants) != nil, nodeMounts(grants))
 		if err != nil {
 			return fmt.Errorf("device %s: its node mount %s is not mounted and cannot be mounted again: %w; unprepare the claim (delete its pods) to prepare it anew",
-				serialText(g.Serial), uses[i].nodeMount, err)
+				serialText(g.Serial), grants[i].nodeMount, err)
 		}
 		loop = l
 	}

@@ -29,9 +29,9 @@ import (
 // ReleaseGrants releases the grants refs as release says (Policy) and
 // returns the errors of those that it could not release. First the stale
 // lease binds of every memdev are unmounted again (retryAllStale). The
-// grants of one memdev are released together in its queue (the uses that
-// the other grants of the call have are not kept), in the order of the
-// first of them; every holder wait of the call ends at one deadline, which
+// grants of one memdev are released together in its queue (what the
+// other grants of the call use is not kept), in the order of the first
+// of them; every holder wait of the call ends at one deadline, which
 // starts at its first holder wait. A grant that is released is gone from
 // the store; one whose release failed stays RELEASING with what it still
 // has, and a retry finds out from the kernel what exists. A ref without a
@@ -93,7 +93,8 @@ func localOrder(r *state.Records, refs []state.GrantRef) []state.GrantRef {
 
 // releaseCall is what the release of the grants of one call shares: its
 // policy and trigger, its grants, the deadlines of its holder waits, and
-// the results of the release of the uses of its grants per memdev.
+// the results of the release of the block devices and node mounts of its
+// grants per memdev.
 type releaseCall struct {
 	release Release
 	trigger state.Trigger
@@ -103,7 +104,7 @@ type releaseCall struct {
 	holder    time.Duration
 	perClaim  bool
 	deadlines map[string]time.Time
-	uses      map[state.Serial]error
+	released  map[state.Serial]error
 	// unrestored are the node mounts of the grants of the call that the
 	// start did not mount again (UNRESTORED, FOREIGN), by grant.
 	unrestored map[state.GrantRef]string
@@ -120,7 +121,7 @@ func newReleaseCall(e *Engine, release Release, refs []state.GrantRef) *releaseC
 		refs:       map[state.GrantRef]bool{},
 		holder:     e.opts.Timeouts.Holder,
 		deadlines:  map[string]time.Time{},
-		uses:       map[state.Serial]error{},
+		released:   map[state.Serial]error{},
 		unrestored: map[state.GrantRef]string{},
 		reasons:    map[state.GrantRef]string{},
 	}
