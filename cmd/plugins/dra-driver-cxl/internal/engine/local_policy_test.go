@@ -18,6 +18,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
@@ -47,7 +48,7 @@ func TestLocalPolicySliced(t *testing.T) {
 	t.Run("rollback keeps below a newer region", func(t *testing.T) {
 		v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib}, fake.MemdevSpec{Serial: serialB})
 		regionAboveNext(t, v, "mem1")
-		v.f.FailWrite("bus/dax/devices/dax0.0/size", errBusy)
+		v.f.FailWrite("bus/dax/devices/dax0.0/size", syscall.EBUSY)
 		logs := klogtest.Capture(t, 3)
 		if err := v.prepare(localDriver, "k", sliceReq("k", 0, state.ModeDax, 256*mib)); err == nil {
 			t.Fatal("the Prepare succeeded")
@@ -231,7 +232,7 @@ func TestLocalPolicySharedNew(t *testing.T) {
 	t.Run("set-up failed", func(t *testing.T) {
 		v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
 		v.configure(func(o *Options) { o.Shared = func(state.Serial) bool { return true } })
-		v.f.FailWrite("bus/dax/drivers/kmem/unbind", errBusy)
+		v.f.FailWrite("bus/dax/drivers/kmem/unbind", syscall.EBUSY)
 		if err := v.prepare(localDriver, "s1", sharedReq("s1")); err == nil {
 			t.Fatal("the Prepare succeeded")
 		}
@@ -377,7 +378,7 @@ func TestPoolPolicyRollbackDestroysBelow(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialB})
 	port := v.f.Kernel().Memdev(serialA).Ports[0]
 	regionAboveNext(t, v, "mem1")
-	v.f.FailWrite("bus/dax/drivers/kmem/unbind", errBusy)
+	v.f.FailWrite("bus/dax/drivers/kmem/unbind", syscall.EBUSY)
 	if err := v.prepare(poolDriver, "a", poolReq("a", 0, serialA, state.ModeDax, state.KindExclusive)); err == nil {
 		t.Fatal("the Prepare succeeded")
 	}

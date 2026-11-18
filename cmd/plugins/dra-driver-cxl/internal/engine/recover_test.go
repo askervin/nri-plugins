@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -460,7 +461,7 @@ func TestRecoverKept(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	v.f.FailWrite("bus/dax/devices/dax0.0/size", errBusy)
+	v.f.FailWrite("bus/dax/devices/dax0.0/size", syscall.EBUSY)
 	if err := v.prepare(localDriver, "k", localReq("k", 0, serialL, state.ModeDax, state.KindExclusive, 256*mib)); err == nil {
 		t.Fatal("the Prepare succeeded")
 	}
@@ -1061,7 +1062,7 @@ func TestRecoverKeptWithoutGrant(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	v.f.FailWrite("bus/dax/devices/dax0.0/size", errBusy)
+	v.f.FailWrite("bus/dax/devices/dax0.0/size", syscall.EBUSY)
 	if err := v.prepare(localDriver, "k", localReq("k", 0, serialL, state.ModeDax, state.KindExclusive, 256*mib)); err == nil {
 		t.Fatal("the Prepare succeeded")
 	}

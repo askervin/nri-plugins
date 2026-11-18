@@ -27,6 +27,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
@@ -104,7 +105,7 @@ func TestLocalShared(t *testing.T) {
 // A local grant on a pool serial is refused before anything is touched.
 func TestLocalGuard(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
-	if err := v.st.Commit(context.Background(), 0, func(doc *storeDocument) error {
+	if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
 		doc.Provenance = append(doc.Provenance, state.Provenance{Serial: serialA, State: state.ProvenancePool})
 		return nil
 	}); err != nil {

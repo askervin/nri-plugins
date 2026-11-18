@@ -22,7 +22,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -573,19 +572,10 @@ func (v *env) formatPmem(memdev string, typ string) {
 	}
 }
 
-// errBusy is the error of a busy device.
-var errBusy = syscall.EBUSY
-
 // blockState returns the sysfs attribute of the state of memory block n.
 func blockState(n int) string {
 	return fmt.Sprintf("devices/system/memory/memory%d/state", n)
 }
-
-// storeDocument is the document of the store.
-type storeDocument = store.Document
-
-// mountInfo is a mount of the kernel.
-type mountInfo = kernel.MountInfo
 
 // companionTarget returns the lease bind of the companion claims of the
 // scenarios.

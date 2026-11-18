@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -232,7 +233,7 @@ func TestPoolReleaseBusy(t *testing.T) {
 	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeNUMA, state.KindExclusive))
 	snap, _ := v.f.Kernel().Observe(context.Background())
 	blocks := snap.Region("region0").Range.Blocks(snap.BlockSize)
-	v.f.FailWrite(blockState(blocks[0]), errBusy)
+	v.f.FailWrite(blockState(blocks[0]), syscall.EBUSY)
 	if err := v.unprepare(poolDriver, "c1"); err == nil {
 		t.Fatal("a busy release succeeded")
 	}
@@ -331,7 +332,7 @@ func TestPoolRollbackReturnsKept(t *testing.T) {
 	if _, err := k.CreateRegion(context.Background(), kernel.CreateRegionRequest{Memdev: "mem1", Decoder: d, Type: kernel.RegionRAM}); err != nil {
 		t.Fatal(err)
 	}
-	v.f.FailCommand("cxl disable-memdev", errBusy)
+	v.f.FailCommand("cxl disable-memdev", syscall.EBUSY)
 	b := poolReq("c", 1, serialB, state.ModeDax, state.KindExclusive)
 	kept, err := v.e.PrepareGrants(context.Background(), []GrantRequest{poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive), b})
 	if !errors.Is(err, errForeignRegion) {

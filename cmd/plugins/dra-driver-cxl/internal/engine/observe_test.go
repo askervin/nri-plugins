@@ -22,6 +22,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
@@ -178,7 +179,7 @@ func TestVerifyStepLogs(t *testing.T) {
 	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := v.st.Commit(context.Background(), 0, func(doc *storeDocument) error {
+	if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
 		doc.Provenance = append(doc.Provenance, state.Provenance{Serial: serialL, State: state.ProvenanceHeld})
 		doc.Grants = append(doc.Grants, state.Grant{Ref: state.GrantRef{Claim: "l"}, Serial: serialL,
 			Asked: state.Asked{Source: state.SourceLocal}, State: state.GrantJournaled})
@@ -223,7 +224,7 @@ func TestVerifyStepBetweenRequests(t *testing.T) {
 		t.Fatalf("violations of a request in progress logged:\n%s", out)
 	}
 	region, part := v.grant("l", 0).Got.Region, v.grant("l", 0).Got.Dax
-	if err := v.st.Commit(context.Background(), 0, func(doc *storeDocument) error {
+	if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
 		doc.Grant(state.GrantRef{Claim: "l"}).State = state.GrantJournaled
 		doc.Preparation(localDriver, "l").State = state.PreparationPreparing
 		return nil

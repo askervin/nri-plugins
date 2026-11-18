@@ -24,6 +24,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
@@ -39,7 +40,7 @@ func TestPersistentBind(t *testing.T) {
 	if g.Got.Bind == nil || g.Got.Bind.State != state.BindBound || g.Got.Lend == nil {
 		t.Fatalf("grant %+v", g.Got)
 	}
-	if !slices.ContainsFunc(v.f.MountTable(), func(m mountInfo) bool { return m.Target == req.BindTarget }) {
+	if !slices.ContainsFunc(v.f.MountTable(), func(m kernel.MountInfo) bool { return m.Target == req.BindTarget }) {
 		t.Fatalf("not bound: %+v", v.f.MountTable())
 	}
 	v.mustUnprepare(poolDriver, "c")

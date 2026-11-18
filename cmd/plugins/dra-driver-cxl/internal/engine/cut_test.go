@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"syscall"
 	"testing"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
@@ -329,7 +330,7 @@ var localCutScenarios = []cutScenario{
 		name:  "local sliced rollback",
 		specs: []fake.MemdevSpec{{Serial: serialL, Ram: gib}},
 		run: func(v *env) {
-			v.f.FailWrite("bus/dax/devices/dax0.1/size", errBusy)
+			v.f.FailWrite("bus/dax/devices/dax0.1/size", syscall.EBUSY)
 			reqs := []GrantRequest{sliceReq("c", 0, state.ModeNUMA, 256*mib), sliceReq("c", 1, state.ModeDax, 256*mib)}
 			_ = v.prepare(localDriver, "c", reqs...)
 			_ = v.prepare(localDriver, "c", reqs...)

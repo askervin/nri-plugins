@@ -23,6 +23,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
@@ -83,7 +84,7 @@ func TestStackRecoveryTopMostFirst(t *testing.T) {
 		uid    string
 		serial uint64
 	}{{"b", serialB}, {"c", serialC}} {
-		if err := v.st.Commit(context.Background(), 0, func(doc *storeDocument) error {
+		if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
 			doc.Preparations = append(doc.Preparations, state.Preparation{UID: c.uid, Driver: poolDriver,
 				State: state.PreparationPreparing, Results: []state.Result{grantResult(c.uid, 0)}})
 			return nil
@@ -204,7 +205,7 @@ func TestStackLocalRecoveryTopMostFirst(t *testing.T) {
 			}
 			drivers := map[string]string{"l": localDriver, "b": poolDriver}
 			for _, uid := range c.order {
-				if err := v.st.Commit(context.Background(), 0, func(doc *storeDocument) error {
+				if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
 					doc.Preparations = append(doc.Preparations, state.Preparation{UID: uid, Driver: drivers[uid],
 						State: state.PreparationPreparing, Results: []state.Result{grantResult(uid, 0)}})
 					return nil
