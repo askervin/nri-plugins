@@ -100,8 +100,10 @@ type Engine struct {
 	// memdevs (Options.ProbesFile).
 	probes map[state.Serial]state.Probe
 
-	// afterCommit is called after every commit that the store applied, nil
-	// outside the tests that stop the process at a commit.
+	// afterCommit is called after every commit of the engine that the store
+	// applied, nil outside the tests that stop the process at a commit of
+	// the engine. The store's AfterCommit sees the commits of the
+	// front-ends too.
 	afterCommit func()
 }
 
