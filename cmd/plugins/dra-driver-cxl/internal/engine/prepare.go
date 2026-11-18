@@ -146,9 +146,6 @@ func (e *Engine) journal(ctx context.Context, req *GrantRequest) error {
 		}
 	}
 	return e.commit(ctx, func(r *state.Records) error {
-		if r.Region(state.RegionRef(req.BindTarget)) != nil {
-			return fmt.Errorf("grant %s: %s is a region", req.Ref, req.BindTarget)
-		}
 		g := r.Grant(req.Ref)
 		if g == nil {
 			r.Grants = append(r.Grants, state.Grant{Ref: req.Ref, Serial: req.Serial, Asked: req.Asked, State: state.GrantRequested})
