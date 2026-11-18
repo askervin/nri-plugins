@@ -566,16 +566,16 @@ func (e *Engine) onlineMemory(ctx context.Context, region, dax string, blocks []
 	})
 }
 
-// releaseRegions releases the regions of ours of the memdev of the grant g
-// by decision (Destroy, or InOrder), and tells whether a region was kept for
-// the claim; one kept below newer regions of another memdev is KEPT for the
-// claim (forClaim) or the memdev IDLE_KEPT with it.
-func (e *Engine) releaseRegions(ctx context.Context, g *state.Grant, memdev string, decision Decision, forClaim bool, trigger state.Trigger) (bool, error) {
-	source, serial := g.Asked.Source, g.Serial
-	var regions []state.RegionRef
-	if m := e.records().Memdev(serial); m != nil {
-		regions = slices.Clone(m.Regions)
+// releaseRegions releases the regions of ours of the memdev with the serial
+// by decision (Destroy, or in order), and tells whether a region was kept
+// for the claim forClaim; one kept below newer regions of another memdev is
+// KEPT for forClaim, or the memdev IDLE_KEPT with it when forClaim is "".
+func (e *Engine) releaseRegions(ctx context.Context, serial state.Serial, memdev string, decision Decision, forClaim string, trigger state.Trigger) (bool, error) {
+	m := e.records().Memdev(serial)
+	if m == nil {
+		return false, nil
 	}
+	source, persistent, regions := m.Source, m.Facts.Persistent, slices.Clone(m.Regions)
 	start := time.Now()
 	for _, ref := range regions {
 		name := string(ref)
@@ -599,17 +599,17 @@ func (e *Engine) releaseRegions(ctx context.Context, g *state.Grant, memdev stri
 		}
 		if len(rs) > 0 {
 			idle := "the idle device"
-			if g.Asked.Kind == state.KindPersistent {
+			if persistent {
 				idle = "the idle persistent device"
 			}
-			if forClaim {
+			if forClaim != "" {
 				e.warnLocal(source, "memdev %s (serial %s): keeping %s for claims %v, whose Prepare did not finish: %s lie above it, its release would leave a hole in the decoders of their ports; their Unprepare releases it, their Prepare again reuses it",
-					memdev, serialText(serial), name, []string{g.Ref.Claim}, strings.Join(rs, ", "))
+					memdev, serialText(serial), name, []string{forClaim}, strings.Join(rs, ", "))
 			} else {
 				e.warnLocal(source, "memdev %s (serial %s): keeping %s of %s: %s lie above it, its release would leave a hole in the decoders of their ports",
 					memdev, serialText(serial), name, idle, strings.Join(rs, ", "))
 			}
-			return forClaim, e.keepMemdev(ctx, serial, trigger, forClaim)
+			return forClaim != "", e.keepMemdev(ctx, serial, trigger, forClaim != "")
 		}
 		if err := e.commit(ctx, func(r *state.Records) error { return dropRegion(r, ref, trigger) }); err != nil {
 			return false, err

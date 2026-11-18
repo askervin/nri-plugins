@@ -31,8 +31,8 @@ const (
 	// at the start.
 	ReleaseRecovery Release = "recovery"
 	// ReleaseIdle is the release of a region of the driver that no grant
-	// and no cut Prepare holds, at the start or at the next Prepare of the
-	// memdev.
+	// and no cut Prepare holds, at the start, at the next Prepare of the
+	// memdev or when the stale lease binds that held it are gone.
 	ReleaseIdle Release = "idle"
 )
 
@@ -197,19 +197,33 @@ func kindOf(asked state.Asked, shared, established bool) Kind {
 // now: shared as configured (Options.Shared), its region established or
 // new.
 func (e *Engine) kindOf(g *state.Grant) Kind {
-	shared := e.opts.Shared != nil && e.opts.Shared(g.Serial)
-	return kindOf(g.Asked, shared, established(e.records(), g))
+	return kindOf(g.Asked, e.configuredShared(g.Serial), established(e.records(), g.Serial, g.Asked.Kind == state.KindPersistent))
 }
 
-// established tells whether the region of ours of the memdev of the grant g
-// is set up (a ram region also zeroed) or kept by an earlier release, not
-// one that a Prepare made and did not finish setting up.
-func established(r *state.Records, g *state.Grant) bool {
-	if g.Asked.Kind == state.KindPersistent {
-		reg := ownRegion(r, g.Serial, state.RegionPmem)
+// idleKind returns the row of the release policy of the memdev m without
+// grants: the kind of its facts, configured shared now or not (shared),
+// its region established or new.
+func (e *Engine) idleKind(m *state.Memdev, shared bool) Kind {
+	asked := state.Asked{Source: m.Source, Kind: kindOfFacts(m.Facts)}
+	return kindOf(asked, shared, established(e.records(), m.Serial, m.Facts.Persistent))
+}
+
+// configuredShared tells whether the local memdev with the serial is
+// configured shared (Options.Shared).
+func (e *Engine) configuredShared(serial state.Serial) bool {
+	return e.opts.Shared != nil && e.opts.Shared(serial)
+}
+
+// established tells whether the region of ours of the memdev with the
+// serial (persistent: its pmem region) is set up (a ram region also
+// zeroed) or kept by an earlier release, not one that a Prepare made and
+// did not finish setting up.
+func established(r *state.Records, serial state.Serial, persistent bool) bool {
+	if persistent {
+		reg := ownRegion(r, serial, state.RegionPmem)
 		return reg != nil && (reg.State == state.RegionKept || reg.SetUp)
 	}
-	reg := ownRegion(r, g.Serial, state.RegionRam)
+	reg := ownRegion(r, serial, state.RegionRam)
 	return reg != nil && (reg.State == state.RegionKept || (reg.SetUp && reg.Zeroed))
 }
 

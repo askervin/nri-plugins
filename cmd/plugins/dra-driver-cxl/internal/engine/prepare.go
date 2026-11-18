@@ -131,8 +131,7 @@ func (e *Engine) releaseIdleLeftover(ctx context.Context, req *GrantRequest) err
 		return nil
 	}
 	idle := *m
-	region, _ := e.localRegionNames(&idle)
-	return e.releaseIdleQueued(ctx, &idle, InOrderIdle, region, state.TriggerPrepare)
+	return e.releaseIdleQueued(ctx, &idle, state.TriggerPrepare)
 }
 
 // journal commits the intent of the grant (REQUESTED -> JOURNALED), with

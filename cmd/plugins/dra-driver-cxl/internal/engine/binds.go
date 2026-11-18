@@ -453,10 +453,9 @@ func (e *Engine) releaseAfterStale(ctx context.Context, serial state.Serial, tri
 	}
 	switch {
 	case len(refs) == 0 && source == state.SourcePool:
-		errs = append(errs, e.releaseIdle(ctx, *m, call))
+		errs = append(errs, e.releaseIdle(ctx, m, e.idleKind(m, false), call.holderDeadline(""), trigger))
 	case len(refs) == 0 && m.Facts.Persistent:
-		region, _ := e.localRegionNames(m)
-		errs = append(errs, e.releaseIdleQueued(ctx, m, InOrderIdle, region, trigger))
+		errs = append(errs, e.releaseIdleQueued(ctx, m, trigger))
 	}
 	e.logAfterStale(source, serial, errs)
 	if err := e.commit(ctx, func(r *state.Records) error {
@@ -505,32 +504,6 @@ func (e *Engine) logAfterStale(source state.Source, serial state.Serial, errs []
 	if len(failed) > 0 {
 		e.errorf(source, "releasing serial %s after its stale lease bind: %v", serialText(serial), errors.Join(failed...))
 	}
-}
-
-// releaseIdle releases a pool memdev without grants after its stale lease
-// binds are gone: the holder wait of its block device, its regions,
-// disabled.
-func (e *Engine) releaseIdle(ctx context.Context, m state.Memdev, call *releaseCall) error {
-	memdev, err := e.k.FindMemdev(uint64(m.Serial))
-	if errors.Is(err, kernel.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return &releaseError{serial: m.Serial, err: err}
-	}
-	if dev := e.currentBlockDevice(m.Serial); dev != "" {
-		if err := e.waitNoHolder(ctx, m.Source, m.Serial, dev, call.holderDeadline("")); err != nil {
-			return &releaseError{serial: m.Serial, held: true, err: err}
-		}
-	}
-	g := &state.Grant{Serial: m.Serial, Asked: state.Asked{Source: m.Source, Kind: state.KindPersistent}}
-	if _, err := e.releaseRegions(ctx, g, memdev, Destroy, false, call.trigger); err != nil {
-		return &releaseError{serial: m.Serial, err: err}
-	}
-	if err := e.disableMemdev(ctx, m.Source, m.Serial, memdev); err != nil {
-		return &releaseError{serial: m.Serial, err: err}
-	}
-	return nil
 }
 
 // forgetStale removes the stale lease binds gone of the memdev with the

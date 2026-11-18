@@ -294,8 +294,8 @@ func (e *localKindError) Error() string {
 // checkLocalKind returns an error when grants of other claims use the local
 // memdev of a request in another way than it asks (sliced, shared,
 // persistent; a persistent memdev shared or not); a memdev that no grant
-// uses but whose region is of another way is released first (a persistent
-// one when nothing holds its block device).
+// uses but whose region is of another way is released first as an idle one
+// (a persistent one when nothing holds its block device).
 func (e *Engine) checkLocalKind(ctx context.Context, req *GrantRequest) error {
 	if req.Asked.Source != state.SourceLocal {
 		return nil
@@ -322,29 +322,8 @@ func (e *Engine) checkLocalKind(ctx context.Context, req *GrantRequest) error {
 		// shared now or not: its region stays
 		return nil
 	}
-	return e.releaseOtherKind(ctx, m, memdev)
-}
-
-// releaseOtherKind releases the regions of a local memdev without grants
-// that is used in another way now, and drops its record: a persistent one
-// when nothing holds its block device.
-func (e *Engine) releaseOtherKind(ctx context.Context, m *state.Memdev, memdev string) error {
-	if dev := e.currentBlockDevice(m.Serial); m.Facts.Persistent && dev != "" {
-		if err := e.waitNoHolder(ctx, m.Source, m.Serial, dev, time.Now()); err != nil {
-			return &releaseError{serial: m.Serial, held: true, err: err}
-		}
-	}
-	serial := m.Serial
-	g := &state.Grant{Serial: m.Serial, Asked: state.Asked{Source: m.Source, Kind: kindOfFacts(m.Facts)}}
-	if _, err := e.releaseRegions(ctx, g, memdev, Destroy, false, state.TriggerPrepare); err != nil {
-		return err
-	}
-	return e.commit(ctx, func(r *state.Records) error {
-		if m := r.Memdev(serial); m != nil && unused(m) {
-			return dropMemdev(r, serial, state.TriggerPrepare)
-		}
-		return nil
-	})
+	// the request tells whether the memdev is configured shared now
+	return e.releaseIdle(ctx, m, e.idleKind(m, shared), time.Now(), state.TriggerPrepare)
 }
 
 // kindConflict returns how the grants of a memdev with the facts use it

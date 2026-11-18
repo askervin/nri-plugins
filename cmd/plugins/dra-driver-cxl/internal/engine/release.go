@@ -585,7 +585,11 @@ func (e *Engine) releaseMemdev(ctx context.Context, g *state.Grant, call *releas
 			return false, &releaseError{serial: serial, held: true, err: err}
 		}
 	}
-	kept, err := e.releaseRegions(ctx, g, memdev, decision, forClaim, trigger)
+	claim := ""
+	if forClaim {
+		claim = g.Ref.Claim
+	}
+	kept, err := e.releaseRegions(ctx, serial, memdev, decision, claim, trigger)
 	if err == nil && !kept && source == state.SourcePool {
 		err = e.disableMemdev(ctx, source, serial, memdev)
 	}
@@ -602,6 +606,47 @@ func (e *Engine) releaseMemdev(ctx context.Context, g *state.Grant, call *releas
 		}
 	}
 	return kept, nil
+}
+
+// releaseIdle releases what the memdev m without grants has, its queue
+// held, as the release policy decides for an idle memdev of the kind: the
+// holder wait of its block device until holderDeadline, its regions of
+// ours, a pool memdev disabled; its record goes when nothing is left of
+// it. A memdev that is gone has nothing to release.
+func (e *Engine) releaseIdle(ctx context.Context, m *state.Memdev, kind Kind, holderDeadline time.Time, trigger state.Trigger) error {
+	source, serial := m.Source, m.Serial
+	decision := Policy(ReleaseIdle, kind, nil)
+	if decision.keeps() {
+		return nil
+	}
+	memdev, err := e.k.FindMemdev(uint64(serial))
+	if errors.Is(err, kernel.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return &releaseError{serial: serial, err: err}
+	}
+	if dev := e.currentBlockDevice(serial); dev != "" {
+		if err := e.waitNoHolder(ctx, source, serial, dev, holderDeadline); err != nil {
+			return &releaseError{serial: serial, held: true, err: err}
+		}
+	}
+	_, err = e.releaseRegions(ctx, serial, memdev, decision, "", trigger)
+	if err == nil && source == state.SourcePool {
+		err = e.disableMemdev(ctx, source, serial, memdev)
+	}
+	if err == nil {
+		err = e.commit(ctx, func(r *state.Records) error {
+			if m := r.Memdev(serial); m != nil && unused(m) {
+				return dropMemdev(r, serial, trigger)
+			}
+			return nil
+		})
+	}
+	if err != nil {
+		return &releaseError{serial: serial, err: err}
+	}
+	return nil
 }
 
 // releaseGone releases what is left of a memdev that is gone: its regions

@@ -16,7 +16,7 @@ package engine
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"path/filepath"
 	"slices"
 	"time"
@@ -131,7 +131,7 @@ func (e *Engine) recoverLocal(ctx context.Context) {
 		case m.Facts.Shared:
 			err = e.recoverShared(ctx, &m)
 		case len(m.Grants) == 0:
-			err = e.releaseIdleLocal(ctx, &m, Destroy, "")
+			err = e.releaseIdleLocal(ctx, &m)
 		}
 		if err != nil {
 			klog.Errorf("local: %v", err)
@@ -151,8 +151,9 @@ func (e *Engine) localRegionNames(m *state.Memdev) (string, string) {
 	return "", ""
 }
 
-// recoverShared keeps the region of a shared local memdev while it is
-// configured shared, or while claims use it, and releases it otherwise.
+// recoverShared keeps the region of a shared local memdev while claims use
+// it, else as the release policy decides for an idle memdev (kept while it
+// is configured shared).
 func (e *Engine) recoverShared(ctx context.Context, m *state.Memdev) error {
 	region, dax := e.localRegionNames(m)
 	if region == "" {
@@ -163,67 +164,55 @@ func (e *Engine) recoverShared(ctx context.Context, m *state.Memdev) error {
 	if claims == nil {
 		claims = []string{}
 	}
+	shared := e.configuredShared(m.Serial)
 	switch {
-	case e.opts.Shared != nil && e.opts.Shared(m.Serial):
+	case len(claims) == 0 && !Policy(ReleaseIdle, e.idleKind(m, shared), nil).keeps():
+		klog.Infof("local: memdev %s (serial %s): not configured shared any more, releasing its region", memdev, s)
+		return e.releaseIdleLocal(ctx, m)
+	case shared:
 		klog.Infof("local: memdev %s (serial %s): keeping shared %s and %s, claims %v", memdev, s, region, dax, claims)
-	case len(claims) > 0:
+	default:
 		klog.Warningf("local: memdev %s (serial %s): not configured shared any more: keeping %s for claims %v, not publishing the memdev until they are gone",
 			memdev, s, region, claims)
-	default:
-		klog.Infof("local: memdev %s (serial %s): not configured shared any more, releasing its region", memdev, s)
-		return e.releaseIdleLocal(ctx, m, Destroy, "")
 	}
 	return nil
 }
 
 // recoverPersistent keeps the region of a persistent local memdev that
-// claims use, and releases one without claims in order when nothing holds
-// its block device now (an idle memdev keeps its region while regions of
-// other memdevs lie above it).
+// claims use, and releases one without claims as an idle memdev (in order:
+// it keeps its region while regions of other memdevs lie above it).
 func (e *Engine) recoverPersistent(ctx context.Context, m *state.Memdev) error {
-	region, _ := e.localRegionNames(m)
 	if len(m.Grants) > 0 {
+		region, _ := e.localRegionNames(m)
 		klog.Infof("local: memdev %s (serial %s): keeping persistent %s, claims %v", e.memdevName(m.Serial), serialText(m.Serial), region, otherClaims(m, ""))
 		return nil
 	}
-	return e.releaseIdleLocal(ctx, m, InOrderIdle, region)
+	return e.releaseIdleLocal(ctx, m)
 }
 
-// releaseIdleLocal releases the regions of a local memdev without grants
-// in its queue by decision, and drops its record when nothing is left of
-// it. A persistent one is released only when nothing holds its block
-// device now (region names its region for the log line).
-func (e *Engine) releaseIdleLocal(ctx context.Context, m *state.Memdev, decision Decision, region string) error {
+// releaseIdleLocal is releaseIdleQueued of the recovery at the start: it
+// takes the queue of the memdev first.
+func (e *Engine) releaseIdleLocal(ctx context.Context, m *state.Memdev) error {
 	leave, err := e.acquire(ctx, m.Serial)
 	if err != nil {
 		return err
 	}
 	defer leave()
-	return e.releaseIdleQueued(ctx, m, decision, region, state.TriggerRecover)
+	return e.releaseIdleQueued(ctx, m, state.TriggerRecover)
 }
 
-// releaseIdleQueued is releaseIdleLocal with the queue of the memdev held.
-func (e *Engine) releaseIdleQueued(ctx context.Context, m *state.Memdev, decision Decision, region string, trigger state.Trigger) error {
-	memdev, err := e.k.FindMemdev(uint64(m.Serial))
-	if err != nil {
-		return err
-	}
-	if dev := e.currentBlockDevice(m.Serial); m.Facts.Persistent && dev != "" {
-		if err := e.waitNoHolder(ctx, m.Source, m.Serial, dev, time.Now()); err != nil {
-			klog.Warningf("local: memdev %s (serial %s): keeping %s of the idle persistent device: %v", memdev, serialText(m.Serial), region, err)
-			return nil
-		}
-	}
-	g := &state.Grant{Serial: m.Serial, Asked: state.Asked{Source: m.Source, Kind: kindOfFacts(m.Facts)}}
-	if _, err := e.releaseRegions(ctx, g, memdev, decision, false, trigger); err != nil {
-		return fmt.Errorf("memdev %s (serial %s): releasing its region: %w", memdev, serialText(m.Serial), err)
-	}
-	return e.commit(ctx, func(r *state.Records) error {
-		if m := r.Memdev(m.Serial); m != nil && unused(m) {
-			return dropMemdev(r, m.Serial, trigger)
-		}
+// releaseIdleQueued releases a local memdev without grants (releaseIdle),
+// its queue held, only when nothing holds its block device now: a held one
+// keeps its region, with a warning.
+func (e *Engine) releaseIdleQueued(ctx context.Context, m *state.Memdev, trigger state.Trigger) error {
+	err := e.releaseIdle(ctx, m, e.idleKind(m, e.configuredShared(m.Serial)), time.Now(), trigger)
+	var re *releaseError
+	if errors.As(err, &re) && re.held {
+		region, _ := e.localRegionNames(m)
+		klog.Warningf("local: memdev %s (serial %s): keeping %s of the idle persistent device: %v", e.memdevName(m.Serial), serialText(m.Serial), region, re.err)
 		return nil
-	})
+	}
+	return err
 }
 
 // ForgetLocal forgets the records of the local memdevs with the serials

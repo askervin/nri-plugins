@@ -540,7 +540,7 @@ Releases:
 - `unprepare`: The Unprepare of the last grant of the memdev.
 - `rollback`: The rollback of a Prepare that failed.
 - `recovery`: The release of a Prepare that a process stop cut, at the start.
-- `idle`: The release of a region of the driver that no grant and no cut Prepare holds, at the start or at the next Prepare of the memdev.
+- `idle`: The release of a region of the driver that no grant and no cut Prepare holds, at the start, at the next Prepare of the memdev or when the stale lease binds that held it are gone.
 
 Decisions:
 
