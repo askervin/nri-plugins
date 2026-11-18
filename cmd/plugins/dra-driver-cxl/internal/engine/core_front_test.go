@@ -129,7 +129,7 @@ func (fe *frontEnd) Started(st *store.Store, e *engine.Engine, rec *engine.Recov
 	if err != nil {
 		return err
 	}
-	cfg := dra.PublishConfig{ManageMemdevs: true, SharedDevices: []string{api.FormatSerial(frontSerialS)}}
+	cfg := dra.PublishConfig{ManageMemdevs: true, SharedDevices: frontShared()}
 	pub, err := dra.NewPublisher(dra.PublishOptions{Config: cfg, NodeName: frontNode, Scan: fe.scan, Store: st, Probes: e.Probes,
 		BlockSize: fe.f.Kernel().BlockSize})
 	if err != nil {
@@ -159,20 +159,27 @@ func (fe *frontEnd) Started(st *store.Store, e *engine.Engine, rec *engine.Recov
 	return pub.ScanWith(ctx, cfg, nil)
 }
 
-// frontSerialS is the serial of the local memdev that the core model
-// configures shared (engine's serialS).
-const frontSerialS = 0x51
+// frontShared returns the local memdevs that the core model configures
+// shared, as the configuration lists them.
+func frontShared() []string {
+	var shared []string
+	for _, m := range engine.CoreMemdevs() {
+		if m.Source == state.SourceLocal && m.Kind == state.KindShared {
+			shared = append(shared, api.FormatSerial(m.Spec.Serial))
+		}
+	}
+	return shared
+}
 
-// scan returns the local memdevs of the node as a scan of the publisher
-// finds them: the sliced, the shared and the persistent one, ready.
+// scan returns the local memdevs of the core model as a scan of the
+// publisher finds them, ready.
 func (fe *frontEnd) scan(context.Context) (*kernel.Snapshot, error) {
 	snap := &kernel.Snapshot{}
-	for _, m := range []struct {
-		serial    uint64
-		ram, pmem uint64
-	}{{0x11, 1 << 30, 0}, {frontSerialS, 1 << 30, 0}, {0x91, 0, 1 << 30}} {
-		snap.Memdevs = append(snap.Memdevs, kernel.MemdevInfo{Name: fe.f.Memdev(m.serial), Serial: m.serial, State: kernel.MemdevReady,
-			RamSize: m.ram, PmemSize: m.pmem})
+	for _, m := range engine.CoreMemdevs() {
+		if m.Source == state.SourceLocal {
+			snap.Memdevs = append(snap.Memdevs, kernel.MemdevInfo{Name: fe.f.Memdev(m.Spec.Serial), Serial: m.Spec.Serial,
+				State: kernel.MemdevReady, RamSize: m.Spec.Ram, PmemSize: m.Spec.Pmem})
+		}
 	}
 	return snap, nil
 }

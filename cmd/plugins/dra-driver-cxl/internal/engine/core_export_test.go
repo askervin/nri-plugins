@@ -51,6 +51,23 @@ type CoreSlot struct {
 	Lease    bool
 }
 
+// CoreMemdev is a memdev of the node of the core model and the row of the
+// release policy of its claims.
+type CoreMemdev struct {
+	Spec   fake.MemdevSpec
+	Source state.Source
+	Kind   state.GrantKind
+}
+
+// CoreMemdevs returns the memdevs of the node of the core model.
+func CoreMemdevs() []CoreMemdev {
+	out := make([]CoreMemdev, 0, len(coreMemdevs))
+	for _, d := range coreMemdevs {
+		out = append(out, CoreMemdev{Spec: d.spec, Source: d.source, Kind: d.kind})
+	}
+	return out
+}
+
 // coreSlotOf returns the slot i as a front-end sees it.
 func coreSlotOf(i int) CoreSlot {
 	sl := &coreSlots[i]
