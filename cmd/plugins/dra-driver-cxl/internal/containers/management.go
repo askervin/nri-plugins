@@ -218,7 +218,7 @@ func (p *Plugin) defaultManagement() Management {
 //   - hasResults: the container uses allocation results
 func logDecision(ctrName string, d *decision, hasResults bool) {
 	klog.V(3).Infof("NRI CreateContainer: ctr=%s: memory %s (steering %s, fencing %s)",
-		ctrName, d.management.text(), d.eff.PolicyText(), fencingText(d.eff))
+		ctrName, d.management.text(), d.eff.PolicyText(), d.eff.FencingText())
 	switch {
 	case d.management == ManagementSteered && d.plan != nil:
 		klog.V(5).Infof("NRI CreateContainer: ctr=%s: prepared memory steering (order=%s, dramNodes=%v, cxlNodes=%v, %s)",
@@ -244,19 +244,6 @@ func (m Management) text() string {
 		return "none"
 	}
 	return string(m)
-}
-
-// fencingText returns the effective fencing and its origin, such as
-// "allowed-mems (default)" or "none (node default)".
-func fencingText(eff *config.Effective) string {
-	switch origin := eff.Origins[config.FieldFencing]; origin {
-	case config.OriginDefault, "":
-		return eff.Container.Fencing + " (" + config.OriginDefault + ")"
-	case config.OriginNodeDefault:
-		return eff.Container.Fencing + " (" + config.OriginNodeDefault + ")"
-	default:
-		return eff.Container.Fencing + " from " + origin
-	}
 }
 
 // claimedNodes returns the NUMA nodes of the CXL numa memory of the

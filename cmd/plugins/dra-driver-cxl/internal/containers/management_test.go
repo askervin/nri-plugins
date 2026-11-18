@@ -282,8 +282,8 @@ func TestManage(t *testing.T) {
 		if tc.text != "" && d.eff.PolicyText() != tc.text {
 			t.Errorf("%s: steering %q, expected %q", tc.name, d.eff.PolicyText(), tc.text)
 		}
-		if tc.fencing != "" && fencingText(d.eff) != tc.fencing {
-			t.Errorf("%s: fencing %q, expected %q", tc.name, fencingText(d.eff), tc.fencing)
+		if tc.fencing != "" && d.eff.FencingText() != tc.fencing {
+			t.Errorf("%s: fencing %q, expected %q", tc.name, d.eff.FencingText(), tc.fencing)
 		}
 	}
 
