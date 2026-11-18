@@ -17,6 +17,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 
@@ -228,7 +229,7 @@ func unknownTransitions(prev, cur *kernel.Snapshot) []string {
 		s[1] = m.State
 		memdevs[m.Serial] = s
 	}
-	for _, serial := range sortedKeys(memdevs) {
+	for _, serial := range slices.Sorted(maps.Keys(memdevs)) {
 		s := memdevs[serial]
 		add(fmt.Sprintf("memdev 0x%x", serial), kernel.MemdevTransitions.Check(s[0], s[1], fsm.AnyTrigger))
 	}
@@ -264,7 +265,7 @@ func diff[T any, S comparable](out *[]string, kind string, table fsm.Table[S], a
 		st[1] = s
 		states[name] = st
 	}
-	for _, name := range sortedKeys(states) {
+	for _, name := range slices.Sorted(maps.Keys(states)) {
 		st := states[name]
 		if err := table.Check(st[0], st[1], fsm.AnyTrigger); err != nil {
 			*out = append(*out, kind+" "+name+": "+err.Error())
@@ -279,16 +280,6 @@ func namespaces(s *kernel.Snapshot) []kernel.Namespace {
 		out = append(out, nd.Namespaces...)
 	}
 	return out
-}
-
-// sortedKeys returns the keys of a map in order.
-func sortedKeys[K interface{ ~string | ~uint64 }, V any](m map[K]V) []K {
-	keys := make([]K, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	return keys
 }
 
 // syncForeignRegions records the regions names that no record names

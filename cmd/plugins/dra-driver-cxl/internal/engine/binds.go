@@ -28,6 +28,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -307,7 +308,7 @@ func (e *Engine) unbindStale(source state.Source, target string) error {
 // serial whose unmount failed, once, in a lazy commit; a memdev without a
 // record keeps nothing.
 func (e *Engine) addStale(serial state.Serial, path string, kind state.StaleKind) {
-	err := e.commitLazy(context.Background(), func(r *state.Records) error {
+	err := e.commitAs(context.Background(), store.Lazy, func(r *state.Records) error {
 		if m := r.Memdev(serial); m != nil {
 			m.Stale = addRef(m.Stale, state.StalePath{Path: path, Kind: kind})
 		}

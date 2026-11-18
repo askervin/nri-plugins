@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -593,7 +594,7 @@ func (e *Engine) bindOrigin(mounts []kernel.MountInfo, source string) (state.Ser
 // another memdev of the grants above its regions, the lowest serial of
 // those (or of all, when every one has).
 func (e *Engine) topMost(bySerial map[state.Serial][]state.GrantRef) state.Serial {
-	serials := sortedKeys(bySerial)
+	serials := slices.Sorted(maps.Keys(bySerial))
 	for _, serial := range serials {
 		memdev, err := e.k.FindMemdev(uint64(serial))
 		if err != nil {
@@ -748,7 +749,7 @@ func (e *Engine) listedMounts() (mounts, binds map[string]bool) {
 // Errors are logged.
 func (e *Engine) sweepNodeMounts() {
 	listed, _ := e.listedMounts()
-	for _, source := range sortedKeys(e.opts.MountsDirs) {
+	for _, source := range slices.Sorted(maps.Keys(e.opts.MountsDirs)) {
 		if !e.owns(source) {
 			continue
 		}

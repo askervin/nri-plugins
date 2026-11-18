@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 
 	"k8s.io/klog/v2"
@@ -50,7 +51,7 @@ func (e *Engine) restoreGrants(ctx context.Context, why map[state.GrantRef]error
 			serials[g.Serial] = true
 		}
 	}
-	for _, serial := range sortedKeys(serials) {
+	for _, serial := range slices.Sorted(maps.Keys(serials)) {
 		if err := e.restoreGrantsOf(ctx, serial, why); err != nil {
 			return err
 		}

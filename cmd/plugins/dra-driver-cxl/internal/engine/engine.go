@@ -358,20 +358,14 @@ func (e *Engine) records() *state.Records {
 // commit applies fn to the records in one durable commit. The rollback
 // timeout, not ctx, bounds its wait in the queue of the store.
 func (e *Engine) commit(ctx context.Context, fn func(r *state.Records) error) error {
-	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), e.opts.Timeouts.Rollback)
-	defer cancel()
-	err := e.store.Commit(cctx, store.Durable, func(doc *store.Document) error { return fn(&doc.Records) })
-	if err == nil && e.afterCommit != nil {
-		e.afterCommit()
-	}
-	return err
+	return e.commitAs(ctx, store.Durable, fn)
 }
 
-// commitLazy applies fn to the records in a lazy commit.
-func (e *Engine) commitLazy(ctx context.Context, fn func(r *state.Records) error) error {
-	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), e.opts.Timeouts.Rollback)
+// commitAs is commit with the durability d.
+func (e *Engine) commitAs(ctx context.Context, d store.Durability, fn func(r *state.Records) error) error {
+	cctx, cancel := e.rollbackContext(ctx)
 	defer cancel()
-	err := e.store.Commit(cctx, store.Lazy, func(doc *store.Document) error { return fn(&doc.Records) })
+	err := e.store.Commit(cctx, d, func(doc *store.Document) error { return fn(&doc.Records) })
 	if err == nil && e.afterCommit != nil {
 		e.afterCommit()
 	}
@@ -408,32 +402,18 @@ func serialText(serial state.Serial) string {
 
 // removeRecord removes the records of a section for which drop is true.
 func removeRecord[T any](records *[]T, drop func(*T) bool) {
-	out := (*records)[:0]
-	for i := range *records {
-		if !drop(&(*records)[i]) {
-			out = append(out, (*records)[i])
-		}
-	}
-	*records = out
+	*records = slices.DeleteFunc(*records, func(r T) bool { return drop(&r) })
 }
 
-// removeRef returns refs without ref.
+// removeRef returns a copy of refs without ref.
 func removeRef[T comparable](refs []T, ref T) []T {
-	out := refs[:0:0]
-	for _, r := range refs {
-		if r != ref {
-			out = append(out, r)
-		}
-	}
-	return out
+	return slices.DeleteFunc(slices.Clone(refs), func(r T) bool { return r == ref })
 }
 
 // addRef returns refs with ref, once.
 func addRef[T comparable](refs []T, ref T) []T {
-	for _, r := range refs {
-		if r == ref {
-			return refs
-		}
+	if slices.Contains(refs, ref) {
+		return refs
 	}
 	return append(refs, ref)
 }
