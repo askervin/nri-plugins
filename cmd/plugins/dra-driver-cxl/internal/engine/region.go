@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"k8s.io/klog/v2"
@@ -46,282 +47,6 @@ func (e *foreignRegionError) Error() string {
 // Is tells whether target is ErrForeignRegion.
 func (e *foreignRegionError) Is(target error) bool {
 	return target == ErrForeignRegion
-}
-
-// GrantError is the error of a grant that could not be realised.
-type GrantError struct {
-	Ref state.GrantRef
-	Err error
-}
-
-// Error returns the error of the grant.
-func (e *GrantError) Error() string {
-	return e.Err.Error()
-}
-
-// Unwrap returns the error of the grant.
-func (e *GrantError) Unwrap() error {
-	return e.Err
-}
-
-// keptOnlineError is the error of memory blocks that keep coming online
-// after offlining them.
-type keptOnlineError struct {
-	blocks []int
-}
-
-// Error returns the error in words.
-func (e *keptOnlineError) Error() string {
-	return fmt.Sprintf("memory blocks %v keep coming online after offlining them: is a udev rule onlining hot-added memory?", e.blocks)
-}
-
-// Is tells whether target is kernel.ErrBusyOnline.
-func (e *keptOnlineError) Is(target error) bool {
-	return target == kernel.ErrBusyOnline
-}
-
-// PrepareGrants realises the grants of reqs in their order and returns them
-// as recorded, REALISED. A grant that is REALISED already and verifies is
-// reused; one that a cut or failed Prepare left is realised further. On an
-// error the grants of the claims of reqs that this or an earlier Prepare
-// made are released as a rollback (Policy ReleaseRollback), on a context
-// that the end of ctx does not end; what the rollback keeps stays recorded
-// and is returned with the error.
-func (e *Engine) PrepareGrants(ctx context.Context, reqs []GrantRequest) ([]state.Grant, error) {
-	ctx, end := e.Request(ctx)
-	defer end()
-	refs := make([]state.GrantRef, 0, len(reqs))
-	for i := range reqs {
-		if !e.owns(reqs[i].Asked.Source) {
-			return nil, fmt.Errorf("engine: grant %s: the records of source %q are not the engine's", reqs[i].Ref, reqs[i].Asked.Source)
-		}
-	}
-	e.setDevices(reqs)
-	for i := range reqs {
-		refs = append(refs, reqs[i].Ref)
-		if err := e.prepareGrant(ctx, &reqs[i]); err != nil {
-			rctx, cancel := e.rollbackContext(ctx)
-			kept := e.rollback(rctx, reqs, reqs[i].Ref, err)
-			e.verify(rctx, nil, state.TriggerPrepare)
-			cancel()
-			return kept, &GrantError{Ref: reqs[i].Ref, Err: err}
-		}
-	}
-	e.verify(ctx, refs, state.TriggerPrepare)
-	return e.grantsOf(refs), nil
-}
-
-// grantsOf returns the records of the grants refs that the store has.
-func (e *Engine) grantsOf(refs []state.GrantRef) []state.Grant {
-	r := e.records()
-	var out []state.Grant
-	for _, ref := range refs {
-		if g := r.Grant(ref); g != nil {
-			out = append(out, g.Clone())
-		}
-	}
-	return out
-}
-
-// prepareGrant realises one grant in the queue of its memdev.
-func (e *Engine) prepareGrant(ctx context.Context, req *GrantRequest) error {
-	leave, err := e.acquire(ctx, req.Serial)
-	if err != nil {
-		return err
-	}
-	defer leave()
-	if g := e.records().Grant(req.Ref); g != nil {
-		switch g.State {
-		case state.GrantRealised:
-			if err := e.verifyGrant(g); err == nil {
-				klog.V(3).Infof("engine: grant %s is realised and verifies: reused", req.Ref)
-				return nil
-			}
-		case state.GrantUnrestored:
-			return e.restoreGrant(ctx, req)
-		case state.GrantReleasing:
-			// a leftover of a failed release, on the context of a rollback
-			rctx, cancel := e.rollbackContext(ctx)
-			err := e.releaseGrant(rctx, req.Ref, newReleaseCall(e, ReleaseRollback, []state.GrantRef{req.Ref}))
-			cancel()
-			if err != nil {
-				return err
-			}
-		}
-	}
-	if err := e.checkLocalKind(ctx, req); err != nil {
-		return err
-	}
-	if err := e.releaseIdleLeftover(ctx, req); err != nil {
-		return err
-	}
-	if err := e.journal(ctx, req); err != nil {
-		return err
-	}
-	return e.realise(ctx, req)
-}
-
-// releaseIdleLeftover releases the region of a local persistent memdev that
-// was kept idle when the next Prepare of the memdev finds no region above it
-// any more (the release policy's idle leftover), the memdev's queue held:
-// the Prepare makes it anew.
-func (e *Engine) releaseIdleLeftover(ctx context.Context, req *GrantRequest) error {
-	m := e.records().Memdev(req.Serial)
-	if req.Asked.Source != state.SourceLocal || req.Asked.Kind != state.KindPersistent || m == nil || m.State != state.MemdevIdleKept {
-		return nil
-	}
-	idle := *m
-	region, _ := e.localRegionNames(&idle)
-	return e.releaseIdleQueued(ctx, &idle, InOrderIdle, region, state.TriggerPrepare)
-}
-
-// journal commits the intent of the grant (REQUESTED -> JOURNALED), with
-// its memdev record, before any kernel object of it is touched. A grant
-// that is JOURNALED or REALISING already keeps its intent. The local guard
-// refuses a local grant on a serial of the pool.
-func (e *Engine) journal(ctx context.Context, req *GrantRequest) error {
-	if req.Asked.Source == state.SourceLocal {
-		if err := e.localGuard(ctx, req.Serial); err != nil {
-			klog.Errorf("local: refusing memdev serial %s: %v", serialText(req.Serial), err)
-			return err
-		}
-	}
-	return e.commit(ctx, func(r *state.Records) error {
-		if r.Region(state.RegionRef(req.BindTarget)) != nil {
-			return fmt.Errorf("grant %s: %s is a region", req.Ref, req.BindTarget)
-		}
-		g := r.Grant(req.Ref)
-		if g == nil {
-			r.Grants = append(r.Grants, state.Grant{Ref: req.Ref, Serial: req.Serial, Asked: req.Asked, State: state.GrantRequested})
-			g = &r.Grants[len(r.Grants)-1]
-		}
-		switch g.State {
-		case state.GrantRequested:
-			if err := state.Apply(&state.GrantTable, &g.State, state.GrantJournaled, state.TriggerPrepare); err != nil {
-				return err
-			}
-		case state.GrantJournaled, state.GrantRealising, state.GrantRealised:
-		default:
-			return fmt.Errorf("grant %s is %s", req.Ref, g.State)
-		}
-		g.Asked = req.Asked
-		g.Intent.BindTarget = req.BindTarget
-		if req.Lend != nil {
-			lend := *req.Lend
-			g.Intent.Lend = &lend
-		}
-		return journalMemdev(r, req)
-	})
-}
-
-// journalMemdev adds the grant to the record of its memdev, made ACTIVE.
-func journalMemdev(r *state.Records, req *GrantRequest) error {
-	m := r.Memdev(req.Serial)
-	if m == nil {
-		r.Memdevs = append(r.Memdevs, state.Memdev{Serial: req.Serial, Source: req.Asked.Source, State: state.MemdevUnused})
-		m = &r.Memdevs[len(r.Memdevs)-1]
-	}
-	if m.Source != req.Asked.Source {
-		return fmt.Errorf("memdev %s is a %s memdev, not %s", req.Serial, m.Source, req.Asked.Source)
-	}
-	switch m.State {
-	case state.MemdevUnused, state.MemdevIdleKept:
-		if err := state.Apply(&state.MemdevTable, &m.State, state.MemdevActive, state.TriggerPrepare); err != nil {
-			return err
-		}
-	case state.MemdevActive:
-		if !m.HasGrant(req.Ref) {
-			if err := state.Apply(&state.MemdevTable, &m.State, state.MemdevActive, state.TriggerPrepare); err != nil {
-				return err
-			}
-		}
-	default:
-		return fmt.Errorf("memdev %s is %s", req.Serial, m.State)
-	}
-	m.Facts = mergeFacts(m.Facts, req.Facts)
-	m.Grants = addRef(m.Grants, req.Ref)
-	return nil
-}
-
-// mergeFacts returns the facts of a memdev record with those that a
-// request knows.
-func mergeFacts(old, req state.MemdevFacts) state.MemdevFacts {
-	out := req
-	if out.NumaAffinity == nil {
-		out.NumaAffinity = old.NumaAffinity
-	}
-	return out
-}
-
-// localGuard returns an error if a local grant on the serial must not be
-// made: the provenance of the serial is POOL or HELD, a pool grant uses
-// it, or the front-end's guard refuses it.
-func (e *Engine) localGuard(ctx context.Context, serial state.Serial) error {
-	r := e.records()
-	if p := r.ProvenanceOf(serial); p != nil && (p.State == state.ProvenancePool || p.State == state.ProvenanceHeld) {
-		return fmt.Errorf("memdev %s is a pool device (%s): not used as a local memdev", serialText(serial), p.State)
-	}
-	if m := r.Memdev(serial); m != nil && m.Source == state.SourcePool {
-		return fmt.Errorf("memdev %s is a pool device: not used as a local memdev", serialText(serial))
-	}
-	if e.opts.LocalGuard != nil {
-		return e.opts.LocalGuard(ctx, serial)
-	}
-	return nil
-}
-
-// realise makes the kernel objects of a JOURNALED or REALISING grant and
-// records them, the grant REALISED at the end.
-func (e *Engine) realise(ctx context.Context, req *GrantRequest) error {
-	memdev, err := e.memdevOf(ctx, req)
-	if err != nil {
-		return err
-	}
-	if err := e.commit(ctx, func(r *state.Records) error {
-		g := r.Grant(req.Ref)
-		if g.State == state.GrantJournaled {
-			if err := state.Apply(&state.GrantTable, &g.State, state.GrantRealising, state.TriggerPrepare); err != nil {
-				return err
-			}
-		}
-		if m := r.Memdev(req.Serial); m != nil {
-			m.Name = memdev
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	switch {
-	case req.Asked.Kind == state.KindPersistent:
-		return e.realisePersistent(ctx, req, memdev)
-	case req.Asked.Source == state.SourcePool:
-		return e.realisePoolRam(ctx, req, memdev)
-	case req.Asked.Kind == state.KindShared:
-		return e.realiseLocalShared(ctx, req, memdev)
-	}
-	return e.realiseLocalParts(ctx, req, memdev)
-}
-
-// memdevOf returns the name of the memdev of a grant. A pool grant waits
-// for its memdev to appear (Timeouts.Memdev), or for the driver of a memdev
-// that is present (Timeouts.ProbeGrace: a disabled memdev is enabled when
-// its region is made); a local memdev must be present.
-func (e *Engine) memdevOf(ctx context.Context, req *GrantRequest) (string, error) {
-	serial := uint64(req.Serial)
-	if req.Asked.Source != state.SourcePool {
-		return e.k.FindMemdev(serial)
-	}
-	if found, err := e.k.FindMemdev(serial); err == nil {
-		wctx, cancel := context.WithTimeout(ctx, e.opts.Timeouts.ProbeGrace)
-		defer cancel()
-		if n, err := e.k.WaitMemdev(wctx, serial, kernel.MemdevBound); err == nil {
-			return n, nil
-		}
-		return found, nil
-	}
-	wctx, cancel := context.WithTimeout(ctx, e.opts.Timeouts.Memdev)
-	defer cancel()
-	return e.k.WaitMemdev(wctx, serial, kernel.MemdevBound)
 }
 
 // ownRegion returns the region of ours of the memdev of the grant that a
@@ -758,6 +483,22 @@ func bindRecord(d *state.DaxDevice, driver string) error {
 	return nil
 }
 
+// keptOnlineError is the error of memory blocks that keep coming online
+// after offlining them.
+type keptOnlineError struct {
+	blocks []int
+}
+
+// Error returns the error in words.
+func (e *keptOnlineError) Error() string {
+	return fmt.Sprintf("memory blocks %v keep coming online after offlining them: is a udev rule onlining hot-added memory?", e.blocks)
+}
+
+// Is tells whether target is kernel.ErrBusyOnline.
+func (e *keptOnlineError) Is(target error) bool {
+	return target == kernel.ErrBusyOnline
+}
+
 // offlineSettled offlines memory blocks under the engine lock and waits,
 // outside it, until they stayed offline for Timeouts.OfflineSettle: a udev
 // rule may online hot-added blocks after they were offlined. Blocks that
@@ -793,66 +534,6 @@ func (e *Engine) fence(ctx context.Context, node int) {
 	}
 }
 
-// realisePoolRam realises a pool grant of volatile memory: the region of
-// the device with its Whole device, kmem with its memory online movable in
-// mode numa (the node fenced first, and again when the node is known only
-// after onlining), device_dax in mode dax (never onlined).
-func (e *Engine) realisePoolRam(ctx context.Context, req *GrantRequest, memdev string) error {
-	region, err := e.ensureRegion(ctx, req, memdev, state.RegionRam, 0)
-	if err != nil {
-		return err
-	}
-	driver := kernel.DriverDeviceDax
-	if req.Asked.Mode == state.ModeNUMA {
-		driver = kernel.DriverKmem
-	}
-	dax, err := e.wholeDevice(ctx, req, region, driver)
-	if err != nil {
-		return err
-	}
-	got := state.Got{Region: state.RegionRef(region), Dax: dax}
-	var dev state.DevNumbers
-	if req.Asked.Mode == state.ModeNUMA {
-		node, err := e.onlineRegion(ctx, req, memdev, region, dax)
-		if err != nil {
-			return err
-		}
-		got.NumaNode = state.NumaNodePtr(node)
-	} else {
-		if d := e.k.DaxDriver(dax); d != kernel.DriverDeviceDax {
-			return fmt.Errorf("%s: %s is bound to %q, not %s", memdev, dax, d, kernel.DriverDeviceDax)
-		}
-		major, minor, err := e.k.DaxDevNumbers(dax)
-		if err != nil {
-			return err
-		}
-		dev = state.DevNumbers{Major: major, Minor: minor}
-	}
-	got.Size = req.Asked.Size
-	return e.realised(ctx, req, got, dev)
-}
-
-// onlineRegion fences the node of the memory of a region of mode numa,
-// onlines its memory blocks movable and returns its node.
-func (e *Engine) onlineRegion(ctx context.Context, req *GrantRequest, memdev, region, dax string) (int, error) {
-	fenced := e.k.TargetNode(dax)
-	e.fence(ctx, fenced)
-	blocks, err := e.k.RegionBlocks(region)
-	if err != nil {
-		return -1, err
-	}
-	if len(blocks) == 0 {
-		return -1, fmt.Errorf("%s: no memory blocks found for %s", memdev, region)
-	}
-	node, err := e.onlineMemory(ctx, region, dax, blocks, fenced, func(node int) {
-		klog.V(3).Infof("%s: %s: NUMA node %d of %s known only after onlining, fencing it late", e.driver(req.Asked.Source), memdev, node, region)
-	})
-	if err == nil && node < 0 {
-		err = fmt.Errorf("%s: cannot find the NUMA node of %s", memdev, region)
-	}
-	return node, err
-}
-
 // onlineMemory onlines the memory blocks of the dax device dax of a region
 // movable, kmem's, and fences its NUMA node again when it is known only
 // after onlining (fenced is the node fenced before, the one that the dax
@@ -885,165 +566,211 @@ func (e *Engine) onlineMemory(ctx context.Context, region, dax string, blocks []
 	})
 }
 
-// realised records what a grant got and the grant REALISED, the grant a
-// user of its dax device and node mount.
-func (e *Engine) realised(ctx context.Context, req *GrantRequest, got state.Got, dev state.DevNumbers) error {
-	return e.commit(ctx, func(r *state.Records) error {
-		g := r.Grant(req.Ref)
-		if g == nil {
-			return fmt.Errorf("grant %s has no record", req.Ref)
+// releaseRegions releases the regions of ours of the memdev of the grant g
+// by decision (Destroy, or InOrder), and tells whether a region was kept for
+// the claim; one kept below newer regions of another memdev is KEPT for the
+// claim (forClaim) or the memdev IDLE_KEPT with it.
+func (e *Engine) releaseRegions(ctx context.Context, g *state.Grant, memdev string, decision Decision, forClaim bool, trigger state.Trigger) (bool, error) {
+	source, serial := g.Asked.Source, g.Serial
+	var regions []state.RegionRef
+	if m := e.records().Memdev(serial); m != nil {
+		regions = slices.Clone(m.Regions)
+	}
+	start := time.Now()
+	for _, ref := range regions {
+		name := string(ref)
+		if _, err := e.k.Region(name); err != nil {
+			if cerr := e.commit(ctx, func(r *state.Records) error { return dropRegion(r, ref, trigger) }); cerr != nil {
+				return false, cerr
+			}
+			continue
 		}
-		bind := g.Got.Bind
-		g.Got = got
-		if got.Bind == nil {
-			g.Got.Bind = bind
-		}
-		if got.Region != "" {
-			if err := setIntentRegion(r, req.Ref, got.Region); err != nil {
+		var rs []string
+		err := e.locked(func() error {
+			if decision.inOrder() {
+				var err error
+				rs, err = e.k.ReleaseRegionInOrder(ctx, memdev, name)
 				return err
 			}
-			reg := r.Region(got.Region)
-			if reg == nil {
-				return fmt.Errorf("region %s has no record", got.Region)
-			}
-			if got.Dax != "" {
-				if err := addDaxUser(reg, got.Dax, req.Ref); err != nil {
-					return err
-				}
-				if !dev.IsZero() {
-					reg.DaxDevice(got.Dax).Dev = dev
-				}
-			}
+			return e.k.ReleaseRegion(ctx, name)
+		})
+		if err != nil {
+			return false, err
 		}
-		if g.State == state.GrantRealised {
-			return nil
+		if len(rs) > 0 {
+			idle := "the idle device"
+			if g.Asked.Kind == state.KindPersistent {
+				idle = "the idle persistent device"
+			}
+			if forClaim {
+				e.warnLocal(source, "memdev %s (serial %s): keeping %s for claims %v, whose Prepare did not finish: %s lie above it, its release would leave a hole in the decoders of their ports; their Unprepare releases it, their Prepare again reuses it",
+					memdev, serialText(serial), name, []string{g.Ref.Claim}, strings.Join(rs, ", "))
+			} else {
+				e.warnLocal(source, "memdev %s (serial %s): keeping %s of %s: %s lie above it, its release would leave a hole in the decoders of their ports",
+					memdev, serialText(serial), name, idle, strings.Join(rs, ", "))
+			}
+			return forClaim, e.keepMemdev(ctx, serial, trigger, forClaim)
 		}
-		return state.Apply(&state.GrantTable, &g.State, state.GrantRealised, state.TriggerPrepare)
-	})
+		if err := e.commit(ctx, func(r *state.Records) error { return dropRegion(r, ref, trigger) }); err != nil {
+			return false, err
+		}
+		if source != state.SourcePool {
+			// the pool logs the release of its memdev
+			klog.Infof("local: memdev %s (serial %s): released %s in %s", memdev, serialText(serial), name, since(start))
+		}
+	}
+	return false, nil
 }
 
-// addDaxUser adds a grant to the users of a dax device of a region.
-func addDaxUser(reg *state.Region, dax string, ref state.GrantRef) error {
-	d := reg.DaxDevice(dax)
-	if d == nil {
-		return fmt.Errorf("%s has no record of %s", reg.Ref(), dax)
-	}
-	if slices.Contains(d.Users, ref) {
+// disableMemdev disables a pool memdev so that the pool can detach it,
+// unless it has a region that no record of the driver names (never
+// touched; logged).
+func (e *Engine) disableMemdev(ctx context.Context, source state.Source, serial state.Serial, memdev string) error {
+	if rs := e.k.Regions(memdev); len(rs) > 0 {
+		e.warnf(source, "memdev %s (serial %s): not disabling it: it has regions %v that no record of the driver names",
+			memdev, serialText(serial), rs)
 		return nil
 	}
-	if len(d.Users) > 0 && d.State != state.DaxSized {
-		if err := state.Apply(&state.DaxDeviceTable, &d.State, d.State, state.TriggerPrepare); err != nil {
-			return err
-		}
+	if err := e.locked(func() error { return e.k.DisableMemdev(ctx, memdev) }); err != nil {
+		return err
 	}
-	d.Users = append(d.Users, ref)
+	e.logf(source, "released %s (serial %s)", memdev, serialText(serial))
 	return nil
 }
 
-// rollback releases the grants of the claims of reqs that the store has,
-// those of this Prepare and of earlier ones that did not finish (Policy
-// ReleaseRollback), and returns those that it did not release (the
-// front-end logs that it keeps their claim's record). The grants of a
-// claim that is prepared (a Prepare again that failed) stay. Errors are
-// logged.
-func (e *Engine) rollback(ctx context.Context, reqs []GrantRequest, failed state.GrantRef, why error) []state.Grant {
-	r := e.records()
-	var refs []state.GrantRef
-	seen := map[state.GrantRef]bool{}
-	add := func(ref state.GrantRef) {
-		if !seen[ref] && r.Grant(ref) != nil {
-			seen[ref] = true
-			refs = append(refs, ref)
+// hasRegion tells whether the memdev with the serial has a region.
+func (e *Engine) hasRegion(serial state.Serial) bool {
+	memdev, err := e.k.FindMemdev(uint64(serial))
+	return err == nil && len(e.k.Regions(memdev)) > 0
+}
+
+// dropRegion removes a region of ours that is destroyed or gone from the
+// records (the region -> NONE, its dax devices with it) and from its
+// memdevs.
+func dropRegion(r *state.Records, ref state.RegionRef, trigger state.Trigger) error {
+	reg := r.Region(ref)
+	if reg == nil {
+		return nil
+	}
+	if err := state.Apply(&state.RegionTable, &reg.State, state.RegionNone, trigger); err != nil {
+		return err
+	}
+	removeRecord(&r.Regions, func(x *state.Region) bool { return x.Ref() == ref })
+	for i := range r.Memdevs {
+		r.Memdevs[i].Regions = removeRef(r.Memdevs[i].Regions, ref)
+		r.Memdevs[i].Hollow = removeRef(r.Memdevs[i].Hollow, ref)
+	}
+	for i := range r.Grants {
+		if r.Grants[i].Got.Region == ref {
+			r.Grants[i].Got.Region, r.Grants[i].Got.Dax, r.Grants[i].Got.Mount = "", "", ""
 		}
 	}
-	for i := range reqs {
-		p := r.PreparationOf(reqs[i].Ref)
-		if p != nil && p.Prepared() {
-			continue
-		}
-		add(reqs[i].Ref)
-		if p != nil {
-			for _, res := range p.Results {
-				if res.Grant != nil {
-					add(*res.Grant)
-				}
+	return nil
+}
+
+// keepMemdev records the regions of the memdev with the serial kept: KEPT
+// (disabled, not set up) when kept for claims, as they are otherwise, but
+// those that the kernel has disabled (a release that failed after cxl
+// disable-region) KEPT too.
+func (e *Engine) keepMemdev(ctx context.Context, serial state.Serial, trigger state.Trigger, forClaims bool) error {
+	disabled := map[state.RegionRef]bool{}
+	if m := e.records().Memdev(serial); m != nil && !forClaims {
+		for _, ref := range m.Regions {
+			if ri, err := e.k.Region(string(ref)); err == nil && ri.State == kernel.RegionDisabled {
+				disabled[ref] = true
 			}
 		}
 	}
-	if len(refs) == 0 {
-		return nil
+	if !forClaims && len(disabled) == 0 {
+		return e.commit(ctx, func(*state.Records) error { return nil })
 	}
-	source := r.Grant(refs[0]).Asked.Source
-	refs = localOrder(r, refs)
-	e.revokeLends(ctx, refs)
-	e.retryAllStale(ctx, state.TriggerPrepare)
-	call := newReleaseCall(e, ReleaseRollback, refs)
-	call.reasons[failed] = why.Error()
-	for _, group := range e.byMemdev(refs) {
-		if err := e.releaseGroup(ctx, group, call); err != nil {
-			e.errorf(source, "rollback: %v", err)
-		}
-	}
-	return e.grantsOf(refs)
-}
-
-// revokeLends revokes the NUMA nodes that the grants refs lend (Got.Lend,
-// recorded before the lend) through Options.Revoke before their memory goes
-// offline. Errors are logged: the release goes on.
-func (e *Engine) revokeLends(ctx context.Context, refs []state.GrantRef) {
-	if e.opts.Revoke == nil {
-		return
-	}
-	r := e.records()
-	for _, ref := range refs {
-		g := r.Grant(ref)
-		if g == nil || g.Got.Lend == nil || g.Got.Lend.NumaNode == nil {
-			continue
-		}
-		if err := e.opts.Revoke(ctx, ref, *g.Got.Lend); err != nil {
-			e.errorf(g.Asked.Source, "rollback: claim %s: %v", e.claimNameOf(ref), err)
-		}
-	}
-}
-
-// RecordLend records the NUMA node that the realised grant ref of a
-// companion claim lends, before it is lent: the node in the lend of its
-// intent, and that lend as the grant's (Got.Lend), in one durable commit.
-func (e *Engine) RecordLend(ctx context.Context, ref state.GrantRef, node int) error {
 	return e.commit(ctx, func(r *state.Records) error {
-		g := r.Grant(ref)
-		if g == nil || g.Intent.Lend == nil {
-			return fmt.Errorf("grant %s has no lend", ref)
+		m := r.Memdev(serial)
+		if m == nil {
+			return nil
 		}
-		g.Intent.Lend.NumaNode = state.NumaNodePtr(node)
-		lend := *g.Intent.Lend
-		g.Got.Lend = &lend
+		for _, ref := range m.Regions {
+			reg := r.Region(ref)
+			if reg == nil || reg.State != state.RegionOwned || !forClaims && !disabled[ref] {
+				continue
+			}
+			if err := keepRegion(reg, trigger); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 }
 
-// verifyGrant returns an error if what a REALISED grant got is not what
-// the kernel has now: its region, dax device numbers, block device and node
-// mount.
-func (e *Engine) verifyGrant(g *state.Grant) error {
-	if g.Got.Region == "" {
-		return fmt.Errorf("grant %s has no region", g.Ref)
+// keepRegion records an OWNED region KEPT: disabled, to be set up again.
+func keepRegion(reg *state.Region, trigger state.Trigger) error {
+	if err := state.Apply(&state.RegionTable, &reg.State, state.RegionKept, trigger); err != nil {
+		return err
 	}
-	ri, err := e.k.Region(string(g.Got.Region))
-	if err != nil || !slices.Contains(ri.Serials, uint64(g.Serial)) {
-		return fmt.Errorf("grant %s: %s is gone", g.Ref, g.Got.Region)
+	// set up again, a kept region is zeroed again
+	reg.Zeroed = false
+	if reg.SetUp {
+		return state.Apply(&state.RegionSetUpTable, &reg.SetUp, false, trigger)
 	}
-	r := e.records()
-	if dev := r.DaxDevOf(g); g.Got.Dax != "" && !dev.IsZero() {
-		major, minor, err := e.k.DaxDevNumbers(g.Got.Dax)
-		if err != nil || major != dev.Major || minor != dev.Minor {
-			return fmt.Errorf("grant %s: %s is not the dax device %d:%d as prepared", g.Ref, g.Got.Dax, dev.Major, dev.Minor)
+	return nil
+}
+
+// deleteHollow deletes the regions of ours of the memdev with the serial
+// that the kernel left hollow (its memdev removed under them) and whose
+// memory blocks are offline; one that cannot be deleted stays in the
+// memdev's Hollow (logged with the command that deletes it).
+func (e *Engine) deleteHollow(ctx context.Context, serial state.Serial, trigger state.Trigger, why string) error {
+	m := e.records().Memdev(serial)
+	if m == nil {
+		return nil
+	}
+	source := m.Source
+	for _, ref := range append(slices.Clone(m.Regions), m.Hollow...) {
+		name := string(ref)
+		if _, err := e.k.Region(name); err != nil {
+			if err := e.commit(ctx, func(r *state.Records) error { return dropRegion(r, ref, trigger) }); err != nil {
+				return err
+			}
+			continue
+		}
+		if !e.k.HollowRegion(name) {
+			continue
+		}
+		e.warnf(source, "serial %s: %s has no target decoder (%s): deleting it", serialText(serial), name, why)
+		if err := e.commit(ctx, func(r *state.Records) error { return hollowRegion(r, ref) }); err != nil {
+			return err
+		}
+		if err := e.locked(func() error { return e.k.DeleteHollowRegion(name) }); err != nil {
+			decoder, derr := e.k.RegionRootDecoder(name)
+			if derr != nil {
+				decoder = "<its root decoder>"
+			}
+			e.errorf(source, "serial %s: %v; it holds its address range until it is deleted, when none of its memory blocks is online: echo %s > /sys/bus/cxl/devices/%s/delete_region",
+				serialText(serial), err, name, decoder)
+			continue
+		}
+		e.logf(source, "serial %s: deleted hollow %s", serialText(serial), name)
+		if err := e.commit(ctx, func(r *state.Records) error { return dropRegion(r, ref, trigger) }); err != nil {
+			return err
 		}
 	}
-	if path := mountPathOf(r, g); path != "" {
-		mi, err := e.k.Mounted(path)
-		if err != nil || mi == nil {
-			return fmt.Errorf("grant %s: %s is not mounted", g.Ref, path)
+	return nil
+}
+
+// hollowRegion records a region of ours whose memdev went under it
+// (HOLLOW_OWNED), in the memdev's Hollow.
+func hollowRegion(r *state.Records, ref state.RegionRef) error {
+	reg := r.Region(ref)
+	if reg == nil || reg.State == state.RegionHollowOwned {
+		return nil
+	}
+	if err := state.Apply(&state.RegionTable, &reg.State, state.RegionHollowOwned, state.TriggerObserve); err != nil {
+		return err
+	}
+	for _, serial := range reg.Targets {
+		if m := r.Memdev(serial); m != nil {
+			m.Regions = removeRef(m.Regions, ref)
+			m.Hollow = addRef(m.Hollow, ref)
 		}
 	}
 	return nil

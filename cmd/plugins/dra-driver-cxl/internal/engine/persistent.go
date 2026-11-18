@@ -1146,212 +1146,245 @@ func (e *Engine) currentBlockDevice(serial state.Serial) string {
 	return ""
 }
 
-// bindGrant binds the node mount of the use of mode fs of a companion grant
-// at its bind target, or finds it bound there, its intent named first.
-func (e *Engine) bindGrant(ctx context.Context, req *GrantRequest, u use) error {
-	if !api.ValidName(filepath.Base(req.BindTarget)) {
-		return fmt.Errorf("grant %s: invalid name %q", req.Ref, filepath.Base(req.BindTarget))
+// releaseMount releases the uses of the block device or node mount of the
+// persistent grants of the call on the memdev of a grant next to the other
+// grants of the memdev, once, and removes those grants from the users of
+// their node mount in one commit. The node mount of a grant that a cut
+// Prepare left is the one of its intent when a mount of its device is
+// there.
+func (e *Engine) releaseMount(ctx context.Context, g *state.Grant, call *releaseCall) error {
+	if g.Asked.Kind != state.KindPersistent {
+		return nil
 	}
-	found, err := e.bindLease(&u, req.BindTarget, func(target string) bool { return e.bindUsed(target, req.Ref) })
+	if err, done := call.uses[g.Serial]; done {
+		return err
+	}
+	r := e.records()
+	var remaining []use
+	for _, u := range usesOf(r, g.Serial, g.Ref) {
+		if !call.refs[u.ref] {
+			remaining = append(remaining, u)
+		}
+	}
+	var refs []state.GrantRef
+	for _, o := range callGrants(r, g, call) {
+		refs = append(refs, o.Ref)
+	}
+	err := e.releaseUses(g.Asked.Source, g.Serial, e.goneUses(r, g, call), remaining)
+	if err != nil {
+		err = fmt.Errorf("releasing %s (serial %s): %w", e.deviceOf(g.Ref), serialText(g.Serial), err)
+	}
+	call.uses[g.Serial] = err
 	if err != nil {
 		return err
 	}
-	what := "grant " + req.Ref.String()
-	if req.Lend != nil {
-		what = "lease " + req.Lend.Lease
+	return e.commit(ctx, func(r *state.Records) error { return leaveMount(r, refs, firstWriter(remaining) != nil, call.trigger) })
+}
+
+// goneUses returns the uses of the block device or node mount that the
+// grants of a release call on the memdev of g give up, g first: none of a
+// node mount that is not ours (UNRESTORED, FOREIGN).
+func (e *Engine) goneUses(r *state.Records, g *state.Grant, call *releaseCall) []use {
+	var gone []use
+	for _, o := range callGrants(r, g, call) {
+		u := useOf(r, o)
+		if u.nodeMount == "" {
+			u = e.cutMountUse(o, u)
+		}
+		if o.Got.BlockDevice == nil && u.nodeMount == "" {
+			continue
+		}
+		if reg := r.Region(o.Got.Region); reg != nil && o.Got.Mount != "" {
+			if m := reg.Mount(o.Got.Mount); m != nil && (m.State == state.MountUnrestored || m.State == state.MountForeign) {
+				// nothing of ours mounted to release
+				continue
+			}
+		}
+		gone = append(gone, u)
 	}
-	if found {
-		e.logf(req.Asked.Source, "%s: %s is bound at %s already", what, u.nodeMount, req.BindTarget)
+	return gone
+}
+
+// callGrants returns g and the other persistent grants of the release call
+// on its memdev.
+func callGrants(r *state.Records, g *state.Grant, call *releaseCall) []*state.Grant {
+	grants := []*state.Grant{g}
+	if m := r.Memdev(g.Serial); m != nil {
+		for _, ref := range m.Grants {
+			if o := r.Grant(ref); o != nil && ref != g.Ref && call.refs[ref] && o.Asked.Kind == state.KindPersistent {
+				grants = append(grants, o)
+			}
+		}
+	}
+	return grants
+}
+
+// cutMountUse returns the use u of a grant of a cut Prepare with the node
+// mount of its intent, when a mount of the block device of its region is
+// there (the mount is made before the grant records it).
+func (e *Engine) cutMountUse(g *state.Grant, u use) use {
+	if g.Intent.MountPath == "" {
+		return u
+	}
+	dev := e.currentBlockDevice(g.Serial)
+	if dev == "" {
+		return u
+	}
+	mi, err := e.k.Mounted(g.Intent.MountPath)
+	if err != nil || mi == nil {
+		return u
+	}
+	for _, a := range []string{string(state.AccessDirect), string(state.AccessCached)} {
+		if ok, _ := e.isDeviceMount(mi, dev, a); ok {
+			u.nodeMount, u.blockDevice = g.Intent.MountPath, dev
+		}
+	}
+	return u
+}
+
+// leaveMount removes grants from the users of the node mounts that list
+// them: a mount without users is gone (ABSENT), one without a writer left
+// read-only.
+func leaveMount(r *state.Records, refs []state.GrantRef, writer bool, trigger state.Trigger) error {
+	for _, ref := range refs {
+		if rg := r.Grant(ref); rg != nil {
+			rg.Got.Mount = ""
+		}
+	}
+	for i := range r.Regions {
+		reg := &r.Regions[i]
+		for j := 0; j < len(reg.Mounts); j++ {
+			m := &reg.Mounts[j]
+			if !slices.ContainsFunc(m.Users, func(u state.GrantRef) bool { return slices.Contains(refs, u) }) {
+				continue
+			}
+			for _, ref := range refs {
+				m.Users = removeRef(m.Users, ref)
+			}
+			gone, err := leftMount(m, writer, trigger)
+			if err != nil {
+				return err
+			}
+			if gone {
+				reg.Mounts = slices.Delete(reg.Mounts, j, j+1)
+				j--
+			}
+		}
+	}
+	return nil
+}
+
+// leftMount applies the transition of a node mount that users left: ABSENT
+// without users (it is gone), read-only without a writer. A FOREIGN one
+// stays: it goes with its region.
+func leftMount(m *state.Mount, writer bool, trigger state.Trigger) (bool, error) {
+	switch {
+	case m.State == state.MountForeign:
+	case len(m.Users) == 0:
+		return true, state.Apply(&state.MountTable, &m.State, state.MountAbsent, trigger)
+	case m.State == state.MountedRW && !writer:
+		return false, state.Apply(&state.MountTable, &m.State, state.MountedRO, trigger)
+	case m.State == state.MountedRO || m.State == state.MountedRW:
+		return false, state.Apply(&state.MountTable, &m.State, m.State, trigger)
+	}
+	return false, nil
+}
+
+// blockDeviceOf returns the block device whose holders the release of the
+// last grant of a memdev, of the call, waits for: the recorded one unless
+// the start did not mount its node mount again or it is not the one of its
+// region now (checkBlockDevice: the region is gone, or its namespace has
+// other numbers); then the recorded one may be another device's now, and
+// the wait is for the current one of the region, none when the memdev has
+// no region. The recorded one stays when the block device of the region is
+// not known now: none would release it without the holder check. A grant
+// of a cut Prepare waits for the current one.
+func (e *Engine) blockDeviceOf(g *state.Grant, call *releaseCall) string {
+	if g.Asked.Kind != state.KindPersistent {
+		return ""
+	}
+	if g.Got.BlockDevice == nil {
+		return e.currentBlockDevice(g.Serial)
+	}
+	recorded := g.Got.BlockDevice.Name
+	var err error
+	if path := call.unrestored[g.Ref]; path != "" {
+		err = fmt.Errorf("its node mount %s was not mounted again at start", path)
 	} else {
-		e.logf(req.Asked.Source, "%s: bound %s at %s", what, u.nodeMount, req.BindTarget)
-	}
-	return nil
-}
-
-// BindError is the error of the lease bind of a grant of a companion
-// claim of mode fs.
-type BindError struct {
-	Err error
-}
-
-// Error returns the error of the bind.
-func (e *BindError) Error() string {
-	return e.Err.Error()
-}
-
-// Unwrap returns the error of the bind.
-func (e *BindError) Unwrap() error {
-	return e.Err
-}
-
-// bindUsed tells whether a prepared grant other than except has the lease
-// bind target.
-func (e *Engine) bindUsed(target string, except state.GrantRef) bool {
-	r := e.records()
-	for i := range r.Grants {
-		g := &r.Grants[i]
-		if g.Ref != except && g.Got.Bind != nil && g.Got.Bind.Target == target && prepared(g) {
-			return true
-		}
-	}
-	return false
-}
-
-// bindLease binds the node mount of an fs use at target and reports
-// whether the bind was there already: read-only binds of writable types by
-// a clone with the read-only attribute, others by MS_BIND, so that the
-// bind and its propagated copies have the flags of the node mount. The bind
-// must be a mount of the root of the node mount of its type with the flags
-// ro (rw for a use that writes), nosuid and nodev; a new bind without them
-// is unmounted again; another mount at the target, or one that otherBind
-// says is the bind of another prepared grant, is neither used nor
-// unmounted. A new bind that fails the check and cannot be unmounted is
-// recorded as stale.
-func (e *Engine) bindLease(u *use, target string, otherBind func(string) bool) (bool, error) {
-	s := serialText(u.serial)
-	node, err := e.k.Mounted(u.nodeMount)
-	switch {
-	case err != nil:
-		return false, err
-	case node == nil:
-		return false, fmt.Errorf("device %s: %s is not mounted", s, u.nodeMount)
-	}
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		return false, err
-	}
-	mi, err := e.k.Mounted(target)
-	if err != nil {
-		return false, err
-	}
-	if mi != nil {
-		return true, checkExistingBind(u, target, mi, node, otherBind)
-	}
-	err = e.locked(func() error {
-		if u.readOnly && !config.FsTypeReadOnly(node.FsType) {
-			return e.k.BindReadOnly(u.nodeMount, target)
-		}
-		return e.k.Mount(u.nodeMount, target, "", syscall.MS_BIND, "")
-	})
-	if err != nil {
-		e.removeMountDir(u.source, target)
-		return false, fmt.Errorf("device %s: binding %s at %s: %w", s, u.nodeMount, target, err)
-	}
-	return false, e.verifyBind(u, target, node)
-}
-
-// checkExistingBind returns an error unless the mount mi at target is the
-// lease bind of the node mount node of the use, and of no other prepared
-// grant (otherBind).
-func checkExistingBind(u *use, target string, mi, node *kernel.MountInfo, otherBind func(string) bool) error {
-	s := serialText(u.serial)
-	switch {
-	case !isLeaseBind(mi, node, u.readOnly):
-		return fmt.Errorf("device %s: %s is a %s mount of %s, not of %s", s, target, mi.FsType, mi.Source, u.nodeMount)
-	case otherBind != nil && otherBind(target):
-		return fmt.Errorf("device %s: %s is the bind of another lease", s, target)
-	}
-	return nil
-}
-
-// verifyBind returns an error, after it unmounted the new bind at target
-// again (or recorded it stale when that fails), when the bind is not the
-// lease bind of the node mount node of the use.
-func (e *Engine) verifyBind(u *use, target string, node *kernel.MountInfo) error {
-	s := serialText(u.serial)
-	mi, err := e.k.Mounted(target)
-	if err == nil && (mi == nil || !isLeaseBind(mi, node, u.readOnly)) {
-		err = fmt.Errorf("device %s: the bind of %s at %s is not a %s nosuid nodev %s mount", s, u.nodeMount, target, kernel.RoWord(u.readOnly), node.FsType)
+		err = e.checkBlockDevice(g)
 	}
 	if err == nil {
-		return nil
+		return recorded
 	}
-	if uerr := e.locked(func() error { return e.k.Unmount(target) }); uerr != nil {
-		e.errorf(u.source, "device %s: unmounting %s: %v; trying again at the next release", s, target, uerr)
-		e.addStale(u.serial, target, state.StaleBind)
-	} else {
-		e.removeMountDir(u.source, target)
-	}
-	return err
-}
-
-// isLeaseBind tells whether a mount is a bind of the node mount node with
-// the flags of a lease bind, ro or rw by readOnly.
-func isLeaseBind(mi, node *kernel.MountInfo, readOnly bool) bool {
-	if mi.FsType != node.FsType || mi.Source != node.Source || mi.Root != node.Root {
-		return false
-	}
-	for _, f := range []string{map[bool]string{true: "ro", false: "rw"}[readOnly], "nosuid", "nodev"} {
-		if !slices.Contains(mi.MountFlags, f) {
-			return false
-		}
-	}
-	return true
-}
-
-// leaseBindType tells whether a mount may be a lease bind: of a block
-// device, of a filesystem type that mode fs mounts.
-func (e *Engine) leaseBindType(mi *kernel.MountInfo) bool {
-	return strings.HasPrefix(mi.Source, e.devRoot()+"/") && (api.KnownFsType(mi.FsType) || slices.Contains(e.opts.FsTypes, mi.FsType))
-}
-
-// unbind unmounts a lease bind target, never detaching it, and removes its
-// directory. A bind that cannot be unmounted (busy while the borrower has
-// files of it open or mapped), or that has another mount on it than a
-// lease bind, is an error.
-func (e *Engine) unbind(source state.Source, what, target string) error {
-	for i := 0; ; i++ {
-		mi, err := e.k.Mounted(target)
-		if err == nil && mi == nil {
-			break
-		}
-		if err == nil && !e.leaseBindType(mi) {
-			return fmt.Errorf("%s: %s is a %s mount of %s, not a lease bind", what, target, mi.FsType, mi.Source)
-		}
-		if err == nil && i >= maxUnbinds {
-			err = errors.New("still mounted")
-		}
-		if err == nil {
-			err = e.locked(func() error { return e.k.Unmount(target) })
-		}
-		if err != nil {
-			return fmt.Errorf("%s: unmounting %s: %w", what, target, err)
-		}
-		e.logf(source, "%s: unbound %s", what, target)
-	}
-	e.removeMountDir(source, target)
-	return nil
-}
-
-// unbindStale unmounts a stale lease bind once, when it is one.
-func (e *Engine) unbindStale(source state.Source, target string) error {
-	mi, err := e.k.Mounted(target)
+	s, claim := serialText(g.Serial), e.claimNameOf(g.Ref)
+	cur := e.currentBlockDevice(g.Serial)
 	switch {
-	case err != nil, mi == nil:
-	case !e.leaseBindType(mi):
-		err = fmt.Errorf("a %s mount of %s is on it", mi.FsType, mi.Source)
+	case cur == "" && e.hasRegion(g.Serial) && e.otherBlockDevice(g.Got.BlockDevice):
+		e.logf(g.Asked.Source, "claim %s: %v; %s is another block device now: the release of device %s waits for no holder of it",
+			claim, err, recorded, s)
+		return ""
+	case cur == "" && e.hasRegion(g.Serial):
+		e.warnf(g.Asked.Source, "claim %s: %v; the block device of the region of device %s is not known now: its release waits for the holders of %s as prepared",
+			claim, err, s, recorded)
+		return recorded
+	case cur == "":
+		e.logf(g.Asked.Source, "claim %s: %v; device %s has no region now: its release waits for no holder of %s", claim, err, s, recorded)
 	default:
-		if err = e.locked(func() error { return e.k.Unmount(target) }); err == nil {
-			e.logf(source, "unbound stale lease bind %s", target)
-		}
+		e.logf(g.Asked.Source, "claim %s: %v; the release of device %s waits for the holders of %s, the block device of its region now, not of %s",
+			claim, err, s, cur, recorded)
 	}
-	if err != nil {
-		return err
-	}
-	e.removeMountDir(source, target)
-	return nil
+	return cur
 }
 
-// addStale records a node mount or lease bind of the memdev with the
-// serial whose unmount failed, once, in a lazy commit; a memdev without a
-// record keeps nothing.
-func (e *Engine) addStale(serial state.Serial, path string, kind state.StaleKind) {
-	err := e.commitLazy(context.Background(), func(r *state.Records) error {
-		if m := r.Memdev(serial); m != nil {
-			m.Stale = addRef(m.Stale, state.StalePath{Path: path, Kind: kind})
-		}
-		return nil
-	})
-	if err != nil {
-		klog.Errorf("engine: memdev %s: recording stale %s %s: %v", serial, kind, path, err)
+// otherBlockDevice tells whether the name of the recorded block device bd
+// is a block device with other numbers now.
+func (e *Engine) otherBlockDevice(bd *state.BlockDevice) bool {
+	major, minor, _, err := e.k.BlockDeviceInfo(filepath.Base(bd.Name))
+	return err == nil && (major != bd.Dev.Major || minor != bd.Dev.Minor)
+}
+
+// fsType returns the type of the filesystem of the block device dev of the
+// device with the serial with the signatures s and the declared type ("":
+// none). A type that the plugin does not know is taken as declared when
+// the device has no signature of a known type.
+func fsType(s kernel.FsSignature, serial, dev, declared string) (string, error) {
+	prefix := "device " + serial + ": "
+	switch {
+	case len(s.Types) == 1 && (declared == "" || declared == s.Types[0]):
+		return s.Types[0], nil
+	case len(s.Types) == 1:
+		return "", fmt.Errorf("%s%s has a filesystem of type %s, not %s", prefix, dev, s.Types[0], declared)
+	case len(s.Types) > 1 && slices.Contains(s.Types, declared):
+		return declared, nil
+	case len(s.Types) > 1:
+		return "", fmt.Errorf("%s%s has signatures of several filesystems (%s): set device.fsType", prefix, dev, strings.Join(s.Types, ", "))
+	case declared == "":
+		return "", fmt.Errorf("%s%s has no filesystem of a type that the plugin knows (%s): set device.fsType", prefix, dev, listOr(api.KnownFsTypes))
+	case api.KnownFsType(declared):
+		return "", fmt.Errorf("%s%s has no filesystem of type %s (no signature of a type that the plugin knows)", prefix, dev, declared)
 	}
+	return declared, nil
+}
+
+// cluster returns true if a filesystem of the type with the signatures s
+// is a cluster filesystem (gfs2 with lock_dlm), else why it is
+// single-host.
+func cluster(s kernel.FsSignature, fsType string) (bool, string) {
+	switch {
+	case !config.FsTypeCluster(fsType):
+		return false, fsType + " is a single-host filesystem"
+	case s.Gfs2LockProto == kernel.Gfs2LockProtoDLM:
+		return true, ""
+	case s.Gfs2LockProto == "":
+		return false, fsType + " without a lock protocol is a single-host filesystem"
+	}
+	return false, fsType + " with " + s.Gfs2LockProto + " is a single-host filesystem"
+}
+
+// listOr returns the values as "a, b or c".
+func listOr(values []string) string {
+	if len(values) < 2 {
+		return strings.Join(values, "")
+	}
+	return strings.Join(values[:len(values)-1], ", ") + " or " + values[len(values)-1]
 }

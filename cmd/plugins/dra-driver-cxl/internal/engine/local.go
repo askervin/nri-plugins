@@ -721,3 +721,104 @@ func (e *Engine) keptIdle(g *state.Grant, memdev string, decision Decision, rele
 		klog.Infof("local: memdev %s (serial %s): keeping %s and %s of the idle shared device", memdev, serialText(g.Serial), reg.Ref(), reg.FirstDax())
 	}
 }
+
+// releaseDax releases the dax device of a grant: its own one (a part of a
+// sliced memdev) offlined and deleted, or the grant removed from the users
+// of a shared one.
+func (e *Engine) releaseDax(ctx context.Context, g *state.Grant, trigger state.Trigger) error {
+	if g.Got.Region == "" || g.Got.Dax == "" {
+		return nil
+	}
+	reg := e.records().Region(g.Got.Region)
+	if reg == nil {
+		return nil
+	}
+	d := reg.DaxDevice(g.Got.Dax)
+	if d == nil {
+		return nil
+	}
+	if own := !d.Whole && len(d.Users) == 1 && d.Users[0] == g.Ref; !own {
+		// a shared device: the grant leaves its users when it is released
+		return nil
+	}
+	region, dax := string(g.Got.Region), g.Got.Dax
+	memdev := e.memdevName(g.Serial)
+	part := localPart{memdev: memdev, serial: g.Serial, claim: g.Ref.Claim, dax: dax, mode: g.Asked.Mode, size: d.Size}
+	if err := e.offlineDax(ctx, &part); err != nil {
+		return err
+	}
+	start := time.Now()
+	if err := e.locked(func() error { return e.k.DeleteDaxDevice(ctx, region, dax) }); err != nil {
+		return fmt.Errorf("memdev %s (serial %s): releasing slice %s: %w", memdev, serialText(g.Serial), dax, err)
+	}
+	part.logf("deleted", start, "")
+	return e.commit(ctx, func(r *state.Records) error { return releasedDax(r, g.Ref, g.Got.Region, dax, trigger) })
+}
+
+// localPart names a part of a local memdev (a dax device of a grant) in the
+// log lines and errors of its release.
+type localPart struct {
+	memdev     string
+	serial     state.Serial
+	claim, dax string
+	mode       state.Mode
+	size       uint64
+}
+
+// logf logs a step of the release of the part that began at start.
+func (p *localPart) logf(step string, start time.Time, details string) {
+	klog.InfofDepth(1, "local: memdev %s (serial %s): claim %s: %s slice %s mode %s size %d%s in %s",
+		p.memdev, serialText(p.serial), p.claim, step, p.dax, p.mode, p.size, details, since(start))
+}
+
+// offlineDax offlines the memory blocks of the dax device of a part bound
+// to kmem, under the engine lock.
+func (e *Engine) offlineDax(ctx context.Context, p *localPart) error {
+	if e.k.DaxDriver(p.dax) != kernel.DriverKmem {
+		return nil
+	}
+	start := time.Now()
+	bs, err := e.k.BlockSize()
+	var blocks []int
+	if err == nil {
+		blocks, err = e.k.DaxDeviceBlocks(p.dax, bs)
+	}
+	if err == nil {
+		err = e.locked(func() error { return e.k.OfflineBlocks(blocks) })
+	}
+	if err != nil {
+		return fmt.Errorf("memdev %s (serial %s): releasing slice %s: cannot offline its memory (in use?): %w", p.memdev, serialText(p.serial), p.dax, err)
+	}
+	if p.claim != "" {
+		p.logf("offlined", start, fmt.Sprintf(" blocks %v", blocks))
+	}
+	return nil
+}
+
+// releasedDax records the own dax device of a grant deleted: a device that
+// a cut Prepare made goes (CREATING -> ABSENT), another one becomes the
+// seed (daxN.0) or goes.
+func releasedDax(r *state.Records, ref state.GrantRef, region state.RegionRef, dax string, trigger state.Trigger) error {
+	reg := r.Region(region)
+	d := reg.DaxDevice(dax)
+	if rg := r.Grant(ref); rg != nil {
+		rg.Got.Dax = ""
+	}
+	if d.State == state.DaxCreating {
+		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxAbsent, trigger); err != nil {
+			return err
+		}
+		removeRecord(&reg.DaxDevices, func(x *state.DaxDevice) bool { return x.Name == dax })
+		return nil
+	}
+	d.Users = nil
+	if strings.HasSuffix(dax, ".0") {
+		d.Driver, d.Size, d.Dev = "", 0, state.DevNumbers{}
+		return state.Apply(&state.DaxDeviceTable, &d.State, state.DaxSeed, trigger)
+	}
+	if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxAbsent, trigger); err != nil {
+		return err
+	}
+	removeRecord(&reg.DaxDevices, func(x *state.DaxDevice) bool { return x.Name == dax })
+	return nil
+}

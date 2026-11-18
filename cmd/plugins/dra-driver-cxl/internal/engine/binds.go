@@ -1,0 +1,555 @@
+// Copyright The NRI Plugins Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package engine
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"syscall"
+
+	"golang.org/x/sys/unix"
+	"k8s.io/klog/v2"
+
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/pkg/cxl/api"
+	"github.com/containers/nri-plugins/pkg/cxl/config"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
+)
+
+// bindGrant binds the node mount of the use of mode fs of a companion grant
+// at its bind target, or finds it bound there, its intent named first.
+func (e *Engine) bindGrant(ctx context.Context, req *GrantRequest, u use) error {
+	if !api.ValidName(filepath.Base(req.BindTarget)) {
+		return fmt.Errorf("grant %s: invalid name %q", req.Ref, filepath.Base(req.BindTarget))
+	}
+	found, err := e.bindLease(&u, req.BindTarget, func(target string) bool { return e.bindUsed(target, req.Ref) })
+	if err != nil {
+		return err
+	}
+	what := "grant " + req.Ref.String()
+	if req.Lend != nil {
+		what = "lease " + req.Lend.Lease
+	}
+	if found {
+		e.logf(req.Asked.Source, "%s: %s is bound at %s already", what, u.nodeMount, req.BindTarget)
+	} else {
+		e.logf(req.Asked.Source, "%s: bound %s at %s", what, u.nodeMount, req.BindTarget)
+	}
+	return nil
+}
+
+// BindError is the error of the lease bind of a grant of a companion
+// claim of mode fs.
+type BindError struct {
+	Err error
+}
+
+// Error returns the error of the bind.
+func (e *BindError) Error() string {
+	return e.Err.Error()
+}
+
+// Unwrap returns the error of the bind.
+func (e *BindError) Unwrap() error {
+	return e.Err
+}
+
+// bindUsed tells whether a prepared grant other than except has the lease
+// bind target.
+func (e *Engine) bindUsed(target string, except state.GrantRef) bool {
+	r := e.records()
+	for i := range r.Grants {
+		g := &r.Grants[i]
+		if g.Ref != except && g.Got.Bind != nil && g.Got.Bind.Target == target && prepared(g) {
+			return true
+		}
+	}
+	return false
+}
+
+// bindLease binds the node mount of an fs use at target and reports
+// whether the bind was there already: read-only binds of writable types by
+// a clone with the read-only attribute, others by MS_BIND, so that the
+// bind and its propagated copies have the flags of the node mount. The bind
+// must be a mount of the root of the node mount of its type with the flags
+// ro (rw for a use that writes), nosuid and nodev; a new bind without them
+// is unmounted again; another mount at the target, or one that otherBind
+// says is the bind of another prepared grant, is neither used nor
+// unmounted. A new bind that fails the check and cannot be unmounted is
+// recorded as stale.
+func (e *Engine) bindLease(u *use, target string, otherBind func(string) bool) (bool, error) {
+	s := serialText(u.serial)
+	node, err := e.k.Mounted(u.nodeMount)
+	switch {
+	case err != nil:
+		return false, err
+	case node == nil:
+		return false, fmt.Errorf("device %s: %s is not mounted", s, u.nodeMount)
+	}
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		return false, err
+	}
+	mi, err := e.k.Mounted(target)
+	if err != nil {
+		return false, err
+	}
+	if mi != nil {
+		return true, checkExistingBind(u, target, mi, node, otherBind)
+	}
+	err = e.locked(func() error {
+		if u.readOnly && !config.FsTypeReadOnly(node.FsType) {
+			return e.k.BindReadOnly(u.nodeMount, target)
+		}
+		return e.k.Mount(u.nodeMount, target, "", syscall.MS_BIND, "")
+	})
+	if err != nil {
+		e.removeMountDir(u.source, target)
+		return false, fmt.Errorf("device %s: binding %s at %s: %w", s, u.nodeMount, target, err)
+	}
+	return false, e.verifyBind(u, target, node)
+}
+
+// checkExistingBind returns an error unless the mount mi at target is the
+// lease bind of the node mount node of the use, and of no other prepared
+// grant (otherBind).
+func checkExistingBind(u *use, target string, mi, node *kernel.MountInfo, otherBind func(string) bool) error {
+	s := serialText(u.serial)
+	switch {
+	case !isLeaseBind(mi, node, u.readOnly):
+		return fmt.Errorf("device %s: %s is a %s mount of %s, not of %s", s, target, mi.FsType, mi.Source, u.nodeMount)
+	case otherBind != nil && otherBind(target):
+		return fmt.Errorf("device %s: %s is the bind of another lease", s, target)
+	}
+	return nil
+}
+
+// verifyBind returns an error, after it unmounted the new bind at target
+// again (or recorded it stale when that fails), when the bind is not the
+// lease bind of the node mount node of the use.
+func (e *Engine) verifyBind(u *use, target string, node *kernel.MountInfo) error {
+	s := serialText(u.serial)
+	mi, err := e.k.Mounted(target)
+	if err == nil && (mi == nil || !isLeaseBind(mi, node, u.readOnly)) {
+		err = fmt.Errorf("device %s: the bind of %s at %s is not a %s nosuid nodev %s mount", s, u.nodeMount, target, kernel.RoWord(u.readOnly), node.FsType)
+	}
+	if err == nil {
+		return nil
+	}
+	if uerr := e.locked(func() error { return e.k.Unmount(target) }); uerr != nil {
+		e.errorf(u.source, "device %s: unmounting %s: %v; trying again at the next release", s, target, uerr)
+		e.addStale(u.serial, target, state.StaleBind)
+	} else {
+		e.removeMountDir(u.source, target)
+	}
+	return err
+}
+
+// isLeaseBind tells whether a mount is a bind of the node mount node with
+// the flags of a lease bind, ro or rw by readOnly.
+func isLeaseBind(mi, node *kernel.MountInfo, readOnly bool) bool {
+	if mi.FsType != node.FsType || mi.Source != node.Source || mi.Root != node.Root {
+		return false
+	}
+	for _, f := range []string{map[bool]string{true: "ro", false: "rw"}[readOnly], "nosuid", "nodev"} {
+		if !slices.Contains(mi.MountFlags, f) {
+			return false
+		}
+	}
+	return true
+}
+
+// leaseBindType tells whether a mount may be a lease bind: of a block
+// device, of a filesystem type that mode fs mounts.
+func (e *Engine) leaseBindType(mi *kernel.MountInfo) bool {
+	return strings.HasPrefix(mi.Source, e.devRoot()+"/") && (api.KnownFsType(mi.FsType) || slices.Contains(e.opts.FsTypes, mi.FsType))
+}
+
+// releaseBind unbinds the lease bind of a companion grant. A bind that is
+// busy (a file of it mapped) becomes STALE, recorded with its memdev, and
+// the release fails.
+func (e *Engine) releaseBind(ctx context.Context, g *state.Grant, trigger state.Trigger) error {
+	b := g.Got.Bind
+	if b == nil {
+		return e.releaseCutBind(g)
+	}
+	if b.State != state.BindBound && b.State != state.BindStale {
+		return nil
+	}
+	if e.bindUsed(b.Target, g.Ref) {
+		e.warnf(g.Asked.Source, "%s: %s is the bind of another prepared claim, not unmounting it", bindWhat(g), b.Target)
+		return e.commit(ctx, func(r *state.Records) error { return boundTo(r, g.Ref, b.Target, state.BindAbsent, trigger) })
+	}
+	err := e.unbind(g.Asked.Source, bindWhat(g), b.Target)
+	to := state.BindAbsent
+	if err != nil {
+		if b.State == state.BindStale || !errors.Is(err, unix.EBUSY) {
+			return err
+		}
+		to = state.BindStale
+	}
+	cerr := e.commit(ctx, func(r *state.Records) error { return boundTo(r, g.Ref, b.Target, to, trigger) })
+	return errors.Join(err, cerr)
+}
+
+// bindWhat returns what the log lines of the lease bind of a grant name: its
+// lease, else the grant.
+func bindWhat(g *state.Grant) string {
+	if l := g.Got.Lend; l != nil {
+		return "lease " + l.Lease
+	}
+	if l := g.Intent.Lend; l != nil {
+		return "lease " + l.Lease
+	}
+	return "grant " + g.Ref.String()
+}
+
+// releaseCutBind unbinds the lease bind that the intent of a grant of a cut
+// Prepare names, when a lease bind is mounted there: the bind is made
+// before the grant records it.
+func (e *Engine) releaseCutBind(g *state.Grant) error {
+	target := g.Intent.BindTarget
+	if target == "" || (g.State != state.GrantJournaled && g.State != state.GrantRealising) {
+		return nil
+	}
+	mi, err := e.k.Mounted(target)
+	if err != nil || mi == nil || !e.leaseBindType(mi) {
+		return err
+	}
+	return e.unbind(g.Asked.Source, bindWhat(g), target)
+}
+
+// boundTo records the lease bind of a grant in state to (ABSENT, or STALE
+// with its memdev's Stale entry).
+func boundTo(r *state.Records, ref state.GrantRef, target string, to state.BindState, trigger state.Trigger) error {
+	rg := r.Grant(ref)
+	if rg == nil || rg.Got.Bind == nil {
+		return nil
+	}
+	if err := state.Apply(&state.BindTable, &rg.Got.Bind.State, to, trigger); err != nil {
+		return err
+	}
+	if m := r.Memdev(rg.Serial); m != nil {
+		stale := state.StalePath{Path: target, Kind: state.StaleBind}
+		if to == state.BindStale {
+			m.Stale = addRef(m.Stale, stale)
+		} else {
+			m.Stale = removeRef(m.Stale, stale)
+		}
+	}
+	return nil
+}
+
+// unbind unmounts a lease bind target, never detaching it, and removes its
+// directory. A bind that cannot be unmounted (busy while the borrower has
+// files of it open or mapped), or that has another mount on it than a
+// lease bind, is an error.
+func (e *Engine) unbind(source state.Source, what, target string) error {
+	for i := 0; ; i++ {
+		mi, err := e.k.Mounted(target)
+		if err == nil && mi == nil {
+			break
+		}
+		if err == nil && !e.leaseBindType(mi) {
+			return fmt.Errorf("%s: %s is a %s mount of %s, not a lease bind", what, target, mi.FsType, mi.Source)
+		}
+		if err == nil && i >= maxUnbinds {
+			err = errors.New("still mounted")
+		}
+		if err == nil {
+			err = e.locked(func() error { return e.k.Unmount(target) })
+		}
+		if err != nil {
+			return fmt.Errorf("%s: unmounting %s: %w", what, target, err)
+		}
+		e.logf(source, "%s: unbound %s", what, target)
+	}
+	e.removeMountDir(source, target)
+	return nil
+}
+
+// unbindStale unmounts a stale lease bind once, when it is one.
+func (e *Engine) unbindStale(source state.Source, target string) error {
+	mi, err := e.k.Mounted(target)
+	switch {
+	case err != nil, mi == nil:
+	case !e.leaseBindType(mi):
+		err = fmt.Errorf("a %s mount of %s is on it", mi.FsType, mi.Source)
+	default:
+		if err = e.locked(func() error { return e.k.Unmount(target) }); err == nil {
+			e.logf(source, "unbound stale lease bind %s", target)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	e.removeMountDir(source, target)
+	return nil
+}
+
+// addStale records a node mount or lease bind of the memdev with the
+// serial whose unmount failed, once, in a lazy commit; a memdev without a
+// record keeps nothing.
+func (e *Engine) addStale(serial state.Serial, path string, kind state.StaleKind) {
+	err := e.commitLazy(context.Background(), func(r *state.Records) error {
+		if m := r.Memdev(serial); m != nil {
+			m.Stale = addRef(m.Stale, state.StalePath{Path: path, Kind: kind})
+		}
+		return nil
+	})
+	if err != nil {
+		klog.Errorf("engine: memdev %s: recording stale %s %s: %v", serial, kind, path, err)
+	}
+}
+
+// RetryStale unmounts the stale lease binds of every memdev and the lease
+// binds of no memdev again, as every release does first, and finishes the
+// Unprepares that they kept from releasing (the periodic pass): the
+// transitions are those of an Unprepare. Errors are logged.
+func (e *Engine) RetryStale(ctx context.Context) {
+	ctx, end := e.Request(ctx)
+	defer end()
+	e.retryAllStale(ctx, state.TriggerUnprepare)
+}
+
+// retryAllStale unmounts the stale lease binds of every memdev of the
+// sources of the engine that no prepared grant lists again, in the queue of
+// each memdev that no other request holds, and forgets those that are
+// gone; then the grants of the memdev that a stale bind left RELEASING are
+// released again when no other grant of a claim uses the memdev, and a
+// pool memdev without grants is released (its holder wait, its region,
+// disabled). Errors are logged.
+func (e *Engine) retryAllStale(ctx context.Context, trigger state.Trigger) {
+	for _, m := range e.records().Memdevs {
+		if len(m.Stale) == 0 || !e.owns(m.Source) || !slices.ContainsFunc(m.Stale, func(sp state.StalePath) bool { return sp.Kind == state.StaleBind }) {
+			continue
+		}
+		e.retryStale(ctx, m.Serial, trigger)
+	}
+	e.retryOrphanBinds()
+}
+
+// addOrphanBind keeps a lease bind of no memdev whose unmount failed, once,
+// for the next release.
+func (e *Engine) addOrphanBind(target string) {
+	e.qmu.Lock()
+	defer e.qmu.Unlock()
+	if !slices.Contains(e.orphanBinds, target) {
+		e.orphanBinds = append(e.orphanBinds, target)
+	}
+}
+
+// retryOrphanBinds unmounts again the lease binds of no memdev that a start
+// could not unmount, and forgets those that are gone or that a prepared
+// grant lists again; the others are tried again at the next release.
+func (e *Engine) retryOrphanBinds() {
+	e.qmu.Lock()
+	binds := e.orphanBinds
+	e.orphanBinds = nil
+	e.qmu.Unlock()
+	var left []string
+	for _, target := range binds {
+		if e.bindUsed(target, state.GrantRef{}) {
+			continue
+		}
+		if err := e.unbindStale(state.SourceLocal, target); err != nil {
+			e.errorf(state.SourceLocal, "unmounting stale lease bind %s: %v", target, err)
+			left = append(left, target)
+		}
+	}
+	for _, target := range left {
+		e.addOrphanBind(target)
+	}
+}
+
+// retryStale unmounts the stale lease binds of the memdev with the serial
+// in its queue, when no other request of the memdev is in progress (its
+// next release tries again), and forgets those that are gone or that a
+// prepared grant lists again; when none is left, the memdev is released
+// after them.
+func (e *Engine) retryStale(ctx context.Context, serial state.Serial, trigger state.Trigger) {
+	leave := e.tryAcquire(serial)
+	if leave == nil {
+		return
+	}
+	defer leave()
+	m := e.records().Memdev(serial)
+	if m == nil {
+		return
+	}
+	source := m.Source
+	var forget []state.StalePath
+	gone, left := false, false
+	for _, sp := range m.Stale {
+		if sp.Kind != state.StaleBind {
+			continue
+		}
+		if e.bindUsed(sp.Path, state.GrantRef{}) {
+			// a Prepare again bound it for its grant
+			forget = append(forget, sp)
+			continue
+		}
+		if err := e.unbindStale(source, sp.Path); err != nil {
+			e.errorf(source, "unmounting stale lease bind %s: %v", sp.Path, err)
+			left = true
+			continue
+		}
+		forget = append(forget, sp)
+		gone = true
+	}
+	if len(forget) == 0 {
+		return
+	}
+	if err := e.commit(ctx, func(r *state.Records) error { return forgetStale(r, serial, forget, trigger) }); err != nil {
+		e.errorf(source, "serial %s: %v", serialText(serial), err)
+		return
+	}
+	if gone && !left {
+		e.releaseAfterStale(ctx, serial, trigger)
+	}
+}
+
+// releaseAfterStale releases the memdev with the serial after its stale
+// lease binds are gone, its queue held, when no grant of a claim uses it
+// any more: its RELEASING grants, each as the release that it was in, else
+// the memdev itself; the record of a memdev of which nothing is left goes.
+// Errors are logged.
+func (e *Engine) releaseAfterStale(ctx context.Context, serial state.Serial, trigger state.Trigger) {
+	r := e.records()
+	m := r.Memdev(serial)
+	if m == nil {
+		return
+	}
+	var refs []state.GrantRef
+	for _, ref := range m.Grants {
+		if g := r.Grant(ref); g == nil || g.State != state.GrantReleasing {
+			return
+		}
+		refs = append(refs, ref)
+	}
+	source := m.Source
+	call := newReleaseCall(e, ReleaseUnprepare, refs)
+	call.trigger = trigger
+	var errs []error
+	for _, ref := range refs {
+		call.release = releaseOf(r.PreparationOf(ref))
+		errs = append(errs, e.releaseGrant(ctx, ref, call))
+	}
+	switch {
+	case len(refs) == 0 && source == state.SourcePool:
+		errs = append(errs, e.releaseIdle(ctx, *m, call))
+	case len(refs) == 0 && m.Facts.Persistent:
+		region, _ := e.localRegionNames(m)
+		errs = append(errs, e.releaseIdleQueued(ctx, m, InOrderIdle, region, trigger))
+	}
+	e.logAfterStale(source, serial, errs)
+	if err := e.commit(ctx, func(r *state.Records) error {
+		if m := r.Memdev(serial); m != nil && unused(m) {
+			return dropMemdev(r, serial, trigger)
+		}
+		return nil
+	}); err != nil {
+		e.errorf(source, "serial %s: %v", serialText(serial), err)
+	}
+}
+
+// releaseOf returns the release that a RELEASING grant of the preparation p
+// was in: a rollback for a claim whose Prepare did not finish, else an
+// Unprepare.
+func releaseOf(p *state.Preparation) Release {
+	if p != nil && (p.State == state.PreparationPreparing || p.State == state.PreparationKept) {
+		return ReleaseRollback
+	}
+	return ReleaseUnprepare
+}
+
+// logAfterStale logs the errors of the release of the memdev with the
+// serial after its stale lease binds: a block device that stayed held, and
+// the other errors.
+func (e *Engine) logAfterStale(source state.Source, serial state.Serial, errs []error) {
+	var held, failed []error
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		cause := err
+		var re *releaseError
+		if errors.As(err, &re) && re.serial == serial {
+			cause = re.err
+		}
+		if errors.Is(err, errHolder) {
+			held = append(held, cause)
+		} else {
+			failed = append(failed, cause)
+		}
+	}
+	if len(held) > 0 {
+		e.errorf(source, "not releasing serial %s after its stale lease bind: %v", serialText(serial), errors.Join(held...))
+	}
+	if len(failed) > 0 {
+		e.errorf(source, "releasing serial %s after its stale lease bind: %v", serialText(serial), errors.Join(failed...))
+	}
+}
+
+// releaseIdle releases a pool memdev without grants after its stale lease
+// binds are gone: the holder wait of its block device, its regions,
+// disabled.
+func (e *Engine) releaseIdle(ctx context.Context, m state.Memdev, call *releaseCall) error {
+	memdev, err := e.k.FindMemdev(uint64(m.Serial))
+	if errors.Is(err, kernel.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return &releaseError{serial: m.Serial, err: err}
+	}
+	if dev := e.currentBlockDevice(m.Serial); dev != "" {
+		if err := e.waitNoHolder(ctx, m.Source, m.Serial, dev, call.holderDeadline("")); err != nil {
+			return &releaseError{serial: m.Serial, held: true, err: err}
+		}
+	}
+	g := &state.Grant{Serial: m.Serial, Asked: state.Asked{Source: m.Source, Kind: state.KindPersistent}}
+	if _, err := e.releaseRegions(ctx, g, memdev, Destroy, false, call.trigger); err != nil {
+		return &releaseError{serial: m.Serial, err: err}
+	}
+	if err := e.disableMemdev(ctx, m.Source, m.Serial, memdev); err != nil {
+		return &releaseError{serial: m.Serial, err: err}
+	}
+	return nil
+}
+
+// forgetStale removes the stale lease binds gone of the memdev with the
+// serial, the binds of their grants that are STALE ABSENT (a BOUND one of
+// a grant that lists it again stays).
+func forgetStale(r *state.Records, serial state.Serial, gone []state.StalePath, trigger state.Trigger) error {
+	m := r.Memdev(serial)
+	if m == nil {
+		return nil
+	}
+	for _, sp := range gone {
+		m.Stale = removeRef(m.Stale, sp)
+		for i := range r.Grants {
+			if b := r.Grants[i].Got.Bind; b != nil && b.Target == sp.Path && b.State == state.BindStale {
+				if err := state.Apply(&state.BindTable, &b.State, state.BindAbsent, trigger); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}

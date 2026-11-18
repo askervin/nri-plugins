@@ -24,11 +24,12 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
-	"golang.org/x/sys/unix"
 )
 
 // The rows of the recovery table: a PREPARED claim whose grants verify is
@@ -58,58 +59,6 @@ func TestRecoverPreparedVerifies(t *testing.T) {
 	v.check("mounted again")
 	v.mustUnprepare(poolDriver, "w")
 	v.mustUnprepare(poolDriver, "n")
-}
-
-// A PREPARED claim whose block device is another one now: its grant is
-// REALISED_UNRESTORED and its preparation PREPARED_UNRESTORED; a Prepare
-// again fails while it does not verify, its Unprepare releases it.
-func TestRecoverUnrestored(t *testing.T) {
-	v := pmemEnv(t, "ext4")
-	v.mustPrepare(poolDriver, "w", fsGrant("w", false, ""))
-	direct := v.mount("w", 0).Path
-	if err := v.f.Kernel().Unmount(direct); err != nil {
-		t.Fatal(err)
-	}
-	v.f.RenamePmem("region0", "pmem3", "259:9")
-	out := v.restart()
-	if !slices.Equal(out.Unrestored, []state.GrantRef{{Claim: "w"}}) {
-		t.Fatalf("recovered %+v", out)
-	}
-	if g := v.grant("w", 0); g.State != state.GrantUnrestored {
-		t.Fatalf("grant %s", g.State)
-	}
-	if p := v.records().Preparation(poolDriver, "w"); p.State != state.PreparationUnrestored {
-		t.Fatalf("preparation %s", p.State)
-	}
-	if m := v.records().Region("region0").Mount(state.AccessDirect); m.State != state.MountUnrestored {
-		t.Fatalf("mount %+v", m)
-	}
-	v.check("unrestored")
-	// a later start that finds the other block device still leaves both so
-	ref := state.GrantRef{Claim: "w"}
-	if out := v.restart(); len(out.Unrestored) > 0 || out.Why[ref] == nil {
-		t.Fatalf("recovered again %+v", out)
-	}
-	if p := v.records().Preparation(poolDriver, "w"); p.State != state.PreparationUnrestored {
-		t.Fatalf("preparation again %s", p.State)
-	}
-	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{fsGrant("w", false, "")}); err == nil ||
-		!strings.Contains(err.Error(), "cannot be mounted again") {
-		t.Fatalf("Prepare again: %v", err)
-	}
-	if g := v.grant("w", 0); g.State != state.GrantUnrestored {
-		t.Fatalf("the Prepare again released the grant: %s", g.State)
-	}
-	// the release waits for the holders of the block device of the region
-	// now, not of the one as prepared
-	logs := captureKlog(t)
-	v.mustUnprepare(poolDriver, "w")
-	want := fmt.Sprintf("claim ns/w: its node mount %s was not mounted again at start; the release of device 0x91 waits for the holders of %s, the block device of its region now, not of %s",
-		direct, filepath.Join(v.f.DevRoot(), "pmem3"), filepath.Join(v.f.DevRoot(), "pmem0"))
-	if out := logs(); !strings.Contains(out, want) {
-		t.Fatalf("no %q in\n%s", want, out)
-	}
-	v.clean("unprepared")
 }
 
 // A claim with grants on two persistent memdevs whose block devices are
@@ -620,43 +569,6 @@ func TestRecoverForeignMount(t *testing.T) {
 	v.clean("unprepared")
 }
 
-// An unrestored grant is mounted again by a Prepare again once its block
-// device is the one prepared (REALISED, its mount MOUNTED_RW), or at the
-// next start (a reader, MOUNTED_RO).
-func TestRecoverRestored(t *testing.T) {
-	for _, writer := range []bool{true, false} {
-		v := pmemEnv(t, "ext4")
-		v.mustPrepare(poolDriver, "c", fsGrant("c", !writer, ""))
-		g, mnt := v.grant("c", 0), v.mount("c", 0).Path
-		if err := v.f.Kernel().Unmount(mnt); err != nil {
-			t.Fatal(err)
-		}
-		v.f.RenamePmem("region0", "pmem3", "259:9")
-		if out := v.restart(); len(out.Unrestored) != 1 {
-			t.Fatalf("recovered %+v", out)
-		}
-		v.f.RenamePmem("region0", "pmem0", "259:1")
-		if writer {
-			if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{fsGrant("c", false, "")}); err != nil {
-				t.Fatal(err)
-			}
-		} else if out := v.restart(); len(out.Restored) != 1 {
-			t.Fatalf("restored %+v", out)
-		}
-		want := state.MountedRO
-		if writer {
-			want = state.MountedRW
-		}
-		if g := v.grant("c", 0); g.State != state.GrantRealised {
-			t.Fatalf("grant %s", g.State)
-		}
-		if m := v.records().Region(g.Got.Region).Mount(g.Got.Mount); m.State != want {
-			t.Fatalf("mount %+v", m)
-		}
-		v.mustUnprepare(poolDriver, "c")
-	}
-}
-
 // A local sliced claim cut after its grant was REALISED (the preparation
 // PREPARING), below a newer pool region: the recovery releases the part and
 // keeps the region in order for the claim (RELEASING -> JOURNALED).
@@ -881,54 +793,6 @@ func TestRecoverOwnDeviceOtherOptions(t *testing.T) {
 	v.clean("unprepared")
 }
 
-// A cached node mount that the start mounts again on another loop device
-// records that one; a Prepare again that mounts an unrestored node mount
-// again makes its other grants REALISED too.
-func TestRecoverLoopRecorded(t *testing.T) {
-	v := pmemEnv(t, "ext4")
-	v.mustPrepare(poolDriver, "r1", fsGrant("r1", true, state.AccessCached))
-	v.mustPrepare(poolDriver, "r2", fsGrant("r2", true, state.AccessCached))
-	mnt := v.mount("r1", 0).Path
-	k := v.f.Kernel()
-	if err := k.Unmount(mnt); err != nil {
-		t.Fatal(err)
-	}
-	// another loop device takes the number of the old one
-	if _, err := k.AttachLoop(filepath.Join(v.dir, "filesystems"), false); err != nil {
-		t.Fatal(err)
-	}
-	v.restart()
-	g := v.grant("r1", 0)
-	m := v.records().Region(g.Got.Region).Mount(g.Got.Mount)
-	if mi, _ := k.Mounted(mnt); mi == nil || mi.Source != m.Loop || m.Path != mnt {
-		t.Fatalf("mounted %+v, mount %+v, grant %+v", mi, m, g.Got)
-	}
-	// unrestored: a block device that is not the one prepared
-	if err := k.Unmount(mnt); err != nil {
-		t.Fatal(err)
-	}
-	v.f.RenamePmem("region0", "pmem3", "259:9")
-	if out := v.restart(); len(out.Unrestored) != 2 {
-		t.Fatalf("recovered %+v", out)
-	}
-	v.f.RenamePmem("region0", "pmem0", "259:1")
-	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{fsGrant("r1", true, state.AccessCached)}); err != nil {
-		t.Fatal(err)
-	}
-	for _, uid := range []string{"r1", "r2"} {
-		if g := v.grant(uid, 0); g.State != state.GrantRealised {
-			t.Fatalf("grant %s: %s", uid, g.State)
-		}
-	}
-	// the preparation of r1 is the front-end's, after PrepareGrants
-	if p := v.records().Preparation(poolDriver, "r2"); p.State != state.PreparationPrepared {
-		t.Fatalf("preparation r2: %s", p.State)
-	}
-	v.mustUnprepare(poolDriver, "r1")
-	v.mustUnprepare(poolDriver, "r2")
-	v.clean("unprepared")
-}
-
 // The start logs what it does with each claim whose Prepare did not
 // finish, and keeps a companion claim of mode numa with a line.
 func TestRecoverClaimLines(t *testing.T) {
@@ -1080,37 +944,6 @@ func TestRecoverKeepsNodeMountOfBusyCompanion(t *testing.T) {
 	v.clean("unprepared")
 }
 
-// A pool block grant whose block device is not the one of its region at a
-// start is REALISED_UNRESTORED (every grant kind is verified), its
-// preparation PREPARED_UNRESTORED; a Prepare again once the block device is
-// the prepared one again restores it.
-func TestRecoverPoolBlockChanged(t *testing.T) {
-	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib})
-	v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialP, state.ModeBlock, state.KindPersistent))
-	v.f.RenamePmem("region0", "pmem3", "259:9")
-	out := v.restart()
-	if !slices.Equal(out.Unrestored, []state.GrantRef{{Claim: "b"}}) || out.Why[state.GrantRef{Claim: "b"}] == nil {
-		t.Fatalf("recovered %+v", out)
-	}
-	if g := v.grant("b", 0); g.State != state.GrantUnrestored {
-		t.Fatalf("grant %s", g.State)
-	}
-	wantPreparation(t, v, poolDriver, "b", state.PreparationUnrestored)
-	req := poolReq("b", 0, serialP, state.ModeBlock, state.KindPersistent)
-	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{req}); err == nil || !strings.Contains(err.Error(), "as prepared") {
-		t.Fatalf("Prepare again with another block device: %v", err)
-	}
-	v.f.RenamePmem("region0", "pmem0", "259:0")
-	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{req}); err != nil {
-		t.Fatalf("Prepare again: %v", err)
-	}
-	if g := v.grant("b", 0); g.State != state.GrantRealised {
-		t.Fatalf("grant %s after the Prepare again", g.State)
-	}
-	v.mustUnprepare(poolDriver, "b")
-	v.clean("unprepared")
-}
-
 // A cut Prepare of a pool claim whose memdev has another tool's region
 // below a region of another memdev made nothing to keep: the start
 // releases its grant, the claim stays PREPARING and the other tool's
@@ -1205,4 +1038,72 @@ func TestRecoverKeptWithoutGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	v.clean("unprepared")
+}
+
+// The start removes the temporary directories of the private dax device
+// nodes that a zeroing or a probe of a stopped process left.
+func TestLocalRemoveDaxNodeDirs(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
+	var dirs []string
+	for _, name := range []string{".cxl-dax-123", ".cxl-dax-4"} {
+		dir := filepath.Join(v.f.DevRoot(), name)
+		if err := os.MkdirAll(filepath.Join(dir, "dax0.0"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		dirs = append(dirs, dir)
+	}
+	other := filepath.Join(v.f.DevRoot(), "cxl-dax-kept")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logs := captureKlog(t)
+	v.restart()
+	out := logs()
+	for _, dir := range dirs {
+		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s is left: %v", dir, err)
+		}
+		wantLog(t, out, "engine: removed "+dir+", left by a zeroing or an address line probe that did not finish")
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Errorf("%s: %v", other, err)
+	}
+	// a probe cut in the middle leaves the region to the recovery
+	v.configure(func(o *Options) { probeOptions(v, o) })
+	v.f.CutProbe()
+	if !v.cut(func() { _ = v.prepare(localDriver, "n", sliceReq("n", 0, state.ModeDax, 256*mib)) }) {
+		t.Fatal("not cut")
+	}
+	out2 := v.restart()
+	if !slices.Equal(out2.Released, []state.GrantRef{{Claim: "n"}}) {
+		t.Fatalf("recovered %+v", out2)
+	}
+	finish(t, v, "finished")
+}
+
+// A busy lease bind at the start is recorded as stale with the memdev of
+// the node mount it binds, unmounted at the next release.
+func TestRecoverBusyBindIsStale(t *testing.T) {
+	v := pmemEnv(t, "ext4")
+	target := filepath.Join(v.dir, localDriver, "lease-fs", "lc1", "data")
+	v.mustPrepare(poolDriver, "c", bindReq("c", target))
+	v.mustPrepare(poolDriver, "r", fsGrant("r", true, ""))
+	// the companion's records are gone (its Unprepare cut after its
+	// bind's record): the bind is not listed
+	if err := v.e.commit(context.Background(), func(r *state.Records) error {
+		r.Grant(state.GrantRef{Claim: "c"}).Got.Bind = nil
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	v.f.SetBusy(target, true)
+	v.restart()
+	if m := v.records().Memdev(serialP); len(m.Stale) != 1 || m.Stale[0].Path != target {
+		t.Fatalf("memdev %+v", m)
+	}
+	v.f.SetBusy(target, false)
+	v.mustUnprepare(poolDriver, "r")
+	if mi, _ := v.f.Kernel().Mounted(target); mi != nil {
+		t.Fatalf("the stale bind is mounted: %+v", mi)
+	}
 }

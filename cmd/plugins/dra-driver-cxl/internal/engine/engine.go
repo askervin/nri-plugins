@@ -12,6 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package engine owns the CXL kernel objects that the driver makes on the
+// node, for local and pool memdevs alike: regions, dax devices and their
+// drivers, memory block states, namespaces, block device flags, node
+// mounts, loop devices and lease binds. It is the only code of the driver
+// that changes them, through pkg/cxl/kernel, and it keeps what it made in
+// the records of package state (Memdev, Region with its DaxDevices and
+// Mounts, Grant with its Bind) in the store.
+//
+// A grant is realised in the order journal, kernel work, verify, record:
+// its intent is committed durably before the first kernel command, and
+// every object it made is committed before the next command that depends on
+// it, so that a process stop at any point leaves records that the recovery
+// can finish (PrepareGrants, ReleaseGrants, Recover). The release of a
+// region follows Policy. The engine serializes its kernel work: one request
+// per memdev at a time (a queue per memdev), and one engine lock around each
+// short kernel call; waits and zeroing run outside the lock.
+//
+// The transitions of the records are the tables of package state,
+// rendered into docs/memory/cxl/states.md; the invariants of the records and
+// the kernel together are in invariants.go.
 package engine
 
 import (
@@ -516,4 +536,30 @@ func addRef[T comparable](refs []T, ref T) []T {
 		}
 	}
 	return append(refs, ref)
+}
+
+// memdevName returns the name of the memdev with the serial: its record's,
+// else the kernel's, else the serial.
+func (e *Engine) memdevName(serial state.Serial) string {
+	if m := e.records().Memdev(serial); m != nil && m.Name != "" {
+		return m.Name
+	}
+	if name, err := e.k.FindMemdev(uint64(serial)); err == nil {
+		return name
+	}
+	return serialText(serial)
+}
+
+// since returns the time since start in milliseconds for logs ("12.345ms").
+func since(start time.Time) string {
+	return fmt.Sprintf("%.3fms", float64(time.Since(start))/float64(time.Millisecond))
+}
+
+// claimNameOf returns the name of the claim of the grant ref (its
+// preparation's), else its uid.
+func (e *Engine) claimNameOf(ref state.GrantRef) string {
+	if p := e.records().PreparationOf(ref); p != nil && p.ClaimName != "" {
+		return p.ClaimName
+	}
+	return ref.Claim
 }

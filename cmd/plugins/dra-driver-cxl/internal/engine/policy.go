@@ -192,3 +192,40 @@ func kindOf(asked state.Asked, shared, established bool) Kind {
 	}
 	return KindLocalParts
 }
+
+// kindOf returns the row of the release policy of the memdev of the grant g
+// now: shared as configured (Options.Shared), its region established or
+// new.
+func (e *Engine) kindOf(g *state.Grant) Kind {
+	shared := e.opts.Shared != nil && e.opts.Shared(g.Serial)
+	return kindOf(g.Asked, shared, established(e.records(), g))
+}
+
+// established tells whether the region of ours of the memdev of the grant g
+// is set up (a ram region also zeroed) or kept by an earlier release, not
+// one that a Prepare made and did not finish setting up.
+func established(r *state.Records, g *state.Grant) bool {
+	if g.Asked.Kind == state.KindPersistent {
+		reg := ownRegion(r, g.Serial, state.RegionPmem)
+		return reg != nil && (reg.State == state.RegionKept || reg.SetUp)
+	}
+	reg := ownRegion(r, g.Serial, state.RegionRam)
+	return reg != nil && (reg.State == state.RegionKept || (reg.SetUp && reg.Zeroed))
+}
+
+// decision returns what the release does with the region of the memdev of
+// the last grant g (Policy); decoders that cannot be read count as a
+// region above.
+func (e *Engine) decision(g *state.Grant, memdev string, release Release) Decision {
+	kind := e.kindOf(g)
+	var above []string
+	var aboveErr error
+	if r := e.records(); release == ReleaseRecovery && ownRegions(r, r.Memdev(g.Serial)) {
+		above, aboveErr = e.k.RegionsAbove(memdev)
+	}
+	decision := Policy(release, kind, above)
+	if aboveErr != nil && decision == Destroy {
+		decision = Policy(release, kind, []string{"(" + aboveErr.Error() + ")"})
+	}
+	return decision
+}

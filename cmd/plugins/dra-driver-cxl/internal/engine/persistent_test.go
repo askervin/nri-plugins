@@ -28,6 +28,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
@@ -246,25 +247,6 @@ func TestPersistentCachedOrder(t *testing.T) {
 	})
 }
 
-// The lease bind of a companion grant of mode fs: bound at its target after
-// the node mount, unbound at its release.
-func TestPersistentBind(t *testing.T) {
-	v := pmemEnv(t, "ext4")
-	req := fsGrant("c", true, "")
-	req.BindTarget = filepath.Join(v.dir, localDriver, "lease-fs", "lc1", "data")
-	req.Lend = &state.GrantLend{Lease: "0123abcd", Name: "data"}
-	v.mustPrepare(poolDriver, "c", req)
-	g := v.grant("c", 0)
-	if g.Got.Bind == nil || g.Got.Bind.State != state.BindBound || g.Got.Lend == nil {
-		t.Fatalf("grant %+v", g.Got)
-	}
-	if !slices.ContainsFunc(v.f.MountTable(), func(m mountInfo) bool { return m.Target == req.BindTarget }) {
-		t.Fatalf("not bound: %+v", v.f.MountTable())
-	}
-	v.mustUnprepare(poolDriver, "c")
-	v.clean("unprepared")
-}
-
 // The log lines of the node mounts and of the read-only flags of the block
 // devices, each once and in order, with the driver's name first.
 func TestPersistentLogLines(t *testing.T) {
@@ -352,30 +334,6 @@ func captureKlog(t *testing.T) func() string {
 		defer mu.Unlock()
 		return buf.String()
 	}
-}
-
-// A lease bind that is busy at its release (a file of it mapped): the bind
-// is STALE, the release fails; a later release unbinds it.
-func TestPersistentBindBusy(t *testing.T) {
-	v := pmemEnv(t, "ext4")
-	req := fsGrant("c", true, "")
-	req.BindTarget = filepath.Join(v.dir, localDriver, "lease-fs", "lc1", "data")
-	req.Lend = &state.GrantLend{Lease: "0123abcd", Name: "data"}
-	v.mustPrepare(poolDriver, "c", req)
-	v.f.SetBusy(req.BindTarget, true)
-	err := v.unprepare(poolDriver, "c")
-	if err == nil || !strings.Contains(err.Error(), "lease 0123abcd: unmounting") {
-		t.Fatalf("error %v", err)
-	}
-	if b := v.grant("c", 0).Got.Bind; b.State != state.BindStale {
-		t.Fatalf("bind %+v", b)
-	}
-	if m := v.records().Memdev(serialP); len(m.Stale) != 1 {
-		t.Fatalf("stale %+v", m.Stale)
-	}
-	v.f.SetBusy(req.BindTarget, false)
-	v.mustUnprepare(poolDriver, "c")
-	v.clean("unprepared")
 }
 
 // A use of a local persistent memdev whose release failed stays a use of
@@ -519,4 +477,58 @@ func TestPersistentReleaseIgnoresGoneBlockDevice(t *testing.T) {
 	v.mustUnprepare(localDriver, "r")
 	v.mustUnprepare(localDriver, "a")
 	v.clean("unprepared")
+}
+
+// The type of the filesystem of a block device from its signatures and
+// the declared type, with the texts of the refusals (P1, P2, P3).
+func TestFsSignatureType(t *testing.T) {
+	const dev = "/dev/pmem0"
+	for _, tc := range []struct {
+		types    []string
+		declared string
+		fsType   string
+		err      string
+	}{
+		{[]string{"ext4"}, "", "ext4", ""},
+		{[]string{"ext4"}, "ext4", "ext4", ""},
+		{[]string{"ext4"}, "xfs", "", "device 0xc1ae0001: /dev/pmem0 has a filesystem of type ext4, not xfs"},                                   // P3
+		{[]string{"btrfs"}, "f2fs", "", "device 0xc1ae0001: /dev/pmem0 has a filesystem of type btrfs, not f2fs"},                               // P3 unknown
+		{[]string{"ext4", "xfs"}, "xfs", "xfs", ""},                                                                                             // several, declared
+		{[]string{"ext4", "xfs"}, "", "", "device 0xc1ae0001: /dev/pmem0 has signatures of several filesystems (ext4, xfs): set device.fsType"}, // P2
+		{[]string{"ext4", "xfs"}, "btrfs", "", "has signatures of several filesystems (ext4, xfs)"},
+		{nil, "", "", "device 0xc1ae0001: /dev/pmem0 has no filesystem of a type that the plugin knows (erofs, squashfs, ext4, xfs, btrfs or gfs2): set device.fsType"}, // P1
+		{nil, "f2fs", "f2fs", ""}, // mounted as declared
+		{nil, "xfs", "", "device 0xc1ae0001: /dev/pmem0 has no filesystem of type xfs (no signature of a type that the plugin knows)"}, // P3b
+	} {
+		got, err := fsType(kernel.FsSignature{Types: tc.types}, "0xc1ae0001", dev, tc.declared)
+		switch {
+		case tc.err != "" && (err == nil || !strings.Contains(err.Error(), tc.err)):
+			t.Errorf("%v %q: error %v, expected %q", tc.types, tc.declared, err, tc.err)
+		case tc.err == "" && err != nil:
+			t.Errorf("%v %q: %v", tc.types, tc.declared, err)
+		case tc.err == "" && got != tc.fsType:
+			t.Errorf("%v %q: %s, expected %s", tc.types, tc.declared, got, tc.fsType)
+		}
+	}
+}
+
+// A cluster filesystem is gfs2 with lock_dlm; the others are single-host,
+// and the reason says why.
+func TestFsSignatureCluster(t *testing.T) {
+	for _, tc := range []struct {
+		sig    kernel.FsSignature
+		fsType string
+		ok     bool
+		why    string
+	}{
+		{kernel.FsSignature{Types: []string{"gfs2"}, Gfs2LockProto: kernel.Gfs2LockProtoDLM}, "gfs2", true, ""},
+		{kernel.FsSignature{Types: []string{"gfs2"}, Gfs2LockProto: "lock_nolock"}, "gfs2", false, "gfs2 with lock_nolock is a single-host filesystem"},
+		{kernel.FsSignature{Types: []string{"gfs2"}}, "gfs2", false, "gfs2 without a lock protocol is a single-host filesystem"},
+		{kernel.FsSignature{Types: []string{"ext4"}}, "ext4", false, "ext4 is a single-host filesystem"},
+		{kernel.FsSignature{Types: []string{"erofs"}}, "f2fs", false, "f2fs is a single-host filesystem"},
+	} {
+		if ok, why := cluster(tc.sig, tc.fsType); ok != tc.ok || why != tc.why {
+			t.Errorf("%+v %s: %v %q", tc.sig, tc.fsType, ok, why)
+		}
+	}
 }
