@@ -154,7 +154,6 @@ func (e *poolTestEnv) driver(t *testing.T) *dra.Plugin {
 		PoolDriver:    device.PoolDriverName,
 		PoolDataDir:   e.dir,
 		LeaseFsRoot:   e.leaseFsRoot,
-		StateFile:     filepath.Join(e.dir, store.FileName),
 		FsTypes:       api.KnownFsTypes,
 		Filesystems:   e.filesystems,
 		Fence:         e.fence,

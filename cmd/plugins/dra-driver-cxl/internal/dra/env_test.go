@@ -245,7 +245,6 @@ func (e *driverEnv) start() {
 		Store:       st,
 		Drivers:     map[state.Source]string{state.SourcePool: pool.Name, state.SourceLocal: local.Name},
 		MountsDirs:  MountsDirs(local, pool),
-		Records:     map[state.Source]string{state.SourcePool: e.stateFile()},
 		Sources:     []state.Source{state.SourcePool, state.SourceLocal},
 		LeaseFsRoot: e.leaseFsRoot(),
 		FsTypes:     e.fsTypes,

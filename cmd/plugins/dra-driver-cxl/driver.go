@@ -345,7 +345,6 @@ func newDriverDevices(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Dr
 		Store:           st,
 		MountsDirs:      dra.MountsDirs(rules.all()...),
 		LeaseFsRoot:     leases.LeaseFsRoot(config.KubeletPluginDir),
-		StateFile:       config.stateFile(),
 		FsTypes:         driverConfig.fsTypes(),
 		Fence:           fence,
 		ProbeAddressing: driverConfig.verifyAddressing(),

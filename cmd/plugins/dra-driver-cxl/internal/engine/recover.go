@@ -568,8 +568,8 @@ func (c *cutClaims) done(e *Engine, ref state.GrantRef) {
 	}
 	switch {
 	case len(c.errs[claim]) > 0:
-		e.warnf(source, "claim %s (%s): not everything was released at start (%v): keeping its record in %s: its Unprepare releases its devices, its Prepare again reuses them",
-			name, claim, errors.Join(c.errs[claim]...), e.recordName(source))
+		e.warnf(source, "claim %s (%s): not everything was released at start (%v): keeping its record in the store: its Unprepare releases its devices, its Prepare again reuses them",
+			name, claim, errors.Join(c.errs[claim]...))
 	case len(c.above[claim]) == 0:
 		e.logf(source, "claim %s (%s): released, its Prepare again prepares its devices anew", name, claim)
 	}
@@ -588,15 +588,6 @@ func (e *Engine) sourceOf(ref state.GrantRef) state.Source {
 		}
 	}
 	return state.SourcePool
-}
-
-// recordName returns what the log lines call the record of a claim of the
-// source whose Prepare did not finish (Options.Records), else "the store".
-func (e *Engine) recordName(source state.Source) string {
-	if n := e.opts.Records[source]; n != "" {
-		return n
-	}
-	return "the store"
 }
 
 // ownsRegion tells whether the engine owns the record of a region: the

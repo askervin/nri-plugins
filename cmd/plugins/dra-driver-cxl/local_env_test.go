@@ -179,7 +179,6 @@ func (e *localTestEnv) start() *dra.Plugin {
 		PoolDataDir:     e.poolDir,
 		LocalDir:        e.dir,
 		LeaseFsRoot:     filepath.Join(e.dir, leaseFsDirName),
-		StateFile:       filepath.Join(e.dir, store.FileName),
 		FsTypes:         e.config.fsTypes(),
 		Filesystems:     e.filesystems,
 		Fence:           e.fence,

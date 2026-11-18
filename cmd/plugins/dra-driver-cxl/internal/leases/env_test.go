@@ -250,7 +250,6 @@ func (e *leaseEnv) boot() {
 		Store:       st,
 		Drivers:     map[state.Source]string{state.SourcePool: pool.Name, state.SourceLocal: local.Name},
 		MountsDirs:  dra.MountsDirs(local, pool),
-		Records:     map[state.Source]string{state.SourcePool: filepath.Join(e.dir, store.FileName)},
 		Sources:     []state.Source{state.SourcePool, state.SourceLocal},
 		LeaseFsRoot: LeaseFsRoot(e.dir),
 		FsTypes:     api.KnownFsTypes,

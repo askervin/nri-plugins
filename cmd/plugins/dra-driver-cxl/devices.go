@@ -67,9 +67,6 @@ type deviceConfig struct {
 	// manages no local memdevs; LeaseFsRoot the directory of the lease-fs
 	// directories of the lease claims, "" for none.
 	LocalDir, LeaseFsRoot string
-	// StateFile is the path of the document of Store, which the log lines
-	// name as the record of a claim.
-	StateFile string
 	// MountsDirs are the directories of the node mounts of mode fs of the
 	// sources (dra.MountsDirs of the drivers' rules); one for each source
 	// of the engine.
@@ -144,7 +141,6 @@ func newDeviceEngine(cfg deviceConfig) (*deviceEngine, error) {
 		Store:           cfg.Store,
 		Drivers:         d.drivers,
 		MountsDirs:      map[state.Source]string{},
-		Records:         map[state.Source]string{},
 		LeaseFsRoot:     cfg.LeaseFsRoot,
 		FsTypes:         cfg.FsTypes,
 		Filesystems:     cfg.Filesystems,
@@ -159,14 +155,12 @@ func newDeviceEngine(cfg deviceConfig) (*deviceEngine, error) {
 		d.drivers[state.SourcePool] = cfg.PoolDriver
 		opts.Sources = append(opts.Sources, state.SourcePool)
 		opts.MountsDirs[state.SourcePool] = cfg.MountsDirs[state.SourcePool]
-		opts.Records[state.SourcePool] = cfg.StateFile
 	}
 	if cfg.LocalDir != "" {
 		// the lines of the local memdevs that the local allocator logged
 		d.drivers[state.SourceLocal] = device.DriverName
 		opts.Sources = append(opts.Sources, state.SourceLocal)
 		opts.MountsDirs[state.SourceLocal] = cfg.MountsDirs[state.SourceLocal]
-		opts.Records[state.SourceLocal] = cfg.StateFile
 		opts.ProbesFile = filepath.Join(cfg.LocalDir, localProbesFileName)
 	}
 	if opts.Sources == nil {
