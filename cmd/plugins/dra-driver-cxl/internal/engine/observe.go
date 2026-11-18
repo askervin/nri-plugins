@@ -32,8 +32,8 @@ import (
 const UnknownTransition = "kernel transition not in table: "
 
 // Observe returns a new observation of the kernel objects. A region of
-// ours that is hollow is logged once per process with the command that
-// deletes it. Every change of the state of a kernel object since the last
+// ours that is hollow is logged once while it stays hollow, with the
+// command that deletes it. Every change of the state of a kernel object since the last
 // observation of the engine that its table does not have is logged at klog
 // V(4) (UnknownTransition); it is never an error.
 func (e *Engine) Observe(ctx context.Context) (*kernel.Snapshot, error) {
@@ -168,10 +168,12 @@ func (e *Engine) verify(ctx context.Context, refs []state.GrantRef, trigger stat
 	}
 }
 
-// logHollow logs each hollow region of ours of the snapshot once per
-// process, with the command that deletes it.
+// logHollow logs each hollow region of ours of the snapshot once while it
+// stays hollow, with the command that deletes it. A name that is no longer
+// hollow is forgotten: the kernel reuses region names.
 func (e *Engine) logHollow(snap *kernel.Snapshot) {
 	r := e.records()
+	hollow := map[string]bool{}
 	for _, ri := range snap.Regions {
 		if ri.State != kernel.RegionHollow {
 			continue
@@ -180,6 +182,7 @@ func (e *Engine) logHollow(snap *kernel.Snapshot) {
 		if reg == nil || !reg.Ours() {
 			continue
 		}
+		hollow[ri.Name] = true
 		e.qmu.Lock()
 		logged := e.hollowLogged[ri.Name]
 		e.hollowLogged[ri.Name] = true
@@ -194,6 +197,13 @@ func (e *Engine) logHollow(snap *kernel.Snapshot) {
 		klog.Warningf("engine: %s is hollow (NUMA node %d): it is deleted when its memory blocks are offline: echo %s > /sys/bus/cxl/devices/%s/delete_region",
 			ri.Name, ri.NumaNode, ri.Name, decoder)
 	}
+	e.qmu.Lock()
+	for name := range e.hollowLogged {
+		if !hollow[name] {
+			delete(e.hollowLogged, name)
+		}
+	}
+	e.qmu.Unlock()
 }
 
 // unknownTransitions returns the changes of the states of the kernel

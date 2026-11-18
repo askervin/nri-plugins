@@ -90,6 +90,37 @@ func TestObserveLogsUnknownTransitions(t *testing.T) {
 	}
 }
 
+// A hollow region of ours is warned of once while it stays hollow, and
+// again when the kernel reuses its name for another hollow region.
+func TestObserveHollowOncePerRegion(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
+	logs := captureKlog(t)
+	for range 2 {
+		v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive))
+		v.f.Unplug(serialA)
+		for range 2 {
+			if _, err := v.e.Observe(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		v.mustUnprepare(poolDriver, "c")
+		if _, err := v.e.Observe(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		v.f.Plug(fake.MemdevSpec{Serial: serialA})
+	}
+	// klog writes a warning to the output of each lower severity too
+	warned := map[string]bool{}
+	for _, line := range strings.Split(logs(), "\n") {
+		if strings.Contains(line, "region0 is hollow") {
+			warned[line] = true
+		}
+	}
+	if len(warned) != 2 {
+		t.Fatalf("warnings %v", warned)
+	}
+}
+
 // A request that waits for its memdev does not hold up the requests of
 // another memdev: one queue per memdev.
 func TestQueuesPerMemdev(t *testing.T) {
