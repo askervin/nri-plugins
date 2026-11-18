@@ -31,6 +31,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 	"golang.org/x/sys/unix"
 )
 
@@ -309,7 +310,7 @@ func TestPoolLeaseBind(t *testing.T) {
 		t.Fatal("the bind did not exist when the broker was told that the companion is prepared")
 	}
 	// a plain bind of the node mount, which inherits its flags
-	wantCalls := []string{fmt.Sprintf("mount %s %s erofs 0x%x dax=always", e.pmem, direct, fsMountFlags), bindCall(direct, target)}
+	wantCalls := []string{fmt.Sprintf("mount %s %s erofs 0x%x dax=always", e.pmem, direct, fsMountFlags), fake.BindCall(direct, target)}
 	if got := e.k.MountCalls("mount"); !slices.Equal(got, wantCalls) {
 		t.Fatalf("mount calls %q, expected %q", got, wantCalls)
 	}

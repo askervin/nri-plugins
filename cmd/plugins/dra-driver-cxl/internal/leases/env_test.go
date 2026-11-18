@@ -32,7 +32,6 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/sys/unix"
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
@@ -826,11 +825,6 @@ func (e *leaseEnv) mounted(target string) *kernel.MountInfo {
 // serial and the access.
 func (e *leaseEnv) nodeMount(serial uint64, access string) string {
 	return filepath.Join(e.poolDir, "mounts", fmt.Sprintf("%x-%s", serial, access))
-}
-
-// bindCall returns the mount call of a bind of a node mount at target.
-func bindCall(nodeMount, target string) string {
-	return fmt.Sprintf("mount %s %s  0x%x ", nodeMount, target, unix.MS_BIND)
 }
 
 // cdiSpec returns the CDI spec of the name on disk, nil if there is none.

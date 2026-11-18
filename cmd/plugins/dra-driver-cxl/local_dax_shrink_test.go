@@ -24,23 +24,8 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
-
-// readWithin runs read in a goroutine and returns whether it returned
-// within 200 ms, and a channel that is closed when it has returned.
-func readWithin(read func()) (bool, <-chan struct{}) {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		read()
-	}()
-	select {
-	case <-done:
-		return true, done
-	case <-time.After(200 * time.Millisecond):
-		return false, done
-	}
-}
 
 // A rescan of the publisher during the release of a dax slice, when the
 // release writes size 0 to its dax device, reads no mapping of a dax
@@ -74,8 +59,8 @@ func TestRescanDuringDaxShrink(t *testing.T) {
 	var rescanned, verified bool
 	var rescanDone, verifyDone <-chan struct{}
 	e.k.Before("write bus/dax/devices/dax0.0/size 0", func() {
-		verified, verifyDone = readWithin(func() { verify, verifyErr = e.devices.Observe(ctx) })
-		rescanned, rescanDone = readWithin(func() { pub.Rescan(ctx, false) })
+		verified, verifyDone = fake.ReadWithin(func() { verify, verifyErr = e.devices.Observe(ctx) })
+		rescanned, rescanDone = fake.ReadWithin(func() { pub.Rescan(ctx, false) })
 	})
 	unprepared := make(chan error, 1)
 	go func() {

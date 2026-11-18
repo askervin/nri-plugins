@@ -108,6 +108,9 @@ func newMountTable(f *Fake) *mountTable {
 	}
 }
 
+// mountCall is the format of a mount call in the call log.
+const mountCall = "mount %s %s %s 0x%x %s"
+
 func (m *mountTable) call(format string, args ...any) {
 	m.calls = append(m.calls, fmt.Sprintf(format, args...))
 }
@@ -232,7 +235,7 @@ func (m *mountTable) cut(target string) {
 func (m *mountTable) Mount(source, target, fstype string, flags uintptr, data string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.call("mount %s %s %s 0x%x %s", source, target, fstype, flags, data)
+	m.call(mountCall, source, target, fstype, flags, data)
 	if err := m.mountErr[source]; err != nil {
 		return err
 	}
@@ -834,6 +837,12 @@ func (f *Fake) MountCalls(prefix string) []string {
 		}
 	}
 	return out
+}
+
+// BindCall returns the call that MountCalls lists for a bind mount of
+// source at target.
+func BindCall(source, target string) string {
+	return fmt.Sprintf(mountCall, source, target, "", unix.MS_BIND, "")
 }
 
 // MountTable returns the mounts of the mount namespace of the process.

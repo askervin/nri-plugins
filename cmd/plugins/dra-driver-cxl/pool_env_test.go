@@ -26,7 +26,6 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/sys/unix"
 	resourceapi "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -564,11 +563,6 @@ func (e *poolTestEnv) wantNoMounts(t *testing.T, p *dra.Plugin) {
 	if v := e.k.Violations(); len(v) > 0 {
 		t.Fatalf("mount rules violated: %v", v)
 	}
-}
-
-// bindCall returns the mount call of a bind of a node mount at target.
-func bindCall(nodeMount, target string) string {
-	return fmt.Sprintf("mount %s %s  0x%x ", nodeMount, target, unix.MS_BIND)
 }
 
 // mountedErr returns the mount at target, nil if there is none, and no

@@ -610,7 +610,7 @@ func TestFsLease(t *testing.T) {
 	if mi := e.mounted(bind); mi == nil || mi.FsType != "erofs" || mi.Source != e.pmem {
 		t.Fatalf("bind %+v", mi)
 	}
-	if len(e.k.MountCalls(bindCall(direct, bind))) != 1 {
+	if len(e.k.MountCalls(fake.BindCall(direct, bind))) != 1 {
 		t.Fatalf("not a bind of the node mount: %q", e.k.MountCalls(""))
 	}
 	if l := e.stored("000000a1"); l == nil || l.Lend == nil || l.Lend.BindTarget != bind || l.Lend.NumaNode != nil {
@@ -629,7 +629,7 @@ func TestFsLease(t *testing.T) {
 	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "pool", Mode: "fs", FsType: "erofs", Shared: true, ReadOnly: true, Access: "cached",
 		Path: "/run/cxl/fs/models", Size: pmemBytes, Serial: "0xc1af0001", Env: fsEnv("erofs", "cached", "/run/cxl/fs/models", "1")})
 	models := filepath.Join(fsDir, "models")
-	if mi := e.mounted(models); mi == nil || mi.Source != filepath.Join(e.k.DevRoot(), "loop0") || len(e.k.MountCalls(bindCall(cached, models))) != 1 {
+	if mi := e.mounted(models); mi == nil || mi.Source != filepath.Join(e.k.DevRoot(), "loop0") || len(e.k.MountCalls(fake.BindCall(cached, models))) != 1 {
 		t.Fatalf("bind %+v, calls %q", mi, e.k.MountCalls(""))
 	}
 	for _, c := range []struct{ name, err string }{
