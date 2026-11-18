@@ -713,12 +713,12 @@ and cannot make it the companion of a lease it did not request.
   the lease table could not be decoded at start, no directory is removed
   until a start with a table that decodes.
 - Plugin restart with `fs` leases: binds and node mounts are kernel
-  mounts and outlive the plugin. At start the driver binds again a
-  bind of a prepared companion claim that is missing (when its node mount
-  is there or could be mounted again), and unmounts the mounts under
-  `lease-fs` that belong to no prepared companion claim (left by a crash
-  between the bind and the write of its state), so that they do not hold
-  the device.
+  mounts and outlive the plugin. At start the driver binds again a bind
+  of a prepared companion claim that is missing (when its node mount is
+  there or could be mounted again, and the claim is not being
+  unprepared), and unmounts the mounts under `lease-fs` that belong to
+  no prepared companion claim (left by a crash between the bind and the
+  write of its state), so that they do not hold the device.
 - Stale binds: a bind that belongs to no prepared companion claim and
   cannot be unmounted (busy) when a Prepare fails or at start is
   unmounted at the next Unprepare (or failed Prepare) of any pool claim on

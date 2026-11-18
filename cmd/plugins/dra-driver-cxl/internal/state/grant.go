@@ -370,8 +370,8 @@ var BindTable = Table[BindState]{
 		},
 		{
 			From: fsm.List(BindAbsent, BindBound), To: BindBound, Triggers: fsm.List(TriggerRecover),
-			When: "the recovery binds a REALISED fs companion again whose node mount is mounted; an existing mount " +
-				"at a listed target is kept",
+			When: "the recovery binds a REALISED fs companion again whose node mount is mounted, unless its claim " +
+				"is UNPREPARING; an existing mount at a listed target is kept",
 		},
 	},
 }

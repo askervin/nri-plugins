@@ -380,19 +380,19 @@ may exist and finishes or undoes it. The start goes in this order:
 
 1. Read the boot id and open the store: lock `state.lock`, read
    `state.json` (or `state.json.prev` when `state.json` cannot be read).
-2. Recovery, before NRI and before kubelet can call: observe
-   the kernel; mount again the node mounts of the prepared claims, found
-   by the identity of their block device, and verify their dax and block
+2. Recovery, before NRI and before kubelet can call: observe the kernel;
+   mount again the node mounts of the prepared claims, found by the
+   identity of their block device, and verify their dax and block
    devices (a mismatch makes the claim PREPARED_UNRESTORED); bind the
-   binds of prepared `fs` companions again; release what the grants of
-   the Prepares that did not finish made, the top-most region first, or
-   keep it by the release policy (the preparation stays PREPARING or
-   becomes KEPT), and keep what the `numa` companions whose Prepare did
-   not finish have for kubelet's Unprepare or Prepare again; unmount the
-   mounts and binds under the driver's directories that no prepared claim
-   lists; delete the dax devices of the driver's regions that no grant
-   uses, and its hollow regions; write the CDI specs again from the
-   records.
+   binds of prepared `fs` companions again, but not of those being
+   unprepared; release what the grants of the Prepares that did not
+   finish made, the top-most region first, or keep it by the release
+   policy (the preparation stays PREPARING or becomes KEPT), and keep
+   what the `numa` companions whose Prepare did not finish have for
+   kubelet's Unprepare or Prepare again; unmount the mounts and binds
+   under the driver's directories that no prepared claim lists; delete
+   the dax devices of the driver's regions that no grant uses, and its
+   hollow regions; write the CDI specs again from the records.
 3. The first list of the pool driver's ResourceSlices, which gates the
    publication of local memdevs, and the fence: the NUMA nodes of the
    claims prepared in this boot.

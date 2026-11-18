@@ -363,15 +363,16 @@ func hollowRecovered(r *state.Records, ref state.RegionRef) error {
 }
 
 // restoreBinds binds again the lease binds of the realised companion
-// grants of prepared claims whose node mount is mounted. Errors are
-// logged.
+// grants of prepared claims whose node mount is mounted, but not of claims
+// being unprepared: kubelet unprepares them again. Errors are logged.
 func (e *Engine) restoreBinds(ctx context.Context) {
 	r := e.records()
 	for i := range r.Grants {
 		g := &r.Grants[i]
 		b := g.Got.Bind
 		p := r.PreparationOf(g.Ref)
-		if b == nil || b.State != state.BindBound || g.State != state.GrantRealised || p == nil || !p.Prepared() || !e.owns(g.Asked.Source) {
+		if b == nil || b.State != state.BindBound || g.State != state.GrantRealised || p == nil || !p.Prepared() ||
+			p.State == state.PreparationUnpreparing || !e.owns(g.Asked.Source) {
 			continue
 		}
 		u := useOf(r, g)

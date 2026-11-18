@@ -516,21 +516,35 @@ func TestRecoverHollowNoted(t *testing.T) {
 }
 
 // The lease bind of a realised companion grant is bound again at a start
-// when it is gone.
+// when it is gone, but not when the Unprepare of the claim was cut before
+// its grants were released.
 func TestRecoverBind(t *testing.T) {
-	v := pmemEnv(t, "ext4")
-	req := fsGrant("c", true, "")
-	req.BindTarget = filepath.Join(v.dir, localDriver, "lease-fs", "lc1", "data")
-	v.mustPrepare(poolDriver, "c", req)
-	if err := v.f.Kernel().Unmount(req.BindTarget); err != nil {
-		t.Fatal(err)
+	for _, unpreparing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unpreparing=%v", unpreparing), func(t *testing.T) {
+			v := pmemEnv(t, "ext4")
+			req := fsGrant("c", true, "")
+			req.BindTarget = filepath.Join(v.dir, localDriver, "lease-fs", "lc1", "data")
+			v.mustPrepare(poolDriver, "c", req)
+			if unpreparing {
+				if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
+					p := doc.Preparation(poolDriver, "c")
+					return state.Apply(&state.PreparationTable, &p.State, state.PreparationUnpreparing, state.TriggerUnprepare)
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := v.f.Kernel().Unmount(req.BindTarget); err != nil {
+				t.Fatal(err)
+			}
+			v.restart()
+			if mi, _ := v.f.Kernel().Mounted(req.BindTarget); (mi != nil) == unpreparing {
+				t.Fatalf("bound again %v", mi != nil)
+			}
+			v.check("restarted")
+			v.mustUnprepare(poolDriver, "c")
+			v.clean("unprepared")
+		})
 	}
-	v.restart()
-	if mi, _ := v.f.Kernel().Mounted(req.BindTarget); mi == nil {
-		t.Fatal("not bound again")
-	}
-	v.check("bound again")
-	v.mustUnprepare(poolDriver, "c")
 }
 
 // Something else mounted at the node mount of a grant at a start: the mount

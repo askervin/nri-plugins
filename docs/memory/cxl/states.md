@@ -144,7 +144,7 @@ States: ABSENT, BOUND, STALE.
 | BOUND | ABSENT | `a-unprepare`, `a-prepare`, `a-recover`: companion Unprepare (after the revoke); the rollback of the companion Prepare; the recovery sweep of a bind that no REALISED grant of a PREPARED preparation lists | - | unmount (never detached); commit (d) |
 | BOUND | STALE | `a-unprepare`, `a-prepare`, `a-recover`: the unmount failed with EBUSY (a file of the bind is mapped) | - | the memdev's Stale list gets the target; the lease RELEASING_BUSY; retried at every release and by the periodic pass |
 | STALE | ABSENT | `a-unprepare`, `a-prepare`, `a-recover`, `a-reconcile`: a retry unmounts it (the holder ended) | - | commit (d) |
-| ABSENT, BOUND | BOUND | `a-recover`: the recovery binds a REALISED fs companion again whose node mount is mounted; an existing mount at a listed target is kept | - | - |
+| ABSENT, BOUND | BOUND | `a-recover`: the recovery binds a REALISED fs companion again whose node mount is mounted, unless its claim is UNPREPARING; an existing mount at a listed target is kept | - | - |
 
 **Invariants.** A BOUND bind's node mount is mounted.
 
