@@ -18,7 +18,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
@@ -26,11 +25,11 @@ import (
 )
 
 // notDriven are the rows of the tables of the leases and the lease claims
-// that the broker does not apply, by "<object>: <from> -> <to> on
-// <triggers>", with the reason.
+// that the broker does not apply, by fsm.TableText.RowName, with the
+// reason.
 var notDriven = map[string]string{
-	"Lease: CREATING,PENDING,LENDING,READY,RELEASING,RELEASING_BUSY,FAILED -> NONE on load": "the store's load of a " +
-		"document of another boot drops the leases",
+	"Lease.State CREATING,PENDING,LENDING,READY,RELEASING,RELEASING_BUSY,FAILED -> NONE on load": "the store's " +
+		"load of a document of another boot drops the leases",
 }
 
 // TestMain counts the rows of the tables of the leases and the lease
@@ -45,15 +44,6 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// rowName returns the name of a row in notDriven.
-func rowName(t state.TableText, r fsm.RowText) string {
-	to := strings.Join(r.To, ",")
-	if r.Stays {
-		to = "(unchanged)"
-	}
-	return fmt.Sprintf("%s: %s -> %s on %s", t.Object, strings.Join(r.From, ","), to, strings.Join(r.Triggers, ","))
-}
-
 // reportRows prints the rows of the lease tables that the broker drives and
 // no test applied, and returns 1 if there is one, or if notDriven names a
 // row that is not in the tables.
@@ -65,8 +55,8 @@ func reportRows(rows *fsm.Rows) int {
 		for _, i := range rows.Unapplied(t) {
 			unapplied[i] = true
 		}
-		for i, r := range t.Rows {
-			name := rowName(t, r)
+		for i := range t.Rows {
+			name := t.RowName(i)
 			names[name] = true
 			switch {
 			case notDriven[name] != "":

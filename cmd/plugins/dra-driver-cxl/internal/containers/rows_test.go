@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"os"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/containers/nri-plugins/pkg/cxl/fsm"
@@ -43,13 +42,7 @@ func reportRows(rows *fsm.Rows, tables ...fsm.TableText) int {
 	code := 0
 	for _, t := range tables {
 		for _, i := range rows.Unapplied(t) {
-			r := t.Rows[i]
-			to := strings.Join(r.To, ",")
-			if r.Stays {
-				to = "(unchanged)"
-			}
-			fmt.Printf("FAIL: row %d of %s.%s %s -> %s on %s is applied by no test\n", i, t.Object, t.Field,
-				strings.Join(r.From, ","), to, strings.Join(r.Triggers, ","))
+			fmt.Printf("FAIL: row %d %s is applied by no test\n", i, t.RowName(i))
 			code = 1
 		}
 	}

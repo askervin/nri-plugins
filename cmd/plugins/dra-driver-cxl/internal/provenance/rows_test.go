@@ -18,7 +18,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
@@ -38,7 +37,7 @@ var watcherTables = []fsm.TableText{
 }
 
 // notDriven are the rows of watcherTables that the watcher does not apply,
-// by "<table> <from> -> <to> on <triggers>", with the reason. The watcher
+// by fsm.TableText.RowName, with the reason. The watcher
 // drives every row of the table.
 var notDriven = map[string]string{}
 
@@ -55,29 +54,20 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// rowName returns the name of a row in notDriven.
-func rowName(t fsm.TableText, r fsm.RowText) string {
-	to := strings.Join(r.To, ",")
-	if r.Stays {
-		to = "(unchanged)"
-	}
-	return fmt.Sprintf("%s.%s %s -> %s on %s", t.Object, t.Field, strings.Join(r.From, ","), to, strings.Join(r.Triggers, ","))
-}
-
 // reportRows prints the rows of watcherTables that no test applied and
 // returns 1 if one of them is not in notDriven, or if a row of notDriven
 // was applied.
 func reportRows(rows *fsm.Rows) int {
 	code := 0
 	for _, t := range watcherTables {
-		for i, r := range t.Rows {
-			if name := rowName(t, r); notDriven[name] != "" && rows.Applied(t.Object, t.Field, i) {
+		for i := range t.Rows {
+			if name := t.RowName(i); notDriven[name] != "" && rows.Applied(t.Object, t.Field, i) {
 				fmt.Printf("FAIL: row %d %s is applied by a test of the watcher: remove it from notDriven\n", i, name)
 				code = 1
 			}
 		}
 		for _, i := range rows.Unapplied(t) {
-			name := rowName(t, t.Rows[i])
+			name := t.RowName(i)
 			why, ok := notDriven[name]
 			switch {
 			case !ok:

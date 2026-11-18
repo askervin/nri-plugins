@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"os"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
@@ -27,20 +26,19 @@ import (
 )
 
 // notDriven are the rows of the table of the preparations that the
-// front-end does not apply, by "<from> -> <to> on <triggers>", with the
-// reason. The tests may apply them through the store or the engine.
+// front-end does not apply, by fsm.TableText.RowName, with the reason. The tests may apply them through the store or the engine.
 var notDriven = map[string]string{
-	"PREPARING -> (unchanged) on a-recover": "the engine's recovery of a cut Prepare",
-	"PREPARED -> PREPARED_UNRESTORED on a-recover": "the engine's recovery of a node mount that does not mount " +
-		"again",
-	"PREPARED_UNRESTORED -> (unchanged) on a-recover": "the engine's recovery of a node mount that does not mount " +
-		"again",
-	"PREPARING,PREPARED,PREPARED_UNRESTORED,PREPARED_STALE,UNPREPARING,KEPT -> PREPARED_STALE on load": "the store's " +
-		"load of the records of another boot",
-	"UNPREPARING -> (unchanged) on a-recover": "a start leaves an UNPREPARING preparation as it is, with no " +
-		"commit",
-	"KEPT -> (unchanged) on a-recover": "the engine's recovery of a kept region",
-	"KEPT -> UNKNOWN on a-recover":     "the engine's recovery of a kept region",
+	"Preparation.State PREPARING -> (unchanged) on a-recover": "the engine's recovery of a cut Prepare",
+	"Preparation.State PREPARED -> PREPARED_UNRESTORED on a-recover": "the engine's recovery of a node mount " +
+		"that does not mount again",
+	"Preparation.State PREPARED_UNRESTORED -> (unchanged) on a-recover": "the engine's recovery of a node " +
+		"mount that does not mount again",
+	"Preparation.State PREPARING,PREPARED,PREPARED_UNRESTORED,PREPARED_STALE,UNPREPARING,KEPT -> " +
+		"PREPARED_STALE on load": "the store's load of the records of another boot",
+	"Preparation.State UNPREPARING -> (unchanged) on a-recover": "a start leaves an UNPREPARING preparation " +
+		"as it is, with no commit",
+	"Preparation.State KEPT -> (unchanged) on a-recover": "the engine's recovery of a kept region",
+	"Preparation.State KEPT -> UNKNOWN on a-recover":     "the engine's recovery of a kept region",
 }
 
 // TestMain counts the rows of the table of the preparations that the tests
@@ -56,15 +54,6 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// preparationRow returns the name of a row in notDriven.
-func preparationRow(r fsm.RowText) string {
-	to := strings.Join(r.To, ",")
-	if r.Stays {
-		to = "(unchanged)"
-	}
-	return fmt.Sprintf("%s -> %s on %s", strings.Join(r.From, ","), to, strings.Join(r.Triggers, ","))
-}
-
 // frontEndTriggers are the triggers of the rows that the front-end drives.
 var frontEndTriggers = []string{string(state.TriggerPrepare), string(state.TriggerUnprepare)}
 
@@ -77,7 +66,7 @@ func reportRows(rows *fsm.Rows) int {
 	code := 0
 	names := map[string]bool{}
 	for i, r := range t.Rows {
-		name := preparationRow(r)
+		name := t.RowName(i)
 		names[name] = true
 		why, listed := notDriven[name]
 		driven := slices.ContainsFunc(r.Triggers, func(tr string) bool { return slices.Contains(frontEndTriggers, tr) })

@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"os"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
@@ -48,7 +47,7 @@ func engineRow(t fsm.TableText, r fsm.RowText) bool {
 }
 
 // notDriven are the rows of engineTables that the engine does not apply,
-// by "<table> <from> -> <to> on <triggers>", with the reason.
+// by fsm.TableText.RowName, with the reason.
 var notDriven = map[string]string{
 	"Grant.State JOURNALED,REALISING,REALISED,REALISED_UNRESTORED,RELEASING -> (unchanged) on load": "the store's load " +
 		"of a document of another boot",
@@ -74,23 +73,14 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// rowName returns the name of a row in notDriven.
-func rowName(t fsm.TableText, r fsm.RowText) string {
-	to := strings.Join(r.To, ",")
-	if r.Stays {
-		to = "(unchanged)"
-	}
-	return fmt.Sprintf("%s.%s %s -> %s on %s", t.Object, t.Field, strings.Join(r.From, ","), to, strings.Join(r.Triggers, ","))
-}
-
 // reportRows prints the rows of engineTables that the engine drives and no
 // test applied and returns 1 if one of them is not in notDriven, or if a
 // row of notDriven was applied.
 func reportRows(rows *fsm.Rows) int {
 	code := 0
 	for _, t := range engineTables {
-		for i, r := range t.Rows {
-			if name := rowName(t, r); notDriven[name] != "" && rows.Applied(t.Object, t.Field, i) {
+		for i := range t.Rows {
+			if name := t.RowName(i); notDriven[name] != "" && rows.Applied(t.Object, t.Field, i) {
 				fmt.Printf("FAIL: row %d %s is applied by a test of the engine: remove it from notDriven\n", i, name)
 				code = 1
 			}
@@ -99,7 +89,7 @@ func reportRows(rows *fsm.Rows) int {
 			if !engineRow(t, t.Rows[i]) {
 				continue
 			}
-			name := rowName(t, t.Rows[i])
+			name := t.RowName(i)
 			why, ok := notDriven[name]
 			switch {
 			case !ok:

@@ -68,6 +68,19 @@ func (t *Table[S]) Text() TableText {
 	return tt
 }
 
+// RowName returns the name of row i of the table, "<object>.<field>
+// <from> -> <to> on <triggers>", with "(unchanged)" for the to of a row
+// that keeps the state.
+func (t TableText) RowName(i int) string {
+	r := t.Rows[i]
+	to := strings.Join(r.To, ",")
+	if r.Stays {
+		to = "(unchanged)"
+	}
+	return fmt.Sprintf("%s.%s %s -> %s on %s", t.Object, t.Field, strings.Join(r.From, ","), to,
+		strings.Join(r.Triggers, ","))
+}
+
 // Texts returns the values as text.
 func Texts[S any](values []S) []string {
 	out := make([]string, 0, len(values))
