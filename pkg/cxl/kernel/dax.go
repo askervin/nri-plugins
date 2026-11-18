@@ -389,18 +389,36 @@ func (k *Kernel) WaitDaxBlocks(ctx context.Context, dax string) error {
 // bound to a driver (the kernel makes it asynchronously after the region is
 // created or enabled), and returns its name.
 func (k *Kernel) WaitDaxRegion(ctx context.Context, region string) (string, error) {
-	var dax string
-	err := k.poll(ctx, func() (bool, error) {
-		if ds := k.DaxDevices(region); len(ds) > 0 && k.DaxDriver(ds[0]) != "" {
-			dax = ds[0]
-			return true, nil
-		}
-		return false, nil
-	})
+	dax, err := k.waitFirstDax(ctx, region, true)
 	if err != nil {
 		return "", fmt.Errorf("no dax device bound to a driver appeared in %s: %w", region, err)
 	}
 	return dax, nil
+}
+
+// WaitFirstDax waits until the first dax device of a region exists, bound
+// to a driver or not, and returns its name.
+func (k *Kernel) WaitFirstDax(ctx context.Context, region string) (string, error) {
+	dax, err := k.waitFirstDax(ctx, region, false)
+	if err != nil {
+		return "", fmt.Errorf("no dax device appeared in %s: %w", region, err)
+	}
+	return dax, nil
+}
+
+// waitFirstDax waits until the first dax device of a region exists, and
+// is bound to a driver if bound is set, and returns its name.
+func (k *Kernel) waitFirstDax(ctx context.Context, region string, bound bool) (string, error) {
+	var dax string
+	err := k.poll(ctx, func() (bool, error) {
+		ds := k.DaxDevices(region)
+		if len(ds) == 0 || bound && k.DaxDriver(ds[0]) == "" {
+			return false, nil
+		}
+		dax = ds[0]
+		return true, nil
+	})
+	return dax, err
 }
 
 // RegionFreeGaps returns the ranges of the memory of a region that none of

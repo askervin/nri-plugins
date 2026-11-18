@@ -635,7 +635,7 @@ func (e *Engine) waitWhole(ctx context.Context, req *GrantRequest, region string
 	var dax string
 	var err error
 	if again {
-		dax, err = e.firstDax(ctx, region)
+		dax, err = e.k.WaitFirstDax(ctx, region)
 	} else {
 		dax, err = e.k.WaitDaxRegion(ctx, region)
 	}
@@ -667,19 +667,6 @@ func (e *Engine) switchWhole(ctx context.Context, req *GrantRequest, region, dax
 		return nil
 	}
 	return e.k.WaitRegionBlocks(ctx, region)
-}
-
-// firstDax returns the first dax device of a region that is enabled again,
-// waiting until the kernel made it.
-func (e *Engine) firstDax(ctx context.Context, region string) (string, error) {
-	for {
-		if ds := e.k.DaxDevices(region); len(ds) > 0 {
-			return ds[0], nil
-		}
-		if err := sleepCtx(ctx, e.pollInterval()); err != nil {
-			return "", fmt.Errorf("no dax device appeared in %s: %w", region, err)
-		}
-	}
 }
 
 // spanRegion gives the unbound first dax device of a region all of the
@@ -789,26 +776,6 @@ func (e *Engine) offlineSettled(ctx context.Context, req *GrantRequest, blocks [
 		if time.Now().After(deadline) {
 			return &keptOnlineError{blocks: blocks}
 		}
-	}
-}
-
-// pollInterval returns the interval of the polls of the engine's waits.
-func (e *Engine) pollInterval() time.Duration {
-	if e.k.PollInterval > 0 {
-		return e.k.PollInterval
-	}
-	return 200 * time.Millisecond
-}
-
-// sleepCtx sleeps for d or until ctx ends.
-func sleepCtx(ctx context.Context, d time.Duration) error {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
 	}
 }
 

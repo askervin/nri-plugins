@@ -359,6 +359,14 @@ func TestDaxDefaultKmem(t *testing.T) {
 	noErr(t, k.WaitRegionBlocks(ctxTimeout(t, 5*time.Second), "region0"))
 	_, err = k.WaitDaxRegion(ctxTimeout(t, 20*time.Millisecond), "region9")
 	wantErr(t, err, context.DeadlineExceeded, "no dax device bound to a driver appeared in region9")
+	noErr(t, k.UnbindDax(context.Background(), dax))
+	_, err = k.WaitDaxRegion(ctxTimeout(t, 20*time.Millisecond), "region0")
+	wantErr(t, err, context.DeadlineExceeded, "no dax device bound to a driver appeared in region0")
+	if dax, err = k.WaitFirstDax(ctxTimeout(t, time.Second), "region0"); err != nil || dax != "dax0.0" {
+		t.Fatalf("first unbound dax device %q %v", dax, err)
+	}
+	_, err = k.WaitFirstDax(ctxTimeout(t, 20*time.Millisecond), "region9")
+	wantErr(t, err, context.DeadlineExceeded, "no dax device appeared in region9")
 }
 
 func itoa(n uint64) string { return strconv.FormatUint(n, 10) }
