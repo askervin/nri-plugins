@@ -88,8 +88,8 @@ func (e *Engine) ensureRegion(ctx context.Context, req *GrantRequest, memdev str
 	if err := e.syncForeignRegions(ctx, names, e.kernelRegion, state.TriggerPrepare); err != nil {
 		return "", err
 	}
-	for _, name := range names {
-		return "", &foreignRegionError{memdev: memdev, region: name}
+	if len(names) > 0 {
+		return "", &foreignRegionError{memdev: memdev, region: names[0]}
 	}
 	name, err := e.createRegion(ctx, req, memdev, mode, size)
 	if errors.Is(err, kernel.ErrEndpointNotReady) {
@@ -682,7 +682,7 @@ func (e *Engine) keepMemdev(ctx context.Context, serial state.Serial, trigger st
 		}
 	}
 	if !forClaims && len(disabled) == 0 {
-		return e.commit(ctx, func(*state.Records) error { return nil })
+		return nil
 	}
 	return e.commit(ctx, func(r *state.Records) error {
 		m := r.Memdev(serial)

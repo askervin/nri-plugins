@@ -356,9 +356,6 @@ func (v *env) prepare(driver, uid string, reqs ...GrantRequest) error {
 				p.Results = append(p.Results, grantResult(uid, reqs[i].Ref.Result))
 			}
 		}
-		if p.State == state.PreparationPreparing {
-			return state.Apply(&state.PreparationTable, &p.State, state.PreparationPreparing, state.TriggerPrepare)
-		}
 		return state.Apply(&state.PreparationTable, &p.State, state.PreparationPreparing, state.TriggerPrepare)
 	}); err != nil {
 		v.t.Fatal(err)
