@@ -110,7 +110,7 @@ func (e *Engine) Recover(ctx context.Context) (*Recovered, error) {
 				n++
 			}
 		}
-		klog.Infof("local: %d memdevs in use after reconcile", n)
+		klog.Infof("engine: %d local memdevs in use after the recovery", n)
 	}
 	return out, nil
 }
@@ -410,7 +410,7 @@ func (e *Engine) restoreBinds(ctx context.Context) {
 func (e *Engine) releaseCut(ctx context.Context) (released, kept []state.GrantRef) {
 	rctx, cancel := e.rollbackContext(ctx)
 	defer cancel()
-	cut := e.cutClaims()
+	cut := e.findCutClaims()
 	if len(cut.bySerial) == 0 {
 		return nil, nil
 	}
@@ -460,10 +460,10 @@ type cutClaims struct {
 	errs     map[string][]error
 }
 
-// cutClaims returns the cut claims that the recovery releases; the grants
+// findCutClaims returns the cut claims that the recovery releases; the grants
 // of numa companions stay (logged), those of memdevs that are gone stay for
 // kubelet's Unprepare.
-func (e *Engine) cutClaims() *cutClaims {
+func (e *Engine) findCutClaims() *cutClaims {
 	c := &cutClaims{bySerial: map[state.Serial][]state.GrantRef{}, left: map[string][]state.GrantRef{},
 		above: map[string][]string{}, errs: map[string][]error{}}
 	r := e.records()

@@ -119,7 +119,7 @@ func (e *Engine) restoreSerial(serial state.Serial, why map[state.GrantRef]error
 			delete(rs.bad, ref)
 		}
 	}
-	if dev := blockDeviceOf(grants); dev != "" && e.checkRecordedBlockDevice(serial, dev) == nil {
+	if dev := firstBlockDevice(grants); dev != "" && e.checkRecordedBlockDevice(serial, dev) == nil {
 		e.restoreFlags(serial, dev, grants, writer)
 	}
 	rs.loops = map[string]string{}

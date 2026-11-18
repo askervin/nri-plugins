@@ -182,8 +182,8 @@ func nodeMounts(grants []pmemGrant) []string {
 	return out
 }
 
-// blockDeviceOf returns the first block device of the grants, "" if none.
-func blockDeviceOf(grants []pmemGrant) string {
+// firstBlockDevice returns the first block device of the grants, "" if none.
+func firstBlockDevice(grants []pmemGrant) string {
 	for _, u := range grants {
 		if u.blockDevice != "" {
 			return u.blockDevice
@@ -988,7 +988,7 @@ func (e *Engine) releasePmemGrants(source state.Source, serial state.Serial, gon
 		return nil
 	}
 	// the recorded block device may be another device's now
-	dev := e.verified(source, serial, blockDeviceOf(remaining))
+	dev := e.verified(source, serial, firstBlockDevice(remaining))
 	var loops []string
 	for _, mnt := range used {
 		mi, err := e.k.Mounted(mnt)
