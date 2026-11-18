@@ -130,8 +130,9 @@ type Options struct {
 	// be made: the serial is listed by a pool ResourceSlice now (a fresh
 	// list; a failed list is an error). Nil: no such check.
 	LocalGuard func(ctx context.Context, serial state.Serial) error
-	// Shared tells whether a local memdev is configured shared, nil for
-	// none.
+	// Shared tells whether a local memdev is shared: configured shared,
+	// or used shared by a claim since the configuration was last read.
+	// Nil: none is.
 	Shared func(serial state.Serial) bool
 	// ProbeAddressing runs the address line probe on the new regions of
 	// local memdevs; ProbesFile keeps the probes that found aliasing, ""
