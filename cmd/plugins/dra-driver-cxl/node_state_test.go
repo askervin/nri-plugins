@@ -205,9 +205,9 @@ func TestPrepareLocalErrors(t *testing.T) {
 		{`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"readOnly":true}}`, "MemoryConfig: device.readOnly needs mode dax"},
 		{`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"ram"}}`, `MemoryConfig: device.mode: invalid mode "ram" (numa or dax)`},
 		{`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"size":1}}`, `unknown field "device.size"`},
-		{`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"LocalDeviceConfig","mode":"dax"}`, `claim demo/claim-u1: unknown kind "LocalDeviceConfig" (MemoryConfig)`},
-		{`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"LendConfig","lease":"l1"}`, `unknown kind "LendConfig" (MemoryConfig)`},
-		{`{"apiVersion":"cxl.nri.io/v1alpha1","mode":"dax"}`, `unknown kind "" (MemoryConfig)`},
+		{`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"LocalDeviceConfig","mode":"dax"}`, `claim demo/claim-u1: MemoryConfig: FromClaim config 0: kind "LocalDeviceConfig", expected "MemoryConfig"`},
+		{`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"LendConfig","lease":"l1"}`, `MemoryConfig: FromClaim config 0: kind "LendConfig", expected "MemoryConfig"`},
+		{`{"apiVersion":"cxl.nri.io/v1alpha1","mode":"dax"}`, `MemoryConfig: FromClaim config 0: kind "", expected "MemoryConfig"`},
 	} {
 		wantErr(t, e.prepare(localClaim("u1", 2*mib, tc.params)), tc.err)
 	}
@@ -788,11 +788,11 @@ func TestPrepareMemoryConfig(t *testing.T) {
 		{[]resourcev1.DeviceAllocationConfiguration{memoryConfigEntry(claim, []string{"dram"}, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"steering":{"policy":"none","maxStep":"1Gi"}}}`)},
 			"claim demo/claim-u9: request dram: MemoryConfig: container.steering.maxStep needs a policy other than none"},
 		{[]resourcev1.DeviceAllocationConfiguration{memoryConfigEntry(claim, nil, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","mode":"dax"}`)},
-			`claim demo/claim-u9: unknown kind "DeviceConfig" (MemoryConfig)`},
+			`claim demo/claim-u9: MemoryConfig: FromClaim config 0: kind "DeviceConfig", expected "MemoryConfig"`},
 		{[]resourcev1.DeviceAllocationConfiguration{memoryConfigEntry(claim, nil, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryPolicyConfig","memoryUseOrder":"first-dram"}`)},
-			`claim demo/claim-u9: unknown kind "MemoryPolicyConfig" (MemoryConfig)`},
+			`claim demo/claim-u9: MemoryConfig: FromClaim config 0: kind "MemoryPolicyConfig", expected "MemoryConfig"`},
 		{[]resourcev1.DeviceAllocationConfiguration{memoryConfigEntry(claim, nil, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"MemoryConfig"}`)},
-			`claim demo/claim-u9: MemoryConfig: apiVersion "cxl-pool.nri.io/v1alpha1", expected "cxl.nri.io/v1alpha1"`},
+			`claim demo/claim-u9: MemoryConfig: FromClaim config 0: apiVersion "cxl-pool.nri.io/v1alpha1", expected "cxl.nri.io/v1alpha1"`},
 		// every entry of the driver is checked, also of other requests
 		{[]resourcev1.DeviceAllocationConfiguration{
 			memoryConfigEntry(class, nil, localDaxConfig),

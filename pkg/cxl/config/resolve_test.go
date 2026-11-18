@@ -433,33 +433,33 @@ func TestResolveErrors(t *testing.T) {
 		{
 			name:    "old kind",
 			entries: []cfg{claimed(`{"apiVersion": "cxl.nri.io/v1alpha1", "kind": "DeviceConfig", "mode": "dax"}`).rawParams()},
-			err:     `unknown kind "DeviceConfig" (MemoryConfig)`,
+			err:     `MemoryConfig: FromClaim config 0: kind "DeviceConfig", expected "MemoryConfig"`,
 		},
 		{
 			name:    "MemoryPolicyConfig",
 			entries: []cfg{claimed(`{"apiVersion": "cxl.nri.io/v1alpha1", "kind": "MemoryPolicyConfig", "memoryUseOrder": "first-dram"}`).rawParams()},
-			err:     `unknown kind "MemoryPolicyConfig" (MemoryConfig)`,
+			err:     `MemoryConfig: FromClaim config 0: kind "MemoryPolicyConfig", expected "MemoryConfig"`,
 		},
 		{
 			name:    "no kind",
 			entries: []cfg{claimed(`{"apiVersion": "cxl.nri.io/v1alpha1"}`).rawParams()},
-			err:     `unknown kind "" (MemoryConfig)`,
+			err:     `MemoryConfig: FromClaim config 0: kind "", expected "MemoryConfig"`,
 		},
 		{
 			name:    "kind is case sensitive",
 			entries: []cfg{claimed(`{"apiVersion": "cxl.nri.io/v1alpha1", "Kind": "MemoryConfig"}`).rawParams()},
-			err:     `unknown kind "" (MemoryConfig)`,
+			err:     `MemoryConfig: FromClaim config 0: kind "", expected "MemoryConfig"`,
 		},
 		{
 			name:    "pool apiVersion",
 			entries: []cfg{claimed(`{"apiVersion": "cxl-pool.nri.io/v1alpha1", "kind": "MemoryConfig"}`).rawParams().of(pool)},
 			driver:  pool,
-			err:     `MemoryConfig: apiVersion "cxl-pool.nri.io/v1alpha1", expected "cxl.nri.io/v1alpha1"`,
+			err:     `MemoryConfig: FromClaim config 0: apiVersion "cxl-pool.nri.io/v1alpha1", expected "cxl.nri.io/v1alpha1"`,
 		},
 		{
 			name:    "other apiVersion",
 			entries: []cfg{claimed(`{"apiVersion": "cxl.nri.io/v1", "kind": "MemoryConfig"}`).rawParams()},
-			err:     `MemoryConfig: apiVersion "cxl.nri.io/v1", expected "cxl.nri.io/v1alpha1"`,
+			err:     `MemoryConfig: FromClaim config 0: apiVersion "cxl.nri.io/v1", expected "cxl.nri.io/v1alpha1"`,
 		},
 		{
 			name:    "fencing in a claim entry",
@@ -593,7 +593,7 @@ func TestCheckEntries(t *testing.T) {
 		{
 			name:    "kind of an entry of another request",
 			entries: []cfg{claimed(``), claimed(`{"kind": "DeviceConfig"}`, "d").rawParams()},
-			err:     `unknown kind "DeviceConfig" (MemoryConfig)`,
+			err:     `MemoryConfig: FromClaim config 1: kind "DeviceConfig", expected "MemoryConfig"`,
 		},
 		{
 			name:    "pool in an entry of another request",

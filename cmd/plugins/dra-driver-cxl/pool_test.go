@@ -419,13 +419,13 @@ func TestPoolConfigErrors(t *testing.T) {
 		{sharedData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"fsTypes":["erofs"]}}`, `unknown field "device.fsTypes"`},
 		{sharedData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"block"}}`, "MemoryConfig: device.mode block needs a persistent device"},
 		{exclusiveData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"fs","readOnly":true}}`, "MemoryConfig: device.mode fs needs a persistent device"},
-		{sharedData, `{"apiVersion":"v1","kind":"MemoryConfig"}`, `MemoryConfig: apiVersion "v1", expected "cxl.nri.io/v1alpha1"`},
-		{sharedData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","mode":"dax"}`, `unknown kind "DeviceConfig" (MemoryConfig)`},
+		{sharedData, `{"apiVersion":"v1","kind":"MemoryConfig"}`, `MemoryConfig: FromClaim config 0: apiVersion "v1", expected "cxl.nri.io/v1alpha1"`},
+		{sharedData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","mode":"dax"}`, `MemoryConfig: FromClaim config 0: kind "DeviceConfig", expected "MemoryConfig"`},
 		// an old kind would give a read-write device of a reader
 		{sharedData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"PoolDeviceConfig","readOnly":true}`,
-			`cxl-pool.nri.io: preparing claim default/c1: unknown kind "PoolDeviceConfig" (MemoryConfig)`},
+			`cxl-pool.nri.io: preparing claim default/c1: MemoryConfig: FromClaim config 0: kind "PoolDeviceConfig", expected "MemoryConfig"`},
 		{sharedData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"MemoryPolicyConfig","memoryUseOrder":"first-dram"}`,
-			`unknown kind "MemoryPolicyConfig" (MemoryConfig)`},
+			`MemoryConfig: FromClaim config 0: kind "MemoryPolicyConfig", expected "MemoryConfig"`},
 	} {
 		claim := withConfig(poolClaim("u1", "c1", "shared0", tc.data), resourceapi.AllocationConfigSourceClaim, nil, tc.params)
 		wantErr(t, prepare(t, p, claim).Err, tc.err)

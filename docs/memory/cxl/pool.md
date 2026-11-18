@@ -247,7 +247,10 @@ spec:
 ```
 
 An opaque configuration of `cxl-pool.nri.io` of another kind fails the
-Prepare with `unknown kind "..." (MemoryConfig)`.
+Prepare with
+`MemoryConfig: FromClaim config 0: kind "...", expected "MemoryConfig"`
+(with the source and the index of the entry,
+[usage.md](usage.md#configuration-errors)).
 
 | field | values | |
 |---|---|---|

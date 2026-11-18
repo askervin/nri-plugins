@@ -775,9 +775,10 @@ Every entry of the driver is checked, also one for another request of the
 claim. Of every entry (`SRC` `FromClass` or `FromClaim`, `I` the index of
 the entry among the entries of its source, from 0):
 
-- `unknown kind "..." (MemoryConfig)` (an entry without a kind gives
-  `unknown kind ""`)
-- `MemoryConfig: apiVersion "...", expected "cxl.nri.io/v1alpha1"`
+- `MemoryConfig: SRC config I: not a JSON object`
+- `MemoryConfig: SRC config I: kind "...", expected "MemoryConfig"` (an
+  entry without a kind gives `kind ""`)
+- `MemoryConfig: SRC config I: apiVersion "...", expected "cxl.nri.io/v1alpha1"`
 - `MemoryConfig: SRC config I: json: unknown field "F"`, F the dotted path
   of the field (`x`, `device.online`, `container.steering.memoryUseOrder`)
 - `MemoryConfig: SRC config I: json: duplicate field "F"`

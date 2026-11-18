@@ -170,10 +170,10 @@ func decodeEntry(raw []byte, source resourceapi.AllocationConfigSource, index in
 		return nil, fmt.Errorf("%s: %w", where, err)
 	}
 	if head.Kind != Kind {
-		return nil, fmt.Errorf("unknown kind %q (%s)", head.Kind, Kind)
+		return nil, fmt.Errorf("%s: kind %q, expected %q", where, head.Kind, Kind)
 	}
 	if head.APIVersion != APIVersion {
-		return nil, fmt.Errorf("%sapiVersion %q, expected %q", errPrefix, head.APIVersion, APIVersion)
+		return nil, fmt.Errorf("%s: apiVersion %q, expected %q", where, head.APIVersion, APIVersion)
 	}
 	if err := strictUnmarshal(raw, &MemoryConfig{}); err != nil {
 		return nil, fmt.Errorf("%s: %w", where, err)
