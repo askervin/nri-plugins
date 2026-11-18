@@ -73,7 +73,7 @@ func TestPersistentFsReadWrite(t *testing.T) {
 	if m == nil || m.Path != direct || g.Got.Mount != state.AccessDirect || m.FsType != "ext4" || g.Intent.MountPath != direct {
 		t.Fatalf("grant %+v, mount %+v", g.Got, m)
 	}
-	if m == nil || m.State != state.MountedRW {
+	if m.State != state.MountedRW {
 		t.Fatalf("mount %+v", m)
 	}
 	v.mustPrepare(poolDriver, "r", fsGrant("r", true, ""))

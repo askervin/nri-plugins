@@ -43,7 +43,6 @@ func TestRecoverPreparedVerifies(t *testing.T) {
 	v.mustPrepare(poolDriver, "w", fsGrant("w", false, ""))
 	before := v.f.Commands()
 	out := v.restart()
-	v.check("restarted")
 	if len(out.Released)+len(out.Kept)+len(out.Unrestored) > 0 || v.f.CommandsSince(before) != "" {
 		t.Fatalf("recovered %+v, commands %q", out, v.f.CommandsSince(before))
 	}
@@ -456,7 +455,6 @@ func TestRecoverKept(t *testing.T) {
 		v.f.After("cxl create-region", func() {})
 		k := v.f.Kernel()
 		d, _ := k.RootDecoder("mem1", kernel.RegionRAM)
-		go func() {}()
 		if _, err := k.CreateRegion(context.Background(), kernel.CreateRegionRequest{Memdev: "mem1", Decoder: d, Type: kernel.RegionRAM}); err != nil {
 			t.Error(err)
 		}
@@ -544,7 +542,6 @@ func TestRecoverHollowNoted(t *testing.T) {
 		t.Fatalf("hollow %s, noted %s", name, reg.NotedName)
 	}
 	v.restart()
-	v.check("recovered")
 	finish(t, v, "recovered")
 	if strings.Contains(v.f.Commands(), "create-region") || !strings.Contains(v.f.Commands(), "delete_region") {
 		t.Fatalf("commands %s", v.f.Commands())

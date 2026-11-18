@@ -223,13 +223,12 @@ func (e *Engine) realisePersistent(ctx context.Context, req *GrantRequest, memde
 	if err != nil {
 		return err
 	}
-	dev := &state.BlockDevice{Name: ns.BlockDevice, Dev: state.DevNumbers{Major: ns.Major, Minor: ns.Minor}}
 	others := pmemGrants(e.records(), req.Serial, req.Ref)
 	u, err := e.preparePmemGrant(ctx, req, ns.BlockDevice, others)
 	if err != nil {
 		return err
 	}
-	got := state.Got{Region: state.RegionRef(region), Namespace: ns.Name, BlockDevice: dev, Size: ns.Size,
+	got := state.Got{Region: state.RegionRef(region), Namespace: ns.Name, BlockDevice: blockDevice(ns), Size: ns.Size,
 		Mount: state.Access(u.access)}
 	if err := e.recordNodeMount(ctx, req, region, u, u.writer() || firstWriter(others) != nil); err != nil {
 		return err
@@ -284,7 +283,7 @@ func (e *Engine) pmemChain(ctx context.Context, req *GrantRequest, memdev string
 	if err != nil {
 		return "", nil, err
 	}
-	dev := &state.BlockDevice{Name: ns.BlockDevice, Dev: state.DevNumbers{Major: ns.Major, Minor: ns.Minor}}
+	dev := blockDevice(ns)
 	return region, ns, e.commit(ctx, func(r *state.Records) error {
 		reg := r.Region(state.RegionRef(region))
 		reg.Pmem = &state.Pmem{NdRegion: nd, Namespace: ns.Name, BlockDevice: dev}
@@ -295,6 +294,12 @@ func (e *Engine) pmemChain(ctx context.Context, req *GrantRequest, memdev string
 		}
 		return nil
 	})
+}
+
+// blockDevice returns the block device of a namespace as the records hold
+// it.
+func blockDevice(ns *kernel.Namespace) *state.BlockDevice {
+	return &state.BlockDevice{Name: ns.BlockDevice, Dev: state.DevNumbers{Major: ns.Major, Minor: ns.Minor}}
 }
 
 // bindCompanion binds the lease of a companion grant of mode fs at its

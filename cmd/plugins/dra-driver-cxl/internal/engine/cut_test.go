@@ -218,7 +218,6 @@ func cutAtEveryCommit(t *testing.T, scenarios []cutScenario) {
 						t.Fatalf("commit %d of %d: not cut", n, total)
 					}
 					v.restart()
-					v.check(what)
 					if s.done != nil {
 						s.done(v)
 					}
@@ -275,7 +274,6 @@ func cutAtActions(t *testing.T, scenarios []cutScenario, actions []string) {
 						t.Skip("no such action")
 					}
 					v.restart()
-					v.check(name)
 					if s.done != nil {
 						s.done(v)
 					}

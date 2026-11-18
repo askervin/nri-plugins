@@ -161,9 +161,6 @@ func (e *Engine) recoverShared(ctx context.Context, m *state.Memdev) error {
 	}
 	memdev, s := e.memdevName(m.Serial), serialText(m.Serial)
 	claims := otherClaims(m, "")
-	if claims == nil {
-		claims = []string{}
-	}
 	shared := e.configuredShared(m.Serial)
 	switch {
 	case len(claims) == 0 && !Policy(ReleaseIdle, e.idleKind(m, shared), nil).keeps():
