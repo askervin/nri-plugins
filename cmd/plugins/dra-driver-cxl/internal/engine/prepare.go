@@ -417,8 +417,9 @@ func (e *Engine) RecordLend(ctx context.Context, ref state.GrantRef, node int) e
 }
 
 // verifyGrant returns an error if what a REALISED grant got is not what
-// the kernel has now: its region, dax device numbers, block device and node
-// mount.
+// the kernel has now: its region on its memdev, the numbers of its dax
+// device and its node mount mounted. The block device of a persistent grant
+// is checked by the restore at start (blockError).
 func (e *Engine) verifyGrant(g *state.Grant) error {
 	if g.Got.Region == "" {
 		return fmt.Errorf("grant %s has no region", g.Ref)
