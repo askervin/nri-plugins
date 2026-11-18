@@ -340,7 +340,7 @@ func (e *Engine) restoreFlags(serial state.Serial, dev string, grants []pmemGran
 	source := grants[0].source
 	var loops []string
 	for _, mnt := range nodeMounts(grants) {
-		if mi, err := e.k.Mounted(mnt); err == nil && mi != nil && e.loopOf(mi) != "" && !isReadOnlyType(mi.FsType) {
+		if mi, err := e.k.Mounted(mnt); err == nil && mi != nil && e.loopOf(mi) != "" && !config.FsTypeReadOnly(mi.FsType) {
 			loops = append(loops, e.loopOf(mi))
 		}
 	}
@@ -385,7 +385,7 @@ func (e *Engine) restoreNodeMount(u *pmemGrant, writer bool, explained []string)
 		return loop, err
 	}
 	switch {
-	case writer && mi.SuperReadOnly() && isUpgradable(mi.FsType):
+	case writer && mi.SuperReadOnly() && config.FsTypeUpgradable(mi.FsType):
 		err = e.upgrade(u.source, u.serial, u.blockDevice, loop, u.nodeMount, explained)
 	case writer && mi.SuperReadOnly():
 		err = fmt.Errorf("device %s: %s is mounted read-only and cannot be remounted read-write (%s)", serialText(u.serial), u.nodeMount, mi.FsType)
@@ -415,7 +415,7 @@ func unrestored(r *state.Records, failed map[state.GrantRef]error, restored []st
 	}
 	for i := range r.Preparations {
 		p := &r.Preparations[i]
-		if p.State != state.PreparationUnrestored || !allRealised(r, p) {
+		if p.State != state.PreparationUnrestored || !r.AllRealised(p) {
 			continue
 		}
 		if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationPrepared, state.TriggerRecover); err != nil {
@@ -478,20 +478,6 @@ func mountWriter(r *state.Records, m *state.Mount) bool {
 	return false
 }
 
-// allRealised tells whether every grant result of a preparation is
-// REALISED.
-func allRealised(r *state.Records, p *state.Preparation) bool {
-	for _, res := range p.Results {
-		if res.Grant == nil {
-			continue
-		}
-		if g := r.Grant(*res.Grant); g == nil || g.State != state.GrantRealised {
-			return false
-		}
-	}
-	return true
-}
-
 // restoreGrant mounts again the node mount of a REALISED_UNRESTORED grant
 // for a Prepare again of its claim, and makes it REALISED (its node mount
 // mounted); an error names why it stays unrestored.
@@ -551,15 +537,4 @@ func (e *Engine) remountGrant(ctx context.Context, req *GrantRequest) error {
 		}
 		return remountedUsers(r, m, req.Ref)
 	})
-}
-
-// isReadOnlyType tells whether a filesystem type is read-only.
-func isReadOnlyType(fsType string) bool {
-	return config.FsTypeReadOnly(fsType)
-}
-
-// isUpgradable tells whether a read-only superblock of the type can be made
-// read-write.
-func isUpgradable(fsType string) bool {
-	return config.FsTypeUpgradable(fsType)
 }

@@ -98,7 +98,7 @@ func prepared(doc *store.Document, driver, uid string) error {
 // the driver whose grants are REALISED again PREPARED; nothing for another.
 func restored(doc *store.Document, driver, uid string) error {
 	cur := doc.Preparation(driver, uid)
-	if cur == nil || cur.State != state.PreparationUnrestored || !allRealised(&doc.Records, cur) {
+	if cur == nil || cur.State != state.PreparationUnrestored || !doc.AllRealised(cur) {
 		return nil
 	}
 	return state.Apply(&state.PreparationTable, &cur.State, state.PreparationPrepared, state.TriggerPrepare)
@@ -186,20 +186,6 @@ func grantRefs(r *state.Records, prep *state.Preparation) []state.GrantRef {
 		}
 	}
 	return refs
-}
-
-// allRealised tells whether every grant result of a preparation is
-// REALISED.
-func allRealised(r *state.Records, prep *state.Preparation) bool {
-	for _, res := range prep.Results {
-		if res.Grant == nil {
-			continue
-		}
-		if g := r.Grant(*res.Grant); g == nil || g.State != state.GrantRealised {
-			return false
-		}
-	}
-	return true
 }
 
 // unrestoredMount returns the path of the node mount of a grant that the

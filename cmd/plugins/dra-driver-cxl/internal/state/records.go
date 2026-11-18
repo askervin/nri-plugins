@@ -87,6 +87,20 @@ func (r *Records) PreparationOf(ref GrantRef) *Preparation {
 	return nil
 }
 
+// AllRealised tells whether every grant result of the preparation is
+// REALISED.
+func (r *Records) AllRealised(p *Preparation) bool {
+	for _, res := range p.Results {
+		if res.Grant == nil {
+			continue
+		}
+		if g := r.Grant(*res.Grant); g == nil || g.State != GrantRealised {
+			return false
+		}
+	}
+	return true
+}
+
 // Grant returns the grant ref, nil if there is none.
 func (r *Records) Grant(ref GrantRef) *Grant {
 	for i := range r.Grants {

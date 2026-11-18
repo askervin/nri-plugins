@@ -650,7 +650,7 @@ func remountedUsers(r *state.Records, m *state.Mount, ref state.GrantRef) error 
 			return err
 		}
 		p := r.PreparationOf(user)
-		if p != nil && p.State == state.PreparationUnrestored && allRealised(r, p) {
+		if p != nil && p.State == state.PreparationUnrestored && r.AllRealised(p) {
 			if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationPrepared, state.TriggerPrepare); err != nil {
 				return err
 			}
