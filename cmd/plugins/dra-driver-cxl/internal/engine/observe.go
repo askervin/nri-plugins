@@ -154,7 +154,7 @@ func (e *Engine) verify(ctx context.Context, refs []state.GrantRef, trigger stat
 		klog.Errorf("engine: observing the kernel: %v", err)
 		return
 	}
-	if err := e.forgetGoneForeign(ctx, snap, trigger); err != nil {
+	if err := e.syncForeignRegions(ctx, nil, snap.Region, trigger); err != nil {
 		klog.Errorf("engine: %v", err)
 	}
 	c := &checker{r: e.records(), s: snap, opts: checkOptions{Sources: e.opts.Sources}, inv: "I3"}
@@ -291,76 +291,48 @@ func sortedKeys[K interface{ ~string | ~uint64 }, V any](m map[K]V) []K {
 	return keys
 }
 
-// recoverForeign records the regions of the snapshot on the memdevs of
-// the engine's records that no record names as FOREIGN, and removes the
-// FOREIGN records of the regions that are gone.
-func (e *Engine) recoverForeign(ctx context.Context, snap *kernel.Snapshot) error {
+// syncForeignRegions records the regions names that no record names
+// (FOREIGN), and removes the FOREIGN records of the regions that are gone
+// from their targets. lookup returns what the kernel has of a region; the
+// commit is made only when the records change.
+func (e *Engine) syncForeignRegions(ctx context.Context, names []string, lookup func(string) kernel.RegionInfo, trigger state.Trigger) error {
 	r := e.records()
 	seen := map[string]kernel.RegionInfo{}
-	var names []string
-	for _, m := range r.Memdevs {
-		if !e.owns(m.Source) {
-			continue
-		}
-		for _, ri := range snap.RegionsOf(uint64(m.Serial)) {
-			if _, ok := seen[ri.Name]; !ok {
-				seen[ri.Name] = ri
-				names = append(names, ri.Name)
-			}
-		}
-	}
-	for _, reg := range r.Regions {
-		if name := string(reg.Ref()); reg.State == state.RegionForeign && !slices.Contains(names, name) {
-			seen[name] = snap.Region(name)
-		}
-	}
-	return e.commit(ctx, func(r *state.Records) error { return syncForeign(r, seen, names, state.TriggerRecover) })
-}
-
-// forgetGoneForeign removes the FOREIGN records of the regions that the
-// snapshot does not have on their targets.
-func (e *Engine) forgetGoneForeign(ctx context.Context, snap *kernel.Snapshot, trigger state.Trigger) error {
-	seen := map[string]kernel.RegionInfo{}
-	gone := false
-	for _, reg := range e.records().Regions {
-		if reg.State == state.RegionForeign {
-			name := string(reg.Ref())
-			seen[name] = snap.Region(name)
-			gone = gone || !foreignStays(&reg, seen[name])
-		}
-	}
-	if !gone {
-		return nil
-	}
-	return e.commit(ctx, func(r *state.Records) error { return syncForeign(r, seen, nil, trigger) })
-}
-
-// noteForeign records the regions names that no record names as FOREIGN,
-// and removes the FOREIGN records of the regions that are gone.
-func (e *Engine) noteForeign(ctx context.Context, names []string, trigger state.Trigger) error {
-	r := e.records()
-	seen := map[string]kernel.RegionInfo{}
-	for _, name := range names {
-		seen[name] = e.kernelRegion(name)
-	}
 	changed := false
+	for _, name := range names {
+		if _, ok := seen[name]; !ok {
+			seen[name] = lookup(name)
+			changed = changed || seen[name].State != kernel.RegionAbsent && r.Region(state.RegionRef(name)) == nil
+		}
+	}
 	for _, reg := range r.Regions {
 		if reg.State != state.RegionForeign {
 			continue
 		}
 		name := string(reg.Ref())
 		if _, ok := seen[name]; !ok {
-			seen[name] = e.kernelRegion(name)
+			seen[name] = lookup(name)
 		}
 		changed = changed || !foreignStays(&reg, seen[name])
-	}
-	for _, name := range names {
-		changed = changed || r.Region(state.RegionRef(name)) == nil
 	}
 	if !changed {
 		return nil
 	}
 	return e.commit(ctx, func(r *state.Records) error { return syncForeign(r, seen, names, trigger) })
+}
+
+// memdevRegions returns the names of the regions of the snapshot on the
+// memdevs of the engine's records.
+func (e *Engine) memdevRegions(snap *kernel.Snapshot) []string {
+	var names []string
+	for _, m := range e.records().Memdevs {
+		if e.owns(m.Source) {
+			for _, ri := range snap.RegionsOf(uint64(m.Serial)) {
+				names = append(names, ri.Name)
+			}
+		}
+	}
+	return names
 }
 
 // kernelRegion returns what the kernel has of the region name, in state

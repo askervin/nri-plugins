@@ -85,7 +85,7 @@ func (e *Engine) ensureRegion(ctx context.Context, req *GrantRequest, memdev str
 		}
 	}
 	names := e.k.Regions(memdev)
-	if err := e.noteForeign(ctx, names, state.TriggerPrepare); err != nil {
+	if err := e.syncForeignRegions(ctx, names, e.kernelRegion, state.TriggerPrepare); err != nil {
 		return "", err
 	}
 	for _, name := range names {

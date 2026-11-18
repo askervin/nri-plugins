@@ -77,7 +77,7 @@ func (e *Engine) Recover(ctx context.Context) (*Recovered, error) {
 	if err := e.recoverRegions(ctx, snap); err != nil {
 		return nil, err
 	}
-	if err := e.recoverForeign(ctx, snap); err != nil {
+	if err := e.syncForeignRegions(ctx, e.memdevRegions(snap), snap.Region, state.TriggerRecover); err != nil {
 		return nil, err
 	}
 	if err := e.restoreGrants(ctx, out.Why); err != nil {
