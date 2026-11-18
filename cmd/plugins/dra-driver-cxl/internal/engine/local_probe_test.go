@@ -71,11 +71,11 @@ func TestLocalProbeAliasing(t *testing.T) {
 		t.Fatalf("probed %v", p)
 	}
 	wantLog(t, logs(),
-		"local: memdev mem0 (serial 0x11): address line probe of region0 (1073741824 bytes): "+res.String()+" in ",
-		"local: memdev mem0 (serial 0x11): region0: "+res.String()+"; using only the first 536870912 bytes of the memdev from now on",
-		"local: memdev mem0 (serial 0x11): released aliased region0, creating a region of 536870912 bytes",
-		"local: memdev mem0 (serial 0x11): creating a region of its first 536870912 bytes only (usable size)",
-		"local: memdev mem0 (serial 0x11): address line probe of region0 (536870912 bytes): no aliasing in ")
+		"engine: local memdev 0x11 (mem0): address line probe of region0 (1073741824 bytes): "+res.String()+" in ",
+		"engine: local memdev 0x11 (mem0): region0: "+res.String()+"; using only the first 536870912 bytes of the memdev from now on",
+		"engine: local memdev 0x11 (mem0): released aliased region0, creating a region of 536870912 bytes",
+		"engine: local memdev 0x11 (mem0): creating a region of its first 536870912 bytes only (usable size)",
+		"engine: local memdev 0x11 (mem0): address line probe of region0 (536870912 bytes): no aliasing in ")
 	path := filepath.Join(v.dir, "localProbes.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -102,7 +102,7 @@ func TestLocalProbeAliasing(t *testing.T) {
 	if p := v.e.Probes()[serialL]; p.UsableSize != 512*mib {
 		t.Fatalf("loaded probes %+v", v.e.Probes())
 	}
-	wantLog(t, logs(), "local: memdev serial 0x11: using only its first 536870912 bytes, found by the address line probe of region0 at ",
+	wantLog(t, logs(), "engine: local memdev 0x11: using only its first 536870912 bytes, found by the address line probe of region0 at ",
 		": "+res.String()+" (remove "+path+" to probe all of it again)")
 	v.mustPrepare(localDriver, "n", sliceReq("n", 0, state.ModeDax, 256*mib))
 	if size := regionSize(t, v, "region0"); size != 512*mib {

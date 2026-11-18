@@ -246,7 +246,6 @@ func (e *leaseEnv) boot() {
 	e.eng, err = engine.New(engine.Options{
 		Kernel:      e.k.Kernel(),
 		Store:       st,
-		Drivers:     map[state.Source]string{state.SourcePool: pool.Name, state.SourceLocal: local.Name},
 		MountsDirs:  dra.MountsDirs(local, pool),
 		Sources:     []state.Source{state.SourcePool, state.SourceLocal},
 		LeaseFsRoot: LeaseFsRoot(e.dir),

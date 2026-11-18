@@ -116,9 +116,9 @@ func TestRestoreFlags(t *testing.T) {
 			// that the observer counts; a local claim for its block device,
 			// with the line of its memdev only
 			want := "not mounting " + direct + " again: " + changed
-			line, notRemounted := driver+": claim ns/r: "+want, true
+			line, notRemounted := "engine: claim ns/r: "+want, true
 			if source == state.SourceLocal {
-				want, line, notRemounted = changed, "local: memdev mem0 (serial 0x91): "+changed, false
+				want, line, notRemounted = changed, "engine: local memdev 0x91 (mem0): "+changed, false
 			}
 			for _, ref := range out.Unrestored {
 				if why := out.Why[ref]; why == nil || why.Error() != want {
@@ -193,7 +193,7 @@ func TestRecoverUnrestored(t *testing.T) {
 	// now, not of the one as prepared
 	logs := captureKlog(t)
 	v.mustUnprepare(poolDriver, "w")
-	want := fmt.Sprintf("claim ns/w: its node mount %s was not mounted again at start; the release of device 0x91 waits for the holders of %s, the block device of its region now, not of %s",
+	want := fmt.Sprintf("claim ns/w: its node mount %s was not mounted again at start; the release of pool memdev 0x91 waits for the holders of %s, the block device of its region now, not of %s",
 		direct, filepath.Join(v.f.DevRoot(), "pmem3"), filepath.Join(v.f.DevRoot(), "pmem0"))
 	if out := logs(); !strings.Contains(out, want) {
 		t.Fatalf("no %q in\n%s", want, out)

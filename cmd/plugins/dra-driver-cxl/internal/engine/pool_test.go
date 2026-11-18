@@ -313,7 +313,7 @@ func TestPoolAddDevRetry(t *testing.T) {
 	}
 	logs := captureKlog(t)
 	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindExclusive))
-	if out := logs(); !strings.Contains(out, "cxl-pool.nri.io: claim ns/c1: device pooled0: ") || !strings.Contains(out, "retrying once in") {
+	if out := logs(); !strings.Contains(out, "engine: claim ns/c1: device pooled0: ") || !strings.Contains(out, "retrying once in") {
 		t.Fatalf("no retry line in\n%s", out)
 	}
 	v.mustUnprepare(poolDriver, "c1")

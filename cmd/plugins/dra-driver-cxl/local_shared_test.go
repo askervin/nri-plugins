@@ -279,7 +279,7 @@ func TestLocalSharedReconcile(t *testing.T) {
 		t.Fatalf("the region of the cut claim is left: %v", rs)
 	}
 	lines := logs()
-	wantLogLine(t, lines, "(serial 0xc100e2e1): keeping shared region0 and dax0.0, claims [u2]\n")
+	wantLogLine(t, lines, "engine: local memdev 0xc100e2e1 (mem0): keeping shared region0 and dax0.0, claims [u2]\n")
 
 	// configured shared, no claims: kept idle
 	e.mustUnprepare("u2")
@@ -316,7 +316,7 @@ func TestLocalSharedReconcile(t *testing.T) {
 	wantReleasedLast(t, e, "region0")
 	wantSharedUse(t, e, nil)
 	lines = logs()[n:]
-	wantLogLine(t, lines, "(serial 0xc100e2e1): not configured shared any more, releasing its region")
+	wantLogLine(t, lines, "engine: local memdev 0xc100e2e1 (mem0): not configured shared any more, releasing its region")
 	if got := zeroedOrReleasedLines(lines); len(got) == 0 {
 		t.Fatalf("no line of the release in\n%s", lines)
 	}
@@ -549,7 +549,7 @@ func TestLocalSharedRegionGone(t *testing.T) {
 	noErr(t, prepareOn(context.Background(), e.s, sharedClaim("u2", "1")))
 	e.check("prepared u2")
 	// the other claims of the device: none
-	if want := "local: memdev mem0 (serial 0xc100e2e1): region0 of the shared device is gone, forgetting it and its claims []"; !strings.Contains(logs(), want) {
+	if want := "engine: local memdev 0xc100e2e1 (mem0): region0 of the shared device is gone, forgetting it and its claims []"; !strings.Contains(logs(), want) {
 		t.Fatalf("no %q in\n%s", want, logs())
 	}
 	wantLocalRegionCount(t, e, 2, 1)

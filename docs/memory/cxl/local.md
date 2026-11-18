@@ -235,8 +235,8 @@ plugin logs it, and a region that does not start at a block boundary when
 it is created:
 
 ```
-local: memdev mem1 (serial 0xc100e2e1): claim <uid>: slice dax0.2 at [0x...] is not aligned to the memory block size 536870912, placing it explicitly
-local: memdev mem1 (serial 0xc100e2e1): region0 at 0x250000000-0x2cfffffff does not start at a memory block boundary (block size 536870912): slices use only its 1610612736 bytes of whole blocks
+engine: local memdev 0xc100e2e1 (mem1): claim <uid>: slice dax0.2 at [0x...] is not aligned to the memory block size 536870912, placing it explicitly
+engine: local memdev 0xc100e2e1 (mem1): region0 at 0x250000000-0x2cfffffff does not start at a memory block boundary (block size 536870912): slices use only its 1610612736 bytes of whole blocks
 ```
 
 ### Node size
@@ -363,13 +363,13 @@ The plugin logs every step of a slice with its dax device, mode, size and
 duration (`<t>`):
 
 ```
-local: memdev mem1 (serial 0xc100e2e1): created region0 (devdax, dax dax0.0, node 2) in <t>
-local: memdev mem1 (serial 0xc100e2e1): claim <uid>: created slice dax0.1 mode numa size 134217728 at [0x258000000-0x25fffffff] in <t>
-local: memdev mem1 (serial 0xc100e2e1): claim <uid>: onlined slice dax0.1 mode numa size 134217728 blocks [75] node 2 in <t>
-local: memdev mem1 (serial 0xc100e2e1): claim <uid>: zeroed slice dax0.0 mode dax size 134217728 in <t>
-local: memdev mem1 (serial 0xc100e2e1): claim <uid>: offlined slice dax0.1 mode numa size 134217728 blocks [75] in <t>
-local: memdev mem1 (serial 0xc100e2e1): claim <uid>: deleted slice dax0.1 mode numa size 134217728 in <t>
-local: memdev mem1 (serial 0xc100e2e1): released region0 in <t>
+engine: local memdev 0xc100e2e1 (mem1): created region0 (devdax, dax dax0.0, node 2) in <t>
+engine: local memdev 0xc100e2e1 (mem1): claim <uid>: created slice dax0.1 mode numa size 134217728 at [0x258000000-0x25fffffff] in <t>
+engine: local memdev 0xc100e2e1 (mem1): claim <uid>: onlined slice dax0.1 mode numa size 134217728 blocks [75] node 2 in <t>
+engine: local memdev 0xc100e2e1 (mem1): claim <uid>: zeroed slice dax0.0 mode dax size 134217728 in <t>
+engine: local memdev 0xc100e2e1 (mem1): claim <uid>: offlined slice dax0.1 mode numa size 134217728 blocks [75] in <t>
+engine: local memdev 0xc100e2e1 (mem1): claim <uid>: deleted slice dax0.1 mode numa size 134217728 in <t>
+engine: local memdev 0xc100e2e1 (mem1): released region0 in <t>
 ```
 
 Restart ([design.md](design.md#how-a-restart-recovers)): the state of
@@ -550,20 +550,20 @@ whose region it keeps, the zeroing of a new region, and a region that
 disappeared while the plugin ran:
 
 ```
-local: memdev mem1 (serial 0xc100e2e1): zeroed new shared dax0.0 size 1073741824 in <t>
-local: memdev mem1 (serial 0xc100e2e1): region0 of the shared device is gone, forgetting it and its claims [<uids>]
+engine: local memdev 0xc100e2e1 (mem1): zeroed new shared dax0.0 size 1073741824 in <t>
+engine: local memdev 0xc100e2e1 (mem1): region0 of the shared device is gone, forgetting it and its claims [<uids>]
 local: memdev mem1 (serial 0xc100e2e1): claim <uid> request mem: shared dax0.0 size 1073741824 read-only false exclusive
-local: memdev mem1 (serial 0xc100e2e1): claim <uid>: released shared dax0.0, claims left [<uids>]
-local: memdev mem1 (serial 0xc100e2e1): keeping region0 and dax0.0 of the idle shared device
+engine: local memdev 0xc100e2e1 (mem1): claim <uid>: released shared dax0.0, claims left [<uids>]
+engine: local memdev 0xc100e2e1 (mem1): keeping region0 and dax0.0 of the idle shared device
 ```
 
 and at start:
 
 ```
-local: memdev mem1 (serial 0xc100e2e1): keeping shared region0 and dax0.0, claims [<uids>]
-local: memdev mem1 (serial 0xc100e2e1): claim <uid> of the shared device is not prepared, dropping it
-local: memdev mem1 (serial 0xc100e2e1): not configured shared any more: keeping region0 for claims [<uids>], not publishing the memdev until they are gone
-local: memdev mem1 (serial 0xc100e2e1): not configured shared any more, releasing its region
+engine: local memdev 0xc100e2e1 (mem1): keeping shared region0 and dax0.0, claims [<uids>]
+engine: local memdev 0xc100e2e1 (mem1): claim <uid> of the shared device is not prepared, dropping it
+engine: local memdev 0xc100e2e1 (mem1): not configured shared any more: keeping region0 for claims [<uids>], not publishing the memdev until they are gone
+engine: local memdev 0xc100e2e1 (mem1): not configured shared any more, releasing its region
 ```
 
 Errors of the Prepare about shared use. The last three come from stale
@@ -725,15 +725,15 @@ restored as those of pool devices; a reboot leaves no region, and the
 next claim creates one again on the same data and labels.
 
 The plugin logs (the node mounts, upgrades and downgrades with the lines
-of [usage.md](usage.md#one-node-superblock-block-device-binds), prefix
-`cxl.nri.io:`):
+of [usage.md](usage.md#one-node-superblock-block-device-binds), source
+`local`):
 
 ```
-local: memdev mem1 (serial 0xc100f5e1): created region1 (pmem, nvdimm region1) in <t>
+engine: local memdev 0xc100f5e1 (mem1): created region1 (pmem, nvdimm region1) in <t>
 local: memdev mem1 (serial 0xc100f5e1) region1: claim <uid> request mem: persistent /dev/pmem1 mode fs read-only false access "direct" fs "ext4"
-local: memdev mem1 (serial 0xc100f5e1): claim <uid>: released persistent /dev/pmem1, claims left [<uids>]
-local: memdev mem1 (serial 0xc100f5e1): keeping region1 of the idle persistent device: region2 lie above it, its release would leave a hole in the decoders of their ports
-local: memdev mem1 (serial 0xc100f5e1): keeping persistent region1, claims [<uids>]
+engine: local memdev 0xc100f5e1 (mem1): claim <uid>: released persistent /dev/pmem1, claims left [<uids>]
+engine: local memdev 0xc100f5e1 (mem1): keeping region1 of the idle persistent device: region2 lie above it, its release would leave a hole in the decoders of their ports
+engine: local memdev 0xc100f5e1 (mem1): keeping persistent region1, claims [<uids>]
 ```
 
 (the last one at start). Errors of the Prepare about other uses of the
@@ -799,8 +799,8 @@ The plugin protects against such devices in two ways:
   it. A marker that reads back as something else fails the claim.
 
   ```
-  local: memdev mem0 (serial 0x...): address line probe of region0 (206158430208 bytes): offsets 0x0 and 0x2000000000 reach the same memory (address bit 37 is ignored): only the first 137438953472 bytes are distinct in <t>
-  local: memdev mem0 (serial 0x...): region0: ...; using only the first 137438953472 bytes of the memdev from now on
+  engine: local memdev 0x... (mem0): address line probe of region0 (206158430208 bytes): offsets 0x0 and 0x2000000000 reach the same memory (address bit 37 is ignored): only the first 137438953472 bytes are distinct in <t>
+  engine: local memdev 0x... (mem0): region0: ...; using only the first 137438953472 bytes of the memdev from now on
   ```
 
   The claim that triggers the probe was allocated against the capacity

@@ -132,9 +132,8 @@ func (v *env) startEngine() {
 	k := v.f.Kernel()
 	k.Sys = &cutSys{Sys: k.Sys, v: v}
 	opts := Options{
-		Kernel:  k,
-		Store:   v.st,
-		Drivers: map[state.Source]string{state.SourcePool: poolDriver, state.SourceLocal: localDriver},
+		Kernel: k,
+		Store:  v.st,
 		MountsDirs: map[state.Source]string{
 			state.SourcePool:  filepath.Join(v.dir, poolDriver, "mounts"),
 			state.SourceLocal: filepath.Join(v.dir, localDriver, "mounts"),

@@ -129,7 +129,7 @@ func TestReleaseOneCallTogether(t *testing.T) {
 	v.mustPrepare(poolDriver, "r2", fsGrant("r2", true, ""))
 	logs = captureKlog(t)
 	v.mustUnprepare(poolDriver, "r1")
-	if out := logs(); !strings.Contains(out, "serial 0x91 is still used by another claim") {
+	if out := logs(); !strings.Contains(out, "memdev 0x91 is still used by another claim") {
 		t.Fatalf("no line of the other claim in\n%s", out)
 	}
 	v.mustUnprepare(poolDriver, "r2")

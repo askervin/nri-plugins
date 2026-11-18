@@ -241,7 +241,6 @@ func (e *driverEnv) start() {
 	e.eng, err = engine.New(engine.Options{
 		Kernel:      e.k.Kernel(),
 		Store:       st,
-		Drivers:     map[state.Source]string{state.SourcePool: pool.Name, state.SourceLocal: local.Name},
 		MountsDirs:  MountsDirs(local, pool),
 		Sources:     []state.Source{state.SourcePool, state.SourceLocal},
 		LeaseFsRoot: e.leaseFsRoot(),

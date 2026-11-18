@@ -387,22 +387,22 @@ def trace_formats_test():
         'as mem0 region0 dax dax0.0 node -1',
         'cxl-pool.nri.io: unprepared claim cxl-demo/cxl-lease-3f2a91c0 (c1a10006-0000-4000-8000-000000000000)',
         # persistent.go
-        'cxl-pool.nri.io: device 0xc1ae0001: mounted /dev/pmem0 at %s (ext4, rw, dax=always)' % mnt,
-        'cxl-pool.nri.io: device 0xc1ae0001: mounted /dev/loop0 at %s (erofs, ro)' % mnt.replace("direct", "cached"),
-        'cxl-pool.nri.io: device 0xc1ae0001: remounted %s read-only' % mnt,
-        'cxl-pool.nri.io: device 0xc1ae0001: /dev/pmem0 read-write',
-        'cxl-pool.nri.io: lease 3f2a91c0: bound %s at %s' % (mnt, lease_fs),
-        'cxl-pool.nri.io: claim cxl-demo/cxl-lease-3f2a91c0: lease 3f2a91c0: bound %s at %s again' % (mnt, lease_fs),
-        'cxl-pool.nri.io: lease 3f2a91c0: unbound %s' % lease_fs,
-        'cxl-pool.nri.io: device 0xc1ae0001: unmounted %s' % mnt,
+        'engine: pool memdev 0xc1ae0001: mounted /dev/pmem0 at %s (ext4, rw, dax=always)' % mnt,
+        'engine: pool memdev 0xc1ae0001: mounted /dev/loop0 at %s (erofs, ro)' % mnt.replace("direct", "cached"),
+        'engine: pool memdev 0xc1ae0001: remounted %s read-only' % mnt,
+        'engine: pool memdev 0xc1ae0001: /dev/pmem0 read-write',
+        'engine: lease 3f2a91c0: bound %s at %s' % (mnt, lease_fs),
+        'engine: claim cxl-demo/cxl-lease-3f2a91c0: lease 3f2a91c0: bound %s at %s again' % (mnt, lease_fs),
+        'engine: lease 3f2a91c0: unbound %s' % lease_fs,
+        'engine: pool memdev 0xc1ae0001: unmounted %s' % mnt,
         # local.go
-        'local: memdev mem0 (serial 0xc100e2e1): released region0 in 35ms',
-        'local: memdev mem0 (serial 0xc100e2e1): not configured shared any more, releasing its region',
-        'local: memdev mem0 (serial 0xc100e2e1): not configured shared any more: keeping region0 for claims [a b], '
+        'engine: local memdev 0xc100e2e1 (mem0): released region0 in 35ms',
+        'engine: local memdev 0xc100e2e1 (mem0): not configured shared any more, releasing its region',
+        'engine: local memdev 0xc100e2e1 (mem0): not configured shared any more: keeping region0 for claims [a b], '
         'not publishing the memdev until they are gone',
-        'local: memdev mem0 (serial 0xc100e2e1): claim c1a10006-0000-4000-8000-000000000000: released shared dax0.0, claims left [a b]',
+        'engine: local memdev 0xc100e2e1 (mem0): claim c1a10006-0000-4000-8000-000000000000: released shared dax0.0, claims left [a b]',
         'lease broker: lease 3f2a91c0: releasing (requester container gone, was Ready)',
-        'cxl-pool.nri.io: released mem0 (serial 0xc1ae0001)',
+        'engine: pool memdev 0xc1ae0001 (mem0): released',
     ]
     controller = [
         'attach fs0 to %s for %s: exclusive for a read-write ext4 claim' % (vm1, want),

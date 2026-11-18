@@ -432,7 +432,7 @@ def fs_trace(sdir, t0=1792600000.0):
 
     def detach(dt, node):
         # the driver releases the memdev (pool.go:1479), the server detaches it
-        klog(dt - 0.6, node, "pool.go:1479", "cxl-pool.nri.io: released mem0 (serial %s)" % SHARED)
+        klog(dt - 0.6, node, "pool.go:1479", "engine: pool memdev %s (mem0): released" % SHARED)
         server(dt - 0.5, "attachment shared0@%s: detaching qemu device fcp_shared0.hp1" % node)
         ctrl(dt, "detached shared0 from %s (node %s, owner k8s:resourceclaim/c1a10006-0000-4000-8000-000000000000)" % (node, node))
         server(dt - 0.1, "attachment shared0@%s: detached (qemu device fcp_shared0.hp1)" % node)
@@ -456,7 +456,7 @@ def fs_trace(sdir, t0=1792600000.0):
              % (NS, LEASES[who], SHARED, mode, ro, access, fstype, mount))
 
     def device_log(dt, node, src, text):
-        klog(dt, node, src, "cxl-pool.nri.io: device %s: %s" % (SHARED, text))
+        klog(dt, node, src, "engine: pool memdev %s: %s" % (SHARED, text))
 
     def target(who):
         return "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/%s/hello" % luid[who]
@@ -487,7 +487,7 @@ def fs_trace(sdir, t0=1792600000.0):
     cl(t + 0.2, "MODIFIED", w, "c1a10006", "cxl-pool.nri.io/fake-cxl-pool/shared0", VM1, deleting=True)
     release_region(t + 0.8, VM1)
     udev(t + 0.95, VM1, "unbind", memdev_path, "cxl")
-    klog(t + 0.96, VM1, "pool.go:1479", "cxl-pool.nri.io: released mem0 (serial %s)" % SHARED)
+    klog(t + 0.96, VM1, "pool.go:1479", "engine: pool memdev %s (mem0): released" % SHARED)
     klog(t + 1, VM1, "pool.go:1521", "cxl-pool.nri.io: unprepared claim %s/%s (c1a10006-0000-4000-8000-000000000000)" % (NS, w))
     cl(t + 2.5, "DELETED", w, "c1a10006", "cxl-pool.nri.io/fake-cxl-pool/shared0", VM1, deleting=True)
     klog(t + 2.6, VM1, "broker.go:1258", "lease broker: lease %s: released" % LEASES["writer"])
@@ -511,7 +511,7 @@ def fs_trace(sdir, t0=1792600000.0):
             device_log(dt + 0.05, where[r], "persistent.go:679", "/dev/pmem0 read-only")
             device_log(dt + 0.1, where[r], "persistent.go:573", "mounted /dev/pmem0 at %s (erofs, ro, dax=always)" % node_mount)
         prepared(dt + 0.2, r, "fs")
-        klog(dt + 0.3, where[r], "persistent.go:1130", "cxl-pool.nri.io: lease %s: bound %s at %s" % (LEASES[r], node_mount, target(r)))
+        klog(dt + 0.3, where[r], "persistent.go:1130", "engine: lease %s: bound %s at %s" % (LEASES[r], node_mount, target(r)))
         ready(dt + 0.4, r, "fs")
     # F9: everything goes away; reader-a still has a file open for a moment
     t = 160
@@ -522,7 +522,7 @@ def fs_trace(sdir, t0=1792600000.0):
              % (NS, LEASES["reader-a"], LEASES["reader-a"], target("reader-a")), "E")
     for i, r in enumerate(READERS):
         dt = t + 4 + i * 0.5
-        klog(dt, where[r], "persistent.go:1246", "cxl-pool.nri.io: lease %s: unbound %s" % (LEASES[r], target(r)))
+        klog(dt, where[r], "persistent.go:1246", "engine: lease %s: unbound %s" % (LEASES[r], target(r)))
         if r in ("reader-b", "reader-c"):
             # the last reader of its node
             device_log(dt + 0.05, where[r], "persistent.go:820", "unmounted %s" % node_mount)
@@ -579,9 +579,9 @@ def local_trace(sdir, t0=1792500000.0):
     udev(t + 1, "add", region, "cxl")
     udev(t + 1.1, "add", region + "/dax_region0", "cxl")
     udev(t + 1.2, "add", region + "/dax_region0/dax0.0", "dax")
-    klog(t + 1.25, "local.go:779", "local: memdev mem0 (serial %s): created region0 (devdax, dax dax0.0, node 2) in 412ms" % LOCAL)
+    klog(t + 1.25, "local.go:779", "engine: local memdev %s (mem0): created region0 (devdax, dax dax0.0, node 2) in 412ms" % LOCAL)
     klog(t + 1.3, "local.go:491", "local: memdev mem0 (serial %s): claim c1a10006-0000-4000-8000-000000000000 request lease: shared dax0.0 size %d read-only false exclusive" % (LOCAL, GI))
-    klog(t + 1.27, "local.go:643", "local: memdev mem0 (serial %s): zeroed new shared dax0.0 size %d in 210ms" % (LOCAL, GI))
+    klog(t + 1.27, "local.go:643", "engine: local memdev %s (mem0): zeroed new shared dax0.0 size %d in 210ms" % (LOCAL, GI))
     klog(t + 1.5, "broker.go:1646", 'lease broker: lease 3f2a91c0: Ready (source local, serial %s, mode dax, read-only false, node -1, dax "/dev/dax0.0", block "", access "", fs "", path "", %d bytes)' % (LOCAL, GI))
     t = 60
     for i, r in enumerate(READERS):
@@ -594,8 +594,8 @@ def local_trace(sdir, t0=1792500000.0):
     klog(t, "broker.go:1189", "lease broker: lease 3f2a91c0: releasing (released by main, was Ready)")
     cl(t + 0.2, "MODIFIED", "cxl-lease-3f2a91c0", "c1a10006", "cxl.nri.io/%s/memdev-c100e2e1" % VM2, VM2, deleting=True)
     cl(t + 1.5, "DELETED", "cxl-lease-3f2a91c0", "c1a10006", "cxl.nri.io/%s/memdev-c100e2e1" % VM2, VM2, deleting=True)
-    klog(t + 1.4, "local.go:1341", "local: memdev mem0 (serial %s): claim c1a10006-0000-4000-8000-000000000000: released shared dax0.0, claims left []" % LOCAL)
-    klog(t + 1.45, "local.go:1346", "local: memdev mem0 (serial %s): keeping region0 and dax0.0 of the idle shared device" % LOCAL)
+    klog(t + 1.4, "local.go:1341", "engine: local memdev %s (mem0): claim c1a10006-0000-4000-8000-000000000000: released shared dax0.0, claims left []" % LOCAL)
+    klog(t + 1.45, "local.go:1346", "engine: local memdev %s (mem0): keeping region0 and dax0.0 of the idle shared device" % LOCAL)
     klog(t + 1.6, "broker.go:1258", "lease broker: lease 3f2a91c0: released")
     for i, r in enumerate(READERS):
         cl(t + 2 + i * 0.1, "MODIFIED", "cxl-lease-" + LEASES[r], "c1a1%04x" % (10 + i), "cxl.nri.io/%s/memdev-c100e2e1" % VM2, VM2)

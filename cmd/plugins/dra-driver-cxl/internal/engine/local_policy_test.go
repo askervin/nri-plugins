@@ -60,7 +60,7 @@ func TestLocalPolicySliced(t *testing.T) {
 			t.Fatalf("grant %+v", g)
 		}
 		wantPreparation(t, v, localDriver, "k", state.PreparationKept)
-		wantLog(t, logs(), "local: memdev mem0 (serial 0x11): keeping region0 for claims [k], whose Prepare did not finish: region1 lie above it")
+		wantLog(t, logs(), "engine: local memdev 0x11 (mem0): keeping region0 for claims [k], whose Prepare did not finish: region1 lie above it")
 		dropRaw(t, v, "region1")
 		v.mustPrepare(localDriver, "k", sliceReq("k", 0, state.ModeDax, 256*mib))
 		if g := v.grant("k", 0); g.Got.Region != "region0" {
@@ -136,8 +136,8 @@ func TestLocalPolicySharedConfigured(t *testing.T) {
 		logs := captureKlog(t)
 		v.mustUnprepare(localDriver, "s1")
 		idleKept(t, v)
-		wantLog(t, logs(), "local: memdev mem0 (serial 0x11): claim s1: released shared dax0.0, claims left []",
-			"local: memdev mem0 (serial 0x11): keeping region0 and dax0.0 of the idle shared device")
+		wantLog(t, logs(), "engine: local memdev 0x11 (mem0): claim s1: released shared dax0.0, claims left []",
+			"engine: local memdev 0x11 (mem0): keeping region0 and dax0.0 of the idle shared device")
 		notZeroedAgain(t, v)
 	})
 	t.Run("rollback", func(t *testing.T) {
@@ -165,8 +165,8 @@ func TestLocalPolicySharedConfigured(t *testing.T) {
 		if !slices.Equal(out.Released, []state.GrantRef{{Claim: "s2"}}) || len(out.Kept) > 0 {
 			t.Fatalf("recovered %+v", out)
 		}
-		wantLog(t, logs(), "local: memdev mem0 (serial 0x11): claim s2 of the shared device is not prepared, dropping it",
-			"local: memdev mem0 (serial 0x11): keeping shared region0 and dax0.0, claims [s1]")
+		wantLog(t, logs(), "engine: local memdev 0x11 (mem0): claim s2 of the shared device is not prepared, dropping it",
+			"engine: local memdev 0x11 (mem0): keeping shared region0 and dax0.0, claims [s1]")
 		v.mustUnprepare(localDriver, "s1")
 		idleKept(t, v)
 		// the recovery of the idle memdev keeps it too
@@ -323,7 +323,7 @@ func TestLocalPolicyPersistent(t *testing.T) {
 		logs := captureKlog(t)
 		v.mustUnprepare(localDriver, "w")
 		idle(t, v)
-		wantLog(t, logs(), "local: memdev mem0 (serial 0x91): keeping region0 of the idle persistent device: "+above+" lie above it")
+		wantLog(t, logs(), "engine: local memdev 0x91 (mem0): keeping region0 of the idle persistent device: "+above+" lie above it")
 		dropRaw(t, v, above)
 		// the start releases the idle region in order
 		v.restart()

@@ -63,7 +63,7 @@ func (e *Engine) realiseLocalShared(ctx context.Context, req *GrantRequest, memd
 		if err != nil {
 			return fmt.Errorf("memdev %s (serial %s): zeroing new shared %s: %w", memdev, serialText(req.Serial), dax, err)
 		}
-		klog.Infof("local: memdev %s (serial %s): zeroed new shared %s size %d in %s", memdev, serialText(req.Serial), dax, size, since(start))
+		klog.Infof("engine: local memdev %s (%s): zeroed new shared %s size %d in %s", serialText(req.Serial), memdev, dax, size, since(start))
 		if err := e.commit(ctx, func(r *state.Records) error {
 			r.Region(state.RegionRef(region)).Zeroed = true
 			return nil
@@ -193,7 +193,7 @@ func (e *Engine) setUpLocal(ctx context.Context, req *GrantRequest, memdev strin
 		usable = 0
 	}
 	if created && usable > 0 {
-		klog.Infof("local: memdev %s (serial %s): creating a region of its first %d bytes only (usable size)", memdev, s, usable)
+		klog.Infof("engine: local memdev %s (%s): creating a region of its first %d bytes only (usable size)", s, memdev, usable)
 	}
 	start := time.Now()
 	region, err := e.ensureRegion(ctx, req, memdev, state.RegionRam, usable)
@@ -212,7 +212,7 @@ func (e *Engine) setUpLocal(ctx context.Context, req *GrantRequest, memdev strin
 	case created:
 		e.logCreated(memdev, req.Serial, region, whole, bs, start)
 	case again:
-		klog.Infof("local: memdev %s (serial %s): set up kept %s (devdax, dax %s, node %d) in %s", memdev, s, region, whole,
+		klog.Infof("engine: local memdev %s (%s): set up kept %s (devdax, dax %s, node %d) in %s", s, memdev, region, whole,
 			e.k.TargetNode(whole), since(start))
 	}
 	return region, whole, created || again, nil
@@ -233,7 +233,7 @@ func (e *Engine) remakeAliased(ctx context.Context, req *GrantRequest, memdev, r
 	if len(above) > 0 {
 		return &aliasedBelowError{memdev: memdev, serial: req.Serial, region: region, usable: aliased}
 	}
-	klog.Infof("local: memdev %s (serial %s): released aliased %s, creating a region of %d bytes", memdev, s, region, e.usableSize(req))
+	klog.Infof("engine: local memdev %s (%s): released aliased %s, creating a region of %d bytes", s, memdev, region, e.usableSize(req))
 	return nil
 }
 
@@ -241,15 +241,15 @@ func (e *Engine) remakeAliased(ctx context.Context, req *GrantRequest, memdev, r
 // not start at a boundary of the memory blocks of bs bytes.
 func (e *Engine) logCreated(memdev string, serial state.Serial, region, whole string, bs uint64, start time.Time) {
 	s := serialText(serial)
-	klog.Infof("local: memdev %s (serial %s): created %s (devdax, dax %s, node %d) in %s", memdev, s, region, whole,
+	klog.Infof("engine: local memdev %s (%s): created %s (devdax, dax %s, node %d) in %s", s, memdev, region, whole,
 		e.k.TargetNode(whole), since(start))
 	if r, err := e.k.RegionRange(region); err == nil && bs > 0 && r.Start%bs != 0 {
 		usable, end := uint64(0), (r.End+1)/bs*bs
 		if start := roundUp(r.Start, bs); end > start {
 			usable = end - start
 		}
-		klog.Warningf("local: memdev %s (serial %s): %s at %v does not start at a memory block boundary (block size %d): slices use only its %d bytes of whole blocks",
-			memdev, s, region, r, bs, usable)
+		klog.Warningf("engine: local memdev %s (%s): %s at %v does not start at a memory block boundary (block size %d): slices use only its %d bytes of whole blocks",
+			s, memdev, region, r, bs, usable)
 	}
 }
 
@@ -424,8 +424,8 @@ func (e *Engine) addPart(ctx context.Context, req *GrantRequest, memdev, region 
 	if err := e.commit(ctx, func(r *state.Records) error { return sizedPart(r, req.Ref, region, aligned, size, dev) }); err != nil {
 		return "", 0, err
 	}
-	klog.Infof("local: memdev %s (serial %s): claim %s: created slice %s mode %s size %d at %v in %s",
-		memdev, serialText(req.Serial), req.Ref.Claim, aligned, req.Asked.Mode, size, ranges, since(start))
+	klog.Infof("engine: local memdev %s (%s): claim %s: created slice %s mode %s size %d at %v in %s",
+		serialText(req.Serial), memdev, req.Ref.Claim, aligned, req.Asked.Mode, size, ranges, since(start))
 	return aligned, size, nil
 }
 
@@ -440,8 +440,8 @@ func (e *Engine) partRoom(req *GrantRequest, memdev, region string, bs uint64) (
 	}
 	size := req.Asked.Size
 	if s := roundUp(roundUp(size, bs), dr.Align); s != size {
-		klog.Warningf("local: memdev %s (serial %s): claim %s: slice of %d bytes rounded up to %d (memory block size %d, align %d)",
-			memdev, serialText(req.Serial), req.Ref.Claim, size, s, bs, dr.Align)
+		klog.Warningf("engine: local memdev %s (%s): claim %s: slice of %d bytes rounded up to %d (memory block size %d, align %d)",
+			serialText(req.Serial), memdev, req.Ref.Claim, size, s, bs, dr.Align)
 		size = s
 	}
 	reg := e.records().Region(state.RegionRef(region))
@@ -456,8 +456,8 @@ func (e *Engine) partRoom(req *GrantRequest, memdev, region string, bs uint64) (
 		}
 	}
 	if avail < size {
-		klog.Errorf("local: memdev %s (serial %s): %d bytes free in %s, a slice needs %d: claims allocated more than the capacity?",
-			memdev, serialText(req.Serial), avail, region, size)
+		klog.Errorf("engine: local memdev %s (%s): %d bytes free in %s, a slice needs %d: claims allocated more than the capacity?",
+			serialText(req.Serial), memdev, avail, region, size)
 		return "", 0, fmt.Errorf("%w for the slice: %d bytes free in %s, the slice needs %d", kernel.ErrNoRoom, avail, region, size)
 	}
 	return first, size, nil
@@ -519,8 +519,8 @@ func (e *Engine) alignPart(ctx context.Context, req *GrantRequest, memdev, regio
 	if aligned {
 		return dax, nil
 	}
-	klog.Warningf("local: memdev %s (serial %s): claim %s: slice %s at %v is not aligned to the memory block size %d, placing it explicitly",
-		memdev, serialText(req.Serial), req.Ref.Claim, dax, ranges, bs)
+	klog.Warningf("engine: local memdev %s (%s): claim %s: slice %s at %v is not aligned to the memory block size %d, placing it explicitly",
+		serialText(req.Serial), memdev, req.Ref.Claim, dax, ranges, bs)
 	if err := e.locked(func() error { return e.k.DeleteDaxDevice(ctx, region, dax) }); err != nil {
 		return dax, err
 	}
@@ -612,8 +612,8 @@ func (e *Engine) onlinePart(ctx context.Context, req *GrantRequest, memdev, regi
 		return -1, err
 	}
 	node, err := e.onlineMemory(ctx, region, dax, blocks, fenced, func(node int) {
-		klog.V(3).Infof("local: memdev %s (serial %s): claim %s: NUMA node %d of %s known only after onlining, fencing it late",
-			memdev, serialText(req.Serial), req.Ref.Claim, node, dax)
+		klog.V(3).Infof("engine: local memdev %s (%s): claim %s: NUMA node %d of %s known only after onlining, fencing it late",
+			serialText(req.Serial), memdev, req.Ref.Claim, node, dax)
 	})
 	switch {
 	case err != nil:
@@ -621,8 +621,8 @@ func (e *Engine) onlinePart(ctx context.Context, req *GrantRequest, memdev, regi
 	case node < 0:
 		return -1, fmt.Errorf("cannot find the NUMA node of %s", dax)
 	}
-	klog.Infof("local: memdev %s (serial %s): claim %s: onlined slice %s mode %s size %d blocks %v node %d in %s",
-		memdev, serialText(req.Serial), req.Ref.Claim, dax, req.Asked.Mode, size, blocks, node, since(start))
+	klog.Infof("engine: local memdev %s (%s): claim %s: onlined slice %s mode %s size %d blocks %v node %d in %s",
+		serialText(req.Serial), memdev, req.Ref.Claim, dax, req.Asked.Mode, size, blocks, node, since(start))
 	return node, nil
 }
 
@@ -649,8 +649,8 @@ func (e *Engine) bindPart(ctx context.Context, req *GrantRequest, memdev, region
 		// "zeroing daxN.M: ..."
 		return err
 	}
-	klog.Infof("local: memdev %s (serial %s): claim %s: zeroed slice %s mode %s size %d in %s",
-		memdev, serialText(req.Serial), req.Ref.Claim, dax, req.Asked.Mode, size, since(start))
+	klog.Infof("engine: local memdev %s (%s): claim %s: zeroed slice %s mode %s size %d in %s",
+		serialText(req.Serial), memdev, req.Ref.Claim, dax, req.Asked.Mode, size, since(start))
 	return nil
 }
 
@@ -670,23 +670,23 @@ func (e *Engine) logReleased(g *state.Grant, release Release) {
 	}
 	switch {
 	case release == ReleaseRecovery && g.Asked.Kind == state.KindShared:
-		klog.Infof("local: memdev %s (serial %s): claim %s of the shared device is not prepared, dropping it", memdev, s, claim)
+		klog.Infof("engine: local memdev %s (%s): claim %s of the shared device is not prepared, dropping it", s, memdev, claim)
 	case release == ReleaseRecovery && g.Asked.Kind == state.KindPersistent:
-		klog.Infof("local: memdev %s (serial %s): claim %s of the persistent device is not prepared, dropping it", memdev, s, claim)
+		klog.Infof("engine: local memdev %s (%s): claim %s of the persistent device is not prepared, dropping it", s, memdev, claim)
 	case release == ReleaseRecovery:
-		klog.Infof("local: memdev %s (serial %s): claim %s is not prepared, releasing it", memdev, s, claim)
+		klog.Infof("engine: local memdev %s (%s): claim %s is not prepared, releasing it", s, memdev, claim)
 	case g.Asked.Kind == state.KindShared:
 		dax := ""
 		if reg := ownRegion(e.records(), g.Serial, state.RegionRam); reg != nil {
 			dax = reg.FirstDax()
 		}
-		klog.Infof("local: memdev %s (serial %s): claim %s: released shared %s, claims left %v", memdev, s, claim, dax, left)
+		klog.Infof("engine: local memdev %s (%s): claim %s: released shared %s, claims left %v", s, memdev, claim, dax, left)
 	case g.Asked.Kind == state.KindPersistent && len(left) > 0:
 		dev := ""
 		if g.Got.BlockDevice != nil {
 			dev = g.Got.BlockDevice.Name
 		}
-		klog.Infof("local: memdev %s (serial %s): claim %s: released persistent %s, claims left %v", memdev, s, claim, dev, left)
+		klog.Infof("engine: local memdev %s (%s): claim %s: released persistent %s, claims left %v", s, memdev, claim, dev, left)
 	}
 }
 
@@ -697,7 +697,7 @@ func (e *Engine) keptIdle(g *state.Grant, memdev string, decision Decision, rele
 		return
 	}
 	if reg := ownRegion(e.records(), g.Serial, state.RegionRam); reg != nil {
-		klog.Infof("local: memdev %s (serial %s): keeping %s and %s of the idle shared device", memdev, serialText(g.Serial), reg.Ref(), reg.FirstDax())
+		klog.Infof("engine: local memdev %s (%s): keeping %s and %s of the idle shared device", serialText(g.Serial), memdev, reg.Ref(), reg.FirstDax())
 	}
 }
 
@@ -723,8 +723,8 @@ func (e *Engine) releaseDax(ctx context.Context, g *state.Grant, trigger state.T
 	region, dax := string(g.Got.Region), g.Got.Dax
 	memdev := e.memdevName(g.Serial)
 	logStep := func(step string, start time.Time, details string) {
-		klog.Infof("local: memdev %s (serial %s): claim %s: %s slice %s mode %s size %d%s in %s",
-			memdev, serialText(g.Serial), g.Ref.Claim, step, dax, g.Asked.Mode, d.Size, details, since(start))
+		klog.Infof("engine: local memdev %s (%s): claim %s: %s slice %s mode %s size %d%s in %s",
+			serialText(g.Serial), memdev, g.Ref.Claim, step, dax, g.Asked.Mode, d.Size, details, since(start))
 	}
 	start := time.Now()
 	blocks, err := e.offlineDax(ctx, dax)

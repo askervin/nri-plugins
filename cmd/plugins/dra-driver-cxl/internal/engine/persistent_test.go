@@ -218,9 +218,9 @@ func TestPersistentCachedOrder(t *testing.T) {
 }
 
 // The log lines of the node mounts and of the read-only flags of the block
-// devices, each once and in order, with the driver's name first.
+// devices, each once and in order.
 func TestPersistentLogLines(t *testing.T) {
-	prefix := poolDriver + ": device " + api.FormatSerial(serialP) + ": "
+	prefix := "engine: pool memdev " + api.FormatSerial(serialP) + ": "
 	wantLines := func(t *testing.T, logs string, want ...string) {
 		t.Helper()
 		if got := linesWithPrefix(logs, prefix); !slices.Equal(got, want) {

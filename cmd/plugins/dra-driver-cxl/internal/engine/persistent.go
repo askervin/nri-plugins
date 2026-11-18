@@ -275,9 +275,9 @@ func (e *Engine) pmemChain(ctx context.Context, req *GrantRequest, memdev string
 	if req.Asked.Source == state.SourceLocal {
 		switch {
 		case created:
-			klog.Infof("local: memdev %s (serial %s): created %s (pmem, nvdimm %s) in %s", memdev, serialText(req.Serial), region, nd, since(start))
+			klog.Infof("engine: local memdev %s (%s): created %s (pmem, nvdimm %s) in %s", serialText(req.Serial), memdev, region, nd, since(start))
 		case again:
-			klog.Infof("local: memdev %s (serial %s): set up kept %s (pmem, nvdimm %s)", memdev, serialText(req.Serial), region, nd)
+			klog.Infof("engine: local memdev %s (%s): set up kept %s (pmem, nvdimm %s)", serialText(req.Serial), memdev, region, nd)
 		}
 	}
 	ns, err := e.pmemNamespace(wctx, req, nd, nss)
@@ -476,7 +476,7 @@ func (e *Engine) checkFsType(req *GrantRequest, typ string, sig *signature) (str
 	switch {
 	case !slices.Contains(e.opts.FsTypes, typ):
 		return fail("filesystem type %s is not allowed on this node (fsTypes: %s)", typ, allowed)
-	case e.nodevType(req.Asked.Source, typ):
+	case e.nodevType(typ):
 		return fail("filesystem type %s does not mount a block device", typ)
 	case !req.Asked.ReadOnly && config.FsTypeReadOnly(typ):
 		return fail("%s is a read-only filesystem: set readOnly: true", typ)
@@ -564,7 +564,7 @@ func (e *Engine) nodeMount(req *GrantRequest, u *pmemGrant, typ, access, mnt str
 	case !writer && !mi.SuperReadOnly():
 		// a rw superblock without a writer (a release that failed)
 		if err := e.downgrade(source, serial, dev, loop, mnt); err != nil {
-			e.errorf(source, "%v", err)
+			klog.Errorf("engine: %v", err)
 		}
 	}
 	return loop, nil
@@ -594,10 +594,10 @@ func errNeedsRecovery(serial, fsType, dev string) error {
 
 // nodevType tells whether the kernel lists the filesystem type as one
 // without a block device.
-func (e *Engine) nodevType(source state.Source, fsType string) bool {
+func (e *Engine) nodevType(fsType string) bool {
 	nodev, err := e.k.NodevFsType(fsType)
 	if err != nil {
-		klog.V(3).Infof("%s: %v", e.driver(source), err)
+		klog.V(3).Infof("engine: %v", err)
 	}
 	return nodev
 }
@@ -675,7 +675,7 @@ func (e *Engine) mountNode(source state.Source, serial state.Serial, dev, access
 		return "", err
 	}
 	if err := e.setReadOnly(source, serial, dev, ro); err != nil {
-		e.removeMountDir(source, mnt)
+		e.removeMountDir(mnt)
 		return "", err
 	}
 	src := dev
@@ -699,7 +699,7 @@ func (e *Engine) mountNode(source state.Source, serial state.Serial, dev, access
 	if len(data) > 0 {
 		what += ", " + strings.Join(data, ",")
 	}
-	e.logf(source, "device %s: mounted %s at %s (%s)", serialText(serial), src, mnt, what)
+	klog.Infof("engine: %s memdev %s: mounted %s at %s (%s)", source, serialText(serial), src, mnt, what)
 	if loop != nil {
 		return loop.Path(), nil
 	}
@@ -723,7 +723,7 @@ func (e *Engine) mountFs(source state.Source, serial state.Serial, dev, src, fsT
 		if loop != nil {
 			e.detachLoop(source, serial, loop)
 		}
-		e.removeMountDir(source, mnt)
+		e.removeMountDir(mnt)
 		if ro && errors.Is(err, syscall.EROFS) {
 			return errNeedsRecovery(s, fsType, dev)
 		}
@@ -731,7 +731,7 @@ func (e *Engine) mountFs(source state.Source, serial state.Serial, dev, src, fsT
 	}
 	if loop != nil {
 		if err := loop.Release(false); err != nil {
-			e.warnf(source, "device %s: closing %s: %v", s, loop.Path(), err)
+			klog.Warningf("engine: %s memdev %s: closing %s: %v", source, s, loop.Path(), err)
 		}
 	}
 	return nil
@@ -748,13 +748,13 @@ func (e *Engine) attachCachedLoop(source state.Source, serial state.Serial, dev,
 		return err
 	})
 	if err != nil {
-		e.removeMountDir(source, mnt)
+		e.removeMountDir(mnt)
 		return nil, fmt.Errorf("device %s: a loop device over %s: %w", serialText(serial), dev, err)
 	}
 	if !readOnlyType {
 		if err := e.setReadOnly(source, serial, l.Path(), ro); err != nil {
 			e.detachLoop(source, serial, l)
-			e.removeMountDir(source, mnt)
+			e.removeMountDir(mnt)
 			return nil, err
 		}
 	}
@@ -775,9 +775,9 @@ func (e *Engine) verifyNodeDax(source state.Source, serial state.Serial, dev, fs
 		return nil
 	}
 	if uerr := e.locked(func() error { return e.k.Unmount(mnt) }); uerr != nil {
-		e.errorf(source, "device %s: unmounting %s: %v", s, mnt, uerr)
+		klog.Errorf("engine: %s memdev %s: unmounting %s: %v", source, s, mnt, uerr)
 	} else {
-		e.removeMountDir(source, mnt)
+		e.removeMountDir(mnt)
 	}
 	return err
 }
@@ -785,7 +785,7 @@ func (e *Engine) verifyNodeDax(source state.Source, serial state.Serial, dev, fs
 // detachLoop detaches a loop device that no mount uses.
 func (e *Engine) detachLoop(source state.Source, serial state.Serial, loop kernel.Loop) {
 	if err := e.locked(func() error { return loop.Release(true) }); err != nil {
-		e.errorf(source, "device %s: detaching %s: %v", serialText(serial), loop.Path(), err)
+		klog.Errorf("engine: %s memdev %s: detaching %s: %v", source, serialText(serial), loop.Path(), err)
 	}
 }
 
@@ -801,11 +801,11 @@ func (e *Engine) upgrade(source state.Source, serial state.Serial, dev, loop, mn
 	fail := func(err error) error {
 		if loop != "" {
 			if rerr := e.setReadOnly(source, serial, loop, true); rerr != nil {
-				e.errorf(source, "%v", rerr)
+				klog.Errorf("engine: %v", rerr)
 			}
 		}
 		if rerr := e.setReadOnly(source, serial, dev, true); rerr != nil {
-			e.errorf(source, "%v", rerr)
+			klog.Errorf("engine: %v", rerr)
 		}
 		return fmt.Errorf("device %s: remounting %s read-write: %w", s, mnt, err)
 	}
@@ -820,7 +820,7 @@ func (e *Engine) upgrade(source state.Source, serial state.Serial, dev, loop, mn
 	if err := e.locked(func() error { return e.k.Reconfigure(mnt, true) }); err != nil {
 		return fail(err)
 	}
-	e.logf(source, "device %s: remounted %s read-write", s, mnt)
+	klog.Infof("engine: %s memdev %s: remounted %s read-write", source, s, mnt)
 	return nil
 }
 
@@ -835,7 +835,7 @@ func (e *Engine) downgrade(source state.Source, serial state.Serial, dev, loop, 
 	if err := e.locked(func() error { return e.k.Reconfigure(mnt, false) }); err != nil {
 		return fmt.Errorf("device %s: remounting %s read-only: %w", s, mnt, err)
 	}
-	e.logf(source, "device %s: remounted %s read-only", s, mnt)
+	klog.Infof("engine: %s memdev %s: remounted %s read-only", source, s, mnt)
 	if loop != "" {
 		if err := e.setReadOnly(source, serial, loop, true); err != nil {
 			return err
@@ -862,7 +862,7 @@ func (e *Engine) setReadOnly(source state.Source, serial state.Serial, dev strin
 		return fmt.Errorf("device %s: %w", s, err)
 	}
 	if changed {
-		e.logf(source, "device %s: %s %s", s, dev, kernel.RoWord(readOnly))
+		klog.Infof("engine: %s memdev %s: %s %s", source, s, dev, kernel.RoWord(readOnly))
 	}
 	return nil
 }
@@ -944,9 +944,9 @@ func (e *Engine) checkNodeMount(serial state.Serial, dev, access, fsType string,
 }
 
 // removeMountDir removes the directory of a mount that is not mounted.
-func (e *Engine) removeMountDir(source state.Source, mnt string) {
+func (e *Engine) removeMountDir(mnt string) {
 	if err := os.Remove(mnt); err != nil && !errors.Is(err, os.ErrNotExist) {
-		e.warnf(source, "removing %s: %v", mnt, err)
+		klog.Warningf("engine: removing %s: %v", mnt, err)
 	}
 }
 
@@ -961,9 +961,9 @@ func (e *Engine) unmountNode(source state.Source, serial state.Serial, mnt strin
 		if err := e.locked(func() error { return e.k.Unmount(mnt) }); err != nil {
 			return fmt.Errorf("device %s: unmounting %s: %w", serialText(serial), mnt, err)
 		}
-		e.logf(source, "device %s: unmounted %s", serialText(serial), mnt)
+		klog.Infof("engine: %s memdev %s: unmounted %s", source, serialText(serial), mnt)
 	}
-	e.removeMountDir(source, mnt)
+	e.removeMountDir(mnt)
 	return nil
 }
 
@@ -1021,7 +1021,7 @@ func (e *Engine) verified(source state.Source, serial state.Serial, dev string) 
 		return dev
 	}
 	if err := e.checkRecordedBlockDevice(serial, dev); err != nil {
-		e.warnf(source, "device %s: not changing the read-only flag of %s: %v", serialText(serial), dev, err)
+		klog.Warningf("engine: %s memdev %s: not changing the read-only flag of %s: %v", source, serialText(serial), dev, err)
 		return ""
 	}
 	return dev
@@ -1048,7 +1048,7 @@ func (e *Engine) waitNoHolder(ctx context.Context, source state.Source, serial s
 			return nil
 		}
 		if !time.Now().Before(deadline) {
-			e.warnf(source, "device %s: %s is held: %s", s, dev, holder)
+			klog.Warningf("engine: %s memdev %s: %s is held: %s", source, s, dev, holder)
 			return fmt.Errorf("device %s: %s is still in use", s, dev)
 		}
 		select {
@@ -1129,7 +1129,7 @@ func (e *Engine) currentBlockDevice(serial state.Serial) string {
 	nss, _, err := e.regionNamespaces(serial)
 	if err != nil {
 		if !errors.Is(err, kernel.ErrNotFound) {
-			klog.Warningf("serial %s: %v", serialText(serial), err)
+			klog.Warningf("engine: memdev %s: %v", serialText(serial), err)
 		}
 		return ""
 	}
@@ -1314,22 +1314,22 @@ func (e *Engine) blockDeviceOf(g *state.Grant, call *releaseCall) string {
 	if err == nil {
 		return recorded
 	}
-	s, claim := serialText(g.Serial), e.claimNameOf(g.Ref)
+	m, claim := memdevText(g.Asked.Source, g.Serial), e.claimNameOf(g.Ref)
 	cur := e.currentBlockDevice(g.Serial)
 	switch {
 	case cur == "" && e.hasRegion(g.Serial) && e.otherBlockDevice(g.Got.BlockDevice):
-		e.logf(g.Asked.Source, "claim %s: %v; %s is another block device now: the release of device %s waits for no holder of it",
-			claim, err, recorded, s)
+		klog.Infof("engine: claim %s: %v; %s is another block device now: the release of %s waits for no holder of it",
+			claim, err, recorded, m)
 		return ""
 	case cur == "" && e.hasRegion(g.Serial):
-		e.warnf(g.Asked.Source, "claim %s: %v; the block device of the region of device %s is not known now: its release waits for the holders of %s as prepared",
-			claim, err, s, recorded)
+		klog.Warningf("engine: claim %s: %v; the block device of the region of %s is not known now: its release waits for the holders of %s as prepared",
+			claim, err, m, recorded)
 		return recorded
 	case cur == "":
-		e.logf(g.Asked.Source, "claim %s: %v; device %s has no region now: its release waits for no holder of %s", claim, err, s, recorded)
+		klog.Infof("engine: claim %s: %v; %s has no region now: its release waits for no holder of %s", claim, err, m, recorded)
 	default:
-		e.logf(g.Asked.Source, "claim %s: %v; the release of device %s waits for the holders of %s, the block device of its region now, not of %s",
-			claim, err, s, cur, recorded)
+		klog.Infof("engine: claim %s: %v; the release of %s waits for the holders of %s, the block device of its region now, not of %s",
+			claim, err, m, cur, recorded)
 	}
 	return cur
 }

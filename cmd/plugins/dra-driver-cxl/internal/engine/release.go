@@ -24,6 +24,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
+	"k8s.io/klog/v2"
 )
 
 // ReleaseGrants releases the grants refs as release says (Policy) and
@@ -278,7 +279,7 @@ func (e *Engine) releaseLast(ctx context.Context, cur *state.Grant, call *releas
 	others, ofCall := e.memdevUsers(cur.Serial, ref, call)
 	e.logReleased(cur, call.release)
 	if others && !ofCall && cur.Asked.Source == state.SourcePool {
-		e.logf(cur.Asked.Source, "serial %s is still used by another claim", serialText(cur.Serial))
+		klog.Infof("engine: %s is still used by another claim", memdevText(cur.Asked.Source, cur.Serial))
 	}
 	if !others && !ofCall {
 		kept, err := e.releaseMemdev(ctx, cur, call)
@@ -657,7 +658,7 @@ func (e *Engine) releaseIdle(ctx context.Context, m *state.Memdev, kind Kind, ho
 // releaseGone releases what is left of a memdev that is gone: its regions
 // of ours that the kernel left hollow.
 func (e *Engine) releaseGone(ctx context.Context, g *state.Grant, trigger state.Trigger) error {
-	e.logf(g.Asked.Source, "memdev with serial %s is gone, nothing to release", serialText(g.Serial))
+	klog.Infof("engine: %s is gone, nothing to release", memdevText(g.Asked.Source, g.Serial))
 	return e.deleteHollow(ctx, g.Serial, trigger, "its memdev was removed before the region was destroyed")
 }
 
@@ -673,14 +674,14 @@ func (e *Engine) releaseStale(ctx context.Context, ref state.GrantRef, trigger s
 	if target := g.Intent.BindTarget; target != "" {
 		// the directory of the lease bind of another boot
 		if mi, err := e.k.Mounted(target); err == nil && mi == nil {
-			e.removeMountDir(g.Asked.Source, target)
+			e.removeMountDir(target)
 		}
 	}
 	if g.Asked.Source == state.SourcePool && r.Memdev(serial) == nil {
 		memdev, err := e.k.FindMemdev(uint64(serial))
 		switch {
 		case errors.Is(err, kernel.ErrNotFound):
-			e.logf(g.Asked.Source, "memdev with serial %s is gone, nothing to release", serialText(serial))
+			klog.Infof("engine: %s is gone, nothing to release", memdevText(g.Asked.Source, serial))
 		case err != nil:
 			return err
 		default:

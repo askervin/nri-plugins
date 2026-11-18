@@ -125,7 +125,7 @@ func (e *Engine) restoreSerial(serial state.Serial, why map[state.GrantRef]error
 	rs.loops = map[string]string{}
 	for _, u := range grants {
 		if rm, ok := byMount[u.nodeMount]; ok && rm.err == nil && rm.loop != u.loop && u.access == api.AccessCached {
-			e.logf(u.source, "device %s: %s is on %s now, not %s", serialText(serial), u.nodeMount, rm.loop, u.loop)
+			klog.Infof("engine: %s memdev %s: %s is on %s now, not %s", u.source, serialText(serial), u.nodeMount, rm.loop, u.loop)
 			rs.loops[u.nodeMount] = rm.loop
 		}
 	}
@@ -165,11 +165,7 @@ func (e *Engine) checkBlocks(serial state.Serial, why map[state.GrantRef]error) 
 	if err == nil {
 		return nil
 	}
-	if source := grants[0].Asked.Source; source == state.SourceLocal {
-		klog.Errorf("local: memdev %s (serial %s): %v", e.memdevName(serial), serialText(serial), err)
-	} else {
-		e.errorf(source, "memdev %s (serial %s): %v", e.memdevName(serial), serialText(serial), err)
-	}
+	klog.Errorf("engine: %s (%s): %v", memdevText(grants[0].Asked.Source, serial), e.memdevName(serial), err)
 	bad := map[state.GrantRef]error{}
 	for _, g := range grants {
 		why[g.Ref], bad[g.Ref] = err, err
@@ -264,9 +260,9 @@ func (e *Engine) restoreMounts(grants []pmemGrant, writer bool, bad map[state.Gr
 		quiet := !slices.ContainsFunc(grants, func(u pmemGrant) bool { return u.nodeMount == mnt && bad[u.ref] == nil })
 		switch {
 		case err != nil && errors.Is(err, errForeignMount):
-			e.errorf(grants[i].source, "%v: it is never used or unmounted by the driver", err)
+			klog.Errorf("engine: %v: it is never used or unmounted by the driver", err)
 		case err != nil && !quiet:
-			e.errorf(grants[i].source, "claim %s: %v", e.claimNameOf(grants[i].ref), err)
+			klog.Errorf("engine: claim %s: %v", e.claimNameOf(grants[i].ref), err)
 		}
 		byMount[mnt] = restoredMount{loop: loop, err: err}
 	}
@@ -290,7 +286,7 @@ func (e *Engine) checkRestoredMount(u *pmemGrant, mi *kernel.MountInfo) (string,
 		loop, err = e.checkNodeMount(u.serial, u.blockDevice, u.access, u.fsType, mi)
 	}
 	if err != nil {
-		e.errorf(u.source, "claim %s: %v", e.claimNameOf(u.ref), err)
+		klog.Errorf("engine: claim %s: %v", e.claimNameOf(u.ref), err)
 		if u.access == api.AccessCached {
 			loop = mi.Source
 		}
@@ -361,7 +357,7 @@ func (e *Engine) restoreFlags(serial state.Serial, dev string, grants []pmemGran
 		errs = append(errs, e.setReadOnly(source, serial, dev, true))
 	}
 	if err := errors.Join(errs...); err != nil {
-		e.errorf(source, "%v", err)
+		klog.Errorf("engine: %v", err)
 	}
 }
 
@@ -377,9 +373,9 @@ func (e *Engine) restoreNodeMount(u *pmemGrant, writer bool, explained []string)
 		return "", err
 	}
 	if mi == nil {
-		e.logf(u.source, "device %s: %s is not mounted, mounting it again", serialText(u.serial), u.nodeMount)
+		klog.Infof("engine: %s memdev %s: %s is not mounted, mounting it again", u.source, serialText(u.serial), u.nodeMount)
 		if err := e.checkRecordedBlockDevice(u.serial, u.blockDevice); err != nil {
-			e.removeMountDir(u.source, u.nodeMount)
+			e.removeMountDir(u.nodeMount)
 			return "", fmt.Errorf("not mounting %s again: %w", u.nodeMount, err)
 		}
 		return e.mountNode(u.source, u.serial, u.blockDevice, u.access, u.fsType, u.nodeMount, writer, explained)
@@ -397,7 +393,7 @@ func (e *Engine) restoreNodeMount(u *pmemGrant, writer bool, explained []string)
 		err = e.downgrade(u.source, u.serial, u.blockDevice, loop, u.nodeMount)
 	}
 	if err != nil {
-		e.errorf(u.source, "%v", err)
+		klog.Errorf("engine: %v", err)
 	}
 	return loop, nil
 }

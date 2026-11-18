@@ -263,7 +263,7 @@ func TestLocalWholeDeviceRows(t *testing.T) {
 	tr = v.trail("region0", "dax0.0")
 	v.mustPrepare(localDriver, "k", sliceReq("k", 0, state.ModeDax, 256*mib))
 	tr.want(t, "DEVICE_DAX whole users=0 size=1073741824", "SIZED part users=1 size=268435456")
-	wantLog(t, logs(), "local: memdev mem0 (serial 0x11): set up kept region0 (devdax, dax dax0.0, node 2) in ")
+	wantLog(t, logs(), "engine: local memdev 0x11 (mem0): set up kept region0 (devdax, dax dax0.0, node 2) in ")
 	dropRaw(t, v, above)
 	v.mustUnprepare(localDriver, "k")
 	v.clean("unprepared")
@@ -313,7 +313,7 @@ func TestLocalReleaseOrder(t *testing.T) {
 	before := v.f.Commands()
 	v.mustUnprepare(localDriver, "c")
 	var deleted []string
-	for _, l := range linesWithPrefix(logs(), "local: memdev ") {
+	for _, l := range linesWithPrefix(logs(), "engine: local memdev ") {
 		if _, rest, ok := strings.Cut(l, ": claim c: deleted slice "); ok {
 			dax, _, _ := strings.Cut(rest, " ")
 			deleted = append(deleted, dax)
@@ -410,7 +410,7 @@ func TestLocalKindIdleReleasedFirst(t *testing.T) {
 	logs := captureKlog(t)
 	v.mustPrepare(localDriver, "n", sliceReq("n", 0, state.ModeDax, 256*mib))
 	out := logs()
-	wantLog(t, out, "local: memdev mem0 (serial 0x11): released region0 in ", "local: memdev mem0 (serial 0x11): created region0 ")
+	wantLog(t, out, "engine: local memdev 0x11 (mem0): released region0 in ", "engine: local memdev 0x11 (mem0): created region0 ")
 	if i, j := strings.Index(out, "released region0 in "), strings.Index(out, "created region0 "); j < i {
 		t.Fatalf("the region was not released first:\n%s", out)
 	}
@@ -451,7 +451,7 @@ func wantMessages(t *testing.T, logs string, want ...string) {
 // released with the claims left, kept at a start and kept idle below a
 // newer region.
 func TestLocalLogLines(t *testing.T) {
-	const memdev = "local: memdev mem0 (serial 0x11): "
+	const memdev = "engine: local memdev 0x11 (mem0): "
 	t.Run("sliced", func(t *testing.T) {
 		v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
 		logs := captureKlog(t)
@@ -496,7 +496,7 @@ func TestLocalLogLines(t *testing.T) {
 		v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib}, fake.MemdevSpec{Serial: serialB})
 		v.formatPmem("mem0", "ext4")
 		pmem := filepath.Join(v.f.DevRoot(), "pmem0")
-		const memdev = "local: memdev mem0 (serial 0x91): "
+		const memdev = "engine: local memdev 0x91 (mem0): "
 		logs := captureKlog(t)
 		v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
 		v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFs, true, ""))
@@ -521,7 +521,7 @@ func TestLocalLogLines(t *testing.T) {
 		v.formatPmem("mem0", "ext4")
 		logs := captureKlog(t)
 		v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
-		wantMessages(t, logs(), "local: memdev mem0 (serial 0x91): created region0 (pmem, nvdimm region0) in <t>")
+		wantMessages(t, logs(), "engine: local memdev 0x91 (mem0): created region0 (pmem, nvdimm region0) in <t>")
 		v.mustUnprepare(localDriver, "w")
 		v.clean("unprepared")
 	})

@@ -48,9 +48,9 @@ func (e *Engine) bindGrant(ctx context.Context, req *GrantRequest, u pmemGrant) 
 		what = "lease " + req.Lend.Lease
 	}
 	if found {
-		e.logf(req.Asked.Source, "%s: %s is bound at %s already", what, u.nodeMount, req.BindTarget)
+		klog.Infof("engine: %s: %s is bound at %s already", what, u.nodeMount, req.BindTarget)
 	} else {
-		e.logf(req.Asked.Source, "%s: bound %s at %s", what, u.nodeMount, req.BindTarget)
+		klog.Infof("engine: %s: bound %s at %s", what, u.nodeMount, req.BindTarget)
 	}
 	return nil
 }
@@ -120,7 +120,7 @@ func (e *Engine) bindLease(u *pmemGrant, target string, otherBind func(string) b
 		return e.k.Mount(u.nodeMount, target, "", syscall.MS_BIND, "")
 	})
 	if err != nil {
-		e.removeMountDir(u.source, target)
+		e.removeMountDir(target)
 		return false, fmt.Errorf("device %s: binding %s at %s: %w", s, u.nodeMount, target, err)
 	}
 	return false, e.verifyBind(u, target, node)
@@ -153,10 +153,10 @@ func (e *Engine) verifyBind(u *pmemGrant, target string, node *kernel.MountInfo)
 		return nil
 	}
 	if uerr := e.locked(func() error { return e.k.Unmount(target) }); uerr != nil {
-		e.errorf(u.source, "device %s: unmounting %s: %v; trying again at the next release", s, target, uerr)
+		klog.Errorf("engine: %s memdev %s: unmounting %s: %v; trying again at the next release", u.source, s, target, uerr)
 		e.addStale(u.serial, target, state.StaleBind)
 	} else {
-		e.removeMountDir(u.source, target)
+		e.removeMountDir(target)
 	}
 	return err
 }
@@ -193,7 +193,7 @@ func (e *Engine) releaseBind(ctx context.Context, g *state.Grant, trigger state.
 		return nil
 	}
 	if e.bindUsed(b.Target, g.Ref) {
-		e.warnf(g.Asked.Source, "%s: %s is the bind of another prepared claim, not unmounting it", bindWhat(g), b.Target)
+		klog.Warningf("engine: %s: %s is the bind of another prepared claim, not unmounting it", bindWhat(g), b.Target)
 		return e.commit(ctx, func(r *state.Records) error { return boundTo(r, g.Ref, b.Target, state.BindAbsent, trigger) })
 	}
 	err := e.unbind(g.Asked.Source, bindWhat(g), b.Target)
@@ -278,9 +278,9 @@ func (e *Engine) unbind(source state.Source, what, target string) error {
 		if err != nil {
 			return fmt.Errorf("%s: unmounting %s: %w", what, target, err)
 		}
-		e.logf(source, "%s: unbound %s", what, target)
+		klog.Infof("engine: %s: unbound %s", what, target)
 	}
-	e.removeMountDir(source, target)
+	e.removeMountDir(target)
 	return nil
 }
 
@@ -293,13 +293,13 @@ func (e *Engine) unbindStale(source state.Source, target string) error {
 		err = fmt.Errorf("a %s mount of %s is on it", mi.FsType, mi.Source)
 	default:
 		if err = e.locked(func() error { return e.k.Unmount(target) }); err == nil {
-			e.logf(source, "unbound stale lease bind %s", target)
+			klog.Infof("engine: unbound stale lease bind %s", target)
 		}
 	}
 	if err != nil {
 		return err
 	}
-	e.removeMountDir(source, target)
+	e.removeMountDir(target)
 	return nil
 }
 
@@ -370,7 +370,7 @@ func (e *Engine) retryOrphanBinds() {
 			continue
 		}
 		if err := e.unbindStale(state.SourceLocal, target); err != nil {
-			e.errorf(state.SourceLocal, "unmounting stale lease bind %s: %v", target, err)
+			klog.Errorf("engine: unmounting stale lease bind %s: %v", target, err)
 			left = append(left, target)
 		}
 	}
@@ -407,7 +407,7 @@ func (e *Engine) retryStale(ctx context.Context, serial state.Serial, trigger st
 			continue
 		}
 		if err := e.unbindStale(source, sp.Path); err != nil {
-			e.errorf(source, "unmounting stale lease bind %s: %v", sp.Path, err)
+			klog.Errorf("engine: unmounting stale lease bind %s: %v", sp.Path, err)
 			left = true
 			continue
 		}
@@ -418,7 +418,7 @@ func (e *Engine) retryStale(ctx context.Context, serial state.Serial, trigger st
 		return
 	}
 	if err := e.commit(ctx, func(r *state.Records) error { return forgetStale(r, serial, forget, trigger) }); err != nil {
-		e.errorf(source, "serial %s: %v", serialText(serial), err)
+		klog.Errorf("engine: %s: %v", memdevText(source, serial), err)
 		return
 	}
 	if gone && !left {
@@ -465,7 +465,7 @@ func (e *Engine) releaseAfterStale(ctx context.Context, serial state.Serial, tri
 		}
 		return nil
 	}); err != nil {
-		e.errorf(source, "serial %s: %v", serialText(serial), err)
+		klog.Errorf("engine: %s: %v", memdevText(source, serial), err)
 	}
 }
 
@@ -500,10 +500,10 @@ func (e *Engine) logAfterStale(source state.Source, serial state.Serial, errs []
 		}
 	}
 	if len(held) > 0 {
-		e.errorf(source, "not releasing serial %s after its stale lease bind: %v", serialText(serial), errors.Join(held...))
+		klog.Errorf("engine: not releasing %s after its stale lease bind: %v", memdevText(source, serial), errors.Join(held...))
 	}
 	if len(failed) > 0 {
-		e.errorf(source, "releasing serial %s after its stale lease bind: %v", serialText(serial), errors.Join(failed...))
+		klog.Errorf("engine: releasing %s after its stale lease bind: %v", memdevText(source, serial), errors.Join(failed...))
 	}
 }
 

@@ -70,7 +70,7 @@ func loadProbes(path string) (map[state.Serial]state.Probe, error) {
 			return nil, fmt.Errorf("parsing %s: serial %q: %w", path, hex, err)
 		}
 		out[state.Serial(serial)] = p
-		klog.Warningf("local: memdev serial 0x%x: using only its first %d bytes, found by the address line probe of %s at %s: %s (remove %s to probe all of it again)",
+		klog.Warningf("engine: local memdev 0x%x: using only its first %d bytes, found by the address line probe of %s at %s: %s (remove %s to probe all of it again)",
 			serial, p.UsableSize, p.Region, p.Time.Format(time.RFC3339), p.Result, path)
 	}
 	return out, nil
@@ -136,13 +136,13 @@ func (e *Engine) probeRegion(ctx context.Context, req *GrantRequest, memdev, reg
 	}
 	res, err := e.k.ProbeAliasing(ctx, dax)
 	if errors.Is(err, kernel.ErrProbeUnsupported) {
-		klog.V(4).Infof("local: memdev %s (serial %s): %v", memdev, s, err)
+		klog.V(4).Infof("engine: local memdev %s (%s): %v", s, memdev, err)
 		return 0, nil
 	}
 	if err != nil {
 		return 0, fmt.Errorf("memdev %s (serial %s): probing %s for address aliasing: %w", memdev, s, region, err)
 	}
-	klog.Infof("local: memdev %s (serial %s): address line probe of %s (%d bytes): %s in %s", memdev, s, region, size, res, since(start))
+	klog.Infof("engine: local memdev %s (%s): address line probe of %s (%d bytes): %s in %s", s, memdev, region, size, res, since(start))
 	if res.Offset == 0 {
 		if res.Garbage >= 0 {
 			return 0, fmt.Errorf("memdev %s (serial %s): %s: %s", memdev, s, region, res)
@@ -153,9 +153,9 @@ func (e *Engine) probeRegion(ctx context.Context, req *GrantRequest, memdev, reg
 	if usable == 0 {
 		return 0, fmt.Errorf("memdev %s (serial %s): %s: %s: less than 256 MiB is usable", memdev, s, region, res)
 	}
-	klog.Warningf("local: memdev %s (serial %s): %s: %s; using only the first %d bytes of the memdev from now on", memdev, s, region, res, usable)
+	klog.Warningf("engine: local memdev %s (%s): %s: %s; using only the first %d bytes of the memdev from now on", s, memdev, region, res, usable)
 	if err := e.saveProbe(req.Serial, state.Probe{UsableSize: usable, Result: res.String(), Region: region, Time: time.Now()}); err != nil {
-		klog.Errorf("local: saving the probe result: %v", err)
+		klog.Errorf("engine: saving the probe result: %v", err)
 	}
 	return usable, nil
 }

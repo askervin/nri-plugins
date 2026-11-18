@@ -107,7 +107,7 @@ func TestReleaseRetriesStaleBindsOfEveryMemdev(t *testing.T) {
 	v.mustPrepare(poolDriver, "a", poolReq("a", 0, serialA, state.ModeDax, state.KindExclusive))
 	v.mustUnprepare(poolDriver, "a")
 	out := logs()
-	for _, want := range []string{"unbound stale lease bind " + target, "released mem0 (serial 0x91)"} {
+	for _, want := range []string{"unbound stale lease bind " + target, "memdev 0x91 (mem0): released"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("no %q in\n%s", want, out)
 		}
@@ -135,7 +135,7 @@ func TestRetryStalePeriodic(t *testing.T) {
 	logs := captureKlog(t)
 	v.e.RetryStale(context.Background(), state.TriggerUnprepare)
 	v.mustNotBeMounted("after the pass", target)
-	if out := logs(); !strings.Contains(out, "released mem0 (serial 0x91)") {
+	if out := logs(); !strings.Contains(out, "memdev 0x91 (mem0): released") {
 		t.Errorf("the memdev is not released:\n%s", out)
 	}
 	if m := v.records().Memdev(serialP); m != nil {

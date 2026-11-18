@@ -141,7 +141,7 @@ func (e *Engine) releaseIdleLeftover(ctx context.Context, req *GrantRequest) err
 func (e *Engine) journal(ctx context.Context, req *GrantRequest) error {
 	if req.Asked.Source == state.SourceLocal {
 		if err := e.localGuard(ctx, req.Serial); err != nil {
-			klog.Errorf("local: refusing memdev serial %s: %v", serialText(req.Serial), err)
+			klog.Errorf("engine: refusing %s: %v", memdevText(state.SourceLocal, req.Serial), err)
 			return err
 		}
 	}
@@ -368,7 +368,6 @@ func (e *Engine) rollback(ctx context.Context, reqs []GrantRequest, failed state
 	if len(refs) == 0 {
 		return nil
 	}
-	source := r.Grant(refs[0]).Asked.Source
 	refs = localOrder(r, refs)
 	e.revokeLends(ctx, refs)
 	e.retryAllStale(ctx, state.TriggerPrepare)
@@ -376,7 +375,7 @@ func (e *Engine) rollback(ctx context.Context, reqs []GrantRequest, failed state
 	call.reasons[failed] = why.Error()
 	for _, group := range e.byMemdev(refs) {
 		if err := e.releaseGroup(ctx, group.serial, group.refs, call); err != nil {
-			e.errorf(source, "rollback: %v", err)
+			klog.Errorf("engine: rollback: %v", err)
 		}
 	}
 	return e.grantsOf(refs)
@@ -396,7 +395,7 @@ func (e *Engine) revokeLends(ctx context.Context, refs []state.GrantRef) {
 			continue
 		}
 		if err := e.opts.Revoke(ctx, ref, *g.Got.Lend); err != nil {
-			e.errorf(g.Asked.Source, "rollback: claim %s: %v", e.claimNameOf(ref), err)
+			klog.Errorf("engine: rollback: claim %s: %v", e.claimNameOf(ref), err)
 		}
 	}
 }

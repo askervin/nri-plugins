@@ -50,11 +50,11 @@ func TestLocalRecoverShared(t *testing.T) {
 		want     string
 		released bool
 	}{
-		{"configured with claims", true, true, "local: memdev mem0 (serial 0x11): keeping shared region0 and dax0.0, claims [s1]", false},
-		{"configured idle", false, true, "local: memdev mem0 (serial 0x11): keeping shared region0 and dax0.0, claims []", false},
-		{"not configured with claims", true, false, "local: memdev mem0 (serial 0x11): not configured shared any more: keeping region0 for " +
+		{"configured with claims", true, true, "engine: local memdev 0x11 (mem0): keeping shared region0 and dax0.0, claims [s1]", false},
+		{"configured idle", false, true, "engine: local memdev 0x11 (mem0): keeping shared region0 and dax0.0, claims []", false},
+		{"not configured with claims", true, false, "engine: local memdev 0x11 (mem0): not configured shared any more: keeping region0 for " +
 			"claims [s1], not publishing the memdev until they are gone", false},
-		{"not configured idle", false, false, "local: memdev mem0 (serial 0x11): not configured shared any more, releasing its region", true},
+		{"not configured idle", false, false, "engine: local memdev 0x11 (mem0): not configured shared any more, releasing its region", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
@@ -97,13 +97,13 @@ func TestLocalRecoverPersistent(t *testing.T) {
 	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
 	logs := captureKlog(t)
 	v.restart()
-	wantLog(t, logs(), "local: memdev mem0 (serial 0x91): keeping persistent region0, claims [w]")
+	wantLog(t, logs(), "engine: local memdev 0x91 (mem0): keeping persistent region0, claims [w]")
 	above := rawRegion(t, v, "mem1")
 	v.mustUnprepare(localDriver, "w")
 	// idle below a region of another memdev
 	logs = captureKlog(t)
 	v.restart()
-	wantLog(t, logs(), "local: memdev mem0 (serial 0x91): keeping region0 of the idle persistent device: "+above+" lie above it")
+	wantLog(t, logs(), "engine: local memdev 0x91 (mem0): keeping region0 of the idle persistent device: "+above+" lie above it")
 	if m := v.records().Memdev(serialP); m == nil || m.State != state.MemdevIdleKept {
 		t.Fatalf("memdev %+v", m)
 	}
@@ -113,13 +113,13 @@ func TestLocalRecoverPersistent(t *testing.T) {
 	v.f.SetHolder(pmem, "dm-0")
 	logs = captureKlog(t)
 	v.restart()
-	wantLog(t, logs(), "local: memdev mem0 (serial 0x91): keeping region0 of the idle persistent device: device 0x91: "+pmem+" is still in use",
-		localDriver+": device 0x91: "+pmem+" is held: in use")
+	wantLog(t, logs(), "engine: local memdev 0x91 (mem0): keeping region0 of the idle persistent device: device 0x91: "+pmem+" is still in use",
+		"engine: local memdev 0x91: "+pmem+" is held: in use")
 	wantRegion(t, v, "region0", state.RegionOwned)
 	v.f.SetHolder(pmem, "")
 	logs = captureKlog(t)
 	v.restart()
-	wantLog(t, logs(), "local: memdev mem0 (serial 0x91): released region0 in ")
+	wantLog(t, logs(), "engine: local memdev 0x91 (mem0): released region0 in ")
 	v.clean("released")
 }
 
@@ -143,8 +143,8 @@ func TestLocalRecoverSlicedIdle(t *testing.T) {
 	}
 	logs := captureKlog(t)
 	v.restart()
-	wantLog(t, logs(), "local: memdev mem0 (serial 0x11): dax0.0 (mode dax, 268435456 bytes) belongs to no claim, deleting it",
-		"local: memdev mem0 (serial 0x11): released region0 in ")
+	wantLog(t, logs(), "engine: local memdev 0x11 (mem0): dax0.0 (mode dax, 268435456 bytes) belongs to no claim, deleting it",
+		"engine: local memdev 0x11 (mem0): released region0 in ")
 	v.clean("released")
 }
 
@@ -166,7 +166,7 @@ func TestLocalRecoverGoneParts(t *testing.T) {
 			if err := v.f.Kernel().ResizeDaxDevice(context.Background(), "dax0.1", 128*mib); err != nil {
 				t.Fatal(err)
 			}
-		}, []string{"local: memdev mem0 (serial 0x11): dax0.1 (mode dax, 134217728 bytes) belongs to no claim, deleting it"}},
+		}, []string{"engine: local memdev 0x11 (mem0): dax0.1 (mode dax, 134217728 bytes) belongs to no claim, deleting it"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
@@ -179,7 +179,7 @@ func TestLocalRecoverGoneParts(t *testing.T) {
 			logs := captureKlog(t)
 			v.restart()
 			wantLog(t, logs(), append([]string{
-				"local: memdev mem0 (serial 0x11): claim d2: slice dax0.1 of 268435456 bytes is gone, dropping it",
+				"engine: local memdev 0x11 (mem0): claim d2: slice dax0.1 of 268435456 bytes is gone, dropping it",
 				"claim d2: no device node for the dax slice " + filepath.Join(v.f.DevRoot(), "dax0.1") + ": the slice is gone",
 			}, c.want...)...)
 			if g := v.grant("d2", 0); g.Got.Dax != "" || g.Got.Region != "region0" || g.State != state.GrantRealised {
@@ -231,7 +231,7 @@ func TestLocalRecoverBadBlocks(t *testing.T) {
 			if !slices.Equal(out.Unrestored, []state.GrantRef{{Claim: "w"}}) || out.Why[state.GrantRef{Claim: "w"}] == nil {
 				t.Fatalf("recovered %+v", out)
 			}
-			if line := logLine(logs(), "local: memdev mem0 (serial 0x91): "); line == "" {
+			if line := logLine(logs(), "engine: local memdev 0x91 (mem0): "); line == "" {
 				t.Fatalf("no error line in\n%s", logs())
 			}
 			if g := v.grant("w", 0); g.State != state.GrantUnrestored {
@@ -281,7 +281,7 @@ func TestLocalForgetLocal(t *testing.T) {
 	if err := v.e.ForgetLocal(context.Background(), []state.Serial{serialL, serialB, serialA}); err != nil {
 		t.Fatal(err)
 	}
-	wantLog(t, logs(), "local: memdev mem0 (serial 0x11): its region was being created, and it is a pool device now: forgetting it without "+
+	wantLog(t, logs(), "engine: local memdev 0x11 (mem0): its region was being created, and it is a pool device now: forgetting it without "+
 		"touching its regions [region1]")
 	r := v.records()
 	if r.Memdev(serialL) != nil || r.Region("region1") != nil || r.Grant(state.GrantRef{Claim: "l"}) != nil {
@@ -323,16 +323,16 @@ func TestLocalRecoverCutPrepares(t *testing.T) {
 		regions int
 	}{
 		{"sliced", []fake.MemdevSpec{{Serial: serialL, Ram: gib}}, nil, realised, sliceReq("c", 0, state.ModeNUMA, 256*mib),
-			"local: memdev mem0 (serial 0x11): claim c is not prepared, releasing it", 0},
+			"engine: local memdev 0x11 (mem0): claim c is not prepared, releasing it", 0},
 		{"shared new", []fake.MemdevSpec{{Serial: serialL, Ram: gib}}, shared, func(v *env) { v.cutZeroing(true) }, sharedReq("c"),
-			"local: memdev mem0 (serial 0x11): claim c of the shared device is not prepared, dropping it", 0},
+			"engine: local memdev 0x11 (mem0): claim c of the shared device is not prepared, dropping it", 0},
 		{"shared established", []fake.MemdevSpec{{Serial: serialL, Ram: gib}}, func(v *env) {
 			shared(v)
 			v.mustPrepare(localDriver, "s", sharedReq("s"))
 			v.mustUnprepare(localDriver, "s")
-		}, realised, sharedReq("c"), "local: memdev mem0 (serial 0x11): claim c of the shared device is not prepared, dropping it", 1},
+		}, realised, sharedReq("c"), "engine: local memdev 0x11 (mem0): claim c of the shared device is not prepared, dropping it", 1},
 		{"persistent", []fake.MemdevSpec{{Serial: serialP, Pmem: gib}}, func(v *env) { v.formatPmem("mem0", "ext4") }, realised,
-			localPmemReq("c", 0, state.ModeFs, true, ""), "local: memdev mem0 (serial 0x91): claim c of the persistent device is not prepared, dropping it", 0},
+			localPmemReq("c", 0, state.ModeFs, true, ""), "engine: local memdev 0x91 (mem0): claim c of the persistent device is not prepared, dropping it", 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			v := newEnv(t, c.specs...)
@@ -348,7 +348,7 @@ func TestLocalRecoverCutPrepares(t *testing.T) {
 			if !slices.Equal(out.Released, []state.GrantRef{{Claim: "c"}}) || len(out.Kept) > 0 {
 				t.Fatalf("recovered %+v", out)
 			}
-			wantLog(t, logs(), c.line, localDriver+": claim ns/c (c): released, its Prepare again prepares its devices anew")
+			wantLog(t, logs(), c.line, "engine: claim ns/c (c): released, its Prepare again prepares its devices anew")
 			if rs := v.f.Kernel().Regions("mem0"); len(rs) != c.regions {
 				t.Fatalf("regions %v", rs)
 			}
@@ -393,7 +393,7 @@ func TestLocalRecoverHeldBlockDevice(t *testing.T) {
 	if !strings.Contains(kept, "is still in use") {
 		t.Fatalf("line %q does not say that the device is still in use in\n%s", kept, lines)
 	}
-	wantLog(t, lines, localDriver+": device 0x91: "+pmem+" is held: in use")
+	wantLog(t, lines, "engine: local memdev 0x91: "+pmem+" is held: in use")
 	wantPreparation(t, v, localDriver, "b", state.PreparationKept)
 	if g := v.grant("b", 0); g.Intent.Region != "region0" {
 		t.Fatalf("grant %+v", g)
@@ -406,7 +406,7 @@ func TestLocalRecoverHeldBlockDevice(t *testing.T) {
 	v.f.SetHolder(pmem, "")
 	logs = captureKlog(t)
 	v.mustUnprepare(localDriver, "b")
-	wantLog(t, logs(), "local: memdev mem0 (serial 0x91): released region0 in ")
+	wantLog(t, logs(), "engine: local memdev 0x91 (mem0): released region0 in ")
 	v.clean("unprepared")
 }
 

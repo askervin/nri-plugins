@@ -111,9 +111,6 @@ type Options struct {
 	Kernel *kernel.Kernel
 	// Store keeps the records.
 	Store *store.Store
-	// Drivers are the names of the drivers of the sources, the prefix of
-	// the log lines of their devices.
-	Drivers map[state.Source]string
 	// MountsDirs are the directories of the node mounts of mode fs of the
 	// sources, <plugin data dir of the driver>/mounts.
 	MountsDirs map[state.Source]string
@@ -225,13 +222,13 @@ func kernelLogf(format string, args ...any) {
 
 // kernelDebugf logs the details of package kernel's lookups at debug level.
 func kernelDebugf(format string, args ...any) {
-	klog.V(3).InfofDepth(1, format, args...)
+	klog.V(3).InfofDepth(1, "kernel: "+format, args...)
 }
 
 // sysWarningf logs what the system calls of package kernel find unexpected
 // as warnings.
 func sysWarningf(format string, args ...any) {
-	klog.WarningfDepth(1, format, args...)
+	klog.WarningfDepth(1, "kernel: "+format, args...)
 }
 
 // New returns an engine over the kernel and the store of opts. A kernel
@@ -384,14 +381,6 @@ func (e *Engine) rollbackContext(ctx context.Context) (context.Context, context.
 	return context.WithTimeout(context.WithoutCancel(ctx), e.opts.Timeouts.Rollback)
 }
 
-// driver returns the name of the driver of a source for the log lines.
-func (e *Engine) driver(source state.Source) string {
-	if d := e.opts.Drivers[source]; d != "" {
-		return d
-	}
-	return string(source)
-}
-
 // owns tells whether the engine owns the records of the source
 // (Options.Sources).
 func (e *Engine) owns(source state.Source) bool {
@@ -403,30 +392,10 @@ func (e *Engine) ownsAll() bool {
 	return e.owns(state.SourcePool) && e.owns(state.SourceLocal)
 }
 
-// logf logs at info level with the driver of the source as the prefix.
-func (e *Engine) logf(source state.Source, format string, args ...any) {
-	klog.InfofDepth(1, e.driver(source)+": "+format, args...)
-}
-
-// warnf logs a warning with the driver of the source as the prefix.
-func (e *Engine) warnf(source state.Source, format string, args ...any) {
-	klog.WarningfDepth(1, e.driver(source)+": "+format, args...)
-}
-
-// warnLocal logs a warning of a region of a memdev with the prefix of the
-// lines of the local memdevs, "local", for the local source, else the
-// driver of the source.
-func (e *Engine) warnLocal(source state.Source, format string, args ...any) {
-	prefix := e.driver(source)
-	if source == state.SourceLocal {
-		prefix = "local"
-	}
-	klog.WarningfDepth(1, prefix+": "+format, args...)
-}
-
-// errorf logs an error with the driver of the source as the prefix.
-func (e *Engine) errorf(source state.Source, format string, args ...any) {
-	klog.ErrorfDepth(1, e.driver(source)+": "+format, args...)
+// memdevText names the memdev of a source with the serial in the log
+// lines: "pool memdev 0xc1ae0001".
+func memdevText(source state.Source, serial state.Serial) string {
+	return string(source) + " memdev " + serialText(serial)
 }
 
 // serialText returns the serial as the log lines and errors write it.

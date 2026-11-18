@@ -76,7 +76,7 @@ func (e *Engine) onlineRegion(ctx context.Context, req *GrantRequest, memdev, re
 		return -1, fmt.Errorf("%s: no memory blocks found for %s", memdev, region)
 	}
 	node, err := e.onlineMemory(ctx, region, dax, blocks, fenced, func(node int) {
-		klog.V(3).Infof("%s: %s: NUMA node %d of %s known only after onlining, fencing it late", e.driver(req.Asked.Source), memdev, node, region)
+		klog.V(3).Infof("engine: %s (%s): NUMA node %d of %s known only after onlining, fencing it late", memdevText(req.Asked.Source, req.Serial), memdev, node, region)
 	})
 	if err == nil && node < 0 {
 		err = fmt.Errorf("%s: cannot find the NUMA node of %s", memdev, region)

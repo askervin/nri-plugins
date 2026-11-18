@@ -163,7 +163,7 @@ func TestStackLocalRollbackBelowPool(t *testing.T) {
 		t.Fatal("the Prepare succeeded")
 	}
 	v.check("rolled back")
-	wantLog(t, logs(), "local: memdev mem0 (serial 0x11): keeping region0 for claims [k], whose Prepare did not finish: region1 lie above it")
+	wantLog(t, logs(), "engine: local memdev 0x11 (mem0): keeping region0 for claims [k], whose Prepare did not finish: region1 lie above it")
 	wantRegion(t, v, "region0", state.RegionKept)
 	wantStack(t, v, serialL, serialB)
 	if g := v.grant("k", 0); g.State != state.GrantJournaled || g.Intent.Region != "region0" {

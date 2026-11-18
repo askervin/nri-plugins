@@ -148,7 +148,8 @@ DRA_LOCAL_PUBLISHED=""             # its ResourceSlice device as JSON,
 DRA_LOCAL_ATTACHMENT=""            # and the state of its attachment to the VM
 DRA_STATE_JSON=""                  # dra-local-state-shared: the state document of the node plugin
 DRA_LOCAL_SHARED_REGION=""         # dra-local-shared-wait: the region of the shared local device
-DRA_LOCAL_SHARED_DAX=""            # and its dax device (daxX.Y)
+DRA_LOCAL_SHARED_DAX=""            # its dax device (daxX.Y)
+DRA_LOCAL_SHARED_MEMDEV=""         # and the memdev (memN)
 DRA_DRIVER_POD=""                  # dra-driver-restart: the new pod of the driver
 DRA_CLAIM_JSON=""                  # dra-local-claim-check: the claim
 DRA_CLAIM_UID=""                   # and its uid
@@ -1523,8 +1524,9 @@ dra-local-shared-wait() { # script API
     # cxl-dump sees one region of the device, enabled, nothing of
     # it online; in sysfs the memdev is enabled and its one region is the
     # whole device, with one dax device of that size bound to device_dax.
-    # DRA_LOCAL_SHARED_REGION and DRA_LOCAL_SHARED_DAX are the region
-    # (regionN) and its dax device (daxX.Y), DRA_MEMDEV the sysfs view.
+    # DRA_LOCAL_SHARED_REGION, DRA_LOCAL_SHARED_DAX and
+    # DRA_LOCAL_SHARED_MEMDEV are the region (regionN), its dax device
+    # (daxX.Y) and the memdev (memN), DRA_MEMDEV the sysfs view.
     local vmdir="$1" label="$2" vmlabel claims
     shift 2
     claims=("$@")
@@ -1538,6 +1540,7 @@ dra-local-shared-wait() { # script API
         "j['enabled'] and len(j['regions']) == 1 and j['regions'][0]['size'] == $DRA_LOCAL_SIZE and [(d['size'], d['driver']) for d in dax_slices()] == [($DRA_LOCAL_SIZE, 'device_dax')]" 30
     DRA_LOCAL_SHARED_REGION=$(dra-value "$DRA_MEMDEV" "j['regions'][0]['name']")
     DRA_LOCAL_SHARED_DAX=$(dra-value "$DRA_MEMDEV" "dax_slices()[0]['name']")
+    DRA_LOCAL_SHARED_MEMDEV=$(dra-value "$DRA_MEMDEV" "j['memdev']")
     echo "$vmlabel: the shared local device is $DRA_LOCAL_SHARED_REGION, /dev/$DRA_LOCAL_SHARED_DAX"
 }
 
@@ -1713,7 +1716,7 @@ dra-local-slices-aligned() { # script API
     # consumed less than whole memory blocks).
     local log
     log=$(dra-plugin-log "$1")
-    if grep -E 'local: .*(does not start at a memory block boundary|placing it explicitly|rounded up to)' <<< "$log"; then
+    if grep -E 'engine: local memdev .*(does not start at a memory block boundary|placing it explicitly|rounded up to)' <<< "$log"; then
         error "the node plugin aligned, placed or rounded regions or slices of local devices itself, see above"
     fi
     echo "the node plugin's regions and slices were block-aligned: no slice placed explicitly or rounded up"
@@ -1732,8 +1735,8 @@ import re, statistics, sys
 units = {"s": 1000.0, "ms": 1.0, "us": 0.001, "ns": 0.000001}
 times = {}
 for line in sys.stdin:
-    m = re.search(r"local: .*: (?:claim \S+: )?(created|onlined|offlined|zeroed|deleted) slice \S+ mode (\S+) .* in ([0-9.]+)(ms|us|ns|s)$", line) or \
-        re.search(r"local: .*: (created|released) region\S*() .*?in ([0-9.]+)(ms|us|ns|s)$", line)
+    m = re.search(r"engine: local memdev .*: (?:claim \S+: )?(created|onlined|offlined|zeroed|deleted) slice \S+ mode (\S+) .* in ([0-9.]+)(ms|us|ns|s)$", line) or \
+        re.search(r"engine: local memdev .*: (created|released) region\S*() .*?in ([0-9.]+)(ms|us|ns|s)$", line)
     if not m:
         continue
     what, mode, value, unit = m.groups()

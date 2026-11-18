@@ -775,7 +775,7 @@ class Trace:
             self.emit(t, "drv", "%s %s: unprepared" % (node, self.lease_who(um.group(1))))
             return
         # The pool driver disables a memdev that no claim uses; the detach follows.
-        rm = re.match(r"\S+: released (mem\d+) \(serial \S+\)$", msg)
+        rm = re.match(r"engine: \w+ memdev \S+ \((mem\d+)\): released$", msg)
         if rm:
             self.emit(t, "drv", "%s released %s" % (node, rm.group(1)))
             return
@@ -787,7 +787,7 @@ class Trace:
                 "excl" if "exclusive" in lo.group(6) else "share"))
             return
         # The other lines of a shared local device (05-status-DRV section 5).
-        sm = re.match(r"local: memdev \S+ \(serial \S+\): (.*)$", msg)
+        sm = re.match(r"engine: local memdev \S+ \(\S+\): (.*)$", msg)
         if sm:
             rest = sm.group(1)
             cr = re.match(r"created (region\d+) \(devdax, dax (\S+?),", rest)
@@ -823,7 +823,7 @@ class Trace:
 
     def on_node_mount(self, t, node, msg):
         """Emit the node mount, remount, unmount and block device read-only lines of persistent devices in MSG; return True if MSG was one."""
-        dm = re.match(r"\S+: device (\S+): (.*)$", msg)
+        dm = re.match(r"engine: \w+ memdev (\S+): (.*)$", msg)
         if not dm:
             return False
         rest = dm.group(2)

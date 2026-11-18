@@ -66,8 +66,9 @@ POD_ENV=""             # env-check: the CXL_ variables of the pod
 POD_DAX=""             # and its dax device
 CDI_NODE=""            # cdi-check: the device node lines of the CDI device
 SHARED_REGION=""       # B: the region of the shared device, kept until H
-SHARED_DAX=""          # and its dax device (daxX.Y)
-SHARED_DEV=""          # and the major:minor of that
+SHARED_DAX=""          # its dax device (daxX.Y)
+SHARED_DEV=""          # the major:minor of that
+SHARED_MEMDEV=""       # and the memdev (memN)
 
 py-str() {
     # Usage: py-str TEXT
@@ -257,7 +258,7 @@ restart-kept() {
     # started, it kept the region of the shared device for the claims
     # CLAIM-UID (none: idle), and did neither zero nor release it.
     local log
-    dra-plugin-log-wait "$VM2" "(serial $DRA_LOCAL_SERIAL): keeping shared $SHARED_REGION and $SHARED_DAX, claims [$*]"
+    dra-plugin-log-wait "$VM2" "local memdev $DRA_LOCAL_SERIAL ($SHARED_MEMDEV): keeping shared $SHARED_REGION and $SHARED_DAX, claims [$*]"
     log=$(dra-plugin-log "$VM2")
     ! grep -E "zeroed new shared |releasing its region|released $SHARED_REGION" <<< "$log" ||
         error "the restarted node plugin zeroed or released the region of the shared device, see above"
@@ -350,6 +351,7 @@ dra-assert "$CLAIM_JSON" "configs() == [] and [s.get('capacity') for s in subreq
 dra-local-shared-wait "$VM2" writer "$WRITER_UID"
 SHARED_REGION="$DRA_LOCAL_SHARED_REGION"
 SHARED_DAX="$DRA_LOCAL_SHARED_DAX"
+SHARED_MEMDEV="$DRA_LOCAL_SHARED_MEMDEV"
 SHARED_DEV=$(dra-value "$DRA_MEMDEV" "dax_slices()[0]['dev']")
 env-check writer 0
 cdi-check "$WRITER_UID" 0
@@ -525,7 +527,7 @@ t0=$EPOCHREALTIME
 dra-install
 dra-trace-driver-follow "$VM2"
 # The node plugin itself released the region: its log says so.
-dra-plugin-log-wait "$VM2" "(serial $DRA_LOCAL_SERIAL): not configured shared any more, releasing its region" 60
+dra-plugin-log-wait "$VM2" "local memdev $DRA_LOCAL_SERIAL ($SHARED_MEMDEV): not configured shared any more, releasing its region" 60
 dra-local-slices-none "$VM2" unshared
 T_UNSHARE=$(echo "$EPOCHREALTIME - $t0" | bc)
 dra-wait "$VM2" sliced-again resourceslices \

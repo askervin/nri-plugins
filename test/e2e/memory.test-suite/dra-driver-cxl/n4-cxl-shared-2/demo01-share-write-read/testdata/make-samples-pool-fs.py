@@ -316,13 +316,13 @@ def trace(sdir, t0=1792700000.0):
         klog(dt, WHERE[who], "pool.go:1521", "cxl-pool.nri.io: unprepared claim %s/cxl-lease-%s (%s)" % (NS, LEASES[key], CUIDS[key]))
 
     def device_log(dt, node, src, text):
-        klog(dt, node, src, "cxl-pool.nri.io: device %s: %s" % (SERIAL, text))
+        klog(dt, node, src, "engine: pool memdev %s: %s" % (SERIAL, text))
 
     def bound(dt, key, who):
-        klog(dt, WHERE[who], "persistent.go:1130", "cxl-pool.nri.io: lease %s: bound %s at %s" % (LEASES[key], direct, LEASE_FS % luid[who]))
+        klog(dt, WHERE[who], "persistent.go:1130", "engine: lease %s: bound %s at %s" % (LEASES[key], direct, LEASE_FS % luid[who]))
 
     def unbound(dt, key, who):
-        klog(dt, WHERE[who], "persistent.go:1246", "cxl-pool.nri.io: lease %s: unbound %s" % (LEASES[key], LEASE_FS % luid[who]))
+        klog(dt, WHERE[who], "persistent.go:1246", "engine: lease %s: unbound %s" % (LEASES[key], LEASE_FS % luid[who]))
 
     def released(dt, key, who, why="released by main, was Ready"):
         klog(dt, WHERE[who], "broker.go:1189", "lease broker: lease %s: releasing (%s)" % (LEASES[key], why))

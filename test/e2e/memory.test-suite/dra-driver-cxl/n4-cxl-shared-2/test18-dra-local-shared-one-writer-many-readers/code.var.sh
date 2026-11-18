@@ -84,7 +84,8 @@ STALE="stale bytes of $TAG" # dra-local-seed: what the node plugin must zero
 COMPANION_JSON=""           # companion-claim: the companion claim of a lease
 COMPANION_UID=""            # and its uid
 SHARED_REGION=""            # L2: the region of the shared device
-SHARED_DAX=""               # and its dax device (daxX.Y)
+SHARED_DAX=""               # its dax device (daxX.Y)
+SHARED_MEMDEV=""            # and the memdev (memN)
 
 lease-template-yaml() {
     # Usage: lease-template-yaml
@@ -400,6 +401,7 @@ dra-pod-wait "$VM2" "cxl-lease-$WRITER_LEASE" Running 60
 dra-local-shared-wait "$VM2" writer "$WRITER_COMPANION_UID"
 SHARED_REGION="$DRA_LOCAL_SHARED_REGION"
 SHARED_DAX="$DRA_LOCAL_SHARED_DAX"
+SHARED_MEMDEV="$DRA_LOCAL_SHARED_MEMDEV"
 # The environment of the lease: the shared device, read-write.
 request writer env --lease "$WRITER_LEASE"
 [ "$REQ_STATUS" == 0 ] || error "cxl-request env --lease $WRITER_LEASE exited $REQ_STATUS"
@@ -588,7 +590,7 @@ t0=$EPOCHREALTIME
 dra-install
 dra-trace-driver-follow "$VM2"
 # The node plugin itself released the region: its log says so.
-dra-plugin-log-wait "$VM2" "(serial $DRA_LOCAL_SERIAL): not configured shared any more, releasing its region" 60
+dra-plugin-log-wait "$VM2" "local memdev $DRA_LOCAL_SERIAL ($SHARED_MEMDEV): not configured shared any more, releasing its region" 60
 dra-local-slices-none "$VM2" unshared
 T_UNSHARE=$(echo "$EPOCHREALTIME - $t0" | bc)
 dra-wait "$VM2" sliced-again resourceslices "attr($LD, 'shared') == False and quantity(capacity($LD, 'memory')) == $DRA_LOCAL_SIZE" 60

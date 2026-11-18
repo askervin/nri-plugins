@@ -196,8 +196,8 @@ func (e *Engine) recoverMemdevs(ctx context.Context, snap *kernel.Snapshot) erro
 	}
 	for _, serial := range gone {
 		if m := e.records().Memdev(serial); m != nil {
-			klog.Warningf("%s: memdev with serial %s is absent: its records are kept for kubelet's Unprepare of its claims",
-				e.driver(m.Source), serialText(serial))
+			klog.Warningf("engine: %s is absent: its records are kept for kubelet's Unprepare of its claims",
+				memdevText(m.Source, serial))
 		}
 	}
 	return nil
@@ -382,15 +382,15 @@ func (e *Engine) restoreBinds(ctx context.Context) {
 		}
 		claim, what := e.claimNameOf(g.Ref), bindWhat(g)
 		if node, err := e.k.Mounted(u.nodeMount); err != nil || node == nil {
-			e.errorf(g.Asked.Source, "claim %s: %s: not binding %s again: %s is not mounted (%v)", claim, what, b.Target, u.nodeMount, err)
+			klog.Errorf("engine: claim %s: %s: not binding %s again: %s is not mounted (%v)", claim, what, b.Target, u.nodeMount, err)
 			continue
 		}
 		ref := g.Ref
 		if _, err := e.bindLease(&u, b.Target, func(t string) bool { return e.bindUsed(t, ref) }); err != nil {
-			e.errorf(g.Asked.Source, "claim %s: %s: not binding %s again: %v", claim, what, b.Target, err)
+			klog.Errorf("engine: claim %s: %s: not binding %s again: %v", claim, what, b.Target, err)
 			continue
 		}
-		e.logf(g.Asked.Source, "claim %s: %s: bound %s at %s again", claim, what, u.nodeMount, b.Target)
+		klog.Infof("engine: claim %s: %s: bound %s at %s again", claim, what, u.nodeMount, b.Target)
 		if err := e.commit(ctx, func(r *state.Records) error {
 			rb := r.Grant(ref).Got.Bind
 			return state.Apply(&state.BindTable, &rb.State, state.BindBound, state.TriggerRecover)
@@ -428,7 +428,7 @@ func (e *Engine) releaseCut(ctx context.Context) (released, kept []state.GrantRe
 				cut.keep(e, ref, above)
 			}
 			if err := e.keepForRecovery(rctx, serial, refs); err != nil {
-				e.errorf(e.sourceOf(refs[0]), "claim %s: %v", e.claimNameOf(refs[0]), err)
+				klog.Errorf("engine: claim %s: %v", e.claimNameOf(refs[0]), err)
 			}
 			kept = append(kept, refs...)
 			continue
@@ -477,7 +477,7 @@ func (e *Engine) findCutClaims() *cutClaims {
 		case numaCompanion(g):
 			if !companions[g.Ref.Claim] {
 				companions[g.Ref.Claim] = true
-				e.logf(g.Asked.Source, "claim %s (%s) is a companion claim: its Unprepare releases its devices, its Prepare again reuses them",
+				klog.Infof("engine: claim %s (%s) is a companion claim: its Unprepare releases its devices, its Prepare again reuses them",
 					e.claimNameOf(g.Ref), g.Ref.Claim)
 			}
 		case m != nil && m.State == state.MemdevGone:
@@ -519,7 +519,7 @@ func (c *cutClaims) announce(e *Engine, serial state.Serial, refs []state.GrantR
 		}
 	}
 	for _, ref := range claims {
-		e.logf(e.sourceOf(ref), "claim %s (%s), whose Prepare did not finish: releasing devices %s", e.claimNameOf(ref), ref.Claim,
+		klog.Infof("engine: claim %s (%s), whose Prepare did not finish: releasing devices %s", e.claimNameOf(ref), ref.Claim,
 			serialText(serial))
 	}
 }
@@ -533,33 +533,18 @@ func (c *cutClaims) done(e *Engine, ref state.GrantRef) {
 		return
 	}
 	delete(c.left, claim)
-	name, source := e.claimNameOf(ref), e.sourceOf(ref)
+	name := e.claimNameOf(ref)
 	if above := c.above[claim]; len(above) > 0 {
-		e.warnf(source, "claim %s (%s): not releasing its devices at start: %s lie above their regions, a release would leave a hole in the decoders of their ports; its Unprepare releases them, its Prepare again reuses them",
+		klog.Warningf("engine: claim %s (%s): not releasing its devices at start: %s lie above their regions, a release would leave a hole in the decoders of their ports; its Unprepare releases them, its Prepare again reuses them",
 			name, claim, strings.Join(above, ", "))
 	}
 	switch {
 	case len(c.errs[claim]) > 0:
-		e.warnf(source, "claim %s (%s): not everything was released at start (%v): keeping its record in the store: its Unprepare releases its devices, its Prepare again reuses them",
+		klog.Warningf("engine: claim %s (%s): not everything was released at start (%v): keeping its record in the store: its Unprepare releases its devices, its Prepare again reuses them",
 			name, claim, errors.Join(c.errs[claim]...))
 	case len(c.above[claim]) == 0:
-		e.logf(source, "claim %s (%s): released, its Prepare again prepares its devices anew", name, claim)
+		klog.Infof("engine: claim %s (%s): released, its Prepare again prepares its devices anew", name, claim)
 	}
-}
-
-// sourceOf returns the source of the grant ref, the pool if it has none.
-func (e *Engine) sourceOf(ref state.GrantRef) state.Source {
-	if g := e.records().Grant(ref); g != nil {
-		return g.Asked.Source
-	}
-	if p := e.records().PreparationOf(ref); p != nil && p.Driver != "" {
-		for s, d := range e.opts.Drivers {
-			if d == p.Driver {
-				return s
-			}
-		}
-	}
-	return state.SourcePool
 }
 
 // ownsRegion tells whether the engine owns the record of a region: the
@@ -581,28 +566,27 @@ func (e *Engine) ownsRegion(r *state.Records, reg *state.Region) bool {
 	return false
 }
 
-// bindOrigin returns the serial and the source of the node mount in a
-// mounts directory of an owned source that a lease bind of the device
-// source binds, the serial by the name of the node mount.
-func (e *Engine) bindOrigin(mounts []kernel.MountInfo, source string) (state.Serial, state.Source, bool) {
-	dirs := map[string]state.Source{}
+// bindOrigin returns the serial of the node mount in a mounts directory
+// of an owned source that a lease bind of the device source binds, the
+// serial by the name of the node mount.
+func (e *Engine) bindOrigin(mounts []kernel.MountInfo, source string) (state.Serial, bool) {
+	dirs := map[string]bool{}
 	for s, d := range e.opts.MountsDirs {
 		if e.owns(s) {
-			dirs[d] = s
+			dirs[d] = true
 		}
 	}
 	for i := range mounts {
 		m := &mounts[i]
-		owner, ok := dirs[filepath.Dir(m.Target)]
-		if m.Source != source || !ok {
+		if m.Source != source || !dirs[filepath.Dir(m.Target)] {
 			continue
 		}
 		hex, _, _ := strings.Cut(filepath.Base(m.Target), "-")
 		if serial, err := strconv.ParseUint(hex, 16, 64); err == nil {
-			return state.Serial(serial), owner, true
+			return state.Serial(serial), true
 		}
 	}
-	return 0, "", false
+	return 0, false
 }
 
 // topMost returns the serial of the grants whose memdev has no region of
@@ -771,24 +755,24 @@ func (e *Engine) sweepNodeMounts() {
 		dir := e.opts.MountsDirs[source]
 		entries, err := os.ReadDir(dir)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			e.errorf(source, "%v", err)
+			klog.Errorf("engine: %v", err)
 		}
 		for _, ent := range entries {
 			mnt := filepath.Join(dir, ent.Name())
 			if listed[mnt] {
 				continue
 			}
-			e.logf(source, "%s belongs to no prepared claim, unmounting it", mnt)
+			klog.Infof("engine: %s belongs to no prepared claim, unmounting it", mnt)
 			if mi, err := e.k.Mounted(mnt); err != nil || mi != nil {
 				if err == nil {
 					err = e.locked(func() error { return e.k.Unmount(mnt) })
 				}
 				if err != nil {
-					e.errorf(source, "unmounting %s: %v", mnt, err)
+					klog.Errorf("engine: unmounting %s: %v", mnt, err)
 					continue
 				}
 			}
-			e.removeMountDir(source, mnt)
+			e.removeMountDir(mnt)
 		}
 	}
 }
@@ -815,18 +799,16 @@ func (e *Engine) sweepBinds(ctx context.Context) {
 		if !strings.HasPrefix(mi.Target, e.opts.LeaseFsRoot+"/") || listed[mi.Target] {
 			continue
 		}
-		serial, source, ok := e.bindOrigin(mounts, mi.Source)
+		serial, ok := e.bindOrigin(mounts, mi.Source)
 		if !ok && !e.ownsAll() {
+			// its node mount is gone: the bind of no memdev, which
+			// only the engine of all sources sweeps
 			continue
 		}
-		if !ok {
-			// its node mount is gone: the bind of no memdev
-			source = state.SourceLocal
-		}
-		e.logf(source, "%s belongs to no prepared claim, unmounting it", mi.Target)
+		klog.Infof("engine: %s belongs to no prepared claim, unmounting it", mi.Target)
 		target := mi.Target
 		if err := e.locked(func() error { return e.k.Unmount(target) }); err != nil {
-			e.errorf(source, "unmounting %s: %v; trying again at the next release", target, err)
+			klog.Errorf("engine: unmounting %s: %v; trying again at the next release", target, err)
 			if ok {
 				e.addStale(serial, target, state.StaleBind)
 			} else {
@@ -834,7 +816,7 @@ func (e *Engine) sweepBinds(ctx context.Context) {
 			}
 			continue
 		}
-		e.removeMountDir(source, target)
+		e.removeMountDir(target)
 		e.forgetSwept(ctx, serial, target)
 	}
 }
@@ -895,8 +877,8 @@ func (e *Engine) deleteDax(ctx context.Context, reg *state.Region, dax string) e
 			mode = state.ModeNUMA
 		}
 		size, _ := e.k.DaxDeviceSize(dax)
-		klog.Warningf("local: memdev %s (serial %s): %s (mode %s, %d bytes) belongs to no claim, deleting it",
-			e.memdevName(serial), serialText(serial), dax, mode, size)
+		klog.Warningf("engine: local memdev %s (%s): %s (mode %s, %d bytes) belongs to no claim, deleting it",
+			serialText(serial), e.memdevName(serial), dax, mode, size)
 	}
 	if _, err := e.offlineDax(ctx, dax); err != nil {
 		return fmt.Errorf("deleting %s: %w", dax, err)

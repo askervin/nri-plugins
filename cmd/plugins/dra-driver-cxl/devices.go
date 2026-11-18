@@ -91,7 +91,7 @@ func newDeviceEngine(cfg deviceConfig) (*deviceEngine, error) {
 		lenders: map[state.Source]*dra.Lender{},
 	}
 	opts := cfg.Engine
-	opts.Drivers, opts.MountsDirs = d.drivers, map[state.Source]string{}
+	opts.MountsDirs = map[state.Source]string{}
 	opts.LocalGuard, opts.Shared, opts.Revoke = d.localGuard, d.isShared, d.revoke
 	// no source is an engine that owns nothing, nil one that owns all
 	opts.Sources = []state.Source{}

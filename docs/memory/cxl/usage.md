@@ -1068,17 +1068,17 @@ claims of a device on the node:
 
 The superblock and the read-only flag of the block device follow from
 the prepared claims; neither is stored. The plugin logs them (verbosity
-0, with the driver name `cxl-pool.nri.io` or `cxl.nri.io` first;
-`<source>` the block device or the loop device, `<data>` the mount data,
-left out with its comma when there is none, as in `(btrfs, rw)`):
+0, `pool|local` the source of the device, `<source>` the block device or
+the loop device, `<data>` the mount data, left out with its comma when
+there is none, as in `(btrfs, rw)`):
 
 ```
-cxl-pool.nri.io: device 0x<serial>: mounted <source> at <mnt> (<type>, ro|rw, <data>)
-cxl-pool.nri.io: device 0x<serial>: remounted <mnt> read-write
-cxl-pool.nri.io: device 0x<serial>: remounted <mnt> read-only
-cxl-pool.nri.io: device 0x<serial>: /dev/pmemK read-only
-cxl-pool.nri.io: device 0x<serial>: /dev/loopN read-write
-cxl-pool.nri.io: device 0x<serial>: unmounted <mnt>
+engine: pool|local memdev 0x<serial>: mounted <source> at <mnt> (<type>, ro|rw, <data>)
+engine: pool|local memdev 0x<serial>: remounted <mnt> read-write
+engine: pool|local memdev 0x<serial>: remounted <mnt> read-only
+engine: pool|local memdev 0x<serial>: /dev/pmemK read-only
+engine: pool|local memdev 0x<serial>: /dev/loopN read-write
+engine: pool|local memdev 0x<serial>: unmounted <mnt>
 ```
 
 #### Several nodes: ReadWriteOnce and cluster filesystems
