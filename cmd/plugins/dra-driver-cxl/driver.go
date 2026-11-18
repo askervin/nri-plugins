@@ -30,6 +30,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/engine"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
@@ -340,7 +341,7 @@ func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFla
 // local memdevs unless they are not managed (manageMemdevs: false); the
 // node mounts of each source in the MountsDir of its rules.
 func newDriverDevices(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, k *kernel.Kernel, fence func(ctx context.Context, node int), st *store.Store, rules driverRules) (*deviceEngine, error) {
-	cfg := deviceConfig{
+	cfg := deviceConfig{Engine: engine.Options{
 		Kernel:          k,
 		Store:           st,
 		MountsDirs:      dra.MountsDirs(rules.all()...),
@@ -348,12 +349,12 @@ func newDriverDevices(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Dr
 		FsTypes:         driverConfig.fsTypes(),
 		Fence:           fence,
 		ProbeAddressing: driverConfig.verifyAddressing(),
-		PoolTimeout:     cxlFlags.PoolPrepareTimeout,
-	}
+		Timeouts:        engine.Timeouts{Memdev: cxlFlags.PoolPrepareTimeout, Settle: cxlFlags.PoolPrepareTimeout},
+	}}
 	if cxlFlags.PoolDriverName != "" {
 		cfg.PoolDriver = cxlFlags.PoolDriverName
-		cfg.PoolDataDir = filepath.Join(filepath.Dir(config.KubeletPluginDir), cxlFlags.PoolDriverName)
-		if err := os.MkdirAll(cfg.PoolDataDir, 0750); err != nil {
+		dataDir := filepath.Join(filepath.Dir(config.KubeletPluginDir), cxlFlags.PoolDriverName)
+		if err := os.MkdirAll(dataDir, 0750); err != nil {
 			return nil, fmt.Errorf("pool driver data directory: %w", err)
 		}
 	}

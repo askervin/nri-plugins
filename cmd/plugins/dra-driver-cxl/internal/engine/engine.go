@@ -120,8 +120,8 @@ type Options struct {
 	// LeaseFsRoot is the directory of the lease-fs directories of the
 	// lease claims, "" for no sweep of lease binds.
 	LeaseFsRoot string
-	// FsTypes are the filesystem types that mode fs may mount, nil for
-	// erofs only.
+	// FsTypes are the filesystem types that mode fs may mount, none when
+	// empty.
 	FsTypes []string
 	// Fence fences a NUMA node before memory of it goes online, nil for
 	// no fencing; it returns once the node is fenced or the fence is not
@@ -251,9 +251,6 @@ func New(opts Options) (*Engine, error) {
 		c := *sys
 		c.Logf = sysWarningf
 		opts.Kernel.Sys = &c
-	}
-	if opts.FsTypes == nil {
-		opts.FsTypes = []string{api.FsTypeErofs}
 	}
 	opts.Timeouts = opts.Timeouts.withDefaults()
 	probes, err := loadProbes(opts.ProbesFile)

@@ -16,7 +16,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -37,15 +36,6 @@ const (
 	// defaultPoolPrepareTimeout is how long a Prepare of the pool driver
 	// waits for the memdev to appear.
 	defaultPoolPrepareTimeout = 30 * time.Second
-	// defaultMemdevProbeGrace is how long a Prepare of the pool driver
-	// waits for the driver of a memdev that is already present. A memdev
-	// disabled by an earlier release is enabled again when its region is
-	// made.
-	defaultMemdevProbeGrace = 2 * time.Second
-	// defaultRegionRetryDelay is the pause before the one retry of a
-	// region creation that failed right after hotplug ("add_dev()
-	// failed").
-	defaultRegionRetryDelay = 3 * time.Second
 	// mountsDirName is the directory of the node mounts of mode fs in the
 	// plugin data directory of a driver.
 	mountsDirName = "mounts"
@@ -56,36 +46,15 @@ const (
 
 // deviceConfig are the settings of the device engine of the driver.
 type deviceConfig struct {
-	// Kernel observes and changes the CXL kernel objects of the node.
-	Kernel *kernel.Kernel
-	// Store keeps the records.
-	Store *store.Store
-	// PoolDriver is the name of the pool driver and PoolDataDir its plugin
-	// data directory, "" when it is disabled.
-	PoolDriver, PoolDataDir string
+	// Engine are the options of the engine. MountsDirs needs the
+	// directory of each source of the engine; newDeviceEngine sets the
+	// sources, their drivers, the probes file and the callbacks.
+	Engine engine.Options
+	// PoolDriver is the name of the pool driver, "" when it is disabled.
+	PoolDriver string
 	// LocalDir is the plugin data directory of cxl.nri.io, "" when it
-	// manages no local memdevs; LeaseFsRoot the directory of the lease-fs
-	// directories of the lease claims, "" for none.
-	LocalDir, LeaseFsRoot string
-	// MountsDirs are the directories of the node mounts of mode fs of the
-	// sources (dra.MountsDirs of the drivers' rules); one for each source
-	// of the engine.
-	MountsDirs map[state.Source]string
-	// FsTypes are the filesystem types that mode fs mounts.
-	FsTypes []string
-	// Fence gets the NUMA nodes of memory before it goes online, nil for
-	// none.
-	Fence func(ctx context.Context, node int)
-	// ProbeAddressing runs the address line probe on new regions of local
-	// memdevs.
-	ProbeAddressing bool
-	// PoolTimeout is how long a pool grant waits for its memdev and for
-	// its region to settle; HolderWait, ProbeGrace, RegionRetry and
-	// OfflineSettle are the holder wait of a release, the grace for the
-	// driver of a present pool memdev, the pause before the retry of a
-	// region creation and how long memory blocks stay offline before their
-	// dax device changes driver; zero for the defaults.
-	PoolTimeout, HolderWait, ProbeGrace, RegionRetry, OfflineSettle time.Duration
+	// manages no local memdevs.
+	LocalDir string
 }
 
 // deviceEngine is the engine of the CXL kernel objects of both sources and
@@ -114,61 +83,33 @@ type deviceEngine struct {
 // newDeviceEngine returns the device engine of the sources of cfg: the
 // pool when PoolDriver is set, the local memdevs when LocalDir is.
 func newDeviceEngine(cfg deviceConfig) (*deviceEngine, error) {
-	if cfg.Store == nil {
-		return nil, errors.New("the device engine needs the state store")
-	}
-	if cfg.PoolTimeout <= 0 {
-		cfg.PoolTimeout = defaultPoolPrepareTimeout
-	}
-	if cfg.ProbeGrace <= 0 {
-		cfg.ProbeGrace = defaultMemdevProbeGrace
-	}
-	if cfg.RegionRetry <= 0 {
-		cfg.RegionRetry = defaultRegionRetryDelay
-	}
 	d := &deviceEngine{
-		k:       cfg.Kernel,
-		st:      cfg.Store,
+		k:       cfg.Engine.Kernel,
+		st:      cfg.Engine.Store,
 		drivers: map[state.Source]string{},
 		shared:  map[state.Serial]bool{},
 		lenders: map[state.Source]*dra.Lender{},
 	}
-	opts := engine.Options{
-		Kernel:          cfg.Kernel,
-		Store:           cfg.Store,
-		Drivers:         d.drivers,
-		MountsDirs:      map[state.Source]string{},
-		LeaseFsRoot:     cfg.LeaseFsRoot,
-		FsTypes:         cfg.FsTypes,
-		LocalGuard:      d.localGuard,
-		Shared:          d.isShared,
-		Revoke:          d.revoke,
-		ProbeAddressing: cfg.ProbeAddressing,
-		Timeouts: engine.Timeouts{Memdev: cfg.PoolTimeout, Settle: cfg.PoolTimeout, Holder: cfg.HolderWait,
-			ProbeGrace: cfg.ProbeGrace, RegionRetry: cfg.RegionRetry, OfflineSettle: cfg.OfflineSettle},
-	}
+	opts := cfg.Engine
+	opts.Drivers, opts.MountsDirs = d.drivers, map[state.Source]string{}
+	opts.LocalGuard, opts.Shared, opts.Revoke = d.localGuard, d.isShared, d.revoke
+	// no source is an engine that owns nothing, nil one that owns all
+	opts.Sources = []state.Source{}
 	if cfg.PoolDriver != "" {
 		d.drivers[state.SourcePool] = cfg.PoolDriver
 		opts.Sources = append(opts.Sources, state.SourcePool)
-		opts.MountsDirs[state.SourcePool] = cfg.MountsDirs[state.SourcePool]
 	}
 	if cfg.LocalDir != "" {
 		// the lines of the local memdevs that the local allocator logged
 		d.drivers[state.SourceLocal] = device.DriverName
 		opts.Sources = append(opts.Sources, state.SourceLocal)
-		opts.MountsDirs[state.SourceLocal] = cfg.MountsDirs[state.SourceLocal]
 		opts.ProbesFile = filepath.Join(cfg.LocalDir, localProbesFileName)
 	}
-	if opts.Sources == nil {
-		// no source: an engine that owns nothing
-		opts.Sources = []state.Source{}
-	}
 	for _, src := range opts.Sources {
-		if opts.MountsDirs[src] == "" {
+		if opts.MountsDirs[src] = cfg.Engine.MountsDirs[src]; opts.MountsDirs[src] == "" {
 			return nil, fmt.Errorf("no directory of the node mounts of the %s source", src)
 		}
 	}
-	opts.Fence = cfg.Fence
 	e, err := engine.New(opts)
 	if err != nil {
 		return nil, err

@@ -169,21 +169,19 @@ func (e *localTestEnv) start() *dra.Plugin {
 	e.st, err = store.Open(context.Background(), store.Options{Dir: e.dir, BootID: e.k.BootID()})
 	noErr(t, err)
 	e.devices, err = newDeviceEngine(deviceConfig{
-		Kernel:          e.k.Kernel(),
-		Store:           e.st,
-		MountsDirs:      dra.MountsDirs(e.rules()...),
-		PoolDriver:      device.PoolDriverName,
-		PoolDataDir:     e.poolDir,
-		LocalDir:        e.dir,
-		LeaseFsRoot:     filepath.Join(e.dir, leaseFsDirName),
-		FsTypes:         e.config.fsTypes(),
-		Fence:           e.fence,
-		ProbeAddressing: e.config.verifyAddressing(),
-		PoolTimeout:     200 * time.Millisecond,
-		HolderWait:      e.holderWait,
-		ProbeGrace:      20 * time.Millisecond,
-		RegionRetry:     10 * time.Millisecond,
-		OfflineSettle:   20 * time.Millisecond,
+		Engine: engine.Options{
+			Kernel:          e.k.Kernel(),
+			Store:           e.st,
+			MountsDirs:      dra.MountsDirs(e.rules()...),
+			LeaseFsRoot:     filepath.Join(e.dir, leaseFsDirName),
+			FsTypes:         e.config.fsTypes(),
+			Fence:           e.fence,
+			ProbeAddressing: e.config.verifyAddressing(),
+			Timeouts: engine.Timeouts{Memdev: 200 * time.Millisecond, Settle: 200 * time.Millisecond, Holder: e.holderWait,
+				ProbeGrace: 20 * time.Millisecond, RegionRetry: 10 * time.Millisecond, OfflineSettle: 20 * time.Millisecond},
+		},
+		PoolDriver: device.PoolDriverName,
+		LocalDir:   e.dir,
 	})
 	noErr(t, err)
 	e.devices.setShared(e.shared)

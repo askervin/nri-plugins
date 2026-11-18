@@ -145,19 +145,17 @@ func (e *poolTestEnv) driver(t *testing.T) *dra.Plugin {
 	e.st, err = store.Open(context.Background(), store.Options{Dir: e.dir, BootID: e.k.BootID()})
 	noErr(t, err)
 	devices, err := newDeviceEngine(deviceConfig{
-		Kernel:        e.k.Kernel(),
-		Store:         e.st,
-		MountsDirs:    dra.MountsDirs(rules),
-		PoolDriver:    device.PoolDriverName,
-		PoolDataDir:   e.dir,
-		LeaseFsRoot:   e.leaseFsRoot,
-		FsTypes:       api.KnownFsTypes,
-		Fence:         e.fence,
-		PoolTimeout:   e.timeout,
-		HolderWait:    e.holderWait,
-		ProbeGrace:    20 * time.Millisecond,
-		RegionRetry:   10 * time.Millisecond,
-		OfflineSettle: 20 * time.Millisecond,
+		Engine: engine.Options{
+			Kernel:      e.k.Kernel(),
+			Store:       e.st,
+			MountsDirs:  dra.MountsDirs(rules),
+			LeaseFsRoot: e.leaseFsRoot,
+			FsTypes:     api.KnownFsTypes,
+			Fence:       e.fence,
+			Timeouts: engine.Timeouts{Memdev: e.timeout, Settle: e.timeout, Holder: e.holderWait,
+				ProbeGrace: 20 * time.Millisecond, RegionRetry: 10 * time.Millisecond, OfflineSettle: 20 * time.Millisecond},
+		},
+		PoolDriver: device.PoolDriverName,
 	})
 	noErr(t, err)
 	p, err := dra.New(dra.Options{
