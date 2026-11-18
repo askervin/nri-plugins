@@ -434,7 +434,7 @@ func (e *Engine) releaseCut(ctx context.Context) (released, kept []state.GrantRe
 			continue
 		}
 		cut.announce(e, serial, refs)
-		err := e.releaseGroup(rctx, refs, call)
+		err := e.releaseGroup(rctx, serial, refs, call)
 		for _, ref := range refs {
 			if e.records().Grant(ref) == nil {
 				released = append(released, ref)

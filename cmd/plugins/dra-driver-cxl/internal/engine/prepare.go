@@ -378,7 +378,7 @@ func (e *Engine) rollback(ctx context.Context, reqs []GrantRequest, failed state
 	call := newReleaseCall(e, ReleaseRollback, refs)
 	call.reasons[failed] = why.Error()
 	for _, group := range e.byMemdev(refs) {
-		if err := e.releaseGroup(ctx, group, call); err != nil {
+		if err := e.releaseGroup(ctx, group.serial, group.refs, call); err != nil {
 			e.errorf(source, "rollback: %v", err)
 		}
 	}

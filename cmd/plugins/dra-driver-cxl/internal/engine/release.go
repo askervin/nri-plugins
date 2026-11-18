@@ -52,7 +52,7 @@ func (e *Engine) ReleaseGrants(ctx context.Context, refs []state.GrantRef, relea
 	call := newReleaseCall(e, release, refs)
 	var errs []error
 	for _, group := range e.byMemdev(refs) {
-		if err := e.releaseGroup(ctx, group, call); err != nil {
+		if err := e.releaseGroup(ctx, group.serial, group.refs, call); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -179,9 +179,15 @@ func triggerOf(release Release) state.Trigger {
 	return state.TriggerRecover
 }
 
+// memdevGroup is the refs of grants of the memdev with the serial.
+type memdevGroup struct {
+	serial state.Serial
+	refs   []state.GrantRef
+}
+
 // byMemdev groups the refs that have a grant by the memdev of their grants,
 // in the order of the first ref of each memdev.
-func (e *Engine) byMemdev(refs []state.GrantRef) [][]state.GrantRef {
+func (e *Engine) byMemdev(refs []state.GrantRef) []memdevGroup {
 	r := e.records()
 	var order []state.Serial
 	groups := map[state.Serial][]state.GrantRef{}
@@ -195,21 +201,18 @@ func (e *Engine) byMemdev(refs []state.GrantRef) [][]state.GrantRef {
 		}
 		groups[g.Serial] = append(groups[g.Serial], ref)
 	}
-	out := make([][]state.GrantRef, 0, len(order))
+	out := make([]memdevGroup, 0, len(order))
 	for _, serial := range order {
-		out = append(out, groups[serial])
+		out = append(out, memdevGroup{serial: serial, refs: groups[serial]})
 	}
 	return out
 }
 
-// releaseGroup releases grants of one memdev, its queue held once: they are
-// RELEASING together before the first of them is released.
-func (e *Engine) releaseGroup(ctx context.Context, refs []state.GrantRef, call *releaseCall) error {
-	g := e.records().Grant(refs[0])
-	if g == nil {
-		return nil
-	}
-	leave, err := e.acquire(ctx, g.Serial)
+// releaseGroup releases grants of the memdev with the serial, its queue
+// held once: they are RELEASING together before the first of them is
+// released. A ref whose grant another release took meanwhile is skipped.
+func (e *Engine) releaseGroup(ctx context.Context, serial state.Serial, refs []state.GrantRef, call *releaseCall) error {
+	leave, err := e.acquire(ctx, serial)
 	if err != nil {
 		return err
 	}

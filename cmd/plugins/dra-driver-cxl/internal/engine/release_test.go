@@ -15,6 +15,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -40,6 +41,26 @@ func twoPmemEnv(t *testing.T) *env {
 // qGrant returns the request of a reader of mode fs on serialQ.
 func qGrant(uid string, n int) GrantRequest {
 	return fsReq(poolReq(uid, n, serialQ, state.ModeFs, state.KindPersistent), true, "")
+}
+
+// The grants of a memdev are released when the first of them is gone by
+// the time the release holds the memdev's queue: another release (the
+// periodic retry of the stale lease binds) took it.
+func TestReleaseGroupFirstGone(t *testing.T) {
+	v := pmemEnv(t, "ext4")
+	v.mustPrepare(poolDriver, "c", fsGrant("c", true, ""))
+	refs := []state.GrantRef{{Claim: "gone"}, v.grant("c", 0).Ref}
+	ctx, end := v.e.Request(context.Background())
+	err := v.e.releaseGroup(ctx, serialP, refs, newReleaseCall(v.e, ReleaseUnprepare, refs))
+	end()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := v.records().Grant(refs[1]); g != nil {
+		t.Fatalf("grant %s", g.State)
+	}
+	v.mustUnprepare(poolDriver, "c")
+	v.clean("unprepared")
 }
 
 // The holder waits of one release call end at one deadline: two held
