@@ -134,13 +134,13 @@ func (d *deviceEngine) recover(ctx context.Context) (*engine.Recovered, error) {
 }
 
 // retryStale unmounts the stale lease binds of the device engine again and
-// finishes the releases that they kept (engine.RetryStale), nothing when
-// the store is LOST: then nothing is released.
+// finishes the releases that they kept (engine.RetryStale, the periodic
+// pass), nothing when the store is LOST: then nothing is released.
 func (d *deviceEngine) retryStale(ctx context.Context) {
 	if d.st.Lost() != nil {
 		return
 	}
-	d.RetryStale(ctx)
+	d.RetryStale(ctx, state.TriggerUnprepare)
 }
 
 // forgetPoolSerials forgets the records of the local memdevs that are pool

@@ -320,12 +320,13 @@ func (e *Engine) addStale(serial state.Serial, path string, kind state.StaleKind
 
 // RetryStale unmounts the stale lease binds of every memdev and the lease
 // binds of no memdev again, as every release does first, and finishes the
-// Unprepares that they kept from releasing (the periodic pass): the
-// transitions are those of an Unprepare. Errors are logged.
-func (e *Engine) RetryStale(ctx context.Context) {
+// releases that they kept, with the transitions of the trigger: an
+// Unprepare for the periodic pass, a Prepare for a refused one. Errors are
+// logged.
+func (e *Engine) RetryStale(ctx context.Context, trigger state.Trigger) {
 	ctx, end := e.Request(ctx)
 	defer end()
-	e.retryAllStale(ctx, state.TriggerUnprepare)
+	e.retryAllStale(ctx, trigger)
 }
 
 // retryAllStale unmounts the stale lease binds of every memdev of the

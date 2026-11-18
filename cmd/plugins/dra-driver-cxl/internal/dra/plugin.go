@@ -442,13 +442,11 @@ func (p *Plugin) refuse(ctx context.Context, uid, claimName string, err error) k
 }
 
 // retryStaleBinds unmounts the stale lease binds of the memdevs again, and
-// releases what they held (engine.ReleaseGrants of no grant).
+// releases what they held (engine.RetryStale of a Prepare).
 func (p *Plugin) retryStaleBinds(ctx context.Context) {
 	rctx, cancel := rollbackContext(ctx)
 	defer cancel()
-	if err := p.engine.ReleaseGrants(rctx, nil, engine.ReleaseRollback); err != nil {
-		klog.Errorf("%s: %v", p.rules.Name, err)
-	}
+	p.engine.RetryStale(rctx, state.TriggerPrepare)
 }
 
 // rollbackTimeout bounds the cleanup after a failure.
