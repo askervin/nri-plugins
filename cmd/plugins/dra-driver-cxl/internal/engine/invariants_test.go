@@ -18,6 +18,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -124,11 +125,7 @@ func TestInvariantViolations(t *testing.T) {
 	r.Preparations = append(r.Preparations, state.Preparation{UID: "lc", Driver: localDriver, ClaimName: "demo/lc",
 		State: state.PreparationPrepared, Results: []state.Result{{Index: 0, Kind: state.ResultLeaseClaim,
 			LeaseClaim: &state.LeaseClaimResult{UID: "lc"}}}})
-	missing := false
-	for _, viol := range state.Check(&r) {
-		missing = missing || (state.LeaseClaimMissing(viol) && strings.Contains(viol.Text, "lease claim lc has no record"))
-	}
-	if !missing {
+	if !slices.ContainsFunc(state.Check(&r), func(v state.Violation) bool { return v.Invariant == state.InvariantLeaseClaims }) {
 		t.Errorf("no violation of the missing lease claim in %v", state.Check(&r))
 	}
 	if out := Check(&r, snap, opts); len(out) > 0 {
@@ -136,9 +133,13 @@ func TestInvariantViolations(t *testing.T) {
 	}
 	// the records of a source that the engine does not own are not checked
 	r = v.records().Clone()
+	r.Memdev(serialA).Regions = append(r.Memdev(serialA).Regions, "region9")
 	s := *snap
 	s.Regions = append(append([]kernel.RegionInfo(nil), snap.Regions...),
 		kernel.RegionInfo{Name: "region9", State: kernel.RegionEnabled, Serials: []uint64{serialA}})
+	if out := Check(&r, &s, CheckOptions{}); len(out) == 0 {
+		t.Errorf("no violations of the records of the pool")
+	}
 	if out := Check(&r, &s, CheckOptions{Sources: []state.Source{state.SourceLocal}}); len(out) > 0 {
 		t.Errorf("records of the pool checked: %v", out)
 	}

@@ -85,6 +85,14 @@ func TestRecoverUnrestored(t *testing.T) {
 		t.Fatalf("mount %+v", m)
 	}
 	v.check("unrestored")
+	// a later start that finds the other block device still leaves both so
+	ref := state.GrantRef{Claim: "w"}
+	if out := v.restart(); len(out.Unrestored) > 0 || out.Why[ref] == nil {
+		t.Fatalf("recovered again %+v", out)
+	}
+	if p := v.records().Preparation(poolDriver, "w"); p.State != state.PreparationUnrestored {
+		t.Fatalf("preparation again %s", p.State)
+	}
 	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{fsGrant("w", false, "")}); err == nil ||
 		!strings.Contains(err.Error(), "cannot be mounted again") {
 		t.Fatalf("Prepare again: %v", err)
@@ -101,6 +109,32 @@ func TestRecoverUnrestored(t *testing.T) {
 	if out := logs(); !strings.Contains(out, want) {
 		t.Fatalf("no %q in\n%s", want, out)
 	}
+	v.clean("unprepared")
+}
+
+// A claim with grants on two persistent memdevs whose block devices are
+// other ones now: the start records the grant of the first memdev
+// REALISED_UNRESTORED and the preparation PREPARED_UNRESTORED, then the
+// other grant, the preparation staying so.
+func TestRecoverUnrestoredOfTwo(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib}, fake.MemdevSpec{Serial: serialQ, Pmem: gib})
+	v.formatPmem("mem0", "ext4")
+	v.formatPmem("mem1", "ext4")
+	v.mustPrepare(poolDriver, "w", fsGrant("w", false, ""),
+		fsReq(poolReq("w", 1, serialQ, state.ModeFs, state.KindPersistent), false, ""))
+	for i := range 2 {
+		g := v.grant("w", i)
+		if err := v.f.Kernel().Unmount(v.mount("w", i).Path); err != nil {
+			t.Fatal(err)
+		}
+		v.f.RenamePmem(string(g.Got.Region), fmt.Sprintf("pmem%d", 3+i), fmt.Sprintf("259:%d", 9+i))
+	}
+	both := []state.GrantRef{{Claim: "w"}, {Claim: "w", Result: 1}}
+	if out := v.restart(); !slices.Equal(out.Unrestored, both) {
+		t.Fatalf("recovered %+v", out)
+	}
+	wantPreparation(t, v, poolDriver, "w", state.PreparationUnrestored)
+	v.mustUnprepare(poolDriver, "w")
 	v.clean("unprepared")
 }
 
@@ -247,6 +281,63 @@ func TestRecoverClaimKeptInPart(t *testing.T) {
 	}
 	v.mustUnprepare(poolDriver, "c")
 	v.clean("unprepared")
+}
+
+// A KEPT claim whose two regions lie below regions of other memdevs: a
+// later start releases the grant whose region has nothing above it any
+// more and keeps the other, the next one releases that too and removes the
+// preparation.
+func TestRecoverKeptReleasedInPart(t *testing.T) {
+	const serialD = 0xd1
+	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialB},
+		fake.MemdevSpec{Serial: serialC, HostBridge: 24}, fake.MemdevSpec{Serial: serialD, HostBridge: 24})
+	first := poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive)
+	second := poolReq("c", 1, serialC, state.ModeDax, state.KindExclusive)
+	if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
+		doc.Preparations = append(doc.Preparations, state.Preparation{UID: "c", Driver: poolDriver, ClaimName: "ns/c",
+			State: state.PreparationPreparing, Results: []state.Result{grantResult("c", 0), grantResult("c", 1)}})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{first}); err != nil {
+		t.Fatal(err)
+	}
+	// cut after the region of the second one was made
+	v.cutAfter(4)
+	if !v.cut(func() { _, _ = v.e.PrepareGrants(context.Background(), []GrantRequest{second}) }) {
+		t.Fatal("not cut")
+	}
+	k := v.f.Kernel()
+	var above []string
+	for _, mem := range []string{"mem1", "mem3"} {
+		d, _ := k.RootDecoder(mem, kernel.RegionRAM)
+		reg, err := k.CreateRegion(context.Background(), kernel.CreateRegionRequest{Memdev: mem, Decoder: d, Type: kernel.RegionRAM})
+		if err != nil {
+			t.Fatal(err)
+		}
+		above = append(above, reg)
+	}
+	both := []state.GrantRef{{Claim: "c"}, {Claim: "c", Result: 1}}
+	if out := v.restart(); !slices.Equal(out.Kept, both) || len(out.Released) > 0 {
+		t.Fatalf("recovered %+v", out)
+	}
+	for i, want := range []struct {
+		released []state.GrantRef
+		results  int
+	}{{both[1:], 1}, {both[:1], 0}} {
+		if err := k.ReleaseRegion(context.Background(), above[1-i]); err != nil {
+			t.Fatal(err)
+		}
+		if out := v.restart(); !slices.Equal(out.Released, want.released) {
+			t.Fatalf("start %d: recovered %+v", i, out)
+		}
+		p := v.records().Preparation(poolDriver, "c")
+		if want.results == 0 && p != nil || want.results > 0 && (p == nil || p.State != state.PreparationKept || len(p.Results) != want.results) {
+			t.Fatalf("start %d: preparation %+v", i, p)
+		}
+	}
+	v.clean("released")
 }
 
 // A cut pool Prepare whose region lies below a region of another memdev is

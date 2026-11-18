@@ -15,6 +15,7 @@
 package state_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -29,35 +30,48 @@ func TestFixtureIsConsistent(t *testing.T) {
 	}
 }
 
-// A grant result of a PREPARING, UNPREPARING or PREPARED_STALE preparation
-// may name a grant that has no record (the recovery released the grants of
-// a cut Prepare, then a reboot made it stale); of a PREPARED or KEPT one it
-// may not.
-func TestGrantResultWithoutItsGrant(t *testing.T) {
+// Records that may look broken but that the invariants allow.
+func TestAllowedRecords(t *testing.T) {
+	cut := func(s state.PreparationState) func(r *state.Records) {
+		return func(r *state.Records) {
+			ref := state.GrantRef{Claim: "cut"}
+			r.Preparations = append(r.Preparations, state.Preparation{UID: "cut", Driver: statetest.PoolDriver,
+				ClaimName: "demo/c-cut", State: s, Results: []state.Result{{Kind: state.ResultGrant, Request: "mem", Grant: &ref}}})
+		}
+	}
 	for _, tc := range []struct {
-		state state.PreparationState
-		want  bool
+		name   string
+		change func(r *state.Records)
 	}{
-		{state.PreparationPreparing, false},
-		{state.PreparationUnpreparing, false},
-		{state.PreparationStale, false},
-		{state.PreparationPrepared, true},
-		{state.PreparationKept, true},
+		// not journaled yet, or released before the front-end's commit
+		{name: "a grant result of a PREPARING preparation without its grant", change: cut(state.PreparationPreparing)},
+		{name: "a grant result of an UNPREPARING preparation without its grant", change: cut(state.PreparationUnpreparing)},
+		// the recovery released the grants of a cut Prepare, then a reboot
+		// made it stale
+		{name: "a grant result of a PREPARED_STALE preparation without its grant", change: cut(state.PreparationStale)},
+		{
+			name: "the whole dax device of a region of an IDLE_KEPT memdev without a user",
+			change: func(r *state.Records) {
+				r.Grants = slices.DeleteFunc(r.Grants, func(g state.Grant) bool { return g.Serial == statetest.SerialShared })
+				r.Preparation(statetest.LocalDriver, statetest.ClaimMixed).State = state.PreparationUnpreparing
+				r.Region("region1").DaxDevices[0].Users = nil
+				m := r.Memdev(statetest.SerialShared)
+				m.Grants = nil
+				m.State = state.MemdevIdleKept
+			},
+		},
+		{
+			name:   "a FAILED lease that keeps its lend",
+			change: func(r *state.Records) { r.Lease(statetest.LeaseNUMA).State = state.LeaseFailed },
+		},
 	} {
-		r := statetest.Records()
-		ref := state.GrantRef{Claim: "cut"}
-		r.Preparations = append(r.Preparations, state.Preparation{UID: "cut", Driver: statetest.PoolDriver, ClaimName: "demo/c-cut",
-			State:   tc.state,
-			Results: []state.Result{{Kind: state.ResultGrant, Request: "mem", Grant: &ref}}})
-		var got []state.Violation
-		for _, v := range state.Check(&r) {
-			if strings.Contains(v.Text, "grant "+ref.String()+" has no record") {
-				got = append(got, v)
+		t.Run(tc.name, func(t *testing.T) {
+			r := statetest.Records()
+			tc.change(&r)
+			for _, v := range state.Check(&r) {
+				t.Errorf("%s", v)
 			}
-		}
-		if (len(got) > 0) != tc.want {
-			t.Errorf("%s: violations %v, want one %v", tc.state, got, tc.want)
-		}
+		})
 	}
 }
 
@@ -138,7 +152,14 @@ func TestInvariantViolations(t *testing.T) {
 		{
 			name:      "a lease claim result without its lease claim",
 			change:    func(r *state.Records) { r.LeaseClaims = nil },
-			invariant: "records", text: "lease claim " + statetest.ClaimLease + " has no record",
+			invariant: "lease claims", text: "lease claim " + statetest.ClaimLease + " has no record",
+		},
+		{
+			name: "a grant result of a PREPARED preparation without its grant",
+			change: func(r *state.Records) {
+				r.Grants = slices.DeleteFunc(r.Grants, func(g state.Grant) bool { return g.Ref == ref(statetest.ClaimDax, 0) })
+			},
+			invariant: "records", text: "grant " + statetest.ClaimDax + "/0 has no record",
 		},
 		{
 			name:      "a lease that lends while pending",
@@ -221,32 +242,6 @@ func TestInvariantViolations(t *testing.T) {
 				t.Errorf("no %s violation %q in %v", tc.invariant, tc.text, state.Check(&r))
 			}
 		})
-	}
-}
-
-func TestKeptWholeDeviceNeedsNoUser(t *testing.T) {
-	r := statetest.Records()
-	reg := r.Region("region1")
-	reg.DaxDevices[0].Users = nil
-	for _, ref := range []state.GrantRef{{Claim: statetest.ClaimShared}, {Claim: statetest.ClaimMixed, Result: 1}} {
-		g := r.Grant(ref)
-		g.Got = state.Got{}
-		g.State = state.GrantJournaled
-	}
-	m := r.Memdev(statetest.SerialShared)
-	m.State = state.MemdevIdleKept
-	for _, v := range state.Check(&r) {
-		if v.Invariant == "users" {
-			t.Errorf("%s", v)
-		}
-	}
-}
-
-func TestFailedLeaseKeepsItsLend(t *testing.T) {
-	r := statetest.Records()
-	r.Lease(statetest.LeaseNUMA).State = state.LeaseFailed
-	for _, v := range state.Check(&r) {
-		t.Errorf("%s", v)
 	}
 }
 

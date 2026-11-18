@@ -51,7 +51,7 @@ States: UNKNOWN, PREPARING, PREPARED, PREPARED_UNRESTORED, PREPARED_STALE, UNPRE
 | PREPARED | (unchanged) | `a-prepare`: Prepare again (kubelet restart, companion re-announce) | - | no commit; companion: OnLending and OnPrepared announced again |
 | PREPARED | PREPARED_UNRESTORED | `a-recover`: a grant's objects do not verify (mount, dax or block identity) | - | commit (l); no CDI device for the claim; logged |
 | PREPARED_UNRESTORED | PREPARED | `a-prepare`, `a-recover`: Prepare again, or the recovery at a restart, mounts again or verifies again | all grants REALISED again | commit (d); CDI spec rewritten |
-| PREPARED_UNRESTORED | (unchanged) | `a-recover`: the recovery at a restart fails again | - | commit (l); logged |
+| PREPARED_UNRESTORED | (unchanged) | `a-recover`: the recovery at a restart fails again, or fails for another grant of the claim | - | logged; for another grant, commit (l) of it REALISED_UNRESTORED |
 | PREPARED_UNRESTORED | (unchanged) | `a-prepare`: Prepare again fails | - | error to kubelet |
 | PREPARING, PREPARED, PREPARED_UNRESTORED, PREPARED_STALE, UNPREPARING, KEPT | PREPARED_STALE | `load`: the document's boot id differs from the running boot | - | commit (l): grants keep Serial, Source and Asked, Got and Intent cleared; no CDI device; nothing released at start |
 | PREPARED_STALE | PREPARING | `a-prepare`: Prepare again (kubelet after a reboot) | - | the old grants dropped in the same commit (d); then as UNKNOWN -> PREPARING |
@@ -115,7 +115,7 @@ States: REQUESTED, JOURNALED, REALISING, REALISED, REALISED_UNRESTORED, RELEASIN
 
 Refused:
 
-- REQUESTED -> REALISING: nothing is created without the intent
+- REQUESTED -> REALISING, REALISED: nothing is created without the intent
 - RELEASED -> any state: a released grant is gone
 
 **Invariants.** Every object named by Got is named by Intent first; Got.Region names a Region record that targets Serial; Got.Dax and Got.Mount name objects of that region that list the grant among their users.
@@ -499,7 +499,8 @@ Probe is the result of the address line probe of a local memdev whose memory ali
 Checked by `state.Check` over the records alone; the engine checks the invariants that also
 need the kernel's view.
 
-- **records**: Every record has a state of its table that a stored record may have, and a unique identity. Every region of ours is one Region record, referenced by every memdev in its Targets, and every region a memdev references is a record of ours that targets it; a FOREIGN region is owned by no one. Every grant belongs to one result of one preparation and is listed by the memdev of its serial (except the grants of a PREPARED_STALE preparation); what Got names lists the grant among its users, and every user of a dax device or a node mount names it back; a grant result names a grant record, but of a PREPARING or UNPREPARING preparation (not journaled yet, or released before the front-end's commit) and of a PREPARED_STALE one (a reboot cut that Prepare or Unprepare). A PREPARED preparation's grants are REALISED, a PREPARED_UNRESTORED one's REALISED or REALISED_UNRESTORED, and the lease claim of their lease results exists unless the claim's Unprepare runs (it closes the lease claim before the preparation turns UNPREPARING; the engine leaves this rule to the lease broker). A lease lends only while READY, releasing or FAILED.
+- **records**: Every record has a state of its table that a stored record may have, and a unique identity. Every region of ours is one Region record, referenced by every memdev in its Targets, and every region a memdev references is a record of ours that targets it; a FOREIGN region is owned by no one. Every grant belongs to one result of one preparation and is listed by the memdev of its serial (except the grants of a PREPARED_STALE preparation); what Got names lists the grant among its users, and every user of a dax device or a node mount names it back; a grant result names a grant record, but of a PREPARING or UNPREPARING preparation (not journaled yet, or released before the front-end's commit) and of a PREPARED_STALE one (a reboot cut that Prepare or Unprepare). A PREPARED preparation's grants are REALISED, a PREPARED_UNRESTORED one's REALISED or REALISED_UNRESTORED. A lease lends only while READY, releasing or FAILED.
+- **lease claims**: The lease claim of a lease result of a PREPARED or PREPARED_UNRESTORED preparation has a record, unless the claim's Unprepare runs: it closes the lease claim before the preparation turns UNPREPARING. The engine does not check this invariant: the lease claims are the lease broker's records, which it writes out of order with the preparations.
 - **users**: Between requests and after the recovery, every region of ours is OWNED, KEPT or HOLLOW_OWNED, and every dax device of a region of ours that is OWNED or KEPT and is not the seed has a user grant that is REALISED, REALISED_UNRESTORED or RELEASING, or is the Whole device of a KEPT region, of a memdev that is IDLE_KEPT, or of a region that a grant of a Prepare that did not finish names, or has as its user a grant of a Prepare that did not finish of a numa companion or of a KEPT preparation (kept for its Unprepare); the recovery deletes the others, those of a HOLLOW_OWNED region go with it.
 - **journaled**: Every object that the driver created lies inside a journaled container: a region of ours targets memdevs with a record; the region, bind target and lend of a grant's Got are named by its Intent; a node mount's path is the Intent of a user grant.
 ## Release policy

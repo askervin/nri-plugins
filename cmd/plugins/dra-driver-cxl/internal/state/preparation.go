@@ -208,8 +208,8 @@ var PreparationTable = Table[PreparationState]{
 		},
 		{
 			From: list(PreparationUnrestored), Stays: true, Triggers: list(TriggerRecover),
-			When:    "the recovery at a restart fails again",
-			Effects: "commit (l); logged",
+			When:    "the recovery at a restart fails again, or fails for another grant of the claim",
+			Effects: "logged; for another grant, commit (l) of it REALISED_UNRESTORED",
 		},
 		{
 			From: list(PreparationUnrestored), Stays: true, Triggers: list(TriggerPrepare),

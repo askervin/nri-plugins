@@ -17,36 +17,42 @@ package state
 import (
 	"fmt"
 	"slices"
-	"strings"
 )
 
 // Violation is a record that breaks an invariant.
 type Violation struct {
 	Invariant string
 	Record    string
-	Text      string
+	// Source is the source of the record, set by the document
+	// invariants: that of a memdev, of a grant, or of the memdev of a
+	// region's first target; "" for the other records.
+	Source Source
+	Text   string
 }
 
-// leaseClaimMissing is the text of the violation of a lease result of a
-// prepared claim whose lease claim has no record.
-const leaseClaimMissing = "lease claim %s has no record"
-
-// LeaseClaimMissing tells whether a violation is that of a lease result of
-// a prepared claim whose lease claim has no record: the claim's Unprepare
-// closes its lease claim before its preparation turns UNPREPARING.
-func LeaseClaimMissing(v Violation) bool {
-	prefix, suffix, _ := strings.Cut(leaseClaimMissing, "%s")
-	return v.Invariant == "records" && strings.HasPrefix(v.Record, "preparation ") &&
-		strings.HasPrefix(v.Text, prefix) && strings.HasSuffix(v.Text, suffix)
-}
+// InvariantLeaseClaims is the name of the document invariant over the
+// lease claims, which the engine does not check.
+const InvariantLeaseClaims = "lease claims"
 
 // String returns the violation in words.
 func (v Violation) String() string {
 	return fmt.Sprintf("%s: %s: %s", v.Invariant, v.Record, v.Text)
 }
 
+// recordID names a record in violations, with its source.
+type recordID struct {
+	name   string
+	source Source
+}
+
+// part returns the identity of a part of the record.
+func (id recordID) part(name string) recordID {
+	id.name += " " + name
+	return id
+}
+
 // addFunc adds a violation by a record.
-type addFunc func(record, format string, args ...any)
+type addFunc func(id recordID, format string, args ...any)
 
 // Invariant is a predicate over the records alone.
 type Invariant struct {
@@ -68,11 +74,17 @@ var DocumentInvariants = []Invariant{
 			"and every user of a dax device or a node mount names it back; a grant result names a grant record, " +
 			"but of a PREPARING or UNPREPARING preparation (not journaled yet, or released before the front-end's " +
 			"commit) and of a PREPARED_STALE one (a reboot cut that Prepare or Unprepare). A PREPARED preparation's grants are " +
-			"REALISED, a PREPARED_UNRESTORED one's REALISED or REALISED_UNRESTORED, and the lease claim of their " +
-			"lease results exists unless the claim's Unprepare runs (it closes the lease claim before the " +
-			"preparation turns UNPREPARING; the engine leaves this rule to the lease broker). A lease lends only while READY, " +
+			"REALISED, a PREPARED_UNRESTORED one's REALISED or REALISED_UNRESTORED. A lease lends only while READY, " +
 			"releasing or FAILED.",
 		check: checkRecords,
+	},
+	{
+		Name: InvariantLeaseClaims,
+		Text: "The lease claim of a lease result of a PREPARED or PREPARED_UNRESTORED preparation has a record, " +
+			"unless the claim's Unprepare runs: it closes the lease claim before the preparation turns UNPREPARING. " +
+			"The engine does not check this invariant: the lease claims are the lease broker's records, which it " +
+			"writes out of order with the preparations.",
+		check: checkLeaseClaims,
 	},
 	{
 		Name: "users",
@@ -97,8 +109,8 @@ var DocumentInvariants = []Invariant{
 func Check(r *Records) []Violation {
 	var out []Violation
 	for _, inv := range DocumentInvariants {
-		inv.check(r, func(record, format string, args ...any) {
-			out = append(out, Violation{Invariant: inv.Name, Record: record, Text: fmt.Sprintf(format, args...)})
+		inv.check(r, func(id recordID, format string, args ...any) {
+			out = append(out, Violation{Invariant: inv.Name, Record: id.name, Source: id.source, Text: fmt.Sprintf(format, args...)})
 		})
 	}
 	return out
@@ -108,9 +120,9 @@ func Check(r *Records) []Violation {
 // not one that a stored record may have, nil if there is none.
 func CheckStates(r *Records) error {
 	var err error
-	checkStates(r, func(record, format string, args ...any) {
+	checkStates(r, func(id recordID, format string, args ...any) {
 		if err == nil {
-			err = fmt.Errorf("%s: %s", record, fmt.Sprintf(format, args...))
+			err = fmt.Errorf("%s: %s", id.name, fmt.Sprintf(format, args...))
 		}
 	})
 	return err
@@ -145,7 +157,7 @@ func checkRecords(r *Records, add addFunc) {
 }
 
 // stored adds the records of a section whose state is not one of stored.
-func stored[T any, S comparable](add addFunc, records []T, allowed []S, id func(*T) string, state func(*T) S) {
+func stored[T any, S comparable](add addFunc, records []T, allowed []S, id func(*T) recordID, state func(*T) S) {
 	for i := range records {
 		if s := state(&records[i]); !slices.Contains(allowed, s) {
 			add(id(&records[i]), "state %q is not one of a stored record", fmt.Sprint(s))
@@ -158,13 +170,10 @@ func checkStates(r *Records, add addFunc) {
 	stored(add, r.Preparations, preparationStored, preparationID, func(p *Preparation) PreparationState { return p.State })
 	stored(add, r.Grants, grantStored, grantID, func(g *Grant) GrantState { return g.State })
 	stored(add, r.Memdevs, memdevStored, memdevID, func(m *Memdev) MemdevState { return m.State })
-	stored(add, r.Regions, regionStored, regionID, func(reg *Region) RegionState { return reg.State })
-	stored(add, r.Leases, leaseStored, func(l *Lease) string { return "lease " + l.ID },
-		func(l *Lease) LeaseState { return l.State })
-	stored(add, r.LeaseClaims, leaseClaimStored, func(c *LeaseClaim) string { return "lease claim " + c.UID },
-		func(c *LeaseClaim) LeaseClaimState { return c.State })
-	stored(add, r.Provenance, provenanceStored, func(p *Provenance) string { return "provenance " + p.Serial.String() },
-		func(p *Provenance) ProvenanceState { return p.State })
+	stored(add, r.Regions, regionStored, r.regionID, func(reg *Region) RegionState { return reg.State })
+	stored(add, r.Leases, leaseStored, leaseID, func(l *Lease) LeaseState { return l.State })
+	stored(add, r.LeaseClaims, leaseClaimStored, leaseClaimID, func(c *LeaseClaim) LeaseClaimState { return c.State })
+	stored(add, r.Provenance, provenanceStored, provenanceID, func(p *Provenance) ProvenanceState { return p.State })
 	for i := range r.Grants {
 		if b := r.Grants[i].Got.Bind; b != nil && !slices.Contains(bindStored, b.State) {
 			add(grantID(&r.Grants[i]), "bind state %q is not one of a stored record", b.State)
@@ -172,18 +181,35 @@ func checkStates(r *Records, add addFunc) {
 	}
 	for i := range r.Regions {
 		reg := &r.Regions[i]
-		stored(add, reg.DaxDevices, daxDeviceStored, func(d *DaxDevice) string { return regionID(reg) + " dax device " + d.Name },
+		stored(add, reg.DaxDevices, daxDeviceStored, func(d *DaxDevice) recordID { return r.regionID(reg).part("dax device " + d.Name) },
 			func(d *DaxDevice) DaxDeviceState { return d.State })
-		stored(add, reg.Mounts, mountStored, func(m *Mount) string { return regionID(reg) + " mount " + m.Path },
+		stored(add, reg.Mounts, mountStored, func(m *Mount) recordID { return r.regionID(reg).part("mount " + m.Path) },
 			func(m *Mount) MountState { return m.State })
 	}
 }
 
-// The names of records in violations.
-func preparationID(p *Preparation) string { return "preparation " + p.Driver + "/" + p.UID }
-func grantID(g *Grant) string             { return "grant " + g.Ref.String() }
-func memdevID(m *Memdev) string           { return "memdev " + m.Serial.String() }
-func regionID(r *Region) string           { return "region " + string(r.Ref()) }
+// The identities of records in violations.
+func preparationID(p *Preparation) recordID {
+	return recordID{name: "preparation " + p.Driver + "/" + p.UID}
+}
+func grantID(g *Grant) recordID           { return recordID{"grant " + g.Ref.String(), g.Asked.Source} }
+func memdevID(m *Memdev) recordID         { return recordID{"memdev " + m.Serial.String(), m.Source} }
+func leaseID(l *Lease) recordID           { return recordID{name: "lease " + l.ID} }
+func leaseClaimID(c *LeaseClaim) recordID { return recordID{name: "lease claim " + c.UID} }
+func provenanceID(p *Provenance) recordID { return recordID{name: "provenance " + p.Serial.String()} }
+func steeredID(s *Steered) recordID       { return recordID{name: "steered " + s.Container} }
+
+// regionID returns the identity of a region in violations, whose source is
+// that of the memdev of its first target.
+func (r *Records) regionID(reg *Region) recordID {
+	id := recordID{name: "region " + string(reg.Ref())}
+	if len(reg.Targets) > 0 {
+		if m := r.Memdev(reg.Targets[0]); m != nil {
+			id.source = m.Source
+		}
+	}
+	return id
+}
 
 // checkUnique adds the identities that more than one record of a section
 // has.
@@ -191,22 +217,22 @@ func checkUnique(r *Records, add addFunc) {
 	unique(add, r.Preparations, preparationID)
 	unique(add, r.Grants, grantID)
 	unique(add, r.Memdevs, memdevID)
-	unique(add, r.Regions, regionID)
-	unique(add, r.Leases, func(l *Lease) string { return "lease " + l.ID })
-	unique(add, r.LeaseClaims, func(c *LeaseClaim) string { return "lease claim " + c.UID })
-	unique(add, r.Provenance, func(p *Provenance) string { return "provenance " + p.Serial.String() })
-	unique(add, r.Steered, func(s *Steered) string { return "steered " + s.Container })
+	unique(add, r.Regions, r.regionID)
+	unique(add, r.Leases, leaseID)
+	unique(add, r.LeaseClaims, leaseClaimID)
+	unique(add, r.Provenance, provenanceID)
+	unique(add, r.Steered, steeredID)
 }
 
 // unique adds the identities that more than one record of the section has.
-func unique[T any](add addFunc, records []T, id func(*T) string) {
+func unique[T any](add addFunc, records []T, id func(*T) recordID) {
 	seen := map[string]bool{}
 	for i := range records {
 		k := id(&records[i])
-		if seen[k] {
+		if seen[k.name] {
 			add(k, "more than one record")
 		}
-		seen[k] = true
+		seen[k.name] = true
 	}
 }
 
@@ -217,17 +243,17 @@ func checkRegionOwners(r *Records, add addFunc) {
 	for i := range r.Regions {
 		reg := &r.Regions[i]
 		if (reg.State == RegionForeign) != (reg.Owner == OwnerForeign) {
-			add(regionID(reg), "state %s with owner %q", reg.State, reg.Owner)
+			add(r.regionID(reg), "state %s with owner %q", reg.State, reg.Owner)
 		}
 		if reg.Ref() == "" {
-			add(regionID(reg), "no name and no noted name")
+			add(r.regionID(reg), "no name and no noted name")
 		}
 		if !reg.Ours() {
 			continue
 		}
 		for _, serial := range reg.Targets {
 			if m := r.Memdev(serial); m != nil && !m.HasRegion(reg.Ref()) {
-				add(regionID(reg), "target memdev %s does not reference it", serial)
+				add(r.regionID(reg), "target memdev %s does not reference it", serial)
 			}
 		}
 	}
@@ -244,14 +270,14 @@ func checkRegionUsers(r *Records, add addFunc) {
 		for _, d := range reg.DaxDevices {
 			for _, u := range d.Users {
 				if g := r.Grant(u); g == nil || g.Got.Region != reg.Ref() || g.Got.Dax != d.Name {
-					add(regionID(reg), "dax device %s: user %s does not use it", d.Name, u)
+					add(r.regionID(reg), "dax device %s: user %s does not use it", d.Name, u)
 				}
 			}
 		}
 		for _, m := range reg.Mounts {
 			for _, u := range m.Users {
 				if g := r.Grant(u); g == nil || g.Got.Region != reg.Ref() || g.Got.Mount != m.Access {
-					add(regionID(reg), "mount %s: user %s does not use it", m.Path, u)
+					add(r.regionID(reg), "mount %s: user %s does not use it", m.Path, u)
 				}
 			}
 		}
@@ -343,13 +369,8 @@ func checkPreparation(r *Records, p *Preparation, add addFunc) {
 			add(preparationID(p), "result %d of kind %q has %d parts", res.Index, res.Kind, n)
 			continue
 		}
-		switch res.Kind {
-		case ResultGrant:
+		if res.Kind == ResultGrant {
 			checkGrantResult(r, p, res, add)
-		case ResultLeaseClaim:
-			if (p.State == PreparationPrepared || p.State == PreparationUnrestored) && r.LeaseClaim(res.LeaseClaim.UID) == nil {
-				add(preparationID(p), leaseClaimMissing, res.LeaseClaim.UID)
-			}
 		}
 	}
 }
@@ -405,9 +426,25 @@ func resultKindSet(res *Result) bool {
 
 // checkLends adds the leases that lend in a state that does not lend.
 func checkLends(r *Records, add addFunc) {
-	for _, l := range r.Leases {
-		if l.Lend != nil && !slices.Contains(lendingLeases, l.State) {
-			add("lease "+l.ID, "lends while %s", l.State)
+	for i := range r.Leases {
+		if l := &r.Leases[i]; l.Lend != nil && !slices.Contains(lendingLeases, l.State) {
+			add(leaseID(l), "lends while %s", l.State)
+		}
+	}
+}
+
+// checkLeaseClaims adds the PREPARED and PREPARED_UNRESTORED preparations
+// with a lease result whose lease claim has no record.
+func checkLeaseClaims(r *Records, add addFunc) {
+	for i := range r.Preparations {
+		p := &r.Preparations[i]
+		if p.State != PreparationPrepared && p.State != PreparationUnrestored {
+			continue
+		}
+		for _, res := range p.Results {
+			if res.Kind == ResultLeaseClaim && res.LeaseClaim != nil && r.LeaseClaim(res.LeaseClaim.UID) == nil {
+				add(preparationID(p), "lease claim %s has no record", res.LeaseClaim.UID)
+			}
 		}
 	}
 }
@@ -421,7 +458,7 @@ func checkUsers(r *Records, add addFunc) {
 			continue
 		}
 		if reg.State == RegionNoted {
-			add(regionID(reg), "%s between requests", reg.State)
+			add(r.regionID(reg), "%s between requests", reg.State)
 		}
 		if reg.State == RegionHollowOwned {
 			// its dax devices go with it when it is deleted
@@ -431,7 +468,7 @@ func checkUsers(r *Records, add addFunc) {
 			if d.State == DaxSeed || (d.Whole && (kept(r, reg) || unfinished(r, reg))) || used(r, &d) || r.UnfinishedUser(&d) {
 				continue
 			}
-			add(regionID(reg), "dax device %s has no realised or releasing user", d.Name)
+			add(r.regionID(reg), "dax device %s has no realised or releasing user", d.Name)
 		}
 	}
 }
@@ -528,12 +565,12 @@ func checkJournaled(r *Records, add addFunc) {
 		}
 		for _, serial := range reg.Targets {
 			if r.Memdev(serial) == nil {
-				add(regionID(reg), "target memdev %s has no record", serial)
+				add(r.regionID(reg), "target memdev %s has no record", serial)
 			}
 		}
 		for _, m := range reg.Mounts {
 			if m.State != MountForeign && !journaledMount(r, &m) {
-				add(regionID(reg), "mount %s is named by no intent", m.Path)
+				add(r.regionID(reg), "mount %s is named by no intent", m.Path)
 			}
 		}
 	}

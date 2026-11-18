@@ -102,12 +102,13 @@ func (c *checker) memdevOwned(serial state.Serial) bool {
 	return m != nil && c.owned(m.Source)
 }
 
-// Check returns the violations of the document invariants and of
-// Invariants by the records r and the kernel snapshot s.
+// Check returns the violations of the document invariants, but the lease
+// claims one, and of Invariants by the records r and the kernel snapshot
+// s, of the records of the sources that the engine owns.
 func Check(r *state.Records, s *kernel.Snapshot, opts CheckOptions) []state.Violation {
 	c := &checker{r: r, s: s, opts: opts}
 	for _, v := range state.Check(r) {
-		if c.violationOwned(v) {
+		if v.Invariant != state.InvariantLeaseClaims && (v.Source == "" || c.owned(v.Source)) {
 			c.out = append(c.out, v)
 		}
 	}
@@ -116,43 +117,6 @@ func Check(r *state.Records, s *kernel.Snapshot, opts CheckOptions) []state.Viol
 		inv.check(c)
 	}
 	return c.out
-}
-
-// violationOwned tells whether a document violation is of a record that the
-// engine owns: a memdev, region or grant of an owned source, or another
-// record. The lease claims are the lease broker's records, written out of
-// order with the preparations: the missing lease claim of a prepared claim
-// whose Unprepare closed it before its preparation turned UNPREPARING is
-// not one of the engine's.
-func (c *checker) violationOwned(v state.Violation) bool {
-	if state.LeaseClaimMissing(v) {
-		return false
-	}
-	if c.opts.Sources == nil {
-		return true
-	}
-	kind, id, _ := strings.Cut(v.Record, " ")
-	switch kind {
-	case "grant":
-		for i := range c.r.Grants {
-			if c.r.Grants[i].Ref.String() == id {
-				return c.owned(c.r.Grants[i].Asked.Source)
-			}
-		}
-	case "memdev":
-		for i := range c.r.Memdevs {
-			if c.r.Memdevs[i].Serial.String() == id {
-				return c.owned(c.r.Memdevs[i].Source)
-			}
-		}
-	case "region":
-		if reg := c.r.Region(state.RegionRef(strings.Fields(id)[0])); reg != nil && len(reg.Targets) > 0 {
-			return c.memdevOwned(reg.Targets[0])
-		}
-	case "preparation":
-		return true
-	}
-	return true
 }
 
 // ownRegions returns the region records of ours of owned memdevs.

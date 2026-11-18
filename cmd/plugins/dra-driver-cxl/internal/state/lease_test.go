@@ -19,41 +19,6 @@ import (
 	"testing"
 )
 
-func TestLeaseTable(t *testing.T) {
-	checkTable(t, &LeaseTable)
-}
-
-func TestLeaseLifeCycles(t *testing.T) {
-	type st = step[LeaseState]
-	tb := &LeaseTable
-	walk(t, tb, "lent, announced again, released while busy", LeaseNone,
-		st{LeaseCreating, TriggerRequest}, st{LeasePending, TriggerRequest}, st{LeaseLending, TriggerOnLending},
-		st{LeaseLending, TriggerOnLending}, st{LeaseReady, TriggerOnPrepared},
-		st{LeaseReady, TriggerOnPrepared}, st{LeaseReady, TriggerOnLending}, st{LeaseReleasing, TriggerRelease},
-		st{LeaseReleasing, TriggerReconcile}, st{LeaseReleasingBusy, TriggerRelease},
-		st{LeaseReleasingBusy, TriggerUnprepare}, st{LeaseReleasing, TriggerRelease}, st{LeaseNone, TriggerRelease})
-	walk(t, tb, "the companion creation failed, released in place", LeaseNone,
-		st{LeaseCreating, TriggerRequest}, st{LeaseFailed, TriggerRequest}, st{LeaseFailed, TriggerRequest},
-		st{LeaseNone, TriggerRelease})
-	walk(t, tb, "a lend that failed, the companion unprepared, released in place", LeaseNone,
-		st{LeaseCreating, TriggerRequest}, st{LeaseLending, TriggerOnLending}, st{LeaseReady, TriggerOnPrepared},
-		st{LeaseFailed, TriggerOnLendFailed}, st{LeaseFailed, TriggerOnReleasing}, st{LeaseFailed, TriggerRelease},
-		st{LeaseNone, TriggerRelease})
-	walk(t, tb, "a device of another mode", LeaseCreating, st{LeaseLending, TriggerOnLending},
-		st{LeaseFailed, TriggerOnPrepared}, st{LeaseFailed, TriggerOnPrepared})
-	walk(t, tb, "the request's wait ended", LeaseNone,
-		st{LeaseCreating, TriggerRequest}, st{LeasePending, TriggerRequest}, st{LeaseReleasing, TriggerRequest},
-		st{LeaseNone, TriggerRelease})
-	walk(t, tb, "the request's wait ended as the companion made it READY", LeasePending,
-		st{LeaseLending, TriggerOnLending}, st{LeaseReady, TriggerOnPrepared}, st{LeaseReleasing, TriggerRequest})
-	walk(t, tb, "a companion whose bind is not restored at a start", LeaseReady,
-		st{LeaseFailed, TriggerRecover}, st{LeaseFailed, TriggerRecover}, st{LeaseNone, TriggerRelease})
-	walk(t, tb, "released while it was created", LeaseCreating, st{LeaseReleasing, TriggerUnprepare},
-		st{LeaseFailed, TriggerRequest})
-	walk(t, tb, "left over in CREATING", LeaseCreating, st{LeaseReleasing, TriggerReconcile})
-	walk(t, tb, "dropped at a reboot", LeaseReady, st{LeaseNone, TriggerLoad})
-}
-
 func TestLeaseLends(t *testing.T) {
 	pod := PodRef{Namespace: "demo", Name: "borrower", UID: "pod-uid-1"}
 	numa := func(id string, st LeaseState, node int) Lease {

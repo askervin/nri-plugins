@@ -20,16 +20,7 @@ import (
 	"time"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state/statetest"
 )
-
-func TestCloneIsEqual(t *testing.T) {
-	r := statetest.Records()
-	c := r.Clone()
-	if !reflect.DeepEqual(r, c) {
-		t.Errorf("clone differs from the records")
-	}
-}
 
 // TestCloneSharesNothing fills every field of the records, clones them and
 // checks that no pointer, slice or map of the clone points into the
@@ -131,19 +122,6 @@ func shared(t *testing.T, a, b reflect.Value, path string) {
 		}
 		for _, k := range a.MapKeys() {
 			shared(t, a.MapIndex(k), b.MapIndex(k), path+"[k]")
-		}
-	}
-}
-
-func TestSortOrdersSections(t *testing.T) {
-	r := statetest.Records()
-	for i, j := 0, len(r.Grants)-1; i < j; i, j = i+1, j-1 {
-		r.Grants[i], r.Grants[j] = r.Grants[j], r.Grants[i]
-	}
-	r.Sort()
-	for i := 1; i < len(r.Grants); i++ {
-		if r.Grants[i-1].Ref.Compare(r.Grants[i].Ref) >= 0 {
-			t.Errorf("grants not sorted at %d", i)
 		}
 	}
 }

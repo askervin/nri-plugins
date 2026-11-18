@@ -185,18 +185,26 @@ func numaCompanion(g *state.Grant) bool {
 }
 
 // cutGrant tells whether a grant is one of a Prepare that a process stop
-// cut: JOURNALED or REALISING, or REALISED or RELEASING (a rollback that the
-// stop cut) of a PREPARING preparation.
+// cut: JOURNALED or REALISING; REALISED of a claim whose Prepare did not
+// finish (PREPARING, or KEPT: an earlier start kept it as it was); or
+// RELEASING of a PREPARING claim (a rollback that the stop cut). A
+// RELEASING grant of a KEPT claim is one of its cut Unprepare, which
+// kubelet's retry finishes.
 func cutGrant(r *state.Records, g *state.Grant) bool {
 	p := r.PreparationOf(g.Ref)
 	if p != nil && p.State == state.PreparationStale {
 		// nothing of another boot is left: released by its Unprepare
 		return false
 	}
-	if g.State == state.GrantJournaled || g.State == state.GrantRealising {
+	switch g.State {
+	case state.GrantJournaled, state.GrantRealising:
 		return true
+	case state.GrantRealised:
+		return unfinished(r, g)
+	case state.GrantReleasing:
+		return p != nil && p.State == state.PreparationPreparing
 	}
-	return p != nil && p.State == state.PreparationPreparing && (g.State == state.GrantRealised || g.State == state.GrantReleasing)
+	return false
 }
 
 // recoverMemdevs makes the memdev records of memdevs that are absent GONE,
@@ -703,11 +711,19 @@ func badBlocks(r *state.Records, bad map[state.GrantRef]error) error {
 				return err
 			}
 		}
-		if p := r.PreparationOf(ref); p != nil && p.State == state.PreparationPrepared {
-			if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationUnrestored, state.TriggerRecover); err != nil {
-				return err
-			}
+		if err := preparationUnrestored(r, ref); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// preparationUnrestored records the PREPARED or PREPARED_UNRESTORED
+// preparation of a grant that the recovery did not restore
+// PREPARED_UNRESTORED.
+func preparationUnrestored(r *state.Records, ref state.GrantRef) error {
+	if p := r.PreparationOf(ref); p != nil && (p.State == state.PreparationPrepared || p.State == state.PreparationUnrestored) {
+		return state.Apply(&state.PreparationTable, &p.State, state.PreparationUnrestored, state.TriggerRecover)
 	}
 	return nil
 }
@@ -951,10 +967,7 @@ func grantUnrestored(r *state.Records, ref state.GrantRef, why error) error {
 			}
 		}
 	}
-	if p := r.PreparationOf(ref); p != nil && p.State == state.PreparationPrepared {
-		return state.Apply(&state.PreparationTable, &p.State, state.PreparationUnrestored, state.TriggerRecover)
-	}
-	return nil
+	return preparationUnrestored(r, ref)
 }
 
 // grantRestored records an unrestored grant whose node mount is mounted

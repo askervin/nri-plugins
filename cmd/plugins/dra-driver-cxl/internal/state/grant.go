@@ -329,7 +329,7 @@ var GrantTable = Table[GrantState]{
 		},
 	},
 	Refused: []Refusal[GrantState]{
-		{From: list(GrantRequested), To: list(GrantRealising), Why: "nothing is created without the intent"},
+		{From: list(GrantRequested), To: list(GrantRealising, GrantRealised), Why: "nothing is created without the intent"},
 		{From: list(GrantReleased), Why: "a released grant is gone"},
 	},
 }

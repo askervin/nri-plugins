@@ -18,6 +18,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -25,7 +26,9 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
-// engineTables are the tables of the records that the engine drives.
+// engineTables are the tables of the records that the engine drives; of
+// the table of the preparations it drives the rows of the recovery
+// (engineRow).
 var engineTables = []fsm.TableText{
 	state.GrantTable.Text(),
 	state.BindTable.Text(),
@@ -34,6 +37,14 @@ var engineTables = []fsm.TableText{
 	state.RegionSetUpTable.Text(),
 	state.DaxDeviceTable.Text(),
 	state.MountTable.Text(),
+	state.PreparationTable.Text(),
+}
+
+// engineRow tells whether the engine drives a row of one of engineTables:
+// a row of the table of the preparations only on a-recover, the front-end
+// drives the others.
+func engineRow(t fsm.TableText, r fsm.RowText) bool {
+	return t.Object != "Preparation" || slices.Contains(r.Triggers, string(state.TriggerRecover))
 }
 
 // notDriven are the rows of engineTables that the engine does not apply,
@@ -46,6 +57,8 @@ var notDriven = map[string]string{
 	"Memdev.State ACTIVE,IDLE_KEPT,GONE -> UNUSED on load": "the store's load of a document of another boot",
 	"Region.State NOTED,OWNED,KEPT,HOLLOW_OWNED,FOREIGN -> NONE on load": "the store's load of a document of " +
 		"another boot",
+	"Preparation.State UNPREPARING -> (unchanged) on a-recover": "a start leaves an UNPREPARING preparation " +
+		"as it is, with no commit",
 }
 
 // TestMain counts the rows that the tests apply and, when every test ran,
@@ -70,9 +83,9 @@ func rowName(t fsm.TableText, r fsm.RowText) string {
 	return fmt.Sprintf("%s.%s %s -> %s on %s", t.Object, t.Field, strings.Join(r.From, ","), to, strings.Join(r.Triggers, ","))
 }
 
-// reportRows prints the rows of engineTables that no test applied and
-// returns 1 if one of them is not in notDriven, or if a row of notDriven
-// was applied.
+// reportRows prints the rows of engineTables that the engine drives and no
+// test applied and returns 1 if one of them is not in notDriven, or if a
+// row of notDriven was applied.
 func reportRows(rows *fsm.Rows) int {
 	code := 0
 	for _, t := range engineTables {
@@ -83,6 +96,9 @@ func reportRows(rows *fsm.Rows) int {
 			}
 		}
 		for _, i := range rows.Unapplied(t) {
+			if !engineRow(t, t.Rows[i]) {
+				continue
+			}
 			name := rowName(t, t.Rows[i])
 			why, ok := notDriven[name]
 			switch {

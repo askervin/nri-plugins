@@ -37,9 +37,10 @@ var notDriven = map[string]string{
 		"again",
 	"PREPARING,PREPARED,PREPARED_UNRESTORED,PREPARED_STALE,UNPREPARING,KEPT -> PREPARED_STALE on load": "the store's " +
 		"load of the records of another boot",
-	"UNPREPARING -> (unchanged) on a-recover": "the engine's recovery: an Unprepare that a stop cut",
-	"KEPT -> (unchanged) on a-recover":        "the engine's recovery of a kept region",
-	"KEPT -> UNKNOWN on a-recover":            "the engine's recovery of a kept region",
+	"UNPREPARING -> (unchanged) on a-recover": "a start leaves an UNPREPARING preparation as it is, with no " +
+		"commit",
+	"KEPT -> (unchanged) on a-recover": "the engine's recovery of a kept region",
+	"KEPT -> UNKNOWN on a-recover":     "the engine's recovery of a kept region",
 }
 
 // TestMain counts the rows of the table of the preparations that the tests
