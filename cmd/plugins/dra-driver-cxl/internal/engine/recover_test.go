@@ -318,6 +318,40 @@ func TestRecoverCutPrepareBelow(t *testing.T) {
 	}
 }
 
+// A Prepare cut after its pool grant was REALISED, below a newer region of
+// another memdev: the recovery keeps the grant and its region as they are
+// (OWNED, set up) for a Prepare again, which reuses them.
+func TestRecoverRealisedBelow(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialB})
+	req := poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive)
+	v.beforePrepared = func() { panic(fake.ErrCut) }
+	if !v.cut(func() { _ = v.prepare(poolDriver, "c", req) }) {
+		t.Fatal("not cut")
+	}
+	k := v.f.Kernel()
+	d, _ := k.RootDecoder("mem1", kernel.RegionRAM)
+	if _, err := k.CreateRegion(context.Background(), kernel.CreateRegionRequest{Memdev: "mem1", Decoder: d, Type: kernel.RegionRAM}); err != nil {
+		t.Fatal(err)
+	}
+	out := v.restart()
+	if !slices.Equal(out.Kept, []state.GrantRef{{Claim: "c"}}) {
+		t.Fatalf("recovered %+v", out)
+	}
+	g := v.grant("c", 0)
+	if reg := v.records().Region(g.Got.Region); g.State != state.GrantRealised || reg == nil || reg.State != state.RegionOwned || !reg.SetUp {
+		t.Fatalf("grant %s, region %+v", g.State, reg)
+	}
+	v.check("recovered")
+	v.mustPrepare(poolDriver, "c", req)
+	if reg := v.records().Region(v.grant("c", 0).Got.Region); reg.State != state.RegionOwned || !reg.SetUp {
+		t.Fatalf("prepared again: region %+v", reg)
+	}
+	v.mustUnprepare(poolDriver, "c")
+	if r := v.records(); len(r.Grants)+len(r.Regions) > 0 {
+		t.Fatalf("records %+v", r)
+	}
+}
+
 // A PREPARING claim with a REALISED grant (cut before the claim was
 // PREPARED) is released at the start, a companion of mode numa kept.
 func TestRecoverRealisedOfPreparing(t *testing.T) {

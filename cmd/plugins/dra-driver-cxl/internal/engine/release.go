@@ -388,16 +388,24 @@ func unfinished(r *state.Records, g *state.Grant) bool {
 
 // keepForRecovery keeps the cut grants refs of one memdev whose region lies
 // below a newer region of another memdev untouched (Policy ReleaseRecovery
-// keeps), the memdev's queue held: its region KEPT, the grants JOURNALED
-// (realised ones as they are).
+// keeps), the memdev's queue held: the grants JOURNALED and the region KEPT
+// to be set up again, but a realised grant and the region that it uses
+// stay as they are.
 func (e *Engine) keepForRecovery(ctx context.Context, serial state.Serial, refs []state.GrantRef) error {
 	leave, err := e.acquire(ctx, serial)
 	if err != nil {
 		return err
 	}
 	defer leave()
-	if err := e.keepMemdev(ctx, serial, state.TriggerRecover, true); err != nil {
-		return err
+	r := e.records()
+	realised := slices.ContainsFunc(refs, func(ref state.GrantRef) bool {
+		g := r.Grant(ref)
+		return g != nil && g.State == state.GrantRealised
+	})
+	if !realised {
+		if err := e.keepMemdev(ctx, serial, state.TriggerRecover, true); err != nil {
+			return err
+		}
 	}
 	for _, ref := range refs {
 		if err := e.keptForClaim(ctx, ref, state.TriggerRecover); err != nil {
