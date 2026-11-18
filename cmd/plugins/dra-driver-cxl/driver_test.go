@@ -31,6 +31,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
@@ -511,7 +512,7 @@ func TestFirstListAfterRecovery(t *testing.T) {
 // The dead keys ignoreNewMemoryDevices and ignoreNewRegions are accepted
 // with a warning that they have no effect.
 func TestDriverConfigDeadKeys(t *testing.T) {
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	cfg, err := newDriverConfigFromString("{ignoreNewMemoryDevices: true, ignoreNewRegions: true}")
 	noErr(t, err)
 	cfg.logDeadKeys()
@@ -562,7 +563,7 @@ func TestWakeOnUevents(t *testing.T) {
 	}
 	newKernelEvents = func(time.Duration) (kernelEvents, error) { return nil, errors.New("no netlink") }
 	devices = &deviceEngine{k: &kernel.Kernel{}}
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	got, stop, err = wakeOnUevents(devices, &DriverConfig{})
 	noErr(t, err)
 	stop()
@@ -579,7 +580,7 @@ func TestWakeOnUevents(t *testing.T) {
 func TestRescanOnStable(t *testing.T) {
 	stop, stable, rescans := make(chan struct{}), make(chan struct{}), make(chan struct{}, 4)
 	done := make(chan struct{})
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	go func() {
 		defer close(done)
 		rescanLoop(stop, stable, func() { rescans <- struct{}{} })

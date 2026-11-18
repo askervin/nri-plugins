@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -63,7 +64,7 @@ func TestUnknownTransitions(t *testing.T) {
 // line that the gates grep for.
 func TestObserveLogsUnknownTransitions(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
-	logs := captureKlogV(t, "4")
+	logs := klogtest.Capture(t, 4)
 	if _, err := v.e.Observe(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +95,7 @@ func TestObserveLogsUnknownTransitions(t *testing.T) {
 // again when the kernel reuses its name for another hollow region.
 func TestObserveHollowOncePerRegion(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	for range 2 {
 		v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive))
 		v.f.Unplug(serialA)
@@ -161,7 +162,7 @@ func TestQueuesPerMemdev(t *testing.T) {
 // invariant.
 func TestVerifyStepLogs(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
-	logs := captureKlogV(t, "4")
+	logs := klogtest.Capture(t, 4)
 	if _, err := v.e.Observe(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +206,7 @@ func TestVerifyStepLogs(t *testing.T) {
 // grant of a Prepare that did not finish (not a kept one) is a violation.
 func TestVerifyStepBetweenRequests(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialL, Ram: gib})
-	logs := captureKlogV(t, "4")
+	logs := klogtest.Capture(t, 4)
 	ran := false
 	v.onZero = func() {
 		// the dax part of l is sized and bound, its grant REALISING
@@ -251,7 +252,7 @@ func TestVerifyStepBetweenRequests(t *testing.T) {
 func TestRequestChecksAtItsEnd(t *testing.T) {
 	v := pmemEnv(t, "ext4")
 	v.f.Plug(fake.MemdevSpec{Serial: serialA})
-	logs := captureKlogV(t, "4")
+	logs := klogtest.Capture(t, 4)
 	v.mustPrepare(poolDriver, "w", fsGrant("w", false, ""))
 	v.mustUnprepare(poolDriver, "w")
 	ran := false

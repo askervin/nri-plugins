@@ -28,6 +28,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 )
@@ -446,7 +447,7 @@ func TestLendConcurrent(t *testing.T) {
 // plugin restart, with the lease kept or released while it was down.
 func TestLendNoneInherits(t *testing.T) {
 	e := newEnv(t)
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	ctx := context.Background()
 	pod := testPod("u1")
 	// node 2 has memory, a numa slice of another pod
@@ -671,7 +672,7 @@ func TestLendNoneSkipNeedsSpec(t *testing.T) {
 // about once per new holder.
 func TestLendNoneParentRestricts(t *testing.T) {
 	e := newEnv(t)
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	ctx := context.Background()
 	const warning = "NRI lend: lend node 2 for l1: ctr=ns/pod-u1/main id=c1: its cpuset.mems.effective lacks the lent nodes 2 (a parent cgroup restricts it, or they have no memory): it cannot use them"
 	// node 2 has memory, but a parent cgroup gives it 0-1 only
@@ -724,7 +725,7 @@ func TestLendsRestoredLogged(t *testing.T) {
 			} else {
 				e = newEnv(t)
 			}
-			logs := captureKlog(t)
+			logs := klogtest.Capture(t, 3)
 			ctx := context.Background()
 			if tc.restoredFirst {
 				e.p.LendsRestored()

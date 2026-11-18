@@ -15,23 +15,20 @@
 package dra
 
 import (
-	"bytes"
 	"context"
-	"flag"
 	"fmt"
 	"maps"
 	"reflect"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/klog/v2"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -129,41 +126,6 @@ func pubNoScan(context.Context) (*kernel.Snapshot, error) { return &kernel.Snaps
 func pubNames(devs DevicesInfo) []string {
 	return slices.Sorted(maps.Keys(devs))
 }
-
-// captureKlogV makes klog write to a buffer at verbosity v for the test,
-// each line once, and returns a function that returns the output so far.
-func captureKlogV(t *testing.T, v string) func() string {
-	t.Helper()
-	fs := flag.NewFlagSet("klog", flag.ContinueOnError)
-	klog.InitFlags(fs)
-	pubNoErr(t, fs.Set("logtostderr", "false"))
-	pubNoErr(t, fs.Set("alsologtostderr", "false"))
-	pubNoErr(t, fs.Set("one_output", "true"))
-	pubNoErr(t, fs.Set("v", v))
-	var mu sync.Mutex
-	var buf bytes.Buffer
-	klog.SetOutput(pubLogWriter(func(p []byte) (int, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		return buf.Write(p)
-	}))
-	t.Cleanup(func() {
-		klog.Flush()
-		_ = fs.Set("logtostderr", "true")
-		_ = fs.Set("one_output", "false")
-		_ = fs.Set("v", "0")
-	})
-	return func() string {
-		klog.Flush()
-		mu.Lock()
-		defer mu.Unlock()
-		return buf.String()
-	}
-}
-
-type pubLogWriter func(p []byte) (int, error)
-
-func (f pubLogWriter) Write(p []byte) (int, error) { return f(p) }
 
 // wantLogLineText fails the test unless a line of the log ends with text.
 func wantLogLineText(t *testing.T, log, text string) {
@@ -420,7 +382,7 @@ func TestBuildDevInfosHollowRegion(t *testing.T) {
 		t.Fatalf("DRAM %+v", devInfos["dram"])
 	}
 
-	logs := captureKlogV(t, "0")
+	logs := klogtest.Capture(t, 0)
 	h := &hollowRegionLog{warned: map[string]bool{}}
 	notOurs := func(string) bool { return false }
 	for i, want := range []int{1, 1, 0} {
@@ -509,7 +471,7 @@ func TestSharedLocalPrecedence(t *testing.T) {
 // is not published as a shared local device, as the documentation quotes
 // it, logged once per reason: held, and a pool device.
 func TestSharedRefusalLogged(t *testing.T) {
-	logs := captureKlogV(t, "0")
+	logs := klogtest.Capture(t, 0)
 	// logged once per process: again for this test
 	for _, reason := range []string{heldReason, "pool device"} {
 		sharedRefusalsLogged.Delete("mem-refused\x00" + reason)
@@ -538,7 +500,7 @@ func TestSharedRefusalLogged(t *testing.T) {
 // not published, as the documentation quotes it, at klog V(4): a pool
 // device, a held memdev, a disabled one.
 func TestPersistentMemdevRefusals(t *testing.T) {
-	logs := captureKlogV(t, "4")
+	logs := klogtest.Capture(t, 4)
 	detected := &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{pubMem("mem3", 0xc100f5e1, 0, -1)}}
 	m := &detected.Memdevs[0]
 	m.PmemSize = 512 * pubMiB
@@ -608,7 +570,7 @@ func TestMemdevSettings(t *testing.T) {
 // publishes nothing (no slice, no line of a publish); after Start a Rescan
 // publishes them with its line.
 func TestRescanBeforeStart(t *testing.T) {
-	logs := captureKlogV(t, "0")
+	logs := klogtest.Capture(t, 0)
 	client := sliceTestClient(pubNode, nil)
 	p := pubPublisher(t, PublishOptions{
 		Config:   PublishConfig{IgnoreDRAMNodes: true, PublishLeaseDevice: true},

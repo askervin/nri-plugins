@@ -15,10 +15,8 @@
 package provenance
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"maps"
 	"os"
@@ -34,7 +32,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
-	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
@@ -366,42 +363,6 @@ func slice(name, driver string, attrs ...map[resourcev1.QualifiedName]resourcev1
 func serialAttr(key, serial string) map[resourcev1.QualifiedName]resourcev1.DeviceAttribute {
 	return map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{resourcev1.QualifiedName(key): {StringValue: &serial}}
 }
-
-// captureKlog makes klog write to a buffer at verbosity 4 for the test and
-// returns a function that returns the output so far.
-func captureKlog(t *testing.T) func() string {
-	t.Helper()
-	fs := flag.NewFlagSet("klog", flag.ContinueOnError)
-	klog.InitFlags(fs)
-	noErr(t, fs.Set("logtostderr", "false"))
-	noErr(t, fs.Set("alsologtostderr", "false"))
-	noErr(t, fs.Set("v", "4"))
-	// each line once, not also in the outputs of the lower severities
-	noErr(t, fs.Set("one_output", "true"))
-	var mu sync.Mutex
-	var buf bytes.Buffer
-	klog.SetOutput(writerFunc(func(p []byte) (int, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		return buf.Write(p)
-	}))
-	t.Cleanup(func() {
-		klog.Flush()
-		_ = fs.Set("logtostderr", "true")
-		_ = fs.Set("one_output", "false")
-		_ = fs.Set("v", "0")
-	})
-	return func() string {
-		klog.Flush()
-		mu.Lock()
-		defer mu.Unlock()
-		return buf.String()
-	}
-}
-
-type writerFunc func(p []byte) (int, error)
-
-func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
 // holdingBack begins the log line of a new memdev that the watcher holds
 // back.

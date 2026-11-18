@@ -23,6 +23,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
@@ -103,7 +104,7 @@ func TestRestoreFlags(t *testing.T) {
 				t.Fatal(err)
 			}
 			v.f.RenamePmem("region0", "pmem3", "259:9")
-			logs := captureKlog(t)
+			logs := klogtest.Capture(t, 3)
 			n = mountCalls(v)
 			out := v.restart()
 			wantMountCalls(t, v, n)
@@ -191,7 +192,7 @@ func TestRecoverUnrestored(t *testing.T) {
 	}
 	// the release waits for the holders of the block device of the region
 	// now, not of the one as prepared
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	v.mustUnprepare(poolDriver, "w")
 	want := fmt.Sprintf("claim ns/w: its node mount %s was not mounted again at start; the release of pool memdev 0x91 waits for the holders of %s, the block device of its region now, not of %s",
 		direct, filepath.Join(v.f.DevRoot(), "pmem3"), filepath.Join(v.f.DevRoot(), "pmem0"))

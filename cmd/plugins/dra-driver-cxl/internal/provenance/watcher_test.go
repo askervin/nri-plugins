@@ -28,6 +28,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -58,7 +59,7 @@ func TestPoolSlicesSerials(t *testing.T) {
 	}
 
 	// an API failure keeps the serials of the last list
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 4)
 	client.PrependReactor("list", "resourceslices", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, errors.New("apiserver unavailable")
 	})
@@ -82,7 +83,7 @@ func TestPoolSlicesSerials(t *testing.T) {
 // successful list: not known, failing, only the remembered pool serials;
 // a new memdev is held without expiry; after a list it is known.
 func TestPoolSlicesFirstListFails(t *testing.T) {
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 4)
 	e := newWatchEnv(t)
 	e.publish("0xc1ee0001")
 	fail := true
@@ -115,7 +116,7 @@ func TestPoolSlicesFirstListFails(t *testing.T) {
 // no slices: UNKNOWN to HELD, HELD again at the next scan with its hold
 // time kept, and LOCAL when the pool is back without it.
 func TestHeldUntilPoolBack(t *testing.T) {
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 4)
 	e := newWatchEnv(t)
 	e.publish("0xc1ee2001")
 	e.wantHeld("pool-c listed")
@@ -195,7 +196,7 @@ func TestHeldBecomesPool(t *testing.T) {
 // and a serial that the pool driver prepares: both POOL with their line,
 // and POOL stays POOL when it is seen again.
 func TestLocalBecomesPool(t *testing.T) {
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 4)
 	e := newWatchEnv(t)
 	e.plug(localSerial)
 	e.plug(otherLocalSerial)
@@ -238,7 +239,7 @@ func TestLocalBecomesPool(t *testing.T) {
 // forgotten, and so is a pool, after Retention of observations at most
 // ObservationGap apart; a longer gap starts the absence again.
 func TestAbsenceExpires(t *testing.T) {
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 4)
 	e := newWatchEnv(t)
 	e.publish("0xc1ee2001")
 	e.plug(localSerial)
@@ -274,7 +275,7 @@ func TestAbsenceExpires(t *testing.T) {
 // without expiry, failed attaches and claims of other nodes do not count,
 // and claims that cannot be listed hold new memdevs for HoldBack.
 func TestClaimEvidence(t *testing.T) {
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 4)
 	e := newWatchEnv(t)
 	e.claim("attached", testNode, "c-shared0", "0xc1ae2001")
 	e.claim("failed", testNode, "c-pooled1", "failed")
@@ -317,7 +318,7 @@ func TestClaimEvidence(t *testing.T) {
 // TestPoolDeviceUsedByLocalClaims pins the error, once, about a pool
 // device that local claims use: it is a pool serial of the gate.
 func TestPoolDeviceUsedByLocalClaims(t *testing.T) {
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 4)
 	e := newWatchEnv(t)
 	e.publish("0xc100e2e1")
 	e.plug(localSerial)

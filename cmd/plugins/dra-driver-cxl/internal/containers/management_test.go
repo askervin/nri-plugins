@@ -24,6 +24,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
@@ -209,7 +210,7 @@ func TestForeignClaimMarker(t *testing.T) {
 		return nil
 	}))
 	refs := []resultRef{{"split", 0}, {"lease", 0}, {"pool", 0}}
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	if got := e.p.results(testPod("p"), "ns/pod-p/ctr", refs); len(got) != 1 || !reflect.DeepEqual(got[0].numaNodes, []int{3}) {
 		t.Fatalf("results %+v of another pod's claims", got)
 	}
@@ -350,7 +351,7 @@ func TestCharCreateContainerLogLines(t *testing.T) {
 	e := newFenceEnv(t, "0-1", 2)
 	e.local.set(nriClaims())
 	e.pool.set(nriPoolResults())
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	pod := testPod("u1")
 
 	_, _, err := e.p.CreateContainer(context.Background(), pod, withClaims(testCtr(pod, "c6", "f", 0), "auto", "none"))

@@ -18,9 +18,7 @@ package main
 // the device engine before memory goes online, the order of Shutdown.
 
 import (
-	"bytes"
 	"context"
-	"flag"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -30,7 +28,6 @@ import (
 
 	nriapi "github.com/containerd/nri/pkg/api"
 	resourceapi "k8s.io/api/resource/v1"
-	"k8s.io/klog/v2"
 	"k8s.io/utils/cpuset"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
@@ -276,36 +273,3 @@ func TestFenceSeed(t *testing.T) {
 		t.Fatalf("fence seed of a lost store %v (%v), want %v", got, err, want)
 	}
 }
-
-// captureKlog makes klog write to a buffer at verbosity 3 for the test and
-// returns a function that returns the output so far.
-func captureKlog(t *testing.T) func() string {
-	t.Helper()
-	fs := flag.NewFlagSet("klog", flag.ContinueOnError)
-	klog.InitFlags(fs)
-	noErr(t, fs.Set("logtostderr", "false"))
-	noErr(t, fs.Set("alsologtostderr", "false"))
-	noErr(t, fs.Set("v", "3"))
-	var mu sync.Mutex
-	var buf bytes.Buffer
-	klog.SetOutput(writerFunc(func(p []byte) (int, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		return buf.Write(p)
-	}))
-	t.Cleanup(func() {
-		klog.Flush()
-		_ = fs.Set("logtostderr", "true")
-		_ = fs.Set("v", "0")
-	})
-	return func() string {
-		klog.Flush()
-		mu.Lock()
-		defer mu.Unlock()
-		return buf.String()
-	}
-}
-
-type writerFunc func(p []byte) (int, error)
-
-func (f writerFunc) Write(p []byte) (int, error) { return f(p) }

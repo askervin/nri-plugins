@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -259,7 +260,7 @@ func TestLocalWholeDeviceRows(t *testing.T) {
 	if size, drv := v.f.DaxSize("dax0.0"), v.f.DaxDriver("dax0.0"); size != 256*mib || drv != "" {
 		t.Fatalf("dax0.0 of %d bytes, driver %q", size, drv)
 	}
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	tr = v.trail("region0", "dax0.0")
 	v.mustPrepare(localDriver, "k", sliceReq("k", 0, state.ModeDax, 256*mib))
 	tr.want(t, "DEVICE_DAX whole users=0 size=1073741824", "SIZED part users=1 size=268435456")
@@ -309,7 +310,7 @@ func TestLocalReleaseOrder(t *testing.T) {
 		return fmt.Sprintf("%s %s", g.Got.Region, g.Got.Dax)
 	}
 	parts := []string{part(3), part(1), part(2), part(0)}
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	before := v.f.Commands()
 	v.mustUnprepare(localDriver, "c")
 	var deleted []string
@@ -407,7 +408,7 @@ func TestLocalKindIdleReleasedFirst(t *testing.T) {
 	if m := v.records().Memdev(serialL); m == nil || m.State != state.MemdevIdleKept {
 		t.Fatalf("memdev %+v", m)
 	}
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	v.mustPrepare(localDriver, "n", sliceReq("n", 0, state.ModeDax, 256*mib))
 	out := logs()
 	wantLog(t, out, "engine: local memdev 0x11 (mem0): released region0 in ", "engine: local memdev 0x11 (mem0): created region0 ")
@@ -454,7 +455,7 @@ func TestLocalLogLines(t *testing.T) {
 	const memdev = "engine: local memdev 0x11 (mem0): "
 	t.Run("sliced", func(t *testing.T) {
 		v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
-		logs := captureKlog(t)
+		logs := klogtest.Capture(t, 3)
 		v.mustPrepare(localDriver, "d", sliceReq("d", 0, state.ModeDax, 128*mib))
 		v.mustPrepare(localDriver, "n", sliceReq("n", 0, state.ModeNUMA, 100*mib))
 		v.mustUnprepare(localDriver, "n")
@@ -475,7 +476,7 @@ func TestLocalLogLines(t *testing.T) {
 	t.Run("shared", func(t *testing.T) {
 		v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
 		v.configure(func(o *Options) { o.Shared = func(state.Serial) bool { return true } })
-		logs := captureKlog(t)
+		logs := klogtest.Capture(t, 3)
 		v.mustPrepare(localDriver, "s1", sharedReq("s1"))
 		v.mustPrepare(localDriver, "s2", sharedReq("s2"))
 		v.mustUnprepare(localDriver, "s1")
@@ -497,7 +498,7 @@ func TestLocalLogLines(t *testing.T) {
 		v.formatPmem("mem0", "ext4")
 		pmem := filepath.Join(v.f.DevRoot(), "pmem0")
 		const memdev = "engine: local memdev 0x91 (mem0): "
-		logs := captureKlog(t)
+		logs := klogtest.Capture(t, 3)
 		v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
 		v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFs, true, ""))
 		v.mustUnprepare(localDriver, "w")
@@ -519,7 +520,7 @@ func TestLocalLogLines(t *testing.T) {
 	t.Run("persistent region created", func(t *testing.T) {
 		v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib})
 		v.formatPmem("mem0", "ext4")
-		logs := captureKlog(t)
+		logs := klogtest.Capture(t, 3)
 		v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
 		wantMessages(t, logs(), "engine: local memdev 0x91 (mem0): created region0 (pmem, nvdimm region0) in <t>")
 		v.mustUnprepare(localDriver, "w")
@@ -618,7 +619,7 @@ func TestLocalCutCompanionPart(t *testing.T) {
 		v.mustKeepCut(ref.Claim)
 		dax := v.grant("comp", 0).Got.Dax
 		devices := v.f.Kernel().DaxDevices("region0")
-		logs := captureKlog(t)
+		logs := klogtest.Capture(t, 3)
 		v.mustPrepare(localDriver, "comp", companion())
 		g := v.grant("comp", 0)
 		if g.Got.Dax != dax || state.NumaNodeOf(g.Got.NumaNode) != 2 || g.State != state.GrantRealised {
@@ -647,7 +648,7 @@ func TestLocalCutCompanionPart(t *testing.T) {
 		if dax == "" || v.f.DaxDriver(dax) != kernel.DriverKmem {
 			t.Fatalf("the cut part %q (%s)", dax, v.f.DaxDriver(dax))
 		}
-		logs := captureKlog(t)
+		logs := klogtest.Capture(t, 3)
 		v.mustPrepare(localDriver, "comp", companion())
 		out2 := logs()
 		deleted, created := strings.Index(out2, "claim comp: deleted slice "+dax+" "), strings.Index(out2, "claim comp: created slice ")

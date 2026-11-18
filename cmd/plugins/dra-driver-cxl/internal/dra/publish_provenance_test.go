@@ -35,6 +35,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
@@ -299,7 +300,7 @@ func pubSerialAttr(key, serial string) map[resourcev1.QualifiedName]resourcev1.D
 // driver restart while the slice is absent, do not publish it; the store
 // has the pool serials, the local memdev and pool-c.
 func TestPoolSerialsSliceDeleted(t *testing.T) {
-	logs := captureKlogV(t, "3")
+	logs := klogtest.Capture(t, 3)
 	e := newPubSerialsEnv(t)
 	e.plug(pubLocalSerial)
 	e.publish("0xc1ee2001", "0xc1ae2001")
@@ -360,7 +361,7 @@ func TestPoolSerialsHotAddWhileSliceDeleted(t *testing.T) {
 // driver never saw in a slice, attached while pool-c has no slice: it is
 // held back, and is a pool device once pool-c lists it.
 func TestPoolSerialsNewMemdevHeldBack(t *testing.T) {
-	logs := captureKlogV(t, "0")
+	logs := klogtest.Capture(t, 0)
 	e := newPubSerialsEnv(t)
 	e.plug(pubLocalSerial)
 	e.publish("0xc1ee2001")
@@ -872,7 +873,7 @@ func TestPoolSlicesSerials(t *testing.T) {
 // the configuration unchanged; after it the local memdevs; without a
 // watcher (no pool controllers) every memdev.
 func TestPoolSlicesFirstListFails(t *testing.T) {
-	logs := captureKlogV(t, "0")
+	logs := klogtest.Capture(t, 0)
 	client := fake.NewClientset(pubSlice("pool", device.PoolDriverName, pubSerialAttr("serial", "0xc1ee0001")))
 	var fail atomic.Bool
 	fail.Store(true)

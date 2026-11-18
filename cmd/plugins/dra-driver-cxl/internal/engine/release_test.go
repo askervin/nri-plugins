@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
@@ -119,7 +120,7 @@ func TestReleaseOneCallTogether(t *testing.T) {
 	r := fsGrant("c", true, "")
 	r.Ref.Result = 1
 	v.mustPrepare(poolDriver, "c", w, r)
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	v.mustUnprepare(poolDriver, "c")
 	if out := logs(); strings.Contains(out, "remounted") || strings.Contains(out, "read-only flag") {
 		t.Fatalf("the claim's own reader kept the node mount:\n%s", out)
@@ -127,7 +128,7 @@ func TestReleaseOneCallTogether(t *testing.T) {
 	v.clean("unprepared")
 	v.mustPrepare(poolDriver, "r1", fsGrant("r1", true, ""))
 	v.mustPrepare(poolDriver, "r2", fsGrant("r2", true, ""))
-	logs = captureKlog(t)
+	logs = klogtest.Capture(t, 3)
 	v.mustUnprepare(poolDriver, "r1")
 	if out := logs(); !strings.Contains(out, "memdev 0x91 is still used by another claim") {
 		t.Fatalf("no line of the other claim in\n%s", out)

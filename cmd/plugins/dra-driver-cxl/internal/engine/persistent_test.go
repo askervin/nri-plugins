@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -229,7 +230,7 @@ func TestPersistentLogLines(t *testing.T) {
 	}
 	t.Run("writer alone", func(t *testing.T) {
 		v := pmemEnv(t, "ext4")
-		logs := captureKlog(t)
+		logs := klogtest.Capture(t, 3)
 		direct := filepath.Join(v.dir, poolDriver, "mounts", "91-direct")
 		v.mustPrepare(poolDriver, "w", fsGrant("w", false, ""))
 		v.mustUnprepare(poolDriver, "w")
@@ -240,7 +241,7 @@ func TestPersistentLogLines(t *testing.T) {
 	})
 	t.Run("cached reader and writer", func(t *testing.T) {
 		v := pmemEnv(t, "ext4")
-		logs := captureKlog(t)
+		logs := klogtest.Capture(t, 3)
 		cached := filepath.Join(v.dir, poolDriver, "mounts", "91-cached")
 		pmem, loop := v.f.DevRoot()+"/pmem0", v.f.DevRoot()+"/loop0"
 		v.mustPrepare(poolDriver, "r", fsGrant("r", true, state.AccessCached))
@@ -414,7 +415,7 @@ func TestPersistentReleaseWithoutRegion(t *testing.T) {
 	if !v.cut(func() { _ = v.unprepare(poolDriver, "w") }) {
 		t.Fatal("not cut")
 	}
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	v.restart()
 	v.mustUnprepare(poolDriver, "w")
 	if !strings.Contains(logs(), "has no region now: its release waits for no holder") {

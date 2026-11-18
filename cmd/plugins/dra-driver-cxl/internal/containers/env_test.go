@@ -15,9 +15,7 @@
 package containers
 
 import (
-	"bytes"
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,7 +26,6 @@ import (
 	"time"
 
 	"github.com/containerd/nri/pkg/api"
-	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
@@ -610,39 +607,6 @@ func (c claimTable) set(claims claimTable) {
 		c[uid] = info
 	}
 }
-
-// captureKlog makes klog write to a buffer at verbosity 3 for the test and
-// returns a function that returns the output so far.
-func captureKlog(t *testing.T) func() string {
-	t.Helper()
-	fs := flag.NewFlagSet("klog", flag.ContinueOnError)
-	klog.InitFlags(fs)
-	noErr(t, fs.Set("logtostderr", "false"))
-	noErr(t, fs.Set("alsologtostderr", "false"))
-	noErr(t, fs.Set("v", "3"))
-	var mu sync.Mutex
-	var buf bytes.Buffer
-	klog.SetOutput(writerFunc(func(p []byte) (int, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		return buf.Write(p)
-	}))
-	t.Cleanup(func() {
-		klog.Flush()
-		_ = fs.Set("logtostderr", "true")
-		_ = fs.Set("v", "0")
-	})
-	return func() string {
-		klog.Flush()
-		mu.Lock()
-		defer mu.Unlock()
-		return buf.String()
-	}
-}
-
-type writerFunc func(p []byte) (int, error)
-
-func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
 // lineWith returns the last line of out that has text, "" for none.
 func lineWith(out, text string) string {

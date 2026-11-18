@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 )
@@ -38,7 +39,7 @@ import (
 // gone the serial is local again. The watch scans at every tick until the
 // next list commits the change.
 func TestFailedCommitPool(t *testing.T) {
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 4)
 	e := newWatchEnv(t)
 	ctx := t.Context()
 	e.publish("0xc1ee2001")
@@ -99,7 +100,7 @@ func TestFailedCommitPool(t *testing.T) {
 // held for the watch, and its hold time does not count; the hold starts
 // at the scan that commits it.
 func TestFailedCommitHold(t *testing.T) {
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 4)
 	e := newWatchEnv(t)
 	e.publish("0xc1ee2001")
 	e.wantHeld("pool-c listed")
@@ -137,7 +138,7 @@ func TestFailedCommitHold(t *testing.T) {
 // write publishes it without a LOCAL record, so a later doubt holds it as
 // a new memdev.
 func TestFailedCommitLocal(t *testing.T) {
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 4)
 	e := newWatchEnv(t)
 	e.publish("0xc1ee2001")
 	e.wantHeld("pool-c listed")
@@ -167,7 +168,7 @@ func TestFailedCommitLocal(t *testing.T) {
 // LOCAL; a pool serial and a pool observed absent for Retention keep their
 // records until a commit removes them.
 func TestFailedCommitExpire(t *testing.T) {
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 4)
 	e := newWatchEnv(t)
 	t0 := e.now()
 	e.publish("0xc1ee2001")
@@ -222,7 +223,7 @@ func TestFailedCommitExpire(t *testing.T) {
 // the error and without the line of the removal: a memdev of the serial is
 // a pool device; the next start with the order removes them.
 func TestFailedCommitForget(t *testing.T) {
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 4)
 	e := newWatchEnv(t)
 	e.publish("0xc1ae2001")
 	e.plug(localSerial)

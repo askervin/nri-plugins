@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
@@ -103,7 +104,7 @@ func TestReleaseRetriesStaleBindsOfEveryMemdev(t *testing.T) {
 	v := pmemEnv(t, "ext4")
 	v.f.Plug(fake.MemdevSpec{Serial: serialA})
 	target := busyCompanion(t, v)
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	v.mustPrepare(poolDriver, "a", poolReq("a", 0, serialA, state.ModeDax, state.KindExclusive))
 	v.mustUnprepare(poolDriver, "a")
 	out := logs()
@@ -132,7 +133,7 @@ func TestRetryStalePeriodic(t *testing.T) {
 		t.Fatalf("memdev %+v", m)
 	}
 	v.f.SetBusy(target, false)
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	v.e.RetryStale(context.Background(), state.TriggerUnprepare)
 	v.mustNotBeMounted("after the pass", target)
 	if out := logs(); !strings.Contains(out, "memdev 0x91 (mem0): released") {
@@ -165,7 +166,7 @@ func TestReleaseBindOfAnotherClaim(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	v.mustUnprepare(poolDriver, "c")
 	if out := logs(); !strings.Contains(out, "is the bind of another prepared claim, not unmounting it") {
 		t.Fatalf("no skip line in\n%s", out)

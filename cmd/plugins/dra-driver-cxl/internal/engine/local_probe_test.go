@@ -24,6 +24,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -62,7 +63,7 @@ func TestLocalProbeAliasing(t *testing.T) {
 	v := probeEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
 	res := aliasing(512 * mib)
 	v.f.Aliasing = res
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	v.mustPrepare(localDriver, "n", sliceReq("n", 0, state.ModeDax, 256*mib))
 	if size := regionSize(t, v, "region0"); size != 512*mib {
 		t.Fatalf("region0 of %d bytes", size)
@@ -97,7 +98,7 @@ func TestLocalProbeAliasing(t *testing.T) {
 	v.mustUnprepare(localDriver, "n")
 	v.clean("unprepared")
 
-	logs = captureKlog(t)
+	logs = klogtest.Capture(t, 3)
 	v.restart()
 	if p := v.e.Probes()[serialL]; p.UsableSize != 512*mib {
 		t.Fatalf("loaded probes %+v", v.e.Probes())

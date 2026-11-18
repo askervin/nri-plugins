@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -158,7 +159,7 @@ func TestStackLocalRollbackBelowPool(t *testing.T) {
 		}
 	})
 	reqs := []GrantRequest{sliceReq("k", 0, state.ModeDax, 256*mib), localReq("k", 1, serialM, state.ModeDax, state.KindExclusive, 256*mib)}
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	if err := v.prepare(localDriver, "k", reqs...); err == nil {
 		t.Fatal("the Prepare succeeded")
 	}

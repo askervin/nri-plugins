@@ -29,6 +29,7 @@ import (
 	"github.com/containerd/nri/pkg/net/multiplex"
 	"github.com/containerd/ttrpc"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 )
@@ -142,7 +143,7 @@ func TestLifecycleOfContainers(t *testing.T) {
 	}
 	// its PostStartContainer after that: the callbacks, no refused
 	// transition
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	noErr(t, n.p.PostStartContainer(ctx, pod, c6))
 	n.wait(n.start, "u1", "late")
 	if c := n.record("c6"); c.Lifecycle != LifecycleStarted {
@@ -275,7 +276,7 @@ func TestCharNRILostLogLine(t *testing.T) {
 	const lost = "NRI connection to the runtime lost, exiting to be restarted and connect again"
 	ctx := context.Background()
 	exits := recordExits(t)
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	p := newEnv(t).p
 	p.connStarted(ctx)
 	p.onClose(ctx)
@@ -467,7 +468,7 @@ func TestNRIConnectionLostStub(t *testing.T) {
 		noErr(t, err)
 		err = p.Start(context.Background(), Connection{Name: "test", Idx: "50", Socket: filepath.Join(t.TempDir(), "none.sock")})
 		wantErr(t, err, "failed to start NRI plugin")
-		logs := captureKlog(t)
+		logs := klogtest.Capture(t, 3)
 		p.Fence(context.Background(), 2)
 		if !strings.Contains(logs(), "NRI fence: NRI not connected, containers are not fenced from CXL node 2") {
 			t.Fatalf("no warning:\n%s", logs())

@@ -25,6 +25,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
@@ -437,7 +438,7 @@ func TestCharSynchronizeSteeringLog(t *testing.T) {
 	e.p.Seed([]int{2})
 	e.hasMemory("0-3")
 	e.local.set(nriClaims())
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	ctx := context.Background()
 	p1 := testPod("u1")
 	cg1 := e.proc(101, "kubepods/u1/c1", "0,2", "0,2")

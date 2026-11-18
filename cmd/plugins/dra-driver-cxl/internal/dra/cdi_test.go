@@ -28,6 +28,7 @@ import (
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -244,7 +245,7 @@ func TestCDIWords(t *testing.T) {
 				return &cdiSpecs.Spec{Kind: rules.CDIKind, Devices: []cdiSpecs.Device{{Name: "claim-u1-0",
 					ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{"CXL_CLAIM_u1_0=1"}}}}}
 			}
-			logs := captureKlogV(t, "5")
+			logs := klogtest.Capture(t, 5)
 			mustOK(t, writeCDISpec(cache, spec(), name, rules.voice))
 			mustOK(t, writeCDISpec(cache, &cdiSpecs.Spec{Kind: rules.CDIKind}, name, rules.voice))
 			// the spec file a directory with an entry: the write fails
@@ -286,7 +287,7 @@ func TestRollbackWords(t *testing.T) {
 	}
 	for _, rules := range []SourceRules{LocalRules(""), PoolRules(device.PoolDriverName, "", "")} {
 		for i, step := range []rollbackStep{rollbackRevoke, rollbackRelease, rollbackCommit, rollbackCDI} {
-			logs := captureKlogV(t, "0")
+			logs := klogtest.Capture(t, 0)
 			rules.voice.rollbackError(step, "u1", "demo/c1", errSteered)
 			if out := logs(); !strings.HasSuffix(strings.TrimSpace(out), "] "+want[rules.Name][i]) {
 				t.Errorf("%s: step %d: %q, want %q", rules.Name, step, out, want[rules.Name][i])

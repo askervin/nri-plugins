@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -66,7 +67,7 @@ func TestLocalRecoverShared(t *testing.T) {
 			if !c.shared {
 				v.tune = nil
 			}
-			logs := captureKlog(t)
+			logs := klogtest.Capture(t, 3)
 			v.restart()
 			out := logs()
 			line := logLine(out, c.want)
@@ -95,13 +96,13 @@ func TestLocalRecoverPersistent(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib}, fake.MemdevSpec{Serial: serialB})
 	v.formatPmem("mem0", "ext4")
 	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	v.restart()
 	wantLog(t, logs(), "engine: local memdev 0x91 (mem0): keeping persistent region0, claims [w]")
 	above := rawRegion(t, v, "mem1")
 	v.mustUnprepare(localDriver, "w")
 	// idle below a region of another memdev
-	logs = captureKlog(t)
+	logs = klogtest.Capture(t, 3)
 	v.restart()
 	wantLog(t, logs(), "engine: local memdev 0x91 (mem0): keeping region0 of the idle persistent device: "+above+" lie above it")
 	if m := v.records().Memdev(serialP); m == nil || m.State != state.MemdevIdleKept {
@@ -111,13 +112,13 @@ func TestLocalRecoverPersistent(t *testing.T) {
 	// idle and held
 	pmem := filepath.Join(v.f.DevRoot(), "pmem0")
 	v.f.SetHolder(pmem, "dm-0")
-	logs = captureKlog(t)
+	logs = klogtest.Capture(t, 3)
 	v.restart()
 	wantLog(t, logs(), "engine: local memdev 0x91 (mem0): keeping region0 of the idle persistent device: device 0x91: "+pmem+" is still in use",
 		"engine: local memdev 0x91: "+pmem+" is held: in use")
 	wantRegion(t, v, "region0", state.RegionOwned)
 	v.f.SetHolder(pmem, "")
-	logs = captureKlog(t)
+	logs = klogtest.Capture(t, 3)
 	v.restart()
 	wantLog(t, logs(), "engine: local memdev 0x91 (mem0): released region0 in ")
 	v.clean("released")
@@ -141,7 +142,7 @@ func TestLocalRecoverSlicedIdle(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	v.restart()
 	wantLog(t, logs(), "engine: local memdev 0x11 (mem0): dax0.0 (mode dax, 268435456 bytes) belongs to no claim, deleting it",
 		"engine: local memdev 0x11 (mem0): released region0 in ")
@@ -176,7 +177,7 @@ func TestLocalRecoverGoneParts(t *testing.T) {
 				t.Fatalf("grant %+v", g.Got)
 			}
 			c.do(t, v)
-			logs := captureKlog(t)
+			logs := klogtest.Capture(t, 3)
 			v.restart()
 			wantLog(t, logs(), append([]string{
 				"engine: local memdev 0x11 (mem0): claim d2: slice dax0.1 of 268435456 bytes is gone, dropping it",
@@ -226,7 +227,7 @@ func TestLocalRecoverBadBlocks(t *testing.T) {
 				mount = m.Path
 			}
 			v.f.RenamePmem("region0", "pmem3", "259:9")
-			logs := captureKlog(t)
+			logs := klogtest.Capture(t, 3)
 			out := v.restart()
 			if !slices.Equal(out.Unrestored, []state.GrantRef{{Claim: "w"}}) || out.Why[state.GrantRef{Claim: "w"}] == nil {
 				t.Fatalf("recovered %+v", out)
@@ -277,7 +278,7 @@ func TestLocalForgetLocal(t *testing.T) {
 	_ = v.st.Close()
 	v.open()
 	before := v.f.Commands()
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	if err := v.e.ForgetLocal(context.Background(), []state.Serial{serialL, serialB, serialA}); err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +344,7 @@ func TestLocalRecoverCutPrepares(t *testing.T) {
 			if !v.cut(func() { _ = v.prepare(localDriver, "c", c.req) }) {
 				t.Fatal("not cut")
 			}
-			logs := captureKlog(t)
+			logs := klogtest.Capture(t, 3)
 			out := v.restart()
 			if !slices.Equal(out.Released, []state.GrantRef{{Claim: "c"}}) || len(out.Kept) > 0 {
 				t.Fatalf("recovered %+v", out)
@@ -378,7 +379,7 @@ func TestLocalRecoverHeldBlockDevice(t *testing.T) {
 	}
 	pmem := filepath.Join(v.f.DevRoot(), "pmem0")
 	v.f.SetHolder(pmem, "dm-0")
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	start := time.Now()
 	out := v.restart()
 	took := time.Since(start)
@@ -404,7 +405,7 @@ func TestLocalRecoverHeldBlockDevice(t *testing.T) {
 	}
 	// the holder is gone: the Unprepare releases the region
 	v.f.SetHolder(pmem, "")
-	logs = captureKlog(t)
+	logs = klogtest.Capture(t, 3)
 	v.mustUnprepare(localDriver, "b")
 	wantLog(t, logs(), "engine: local memdev 0x91 (mem0): released region0 in ")
 	v.clean("unprepared")
@@ -562,7 +563,7 @@ func TestLocalForgetLocalPersistent(t *testing.T) {
 	}
 	_ = v.st.Close()
 	v.open()
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	if err := v.e.ForgetLocal(context.Background(), []state.Serial{serialP}); err != nil {
 		t.Fatal(err)
 	}

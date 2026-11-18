@@ -15,10 +15,8 @@
 package engine
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -27,8 +25,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
@@ -741,34 +737,6 @@ func cutWhenRealised(v *env, uid string) {
 	}
 }
 
-// captureKlogV returns the klog output from now on at the verbosity.
-func captureKlogV(t *testing.T, verbosity string) func() string {
-	t.Helper()
-	fs := flag.NewFlagSet("klog", flag.ContinueOnError)
-	klog.InitFlags(fs)
-	_ = fs.Set("logtostderr", "false")
-	_ = fs.Set("alsologtostderr", "false")
-	_ = fs.Set("v", verbosity)
-	var mu sync.Mutex
-	var buf strings.Builder
-	klog.SetOutput(writerFunc(func(p []byte) (int, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		return buf.Write(p)
-	}))
-	t.Cleanup(func() {
-		klog.Flush()
-		_ = fs.Set("logtostderr", "true")
-		_ = fs.Set("v", "0")
-	})
-	return func() string {
-		klog.Flush()
-		mu.Lock()
-		defer mu.Unlock()
-		return buf.String()
-	}
-}
-
 // pmemEnv returns a node with the persistent pool memdev serialP whose
 // fsdax namespace has a filesystem of the type.
 func pmemEnv(t *testing.T, typ string) *env {
@@ -804,39 +772,6 @@ func linesWithPrefix(logs, prefix string) []string {
 		}
 	}
 	return lines
-}
-
-// writerFunc is an io.Writer of a function.
-type writerFunc func([]byte) (int, error)
-
-func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
-
-// captureKlog returns the klog output from now on, at verbosity 3.
-func captureKlog(t *testing.T) func() string {
-	t.Helper()
-	fs := flag.NewFlagSet("klog", flag.ContinueOnError)
-	klog.InitFlags(fs)
-	_ = fs.Set("logtostderr", "false")
-	_ = fs.Set("alsologtostderr", "false")
-	_ = fs.Set("v", "3")
-	var mu sync.Mutex
-	var buf bytes.Buffer
-	klog.SetOutput(writerFunc(func(p []byte) (int, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		return buf.Write(p)
-	}))
-	t.Cleanup(func() {
-		klog.Flush()
-		_ = fs.Set("logtostderr", "true")
-		_ = fs.Set("v", "0")
-	})
-	return func() string {
-		klog.Flush()
-		mu.Lock()
-		defer mu.Unlock()
-		return buf.String()
-	}
 }
 
 // busyCompanion prepares the companion claim c with a lease bind on serialP

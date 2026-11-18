@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -47,7 +48,7 @@ func TestLocalPolicySliced(t *testing.T) {
 		v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib}, fake.MemdevSpec{Serial: serialB})
 		regionAboveNext(t, v, "mem1")
 		v.f.FailWrite("bus/dax/devices/dax0.0/size", errBusy)
-		logs := captureKlog(t)
+		logs := klogtest.Capture(t, 3)
 		if err := v.prepare(localDriver, "k", sliceReq("k", 0, state.ModeDax, 256*mib)); err == nil {
 			t.Fatal("the Prepare succeeded")
 		}
@@ -133,7 +134,7 @@ func TestLocalPolicySharedConfigured(t *testing.T) {
 	t.Run("unprepare", func(t *testing.T) {
 		v := newShared(t)
 		v.mustPrepare(localDriver, "s1", sharedReq("s1"))
-		logs := captureKlog(t)
+		logs := klogtest.Capture(t, 3)
 		v.mustUnprepare(localDriver, "s1")
 		idleKept(t, v)
 		wantLog(t, logs(), "engine: local memdev 0x11 (mem0): claim s1: released shared dax0.0, claims left []",
@@ -160,7 +161,7 @@ func TestLocalPolicySharedConfigured(t *testing.T) {
 		if !v.cut(func() { _ = v.prepare(localDriver, "s2", sharedReq("s2")) }) {
 			t.Fatal("not cut")
 		}
-		logs := captureKlog(t)
+		logs := klogtest.Capture(t, 3)
 		out := v.restart()
 		if !slices.Equal(out.Released, []state.GrantRef{{Claim: "s2"}}) || len(out.Kept) > 0 {
 			t.Fatalf("recovered %+v", out)
@@ -320,7 +321,7 @@ func TestLocalPolicyPersistent(t *testing.T) {
 		v := newPmem(t)
 		v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
 		above := rawRegion(t, v, "mem1")
-		logs := captureKlog(t)
+		logs := klogtest.Capture(t, 3)
 		v.mustUnprepare(localDriver, "w")
 		idle(t, v)
 		wantLog(t, logs(), "engine: local memdev 0x91 (mem0): keeping region0 of the idle persistent device: "+above+" lie above it")

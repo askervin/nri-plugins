@@ -31,6 +31,7 @@ import (
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -167,7 +168,7 @@ func publishLocalAs(e *localTestEnv, shared bool) {
 // ones.
 func TestLocalSharedClaims(t *testing.T) {
 	e := newSharedEnv(t)
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	resized := false
 	e.k.Before("write bus/dax/devices/dax0.0/size", func() { resized = true })
 	e.mustPrepare(localClaim("u1", -int64(device.SharesUnlimited)))
@@ -271,7 +272,7 @@ func TestLocalSharedReconcile(t *testing.T) {
 		resourcev1.DeviceRequestAllocationResult{Request: "other", Driver: device.DriverName, Pool: testNode, Device: memdevDeviceName(other)})
 	e.k.CutAfter("cxl create-region -t ram -d decoder0.1")
 	cutLocalPrepare(t, e, c)
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	e.restart()
 	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{"u2"}})
 	wantDax(t, e, "dax0.0", localRegionSize, "device_dax")
@@ -545,7 +546,7 @@ func TestLocalSharedRegionGone(t *testing.T) {
 	e.mustUnprepare("u1")
 	noErr(t, e.k.Kernel().ReleaseRegion(context.Background(), "region0"))
 	wantLocalRegionCount(t, e, 1, 1)
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	noErr(t, prepareOn(context.Background(), e.s, sharedClaim("u2", "1")))
 	e.check("prepared u2")
 	// the other claims of the device: none

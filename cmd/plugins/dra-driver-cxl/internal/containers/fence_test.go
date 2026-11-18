@@ -27,6 +27,7 @@ import (
 	"github.com/containerd/nri/pkg/api"
 	"k8s.io/utils/cpuset"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
@@ -719,7 +720,7 @@ func TestLendSynchronizeKept(t *testing.T) {
 // another child cgroup of the container is found in it.
 func TestReviewSubCgroupUpdatesForever(t *testing.T) {
 	e := newFenceEnv(t, "0-2", 2)
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	ctx := context.Background()
 	pod := testPod("u1")
 	parent := filepath.Join(cgroupRoot, "kubepods/u1/c1")
@@ -804,7 +805,7 @@ func TestContainerCgroupDir(t *testing.T) {
 // before.
 func TestReviewSeededNoneLogsUpdatingAgain(t *testing.T) {
 	e := newEnvWith(t, envOptions{fencing: config.FencingNone, leases: []state.Lease{readyLease("l1", "u1", "main", 2)}})
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	ctx := context.Background()
 	pod := testPod("u1")
 	c2 := withSpecMems(testCtr(pod, "c2", "main", 102), "0-1")
@@ -828,7 +829,7 @@ func TestReviewSeededNoneLogsUpdatingAgain(t *testing.T) {
 // without NRI and of the seed of the prepared claims.
 func TestCharFenceLogLines(t *testing.T) {
 	e := newFenceEnv(t, "0-2")
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	ctx := context.Background()
 	e.readyFence()
 	e.p.Fence(ctx, 3)

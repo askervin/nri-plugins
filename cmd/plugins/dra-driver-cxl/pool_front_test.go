@@ -28,6 +28,7 @@ import (
 	resourceapi "k8s.io/api/resource/v1"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -140,7 +141,7 @@ func TestPoolRollbackKept(t *testing.T) {
 	// rollback of the first one cannot disable its memdev
 	e.k.FailCommand("cxl disable-memdev", syscall.EBUSY)
 	claim := addPoolDevice(poolClaim("u1", "c1", "pooled0", exclusiveData), "mem2", "pooled1", `{"serial":"0xc1ee0002","shared":false,"size":268435456}`)
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	wantErr(t, prepare(t, p, claim).Err, "that the plugin did not create")
 	want := "rollback: claim default/c1 (u1): not everything was released: keeping its record in " + filepath.Join(e.dir, store.FileName) +
 		" for its Unprepare or its next Prepare"
@@ -348,7 +349,7 @@ func TestPoolRefusedPrepareRetriesStaleBinds(t *testing.T) {
 	e.k.SetBusy(target, true)
 	wantErr(t, unprepare(t, p, uid), "device or resource busy")
 	e.k.SetBusy(target, false)
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	wantErr(t, prepare(t, p, poolClaim("x1", "c-x1", "pooled9", "")).Err, "no entry")
 	if want := "unbound stale lease bind " + target; !strings.Contains(logs(), want) {
 		t.Fatalf("no %q in\n%s", want, logs())
@@ -458,7 +459,7 @@ func TestPoolLeaseBindChecks(t *testing.T) {
 	noErr(t, prepare(t, p, persistentClaim("d1", persistentData, fsConfig("direct", ""))).Err)
 	noErr(t, os.MkdirAll(target, 0o755))
 	noErr(t, k.Mount(direct, target, "", syscall.MS_BIND, ""))
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	noErr(t, prepare(t, p, fsCompanion("l7", "direct")).Err)
 	if want := "lease l7: " + direct + " is bound at " + target + " already"; !strings.Contains(logs(), want) {
 		t.Fatalf("no %q in\n%s", want, logs())

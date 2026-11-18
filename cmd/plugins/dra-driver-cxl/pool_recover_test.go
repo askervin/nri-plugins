@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -34,7 +35,7 @@ func TestPoolCutPrepareAtStart(t *testing.T) {
 	p := e.driver(t)
 	e.k.CutAfter("cxl create-region")
 	cutPrepare(t, p, poolClaim("u1", "c1", "pooled0", exclusiveData))
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	p = e.driver(t)
 	out := logs()
 	for _, want := range []string{
@@ -78,7 +79,7 @@ func TestPoolKeptRecord(t *testing.T) {
 	above, err := k.CreateRegion(context.Background(), kernel.CreateRegionRequest{Memdev: other, Decoder: d, Type: kernel.RegionRAM})
 	noErr(t, err)
 	e.base = e.k.Commands()
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	p = e.driver(t)
 	if want := "claim default/c1 (u1): not releasing its devices at start: " + above + " lie above their regions"; !strings.Contains(logs(), want) {
 		t.Fatalf("no %q in\n%s", want, logs())
@@ -119,7 +120,7 @@ func TestPoolCutCompanionKept(t *testing.T) {
 	claim.Labels = map[string]string{device.LeaseLabel: "l1"}
 	e.k.CutAfter("write devices/system/memory/memory")
 	cutPrepare(t, p, claim)
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	p = e.driver(t)
 	if want := "claim demo/cxl-lease-l1 (uid-cxl-lease-l1) is a companion claim: its Unprepare releases its devices, its Prepare again reuses them"; !strings.Contains(logs(), want) {
 		t.Fatalf("no %q in\n%s", want, logs())
@@ -160,7 +161,7 @@ func TestPoolOtherBoot(t *testing.T) {
 	noErr(t, unprepare(t, p, "u1"))
 	// the Unprepare of u2 disables its memdev, which no grant of this
 	// boot uses
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	noErr(t, unprepare(t, p, "u2"))
 	if want := "unpreparing claim default/c2 (u2), not prepared any more (prepared in another boot)"; !strings.Contains(logs(), want) {
 		t.Fatalf("no %q in\n%s", want, logs())

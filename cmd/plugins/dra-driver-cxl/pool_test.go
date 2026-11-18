@@ -33,6 +33,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -98,7 +99,7 @@ func TestPoolPrepareExclusive(t *testing.T) {
 	memdev := e.plug(0xc1ee0001)
 	p := e.driver(t)
 
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	res := prepare(t, p, poolClaim("u1", "c1", "pooled0", exclusiveData))
 	noErr(t, res.Err)
 	// the line that test10 waits for

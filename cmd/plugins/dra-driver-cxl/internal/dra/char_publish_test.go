@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
@@ -39,7 +40,7 @@ func charRegions() *kernel.Snapshot {
 // the reason at klog V(4); its node still counts as a CXL node, not as
 // DRAM.
 func TestCharIgnoreRegions(t *testing.T) {
-	logs := captureKlogV(t, "4")
+	logs := klogtest.Capture(t, 4)
 	cfg := PublishConfig{IgnoreRegions: []string{"region0"}}
 	devs := BuildDevices(cfg, charRegions(), nil, nil, nil)
 	if got := pubNames(devs); !slices.Equal(got, []string{"dram", "region1-node3"}) {
@@ -55,7 +56,7 @@ func TestCharIgnoreRegions(t *testing.T) {
 // with the reason at klog V(4); a region that both ignoreRegions and
 // ignoreNodes refuse has the reason of ignoreRegions only.
 func TestCharIgnoreNodes(t *testing.T) {
-	logs := captureKlogV(t, "4")
+	logs := klogtest.Capture(t, 4)
 	cfg := PublishConfig{IgnoreNodes: []int{3}}
 	devs := BuildDevices(cfg, charRegions(), nil, nil, nil)
 	if got := pubNames(devs); !slices.Equal(got, []string{"dram", "region0-node2"}) {
@@ -63,7 +64,7 @@ func TestCharIgnoreNodes(t *testing.T) {
 	}
 	wantLogLineText(t, logs(), `- ignoring region device "region1": region is on node 3`)
 
-	logs = captureKlogV(t, "4")
+	logs = klogtest.Capture(t, 4)
 	cfg = PublishConfig{IgnoreRegions: []string{"region0"}, IgnoreNodes: []int{2}}
 	devs = BuildDevices(cfg, charRegions(), nil, nil, nil)
 	if got := pubNames(devs); !slices.Equal(got, []string{"dram", "region1-node3"}) {
@@ -112,7 +113,7 @@ func TestCharPublishOrder(t *testing.T) {
 		Scan:     pubNoScan,
 	})
 	q.Rescan(context.Background(), false)
-	logs := captureKlogV(t, "4")
+	logs := klogtest.Capture(t, 4)
 	q.Rescan(context.Background(), true)
 	out := logs()
 	if strings.Contains(out, "the periodic rescan changed the devices") {
@@ -125,7 +126,7 @@ func TestCharPublishOrder(t *testing.T) {
 // capacity is published by its RAM as a sliced local memdev, and the
 // unused persistent capacity is logged at klog V(3).
 func TestCharPersistentCapacityOfRAMMemdev(t *testing.T) {
-	logs := captureKlogV(t, "3")
+	logs := klogtest.Capture(t, 3)
 	m := pubMemdev()
 	m.PmemSize = 256 * pubMiB
 	devs := BuildDevices(PublishConfig{IgnoreDRAMNodes: true, ManageMemdevs: true}, &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{m}}, nil, nil,

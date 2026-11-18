@@ -26,6 +26,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -192,7 +193,7 @@ func TestRecoverClaimKeptInPart(t *testing.T) {
 		t.Fatal(err)
 	}
 	kept := k.Regions("mem0")
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	out := v.restart()
 	if !slices.Equal(out.Released, []state.GrantRef{{Claim: "c"}}) || !slices.Equal(out.Kept, []state.GrantRef{{Claim: "c", Result: 1}}) {
 		t.Fatalf("recovered %+v", out)
@@ -822,7 +823,7 @@ func TestRecoverOwnDeviceOtherOptions(t *testing.T) {
 	if err := k.FsMount(g.Got.BlockDevice.Name, mnt, "ext4", false, []string{"dax=never"}); err != nil {
 		t.Fatal(err)
 	}
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	if out := v.restart(); len(out.Unrestored) > 0 {
 		t.Fatalf("recovered %+v", out)
 	}
@@ -871,7 +872,7 @@ func TestRecoverClaimLines(t *testing.T) {
 	if mi, _ := v.f.Kernel().Mounted(target); mi == nil {
 		t.Fatal("the lease bind is not mounted")
 	}
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	recovered := v.restart()
 	out := logs()
 	for _, want := range []string{
@@ -953,7 +954,7 @@ func TestRecoverOrphanBind(t *testing.T) {
 		t.Fatal(err)
 	}
 	v.f.SetBusy(orphan, true)
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	v.restart()
 	wantLog(t, logs(), orphan+" belongs to no prepared claim, unmounting it",
 		"unmounting "+orphan+": device or resource busy; trying again at the next release")
@@ -1102,7 +1103,7 @@ func TestLocalRemoveDaxNodeDirs(t *testing.T) {
 	if err := os.MkdirAll(other, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	v.restart()
 	out := logs()
 	for _, dir := range dirs {

@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 )
@@ -135,7 +136,7 @@ func TestRecordsRefresh(t *testing.T) {
 // their counts and the name, POOL serials that stay pool devices without
 // their slices, LOCAL ones that are local at once, and the listed pools.
 func TestRecordsLoaded(t *testing.T) {
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 4)
 	e := newWatchEnv(t)
 	wantLogLine(t, logs(), fmt.Sprintf("pool serials: loaded 0 serials (0 pool serials) and 0 pools from %s", e.name()))
 	e.publish("0xc1ee2001", "0xc1ae2001")
@@ -163,7 +164,7 @@ func TestRecordsLoaded(t *testing.T) {
 // goes on from its HeldSince, so a memdev held before a restart is
 // published HoldBack after its first hold, not after the restart.
 func TestLoadHeldRecord(t *testing.T) {
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 4)
 	e := newWatchEnv(t)
 	e.publish("0xc1ee2001")
 	e.plug(localSerial)
@@ -187,7 +188,7 @@ func TestLoadHeldRecord(t *testing.T) {
 // then published as local, a new memdev local at once after MissingWindow,
 // and no commit tried on the store.
 func TestLostStore(t *testing.T) {
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 4)
 	e := newWatchEnv(t)
 	e.lose("{bogus")
 	lost := e.st.Lost().Error()
@@ -256,7 +257,7 @@ func TestFlagsForget(t *testing.T) {
 // serials are removed with a line each, durably; a serial without a record
 // is a warning; a memdev of a removed serial is new again.
 func TestForget(t *testing.T) {
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 4)
 	e := newWatchEnv(t)
 	e.publish("0xc1ae2001")
 	e.plug(localSerial)

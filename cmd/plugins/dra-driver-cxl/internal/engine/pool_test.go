@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -289,7 +290,7 @@ func TestFenceDeadline(t *testing.T) {
 		v.fenceMu.Unlock()
 		<-ctx.Done()
 	}
-	logs := captureKlogV(t, "0")
+	logs := klogtest.Capture(t, 0)
 	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeNUMA, state.KindExclusive))
 	if !strings.Contains(logs(), "fencing NUMA node 2 did not finish in 20ms: its memory goes online anyway") {
 		t.Fatalf("logs %s", logs())
@@ -311,7 +312,7 @@ func TestPoolAddDevRetry(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	logs := captureKlog(t)
+	logs := klogtest.Capture(t, 3)
 	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindExclusive))
 	if out := logs(); !strings.Contains(out, "engine: claim ns/c1: device pooled0: ") || !strings.Contains(out, "retrying once in") {
 		t.Fatalf("no retry line in\n%s", out)
