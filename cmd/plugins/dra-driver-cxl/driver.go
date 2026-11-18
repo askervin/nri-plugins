@@ -167,6 +167,19 @@ PluginDataDirectoryPath: %v`,
 // between releases.
 const staleBindPeriod = 60 * time.Second
 
+// newKernel returns the kernel of the node. It logs what it does, the
+// details of its lookups at klog V(3) and what its system calls find
+// unexpected as warnings.
+func newKernel() *kernel.Kernel {
+	k := kernel.New()
+	k.Logf = func(format string, args ...any) { klog.InfofDepth(1, "kernel: "+format, args...) }
+	k.Debugf = func(format string, args ...any) { klog.V(3).InfofDepth(1, "kernel: "+format, args...) }
+	if sys, ok := k.Sys.(*kernel.SysCalls); ok {
+		sys.Logf = func(format string, args ...any) { klog.WarningfDepth(1, "kernel: "+format, args...) }
+	}
+	return k
+}
+
 // kernelEvents are the uevents of the kernel objects: they wake the waits
 // of the kernel package, and their stable signal the rescans.
 type kernelEvents interface {

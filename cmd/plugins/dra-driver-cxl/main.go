@@ -36,7 +36,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
-	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/version"
 )
 
@@ -312,7 +311,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	// store (state.json); the store drops or marks stale what is of another
 	// boot before they are read. Without the boot id the driver does not
 	// start: it could not tell the records of another boot.
-	k := kernel.New()
+	k := newKernel()
 	bootID, err := k.BootID()
 	if err != nil {
 		return nil, fmt.Errorf("the boot id of the running kernel: %w", err)

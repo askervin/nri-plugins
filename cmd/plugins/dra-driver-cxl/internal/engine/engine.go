@@ -42,8 +42,6 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/klog/v2"
-
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -217,39 +215,10 @@ func (t Timeouts) withDefaults() Timeouts {
 	return t
 }
 
-// kernelLogf logs what package kernel does.
-func kernelLogf(format string, args ...any) {
-	klog.InfofDepth(1, "kernel: "+format, args...)
-}
-
-// kernelDebugf logs the details of package kernel's lookups at debug level.
-func kernelDebugf(format string, args ...any) {
-	klog.V(3).InfofDepth(1, "kernel: "+format, args...)
-}
-
-// sysWarningf logs what the system calls of package kernel find unexpected
-// as warnings.
-func sysWarningf(format string, args ...any) {
-	klog.WarningfDepth(1, "kernel: "+format, args...)
-}
-
-// New returns an engine over the kernel and the store of opts. A kernel
-// without Logf logs through kernelLogf, its lookups' details at klog V(3),
-// the unexpected findings of its system calls as warnings.
+// New returns an engine over the kernel and the store of opts.
 func New(opts Options) (*Engine, error) {
 	if opts.Kernel == nil || opts.Store == nil {
 		return nil, errors.New("engine: a kernel and a store are required")
-	}
-	if opts.Kernel.Logf == nil {
-		opts.Kernel.Logf = kernelLogf
-	}
-	if opts.Kernel.Debugf == nil {
-		opts.Kernel.Debugf = kernelDebugf
-	}
-	if sys, ok := opts.Kernel.Sys.(*kernel.SysCalls); ok && sys.Logf == nil {
-		c := *sys
-		c.Logf = sysWarningf
-		opts.Kernel.Sys = &c
 	}
 	opts.Timeouts = opts.Timeouts.withDefaults()
 	probes, err := loadProbes(opts.ProbesFile)
