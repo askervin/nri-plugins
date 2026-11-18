@@ -95,10 +95,11 @@ func TestStackRecoveryTopMostFirst(t *testing.T) {
 	}
 	wantStack(t, v, serialB, serialC)
 	out := v.restart()
-	if !slices.Equal(out.Released, []state.GrantRef{{Claim: "c"}, {Claim: "b"}}) || len(out.Kept) > 0 {
+	if !slices.Equal(out.Released, []state.GrantRef{{Claim: "b"}, {Claim: "c"}}) || len(out.Kept) > 0 {
 		t.Fatalf("recovered %+v", out)
 	}
 	wantStack(t, v)
+	wantTopMostFirst(t, v)
 	v.check("recovered")
 	finish(t, v, "recovered")
 }
@@ -190,10 +191,9 @@ func TestStackLocalRecoveryTopMostFirst(t *testing.T) {
 	for _, c := range []struct {
 		name  string
 		order []string
-		want  []state.GrantRef
 	}{
-		{"local below", []string{"l", "b"}, []state.GrantRef{{Claim: "b"}, {Claim: "l"}}},
-		{"local above", []string{"b", "l"}, []state.GrantRef{{Claim: "l"}, {Claim: "b"}}},
+		{"local below", []string{"l", "b"}},
+		{"local above", []string{"b", "l"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			v := newEnv(t, stackSpecs...)
@@ -215,15 +215,22 @@ func TestStackLocalRecoveryTopMostFirst(t *testing.T) {
 				}
 			}
 			out := v.restart()
-			if !slices.Equal(out.Released, c.want) || len(out.Kept) > 0 {
+			if !slices.Equal(out.Released, []state.GrantRef{{Claim: "b"}, {Claim: "l"}}) || len(out.Kept) > 0 {
 				t.Fatalf("recovered %+v", out)
 			}
 			wantStack(t, v)
-			cmds := v.f.Commands()
-			if top, below := strings.Index(cmds, "cxl destroy-region region1"), strings.Index(cmds, "cxl destroy-region region0"); top < 0 || below < top {
-				t.Fatalf("not released top-most first:\n%s", cmds)
-			}
+			wantTopMostFirst(t, v)
 			finish(t, v, "recovered")
 		})
+	}
+}
+
+// wantTopMostFirst fails the test unless region1, made above region0, was
+// destroyed first.
+func wantTopMostFirst(t *testing.T, v *env) {
+	t.Helper()
+	cmds := v.f.Commands()
+	if top, below := strings.Index(cmds, "cxl destroy-region region1"), strings.Index(cmds, "cxl destroy-region region0"); top < 0 || below < top {
+		t.Fatalf("not released top-most first:\n%s", cmds)
 	}
 }

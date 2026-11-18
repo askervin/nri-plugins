@@ -30,24 +30,13 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
-// Recovered is what the recovery did.
+// Recovered is what the recovery tells the front-ends; the records tell
+// the rest.
 type Recovered struct {
-	// Released are the grants of Prepares that a process stop cut whose
-	// objects were released.
-	Released []state.GrantRef
-	// Kept are the grants of cut Prepares whose objects were kept: their
-	// region lies below a newer region of another memdev, or their release
-	// failed.
-	Kept []state.GrantRef
-	// Absent are the grants of cut Prepares whose memdev is absent, kept
-	// for kubelet's Unprepare.
-	Absent []state.GrantRef
-	// Unrestored are the realised grants whose objects did not verify
-	// (no CDI device for their claims), Restored those that verify again.
-	Unrestored, Restored []state.GrantRef
 	// Why are the reasons of the grants of prepared claims whose node
-	// mount is not mounted after the start: the Unrestored ones and those
-	// that were unrestored already.
+	// mount is not mounted after the start: those that did not verify now
+	// (no CDI device for their claims) and those that were unrestored
+	// already.
 	Why map[state.GrantRef]error
 }
 
@@ -91,12 +80,12 @@ func (e *Engine) Recover(ctx context.Context) (*Recovered, error) {
 	if err := e.recoverForeign(ctx, snap); err != nil {
 		return nil, err
 	}
-	if err := e.restoreGrants(ctx, out); err != nil {
+	if err := e.restoreGrants(ctx, out.Why); err != nil {
 		return nil, err
 	}
 	e.restoreBinds(ctx)
-	e.releaseCut(ctx, out)
-	if err := e.recoverPreparations(ctx, out); err != nil {
+	released, kept := e.releaseCut(ctx)
+	if err := e.recoverPreparations(ctx, released, kept); err != nil {
 		return nil, err
 	}
 	e.sweepBinds(ctx)
@@ -415,13 +404,14 @@ func (e *Engine) restoreBinds(ctx context.Context) {
 // memdevs that are gone, the memdev whose regions are top-most first. The
 // log lines name each claim: when its first memdev is released or kept,
 // and when its last one is. Errors are logged; a grant that is not
-// released is kept.
-func (e *Engine) releaseCut(ctx context.Context, out *Recovered) {
+// released is kept. It returns the grants that it released and those that
+// it kept.
+func (e *Engine) releaseCut(ctx context.Context) (released, kept []state.GrantRef) {
 	rctx, cancel := e.rollbackContext(ctx)
 	defer cancel()
-	cut := e.cutClaims(out)
+	cut := e.cutClaims()
 	if len(cut.bySerial) == 0 {
-		return
+		return nil, nil
 	}
 	call := newReleaseCall(e, ReleaseRecovery, nil)
 	call.perClaim = true
@@ -439,23 +429,24 @@ func (e *Engine) releaseCut(ctx context.Context, out *Recovered) {
 			if err := e.keepForRecovery(rctx, serial, refs); err != nil {
 				e.errorf(e.sourceOf(refs[0]), "claim %s: %v", e.claimNameOf(refs[0]), err)
 			}
-			out.Kept = append(out.Kept, refs...)
+			kept = append(kept, refs...)
 			continue
 		}
 		cut.announce(e, serial, refs)
 		err := e.releaseGroup(rctx, refs, call)
 		for _, ref := range refs {
 			if e.records().Grant(ref) == nil {
-				out.Released = append(out.Released, ref)
+				released = append(released, ref)
 				continue
 			}
-			out.Kept = append(out.Kept, ref)
+			kept = append(kept, ref)
 			cut.failed(ref, err)
 		}
 		for _, ref := range refs {
 			cut.done(e, ref)
 		}
 	}
+	return released, kept
 }
 
 // cutClaims are the claims of cut Prepares that the recovery releases:
@@ -469,9 +460,9 @@ type cutClaims struct {
 }
 
 // cutClaims returns the cut claims that the recovery releases; the grants
-// of numa companions stay (logged), those of memdevs that are gone are in
-// out.Absent.
-func (e *Engine) cutClaims(out *Recovered) *cutClaims {
+// of numa companions stay (logged), those of memdevs that are gone stay for
+// kubelet's Unprepare.
+func (e *Engine) cutClaims() *cutClaims {
 	c := &cutClaims{bySerial: map[state.Serial][]state.GrantRef{}, left: map[string][]state.GrantRef{},
 		above: map[string][]string{}, errs: map[string][]error{}}
 	r := e.records()
@@ -489,7 +480,6 @@ func (e *Engine) cutClaims(out *Recovered) *cutClaims {
 					e.claimNameOf(g.Ref), g.Ref.Claim)
 			}
 		case m != nil && m.State == state.MemdevGone:
-			out.Absent = append(out.Absent, g.Ref)
 		default:
 			c.bySerial[g.Serial] = append(c.bySerial[g.Serial], g.Ref)
 			c.left[g.Ref.Claim] = append(c.left[g.Ref.Claim], g.Ref)
@@ -649,37 +639,37 @@ func (e *Engine) topMost(bySerial map[state.Serial][]state.GrantRef) state.Seria
 // others stay PREPARING with their results for kubelet's retry. A KEPT
 // preparation of an earlier start loses the results of the grants that the
 // recovery released, and goes when none is left (keptReleased).
-func (e *Engine) recoverPreparations(ctx context.Context, out *Recovered) error {
-	if len(out.Kept) == 0 && len(out.Released) == 0 && !keptWithoutGrant(e.records()) {
+func (e *Engine) recoverPreparations(ctx context.Context, released, kept []state.GrantRef) error {
+	if len(kept) == 0 && len(released) == 0 && !keptWithoutGrant(e.records()) {
 		return nil
 	}
 	return e.commit(ctx, func(r *state.Records) error {
-		if err := keptReleased(r, out.Released); err != nil {
+		if err := keptReleased(r, released); err != nil {
 			return err
 		}
-		return preparingRecovered(r, out)
+		return preparingRecovered(r, released, kept)
 	})
 }
 
 // preparingRecovered makes a PREPARING preparation with a grant that the
-// recovery kept (out.Kept) KEPT, with the results of its grants that are
-// left, and one with a grant that it released PREPARING again.
-func preparingRecovered(r *state.Records, out *Recovered) error {
+// recovery kept KEPT, with the results of its grants that are left, and
+// one with a grant that it released PREPARING again.
+func preparingRecovered(r *state.Records, released, kept []state.GrantRef) error {
 	for i := range r.Preparations {
 		p := &r.Preparations[i]
 		if p.State != state.PreparationPreparing {
 			continue
 		}
-		kept, touched := false, false
+		isKept, touched := false, false
 		for _, res := range p.Results {
 			if res.Grant == nil {
 				continue
 			}
-			kept = kept || slices.Contains(out.Kept, *res.Grant)
-			touched = touched || kept || slices.Contains(out.Released, *res.Grant)
+			isKept = isKept || slices.Contains(kept, *res.Grant)
+			touched = touched || isKept || slices.Contains(released, *res.Grant)
 		}
 		switch {
-		case kept:
+		case isKept:
 			if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationKept, state.TriggerRecover); err != nil {
 				return err
 			}

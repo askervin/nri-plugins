@@ -224,15 +224,58 @@ func (v *env) cutAfter(n int) {
 
 // restart stops the process (the store closed) and starts it again: a new
 // store and engine, and the recovery.
-func (v *env) restart() *Recovered {
+func (v *env) restart() *recovered {
 	v.t.Helper()
 	_ = v.st.Close()
 	v.open()
-	out, err := v.e.Recover(context.Background())
+	before := v.records()
+	rec, err := v.e.Recover(context.Background())
 	if err != nil {
 		v.t.Fatalf("recover: %v", err)
 	}
 	v.check("restarted")
+	return recoveredOf(before, v.records(), rec)
+}
+
+// recovered is what a recovery did by the records before and after it,
+// each list in the order of the refs: the grants that are gone (Released);
+// the grants of cut Prepares of KEPT preparations (Kept), and those on GONE
+// memdevs, numa companions' but (Absent); the grants that became
+// REALISED_UNRESTORED (Unrestored) or REALISED again (Restored). Why is
+// what Recover returned.
+type recovered struct {
+	Released, Kept, Absent, Unrestored, Restored []state.GrantRef
+	Why                                          map[state.GrantRef]error
+}
+
+// recoveredOf returns what the recovery rec did to the records before,
+// which made the records after.
+func recoveredOf(before, after *state.Records, rec *Recovered) *recovered {
+	out := &recovered{Why: rec.Why}
+	for i := range before.Grants {
+		if ref := before.Grants[i].Ref; after.Grant(ref) == nil {
+			out.Released = append(out.Released, ref)
+		}
+	}
+	for i := range after.Grants {
+		g := &after.Grants[i]
+		was := before.Grant(g.Ref)
+		cut := was != nil && cutGrant(before, was)
+		p, m := after.PreparationOf(g.Ref), after.Memdev(g.Serial)
+		switch {
+		case cut && p != nil && p.State == state.PreparationKept:
+			out.Kept = append(out.Kept, g.Ref)
+		case cut && m != nil && m.State == state.MemdevGone && !numaCompanion(g):
+			out.Absent = append(out.Absent, g.Ref)
+		case g.State == state.GrantUnrestored && (was == nil || was.State != state.GrantUnrestored):
+			out.Unrestored = append(out.Unrestored, g.Ref)
+		case g.State == state.GrantRealised && was != nil && was.State == state.GrantUnrestored:
+			out.Restored = append(out.Restored, g.Ref)
+		}
+	}
+	for _, refs := range [][]state.GrantRef{out.Released, out.Kept, out.Absent, out.Unrestored, out.Restored} {
+		slices.SortFunc(refs, state.GrantRef.Compare)
+	}
 	return out
 }
 

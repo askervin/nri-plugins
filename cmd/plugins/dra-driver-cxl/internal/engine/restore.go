@@ -38,7 +38,7 @@ var errForeignMount = errors.New("something else is mounted at the node mount")
 // derive. A grant whose node mount cannot be mounted again is
 // REALISED_UNRESTORED (its node mount UNRESTORED); an unrestored one that
 // verifies again is REALISED.
-func (e *Engine) restoreGrants(ctx context.Context, out *Recovered) error {
+func (e *Engine) restoreGrants(ctx context.Context, why map[state.GrantRef]error) error {
 	r := e.records()
 	serials := map[state.Serial]bool{}
 	for i := range r.Grants {
@@ -51,39 +51,28 @@ func (e *Engine) restoreGrants(ctx context.Context, out *Recovered) error {
 		}
 	}
 	for _, serial := range sortedKeys(serials) {
-		if err := e.restoreGrantsOf(ctx, serial, out); err != nil {
+		if err := e.restoreGrantsOf(ctx, serial, why); err != nil {
 			return err
 		}
 	}
-	slices.SortFunc(out.Unrestored, state.GrantRef.Compare)
 	return nil
 }
 
 // restoreGrantsOf restores the node mounts of the realised grants of the
-// memdev with the serial (restoreSerial), records what it found and adds it
-// to out.
-func (e *Engine) restoreGrantsOf(ctx context.Context, serial state.Serial, out *Recovered) error {
-	rs := e.restoreSerial(serial, out.Why)
+// memdev with the serial (restoreSerial) and records what it found, with
+// the reasons in why.
+func (e *Engine) restoreGrantsOf(ctx context.Context, serial state.Serial, why map[state.GrantRef]error) error {
+	rs := e.restoreSerial(serial, why)
 	if len(rs.failed) == 0 && len(rs.restored) == 0 && len(rs.loops) == 0 && len(rs.bad) == 0 {
 		return nil
 	}
-	if err := e.commit(ctx, func(r *state.Records) error {
+	return e.commit(ctx, func(r *state.Records) error {
 		remounted(r, rs.loops)
 		if err := unrestored(r, rs.failed, rs.restored); err != nil {
 			return err
 		}
 		return badBlocks(r, rs.bad)
-	}); err != nil {
-		return err
-	}
-	for ref := range rs.failed {
-		out.Unrestored = append(out.Unrestored, ref)
-	}
-	for ref := range rs.bad {
-		out.Unrestored = append(out.Unrestored, ref)
-	}
-	out.Restored = append(out.Restored, rs.restored...)
-	return nil
+	})
 }
 
 // blockError returns why a grant of a persistent memdev does not verify:
