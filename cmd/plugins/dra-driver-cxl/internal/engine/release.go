@@ -354,7 +354,7 @@ func (e *Engine) memdevUsers(serial state.Serial, ref state.GrantRef, call *rele
 func holdsRegion(r *state.Records, m *state.Memdev, ref state.GrantRef) bool {
 	g := r.Grant(ref)
 	switch {
-	case g != nil && g.Got.Region == "" && g.Intent.Region == "" && unfinished(r, g):
+	case g != nil && g.Got.Region == "" && g.Intent.Region == "" && r.PrepareUnfinished(g):
 		return false
 	case g == nil || !unpreparing(r, g):
 		return true
@@ -378,13 +378,6 @@ func holdsRegion(r *state.Records, m *state.Memdev, ref state.GrantRef) bool {
 		}
 	}
 	return false
-}
-
-// unfinished tells whether a grant is of a claim whose Prepare did not
-// finish: PREPARING (a numa companion that a start kept) or KEPT.
-func unfinished(r *state.Records, g *state.Grant) bool {
-	p := r.PreparationOf(g.Ref)
-	return p != nil && (p.State == state.PreparationPreparing || p.State == state.PreparationKept)
 }
 
 // keepForRecovery keeps the cut grants refs of one memdev whose region lies

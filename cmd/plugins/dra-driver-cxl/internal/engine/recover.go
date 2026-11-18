@@ -165,7 +165,7 @@ func cutGrant(r *state.Records, g *state.Grant) bool {
 	case state.GrantJournaled, state.GrantRealising:
 		return true
 	case state.GrantRealised:
-		return unfinished(r, g)
+		return r.PrepareUnfinished(g)
 	case state.GrantReleasing:
 		return p != nil && p.State == state.PreparationPreparing
 	}

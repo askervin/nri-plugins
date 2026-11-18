@@ -231,55 +231,18 @@ func checkI2Device(c *checker, reg *state.Region, d kernel.DaxDeviceInfo) {
 	name := string(reg.Ref())
 	rec := reg.DaxDevice(d.Name)
 	switch {
-	case rec == nil && (reg.State == state.RegionKept || unfinishedRegion(c.r, reg)) && strings.HasSuffix(d.Name, ".0"):
+	case rec == nil && (reg.State == state.RegionKept || c.r.UnfinishedRegion(reg)) && strings.HasSuffix(d.Name, ".0"):
 		// the Whole device of a region kept, or of a companion kept at a
 		// start, before it was set up
 	case rec == nil:
 		c.add("region "+name, "the kernel has %s (%s) that no record names", d.Name, d.State)
-	case (reg.State == state.RegionKept || unfinishedRegion(c.r, reg)) && !reg.SetUp && strings.HasSuffix(d.Name, ".0"):
+	case (reg.State == state.RegionKept || c.r.UnfinishedRegion(reg)) && !reg.SetUp && strings.HasSuffix(d.Name, ".0"):
 		// the Whole device of a kept region, or of a companion kept at a
 		// start, enabled again before its set-up
-	case rec.Whole && (reg.State == state.RegionKept || kept(c.r, reg) || len(rec.Users) > 0 || reg.SetUp || unfinishedRegion(c.r, reg)):
-	case !usedBy(c.r, rec) && !c.r.UnfinishedUser(rec):
+	case rec.Whole && (c.r.KeptRegion(reg) || len(rec.Users) > 0 || reg.SetUp || c.r.UnfinishedRegion(reg)):
+	case !c.r.InUse(rec) && !c.r.UnfinishedUser(rec):
 		c.add("region "+name, "%s has no REALISED or RELEASING user", d.Name)
 	}
-}
-
-// unfinishedRegion tells whether a grant of a Prepare that did not finish
-// (JOURNALED, REALISING, or RELEASING by a failed release before it got a
-// dax device) names the region: a numa companion that a start keeps for
-// its Unprepare.
-func unfinishedRegion(r *state.Records, reg *state.Region) bool {
-	for i := range r.Grants {
-		g := &r.Grants[i]
-		open := g.State == state.GrantJournaled || g.State == state.GrantRealising ||
-			g.State == state.GrantReleasing && g.Got.Dax == "" && unfinished(r, g)
-		if open && (g.Got.Region == reg.Ref() || g.Intent.Region == reg.Ref()) {
-			return true
-		}
-	}
-	return false
-}
-
-// kept tells whether a memdev of the region is IDLE_KEPT.
-func kept(r *state.Records, reg *state.Region) bool {
-	for _, serial := range reg.Targets {
-		if m := r.Memdev(serial); m != nil && m.State == state.MemdevIdleKept {
-			return true
-		}
-	}
-	return false
-}
-
-// usedBy tells whether a user of the dax device is REALISED,
-// REALISED_UNRESTORED or RELEASING.
-func usedBy(r *state.Records, d *state.DaxDevice) bool {
-	for _, u := range d.Users {
-		if g := r.Grant(u); g != nil && (g.State == state.GrantRealised || g.State == state.GrantUnrestored || g.State == state.GrantReleasing) {
-			return true
-		}
-	}
-	return false
 }
 
 func checkI3(c *checker) {

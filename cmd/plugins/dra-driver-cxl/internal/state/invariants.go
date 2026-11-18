@@ -467,7 +467,7 @@ func checkUsers(r *Records, add addFunc) {
 			continue
 		}
 		for _, d := range reg.DaxDevices {
-			if d.State == DaxSeed || (d.Whole && (kept(r, reg) || unfinished(r, reg))) || used(r, &d) || r.UnfinishedUser(&d) {
+			if d.State == DaxSeed || (d.Whole && (r.KeptRegion(reg) || r.UnfinishedRegion(reg))) || r.InUse(&d) || r.UnfinishedUser(&d) {
 				continue
 			}
 			add(r.regionID(reg), "dax device %s has no realised or releasing user", d.Name)
@@ -475,9 +475,9 @@ func checkUsers(r *Records, add addFunc) {
 	}
 }
 
-// used tells whether a user of the dax device is REALISED,
+// InUse tells whether a user of the dax device is REALISED,
 // REALISED_UNRESTORED or RELEASING.
-func used(r *Records, d *DaxDevice) bool {
+func (r *Records) InUse(d *DaxDevice) bool {
 	for _, u := range d.Users {
 		if g := r.Grant(u); g != nil && (g.State == GrantRealised || g.State == GrantUnrestored || g.State == GrantReleasing) {
 			return true
@@ -524,13 +524,14 @@ func (r *Records) RegionInMaking(m *Memdev, reg *Region) bool {
 	return true
 }
 
-// unfinished tells whether a grant of a Prepare that did not finish
+// UnfinishedRegion tells whether a grant of a Prepare that did not finish
 // (JOURNALED, REALISING, or RELEASING by a failed release before it got a
-// dax device) names the region.
-func unfinished(r *Records, reg *Region) bool {
+// dax device) names the region: a numa companion that a start keeps for
+// its Unprepare.
+func (r *Records) UnfinishedRegion(reg *Region) bool {
 	for i := range r.Grants {
 		g := &r.Grants[i]
-		open := g.State == GrantJournaled || g.State == GrantRealising || g.State == GrantReleasing && g.Got.Dax == "" && notPrepared(r, g)
+		open := g.State == GrantJournaled || g.State == GrantRealising || g.State == GrantReleasing && g.Got.Dax == "" && r.PrepareUnfinished(g)
 		if open && (g.Got.Region == reg.Ref() || g.Intent.Region == reg.Ref()) {
 			return true
 		}
@@ -538,15 +539,16 @@ func unfinished(r *Records, reg *Region) bool {
 	return false
 }
 
-// notPrepared tells whether a grant is of a claim whose Prepare did not
-// finish: PREPARING or KEPT.
-func notPrepared(r *Records, g *Grant) bool {
+// PrepareUnfinished tells whether a grant is of a claim whose Prepare did
+// not finish: PREPARING (a numa companion that a start kept) or KEPT.
+func (r *Records) PrepareUnfinished(g *Grant) bool {
 	p := r.PreparationOf(g.Ref)
 	return p != nil && (p.State == PreparationPreparing || p.State == PreparationKept)
 }
 
-// kept tells whether the region is KEPT or a memdev of it is IDLE_KEPT.
-func kept(r *Records, reg *Region) bool {
+// KeptRegion tells whether the region is KEPT or a memdev of it is
+// IDLE_KEPT.
+func (r *Records) KeptRegion(reg *Region) bool {
 	if reg.State == RegionKept {
 		return true
 	}
