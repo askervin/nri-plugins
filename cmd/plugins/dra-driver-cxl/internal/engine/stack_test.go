@@ -26,34 +26,6 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
-// The decoder stacks of the host bridge 12 in the scenarios of the e2e
-// model: the local memdev l and the pool devices b and c under it.
-var stackSpecs = []fake.MemdevSpec{{Serial: serialL, Ram: gib}, {Serial: serialB}, {Serial: serialC}}
-
-// wantStack fails the test unless the decoder stack of the host bridge of
-// the memdev with the serial is the regions of the memdevs of serials, 0 for
-// a hole.
-func wantStack(t *testing.T, v *env, serials ...uint64) {
-	t.Helper()
-	k := v.f.Kernel()
-	port := k.Memdev(serialL).Ports[0]
-	var want []string
-	for _, s := range serials {
-		if s == 0 {
-			want = append(want, "")
-			continue
-		}
-		rs := k.Regions(k.Memdev(s).Name)
-		if len(rs) != 1 {
-			t.Fatalf("memdev 0x%x has regions %v", s, rs)
-		}
-		want = append(want, rs[0])
-	}
-	if got := v.f.Stack(port); !slices.Equal(got, want) {
-		t.Fatalf("stack of %s %q, want %q", port, got, want)
-	}
-}
-
 // The sequence of the model's TestBlockedUntilHoleClears: a pool
 // device released below a newer region leaves a hole; a Prepare that needs
 // a new region through the stack fails with the hole text until the region

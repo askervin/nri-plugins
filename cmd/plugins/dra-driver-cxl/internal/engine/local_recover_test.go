@@ -39,16 +39,6 @@ func logLine(logs, text string) string {
 	return ""
 }
 
-// cutWhenRealised makes the process stop after the commit that makes the
-// grant of result 0 of the claim uid REALISED.
-func cutWhenRealised(v *env, uid string) {
-	v.e.afterCommit = func() {
-		if g := v.records().Grant(state.GrantRef{Claim: uid}); g != nil && g.State == state.GrantRealised {
-			panic(fake.ErrCut)
-		}
-	}
-}
-
 // The start keeps the region of a local memdev configured shared, with
 // claims or idle; one not configured shared any more stays for its claims
 // (a warning), and is released when it is idle, its record dropped.

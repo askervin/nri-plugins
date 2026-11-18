@@ -15,16 +15,21 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
+
+	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
@@ -538,3 +543,341 @@ type storeDocument = store.Document
 
 // mountInfo is a mount of the kernel.
 type mountInfo = kernel.MountInfo
+
+// companionTarget returns the lease bind of the companion claims of the
+// scenarios.
+func companionTarget(v *env) string {
+	return filepath.Join(v.dir, localDriver, "lease-fs", "lc1", "data")
+}
+
+// finish unprepares every claim that the store has and checks that nothing
+// is left.
+func finish(t *testing.T, v *env, what string) {
+	t.Helper()
+	for _, p := range v.records().Preparations {
+		if err := v.unprepare(p.Driver, p.UID); err != nil {
+			t.Fatalf("%s: unprepare %s: %v", what, p.UID, err)
+		}
+	}
+	v.check(what + ": finished")
+	v.clean(what + ": finished")
+}
+
+// probeOptions sets the address line probe of the new regions of the local
+// memdevs of the node, its results in the node's probes file.
+func probeOptions(v *env, o *Options) {
+	o.ProbeAddressing = true
+	o.ProbesFile = filepath.Join(v.dir, "localProbes.json")
+}
+
+// sharedOptions configures every local memdev shared, the new regions
+// probed.
+func sharedOptions(v *env, o *Options) {
+	probeOptions(v, o)
+	o.Shared = func(state.Serial) bool { return true }
+}
+
+// releaseIdleShared starts the node again with no local memdev configured
+// shared: the start releases the regions that idle shared memdevs kept.
+func releaseIdleShared(v *env) {
+	prev := v.tune
+	v.tune = func(o *Options) {
+		if prev != nil {
+			prev(o)
+		}
+		o.Shared = nil
+	}
+	v.restart()
+}
+
+// sliceReq returns the request of a part of the local sliced memdev
+// serialL for result n of the claim uid.
+func sliceReq(uid string, n int, mode state.Mode, size uint64) GrantRequest {
+	return localReq(uid, n, serialL, mode, state.KindExclusive, size)
+}
+
+// sharedReq returns the request of a grant of the local shared memdev
+// serialL for the claim uid.
+func sharedReq(uid string) GrantRequest {
+	return localReq(uid, 0, serialL, state.ModeDax, state.KindShared, gib)
+}
+
+// localPmemReq returns the request of a grant of mode fs (access, readOnly)
+// or block of the local persistent memdev serialP for result n of the
+// claim uid.
+func localPmemReq(uid string, n int, mode state.Mode, readOnly bool, access state.Access) GrantRequest {
+	req := localReq(uid, n, serialP, mode, state.KindPersistent, 0)
+	if mode == state.ModeFs {
+		return fsReq(req, readOnly, access)
+	}
+	req.Asked.ReadOnly = readOnly
+	return req
+}
+
+// rawRegion creates a ram region on the memdev through the kernel, as
+// another tool would, and returns it.
+func rawRegion(t *testing.T, v *env, memdev string) string {
+	t.Helper()
+	k := v.f.Kernel()
+	d, err := k.RootDecoder(memdev, kernel.RegionRAM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := k.CreateRegion(context.Background(), kernel.CreateRegionRequest{Memdev: memdev, Decoder: d, Type: kernel.RegionRAM})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return name
+}
+
+// regionAboveNext makes a ram region on the memdev right after the next cxl
+// create-region, above the region that it created.
+func regionAboveNext(t *testing.T, v *env, memdev string) {
+	v.f.After("cxl create-region", func() {
+		v.f.After("cxl create-region", func() {})
+		rawRegion(t, v, memdev)
+	})
+}
+
+// dropRaw destroys a region that rawRegion made.
+func dropRaw(t *testing.T, v *env, region string) {
+	t.Helper()
+	if err := v.f.Kernel().ReleaseRegion(context.Background(), region); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// wantLog fails the test unless the log has every line of want.
+func wantLog(t *testing.T, logs string, want ...string) {
+	t.Helper()
+	for _, w := range want {
+		if !strings.Contains(logs, w) {
+			t.Errorf("no %q in the log:\n%s", w, logs)
+		}
+	}
+}
+
+// wantRegion fails the test unless the record of the region is in the
+// state, nil for none.
+func wantRegion(t *testing.T, v *env, region string, want state.RegionState) *state.Region {
+	t.Helper()
+	reg := v.records().Region(state.RegionRef(region))
+	switch {
+	case want == "" && reg != nil:
+		t.Fatalf("%s: %+v", region, reg)
+	case want != "" && (reg == nil || reg.State != want):
+		t.Fatalf("%s: %+v, want %s", region, reg, want)
+	}
+	return reg
+}
+
+// wantPreparation fails the test unless the preparation of the claim uid of
+// the driver is in the state, "" for none.
+func wantPreparation(t *testing.T, v *env, driver, uid string, want state.PreparationState) {
+	t.Helper()
+	p := v.records().Preparation(driver, uid)
+	switch {
+	case want == "" && p != nil:
+		t.Fatalf("preparation %s: %+v", uid, p)
+	case want != "" && (p == nil || p.State != want):
+		t.Fatalf("preparation %s: %+v, want %s", uid, p, want)
+	}
+}
+
+// cutWhenRealised makes the process stop after the commit that makes the
+// grant of result 0 of the claim uid REALISED.
+func cutWhenRealised(v *env, uid string) {
+	v.e.afterCommit = func() {
+		if g := v.records().Grant(state.GrantRef{Claim: uid}); g != nil && g.State == state.GrantRealised {
+			panic(fake.ErrCut)
+		}
+	}
+}
+
+// captureKlogV returns the klog output from now on at the verbosity.
+func captureKlogV(t *testing.T, verbosity string) func() string {
+	t.Helper()
+	fs := flag.NewFlagSet("klog", flag.ContinueOnError)
+	klog.InitFlags(fs)
+	_ = fs.Set("logtostderr", "false")
+	_ = fs.Set("alsologtostderr", "false")
+	_ = fs.Set("v", verbosity)
+	var mu sync.Mutex
+	var buf strings.Builder
+	klog.SetOutput(writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.Write(p)
+	}))
+	t.Cleanup(func() {
+		klog.Flush()
+		_ = fs.Set("logtostderr", "true")
+		_ = fs.Set("v", "0")
+	})
+	return func() string {
+		klog.Flush()
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.String()
+	}
+}
+
+// pmemEnv returns a node with the persistent pool memdev serialP whose
+// fsdax namespace has a filesystem of the type.
+func pmemEnv(t *testing.T, typ string) *env {
+	t.Helper()
+	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib})
+	v.formatPmem("mem0", typ)
+	return v
+}
+
+// fsGrant returns the request of a pool grant of mode fs on serialP.
+func fsGrant(uid string, readOnly bool, access state.Access) GrantRequest {
+	return fsReq(poolReq(uid, 0, serialP, state.ModeFs, state.KindPersistent), readOnly, access)
+}
+
+// sources are the sources of the grants of the engine.
+var sources = []state.Source{state.SourcePool, state.SourceLocal}
+
+// driverOf returns the driver of the claims of a source.
+func driverOf(source state.Source) string {
+	if source == state.SourceLocal {
+		return localDriver
+	}
+	return poolDriver
+}
+
+// linesWithPrefix returns the messages of the klog output that begin with
+// prefix, in order, without the klog header.
+func linesWithPrefix(logs, prefix string) []string {
+	var lines []string
+	for _, l := range strings.Split(logs, "\n") {
+		if _, msg, ok := strings.Cut(l, "] "); ok && strings.HasPrefix(msg, prefix) {
+			lines = append(lines, msg)
+		}
+	}
+	return lines
+}
+
+// writerFunc is an io.Writer of a function.
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// captureKlog returns the klog output from now on, at verbosity 3.
+func captureKlog(t *testing.T) func() string {
+	t.Helper()
+	fs := flag.NewFlagSet("klog", flag.ContinueOnError)
+	klog.InitFlags(fs)
+	_ = fs.Set("logtostderr", "false")
+	_ = fs.Set("alsologtostderr", "false")
+	_ = fs.Set("v", "3")
+	var mu sync.Mutex
+	var buf bytes.Buffer
+	klog.SetOutput(writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.Write(p)
+	}))
+	t.Cleanup(func() {
+		klog.Flush()
+		_ = fs.Set("logtostderr", "true")
+		_ = fs.Set("v", "0")
+	})
+	return func() string {
+		klog.Flush()
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.String()
+	}
+}
+
+// busyCompanion prepares the companion claim c with a lease bind on serialP
+// whose Unprepare fails on the busy bind, which is free again afterwards.
+func busyCompanion(t *testing.T, v *env) string {
+	t.Helper()
+	target := filepath.Join(v.dir, localDriver, "lease-fs", "lc1", "data")
+	v.mustPrepare(poolDriver, "c", bindReq("c", target))
+	v.f.SetBusy(target, true)
+	if err := v.unprepare(poolDriver, "c"); err == nil {
+		t.Fatal("a busy unbind succeeded")
+	}
+	v.f.SetBusy(target, false)
+	return target
+}
+
+// bindReq returns the request of a reader of mode fs on serialP of a
+// companion claim whose lease bind is at target.
+func bindReq(uid, target string) GrantRequest {
+	req := fsGrant(uid, true, "")
+	req.BindTarget = target
+	req.Lend = &state.GrantLend{Lease: "0123abcd", Name: "data"}
+	return req
+}
+
+// busyCompanionNextToReader prepares the fs claim r and the fs lease
+// companion c on the node mount of serialP, then fails the Unprepare of c
+// on its busy lease bind. It returns the node mount and the bind.
+func busyCompanionNextToReader(t *testing.T, v *env) (string, string) {
+	t.Helper()
+	target := companionTarget(v)
+	v.mustPrepare(poolDriver, "r", fsGrant("r", true, ""))
+	v.mustPrepare(poolDriver, "c", bindReq("c", target))
+	mnt := mountPathOf(v.records(), v.grant("c", 0))
+	if mnt == "" || mnt != mountPathOf(v.records(), v.grant("r", 0)) {
+		t.Fatalf("node mounts %q and %q, want one", mnt, mountPathOf(v.records(), v.grant("r", 0)))
+	}
+	v.f.SetBusy(target, true)
+	if err := v.unprepare(poolDriver, "c"); err == nil {
+		t.Fatal("a busy unbind succeeded")
+	}
+	return mnt, target
+}
+
+// mustBeMounted fails the test when nothing is mounted at each path.
+func (v *env) mustBeMounted(what string, paths ...string) {
+	v.t.Helper()
+	for _, p := range paths {
+		if mi, err := v.f.Kernel().Mounted(p); err != nil || mi == nil {
+			v.t.Fatalf("%s: %s is not mounted (%v)", what, p, err)
+		}
+	}
+}
+
+// mustNotBeMounted fails the test when something is mounted at a path.
+func (v *env) mustNotBeMounted(what string, paths ...string) {
+	v.t.Helper()
+	for _, p := range paths {
+		if mi, err := v.f.Kernel().Mounted(p); err != nil || mi != nil {
+			v.t.Fatalf("%s: %s is mounted: %+v (%v)", what, p, mi, err)
+		}
+	}
+}
+
+// The decoder stacks of the host bridge 12 in the scenarios of the e2e
+// model: the local memdev l and the pool devices b and c under it.
+var stackSpecs = []fake.MemdevSpec{{Serial: serialL, Ram: gib}, {Serial: serialB}, {Serial: serialC}}
+
+// wantStack fails the test unless the decoder stack of the host bridge of
+// the memdev with the serial is the regions of the memdevs of serials, 0 for
+// a hole.
+func wantStack(t *testing.T, v *env, serials ...uint64) {
+	t.Helper()
+	k := v.f.Kernel()
+	port := k.Memdev(serialL).Ports[0]
+	var want []string
+	for _, s := range serials {
+		if s == 0 {
+			want = append(want, "")
+			continue
+		}
+		rs := k.Regions(k.Memdev(s).Name)
+		if len(rs) != 1 {
+			t.Fatalf("memdev 0x%x has regions %v", s, rs)
+		}
+		want = append(want, rs[0])
+	}
+	if got := v.f.Stack(port); !slices.Equal(got, want) {
+		t.Fatalf("stack of %s %q, want %q", port, got, want)
+	}
+}

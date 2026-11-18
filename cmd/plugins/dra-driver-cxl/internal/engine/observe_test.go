@@ -16,13 +16,9 @@ package engine
 
 import (
 	"context"
-	"flag"
 	"strings"
-	"sync"
 	"testing"
 	"time"
-
-	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -91,34 +87,6 @@ func TestObserveLogsUnknownTransitions(t *testing.T) {
 	}
 	if !strings.Contains(logs(), UnknownTransition+"memdev 0xb1: MemdevInfo.State: READY -> BOUND") {
 		t.Fatalf("logs %s", logs())
-	}
-}
-
-// captureKlogV returns the klog output from now on at the verbosity.
-func captureKlogV(t *testing.T, verbosity string) func() string {
-	t.Helper()
-	fs := flag.NewFlagSet("klog", flag.ContinueOnError)
-	klog.InitFlags(fs)
-	_ = fs.Set("logtostderr", "false")
-	_ = fs.Set("alsologtostderr", "false")
-	_ = fs.Set("v", verbosity)
-	var mu sync.Mutex
-	var buf strings.Builder
-	klog.SetOutput(writerFunc(func(p []byte) (int, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		return buf.Write(p)
-	}))
-	t.Cleanup(func() {
-		klog.Flush()
-		_ = fs.Set("logtostderr", "true")
-		_ = fs.Set("v", "0")
-	})
-	return func() string {
-		klog.Flush()
-		mu.Lock()
-		defer mu.Unlock()
-		return buf.String()
 	}
 }
 

@@ -15,7 +15,6 @@
 package engine
 
 import (
-	"context"
 	"errors"
 	"slices"
 	"strings"
@@ -25,76 +24,6 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
-
-// rawRegion creates a ram region on the memdev through the kernel, as
-// another tool would, and returns it.
-func rawRegion(t *testing.T, v *env, memdev string) string {
-	t.Helper()
-	k := v.f.Kernel()
-	d, err := k.RootDecoder(memdev, kernel.RegionRAM)
-	if err != nil {
-		t.Fatal(err)
-	}
-	name, err := k.CreateRegion(context.Background(), kernel.CreateRegionRequest{Memdev: memdev, Decoder: d, Type: kernel.RegionRAM})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return name
-}
-
-// regionAboveNext makes a ram region on the memdev right after the next cxl
-// create-region, above the region that it created.
-func regionAboveNext(t *testing.T, v *env, memdev string) {
-	v.f.After("cxl create-region", func() {
-		v.f.After("cxl create-region", func() {})
-		rawRegion(t, v, memdev)
-	})
-}
-
-// dropRaw destroys a region that rawRegion made.
-func dropRaw(t *testing.T, v *env, region string) {
-	t.Helper()
-	if err := v.f.Kernel().ReleaseRegion(context.Background(), region); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// wantLog fails the test unless the log has every line of want.
-func wantLog(t *testing.T, logs string, want ...string) {
-	t.Helper()
-	for _, w := range want {
-		if !strings.Contains(logs, w) {
-			t.Errorf("no %q in the log:\n%s", w, logs)
-		}
-	}
-}
-
-// wantRegion fails the test unless the record of the region is in the
-// state, nil for none.
-func wantRegion(t *testing.T, v *env, region string, want state.RegionState) *state.Region {
-	t.Helper()
-	reg := v.records().Region(state.RegionRef(region))
-	switch {
-	case want == "" && reg != nil:
-		t.Fatalf("%s: %+v", region, reg)
-	case want != "" && (reg == nil || reg.State != want):
-		t.Fatalf("%s: %+v, want %s", region, reg, want)
-	}
-	return reg
-}
-
-// wantPreparation fails the test unless the preparation of the claim uid of
-// the driver is in the state, "" for none.
-func wantPreparation(t *testing.T, v *env, driver, uid string, want state.PreparationState) {
-	t.Helper()
-	p := v.records().Preparation(driver, uid)
-	switch {
-	case want == "" && p != nil:
-		t.Fatalf("preparation %s: %+v", uid, p)
-	case want != "" && (p == nil || p.State != want):
-		t.Fatalf("preparation %s: %+v, want %s", uid, p, want)
-	}
-}
 
 // The release policy of a local sliced memdev: its Unprepare destroys the
 // region also below a newer region of another memdev (a hole); a rollback

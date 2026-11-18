@@ -15,36 +15,17 @@
 package engine
 
 import (
-	"bytes"
 	"errors"
-	"flag"
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
-
-	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
-
-// pmemEnv returns a node with the persistent pool memdev serialP whose
-// fsdax namespace has a filesystem of the type.
-func pmemEnv(t *testing.T, typ string) *env {
-	t.Helper()
-	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib})
-	v.formatPmem("mem0", typ)
-	return v
-}
-
-// fsGrant returns the request of a pool grant of mode fs on serialP.
-func fsGrant(uid string, readOnly bool, access state.Access) GrantRequest {
-	return fsReq(poolReq(uid, 0, serialP, state.ModeFs, state.KindPersistent), readOnly, access)
-}
 
 // A writable block grant creates the fsdax namespace of the device, the
 // block device read-write; its release destroys the region and disables
@@ -154,17 +135,6 @@ func TestPersistentP9D(t *testing.T) {
 		t.Fatal("block device writable after the refusal")
 	}
 	v.mustUnprepare(poolDriver, "r")
-}
-
-// sources are the sources of the grants of the engine.
-var sources = []state.Source{state.SourcePool, state.SourceLocal}
-
-// driverOf returns the driver of the claims of a source.
-func driverOf(source state.Source) string {
-	if source == state.SourceLocal {
-		return localDriver
-	}
-	return poolDriver
 }
 
 // fsUse returns the request of a grant of mode fs of the claim uid on the
@@ -289,51 +259,6 @@ func TestPersistentLogLines(t *testing.T) {
 			prefix+pmem+" read-only",
 			prefix+"unmounted "+cached)
 	})
-}
-
-// linesWithPrefix returns the messages of the klog output that begin with
-// prefix, in order, without the klog header.
-func linesWithPrefix(logs, prefix string) []string {
-	var lines []string
-	for _, l := range strings.Split(logs, "\n") {
-		if _, msg, ok := strings.Cut(l, "] "); ok && strings.HasPrefix(msg, prefix) {
-			lines = append(lines, msg)
-		}
-	}
-	return lines
-}
-
-// writerFunc is an io.Writer of a function.
-type writerFunc func([]byte) (int, error)
-
-func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
-
-// captureKlog returns the klog output from now on, at verbosity 3.
-func captureKlog(t *testing.T) func() string {
-	t.Helper()
-	fs := flag.NewFlagSet("klog", flag.ContinueOnError)
-	klog.InitFlags(fs)
-	_ = fs.Set("logtostderr", "false")
-	_ = fs.Set("alsologtostderr", "false")
-	_ = fs.Set("v", "3")
-	var mu sync.Mutex
-	var buf bytes.Buffer
-	klog.SetOutput(writerFunc(func(p []byte) (int, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		return buf.Write(p)
-	}))
-	t.Cleanup(func() {
-		klog.Flush()
-		_ = fs.Set("logtostderr", "true")
-		_ = fs.Set("v", "0")
-	})
-	return func() string {
-		klog.Flush()
-		mu.Lock()
-		defer mu.Unlock()
-		return buf.String()
-	}
 }
 
 // A use of a local persistent memdev whose release failed stays a use of

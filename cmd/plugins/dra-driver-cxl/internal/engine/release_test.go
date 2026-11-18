@@ -16,7 +16,6 @@ package engine
 
 import (
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -41,20 +40,6 @@ func twoPmemEnv(t *testing.T) *env {
 // qGrant returns the request of a reader of mode fs on serialQ.
 func qGrant(uid string, n int) GrantRequest {
 	return fsReq(poolReq(uid, n, serialQ, state.ModeFs, state.KindPersistent), true, "")
-}
-
-// busyCompanion prepares the companion claim c with a lease bind on serialP
-// whose Unprepare fails on the busy bind, which is free again afterwards.
-func busyCompanion(t *testing.T, v *env) string {
-	t.Helper()
-	target := filepath.Join(v.dir, localDriver, "lease-fs", "lc1", "data")
-	v.mustPrepare(poolDriver, "c", bindReq("c", target))
-	v.f.SetBusy(target, true)
-	if err := v.unprepare(poolDriver, "c"); err == nil {
-		t.Fatal("a busy unbind succeeded")
-	}
-	v.f.SetBusy(target, false)
-	return target
 }
 
 // The holder waits of one release call end at one deadline: two held
@@ -104,15 +89,6 @@ func TestReleaseStaleRetryKeepsTheDeadline(t *testing.T) {
 	v.clean("unprepared")
 }
 
-// bindReq returns the request of a reader of mode fs on serialP of a
-// companion claim whose lease bind is at target.
-func bindReq(uid, target string) GrantRequest {
-	req := fsGrant(uid, true, "")
-	req.BindTarget = target
-	req.Lend = &state.GrantLend{Lease: "0123abcd", Name: "data"}
-	return req
-}
-
 // The writer and the reader of one claim on one memdev are released
 // together: the node mount is unmounted without a remount read-only first.
 // The release of a claim next to another one's says so.
@@ -137,45 +113,6 @@ func TestReleaseOneCallTogether(t *testing.T) {
 	}
 	v.mustUnprepare(poolDriver, "r2")
 	v.clean("unprepared")
-}
-
-// busyCompanionNextToReader prepares the fs claim r and the fs lease
-// companion c on the node mount of serialP, then fails the Unprepare of c
-// on its busy lease bind. It returns the node mount and the bind.
-func busyCompanionNextToReader(t *testing.T, v *env) (string, string) {
-	t.Helper()
-	target := companionTarget(v)
-	v.mustPrepare(poolDriver, "r", fsGrant("r", true, ""))
-	v.mustPrepare(poolDriver, "c", bindReq("c", target))
-	mnt := mountPathOf(v.records(), v.grant("c", 0))
-	if mnt == "" || mnt != mountPathOf(v.records(), v.grant("r", 0)) {
-		t.Fatalf("node mounts %q and %q, want one", mnt, mountPathOf(v.records(), v.grant("r", 0)))
-	}
-	v.f.SetBusy(target, true)
-	if err := v.unprepare(poolDriver, "c"); err == nil {
-		t.Fatal("a busy unbind succeeded")
-	}
-	return mnt, target
-}
-
-// mustBeMounted fails the test when nothing is mounted at each path.
-func (v *env) mustBeMounted(what string, paths ...string) {
-	v.t.Helper()
-	for _, p := range paths {
-		if mi, err := v.f.Kernel().Mounted(p); err != nil || mi == nil {
-			v.t.Fatalf("%s: %s is not mounted (%v)", what, p, err)
-		}
-	}
-}
-
-// mustNotBeMounted fails the test when something is mounted at a path.
-func (v *env) mustNotBeMounted(what string, paths ...string) {
-	v.t.Helper()
-	for _, p := range paths {
-		if mi, err := v.f.Kernel().Mounted(p); err != nil || mi != nil {
-			v.t.Fatalf("%s: %s is mounted: %+v (%v)", what, p, mi, err)
-		}
-	}
 }
 
 // A companion whose Unprepare failed on its busy lease bind still uses its

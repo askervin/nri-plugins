@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"testing"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
@@ -41,12 +40,6 @@ type cutScenario struct {
 	// idle releases what the node keeps for idle memdevs once every claim
 	// is unprepared (a shared region kept idle), nil for nothing.
 	idle func(v *env)
-}
-
-// companionTarget returns the lease bind of the companion claims of the
-// scenarios.
-func companionTarget(v *env) string {
-	return filepath.Join(v.dir, localDriver, "lease-fs", "lc1", "data")
 }
 
 // cutScenarios are the life cycles of every kind of grant.
@@ -158,19 +151,6 @@ func newCutEnv(t *testing.T, s cutScenario) *env {
 		s.setup(v)
 	}
 	return v
-}
-
-// finish unprepares every claim that the store has and checks that nothing
-// is left.
-func finish(t *testing.T, v *env, what string) {
-	t.Helper()
-	for _, p := range v.records().Preparations {
-		if err := v.unprepare(p.Driver, p.UID); err != nil {
-			t.Fatalf("%s: unprepare %s: %v", what, p.UID, err)
-		}
-	}
-	v.check(what + ": finished")
-	v.clean(what + ": finished")
 }
 
 // finishScenario unprepares every claim of the node of a scenario,
@@ -311,57 +291,6 @@ const (
 	cutZero  = "zero"
 	cutProbe = "probe"
 )
-
-// probeOptions sets the address line probe of the new regions of the local
-// memdevs of the node, its results in the node's probes file.
-func probeOptions(v *env, o *Options) {
-	o.ProbeAddressing = true
-	o.ProbesFile = filepath.Join(v.dir, "localProbes.json")
-}
-
-// sharedOptions configures every local memdev shared, the new regions
-// probed.
-func sharedOptions(v *env, o *Options) {
-	probeOptions(v, o)
-	o.Shared = func(state.Serial) bool { return true }
-}
-
-// releaseIdleShared starts the node again with no local memdev configured
-// shared: the start releases the regions that idle shared memdevs kept.
-func releaseIdleShared(v *env) {
-	prev := v.tune
-	v.tune = func(o *Options) {
-		if prev != nil {
-			prev(o)
-		}
-		o.Shared = nil
-	}
-	v.restart()
-}
-
-// sliceReq returns the request of a part of the local sliced memdev
-// serialL for result n of the claim uid.
-func sliceReq(uid string, n int, mode state.Mode, size uint64) GrantRequest {
-	return localReq(uid, n, serialL, mode, state.KindExclusive, size)
-}
-
-// sharedReq returns the request of a grant of the local shared memdev
-// serialL for the claim uid.
-func sharedReq(uid string) GrantRequest {
-	return localReq(uid, 0, serialL, state.ModeDax, state.KindShared, gib)
-}
-
-// localPmemReq returns the request of a grant of mode fs (access, readOnly)
-// or block of the local persistent memdev serialP for result n of the
-// claim uid.
-func localPmemReq(uid string, n int, mode state.Mode, readOnly bool, access state.Access) GrantRequest {
-	req := localReq(uid, n, serialP, mode, state.KindPersistent, 0)
-	if mode == state.ModeFs {
-		return fsReq(req, readOnly, access)
-	}
-	req.Asked.ReadOnly = readOnly
-	return req
-}
 
 // localCutScenarios are the life cycles of every kind of local grant.
 var localCutScenarios = []cutScenario{
