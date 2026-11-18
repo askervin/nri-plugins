@@ -15,6 +15,8 @@
 package engine
 
 import (
+	"slices"
+
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 )
 
@@ -113,53 +115,70 @@ func (d Decision) keeps() bool {
 	return d == Keep || d == KeepIdle
 }
 
-// localPolicy are the decisions of the release policy for the kinds of
-// local memdevs, by release: a sliced memdev is released in the order that
-// the user chose (a hole is allowed), a shared one is kept while it is
-// configured shared (zeroed once), a persistent one is kept idle while
-// regions of other memdevs lie above it.
-var localPolicy = map[Kind]map[Release]Decision{
-	//                                Unprepare    rollback  recovery     idle
-	KindLocalParts:         byRelease(Destroy, InOrder, InOrder, Destroy),
-	KindLocalShared:        byRelease(KeepIdle, KeepIdle, KeepIdle, KeepIdle),
-	KindLocalSharedNew:     byRelease(KeepIdle, InOrder, InOrder, KeepIdle),
-	KindLocalUnshared:      byRelease(Destroy, InOrder, Destroy, Destroy),
-	KindLocalUnsharedNew:   byRelease(Destroy, InOrder, InOrder, Destroy),
-	KindLocalPersistent:    byRelease(InOrderIdle, InOrder, InOrderIdle, InOrderIdle),
-	KindLocalPersistentNew: byRelease(InOrderIdle, InOrder, InOrder, InOrderIdle),
+// PolicyRow is a row of the release policy: the decisions of the releases
+// of the last grant of a memdev of a kind.
+type PolicyRow struct {
+	Kind                Kind
+	Unprepare, Rollback Decision
+	Recovery            Decision
+	RecoveryAbove       Decision // with regions of other memdevs above the region
+	Idle                Decision
 }
 
-// PolicyKinds are the rows of the release policy, in the order of the
-// documentation.
-var PolicyKinds = []Kind{KindLocalParts, KindLocalShared, KindLocalSharedNew, KindLocalUnshared, KindLocalUnsharedNew,
-	KindLocalPersistent, KindLocalPersistentNew, KindPoolExclusive, KindPoolShared, KindPoolPersistent}
+// PolicyRows are the release policy, in the order of the documentation: a
+// sliced local memdev is released in the order that the user chose (a hole
+// is allowed), a shared one is kept while it is configured shared (zeroed
+// once), a persistent one is kept idle while regions of other memdevs lie
+// above it; a pool region is destroyed unless a recovery finds regions
+// above it.
+var PolicyRows = []PolicyRow{
+	// kind, unprepare, rollback, recovery, recovery above, idle
+	{KindLocalParts, Destroy, InOrder, InOrder, InOrder, Destroy},
+	{KindLocalShared, KeepIdle, KeepIdle, KeepIdle, KeepIdle, KeepIdle},
+	{KindLocalSharedNew, KeepIdle, InOrder, InOrder, InOrder, KeepIdle},
+	{KindLocalUnshared, Destroy, InOrder, Destroy, Destroy, Destroy},
+	{KindLocalUnsharedNew, Destroy, InOrder, InOrder, InOrder, Destroy},
+	{KindLocalPersistent, InOrderIdle, InOrder, InOrderIdle, InOrderIdle, InOrderIdle},
+	{KindLocalPersistentNew, InOrderIdle, InOrder, InOrder, InOrder, InOrderIdle},
+	// a kept pool region would block the hot-remove of the device; a
+	// recovery keeps one below regions of other memdevs for its claim
+	{KindPoolExclusive, Destroy, Destroy, Destroy, Keep, Destroy},
+	{KindPoolShared, Destroy, Destroy, Destroy, Keep, Destroy},
+	{KindPoolPersistent, Destroy, Destroy, Destroy, Keep, Destroy},
+}
 
 // PolicyReleases are the columns of the release policy, in the order of
 // the documentation.
 var PolicyReleases = []Release{ReleaseUnprepare, ReleaseRollback, ReleaseRecovery, ReleaseIdle}
 
-// byRelease returns the decisions of a row of the release policy.
-func byRelease(unprepare, rollback, recovery, idle Decision) map[Release]Decision {
-	return map[Release]Decision{ReleaseUnprepare: unprepare, ReleaseRollback: rollback, ReleaseRecovery: recovery,
-		ReleaseIdle: idle}
+// Decision returns the decision of the row for the release, with regions
+// of other memdevs above the region or not.
+func (p PolicyRow) Decision(release Release, above bool) Decision {
+	switch release {
+	case ReleaseUnprepare:
+		return p.Unprepare
+	case ReleaseRollback:
+		return p.Rollback
+	case ReleaseRecovery:
+		if above {
+			return p.RecoveryAbove
+		}
+		return p.Recovery
+	case ReleaseIdle:
+		return p.Idle
+	}
+	return Keep
 }
 
 // Policy returns what happens to the region of a memdev of a kind when its
 // last grant goes by release, with the regions of other memdevs above its
-// regions now (regionsAbove).
+// regions now (regionsAbove); Keep of a kind that it does not know.
 func Policy(release Release, kind Kind, regionsAbove []string) Decision {
-	switch kind {
-	case KindPoolExclusive, KindPoolShared, KindPoolPersistent:
-		// a kept pool region would block the hot-remove of the device
-		if release == ReleaseRecovery && len(regionsAbove) > 0 {
-			return Keep
-		}
-		return Destroy
+	i := slices.IndexFunc(PolicyRows, func(p PolicyRow) bool { return p.Kind == kind })
+	if i < 0 {
+		return Keep
 	}
-	if d, ok := localPolicy[kind][release]; ok {
-		return d
-	}
-	return Keep
+	return PolicyRows[i].Decision(release, len(regionsAbove) > 0)
 }
 
 // kindOf returns the row of the release policy of a memdev of the source
@@ -228,18 +247,16 @@ func established(r *state.Records, serial state.Serial, persistent bool) bool {
 }
 
 // decision returns what the release does with the region of the memdev of
-// the last grant g (Policy); decoders that cannot be read count as a
+// the last grant g (Policy), and the regions of other memdevs above the
+// regions of ours of a recovery; decoders that cannot be read count as a
 // region above.
-func (e *Engine) decision(g *state.Grant, memdev string, release Release) Decision {
-	kind := e.kindOf(g)
+func (e *Engine) decision(g *state.Grant, memdev string, release Release) (Decision, []string) {
 	var above []string
-	var aboveErr error
 	if r := e.records(); release == ReleaseRecovery && ownRegions(r, r.Memdev(g.Serial)) {
-		above, aboveErr = e.k.RegionsAbove(memdev)
+		var err error
+		if above, err = e.k.RegionsAbove(memdev); err != nil {
+			above = []string{"(" + err.Error() + ")"}
+		}
 	}
-	decision := Policy(release, kind, above)
-	if aboveErr != nil && decision == Destroy {
-		decision = Policy(release, kind, []string{"(" + aboveErr.Error() + ")"})
-	}
-	return decision
+	return Policy(release, e.kindOf(g), above), above
 }

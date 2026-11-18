@@ -405,8 +405,8 @@ func paragraph(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
-// renderPolicy writes the release policy of the engine (engine.Policy): a
-// row per kind of memdev, a column per release, with the doc comments of
+// renderPolicy writes the release policy of the engine (engine.PolicyRows):
+// a row per kind of memdev, a column per release, with the doc comments of
 // the constants of the kinds, releases and decisions in engineDir.
 func renderPolicy(b *bytes.Buffer, engineDir string) error {
 	texts := map[string]map[string]string{}
@@ -430,10 +430,12 @@ func renderPolicy(b *bytes.Buffer, engineDir string) error {
 		b.WriteString(":---|")
 	}
 	b.WriteString("\n")
-	for _, k := range engine.PolicyKinds {
-		fmt.Fprintf(b, "| %s |", k)
+	var kinds []engine.Kind
+	for _, row := range engine.PolicyRows {
+		kinds = append(kinds, row.Kind)
+		fmt.Fprintf(b, "| %s |", row.Kind)
 		for _, r := range engine.PolicyReleases {
-			d, above := engine.Policy(r, k, nil), engine.Policy(r, k, []string{"above"})
+			d, above := row.Decision(r, false), row.Decision(r, true)
 			if d == above {
 				fmt.Fprintf(b, " %s |", d)
 			} else {
@@ -446,7 +448,7 @@ func renderPolicy(b *bytes.Buffer, engineDir string) error {
 		title, typ string
 		values     []string
 	}{
-		{"Kinds", "Kind", stringsOf(engine.PolicyKinds)},
+		{"Kinds", "Kind", stringsOf(kinds)},
 		{"Releases", "Release", stringsOf(engine.PolicyReleases)},
 		{"Decisions", "Decision", stringsOf([]engine.Decision{engine.Destroy, engine.InOrder, engine.InOrderIdle, engine.Keep,
 			engine.KeepIdle})},

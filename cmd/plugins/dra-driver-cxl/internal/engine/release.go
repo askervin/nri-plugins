@@ -434,23 +434,15 @@ func (e *Engine) recoveryAbove(serial state.Serial, refs []state.GrantRef) []str
 	if m == nil || slices.ContainsFunc(m.Grants, func(o state.GrantRef) bool { return !slices.Contains(refs, o) }) {
 		return nil
 	}
-	if !ownRegions(r, m) {
-		// nothing of ours to keep: another tool's region is FOREIGN
-		return nil
-	}
 	g := r.Grant(refs[0])
 	memdev, err := e.k.FindMemdev(uint64(serial))
 	if err != nil || g == nil {
 		return nil
 	}
-	above, err := e.k.RegionsAbove(memdev)
-	if err != nil {
-		above = []string{"(" + err.Error() + ")"}
+	if d, above := e.decision(g, memdev, ReleaseRecovery); d == Keep {
+		return above
 	}
-	if Policy(ReleaseRecovery, e.kindOf(g), above) != Keep {
-		return nil
-	}
-	return above
+	return nil
 }
 
 // ownRegions tells whether the memdev record m names a region of ours.
@@ -581,7 +573,7 @@ func (e *Engine) releaseMemdev(ctx context.Context, g *state.Grant, call *releas
 	if err != nil {
 		return false, &releaseError{serial: serial, err: err}
 	}
-	decision := e.decision(g, memdev, release)
+	decision, _ := e.decision(g, memdev, release)
 	forClaim := decision.forClaim(release)
 	if decision.keeps() {
 		e.keptIdle(g, memdev, decision, release)
