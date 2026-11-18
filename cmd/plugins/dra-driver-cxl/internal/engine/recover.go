@@ -883,25 +883,23 @@ func (e *Engine) deleteUnowned(ctx context.Context) {
 // no grant uses, deletes it and drops its record.
 func (e *Engine) deleteDax(ctx context.Context, reg *state.Region, dax string) error {
 	region := reg.Ref()
-	part := localPart{dax: dax, mode: state.ModeDax}
+	var serial state.Serial
 	if len(reg.Targets) > 0 {
-		part.serial = reg.Targets[0]
-		part.memdev = e.memdevName(part.serial)
+		serial = reg.Targets[0]
 	}
-	local := false
-	if m := e.records().Memdev(part.serial); m != nil {
-		local = m.Source == state.SourceLocal
-	}
-	if e.k.DaxDriver(dax) == kernel.DriverKmem {
-		part.mode = state.ModeNUMA
-	}
-	part.size, _ = e.k.DaxDeviceSize(dax)
+	m := e.records().Memdev(serial)
+	local := m != nil && m.Source == state.SourceLocal
 	if local {
+		mode := state.ModeDax
+		if e.k.DaxDriver(dax) == kernel.DriverKmem {
+			mode = state.ModeNUMA
+		}
+		size, _ := e.k.DaxDeviceSize(dax)
 		klog.Warningf("local: memdev %s (serial %s): %s (mode %s, %d bytes) belongs to no claim, deleting it",
-			part.memdev, serialText(part.serial), dax, part.mode, part.size)
+			e.memdevName(serial), serialText(serial), dax, mode, size)
 	}
-	if err := e.offlineDax(ctx, &part); err != nil {
-		return err
+	if _, err := e.offlineDax(ctx, dax); err != nil {
+		return fmt.Errorf("deleting %s: %w", dax, err)
 	}
 	if err := e.locked(func() error { return e.k.DeleteDaxDevice(ctx, string(region), dax) }); err != nil {
 		return err

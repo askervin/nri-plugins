@@ -722,56 +722,44 @@ func (e *Engine) releaseDax(ctx context.Context, g *state.Grant, trigger state.T
 	}
 	region, dax := string(g.Got.Region), g.Got.Dax
 	memdev := e.memdevName(g.Serial)
-	part := localPart{memdev: memdev, serial: g.Serial, claim: g.Ref.Claim, dax: dax, mode: g.Asked.Mode, size: d.Size}
-	if err := e.offlineDax(ctx, &part); err != nil {
-		return err
+	logStep := func(step string, start time.Time, details string) {
+		klog.Infof("local: memdev %s (serial %s): claim %s: %s slice %s mode %s size %d%s in %s",
+			memdev, serialText(g.Serial), g.Ref.Claim, step, dax, g.Asked.Mode, d.Size, details, since(start))
 	}
 	start := time.Now()
+	blocks, err := e.offlineDax(ctx, dax)
+	if err != nil {
+		return fmt.Errorf("memdev %s (serial %s): releasing slice %s: %w", memdev, serialText(g.Serial), dax, err)
+	}
+	if len(blocks) > 0 {
+		logStep("offlined", start, fmt.Sprintf(" blocks %v", blocks))
+	}
+	start = time.Now()
 	if err := e.locked(func() error { return e.k.DeleteDaxDevice(ctx, region, dax) }); err != nil {
 		return fmt.Errorf("memdev %s (serial %s): releasing slice %s: %w", memdev, serialText(g.Serial), dax, err)
 	}
-	part.logf("deleted", start, "")
+	logStep("deleted", start, "")
 	return e.commit(ctx, func(r *state.Records) error { return releasedDax(r, g.Ref, g.Got.Region, dax, trigger) })
 }
 
-// localPart names a part of a local memdev (a dax device of a grant) in the
-// log lines and errors of its release.
-type localPart struct {
-	memdev     string
-	serial     state.Serial
-	claim, dax string
-	mode       state.Mode
-	size       uint64
-}
-
-// logf logs a step of the release of the part that began at start.
-func (p *localPart) logf(step string, start time.Time, details string) {
-	klog.InfofDepth(1, "local: memdev %s (serial %s): claim %s: %s slice %s mode %s size %d%s in %s",
-		p.memdev, serialText(p.serial), p.claim, step, p.dax, p.mode, p.size, details, since(start))
-}
-
-// offlineDax offlines the memory blocks of the dax device of a part bound
-// to kmem, under the engine lock.
-func (e *Engine) offlineDax(ctx context.Context, p *localPart) error {
-	if e.k.DaxDriver(p.dax) != kernel.DriverKmem {
-		return nil
+// offlineDax offlines the memory blocks of the dax device dax when it is
+// bound to kmem, under the engine lock; it returns the blocks offlined.
+func (e *Engine) offlineDax(ctx context.Context, dax string) ([]int, error) {
+	if e.k.DaxDriver(dax) != kernel.DriverKmem {
+		return nil, nil
 	}
-	start := time.Now()
 	bs, err := e.k.BlockSize()
 	var blocks []int
 	if err == nil {
-		blocks, err = e.k.DaxDeviceBlocks(p.dax, bs)
+		blocks, err = e.k.DaxDeviceBlocks(dax, bs)
 	}
 	if err == nil {
 		err = e.locked(func() error { return e.k.OfflineBlocks(blocks) })
 	}
 	if err != nil {
-		return fmt.Errorf("memdev %s (serial %s): releasing slice %s: cannot offline its memory (in use?): %w", p.memdev, serialText(p.serial), p.dax, err)
+		return nil, fmt.Errorf("cannot offline its memory (in use?): %w", err)
 	}
-	if p.claim != "" {
-		p.logf("offlined", start, fmt.Sprintf(" blocks %v", blocks))
-	}
-	return nil
+	return blocks, nil
 }
 
 // releasedDax records the own dax device of a grant deleted: a device that
