@@ -37,8 +37,6 @@ import (
 const (
 	rootPath = "devices/platform/ACPI0017:00/root0"
 	ndBus    = rootPath + "/nvdimm-bridge0/ndbus0"
-	// cxlAlign is the alignment of the size of a CXL region.
-	cxlAlign = 256 << 20
 	// portDecoders is the number of HDM decoders of every port (qemu).
 	portDecoders = 4
 	// daxMajor is the major number of dax character devices, pmemMajor of
@@ -591,7 +589,7 @@ func (f *Fake) createRegion(args []string) (string, error) {
 		}
 		size = v
 	}
-	if size == 0 || size%cxlAlign != 0 {
+	if size == 0 || size%kernel.RegionAlign != 0 {
 		return "", fmt.Errorf("cxl region: create_region: %s: failed to set size: %w", next, syscall.EINVAL)
 	}
 	ports := f.pathPorts(m)

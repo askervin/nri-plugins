@@ -521,7 +521,7 @@ func (c *cutClaims) announce(e *Engine, serial state.Serial, refs []state.GrantR
 	}
 	for _, ref := range claims {
 		klog.Infof("engine: claim %s (%s), whose Prepare did not finish: releasing devices %s", e.claimNameOf(ref), ref.Claim,
-			serialText(serial))
+			serial.String())
 	}
 }
 
@@ -879,7 +879,7 @@ func (e *Engine) deleteDax(ctx context.Context, reg *state.Region, dax string) e
 		}
 		size, _ := e.k.DaxDeviceSize(dax)
 		klog.Warningf("engine: local memdev %s (%s): %s (mode %s, %d bytes) belongs to no claim, deleting it",
-			serialText(serial), e.memdevName(serial), dax, mode, size)
+			serial.String(), e.memdevName(serial), dax, mode, size)
 	}
 	if _, err := e.offlineDax(ctx, dax); err != nil {
 		return fmt.Errorf("deleting %s: %w", dax, err)

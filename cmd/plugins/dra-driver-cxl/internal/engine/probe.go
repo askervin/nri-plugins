@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"context"
+
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
@@ -40,11 +41,6 @@ import (
 // usable size is recorded (state.Probe) in Options.ProbesFile, by which
 // every later region of the memdev is made smaller and the publisher
 // publishes it.
-
-// regionAlign is the alignment of the size of a region of a local memdev
-// made smaller than the memdev: the alignment of a CXL region in its
-// window.
-const regionAlign = 256 << 20
 
 // loadProbes returns the probe results of the file path by serial, none
 // when it does not exist.
@@ -106,7 +102,7 @@ func (e *Engine) saveProbe(serial state.Serial, p state.Probe) error {
 
 // usableSize returns the bytes of a local memdev that its region gets: the
 // smaller of its configured usable size (Facts.Usable) and the probed one,
-// rounded down to regionAlign; 0 for all of it.
+// rounded down to kernel.RegionAlign; 0 for all of it.
 func (e *Engine) usableSize(req *GrantRequest) uint64 {
 	size := req.Facts.Usable
 	e.qmu.Lock()
@@ -115,7 +111,7 @@ func (e *Engine) usableSize(req *GrantRequest) uint64 {
 	if ok && p.UsableSize > 0 && (size == 0 || p.UsableSize < size) {
 		size = p.UsableSize
 	}
-	return size / regionAlign * regionAlign
+	return size / kernel.RegionAlign * kernel.RegionAlign
 }
 
 // probeRegion runs the address line probe on the region of a local memdev
@@ -128,7 +124,7 @@ func (e *Engine) probeRegion(ctx context.Context, req *GrantRequest, memdev, reg
 	if !e.opts.ProbeAddressing {
 		return 0, nil
 	}
-	s := serialText(req.Serial)
+	s := req.Serial.String()
 	start := time.Now()
 	size, err := e.k.DaxDeviceSize(dax)
 	if err != nil {
@@ -149,9 +145,9 @@ func (e *Engine) probeRegion(ctx context.Context, req *GrantRequest, memdev, reg
 		}
 		return 0, nil
 	}
-	usable := res.Offset / regionAlign * regionAlign
+	usable := res.Offset / kernel.RegionAlign * kernel.RegionAlign
 	if usable == 0 {
-		return 0, fmt.Errorf("memdev %s (serial %s): %s: %s: less than 256 MiB is usable", memdev, s, region, res)
+		return 0, fmt.Errorf("memdev %s (serial %s): %s: %s: less than %d MiB is usable", memdev, s, region, res, kernel.RegionAlign>>20)
 	}
 	klog.Warningf("engine: local memdev %s (%s): %s: %s; using only the first %d bytes of the memdev from now on", s, memdev, region, res, usable)
 	if err := e.saveProbe(req.Serial, state.Probe{UsableSize: usable, Result: res.String(), Region: region, Time: time.Now()}); err != nil {
@@ -173,5 +169,5 @@ type aliasedBelowError struct {
 // Error returns the error in words.
 func (e *aliasedBelowError) Error() string {
 	return fmt.Sprintf("memdev %s (serial %s): %s aliases: it is created again with its first %d bytes only once no region of another memory device lies above it in the decoders",
-		e.memdev, serialText(e.serial), e.region, e.usable)
+		e.memdev, e.serial.String(), e.region, e.usable)
 }

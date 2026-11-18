@@ -21,7 +21,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/resource"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 // Settings of local memdevs: the usable size of a memdev whose memory
@@ -59,8 +59,9 @@ func (c *DriverConfig) validateMemdevSettings() error {
 			if err != nil {
 				return fmt.Errorf("memdevSettings[%d]: usableSize %q: %w", i, s.UsableSize, err)
 			}
-			if q.Value() < dra.CXLRegionAlign {
-				return fmt.Errorf("memdevSettings[%d]: usableSize %q is less than 256Mi", i, s.UsableSize)
+			if q.Value() < kernel.RegionAlign {
+				return fmt.Errorf("memdevSettings[%d]: usableSize %q is less than %s", i, s.UsableSize,
+					resource.NewQuantity(kernel.RegionAlign, resource.BinarySI))
 			}
 		}
 	}

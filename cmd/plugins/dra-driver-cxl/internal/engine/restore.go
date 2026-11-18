@@ -126,7 +126,7 @@ func (e *Engine) restoreSerial(serial state.Serial, why map[state.GrantRef]error
 	rs.loops = map[string]string{}
 	for _, u := range grants {
 		if rm, ok := byMount[u.nodeMount]; ok && rm.err == nil && rm.loop != u.loop && u.access == api.AccessCached {
-			klog.Infof("engine: %s memdev %s: %s is on %s now, not %s", u.source, serialText(serial), u.nodeMount, rm.loop, u.loop)
+			klog.Infof("engine: %s memdev %s: %s is on %s now, not %s", u.source, serial.String(), u.nodeMount, rm.loop, u.loop)
 			rs.loops[u.nodeMount] = rm.loop
 		}
 	}
@@ -374,7 +374,7 @@ func (e *Engine) restoreNodeMount(u *pmemGrant, writer bool, explained []string)
 		return "", err
 	}
 	if mi == nil {
-		klog.Infof("engine: %s memdev %s: %s is not mounted, mounting it again", u.source, serialText(u.serial), u.nodeMount)
+		klog.Infof("engine: %s memdev %s: %s is not mounted, mounting it again", u.source, u.serial.String(), u.nodeMount)
 		if err := e.checkRecordedBlockDevice(u.serial, u.blockDevice); err != nil {
 			e.removeMountDir(u.nodeMount)
 			return "", fmt.Errorf("not mounting %s again: %w", u.nodeMount, err)
@@ -389,7 +389,7 @@ func (e *Engine) restoreNodeMount(u *pmemGrant, writer bool, explained []string)
 	case writer && mi.SuperReadOnly() && config.FsTypeUpgradable(mi.FsType):
 		err = e.upgrade(u.source, u.serial, u.blockDevice, loop, u.nodeMount, explained)
 	case writer && mi.SuperReadOnly():
-		err = fmt.Errorf("device %s: %s is mounted read-only and cannot be remounted read-write (%s)", serialText(u.serial), u.nodeMount, mi.FsType)
+		err = fmt.Errorf("device %s: %s is mounted read-only and cannot be remounted read-write (%s)", u.serial.String(), u.nodeMount, mi.FsType)
 	case !writer && !mi.SuperReadOnly():
 		err = e.downgrade(u.source, u.serial, u.blockDevice, loop, u.nodeMount)
 	}
@@ -507,7 +507,7 @@ func (e *Engine) remountGrant(ctx context.Context, req *GrantRequest) error {
 		l, err := e.restoreNodeMount(&grants[i], firstWriter(grants) != nil, nodeMounts(grants))
 		if err != nil {
 			return fmt.Errorf("device %s: its node mount %s is not mounted and cannot be mounted again: %w; unprepare the claim (delete its pods) to prepare it anew",
-				serialText(g.Serial), grants[i].nodeMount, err)
+				g.Serial.String(), grants[i].nodeMount, err)
 		}
 		loop = l
 	}

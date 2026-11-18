@@ -249,7 +249,7 @@ func (e *Engine) pmemChain(ctx context.Context, req *GrantRequest, memdev string
 		return "", nil, err
 	}
 	if !ok {
-		return "", nil, fmt.Errorf("device %s: %s has no persistent memory", serialText(req.Serial), memdev)
+		return "", nil, fmt.Errorf("device %s: %s has no persistent memory", req.Serial.String(), memdev)
 	}
 	wctx, cancel := context.WithTimeout(ctx, e.settle(req.Asked.Source))
 	defer cancel()
@@ -274,9 +274,9 @@ func (e *Engine) pmemChain(ctx context.Context, req *GrantRequest, memdev string
 	if req.Asked.Source == state.SourceLocal {
 		switch {
 		case created:
-			klog.Infof("engine: local memdev %s (%s): created %s (pmem, nvdimm %s) in %s", serialText(req.Serial), memdev, region, nd, since(start))
+			klog.Infof("engine: local memdev %s (%s): created %s (pmem, nvdimm %s) in %s", req.Serial.String(), memdev, region, nd, since(start))
 		case again:
-			klog.Infof("engine: local memdev %s (%s): set up kept %s (pmem, nvdimm %s)", serialText(req.Serial), memdev, region, nd)
+			klog.Infof("engine: local memdev %s (%s): set up kept %s (pmem, nvdimm %s)", req.Serial.String(), memdev, region, nd)
 		}
 	}
 	ns, err := e.pmemNamespace(wctx, req, nd, nss)
@@ -332,7 +332,7 @@ func (e *Engine) pmemNamespace(ctx context.Context, req *GrantRequest, nd string
 		return ns, nil
 	}
 	if req.Asked.Mode == state.ModeFs || req.Asked.ReadOnly {
-		return nil, fmt.Errorf("device %s: no fsdax namespace in %s: has a writer written the device?", serialText(req.Serial), nd)
+		return nil, fmt.Errorf("device %s: no fsdax namespace in %s: has a writer written the device?", req.Serial.String(), nd)
 	}
 	existing := ""
 	if len(nss) > 0 {
@@ -362,7 +362,7 @@ func (e *Engine) pmemNamespace(ctx context.Context, req *GrantRequest, nd string
 // of the device changed but what cannot be undone, which is logged.
 func (e *Engine) preparePmemGrant(ctx context.Context, req *GrantRequest, dev string, others []pmemGrant) (pmemGrant, error) {
 	u := pmemGrant{ref: req.Ref, source: req.Asked.Source, serial: req.Serial, mode: req.Asked.Mode, readOnly: req.Asked.ReadOnly, blockDevice: dev}
-	s := serialText(req.Serial)
+	s := req.Serial.String()
 	blockWriter := slices.ContainsFunc(others, func(o pmemGrant) bool { return o.mode == state.ModeBlock && o.writer() })
 	if blockWriter || (req.Asked.Mode == state.ModeBlock && !req.Asked.ReadOnly && len(others) > 0) {
 		return u, fmt.Errorf("device %s: mode block read-write needs the device alone on this node", s)
@@ -385,7 +385,7 @@ func (e *Engine) preparePmemGrant(ctx context.Context, req *GrantRequest, dev st
 // mount of the access mounted, reused, made read-write or read-only.
 func (e *Engine) prepareFs(ctx context.Context, req *GrantRequest, u pmemGrant, others []pmemGrant) (pmemGrant, error) {
 	source, serial, dev := req.Asked.Source, req.Serial, u.blockDevice
-	sig := &signature{e: e, serial: serialText(serial), dev: dev}
+	sig := &signature{e: e, serial: serial.String(), dev: dev}
 	typ, err := e.fsTypeOf(req, dev, sig)
 	if err != nil {
 		return u, err
@@ -524,7 +524,7 @@ func checkCluster(req *GrantRequest, typ string, sig *signature) error {
 // of one node next to the other grants of the device: one access with a
 // writer, a writer only with one access.
 func checkNodeRules(req *GrantRequest, access string, others []pmemGrant) error {
-	s := serialText(req.Serial)
+	s := req.Serial.String()
 	other := firstWriter(others)
 	accesses := fsAccesses(others)
 	switch {
@@ -700,11 +700,11 @@ func (e *Engine) mountNode(source state.Source, serial state.Serial, dev, access
 			return "", err
 		}
 	}
-	what := fsType + ", " + map[bool]string{true: "ro", false: "rw"}[ro]
+	what := fsType + ", " + roWord(ro)
 	if len(data) > 0 {
 		what += ", " + strings.Join(data, ",")
 	}
-	klog.Infof("engine: %s memdev %s: mounted %s at %s (%s)", source, serialText(serial), src, mnt, what)
+	klog.Infof("engine: %s memdev %s: mounted %s at %s (%s)", source, serial.String(), src, mnt, what)
 	if loop != nil {
 		return loop.Path(), nil
 	}
@@ -717,7 +717,7 @@ func (e *Engine) mountNode(source state.Source, serial state.Serial, dev, access
 // error the loop device is detached and the directory removed; then the
 // mount keeps the autoclear loop device.
 func (e *Engine) mountFs(source state.Source, serial state.Serial, dev, src, fsType, mnt string, ro bool, data []string, loop kernel.Loop) error {
-	s := serialText(serial)
+	s := serial.String()
 	err := e.locked(func() error {
 		if config.FsTypeReadOnly(fsType) {
 			return e.k.Mount(src, mnt, fsType, fsMountFlags, strings.Join(data, ","))
@@ -754,7 +754,7 @@ func (e *Engine) attachCachedLoop(source state.Source, serial state.Serial, dev,
 	})
 	if err != nil {
 		e.removeMountDir(mnt)
-		return nil, fmt.Errorf("device %s: a loop device over %s: %w", serialText(serial), dev, err)
+		return nil, fmt.Errorf("device %s: a loop device over %s: %w", serial.String(), dev, err)
 	}
 	if !readOnlyType {
 		if err := e.setReadOnly(source, serial, l.Path(), ro); err != nil {
@@ -771,7 +771,7 @@ func (e *Engine) attachCachedLoop(source state.Source, serial state.Serial, dev,
 // mount of the block device on the node has the superblock, and its
 // options win.
 func (e *Engine) verifyNodeDax(source state.Source, serial state.Serial, dev, fsType, mnt string) error {
-	s := serialText(serial)
+	s := serial.String()
 	mi, err := e.k.Mounted(mnt)
 	if err == nil && (mi == nil || !mi.HasSuperOpt(daxAlways)) {
 		err = fmt.Errorf("device %s: %s on %s was mounted without DAX", s, fsType, dev)
@@ -790,7 +790,7 @@ func (e *Engine) verifyNodeDax(source state.Source, serial state.Serial, dev, fs
 // detachLoop detaches a loop device that no mount uses.
 func (e *Engine) detachLoop(source state.Source, serial state.Serial, loop kernel.Loop) {
 	if err := e.locked(func() error { return loop.Release(true) }); err != nil {
-		klog.Errorf("engine: %s memdev %s: detaching %s: %v", source, serialText(serial), loop.Path(), err)
+		klog.Errorf("engine: %s memdev %s: detaching %s: %v", source, serial.String(), loop.Path(), err)
 	}
 }
 
@@ -799,7 +799,7 @@ func (e *Engine) detachLoop(source state.Source, serial state.Serial, loop kerne
 // superblock. On error both are read-only again. It refuses while the
 // device has a superblock that the node mounts explained do not have.
 func (e *Engine) upgrade(source state.Source, serial state.Serial, dev, loop, mnt string, explained []string) error {
-	s := serialText(serial)
+	s := serial.String()
 	if err := e.checkUnexplained(serial, dev, explained); err != nil {
 		return err
 	}
@@ -833,7 +833,7 @@ func (e *Engine) upgrade(source state.Source, serial state.Serial, dev, loop, mn
 // read-only: its data written, the superblock, then the loop device of a
 // cached mount, then the block device.
 func (e *Engine) downgrade(source state.Source, serial state.Serial, dev, loop, mnt string) error {
-	s := serialText(serial)
+	s := serial.String()
 	if err := e.locked(func() error { return e.k.Syncfs(mnt) }); err != nil {
 		return fmt.Errorf("device %s: remounting %s read-only: %w", s, mnt, err)
 	}
@@ -857,7 +857,7 @@ func (e *Engine) setReadOnly(source state.Source, serial state.Serial, dev strin
 	if dev == "" {
 		return nil
 	}
-	s := serialText(serial)
+	s := serial.String()
 	changed := false
 	if err := e.locked(func() error {
 		var err error
@@ -878,7 +878,7 @@ func (e *Engine) setReadOnly(source state.Source, serial state.Serial, dev strin
 // mounts of the grants of the device), or if its superblocks cannot be
 // read.
 func (e *Engine) checkUnexplained(serial state.Serial, dev string, explained []string) error {
-	s := serialText(serial)
+	s := serial.String()
 	sbs, err := e.k.Superblocks(dev)
 	if err != nil {
 		return fmt.Errorf("device %s: the superblocks of %s: %w", s, dev, err)
@@ -896,7 +896,7 @@ func (e *Engine) checkUnexplained(serial state.Serial, dev string, explained []s
 	for _, sb := range sbs {
 		if !known[sb.Device] {
 			return fmt.Errorf("device %s: %s has a superblock that no claim of this node explains (%s mounted %s in %s): it is not used until that mount is gone",
-				s, dev, sb.Source, map[bool]string{true: "ro", false: "rw"}[sb.ReadOnly], sb.Where)
+				s, dev, sb.Source, roWord(sb.ReadOnly), sb.Where)
 		}
 	}
 	return nil
@@ -924,7 +924,7 @@ func (e *Engine) isDeviceMount(mi *kernel.MountInfo, dev, access string) (bool, 
 // (direct, with dax=always for the DAX types), on a loop device over it
 // (cached).
 func (e *Engine) checkNodeMount(serial state.Serial, dev, access, fsType string, mi *kernel.MountInfo) (string, error) {
-	s := serialText(serial)
+	s := serial.String()
 	ok, err := e.isDeviceMount(mi, dev, access)
 	if err != nil {
 		return "", err
@@ -964,9 +964,9 @@ func (e *Engine) unmountNode(source state.Source, serial state.Serial, mnt strin
 	}
 	if mi != nil {
 		if err := e.locked(func() error { return e.k.Unmount(mnt) }); err != nil {
-			return fmt.Errorf("device %s: unmounting %s: %w", serialText(serial), mnt, err)
+			return fmt.Errorf("device %s: unmounting %s: %w", serial.String(), mnt, err)
 		}
-		klog.Infof("engine: %s memdev %s: unmounted %s", source, serialText(serial), mnt)
+		klog.Infof("engine: %s memdev %s: unmounted %s", source, serial.String(), mnt)
 	}
 	e.removeMountDir(mnt)
 	return nil
@@ -1026,7 +1026,7 @@ func (e *Engine) verified(source state.Source, serial state.Serial, dev string) 
 		return dev
 	}
 	if err := e.checkRecordedBlockDevice(serial, dev); err != nil {
-		klog.Warningf("engine: %s memdev %s: not changing the read-only flag of %s: %v", source, serialText(serial), dev, err)
+		klog.Warningf("engine: %s memdev %s: not changing the read-only flag of %s: %v", source, serial.String(), dev, err)
 		return ""
 	}
 	return dev
@@ -1043,7 +1043,7 @@ func (e *Engine) verified(source state.Source, serial state.Serial, dev string) 
 // lazily, so a lease bind can be gone from the driver's view and still hold
 // the device.
 func (e *Engine) waitNoHolder(ctx context.Context, source state.Source, serial state.Serial, dev string, deadline time.Time) error {
-	s := serialText(serial)
+	s := serial.String()
 	for {
 		holder, err := e.k.Holder(dev)
 		if err != nil {
@@ -1076,14 +1076,14 @@ func (e *Engine) checkRecordedBlockDevice(serial state.Serial, blockDev string) 
 			return e.checkBlockDevice(g)
 		}
 	}
-	return fmt.Errorf("device %s: no prepared device has %s", serialText(serial), blockDev)
+	return fmt.Errorf("device %s: no prepared device has %s", serial.String(), blockDev)
 }
 
 // checkBlockDevice returns an error if the block device of a grant is not
 // the one of the fsdax namespace of the region of its memdev now: its
 // name, numbers and namespace must be those that the Prepare recorded.
 func (e *Engine) checkBlockDevice(g *state.Grant) error {
-	s := serialText(g.Serial)
+	s := g.Serial.String()
 	nss, nd, err := e.regionNamespaces(g.Serial)
 	if err != nil {
 		return fmt.Errorf("device %s: %w", s, err)
@@ -1137,7 +1137,7 @@ func (e *Engine) currentBlockDevice(serial state.Serial) string {
 	nss, _, err := e.regionNamespaces(serial)
 	if err != nil {
 		if !errors.Is(err, kernel.ErrNotFound) && !errors.Is(err, errNoRegion) {
-			klog.Warningf("engine: memdev %s: %v", serialText(serial), err)
+			klog.Warningf("engine: memdev %s: %v", serial.String(), err)
 		}
 		return ""
 	}
@@ -1178,7 +1178,7 @@ func (e *Engine) releaseMount(ctx context.Context, g *state.Grant, call *release
 	}
 	err := e.releasePmemGrants(g.Asked.Source, g.Serial, e.gonePmemGrants(r, g, call), remaining)
 	if err != nil {
-		err = fmt.Errorf("releasing %s (serial %s): %w", e.deviceNameOf(g.Ref), serialText(g.Serial), err)
+		err = fmt.Errorf("releasing %s (serial %s): %w", e.deviceNameOf(g.Ref), g.Serial.String(), err)
 	}
 	call.released[g.Serial] = err
 	if err != nil {

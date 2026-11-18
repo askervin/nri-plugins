@@ -96,7 +96,7 @@ func (e *Engine) bindUsed(target string, except state.GrantRef) bool {
 // unmounted. A new bind that fails the check and cannot be unmounted is
 // recorded as stale.
 func (e *Engine) bindLease(u *pmemGrant, target string, otherBind func(string) bool) (bool, error) {
-	s := serialText(u.serial)
+	s := u.serial.String()
 	node, err := e.k.Mounted(u.nodeMount)
 	switch {
 	case err != nil:
@@ -131,7 +131,7 @@ func (e *Engine) bindLease(u *pmemGrant, target string, otherBind func(string) b
 // lease bind of the node mount node of the grant, and of no other prepared
 // grant (otherBind).
 func checkExistingBind(u *pmemGrant, target string, mi, node *kernel.MountInfo, otherBind func(string) bool) error {
-	s := serialText(u.serial)
+	s := u.serial.String()
 	switch {
 	case !isLeaseBind(mi, node, u.readOnly):
 		return fmt.Errorf("device %s: %s is a %s mount of %s, not of %s", s, target, mi.FsType, mi.Source, u.nodeMount)
@@ -145,7 +145,7 @@ func checkExistingBind(u *pmemGrant, target string, mi, node *kernel.MountInfo, 
 // again (or recorded it stale when that fails), when the bind is not the
 // lease bind of the node mount node of the grant.
 func (e *Engine) verifyBind(u *pmemGrant, target string, node *kernel.MountInfo) error {
-	s := serialText(u.serial)
+	s := u.serial.String()
 	mi, err := e.k.Mounted(target)
 	if err == nil && (mi == nil || !isLeaseBind(mi, node, u.readOnly)) {
 		err = fmt.Errorf("device %s: the bind of %s at %s is not a %s nosuid nodev %s mount", s, u.nodeMount, target, kernel.RoWord(u.readOnly), node.FsType)
@@ -168,7 +168,7 @@ func isLeaseBind(mi, node *kernel.MountInfo, readOnly bool) bool {
 	if mi.FsType != node.FsType || mi.Source != node.Source || mi.Root != node.Root {
 		return false
 	}
-	for _, f := range []string{map[bool]string{true: "ro", false: "rw"}[readOnly], "nosuid", "nodev"} {
+	for _, f := range []string{roWord(readOnly), "nosuid", "nodev"} {
 		if !slices.Contains(mi.MountFlags, f) {
 			return false
 		}

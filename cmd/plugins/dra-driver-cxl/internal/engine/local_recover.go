@@ -50,7 +50,7 @@ func (e *Engine) forgetGoneParts(ctx context.Context) {
 		if size, err := e.k.DaxDeviceSize(g.Got.Dax); err == nil && size == d.Size {
 			continue
 		}
-		klog.Warningf("engine: local memdev %s (%s): claim %s: slice %s of %d bytes is gone, dropping it", serialText(g.Serial),
+		klog.Warningf("engine: local memdev %s (%s): claim %s: slice %s of %d bytes is gone, dropping it", g.Serial.String(),
 			e.memdevName(g.Serial), g.Ref.Claim, g.Got.Dax, d.Size)
 		if g.Asked.Mode == state.ModeDax {
 			klog.Warningf("engine: claim %s: no device node for the dax slice %s: the slice is gone", g.Ref.Claim, filepath.Join(e.devRoot(), g.Got.Dax))
@@ -159,7 +159,7 @@ func (e *Engine) recoverShared(ctx context.Context, m *state.Memdev) error {
 	if region == "" {
 		return nil
 	}
-	memdev, s := e.memdevName(m.Serial), serialText(m.Serial)
+	memdev, s := e.memdevName(m.Serial), m.Serial.String()
 	claims := otherClaims(m, "")
 	shared := e.configuredShared(m.Serial)
 	switch {
@@ -181,7 +181,7 @@ func (e *Engine) recoverShared(ctx context.Context, m *state.Memdev) error {
 func (e *Engine) recoverPersistent(ctx context.Context, m *state.Memdev) error {
 	if len(m.Grants) > 0 {
 		region, _ := e.localRegionNames(m)
-		klog.Infof("engine: local memdev %s (%s): keeping persistent %s, claims %v", serialText(m.Serial), e.memdevName(m.Serial), region, otherClaims(m, ""))
+		klog.Infof("engine: local memdev %s (%s): keeping persistent %s, claims %v", m.Serial.String(), e.memdevName(m.Serial), region, otherClaims(m, ""))
 		return nil
 	}
 	return e.releaseIdleLocal(ctx, m)
@@ -206,7 +206,7 @@ func (e *Engine) releaseIdleQueued(ctx context.Context, m *state.Memdev, trigger
 	var re *releaseError
 	if errors.As(err, &re) && re.held {
 		region, _ := e.localRegionNames(m)
-		klog.Warningf("engine: local memdev %s (%s): keeping %s of the idle persistent device: %v", serialText(m.Serial), e.memdevName(m.Serial), region, re.err)
+		klog.Warningf("engine: local memdev %s (%s): keeping %s of the idle persistent device: %v", m.Serial.String(), e.memdevName(m.Serial), region, re.err)
 		return nil
 	}
 	return err
@@ -227,7 +227,7 @@ func (e *Engine) ForgetLocal(ctx context.Context, serials []state.Serial) error 
 		}
 		memdev, _ := e.k.FindMemdev(uint64(serial))
 		klog.Warningf("engine: local memdev %s (%s): its region was being created, and it is a pool device now: forgetting it without touching its regions %v",
-			serialText(serial), memdev, e.k.Regions(memdev))
+			serial.String(), memdev, e.k.Regions(memdev))
 		forget = append(forget, serial)
 	}
 	if len(forget) == 0 {

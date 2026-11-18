@@ -215,10 +215,10 @@ func mergeFacts(old, req state.MemdevFacts) state.MemdevFacts {
 func (e *Engine) localGuard(ctx context.Context, serial state.Serial) error {
 	r := e.records()
 	if p := r.ProvenanceOf(serial); p != nil && (p.State == state.ProvenancePool || p.State == state.ProvenanceHeld) {
-		return fmt.Errorf("memdev %s is a pool device (%s): not used as a local memdev", serialText(serial), p.State)
+		return fmt.Errorf("memdev %s is a pool device (%s): not used as a local memdev", serial.String(), p.State)
 	}
 	if m := r.Memdev(serial); m != nil && m.Source == state.SourcePool {
-		return fmt.Errorf("memdev %s is a pool device: not used as a local memdev", serialText(serial))
+		return fmt.Errorf("memdev %s is a pool device: not used as a local memdev", serial.String())
 	}
 	if e.opts.LocalGuard != nil {
 		return e.opts.LocalGuard(ctx, serial)

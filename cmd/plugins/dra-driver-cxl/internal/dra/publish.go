@@ -573,11 +573,6 @@ func (l *LocalSnapshot) claims() map[uint64][]string {
 	return out
 }
 
-// CXLRegionAlign is the alignment of the physical address of a CXL region
-// in its window: a region starts at most block size - CXLRegionAlign after
-// a memory block boundary.
-const CXLRegionAlign = 256 << 20
-
 // LocalUsableSize returns the bytes of whole memory blocks of bs bytes that
 // a region on a memdev of size bytes is sure to hold, wherever in its
 // window it starts.
@@ -585,8 +580,8 @@ func LocalUsableSize(size, bs uint64) uint64 {
 	if bs == 0 {
 		return 0
 	}
-	if bs > CXLRegionAlign {
-		head := bs - CXLRegionAlign
+	if bs > kernel.RegionAlign {
+		head := bs - kernel.RegionAlign
 		if size <= head {
 			return 0
 		}
@@ -1014,7 +1009,7 @@ func memdevUsableSize(cfg PublishConfig, memDev *kernel.MemdevInfo, local *Local
 	size := memDev.RamSize
 	for _, limit := range []uint64{cfg.usableSize(memDev.Name, memDev.Serial), local.ProbedSize(memDev.Serial)} {
 		if limit > 0 && limit < size {
-			size = limit / CXLRegionAlign * CXLRegionAlign
+			size = limit / kernel.RegionAlign * kernel.RegionAlign
 		}
 	}
 	return size

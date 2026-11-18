@@ -62,6 +62,10 @@ const (
 	RegionPmem = "pmem"
 )
 
+// RegionAlign is the alignment of the size of a CXL region and of its
+// physical address in its window.
+const RegionAlign = 256 << 20
+
 // RegionState is the state of a region.
 type RegionState int
 

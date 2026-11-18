@@ -22,9 +22,10 @@ import (
 	"slices"
 	"time"
 
+	"k8s.io/klog/v2"
+
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
-	"k8s.io/klog/v2"
 )
 
 // ReleaseGrants releases the grants refs as release says (Policy) and
@@ -157,7 +158,7 @@ type releaseError struct {
 
 // Error returns the error in words.
 func (e *releaseError) Error() string {
-	return fmt.Sprintf("releasing serial %s: %v", serialText(e.serial), e.err)
+	return fmt.Sprintf("releasing serial %s: %v", e.serial.String(), e.err)
 }
 
 // Unwrap returns the cause.

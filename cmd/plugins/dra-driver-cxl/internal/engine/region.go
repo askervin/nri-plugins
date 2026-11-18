@@ -124,7 +124,7 @@ func (e *Engine) forgetGoneRegion(ctx context.Context, req *GrantRequest, memdev
 	if m := e.records().Memdev(req.Serial); m != nil {
 		claims = append(claims, otherClaims(m, req.Ref.Claim)...)
 	}
-	klog.Warningf("engine: local memdev %s (%s): %s of the %s device is gone, forgetting it and its claims %v", serialText(req.Serial), memdev, name, what, claims)
+	klog.Warningf("engine: local memdev %s (%s): %s of the %s device is gone, forgetting it and its claims %v", req.Serial.String(), memdev, name, what, claims)
 	return true, e.commit(ctx, func(r *state.Records) error { return dropRegion(r, reg.Ref(), state.TriggerPrepare) })
 }
 
@@ -141,7 +141,7 @@ func (e *Engine) useRegion(ctx context.Context, req *GrantRequest, memdev string
 	// a region has one target memdev: its kernel state is the one to look
 	// at (an interleaved region would need every target's)
 	if reg.State == state.RegionOwned && ri.State == kernel.RegionDisabled {
-		klog.Infof("engine: %s memdev %s (%s): %s is disabled: keeping it to enable and set it up again", req.Asked.Source, serialText(req.Serial),
+		klog.Infof("engine: %s memdev %s (%s): %s is disabled: keeping it to enable and set it up again", req.Asked.Source, req.Serial.String(),
 			memdev, name)
 		if err := e.commit(ctx, func(r *state.Records) error {
 			return keepRegion(r.Region(reg.Ref()), state.TriggerPrepare)
@@ -162,7 +162,7 @@ func (e *Engine) useRegion(ctx context.Context, req *GrantRequest, memdev string
 		if req.Asked.Source == state.SourcePool {
 			e.k.Logf("%s: reusing %s", memdev, name)
 		}
-		klog.Infof("engine: %s memdev %s (%s): enabled kept %s", req.Asked.Source, serialText(req.Serial), memdev, name)
+		klog.Infof("engine: %s memdev %s (%s): enabled kept %s", req.Asked.Source, req.Serial.String(), memdev, name)
 		if err := e.commit(ctx, func(r *state.Records) error {
 			rec := r.Region(state.RegionRef(name))
 			if err := state.Apply(&state.RegionTable, &rec.State, state.RegionOwned, state.TriggerPrepare); err != nil {
@@ -604,10 +604,10 @@ func (e *Engine) releaseRegions(ctx context.Context, serial state.Serial, memdev
 			}
 			if forClaim != "" {
 				klog.Warningf("engine: %s memdev %s (%s): keeping %s for claims %v, whose Prepare did not finish: %s lie above it, its release would leave a hole in the decoders of their ports; their Unprepare releases it, their Prepare again reuses it",
-					source, serialText(serial), memdev, name, []string{forClaim}, strings.Join(rs, ", "))
+					source, serial.String(), memdev, name, []string{forClaim}, strings.Join(rs, ", "))
 			} else {
 				klog.Warningf("engine: %s memdev %s (%s): keeping %s of %s: %s lie above it, its release would leave a hole in the decoders of their ports",
-					source, serialText(serial), memdev, name, idle, strings.Join(rs, ", "))
+					source, serial.String(), memdev, name, idle, strings.Join(rs, ", "))
 			}
 			return forClaim != "", e.keepMemdev(ctx, serial, trigger, forClaim != "")
 		}
@@ -616,7 +616,7 @@ func (e *Engine) releaseRegions(ctx context.Context, serial state.Serial, memdev
 		}
 		if source != state.SourcePool {
 			// the pool logs the release of its memdev
-			klog.Infof("engine: local memdev %s (%s): released %s in %s", serialText(serial), memdev, name, since(start))
+			klog.Infof("engine: local memdev %s (%s): released %s in %s", serial.String(), memdev, name, since(start))
 		}
 	}
 	return false, nil
@@ -628,7 +628,7 @@ func (e *Engine) releaseRegions(ctx context.Context, serial state.Serial, memdev
 func (e *Engine) disableMemdev(ctx context.Context, source state.Source, serial state.Serial, memdev string) error {
 	if rs := e.k.Regions(memdev); len(rs) > 0 {
 		klog.Warningf("engine: %s memdev %s (%s): not disabling it: it has regions %v that no record of the driver names",
-			source, serialText(serial), memdev, rs)
+			source, serial.String(), memdev, rs)
 		return nil
 	}
 	if err := e.locked(func() error { return e.k.DisableMemdev(ctx, memdev) }); err != nil {

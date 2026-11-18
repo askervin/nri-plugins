@@ -46,7 +46,6 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
-	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
@@ -392,12 +391,15 @@ func (e *Engine) ownsAll() bool {
 // memdevText names the memdev of a source with the serial in the log
 // lines: "pool memdev 0xc1ae0001".
 func memdevText(source state.Source, serial state.Serial) string {
-	return string(source) + " memdev " + serialText(serial)
+	return string(source) + " memdev " + serial.String()
 }
 
-// serialText returns the serial as the log lines and errors write it.
-func serialText(serial state.Serial) string {
-	return api.FormatSerial(uint64(serial))
+// roWord returns the mount option of a read-only or a read-write mount.
+func roWord(readOnly bool) string {
+	if readOnly {
+		return "ro"
+	}
+	return "rw"
 }
 
 // removeRecord removes the records of a section for which drop is true.
@@ -427,7 +429,7 @@ func (e *Engine) memdevName(serial state.Serial) string {
 	if name, err := e.k.FindMemdev(uint64(serial)); err == nil {
 		return name
 	}
-	return serialText(serial)
+	return serial.String()
 }
 
 // since returns the time since start in milliseconds for logs ("12.345ms").
