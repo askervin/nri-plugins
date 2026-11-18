@@ -17,6 +17,8 @@ package state
 import (
 	"fmt"
 	"slices"
+
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
 // Violation is a record that breaks an invariant.
@@ -131,13 +133,13 @@ func CheckStates(r *Records) error {
 // The states that a record in the store may have, by table; the others
 // are defined next to their tables.
 var (
-	memdevStored     = list(MemdevActive, MemdevIdleKept, MemdevGone)
-	daxDeviceStored  = list(DaxCreating, DaxSized, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline, DaxSeed)
-	mountStored      = list(MountedRO, MountedRW, MountForeign, MountUnrestored)
-	bindStored       = list(BindAbsent, BindBound, BindStale)
-	leaseClaimStored = list(LeaseClaimOpen, LeaseClaimOpenNoListener, LeaseClaimClosing)
-	provenanceStored = list(ProvenanceHeld, ProvenanceLocal, ProvenancePool)
-	lendingLeases    = list(LeaseReady, LeaseReleasing, LeaseReleasingBusy, LeaseFailed)
+	memdevStored     = fsm.List(MemdevActive, MemdevIdleKept, MemdevGone)
+	daxDeviceStored  = fsm.List(DaxCreating, DaxSized, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline, DaxSeed)
+	mountStored      = fsm.List(MountedRO, MountedRW, MountForeign, MountUnrestored)
+	bindStored       = fsm.List(BindAbsent, BindBound, BindStale)
+	leaseClaimStored = fsm.List(LeaseClaimOpen, LeaseClaimOpenNoListener, LeaseClaimClosing)
+	provenanceStored = fsm.List(ProvenanceHeld, ProvenanceLocal, ProvenancePool)
+	lendingLeases    = fsm.List(LeaseReady, LeaseReleasing, LeaseReleasingBusy, LeaseFailed)
 )
 
 // checkRecords adds the violations of record consistency.

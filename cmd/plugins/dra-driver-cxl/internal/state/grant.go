@@ -14,6 +14,8 @@
 
 package state
 
+import "github.com/containers/nri-plugins/pkg/cxl/fsm"
+
 // Grant is the memory given to one allocation result of a claim on one
 // memdev, local or pool; the grants of a lease are those of its companion
 // claim. Asked is what the result and its MemoryConfig ask for, Intent what
@@ -203,19 +205,19 @@ const (
 )
 
 // releasers are the actions that release the objects of a grant.
-var releasers = list(TriggerUnprepare, TriggerPrepare, TriggerRecover)
+var releasers = fsm.List(TriggerUnprepare, TriggerPrepare, TriggerRecover)
 
 // grantStored are the states of a grant record in the store.
-var grantStored = list(GrantJournaled, GrantRealising, GrantRealised, GrantUnrestored, GrantReleasing)
+var grantStored = fsm.List(GrantJournaled, GrantRealising, GrantRealised, GrantUnrestored, GrantReleasing)
 
 // GrantTable is the transition table of Grant.State.
 var GrantTable = Table[GrantState]{
 	Object: "Grant",
 	Field:  "State",
-	States: list(GrantRequested, GrantJournaled, GrantRealising, GrantRealised, GrantUnrestored, GrantReleasing, GrantReleased),
+	States: fsm.List(GrantRequested, GrantJournaled, GrantRealising, GrantRealised, GrantUnrestored, GrantReleasing, GrantReleased),
 	Rows: []Transition[GrantState]{
 		{
-			From: list(GrantRequested), To: GrantJournaled, Triggers: list(TriggerPrepare),
+			From: fsm.List(GrantRequested), To: GrantJournaled, Triggers: fsm.List(TriggerPrepare),
 			When: "the grant request is built from the result and the config",
 			Guard: "no FOREIGN region on the memdev; local: provenance not POOL or HELD, a fresh list of the " +
 				"pool ResourceSlices does not name the serial, no pool grant on it",
@@ -223,21 +225,21 @@ var GrantTable = Table[GrantState]{
 				"mount path, bind target, lend)",
 		},
 		{
-			From: list(GrantJournaled), To: GrantRealising, Triggers: list(TriggerPrepare),
+			From: fsm.List(GrantJournaled), To: GrantRealising, Triggers: fsm.List(TriggerPrepare),
 			When:  "the first kernel action of the grant",
 			Guard: "memdev ready (pool: waited for; without a driver: enabled after the probe grace)",
 			Effects: "kernel commands; every created object committed (d) into Got before the next command that " +
 				"depends on it",
 		},
 		{
-			From: list(GrantRealising), To: GrantRealised, Triggers: list(TriggerPrepare),
+			From: fsm.List(GrantRealising), To: GrantRealised, Triggers: fsm.List(TriggerPrepare),
 			When: "the last step done (numa: fenced and online; dax: bound and zeroed; block, fs: mounted and " +
 				"verified; companion: bound or lent)",
 			Effects: "commit (d) jointly with the Preparation PREPARED (or per grant for claims of several " +
 				"results, then PREPARED last)",
 		},
 		{
-			From: list(GrantRealising), To: GrantReleasing, Triggers: list(TriggerPrepare, TriggerUnprepare),
+			From: fsm.List(GrantRealising), To: GrantReleasing, Triggers: fsm.List(TriggerPrepare, TriggerUnprepare),
 			When: "a persistent refusal (no fsdax namespace for a reader; no allowed filesystem type; a block " +
 				"writer that is not exclusive) or a config refusal found after kernel work; or any other " +
 				"failure (decoder hole, no room, EBUSY online, timeout)",
@@ -246,33 +248,33 @@ var GrantTable = Table[GrantState]{
 				"an Unprepare of a grant that a failed release at the start left REALISING releases it the same way",
 		},
 		{
-			From: list(GrantJournaled), To: GrantReleasing, Triggers: list(TriggerPrepare, TriggerUnprepare),
+			From: fsm.List(GrantJournaled), To: GrantReleasing, Triggers: fsm.List(TriggerPrepare, TriggerUnprepare),
 			When: "the rollback of a Prepare that failed before the grant's first kernel action; an Unprepare of " +
 				"a PREPARING or KEPT preparation",
 			Effects: "Reason the error of the step when the grant's own Prepare failed; release what Got and " +
 				"Intent name (a kept region per Policy); commit (d)",
 		},
 		{
-			From: list(GrantRealised), To: GrantReleasing, Triggers: releasers,
+			From: fsm.List(GrantRealised), To: GrantReleasing, Triggers: releasers,
 			When: "an Unprepare; the rollback of a sibling grant of the same claim; the recovery of a PREPARING " +
 				"preparation (unfinished claim)",
 			Guard:   "companion: lends revoked and binds unbound first",
 			Effects: "commit (d)",
 		},
 		{
-			From: list(GrantReleasing), To: GrantReleased, Triggers: releasers,
+			From: fsm.List(GrantReleasing), To: GrantReleased, Triggers: releasers,
 			When: "mounts unmounted or downgraded, blocks offline, dax device deleted, the region per Policy " +
 				"when the grant was its last user",
 			Effects: "commit (d) removing the grant; the Memdev's grants and the users of the region's objects " +
 				"updated",
 		},
 		{
-			From: list(GrantReleasing), Stays: true, Triggers: releasers,
+			From: fsm.List(GrantReleasing), Stays: true, Triggers: releasers,
 			When:    "a release step failed (EBUSY offline, busy mount, holder)",
 			Effects: "error up (kubelet retries); records unchanged",
 		},
 		{
-			From: list(GrantReleasing), To: GrantJournaled, Triggers: list(TriggerPrepare, TriggerRecover),
+			From: fsm.List(GrantReleasing), To: GrantJournaled, Triggers: fsm.List(TriggerPrepare, TriggerRecover),
 			When: "the rollback of a failed Prepare, or the recovery of a cut Prepare's REALISED grant, released what " +
 				"the grant made but kept its region below a newer region of another memdev (Policy in order refused, " +
 				"or recovery keep)",
@@ -281,56 +283,56 @@ var GrantTable = Table[GrantState]{
 				"commit (d)",
 		},
 		{
-			From: list(GrantRealised), To: GrantUnrestored, Triggers: list(TriggerRecover),
+			From: fsm.List(GrantRealised), To: GrantUnrestored, Triggers: fsm.List(TriggerRecover),
 			When: "verification failed (mount: not remountable; dax: name, dev, size or region mismatch; block: " +
 				"namespace, name or dev mismatch)",
 			Effects: "commit (l); no CDI device",
 		},
 		{
-			From: list(GrantUnrestored), To: GrantRealised, Triggers: list(TriggerPrepare, TriggerRecover),
+			From: fsm.List(GrantUnrestored), To: GrantRealised, Triggers: fsm.List(TriggerPrepare, TriggerRecover),
 			When:    "Prepare again, or the recovery at a restart, verifies or mounts again",
 			Effects: "commit (d)",
 		},
 		{
-			From: list(GrantUnrestored), To: GrantReleasing, Triggers: releasers,
+			From: fsm.List(GrantUnrestored), To: GrantReleasing, Triggers: releasers,
 			When:    "an Unprepare or a rollback",
 			Effects: "commit (d); nothing of Got to undo beyond what verifies",
 		},
 		{
-			From: grantStored, Stays: true, Triggers: list(TriggerLoad),
+			From: grantStored, Stays: true, Triggers: fsm.List(TriggerLoad),
 			When:    "the preparation became PREPARED_STALE at the load",
 			Effects: "Got and Intent cleared, nothing released at start; commit (l)",
 		},
 		{
-			From: list(GrantJournaled, GrantRealising), To: GrantJournaled, Triggers: list(TriggerRecover),
+			From: fsm.List(GrantJournaled, GrantRealising), To: GrantJournaled, Triggers: fsm.List(TriggerRecover),
 			When:    "recovery phase 1 of a cut Prepare kept the region (region KEPT)",
 			Guard:   "Policy (trigger recovery) says keep",
 			Effects: "commit (d); a numa companion's lend is left to phase 2 and kubelet",
 		},
 		{
-			From: list(GrantJournaled, GrantRealising), To: GrantReleased, Triggers: list(TriggerRecover),
+			From: fsm.List(GrantJournaled, GrantRealising), To: GrantReleased, Triggers: fsm.List(TriggerRecover),
 			When:    "recovery phase 1 of a cut Prepare released the objects named by Got and by Intent",
 			Guard:   "Policy (trigger recovery) says destroy",
 			Effects: "commit (d)",
 		},
 		{
-			From:     list(GrantJournaled, GrantRealising, GrantRealised, GrantUnrestored),
+			From:     fsm.List(GrantJournaled, GrantRealising, GrantRealised, GrantUnrestored),
 			To:       GrantReleased,
-			Triggers: list(TriggerPrepare, TriggerUnprepare),
+			Triggers: fsm.List(TriggerPrepare, TriggerUnprepare),
 			When: "a Prepare again or an Unprepare of a PREPARED_STALE preparation (a RELEASING grant goes by the " +
 				"release row)",
 			Guard:   "the preparation is PREPARED_STALE",
 			Effects: "dropped in the commit (d) of the preparation; an Unprepare releases by serial first",
 		},
 		{
-			From: grantStored, To: GrantReleased, Triggers: list(TriggerLoad),
+			From: grantStored, To: GrantReleased, Triggers: fsm.List(TriggerLoad),
 			When:    "its preparation of another boot is dropped at the load (the driver drops such records)",
 			Effects: "dropped with the preparation, commit (l)",
 		},
 	},
 	Refused: []Refusal[GrantState]{
-		{From: list(GrantRequested), To: list(GrantRealising, GrantRealised), Why: "nothing is created without the intent"},
-		{From: list(GrantReleased), Why: "a released grant is gone"},
+		{From: fsm.List(GrantRequested), To: fsm.List(GrantRealising, GrantRealised), Why: "nothing is created without the intent"},
+		{From: fsm.List(GrantReleased), Why: "a released grant is gone"},
 	},
 }
 
@@ -338,36 +340,36 @@ var GrantTable = Table[GrantState]{
 var BindTable = Table[BindState]{
 	Object: "Bind",
 	Field:  "State",
-	States: list(BindAbsent, BindBound, BindStale),
+	States: fsm.List(BindAbsent, BindBound, BindStale),
 	Rows: []Transition[BindState]{
 		{
-			From: list(BindAbsent), To: BindBound, Triggers: list(TriggerPrepare),
+			From: fsm.List(BindAbsent), To: BindBound, Triggers: fsm.List(TriggerPrepare),
 			When:  "companion Prepare of an fs lease, after the node mount exists",
 			Guard: "the name is unused; the node mount is mounted",
 			Effects: "plain bind of a read-only node mount, or a read-only bind of a writable type; verified; " +
 				"commit (d) of the target in Got",
 		},
 		{
-			From: list(BindBound), To: BindAbsent, Triggers: list(TriggerUnprepare, TriggerPrepare, TriggerRecover),
+			From: fsm.List(BindBound), To: BindAbsent, Triggers: fsm.List(TriggerUnprepare, TriggerPrepare, TriggerRecover),
 			When: "companion Unprepare (after the revoke); the rollback of the companion Prepare; the recovery " +
 				"sweep of a bind that no REALISED grant of a PREPARED preparation lists",
 			Effects: "unmount (never detached); commit (d)",
 		},
 		{
-			From: list(BindBound), To: BindStale, Triggers: list(TriggerUnprepare, TriggerPrepare, TriggerRecover),
+			From: fsm.List(BindBound), To: BindStale, Triggers: fsm.List(TriggerUnprepare, TriggerPrepare, TriggerRecover),
 			When: "the unmount failed with EBUSY (a file of the bind is mapped)",
 			Effects: "the memdev's Stale list gets the target; the lease RELEASING_BUSY; retried at every release " +
 				"and by the periodic pass",
 		},
 		{
-			From:     list(BindStale),
+			From:     fsm.List(BindStale),
 			To:       BindAbsent,
-			Triggers: list(TriggerUnprepare, TriggerPrepare, TriggerRecover, TriggerReconcile),
+			Triggers: fsm.List(TriggerUnprepare, TriggerPrepare, TriggerRecover, TriggerReconcile),
 			When:     "a retry unmounts it (the holder ended)",
 			Effects:  "commit (d)",
 		},
 		{
-			From: list(BindAbsent, BindBound), To: BindBound, Triggers: list(TriggerRecover),
+			From: fsm.List(BindAbsent, BindBound), To: BindBound, Triggers: fsm.List(TriggerRecover),
 			When: "the recovery binds a REALISED fs companion again whose node mount is mounted; an existing mount " +
 				"at a listed target is kept",
 		},

@@ -80,30 +80,30 @@ const (
 var ReadinessTable = fsm.Table[Readiness]{
 	Object: "Plugin",
 	Field:  "Readiness",
-	States: list(ReadinessWaiting, ReadinessSynchronized, ReadinessLendsRestored, ReadinessReady),
+	States: fsm.List(ReadinessWaiting, ReadinessSynchronized, ReadinessLendsRestored, ReadinessReady),
 	Rows: []fsm.Transition[Readiness]{
 		{
-			From: list(ReadinessWaiting), To: ReadinessSynchronized, Triggers: list(TriggerSynchronize),
+			From: fsm.List(ReadinessWaiting), To: ReadinessSynchronized, Triggers: fsm.List(TriggerSynchronize),
 			When:    "the first Synchronize built the container table",
 			Effects: "WaitSynchronized returns: the lease peers are identified, Prepare goes on",
 		},
 		{
-			From: list(ReadinessWaiting), To: ReadinessLendsRestored, Triggers: list(TriggerLendsRestored),
+			From: fsm.List(ReadinessWaiting), To: ReadinessLendsRestored, Triggers: fsm.List(TriggerLendsRestored),
 			When: "the broker's first reconcile restored the lends before the first Synchronize",
 		},
 		{
-			From: list(ReadinessSynchronized), To: ReadinessReady, Triggers: list(TriggerLendsRestored),
+			From: fsm.List(ReadinessSynchronized), To: ReadinessReady, Triggers: fsm.List(TriggerLendsRestored),
 			When:    "the lends restored after the first Synchronize",
 			Effects: "a fence pass in the background (fencing allowed-mems); logged once",
 		},
 		{
-			From: list(ReadinessLendsRestored), To: ReadinessReady, Triggers: list(TriggerSynchronize),
+			From: fsm.List(ReadinessLendsRestored), To: ReadinessReady, Triggers: fsm.List(TriggerSynchronize),
 			When:    "the first Synchronize after the lends were restored",
 			Effects: "WaitSynchronized returns; a fence pass in the background (fencing allowed-mems); logged once",
 		},
 	},
 	Refused: []fsm.Refusal[Readiness]{
-		{From: list(ReadinessReady), To: list(ReadinessWaiting, ReadinessSynchronized, ReadinessLendsRestored),
+		{From: fsm.List(ReadinessReady), To: fsm.List(ReadinessWaiting, ReadinessSynchronized, ReadinessLendsRestored),
 			Why: "fencing stays ready for the life of the process"},
 	},
 }
@@ -112,47 +112,47 @@ var ReadinessTable = fsm.Table[Readiness]{
 var ConnTable = fsm.Table[ConnState]{
 	Object: "Plugin",
 	Field:  "Conn",
-	States: list(ConnNone, ConnStarted, ConnAbsent, ConnClosed, ConnStopping, ConnStopped, ConnLost),
+	States: fsm.List(ConnNone, ConnStarted, ConnAbsent, ConnClosed, ConnStopping, ConnStopped, ConnLost),
 	Rows: []fsm.Transition[ConnState]{
 		{
-			From: list(ConnNone), To: ConnStarted, Triggers: list(TriggerNRIStart),
+			From: fsm.List(ConnNone), To: ConnStarted, Triggers: fsm.List(TriggerNRIStart),
 			When:    "Start of the stub succeeded",
 			Effects: "the plugin gets the container events",
 		},
 		{
-			From: list(ConnNone, ConnClosed), To: ConnAbsent, Triggers: list(TriggerNRIStart),
+			From: fsm.List(ConnNone, ConnClosed), To: ConnAbsent, Triggers: fsm.List(TriggerNRIStart),
 			When:    "the stub could not be made or started",
 			Effects: "Fence records a node only (warned), lends fail with \"lending unavailable: NRI not connected\"",
 		},
 		{
-			From: list(ConnNone), To: ConnClosed, Triggers: list(TriggerNRIClose),
+			From: fsm.List(ConnNone), To: ConnClosed, Triggers: fsm.List(TriggerNRIClose),
 			When: "the runtime closed the connection before Start returned",
 		},
 		{
-			From: list(ConnStarted, ConnClosed), To: ConnLost, Triggers: list(TriggerNRIStart, TriggerNRIClose),
+			From: fsm.List(ConnStarted, ConnClosed), To: ConnLost, Triggers: fsm.List(TriggerNRIStart, TriggerNRIClose),
 			When:    "the connection is closed after it started, not stopping, while the context of Start runs",
 			Effects: "exit status 1: the restarted process connects again and gets its state from the store",
 		},
 		{
-			From: list(ConnStarted, ConnClosed), To: ConnStopped, Triggers: list(TriggerNRIStart, TriggerNRIClose),
+			From: fsm.List(ConnStarted, ConnClosed), To: ConnStopped, Triggers: fsm.List(TriggerNRIStart, TriggerNRIClose),
 			When: "the connection is closed after it started, after the context of Start ended",
 		},
 		{
-			From: list(ConnNone, ConnStarted, ConnAbsent, ConnClosed), To: ConnStopping, Triggers: list(TriggerStopping),
+			From: fsm.List(ConnNone, ConnStarted, ConnAbsent, ConnClosed), To: ConnStopping, Triggers: fsm.List(TriggerStopping),
 			When:    "the driver stops",
 			Effects: "a close of the connection from now on is no loss",
 		},
 		{
-			From: list(ConnStopping), To: ConnStopped, Triggers: list(TriggerNRIClose),
+			From: fsm.List(ConnStopping), To: ConnStopped, Triggers: fsm.List(TriggerNRIClose),
 			When: "the connection closed while stopping",
 		},
 		{
-			From: list(ConnStopping, ConnStopped, ConnAbsent, ConnLost), Stays: true,
-			Triggers: list(TriggerNRIStart, TriggerNRIClose, TriggerStopping),
+			From: fsm.List(ConnStopping, ConnStopped, ConnAbsent, ConnLost), Stays: true,
+			Triggers: fsm.List(TriggerNRIStart, TriggerNRIClose, TriggerStopping),
 			When:     "a Start, close or stop of a connection that is stopping, gone or absent",
 		},
 	},
 	Refused: []fsm.Refusal[ConnState]{
-		{From: list(ConnLost, ConnStopped), To: list(ConnStarted), Why: "the stub never connects again: the process exits"},
+		{From: fsm.List(ConnLost, ConnStopped), To: fsm.List(ConnStarted), Why: "the stub never connects again: the process exits"},
 	},
 }

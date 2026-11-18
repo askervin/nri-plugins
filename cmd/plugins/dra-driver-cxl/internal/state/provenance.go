@@ -16,6 +16,8 @@ package state
 
 import (
 	"time"
+
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
 // Provenance is the sticky knowledge of the source of a serial: whether a
@@ -92,82 +94,82 @@ const (
 var ProvenanceTable = Table[ProvenanceState]{
 	Object: "Provenance",
 	Field:  "State",
-	States: list(ProvenanceUnknown, ProvenanceHeld, ProvenanceLocal, ProvenancePool),
+	States: fsm.List(ProvenanceUnknown, ProvenanceHeld, ProvenanceLocal, ProvenancePool),
 	Rows: []Transition[ProvenanceState]{
 		{
-			From: list(ProvenanceUnknown), To: ProvenancePool, Triggers: list(TriggerList, TriggerPrepare),
+			From: fsm.List(ProvenanceUnknown), To: ProvenancePool, Triggers: fsm.List(TriggerList, TriggerPrepare),
 			When: "a pool ResourceSlice lists the serial; or a pool claim's status data names it; or a pool grant " +
 				"is JOURNALED",
 			Effects: "commit (d) with Pool <driver>/<pool> and LastSeen",
 		},
 		{
-			From: list(ProvenanceUnknown), To: ProvenanceHeld, Triggers: list(TriggerObserve),
+			From: fsm.List(ProvenanceUnknown), To: ProvenanceHeld, Triggers: fsm.List(TriggerObserve),
 			When: "a new memdev appears with a reason for doubt: pool ResourceSlices never listed; a pool claim of " +
 				"the node attaching; a remembered pool's ResourceSlices missing for less than 1 h; the list fails; " +
 				"the record was lost",
 			Effects: "commit (d) with HeldSince and HeldReason; not published",
 		},
 		{
-			From: list(ProvenanceUnknown), To: ProvenanceLocal, Triggers: list(TriggerObserve),
+			From: fsm.List(ProvenanceUnknown), To: ProvenanceLocal, Triggers: fsm.List(TriggerObserve),
 			When:    "a new memdev appears and there is no reason to hold it",
 			Effects: "commit (l); published per its kind",
 		},
 		{
-			From: list(ProvenanceHeld), Stays: true, Triggers: list(TriggerObserve, TriggerList),
+			From: fsm.List(ProvenanceHeld), Stays: true, Triggers: fsm.List(TriggerObserve, TriggerList),
 			When:    "the reason refreshed by a later observation",
 			Effects: "commit (d) when the reason changed; HeldSince restarts at a change from a reason without expiry",
 		},
 		{
-			From: list(ProvenanceHeld), To: ProvenanceLocal, Triggers: list(TriggerExpire),
+			From: fsm.List(ProvenanceHeld), To: ProvenanceLocal, Triggers: fsm.List(TriggerExpire),
 			When: "the hold expired (5 min) and the reason was: list failing, pool missing for less than 1 h, file " +
 				"lost, claims not listable",
 			Guard:   "not \"never listed\", not \"attaching\"",
 			Effects: "commit (d); published",
 		},
 		{
-			From: list(ProvenanceHeld), To: ProvenanceLocal, Triggers: list(TriggerObserve),
+			From: fsm.List(ProvenanceHeld), To: ProvenanceLocal, Triggers: fsm.List(TriggerObserve),
 			When:    "a later observation finds no reason for doubt any more, or the engine has the memdev as local",
 			Guard:   "not listed by a pool ResourceSlice or claim",
 			Effects: "commit (d); published",
 		},
 		{
-			From: list(ProvenanceHeld), To: ProvenanceUnknown, Triggers: list(TriggerObserve),
+			From: fsm.List(ProvenanceHeld), To: ProvenanceUnknown, Triggers: fsm.List(TriggerObserve),
 			When:    "the memdev is gone before its hold ended",
 			Effects: "commit (d) removing the record",
 		},
 		{
-			From: list(ProvenanceHeld), To: ProvenancePool, Triggers: list(TriggerList, TriggerPrepare),
+			From: fsm.List(ProvenanceHeld), To: ProvenancePool, Triggers: fsm.List(TriggerList, TriggerPrepare),
 			When:    "listed by a ResourceSlice or a claim, or a pool grant",
 			Effects: "commit (d)",
 		},
 		{
-			From: list(ProvenanceLocal), To: ProvenancePool, Triggers: list(TriggerList, TriggerPrepare),
+			From: fsm.List(ProvenanceLocal), To: ProvenancePool, Triggers: fsm.List(TriggerList, TriggerPrepare),
 			When:    "a pool ResourceSlice or claim lists it later",
 			Effects: "commit (d); withdrawn from publication; existing local grants logged once (conflict)",
 		},
 		{
-			From: list(ProvenancePool), Stays: true, Triggers: list(TriggerList, TriggerObserve, TriggerPrepare),
+			From: fsm.List(ProvenancePool), Stays: true, Triggers: fsm.List(TriggerList, TriggerObserve, TriggerPrepare),
 			When:    "seen again",
 			Effects: "LastSeen (l, at most hourly)",
 		},
 		{
-			From: list(ProvenancePool), To: ProvenanceUnknown, Triggers: list(TriggerExpire),
+			From: fsm.List(ProvenancePool), To: ProvenanceUnknown, Triggers: fsm.List(TriggerExpire),
 			When: "24 h of observed absence (observations at most 5 min apart; the absence timer restarts after a " +
 				"gap) and no grant",
 			Effects: "commit (l) removing the record",
 		},
 		{
-			From: list(ProvenanceLocal), To: ProvenanceUnknown, Triggers: list(TriggerExpire),
+			From: fsm.List(ProvenanceLocal), To: ProvenanceUnknown, Triggers: fsm.List(TriggerExpire),
 			When:    "the memdev absent for 24 h of observed absence",
 			Effects: "commit (l) removing the record",
 		},
 		{
-			From: list(ProvenancePool, ProvenanceLocal), To: ProvenanceUnknown, Triggers: list(TriggerLoad),
+			From: fsm.List(ProvenancePool, ProvenanceLocal), To: ProvenanceUnknown, Triggers: fsm.List(TriggerLoad),
 			When:    "the operator names the serial with --forget-pool-serial at the start",
 			Effects: "commit (d) removing the record; a memdev of the serial is new again",
 		},
 	},
 	Refused: []Refusal[ProvenanceState]{
-		{From: list(ProvenancePool), To: list(ProvenanceLocal, ProvenanceHeld), Why: "POOL is sticky"},
+		{From: fsm.List(ProvenancePool), To: fsm.List(ProvenanceLocal, ProvenanceHeld), Why: "POOL is sticky"},
 	},
 }

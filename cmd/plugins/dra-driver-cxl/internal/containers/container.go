@@ -158,11 +158,11 @@ var Triggers = []Trigger{TriggerCreate, TriggerStart, TriggerPostStart, TriggerS
 var LifecycleTable = fsm.Table[Lifecycle]{
 	Object: "Container",
 	Field:  "Lifecycle",
-	States: list(LifecycleNone, LifecycleUnseen, LifecycleCreated, LifecycleTaskCreated, LifecycleStarted,
+	States: fsm.List(LifecycleNone, LifecycleUnseen, LifecycleCreated, LifecycleTaskCreated, LifecycleStarted,
 		LifecycleGone),
 	Rows: []fsm.Transition[Lifecycle]{
 		{
-			From: list(LifecycleNone), To: LifecycleCreated, Triggers: list(TriggerCreate),
+			From: fsm.List(LifecycleNone), To: LifecycleCreated, Triggers: fsm.List(TriggerCreate),
 			When: "the runtime creates the container",
 			Effects: "the management decided; fenced: an adjustment of cpuset.mems iff wantMems differs from " +
 				"the spec; the nodes of its READY numa leases recorded as lent (seeded); also when the " +
@@ -170,7 +170,7 @@ var LifecycleTable = fsm.Table[Lifecycle]{
 				"management of the defaults until the container stops)",
 		},
 		{
-			From: list(LifecycleNone), To: LifecycleUnseen, Triggers: list(TriggerSynchronize),
+			From: fsm.List(LifecycleNone), To: LifecycleUnseen, Triggers: fsm.List(TriggerSynchronize),
 			When:  "Synchronize lists a created, running or paused container that the plugin has no record of",
 			Guard: "the first Synchronize of the process",
 			Effects: "the management decided from its results; not steered by this process; a manager of a " +
@@ -178,35 +178,35 @@ var LifecycleTable = fsm.Table[Lifecycle]{
 				"(memory.high max); seeded; no adjustment possible",
 		},
 		{
-			From: list(LifecycleUnseen), To: LifecycleStarted, Triggers: list(TriggerSynchronize),
+			From: fsm.List(LifecycleUnseen), To: LifecycleStarted, Triggers: fsm.List(TriggerSynchronize),
 			When:    "Synchronize lists the container running or paused",
 			Effects: "its pid, cgroup and own nodes read; its claimed nodes in its cpuset.mems are its own",
 		},
 		{
-			From: list(LifecycleNone, LifecycleUnseen, LifecycleCreated), To: LifecycleTaskCreated,
-			Triggers: list(TriggerStart),
+			From: fsm.List(LifecycleNone, LifecycleUnseen, LifecycleCreated), To: LifecycleTaskCreated,
+			Triggers: fsm.List(TriggerStart),
 			When:     "the runtime has created the task of the container (a record is made for a container that the plugin has none of, with the management of the defaults)",
 			Effects: "its pid, cgroup and own nodes read; steered: the Steered record committed (d, bounded) " +
 				"before the manager starts; a manager that does not start makes it fenced or none; updates " +
 				"from here reach its spec only",
 		},
 		{
-			From: list(LifecycleUnseen, LifecycleCreated, LifecycleTaskCreated), To: LifecycleStarted,
-			Triggers: list(TriggerPostStart),
+			From: fsm.List(LifecycleUnseen, LifecycleCreated, LifecycleTaskCreated), To: LifecycleStarted,
+			Triggers: fsm.List(TriggerPostStart),
 			When:     "the runtime has marked the container started",
 			Effects: "its pid, cgroup and own nodes read if StartContainer was not seen; the OnContainerStarted " +
 				"callbacks (the broker lends the nodes of its READY numa leases again); fenced: the repair " +
 				"pass of the one container (wantMems against its cgroup) once fencing is ready",
 		},
 		{
-			From: list(LifecycleStarted), Stays: true, Triggers: list(TriggerPostStart),
+			From: fsm.List(LifecycleStarted), Stays: true, Triggers: fsm.List(TriggerPostStart),
 			When: "Synchronize found the container running before its PostStartContainer",
 			Effects: "the OnContainerStarted callbacks; fenced: the repair pass of the one container once " +
 				"fencing is ready",
 		},
 		{
-			From: list(LifecycleUnseen, LifecycleCreated, LifecycleTaskCreated, LifecycleStarted), To: LifecycleGone,
-			Triggers: list(TriggerStop),
+			From: fsm.List(LifecycleUnseen, LifecycleCreated, LifecycleTaskCreated, LifecycleStarted), To: LifecycleGone,
+			Triggers: fsm.List(TriggerStop),
 			When:     "the runtime stops or removes the container",
 			Effects: "the record leaves the table; the OnContainerGone callbacks (the broker keeps its leases " +
 				"while the pod lives or a newer instance exists); its manager stopped (memory.high max), then " +
@@ -214,8 +214,8 @@ var LifecycleTable = fsm.Table[Lifecycle]{
 		},
 	},
 	Refused: []fsm.Refusal[Lifecycle]{
-		{From: list(LifecycleGone), Why: "a gone container is out of the table; its restart is a new record"},
-		{From: list(LifecycleStarted), To: list(LifecycleNone, LifecycleUnseen, LifecycleCreated, LifecycleTaskCreated),
+		{From: fsm.List(LifecycleGone), Why: "a gone container is out of the table; its restart is a new record"},
+		{From: fsm.List(LifecycleStarted), To: fsm.List(LifecycleNone, LifecycleUnseen, LifecycleCreated, LifecycleTaskCreated),
 			Why: "a started container never goes back"},
 	},
 }
@@ -224,46 +224,46 @@ var LifecycleTable = fsm.Table[Lifecycle]{
 var ManagementTable = fsm.Table[Management]{
 	Object: "Container",
 	Field:  "Management",
-	States: list(ManagementUndecided, ManagementSteered, ManagementFenced, ManagementNone),
+	States: fsm.List(ManagementUndecided, ManagementSteered, ManagementFenced, ManagementNone),
 	Rows: []fsm.Transition[Management]{
 		{
-			From: list(ManagementUndecided), To: ManagementSteered, Triggers: list(TriggerCreate),
+			From: fsm.List(ManagementUndecided), To: ManagementSteered, Triggers: fsm.List(TriggerCreate),
 			When:  "the effective settings of its results steer and there is DRAM or CXL numa memory to steer",
 			Guard: "the settings of the results combine and a plan is built (else the creation fails)",
 			Effects: "the plan kept until its start; no adjustment: it has every node until its manager " +
 				"writes its cgroup",
 		},
 		{
-			From: list(ManagementUndecided), To: ManagementSteered, Triggers: list(TriggerSynchronize),
+			From: fsm.List(ManagementUndecided), To: ManagementSteered, Triggers: fsm.List(TriggerSynchronize),
 			When:    "the settings of the results of a container that Synchronize finds do not combine",
 			Effects: "taken as steered: neither fenced nor lent to",
 		},
 		{
-			From: list(ManagementUndecided), To: ManagementFenced,
-			Triggers: list(TriggerCreate, TriggerSynchronize, TriggerStart),
+			From: fsm.List(ManagementUndecided), To: ManagementFenced,
+			Triggers: fsm.List(TriggerCreate, TriggerSynchronize, TriggerStart),
 			When: "not steered (by this process) and fencing allowed-mems; the defaults for a container " +
 				"whose creation failed or that the plugin has no record of",
 			Effects: "wantMems: its own nodes without the fenced nodes, its claimed and its lent nodes",
 		},
 		{
-			From: list(ManagementUndecided), To: ManagementNone,
-			Triggers: list(TriggerCreate, TriggerSynchronize, TriggerStart),
+			From: fsm.List(ManagementUndecided), To: ManagementNone,
+			Triggers: fsm.List(TriggerCreate, TriggerSynchronize, TriggerStart),
 			When:     "not steered (by this process) and fencing none",
 			Effects:  "its cpuset.mems is left as the runtime made it",
 		},
 		{
-			From: list(ManagementSteered), To: ManagementFenced, Triggers: list(TriggerStart),
+			From: fsm.List(ManagementSteered), To: ManagementFenced, Triggers: fsm.List(TriggerStart),
 			When:    "its manager does not start (no cgroup, cgmpolmgr.New or Start fails) and fencing allowed-mems",
 			Effects: "its Steered record removed; fenced by the repair pass at its PostStartContainer",
 		},
 		{
-			From: list(ManagementSteered), To: ManagementNone, Triggers: list(TriggerStart),
+			From: fsm.List(ManagementSteered), To: ManagementNone, Triggers: fsm.List(TriggerStart),
 			When:    "its manager does not start and fencing none",
 			Effects: "its Steered record removed",
 		},
 	},
 	Refused: []fsm.Refusal[Management]{
-		{From: list(ManagementFenced, ManagementNone), To: list(ManagementSteered),
+		{From: fsm.List(ManagementFenced, ManagementNone), To: fsm.List(ManagementSteered),
 			Why: "a container is steered only by a plan of its creation; a re-created container is a new record"},
 	},
 }
@@ -350,9 +350,4 @@ func (c *Container) started() bool {
 // container or will at its start.
 func (c *Container) steered() bool {
 	return c.Management == ManagementSteered
-}
-
-// list returns its arguments as a slice.
-func list[S any](values ...S) []S {
-	return values
 }

@@ -14,6 +14,8 @@
 
 package state
 
+import "github.com/containers/nri-plugins/pkg/cxl/fsm"
+
 // LeaseClaim is a claim on the lease device, prepared by cxl.nri.io for a
 // pod: its lease socket, its directories and the pods it is reserved for.
 // It owns <data dir>/leases/<uid>/cxl.sock, <data dir>/leases/<uid>/fs and
@@ -70,85 +72,85 @@ const (
 var LeaseClaimTable = Table[LeaseClaimState]{
 	Object: "LeaseClaim",
 	Field:  "State",
-	States: list(LeaseClaimNone, LeaseClaimOpen, LeaseClaimOpenNoListener,
+	States: fsm.List(LeaseClaimNone, LeaseClaimOpen, LeaseClaimOpenNoListener,
 		LeaseClaimClosing, LeaseClaimClosed, LeaseClaimRemoving),
 	Rows: []Transition[LeaseClaimState]{
 		{
-			From: list(LeaseClaimNone), To: LeaseClaimOpen, Triggers: list(TriggerPrepare),
+			From: fsm.List(LeaseClaimNone), To: LeaseClaimOpen, Triggers: fsm.List(TriggerPrepare),
 			When: "a Prepare of a claim with a lease result (OpenClaim)",
 			Effects: "commit (d), a failed one fails the Prepare; CDI device lease-<uid>; its lease-fs directory made; the socket " +
 				"created in a private directory and renamed",
 		},
 		{
-			From: list(LeaseClaimOpen), Stays: true, Triggers: list(TriggerPrepare, TriggerRequest),
+			From: fsm.List(LeaseClaimOpen), Stays: true, Triggers: fsm.List(TriggerPrepare, TriggerRequest),
 			When:    "OpenClaim again; Pods refreshed from reservedFor when a peer's pod is unknown",
 			Effects: "commit (d)",
 		},
 		{
-			From: list(LeaseClaimOpenNoListener, LeaseClaimClosing), To: LeaseClaimOpen, Triggers: list(TriggerPrepare),
+			From: fsm.List(LeaseClaimOpenNoListener, LeaseClaimClosing), To: LeaseClaimOpen, Triggers: fsm.List(TriggerPrepare),
 			When:    "OpenClaim of a claim whose socket did not start again, or whose close did not finish",
 			Effects: "commit (d); the socket started; a later Unprepare closes the claim",
 		},
 		{
-			From: list(LeaseClaimOpen, LeaseClaimOpenNoListener), To: LeaseClaimOpen, Triggers: list(TriggerRecover),
+			From: fsm.List(LeaseClaimOpen, LeaseClaimOpenNoListener), To: LeaseClaimOpen, Triggers: fsm.List(TriggerRecover),
 			When:  "the start listens on the socket again",
 			Guard: "listen succeeded",
 		},
 		{
-			From: list(LeaseClaimOpenNoListener), To: LeaseClaimOpen, Triggers: list(TriggerReconcile),
+			From: fsm.List(LeaseClaimOpenNoListener), To: LeaseClaimOpen, Triggers: fsm.List(TriggerReconcile),
 			When:    "the reconcile listens on the socket again",
 			Guard:   "listen succeeded",
 			Effects: "commit (d)",
 		},
 		{
-			From:     list(LeaseClaimOpen, LeaseClaimOpenNoListener),
+			From:     fsm.List(LeaseClaimOpen, LeaseClaimOpenNoListener),
 			To:       LeaseClaimOpenNoListener,
-			Triggers: list(TriggerRecover),
+			Triggers: fsm.List(TriggerRecover),
 			When:     "listening again at the start failed",
 			Effects:  "logged; the socket starts at the next OpenClaim",
 		},
 		{
-			From: list(LeaseClaimOpen, LeaseClaimOpenNoListener), To: LeaseClaimClosing, Triggers: list(TriggerUnprepare),
+			From: fsm.List(LeaseClaimOpen, LeaseClaimOpenNoListener), To: LeaseClaimClosing, Triggers: fsm.List(TriggerUnprepare),
 			When: "an Unprepare of the claim (CloseClaim)",
 			Effects: "commit (d); every lease of the claim released; a new lease request on the socket is refused, " +
 				"releases, lists and env are served",
 		},
 		{
-			From: list(LeaseClaimClosing), Stays: true, Triggers: list(TriggerRecover),
+			From: fsm.List(LeaseClaimClosing), Stays: true, Triggers: fsm.List(TriggerRecover),
 			When: "the start of a claim whose close a stop cut",
 			Effects: "the socket listened again (a failed listen logged); new lease requests refused; kubelet's " +
 				"Unprepare retry closes the claim",
 		},
 		{
-			From: list(LeaseClaimClosing), Stays: true, Triggers: list(TriggerUnprepare),
+			From: fsm.List(LeaseClaimClosing), Stays: true, Triggers: fsm.List(TriggerUnprepare),
 			When:    "the Unprepare retried: the leases of the claim released again",
 			Effects: "\"still releasing N leases\" to kubelet while not every lease has DeletionRequested within 5 s",
 		},
 		{
-			From: list(LeaseClaimClosing), To: LeaseClaimClosed, Triggers: list(TriggerUnprepare),
+			From: fsm.List(LeaseClaimClosing), To: LeaseClaimClosed, Triggers: fsm.List(TriggerUnprepare),
 			When: "every lease has DeletionRequested (not necessarily gone)",
 			Effects: "the listener and its open connections closed; commit (d) removing the record; CDI device " +
 				"removed; the socket removed",
 		},
 		{
-			From:     list(LeaseClaimClosed),
+			From:     fsm.List(LeaseClaimClosed),
 			To:       LeaseClaimRemoving,
-			Triggers: list(TriggerUnprepare, TriggerRelease, TriggerReconcile, TriggerRecover),
+			Triggers: fsm.List(TriggerUnprepare, TriggerRelease, TriggerReconcile, TriggerRecover),
 			When: "the directories of a claim without a record are removed: by CloseClaim, by the release of its last " +
 				"lease, by the sweep of the reconcile and of the start",
 			Guard:   "no bind mounted in its lease-fs directory, which is removed (else it stays CLOSED)",
 			Effects: "the entries of its socket directory removed by name, never following a symlink",
 		},
 		{
-			From:     list(LeaseClaimRemoving),
+			From:     fsm.List(LeaseClaimRemoving),
 			To:       LeaseClaimNone,
-			Triggers: list(TriggerUnprepare, TriggerRelease, TriggerReconcile, TriggerRecover),
+			Triggers: fsm.List(TriggerUnprepare, TriggerRelease, TriggerReconcile, TriggerRecover),
 			When:     "the socket directory removed",
 		},
 	},
 	Refused: []Refusal[LeaseClaimState]{
 		{
-			From: list(LeaseClaimClosing), To: list(LeaseClaimOpen), Except: list(TriggerPrepare),
+			From: fsm.List(LeaseClaimClosing), To: fsm.List(LeaseClaimOpen), Except: fsm.List(TriggerPrepare),
 			Why: "a closing claim is opened again only by a Prepare of the claim",
 		},
 	},

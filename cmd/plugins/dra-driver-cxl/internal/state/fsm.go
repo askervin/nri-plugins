@@ -103,8 +103,3 @@ var ErrTransition = fsm.ErrTransition
 func Apply[S comparable](t *Table[S], state *S, to S, trigger Trigger) error {
 	return fsm.Apply(t, state, to, trigger)
 }
-
-// list returns its arguments as a slice.
-func list[S any](values ...S) []S {
-	return values
-}
