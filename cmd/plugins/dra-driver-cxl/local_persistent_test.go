@@ -928,6 +928,25 @@ func TestLocalPersistentUnexplainedSuperblock(t *testing.T) {
 	e.wantNoViolations()
 }
 
+// A btrfs superblock has a device number of its own, not that of the block
+// device: a btrfs mount that no claim explains refuses a writer too.
+func TestLocalPersistentUnexplainedBtrfs(t *testing.T) {
+	e := newPmemTestEnv(t)
+	e.plugAbove()
+	e.formatted("btrfs")
+	e.start()
+	pmem := e.keepIdle()
+	e.k.AddForeign(4242, pmem, "/mnt/x", "btrfs", false)
+	wantErr(t, e.prepare(pmemClaim("w1", localPmemAll, localPmemBlockRW)), "has a superblock that no claim of this node explains")
+	e.k.RemoveForeign(4242)
+	e.mustPrepare(pmemClaim("w1", localPmemAll, localPmemBlockRW))
+	e.mustUnprepare("w1")
+	e.releaseAbove()
+	e.restart()
+	e.wantClean()
+	e.wantNoViolations()
+}
+
 // fsTypes of the driver configuration: erofs only by default, the listed
 // types, none for an empty list; a refused type is not mounted.
 func TestLocalPersistentFsTypes(t *testing.T) {
