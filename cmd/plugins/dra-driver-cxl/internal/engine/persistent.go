@@ -1100,6 +1100,9 @@ func (e *Engine) checkBlockDevice(g *state.Grant) error {
 	return nil
 }
 
+// errNoRegion is the kind of the error of a memdev without a region.
+var errNoRegion = errors.New("has no region")
+
 // regionNamespaces returns the namespaces of the nd region of the region of
 // the memdev with the serial and the nd region, waiting at most
 // Timeouts.Restore for them to settle.
@@ -1110,7 +1113,7 @@ func (e *Engine) regionNamespaces(serial state.Serial) ([]kernel.Namespace, stri
 	}
 	regions := e.k.Regions(memdev)
 	if len(regions) == 0 {
-		return nil, "", fmt.Errorf("%s has no region", memdev)
+		return nil, "", fmt.Errorf("%s %w", memdev, errNoRegion)
 	}
 	nd, err := e.k.NdRegionOf(regions[0])
 	if err != nil {
@@ -1128,7 +1131,7 @@ func (e *Engine) regionNamespaces(serial state.Serial) ([]kernel.Namespace, stri
 func (e *Engine) currentBlockDevice(serial state.Serial) string {
 	nss, _, err := e.regionNamespaces(serial)
 	if err != nil {
-		if !errors.Is(err, kernel.ErrNotFound) {
+		if !errors.Is(err, kernel.ErrNotFound) && !errors.Is(err, errNoRegion) {
 			klog.Warningf("engine: memdev %s: %v", serialText(serial), err)
 		}
 		return ""

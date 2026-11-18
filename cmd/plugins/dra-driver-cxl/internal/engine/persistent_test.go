@@ -404,6 +404,30 @@ func TestPersistentReleaseIgnoresGoneBlockDevice(t *testing.T) {
 	v.clean("unprepared")
 }
 
+// The release of a persistent grant whose region a cut release destroyed
+// waits for no holder of its block device, and a memdev without a region
+// is no warning.
+func TestPersistentReleaseWithoutRegion(t *testing.T) {
+	v := pmemEnv(t, "ext4")
+	v.mustPrepare(poolDriver, "w", fsGrant("w", false, ""))
+	v.f.CutAfter("cxl destroy-region")
+	if !v.cut(func() { _ = v.unprepare(poolDriver, "w") }) {
+		t.Fatal("not cut")
+	}
+	logs := captureKlog(t)
+	v.restart()
+	v.mustUnprepare(poolDriver, "w")
+	if !strings.Contains(logs(), "has no region now: its release waits for no holder") {
+		t.Fatalf("no release without a region in the log:\n%s", logs())
+	}
+	for _, l := range strings.Split(logs(), "\n") {
+		if strings.HasPrefix(l, "W") && strings.Contains(l, "has no region") {
+			t.Errorf("warning %q", l)
+		}
+	}
+	v.clean("unprepared")
+}
+
 // The type of the filesystem of a block device from its signatures and
 // the declared type, with the texts of the refusals (P1, P2, P3).
 func TestFsSignatureType(t *testing.T) {
