@@ -80,7 +80,7 @@ type Engine struct {
 	mu sync.Mutex
 
 	// qmu guards queues, last, unknown, orphanBinds, running,
-	// started, observed, hollowLogged, devices and probes: a leaf lock.
+	// started, observed, hollowLogged and probes: a leaf lock.
 	qmu    sync.Mutex
 	queues map[state.Serial]chan struct{}
 	last   *kernel.Snapshot
@@ -96,9 +96,6 @@ type Engine struct {
 	// the latest observation (last).
 	running, started, observed int
 	hollowLogged               map[string]bool
-	// devices are the DRA devices of the requests of the grants, for the
-	// errors of their release.
-	devices map[state.GrantRef]string
 	// probes are the results of the address line probes of the local
 	// memdevs (Options.ProbesFile).
 	probes map[state.Serial]state.Probe
@@ -269,7 +266,6 @@ func New(opts Options) (*Engine, error) {
 		opts:         opts,
 		queues:       map[state.Serial]chan struct{}{},
 		hollowLogged: map[string]bool{},
-		devices:      map[state.GrantRef]string{},
 		probes:       probes,
 	}, nil
 }
@@ -287,12 +283,9 @@ func (e *Engine) settle(source state.Source) time.Duration {
 // result of a claim on a memdev, with what it asks and the facts of the
 // memdev.
 type GrantRequest struct {
-	Ref state.GrantRef
-	// ClaimName (namespace/name) and Device (the DRA device of the
-	// allocation result) name the grant in the log lines.
-	ClaimName, Device string
-	Serial            state.Serial
-	Asked             state.Asked
+	Ref    state.GrantRef
+	Serial state.Serial
+	Asked  state.Asked
 	// Facts are the facts of the memdev that the source knows (the pool
 	// controller's status data, the local configuration).
 	Facts state.MemdevFacts
@@ -310,24 +303,6 @@ type GrantRequest struct {
 	// the engine (Options.Revoke) before the rollback of a later Prepare
 	// of the claim releases the grant.
 	Lend *state.GrantLend
-}
-
-// claimName returns the claim of the request for the log lines: its name,
-// else its uid.
-func (r *GrantRequest) claimName() string {
-	if r.ClaimName != "" {
-		return r.ClaimName
-	}
-	return r.Ref.Claim
-}
-
-// device returns the device of the request for the log lines: the DRA
-// device, else the memdev.
-func (r *GrantRequest) device(memdev string) string {
-	if r.Device != "" {
-		return r.Device
-	}
-	return memdev
 }
 
 // queue returns the queue of the memdev with the serial.
@@ -368,35 +343,6 @@ func (e *Engine) tryAcquire(serial state.Serial) func() {
 	default:
 		return nil
 	}
-}
-
-// setDevices remembers the DRA devices of the requests.
-func (e *Engine) setDevices(reqs []GrantRequest) {
-	e.qmu.Lock()
-	defer e.qmu.Unlock()
-	for i := range reqs {
-		if reqs[i].Device != "" {
-			e.devices[reqs[i].Ref] = reqs[i].Device
-		}
-	}
-}
-
-// forgetDevice forgets the DRA device of a grant that is released.
-func (e *Engine) forgetDevice(ref state.GrantRef) {
-	e.qmu.Lock()
-	defer e.qmu.Unlock()
-	delete(e.devices, ref)
-}
-
-// deviceOf returns the DRA device of the request of the grant ref for the
-// errors, else the grant.
-func (e *Engine) deviceOf(ref state.GrantRef) string {
-	e.qmu.Lock()
-	defer e.qmu.Unlock()
-	if d := e.devices[ref]; d != "" {
-		return d
-	}
-	return ref.String()
 }
 
 // locked runs fn, a short kernel call, holding the engine lock.
@@ -547,4 +493,15 @@ func (e *Engine) claimNameOf(ref state.GrantRef) string {
 		return p.ClaimName
 	}
 	return ref.Claim
+}
+
+// deviceNameOf returns the DRA device of the grant ref (its preparation's
+// result), else the ref.
+func (e *Engine) deviceNameOf(ref state.GrantRef) string {
+	if p := e.records().PreparationOf(ref); p != nil {
+		if res := p.Result(ref.Result); res != nil && res.Device != "" {
+			return res.Device
+		}
+	}
+	return ref.String()
 }

@@ -57,7 +57,6 @@ func (e *Engine) PrepareGrants(ctx context.Context, reqs []GrantRequest) ([]stat
 			return nil, fmt.Errorf("engine: grant %s: the records of source %q are not the engine's", reqs[i].Ref, reqs[i].Asked.Source)
 		}
 	}
-	e.setDevices(reqs)
 	for i := range reqs {
 		refs = append(refs, reqs[i].Ref)
 		if err := e.prepareGrant(ctx, &reqs[i]); err != nil {

@@ -471,7 +471,7 @@ func (p *Plugin) deviceError(pr *prepare, err error) error {
 	}
 	for i := range pr.reqs {
 		if req := &pr.reqs[i]; req.Ref == ge.Ref {
-			return p.rules.voice.deviceError(req, pr.request(req.Ref), ge.Err)
+			return p.rules.voice.deviceError(req, pr.request(req.Ref), pr.device(req.Ref), ge.Err)
 		}
 	}
 	return err
@@ -628,7 +628,7 @@ func (p *Plugin) remount(ctx context.Context, prep *state.Preparation) error {
 		if g == nil || g.State != state.GrantUnrestored {
 			continue
 		}
-		reqs = append(reqs, engine.GrantRequest{Ref: g.Ref, ClaimName: prep.ClaimName, Device: res.Device, Serial: g.Serial, Asked: g.Asked})
+		reqs = append(reqs, engine.GrantRequest{Ref: g.Ref, Serial: g.Serial, Asked: g.Asked})
 		if mnt := unrestoredMount(r, g); mnt != "" && !slices.Contains(mounts, mnt) {
 			mounts = append(mounts, mnt)
 		}

@@ -124,8 +124,9 @@ type voice interface {
 	// finishFailure returns the error of a Prepare whose CDI spec or
 	// PREPARED commit failed.
 	finishFailure(claimName string, err error) error
-	// deviceError returns the error of the grant of req.
-	deviceError(req *engine.GrantRequest, request string, err error) error
+	// deviceError returns the error of the grant of req, of the request
+	// and the DRA device of its result.
+	deviceError(req *engine.GrantRequest, request, device string, err error) error
 	// prepared logs what the grants of a Prepare got.
 	prepared(p *Plugin, pr *prepare)
 	// companionPrepared logs the lend of a prepared companion claim.
@@ -204,11 +205,11 @@ func (localVoice) finishFailure(_ string, err error) error {
 	return err
 }
 
-func (localVoice) deviceError(req *engine.GrantRequest, request string, err error) error {
+func (localVoice) deviceError(req *engine.GrantRequest, request, device string, err error) error {
 	if req.Asked.Kind == state.KindPersistent {
 		return fmt.Errorf("request %s: %w", request, err)
 	}
-	return fmt.Errorf("device %s: %w", req.Device, err)
+	return fmt.Errorf("device %s: %w", device, err)
 }
 
 // prepared logs what each allocation result on a local memdev of a Prepare
@@ -360,8 +361,8 @@ func (v poolVoice) failure(claimName string, err error) error { return v.fail(cl
 
 func (v poolVoice) finishFailure(claimName string, err error) error { return v.fail(claimName, err) }
 
-func (poolVoice) deviceError(req *engine.GrantRequest, _ string, err error) error {
-	return fmt.Errorf("device %s serial 0x%x: %w", req.Device, uint64(req.Serial), err)
+func (poolVoice) deviceError(req *engine.GrantRequest, _, device string, err error) error {
+	return fmt.Errorf("device %s serial 0x%x: %w", device, uint64(req.Serial), err)
 }
 
 // prepared logs the devices of a claim as prepared, from the records of
@@ -387,12 +388,12 @@ func (v poolVoice) prepared(p *Plugin, pr *prepare) {
 				nodeMount, loop, fsType = m.Path, m.Loop, m.FsType
 			}
 			klog.Infof("%s: claim %s: prepared %s (serial 0x%x, shared %v, mode %s, read-only %v) as %s %s namespace %s block %s access %q fs %q mount %q loop %q",
-				v.name, pr.claimName, req.Device, s, sharedGrant(g), mode, g.Asked.ReadOnly, memdev, g.Got.Region,
+				v.name, pr.claimName, pr.device(req.Ref), s, sharedGrant(g), mode, g.Asked.ReadOnly, memdev, g.Got.Region,
 				g.Got.Namespace, block, g.Got.Mount, fsType, nodeMount, loop)
 			continue
 		}
 		klog.Infof("%s: claim %s: prepared %s (serial 0x%x, shared %v, mode %s, read-only %v) as %s %s dax %s node %d",
-			v.name, pr.claimName, req.Device, s, sharedGrant(g), mode, g.Asked.ReadOnly, memdev, g.Got.Region, g.Got.Dax,
+			v.name, pr.claimName, pr.device(req.Ref), s, sharedGrant(g), mode, g.Asked.ReadOnly, memdev, g.Got.Region, g.Got.Dax,
 			state.NumaNodeOf(g.Got.NumaNode))
 	}
 }

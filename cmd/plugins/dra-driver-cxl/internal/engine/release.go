@@ -285,11 +285,7 @@ func (e *Engine) releaseLast(ctx context.Context, cur *state.Grant, call *releas
 			return e.keptForClaim(ctx, ref, trigger)
 		}
 	}
-	if err := e.commit(ctx, func(r *state.Records) error { return releasedGrant(r, ref, trigger) }); err != nil {
-		return err
-	}
-	e.forgetDevice(ref)
-	return nil
+	return e.commit(ctx, func(r *state.Records) error { return releasedGrant(r, ref, trigger) })
 }
 
 // startReleases commits the grants refs RELEASING in one commit, but those
@@ -643,7 +639,7 @@ func (e *Engine) releaseStale(ctx context.Context, ref state.GrantRef, trigger s
 			}
 		}
 	}
-	if err := e.commit(ctx, func(r *state.Records) error {
+	return e.commit(ctx, func(r *state.Records) error {
 		g := r.Grant(ref)
 		if g == nil {
 			return nil
@@ -656,9 +652,5 @@ func (e *Engine) releaseStale(ctx context.Context, ref state.GrantRef, trigger s
 			m.Grants = removeRef(m.Grants, ref)
 		}
 		return nil
-	}); err != nil {
-		return err
-	}
-	e.forgetDevice(ref)
-	return nil
+	})
 }

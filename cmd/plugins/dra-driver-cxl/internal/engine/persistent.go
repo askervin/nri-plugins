@@ -1166,7 +1166,7 @@ func (e *Engine) releaseMount(ctx context.Context, g *state.Grant, call *release
 	}
 	err := e.releaseUses(g.Asked.Source, g.Serial, e.goneUses(r, g, call), remaining)
 	if err != nil {
-		err = fmt.Errorf("releasing %s (serial %s): %w", e.deviceOf(g.Ref), serialText(g.Serial), err)
+		err = fmt.Errorf("releasing %s (serial %s): %w", e.deviceNameOf(g.Ref), serialText(g.Serial), err)
 	}
 	call.uses[g.Serial] = err
 	if err != nil {

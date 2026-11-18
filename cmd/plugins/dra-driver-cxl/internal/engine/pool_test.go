@@ -298,14 +298,21 @@ func TestFenceDeadline(t *testing.T) {
 }
 
 // A cxl create-region that fails with add_dev is tried once more, logged
-// with the claim and the DRA device.
+// with the claim and the DRA device of its preparation.
 func TestPoolAddDevRetry(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
 	v.f.FailCommand("cxl create-region", fake.ErrAddDev)
-	req := poolReq("c1", 0, serialA, state.ModeDax, state.KindExclusive)
-	req.ClaimName, req.Device = "ns/c1", "pooled0"
+	res := grantResult("c1", 0)
+	res.Device = "pooled0"
+	if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
+		doc.Preparations = append(doc.Preparations, state.Preparation{UID: "c1", Driver: poolDriver, ClaimName: "ns/c1",
+			State: state.PreparationPreparing, Results: []state.Result{res}})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	logs := captureKlog(t)
-	v.mustPrepare(poolDriver, "c1", req)
+	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindExclusive))
 	if out := logs(); !strings.Contains(out, "cxl-pool.nri.io: claim ns/c1: device pooled0: ") || !strings.Contains(out, "retrying once in") {
 		t.Fatalf("no retry line in\n%s", out)
 	}

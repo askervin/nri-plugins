@@ -93,7 +93,7 @@ func (e *Engine) ensureRegion(ctx context.Context, req *GrantRequest, memdev str
 	}
 	name, err := e.createRegion(ctx, req, memdev, mode, size)
 	if errors.Is(err, kernel.ErrEndpointNotReady) {
-		e.warnf(req.Asked.Source, "claim %s: device %s: %v; retrying once in %v", req.claimName(), req.device(memdev), err,
+		e.warnf(req.Asked.Source, "claim %s: device %s: %v; retrying once in %v", e.claimNameOf(req.Ref), e.deviceNameOf(req.Ref), err,
 			e.opts.Timeouts.RegionRetry)
 		select {
 		case <-ctx.Done():

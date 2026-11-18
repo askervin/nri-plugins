@@ -74,6 +74,16 @@ func (pr *prepare) request(ref state.GrantRef) string {
 	return ""
 }
 
+// device returns the DRA device of the result of the grant ref.
+func (pr *prepare) device(ref state.GrantRef) string {
+	for _, res := range pr.results {
+		if res.Index == ref.Result {
+			return res.Device
+		}
+	}
+	return ""
+}
+
 // grantLend returns the lend of a grant of the Prepare, nil for a claim that
 // is not a companion.
 func (pr *prepare) grantLend() *state.GrantLend {
@@ -328,11 +338,9 @@ func otherResult(res *state.Result, r *resourcev1.DeviceRequestAllocationResult,
 // fs by the env key of the result).
 func (p *Plugin) memdevRequest(pr *prepare, r *resourcev1.DeviceRequestAllocationResult, n int, key string, dev *Memdev, cfg config.Device) (engine.GrantRequest, error) {
 	req := engine.GrantRequest{
-		Ref:       state.GrantRef{Claim: pr.uid, Result: n},
-		ClaimName: pr.claimName,
-		Device:    r.Device,
-		Serial:    state.Serial(dev.Serial),
-		Asked:     state.Asked{Source: state.SourceLocal, ReadOnly: cfg.IsReadOnly()},
+		Ref:    state.GrantRef{Claim: pr.uid, Result: n},
+		Serial: state.Serial(dev.Serial),
+		Asked:  state.Asked{Source: state.SourceLocal, ReadOnly: cfg.IsReadOnly()},
 		Facts: state.MemdevFacts{Shared: dev.Shared, Persistent: dev.Persistent,
 			Usable: p.local.UsableSize(dev.Name, dev.Serial)},
 		Lend: pr.grantLend(),
@@ -506,7 +514,7 @@ func (p *Plugin) poolResults(claim *resourcev1.ResourceClaim, pr *prepare, resol
 		if err := p.checkSamePreparation(data, asked, pr.uid); err != nil {
 			return fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, err)
 		}
-		req := poolRequest(pr, n, r, data, asked)
+		req := poolRequest(pr, n, data, asked)
 		if err := pr.leaseBind(&req, &fs); err != nil {
 			return err
 		}
@@ -518,11 +526,9 @@ func (p *Plugin) poolResults(claim *resourcev1.ResourceClaim, pr *prepare, resol
 
 // poolRequest returns the request to the engine of the allocation result n
 // of a Prepare of a claim, with its parsed status data and what it asks.
-func poolRequest(pr *prepare, n int, r *resourcev1.DeviceRequestAllocationResult, data *device.PoolDevice, asked state.Asked) engine.GrantRequest {
+func poolRequest(pr *prepare, n int, data *device.PoolDevice, asked state.Asked) engine.GrantRequest {
 	return engine.GrantRequest{
 		Ref:        state.GrantRef{Claim: pr.uid, Result: n},
-		ClaimName:  pr.claimName,
-		Device:     r.Device,
 		Serial:     state.Serial(data.Serial),
 		Asked:      asked,
 		Facts:      state.MemdevFacts{Shared: data.Shared, Persistent: data.Persistent, Coherent: data.Coherent},
