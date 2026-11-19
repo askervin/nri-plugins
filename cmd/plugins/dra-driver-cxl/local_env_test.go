@@ -462,13 +462,6 @@ func makeOpaqueConfig(driver string, source resourcev1.AllocationConfigSource, c
 	}
 }
 
-// localMemdev returns the observed local memdev localSerial.
-func localMemdev() kernel.MemdevInfo {
-	m := observedMemdev("mem0", localSerial, localRegionSize, 0)
-	m.Major = 251
-	return m
-}
-
 // localClaim returns a claim allocated the local memdev for request "mem",
 // consuming bytes of it (0: no consumed capacity), with opaque cxl.nri.io
 // claim configs.

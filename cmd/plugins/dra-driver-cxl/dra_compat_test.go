@@ -31,55 +31,17 @@ import (
 // package use them.
 
 type (
-	localSnapshot = dra.LocalSnapshot
-	localUse      = dra.LocalUse
+	localUse = dra.LocalUse
 )
 
 var (
 	resultEnvVarName = state.ResultEnvVarName
 )
 
-// buildDevInfosHeld is buildDevInfos with the serials of the new memdevs
-// that are held.
-func buildDevInfosHeld(cfg *DriverConfig, detected *kernel.Snapshot, poolSerials, held map[uint64]bool, local *localSnapshot) (dra.DevicesInfo, error) {
-	if err := cfg.validate(); err != nil {
-		return nil, err
-	}
-	return dra.BuildDevices(cfg.publishConfig(), detected, poolSerials, held, local), nil
-}
-
 // observedMemdev returns an observed memdev with a driver, of RAM capacity
 // ram and with the CPU NUMA node affinity.
 func observedMemdev(name string, serial, ram uint64, affinity int) kernel.MemdevInfo {
 	return kernel.MemdevInfo{Name: name, Serial: serial, State: kernel.MemdevReady, RamSize: ram, NodeAffinity: affinity}
-}
-
-// observedRegion adds a region of the mode and of size bytes on the memdevs
-// with the serials to the snapshot s, after the ranges of its regions:
-// enabled on node, a RAM region with its memory blocks online on node;
-// disabled without memory for node -1. The block size of s is
-// localBlockSize unless it has one.
-func observedRegion(s *kernel.Snapshot, name, mode string, node int, size uint64, serials ...uint64) {
-	if s.BlockSize == 0 {
-		s.BlockSize = localBlockSize
-	}
-	start := uint64(0)
-	for _, r := range s.Regions {
-		start = max(start, (r.Range.End+s.BlockSize)/s.BlockSize*s.BlockSize)
-	}
-	r := kernel.RegionInfo{Name: name, State: kernel.RegionEnabled, Mode: mode, NumaNode: node,
-		Range: kernel.Range{Start: start, End: start + size - 1}, Serials: serials}
-	if node < 0 {
-		r.State = kernel.RegionDisabled
-	} else {
-		s.DaxDevices = append(s.DaxDevices, kernel.DaxDeviceInfo{Name: "dax-" + name, Region: name, Size: size, TargetNode: node})
-	}
-	if node >= 0 && mode == kernel.RegionRAM {
-		for _, b := range r.Range.Blocks(s.BlockSize) {
-			s.Blocks = append(s.Blocks, kernel.MemoryBlock{Index: b, State: kernel.BlockOnline, NumaNode: node})
-		}
-	}
-	s.Regions = append(s.Regions, r)
 }
 
 // poolNumaNodes returns the NUMA nodes of the memory of the claims of the

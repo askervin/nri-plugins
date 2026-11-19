@@ -178,6 +178,28 @@ func TestObservePartial(t *testing.T) {
 	}
 }
 
+// The lookups of a snapshot literal, which has no index, scan its entries;
+// an entry it does not have is absent.
+func TestSnapshotLiteralLookups(t *testing.T) {
+	s := &kernel.Snapshot{
+		Memdevs:    []kernel.MemdevInfo{{Name: "mem0", Serial: 0x11}},
+		Regions:    []kernel.RegionInfo{{Name: "region0"}},
+		DaxDevices: []kernel.DaxDeviceInfo{{Name: "dax0.0"}},
+		Blocks:     []kernel.MemoryBlock{{Index: 7, State: kernel.BlockOnline}},
+		Devices:    []kernel.BlockDevice{{Path: "/dev/pmem0"}},
+	}
+	_, pmem0 := s.BlockDevice("/dev/pmem0")
+	if s.Memdev(0x11).Name != "mem0" || s.Region("region0").Name != "region0" || s.DaxDevice("dax0.0").Name != "dax0.0" ||
+		!slices.Equal(s.OnlineBlocks([]int{6, 7}), []int{7}) || !pmem0 {
+		t.Fatal("an entry of the literal not found")
+	}
+	_, pmem1 := s.BlockDevice("/dev/pmem1")
+	if s.Memdev(0x12).State != kernel.MemdevAbsent || s.Region("region1").State != kernel.RegionAbsent ||
+		s.DaxDevice("dax0.1").State != kernel.DaxAbsent || s.Block(6).State != kernel.BlockAbsent || pmem1 {
+		t.Fatal("an entry that the literal does not have found")
+	}
+}
+
 // The waits are woken by the events of the kernel: a wait whose polls are
 // an hour apart ends at once when the memdev appears.
 func TestWaitWokenByEvents(t *testing.T) {

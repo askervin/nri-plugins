@@ -16,77 +16,9 @@ package main
 
 import (
 	"fmt"
-	"maps"
 	"slices"
 	"testing"
-
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
-	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
-
-// pmemMemdev returns a memdev of persistent memory only.
-func pmemMemdev(name string, serial uint64) kernel.MemdevInfo {
-	m := observedMemdev(name, serial, 0, -1)
-	m.PmemSize = 4 << 30
-	return m
-}
-
-// The publication of persistent local memdevs and its refusals;
-// persistent: false on every other local memdev.
-func TestBuildDevInfosPersistentMemdevs(t *testing.T) {
-	devices := &kernel.Snapshot{}
-	for i := range 10 {
-		devices.Memdevs = append(devices.Memdevs, pmemMemdev(fmt.Sprintf("mem%d", i+1), 0xb1+uint64(i)))
-	}
-	devices.Memdevs[0].NodeAffinity = 1
-	devices.Memdevs[5].State = kernel.MemdevUnbound
-	devices.Memdevs[7].RamSize = 1 << 30
-	// a foreign pmem region with a node is not a region device (A5)
-	observedRegion(devices, "region0", kernel.RegionPmem, 2, 4<<30, 0xb7)
-	cfg := &DriverConfig{IgnoreDevices: []string{"mem3"}, SharedDevices: []string{"0xb2", "0xba"}, IgnoreDRAMNodes: true}
-	local := &localSnapshot{Uses: map[uint64]localUse{
-		0xb9: {Claims: []string{"u1"}},
-		0xba: {Persistent: true, Claims: []string{"u2"}},
-		0xb1: {Persistent: true},
-	}, BlockSize: localBlockSize}
-	devInfos := buildDevInfosHeldOK(t, cfg, devices, map[uint64]bool{0xb4: true}, map[uint64]bool{0xb5: true}, local)
-	got := slices.Sorted(maps.Keys(devInfos))
-	want := []string{"memdev-b1", "memdev-b2", "memdev-b8"}
-	if !slices.Equal(got, want) {
-		t.Fatalf("published %v, expected %v", got, want)
-	}
-	if m := devInfos["memdev-b1"].Dev.(*dra.Memdev); *m != (dra.Memdev{Name: "mem1", Serial: 0xb1, Size: 4 << 30, NodeAffinity: 1, Persistent: true}) {
-		t.Fatalf("persistent memdev %+v", m)
-	}
-	if m := devInfos["memdev-b2"].Dev.(*dra.Memdev); !m.Persistent || !m.Shared || m.Size != 4<<30 {
-		t.Fatalf("shared persistent memdev %+v", m)
-	}
-	// RAM and pmem: the RAM, not persistent
-	if m := devInfos["memdev-b8"].Dev.(*dra.Memdev); m.Persistent || m.Shared || m.Size != 1<<30 {
-		t.Fatalf("memdev with RAM and pmem %+v", m)
-	}
-	// idle again: the other sharing is published
-	local.Uses[0xba] = localUse{Persistent: true}
-	if devInfos = buildDevInfosHeldOK(t, cfg, devices, nil, nil, local); devInfos["memdev-ba"] == nil {
-		t.Fatalf("idle persistent memdev not published: %v", slices.Sorted(maps.Keys(devInfos)))
-	}
-	// a sliced memdev that a persistent device's claims use is not
-	ram := localMemdev()
-	ram.Serial = 0xbb
-	local.Uses[0xbb] = localUse{Persistent: true, Claims: []string{"u3"}}
-	devices.Memdevs = append(devices.Memdevs, ram)
-	if devInfos = buildDevInfosHeldOK(t, cfg, devices, nil, nil, local); devInfos["memdev-bb"] != nil {
-		t.Fatal("a memdev used as a persistent device published as sliced")
-	}
-}
-
-// buildDevInfosHeldOK is buildDevInfosHeld, failing the test on error.
-func buildDevInfosHeldOK(t *testing.T, cfg *DriverConfig, devices *kernel.Snapshot, pool, held map[uint64]bool, local *localSnapshot) map[string]*dra.DeviceInfo {
-	t.Helper()
-	devInfos, err := buildDevInfosHeld(cfg, devices, pool, held, local)
-	noErr(t, err)
-	return devInfos
-}
 
 // fsTypes defaults to erofs, is returned as a copy, and its invalid or
 // misspelt settings are refused.

@@ -181,8 +181,9 @@ func TestLocalRegionErrors(t *testing.T) {
 }
 
 // A first part whose set-up fails leaves nothing: the region does not come
-// up in devdax mode, its zeroing fails, kmem cannot be bound or the memory
-// not onlined. A later part that fails to resize, to come up in devdax
+// up in devdax mode, its zeroing fails, kmem cannot be bound, the memory
+// not onlined, the part rounded up to whole memory blocks does not fit or
+// the memory block size cannot be read. A later part that fails to resize, to come up in devdax
 // mode or to online goes alone; a part that fails to delete stays with its
 // claim until a retry.
 func TestLocalSliceFailures(t *testing.T) {
@@ -221,11 +222,15 @@ func TestLocalSliceFailures(t *testing.T) {
 			"memdev mem0 (serial 0x11): bind dax0.0 to kmem: input/output error"},
 		{"online", func(v *env) { v.f.FailWrite(blockState(75), syscall.EIO) }, numa("l1", 256*mib),
 			"memdev mem0 (serial 0x11): memory75: online_movable: input/output error"},
+		{"no room for whole blocks", func(v *env) { v.f.SetBlockSize(2 * gib) }, numa("l1", 128*mib),
+			"memdev mem0 (serial 0x11): no room for the slice: 1073741824 bytes free in region0, the slice needs 2147483648"},
+		{"block size unreadable", func(v *env) { v.f.Write("devices/system/memory/block_size_bytes", "bogus") }, dax("l1"),
+			`cannot parse the memory block size "bogus" in <sys>/devices/system/memory/block_size_bytes`},
 	} {
 		t.Run("first part "+tc.name, func(t *testing.T) {
 			v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
 			tc.fail(v)
-			failed(t, v, "l1", tc.req, tc.err)
+			failed(t, v, "l1", tc.req, strings.ReplaceAll(tc.err, "<sys>", v.f.SysRoot()))
 			wantPreparation(t, v, localDriver, "l1", "")
 			if strings.Contains(v.f.Commands(), "disable-memdev") {
 				t.Fatal("a local memdev was disabled")
