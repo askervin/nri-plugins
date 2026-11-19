@@ -331,11 +331,13 @@ func (e *driverEnv) leaseFsRoot() string {
 func (e *driverEnv) publishConfig() PublishConfig {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	cfg := PublishConfig{ManageMemdevs: true, PublishLeaseDevice: true}
+	var shared []string
 	for _, s := range slices.Sorted(maps.Keys(e.shared)) {
-		cfg.SharedDevices = append(cfg.SharedDevices, fmt.Sprintf("0x%x", s))
+		shared = append(shared, api.FormatSerial(s))
 	}
-	return cfg
+	specs, err := ParseMemdevSpecs(shared)
+	mustOK(e.t, err)
+	return PublishConfig{ManageMemdevs: true, PublishLeaseDevice: true, SharedDevices: specs}
 }
 
 // scan returns the observation of a scan of the publisher (detected),

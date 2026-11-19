@@ -31,10 +31,10 @@ import (
 )
 
 type DriverConfig struct {
-	// IgnoreDevices is a list of CXL memory devices. Matches
-	// uevent DEVNAME, <major>:<minor>, or serial number in
-	// decimal format, or 0x<hex>. Example: ["mem0", "cxl/mem0",
-	// "251:0", "3238060771", "0xc100e2e0"]
+	// IgnoreDevices is a list of CXL memory devices: a device is
+	// its name, uevent DEVNAME, <major>:<minor>, or serial number in
+	// decimal or 0x hex (dra.MemdevSpec). Example: ["mem0",
+	// "cxl/mem0", "251:0", "3238060771", "0xc100e2e0"]
 	IgnoreDevices []string `json:"ignoreDevices,omitempty"`
 	// SharedDevices is a list of local CXL memory devices that are
 	// published as shared devices (class cxl-local-shared): one devdax
@@ -42,6 +42,9 @@ type DriverConfig struct {
 	// like IgnoreDevices; IgnoreDevices and pool devices take
 	// precedence. Example: ["0xc100e2e1"]
 	SharedDevices []string `json:"sharedDevices,omitempty"`
+	// ignoreDevices and sharedDevices are IgnoreDevices and
+	// SharedDevices parsed by validate.
+	ignoreDevices, sharedDevices []dra.MemdevSpec
 	// IgnoreRegions is a list of CXL memory regions ["region0"]
 	// to be ignored by the driver.
 	IgnoreRegions []string `json:"ignoreRegions,omitempty"`
@@ -141,7 +144,14 @@ func (c *DriverConfig) logDefaults() {
 // validate returns an error if a value of the configuration is invalid,
 // and decodes the defaults.
 func (c *DriverConfig) validate() error {
-	if err := c.validateMemdevSettings(); err != nil {
+	var err error
+	if c.ignoreDevices, err = dra.ParseMemdevSpecs(c.IgnoreDevices); err != nil {
+		return fmt.Errorf("ignoreDevices: %w", err)
+	}
+	if c.sharedDevices, err = dra.ParseMemdevSpecs(c.SharedDevices); err != nil {
+		return fmt.Errorf("sharedDevices: %w", err)
+	}
+	if err = c.validateMemdevSettings(); err != nil {
 		return err
 	}
 	for _, t := range c.FsTypes {
@@ -257,8 +267,8 @@ func resolveConfigStr(flags *CXLFlags) (string, error) {
 // configuration.
 func (c *DriverConfig) publishConfig() dra.PublishConfig {
 	return dra.PublishConfig{
-		IgnoreDevices:      c.IgnoreDevices,
-		SharedDevices:      c.SharedDevices,
+		IgnoreDevices:      c.ignoreDevices,
+		SharedDevices:      c.sharedDevices,
 		IgnoreRegions:      c.IgnoreRegions,
 		IgnoreNodes:        c.IgnoreNodes,
 		IgnoreDRAMNodes:    c.IgnoreDRAMNodes,

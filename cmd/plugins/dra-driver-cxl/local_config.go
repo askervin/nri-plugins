@@ -16,11 +16,10 @@ package main
 
 import (
 	"fmt"
-	"strconv"
-	"strings"
 
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
@@ -34,9 +33,11 @@ import (
 
 // MemdevSetting is a setting of the local memdevs that Device matches.
 type MemdevSetting struct {
-	// Device matches a memdev by name (mem0) or serial (decimal, 0x<hex>
-	// or <hex>).
+	// Device matches a memdev by name (mem0, cxl/mem0) or serial (decimal
+	// or 0x hex).
 	Device string `json:"device"`
+	// spec is Device parsed by validate.
+	spec dra.MemdevSpec
 	// UsableSize is a quantity ("128Gi"): only the first UsableSize bytes
 	// of the RAM capacity of the memdev are used. Use it for a memdev
 	// whose memory is broken or aliased above it. Rounded down to a
@@ -50,10 +51,16 @@ type MemdevSetting struct {
 
 // validateMemdevSettings returns an error if a memdev setting is invalid.
 func (c *DriverConfig) validateMemdevSettings() error {
-	for i, s := range c.MemdevSettings {
+	for i := range c.MemdevSettings {
+		s := &c.MemdevSettings[i]
 		if s.Device == "" {
 			return fmt.Errorf("memdevSettings[%d]: no device", i)
 		}
+		spec, err := dra.ParseMemdevID(s.Device)
+		if err != nil {
+			return fmt.Errorf("memdevSettings[%d]: %w", i, err)
+		}
+		s.spec = spec
 		if s.UsableSize != "" {
 			q, err := resource.ParseQuantity(s.UsableSize)
 			if err != nil {
@@ -75,29 +82,11 @@ func (c *DriverConfig) memdevSetting(memdev string, serial uint64) *MemdevSettin
 		return nil
 	}
 	for i := range c.MemdevSettings {
-		if s := &c.MemdevSettings[i]; settingMatches(s.Device, memdev, serial) {
+		if s := &c.MemdevSettings[i]; s.spec.MatchID(memdev, serial) {
 			return s
 		}
 	}
 	return nil
-}
-
-// settingMatches tells whether the device of a memdev setting matches the
-// memdev name or serial: the name, or the serial in decimal, 0x<hex> or
-// <hex>, compared as a number.
-func settingMatches(spec, memdev string, serial uint64) bool {
-	if spec == memdev {
-		return true
-	}
-	if hex, ok := strings.CutPrefix(spec, "0x"); ok {
-		v, err := strconv.ParseUint(hex, 16, 64)
-		return err == nil && v == serial
-	}
-	if v, err := strconv.ParseUint(spec, 10, 64); err == nil && v == serial {
-		return true
-	}
-	v, err := strconv.ParseUint(spec, 16, 64)
-	return err == nil && v == serial
 }
 
 // configuredUsableSize returns the usableSize of the first memdev setting

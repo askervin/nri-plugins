@@ -366,11 +366,13 @@ func (e *leaseEnv) setShared(serial uint64) {
 func (e *leaseEnv) publishConfig() dra.PublishConfig {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	cfg := dra.PublishConfig{ManageMemdevs: true, PublishLeaseDevice: true}
+	var shared []string
 	for _, s := range slices.Sorted(maps.Keys(e.shared)) {
-		cfg.SharedDevices = append(cfg.SharedDevices, fmt.Sprintf("0x%x", s))
+		shared = append(shared, api.FormatSerial(s))
 	}
-	return cfg
+	specs, err := dra.ParseMemdevSpecs(shared)
+	mustOK(e.t, err)
+	return dra.PublishConfig{ManageMemdevs: true, PublishLeaseDevice: true, SharedDevices: specs}
 }
 
 // detected returns the observation of the node that a scan makes.

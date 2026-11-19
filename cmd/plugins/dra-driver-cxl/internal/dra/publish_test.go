@@ -59,6 +59,14 @@ func pubMemdev() kernel.MemdevInfo {
 	return m
 }
 
+// memdevSpecs returns the memdevs of the specs.
+func memdevSpecs(t *testing.T, specs ...string) []MemdevSpec {
+	t.Helper()
+	parsed, err := ParseMemdevSpecs(specs)
+	mustOK(t, err)
+	return parsed
+}
+
 // pubMem returns an observed memdev with a driver, of RAM capacity ram and
 // with the CPU NUMA node affinity.
 func pubMem(name string, serial, ram uint64, affinity int) kernel.MemdevInfo {
@@ -187,7 +195,7 @@ func TestBuildDevInfosLocalMemdevs(t *testing.T) {
 	devices.Memdevs[6].RamSize = 0
 	pubRegion(devices, "region0", 2, 1<<30, 0xa2)
 	pubRegion(devices, "region1", 3, 1<<30, 0xa5)
-	cfg := PublishConfig{IgnoreDevices: []string{"0xa4"}, ManageMemdevs: true}
+	cfg := PublishConfig{IgnoreDevices: memdevSpecs(t, "0xa4"), ManageMemdevs: true}
 	local := &LocalSnapshot{Uses: map[uint64]LocalUse{0xa5: {}}, BlockSize: pubBlockSize}
 	pool := map[uint64]bool{0xa3: true}
 	devInfos := BuildDevices(cfg, devices, pool, nil, local)
@@ -454,6 +462,43 @@ func TestBuildDevInfosHollowRegion(t *testing.T) {
 	}
 }
 
+// TestParseMemdevSpec pins the forms of a memdev spec and the memdevs that
+// each matches: a serial is decimal or 0x hex of any case, never bare hex.
+func TestParseMemdevSpec(t *testing.T) {
+	mems := []kernel.MemdevInfo{
+		{Name: "mem0", Serial: 0xc100e2e0, Major: 251, Minor: 0},
+		{Name: "mem1", Serial: 0x100, Major: 251, Minor: 1},
+	}
+	for spec, want := range map[string]string{
+		"mem0":       `mem0: memory device name "mem0"`,
+		"cxl/mem1":   `mem1: memory uevent device name "cxl/mem1"`,
+		"251:0":      `mem0: memory device with major:minor "251:0"`,
+		"3238060768": `mem0: memory device serial "3238060768"`,
+		"0xc100e2e0": `mem0: memory device serial "0xc100e2e0"`,
+		"0XC100E2E0": `mem0: memory device serial "0XC100E2E0"`,
+		"256":        `mem1: memory device serial "256"`,
+		"100":        "",
+		"mem2":       "",
+	} {
+		s, err := ParseMemdevSpec(spec)
+		mustOK(t, err)
+		var got []string
+		for i := range mems {
+			if m := s.Match(&mems[i]); m != "" {
+				got = append(got, mems[i].Name+": "+m)
+			}
+		}
+		if strings.Join(got, ", ") != want {
+			t.Errorf("%q matches %q, expected %q", spec, got, want)
+		}
+	}
+	for _, spec := range []string{"", "a5", "c100e2e0", "mem", "memx", "mem-1", "cxl/", "cxl/a5", "251:", "251:x", "-1", "0x", "0xg"} {
+		if _, err := ParseMemdevSpec(spec); err == nil {
+			t.Errorf("%q parsed", spec)
+		}
+	}
+}
+
 // TestSharedLocalPrecedence pins the precedence per memdev: ignoreDevices
 // over pool devices over sharedDevices over sliced; any spec form of
 // ignoreDevices and sharedDevices matches; a memdev used one way by claims
@@ -468,8 +513,8 @@ func TestSharedLocalPrecedence(t *testing.T) {
 	byName, ignored, pooled, sliced := &devices.Memdevs[0], &devices.Memdevs[4], &devices.Memdevs[5], &devices.Memdevs[6]
 	pubRegion(devices, "region9", 3, 1<<30, 0xaa)
 	cfg := PublishConfig{
-		IgnoreDevices: []string{"0xa5"},
-		SharedDevices: []string{"mem1", "cxl/mem2", "251:3", "164", "a5", "0xa6", "0xa8", "0xaa"},
+		IgnoreDevices: memdevSpecs(t, "0xa5"),
+		SharedDevices: memdevSpecs(t, "mem1", "cxl/mem2", "251:3", "164", "0XA5", "0xa6", "0xa8", "0xaa"),
 		ManageMemdevs: true,
 	}
 	pool := map[uint64]bool{0xa6: true}
@@ -523,10 +568,10 @@ func TestSharedRefusalLogged(t *testing.T) {
 	logs := klogtest.Capture(t, 0)
 	// logged once per process: again for this test
 	for _, reason := range []string{heldReason, "pool device"} {
-		sharedRefusalsLogged.Delete("mem-refused\x00" + reason)
+		sharedRefusalsLogged.Delete("mem31\x00" + reason)
 	}
-	cfg := PublishConfig{SharedDevices: []string{"mem-refused"}, ManageMemdevs: true, IgnoreDRAMNodes: true}
-	detected := &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{pubMem("mem-refused", 0xa1f, 1<<30, -1)}}
+	cfg := PublishConfig{SharedDevices: memdevSpecs(t, "mem31"), ManageMemdevs: true, IgnoreDRAMNodes: true}
+	detected := &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{pubMem("mem31", 0xa1f, 1<<30, -1)}}
 	local := &LocalSnapshot{BlockSize: pubBlockSize}
 	for range 2 {
 		if devs := BuildDevices(cfg, detected, nil, map[uint64]bool{0xa1f: true}, local); len(devs) != 0 {
@@ -537,10 +582,10 @@ func TestSharedRefusalLogged(t *testing.T) {
 		t.Fatalf("published %v", pubNames(devs))
 	}
 	out := logs()
-	if n := logMatches(out, `- not publishing memory device "mem-refused" as a shared local device: `+heldReason); n != 1 {
+	if n := logMatches(out, `- not publishing memory device "mem31" as a shared local device: `+heldReason); n != 1 {
 		t.Fatalf("%d lines of the held refusal:\n%s", n, out)
 	}
-	if n := logMatches(out, `- not publishing memory device "mem-refused" as a shared local device: pool device`); n != 1 {
+	if n := logMatches(out, `- not publishing memory device "mem31" as a shared local device: pool device`); n != 1 {
 		t.Fatalf("%d lines of the pool refusal:\n%s", n, out)
 	}
 }

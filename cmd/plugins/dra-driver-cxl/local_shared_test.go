@@ -367,14 +367,16 @@ func TestPublishSharedLocalMemdev(t *testing.T) {
 	}
 }
 
-// The sharedDevices of the configuration: a list of strings.
+// The sharedDevices of the configuration: a list of strings, each a memdev
+// spec; an invalid spec of sharedDevices or ignoreDevices fails the load.
 func TestDriverConfigSharedDevices(t *testing.T) {
 	cfg, err := newDriverConfigFromString(`sharedDevices: ["0xc100e2e1", "mem1"]`)
 	noErr(t, err)
 	if !slices.Equal(cfg.SharedDevices, []string{"0xc100e2e1", "mem1"}) {
 		t.Fatalf("sharedDevices %v", cfg.SharedDevices)
 	}
-	for _, bad := range []string{`sharedDevices: "0xc100e2e1"`, `sharedDevice: ["0xc100e2e1"]`, `sharedDevices: [{serial: 1}]`} {
+	for _, bad := range []string{`sharedDevices: "0xc100e2e1"`, `sharedDevice: ["0xc100e2e1"]`, `sharedDevices: [{serial: 1}]`,
+		`sharedDevices: ["c100e2e1"]`, `ignoreDevices: ["mem0", "cxl/c100e2e1"]`} {
 		if _, err := newDriverConfigFromString(bad); err == nil {
 			t.Errorf("%s: no error", bad)
 		}

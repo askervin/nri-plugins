@@ -70,7 +70,7 @@ type scanCase struct {
 
 // scanCases returns the configurations of the publisher that the
 // characterization applies to every topology with the serials.
-func scanCases(serials []uint64) map[string]scanCase {
+func scanCases(t *testing.T, serials []uint64) map[string]scanCase {
 	managed := func() *LocalSnapshot {
 		return &LocalSnapshot{Uses: map[uint64]LocalUse{}, Probed: map[uint64]uint64{}, BlockSize: scanBlockSize}
 	}
@@ -85,9 +85,9 @@ func scanCases(serials []uint64) map[string]scanCase {
 		"unmanaged": {cfg: PublishConfig{PublishLeaseDevice: true}},
 		"managed":   {cfg: PublishConfig{ManageMemdevs: true}, local: managed()},
 		"ignored": {cfg: PublishConfig{ManageMemdevs: true, IgnoreRegions: []string{"region1"}, IgnoreNodes: []int{3},
-			IgnoreDevices: []string{"mem0", "cxl/mem1", "251:2", strconv.FormatUint(at(3), 10), strconv.FormatUint(at(4), 16)}},
+			IgnoreDevices: memdevSpecs(t, "mem0", "cxl/mem1", "251:2", strconv.FormatUint(at(3), 10), fmt.Sprintf("0X%X", at(4)))},
 			local: managed()},
-		"shared": {cfg: PublishConfig{ManageMemdevs: true, SharedDevices: shared}, local: managed()},
+		"shared": {cfg: PublishConfig{ManageMemdevs: true, SharedDevices: memdevSpecs(t, shared...)}, local: managed()},
 		"pool":   {cfg: PublishConfig{ManageMemdevs: true}, pool: map[uint64]bool{at(0): true}, held: map[uint64]bool{at(1): true}, local: managed()},
 		"used":   {cfg: PublishConfig{ManageMemdevs: true, IgnoreDRAMNodes: true}, local: used},
 	}
@@ -142,7 +142,7 @@ func TestCharScanTopologies(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			top := build(t)
 			var data []byte
-			cases := scanCases(top.serials)
+			cases := scanCases(t, top.serials)
 			for _, c := range slices.Sorted(maps.Keys(cases)) {
 				devs := scanDevices(t, top, cases[c])
 				for _, name := range slices.Sorted(maps.Keys(devs)) {

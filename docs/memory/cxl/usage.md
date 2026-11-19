@@ -1930,7 +1930,7 @@ defaults:
 
 | key | type | default | |
 |:----|:-----|:--------|:-|
-| `ignoreDevices` | list of strings | | CXL memory devices to leave alone: device name (`mem0`, `cxl/mem0`), `major:minor` (`251:0`), or serial in decimal or `0x` hex |
+| `ignoreDevices` | list of strings | | CXL memory devices to leave alone: device name (`mem0`, `cxl/mem0`), `major:minor` (`251:0`), or serial in decimal or `0x` hex of any case |
 | `sharedDevices` | list of strings | | local CXL memory devices to publish as shared devices, matched as `ignoreDevices`: claims and leases of such a device map the whole device as devdax ([local.md](local.md#shared-local-devices)) |
 | `ignoreRegions` | list of strings | | CXL regions to leave alone (`region0`) |
 | `ignoreNodes` | list of integers | | NUMA nodes to leave alone |
@@ -1940,7 +1940,7 @@ defaults:
 | `ignoreDRAMNodes` | bool | `false` | publish no `dram` device |
 | `udevStableDuration` | duration | `200ms` | quiet period after the last udev event before the devices are scanned again |
 | `manageMemdevs` | bool | `true` | publish the local memdevs that have no region and create their regions for claims |
-| `memdevSettings` | list | | settings of individual local memdevs: `device` (name `mem0` or serial in decimal or `0x` hex), `usableSize` (quantity): only the first `usableSize` bytes of the memdev are published and mapped by its regions ([local.md](local.md#broken-and-aliased-memory); not for persistent memdevs), and `coherent` (bool, default `false`): the memory of the memdev is coherent between the hosts that share it (`sharedDevices`), so that a cluster filesystem may be read-write on it ([local.md](local.md#persistent-local-memdevs)) |
+| `memdevSettings` | list | | settings of individual local memdevs: `device` (name `mem0`, `cxl/mem0`, or serial in decimal or `0x` hex), `usableSize` (quantity): only the first `usableSize` bytes of the memdev are published and mapped by its regions ([local.md](local.md#broken-and-aliased-memory); not for persistent memdevs), and `coherent` (bool, default `false`): the memory of the memdev is coherent between the hosts that share it (`sharedDevices`), so that a cluster filesystem may be read-write on it ([local.md](local.md#persistent-local-memdevs)) |
 | `fsTypes` | list of strings | `[erofs]` | the filesystem types that mode `fs` mounts on the node, for both drivers; a list replaces the default. erofs is the only type designed for untrusted images: every other type in the list (`squashfs`, `ext4`, `xfs`, `btrfs`, `gfs2`, or one that the plugin does not know, class single-host, [Filesystems](#filesystems)) trusts every party that can write the node's devices raw, that is the read-write `block` claims and leases of the devices on any node of any cluster that shares the pool. With the default no read-write mount is possible. `[]` mounts nothing (the refusal says `fsTypes: none`). The plugin logs the list at start: `fsTypes: <t1>, <t2>, ...: the filesystem types that mode fs mounts on this node`, or `fsTypes: none: mode fs mounts no filesystem on this node` |
 | `verifyAddressing` | bool | `true` | run an address line test on every new region of a local memdev of RAM, and use only the distinct bytes of a memdev whose memory aliases ([local.md](local.md#broken-and-aliased-memory)); persistent memdevs are not probed |
 | `defaults.container.steering` | object | `{policy: none}` | the steering of every container of the node whose results do not set it, the fields of `container.steering` ([MemoryConfig fields](#memoryconfig-fields), [Steering](#steering)); `{policy: auto}` steers every container with `numa` memory |
@@ -1953,6 +1953,9 @@ settings of containers, which their results override field by field
 case-sensitively. These errors stop the plugin:
 
 - `fsTypes: invalid filesystem type "X" (lower-case letters, digits, "_" and "-")`
+- `ignoreDevices: invalid memory device "X": not a name (mem0, cxl/mem0), major:minor (251:0) or serial in decimal or 0x hex`,
+  the same for `sharedDevices`, and
+  `memdevSettings[I]: invalid memory device "X": not a name (mem0, cxl/mem0) or serial in decimal or 0x hex`
 - `defaults: json: unknown field "F"` (`device`, `pool`,
   `container.Fencing`, ...)
 - `defaults.container.fencing: invalid value "X" (allowed-mems, mempolicy or none)`,

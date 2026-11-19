@@ -399,21 +399,118 @@ func localIgnoreReason(mems []kernel.MemdevInfo, local *LocalSnapshot) string {
 	return ""
 }
 
-// memdevMatches returns which spec of specs matches a memdev, described,
-// "" if none does. A spec matches the memdev name (mem0), the uevent device
-// name (cxl/mem0), <major>:<minor> or the serial in decimal, 0x<hex> or
-// <hex>.
-func memdevMatches(specs []string, memDev *kernel.MemdevInfo) string {
+// MemdevSpec is a memdev of the configuration: its name (mem0), its uevent
+// device name (cxl/mem0), the <major>:<minor> of its character device
+// (251:0) or its serial in decimal or 0x hex.
+type MemdevSpec struct {
+	spec         string
+	form         memdevSpecForm
+	name         string
+	major, minor int
+	serial       uint64
+}
+
+type memdevSpecForm int
+
+const (
+	specNone memdevSpecForm = iota
+	specName
+	specDevName
+	specDevNum
+	specSerial
+)
+
+// ParseMemdevSpec returns the memdev of a spec of the configuration, an
+// error if the spec is none of the forms of a MemdevSpec.
+func ParseMemdevSpec(spec string) (MemdevSpec, error) {
+	s := MemdevSpec{spec: spec}
+	if name, ok := strings.CutPrefix(spec, "cxl/"); ok && isMemdevName(name) {
+		s.form, s.name = specDevName, name
+	} else if isMemdevName(spec) {
+		s.form, s.name = specName, spec
+	} else if major, minor, ok := strings.Cut(spec, ":"); ok {
+		ma, errMa := strconv.ParseUint(major, 10, 32)
+		mi, errMi := strconv.ParseUint(minor, 10, 32)
+		if errMa == nil && errMi == nil {
+			s.form, s.major, s.minor = specDevNum, int(ma), int(mi)
+		}
+	} else if serial, err := api.ParseSerial(spec); err == nil {
+		s.form, s.serial = specSerial, serial
+	}
+	if s.form == specNone {
+		return s, fmt.Errorf("invalid memory device %q: not a name (mem0, cxl/mem0), major:minor (251:0) or serial in decimal or 0x hex", spec)
+	}
+	return s, nil
+}
+
+// ParseMemdevSpecs returns the memdevs of the specs, an error for the first
+// invalid one.
+func ParseMemdevSpecs(specs []string) ([]MemdevSpec, error) {
+	var parsed []MemdevSpec
 	for _, spec := range specs {
-		switch spec {
-		case memDev.Name:
-			return fmt.Sprintf("memory device name %q", spec)
-		case "cxl/" + memDev.Name:
-			return fmt.Sprintf("memory uevent device name %q", spec)
-		case fmt.Sprintf("%d:%d", memDev.Major, memDev.Minor):
-			return fmt.Sprintf("memory device with major:minor %q", spec)
-		case fmt.Sprintf("%d", memDev.Serial), fmt.Sprintf("0x%x", memDev.Serial), fmt.Sprintf("%x", memDev.Serial):
-			return fmt.Sprintf("memory device serial %q", spec)
+		s, err := ParseMemdevSpec(spec)
+		if err != nil {
+			return nil, err
+		}
+		parsed = append(parsed, s)
+	}
+	return parsed, nil
+}
+
+// ParseMemdevID returns the memdev of a spec by its name or serial, an
+// error for a <major>:<minor>, which MatchID cannot match.
+func ParseMemdevID(spec string) (MemdevSpec, error) {
+	s, err := ParseMemdevSpec(spec)
+	if err == nil && s.form == specDevNum {
+		return s, fmt.Errorf("invalid memory device %q: not a name (mem0, cxl/mem0) or serial in decimal or 0x hex", spec)
+	}
+	return s, err
+}
+
+// isMemdevName tells whether a name is a memdev name: mem<N>.
+func isMemdevName(name string) bool {
+	n, ok := strings.CutPrefix(name, "mem")
+	if !ok {
+		return false
+	}
+	_, err := strconv.ParseUint(n, 10, 64)
+	return err == nil
+}
+
+// Match returns how the spec matches a memdev, described, "" if it does
+// not.
+func (s MemdevSpec) Match(memDev *kernel.MemdevInfo) string {
+	switch {
+	case s.form == specName && s.name == memDev.Name:
+		return fmt.Sprintf("memory device name %q", s.spec)
+	case s.form == specDevName && s.name == memDev.Name:
+		return fmt.Sprintf("memory uevent device name %q", s.spec)
+	case s.form == specDevNum && s.major == memDev.Major && s.minor == memDev.Minor:
+		return fmt.Sprintf("memory device with major:minor %q", s.spec)
+	case s.form == specSerial && s.serial == memDev.Serial:
+		return fmt.Sprintf("memory device serial %q", s.spec)
+	}
+	return ""
+}
+
+// MatchID tells whether the spec matches the memdev of the name and the
+// serial; a <major>:<minor> spec does not.
+func (s MemdevSpec) MatchID(name string, serial uint64) bool {
+	switch s.form {
+	case specName, specDevName:
+		return s.name == name
+	case specSerial:
+		return s.serial == serial
+	}
+	return false
+}
+
+// memdevMatches returns how a spec of specs matches a memdev, described,
+// "" if none does.
+func memdevMatches(specs []MemdevSpec, memDev *kernel.MemdevInfo) string {
+	for _, s := range specs {
+		if m := s.Match(memDev); m != "" {
+			return m
 		}
 	}
 	return ""

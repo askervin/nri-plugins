@@ -130,7 +130,11 @@ func (fe *frontEnd) Started(st *store.Store, e *engine.Engine, rec *engine.Recov
 	if err != nil {
 		return err
 	}
-	cfg := dra.PublishConfig{ManageMemdevs: true, SharedDevices: frontShared()}
+	shared, err := dra.ParseMemdevSpecs(frontShared())
+	if err != nil {
+		return err
+	}
+	cfg := dra.PublishConfig{ManageMemdevs: true, SharedDevices: shared}
 	pub, err := dra.NewPublisher(dra.PublishOptions{Config: cfg, NodeName: frontNode, Scan: fe.scan, Store: st, Probes: e.Probes,
 		BlockSize: fe.f.Kernel().BlockSize})
 	if err != nil {

@@ -125,10 +125,9 @@ type PublishOptions struct {
 // PublishConfig are the settings of the configuration of the driver that
 // the publisher applies.
 type PublishConfig struct {
-	// IgnoreDevices are memdevs that are never published (name, uevent
-	// device name, <major>:<minor>, serial); SharedDevices the local memdevs
-	// published as shared devices.
-	IgnoreDevices, SharedDevices []string
+	// IgnoreDevices are memdevs that are never published; SharedDevices
+	// the local memdevs published as shared devices.
+	IgnoreDevices, SharedDevices []MemdevSpec
 	// IgnoreRegions and IgnoreNodes are regions and NUMA nodes that are not
 	// published.
 	IgnoreRegions []string

@@ -60,15 +60,18 @@ func lendOf(p *dra.Plugin, uid string) *lendRecord {
 }
 
 // buildDevInfos returns the devices that the publisher publishes of the
-// observation of the node with the configuration, the pool serials and the
-// uses of the local memdevs.
+// observation of the node with the configuration (validated first, as at
+// load), the pool serials and the uses of the local memdevs.
 func buildDevInfos(cfg *DriverConfig, detected *kernel.Snapshot, poolSerials map[uint64]bool, local *localSnapshot) (dra.DevicesInfo, error) {
-	return dra.BuildDevices(cfg.publishConfig(), detected, poolSerials, nil, local), nil
+	return buildDevInfosHeld(cfg, detected, poolSerials, nil, local)
 }
 
 // buildDevInfosHeld is buildDevInfos with the serials of the new memdevs
 // that are held.
 func buildDevInfosHeld(cfg *DriverConfig, detected *kernel.Snapshot, poolSerials, held map[uint64]bool, local *localSnapshot) (dra.DevicesInfo, error) {
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
 	return dra.BuildDevices(cfg.publishConfig(), detected, poolSerials, held, local), nil
 }
 

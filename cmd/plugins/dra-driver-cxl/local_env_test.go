@@ -209,7 +209,7 @@ func (e *localTestEnv) start() *dra.Plugin {
 	noErr(t, err)
 	e.cdi = cache
 	e.publisher, err = dra.NewPublisher(dra.PublishOptions{
-		Config:    e.config.publishConfig(),
+		Config:    e.publishConfig(),
 		NodeName:  testNode,
 		Scan:      func(context.Context) (*kernel.Snapshot, error) { return e.detected(), nil },
 		Store:     e.st,
@@ -225,7 +225,7 @@ func (e *localTestEnv) start() *dra.Plugin {
 		SysRoot:   e.k.SysRoot(),
 		DevRoot:   e.k.DevRoot(),
 		CDI:       cache,
-		Local:     e.config.localConfig(),
+		Local:     e.localConfig(),
 		OnShared:  e.devices.addShared,
 		Publisher: e.publisher,
 	})
@@ -266,7 +266,24 @@ func (e *localTestEnv) detected() *kernel.Snapshot {
 // rescan publishes the local memdevs as a scan of the publisher does.
 func (e *localTestEnv) rescan() {
 	e.t.Helper()
-	noErr(e.t, e.publisher.ScanWith(context.Background(), e.config.publishConfig(), e.poolSerials))
+	noErr(e.t, e.publisher.ScanWith(context.Background(), e.publishConfig(), e.poolSerials))
+}
+
+// publishConfig returns the settings of the publisher of the configuration,
+// which is validated first, as the driver does at start: tests change
+// e.config between scans.
+func (e *localTestEnv) publishConfig() dra.PublishConfig {
+	e.t.Helper()
+	noErr(e.t, e.config.validate())
+	return e.config.publishConfig()
+}
+
+// localConfig returns the settings of the local memdevs of the validated
+// configuration.
+func (e *localTestEnv) localConfig() dra.LocalConfig {
+	e.t.Helper()
+	noErr(e.t, e.config.validate())
+	return e.config.localConfig()
 }
 
 // prepare prepares a claim on the node state, as the kubelet plugin does,
@@ -463,7 +480,7 @@ func (e *localTestEnv) allocatable() (dra.DevicesInfo, error) {
 // on the same store, engine and publisher.
 func (e *localTestEnv) unmanaged() {
 	e.t.Helper()
-	local := e.config.localConfig()
+	local := e.localConfig()
 	local.Managed = false
 	p, err := dra.New(dra.Options{
 		Rules:     e.rules()[0],

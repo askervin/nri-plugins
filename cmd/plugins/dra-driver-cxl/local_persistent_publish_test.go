@@ -180,9 +180,16 @@ memdevSettings:
 	if none.memdevCoherent("mem0", 1) {
 		t.Fatal("coherent without a configuration")
 	}
-	for spec, want := range map[string]bool{"mem0": true, "0xc100f5e1": true, "0xC100F5E1": true, "c100f5e1": true, "3238065633": true, "0x1": false, "mem1": false, "0x": false} {
-		if got := settingMatches(spec, "mem0", 0xc100f5e1); got != want {
-			t.Errorf("settingMatches(%q) %v, expected %v", spec, got, want)
+	for spec, want := range map[string]bool{"mem0": true, "cxl/mem0": true, "0xc100f5e1": true, "0XC100F5E1": true, "3238065633": true, "0x1": false, "mem1": false} {
+		cfg, err := newDriverConfigFromString(fmt.Sprintf("memdevSettings: [{device: %q, coherent: true}]", spec))
+		noErr(t, err)
+		if got := cfg.memdevCoherent("mem0", 0xc100f5e1); got != want {
+			t.Errorf("device %q: coherent %v, expected %v", spec, got, want)
+		}
+	}
+	for _, spec := range []string{"c100f5e1", "251:0", "0x"} {
+		if _, err := newDriverConfigFromString(fmt.Sprintf("memdevSettings: [{device: %q}]", spec)); err == nil {
+			t.Errorf("device %q accepted", spec)
 		}
 	}
 }

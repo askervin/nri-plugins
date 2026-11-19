@@ -45,7 +45,7 @@ func TestRescanDuringDaxShrink(t *testing.T) {
 	}
 	// the publisher of the driver: its scan of the kernel (driver.go)
 	pub, err := dra.NewPublisher(dra.PublishOptions{
-		Config:    e.config.publishConfig(),
+		Config:    e.publishConfig(),
 		NodeName:  testNode,
 		Scan:      e.k.Kernel().ObserveTopology,
 		Store:     e.st,
