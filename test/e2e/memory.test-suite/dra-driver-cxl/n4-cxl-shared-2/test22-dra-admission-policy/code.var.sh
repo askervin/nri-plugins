@@ -41,8 +41,10 @@
 # the real thing: a pool lease of a running container (test12) whose
 # companion pod and claim the driver creates and, at the release, deletes
 # under the policy. While they run, the driver of VM2 may delete them (dry
-# runs). Last, an orphan companion claim (a lease name, no lease) that the
-# driver deletes at its next reconcile (at most 60 s).
+# runs). A pod that names the CDI device of the lease claim in a
+# cdi.k8s.io annotation does not get the device. Last, an orphan companion
+# claim (a lease name, no lease) that the driver deletes at its next
+# reconcile (at most 60 s).
 #
 # Everything happens on VM2, the VM of the test (n4-cxl-shared-2), the
 # control plane of the cluster of VM2, VM1 and VM0. Run test00-up of
@@ -450,6 +452,38 @@ for kind in resourceclaim pod; do
     driver-kubectl "$VM2_NAME" delete --dry-run=server --cascade=foreground "$kind" "$COMPANION"
     admitted "the deletion of the companion $kind $COMPANION"
 done
+# The CDI device of the lease claim: the lease socket. A pod that names
+# it in a cdi.k8s.io annotation does not get it.
+LEASE_CLAIM=$(dra-pod-claim "$VM2" borrower) || error "pod borrower has no claim"
+dra-json "$VM2" resourceclaim -n "$DRA_NS" "$LEASE_CLAIM" ||
+    command-error "no lease claim $LEASE_CLAIM"
+LEASE_CLAIM_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
+dra-lease-cdi-assert "$VM2" "$LEASE_CLAIM_UID"
+dra-apply "$VM2" <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cdi-annotated
+  annotations:
+    cdi.k8s.io/test22: $DRA_LOCAL_DRIVER/device=lease-$LEASE_CLAIM_UID
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: $VM2_NAME
+  terminationGracePeriodSeconds: 2
+  restartPolicy: Never
+  containers:
+  - name: main
+    image: $PYTHON_IMAGE
+    imagePullPolicy: IfNotPresent
+    command: ["sh", "-c", "trap 'exit 0' TERM; sleep infinity & wait"]
+EOF
+dra-pod-wait "$VM2" cdi-annotated Running 60
+# shellcheck disable=SC2016 # expanded by sh in the container
+dra-exec "$VM2" cdi-annotated/main sh -c 'echo "${CXL_LEASE_SOCKET:-no socket}"; test -e /run/cxl || echo "no /run/cxl"' ||
+    command-error "cannot look for the lease socket in pod cdi-annotated"
+[ "$COMMAND_OUTPUT" == "no socket
+no /run/cxl" ] || error "pod cdi-annotated got CDI device lease-$LEASE_CLAIM_UID from its annotation: $COMMAND_OUTPUT"
+dra-delete-pod "$VM2" cdi-annotated
 dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" release --lease "$LEASE" ||
     command-error "cxl-request release --lease $LEASE failed"
 dra-assert "$(dra-last-json "$COMMAND_OUTPUT")" "j.get('lease') == '$LEASE' and j.get('state') == 'Released'"
