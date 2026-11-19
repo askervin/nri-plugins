@@ -11,12 +11,16 @@
 # ServiceAccountTokenPodNodeInfo):
 # - resourceslices-policy-nri-dra-driver-cxl: only the ResourceSlices of
 #   its node.
-# - lease-companions-policy-nri-dra-driver-cxl: creates only pods and
-#   claims with the labels of a lease companion (cxl.nri.io/lease,
-#   cxl.nri.io/requester-uid, cxl.nri.io/node) whose node label is its
-#   node, and pods only pinned to its node by a required node affinity,
-#   without volumes, host namespaces or privileged containers, running the
-#   companion image of the chart; deletes only objects with its node label.
+# - lease-companions-policy-nri-dra-driver-cxl: creates and deletes only
+#   pods and claims named cxl-lease-<lease> with the labels of a lease
+#   companion (cxl.nri.io/lease=<lease>, cxl.nri.io/requester-uid,
+#   cxl.nri.io/node) whose node label is its node. The claims request only
+#   the classes cxl-local and cxl-pool and their -shared and -persistent
+#   variants, without adminAccess. The pods are pinned to its node by a
+#   required node affinity and use only the claim of their name. They run
+#   the companion image of the chart without a command, volumes, host
+#   namespaces, host ports, privileged containers, added capabilities or a
+#   system priority class.
 #
 # The test talks to the API server as the driver of VM2 would: kubectl of
 # the cluster's admin impersonates the service account with the node extra
@@ -26,16 +30,15 @@
 # nothing is left if a policy admits what it should refuse.
 #
 # What you will see: both policies Deny-bound and free of type-check
-# warnings; a companion-shaped pod and a labelled claim of VM2 admitted;
-# refused with the message of the policy: a pod labelled for VM1, a pod
-# pinned to VM1, a pod with a hostPath volume, in the host network, with a
-# privileged container, with another image, an unlabelled claim, a request
-# of a user without a node, and the deletion of a claim of VM1; a labelled
-# claim of VM2 deleted as the driver does it (foreground). Then the real
-# thing: a pool lease of a running container (test12) whose companion pod
-# and claim the driver creates and, at the release, deletes under the
-# policy, and an orphan companion claim (a lease name, no lease) that the
-# driver deletes at its next reconcile (at most 60 s).
+# warnings; a companion pod, a companion claim and a ResourceSlice of VM2
+# admitted. Refused with the message of its policy: one request for each
+# rule, for instance a pod pinned to VM1, a claim of the class cxl-dram,
+# the deletion of a pod of VM1 and a ResourceSlice of all nodes. Then the
+# real thing: a pool lease of a running container (test12) whose companion
+# pod and claim the driver creates and, at the release, deletes under the
+# policy. While they run, the driver of VM2 may delete them (dry runs).
+# Last, an orphan companion claim (a lease name, no lease) that the driver
+# deletes at its next reconcile (at most 60 s).
 #
 # Everything happens on VM2, the VM of the test (n4-cxl-shared-2), the
 # control plane of the cluster of VM2, VM1 and VM0. Run test00-up of
@@ -62,27 +65,38 @@ DRIVER_USER=system:serviceaccount:kube-system:nri-dra-driver-cxl
 NODE_EXTRA=authentication.kubernetes.io/node-name
 POLICY=lease-companions-policy-nri-dra-driver-cxl
 SLICE_POLICY=resourceslices-policy-nri-dra-driver-cxl
-ORPHAN=cxl-lease-0badc0de   # a companion claim without a lease
+FAKE_LEASE=0badc0de         # the lease of the companion-shaped objects
+FAKE_COMPANION=cxl-lease-$FAKE_LEASE
+ORPHAN=$FAKE_COMPANION      # a companion claim without a lease
+
+admin-kubectl() {
+    # Usage: admin-kubectl KUBECTL-ARGS...
+    #
+    # Run "kubectl KUBECTL-ARGS" in namespace $DRA_NS in VM2 as the admin
+    # of the cluster. With "-f -" in KUBECTL-ARGS the YAML comes from
+    # stdin. Return the exit status of kubectl. COMMAND_OUTPUT has the
+    # output, COMMAND_STATUS the exit status.
+    local yaml
+    if [[ " $* " == *" -f - "* ]]; then
+        yaml=$(cat)
+        dra-vm-command "$VM2" "kubectl -n $DRA_NS $* <<'DRIVER_KUBECTL_EOF'
+$yaml
+DRIVER_KUBECTL_EOF"
+    else
+        dra-vm-command "$VM2" "kubectl -n $DRA_NS $*"
+    fi
+}
 
 driver-kubectl() {
     # Usage: driver-kubectl NODE KUBECTL-ARGS...
     #
-    # Run "kubectl KUBECTL-ARGS" in namespace $DRA_NS in VM2 as the service
-    # account of the driver on node NODE ("" for a user without a node).
-    # With "-f -" in KUBECTL-ARGS the YAML comes from stdin. COMMAND_OUTPUT
-    # has the output, COMMAND_STATUS the exit status, which is returned.
-    local node="$1" as yaml
+    # Run admin-kubectl KUBECTL-ARGS as the service account of the driver
+    # on node NODE ("" for a user without a node).
+    local node="$1" as
     shift
-    as="--as=$DRIVER_USER"
-    [ -z "$node" ] || as+=" --as-user-extra=$NODE_EXTRA=$node"
-    if [[ " $* " == *" -f - "* ]]; then
-        yaml=$(cat)
-        dra-vm-command "$VM2" "kubectl $as -n $DRA_NS $* <<'DRIVER_KUBECTL_EOF'
-$yaml
-DRIVER_KUBECTL_EOF"
-    else
-        dra-vm-command "$VM2" "kubectl $as -n $DRA_NS $*"
-    fi
+    as=(--as="$DRIVER_USER")
+    [ -z "$node" ] || as+=(--as-user-extra="$NODE_EXTRA=$node")
+    admin-kubectl "${as[@]}" "$@"
 }
 
 admitted() {
@@ -95,71 +109,113 @@ admitted() {
 }
 
 policy-denied() {
-    # Usage: policy-denied WHAT MESSAGE
+    # Usage: policy-denied WHAT MESSAGE [POLICY]
     #
-    # Fail the test unless the last driver-kubectl failed, denied by the
-    # companion policy with MESSAGE.
+    # Fail the test unless the last driver-kubectl failed, denied by POLICY
+    # (default $POLICY) with MESSAGE.
+    local policy="${3:-$POLICY}"
     [ "$COMMAND_STATUS" != 0 ] ||
-        error "$1: admitted, expected $POLICY to refuse it"
-    grep -qF "ValidatingAdmissionPolicy '$POLICY' with binding '$POLICY' denied request: $2" <<< "$COMMAND_OUTPUT" ||
-        error "$1: not denied by $POLICY with \"$2\""
-    echo "denied by $POLICY: $1"
+        error "$1: admitted, expected $policy to refuse it"
+    grep -qF "ValidatingAdmissionPolicy '$policy' with binding '$policy' denied request: $2" <<< "$COMMAND_OUTPUT" ||
+        error "$1: not denied by $policy with \"$2\""
+    echo "denied by $policy: $1"
+}
+
+companion-denied() {
+    # Usage: companion-denied WHAT MESSAGE SPEC-LINES [CONTAINER-LINES [IMAGE]]
+    #
+    # Fail the test unless $POLICY refuses with MESSAGE that the driver of
+    # VM2 creates its companion pod with SPEC-LINES, CONTAINER-LINES and
+    # IMAGE (see companion-pod-yaml).
+    driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(companion-pod-yaml "$VM2_NAME" "$VM2_NAME" "$3" "${4:-}" "${5:-}")"
+    policy-denied "$1" "$2"
 }
 
 companion-pod-yaml() {
     # Usage: companion-pod-yaml NODE-LABEL AFFINITY-NODE [SPEC-LINES [CONTAINER-LINES [IMAGE]]]
     #
-    # Print pod fake-companion in the shape of a companion pod: the labels
-    # of lease 0badc0de with node label NODE-LABEL, a required node affinity
-    # to AFFINITY-NODE, no service account token, one container of IMAGE
+    # Print pod $FAKE_COMPANION in the shape of a companion pod: the labels
+    # of lease $FAKE_LEASE with node label NODE-LABEL, a required node
+    # affinity to AFFINITY-NODE (none if AFFINITY-NODE is ""), no service
+    # account token, the claim $FAKE_COMPANION, one container of IMAGE
     # (default $PAUSE_IMAGE). CONTAINER-LINES are added to the container
-    # (indented by 4), SPEC-LINES to the spec (indented by 2).
+    # (indented by 4), SPEC-LINES to the spec (indented by 2). SPEC-LINES
+    # with resourceClaims replace the claim.
     cat <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
-  name: fake-companion
+  name: $FAKE_COMPANION
   labels:
-    $DRA_LEASE_LABEL: 0badc0de
+    $DRA_LEASE_LABEL: $FAKE_LEASE
     $DRA_REQUESTER_LABEL: 00000000-0000-0000-0000-00000badc0de
     $DRA_NODE_LABEL: $1
 spec:
+EOF
+    [ -z "$2" ] || cat <<EOF
   affinity:
     nodeAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
         nodeSelectorTerms:
         - matchFields:
           - {key: metadata.name, operator: In, values: [$2]}
+EOF
+    [[ "${3:-}" == *resourceClaims:* ]] ||
+        echo "  resourceClaims: [{name: lease, resourceClaimName: $FAKE_COMPANION}]"
+    cat <<EOF
   automountServiceAccountToken: false
   enableServiceLinks: false
   containers:
   - name: pause
     image: ${5:-$PAUSE_IMAGE}
 EOF
-    [ -z "$4" ] || echo "$4"
-    [ -z "$3" ] || echo "$3"
+    [ -z "${4:-}" ] || echo "$4"
+    [ -z "${3:-}" ] || echo "$3"
 }
 
 labelled-claim-yaml() {
-    # Usage: labelled-claim-yaml NAME [NODE-LABEL]
+    # Usage: labelled-claim-yaml NAME [NODE-LABEL [LEASE [REQUEST-LINES]]]
     #
-    # Print an empty ResourceClaim NAME with the labels of lease 0badc0de
-    # and node label NODE-LABEL, without labels if NODE-LABEL is not given.
-    # No pod uses it. The driver of the node deletes it as an orphan only
-    # when NAME is $ORPHAN, the name of the companion of the lease.
+    # Print ResourceClaim NAME with the labels of lease LEASE (default
+    # $FAKE_LEASE) and node label NODE-LABEL, without labels if NODE-LABEL
+    # is "" or not given. REQUEST-LINES are its device requests (indented
+    # by 4). Without them its spec is empty. No pod uses it. The driver of
+    # the node deletes it as an orphan only when NAME is cxl-lease-LEASE.
     cat <<EOF
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
   name: $1
 EOF
-    [ -z "$2" ] || cat <<EOF
+    [ -z "${2:-}" ] || cat <<EOF
   labels:
-    $DRA_LEASE_LABEL: 0badc0de
+    $DRA_LEASE_LABEL: ${3:-$FAKE_LEASE}
     $DRA_REQUESTER_LABEL: 00000000-0000-0000-0000-00000badc0de
     $DRA_NODE_LABEL: $2
 EOF
-    echo "spec: {}"
+    if [ -z "${4:-}" ]; then
+        echo "spec: {}"
+    else
+        printf 'spec:\n  devices:\n    requests:\n%s\n' "$4"
+    fi
+}
+
+slice-yaml() {
+    # Usage: slice-yaml NODE-LINE
+    #
+    # Print ResourceSlice test22-slice of driver $DRA_LOCAL_DRIVER without
+    # devices. NODE-LINE (indented by 2) says which nodes it is for.
+    cat <<EOF
+apiVersion: resource.k8s.io/v1
+kind: ResourceSlice
+metadata:
+  name: test22-slice
+spec:
+  driver: $DRA_LOCAL_DRIVER
+  pool: {name: test22, generation: 1, resourceSliceCount: 1}
+$1
+  devices: []
+EOF
 }
 
 borrower-yaml() {
@@ -231,51 +287,121 @@ dra-assert "$COMMAND_OUTPUT" "sorted((r['apiGroups'], r['resources'], sorted(r['
 # deletes it at its next reconcile, checked in E.
 dra-apply "$VM2" <<< "$(labelled-claim-yaml "$ORPHAN" "$VM2_NAME")"
 
-echo "### B: what the driver of VM2 may create and delete"
+echo "### B: what the driver of VM2 may create"
 driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(companion-pod-yaml "$VM2_NAME" "$VM2_NAME")"
 admitted "a companion pod of $VM2_NAME"
-driver-kubectl "$VM2_NAME" create -f - <<< "$(labelled-claim-yaml own-node-object "$VM2_NAME")"
-admitted "a labelled claim of $VM2_NAME"
-# The driver deletes companions with foreground propagation.
-driver-kubectl "$VM2_NAME" delete resourceclaim own-node-object --cascade=foreground --wait=true --timeout=30s
-admitted "the deletion of a labelled claim of $VM2_NAME"
+driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(labelled-claim-yaml cxl-lease-0badcafe "$VM2_NAME" 0badcafe "    - name: mem
+      firstAvailable:
+      - {name: local, deviceClassName: cxl-local}
+      - {name: pool, deviceClassName: cxl-pool}")"
+admitted "a companion claim of $VM2_NAME"
+driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(slice-yaml "  nodeName: $VM2_NAME")"
+admitted "a ResourceSlice of $VM2_NAME"
 
-echo "### C: what the policy refuses the driver of VM2"
-driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(companion-pod-yaml "$VM1_NAME" "$VM1_NAME")"
-policy-denied "a companion pod of $VM1_NAME" \
-    "this user running on node '$VM2_NAME' may not create pods of node '$VM1_NAME'"
-driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(companion-pod-yaml "$VM2_NAME" "$VM1_NAME")"
-policy-denied "a pod of $VM2_NAME pinned to $VM1_NAME" \
-    "this user running on node '$VM2_NAME' may create only pods whose required node affinity selects that node by metadata.name in every term"
-driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(companion-pod-yaml "$VM2_NAME" "$VM2_NAME" "  volumes:
-  - {name: root, hostPath: {path: /}}" "    volumeMounts:
-    - {name: root, mountPath: /host}")"
-policy-denied "a pod with a hostPath volume" \
-    "this user may not create pods with volumes"
-driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(companion-pod-yaml "$VM2_NAME" "$VM2_NAME" "  hostNetwork: true")"
-policy-denied "a pod in the host network" \
-    "this user may not create pods in the host network, PID or IPC namespace"
-driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(companion-pod-yaml "$VM2_NAME" "$VM2_NAME" "" "    securityContext: {privileged: true}")"
-policy-denied "a pod with a privileged container" \
-    "this user may not create pods with privileged containers"
-driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(companion-pod-yaml "$VM2_NAME" "$VM2_NAME" "" "" "$PYTHON_IMAGE")"
-policy-denied "a pod of another image" \
-    "this user may create only pods whose containers run the companion image $PAUSE_IMAGE"
+echo "### C: what the policies refuse"
+driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(companion-pod-yaml "$VM2_NAME" "$VM2_NAME" | grep -vF -e "$DRA_LEASE_LABEL:" -e "$DRA_REQUESTER_LABEL:")"
+policy-denied "a pod without the labels of a lease" \
+    "this user may create only pods with the labels $DRA_LEASE_LABEL, $DRA_REQUESTER_LABEL and $DRA_NODE_LABEL of a lease companion"
 driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(labelled-claim-yaml unlabelled-object)"
 policy-denied "an unlabelled claim" \
     "this user may create only resourceclaims with the labels $DRA_LEASE_LABEL, $DRA_REQUESTER_LABEL and $DRA_NODE_LABEL of a lease companion"
+driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(companion-pod-yaml "$VM1_NAME" "$VM1_NAME")"
+policy-denied "a companion pod of $VM1_NAME" \
+    "this user running on node '$VM2_NAME' may not create pods of node '$VM1_NAME'"
+driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(labelled-claim-yaml not-a-companion "$VM2_NAME")"
+policy-denied "a claim not named after its lease" \
+    "this user may create only resourceclaims named cxl-lease-<lease> with the label $DRA_LEASE_LABEL=<lease>"
+pinned="this user running on node '$VM2_NAME' may create only pods whose required node affinity selects that node by metadata.name in every term"
+driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(companion-pod-yaml "$VM2_NAME" "$VM1_NAME")"
+policy-denied "a pod of $VM2_NAME pinned to $VM1_NAME" "$pinned"
+driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(companion-pod-yaml "$VM2_NAME" "")"
+policy-denied "a pod without node affinity" "$pinned"
+companion-denied "a pod with nodeName $VM1_NAME" "$pinned" "  nodeName: $VM1_NAME"
+companion-denied "a pod with a hostPath volume" "this user may not create pods with volumes" "  volumes:
+  - {name: root, hostPath: {path: /}}" "    volumeMounts:
+    - {name: root, mountPath: /host}"
+for ns in hostNetwork hostPID hostIPC; do
+    companion-denied "a pod with $ns" "this user may not create pods in the host network, PID or IPC namespace" "  $ns: true"
+done
+companion-denied "a pod with a privileged container" "this user may not create pods with privileged containers" \
+    "" "    securityContext: {privileged: true}"
+companion-denied "a pod with a privileged initContainer" "this user may not create pods with privileged containers" "  initContainers:
+  - {name: init, image: $PAUSE_IMAGE, securityContext: {privileged: true}}"
+image="this user may create only pods whose containers run the companion image $PAUSE_IMAGE"
+companion-denied "a pod of another image" "$image" "" "" "$PYTHON_IMAGE"
+companion-denied "a pod with an initContainer of another image" "$image" "  initContainers:
+  - {name: init, image: $PYTHON_IMAGE}"
+companion-denied "a pod with a claim from a template" "this user may create only pods whose ResourceClaims have the name of the pod" \
+    "  resourceClaims: [{name: lease, resourceClaimTemplateName: cxl-lease}]"
+companion-denied "a pod with a command" "this user may not create pods with a command or args" "" "    command: [sh]"
+companion-denied "a pod with args" "this user may not create pods with a command or args" "" "    args: [sh]"
+companion-denied "a pod with a host port" "this user may not create pods with host ports" \
+    "" "    ports: [{containerPort: 8080, hostPort: 8080}]"
+companion-denied "a pod that adds a capability" "this user may not create pods that add capabilities" \
+    "" "    securityContext: {capabilities: {add: [SYS_ADMIN]}}"
+companion-denied "a pod of priority class system-node-critical" \
+    "this user may not create pods of the priority classes system-node-critical and system-cluster-critical" \
+    "  priorityClassName: system-node-critical"
+driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(labelled-claim-yaml cxl-lease-0badcafe "$VM2_NAME" 0badcafe "    - {name: mem, exactly: {deviceClassName: cxl-dram}}")"
+policy-denied "a claim of class cxl-dram" \
+    "this user may create only resourceclaims of the device classes cxl-local, cxl-local-shared, cxl-local-persistent, cxl-pool, cxl-pool-shared, cxl-pool-persistent"
+# The API server refuses adminAccess in a namespace without this label
+# before the policies run.
+dra-vm-command "$VM2" "kubectl label namespace $DRA_NS resource.kubernetes.io/admin-access=true" ||
+    command-error "cannot label namespace $DRA_NS for adminAccess"
+driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(labelled-claim-yaml cxl-lease-0badcafe "$VM2_NAME" 0badcafe "    - {name: mem, exactly: {deviceClassName: cxl-pool, adminAccess: true}}")"
+policy-denied "a claim with adminAccess" "this user may not create resourceclaims with adminAccess"
+dra-vm-command "$VM2" "kubectl label namespace $DRA_NS resource.kubernetes.io/admin-access-" ||
+    command-error "cannot remove label resource.kubernetes.io/admin-access of namespace $DRA_NS"
 driver-kubectl "" create --dry-run=server -f - <<< "$(companion-pod-yaml "$VM2_NAME" "$VM2_NAME")"
 policy-denied "a companion pod of a user without a node" \
     "no node association found for user, this user must run in a pod on a node and ServiceAccountTokenPodNodeInfo must be enabled"
-# The admin is not restricted: it creates a labelled claim of VM1, which
-# the driver of VM2 may not delete.
-dra-apply "$VM2" <<< "$(labelled-claim-yaml other-node-object "$VM1_NAME")"
+driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(slice-yaml "  nodeName: $VM1_NAME")"
+policy-denied "a ResourceSlice of $VM1_NAME" \
+    "this user running on node '$VM2_NAME' may not modify resourceslices on node '$VM1_NAME'" "$SLICE_POLICY"
+driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(slice-yaml "  allNodes: true")"
+policy-denied "a ResourceSlice of all nodes" \
+    "this user running on node '$VM2_NAME' may not modify cluster resourceslices" "$SLICE_POLICY"
+# The admin is not restricted. It creates objects that the driver of VM2
+# may not delete: an unlabelled claim, a claim of VM2 not named after its
+# lease, a claim of VM1 and a pod of VM1 that never runs. The driver of
+# VM1 does not take them for its companions: they are not named after
+# their lease.
+dra-apply "$VM2" <<< "$(labelled-claim-yaml unlabelled-object)
+---
+$(labelled-claim-yaml not-a-companion "$VM2_NAME")
+---
+$(labelled-claim-yaml other-node-object "$VM1_NAME")
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: other-node-pod
+  labels:
+    $DRA_NODE_LABEL: $VM1_NAME
+spec:
+  nodeSelector:
+    test22-no-such-node: none
+  containers:
+  - {name: pause, image: $PAUSE_IMAGE}"
+driver-kubectl "$VM2_NAME" delete --dry-run=server resourceclaim unlabelled-object
+policy-denied "the deletion of an unlabelled claim" \
+    "this user running on node '$VM2_NAME' may not delete resourceclaims without the label $DRA_NODE_LABEL"
+driver-kubectl "$VM2_NAME" delete --dry-run=server resourceclaim not-a-companion
+policy-denied "the deletion of a claim not named after its lease" \
+    "this user may delete only resourceclaims named cxl-lease-<lease> with the label $DRA_LEASE_LABEL=<lease>"
+driver-kubectl "$VM2_NAME" delete --dry-run=server pod other-node-pod
+policy-denied "the deletion of a pod of $VM1_NAME" \
+    "this user running on node '$VM2_NAME' may not delete pods of node '$VM1_NAME'"
 driver-kubectl "$VM2_NAME" delete resourceclaim other-node-object
-policy-denied "the deletion of a labelled claim of $VM1_NAME" \
+policy-denied "the deletion of a claim of $VM1_NAME" \
     "this user running on node '$VM2_NAME' may not delete resourceclaims of node '$VM1_NAME'"
 dra-json "$VM2" resourceclaim -n "$DRA_NS" other-node-object ||
     error "claim other-node-object is gone, the driver of $VM2_NAME deleted it"
-dra-delete "$VM2" resourceclaim other-node-object
+dra-delete "$VM2" pod other-node-pod --grace-period=0
+for claim in unlabelled-object not-a-companion other-node-object; do
+    dra-delete "$VM2" resourceclaim "$claim"
+done
 
 echo "### D: the companion of a real lease, created and deleted by the driver"
 dra-apply "$VM2" <<< "$(borrower-yaml)"
@@ -299,6 +425,11 @@ dra-assert "$COMMAND_OUTPUT" "[(c['image'], bool(c.get('securityContext', {}).ge
 dra-json "$VM2" resourceclaim -n "$DRA_NS" "$COMPANION" ||
     command-error "no companion claim $COMPANION"
 dra-companion-meta-check "$COMMAND_OUTPUT" "$LEASE" "$BORROWER_UID" "$VM2_NAME" "$DRA_NS/borrower/main"
+# The driver deletes companions with foreground propagation.
+for kind in resourceclaim pod; do
+    driver-kubectl "$VM2_NAME" delete --dry-run=server --cascade=foreground "$kind" "$COMPANION"
+    admitted "the deletion of the companion $kind $COMPANION"
+done
 dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" release --lease "$LEASE" ||
     command-error "cxl-request release --lease $LEASE failed"
 dra-assert "$(dra-last-json "$COMMAND_OUTPUT")" "j.get('lease') == '$LEASE' and j.get('state') == 'Released'"

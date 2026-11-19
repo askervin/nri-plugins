@@ -295,6 +295,13 @@
                 "companionImage": {
                     "type": "string",
                     "minLength": 1
+                },
+                "priorityClassNames": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
                 }
             }
         },

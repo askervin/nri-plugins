@@ -35,8 +35,15 @@ leases:
   enabled: true
   # How long a lease request waits for Ready when it does not say, at most 1h.
   wait: 120s
-  # Image of the companion pods of leases.
+  # Image of the companion pods of leases. The admission policy of the
+  # companions allows only this image: a digest (image@sha256:...) pins it.
   companionImage: registry.k8s.io/pause:3.10
+  # Priority classes that companion pods may have. A companion has the
+  # priority class of the pod that requests the lease. With [] a companion
+  # may have any class but system-node-critical and system-cluster-critical.
+  # A list must include the globalDefault PriorityClass of the cluster, if
+  # it has one.
+  priorityClassNames: []
 
 # Driver configuration, see docs/memory/cxl/usage.md. The driver reads it
 # only when it starts; a change restarts the DaemonSet.

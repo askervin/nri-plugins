@@ -1,10 +1,14 @@
 # The service account of the driver may create and delete only the
 # companion pods and ResourceClaims of the leases of the node that its pod
-# runs on: objects with the labels of a lease and the node label of that
-# node, and pods pinned to that node that run the companion image without
-# volumes, host namespaces or privileged containers. Needs the
-# ServiceAccountTokenPodNodeInfo feature (on by default since Kubernetes
-# 1.30).
+# runs on: objects named cxl-lease-<lease> with the labels of that lease
+# and the node label of that node. Its claims request only the classes
+# cxl-local and cxl-pool and their -shared and -persistent variants,
+# without adminAccess. Its pods are pinned to that node. They use only the
+# claim of the same name and run the companion image. They have no
+# command, volumes, host namespaces, host ports, privileged containers or
+# added capabilities. Their priority class is one that
+# leases.priorityClassNames allows. Needs the ServiceAccountTokenPodNodeInfo
+# feature (on by default since Kubernetes 1.30).
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -37,6 +41,12 @@ spec:
   - name: objectNodeName
     expression: >-
       variables.labels[?'cxl.nri.io/node'].orValue('')
+  - name: objectName
+    expression: >-
+      (request.operation == "DELETE" ? oldObject : object).metadata.name
+  - name: leaseID
+    expression: >-
+      variables.labels[?'cxl.nri.io/lease'].orValue('')
   - name: isPodCreate
     expression: >-
       request.operation == "CREATE" && request.resource.resource == "pods"
@@ -59,6 +69,22 @@ spec:
   - name: containers
     expression: >-
       variables.isPodCreate ? object.spec.containers + object.spec.?initContainers.orValue([]) : []
+  - name: podPriorityClass
+    expression: >-
+      variables.isPodCreate ? object.spec.?priorityClassName.orValue('') : ''
+  - name: podClaims
+    expression: >-
+      variables.isPodCreate ? object.spec.?resourceClaims.orValue([]) : []
+  # The device classes that the claims of leases request.
+  - name: leaseClasses
+    expression: >-
+      ["cxl-local", "cxl-local-shared", "cxl-local-persistent", "cxl-pool", "cxl-pool-shared", "cxl-pool-persistent"]
+  # The device requests of a ResourceClaim to create: [] for pods and
+  # deletions.
+  - name: claimRequests
+    expression: >-
+      request.operation == "CREATE" && request.resource.resource == "resourceclaims" ?
+      object.spec.?devices.?requests.orValue([]) : []
   validations:
   - expression: variables.userNodeName != ""
     message: >-
@@ -76,6 +102,10 @@ spec:
       "this user running on node '" + variables.userNodeName + "' may not " +
       request.operation.lowerAscii() + " " + request.resource.resource +
       (variables.objectNodeName == "" ? " without the label cxl.nri.io/node" : " of node '" + variables.objectNodeName + "'")
+  - expression: variables.leaseID != "" && variables.objectName == "cxl-lease-" + variables.leaseID
+    messageExpression: >-
+      "this user may " + request.operation.lowerAscii() + " only " + request.resource.resource +
+      " named cxl-lease-<lease> with the label cxl.nri.io/lease=<lease>"
   - expression: variables.podPinned
     messageExpression: >-
       "this user running on node '" + variables.userNodeName +
@@ -94,6 +124,43 @@ spec:
       variables.containers.all(c, c.image == {{ .Values.leases.companionImage | quote }})
     message: >-
       this user may create only pods whose containers run the companion image {{ .Values.leases.companionImage }}
+  - expression: >-
+      variables.podClaims.all(c, c.?resourceClaimName.orValue('') == variables.objectName)
+    message: >-
+      this user may create only pods whose ResourceClaims have the name of the pod
+  - expression: >-
+      variables.containers.all(c, c.?command.orValue([]).size() == 0 && c.?args.orValue([]).size() == 0)
+    message: >-
+      this user may not create pods with a command or args
+  - expression: >-
+      variables.containers.all(c, c.?ports.orValue([]).all(p, p.?hostPort.orValue(0) == 0))
+    message: >-
+      this user may not create pods with host ports
+  - expression: >-
+      variables.containers.all(c, c.?securityContext.?capabilities.?add.orValue([]).size() == 0)
+    message: >-
+      this user may not create pods that add capabilities
+  {{- with .Values.leases.priorityClassNames }}
+  - expression: >-
+      variables.podPriorityClass == "" || variables.podPriorityClass in {{ toJson . }}
+    message: >-
+      this user may create only pods without a priority class or of the priority classes {{ join ", " . }}
+  {{- else }}
+  - expression: >-
+      !(variables.podPriorityClass in ["system-node-critical", "system-cluster-critical"])
+    message: >-
+      this user may not create pods of the priority classes system-node-critical and system-cluster-critical
+  {{- end }}
+  - expression: >-
+      variables.claimRequests.all(r, r.?exactly.hasValue() ?
+        r.exactly.deviceClassName in variables.leaseClasses :
+        r.?firstAvailable.orValue([]).all(s, s.deviceClassName in variables.leaseClasses))
+    messageExpression: >-
+      "this user may create only resourceclaims of the device classes " + variables.leaseClasses.join(", ")
+  - expression: >-
+      variables.claimRequests.all(r, !r.?exactly.?adminAccess.orValue(false))
+    message: >-
+      this user may not create resourceclaims with adminAccess
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

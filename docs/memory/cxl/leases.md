@@ -625,12 +625,15 @@ The delete also requires the UID that the driver read. A release keeps
 any other object of that name and counts it as gone.
 
 The admission policy `lease-companions-policy-nri-dra-driver-cxl` of the
-Helm chart admits the driver's creation of these objects only with the
-three labels, its own node in `cxl.nri.io/node` and, for the pod, the
-node affinity to its node, no volumes, no host namespaces, no privileged
-container and the image of `leases.companionImage`, and their deletion
-only with its own node in `cxl.nri.io/node`
-([usage.md](usage.md#rbac-and-admission-policies)).
+Helm chart admits the driver's creation and deletion of these objects
+only with the name `cxl-lease-<id>`, the three labels and its own node
+in `cxl.nri.io/node`. The claim may request only the classes
+`cxl-local` and `cxl-pool` and their `-shared` and `-persistent`
+variants. The pod must have the node affinity to its node, the claim of
+the same name and the image of `leases.companionImage`. It may not have
+a command, volumes, host namespaces, host ports, privileged containers,
+added capabilities or a priority class that `leases.priorityClassNames`
+refuses ([usage.md](usage.md#rbac-and-admission-policies)).
 
 A claim with the label `cxl.nri.io/lease` is a companion claim. Before
 it touches a device, the driver that prepares it checks that the lease is
@@ -827,6 +830,11 @@ and cannot make it the companion of a lease it did not request.
   admission policy limits the plugin's account to the companions of its
   own node ([usage.md](usage.md#rbac-and-admission-policies)); a host
   process with a kubeconfig of another user has no such limit.
+- Priority: a companion pod has the priority class of its requester.
+  The chart's admission policy refuses the companion of a requester of
+  the class `system-node-critical` or `system-cluster-critical`, or of a
+  class not in `leases.priorityClassNames` when that list is set. The
+  lease of such a requester fails.
 - Every lease is a pod on the requester's node. It requests 100m CPU and
   16Mi memory. Size the tenants' ResourceQuota and the kubelet's
   `maxPods` for these pods. `--lease-max-per-pod` (default 16) and

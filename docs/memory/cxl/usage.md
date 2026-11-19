@@ -237,15 +237,21 @@ ValidatingAdmissionPolicies of the chart, bound with
 
 - `resourceslices-policy-nri-dra-driver-cxl`: it creates, updates and
   deletes only the ResourceSlices of its own node (`spec.nodeName`).
-- `lease-companions-policy-nri-dra-driver-cxl`: it creates only pods and
-  ResourceClaims with the labels `cxl.nri.io/lease`,
-  `cxl.nri.io/requester-uid` and `cxl.nri.io/node`, the node label its
-  own node, and of pods only those that a required node affinity pins to
-  that node (`matchFields` on `metadata.name`), without volumes, without
-  the host network, PID or IPC namespace and without privileged
-  containers, whose containers all run `leases.companionImage`. It
-  deletes only pods and ResourceClaims whose `cxl.nri.io/node` is its
-  node.
+- `lease-companions-policy-nri-dra-driver-cxl`: it creates and deletes
+  only pods and ResourceClaims named `cxl-lease-<lease>` with the labels
+  `cxl.nri.io/lease=<lease>`, `cxl.nri.io/requester-uid` and
+  `cxl.nri.io/node`. Their node label is its own node. Its claims
+  request only the classes `cxl-local` and `cxl-pool` and their
+  `-shared` and `-persistent` variants, without `adminAccess`. A
+  required node affinity (`matchFields` on `metadata.name`) pins its
+  pods to its node. The pods use only the claim of their own name. All
+  their containers run `leases.companionImage` without a command or
+  args. The pods have no volumes, host network, PID or IPC namespace,
+  host ports, privileged containers or added capabilities. With
+  `leases.priorityClassNames: []` (the default) a pod may have any
+  priority class but `system-node-critical` and
+  `system-cluster-critical`. With a list a pod has no class or one of
+  the list.
 
 The API server knows the node of the user from the token of the driver's
 pod (the user extra `authentication.kubernetes.io/node-name`): both
@@ -255,7 +261,11 @@ ServiceAccount that they match. A mutating admission webhook that adds
 volumes or containers to the pods of the requesters' namespaces, or
 rewrites their images (sidecar injection, registry mirrors), makes the
 companion policy refuse the companions, and the leases fail: exempt the
-pods with the label `cxl.nri.io/lease` from it. A host process
+pods with the label `cxl.nri.io/lease` from it. A companion pod has the
+priority class of the pod that requests the lease. The `Priority`
+admission plugin gives a pod without a class the `globalDefault`
+PriorityClass of the cluster. So a list in `leases.priorityClassNames`
+must include that class. A host process
 ([As a host process](#as-a-host-process)) uses a kubeconfig of its own
 user, whom the policies do not match.
 
