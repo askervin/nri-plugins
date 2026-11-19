@@ -14,16 +14,6 @@
 
 package main
 
-import (
-	"context"
-	"fmt"
-	"slices"
-	"sync"
-
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
-)
-
 // The fakes and fixtures of companion claims and lease claims that the
 // tests of the drivers share: the lease broker itself is tested in
 // internal/leases.
@@ -37,68 +27,6 @@ type stopFunc func()
 
 // Stop calls the function.
 func (f stopFunc) Stop() { f() }
-
-// companionName is the name of the companion claim and pod of a lease.
-func companionName(id string) string {
-	return leases.CompanionName(id)
-}
-
-// fakeLender is a dra.NodeLender that records the lent nodes and its
-// calls.
-type fakeLender struct {
-	mu      sync.Mutex
-	lent    map[string]map[int][]string // podUID/name -> node -> holders
-	calls   []string
-	lendErr error
-}
-
-// newFakeLender returns a lender that has lent nothing.
-func newFakeLender() *fakeLender {
-	return &fakeLender{lent: map[string]map[int][]string{}}
-}
-
-func (f *fakeLender) LendNode(ctx context.Context, podUID, name string, node int, holder string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls = append(f.calls, fmt.Sprintf("lend %s/%s %d", podUID, name, node))
-	if f.lendErr != nil {
-		return f.lendErr
-	}
-	k := podUID + "/" + name
-	if f.lent[k] == nil {
-		f.lent[k] = map[int][]string{}
-	}
-	if !slices.Contains(f.lent[k][node], holder) {
-		f.lent[k][node] = append(f.lent[k][node], holder)
-	}
-	return nil
-}
-
-func (f *fakeLender) RevokeNode(ctx context.Context, podUID, name string, node int, holder string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls = append(f.calls, fmt.Sprintf("revoke %s/%s %d", podUID, name, node))
-	k := podUID + "/" + name
-	if h := slices.DeleteFunc(f.lent[k][node], func(s string) bool { return s == holder }); len(h) > 0 {
-		f.lent[k][node] = h
-	} else {
-		delete(f.lent[k], node)
-	}
-	return nil
-}
-
-func (f *fakeLender) LentNodes(podUID, name string) []int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var nodes []int
-	for n := range f.lent[podUID+"/"+name] {
-		nodes = append(nodes, n)
-	}
-	slices.Sort(nodes)
-	return nodes
-}
-
-var _ dra.NodeLender = (*fakeLender)(nil)
 
 const (
 	testNode   = "node1"

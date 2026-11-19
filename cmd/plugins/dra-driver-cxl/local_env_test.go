@@ -395,11 +395,3 @@ func memdevClaim(uid, dev string, consumed int64, configs ...string) *resourcev1
 	}
 	return c
 }
-
-// localCompanion returns localClaim as the companion claim of lease l1.
-func localCompanion(uid string, consumed int64, configs ...string) *resourcev1.ResourceClaim {
-	c := localClaim(uid, consumed, configs...)
-	c.ObjectMeta = companionClaim("l1").ObjectMeta
-	c.UID = types.UID(uid)
-	return c
-}

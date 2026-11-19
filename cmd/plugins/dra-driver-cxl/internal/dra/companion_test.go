@@ -296,6 +296,60 @@ func TestCompanionLendNUMA(t *testing.T) {
 	}
 }
 
+// A Prepare that lends blocks no reader: the readers of the prepared
+// claims and the resources of the publisher do not wait for the lend.
+func TestCompanionLendBlocksNoReader(t *testing.T) {
+	e := lendEnv(t)
+	nodes, _ := e.lending()
+	e.mustPrepare(e.local, localClaim("u0", localDev, envBlockSize))
+	e.wantEvents("prepared u0")
+	entered, release := make(chan struct{}), make(chan struct{})
+	nodes.onLend = func(int) {
+		close(entered)
+		<-release
+	}
+	done := make(chan error, 1)
+	go func() {
+		claim := e.companionOf(e.local)
+		res, err := e.local.PrepareResourceClaims(context.Background(), []*resourcev1.ResourceClaim{claim})
+		if err == nil {
+			err = res[claim.UID].Err
+		}
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the Prepare did not lend")
+	}
+	read := make(chan bool, 1)
+	go func() {
+		_, _, ok := e.local.PreparedResult("u0", 0)
+		_ = e.pub.Resources()
+		read <- ok && e.local.ClaimInfo("u0") != nil
+	}()
+	select {
+	case ok := <-read:
+		if !ok {
+			t.Error("no prepared result or claim info of u0")
+		}
+	case <-time.After(10 * time.Second):
+		t.Error("the readers waited for the lend")
+	}
+	close(release)
+	select {
+	case err := <-done:
+		mustOK(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the Prepare of the companion claim did not end")
+	}
+	e.check("prepared c1")
+	e.wantEvents("prepared c1", "lending l1 cxl-lease-l1", "lend pod-uid-1/app 2 l1", "prepared l1")
+	e.mustUnprepare(e.local, "c1")
+	e.mustUnprepare(e.local, "u0")
+	e.wantClean()
+}
+
 // A companion claim of a dax device of either driver, or of a read-only
 // share of a shared local memdev: the broker gets the dax device, no node
 // is lent or revoked, no CDI device.

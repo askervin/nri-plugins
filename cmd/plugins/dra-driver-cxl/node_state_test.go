@@ -17,12 +17,10 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -48,97 +46,6 @@ func localRegionNode(e *localTestEnv) int {
 		e.t.Fatalf("region %+v without a node", ri)
 	}
 	return ri.NumaNode
-}
-
-// wantLog checks that a log of calls ends with want.
-func wantLog(t *testing.T, log, want string) {
-	t.Helper()
-	if !strings.HasSuffix(log, want) {
-		t.Fatalf("calls\n%s\nexpected to end with\n%s", log, want)
-	}
-}
-
-// blockingLender is a fakeLender whose LendNode waits until release is
-// closed.
-type blockingLender struct {
-	*fakeLender
-	entered chan struct{}
-	release chan struct{}
-}
-
-func (b *blockingLender) LendNode(ctx context.Context, podUID, name string, node int, holder string) error {
-	select {
-	case b.entered <- struct{}{}:
-	default:
-	}
-	<-b.release
-	return b.fakeLender.LendNode(ctx, podUID, name, node, holder)
-}
-
-// lends returns the number of calls of the lender.
-func (b *blockingLender) lends() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return len(b.calls)
-}
-
-// The NRI readers and the publisher never wait for a Prepare that lends.
-func TestPrepareDoesNotBlockReaders(t *testing.T) {
-	e := newLocalTestEnv(t)
-	e.start()
-	bl := &blockingLender{fakeLender: newFakeLender(), entered: make(chan struct{}, 1), release: make(chan struct{})}
-	hooks := &fakeHooks{}
-	e.s.Lender().Set(bl, hooks)
-	ctx := context.Background()
-	e.mustPrepare(localClaim("u0", 32*mib))
-
-	done := make(chan error, 1)
-	go func() { done <- prepareOn(ctx, e.s, localCompanion("u1", 64*mib)) }()
-	select {
-	case <-bl.entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Prepare did not lend")
-	}
-	readers := make(chan error, 1)
-	go func() {
-		if e.s.ClaimInfo("u0") == nil {
-			readers <- errors.New("no claim info of u0")
-			return
-		}
-		_, _, _ = e.s.PreparedResult("u0", 0)
-		_ = e.publisher.Resources()
-		readers <- nil
-	}()
-	select {
-	case err := <-readers:
-		noErr(t, err)
-	case <-time.After(10 * time.Second):
-		t.Fatal("claim info or resources waited for a lend")
-	}
-	close(bl.release)
-	select {
-	case err := <-done:
-		noErr(t, err)
-	case <-time.After(10 * time.Second):
-		t.Fatal("Prepare of u1 did not finish")
-	}
-	e.check("prepared")
-	if n := bl.lends(); n != 1 {
-		t.Fatalf("%d lends of u1", n)
-	}
-	n := 0
-	for _, g := range e.records().Grants {
-		if g.Ref.Claim == "u1" {
-			n++
-		}
-	}
-	if n != 1 {
-		t.Fatalf("%d grants of u1", n)
-	}
-	wantLog(t, hooks.log(), "lending l1 cxl-lease-l1\nprepared l1")
-	e.mustUnprepare("u1")
-	e.mustUnprepare("u0")
-	e.wantClean()
 }
 
 // injectDevices adds devices of regions, DRAM or the lease device to the

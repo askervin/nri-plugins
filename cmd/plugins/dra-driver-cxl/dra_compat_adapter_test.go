@@ -15,7 +15,6 @@
 package main
 
 import (
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 )
 
@@ -24,15 +23,6 @@ import (
 type (
 	// PreparedDeviceInfo is a device of a prepared claim of cxl.nri.io.
 	PreparedDeviceInfo = state.DeviceInfo
-	// lendRecord is the lend of a companion claim.
-	lendRecord = lend.Lend
-	// lentDevice is a memdev of a companion claim as the lease broker gets
-	// it.
-	lentDevice = state.DeviceInfo
-	// leaseHooks is what the drivers tell the lease broker.
-	leaseHooks = lend.LeaseHooks
-	// podRef identifies a pod.
-	podRef = state.PodRef
 )
 
 // ptr returns a pointer to v.
