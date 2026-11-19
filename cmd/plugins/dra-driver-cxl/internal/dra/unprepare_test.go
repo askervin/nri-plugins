@@ -162,11 +162,11 @@ func TestUnprepareCDIFails(t *testing.T) {
 			}
 			// the spec file a directory with an entry: the rename of the
 			// written spec fails (a spec of no devices is not written)
-			spec := filepath.Join(e.cdiDir, p.Rules().CDISpecName+".yaml")
+			spec := filepath.Join(e.cdiDir, p.Rules().CDISpecName()+".yaml")
 			mustOK(t, os.Remove(spec))
 			mustOK(t, os.MkdirAll(filepath.Join(spec, "entry"), 0o755))
 			logs := klogCapture(t)
-			wantErrText(t, e.unprepare(p, "u1"), p.Name()+": claim demo/claim-u1: write CDI spec "+p.Rules().CDISpecName+": ")
+			wantErrText(t, e.unprepare(p, "u1"), p.Name()+": claim demo/claim-u1: write CDI spec "+p.Rules().CDISpecName()+": ")
 			if strings.Contains(logs(), "unprepared claim") {
 				t.Fatal("a failed Unprepare logged as unprepared")
 			}

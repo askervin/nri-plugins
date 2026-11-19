@@ -202,8 +202,8 @@ func TestNew(t *testing.T) {
 	if _, err := New(Options{Rules: PoolRules(device.PoolDriverName, ""), Store: e.st}); err == nil {
 		t.Fatal("a plugin without the engine")
 	}
-	_, err := New(Options{Rules: SourceRules{Name: "zero.nri.io", Source: state.SourcePool}, Store: e.st, Engine: e.eng})
-	wantErrText(t, err, "zero.nri.io: the rules have no validation")
+	_, err := New(Options{Rules: SourceRules{Name: "zero.nri.io"}, Store: e.st, Engine: e.eng})
+	wantErrText(t, err, `zero.nri.io: rules of source "": not those of LocalRules or PoolRules`)
 	_, err = New(Options{Rules: LocalRules(""), Store: e.st, Engine: e.eng})
 	wantErrText(t, err, "cxl.nri.io: the plugin publishes and needs the publisher")
 	for _, opts := range []PublishOptions{{Scan: pubNoScan}, {Store: e.st}} {

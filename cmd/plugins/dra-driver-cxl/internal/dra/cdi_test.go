@@ -118,7 +118,7 @@ func TestCDISpecOfClaims(t *testing.T) {
 		doc.Preparation(driver, uid).State = s
 	}
 	names := func(p *Plugin, pending string) []string {
-		spec, err := buildCDISpec(doc, p.Name(), p.Rules().CDIKind, p.roots, pending)
+		spec, err := buildCDISpec(doc, p.Name(), p.Rules().CDIKind(), p.roots, pending)
 		mustOK(t, err)
 		var out []string
 		for _, d := range spec.Devices {

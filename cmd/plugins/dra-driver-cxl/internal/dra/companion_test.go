@@ -210,7 +210,7 @@ func TestCompanionLendNUMA(t *testing.T) {
 				got[0].RequestName != want.RequestName || !reflect.DeepEqual(got[0], p.ClaimInfo("c1").Devices[0]) {
 				t.Fatalf("lent devices %+v of %q, expected %+v of %q", got, src, want, source)
 			}
-			if e.cdiSpec(p.Rules().CDISpecName) != nil {
+			if e.cdiSpec(p.Rules().CDISpecName()) != nil {
 				t.Fatal("a CDI device of a companion claim")
 			}
 			if !local {

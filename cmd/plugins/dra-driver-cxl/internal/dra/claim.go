@@ -167,35 +167,32 @@ type LocalConfig struct {
 	Coherent   func(memdev string, serial uint64) bool
 }
 
-// validateLocal returns the Prepare of a claim of cxl.nri.io, or an error
-// when the claim cannot be prepared: no allocation, a MemoryConfig that does
-// not decode or does not fit its devices, a companion claim that cannot be
-// lent.
-func (p *Plugin) validateLocal(claim *resourcev1.ResourceClaim) (*prepare, error) {
+// validate returns the Prepare of a claim, or an error when the claim cannot
+// be prepared: no allocation, a MemoryConfig that does not decode, a result
+// that cannot be prepared (localResult, poolResult), a companion claim that
+// cannot be lent; a lease that cannot be bound is told to the broker.
+func (p *Plugin) validate(claim *resourcev1.ResourceClaim) (*prepare, error) {
 	if claim.Status.Allocation == nil {
 		return nil, errors.New("no allocation")
 	}
 	if err := config.CheckEntries(claim, p.rules.Name); err != nil {
 		return nil, err
 	}
-	allocatable := p.allocatable()
-	resolved, err := resolveResults(claim, p.rules.Name, func(r *resourcev1.DeviceRequestAllocationResult) bool {
-		return r.Driver == p.rules.Name && r.Pool == p.nodeName
-	})
+	resolved, err := resolveResults(claim, p.rules.Name, p.ofDriver)
 	if err != nil {
 		return nil, err
 	}
+	allocatable := p.allocatable()
 	pr := newPrepare(claim)
 	if id := LeaseOf(claim); id != "" {
-		local, all := p.localMemdevResults(claim, allocatable)
-		if local == 0 || local != all {
+		if !p.memdevsOnly(claim, allocatable) {
 			return nil, fmt.Errorf("the companion claim of lease %s needs %s devices only", id, device.DeviceTypeMemdev)
 		}
 		if pr.lend, err = p.lender.Check(id, claim); err != nil {
 			return nil, err
 		}
 	}
-	err = p.localResults(claim, pr, allocatable, resolved)
+	err = p.results(claim, pr, allocatable, resolved)
 	var be *engine.BindError
 	if errors.As(err, &be) {
 		p.lender.Failed(pr.lend.Lease, err)
@@ -203,80 +200,100 @@ func (p *Plugin) validateLocal(claim *resourcev1.ResourceClaim) (*prepare, error
 	return pr, err
 }
 
-// localMemdevResults returns the number of allocation results of a claim on
-// local memdevs of the node, and the number of all its results on devices
-// of the node.
-func (p *Plugin) localMemdevResults(claim *resourcev1.ResourceClaim, allocatable DevicesInfo) (local, all int) {
-	for _, r := range claim.Status.Allocation.Devices.Results {
-		if r.Driver != p.rules.Name || r.Pool != p.nodeName {
-			continue
-		}
-		all++
-		if d := allocatable[r.Device]; d != nil {
-			if _, ok := d.Dev.(*Memdev); ok {
-				local++
-			}
-		}
-	}
-	return local, all
+// ofDriver tells whether an allocation result is the driver's: of
+// cxl.nri.io on the node, or of the pool driver.
+func (p *Plugin) ofDriver(r *resourcev1.DeviceRequestAllocationResult) bool {
+	return r.Driver == p.rules.Name && (p.rules.Source == state.SourcePool || r.Pool == p.nodeName)
 }
 
-// localResults sets the requests to the engine and the results of a Prepare
-// of a claim of cxl.nri.io: one for every allocation result of the driver on
-// the node, as the MemoryConfig of the result (resolved) says, of the
-// devices allocatable.
-func (p *Plugin) localResults(claim *resourcev1.ResourceClaim, pr *prepare, allocatable DevicesInfo, resolved map[int]*config.Resolved) error {
+// memdevsOnly tells whether the allocation results of the driver in a claim
+// are memdevs, at least one, as a companion claim needs: every device of
+// the pool driver is, cxl.nri.io looks its devices up in allocatable.
+func (p *Plugin) memdevsOnly(claim *resourcev1.ResourceClaim, allocatable DevicesInfo) bool {
+	n := 0
+	for i := range claim.Status.Allocation.Devices.Results {
+		r := &claim.Status.Allocation.Devices.Results[i]
+		if !p.ofDriver(r) {
+			continue
+		}
+		if p.rules.Source == state.SourceLocal {
+			d := allocatable[r.Device]
+			if d == nil {
+				return false
+			}
+			if _, ok := d.Dev.(*Memdev); !ok {
+				return false
+			}
+		}
+		n++
+	}
+	return n > 0
+}
+
+// results sets the requests to the engine and the results of a Prepare of
+// a claim: one for every allocation result of the driver, as its
+// MemoryConfig (resolved) says, of a device of the node in allocatable
+// (localResult) or of a pool device (poolResult).
+func (p *Plugin) results(claim *resourcev1.ResourceClaim, pr *prepare, allocatable DevicesInfo, resolved map[int]*config.Resolved) error {
 	// the env keys of the memdevs, as the CDI spec counts them
 	keys := envKeys{}
 	fs := 0
 	for n := range claim.Status.Allocation.Devices.Results {
 		r := &claim.Status.Allocation.Devices.Results[n]
-		if r.Driver != p.rules.Name || r.Pool != p.nodeName {
-			klog.Infof("ignoring claim allocation device %+v", *r)
+		if !p.ofDriver(r) {
 			continue
 		}
-		dev, found := allocatable[r.Device]
-		if !found {
-			return fmt.Errorf("could not find allocatable device %v (pool %v)", r.Device, r.Pool)
-		}
 		res := resolved[n]
-		if res == nil {
-			return fmt.Errorf("request %s: internal error: no MemoryConfig of the result", r.Request)
-		}
 		klog.V(3).Infof("%s: claim %s request %s result %d: MemoryConfig %s", p.rules.Name, pr.claimName, r.Request, n, res.Config.Compact())
 		result := state.Result{Index: n, Request: r.Request, Pool: r.Pool, Device: r.Device, Settings: res.Settings()}
 		if r.ShareID != nil {
 			result.ShareID = string(*r.ShareID)
 		}
 		cfg := res.Config.DeviceSection()
+		var req *engine.GrantRequest
 		var err error
-		switch d := dev.Dev.(type) {
-		case *Memdev:
-			key := keys.next(api.Key(d.Serial, 1))
-			var req engine.GrantRequest
-			if req, err = p.memdevRequest(pr, r, n, key, d, cfg); err == nil {
-				if err = pr.leaseBind(&req, &fs); err != nil {
-					return err
-				}
-				pr.reqs = append(pr.reqs, req)
-				ref := req.Ref
-				result.Kind, result.Grant = state.ResultGrant, &ref
-			}
+		switch p.rules.Source {
+		case state.SourceLocal:
+			req, err = p.localResult(pr, &result, r, allocatable, keys, cfg)
 		default:
-			if err = otherResult(&result, r, d, cfg); err != nil {
-				err = fmt.Errorf("request %s: %w", r.Request, err)
-			}
-			pr.lease = pr.lease || result.Kind == state.ResultLeaseClaim
-			if result.LeaseClaim != nil {
-				result.LeaseClaim.UID = pr.uid
-			}
+			req, err = p.poolResult(claim, pr, r, n, keys, cfg)
 		}
 		if err != nil {
 			return err
 		}
+		if req != nil {
+			if err := pr.leaseBind(req, &fs); err != nil {
+				return err
+			}
+			pr.reqs = append(pr.reqs, *req)
+			ref := req.Ref
+			result.Kind, result.Grant = state.ResultGrant, &ref
+		}
 		pr.results = append(pr.results, result)
 	}
 	return nil
+}
+
+// localResult returns the request to the engine of an allocation result r of
+// cxl.nri.io on a local memdev in allocatable (memdevRequest), or sets the
+// result of another device of the node (otherResult) and returns no request.
+func (p *Plugin) localResult(pr *prepare, result *state.Result, r *resourcev1.DeviceRequestAllocationResult, allocatable DevicesInfo, keys envKeys, cfg config.Device) (*engine.GrantRequest, error) {
+	dev, found := allocatable[r.Device]
+	if !found {
+		return nil, fmt.Errorf("could not find allocatable device %v (pool %v)", r.Device, r.Pool)
+	}
+	if d, ok := dev.Dev.(*Memdev); ok {
+		req, err := p.memdevRequest(pr, r, result.Index, keys.next(api.Key(d.Serial, 1)), d, cfg)
+		return &req, err
+	}
+	if err := otherResult(result, r, dev.Dev, cfg); err != nil {
+		return nil, fmt.Errorf("request %s: %w", r.Request, err)
+	}
+	pr.lease = pr.lease || result.Kind == state.ResultLeaseClaim
+	if result.LeaseClaim != nil {
+		result.LeaseClaim.UID = pr.uid
+	}
+	return nil, nil
 }
 
 // otherResult sets the result of an allocation result r of a device of the
@@ -423,89 +440,39 @@ func poolFacts(d *device.PoolDevice) config.DeviceFacts {
 	}
 }
 
-// validatePool returns the Prepare of a claim of the pool driver, or an
-// error if the claim cannot be prepared: its allocation or MemoryConfig is
-// invalid, the companion gate refuses it, or an allocation result cannot be
-// prepared (poolResults); a lease that cannot be bound is told to the
-// broker.
-func (p *Plugin) validatePool(claim *resourcev1.ResourceClaim) (*prepare, error) {
-	if claim.Status.Allocation == nil {
-		return nil, errors.New("no allocation")
-	}
-	if err := config.CheckEntries(claim, p.rules.Name); err != nil {
-		return nil, err
-	}
-	resolved, err := resolveResults(claim, p.rules.Name, func(r *resourcev1.DeviceRequestAllocationResult) bool { return r.Driver == p.rules.Name })
+// poolResult returns the request to the engine of an allocation result r of
+// the pool driver, from the status data of its device, or an error when it
+// cannot be prepared: no status data, shares that do not fit, a mode the
+// device does not have, another claim's preparation of the device in another
+// way.
+func (p *Plugin) poolResult(claim *resourcev1.ResourceClaim, pr *prepare, r *resourcev1.DeviceRequestAllocationResult, n int, keys envKeys, cfg config.Device) (*engine.GrantRequest, error) {
+	data, err := device.PoolStatus(claim, r)
 	if err != nil {
 		return nil, err
 	}
-	pr := newPrepare(claim)
-	if id := LeaseOf(claim); id != "" {
-		if pr.lend, err = p.lender.Check(id, claim); err != nil {
-			return pr, err
+	if data.Shared {
+		// before the device is touched: shares "0" fits next to an
+		// exclusive holder
+		if _, err := consumedShares(data.Serial, r); err != nil {
+			return nil, err
 		}
 	}
-	if err := p.poolResults(claim, pr, resolved); err != nil {
-		var be *engine.BindError
-		if errors.As(err, &be) {
-			p.lender.Failed(pr.lend.Lease, err)
-		}
-		return pr, err
+	mode, err := cfg.PoolMode(poolFacts(data))
+	if err != nil {
+		return nil, fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, err)
 	}
-	return pr, nil
-}
-
-// poolResults sets the requests to the engine and the results of a Prepare
-// of a claim from the allocation results of the pool driver, the status
-// data of their devices and their MemoryConfig, and returns an error for a
-// result that cannot be prepared: no status data, shares that do not fit, a
-// mode the device does not have, another claim's preparation of the device
-// in another way, a lease of mode fs without its directory.
-func (p *Plugin) poolResults(claim *resourcev1.ResourceClaim, pr *prepare, resolved map[int]*config.Resolved) error {
-	keys := envKeys{}
-	fs := 0
-	for n := range claim.Status.Allocation.Devices.Results {
-		r := &claim.Status.Allocation.Devices.Results[n]
-		if r.Driver != p.rules.Name {
-			continue
-		}
-		data, err := device.PoolStatus(claim, r)
-		if err != nil {
-			return err
-		}
-		if data.Shared {
-			// before the device is touched: shares "0" fits next to an
-			// exclusive holder
-			if _, err := consumedShares(data.Serial, r); err != nil {
-				return err
-			}
-		}
-		res := resolved[n]
-		klog.V(3).Infof("%s: claim %s request %s result %d: MemoryConfig %s", p.rules.Name, pr.claimName, r.Request, n, res.Config.Compact())
-		cfg := res.Config.DeviceSection()
-		mode, err := cfg.PoolMode(poolFacts(data))
-		if err != nil {
-			return fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, err)
-		}
-		asked := state.Asked{Source: state.SourcePool, Kind: grantKind(data.Shared, data.Persistent), Mode: state.Mode(mode),
-			ReadOnly: cfg.IsReadOnly(), Size: data.Size, Shared: data.Shared}
-		// the env key of the device, as the CDI spec counts them
-		key := keys.next(api.Key(data.Serial, 1))
-		if mode == api.ModeFs {
-			// access "": by the type of the filesystem, at its Prepare
-			asked.Access, asked.Path, asked.FsType = state.Access(cfg.Access), cmp.Or(cfg.Path, defaultFsPath(key)), cfg.FsType
-		}
-		if err := p.checkSamePreparation(data, asked, pr.uid); err != nil {
-			return fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, err)
-		}
-		req := poolRequest(pr, n, data, asked)
-		if err := pr.leaseBind(&req, &fs); err != nil {
-			return err
-		}
-		pr.reqs = append(pr.reqs, req)
-		pr.results = append(pr.results, poolResultOf(pr.uid, n, r, res.Settings()))
+	asked := state.Asked{Source: state.SourcePool, Kind: grantKind(data.Shared, data.Persistent), Mode: state.Mode(mode),
+		ReadOnly: cfg.IsReadOnly(), Size: data.Size, Shared: data.Shared}
+	key := keys.next(api.Key(data.Serial, 1))
+	if mode == api.ModeFs {
+		// access "": by the type of the filesystem, at its Prepare
+		asked.Access, asked.Path, asked.FsType = state.Access(cfg.Access), cmp.Or(cfg.Path, defaultFsPath(key)), cfg.FsType
 	}
-	return nil
+	if err := p.checkSamePreparation(data, asked, pr.uid); err != nil {
+		return nil, fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, err)
+	}
+	req := poolRequest(pr, n, data, asked)
+	return &req, nil
 }
 
 // poolRequest returns the request to the engine of the allocation result n
@@ -531,19 +498,6 @@ func grantKind(shared, persistent bool) state.GrantKind {
 		return state.KindShared
 	}
 	return state.KindExclusive
-}
-
-// poolResultOf returns the result n of a Prepare of a claim: a grant of the
-// device of the allocation result, with what the claim asks.
-func poolResultOf(uid string, n int, r *resourcev1.DeviceRequestAllocationResult, settings config.ResultSettings) state.Result {
-	res := state.Result{
-		Index: n, Kind: state.ResultGrant, Request: r.Request, Pool: r.Pool, Device: r.Device, Settings: settings,
-		Grant: &state.GrantRef{Claim: uid, Result: n},
-	}
-	if r.ShareID != nil {
-		res.ShareID = string(*r.ShareID)
-	}
-	return res
 }
 
 // preparedGrant returns a grant of a prepared claim of the driver other

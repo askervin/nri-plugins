@@ -134,10 +134,10 @@ func New(opts Options) (*Plugin, error) {
 	if opts.Store == nil || opts.Engine == nil {
 		return nil, fmt.Errorf("%s: the plugin needs the state store and the device engine", opts.Rules.Name)
 	}
-	if opts.Rules.validate == nil {
-		return nil, fmt.Errorf("%s: the rules have no validation: not those of LocalRules or PoolRules", opts.Rules.Name)
+	if opts.Rules.Source != state.SourceLocal && opts.Rules.Source != state.SourcePool {
+		return nil, fmt.Errorf("%s: rules of source %q: not those of LocalRules or PoolRules", opts.Rules.Name, opts.Rules.Source)
 	}
-	if opts.Rules.Publishes && opts.Publisher == nil {
+	if opts.Rules.publishes() && opts.Publisher == nil {
 		return nil, fmt.Errorf("%s: the plugin publishes and needs the publisher", opts.Rules.Name)
 	}
 	return &Plugin{
@@ -258,7 +258,7 @@ func (p *Plugin) commit(ctx context.Context, fn func(doc *store.Document) error)
 // ResourceSlice (the scheduler allocated from it), nil for a driver that
 // does not publish.
 func (p *Plugin) allocatable() DevicesInfo {
-	if p.publisher == nil || !p.rules.Publishes {
+	if p.publisher == nil || !p.rules.publishes() {
 		return nil
 	}
 	return p.publisher.Published()
@@ -325,7 +325,7 @@ func (p *Plugin) prepare(ctx context.Context, claim *resourcev1.ResourceClaim) k
 	if prep := p.preparation(uid); prep != nil && prep.Prepared() {
 		return p.preparedAgain(ctx, claim, prep)
 	}
-	pr, err := p.rules.validate(p, claim)
+	pr, err := p.validate(claim)
 	if err != nil {
 		return p.refuse(uid, claimName, err)
 	}
@@ -426,7 +426,7 @@ func (p *Plugin) realise(ctx context.Context, pr *prepare) error {
 // PREPARED), else after the commit (Lender.preparedStep); a failure rolls
 // the Prepare back, and tells the broker that the lend failed.
 func (p *Plugin) finish(ctx context.Context, pr *prepare) kubeletplugin.PrepareResult {
-	result := prepareResult(p.preparation(pr.uid), p.rules.CDIKind)
+	result := prepareResult(p.preparation(pr.uid), p.rules.CDIKind())
 	var rec *lend.Lend
 	// step changes the records in the PREPARED commit, after runs once it
 	// is committed; both do nothing for a claim that is not a companion
@@ -643,10 +643,10 @@ func (p *Plugin) preparedAgain(ctx context.Context, claim *resourcev1.ResourceCl
 	if prep.Lease != "" {
 		lend, devs := p.lendAndDevices(prep)
 		p.lender.Reprepared(lend, claim, p.rules.Source, devs)
-		return prepareResult(prep, p.rules.CDIKind)
+		return prepareResult(prep, p.rules.CDIKind())
 	}
 	if prep.State != state.PreparationUnrestored {
-		return prepareResult(prep, p.rules.CDIKind)
+		return prepareResult(prep, p.rules.CDIKind())
 	}
 	if err := p.remount(ctx, prep); err != nil {
 		if serr := stays(prep, state.TriggerPrepare); serr != nil {
@@ -654,7 +654,7 @@ func (p *Plugin) preparedAgain(ctx context.Context, claim *resourcev1.ResourceCl
 		}
 		return failed(fmt.Errorf("%w; unprepare the claim (delete its pods) to prepare it anew", err))
 	}
-	return prepareResult(p.preparation(prep.UID), p.rules.CDIKind)
+	return prepareResult(p.preparation(prep.UID), p.rules.CDIKind())
 }
 
 // remount mounts again the node mounts of a prepared claim that the start
@@ -871,7 +871,7 @@ func (p *Plugin) Result(uid string) (kubeletplugin.PrepareResult, bool) {
 	if prep == nil || !prep.Prepared() {
 		return kubeletplugin.PrepareResult{}, false
 	}
-	return prepareResult(prep, p.rules.CDIKind), true
+	return prepareResult(prep, p.rules.CDIKind()), true
 }
 
 // ClaimInfo returns a prepared claim with its devices, nil if the claim is
@@ -992,11 +992,11 @@ func (p *Plugin) writeCDI(pending string) error {
 	}
 	p.cdiMu.Lock()
 	defer p.cdiMu.Unlock()
-	spec, err := buildCDISpec(p.st.Snapshot(), p.rules.Name, p.rules.CDIKind, p.roots, pending)
+	spec, err := buildCDISpec(p.st.Snapshot(), p.rules.Name, p.rules.CDIKind(), p.roots, pending)
 	if err != nil {
 		return err
 	}
-	return writeCDISpec(p.cdi, spec, p.rules.Name, p.rules.CDISpecName)
+	return writeCDISpec(p.cdi, spec, p.rules.Name, p.rules.CDISpecName())
 }
 
 // WriteCDI writes the CDI spec of the prepared claims of the driver, or

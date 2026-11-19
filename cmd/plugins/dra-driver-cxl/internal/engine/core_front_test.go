@@ -306,7 +306,7 @@ func (fe *frontEnd) Check() []string {
 func (fe *frontEnd) checkCDI(doc *store.Document, snap *kernel.Snapshot, rules dra.SourceRules) []string {
 	var out []string
 	devs := map[string]*cdiSpecs.Device{}
-	spec, err := fe.cdiSpec(rules.CDISpecName)
+	spec, err := fe.cdiSpec(rules.CDISpecName())
 	if err != nil {
 		return []string{err.Error()}
 	}

@@ -15,63 +15,59 @@
 package dra
 
 import (
-	resourcev1 "k8s.io/api/resource/v1"
-
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
-// SourceRules are what the two DRA drivers of the process do differently:
-// the source of their devices, how an allocation result maps to a memdev and
-// a grant, whether the driver publishes the node's ResourceSlice, its CDI
-// kind, and the rules that the two drivers apply differently.
+// SourceRules are what the two DRA drivers of the process have differently:
+// the name of the driver, the source of its devices and the directory of
+// their node mounts. The source decides how an allocation result maps to a
+// memdev and a grant (Plugin.validate), whether the driver publishes the
+// node's ResourceSlice, and its CDI kind and spec name.
 type SourceRules struct {
 	// Name is the DRA driver name.
 	Name string
 	// Source is the source of the devices of the driver's grants.
 	Source state.Source
-	// Publishes: the driver publishes the node's ResourceSlice.
-	Publishes bool
-	// CDIKind is the kind of the CDI devices of the driver, CDISpecName
-	// the name of its spec file.
-	CDIKind, CDISpecName string
 	// MountsDir is the directory of the node mounts of mode fs of the
 	// driver's devices.
 	MountsDir string
-
-	// validate returns the Prepare of a claim, every result checked.
-	validate func(p *Plugin, claim *resourcev1.ResourceClaim) (*prepare, error)
 }
 
 // LocalRules returns the rules of cxl.nri.io: the local memdevs of the node,
-// found in the last scan; publishes the node's ResourceSlice; CDI kind
-// device.CDIKind; node mounts in mountsDir.
+// found in the last scan; node mounts in mountsDir.
 func LocalRules(mountsDir string) SourceRules {
-	return SourceRules{
-		Name:        device.DriverName,
-		Source:      state.SourceLocal,
-		Publishes:   true,
-		CDIKind:     device.CDIKind,
-		CDISpecName: device.ClaimsCDISpecName,
-		MountsDir:   mountsDir,
-		validate:    (*Plugin).validateLocal,
-	}
+	return SourceRules{Name: device.DriverName, Source: state.SourceLocal, MountsDir: mountsDir}
 }
 
 // PoolRules returns the rules of the pool driver name: the devices that a
 // pool controller attached to the node for a claim, found by the serial of
-// the claim's status data; publishes nothing; CDI kind device.PoolCDIKind;
-// node mounts in mountsDir.
+// the claim's status data; node mounts in mountsDir.
 func PoolRules(name, mountsDir string) SourceRules {
-	return SourceRules{
-		Name:        name,
-		Source:      state.SourcePool,
-		CDIKind:     device.PoolCDIKind,
-		CDISpecName: device.PoolCDISpecName,
-		MountsDir:   mountsDir,
-		validate:    (*Plugin).validatePool,
+	return SourceRules{Name: name, Source: state.SourcePool, MountsDir: mountsDir}
+}
+
+// publishes tells whether the driver publishes the node's ResourceSlice:
+// cxl.nri.io does, the pool driver does not.
+func (r SourceRules) publishes() bool {
+	return r.Source == state.SourceLocal
+}
+
+// CDIKind returns the kind of the CDI devices of the driver.
+func (r SourceRules) CDIKind() string {
+	if r.Source == state.SourceLocal {
+		return device.CDIKind
 	}
+	return device.PoolCDIKind
+}
+
+// CDISpecName returns the name of the CDI spec file of the driver.
+func (r SourceRules) CDISpecName() string {
+	if r.Source == state.SourceLocal {
+		return device.ClaimsCDISpecName
+	}
+	return device.PoolCDISpecName
 }
 
 // MountsDirs returns the directories of the node mounts of mode fs of the

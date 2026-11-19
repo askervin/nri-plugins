@@ -66,7 +66,7 @@ func TestPoolNUMA(t *testing.T) {
 	if !strings.Contains(e.commands(), "cxl create-region -t ram -d decoder0.0 -m mem0") {
 		t.Fatalf("commands:\n%s", e.commands())
 	}
-	if spec := e.cdiSpec(e.pool.Rules().CDISpecName); spec == nil || spec.Kind != "nri.io/cxl-pool" {
+	if spec := e.cdiSpec(e.pool.Rules().CDISpecName()); spec == nil || spec.Kind != "nri.io/cxl-pool" {
 		t.Fatalf("CDI spec %+v", spec)
 	}
 	cd := e.cdiDevice(e.pool, "claim-u1-0")

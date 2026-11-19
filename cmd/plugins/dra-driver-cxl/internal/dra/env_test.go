@@ -591,7 +591,7 @@ func (e *driverEnv) cdiSpec(name string) *cdiSpecs.Spec {
 // on disk, nil if there is none.
 func (e *driverEnv) cdiDevice(p *Plugin, name string) *cdiSpecs.Device {
 	e.t.Helper()
-	spec := e.cdiSpec(p.Rules().CDISpecName)
+	spec := e.cdiSpec(p.Rules().CDISpecName())
 	if spec == nil {
 		return nil
 	}
@@ -608,7 +608,7 @@ func (e *driverEnv) cdiDevice(p *Plugin, name string) *cdiSpecs.Device {
 func (e *driverEnv) cdiNames(p *Plugin) []string {
 	e.t.Helper()
 	var out []string
-	if spec := e.cdiSpec(p.Rules().CDISpecName); spec != nil {
+	if spec := e.cdiSpec(p.Rules().CDISpecName()); spec != nil {
 		for _, d := range spec.Devices {
 			out = append(out, d.Name)
 		}
