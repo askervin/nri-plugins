@@ -599,7 +599,6 @@
 |POOL: fake-cxl-pool-server               12:41:07 |
 |fs0 512Mi shared persistent  allocated            |
 |  attached: vm1 exclusive                         |
-|  owner: k8s:resourceclaim/c1a10010-0000-4000-8000|
 |no file system (zeros)                            |
 |file /tmp/fake-cxl-pool/fs0.raw                   |
 +--------------------------------------------------+
@@ -626,7 +625,6 @@
 |POOL: fake-cxl-pool-server               12:41:07 |
 |fs0 512Mi shared persistent  allocated            |
 |  attached: vm1 exclusive                         |
-|  owner: k8s:resourceclaim/c1a10010-0000-4000-8000|
 |ext4 "demo" 510M, clean                           |
 |file /tmp/fake-cxl-pool/fs0.raw                   |
 +--------------------------------------------------+
@@ -867,7 +865,6 @@
 |POOL: fake-cxl-pool-server               12:41:07 |
 |shared0 256Mi shared persistent  allocated        |
 |  attached: vm1 exclusive                         |
-|  owner: k8s:resourceclaim/c1a1d882-0000-4000-8000|
 |no file system (zeros)                            |
 |file /tmp/fake-cxl-pool/shared0.raw               |
 +--------------------------------------------------+
@@ -894,7 +891,6 @@
 |POOL: fake-cxl-pool-server               12:41:07 |
 |shared0 256Mi shared persistent  allocated        |
 |  attached: vm1 exclusive                         |
-|  owner: k8s:resourceclaim/c1a1d882-0000-4000-8000|
 |erofs: hello.txt 32 bytes                         |
 |  "Hello from the writer, 12:01:12"               |
 |file /tmp/fake-cxl-pool/shared0.raw               |
@@ -925,7 +921,6 @@
 |POOL: fake-cxl-pool-server               12:41:07 |
 |shared0 256Mi shared persistent  allocated        |
 |  attached: vm1 exclusive                         |
-|  owner: k8s:resourceclaim/c1a1d882-0000-4000-8000|
 |erofs: hello.txt 32 bytes                         |
 |  "Hello from the writer, 12:01:12"               |
 |file /tmp/fake-cxl-pool/shared0.raw               |
