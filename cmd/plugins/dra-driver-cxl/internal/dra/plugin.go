@@ -327,7 +327,7 @@ func (p *Plugin) prepare(ctx context.Context, claim *resourcev1.ResourceClaim) k
 	}
 	pr, err := p.rules.validate(p, claim)
 	if err != nil {
-		return p.refuse(ctx, uid, claimName, err)
+		return p.refuse(uid, claimName, err)
 	}
 	if err := p.commitPreparing(ctx, pr); err != nil {
 		return failed(err)
@@ -420,22 +420,25 @@ func (p *Plugin) realise(ctx context.Context, pr *prepare) error {
 }
 
 // finish writes the CDI spec with the devices of a Prepare whose grants are
-// realised, commits it PREPARED and tells the broker of a companion claim:
-// in the same commit when the broker's hooks are a lend.PreparedStepper
-// (the lease READY with its preparation PREPARED), else after the commit
-// (Lender.preparedStep); a failure rolls the Prepare back.
+// realised (a companion claim has none), commits it PREPARED and tells the
+// broker of a companion claim: in the same commit when the broker's hooks
+// are a lend.PreparedStepper (the lease READY with its preparation
+// PREPARED), else after the commit (Lender.preparedStep); a failure rolls
+// the Prepare back, and tells the broker that the lend failed.
 func (p *Plugin) finish(ctx context.Context, pr *prepare) kubeletplugin.PrepareResult {
 	result := prepareResult(p.preparation(pr.uid), p.rules.CDIKind)
 	var rec *lend.Lend
 	// step changes the records in the PREPARED commit, after runs once it
 	// is committed; both do nothing for a claim that is not a companion
 	step, after := func(*state.Records) {}, func() {}
+	var err error
 	if pr.lend != nil {
 		var devs []state.DeviceInfo
 		rec, devs = p.lendAndDevices(p.preparation(pr.uid))
 		step, after = p.lender.preparedStep(pr.lend.Lease, p.rules.Source, devs)
+	} else {
+		err = p.writeCDI(pr.uid)
 	}
-	err := p.writeCDI(pr.uid)
 	if err == nil {
 		err = p.commit(ctx, func(doc *store.Document) error {
 			err := prepared(doc, p.rules.Name, pr.uid)
@@ -447,12 +450,14 @@ func (p *Plugin) finish(ctx context.Context, pr *prepare) kubeletplugin.PrepareR
 	}
 	if err != nil {
 		p.rollback(ctx, pr.uid, pr.claimName, func() {
-			if pr.lend != nil && p.rules.FailLeaseOnFinish {
+			if pr.lend != nil {
 				p.lender.Failed(pr.lend.Lease, err)
 			}
 		})
-		if cerr := p.writeCDI(""); cerr != nil {
-			p.rollbackError(pr.claimName, cerr)
+		if pr.lend == nil {
+			if cerr := p.writeCDI(""); cerr != nil {
+				p.rollbackError(pr.claimName, cerr)
+			}
 		}
 		return failed(err)
 	}
@@ -472,27 +477,14 @@ func failed(err error) kubeletplugin.PrepareResult {
 // refuse returns the result of a Prepare refused before any device is
 // touched: nothing is rolled back, what an earlier Prepare of the claim made
 // stays with its preparation for the next Prepare or the Unprepare (a KEPT,
-// PREPARING or STALE record keeps its state); the rules may retry the stale
-// lease binds as a failed Prepare does.
-func (p *Plugin) refuse(ctx context.Context, uid, claimName string, err error) kubeletplugin.PrepareResult {
+// PREPARING or STALE record keeps its state).
+func (p *Plugin) refuse(uid, claimName string, err error) kubeletplugin.PrepareResult {
 	if prep := p.preparation(uid); prep != nil {
 		if serr := stays(prep, state.TriggerPrepare); serr != nil {
 			klog.Errorf("%s: claim %s: %v", p.rules.Name, claimName, serr)
 		}
 	}
-	res := failed(err)
-	if p.rules.RetryStaleOnRefusal {
-		p.retryStaleBinds(ctx)
-	}
-	return res
-}
-
-// retryStaleBinds unmounts the stale lease binds of the memdevs again, and
-// releases what they held (engine.RetryStale of a Prepare).
-func (p *Plugin) retryStaleBinds(ctx context.Context) {
-	rctx, cancel := rollbackContext(ctx)
-	defer cancel()
-	p.engine.RetryStale(rctx, state.TriggerPrepare)
+	return failed(err)
 }
 
 // rollbackTimeout bounds the cleanup after a failure.
@@ -750,13 +742,14 @@ func (p *Plugin) unprepareClaim(ctx context.Context, uid string) error {
 // that a companion claim lends are revoked before its memory goes offline
 // (not those of another boot: nothing of it exists). A claim without a
 // record had nothing prepared: not an error. The CDI spec is written after
-// it; its error is the Unprepare's after the release of a prepared claim
-// with the rule FailUnprepareOnCDI, logged otherwise.
+// it, also without a record, so that kubelet's retry after its error writes
+// it again; its error is the Unprepare's after the release of a prepared
+// claim, logged otherwise.
 func (p *Plugin) unprepare(ctx context.Context, uid string) (string, error) {
 	prep := p.preparation(uid)
 	if prep == nil {
 		klog.V(3).Infof("%s: claim %s is not prepared, nothing to release", p.rules.Name, uid)
-		return "", nil
+		return "", p.writeCDI("")
 	}
 	isPrepared := prep.Prepared()
 	if !isPrepared {
@@ -778,7 +771,7 @@ func (p *Plugin) unprepare(ctx context.Context, uid string) (string, error) {
 	}
 	err := p.release(ctx, prep, companion)
 	cerr := p.writeCDI("")
-	if cerr != nil && (err != nil || !isPrepared || !p.rules.FailUnprepareOnCDI) {
+	if cerr != nil && (err != nil || !isPrepared) {
 		klog.Errorf("%s: %v", p.rules.Name, cerr)
 		cerr = nil
 	}
@@ -999,7 +992,7 @@ func (p *Plugin) writeCDI(pending string) error {
 	}
 	p.cdiMu.Lock()
 	defer p.cdiMu.Unlock()
-	spec, err := buildCDISpec(p.st.Snapshot(), p.rules.Name, p.rules.CDIKind, p.roots, pending, p.rules.CDIUnpreparing)
+	spec, err := buildCDISpec(p.st.Snapshot(), p.rules.Name, p.rules.CDIKind, p.roots, pending)
 	if err != nil {
 		return err
 	}

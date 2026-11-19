@@ -282,13 +282,13 @@ func (fe *frontEnd) revoke(ctx context.Context, ref state.GrantRef, gl state.Gra
 
 // Check returns the violations of the CDI specs, the lends and the lease
 // binds against the records and the kernel now (6.2, 6.3, 5.3, O6): the
-// spec of each driver has the devices of the results of its PREPARED
-// claims that are not companions (cxl.nri.io: UNPREPARING ones too, D-88),
-// each naming the dax device, the block device or the node mount that the
-// records and the kernel have; a NUMA node is lent only for a grant that
-// records the lend, and every prepared numa companion's node is lent; a
-// lease bind is mounted only for a grant that records it, and every
-// prepared fs companion's bind is mounted.
+// spec of each driver has the devices of the results of its PREPARED and
+// UNPREPARING claims that are not companions, each naming the dax device,
+// the block device or the node mount that the records and the kernel
+// have; a NUMA node is lent only for a grant that records the lend, and
+// every prepared numa companion's node is lent; a lease bind is mounted
+// only for a grant that records it, and every prepared fs companion's
+// bind is mounted.
 func (fe *frontEnd) Check() []string {
 	doc := fe.st.Snapshot()
 	snap, err := fe.f.Kernel().Observe(context.Background())
@@ -332,7 +332,7 @@ func (fe *frontEnd) checkCDI(doc *store.Document, snap *kernel.Snapshot, rules d
 					continue
 				}
 				out = append(out, fe.checkCDIDevice(r, snap, d, prep, &res)...)
-			case d != nil && (prep.Lease != "" || prep.State != state.PreparationUnpreparing || !rules.CDIUnpreparing):
+			case d != nil && (prep.Lease != "" || prep.State != state.PreparationUnpreparing):
 				out = append(out, fmt.Sprintf("%s: CDI device %s of %s claim %s (lease %q)", rules.Name, name, prep.State, prep.UID, prep.Lease))
 			}
 		}

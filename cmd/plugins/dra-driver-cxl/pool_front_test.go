@@ -262,36 +262,6 @@ func TestPoolCompanionRevoke(t *testing.T) {
 	e.wantClean(t, p)
 }
 
-// A companion whose lend succeeded and whose CDI spec cannot be written is
-// revoked with its memory online, then released and forgotten.
-func TestPoolCompanionRollbackRevokes(t *testing.T) {
-	e := newPoolTestEnv(t)
-	e.plug(0xc1ae0001)
-	e.plug(0xc1ee0001)
-	p := e.driver(t)
-	hooks := &fakeHooks{}
-	lender := &recordedLender{fakeLender: newFakeLender(), e: e, region: "region1"}
-	p.Lender().Set(lender, hooks)
-	// a claim with a CDI device, then a CDI directory that cannot be
-	// written
-	noErr(t, prepare(t, p, poolClaim("s1", "c-s1", "shared0", sharedData)).Err)
-	noErr(t, os.RemoveAll(e.cdiDir))
-	noErr(t, os.WriteFile(e.cdiDir, nil, 0o644))
-	wantErr(t, prepare(t, p, numaCompanion("l1")).Err, "CDI spec")
-	if got := lender.revokes(); !slices.Equal(got, []bool{true}) {
-		t.Fatalf("revokes with the memory online: %v", got)
-	}
-	if prep := e.preparation("uid-cxl-lease-l1"); prep != nil || strings.Contains(hooks.log(), "prepared l1") {
-		t.Fatalf("the companion kept: %+v\n%s", prep, hooks.log())
-	}
-	if rs := e.k.Kernel().Regions("mem1"); len(rs) != 0 {
-		t.Fatalf("regions %v of the companion left", rs)
-	}
-	noErr(t, os.Remove(e.cdiDir))
-	noErr(t, os.MkdirAll(e.cdiDir, 0o755))
-	noErr(t, unprepare(t, p, "s1"))
-}
-
 // The claims of a node mount that the start could not mount again have no
 // CDI device; they get them back when the node mount is mounted again: by
 // the Prepare again of one of them, or by the Prepare of a new claim.
@@ -334,29 +304,6 @@ func TestPoolRemountCDI(t *testing.T) {
 			e.wantClean(t, p)
 		})
 	}
-}
-
-// A Prepare refused before any device is touched retries the stale lease
-// binds as a failed Prepare does: the bind that a busy Unprepare left is
-// unmounted, the companion released after it.
-func TestPoolRefusedPrepareRetriesStaleBinds(t *testing.T) {
-	e, p, hooks := newPoolLeaseEnv(t)
-	target := filepath.Join(hooks.fsDir, "models")
-	uid := "uid-cxl-lease-l1"
-	noErr(t, prepare(t, p, fsCompanion("l1", "direct")).Err)
-	e.k.SetBusy(target, true)
-	wantErr(t, unprepare(t, p, uid), "device or resource busy")
-	e.k.SetBusy(target, false)
-	logs := klogtest.Capture(t, 3)
-	wantErr(t, prepare(t, p, poolClaim("x1", "c-x1", "pooled9", "")).Err, "no entry")
-	if want := "unbound stale lease bind " + target; !strings.Contains(logs(), want) {
-		t.Fatalf("no %q in\n%s", want, logs())
-	}
-	if mi := e.mounted(target); mi != nil {
-		t.Fatalf("the stale bind is mounted: %+v", mi)
-	}
-	noErr(t, unprepare(t, p, uid))
-	e.wantClean(t, p)
 }
 
 // Companions of another boot: a stale numa companion's Unprepare revokes

@@ -43,7 +43,7 @@ States: UNKNOWN, PREPARING, PREPARED, PREPARED_UNRESTORED, PREPARED_STALE, UNPRE
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
 | UNKNOWN | PREPARING | `a-prepare`: validation and the companion gate passed | allocation present; config decodes; local: device in the last published ResourceSlice; pool: status data present | commit (d) of the preparation with its results (the intent); companion: lease LENDING in the same commit |
-| PREPARING | PREPARED | `a-prepare`: every result realised, CDI spec written | all grants REALISED | commit (d) jointly with lease READY (companion) or lease claim OPEN (lease result); kubelet gets the result |
+| PREPARING | PREPARED | `a-prepare`: every result realised, CDI spec written (none for a companion) | all grants REALISED | commit (d) jointly with lease READY (companion) or lease claim OPEN (lease result); kubelet gets the result |
 | PREPARING | UNKNOWN | `a-prepare`, `a-unprepare`: the Prepare failed and its rollback released everything; or an Unprepare released everything recorded | no KEPT region, no Stale entry | commit (d) removing the record; kubelet gets the error (Prepare) or nil (Unprepare) |
 | PREPARING | KEPT | `a-prepare`, `a-recover`: the Prepare failed and its rollback kept a region (in-order release refused); or the recovery kept a cut region below newer regions | Policy says keep | commit (d); error to kubelet (retry) or nothing (recovery) |
 | PREPARING | (unchanged) | `a-recover`: the recovery of a cut Prepare: leftovers released, the record stays for kubelet's retry | - | commit (d) of the grants back to JOURNALED or RELEASED |
@@ -60,7 +60,7 @@ States: UNKNOWN, PREPARING, PREPARED, PREPARED_UNRESTORED, PREPARED_STALE, UNPRE
 | PREPARED, PREPARED_UNRESTORED | UNPREPARING | `a-unprepare` | lease claim: CloseClaim returned; companion: OnReleasing done | commit (d) |
 | UNPREPARING | UNKNOWN | `a-unprepare`: every grant RELEASED | - | commit (d) removing the record; kubelet gets nil |
 | UNPREPARING | (unchanged) | `a-unprepare`: a release step failed (EBUSY, a revoke before the lender is set up) | - | error to kubelet (retried about every second); records unchanged; the retry finds out from the kernel what exists |
-| UNPREPARING | (unchanged) | `a-recover`: the record at the start: no remount; cxl.nri.io's CDI spec keeps the claim's devices (CDIUnpreparing) until kubelet's Unprepare retry removes them, the pool driver's has none | - | nothing at start |
+| UNPREPARING | (unchanged) | `a-recover`: the record at the start: no remount; the CDI spec keeps the claim's devices until kubelet's Unprepare retry removes them | - | nothing at start |
 | UNPREPARING | (unchanged) | `a-prepare`: a Prepare again before kubelet's Unprepare retry | - | the result is returned as prepared (both drivers); a companion is announced again; no commit |
 | KEPT | PREPARING | `a-prepare`: Prepare again | - | the kept region is enabled and set up again |
 | KEPT | (unchanged) | `a-prepare`: a Prepare again fails validation or the companion gate | - | error to kubelet; the record and the kept region stay for the next Prepare or the Unprepare |

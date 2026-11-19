@@ -39,19 +39,6 @@ type SourceRules struct {
 	// MountsDir is the directory of the node mounts of mode fs of the
 	// driver's devices.
 	MountsDir string
-	// CDIUnpreparing: the CDI spec keeps the devices of a claim whose
-	// Unprepare did not finish.
-	CDIUnpreparing bool
-	// FailLeaseOnFinish: a companion claim whose CDI spec or PREPARED
-	// commit fails after the lend tells the broker that the lend failed.
-	FailLeaseOnFinish bool
-	// RetryStaleOnRefusal: a Prepare refused before a device is touched
-	// unmounts the stale lease binds again, as a failed Prepare does.
-	RetryStaleOnRefusal bool
-	// FailUnprepareOnCDI: the Unprepare of a prepared claim whose devices
-	// were released returns the error of the CDI spec written after it to
-	// kubelet; otherwise the error is logged.
-	FailUnprepareOnCDI bool
 
 	// validate returns the Prepare of a claim, every result checked.
 	validate func(p *Plugin, claim *resourcev1.ResourceClaim) (*prepare, error)
@@ -62,16 +49,13 @@ type SourceRules struct {
 // device.CDIKind; node mounts in mountsDir.
 func LocalRules(mountsDir string) SourceRules {
 	return SourceRules{
-		Name:               device.DriverName,
-		Source:             state.SourceLocal,
-		Publishes:          true,
-		CDIKind:            device.CDIKind,
-		CDISpecName:        device.ClaimsCDISpecName,
-		MountsDir:          mountsDir,
-		CDIUnpreparing:     true,
-		FailLeaseOnFinish:  true,
-		FailUnprepareOnCDI: true,
-		validate:           (*Plugin).validateLocal,
+		Name:        device.DriverName,
+		Source:      state.SourceLocal,
+		Publishes:   true,
+		CDIKind:     device.CDIKind,
+		CDISpecName: device.ClaimsCDISpecName,
+		MountsDir:   mountsDir,
+		validate:    (*Plugin).validateLocal,
 	}
 }
 
@@ -81,13 +65,12 @@ func LocalRules(mountsDir string) SourceRules {
 // node mounts in mountsDir.
 func PoolRules(name, mountsDir string) SourceRules {
 	return SourceRules{
-		Name:                name,
-		Source:              state.SourcePool,
-		CDIKind:             device.PoolCDIKind,
-		CDISpecName:         device.PoolCDISpecName,
-		MountsDir:           mountsDir,
-		RetryStaleOnRefusal: true,
-		validate:            (*Plugin).validatePool,
+		Name:        name,
+		Source:      state.SourcePool,
+		CDIKind:     device.PoolCDIKind,
+		CDISpecName: device.PoolCDISpecName,
+		MountsDir:   mountsDir,
+		validate:    (*Plugin).validatePool,
 	}
 }
 

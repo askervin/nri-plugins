@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -297,43 +296,6 @@ func TestCompanionLendFails(t *testing.T) {
 	}
 }
 
-// A companion claim whose CDI spec cannot be written after the lend is
-// rolled back: cxl.nri.io tells the broker that the lend failed, the pool
-// driver does not (FailLeaseOnFinish).
-func TestCompanionFinishFails(t *testing.T) {
-	for _, local := range []bool{true, false} {
-		e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, poolSpec(serialPoolX), fake.MemdevSpec{Serial: 0xc1ee0002, HostBridge: 24})
-		p, other := e.pool, poolClaim("u0", "pooled1", `{"serial":"0xc1ee0002","shared":false,"size":268435456}`)
-		if local {
-			p, other = e.local, localClaim("u0", device.DRAMDeviceName, 64*mib)
-		}
-		t.Run(p.Name(), func(t *testing.T) {
-			e.t = t
-			e.lending()
-			// a claim with a CDI device, then a CDI directory that cannot
-			// be written
-			e.mustPrepare(p, other)
-			mustOK(t, os.RemoveAll(e.cdiDir))
-			mustOK(t, os.WriteFile(e.cdiDir, nil, 0o644))
-			e.takeEvents()
-			res := e.prepare(p, e.companionOf(p))
-			wantErrText(t, res.Err, "write CDI spec")
-			want := []string{"lending l1 cxl-lease-l1", "lend pod-uid-1/app 2 l1", "revoke pod-uid-1/app 2 l1"}
-			if local {
-				want = append(want, "failed l1: "+errors.Unwrap(res.Err).Error())
-			}
-			e.wantEvents("failed", want...)
-			e.wantState(p, "c1", state.PreparationUnknown)
-			mustOK(t, os.Remove(e.cdiDir))
-			mustOK(t, os.MkdirAll(e.cdiDir, 0o755))
-			e.mustPrepare(p, e.companionOf(p))
-			e.mustUnprepare(p, "c1")
-			e.mustUnprepare(p, "u0")
-			e.wantClean()
-		})
-	}
-}
-
 // The Unprepare of a numa companion whose Prepare a stop cut after the
 // lend: either driver tells the broker and revokes the node before it
 // releases the memory.
@@ -387,8 +349,8 @@ func (h *stepHooks) PreparedStep(id string, _ state.Source, _ []state.DeviceInfo
 // A joint commit of a companion's PREPARED and its lease's READY whose
 // write the disk stalls beyond commitTimeout is waited for in both drivers,
 // and its write decides: a write that succeeds prepares the claim and tells
-// the broker after it, a write that fails fails the Prepare and rolls it
-// back without telling the broker that the claim is prepared.
+// the broker after it, a write that fails fails the Prepare, rolls it back
+// and tells the broker that the lend failed, not that the claim is prepared.
 func TestCompanionLateJointCommit(t *testing.T) {
 	defer func(d time.Duration) { commitTimeout = d }(commitTimeout)
 	commitTimeout = 200 * time.Millisecond
@@ -418,6 +380,9 @@ func TestCompanionLateJointCommit(t *testing.T) {
 				}
 				if got := e.stateOf(p, "c1"); got == state.PreparationPrepared {
 					t.Fatalf("claim %s after a failed write of PREPARED", got)
+				}
+				if !slices.ContainsFunc(events, func(ev string) bool { return strings.HasPrefix(ev, "failed l1: ") }) {
+					t.Fatalf("the broker was not told that the lend failed, calls:\n%s", strings.Join(events, "\n"))
 				}
 			})
 		}

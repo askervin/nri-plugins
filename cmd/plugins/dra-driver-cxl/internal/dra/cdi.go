@@ -97,28 +97,28 @@ func FsCDIMount(nodeMount, path string, readOnly bool) *cdiSpecs.Mount {
 }
 
 // cdiClaims tells whether the CDI spec of a driver has the devices of a
-// preparation: a claim that is not a companion, PREPARED, or the claim
-// pending whose Prepare is finishing, or UNPREPARING when the driver keeps
-// those (unpreparing).
-func cdiClaims(prep *state.Preparation, pending string, unpreparing bool) bool {
+// preparation: a claim that is not a companion, PREPARED, UNPREPARING (until
+// kubelet's Unprepare retry), or the claim pending whose Prepare is
+// finishing.
+func cdiClaims(prep *state.Preparation, pending string) bool {
 	switch {
 	case prep.Lease != "":
 		return false
 	case prep.UID == pending, prep.State == state.PreparationPrepared:
 		return true
 	}
-	return unpreparing && prep.State == state.PreparationUnpreparing
+	return prep.State == state.PreparationUnpreparing
 }
 
 // buildCDISpec returns the CDI spec of the kind of the claims of the driver
 // in doc that cdiClaims takes, and an error for a PREPARED or pending claim
 // with a device of mode fs that has no node mount.
-func buildCDISpec(doc *store.Document, driver, kind string, rs roots, pending string, unpreparing bool) (*cdiSpecs.Spec, error) {
+func buildCDISpec(doc *store.Document, driver, kind string, rs roots, pending string) (*cdiSpecs.Spec, error) {
 	spec := &cdiSpecs.Spec{Kind: kind}
 	byUID := map[string]*state.Preparation{}
 	for i := range doc.Preparations {
 		prep := &doc.Preparations[i]
-		if prep.Driver == driver && cdiClaims(prep, pending, unpreparing) {
+		if prep.Driver == driver && cdiClaims(prep, pending) {
 			byUID[prep.UID] = prep
 		}
 	}

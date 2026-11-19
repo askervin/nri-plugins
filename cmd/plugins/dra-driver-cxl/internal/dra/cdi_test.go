@@ -76,7 +76,7 @@ func TestClaimsCDISpec(t *testing.T) {
 			"CXL_CLAIM_u1_2=1", "CXL_REGION0_MODE=numa", "CXL_REGION0_NODE=2", "CXL_REGION0_SIZE=67108864"}}},
 		{Name: "claim-u2-0", ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{"CXL_CLAIM_u2_0=1"}}},
 	}
-	spec, err := buildCDISpec(e.st.Snapshot(), device.DriverName, device.CDIKind, e.local.roots, "", true)
+	spec, err := buildCDISpec(e.st.Snapshot(), device.DriverName, device.CDIKind, e.local.roots, "")
 	mustOK(t, err)
 	if spec.Kind != "nri.io/cxl" || !reflect.DeepEqual(spec.Devices, want) {
 		t.Fatalf("CDI spec %+v", spec)
@@ -90,8 +90,8 @@ func TestClaimsCDISpec(t *testing.T) {
 // sorted by claim, a second result on one memdev with the env key _2, of
 // the kind and in the file of the driver; companions, claims whose
 // devices did not verify at the start and claims whose Prepare is not
-// finishing are left out, UNPREPARING ones are kept by cxl.nri.io only;
-// the spec of no device is removed.
+// finishing are left out, UNPREPARING ones are kept; the spec of no device
+// is removed.
 func TestCDISpecOfClaims(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, fake.MemdevSpec{Serial: serialPoolS, HostBridge: 24})
 	b := addLocalResult(localClaim("b", localDev, envBlockSize), "second", localDev, envBlockSize)
@@ -118,7 +118,7 @@ func TestCDISpecOfClaims(t *testing.T) {
 		doc.Preparation(driver, uid).State = s
 	}
 	names := func(p *Plugin, pending string) []string {
-		spec, err := buildCDISpec(doc, p.Name(), p.Rules().CDIKind, p.roots, pending, p.Rules().CDIUnpreparing)
+		spec, err := buildCDISpec(doc, p.Name(), p.Rules().CDIKind, p.roots, pending)
 		mustOK(t, err)
 		var out []string
 		for _, d := range spec.Devices {
@@ -133,10 +133,10 @@ func TestCDISpecOfClaims(t *testing.T) {
 	if got := names(e.local, ""); !slices.Equal(got, []string{"claim-a-0"}) {
 		t.Fatalf("local %v", got)
 	}
-	if got := names(e.pool, ""); len(got) != 0 {
+	if got := names(e.pool, ""); !slices.Equal(got, []string{"claim-p1-0"}) {
 		t.Fatalf("pool %v", got)
 	}
-	if got := names(e.pool, "p2"); !slices.Equal(got, []string{"claim-p2-0"}) {
+	if got := names(e.pool, "p2"); !slices.Equal(got, []string{"claim-p1-0", "claim-p2-0"}) {
 		t.Fatalf("pool with the pending claim %v", got)
 	}
 	doc.Preparation(device.DriverName, "a").Lease = "l1"
@@ -285,7 +285,7 @@ func TestCDISpecOfIncompleteDevices(t *testing.T) {
 	doc.Grant(state.GrantRef{Claim: "f"}).Got.Mount = ""
 	doc.Grant(state.GrantRef{Claim: "d"}).Got.Dax = ""
 	build := func(pending string) (*cdiSpecs.Spec, error) {
-		return buildCDISpec(doc, device.DriverName, device.CDIKind, e.local.roots, pending, true)
+		return buildCDISpec(doc, device.DriverName, device.CDIKind, e.local.roots, pending)
 	}
 	spec, err := build("")
 	wantErrText(t, err, "claim demo/claim-f: result 0: no node mount")

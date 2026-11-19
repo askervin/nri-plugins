@@ -16,8 +16,7 @@ package dra
 
 import (
 	"context"
-	"path/filepath"
-	"strings"
+	"os"
 	"testing"
 
 	resourcev1 "k8s.io/api/resource/v1"
@@ -151,37 +150,6 @@ func TestPrepareRefusedKeepsStale(t *testing.T) {
 	e.wantClean()
 }
 
-// A refused Prepare of the pool driver unmounts the stale lease binds
-// again, as a failed one does; one of cxl.nri.io does not.
-func TestPrepareRefusedRetriesStaleBinds(t *testing.T) {
-	e := newDriverEnv(t, nil, poolPmemSpec(serialPoolP))
-	e.formatPmem(serialPoolP, "erofs")
-	_, hooks := e.lending()
-	hooks.fsDir, hooks.name = filepath.Join(e.leaseFsRoot(), "lc1"), "data"
-	target := filepath.Join(hooks.fsDir, hooks.name)
-	c := companion(poolClaim("c1", "llm0", poolPmemData, cfgFsRO), "l1")
-	e.mustPrepare(e.pool, c)
-	if mi, _ := e.k.Kernel().Mounted(target); mi == nil {
-		t.Fatalf("no lease bind at %s", target)
-	}
-	e.k.SetBusy(target, true)
-	wantErrText(t, e.unprepare(e.pool, "c1"), "busy")
-	e.wantState(e.pool, "c1", state.PreparationUnpreparing)
-	e.k.SetBusy(target, false)
-	logs := klogCapture(t)
-	wantErrText(t, e.prepare(e.local, localClaim("x1", "memdev-77", 0)).Err, "could not find allocatable device")
-	if strings.Contains(logs(), "stale lease bind") {
-		t.Fatalf("cxl.nri.io retried the stale lease binds:\n%s", logs())
-	}
-	wantErrText(t, e.prepare(e.pool, poolClaim("x1", "llm0", "")).Err, "cxl-pool.nri.io: claim demo/claim-x1: ")
-	wantLogText(t, logs(), "unbound stale lease bind "+target)
-	if mi, _ := e.k.Kernel().Mounted(target); mi != nil {
-		t.Fatalf("the stale lease bind is mounted: %+v", mi)
-	}
-	e.mustUnprepare(e.pool, "c1")
-	e.wantClean()
-}
-
 // A Prepare that fails after its intent: its record removed when its
 // rollback released everything, in the words of each driver.
 func TestPrepareFailedAfterIntent(t *testing.T) {
@@ -213,5 +181,23 @@ func TestPrepareFailedAfterIntent(t *testing.T) {
 	if spec := e.cdiSpec(device.ClaimsCDISpecName); spec != nil {
 		t.Fatalf("CDI spec %+v", spec)
 	}
+	e.wantClean()
+}
+
+// A Prepare whose CDI spec cannot be written is rolled back; the spec of
+// the other prepared claim cannot be written either, which is logged.
+func TestPrepareCDIFails(t *testing.T) {
+	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()})
+	e.mustPrepare(e.local, localClaim("u0", localDev, envBlockSize))
+	mustOK(t, os.RemoveAll(e.cdiDir))
+	mustOK(t, os.WriteFile(e.cdiDir, nil, 0o644))
+	logs := klogCapture(t)
+	res := e.prepare(e.local, localClaim("u1", localDev, envBlockSize))
+	wantErrText(t, res.Err, "cxl.nri.io: claim demo/claim-u1: write CDI spec "+device.ClaimsCDISpecName+": ")
+	wantLogText(t, logs(), "cxl.nri.io: claim demo/claim-u1: rollback: write CDI spec "+device.ClaimsCDISpecName+": ")
+	e.wantState(e.local, "u1", state.PreparationUnknown)
+	mustOK(t, os.Remove(e.cdiDir))
+	mustOK(t, os.MkdirAll(e.cdiDir, 0o755))
+	e.mustUnprepare(e.local, "u0")
 	e.wantClean()
 }

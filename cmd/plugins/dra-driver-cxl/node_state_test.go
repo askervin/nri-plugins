@@ -42,9 +42,6 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
-// localOtherSerial is a second local memdev of RAM, under host bridge 24.
-const localOtherSerial = 0xc100e2e3
-
 // localRegionNode returns the NUMA node of the region of the local memdev
 // in the kernel.
 func localRegionNode(e *localTestEnv) int {
@@ -500,35 +497,6 @@ func TestUnprepareLocalFailures(t *testing.T) {
 	if e.cdiSpec() != nil || e.inUse() {
 		t.Fatalf("after the retry: in use %v", e.inUse())
 	}
-	e.wantClean()
-}
-
-// A companion claim whose CDI spec cannot be written rolls back: the lend
-// revoked, the broker told, the memory released.
-func TestPrepareLocalPersistFailure(t *testing.T) {
-	e, lender, hooks := newLocalLendEnv(t, fake.MemdevSpec{Serial: localOtherSerial, Ram: localRegionSize, HostBridge: 24})
-	e.rescan()
-	// a claim with a CDI device on the other memdev, then a CDI directory
-	// that cannot be written
-	e.mustPrepare(memdevClaim("u0", memdevDeviceName(localOtherSerial), localBlockSize))
-	noErr(t, os.RemoveAll(e.cdiDir))
-	noErr(t, os.WriteFile(e.cdiDir, nil, 0o644))
-	err := e.prepare(localCompanion("u1", 64*mib))
-	wantErr(t, err, "CDI spec")
-	if calls := lender.callLog(); calls != "lend pod-uid-1/app 2\nrevoke pod-uid-1/app 2" {
-		t.Fatalf("lender calls %q", calls)
-	}
-	if log := hooks.log(); !strings.HasSuffix(log, "\nfailed l1: "+errors.Unwrap(err).Error()) || strings.Contains(log, "releasing") {
-		t.Fatalf("hooks %s", log)
-	}
-	if _, found := e.prepared()["u1"]; found || e.s.ClaimInfo("u1") != nil || e.preparation("u1") != nil || len(e.regions(localSerial)) != 0 {
-		t.Fatalf("claim kept after the rollback, regions %v", e.regions(localSerial))
-	}
-	noErr(t, os.Remove(e.cdiDir))
-	noErr(t, os.MkdirAll(e.cdiDir, 0o755))
-	e.mustPrepare(localCompanion("u1", 64*mib))
-	e.mustUnprepare("u1")
-	e.mustUnprepare("u0")
 	e.wantClean()
 }
 

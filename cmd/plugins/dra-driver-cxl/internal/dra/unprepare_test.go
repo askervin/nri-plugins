@@ -17,6 +17,7 @@ package dra
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -85,9 +86,8 @@ func TestUnprepareRevokeFails(t *testing.T) {
 	}
 }
 
-// A release that fails leaves the claim UNPREPARING; cxl.nri.io keeps its
-// CDI devices (CDIUnpreparing), the pool driver does not; the retry
-// releases it.
+// A release that fails leaves the claim UNPREPARING with its CDI devices;
+// the retry releases it.
 func TestUnprepareReleaseFails(t *testing.T) {
 	t.Run("cxl.nri.io", func(t *testing.T) {
 		e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()})
@@ -124,8 +124,8 @@ func TestUnprepareReleaseFails(t *testing.T) {
 		wantErrText(t, err, "cxl-pool.nri.io: claim demo/claim-u1: ")
 		wantErrText(t, err, "device 0xc1af0001: unmounting "+mnt+": device or resource busy")
 		e.wantState(e.pool, "u1", state.PreparationUnpreparing)
-		if e.cdiDevice(e.pool, "claim-u1-0") != nil {
-			t.Fatal("a CDI device of an UNPREPARING pool claim")
+		if e.cdiDevice(e.pool, "claim-u1-0") == nil {
+			t.Fatal("no CDI device of an UNPREPARING claim")
 		}
 		// a Prepare again of the UNPREPARING claim returns its result
 		res := e.mustPrepare(e.pool, poolClaim("u1", "llm0", poolPmemData, cfgFsRO))
@@ -142,9 +142,8 @@ func TestUnprepareReleaseFails(t *testing.T) {
 }
 
 // A CDI spec that does not write after the release of a prepared claim
-// fails the Unprepare of cxl.nri.io (FailUnprepareOnCDI); the pool driver
-// logs it. Either way the claim is gone, and
-// kubelet's retry finds nothing to release.
+// fails the Unprepare; the claim is gone, and kubelet's retry finds nothing
+// to release and writes the spec.
 func TestUnprepareCDIFails(t *testing.T) {
 	for _, local := range []bool{true, false} {
 		e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, poolSpec(serialPoolX), fake.MemdevSpec{Serial: serialPoolS, HostBridge: 24})
@@ -167,23 +166,18 @@ func TestUnprepareCDIFails(t *testing.T) {
 			mustOK(t, os.Remove(spec))
 			mustOK(t, os.MkdirAll(filepath.Join(spec, "entry"), 0o755))
 			logs := klogCapture(t)
-			err := e.unprepare(p, "u1")
-			want := "write CDI spec " + p.Rules().CDISpecName + ": "
-			if local {
-				wantErrText(t, err, p.Name()+": claim demo/claim-u1: "+want)
-				if strings.Contains(logs(), "unprepared claim") {
-					t.Fatal("a failed Unprepare logged as unprepared")
-				}
-			} else {
-				mustOK(t, err)
-				wantLogText(t, logs(), p.Name()+": "+want)
-				wantLogText(t, logs(), p.Name()+": unprepared claim demo/claim-u1 (u1)")
+			wantErrText(t, e.unprepare(p, "u1"), p.Name()+": claim demo/claim-u1: write CDI spec "+p.Rules().CDISpecName+": ")
+			if strings.Contains(logs(), "unprepared claim") {
+				t.Fatal("a failed Unprepare logged as unprepared")
 			}
 			if e.preparation(p, "u1") != nil {
 				t.Fatal("the record of u1 is left")
 			}
 			mustOK(t, os.RemoveAll(spec))
 			e.mustUnprepare(p, "u1")
+			if names := e.cdiNames(p); !slices.Equal(names, []string{"claim-u2-0"}) {
+				t.Fatalf("CDI devices after kubelet's retry %v", names)
+			}
 			e.mustUnprepare(p, "u2")
 			e.wantClean()
 		})
@@ -192,7 +186,7 @@ func TestUnprepareCDIFails(t *testing.T) {
 
 // The Unprepare of a claim of mode fs of cxl.nri.io that failed after its
 // node mount was unmounted: the claim stays UNPREPARING with its CDI device
-// (CDIUnpreparing) without the mount that is gone, the CDI spec still
+// without the mount that is gone, the CDI spec still
 // writes, so the next Prepare and a start succeed, and kubelet's retry
 // finishes the release.
 func TestUnprepareFailedAfterUnmount(t *testing.T) {

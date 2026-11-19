@@ -161,7 +161,7 @@ var PreparationTable = Table[PreparationState]{
 		},
 		{
 			From: fsm.List(PreparationPreparing), To: PreparationPrepared, Triggers: fsm.List(TriggerPrepare),
-			When:  "every result realised, CDI spec written",
+			When:  "every result realised, CDI spec written (none for a companion)",
 			Guard: "all grants REALISED",
 			Effects: "commit (d) jointly with lease READY (companion) or lease claim OPEN (lease result); kubelet " +
 				"gets the result",
@@ -256,8 +256,8 @@ var PreparationTable = Table[PreparationState]{
 		},
 		{
 			From: fsm.List(PreparationUnpreparing), Stays: true, Triggers: fsm.List(TriggerRecover),
-			When: "the record at the start: no remount; cxl.nri.io's CDI spec keeps the claim's devices " +
-				"(CDIUnpreparing) until kubelet's Unprepare retry removes them, the pool driver's has none",
+			When: "the record at the start: no remount; the CDI spec keeps the claim's devices until " +
+				"kubelet's Unprepare retry removes them",
 			Effects: "nothing at start",
 		},
 		{
