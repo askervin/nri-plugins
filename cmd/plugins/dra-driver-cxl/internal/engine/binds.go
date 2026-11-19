@@ -57,7 +57,8 @@ func (e *Engine) bindGrant(ctx context.Context, req *GrantRequest, u pmemGrant) 
 }
 
 // BindError is the error of the lease bind of a grant of a companion
-// claim of mode fs.
+// claim of mode fs: of the bind, or of its target that the Prepare checks
+// before.
 type BindError struct {
 	Err error
 }

@@ -289,17 +289,6 @@ func (c *Lender) RevokeGrant(ctx context.Context, gl state.GrantLend, claimName 
 	return c.Revoke(ctx, rec, claimName)
 }
 
-// leaseBindError is the error of a companion claim whose lease of mode fs
-// cannot be bound.
-type leaseBindError struct {
-	err error
-}
-
-// Error returns the error in words.
-func (e *leaseBindError) Error() string {
-	return e.err.Error()
-}
-
 // leaseBindTarget returns the lease bind of the device of mode fs of a
 // companion claim, <FsDir>/<Name> of its lend.
 func leaseBindTarget(lend *lend.Lend) (string, error) {

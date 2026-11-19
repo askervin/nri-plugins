@@ -101,11 +101,11 @@ func (pr *prepare) leaseBind(req *engine.GrantRequest, fs *int) error {
 		return nil
 	}
 	if *fs++; *fs > 1 {
-		return &leaseBindError{fmt.Errorf("lease %s: more than one filesystem device", pr.lend.Lease)}
+		return &engine.BindError{Err: fmt.Errorf("lease %s: more than one filesystem device", pr.lend.Lease)}
 	}
 	target, err := leaseBindTarget(pr.lend)
 	if err != nil {
-		return &leaseBindError{err}
+		return &engine.BindError{Err: err}
 	}
 	req.BindTarget = target
 	return nil
@@ -206,8 +206,8 @@ func (p *Plugin) validateLocal(claim *resourcev1.ResourceClaim) (*prepare, error
 		}
 	}
 	err = p.localResults(claim, pr, allocatable, resolved)
-	var le *leaseBindError
-	if errors.As(err, &le) {
+	var be *engine.BindError
+	if errors.As(err, &be) {
 		p.lender.Failed(pr.lend.Lease, err)
 		err = fmt.Errorf("claim %v/%v: %w", claim.Namespace, claim.Name, err)
 	}
@@ -462,8 +462,8 @@ func (p *Plugin) validatePool(claim *resourcev1.ResourceClaim) (*prepare, error)
 		}
 	}
 	if err := p.poolResults(claim, pr, resolved); err != nil {
-		var le *leaseBindError
-		if errors.As(err, &le) {
+		var be *engine.BindError
+		if errors.As(err, &be) {
 			p.lender.Failed(pr.lend.Lease, err)
 		}
 		return pr, err
