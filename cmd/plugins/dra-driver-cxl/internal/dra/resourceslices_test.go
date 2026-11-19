@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -34,6 +35,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 // sliceTestClient returns a fake clientset with the node, whose creates and
@@ -336,5 +338,63 @@ func TestStartWithoutAPIServer(t *testing.T) {
 	q.Stop()
 	if took := time.Since(start); took > time.Second {
 		t.Errorf("Stop took %v while waiting for the API server", took)
+	}
+}
+
+// TestSliceChunks pins the slices of the node's pool: at most
+// ResourceSliceMaxDevices devices each, sorted by name across them, and one
+// empty slice for no devices.
+func TestSliceChunks(t *testing.T) {
+	// the DRAM of node 0, the lease and 130 regions
+	snap := &kernel.Snapshot{NumaNodes: pubNodes(0)}
+	for i := 1; i <= 130; i++ {
+		snap.NumaNodes = append(snap.NumaNodes, pubNodes(i)...)
+		snap.Memdevs = append(snap.Memdevs, pubMem(fmt.Sprintf("mem%d", i), uint64(i), 1<<30, 0))
+		pubRegion(snap, fmt.Sprintf("region%d", i), i, 1<<30, uint64(i))
+	}
+	client := sliceTestClient(pubNode, nil)
+	p := pubPublisher(t, PublishOptions{
+		Config:   PublishConfig{PublishLeaseDevice: true},
+		NodeName: pubNode,
+		Client:   client,
+		Scan:     func(context.Context) (*kernel.Snapshot, error) { return snap, nil },
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pubNoErr(t, p.Scan(ctx))
+	var names []string
+	var sizes []int
+	for _, s := range p.Resources().Pools[pubNode].Slices {
+		sizes = append(sizes, len(s.Devices))
+		for _, d := range s.Devices {
+			names = append(names, d.Name)
+		}
+	}
+	if fmt.Sprint(sizes) != "[128 4]" || !slices.IsSorted(names) {
+		t.Fatalf("slices of %v devices: %v", sizes, names)
+	}
+	p.Start(ctx)
+	defer p.Stop()
+	slices.Sort(names)
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		got := nodeSliceDevices(t, client, pubNode)
+		slices.Sort(got)
+		if slices.Equal(got, names) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("published %d devices, expected %d", len(got), len(names))
+		}
+	}
+	list, err := client.ResourceV1().ResourceSlices().List(ctx, metav1.ListOptions{})
+	pubNoErr(t, err)
+	if len(list.Items) != 2 || list.Items[0].Spec.Pool.ResourceSliceCount != 2 {
+		t.Fatalf("%d slices, expected 2 of a pool of 2", len(list.Items))
+	}
+
+	empty := pubPublisher(t, PublishOptions{NodeName: pubNode})
+	pubNoErr(t, empty.Scan(ctx))
+	if s := empty.Resources().Pools[pubNode].Slices; len(s) != 1 || len(s[0].Devices) != 0 {
+		t.Fatalf("slices %+v of no devices, expected one empty", s)
 	}
 }

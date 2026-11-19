@@ -685,7 +685,7 @@ func MemdevDeviceName(serial uint64) string {
 	return device.MemdevDevicePrefix + strconv.FormatUint(serial, 16)
 }
 
-// resources returns the devices of the node's ResourceSlice of the table,
+// resources returns the devices of the node's ResourceSlices of the table,
 // sorted by name.
 func resources(devs DevicesInfo) []resourcev1.Device {
 	out := []resourcev1.Device{}

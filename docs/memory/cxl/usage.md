@@ -304,8 +304,9 @@ chart does. Never run a host process and the DaemonSet on the same node.
 
 ## Devices of cxl.nri.io
 
-The plugin publishes one ResourceSlice per node (pool name = node name)
-under the driver `cxl.nri.io`:
+The plugin publishes the devices of a node in one pool (pool name = node
+name), in ResourceSlices of at most 128 devices, under the driver
+`cxl.nri.io`:
 
 ```yaml
 - name: memdev-c100e2e1              # "memdev-" + serial in lower-case hex

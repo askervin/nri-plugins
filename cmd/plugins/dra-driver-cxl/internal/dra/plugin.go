@@ -39,7 +39,7 @@ import (
 
 // Plugin is one DRA driver of the process, a kubelet plugin: cxl.nri.io
 // (the local memdevs, the regions, the DRAM and the lease device of the
-// node; it publishes the node's ResourceSlice) or the pool driver (the
+// node; it publishes the node's ResourceSlices) or the pool driver (the
 // devices that pool controllers attach to the node). They differ only in
 // their SourceRules.
 //
@@ -83,7 +83,7 @@ type Plugin struct {
 	lender   *Lender
 	local    LocalConfig
 	onShared func(serial uint64)
-	// publisher publishes the node's ResourceSlice, nil for none.
+	// publisher publishes the node's ResourceSlices, nil for none.
 	publisher *Publisher
 	helper    *kubeletplugin.Helper
 	cdi       *cdiapi.Cache
@@ -118,7 +118,7 @@ type Options struct {
 	// OnShared is told the serial of a local memdev that a claim uses
 	// shared, nil for none.
 	OnShared func(serial uint64)
-	// Publisher publishes the node's ResourceSlice: it rescans after a
+	// Publisher publishes the node's ResourceSlices: it rescans after a
 	// request that changed the records; the rules that publish look the
 	// devices of their claims up in its last publication.
 	Publisher *Publisher

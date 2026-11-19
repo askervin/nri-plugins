@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	resourcev1 "k8s.io/api/resource/v1"
 	coreclientset "k8s.io/client-go/kubernetes"
 	"k8s.io/dynamic-resource-allocation/resourceslice"
 	"k8s.io/klog/v2"
@@ -34,14 +35,14 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
-// Publisher publishes the ResourceSlice of the node of cxl.nri.io: one pool
-// named after the node, one slice, owner the Node.
+// Publisher publishes the ResourceSlices of the node of cxl.nri.io: one pool
+// named after the node, of slices of at most 128 devices, owner the Node.
 //
 // Identity: one per process, of the node.
 //
 // States: the table, the devices of the last scan; not started (the scans
 // set the table, nothing is published), started (the first publish of the
-// publisher goroutine starts the controller of the node's slice, then
+// publisher goroutine starts the controller of the node's slices, then
 // every scan is published) and stopped (nothing is published). A latch:
 // the API server drops nodeAllocatableResources. The configuration is
 // that of NewPublisher.
@@ -79,7 +80,7 @@ type Publisher struct {
 	// published is the table of the last publication, nil before the
 	// first.
 	published DevicesInfo
-	// ctl publishes the node's slice, nil before the first publish and
+	// ctl publishes the node's slices, nil before the first publish and
 	// after Stop.
 	ctl *resourceslice.Controller
 	// noAllocatable: the API server drops nodeAllocatableResources.
@@ -151,7 +152,7 @@ func (c *PublishConfig) usableSize(memdev string, serial uint64) uint64 {
 	return c.UsableSize(memdev, serial)
 }
 
-// NewPublisher returns the publisher of the node's ResourceSlice of the
+// NewPublisher returns the publisher of the node's ResourceSlices of the
 // scans of opts.Scan and the records of opts.Store; it publishes after
 // Start.
 func NewPublisher(opts PublishOptions) (*Publisher, error) {
@@ -191,7 +192,7 @@ func (p *Publisher) LastScan() time.Time {
 	return time.Unix(0, p.scanned.Load())
 }
 
-// Resources returns the resources of the node's ResourceSlice: the devices
+// Resources returns the resources of the node's ResourceSlices: the devices
 // of the table, sorted by name.
 func (p *Publisher) Resources() resourceslice.DriverResources {
 	p.mu.Lock()
@@ -200,9 +201,10 @@ func (p *Publisher) Resources() resourceslice.DriverResources {
 	return p.resourcesOf(devs, noAllocatable)
 }
 
-// resourcesOf returns the resources of the node's ResourceSlice of the
-// devices of a table, sorted by name; without nodeAllocatableResources if
-// noAllocatable.
+// resourcesOf returns the resources of the node's ResourceSlices of the
+// devices of a table, sorted by name, in slices of at most
+// ResourceSliceMaxDevices, one empty slice for no devices; without
+// nodeAllocatableResources if noAllocatable.
 func (p *Publisher) resourcesOf(devs DevicesInfo, noAllocatable bool) resourceslice.DriverResources {
 	out := resources(devs)
 	if noAllocatable {
@@ -210,11 +212,14 @@ func (p *Publisher) resourcesOf(devs DevicesInfo, noAllocatable bool) resourcesl
 			out[i].NodeAllocatableResources = nil
 		}
 	}
-	return resourceslice.DriverResources{
-		Pools: map[string]resourceslice.Pool{
-			p.opts.NodeName: {Slices: []resourceslice.Slice{{Devices: out}}},
-		},
+	var pool resourceslice.Pool
+	for chunk := range slices.Chunk(out, resourcev1.ResourceSliceMaxDevices) {
+		pool.Slices = append(pool.Slices, resourceslice.Slice{Devices: chunk})
 	}
+	if len(pool.Slices) == 0 {
+		pool.Slices = []resourceslice.Slice{{}}
+	}
+	return resourceslice.DriverResources{Pools: map[string]resourceslice.Pool{p.opts.NodeName: pool}}
 }
 
 // Scan scans the node and sets the table, without publishing it.
@@ -231,7 +236,7 @@ func (p *Publisher) Scan(ctx context.Context) error {
 }
 
 // Start starts the publisher goroutine, once: its first publish of the
-// table starts the controller of the node's slice, then it scans and
+// table starts the controller of the node's slices, then it scans and
 // publishes when Trigger asks for it, until ctx ends or Stop. Start does
 // not wait for the API server.
 func (p *Publisher) Start(ctx context.Context) {
@@ -362,7 +367,7 @@ func (p *Publisher) Rescan(ctx context.Context, periodic bool) {
 }
 
 // publish publishes the table: the first publish starts the controller of
-// the node's slice, which runs until ctx ends, and waits until its informer
+// the node's slices, which runs until ctx ends, and waits until its informer
 // has synced; the later ones update the controller and do not wait for the
 // API server. Called with scanMu held.
 func (p *Publisher) publish(ctx context.Context) error {
@@ -370,12 +375,14 @@ func (p *Publisher) publish(ctx context.Context) error {
 	table, noAllocatable, ctl := p.devices, p.noAllocatable, p.ctl
 	p.mu.Unlock()
 	res := p.resourcesOf(table, noAllocatable)
-	devs := res.Pools[p.opts.NodeName].Slices[0].Devices
-	for i := range devs {
-		klog.V(5).Infof("Processing allocatable device %v: %+v", devs[i].Name, devs[i])
+	n := 0
+	for _, s := range res.Pools[p.opts.NodeName].Slices {
+		for i := range s.Devices {
+			klog.V(5).Infof("Processing allocatable device %v: %+v", s.Devices[i].Name, s.Devices[i])
+		}
+		n += len(s.Devices)
 	}
-	klog.FromContext(ctx).Info("Publishing resources", "len", len(devs))
-	klog.V(5).Infof("devices: %+v", devs)
+	klog.FromContext(ctx).Info("Publishing resources", "len", n)
 	if ctl != nil {
 		ctl.Update(&res) // a deep copy
 	} else {

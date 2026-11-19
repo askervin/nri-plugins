@@ -24,7 +24,7 @@ import (
 // the name of the driver, the source of its devices and the directory of
 // their node mounts. The name is the vendor of the driver's CDI kind. The
 // source decides how an allocation result maps to a memdev and a grant
-// (Plugin.validate), whether the driver publishes the node's ResourceSlice,
+// (Plugin.validate), whether the driver publishes the node's ResourceSlices,
 // and its CDI spec name.
 type SourceRules struct {
 	// Name is the DRA driver name.
@@ -49,7 +49,7 @@ func PoolRules(name, mountsDir string) SourceRules {
 	return SourceRules{Name: name, Source: state.SourcePool, MountsDir: mountsDir}
 }
 
-// publishes tells whether the driver publishes the node's ResourceSlice:
+// publishes tells whether the driver publishes the node's ResourceSlices:
 // cxl.nri.io does, the pool driver does not.
 func (r SourceRules) publishes() bool {
 	return r.Source == state.SourceLocal

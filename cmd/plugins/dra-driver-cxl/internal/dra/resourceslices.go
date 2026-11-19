@@ -27,8 +27,8 @@ import (
 )
 
 // nodeResourceSliceSyncDelay is the SyncDelay of the controller of the node's
-// cxl.nri.io ResourceSlice: how long it waits after an informer event of
-// the slice (someone else created, changed or deleted it) before it puts
+// cxl.nri.io ResourceSlices: how long it waits after an informer event of
+// a slice (someone else created, changed or deleted it) before it puts
 // the slice back as the driver publishes it.
 //
 // kubelet deletes every ResourceSlice of its node when it starts
@@ -38,24 +38,24 @@ import (
 // (resourceslice.DefaultSyncDelay) the node had no cxl.nri.io devices for
 // up to 30 s after every kubelet restart, and the claims of them did not
 // schedule. The delay batches the events of a burst and lets the informer
-// cache catch up with deletions; one second does both for the single slice
-// of the node. Only events of that slice wait for it: the driver's own
+// cache catch up with deletions; one second does both for the few slices
+// of the node. Only events of the slices wait for it: the driver's own
 // publishes call Update, which syncs at once. It also answers any other
 // writer of the slice within a second instead of 30 s: two driver instances
 // on a node, or a Node object re-created while the driver runs (the
 // controller looks up the owner UID once, the garbage collector deletes the
 // slice of the old owner) make the slice flap about once a second instead
-// of once in 30 s. Accepted: one pool of one slice, one write a second at
-// most.
+// of once in 30 s. Accepted: one pool of a slice per 128 devices, one
+// write of each a second at most.
 const nodeResourceSliceSyncDelay = time.Second
 
 // errorLogInterval is how long the publisher does not log an error of the
-// controller of the node's slice again: the controller retries a failed
+// controller of the node's slices again: the controller retries a failed
 // write, and an error that the API server keeps returning would be logged
 // at every retry.
 const errorLogInterval = 10 * time.Minute
 
-// startController starts the controller of the node's ResourceSlice with
+// startController starts the controller of the node's ResourceSlices with
 // the resources res, like kubeletplugin.Helper.PublishResources does (the
 // same owner and names), but with the SyncDelay
 // nodeResourceSliceSyncDelay, which the helper has no option for, and the
@@ -74,7 +74,7 @@ func (p *Publisher) startController(ctx context.Context, res *resourceslice.Driv
 	})
 }
 
-// handleError handles an error of the controller of the node's slice. When
+// handleError handles an error of the controller of the node's slices. When
 // the API server dropped the nodeAllocatableResources of a device (feature
 // gate DRANodeAllocatableResources off), the table is published without
 // them from then on, after one warning: the controller would write the
@@ -112,7 +112,7 @@ func (p *Publisher) handleError(ctx context.Context, err error, msg string) {
 }
 
 // droppedNodeAllocatable tells whether the API server dropped the
-// nodeAllocatableResources of a device of the node's slice.
+// nodeAllocatableResources of a device of the node's slices.
 func droppedNodeAllocatable(dropped *resourceslice.DroppedFieldsError) bool {
 	if dropped.DesiredSlice == nil || dropped.ActualSlice == nil {
 		return false
