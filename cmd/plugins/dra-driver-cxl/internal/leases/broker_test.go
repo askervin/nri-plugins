@@ -1133,16 +1133,13 @@ func TestFsLeaseClaims(t *testing.T) {
 }
 
 // A lost store: the broker starts without lease claims and leases, keeps
-// every directory of lease claims, the companions of the node and the CDI
-// spec of cxl.nri.io with the device of the lease claim, and refuses to open a lease claim with the
-// text of the lost state.
+// every directory of lease claims and the companions of the node, and
+// refuses to open a lease claim with the text of the lost state.
 func TestLostStore(t *testing.T) {
 	e := brokerEnv(t)
 	e.openClaim()
 	e.start()
 	id := e.readyNUMA()
-	mustOK(t, e.local.WriteCDI())
-	spec := e.cdiSpec(device.ClaimsCDISpecName)
 	e.b.Stop()
 	_ = e.st.Close()
 	mustOK(t, os.WriteFile(filepath.Join(e.dir, store.FileName), []byte("{"), 0o600))
@@ -1161,11 +1158,8 @@ func TestLostStore(t *testing.T) {
 			t.Fatalf("directory of a lease claim removed with a lost store: %v", err)
 		}
 	}
-	// the companion of the node and the CDI spec stay
+	// the companion of the node stays
 	e.waitClaim(CompanionName(id))
-	if got := e.cdiSpec(device.ClaimsCDISpecName); spec == nil || len(spec.Devices) != 1 || !reflect.DeepEqual(got, spec) {
-		t.Fatalf("CDI spec %+v, was %+v", got, spec)
-	}
 	wantErrText(t, e.b.OpenClaim(leaseClaimObj()), "--new-state")
 
 	// a start with a new document sweeps the directories of the lease

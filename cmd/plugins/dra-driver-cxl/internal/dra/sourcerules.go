@@ -68,16 +68,6 @@ func (r SourceRules) CDISpecName() string {
 	return device.PoolCDISpecName
 }
 
-// MountsDirs returns the directories of the node mounts of mode fs of the
-// sources of rules, by source (engine.Options.MountsDirs).
-func MountsDirs(rules ...SourceRules) map[state.Source]string {
-	dirs := map[state.Source]string{}
-	for _, r := range rules {
-		dirs[r.Source] = r.MountsDir
-	}
-	return dirs
-}
-
 // serialsOf returns the serials of the grants of a preparation, for the log
 // lines.
 func serialsOf(r *state.Records, prep *state.Preparation) []string {

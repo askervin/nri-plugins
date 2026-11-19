@@ -18,9 +18,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io/fs"
 	"maps"
 	"net"
 	"os"
@@ -37,23 +35,15 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
-	k8stesting "k8s.io/client-go/testing"
-	"k8s.io/dynamic-resource-allocation/kubeletplugin"
-	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
-	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/engine"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
-	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
 const (
@@ -67,18 +57,16 @@ const (
 	// envLeaseClaim is the uid of the lease claim of the requester pod.
 	envLeaseClaim = "lc1"
 
-	// serials of the local memdevs: sliced (1 GiB of RAM), shared (1 GiB
-	// of RAM) and persistent (512 MiB).
+	// serials of the local memdevs of this node: sliced, shared.
 	serialSliced = 0xc100e2e1
 	serialShared = 0xc100e2e2
-	serialPmem   = 0xc100f5e1
 	// serials of the pool devices: volatile memory, shared, persistent.
 	serialPoolX = 0xc1ee0001
 	serialPoolS = 0xc1ae0001
 	serialPoolP = 0xc1af0001
 
-	// pmemBytes are the bytes of the fsdax namespace of 512 MiB of
-	// persistent memory of the fake.
+	// pmemBytes are the bytes of an fsdax namespace on 512 MiB of
+	// persistent memory.
 	pmemBytes = 534773760
 )
 
@@ -86,36 +74,22 @@ const (
 // are in.
 var requester = Requester{Pod: state.PodRef{Namespace: envNS, Name: envPod, UID: envPodUID}, Container: envCtr}
 
-// leaseEnv is a node for the tests of the broker: the fake kernel of
-// pkg/cxl/kernel/fake, a store in a temporary directory with the views,
-// the device engine of both sources, the two DRA plugins over them
-// (cxl.nri.io, local; the pool driver), the broker over the same store, a
-// fake API client and a fake container plugin. Like kubelet, the fake
-// client unprepares a companion claim through the plugin that prepared it
-// when the claim is deleted, and keeps the claim while that fails. The
-// kernel, the files, the client and the container plugin outlive a
-// restart.
+// leaseEnv is a node for the tests of the broker: a store in a temporary
+// directory, the broker over it, a fake API client and a fake container
+// plugin. The tests call the hooks of the companion's Prepare and
+// Unprepare as the drivers do. The files, the client and the container
+// plugin outlive a restart.
 type leaseEnv struct {
 	t *testing.T
-	k *fake.Fake
-	// dir is the plugin data directory of cxl.nri.io, of the broker and
-	// of the store; poolDir that of the pool driver.
-	dir, poolDir, cdiDir, cli string
+	// dir is the plugin data directory of the broker and of the store.
+	dir, cli string
+	// boots is the number of reboots of the node: its boot id.
+	boots int
 
 	client *k8sfake.Clientset
 	ctrs   *fakeContainers
 	st     *store.Store
-	eng    *engine.Engine
-	local  *dra.Plugin
-	pool   *dra.Plugin
-	pub    *dra.Publisher
-	cache  *cdiapi.Cache
 	b      *Broker
-
-	// memdevs are the local memdevs that the scans find, by serial.
-	memdevs map[uint64]kernel.MemdevInfo
-	// shared are the local memdevs configured shared.
-	shared map[uint64]bool
 
 	// opts change the options of the broker of the next start, nil for
 	// none; started tells whether the broker was started; newState makes
@@ -127,45 +101,21 @@ type leaseEnv struct {
 	newState    bool
 	afterCommit func()
 	failing     atomic.Bool
-
-	mu sync.Mutex
-	// prepared are the drivers that prepared the companion claims, by
-	// name.
-	prepared map[string]string
 }
 
-// newLeaseEnv returns a node with the local memdevs of local (found by the
-// scans of cxl.nri.io) and the pool devices of pool plugged, whose broker
-// is not started yet (start).
-func newLeaseEnv(t *testing.T, local []fake.MemdevSpec, pool ...fake.MemdevSpec) *leaseEnv {
+// brokerEnv returns a node whose broker is not started yet (start).
+func brokerEnv(t *testing.T) *leaseEnv {
 	t.Helper()
 	dir := t.TempDir()
 	e := &leaseEnv{
-		t:        t,
-		k:        fake.New(t),
-		dir:      filepath.Join(dir, device.DriverName),
-		poolDir:  filepath.Join(dir, device.PoolDriverName),
-		cdiDir:   filepath.Join(dir, "cdi"),
-		cli:      filepath.Join(dir, "cxl-request"),
-		client:   k8sfake.NewClientset(requesterPod(), leaseClaimObj()),
-		memdevs:  map[uint64]kernel.MemdevInfo{},
-		shared:   map[uint64]bool{},
-		prepared: map[string]string{},
+		t:      t,
+		dir:    filepath.Join(dir, device.DriverName),
+		cli:    filepath.Join(dir, "cxl-request"),
+		client: k8sfake.NewClientset(requesterPod(), leaseClaimObj()),
+		ctrs:   newFakeContainers(requester),
 	}
-	e.ctrs = newFakeContainers(requester)
-	for _, d := range []string{e.dir, e.poolDir, e.cdiDir} {
-		mustOK(t, os.MkdirAll(d, 0o755))
-	}
+	mustOK(t, os.MkdirAll(e.dir, 0o755))
 	mustOK(t, os.WriteFile(e.cli, []byte("#!/bin/true\n"), 0o755))
-	for _, s := range local {
-		e.plugLocal(s)
-	}
-	for _, s := range pool {
-		e.k.Plug(s)
-	}
-	// added before the broker uses the client: the fake client does not
-	// lock its reactor chain
-	e.client.PrependReactor("delete", "resourceclaims", e.unprepareDeleted)
 	t.Cleanup(func() {
 		if e.b != nil {
 			e.b.Stop()
@@ -176,11 +126,6 @@ func newLeaseEnv(t *testing.T, local []fake.MemdevSpec, pool ...fake.MemdevSpec)
 	})
 	e.boot()
 	return e
-}
-
-// brokerEnv returns a node without memdevs.
-func brokerEnv(t *testing.T) *leaseEnv {
-	return newLeaseEnv(t, nil)
 }
 
 // requesterPod is the requester pod.
@@ -206,73 +151,15 @@ func leaseClaimObj() *resourcev1.ResourceClaim {
 	}
 }
 
-// plugLocal hot-adds a local memdev that the scans find.
-func (e *leaseEnv) plugLocal(spec fake.MemdevSpec) string {
-	name := e.k.Plug(spec)
-	ram, pmem := spec.Ram, spec.Pmem
-	if ram == 0 && pmem == 0 {
-		ram = 256 << 20
-	}
-	e.memdevs[spec.Serial] = kernel.MemdevInfo{Name: name, Serial: spec.Serial, State: kernel.MemdevReady, RamSize: ram, PmemSize: pmem,
-		NodeAffinity: 0}
-	return name
-}
-
-// boot starts the drivers on the env's kernel and files as the start of the
-// process does: the store opened, the engine of both sources and its
-// recovery, both plugins, the broker (not started).
+// boot opens the store and makes the broker over it (not started) as the
+// start of the process does.
 func (e *leaseEnv) boot() {
 	t := e.t
 	t.Helper()
-	ctx := context.Background()
-	local := dra.LocalRules(filepath.Join(e.dir, "mounts"))
-	pool := dra.PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, "mounts"))
-	st, err := store.Open(ctx, store.Options{Dir: e.dir, BootID: e.k.BootID(), NewState: e.newState,
-		AfterCommit: e.afterCommit, WriteFault: e.writeFault})
+	st, err := store.Open(context.Background(), store.Options{Dir: e.dir, BootID: fmt.Sprintf("boot-%d", e.boots),
+		NewState: e.newState, AfterCommit: e.afterCommit, WriteFault: e.writeFault})
 	mustOK(t, err)
 	e.st = st
-	e.eng, err = engine.New(engine.Options{
-		Kernel:      e.k.Kernel(),
-		Store:       st,
-		MountsDirs:  dra.MountsDirs(local, pool),
-		Sources:     []state.Source{state.SourcePool, state.SourceLocal},
-		LeaseFsRoot: LeaseFsRoot(e.dir),
-		FsTypes:     api.KnownFsTypes,
-		Shared:      func(serial state.Serial) bool { return e.isShared(uint64(serial)) },
-		Revoke:      e.revoke,
-		Timeouts: engine.Timeouts{Memdev: 300 * time.Millisecond, ProbeGrace: 20 * time.Millisecond, RegionRetry: 10 * time.Millisecond,
-			Settle: 2 * time.Second, LocalSettle: 2 * time.Second, Restore: time.Second, Holder: 50 * time.Millisecond,
-			OfflineSettle: 20 * time.Millisecond, Offline: time.Second},
-	})
-	mustOK(t, err)
-	rec := &engine.Recovered{Why: map[state.GrantRef]error{}}
-	if st.Lost() == nil {
-		rec, err = e.eng.Recover(ctx)
-		mustOK(t, err)
-	}
-	e.cache, err = cdiapi.NewCache(cdiapi.WithSpecDirs(e.cdiDir), cdiapi.WithAutoRefresh(false))
-	mustOK(t, err)
-	e.pub, err = dra.NewPublisher(dra.PublishOptions{
-		Config:    e.publishConfig(),
-		NodeName:  envNode,
-		Scan:      func(context.Context) (*kernel.Snapshot, error) { return e.detected(), nil },
-		Store:     st,
-		Probes:    e.eng.Probes,
-		BlockSize: e.k.Kernel().BlockSize,
-	})
-	mustOK(t, err)
-	e.local, err = dra.New(dra.Options{Rules: local, Store: st, Engine: e.eng, NodeName: envNode,
-		SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot(), CDI: e.cache, Publisher: e.pub,
-		Local: dra.LocalConfig{Managed: true, UsableSize: func(string, uint64) uint64 { return 0 },
-			Coherent: func(string, uint64) bool { return false }}})
-	mustOK(t, err)
-	e.pool, err = dra.New(dra.Options{Rules: pool, Store: st, Engine: e.eng, NodeName: envNode,
-		SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot(), CDI: e.cache})
-	mustOK(t, err)
-	e.pool.Recovered(rec)
-	e.local.Recovered(rec)
-	e.rescan()
-
 	n := 0
 	opts := Options{
 		Store:       st,
@@ -282,7 +169,7 @@ func (e *leaseEnv) boot() {
 		CLI:         e.cli,
 		WaitDefault: 5 * time.Second,
 		PoolDriver:  device.PoolDriverName,
-		Kernel:      e.k.Kernel(),
+		Mounts:      func() ([]kernel.MountInfo, error) { return nil, nil },
 		Timeouts:    Timeouts{Poll: 5 * time.Millisecond, Reconcile: time.Hour, Close: 2 * time.Second},
 		NewID:       func() string { n++; return fmt.Sprintf("%08x", 0xa0+n) },
 	}
@@ -292,13 +179,9 @@ func (e *leaseEnv) boot() {
 	e.b, err = New(opts)
 	mustOK(t, err)
 	e.started = false
-	e.local.SetLeases(e.b)
-	mustOK(t, e.local.WriteCDI())
-	mustOK(t, e.pool.WriteCDI())
 }
 
-// start starts the broker with the env's container plugin and makes it the
-// lender of both drivers.
+// start starts the broker with the env's container plugin.
 func (e *leaseEnv) start() {
 	e.startWith(e.ctrs)
 }
@@ -306,18 +189,11 @@ func (e *leaseEnv) start() {
 // startWith starts the broker with the container plugin c (nil: NRI is not
 // connected).
 func (e *leaseEnv) startWith(c Containers) {
-	var nodes dra.NodeLender
-	if c != nil {
-		nodes = c
-	}
-	e.local.Lender().Set(nodes, e.b)
-	e.pool.Lender().Set(nodes, e.b)
 	e.b.Start(c)
 	e.started = true
 }
 
-// restart stops the broker and the drivers and boots them again on the
-// same kernel and files.
+// restart stops the broker and boots it again on the same files.
 func (e *leaseEnv) restart() {
 	e.t.Helper()
 	e.b.Stop()
@@ -325,85 +201,13 @@ func (e *leaseEnv) restart() {
 	e.boot()
 }
 
-// reboot reboots the node (the kernel objects of the drivers gone, the
-// memdevs stay) and boots the drivers again.
+// reboot reboots the node and boots the broker again.
 func (e *leaseEnv) reboot() {
 	e.t.Helper()
 	e.b.Stop()
 	_ = e.st.Close()
-	e.k.Reboot()
+	e.boots++
 	e.boot()
-}
-
-// isShared tells whether the local memdev is configured shared.
-func (e *leaseEnv) isShared(serial uint64) bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.shared[serial]
-}
-
-// publishConfig returns the configuration of the scans.
-func (e *leaseEnv) publishConfig() dra.PublishConfig {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	var shared []string
-	for _, s := range slices.Sorted(maps.Keys(e.shared)) {
-		shared = append(shared, api.FormatSerial(s))
-	}
-	specs, err := dra.ParseMemdevSpecs(shared)
-	mustOK(e.t, err)
-	return dra.PublishConfig{ManageMemdevs: true, PublishLeaseDevice: true, SharedDevices: specs}
-}
-
-// detected returns the observation of the node that a scan makes.
-func (e *leaseEnv) detected() *kernel.Snapshot {
-	d := &kernel.Snapshot{NumaNodes: []kernel.NumaNode{{ID: 0, HasMemory: true, MemTotal: 8 << 30}}}
-	for _, s := range slices.Sorted(maps.Keys(e.memdevs)) {
-		d.Memdevs = append(d.Memdevs, e.memdevs[s])
-	}
-	return d
-}
-
-// rescan sets the devices of the publisher as a scan of the node does.
-func (e *leaseEnv) rescan() {
-	e.t.Helper()
-	mustOK(e.t, e.pub.ScanWith(context.Background(), e.publishConfig(), e.pool.Serials()))
-}
-
-// revoke revokes the NUMA node that a grant of a companion claim lends,
-// through the lender of the driver of the grant's source.
-func (e *leaseEnv) revoke(ctx context.Context, ref state.GrantRef, lend state.GrantLend) error {
-	r := &e.st.Snapshot().Records
-	p := e.pool
-	if g := r.Grant(ref); g != nil && g.Asked.Source == state.SourceLocal {
-		p = e.local
-	}
-	return p.Lender().RevokeGrant(ctx, lend, ref.Claim)
-}
-
-// unprepareDeleted is the fake client's reactor of a deleted claim: a
-// prepared companion claim is unprepared by its plugin first, and kept
-// while that fails.
-func (e *leaseEnv) unprepareDeleted(a k8stesting.Action) (bool, runtime.Object, error) {
-	name := a.(k8stesting.DeleteAction).GetName()
-	e.mu.Lock()
-	driver := e.prepared[name]
-	e.mu.Unlock()
-	p := e.pool
-	switch driver {
-	case "":
-		return false, nil, nil
-	case device.DriverName:
-		p = e.local
-	}
-	res, err := p.UnprepareResourceClaims(context.Background(), []kubeletplugin.NamespacedObject{{UID: types.UID("uid-" + name)}})
-	if err != nil || res[types.UID("uid-"+name)] != nil {
-		return true, nil, nil // kept until the next try
-	}
-	e.mu.Lock()
-	delete(e.prepared, name)
-	e.mu.Unlock()
-	return false, nil, nil
 }
 
 // openClaim opens the env's lease claim.
@@ -595,19 +399,6 @@ func companionClaim(id string) *resourcev1.ResourceClaim {
 	}}
 }
 
-// cdiSpec returns the CDI spec of the name on disk, nil if there is none.
-func (e *leaseEnv) cdiSpec(name string) *cdiSpecs.Spec {
-	e.t.Helper()
-	data, err := os.ReadFile(filepath.Join(e.cdiDir, name))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	mustOK(e.t, err)
-	spec := &cdiSpecs.Spec{}
-	mustOK(e.t, json.Unmarshal(data, spec))
-	return spec
-}
-
 // sleep waits a poll interval of the tests.
 func (e *leaseEnv) sleep() {
 	time.Sleep(5 * time.Millisecond)
@@ -649,7 +440,6 @@ type fakeContainers struct {
 
 var (
 	_ Containers       = (*fakeContainers)(nil)
-	_ dra.NodeLender   = (*fakeContainers)(nil)
 	_ lend.LeaseHooks  = (*Broker)(nil)
 	_ lend.LeaseClaims = (*Broker)(nil)
 )

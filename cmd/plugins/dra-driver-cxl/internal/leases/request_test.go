@@ -26,7 +26,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -62,27 +61,25 @@ func poolSlice() *resourcev1.ResourceSlice {
 // memdev 0xc100e2e1, the shared local memdev 0xc100e2e2 and the persistent
 // local memdev 0xc100f5e1.
 func localResourceSlice() *resourcev1.ResourceSlice {
-	return nodeResourceSlice(envNode,
-		dra.LocalMemdevDevice(dra.MemdevDeviceName(serialSliced), &dra.Memdev{Serial: serialSliced, Size: 1 << 30, NodeAffinity: 0, BlockSize: 128 << 20}),
-		dra.LocalMemdevDevice("memdev-c100e2e2", &dra.Memdev{Serial: serialShared, Size: 1 << 30, NodeAffinity: 0, Shared: true}),
-		persistentLocalDevice())
+	return nodeResourceSlice(envNode, localDeviceOf("0xc100e2e1", false, false), localDeviceOf("0xc100e2e2", true, false),
+		localDeviceOf("0xc100f5e1", false, true))
 }
 
-// persistentLocalDevice is the persistent local memdev 0xc100f5e1 as
-// cxl.nri.io publishes it: not shared, persistent, with shares.
-func persistentLocalDevice() resourcev1.Device {
-	return persistentLocalDeviceOf("0xc100f5e1")
-}
-
-// persistentLocalDeviceOf is a persistent local memdev with the serial.
-func persistentLocalDeviceOf(serial string) resourcev1.Device {
+// localDeviceOf is a local memdev of 1 GiB with the serial as cxl.nri.io
+// publishes it: a shared or a persistent one has shares, another one
+// memory.
+func localDeviceOf(serial string, shared, persistent bool) resourcev1.Device {
+	capacity := map[resourcev1.QualifiedName]resourcev1.DeviceCapacity{"memory": {Value: resource.MustParse("1Gi")}}
+	if shared || persistent {
+		capacity = map[resourcev1.QualifiedName]resourcev1.DeviceCapacity{"shares": {Value: resource.MustParse("1M")}}
+	}
 	return resourcev1.Device{
 		Name: "memdev-" + strings.TrimPrefix(serial, "0x"),
 		Attributes: map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
 			"type": {StringValue: ptr("memdev")}, "source": {StringValue: ptr("local")}, "serial": {StringValue: ptr(serial)},
-			"shared": {BoolValue: ptr(false)}, "persistent": {BoolValue: ptr(true)}, "size": {IntValue: ptr(int64(1 << 30))},
+			"shared": {BoolValue: ptr(shared)}, "persistent": {BoolValue: ptr(persistent)}, "size": {IntValue: ptr(int64(1 << 30))},
 		},
-		Capacity:                 map[resourcev1.QualifiedName]resourcev1.DeviceCapacity{"shares": {Value: resource.MustParse("1M")}},
+		Capacity:                 capacity,
 		AllowMultipleAllocations: ptr(true),
 	}
 }
@@ -133,8 +130,7 @@ func persistentPoolSlice() *resourcev1.ResourceSlice {
 func newSlicesBrokerEnv(t *testing.T) *leaseEnv {
 	e := brokerEnv(t)
 	e.addSlices(poolSlice(), localResourceSlice(), persistentPoolSlice(),
-		nodeResourceSlice("node2", dra.LocalMemdevDevice("memdev-c100e2e3", &dra.Memdev{Serial: 0xc100e2e3, Size: 1 << 30, NodeAffinity: -1, Shared: true}),
-			persistentLocalDeviceOf("0xc100f5e2")))
+		nodeResourceSlice("node2", localDeviceOf("0xc100e2e3", true, false), localDeviceOf("0xc100f5e2", false, true)))
 	return e
 }
 
@@ -310,7 +306,7 @@ func companionConfigsOf(c *resourcev1.ResourceClaim) []opaqueConfig {
 // same serial, whatever the order of the ResourceSlices.
 func TestSerialOfThisNode(t *testing.T) {
 	e := newSlicesBrokerEnv(t)
-	e.addSlices(nodeResourceSlice("node0", dra.LocalMemdevDevice("memdev-c100e2e2", &dra.Memdev{Serial: serialShared, Size: 256 << 20, NodeAffinity: -1, Shared: true})))
+	e.addSlices(nodeResourceSlice("node0", localDeviceOf("0xc100e2e2", true, false)))
 	dev, err := e.b.deviceBySerial(serialShared)
 	mustOK(t, err)
 	if dev == nil || dev.node != envNode || dev.driver != device.DriverName {
