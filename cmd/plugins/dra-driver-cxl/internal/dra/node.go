@@ -308,6 +308,16 @@ func (n *Node) SetLenders(nodes NodeLender, hooks lend.LeaseHooks) {
 	n.Pool.Lender().Set(nodes, hooks)
 }
 
+// RetryStale unmounts the stale lease binds again and finishes the
+// releases that they kept (engine.RetryStale). With a LOST store it does
+// nothing: then nothing is released.
+func (n *Node) RetryStale(ctx context.Context) {
+	if n.opts.Store.Lost() != nil {
+		return
+	}
+	n.Engine.RetryStale(ctx, state.TriggerUnprepare)
+}
+
 // localGuard returns an error for a local memdev that the pool driver
 // prepares, or that a pool ResourceSlice lists now (a fresh list of the
 // watcher). It returns nil before the recovery.

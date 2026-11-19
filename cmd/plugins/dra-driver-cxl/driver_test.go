@@ -18,7 +18,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -27,17 +26,11 @@ import (
 	"time"
 
 	resourceapi "k8s.io/api/resource/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	k8sfake "k8s.io/client-go/kubernetes/fake"
-	k8stesting "k8s.io/client-go/testing"
 
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -207,134 +200,15 @@ func TestDriverConfigFsTypes(t *testing.T) {
 	wantErr(t, err, `unknown field "fsType"`)
 }
 
-// The local part of a start: nothing with manageMemdevs false, else the
-// store and kernel of the node; an old file of a gone memdev is not used.
-// The rules of the drivers are the one place of their per-source values:
-// the store drops the preparations of another boot of cxl.nri.io and keeps
-// those of the pool driver PREPARED_STALE, the engine mounts in the
-// MountsDir of each.
-func TestDriverRules(t *testing.T) {
-	ctx := context.Background()
+// The state store is in the plugin data directory of cxl.nri.io.
+func TestOpenDriverStore(t *testing.T) {
 	dir := t.TempDir()
-	local := filepath.Join(dir, device.DriverName)
-	noErr(t, os.MkdirAll(local, 0o750))
-	flags := &CXLFlags{}
-	config := &pluginConfig{Flags: flags, KubeletPluginDir: local}
-	if r := newDriverRules(config, flags); r.pool != nil || len(r.all()) != 1 || r.local.MountsDir != filepath.Join(local, mountsDirName) {
-		t.Fatalf("the rules without the pool driver: %+v", r)
-	}
-	flags.PoolDriverName = device.PoolDriverName
-	rules := newDriverRules(config, flags)
-	want := map[state.Source]string{
-		state.SourceLocal: filepath.Join(local, mountsDirName),
-		state.SourcePool:  filepath.Join(dir, device.PoolDriverName, mountsDirName),
-	}
-	if got := dra.MountsDirs(rules.all()...); !maps.Equal(got, want) {
-		t.Fatalf("mounts directories %v, want %v", got, want)
-	}
-	uid := func(driver string) string { return "u-" + driver }
-	for _, boot := range []string{"b0", "b1"} {
-		st, closeStore, err := openDriverStore(ctx, config, flags, boot)
-		noErr(t, err)
-		if boot == "b0" {
-			noErr(t, st.Commit(ctx, store.Durable, func(doc *store.Document) error {
-				for _, driver := range []string{device.DriverName, device.PoolDriverName} {
-					doc.Preparations = append(doc.Preparations, state.Preparation{UID: uid(driver), Driver: driver,
-						ClaimName: "ns/c", State: state.PreparationPrepared})
-				}
-				return nil
-			}))
-		} else {
-			// both drivers keep their preparations of another boot
-			r := st.Snapshot().Records
-			for _, driver := range []string{device.DriverName, device.PoolDriverName} {
-				if p := r.Preparation(driver, uid(driver)); p == nil || p.State != state.PreparationStale {
-					t.Errorf("the preparation of %s of another boot: %+v", driver, p)
-				}
-			}
-		}
-		closeStore()
-	}
-}
-
-func TestNewLocalHelper(t *testing.T) {
-	ctx := context.Background()
-	// start starts the local part of the driver on a node of its own; the
-	// store is closed by the returned function
-	start := func(cfg *DriverConfig) (*frontEnds, *deviceEngine, string, func()) {
-		t.Helper()
-		dir := t.TempDir()
-		for _, d := range []string{"sys/bus/cxl/devices", "sys/devices/system/node", "cdi"} {
-			noErr(t, os.MkdirAll(filepath.Join(dir, d), 0o755))
-		}
-		flags := &CXLFlags{CDIRoot: filepath.Join(dir, "cdi"), NodeName: testNode}
-		config := &pluginConfig{Flags: flags, KubeletPluginDir: dir}
-		rules := newDriverRules(config, flags)
-		st, closeStore, err := openDriverStore(ctx, config, flags, "boot-1")
-		noErr(t, err)
-		devices, err := newDriverDevices(config, flags, cfg, kernelAt(dir), nil, st, rules)
-		if err == nil {
-			var fe *frontEnds
-			if fe, err = newFrontEnds(config, flags, cfg, st, devices, nil, rules, nil); err == nil {
-				if err = fe.recover(ctx, cfg, devices); err == nil {
-					return fe, devices, dir, closeStore
-				}
-			}
-		}
-		closeStore()
+	config := &pluginConfig{Flags: &CXLFlags{}, KubeletPluginDir: dir}
+	_, closeStore, err := openDriverStore(context.Background(), config, config.Flags, "b0")
+	noErr(t, err)
+	closeStore()
+	if _, err := os.Stat(filepath.Join(dir, store.FileName)); err != nil {
 		t.Fatal(err)
-		return nil, nil, "", nil
-	}
-	fe, _, _, stop := start(&DriverConfig{ManageMemdevs: ptr(false)})
-	stop()
-	if fe.publisher.LocalSnapshot() != nil {
-		t.Fatalf("unmanaged memdevs: %+v", fe.publisher.LocalSnapshot())
-	}
-	fe, devices, dir, stop := start(&DriverConfig{})
-	defer stop()
-	if snap := fe.publisher.LocalSnapshot(); snap == nil || len(snap.Uses) != 0 {
-		t.Fatalf("uses %+v without memdevs", snap)
-	}
-	if devices.k.SysRoot != dir+"/sys" {
-		t.Fatalf("local devices on %s", devices.k.SysRoot)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "state.json")); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// A start rewrites the CDI spec of cxl.nri.io in place, removed without
-// prepared claims, and removes the spec of the pool driver when it is off;
-// other specs stay.
-func TestStartRemovesUnownedCDISpecs(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	for _, d := range []string{"sys/bus/cxl/devices", "sys/devices/system/node", "cdi"} {
-		noErr(t, os.MkdirAll(filepath.Join(dir, d), 0o755))
-	}
-	for name, kind := range map[string]string{device.ClaimsCDISpecName: device.CDIKind(device.DriverName),
-		device.PoolCDISpecName: device.CDIKind(device.PoolDriverName), "gpu.yaml": "example.com/gpu"} {
-		data := `{"cdiVersion":"0.6.0","kind":"` + kind + `","devices":[{"name":"d","containerEdits":{"env":["A=1"]}}]}`
-		noErr(t, os.WriteFile(filepath.Join(dir, "cdi", name), []byte(data), 0o600))
-	}
-	flags := &CXLFlags{CDIRoot: filepath.Join(dir, "cdi"), NodeName: testNode}
-	config := &pluginConfig{Flags: flags, KubeletPluginDir: dir}
-	rules := newDriverRules(config, flags)
-	st, err := store.Open(ctx, store.Options{Dir: dir, BootID: "boot-1"})
-	noErr(t, err)
-	devices, err := newDriverDevices(config, flags, &DriverConfig{}, kernelAt(dir), nil, st, rules)
-	noErr(t, err)
-	fe, err := newFrontEnds(config, flags, &DriverConfig{}, st, devices, nil, rules, nil)
-	noErr(t, err)
-	noErr(t, fe.writeCDI(st))
-	noErr(t, st.Close())
-	var left []string
-	m, _ := filepath.Glob(filepath.Join(dir, "cdi", "*"))
-	for _, path := range m {
-		left = append(left, filepath.Base(path))
-	}
-	if !slices.Equal(left, []string{"gpu.yaml"}) {
-		t.Errorf("left %v, want [gpu.yaml]", left)
 	}
 }
 
@@ -454,43 +328,6 @@ func TestEveryPeriod(t *testing.T) {
 	}
 }
 
-// The first list of the pool ResourceSlices runs after the recovery: when
-// it runs, the engine has recovered its records and
-// the local guard is set.
-func TestFirstListAfterRecovery(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	for _, d := range []string{"sys/bus/cxl/devices", "sys/devices/system/node", "cdi"} {
-		noErr(t, os.MkdirAll(filepath.Join(dir, d), 0o755))
-	}
-	flags := &CXLFlags{CDIRoot: filepath.Join(dir, "cdi"), NodeName: testNode}
-	config := &pluginConfig{Flags: flags, KubeletPluginDir: dir}
-	rules := newDriverRules(config, flags)
-	st, closeStore, err := openDriverStore(ctx, config, flags, "boot-1")
-	noErr(t, err)
-	defer closeStore()
-	devices, err := newDriverDevices(config, flags, &DriverConfig{}, kernelAt(dir), nil, st, rules)
-	noErr(t, err)
-	lists, guarded := 0, 0
-	client := k8sfake.NewClientset()
-	client.PrependReactor("list", "resourceslices", func(k8stesting.Action) (bool, runtime.Object, error) {
-		lists++
-		devices.mu.Lock()
-		if devices.guard != nil {
-			guarded++
-		}
-		devices.mu.Unlock()
-		return false, nil, nil
-	})
-	watcher := provenance.New(provenance.Options{Store: st, Client: client, NodeName: testNode, Name: "poolSerials.json"})
-	fe, err := newFrontEnds(config, flags, &DriverConfig{}, st, devices, watcher, rules, nil)
-	noErr(t, err)
-	noErr(t, fe.recover(ctx, &DriverConfig{}, devices))
-	if lists == 0 || guarded != lists {
-		t.Fatalf("%d lists, %d after the recovery", lists, guarded)
-	}
-}
-
 // The dead keys ignoreNewMemoryDevices and ignoreNewRegions are accepted
 // with a warning that they have no effect.
 func TestDriverConfigDeadKeys(t *testing.T) {
@@ -527,31 +364,31 @@ func TestWakeOnUevents(t *testing.T) {
 	ev := &fakeEvents{}
 	var stable time.Duration
 	newKernelEvents = func(d time.Duration) (kernelEvents, error) { stable = d; return ev, nil }
-	devices := &deviceEngine{k: &kernel.Kernel{}}
+	k := &kernel.Kernel{}
 	cfg := &DriverConfig{UdevStableDuration: "1s"}
-	got, stop, err := wakeOnUevents(devices, cfg)
+	got, stop, err := wakeOnUevents(k, cfg)
 	noErr(t, err)
-	if !ev.started || stable != time.Second || got != kernelEvents(ev) || devices.k.Events != kernel.Events(ev) {
-		t.Fatalf("events %+v, stable %v, kernel events %v", ev, stable, devices.k.Events)
+	if !ev.started || stable != time.Second || got != kernelEvents(ev) || k.Events != kernel.Events(ev) {
+		t.Fatalf("events %+v, stable %v, kernel events %v", ev, stable, k.Events)
 	}
 	stop()
 	if !ev.stopped {
 		t.Fatal("not stopped")
 	}
-	if _, _, err := wakeOnUevents(devices, &DriverConfig{UdevStableDuration: "-1s"}); err == nil {
+	if _, _, err := wakeOnUevents(k, &DriverConfig{UdevStableDuration: "-1s"}); err == nil {
 		t.Fatal("a negative udevStableDuration")
 	}
-	if _, _, err := wakeOnUevents(devices, &DriverConfig{UdevStableDuration: "-1s", IgnoreNewNodes: true}); err != nil {
+	if _, _, err := wakeOnUevents(k, &DriverConfig{UdevStableDuration: "-1s", IgnoreNewNodes: true}); err != nil {
 		t.Fatalf("udevStableDuration with ignoreNewNodes: %v", err)
 	}
 	newKernelEvents = func(time.Duration) (kernelEvents, error) { return nil, errors.New("no netlink") }
-	devices = &deviceEngine{k: &kernel.Kernel{}}
+	k = &kernel.Kernel{}
 	logs := klogtest.Capture(t, 3)
-	got, stop, err = wakeOnUevents(devices, &DriverConfig{})
+	got, stop, err = wakeOnUevents(k, &DriverConfig{})
 	noErr(t, err)
 	stop()
-	if got != nil || devices.k.Events != nil {
-		t.Fatalf("kernel events %v without uevents", devices.k.Events)
+	if got != nil || k.Events != nil {
+		t.Fatalf("kernel events %v without uevents", k.Events)
 	}
 	// an error, not a warning: nothing rescans the ResourceSlice
 	if out := logs(); !strings.HasPrefix(out, "E") || !strings.Contains(out, "the ResourceSlice is not rescanned on uevents") {

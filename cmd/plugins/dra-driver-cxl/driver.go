@@ -17,8 +17,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"maps"
-	"os"
 	"path/filepath"
 	"slices"
 	"time"
@@ -26,14 +24,12 @@ import (
 	coreclientset "k8s.io/client-go/kubernetes"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	"k8s.io/klog/v2"
-	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/engine"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -93,9 +89,9 @@ func loadDriverConfig(cxlFlags *CXLFlags) (*DriverConfig, error) {
 }
 
 // newBroker returns the lease broker of the lease claims and the leases of
-// the store st, nil when lending is disabled; cxl.nri.io tells it of its
-// lease claims.
-func newBroker(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, st *store.Store, fe *frontEnds, k *kernel.Kernel) (*leases.Broker, error) {
+// the store st, nil when lending is disabled; cxl.nri.io of node tells it
+// of its lease claims.
+func newBroker(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, st *store.Store, node *dra.Node, k *kernel.Kernel) (*leases.Broker, error) {
 	if !driverConfig.PublishLeaseDevice {
 		return nil, nil
 	}
@@ -107,34 +103,32 @@ func newBroker(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverCon
 		CLI:         cxlFlags.LeaseCLI,
 		Image:       cxlFlags.LeaseCompanionImage,
 		WaitDefault: cxlFlags.LeaseWait,
-		PoolDriver:  fe.pool.Name(),
+		PoolDriver:  node.Pool.Name(),
 		Limits:      cxlFlags.LeaseLimits,
 		Kernel:      k,
 	})
 	if err != nil {
 		return nil, err
 	}
-	fe.local.SetLeases(b)
+	node.Local.SetLeases(b)
 	return b, nil
 }
 
-// wireLenders sets the lenders of the companion claims of both drivers: the
-// NRI plugin nri and the broker, none when lending is disabled (a lend
-// recorded before is not revoked then). It returns the containers of the
-// broker's requests: nri, nil when NRI did not start, which makes lease
+// wireLenders sets the lenders of the companion claims of both drivers of
+// node: the NRI plugin nri and the broker, none when lending is disabled (a
+// lend recorded before is not revoked then). It returns the containers of
+// the broker's requests: nri, nil when NRI did not start, which makes lease
 // requests and companion claims fail with errLendingUnavailable.
-func wireLenders(nri *containers.Plugin, broker *leases.Broker, fe *frontEnds) leases.Containers {
+func wireLenders(nri *containers.Plugin, broker *leases.Broker, node *dra.Node) leases.Containers {
 	var lender leases.Containers
 	var nodes dra.NodeLender
 	if nri != nil {
 		lender, nodes = nri, nri
 	}
 	if broker != nil {
-		fe.pool.Lender().Set(nodes, broker)
-		fe.local.Lender().Set(nodes, broker)
+		node.SetLenders(nodes, broker)
 	} else {
-		fe.pool.Lender().Set(nil, nil)
-		fe.local.Lender().Set(nil, nil)
+		node.SetLenders(nil, nil)
 	}
 	return lender
 }
@@ -142,14 +136,14 @@ func wireLenders(nri *containers.Plugin, broker *leases.Broker, fe *frontEnds) l
 // startPlugins registers the kubelet plugins of cxl.nri.io and of the pool
 // driver, starts the publisher of the node's ResourceSlices and the watcher
 // of the pool devices.
-func (d *driver) startPlugins(ctx context.Context, config *pluginConfig, fe *frontEnds, watcher *provenance.Watcher) error {
+func (d *driver) startPlugins(ctx context.Context, config *pluginConfig, node *dra.Node) error {
 	klog.Infof(`Starting DRA driver kubelet plugin
 RegistrarDirectoryPath: %v
 PluginDataDirectoryPath: %v`,
 		config.KubeletPluginsRegistryDir,
 		config.KubeletPluginDir)
 
-	if err := fe.local.Start(ctx,
+	if err := node.Local.Start(ctx,
 		kubeletplugin.KubeClient(config.Client),
 		kubeletplugin.NodeName(config.Flags.NodeName),
 		kubeletplugin.DriverName(device.DriverName),
@@ -158,12 +152,12 @@ PluginDataDirectoryPath: %v`,
 	); err != nil {
 		return err
 	}
-	if err := startPoolDriver(ctx, config, fe.pool); err != nil {
-		fe.local.Stop()
+	if err := startPoolDriver(ctx, config, node.Pool); err != nil {
+		node.Local.Stop()
 		return err
 	}
-	fe.publisher.Start(ctx)
-	go watcher.Watch(ctx, fe.publisher.Trigger, fe.publisher.LastScan)
+	node.Publisher.Start(ctx)
+	go node.Watcher.Watch(ctx, node.Publisher.Trigger, node.Publisher.LastScan)
 	return nil
 }
 
@@ -205,11 +199,11 @@ var newKernelEvents = func(stableDuration time.Duration) (kernelEvents, error) {
 }
 
 // wakeOnUevents starts the one watch of the uevents of the kernel objects,
-// and makes them wake the waits of the kernel of the device engine early
-// (they still poll). It returns the events, nil without them (the waits
-// only poll), and their stop; an invalid udevStableDuration is an error
-// unless ignoreNewNodes is set.
-func wakeOnUevents(devices *deviceEngine, driverConfig *DriverConfig) (kernelEvents, func(), error) {
+// and makes them wake the waits of the kernel k early (they still poll).
+// It returns the events, nil without them (the waits only poll), and their
+// stop; an invalid udevStableDuration is an error unless ignoreNewNodes is
+// set.
+func wakeOnUevents(k *kernel.Kernel, driverConfig *DriverConfig) (kernelEvents, func(), error) {
 	var stableDuration time.Duration
 	if !driverConfig.IgnoreNewNodes {
 		d, err := parseUdevStableDuration(driverConfig.UdevStableDuration)
@@ -224,7 +218,7 @@ func wakeOnUevents(devices *deviceEngine, driverConfig *DriverConfig) (kernelEve
 		return nil, func() {}, nil
 	}
 	ev.Start()
-	devices.k.Events = ev
+	k.Events = ev
 	return ev, ev.Stop, nil
 }
 
@@ -272,14 +266,14 @@ func fenceOf(nri *containers.Plugin) func(ctx context.Context, node int) {
 // when it did not start: then the driver runs without NRI. A Prepare of
 // either driver waits for its first Synchronize; without the lease broker
 // (withBroker false) there are no lends to restore.
-func startNRI(ctx context.Context, nri *containers.Plugin, cxlFlags *CXLFlags, fe *frontEnds, withBroker bool) *containers.Plugin {
+func startNRI(ctx context.Context, nri *containers.Plugin, cxlFlags *CXLFlags, node *dra.Node, withBroker bool) *containers.Plugin {
 	if err := nri.Start(ctx, containers.Connection{Name: cxlFlags.NRIName, Idx: cxlFlags.NRIIdx, Socket: cxlFlags.NRISocket}); err != nil {
 		klog.Warningf("Failed to start NRI plugin (continuing without it): %v", err)
 		return nil
 	}
 	wait := func(ctx context.Context) error { return waitNRI(ctx, nri) }
-	fe.local.SetWaitNRI(wait)
-	fe.pool.SetWaitNRI(wait)
+	node.Local.SetWaitNRI(wait)
+	node.Pool.SetWaitNRI(wait)
 	if !withBroker {
 		// no lends to restore
 		nri.LendsRestored()
@@ -290,38 +284,6 @@ func startNRI(ctx context.Context, nri *containers.Plugin, cxlFlags *CXLFlags, f
 // storeLockWait is how long the driver waits at start for the lock of the
 // state store that another driver process holds.
 const storeLockWait = 2 * time.Minute
-
-// driverRules are the SourceRules of the DRA drivers of the process.
-type driverRules struct {
-	local dra.SourceRules
-	pool  *dra.SourceRules // nil when the pool driver is disabled
-}
-
-// newDriverRules returns the rules of cxl.nri.io and of the pool driver
-// unless it is disabled (empty --pool-driver-name): the node mounts of each
-// in the mounts directory of its plugin data directory.
-func newDriverRules(config *pluginConfig, cxlFlags *CXLFlags) driverRules {
-	r := driverRules{local: dra.LocalRules(filepath.Join(config.KubeletPluginDir, mountsDirName))}
-	if cxlFlags.PoolDriverName != "" {
-		poolDir := filepath.Join(filepath.Dir(config.KubeletPluginDir), cxlFlags.PoolDriverName)
-		pool := dra.PoolRules(cxlFlags.PoolDriverName, filepath.Join(poolDir, mountsDirName))
-		r.pool = &pool
-	}
-	return r
-}
-
-// all returns the rules of the drivers that run.
-func (r driverRules) all() []dra.SourceRules {
-	if r.pool == nil {
-		return []dra.SourceRules{r.local}
-	}
-	return []dra.SourceRules{r.local, *r.pool}
-}
-
-// stateFile returns the path of the document of the state store.
-func (c *pluginConfig) stateFile() string {
-	return filepath.Join(c.KubeletPluginDir, store.FileName)
-}
 
 // openDriverStore opens the state store in the plugin data directory of
 // cxl.nri.io, and returns it and its close.
@@ -340,203 +302,25 @@ func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFla
 	}, nil
 }
 
-// newDriverDevices returns the device engine of the drivers over the
-// kernel k and the records of the store st: of
-// the pool driver unless it is disabled (empty --pool-driver-name), of the
-// local memdevs unless they are not managed (manageMemdevs: false); the
-// node mounts of each source in the MountsDir of its rules.
-func newDriverDevices(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, k *kernel.Kernel, fence func(ctx context.Context, node int), st *store.Store, rules driverRules) (*deviceEngine, error) {
-	cfg := deviceConfig{Engine: engine.Options{
+// nodeOptions returns the options of the DRA drivers of the node over the
+// kernel k and the store st. Fence and Shutdown are not set.
+func nodeOptions(config *pluginConfig, driverConfig *DriverConfig, k *kernel.Kernel, st *store.Store) dra.NodeOptions {
+	f := config.Flags
+	return dra.NodeOptions{
 		Kernel:          k,
 		Store:           st,
-		MountsDirs:      dra.MountsDirs(rules.all()...),
+		Dir:             config.KubeletPluginDir,
+		PoolDriver:      f.PoolDriverName,
 		LeaseFsRoot:     leases.LeaseFsRoot(config.KubeletPluginDir),
+		CDIDir:          f.CDIRoot,
+		NodeName:        f.NodeName,
+		Client:          config.Client,
+		Local:           driverConfig.localConfig(),
+		Publish:         driverConfig.publishConfig(),
 		FsTypes:         driverConfig.fsTypes(),
-		Fence:           fence,
 		ProbeAddressing: driverConfig.verifyAddressing(),
-		Timeouts:        engine.Timeouts{Memdev: cxlFlags.PoolPrepareTimeout, Settle: cxlFlags.PoolPrepareTimeout},
-	}}
-	if cxlFlags.PoolDriverName != "" {
-		cfg.PoolDriver = cxlFlags.PoolDriverName
-		dataDir := filepath.Join(filepath.Dir(config.KubeletPluginDir), cxlFlags.PoolDriverName)
-		if err := os.MkdirAll(dataDir, 0750); err != nil {
-			return nil, fmt.Errorf("pool driver data directory: %w", err)
-		}
-	}
-	if driverConfig.manageMemdevs() {
-		cfg.LocalDir = config.KubeletPluginDir
-	}
-	devices, err := newDeviceEngine(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("device engine: %w", err)
-	}
-	return devices, nil
-}
-
-// newWatcher returns the watcher of the pool driver's devices with the
-// provenance records of the store st, nil without a Kubernetes client.
-func newWatcher(config *pluginConfig, cxlFlags *CXLFlags, st *store.Store) *provenance.Watcher {
-	if config.Client == nil {
-		return nil
-	}
-	return provenance.New(provenance.Options{
-		Store:    st,
-		Client:   config.Client,
-		Driver:   cxlFlags.PoolDriverName,
-		NodeName: cxlFlags.NodeName,
-		Name:     config.stateFile(),
-		Forget:   cxlFlags.Provenance.Forget,
-	})
-}
-
-// frontEnds are the two DRA drivers of the process, the publisher of the
-// node's ResourceSlices and the CDI cache that the drivers and the lease
-// broker write their specs with.
-type frontEnds struct {
-	local     *dra.Plugin
-	pool      *dra.Plugin // nil when the pool driver is disabled
-	publisher *dra.Publisher
-	watcher   *provenance.Watcher
-	cdi       *cdiapi.Cache
-}
-
-// newFrontEnds returns the DRA drivers of rules over the store st and the
-// device engine devices: cxl.nri.io, which publishes the node's
-// ResourceSlice of the devices of the kernel of the engine, and the pool
-// driver unless it is disabled (rules.pool nil). The Prepares and
-// Unprepares of both have the publisher rescan. Their CDI specs are written
-// to the directory cxlFlags.CDIRoot. shutdown is told their fatal errors.
-func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, st *store.Store, devices *deviceEngine, watcher *provenance.Watcher, rules driverRules, shutdown func(error)) (*frontEnds, error) {
-	// the cache only writes: no refresh after the first, no watch
-	cdi, err := cdiapi.NewCache(cdiapi.WithSpecDirs(cxlFlags.CDIRoot), cdiapi.WithAutoRefresh(false))
-	if err != nil {
-		return nil, fmt.Errorf("CDI cache of %s: %w", cxlFlags.CDIRoot, err)
-	}
-	fe := &frontEnds{watcher: watcher, cdi: cdi}
-	publisher, err := dra.NewPublisher(dra.PublishOptions{
-		Config:      driverConfig.publishConfig(),
-		NodeName:    cxlFlags.NodeName,
-		Client:      config.Client,
-		Scan:        devices.k.ObserveTopology,
-		Watcher:     watcher,
-		PoolSerials: func() map[uint64]bool { return fe.pool.Serials() },
-		Store:       st,
-		Probes:      devices.Probes,
-		BlockSize:   devices.k.BlockSize,
-	})
-	if err != nil {
-		return nil, err
-	}
-	fe.publisher = publisher
-	if rules.pool != nil {
-		pool, err := dra.New(dra.Options{
-			Rules:     *rules.pool,
-			Store:     st,
-			Engine:    devices.Engine,
-			NodeName:  cxlFlags.NodeName,
-			SysRoot:   devices.k.SysRoot,
-			DevRoot:   devices.k.DevRoot,
-			CDI:       fe.cdi,
-			Shutdown:  shutdown,
-			Publisher: fe.publisher,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("pool driver: %w", err)
-		}
-		fe.pool = pool
-		devices.setLender(state.SourcePool, pool.Lender())
-	}
-	local, err := dra.New(dra.Options{
-		Rules:     rules.local,
-		Store:     st,
-		Engine:    devices.Engine,
-		NodeName:  cxlFlags.NodeName,
-		SysRoot:   devices.k.SysRoot,
-		DevRoot:   devices.k.DevRoot,
-		CDI:       fe.cdi,
-		Local:     driverConfig.localConfig(),
-		OnShared:  devices.addShared,
-		Shutdown:  shutdown,
-		Publisher: fe.publisher,
-	})
-	if err != nil {
-		return nil, err
-	}
-	fe.local = local
-	devices.setLender(state.SourceLocal, local.Lender())
-	return fe, nil
-}
-
-// recover recovers the records of the device engine at a start and makes
-// the first scan: the configured shared local memdevs known, the records of
-// the local memdevs that are pool devices now forgotten, the recovery of
-// the engine (before any scan: the regions of the drivers are never
-// published as region devices), the local guard, the first scan of the
-// devices of the kernel of the engine.
-func (fe *frontEnds) recover(ctx context.Context, driverConfig *DriverConfig, devices *deviceEngine) error {
-	snap, err := devices.k.ObserveTopology(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to detect devices: %v", err)
-	}
-	if !devices.k.HasCXLBus() {
-		klog.Warningf("no CXL bus in %s: the node has no CXL memdevs or regions (are the CXL modules loaded?)", devices.k.SysRoot)
-	}
-	// the recovery knows the pool serials of the records: those that the pool
-	// driver prepares and the remembered ones
-	known := map[uint64]bool{}
-	maps.Copy(known, fe.pool.Serials())
-	maps.Copy(known, fe.watcher.PoolSerials())
-	devices.setShared(dra.SharedSerials(driverConfig.publishConfig(), snap.Memdevs, known))
-	if err := devices.forgetPoolSerials(ctx, known); err != nil {
-		return err
-	}
-	rec, err := devices.recover(ctx)
-	if err != nil {
-		return err
-	}
-	fe.pool.Recovered(rec)
-	devices.setGuard(localPoolGuard(fe.pool, fe.watcher))
-	// the first list of the pool ResourceSlices, after the recovery: it
-	// gates the publication of local memdevs
-	cfg, poolSerials := fe.publisher.ScanInput(ctx)
-	devices.setShared(dra.SharedSerials(cfg, snap.Memdevs, poolSerials))
-	if driverConfig.manageMemdevs() {
-		if _, err := devices.k.BlockSize(); err != nil {
-			klog.Warningf("local: memory block size: %v: local memory devices are not published until the memory block size is known", err)
-		}
-	}
-	if err := fe.publisher.ScanWith(ctx, cfg, poolSerials); err != nil {
-		return err
-	}
-	fe.local.Recovered(rec)
-	return nil
-}
-
-// writeCDI writes the CDI specs of the prepared claims of the drivers in
-// place and removes the spec of the pool driver when it is off. Nothing on
-// the store st lost: its prepared claims are unknown, their specs stay.
-func (fe *frontEnds) writeCDI(st *store.Store) error {
-	if st.Lost() != nil {
-		return nil
-	}
-	if err := fe.local.WriteCDI(); err != nil {
-		return err
-	}
-	if fe.pool == nil {
-		return fe.cdi.RemoveSpec(device.PoolCDISpecName)
-	}
-	return fe.pool.WriteCDI()
-}
-
-// localPoolGuard returns the check of a local memdev before the engine
-// uses it: a memdev that the pool driver prepares, or that a pool
-// ResourceSlice lists now (a fresh list of the watcher), is refused.
-func localPoolGuard(pool *dra.Plugin, watcher *provenance.Watcher) func(ctx context.Context, serial uint64) error {
-	return func(ctx context.Context, serial uint64) error {
-		if pool.Serials()[serial] {
-			return fmt.Errorf("memory device serial 0x%x is prepared by the pool driver %s: it is not used as a local memory device", serial, pool.Name())
-		}
-		return watcher.CheckLocal(ctx, serial)
+		Timeouts:        engine.Timeouts{Memdev: f.PoolPrepareTimeout, Settle: f.PoolPrepareTimeout},
+		Forget:          f.Provenance.Forget,
 	}
 }
 

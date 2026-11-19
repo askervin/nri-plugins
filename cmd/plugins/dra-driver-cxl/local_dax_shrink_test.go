@@ -49,7 +49,7 @@ func TestRescanDuringDaxShrink(t *testing.T) {
 		NodeName:  testNode,
 		Scan:      e.k.Kernel().ObserveTopology,
 		Store:     e.st,
-		Probes:    e.devices.Probes,
+		Probes:    e.node.Engine.Probes,
 		BlockSize: e.k.Kernel().BlockSize,
 	})
 	noErr(t, err)
@@ -59,7 +59,7 @@ func TestRescanDuringDaxShrink(t *testing.T) {
 	var rescanned, verified bool
 	var rescanDone, verifyDone <-chan struct{}
 	e.k.Before("write bus/dax/devices/dax0.0/size 0", func() {
-		verified, verifyDone = fake.ReadWithin(func() { verify, verifyErr = e.devices.Observe(ctx) })
+		verified, verifyDone = fake.ReadWithin(func() { verify, verifyErr = e.node.Engine.Observe(ctx) })
 		rescanned, rescanDone = fake.ReadWithin(func() { pub.Rescan(ctx, false) })
 	})
 	unprepared := make(chan error, 1)

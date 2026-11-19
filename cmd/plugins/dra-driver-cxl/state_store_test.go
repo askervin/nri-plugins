@@ -62,26 +62,24 @@ func TestStartOnALostStore(t *testing.T) {
 
 	flags := &CXLFlags{PoolDriverName: device.PoolDriverName, PoolPrepareTimeout: time.Second, CDIRoot: filepath.Join(root, "cdi"), NodeName: "n1"}
 	config := &pluginConfig{Flags: flags, KubeletPluginDir: local}
-	rules := newDriverRules(config, flags)
-	devices, err := newDriverDevices(config, flags, &DriverConfig{}, kernelAt(root), nil, st, rules)
+	node, err := dra.NewNode(nodeOptions(config, &DriverConfig{}, kernelAt(root), st))
 	noErr(t, err)
-	fe, err := newFrontEnds(config, flags, &DriverConfig{}, st, devices, nil, rules, nil)
+	_, err = node.Recover(ctx)
 	noErr(t, err)
-	noErr(t, fe.recover(ctx, &DriverConfig{}, devices))
-	p, ns := fe.pool, fe.local
+	p, ns := node.Pool, node.Local
 	if r := p.Records(); len(r.Preparations) != 0 || len(p.Serials()) != 0 {
 		t.Errorf("pool driver: preparations %v, serials %v", r.Preparations, p.Serials())
 	}
-	if uses := fe.publisher.LocalSnapshot().Uses; len(uses) != 0 {
+	if uses := node.Publisher.LocalSnapshot().Uses; len(uses) != 0 {
 		t.Errorf("local uses %v", uses)
 	}
 	b, err := leases.New(leases.Options{Store: st, Client: k8sfake.NewClientset(), NodeName: testNode, DataDir: local,
 		CLI: filepath.Join(root, "cxl-request"), WaitDefault: time.Second, PoolDriver: device.PoolDriverName})
 	noErr(t, err)
 	defer b.Stop()
-	noErr(t, fe.writeCDI(st))
+	noErr(t, node.WriteCDI())
 
-	fe.publisher.SetDevices(dra.DevicesInfo{"dram": {Name: "dram", Dev: &dra.DRAM{Nodes: []int{0}, Size: 1 << 30}}})
+	node.Publisher.SetDevices(dra.DevicesInfo{"dram": {Name: "dram", Dev: &dra.DRAM{Nodes: []int{0}, Size: 1 << 30}}})
 	claim := &resourcev1.ResourceClaim{
 		ObjectMeta: metav1.ObjectMeta{UID: "u1", Name: "c", Namespace: "ns"},
 		Status: resourcev1.ResourceClaimStatus{Allocation: &resourcev1.AllocationResult{Devices: resourcev1.DeviceAllocationResult{

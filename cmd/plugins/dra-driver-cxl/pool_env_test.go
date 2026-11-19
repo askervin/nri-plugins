@@ -31,7 +31,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
-	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
@@ -88,47 +87,35 @@ func (e *poolTestEnv) plug(serial uint64) string {
 }
 
 // driver returns a new pool driver on the env's store, as after a restart
-// (the store opened again, the engine's recovery), without a kubelet
-// plugin. A driver returned before must not be used after.
+// (the store opened again, the recovery of dra.NewNode), without a kubelet
+// plugin. cxl.nri.io manages no local memdevs. A driver returned before
+// must not be used after.
 func (e *poolTestEnv) driver(t *testing.T) *dra.Plugin {
 	t.Helper()
 	noErr(t, os.MkdirAll(e.cdiDir, 0o755))
-	cache, err := cdiapi.NewCache(cdiapi.WithSpecDirs(e.cdiDir), cdiapi.WithAutoRefresh(false))
-	noErr(t, err)
 	if e.st != nil {
 		_ = e.st.Close()
 	}
-	rules := dra.PoolRules(device.PoolDriverName, filepath.Join(e.dir, mountsDirName))
+	var err error
 	e.st, err = store.Open(context.Background(), store.Options{Dir: e.dir, BootID: e.k.BootID()})
 	noErr(t, err)
-	devices, err := newDeviceEngine(deviceConfig{
-		Engine: engine.Options{
-			Kernel:     e.k.Kernel(),
-			Store:      e.st,
-			MountsDirs: dra.MountsDirs(rules),
-			FsTypes:    api.KnownFsTypes,
-			Timeouts: engine.Timeouts{Memdev: e.timeout, Settle: e.timeout, Holder: e.holderWait,
-				ProbeGrace: 20 * time.Millisecond, RegionRetry: 10 * time.Millisecond, OfflineSettle: 20 * time.Millisecond},
-		},
+	node, err := dra.NewNode(dra.NodeOptions{
+		Kernel:     e.k.Kernel(),
+		Store:      e.st,
+		Dir:        filepath.Join(filepath.Dir(e.dir), device.DriverName),
 		PoolDriver: device.PoolDriverName,
+		CDIDir:     e.cdiDir,
+		NodeName:   testNode,
+		FsTypes:    api.KnownFsTypes,
+		Timeouts: engine.Timeouts{Memdev: e.timeout, Settle: e.timeout, Holder: e.holderWait,
+			ProbeGrace: 20 * time.Millisecond, RegionRetry: 10 * time.Millisecond, OfflineSettle: 20 * time.Millisecond},
 	})
 	noErr(t, err)
-	p, err := dra.New(dra.Options{
-		Rules:   rules,
-		Store:   e.st,
-		Engine:  devices.Engine,
-		SysRoot: e.k.SysRoot(),
-		DevRoot: e.k.DevRoot(),
-		CDI:     cache,
-	})
+	_, err = node.Recover(context.Background())
 	noErr(t, err)
-	devices.setLender(state.SourcePool, p.Lender())
-	rec, err := devices.recover(context.Background())
-	noErr(t, err)
-	p.Recovered(rec)
-	noErr(t, p.WriteCDI())
-	checkPool(t, p, "started")
-	return p
+	noErr(t, node.WriteCDI())
+	checkPool(t, node.Pool, "started")
+	return node.Pool
 }
 
 // records returns the records of the env's store.

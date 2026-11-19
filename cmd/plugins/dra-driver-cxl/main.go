@@ -35,6 +35,7 @@ import (
 	cdiparser "tags.cncf.io/container-device-interface/pkg/parser"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -54,6 +55,9 @@ const (
 	defaultKubeAPIBurst = 10
 	defaultNRIName      = "dra-driver-cxl"
 	defaultNRIIdx       = "30"
+	// defaultPoolPrepareTimeout is how long a Prepare of the pool driver
+	// waits for the memdev to appear.
+	defaultPoolPrepareTimeout = 30 * time.Second
 )
 
 // CXLFlags are the command line flags of the driver.
@@ -328,7 +332,6 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 		return nil, fmt.Errorf("the boot id of the running kernel: %w", err)
 	}
 	klog.Infof("boot id %s", bootID)
-	rules := newDriverRules(config, cxlFlags)
 	st, closeStore, err := openDriverStore(ctx, config, cxlFlags, bootID)
 	if err != nil {
 		return nil, err
@@ -353,52 +356,49 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	if err != nil {
 		return nil, err
 	}
-	devices, err := newDriverDevices(config, cxlFlags, driverConfig, k, fenceOf(nri), st, rules)
-	if err != nil {
-		return nil, err
-	}
-	events, stopEvents, err := wakeOnUevents(devices, driverConfig)
+	events, stopEvents, err := wakeOnUevents(k, driverConfig)
 	if err != nil {
 		return nil, err
 	}
 	// the lease device and the lease broker lend local memdevs and, with
 	// the pool driver, pool devices
 	driverConfig.PublishLeaseDevice = cxlFlags.Leases
-	watcher := newWatcher(config, cxlFlags, st)
 	fatal := make(chan error, 1)
-	shutdown := func(err error) {
+	opts := nodeOptions(config, driverConfig, k, st)
+	opts.Fence = fenceOf(nri)
+	opts.Shutdown = func(err error) {
 		select {
 		case fatal <- err:
 		default: // the first one stops the driver
 		}
 	}
-	fe, err := newFrontEnds(config, cxlFlags, driverConfig, st, devices, watcher, rules, shutdown)
+	node, err := dra.NewNode(opts)
 	if err != nil {
 		return nil, err
 	}
-	if err := fe.recover(ctx, driverConfig, devices); err != nil {
+	if _, err := node.Recover(ctx); err != nil {
 		return nil, err
 	}
 
 	// 3. Not the nodes of the claims of another boot: they have no memory
 	// online, their Prepares again fence the nodes before they online it.
 	// A lost store fences every node of online CXL memory.
-	seed, err := fenceSeed(ctx, st, devices.k, fe.local.Name(), fe.pool.Name())
+	seed, err := fenceSeed(ctx, st, k, node.Local.Name(), node.Pool.Name())
 	if err != nil {
 		return nil, err
 	}
 	nri.Seed(seed)
-	// fe.pool is a nil *dra.Plugin without the pool driver: its readers
+	// node.Pool is a nil *dra.Plugin without the pool driver: its readers
 	// are nil-receiver safe (no pool results)
-	nri.SetResults(fe.local, fe.pool)
+	nri.SetResults(node.Local, node.Pool)
 
 	d := &driver{
 		client:     config.Client,
 		config:     driverConfig,
-		local:      fe.local,
-		pool:       fe.pool,
-		publisher:  fe.publisher,
-		watcher:    watcher,
+		local:      node.Local,
+		pool:       node.Pool,
+		publisher:  node.Publisher,
+		watcher:    node.Watcher,
 		closeStore: closeStore,
 		cancelRun:  cancelRun,
 		stop:       make(chan struct{}),
@@ -409,7 +409,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 
 	// 4. The lease broker re-creates the sockets of prepared lease claims
 	// before kubelet can call Prepare or Unprepare.
-	broker, err := newBroker(config, cxlFlags, driverConfig, st, fe, devices.k)
+	broker, err := newBroker(config, cxlFlags, driverConfig, st, node, k)
 	if err != nil {
 		return nil, err
 	}
@@ -418,7 +418,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	}
 	// The specs of the claims prepared before the start are rewritten, not
 	// removed first: a container created meanwhile finds its devices.
-	if err := fe.writeCDI(st); err != nil {
+	if err := node.WriteCDI(); err != nil {
 		return nil, err
 	}
 
@@ -430,17 +430,17 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	// above. A Prepare still waits for the first Synchronize (waitNRI): the
 	// stub starts when the runtime has configured it, before it
 	// synchronizes.
-	d.nri = startNRI(runCtx, nri, cxlFlags, fe, broker != nil)
-	lender := wireLenders(d.nri, broker, fe)
+	d.nri = startNRI(runCtx, nri, cxlFlags, node, broker != nil)
+	lender := wireLenders(d.nri, broker, node)
 
 	// 6. The kubelet plugins, the publisher and the watchers.
-	if err := d.startPlugins(runCtx, config, fe, watcher); err != nil {
+	if err := d.startPlugins(runCtx, config, node); err != nil {
 		return nil, err
 	}
 	if broker != nil {
 		broker.Start(lender)
 	}
-	go everyPeriod(staleBindPeriod, d.stop, func() { devices.retryStale(runCtx) })
+	go everyPeriod(staleBindPeriod, d.stop, func() { node.RetryStale(runCtx) })
 	if d.nri != nil {
 		go everyPeriod(repairPeriod, d.stop, func() { d.nri.Repair(runCtx) })
 	}

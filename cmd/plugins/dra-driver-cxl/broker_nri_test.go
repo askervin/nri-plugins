@@ -29,6 +29,7 @@ import (
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
@@ -70,21 +71,21 @@ func TestCreateContainerDoesNotWaitForTheBroker(t *testing.T) {
 	flags := &CXLFlags{PoolDriverName: device.PoolDriverName, PoolPrepareTimeout: time.Second, CDIRoot: filepath.Join(root, "cdi"),
 		NodeName: testNode, Leases: true}
 	cfg := &pluginConfig{Flags: flags, KubeletPluginDir: local}
-	rules := newDriverRules(cfg, flags)
 	nri, err := containers.New(containers.Options{Defaults: config.Container{Fencing: config.FencingNone}, Store: st, Leases: true,
 		SysRoot: root})
 	noErr(t, err)
-	devices, err := newDriverDevices(cfg, flags, &DriverConfig{}, kernelAt(root), fenceOf(nri), st, rules)
+	opts := nodeOptions(cfg, &DriverConfig{}, kernelAt(root), st)
+	opts.Fence = fenceOf(nri)
+	node, err := dra.NewNode(opts)
 	noErr(t, err)
-	fe, err := newFrontEnds(cfg, flags, &DriverConfig{}, st, devices, nil, rules, nil)
+	_, err = node.Recover(ctx)
 	noErr(t, err)
-	noErr(t, fe.recover(ctx, &DriverConfig{}, devices))
 	// newBroker's broker, with a client of the test
 	broker, err := leases.New(leases.Options{Store: st, Client: k8sfake.NewClientset(), NodeName: testNode, DataDir: local,
 		CLI: filepath.Join(root, "cxl-request"), WaitDefault: time.Second, PoolDriver: device.PoolDriverName})
 	noErr(t, err)
-	fe.local.SetLeases(broker)
-	broker.Start(wireLenders(nri, broker, fe))
+	node.Local.SetLeases(broker)
+	broker.Start(wireLenders(nri, broker, node))
 	defer broker.Stop()
 
 	armed.Store(true)
