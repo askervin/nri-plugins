@@ -69,8 +69,8 @@ enabled), the empty mount point `fs` in that directory and the directory
 `/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/<claim uid>` (0755, labelled
 the same way), and returns for the allocation result of the lease device
 its CDI device `nri.io/cxl=claim-<claim uid>-<n>` (spec file `cxl-claims`,
-only the marker `CXL_CLAIM_<uid>_<n>=1`) and the CDI device `nri.io/cxl=lease-<claim uid>`
-(spec file `cxl-leases`):
+only the marker `CXL_CLAIM_<uid>_<n>=1`) and the CDI device
+`nri.io/cxl=lease-<claim uid>` of the same spec file:
 
 - bind mount (rbind, ro) of the socket directory at `/run/cxl`: a
   container cannot write the host directory, and connecting to the socket
@@ -634,7 +634,7 @@ and cannot make it the companion of a lease it did not request.
   restart ([design.md](design.md#leases-and-lease-claims)). A state that
   cannot be read makes the plugin start LOST, with an empty lease table
   ([usage.md](usage.md#upgrade)). It then deletes no companion pod or
-  claim and keeps the CDI spec of the lease claims.
+  claim and keeps the CDI specs.
 - Requester container stops: if the pod is being deleted, finished, gone
   or has restartPolicy Never, its leases are released. Otherwise they
   are kept, and the restarted container is created with the nodes of its

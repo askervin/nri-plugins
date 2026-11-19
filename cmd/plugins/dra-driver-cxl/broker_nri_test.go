@@ -80,7 +80,7 @@ func TestCreateContainerDoesNotWaitForTheBroker(t *testing.T) {
 	noErr(t, err)
 	noErr(t, fe.recover(ctx, &DriverConfig{}, devices))
 	// newBroker's broker, with a client of the test
-	broker, err := leases.New(leases.Options{Store: st, Client: k8sfake.NewClientset(), NodeName: testNode, DataDir: local, CDI: fe.cdi,
+	broker, err := leases.New(leases.Options{Store: st, Client: k8sfake.NewClientset(), NodeName: testNode, DataDir: local,
 		CLI: filepath.Join(root, "cxl-request"), WaitDefault: time.Second, PoolDriver: device.PoolDriverName})
 	noErr(t, err)
 	fe.local.SetLeases(broker)

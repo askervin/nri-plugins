@@ -201,7 +201,7 @@ for f in /etc/cdi/*cxl* /var/run/cdi/*cxl*; do
 done
 [ "$n" -gt 0 ] || echo 'no CDI specs of the CXL drivers: no claim or lease is prepared on this node'
 # Companion claims of leases get no CDI device: their memory reaches the
-# container through its lease device (lease-<uid> of cxl-leases.yaml).
+# container through its lease device (lease-<uid> of cxl-claims.yaml).
 [ -s /etc/cdi/cxl-pool.yaml ] || [ -s /var/run/cdi/cxl-pool.yaml ] ||
     echo 'no pool claims with CDI devices (cxl-pool.yaml): leases have none, their memory comes through the lease device'
 """

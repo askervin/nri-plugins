@@ -48,7 +48,7 @@ func TestStartOnALostStore(t *testing.T) {
 	// the CDI specs of claims prepared before the store was lost
 	specs := map[string]string{}
 	for name, kind := range map[string]string{device.ClaimsCDISpecName: device.CDIKind, device.PoolCDISpecName: device.PoolCDIKind,
-		device.LeasesCDISpecName: device.CDIKind} {
+		"cxl-local": device.CDIKind} {
 		specs[name] = "cdiVersion: 0.6.0\nkind: " + kind + "\ndevices:\n- name: claim-u0-0\n  containerEdits:\n    env: [A=1]\n"
 		noErr(t, os.WriteFile(filepath.Join(root, "cdi", name+".yaml"), []byte(specs[name]), 0o600))
 	}
@@ -75,11 +75,11 @@ func TestStartOnALostStore(t *testing.T) {
 	if uses := fe.publisher.LocalSnapshot().Uses; len(uses) != 0 {
 		t.Errorf("local uses %v", uses)
 	}
-	b, err := leases.New(leases.Options{Store: st, Client: k8sfake.NewClientset(), NodeName: testNode, DataDir: local, CDI: fe.cdi,
+	b, err := leases.New(leases.Options{Store: st, Client: k8sfake.NewClientset(), NodeName: testNode, DataDir: local,
 		CLI: filepath.Join(root, "cxl-request"), WaitDefault: time.Second, PoolDriver: device.PoolDriverName})
 	noErr(t, err)
 	defer b.Stop()
-	noErr(t, fe.writeCDI(st, true))
+	noErr(t, fe.writeCDI(st))
 
 	fe.publisher.SetDevices(dra.DevicesInfo{"dram": {Name: "dram", Dev: &dra.DRAM{Nodes: []int{0}, Size: 1 << 30}}})
 	claim := &resourcev1.ResourceClaim{

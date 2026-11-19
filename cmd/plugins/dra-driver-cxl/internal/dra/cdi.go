@@ -26,6 +26,7 @@ import (
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
@@ -47,6 +48,12 @@ import (
 // of a claim: "claim-<uid>-<n>".
 func ClaimCDIDeviceName(claimUID string, n int) string {
 	return "claim-" + claimUID + "-" + strconv.Itoa(n)
+}
+
+// LeaseCDIDeviceName is the CDI device name of a claim on the lease
+// device: its socket directory, lease-fs directory and CLI.
+func LeaseCDIDeviceName(claimUID string) string {
+	return "lease-" + claimUID
 }
 
 // envKeys counts the memories of each base env key in one claim.
@@ -111,9 +118,10 @@ func cdiClaims(prep *state.Preparation, pending string) bool {
 }
 
 // buildCDISpec returns the CDI spec of the kind of the claims of the driver
-// in doc that cdiClaims takes, and an error for a PREPARED or pending claim
-// with a device of mode fs that has no node mount.
-func buildCDISpec(doc *store.Document, driver, kind string, rs roots, pending string) (*cdiSpecs.Spec, error) {
+// in doc that cdiClaims takes and, with leases, of the lease claims in doc,
+// and an error for a PREPARED or pending claim with a device of mode fs
+// that has no node mount.
+func buildCDISpec(doc *store.Document, driver, kind string, rs roots, pending string, leases lend.LeaseClaims) (*cdiSpecs.Spec, error) {
 	spec := &cdiSpecs.Spec{Kind: kind}
 	byUID := map[string]*state.Preparation{}
 	for i := range doc.Preparations {
@@ -133,6 +141,11 @@ func buildCDISpec(doc *store.Document, driver, kind string, rs roots, pending st
 				continue
 			}
 			spec.Devices = append(spec.Devices, cdiDevice(uid, d, keys))
+		}
+	}
+	if leases != nil {
+		for _, lc := range doc.LeaseClaims {
+			spec.Devices = append(spec.Devices, cdiSpecs.Device{Name: LeaseCDIDeviceName(lc.UID), ContainerEdits: leases.CDIEdits(lc.UID)})
 		}
 	}
 	return spec, errors.Join(errs...)

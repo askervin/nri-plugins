@@ -37,8 +37,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stesting "k8s.io/client-go/testing"
-	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
-	cdiparser "tags.cncf.io/container-device-interface/pkg/parser"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
@@ -48,11 +46,6 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
-
-// cdiID is the qualified CDI device name of a lease claim.
-func cdiID(claimUID string) string {
-	return cdiparser.QualifiedName(device.CDIVendor, device.CDIClass, CDIDeviceName(claimUID))
-}
 
 // numaDevice is the lent device of a pool numa lease on node 2.
 var numaDevice = preparedDev(serialPoolX, 1<<28, api.ModeNUMA, 2)
@@ -89,10 +82,10 @@ func (e *leaseEnv) readyNUMA() string {
 	return id
 }
 
-// The socket and the CDI device of a lease claim: modes, mounts, the
+// The socket and the CDI edits of a lease claim: modes, mounts, the
 // environment; requests answered "lending unavailable" before the start;
-// the socket again after a restart; CloseClaim removes them, and an
-// unknown claim is no error.
+// the socket again after a restart; CloseClaim removes the socket, the
+// directories and the record, and an unknown claim is no error.
 func TestLeaseClaimSocketAndCDI(t *testing.T) {
 	e := brokerEnv(t)
 	e.openClaim()
@@ -105,28 +98,20 @@ func TestLeaseClaimSocketAndCDI(t *testing.T) {
 	if st, _ := os.Stat(filepath.Dir(e.sock())); st.Mode().Perm() != 0o755 {
 		t.Fatalf("directory mode %v", st.Mode())
 	}
-	cache, err := cdiapi.NewCache(cdiapi.WithSpecDirs(e.cdiDir), cdiapi.WithAutoRefresh(false))
-	mustOK(t, err)
-	dev := cache.GetDevice(cdiID(envLeaseClaim))
-	if dev == nil || cdiID(envLeaseClaim) != "nri.io/cxl=lease-lc1" {
-		t.Fatalf("CDI device %s missing: %v", cdiID(envLeaseClaim), cache.ListDevices())
-	}
+	edits := e.b.CDIEdits(envLeaseClaim)
 	fsDir := filepath.Join(e.dir, "lease-fs", envLeaseClaim)
 	wantMounts := []*cdiSpecs.Mount{
 		{HostPath: filepath.Dir(e.sock()), ContainerPath: "/run/cxl", Type: "bind", Options: []string{"rbind", "ro"}},
 		{HostPath: fsDir, ContainerPath: "/run/cxl/fs", Type: "bind", Options: []string{"rbind", "ro", "rslave"}},
 		{HostPath: e.cli, ContainerPath: "/usr/local/bin/cxl-request", Type: "bind", Options: []string{"bind", "ro"}},
 	}
-	if !reflect.DeepEqual(dev.ContainerEdits.Mounts, wantMounts) {
-		t.Fatalf("mounts %+v", dev.ContainerEdits.Mounts)
+	if !reflect.DeepEqual(edits.Mounts, wantMounts) {
+		t.Fatalf("mounts %+v", edits.Mounts)
 	}
 	for _, d := range []string{fsDir, filepath.Join(filepath.Dir(e.sock()), "fs")} {
 		if st, err := os.Stat(d); err != nil || !st.IsDir() || st.Mode().Perm() != 0o755 {
 			t.Fatalf("directory %s: %v %v", d, st, err)
 		}
-	}
-	if m, _ := filepath.Glob(filepath.Join(e.cdiDir, device.LeasesCDISpecName+".*")); len(m) != 1 {
-		t.Fatalf("CDI spec files %v", m)
 	}
 	if l := e.st.Snapshot().Leases; len(l) != 0 {
 		t.Fatalf("lease records %+v", l)
@@ -135,9 +120,9 @@ func TestLeaseClaimSocketAndCDI(t *testing.T) {
 		!reflect.DeepEqual(lc.Pods, []state.PodRef{requester.Pod}) {
 		t.Fatalf("lease claim record %+v", lc)
 	}
-	if !slices.Equal(dev.ContainerEdits.Env, []string{"CXL_LEASE_SOCKET=/run/cxl/cxl.sock"}) ||
+	if !slices.Equal(edits.Env, []string{"CXL_LEASE_SOCKET=/run/cxl/cxl.sock"}) ||
 		leaseContainerDir+"/"+leaseSocketName != api.DefaultSocket {
-		t.Fatalf("env %v", dev.ContainerEdits.Env)
+		t.Fatalf("env %v", edits.Env)
 	}
 	// before the start a request waits for it, bounded
 	e.opts = func(o *Options) { o.Timeouts.SyncWait = 200 * time.Millisecond }
@@ -162,9 +147,6 @@ func TestLeaseClaimSocketAndCDI(t *testing.T) {
 		if _, err := os.Stat(d); !os.IsNotExist(err) {
 			t.Fatalf("directory %s not removed: %v", d, err)
 		}
-	}
-	if m, _ := filepath.Glob(filepath.Join(e.cdiDir, device.LeasesCDISpecName+".*")); len(m) != 0 {
-		t.Fatalf("CDI spec not removed: %v", m)
 	}
 	if e.st.Snapshot().LeaseClaim(envLeaseClaim) != nil {
 		t.Fatal("lease claim record left")
@@ -1096,14 +1078,15 @@ func TestFsLeaseClaims(t *testing.T) {
 
 // A lost store: the broker starts without lease claims and leases, keeps
 // every directory of lease claims, the companions of the node and the CDI
-// spec of the lease claims, and refuses to open a lease claim with the
+// spec of cxl.nri.io with the device of the lease claim, and refuses to open a lease claim with the
 // text of the lost state.
 func TestLostStore(t *testing.T) {
 	e := brokerEnv(t)
 	e.openClaim()
 	e.start()
 	id := e.readyNUMA()
-	spec := e.cdiSpec(device.LeasesCDISpecName)
+	mustOK(t, e.local.WriteCDI())
+	spec := e.cdiSpec(device.ClaimsCDISpecName)
 	e.b.Stop()
 	_ = e.st.Close()
 	mustOK(t, os.WriteFile(filepath.Join(e.dir, store.FileName), []byte("{"), 0o600))
@@ -1122,10 +1105,10 @@ func TestLostStore(t *testing.T) {
 			t.Fatalf("directory of a lease claim removed with a lost store: %v", err)
 		}
 	}
-	// the companion of the node and the CDI spec of the lease claims stay
+	// the companion of the node and the CDI spec stay
 	e.waitClaim(CompanionName(id))
-	if got := e.cdiSpec(device.LeasesCDISpecName); spec == nil || !reflect.DeepEqual(got, spec) {
-		t.Fatalf("CDI spec of the lease claims %+v, was %+v", got, spec)
+	if got := e.cdiSpec(device.ClaimsCDISpecName); spec == nil || len(spec.Devices) != 1 || !reflect.DeepEqual(got, spec) {
+		t.Fatalf("CDI spec %+v, was %+v", got, spec)
 	}
 	wantErrText(t, e.b.OpenClaim(leaseClaimObj()), "--new-state")
 

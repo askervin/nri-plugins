@@ -225,16 +225,15 @@ func TestFailedCommitNoFailure(t *testing.T) {
 	e.wantGone(CompanionName(id))
 }
 
-// A lease claim whose OPEN commit fails has no socket, no CDI device and no
-// record; one whose removal fails keeps its socket and its record, and is
-// closed by the Unprepare again.
+// A lease claim whose OPEN commit fails has no socket and no record; one
+// whose removal fails keeps its socket and its record, and is closed by the
+// Unprepare again.
 func TestFailedCommitOpenAndClose(t *testing.T) {
 	e := brokerEnv(t)
 	e.failWrites(true)
 	wantErrText(t, e.b.OpenClaim(leaseClaimObj()), "lease broker: ")
-	if _, err := os.Stat(e.sock()); !errors.Is(err, os.ErrNotExist) || e.claim(envLeaseClaim) != nil ||
-		e.cdiSpec(device.LeasesCDISpecName) != nil {
-		t.Fatalf("socket %v, record %+v or CDI spec of a failed open", err, e.claim(envLeaseClaim))
+	if _, err := os.Stat(e.sock()); !errors.Is(err, os.ErrNotExist) || e.claim(envLeaseClaim) != nil {
+		t.Fatalf("socket %v or record %+v of a failed open", err, e.claim(envLeaseClaim))
 	}
 	e.failWrites(false)
 	e.openClaim()
@@ -249,9 +248,6 @@ func TestFailedCommitOpenAndClose(t *testing.T) {
 	conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: e.sock(), Net: "unix"})
 	mustOK(t, err)
 	_ = conn.Close()
-	if spec := e.cdiSpec(device.LeasesCDISpecName); spec == nil || len(spec.Devices) != 1 {
-		t.Fatalf("CDI spec after a failed removal %+v", spec)
-	}
 	e.failWrites(false)
 	mustOK(t, e.b.CloseClaim(context.Background(), envLeaseClaim))
 	if _, err := os.Stat(e.sock()); !errors.Is(err, os.ErrNotExist) || e.claim(envLeaseClaim) != nil {

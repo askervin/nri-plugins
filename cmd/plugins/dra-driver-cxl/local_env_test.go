@@ -514,7 +514,7 @@ func (e *localTestEnv) prepared() map[string]kubeletplugin.PrepareResult {
 			if p.Lease == "" {
 				d.CDIDeviceIDs = []string{device.CDIKind + "=" + dra.ClaimCDIDeviceName(p.UID, rr.Index)}
 				if rr.Kind == state.ResultLeaseClaim {
-					d.CDIDeviceIDs = append(d.CDIDeviceIDs, device.CDIKind+"=lease-"+p.UID)
+					d.CDIDeviceIDs = append(d.CDIDeviceIDs, device.CDIKind+"="+dra.LeaseCDIDeviceName(p.UID))
 				}
 			}
 			res.Devices = append(res.Devices, d)

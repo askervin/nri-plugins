@@ -283,8 +283,6 @@ func (e *leaseEnv) boot() {
 	mustOK(t, err)
 	e.pool.Recovered(rec)
 	e.local.Recovered(rec)
-	mustOK(t, e.local.WriteCDI())
-	mustOK(t, e.pool.WriteCDI())
 	e.rescan()
 
 	n := 0
@@ -293,7 +291,6 @@ func (e *leaseEnv) boot() {
 		Client:      e.client,
 		NodeName:    envNode,
 		DataDir:     e.dir,
-		CDI:         e.cache,
 		CLI:         e.cli,
 		WaitDefault: 5 * time.Second,
 		PoolDriver:  device.PoolDriverName,
@@ -308,6 +305,8 @@ func (e *leaseEnv) boot() {
 	mustOK(t, err)
 	e.started = false
 	e.local.SetLeases(e.b)
+	mustOK(t, e.local.WriteCDI())
+	mustOK(t, e.pool.WriteCDI())
 }
 
 // start starts the broker with the env's container plugin and makes it the
@@ -837,14 +836,17 @@ func (e *leaseEnv) cdiSpec(name string) *cdiSpecs.Spec {
 }
 
 // wantNoCDIDevices fails the test when a prepared companion claim of one
-// device has a CDI device, or the CDI spec of a driver has one.
+// device has a CDI device, or the CDI spec of a driver has a device of a
+// claim.
 func (e *leaseEnv) wantNoCDIDevices(r kubeletplugin.PrepareResult) {
 	e.t.Helper()
 	if len(r.Devices) != 1 || len(r.Devices[0].CDIDeviceIDs) != 0 {
 		e.t.Fatalf("CDI devices of a companion claim: %+v", r.Devices)
 	}
 	for _, name := range []string{device.ClaimsCDISpecName, device.PoolCDISpecName} {
-		if spec := e.cdiSpec(name); spec != nil && len(spec.Devices) > 0 {
+		if spec := e.cdiSpec(name); spec != nil && slices.ContainsFunc(spec.Devices, func(d cdiSpecs.Device) bool {
+			return strings.HasPrefix(d.Name, "claim-")
+		}) {
 			e.t.Fatalf("CDI spec %s of a companion claim: %+v", name, spec.Devices)
 		}
 	}

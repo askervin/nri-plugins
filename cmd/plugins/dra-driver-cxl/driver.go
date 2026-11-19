@@ -97,7 +97,6 @@ func newBroker(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverCon
 		Client:      config.Client,
 		NodeName:    config.Flags.NodeName,
 		DataDir:     config.KubeletPluginDir,
-		CDI:         fe.cdi,
 		CLI:         cxlFlags.LeaseCLI,
 		Image:       cxlFlags.LeaseCompanionImage,
 		WaitDefault: cxlFlags.LeaseWait,
@@ -510,11 +509,9 @@ func (fe *frontEnds) recover(ctx context.Context, driverConfig *DriverConfig, de
 }
 
 // writeCDI writes the CDI specs of the prepared claims of the drivers in
-// place, then removes the other CXL specs of the CDI directory: all but
-// those of the drivers and, with leases, of the lease broker, which wrote
-// its own. Nothing on the store st lost: its prepared claims are unknown,
-// their specs stay.
-func (fe *frontEnds) writeCDI(st *store.Store, leases bool) error {
+// place, then removes the other CXL specs of the CDI directory. Nothing on
+// the store st lost: its prepared claims are unknown, their specs stay.
+func (fe *frontEnds) writeCDI(st *store.Store) error {
 	if st.Lost() != nil {
 		return nil
 	}
@@ -527,9 +524,6 @@ func (fe *frontEnds) writeCDI(st *store.Store, leases bool) error {
 		if err := fe.pool.WriteCDI(); err != nil {
 			return err
 		}
-	}
-	if leases {
-		owned = append(owned, device.LeasesCDISpecName)
 	}
 	return dra.RemoveCXLSpecs(fe.cdi, owned...)
 }

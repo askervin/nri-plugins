@@ -60,12 +60,13 @@ import (
 //
 // Invariants: a PREPARED claim's grants are REALISED; the CDI spec of the
 // driver has the devices of its PREPARED and UNPREPARING claims that are
-// not companions; a companion claim has no CDI device.
+// not companions and, with the lease broker, a device per lease claim; a
+// companion claim has no CDI device.
 //
 // Persistence: the preparations are records of the store, committed
 // durably before kubelet gets a response; the CDI spec is derived from
-// them. A Prepare or an Unprepare that committed a change of the records
-// asks the publisher for a rescan when it ends.
+// them and the lease claims. A Prepare or an Unprepare that committed a
+// change of the records asks the publisher for a rescan when it ends.
 //
 // Locks and waits: the kubelet helper serializes the Prepares and
 // Unprepares of the driver, and with them the writes of its CDI spec; mu
@@ -968,15 +969,15 @@ func logLoaded(r *state.Records, name string) {
 	klog.Infof("%s: loaded %d prepared claims", name, n)
 }
 
-// writeCDI writes the CDI spec of the prepared claims of the driver and of
-// the claim pending whose Prepare is finishing ("": none), or removes it
-// when there are none; nothing without a CDI cache, and nothing on a lost
+// writeCDI writes the CDI spec of the prepared claims of the driver, of
+// the claim pending whose Prepare is finishing ("": none) and of the lease
+// claims of the lease broker, or removes it when there are none; nothing without a CDI cache, and nothing on a lost
 // store, whose prepared claims are unknown.
 func (p *Plugin) writeCDI(pending string) error {
 	if p.cdi == nil || p.st.Lost() != nil {
 		return nil
 	}
-	spec, err := buildCDISpec(p.st.Snapshot(), p.rules.Name, p.rules.CDIKind(), p.roots, pending)
+	spec, err := buildCDISpec(p.st.Snapshot(), p.rules.Name, p.rules.CDIKind(), p.roots, pending, p.leaseClaims())
 	if err != nil {
 		return err
 	}

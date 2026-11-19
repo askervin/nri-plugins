@@ -973,6 +973,11 @@ func (f *fakeLeaseClaims) CloseClaim(ctx context.Context, uid string) error {
 	})
 }
 
+// CDIEdits returns an env variable of the claim.
+func (f *fakeLeaseClaims) CDIEdits(uid string) cdiSpecs.ContainerEdits {
+	return cdiSpecs.ContainerEdits{Env: []string{"LEASE_" + uid + "=1"}}
+}
+
 // setErrors sets the errors of the next opens and closes.
 func (f *fakeLeaseClaims) setErrors(open, close error) {
 	f.mu.Lock()

@@ -321,7 +321,8 @@ func TestCompanionUnpreparedBehind(t *testing.T) {
 
 // The lease device is published with --leases only; a claim on it is
 // prepared by cxl.nri.io through the broker: its CDI devices claim-<uid>-0
-// and lease-<uid>, its socket; its Unprepare closes the lease claim first.
+// and lease-<uid> (the broker's edits) in the spec of cxl.nri.io, its
+// socket; its Unprepare closes the lease claim first and removes them.
 func TestLeaseClaimPrepare(t *testing.T) {
 	if devs := dra.BuildDevices(dra.PublishConfig{IgnoreDRAMNodes: true, PublishLeaseDevice: true}, &kernel.Snapshot{}, nil, nil, nil); devs["lease"] == nil {
 		t.Fatalf("no lease device in %v", devs)
@@ -336,6 +337,10 @@ func TestLeaseClaimPrepare(t *testing.T) {
 	if len(r.Devices) != 1 || !slices.Equal(r.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl=claim-lc1-0", "nri.io/cxl=lease-lc1"}) {
 		t.Fatalf("prepared %+v", r.Devices)
 	}
+	if spec := e.cdiSpec(device.ClaimsCDISpecName); spec == nil || len(spec.Devices) != 2 || spec.Devices[1].Name != "lease-lc1" ||
+		!reflect.DeepEqual(spec.Devices[1].ContainerEdits, e.b.CDIEdits(envLeaseClaim)) {
+		t.Fatalf("CDI spec %+v", spec)
+	}
 	if info := e.local.ClaimInfo(envLeaseClaim); info == nil || info.Devices[0].DeviceType != device.DeviceTypeLease || info.Devices[0].Mode != "" {
 		t.Fatalf("claim info %+v", info)
 	}
@@ -344,7 +349,7 @@ func TestLeaseClaimPrepare(t *testing.T) {
 	}
 	resp, _ := e.call(api.Request{Op: api.OpRequest, Size: "64Mi", Wait: "0s"})
 	mustOK(t, e.unprepare(e.local, envLeaseClaim))
-	if _, err := os.Stat(e.sock()); !os.IsNotExist(err) || e.claim(envLeaseClaim) != nil {
+	if _, err := os.Stat(e.sock()); !os.IsNotExist(err) || e.claim(envLeaseClaim) != nil || e.cdiSpec(device.ClaimsCDISpecName) != nil {
 		t.Fatalf("lease claim left: %v", err)
 	}
 	e.waitState(resp.Lease, state.LeaseNone)

@@ -1988,14 +1988,13 @@ the pool driver, `/var/lib/kubelet/plugins/cxl-pool.nri.io`.
 | `D/lease-fs/<claim uid>/<name>` | the bind of the node mount of an `fs` lease; the directory of the claim is the container's `/run/cxl/fs` ([leases.md](leases.md#opting-in)) |
 | `D/cxl-request` | the lease CLI that the plugin of the Helm chart copies from its image (`--lease-cli-source`) |
 | `D/mounts/<serial hex>-<access>`, `P/mounts/<serial hex>-<access>` | the node mount of the filesystem of a persistent local memdev, or of a persistent pool device, for mode `fs` ([Persistent memory](#persistent-memory)) |
-| `<cdi root>/cxl-claims.yaml` | CDI kind `nri.io/cxl`: a device `claim-<uid>-<n>` per allocation result n of a prepared `cxl.nri.io` claim, with the marker, the result's variables and its dax device node |
-| `<cdi root>/cxl-leases.yaml` | CDI kind `nri.io/cxl`: a device `lease-<uid>` per lease claim |
+| `<cdi root>/cxl-claims.yaml` | CDI kind `nri.io/cxl`: a device `claim-<uid>-<n>` per allocation result n of a prepared `cxl.nri.io` claim, with the marker, the result's variables and its dax device node, and a device `lease-<uid>` per lease claim |
 | `<cdi root>/cxl-pool.yaml` | CDI kind `nri.io/cxl-pool`: a device `claim-<uid>-<n>` per allocation result n of a prepared pool claim, likewise |
 
 To read the records, read `state.json` (with the plugin running it is
 replaced, never written in place). Companion claims of leases get no CDI
 device ([leases.md](leases.md#companion-objects)). At
-start the plugin writes the three files again from the document, each
+start the plugin writes the two files again from the document, each
 replaced in place (removed without devices), then deletes the other CDI
 specs of the kinds `nri.io/cxl` and `nri.io/cxl-pool`, such as the file
 of a disabled pool driver or lease device. A plugin that starts LOST

@@ -292,8 +292,8 @@ func installLeaseCLI(src, dst string) (retErr error) {
 //     devices and the first scan;
 //  3. the fence of the NRI plugin seeded with the NUMA nodes of the claims;
 //  4. the lease broker loaded, the sockets of its lease claims made again,
-//     the CDI specs of the prepared claims written in place, the other CXL
-//     specs removed;
+//     the CDI specs of the prepared claims and the lease claims written in
+//     place, the other CXL specs removed;
 //  5. the NRI plugin started and the lenders wired;
 //  6. the kubelet plugins of cxl.nri.io and of the pool driver registered,
 //     the first publication of the node's ResourceSlice, the watchers, the
@@ -397,7 +397,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	}
 	// The specs of the claims prepared before the start are rewritten, not
 	// removed first: a container created meanwhile finds its devices.
-	if err := fe.writeCDI(st, broker != nil); err != nil {
+	if err := fe.writeCDI(st); err != nil {
 		return nil, err
 	}
 

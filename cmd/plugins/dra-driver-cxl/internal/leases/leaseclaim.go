@@ -27,23 +27,21 @@ import (
 	"golang.org/x/sys/unix"
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/klog/v2"
-	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
-	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 // LeaseClaim: a claim on the lease device "lease" of cxl.nri.io, prepared
 // for the containers that reference it: OpenClaim creates
 // <data dir>/leases/<uid>/cxl.sock and <data dir>/lease-fs/<uid>, and the
-// CDI device nri.io/cxl=lease-<uid> bind-mounts the socket directory at
-// /run/cxl, the lease-fs directory read-only as a slave at /run/cxl/fs
-// (the driver of the device binds the filesystems of fs leases below it,
-// and they appear in the running containers) and the cxl-request CLI at
-// /usr/local/bin.
+// CDI device lease-<uid> that cxl.nri.io writes with CDIEdits bind-mounts
+// the socket directory at /run/cxl, the lease-fs directory read-only as a
+// slave at /run/cxl/fs (the driver of the device binds the filesystems of
+// fs leases below it, and they appear in the running containers) and the
+// cxl-request CLI at /usr/local/bin.
 //
 // Identity: the record state.LeaseClaim: UID, the claim UID (the socket
 // directory and the CDI device name); Namespace and Name of the claim.
@@ -66,7 +64,7 @@ import (
 //
 // Persistence: the record in the store, its only copy, committed before its
 // socket and CDI device, and its removal committed before the socket stops
-// and the CDI device goes (closed); lease claims survive a reboot (kubelet
+// (closed) and the CDI device goes; lease claims survive a reboot (kubelet
 // prepares them again). A lost store keeps every directory.
 //
 // Locks and waits: the commits of the store; the broker's mutex for the
@@ -102,11 +100,6 @@ const (
 	selinuxContainerFileLabel = "system_u:object_r:container_file_t:s0"
 )
 
-// CDIDeviceName is the CDI device name of a lease claim.
-func CDIDeviceName(claimUID string) string {
-	return "lease-" + claimUID
-}
-
 // leaseDir returns the host directory of a lease claim.
 func (b *Broker) leaseDir(claimUID string) string {
 	return filepath.Join(b.opts.DataDir, leaseDirName, claimUID)
@@ -140,9 +133,8 @@ func reservedPods(claim *resourcev1.ResourceClaim) []state.PodRef {
 	return pods
 }
 
-// OpenClaim records a claim on the lease device, writes its CDI device and
-// starts its socket. Idempotent: an open claim gets the pods of its
-// reservedFor.
+// OpenClaim records a claim on the lease device and starts its socket.
+// Idempotent: an open claim gets the pods of its reservedFor.
 func (b *Broker) OpenClaim(claim *resourcev1.ResourceClaim) error {
 	uid := string(claim.UID)
 	var lc state.LeaseClaim
@@ -165,9 +157,6 @@ func (b *Broker) OpenClaim(claim *resourcev1.ResourceClaim) error {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if err := b.writeCDISpec(); err != nil {
-		return err
-	}
 	if err := b.listen(uid); err != nil {
 		return err
 	}
@@ -214,10 +203,10 @@ func (b *Broker) recoverClaims() {
 // CloseClaim releases every lease of a lease claim, waits up to
 // Timeouts.Close until their nodes are revoked and the deletion of their
 // companions is requested, then stops the socket, removes the claim and
-// its CDI device and its directories; a lease-fs directory with a mount in
-// it is removed later. The leases are removed when their companions are
-// gone. A timeout is an error (kubelet retries the Unprepare). Unknown
-// claims are not an error.
+// its directories; a lease-fs directory with a mount in it is removed
+// later. The leases are removed when their companions are gone. A timeout
+// is an error (kubelet retries the Unprepare). Unknown claims are not an
+// error.
 func (b *Broker) CloseClaim(ctx context.Context, uid string) error {
 	if b.records().LeaseClaim(uid) == nil {
 		// a socket left by a removal committed after its wait ended
@@ -258,29 +247,28 @@ func (b *Broker) CloseClaim(ctx context.Context, uid string) error {
 	if err := b.waitFor(ctx, func() bool { return remaining() == 0 }); err != nil {
 		return fmt.Errorf("claim %s/%s: still releasing %d leases, retry", ns, name, remaining())
 	}
-	closed, err := b.closed(uid)
-	switch {
-	case !closed && err != nil:
+	switch closed, err := b.closed(uid); {
+	case err != nil:
 		return err
 	case !closed:
 		return fmt.Errorf("claim %s/%s: prepared again while it was closed, retry", ns, name)
 	}
-	errs := []error{err}
 	sock := filepath.Join(b.leaseDir(uid), leaseSocketName)
-	if err := os.Remove(sock); err != nil && !errors.Is(err, os.ErrNotExist) {
-		errs = append(errs, err)
+	err = os.Remove(sock)
+	if errors.Is(err, os.ErrNotExist) {
+		err = nil
 	}
 	if left := b.removeClaimDirs(uid, state.TriggerUnprepare); len(left) > 0 {
 		klog.Infof("lease broker: claim %s/%s (%s): left %v, removed later", ns, name, uid, left)
 	}
 	klog.Infof("lease broker: claim %s/%s (%s): lease socket closed", ns, name, uid)
-	return errors.Join(errs...)
+	return err
 }
 
 // closed removes the record of a closing lease claim, then stops its
-// socket and removes its CDI device; it reports whether the claim is
-// closed (false: it was opened again meanwhile, or the commit failed) and
-// returns the error of the commit or of the CDI write.
+// socket; it reports whether the claim is closed (false: it was opened
+// again meanwhile, or the commit failed) and returns the error of the
+// commit.
 func (b *Broker) closed(uid string) (bool, error) {
 	closed := true
 	err := b.commit(func(r *state.Records) error {
@@ -303,7 +291,7 @@ func (b *Broker) closed(uid string) (bool, error) {
 		return false, nil
 	}
 	b.stopListening(uid)
-	return true, b.writeCDISpec()
+	return true, nil
 }
 
 // stopListening stops the socket of a lease claim: it closes the listener,
@@ -583,9 +571,10 @@ func SELinuxLabel(paths ...string) {
 	}
 }
 
-// cdiDevice returns the CDI device of a lease claim.
-func (b *Broker) cdiDevice(lc *state.LeaseClaim) cdiSpecs.Device {
-	claimUID := lc.UID
+// CDIEdits returns the container edits of the CDI device of the lease
+// claim claimUID: its socket directory, its lease-fs directory and the
+// CLI.
+func (b *Broker) CDIEdits(claimUID string) cdiSpecs.ContainerEdits {
 	edits := cdiSpecs.ContainerEdits{
 		Env: []string{api.SocketEnv + "=" + api.DefaultSocket},
 		// read-only: connect(2) needs write access to the socket only,
@@ -617,35 +606,5 @@ func (b *Broker) cdiDevice(lc *state.LeaseClaim) cdiSpecs.Device {
 			klog.Warningf("lease broker: cxl-request CLI %s not mounted into containers: %v", b.opts.CLI, err)
 		}
 	}
-	return cdiSpecs.Device{Name: CDIDeviceName(claimUID), ContainerEdits: edits}
-}
-
-// writeCDISpec writes the CDI spec of the lease claims of the records, or
-// removes it when there are none; nothing on a lost store, whose lease
-// claims are unknown. Called with b.mu held: the writes of the spec are
-// serialized, each of the latest records.
-func (b *Broker) writeCDISpec() error {
-	if b.opts.CDI == nil || b.st.Lost() != nil {
-		return nil
-	}
-	spec := &cdiSpecs.Spec{Kind: device.CDIKind}
-	r := b.records()
-	for i := range r.LeaseClaims {
-		spec.Devices = append(spec.Devices, b.cdiDevice(&r.LeaseClaims[i]))
-	}
-	if len(spec.Devices) == 0 {
-		if err := b.opts.CDI.RemoveSpec(device.LeasesCDISpecName); err != nil {
-			klog.V(5).Infof("lease broker: could not remove CDI spec %s (may not exist): %v", device.LeasesCDISpecName, err)
-		}
-		return nil
-	}
-	v, err := cdiapi.MinimumRequiredVersion(spec)
-	if err != nil {
-		return fmt.Errorf("CDI spec version: %w", err)
-	}
-	spec.Version = v
-	if err := b.opts.CDI.WriteSpec(spec, device.LeasesCDISpecName); err != nil {
-		return fmt.Errorf("failed to write CDI spec %s: %w", device.LeasesCDISpecName, err)
-	}
-	return nil
+	return edits
 }

@@ -59,8 +59,9 @@ func TestRemoveCXLSpecs(t *testing.T) {
 
 // TestClaimsCDISpec checks the CDI spec of the claims of cxl.nri.io built
 // from their records: the env of the DRAM and of a region with their
-// consumed sizes, the marker only of the lease device, nothing of a result
-// of another driver or of a companion claim.
+// consumed sizes, the marker only of the lease device and the device of its
+// lease claim, nothing of a result of another driver or of a companion
+// claim.
 func TestClaimsCDISpec(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()})
 	e.lending()
@@ -81,8 +82,9 @@ func TestClaimsCDISpec(t *testing.T) {
 		{Name: "claim-u1-2", ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{
 			"CXL_CLAIM_u1_2=1", "CXL_REGION0_MODE=numa", "CXL_REGION0_NODE=2", "CXL_REGION0_SIZE=67108864"}}},
 		{Name: "claim-u2-0", ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{"CXL_CLAIM_u2_0=1"}}},
+		{Name: "lease-u2", ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{"LEASE_u2=1"}}},
 	}
-	spec, err := buildCDISpec(e.st.Snapshot(), device.DriverName, device.CDIKind, e.local.roots, "")
+	spec, err := buildCDISpec(e.st.Snapshot(), device.DriverName, device.CDIKind, e.local.roots, "", e.leases)
 	mustOK(t, err)
 	if spec.Kind != "nri.io/cxl" || !reflect.DeepEqual(spec.Devices, want) {
 		t.Fatalf("CDI spec %+v", spec)
@@ -124,7 +126,7 @@ func TestCDISpecOfClaims(t *testing.T) {
 		doc.Preparation(driver, uid).State = s
 	}
 	names := func(p *Plugin, pending string) []string {
-		spec, err := buildCDISpec(doc, p.Name(), p.Rules().CDIKind(), p.roots, pending)
+		spec, err := buildCDISpec(doc, p.Name(), p.Rules().CDIKind(), p.roots, pending, nil)
 		mustOK(t, err)
 		var out []string
 		for _, d := range spec.Devices {
@@ -291,7 +293,7 @@ func TestCDISpecOfIncompleteDevices(t *testing.T) {
 	doc.Grant(state.GrantRef{Claim: "f"}).Got.Mount = ""
 	doc.Grant(state.GrantRef{Claim: "d"}).Got.Dax = ""
 	build := func(pending string) (*cdiSpecs.Spec, error) {
-		return buildCDISpec(doc, device.DriverName, device.CDIKind, e.local.roots, pending)
+		return buildCDISpec(doc, device.DriverName, device.CDIKind, e.local.roots, pending, nil)
 	}
 	spec, err := build("")
 	wantErrText(t, err, "claim demo/claim-f: result 0: no node mount")

@@ -278,8 +278,9 @@ func TestLocalDRAM(t *testing.T) {
 }
 
 // The lease device: its lease claim opened at the Prepare (refused
-// without the broker), its CDI devices claim-<uid>-<n> and lease-<uid>,
-// the lease claim closed first at the Unprepare.
+// without the broker), its CDI devices claim-<uid>-<n> and lease-<uid> in
+// the spec of the driver, the lease claim closed first at the Unprepare
+// and its devices removed.
 func TestLocalLeaseDevice(t *testing.T) {
 	e := newDriverEnv(t, nil)
 	res := e.prepare(e.local, localClaim("u1", device.LeaseDeviceName, 0))
@@ -295,6 +296,9 @@ func TestLocalLeaseDevice(t *testing.T) {
 	if cd := e.cdiDevice(e.local, "claim-u1-0"); cd == nil || !slices.Equal(cd.ContainerEdits.Env, []string{"CXL_CLAIM_u1_0=1"}) {
 		t.Fatalf("CDI device %+v", cd)
 	}
+	if cd := e.cdiDevice(e.local, "lease-u1"); cd == nil || !slices.Equal(cd.ContainerEdits.Env, []string{"LEASE_u1=1"}) {
+		t.Fatalf("CDI device %+v", cd)
+	}
 	// a socket that does not open: rolled back
 	e.leases.setErrors(errSteered, nil)
 	res = e.prepare(e.local, localClaim("u2", device.LeaseDeviceName, 0))
@@ -304,6 +308,9 @@ func TestLocalLeaseDevice(t *testing.T) {
 	e.takeEvents()
 	e.mustUnprepare(e.local, "u1")
 	e.wantEvents("unprepare", "close u1 (PREPARED)")
+	if names := e.cdiNames(e.local); len(names) != 0 {
+		t.Fatalf("CDI devices %v", names)
+	}
 	// a lease claim that does not close: kubelet retries, nothing else
 	e.mustPrepare(e.local, localClaim("u3", device.LeaseDeviceName, 0))
 	e.leases.setErrors(nil, errSteered)
@@ -342,7 +349,7 @@ func TestLocalPrepareResult(t *testing.T) {
 	if got, ok := e.local.Result("u1"); !ok || !reflect.DeepEqual(got, res) {
 		t.Fatalf("Result %+v %v", got, ok)
 	}
-	if names := e.cdiNames(e.local); !slices.Equal(names, []string{"claim-u1-0", "claim-u1-1", "claim-u1-3", "claim-u1-4"}) {
+	if names := e.cdiNames(e.local); !slices.Equal(names, []string{"claim-u1-0", "claim-u1-1", "claim-u1-3", "claim-u1-4", "lease-u1"}) {
 		t.Fatalf("CDI devices %v", names)
 	}
 	// a Prepare again returns the same result, without a command or an

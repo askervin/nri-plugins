@@ -596,6 +596,10 @@ func (f *fakeLeaseClaims) CloseClaim(ctx context.Context, uid string) error {
 	})
 }
 
+func (f *fakeLeaseClaims) CDIEdits(uid string) cdiSpecs.ContainerEdits {
+	return cdiSpecs.ContainerEdits{Env: []string{"LEASE_" + uid + "=1"}}
+}
+
 // memoryConfigClaim returns a claim with the results numa (a slice of the
 // local memdev), region, dram and lease, in this order, of the device
 // classes cxl-local, cxl-region, cxl-dram and cxl-lease, with the configs.

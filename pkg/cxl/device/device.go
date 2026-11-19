@@ -37,11 +37,9 @@ const (
 	PoolCDIClass = "cxl-pool"
 	// PoolCDIKind is the CDI kind of the pool driver.
 	PoolCDIKind = CDIVendor + "/" + PoolCDIClass
-	// ClaimsCDISpecName is the CDI spec file of the claims of cxl.nri.io.
+	// ClaimsCDISpecName is the CDI spec file of the claims of cxl.nri.io
+	// and of its lease claims.
 	ClaimsCDISpecName = "cxl-claims"
-	// LeasesCDISpecName is the CDI spec file of the lease claims (socket
-	// directory and CLI mounts).
-	LeasesCDISpecName = "cxl-leases"
 	// PoolCDISpecName is the CDI spec file of the claims of the pool
 	// driver.
 	PoolCDISpecName = "cxl-pool"

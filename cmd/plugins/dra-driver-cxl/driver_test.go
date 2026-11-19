@@ -358,42 +358,36 @@ func TestNewLocalHelper(t *testing.T) {
 	}
 }
 
-// A start keeps the CXL CDI specs that a writer of the process owns and
-// removes the others: the lease broker's without leases.
+// A start keeps the CXL CDI specs that a driver of the process owns and
+// removes the others.
 func TestStartRemovesUnownedCDISpecs(t *testing.T) {
 	ctx := context.Background()
-	for _, leases := range []bool{false, true} {
-		dir := t.TempDir()
-		for _, d := range []string{"sys/bus/cxl/devices", "sys/devices/system/node", "cdi"} {
-			noErr(t, os.MkdirAll(filepath.Join(dir, d), 0o755))
-		}
-		for name, kind := range map[string]string{device.LeasesCDISpecName: device.CDIKind, "cxl-local": device.CDIKind, "gpu": "example.com/gpu"} {
-			data := "cdiVersion: 0.6.0\nkind: " + kind + "\ndevices:\n- name: " + name + "\n  containerEdits:\n    env: [A=1]\n"
-			noErr(t, os.WriteFile(filepath.Join(dir, "cdi", name+".yaml"), []byte(data), 0o600))
-		}
-		flags := &CXLFlags{CDIRoot: filepath.Join(dir, "cdi"), NodeName: testNode}
-		config := &pluginConfig{Flags: flags, KubeletPluginDir: dir}
-		rules := newDriverRules(config, flags)
-		st, err := store.Open(ctx, store.Options{Dir: dir, BootID: "boot-1"})
-		noErr(t, err)
-		devices, err := newDriverDevices(config, flags, &DriverConfig{}, kernelAt(dir), nil, st, rules)
-		noErr(t, err)
-		fe, err := newFrontEnds(config, flags, &DriverConfig{}, st, devices, nil, rules)
-		noErr(t, err)
-		noErr(t, fe.writeCDI(st, leases))
-		noErr(t, st.Close())
-		want := []string{"gpu.yaml"}
-		if leases {
-			want = []string{device.LeasesCDISpecName + ".yaml", "gpu.yaml"}
-		}
-		var left []string
-		m, _ := filepath.Glob(filepath.Join(dir, "cdi", "*"))
-		for _, path := range m {
-			left = append(left, filepath.Base(path))
-		}
-		if !slices.Equal(left, want) {
-			t.Errorf("leases %v: left %v, want %v", leases, left, want)
-		}
+	dir := t.TempDir()
+	for _, d := range []string{"sys/bus/cxl/devices", "sys/devices/system/node", "cdi"} {
+		noErr(t, os.MkdirAll(filepath.Join(dir, d), 0o755))
+	}
+	for name, kind := range map[string]string{"cxl-leases": device.CDIKind, "cxl-local": device.CDIKind, "gpu": "example.com/gpu"} {
+		data := "cdiVersion: 0.6.0\nkind: " + kind + "\ndevices:\n- name: " + name + "\n  containerEdits:\n    env: [A=1]\n"
+		noErr(t, os.WriteFile(filepath.Join(dir, "cdi", name+".yaml"), []byte(data), 0o600))
+	}
+	flags := &CXLFlags{CDIRoot: filepath.Join(dir, "cdi"), NodeName: testNode}
+	config := &pluginConfig{Flags: flags, KubeletPluginDir: dir}
+	rules := newDriverRules(config, flags)
+	st, err := store.Open(ctx, store.Options{Dir: dir, BootID: "boot-1"})
+	noErr(t, err)
+	devices, err := newDriverDevices(config, flags, &DriverConfig{}, kernelAt(dir), nil, st, rules)
+	noErr(t, err)
+	fe, err := newFrontEnds(config, flags, &DriverConfig{}, st, devices, nil, rules)
+	noErr(t, err)
+	noErr(t, fe.writeCDI(st))
+	noErr(t, st.Close())
+	var left []string
+	m, _ := filepath.Glob(filepath.Join(dir, "cdi", "*"))
+	for _, path := range m {
+		left = append(left, filepath.Base(path))
+	}
+	if !slices.Equal(left, []string{"gpu.yaml"}) {
+		t.Errorf("left %v, want [gpu.yaml]", left)
 	}
 }
 

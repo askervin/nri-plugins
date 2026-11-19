@@ -1884,10 +1884,9 @@ func (k *checker) checkStateFiles(v VM, ov *ObsVM, pr *vmPred) {
 		switch {
 		case strings.Contains(file, "cxl-claims"):
 			claims = cdiUIDs(names, "claim-", true)
+			leases = cdiUIDs(names, "lease-", false)
 		case strings.Contains(file, "cxl-pool"):
 			pool = cdiUIDs(names, "claim-", true)
-		case strings.Contains(file, "cxl-leases"):
-			leases = cdiUIDs(names, "lease-", false)
 		}
 	}
 	if claims == nil {
@@ -1906,7 +1905,7 @@ func (k *checker) checkStateFiles(v VM, ov *ObsVM, pr *vmPred) {
 		k.waitf("%s: cxl-pool.yaml has claims %v, want %v", v, sortedKeys(pool), sortedKeys(pr.poolUIDs))
 	}
 	if !sameSet(leases, pr.leaseUIDs) {
-		k.waitf("%s: cxl-leases.yaml has claims %v, want %v", v, sortedKeys(leases), sortedKeys(pr.leaseUIDs))
+		k.waitf("%s: cxl-claims.yaml has lease claims %v, want %v", v, sortedKeys(leases), sortedKeys(pr.leaseUIDs))
 	}
 }
 

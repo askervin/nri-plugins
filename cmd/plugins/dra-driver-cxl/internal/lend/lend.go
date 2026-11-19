@@ -25,6 +25,7 @@ import (
 	"errors"
 
 	resourcev1 "k8s.io/api/resource/v1"
+	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 )
@@ -90,6 +91,9 @@ type LeaseClaims interface {
 	// requested, then stops the socket and removes the directories.
 	// Unknown claims are not an error.
 	CloseClaim(ctx context.Context, uid string) error
+	// CDIEdits returns the container edits of the CDI device of the
+	// claim: its socket directory, its lease-fs directory and the CLI.
+	CDIEdits(uid string) cdiSpecs.ContainerEdits
 }
 
 // ErrLendingUnavailable is the error of a lend without NRI.

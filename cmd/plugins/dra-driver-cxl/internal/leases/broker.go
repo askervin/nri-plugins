@@ -29,7 +29,6 @@ import (
 
 	coreclientset "k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
-	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
@@ -111,8 +110,6 @@ type Options struct {
 	NodeName string
 	// DataDir is the plugin data directory of cxl.nri.io.
 	DataDir string
-	// CDI writes the CDI spec of the lease claims, nil for none.
-	CDI *cdiapi.Cache
 	// CLI is the host path of cxl-request, Image the image of the
 	// companion pods ("": DefaultCompanionImage), WaitDefault the wait of
 	// a request that names none (0: DefaultWait).
@@ -204,13 +201,12 @@ func (l Limits) withDefaults() Limits {
 // before a commit only spares the commit when there is nothing to change.
 //
 // Locks and waits: mu guards the process memory; a leaf lock among the
-// driver's locks, held across the CDI cache's lock and the file operations
-// of a socket, never across a commit, an API call or a call of the
-// container plugin. A commit function changes only the records: it takes
-// no lock and waits for nothing, as it runs inside the store's
-// commit (the DRA driver runs the step of PreparedStep inside its own
-// commit). A commit waits at most Timeouts.Persist. Waiters poll changed
-// and every Timeouts.Poll.
+// driver's locks, held across the file operations of a socket, never
+// across a commit, an API call or a call of the container plugin. A commit
+// function changes only the records: it takes no lock and waits for
+// nothing, as it runs inside the store's commit (the DRA driver runs the
+// step of PreparedStep inside its own commit). A commit waits at most
+// Timeouts.Persist. Waiters poll changed and every Timeouts.Poll.
 type Broker struct {
 	opts Options
 	st   *store.Store
@@ -249,9 +245,9 @@ type Broker struct {
 }
 
 // New loads the lease claims and leases from the store, fails the READY
-// leases whose companion's device the start did not restore, rewrites the
-// CDI spec and starts the sockets of the lease claims. Requests are
-// answered with "lending unavailable" until Start.
+// leases whose companion's device the start did not restore and starts the
+// sockets of the lease claims. Requests are answered with "lending
+// unavailable" until Start.
 func New(opts Options) (*Broker, error) {
 	if opts.Store == nil {
 		return nil, errors.New("lease broker: the broker needs the state store")
@@ -288,13 +284,6 @@ func New(opts Options) (*Broker, error) {
 		klog.Errorf("lease broker: %v; starting with an empty lease table", err)
 	}
 	b.unrestored = b.failUnrestored()
-	b.mu.Lock()
-	err := b.writeCDISpec()
-	b.mu.Unlock()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("lease broker: %w", err)
-	}
 	b.recoverClaims()
 	b.sweepFsDirs(state.TriggerRecover)
 	r := b.records()
