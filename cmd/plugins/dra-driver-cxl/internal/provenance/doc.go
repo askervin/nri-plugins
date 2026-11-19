@@ -16,7 +16,7 @@
 // memory pool: the Provenance record of each serial (UNKNOWN, HELD, POOL,
 // LOCAL) and the Watcher that lists the pool driver's ResourceSlices and
 // the pool claims of the node. Its consumers are the publisher of the
-// node's ResourceSlice, which never publishes a pool device or a held
+// node's ResourceSlices, which never publishes a pool device or a held
 // memdev as a local one, and the device engine's check before a local
 // grant (CheckLocal, with a fresh list). The transition table of
 // Provenance.State is in internal/state and docs/memory/cxl/states.md.

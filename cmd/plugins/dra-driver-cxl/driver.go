@@ -45,7 +45,7 @@ type driver struct {
 	// nri is the NRI plugin, nil when NRI did not start.
 	nri *containers.Plugin
 	// local is cxl.nri.io, pool the pool driver (nil when it is
-	// disabled), publisher the publisher of the node's ResourceSlice,
+	// disabled), publisher the publisher of the node's ResourceSlices,
 	// watcher the watcher of the pool devices (nil without a client).
 	local     *dra.Plugin
 	pool      *dra.Plugin
@@ -133,7 +133,7 @@ func wireLenders(nri *containers.Plugin, broker *leases.Broker, fe *frontEnds) l
 }
 
 // startPlugins registers the kubelet plugins of cxl.nri.io and of the pool
-// driver, starts the publisher of the node's ResourceSlice and the watcher
+// driver, starts the publisher of the node's ResourceSlices and the watcher
 // of the pool devices.
 func (d *driver) startPlugins(ctx context.Context, config *pluginConfig, fe *frontEnds, watcher *provenance.Watcher) error {
 	klog.Infof(`Starting DRA driver kubelet plugin
@@ -385,7 +385,7 @@ func newWatcher(config *pluginConfig, cxlFlags *CXLFlags, st *store.Store) *prov
 }
 
 // frontEnds are the two DRA drivers of the process, the publisher of the
-// node's ResourceSlice and the CDI cache that the drivers and the lease
+// node's ResourceSlices and the CDI cache that the drivers and the lease
 // broker write their specs with.
 type frontEnds struct {
 	local     *dra.Plugin

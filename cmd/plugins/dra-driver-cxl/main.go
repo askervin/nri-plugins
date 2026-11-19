@@ -304,7 +304,7 @@ func installLeaseCLI(src, dst string) (retErr error) {
 //     place, the other CXL specs removed;
 //  5. the NRI plugin started and the lenders wired;
 //  6. the kubelet plugins of cxl.nri.io and of the pool driver registered,
-//     the first publication of the node's ResourceSlice, the watchers, the
+//     the first publication of the node's ResourceSlices, the watchers, the
 //     periodic pass over the stale lease binds and the periodic repair pass
 //     of the cpuset.mems of the fenced containers.
 func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
