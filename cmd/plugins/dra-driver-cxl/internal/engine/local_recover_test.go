@@ -263,54 +263,67 @@ func TestLocalRecoverBadBlocks(t *testing.T) {
 }
 
 // ForgetLocal forgets the records of a local memdev whose region was being
-// created (NOTED) and that is a pool device now, without touching the
-// region; a local memdev whose region is made stays.
+// created (NOTED, or made and cut in its probe) and that is a pool device
+// now, without touching the region; a local memdev whose region is made
+// stays.
 func TestLocalForgetLocal(t *testing.T) {
-	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib}, fake.MemdevSpec{Serial: serialB})
-	v.mustPrepare(localDriver, "b", localReq("b", 0, serialB, state.ModeDax, state.KindExclusive, 256*mib))
-	v.f.CutAfter("cxl create-region")
-	if !v.cut(func() { _ = v.prepare(localDriver, "l", sliceReq("l", 0, state.ModeDax, 256*mib)) }) {
-		t.Fatal("not cut")
+	for _, c := range []struct {
+		name   string
+		cut    func(v *env)
+		region state.RegionState
+	}{
+		{"created", func(v *env) { v.f.CutAfter("cxl create-region") }, state.RegionNoted},
+		{"probe", func(v *env) { v.f.CutProbe() }, state.RegionOwned},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib}, fake.MemdevSpec{Serial: serialB})
+			v.configure(func(o *Options) { probeOptions(v, o) })
+			v.mustPrepare(localDriver, "b", localReq("b", 0, serialB, state.ModeDax, state.KindExclusive, 256*mib))
+			c.cut(v)
+			if !v.cut(func() { _ = v.prepare(localDriver, "l", sliceReq("l", 0, state.ModeDax, 256*mib)) }) {
+				t.Fatal("not cut")
+			}
+			if reg := v.records().Region("region1"); reg == nil || reg.State != c.region {
+				t.Fatalf("region %+v", reg)
+			}
+			_ = v.st.Close()
+			v.open()
+			before := v.f.Commands()
+			logs := klogtest.Capture(t, 3)
+			if err := v.e.ForgetLocal(context.Background(), []state.Serial{serialL, serialB, serialA}); err != nil {
+				t.Fatal(err)
+			}
+			wantLog(t, logs(), "engine: local memdev 0x11 (mem0): its region was being created, and it is a pool device now: forgetting it without "+
+				"touching its regions [region1]")
+			r := v.records()
+			if r.Memdev(serialL) != nil || r.Region("region1") != nil || r.Grant(state.GrantRef{Claim: "l"}) != nil {
+				t.Fatalf("records %+v", r)
+			}
+			if r.Memdev(serialB) == nil || r.Grant(state.GrantRef{Claim: "b"}) == nil {
+				t.Fatalf("records of serial 0xb1 %+v", r)
+			}
+			if cmds := v.f.CommandsSince(before); cmds != "" {
+				t.Fatalf("commands %q", cmds)
+			}
+			if rs := v.f.Kernel().Regions("mem0"); !slices.Equal(rs, []string{"region1"}) {
+				t.Fatalf("regions of mem0 %v", rs)
+			}
+			if _, err := v.e.Recover(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if rs := v.f.Kernel().Regions("mem0"); !slices.Equal(rs, []string{"region1"}) {
+				t.Fatalf("regions of mem0 after the recovery %v", rs)
+			}
+			dropRaw(t, v, "region1")
+			finish(t, v, "finished")
+		})
 	}
-	if reg := v.records().Region("region1"); reg == nil || reg.State != state.RegionNoted {
-		t.Fatalf("region %+v", reg)
-	}
-	_ = v.st.Close()
-	v.open()
-	before := v.f.Commands()
-	logs := klogtest.Capture(t, 3)
-	if err := v.e.ForgetLocal(context.Background(), []state.Serial{serialL, serialB, serialA}); err != nil {
-		t.Fatal(err)
-	}
-	wantLog(t, logs(), "engine: local memdev 0x11 (mem0): its region was being created, and it is a pool device now: forgetting it without "+
-		"touching its regions [region1]")
-	r := v.records()
-	if r.Memdev(serialL) != nil || r.Region("region1") != nil || r.Grant(state.GrantRef{Claim: "l"}) != nil {
-		t.Fatalf("records %+v", r)
-	}
-	if r.Memdev(serialB) == nil || r.Grant(state.GrantRef{Claim: "b"}) == nil {
-		t.Fatalf("records of serial 0xb1 %+v", r)
-	}
-	if cmds := v.f.CommandsSince(before); cmds != "" {
-		t.Fatalf("commands %q", cmds)
-	}
-	if rs := v.f.Kernel().Regions("mem0"); !slices.Equal(rs, []string{"region1"}) {
-		t.Fatalf("regions of mem0 %v", rs)
-	}
-	if _, err := v.e.Recover(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if rs := v.f.Kernel().Regions("mem0"); !slices.Equal(rs, []string{"region1"}) {
-		t.Fatalf("regions of mem0 after the recovery %v", rs)
-	}
-	dropRaw(t, v, "region1")
-	finish(t, v, "finished")
 }
 
 // The start releases the cut Prepares of local memdevs as the recovery
-// cells say, with the line of each kind: a part released, a new shared
-// region released, an established one kept idle, a persistent region
-// released.
+// cells say, with the line of each kind: a part released, also before its
+// region was made, a new shared region released, an established one kept
+// idle, a persistent region released.
 func TestLocalRecoverCutPrepares(t *testing.T) {
 	shared := func(v *env) { v.configure(func(o *Options) { o.Shared = func(state.Serial) bool { return true } }) }
 	realised := func(v *env) { cutWhenRealised(v, "c") }
@@ -325,6 +338,8 @@ func TestLocalRecoverCutPrepares(t *testing.T) {
 	}{
 		{"sliced", []fake.MemdevSpec{{Serial: serialL, Ram: gib}}, nil, realised, sliceReq("c", 0, state.ModeNUMA, 256*mib),
 			"engine: local memdev 0x11 (mem0): claim c is not prepared, releasing it", 0},
+		{"sliced before its region", []fake.MemdevSpec{{Serial: serialL, Ram: gib}}, nil, func(v *env) { v.f.CutBefore("cxl create-region") },
+			sliceReq("c", 0, state.ModeNUMA, 256*mib), "engine: local memdev 0x11 (mem0): claim c is not prepared, releasing it", 0},
 		{"shared new", []fake.MemdevSpec{{Serial: serialL, Ram: gib}}, shared, func(v *env) { v.cutZeroing(true) }, sharedReq("c"),
 			"engine: local memdev 0x11 (mem0): claim c of the shared device is not prepared, dropping it", 0},
 		{"shared established", []fake.MemdevSpec{{Serial: serialL, Ram: gib}}, func(v *env) {
@@ -357,7 +372,7 @@ func TestLocalRecoverCutPrepares(t *testing.T) {
 			// kubelet's retry prepares anew
 			v.mustPrepare(localDriver, "c", c.req)
 			v.mustUnprepare(localDriver, "c")
-			if c.name != "sliced" && c.name != "persistent" {
+			if strings.HasPrefix(c.name, "shared") {
 				releaseIdleShared(v)
 			}
 			v.clean("unprepared")
@@ -494,6 +509,171 @@ func TestLocalReleasingGrantHoldsNoNewRegion(t *testing.T) {
 	}
 	v.mustUnprepare(localDriver, "d")
 	v.clean("unprepared")
+}
+
+// A region that a start kept for the claim of a cut Prepare, below a newer
+// region of another memdev, and that a later start does not keep for it:
+// that start releases the claim, which then holds nothing (its Unprepare
+// runs no command, its Prepare again prepares it anew). A sliced region
+// whose region above went goes at that start; a shared one stays with the
+// idle memdev, and the Prepare again sets it up and zeroes it once.
+func TestLocalKeptRegionReleasedLater(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		t.Run(map[bool]string{false: "sliced", true: "shared"}[shared], func(t *testing.T) {
+			v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib}, fake.MemdevSpec{Serial: serialB})
+			v.configure(func(o *Options) { probeOptions(v, o) })
+			req := sliceReq("u1", 0, state.ModeNUMA, 256*mib)
+			if shared {
+				v.configure(func(o *Options) { sharedOptions(v, o) })
+				req = sharedReq("u1")
+			}
+			v.f.CutProbe()
+			if !v.cut(func() { _ = v.prepare(localDriver, "u1", req) }) {
+				t.Fatal("not cut")
+			}
+			above := rawRegion(t, v, "mem1")
+			if out := v.restart(); !slices.Equal(out.Kept, []state.GrantRef{{Claim: "u1"}}) {
+				t.Fatalf("recovered %+v", out)
+			}
+			wantRegion(t, v, "region0", state.RegionKept)
+			if !shared {
+				dropRaw(t, v, above)
+			}
+			before := v.f.Commands()
+			if out := v.restart(); !slices.Equal(out.Released, []state.GrantRef{{Claim: "u1"}}) || len(out.Kept) > 0 {
+				t.Fatalf("recovered at the later start %+v", out)
+			}
+			want := "cxl disable-region region0\ncxl destroy-region region0"
+			if shared {
+				want = ""
+				if m := v.records().Memdev(serialL); m == nil || m.State != state.MemdevIdleKept || len(m.Grants) > 0 {
+					t.Fatalf("memdev %+v", m)
+				}
+			}
+			if cmds := v.f.CommandsSince(before); cmds != want {
+				t.Fatalf("commands at the later start %q, want %q", cmds, want)
+			}
+			before = v.f.Commands()
+			v.mustUnprepare(localDriver, "u1")
+			if cmds := v.f.CommandsSince(before); cmds != "" {
+				t.Fatalf("the Unprepare of the released claim ran %q", cmds)
+			}
+			wantPreparation(t, v, localDriver, "u1", "")
+			v.mustPrepare(localDriver, "u1", req)
+			creates := map[bool]int{false: 2, true: 1}[shared]
+			if n := strings.Count(v.f.Commands(), "cxl create-region -t ram -d decoder0.0 -m mem0"); n != creates {
+				t.Fatalf("%d regions created on mem0, want %d", n, creates)
+			}
+			if z := v.f.Zeroed(); shared && len(z) != 1 {
+				t.Fatalf("zeroed %v, want the region once", z)
+			}
+			v.mustUnprepare(localDriver, "u1")
+			if shared {
+				dropRaw(t, v, above)
+				releaseIdleShared(v)
+			}
+			v.clean("unprepared")
+		})
+	}
+}
+
+// A kept region is not set up any more, and a cut release may have
+// disabled it: the Unprepare of the claim of a kept region, cut after its
+// cxl disable-region, leaves it disabled; the start keeps it again below
+// the newer region (the claim's grant RELEASING), and the Prepares of
+// another claim and of the kept claim set it up again. A shared device
+// that is not configured shared any more, kept for the claim whose other
+// result failed, gets all of its region again at the claim's Prepare
+// again, zeroed.
+func TestLocalKeptRegionSetUpAgain(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		cut  func(v *env)
+	}{
+		{"probe", func(v *env) { v.f.CutProbe() }},
+		{"slice", func(v *env) { v.f.CutAfter("write " + blockState(74) + " online_movable") }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib}, fake.MemdevSpec{Serial: serialB})
+			v.configure(func(o *Options) { probeOptions(v, o) })
+			c.cut(v)
+			if !v.cut(func() { _ = v.prepare(localDriver, "u1", sliceReq("u1", 0, state.ModeNUMA, 128*mib)) }) {
+				t.Fatal("not cut")
+			}
+			above := rawRegion(t, v, "mem1")
+			v.restart()
+			wantRegion(t, v, "region0", state.RegionKept)
+			v.f.CutAfter("cxl disable-region")
+			if !v.cut(func() { _ = v.unprepare(localDriver, "u1") }) {
+				t.Fatal("the Unprepare was not cut")
+			}
+			before := v.f.Commands()
+			if out := v.restart(); len(out.Released)+len(out.Kept) > 0 {
+				t.Fatalf("recovered %+v", out)
+			}
+			if cmds := v.f.CommandsSince(before); cmds != "" {
+				t.Fatalf("commands at the start %q", cmds)
+			}
+			wantRegion(t, v, "region0", state.RegionKept)
+			if g := v.grant("u1", 0); g.State != state.GrantReleasing {
+				t.Fatalf("grant of the kept claim %+v", g)
+			}
+			before = v.f.Commands()
+			v.mustPrepare(localDriver, "u2", sliceReq("u2", 0, state.ModeNUMA, 128*mib))
+			if cmds := v.f.CommandsSince(before); cmds != "cxl enable-region region0" {
+				t.Fatalf("commands of the Prepare %q", cmds)
+			}
+			v.mustPrepare(localDriver, "u1", sliceReq("u1", 0, state.ModeDax, 128*mib))
+			if n := strings.Count(v.f.Commands(), "cxl create-region -t ram -d decoder0.0 -m mem0"); n != 1 {
+				t.Fatalf("%d regions created on mem0", n)
+			}
+			wantRegion(t, v, "region0", state.RegionOwned)
+			if g1, g2 := v.grant("u1", 0), v.grant("u2", 0); g1.Got.Region != "region0" || g2.Got.Region != "region0" {
+				t.Fatalf("grants %+v %+v", g1, g2)
+			}
+			snap, err := v.f.Kernel().Observe(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if online := snap.OnlineBlocks(snap.Region("region0").Range.Blocks(snap.BlockSize)); !slices.Equal(online, []int{74}) {
+				t.Fatalf("online blocks %v", online)
+			}
+			v.mustUnprepare(localDriver, "u1")
+			v.mustUnprepare(localDriver, "u2")
+			dropRaw(t, v, above)
+			v.restart()
+			v.clean("unprepared")
+		})
+	}
+
+	t.Run("no longer shared", func(t *testing.T) {
+		v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib}, fake.MemdevSpec{Serial: serialB},
+			fake.MemdevSpec{Serial: serialC, Ram: 512 * mib, HostBridge: 24})
+		shared := true
+		v.configure(func(o *Options) {
+			probeOptions(v, o)
+			o.Shared = func(s state.Serial) bool { return shared && s == serialL }
+		})
+		regionAboveNext(t, v, "mem1")
+		v.f.Before("cxl create-region -t ram -d decoder0.1", func() { shared = false })
+		v.f.FailCommand("cxl create-region -t ram -d decoder0.1", errors.New("cxl region: cmd_create_region: failed"))
+		if err := v.prepare(localDriver, "u1", sharedReq("u1"), localReq("u1", 1, serialC, state.ModeDax, state.KindExclusive, 256*mib)); err == nil {
+			t.Fatal("the Prepare succeeded")
+		}
+		wantRegion(t, v, "region0", state.RegionKept)
+		wantPreparation(t, v, localDriver, "u1", state.PreparationKept)
+		v.mustPrepare(localDriver, "u1", sharedReq("u1"))
+		if g := v.grant("u1", 0); g.Got.Region != "region0" || g.Got.Size != gib {
+			t.Fatalf("grant %+v, want all of region0", g)
+		}
+		if z := v.f.Zeroed(); len(z) != 2 {
+			t.Fatalf("zeroed %v, want the region twice", z)
+		}
+		v.mustUnprepare(localDriver, "u1")
+		dropRaw(t, v, "region1")
+		v.restart()
+		v.clean("unprepared")
+	})
 }
 
 // A kept region that a Prepare enabled again is kept again by the start
