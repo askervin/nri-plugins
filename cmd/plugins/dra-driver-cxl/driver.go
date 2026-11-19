@@ -55,6 +55,10 @@ type driver struct {
 	// closeStore writes the pending commits of the state store and
 	// closes it.
 	closeStore func()
+	// cancelRun ends the context of the parts that run until Shutdown:
+	// the NRI stub, the kubelet helpers, the publisher, the watcher and
+	// the periodic passes.
+	cancelRun func()
 	// stop ends the periodic passes of the driver.
 	stop chan struct{}
 	// fatal gets the first fatal error of the kubelet plugins: run stops
@@ -639,6 +643,9 @@ func (d *driver) Shutdown(ctx context.Context) error {
 	d.pool.Stop()
 	d.publisher.Stop()
 	d.local.Stop()
+	if d.cancelRun != nil {
+		d.cancelRun()
+	}
 	if d.closeStore != nil {
 		d.closeStore()
 	}

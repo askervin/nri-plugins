@@ -294,7 +294,9 @@ func installLeaseCLI(src, dst string) (retErr error) {
 }
 
 // newDriver returns the driver of the configuration of config, started in
-// the order of its start-up:
+// the order of its start-up below. The waits of the start end with ctx;
+// the parts that run until Shutdown do not: Shutdown stops them in its
+// order and ends their context last.
 //  1. the boot id and the state store;
 //  2. the device engine and its recovery, with the first list of the pool
 //     devices and the first scan;
@@ -331,9 +333,11 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	if err != nil {
 		return nil, err
 	}
+	runCtx, cancelRun := context.WithCancel(context.WithoutCancel(ctx))
 	started := false
 	defer func() {
 		if !started {
+			cancelRun()
 			closeStore()
 		}
 	}()
@@ -396,6 +400,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 		publisher:  fe.publisher,
 		watcher:    watcher,
 		closeStore: closeStore,
+		cancelRun:  cancelRun,
 		stop:       make(chan struct{}),
 		fatal:      fatal,
 		events:     events,
@@ -425,29 +430,30 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	// above. A Prepare still waits for the first Synchronize (waitNRI): the
 	// stub starts when the runtime has configured it, before it
 	// synchronizes.
-	d.nri = startNRI(ctx, nri, cxlFlags, fe, broker != nil)
+	d.nri = startNRI(runCtx, nri, cxlFlags, fe, broker != nil)
 	lender := wireLenders(d.nri, broker, fe)
 
 	// 6. The kubelet plugins, the publisher and the watchers.
-	if err := d.startPlugins(ctx, config, fe, watcher); err != nil {
+	if err := d.startPlugins(runCtx, config, fe, watcher); err != nil {
 		return nil, err
 	}
 	if broker != nil {
 		broker.Start(lender)
 	}
-	go everyPeriod(staleBindPeriod, d.stop, func() { devices.retryStale(ctx) })
+	go everyPeriod(staleBindPeriod, d.stop, func() { devices.retryStale(runCtx) })
 	if d.nri != nil {
-		go everyPeriod(repairPeriod, d.stop, func() { d.nri.Repair(ctx) })
+		go everyPeriod(repairPeriod, d.stop, func() { d.nri.Repair(runCtx) })
 	}
-	d.startRescans(ctx, driverConfig)
+	d.startRescans(runCtx, driverConfig)
 
 	klog.V(3).Info("Finished creating new driver")
 	started = true
 	return d, nil
 }
 
-// run runs the driver until a signal or a fatal error of the kubelet
-// plugins stops it, and returns the fatal error.
+// run runs the driver until SIGTERM, SIGINT or a fatal error of the
+// kubelet plugins stops it, and returns the fatal error. A signal during
+// the start ends its waits.
 func run(ctx context.Context, flags *CXLFlags) error {
 	klog.Infof("Starting %s version %s (build %s, %s, %s/%s), drivers %s and %q",
 		filepath.Base(os.Args[0]), version.Version, version.Build,
@@ -476,20 +482,27 @@ func run(ctx context.Context, flags *CXLFlags) error {
 		}
 	}
 
+	// SIGQUIT keeps its goroutine dump: the diagnostic of a hang
+	ctx, stopSignals := signal.NotifyContext(ctx, syscall.SIGTERM, os.Interrupt)
+	defer stopSignals()
 	driver, err := newDriver(ctx, config)
 	if err != nil {
+		if ctx.Err() != nil {
+			klog.Infof("%v during the start (%v), exiting.", context.Cause(ctx), err)
+			return nil
+		}
 		return err
 	}
 
-	sigc := make(chan os.Signal, 1)
-	signal.Notify(sigc, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	var fatal error
 	select {
-	case sig := <-sigc:
-		klog.Infof("Received signal %v, exiting.", sig)
+	case <-ctx.Done():
+		klog.Infof("%v, exiting.", context.Cause(ctx))
 	case fatal = <-driver.fatal:
 		klog.Infof("Fatal error of a kubelet plugin, exiting.")
 	}
+	// a second signal kills the process at once
+	stopSignals()
 	if err := driver.Shutdown(ctx); err != nil {
 		klog.Errorf("Unable to cleanly shut down the driver: %v", err)
 	}

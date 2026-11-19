@@ -1896,7 +1896,9 @@ variable when it is set. Both `-flag` and `--flag` work.
 
 `-v` and the other logging flags of klog are accepted too;
 `nri-dra-driver-cxl -help` lists them all. The plugin stops on SIGTERM and
-SIGINT, and exits with status 1 when the runtime closes the NRI connection
+SIGINT, also while it starts; a second one during the stop kills it at
+once, and SIGQUIT dumps its goroutines (Go's default). It exits with
+status 1 when the runtime closes the NRI connection
 or a gRPC server of its kubelet plugins fails, to be restarted
 ([As a host process](#as-a-host-process)).
 
