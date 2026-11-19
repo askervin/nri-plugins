@@ -330,7 +330,7 @@ func TestNewLocalHelper(t *testing.T) {
 		devices, err := newDriverDevices(config, flags, cfg, kernelAt(dir), nil, st, rules)
 		if err == nil {
 			var fe *frontEnds
-			if fe, err = newFrontEnds(config, flags, cfg, st, devices, nil, rules); err == nil {
+			if fe, err = newFrontEnds(config, flags, cfg, st, devices, nil, rules, nil); err == nil {
 				if err = fe.recover(ctx, cfg, devices); err == nil {
 					return fe, devices, dir, closeStore
 				}
@@ -379,7 +379,7 @@ func TestStartRemovesUnownedCDISpecs(t *testing.T) {
 	noErr(t, err)
 	devices, err := newDriverDevices(config, flags, &DriverConfig{}, kernelAt(dir), nil, st, rules)
 	noErr(t, err)
-	fe, err := newFrontEnds(config, flags, &DriverConfig{}, st, devices, nil, rules)
+	fe, err := newFrontEnds(config, flags, &DriverConfig{}, st, devices, nil, rules, nil)
 	noErr(t, err)
 	noErr(t, fe.writeCDI(st))
 	noErr(t, st.Close())
@@ -537,7 +537,7 @@ func TestFirstListAfterRecovery(t *testing.T) {
 			devices.mu.Unlock()
 			return nil, nil
 		}})
-	fe, err := newFrontEnds(config, flags, &DriverConfig{}, st, devices, watcher, rules)
+	fe, err := newFrontEnds(config, flags, &DriverConfig{}, st, devices, watcher, rules, nil)
 	noErr(t, err)
 	noErr(t, fe.recover(ctx, &DriverConfig{}, devices))
 	if lists == 0 || guarded != lists {

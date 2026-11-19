@@ -361,7 +361,14 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	// the pool driver, pool devices
 	driverConfig.PublishLeaseDevice = cxlFlags.Leases
 	watcher := newWatcher(config, cxlFlags, st)
-	fe, err := newFrontEnds(config, cxlFlags, driverConfig, st, devices, watcher, rules)
+	fatal := make(chan error, 1)
+	shutdown := func(err error) {
+		select {
+		case fatal <- err:
+		default: // the first one stops the driver
+		}
+	}
+	fe, err := newFrontEnds(config, cxlFlags, driverConfig, st, devices, watcher, rules, shutdown)
 	if err != nil {
 		return nil, err
 	}
@@ -390,6 +397,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 		watcher:    watcher,
 		closeStore: closeStore,
 		stop:       make(chan struct{}),
+		fatal:      fatal,
 		events:     events,
 		stopEvents: stopEvents,
 	}
@@ -438,7 +446,8 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	return d, nil
 }
 
-// run runs the driver until a signal stops it.
+// run runs the driver until a signal or a fatal error of the kubelet
+// plugins stops it, and returns the fatal error.
 func run(ctx context.Context, flags *CXLFlags) error {
 	klog.Infof("Starting %s version %s (build %s, %s, %s/%s), drivers %s and %q",
 		filepath.Base(os.Args[0]), version.Version, version.Build,
@@ -474,13 +483,17 @@ func run(ctx context.Context, flags *CXLFlags) error {
 
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
-	sig := <-sigc
-
-	klog.Infof("Received signal %v, exiting.", sig)
+	var fatal error
+	select {
+	case sig := <-sigc:
+		klog.Infof("Received signal %v, exiting.", sig)
+	case fatal = <-driver.fatal:
+		klog.Infof("Fatal error of a kubelet plugin, exiting.")
+	}
 	if err := driver.Shutdown(ctx); err != nil {
 		klog.Errorf("Unable to cleanly shut down the driver: %v", err)
 	}
-	return nil
+	return fatal
 }
 
 func main() {

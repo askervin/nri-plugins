@@ -76,7 +76,7 @@ func TestCreateContainerDoesNotWaitForTheBroker(t *testing.T) {
 	noErr(t, err)
 	devices, err := newDriverDevices(cfg, flags, &DriverConfig{}, kernelAt(root), fenceOf(nri), st, rules)
 	noErr(t, err)
-	fe, err := newFrontEnds(cfg, flags, &DriverConfig{}, st, devices, nil, rules)
+	fe, err := newFrontEnds(cfg, flags, &DriverConfig{}, st, devices, nil, rules, nil)
 	noErr(t, err)
 	noErr(t, fe.recover(ctx, &DriverConfig{}, devices))
 	// newBroker's broker, with a client of the test

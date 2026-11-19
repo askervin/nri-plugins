@@ -57,6 +57,9 @@ type driver struct {
 	closeStore func()
 	// stop ends the periodic passes of the driver.
 	stop chan struct{}
+	// fatal gets the first fatal error of the kubelet plugins: run stops
+	// the driver and the process exits non-zero.
+	fatal chan error
 	// events are the uevents of the kernel objects, nil without them;
 	// stopEvents stops them.
 	events     kernelEvents
@@ -400,8 +403,8 @@ type frontEnds struct {
 // ResourceSlice of the devices of the kernel of the engine, and the pool
 // driver unless it is disabled (rules.pool nil). The Prepares and
 // Unprepares of both have the publisher rescan. Their CDI specs are written
-// to the directory cxlFlags.CDIRoot.
-func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, st *store.Store, devices *deviceEngine, watcher *provenance.Watcher, rules driverRules) (*frontEnds, error) {
+// to the directory cxlFlags.CDIRoot. shutdown is told their fatal errors.
+func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, st *store.Store, devices *deviceEngine, watcher *provenance.Watcher, rules driverRules, shutdown func(error)) (*frontEnds, error) {
 	// the cache only writes: no refresh after the first, no watch
 	cdi, err := cdiapi.NewCache(cdiapi.WithSpecDirs(cxlFlags.CDIRoot), cdiapi.WithAutoRefresh(false))
 	if err != nil {
@@ -432,6 +435,7 @@ func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Driver
 			SysRoot:   devices.k.SysRoot,
 			DevRoot:   devices.k.DevRoot,
 			CDI:       fe.cdi,
+			Shutdown:  shutdown,
 			Publisher: fe.publisher,
 		})
 		if err != nil {
@@ -450,6 +454,7 @@ func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Driver
 		CDI:       fe.cdi,
 		Local:     driverConfig.localConfig(),
 		OnShared:  devices.addShared,
+		Shutdown:  shutdown,
 		Publisher: fe.publisher,
 	})
 	if err != nil {

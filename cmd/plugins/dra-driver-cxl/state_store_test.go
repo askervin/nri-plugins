@@ -65,7 +65,7 @@ func TestStartOnALostStore(t *testing.T) {
 	rules := newDriverRules(config, flags)
 	devices, err := newDriverDevices(config, flags, &DriverConfig{}, kernelAt(root), nil, st, rules)
 	noErr(t, err)
-	fe, err := newFrontEnds(config, flags, &DriverConfig{}, st, devices, nil, rules)
+	fe, err := newFrontEnds(config, flags, &DriverConfig{}, st, devices, nil, rules, nil)
 	noErr(t, err)
 	noErr(t, fe.recover(ctx, &DriverConfig{}, devices))
 	p, ns := fe.pool, fe.local

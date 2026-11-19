@@ -1895,8 +1895,9 @@ variable when it is set. Both `-flag` and `--flag` work.
 
 `-v` and the other logging flags of klog are accepted too;
 `nri-dra-driver-cxl -help` lists them all. The plugin stops on SIGTERM and
-SIGINT, and exits with status 1 when the runtime closes the NRI connection,
-to be restarted ([As a host process](#as-a-host-process)).
+SIGINT, and exits with status 1 when the runtime closes the NRI connection
+or a gRPC server of its kubelet plugins fails, to be restarted
+([As a host process](#as-a-host-process)).
 
 Without NRI (the socket cannot be reached) the plugin runs on: claims are
 prepared, containers are not steered and not kept off the CXL nodes of

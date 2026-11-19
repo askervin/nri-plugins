@@ -28,6 +28,7 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -124,17 +125,28 @@ func TestWaitNRI(t *testing.T) {
 	e.wantClean()
 }
 
-// HandleError logs the errors of the kubelet plugin helper as recoverable
-// or not with the driver; the drivers report no device health.
+// HandleError logs an error of the kubelet plugin helper in one line with
+// the driver, and tells a fatal one to Shutdown; the drivers report no
+// device health.
 func TestHandleErrorAndHealth(t *testing.T) {
 	e := newDriverEnv(t, nil)
-	logs := klogCapture(t)
+	var fatal []error
+	for _, p := range []*Plugin{e.local, e.pool} {
+		p.shutdown = func(err error) { fatal = append(fatal, err) }
+	}
+	logs := klogtest.Capture(t, 0)
 	ctx := context.Background()
 	e.pool.HandleError(ctx, fmt.Errorf("slice: %w", kubeletplugin.ErrRecoverable), "publishing")
-	e.local.HandleError(ctx, errors.New("lost"), "registering")
+	e.local.HandleError(ctx, errors.New("lost"), "registrar gRPC server failed")
 	log := logs()
-	wantLogText(t, log, `"DRAPlugin encountered an error." err="slice: recoverable error" driver="cxl-pool.nri.io"`)
-	wantLogText(t, log, `"Unrecoverable error." err="lost" driver="cxl.nri.io"`)
+	wantLogText(t, log, `"publishing" err="slice: recoverable error" driver="cxl-pool.nri.io" fatal=false`)
+	wantLogText(t, log, `"registrar gRPC server failed" err="lost" driver="cxl.nri.io" fatal=true`)
+	if n := logMatches(log, "slice: recoverable error") + logMatches(log, `err="lost"`); n != 2 {
+		t.Fatalf("%d lines of the errors, expected 2:\n%s", n, log)
+	}
+	if fmt.Sprint(fatal) != "[cxl.nri.io: registrar gRPC server failed: lost]" {
+		t.Fatalf("shutdown of %v", fatal)
+	}
 	for _, p := range []*Plugin{e.local, e.pool} {
 		if err := p.WatchHealthStatus(ctx, make(chan kubeletplugin.DeviceHealthReport)); !errors.Is(err, kubeletplugin.ErrHealthNotSupported) {
 			t.Fatalf("%s: %v", p.Name(), err)

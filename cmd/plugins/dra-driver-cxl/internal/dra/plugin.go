@@ -25,7 +25,6 @@ import (
 
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	"k8s.io/klog/v2"
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
@@ -83,6 +82,9 @@ type Plugin struct {
 	lender   *Lender
 	local    LocalConfig
 	onShared func(serial uint64)
+	// shutdown is told a fatal error of the kubelet plugin helper, nil
+	// for none.
+	shutdown func(err error)
 	// publisher publishes the node's ResourceSlices, nil for none.
 	publisher *Publisher
 	helper    *kubeletplugin.Helper
@@ -118,6 +120,10 @@ type Options struct {
 	// OnShared is told the serial of a local memdev that a claim uses
 	// shared, nil for none.
 	OnShared func(serial uint64)
+	// Shutdown is told a fatal error of the kubelet plugin helper (a gRPC
+	// server of it failed: kubelet cannot reach the driver any more) and
+	// stops the driver; nil for none.
+	Shutdown func(err error)
 	// Publisher publishes the node's ResourceSlices: it rescans after a
 	// request that changed the records; the rules that publish look the
 	// devices of their claims up in its last publication.
@@ -145,6 +151,7 @@ func New(opts Options) (*Plugin, error) {
 		cdi:        opts.CDI,
 		local:      opts.Local,
 		onShared:   opts.OnShared,
+		shutdown:   opts.Shutdown,
 		publisher:  opts.Publisher,
 		lender:     NewLender(opts.Rules.Name),
 		inflight:   map[uint64]int{},
@@ -991,14 +998,14 @@ func (p *Plugin) WriteCDI() error {
 }
 
 // HandleError is called by the kubelet plugin helper on asynchronous
-// errors.
-func (p *Plugin) HandleError(ctx context.Context, err error, message string) {
-	if errors.Is(err, kubeletplugin.ErrRecoverable) {
-		klog.FromContext(ctx).Error(err, "DRAPlugin encountered an error.", "driver", p.rules.Name)
-	} else {
-		klog.FromContext(ctx).Error(err, "Unrecoverable error.", "driver", p.rules.Name)
+// errors: it logs one line, and tells a fatal error, one not marked
+// kubeletplugin.ErrRecoverable, to Options.Shutdown.
+func (p *Plugin) HandleError(ctx context.Context, err error, msg string) {
+	fatal := !errors.Is(err, kubeletplugin.ErrRecoverable)
+	klog.FromContext(ctx).Error(err, msg, "driver", p.rules.Name, "fatal", fatal)
+	if fatal && p.shutdown != nil {
+		p.shutdown(fmt.Errorf("%s: %s: %w", p.rules.Name, msg, err))
 	}
-	runtime.HandleErrorWithContext(ctx, err, message)
 }
 
 // WatchHealthStatus declines kubelet's health stream: the driver does not
