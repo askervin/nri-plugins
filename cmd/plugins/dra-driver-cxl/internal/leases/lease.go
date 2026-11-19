@@ -376,9 +376,6 @@ func (b *Broker) removeLease(l *state.Lease) bool {
 	})
 	b.mu.Lock()
 	delete(b.releasing, l.ID)
-	if removed {
-		delete(b.specHashes, l.ID)
-	}
 	b.mu.Unlock()
 	if !removed {
 		return false

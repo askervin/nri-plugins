@@ -70,6 +70,9 @@ type Lease struct {
 	DeletionRequested bool      `json:"deletionRequested,omitempty"`
 	Lend              *Lend     `json:"lend,omitempty"`
 	Created           time.Time `json:"created"`
+	// SpecHash is the hash of the companion claim's spec as the API server
+	// returned it at its creation (lend.SpecHash).
+	SpecHash string `json:"specHash,omitempty"`
 }
 
 // LeaseAsked is what a lease request asks for.

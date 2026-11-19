@@ -195,8 +195,7 @@ func (l Limits) withDefaults() Limits {
 // States: the records of state.Lease and state.LeaseClaim (lease.go,
 // leaseclaim.go) in the store, their only copy. Process memory, not
 // records: the container plugin and the identity of the peers, the sockets
-// and their connections, the hashes of the companion claims made, the
-// running releases, the claims whose directories are being removed (CLOSED
+// and their connections, the running releases, the claims whose directories are being removed (CLOSED
 // and REMOVING) and the leases failed at the start.
 //
 // Transitions: state.LeaseTable and state.LeaseClaimTable, applied by
@@ -246,9 +245,6 @@ type Broker struct {
 	// warnings count the warnings of the sockets by lease claim (uid) and
 	// reason.
 	warnings map[string]map[string]*warningCount
-	// specHashes are the hashes of the specs of the companion claims that
-	// the broker created, by lease (lend.SpecHash).
-	specHashes map[string]string
 	// releasing are the leases whose release runs, or is being committed.
 	releasing map[string]bool
 	// removing are the lease claims (uid) whose directories are being
@@ -292,19 +288,18 @@ func New(opts Options) (*Broker, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &Broker{
-		opts:       opts,
-		st:         opts.Store,
-		t:          opts.Timeouts.withDefaults(),
-		listeners:  map[string]*net.UnixListener{},
-		conns:      map[string]map[*net.UnixConn]bool{},
-		requests:   map[string]flowcontrol.PassiveRateLimiter{},
-		warnings:   map[string]map[string]*warningCount{},
-		specHashes: map[string]string{},
-		releasing:  map[string]bool{},
-		removing:   map[string]chan struct{}{},
-		changed:    make(chan struct{}),
-		ctx:        ctx,
-		cancel:     cancel,
+		opts:      opts,
+		st:        opts.Store,
+		t:         opts.Timeouts.withDefaults(),
+		listeners: map[string]*net.UnixListener{},
+		conns:     map[string]map[*net.UnixConn]bool{},
+		requests:  map[string]flowcontrol.PassiveRateLimiter{},
+		warnings:  map[string]map[string]*warningCount{},
+		releasing: map[string]bool{},
+		removing:  map[string]chan struct{}{},
+		changed:   make(chan struct{}),
+		ctx:       ctx,
+		cancel:    cancel,
 	}
 	if err := b.st.Lost(); err != nil {
 		klog.Errorf("lease broker: %v; starting with an empty lease table", err)

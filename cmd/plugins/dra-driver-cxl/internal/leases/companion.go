@@ -333,9 +333,14 @@ func (b *Broker) createCompanion(l *state.Lease) error {
 	if err != nil {
 		return fmt.Errorf("creating companion claim %s/%s: %w", claim.Namespace, claim.Name, err)
 	}
-	b.mu.Lock()
-	b.specHashes[l.ID] = lend.SpecHash(&created.Spec)
-	b.mu.Unlock()
+	hash := lend.SpecHash(&created.Spec)
+	if !b.change(func(r *state.Records) {
+		if cur := r.Lease(l.ID); cur != nil {
+			cur.SpecHash = hash
+		}
+	}) {
+		return fmt.Errorf("storing the spec hash of companion claim %s/%s", claim.Namespace, claim.Name)
+	}
 	if _, err := b.opts.Client.CoreV1().Pods(pod.Namespace).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
 		return fmt.Errorf("creating companion pod %s/%s: %w", pod.Namespace, pod.Name, err)
 	}
@@ -348,17 +353,15 @@ func (b *Broker) createCompanion(l *state.Lease) error {
 // the broker.
 
 // CompanionSpecHash returns the hash of the spec of the companion claim of
-// the lease id as the API server returned it at its creation ("" if this
-// process did not create it), and whether the lease waits for the first
-// Prepare of the claim (CREATING or PENDING).
+// the lease id as the API server returned it at its creation ("" before
+// it), and whether the lease waits for the first Prepare of the claim
+// (CREATING or PENDING).
 func (b *Broker) CompanionSpecHash(id string) (string, bool) {
 	l := b.records().Lease(id)
 	if l == nil {
 		return "", false
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.specHashes[id], l.State == state.LeaseCreating || l.State == state.LeasePending
+	return l.SpecHash, l.State == state.LeaseCreating || l.State == state.LeasePending
 }
 
 // OnLending is the companion gate: it checks that a claim is the companion

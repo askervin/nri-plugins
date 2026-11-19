@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	resourcev1 "k8s.io/api/resource/v1"
@@ -153,7 +152,7 @@ func checkSpecHash(hooks lend.LeaseHooks, id string, claim *resourcev1.ResourceC
 		return nil
 	}
 	want, first := h.CompanionSpecHash(id)
-	if !first || !strings.HasPrefix(want, lend.SpecHashVersion) {
+	if !first || want == "" {
 		return nil
 	}
 	if got := lend.SpecHash(&claim.Spec); got != want {

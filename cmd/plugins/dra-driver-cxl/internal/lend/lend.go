@@ -99,17 +99,13 @@ type LeaseClaims interface {
 // ErrLendingUnavailable is the error of a lend without NRI.
 var ErrLendingUnavailable = errors.New("lending unavailable: NRI not connected")
 
-// SpecHashVersion is the version of SpecHash; a recorded hash of another
-// version is not compared.
-const SpecHashVersion = "v1:"
-
-// SpecHash returns the hash of the spec of a claim, of version
-// SpecHashVersion: the SHA-256 of its JSON.
+// SpecHash returns the hash of the spec of a claim: the SHA-256 of its
+// JSON.
 func SpecHash(spec *resourcev1.ResourceClaimSpec) string {
 	data, err := json.Marshal(spec)
 	if err != nil {
 		return ""
 	}
 	sum := sha256.Sum256(data)
-	return SpecHashVersion + hex.EncodeToString(sum[:])
+	return hex.EncodeToString(sum[:])
 }

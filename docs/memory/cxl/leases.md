@@ -633,7 +633,9 @@ it touches a device, the driver that prepares it checks that the lease is
 in the lease table and is being created (or Lending or Ready, for a
 prepare again after a restart), that the claim's name is
 `cxl-lease-<id>` and its namespace the requester pod's, and that the
-claim has an ownerReference to the requester pod. A claim that carries
+claim has an ownerReference to the requester pod. On the first Prepare,
+the driver also checks that the claim's spec is the one that the plugin
+created. The lease record keeps a hash of that spec. A claim that carries
 the label and fails a check fails its Prepare with
 `claim <ns>/<name>: not the companion of lease <id>` (kubelet retries; a
 pod that references such a claim never starts); the companion of a lease

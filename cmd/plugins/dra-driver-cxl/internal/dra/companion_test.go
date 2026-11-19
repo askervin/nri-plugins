@@ -151,15 +151,12 @@ func specClaim() *resourcev1.ResourceClaim {
 }
 
 // The spec hash of a companion claim is compared only when the hooks tell
-// it (SpecHasher), the lease waits for its first Prepare and the hash is of
-// the version of SpecHash; a mismatch refuses the claim before OnLending
-// and any device; a Prepare again does not compare.
+// a hash (SpecHasher) and the lease waits for its first Prepare; a
+// mismatch refuses the claim before OnLending and any device; a Prepare
+// again does not compare.
 func TestCompanionSpecHash(t *testing.T) {
 	good := lend.SpecHash(&specClaim().Spec)
-	if !strings.HasPrefix(good, "v1:") {
-		t.Fatalf("hash %q", good)
-	}
-	bad := "v1:" + strings.Repeat("0", 64)
+	bad := strings.Repeat("0", 64)
 	for _, tc := range []struct {
 		name    string
 		hasher  bool
@@ -171,7 +168,6 @@ func TestCompanionSpecHash(t *testing.T) {
 		{"same hash", true, good, true, false},
 		{"another hash", true, bad, true, true},
 		{"another hash, not the first Prepare", true, bad, false, false},
-		{"another version", true, "v2:" + strings.Repeat("0", 64), true, false},
 		{"no hash", true, "", true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

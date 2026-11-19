@@ -1380,7 +1380,7 @@ func TestLeaseListAndReleaseOfTheClaim(t *testing.T) {
 
 // The broker tells the companion gate the hash of the companion claim's
 // spec as the API server returned it at its creation, while the lease
-// waits for the claim's first Prepare.
+// waits for the claim's first Prepare. The hash survives a restart.
 func TestCompanionSpecHash(t *testing.T) {
 	e := brokerEnv(t)
 	e.openClaim()
@@ -1394,6 +1394,11 @@ func TestCompanionSpecHash(t *testing.T) {
 	hash, first := e.b.CompanionSpecHash(r.Lease)
 	if hash != lend.SpecHash(&claim.Spec) || !first {
 		t.Fatalf("hash %q first %v, want %q first", hash, first, lend.SpecHash(&claim.Spec))
+	}
+	e.restart()
+	e.start()
+	if h, first := e.b.CompanionSpecHash(r.Lease); h != hash || !first {
+		t.Fatalf("after a restart: hash %q first %v, want %q first", h, first, hash)
 	}
 	var hasher lend.SpecHasher = e.b
 	if h, _ := hasher.CompanionSpecHash("00000000"); h != "" {
