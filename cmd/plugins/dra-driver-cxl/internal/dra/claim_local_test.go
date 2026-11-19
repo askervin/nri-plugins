@@ -164,11 +164,21 @@ func hasEnv(t *testing.T, cd *cdiSpecs.Device, vars ...string) {
 	}
 }
 
-// A persistent local memdev in mode block: the exclusive writer makes the
-// fsdax namespace, a reader gets the block device read-only; both as CDI
-// device nodes.
+// A persistent local memdev in mode block: readers before a writer are
+// refused without a namespace or a region, the exclusive writer makes the fsdax
+// namespace, a reader gets the block device read-only; both as CDI device
+// nodes.
 func TestLocalPersistentBlock(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{pmemSpec()})
+	e.mark()
+	for _, cfg := range []string{cfgFsRO, cfgBlockRO} {
+		wantErrText(t, e.prepare(e.local, localClaim("r0", pmemDev, -1, cfg)).Err,
+			"cxl.nri.io: claim demo/claim-r0: device memdev-c100f5e1 serial 0xc100f5e1: device 0xc100f5e1: no fsdax namespace in region0: has a writer written the device?")
+		e.wantState(e.local, "r0", state.PreparationUnknown)
+	}
+	if strings.Contains(e.commands(), "ndctl") || len(e.k.Kernel().Regions("mem0")) != 0 {
+		t.Fatalf("a reader made a namespace or left a region:\n%s", e.commands())
+	}
 	e.mustPrepare(e.local, localClaim("w1", pmemDev, -device.SharesUnlimited, cfgBlock))
 	if !strings.Contains(e.commands(), "ndctl create-namespace") {
 		t.Fatalf("no namespace made:\n%s", e.commands())

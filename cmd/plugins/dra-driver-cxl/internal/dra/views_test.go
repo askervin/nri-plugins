@@ -63,6 +63,29 @@ func TestNumaNodes(t *testing.T) {
 	}
 }
 
+// The NUMA node of a companion claim whose Prepare a stop cut after its
+// memory came online, before its grant had the node: the node of its
+// region, from the start; the claim has no results for the NRI plugin.
+func TestNumaNodesUnfinished(t *testing.T) {
+	e := lendEnv(t)
+	e.lending()
+	e.k.CutAfter("write devices/system/memory/memory")
+	e.cutPrepare(e.pool, e.companionOf(e.pool))
+	e.restart()
+	e.wantState(e.pool, "c1", state.PreparationPreparing)
+	if g := e.records().Grant(state.GrantRef{Claim: "c1"}); g == nil || g.Got.NumaNode != nil {
+		t.Fatalf("grant %+v", g)
+	}
+	if got := NumaNodes(e.records(), e.pool.Name()); !slices.Equal(got, []int{2}) || e.pool.ClaimInfo("c1") != nil {
+		t.Fatalf("NUMA nodes %v, claim info %+v", got, e.pool.ClaimInfo("c1"))
+	}
+	e.mustUnprepare(e.pool, "c1")
+	if got := NumaNodes(e.records(), e.pool.Name()); len(got) != 0 {
+		t.Fatalf("NUMA nodes %v", got)
+	}
+	e.wantClean()
+}
+
 // Serials has the serials of the grants of the driver's source and of the
 // Prepares in progress, until the Prepare ends.
 func TestSerials(t *testing.T) {

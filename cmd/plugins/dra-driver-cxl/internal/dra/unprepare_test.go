@@ -21,13 +21,55 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	resourcev1 "k8s.io/api/resource/v1"
+	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
+
+// The Unprepare of a claim that the driver does not know returns without
+// waiting for the Prepare of another claim, which holds the memdev for long
+// when it zeroes a whole shared device.
+func TestUnprepareUnknownDoesNotWait(t *testing.T) {
+	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()})
+	entered, release := make(chan struct{}), make(chan struct{})
+	e.k.Before("cxl create-region", func() {
+		close(entered)
+		<-release
+	})
+	prepared := make(chan error, 1)
+	go func() {
+		res, err := e.local.PrepareResourceClaims(t.Context(), []*resourcev1.ResourceClaim{localClaim("u1", localDev, envBlockSize)})
+		if err == nil {
+			err = res["u1"].Err
+		}
+		prepared <- err
+	}()
+	<-entered
+	done := make(chan error, 1)
+	go func() {
+		res, err := e.local.UnprepareResourceClaims(t.Context(), []kubeletplugin.NamespacedObject{{UID: "u2"}})
+		if err == nil {
+			err = res["u2"]
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		close(release)
+		mustOK(t, err)
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("the Unprepare of an unknown claim waits for the Prepare of another claim")
+	}
+	mustOK(t, <-prepared)
+	e.mustUnprepare(e.local, "u1")
+	e.wantClean()
+}
 
 // The Unprepare of a companion claim of cxl.nri.io: the lease claim closed
 // before anything, the broker told, UNPREPARING committed before the

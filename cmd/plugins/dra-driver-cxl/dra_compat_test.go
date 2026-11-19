@@ -42,15 +42,6 @@ func observedMemdev(name string, serial, ram uint64, affinity int) kernel.Memdev
 	return kernel.MemdevInfo{Name: name, Serial: serial, State: kernel.MemdevReady, RamSize: ram, NodeAffinity: affinity}
 }
 
-// poolNumaNodes returns the NUMA nodes of the memory of the claims of the
-// pool driver p that the engine onlined.
-func poolNumaNodes(p *dra.Plugin) []int {
-	if p == nil {
-		return nil
-	}
-	return dra.NumaNodes(p.Records(), p.Name())
-}
-
 // prepareOn prepares a claim on the plugin p as kubelet does and returns
 // its error.
 func prepareOn(ctx context.Context, p *dra.Plugin, claim *resourceapi.ResourceClaim) error {

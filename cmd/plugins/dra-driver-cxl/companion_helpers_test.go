@@ -101,10 +101,9 @@ func (f *fakeLender) LentNodes(podUID, name string) []int {
 var _ dra.NodeLender = (*fakeLender)(nil)
 
 const (
-	testNode          = "node1"
-	testNS            = "demo"
-	testPod           = "borrower"
-	testPodUID        = "pod-uid-1"
-	testCtr           = "app"
-	testLeaseClaimUID = "lc1"
+	testNode   = "node1"
+	testNS     = "demo"
+	testPod    = "borrower"
+	testPodUID = "pod-uid-1"
+	testCtr    = "app"
 )

@@ -60,10 +60,6 @@ const (
 	// dax, writable and read-only.
 	localDaxConfig = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"dax"}}`
 	localROConfig  = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"dax","readOnly":true}}`
-	// fakePmemBytes is the size of the block device of a persistent memdev
-	// of 512 MiB of the fake kernel: its fsdax namespace without the pfn
-	// info block.
-	fakePmemBytes = 534773760
 )
 
 // localTestEnv is a node for the tests of the local memdevs of cxl.nri.io:
@@ -493,10 +489,4 @@ func localCompanion(uid string, consumed int64, configs ...string) *resourcev1.R
 	c.ObjectMeta = companionClaim("l1").ObjectMeta
 	c.UID = types.UID(uid)
 	return c
-}
-
-// fakeMemdevSpecPmem returns the spec of a local memdev of 512 MiB of
-// persistent memory under host bridge 24.
-func fakeMemdevSpecPmem(serial uint64) fake.MemdevSpec {
-	return fake.MemdevSpec{Serial: serial, Pmem: 512 * mib, HostBridge: 24}
 }

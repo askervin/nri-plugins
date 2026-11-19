@@ -32,7 +32,7 @@ import (
 // drivers, in the words of each: no kernel command, no record. set changes
 // the node for a case and returns what restores it.
 func TestPrepareRefusedBeforeDevices(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, poolSpec(serialPoolX))
+	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec(), pmemSpec()}, poolSpec(serialPoolX))
 	noAlloc := func(c *resourcev1.ResourceClaim) *resourcev1.ResourceClaim {
 		c.Status.Allocation = nil
 		return c
@@ -81,6 +81,14 @@ func TestPrepareRefusedBeforeDevices(t *testing.T) {
 			"cxl.nri.io: claim demo/claim-u1: request mem: MemoryConfig: device: the lease device has no device settings", nil},
 		{"local shares of a sliced memdev", e.local, localClaim("u1", localDev, -1),
 			"claim demo/claim-u1: request mem: device 0xc100e2e1: allocated as a shared device, which it is not any more", nil},
+		{"local persistent writer of a share", e.local, localClaim("u1", pmemDev, -1, cfgBlock),
+			"cxl.nri.io: claim demo/claim-u1: request mem: MemoryConfig: device.mode block: the device is writable only exclusively (no shares request)", nil},
+		{"local persistent without a mode", e.local, localClaim("u1", pmemDev, -1),
+			"cxl.nri.io: claim demo/claim-u1: request mem: MemoryConfig: device: a persistent device needs mode block or fs", nil},
+		{"local persistent shares 0", e.local, shares0(localClaim("u1", pmemDev, -1, cfgBlockRO)),
+			`cxl.nri.io: claim demo/claim-u1: request mem: device 0xc100f5e1: consumed shares "0" is less than 1`, nil},
+		{"local persistent allocated as volatile", e.local, localClaim("u1", pmemDev, envBlockSize, cfgBlockRO),
+			"cxl.nri.io: claim demo/claim-u1: request mem: device 0xc100f5e1: allocated as a device of volatile memory, which it is not any more", nil},
 		{"local size 0", e.local, localClaim("u1", localDev, 0), "cxl.nri.io: claim demo/claim-u1: device memdev-c100e2e1: size 0", sizeZero},
 		{"local memdevs not managed", e.local, localClaim("u1", localDev, 0),
 			"cxl.nri.io: claim demo/claim-u1: device memdev-c100e2e1: local memdevs are not managed (manageMemdevs: false)", unmanaged},

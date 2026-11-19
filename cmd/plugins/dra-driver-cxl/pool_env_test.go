@@ -155,18 +155,6 @@ func (e *poolTestEnv) cdiSpec(t *testing.T) *cdiSpecs.Spec {
 	return spec
 }
 
-func cdiDeviceByName(spec *cdiSpecs.Spec, name string) *cdiSpecs.Device {
-	if spec == nil {
-		return nil
-	}
-	for i := range spec.Devices {
-		if spec.Devices[i].Name == name {
-			return &spec.Devices[i]
-		}
-	}
-	return nil
-}
-
 // wantClean checks that nothing is prepared: no CDI spec, no serials, no
 // record of the pool driver in the store, no region in the kernel.
 func (e *poolTestEnv) wantClean(t *testing.T, p *dra.Plugin) {
@@ -311,25 +299,4 @@ func kernelAt(root string) *kernel.Kernel {
 	k := kernel.New()
 	k.SysRoot = filepath.Join(root, "sys")
 	return k
-}
-
-// errCut is the panic of a process stop of the fake (fake.ErrCut).
-var errCut = fake.ErrCut
-
-// cutPrepare runs a Prepare of the claim that the process does not finish:
-// it stops (panics with fake.ErrCut) at a cut point of the fake. The test
-// then starts the driver again on the same store and kernel.
-func cutPrepare(t *testing.T, p *dra.Plugin, claim *resourceapi.ResourceClaim) {
-	t.Helper()
-	defer func() {
-		r := recover()
-		if err, ok := r.(error); ok && errors.Is(err, errCut) {
-			return
-		}
-		if r == nil {
-			t.Fatal("the Prepare was not cut")
-		}
-		panic(r)
-	}()
-	_, _ = p.PrepareResourceClaims(context.Background(), []*resourceapi.ResourceClaim{claim})
 }
