@@ -98,10 +98,9 @@ const (
 
 // driverEnv is a node for the tests of the front-end: the fake kernel of
 // pkg/cxl/kernel/fake, a store in a temporary directory with the views of
-// the state files, the device engine of both sources, the two plugins
-// over them (cxl.nri.io, local; the pool driver, pool), the publisher of
-// the local devices and a CDI directory. The kernel and the files outlive
-// a restart (restart), the fakes of the lease broker and of NRI too.
+// the state files, and the drivers of NewNode with both sources over them.
+// The kernel and the files outlive a restart (restart). The fakes of the
+// lease broker and of NRI outlive it too.
 type driverEnv struct {
 	t *testing.T
 	k *fake.Fake
@@ -110,6 +109,7 @@ type driverEnv struct {
 	dir, poolDir, cdiDir string
 
 	st    *store.Store
+	node  *Node
 	eng   *engine.Engine
 	local *Plugin
 	pool  *Plugin
@@ -131,7 +131,7 @@ type driverEnv struct {
 
 	// mu guards shared, events and onScan.
 	mu sync.Mutex
-	// shared are the local memdevs configured shared or used shared.
+	// shared are the local memdevs configured shared.
 	shared map[uint64]bool
 	// events are the calls of the fakes of the broker and of NRI, in order.
 	events []string
@@ -210,96 +210,61 @@ func (e *driverEnv) plugLocal(spec fake.MemdevSpec) string {
 	return name
 }
 
-// setShared configures the local memdev with the serial shared.
+// setShared configures the local memdev with the serial shared and
+// restarts the drivers.
 func (e *driverEnv) setShared(serial uint64) {
 	e.mu.Lock()
 	e.shared[serial] = true
 	e.mu.Unlock()
-	e.rescan()
+	e.restart()
 }
 
 // isShared tells whether the local memdev is configured or used shared.
 func (e *driverEnv) isShared(serial uint64) bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.shared[serial]
+	return e.node.isShared(state.Serial(serial))
 }
 
 // start starts the drivers on the env's kernel and files, as a start of
-// the process does: the store opened, the engine of both sources and its
-// recovery, both plugins with the lender and the lease claims of the env,
-// their CDI specs written, a scan of the local devices.
+// the process does: the store opened, NewNode with both sources and its
+// recovery, the lender and the lease claims of the env set, the CDI specs
+// written.
 func (e *driverEnv) start() {
 	t := e.t
 	t.Helper()
 	ctx := context.Background()
-	local := LocalRules(filepath.Join(e.dir, "mounts"))
-	pool := PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, "mounts"))
 	st, err := store.Open(ctx, store.Options{Dir: e.dir, BootID: e.k.BootID(), WriteFault: e.writeFault})
 	mustOK(t, err)
 	e.st = st
-	e.eng, err = engine.New(engine.Options{
+	e.node, err = NewNode(NodeOptions{
 		Kernel:      e.k.Kernel(),
 		Store:       st,
-		MountsDirs:  MountsDirs(local, pool),
-		Sources:     []state.Source{state.SourcePool, state.SourceLocal},
+		Dir:         e.dir,
+		PoolDriver:  device.PoolDriverName,
 		LeaseFsRoot: e.leaseFsRoot(),
-		FsTypes:     e.fsTypes,
-		Shared:      func(serial state.Serial) bool { return e.isShared(uint64(serial)) },
-		Revoke:      e.revoke,
+		CDIDir:      e.cdiDir,
+		NodeName:    envNode,
+		Client:      e.client,
+		Local: LocalConfig{Managed: true, UsableSize: func(string, uint64) uint64 { return 0 },
+			Coherent: func(string, uint64) bool { return false }},
+		Publish: e.publishConfig(),
+		Scan:    e.scan,
+		FsTypes: e.fsTypes,
 		Timeouts: engine.Timeouts{Memdev: 300 * time.Millisecond, ProbeGrace: 20 * time.Millisecond, RegionRetry: 10 * time.Millisecond,
 			Settle: 2 * time.Second, LocalSettle: 2 * time.Second, Restore: time.Second, Holder: 50 * time.Millisecond,
 			OfflineSettle: 20 * time.Millisecond, Offline: time.Second},
 	})
 	mustOK(t, err)
-	e.rec, err = e.eng.Recover(ctx)
-	mustOK(t, err)
-	e.cache, err = cdiapi.NewCache(cdiapi.WithSpecDirs(e.cdiDir), cdiapi.WithAutoRefresh(false))
-	mustOK(t, err)
-	e.pub, err = NewPublisher(PublishOptions{
-		Config:      e.publishConfig(),
-		NodeName:    envNode,
-		Client:      e.client,
-		Scan:        e.scan,
-		PoolSerials: func() map[uint64]bool { return e.pool.Serials() },
-		Store:       st,
-		Probes:      e.eng.Probes,
-		BlockSize:   e.k.Kernel().BlockSize,
-	})
-	mustOK(t, err)
-	e.local, err = New(Options{
-		Rules:    local,
-		Store:    st,
-		Engine:   e.eng,
-		NodeName: envNode,
-		SysRoot:  e.k.SysRoot(),
-		DevRoot:  e.k.DevRoot(),
-		CDI:      e.cache,
-		Local: LocalConfig{Managed: true, UsableSize: func(string, uint64) uint64 { return 0 },
-			Coherent: func(string, uint64) bool { return false }},
-		OnShared: func(serial uint64) {
-			e.mu.Lock()
-			defer e.mu.Unlock()
-			e.shared[serial] = true
-		},
-		Publisher: e.pub,
-	})
-	mustOK(t, err)
-	e.pool, err = New(Options{Rules: pool, Store: st, Engine: e.eng, NodeName: envNode,
-		SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot(), CDI: e.cache, Publisher: e.pub})
+	n := e.node
+	e.eng, e.local, e.pool, e.pub, e.cache = n.Engine, n.Local, n.Pool, n.Publisher, n.cdi
+	e.rec, err = n.Recover(ctx)
 	mustOK(t, err)
 	if e.lent {
-		e.local.Lender().Set(e.nodeLender(), e.hooks)
-		e.pool.Lender().Set(e.nodeLender(), e.hooks)
+		n.SetLenders(e.nodeLender(), e.hooks)
 	}
 	if e.leases != nil {
 		e.local.SetLeases(e.leases)
 	}
-	e.pool.Recovered(e.rec)
-	e.local.Recovered(e.rec)
-	mustOK(t, e.local.WriteCDI())
-	mustOK(t, e.pool.WriteCDI())
-	e.rescan()
+	mustOK(t, n.WriteCDI())
 	e.check("started")
 }
 
@@ -392,8 +357,7 @@ func (e *driverEnv) addRegion(name string, node int, size uint64) string {
 // connected) and the hooks of the broker (nil: lending disabled).
 func (e *driverEnv) lend(nodes *fakeNodes, hooks lend.LeaseHooks) {
 	e.nodes, e.hooks, e.lent = nodes, hooks, true
-	e.local.Lender().Set(e.nodeLender(), hooks)
-	e.pool.Lender().Set(e.nodeLender(), hooks)
+	e.node.SetLenders(e.nodeLender(), hooks)
 }
 
 // nodeLender returns the node lender of the env, nil for none.
@@ -418,22 +382,6 @@ func (e *driverEnv) setLeases() *fakeLeaseClaims {
 	e.leases = &fakeLeaseClaims{e: e}
 	e.local.SetLeases(e.leases)
 	return e.leases
-}
-
-// revoke revokes the NUMA node that a grant of a companion claim lends,
-// through the lender of the driver of the grant's source, as the engine's
-// Revoke of the process does.
-func (e *driverEnv) revoke(ctx context.Context, ref state.GrantRef, lend state.GrantLend) error {
-	r := &e.st.Snapshot().Records
-	p := e.pool
-	if g := r.Grant(ref); g != nil && g.Asked.Source == state.SourceLocal {
-		p = e.local
-	}
-	claimName := ref.Claim
-	if prep := r.Preparation(p.Name(), ref.Claim); prep != nil && prep.ClaimName != "" {
-		claimName = prep.ClaimName
-	}
-	return p.Lender().RevokeGrant(ctx, lend, claimName)
 }
 
 // check fails the test on a violation of the invariants of the records and

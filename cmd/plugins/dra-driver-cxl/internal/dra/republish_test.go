@@ -178,7 +178,8 @@ func TestUnprepareRepublishesWithoutRescan(t *testing.T) {
 	e.setShared(serialShared)
 	shared := MemdevDeviceName(serialShared)
 	e.mustPrepare(e.local, localClaim("u1", shared, -1, cfgDax))
-	// configured sliced: hidden while it is used shared
+	// configured sliced after the restart of publishing: hidden while it
+	// is used shared
 	e.mu.Lock()
 	delete(e.shared, serialShared)
 	e.mu.Unlock()
