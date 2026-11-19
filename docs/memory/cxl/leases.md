@@ -314,11 +314,11 @@ The plugin refuses further requests that only it can judge:
 | case | message |
 |:-----|:--------|
 | `--size` not a positive quantity | `invalid size "..."` |
-| `--shared` with the serial of a device without a `shares` capacity (an exclusive pool device, a local memdev of volatile memory that is not configured shared; a persistent local memdev has shares) | `device 0x...: not shareable` |
-| `--source local` with the serial of a pool device | `device 0x...: not a local device` |
-| `--source pool` with the serial of a local device | `device 0x...: not a pool device` |
-| `--mode fs` or `--mode block` with the serial of a device of volatile memory | `device 0x...: mode fs needs a persistent device`, `device 0x...: mode block needs a persistent device` |
-| the serial of a device of persistent memory (local or pool) without `--mode block` or `--mode fs` | `device 0x...: a persistent device needs mode block or fs` |
+| `--shared` with the serial of a device without a `shares` capacity (an exclusive pool device, a local memdev of volatile memory that is not configured shared; a persistent local memdev has shares) | `memdev 0x...: not shareable` |
+| `--source local` with the serial of a pool device | `memdev 0x...: not a local device` |
+| `--source pool` with the serial of a local device | `memdev 0x...: not a pool device` |
+| `--mode fs` or `--mode block` with the serial of a device of volatile memory | `memdev 0x...: mode fs needs a persistent device`, `memdev 0x...: mode block needs a persistent device` |
+| the serial of a device of persistent memory (local or pool) without `--mode block` or `--mode fs` | `memdev 0x...: a persistent device needs mode block or fs` |
 | `--mode numa` with the serial of a shared device | `shared memory is never onlined as RAM: use mode dax` |
 | `--source pool`, or the serial of a pool device, while the pool driver is disabled (a request without `--source` is served by local devices then) | `pool driver disabled (--pool-driver-name)` |
 | `--mode fs` with the `--name` (or default name) of another lease of the lease claim, in any state | `name "..." is in use by lease <id>` |

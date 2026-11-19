@@ -205,9 +205,9 @@ func (b *Broker) serialOptions(a *state.LeaseAsked, req *api.Request) error {
 	}
 	switch {
 	case api.PersistentMode(string(a.Mode)) && !dev.persistent:
-		return fmt.Errorf("device %s: mode %s needs a persistent device", text, a.Mode)
+		return fmt.Errorf("memdev %s: mode %s needs a persistent device", text, a.Mode)
 	case !api.PersistentMode(string(a.Mode)) && dev.persistent:
-		return fmt.Errorf("device %s: a persistent device needs mode %s or %s", text, api.ModeBlock, api.ModeFs)
+		return fmt.Errorf("memdev %s: a persistent device needs mode %s or %s", text, api.ModeBlock, api.ModeFs)
 	case !dev.shared:
 		a.DeviceSource = deviceSourceOf(dev, req)
 		return nil
@@ -228,12 +228,12 @@ func (b *Broker) serialOptions(a *state.LeaseAsked, req *api.Request) error {
 func (b *Broker) deviceRefusal(dev *publishedDevice, a *state.LeaseAsked, req *api.Request, text string) error {
 	switch {
 	case !dev.shares && a.Shared:
-		return fmt.Errorf("device %s: not shareable", text)
+		return fmt.Errorf("memdev %s: not shareable", text)
 	case !dev.shared && !dev.persistent:
 	case req.Source == api.SourceLocal && dev.driver != device.DriverName:
-		return fmt.Errorf("device %s: not a local device", text)
+		return fmt.Errorf("memdev %s: not a local device", text)
 	case req.Source == api.SourcePool && dev.driver == device.DriverName:
-		return fmt.Errorf("device %s: not a pool device", text)
+		return fmt.Errorf("memdev %s: not a pool device", text)
 	}
 	return nil
 }

@@ -684,14 +684,14 @@ refused 2 "fd needs --exec" fd --lease 0123abcd
 refused 2 "release takes --lease ID or --all" release
 refused 2 "release takes --lease ID or --all" release --lease 0123abcd --all
 refused 2 'invalid wait "soon"' request --size 64Mi --wait soon
-refused 1 "device $POOLED0_SERIAL: not shareable" request --serial "$POOLED0_SERIAL" --shared
+refused 1 "memdev $POOLED0_SERIAL: not shareable" request --serial "$POOLED0_SERIAL" --shared
 # shared0 is volatile: it has no filesystem and no block device. mode fs
 # without readOnly (read-only) and with --read-write passes cxl-request
 # and reaches the node plugin.
-refused 1 "device $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --shared --read-only --mode fs
-refused 1 "device $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --shared --mode fs
-refused 1 "device $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --shared --mode fs --read-write --fs-type ext4
-refused 1 "device $SHARED_SERIAL: mode block needs a persistent device" request --serial "$SHARED_SERIAL" --mode block
+refused 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --shared --read-only --mode fs
+refused 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --shared --mode fs
+refused 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --shared --mode fs --read-write --fs-type ext4
+refused 1 "memdev $SHARED_SERIAL: mode block needs a persistent device" request --serial "$SHARED_SERIAL" --mode block
 dra-leases "$VM2" borrower/main
 dra-assert "$DRA_LEASES" "j == []"
 dra-json "$VM2" pods -n "$DRA_NS" -l "$DRA_LEASE_LABEL"

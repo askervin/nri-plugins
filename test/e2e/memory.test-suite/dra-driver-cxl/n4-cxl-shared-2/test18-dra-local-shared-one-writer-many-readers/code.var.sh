@@ -546,7 +546,7 @@ retry-until --timeout 60 --interval 1 --message "nothing left of lease $lease" '
 [ -z "$(dra-pool-attachments "$VM2_NAME")" ] || error "the pool attached devices for local leases: $(dra-pool-attachments "$VM2_NAME")"
 
 echo "### E4: requests that the node plugin and cxl-request refuse"
-refused 1 "device $S: not a pool device" reader-c request --serial "$S" --source pool
+refused 1 "memdev $S: not a pool device" reader-c request --serial "$S" --source pool
 refused 2 "shared memory is never onlined as RAM: use mode dax" reader-c request --serial "$S" --shared --mode numa
 dra-leases "$VM2" reader-c
 dra-assert "$DRA_LEASES" "[l['lease'] for l in j] == ['${READER_LEASE[reader-c]}']"
