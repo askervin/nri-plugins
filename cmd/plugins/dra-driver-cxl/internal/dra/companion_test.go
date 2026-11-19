@@ -18,6 +18,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -345,6 +347,50 @@ func TestCompanionLendFails(t *testing.T) {
 			e.wantClean()
 		})
 	}
+}
+
+// The lease bind of a lend of a device of mode fs is <FsDir>/<Name>; a lend
+// without a name, or with one that is not a valid name, or of a lease
+// claim without a filesystem directory is refused.
+func TestLeaseBindTarget(t *testing.T) {
+	for _, c := range []struct {
+		name, fsDir string
+		want, err   string
+	}{
+		{"models", "/run/cxl/fs/l1", "/run/cxl/fs/l1/models", ""},
+		{"", "/run/cxl/fs/l1", "", "lease l1: the device is of mode fs, the lease is not"},
+		{"..", "/run/cxl/fs/l1", "", `lease l1: invalid name ".."`},
+		{"models", "", "", "lease l1: its lease claim has no filesystem directory"},
+	} {
+		target, err := leaseBindTarget(&lend.Lend{Lease: "l1", Name: c.name, FsDir: c.fsDir})
+		got := ""
+		if err != nil {
+			got = err.Error()
+		}
+		if target != c.want || got != c.err {
+			t.Errorf("name %q in %q: target %q, error %q; want %q, %q", c.name, c.fsDir, target, got, c.want, c.err)
+		}
+	}
+}
+
+// A lease bind that fails fails the Prepare of the companion claim of a
+// device of mode fs with the error of the bind, without the device of the
+// result, and the broker is told.
+func TestCompanionLeaseBindFails(t *testing.T) {
+	e := newDriverEnv(t, nil, poolPmemSpec(serialPoolP))
+	e.formatPmem(serialPoolP, "erofs")
+	_, hooks := e.lending()
+	hooks.fsDir, hooks.name = filepath.Join(e.leaseFsRoot(), "l1"), "models"
+	target := filepath.Join(hooks.fsDir, hooks.name)
+	mustOK(t, os.MkdirAll(target, 0o755))
+	mustOK(t, e.k.Kernel().Mount("tmpfs", target, "tmpfs", 0, ""))
+	res := e.prepare(e.pool, companion(poolClaim("c1", "llm0", poolPmemData, cfgFsRO), "l1"))
+	bindErr := "device 0xc1af0001: " + target + " is a tmpfs mount of tmpfs, not of " + filepath.Join(e.poolDir, "mounts", "c1af0001-direct")
+	wantErrText(t, res.Err, e.prefix(e.pool)+bindErr)
+	e.wantEvents("failed", "lending l1 cxl-lease-l1", "failed l1: "+bindErr)
+	e.wantState(e.pool, "c1", state.PreparationUnknown)
+	mustOK(t, e.k.Kernel().Unmount(target))
+	e.wantClean()
 }
 
 // A revoke of a lend goes on after a node it fails to revoke: the errors

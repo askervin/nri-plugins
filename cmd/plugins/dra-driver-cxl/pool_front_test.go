@@ -25,7 +25,6 @@ import (
 
 	resourceapi "k8s.io/api/resource/v1"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 )
 
@@ -169,118 +168,6 @@ func TestPoolOtherBootCompanion(t *testing.T) {
 		if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("bind directory left: %v", err)
 		}
-		e.wantClean(t, p)
-	})
-}
-
-// The lease bind of a companion of mode fs: a mount that is there already
-// and is not the bind of its node mount is neither used nor unmounted, and
-// the lease fails; a new bind without the flags or the root of the node
-// mount is unmounted again; a bind of another lease is not used; a bind of
-// the node mount there from a Prepare that a stop cut is used; another
-// mount stacked on a bind stops its unbind.
-func TestPoolLeaseBindChecks(t *testing.T) {
-	e, p, hooks := newPoolLeaseEnv(t)
-	direct := e.nodeMount(0xc1ae0001, "direct")
-	target := filepath.Join(hooks.fsDir, "models")
-	k := e.k.Kernel()
-
-	// a foreign mount at the target
-	noErr(t, os.MkdirAll(target, 0o755))
-	noErr(t, k.Mount("tmpfs", target, "tmpfs", 0, ""))
-	wantErr(t, prepare(t, p, fsCompanion("l3", "direct")).Err, target+" is a tmpfs mount of tmpfs, not of "+direct)
-	if !strings.Contains(hooks.log(), "failed l3: ") {
-		t.Fatalf("lend failure not told:\n%s", hooks.log())
-	}
-	if mi := e.mounted(target); mi == nil || mi.FsType != "tmpfs" {
-		t.Fatalf("the foreign mount was used or unmounted: %+v", mi)
-	}
-	noErr(t, k.Unmount(target))
-	e.wantClean(t, p)
-
-	// a bind without the flags of the node mount, of another root
-	for _, bind := range []struct {
-		root  string
-		flags []string
-	}{{"", []string{"ro", "relatime"}}, {"/sub", nil}} {
-		e.k.SetBind(bind.root, bind.flags)
-		wantErr(t, prepare(t, p, fsCompanion("l4", "direct")).Err, "the bind of "+direct+" at "+target+" is not a read-only nosuid nodev erofs mount")
-		if mi := e.mounted(target); mi != nil {
-			t.Fatalf("the bad bind stays: %+v", mi)
-		}
-		e.k.SetBind("", nil)
-		e.wantClean(t, p)
-	}
-
-	// the bind of another lease
-	noErr(t, prepare(t, p, fsCompanion("l5", "direct")).Err)
-	wantErr(t, prepare(t, p, fsCompanion("l6", "direct")).Err, target+" is the bind of another lease")
-	noErr(t, unprepare(t, p, "uid-cxl-lease-l5"))
-
-	// a bind of the node mount that is there already is used
-	noErr(t, prepare(t, p, persistentClaim("d1", persistentData, fsConfig("direct", ""))).Err)
-	noErr(t, os.MkdirAll(target, 0o755))
-	noErr(t, k.Mount(direct, target, "", syscall.MS_BIND, ""))
-	logs := klogtest.Capture(t, 3)
-	noErr(t, prepare(t, p, fsCompanion("l7", "direct")).Err)
-	if want := "lease l7: " + direct + " is bound at " + target + " already"; !strings.Contains(logs(), want) {
-		t.Fatalf("no %q in\n%s", want, logs())
-	}
-	noErr(t, unprepare(t, p, "d1"))
-
-	// another mount on the bind stops its unbind
-	noErr(t, k.Mount("tmpfs", target, "tmpfs", 0, ""))
-	wantErr(t, unprepare(t, p, "uid-cxl-lease-l7"), target+" is a tmpfs mount of tmpfs, not a lease bind")
-	noErr(t, k.Unmount(target))
-	noErr(t, unprepare(t, p, "uid-cxl-lease-l7"))
-	e.wantClean(t, p)
-
-	// the names of the lend
-	for _, c := range []struct{ name, err string }{
-		{"..", `lease l8: invalid name ".."`},
-		{"", "lease l8: the device is of mode fs, the lease is not"},
-	} {
-		hooks.name = c.name
-		wantErr(t, prepare(t, p, fsCompanion("l8", "direct")).Err, c.err)
-	}
-	hooks.name = "models"
-	e.wantClean(t, p)
-}
-
-// The refusals of a Prepare of a persistent device: a memdev without
-// persistent memory, a filesystem that does not mount, a superblock
-// without DAX (and the loop device of a cached Prepare is detached).
-func TestPoolPersistentErrors(t *testing.T) {
-	t.Run("no persistent memory", func(t *testing.T) {
-		e := newPoolTestEnv(t)
-		memdev := e.plug(0xc1ae0001)
-		p := e.driver(t)
-		wantErr(t, prepare(t, p, persistentClaim("x", persistentData, fsConfig("direct", ""))).Err,
-			"device 0xc1ae0001: "+memdev+" has no persistent memory")
-		e.wantClean(t, p)
-	})
-	t.Run("mount", func(t *testing.T) {
-		e := newPoolTestEnv(t)
-		_, pmem := e.plugPersistent(0xc1ae0001, "erofs")
-		p := e.driver(t)
-		e.k.SetMountError(pmem, syscall.EINVAL, "")
-		wantErr(t, prepare(t, p, persistentClaim("x", persistentData, fsConfig("direct", ""))).Err,
-			pmem+" has no erofs filesystem: invalid argument")
-		e.k.SetMountError(pmem, nil, "")
-		e.k.SetMountError(e.loop(0), syscall.EINVAL, "")
-		wantErr(t, prepare(t, p, persistentClaim("y", persistentData, fsConfig("cached", ""))).Err, "invalid argument")
-		if ls := e.loops(); len(ls) != 0 {
-			t.Fatalf("loop devices %+v left", ls)
-		}
-		e.wantClean(t, p)
-	})
-	t.Run("no DAX", func(t *testing.T) {
-		e := newPoolTestEnv(t)
-		_, pmem := e.plugPersistent(0xc1ae0001, "erofs")
-		p := e.driver(t)
-		e.k.SetSuperOpts(pmem, "ro")
-		wantErr(t, prepare(t, p, persistentClaim("x", persistentData, fsConfig("direct", ""))).Err,
-			"erofs on "+pmem+" was mounted without DAX")
 		e.wantClean(t, p)
 	})
 }

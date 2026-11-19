@@ -610,7 +610,8 @@ func TestSharedRefusalLogged(t *testing.T) {
 
 // TestPersistentMemdevRefusals pins the line of a persistent memdev that is
 // not published, as the documentation quotes it, at klog V(4): a pool
-// device, a held memdev, a disabled one.
+// device, a held memdev, a disabled one, one that claims use shared while
+// it is not shared now, which is published again when they are gone.
 func TestPersistentMemdevRefusals(t *testing.T) {
 	logs := klogtest.Capture(t, 4)
 	detected := &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{pubMem("mem3", 0xc100f5e1, 0, -1)}}
@@ -622,22 +623,30 @@ func TestPersistentMemdevRefusals(t *testing.T) {
 		t.Fatalf("published %v", pubNames(devs))
 	}
 	serial := map[uint64]bool{0xc100f5e1: true}
+	sharedUse := map[uint64]LocalUse{0xc100f5e1: {Shared: true, Persistent: true, Claims: []string{"ro1"}}}
 	for _, tc := range []struct {
 		pool, held map[uint64]bool
 		enabled    bool
+		uses       map[uint64]LocalUse
 		reason     string
 	}{
-		{serial, nil, true, "pool device"},
-		{nil, serial, true, heldReason},
-		{nil, nil, false, "memory device is disabled"},
+		{serial, nil, true, nil, "pool device"},
+		{nil, serial, true, nil, heldReason},
+		{nil, nil, false, nil, "memory device is disabled"},
+		{nil, nil, true, sharedUse, "used as a shared persistent device by claims [ro1]"},
 	} {
 		m.State = map[bool]kernel.MemdevState{true: kernel.MemdevReady, false: kernel.MemdevUnbound}[tc.enabled]
+		local.Uses = tc.uses
 		if devs := BuildDevices(cfg, detected, tc.pool, tc.held, local); len(devs) != 0 {
 			t.Fatalf("%s: published %v", tc.reason, pubNames(devs))
 		}
 		if n := logMatches(logs(), `- not publishing memory device "mem3" as a persistent local memory device: `+tc.reason); n != 1 {
 			t.Fatalf("%d lines with %q:\n%s", n, tc.reason, logs())
 		}
+	}
+	local.Uses = map[uint64]LocalUse{0xc100f5e1: {Shared: true, Persistent: true, Claims: []string{}}}
+	if m, ok := BuildDevices(cfg, detected, nil, nil, local)["memdev-c100f5e1"].Dev.(*Memdev); !ok || m.Shared || !m.Persistent {
+		t.Fatalf("published %+v", m)
 	}
 }
 

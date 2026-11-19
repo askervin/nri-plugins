@@ -16,9 +16,11 @@ package engine
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
@@ -184,6 +186,272 @@ func TestPersistentP9D(t *testing.T) {
 		t.Fatal("block device writable after the refusal")
 	}
 	v.mustUnprepare(poolDriver, "r")
+}
+
+// The refusals of the rules of a persistent device before anything of it
+// is mounted, with their texts, and the rules that let a claim through.
+func TestPersistentRules(t *testing.T) {
+	fs := func(uid string, readOnly bool, access state.Access, fsType string) GrantRequest {
+		req := localPmemReq(uid, 0, state.ModeFs, readOnly, access)
+		req.Asked.FsType = fsType
+		return req
+	}
+	// shared makes req of a device that other hosts may use
+	shared := func(req GrantRequest, coherent bool) GrantRequest {
+		req.SingleHost, req.Facts.Coherent = false, coherent
+		return req
+	}
+	reader := func(uid string, access state.Access) func(v *env, dev string) {
+		return func(v *env, dev string) { v.mustPrepare(localDriver, uid, fs(uid, true, access, "")) }
+	}
+	known := []string{"erofs", "squashfs", "ext4", "xfs", "btrfs", "gfs2"}
+	for _, tc := range []struct {
+		name  string
+		image string
+		// fsTypes are the types that the node allows, nil for known
+		fsTypes []string
+		setup   func(v *env, dev string)
+		req     GrantRequest
+		// err is the refusal, $DEV for the block device; "" for none
+		err string
+	}{
+		{name: "type not allowed", image: "ext4", fsTypes: []string{"erofs", "squashfs"}, req: fs("x", true, "", ""),
+			err: "device 0x91: filesystem type ext4 is not allowed on this node (fsTypes: erofs, squashfs)"},
+		{name: "no type allowed", image: "erofs", fsTypes: []string{}, req: fs("x", true, "", ""),
+			err: "device 0x91: filesystem type erofs is not allowed on this node (fsTypes: none)"},
+		{name: "type without a block device", fsTypes: append(slices.Clone(known), "tmpfs"), req: fs("x", true, "", "tmpfs"),
+			err: "device 0x91: filesystem type tmpfs does not mount a block device"},
+		{name: "read-only type written", image: "erofs", req: fs("x", false, "", ""),
+			err: "device 0x91: erofs is a read-only filesystem: set readOnly: true"},
+		{name: "direct without DAX", image: "btrfs", req: fs("x", true, state.AccessDirect, ""),
+			err: "device 0x91: btrfs has no DAX: use access cached"},
+		{name: "single-host type written by hosts", image: "gfs2-nolock", req: shared(fs("x", false, "", "gfs2"), true),
+			err: "device 0x91: read-write on several hosts needs a cluster filesystem on coherent memory: gfs2 with lock_nolock is a single-host filesystem"},
+		{name: "cluster type on memory that is not coherent", image: "gfs2", req: shared(fs("x", false, "", "gfs2"), false),
+			err: "device 0x91: read-write on several hosts needs a cluster filesystem on coherent memory: the device is not coherent between hosts"},
+		{name: "cluster type written by hosts", image: "gfs2", req: shared(fs("x", false, "", "gfs2"), true)},
+		{name: "cached next to a direct writer", image: "ext4", req: fs("x", true, state.AccessCached, ""),
+			setup: func(v *env, dev string) { v.mustPrepare(localDriver, "w", fs("w", false, state.AccessDirect, "")) },
+			err:   "device 0x91: it is mounted read-write with access direct on this node: access cached would mount it a second time"},
+		{name: "writer next to both accesses", image: "ext4", req: fs("x", false, state.AccessDirect, ""),
+			setup: func(v *env, dev string) {
+				reader("r1", state.AccessDirect)(v, dev)
+				reader("r2", state.AccessCached)(v, dev)
+			},
+			err: "device 0x91: it is mounted with access direct and cached on this node: a read-write claim needs one access only"},
+		{name: "direct writer next to a cached reader", image: "ext4", req: fs("x", false, state.AccessDirect, ""), setup: reader("r", state.AccessCached),
+			err: "device 0x91: it is mounted with access cached only on this node: a read-write claim with access direct would mount it a second time"},
+		{name: "block writer next to a reader", image: "ext4", req: localPmemReq("x", 0, state.ModeBlock, false, ""), setup: reader("r", ""),
+			err: "device 0x91: mode block read-write needs the device alone on this node"},
+		{name: "btrfs writer next to a reader", image: "btrfs", req: fs("x", false, "", ""), setup: reader("r", ""),
+			err: "device 0x91: btrfs is mounted read-only on this node and cannot be remounted read-write: a read-write claim waits until the read-only claims of the node are gone"},
+		{name: "reader of a dirty ext4", image: "ext4-dirty", req: fs("x", true, "", ""),
+			err: "device 0x91: ext4 on $DEV needs recovery (it was not unmounted cleanly): a read-only mount cannot recover it, a read-write claim on one node does"},
+		{name: "reader of an xfs that the mount finds dirty", image: "xfs", req: fs("x", true, "", ""),
+			setup: func(v *env, dev string) {
+				// the block device is there while a block reader holds the device
+				v.mustPrepare(localDriver, "b", localPmemReq("b", 0, state.ModeBlock, true, ""))
+				v.f.SetDirty(dev, true)
+			},
+			err: "device 0x91: xfs on $DEV needs recovery (it was not unmounted cleanly): a read-only mount cannot recover it, a read-write claim on one node does"},
+		{name: "writer of a dirty ext4", image: "ext4-dirty", req: fs("x", false, "", "")},
+		{name: "mount refused", image: "ext4", req: fs("x", true, "", ""),
+			setup: func(v *env, dev string) {
+				v.f.SetMountError(dev, syscall.EINVAL, "e ext4: unsupported blocksize for DAX")
+			},
+			err: "device 0x91: $DEV has no ext4 filesystem: invalid argument: e ext4: unsupported blocksize for DAX"},
+		{name: "mount of the loop device refused", image: "ext4", req: fs("x", true, state.AccessCached, ""),
+			setup: func(v *env, dev string) { v.f.SetMountError(filepath.Join(v.f.DevRoot(), "loop0"), syscall.EINVAL, "") },
+			err:   "device 0x91: $DEV has no ext4 filesystem: invalid argument"},
+		{name: "superblock without DAX", image: "ext4", req: fs("x", true, "", ""),
+			setup: func(v *env, dev string) { v.f.SetSuperOpts(dev, "ro", "dax=never") },
+			err:   "device 0x91: ext4 on $DEV was mounted without DAX"},
+		{name: "no known filesystem", req: fs("x", true, "", ""),
+			err: "device 0x91: $DEV has no filesystem of a type that the plugin knows (erofs, squashfs, ext4, xfs, btrfs or gfs2): set device.fsType"},
+		{name: "type other than the node mount's", image: "ext4", req: fs("x", true, "", "xfs"), setup: reader("r", ""),
+			err: "device 0x91: $DEV has a filesystem of type ext4, not xfs"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := pmemEnv(t, tc.image)
+			fsTypes := tc.fsTypes
+			if fsTypes == nil {
+				fsTypes = known
+			}
+			v.configure(func(o *Options) { o.FsTypes = fsTypes })
+			dev := filepath.Join(v.f.DevRoot(), "pmem0")
+			if tc.setup != nil {
+				tc.setup(v, dev)
+			}
+			mounts, loops := len(v.f.MountTable()), len(v.f.Kernel().LoopDevices())
+			err := v.prepare(localDriver, "x", tc.req)
+			switch {
+			case tc.err == "" && err != nil:
+				t.Fatal(err)
+			case tc.err != "" && (err == nil || err.Error() != strings.ReplaceAll(tc.err, "$DEV", dev)):
+				t.Fatalf("error %v, want %q", err, tc.err)
+			case tc.err != "" && (len(v.f.MountTable()) != mounts || len(v.f.Kernel().LoopDevices()) != loops):
+				t.Fatalf("mounts %+v, loop devices %v after a refusal", v.f.MountTable(), v.f.Kernel().LoopDevices())
+			}
+			finish(t, v, "finished")
+			entries, _ := os.ReadDir(filepath.Join(v.dir, localDriver, "mounts"))
+			if len(v.f.MountTable()) != 0 || len(v.f.Kernel().LoopDevices()) != 0 || len(entries) != 0 {
+				t.Fatalf("left: mounts %+v loops %v dirs %v", v.f.MountTable(), v.f.Kernel().LoopDevices(), entries)
+			}
+		})
+	}
+}
+
+// A persistent grant of a memdev without persistent memory is refused.
+func TestPersistentWithoutPmem(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
+	err := v.prepare(poolDriver, "x", fsReq(poolReq("x", 0, serialA, state.ModeFs, state.KindPersistent), true, ""))
+	if want := "device 0xa1: mem0 has no persistent memory"; err == nil || err.Error() != want {
+		t.Fatalf("error %v, want %q", err, want)
+	}
+	finish(t, v, "unprepared")
+}
+
+// An upgrade that the filesystem refuses leaves both block devices of a
+// cached xfs read-only again; a read-only xfs is mounted with nouuid.
+func TestPersistentUpgradeFails(t *testing.T) {
+	v := pmemEnv(t, "xfs")
+	v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFs, true, state.AccessCached))
+	m := v.mount("r", 0)
+	if c := v.f.MountCalls("fsmount"); m.Loop == "" || !slices.Equal(c, []string{"fsmount " + m.Loop + " " + m.Path + " xfs ro dax=never,nouuid"}) {
+		t.Fatalf("mounts %q, loop device %q", c, m.Loop)
+	}
+	v.f.SetReconfigureError(m.Path, syscall.EINVAL)
+	err := v.prepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, state.AccessCached))
+	if want := "device 0x91: remounting " + m.Path + " read-write: invalid argument"; err == nil || err.Error() != want {
+		t.Fatalf("error %v, want %q", err, want)
+	}
+	if !v.f.IsReadOnly(filepath.Join(v.f.DevRoot(), "pmem0")) || !v.f.IsReadOnly(m.Loop) {
+		t.Fatal("block devices writable after a failed upgrade")
+	}
+	if mi, _ := v.f.Kernel().Mounted(m.Path); mi == nil || !mi.SuperReadOnly() {
+		t.Fatalf("node mount %+v", mi)
+	}
+	v.mustUnprepare(localDriver, "r")
+	v.clean("unprepared")
+	if len(v.f.Violations()) > 0 {
+		t.Fatalf("violations %v", v.f.Violations())
+	}
+}
+
+// A superblock of the device that no grant of the node explains, a mount in
+// another mount namespace of the block device or of a loop device over it,
+// refuses a writer, a fresh mount of a writable type and a block writer,
+// and a read-write one a reader that would make the block device
+// read-only, before anything is mounted; the same claim is prepared once
+// that mount is gone. A copy of a node mount in a container or a bind of
+// it elsewhere is explained. Superblocks that cannot be read refuse a use.
+func TestPersistentUnexplainedSuperblocks(t *testing.T) {
+	fsClaim := func(uid string, readOnly bool) GrantRequest {
+		return localPmemReq(uid, 0, state.ModeFs, readOnly, "")
+	}
+	blockClaim := func(uid string, readOnly bool) GrantRequest {
+		return localPmemReq(uid, 0, state.ModeBlock, readOnly, "")
+	}
+	unexplained := func(src, ro, target string) string {
+		return "device 0x91: $DEV has a superblock that no claim of this node explains (" + src + " mounted " + ro + " in pid 4242 at " +
+			target + "): it is not used until that mount is gone"
+	}
+	notReadOnly := "device 0x91: not making $DEV read-only: $DEV is mounted read-write in pid 4242 at /mnt/x"
+	for _, c := range []struct {
+		name  string
+		image string
+		// held is a claim prepared before the mount elsewhere, if any
+		held GrantRequest
+		// the mount elsewhere, of a loop device over the block device
+		// if loop; none without a target
+		target   string
+		loop, ro bool
+		// hidden makes the superblocks unreadable
+		hidden bool
+		req    GrantRequest
+		// err is the refusal, $DEV for the block device, $SRC for the
+		// source of the mount elsewhere, $PROC for the procfs; "" for none
+		err string
+	}{
+		{name: "writer", image: "ext4", target: "/mnt/x", req: fsClaim("x", false), err: unexplained("$DEV", "rw", "/mnt/x")},
+		{name: "reader of a writable type", image: "ext4", target: "/mnt/x", req: fsClaim("x", true), err: unexplained("$DEV", "rw", "/mnt/x")},
+		{name: "block writer", image: "ext4", target: "/mnt/x", req: blockClaim("x", false), err: unexplained("$DEV", "rw", "/mnt/x")},
+		{name: "block writer, read-only mount", image: "ext4", target: "/mnt/x", ro: true, req: blockClaim("x", false),
+			err: unexplained("$DEV", "ro", "/mnt/x")},
+		{name: "block reader", image: "ext4", target: "/mnt/x", req: blockClaim("x", true), err: notReadOnly},
+		{name: "block reader, read-only mount", image: "ext4", target: "/mnt/x", ro: true, req: blockClaim("x", true)},
+		// a btrfs superblock has a device number of its own
+		{name: "block writer, btrfs", image: "btrfs", target: "/mnt/x", req: blockClaim("x", false), err: unexplained("$DEV", "rw", "/mnt/x")},
+		{name: "block reader, btrfs", image: "btrfs", target: "/mnt/x", req: blockClaim("x", true), err: notReadOnly},
+		{name: "upgrade, loop device", image: "ext4", held: fsClaim("r", true), target: "/mnt/old", loop: true, ro: true,
+			req: fsClaim("x", false), err: unexplained("$SRC", "ro", "/mnt/old")},
+		{name: "upgrade, bind of the node mount", image: "ext4", held: fsClaim("r", true), target: "/run/cxl/fs/ro", ro: true,
+			req: fsClaim("x", false)},
+		{name: "writer, copy of the node mount in a container", image: "ext4", held: fsClaim("w", false), target: "/data",
+			req: fsClaim("x", false)},
+		{name: "writer, superblocks unreadable", image: "ext4", hidden: true, req: fsClaim("x", false),
+			err: "open $PROC/self/mountinfo: no such file or directory"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib}, fake.MemdevSpec{Serial: serialB})
+			v.formatPmem("mem0", c.image)
+			v.configure(func(o *Options) { o.FsTypes = []string{"ext4", "btrfs"} })
+			dev := filepath.Join(v.f.DevRoot(), "pmem0")
+			// the region stays idle under a region above it, its block
+			// device writable as a block writer leaves it
+			v.mustPrepare(localDriver, "b", blockClaim("b", false))
+			above := rawRegion(t, v, "mem1")
+			v.mustUnprepare(localDriver, "b")
+			if c.held.Ref.Claim != "" {
+				v.mustPrepare(localDriver, c.held.Ref.Claim, c.held)
+			}
+			src := dev
+			var loop kernel.Loop
+			if c.loop {
+				var err error
+				if loop, err = v.f.Kernel().AttachLoop(dev, false); err != nil {
+					t.Fatal(err)
+				}
+				src = loop.Path()
+			}
+			if c.target != "" {
+				v.f.AddForeign(4242, src, c.target, c.image, c.ro)
+			}
+			v.f.HideProc(c.hidden)
+			n := mountCalls(v)
+			err := v.prepare(localDriver, "x", c.req)
+			v.f.HideProc(false)
+			want := strings.NewReplacer("$DEV", dev, "$SRC", src, "$PROC", v.f.ProcRoot()).Replace(c.err)
+			switch {
+			case c.err == "" && err != nil:
+				t.Fatal(err)
+			case c.err != "" && (err == nil || err.Error() != want):
+				t.Fatalf("error %v, want %q", err, want)
+			case c.err != "":
+				if calls := mountCallsSince(v, n); len(calls) > 0 {
+					t.Fatalf("calls %q of a refused Prepare", calls)
+				}
+				v.f.RemoveForeign(4242)
+				if loop != nil {
+					if err := loop.Release(true); err != nil {
+						t.Fatal(err)
+					}
+				}
+				v.mustPrepare(localDriver, "x", c.req)
+			}
+			v.f.RemoveForeign(4242)
+			for _, p := range v.records().Preparations {
+				v.mustUnprepare(localDriver, p.UID)
+			}
+			dropRaw(t, v, above)
+			v.restart()
+			v.check("finished")
+			v.clean("finished")
+			if viol := v.f.Violations(); len(viol) > 0 {
+				t.Fatalf("violations %v", viol)
+			}
+		})
+	}
 }
 
 // fsUse returns the request of a grant of mode fs of the claim uid on the
@@ -371,6 +639,55 @@ func TestPersistentReleasingGrants(t *testing.T) {
 			t.Fatalf("violations %v", viol)
 		}
 	})
+}
+
+// The Unprepare of a writer whose downgrade fails does not finish: its
+// claim stays UNPREPARING and its grant RELEASING through a start, which
+// leaves the read-write node mount as it is for kubelet's retry; the retry
+// makes the node mount and the block device read-only for the reader. A
+// downgrade fails closed when the superblocks cannot be read.
+func TestPersistentFailedDowngrade(t *testing.T) {
+	v := pmemEnv(t, "ext4")
+	dev := filepath.Join(v.f.DevRoot(), "pmem0")
+	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
+	v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFs, true, ""))
+	direct := v.mount("w", 0).Path
+	writable := func(what string) {
+		t.Helper()
+		if mi, _ := v.f.Kernel().Mounted(direct); mi == nil || mi.SuperReadOnly() || v.f.IsReadOnly(dev) {
+			t.Fatalf("%s: node mount %+v, block device read-only %v", what, mi, v.f.IsReadOnly(dev))
+		}
+		wantPreparation(t, v, localDriver, "w", state.PreparationUnpreparing)
+		if g := v.grant("w", 0); g.State != state.GrantReleasing {
+			t.Fatalf("%s: grant %+v", what, g)
+		}
+	}
+	v.f.SetWriting(direct, true)
+	if err := v.unprepare(localDriver, "w"); err == nil || err.Error() != "releasing w/0 (serial 0x91): device 0x91: remounting "+direct+" read-only: device or resource busy" {
+		t.Fatalf("error %v", err)
+	}
+	writable("failed downgrade")
+	n := mountCalls(v)
+	v.restart()
+	writable("restarted")
+	wantMountCalls(t, v, n)
+	v.f.SetWriting(direct, false)
+	v.mustUnprepare(localDriver, "w")
+	if mi, _ := v.f.Kernel().Mounted(direct); mi == nil || !mi.SuperReadOnly() || !v.f.IsReadOnly(dev) {
+		t.Fatalf("downgraded: node mount %+v, block device read-only %v", mi, v.f.IsReadOnly(dev))
+	}
+	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
+	v.f.HideProc(true)
+	err := v.unprepare(localDriver, "w")
+	v.f.HideProc(false)
+	if want := "releasing w/0 (serial 0x91): device 0x91: not making " + dev + " read-only: its superblocks: open " + v.f.ProcRoot() + ": no such file or directory"; err == nil || err.Error() != want {
+		t.Fatalf("error %v, want %q", err, want)
+	}
+	v.check("superblocks unreadable")
+	finish(t, v, "finished")
+	if viol := v.f.Violations(); len(viol) > 0 {
+		t.Fatalf("violations %v", viol)
+	}
 }
 
 // A claim of mode fs of another boot (PREPARED_STALE) has nothing mounted:

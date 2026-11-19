@@ -501,32 +501,6 @@ func (e *localTestEnv) onlineBlocks() []int {
 	return out
 }
 
-// formatPmem makes the fsdax namespace of the persistent memdev with the
-// serial and a filesystem of the types on it, as a writer on another host
-// would, leaving no region, and returns its block device.
-func (e *localTestEnv) formatPmem(serial uint64, types ...string) string {
-	e.t.Helper()
-	k := e.k.Kernel()
-	memdev := e.k.Memdev(serial)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	d, err := k.RootDecoder(memdev, kernel.RegionPmem)
-	noErr(e.t, err)
-	region, err := k.CreateRegion(ctx, kernel.CreateRegionRequest{Memdev: memdev, Decoder: d, Type: kernel.RegionPmem})
-	noErr(e.t, err)
-	nd, err := k.WaitNdRegion(ctx, region)
-	noErr(e.t, err)
-	ns, err := k.CreateFsdaxNamespace(ctx, nd, "")
-	noErr(e.t, err)
-	if len(types) > 0 {
-		e.k.SetImage(ns.BlockDevice, fake.FsImage(types...))
-	}
-	noErr(e.t, k.ReleaseRegion(ctx, region))
-	// the commands of the writer are not the driver's
-	e.base = e.k.Commands()
-	return ns.BlockDevice
-}
-
 // makeOpaqueConfig returns an allocation config of the driver with config
 // as its opaque parameters.
 func makeOpaqueConfig(driver string, source resourcev1.AllocationConfigSource, config interface{}) resourcev1.DeviceAllocationConfiguration {

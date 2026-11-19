@@ -16,6 +16,7 @@ package engine
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -69,6 +70,95 @@ func TestPersistentBindBusy(t *testing.T) {
 	v.f.SetBusy(req.BindTarget, false)
 	v.mustUnprepare(poolDriver, "c")
 	v.clean("unprepared")
+}
+
+// The checks of a lease bind: a mount at its target that is not a bind of
+// the node mount is neither used nor unmounted, and the grant fails; a new
+// bind without the flags or the root of the node mount is unmounted again;
+// the bind of another lease is not used; a bind of the node mount there
+// already, of a Prepare that a stop cut, is used; another mount stacked on
+// a bind stops its unbind.
+func TestPersistentBindChecks(t *testing.T) {
+	setup := func(t *testing.T) (v *env, target, node string) {
+		v = pmemEnv(t, "ext4")
+		target = filepath.Join(v.dir, localDriver, "lease-fs", "lc1", "data")
+		node = filepath.Join(v.dir, poolDriver, "mounts", "91-direct")
+		return v, target, node
+	}
+	tmpfs := func(t *testing.T, v *env, target string) {
+		t.Helper()
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := v.f.Kernel().Mount("tmpfs", target, "tmpfs", 0, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refused := func(t *testing.T, v *env, uid, target, want string) {
+		t.Helper()
+		if err := v.prepare(poolDriver, uid, bindReq(uid, target)); err == nil || err.Error() != want {
+			t.Fatalf("error %v, want %q", err, want)
+		}
+	}
+	t.Run("another mount at the target", func(t *testing.T) {
+		v, target, node := setup(t)
+		tmpfs(t, v, target)
+		refused(t, v, "c", target, "device 0x91: "+target+" is a tmpfs mount of tmpfs, not of "+node)
+		if mi, _ := v.f.Kernel().Mounted(target); mi == nil || mi.FsType != "tmpfs" {
+			t.Fatalf("the mount at the target was used or unmounted: %+v", mi)
+		}
+		if err := v.f.Kernel().Unmount(target); err != nil {
+			t.Fatal(err)
+		}
+		finish(t, v, "unprepared")
+	})
+	for _, bind := range []struct {
+		name  string
+		root  string
+		flags []string
+	}{
+		{"bind without the flags", "", []string{"ro", "relatime"}},
+		{"bind of another root", "/sub", nil},
+	} {
+		t.Run(bind.name, func(t *testing.T) {
+			v, target, node := setup(t)
+			v.f.SetBind(bind.root, bind.flags)
+			refused(t, v, "c", target, "device 0x91: the bind of "+node+" at "+target+" is not a read-only nosuid nodev ext4 mount")
+			if mi, _ := v.f.Kernel().Mounted(target); mi != nil {
+				t.Fatalf("the bad bind stays: %+v", mi)
+			}
+			v.f.SetBind("", nil)
+			finish(t, v, "unprepared")
+		})
+	}
+	t.Run("bind of another lease", func(t *testing.T) {
+		v, target, _ := setup(t)
+		v.mustPrepare(poolDriver, "c", bindReq("c", target))
+		refused(t, v, "d", target, "device 0x91: "+target+" is the bind of another lease")
+		finish(t, v, "unprepared")
+	})
+	t.Run("bind there already, then stacked", func(t *testing.T) {
+		v, target, node := setup(t)
+		v.mustPrepare(poolDriver, "r", fsGrant("r", true, ""))
+		// the bind of a Prepare that a stop cut
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := v.f.Kernel().BindReadOnly(node, target); err != nil {
+			t.Fatal(err)
+		}
+		logs := klogtest.Capture(t, 3)
+		v.mustPrepare(poolDriver, "c", bindReq("c", target))
+		wantLog(t, logs(), "engine: lease 0123abcd: "+node+" is bound at "+target+" already")
+		tmpfs(t, v, target)
+		if err := v.unprepare(poolDriver, "c"); err == nil || err.Error() != "lease 0123abcd: "+target+" is a tmpfs mount of tmpfs, not a lease bind" {
+			t.Fatalf("error %v", err)
+		}
+		if err := v.f.Kernel().Unmount(target); err != nil {
+			t.Fatal(err)
+		}
+		finish(t, v, "unprepared")
+	})
 }
 
 // The retry of the stale lease binds of a memdev whose queue another

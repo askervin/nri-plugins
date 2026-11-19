@@ -23,7 +23,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -560,14 +559,4 @@ func (e *poolTestEnv) wantNoMounts(t *testing.T, p *dra.Plugin) {
 // error, as a mount table does.
 func (e *poolTestEnv) mountedErr(target string) (*mountInfo, error) {
 	return e.mounted(target), nil
-}
-
-// loop returns the path of the loop device n of the fake.
-func (e *poolTestEnv) loop(n int) string {
-	return filepath.Join(e.k.DevRoot(), "loop"+strconv.Itoa(n))
-}
-
-// loops returns the loop devices of the fake that are attached.
-func (e *poolTestEnv) loops() []kernel.LoopDevice {
-	return e.k.Kernel().LoopDevices()
 }

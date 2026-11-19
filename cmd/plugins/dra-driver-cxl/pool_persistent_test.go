@@ -36,11 +36,6 @@ const (
 	blockROConfig  = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"block","readOnly":true}}`
 )
 
-// fsConfig returns a MemoryConfig of mode fs with the access and path.
-func fsConfig(access, path string) string {
-	return fmt.Sprintf(`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"fs","readOnly":true,"access":%q,"path":%q}}`, access, path)
-}
-
 func persistentClaim(uid, data, config string) *resourceapi.ResourceClaim {
 	return withConfig(poolClaim(uid, "c-"+uid, "llm0", data), resourceapi.AllocationConfigSourceClaim, nil, config)
 }
