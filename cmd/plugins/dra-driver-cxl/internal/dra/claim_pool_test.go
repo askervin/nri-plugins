@@ -88,6 +88,30 @@ func TestPoolNUMA(t *testing.T) {
 	e.mustUnprepare(e.pool, "u1")
 }
 
+// Two claims of one exclusive pool device in mode numa, an allocation that
+// the scheduler does not make: the second gets the region of the first,
+// its memory onlined again without a command, on the same node; the last
+// Unprepare releases the region.
+func TestPoolNUMATwoClaims(t *testing.T) {
+	e := newDriverEnv(t, nil, poolSpec(serialPoolX))
+	e.mustPrepare(e.pool, poolClaim("u1", "pooled0", poolExclusiveData))
+	e.mark()
+	e.mustPrepare(e.pool, poolClaim("u2", "pooled0", poolExclusiveData))
+	e.wantNoCommands("the second claim")
+	for _, uid := range []string{"u1", "u2"} {
+		if d := e.pool.ClaimInfo(uid).Devices[0]; !slices.Equal(d.NUMANodes, []int{2}) || !strings.HasSuffix(d.SysfsPath, "/region0") {
+			t.Fatalf("claim %s: device %+v", uid, d)
+		}
+	}
+	e.mustUnprepare(e.pool, "u1")
+	e.wantNoCommands("the Unprepare of the first claim")
+	e.mustUnprepare(e.pool, "u2")
+	if !strings.Contains(e.commands(), "cxl destroy-region region0\ncxl disable-memdev mem0") {
+		t.Fatalf("not released:\n%s", e.commands())
+	}
+	e.wantClean()
+}
+
 // A pool device of volatile memory in mode dax, and a shared one used by
 // two claims: devdax devices as CDI device nodes, read-only by the
 // configuration.

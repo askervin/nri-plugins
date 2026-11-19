@@ -16,33 +16,9 @@ package main
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 )
-
-// localRegionCount returns how many times the driver created a region on
-// the local memdev and destroyed region0.
-func localRegionCount(e *localTestEnv) (created, destroyed int) {
-	for _, line := range strings.Split(e.commands(), "\n") {
-		switch {
-		case strings.HasPrefix(line, "cxl create-region ") && strings.Contains(line, " -m mem0"):
-			created++
-		case line == "cxl destroy-region region0":
-			destroyed++
-		}
-	}
-	return created, destroyed
-}
-
-// wantLocalRegionCount checks how many times the local memdev got a region
-// and region0 was destroyed.
-func wantLocalRegionCount(t *testing.T, e *localTestEnv, created, destroyed int) {
-	t.Helper()
-	if c, d := localRegionCount(e); c != created || d != destroyed {
-		t.Fatalf("region created %d and destroyed %d times, expected %d and %d:\n%s", c, d, created, destroyed, e.commands())
-	}
-}
 
 // The Unprepare of a claim that the driver does not know returns without
 // waiting for the Prepare of another claim, which holds the memdev for long

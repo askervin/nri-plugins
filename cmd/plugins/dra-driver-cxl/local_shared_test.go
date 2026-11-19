@@ -15,8 +15,6 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -25,33 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/containers/nri-plugins/pkg/cxl/device"
-	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
-
-// newSharedEnv returns a started node whose local memdev is configured
-// shared, with the memdevs of specs plugged.
-func newSharedEnv(t *testing.T, specs ...fake.MemdevSpec) *localTestEnv {
-	t.Helper()
-	e := newLocalTestEnv(t, specs...)
-	configureShared(e, true)
-	e.start()
-	return e
-}
-
-// configureShared configures the local memdev shared or not: in the
-// configuration of the publisher and of the next start, and in the shared
-// memdevs of the running device engine.
-func configureShared(e *localTestEnv, shared bool) {
-	e.config.SharedDevices = nil
-	e.shared = map[uint64]bool{}
-	if shared {
-		e.config.SharedDevices = []string{"0xc100e2e1"}
-		e.shared[localSerial] = true
-	}
-	if e.devices != nil {
-		e.devices.setShared(e.shared)
-	}
-}
 
 // sharedClaim returns a claim allocated the shared local memdev for
 // request "mem", with consumed shares ("" for none) and opaque cxl.nri.io
@@ -62,19 +34,6 @@ func sharedClaim(uid, shares string, configs ...string) *resourcev1.ResourceClai
 		c.Status.Allocation.Devices.Results[0].ConsumedCapacity = map[resourcev1.QualifiedName]resource.Quantity{device.CapacityShares: resource.MustParse(shares)}
 	}
 	return c
-}
-
-// wantSharedUse checks how the device engine uses the local memdev, nil
-// for not at all.
-func wantSharedUse(t *testing.T, e *localTestEnv, want *localUse) {
-	t.Helper()
-	got, ok := e.localSnapshot().Use(localSerial)
-	switch {
-	case want == nil && ok:
-		t.Fatalf("memdev used %+v, expected unused", got)
-	case want != nil && (!ok || got.Shared != want.Shared || !slices.Equal(got.Claims, want.Claims)):
-		t.Fatalf("memdev used %v %+v, expected %+v", ok, got, *want)
-	}
 }
 
 // The sharedDevices of the configuration: a list of strings, each a memdev
@@ -90,38 +49,6 @@ func TestDriverConfigSharedDevices(t *testing.T) {
 		if _, err := newDriverConfigFromString(bad); err == nil {
 			t.Errorf("%s: no error", bad)
 		}
-	}
-}
-
-// Prepare failures after the shared device was realised roll the claim
-// back and keep the region: a failed write of the CDI spec. A claim whose
-// second result has no device fails before the device is touched.
-func TestPrepareSharedLocalRollback(t *testing.T) {
-	e := newSharedEnv(t)
-	e.mustPrepare(sharedClaim("u0", "1"))
-	e.mustUnprepare("u0")
-	spec := filepath.Join(e.cdiDir, device.ClaimsCDISpecName)
-	noErr(t, os.MkdirAll(filepath.Join(spec, "x"), 0o755))
-	wantErr(t, e.prepare(sharedClaim("u1", "1")), "write CDI spec")
-	noErr(t, os.RemoveAll(spec))
-	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{}})
-	wantLocalRegionCount(t, e, 1, 0)
-	if e.preparation("u1") != nil || e.s.ClaimInfo("u1") != nil {
-		t.Fatalf("rolled back claim %+v", e.preparation("u1"))
-	}
-
-	c := sharedClaim("u2", "1")
-	c.Status.Allocation.Devices.Results = append(c.Status.Allocation.Devices.Results,
-		resourcev1.DeviceRequestAllocationResult{Request: "other", Driver: device.DriverName, Pool: testNode, Device: "missing"})
-	before := e.k.Commands()
-	wantErr(t, e.prepare(c), "could not find allocatable device missing")
-	if got := e.k.CommandsSince(before); got != "" {
-		t.Fatalf("commands of a refused claim:\n%s", got)
-	}
-	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{}})
-	wantLocalRegionCount(t, e, 1, 0)
-	if len(e.prepared()) != 0 {
-		t.Fatalf("prepared %v", e.prepared())
 	}
 }
 

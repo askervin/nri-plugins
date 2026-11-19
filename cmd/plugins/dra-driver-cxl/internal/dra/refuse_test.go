@@ -59,6 +59,8 @@ func TestPrepareRefusedBeforeDevices(t *testing.T) {
 	}{
 		{"local no allocation", e.local, noAlloc(localClaim("u1", localDev, 0)), "cxl.nri.io: claim demo/claim-u1: no allocation", nil},
 		{"local unknown device", e.local, localClaim("u1", "memdev-77", 0), "could not find allocatable device memdev-77 (pool node1)", nil},
+		{"local unknown second device", e.local, addLocalResult(localClaim("u1", localDev, envBlockSize), "other", "memdev-77", 0),
+			"could not find allocatable device memdev-77 (pool node1)", nil},
 		{"local config", e.local, localClaim("u1", localDev, 0, badConfig),
 			`claim demo/claim-u1: request mem: MemoryConfig: device.mode: invalid mode "memory" (numa or dax)`, nil},
 		{"local shares of a sliced memdev", e.local, localClaim("u1", localDev, -1),
@@ -85,8 +87,10 @@ func TestPrepareRefusedBeforeDevices(t *testing.T) {
 	}
 }
 
-// A KEPT claim whose Prepare again is refused keeps its record and what it
-// kept; its Prepare again with the status data reuses it.
+// A claim whose Prepare a stop cut below a newer region of another memdev
+// is KEPT at the start, with its record, the region of its grant and its
+// memdev; a refused Prepare again keeps them, its Prepare again with the
+// status data reuses the region.
 func TestPrepareRefusedKeepsKept(t *testing.T) {
 	e := newDriverEnv(t, nil, poolSpec(serialPoolX), poolSpec(0xc1ee0002))
 	// a stop cuts the Prepare after its region, another memdev gets a
@@ -102,8 +106,15 @@ func TestPrepareRefusedKeepsKept(t *testing.T) {
 	e.restart()
 	e.wantState(e.pool, "u1", state.PreparationKept)
 	kept := e.records().Grant(state.GrantRef{Claim: "u1"})
-	if kept == nil || kept.Intent.Region == "" || len(e.k.Kernel().Regions("mem0")) != 1 {
+	if kept == nil || kept.Serial != serialPoolX || kept.Intent.Region != "region0" || len(e.k.Kernel().Regions("mem0")) != 1 {
 		t.Fatalf("kept grant %+v, regions %v", kept, e.k.Kernel().Regions("mem0"))
+	}
+	// its device as the claim asks it, before the Prepare made it
+	if d := e.devices(e.pool, "u1"); len(d) != 1 || d[0].Serial != serialPoolX || d[0].Mode != "numa" || d[0].SysfsPath != "" {
+		t.Fatalf("device of the kept claim %+v", d)
+	}
+	if !e.pool.Serials()[serialPoolX] {
+		t.Fatalf("serials %v", e.pool.Serials())
 	}
 	e.mark()
 	wantErrText(t, e.prepare(e.pool, poolClaim("u1", "pooled0", "")).Err, "cxl-pool.nri.io: claim demo/claim-u1: ")
@@ -140,34 +151,61 @@ func TestPrepareRefusedKeepsPreparing(t *testing.T) {
 	e.wantClean()
 }
 
-// After a reboot the claims of both drivers are PREPARED_STALE: a refused Prepare again keeps one, a Prepare
-// again prepares it anew, an Unprepare of another removes it without a
-// revoke.
+// After a reboot the claims of both drivers are PREPARED_STALE, without a
+// command at the start: no result for kubelet, no CDI device, no NUMA node
+// to fence. A refused Prepare again keeps one, a Prepare again prepares it
+// anew; the Unprepare of a pool one releases its memdev by its serial, of
+// a local one runs no command; both remove the record.
 func TestPrepareRefusedKeepsStale(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, poolSpec(serialPoolX), fake.MemdevSpec{Serial: serialPoolS, HostBridge: 24})
 	e.mustPrepare(e.pool, poolClaim("u1", "pooled0", poolExclusiveData))
 	e.mustPrepare(e.pool, poolClaim("u2", "shared0", poolSharedData))
 	e.mustPrepare(e.local, localClaim("l1", localDev, envBlockSize))
+	e.mustPrepare(e.local, localClaim("l2", localDev, envBlockSize))
+	drivers := []string{device.DriverName, device.PoolDriverName}
+	if len(NumaNodes(e.records(), drivers...)) == 0 {
+		t.Fatal("no NUMA node before the reboot")
+	}
 	logs := klogCapture(t)
 	e.reboot()
-	e.wantState(e.pool, "u1", state.PreparationStale)
-	e.wantState(e.local, "l1", state.PreparationStale)
-	if e.cdiDevice(e.pool, "claim-u1-0") != nil || e.pool.ClaimInfo("u1") != nil {
-		t.Fatal("a stale claim has CDI devices")
+	e.wantNoCommands("the start after a reboot")
+	for _, c := range []struct {
+		p   *Plugin
+		uid string
+	}{{e.pool, "u1"}, {e.pool, "u2"}, {e.local, "l1"}, {e.local, "l2"}} {
+		e.wantState(c.p, c.uid, state.PreparationStale)
+		if _, ok := c.p.Result(c.uid); ok || c.p.ClaimInfo(c.uid) != nil {
+			t.Fatalf("%s: stale claim %s is prepared", c.p.Name(), c.uid)
+		}
+	}
+	if names := append(e.cdiNames(e.pool), e.cdiNames(e.local)...); len(names) != 0 {
+		t.Fatalf("CDI devices of stale claims %v", names)
+	}
+	if got := NumaNodes(e.records(), drivers...); len(got) != 0 {
+		t.Fatalf("NUMA nodes of stale claims %v", got)
 	}
 	wantErrText(t, e.prepare(e.pool, poolClaim("u1", "pooled0", "")).Err, "cxl-pool.nri.io: claim demo/claim-u1: ")
 	e.wantNoCommands("a refused Prepare of a stale claim")
 	e.wantState(e.pool, "u1", state.PreparationStale)
 	e.mustPrepare(e.pool, poolClaim("u1", "pooled0", poolExclusiveData))
-	if e.cdiDevice(e.pool, "claim-u1-0") == nil {
-		t.Fatal("no CDI device of the claim prepared anew")
+	// a stale claim prepared anew while a memdev of this boot has a record
+	e.mustPrepare(e.local, localClaim("l1", localDev, envBlockSize))
+	if e.cdiDevice(e.pool, "claim-u1-0") == nil || e.cdiDevice(e.local, "claim-l1-0") == nil {
+		t.Fatal("no CDI device of a claim prepared anew")
 	}
+	e.mark()
 	e.mustUnprepare(e.pool, "u2")
-	wantLogText(t, logs(), "cxl-pool.nri.io: unpreparing claim demo/claim-u2 (u2), not prepared any more (")
+	if got, want := e.commands(), "cxl disable-memdev "+e.k.Memdev(serialPoolS); got != want {
+		t.Fatalf("the Unprepare of a stale pool claim ran\n%s\nexpected\n%s", got, want)
+	}
+	wantLogText(t, logs(), "cxl-pool.nri.io: unpreparing claim demo/claim-u2 (u2), not prepared any more (prepared in another boot)")
 	e.mustUnprepare(e.pool, "u1")
-	e.wantState(e.local, "l1", state.PreparationStale)
+	e.wantState(e.local, "l2", state.PreparationStale)
+	e.mark()
+	e.mustUnprepare(e.local, "l2")
+	e.wantNoCommands("the Unprepare of a stale local claim")
+	e.wantState(e.local, "l2", state.PreparationUnknown)
 	e.mustUnprepare(e.local, "l1")
-	e.wantState(e.local, "l1", state.PreparationUnknown)
 	e.wantClean()
 }
 

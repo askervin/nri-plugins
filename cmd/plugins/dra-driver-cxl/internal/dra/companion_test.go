@@ -456,6 +456,45 @@ func TestCompanionLeaseBindRefused(t *testing.T) {
 	e.wantClean()
 }
 
+// The companions of another boot: a numa one refused at the lease again
+// stays PREPARED_STALE and its Unprepare revokes no node, the broker is
+// told of the release; the directory of the lease bind of an fs one stays
+// over the reboot, its Unprepare removes it.
+func TestCompanionOtherBoot(t *testing.T) {
+	t.Run("numa", func(t *testing.T) {
+		e := lendEnv(t)
+		_, hooks := e.lending()
+		e.mustPrepare(e.pool, e.companionOf(e.pool))
+		e.takeEvents()
+		e.reboot()
+		e.wantState(e.pool, "c1", state.PreparationStale)
+		hooks.setLendingErr(errors.New("lease l1 is gone"))
+		wantErrText(t, e.prepare(e.pool, e.companionOf(e.pool)).Err, e.prefix(e.pool)+"lease l1 is gone")
+		e.wantState(e.pool, "c1", state.PreparationStale)
+		e.mustUnprepare(e.pool, "c1")
+		e.wantEvents("stale", "lending l1 cxl-lease-l1", "releasing l1")
+		e.wantClean()
+	})
+	t.Run("fs", func(t *testing.T) {
+		e := newDriverEnv(t, nil, poolPmemSpec(serialPoolP))
+		e.formatPmem(serialPoolP, "erofs")
+		_, hooks := e.lending()
+		hooks.fsDir, hooks.name = filepath.Join(e.leaseFsRoot(), "l1"), "models"
+		target := filepath.Join(hooks.fsDir, hooks.name)
+		e.mustPrepare(e.pool, companion(poolClaim("c1", "llm0", poolPmemData, cfgFsRO), "l1"))
+		e.reboot()
+		e.wantState(e.pool, "c1", state.PreparationStale)
+		if _, err := os.Stat(target); err != nil {
+			t.Fatalf("lease bind directory after the reboot: %v", err)
+		}
+		e.mustUnprepare(e.pool, "c1")
+		if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("lease bind directory left: %v", err)
+		}
+		e.wantClean()
+	})
+}
+
 // A revoke of a lend goes on after a node it fails to revoke: the errors
 // of the nodes are joined.
 func TestCompanionRevokeEveryNode(t *testing.T) {

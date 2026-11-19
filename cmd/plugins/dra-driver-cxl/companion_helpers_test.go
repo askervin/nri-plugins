@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strings"
 	"sync"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
@@ -101,12 +100,6 @@ func (f *fakeLender) LentNodes(podUID, name string) []int {
 	}
 	slices.Sort(nodes)
 	return nodes
-}
-
-func (f *fakeLender) callLog() string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return strings.Join(f.calls, "\n")
 }
 
 var _ dra.NodeLender = (*fakeLender)(nil)

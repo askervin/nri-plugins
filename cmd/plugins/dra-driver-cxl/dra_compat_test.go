@@ -30,9 +30,7 @@ import (
 // The names of the front-end (internal/dra) as the tests of the driver
 // package use them.
 
-type (
-	localUse = dra.LocalUse
-)
+type ()
 
 var (
 	resultEnvVarName = state.ResultEnvVarName

@@ -323,24 +323,6 @@ func (e *poolTestEnv) commands() string {
 	return e.k.CommandsSince(e.base)
 }
 
-// grant returns the grant of result n of the claim uid, nil if there is
-// none.
-func (e *poolTestEnv) grant(uid string, n int) *state.Grant {
-	return e.records().Grant(state.GrantRef{Claim: uid, Result: n})
-}
-
-// unfinished returns the preparation of the claim uid of the pool driver
-// whose Prepare did not finish (PREPARING), that a rollback or the start
-// kept (KEPT) or that is of another boot (PREPARED_STALE), nil if there is
-// none.
-func (e *poolTestEnv) unfinished(uid string) *state.Preparation {
-	p := e.preparation(uid)
-	if p == nil || (p.State != state.PreparationPreparing && p.State != state.PreparationKept && p.State != state.PreparationStale) {
-		return nil
-	}
-	return p
-}
-
 // wantNoClaims checks that the pool driver has no claim: no CDI spec, no
 // preparation and no grant.
 func (e *poolTestEnv) wantNoClaims(t *testing.T, p *dra.Plugin) {
@@ -348,15 +330,6 @@ func (e *poolTestEnv) wantNoClaims(t *testing.T, p *dra.Plugin) {
 	r := e.records()
 	if e.cdiSpec(t) != nil || len(r.Grants) > 0 || slices.ContainsFunc(r.Preparations, func(x state.Preparation) bool { return x.Driver == device.PoolDriverName }) {
 		t.Fatalf("claims left: CDI spec %+v, preparations %+v, grants %+v", e.cdiSpec(t), r.Preparations, r.Grants)
-	}
-}
-
-// wantCommand fails the test unless the fake ran a command that contains
-// cmd.
-func (e *poolTestEnv) wantCommand(t *testing.T, cmd string) {
-	t.Helper()
-	if cmds := e.commands(); !strings.Contains(cmds, cmd) {
-		t.Fatalf("command %q not run:\n%s", cmd, cmds)
 	}
 }
 

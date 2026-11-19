@@ -243,14 +243,6 @@ func (e *localTestEnv) restart() *dra.Plugin {
 	return e.start()
 }
 
-// reboot reboots the node: nothing of the kernel objects of the drivers is
-// left, the memdevs stay; the driver is started again.
-func (e *localTestEnv) reboot() *dra.Plugin {
-	e.t.Helper()
-	e.k.Reboot()
-	return e.start()
-}
-
 // detected returns the observation of the node that a scan makes: the
 // local memdevs that the publisher sees.
 func (e *localTestEnv) detected() *kernel.Snapshot {

@@ -15,8 +15,6 @@
 package main
 
 import (
-	"errors"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -120,54 +118,4 @@ func TestPoolCompanionRefused(t *testing.T) {
 		t.Fatalf("hooks:\n%s", log)
 	}
 	e.wantClean(t, p)
-}
-
-// Companions of another boot: a stale numa companion's Unprepare revokes
-// nothing, also before the lender is set up; its Prepare again refused at
-// the lease keeps it STALE; a stale fs companion's Unprepare removes the
-// directory of its lease bind.
-func TestPoolOtherBootCompanion(t *testing.T) {
-	t.Run("numa", func(t *testing.T) {
-		e := newPoolTestEnv(t)
-		e.plug(0xc1ee0001)
-		p := e.driver(t)
-		hooks := &fakeHooks{}
-		lender := newFakeLender()
-		p.Lender().Set(lender, hooks)
-		uid := "uid-cxl-lease-l1"
-		noErr(t, prepare(t, p, numaCompanion("l1")).Err)
-		e.k.Reboot()
-		p = e.driver(t)
-		if prep := e.preparation(uid); prep == nil || prep.State != state.PreparationStale {
-			t.Fatalf("preparation %+v", prep)
-		}
-		p.Lender().Set(lender, &fakeHooks{lendingErr: errors.New("lease l1 is gone")})
-		wantErr(t, prepare(t, p, numaCompanion("l1")).Err, "lease l1 is gone")
-		if prep := e.preparation(uid); prep == nil || prep.State != state.PreparationStale {
-			t.Fatalf("preparation %+v", prep)
-		}
-		p = e.driver(t)
-		calls := lender.callLog()
-		noErr(t, unprepare(t, p, uid))
-		if lender.callLog() != calls {
-			t.Fatalf("a stale companion revoked:\n%s", strings.TrimPrefix(lender.callLog(), calls))
-		}
-		e.wantClean(t, p)
-	})
-	t.Run("fs", func(t *testing.T) {
-		e, p, hooks := newPoolLeaseEnv(t)
-		target := filepath.Join(hooks.fsDir, "models")
-		uid := "uid-cxl-lease-l1"
-		noErr(t, prepare(t, p, fsCompanion("l1", "direct")).Err)
-		e.k.Reboot()
-		p = e.leaseDriver(t, hooks)
-		if _, err := os.Stat(target); err != nil {
-			t.Fatalf("bind directory after the reboot: %v", err)
-		}
-		noErr(t, unprepare(t, p, uid))
-		if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("bind directory left: %v", err)
-		}
-		e.wantClean(t, p)
-	})
 }
