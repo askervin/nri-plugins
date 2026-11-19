@@ -81,6 +81,10 @@ type Watcher struct {
 	failing  bool      // the last list failed
 	listErr  error     // the error of the last list that failed
 	lastList time.Time // of the last successful list
+	// lists counts the lists started; recorded is the number of the list
+	// whose result serials to lastList hold: a list that started before
+	// it does not change them.
+	lists, recorded uint64
 	// prepared has the serials that the pool driver prepared at the last
 	// scan (NotePrepared).
 	prepared map[uint64]bool
@@ -193,14 +197,10 @@ func (w *Watcher) Serials(ctx context.Context) (map[uint64]bool, bool) {
 	if w == nil {
 		return nil, true
 	}
-	lctx, cancel := context.WithTimeout(ctx, apiTimeout)
-	defer cancel()
-	items, err := w.opts.List(lctx)
-	r0 := w.records()
+	serials, r0, err := w.listSerials(ctx)
 	out := poolSerialsOf(r0)
 	if err != nil {
 		w.mu.Lock()
-		w.failing, w.listErr = true, err
 		known := w.known
 		for s := range w.serials {
 			out[s] = true
@@ -213,7 +213,60 @@ func (w *Watcher) Serials(ctx context.Context) (map[uint64]bool, bool) {
 		}
 		return out, known
 	}
+	for s := range serials {
+		out[s] = true
+	}
+	return out, true
+}
+
+// listSerials lists the ResourceSlices of the pool driver and returns the
+// serials of their devices with their pools, the records before the list
+// and its error. The list's result is recorded unless a list that started
+// later is, and its serials are made POOL.
+func (w *Watcher) listSerials(ctx context.Context) (map[uint64]string, *state.Records, error) {
+	w.mu.Lock()
+	w.lists++
+	n := w.lists
+	w.mu.Unlock()
+	serials, listed, err := w.list(ctx)
+	r0 := w.records()
 	now := w.opts.Now()
+	var gone []poolGone
+	w.mu.Lock()
+	latest := n > w.recorded
+	switch {
+	case !latest:
+	case err != nil:
+		w.recorded, w.failing, w.listErr = n, true, err
+	default:
+		gone = w.observePoolsLocked(r0, listed, now)
+		for s := range serials {
+			delete(w.absent, s)
+		}
+		w.recorded, w.serials, w.listed, w.known, w.failing = n, serials, listed, true, false
+	}
+	w.mu.Unlock()
+	if err != nil {
+		return nil, r0, err
+	}
+	w.commitStep("list", now, r0, func(s *step, r *state.Records) {
+		for _, serial := range slices.Sorted(maps.Keys(serials)) {
+			s.notePool(r, serial, serials[serial], triggerList)
+		}
+		s.notePools(r, listed, gone)
+	})
+	return serials, r0, nil
+}
+
+// list lists the ResourceSlices of the pool driver: the serials of their
+// devices with their pools, and the pools with serials.
+func (w *Watcher) list(ctx context.Context) (map[uint64]string, map[string]bool, error) {
+	lctx, cancel := context.WithTimeout(ctx, apiTimeout)
+	defer cancel()
+	items, err := w.opts.List(lctx)
+	if err != nil {
+		return nil, nil, err
+	}
 	serials, listed := map[uint64]string{}, map[string]bool{}
 	for i := range items {
 		rs := &items[i]
@@ -227,23 +280,7 @@ func (w *Watcher) Serials(ctx context.Context) (map[uint64]bool, bool) {
 			}
 		}
 	}
-	w.mu.Lock()
-	gone := w.observePoolsLocked(r0, listed, now)
-	for s := range serials {
-		delete(w.absent, s)
-	}
-	w.serials, w.listed, w.known, w.failing = serials, listed, true, false
-	w.mu.Unlock()
-	w.commitStep("list", now, r0, func(s *step, r *state.Records) {
-		for _, serial := range slices.Sorted(maps.Keys(serials)) {
-			s.notePool(r, serial, serials[serial], triggerList)
-		}
-		s.notePools(r, listed, gone)
-	})
-	for s := range serials {
-		out[s] = true
-	}
-	return out, true
+	return serials, listed, nil
 }
 
 // DeviceSerial returns the serial attribute of a device of a ResourceSlice
@@ -327,24 +364,26 @@ func (w *Watcher) NotePrepared(serials map[uint64]bool) {
 }
 
 // CheckLocal returns an error if the memdev with the serial must not be
-// used as a local memory device: a current pool ResourceSlice lists it (a
-// fresh list; the serials of the last list if that fails), or the list
-// fails. The listed serials are made POOL.
+// used as a local memory device: a fresh list of the pool ResourceSlices
+// lists it (the last successful list if it fails), or the list fails. It
+// decides on its own list, not on a list that ends meanwhile. The listed
+// serials are made POOL.
 func (w *Watcher) CheckLocal(ctx context.Context, serial uint64) error {
 	if w == nil {
 		return nil
 	}
-	w.Serials(ctx)
-	w.mu.Lock()
-	pool, listed := w.serials[serial]
-	failing, listErr := w.failing, w.listErr
-	w.mu.Unlock()
-	switch {
-	case listed:
+	serials, _, err := w.listSerials(ctx)
+	if err != nil {
+		w.mu.Lock()
+		serials = w.serials
+		w.mu.Unlock()
+	}
+	if pool, listed := serials[serial]; listed {
 		return fmt.Errorf("memory device serial 0x%x is a pool device of %s: it is not used as a local memory device", serial, pool)
-	case failing:
+	}
+	if err != nil {
 		return fmt.Errorf("the ResourceSlices of pool controllers cannot be listed (%v): memory device serial 0x%x is not used as a local memory device until a list succeeds",
-			listErr, serial)
+			err, serial)
 	}
 	return nil
 }

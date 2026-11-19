@@ -30,6 +30,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
@@ -537,4 +538,67 @@ func TestCheckLocalListFails(t *testing.T) {
 		"memory device serial 0xc100e2e1 is not used as a local memory device until a list succeeds")
 	fail.Store(false)
 	noErr(t, e.w.CheckLocal(ctx, localSerial))
+}
+
+// TestCheckLocalOwnList pins that CheckLocal decides on its own list, and
+// that a list that started before it and ends after it is not recorded
+// over it: a scan's slow list that missed the pool slice, or that
+// succeeded while CheckLocal's list failed, lets no local use pass.
+func TestCheckLocalOwnList(t *testing.T) {
+	for _, tc := range []string{"listed", "failing"} {
+		t.Run(tc, func(t *testing.T) {
+			e := newWatchEnv(t)
+			ctx := t.Context()
+			e.publish("0xc100e2e1") // localSerial
+			var calls atomic.Int32
+			started, release, scanned := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			list := e.w.opts.List
+			e.w.opts.List = func(ctx context.Context) ([]resourcev1.ResourceSlice, error) {
+				switch {
+				case calls.Add(1) == 1: // the scan's: without the pool slice
+					close(started)
+					<-release
+					return nil, nil
+				case tc == "failing":
+					return nil, errors.New("apiserver unavailable")
+				}
+				return list(ctx)
+			}
+			go func() {
+				defer close(scanned)
+				e.w.Serials(ctx)
+			}()
+			<-started
+			// the scan's list ends after CheckLocal's list is recorded,
+			// before CheckLocal decides
+			var once sync.Once
+			endScan := func() {
+				once.Do(func() {
+					close(release)
+					<-scanned
+				})
+			}
+			commit := e.w.storeCommit
+			e.w.storeCommit = func(ctx context.Context, d store.Durability, fn store.Func) error {
+				endScan()
+				return commit(ctx, d, fn)
+			}
+			err := e.w.CheckLocal(ctx, localSerial)
+			endScan()
+			if tc == "listed" {
+				wantErr(t, err, "memory device serial 0xc100e2e1 is a pool device of "+device.PoolDriverName+"/pool-c: "+
+					"it is not used as a local memory device")
+			} else {
+				wantErr(t, err, "the ResourceSlices of pool controllers cannot be listed (apiserver unavailable): "+
+					"memory device serial 0xc100e2e1 is not used as a local memory device until a list succeeds")
+			}
+			e.w.mu.Lock()
+			_, listed := e.w.serials[localSerial]
+			failing := e.w.failing
+			e.w.mu.Unlock()
+			if listed != (tc == "listed") || failing != (tc == "failing") {
+				t.Fatalf("recorded: listed %v, failing %v", listed, failing)
+			}
+		})
+	}
 }
