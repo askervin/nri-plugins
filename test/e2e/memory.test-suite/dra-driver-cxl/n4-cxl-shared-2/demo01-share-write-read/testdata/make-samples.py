@@ -602,7 +602,6 @@ def local_trace(sdir, t0=1792500000.0):
         ev(t + 2.2 + i * 0.1, "Pod", "cxl-lease-" + LEASES[r], "Scheduled", "Successfully assigned %s/cxl-lease-%s to %s" % (NS, LEASES[r], VM2))
         klog(t + 3 + i * 0.2, "plugin.go:362", "cxl.nri.io: claim %s/cxl-lease-%s: prepared memdev-c100e2e1 (serial %s, shared true, mode dax, read-only true) as mem0 region0 dax dax0.0 size %d node -1 1 share" % (NS, LEASES[r], LOCAL, GI))
         klog(t + 3.1 + i * 0.2, "broker.go:1646", 'lease broker: lease %s: Ready (source local, serial %s, mode dax, read-only true, node -1, dax "/dev/dax0.0", block "", access "", fs "", path "", %d bytes)' % (LEASES[r], LOCAL, GI))
-    klog(t + 5, "driver.go:942", '"DRAPlugin encountered an error." err="pool \\"%s\\", slice #0: some fields were dropped by the apiserver, probably because these features are disabled: unknown"' % VM2, "E")
     t = 160
     for i, r in enumerate(READERS):
         klog(t + i * 0.3, "broker.go:1189", "lease broker: lease %s: releasing (requester container gone, was Ready)" % LEASES[r])

@@ -3418,12 +3418,10 @@ patterns = {
     "udev": r"^KERNEL\[",
     "kubelet": r"(?i)prepar|resourceclaim|error|fail",
 }
-# Lines that match but tell nothing: the cxl.nri.io publisher reports
-# nodeAllocatableResources dropped by the apiserver on every publish
-# (DRANodeAllocatableResources is off, D32), the controller logs every
-# server event, the udev watcher logs every rescan trigger.
+# Lines that match but tell nothing: the controller logs every server
+# event, the udev watcher logs every rescan trigger.
 noise = {
-    "driver": r"some fields were dropped by the apiserver|udev event triggered rescan|^cxl region: (decoder_region_action|region_action|cmd_disable_region)",
+    "driver": r"udev event triggered rescan|^cxl region: (decoder_region_action|region_action|cmd_disable_region)",
     "controller": r"server event ",
 }
 rows = []

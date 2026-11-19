@@ -155,9 +155,7 @@ PluginDataDirectoryPath: %v`,
 		fe.local.Stop()
 		return err
 	}
-	if err := fe.publisher.Start(ctx); err != nil {
-		return err
-	}
+	fe.publisher.Start(ctx)
 	go watcher.Watch(ctx, fe.publisher.Trigger, fe.publisher.LastScan)
 	return nil
 }
@@ -458,7 +456,6 @@ func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Driver
 		return nil, err
 	}
 	fe.local = local
-	fe.publisher.SetOnError(local.HandleError)
 	devices.setLender(state.SourceLocal, local.Lender())
 	return fe, nil
 }

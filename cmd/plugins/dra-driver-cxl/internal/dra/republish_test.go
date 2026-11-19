@@ -40,7 +40,7 @@ func (e *driverEnv) publishing() *k8sfake.Clientset {
 	e.restart()
 	ctx, cancel := context.WithCancel(context.Background())
 	pub := e.pub
-	mustOK(e.t, pub.Start(ctx))
+	pub.Start(ctx)
 	e.t.Cleanup(func() {
 		pub.Stop()
 		cancel()

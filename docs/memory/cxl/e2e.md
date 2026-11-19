@@ -212,8 +212,8 @@ n4-cxl-shared-2-fedora-43-containerd   Ready    control-plane   87s   v1.37.1   
 Kubernetes is the latest release (`k8s_release`), v1.37 or later is
 needed. The VMs are created with the default feature gates of that
 release: `DRANodeAllocatableResources` is off, so the API server drops
-`nodeAllocatableResources` from the ResourceSlices (see
-[Feature gates](usage.md#feature-gates)). To try it, create the VMs with
+`nodeAllocatableResources` from the ResourceSlices, and the driver logs a
+warning of it once (see [Feature gates](usage.md#feature-gates)). To try it, create the VMs with
 `k8s_feature_gates=DRANodeAllocatableResources=true` in the environment
 of `run_tests.sh`.
 

@@ -17,12 +17,9 @@ package dra
 import (
 	"context"
 	"errors"
-	"fmt"
-	"sync"
+	"maps"
 	"time"
 
-	coreclientset "k8s.io/client-go/kubernetes"
-	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	"k8s.io/dynamic-resource-allocation/resourceslice"
 	"k8s.io/klog/v2"
 
@@ -52,105 +49,82 @@ import (
 // most.
 const nodeResourceSliceSyncDelay = time.Second
 
-// nodeResourceSlices publishes the ResourceSlice of the node with a resourceslice
-// controller of its own, like kubeletplugin.Helper.PublishResources does
-// (the same owner, names and error handling), but with SyncDelay
-// nodeResourceSliceSyncDelay: the helper starts its controller with the default
-// SyncDelay and has no option for it.
-//
-// Identity: one per Publisher, of the node nodeName.
-//
-// States: a two-state in-memory latch, not a State field: no controller
-// (ctl nil) and running (ctl set).
-//
-// Transitions: no controller -> running at the first publish; running ->
-// no controller at stop (a later publish starts a new one).
-//
-// Invariants: at most one controller runs.
-//
-// Persistence: none; the published slice is the API server's.
-//
-// Locks and waits: mu guards ctl; publish does not wait for the API
-// server, stop waits for the controller with mu released.
-type nodeResourceSlices struct {
-	client    coreclientset.Interface
-	nodeName  string
-	syncDelay time.Duration
-	onError   func(ctx context.Context, err error, msg string)
+// errorLogInterval is how long the publisher does not log an error of the
+// controller of the node's slice again: the controller retries a failed
+// write, and an error that the API server keeps returning would be logged
+// at every retry.
+const errorLogInterval = 10 * time.Minute
 
-	// mu guards ctl: a leaf lock.
-	mu  sync.Mutex
-	ctl *resourceslice.Controller // nil before the first publish
-}
-
-// newNodeResourceSlices returns the publisher of the ResourceSlice of node
-// nodeName. onError gets the errors of publishing, marked recoverable.
-func newNodeResourceSlices(client coreclientset.Interface, nodeName string, onError func(ctx context.Context, err error, msg string)) *nodeResourceSlices {
-	return &nodeResourceSlices{
-		client:    client,
-		nodeName:  nodeName,
-		syncDelay: nodeResourceSliceSyncDelay,
-		onError:   onError,
-	}
-}
-
-// publish sets the resources of the node: the first call starts the
-// controller, which runs until ctx ends or stop is called, later calls
-// update its desired state. publish does not wait for the API server.
-func (s *nodeResourceSlices) publish(ctx context.Context, resources resourceslice.DriverResources) error {
-	if s.nodeName == "" {
-		return errors.New("no node name to publish resources")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.ctl != nil {
-		s.ctl.Update(&resources) // a deep copy
-		return nil
-	}
+// startController starts the controller of the node's ResourceSlice with
+// the resources res, like kubeletplugin.Helper.PublishResources does (the
+// same owner and names), but with the SyncDelay
+// nodeResourceSliceSyncDelay, which the helper has no option for, and the
+// publisher's error handler. The controller runs until ctx ends. It returns
+// once the informer of the controller has synced, or ctx ended.
+func (p *Publisher) startController(ctx context.Context, res *resourceslice.DriverResources) (*resourceslice.Controller, error) {
 	ctx = klog.NewContext(ctx, klog.LoggerWithName(klog.FromContext(ctx), "ResourceSlice controller"))
-	ctl, err := resourceslice.StartController(ctx, resourceslice.Options{
+	return resourceslice.StartController(ctx, resourceslice.Options{
 		DriverName: device.DriverName,
-		KubeClient: s.client,
+		KubeClient: p.opts.Client,
 		// The UID is found by the controller.
-		Owner:     &resourceslice.Owner{APIVersion: "v1", Kind: "Node", Name: s.nodeName},
-		Resources: &resources, // a deep copy
-		SyncDelay: ptr(s.syncDelay),
-		ErrorHandler: func(ctx context.Context, err error, msg string) {
-			// As the helper: neither retrying nor restarting fixes these
-			// errors, all are recoverable.
-			if s.onError != nil {
-				s.onError(ctx, recoverableResourceSliceError{err}, msg)
-			}
-		},
+		Owner:        &resourceslice.Owner{APIVersion: "v1", Kind: "Node", Name: p.opts.NodeName},
+		Resources:    res, // a deep copy
+		SyncDelay:    ptr(nodeResourceSliceSyncDelay),
+		ErrorHandler: p.handleError,
 	})
-	if err != nil {
-		return fmt.Errorf("start ResourceSlice controller: %w", err)
-	}
-	s.ctl = ctl
-	return nil
 }
 
-// stop stops the controller and waits for it. The published slices stay.
-func (s *nodeResourceSlices) stop() {
-	if s == nil {
+// handleError handles an error of the controller of the node's slice. When
+// the API server dropped the nodeAllocatableResources of a device (feature
+// gate DRANodeAllocatableResources off), the table is published without
+// them from then on, after one warning: the controller would write the
+// slice again at every publish otherwise. Other errors are logged, each
+// message once in errorLogInterval, and other dropped fields once whether
+// dropped at a create or at an update of the slice.
+func (p *Publisher) handleError(ctx context.Context, err error, msg string) {
+	key := msg + ": " + err.Error()
+	var dropped *resourceslice.DroppedFieldsError
+	if errors.As(err, &dropped) && droppedNodeAllocatable(dropped) {
+		p.mu.Lock()
+		first := !p.noAllocatable
+		p.noAllocatable = true
+		p.mu.Unlock()
+		if first {
+			klog.Warning("the API server drops nodeAllocatableResources (feature gate DRANodeAllocatableResources is off): " +
+				"claimed memory is not accounted against the node's allocatable memory; publishing the devices without it")
+		}
 		return
 	}
-	s.mu.Lock()
-	ctl := s.ctl
-	s.ctl = nil
-	s.mu.Unlock()
-	ctl.Stop() // nil-safe
+	if dropped != nil {
+		key = dropped.Error()
+	}
+	now := time.Now()
+	p.mu.Lock()
+	maps.DeleteFunc(p.logged, func(_ string, at time.Time) bool { return now.Sub(at) >= errorLogInterval })
+	_, seen := p.logged[key]
+	if !seen {
+		p.logged[key] = now
+	}
+	p.mu.Unlock()
+	if !seen {
+		klog.FromContext(ctx).Error(err, msg)
+	}
 }
 
-// recoverableResourceSliceError is an error of the ResourceSlice controller,
-// recoverable (errors.Is kubeletplugin.ErrRecoverable) as the helper marks
-// them, with an unchanged message.
-type recoverableResourceSliceError struct{ error }
-
-func (e recoverableResourceSliceError) Is(target error) bool {
-	return target == kubeletplugin.ErrRecoverable
+// droppedNodeAllocatable tells whether the API server dropped the
+// nodeAllocatableResources of a device of the node's slice.
+func droppedNodeAllocatable(dropped *resourceslice.DroppedFieldsError) bool {
+	if dropped.DesiredSlice == nil || dropped.ActualSlice == nil {
+		return false
+	}
+	want, got := dropped.DesiredSlice.Spec.Devices, dropped.ActualSlice.Spec.Devices
+	for i := range min(len(want), len(got)) {
+		if len(want[i].NodeAllocatableResources) > 0 && len(got[i].NodeAllocatableResources) == 0 {
+			return true
+		}
+	}
+	return false
 }
-func (e recoverableResourceSliceError) Unwrap() error { return e.error }
 
 // ptr returns a pointer to v.
 func ptr[T any](v T) *T {

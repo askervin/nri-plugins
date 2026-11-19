@@ -579,9 +579,6 @@ def render_t6(data, state, now=None, stale=False):
 KLOG = re.compile(r"^([IWEF])\d{4} [\d:.]+\s+\d+ [^\]]+\] (.*)$")
 LEASE_MARK = "\x01%s\x02"
 LEASE_RE = re.compile("\x01([0-9a-f]{8})\x02")
-# Driver errors that tell nothing: the apiserver drops fields of the
-# ResourceSlices on every publish (dra.source.sh, dra-trace-summary).
-DRIVER_NOISE = r"some fields were dropped by the apiserver"
 
 
 class Trace:
@@ -805,7 +802,7 @@ class Trace:
             elif rest.startswith("not configured shared"):
                 self.emit(t, "drv", "%s unshared: %s the region" % (node, "keeping" if "keeping" in rest else "releasing"))
             return
-        if level in "EF" and not re.search(DRIVER_NOISE, msg):
+        if level in "EF":
             self.emit(t, "drv", "%s ERROR %s" % (node, msg))
 
     def ready_what(self, rest):

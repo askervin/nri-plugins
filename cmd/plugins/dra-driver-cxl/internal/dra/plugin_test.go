@@ -144,8 +144,8 @@ func TestHandleErrorAndHealth(t *testing.T) {
 
 // New refuses a plugin without the store or the engine, one of rules that
 // are not those of LocalRules or PoolRules, and one that publishes without
-// the publisher; NewPublisher refuses a publisher without the store or the
-// scan.
+// the publisher; NewPublisher refuses a publisher without the store, the
+// scan or the node name.
 func TestNew(t *testing.T) {
 	e := newDriverEnv(t, nil)
 	if _, err := New(Options{Rules: PoolRules(device.PoolDriverName, ""), Store: e.st}); err == nil {
@@ -155,9 +155,9 @@ func TestNew(t *testing.T) {
 	wantErrText(t, err, `zero.nri.io: rules of source "": not those of LocalRules or PoolRules`)
 	_, err = New(Options{Rules: LocalRules(""), Store: e.st, Engine: e.eng})
 	wantErrText(t, err, "cxl.nri.io: the plugin publishes and needs the publisher")
-	for _, opts := range []PublishOptions{{Scan: pubNoScan}, {Store: e.st}} {
+	for _, opts := range []PublishOptions{{Scan: pubNoScan, NodeName: pubNode}, {Store: e.st, NodeName: pubNode}, {Store: e.st, Scan: pubNoScan}} {
 		_, err = NewPublisher(opts)
-		wantErrText(t, err, "the publisher needs the state store and the scan of the devices")
+		wantErrText(t, err, "the publisher needs the state store, the scan of the devices and the node name")
 	}
 	p, err := New(Options{Rules: PoolRules("other.nri.io", ""), Store: e.st, Engine: e.eng})
 	mustOK(t, err)

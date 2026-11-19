@@ -215,7 +215,7 @@ func TestLocalBlockSize(t *testing.T) {
 	if bs := e.localSnapshot().BlockSize; bs != localBlockSize {
 		t.Fatalf("block size %d", bs)
 	}
-	off, err := dra.NewPublisher(dra.PublishOptions{Store: e.st, Scan: func(context.Context) (*kernel.Snapshot, error) { return &kernel.Snapshot{}, nil }})
+	off, err := dra.NewPublisher(dra.PublishOptions{Store: e.st, NodeName: "node1", Scan: func(context.Context) (*kernel.Snapshot, error) { return &kernel.Snapshot{}, nil }})
 	noErr(t, err)
 	if off.LocalSnapshot() != nil {
 		t.Fatal("snapshot of unmanaged local devices")

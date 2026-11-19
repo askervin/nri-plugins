@@ -88,8 +88,10 @@ The driver uses these Kubernetes features:
 Without `DRANodeAllocatableResources` the API server drops
 `nodeAllocatableResources` from the ResourceSlices of the driver, and
 claimed memory is not accounted against the node's allocatable memory;
-everything else works. Turn a gate on in the API server, the scheduler
-and the kubelet of every node, for instance with kubeadm:
+everything else works. The driver logs a warning of it once and
+publishes its devices without the field. Turn a gate on in the API
+server, the scheduler and the kubelet of every node, for instance with
+kubeadm:
 
 ```yaml
 apiVersion: kubeadm.k8s.io/v1beta4

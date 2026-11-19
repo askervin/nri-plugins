@@ -123,6 +123,17 @@ func pubPublisher(t *testing.T, opts PublishOptions) *Publisher {
 // pubNoScan returns an observation of a node without CXL objects.
 func pubNoScan(context.Context) (*kernel.Snapshot, error) { return &kernel.Snapshot{}, nil }
 
+// dramScan returns a scan that finds a node with DRAM while dram is set,
+// one without devices otherwise.
+func dramScan(dram *atomic.Bool) func(context.Context) (*kernel.Snapshot, error) {
+	return func(context.Context) (*kernel.Snapshot, error) {
+		if !dram.Load() {
+			return &kernel.Snapshot{}, nil
+		}
+		return &kernel.Snapshot{NumaNodes: []kernel.NumaNode{{ID: 0, HasMemory: true, MemTotal: 8 << 30}}}, nil
+	}
+}
+
 // pubNames returns the names of the devices, sorted.
 func pubNames(devs DevicesInfo) []string {
 	return slices.Sorted(maps.Keys(devs))
@@ -595,7 +606,7 @@ func TestRescanBeforeStart(t *testing.T) {
 		t.Fatalf("%d lines of a publish before the start:\n%s", n, logs())
 	}
 
-	pubNoErr(t, p.Start(ctx))
+	p.Start(ctx)
 	defer p.Stop()
 	waitNodeSlice(t, client, pubNode, 5*time.Second, device.LeaseDeviceName)
 	p.Rescan(ctx, false)
@@ -615,12 +626,7 @@ func TestPublishedTable(t *testing.T) {
 		Config:   PublishConfig{PublishLeaseDevice: true},
 		NodeName: pubNode,
 		Client:   client,
-		Scan: func(context.Context) (*kernel.Snapshot, error) {
-			if !dram.Load() {
-				return &kernel.Snapshot{}, nil
-			}
-			return &kernel.Snapshot{NumaNodes: []kernel.NumaNode{{ID: 0, HasMemory: true, MemTotal: 8 << 30}}}, nil
-		},
+		Scan:     dramScan(&dram),
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -628,8 +634,9 @@ func TestPublishedTable(t *testing.T) {
 	if p.Published()[device.LeaseDeviceName] == nil {
 		t.Fatalf("published table before the first publication: %+v", p.Published())
 	}
-	pubNoErr(t, p.Start(ctx))
+	p.Start(ctx)
 	defer p.Stop()
+	waitNodeSlice(t, client, pubNode, 5*time.Second, device.LeaseDeviceName)
 	// a scan that finds the DRAM device, not published
 	dram.Store(true)
 	pubNoErr(t, p.Scan(ctx))

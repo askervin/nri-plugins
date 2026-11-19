@@ -290,7 +290,7 @@ def main():
         node = state.get({"vm0": "VM0_NODE", "vm1": "VM1_NODE"}.get(rest[0], "VM2_NODE")) or state["VM2_NODE"]
         zoom_shell(state, "vm2", "pod=$(kubectl get pods -n kube-system -l app.kubernetes.io/name=nri-dra-driver-cxl "
                    "--field-selector spec.nodeName=%s -o name | head -n 1); kubectl logs -n kube-system --tail=%d -c nri-dra-driver-cxl $pod "
-                   "| grep -vE 'CA file|Watch close|some fields were dropped|Waited before sending request' | tail -n %d "
+                   "| grep -vE 'CA file|Watch close|Waited before sending request' | tail -n %d "
                    "| sed -E 's/^[IWEF][0-9]{4} [0-9:.]+ +[0-9]+ [^]]+\\] //'" % (node, 4 * n, n))
     elif what == "kernel" and rest:
         zoom_kernel(state, rest[0])

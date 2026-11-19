@@ -40,13 +40,19 @@ import (
 // Identity: one per process, of the node.
 //
 // States: the table, the devices of the last scan; not started (the scans
-// set the table, nothing is published) and started (every scan is
-// published). The configuration is that of NewPublisher.
+// set the table, nothing is published), started (the first publish of the
+// publisher goroutine starts the controller of the node's slice, then
+// every scan is published) and stopped (nothing is published). A latch:
+// the API server drops nodeAllocatableResources. The configuration is
+// that of NewPublisher.
 //
 // Transitions: a scan (at the start, then on udev events, the watch's
 // ticks and after the Prepares and Unprepares that changed the records,
 // one at a time from the list of the pool slices to the publish) sets the
-// table. A publish of an unchanged table writes nothing to the API server.
+// table. The controller's first report of a dropped nodeAllocatableResources
+// sets the latch: the table is published without it from then on. A
+// publish of an unchanged table writes nothing to the API server: the
+// controller writes a slice that differs only.
 //
 // Invariants: a pool device and a HELD memdev are never published as local
 // ones; the devices are sorted by name, so their order is not a change; no
@@ -55,9 +61,12 @@ import (
 // Persistence: none; the table is derived from the kernel, the provenance
 // records and the records of the local memdevs.
 //
-// Locks and waits: scanMu serializes the scans (it is held across the lists
-// of the API server, bounded); mu guards the table, never held across a
-// scan or a publish.
+// Locks and waits: scanMu serializes the scans, the publishes and the
+// changes of the controller, so that nothing publishes after Stop (it is
+// held across the lists of the API server, bounded, and across the first
+// publish, which waits for the informer of the controller until it has
+// synced or Stop); mu guards the table, the controller and the latch, never
+// held across a scan or a publish.
 type Publisher struct {
 	opts PublishOptions
 
@@ -70,7 +79,17 @@ type Publisher struct {
 	// published is the table of the last publication, nil before the
 	// first.
 	published DevicesInfo
-	slices    *nodeResourceSlices // nil before Start
+	// ctl publishes the node's slice, nil before the first publish and
+	// after Stop.
+	ctl *resourceslice.Controller
+	// noAllocatable: the API server drops nodeAllocatableResources.
+	noAllocatable bool
+	// logged are the messages of the errors of ctl logged, with when.
+	logged map[string]time.Time
+	// cancel ends the context of the publisher goroutine and ctl, done
+	// is closed when the goroutine has returned; nil before Start.
+	cancel context.CancelFunc
+	done   chan struct{}
 
 	// triggerMu guards the fields below: a leaf lock.
 	triggerMu     sync.Mutex
@@ -85,11 +104,9 @@ type PublishOptions struct {
 	// Config are the settings of the configuration of the driver, fixed
 	// for the life of the publisher.
 	Config PublishConfig
-	// NodeName is the node of the slice; Client publishes it, OnError gets
-	// the errors of publishing (marked recoverable).
+	// NodeName is the node of the slice; Client publishes it.
 	NodeName string
 	Client   coreclientset.Interface
-	OnError  func(ctx context.Context, err error, msg string)
 	// Scan returns an observation of the kernel objects of the node.
 	Scan func(ctx context.Context) (*kernel.Snapshot, error)
 	// Watcher knows the provenance of the memdevs, nil for no pool.
@@ -138,18 +155,10 @@ func (c *PublishConfig) usableSize(memdev string, serial uint64) uint64 {
 // scans of opts.Scan and the records of opts.Store; it publishes after
 // Start.
 func NewPublisher(opts PublishOptions) (*Publisher, error) {
-	if opts.Store == nil || opts.Scan == nil {
-		return nil, errors.New("the publisher needs the state store and the scan of the devices")
+	if opts.Store == nil || opts.Scan == nil || opts.NodeName == "" {
+		return nil, errors.New("the publisher needs the state store, the scan of the devices and the node name")
 	}
-	return &Publisher{opts: opts, devices: DevicesInfo{}, trigger: make(chan struct{}, 1)}, nil
-}
-
-// SetOnError sets the handler of the errors of publishing (marked
-// recoverable); it takes effect at Start.
-func (p *Publisher) SetOnError(onError func(ctx context.Context, err error, msg string)) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.opts.OnError = onError
+	return &Publisher{opts: opts, devices: DevicesInfo{}, logged: map[string]time.Time{}, trigger: make(chan struct{}, 1)}, nil
 }
 
 // Published returns the devices of the last publication, by name, those of
@@ -186,17 +195,24 @@ func (p *Publisher) LastScan() time.Time {
 // of the table, sorted by name.
 func (p *Publisher) Resources() resourceslice.DriverResources {
 	p.mu.Lock()
-	devs := p.devices
+	devs, noAllocatable := p.devices, p.noAllocatable
 	p.mu.Unlock()
-	return p.resourcesOf(devs)
+	return p.resourcesOf(devs, noAllocatable)
 }
 
 // resourcesOf returns the resources of the node's ResourceSlice of the
-// devices of a table, sorted by name.
-func (p *Publisher) resourcesOf(devs DevicesInfo) resourceslice.DriverResources {
+// devices of a table, sorted by name; without nodeAllocatableResources if
+// noAllocatable.
+func (p *Publisher) resourcesOf(devs DevicesInfo, noAllocatable bool) resourceslice.DriverResources {
+	out := resources(devs)
+	if noAllocatable {
+		for i := range out {
+			out[i].NodeAllocatableResources = nil
+		}
+	}
 	return resourceslice.DriverResources{
 		Pools: map[string]resourceslice.Pool{
-			p.opts.NodeName: {Slices: []resourceslice.Slice{{Devices: resources(devs)}}},
+			p.opts.NodeName: {Slices: []resourceslice.Slice{{Devices: out}}},
 		},
 	}
 }
@@ -214,25 +230,26 @@ func (p *Publisher) Scan(ctx context.Context) error {
 	return nil
 }
 
-// Start starts publishing: the first publish of the table, then the
-// publisher goroutine, which scans and publishes when Trigger asks for it,
-// until ctx ends or Stop.
-func (p *Publisher) Start(ctx context.Context) error {
+// Start starts the publisher goroutine, once: its first publish of the
+// table starts the controller of the node's slice, then it scans and
+// publishes when Trigger asks for it, until ctx ends or Stop. Start does
+// not wait for the API server.
+func (p *Publisher) Start(ctx context.Context) {
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	p.mu.Lock()
-	if p.slices == nil {
-		p.slices = newNodeResourceSlices(p.opts.Client, p.opts.NodeName, p.opts.OnError)
-	}
+	p.cancel, p.done = cancel, done
 	p.mu.Unlock()
-	if err := p.publish(ctx); err != nil {
-		return fmt.Errorf("startup error: %v", err)
-	}
 	p.scanned.Store(time.Now().UnixNano())
-	go p.run(ctx)
-	return nil
+	go func() {
+		defer close(done)
+		p.run(ctx)
+	}()
 }
 
-// Stop stops the publisher goroutine and the ResourceSlice controller. The
-// published slice stays. Nothing for a nil publisher.
+// Stop stops the publisher goroutine and the controller of the node's
+// slice and waits for them; the published slice stays. Nothing for a nil
+// publisher.
 func (p *Publisher) Stop() {
 	if p == nil {
 		return
@@ -244,9 +261,20 @@ func (p *Publisher) Stop() {
 	}
 	p.triggerMu.Unlock()
 	p.mu.Lock()
-	s := p.slices
+	cancel, done := p.cancel, p.done
 	p.mu.Unlock()
-	s.stop()
+	if cancel == nil {
+		return
+	}
+	cancel()
+	<-done
+	p.scanMu.Lock()
+	p.mu.Lock()
+	ctl := p.ctl
+	p.ctl = nil
+	p.mu.Unlock()
+	p.scanMu.Unlock()
+	ctl.Stop() // nil-safe
 }
 
 // Trigger asks the publisher goroutine for a scan and a publish; a periodic
@@ -266,8 +294,18 @@ func (p *Publisher) Trigger(_ context.Context, periodic bool) {
 	}
 }
 
-// run scans and publishes at every trigger until ctx ends or Stop.
+// run makes the first publish, then scans and publishes at every trigger
+// until ctx ends or Stop.
 func (p *Publisher) run(ctx context.Context) {
+	p.scanMu.Lock()
+	err := p.publish(ctx)
+	p.scanMu.Unlock()
+	if err != nil {
+		if ctx.Err() == nil {
+			klog.Errorf("publisher: %v", err)
+		}
+		return
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -307,13 +345,13 @@ func (p *Publisher) Rescan(ctx context.Context, periodic bool) {
 	p.mu.Lock()
 	changed := !slices.Equal(slices.Sorted(maps.Keys(p.devices)), slices.Sorted(maps.Keys(devs)))
 	p.devices = devs
-	started := p.slices != nil
+	publishing := p.ctl != nil
 	p.mu.Unlock()
 	if periodic && changed {
 		logf = klog.Infof
 		logf("rescanAndPublish: the periodic rescan changed the devices")
 	}
-	if !started {
+	if !publishing {
 		return
 	}
 	if err := p.publish(ctx); err != nil {
@@ -323,23 +361,31 @@ func (p *Publisher) Rescan(ctx context.Context, periodic bool) {
 	logf("rescanAndPublish: published updated resources (%d devices)", len(devs))
 }
 
-// publish publishes the table.
+// publish publishes the table: the first publish starts the controller of
+// the node's slice, which runs until ctx ends, and waits until its informer
+// has synced; the later ones update the controller and do not wait for the
+// API server. Called with scanMu held.
 func (p *Publisher) publish(ctx context.Context) error {
 	p.mu.Lock()
-	table := p.devices
+	table, noAllocatable, ctl := p.devices, p.noAllocatable, p.ctl
 	p.mu.Unlock()
-	res := p.resourcesOf(table)
+	res := p.resourcesOf(table, noAllocatable)
 	devs := res.Pools[p.opts.NodeName].Slices[0].Devices
 	for i := range devs {
 		klog.V(5).Infof("Processing allocatable device %v: %+v", devs[i].Name, devs[i])
 	}
 	klog.FromContext(ctx).Info("Publishing resources", "len", len(devs))
 	klog.V(5).Infof("devices: %+v", devs)
-	p.mu.Lock()
-	s := p.slices
-	p.mu.Unlock()
-	if err := s.publish(ctx, res); err != nil {
-		return fmt.Errorf("error publishing resources: %v", err)
+	if ctl != nil {
+		ctl.Update(&res) // a deep copy
+	} else {
+		ctl, err := p.startController(ctx, &res)
+		if err != nil {
+			return fmt.Errorf("start ResourceSlice controller: %w", err)
+		}
+		p.mu.Lock()
+		p.ctl = ctl
+		p.mu.Unlock()
 	}
 	p.mu.Lock()
 	p.published = table

@@ -16,7 +16,6 @@
 1792500103.300000 vm.driver I1020 12:00:43.000000  4242 broker.go:1646] lease broker: lease 51aa7b09: Ready (source local, serial 0xc100e2e1, mode dax, read-only true, node -1, dax "/dev/dax0.0", block "", access "", fs "", path "", 1073741824 bytes)
 1792500103.400000 vm.driver I1020 12:00:43.000000  4242 plugin.go:362] cxl.nri.io: claim cxl-demo/cxl-lease-e0c4d3f1: prepared memdev-c100e2e1 (serial 0xc100e2e1, shared true, mode dax, read-only true) as mem0 region0 dax dax0.0 size 1073741824 node -1 1 share
 1792500103.500000 vm.driver I1020 12:00:43.000000  4242 broker.go:1646] lease broker: lease e0c4d3f1: Ready (source local, serial 0xc100e2e1, mode dax, read-only true, node -1, dax "/dev/dax0.0", block "", access "", fs "", path "", 1073741824 bytes)
-1792500105.000000 vm.driver E1020 12:00:45.000000  4242 driver.go:942] "DRAPlugin encountered an error." err="pool \"n4-cxl-shared-2-fedora-43-containerd\", slice #0: some fields were dropped by the apiserver, probably because these features are disabled: unknown"
 1792500160.000000 vm.driver I1020 12:00:40.000000  4242 broker.go:1189] lease broker: lease 8c1d02e4: releasing (requester container gone, was Ready)
 1792500160.300000 vm.driver I1020 12:00:40.000000  4242 broker.go:1189] lease broker: lease 51aa7b09: releasing (requester container gone, was Ready)
 1792500160.600000 vm.driver I1020 12:00:40.000000  4242 broker.go:1189] lease broker: lease e0c4d3f1: releasing (requester container gone, was Ready)

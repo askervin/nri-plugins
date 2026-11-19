@@ -873,8 +873,8 @@ func LocalRequestPolicy(size, bs uint64) *resourcev1.CapacityRequestPolicy {
 // capacity (device and node) is in bytes, hence capacityMultiplier is 1.
 //
 // Requires DRANodeAllocatableResources feature gate. Without it the
-// apiserver drops the field from published ResourceSlices and the driver
-// logs "some fields were dropped by the apiserver".
+// apiserver drops the field from published ResourceSlices, and the
+// publisher logs a warning once and publishes the devices without it.
 func MemoryNodeAllocatableResources() map[v1.ResourceName]resourcev1.NodeAllocatableResource {
 	return map[v1.ResourceName]resourcev1.NodeAllocatableResource{
 		v1.ResourceMemory: {
