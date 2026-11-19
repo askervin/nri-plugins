@@ -50,7 +50,7 @@ func TestPrepareLocalNUMA(t *testing.T) {
 		t.Fatal("memdev not in use")
 	}
 	res := e.prepared()["u1"]
-	if len(res.Devices) != 1 || !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl=claim-u1-0"}) {
+	if len(res.Devices) != 1 || !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"cxl.nri.io/device=claim-u1-0"}) {
 		t.Fatalf("prepared %+v", res.Devices)
 	}
 	// the node of the memory of the region in the kernel

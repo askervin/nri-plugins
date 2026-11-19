@@ -31,6 +31,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
+	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
+	cdiparser "tags.cncf.io/container-device-interface/pkg/parser"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
@@ -47,7 +49,7 @@ const (
 	// sockets of the drivers.
 	kubeletPluginsRegistryDir = "/var/lib/kubelet/plugins_registry"
 
-	defaultCDIRoot      = "/etc/cdi"
+	defaultCDIRoot      = cdiapi.DefaultDynamicDir
 	defaultKubeAPIQPS   = 5
 	defaultKubeAPIBurst = 10
 	defaultNRIName      = "dra-driver-cxl"
@@ -200,6 +202,12 @@ func parseFlags(fs *flag.FlagSet, args []string, lookupEnv func(string) (string,
 	}
 	if f.LeaseCLISource != "" && f.LeaseCLI == "" {
 		return nil, errors.New("--lease-cli-source needs --lease-cli")
+	}
+	// The pool driver name is the vendor of its CDI kind.
+	if f.PoolDriverName != "" {
+		if err := cdiparser.ValidateVendorName(f.PoolDriverName); err != nil {
+			return nil, fmt.Errorf("--pool-driver-name %q: %w", f.PoolDriverName, err)
+		}
 	}
 	return f, nil
 }

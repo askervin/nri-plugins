@@ -77,6 +77,8 @@ DRA_LEASE_DIR=/var/lib/kubelet/plugins/cxl.nri.io/leases
 # filesystem of a lease at <claim uid>/<name>, /run/cxl/fs/<name> in them.
 DRA_LEASE_FS_DIR=/var/lib/kubelet/plugins/cxl.nri.io/lease-fs
 DRA_LEASE_FS_CTR_DIR=/run/cxl/fs
+# The directory of the CDI specs (JSON) that the drivers write on the node.
+DRA_CDI_DIR=/var/run/cdi
 # The labels of the companion pods and claims of leases.
 DRA_LEASE_LABEL=cxl.nri.io/lease
 DRA_REQUESTER_LABEL=cxl.nri.io/requester-uid
@@ -1279,126 +1281,96 @@ dra-delete-pod() { # script API
     dra-delete "$1" pod "$2" --grace-period=2 --wait=true --timeout=60s
 }
 
-dra-cdi-device() { # script API
-    # Usage: dra-cdi-device VMDIR NAME
+dra-cdi-specs() {
+    # Usage: dra-cdi-specs VMDIR
     #
-    # Print CDI device NAME of the CDI spec files (YAML) of the VM of VMDIR,
-    # in /etc/cdi and /var/run/cdi, quietly: a line "file: FILE" and a line
-    # "kind: KIND" of its spec, then its own lines of the spec. Print
-    # nothing if there is no such device.
-    # Example: dra-cdi-device "$VM" "claim-$CLAIM_UID-0"
+    # Print the CDI spec files (JSON) in $DRA_CDI_DIR of the VM of VMDIR,
+    # quietly, one per line: the path, a tab and the content without
+    # newlines. Return non-zero if the directory cannot be read.
     local script
-    script="want=$(printf %q "$2")
+    script="dir=$(printf %q "$DRA_CDI_DIR")
 $(cat <<'EOF2'
-for f in /etc/cdi/* /var/run/cdi/*; do
+[ -r "$dir" ] || exit 1
+for f in "$dir"/*.json; do
     [ -f "$f" ] || continue
-    awk -v want="$want" '
-        /^kind:/ { kind = $2 }
-        /^[^ -]/ { p = 0 }
-        /^ *- name: / { n = $NF; gsub(/"/, "", n); p = (n == want); if (p) { print "file: " FILENAME; print "kind: " kind } }
-        p { print }' "$f"
+    printf '%s\t' "$f"
+    tr -d '\n' < "$f"
+    echo
 done
 EOF2
 )"
     dra-vm-command-q "$1" "$script"
 }
 
-dra-cdi-devices-with() { # script API
-    # Usage: dra-cdi-devices-with VMDIR TEXT
+dra-cdi-py() {
+    # Usage: dra-cdi-py device|devices-with ARG
     #
-    # Print the names of the CDI devices of the CDI spec files (YAML) of the
-    # VM of VMDIR that have a line with TEXT (a fixed string, for instance
-    # an environment variable name), one per line, quietly. Return
-    # non-zero if neither CDI spec directory can be read.
-    local script
-    script="text=$(printf %q "$2")
-$(cat <<'EOF2'
-[ -r /etc/cdi ] || [ -r /var/run/cdi ] || exit 1
-for f in /etc/cdi/* /var/run/cdi/*; do
-    [ -f "$f" ] || continue
-    awk -v t="$text" '
-        /^[^ -]/ { n = "" }
-        /^ *- name: / { n = $NF; gsub(/"/, "", n) }
-        n != "" && index($0, t) { print n }' "$f"
-done | sort -u
-exit "${PIPESTATUS[0]}"
-EOF2
-)"
-    dra-vm-command-q "$1" "$script"
-}
-
-dra-cdi-mounts() { # script API
-    # Usage: dra-cdi-mounts CDI
-    #
-    # Print the mounts of the CDI device CDI (the lines that dra-cdi-device
-    # printed) as a JSON list in the order of the spec, one object per
-    # mount with its fields (hostPath, containerPath, type, options).
-    # Return non-zero if CDI has a mount line that cannot be parsed.
+    # Read the output of dra-cdi-specs and print CDI device ARG (device) or
+    # the devices that contain ARG (devices-with), see the callers.
     python3 -c '
 import json, sys
 
-def value(text):
-    text = text.strip()
-    if text.startswith("[") and text.endswith("]"):
-        return [value(t) for t in text[1:-1].split(",") if t.strip()]
-    if text.startswith("\""):
-        return json.loads(text)
-    if text.startswith("\x27") and text.endswith("\x27"):
-        return text[1:-1]
-    return text
+mode, arg = sys.argv[1], sys.argv[2]
+found = set()
+for line in sys.stdin.read().splitlines():
+    path, _, text = line.partition("\t")
+    if not text.strip():
+        continue
+    spec = json.loads(text)
+    for dev in spec.get("devices") or []:
+        if mode == "devices-with" and arg in json.dumps(dev):
+            found.add(dev["name"])
+        if mode == "device" and dev.get("name") == arg:
+            edits = dev.get("containerEdits") or {}
+            print(json.dumps({"file": path, "kind": spec.get("kind"), "name": arg,
+                              "env": edits.get("env") or [],
+                              "deviceNodes": edits.get("deviceNodes") or [],
+                              "mounts": edits.get("mounts") or []}))
+            sys.exit(0)
+for name in sorted(found):
+    print(name)' "$1" "$2"
+}
 
-mounts, base, item, opts, cur = [], None, None, None, None
-for line in sys.argv[1].splitlines():
-    if not line.strip():
-        continue
-    indent = len(line) - len(line.lstrip())
-    s = line.strip()
-    if base is None:
-        if s == "mounts:":
-            base = indent
-        continue
-    if indent < base or (indent == base and not s.startswith("- ")):
-        break
-    if s.startswith("- ") and (item is None or indent == item):
-        item, cur, opts = indent, {}, None
-        mounts.append(cur)
-        s = s[2:]
-    elif s.startswith("- "):
-        if opts is None:
-            sys.exit("dra-cdi-mounts: an item outside options: %r" % line)
-        opts.append(value(s[2:]))
-        continue
-    key, sep, rest = s.partition(":")
-    if not sep or cur is None:
-        sys.exit("dra-cdi-mounts: cannot parse: %r" % line)
-    if rest.strip():
-        cur[key] = value(rest)
-        opts = None
-    else:
-        opts = cur[key] = []
-print(json.dumps(mounts))' "$1"
+dra-cdi-device() { # script API
+    # Usage: dra-cdi-device VMDIR NAME
+    #
+    # Print CDI device NAME of the CDI specs of the VM of VMDIR (see
+    # dra-cdi-specs) as a JSON object, quietly: file and kind of its spec,
+    # name, and env, deviceNodes and mounts of its containerEdits ([] if
+    # none). Print nothing if there is no such device.
+    # Example: dra-cdi-device "$VM" "claim-$CLAIM_UID-0"
+    dra-cdi-specs "$1" | dra-cdi-py device "$2"
+}
+
+dra-cdi-devices-with() { # script API
+    # Usage: dra-cdi-devices-with VMDIR TEXT
+    #
+    # Print the names of the CDI devices of the CDI specs of the VM of
+    # VMDIR (see dra-cdi-specs) whose JSON has TEXT (a fixed string, for
+    # instance an environment variable name), sorted, one per line,
+    # quietly. Return non-zero if the specs cannot be read.
+    local specs
+    specs=$(dra-cdi-specs "$1") || return 1
+    dra-cdi-py devices-with "$2" <<< "$specs"
 }
 
 dra-lease-cdi-assert() { # script API
     # Usage: dra-lease-cdi-assert VMDIR CLAIM-UID
     #
     # Fail the test unless the VM of VMDIR has the CDI device lease-CLAIM-UID
-    # of kind nri.io/cxl, the device of a lease claim that may lease
-    # filesystems: env CXL_LEASE_SOCKET=/run/cxl/cxl.sock and exactly three
-    # bind mounts, $DRA_LEASE_DIR/CLAIM-UID at /run/cxl (rbind, ro), then
-    # $DRA_LEASE_FS_DIR/CLAIM-UID at $DRA_LEASE_FS_CTR_DIR (rbind, ro,
+    # of kind $DRA_LOCAL_DRIVER/device, the device of a lease claim that may
+    # lease filesystems: env CXL_LEASE_SOCKET=/run/cxl/cxl.sock and exactly
+    # three bind mounts, $DRA_LEASE_DIR/CLAIM-UID at /run/cxl (rbind, ro),
+    # then $DRA_LEASE_FS_DIR/CLAIM-UID at $DRA_LEASE_FS_CTR_DIR (rbind, ro,
     # rslave), and $DRA_REQUEST_NODE_BIN at $DRA_REQUEST_CTR_BIN (bind, ro).
-    local vmdir="$1" uid="$2" cdi mounts
+    local vmdir="$1" uid="$2" cdi
     cdi=$(dra-cdi-device "$vmdir" "lease-$uid")
     echo "CDI device lease-$uid: $cdi"
-    grep -qx "kind: nri.io/cxl" <<< "$cdi" || error "no CDI device lease-$uid of kind nri.io/cxl in $(dra-vm-label "$vmdir")"
-    grep -qxE ' *- "?CXL_LEASE_SOCKET=/run/cxl/cxl\.sock"?' <<< "$cdi" ||
-        error "the CDI device lease-$uid has no env CXL_LEASE_SOCKET=/run/cxl/cxl.sock"
-    mounts=$(dra-cdi-mounts "$cdi") || error "cannot parse the mounts of the CDI device lease-$uid"
-    echo "mounts of lease-$uid: $mounts"
-    dra-assert "$mounts" "sorted((m.get('hostPath'), m.get('containerPath'), m.get('type'), m.get('options')) for m in j) == sorted([('$DRA_LEASE_DIR/$uid', '/run/cxl', 'bind', ['rbind', 'ro']), ('$DRA_LEASE_FS_DIR/$uid', '$DRA_LEASE_FS_CTR_DIR', 'bind', ['rbind', 'ro', 'rslave']), ('$DRA_REQUEST_NODE_BIN', '$DRA_REQUEST_CTR_BIN', 'bind', ['bind', 'ro'])])"
+    [ -n "$cdi" ] || error "no CDI device lease-$uid in $(dra-vm-label "$vmdir")"
+    dra-assert "$cdi" "j['kind'] == '$DRA_LOCAL_DRIVER/device' and 'CXL_LEASE_SOCKET=/run/cxl/cxl.sock' in j['env']"
+    dra-assert "$cdi" "sorted((m.get('hostPath'), m.get('containerPath'), m.get('type'), m.get('options')) for m in j['mounts']) == sorted([('$DRA_LEASE_DIR/$uid', '/run/cxl', 'bind', ['rbind', 'ro']), ('$DRA_LEASE_FS_DIR/$uid', '$DRA_LEASE_FS_CTR_DIR', 'bind', ['rbind', 'ro', 'rslave']), ('$DRA_REQUEST_NODE_BIN', '$DRA_REQUEST_CTR_BIN', 'bind', ['bind', 'ro'])])"
     # The socket directory first: the filesystem directory is mounted inside it.
-    dra-assert "$mounts" "[m['containerPath'] for m in j].index('/run/cxl') < [m['containerPath'] for m in j].index('$DRA_LEASE_FS_CTR_DIR')"
+    dra-assert "$cdi" "[m['containerPath'] for m in j['mounts']].index('/run/cxl') < [m['containerPath'] for m in j['mounts']].index('$DRA_LEASE_FS_CTR_DIR')"
 }
 
 dra-fs-mounts() { # script API

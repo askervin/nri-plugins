@@ -68,9 +68,9 @@ NodePrepare of a claim on `lease` creates
 enabled), the empty mount point `fs` in that directory and the directory
 `/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/<claim uid>` (0755, labelled
 the same way), and returns for the allocation result of the lease device
-its CDI device `nri.io/cxl=claim-<claim uid>-<n>` (spec file `cxl-claims`,
-only the marker `CXL_CLAIM_<uid>_<n>=1`) and the CDI device
-`nri.io/cxl=lease-<claim uid>` of the same spec file:
+its CDI device `cxl.nri.io/device=claim-<claim uid>-<n>` (spec file
+`cxl-claims.json`, only the marker `CXL_CLAIM_<uid>_<n>=1`) and the CDI
+device `cxl.nri.io/device=lease-<claim uid>` of the same spec file:
 
 - bind mount (rbind, ro) of the socket directory at `/run/cxl`: a
   container cannot write the host directory, and connecting to the socket

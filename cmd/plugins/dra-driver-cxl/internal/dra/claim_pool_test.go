@@ -59,14 +59,14 @@ func TestPoolNUMA(t *testing.T) {
 	e := newDriverEnv(t, nil, poolSpec(serialPoolX))
 	logs := klogCapture(t)
 	res := e.mustPrepare(e.pool, poolClaim("u1", "pooled0", poolExclusiveData))
-	wantResult(t, res, resultDevice("mem", envPool, "pooled0", "nri.io/cxl-pool=claim-u1-0"))
+	wantResult(t, res, resultDevice("mem", envPool, "pooled0", "cxl-pool.nri.io/device=claim-u1-0"))
 	if prepared := regexp.MustCompile(`cxl-pool\.nri\.io: claim .*: prepared pooled0`); !prepared.MatchString(logs()) {
 		t.Fatalf("no line %q in\n%s", prepared, logs())
 	}
 	if !strings.Contains(e.commands(), "cxl create-region -t ram -d decoder0.0 -m mem0") {
 		t.Fatalf("commands:\n%s", e.commands())
 	}
-	if spec := e.cdiSpec(e.pool.Rules().CDISpecName()); spec == nil || spec.Kind != "nri.io/cxl-pool" {
+	if spec := e.cdiSpec(e.pool.Rules().CDISpecName()); spec == nil || spec.Kind != "cxl-pool.nri.io/device" {
 		t.Fatalf("CDI spec %+v", spec)
 	}
 	cd := e.cdiDevice(e.pool, "claim-u1-0")

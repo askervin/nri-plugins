@@ -612,15 +612,14 @@ echo "device cgroup of dax-ro: $devices"
 dra-assert "$(sed -n 's/^spec: //p' <<< "$devices")" \
     "[d.get('access') for d in j if d.get('allow') and d.get('major') == ${RO_DEV%:*} and d.get('minor') == ${RO_DEV#*:}] == ['r']"
 # The CDI device of the allocation result of the claim, claim-<uid>-0 in
-# the spec cxl-claims, has the device node with permissions r, the
+# the spec cxl-claims.json, has the device node with permissions r, the
 # environment of the slice and the marker of the result,
 # CXL_CLAIM_<uid>_0. There is no CDI device of the claim as a whole.
 cdi=$(dra-cdi-device "$VM2" "claim-$RO_UID-0")
 echo "CDI device claim-$RO_UID-0: $cdi"
-grep -qx "kind: nri.io/cxl" <<< "$cdi" || error "no CDI device claim-$RO_UID-0 of kind nri.io/cxl in the VM"
-grep -qE '^ *permissions: r$' <<< "$cdi" || error "the CDI device claim-$RO_UID-0 of dax-ro has no device node with permissions r"
-grep -qF -- "- CXL_${DRA_LOCAL_HEX}_READONLY=1" <<< "$cdi" || error "the CDI device claim-$RO_UID-0 of dax-ro has no CXL_${DRA_LOCAL_HEX}_READONLY=1"
-grep -qF -- "- CXL_CLAIM_${RO_UID//-/_}_0=1" <<< "$cdi" || error "the CDI device claim-$RO_UID-0 of dax-ro has no marker of result 0 of its claim"
+[ -n "$cdi" ] || error "no CDI device claim-$RO_UID-0 in the VM"
+dra-assert "$cdi" "j['kind'] == '$DRA_LOCAL_DRIVER/device' and any(n.get('permissions') == 'r' for n in j['deviceNodes'])"
+dra-assert "$cdi" "'CXL_${DRA_LOCAL_HEX}_READONLY=1' in j['env'] and 'CXL_CLAIM_${RO_UID//-/_}_0=1' in j['env']"
 [ "$(dra-cdi-devices-with "$VM2" "$RO_UID")" == "claim-$RO_UID-0" ] ||
     error "the claim of dax-ro has other CDI devices than claim-$RO_UID-0: $(dra-cdi-devices-with "$VM2" "$RO_UID")"
 dra-delete-pod "$VM2" dax-ro

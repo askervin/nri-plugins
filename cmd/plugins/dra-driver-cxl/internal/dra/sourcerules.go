@@ -22,9 +22,10 @@ import (
 
 // SourceRules are what the two DRA drivers of the process have differently:
 // the name of the driver, the source of its devices and the directory of
-// their node mounts. The source decides how an allocation result maps to a
-// memdev and a grant (Plugin.validate), whether the driver publishes the
-// node's ResourceSlice, and its CDI kind and spec name.
+// their node mounts. The name is the vendor of the driver's CDI kind. The
+// source decides how an allocation result maps to a memdev and a grant
+// (Plugin.validate), whether the driver publishes the node's ResourceSlice,
+// and its CDI spec name.
 type SourceRules struct {
 	// Name is the DRA driver name.
 	Name string
@@ -56,10 +57,7 @@ func (r SourceRules) publishes() bool {
 
 // CDIKind returns the kind of the CDI devices of the driver.
 func (r SourceRules) CDIKind() string {
-	if r.Source == state.SourceLocal {
-		return device.CDIKind
-	}
-	return device.PoolCDIKind
+	return device.CDIKind(r.Name)
 }
 
 // CDISpecName returns the name of the CDI spec file of the driver.

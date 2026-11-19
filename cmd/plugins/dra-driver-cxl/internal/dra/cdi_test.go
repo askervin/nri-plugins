@@ -16,6 +16,7 @@ package dra
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"maps"
 	"os"
@@ -33,29 +34,6 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
-
-// TestRemoveCXLSpecs removes the CDI specs of both drivers but the files of
-// the spec names owned, and keeps the specs of other kinds.
-func TestRemoveCXLSpecs(t *testing.T) {
-	dir := t.TempDir()
-	files := map[string]string{"cxl-claims.yaml": "nri.io/cxl", "cxl-claims.json": "nri.io/cxl", "cxl-local.yaml": "nri.io/cxl",
-		"cxl-pool.yaml": "nri.io/cxl-pool", "gpu.yaml": "example.com/gpu"}
-	for file, kind := range files {
-		data := "cdiVersion: 0.6.0\nkind: " + kind + "\ndevices:\n- name: d" + strings.ReplaceAll(file, ".", "-") + "\n  containerEdits:\n    env: [A=1]\n"
-		mustOK(t, os.WriteFile(filepath.Join(dir, file), []byte(data), 0o600))
-	}
-	cache, err := cdiapi.NewCache(cdiapi.WithSpecDirs(dir), cdiapi.WithAutoRefresh(false))
-	mustOK(t, err)
-	mustOK(t, RemoveCXLSpecs(cache, "cxl-claims", "cxl-pool.yaml"))
-	var left []string
-	m, _ := filepath.Glob(filepath.Join(dir, "*"))
-	for _, path := range m {
-		left = append(left, filepath.Base(path))
-	}
-	if want := []string{"cxl-claims.yaml", "cxl-pool.yaml", "gpu.yaml"}; !slices.Equal(left, want) {
-		t.Fatalf("left %v, want %v", left, want)
-	}
-}
 
 // TestClaimsCDISpec checks the CDI spec of the claims of cxl.nri.io built
 // from their records: the env of the DRAM and of a region with their
@@ -84,9 +62,9 @@ func TestClaimsCDISpec(t *testing.T) {
 		{Name: "claim-u2-0", ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{"CXL_CLAIM_u2_0=1"}}},
 		{Name: "lease-u2", ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{"LEASE_u2=1"}}},
 	}
-	spec, err := buildCDISpec(e.st.Snapshot(), device.DriverName, device.CDIKind, e.local.roots, "", e.leases)
+	spec, err := buildCDISpec(e.st.Snapshot(), device.DriverName, device.CDIKind(device.DriverName), e.local.roots, "", e.leases)
 	mustOK(t, err)
-	if spec.Kind != "nri.io/cxl" || !reflect.DeepEqual(spec.Devices, want) {
+	if spec.Kind != "cxl.nri.io/device" || !reflect.DeepEqual(spec.Devices, want) {
 		t.Fatalf("CDI spec %+v", spec)
 	}
 	if onDisk := e.cdiSpec(device.ClaimsCDISpecName); onDisk == nil || !reflect.DeepEqual(onDisk.Devices, want) {
@@ -113,7 +91,7 @@ func TestCDISpecOfClaims(t *testing.T) {
 	if got := e.cdiNames(e.pool); !slices.Equal(got, []string{"claim-p1-0", "claim-p2-0"}) {
 		t.Fatalf("pool CDI devices %v", got)
 	}
-	if spec := e.cdiSpec(device.PoolCDISpecName); spec.Kind != device.PoolCDIKind {
+	if spec := e.cdiSpec(device.PoolCDISpecName); spec.Kind != device.CDIKind(device.PoolDriverName) {
 		t.Fatalf("pool CDI spec kind %q", spec.Kind)
 	}
 	b1 := e.cdiDevice(e.local, "claim-b-1")
@@ -215,28 +193,28 @@ func TestWriteCDISpec(t *testing.T) {
 	mustOK(t, err)
 	name, driver := device.PoolCDISpecName, device.PoolDriverName
 	spec := func() *cdiSpecs.Spec {
-		return &cdiSpecs.Spec{Kind: device.PoolCDIKind, Devices: []cdiSpecs.Device{{Name: "claim-u1-0",
+		return &cdiSpecs.Spec{Kind: device.CDIKind(device.PoolDriverName), Devices: []cdiSpecs.Device{{Name: "claim-u1-0",
 			ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{"CXL_CLAIM_u1_0=1"}}}}}
 	}
 	written := spec()
 	mustOK(t, writeCDISpec(cache, written, driver, name))
-	m, _ := filepath.Glob(filepath.Join(dir, name+".*"))
-	if len(m) != 1 || written.Version == "" {
+	m, _ := filepath.Glob(filepath.Join(dir, "*"))
+	if len(m) != 1 || filepath.Base(m[0]) != name || written.Version == "" {
 		t.Fatalf("spec files %v, version %q", m, written.Version)
 	}
 	data, err := os.ReadFile(m[0])
 	mustOK(t, err)
-	if !strings.Contains(string(data), "claim-u1-0") {
+	if !json.Valid(data) || !strings.Contains(string(data), "claim-u1-0") {
 		t.Fatalf("spec\n%s", data)
 	}
-	mustOK(t, writeCDISpec(cache, &cdiSpecs.Spec{Kind: device.PoolCDIKind}, driver, name))
+	mustOK(t, writeCDISpec(cache, &cdiSpecs.Spec{Kind: device.CDIKind(device.PoolDriverName)}, driver, name))
 	if m, _ := filepath.Glob(filepath.Join(dir, "*")); len(m) != 0 {
 		t.Fatalf("left %v", m)
 	}
 	// again: nothing to remove is not an error
-	mustOK(t, writeCDISpec(cache, &cdiSpecs.Spec{Kind: device.PoolCDIKind}, driver, name))
+	mustOK(t, writeCDISpec(cache, &cdiSpecs.Spec{Kind: device.CDIKind(device.PoolDriverName)}, driver, name))
 	// the spec file a directory with an entry: the write fails
-	mustOK(t, os.MkdirAll(filepath.Join(dir, name+".yaml", "entry"), 0o755))
+	mustOK(t, os.MkdirAll(filepath.Join(dir, name, "entry"), 0o755))
 	err = writeCDISpec(cache, spec(), driver, name)
 	wantErrText(t, err, "write CDI spec "+name+": ")
 	if errors.Unwrap(err) == nil {
@@ -293,7 +271,7 @@ func TestCDISpecOfIncompleteDevices(t *testing.T) {
 	doc.Grant(state.GrantRef{Claim: "f"}).Got.Mount = ""
 	doc.Grant(state.GrantRef{Claim: "d"}).Got.Dax = ""
 	build := func(pending string) (*cdiSpecs.Spec, error) {
-		return buildCDISpec(doc, device.DriverName, device.CDIKind, e.local.roots, pending, nil)
+		return buildCDISpec(doc, device.DriverName, device.CDIKind(device.DriverName), e.local.roots, pending, nil)
 	}
 	spec, err := build("")
 	wantErrText(t, err, "claim demo/claim-f: result 0: no node mount")

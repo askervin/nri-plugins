@@ -45,11 +45,7 @@ func TestPreparedCommitWaitsForItsWrite(t *testing.T) {
 	// the first write after the CDI spec names the claim's device is the
 	// write of PREPARED
 	inSpec := func() bool {
-		m, _ := filepath.Glob(filepath.Join(e.cdiDir, device.ClaimsCDISpecName+".*"))
-		if len(m) != 1 {
-			return false
-		}
-		data, _ := os.ReadFile(m[0])
+		data, _ := os.ReadFile(filepath.Join(e.cdiDir, device.ClaimsCDISpecName))
 		return bytes.Contains(data, []byte("claim-u1-0"))
 	}
 	var stall func() error

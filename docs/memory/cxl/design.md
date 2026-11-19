@@ -472,6 +472,6 @@ path.
   driver holds its node mounts of mode `fs`. The start removes the
   directories that no record names, and unmounts what no prepared claim
   lists.
-- The CDI specs `cxl-claims` (with the devices of the lease claims) and
-  `cxl-pool` in the CDI root are written from the records, and again at
-  every start.
+- The CDI specs `cxl-claims.json` (with the devices of the lease claims)
+  and `cxl-pool-claims.json` in the CDI root are written from the
+  records, and again at every start.

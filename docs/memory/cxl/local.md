@@ -310,10 +310,11 @@ For every allocated `memdev` device of a claim:
    for writing, whatever the container's capabilities. Applications
    `mmap` the device (`MAP_SHARED`, aligned to the device alignment,
    2 MiB) and agree on the layout of the memory themselves.
-6. The slice's CDI device `nri.io/cxl=claim-<claim uid>-<n>` (spec file
-   `cxl-claims`, n the index of the allocation result in the claim) has
-   the marker `CXL_CLAIM_<uid>_<n>=1`, the device node of a `dax` slice
-   and the variables of [usage.md](usage.md#environment-variables):
+6. The slice's CDI device `cxl.nri.io/device=claim-<claim uid>-<n>` (spec
+   file `cxl-claims.json`, n the index of the allocation result in the
+   claim) has the marker `CXL_CLAIM_<uid>_<n>=1`, the device node of a
+   `dax` slice and the variables of
+   [usage.md](usage.md#environment-variables):
 
    ```
    CXL_<KEY>_SERIAL=0x<serial>
@@ -530,8 +531,8 @@ with `cxl-request request --serial 0xc100e2e1` (exclusively) or
 3. The claim is recorded on the device in the state of the plugin
    (`state.json`), with the dax device, mode, size and `readOnly`; the
    memdev's facts say `"shared": true`.
-4. The claim's CDI device `nri.io/cxl=claim-<claim uid>-<n>` has the
-   marker `CXL_CLAIM_<uid>_<n>=1`, the variables of
+4. The claim's CDI device `cxl.nri.io/device=claim-<claim uid>-<n>` has
+   the marker `CXL_CLAIM_<uid>_<n>=1`, the variables of
    [usage.md](usage.md#environment-variables) with
    `CXL_<KEY>_SHARED=1` and `CXL_<KEY>_SIZE` the size of `daxX.0` (the
    region of the whole memdev), and
@@ -702,8 +703,8 @@ has a writer and a reader. A running container leases the device with
    [usage.md](usage.md#one-node-superblock-block-device-binds) (one
    read-write superblock, a read-only block device without a writer,
    upgrade and downgrade).
-5. The claim's CDI device `nri.io/cxl=claim-<claim uid>-<n>` has the
-   marker, the variables of
+5. The claim's CDI device `cxl.nri.io/device=claim-<claim uid>-<n>` has
+   the marker, the variables of
    [usage.md](usage.md#environment-variables) (`CXL_<KEY>_FSTYPE` in
    mode `fs`), and the block device node (permissions `r` when
    read-only) or the bind mount of the node mount.

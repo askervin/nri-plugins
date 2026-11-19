@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -34,7 +35,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/yaml"
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
@@ -512,9 +512,9 @@ func (e *localTestEnv) prepared() map[string]kubeletplugin.PrepareResult {
 		for _, rr := range p.Results {
 			d := kubeletplugin.Device{Requests: []string{rr.Request}, PoolName: rr.Pool, DeviceName: rr.Device}
 			if p.Lease == "" {
-				d.CDIDeviceIDs = []string{device.CDIKind + "=" + dra.ClaimCDIDeviceName(p.UID, rr.Index)}
+				d.CDIDeviceIDs = []string{device.CDIKind(device.DriverName) + "=" + dra.ClaimCDIDeviceName(p.UID, rr.Index)}
 				if rr.Kind == state.ResultLeaseClaim {
-					d.CDIDeviceIDs = append(d.CDIDeviceIDs, device.CDIKind+"="+dra.LeaseCDIDeviceName(p.UID))
+					d.CDIDeviceIDs = append(d.CDIDeviceIDs, device.CDIKind(device.DriverName)+"="+dra.LeaseCDIDeviceName(p.UID))
 				}
 			}
 			res.Devices = append(res.Devices, d)
@@ -528,14 +528,13 @@ func (e *localTestEnv) prepared() map[string]kubeletplugin.PrepareResult {
 // none.
 func (e *localTestEnv) cdiSpec() *cdiSpecs.Spec {
 	e.t.Helper()
-	m, _ := filepath.Glob(filepath.Join(e.cdiDir, device.ClaimsCDISpecName+".*"))
-	if len(m) == 0 {
+	data, err := os.ReadFile(filepath.Join(e.cdiDir, device.ClaimsCDISpecName))
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
-	data, err := os.ReadFile(m[0])
 	noErr(e.t, err)
 	spec := &cdiSpecs.Spec{}
-	noErr(e.t, yaml.Unmarshal(data, spec))
+	noErr(e.t, json.Unmarshal(data, spec))
 	return spec
 }
 

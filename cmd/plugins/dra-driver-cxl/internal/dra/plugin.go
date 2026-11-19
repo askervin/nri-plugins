@@ -990,11 +990,6 @@ func (p *Plugin) WriteCDI() error {
 	return p.writeCDI("")
 }
 
-// CDISpecName returns the name of the CDI spec of the driver.
-func (p *Plugin) CDISpecName() string {
-	return p.rules.CDISpecName()
-}
-
 // HandleError is called by the kubelet plugin helper on asynchronous
 // errors.
 func (p *Plugin) HandleError(ctx context.Context, err error, message string) {

@@ -86,7 +86,7 @@ Where the data comes from:
                 uses; "leaseClaims" the UIDs of the lease claims;
                 "leases" by id: mode, state (Creating, Pending, Lending,
                 Ready, Releasing, Failed) and pod name
-  cdi           /etc/cdi/* and /var/run/cdi/*: file -> device names
+  cdi           /var/run/cdi/*.json: file -> device names
   containers    crictl ps (running containers of NS) and crictl inspect:
                 the cgroup v2 directory of each container is that of its
                 init process (/proc/PID/cgroup). mems is cpuset.mems, or,
@@ -194,7 +194,7 @@ holder check and a concurrent erofs mount would fail):
                 access, path, nodeMount, loopDevice; null for what the
                 grant does not have) and lend (of a companion claim:
                 lease, pod, container, fsDir, name, mounts; else null)
-  cdiPool       the CDI devices of the pool driver's spec (cxl-pool.*):
+  cdiPool       the CDI devices of the pool driver's spec (cxl-pool-claims.json):
                 per device name its env, deviceNodes (path, type, major,
                 minor, permissions) and mounts (hostPath, containerPath,
                 type, options)
@@ -276,7 +276,7 @@ LEASE_FS = LOCAL_DIR + "/lease-fs"
 LEASES_DIR = LOCAL_DIR + "/leases"
 LEASE_FS_CTR = "/run/cxl/fs"
 KILLAT_DIR = "/run/mbt-killat"
-CDI_DIRS = ["/etc/cdi", "/var/run/cdi"]
+CDI_DIR = "/var/run/cdi"
 SLOT_LABEL = "mbt.slot"
 LEASE_LABEL = "cxl.nri.io/lease"
 REQUESTER_LABEL = "cxl.nri.io/requester-uid"
@@ -585,54 +585,22 @@ def json_file(path):
     raise ValueError("%s: %s" % (path, last))
 
 
-def unquote(text):
-    text = text.strip()
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
-        return text[1:-1]
-    return text
-
-
 def cdi_names(path):
-    """The device names of the CDI spec file path (YAML or JSON)."""
+    """The device names of the CDI spec file path (JSON)."""
     with open(path) as f:
-        text = f.read()
-    if path.endswith(".json"):
-        return [d.get("name") for d in json.loads(text).get("devices") or []]
-    names, in_devices, item = [], False, None
-    for line in text.splitlines():
-        s = line.strip()
-        if not s or s.startswith("#"):
-            continue
-        indent = len(line) - len(line.lstrip(" "))
-        if indent == 0 and not s.startswith("-"):
-            in_devices, item = s.split(":", 1)[0] == "devices", None
-            continue
-        if not in_devices:
-            continue
-        if s.startswith("- ") or s == "-":
-            if item is None:
-                item = indent
-            if indent == item:
-                s = s[1:].strip()
-                if s.startswith("name:"):
-                    names.append(unquote(s[len("name:"):]))
-                continue
-        if item is not None and indent == item + 2 and s.startswith("name:"):
-            names.append(unquote(s[len("name:"):]))
-    return names
+        return [d.get("name") for d in json.load(f).get("devices") or []]
 
 
 def cdi(errors):
     out = {}
-    for d in CDI_DIRS:
-        for path in sorted(glob.glob(d + "/*")):
-            if not os.path.isfile(path):
-                continue
-            try:
-                out[path] = cdi_names(path)
-            except Exception as e:
-                errors.append("cdi %s: %s" % (path, e))
-                out[path] = None
+    for path in sorted(glob.glob(CDI_DIR + "/*.json")):
+        if not os.path.isfile(path):
+            continue
+        try:
+            out[path] = cdi_names(path)
+        except Exception as e:
+            errors.append("cdi %s: %s" % (path, e))
+            out[path] = None
     return out
 
 
@@ -1307,120 +1275,29 @@ def pmem(errors):
     return out
 
 
-def yaml_scalar(text):
-    t = text.strip()
-    if not t or t in ("null", "~"):
-        return None
-    if t.startswith('"'):
-        return json.loads(t)
-    if t.startswith("'") and t.endswith("'"):
-        return t[1:-1].replace("''", "'")
-    if t.startswith("[") and t.endswith("]"):
-        inner = t[1:-1].strip()
-        return [yaml_scalar(x) for x in inner.split(",")] if inner else []
-    if t == "{}":
-        return {}
-    if t in ("true", "false"):
-        return t == "true"
-    if re.fullmatch(r"-?\d+", t):
-        return int(t)
-    return t
-
-
-def yaml_key_value(text):
-    """(key, rest) of "key: rest" or "key:", None if text is no such line."""
-    if text[:1] in ("'", '"', "[", "{"):
-        return None
-    m = re.match(r"([^:#]+):(?:\s+(.*))?$", text)
-    if not m:
-        return None
-    return m.group(1).strip(), (m.group(2) or "")
-
-
-def yaml_load(text):
-    """The YAML subset of Go's YAML output (block mappings and sequences,
-    plain, quoted and flow scalars), enough for CDI spec files."""
-    lines = []
-    for raw in text.splitlines():
-        s = raw.rstrip()
-        if not s.strip() or s.strip().startswith("#") or s.strip() == "---":
-            continue
-        lines.append([len(s) - len(s.lstrip(" ")), s.strip()])
-    pos = [0]
-
-    def node(ind):
-        if pos[0] >= len(lines):
-            return None
-        i, s = lines[pos[0]]
-        if s == "-" or s.startswith("- "):
-            return seq(i)
-        return mapping(i)
-
-    def seq(ind):
-        out = []
-        while pos[0] < len(lines):
-            i, s = lines[pos[0]]
-            if i != ind or not (s == "-" or s.startswith("- ")):
-                break
-            rest = s[1:].strip()
-            if not rest:
-                pos[0] += 1
-                out.append(node(lines[pos[0]][0]) if pos[0] < len(lines) and lines[pos[0]][0] > ind else None)
-            elif yaml_key_value(rest):
-                lines[pos[0]] = [ind + 2, rest]
-                out.append(mapping(ind + 2))
-            else:
-                pos[0] += 1
-                out.append(yaml_scalar(rest))
-        return out
-
-    def mapping(ind):
-        out = {}
-        while pos[0] < len(lines):
-            i, s = lines[pos[0]]
-            if i != ind or s == "-" or s.startswith("- "):
-                break
-            kv = yaml_key_value(s)
-            if kv is None:
-                raise ValueError("cannot parse YAML line %r" % s)
-            key, rest = kv
-            pos[0] += 1
-            if rest.strip():
-                out[key] = yaml_scalar(rest)
-            elif pos[0] < len(lines) and (lines[pos[0]][0] > ind or
-                                          (lines[pos[0]][0] == ind and (lines[pos[0]][1] == "-" or
-                                                                        lines[pos[0]][1].startswith("- ")))):
-                out[key] = node(lines[pos[0]][0])
-            else:
-                out[key] = None
-        return out
-
-    return node(0)
-
-
 def cdi_pool(errors):
-    """The CDI devices of the pool driver's spec file(s): name -> env,
+    """The CDI devices of the pool driver's spec file: name -> env,
     deviceNodes, mounts."""
     out = {}
-    for d in CDI_DIRS:
-        for path in sorted(glob.glob(d + "/cxl-pool*")):
-            try:
-                with open(path) as f:
-                    text = f.read()
-                spec = json.loads(text) if path.endswith(".json") else yaml_load(text)
-            except Exception as e:
-                errors.append("cdiPool %s: %s: %s" % (path, type(e).__name__, e))
-                continue
-            for dev in (spec or {}).get("devices") or []:
-                ed = dev.get("containerEdits") or {}
-                out[dev.get("name")] = {
-                    "file": path,
-                    "env": sorted(e for e in ed.get("env") or [] if not str(e).startswith("CXL_CLAIM_")),
-                    "deviceNodes": [{k: n.get(k) for k in ("path", "type", "major", "minor", "permissions")}
-                                    for n in ed.get("deviceNodes") or []],
-                    "mounts": [{k: m.get(k) for k in ("hostPath", "containerPath", "type", "options")}
-                               for m in ed.get("mounts") or []],
-                }
+    path = CDI_DIR + "/cxl-pool-claims.json"
+    try:
+        with open(path) as f:
+            spec = json.load(f)
+    except FileNotFoundError:
+        return out
+    except Exception as e:
+        errors.append("cdiPool %s: %s: %s" % (path, type(e).__name__, e))
+        return out
+    for dev in (spec or {}).get("devices") or []:
+        ed = dev.get("containerEdits") or {}
+        out[dev.get("name")] = {
+            "file": path,
+            "env": sorted(e for e in ed.get("env") or [] if not str(e).startswith("CXL_CLAIM_")),
+            "deviceNodes": [{k: n.get(k) for k in ("path", "type", "major", "minor", "permissions")}
+                            for n in ed.get("deviceNodes") or []],
+            "mounts": [{k: m.get(k) for k in ("hostPath", "containerPath", "type", "options")}
+                       for m in ed.get("mounts") or []],
+        }
     return out
 
 

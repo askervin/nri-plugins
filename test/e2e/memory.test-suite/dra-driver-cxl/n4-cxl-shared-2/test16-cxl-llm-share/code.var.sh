@@ -452,13 +452,9 @@ claim-check() {
     uid=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
     cdi=$(dra-cdi-device "$vm" "claim-$uid-0")
     echo "CDI device claim-$uid-0: $cdi"
-    grep -qx "kind: nri.io/cxl-pool" <<< "$cdi" || error "no CDI device claim-$uid-0 of kind nri.io/cxl-pool for $r"
-    grep -q 'deviceNodes:' <<< "$cdi" && error "the CDI device of $r has device nodes"
-    grep -qxE " *(- )?hostPath: \"?${DRA_POOL_MOUNT_DIR//./\\.}/$LLM_MOUNT_ID-$access\"?" <<< "$cdi" ||
-        error "the CDI device of $r does not mount $DRA_POOL_MOUNT_DIR/$LLM_MOUNT_ID-$access"
-    grep -qE "^ *(- )?containerPath: \"?$path\"?$" <<< "$cdi" || error "the CDI device of $r does not mount at $path"
-    grep -qE '^ *(- )?type: "?bind"?$' <<< "$cdi" || error "the CDI mount of $r is not a bind mount"
-    grep -qE '^ *- "?ro"?$' <<< "$cdi" || error "the CDI mount of $r is not read-only"
+    [ -n "$cdi" ] || error "no CDI device claim-$uid-0 for $r"
+    dra-assert "$cdi" "j['kind'] == '$DRA_POOL_DRIVER/device' and j['deviceNodes'] == []"
+    dra-assert "$cdi" "any(m.get('hostPath') == '$DRA_POOL_MOUNT_DIR/$LLM_MOUNT_ID-$access' and m.get('containerPath') == '$path' and m.get('type') == 'bind' and 'ro' in (m.get('options') or []) for m in j['mounts'])"
 }
 
 lease-check() {
@@ -834,12 +830,11 @@ dra-assert "$COMMAND_OUTPUT" "device_data('$LLM_DEVICE')['exclusive'] == True an
 uid=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
 cdi=$(dra-cdi-device "$VM1" "claim-$uid-0")
 echo "CDI device claim-$uid-0: $cdi"
-grep -qx "kind: nri.io/cxl-pool" <<< "$cdi" || error "no CDI device claim-$uid-0 of kind nri.io/cxl-pool for the writer"
+[ -n "$cdi" ] || error "no CDI device claim-$uid-0 for the writer"
+dra-assert "$cdi" "j['kind'] == '$DRA_POOL_DRIVER/device'"
+# The device node is the CXL_<hex>_PATH of the writer, a block device.
 pmem=$(dra-env-value "$LLM_LOG" "CXL_${LLM_HEX}_PATH")
-grep -qxE " *(- )?path: \"?$pmem\"?" <<< "$cdi" ||
-    error "the CDI device of the writer has no device node $pmem, the CXL_${LLM_HEX}_PATH of the writer"
-grep -qE '^ *(- )?type: "?b"?$' <<< "$cdi" ||
-    error "the device node of the CDI device of the writer is not a block device"
+dra-assert "$cdi" "any(n.get('path') == '$pmem' and n.get('type') == 'b' for n in j['deviceNodes'])"
 pool-attachments "$LLM_DEVICE"
 pool-assert "$COMMAND_OUTPUT" "[(a['host'], a.get('exclusive', False)) for a in j] == [('$VM1_NAME', True)]"
 # The host: the labels of the namespace in the LSA file, the model in the

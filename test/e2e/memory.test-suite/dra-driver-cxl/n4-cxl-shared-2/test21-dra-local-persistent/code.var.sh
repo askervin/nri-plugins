@@ -248,7 +248,7 @@ for p in fs-rw fs-ro; do
         SERIAL="$LP_SERIAL" SHARED=0 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=direct READONLY="$ro" FSTYPE=ext4
     fs-ctr-mount-assert "$p" "$FS_PATH" "$rw" ext4
     fs-ctr-read-assert "$p" "$FS_PATH" "$FS_FILE" "$TEXT_EXT4"
-    fs-cdi-assert "$VM2" "$p" nri.io/cxl "$MNT_DIRECT" "$FS_PATH" "$opts"
+    fs-cdi-assert "$VM2" "$p" "$DRA_LOCAL_DRIVER/device" "$MNT_DIRECT" "$FS_PATH" "$opts"
 done
 fs-ctr-write fs-rw "$FS_PATH" c.txt "$TEXT_C"
 fs-ctr-read-assert fs-ro "$FS_PATH" c.txt "$TEXT_C"

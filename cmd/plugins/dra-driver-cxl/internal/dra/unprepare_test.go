@@ -104,7 +104,7 @@ func TestUnprepareReleaseFails(t *testing.T) {
 		}
 		// a Prepare again of the UNPREPARING claim returns its result
 		res := e.mustPrepare(e.local, localClaim("u1", localDev, envBlockSize, cfgDax))
-		wantResult(t, res, resultDevice("mem", envNode, localDev, "nri.io/cxl=claim-u1-0"))
+		wantResult(t, res, resultDevice("mem", envNode, localDev, "cxl.nri.io/device=claim-u1-0"))
 		e.wantState(e.local, "u1", state.PreparationUnpreparing)
 		e.restart()
 		e.wantState(e.local, "u1", state.PreparationUnpreparing)
@@ -129,7 +129,7 @@ func TestUnprepareReleaseFails(t *testing.T) {
 		}
 		// a Prepare again of the UNPREPARING claim returns its result
 		res := e.mustPrepare(e.pool, poolClaim("u1", "llm0", poolPmemData, cfgFsRO))
-		if len(res.Devices) != 1 || len(res.Devices[0].CDIDeviceIDs) != 1 || res.Devices[0].CDIDeviceIDs[0] != "nri.io/cxl-pool=claim-u1-0" {
+		if len(res.Devices) != 1 || len(res.Devices[0].CDIDeviceIDs) != 1 || res.Devices[0].CDIDeviceIDs[0] != "cxl-pool.nri.io/device=claim-u1-0" {
 			t.Fatalf("the result of an UNPREPARING claim %+v", res)
 		}
 		e.wantState(e.pool, "u1", state.PreparationUnpreparing)
@@ -162,7 +162,7 @@ func TestUnprepareCDIFails(t *testing.T) {
 			}
 			// the spec file a directory with an entry: the rename of the
 			// written spec fails (a spec of no devices is not written)
-			spec := filepath.Join(e.cdiDir, p.Rules().CDISpecName()+".yaml")
+			spec := filepath.Join(e.cdiDir, p.Rules().CDISpecName())
 			mustOK(t, os.Remove(spec))
 			mustOK(t, os.MkdirAll(filepath.Join(spec, "entry"), 0o755))
 			logs := klogCapture(t)

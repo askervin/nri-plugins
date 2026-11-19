@@ -191,7 +191,7 @@ func TestOracleDeviations(t *testing.T) {
 		{"unused dax devices", func(o *Observation) {
 			o.VMs["vm0"].State.UnusedDax = []string{"dax9.1"}
 		}, VWait, "dax devices [dax9.1] of local memdevs without a user"},
-		{"cdi", func(o *Observation) { o.VMs["vm2"].CDI["/etc/cdi/cxl-pool.yaml"] = nil }, VWait, "cxl-pool.yaml"},
+		{"cdi", func(o *Observation) { o.VMs["vm2"].CDI[cdiDir+"/"+poolCDISpec] = nil }, VWait, poolCDISpec},
 		{"state unreadable", func(o *Observation) {
 			o.VMs["vm2"].State = nil
 			o.VMs["vm2"].Errors = []string{"state: permission denied"}

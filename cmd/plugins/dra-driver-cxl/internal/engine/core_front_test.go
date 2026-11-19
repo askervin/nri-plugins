@@ -17,7 +17,9 @@ package engine_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -31,7 +33,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
-	"sigs.k8s.io/yaml"
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
@@ -424,17 +425,17 @@ func nodeList(nodes []*cdiSpecs.DeviceNode) string {
 
 // cdiSpec returns the CDI spec of the name on disk, nil if there is none.
 func (fe *frontEnd) cdiSpec(name string) (*cdiSpecs.Spec, error) {
-	m, _ := filepath.Glob(filepath.Join(fe.cdiDir(), name+".*"))
-	if len(m) == 0 {
+	path := filepath.Join(fe.cdiDir(), name)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
-	data, err := os.ReadFile(m[0])
 	if err != nil {
 		return nil, err
 	}
 	spec := &cdiSpecs.Spec{}
-	if err := yaml.Unmarshal(data, spec); err != nil {
-		return nil, fmt.Errorf("CDI spec %s: %w", m[0], err)
+	if err := json.Unmarshal(data, spec); err != nil {
+		return nil, fmt.Errorf("CDI spec %s: %w", path, err)
 	}
 	return spec, nil
 }

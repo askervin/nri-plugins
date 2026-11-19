@@ -391,7 +391,7 @@ for p in rw-a rw-b ro-c; do
         SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=direct READONLY="$ro" FSTYPE=ext4
     fs-ctr-mount-assert "$p" "$FS_PATH" "$rw" ext4
     fs-ctr-read-assert "$p" "$FS_PATH" "$FS_FILE" "$TEXT_EXT4"
-    fs-cdi-assert "$VM2" "$p" nri.io/cxl-pool "$MNT_DIRECT" "$FS_PATH" "$opts"
+    fs-cdi-assert "$VM2" "$p" "$DRA_POOL_DRIVER/device" "$MNT_DIRECT" "$FS_PATH" "$opts"
 done
 fs-ctr-write rw-a "$FS_PATH" a.txt "$TEXT_A"
 fs-ctr-read-assert rw-b "$FS_PATH" a.txt "$TEXT_A"

@@ -49,7 +49,7 @@ func TestParseFlagsDefaults(t *testing.T) {
 		NodeName:            "n1",
 		KubeAPIQPS:          5,
 		KubeAPIBurst:        10,
-		CDIRoot:             "/etc/cdi",
+		CDIRoot:             "/var/run/cdi",
 		NRIName:             "dra-driver-cxl",
 		NRIIdx:              "30",
 		PoolDriverName:      "cxl-pool.nri.io",
@@ -74,7 +74,7 @@ func TestParseFlagsEnvironment(t *testing.T) {
 		"KUBECONFIG":            "/kubeconfig",
 		"KUBE_API_QPS":          "7.5",
 		"KUBE_API_BURST":        "20",
-		"CDI_ROOT":              "/var/run/cdi",
+		"CDI_ROOT":              "/etc/cdi",
 		"CONFIG_STR":            "{}",
 		"NRI_PLUGIN_NAME":       "cxl",
 		"NRI_PLUGIN_IDX":        "40",
@@ -99,7 +99,7 @@ func TestParseFlagsEnvironment(t *testing.T) {
 		KubeConfig:          "/kubeconfig",
 		KubeAPIQPS:          7.5,
 		KubeAPIBurst:        20,
-		CDIRoot:             "/var/run/cdi",
+		CDIRoot:             "/etc/cdi",
 		ConfigStr:           "{}",
 		NRIName:             "cxl",
 		NRIIdx:              "40",
@@ -153,6 +153,7 @@ func TestParseFlagsErrors(t *testing.T) {
 		{[]string{"--node-name", "n1"}, map[string]string{"LEASE_WAIT": "1"}, "LEASE_WAIT"},
 		{[]string{"--node-name", "n1", "--lease-cli=", "--lease-cli-source", "/bin/cxl-request"}, nil, "--lease-cli"},
 		{[]string{"--no-such-flag"}, nil, "no-such-flag"},
+		{[]string{"--node-name", "n1", "--pool-driver-name", "1.pool.example.com"}, nil, "--pool-driver-name \"1.pool.example.com\": invalid vendor"},
 	} {
 		if _, err := testParseFlags(tc.args, tc.env); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("args %v env %v: error %v, expected one with %q", tc.args, tc.env, err, tc.want)

@@ -358,17 +358,19 @@ func TestNewLocalHelper(t *testing.T) {
 	}
 }
 
-// A start keeps the CXL CDI specs that a driver of the process owns and
-// removes the others.
+// A start rewrites the CDI spec of cxl.nri.io in place, removed without
+// prepared claims, and removes the spec of the pool driver when it is off;
+// other specs stay.
 func TestStartRemovesUnownedCDISpecs(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	for _, d := range []string{"sys/bus/cxl/devices", "sys/devices/system/node", "cdi"} {
 		noErr(t, os.MkdirAll(filepath.Join(dir, d), 0o755))
 	}
-	for name, kind := range map[string]string{"cxl-leases": device.CDIKind, "cxl-local": device.CDIKind, "gpu": "example.com/gpu"} {
-		data := "cdiVersion: 0.6.0\nkind: " + kind + "\ndevices:\n- name: " + name + "\n  containerEdits:\n    env: [A=1]\n"
-		noErr(t, os.WriteFile(filepath.Join(dir, "cdi", name+".yaml"), []byte(data), 0o600))
+	for name, kind := range map[string]string{device.ClaimsCDISpecName: device.CDIKind(device.DriverName),
+		device.PoolCDISpecName: device.CDIKind(device.PoolDriverName), "gpu.yaml": "example.com/gpu"} {
+		data := `{"cdiVersion":"0.6.0","kind":"` + kind + `","devices":[{"name":"d","containerEdits":{"env":["A=1"]}}]}`
+		noErr(t, os.WriteFile(filepath.Join(dir, "cdi", name), []byte(data), 0o600))
 	}
 	flags := &CXLFlags{CDIRoot: filepath.Join(dir, "cdi"), NodeName: testNode}
 	config := &pluginConfig{Flags: flags, KubeletPluginDir: dir}

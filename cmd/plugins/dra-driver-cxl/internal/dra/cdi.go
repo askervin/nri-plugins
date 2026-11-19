@@ -18,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"path/filepath"
 	"slices"
 	"strconv"
 
@@ -30,7 +29,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
-	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
 // The CDI spec of a driver: one device claim-<uid>-<n> per allocation
@@ -40,9 +38,11 @@ import (
 // (api.Env), the device node of a dax or block device (none of a dax
 // device that is gone) and the bind mount of the node mount of an fs device
 // (none for the kept device of an UNPREPARING claim whose node mount a
-// failed release unmounted). It is built from the records (not from
-// the existing file), so it is right also after a restart, and the same
-// for both drivers but its kind and file name.
+// failed release unmounted). The spec of cxl.nri.io with the lease broker
+// has also one device lease-<uid> per lease claim, of the container edits
+// that the broker gives. It is built from the records (not from the
+// existing file), so it is right also after a restart, and the same for
+// both drivers but its kind and file name.
 
 // ClaimCDIDeviceName returns the CDI device name of the allocation result n
 // of a claim: "claim-<uid>-<n>".
@@ -189,7 +189,7 @@ func writeCDISpec(cache *cdiapi.Cache, spec *cdiSpecs.Spec, driver, name string)
 		}
 		return nil
 	}
-	version, err := cdiapi.MinimumRequiredVersion(spec)
+	version, err := cdiSpecs.MinimumRequiredVersion(spec)
 	if err != nil {
 		return fmt.Errorf("CDI spec version: %w", err)
 	}
@@ -199,36 +199,4 @@ func writeCDISpec(cache *cdiapi.Cache, spec *cdiSpecs.Spec, driver, name string)
 	}
 	klog.V(5).Infof("%s: wrote CDI spec %s with %d devices", driver, name, len(spec.Devices))
 	return nil
-}
-
-// RemoveCXLSpecs removes the CDI specs of kinds device.CDIKind and
-// device.PoolCDIKind that the CDI cache found in its spec directory, except
-// the files of the spec names owned, which their writers write in place.
-func RemoveCXLSpecs(cache *cdiapi.Cache, owned ...string) error {
-	keep := map[string]bool{}
-	for _, name := range owned {
-		keep[specFile(name)] = true
-	}
-	var errs []error
-	for _, spec := range cache.GetVendorSpecs(device.CDIVendor) {
-		file := filepath.Base(spec.GetPath())
-		if spec.Kind != device.CDIKind && spec.Kind != device.PoolCDIKind || keep[file] {
-			continue
-		}
-		if err := cache.RemoveSpec(file); err != nil {
-			errs = append(errs, fmt.Errorf("remove CDI spec %s: %w", spec.GetPath(), err))
-		}
-	}
-	return errors.Join(errs...)
-}
-
-// specFile returns the name of the file that the CDI cache writes of the
-// spec name: name itself with the extension ".json" or ".yaml", else
-// name.yaml.
-func specFile(name string) string {
-	switch filepath.Ext(name) {
-	case ".json", ".yaml":
-		return name
-	}
-	return name + ".yaml"
 }

@@ -29,6 +29,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -1881,11 +1882,11 @@ func (k *checker) checkStateFiles(v VM, ov *ObsVM, pr *vmPred) {
 	}
 	var claims, pool, leases map[string]bool
 	for file, names := range ov.CDI {
-		switch {
-		case strings.Contains(file, "cxl-claims"):
+		switch path.Base(file) {
+		case claimsCDISpec:
 			claims = cdiUIDs(names, "claim-", true)
 			leases = cdiUIDs(names, "lease-", false)
-		case strings.Contains(file, "cxl-pool"):
+		case poolCDISpec:
 			pool = cdiUIDs(names, "claim-", true)
 		}
 	}
@@ -1899,13 +1900,13 @@ func (k *checker) checkStateFiles(v VM, ov *ObsVM, pr *vmPred) {
 		leases = map[string]bool{}
 	}
 	if !sameSet(claims, pr.localUIDs) {
-		k.waitf("%s: cxl-claims.yaml has claims %v, want %v", v, sortedKeys(claims), sortedKeys(pr.localUIDs))
+		k.waitf("%s: %s has claims %v, want %v", v, claimsCDISpec, sortedKeys(claims), sortedKeys(pr.localUIDs))
 	}
 	if !sameSet(pool, pr.poolUIDs) {
-		k.waitf("%s: cxl-pool.yaml has claims %v, want %v", v, sortedKeys(pool), sortedKeys(pr.poolUIDs))
+		k.waitf("%s: %s has claims %v, want %v", v, poolCDISpec, sortedKeys(pool), sortedKeys(pr.poolUIDs))
 	}
 	if !sameSet(leases, pr.leaseUIDs) {
-		k.waitf("%s: cxl-claims.yaml has lease claims %v, want %v", v, sortedKeys(leases), sortedKeys(pr.leaseUIDs))
+		k.waitf("%s: %s has lease claims %v, want %v", v, claimsCDISpec, sortedKeys(leases), sortedKeys(pr.leaseUIDs))
 	}
 }
 
@@ -1914,7 +1915,7 @@ func cdiUIDs(names []string, prefix string, indexed bool) map[string]bool {
 	uids := map[string]bool{}
 	for _, n := range names {
 		if i := strings.LastIndex(n, "="); i >= 0 {
-			n = n[i+1:] // a qualified name nri.io/cxl=claim-...
+			n = n[i+1:] // a qualified name cxl.nri.io/device=claim-...
 		}
 		rest, ok := strings.CutPrefix(n, prefix)
 		if !ok {

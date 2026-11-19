@@ -21,6 +21,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -38,7 +39,6 @@ import (
 	coreclientset "k8s.io/client-go/kubernetes"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/yaml"
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
@@ -576,14 +576,13 @@ func (e *driverEnv) wantClean() {
 // cdiSpec returns the CDI spec of the name on disk, nil if there is none.
 func (e *driverEnv) cdiSpec(name string) *cdiSpecs.Spec {
 	e.t.Helper()
-	m, _ := filepath.Glob(filepath.Join(e.cdiDir, name+".*"))
-	if len(m) == 0 {
+	data, err := os.ReadFile(filepath.Join(e.cdiDir, name))
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
-	data, err := os.ReadFile(m[0])
 	mustOK(e.t, err)
 	spec := &cdiSpecs.Spec{}
-	mustOK(e.t, yaml.Unmarshal(data, spec))
+	mustOK(e.t, json.Unmarshal(data, spec))
 	return spec
 }
 

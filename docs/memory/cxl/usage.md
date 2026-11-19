@@ -1472,10 +1472,11 @@ the claim, whatever requests a container references.
 Programs find what they got by scanning `CXL_*_MODE`.
 
 The variables and device nodes come from CDI devices, one per allocation
-result of a claim: `nri.io/cxl=claim-<uid>-<n>` (spec file `cxl-claims`)
-and `nri.io/cxl-pool=claim-<uid>-<n>` (spec file `cxl-pool`), n being the
-index of the result in the claim's allocation (so the n of one driver may
-have gaps). Each has the marker, the variables and the device node (or,
+result of a claim: `cxl.nri.io/device=claim-<uid>-<n>` (spec file
+`cxl-claims.json`) and `cxl-pool.nri.io/device=claim-<uid>-<n>` (spec file
+`cxl-pool-claims.json`; the vendor is the name of the pool driver), n
+being the index of the result in the claim's allocation (so the n of one
+driver may have gaps). Each has the marker, the variables and the device node (or,
 in mode `fs`, the bind mount) of its own result only. kubelet gives a
 container the CDI devices of the requests it references
 (`resources.claims[].request`), all of them without a request: a
@@ -1870,7 +1871,7 @@ variable when it is set. Both `-flag` and `--flag` work.
 | `--kubeconfig` | `KUBECONFIG` | (empty: in-cluster config) | |
 | `--kube-api-qps` | `KUBE_API_QPS` | `5` | queries per second of the Kubernetes API client |
 | `--kube-api-burst` | `KUBE_API_BURST` | `10` | burst of the Kubernetes API client |
-| `--cdi-root` | `CDI_ROOT` | `/etc/cdi` | where the CDI spec files are written |
+| `--cdi-root` | `CDI_ROOT` | `/var/run/cdi` | where the CDI spec files are written |
 | `--config-str`, `-c` | `CONFIG_STR` | (empty) | the [configuration](#configuration-file) as a JSON or YAML string |
 | `--config-file`, `-f` | | | the configuration file, JSON or YAML; not together with `-c` |
 | `--nri-name` | `NRI_PLUGIN_NAME` | `dra-driver-cxl` | NRI plugin name |
@@ -1988,17 +1989,16 @@ the pool driver, `/var/lib/kubelet/plugins/cxl-pool.nri.io`.
 | `D/lease-fs/<claim uid>/<name>` | the bind of the node mount of an `fs` lease; the directory of the claim is the container's `/run/cxl/fs` ([leases.md](leases.md#opting-in)) |
 | `D/cxl-request` | the lease CLI that the plugin of the Helm chart copies from its image (`--lease-cli-source`) |
 | `D/mounts/<serial hex>-<access>`, `P/mounts/<serial hex>-<access>` | the node mount of the filesystem of a persistent local memdev, or of a persistent pool device, for mode `fs` ([Persistent memory](#persistent-memory)) |
-| `<cdi root>/cxl-claims.yaml` | CDI kind `nri.io/cxl`: a device `claim-<uid>-<n>` per allocation result n of a prepared `cxl.nri.io` claim, with the marker, the result's variables and its dax device node, and a device `lease-<uid>` per lease claim |
-| `<cdi root>/cxl-pool.yaml` | CDI kind `nri.io/cxl-pool`: a device `claim-<uid>-<n>` per allocation result n of a prepared pool claim, likewise |
+| `<cdi root>/cxl-claims.json` | CDI kind `cxl.nri.io/device`: a device `claim-<uid>-<n>` per allocation result n of a prepared `cxl.nri.io` claim, with the marker, the result's variables and its dax device node, and a device `lease-<uid>` per lease claim |
+| `<cdi root>/cxl-pool-claims.json` | CDI kind `<pool driver name>/device` (`cxl-pool.nri.io/device`): a device `claim-<uid>-<n>` per allocation result n of a prepared pool claim, likewise |
 
 To read the records, read `state.json` (with the plugin running it is
 replaced, never written in place). Companion claims of leases get no CDI
 device ([leases.md](leases.md#companion-objects)). At
-start the plugin writes the two files again from the document, each
-replaced in place (removed without devices), then deletes the other CDI
-specs of the kinds `nri.io/cxl` and `nri.io/cxl-pool`, such as the file
-of a disabled pool driver or lease device. A plugin that starts LOST
-keeps them all as they are.
+start each driver writes its file again from the document, replaced in
+place (removed without devices), and the plugin removes the file of the
+pool driver when that is disabled. A plugin that starts LOST keeps them
+all as they are.
 
 The flags of the files are no values of the Helm chart: add one to the
 `args` of the container of the DaemonSet

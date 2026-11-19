@@ -64,7 +64,7 @@ CLAIM_JSON=""          # claim-check: the claim
 CLAIM_UID=""           # and its uid
 POD_ENV=""             # env-check: the CXL_ variables of the pod
 POD_DAX=""             # and its dax device
-CDI_NODE=""            # cdi-check: the device node lines of the CDI device
+CDI_NODE=""            # cdi-check: the device nodes of the CDI device
 SHARED_REGION=""       # B: the region of the shared device, kept until H
 SHARED_DAX=""          # its dax device (daxX.Y)
 SHARED_DEV=""          # the major:minor of that
@@ -163,26 +163,24 @@ cdi-check() {
     # Usage: cdi-check UID READONLY
     #
     # Check the CDI device of the allocation result of claim UID,
-    # claim-UID-0 (spec cxl-claims): the device node of the shared device,
-    # with permissions r if READONLY is 1, the environment of the device
-    # and the marker of the result (CXL_CLAIM_<uid>_0), and no other CDI
-    # device of the claim. CDI_NODE
-    # are its device node lines.
+    # claim-UID-0 (spec cxl-claims.json): the device node of the shared
+    # device, with permissions r if READONLY is 1, the environment of the
+    # device and the marker of the result (CXL_CLAIM_<uid>_0), and no other
+    # CDI device of the claim. CDI_NODE is its device nodes.
     local uid="$1" ro="$2" cdi
     cdi=$(dra-cdi-device "$VM2" "claim-$uid-0")
     echo "CDI device claim-$uid-0: $cdi"
-    grep -qx "kind: nri.io/cxl" <<< "$cdi" || error "no CDI device claim-$uid-0 of kind nri.io/cxl"
-    grep -qE "^ *(- )?path: /dev/$DRA_LOCAL_SHARED_DAX\$" <<< "$cdi" || error "the CDI device claim-$uid-0 has no device node /dev/$DRA_LOCAL_SHARED_DAX"
+    [ -n "$cdi" ] || error "no CDI device claim-$uid-0"
+    dra-assert "$cdi" "j['kind'] == '$DRA_LOCAL_DRIVER/device' and any(n.get('path') == '/dev/$DRA_LOCAL_SHARED_DAX' for n in j['deviceNodes'])"
     if [ "$ro" == 1 ]; then
-        grep -qE '^ *permissions: r$' <<< "$cdi" || error "the CDI device claim-$uid-0 has no device node with permissions r"
+        dra-assert "$cdi" "any(n.get('permissions') == 'r' for n in j['deviceNodes'])"
     else
-        ! grep -qE '^ *permissions:' <<< "$cdi" || error "the CDI device claim-$uid-0 has a device node with restricted permissions"
+        dra-assert "$cdi" "not any('permissions' in n for n in j['deviceNodes'])"
     fi
-    grep -qF -- "- CXL_${DRA_LOCAL_HEX}_READONLY=$ro" <<< "$cdi" || error "the CDI device claim-$uid-0 has no CXL_${DRA_LOCAL_HEX}_READONLY=$ro"
-    grep -qF -- "- CXL_CLAIM_${uid//-/_}_0=1" <<< "$cdi" || error "the CDI device claim-$uid-0 has no marker of result 0 of its claim"
+    dra-assert "$cdi" "'CXL_${DRA_LOCAL_HEX}_READONLY=$ro' in j['env'] and 'CXL_CLAIM_${uid//-/_}_0=1' in j['env']"
     [ "$(dra-cdi-devices-with "$VM2" "$uid")" == "claim-$uid-0" ] ||
         error "the claim $uid has other CDI devices than claim-$uid-0: $(dra-cdi-devices-with "$VM2" "$uid")"
-    CDI_NODE=$(grep -E '^ *(- )?(path|type|major|minor|permissions): ' <<< "$cdi")
+    CDI_NODE=$(dra-value "$cdi" "j['deviceNodes']")
 }
 
 waiting() {

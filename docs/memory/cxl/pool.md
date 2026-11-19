@@ -639,8 +639,9 @@ NodePrepareResources, for each allocated device of the driver:
    one node (one read-write superblock, a read-only block device without
    a writer) are the same as for persistent local memdevs, in the same
    code.
-5. Return the device's CDI device `nri.io/cxl-pool=claim-<claim uid>-<n>`
-   (spec file `cxl-pool`, n the index of the allocation result in the
+5. Return the device's CDI device
+   `cxl-pool.nri.io/device=claim-<claim uid>-<n>` (spec file
+   `cxl-pool-claims.json`, n the index of the allocation result in the
    claim) with the marker `CXL_CLAIM_<uid>_<n>=1`, the device node of a
    `dax` device and the variables of
    [usage.md](usage.md#environment-variables):

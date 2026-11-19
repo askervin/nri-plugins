@@ -110,7 +110,7 @@ func TestPoolPrepareExclusive(t *testing.T) {
 		Requests:     []string{"mem"},
 		PoolName:     "fake-cxl-pool",
 		DeviceName:   "pooled0",
-		CDIDeviceIDs: []string{"nri.io/cxl-pool=claim-u1-0"},
+		CDIDeviceIDs: []string{"cxl-pool.nri.io/device=claim-u1-0"},
 	}}
 	if !reflect.DeepEqual(res.Devices, want) {
 		t.Fatalf("unexpected devices %+v", res.Devices)
@@ -119,7 +119,7 @@ func TestPoolPrepareExclusive(t *testing.T) {
 	if n := e.onlineBlocks("region0"); n == 0 {
 		t.Fatal("the memory of the region is not online")
 	}
-	if spec := e.cdiSpec(t); spec.Kind != "nri.io/cxl-pool" {
+	if spec := e.cdiSpec(t); spec.Kind != "cxl-pool.nri.io/device" {
 		t.Fatalf("CDI spec kind %q", spec.Kind)
 	}
 	cd := e.wantCDIDevice(t, "claim-u1-0", []string{"CXL_C1EE0001_MODE=numa", "CXL_C1EE0001_NODE=2", "CXL_C1EE0001_SERIAL=0xc1ee0001",
@@ -164,7 +164,7 @@ func TestPoolPrepareSharedTwoClaims(t *testing.T) {
 	c1.Status.Devices[1].ShareID = ptr(string(shareID))
 	res := prepare(t, p, c1)
 	noErr(t, res.Err)
-	if !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl-pool=claim-u1-0"}) || res.Devices[0].ShareID == nil || *res.Devices[0].ShareID != shareID {
+	if !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"cxl-pool.nri.io/device=claim-u1-0"}) || res.Devices[0].ShareID == nil || *res.Devices[0].ShareID != shareID {
 		t.Fatalf("unexpected device %+v", res.Devices[0])
 	}
 	if prep := e.preparation("u1"); prep == nil || prep.Results[0].ShareID != string(shareID) {
@@ -329,7 +329,7 @@ func TestPoolPrepareExclusiveDax(t *testing.T) {
 	claim := withConfig(poolClaim("u1", "c1", "pooled0", exclusiveData), resourceapi.AllocationConfigSourceClaim, nil, daxConfig)
 	res := prepare(t, p, claim)
 	noErr(t, res.Err)
-	if !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl-pool=claim-u1-0"}) {
+	if !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"cxl-pool.nri.io/device=claim-u1-0"}) {
 		t.Fatalf("unexpected device %+v", res.Devices[0])
 	}
 	if d := e.k.DaxDriver("dax0.0"); d != "device_dax" {
@@ -368,7 +368,7 @@ func TestPoolReadOnlyCDIDevices(t *testing.T) {
 
 	res := prepare(t, p, withConfig(poolClaim("u1", "c1", "shared0", sharedData), resourceapi.AllocationConfigSourceClaim, nil, roConfig))
 	noErr(t, res.Err)
-	if !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl-pool=claim-u1-0"}) {
+	if !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"cxl-pool.nri.io/device=claim-u1-0"}) {
 		t.Fatalf("unexpected device %+v", res.Devices[0])
 	}
 	ro := e.wantCDIDevice(t, "claim-u1-0", []string{"CXL_C1AE0001_DAX=" + dax0, "CXL_C1AE0001_MODE=dax", "CXL_C1AE0001_READONLY=1",
@@ -383,7 +383,7 @@ func TestPoolReadOnlyCDIDevices(t *testing.T) {
 	// region is reused
 	res = prepare(t, p, poolClaim("u2", "c2", "shared0", sharedData))
 	noErr(t, res.Err)
-	if !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl-pool=claim-u2-0"}) {
+	if !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"cxl-pool.nri.io/device=claim-u2-0"}) {
 		t.Fatalf("unexpected device %+v", res.Devices[0])
 	}
 	if n := strings.Count(e.commands(), "create-region"); n != 1 {
@@ -474,7 +474,7 @@ func TestPoolCDISpecKeys(t *testing.T) {
 				"CXL_C1EE0001_SIZE=536870912", "CXL_CLAIM_u1_3=1"},
 		}},
 	}
-	if spec.Kind != device.PoolCDIKind || !reflect.DeepEqual(spec.Devices, want) {
+	if spec.Kind != device.CDIKind(device.PoolDriverName) || !reflect.DeepEqual(spec.Devices, want) {
 		t.Fatalf("CDI spec %+v", spec)
 	}
 	noErr(t, unprepare(t, p, "u1"))

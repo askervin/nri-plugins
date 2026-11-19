@@ -105,7 +105,7 @@ func TestPrepareLocalDax(t *testing.T) {
 	e.mustPrepare(localClaim("u1", localBlockSize, localDaxConfig))
 	// 32Mi is rounded up to a memory block
 	e.mustPrepare(localClaim("u2", 32*mib, localROConfig))
-	wantLocalCDIDevices(e, "u2", "nri.io/cxl=claim-u2-0")
+	wantLocalCDIDevices(e, "u2", "cxl.nri.io/device=claim-u2-0")
 	dax1, major, minor1 := localDax(e, "dax0.1")
 	dax0, _, minor0 := localDax(e, "dax0.0")
 	e.wantDeviceInfo("u2", PreparedDeviceInfo{
@@ -171,8 +171,8 @@ func TestPrepareLocalTwoSlices(t *testing.T) {
 	claim.Status.Allocation.Devices.Config = append(claim.Status.Allocation.Devices.Config, ro)
 	e.mustPrepare(claim)
 	devs := e.prepared()["u1"].Devices
-	if len(devs) != 2 || !slices.Equal(devs[0].CDIDeviceIDs, []string{"nri.io/cxl=claim-u1-0"}) ||
-		!slices.Equal(devs[1].CDIDeviceIDs, []string{"nri.io/cxl=claim-u1-1"}) {
+	if len(devs) != 2 || !slices.Equal(devs[0].CDIDeviceIDs, []string{"cxl.nri.io/device=claim-u1-0"}) ||
+		!slices.Equal(devs[1].CDIDeviceIDs, []string{"cxl.nri.io/device=claim-u1-1"}) {
 		t.Fatalf("prepared %+v", devs)
 	}
 	dax0, major, minor0 := localDax(e, "dax0.0")

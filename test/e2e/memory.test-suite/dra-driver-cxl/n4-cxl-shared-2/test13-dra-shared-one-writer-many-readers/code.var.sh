@@ -357,16 +357,15 @@ done
 dra-json "$VM2" resourceclaim -n "$DRA_NS" shared-read-only
 dra-assert "$COMMAND_OUTPUT" "allocated_node() == '$VM1_NAME'"
 # The pool driver on VM1 prepared the claim as the CDI device of its
-# allocation result, claim-<uid>-0 (spec cxl-pool), with a read-only
+# allocation result, claim-<uid>-0 (spec cxl-pool-claims.json), with a read-only
 # device node, the environment of shared0 and the marker of the result,
 # CXL_CLAIM_<uid>_0.
 RO_CLAIM_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
 cdi=$(dra-cdi-device "$VM1" "claim-$RO_CLAIM_UID-0")
 echo "CDI device claim-$RO_CLAIM_UID-0: $cdi"
-grep -qx "kind: nri.io/cxl-pool" <<< "$cdi" || error "no CDI device claim-$RO_CLAIM_UID-0 of kind nri.io/cxl-pool in VM1"
-grep -qE '^ *permissions: r$' <<< "$cdi" || error "the CDI device of the claim of reader-d has no device node with permissions r"
-grep -qF -- "- CXL_${SHARED_HEX}_READONLY=1" <<< "$cdi" || error "the CDI device of the claim of reader-d has no CXL_${SHARED_HEX}_READONLY=1"
-grep -qF -- "- CXL_CLAIM_${RO_CLAIM_UID//-/_}_0=1" <<< "$cdi" || error "the CDI device of the claim of reader-d has no marker of result 0 of its claim"
+[ -n "$cdi" ] || error "no CDI device claim-$RO_CLAIM_UID-0 in VM1"
+dra-assert "$cdi" "j['kind'] == '$DRA_POOL_DRIVER/device' and any(n.get('permissions') == 'r' for n in j['deviceNodes'])"
+dra-assert "$cdi" "'CXL_${SHARED_HEX}_READONLY=1' in j['env'] and 'CXL_CLAIM_${RO_CLAIM_UID//-/_}_0=1' in j['env']"
 [ "$(dra-cdi-devices-with "$VM1" "$RO_CLAIM_UID")" == "claim-$RO_CLAIM_UID-0" ] ||
     error "the claim of reader-d has other CDI devices than claim-$RO_CLAIM_UID-0: $(dra-cdi-devices-with "$VM1" "$RO_CLAIM_UID")"
 for r in "${READERS[@]}"; do

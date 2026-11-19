@@ -191,19 +191,21 @@ echo '== lease binds'; l=$(find /var/lib/kubelet/plugins/cxl.nri.io/lease-fs -mi
 """
 
 
+# A spec per line: zoom_cdi indents the JSON.
 CDI_SCRIPT = r"""
 n=0
-for f in /etc/cdi/*cxl* /var/run/cdi/*cxl*; do
+for f in /var/run/cdi/cxl*.json; do
     [ -f "$f" ] || continue
     n=$((n + 1))
     echo "== $f"
-    cat "$f"
+    tr -d '\n' < "$f"
+    echo
 done
 [ "$n" -gt 0 ] || echo 'no CDI specs of the CXL drivers: no claim or lease is prepared on this node'
 # Companion claims of leases get no CDI device: their memory reaches the
-# container through its lease device (lease-<uid> of cxl-claims.yaml).
-[ -s /etc/cdi/cxl-pool.yaml ] || [ -s /var/run/cdi/cxl-pool.yaml ] ||
-    echo 'no pool claims with CDI devices (cxl-pool.yaml): leases have none, their memory comes through the lease device'
+# container through its lease device (lease-<uid> of cxl-claims.json).
+[ -s /var/run/cdi/cxl-pool-claims.json ] ||
+    echo 'no pool claims with CDI devices (cxl-pool-claims.json): leases have none, their memory comes through the lease device'
 """
 
 # The kernel lines of CXL, dax and memory since a time (%(since)s, epoch
@@ -238,6 +240,19 @@ def zoom_shell(state, node, script, timeout=30):
     print(c.short_text(out.rstrip(), state))
 
 
+def zoom_cdi(state, node):
+    rc, out = c.run_vm(vmdir(state, node), CDI_SCRIPT, 30)
+    lines = []
+    for line in out.rstrip().splitlines():
+        if line.startswith("{"):
+            try:
+                line = json.dumps(json.loads(line), indent=2)
+            except ValueError:
+                pass
+        lines.append(line)
+    print(c.short_text("\n".join(lines), state))
+
+
 def main():
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help", "help"):
@@ -268,7 +283,7 @@ def main():
         else:
             zoom_shell(state, "vm2", "kubectl exec -n %s %s -- /demo/env" % (ns, rest[0]))
     elif what == "cdi" and rest:
-        zoom_shell(state, rest[0], CDI_SCRIPT)
+        zoom_cdi(state, rest[0])
     elif what == "driver" and rest:
         vmdir(state, rest[0])   # refuses a NODE that the demo does not have
         n = int(rest[1]) if len(rest) > 1 else 30

@@ -394,15 +394,14 @@ fs-cdi-assert() { # script API
     # claim-<uid>-0 of ResourceClaim CLAIM, of KIND, without device nodes
     # and with exactly one mount: a bind of HOSTPATH at CTRPATH with the
     # options OPTIONS (a Python list).
-    local vmdir="$1" claim="$2" kind="$3" host="$4" ctr="$5" opts="$6" uid cdi mounts
+    local vmdir="$1" claim="$2" kind="$3" host="$4" ctr="$5" opts="$6" uid cdi
     dra-json "$OUTPUT_DIR" resourceclaim -n "$DRA_NS" "$claim"
     uid=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
     cdi=$(dra-cdi-device "$vmdir" "claim-$uid-0")
     echo "CDI device claim-$uid-0 of $claim: $cdi"
-    grep -qx "kind: $kind" <<< "$cdi" || error "no CDI device claim-$uid-0 of kind $kind for $claim"
-    ! grep -q 'deviceNodes:' <<< "$cdi" || error "the CDI device of $claim has device nodes"
-    mounts=$(dra-cdi-mounts "$cdi") || error "cannot parse the mounts of the CDI device of $claim"
-    dra-assert "$mounts" "[(m.get('hostPath'), m.get('containerPath'), m.get('type'), m.get('options')) for m in j] == [('$host', '$ctr', 'bind', $opts)]"
+    [ -n "$cdi" ] || error "no CDI device claim-$uid-0 for $claim"
+    dra-assert "$cdi" "j['kind'] == '$kind' and j['deviceNodes'] == []"
+    dra-assert "$cdi" "[(m.get('hostPath'), m.get('containerPath'), m.get('type'), m.get('options')) for m in j['mounts']] == [('$host', '$ctr', 'bind', $opts)]"
 }
 
 fs-claim-data-assert() { # script API

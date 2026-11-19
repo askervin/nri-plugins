@@ -957,8 +957,8 @@ func (s *sim) observeVM(v VM) *ObsVM {
 		}
 		ov.Ports = append(ov.Ports, port)
 	}
-	ov.CDI["/etc/cdi/cxl-claims.yaml"] = append(claimsCDI, leasesCDI...)
-	ov.CDI["/etc/cdi/cxl-pool.yaml"] = poolCDI
+	ov.CDI[cdiDir+"/"+claimsCDISpec] = append(claimsCDI, leasesCDI...)
+	ov.CDI[cdiDir+"/"+poolCDISpec] = poolCDI
 	ov.Containers = containers
 	s.observePmemVM(st, v, ov)
 	for d := cPmem0; d < nDevs; d++ {

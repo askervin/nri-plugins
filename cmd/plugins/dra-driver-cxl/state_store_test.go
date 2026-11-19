@@ -47,10 +47,10 @@ func TestStartOnALostStore(t *testing.T) {
 	}
 	// the CDI specs of claims prepared before the store was lost
 	specs := map[string]string{}
-	for name, kind := range map[string]string{device.ClaimsCDISpecName: device.CDIKind, device.PoolCDISpecName: device.PoolCDIKind,
-		"cxl-local": device.CDIKind} {
-		specs[name] = "cdiVersion: 0.6.0\nkind: " + kind + "\ndevices:\n- name: claim-u0-0\n  containerEdits:\n    env: [A=1]\n"
-		noErr(t, os.WriteFile(filepath.Join(root, "cdi", name+".yaml"), []byte(specs[name]), 0o600))
+	for name, kind := range map[string]string{device.ClaimsCDISpecName: device.CDIKind(device.DriverName),
+		device.PoolCDISpecName: device.CDIKind(device.PoolDriverName)} {
+		specs[name] = `{"cdiVersion":"0.6.0","kind":"` + kind + `","devices":[{"name":"claim-u0-0","containerEdits":{"env":["A=1"]}}]}`
+		noErr(t, os.WriteFile(filepath.Join(root, "cdi", name), []byte(specs[name]), 0o600))
 	}
 	ctx := context.Background()
 	st, err := store.Open(ctx, store.Options{Dir: local, BootID: "boot-1"})
@@ -99,7 +99,7 @@ func TestStartOnALostStore(t *testing.T) {
 		t.Errorf("the lost document was rewritten: %q %v", data, err)
 	}
 	for name, want := range specs {
-		if data, err := os.ReadFile(filepath.Join(root, "cdi", name+".yaml")); err != nil || string(data) != want {
+		if data, err := os.ReadFile(filepath.Join(root, "cdi", name)); err != nil || string(data) != want {
 			t.Errorf("CDI spec %s changed in LOST mode: %q %v", name, data, err)
 		}
 	}

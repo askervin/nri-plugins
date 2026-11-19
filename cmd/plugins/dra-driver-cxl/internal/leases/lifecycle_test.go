@@ -334,7 +334,7 @@ func TestLeaseClaimPrepare(t *testing.T) {
 	e.start()
 	r := e.prepare(e.local, leaseClaimObj())
 	mustOK(t, r.Err)
-	if len(r.Devices) != 1 || !slices.Equal(r.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl=claim-lc1-0", "nri.io/cxl=lease-lc1"}) {
+	if len(r.Devices) != 1 || !slices.Equal(r.Devices[0].CDIDeviceIDs, []string{"cxl.nri.io/device=claim-lc1-0", "cxl.nri.io/device=lease-lc1"}) {
 		t.Fatalf("prepared %+v", r.Devices)
 	}
 	if spec := e.cdiSpec(device.ClaimsCDISpecName); spec == nil || len(spec.Devices) != 2 || spec.Devices[1].Name != "lease-lc1" ||

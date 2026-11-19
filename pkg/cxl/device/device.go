@@ -27,22 +27,14 @@ import (
 )
 
 const (
-	// CDIVendor is the CDI vendor of both drivers.
-	CDIVendor = "nri.io"
-	// CDIClass is the CDI class of cxl.nri.io.
-	CDIClass = "cxl"
-	// CDIKind is the CDI kind of cxl.nri.io.
-	CDIKind = CDIVendor + "/" + CDIClass
-	// PoolCDIClass is the CDI class of the pool driver.
-	PoolCDIClass = "cxl-pool"
-	// PoolCDIKind is the CDI kind of the pool driver.
-	PoolCDIKind = CDIVendor + "/" + PoolCDIClass
+	// CDIClass is the CDI class of the devices of both drivers (CDIKind).
+	CDIClass = "device"
 	// ClaimsCDISpecName is the CDI spec file of the claims of cxl.nri.io
 	// and of its lease claims.
-	ClaimsCDISpecName = "cxl-claims"
+	ClaimsCDISpecName = "cxl-claims.json"
 	// PoolCDISpecName is the CDI spec file of the claims of the pool
 	// driver.
-	PoolCDISpecName = "cxl-pool"
+	PoolCDISpecName = "cxl-pool-claims.json"
 
 	// DriverName is the DRA driver of the devices attached to a node.
 	DriverName = "cxl.nri.io"
@@ -127,6 +119,13 @@ const (
 // allocation, and writes the condition AttachedCondition and the status
 // data into the entry of the result in claim.status.devices, or the
 // condition AttachFailedCondition.
+
+// CDIKind returns the CDI kind of the devices of the DRA driver: the
+// driver name as the vendor and the class CDIClass, as the resource
+// manager names the kinds of its DRA drivers (pkg/resmgr/dra).
+func CDIKind(driver string) string {
+	return driver + "/" + CDIClass
+}
 
 // AttachedCondition returns the condition of a device that the pool
 // controller of the driver attached for the claim.

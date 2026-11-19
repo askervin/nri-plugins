@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"net"
 	"os"
@@ -32,7 +33,6 @@ import (
 	"testing"
 	"time"
 
-	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -824,14 +824,13 @@ func (e *leaseEnv) nodeMount(serial uint64, access string) string {
 // cdiSpec returns the CDI spec of the name on disk, nil if there is none.
 func (e *leaseEnv) cdiSpec(name string) *cdiSpecs.Spec {
 	e.t.Helper()
-	m, _ := filepath.Glob(filepath.Join(e.cdiDir, name+".*"))
-	if len(m) == 0 {
+	data, err := os.ReadFile(filepath.Join(e.cdiDir, name))
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
-	data, err := os.ReadFile(m[0])
 	mustOK(e.t, err)
 	spec := &cdiSpecs.Spec{}
-	mustOK(e.t, yaml.Unmarshal(data, spec))
+	mustOK(e.t, json.Unmarshal(data, spec))
 	return spec
 }
 

@@ -391,7 +391,7 @@ func TestPrepareSharedLocal(t *testing.T) {
 
 	// the writer: no shares request, the scheduler counts all of them
 	e.mustPrepare(sharedClaim("u1", "1M"))
-	wantCDIDeviceIDs(t, e, "u1", "nri.io/cxl=claim-u1-0")
+	wantCDIDeviceIDs(t, e, "u1", "cxl.nri.io/device=claim-u1-0")
 	e.wantDeviceInfo("u1", PreparedDeviceInfo{
 		RequestName: "mem", DeviceName: localDeviceName, DeviceType: device.DeviceTypeMemdev, Mode: api.ModeDax, Shared: true,
 		SysfsPath: e.k.P("bus/cxl/devices/region0"), NodeAffinities: []int{0},
@@ -590,7 +590,7 @@ func TestPrepareSharedLocalRollback(t *testing.T) {
 	e := newSharedEnv(t)
 	e.mustPrepare(sharedClaim("u0", "1"))
 	e.mustUnprepare("u0")
-	spec := filepath.Join(e.cdiDir, device.ClaimsCDISpecName+".yaml")
+	spec := filepath.Join(e.cdiDir, device.ClaimsCDISpecName)
 	noErr(t, os.MkdirAll(filepath.Join(spec, "x"), 0o755))
 	wantErr(t, e.prepare(sharedClaim("u1", "1")), "write CDI spec")
 	noErr(t, os.RemoveAll(spec))

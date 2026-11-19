@@ -16,8 +16,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -32,7 +34,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
-	"sigs.k8s.io/yaml"
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
@@ -256,14 +257,13 @@ func (e *poolTestEnv) device(p *dra.Plugin, uid string, n int) poolDevice {
 // cdiSpec returns the pool CDI spec on disk, nil if there is none.
 func (e *poolTestEnv) cdiSpec(t *testing.T) *cdiSpecs.Spec {
 	t.Helper()
-	m, _ := filepath.Glob(filepath.Join(e.cdiDir, device.PoolCDISpecName+".*"))
-	if len(m) == 0 {
+	data, err := os.ReadFile(filepath.Join(e.cdiDir, device.PoolCDISpecName))
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
-	data, err := os.ReadFile(m[0])
 	noErr(t, err)
 	spec := &cdiSpecs.Spec{}
-	noErr(t, yaml.Unmarshal(data, spec))
+	noErr(t, json.Unmarshal(data, spec))
 	return spec
 }
 

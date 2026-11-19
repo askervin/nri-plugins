@@ -58,7 +58,7 @@ func TestLocalSlicedNUMA(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()})
 	logs := klogCapture(t)
 	res := e.mustPrepare(e.local, localClaim("u1", localDev, 64*mib))
-	wantResult(t, res, resultDevice("mem", envNode, localDev, "nri.io/cxl=claim-u1-0"))
+	wantResult(t, res, resultDevice("mem", envNode, localDev, "cxl.nri.io/device=claim-u1-0"))
 	e.wantState(e.local, "u1", state.PreparationPrepared)
 	g := e.records().Grant(state.GrantRef{Claim: "u1"})
 	node := state.NumaNodeOf(g.Got.NumaNode)
@@ -239,7 +239,7 @@ func TestLocalRegion(t *testing.T) {
 	dev := e.addRegion("region5", 4, 1<<30)
 	e.mark()
 	res := e.mustPrepare(e.local, localClaim("u1", dev, 64*mib))
-	wantResult(t, res, resultDevice("mem", envNode, dev, "nri.io/cxl=claim-u1-0"))
+	wantResult(t, res, resultDevice("mem", envNode, dev, "cxl.nri.io/device=claim-u1-0"))
 	e.wantNoCommands("a region result")
 	want := state.DeviceInfo{RequestName: "mem", DeviceName: dev, DeviceType: device.DeviceTypeRegion, Mode: api.ModeNUMA,
 		SysfsPath: e.k.P("bus/cxl/devices/region5"), NUMANodes: []int{4}, NodeAffinities: []int{1}, TotalBytes: 1 << 30,
@@ -288,7 +288,7 @@ func TestLocalLeaseDevice(t *testing.T) {
 	e.wantState(e.local, "u1", state.PreparationUnknown)
 	e.setLeases()
 	res = e.mustPrepare(e.local, localClaim("u1", device.LeaseDeviceName, 0))
-	wantResult(t, res, resultDevice("mem", envNode, device.LeaseDeviceName, "nri.io/cxl=claim-u1-0", "nri.io/cxl=lease-u1"))
+	wantResult(t, res, resultDevice("mem", envNode, device.LeaseDeviceName, "cxl.nri.io/device=claim-u1-0", "cxl.nri.io/device=lease-u1"))
 	e.wantEvents("prepare", "open u1")
 	if d := e.local.ClaimInfo("u1").Devices[0]; d.DeviceType != device.DeviceTypeLease || d.Mode != "" {
 		t.Fatalf("device info %+v", d)
@@ -339,13 +339,13 @@ func TestLocalPrepareResult(t *testing.T) {
 	share := types.UID("share-1")
 	c.Status.Allocation.Devices.Results[1].ShareID = &share
 	res := e.mustPrepare(e.local, c)
-	region5 := resultDevice("region", envNode, region, "nri.io/cxl=claim-u1-1")
+	region5 := resultDevice("region", envNode, region, "cxl.nri.io/device=claim-u1-1")
 	region5.ShareID = &share
 	wantResult(t, res,
-		resultDevice("mem", envNode, localDev, "nri.io/cxl=claim-u1-0"),
+		resultDevice("mem", envNode, localDev, "cxl.nri.io/device=claim-u1-0"),
 		region5,
-		resultDevice("dram", envNode, device.DRAMDeviceName, "nri.io/cxl=claim-u1-3"),
-		resultDevice("lease", envNode, device.LeaseDeviceName, "nri.io/cxl=claim-u1-4", "nri.io/cxl=lease-u1"))
+		resultDevice("dram", envNode, device.DRAMDeviceName, "cxl.nri.io/device=claim-u1-3"),
+		resultDevice("lease", envNode, device.LeaseDeviceName, "cxl.nri.io/device=claim-u1-4", "cxl.nri.io/device=lease-u1"))
 	if got, ok := e.local.Result("u1"); !ok || !reflect.DeepEqual(got, res) {
 		t.Fatalf("Result %+v %v", got, ok)
 	}

@@ -108,10 +108,14 @@ func (p *ObsPod) dualClaims() (pool, local *ObsClaim, ok bool) {
 }
 
 // localDriver is the DRA driver of local claims, poolDriver that of pool
-// claims.
+// claims. claimsCDISpec is the CDI spec file of localDriver in cdiDir,
+// poolCDISpec that of poolDriver.
 const (
-	localDriver = "cxl.nri.io"
-	poolDriver  = "cxl-pool.nri.io"
+	localDriver   = "cxl.nri.io"
+	poolDriver    = "cxl-pool.nri.io"
+	cdiDir        = "/var/run/cdi"
+	claimsCDISpec = "cxl-claims.json"
+	poolCDISpec   = "cxl-pool-claims.json"
 )
 
 // claimAllocated: a claim of the pod is allocated (a dnuma pod: one of

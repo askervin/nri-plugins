@@ -509,23 +509,19 @@ func (fe *frontEnds) recover(ctx context.Context, driverConfig *DriverConfig, de
 }
 
 // writeCDI writes the CDI specs of the prepared claims of the drivers in
-// place, then removes the other CXL specs of the CDI directory. Nothing on
+// place and removes the spec of the pool driver when it is off. Nothing on
 // the store st lost: its prepared claims are unknown, their specs stay.
 func (fe *frontEnds) writeCDI(st *store.Store) error {
 	if st.Lost() != nil {
 		return nil
 	}
-	owned := []string{fe.local.CDISpecName()}
 	if err := fe.local.WriteCDI(); err != nil {
 		return err
 	}
-	if fe.pool != nil {
-		owned = append(owned, fe.pool.CDISpecName())
-		if err := fe.pool.WriteCDI(); err != nil {
-			return err
-		}
+	if fe.pool == nil {
+		return fe.cdi.RemoveSpec(device.PoolCDISpecName)
 	}
-	return dra.RemoveCXLSpecs(fe.cdi, owned...)
+	return fe.pool.WriteCDI()
 }
 
 // localPoolGuard returns the check of a local memdev before the engine

@@ -1396,7 +1396,7 @@ tests.
   driver's state is in `/var/lib/kubelet/plugins/cxl.nri.io/` and
   `/var/lib/kubelet/plugins/cxl-pool.nri.io/`
   ([Files on the node](usage.md#files-on-the-node)), its CDI specs in
-  `/etc/cdi/cxl-*.yaml`.
+  `/var/run/cdi/cxl*.json`.
 - A device that stays in a VM after a force-deleted pod, or a zombie
   device of a stock qemu: the tests of `n4-cxl-shared-2` from `test10`
   on restart a VM that has CXL devices at their start and wait until its
