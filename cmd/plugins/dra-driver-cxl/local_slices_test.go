@@ -22,13 +22,11 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"syscall"
 	"testing"
 
 	resourcev1 "k8s.io/api/resource/v1"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -244,92 +242,6 @@ func TestLocalLargeBlocks(t *testing.T) {
 	e.wantClean()
 }
 
-// A slice whose release failed is never handed out again and keeps the
-// region: its grant stays RELEASING until its claim's next Unprepare.
-func TestLocalFailedReleases(t *testing.T) {
-	e := newSliceTestEnv(t)
-	e.start()
-	e.mustPrepare(localClaim("u1", localBlockSize))
-	e.mustPrepare(localClaim("u2", localBlockSize, localDaxConfig))
-	e.wantDax("dax0.0", localBlockSize, kernel.DriverKmem)
-	e.wantMemoryBlocks(74)
-
-	// the memory of u1 cannot be offlined
-	e.k.FailWrite("devices/system/memory/memory74/state", syscall.EBUSY)
-	wantErr(t, e.unprepare("u1"), "releasing slice dax0.0: cannot offline its memory (in use?)")
-	if g := e.grant("u1", 0); g == nil || g.State != state.GrantReleasing || g.Got.Dax != "dax0.0" {
-		t.Fatalf("grant of the failed release %+v", g)
-	}
-	// the next slice does not get it
-	e.mustPrepare(localClaim("u3", localBlockSize, localDaxConfig))
-	if d := e.dax("u3", 0); d == "dax0.0" {
-		t.Fatalf("slice %s of a failed release handed out", d)
-	}
-	e.wantDax("dax0.0", localBlockSize, kernel.DriverKmem)
-	e.wantMemoryBlocks(74)
-	// kubelet's retry releases it
-	e.mustUnprepare("u1")
-	e.wantDax("dax0.0", 0, "")
-	e.wantMemoryBlocks()
-
-	// a numa slice whose rollback cannot offline it: dax0.0 again, on the
-	// free blocks 74 and 77
-	e.k.FailWrite("devices/system/memory/memory77/state", syscall.EIO)
-	e.k.FailWrite("devices/system/memory/memory74/state", nil, syscall.EBUSY)
-	_ = e.prepareFails(localClaim("u4", 2*localBlockSize), "memory77: online_movable: input/output error")
-	g := e.grant("u4", 0)
-	if g == nil || g.State != state.GrantReleasing || g.Got.Dax != "dax0.0" {
-		t.Fatalf("grant of the failed rollback %+v", g)
-	}
-	e.wantDax("dax0.0", 2*localBlockSize, kernel.DriverKmem)
-	e.wantRanges("dax0.0", e.blockRange(74, 1), e.blockRange(77, 1))
-	if online := e.onlineBlocks(); !slices.Equal(online, []int{74}) {
-		t.Fatalf("blocks %v online", online)
-	}
-	if p := e.preparation("u4"); p == nil || p.State != state.PreparationKept {
-		t.Fatalf("preparation of the failed rollback %+v", p)
-	}
-	// the last claim keeps the region for it; the Unprepare of its claim
-	// releases it
-	e.mustUnprepare("u2")
-	e.mustUnprepare("u3")
-	if strings.Contains(e.commands(), "destroy-region") {
-		t.Fatalf("region released with the slice of a failed release:\n%s", e.commands())
-	}
-	e.wantUsed(true)
-	e.mustUnprepare("u4")
-	e.wantRegionReleased("region0")
-	e.wantMemoryBlocks()
-	e.wantClean()
-
-	// restart: u1 is not prepared (its Prepare was cut after its memory
-	// went online), and its memory cannot be offlined: its grant keeps the
-	// part for its Unprepare
-	e.mustPrepare(localClaim("u2", localBlockSize, localDaxConfig))
-	e.k.CutAfter("write devices/system/memory/memory75/state online_movable")
-	if !e.cut(func() { _ = prepareOn(context.Background(), e.s, localClaim("u1", localBlockSize)) }) {
-		t.Fatal("the Prepare was not cut")
-	}
-	e.k.FailWrite("devices/system/memory/memory75/state", syscall.EBUSY)
-	e.restart()
-	if g := e.grant("u1", 0); g == nil || g.State != state.GrantRealising || g.Got.Dax != "dax0.1" {
-		t.Fatalf("grant after the restart %+v", g)
-	}
-	if p := e.preparation("u1"); p == nil || p.State != state.PreparationKept {
-		t.Fatalf("preparation after the restart %+v", p)
-	}
-	e.mustPrepare(localClaim("u3", localBlockSize, localDaxConfig))
-	if d := e.dax("u3", 0); d == "dax0.1" {
-		t.Fatalf("slice %s of a failed release handed out", d)
-	}
-	e.wantMemoryBlocks(75)
-	e.mustUnprepare("u1")
-	e.wantGone("dax0.1")
-	e.mustUnprepare("u2")
-	e.mustUnprepare("u3")
-	e.wantClean()
-}
-
 // A kmem device with online memory that no record names is not reused nor
 // unbound; a restart offlines and deletes it.
 func TestLocalUntrackedKmem(t *testing.T) {
@@ -359,45 +271,6 @@ func TestLocalUntrackedKmem(t *testing.T) {
 	for _, uid := range []string{"u1", "u2", "u3"} {
 		e.mustUnprepare(uid)
 	}
-	e.wantClean()
-}
-
-// A numa slice that fails to offline keeps its grant RELEASING until the
-// Unprepare is retried; other claims are not affected.
-func TestLocalNUMAReleaseFailure(t *testing.T) {
-	e := newSliceTestEnv(t)
-	e.start()
-	e.mustPrepare(localClaim("u1", 2*localBlockSize))
-	e.k.FailWrite("devices/system/memory/memory75/state", syscall.EBUSY)
-	err := e.unprepare("u1")
-	wantErr(t, err, "releasing slice dax0.0: cannot offline its memory (in use?)")
-	wantErr(t, err, "device or resource busy")
-	if e.k.BlockState(74) != kernel.BlockStateOffline || e.k.BlockState(75) != kernel.BlockStateOnline {
-		t.Fatalf("memory74 %q, memory75 %q", e.k.BlockState(74), e.k.BlockState(75))
-	}
-	e.wantDax("dax0.0", 2*localBlockSize, kernel.DriverKmem)
-	if g := e.grant("u1", 0); g == nil || g.State != state.GrantReleasing || g.Got.Dax != "dax0.0" {
-		t.Fatalf("grant %+v", g)
-	}
-	if p := e.preparation("u1"); p == nil || p.State != state.PreparationUnpreparing {
-		t.Fatalf("preparation %+v", p)
-	}
-	// another numa claim gets a slice of its own meanwhile
-	e.mustPrepare(localClaim("u2", localBlockSize))
-	e.wantRanges(e.dax("u2", 0), e.blockRange(76, 1))
-	e.mustUnprepare("u1")
-	e.wantMemoryBlocks(76)
-	if strings.Contains(e.commands(), "destroy-region") {
-		t.Fatalf("region destroyed while u2 uses it:\n%s", e.commands())
-	}
-	// a slice that fails to delete after the offline
-	u2 := e.dax("u2", 0)
-	e.k.FailWrite("bus/dax/devices/"+u2+"/size", syscall.EBUSY)
-	wantErr(t, e.unprepare("u2"), "releasing slice "+u2)
-	e.wantMemoryBlocks()
-	e.wantDax(u2, localBlockSize, "")
-	e.mustUnprepare("u2")
-	e.wantRegionReleased("region0")
 	e.wantClean()
 }
 

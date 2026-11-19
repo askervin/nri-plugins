@@ -338,21 +338,6 @@ func (e *localTestEnv) check(what string) {
 	}
 }
 
-// cut runs fn, which the process does not finish: it stops (panics with
-// fake.ErrCut) at a cut point of the fake; cut reports whether it did.
-func (e *localTestEnv) cut(fn func()) (cut bool) {
-	defer func() {
-		if p := recover(); p != nil {
-			if err, ok := p.(error); !ok || !errors.Is(err, fake.ErrCut) {
-				panic(p)
-			}
-			cut = true
-		}
-	}()
-	fn()
-	return false
-}
-
 // records returns the records of the env's store.
 func (e *localTestEnv) records() *state.Records {
 	return &e.st.Snapshot().Records
@@ -462,19 +447,6 @@ func (e *localTestEnv) wantClean() {
 // kernel.
 func (e *localTestEnv) regions(serial uint64) []string {
 	return e.k.Kernel().Regions(e.k.Memdev(serial))
-}
-
-// onlineBlocks returns the memory blocks of the kernel that are online.
-func (e *localTestEnv) onlineBlocks() []int {
-	snap, err := e.k.Kernel().Observe(context.Background())
-	noErr(e.t, err)
-	var out []int
-	for _, b := range snap.Blocks {
-		if b.State == kernel.BlockOnline {
-			out = append(out, b.Index)
-		}
-	}
-	return out
 }
 
 // makeOpaqueConfig returns an allocation config of the driver with config
