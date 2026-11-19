@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"syscall"
 	"time"
@@ -35,11 +36,12 @@ import (
 
 // The protocol of a lease socket: SOCK_STREAM, one JSON line each way,
 // several requests per connection, a request line of at most
-// maxRequestLine bytes decoded strictly; the response of a Ready dax or
-// block lease carries the open fd of its device (SCM_RIGHTS) on the write
-// of its line. The peer is the process that connected, fixed at connect by
-// its pid, start time and pidfd; the identity of every request is that of
-// the peer's container then, the connection's once the peer is gone.
+// maxRequestLine bytes with one object of known fields; the response of a
+// Ready dax or block lease carries the open fd of its device (SCM_RIGHTS)
+// on the write of its line. The peer is the process that connected, fixed
+// at connect by its pid, start time and pidfd; the identity of every
+// request is that of the peer's container then, the connection's once the
+// peer is gone.
 
 // leaseFd names the device of a dax or block lease whose fd goes with a
 // response: none if path is "". The fd goes only while the lease is Ready
@@ -212,13 +214,17 @@ func (b *Broker) warnLocked(claimUID, reason string, err error) {
 	klog.Warningf("lease broker: claim %s: %s: %v", claimUID, reason, err)
 }
 
-// decodeRequest returns the request of a line, decoded strictly.
+// decodeRequest returns the request of a line. It refuses unknown fields
+// and data after the object.
 func decodeRequest(line []byte) (*api.Request, error) {
 	req := &api.Request{}
 	dec := json.NewDecoder(bytes.NewReader(line))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(req); err != nil {
 		return nil, fmt.Errorf("invalid request: %v", err)
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("invalid request: data after the object")
 	}
 	return req, nil
 }

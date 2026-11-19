@@ -97,6 +97,12 @@ const (
 	DRAMKey = "DRAM"
 )
 
+// MaxWait is the longest wait of a request.
+const MaxWait = time.Hour
+
+// maxRequestID is the longest requestId in bytes.
+const maxRequestID = 64
+
 // Request is one request line on a lease socket. Only Op is required.
 type Request struct {
 	Op        string `json:"op"`
@@ -158,9 +164,19 @@ func (r *Request) EffectiveMode() string {
 // together or have invalid values.
 func (r *Request) Validate() error {
 	if r.Wait != "" {
-		if d, err := time.ParseDuration(r.Wait); err != nil || d < 0 {
+		d, err := time.ParseDuration(r.Wait)
+		if err != nil || d < 0 {
 			return fmt.Errorf("invalid wait %q", r.Wait)
 		}
+		if d > MaxWait {
+			return fmt.Errorf("invalid wait %q (at most %s)", r.Wait, MaxWait)
+		}
+	}
+	if r.RequestID != "" && !portableName(r.RequestID, maxRequestID) {
+		return fmt.Errorf(`invalid requestId %q (1 to %d letters, digits, ".", "_" and "-")`, r.RequestID, maxRequestID)
+	}
+	if r.Lease != "" && !validLease(r.Lease) {
+		return fmt.Errorf("invalid lease %q (8 lower-case hex digits)", r.Lease)
 	}
 	switch r.Op {
 	case OpRequest:
@@ -237,13 +253,33 @@ func (r *Request) validateValues() error {
 // lease: 1 to 255 bytes of letters, digits, ".", "_" and "-", not "." and
 // not "..".
 func ValidName(name string) bool {
-	if name == "" || len(name) > 255 || name == "." || name == ".." {
+	return portableName(name, 255) && name != "." && name != ".."
+}
+
+// portableName returns true if s has 1 to maxLen bytes of letters, digits,
+// ".", "_" and "-".
+func portableName(s string, maxLen int) bool {
+	if s == "" || len(s) > maxLen {
 		return false
 	}
-	for i := 0; i < len(name); i++ {
-		switch c := name[i]; {
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
 		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '.', c == '_', c == '-':
 		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validLease returns true if id is 8 lower-case hex digits, the form of a
+// lease id.
+func validLease(id string) bool {
+	if len(id) != 8 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		if c := id[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 	}

@@ -149,6 +149,8 @@ func TestParseFlagsErrors(t *testing.T) {
 		{[]string{"--node-name", "n1", "extra"}, nil, "arguments not supported"},
 		{[]string{"--node-name", "n1"}, map[string]string{"KUBE_API_BURST": "many"}, "KUBE_API_BURST"},
 		{[]string{"--node-name", "n1"}, map[string]string{"LEASE_WAIT": "1"}, "LEASE_WAIT"},
+		{[]string{"--node-name", "n1", "--lease-wait", "61m"}, nil, "--lease-wait 1h1m0s: not between 0s and 1h0m0s"},
+		{[]string{"--node-name", "n1", "--lease-wait", "-1s"}, nil, "--lease-wait -1s: not between 0s and 1h0m0s"},
 		{[]string{"--node-name", "n1", "--lease-cli=", "--lease-cli-source", "/bin/cxl-request"}, nil, "--lease-cli"},
 		{[]string{"--no-such-flag"}, nil, "no-such-flag"},
 		{[]string{"--node-name", "n1", "--pool-driver-name", "1.pool.example.com"}, nil, "--pool-driver-name \"1.pool.example.com\": invalid vendor"},

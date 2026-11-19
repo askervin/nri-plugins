@@ -214,9 +214,12 @@ func TestAuthRejection(t *testing.T) {
 		{api.Request{Op: "request", Size: "lots"}, `invalid size "lots"`},
 		{api.Request{Op: "request", Size: "0"}, `invalid size "0"`},
 		{api.Request{Op: "lease"}, `unknown op "lease"`},
-		{api.Request{Op: "release", Lease: "nope"}, "no such lease of this pod"},
-		{api.Request{Op: "fd", Lease: "nope"}, "no such lease of this container"},
-		{api.Request{Op: "env", Lease: "nope"}, "no such lease of this pod"},
+		{api.Request{Op: "request", Size: "1Gi", Wait: "2h"}, `invalid wait "2h" (at most 1h0m0s)`},
+		{api.Request{Op: "request", Size: "1Gi", RequestID: strings.Repeat("r", 65)}, `invalid requestId "rrr`},
+		{api.Request{Op: "release", Lease: "nope"}, `invalid lease "nope" (8 lower-case hex digits)`},
+		{api.Request{Op: "release", Lease: "0000000f"}, "no such lease of this pod"},
+		{api.Request{Op: "fd", Lease: "0000000f"}, "no such lease of this container"},
+		{api.Request{Op: "env", Lease: "0000000f"}, "no such lease of this pod"},
 	} {
 		resp, _ := e.call(c.req)
 		if resp.Error != c.err && !strings.HasPrefix(resp.Error, c.err) {
@@ -226,6 +229,11 @@ func TestAuthRejection(t *testing.T) {
 	for _, line := range []string{`{"op":"request","kind":"memory","size":"1Gi"}`, `{"op":"request","exclusive":true}`, `[]`} {
 		resp, _ := e.callRaw(line)
 		wantErrText(t, errors.New(resp.Error), "invalid request: ")
+	}
+	for _, line := range []string{`{"op":"request","size":"1Gi"} {"op":"list"}`, `{"op":"request","size":"1Gi"}x`, `{"op":"request","size":"1Gi"}}`} {
+		if resp, _ := e.callRaw(line); resp.Error != "invalid request: data after the object" {
+			t.Errorf("%s: %+v", line, resp)
+		}
 	}
 	if resp, _ := e.callRaw(`{"op":"request","kind":"memory"}`); resp.Error != `invalid request: json: unknown field "kind"` {
 		t.Fatalf("old protocol: %+v", resp)

@@ -33,7 +33,7 @@ pool:
 leases:
   # Lend memory to running containers.
   enabled: true
-  # How long a lease request waits for Ready when it does not say.
+  # How long a lease request waits for Ready when it does not say, at most 1h.
   wait: 120s
   # Image of the companion pods of leases.
   companionImage: registry.k8s.io/pause:3.10

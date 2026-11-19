@@ -272,9 +272,9 @@ cxl-request help
 | `--name` | 1 to 255 letters, digits, `.`, `_`, `-`, not `.` or `..`; default the lease id | `fs`: the mount point `/run/cxl/fs/NAME`, unique among the leases of the lease claim |
 | `--size` | quantity, for example `512Mi` | at least this much: a capacity request on exclusive devices, a size selector on shared devices |
 | `--serial` | `0x` hex or decimal | this device |
-| `--wait` | Go duration; omitted: the plugin's `--lease-wait` (`120s`); `0s`: do not wait | `request`, `fd`, `env`: until Ready; `release`: until Released |
-| `--request-id` | string | the same id from the same container returns the same lease: repeat the whole command after a lost connection |
-| `--lease` | 8 hex digits | the lease of `release`, `fd` and `env` |
+| `--wait` | Go duration, at most `1h`; omitted: the plugin's `--lease-wait` (`120s`); `0s`: do not wait | `request`, `fd`, `env`: until Ready; `release`: until Released |
+| `--request-id` | 1 to 64 letters, digits, `.`, `_`, `-` | the same id from the same container returns the same lease: repeat the whole command after a lost connection |
+| `--lease` | 8 lower-case hex digits | the lease of `release`, `fd` and `env` |
 | `--all` | | `release`: every lease of the pod |
 | `--exec` | CMD ARG... | run CMD with the lease's environment, and the fd of a `dax` or `block` lease as fd 3 |
 
@@ -288,6 +288,12 @@ other clients the same way and answers `{"error": ...}`:
 
 | case | message |
 |:-----|:--------|
+| `--exec` with `release` or `list` | `--exec is for request, fd and env` |
+| `fd` without `--exec` | `fd needs --exec` |
+| `--wait` not a duration, or negative | `invalid wait "..."` |
+| `--wait` longer than `1h` | `invalid wait "..." (at most 1h0m0s)` |
+| `--request-id` not 1 to 64 bytes of letters, digits, `.`, `_` and `-` | `invalid requestId "..." (1 to 64 letters, digits, ".", "_" and "-")` |
+| `--lease` not 8 lower-case hex digits | `invalid lease "..." (8 lower-case hex digits)` |
 | `--source` other than `local`, `pool` | `invalid source "..." (local or pool)` |
 | `--mode` other than `numa`, `dax`, `fs`, `block` | `invalid mode "..." (numa, dax, fs or block)` |
 | `--access` other than `direct`, `cached` | `invalid access "..." (direct or cached)` |
@@ -303,11 +309,8 @@ other clients the same way and answers `{"error": ...}`:
 | `--read-only` without `--mode dax`, `--mode fs`, `--mode block` or `--shared` | `readOnly needs mode dax, fs or block` |
 | `request` without `--shared`, `--serial` and `--size` | `size or serial is required` |
 | `--serial` not a number | `invalid serial "..."` |
-| `--exec` with `release` or `list` | `--exec is for request, fd and env` |
-| `fd` without `--exec` | `fd needs --exec` |
 | `fd` or `env` without `--lease` | `fd needs --lease ID`, `env needs --lease ID` |
 | `release` with neither or both of `--lease` and `--all` | `release takes --lease ID or --all` |
-| `--wait` not a duration, or negative | `invalid wait "..."` |
 
 The plugin refuses further requests that only it can judge:
 
@@ -430,9 +433,10 @@ cxl-request release --all
 
 `SOCK_STREAM` unix socket, one JSON object per line in each direction; a
 connection may carry several requests. The fields of a request mirror the
-options of `cxl-request`; all are optional except `op`. Requests are
-decoded strictly: an unknown field is answered with
-`invalid request: json: unknown field "..."`, an unknown `op` with
+options of `cxl-request`; all are optional except `op`. The plugin
+answers an unknown field with `invalid request: json: unknown field "..."`.
+It answers data after the object with
+`invalid request: data after the object`. An unknown `op` gets
 `unknown op "..." (request, release, list, fd or env)`.
 
 | field | values |
@@ -448,9 +452,9 @@ decoded strictly: an unknown field is answered with
 | `name` | the mount point in `/run/cxl/fs`; mode `fs` only |
 | `size` | quantity string |
 | `serial` | string, `0x` hex or decimal |
-| `wait` | Go duration string |
-| `requestId` | string |
-| `lease` | lease id |
+| `wait` | Go duration string, at most `1h` |
+| `requestId` | 1 to 64 letters, digits, `.`, `_`, `-` |
+| `lease` | lease id: 8 lower-case hex digits |
 | `all` | bool |
 
 For example:

@@ -38,6 +38,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
+	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/version"
@@ -219,6 +220,9 @@ func parseFlags(fs *flag.FlagSet, args []string, lookupEnv func(string) (string,
 	}
 	if f.LeaseCLISource != "" && f.LeaseCLI == "" {
 		return nil, errors.New("--lease-cli-source needs --lease-cli")
+	}
+	if f.LeaseWait < 0 || f.LeaseWait > api.MaxWait {
+		return nil, fmt.Errorf("--lease-wait %s: not between 0s and %s", f.LeaseWait, api.MaxWait)
 	}
 	// The pool driver name is the vendor of its CDI kind.
 	if f.PoolDriverName != "" {

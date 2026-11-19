@@ -1886,7 +1886,7 @@ variable when it is set. Both `-flag` and `--flag` work.
 | `--leases` | `LEASES` | `true` | lend memory to running containers: publish the `lease` device, serve lease sockets, create companions (needs NRI) |
 | `--lease-cli` | `LEASE_CLI` | `/usr/local/bin/cxl-request` | host path of the static `cxl-request`, mounted into the containers of lease claims |
 | `--lease-cli-source` | `LEASE_CLI_SOURCE` | (empty) | at start, before any CDI spec is written, copy this file to `--lease-cli` (mode 0755, replaced atomically); the chart copies the `/bin/cxl-request` of the image to the host this way |
-| `--lease-wait` | `LEASE_WAIT` | `120s` | how long a lease request waits for Ready when it does not say |
+| `--lease-wait` | `LEASE_WAIT` | `120s` | how long a lease request waits for Ready when it does not say; at most `1h` |
 | `--lease-companion-image` | `LEASE_COMPANION_IMAGE` | `registry.k8s.io/pause:3.10` | image of the companion pods of leases |
 | `--lease-max-connections` | `LEASE_MAX_CONNECTIONS` | `64` | open connections of the lease socket of one lease claim; one more is closed at once |
 | `--lease-idle-timeout` | `LEASE_IDLE_TIMEOUT` | `10m0s` | how long a connection of a lease socket may stay without a request before the plugin closes it |
