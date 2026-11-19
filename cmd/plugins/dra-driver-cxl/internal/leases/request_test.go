@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -380,6 +381,33 @@ func TestCompanionClaims(t *testing.T) {
 	serial := func(driver, serial string) string {
 		return `device.attributes["` + driver + `"].serial == "` + serial + `"`
 	}
+	// the claim and the pod of every companion: owned by the requester
+	// pod, the pod pinned to the node
+	wantLabels := map[string]string{"cxl.nri.io/lease": "x", "cxl.nri.io/requester-uid": envPodUID, "cxl.nri.io/node": envNode}
+	wantAnnotations := map[string]string{"cxl.nri.io/requester": "demo/borrower/app"}
+	owner := metav1.OwnerReference{APIVersion: "v1", Kind: "Pod", Name: envPod, UID: envPodUID}
+	claimOwner := owner
+	claimOwner.Controller = ptr(true)
+	res := corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("16Mi")}
+	wantPodSpec := corev1.PodSpec{
+		Affinity: &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+			NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchFields: []corev1.NodeSelectorRequirement{{Key: "metadata.name", Operator: corev1.NodeSelectorOpIn, Values: []string{envNode}}}}},
+		}}},
+		Tolerations:                   []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
+		RestartPolicy:                 corev1.RestartPolicyAlways,
+		AutomountServiceAccountToken:  ptr(false),
+		EnableServiceLinks:            ptr(false),
+		TerminationGracePeriodSeconds: ptr(int64(1)),
+		SecurityContext: &corev1.PodSecurityContext{RunAsNonRoot: ptr(true), RunAsUser: ptr(int64(65535)), RunAsGroup: ptr(int64(65535)),
+			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
+		ResourceClaims: []corev1.PodResourceClaim{{Name: "lease", ResourceClaimName: ptr("cxl-lease-x")}},
+		Containers: []corev1.Container{{
+			Name: "pause", Image: "registry.k8s.io/pause:3.10",
+			Resources: corev1.ResourceRequirements{Requests: res, Limits: res},
+			SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: ptr(false), ReadOnlyRootFilesystem: ptr(true),
+				Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}},
+		}},
+	}
 	for _, tc := range []struct {
 		name    string
 		req     api.Request
@@ -636,7 +664,7 @@ func TestCompanionClaims(t *testing.T) {
 		tc.req.Op = api.OpRequest
 		mustOK(t, tc.req.Validate())
 		mustOK(t, e.b.requestOptions(&l.Asked, &tc.req))
-		claim, _, err := e.b.companionObjects(l)
+		claim, cpod, err := e.b.companionObjects(l)
 		mustOK(t, err)
 		if got := claim.Spec.Devices.Requests; len(got) != 1 || !reflect.DeepEqual(got[0], tc.want) {
 			data, _ := json.Marshal(got)
@@ -645,9 +673,17 @@ func TestCompanionClaims(t *testing.T) {
 		if got := companionConfigsOf(claim); !reflect.DeepEqual(got, tc.configs) {
 			t.Errorf("%s: configs\n%+v\nexpected\n%+v", tc.name, got, tc.configs)
 		}
-		wantLabels := map[string]string{"cxl.nri.io/lease": "x", "cxl.nri.io/requester-uid": envPodUID, "cxl.nri.io/node": envNode}
-		if !reflect.DeepEqual(claim.Labels, wantLabels) {
-			t.Errorf("%s: labels %v", tc.name, claim.Labels)
+		if claim.Name != "cxl-lease-x" || claim.Namespace != envNS || !reflect.DeepEqual(claim.Labels, wantLabels) ||
+			!reflect.DeepEqual(claim.Annotations, wantAnnotations) || !reflect.DeepEqual(claim.OwnerReferences, []metav1.OwnerReference{claimOwner}) {
+			t.Errorf("%s: claim %s/%s labels %v annotations %v owners %+v", tc.name, claim.Namespace, claim.Name, claim.Labels, claim.Annotations, claim.OwnerReferences)
+		}
+		if cpod.Name != claim.Name || cpod.Namespace != envNS || !reflect.DeepEqual(cpod.Labels, wantLabels) ||
+			!reflect.DeepEqual(cpod.Annotations, wantAnnotations) || !reflect.DeepEqual(cpod.OwnerReferences, []metav1.OwnerReference{owner}) {
+			t.Errorf("%s: pod %s/%s labels %v annotations %v owners %+v", tc.name, cpod.Namespace, cpod.Name, cpod.Labels, cpod.Annotations, cpod.OwnerReferences)
+		}
+		if !reflect.DeepEqual(cpod.Spec, wantPodSpec) {
+			data, _ := json.Marshal(cpod.Spec)
+			t.Errorf("%s: pod spec %s", tc.name, data)
 		}
 	}
 	// pool memory without the pool driver

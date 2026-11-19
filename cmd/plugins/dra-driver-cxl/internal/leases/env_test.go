@@ -36,7 +36,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -67,8 +66,6 @@ const (
 	envCtr    = "app"
 	// envLeaseClaim is the uid of the lease claim of the requester pod.
 	envLeaseClaim = "lc1"
-	// envPool is the DRA pool of the pool devices.
-	envPool = "fake-cxl-pool"
 
 	// serials of the local memdevs: sliced (1 GiB of RAM), shared (1 GiB
 	// of RAM) and persistent (512 MiB).
@@ -79,13 +76,6 @@ const (
 	serialPoolX = 0xc1ee0001
 	serialPoolS = 0xc1ae0001
 	serialPoolP = 0xc1af0001
-
-	// the status data of the pool devices
-	poolExclusiveData = `{"serial":"0xc1ee0001","shared":false,"size":268435456,"host":"n1"}`
-	poolSharedData    = `{"serial":"0xc1ae0001","shared":true,"size":268435456}`
-	poolPmemData      = `{"serial":"0xc1af0001","shared":true,"size":536870912,"persistent":true}`
-	poolWriterData    = `{"serial":"0xc1af0001","shared":true,"size":536870912,"persistent":true,"exclusive":true}`
-	poolPmemRWData    = `{"serial":"0xc1af0001","shared":true,"size":536870912,"persistent":true,"singleHost":true}`
 
 	// pmemBytes are the bytes of the fsdax namespace of 512 MiB of
 	// persistent memory of the fake.
@@ -137,8 +127,6 @@ type leaseEnv struct {
 	newState    bool
 	afterCommit func()
 	failing     atomic.Bool
-	// pmem is the block device of the persistent device formatted last.
-	pmem string
 
 	mu sync.Mutex
 	// prepared are the drivers that prepared the companion claims, by
@@ -354,14 +342,6 @@ func (e *leaseEnv) isShared(serial uint64) bool {
 	return e.shared[serial]
 }
 
-// setShared configures the local memdev with the serial shared.
-func (e *leaseEnv) setShared(serial uint64) {
-	e.mu.Lock()
-	e.shared[serial] = true
-	e.mu.Unlock()
-	e.rescan()
-}
-
 // publishConfig returns the configuration of the scans.
 func (e *leaseEnv) publishConfig() dra.PublishConfig {
 	e.mu.Lock()
@@ -401,17 +381,6 @@ func (e *leaseEnv) revoke(ctx context.Context, ref state.GrantRef, lend state.Gr
 	return p.Lender().RevokeGrant(ctx, lend, ref.Claim)
 }
 
-// check fails the test on a violation of the invariants of the records and
-// the kernel now (Engine.Check, with state.Check).
-func (e *leaseEnv) check(what string) {
-	e.t.Helper()
-	snap, err := e.eng.Observe(context.Background())
-	mustOK(e.t, err)
-	for _, v := range e.eng.Check(snap, []state.Source{state.SourcePool, state.SourceLocal}, nil) {
-		e.t.Errorf("%s: %s", what, v)
-	}
-}
-
 // unprepareDeleted is the fake client's reactor of a deleted claim: a
 // prepared companion claim is unprepared by its plugin first, and kept
 // while that fails.
@@ -435,41 +404,6 @@ func (e *leaseEnv) unprepareDeleted(a k8stesting.Action) (bool, runtime.Object, 
 	delete(e.prepared, name)
 	e.mu.Unlock()
 	return false, nil, nil
-}
-
-// prepare prepares a companion claim through the plugin as kubelet does and
-// returns the result; a prepared claim is unprepared by the fake client
-// when it is deleted.
-func (e *leaseEnv) prepare(p *dra.Plugin, claim *resourcev1.ResourceClaim) kubeletplugin.PrepareResult {
-	e.t.Helper()
-	res, err := p.PrepareResourceClaims(context.Background(), []*resourcev1.ResourceClaim{claim})
-	mustOK(e.t, err)
-	r := res[claim.UID]
-	if r.Err == nil {
-		e.mu.Lock()
-		e.prepared[claim.Name] = p.Name()
-		e.mu.Unlock()
-	}
-	e.check(p.Name() + ": prepared " + claim.Name)
-	return r
-}
-
-// unprepare unprepares a claim through the plugin as kubelet does.
-func (e *leaseEnv) unprepare(p *dra.Plugin, uid string) error {
-	e.t.Helper()
-	res, err := p.UnprepareResourceClaims(context.Background(), []kubeletplugin.NamespacedObject{{UID: types.UID(uid)}})
-	mustOK(e.t, err)
-	if res[types.UID(uid)] == nil {
-		e.mu.Lock()
-		for name, driver := range e.prepared {
-			if driver == p.Name() && "uid-"+name == uid {
-				delete(e.prepared, name)
-			}
-		}
-		e.mu.Unlock()
-	}
-	e.check(p.Name() + ": unprepared " + uid)
-	return res[types.UID(uid)]
 }
 
 // openClaim opens the env's lease claim.
@@ -564,23 +498,6 @@ func (e *leaseEnv) async(req api.Request) chan api.Response {
 	return ch
 }
 
-// callFd runs call in the background and returns a channel of its
-// response with its fd.
-func (e *leaseEnv) callFd(req api.Request) chan fdResponse {
-	ch := make(chan fdResponse, 1)
-	go func() {
-		r, fd := e.call(req)
-		ch <- fdResponse{r, fd}
-	}()
-	return ch
-}
-
-// fdResponse is a response with its fd (-1 for none).
-type fdResponse struct {
-	resp api.Response
-	fd   int
-}
-
 // waitClaim waits for the companion claim and pod of the name and returns
 // the claim.
 func (e *leaseEnv) waitClaim(name string) *resourcev1.ResourceClaim {
@@ -612,20 +529,6 @@ func (e *leaseEnv) wantGone(name string) {
 	if !apierrors.IsNotFound(err) {
 		e.t.Fatalf("companion claim %s still exists (%v)", name, err)
 	}
-}
-
-// waitGoneDir waits until the directory is removed.
-func (e *leaseEnv) waitGoneDir(dir string) {
-	e.t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	_, err := os.Stat(dir)
-	e.t.Fatalf("directory %s left: %v", dir, err)
 }
 
 // lease returns a copy of the lease record of the store, nil for none.
@@ -680,21 +583,6 @@ func (e *leaseEnv) waitState(id string, want state.LeaseState) {
 	e.t.Fatalf("lease %s not %s: %+v", id, want, e.lease(id))
 }
 
-// wantReleaseAll releases all leases of the pod and checks that the n
-// leases are gone.
-func (e *leaseEnv) wantReleaseAll(n int) {
-	e.t.Helper()
-	rel, _ := e.call(api.Request{Op: api.OpRelease, All: true})
-	if rel.Leases == nil || len(*rel.Leases) != n {
-		e.t.Fatalf("release all %+v", rel)
-	}
-	for _, l := range *rel.Leases {
-		if l.State != api.StateReleased {
-			e.t.Fatalf("release all: %+v", l)
-		}
-	}
-}
-
 // companionClaim returns the companion claim of the lease id as the broker
 // creates it: name, namespace, label and owner.
 func companionClaim(id string) *resourcev1.ResourceClaim {
@@ -705,120 +593,6 @@ func companionClaim(id string) *resourcev1.ResourceClaim {
 		Labels:          map[string]string{device.LeaseLabel: id},
 		OwnerReferences: []metav1.OwnerReference{{APIVersion: "v1", Kind: "Pod", Name: envPod, UID: envPodUID, Controller: ptr(true)}},
 	}}
-}
-
-// allocatedPool returns a companion claim as the scheduler and the pool
-// controller leave it: allocated the pool device dev, the configs copied
-// from the spec, the device data in the status.
-func allocatedPool(c *resourcev1.ResourceClaim, dev, data string) *resourcev1.ResourceClaim {
-	c = c.DeepCopy()
-	c.UID = types.UID("uid-" + c.Name)
-	request := companionClaimRef
-	if len(c.Spec.Devices.Requests) > 0 && len(c.Spec.Devices.Requests[0].FirstAvailable) > 0 {
-		request += "/" + api.SourcePool
-	}
-	c.Status.Allocation = &resourcev1.AllocationResult{Devices: resourcev1.DeviceAllocationResult{
-		Results: []resourcev1.DeviceRequestAllocationResult{{Request: request, Driver: device.PoolDriverName, Pool: envPool, Device: dev,
-			ConsumedCapacity: poolConsumed(data)}},
-		Config: allocationConfigs(c, request),
-	}}
-	c.Status.Devices = []resourcev1.AllocatedDeviceStatus{{Driver: device.PoolDriverName, Pool: envPool, Device: dev,
-		Data: &runtime.RawExtension{Raw: []byte(data)}}}
-	return c
-}
-
-// allocatedLocal returns a companion claim as the scheduler leaves it when
-// it allocated the local memdev dev to its request: the configs of the
-// request copied from the spec, the capacity of the request consumed.
-func allocatedLocal(c *resourcev1.ResourceClaim, dev string) *resourcev1.ResourceClaim {
-	c = c.DeepCopy()
-	c.UID = types.UID("uid-" + c.Name)
-	request, capacity := companionClaimRef, (*resourcev1.CapacityRequirements)(nil)
-	if r := c.Spec.Devices.Requests[0]; r.Exactly != nil {
-		capacity = r.Exactly.Capacity
-	} else {
-		request += "/" + api.SourceLocal
-		capacity = r.FirstAvailable[0].Capacity
-	}
-	result := resourcev1.DeviceRequestAllocationResult{Request: request, Driver: device.DriverName, Pool: envNode, Device: dev}
-	if capacity != nil {
-		result.ConsumedCapacity = maps.Clone(capacity.Requests)
-	}
-	c.Status.Allocation = &resourcev1.AllocationResult{Devices: resourcev1.DeviceAllocationResult{
-		Results: []resourcev1.DeviceRequestAllocationResult{result},
-		Config:  allocationConfigs(c, request),
-	}}
-	return c
-}
-
-// allocationConfigs returns the configs of the spec of a claim that apply
-// to the request, as the allocation copies them.
-func allocationConfigs(c *resourcev1.ResourceClaim, request string) []resourcev1.DeviceAllocationConfiguration {
-	var cfgs []resourcev1.DeviceAllocationConfiguration
-	for _, sc := range c.Spec.Devices.Config {
-		if len(sc.Requests) == 0 || slices.Contains(sc.Requests, request) {
-			cfgs = append(cfgs, resourcev1.DeviceAllocationConfiguration{Source: resourcev1.AllocationConfigSourceClaim,
-				Requests: sc.Requests, DeviceConfiguration: sc.DeviceConfiguration})
-		}
-	}
-	return cfgs
-}
-
-// poolConsumed returns the consumed capacity of an allocation result of a
-// pool device with the status data: of a shared device all of its shares
-// (exclusive) or one, nil otherwise.
-func poolConsumed(data string) map[resourcev1.QualifiedName]resource.Quantity {
-	var d struct{ Shared, Exclusive bool }
-	if err := json.Unmarshal([]byte(data), &d); err != nil || !d.Shared {
-		return nil
-	}
-	if d.Exclusive {
-		return map[resourcev1.QualifiedName]resource.Quantity{device.CapacityShares: *resource.NewQuantity(device.SharesUnlimited, resource.DecimalSI)}
-	}
-	return map[resourcev1.QualifiedName]resource.Quantity{device.CapacityShares: resource.MustParse("1")}
-}
-
-// formatPmem makes the fsdax namespace of the persistent memdev with the
-// serial and a filesystem of the type on it ("": none), as a writer on
-// another host leaves it (no region), and returns its block device.
-func (e *leaseEnv) formatPmem(serial uint64, typ string) string {
-	e.t.Helper()
-	k := e.k.Kernel()
-	memdev := e.k.Memdev(serial)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	d, err := k.RootDecoder(memdev, kernel.RegionPmem)
-	mustOK(e.t, err)
-	region, err := k.CreateRegion(ctx, kernel.CreateRegionRequest{Memdev: memdev, Decoder: d, Type: kernel.RegionPmem})
-	mustOK(e.t, err)
-	nd, err := k.WaitNdRegion(ctx, region)
-	mustOK(e.t, err)
-	ns, err := k.CreateFsdaxNamespace(ctx, nd, "")
-	mustOK(e.t, err)
-	if typ != "" {
-		e.k.SetImage(ns.BlockDevice, fake.FsImage(typ))
-	}
-	mustOK(e.t, k.ReleaseRegion(ctx, region))
-	e.pmem = ns.BlockDevice
-	return ns.BlockDevice
-}
-
-// mounted returns the mount at target, nil if there is none.
-func (e *leaseEnv) mounted(target string) *kernel.MountInfo {
-	mounts, err := e.k.Kernel().Mounts()
-	mustOK(e.t, err)
-	for i := range mounts {
-		if mounts[i].Target == target {
-			return &mounts[i]
-		}
-	}
-	return nil
-}
-
-// nodeMount returns the node mount of the persistent pool device with the
-// serial and the access.
-func (e *leaseEnv) nodeMount(serial uint64, access string) string {
-	return filepath.Join(e.poolDir, "mounts", fmt.Sprintf("%x-%s", serial, access))
 }
 
 // cdiSpec returns the CDI spec of the name on disk, nil if there is none.
@@ -832,78 +606,6 @@ func (e *leaseEnv) cdiSpec(name string) *cdiSpecs.Spec {
 	spec := &cdiSpecs.Spec{}
 	mustOK(e.t, json.Unmarshal(data, spec))
 	return spec
-}
-
-// wantNoCDIDevices fails the test when a prepared companion claim of one
-// device has a CDI device, or the CDI spec of a driver has a device of a
-// claim.
-func (e *leaseEnv) wantNoCDIDevices(r kubeletplugin.PrepareResult) {
-	e.t.Helper()
-	if len(r.Devices) != 1 || len(r.Devices[0].CDIDeviceIDs) != 0 {
-		e.t.Fatalf("CDI devices of a companion claim: %+v", r.Devices)
-	}
-	for _, name := range []string{device.ClaimsCDISpecName, device.PoolCDISpecName} {
-		if spec := e.cdiSpec(name); spec != nil && slices.ContainsFunc(spec.Devices, func(d cdiSpecs.Device) bool {
-			return strings.HasPrefix(d.Name, "claim-")
-		}) {
-			e.t.Fatalf("CDI spec %s of a companion claim: %+v", name, spec.Devices)
-		}
-	}
-}
-
-// wantClean fails the test unless the drivers hold nothing: no preparation,
-// grant, memdev or region record, no region in the kernel, no mount under
-// the plugin data directories, no violation of the mount rules of the
-// fake.
-func (e *leaseEnv) wantClean() {
-	e.t.Helper()
-	r := &e.st.Snapshot().Records
-	if len(r.Preparations)+len(r.Grants)+len(r.Memdevs)+len(r.Regions) > 0 {
-		e.t.Fatalf("records left: preparations %+v grants %+v memdevs %+v regions %+v", r.Preparations, r.Grants, r.Memdevs, r.Regions)
-	}
-	e.wantNoRegions()
-	mounts, err := e.k.Kernel().Mounts()
-	mustOK(e.t, err)
-	for _, m := range mounts {
-		if strings.HasPrefix(m.Target, e.dir+"/") || strings.HasPrefix(m.Target, e.poolDir+"/") {
-			e.t.Fatalf("mounted: %+v", m)
-		}
-	}
-	if v := e.k.Violations(); len(v) > 0 {
-		e.t.Fatalf("mount rules violated: %v", v)
-	}
-}
-
-// onlineBlocks returns the number of the memory blocks that are online.
-func (e *leaseEnv) onlineBlocks() int {
-	snap, err := e.k.Kernel().Observe(context.Background())
-	mustOK(e.t, err)
-	n := 0
-	for _, b := range snap.Blocks {
-		if b.State == kernel.BlockOnline {
-			n++
-		}
-	}
-	return n
-}
-
-// regions returns the regions of the kernel.
-func (e *leaseEnv) regions() []string {
-	snap, err := e.k.Kernel().Observe(context.Background())
-	mustOK(e.t, err)
-	var out []string
-	for _, ri := range snap.Regions {
-		out = append(out, ri.Name)
-	}
-	return out
-}
-
-// wantNoRegions fails the test when a region is left.
-func (e *leaseEnv) wantNoRegions() {
-	e.t.Helper()
-	if r := e.regions(); len(r) != 0 {
-		e.t.Fatalf("regions left: %v", r)
-	}
 }
 
 // sleep waits a poll interval of the tests.
@@ -1057,13 +759,6 @@ func (f *fakeContainers) lentNodes(podUID, container string) []int {
 	return slices.Sorted(maps.Keys(f.lent[podUID+"/"+container]))
 }
 
-// holders returns the holders of a node lent to a container.
-func (f *fakeContainers) holders(podUID, container string, node int) []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return slices.Clone(f.lent[podUID+"/"+container][node])
-}
-
 // callLog returns the calls so far.
 func (f *fakeContainers) callLog() string {
 	f.mu.Lock()
@@ -1103,11 +798,4 @@ func (f *fakeContainers) setOnRevoke(fn func(podUID, container string, node int,
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.onRevoke = fn
-}
-
-// setLendErr sets the error of the next lends.
-func (f *fakeContainers) setLendErr(err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.lendErr = err
 }

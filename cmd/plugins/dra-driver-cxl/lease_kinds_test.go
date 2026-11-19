@@ -12,13 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package leases
+package main
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -28,13 +27,13 @@ import (
 	"syscall"
 	"testing"
 
-	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
@@ -64,8 +63,8 @@ type fdEnv struct {
 func newFdEnv(t *testing.T, local []fake.MemdevSpec, pool ...fake.MemdevSpec) *fdEnv {
 	e := &fdEnv{leaseEnv: newLeaseEnv(t, local, pool...)}
 	tag := filepath.Join(t.TempDir(), "fake-device")
-	mustOK(t, os.WriteFile(tag, []byte("TAG"), 0o600))
-	e.opts = func(o *Options) {
+	noErr(t, os.WriteFile(tag, []byte("TAG"), 0o600))
+	e.opts = func(o *leases.Options) {
 		o.OpenDevice = func(path string, readOnly bool) (*os.File, error) {
 			access := "rw"
 			if readOnly {
@@ -121,9 +120,9 @@ func wantResponse(t *testing.T, got, want api.Response) {
 func (e *leaseEnv) requestPool(id string, req api.Request, dev, data string) (*resourcev1.ResourceClaim, fdResponse) {
 	e.t.Helper()
 	ch := e.callFd(req)
-	claim := e.waitClaim(CompanionName(id))
+	claim := e.waitClaim(leases.CompanionName(id))
 	r := e.prepare(e.pool, allocatedPool(claim, dev, data))
-	mustOK(e.t, r.Err)
+	noErr(e.t, r.Err)
 	e.wantNoCDIDevices(r)
 	return claim, <-ch
 }
@@ -134,9 +133,9 @@ func (e *leaseEnv) requestPool(id string, req api.Request, dev, data string) (*r
 func (e *leaseEnv) requestLocal(id string, req api.Request, serial uint64) (*resourcev1.ResourceClaim, fdResponse) {
 	e.t.Helper()
 	ch := e.callFd(req)
-	claim := e.waitClaim(CompanionName(id))
+	claim := e.waitClaim(leases.CompanionName(id))
 	r := e.prepare(e.local, allocatedLocal(claim, dra.MemdevDeviceName(serial)))
-	mustOK(e.t, r.Err)
+	noErr(e.t, r.Err)
 	e.wantNoCDIDevices(r)
 	return claim, <-ch
 }
@@ -150,7 +149,7 @@ func deviceConfigOf(t *testing.T, c *resourcev1.ResourceClaim, driver string) *c
 			continue
 		}
 		var mc config.MemoryConfig
-		mustOK(t, json.Unmarshal(cfg.Opaque.Parameters.Raw, &mc))
+		noErr(t, json.Unmarshal(cfg.Opaque.Parameters.Raw, &mc))
 		if mc.APIVersion != config.APIVersion || mc.Kind != config.Kind || mc.Container != nil || mc.Pool != nil || mc.Device == nil {
 			t.Fatalf("companion config of %s: %s", driver, cfg.Opaque.Parameters.Raw)
 		}
@@ -159,12 +158,11 @@ func deviceConfigOf(t *testing.T, c *resourcev1.ResourceClaim, driver string) *c
 	return nil
 }
 
-// A pool numa lease: the companion claim and pod exactly, the node lent at
-// the Prepare, the response, the requestId, list, env and fd; a started
+// A pool numa lease: the node lent at the Prepare, the response, the requestId, list, env and fd; a started
 // container gets the node again; the release revokes it, deletes the
 // companion, whose Unprepare releases the region.
 func TestPoolNumaLease(t *testing.T) {
-	e := newLeaseEnv(t, nil, fake.MemdevSpec{Serial: serialPoolX})
+	e := newLeaseEnv(t, nil, fake.MemdevSpec{Serial: poolSerial})
 	e.openClaim()
 	e.start()
 	ch := e.async(api.Request{Op: api.OpRequest, Source: "pool", Size: "256Mi", Wait: "5s", RequestID: "r1"})
@@ -172,60 +170,9 @@ func TestPoolNumaLease(t *testing.T) {
 	claim := e.waitClaim(name)
 	e.waitState("000000a1", state.LeasePending)
 
-	params := `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"numa"}}`
-	wantSpec := resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{
-		Requests: []resourcev1.DeviceRequest{{Name: "lease", Exactly: &resourcev1.ExactDeviceRequest{
-			DeviceClassName: "cxl-pool",
-			Capacity:        &resourcev1.CapacityRequirements{Requests: map[resourcev1.QualifiedName]resource.Quantity{"memory": resource.MustParse("256Mi")}},
-		}}},
-		Config: []resourcev1.DeviceClaimConfiguration{{DeviceConfiguration: resourcev1.DeviceConfiguration{Opaque: &resourcev1.OpaqueDeviceConfiguration{
-			Driver: "cxl-pool.nri.io", Parameters: runtime.RawExtension{Raw: []byte(params)},
-		}}}},
-	}}
-	if !reflect.DeepEqual(claim.Spec, wantSpec) {
-		got, _ := json.Marshal(claim.Spec)
-		t.Fatalf("claim spec:\n%s", got)
-	}
-	if want := []metav1.OwnerReference{{APIVersion: "v1", Kind: "Pod", Name: envPod, UID: envPodUID, Controller: ptr(true)}}; !reflect.DeepEqual(claim.OwnerReferences, want) {
-		t.Fatalf("claim owners %+v", claim.OwnerReferences)
-	}
-	wantLabels := map[string]string{"cxl.nri.io/lease": "000000a1", "cxl.nri.io/requester-uid": envPodUID, "cxl.nri.io/node": envNode}
-	if !reflect.DeepEqual(claim.Labels, wantLabels) || !reflect.DeepEqual(claim.Annotations, map[string]string{"cxl.nri.io/requester": "demo/borrower/app"}) {
-		t.Fatalf("claim labels %v, annotations %v", claim.Labels, claim.Annotations)
-	}
-	pod, err := e.client.CoreV1().Pods(envNS).Get(context.Background(), name, metav1.GetOptions{})
-	mustOK(t, err)
-	if !reflect.DeepEqual(pod.Labels, wantLabels) || !reflect.DeepEqual(pod.OwnerReferences, []metav1.OwnerReference{{APIVersion: "v1", Kind: "Pod", Name: envPod, UID: envPodUID}}) {
-		t.Fatalf("pod labels %v, owners %+v", pod.Labels, pod.OwnerReferences)
-	}
-	res := corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("16Mi")}
-	wantPodSpec := corev1.PodSpec{
-		Affinity: &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-			NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchFields: []corev1.NodeSelectorRequirement{{Key: "metadata.name", Operator: corev1.NodeSelectorOpIn, Values: []string{envNode}}}}},
-		}}},
-		Tolerations:                   []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
-		RestartPolicy:                 corev1.RestartPolicyAlways,
-		AutomountServiceAccountToken:  ptr(false),
-		EnableServiceLinks:            ptr(false),
-		TerminationGracePeriodSeconds: ptr(int64(1)),
-		SecurityContext: &corev1.PodSecurityContext{RunAsNonRoot: ptr(true), RunAsUser: ptr(int64(65535)), RunAsGroup: ptr(int64(65535)),
-			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
-		ResourceClaims: []corev1.PodResourceClaim{{Name: "lease", ResourceClaimName: ptr(name)}},
-		Containers: []corev1.Container{{
-			Name: "pause", Image: "registry.k8s.io/pause:3.10",
-			Resources: corev1.ResourceRequirements{Requests: res, Limits: res},
-			SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: ptr(false), ReadOnlyRootFilesystem: ptr(true),
-				Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}},
-		}},
-	}
-	if !reflect.DeepEqual(pod.Spec, wantPodSpec) {
-		got, _ := json.Marshal(pod.Spec)
-		t.Fatalf("pod spec:\n%s", got)
-	}
-
 	alloc := allocatedPool(claim, "pooled0", poolExclusiveData)
 	r := e.prepare(e.pool, alloc)
-	mustOK(t, r.Err)
+	noErr(t, r.Err)
 	if len(r.Devices) != 1 || len(r.Devices[0].CDIDeviceIDs) != 0 {
 		t.Fatalf("CDI devices of a companion claim: %+v", r.Devices)
 	}
@@ -282,15 +229,15 @@ func TestPoolNumaLease(t *testing.T) {
 	e.check("released")
 }
 
-// A pool dax lease: the memory stays offline as devdax, the fd of the dax
-// device goes with the response; a numa lease's claim has its device
-// section too.
+// A pool dax lease without a source: the scheduler took the pool
+// subrequest, the pool driver applies its own config only. The memory stays
+// offline as devdax, the fd of the dax device goes with the response, the
+// lease records the source.
 func TestPoolDaxLease(t *testing.T) {
-	e := newFdEnv(t, nil, fake.MemdevSpec{Serial: serialPoolX})
-	claim, r := e.requestPool("000000a1", api.Request{Op: api.OpRequest, Source: "pool", Size: "256Mi", Mode: "dax", Wait: "5s"}, "pooled0", poolExclusiveData)
-	ex := claim.Spec.Devices.Requests[0].Exactly
-	if size := ex.Capacity.Requests["memory"]; ex.DeviceClassName != device.ClassPool || size.String() != "256Mi" {
-		t.Fatalf("memory request %+v", ex)
+	e := newFdEnv(t, nil, fake.MemdevSpec{Serial: poolSerial})
+	claim, r := e.requestPool("000000a1", api.Request{Op: api.OpRequest, Size: "256Mi", Mode: "dax", Wait: "5s"}, "pooled0", poolExclusiveData)
+	if fr := claim.Spec.Devices.Requests[0]; fr.Exactly != nil || len(fr.FirstAvailable) != 2 {
+		t.Fatalf("local, then pool request %+v", fr)
 	}
 	if dc := deviceConfigOf(t, claim, device.PoolDriverName); dc == nil || dc.Mode != api.ModeDax || dc.IsReadOnly() {
 		t.Fatalf("companion device section %+v", dc)
@@ -309,7 +256,7 @@ func TestPoolDaxLease(t *testing.T) {
 	if calls := e.ctrs.callLog(); strings.Contains(calls, "lend") {
 		t.Fatalf("dax memory lent as a node:\n%s", calls)
 	}
-	if l := e.stored("000000a1"); l == nil || l.Lend != nil || l.Got == nil || l.Got.Dax != dax {
+	if l := e.stored("000000a1"); l == nil || l.Lend != nil || l.Got == nil || l.Got.Dax != dax || l.Got.Source != state.SourcePool || l.Asked.Source != "" {
 		t.Fatalf("stored lease %+v", l)
 	}
 	e.wantReleaseAll(1)
@@ -318,7 +265,9 @@ func TestPoolDaxLease(t *testing.T) {
 }
 
 // A share of a shared pool device: one share, mode dax, the fd again with
-// fd, none with env; nothing lent as a node.
+// fd, none with env; nothing lent as a node. Then the device taken whole,
+// read-only: no shares request, the fd opened read-only, also when it is
+// sent again.
 func TestPoolSharedLeaseFd(t *testing.T) {
 	e := newFdEnv(t, nil, fake.MemdevSpec{Serial: serialPoolS})
 	claim, r := e.requestPool("000000a1", api.Request{Op: api.OpRequest, Serial: "0xC1AE0001", Shared: true, Source: "pool"}, "shared0", poolSharedData)
@@ -359,13 +308,8 @@ func TestPoolSharedLeaseFd(t *testing.T) {
 	e.ctrs.setPeer(&requester)
 	e.wantReleaseAll(1)
 	e.wantGone("cxl-lease-000000a1")
-}
 
-// A shared pool device taken whole, read-only: no shares request, the fd
-// opened read-only, also when it is sent again.
-func TestExclusiveReadOnlySharedLease(t *testing.T) {
-	e := newFdEnv(t, nil, fake.MemdevSpec{Serial: serialPoolS})
-	claim, r := e.requestPool("000000a1", api.Request{Op: api.OpRequest, Serial: "0xc1ae0001", Mode: "dax", ReadOnly: true}, "shared0",
+	claim, r = e.requestPool("000000a2", api.Request{Op: api.OpRequest, Serial: "0xc1ae0001", Mode: "dax", ReadOnly: true}, "shared0",
 		`{"serial":"0xc1ae0001","shared":true,"size":268435456,"exclusive":true}`)
 	if ex := claim.Spec.Devices.Requests[0].Exactly; ex == nil || ex.DeviceClassName != "cxl-pool-shared" || ex.Capacity != nil {
 		t.Fatalf("exclusive request %+v", claim.Spec.Devices.Requests[0])
@@ -374,38 +318,14 @@ func TestExclusiveReadOnlySharedLease(t *testing.T) {
 		t.Fatalf("companion device section %+v", dc)
 	}
 	wantFd(t, r.fd)
-	dax := filepath.Join(e.k.DevRoot(), "dax0.0")
+	sharedEnv["CXL_C1AE0001_READONLY"] = "1"
 	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "pool", Mode: "dax", ReadOnly: true, Size: 268435456, Serial: "0xc1ae0001",
-		Dax: dax, Env: map[string]string{"CXL_C1AE0001_DAX": dax, "CXL_C1AE0001_MODE": "dax", "CXL_C1AE0001_READONLY": "1",
-			"CXL_C1AE0001_SERIAL": "0xc1ae0001", "CXL_C1AE0001_SHARED": "1", "CXL_C1AE0001_SIZE": "268435456"}})
-	again, fd := e.call(api.Request{Op: api.OpFd, Lease: r.resp.Lease})
+		Dax: dax, Env: sharedEnv})
+	resp, fd = e.call(api.Request{Op: api.OpFd, Lease: "000000a2"})
 	wantFd(t, fd)
-	wantResponse(t, again, r.resp)
-	if got := e.opens(); !slices.Equal(got, []string{dax + " ro", dax + " ro"}) {
+	wantResponse(t, resp, r.resp)
+	if got := e.opens(); !slices.Equal(got, []string{dax + " rw", dax + " rw", dax + " ro", dax + " ro"}) {
 		t.Fatalf("opens %v", got)
-	}
-	e.wantReleaseAll(1)
-}
-
-// A lease without a source, prepared from the pool: the scheduler took the
-// pool subrequest, the pool driver applies its own config only, the lease
-// records the source.
-func TestDefaultLeaseFromPool(t *testing.T) {
-	e := newFdEnv(t, nil, fake.MemdevSpec{Serial: serialPoolX})
-	claim, r := e.requestPool("000000a1", api.Request{Op: api.OpRequest, Size: "256Mi", Mode: "dax"}, "pooled0", poolExclusiveData)
-	if fr := claim.Spec.Devices.Requests[0]; fr.Exactly != nil || len(fr.FirstAvailable) != 2 {
-		t.Fatalf("local, then pool request %+v", fr)
-	}
-	wantFd(t, r.fd)
-	dax := filepath.Join(e.k.DevRoot(), "dax0.0")
-	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "pool", Mode: "dax", Size: 268435456, Serial: "0xc1ee0001", Dax: dax,
-		Env: map[string]string{"CXL_C1EE0001_DAX": dax, "CXL_C1EE0001_MODE": "dax", "CXL_C1EE0001_READONLY": "0", "CXL_C1EE0001_SERIAL": "0xc1ee0001",
-			"CXL_C1EE0001_SHARED": "0", "CXL_C1EE0001_SIZE": "268435456"}})
-	if got := e.k.DaxDriver("dax0.0"); got != "device_dax" {
-		t.Fatalf("dax driver %s", got)
-	}
-	if l := e.lease(r.resp.Lease); sourceOf(l) != state.SourcePool || l.Asked.Source != "" {
-		t.Fatalf("stored lease %+v", l)
 	}
 	e.wantReleaseAll(1)
 }
@@ -413,10 +333,10 @@ func TestDefaultLeaseFromPool(t *testing.T) {
 // A local numa lease: the node of the local slice lent by cxl.nri.io, lent
 // again by the reconcile, revoked by the release.
 func TestLocalNumaLease(t *testing.T) {
-	e := newLeaseEnv(t, []fake.MemdevSpec{{Serial: serialSliced, Ram: 1 << 30}})
+	e := newLeaseEnv(t, []fake.MemdevSpec{{Serial: localSerial, Ram: 1 << 30}})
 	e.openClaim()
 	e.start()
-	claim, r := e.requestLocal("000000a1", api.Request{Op: api.OpRequest, Size: "128Mi", Source: "local", Wait: "5s"}, serialSliced)
+	claim, r := e.requestLocal("000000a1", api.Request{Op: api.OpRequest, Size: "128Mi", Source: "local", Wait: "5s"}, localSerial)
 	if ex := claim.Spec.Devices.Requests[0].Exactly; ex == nil || ex.DeviceClassName != device.ClassLocal {
 		t.Fatalf("local request %+v", claim.Spec.Devices.Requests[0])
 	}
@@ -427,7 +347,7 @@ func TestLocalNumaLease(t *testing.T) {
 		t.Fatalf("lent %v", got)
 	}
 	e.ctrs.forget()
-	e.b.reconcile()
+	e.reconcile()
 	if got := e.ctrs.lentNodes(envPodUID, envCtr); !slices.Equal(got, []int{2}) {
 		t.Fatalf("lend not re-applied: %v", got)
 	}
@@ -442,16 +362,16 @@ func TestLocalNumaLease(t *testing.T) {
 // subrequest; the config of the pool driver applies to the pool
 // subrequest only; the response tells the source; the fd read-only.
 func TestLocalDaxLease(t *testing.T) {
-	e := newFdEnv(t, []fake.MemdevSpec{{Serial: serialSliced, Ram: 1 << 30}})
+	e := newFdEnv(t, []fake.MemdevSpec{{Serial: localSerial, Ram: 1 << 30}})
 	ch := e.callFd(api.Request{Op: api.OpRequest, Size: "128Mi", Mode: "dax", ReadOnly: true, Wait: "5s"})
 	claim := e.waitClaim("cxl-lease-000000a1")
 	if fr := claim.Spec.Devices.Requests[0]; fr.Exactly != nil || len(fr.FirstAvailable) != 2 {
 		t.Fatalf("local, then pool request %+v", fr)
 	}
-	c := allocatedLocal(claim, dra.MemdevDeviceName(serialSliced))
-	mustOK(t, config.CheckEntries(c, device.DriverName))
+	c := allocatedLocal(claim, dra.MemdevDeviceName(localSerial))
+	noErr(t, config.CheckEntries(c, device.DriverName))
 	res, err := config.Resolve(c, device.DriverName, "lease/local")
-	mustOK(t, err)
+	noErr(t, err)
 	if mode, err := res.Config.DeviceSection().MemdevMode(false); err != nil || mode != api.ModeDax || !res.Config.DeviceSection().IsReadOnly() {
 		t.Fatalf("MemoryConfig %s: mode %q %v", res.Config.Compact(), mode, err)
 	}
@@ -464,13 +384,13 @@ func TestLocalDaxLease(t *testing.T) {
 		Results: []resourcev1.DeviceRequestAllocationResult{{Request: "lease/pool", Driver: device.PoolDriverName, Pool: envPool, Device: "pooled0"}},
 		Config:  allocationConfigs(pc, "lease/pool"),
 	}}
-	mustOK(t, config.CheckEntries(pc, device.PoolDriverName))
+	noErr(t, config.CheckEntries(pc, device.PoolDriverName))
 	pres, err := config.Resolve(pc, device.PoolDriverName, "lease/pool")
-	mustOK(t, err)
+	noErr(t, err)
 	if got := pres.Config.Compact(); got != `{"device":{"mode":"dax","readOnly":true}}` {
 		t.Fatalf("pool MemoryConfig %s", got)
 	}
-	mustOK(t, e.prepare(e.local, c).Err)
+	noErr(t, e.prepare(e.local, c).Err)
 	r := <-ch
 	wantFd(t, r.fd)
 	dax := filepath.Join(e.k.DevRoot(), "dax0.0")
@@ -514,21 +434,16 @@ func TestLocalSharedLease(t *testing.T) {
 // Two leases of a container hold one NUMA node (a local device and a pool
 // device under one host bridge): releasing one keeps the node lent.
 func TestTwoLeasesOneNode(t *testing.T) {
-	e := brokerEnv(t)
+	e := newLeaseEnv(t, []fake.MemdevSpec{{Serial: localSerial, Ram: 1 << 30}}, fake.MemdevSpec{Serial: poolSerial})
 	e.openClaim()
 	e.start()
-	lender := dra.NewLender(device.DriverName)
-	lender.Set(e.ctrs, e.b)
-	var ids []string
-	for _, source := range []string{"local", "pool"} {
-		resp, _ := e.call(api.Request{Op: api.OpRequest, Size: "64Mi", Source: source, Wait: "0s"})
-		rec, err := lender.Check(resp.Lease, e.waitClaim(CompanionName(resp.Lease)))
-		mustOK(t, err)
-		devs := []state.DeviceInfo{preparedDev(serialSliced, 64<<20, api.ModeNUMA, 2)}
-		mustOK(t, lender.Lend(context.Background(), rec, devs))
-		lender.Prepared(resp.Lease, state.Source(source), devs)
-		e.waitState(resp.Lease, state.LeaseReady)
-		ids = append(ids, resp.Lease)
+	_, local := e.requestLocal("000000a1", api.Request{Op: api.OpRequest, Size: "128Mi", Source: "local", Wait: "5s"}, localSerial)
+	_, pool := e.requestPool("000000a2", api.Request{Op: api.OpRequest, Size: "256Mi", Source: "pool", Wait: "5s"}, "pooled0", poolExclusiveData)
+	ids := []string{local.resp.Lease, pool.resp.Lease}
+	for _, r := range []fdResponse{local, pool} {
+		if r.resp.State != api.StateReady || r.resp.Node == nil || *r.resp.Node != 2 {
+			t.Fatalf("response %+v", r.resp)
+		}
 	}
 	if got := e.ctrs.holders(envPodUID, envCtr, 2); !slices.Equal(got, ids) {
 		t.Fatalf("holders of node 2: %v, expected %v", got, ids)
@@ -537,7 +452,7 @@ func TestTwoLeasesOneNode(t *testing.T) {
 		t.Fatalf("lends %v", got)
 	}
 	e.ctrs.forget()
-	e.b.reconcile()
+	e.reconcile()
 	if got := e.ctrs.holders(envPodUID, envCtr, 2); len(got) != 2 || !slices.Contains(got, ids[0]) || !slices.Contains(got, ids[1]) {
 		t.Fatalf("holders after reconcile: %v", got)
 	}
@@ -545,7 +460,7 @@ func TestTwoLeasesOneNode(t *testing.T) {
 	if rel.State != api.StateReleased {
 		t.Fatalf("release %+v", rel)
 	}
-	mustOK(t, lender.Revoke(context.Background(), &lend.Lend{Lease: ids[0], Pod: requester.Pod, Container: envCtr, NumaNodes: []int{2}}, "ns/c"))
+	e.wantGone(leases.CompanionName(ids[0]))
 	if got := e.ctrs.holders(envPodUID, envCtr, 2); !slices.Equal(got, ids[1:]) {
 		t.Fatalf("holders after the first release: %v", got)
 	}
@@ -641,14 +556,14 @@ func TestFsLease(t *testing.T) {
 			t.Errorf("name %s: %+v, expected %q", c.name, r, c.err)
 		}
 	}
-	if l, _ := e.client.ResourceV1().ResourceClaims(envNS).List(ctx, metav1.ListOptions{}); e.numLeases() != 2 || len(l.Items) != 3 {
+	if l, _ := e.client.ResourceV1().ResourceClaims(testNS).List(ctx, metav1.ListOptions{}); e.numLeases() != 2 || len(l.Items) != 3 {
 		t.Fatalf("%d leases, %d claims after refused requests", e.numLeases(), len(l.Items))
 	}
 
 	e.restart()
 	e.start()
-	if l := e.lease("000000a2"); l == nil || l.Asked.Mode != state.ModeFs || accessOf(l) != state.AccessCached || l.Asked.Name != "models" ||
-		got(l).Path != "/run/cxl/fs/models" || !l.Asked.ReadOnly {
+	if l := e.lease("000000a2"); l == nil || l.Got == nil || l.Asked.Mode != state.ModeFs || l.Got.Access != state.AccessCached || l.Asked.Name != "models" ||
+		l.Got.Path != "/run/cxl/fs/models" || !l.Asked.ReadOnly {
 		t.Fatalf("lease after a restart %+v", l)
 	}
 	if lc := e.claim(envLeaseClaim); lc == nil {
@@ -672,19 +587,19 @@ func TestFsLease(t *testing.T) {
 	if e.mounted(bind) == nil {
 		t.Fatal("busy bind unmounted")
 	}
-	if _, err := e.client.ResourceV1().ResourceClaims(envNS).Get(ctx, CompanionName("000000a1"), metav1.GetOptions{}); err != nil {
+	if _, err := e.client.ResourceV1().ResourceClaims(testNS).Get(ctx, leases.CompanionName("000000a1"), metav1.GetOptions{}); err != nil {
 		t.Fatalf("companion claim of a busy bind: %v", err)
 	}
 	e.k.SetBusy(bind, false)
 	e.waitState("000000a1", state.LeaseNone)
-	e.wantGone(CompanionName("000000a1"))
+	e.wantGone(leases.CompanionName("000000a1"))
 	if _, err := os.Stat(bind); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("bind directory left: %v", err)
 	}
 
 	// the pod ends with a busy bind
 	e.k.SetBusy(models, true)
-	mustOK(t, e.b.CloseClaim(ctx, envLeaseClaim))
+	noErr(t, e.b.CloseClaim(ctx, envLeaseClaim))
 	if _, err := os.Stat(models); err != nil {
 		t.Fatalf("bind directory removed while mounted: %v", err)
 	}
@@ -694,8 +609,8 @@ func TestFsLease(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(filepath.Dir(e.sock()), "fs")); err != nil {
 		t.Fatalf("mount point of /run/cxl/fs removed while a bind is in lease-fs: %v", err)
 	}
-	e.b.reconcile()
-	if l := e.lease("000000a2"); l == nil || !releasingState(l.State) {
+	e.reconcile()
+	if l := e.lease("000000a2"); l == nil || (l.State != state.LeaseReleasing && l.State != state.LeaseReleasingBusy) {
 		t.Fatalf("lease %+v", l)
 	}
 	if _, err := os.Stat(models); err != nil {
@@ -737,12 +652,12 @@ func TestFsLeaseReadWrite(t *testing.T) {
 		"000000a1": `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"fs","readOnly":false}}`,
 		"000000a2": `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"fs","readOnly":true}}`,
 	} {
-		claim := e.waitClaim(CompanionName(id))
+		claim := e.waitClaim(leases.CompanionName(id))
 		if got := string(claim.Spec.Devices.Config[0].Opaque.Parameters.Raw); got != want {
 			t.Errorf("%s: config %s", id, got)
 		}
 	}
-	if l := e.stored("000000a1"); l == nil || !l.Asked.ReadWrite || l.Asked.ReadOnly || fsTypeOf(l) != "ext4" || readOnly(l) {
+	if l := e.stored("000000a1"); l == nil || l.Got == nil || !l.Asked.ReadWrite || l.Asked.ReadOnly || l.Got.FsType != "ext4" {
 		t.Fatalf("lease %+v", l)
 	}
 	if v := e.k.Violations(); len(v) > 0 {
@@ -787,14 +702,14 @@ func TestFsLeaseCloseRace(t *testing.T) {
 	bind := filepath.Join(fsDir, "models")
 	closed := false
 	hooks := &closingHooks{Broker: e.b, close: func() {
-		mustOK(t, e.b.CloseClaim(context.Background(), envLeaseClaim))
+		noErr(t, e.b.CloseClaim(context.Background(), envLeaseClaim))
 		_, err := os.Stat(fsDir)
 		closed = errors.Is(err, os.ErrNotExist)
 	}}
 	e.pool.Lender().Set(e.ctrs, hooks)
 	ch := e.async(api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "fs", Name: "models", Wait: "5s"})
-	claim := e.waitClaim(CompanionName("000000a1"))
-	mustOK(t, e.prepare(e.pool, allocatedPool(claim, "llm0", poolPmemData)).Err)
+	claim := e.waitClaim(leases.CompanionName("000000a1"))
+	noErr(t, e.prepare(e.pool, allocatedPool(claim, "llm0", poolPmemData)).Err)
 	if !closed {
 		t.Fatal("CloseClaim did not remove the lease-fs directory")
 	}
@@ -805,13 +720,13 @@ func TestFsLeaseCloseRace(t *testing.T) {
 		t.Fatal("no bind in the directory made again")
 	}
 	e.waitState("000000a1", state.LeaseNone)
-	e.b.reconcile()
+	e.reconcile()
 	if _, err := os.Stat(bind); err != nil {
 		t.Fatalf("bind directory swept while mounted: %v", err)
 	}
 	// kubelet unprepares the companion
-	mustOK(t, e.unprepare(e.pool, "uid-"+CompanionName("000000a1")))
-	e.b.reconcile()
+	noErr(t, e.unprepare(e.pool, "uid-"+leases.CompanionName("000000a1")))
+	e.reconcile()
 	for _, d := range []string{fsDir, filepath.Dir(e.sock())} {
 		if _, err := os.Stat(d); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("directory %s left: %v", d, err)
@@ -823,7 +738,7 @@ func TestFsLeaseCloseRace(t *testing.T) {
 // closingHooks close the lease claim when the companion claim of one of
 // its leases is being prepared, right after OnLending.
 type closingHooks struct {
-	*Broker
+	*leases.Broker
 	close func()
 }
 
@@ -891,11 +806,11 @@ func TestBlockLease(t *testing.T) {
 	}
 	e.restart()
 	e.start()
-	if l := e.lease("000000a1"); l == nil || l.Asked.Mode != state.ModeBlock || got(l).Block != pmem || l.Asked.ReadOnly {
+	if l := e.lease("000000a1"); l == nil || l.Got == nil || l.Asked.Mode != state.ModeBlock || l.Got.Block != pmem || l.Asked.ReadOnly {
 		t.Fatalf("lease after a restart %+v", l)
 	}
 	e.wantReleaseAll(1)
-	e.wantGone(CompanionName("000000a1"))
+	e.wantGone(leases.CompanionName("000000a1"))
 	e.wantNoRegions()
 
 	_, r = e.requestPool("000000a1", api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "block", Wait: "5s"},
@@ -922,32 +837,16 @@ func TestBlockLease(t *testing.T) {
 // error, and kept.
 func TestBlockLeaseOpenError(t *testing.T) {
 	e := newBlockEnv(t)
-	e.opts = func(o *Options) {
+	e.opts = func(o *leases.Options) {
 		o.OpenDevice = func(string, bool) (*os.File, error) { return nil, syscall.ENXIO }
 	}
 	e.restart()
 	e.start()
 	_, r := e.requestPool("000000a1", api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Mode: "block", Wait: "5s"}, "llm0", poolWriterData)
 	l := e.stored("000000a1")
-	if r.fd >= 0 || l == nil || r.resp.Error != "opening "+got(l).Block+": no such device or address" || r.resp.State != api.StateReady {
+	if r.fd >= 0 || l == nil || l.Got == nil || r.resp.Error != "opening "+l.Got.Block+": no such device or address" || r.resp.State != api.StateReady {
 		t.Fatalf("response %+v fd %d", r.resp, r.fd)
 	}
 	e.wantReleaseAll(1)
 	e.wantNoRegions()
-}
-
-// A companion claim of a lease that the broker does not have is refused by
-// the pool driver before any device is touched.
-func TestCompanionRefused(t *testing.T) {
-	e := newLeaseEnv(t, nil, fake.MemdevSpec{Serial: serialPoolX})
-	before := e.k.Commands()
-	c := allocatedPool(companionClaim("abc"), "pooled0", poolExclusiveData)
-	wantErrText(t, e.prepare(e.pool, c).Err, "lending to running containers is disabled (--leases=false)")
-	e.startWith(nil)
-	wantErrText(t, e.prepare(e.pool, c).Err, "lending unavailable: NRI not connected")
-	e.pool.Lender().Set(e.ctrs, e.b)
-	wantErrText(t, e.prepare(e.pool, c).Err, fmt.Sprintf("claim %s/%s: not the companion of lease abc", envNS, c.Name))
-	if strings.Contains(e.k.CommandsSince(before), "create-region") {
-		t.Fatalf("device touched for a refused lend:\n%s", e.k.CommandsSince(before))
-	}
 }

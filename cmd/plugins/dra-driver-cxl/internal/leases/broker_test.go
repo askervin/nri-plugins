@@ -448,7 +448,8 @@ func TestTimeoutReleases(t *testing.T) {
 }
 
 // Only the companion claim of a lease is lent: its name, namespace and
-// owner; a failed lease is not lent again.
+// owner; a Prepare again of a READY companion keeps it READY; a failed
+// lease is not lent again.
 func TestOnLending(t *testing.T) {
 	e := brokerEnv(t)
 	e.openClaim()
@@ -484,6 +485,15 @@ func TestOnLending(t *testing.T) {
 	}
 	if _, err := e.b.OnLending(id, companionClaim(id)); err != nil {
 		t.Fatalf("a Prepare again: %v", err)
+	}
+	e.b.OnPrepared(id, state.SourcePool, []state.DeviceInfo{numaDevice})
+	if _, err := e.b.OnLending(id, companionClaim(id)); err != nil {
+		t.Fatalf("a Prepare again of a READY companion: %v", err)
+	}
+	e.b.OnPrepared(id, state.SourcePool, []state.DeviceInfo{numaDevice})
+	if l := e.stored(id); l == nil || l.State != state.LeaseReady || l.ReleaseRequested || l.Lend == nil ||
+		state.NumaNodeOf(l.Lend.NumaNode) != 2 {
+		t.Fatalf("lease after a Prepare again of a READY companion %+v", l)
 	}
 	e.b.OnLendFailed(id, errors.New("boom"))
 	_, err = e.b.OnLending(id, companionClaim(id))
@@ -534,6 +544,52 @@ func TestLendFailed(t *testing.T) {
 	if l := e.lease("000000a1"); l.Error == "again" {
 		t.Fatalf("a failed lease failed again %+v", l)
 	}
+	stay.Store(false)
+	e.waitState("000000a1", state.LeaseNone)
+	e.wantGone(CompanionName("000000a1"))
+}
+
+// A released fs lease is RELEASING_BUSY while the bind of its companion is
+// STALE (a file of it is mapped), RELEASING again once the unbind
+// succeeded, and gone with its companion.
+func TestReleaseBusy(t *testing.T) {
+	var stay atomic.Bool
+	e := brokerEnv(t)
+	e.client.PrependReactor("delete", "pods", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		return stay.Load(), nil, nil // accepted, the pod stays (Terminating)
+	})
+	e.openClaim()
+	e.start()
+	ch := e.async(api.Request{Op: api.OpRequest, Shared: true, ReadOnly: true, Mode: "fs", Size: "64Mi", Wait: "5s"})
+	claim := e.waitClaim(CompanionName("000000a1"))
+	_, err := e.b.OnLending("000000a1", claim)
+	mustOK(t, err)
+	e.b.OnPrepared("000000a1", state.SourcePool, []state.DeviceInfo{
+		withDev(preparedDev(serialPoolP, pmemBytes, api.ModeFs, -1), func(d *state.DeviceInfo) { d.Access = "direct" })})
+	if r := <-ch; r.State != api.StateReady {
+		t.Fatalf("response %+v", r)
+	}
+	l := e.stored("000000a1")
+	if l == nil || l.Lend == nil || l.Lend.BindTarget == "" {
+		t.Fatalf("lease %+v", l)
+	}
+	// the companion's grant as its Unprepare leaves it when the unbind
+	// fails with EBUSY
+	lend := &state.GrantLend{Lease: "000000a1", Pod: l.Pod, Container: l.Container}
+	e.edit(func(r *state.Records) {
+		r.Grants = append(r.Grants, state.Grant{
+			Ref: state.GrantRef{Claim: string(claim.UID)}, State: state.GrantReleasing,
+			Intent: state.Intent{BindTarget: l.Lend.BindTarget, Lend: lend},
+			Got:    state.Got{Bind: &state.Bind{Target: l.Lend.BindTarget, State: state.BindStale}, Lend: lend},
+		})
+	})
+	stay.Store(true)
+	if rel, _ := e.call(api.Request{Op: api.OpRelease, Lease: "000000a1", Wait: "20ms"}); rel.State != api.StateReleasing {
+		t.Fatalf("release of a busy fs lease %+v", rel)
+	}
+	e.waitState("000000a1", state.LeaseReleasingBusy)
+	e.edit(func(r *state.Records) { r.Grants[0].Got.Bind.State = state.BindAbsent })
+	e.waitState("000000a1", state.LeaseReleasing)
 	stay.Store(false)
 	e.waitState("000000a1", state.LeaseNone)
 	e.wantGone(CompanionName("000000a1"))
