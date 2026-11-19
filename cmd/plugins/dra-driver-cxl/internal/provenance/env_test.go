@@ -104,8 +104,7 @@ func (e *watchEnv) restart() {
 	st, err := store.Open(context.Background(), store.Options{Dir: e.dir, BootID: "boot-1"})
 	noErr(e.t, err)
 	e.st = st
-	list, claims := ClientLists(e.client, "")
-	e.w = New(Options{Store: e.st, List: list, Claims: claims, NodeName: testNode, Name: e.name(), Forget: e.forget, Now: e.now})
+	e.w = New(Options{Store: e.st, Client: e.client, NodeName: testNode, Name: e.name(), Forget: e.forget, Now: e.now})
 }
 
 // lose makes state.json content and removes state.json.prev, so that the

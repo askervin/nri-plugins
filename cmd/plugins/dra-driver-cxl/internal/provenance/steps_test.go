@@ -230,8 +230,7 @@ func TestFailedCommitForget(t *testing.T) {
 	e.wantHeld("first start")
 	e.flush()
 	noErr(t, e.st.Close())
-	list, claims := ClientLists(e.client, "")
-	w := New(Options{Store: e.st, List: list, Claims: claims, NodeName: testNode, Name: e.name(), Forget: []uint64{sharedPoolSerial},
+	w := New(Options{Store: e.st, Client: e.client, NodeName: testNode, Name: e.name(), Forget: []uint64{sharedPoolSerial},
 		Now: e.now})
 	out := logs()
 	wantLogLine(t, out, "pool serials: writing "+e.name()+": "+store.ErrClosed.Error())

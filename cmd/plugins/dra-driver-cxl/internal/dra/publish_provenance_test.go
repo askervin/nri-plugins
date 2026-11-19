@@ -99,8 +99,7 @@ func (e *pubSerialsEnv) restart() {
 	st, err := store.Open(context.Background(), store.Options{Dir: e.dir, BootID: "boot-1"})
 	pubNoErr(e.t, err)
 	e.st = st
-	list, claims := provenance.ClientLists(e.client, "")
-	e.w = provenance.New(provenance.Options{Store: e.st, List: list, Claims: claims, NodeName: pubNode,
+	e.w = provenance.New(provenance.Options{Store: e.st, Client: e.client, NodeName: pubNode,
 		Name: filepath.Join(e.dir, store.FileName), Now: e.now})
 	e.p = e.publisher(func(context.Context) (*kernel.Snapshot, error) { return e.devices(), nil })
 }
@@ -852,8 +851,7 @@ func TestPoolSlicesSerials(t *testing.T) {
 		pubSlice("other", "other.example.com", pubSerialAttr("other.example.com/serial", "3238060770")),
 		pubSlice("node1", device.DriverName, pubSerialAttr("serial", "0xc100e2e1")),
 	)
-	list, claims := provenance.ClientLists(client, "")
-	w := provenance.New(provenance.Options{List: list, Claims: claims, NodeName: pubNode})
+	w := provenance.New(provenance.Options{Client: client, NodeName: pubNode})
 	st := pubStore(t)
 	ctx := context.Background()
 	if got, _ := scanNames(t, ctx, st, w); !slices.Equal(got, []string{pubLocalDeviceName}) {
@@ -883,8 +881,7 @@ func TestPoolSlicesFirstListFails(t *testing.T) {
 		}
 		return false, nil, nil
 	})
-	list, claims := provenance.ClientLists(client, "")
-	w := provenance.New(provenance.Options{List: list, Claims: claims, NodeName: pubNode})
+	w := provenance.New(provenance.Options{Client: client, NodeName: pubNode})
 	st := pubStore(t)
 	ctx := context.Background()
 	// nothing is known: no local memdev at all, regions stay as they are

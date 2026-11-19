@@ -27,6 +27,9 @@ import (
 	"time"
 
 	resourceapi "k8s.io/api/resource/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 
@@ -527,16 +530,17 @@ func TestFirstListAfterRecovery(t *testing.T) {
 	devices, err := newDriverDevices(config, flags, &DriverConfig{}, kernelAt(dir), nil, st, rules)
 	noErr(t, err)
 	lists, guarded := 0, 0
-	watcher := provenance.New(provenance.Options{Store: st, NodeName: testNode, Name: "poolSerials.json",
-		List: func(context.Context) ([]resourceapi.ResourceSlice, error) {
-			lists++
-			devices.mu.Lock()
-			if devices.guard != nil {
-				guarded++
-			}
-			devices.mu.Unlock()
-			return nil, nil
-		}})
+	client := k8sfake.NewClientset()
+	client.PrependReactor("list", "resourceslices", func(k8stesting.Action) (bool, runtime.Object, error) {
+		lists++
+		devices.mu.Lock()
+		if devices.guard != nil {
+			guarded++
+		}
+		devices.mu.Unlock()
+		return false, nil, nil
+	})
+	watcher := provenance.New(provenance.Options{Store: st, Client: client, NodeName: testNode, Name: "poolSerials.json"})
 	fe, err := newFrontEnds(config, flags, &DriverConfig{}, st, devices, watcher, rules, nil)
 	noErr(t, err)
 	noErr(t, fe.recover(ctx, &DriverConfig{}, devices))

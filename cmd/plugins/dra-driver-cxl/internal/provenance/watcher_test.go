@@ -45,16 +45,14 @@ func TestPoolSlicesSerials(t *testing.T) {
 		slice("other", "other.example.com", serialAttr("other.example.com/serial", "3238060770")),
 		slice("node1", device.DriverName, serialAttr("serial", "0xc100e2e1")),
 	)
-	list, claims := ClientLists(client, "")
-	w := New(Options{List: list, Claims: claims, NodeName: testNode})
+	w := New(Options{Client: client, NodeName: testNode})
 	ctx := context.Background()
 	serials, known := w.Serials(ctx)
 	if !known || w.Failing() || !maps.Equal(serials, map[uint64]bool{0xc1ee0001: true}) {
 		t.Fatalf("serials %v known %v failing %v", serials, known, w.Failing())
 	}
 	// another pool driver name
-	list, claims = ClientLists(client, "other.example.com")
-	other := New(Options{List: list, Claims: claims, Driver: "other.example.com", NodeName: testNode})
+	other := New(Options{Client: client, Driver: "other.example.com", NodeName: testNode})
 	if serials, _ := other.Serials(ctx); !maps.Equal(serials, map[uint64]bool{3238060770: true}) {
 		t.Fatalf("serials of other.example.com %v", serials)
 	}
@@ -393,8 +391,7 @@ func TestCheckLocalRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	// not listed by a watcher without the records
-	list, claims := ClientLists(e.client, "")
-	fresh := New(Options{List: list, Claims: claims, NodeName: testNode})
+	fresh := New(Options{Client: e.client, NodeName: testNode})
 	noErr(t, fresh.CheckLocal(ctx, localSerial))
 }
 
@@ -410,21 +407,20 @@ func TestWatch(t *testing.T) {
 	var failing atomic.Bool
 	listErr := errors.New("apiserver unavailable")
 	var holding atomic.Bool
-	w := New(Options{
-		List: func(context.Context) ([]resourcev1.ResourceSlice, error) {
-			if failing.Load() {
-				return nil, listErr
-			}
-			return nil, nil
-		},
-		Claims: func(context.Context) ([]resourcev1.ResourceClaim, error) {
-			if holding.Load() {
-				return []resourcev1.ResourceClaim{*poolClaim("attaching", testNode, "c-pooled0", "")}, nil
-			}
-			return nil, nil
-		},
-		NodeName: testNode,
+	client := fake.NewClientset()
+	client.PrependReactor("list", "resourceslices", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if failing.Load() {
+			return true, nil, listErr
+		}
+		return false, nil, nil
 	})
+	client.PrependReactor("list", "resourceclaims", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if holding.Load() {
+			return true, &resourcev1.ResourceClaimList{Items: []resourcev1.ResourceClaim{*poolClaim("attaching", testNode, "c-pooled0", "")}}, nil
+		}
+		return false, nil, nil
+	})
+	w := New(Options{Client: client, NodeName: testNode})
 	ctx := t.Context()
 	var mu sync.Mutex
 	var calls []bool
@@ -552,8 +548,8 @@ func TestCheckLocalOwnList(t *testing.T) {
 			e.publish("0xc100e2e1") // localSerial
 			var calls atomic.Int32
 			started, release, scanned := make(chan struct{}), make(chan struct{}), make(chan struct{})
-			list := e.w.opts.List
-			e.w.opts.List = func(ctx context.Context) ([]resourcev1.ResourceSlice, error) {
+			list := e.w.listSlices
+			e.w.listSlices = func(ctx context.Context) ([]resourcev1.ResourceSlice, error) {
 				switch {
 				case calls.Add(1) == 1: // the scan's: without the pool slice
 					close(started)

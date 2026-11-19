@@ -68,6 +68,9 @@ type Watcher struct {
 	// storeCommit is its Commit.
 	st          *store.Store
 	storeCommit func(ctx context.Context, d store.Durability, fn store.Func) error
+	// listSlices lists the ResourceSlices of the pool driver through
+	// opts.Client.
+	listSlices func(ctx context.Context) ([]resourcev1.ResourceSlice, error)
 
 	// mu guards the fields below: a leaf lock.
 	mu sync.Mutex
@@ -109,10 +112,9 @@ type Watcher struct {
 type Options struct {
 	// Store keeps the records.
 	Store *store.Store
-	// List lists the ResourceSlices of the pool driver, Claims the
-	// ResourceClaims (nil: none listed).
-	List   func(ctx context.Context) ([]resourcev1.ResourceSlice, error)
-	Claims func(ctx context.Context) ([]resourcev1.ResourceClaim, error)
+	// Client lists the ResourceSlices of the pool driver and the
+	// ResourceClaims.
+	Client coreclientset.Interface
 	// Driver is the name of the pool driver, "" for device.PoolDriverName;
 	// NodeName the node of the driver.
 	Driver, NodeName string
@@ -156,35 +158,17 @@ func New(opts Options) *Watcher {
 		conflicts:   map[uint64]bool{},
 		uncommitted: map[string]bool{},
 	}
+	w.listSlices = func(ctx context.Context) ([]resourcev1.ResourceSlice, error) {
+		sel := fields.OneTermEqualSelector(resourcev1.ResourceSliceSelectorDriver, opts.Driver).String()
+		l, err := opts.Client.ResourceV1().ResourceSlices().List(ctx, metav1.ListOptions{FieldSelector: sel})
+		if err != nil {
+			return nil, err
+		}
+		return l.Items, nil
+	}
 	w.open()
 	w.forget(opts.Forget)
 	return w
-}
-
-// ClientLists returns the lists of the ResourceSlices of the pool driver
-// (a field selector of the driver) and of the ResourceClaims through the
-// client.
-func ClientLists(client coreclientset.Interface, driver string) (func(context.Context) ([]resourcev1.ResourceSlice, error),
-	func(context.Context) ([]resourcev1.ResourceClaim, error)) {
-	if driver == "" {
-		driver = device.PoolDriverName
-	}
-	slices := func(ctx context.Context) ([]resourcev1.ResourceSlice, error) {
-		sel := fields.OneTermEqualSelector(resourcev1.ResourceSliceSelectorDriver, driver).String()
-		l, err := client.ResourceV1().ResourceSlices().List(ctx, metav1.ListOptions{FieldSelector: sel})
-		if err != nil {
-			return nil, err
-		}
-		return l.Items, nil
-	}
-	claims := func(ctx context.Context) ([]resourcev1.ResourceClaim, error) {
-		l, err := client.ResourceV1().ResourceClaims("").List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return nil, err
-		}
-		return l.Items, nil
-	}
-	return slices, claims
 }
 
 // Serials lists the ResourceSlices and returns the serials of the devices
@@ -263,7 +247,7 @@ func (w *Watcher) listSerials(ctx context.Context) (map[uint64]string, *state.Re
 func (w *Watcher) list(ctx context.Context) (map[uint64]string, map[string]bool, error) {
 	lctx, cancel := context.WithTimeout(ctx, apiTimeout)
 	defer cancel()
-	items, err := w.opts.List(lctx)
+	items, err := w.listSlices(lctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -427,13 +411,13 @@ type claimEvidence struct {
 func (w *Watcher) claimEvidence(ctx context.Context) (*claimEvidence, error) {
 	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
 	defer cancel()
-	claims, err := w.opts.Claims(ctx)
+	claims, err := w.opts.Client.ResourceV1().ResourceClaims("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
 	ev := &claimEvidence{serials: map[uint64]string{}}
-	for i := range claims {
-		c := &claims[i]
+	for i := range claims.Items {
+		c := &claims.Items[i]
 		a := c.Status.Allocation
 		if a == nil || device.AllocationNode(a) != w.opts.NodeName {
 			continue

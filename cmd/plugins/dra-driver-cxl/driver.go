@@ -375,11 +375,9 @@ func newWatcher(config *pluginConfig, cxlFlags *CXLFlags, st *store.Store) *prov
 	if config.Client == nil {
 		return nil
 	}
-	list, claims := provenance.ClientLists(config.Client, cxlFlags.PoolDriverName)
 	return provenance.New(provenance.Options{
 		Store:    st,
-		List:     list,
-		Claims:   claims,
+		Client:   config.Client,
 		Driver:   cxlFlags.PoolDriverName,
 		NodeName: cxlFlags.NodeName,
 		Name:     config.stateFile(),

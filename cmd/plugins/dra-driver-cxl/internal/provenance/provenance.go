@@ -803,7 +803,7 @@ func (w *Watcher) evidence(ctx context.Context, r *state.Records, snap *kernel.S
 		_, uses := local[m.Serial]
 		return !poolSerials[m.Serial] && (p == nil || !recorded(p)) && !uses
 	}
-	if !slices.ContainsFunc(snap.Memdevs, isNew) || w.opts.Claims == nil || w.opts.NodeName == "" {
+	if !slices.ContainsFunc(snap.Memdevs, isNew) || w.opts.NodeName == "" {
 		return nil, nil
 	}
 	ev, err := w.claimEvidence(ctx)

@@ -57,8 +57,7 @@ func TestPrepareLocalPoolDevice(t *testing.T) {
 		noErr(t, err)
 	}
 	watcher := func() *provenance.Watcher {
-		list, claims := provenance.ClientLists(client, "")
-		return provenance.New(provenance.Options{List: list, Claims: claims, NodeName: testNode})
+		return provenance.New(provenance.Options{Client: client, NodeName: testNode})
 	}
 	publish("0xc1ee2001", "0xc100e2e1")
 	w := watcher()
