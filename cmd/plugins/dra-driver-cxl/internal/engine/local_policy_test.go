@@ -15,6 +15,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
@@ -101,7 +102,9 @@ func TestLocalPolicySliced(t *testing.T) {
 // The release policy of a local memdev configured shared whose region is
 // established: its Unprepare, a rollback and a recovery keep the region for
 // the idle memdev (IDLE_KEPT), the Whole device stays, and the next grant
-// does not zero it again.
+// does not zero it again. A Prepare that cannot read the dax device of the
+// kept region keeps it too; a kept region that another tool released is
+// forgotten, and a new one is made and zeroed.
 func TestLocalPolicySharedConfigured(t *testing.T) {
 	shared := func(v *env, o *Options) { o.Shared = func(state.Serial) bool { return true } }
 	newShared := func(t *testing.T) *env {
@@ -175,6 +178,38 @@ func TestLocalPolicySharedConfigured(t *testing.T) {
 		v.restart()
 		idleKept(t, v)
 		notZeroedAgain(t, v)
+	})
+	t.Run("dax device unreadable", func(t *testing.T) {
+		v := newShared(t)
+		v.mustPrepare(localDriver, "s1", sharedReq("s1"))
+		v.mustUnprepare(localDriver, "s1")
+		dev := v.f.Read("bus/dax/devices/dax0.0/dev")
+		v.f.Write("bus/dax/devices/dax0.0/dev", "bogus")
+		err := v.prepare(localDriver, "s2", sharedReq("s2"))
+		if want := `memdev mem0 (serial 0x11): dax0.0: dax0.0: cannot parse device numbers "bogus"`; err == nil || err.Error() != want {
+			t.Fatalf("error %v, want %q", err, want)
+		}
+		wantPreparation(t, v, localDriver, "s2", "")
+		v.f.Write("bus/dax/devices/dax0.0/dev", dev)
+		idleKept(t, v)
+		notZeroedAgain(t, v)
+	})
+	t.Run("region gone", func(t *testing.T) {
+		v := newShared(t)
+		v.mustPrepare(localDriver, "s1", sharedReq("s1"))
+		v.mustUnprepare(localDriver, "s1")
+		if err := v.f.Kernel().ReleaseRegion(context.Background(), "region0"); err != nil {
+			t.Fatal(err)
+		}
+		logs := klogtest.Capture(t, 3)
+		v.mustPrepare(localDriver, "s2", sharedReq("s2"))
+		wantLog(t, logs(), "engine: local memdev 0x11 (mem0): region0 of the shared device is gone, forgetting it and its claims []")
+		if z := v.f.Zeroed(); len(z) != 2 {
+			t.Fatalf("zeroed %v", z)
+		}
+		v.mustUnprepare(localDriver, "s2")
+		releaseIdleShared(v)
+		v.clean("released")
 	})
 }
 

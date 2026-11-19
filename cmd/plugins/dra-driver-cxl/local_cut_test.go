@@ -44,24 +44,6 @@ func wantLocalRegionCount(t *testing.T, e *localTestEnv, created, destroyed int)
 	}
 }
 
-// wantReleasedLast checks that the last commands of the driver released
-// the region.
-func wantReleasedLast(t *testing.T, e *localTestEnv, region string) {
-	t.Helper()
-	if !strings.HasSuffix(e.commands(), "cxl disable-region "+region+"\ncxl destroy-region "+region) {
-		t.Fatalf("%s not released:\n%s", region, e.commands())
-	}
-}
-
-// wantNoRegionRelease checks that no region was disabled or destroyed in
-// the commands.
-func wantNoRegionRelease(t *testing.T, cmds string) {
-	t.Helper()
-	if strings.Contains(cmds, "disable-region") || strings.Contains(cmds, "destroy-region") {
-		t.Fatalf("a region was released:\n%s", cmds)
-	}
-}
-
 // The Unprepare of a claim that the driver does not know returns without
 // waiting for the Prepare of another claim, which holds the memdev for long
 // when it zeroes a whole shared device.

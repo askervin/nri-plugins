@@ -15,8 +15,6 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -26,7 +24,6 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
@@ -94,58 +91,6 @@ func TestDriverConfigSharedDevices(t *testing.T) {
 			t.Errorf("%s: no error", bad)
 		}
 	}
-}
-
-// A failed creation of the region of a shared memdev, or of its zeroing,
-// leaves no device, no claim and no region; a dax device of a kept region
-// that fails leaves the region kept and no claim.
-func TestLocalSharedCreateFailures(t *testing.T) {
-	e := newSharedEnv(t)
-	// the retry fails too
-	e.k.FailCommand("cxl create-region", fake.ErrAddDev, fake.ErrAddDev)
-	wantErr(t, e.prepare(sharedClaim("u1", "1M")), "add_dev")
-	wantSharedUse(t, e, nil)
-
-	e.k.ZeroErr = errors.New("no mmap")
-	err := e.prepare(sharedClaim("u1", "1M"))
-	wantErr(t, err, "memdev mem0 (serial 0xc100e2e1): zeroing new shared dax0.0: no mmap")
-	wantReleasedLast(t, e, "region0")
-	wantSharedUse(t, e, nil)
-	e.k.ZeroErr = nil
-
-	// the dax device of a kept region fails: no claim, the region stays
-	e.mustPrepare(sharedClaim("u2", "1M"))
-	e.mustUnprepare("u2")
-	e.k.Write("bus/dax/devices/dax0.0/dev", "bogus")
-	before := e.k.Commands()
-	wantErr(t, e.prepare(sharedClaim("u3", "1")), `memdev mem0 (serial 0xc100e2e1): dax0.0: dax0.0: cannot parse device numbers "bogus"`)
-	wantNoRegionRelease(t, e.k.CommandsSince(before))
-	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{}})
-	e.k.Write("bus/dax/devices/dax0.0/dev", "252:0")
-	e.mustPrepare(sharedClaim("u3", "1"))
-	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{"u3"}})
-}
-
-// A kept region that disappeared is forgotten, and the next claim creates
-// and zeroes a new one.
-func TestLocalSharedRegionGone(t *testing.T) {
-	e := newSharedEnv(t)
-	e.mustPrepare(sharedClaim("u1", "1"))
-	e.mustUnprepare("u1")
-	noErr(t, e.k.Kernel().ReleaseRegion(context.Background(), "region0"))
-	wantLocalRegionCount(t, e, 1, 1)
-	logs := klogtest.Capture(t, 3)
-	noErr(t, prepareOn(context.Background(), e.s, sharedClaim("u2", "1")))
-	e.check("prepared u2")
-	// the other claims of the device: none
-	if want := "engine: local memdev 0xc100e2e1 (mem0): region0 of the shared device is gone, forgetting it and its claims []"; !strings.Contains(logs(), want) {
-		t.Fatalf("no %q in\n%s", want, logs())
-	}
-	wantLocalRegionCount(t, e, 2, 1)
-	if z := e.k.Zeroed(); len(z) != 2 {
-		t.Fatalf("new region not zeroed: %v", z)
-	}
-	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{"u2"}})
 }
 
 // Prepare failures after the shared device was realised roll the claim
