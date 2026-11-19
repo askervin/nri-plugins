@@ -125,19 +125,20 @@ func TestLocalRecoverPersistent(t *testing.T) {
 }
 
 // The start releases the region of a sliced local memdev without claims,
-// and deletes the parts that belong to no claim first.
+// and deletes the parts that belong to no claim first, the memory of a
+// numa part offlined.
 func TestLocalRecoverSlicedIdle(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
 	v.mustPrepare(localDriver, "d", sliceReq("d", 0, state.ModeDax, 256*mib))
-	// the claim is forgotten (another front-end), its part left
-	ref := state.GrantRef{Claim: "d"}
+	v.mustPrepare(localDriver, "n", sliceReq("n", 0, state.ModeNUMA, 128*mib))
+	// the claims are forgotten (another front-end), their parts left
 	if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
-		removeRecord(&doc.Grants, func(g *state.Grant) bool { return g.Ref == ref })
-		removeRecord(&doc.Preparations, func(p *state.Preparation) bool { return p.UID == "d" })
+		doc.Grants, doc.Preparations = nil, nil
 		m := doc.Memdev(serialL)
 		m.Grants, m.State = nil, state.MemdevIdleKept
-		d := doc.Region("region0").DaxDevice("dax0.0")
-		d.Users = nil
+		for _, dax := range []string{"dax0.0", "dax0.1"} {
+			doc.Region("region0").DaxDevice(dax).Users = nil
+		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -145,6 +146,7 @@ func TestLocalRecoverSlicedIdle(t *testing.T) {
 	logs := klogtest.Capture(t, 3)
 	v.restart()
 	wantLog(t, logs(), "engine: local memdev 0x11 (mem0): dax0.0 (mode dax, 268435456 bytes) belongs to no claim, deleting it",
+		"engine: local memdev 0x11 (mem0): dax0.1 (mode numa, 134217728 bytes) belongs to no claim, deleting it",
 		"engine: local memdev 0x11 (mem0): released region0 in ")
 	v.clean("released")
 }

@@ -30,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -684,6 +685,18 @@ func TestMemdevSettings(t *testing.T) {
 	}
 	if got := memdevUsableSize(PublishConfig{}, m2, nil); got != 2<<30 {
 		t.Errorf("usable size %d without settings", got)
+	}
+}
+
+// TestLocalSnapshot pins the snapshot of the local memdevs that the
+// publication reads: the usable sizes of the address line probes by serial.
+func TestLocalSnapshot(t *testing.T) {
+	probes := func() map[state.Serial]state.Probe {
+		return map[state.Serial]state.Probe{0x11: {UsableSize: 512 << 20}}
+	}
+	p := pubPublisher(t, PublishOptions{NodeName: pubNode, Config: PublishConfig{ManageMemdevs: true}, Probes: probes})
+	if got := p.LocalSnapshot().Probed; !maps.Equal(got, map[uint64]uint64{0x11: 512 << 20}) {
+		t.Fatalf("probed %v", got)
 	}
 }
 

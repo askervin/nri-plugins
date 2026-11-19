@@ -36,9 +36,7 @@ type (
 )
 
 var (
-	memdevDeviceName  = dra.MemdevDeviceName
-	localMemdevDevice = dra.LocalMemdevDevice
-	resultEnvVarName  = state.ResultEnvVarName
+	resultEnvVarName = state.ResultEnvVarName
 )
 
 // buildDevInfosHeld is buildDevInfos with the serials of the new memdevs

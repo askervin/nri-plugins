@@ -284,7 +284,8 @@ func TestLocalSliceFailures(t *testing.T) {
 // does not start at a block boundary, bound or onlined leave nothing of
 // it: the misplaced first-fit device cannot be deleted, the placed device
 // cannot be mapped or bound to kmem, the region cannot be read, the memory
-// blocks of kmem never appear.
+// blocks of kmem never appear, the free memory is only across block
+// boundaries.
 func TestLocalPlacementFailures(t *testing.T) {
 	const bs = 512 * mib
 	v := newEnv(t)
@@ -336,6 +337,18 @@ func TestLocalPlacementFailures(t *testing.T) {
 	v.f.NoKmemBlocks, v.prepareTimeout = true, 50*time.Millisecond
 	failed("no memory blocks", numa, "memdev mem0 (serial 0x11): dax0.2: 0 of 1 memory blocks appeared: context deadline exceeded")
 	v.f.NoKmemBlocks, v.prepareTimeout = false, 0
+
+	// the free memory is left only across block boundaries
+	v.mustPrepare(localDriver, "d2", localReq("d2", 0, serialL, state.ModeDax, state.KindExclusive, bs))
+	v.mustPrepare(localDriver, "d3", localReq("d3", 0, serialL, state.ModeDax, state.KindExclusive, bs))
+	err = v.prepare(localDriver, "n1", numa)
+	if want := "memdev mem0 (serial 0x11): no room for the slice: no 536870912 bytes of whole free memory blocks in region0 " +
+		"(free [0x250000000-0x25fffffff 0x2c0000000-0x2cfffffff], memory block size 536870912)"; !errors.Is(err, kernel.ErrNoRoom) || err.Error() != want {
+		t.Fatalf("no whole blocks: error %v, want %q", err, want)
+	}
+	v.check("no whole blocks")
+	v.mustUnprepare(localDriver, "d2")
+	v.mustUnprepare(localDriver, "d3")
 
 	if v.f.DaxSize("dax0.0") != 0 || v.f.DaxDriver("dax0.0") != "" || len(v.records().Grants) != 1 ||
 		v.f.DaxDriver(d1) != kernel.DriverDeviceDax || v.f.DaxSize(d1) != bs {
