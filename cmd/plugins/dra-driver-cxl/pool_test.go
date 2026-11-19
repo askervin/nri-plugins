@@ -424,7 +424,7 @@ func TestPoolConfigErrors(t *testing.T) {
 		{sharedData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","mode":"dax"}`, `MemoryConfig: FromClaim config 0: kind "DeviceConfig", expected "MemoryConfig"`},
 		// an old kind would give a read-write device of a reader
 		{sharedData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"PoolDeviceConfig","readOnly":true}`,
-			`cxl-pool.nri.io: preparing claim default/c1: MemoryConfig: FromClaim config 0: kind "PoolDeviceConfig", expected "MemoryConfig"`},
+			`cxl-pool.nri.io: claim default/c1: MemoryConfig: FromClaim config 0: kind "PoolDeviceConfig", expected "MemoryConfig"`},
 		{sharedData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"MemoryPolicyConfig","memoryUseOrder":"first-dram"}`,
 			`MemoryConfig: FromClaim config 0: kind "MemoryPolicyConfig", expected "MemoryConfig"`},
 	} {
@@ -498,7 +498,7 @@ func TestPoolSharesGuard(t *testing.T) {
 	}
 	for _, tc := range []struct{ shares, text string }{{"0", `"0"`}, {"", `""`}} {
 		wantErr(t, prepare(t, p, withShares("u0", tc.shares)).Err,
-			"cxl-pool.nri.io: preparing claim default/c-u0: device 0xc1ae0001: consumed shares "+tc.text+" is less than 1: request shares: 1 (a share) or no shares (exclusive)")
+			"cxl-pool.nri.io: claim default/c-u0: device 0xc1ae0001: consumed shares "+tc.text+" is less than 1: request shares: 1 (a share) or no shares (exclusive)")
 	}
 	if strings.Contains(e.commands(), "create-region") {
 		t.Fatalf("a refused claim touched the device:\n%s", e.commands())
@@ -573,15 +573,15 @@ func TestPoolPrepareMemoryConfig(t *testing.T) {
 		params, err string
 	}{
 		{claim, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"fencing":"none"}}`,
-			"cxl-pool.nri.io: preparing claim default/c2: MemoryConfig: container.fencing: set by the driver configuration only (defaults.container.fencing)"},
+			"cxl-pool.nri.io: claim default/c2: MemoryConfig: container.fencing: set by the driver configuration only (defaults.container.fencing)"},
 		{class, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"steering":{"policy":"waypoints","waypoints":[{"targetUsages":[{"memoryType":"HBM","usage":"1Gi"}]}]}}}`,
-			`cxl-pool.nri.io: preparing claim default/c2: request mem: MemoryConfig: container.steering.waypoints[0].targetUsages[0].memoryType: invalid memory type "HBM" (DRAM or CXL)`},
+			`cxl-pool.nri.io: claim default/c2: request mem: MemoryConfig: container.steering.waypoints[0].targetUsages[0].memoryType: invalid memory type "HBM" (DRAM or CXL)`},
 		{claim, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","pool":{"opaque":{"fake-cxl-pool":1}}}`,
-			"cxl-pool.nri.io: preparing claim default/c2: request mem: MemoryConfig: pool.opaque.fake-cxl-pool: not a JSON object"},
+			"cxl-pool.nri.io: claim default/c2: request mem: MemoryConfig: pool.opaque.fake-cxl-pool: not a JSON object"},
 		{claim, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","pool":{"slot":"1"}}`,
-			`cxl-pool.nri.io: preparing claim default/c2: MemoryConfig: FromClaim config 0: json: unknown field "pool.slot"`},
+			`cxl-pool.nri.io: claim default/c2: MemoryConfig: FromClaim config 0: json: unknown field "pool.slot"`},
 		{claim, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"steering":{"policy":"none","minStep":"1Gi"}}}`,
-			"cxl-pool.nri.io: preparing claim default/c2: request mem: MemoryConfig: container.steering.minStep needs a policy other than none"},
+			"cxl-pool.nri.io: claim default/c2: request mem: MemoryConfig: container.steering.minStep needs a policy other than none"},
 	} {
 		wantErr(t, prepare(t, p, withConfig(poolClaim("u2", "c2", "pooled0", exclusiveData), tc.source, nil, tc.params)).Err, tc.err)
 		e.wantClean(t, p)

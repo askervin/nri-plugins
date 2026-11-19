@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -133,8 +134,8 @@ func New(opts Options) (*Plugin, error) {
 	if opts.Store == nil || opts.Engine == nil {
 		return nil, fmt.Errorf("%s: the plugin needs the state store and the device engine", opts.Rules.Name)
 	}
-	if opts.Rules.validate == nil || opts.Rules.voice == nil {
-		return nil, fmt.Errorf("%s: the rules have no validation or voice: not those of LocalRules or PoolRules", opts.Rules.Name)
+	if opts.Rules.validate == nil {
+		return nil, fmt.Errorf("%s: the rules have no validation: not those of LocalRules or PoolRules", opts.Rules.Name)
 	}
 	if opts.Rules.Publishes && opts.Publisher == nil {
 		return nil, fmt.Errorf("%s: the plugin publishes and needs the publisher", opts.Rules.Name)
@@ -215,9 +216,10 @@ func (p *Plugin) Start(ctx context.Context, opts ...kubeletplugin.Option) error 
 		return err
 	}
 	helper, err := kubeletplugin.Start(ctx, p, opts...)
-	if err := p.rules.voice.started(err); err != nil {
-		return err
+	if err != nil {
+		return fmt.Errorf("%s: starting the kubelet plugin: %w", p.rules.Name, err)
 	}
+	klog.Infof("%s: kubelet plugin registered", p.rules.Name)
 	p.helper = helper
 	return nil
 }
@@ -264,7 +266,8 @@ func (p *Plugin) allocatable() DevicesInfo {
 
 // PrepareResourceClaims prepares the claims of kubelet: after the first NRI
 // Synchronize (bounded; else every claim fails and kubelet retries), each
-// claim in its turn.
+// claim in its turn. The error of a claim is logged, and returned with the
+// driver and the claim.
 func (p *Plugin) PrepareResourceClaims(ctx context.Context, claims []*resourcev1.ResourceClaim) (map[types.UID]kubeletplugin.PrepareResult, error) {
 	klog.V(5).Infof("NodePrepareResource is called: request: %+v", claims)
 	response := map[types.UID]kubeletplugin.PrepareResult{}
@@ -281,9 +284,21 @@ func (p *Plugin) PrepareResourceClaims(ctx context.Context, claims []*resourcev1
 		}
 	}
 	for _, claim := range claims {
-		response[claim.UID] = p.prepareClaim(ctx, claim)
+		res := p.prepareClaim(ctx, claim)
+		if res.Err != nil {
+			res.Err = p.claimError(claim.Namespace, claim.Name, res.Err)
+		}
+		response[claim.UID] = res
 	}
 	return response, nil
+}
+
+// claimError returns the error of the Prepare or Unprepare of the claim
+// namespace/name, logged: "<driver>: claim <namespace>/<name>: <err>".
+func (p *Plugin) claimError(namespace, name string, err error) error {
+	err = fmt.Errorf("%s: claim %s/%s: %w", p.rules.Name, namespace, name, err)
+	klog.Error(err)
+	return err
 }
 
 // prepareClaim prepares a claim with its lock held, in a request of the
@@ -310,28 +325,61 @@ func (p *Plugin) prepare(ctx context.Context, claim *resourcev1.ResourceClaim) k
 	if prep := p.preparation(uid); prep != nil && prep.Prepared() {
 		return p.preparedAgain(ctx, claim, prep)
 	}
-	v := p.rules.voice
 	pr, err := p.rules.validate(p, claim)
 	if err != nil {
 		return p.refuse(ctx, uid, claimName, err)
 	}
 	if err := p.commitPreparing(ctx, pr); err != nil {
-		return failed(v.failure(claimName, err))
+		return failed(err)
 	}
 	p.addInflight(pr.reqs, 1)
 	defer p.addInflight(pr.reqs, -1)
 	if err := p.realise(ctx, pr); err != nil {
-		return failed(v.failure(claimName, err))
+		return failed(err)
 	}
 	if err := p.openLeaseClaim(claim, pr); err != nil {
 		p.rollback(ctx, uid, claimName, nil)
-		return failed(v.refused(claimName, err))
+		return failed(err)
 	}
-	v.prepared(p, pr)
+	p.logPrepared(pr)
 	if err := p.lendCompanion(ctx, pr); err != nil {
-		return failed(v.failure(claimName, err))
+		return failed(err)
 	}
 	return p.finish(ctx, pr)
+}
+
+// logPrepared logs what each grant of a Prepare got.
+func (p *Plugin) logPrepared(pr *prepare) {
+	r := p.records()
+	for i := range pr.reqs {
+		req := &pr.reqs[i]
+		g := r.Grant(req.Ref)
+		if g == nil {
+			continue
+		}
+		memdev := ""
+		if m := r.Memdev(g.Serial); m != nil {
+			memdev = m.Name
+		}
+		what := fmt.Sprintf("%s: claim %s: prepared %s (serial 0x%x, shared %v, mode %s, read-only %v) as %s %s",
+			p.rules.Name, pr.claimName, pr.device(req.Ref), uint64(g.Serial), sharedGrant(g), g.Asked.Mode, g.Asked.ReadOnly,
+			memdev, g.Got.Region)
+		if g.Asked.Mode == state.ModeBlock || g.Asked.Mode == state.ModeFs {
+			block, nodeMount, loop, fsType := "", "", "", ""
+			if bd := g.Got.BlockDevice; bd != nil {
+				block = bd.Name
+			}
+			if m := r.MountOf(g); m != nil {
+				nodeMount, loop, fsType = m.Path, m.Loop, m.FsType
+			}
+			klog.Infof("%s namespace %s block %s access %q fs %q mount %q loop %q",
+				what, g.Got.Namespace, block, g.Got.Mount, fsType, nodeMount, loop)
+			continue
+		}
+		// the shares of a shared local memdev that the claim uses
+		uses := strings.TrimRight(" "+pr.uses[req.Ref], " ")
+		klog.Infof("%s dax %s size %d node %d%s", what, g.Got.Dax, g.Got.Size, state.NumaNodeOf(g.Got.NumaNode), uses)
+	}
 }
 
 // commitPreparing commits the preparation of a Prepare PREPARING with its
@@ -377,7 +425,6 @@ func (p *Plugin) realise(ctx context.Context, pr *prepare) error {
 // (the lease READY with its preparation PREPARED), else after the commit
 // (Lender.preparedStep); a failure rolls the Prepare back.
 func (p *Plugin) finish(ctx context.Context, pr *prepare) kubeletplugin.PrepareResult {
-	v := p.rules.voice
 	result := prepareResult(p.preparation(pr.uid), p.rules.CDIKind)
 	var rec *lend.Lend
 	// step changes the records in the PREPARED commit, after runs once it
@@ -399,22 +446,21 @@ func (p *Plugin) finish(ctx context.Context, pr *prepare) kubeletplugin.PrepareR
 		})
 	}
 	if err != nil {
-		err = v.finishFailure(pr.claimName, err)
 		p.rollback(ctx, pr.uid, pr.claimName, func() {
 			if pr.lend != nil && p.rules.FailLeaseOnFinish {
 				p.lender.Failed(pr.lend.Lease, err)
 			}
 		})
 		if cerr := p.writeCDI(""); cerr != nil {
-			v.rollbackError(rollbackCDI, pr.uid, pr.claimName, cerr)
+			p.rollbackError(pr.claimName, cerr)
 		}
 		return failed(err)
 	}
 	if rec != nil {
-		v.companionPrepared(pr.claimName, rec)
+		klog.Infof("%s: claim %s: companion of lease %s of %s/%s/%s prepared (nodes %v, binds %v)",
+			p.rules.Name, pr.claimName, rec.Lease, rec.Pod.Namespace, rec.Pod.Name, rec.Container, rec.NumaNodes, rec.Mounts)
 	}
 	after()
-	klog.V(5).Infof("Created prepared claim %v allocation", pr.uid)
 	return result
 }
 
@@ -434,7 +480,7 @@ func (p *Plugin) refuse(ctx context.Context, uid, claimName string, err error) k
 			klog.Errorf("%s: claim %s: %v", p.rules.Name, claimName, serr)
 		}
 	}
-	res := failed(p.rules.voice.refused(claimName, err))
+	res := failed(err)
 	if p.rules.RetryStaleOnRefusal {
 		p.retryStaleBinds(ctx)
 	}
@@ -458,9 +504,8 @@ func rollbackContext(ctx context.Context) (context.Context, context.CancelFunc) 
 	return context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 }
 
-// deviceError returns the error of a grant of a Prepare in the words of the
-// driver: the device or the request of the result; a lease bind names the
-// lease itself.
+// deviceError returns the error of a grant of a Prepare with the device of
+// the result and its serial; a lease bind names the lease itself.
 func (p *Plugin) deviceError(pr *prepare, err error) error {
 	var ge *engine.GrantError
 	var be *engine.BindError
@@ -469,7 +514,7 @@ func (p *Plugin) deviceError(pr *prepare, err error) error {
 	}
 	for i := range pr.reqs {
 		if req := &pr.reqs[i]; req.Ref == ge.Ref {
-			return p.rules.voice.deviceError(req, pr.request(req.Ref), pr.device(req.Ref), ge.Err)
+			return fmt.Errorf("device %s serial 0x%x: %w", pr.device(req.Ref), uint64(req.Serial), ge.Err)
 		}
 	}
 	return err
@@ -483,10 +528,10 @@ func (p *Plugin) openLeaseClaim(claim *resourcev1.ResourceClaim, pr *prepare) er
 	}
 	leases := p.leaseClaims()
 	if leases == nil {
-		return fmt.Errorf("claim %v/%v: lending to running containers is disabled (--leases=false)", claim.Namespace, claim.Name)
+		return errors.New("lending to running containers is disabled (--leases=false)")
 	}
 	if err := leases.OpenClaim(claim); err != nil {
-		return fmt.Errorf("claim %v/%v: lease socket: %w", claim.Namespace, claim.Name, err)
+		return fmt.Errorf("lease socket: %w", err)
 	}
 	return nil
 }
@@ -548,11 +593,18 @@ func (p *Plugin) failedPrepare(ctx context.Context, uid string) {
 		return err
 	})
 	if err != nil {
-		p.rules.voice.rollbackError(rollbackCommit, uid, claimName, err)
+		p.rollbackError(claimName, err)
 	}
 	if kept {
-		p.rules.voice.kept(uid, claimName)
+		klog.Warningf("%s: claim %s (%s): rollback: not everything was released: keeping its record for its Unprepare or its next Prepare",
+			p.rules.Name, claimName, uid)
 	}
+}
+
+// rollbackError logs an error of the rollback of a failed Prepare of the
+// claim claimName.
+func (p *Plugin) rollbackError(claimName string, err error) {
+	klog.Errorf("%s: claim %s: rollback: %v", p.rules.Name, claimName, err)
 }
 
 // rollback releases the devices of a claim whose Prepare failed after the
@@ -570,7 +622,7 @@ func (p *Plugin) rollback(ctx context.Context, uid, claimName string, failed fun
 	}
 	if prep.Lease != "" {
 		if err := p.lender.Revoke(rctx, lendOf(p.st.Snapshot(), prep), claimName); err != nil {
-			p.rules.voice.rollbackError(rollbackRevoke, uid, claimName, err)
+			p.rollbackError(claimName, err)
 		}
 	}
 	if failed != nil {
@@ -578,7 +630,7 @@ func (p *Plugin) rollback(ctx context.Context, uid, claimName string, failed fun
 	}
 	if refs := grantRefs(p.records(), prep); len(refs) > 0 {
 		if err := p.engine.ReleaseGrants(rctx, refs, engine.ReleaseRollback); err != nil {
-			p.rules.voice.rollbackError(rollbackRelease, uid, claimName, err)
+			p.rollbackError(claimName, err)
 		}
 	}
 	p.failedPrepare(rctx, uid)
@@ -590,8 +642,7 @@ func (p *Plugin) rollback(ctx context.Context, uid, claimName string, failed fun
 // did not mount again are mounted, and the claims of them have their CDI
 // devices again then.
 func (p *Plugin) preparedAgain(ctx context.Context, claim *resourcev1.ResourceClaim, prep *state.Preparation) kubeletplugin.PrepareResult {
-	v := p.rules.voice
-	v.alreadyPrepared(prep)
+	klog.V(3).Infof("%s: claim %s (%s) was already prepared", p.rules.Name, prep.ClaimName, prep.UID)
 	if prep.State == state.PreparationPrepared || prep.State == state.PreparationUnpreparing {
 		if err := stays(prep, state.TriggerPrepare); err != nil {
 			klog.Errorf("%s: claim %s: %v", p.rules.Name, prep.ClaimName, err)
@@ -609,7 +660,7 @@ func (p *Plugin) preparedAgain(ctx context.Context, claim *resourcev1.ResourceCl
 		if serr := stays(prep, state.TriggerPrepare); serr != nil {
 			klog.Errorf("%s: claim %s: %v", p.rules.Name, prep.ClaimName, serr)
 		}
-		return failed(v.remountError(claim, err))
+		return failed(fmt.Errorf("%w; unprepare the claim (delete its pods) to prepare it anew", err))
 	}
 	return prepareResult(p.preparation(prep.UID), p.rules.CDIKind)
 }
@@ -644,20 +695,26 @@ func (p *Plugin) remount(ctx context.Context, prep *state.Preparation) error {
 		delete(p.unrestored, prep.UID)
 		p.mu.Unlock()
 		if why == nil {
-			why = errors.New("its node mount is not mounted")
+			why = errNotMounted
 		}
-		p.rules.voice.remounted(prep, mounts, why)
+		klog.Infof("%s: claim %s (%s) has its CDI devices again (it had none: %v); mounted again: %v",
+			p.rules.Name, prep.ClaimName, prep.UID, why, mounts)
 	}
 	return errors.Join(err, p.writeCDI(""))
 }
 
 // UnprepareResourceClaims unprepares the claims of kubelet, each in its
-// turn.
+// turn. The error of a claim is logged, and returned with the driver and
+// the claim.
 func (p *Plugin) UnprepareResourceClaims(ctx context.Context, claims []kubeletplugin.NamespacedObject) (map[types.UID]error, error) {
 	klog.V(5).Infof("NodeUnprepareResource is called: number of claims: %d", len(claims))
 	response := map[types.UID]error{}
 	for _, claim := range claims {
-		response[claim.UID] = p.unprepareClaim(ctx, string(claim.UID))
+		err := p.unprepareClaim(ctx, string(claim.UID))
+		if err != nil {
+			err = p.claimError(claim.Namespace, claim.Name, err)
+		}
+		response[claim.UID] = err
 	}
 	return response, nil
 }
@@ -681,7 +738,10 @@ func (p *Plugin) unprepareClaim(ctx context.Context, uid string) error {
 	ctx, end := p.engine.Request(ctx)
 	defer end()
 	claimName, err := p.unprepare(ctx, uid)
-	return p.rules.voice.unprepared(uid, claimName, err)
+	if err == nil && claimName != "" {
+		klog.Infof("%s: unprepared claim %s (%s)", p.rules.Name, claimName, uid)
+	}
+	return err
 }
 
 // unprepare releases the devices of a claim and removes its preparation,
@@ -693,15 +753,19 @@ func (p *Plugin) unprepareClaim(ctx context.Context, uid string) error {
 // it; its error is the Unprepare's after the release of a prepared claim
 // with the rule FailUnprepareOnCDI, logged otherwise.
 func (p *Plugin) unprepare(ctx context.Context, uid string) (string, error) {
-	v := p.rules.voice
 	prep := p.preparation(uid)
 	if prep == nil {
-		v.notPrepared(uid)
+		klog.V(3).Infof("%s: claim %s is not prepared, nothing to release", p.rules.Name, uid)
 		return "", nil
 	}
 	isPrepared := prep.Prepared()
 	if !isPrepared {
-		v.unfinished(prep, serialsOf(p.records(), prep))
+		what := "whose Prepare did not finish"
+		if prep.State == state.PreparationStale {
+			what = "not prepared any more (prepared in another boot)"
+		}
+		klog.Infof("%s: unpreparing claim %s (%s), %s: releasing devices %s",
+			p.rules.Name, prep.ClaimName, prep.UID, what, strings.Join(serialsOf(p.records(), prep), ", "))
 	}
 	companion := prep.Lease != ""
 	if companion {
@@ -709,7 +773,7 @@ func (p *Plugin) unprepare(ctx context.Context, uid string) (string, error) {
 	}
 	if isPrepared {
 		if err := p.commit(ctx, func(doc *store.Document) error { return unpreparing(doc, p.rules.Name, uid) }); err != nil {
-			return prep.ClaimName, v.unprepareError(prep, isPrepared, err)
+			return prep.ClaimName, err
 		}
 	}
 	err := p.release(ctx, prep, companion)
@@ -719,9 +783,8 @@ func (p *Plugin) unprepare(ctx context.Context, uid string) (string, error) {
 		cerr = nil
 	}
 	if err != nil {
-		return prep.ClaimName, v.unprepareError(prep, isPrepared, err)
+		return prep.ClaimName, err
 	}
-	klog.V(5).Infof("Freeing devices from claim %v", uid)
 	return prep.ClaimName, cerr
 }
 
@@ -847,16 +910,20 @@ func (p *Plugin) PreparedResult(uid string, n int) (string, state.DeviceInfo, bo
 	return "", state.DeviceInfo{}, false
 }
 
+// errNotMounted is why a prepared claim has no CDI devices when the
+// recovery does not say.
+var errNotMounted = errors.New("its node mount is not mounted")
+
 // Recovered logs what the recovery of the engine (rec, nil for a LOST
-// store) left of the driver's claims at a start: the memdevs of prepared
-// claims that are gone, the count of the prepared claims (pool driver), the
-// claims without CDI devices because a node mount did not mount again.
-func (p *Plugin) Recovered(rec *engine.Recovered, loadedFrom string) {
+// store) left of the driver's claims at a start: the count of the prepared
+// claims, the memdevs of them that are gone, the claims without CDI devices
+// because a node mount did not mount again.
+func (p *Plugin) Recovered(rec *engine.Recovered) {
 	if p == nil || rec == nil {
 		return
 	}
 	r := p.records()
-	p.rules.voice.loaded(r, loadedFrom)
+	logLoaded(r, p.rules.Name)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for i := range r.Preparations {
@@ -864,20 +931,22 @@ func (p *Plugin) Recovered(rec *engine.Recovered, loadedFrom string) {
 		if prep.Driver != p.rules.Name || prep.State != state.PreparationUnrestored {
 			continue
 		}
-		mount, found, why := unrestoredOf(r, prep, rec)
-		if why = p.rules.voice.unrestoredWhy(why); why != nil {
-			p.unrestored[prep.UID] = why
+		mount, why := unrestoredOf(r, prep, rec)
+		if why == nil {
+			why = errNotMounted
 		}
+		p.unrestored[prep.UID] = why
 		if prep.Lease == "" {
-			p.rules.voice.unrestored(prep, found, mount, why)
+			klog.Errorf("%s: claim %s (%s) has no CDI device: node mount %q: %v; a new container of it fails on its CDI device, its Prepare again tries to mount it again, its Unprepare releases the device",
+				p.rules.Name, prep.ClaimName, prep.UID, mount, why)
 		}
 	}
 }
 
 // unrestoredOf returns the node mount of the first REALISED_UNRESTORED grant
-// of a preparation, whether it has one, and why the recovery rec did not
-// mount it again (nil if it does not say).
-func unrestoredOf(r *state.Records, prep *state.Preparation, rec *engine.Recovered) (string, bool, error) {
+// of a preparation and why the recovery rec did not mount it again (nil if
+// it does not say).
+func unrestoredOf(r *state.Records, prep *state.Preparation, rec *engine.Recovered) (string, error) {
 	var why error
 	mount, found := "", false
 	for _, res := range prep.Results {
@@ -892,13 +961,13 @@ func unrestoredOf(r *state.Records, prep *state.Preparation, rec *engine.Recover
 			why = rec.Why[g.Ref]
 		}
 	}
-	return mount, found, why
+	return mount, why
 }
 
 // logLoaded logs the prepared claims of the driver name that the records r
-// loaded from have, and the devices of them whose memdev is gone (GONE
-// after the recovery).
-func logLoaded(r *state.Records, name, from string) {
+// have at a start, and the devices of them whose memdev is gone (GONE after
+// the recovery).
+func logLoaded(r *state.Records, name string) {
 	n := 0
 	for i := range r.Preparations {
 		prep := &r.Preparations[i]
@@ -917,7 +986,7 @@ func logLoaded(r *state.Records, name, from string) {
 			}
 		}
 	}
-	klog.Infof("%s: loaded %d prepared claims from %s", name, n, from)
+	klog.Infof("%s: loaded %d prepared claims", name, n)
 }
 
 // writeCDI writes the CDI spec of the prepared claims of the driver and of
@@ -934,7 +1003,7 @@ func (p *Plugin) writeCDI(pending string) error {
 	if err != nil {
 		return err
 	}
-	return writeCDISpec(p.cdi, spec, p.rules.CDISpecName, p.rules.voice)
+	return writeCDISpec(p.cdi, spec, p.rules.Name, p.rules.CDISpecName)
 }
 
 // WriteCDI writes the CDI spec of the prepared claims of the driver, or

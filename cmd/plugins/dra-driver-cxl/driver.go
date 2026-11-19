@@ -300,7 +300,7 @@ func newDriverRules(config *pluginConfig, cxlFlags *CXLFlags) driverRules {
 	r := driverRules{local: dra.LocalRules(filepath.Join(config.KubeletPluginDir, mountsDirName))}
 	if cxlFlags.PoolDriverName != "" {
 		poolDir := filepath.Join(filepath.Dir(config.KubeletPluginDir), cxlFlags.PoolDriverName)
-		pool := dra.PoolRules(cxlFlags.PoolDriverName, filepath.Join(poolDir, mountsDirName), config.stateFile())
+		pool := dra.PoolRules(cxlFlags.PoolDriverName, filepath.Join(poolDir, mountsDirName))
 		r.pool = &pool
 	}
 	return r
@@ -394,8 +394,6 @@ type frontEnds struct {
 	pool      *dra.Plugin // nil when the pool driver is disabled
 	publisher *dra.Publisher
 	watcher   *provenance.Watcher
-	// stateFile is the path of the document of the store.
-	stateFile string
 }
 
 // newFrontEnds returns the DRA drivers of rules over the store st and the
@@ -404,7 +402,7 @@ type frontEnds struct {
 // driver unless it is disabled (rules.pool nil). The Prepares and
 // Unprepares of both have the publisher rescan.
 func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, st *store.Store, devices *deviceEngine, watcher *provenance.Watcher, rules driverRules) (*frontEnds, error) {
-	fe := &frontEnds{watcher: watcher, stateFile: config.stateFile()}
+	fe := &frontEnds{watcher: watcher}
 	publisher, err := dra.NewPublisher(dra.PublishOptions{
 		Config:      driverConfig.publishConfig(),
 		NodeName:    cxlFlags.NodeName,
@@ -485,7 +483,7 @@ func (fe *frontEnds) recover(ctx context.Context, cdiRoot string, driverConfig *
 	if err != nil {
 		return err
 	}
-	fe.pool.Recovered(rec, fe.stateFile)
+	fe.pool.Recovered(rec)
 	devices.setGuard(localPoolGuard(fe.pool, fe.watcher))
 	// the first list of the pool ResourceSlices, after the recovery: it
 	// gates the publication of local memdevs
@@ -515,7 +513,7 @@ func (fe *frontEnds) recover(ctx context.Context, cdiRoot string, driverConfig *
 	fe.local.SetCDI(cache)
 	fe.pool.SetCDI(cache)
 	// The CDI specs of the claims prepared before a restart.
-	fe.local.Recovered(rec, "")
+	fe.local.Recovered(rec)
 	if err := fe.local.WriteCDI(); err != nil {
 		return fmt.Errorf("failed to create new NodeState: %v", err)
 	}

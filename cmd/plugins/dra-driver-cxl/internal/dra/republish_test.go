@@ -105,7 +105,7 @@ func TestRequestsAskForRescan(t *testing.T) {
 	}{
 		{"a local Prepare", func() { e.mustPrepare(e.local, localClaim("u1", localDev, envBlockSize)) }, true},
 		{"a Prepare of a prepared claim", func() { e.mustPrepare(e.local, localClaim("u1", localDev, envBlockSize)) }, false},
-		{"a refused Prepare", func() { wantErrText(t, e.prepare(e.local, noAllocation).Err, "no allocation found") }, false},
+		{"a refused Prepare", func() { wantErrText(t, e.prepare(e.local, noAllocation).Err, "no allocation") }, false},
 		{"a persistent Prepare", func() { e.mustPrepare(e.local, localClaim("u2", pmemDev, -device.SharesUnlimited, cfgBlock)) }, true},
 		{"a DRAM Prepare", func() { e.mustPrepare(e.local, localClaim("u3", device.DRAMDeviceName, 64*mib)) }, true},
 		{"a pool Prepare", func() { e.mustPrepare(e.pool, poolClaim("p1", "pooled0", poolExclusiveData)) }, true},

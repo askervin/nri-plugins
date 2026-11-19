@@ -765,10 +765,15 @@ class Trace:
             return
         if self.on_lease_mount(t, node, msg):
             return
-        pm = re.search(r"claim \S+?/(\S+): prepared (\S+) \(.*read-only (\w+)\) as \S+ \S+ dax (\S+)", msg)
+        pm = re.search(r"claim \S+?/(\S+): prepared (\S+) \(.*read-only (\w+)\) as \S+ \S+ dax (\S+) .*?node \S+( exclusive| \d+ shares?)?$", msg)
         if pm:
-            self.emit(t, "drv", "%s %s: prepared %s %s" % (
-                node, self.lease_who(pm.group(1)), pm.group(4), "ro" if pm.group(3) == "true" else "rw"))
+            ro = "ro" if pm.group(3) == "true" else "rw"
+            if pm.group(5):
+                # The shares of a shared local memdev.
+                self.emit(t, "drv", "%s %s: %s %s %s" % (
+                    node, self.lease_who(pm.group(1)), pm.group(4), ro, "excl" if "exclusive" in pm.group(5) else "share"))
+            else:
+                self.emit(t, "drv", "%s %s: prepared %s %s" % (node, self.lease_who(pm.group(1)), pm.group(4), ro))
             return
         um = re.search(r"unprepared claim \S+?/(\S+)", msg)
         if um:
@@ -778,13 +783,6 @@ class Trace:
         rm = re.match(r"engine: \w+ memdev \S+ \((mem\d+)\): released$", msg)
         if rm:
             self.emit(t, "drv", "%s released %s" % (node, rm.group(1)))
-            return
-        lo = re.match(r"local: memdev (\S+) \(serial (\S+)\): claim (\S+) request \S+: shared (\S+) size \d+ read-only (\w+) (.*)$", msg)
-        if lo:
-            claim = self.uid_claim.get(lo.group(3)[:8], lo.group(3)[:8])
-            self.emit(t, "drv", "%s %s: %s %s %s" % (
-                node, self.lease_who(claim), lo.group(4), "ro" if lo.group(5) == "true" else "rw",
-                "excl" if "exclusive" in lo.group(6) else "share"))
             return
         # The other lines of a shared local device (05-status-DRV section 5).
         sm = re.match(r"engine: local memdev \S+ \(\S+\): (.*)$", msg)
@@ -845,7 +843,7 @@ class Trace:
         """Emit the bind, unbind and busy unmount lines of fs leases in MSG; return True if MSG was one."""
         bm = re.search(r": lease ([0-9a-f]{8}): bound \S+ at (\S+?)( again)?$", msg)
         um = re.search(r": lease ([0-9a-f]{8}): unbound (\S+)$", msg)
-        busy = re.search(r"unpreparing claim \S+: lease ([0-9a-f]{8}): unmounting \S+: .*busy", msg)
+        busy = re.search(r"claim \S+: lease ([0-9a-f]{8}): unmounting \S+: .*busy", msg)
         if bm:
             self.emit(t, "drv", "%s %s: mounted %s%s" % (node, LEASE_MARK % bm.group(1), os.path.basename(bm.group(2)),
                                                        " again" if bm.group(3) else ""))

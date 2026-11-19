@@ -242,6 +242,14 @@ holding() {
     done
 }
 
+prepared-line() {
+    # Usage: prepared-line NAME READ-ONLY USES
+    #
+    # Print the log line of the driver of the Prepare of claim NAME of the
+    # shared device, READ-ONLY true or false, USES "exclusive" or "1 share".
+    echo "$DRA_LOCAL_DRIVER: claim $DRA_NS/$1: prepared $DRA_LOCAL_DEVICE (serial $DRA_LOCAL_SERIAL, shared true, mode dax, read-only $2) as $SHARED_MEMDEV $SHARED_REGION dax $SHARED_DAX size $DRA_LOCAL_SIZE node -1 $3"
+}
+
 plugin-log-has() {
     # Usage: plugin-log-has TEXT
     #
@@ -355,7 +363,7 @@ SHARED_MEMDEV="$DRA_LOCAL_SHARED_MEMDEV"
 SHARED_DEV=$(dra-value "$DRA_MEMDEV" "dax_slices()[0]['dev']")
 env-check writer 0
 cdi-check "$WRITER_UID" 0
-plugin-log-has "claim $WRITER_UID request mem: shared $SHARED_DAX size $DRA_LOCAL_SIZE read-only false exclusive"
+plugin-log-has "$(prepared-line writer false exclusive)"
 # The new region was zeroed once: where dra-local-seed left stale bytes,
 # the writer finds zeros.
 plugin-log-has "zeroed new shared $SHARED_DAX size $DRA_LOCAL_SIZE in "
@@ -400,7 +408,7 @@ for r in reader-a reader-b; do
     done
     env-check "$r" 1
     cdi-check "$CLAIM_UID" 1
-    plugin-log-has "claim $CLAIM_UID request mem: shared $SHARED_DAX size $DRA_LOCAL_SIZE read-only true 1 share"
+    plugin-log-has "$(prepared-line "$r" true "1 share")"
 done
 # The same device node in both, the region of the writer.
 dra-local-shared-wait "$VM2" readers "${READER_UID[reader-a]}" "${READER_UID[reader-b]}"

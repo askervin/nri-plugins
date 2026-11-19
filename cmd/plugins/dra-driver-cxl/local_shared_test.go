@@ -193,8 +193,8 @@ func TestLocalSharedClaims(t *testing.T) {
 	}
 	lines := logs()
 	wantLogLine(t, lines, "zeroed new shared dax0.0 size 1073741824 in ")
-	wantLogLine(t, lines, "claim u1 request mem: shared dax0.0 size 1073741824 read-only false exclusive")
-	wantLogLine(t, lines, "claim u2 request mem: shared dax0.0 size 1073741824 read-only true 1 share")
+	wantLogLine(t, lines, "claim demo/claim-u1: prepared memdev-c100e2e1 (serial 0xc100e2e1, shared true, mode dax, read-only false) as mem0 region0 dax dax0.0 size 1073741824 node -1 exclusive")
+	wantLogLine(t, lines, "claim demo/claim-u2: prepared memdev-c100e2e1 (serial 0xc100e2e1, shared true, mode dax, read-only true) as mem0 region0 dax dax0.0 size 1073741824 node -1 1 share")
 	if got := zeroedOrReleasedLines(lines); len(got) != 1 {
 		t.Fatalf("lines of the zeroing and the release %q", got)
 	}
@@ -592,7 +592,7 @@ func TestPrepareSharedLocalRollback(t *testing.T) {
 	e.mustUnprepare("u0")
 	spec := filepath.Join(e.cdiDir, device.ClaimsCDISpecName+".yaml")
 	noErr(t, os.MkdirAll(filepath.Join(spec, "x"), 0o755))
-	wantErr(t, e.prepare(sharedClaim("u1", "1")), "failed to write CDI spec")
+	wantErr(t, e.prepare(sharedClaim("u1", "1")), "write CDI spec")
 	noErr(t, os.RemoveAll(spec))
 	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{}})
 	wantLocalRegionCount(t, e, 1, 0)

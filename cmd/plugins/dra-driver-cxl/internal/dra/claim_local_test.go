@@ -16,6 +16,7 @@ package dra
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strconv"
@@ -64,8 +65,8 @@ func TestLocalSlicedNUMA(t *testing.T) {
 	if g.State != state.GrantRealised || node < 0 || g.Got.Size != uint64(envBlockSize) {
 		t.Fatalf("grant %+v", g)
 	}
-	wantLogText(t, logs(), "local: memdev mem0 (serial 0xc100e2e1) region0: claim u1 request mem: slice "+g.Got.Dax+
-		" mode numa size 134217728 node "+strconv.Itoa(node))
+	wantLogText(t, logs(), "cxl.nri.io: claim demo/claim-u1: prepared "+localDev+
+		" (serial 0xc100e2e1, shared false, mode numa, read-only false) as mem0 region0 dax "+g.Got.Dax+" size 134217728 node "+strconv.Itoa(node))
 	info := e.local.ClaimInfo("u1")
 	want := state.DeviceInfo{RequestName: "mem", DeviceName: localDev, DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA,
 		SysfsPath: e.k.P("bus/cxl/devices/region0"), NUMANodes: []int{node}, NodeAffinities: []int{0},
@@ -124,9 +125,10 @@ func TestLocalSharedDax(t *testing.T) {
 	e.mustPrepare(e.local, localClaim("w1", localDev, -device.SharesUnlimited, cfgDax))
 	e.mustPrepare(e.local, localClaim("r1", localDev, -1, cfgDaxRO))
 	log := logs()
-	wantLogLine(t, log, "local: memdev mem1 (serial 0xc100e2e1): claim w1 request mem: shared dax0.0 size 1073741824 read-only false exclusive")
-	lines := logLines(log, "read-only true 1 share")
-	if len(lines) != 1 || !strings.Contains(lines[0], "claim r1 request mem: shared dax0.0 size 1073741824 read-only true 1 share") {
+	shared := "(serial 0xc100e2e1, shared true, mode dax, read-only %v) as mem1 region0 dax dax0.0 size 1073741824 node -1 %s"
+	wantLogLine(t, log, "cxl.nri.io: claim demo/claim-w1: prepared "+localDev+" "+fmt.Sprintf(shared, false, "exclusive"))
+	lines := logLines(log, " 1 share")
+	if len(lines) != 1 || !strings.HasSuffix(lines[0], "cxl.nri.io: claim demo/claim-r1: prepared "+localDev+" "+fmt.Sprintf(shared, true, "1 share")) {
 		t.Fatalf("shared lines %q", lines)
 	}
 	w, r := e.local.ClaimInfo("w1").Devices[0], e.local.ClaimInfo("r1").Devices[0]
@@ -210,8 +212,8 @@ func TestLocalPersistentFs(t *testing.T) {
 		w.Path != "/run/cxl-fs/C100F5E1" || w.ReadOnly || r.NodeMount != w.NodeMount || !r.ReadOnly {
 		t.Fatalf("device infos %+v %+v", w, r)
 	}
-	wantLogLine(t, logs(), "local: memdev mem1 (serial 0xc100f5e1) region1: claim w1 request mem: persistent "+w.BlockDevice+
-		` mode fs read-only false access "direct" fs "ext4"`)
+	wantLogLine(t, logs(), "cxl.nri.io: claim demo/claim-w1: prepared "+pmemDev+" (serial 0xc100f5e1, shared false, mode fs, read-only false)"+
+		" as mem1 region1 namespace namespace1.0 block "+w.BlockDevice+` access "direct" fs "ext4" mount "`+w.NodeMount+`" loop ""`)
 	for _, c := range []struct {
 		uid      string
 		readOnly bool

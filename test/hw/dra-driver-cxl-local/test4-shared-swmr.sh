@@ -141,14 +141,14 @@ echo "    again: $got"
 check "a later claim reads the data of the idle device" grep -qF "$TEXT2" <<< "$got"
 delete_all
 
-log "driver log of the shared device (local:)"
-driver_log 30m | grep -E "local: memdev" | sed 's/^[^]]*] //; s/^/    /' | tail -n 20
+log "driver log of the shared device (its prepared claims)"
+driver_log 30m | grep -E "cxl.nri.io: claim [^ ]+: prepared" | sed 's/^[^]]*] //; s/^/    /' | tail -n 20
 
 log "switching back to the sliced configuration releases the region"
 "$LIB_DIR/deploy.sh" sliced 2>&1 | grep -E '^\[' | sed 's/^/  deploy: /'
 check "no CXL region is left on the memdev" wait_for 120 "no regions" no_regions
 check "the memdev is published sliced again" \
     test "$(jget "$(slice_json)" 'j["attributes"]["shared"]["bool"]')" == False
-driver_log 5m | grep -E "local: memdev" | sed 's/^[^]]*] //; s/^/    /'
+driver_log 5m | grep -E "cxl.nri.io: claim [^ ]+: prepared" | sed 's/^[^]]*] //; s/^/    /'
 
 summary

@@ -66,11 +66,7 @@ func TestUnprepareRevokeFails(t *testing.T) {
 			nodes.setErrors(nil, errSteered)
 			err := e.unprepare(p, "c1")
 			revokeErr := "lease l1: revoking node 2 from demo/borrower/app: " + errSteered.Error()
-			want := "cxl-pool.nri.io: unpreparing claim demo/cxl-lease-l1: " + revokeErr
-			if local {
-				want = "error freeing devices: claim demo/cxl-lease-l1: " + revokeErr
-			}
-			wantErrText(t, err, want)
+			wantErrText(t, err, p.Name()+": claim demo/cxl-lease-l1: "+revokeErr)
 			e.wantState(p, "c1", state.PreparationUnpreparing)
 			if e.onlineBlocks() == 0 {
 				t.Fatal("the memory went offline after a failed revoke")
@@ -98,7 +94,7 @@ func TestUnprepareReleaseFails(t *testing.T) {
 		e.mustPrepare(e.local, localClaim("u1", localDev, envBlockSize, cfgDax))
 		dax := e.records().Grant(state.GrantRef{Claim: "u1"}).Got.Dax
 		e.k.FailWrite("bus/dax/devices/"+dax+"/size", syscall.EBUSY)
-		wantErrText(t, e.unprepare(e.local, "u1"), "error freeing devices: claim demo/claim-u1: ")
+		wantErrText(t, e.unprepare(e.local, "u1"), "cxl.nri.io: claim demo/claim-u1: ")
 		e.wantState(e.local, "u1", state.PreparationUnpreparing)
 		if e.cdiDevice(e.local, "claim-u1-0") == nil {
 			t.Fatal("no CDI device of an UNPREPARING claim")
@@ -125,7 +121,7 @@ func TestUnprepareReleaseFails(t *testing.T) {
 		mnt := filepath.Join(e.poolDir, "mounts", "c1af0001-direct")
 		e.k.SetBusy(mnt, true)
 		err := e.unprepare(e.pool, "u1")
-		wantErrText(t, err, "cxl-pool.nri.io: unpreparing claim demo/claim-u1: ")
+		wantErrText(t, err, "cxl-pool.nri.io: claim demo/claim-u1: ")
 		wantErrText(t, err, "device 0xc1af0001: unmounting "+mnt+": device or resource busy")
 		e.wantState(e.pool, "u1", state.PreparationUnpreparing)
 		if e.cdiDevice(e.pool, "claim-u1-0") != nil {
@@ -172,11 +168,11 @@ func TestUnprepareCDIFails(t *testing.T) {
 			mustOK(t, os.MkdirAll(filepath.Join(spec, "entry"), 0o755))
 			logs := klogCapture(t)
 			err := e.unprepare(p, "u1")
-			want := "failed to write CDI spec " + p.Rules().CDISpecName + ": "
+			want := "write CDI spec " + p.Rules().CDISpecName + ": "
 			if local {
-				wantErrText(t, err, "error freeing devices: "+want)
-				if strings.Contains(logs(), "Freed devices for claim 'u1'") {
-					t.Fatal("a failed Unprepare logged as freed")
+				wantErrText(t, err, p.Name()+": claim demo/claim-u1: "+want)
+				if strings.Contains(logs(), "unprepared claim") {
+					t.Fatal("a failed Unprepare logged as unprepared")
 				}
 			} else {
 				mustOK(t, err)
@@ -205,7 +201,7 @@ func TestUnprepareFailedAfterUnmount(t *testing.T) {
 	e.mustPrepare(e.local, localClaim("w1", pmemDev, -device.SharesUnlimited, cfgFsRW))
 	mnt := e.local.ClaimInfo("w1").Devices[0].NodeMount
 	e.k.FailCommand("cxl disable-region", syscall.EIO)
-	wantErrText(t, e.unprepare(e.local, "w1"), "error freeing devices: claim demo/claim-w1: ")
+	wantErrText(t, e.unprepare(e.local, "w1"), "cxl.nri.io: claim demo/claim-w1: ")
 	e.wantState(e.local, "w1", state.PreparationUnpreparing)
 	if mi, err := e.k.Kernel().Mounted(mnt); err != nil || mi != nil {
 		t.Fatalf("node mount %s: %+v %v", mnt, mi, err)

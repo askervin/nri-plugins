@@ -113,7 +113,7 @@ func TestPoolDaxAndShared(t *testing.T) {
 	// device is touched
 	e.mark()
 	res := e.prepare(e.pool, poolClaim("s3", "shared0", poolSharedData, cfgNUMA))
-	wantErrText(t, res.Err, "cxl-pool.nri.io: preparing claim demo/claim-s3: device shared0 serial 0xc1ae0001: ")
+	wantErrText(t, res.Err, "cxl-pool.nri.io: claim demo/claim-s3: device shared0 serial 0xc1ae0001: ")
 	e.wantNoCommands("a refused claim")
 	for _, uid := range []string{"x1", "s1", "s2"} {
 		e.mustUnprepare(e.pool, uid)
@@ -209,8 +209,8 @@ func TestPoolRollbackKept(t *testing.T) {
 		`{"serial":"0xc1ee0002","shared":false,"size":268435456}`)
 	logs := klogCapture(t)
 	wantErrText(t, e.prepare(e.pool, claim).Err, "that the plugin did not create")
-	wantLogText(t, logs(), "cxl-pool.nri.io: rollback: claim demo/claim-u1 (u1): not everything was released: keeping its record in "+
-		e.stateFile()+" for its Unprepare or its next Prepare")
+	wantLogText(t, logs(), "cxl-pool.nri.io: claim demo/claim-u1 (u1): rollback: not everything was released: "+
+		"keeping its record for its Unprepare or its next Prepare")
 	prep := e.preparation(e.pool, "u1")
 	if prep == nil || prep.State != state.PreparationKept || len(prep.Results) != 1 || prep.Results[0].Index != 0 {
 		t.Fatalf("preparation %+v", prep)
@@ -237,7 +237,7 @@ func TestPoolSchedulerHold(t *testing.T) {
 	logs := klogCapture(t)
 	xnuma := poolClaim("xnuma", "pooled0", "")
 	res := e.prepare(e.pool, xnuma)
-	wantErrText(t, res.Err, "cxl-pool.nri.io: preparing claim demo/claim-xnuma: ")
+	wantErrText(t, res.Err, "cxl-pool.nri.io: claim demo/claim-xnuma: ")
 	e.wantNoCommands("a Prepare without status data")
 	e.wantState(e.pool, "xnuma", state.PreparationUnknown)
 	if s := e.pool.Serials(); len(s) != 0 {
@@ -250,7 +250,7 @@ func TestPoolSchedulerHold(t *testing.T) {
 	}
 	e.wantNoCommands("an Unprepare without a record")
 	xdax := poolClaim("xdax", "pooled0", "", cfgDax)
-	wantErrText(t, e.prepare(e.pool, xdax).Err, "cxl-pool.nri.io: preparing claim demo/claim-xdax: ")
+	wantErrText(t, e.prepare(e.pool, xdax).Err, "cxl-pool.nri.io: claim demo/claim-xdax: ")
 	e.wantNoCommands("a Prepare without status data")
 	e.mustPrepare(e.pool, setPoolData(xdax, "pooled0", poolExclusiveData))
 	if d := e.devices(e.pool, "xdax"); len(d) != 1 || d[0].Mode != api.ModeDax {
@@ -275,7 +275,7 @@ func TestPoolRollbackOutlivesContext(t *testing.T) {
 	claim := poolClaim("u1", "pooled0", poolExclusiveData)
 	res, err := e.pool.PrepareResourceClaims(ctx, []*resourcev1.ResourceClaim{claim})
 	mustOK(t, err)
-	wantErrText(t, res[claim.UID].Err, "failed to write CDI spec")
+	wantErrText(t, res[claim.UID].Err, "write CDI spec")
 	mustOK(t, os.Remove(e.cdiDir))
 	mustOK(t, os.MkdirAll(e.cdiDir, 0o755))
 	e.check("rolled back")

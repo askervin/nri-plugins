@@ -62,18 +62,17 @@ func TestRemountLocal(t *testing.T) {
 	mnt := filepath.Join(e.dir, "mounts", "c100f5e1-direct")
 	logs := klogCapture(t)
 	why := e.unrestore(e.local, "r1", mnt, dev)
-	wantLogText(t, logs(), "claim demo/claim-r1 (r1) has no CDI device: "+why.Error()+"; a new container of it fails on its CDI device, "+
-		"its Prepare again tries to mount it again, its Unprepare releases the device")
+	wantLogText(t, logs(), "cxl.nri.io: claim demo/claim-r1 (r1) has no CDI device: node mount \""+mnt+"\": "+why.Error()+
+		"; a new container of it fails on its CDI device, its Prepare again tries to mount it again, its Unprepare releases the device")
 	res := e.prepare(e.local, claim)
-	wantErrText(t, res.Err, "claim demo/claim-r1: ")
+	wantErrText(t, res.Err, "cxl.nri.io: claim demo/claim-r1: ")
 	wantErrText(t, res.Err, "; unprepare the claim (delete its pods) to prepare it anew")
 	e.wantState(e.local, "r1", state.PreparationUnrestored)
 	e.k.SetMountError(dev, nil, "")
 	e.mustPrepare(e.local, claim)
 	e.wantState(e.local, "r1", state.PreparationPrepared)
 	log := logs()
-	wantLogText(t, log, "local: claim r1: "+mnt+" is mounted again (it was not: "+why.Error()+")")
-	wantLogText(t, log, "claim demo/claim-r1 (r1): its devices are restored: it has its CDI devices again")
+	wantLogText(t, log, "cxl.nri.io: claim demo/claim-r1 (r1) has its CDI devices again (it had none: "+why.Error()+"); mounted again: ["+mnt+"]")
 	if e.cdiDevice(e.local, "claim-r1-0") == nil || e.local.Unrestored()["r1"] != nil {
 		t.Fatalf("not restored: %v", e.local.Unrestored())
 	}
@@ -82,8 +81,7 @@ func TestRemountLocal(t *testing.T) {
 }
 
 // A claim of the pool driver whose node mount the start could not mount
-// again, in the pool driver's words; its Unprepare while unrestored
-// releases it.
+// again; its Unprepare while unrestored releases it.
 func TestRemountPool(t *testing.T) {
 	e := newDriverEnv(t, nil, poolPmemSpec(serialPoolP))
 	dev := e.formatPmem(serialPoolP, "erofs")
@@ -93,15 +91,15 @@ func TestRemountPool(t *testing.T) {
 	logs := klogCapture(t)
 	why := e.unrestore(e.pool, "r1", mnt, dev)
 	log := logs()
-	wantLogText(t, log, "cxl-pool.nri.io: claim demo/claim-r1 (r1) has no CDI device: its node mount "+mnt+" is not mounted ("+why.Error()+
-		"); a new container of it fails on its CDI device, its Prepare again tries to mount it again, its Unprepare releases the device")
-	wantLogText(t, log, "cxl-pool.nri.io: loaded 1 prepared claims from "+e.stateFile())
-	wantErrText(t, e.prepare(e.pool, claim).Err, "cxl-pool.nri.io: preparing claim demo/claim-r1: ")
+	wantLogText(t, log, "cxl-pool.nri.io: claim demo/claim-r1 (r1) has no CDI device: node mount \""+mnt+"\": "+why.Error()+
+		"; a new container of it fails on its CDI device, its Prepare again tries to mount it again, its Unprepare releases the device")
+	wantLogText(t, log, "cxl-pool.nri.io: loaded 1 prepared claims")
+	wantErrText(t, e.prepare(e.pool, claim).Err, "cxl-pool.nri.io: claim demo/claim-r1: ")
 	e.wantState(e.pool, "r1", state.PreparationUnrestored)
 	e.k.SetMountError(dev, nil, "")
 	e.mustPrepare(e.pool, claim)
 	e.wantState(e.pool, "r1", state.PreparationPrepared)
-	wantLogText(t, logs(), "cxl-pool.nri.io: claim demo/claim-r1: "+mnt+" is mounted again: the claims of it have their CDI devices again")
+	wantLogText(t, logs(), "cxl-pool.nri.io: claim demo/claim-r1 (r1) has its CDI devices again (it had none: "+why.Error()+"); mounted again: ["+mnt+"]")
 	if e.cdiDevice(e.pool, "claim-r1-0") == nil {
 		t.Fatal("no CDI device after the remount")
 	}

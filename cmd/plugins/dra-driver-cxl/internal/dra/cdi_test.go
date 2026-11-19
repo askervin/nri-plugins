@@ -28,7 +28,6 @@ import (
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -200,100 +199,46 @@ func TestCDISpecsOfALostStore(t *testing.T) {
 }
 
 // writeCDISpec writes a spec of devices and removes the spec file of no
-// devices; writeCDI writes nothing without a CDI cache.
+// devices, its write error wrapped; writeCDI writes nothing without a CDI
+// cache.
 func TestWriteCDISpec(t *testing.T) {
 	dir := t.TempDir()
 	cache, err := cdiapi.NewCache(cdiapi.WithSpecDirs(dir), cdiapi.WithAutoRefresh(false))
 	mustOK(t, err)
-	v := PoolRules(device.PoolDriverName, "", "").voice
-	spec := &cdiSpecs.Spec{Kind: device.PoolCDIKind, Devices: []cdiSpecs.Device{{Name: "claim-u1-0",
-		ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{"CXL_CLAIM_u1_0=1"}}}}}
-	mustOK(t, writeCDISpec(cache, spec, device.PoolCDISpecName, v))
-	m, _ := filepath.Glob(filepath.Join(dir, device.PoolCDISpecName+".*"))
-	if len(m) != 1 || spec.Version == "" {
-		t.Fatalf("spec files %v, version %q", m, spec.Version)
+	name, driver := device.PoolCDISpecName, device.PoolDriverName
+	spec := func() *cdiSpecs.Spec {
+		return &cdiSpecs.Spec{Kind: device.PoolCDIKind, Devices: []cdiSpecs.Device{{Name: "claim-u1-0",
+			ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{"CXL_CLAIM_u1_0=1"}}}}}
+	}
+	written := spec()
+	mustOK(t, writeCDISpec(cache, written, driver, name))
+	m, _ := filepath.Glob(filepath.Join(dir, name+".*"))
+	if len(m) != 1 || written.Version == "" {
+		t.Fatalf("spec files %v, version %q", m, written.Version)
 	}
 	data, err := os.ReadFile(m[0])
 	mustOK(t, err)
 	if !strings.Contains(string(data), "claim-u1-0") {
 		t.Fatalf("spec\n%s", data)
 	}
-	mustOK(t, writeCDISpec(cache, &cdiSpecs.Spec{Kind: device.PoolCDIKind}, device.PoolCDISpecName, v))
+	mustOK(t, writeCDISpec(cache, &cdiSpecs.Spec{Kind: device.PoolCDIKind}, driver, name))
 	if m, _ := filepath.Glob(filepath.Join(dir, "*")); len(m) != 0 {
 		t.Fatalf("left %v", m)
 	}
 	// again: nothing to remove is not an error
-	mustOK(t, writeCDISpec(cache, &cdiSpecs.Spec{Kind: device.PoolCDIKind}, device.PoolCDISpecName, v))
+	mustOK(t, writeCDISpec(cache, &cdiSpecs.Spec{Kind: device.PoolCDIKind}, driver, name))
+	// the spec file a directory with an entry: the write fails
+	mustOK(t, os.MkdirAll(filepath.Join(dir, name+".yaml", "entry"), 0o755))
+	err = writeCDISpec(cache, spec(), driver, name)
+	wantErrText(t, err, "write CDI spec "+name+": ")
+	if errors.Unwrap(err) == nil {
+		t.Fatalf("the error %v is not wrapped", err)
+	}
 	st, err := store.Open(t.Context(), store.Options{Dir: t.TempDir(), BootID: "b1"})
 	mustOK(t, err)
 	defer func() { _ = st.Close() }()
-	p := &Plugin{rules: PoolRules(device.PoolDriverName, "", ""), st: st}
+	p := &Plugin{rules: PoolRules(device.PoolDriverName, ""), st: st}
 	mustOK(t, p.WriteCDI())
-}
-
-// The words of the two drivers about their CDI specs: cxl.nri.io's without
-// a prefix and its errors not wrapped, the pool driver's with its name and
-// its errors wrapped (and no line for the removal of an empty spec).
-func TestCDIWords(t *testing.T) {
-	for _, rules := range []SourceRules{LocalRules(""), PoolRules(device.PoolDriverName, "", "")} {
-		t.Run(rules.Name, func(t *testing.T) {
-			dir := t.TempDir()
-			cache, err := cdiapi.NewCache(cdiapi.WithSpecDirs(dir), cdiapi.WithAutoRefresh(false))
-			mustOK(t, err)
-			name := rules.CDISpecName
-			spec := func() *cdiSpecs.Spec {
-				return &cdiSpecs.Spec{Kind: rules.CDIKind, Devices: []cdiSpecs.Device{{Name: "claim-u1-0",
-					ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{"CXL_CLAIM_u1_0=1"}}}}}
-			}
-			logs := klogtest.Capture(t, 5)
-			mustOK(t, writeCDISpec(cache, spec(), name, rules.voice))
-			mustOK(t, writeCDISpec(cache, &cdiSpecs.Spec{Kind: rules.CDIKind}, name, rules.voice))
-			// the spec file a directory with an entry: the write fails
-			mustOK(t, os.MkdirAll(filepath.Join(dir, name+".yaml", "entry"), 0o755))
-			err = writeCDISpec(cache, spec(), name, rules.voice)
-			wantErrText(t, err, "failed to write CDI spec "+name+": ")
-			wrote, removed := "Wrote CDI spec "+name+" with 1 devices", "Removed empty CDI spec "+name
-			if rules.Source == state.SourcePool {
-				wrote, removed = rules.Name+": wrote CDI spec "+name+" with 1 devices", ""
-			}
-			out := logs()
-			wantLogText(t, out, wrote)
-			if removed != "" {
-				wantLogText(t, out, removed)
-			} else if strings.Contains(out, "Removed empty CDI spec") {
-				t.Fatalf("a removal line of the pool driver:\n%s", out)
-			}
-			if wrapped := errors.Unwrap(err) != nil; wrapped != (rules.Source == state.SourcePool) {
-				t.Fatalf("the error %v wrapped: %v", err, wrapped)
-			}
-			if verr := rules.voice.cdiVersionError(errSteered); rules.Source == state.SourcePool {
-				if verr.Error() != "CDI spec version: "+errSteered.Error() || !errors.Is(verr, errSteered) {
-					t.Fatalf("version error %v", verr)
-				}
-			} else if verr.Error() != "failed to get minimum required CDI spec version: "+errSteered.Error() || errors.Is(verr, errSteered) {
-				t.Fatalf("version error %v", verr)
-			}
-		})
-	}
-}
-
-// The words of the two drivers about the errors of a rollback, by step.
-func TestRollbackWords(t *testing.T) {
-	want := map[string][]string{
-		device.DriverName: {"claim demo/c1: rollback: " + errSteered.Error(), "claim demo/c1: rollback: " + errSteered.Error(),
-			"claim u1: rollback: " + errSteered.Error(), "claim demo/c1: rollback: " + errSteered.Error()},
-		device.PoolDriverName: {"cxl-pool.nri.io: rollback: claim demo/c1: " + errSteered.Error(), "cxl-pool.nri.io: rollback: " + errSteered.Error(),
-			"cxl-pool.nri.io: claim demo/c1: " + errSteered.Error(), "cxl-pool.nri.io: " + errSteered.Error()},
-	}
-	for _, rules := range []SourceRules{LocalRules(""), PoolRules(device.PoolDriverName, "", "")} {
-		for i, step := range []rollbackStep{rollbackRevoke, rollbackRelease, rollbackCommit, rollbackCDI} {
-			logs := klogtest.Capture(t, 0)
-			rules.voice.rollbackError(step, "u1", "demo/c1", errSteered)
-			if out := logs(); !strings.HasSuffix(strings.TrimSpace(out), "] "+want[rules.Name][i]) {
-				t.Errorf("%s: step %d: %q, want %q", rules.Name, step, out, want[rules.Name][i])
-			}
-		}
-	}
 }
 
 // The names of the CDI devices and of the result markers: the claim UID

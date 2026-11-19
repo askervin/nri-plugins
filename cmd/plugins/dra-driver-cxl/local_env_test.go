@@ -231,7 +231,7 @@ func (e *localTestEnv) start() *dra.Plugin {
 	})
 	noErr(t, err)
 	e.devices.setLender(state.SourceLocal, e.s.Lender())
-	e.s.Recovered(e.rec, "")
+	e.s.Recovered(e.rec)
 	noErr(t, e.s.WriteCDI())
 	e.rescan()
 	e.check("started")
@@ -291,7 +291,7 @@ func (e *localTestEnv) prepare(claim *resourcev1.ResourceClaim) error {
 // unprepare unprepares the claim uid and checks the invariants after it.
 func (e *localTestEnv) unprepare(uid string) error {
 	e.t.Helper()
-	res, err := e.s.UnprepareResourceClaims(context.Background(), []kubeletplugin.NamespacedObject{{UID: types.UID(uid)}})
+	res, err := e.s.UnprepareResourceClaims(context.Background(), []kubeletplugin.NamespacedObject{kubeletClaim(e.s, uid)})
 	noErr(e.t, err)
 	e.check("unprepared " + uid)
 	return res[types.UID(uid)]
@@ -459,7 +459,7 @@ func (e *localTestEnv) inUse() bool {
 func (e *localTestEnv) rules() []dra.SourceRules {
 	return []dra.SourceRules{
 		dra.LocalRules(filepath.Join(e.dir, mountsDirName)),
-		dra.PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, mountsDirName), filepath.Join(e.dir, store.FileName)),
+		dra.PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, mountsDirName)),
 	}
 }
 

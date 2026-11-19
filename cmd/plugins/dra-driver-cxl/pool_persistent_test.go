@@ -333,7 +333,7 @@ func TestPoolLeaseBind(t *testing.T) {
 	// the borrower has files of the bind open: the Unprepare fails, the
 	// claim, the node mount and the region stay
 	e.k.SetBusy(target, true)
-	wantErr(t, unprepare(t, p, uid), "cxl-pool.nri.io: unpreparing claim demo/cxl-lease-l1: lease l1: unmounting "+target+": device or resource busy")
+	wantErr(t, unprepare(t, p, uid), "cxl-pool.nri.io: claim demo/cxl-lease-l1: lease l1: unmounting "+target+": device or resource busy")
 	if e.preparation(uid) == nil || strings.Contains(e.commands(), "disable-region") {
 		t.Fatalf("busy bind: claim %v, commands:\n%s", e.preparation(uid), e.commands())
 	}
@@ -400,7 +400,7 @@ func TestPoolLeaseBindErrors(t *testing.T) {
 	// E1: a lease claim of an older driver
 	hooks.fsDir = ""
 	wantErr(t, prepare(t, p, fsCompanion("l1", "direct")).Err,
-		"cxl-pool.nri.io: preparing claim demo/cxl-lease-l1: lease l1: its lease claim has no filesystem directory")
+		"cxl-pool.nri.io: claim demo/cxl-lease-l1: lease l1: its lease claim has no filesystem directory")
 	if !strings.Contains(hooks.log(), "failed l1: lease l1: its lease claim has no filesystem directory") {
 		t.Fatalf("lend failure not told:\n%s", hooks.log())
 	}

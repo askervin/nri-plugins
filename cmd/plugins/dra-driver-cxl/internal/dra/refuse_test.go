@@ -43,17 +43,17 @@ func TestPrepareRefusedBeforeDevices(t *testing.T) {
 		claim *resourcev1.ResourceClaim
 		err   string
 	}{
-		{"local no allocation", e.local, noAlloc(localClaim("u1", localDev, 0)), "no allocation found in claim demo/claim-u1 status"},
+		{"local no allocation", e.local, noAlloc(localClaim("u1", localDev, 0)), "cxl.nri.io: claim demo/claim-u1: no allocation"},
 		{"local unknown device", e.local, localClaim("u1", "memdev-77", 0), "could not find allocatable device memdev-77 (pool node1)"},
 		{"local config", e.local, localClaim("u1", localDev, 0, badConfig),
 			`claim demo/claim-u1: request mem: MemoryConfig: device.mode: invalid mode "memory" (numa or dax)`},
 		{"local shares of a sliced memdev", e.local, localClaim("u1", localDev, -1),
 			"claim demo/claim-u1: request mem: device 0xc100e2e1: allocated as a shared device, which it is not any more"},
 		{"pool no allocation", e.pool, noAlloc(poolClaim("u1", "pooled0", poolExclusiveData)),
-			"cxl-pool.nri.io: preparing claim demo/claim-u1: no allocation"},
-		{"pool no status data", e.pool, poolClaim("u1", "pooled0", ""), "cxl-pool.nri.io: preparing claim demo/claim-u1: "},
+			"cxl-pool.nri.io: claim demo/claim-u1: no allocation"},
+		{"pool no status data", e.pool, poolClaim("u1", "pooled0", ""), "cxl-pool.nri.io: claim demo/claim-u1: "},
 		{"pool config", e.pool, poolClaim("u1", "pooled0", poolExclusiveData, badConfig),
-			`cxl-pool.nri.io: preparing claim demo/claim-u1: device pooled0 serial 0xc1ee0001: MemoryConfig: device.mode: invalid mode "memory"`},
+			`cxl-pool.nri.io: claim demo/claim-u1: device pooled0 serial 0xc1ee0001: MemoryConfig: device.mode: invalid mode "memory"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e.t = t
@@ -86,7 +86,7 @@ func TestPrepareRefusedKeepsKept(t *testing.T) {
 		t.Fatalf("kept grant %+v, regions %v", kept, e.k.Kernel().Regions("mem0"))
 	}
 	e.mark()
-	wantErrText(t, e.prepare(e.pool, poolClaim("u1", "pooled0", "")).Err, "cxl-pool.nri.io: preparing claim demo/claim-u1: ")
+	wantErrText(t, e.prepare(e.pool, poolClaim("u1", "pooled0", "")).Err, "cxl-pool.nri.io: claim demo/claim-u1: ")
 	e.wantNoCommands("a refused Prepare of a KEPT claim")
 	e.wantState(e.pool, "u1", state.PreparationKept)
 	e.mustPrepare(e.pool, poolClaim("u1", "pooled0", poolExclusiveData))
@@ -110,7 +110,7 @@ func TestPrepareRefusedKeepsPreparing(t *testing.T) {
 		e.wantState(e.pool, uid, state.PreparationPreparing)
 	}
 	e.mark()
-	wantErrText(t, e.prepare(e.pool, poolClaim("u1", "pooled0", "")).Err, "cxl-pool.nri.io: preparing claim demo/claim-u1: ")
+	wantErrText(t, e.prepare(e.pool, poolClaim("u1", "pooled0", "")).Err, "cxl-pool.nri.io: claim demo/claim-u1: ")
 	e.wantNoCommands("a refused Prepare of a PREPARING claim")
 	e.wantState(e.pool, "u1", state.PreparationPreparing)
 	e.mustUnprepare(e.pool, "u2")
@@ -135,7 +135,7 @@ func TestPrepareRefusedKeepsStale(t *testing.T) {
 	if e.cdiDevice(e.pool, "claim-u1-0") != nil || e.pool.ClaimInfo("u1") != nil {
 		t.Fatal("a stale claim has CDI devices")
 	}
-	wantErrText(t, e.prepare(e.pool, poolClaim("u1", "pooled0", "")).Err, "cxl-pool.nri.io: preparing claim demo/claim-u1: ")
+	wantErrText(t, e.prepare(e.pool, poolClaim("u1", "pooled0", "")).Err, "cxl-pool.nri.io: claim demo/claim-u1: ")
 	e.wantNoCommands("a refused Prepare of a stale claim")
 	e.wantState(e.pool, "u1", state.PreparationStale)
 	e.mustPrepare(e.pool, poolClaim("u1", "pooled0", poolExclusiveData))
@@ -173,7 +173,7 @@ func TestPrepareRefusedRetriesStaleBinds(t *testing.T) {
 	if strings.Contains(logs(), "stale lease bind") {
 		t.Fatalf("cxl.nri.io retried the stale lease binds:\n%s", logs())
 	}
-	wantErrText(t, e.prepare(e.pool, poolClaim("x1", "llm0", "")).Err, "cxl-pool.nri.io: preparing claim demo/claim-x1: ")
+	wantErrText(t, e.prepare(e.pool, poolClaim("x1", "llm0", "")).Err, "cxl-pool.nri.io: claim demo/claim-x1: ")
 	wantLogText(t, logs(), "unbound stale lease bind "+target)
 	if mi, _ := e.k.Kernel().Mounted(target); mi != nil {
 		t.Fatalf("the stale lease bind is mounted: %+v", mi)
@@ -188,7 +188,7 @@ func TestPrepareFailedAfterIntent(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()})
 	// a pool device that does not appear
 	res := e.prepare(e.pool, poolClaim("u1", "pooled9", poolExclusiveData))
-	wantErrText(t, res.Err, "cxl-pool.nri.io: preparing claim demo/claim-u1: device pooled9 serial 0xc1ee0001: ")
+	wantErrText(t, res.Err, "cxl-pool.nri.io: claim demo/claim-u1: device pooled9 serial 0xc1ee0001: ")
 	e.wantState(e.pool, "u1", state.PreparationUnknown)
 	// a local memdev with a region that the driver did not make
 	k := e.k.Kernel()
@@ -198,7 +198,7 @@ func TestPrepareFailedAfterIntent(t *testing.T) {
 	region, err := k.CreateRegion(context.Background(), kernel.CreateRegionRequest{Memdev: memdev, Decoder: d, Type: kernel.RegionRAM})
 	mustOK(t, err)
 	res = e.prepare(e.local, localClaim("u2", localDev, envBlockSize))
-	wantErrText(t, res.Err, "claim demo/claim-u2: device "+localDev+": ")
+	wantErrText(t, res.Err, "claim demo/claim-u2: device "+localDev+" serial 0xc100e2e1: ")
 	wantErrText(t, res.Err, "that the plugin did not create")
 	e.wantState(e.local, "u2", state.PreparationUnknown)
 	if reg := e.records().Region(state.RegionRef(region)); reg == nil || reg.State != state.RegionForeign {

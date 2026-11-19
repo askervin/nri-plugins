@@ -518,7 +518,7 @@ func TestPrepareLocalPersistFailure(t *testing.T) {
 	if calls := lender.callLog(); calls != "lend pod-uid-1/app 2\nrevoke pod-uid-1/app 2" {
 		t.Fatalf("lender calls %q", calls)
 	}
-	if log := hooks.log(); !strings.HasSuffix(log, "\nfailed l1: "+err.Error()) || strings.Contains(log, "releasing") {
+	if log := hooks.log(); !strings.HasSuffix(log, "\nfailed l1: "+errors.Unwrap(err).Error()) || strings.Contains(log, "releasing") {
 		t.Fatalf("hooks %s", log)
 	}
 	if _, found := e.prepared()["u1"]; found || e.s.ClaimInfo("u1") != nil || e.preparation("u1") != nil || len(e.regions(localSerial)) != 0 {

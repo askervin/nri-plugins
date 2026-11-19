@@ -761,12 +761,10 @@ CreateContainer ([Container settings](#container-settings)); errors of
 `pool.opaque.<key>` are the pool controller's
 ([pool.md](pool.md#configuration-of-a-pool-controller)). The errors of a
 configuration start with `MemoryConfig: ` and the path of the field. The
-Prepare error of `cxl.nri.io` puts `claim NS/NAME: ` before an error of
-an entry, and `claim NS/NAME: request R: ` before an error of the
-configuration of a result; that of `cxl-pool.nri.io` puts
-`cxl-pool.nri.io: preparing claim NS/NAME: ` and `request R: ` or
-`device D serial 0xS: ` before them. The CreateContainer error starts with
-`container NS/POD/CTR: `.
+Prepare error of both drivers puts `DRIVER: claim NS/NAME: ` before an
+error of an entry, and `request R: ` or `device D serial 0xS: ` after it
+before an error of the configuration of a result or of its device. The
+CreateContainer error starts with `container NS/POD/CTR: `.
 
 Decoding is strict and case-sensitive: a field `Mode` is unknown, and so
 are a field written twice and the names of fields that are not

@@ -518,7 +518,7 @@ def fs_trace(sdir, t0=1792600000.0):
     for i, r in enumerate(READERS):
         klog(t + i * 0.3, where[r], "broker.go:1189", "lease broker: lease %s: releasing (requester container gone, was Ready)" % LEASES[r])
     for k in range(2):
-        klog(t + 1 + k, VM2, "draplugin.go:612", '"UnprepareResourceClaims failed" err="cxl-pool.nri.io: unpreparing claim %s/cxl-lease-%s: lease %s: unmounting %s: device or resource busy"'
+        klog(t + 1 + k, VM2, "draplugin.go:612", '"UnprepareResourceClaims failed" err="cxl-pool.nri.io: claim %s/cxl-lease-%s: lease %s: unmounting %s: device or resource busy"'
              % (NS, LEASES["reader-a"], LEASES["reader-a"], target("reader-a")), "E")
     for i, r in enumerate(READERS):
         dt = t + 4 + i * 0.5
@@ -580,7 +580,7 @@ def local_trace(sdir, t0=1792500000.0):
     udev(t + 1.1, "add", region + "/dax_region0", "cxl")
     udev(t + 1.2, "add", region + "/dax_region0/dax0.0", "dax")
     klog(t + 1.25, "local.go:779", "engine: local memdev %s (mem0): created region0 (devdax, dax dax0.0, node 2) in 412ms" % LOCAL)
-    klog(t + 1.3, "local.go:491", "local: memdev mem0 (serial %s): claim c1a10006-0000-4000-8000-000000000000 request lease: shared dax0.0 size %d read-only false exclusive" % (LOCAL, GI))
+    klog(t + 1.3, "plugin.go:362", "cxl.nri.io: claim %s/cxl-lease-3f2a91c0: prepared memdev-c100e2e1 (serial %s, shared true, mode dax, read-only false) as mem0 region0 dax dax0.0 size %d node -1 exclusive" % (NS, LOCAL, GI))
     klog(t + 1.27, "local.go:643", "engine: local memdev %s (mem0): zeroed new shared dax0.0 size %d in 210ms" % (LOCAL, GI))
     klog(t + 1.5, "broker.go:1646", 'lease broker: lease 3f2a91c0: Ready (source local, serial %s, mode dax, read-only false, node -1, dax "/dev/dax0.0", block "", access "", fs "", path "", %d bytes)' % (LOCAL, GI))
     t = 60
@@ -600,7 +600,7 @@ def local_trace(sdir, t0=1792500000.0):
     for i, r in enumerate(READERS):
         cl(t + 2 + i * 0.1, "MODIFIED", "cxl-lease-" + LEASES[r], "c1a1%04x" % (10 + i), "cxl.nri.io/%s/memdev-c100e2e1" % VM2, VM2)
         ev(t + 2.2 + i * 0.1, "Pod", "cxl-lease-" + LEASES[r], "Scheduled", "Successfully assigned %s/cxl-lease-%s to %s" % (NS, LEASES[r], VM2))
-        klog(t + 3 + i * 0.2, "local.go:491", "local: memdev mem0 (serial %s): claim c1a1%04x-0000-4000-8000-000000000000 request lease: shared dax0.0 size %d read-only true 1 share" % (LOCAL, 10 + i, GI))
+        klog(t + 3 + i * 0.2, "plugin.go:362", "cxl.nri.io: claim %s/cxl-lease-%s: prepared memdev-c100e2e1 (serial %s, shared true, mode dax, read-only true) as mem0 region0 dax dax0.0 size %d node -1 1 share" % (NS, LEASES[r], LOCAL, GI))
         klog(t + 3.1 + i * 0.2, "broker.go:1646", 'lease broker: lease %s: Ready (source local, serial %s, mode dax, read-only true, node -1, dax "/dev/dax0.0", block "", access "", fs "", path "", %d bytes)' % (LEASES[r], LOCAL, GI))
     klog(t + 5, "driver.go:942", '"DRAPlugin encountered an error." err="pool \\"%s\\", slice #0: some fields were dropped by the apiserver, probably because these features are disabled: unknown"' % VM2, "E")
     t = 160

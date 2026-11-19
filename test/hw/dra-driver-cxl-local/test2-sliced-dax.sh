@@ -136,7 +136,7 @@ gone() { [ "$(node_mib "$N")" == 0 ]; }
 check "node $N has no memory in 120 s" wait_for 120 "node $N empty" gone
 check "no CXL region is left on the memdev" wait_for 60 "no regions" no_regions
 
-log "driver log of the slices (local:)"
-driver_log 15m | grep -E "local: memdev" | sed 's/^[^]]*] //; s/^/    /' | tail -n 25
+log "driver log of the slices (their prepared claims)"
+driver_log 15m | grep -E "cxl.nri.io: claim [^ ]+: prepared" | sed 's/^[^]]*] //; s/^/    /' | tail -n 25
 
 summary

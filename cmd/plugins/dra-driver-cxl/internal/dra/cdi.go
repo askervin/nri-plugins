@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strconv"
 
+	"k8s.io/klog/v2"
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
@@ -166,22 +167,24 @@ func cdiDevice(uid string, d *state.DeviceInfo, keys envKeys) cdiSpecs.Device {
 	return cdiSpecs.Device{Name: ClaimCDIDeviceName(uid, d.Result), ContainerEdits: edits}
 }
 
-// writeCDISpec writes a CDI spec file of the cache, or removes it when the
-// spec has no devices, in the words of the driver's voice v.
-func writeCDISpec(cache *cdiapi.Cache, spec *cdiSpecs.Spec, name string, v voice) error {
+// writeCDISpec writes the CDI spec file name to the cache, or removes it
+// when the spec has no devices. The log lines name the driver.
+func writeCDISpec(cache *cdiapi.Cache, spec *cdiSpecs.Spec, driver, name string) error {
 	if len(spec.Devices) == 0 {
-		v.cdiRemoved(name, cache.RemoveSpec(name))
+		if err := cache.RemoveSpec(name); err != nil {
+			klog.V(5).Infof("%s: could not remove CDI spec %s (may not exist): %v", driver, name, err)
+		}
 		return nil
 	}
 	version, err := cdiapi.MinimumRequiredVersion(spec)
 	if err != nil {
-		return v.cdiVersionError(err)
+		return fmt.Errorf("CDI spec version: %w", err)
 	}
 	spec.Version = version
 	if err := cache.WriteSpec(spec, name); err != nil {
-		return v.cdiWriteError(name, err)
+		return fmt.Errorf("write CDI spec %s: %w", name, err)
 	}
-	v.cdiWrote(name, len(spec.Devices))
+	klog.V(5).Infof("%s: wrote CDI spec %s with %d devices", driver, name, len(spec.Devices))
 	return nil
 }
 

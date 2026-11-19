@@ -136,7 +136,7 @@ func (fe *frontEnd) Started(st *store.Store, e *engine.Engine, rec *engine.Recov
 		return err
 	}
 	local := dra.LocalRules(fe.mountsDirs[state.SourceLocal])
-	pool := dra.PoolRules(device.PoolDriverName, fe.mountsDirs[state.SourcePool], store.FileName)
+	pool := dra.PoolRules(device.PoolDriverName, fe.mountsDirs[state.SourcePool])
 	fe.st = st
 	fe.local, err = dra.New(dra.Options{Rules: local, Store: st, Engine: e, NodeName: frontNode,
 		SysRoot: fe.f.SysRoot(), DevRoot: fe.f.DevRoot(), CDI: cache, Publisher: pub, Local: dra.LocalConfig{Managed: true,
@@ -151,7 +151,7 @@ func (fe *frontEnd) Started(st *store.Store, e *engine.Engine, rec *engine.Recov
 	}
 	for _, p := range []*dra.Plugin{fe.local, fe.pool} {
 		p.Lender().Set(fe.nodes, fe.hooks)
-		p.Recovered(rec, store.FileName)
+		p.Recovered(rec)
 		if err := p.WriteCDI(); err != nil {
 			return err
 		}

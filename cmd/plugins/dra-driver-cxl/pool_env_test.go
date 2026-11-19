@@ -141,7 +141,7 @@ func (e *poolTestEnv) driver(t *testing.T) *dra.Plugin {
 	if e.st != nil {
 		_ = e.st.Close()
 	}
-	rules := dra.PoolRules(device.PoolDriverName, filepath.Join(e.dir, mountsDirName), filepath.Join(e.dir, store.FileName))
+	rules := dra.PoolRules(device.PoolDriverName, filepath.Join(e.dir, mountsDirName))
 	e.st, err = store.Open(context.Background(), store.Options{Dir: e.dir, BootID: e.k.BootID()})
 	noErr(t, err)
 	devices, err := newDeviceEngine(deviceConfig{
@@ -170,7 +170,7 @@ func (e *poolTestEnv) driver(t *testing.T) *dra.Plugin {
 	devices.setLender(state.SourcePool, p.Lender())
 	rec, err := devices.recover(context.Background())
 	noErr(t, err)
-	p.Recovered(rec, filepath.Join(e.dir, store.FileName))
+	p.Recovered(rec)
 	noErr(t, p.WriteCDI())
 	checkPool(t, p, "started")
 	return p
@@ -451,9 +451,19 @@ func prepare(t *testing.T, p *dra.Plugin, claim *resourceapi.ResourceClaim) kube
 	return res[claim.UID]
 }
 
+// kubeletClaim returns the claim uid as kubelet unprepares it: with the
+// namespace and the name of a prepared claim.
+func kubeletClaim(p *dra.Plugin, uid string) kubeletplugin.NamespacedObject {
+	claim := kubeletplugin.NamespacedObject{UID: types.UID(uid)}
+	if info := p.ClaimInfo(uid); info != nil {
+		claim.Namespace, claim.Name, _ = strings.Cut(info.ClaimName, "/")
+	}
+	return claim
+}
+
 func unprepare(t *testing.T, p *dra.Plugin, uid string) error {
 	t.Helper()
-	res, err := p.UnprepareResourceClaims(context.Background(), []kubeletplugin.NamespacedObject{{UID: types.UID(uid)}})
+	res, err := p.UnprepareResourceClaims(context.Background(), []kubeletplugin.NamespacedObject{kubeletClaim(p, uid)})
 	if err != nil {
 		t.Fatal(err)
 	}

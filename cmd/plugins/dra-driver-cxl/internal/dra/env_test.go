@@ -234,7 +234,7 @@ func (e *driverEnv) start() {
 	t.Helper()
 	ctx := context.Background()
 	local := LocalRules(filepath.Join(e.dir, "mounts"))
-	pool := PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, "mounts"), e.stateFile())
+	pool := PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, "mounts"))
 	st, err := store.Open(ctx, store.Options{Dir: e.dir, BootID: e.k.BootID(), WriteFault: e.writeFault})
 	mustOK(t, err)
 	e.st = st
@@ -295,8 +295,8 @@ func (e *driverEnv) start() {
 	if e.leases != nil {
 		e.local.SetLeases(e.leases)
 	}
-	e.pool.Recovered(e.rec, e.stateFile())
-	e.local.Recovered(e.rec, "")
+	e.pool.Recovered(e.rec)
+	e.local.Recovered(e.rec)
 	mustOK(t, e.local.WriteCDI())
 	mustOK(t, e.pool.WriteCDI())
 	e.rescan()
@@ -319,11 +319,6 @@ func (e *driverEnv) reboot() {
 	e.k.Reboot()
 	e.base = e.k.Commands()
 	e.restart()
-}
-
-// stateFile returns the path of the document of the store.
-func (e *driverEnv) stateFile() string {
-	return filepath.Join(e.dir, store.FileName)
 }
 
 // leaseFsRoot is the directory of the lease-fs directories.
@@ -476,11 +471,16 @@ func (e *driverEnv) mustPrepare(p *Plugin, claim *resourcev1.ResourceClaim) kube
 	return res
 }
 
-// unprepare unprepares the claim uid on the plugin as kubelet does and
-// checks the invariants after it.
+// unprepare unprepares the claim uid on the plugin as kubelet does, with
+// the namespace and the name of its record, and checks the invariants after
+// it.
 func (e *driverEnv) unprepare(p *Plugin, uid string) error {
 	e.t.Helper()
-	res, err := p.UnprepareResourceClaims(context.Background(), []kubeletplugin.NamespacedObject{{UID: types.UID(uid)}})
+	claim := kubeletplugin.NamespacedObject{UID: types.UID(uid)}
+	if prep := p.preparation(uid); prep != nil {
+		claim.Namespace, claim.Name, _ = strings.Cut(prep.ClaimName, "/")
+	}
+	res, err := p.UnprepareResourceClaims(context.Background(), []kubeletplugin.NamespacedObject{claim})
 	mustOK(e.t, err)
 	e.check(p.Name() + ": unprepared " + uid)
 	return res[types.UID(uid)]

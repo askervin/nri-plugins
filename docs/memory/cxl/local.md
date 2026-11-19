@@ -552,7 +552,7 @@ disappeared while the plugin ran:
 ```
 engine: local memdev 0xc100e2e1 (mem1): zeroed new shared dax0.0 size 1073741824 in <t>
 engine: local memdev 0xc100e2e1 (mem1): region0 of the shared device is gone, forgetting it and its claims [<uids>]
-local: memdev mem1 (serial 0xc100e2e1): claim <uid> request mem: shared dax0.0 size 1073741824 read-only false exclusive
+cxl.nri.io: claim <ns>/<name>: prepared memdev-c100e2e1 (serial 0xc100e2e1, shared true, mode dax, read-only false) as mem1 region0 dax dax0.0 size 1073741824 node -1 exclusive
 engine: local memdev 0xc100e2e1 (mem1): claim <uid>: released shared dax0.0, claims left [<uids>]
 engine: local memdev 0xc100e2e1 (mem1): keeping region0 and dax0.0 of the idle shared device
 ```
@@ -730,7 +730,7 @@ of [usage.md](usage.md#one-node-superblock-block-device-binds), source
 
 ```
 engine: local memdev 0xc100f5e1 (mem1): created region1 (pmem, nvdimm region1) in <t>
-local: memdev mem1 (serial 0xc100f5e1) region1: claim <uid> request mem: persistent /dev/pmem1 mode fs read-only false access "direct" fs "ext4"
+cxl.nri.io: claim <ns>/<name>: prepared memdev-c100f5e1 (serial 0xc100f5e1, shared false, mode fs, read-only false) as mem1 region1 namespace namespace1.0 block /dev/pmem1 access "direct" fs "ext4" mount "<mount>" loop ""
 engine: local memdev 0xc100f5e1 (mem1): claim <uid>: released persistent /dev/pmem1, claims left [<uids>]
 engine: local memdev 0xc100f5e1 (mem1): keeping region1 of the idle persistent device: region2 lie above it, its release would leave a hole in the decoders of their ports
 engine: local memdev 0xc100f5e1 (mem1): keeping persistent region1, claims [<uids>]

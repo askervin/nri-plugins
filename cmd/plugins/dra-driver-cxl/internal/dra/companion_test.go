@@ -57,7 +57,7 @@ func (e *driverEnv) prefix(p *Plugin) string {
 	if p == e.local {
 		return "claim demo/cxl-lease-l1: "
 	}
-	return "cxl-pool.nri.io: preparing claim demo/cxl-lease-l1: "
+	return "cxl-pool.nri.io: claim demo/cxl-lease-l1: "
 }
 
 // The companion gate of both drivers before any device is touched: lending
@@ -317,10 +317,10 @@ func TestCompanionFinishFails(t *testing.T) {
 			mustOK(t, os.WriteFile(e.cdiDir, nil, 0o644))
 			e.takeEvents()
 			res := e.prepare(p, e.companionOf(p))
-			wantErrText(t, res.Err, "failed to write CDI spec")
+			wantErrText(t, res.Err, "write CDI spec")
 			want := []string{"lending l1 cxl-lease-l1", "lend pod-uid-1/app 2 l1", "revoke pod-uid-1/app 2 l1"}
 			if local {
-				want = append(want, "failed l1: "+res.Err.Error())
+				want = append(want, "failed l1: "+errors.Unwrap(res.Err).Error())
 			}
 			e.wantEvents("failed", want...)
 			e.wantState(p, "c1", state.PreparationUnknown)

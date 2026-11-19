@@ -64,16 +64,6 @@ func newPrepare(claim *resourcev1.ResourceClaim) *prepare {
 	return &prepare{uid: string(claim.UID), claimName: claim.Namespace + "/" + claim.Name, uses: map[state.GrantRef]string{}}
 }
 
-// request returns the request of the result of the grant ref.
-func (pr *prepare) request(ref state.GrantRef) string {
-	for _, res := range pr.results {
-		if res.Index == ref.Result {
-			return res.Request
-		}
-	}
-	return ""
-}
-
 // device returns the DRA device of the result of the grant ref.
 func (pr *prepare) device(ref state.GrantRef) string {
 	for _, res := range pr.results {
@@ -183,33 +173,32 @@ type LocalConfig struct {
 // lent.
 func (p *Plugin) validateLocal(claim *resourcev1.ResourceClaim) (*prepare, error) {
 	if claim.Status.Allocation == nil {
-		return nil, fmt.Errorf("no allocation found in claim %v/%v status", claim.Namespace, claim.Name)
+		return nil, errors.New("no allocation")
 	}
 	if err := config.CheckEntries(claim, p.rules.Name); err != nil {
-		return nil, fmt.Errorf("claim %v/%v: %w", claim.Namespace, claim.Name, err)
+		return nil, err
 	}
 	allocatable := p.allocatable()
 	resolved, err := resolveResults(claim, p.rules.Name, func(r *resourcev1.DeviceRequestAllocationResult) bool {
 		return r.Driver == p.rules.Name && r.Pool == p.nodeName
 	})
 	if err != nil {
-		return nil, fmt.Errorf("claim %v/%v: %w", claim.Namespace, claim.Name, err)
+		return nil, err
 	}
 	pr := newPrepare(claim)
 	if id := LeaseOf(claim); id != "" {
 		local, all := p.localMemdevResults(claim, allocatable)
 		if local == 0 || local != all {
-			return nil, fmt.Errorf("claim %v/%v: the companion claim of lease %s needs %s devices only", claim.Namespace, claim.Name, id, device.DeviceTypeMemdev)
+			return nil, fmt.Errorf("the companion claim of lease %s needs %s devices only", id, device.DeviceTypeMemdev)
 		}
 		if pr.lend, err = p.lender.Check(id, claim); err != nil {
-			return nil, fmt.Errorf("claim %v/%v: %w", claim.Namespace, claim.Name, err)
+			return nil, err
 		}
 	}
 	err = p.localResults(claim, pr, allocatable, resolved)
 	var be *engine.BindError
 	if errors.As(err, &be) {
 		p.lender.Failed(pr.lend.Lease, err)
-		err = fmt.Errorf("claim %v/%v: %w", claim.Namespace, claim.Name, err)
 	}
 	return pr, err
 }
@@ -252,9 +241,9 @@ func (p *Plugin) localResults(claim *resourcev1.ResourceClaim, pr *prepare, allo
 		}
 		res := resolved[n]
 		if res == nil {
-			return pr.claimError(fmt.Errorf("request %s: internal error: no MemoryConfig of the result", r.Request))
+			return fmt.Errorf("request %s: internal error: no MemoryConfig of the result", r.Request)
 		}
-		klog.V(3).Infof("claim %s request %s result %d: MemoryConfig %s", pr.claimName, r.Request, n, res.Config.Compact())
+		klog.V(3).Infof("%s: claim %s request %s result %d: MemoryConfig %s", p.rules.Name, pr.claimName, r.Request, n, res.Config.Compact())
 		result := state.Result{Index: n, Request: r.Request, Pool: r.Pool, Device: r.Device, Settings: res.Settings()}
 		if r.ShareID != nil {
 			result.ShareID = string(*r.ShareID)
@@ -275,7 +264,7 @@ func (p *Plugin) localResults(claim *resourcev1.ResourceClaim, pr *prepare, allo
 			}
 		default:
 			if err = otherResult(&result, r, d, cfg); err != nil {
-				err = pr.claimError(fmt.Errorf("request %s: %w", r.Request, err))
+				err = fmt.Errorf("request %s: %w", r.Request, err)
 			}
 			pr.lease = pr.lease || result.Kind == state.ResultLeaseClaim
 			if result.LeaseClaim != nil {
@@ -288,11 +277,6 @@ func (p *Plugin) localResults(claim *resourcev1.ResourceClaim, pr *prepare, allo
 		pr.results = append(pr.results, result)
 	}
 	return nil
-}
-
-// claimError returns err of the claim of a Prepare: "claim ns/name: err".
-func (pr *prepare) claimError(err error) error {
-	return fmt.Errorf("claim %s: %w", pr.claimName, err)
 }
 
 // otherResult sets the result of an allocation result r of a device of the
@@ -349,7 +333,7 @@ func (p *Plugin) memdevRequest(pr *prepare, r *resourcev1.DeviceRequestAllocatio
 		req.Facts.NumaAffinity = state.NumaNodePtr(dev.NodeAffinity)
 	}
 	if !p.local.Managed {
-		return req, pr.claimError(fmt.Errorf("device %s: %w", r.Device, errors.New("local memdevs are not managed (manageMemdevs: false)")))
+		return req, fmt.Errorf("device %s: local memdevs are not managed (manageMemdevs: false)", r.Device)
 	}
 	if dev.Persistent {
 		return req, p.persistentRequest(pr, &req, r, key, dev, cfg)
@@ -364,7 +348,7 @@ func (p *Plugin) memdevRequest(pr *prepare, r *resourcev1.DeviceRequestAllocatio
 		mode, err = cfg.MemdevMode(dev.Shared)
 	}
 	if err != nil {
-		return req, pr.claimError(fmt.Errorf("request %s: %w", r.Request, err))
+		return req, fmt.Errorf("request %s: %w", r.Request, err)
 	}
 	req.Asked.Mode = state.Mode(mode)
 	if dev.Shared {
@@ -373,7 +357,7 @@ func (p *Plugin) memdevRequest(pr *prepare, r *resourcev1.DeviceRequestAllocatio
 		return req, nil
 	}
 	if _, ok := r.ConsumedCapacity[device.CapacityShares]; ok {
-		return req, pr.claimError(fmt.Errorf("request %s: device %s: allocated as a shared device, which it is not any more", r.Request, api.FormatSerial(dev.Serial)))
+		return req, fmt.Errorf("request %s: device %s: allocated as a shared device, which it is not any more", r.Request, api.FormatSerial(dev.Serial))
 	}
 	size := dev.Size
 	if dev.BlockSize > 0 {
@@ -383,7 +367,7 @@ func (p *Plugin) memdevRequest(pr *prepare, r *resourcev1.DeviceRequestAllocatio
 		size = uint64(consumed.Value())
 	}
 	if size == 0 {
-		return req, pr.claimError(fmt.Errorf("device %s: %w", r.Device, errors.New("size 0")))
+		return req, fmt.Errorf("device %s: size 0", r.Device)
 	}
 	req.Asked.Kind, req.Asked.Size = state.KindExclusive, size
 	return req, nil
@@ -394,7 +378,7 @@ func (p *Plugin) memdevRequest(pr *prepare, r *resourcev1.DeviceRequestAllocatio
 // configuration and the allocation give them.
 func (p *Plugin) persistentRequest(pr *prepare, req *engine.GrantRequest, r *resourcev1.DeviceRequestAllocationResult, key string, dev *Memdev, cfg config.Device) error {
 	fail := func(err error) error {
-		return pr.claimError(fmt.Errorf("request %s: %w", r.Request, err))
+		return fmt.Errorf("request %s: %w", r.Request, err)
 	}
 	if _, ok := r.ConsumedCapacity[device.CapacityMemory]; ok {
 		return fail(fmt.Errorf("device %s: allocated as a device of volatile memory, which it is not any more", api.FormatSerial(dev.Serial)))

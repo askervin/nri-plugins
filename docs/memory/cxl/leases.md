@@ -681,7 +681,7 @@ and cannot make it the companion of a lease it did not request.
   while the borrower has files of the filesystem open or mapped (a
   running `llama-server` maps its model), it fails with `device or
   resource busy`, the Unprepare fails
-  (`cxl-pool.nri.io: unpreparing claim <ns>/cxl-lease-<id>: lease <id>: unmounting <bind>: device or resource busy`),
+  (`cxl-pool.nri.io: claim <ns>/cxl-lease-<id>: lease <id>: unmounting <bind>: device or resource busy`),
   kubelet retries it, the companion stays Terminating and the lease
   Releasing; `cxl-request release --wait ...` exits with 3. The release
   of the last read-write lease or claim of the node downgrades the

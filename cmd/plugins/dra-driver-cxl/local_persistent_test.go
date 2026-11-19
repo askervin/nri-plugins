@@ -328,7 +328,7 @@ func TestLocalPersistentLifeCycle(t *testing.T) {
 
 	// readers before a writer: refused, the region goes again
 	wantErr(t, e.prepare(pmemClaim("r1", localPmemShare, localPmemFsRO)),
-		"claim demo/claim-r1: request mem: device 0xc100f5e1: no fsdax namespace in region0: has a writer written the device?")
+		"cxl.nri.io: claim demo/claim-r1: device memdev-c100f5e1 serial 0xc100f5e1: device 0xc100f5e1: no fsdax namespace in region0: has a writer written the device?")
 	wantErr(t, e.prepare(pmemClaim("r1", localPmemShare, localPmemBlockRO)), "no fsdax namespace in region0")
 	e.wantRegions(2, 2)
 	if strings.Contains(e.commands(), "ndctl") || e.used() {
@@ -953,7 +953,7 @@ func TestLocalPersistentFsTypes(t *testing.T) {
 	e := newPmemTestEnv(t)
 	e.formatted("ext4")
 	for _, tc := range []struct{ config, err string }{
-		{"", "claim demo/claim-ro1: request mem: device 0xc100f5e1: filesystem type ext4 is not allowed on this node (fsTypes: erofs)"},
+		{"", "cxl.nri.io: claim demo/claim-ro1: device memdev-c100f5e1 serial 0xc100f5e1: device 0xc100f5e1: filesystem type ext4 is not allowed on this node (fsTypes: erofs)"},
 		{"fsTypes: [erofs, ext4]", ""},
 		{"fsTypes: []", "filesystem type ext4 is not allowed on this node (fsTypes: none)"},
 	} {

@@ -238,7 +238,7 @@ func (e *leaseEnv) boot() {
 	t.Helper()
 	ctx := context.Background()
 	local := dra.LocalRules(filepath.Join(e.dir, "mounts"))
-	pool := dra.PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, "mounts"), filepath.Join(e.dir, store.FileName))
+	pool := dra.PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, "mounts"))
 	st, err := store.Open(ctx, store.Options{Dir: e.dir, BootID: e.k.BootID(), NewState: e.newState,
 		AfterCommit: e.afterCommit, WriteFault: e.writeFault})
 	mustOK(t, err)
@@ -281,8 +281,8 @@ func (e *leaseEnv) boot() {
 	e.pool, err = dra.New(dra.Options{Rules: pool, Store: st, Engine: e.eng, NodeName: envNode,
 		SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot(), CDI: e.cache})
 	mustOK(t, err)
-	e.pool.Recovered(rec, filepath.Join(e.dir, store.FileName))
-	e.local.Recovered(rec, "")
+	e.pool.Recovered(rec)
+	e.local.Recovered(rec)
 	mustOK(t, e.local.WriteCDI())
 	mustOK(t, e.pool.WriteCDI())
 	e.rescan()
