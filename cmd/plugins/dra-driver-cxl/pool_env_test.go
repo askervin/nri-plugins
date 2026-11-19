@@ -62,8 +62,6 @@ type poolTestEnv struct {
 	leaseFsRoot string // of the pool driver, "" for none
 	timeout     time.Duration
 	holderWait  time.Duration
-	// fence fences the NUMA nodes, nil for none.
-	fence func(ctx context.Context, node int)
 	// base are the commands of the fake before those of the driver.
 	base string
 	// pmem is the block device of the persistent device plugged last.
@@ -151,7 +149,6 @@ func (e *poolTestEnv) driver(t *testing.T) *dra.Plugin {
 			MountsDirs:  dra.MountsDirs(rules),
 			LeaseFsRoot: e.leaseFsRoot,
 			FsTypes:     api.KnownFsTypes,
-			Fence:       e.fence,
 			Timeouts: engine.Timeouts{Memdev: e.timeout, Settle: e.timeout, Holder: e.holderWait,
 				ProbeGrace: 20 * time.Millisecond, RegionRetry: 10 * time.Millisecond, OfflineSettle: 20 * time.Millisecond},
 		},

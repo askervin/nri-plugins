@@ -35,17 +35,18 @@ import (
 
 // The parts of a local sliced memdev: the first one is daxN.0 of the region
 // (its Whole device resized), the next ones new dax devices; numa parts
-// online movable on the fenced node, dax parts device_dax and zeroed; the
-// Unprepare of the last part destroys the region.
+// online movable on the node fenced before, dax parts device_dax and
+// zeroed; the Unprepare of the last part destroys the region.
 func TestLocalSliced(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
+	at := v.onlineAtFence()
 	v.mustPrepare(localDriver, "n1", localReq("n1", 0, serialL, state.ModeNUMA, state.KindExclusive, 256*mib))
 	g := v.grant("n1", 0)
 	if g.Got.Dax != "dax0.0" || state.NumaNodeOf(g.Got.NumaNode) != 2 || v.f.DaxDriver("dax0.0") != kernel.DriverKmem {
 		t.Fatalf("numa part %+v", g.Got)
 	}
-	if !slices.Contains(v.fenced, 2) {
-		t.Fatalf("fenced %v", v.fenced)
+	if !slices.Equal(v.fenced, []int{2}) || !slices.Equal(*at, []string{"2: []"}) {
+		t.Fatalf("fenced %v, online at the fences %v", v.fenced, *at)
 	}
 	v.mustPrepare(localDriver, "d1", localReq("d1", 0, serialL, state.ModeDax, state.KindExclusive, 200*mib))
 	g = v.grant("d1", 0)
@@ -63,6 +64,9 @@ func TestLocalSliced(t *testing.T) {
 	v.mustPrepare(localDriver, "n2", localReq("n2", 0, serialL, state.ModeNUMA, state.KindExclusive, 128*mib))
 	if g := v.grant("n2", 0); g.Got.Dax != "dax0.0" {
 		t.Fatalf("part of the seed %+v", g.Got)
+	}
+	if !slices.Equal(*at, []string{"2: []", "2: []"}) {
+		t.Fatalf("online at the fences %v", *at)
 	}
 	v.mustUnprepare(localDriver, "d1")
 	v.mustUnprepare(localDriver, "n2")

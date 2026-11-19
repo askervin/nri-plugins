@@ -275,6 +275,28 @@ func recoveredOf(before, after *state.Records, rec *Recovered) *recovered {
 	return out
 }
 
+// onlineAtFence makes the fence record the memory blocks online at each
+// fence, as "node: blocks".
+func (v *env) onlineAtFence() *[]string {
+	var at []string
+	fence := v.e.opts.Fence
+	v.e.opts.Fence = func(ctx context.Context, node int) {
+		snap, err := v.f.Kernel().Observe(context.Background())
+		if err != nil {
+			v.t.Fatalf("observe at the fence: %v", err)
+		}
+		var online []int
+		for _, b := range snap.Blocks {
+			if b.State == kernel.BlockOnline {
+				online = append(online, b.Index)
+			}
+		}
+		at = append(at, fmt.Sprintf("%d: %v", node, online))
+		fence(ctx, node)
+	}
+	return &at
+}
+
 // cut runs fn and reports whether the process was stopped in it.
 func (v *env) cut(fn func()) (cut bool) {
 	defer func() {

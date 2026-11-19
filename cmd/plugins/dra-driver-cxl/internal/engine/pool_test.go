@@ -32,10 +32,11 @@ import (
 )
 
 // A pool device in mode numa: its region with daxN.0 bound to kmem and its
-// memory online movable on the node of its window, fenced first; its
-// Unprepare destroys the region and disables the memdev.
+// memory online movable on the node of its window, fenced before any of it
+// is online; its Unprepare destroys the region and disables the memdev.
 func TestPoolNuma(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
+	at := v.onlineAtFence()
 	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeNUMA, state.KindExclusive))
 	g := v.grant("c1", 0)
 	if g.State != state.GrantRealised || g.Got.Region != "region0" || g.Got.Dax != "dax0.0" || state.NumaNodeOf(g.Got.NumaNode) != 2 {
@@ -46,8 +47,8 @@ func TestPoolNuma(t *testing.T) {
 		len(reg.DaxDevices[0].Users) != 1 {
 		t.Fatalf("region %+v", reg)
 	}
-	if len(v.fenced) != 1 || v.fenced[0] != 2 {
-		t.Fatalf("fenced %v", v.fenced)
+	if len(v.fenced) != 1 || v.fenced[0] != 2 || !slices.Equal(*at, []string{"2: []"}) {
+		t.Fatalf("fenced %v, online at the fences %v", v.fenced, *at)
 	}
 	snap, _ := v.f.Kernel().Observe(context.Background())
 	if online := snap.OnlineBlocks(snap.Region("region0").Range.Blocks(snap.BlockSize)); len(online) == 0 {

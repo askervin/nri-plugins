@@ -14,8 +14,9 @@
 
 package main
 
-// The NRI plugin (internal/containers) as the driver wires it: the fence of
-// the device engine before memory goes online, the order of Shutdown.
+// The NRI plugin (internal/containers) as the driver wires it: the fence
+// that the device engine gets, the nodes fenced from the start, the order
+// of Shutdown.
 
 import (
 	"context"
@@ -23,151 +24,16 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"sync"
 	"testing"
 
 	nriapi "github.com/containerd/nri/pkg/api"
-	resourceapi "k8s.io/api/resource/v1"
-	"k8s.io/utils/cpuset"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
-	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
-
-// fenceRecorder is the fence of the device engine of a test: it records
-// the fenced nodes at the fence of each new node, and what at returns.
-type fenceRecorder struct {
-	mu     sync.Mutex
-	at     func() string
-	fenced cpuset.CPUSet
-	calls  []string
-}
-
-// newRecordedFence returns a recorder and its fence.
-func newRecordedFence(at func() string) (func(ctx context.Context, node int), *fenceRecorder) {
-	r := &fenceRecorder{at: at, fenced: cpuset.New()}
-	return r.fence, r
-}
-
-// fence records the fence of node, if it is new.
-func (r *fenceRecorder) fence(_ context.Context, node int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.fenced.Contains(node) {
-		return
-	}
-	r.fenced = r.fenced.Union(cpuset.New(node))
-	call := r.fenced.String()
-	if r.at != nil {
-		call += " " + r.at()
-	}
-	r.calls = append(r.calls, call)
-}
-
-// taken returns the recorded fences and forgets them.
-func (r *fenceRecorder) taken() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := r.calls
-	r.calls = nil
-	return out
-}
-
-func TestFencePoolBeforeOnline(t *testing.T) {
-	e := newPoolTestEnv(t)
-	e.plug(0xc1ee0001)
-	// the state of the first memory block of the region at the fence
-	fence, r := newRecordedFence(func() string {
-		blocks, _ := e.k.Kernel().RegionBlocks("region0")
-		if len(blocks) == 0 {
-			return "no blocks"
-		}
-		return e.k.BlockState(blocks[0])
-	})
-	e.fence = fence
-	p := e.driver(t)
-
-	noErr(t, prepare(t, p, poolClaim("u1", "c1", "pooled0", exclusiveData)).Err)
-	if got := r.taken(); !reflect.DeepEqual(got, []string{"2 offline"}) {
-		t.Fatalf("fences %v, expected one before onlining", got)
-	}
-	if e.onlineBlocks("region0") == 0 {
-		t.Fatal("the memory of the region is not online")
-	}
-	if _, d, ok := p.PreparedResult("u1", 0); !ok || !reflect.DeepEqual(d.NUMANodes, []int{2}) || d.Mode != cxlapi.ModeNUMA || d.Result != 0 ||
-		d.ConsumedBytes != 256<<20 {
-		t.Fatalf("prepared result %+v", d)
-	}
-	if got := poolNumaNodes(p); !reflect.DeepEqual(got, []int{2}) {
-		t.Fatalf("numa nodes %v", got)
-	}
-	p = e.driver(t)
-	if got := cpuset.New(poolNumaNodes(p)...).String(); got != "2" {
-		t.Fatalf("prepared nodes after a restart %s", got)
-	}
-	noErr(t, unprepare(t, p, "u1"))
-	if _, d, ok := p.PreparedResult("u1", 0); ok {
-		t.Fatalf("prepared result %+v after unprepare", d)
-	}
-	var none *dra.Plugin
-	if _, _, ok := none.PreparedResult("u1", 0); ok || poolNumaNodes(none) != nil {
-		t.Fatal("nodes of a disabled pool driver")
-	}
-
-	// dax devices are not fenced
-	e2 := newPoolTestEnv(t)
-	e2.plug(0xc1ee0001)
-	fence2, r2 := newRecordedFence(nil)
-	e2.fence = fence2
-	p2 := e2.driver(t)
-	claim := withConfig(poolClaim("u2", "c2", "pooled0", exclusiveData), resourceapi.AllocationConfigSourceClaim, nil, daxConfig)
-	noErr(t, prepare(t, p2, claim).Err)
-	if got := r2.taken(); len(got) != 0 || poolNumaNodes(p2) != nil {
-		t.Fatalf("dax device fenced: %v, numa nodes %v", got, poolNumaNodes(p2))
-	}
-}
-
-// The NUMA node of a local numa slice is fenced once, before its memory
-// goes online; a dax slice is not fenced.
-func TestFenceLocalBeforeOnline(t *testing.T) {
-	e := newLocalTestEnv(t)
-	// the memory blocks online at each fence
-	online := func() string {
-		m, _ := filepath.Glob(e.k.P("devices/system/memory/memory*/state"))
-		n := 0
-		for _, path := range m {
-			if b, _ := os.ReadFile(path); strings.HasPrefix(string(b), "online") {
-				n++
-			}
-		}
-		return "online=" + strings.Repeat("x", n)
-	}
-	fence, r := newRecordedFence(online)
-	e.fence = fence
-	e.start()
-	e.mustPrepare(localClaim("u1", localBlockSize, localDaxConfig))
-	if got := r.taken(); len(got) != 0 {
-		t.Fatalf("dax slice fenced: %v", got)
-	}
-	e.mustPrepare(localClaim("u2", localBlockSize))
-	if got := r.taken(); !reflect.DeepEqual(got, []string{"2 online="}) {
-		t.Fatalf("fences %v, expected one before onlining", got)
-	}
-	// the block of the numa slice is the only one, online movable
-	(&sliceTestEnv{e}).wantMemoryBlocks(75)
-	e.mustPrepare(localClaim("u3", localBlockSize))
-	if got := r.taken(); len(got) != 0 {
-		t.Fatalf("fenced node fenced again: %v", got)
-	}
-	for _, uid := range []string{"u1", "u2", "u3"} {
-		e.mustUnprepare(uid)
-	}
-	e.wantClean()
-}
 
 // TestShutdownStopsNRIFirst checks that Shutdown makes a close of the NRI
 // connection no loss before it stops anything else: the runtime may close

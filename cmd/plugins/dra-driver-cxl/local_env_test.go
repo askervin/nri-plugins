@@ -93,9 +93,6 @@ type localTestEnv struct {
 	config      *DriverConfig
 	shared      map[uint64]bool
 	poolSerials map[uint64]bool
-	// fence fences the NUMA nodes of memory before it goes online, nil
-	// for none.
-	fence func(ctx context.Context, node int)
 	// holderWait is the holder wait of a release.
 	holderWait time.Duration
 	// memdevs are the local memdevs that the publisher sees, by serial.
@@ -177,7 +174,6 @@ func (e *localTestEnv) start() *dra.Plugin {
 			MountsDirs:      dra.MountsDirs(e.rules()...),
 			LeaseFsRoot:     filepath.Join(e.dir, leaseFsDirName),
 			FsTypes:         e.config.fsTypes(),
-			Fence:           e.fence,
 			ProbeAddressing: e.config.verifyAddressing(),
 			Timeouts: engine.Timeouts{Memdev: 200 * time.Millisecond, Settle: 200 * time.Millisecond, Holder: e.holderWait,
 				ProbeGrace: 20 * time.Millisecond, RegionRetry: 10 * time.Millisecond, OfflineSettle: 20 * time.Millisecond},
