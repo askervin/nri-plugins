@@ -34,20 +34,26 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
-// TestRemoveCXLSpecs removes the CDI specs of both drivers, also of their
-// earlier names, and keeps the others.
+// TestRemoveCXLSpecs removes the CDI specs of both drivers but the files of
+// the spec names owned, and keeps the specs of other kinds.
 func TestRemoveCXLSpecs(t *testing.T) {
 	dir := t.TempDir()
-	for name, kind := range map[string]string{"cxl-claims": "nri.io/cxl", "cxl-local": "nri.io/cxl", "cxl-pool": "nri.io/cxl-pool", "gpu": "example.com/gpu"} {
-		data := "cdiVersion: 0.6.0\nkind: " + kind + "\ndevices:\n- name: " + name + "\n  containerEdits:\n    env: [A=1]\n"
-		mustOK(t, os.WriteFile(filepath.Join(dir, name+".yaml"), []byte(data), 0o600))
+	files := map[string]string{"cxl-claims.yaml": "nri.io/cxl", "cxl-claims.json": "nri.io/cxl", "cxl-local.yaml": "nri.io/cxl",
+		"cxl-pool.yaml": "nri.io/cxl-pool", "gpu.yaml": "example.com/gpu"}
+	for file, kind := range files {
+		data := "cdiVersion: 0.6.0\nkind: " + kind + "\ndevices:\n- name: d" + strings.ReplaceAll(file, ".", "-") + "\n  containerEdits:\n    env: [A=1]\n"
+		mustOK(t, os.WriteFile(filepath.Join(dir, file), []byte(data), 0o600))
 	}
 	cache, err := cdiapi.NewCache(cdiapi.WithSpecDirs(dir), cdiapi.WithAutoRefresh(false))
 	mustOK(t, err)
-	mustOK(t, RemoveCXLSpecs(cache))
+	mustOK(t, RemoveCXLSpecs(cache, "cxl-claims", "cxl-pool.yaml"))
+	var left []string
 	m, _ := filepath.Glob(filepath.Join(dir, "*"))
-	if len(m) != 1 || filepath.Base(m[0]) != "gpu.yaml" {
-		t.Fatalf("left %v", m)
+	for _, path := range m {
+		left = append(left, filepath.Base(path))
+	}
+	if want := []string{"cxl-claims.yaml", "cxl-pool.yaml", "gpu.yaml"}; !slices.Equal(left, want) {
+		t.Fatalf("left %v, want %v", left, want)
 	}
 }
 

@@ -1995,8 +1995,11 @@ the pool driver, `/var/lib/kubelet/plugins/cxl-pool.nri.io`.
 To read the records, read `state.json` (with the plugin running it is
 replaced, never written in place). Companion claims of leases get no CDI
 device ([leases.md](leases.md#companion-objects)). At
-start the plugin deletes every CDI spec of the kinds `nri.io/cxl` and
-`nri.io/cxl-pool` and writes the three files again from the document.
+start the plugin writes the three files again from the document, each
+replaced in place (removed without devices), then deletes the other CDI
+specs of the kinds `nri.io/cxl` and `nri.io/cxl-pool`, such as the file
+of a disabled pool driver or lease device. A plugin that starts LOST
+keeps them all as they are.
 
 The flags of the files are no values of the Helm chart: add one to the
 `args` of the container of the DaemonSet

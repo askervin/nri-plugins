@@ -289,10 +289,11 @@ func installLeaseCLI(src, dst string) (retErr error) {
 // the order of its start-up:
 //  1. the boot id and the state store;
 //  2. the device engine and its recovery, with the first list of the pool
-//     devices, the first scan and the CDI specs of the prepared claims of
-//     cxl.nri.io;
+//     devices and the first scan;
 //  3. the fence of the NRI plugin seeded with the NUMA nodes of the claims;
-//  4. the lease broker loaded, the sockets of its lease claims made again;
+//  4. the lease broker loaded, the sockets of its lease claims made again,
+//     the CDI specs of the prepared claims written in place, the other CXL
+//     specs removed;
 //  5. the NRI plugin started and the lenders wired;
 //  6. the kubelet plugins of cxl.nri.io and of the pool driver registered,
 //     the first publication of the node's ResourceSlice, the watchers, the
@@ -356,7 +357,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := fe.recover(ctx, config.Flags.CDIRoot, driverConfig, devices); err != nil {
+	if err := fe.recover(ctx, driverConfig, devices); err != nil {
 		return nil, err
 	}
 
@@ -393,6 +394,11 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	}
 	if broker != nil {
 		d.broker = broker
+	}
+	// The specs of the claims prepared before the start are rewritten, not
+	// removed first: a container created meanwhile finds its devices.
+	if err := fe.writeCDI(st, broker != nil); err != nil {
+		return nil, err
 	}
 
 	// 5. The NRI plugin starts before the kubelet plugins: kubelet creates

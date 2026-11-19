@@ -50,17 +50,17 @@ import (
 //
 // Transitions: Prepare: UNKNOWN, STALE or KEPT -> PREPARING (every result
 // checked before, the intent committed before the engine touches a device)
-// -> PREPARED (grants realised, lend done, CDI spec written), or KEPT /
-// UNKNOWN after a failure's rollback; a Prepare of a prepared claim returns
-// its result (a companion announced again, unrestored node mounts mounted
-// again). Unprepare: lease claims closed first (cxl.nri.io), the companion
-// told and its lend revoked, PREPARED -> UNPREPARING, the grants released,
-// -> UNKNOWN. See the table below in internal/state.
+// -> PREPARED (grants realised, the lend of a companion done or the CDI
+// spec written), or KEPT / UNKNOWN after a failure's rollback; a Prepare of
+// a prepared claim returns its result (a companion announced again,
+// unrestored node mounts mounted again). Unprepare: lease claims closed
+// first (cxl.nri.io), the companion told and its lend revoked, PREPARED ->
+// UNPREPARING, the grants released, -> UNKNOWN. See the table below in
+// internal/state.
 //
 // Invariants: a PREPARED claim's grants are REALISED; the CDI spec of the
-// driver has the devices of its PREPARED claims (and UNPREPARING ones when
-// the rules keep them) that are not companions; a companion claim has no
-// CDI device.
+// driver has the devices of its PREPARED and UNPREPARING claims that are
+// not companions; a companion claim has no CDI device.
 //
 // Persistence: the preparations are records of the store, committed
 // durably before kubelet gets a response; the CDI spec is derived from
@@ -68,10 +68,9 @@ import (
 // asks the publisher for a rescan when it ends.
 //
 // Locks and waits: the kubelet helper serializes the Prepares and
-// Unprepares of the driver; a claim's lock serializes its own (and a
-// test's); the CDI write lock the writes of the spec; mu guards the
-// in-flight serials, the unrestored claims and the late settings. A Prepare
-// waits up to 30 s for the first NRI Synchronize before any claim lock. The
+// Unprepares of the driver, and with them the writes of its CDI spec; mu
+// guards the in-flight serials, the unrestored claims and the late
+// settings. A Prepare waits up to 30 s for the first NRI Synchronize. The
 // rescan is asked for with no lock of the plugin or the engine held, and
 // is not waited for.
 type Plugin struct {
@@ -86,11 +85,7 @@ type Plugin struct {
 	// publisher publishes the node's ResourceSlice, nil for none.
 	publisher *Publisher
 	helper    *kubeletplugin.Helper
-
-	locks claimLocks
-	// cdiMu serializes the writes of the CDI spec: a leaf lock.
-	cdiMu sync.Mutex
-	cdi   *cdiapi.Cache
+	cdi       *cdiapi.Cache
 
 	// mu guards the fields below: a leaf lock.
 	mu      sync.Mutex
@@ -209,12 +204,8 @@ func (p *Plugin) leaseClaims() lend.LeaseClaims {
 	return p.leases
 }
 
-// Start writes the CDI spec of the prepared claims and starts the kubelet
-// plugin with the options.
+// Start starts the kubelet plugin with the options.
 func (p *Plugin) Start(ctx context.Context, opts ...kubeletplugin.Option) error {
-	if err := p.writeCDI(""); err != nil {
-		return err
-	}
 	helper, err := kubeletplugin.Start(ctx, p, opts...)
 	if err != nil {
 		return fmt.Errorf("%s: starting the kubelet plugin: %w", p.rules.Name, err)
@@ -301,14 +292,11 @@ func (p *Plugin) claimError(namespace, name string, err error) error {
 	return err
 }
 
-// prepareClaim prepares a claim with its lock held, in a request of the
-// engine, and asks the publisher for a rescan when the Prepare changed the
-// records.
+// prepareClaim prepares a claim in a request of the engine, and asks the
+// publisher for a rescan when the Prepare changed the records.
 func (p *Plugin) prepareClaim(ctx context.Context, claim *resourcev1.ResourceClaim) kubeletplugin.PrepareResult {
-	// deferred first: runs after the unlock and the end of the request
+	// deferred first: runs after the end of the request
 	defer p.republish(ctx, p.generation())
-	unlock := p.locks.lock(string(claim.UID))
-	defer unlock()
 	ctx, end := p.engine.Request(ctx)
 	defer end()
 	return p.prepare(ctx, claim)
@@ -712,11 +700,11 @@ func (p *Plugin) UnprepareResourceClaims(ctx context.Context, claims []kubeletpl
 }
 
 // unprepareClaim unprepares a claim: its lease claim closed first (a claim
-// on the lease device of cxl.nri.io), then its devices released with the
-// claim's lock held, in a request of the engine. It asks the publisher for
-// a rescan when the Unprepare changed the records.
+// on the lease device of cxl.nri.io), then its devices released in a
+// request of the engine. It asks the publisher for a rescan when the
+// Unprepare changed the records.
 func (p *Plugin) unprepareClaim(ctx context.Context, uid string) error {
-	// deferred first: runs after the unlock and the end of the request
+	// deferred first: runs after the end of the request
 	defer p.republish(ctx, p.generation())
 	if leases := p.leaseClaims(); leases != nil {
 		// the leases of a lease claim are released first (bounded; an
@@ -725,8 +713,6 @@ func (p *Plugin) unprepareClaim(ctx context.Context, uid string) error {
 			return err
 		}
 	}
-	unlock := p.locks.lock(uid)
-	defer unlock()
 	ctx, end := p.engine.Request(ctx)
 	defer end()
 	claimName, err := p.unprepare(ctx, uid)
@@ -990,8 +976,6 @@ func (p *Plugin) writeCDI(pending string) error {
 	if p.cdi == nil || p.st.Lost() != nil {
 		return nil
 	}
-	p.cdiMu.Lock()
-	defer p.cdiMu.Unlock()
 	spec, err := buildCDISpec(p.st.Snapshot(), p.rules.Name, p.rules.CDIKind(), p.roots, pending)
 	if err != nil {
 		return err
@@ -1005,15 +989,9 @@ func (p *Plugin) WriteCDI() error {
 	return p.writeCDI("")
 }
 
-// SetCDI sets the CDI cache that the spec of the driver is written with;
-// nothing for a nil plugin.
-func (p *Plugin) SetCDI(cdi *cdiapi.Cache) {
-	if p == nil {
-		return
-	}
-	p.cdiMu.Lock()
-	defer p.cdiMu.Unlock()
-	p.cdi = cdi
+// CDISpecName returns the name of the CDI spec of the driver.
+func (p *Plugin) CDISpecName() string {
+	return p.rules.CDISpecName()
 }
 
 // HandleError is called by the kubelet plugin helper on asynchronous
@@ -1031,43 +1009,6 @@ func (p *Plugin) HandleError(ctx context.Context, err error, message string) {
 // report per-device health.
 func (p *Plugin) WatchHealthStatus(ctx context.Context, reports chan<- kubeletplugin.DeviceHealthReport) error {
 	return kubeletplugin.ErrHealthNotSupported
-}
-
-// claimLocks serializes the work on each claim.
-type claimLocks struct {
-	// mu guards claims: a leaf lock.
-	mu     sync.Mutex
-	claims map[string]*claimLock
-}
-
-// claimLock is the lock of one claim UID.
-type claimLock struct {
-	sync.Mutex
-	users int
-}
-
-// lock locks the claim UID and returns the function that unlocks it.
-func (l *claimLocks) lock(uid string) func() {
-	l.mu.Lock()
-	if l.claims == nil {
-		l.claims = map[string]*claimLock{}
-	}
-	c := l.claims[uid]
-	if c == nil {
-		c = &claimLock{}
-		l.claims[uid] = c
-	}
-	c.users++
-	l.mu.Unlock()
-	c.Lock()
-	return func() {
-		c.Unlock()
-		l.mu.Lock()
-		if c.users--; c.users == 0 {
-			delete(l.claims, uid)
-		}
-		l.mu.Unlock()
-	}
 }
 
 // Unrestored returns the claims of the driver without CDI devices since the

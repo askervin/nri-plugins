@@ -481,12 +481,12 @@ func (e *localTestEnv) unmanaged() {
 		NodeName:  testNode,
 		SysRoot:   e.k.SysRoot(),
 		DevRoot:   e.k.DevRoot(),
+		CDI:       e.cdi,
 		Local:     local,
 		OnShared:  e.devices.addShared,
 		Publisher: e.publisher,
 	})
 	noErr(e.t, err)
-	p.SetCDI(e.cdi)
 	e.s = p
 	e.devices.setLender(state.SourceLocal, e.s.Lender())
 }

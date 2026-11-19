@@ -392,8 +392,7 @@ func (b *blockingLender) lends() int {
 	return len(b.calls)
 }
 
-// The NRI readers, the publisher and other claims never wait for a Prepare
-// that lends, and two Prepares of one claim run one after the other.
+// The NRI readers and the publisher never wait for a Prepare that lends.
 func TestPrepareDoesNotBlockReaders(t *testing.T) {
 	e := newLocalTestEnv(t)
 	e.start()
@@ -403,7 +402,7 @@ func TestPrepareDoesNotBlockReaders(t *testing.T) {
 	ctx := context.Background()
 	e.mustPrepare(localClaim("u0", 32*mib))
 
-	done := make(chan error, 2)
+	done := make(chan error, 1)
 	go func() { done <- prepareOn(ctx, e.s, localCompanion("u1", 64*mib)) }()
 	select {
 	case <-bl.entered:
@@ -418,33 +417,20 @@ func TestPrepareDoesNotBlockReaders(t *testing.T) {
 		}
 		_, _, _ = e.s.PreparedResult("u0", 0)
 		_ = e.publisher.Resources()
-		err := prepareOn(ctx, e.s, localClaim("u2", 2*mib))
-		if err == nil {
-			err = unprepareOn(ctx, e.s, "u2")
-		}
-		readers <- err
+		readers <- nil
 	}()
 	select {
 	case err := <-readers:
 		noErr(t, err)
 	case <-time.After(10 * time.Second):
-		t.Fatal("claim info, resources or another claim waited for a lend")
-	}
-
-	go func() { done <- prepareOn(ctx, e.s, localCompanion("u1", 64*mib)) }()
-	select {
-	case err := <-done:
-		t.Fatalf("a Prepare of u1 finished during the lend of u1: %v", err)
-	case <-time.After(100 * time.Millisecond):
+		t.Fatal("claim info or resources waited for a lend")
 	}
 	close(bl.release)
-	for i := 0; i < 2; i++ {
-		select {
-		case err := <-done:
-			noErr(t, err)
-		case <-time.After(10 * time.Second):
-			t.Fatal("Prepare of u1 did not finish")
-		}
+	select {
+	case err := <-done:
+		noErr(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("Prepare of u1 did not finish")
 	}
 	e.check("prepared")
 	if n := bl.lends(); n != 1 {
@@ -459,7 +445,7 @@ func TestPrepareDoesNotBlockReaders(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("%d grants of u1", n)
 	}
-	wantLog(t, hooks.log(), "lending l1 cxl-lease-l1\nprepared l1\nlending l1 cxl-lease-l1\nprepared l1")
+	wantLog(t, hooks.log(), "lending l1 cxl-lease-l1\nprepared l1")
 	e.mustUnprepare("u1")
 	e.mustUnprepare("u0")
 	e.wantClean()

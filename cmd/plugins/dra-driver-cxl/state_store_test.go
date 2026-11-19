@@ -25,7 +25,6 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
-	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
@@ -68,7 +67,7 @@ func TestStartOnALostStore(t *testing.T) {
 	noErr(t, err)
 	fe, err := newFrontEnds(config, flags, &DriverConfig{}, st, devices, nil, rules)
 	noErr(t, err)
-	noErr(t, fe.recover(ctx, filepath.Join(root, "cdi"), &DriverConfig{}, devices))
+	noErr(t, fe.recover(ctx, &DriverConfig{}, devices))
 	p, ns := fe.pool, fe.local
 	if r := p.Records(); len(r.Preparations) != 0 || len(p.Serials()) != 0 {
 		t.Errorf("pool driver: preparations %v, serials %v", r.Preparations, p.Serials())
@@ -76,12 +75,11 @@ func TestStartOnALostStore(t *testing.T) {
 	if uses := fe.publisher.LocalSnapshot().Uses; len(uses) != 0 {
 		t.Errorf("local uses %v", uses)
 	}
-	cache, err := cdiapi.NewCache(cdiapi.WithSpecDirs(filepath.Join(root, "cdi")), cdiapi.WithAutoRefresh(false))
-	noErr(t, err)
-	b, err := leases.New(leases.Options{Store: st, Client: k8sfake.NewClientset(), NodeName: testNode, DataDir: local, CDI: cache,
+	b, err := leases.New(leases.Options{Store: st, Client: k8sfake.NewClientset(), NodeName: testNode, DataDir: local, CDI: fe.cdi,
 		CLI: filepath.Join(root, "cxl-request"), WaitDefault: time.Second, PoolDriver: device.PoolDriverName})
 	noErr(t, err)
 	defer b.Stop()
+	noErr(t, fe.writeCDI(st, true))
 
 	fe.publisher.SetDevices(dra.DevicesInfo{"dram": {Name: "dram", Dev: &dra.DRAM{Nodes: []int{0}, Size: 1 << 30}}})
 	claim := &resourcev1.ResourceClaim{

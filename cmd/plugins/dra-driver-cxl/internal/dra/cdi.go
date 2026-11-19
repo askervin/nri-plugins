@@ -189,16 +189,33 @@ func writeCDISpec(cache *cdiapi.Cache, spec *cdiSpecs.Spec, driver, name string)
 }
 
 // RemoveCXLSpecs removes the CDI specs of kinds device.CDIKind and
-// device.PoolCDIKind from the spec directory that the CDI cache writes to.
-func RemoveCXLSpecs(cache *cdiapi.Cache) error {
+// device.PoolCDIKind that the CDI cache found in its spec directory, except
+// the files of the spec names owned, which their writers write in place.
+func RemoveCXLSpecs(cache *cdiapi.Cache, owned ...string) error {
+	keep := map[string]bool{}
+	for _, name := range owned {
+		keep[specFile(name)] = true
+	}
 	var errs []error
 	for _, spec := range cache.GetVendorSpecs(device.CDIVendor) {
-		if spec.Kind != device.CDIKind && spec.Kind != device.PoolCDIKind {
+		file := filepath.Base(spec.GetPath())
+		if spec.Kind != device.CDIKind && spec.Kind != device.PoolCDIKind || keep[file] {
 			continue
 		}
-		if err := cache.RemoveSpec(filepath.Base(spec.GetPath())); err != nil {
-			errs = append(errs, fmt.Errorf("failed to remove old CDI spec %s: %w", spec.GetPath(), err))
+		if err := cache.RemoveSpec(file); err != nil {
+			errs = append(errs, fmt.Errorf("remove CDI spec %s: %w", spec.GetPath(), err))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// specFile returns the name of the file that the CDI cache writes of the
+// spec name: name itself with the extension ".json" or ".yaml", else
+// name.yaml.
+func specFile(name string) string {
+	switch filepath.Ext(name) {
+	case ".json", ".yaml":
+		return name
+	}
+	return name + ".yaml"
 }

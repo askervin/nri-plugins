@@ -47,8 +47,8 @@ type Lend struct {
 }
 
 // LeaseHooks is what a driver tells the lease broker about companion
-// claims. The hooks are called with the driver's claim locked and must not
-// call back into the driver.
+// claims. The hooks are called in a Prepare or an Unprepare of the driver
+// and must not call back into the driver.
 type LeaseHooks interface {
 	// OnLending checks that the claim is the companion of the lease,
 	// marks the lease Lending and returns the lend of the lease's

@@ -81,53 +81,6 @@ func TestPreparedCommitWaitsForItsWrite(t *testing.T) {
 	e.wantClean()
 }
 
-// Two Prepares of one claim serialize on its lock, the Prepare of another
-// claim does not wait for them.
-func TestClaimLock(t *testing.T) {
-	e := lendEnv(t)
-	_, hooks := e.lending()
-	block := make(chan struct{})
-	entered := make(chan string, 4)
-	hooks.mu.Lock()
-	hooks.block = map[string]chan struct{}{"cxl-lease-l1": block}
-	hooks.entered = entered
-	hooks.mu.Unlock()
-	ctx := context.Background()
-	prepare := func(c *resourcev1.ResourceClaim, out chan<- kubeletplugin.PrepareResult) {
-		res, err := e.local.PrepareResourceClaims(ctx, []*resourcev1.ResourceClaim{c})
-		if err != nil {
-			out <- kubeletplugin.PrepareResult{Err: err}
-			return
-		}
-		out <- res[c.UID]
-	}
-	first, second := make(chan kubeletplugin.PrepareResult, 1), make(chan kubeletplugin.PrepareResult, 1)
-	go prepare(e.companionOf(e.local), first)
-	if name := <-entered; name != "cxl-lease-l1" {
-		t.Fatalf("entered %s", name)
-	}
-	go prepare(e.companionOf(e.local), second)
-	// another claim of the driver meanwhile
-	e.mustPrepare(e.local, localClaim("u2", device.DRAMDeviceName, 64*mib))
-	select {
-	case name := <-entered:
-		t.Fatalf("the second Prepare of the claim entered the gate of %s while the first one is in it", name)
-	case res := <-second:
-		t.Fatalf("the second Prepare of the claim returned %+v while the first one runs", res)
-	case <-time.After(100 * time.Millisecond):
-	}
-	close(block)
-	a, b := <-first, <-second
-	mustOK(t, a.Err)
-	mustOK(t, b.Err)
-	e.wantEvents("two Prepares of one claim", "lending l1 cxl-lease-l1", "lend pod-uid-1/app 2 l1", "prepared l1",
-		"lending l1 cxl-lease-l1", "prepared l1")
-	e.check("after the Prepares")
-	e.mustUnprepare(e.local, "c1")
-	e.mustUnprepare(e.local, "u2")
-	e.wantClean()
-}
-
 // A Prepare waits for the first NRI Synchronize: an error of the wait
 // fails every claim of the call, with a warning, before any device or
 // record.

@@ -27,7 +27,6 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
-	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
@@ -79,11 +78,9 @@ func TestCreateContainerDoesNotWaitForTheBroker(t *testing.T) {
 	noErr(t, err)
 	fe, err := newFrontEnds(cfg, flags, &DriverConfig{}, st, devices, nil, rules)
 	noErr(t, err)
-	noErr(t, fe.recover(ctx, flags.CDIRoot, &DriverConfig{}, devices))
-	cache, err := cdiapi.NewCache(cdiapi.WithSpecDirs(flags.CDIRoot), cdiapi.WithAutoRefresh(false))
-	noErr(t, err)
-	// newBroker's broker, with a CDI cache of the test
-	broker, err := leases.New(leases.Options{Store: st, Client: k8sfake.NewClientset(), NodeName: testNode, DataDir: local, CDI: cache,
+	noErr(t, fe.recover(ctx, &DriverConfig{}, devices))
+	// newBroker's broker, with a client of the test
+	broker, err := leases.New(leases.Options{Store: st, Client: k8sfake.NewClientset(), NodeName: testNode, DataDir: local, CDI: fe.cdi,
 		CLI: filepath.Join(root, "cxl-request"), WaitDefault: time.Second, PoolDriver: device.PoolDriverName})
 	noErr(t, err)
 	fe.local.SetLeases(broker)

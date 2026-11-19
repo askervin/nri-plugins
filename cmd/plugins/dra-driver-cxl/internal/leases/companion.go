@@ -337,7 +337,8 @@ func (b *Broker) createCompanion(l *state.Lease) error {
 }
 
 // The hooks (lend.LeaseHooks) that the drivers call for the companion
-// claims with the claim locked: they only touch the records of the broker.
+// claims in their Prepares and Unprepares: they only touch the records of
+// the broker.
 
 // CompanionSpecHash returns the hash of the spec of the companion claim of
 // the lease id as the API server returned it at its creation ("" if this

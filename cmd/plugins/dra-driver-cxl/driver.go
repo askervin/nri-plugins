@@ -97,7 +97,7 @@ func newBroker(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverCon
 		Client:      config.Client,
 		NodeName:    config.Flags.NodeName,
 		DataDir:     config.KubeletPluginDir,
-		CDI:         cdiapi.GetDefaultCache(),
+		CDI:         fe.cdi,
 		CLI:         cxlFlags.LeaseCLI,
 		Image:       cxlFlags.LeaseCompanionImage,
 		WaitDefault: cxlFlags.LeaseWait,
@@ -387,22 +387,30 @@ func newWatcher(config *pluginConfig, cxlFlags *CXLFlags, st *store.Store) *prov
 	})
 }
 
-// frontEnds are the two DRA drivers of the process and the publisher of the
-// node's ResourceSlice.
+// frontEnds are the two DRA drivers of the process, the publisher of the
+// node's ResourceSlice and the CDI cache that the drivers and the lease
+// broker write their specs with.
 type frontEnds struct {
 	local     *dra.Plugin
 	pool      *dra.Plugin // nil when the pool driver is disabled
 	publisher *dra.Publisher
 	watcher   *provenance.Watcher
+	cdi       *cdiapi.Cache
 }
 
 // newFrontEnds returns the DRA drivers of rules over the store st and the
 // device engine devices: cxl.nri.io, which publishes the node's
 // ResourceSlice of the devices of the kernel of the engine, and the pool
 // driver unless it is disabled (rules.pool nil). The Prepares and
-// Unprepares of both have the publisher rescan.
+// Unprepares of both have the publisher rescan. Their CDI specs are written
+// to the directory cxlFlags.CDIRoot.
 func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, st *store.Store, devices *deviceEngine, watcher *provenance.Watcher, rules driverRules) (*frontEnds, error) {
-	fe := &frontEnds{watcher: watcher}
+	// the cache only writes: no refresh after the first, no watch
+	cdi, err := cdiapi.NewCache(cdiapi.WithSpecDirs(cxlFlags.CDIRoot), cdiapi.WithAutoRefresh(false))
+	if err != nil {
+		return nil, fmt.Errorf("CDI cache of %s: %w", cxlFlags.CDIRoot, err)
+	}
+	fe := &frontEnds{watcher: watcher, cdi: cdi}
 	publisher, err := dra.NewPublisher(dra.PublishOptions{
 		Config:      driverConfig.publishConfig(),
 		NodeName:    cxlFlags.NodeName,
@@ -426,6 +434,7 @@ func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Driver
 			NodeName:  cxlFlags.NodeName,
 			SysRoot:   devices.k.SysRoot,
 			DevRoot:   devices.k.DevRoot,
+			CDI:       fe.cdi,
 			Publisher: fe.publisher,
 		})
 		if err != nil {
@@ -441,6 +450,7 @@ func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Driver
 		NodeName:  cxlFlags.NodeName,
 		SysRoot:   devices.k.SysRoot,
 		DevRoot:   devices.k.DevRoot,
+		CDI:       fe.cdi,
 		Local:     driverConfig.localConfig(),
 		OnShared:  devices.addShared,
 		Publisher: fe.publisher,
@@ -459,10 +469,8 @@ func newFrontEnds(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *Driver
 // the local memdevs that are pool devices now forgotten, the recovery of
 // the engine (before any scan: the regions of the drivers are never
 // published as region devices), the local guard, the first scan of the
-// devices of the kernel of the engine, the CDI specs of the claims of
-// cxl.nri.io rewritten in the directory cdiRoot (kept as they are on a
-// lost store).
-func (fe *frontEnds) recover(ctx context.Context, cdiRoot string, driverConfig *DriverConfig, devices *deviceEngine) error {
+// devices of the kernel of the engine.
+func (fe *frontEnds) recover(ctx context.Context, driverConfig *DriverConfig, devices *deviceEngine) error {
 	snap, err := devices.k.ObserveTopology(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to detect devices: %v", err)
@@ -497,27 +505,33 @@ func (fe *frontEnds) recover(ctx context.Context, cdiRoot string, driverConfig *
 	if err := fe.publisher.ScanWith(ctx, cfg, poolSerials); err != nil {
 		return err
 	}
-	klog.V(3).Info("Creating new NodeState")
-	klog.V(5).Info("Refreshing CDI registry")
-	if err := cdiapi.Configure(cdiapi.WithSpecDirs(cdiRoot)); err != nil {
-		return fmt.Errorf("failed to create new NodeState: unable to refresh the CDI registry: %v", err)
-	}
-	cache := cdiapi.GetDefaultCache()
-	// a lost store does not know the prepared claims: their specs stay
-	if devices.st.Lost() == nil {
-		if err := dra.RemoveCXLSpecs(cache); err != nil {
-			return fmt.Errorf("failed to create new NodeState: %v", err)
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	fe.local.SetCDI(cache)
-	fe.pool.SetCDI(cache)
-	// The CDI specs of the claims prepared before a restart.
 	fe.local.Recovered(rec)
-	if err := fe.local.WriteCDI(); err != nil {
-		return fmt.Errorf("failed to create new NodeState: %v", err)
-	}
 	return nil
+}
+
+// writeCDI writes the CDI specs of the prepared claims of the drivers in
+// place, then removes the other CXL specs of the CDI directory: all but
+// those of the drivers and, with leases, of the lease broker, which wrote
+// its own. Nothing on the store st lost: its prepared claims are unknown,
+// their specs stay.
+func (fe *frontEnds) writeCDI(st *store.Store, leases bool) error {
+	if st.Lost() != nil {
+		return nil
+	}
+	owned := []string{fe.local.CDISpecName()}
+	if err := fe.local.WriteCDI(); err != nil {
+		return err
+	}
+	if fe.pool != nil {
+		owned = append(owned, fe.pool.CDISpecName())
+		if err := fe.pool.WriteCDI(); err != nil {
+			return err
+		}
+	}
+	if leases {
+		owned = append(owned, device.LeasesCDISpecName)
+	}
+	return dra.RemoveCXLSpecs(fe.cdi, owned...)
 }
 
 // localPoolGuard returns the check of a local memdev before the engine
@@ -556,8 +570,7 @@ func fenceSeed(ctx context.Context, st *store.Store, k *kernel.Kernel, drivers .
 }
 
 // startPoolDriver registers the pool driver as a second kubelet plugin
-// (nothing if pool is nil). The start removed all old CDI specs of both
-// drivers, so the pool driver writes its own again first.
+// (nothing if pool is nil).
 func startPoolDriver(ctx context.Context, config *pluginConfig, pool *dra.Plugin) error {
 	if pool == nil {
 		return nil
