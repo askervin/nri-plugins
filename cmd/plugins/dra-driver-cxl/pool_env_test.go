@@ -18,7 +18,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -57,15 +56,12 @@ type poolTestEnv struct {
 	st *store.Store
 	// dir is the plugin data directory of the pool driver and of the
 	// store.
-	dir         string
-	cdiDir      string
-	leaseFsRoot string // of the pool driver, "" for none
-	timeout     time.Duration
-	holderWait  time.Duration
+	dir        string
+	cdiDir     string
+	timeout    time.Duration
+	holderWait time.Duration
 	// base are the commands of the fake before those of the driver.
 	base string
-	// pmem is the block device of the persistent device plugged last.
-	pmem string
 }
 
 func newPoolTestEnv(t *testing.T) *poolTestEnv {
@@ -93,41 +89,6 @@ func (e *poolTestEnv) plug(serial uint64) string {
 	return e.k.Plug(fake.MemdevSpec{Serial: serial})
 }
 
-// plugPersistent hot-adds the pool device of persistent memory with the
-// serial, whose fsdax namespace another host made with a filesystem of the
-// types on it, and returns its memdev and its block device.
-func (e *poolTestEnv) plugPersistent(serial uint64, types ...string) (string, string) {
-	e.t.Helper()
-	memdev := e.k.Plug(fake.MemdevSpec{Serial: serial, Pmem: 512 << 20})
-	e.pmem = e.formatPmem(memdev, types...)
-	return memdev, e.pmem
-}
-
-// formatPmem makes the fsdax namespace of the persistent memdev and a
-// filesystem of the types on it, as a writer on another host would,
-// leaving no region, and returns its block device.
-func (e *poolTestEnv) formatPmem(memdev string, types ...string) string {
-	e.t.Helper()
-	k := e.k.Kernel()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	d, err := k.RootDecoder(memdev, kernel.RegionPmem)
-	noErr(e.t, err)
-	region, err := k.CreateRegion(ctx, kernel.CreateRegionRequest{Memdev: memdev, Decoder: d, Type: kernel.RegionPmem})
-	noErr(e.t, err)
-	nd, err := k.WaitNdRegion(ctx, region)
-	noErr(e.t, err)
-	ns, err := k.CreateFsdaxNamespace(ctx, nd, "")
-	noErr(e.t, err)
-	if len(types) > 0 {
-		e.k.SetImage(ns.BlockDevice, fake.FsImage(types...))
-	}
-	noErr(e.t, k.ReleaseRegion(ctx, region))
-	// the commands of the writer are not the driver's
-	e.base = e.k.Commands()
-	return ns.BlockDevice
-}
-
 // driver returns a new pool driver on the env's store, as after a restart
 // (the store opened again, the engine's recovery), without a kubelet
 // plugin. A driver returned before must not be used after.
@@ -144,11 +105,10 @@ func (e *poolTestEnv) driver(t *testing.T) *dra.Plugin {
 	noErr(t, err)
 	devices, err := newDeviceEngine(deviceConfig{
 		Engine: engine.Options{
-			Kernel:      e.k.Kernel(),
-			Store:       e.st,
-			MountsDirs:  dra.MountsDirs(rules),
-			LeaseFsRoot: e.leaseFsRoot,
-			FsTypes:     api.KnownFsTypes,
+			Kernel:     e.k.Kernel(),
+			Store:      e.st,
+			MountsDirs: dra.MountsDirs(rules),
+			FsTypes:    api.KnownFsTypes,
 			Timeouts: engine.Timeouts{Memdev: e.timeout, Settle: e.timeout, Holder: e.holderWait,
 				ProbeGrace: 20 * time.Millisecond, RegionRetry: 10 * time.Millisecond, OfflineSettle: 20 * time.Millisecond},
 		},
@@ -484,33 +444,4 @@ func cutPrepare(t *testing.T, p *dra.Plugin, claim *resourceapi.ResourceClaim) {
 		panic(r)
 	}()
 	_, _ = p.PrepareResourceClaims(context.Background(), []*resourceapi.ResourceClaim{claim})
-}
-
-// nodeMount returns the node mount of mode fs of the device with the
-// serial and the access.
-func (e *poolTestEnv) nodeMount(serial uint64, access string) string {
-	return filepath.Join(e.dir, mountsDirName, fmt.Sprintf("%x-%s", serial, access))
-}
-
-// mounts returns the mounts of the node as the driver's mount table has
-// them.
-func (e *poolTestEnv) mounts() ([]mountInfo, error) {
-	return e.k.Kernel().Mounts()
-}
-
-// mounted returns the mount at target, nil if there is none.
-func (e *poolTestEnv) mounted(target string) *mountInfo {
-	ms, _ := e.mounts()
-	for i := len(ms) - 1; i >= 0; i-- {
-		if ms[i].Target == target {
-			return &ms[i]
-		}
-	}
-	return nil
-}
-
-// mountedErr returns the mount at target, nil if there is none, and no
-// error, as a mount table does.
-func (e *poolTestEnv) mountedErr(target string) (*mountInfo, error) {
-	return e.mounted(target), nil
 }

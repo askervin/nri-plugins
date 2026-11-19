@@ -112,6 +112,39 @@ func TestRemountPool(t *testing.T) {
 	e.wantClean()
 }
 
+// A companion claim of mode fs whose node mount and lease bind are lost:
+// its Prepare again fails without telling the broker while the device
+// cannot be mounted, and then binds the lease again before the broker
+// hears of the companion again.
+func TestRemountCompanion(t *testing.T) {
+	e := newDriverEnv(t, nil, poolPmemSpec(serialPoolP))
+	dev := e.formatPmem(serialPoolP, "erofs")
+	_, hooks := e.lending()
+	hooks.fsDir, hooks.name = filepath.Join(e.leaseFsRoot(), "l1"), "models"
+	target := filepath.Join(hooks.fsDir, hooks.name)
+	claim := companion(poolClaim("c1", "llm0", poolPmemData, cfgFsRO), "l1")
+	e.mustPrepare(e.pool, claim)
+	mnt := filepath.Join(e.poolDir, "mounts", "c1af0001-direct")
+	mustOK(t, e.k.Kernel().Unmount(target))
+	e.takeEvents()
+	logs := klogCapture(t)
+	why := e.unrestore(e.pool, "c1", mnt, dev)
+	wantErrText(t, e.prepare(e.pool, claim).Err, "cxl-pool.nri.io: claim demo/cxl-lease-l1: device 0xc1af0001: its node mount "+mnt+
+		" is not mounted and cannot be mounted again: "+why.Error()+"; unprepare the claim (delete its pods) to prepare it anew")
+	e.wantState(e.pool, "c1", state.PreparationUnrestored)
+	e.wantEvents("unrestored")
+	e.k.SetMountError(dev, nil, "")
+	e.mustPrepare(e.pool, claim)
+	e.wantState(e.pool, "c1", state.PreparationPrepared)
+	e.wantEvents("remounted", "lending l1 cxl-lease-l1", "prepared l1")
+	wantLogText(t, logs(), "cxl-pool.nri.io: claim demo/cxl-lease-l1 (c1) has its lease binds again (it had none: "+why.Error()+"); mounted again: ["+mnt+"]")
+	if mi, err := e.k.Kernel().Mounted(target); err != nil || mi == nil {
+		t.Fatalf("lease bind %s not mounted again: %v", target, err)
+	}
+	e.mustUnprepare(e.pool, "c1")
+	e.wantClean()
+}
+
 // Two claims of one node mount that the start could not mount again: the
 // Prepare again of one mounts it again for both, and both have their CDI
 // devices again.

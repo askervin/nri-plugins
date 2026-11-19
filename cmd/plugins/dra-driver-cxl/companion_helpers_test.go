@@ -22,7 +22,6 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
-	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 // The fakes and fixtures of companion claims and lease claims that the
@@ -38,9 +37,6 @@ type stopFunc func()
 
 // Stop calls the function.
 func (f stopFunc) Stop() { f() }
-
-// mountInfo is a mount of a mount namespace.
-type mountInfo = kernel.MountInfo
 
 // companionName is the name of the companion claim and pod of a lease.
 func companionName(id string) string {

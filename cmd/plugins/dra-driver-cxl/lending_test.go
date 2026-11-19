@@ -29,36 +29,21 @@ import (
 
 // fakeHooks records the leaseHooks calls.
 type fakeHooks struct {
-	mu         sync.Mutex
-	calls      []string
-	lendingErr error
-	devs       []lentDevice
-	source     state.Source // of the devices
-	fsDir      string       // FsDir of the lend records
-	name       string       // Name of the lend records
-	onPrepared func(string) // called by OnPrepared with the lease id
+	mu    sync.Mutex
+	calls []string
 }
 
 func (h *fakeHooks) OnLending(id string, claim *resourceapi.ResourceClaim) (*lendRecord, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.calls = append(h.calls, "lending "+id+" "+claim.Name)
-	if h.lendingErr != nil {
-		return nil, h.lendingErr
-	}
-	return &lendRecord{Lease: id, Pod: podRef{Namespace: testNS, Name: testPod, UID: testPodUID}, Container: testCtr,
-		FsDir: h.fsDir, Name: h.name}, nil
+	return &lendRecord{Lease: id, Pod: podRef{Namespace: testNS, Name: testPod, UID: testPodUID}, Container: testCtr}, nil
 }
 
-func (h *fakeHooks) OnPrepared(id string, source state.Source, devs []lentDevice) {
+func (h *fakeHooks) OnPrepared(id string, _ state.Source, _ []lentDevice) {
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.calls = append(h.calls, "prepared "+id)
-	h.devs, h.source = devs, source
-	fn := h.onPrepared
-	h.mu.Unlock()
-	if fn != nil {
-		fn(id)
-	}
 }
 
 func (h *fakeHooks) OnLendFailed(id string, err error) {

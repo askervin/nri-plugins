@@ -456,6 +456,25 @@ func TestCompanionLeaseBindRefused(t *testing.T) {
 	e.wantClean()
 }
 
+// A companion claim refused after the gate of the broker: the broker is told
+// that the lend failed when the MemoryConfig of the claim does not fit its
+// device, not while the pool controller has not attached the device yet.
+func TestCompanionRefusedLasting(t *testing.T) {
+	e := lendEnv(t)
+	e.lending()
+	e.mark()
+	c := e.companionOf(e.pool)
+	c.Status.Devices = nil
+	wantErrText(t, e.prepare(e.pool, c).Err, "not attached by the pool controller yet")
+	e.wantEvents("not attached", "lending l1 cxl-lease-l1")
+	mismatch := "device pooled0 serial 0xc1ee0001: MemoryConfig: device.mode fs needs a persistent device"
+	wantErrText(t, e.prepare(e.pool, e.companionOf(e.pool, cfgFsRO)).Err, e.prefix(e.pool)+mismatch)
+	e.wantEvents("mismatch", "lending l1 cxl-lease-l1", "failed l1: "+mismatch)
+	e.wantNoCommands("refused companions")
+	e.wantState(e.pool, "c1", state.PreparationUnknown)
+	e.wantClean()
+}
+
 // The companions of another boot: a numa one refused at the lease again
 // stays PREPARED_STALE and its Unprepare revokes no node, the broker is
 // told of the release; the directory of the lease bind of an fs one stays
