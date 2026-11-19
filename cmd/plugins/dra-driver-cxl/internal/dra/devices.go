@@ -53,8 +53,8 @@ type DRAM struct {
 // Region is the Dev of a region device (DeviceTypeRegion).
 type Region struct {
 	Name     string // regionN
-	NumaNode int    // NUMA node of its memory
-	Size     uint64 // bytes
+	NumaNode int    // NUMA node of its online memory
+	Size     uint64 // bytes of its online memory
 	// NodeAffinity are the CPU NUMA nodes of its memdevs, -1 for one not
 	// known.
 	NodeAffinity []int
@@ -219,39 +219,20 @@ func regionSize(r kernel.RegionInfo) uint64 {
 	return r.Range.Size()
 }
 
-// regionNodes returns the NUMA node of the memory of each region of the
-// snapshot, by name: the node of a zone of online memory that starts in the
-// region (the first online memory block of its node and zone), else the
-// target node of a dax device of the region, -1 if neither tells.
-func regionNodes(snap *kernel.Snapshot) map[string]int {
-	type zone struct {
-		node  int
-		zones string
-	}
-	// a zone of /proc/zoneinfo starts at its first online memory block
-	first := map[zone]int{}
-	for _, b := range snap.Blocks {
-		z := zone{b.NumaNode, b.Zones}
-		if f, ok := first[z]; b.State == kernel.BlockOnline && b.NumaNode >= 0 && (!ok || b.Index < f) {
-			first[z] = b.Index
-		}
-	}
-	out := map[string]int{}
-	for _, r := range snap.Regions {
-		node := -1
-		for z, b := range first {
-			if addr := uint64(b) * snap.BlockSize; r.Range != (kernel.Range{}) && addr >= r.Range.Start && addr <= r.Range.End {
-				node = z.node
+// regionMemory returns the NUMA node and the bytes of the online memory of
+// a region of the snapshot: the node of its first online memory block, -1
+// and 0 if none is online.
+func regionMemory(snap *kernel.Snapshot, r *kernel.RegionInfo) (int, uint64) {
+	node, size := -1, uint64(0)
+	for _, i := range r.Range.Blocks(snap.BlockSize) {
+		if b := snap.Block(i); b.State == kernel.BlockOnline && b.NumaNode >= 0 {
+			if node < 0 {
+				node = b.NumaNode
 			}
+			size += snap.BlockSize
 		}
-		for _, d := range snap.DaxDevicesOf(r.Name) {
-			if node < 0 && d.TargetNode >= 0 {
-				node = d.TargetNode
-			}
-		}
-		out[r.Name] = node
 	}
-	return out
+	return node, size
 }
 
 // numaNodesByName returns the NUMA nodes of the snapshot in the order of
@@ -284,14 +265,13 @@ func regionMemdevs(snap *kernel.Snapshot, r *kernel.RegionInfo) []kernel.MemdevI
 func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held map[uint64]bool, local *LocalSnapshot) DevicesInfo {
 	cxlNodes := make(map[int]bool)
 	devInfos := make(map[string]*DeviceInfo)
-	nodes := regionNodes(snap)
 	for i := range snap.Regions {
 		r := &snap.Regions[i]
-		node := nodes[r.Name]
+		node, size := regionMemory(snap, r)
 		klog.V(3).Infof("discovered CXL region device: %+v", *r)
-		// the memory of a hollow region that kmem could not remove is not
-		// DRAM either
-		cxlNodes[node] = true
+		// the memory of a region is not DRAM, published or not, hollow
+		// with memory that kmem could not remove included
+		cxlNodes[r.NumaNode] = true
 		if r.State == kernel.RegionHollow {
 			klog.V(4).Infof("- ignoring region device %q: it has no target decoder", r.Name)
 			continue
@@ -301,7 +281,7 @@ func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held ma
 			klog.V(4).Infof("- ignoring region device %q: %s", r.Name, reason)
 			continue
 		}
-		dev := &Region{Name: r.Name, NumaNode: node, Size: regionSize(*r)}
+		dev := &Region{Name: r.Name, NumaNode: node, Size: size}
 		for _, m := range mems {
 			dev.NodeAffinity = append(dev.NodeAffinity, m.NodeAffinity)
 		}
@@ -323,24 +303,25 @@ func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held ma
 	return devInfos
 }
 
-// regionIgnoreReason returns why a region on node with the memdevs mems
-// that is not hollow is not published, "" if it is: on a pool or held
-// memdev, on a memdev of the engine, without a node (disabled), of
-// persistent memory, in ignoreRegions, on a node of ignoreNodes, with a
-// memdev of ignoreDevices; the first reason only.
+// regionIgnoreReason returns why a region with the memdevs mems and online
+// memory on node (-1 for none) that is not hollow is not published, "" if
+// it is: on a pool or held memdev, on a memdev of the engine, disabled, of
+// persistent memory, without online memory, in ignoreRegions, on a node of
+// ignoreNodes, with a memdev of ignoreDevices; the first reason only.
 func regionIgnoreReason(cfg PublishConfig, r *kernel.RegionInfo, node int, mems []kernel.MemdevInfo, poolSerials, held map[uint64]bool, local *LocalSnapshot) string {
 	reason := poolIgnoreReason(mems, poolSerials, held)
 	if reason == "" {
 		reason = localIgnoreReason(mems, local)
 	}
-	if node < 0 {
-		reason = "region is disabled"
-	}
-	if reason == "" && r.Mode == kernel.RegionPmem {
-		reason = "region of persistent memory"
-	}
-	if reason != "" {
+	switch {
+	case reason != "":
 		return reason
+	case r.State != kernel.RegionEnabled:
+		return "region is disabled"
+	case r.Mode == kernel.RegionPmem:
+		return "region of persistent memory"
+	case node < 0:
+		return "region has no online memory"
 	}
 	if slices.Contains(cfg.IgnoreRegions, r.Name) {
 		return fmt.Sprintf("region name %q", r.Name)

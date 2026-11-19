@@ -360,9 +360,10 @@ func (e *driverEnv) setOnScan(fn func()) {
 // detected returns the observation of the node that a scan makes: the
 // local memdevs, the extra regions and two NUMA nodes of DRAM.
 func (e *driverEnv) detected() *kernel.Snapshot {
-	d := &kernel.Snapshot{Regions: e.extra.Regions, DaxDevices: e.extra.DaxDevices, NumaNodes: []kernel.NumaNode{
-		{ID: 0, HasMemory: true, MemTotal: 8 << 30}, {ID: 1, HasMemory: true, MemTotal: 8 << 30},
-	}}
+	d := &kernel.Snapshot{BlockSize: e.extra.BlockSize, Regions: e.extra.Regions, DaxDevices: e.extra.DaxDevices,
+		Blocks: e.extra.Blocks, NumaNodes: []kernel.NumaNode{
+			{ID: 0, HasMemory: true, MemTotal: 8 << 30}, {ID: 1, HasMemory: true, MemTotal: 8 << 30},
+		}}
 	for _, s := range slices.Sorted(maps.Keys(e.memdevs)) {
 		d.Memdevs = append(d.Memdevs, e.memdevs[s])
 	}

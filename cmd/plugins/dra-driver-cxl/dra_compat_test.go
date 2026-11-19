@@ -79,14 +79,29 @@ func observedMemdev(name string, serial, ram uint64, affinity int) kernel.Memdev
 }
 
 // observedRegion adds a region of the mode and of size bytes on the memdevs
-// with the serials to the snapshot s: enabled on node, which a dax device of
-// the region tells, disabled for node -1.
+// with the serials to the snapshot s, after the ranges of its regions:
+// enabled on node, a RAM region with its memory blocks online on node;
+// disabled without memory for node -1. The block size of s is
+// localBlockSize unless it has one.
 func observedRegion(s *kernel.Snapshot, name, mode string, node int, size uint64, serials ...uint64) {
-	r := kernel.RegionInfo{Name: name, State: kernel.RegionEnabled, Mode: mode, NumaNode: node, Range: kernel.Range{End: size - 1}, Serials: serials}
+	if s.BlockSize == 0 {
+		s.BlockSize = localBlockSize
+	}
+	start := uint64(0)
+	for _, r := range s.Regions {
+		start = max(start, (r.Range.End+s.BlockSize)/s.BlockSize*s.BlockSize)
+	}
+	r := kernel.RegionInfo{Name: name, State: kernel.RegionEnabled, Mode: mode, NumaNode: node,
+		Range: kernel.Range{Start: start, End: start + size - 1}, Serials: serials}
 	if node < 0 {
 		r.State = kernel.RegionDisabled
 	} else {
 		s.DaxDevices = append(s.DaxDevices, kernel.DaxDeviceInfo{Name: "dax-" + name, Region: name, Size: size, TargetNode: node})
+	}
+	if node >= 0 && mode == kernel.RegionRAM {
+		for _, b := range r.Range.Blocks(s.BlockSize) {
+			s.Blocks = append(s.Blocks, kernel.MemoryBlock{Index: b, State: kernel.BlockOnline, NumaNode: node})
+		}
 	}
 	s.Regions = append(s.Regions, r)
 }

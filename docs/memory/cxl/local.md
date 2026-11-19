@@ -33,8 +33,9 @@ and has no region that the plugin did not create itself. A memdev listed
 in `sharedDevices` is published as a shared device instead; the sections
 up to [Shared local devices](#shared-local-devices) describe sliced
 memdevs. A memdev with a
-foreign region is left alone: its RAM region is a `region` device, a
-foreign devdax region is not published. Destroy the region to let the
+foreign region is left alone: its RAM region with online memory is a
+`region` device, a foreign region without online memory (offline,
+devdax) is not published. Destroy the region to let the
 plugin manage the device.
 
 Local and pool devices are told apart by serial. A memdev is a pool

@@ -66,15 +66,26 @@ func pubMem(name string, serial, ram uint64, affinity int) kernel.MemdevInfo {
 }
 
 // pubRegion adds a region of RAM of size bytes on the memdevs with the
-// serials to the snapshot s: enabled on node, which a dax device of the
-// region tells, disabled for node -1.
+// serials to the snapshot s, after the ranges of its regions: enabled with
+// its memory blocks online on node, disabled without memory for node -1.
+// The block size of s is pubBlockSize unless it has one.
 func pubRegion(s *kernel.Snapshot, name string, node int, size uint64, serials ...uint64) {
+	if s.BlockSize == 0 {
+		s.BlockSize = pubBlockSize
+	}
+	start := uint64(0)
+	for _, r := range s.Regions {
+		start = max(start, (r.Range.End+s.BlockSize)/s.BlockSize*s.BlockSize)
+	}
 	r := kernel.RegionInfo{Name: name, State: kernel.RegionEnabled, Mode: kernel.RegionRAM, NumaNode: node,
-		Range: kernel.Range{Start: 0, End: size - 1}, Serials: serials}
+		Range: kernel.Range{Start: start, End: start + size - 1}, Serials: serials}
 	if node < 0 {
 		r.State = kernel.RegionDisabled
 	} else {
 		s.DaxDevices = append(s.DaxDevices, kernel.DaxDeviceInfo{Name: "dax-" + name, Region: name, Size: size, TargetNode: node})
+		for _, b := range r.Range.Blocks(s.BlockSize) {
+			s.Blocks = append(s.Blocks, kernel.MemoryBlock{Index: b, State: kernel.BlockOnline, NumaNode: node})
+		}
 	}
 	s.Regions = append(s.Regions, r)
 }
@@ -374,6 +385,32 @@ func TestLocalRequestPolicy(t *testing.T) {
 	}
 }
 
+// TestRegionOnlineMemory: a region device has the node and the bytes of
+// the online memory of its region; a region without online memory or
+// disabled is not published, and its node is not DRAM either.
+func TestRegionOnlineMemory(t *testing.T) {
+	logs := klogtest.Capture(t, 4)
+	s := &kernel.Snapshot{NumaNodes: pubNodes(0, 2, 3, 4)}
+	pubRegion(s, "region0", 2, 4*pubBlockSize)
+	pubRegion(s, "region1", 3, pubBlockSize)
+	pubRegion(s, "region2", 4, pubBlockSize)
+	s.Blocks[0].State, s.Blocks[3].State, s.Blocks[4].State = kernel.BlockOffline, kernel.BlockOffline, kernel.BlockOffline
+	s.Regions[2].State = kernel.RegionDisabled
+	devs := BuildDevices(PublishConfig{}, s, nil, nil, nil)
+	if got := pubNames(devs); !slices.Equal(got, []string{"dram", "region0-node2"}) {
+		t.Fatalf("published %v", got)
+	}
+	if r := devs["region0-node2"].Dev.(*Region); r.Size != 2*pubBlockSize {
+		t.Fatalf("region0 of %d bytes, expected its 2 online blocks", r.Size)
+	}
+	if dram := devs[device.DRAMDeviceName].Dev.(*DRAM); !slices.Equal(dram.Nodes, []int{0}) {
+		t.Fatalf("DRAM nodes %v", dram.Nodes)
+	}
+	log := logs()
+	wantLogLineText(t, log, `- ignoring region device "region1": region has no online memory`)
+	wantLogLineText(t, log, `- ignoring region device "region2": region is disabled`)
+}
+
 // TestBuildDevInfosHollowRegion pins a hollow region of a scan: it is not
 // published, the other devices are, and it is warned about once while it
 // stays, unless it is one of the device engine. The hollow region still
@@ -385,7 +422,7 @@ func TestBuildDevInfosHollowRegion(t *testing.T) {
 	pubRegion(devices, "region0", 2, 1<<30, 0xc100e2e0)
 	devices.Regions = append(devices.Regions, kernel.RegionInfo{Name: "region1", State: kernel.RegionHollow, Mode: kernel.RegionRAM,
 		Range: kernel.Range{Start: 0x850000000, End: 0x850000000 + 1<<28 - 1}, NumaNode: 3, RootDecoder: "decoder0.1"})
-	devices.Blocks = []kernel.MemoryBlock{{Index: 0x85, State: kernel.BlockOnline, Zones: "Movable", NumaNode: 3}}
+	devices.Blocks = append(devices.Blocks, kernel.MemoryBlock{Index: 0x85, State: kernel.BlockOnline, Zones: "Movable", NumaNode: 3})
 	devInfos := BuildDevices(PublishConfig{ManageMemdevs: true}, devices, nil, nil, nil)
 	if devInfos["region0-node2"] == nil || devInfos["region1-node3"] != nil || len(devInfos) != 2 {
 		t.Fatalf("devices %v", pubNames(devInfos))

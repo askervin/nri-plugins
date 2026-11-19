@@ -376,7 +376,7 @@ name), in ResourceSlices of at most 128 devices, under the driver
 |:----------|:--------|:------|
 | `type` | all | `memdev`, `region`, `dram` or `lease` |
 | `source` | `memdev`, `region`, `dram` | `local` (pool devices have `pool`) |
-| `size` | `memdev`, `region`, `dram` | bytes: the RAM capacity of a memdev (the persistent capacity of a persistent memdev), the size of a region, the DRAM of the nodes |
+| `size` | `memdev`, `region`, `dram` | bytes: the RAM capacity of a memdev (the persistent capacity of a persistent memdev), the online memory of a region, the DRAM of the nodes |
 | `serial` | `memdev` | `0x` and lower-case hex |
 | `shared` | `memdev` | `false`: every claim gets a slice of its own, or a persistent memdev that no other host uses; `true`: a shared local device, whose claims map the same bytes, or a persistent memdev in `sharedDevices` |
 | `persistent` | `memdev` | `true`: a memdev of persistent memory, used in modes `block` and `fs`; `false`: every other memdev |
@@ -397,10 +397,11 @@ name), in ResourceSlices of at most 128 devices, under the driver
   persistent memory ([local.md](local.md#persistent-local-memdevs),
   [Persistent memory](#persistent-memory)).
 - `<region>-node<N>`, type `region`: a region of RAM that exists already
-  (created by the BIOS or an admin) and is online as NUMA node N (regions
-  of persistent memory are never published); claims
-  consume its capacity, and their containers that opt in to steering are
-  steered to N.
+  (created by the BIOS or an admin), is enabled and has memory online as
+  NUMA node N; its size is that of its online memory. A region without
+  online memory (offline, devdax) and a region of persistent memory are
+  never published. Claims consume its capacity, and their containers that
+  opt in to steering are steered to N.
 - `dram`, type `dram`: one device for all DRAM nodes, for steering;
   absent with `ignoreDRAMNodes`.
 - `lease`, type `lease`: the device of lease claims
