@@ -38,6 +38,7 @@ func testParseFlags(args []string, env map[string]string) (*CXLFlags, error) {
 	})
 }
 
+// The defaults of the flags; --new-state changes NewState only.
 func TestParseFlagsDefaults(t *testing.T) {
 	f, err := testParseFlags(nil, map[string]string{"NODE_NAME": "n1"})
 	if err != nil {
@@ -63,6 +64,11 @@ func TestParseFlagsDefaults(t *testing.T) {
 	}
 	if device.PoolDriverName != want.PoolDriverName || device.DriverName != "cxl.nri.io" {
 		t.Fatalf("driver names %s %s", device.DriverName, device.PoolDriverName)
+	}
+	f, err = testParseFlags([]string{"--new-state"}, map[string]string{"NODE_NAME": "n1"})
+	want.NewState = true
+	if err != nil || !reflect.DeepEqual(f, want) {
+		t.Fatalf("flags\n%+v, expected\n%+v, error %v", f, want, err)
 	}
 }
 
@@ -126,16 +132,6 @@ func TestParseFlagsEnvironment(t *testing.T) {
 	f, err = testParseFlags([]string{"-f", "/config.yaml"}, env)
 	if err != nil || f.ConfigFile != "/config.yaml" || f.ConfigStr != "{}" {
 		t.Fatalf("flags %+v, error %v", f, err)
-	}
-}
-
-func TestParseFlagsStore(t *testing.T) {
-	f, err := testParseFlags([]string{"--new-state"}, map[string]string{"NODE_NAME": "n1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !f.NewState {
-		t.Fatalf("flags %+v, expected NewState", f)
 	}
 }
 

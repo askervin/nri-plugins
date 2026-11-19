@@ -44,59 +44,10 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
-func TestNewDriverConfigFromString_WithoutTestability(t *testing.T) {
-	configJSON := `{"ignoreDevices": ["mem0"]}`
-
-	cfg, err := newDriverConfigFromString(configJSON)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(cfg.IgnoreDevices) != 1 || cfg.IgnoreDevices[0] != "mem0" {
-		t.Errorf("expected IgnoreDevices [mem0], got %v", cfg.IgnoreDevices)
-	}
-}
-
-func TestNewDriverConfigFromString_EmptyConfig(t *testing.T) {
-	if _, err := newDriverConfigFromString("{}"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestNewDriverConfigFromString_YAML(t *testing.T) {
-	configYAML := `
-ignoreDevices:
-  - mem0
-  - mem1
-ignoreRegions:
-  - region0
-ignoreNodes:
-  - 1
-  - 3
-ignoreNewMemoryDevices: true
-ignoreNewRegions: true
-ignoreNewNodes: true
-ignoreDRAMNodes: true
-`
-	cfg, err := newDriverConfigFromString(configYAML)
-	if err != nil {
-		t.Fatalf("unexpected error parsing YAML: %v", err)
-	}
-	if len(cfg.IgnoreDevices) != 2 || cfg.IgnoreDevices[0] != "mem0" || cfg.IgnoreDevices[1] != "mem1" {
-		t.Errorf("expected IgnoreDevices [mem0 mem1], got %v", cfg.IgnoreDevices)
-	}
-	if len(cfg.IgnoreRegions) != 1 || cfg.IgnoreRegions[0] != "region0" {
-		t.Errorf("expected IgnoreRegions [region0], got %v", cfg.IgnoreRegions)
-	}
-	if len(cfg.IgnoreNodes) != 2 || cfg.IgnoreNodes[0] != 1 || cfg.IgnoreNodes[1] != 3 {
-		t.Errorf("expected IgnoreNodes [1 3], got %v", cfg.IgnoreNodes)
-	}
-	if !cfg.IgnoreDRAMNodes || !cfg.IgnoreNewMemoryDevices || !cfg.IgnoreNewRegions || !cfg.IgnoreNewNodes {
-		t.Errorf("expected ignoreDRAMNodes and ignoreNew*: %+v", cfg)
-	}
-}
-
-// TestDriverConfigKeys checks that the keys of the configuration are the
-// lower-camel json tags.
+// TestDriverConfigKeys checks the decoding of the configuration: its keys
+// are the lower-camel json tags, in JSON or YAML, from the file of -f or
+// none; unknown keys, values of another type and invalid memdevs are
+// refused, and manageMemdevs is true unless set false.
 func TestDriverConfigKeys(t *testing.T) {
 	cfg := &DriverConfig{IgnoreDevices: []string{"mem0"}, IgnoreRegions: []string{"region0"}, IgnoreNodes: []int{1},
 		IgnoreNewMemoryDevices: true, IgnoreNewRegions: true, IgnoreNewNodes: true, IgnoreDRAMNodes: true,
@@ -110,9 +61,53 @@ func TestDriverConfigKeys(t *testing.T) {
 	if string(data) != want {
 		t.Errorf("configuration %s, expected %s", data, want)
 	}
-	if _, err := newDriverConfigFromString("ignoreDevice: [mem0]"); err == nil {
-		t.Error("an unknown key is accepted")
+	const parseErr = "failed to parse driver config: error unmarshaling JSON: while decoding JSON: json: "
+	const memdevErr = "not a name (mem0, cxl/mem0), major:minor (251:0) or serial in decimal or 0x hex"
+	for _, tc := range []struct {
+		config string
+		want   string // the configuration as JSON, or the start of the error
+	}{
+		{"", "{}"},
+		{"{}", "{}"},
+		{`{"ignoreDevices": ["mem0"], "manageMemdevs": false}`, `{"ignoreDevices":["mem0"],"manageMemdevs":false}`},
+		{"ignoreDevices: [mem0, mem1]\nignoreRegions: [region0]\nignoreNodes: [1, 3]\nignoreDRAMNodes: true\nmanageMemdevs: true",
+			`{"ignoreDevices":["mem0","mem1"],"ignoreRegions":["region0"],"ignoreNodes":[1,3],"ignoreDRAMNodes":true,"manageMemdevs":true}`},
+		{`sharedDevices: ["0xc100e2e1", "mem1"]`, `{"sharedDevices":["0xc100e2e1","mem1"]}`},
+		{"ignoreDevice: [mem0]", parseErr + `unknown field "ignoreDevice"`},
+		{`sharedDevice: ["0xc100e2e1"]`, parseErr + `unknown field "sharedDevice"`},
+		{`sharedDevices: "0xc100e2e1"`, parseErr + "cannot unmarshal string into "},
+		{"sharedDevices: [{serial: 1}]", parseErr + "cannot unmarshal object into "},
+		{`sharedDevices: ["c100e2e1"]`, `sharedDevices: invalid memory device "c100e2e1": ` + memdevErr},
+		{`ignoreDevices: ["mem0", "cxl/c100e2e1"]`, `ignoreDevices: invalid memory device "cxl/c100e2e1": ` + memdevErr},
+	} {
+		cfg, err := newDriverConfigFromString(tc.config)
+		got := ""
+		if err != nil {
+			got = err.Error()
+		} else {
+			data, err := json.Marshal(cfg)
+			noErr(t, err)
+			got = string(data)
+		}
+		// the json package words the rest of its errors
+		if got != tc.want && (err == nil || !strings.HasPrefix(got, tc.want)) {
+			t.Errorf("%q: %s, expected %s", tc.config, got, tc.want)
+		}
 	}
+	if !(&DriverConfig{}).manageMemdevs() || !(&DriverConfig{ManageMemdevs: ptr(true)}).manageMemdevs() ||
+		(&DriverConfig{ManageMemdevs: ptr(false)}).manageMemdevs() {
+		t.Error("manageMemdevs is not true unless set false")
+	}
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	noErr(t, os.WriteFile(file, []byte("ignoreDevices: [mem1]"), 0o600))
+	if s, err := resolveConfigStr(&CXLFlags{ConfigFile: file}); err != nil || s != "ignoreDevices: [mem1]" {
+		t.Errorf("the configuration file: %q, %v", s, err)
+	}
+	if s, err := resolveConfigStr(&CXLFlags{}); err != nil || s != "" {
+		t.Errorf("no configuration: %q, %v", s, err)
+	}
+	_, err = resolveConfigStr(&CXLFlags{ConfigFile: file + ".gone"})
+	wantErr(t, err, `failed to read configuration file "`+file+`.gone": open `)
 }
 
 func TestResolveConfigStr_StringOnly(t *testing.T) {
@@ -123,23 +118,6 @@ func TestResolveConfigStr_StringOnly(t *testing.T) {
 	}
 	if result != flags.ConfigStr {
 		t.Errorf("expected config string to be returned as-is, got %q", result)
-	}
-}
-
-func TestResolveConfigStr_FileOnly(t *testing.T) {
-	content := `{"ignoreDevices": ["mem1"]}`
-	tmpFile := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
-		t.Fatalf("failed to write temp file: %v", err)
-	}
-
-	flags := &CXLFlags{ConfigFile: tmpFile}
-	result, err := resolveConfigStr(flags)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result != content {
-		t.Errorf("expected %q, got %q", content, result)
 	}
 }
 
@@ -154,45 +132,6 @@ func TestResolveConfigStr_BothError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not both") {
 		t.Errorf("expected error about mutual exclusivity, got: %v", err)
-	}
-}
-
-func TestResolveConfigStr_NeitherReturnsEmpty(t *testing.T) {
-	flags := &CXLFlags{}
-	result, err := resolveConfigStr(flags)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result != "" {
-		t.Errorf("expected empty string, got %q", result)
-	}
-}
-
-func TestResolveConfigStr_FileNotFound(t *testing.T) {
-	flags := &CXLFlags{ConfigFile: "/nonexistent/path/config.yaml"}
-	_, err := resolveConfigStr(flags)
-	if err == nil {
-		t.Fatal("expected error for nonexistent file")
-	}
-}
-
-func TestDriverConfigManageMemdevs(t *testing.T) {
-	for _, tc := range []struct {
-		config string
-		want   bool
-	}{
-		{"{}", true},
-		{"manageMemdevs: true", true},
-		{"manageMemdevs: false", false},
-		{`{"manageMemdevs": false, "ignoreDevices": ["mem0"]}`, false},
-	} {
-		cfg, err := newDriverConfigFromString(tc.config)
-		if err != nil {
-			t.Fatalf("%s: %v", tc.config, err)
-		}
-		if got := cfg.manageMemdevs(); got != tc.want {
-			t.Errorf("%s: manageMemdevs %v, expected %v", tc.config, got, tc.want)
-		}
 	}
 }
 
@@ -238,6 +177,34 @@ func TestDriverConfigDefaults(t *testing.T) {
 	if err != nil || string(data) != `{"defaults":{"container":{"steering":{"minStep":"64Mi","policy":"auto"}}}}` {
 		t.Errorf("configuration %s %v", data, err)
 	}
+}
+
+// fsTypes defaults to erofs, is returned as a copy, and its invalid or
+// misspelt settings are refused.
+func TestDriverConfigFsTypes(t *testing.T) {
+	cfg, err := newDriverConfigFromString("")
+	noErr(t, err)
+	if got := cfg.fsTypes(); !slices.Equal(got, []string{"erofs"}) {
+		t.Fatalf("default fsTypes %v", got)
+	}
+	cfg.fsTypes()[0] = "x"
+	if cfg.fsTypes()[0] != "erofs" || defaultFsTypes[0] != "erofs" {
+		t.Fatal("fsTypes() is not a copy")
+	}
+	cfg, err = newDriverConfigFromString("fsTypes: [erofs, f2fs]")
+	noErr(t, err)
+	if got := cfg.fsTypes(); !slices.Equal(got, []string{"erofs", "f2fs"}) {
+		t.Fatalf("fsTypes %v", got)
+	}
+	cfg, err = newDriverConfigFromString("fsTypes: []")
+	noErr(t, err)
+	if got := cfg.fsTypes(); got == nil || len(got) != 0 {
+		t.Fatalf("empty fsTypes %#v", got)
+	}
+	_, err = newDriverConfigFromString("fsTypes: [ext4, Ext4]")
+	wantErr(t, err, `fsTypes: invalid filesystem type "Ext4" (lower-case letters, digits, "_" and "-")`)
+	_, err = newDriverConfigFromString("fsType: [ext4]")
+	wantErr(t, err, `unknown field "fsType"`)
 }
 
 // The local part of a start: nothing with manageMemdevs false, else the
@@ -552,7 +519,8 @@ func (f *fakeEvents) Stable() <-chan struct{} { return f.stable }
 
 // One watch of the uevents of the kernel objects wakes the waits of the
 // engine's kernel and gives the stable signal of the rescans after
-// udevStableDuration; without uevents the waits only poll.
+// udevStableDuration; every stable signal rescans once, until the driver
+// stops. Without uevents the waits only poll and nothing rescans.
 func TestWakeOnUevents(t *testing.T) {
 	old := newKernelEvents
 	t.Cleanup(func() { newKernelEvents = old })
@@ -589,24 +557,20 @@ func TestWakeOnUevents(t *testing.T) {
 	if out := logs(); !strings.HasPrefix(out, "E") || !strings.Contains(out, "the ResourceSlice is not rescanned on uevents") {
 		t.Fatalf("no error line in\n%s", out)
 	}
-}
 
-// Every stable signal of the uevents rescans once, until the driver stops.
-func TestRescanOnStable(t *testing.T) {
-	stop, stable, rescans := make(chan struct{}), make(chan struct{}), make(chan struct{}, 4)
+	stopRescans, signals, rescans := make(chan struct{}), make(chan struct{}), make(chan struct{}, 4)
 	done := make(chan struct{})
-	logs := klogtest.Capture(t, 3)
 	go func() {
 		defer close(done)
-		rescanLoop(stop, stable, func() { rescans <- struct{}{} })
+		rescanLoop(stopRescans, signals, func() { rescans <- struct{}{} })
 	}()
-	stable <- struct{}{}
+	signals <- struct{}{}
 	select {
 	case <-rescans:
 	case <-time.After(5 * time.Second):
 		t.Fatal("no rescan after a stable signal")
 	}
-	close(stop)
+	close(stopRescans)
 	<-done
 	if len(rescans) != 0 {
 		t.Fatalf("%d rescans more", len(rescans))
@@ -617,6 +581,6 @@ func TestRescanOnStable(t *testing.T) {
 	// without uevents, and with ignoreNewNodes, nothing rescans
 	d := &driver{stop: make(chan struct{})}
 	d.startRescans(context.Background(), &DriverConfig{})
-	d.events = &fakeEvents{stable: stable}
+	d.events = &fakeEvents{stable: signals}
 	d.startRescans(context.Background(), &DriverConfig{IgnoreNewNodes: true})
 }
