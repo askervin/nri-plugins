@@ -65,8 +65,10 @@ func TestRemountLocal(t *testing.T) {
 	wantLogText(t, logs(), "cxl.nri.io: claim demo/claim-r1 (r1) has no CDI device: node mount \""+mnt+"\": "+why.Error()+
 		"; a new container of it fails on its CDI device, its Prepare again tries to mount it again, its Unprepare releases the device")
 	res := e.prepare(e.local, claim)
-	wantErrText(t, res.Err, "cxl.nri.io: claim demo/claim-r1: ")
-	wantErrText(t, res.Err, "; unprepare the claim (delete its pods) to prepare it anew")
+	if want := "cxl.nri.io: claim demo/claim-r1: device 0xc100f5e1: its node mount " + mnt + " is not mounted and cannot be mounted again: " +
+		why.Error() + "; unprepare the claim (delete its pods) to prepare it anew"; res.Err == nil || res.Err.Error() != want {
+		t.Fatalf("error %v, expected %q", res.Err, want)
+	}
 	e.wantState(e.local, "r1", state.PreparationUnrestored)
 	e.k.SetMountError(dev, nil, "")
 	e.mustPrepare(e.local, claim)

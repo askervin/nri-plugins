@@ -507,7 +507,7 @@ func (e *Engine) remountGrant(ctx context.Context, req *GrantRequest) error {
 	if i >= 0 && grants[i].nodeMount != "" {
 		l, err := e.restoreNodeMount(&grants[i], firstWriter(grants) != nil, nodeMounts(grants))
 		if err != nil {
-			return fmt.Errorf("device %s: its node mount %s is not mounted and cannot be mounted again: %w; unprepare the claim (delete its pods) to prepare it anew",
+			return fmt.Errorf("device %s: its node mount %s is not mounted and cannot be mounted again: %w",
 				g.Serial.String(), grants[i].nodeMount, err)
 		}
 		loop = l
