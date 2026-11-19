@@ -1430,13 +1430,29 @@ func TestStopKeepsWaitingLease(t *testing.T) {
 	}
 }
 
-// A commit of the broker's records waits at most Timeouts.Persist for a
-// stalled store, without the broker's mutex: the error is returned, and
-// the change never happens.
+// A commit of the broker's records runs without the broker's mutex. It
+// waits at most Timeouts.Persist for a stalled store. Then it returns the
+// error, and the change never happens.
 func TestPersistBounded(t *testing.T) {
 	e := brokerEnv(t)
 	e.opts = func(o *Options) { o.Timeouts.Persist = 50 * time.Millisecond }
 	e.restart()
+	applied, done := make(chan struct{}), make(chan error, 1)
+	e.b.mu.Lock()
+	go func() {
+		done <- e.b.commit(func(*state.Records) error {
+			close(applied)
+			return nil
+		})
+	}()
+	select {
+	case <-applied:
+	case <-time.After(5 * time.Second):
+		t.Error("the broker's mutex is held during a commit")
+	}
+	e.b.mu.Unlock()
+	<-done
+
 	stall, stalled := make(chan struct{}), make(chan struct{})
 	go func() {
 		_ = e.st.Commit(context.Background(), store.Lazy, func(*store.Document) error {
@@ -1446,36 +1462,27 @@ func TestPersistBounded(t *testing.T) {
 		})
 	}()
 	<-stalled
-	start := time.Now()
-	done := make(chan error, 1)
 	go func() {
 		done <- e.b.commit(func(r *state.Records) error {
 			r.Leases = append(r.Leases, state.Lease{ID: "0000late", Claim: envLeaseClaim, State: state.LeaseCreating})
 			return nil
 		})
 	}()
-	for {
-		select {
-		case err := <-done:
-			close(stall)
-			if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 5*time.Second {
-				t.Fatalf("commit to a stalled store: %v after %v", err, time.Since(start))
-			}
-			// the store applies the commits in order: the withdrawn one
-			// would be in the snapshot when the next one returns
-			mustOK(t, e.st.Commit(context.Background(), store.Durable, func(*store.Document) error { return nil }))
-			if l := e.st.Snapshot().Lease("0000late"); l != nil {
-				t.Fatalf("the change of a failed commit is in the store: %+v", l)
-			}
-			return
-		default:
-		}
-		if !e.b.mu.TryLock() {
-			close(stall)
-			t.Fatal("the broker's mutex is held during a commit")
-		}
-		e.b.mu.Unlock()
-		time.Sleep(time.Millisecond)
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		err = errors.New("no return in 5s")
+	}
+	close(stall)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("commit to a stalled store: %v", err)
+	}
+	// the store applies the commits in order: the withdrawn one
+	// would be in the snapshot when the next one returns
+	mustOK(t, e.st.Commit(context.Background(), store.Durable, func(*store.Document) error { return nil }))
+	if l := e.st.Snapshot().Lease("0000late"); l != nil {
+		t.Fatalf("the change of a failed commit is in the store: %+v", l)
 	}
 }
 
