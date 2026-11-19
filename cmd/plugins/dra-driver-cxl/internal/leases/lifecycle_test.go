@@ -23,12 +23,14 @@ import (
 	"sync/atomic"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
+	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
 // A companion that cannot be created fails the lease and releases it: the
@@ -45,14 +47,22 @@ func TestCompanionCreateFails(t *testing.T) {
 	})
 	e.openClaim()
 	e.start()
-	// a claim of the name exists already
-	_, err := e.client.ResourceV1().ResourceClaims(envNS).Create(context.Background(), companionClaim("000000a1"), metav1.CreateOptions{})
+	// a companion claim of another node and a user pod have the name
+	claim := companionClaim("000000a1")
+	claim.Labels[device.NodeLabel] = "node2"
+	_, err := e.client.ResourceV1().ResourceClaims(envNS).Create(context.Background(), claim, metav1.CreateOptions{})
+	mustOK(t, err)
+	_, err = e.client.CoreV1().Pods(envNS).Create(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: claim.Name, Namespace: envNS}}, metav1.CreateOptions{})
 	mustOK(t, err)
 	r, _ := e.call(api.Request{Op: api.OpRequest, Size: "64Mi"})
 	if r.State != api.StateFailed || !strings.HasPrefix(r.Error, "creating companion claim demo/cxl-lease-000000a1: ") {
 		t.Fatalf("response %+v", r)
 	}
 	e.waitState(r.Lease, state.LeaseNone)
+	_, err = e.client.ResourceV1().ResourceClaims(envNS).Get(context.Background(), claim.Name, metav1.GetOptions{})
+	mustOK(t, err)
+	_, err = e.client.CoreV1().Pods(envNS).Get(context.Background(), claim.Name, metav1.GetOptions{})
+	mustOK(t, err)
 
 	podFails.Store(true)
 	r, _ = e.call(api.Request{Op: api.OpRequest, Size: "64Mi"})

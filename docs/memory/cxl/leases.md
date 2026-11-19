@@ -612,6 +612,11 @@ The companion objects of lease `<id>` live in the requester's namespace:
   `cxl.nri.io/requester-uid=<pod uid>`, `cxl.nri.io/node=<node>` and
   the annotation `cxl.nri.io/requester=<ns>/<pod>/<container>`.
 
+The driver deletes a pod or claim `cxl-lease-<id>` only if its labels
+`cxl.nri.io/lease` and `cxl.nri.io/node` name the lease and the node.
+The delete also requires the UID that the driver read. A release keeps
+any other object of that name and counts it as gone.
+
 The admission policy `lease-companions-policy-nri-dra-driver-cxl` of the
 Helm chart admits the driver's creation of these objects only with the
 three labels, its own node in `cxl.nri.io/node` and, for the pod, the

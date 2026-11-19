@@ -25,10 +25,12 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
+	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
 // Lease: one request of a running container for memory, served through
@@ -323,11 +325,11 @@ func (b *Broker) release(l *state.Lease) {
 		}
 		cancel()
 	}
-	name := CompanionName(l.ID)
 	ns := l.Pod.Namespace
+	foreign := map[string]bool{}
 	delay := b.t.Poll
 	for {
-		gone, err := b.deleteCompanion(ns, name)
+		gone, err := b.deleteCompanion(ns, l.ID, foreign)
 		if err != nil {
 			klog.Warningf("lease broker: lease %s: %v", l.ID, err)
 		} else {
@@ -435,13 +437,31 @@ func companionBusy(r *state.Records, id string) bool {
 	return false
 }
 
-// deleteCompanion deletes the companion pod and claim and reports whether
-// both are gone.
-func (b *Broker) deleteCompanion(ns, name string) (bool, error) {
+// deleteCompanion deletes the companion pod and claim of lease id and
+// reports whether both are gone. It keeps an object of the companion name
+// that does not have the lease and node labels of the lease. Such an
+// object counts as gone. It logs the first such object of each kind and
+// adds the kind to foreign.
+func (b *Broker) deleteCompanion(ns, id string, foreign map[string]bool) (bool, error) {
 	ctx, cancel := b.apiContext()
 	defer cancel()
-	fg := metav1.DeletePropagationForeground
-	opts := metav1.DeleteOptions{PropagationPolicy: &fg}
+	name := CompanionName(id)
+	// deleteOpts returns the options to delete the object of uid only.
+	deleteOpts := func(uid types.UID) metav1.DeleteOptions {
+		fg := metav1.DeletePropagationForeground
+		return metav1.DeleteOptions{PropagationPolicy: &fg, Preconditions: metav1.NewUIDPreconditions(string(uid))}
+	}
+	// isForeign tells whether an object of the name is not the companion.
+	isForeign := func(kind string, o metav1.ObjectMeta) bool {
+		if o.Labels[device.LeaseLabel] == id && o.Labels[device.NodeLabel] == b.opts.NodeName {
+			return false
+		}
+		if !foreign[kind] {
+			foreign[kind] = true
+			klog.Warningf("lease broker: lease %s: keeping %s %s/%s: it is not the companion of the lease on this node", id, kind, ns, name)
+		}
+		return true
+	}
 	var errs []error
 	gone := true
 	pod, err := b.opts.Client.CoreV1().Pods(ns).Get(ctx, name, metav1.GetOptions{})
@@ -450,10 +470,11 @@ func (b *Broker) deleteCompanion(ns, name string) (bool, error) {
 	case err != nil:
 		gone = false
 		errs = append(errs, err)
+	case isForeign("pod", pod.ObjectMeta):
 	default:
 		gone = false
 		if pod.DeletionTimestamp == nil {
-			if err := b.opts.Client.CoreV1().Pods(ns).Delete(ctx, name, opts); err != nil && !apierrors.IsNotFound(err) {
+			if err := b.opts.Client.CoreV1().Pods(ns).Delete(ctx, name, deleteOpts(pod.UID)); err != nil && !apierrors.IsNotFound(err) {
 				errs = append(errs, fmt.Errorf("deleting companion pod %s/%s: %w", ns, name, err))
 			}
 		}
@@ -464,10 +485,11 @@ func (b *Broker) deleteCompanion(ns, name string) (bool, error) {
 	case err != nil:
 		gone = false
 		errs = append(errs, err)
+	case isForeign("claim", claim.ObjectMeta):
 	default:
 		gone = false
 		if claim.DeletionTimestamp == nil {
-			if err := b.opts.Client.ResourceV1().ResourceClaims(ns).Delete(ctx, name, opts); err != nil && !apierrors.IsNotFound(err) {
+			if err := b.opts.Client.ResourceV1().ResourceClaims(ns).Delete(ctx, name, deleteOpts(claim.UID)); err != nil && !apierrors.IsNotFound(err) {
 				errs = append(errs, fmt.Errorf("deleting companion claim %s/%s: %w", ns, name, err))
 			}
 		}
