@@ -177,8 +177,9 @@ func TestCompanionSpecHash(t *testing.T) {
 
 // A companion claim of a numa slice of either driver: no CDI device, its
 // node recorded before it is lent, the broker told the lent devices; a
-// Prepare again announces it again; its Unprepare revokes the node with
-// the memory online, then releases it.
+// Prepare again announces it again, unless the broker no longer has the
+// lease; its Unprepare revokes the node with the memory online, then
+// releases it.
 func TestCompanionLendNUMA(t *testing.T) {
 	for _, local := range []bool{true, false} {
 		e := lendEnv(t)
@@ -230,6 +231,16 @@ func TestCompanionLendNUMA(t *testing.T) {
 			}
 			e.wantNoCommands("a Prepare again")
 			e.wantEvents("a Prepare again", "lending l1 cxl-lease-l1", "prepared l1")
+			hooks.mu.Lock()
+			hooks.lendingErr = errors.New("unknown lease")
+			hooks.mu.Unlock()
+			if again := e.mustPrepare(p, e.companionOf(p)); !reflect.DeepEqual(again, res) {
+				t.Fatalf("again, the lease unknown %+v", again)
+			}
+			e.wantEvents("a Prepare again, the lease unknown", "lending l1 cxl-lease-l1")
+			hooks.mu.Lock()
+			hooks.lendingErr = nil
+			hooks.mu.Unlock()
 			var atRevoke []string
 			nodes.onRevoke = func(int) {
 				online := e.onlineBlocks() > 0
@@ -241,6 +252,46 @@ func TestCompanionLendNUMA(t *testing.T) {
 				t.Fatalf("at the revoke: %v, lent %v", atRevoke, nodes.lentNodes())
 			}
 			e.wantClean()
+		})
+	}
+}
+
+// A companion claim of a dax device of either driver, or of a read-only
+// share of a shared local memdev: the broker gets the dax device, no node
+// is lent or revoked, no CDI device.
+func TestCompanionLendDax(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		local, shared bool
+	}{{"local", true, false}, {"pool", false, false}, {"shared", true, true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			var e *driverEnv
+			var claim *resourcev1.ResourceClaim
+			if tc.shared {
+				e = newDriverEnv(t, []fake.MemdevSpec{{Serial: 0xc100e2e0}, sharedOne()})
+				e.setShared(serialSliced)
+				claim = companion(localClaim("c1", localDev, -1, cfgDaxRO), "l1")
+			} else {
+				e = lendEnv(t)
+				claim = e.companionOf(e.pluginOf(tc.local), cfgDax)
+			}
+			p := e.pluginOf(tc.local)
+			_, hooks := e.lending()
+			e.mustPrepare(p, claim)
+			e.wantEvents("prepared", "lending l1 cxl-lease-l1", "prepared l1")
+			got, _ := hooks.lentDevices()
+			if len(got) != 1 || got[0].Mode != api.ModeDax || got[0].DaxDevice == "" || len(got[0].NUMANodes) != 0 ||
+				got[0].Shared != tc.shared || got[0].ReadOnly != tc.shared {
+				t.Fatalf("lent devices %+v", got)
+			}
+			if e.cdiSpec(p.Rules().CDISpecName()) != nil {
+				t.Fatal("a CDI device of a companion claim")
+			}
+			e.mustUnprepare(p, "c1")
+			e.wantEvents("unprepared", "releasing l1")
+			if !tc.shared {
+				e.wantClean()
+			}
 		})
 	}
 }
@@ -293,6 +344,22 @@ func TestCompanionLendFails(t *testing.T) {
 			e.wantState(p, "c1", state.PreparationUnknown)
 			e.wantClean()
 		})
+	}
+}
+
+// A revoke of a lend goes on after a node it fails to revoke: the errors
+// of the nodes are joined.
+func TestCompanionRevokeEveryNode(t *testing.T) {
+	e := lendEnv(t)
+	nodes, _ := e.lending()
+	nodes.setErrors(nil, errSteered)
+	rec := &lend.Lend{Lease: "l1", Pod: state.PodRef{Namespace: envNS, Name: envPod, UID: envPodUID}, Container: envCtr, NumaNodes: []int{2, 3}}
+	err := e.pool.Lender().Revoke(context.Background(), rec, "demo/cxl-lease-l1")
+	e.wantEvents("revoke", "revoke pod-uid-1/app 2 l1", "revoke pod-uid-1/app 3 l1")
+	for _, n := range []int{2, 3} {
+		if want := fmt.Sprintf("lease l1: revoking node %d from demo/borrower/app: %v", n, errSteered); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %v, expected %q in it", err, want)
+		}
 	}
 }
 

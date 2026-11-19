@@ -393,6 +393,24 @@ func TestLocalRequestPolicy(t *testing.T) {
 	}
 }
 
+// A region of a memdev of the pool driver is not published and its node
+// is not DRAM; without the pool driver it is a region device.
+func TestBuildDevInfosSkipsPoolRegions(t *testing.T) {
+	devices := &kernel.Snapshot{NumaNodes: pubNodes(0, 2, 3), Memdevs: []kernel.MemdevInfo{pubMem("mem0", 0xa1, 0, -1), pubMem("mem1", 0xa2, 0, -1)}}
+	pubRegion(devices, "region0", 2, 1<<30, 0xa1)
+	pubRegion(devices, "region1", 3, 1<<30, 0xa2)
+	devInfos := BuildDevices(PublishConfig{}, devices, map[uint64]bool{0xa2: true}, nil, nil)
+	if got := pubNames(devInfos); !slices.Equal(got, []string{"dram", "region0-node2"}) {
+		t.Fatalf("published %v", got)
+	}
+	if dram, ok := devInfos["dram"].Dev.(*DRAM); !ok || !slices.Equal(dram.Nodes, []int{0}) {
+		t.Fatalf("DRAM %+v", devInfos["dram"].Dev)
+	}
+	if got := pubNames(BuildDevices(PublishConfig{}, devices, nil, nil, nil)); !slices.Equal(got, []string{"dram", "region0-node2", "region1-node3"}) {
+		t.Fatalf("published %v without the pool driver", got)
+	}
+}
+
 // TestRegionOnlineMemory: a region device has the node and the bytes of
 // the online memory of its region; a region without online memory or
 // disabled is not published, and its node is not DRAM either.

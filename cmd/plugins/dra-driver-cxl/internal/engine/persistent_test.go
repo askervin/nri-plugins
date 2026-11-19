@@ -112,6 +112,54 @@ func TestPersistentFsReadOnly(t *testing.T) {
 	v.clean("unprepared")
 }
 
+// A reader without an access gets direct on a type with DAX, cached on the
+// others; a read-only type is mounted with mount(2), the others with the
+// new mount API; fsTypes lets in the types it lists. A block reader makes
+// the block device read-only.
+func TestPersistentDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		typ     string
+		access  state.Access
+		syscall string
+	}{
+		{"erofs", state.AccessDirect, "mount "},
+		{"squashfs", state.AccessCached, "mount "},
+		{"ext4", state.AccessDirect, "fsmount "},
+		{"xfs", state.AccessDirect, "fsmount "},
+		{"btrfs", state.AccessCached, "fsmount "},
+	} {
+		t.Run(tc.typ, func(t *testing.T) {
+			v := pmemEnv(t, tc.typ)
+			v.configure(func(o *Options) { o.FsTypes = []string{tc.typ} })
+			n := mountCalls(v)
+			v.mustPrepare(poolDriver, "r", fsGrant("r", true, ""))
+			if g := v.grant("r", 0); g.Got.Mount != tc.access {
+				t.Fatalf("access %q, want %q", g.Got.Mount, tc.access)
+			}
+			var mounts []string
+			for _, c := range mountCallsSince(v, n) {
+				if strings.HasPrefix(c, "mount ") || strings.HasPrefix(c, "fsmount ") {
+					mounts = append(mounts, c)
+				}
+			}
+			if len(mounts) != 1 || !strings.HasPrefix(mounts[0], tc.syscall) {
+				t.Fatalf("mounts %q, want one %q", mounts, tc.syscall)
+			}
+			v.mustUnprepare(poolDriver, "r")
+			v.clean("unprepared")
+		})
+	}
+	t.Run("block reader", func(t *testing.T) {
+		v := pmemEnv(t, "")
+		v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeBlock, true, ""))
+		if g := v.grant("r", 0); g.Got.BlockDevice == nil || !v.f.IsReadOnly(g.Got.BlockDevice.Name) {
+			t.Fatalf("block reader on a writable device: %+v", g.Got)
+		}
+		v.mustUnprepare(localDriver, "r")
+		v.clean("unprepared")
+	})
+}
+
 // A read-write claim with access cached of a device that a reader mounts
 // with access direct only is refused with the text of the e2e tests, and
 // the refusal mounts and changes nothing.

@@ -109,7 +109,8 @@ func TestRecoverCutUnprepare(t *testing.T) {
 }
 
 // A PREPARING claim cut after its region was made: released at the start,
-// the preparation stays PREPARING for kubelet's retry, which prepares anew.
+// no region left, the preparation stays PREPARING with its results for
+// kubelet's retry, which prepares anew.
 func TestRecoverCutPrepare(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
 	v.f.After("cxl create-region", func() { panic(fake.ErrCut) })
@@ -117,12 +118,24 @@ func TestRecoverCutPrepare(t *testing.T) {
 		t.Fatal("not cut")
 	}
 	v.f.After("cxl create-region", func() {})
+	logs := klogtest.Capture(t, 3)
 	out := v.restart()
 	if !slices.Equal(out.Released, []state.GrantRef{{Claim: "c"}}) {
 		t.Fatalf("recovered %+v", out)
 	}
-	if p := v.records().Preparation(poolDriver, "c"); p == nil || p.State != state.PreparationPreparing {
+	for _, want := range []string{
+		"engine: claim ns/c (c), whose Prepare did not finish: releasing devices 0xa1",
+		"engine: claim ns/c (c): released, its Prepare again prepares its devices anew",
+	} {
+		if !strings.Contains(logs(), want) {
+			t.Errorf("no %q in\n%s", want, logs())
+		}
+	}
+	if p := v.records().Preparation(poolDriver, "c"); p == nil || p.State != state.PreparationPreparing || len(p.Results) != 1 {
 		t.Fatalf("preparation %+v", p)
+	}
+	if rs := v.f.Kernel().Regions("mem0"); len(rs) != 0 {
+		t.Fatalf("regions %v left at the start", rs)
 	}
 	v.check("recovered")
 	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeNUMA, state.KindExclusive))
