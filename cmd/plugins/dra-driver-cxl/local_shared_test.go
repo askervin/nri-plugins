@@ -16,25 +16,8 @@ package main
 
 import (
 	"slices"
-	"strings"
 	"testing"
-
-	resourcev1 "k8s.io/api/resource/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
-
-	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
-
-// sharedClaim returns a claim allocated the shared local memdev for
-// request "mem", with consumed shares ("" for none) and opaque cxl.nri.io
-// claim configs.
-func sharedClaim(uid, shares string, configs ...string) *resourcev1.ResourceClaim {
-	c := localClaim(uid, 0, configs...)
-	if shares != "" {
-		c.Status.Allocation.Devices.Results[0].ConsumedCapacity = map[resourcev1.QualifiedName]resource.Quantity{device.CapacityShares: resource.MustParse(shares)}
-	}
-	return c
-}
 
 // The sharedDevices of the configuration: a list of strings, each a memdev
 // spec; an invalid spec of sharedDevices or ignoreDevices fails the load.
@@ -49,16 +32,5 @@ func TestDriverConfigSharedDevices(t *testing.T) {
 		if _, err := newDriverConfigFromString(bad); err == nil {
 			t.Errorf("%s: no error", bad)
 		}
-	}
-}
-
-// A stale allocation of the shared shape is refused on a sliced memdev.
-func TestPrepareSlicedRefusesShares(t *testing.T) {
-	e := newLocalTestEnv(t)
-	e.start()
-	wantErr(t, e.prepare(sharedClaim("u1", "1M")),
-		"claim demo/claim-u1: request mem: device 0xc100e2e1: allocated as a shared device, which it is not any more")
-	if strings.Contains(e.commands(), "create-region") || e.inUse() {
-		t.Fatalf("a refused claim touched the memdev:\n%s", e.commands())
 	}
 }

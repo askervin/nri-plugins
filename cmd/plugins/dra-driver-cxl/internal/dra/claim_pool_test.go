@@ -114,7 +114,8 @@ func TestPoolNUMATwoClaims(t *testing.T) {
 
 // A pool device of volatile memory in mode dax, and a shared one used by
 // two claims: devdax devices as CDI device nodes, read-only by the
-// configuration.
+// configuration. A claim of either device that does not fit how it is
+// prepared is refused.
 func TestPoolDaxAndShared(t *testing.T) {
 	e := newDriverEnv(t, nil, poolSpec(serialPoolX), fake.MemdevSpec{Serial: serialPoolS, HostBridge: 24})
 	e.mustPrepare(e.pool, poolClaim("x1", "pooled0", poolExclusiveData, cfgDax))
@@ -133,12 +134,17 @@ func TestPoolDaxAndShared(t *testing.T) {
 	if cd := e.cdiDevice(e.pool, "claim-s2-0"); cd == nil || cd.ContainerEdits.DeviceNodes[0].Permissions != "r" {
 		t.Fatalf("read-only CDI device %+v", cd)
 	}
-	// a claim of the shared device in another mode is refused before the
-	// device is touched
+	// claims that do not fit how the devices are prepared are refused
+	// before the devices are touched
 	e.mark()
-	res := e.prepare(e.pool, poolClaim("s3", "shared0", poolSharedData, cfgNUMA))
-	wantErrText(t, res.Err, "cxl-pool.nri.io: claim demo/claim-s3: device shared0 serial 0xc1ae0001: ")
-	e.wantNoCommands("a refused claim")
+	wantErrText(t, e.prepare(e.pool, poolClaim("s3", "shared0", poolSharedData, cfgNUMA)).Err,
+		"cxl-pool.nri.io: claim demo/claim-s3: device shared0 serial 0xc1ae0001: MemoryConfig: device: a shared device is used as dax only")
+	notShared := `{"serial":"0xc1ae0001","shared":false,"size":268435456}`
+	wantErrText(t, e.prepare(e.pool, poolClaim("s4", "shared0", notShared)).Err,
+		"cxl-pool.nri.io: claim demo/claim-s4: device shared0 serial 0xc1ae0001: shared=false, but another claim prepared it with shared=true")
+	wantErrText(t, e.prepare(e.pool, poolClaim("x2", "pooled0", poolExclusiveData)).Err,
+		"cxl-pool.nri.io: claim demo/claim-x2: device pooled0 serial 0xc1ee0001: mode numa, but another claim prepared it in mode dax")
+	e.wantNoCommands("refused claims")
 	for _, uid := range []string{"x1", "s1", "s2"} {
 		e.mustUnprepare(e.pool, uid)
 	}

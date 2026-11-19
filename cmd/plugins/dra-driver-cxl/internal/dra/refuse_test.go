@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	resourcev1 "k8s.io/api/resource/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -34,6 +35,10 @@ func TestPrepareRefusedBeforeDevices(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, poolSpec(serialPoolX))
 	noAlloc := func(c *resourcev1.ResourceClaim) *resourcev1.ResourceClaim {
 		c.Status.Allocation = nil
+		return c
+	}
+	shares0 := func(c *resourcev1.ResourceClaim) *resourcev1.ResourceClaim {
+		c.Status.Allocation.Devices.Results[0].ConsumedCapacity[device.CapacityShares] = resource.MustParse("0")
 		return c
 	}
 	badConfig := `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"memory"}}`
@@ -71,6 +76,8 @@ func TestPrepareRefusedBeforeDevices(t *testing.T) {
 		{"pool no allocation", e.pool, noAlloc(poolClaim("u1", "pooled0", poolExclusiveData)),
 			"cxl-pool.nri.io: claim demo/claim-u1: no allocation", nil},
 		{"pool no status data", e.pool, poolClaim("u1", "pooled0", ""), "cxl-pool.nri.io: claim demo/claim-u1: ", nil},
+		{"pool shares 0", e.pool, shares0(poolClaim("u1", "shared0", poolSharedData)),
+			`cxl-pool.nri.io: claim demo/claim-u1: device 0xc1ae0001: consumed shares "0" is less than 1: request shares: 1 (a share) or no shares (exclusive)`, nil},
 		{"pool config", e.pool, poolClaim("u1", "pooled0", poolExclusiveData, badConfig),
 			`cxl-pool.nri.io: claim demo/claim-u1: device pooled0 serial 0xc1ee0001: MemoryConfig: device.mode: invalid mode "memory"`, nil},
 	} {

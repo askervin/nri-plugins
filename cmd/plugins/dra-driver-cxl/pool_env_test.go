@@ -293,31 +293,6 @@ func (e *poolTestEnv) wantNoClaims(t *testing.T, p *dra.Plugin) {
 	}
 }
 
-// wantReleased fails the test unless the last commands released region0
-// of mem0 and disabled the memdev.
-func (e *poolTestEnv) wantReleased(t *testing.T, region, memdev string) {
-	t.Helper()
-	cmds := e.commands()
-	want := "cxl disable-region " + region + "\ncxl destroy-region " + region + "\ncxl disable-memdev " + memdev
-	if !strings.Contains(cmds, want) {
-		t.Fatalf("device not released (%q):\n%s", want, cmds)
-	}
-}
-
-// onlineBlocks returns the number of the memory blocks of a region that
-// are online.
-func (e *poolTestEnv) onlineBlocks(region string) int {
-	k := e.k.Kernel()
-	blocks, _ := k.RegionBlocks(region)
-	n := 0
-	for _, b := range blocks {
-		if k.MemoryBlock(b).State == kernel.BlockOnline {
-			n++
-		}
-	}
-	return n
-}
-
 // poolConsumed returns the consumed capacity of an allocation result of
 // a pool device with the status data: of a shared device all of its
 // shares (exclusive) or one, nil otherwise.
