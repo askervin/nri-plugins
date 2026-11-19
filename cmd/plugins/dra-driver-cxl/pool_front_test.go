@@ -306,6 +306,46 @@ func TestPoolRemountCDI(t *testing.T) {
 	}
 }
 
+// A companion claim of mode fs whose node mount and lease bind a new mount
+// namespace lost: its Prepare again fails, without telling the broker,
+// while the device cannot be mounted, and then mounts the node mount and
+// binds it again before the broker hears of the companion.
+func TestPoolRemountCompanion(t *testing.T) {
+	e, p, hooks := newPoolLeaseEnv(t)
+	direct := e.nodeMount(0xc1ae0001, "direct")
+	target := filepath.Join(hooks.fsDir, "models")
+	uid := "uid-cxl-lease-l1"
+	noErr(t, prepare(t, p, fsCompanion("l1", "direct")).Err)
+	k := e.k.Kernel()
+	noErr(t, k.Unmount(target))
+	noErr(t, k.Unmount(direct))
+	e.k.SetMountError(e.pmem, syscall.EIO, "")
+	p = e.leaseDriver(t, hooks)
+	if prep := e.preparation(uid); prep.State != state.PreparationUnrestored {
+		t.Fatalf("preparation %+v", prep)
+	}
+	calls := hooks.log()
+	wantErr(t, prepare(t, p, fsCompanion("l1", "direct")).Err, "its node mount "+direct+" is not mounted and cannot be mounted again")
+	if log := hooks.log(); log != calls {
+		t.Fatalf("the broker heard of an unrestored companion:\n%s", strings.TrimPrefix(log, calls))
+	}
+	e.k.SetMountError(e.pmem, nil, "")
+	bound := false
+	hooks.onPrepared = func(string) {
+		mi, _ := e.mountedErr(target)
+		bound = mi != nil
+	}
+	noErr(t, prepare(t, p, fsCompanion("l1", "direct")).Err)
+	if prep := e.preparation(uid); prep.State != state.PreparationPrepared || !bound {
+		t.Fatalf("preparation %+v, bound before the broker heard: %v", prep, bound)
+	}
+	if log := strings.TrimPrefix(hooks.log(), calls); log != "\nlending l1 cxl-lease-l1\nprepared l1" {
+		t.Fatalf("hooks:\n%s", log)
+	}
+	noErr(t, unprepare(t, p, uid))
+	e.wantClean(t, p)
+}
+
 // Companions of another boot: a stale numa companion's Unprepare revokes
 // nothing, also before the lender is set up; its Prepare again refused at
 // the lease keeps it STALE; a stale fs companion's Unprepare removes the

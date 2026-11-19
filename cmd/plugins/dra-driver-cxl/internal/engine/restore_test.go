@@ -239,6 +239,36 @@ func TestRecoverRestored(t *testing.T) {
 	}
 }
 
+// An fs companion grant whose node mount and lease bind a new mount
+// namespace lost, and whose node mount a start cannot mount again: a
+// Prepare again that mounts the node mount binds it again.
+func TestRestoredBind(t *testing.T) {
+	v := pmemEnv(t, "ext4")
+	req := fsGrant("c", true, "")
+	req.BindTarget = filepath.Join(v.dir, localDriver, "lease-fs", "lc1", "data")
+	v.mustPrepare(poolDriver, "c", req)
+	k := v.f.Kernel()
+	for _, mnt := range []string{req.BindTarget, v.mount("c", 0).Path} {
+		if err := k.Unmount(mnt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	v.f.RenamePmem("region0", "pmem3", "259:9")
+	if out := v.restart(); len(out.Unrestored) != 1 {
+		t.Fatalf("recovered %+v", out)
+	}
+	v.f.RenamePmem("region0", "pmem0", "259:1")
+	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{req}); err != nil {
+		t.Fatal(err)
+	}
+	if mi, _ := k.Mounted(req.BindTarget); mi == nil {
+		t.Fatal("not bound again")
+	}
+	v.check("restored")
+	v.mustUnprepare(poolDriver, "c")
+	v.clean("unprepared")
+}
+
 // A pool block grant whose block device is not the one of its region at a
 // start is REALISED_UNRESTORED (every grant kind is verified), its
 // preparation PREPARED_UNRESTORED; a Prepare again once the block device is

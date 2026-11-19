@@ -492,7 +492,8 @@ func (e *Engine) restoreGrant(ctx context.Context, req *GrantRequest) error {
 }
 
 // remountGrant mounts again the node mount of a REALISED_UNRESTORED grant
-// and makes it REALISED (restoreGrant).
+// and makes it REALISED (restoreGrant), with the other grants of the node
+// mount; their lease binds are bound again.
 func (e *Engine) remountGrant(ctx context.Context, req *GrantRequest) error {
 	g := e.records().Grant(req.Ref)
 	grants := e.preparedPmemGrants(g.Serial)
@@ -511,7 +512,8 @@ func (e *Engine) remountGrant(ctx context.Context, req *GrantRequest) error {
 		}
 		loop = l
 	}
-	return e.commit(ctx, func(r *state.Records) error {
+	var users []state.GrantRef
+	err := e.commit(ctx, func(r *state.Records) error {
 		g := r.Grant(req.Ref)
 		if err := state.Apply(&state.GrantTable, &g.State, state.GrantRealised, state.TriggerPrepare); err != nil {
 			return err
@@ -524,6 +526,7 @@ func (e *Engine) remountGrant(ctx context.Context, req *GrantRequest) error {
 		if m == nil {
 			return nil
 		}
+		users = slices.Clone(m.Users)
 		if loop != "" {
 			m.Loop = loop
 		}
@@ -538,4 +541,14 @@ func (e *Engine) remountGrant(ctx context.Context, req *GrantRequest) error {
 		}
 		return remountedUsers(r, m, req.Ref)
 	})
+	if err != nil {
+		return err
+	}
+	r := e.records()
+	for _, ref := range users {
+		if g := r.Grant(ref); g != nil {
+			e.restoreBind(ctx, r, g, state.TriggerPrepare)
+		}
+	}
+	return nil
 }

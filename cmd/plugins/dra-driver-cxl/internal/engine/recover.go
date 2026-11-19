@@ -364,40 +364,45 @@ func hollowRecovered(r *state.Records, ref state.RegionRef) error {
 }
 
 // restoreBinds binds again the lease binds of the realised companion
-// grants of prepared claims whose node mount is mounted, but not of claims
-// being unprepared: kubelet unprepares them again. Errors are logged.
+// grants (restoreBind).
 func (e *Engine) restoreBinds(ctx context.Context) {
 	r := e.records()
 	for i := range r.Grants {
-		g := &r.Grants[i]
-		b := g.Got.Bind
-		p := r.PreparationOf(g.Ref)
-		if b == nil || b.State != state.BindBound || g.State != state.GrantRealised || p == nil || !p.Prepared() ||
-			p.State == state.PreparationUnpreparing || !e.owns(g.Asked.Source) {
-			continue
-		}
-		u := pmemGrantOf(r, g)
-		mi, err := e.k.Mounted(b.Target)
-		if err != nil || mi != nil {
-			continue
-		}
-		claim, what := e.claimNameOf(g.Ref), bindWhat(g)
-		if node, err := e.k.Mounted(u.nodeMount); err != nil || node == nil {
-			klog.Errorf("engine: claim %s: %s: not binding %s again: %s is not mounted (%v)", claim, what, b.Target, u.nodeMount, err)
-			continue
-		}
-		ref := g.Ref
-		if _, err := e.bindLease(&u, b.Target, func(t string) bool { return e.bindUsed(t, ref) }); err != nil {
-			klog.Errorf("engine: claim %s: %s: not binding %s again: %v", claim, what, b.Target, err)
-			continue
-		}
-		klog.Infof("engine: claim %s: %s: bound %s at %s again", claim, what, u.nodeMount, b.Target)
-		if err := e.commit(ctx, func(r *state.Records) error {
-			rb := r.Grant(ref).Got.Bind
-			return state.Apply(&state.BindTable, &rb.State, state.BindBound, state.TriggerRecover)
-		}); err != nil {
-			klog.Errorf("engine: %v", err)
-		}
+		e.restoreBind(ctx, r, &r.Grants[i], state.TriggerRecover)
+	}
+}
+
+// restoreBind binds again the lease bind of a realised companion grant of
+// a prepared claim whose node mount is mounted, but not of a claim being
+// unprepared: kubelet unprepares it again. Errors are logged.
+func (e *Engine) restoreBind(ctx context.Context, r *state.Records, g *state.Grant, trigger state.Trigger) {
+	b := g.Got.Bind
+	p := r.PreparationOf(g.Ref)
+	if b == nil || b.State != state.BindBound || g.State != state.GrantRealised || p == nil || !p.Prepared() ||
+		p.State == state.PreparationUnpreparing || !e.owns(g.Asked.Source) {
+		return
+	}
+	u := pmemGrantOf(r, g)
+	mi, err := e.k.Mounted(b.Target)
+	if err != nil || mi != nil {
+		return
+	}
+	claim, what := e.claimNameOf(g.Ref), bindWhat(g)
+	if node, err := e.k.Mounted(u.nodeMount); err != nil || node == nil {
+		klog.Errorf("engine: claim %s: %s: not binding %s again: %s is not mounted (%v)", claim, what, b.Target, u.nodeMount, err)
+		return
+	}
+	ref := g.Ref
+	if _, err := e.bindLease(&u, b.Target, func(t string) bool { return e.bindUsed(t, ref) }); err != nil {
+		klog.Errorf("engine: claim %s: %s: not binding %s again: %v", claim, what, b.Target, err)
+		return
+	}
+	klog.Infof("engine: claim %s: %s: bound %s at %s again", claim, what, u.nodeMount, b.Target)
+	if err := e.commit(ctx, func(r *state.Records) error {
+		rb := r.Grant(ref).Got.Bind
+		return state.Apply(&state.BindTable, &rb.State, state.BindBound, trigger)
+	}); err != nil {
+		klog.Errorf("engine: %v", err)
 	}
 }
 

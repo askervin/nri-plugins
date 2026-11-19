@@ -625,10 +625,10 @@ func (p *Plugin) rollback(ctx context.Context, uid, claimName string, failed fun
 }
 
 // preparedAgain returns the result of a claim that is prepared (or
-// UNPREPARING: kubelet's Unprepare retry has not removed it): a companion
-// claim is announced to the broker again, the node mounts that the start
-// did not mount again are mounted, and the claims of them have their CDI
-// devices again then.
+// UNPREPARING: kubelet's Unprepare retry has not removed it): the node
+// mounts that the start did not mount again are mounted, the claims of
+// them have their CDI devices and lease binds again then, and a companion
+// claim is announced to the broker again.
 func (p *Plugin) preparedAgain(ctx context.Context, claim *resourcev1.ResourceClaim, prep *state.Preparation) kubeletplugin.PrepareResult {
 	klog.V(3).Infof("%s: claim %s (%s) was already prepared", p.rules.Name, prep.ClaimName, prep.UID)
 	if prep.State == state.PreparationPrepared || prep.State == state.PreparationUnpreparing {
@@ -636,21 +636,20 @@ func (p *Plugin) preparedAgain(ctx context.Context, claim *resourcev1.ResourceCl
 			klog.Errorf("%s: claim %s: %v", p.rules.Name, prep.ClaimName, err)
 		}
 	}
+	if prep.State == state.PreparationUnrestored {
+		if err := p.remount(ctx, prep); err != nil {
+			if serr := stays(prep, state.TriggerPrepare); serr != nil {
+				klog.Errorf("%s: claim %s: %v", p.rules.Name, prep.ClaimName, serr)
+			}
+			return failed(fmt.Errorf("%w; unprepare the claim (delete its pods) to prepare it anew", err))
+		}
+		prep = p.preparation(prep.UID)
+	}
 	if prep.Lease != "" {
 		lend, devs := p.lendAndDevices(prep)
 		p.lender.Reprepared(lend, claim, p.rules.Source, devs)
-		return prepareResult(prep, p.rules.CDIKind())
 	}
-	if prep.State != state.PreparationUnrestored {
-		return prepareResult(prep, p.rules.CDIKind())
-	}
-	if err := p.remount(ctx, prep); err != nil {
-		if serr := stays(prep, state.TriggerPrepare); serr != nil {
-			klog.Errorf("%s: claim %s: %v", p.rules.Name, prep.ClaimName, serr)
-		}
-		return failed(fmt.Errorf("%w; unprepare the claim (delete its pods) to prepare it anew", err))
-	}
-	return prepareResult(p.preparation(prep.UID), p.rules.CDIKind())
+	return prepareResult(prep, p.rules.CDIKind())
 }
 
 // remount mounts again the node mounts of a prepared claim that the start
@@ -685,8 +684,12 @@ func (p *Plugin) remount(ctx context.Context, prep *state.Preparation) error {
 		if why == nil {
 			why = errNotMounted
 		}
-		klog.Infof("%s: claim %s (%s) has its CDI devices again (it had none: %v); mounted again: %v",
-			p.rules.Name, prep.ClaimName, prep.UID, why, mounts)
+		has := "its CDI devices"
+		if prep.Lease != "" {
+			has = "its lease binds"
+		}
+		klog.Infof("%s: claim %s (%s) has %s again (it had none: %v); mounted again: %v",
+			p.rules.Name, prep.ClaimName, prep.UID, has, why, mounts)
 	}
 	return errors.Join(err, p.writeCDI(""))
 }

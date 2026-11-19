@@ -373,5 +373,10 @@ var BindTable = Table[BindState]{
 			When: "the recovery binds a REALISED fs companion again whose node mount is mounted, unless its claim " +
 				"is UNPREPARING; an existing mount at a listed target is kept",
 		},
+		{
+			From: fsm.List(BindBound), To: BindBound, Triggers: fsm.List(TriggerPrepare),
+			When: "a Prepare again mounts the node mount of an unrestored fs companion again and binds it again " +
+				"as the recovery does",
+		},
 	},
 }
