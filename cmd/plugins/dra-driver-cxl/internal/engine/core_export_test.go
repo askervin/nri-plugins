@@ -15,10 +15,10 @@
 package engine
 
 import (
+	"context"
 	"testing"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
@@ -26,11 +26,12 @@ import (
 // requests of the claims of the slots, as the DRA drivers do, over the
 // store and the engine of each start of the process.
 type CoreFront interface {
-	// TuneEngine changes the options of the engine of every start.
-	TuneEngine(o *Options)
-	// Started starts the front-end over the store and the engine of a
-	// start whose recovery returned rec.
-	Started(st *store.Store, e *Engine, rec *Recovered) error
+	// NewEngine returns the engine of a start with the options o. The
+	// front-end of the start is over this engine.
+	NewEngine(o Options) (*Engine, error)
+	// Recover recovers the records of a start and starts the front-end,
+	// as the process does.
+	Recover(ctx context.Context) error
 	// Prepare and Unprepare run kubelet's request of the claim uid of a
 	// slot and return its error.
 	Prepare(sl CoreSlot, uid string) error

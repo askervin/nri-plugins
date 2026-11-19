@@ -71,6 +71,8 @@ type env struct {
 	// tune changes the options of every engine that the node starts, nil
 	// for none.
 	tune func(o *Options)
+	// newEngine returns every engine that the node starts, nil for New.
+	newEngine func(o Options) (*Engine, error)
 	// cutZero stops the process before ("before") or after ("after") the
 	// next zeroing of a dax device, "" for never; onZero runs before the
 	// next zeroing, nil for nothing; cutMu guards them.
@@ -152,7 +154,11 @@ func (v *env) startEngine() {
 	if v.tune != nil {
 		v.tune(&opts)
 	}
-	e, err := New(opts)
+	newEngine := New
+	if v.newEngine != nil {
+		newEngine = v.newEngine
+	}
+	e, err := newEngine(opts)
 	if err != nil {
 		v.t.Fatal(err)
 	}

@@ -85,6 +85,7 @@ func newCoreExec(t *testing.T, log io.Writer, newFront func(f *fake.Fake, dir st
 	x.v = v
 	if newFront != nil {
 		x.front = newFront(v.f, v.dir)
+		v.newEngine = x.front.NewEngine
 		v.storeCuts = true
 	}
 	for _, d := range coreMemdevs {
@@ -99,11 +100,7 @@ func newCoreExec(t *testing.T, log io.Writer, newFront func(f *fake.Fake, dir st
 	v.open()
 	t.Cleanup(func() { _ = v.st.Close() })
 	if x.front != nil {
-		rec, err := v.e.Recover(context.Background())
-		if err == nil {
-			err = x.front.Started(v.st, v.e, rec)
-		}
-		if err != nil {
+		if err := x.front.Recover(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -125,9 +122,6 @@ func (x *coreExec) tune(o *Options) {
 	}
 	o.Kernel.Exec = x.exec(o.Kernel.Exec)
 	o.Kernel.WriteFile = x.writeFile(o.Kernel.WriteFile)
-	if x.front != nil {
-		x.front.TuneEngine(o)
-	}
 }
 
 // take returns the armed fault if the kernel call matches it and no call
@@ -483,8 +477,7 @@ func (x *coreExec) start(j int) error {
 		}
 		v.commitMu.Unlock()
 		var err error
-		var rec *Recovered
-		cut := v.cut(func() { rec, err = v.e.Recover(context.Background()) })
+		cut := v.cut(func() { err = x.recoverStart() })
 		v.commitMu.Lock()
 		v.cutAt = 0
 		v.commitMu.Unlock()
@@ -492,14 +485,21 @@ func (x *coreExec) start(j int) error {
 			if err != nil {
 				return fmt.Errorf("recover: %w", err)
 			}
-			if x.front != nil {
-				return x.front.Started(v.st, v.e, rec)
-			}
 			return nil
 		}
 		_, _ = fmt.Fprintf(x.log, "core: the start stopped after commit %d of its recovery\n", j)
 		j = 0
 	}
+}
+
+// recoverStart recovers the records of a start, through the front-end when
+// there is one.
+func (x *coreExec) recoverStart() error {
+	if x.front != nil {
+		return x.front.Recover(context.Background())
+	}
+	_, err := x.v.e.Recover(context.Background())
+	return err
 }
 
 // observe returns the observable state of the node, with the generations

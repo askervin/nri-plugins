@@ -33,7 +33,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
-	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
@@ -79,15 +78,12 @@ type frontEnd struct {
 	t   *testing.T
 	f   *fake.Fake
 	dir string
-	// mountsDirs and leaseFsRoot are the directories of the node mounts and
-	// of the lease binds of the engine.
-	mountsDirs  map[state.Source]string
+	// leaseFsRoot is the directory of the lease binds of the engine.
 	leaseFsRoot string
 	bootID      string
 
 	st    *store.Store
-	local *dra.Plugin
-	pool  *dra.Plugin
+	node  *dra.Node
 	nodes *frontNodes
 	hooks *frontHooks
 }
@@ -98,8 +94,10 @@ func newFrontEnd(t *testing.T, f *fake.Fake, dir string) *frontEnd {
 	fe := &frontEnd{t: t, f: f, dir: dir, bootID: f.BootID()}
 	fe.nodes = &frontNodes{}
 	fe.hooks = &frontHooks{fe: fe}
-	if err := os.MkdirAll(fe.cdiDir(), 0o755); err != nil {
-		t.Fatal(err)
+	for _, d := range []string{fe.cdiDir(), fe.pluginDir()} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return fe
 }
@@ -109,67 +107,66 @@ func (fe *frontEnd) cdiDir() string {
 	return filepath.Join(fe.dir, "cdi")
 }
 
-// TuneEngine sets the revoke of the lends of companion grants of the engine
-// and notes its directories.
-func (fe *frontEnd) TuneEngine(o *engine.Options) {
-	o.Revoke = fe.revoke
-	fe.mountsDirs, fe.leaseFsRoot = o.MountsDirs, o.LeaseFsRoot
+// pluginDir returns the plugin data directory of cxl.nri.io.
+func (fe *frontEnd) pluginDir() string {
+	return filepath.Join(fe.dir, device.DriverName)
 }
 
-// Started starts both plugins over the store and the engine of a start, as
-// the process does after the recovery rec: the lenders set, the CDI specs
-// written from the records, the local devices published. NRI's lends do not
-// outlive a reboot.
-func (fe *frontEnd) Started(st *store.Store, e *engine.Engine, rec *engine.Recovered) error {
+// NewEngine returns the engine of the drivers of a start, as the process
+// makes them (dra.NewNode) from the options o of the engine. NRI's lends
+// do not outlive a reboot.
+func (fe *frontEnd) NewEngine(o engine.Options) (*engine.Engine, error) {
 	if b := fe.f.BootID(); b != fe.bootID {
 		fe.bootID = b
 		fe.nodes.clear()
 	}
-	ctx := context.Background()
-	cache, err := cdiapi.NewCache(cdiapi.WithSpecDirs(fe.cdiDir()), cdiapi.WithAutoRefresh(false))
+	shared, err := dra.ParseMemdevSpecs(frontShared(o))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	shared, err := dra.ParseMemdevSpecs(frontShared())
+	node, err := dra.NewNode(dra.NodeOptions{
+		Kernel:      o.Kernel,
+		Store:       o.Store,
+		Dir:         fe.pluginDir(),
+		PoolDriver:  device.PoolDriverName,
+		LeaseFsRoot: o.LeaseFsRoot,
+		CDIDir:      fe.cdiDir(),
+		NodeName:    frontNode,
+		Local: dra.LocalConfig{Managed: true, UsableSize: func(string, uint64) uint64 { return 0 },
+			Coherent: func(string, uint64) bool { return false }},
+		Publish:         dra.PublishConfig{ManageMemdevs: true, SharedDevices: shared},
+		Scan:            fe.scan,
+		Fence:           o.Fence,
+		FsTypes:         o.FsTypes,
+		ProbeAddressing: o.ProbeAddressing,
+		Timeouts:        o.Timeouts,
+	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	cfg := dra.PublishConfig{ManageMemdevs: true, SharedDevices: shared}
-	pub, err := dra.NewPublisher(dra.PublishOptions{Config: cfg, NodeName: frontNode, Scan: fe.scan, Store: st, Probes: e.Probes,
-		BlockSize: fe.f.Kernel().BlockSize})
-	if err != nil {
-		return err
-	}
-	local := dra.LocalRules(fe.mountsDirs[state.SourceLocal])
-	pool := dra.PoolRules(device.PoolDriverName, fe.mountsDirs[state.SourcePool])
-	fe.st = st
-	fe.local, err = dra.New(dra.Options{Rules: local, Store: st, Engine: e, NodeName: frontNode,
-		SysRoot: fe.f.SysRoot(), DevRoot: fe.f.DevRoot(), CDI: cache, Publisher: pub, Local: dra.LocalConfig{Managed: true,
-			UsableSize: func(string, uint64) uint64 { return 0 }, Coherent: func(string, uint64) bool { return false }}})
-	if err != nil {
-		return err
-	}
-	fe.pool, err = dra.New(dra.Options{Rules: pool, Store: st, Engine: e, NodeName: frontNode,
-		SysRoot: fe.f.SysRoot(), DevRoot: fe.f.DevRoot(), CDI: cache, Publisher: pub})
-	if err != nil {
-		return err
-	}
-	for _, p := range []*dra.Plugin{fe.local, fe.pool} {
-		p.Lender().Set(fe.nodes, fe.hooks)
-		p.Recovered(rec)
-		if err := p.WriteCDI(); err != nil {
-			return err
-		}
-	}
-	return pub.ScanWith(ctx, cfg, nil)
+	fe.st, fe.node, fe.leaseFsRoot = o.Store, node, o.LeaseFsRoot
+	return node.Engine, nil
 }
 
-// frontShared returns the local memdevs that the core model configures
-// shared, as the configuration lists them.
-func frontShared() []string {
+// Recover recovers the records of a start, writes the CDI specs from them
+// and sets the lenders, as the process does.
+func (fe *frontEnd) Recover(ctx context.Context) error {
+	if _, err := fe.node.Recover(ctx); err != nil {
+		return err
+	}
+	if err := fe.node.WriteCDI(); err != nil {
+		return err
+	}
+	fe.node.SetLenders(fe.nodes, fe.hooks)
+	return nil
+}
+
+// frontShared returns the local memdevs of the core model that are shared
+// with the options o, as the configuration lists them.
+func frontShared(o engine.Options) []string {
 	var shared []string
 	for _, m := range engine.CoreMemdevs() {
-		if m.Source == state.SourceLocal && m.Kind == state.KindShared {
+		if m.Source == state.SourceLocal && o.Shared != nil && o.Shared(state.Serial(m.Spec.Serial)) {
 			shared = append(shared, api.FormatSerial(m.Spec.Serial))
 		}
 	}
@@ -192,9 +189,9 @@ func (fe *frontEnd) scan(context.Context) (*kernel.Snapshot, error) {
 // plugin returns the plugin of the source.
 func (fe *frontEnd) plugin(source state.Source) *dra.Plugin {
 	if source == state.SourcePool {
-		return fe.pool
+		return fe.node.Pool
 	}
-	return fe.local
+	return fe.node.Local
 }
 
 // Prepare runs kubelet's Prepare of the claim uid of a slot.
@@ -273,18 +270,6 @@ func (fe *frontEnd) claim(sl engine.CoreSlot, uid string) *resourcev1.ResourceCl
 	return c
 }
 
-// revoke revokes the NUMA node that a grant of a companion claim lends,
-// through the lender of the driver of the grant's source, as the engine's
-// Revoke of the process does.
-func (fe *frontEnd) revoke(ctx context.Context, ref state.GrantRef, gl state.GrantLend) error {
-	r := &fe.st.Snapshot().Records
-	p := fe.pool
-	if g := r.Grant(ref); g != nil && g.Asked.Source == state.SourceLocal {
-		p = fe.local
-	}
-	return p.Lender().RevokeGrant(ctx, gl, ref.Claim)
-}
-
 // Check returns the violations of the CDI specs, the lends and the lease
 // binds against the records and the kernel now (6.2, 6.3, 5.3, O6): the
 // spec of each driver has the devices of the results of its PREPARED and
@@ -301,7 +286,7 @@ func (fe *frontEnd) Check() []string {
 		return []string{"observe: " + err.Error()}
 	}
 	var out []string
-	for _, p := range []*dra.Plugin{fe.local, fe.pool} {
+	for _, p := range []*dra.Plugin{fe.node.Local, fe.node.Pool} {
 		out = append(out, fe.checkCDI(doc, snap, p.Rules())...)
 	}
 	return append(out, fe.checkLends(doc, snap)...)
