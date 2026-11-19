@@ -1263,6 +1263,34 @@ func TestCloseClaimClosesConnections(t *testing.T) {
 	}
 }
 
+// Stop ends the open connections of the sockets, and returns after their
+// goroutines.
+func TestStopClosesConnections(t *testing.T) {
+	e := brokerEnv(t)
+	e.openClaim()
+	e.start()
+	c, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: e.sock(), Net: "unix"})
+	mustOK(t, err)
+	defer func() { _ = c.Close() }()
+	_, err = c.Write([]byte(`{"op":"list"}` + "\n"))
+	mustOK(t, err)
+	mustOK(t, c.SetReadDeadline(time.Now().Add(5*time.Second)))
+	r := bufio.NewReader(c)
+	if line, err := r.ReadString('\n'); err != nil || !strings.Contains(line, `"leases":[]`) {
+		t.Fatalf("list: %q %v", line, err)
+	}
+	e.b.Stop()
+	e.b.mu.Lock()
+	n := len(e.b.conns)
+	e.b.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("connections of %d lease claims after Stop", n)
+	}
+	if data, err := io.ReadAll(r); err != nil || len(data) != 0 {
+		t.Fatalf("after Stop: %q %v", data, err)
+	}
+}
+
 // A pod with two lease claims lists and releases on the socket of each
 // only the leases asked for on that socket.
 func TestLeaseListAndReleaseOfTheClaim(t *testing.T) {
@@ -1629,6 +1657,67 @@ func TestLimits(t *testing.T) {
 	start := time.Now()
 	if data, err := io.ReadAll(r1); err != nil || len(data) != 0 || time.Since(start) > 4*time.Second {
 		t.Fatalf("an idle connection: %q %v after %v", data, err, time.Since(start))
+	}
+}
+
+// The socket of a lease claim logs a refusal of one reason at most once
+// in logPeriod, and counts the others until the claim is closed.
+func TestRefusalWarnings(t *testing.T) {
+	const reason = "refusing a connection"
+	e := brokerEnv(t)
+	e.opts = func(o *Options) { o.Limits = Limits{Connections: 1} }
+	e.restart()
+	e.openClaim()
+	e.start()
+	c1, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: e.sock(), Net: "unix"})
+	mustOK(t, err)
+	defer func() { _ = c1.Close() }()
+	_, err = c1.Write([]byte(`{"op":"list"}` + "\n"))
+	mustOK(t, err)
+	mustOK(t, c1.SetReadDeadline(time.Now().Add(5*time.Second)))
+	if _, err := bufio.NewReader(c1).ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	// refused returns the warning count after a connection beyond the limit
+	refused := func() warningCount {
+		t.Helper()
+		c, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: e.sock(), Net: "unix"})
+		mustOK(t, err)
+		defer func() { _ = c.Close() }()
+		mustOK(t, c.SetReadDeadline(time.Now().Add(5*time.Second)))
+		if data, err := io.ReadAll(c); err != nil || len(data) != 0 {
+			t.Fatalf("a connection beyond the limit: %q %v", data, err)
+		}
+		e.b.mu.Lock()
+		defer e.b.mu.Unlock()
+		w := e.b.warnings[envLeaseClaim][reason]
+		if w == nil {
+			t.Fatalf("no count of %q", reason)
+		}
+		return *w
+	}
+	first := refused()
+	if first.skipped != 0 {
+		t.Fatalf("first refusal %+v", first)
+	}
+	for skipped := 1; skipped <= 2; skipped++ {
+		if w := refused(); w.skipped != skipped || !w.logged.Equal(first.logged) {
+			t.Fatalf("refusal %d within logPeriod %+v", skipped+1, w)
+		}
+	}
+	past := first.logged.Add(-logPeriod)
+	e.b.mu.Lock()
+	e.b.warnings[envLeaseClaim][reason].logged = past
+	e.b.mu.Unlock()
+	if w := refused(); w.skipped != 0 || !w.logged.After(past) {
+		t.Fatalf("refusal after logPeriod %+v", w)
+	}
+	mustOK(t, e.b.CloseClaim(context.Background(), envLeaseClaim))
+	e.b.mu.Lock()
+	n := len(e.b.warnings)
+	e.b.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("warning counts of %d lease claims after CloseClaim", n)
 	}
 }
 

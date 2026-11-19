@@ -671,8 +671,11 @@ and cannot make it the companion of a lease it did not request.
   `cxl-lease-<value of the lease label>` and have no lease in the table.
   The reconcile lists these labelled pods and claims once. A companion pod
   without the labels counts as gone.
-- Plugin restart: the sockets of the lease claims are created again in
-  the mounted directories, leases continue.
+- Plugin restart: a stopping plugin answers a request that waits for its
+  lease with `the driver is stopping: lease <id> stays <state>, ask
+  again`. Then it closes the connections. The restarted plugin creates
+  the sockets of the lease claims again in the mounted directories. The
+  leases continue.
 - Node reboot: the lease table records the boot id of the kernel
   (`/proc/sys/kernel/random/boot_id`). A lease does not survive a reboot
   (the fds of `dax` and `block` leases went with their processes, the

@@ -236,6 +236,9 @@ type Broker struct {
 	// requests are the token buckets of the lease claims (uid) for the
 	// requests that make API calls.
 	requests map[string]flowcontrol.PassiveRateLimiter
+	// warnings count the warnings of the sockets by lease claim (uid) and
+	// reason.
+	warnings map[string]map[string]*warningCount
 	// specHashes are the hashes of the specs of the companion claims that
 	// the broker created, by lease (lend.SpecHash).
 	specHashes map[string]string
@@ -288,6 +291,7 @@ func New(opts Options) (*Broker, error) {
 		listeners:  map[string]*net.UnixListener{},
 		conns:      map[string]map[*net.UnixConn]bool{},
 		requests:   map[string]flowcontrol.PassiveRateLimiter{},
+		warnings:   map[string]map[string]*warningCount{},
 		specHashes: map[string]string{},
 		releasing:  map[string]bool{},
 		removing:   map[string]chan struct{}{},
@@ -342,8 +346,9 @@ func (b *Broker) Start(containers Containers) {
 	go b.reconcileLoop(containers)
 }
 
-// Stop closes the sockets and stops the background work. The leases are
-// kept: a restarted plugin continues with them.
+// Stop closes the sockets, ends their connections and waits until the
+// background work stops. A request in progress gets its answer. The
+// leases are kept: a restarted plugin continues with them.
 func (b *Broker) Stop() {
 	if b == nil {
 		return
@@ -353,6 +358,12 @@ func (b *Broker) Stop() {
 	for uid, l := range b.listeners {
 		_ = l.Close()
 		delete(b.listeners, uid)
+	}
+	// only the read side: a request in progress can still write its answer
+	for _, conns := range b.conns {
+		for c := range conns {
+			_ = c.CloseRead()
+		}
 	}
 	b.mu.Unlock()
 	b.wg.Wait()

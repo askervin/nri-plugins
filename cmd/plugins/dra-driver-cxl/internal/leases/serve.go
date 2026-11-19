@@ -48,24 +48,47 @@ type leaseFd struct {
 	readOnly bool
 }
 
-// accept serves the socket of a lease claim.
+// logPeriod is the shortest time between two logged warnings with the same
+// lease claim and reason.
+const logPeriod = time.Minute
+
+// warningCount is the time of the last logged warning with a lease claim
+// and reason, and the number of such warnings not logged since.
+type warningCount struct {
+	logged  time.Time
+	skipped int
+}
+
+// accept serves the socket of a lease claim until the socket is closed.
+// After an error, for instance EMFILE, it waits and accepts again.
 func (b *Broker) accept(claimUID string, l *net.UnixListener) {
 	defer b.wg.Done()
+	var delay time.Duration
 	for {
 		c, err := l.AcceptUnix()
-		if err != nil {
-			if !errors.Is(err, net.ErrClosed) {
-				klog.Errorf("lease broker: claim %s: accept: %v", claimUID, err)
-			}
+		if errors.Is(err, net.ErrClosed) {
 			return
 		}
+		if err != nil {
+			delay = min(max(2*delay, 5*time.Millisecond), time.Second)
+			b.warn(claimUID, "accept", err)
+			select {
+			case <-b.ctx.Done():
+				return
+			case <-time.After(delay):
+			}
+			continue
+		}
+		delay = 0
+		b.wg.Add(1)
 		go b.serveConn(claimUID, c)
 	}
 }
 
-// serveConn answers the request lines of one connection until it ends or
-// its lease claim is closed.
+// serveConn answers the request lines of one connection until it ends,
+// its lease claim is closed or the broker stops.
 func (b *Broker) serveConn(claimUID string, c *net.UnixConn) {
+	defer b.wg.Done()
 	if !b.addConn(claimUID, c) {
 		_ = c.Close()
 		return
@@ -75,7 +98,7 @@ func (b *Broker) serveConn(claimUID string, c *net.UnixConn) {
 	defer proc.close()
 	who, authErr := b.authenticate(claimUID, proc, procErr)
 	if authErr != nil {
-		klog.Warningf("lease broker: claim %s: rejected connection: %v", claimUID, authErr)
+		b.warn(claimUID, "rejected connection", authErr)
 	}
 	connected, connectedErr := who, authErr
 	r := bufio.NewReaderSize(c, 4096)
@@ -85,7 +108,7 @@ func (b *Broker) serveConn(claimUID string, c *net.UnixConn) {
 			return
 		}
 		line, err := readLine(r)
-		if err != nil {
+		if err != nil || b.ctx.Err() != nil {
 			return
 		}
 		if !first {
@@ -119,7 +142,7 @@ func (b *Broker) addConn(claimUID string, c *net.UnixConn) bool {
 		return false
 	}
 	if n := len(b.conns[claimUID]); n >= b.opts.Limits.Connections {
-		klog.Warningf("lease broker: claim %s: refusing a connection: %d are open, the limit of --lease-max-connections", claimUID, n)
+		b.warnLocked(claimUID, "refusing a connection", fmt.Errorf("%d are open, the limit of --lease-max-connections", n))
 		return false
 	}
 	if b.conns[claimUID] == nil {
@@ -147,6 +170,43 @@ func (b *Broker) closeConnsLocked(claimUID string) {
 	for c := range b.conns[claimUID] {
 		_ = c.Close()
 	}
+}
+
+// warn logs a warning of the socket of a lease claim, like warnLocked.
+func (b *Broker) warn(claimUID, reason string, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.warnLocked(claimUID, reason, err)
+}
+
+// warnLocked logs a warning of the socket of a lease claim, at most one
+// for a reason in logPeriod. It counts the other warnings. The next logged
+// warning tells their number. A warning of a closed socket is always
+// logged. Called with b.mu held.
+func (b *Broker) warnLocked(claimUID, reason string, err error) {
+	now := time.Now()
+	var skipped int
+	if b.listeners[claimUID] != nil {
+		w := b.warnings[claimUID][reason]
+		if w == nil {
+			if b.warnings[claimUID] == nil {
+				b.warnings[claimUID] = map[string]*warningCount{}
+			}
+			w = &warningCount{}
+			b.warnings[claimUID][reason] = w
+		}
+		if now.Sub(w.logged) < logPeriod {
+			w.skipped++
+			return
+		}
+		skipped = w.skipped
+		w.logged, w.skipped = now, 0
+	}
+	if skipped > 0 {
+		klog.Warningf("lease broker: claim %s: %s: %v (%d more not logged)", claimUID, reason, err, skipped)
+		return
+	}
+	klog.Warningf("lease broker: claim %s: %s: %v", claimUID, reason, err)
 }
 
 // decodeRequest returns the request of a line, decoded strictly.

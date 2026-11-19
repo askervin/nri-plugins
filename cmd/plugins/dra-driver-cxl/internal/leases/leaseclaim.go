@@ -296,7 +296,7 @@ func (b *Broker) closed(uid string) (bool, error) {
 // stopListening stops the socket of a lease claim: it closes the listener,
 // so that no new connection is accepted, and the open connections
 // (closeConnsLocked), so that their requests end. It drops the claim's
-// request bucket. Called with b.mu held.
+// request bucket and warning counts. Called with b.mu held.
 func (b *Broker) stopListening(uid string) {
 	if l := b.listeners[uid]; l != nil {
 		_ = l.Close()
@@ -304,6 +304,7 @@ func (b *Broker) stopListening(uid string) {
 	}
 	b.closeConnsLocked(uid)
 	delete(b.requests, uid)
+	delete(b.warnings, uid)
 }
 
 // removeClaimDirs removes the directories of a lease claim that is not in
