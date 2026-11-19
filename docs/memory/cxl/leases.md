@@ -55,6 +55,15 @@ spec:
     resources: {claims: [{name: lease}]}
 ```
 
+Any pod whose namespace may have claims of the class `cxl-lease` may
+lease memory. A cluster administrator can limit this in two ways. A
+ResourceQuota with `cxl-lease.deviceclass.resource.k8s.io/devices: 0`
+refuses such claims in its namespace. The Helm value
+`leases.namespaceLabels` adds the admission policy
+`lease-namespaces-policy-nri-dra-driver-cxl`. Then only namespaces with
+those labels may have such claims and their templates
+([usage.md](usage.md#rbac-and-admission-policies)).
+
 Leases need NRI (the plugin lends nodes through NRI and maps callers to
 containers) and the host PID namespace. The DaemonSet of the Helm chart
 has both, and so has a host process ([usage.md](usage.md#build-and-deploy)).

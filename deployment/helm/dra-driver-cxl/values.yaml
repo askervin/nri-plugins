@@ -44,6 +44,10 @@ leases:
   # A list must include the globalDefault PriorityClass of the cluster, if
   # it has one.
   priorityClassNames: []
+  # Labels that a namespace must have so that its ResourceClaims and
+  # ResourceClaimTemplates may request the device class cxl-lease. With {}
+  # every namespace may.
+  namespaceLabels: {}
 
 # Driver configuration, see docs/memory/cxl/usage.md. The driver reads it
 # only when it starts; a change restarts the DaemonSet.

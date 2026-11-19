@@ -302,6 +302,12 @@
                         "type": "string",
                         "minLength": 1
                     }
+                },
+                "namespaceLabels": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
                 }
             }
         },

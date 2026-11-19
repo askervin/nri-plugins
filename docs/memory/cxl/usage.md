@@ -269,6 +269,12 @@ must include that class. A host process
 ([As a host process](#as-a-host-process)) uses a kubeconfig of its own
 user, whom the policies do not match.
 
+With `leases.namespaceLabels` the chart adds a third policy,
+`lease-namespaces-policy-nri-dra-driver-cxl`. It binds every user. Only
+namespaces with all those labels may have ResourceClaims and
+ResourceClaimTemplates that request the class `cxl-lease`. Pods of other
+namespaces cannot lease memory ([leases.md](leases.md#opting-in)).
+
 ### As a host process
 
 The driver can run on the node as a host process instead, for example as a

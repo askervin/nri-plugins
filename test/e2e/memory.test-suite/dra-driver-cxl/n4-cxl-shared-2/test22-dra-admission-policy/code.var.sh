@@ -21,6 +21,9 @@
 #   the companion image of the chart without a command, volumes, host
 #   namespaces, host ports, privileged containers, added capabilities or a
 #   system priority class.
+# The test installs the chart with leases.namespaceLabels. Then a third
+# policy, lease-namespaces-policy-nri-dra-driver-cxl, binds every user: only
+# namespaces with those labels may have claims of the class cxl-lease.
 #
 # The test talks to the API server as the driver of VM2 would: kubectl of
 # the cluster's admin impersonates the service account with the node extra
@@ -29,16 +32,17 @@
 # are server-side dry runs: admission runs as for a real create, and
 # nothing is left if a policy admits what it should refuse.
 #
-# What you will see: both policies Deny-bound and free of type-check
+# What you will see: the three policies Deny-bound and free of type-check
 # warnings; a companion pod, a companion claim and a ResourceSlice of VM2
 # admitted. Refused with the message of its policy: one request for each
 # rule, for instance a pod pinned to VM1, a claim of the class cxl-dram,
-# the deletion of a pod of VM1 and a ResourceSlice of all nodes. Then the
-# real thing: a pool lease of a running container (test12) whose companion
-# pod and claim the driver creates and, at the release, deletes under the
-# policy. While they run, the driver of VM2 may delete them (dry runs).
-# Last, an orphan companion claim (a lease name, no lease) that the driver
-# deletes at its next reconcile (at most 60 s).
+# the deletion of a pod of VM1, a ResourceSlice of all nodes, and a
+# template of the class cxl-lease in a namespace without the labels. Then
+# the real thing: a pool lease of a running container (test12) whose
+# companion pod and claim the driver creates and, at the release, deletes
+# under the policy. While they run, the driver of VM2 may delete them (dry
+# runs). Last, an orphan companion claim (a lease name, no lease) that the
+# driver deletes at its next reconcile (at most 60 s).
 #
 # Everything happens on VM2, the VM of the test (n4-cxl-shared-2), the
 # control plane of the cluster of VM2, VM1 and VM0. Run test00-up of
@@ -65,6 +69,8 @@ DRIVER_USER=system:serviceaccount:kube-system:nri-dra-driver-cxl
 NODE_EXTRA=authentication.kubernetes.io/node-name
 POLICY=lease-companions-policy-nri-dra-driver-cxl
 SLICE_POLICY=resourceslices-policy-nri-dra-driver-cxl
+NS_POLICY=lease-namespaces-policy-nri-dra-driver-cxl
+NS_LABEL=cxl-leases         # leases.namespaceLabels: {cxl-leases: allowed}
 FAKE_LEASE=0badc0de         # the lease of the companion-shaped objects
 FAKE_COMPANION=cxl-lease-$FAKE_LEASE
 ORPHAN=$FAKE_COMPANION      # a companion claim without a lease
@@ -266,17 +272,24 @@ pool-server-start "
 pool-client-install "$VM2"
 
 echo "### preconditions: the pool controller and the driver run in the cluster"
+# The chart has the policy of lease namespaces only with namespaceLabels.
+values="$TEST_OUTPUT_DIR/test22-helm-values.yaml"
+{ cat "$DRA_HELM_VALUES"; printf 'leases:\n  namespaceLabels:\n    %s: allowed\n' "$NS_LABEL"; } > "$values"
+DRA_HELM_VALUES="$values"
 dra-build
 dra-install
 dra-pull-images "$VM2" "$PYTHON_IMAGE" "$PAUSE_IMAGE"
 
 echo "### A: the policies of the chart"
-for p in "$SLICE_POLICY" "$POLICY"; do
+for p in "$SLICE_POLICY" "$POLICY" "$NS_POLICY"; do
     # The API server type-checks a policy against the kinds it matches and
     # reports the expressions that do not fit in its status.
     dra-wait "$VM2" "policy-$p" "validatingadmissionpolicy $p" \
         "j.get('status', {}).get('observedGeneration') == j['metadata']['generation'] and not j['status'].get('typeChecking', {}).get('expressionWarnings')" 30
-    dra-assert "$COMMAND_OUTPUT" "j['spec']['failurePolicy'] == 'Fail' and [c['expression'] for c in j['spec']['matchConditions']] == ['request.userInfo.username == \"$DRIVER_USER\"']"
+    # The policy of lease namespaces binds every user.
+    conditions="['request.userInfo.username == \"$DRIVER_USER\"']"
+    [ "$p" != "$NS_POLICY" ] || conditions="[]"
+    dra-assert "$COMMAND_OUTPUT" "j['spec']['failurePolicy'] == 'Fail' and [c['expression'] for c in j['spec'].get('matchConditions', [])] == $conditions"
     dra-json "$VM2" validatingadmissionpolicybinding "$p" ||
         command-error "no ValidatingAdmissionPolicyBinding $p"
     dra-assert "$COMMAND_OUTPUT" "j['spec']['policyName'] == '$p' and j['spec']['validationActions'] == ['Deny']"
@@ -402,6 +415,13 @@ dra-delete "$VM2" pod other-node-pod --grace-period=0
 for claim in unlabelled-object not-a-companion other-node-object; do
     dra-delete "$VM2" resourceclaim "$claim"
 done
+# Namespace $DRA_NS has no label $NS_LABEL yet: nobody may create the
+# template of the lease claim of the borrower in D there.
+admin-kubectl create --dry-run=server -f - <<< "$(dra-lease-template-yaml cxl-lease)"
+policy-denied "a template of class cxl-lease in namespace $DRA_NS" \
+    "namespace $DRA_NS may not have resourceclaimtemplates of the device class cxl-lease: only namespaces with the labels $NS_LABEL=allowed may" "$NS_POLICY"
+dra-vm-command "$VM2" "kubectl label namespace $DRA_NS $NS_LABEL=allowed" ||
+    command-error "cannot label namespace $DRA_NS"
 
 echo "### D: the companion of a real lease, created and deleted by the driver"
 dra-apply "$VM2" <<< "$(borrower-yaml)"
@@ -444,6 +464,8 @@ dra-plugin-log "$VM2" | grep -E "lease broker: (deleting companion|lease $LEASE:
 
 echo "### cleanup"
 dra-delete "$VM2" pod borrower --grace-period=2 --wait=true --timeout=60s
+dra-vm-command "$VM2" "kubectl label namespace $DRA_NS $NS_LABEL-" ||
+    command-error "cannot remove label $NS_LABEL of namespace $DRA_NS"
 dra-cleanup
 pool-cleanup
 trap - EXIT

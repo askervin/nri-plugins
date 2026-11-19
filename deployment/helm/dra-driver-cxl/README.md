@@ -90,6 +90,8 @@ modify only the ResourceSlices and the lease companion pods and claims of
 its own node (they need the `ServiceAccountTokenPodNodeInfo` feature, on
 by default since Kubernetes 1.30; see
 [RBAC and admission policies](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#rbac-and-admission-policies)).
+With `leases.namespaceLabels` a third policy lets only the namespaces with
+those labels lease memory.
 To customize the available parameters as
 described in the [Configuration options](#configuration-options) below, you
 have two options: you can use the `--set` flag or create a custom
@@ -162,6 +164,7 @@ customize with their own values, along with the default values.
 | `leases.wait`            | 120s                                                                                                                          | how long a lease request waits for Ready when it does not say, at most 1h (`--lease-wait`) |
 | `leases.companionImage`  | registry.k8s.io/pause:3.10                                                                                                    | image of the companion pods of leases (`--lease-companion-image`), the only image that the admission policy of companions allows; a digest pins it |
 | `leases.priorityClassNames` | []                                                                                                                         | priority classes that companion pods may have; [] allows every class but `system-node-critical` and `system-cluster-critical` |
+| `leases.namespaceLabels` | {}                                                                                                                            | labels that a namespace needs so that its claims may request `cxl-lease`; {} allows every namespace |
 | `config`                 | {}                                                                                                                            | driver configuration file (`-f`)                     |
 | `deviceClassConfig`      | {}                                                                                                                            | class name: the body of a `MemoryConfig` (`device`, `container`, `pool`; `container` only for `cxl-lease`), rendered into the `spec.config` of the class |
 | `logLevel`               | 4                                                                                                                             | log verbosity (`-v`)                                 |
