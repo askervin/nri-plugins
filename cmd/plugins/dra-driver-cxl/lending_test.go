@@ -15,20 +15,15 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"strings"
 	"sync"
-	"testing"
 
 	resourceapi "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
@@ -96,54 +91,6 @@ func companionClaim(id string) *resourceapi.ResourceClaim {
 		Labels:          map[string]string{device.LeaseLabel: id},
 		OwnerReferences: []metav1.OwnerReference{{APIVersion: "v1", Kind: "Pod", Name: testPod, UID: testPodUID, Controller: ptr(true)}},
 	}}
-}
-
-func testLendRecord() *lendRecord {
-	return &lendRecord{Lease: "l1", Pod: podRef{Namespace: testNS, Name: testPod, UID: testPodUID}, Container: testCtr}
-}
-
-func TestCompanionLenderDisabled(t *testing.T) {
-	claim := companionClaim("l1")
-	c := dra.NewLender(device.DriverName)
-	_, err := c.Check("l1", claim)
-	wantErr(t, err, "lease l1: lending to running containers is disabled (--leases=false)")
-	hooks := &fakeHooks{}
-	c.Set(nil, hooks)
-	if _, err := c.Check("l1", claim); !errors.Is(err, errLendingUnavailable) {
-		t.Fatalf("check without NRI: %v", err)
-	}
-	// numa devices cannot be lent without NRI, dax devices need no lend
-	rec := testLendRecord()
-	if err := c.Lend(context.Background(), rec, []lentDevice{numaLent(3)}); !errors.Is(err, errLendingUnavailable) || len(rec.NumaNodes) != 0 {
-		t.Fatalf("lend without NRI: %+v %v", rec, err)
-	}
-	noErr(t, c.Lend(context.Background(), rec, []lentDevice{{DeviceType: device.DeviceTypeMemdev, Mode: api.ModeDax, DaxDevice: "/dev/dax0.1"}}))
-	if rec.Lease != "l1" || rec.Container != testCtr || len(rec.NumaNodes) != 0 {
-		t.Fatalf("dax lend record %+v", rec)
-	}
-	// revoking without NRI only warns
-	noErr(t, c.Revoke(context.Background(), &lendRecord{Lease: "l1", NumaNodes: []int{3}}, "ns/c"))
-	if log := hooks.log(); log != "" {
-		t.Fatalf("hooks called: %s", log)
-	}
-
-	// a nil companionLender is disabled and safe to use
-	var n *companionLender
-	n.Set(newFakeLender(), hooks)
-	n.Prepared("l1", state.SourceLocal, nil)
-	n.Failed("l1", errors.New("x"))
-	n.Releasing("l1")
-	n.Reprepared(&lendRecord{Lease: "l1"}, claim, state.SourceLocal, nil)
-	if hooks.log() != "" {
-		t.Fatalf("nil companionLender: hooks %s", hooks.log())
-	}
-	_, err = n.Check("l1", claim)
-	wantErr(t, err, "disabled")
-}
-
-// numaLent returns a memdev of a companion claim in mode numa on node.
-func numaLent(node int) lentDevice {
-	return lentDevice{DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA, NUMANodes: []int{node}}
 }
 
 // withDriverConfig appends an opaque config of driver to a claim's

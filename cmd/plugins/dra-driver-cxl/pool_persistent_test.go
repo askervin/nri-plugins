@@ -15,17 +15,14 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	resourceapi "k8s.io/api/resource/v1"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
-	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
 const (
@@ -70,41 +67,4 @@ func fsCompanion(id, access string) *resourceapi.ResourceClaim {
 	c := persistentClaim("uid-"+companionName(id), persistentData, cfg)
 	c.ObjectMeta = companionClaim(id).ObjectMeta
 	return c
-}
-
-// TestPoolLeaseBindErrors refuses the Prepare of companion claims of fs
-// leases whose bind cannot be made before any device is touched, and tells
-// the broker (TestPoolLeaseBindChecks has the binds that fail).
-func TestPoolLeaseBindErrors(t *testing.T) {
-	e, p, hooks := newPoolLeaseEnv(t)
-	target := filepath.Join(hooks.fsDir, "models")
-	checkClean := func(what string) {
-		t.Helper()
-		e.wantClean(t, p)
-		e.wantNoMounts(t, p)
-		// refused before any device is touched
-		if strings.Contains(e.commands(), "create-region") {
-			t.Fatalf("%s: a device was touched:\n%s", what, e.commands())
-		}
-		if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("%s: bind directory left: %v", what, err)
-		}
-	}
-
-	// E1: a lease claim of an older driver
-	hooks.fsDir = ""
-	wantErr(t, prepare(t, p, fsCompanion("l1", "direct")).Err,
-		"cxl-pool.nri.io: claim demo/cxl-lease-l1: lease l1: its lease claim has no filesystem directory")
-	if !strings.Contains(hooks.log(), "failed l1: lease l1: its lease claim has no filesystem directory") {
-		t.Fatalf("lend failure not told:\n%s", hooks.log())
-	}
-	checkClean("E1")
-	hooks.fsDir = filepath.Join(e.leaseFsRoot, "lc1")
-
-	// E2: two fs devices
-	c := fsCompanion("l2", "direct")
-	c.Status.Allocation.Devices.Results = append(c.Status.Allocation.Devices.Results,
-		resourceapi.DeviceRequestAllocationResult{Request: "mem2", Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: "llm0", ConsumedCapacity: poolConsumed(persistentData)})
-	wantErr(t, prepare(t, p, c).Err, "lease l2: more than one filesystem device")
-	checkClean("E2")
 }

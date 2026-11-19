@@ -28,6 +28,7 @@ import (
 
 	resourcev1 "k8s.io/api/resource/v1"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
@@ -102,6 +103,43 @@ func TestCompanionGate(t *testing.T) {
 	wantErrText(t, e.prepare(e.local, none).Err, "needs memdev devices only")
 	e.wantNoCommands("refused companions")
 	e.wantEvents("memdevs only")
+}
+
+// Without NRI a lend of numa devices fails and one of dax devices passes:
+// the broker passes them as an fd; a revoke only warns. A nil Lender, the
+// lender of a plugin that is not there, is disabled and calls no hook.
+func TestCompanionLenderWithoutNRI(t *testing.T) {
+	e := lendEnv(t)
+	hooks := &fakeHooks{e: e}
+	e.lend(nil, hooks)
+	ctx := context.Background()
+	c := e.local.Lender()
+	rec := &lend.Lend{Lease: "l1", Pod: state.PodRef{Namespace: envNS, Name: envPod, UID: envPodUID}, Container: envCtr}
+	numa := state.DeviceInfo{DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA, NUMANodes: []int{3}}
+	if err := c.Lend(ctx, rec, []state.DeviceInfo{numa}); !errors.Is(err, lend.ErrLendingUnavailable) || len(rec.NumaNodes) != 0 {
+		t.Fatalf("numa lend: %v, nodes %v", err, rec.NumaNodes)
+	}
+	dax := state.DeviceInfo{DeviceType: device.DeviceTypeMemdev, Mode: api.ModeDax, DaxDevice: "/dev/dax0.1"}
+	if err := c.Lend(ctx, rec, []state.DeviceInfo{dax}); err != nil || len(rec.NumaNodes) != 0 {
+		t.Fatalf("dax lend: %v, nodes %v", err, rec.NumaNodes)
+	}
+	logs := klogtest.Capture(t, 0)
+	rec.NumaNodes = []int{3}
+	mustOK(t, c.Revoke(ctx, rec, "demo/cxl-lease-l1"))
+	line := "cxl.nri.io: claim demo/cxl-lease-l1: lease l1: lending unavailable: NRI not connected, cannot revoke nodes [3] from demo/borrower/app"
+	if got := logs(); logMatches(got, line) != 1 {
+		t.Fatalf("no %q in\n%s", line, got)
+	}
+
+	var n *Lender
+	n.Set(&fakeNodes{e: e}, hooks)
+	n.Prepared("l1", state.SourceLocal, nil)
+	n.Failed("l1", errors.New("lend failed"))
+	n.Releasing("l1")
+	n.Reprepared(rec, e.companionOf(e.local), state.SourceLocal, nil)
+	_, err := n.Check("l1", e.companionOf(e.local))
+	wantErrText(t, err, "lease l1: lending to running containers is disabled (--leases=false)")
+	e.wantEvents("lender without NRI and nil lender")
 }
 
 // specClaim returns the companion claim c1 of the sliced local memdev with
@@ -390,6 +428,31 @@ func TestCompanionLeaseBindFails(t *testing.T) {
 	e.wantEvents("failed", "lending l1 cxl-lease-l1", "failed l1: "+bindErr)
 	e.wantState(e.pool, "c1", state.PreparationUnknown)
 	mustOK(t, e.k.Kernel().Unmount(target))
+	e.wantClean()
+}
+
+// A companion claim of mode fs whose lease bind cannot be made is refused
+// before any device is touched, and the broker is told: its lease claim has
+// no filesystem directory, or the claim has two devices of mode fs.
+func TestCompanionLeaseBindRefused(t *testing.T) {
+	e := newDriverEnv(t, nil, poolPmemSpec(serialPoolP))
+	e.formatPmem(serialPoolP, "erofs")
+	_, hooks := e.lending()
+	hooks.name = "models"
+	e.mark()
+	noDir := "lease l1: its lease claim has no filesystem directory"
+	wantErrText(t, e.prepare(e.pool, companion(poolClaim("c1", "llm0", poolPmemData, cfgFsRO), "l1")).Err, e.prefix(e.pool)+noDir)
+	e.wantEvents("no directory", "lending l1 cxl-lease-l1", "failed l1: "+noDir)
+	hooks.fsDir = filepath.Join(e.leaseFsRoot(), "l1")
+	two := addPoolResult(companion(poolClaim("c1", "llm0", poolPmemData, cfgFsRO), "l1"), "mem2", "llm0", poolPmemData)
+	twoFs := "lease l1: more than one filesystem device"
+	wantErrText(t, e.prepare(e.pool, two).Err, e.prefix(e.pool)+twoFs)
+	e.wantEvents("two fs devices", "lending l1 cxl-lease-l1", "failed l1: "+twoFs)
+	e.wantNoCommands("refused lease binds")
+	e.wantState(e.pool, "c1", state.PreparationUnknown)
+	if _, err := os.Stat(hooks.fsDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("lease directory made: %v", err)
+	}
 	e.wantClean()
 }
 

@@ -536,22 +536,6 @@ func (e *poolTestEnv) mounted(target string) *mountInfo {
 	return nil
 }
 
-// wantNoMounts fails the test when a node mount or a lease bind of the
-// pool driver is mounted.
-func (e *poolTestEnv) wantNoMounts(t *testing.T, p *dra.Plugin) {
-	t.Helper()
-	ms, err := e.mounts()
-	noErr(t, err)
-	for _, m := range ms {
-		if strings.HasPrefix(m.Target, e.dir+"/") || (e.leaseFsRoot != "" && strings.HasPrefix(m.Target, e.leaseFsRoot+"/")) {
-			t.Fatalf("mounted: %+v", m)
-		}
-	}
-	if v := e.k.Violations(); len(v) > 0 {
-		t.Fatalf("mount rules violated: %v", v)
-	}
-}
-
 // mountedErr returns the mount at target, nil if there is none, and no
 // error, as a mount table does.
 func (e *poolTestEnv) mountedErr(target string) (*mountInfo, error) {

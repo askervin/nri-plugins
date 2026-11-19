@@ -15,7 +15,6 @@
 package main
 
 import (
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 )
@@ -32,8 +31,6 @@ type (
 	lentDevice = state.DeviceInfo
 	// leaseHooks is what the drivers tell the lease broker.
 	leaseHooks = lend.LeaseHooks
-	// companionLender lends the companion claims of a driver.
-	companionLender = dra.Lender
 	// podRef identifies a pod.
 	podRef = state.PodRef
 )
