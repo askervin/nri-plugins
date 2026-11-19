@@ -23,7 +23,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -394,29 +393,6 @@ func (e *localTestEnv) allocatable() (dra.DevicesInfo, error) {
 	return e.publisher.Devices(), nil
 }
 
-// unmanaged makes cxl.nri.io a driver that does not manage local memdevs,
-// on the same store, engine and publisher.
-func (e *localTestEnv) unmanaged() {
-	e.t.Helper()
-	local := e.localConfig()
-	local.Managed = false
-	p, err := dra.New(dra.Options{
-		Rules:     e.rules()[0],
-		Store:     e.st,
-		Engine:    e.devices.Engine,
-		NodeName:  testNode,
-		SysRoot:   e.k.SysRoot(),
-		DevRoot:   e.k.DevRoot(),
-		CDI:       e.cdi,
-		Local:     local,
-		OnShared:  e.devices.addShared,
-		Publisher: e.publisher,
-	})
-	noErr(e.t, err)
-	e.s = p
-	e.devices.setLender(state.SourceLocal, e.s.Lender())
-}
-
 // localSnapshot returns the uses of the local memdevs as the publisher sees
 // them.
 func (e *localTestEnv) localSnapshot() *dra.LocalSnapshot {
@@ -564,21 +540,6 @@ func localCompanion(uid string, consumed int64, configs ...string) *resourcev1.R
 	c.ObjectMeta = companionClaim("l1").ObjectMeta
 	c.UID = types.UID(uid)
 	return c
-}
-
-// memoryConfig returns a MemoryConfig of the device of mode, read-only or
-// not, with the device settings extra (JSON members, "" for none).
-func memoryConfig(mode string, readOnly bool, extra string) string {
-	cfg := map[string]any{"mode": mode}
-	if readOnly {
-		cfg["readOnly"] = true
-	}
-	data, _ := json.Marshal(cfg)
-	dev := string(data)
-	if extra != "" {
-		dev = strings.TrimSuffix(dev, "}") + "," + extra + "}"
-	}
-	return `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":` + dev + `}`
 }
 
 // fakeMemdevSpecPmem returns the spec of a local memdev of 512 MiB of

@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -120,6 +121,225 @@ func TestLocalGuard(t *testing.T) {
 		t.Fatalf("commands %q", cmds)
 	}
 	v.clean("refused")
+}
+
+// A region creation of a local memdev that fails with add_dev is tried
+// once more; a second failure fails the grant and leaves nothing. A region
+// that the plugin did not create is refused untouched, and a memdev that
+// is gone is not found.
+func TestLocalRegionErrors(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
+	ctx := context.Background()
+	req := localReq("l1", 0, serialL, state.ModeDax, state.KindExclusive, 128*mib)
+	refused := func(what, want string, is error) {
+		t.Helper()
+		before := v.f.Commands()
+		err := v.prepare(localDriver, "l1", req)
+		if !errors.Is(err, is) || err.Error() != want {
+			t.Fatalf("%s: error %v, want %q", what, err, want)
+		}
+		if cmds := v.f.CommandsSince(before); cmds != "" {
+			t.Fatalf("%s: commands %q", what, cmds)
+		}
+	}
+
+	v.f.FailCommand("cxl create-region", fake.ErrAddDev)
+	v.mustPrepare(localDriver, "l1", req)
+	if n := strings.Count(v.f.Commands(), "cxl create-region"); n != 2 {
+		t.Fatalf("region created %d times:\n%s", n, v.f.Commands())
+	}
+	v.mustUnprepare(localDriver, "l1")
+
+	v.f.FailCommand("cxl create-region", fake.ErrAddDev, fake.ErrAddDev)
+	if err := v.prepare(localDriver, "l1", req); err == nil || err.Error() != "memdev mem0 (serial 0x11): cxl region: cmd_create_region: region0: add_dev() failed" {
+		t.Fatalf("error %v", err)
+	}
+	wantPreparation(t, v, localDriver, "l1", "")
+	v.clean("add_dev twice")
+
+	k := v.f.Kernel()
+	d, err := k.RootDecoder("mem0", kernel.RegionRAM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	region, err := k.CreateRegion(ctx, kernel.CreateRegionRequest{Memdev: "mem0", Decoder: d, Type: kernel.RegionRAM})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused("foreign region", "memdev mem0 has region region0 that the plugin did not create", errForeignRegion)
+	if err := k.ReleaseRegion(ctx, region); err != nil {
+		t.Fatal(err)
+	}
+
+	v.f.Unplug(serialL)
+	refused("memdev gone", "no CXL memory device with the serial 0x11", kernel.ErrNotFound)
+	v.clean("refused")
+}
+
+// A first part whose set-up fails leaves nothing: the region does not come
+// up in devdax mode, its zeroing fails, kmem cannot be bound or the memory
+// not onlined. A later part that fails to resize, to come up in devdax
+// mode or to online goes alone; a part that fails to delete stays with its
+// claim until a retry.
+func TestLocalSliceFailures(t *testing.T) {
+	enable := errors.New("device_dax: enable failed")
+	numa := func(uid string, size uint64) GrantRequest {
+		return localReq(uid, 0, serialL, state.ModeNUMA, state.KindExclusive, size)
+	}
+	dax := func(uid string) GrantRequest {
+		return localReq(uid, 0, serialL, state.ModeDax, state.KindExclusive, 128*mib)
+	}
+	noDevdax := func(v *env) {
+		v.f.FailWrite("bus/dax/drivers/device_dax/new_id", enable)
+		v.f.FailWrite("bus/dax/drivers/device_dax/bind", enable)
+	}
+	failed := func(t *testing.T, v *env, uid string, req GrantRequest, want string) {
+		t.Helper()
+		if err := v.prepare(localDriver, uid, req); err == nil || err.Error() != want {
+			t.Fatalf("error %v, want %q", err, want)
+		}
+		for b := 74; b < 82; b++ {
+			if v.f.BlockState(b) == kernel.BlockStateOnline {
+				t.Fatalf("memory%d online", b)
+			}
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		fail func(v *env)
+		req  GrantRequest
+		err  string
+	}{
+		{"no devdax", noDevdax, dax("l1"), "bind dax0.0 to device_dax: device_dax: enable failed"},
+		{"zeroing", func(v *env) { v.f.ZeroErr = errors.New("mmap: no such device") }, dax("l1"),
+			"memdev mem0 (serial 0x11): zeroing dax0.0: mmap: no such device"},
+		{"kmem bind", func(v *env) { v.f.FailWrite("bus/dax/drivers/kmem/bind", syscall.EIO) }, numa("l1", 128*mib),
+			"memdev mem0 (serial 0x11): bind dax0.0 to kmem: input/output error"},
+		{"online", func(v *env) { v.f.FailWrite(blockState(75), syscall.EIO) }, numa("l1", 256*mib),
+			"memdev mem0 (serial 0x11): memory75: online_movable: input/output error"},
+	} {
+		t.Run("first part "+tc.name, func(t *testing.T) {
+			v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
+			tc.fail(v)
+			failed(t, v, "l1", tc.req, tc.err)
+			wantPreparation(t, v, localDriver, "l1", "")
+			if strings.Contains(v.f.Commands(), "disable-memdev") {
+				t.Fatal("a local memdev was disabled")
+			}
+			v.clean("failed")
+		})
+	}
+	t.Run("later part", func(t *testing.T) {
+		v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
+		v.mustPrepare(localDriver, "d1", dax("d1"))
+		for _, tc := range []struct {
+			fail func()
+			req  GrantRequest
+			err  string
+		}{
+			{func() { v.f.FailWrite("bus/dax/devices/dax0.1/size", syscall.EIO) }, dax("d2"),
+				"memdev mem0 (serial 0x11): dax0.1: set size 134217728: input/output error"},
+			{func() { noDevdax(v) }, dax("d2"), "memdev mem0 (serial 0x11): bind dax0.1 to device_dax: device_dax: enable failed"},
+			{func() { v.f.FailWrite(blockState(76), syscall.EIO) }, numa("d2", 256*mib),
+				"memdev mem0 (serial 0x11): memory76: online_movable: input/output error"},
+		} {
+			tc.fail()
+			failed(t, v, "d2", tc.req, tc.err)
+			if v.f.DaxExists("dax0.1") {
+				t.Fatalf("dax0.1 left after %q", tc.err)
+			}
+		}
+		if v.f.DaxDriver("dax0.0") != kernel.DriverDeviceDax || v.f.DaxSize("dax0.0") != 128*mib || len(v.records().Grants) != 1 {
+			t.Fatalf("dax0.0 %s %d, grants %+v", v.f.DaxDriver("dax0.0"), v.f.DaxSize("dax0.0"), v.records().Grants)
+		}
+		v.mustUnprepare(localDriver, "d1")
+		v.clean("unprepared")
+	})
+	t.Run("part that fails to delete", func(t *testing.T) {
+		v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
+		v.mustPrepare(localDriver, "d1", dax("d1"))
+		v.mustPrepare(localDriver, "d2", dax("d2"))
+		d2 := v.grant("d2", 0).Got.Dax
+		v.f.FailWrite("bus/cxl/devices/region0/dax_region0/dax_region/delete", syscall.EBUSY)
+		if err := v.unprepare(localDriver, "d2"); err == nil || err.Error() != "memdev mem0 (serial 0x11): releasing slice dax0.1: region0: delete dax0.1: device or resource busy" {
+			t.Fatalf("error %v", err)
+		}
+		if g := v.grant("d2", 0); !v.f.DaxExists(d2) || g == nil || g.State != state.GrantReleasing {
+			t.Fatalf("after a failed release: %s exists %v, grant %+v", d2, v.f.DaxExists(d2), g)
+		}
+		v.mustUnprepare(localDriver, "d2")
+		if v.f.DaxExists(d2) {
+			t.Fatalf("%s left", d2)
+		}
+		v.mustUnprepare(localDriver, "d1")
+		v.clean("unprepared")
+	})
+}
+
+// Failures while a part is placed on the whole blocks of a region that
+// does not start at a block boundary, bound or onlined leave nothing of
+// it: the misplaced first-fit device cannot be deleted, the placed device
+// cannot be mapped or bound to kmem, the region cannot be read, the memory
+// blocks of kmem never appear.
+func TestLocalPlacementFailures(t *testing.T) {
+	const bs = 512 * mib
+	v := newEnv(t)
+	v.f.SetBlockSize(bs)
+	v.f.Plug(fake.MemdevSpec{Serial: serialL, Ram: 2 * gib})
+	numa := localReq("n1", 0, serialL, state.ModeNUMA, state.KindExclusive, bs)
+	dax := localReq("n1", 0, serialL, state.ModeDax, state.KindExclusive, bs)
+	failed := func(what string, req GrantRequest, want string) {
+		t.Helper()
+		if err := v.prepare(localDriver, "n1", req); err == nil || err.Error() != want {
+			t.Fatalf("%s: error %v, want %q", what, err, want)
+		}
+		for b := 18; b < 23; b++ {
+			if v.f.BlockState(b) == kernel.BlockStateOnline {
+				t.Fatalf("%s: memory%d online", what, b)
+			}
+		}
+		if devs := v.f.Kernel().DaxDevices("region0"); len(devs) > 2 {
+			t.Fatalf("%s: dax devices %v", what, devs)
+		}
+	}
+
+	v.f.FailWrite("bus/dax/devices/dax0.0/size", nil, syscall.EIO)
+	failed("first-fit device not deleted", numa, "memdev mem0 (serial 0x11): dax0.0: set size 0: input/output error")
+	v.clean("first-fit device not deleted")
+
+	v.mustPrepare(localDriver, "d1", localReq("d1", 0, serialL, state.ModeDax, state.KindExclusive, bs))
+	d1 := v.grant("d1", 0).Got.Dax
+	v.f.FailWrite("bus/dax/devices/dax0.2/mapping", syscall.EIO)
+	failed("not mapped", numa, "memdev mem0 (serial 0x11): dax0.2: map 0x280000000-0x29fffffff: input/output error")
+	v.f.FailWrite("bus/dax/drivers/kmem/bind", syscall.EIO)
+	failed("not bound", numa, "memdev mem0 (serial 0x11): bind dax0.2 to kmem: input/output error")
+
+	size := v.f.Read("bus/cxl/devices/region0/size")
+	v.f.Before("write bus/dax/devices/dax0.0/size 0", func() { v.f.Write("bus/cxl/devices/region0/size", "bogus") })
+	err := v.prepare(localDriver, "n1", dax)
+	v.f.Write("bus/cxl/devices/region0/size", size)
+	// the available size that the fake wrote while the size was bogus
+	free := uint64(0)
+	for _, g := range v.f.Gaps("region0") {
+		free += g.Size()
+	}
+	v.f.Write("bus/cxl/devices/region0/dax_region0/dax_region/available_size", fmt.Sprint(free))
+	if want := `memdev mem0 (serial 0x11): cannot parse region region0 resource "0x250000000" size "bogus"`; err == nil || err.Error() != want {
+		t.Fatalf("region unreadable: error %v, want %q", err, want)
+	}
+	v.check("region unreadable")
+
+	v.f.NoKmemBlocks, v.prepareTimeout = true, 50*time.Millisecond
+	failed("no memory blocks", numa, "memdev mem0 (serial 0x11): dax0.2: 0 of 1 memory blocks appeared: context deadline exceeded")
+	v.f.NoKmemBlocks, v.prepareTimeout = false, 0
+
+	if v.f.DaxSize("dax0.0") != 0 || v.f.DaxDriver("dax0.0") != "" || len(v.records().Grants) != 1 ||
+		v.f.DaxDriver(d1) != kernel.DriverDeviceDax || v.f.DaxSize(d1) != bs {
+		t.Fatalf("dax0.0 %d %q, %s %d %q, grants %+v", v.f.DaxSize("dax0.0"), v.f.DaxDriver("dax0.0"),
+			d1, v.f.DaxSize(d1), v.f.DaxDriver(d1), v.records().Grants)
+	}
+	v.mustUnprepare(localDriver, "d1")
+	v.clean("unprepared")
 }
 
 // Parts of a region that does not start at a memory block boundary are

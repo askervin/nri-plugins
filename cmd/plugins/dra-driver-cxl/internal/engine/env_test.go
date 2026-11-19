@@ -83,6 +83,8 @@ type env struct {
 	// storeCuts counts the commits of cutAt at the store (every commit)
 	// instead of at the engine.
 	storeCuts bool
+	// prepareTimeout bounds the Prepares of prepare, 0 for no bound.
+	prepareTimeout time.Duration
 }
 
 // newEnv returns a node with the memdevs of specs plugged.
@@ -355,7 +357,13 @@ func (v *env) prepare(driver, uid string, reqs ...GrantRequest) error {
 	}); err != nil {
 		v.t.Fatal(err)
 	}
-	_, err := v.e.PrepareGrants(ctx, reqs)
+	pctx := ctx
+	if v.prepareTimeout > 0 {
+		var cancel context.CancelFunc
+		pctx, cancel = context.WithTimeout(ctx, v.prepareTimeout)
+		defer cancel()
+	}
+	_, err := v.e.PrepareGrants(pctx, reqs)
 	if before := v.beforePrepared; before != nil && err == nil {
 		v.beforePrepared = nil
 		before()

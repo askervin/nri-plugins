@@ -28,7 +28,8 @@ import (
 )
 
 // The Prepares that are refused before any device is touched, of both
-// drivers, in the words of each: no kernel command, no record.
+// drivers, in the words of each: no kernel command, no record. set changes
+// the node for a case and returns what restores it.
 func TestPrepareRefusedBeforeDevices(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, poolSpec(serialPoolX))
 	noAlloc := func(c *resourcev1.ResourceClaim) *resourcev1.ResourceClaim {
@@ -36,26 +37,46 @@ func TestPrepareRefusedBeforeDevices(t *testing.T) {
 		return c
 	}
 	badConfig := `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"memory"}}`
+	sizeZero := func() func() {
+		devs := e.pub.Devices()
+		info := *devs[localDev]
+		m := *info.Dev.(*Memdev)
+		m.Size = 0
+		info.Dev = &m
+		e.pub.SetDevices(DevicesInfo{localDev: &info})
+		return func() { e.pub.SetDevices(devs) }
+	}
+	unmanaged := func() func() {
+		e.local.local.Managed = false
+		return func() { e.local.local.Managed = true }
+	}
 	for _, tc := range []struct {
 		name  string
 		p     *Plugin
 		claim *resourcev1.ResourceClaim
 		err   string
+		set   func() func()
 	}{
-		{"local no allocation", e.local, noAlloc(localClaim("u1", localDev, 0)), "cxl.nri.io: claim demo/claim-u1: no allocation"},
-		{"local unknown device", e.local, localClaim("u1", "memdev-77", 0), "could not find allocatable device memdev-77 (pool node1)"},
+		{"local no allocation", e.local, noAlloc(localClaim("u1", localDev, 0)), "cxl.nri.io: claim demo/claim-u1: no allocation", nil},
+		{"local unknown device", e.local, localClaim("u1", "memdev-77", 0), "could not find allocatable device memdev-77 (pool node1)", nil},
 		{"local config", e.local, localClaim("u1", localDev, 0, badConfig),
-			`claim demo/claim-u1: request mem: MemoryConfig: device.mode: invalid mode "memory" (numa or dax)`},
+			`claim demo/claim-u1: request mem: MemoryConfig: device.mode: invalid mode "memory" (numa or dax)`, nil},
 		{"local shares of a sliced memdev", e.local, localClaim("u1", localDev, -1),
-			"claim demo/claim-u1: request mem: device 0xc100e2e1: allocated as a shared device, which it is not any more"},
+			"claim demo/claim-u1: request mem: device 0xc100e2e1: allocated as a shared device, which it is not any more", nil},
+		{"local size 0", e.local, localClaim("u1", localDev, 0), "cxl.nri.io: claim demo/claim-u1: device memdev-c100e2e1: size 0", sizeZero},
+		{"local memdevs not managed", e.local, localClaim("u1", localDev, 0),
+			"cxl.nri.io: claim demo/claim-u1: device memdev-c100e2e1: local memdevs are not managed (manageMemdevs: false)", unmanaged},
 		{"pool no allocation", e.pool, noAlloc(poolClaim("u1", "pooled0", poolExclusiveData)),
-			"cxl-pool.nri.io: claim demo/claim-u1: no allocation"},
-		{"pool no status data", e.pool, poolClaim("u1", "pooled0", ""), "cxl-pool.nri.io: claim demo/claim-u1: "},
+			"cxl-pool.nri.io: claim demo/claim-u1: no allocation", nil},
+		{"pool no status data", e.pool, poolClaim("u1", "pooled0", ""), "cxl-pool.nri.io: claim demo/claim-u1: ", nil},
 		{"pool config", e.pool, poolClaim("u1", "pooled0", poolExclusiveData, badConfig),
-			`cxl-pool.nri.io: claim demo/claim-u1: device pooled0 serial 0xc1ee0001: MemoryConfig: device.mode: invalid mode "memory"`},
+			`cxl-pool.nri.io: claim demo/claim-u1: device pooled0 serial 0xc1ee0001: MemoryConfig: device.mode: invalid mode "memory"`, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e.t = t
+			if tc.set != nil {
+				defer tc.set()()
+			}
 			e.mark()
 			wantErrText(t, e.prepare(tc.p, tc.claim).Err, tc.err)
 			e.wantNoCommands("refused")
