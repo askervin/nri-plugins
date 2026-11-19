@@ -840,7 +840,7 @@ func scanNames(t *testing.T, ctx context.Context, st *store.Store, w *provenance
 		BlockSize: func() (uint64, error) { return pubBlockSize, nil },
 	})
 	pubNoErr(t, p.Scan(ctx))
-	return pubNames(p.Devices()), p.config()
+	return pubNames(p.Devices()), p.opts.Config
 }
 
 // TestPoolSlicesSerials pins the scan input of the pool slices: a pool

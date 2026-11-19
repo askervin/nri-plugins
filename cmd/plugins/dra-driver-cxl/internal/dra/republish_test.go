@@ -96,7 +96,9 @@ func waitScans(t *testing.T, scans *atomic.Int32, want int32) {
 func TestRequestsAskForRescan(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec(), pmemSpec()}, poolSpec(serialPoolX))
 	takeTrigger(e.pub)
-	gen, scanned := e.pub.Generation(), e.pub.LastScan()
+	var scans atomic.Int32
+	e.setOnScan(func() { scans.Add(1) })
+	scanned := e.pub.LastScan()
 	noAllocation := &resourcev1.ResourceClaim{ObjectMeta: metav1.ObjectMeta{UID: "u8", Name: "claim-u8", Namespace: envNS}}
 	for _, step := range []struct {
 		what string
@@ -120,8 +122,8 @@ func TestRequestsAskForRescan(t *testing.T) {
 			t.Errorf("%s: rescan asked %v (not periodic %v), expected %v", step.what, asked, urgent, step.want)
 		}
 	}
-	if g := e.pub.Generation(); g != gen || !e.pub.LastScan().Equal(scanned) {
-		t.Fatalf("a request scanned: generation %d (was %d), last scan %v (was %v)", g, gen, e.pub.LastScan(), scanned)
+	if n := scans.Load(); n != 0 || !e.pub.LastScan().Equal(scanned) {
+		t.Fatalf("the requests scanned: %d scans, last scan %v (was %v)", n, e.pub.LastScan(), scanned)
 	}
 }
 
@@ -159,31 +161,28 @@ func TestUnchangedRescanWritesNoSlice(t *testing.T) {
 		}
 	}
 	// a change of the devices is written once
-	cfg := e.publishConfig()
-	cfg.PublishLeaseDevice = false
-	e.pub.SetConfig(cfg)
+	e.plugLocal(pmemSpec())
 	e.pub.Trigger(ctx, false)
-	waitNodeSlice(t, client, envNode, 5*time.Second, device.DRAMDeviceName, localDev)
+	waitNodeSlice(t, client, envNode, 5*time.Second, device.DRAMDeviceName, device.LeaseDeviceName, localDev, pmemDev)
 	if n := sliceWrites(client); n != 2 {
 		t.Fatalf("%d writes of the slice after a change of the devices, expected its create and one update", n)
 	}
 }
 
 // The last Unprepare of a memdev used shared that is not configured shared
-// any more has the memdev published again as a sliced one within the
-// rescan that it asks for: with no kernel event that the publisher sees
-// and no other rescan.
+// any more (the driver restarted with another configuration) has the
+// memdev published again as a sliced one within the rescan that it asks
+// for: with no kernel event that the publisher sees and no other rescan.
 func TestUnprepareRepublishesWithoutRescan(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{sharedSpec()})
 	e.setShared(serialShared)
-	client := e.publishing()
 	shared := MemdevDeviceName(serialShared)
 	e.mustPrepare(e.local, localClaim("u1", shared, -1, cfgDax))
 	// configured sliced: hidden while it is used shared
 	e.mu.Lock()
 	delete(e.shared, serialShared)
 	e.mu.Unlock()
-	e.pub.SetConfig(e.publishConfig())
+	client := e.publishing()
 	e.pub.Rescan(context.Background(), false)
 	waitNodeSlice(t, client, envNode, 5*time.Second, device.DRAMDeviceName, device.LeaseDeviceName)
 	e.mustUnprepare(e.local, "u1")

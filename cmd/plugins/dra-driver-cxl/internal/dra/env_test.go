@@ -373,9 +373,7 @@ func (e *driverEnv) detected() *kernel.Snapshot {
 // rescan sets the devices of the publisher as a scan of the node does.
 func (e *driverEnv) rescan() {
 	e.t.Helper()
-	cfg := e.publishConfig()
-	e.pub.SetConfig(cfg)
-	mustOK(e.t, e.pub.ScanWith(context.Background(), cfg, e.pool.Serials()))
+	mustOK(e.t, e.pub.ScanWith(context.Background(), e.publishConfig(), e.pool.Serials()))
 }
 
 // addRegion adds a region that existed before the driver, on node, to the

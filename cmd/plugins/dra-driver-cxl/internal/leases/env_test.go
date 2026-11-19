@@ -385,9 +385,7 @@ func (e *leaseEnv) detected() *kernel.Snapshot {
 // rescan sets the devices of the publisher as a scan of the node does.
 func (e *leaseEnv) rescan() {
 	e.t.Helper()
-	cfg := e.publishConfig()
-	e.pub.SetConfig(cfg)
-	mustOK(e.t, e.pub.ScanWith(context.Background(), cfg, e.pool.Serials()))
+	mustOK(e.t, e.pub.ScanWith(context.Background(), e.publishConfig(), e.pool.Serials()))
 }
 
 // revoke revokes the NUMA node that a grant of a companion claim lends,

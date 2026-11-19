@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -609,11 +610,17 @@ func TestRescanBeforeStart(t *testing.T) {
 // first one; a scan that is not published leaves it.
 func TestPublishedTable(t *testing.T) {
 	client := sliceTestClient(pubNode, nil)
+	var dram atomic.Bool
 	p := pubPublisher(t, PublishOptions{
-		Config:   PublishConfig{IgnoreDRAMNodes: true, PublishLeaseDevice: true},
+		Config:   PublishConfig{PublishLeaseDevice: true},
 		NodeName: pubNode,
 		Client:   client,
-		Scan:     pubNoScan,
+		Scan: func(context.Context) (*kernel.Snapshot, error) {
+			if !dram.Load() {
+				return &kernel.Snapshot{}, nil
+			}
+			return &kernel.Snapshot{NumaNodes: []kernel.NumaNode{{ID: 0, HasMemory: true, MemTotal: 8 << 30}}}, nil
+		},
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -623,14 +630,14 @@ func TestPublishedTable(t *testing.T) {
 	}
 	pubNoErr(t, p.Start(ctx))
 	defer p.Stop()
-	// a scan without the lease device, not published
-	p.SetConfig(PublishConfig{IgnoreDRAMNodes: true})
+	// a scan that finds the DRAM device, not published
+	dram.Store(true)
 	pubNoErr(t, p.Scan(ctx))
-	if p.Devices()[device.LeaseDeviceName] != nil || p.Published()[device.LeaseDeviceName] == nil {
+	if p.Devices()[device.DRAMDeviceName] == nil || p.Published()[device.DRAMDeviceName] != nil {
 		t.Fatalf("scanned %v, published %v", p.Devices(), p.Published())
 	}
 	p.Rescan(ctx, false)
-	if p.Published()[device.LeaseDeviceName] != nil {
+	if p.Published()[device.DRAMDeviceName] == nil {
 		t.Fatalf("published %v after the rescan", p.Published())
 	}
 }

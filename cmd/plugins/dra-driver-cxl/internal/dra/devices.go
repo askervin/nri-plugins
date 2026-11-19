@@ -25,7 +25,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/dynamic-resource-allocation/resourceslice"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/cpuset"
 
@@ -709,11 +708,6 @@ func resources(devs DevicesInfo) []resourcev1.Device {
 		}
 	}
 	return out
-}
-
-// equalDevices tells whether two lists of devices are the same.
-func equalDevices(a, b []resourcev1.Device) bool {
-	return resourceslice.DevicesDeepEqual(a, b)
 }
 
 // leaseDevice returns the ResourceSlice device of the lease device: no

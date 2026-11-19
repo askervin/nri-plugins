@@ -266,16 +266,7 @@ func (e *localTestEnv) detected() *kernel.Snapshot {
 // rescan publishes the local memdevs as a scan of the publisher does.
 func (e *localTestEnv) rescan() {
 	e.t.Helper()
-	cfg := e.config.publishConfig()
-	e.publisher = e.publisherOf(cfg)
-	noErr(e.t, e.publisher.ScanWith(context.Background(), cfg, e.poolSerials))
-}
-
-// publisherOf returns the publisher of the env with the configuration cfg
-// (the configuration of the env may have changed since the start).
-func (e *localTestEnv) publisherOf(cfg dra.PublishConfig) *dra.Publisher {
-	e.publisher.SetConfig(cfg)
-	return e.publisher
+	noErr(e.t, e.publisher.ScanWith(context.Background(), e.config.publishConfig(), e.poolSerials))
 }
 
 // prepare prepares a claim on the node state, as the kubelet plugin does,

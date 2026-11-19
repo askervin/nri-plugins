@@ -39,15 +39,14 @@ import (
 //
 // Identity: one per process, of the node.
 //
-// States: the table, the devices of the last scan with a generation that
-// counts its changes; not started (the scans set the table, nothing is
-// published) and started (every scan is published).
+// States: the table, the devices of the last scan; not started (the scans
+// set the table, nothing is published) and started (every scan is
+// published). The configuration is that of NewPublisher.
 //
 // Transitions: a scan (at the start, then on udev events, the watch's
 // ticks and after the Prepares and Unprepares that changed the records,
 // one at a time from the list of the pool slices to the publish) sets the
-// table; the generation grows when its devices change. A publish of an
-// unchanged table writes nothing to the API server.
+// table. A publish of an unchanged table writes nothing to the API server.
 //
 // Invariants: a pool device and a HELD memdev are never published as local
 // ones; the devices are sorted by name, so their order is not a change; no
@@ -70,10 +69,8 @@ type Publisher struct {
 	devices DevicesInfo
 	// published is the table of the last publication, nil before the
 	// first.
-	published  DevicesInfo
-	generation uint64
-	names      []string
-	slices     *nodeResourceSlices // nil before Start
+	published DevicesInfo
+	slices    *nodeResourceSlices // nil before Start
 
 	// triggerMu guards the fields below: a leaf lock.
 	triggerMu     sync.Mutex
@@ -85,7 +82,8 @@ type Publisher struct {
 
 // PublishOptions are the settings of a Publisher.
 type PublishOptions struct {
-	// Config are the settings of the configuration of the driver.
+	// Config are the settings of the configuration of the driver, fixed
+	// for the life of the publisher.
 	Config PublishConfig
 	// NodeName is the node of the slice; Client publishes it, OnError gets
 	// the errors of publishing (marked recoverable).
@@ -146,22 +144,6 @@ func NewPublisher(opts PublishOptions) (*Publisher, error) {
 	return &Publisher{opts: opts, devices: DevicesInfo{}, trigger: make(chan struct{}, 1)}, nil
 }
 
-// SetConfig sets the configuration of the next scans.
-func (p *Publisher) SetConfig(cfg PublishConfig) {
-	p.scanMu.Lock()
-	defer p.scanMu.Unlock()
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.opts.Config = cfg
-}
-
-// config returns the configuration of the scans.
-func (p *Publisher) config() PublishConfig {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.opts.Config
-}
-
 // SetOnError sets the handler of the errors of publishing (marked
 // recoverable); it takes effect at Start.
 func (p *Publisher) SetOnError(onError func(ctx context.Context, err error, msg string)) {
@@ -192,34 +174,7 @@ func (p *Publisher) Devices() DevicesInfo {
 func (p *Publisher) SetDevices(devs DevicesInfo) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.setLocked(devs)
-}
-
-// setLocked sets the devices of the table and counts a change of them.
-// Called with p.mu held.
-func (p *Publisher) setLocked(devs DevicesInfo) {
-	names := slices.Sorted(maps.Keys(devs))
-	if !slices.Equal(names, p.names) || !sameDevices(p.devices, devs) {
-		p.generation++
-	}
-	p.devices, p.names = devs, names
-}
-
-// sameDevices tells whether two tables publish the same devices.
-func sameDevices(a, b DevicesInfo) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	ra, rb := resources(a), resources(b)
-	return equalDevices(ra, rb)
-}
-
-// Generation returns the generation of the table: it grows with every
-// change of its devices.
-func (p *Publisher) Generation() uint64 {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.generation
+	p.devices = devs
 }
 
 // LastScan returns the time of the last scan, or of the start.
@@ -350,9 +305,8 @@ func (p *Publisher) Rescan(ctx context.Context, periodic bool) {
 		return
 	}
 	p.mu.Lock()
-	old := p.names
-	p.setLocked(devs)
-	changed := !slices.Equal(old, p.names)
+	changed := !slices.Equal(slices.Sorted(maps.Keys(p.devices)), slices.Sorted(maps.Keys(devs)))
+	p.devices = devs
 	started := p.slices != nil
 	p.mu.Unlock()
 	if periodic && changed {
@@ -457,7 +411,7 @@ func (p *Publisher) ScanInput(ctx context.Context) (PublishConfig, map[uint64]bo
 	for s := range remote {
 		serials[s] = true
 	}
-	cfg := p.config()
+	cfg := p.opts.Config
 	if known || !cfg.ManageMemdevs {
 		return cfg, serials
 	}
@@ -470,7 +424,7 @@ func (p *Publisher) ScanInput(ctx context.Context) (PublishConfig, map[uint64]bo
 // have, the memory block size and the probed usable sizes; nil when the
 // local memdevs are not managed.
 func (p *Publisher) LocalSnapshot() *LocalSnapshot {
-	if !p.config().ManageMemdevs {
+	if !p.opts.Config.ManageMemdevs {
 		return nil
 	}
 	snap := &LocalSnapshot{Uses: map[uint64]LocalUse{}, Probed: map[uint64]uint64{}}
