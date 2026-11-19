@@ -125,3 +125,21 @@ func shared(t *testing.T, a, b reflect.Value, path string) {
 		}
 	}
 }
+
+// TestFirstDax: the first dax device of a region is its whole device, else
+// its daxN.0, "" for none.
+func TestFirstDax(t *testing.T) {
+	for _, c := range []struct {
+		devs []state.DaxDevice
+		want string
+	}{
+		{[]state.DaxDevice{{Name: "dax0.0"}, {Name: "dax0.1", Whole: true}}, "dax0.1"},
+		{[]state.DaxDevice{{Name: "dax0.1"}, {Name: "dax0.0"}}, "dax0.0"},
+		{[]state.DaxDevice{{Name: "dax0.1"}}, ""},
+		{nil, ""},
+	} {
+		if got := (&state.Region{DaxDevices: c.devs}).FirstDax(); got != c.want {
+			t.Errorf("%+v: %q, want %q", c.devs, got, c.want)
+		}
+	}
+}
