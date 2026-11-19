@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
@@ -72,7 +73,15 @@ func (b *Broker) reconcile() {
 	containers := b.containers
 	b.mu.Unlock()
 	b.failUnrestored()
+	// the leases before the list: the companion of a lease past CREATING
+	// is in it
 	leases := b.records().Leases
+	pods, err := b.companionPods()
+	if err != nil {
+		klog.Warningf("lease broker: listing companion pods: %v", err)
+	}
+	// requesterDone of the pods of stopped containers, by pod UID
+	done := map[string]bool{}
 
 	for i := range leases {
 		l := &leases[i]
@@ -90,12 +99,17 @@ func (b *Broker) reconcile() {
 			}
 			continue
 		}
-		if gone, reason := b.companionGone(l.Pod.Namespace, CompanionName(l.ID)); gone {
+		if gone, reason := companionGone(pods, err, l.Pod.Namespace, CompanionName(l.ID)); gone {
 			b.startRelease(l.ID, reason, state.TriggerReconcile)
 			continue
 		}
 		if containers != nil && !containers.Running(l.Pod.UID, l.Container) {
-			if b.requesterDone(l.Pod) {
+			d, ok := done[l.Pod.UID]
+			if !ok {
+				d = b.requesterDone(l.Pod)
+				done[l.Pod.UID] = d
+			}
+			if d {
 				b.startRelease(l.ID, "requester container gone", state.TriggerReconcile)
 			}
 			continue
@@ -104,7 +118,9 @@ func (b *Broker) reconcile() {
 			b.relendContainer(l.Pod.UID, l.Container)
 		}
 	}
-	b.deleteOrphans()
+	if err == nil {
+		b.deleteOrphans(pods)
+	}
 	b.sweepFsDirs(state.TriggerReconcile)
 	b.listenAgain()
 }
@@ -144,17 +160,38 @@ func (b *Broker) listenAgain() {
 	})
 }
 
-// companionGone reports whether a companion pod no longer holds its claim:
-// deleted, being deleted or finished (evicted), and why.
-func (b *Broker) companionGone(ns, name string) (bool, string) {
+// companionPods returns the companion pods of the node: the pods with the
+// node and lease labels, by namespace and name.
+func (b *Broker) companionPods() (map[types.NamespacedName]*corev1.Pod, error) {
 	ctx, cancel := b.apiContext()
 	defer cancel()
-	p, err := b.opts.Client.CoreV1().Pods(ns).Get(ctx, name, metav1.GetOptions{})
+	list, err := b.opts.Client.CoreV1().Pods("").List(ctx, companionSelector(b.opts.NodeName))
+	if err != nil {
+		return nil, err
+	}
+	pods := make(map[types.NamespacedName]*corev1.Pod, len(list.Items))
+	for i := range list.Items {
+		p := &list.Items[i]
+		pods[types.NamespacedName{Namespace: p.Namespace, Name: p.Name}] = p
+	}
+	return pods, nil
+}
+
+// companionSelector returns the options that list the companions of node.
+func companionSelector(node string) metav1.ListOptions {
+	return metav1.ListOptions{LabelSelector: device.NodeLabel + "=" + node + "," + device.LeaseLabel}
+}
+
+// companionGone reports whether a companion pod no longer holds its claim:
+// not in the companion pods, being deleted or finished (evicted), and why;
+// false if the pods were not listed (listErr).
+func companionGone(pods map[types.NamespacedName]*corev1.Pod, listErr error, ns, name string) (bool, string) {
+	p := pods[types.NamespacedName{Namespace: ns, Name: name}]
 	switch {
-	case apierrors.IsNotFound(err):
-		return true, "companion pod gone"
-	case err != nil:
+	case listErr != nil:
 		return false, ""
+	case p == nil:
+		return true, "companion pod gone"
 	case p.DeletionTimestamp != nil:
 		return true, "companion pod being deleted"
 	case p.Status.Phase == corev1.PodFailed || p.Status.Phase == corev1.PodSucceeded:
@@ -239,18 +276,18 @@ func (b *Broker) relendContainer(podUID, container string) {
 	}
 }
 
-// deleteOrphans deletes the companion pods and claims of this node that
-// have no lease: the objects with the node and lease labels whose name is
-// cxl-lease-<lease label>. A lost store does not know the leases of the
-// node, so nothing is deleted then.
-func (b *Broker) deleteOrphans() {
+// deleteOrphans deletes the companion pods (of pods) and claims of this
+// node that have no lease: the objects with the node and lease labels
+// whose name is cxl-lease-<lease label>. A lost store does not know the
+// leases of the node, so nothing is deleted then.
+func (b *Broker) deleteOrphans(pods map[types.NamespacedName]*corev1.Pod) {
 	if b.st.Lost() != nil {
 		klog.V(3).Infof("lease broker: the lease table was not decoded, keeping the companions of the node")
 		return
 	}
 	ctx, cancel := b.apiContext()
 	defer cancel()
-	sel := metav1.ListOptions{LabelSelector: device.NodeLabel + "=" + b.opts.NodeName + "," + device.LeaseLabel}
+	sel := companionSelector(b.opts.NodeName)
 	// orphan tells whether an object is a companion without a lease.
 	orphan := func(o metav1.ObjectMeta) bool {
 		id := o.Labels[device.LeaseLabel]
@@ -259,15 +296,11 @@ func (b *Broker) deleteOrphans() {
 		}
 		return b.records().Lease(id) == nil
 	}
-	if pods, err := b.opts.Client.CoreV1().Pods("").List(ctx, sel); err != nil {
-		klog.Warningf("lease broker: listing companion pods: %v", err)
-	} else {
-		for _, p := range pods.Items {
-			if orphan(p.ObjectMeta) {
-				klog.Infof("lease broker: deleting companion pod %s/%s without a lease", p.Namespace, p.Name)
-				if err := b.opts.Client.CoreV1().Pods(p.Namespace).Delete(ctx, p.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-					klog.Warningf("lease broker: %v", err)
-				}
+	for _, p := range pods {
+		if orphan(p.ObjectMeta) {
+			klog.Infof("lease broker: deleting companion pod %s/%s without a lease", p.Namespace, p.Name)
+			if err := b.opts.Client.CoreV1().Pods(p.Namespace).Delete(ctx, p.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+				klog.Warningf("lease broker: %v", err)
 			}
 		}
 	}

@@ -59,7 +59,7 @@ func TestParseFlagsDefaults(t *testing.T) {
 		LeaseCLI:            "/usr/local/bin/cxl-request",
 		LeaseWait:           120 * time.Second,
 		LeaseCompanionImage: "registry.k8s.io/pause:3.10",
-		LeaseLimits:         leases.Limits{Connections: 64, Idle: 10 * time.Minute, LeasesPerPod: 64},
+		LeaseLimits:         leases.Limits{Connections: 64, Idle: 10 * time.Minute, LeasesPerPod: 64, RequestsPerMinute: 32},
 	}
 	if !reflect.DeepEqual(f, want) {
 		t.Fatalf("flags\n%+v, expected\n%+v", f, want)
@@ -76,25 +76,26 @@ func TestParseFlagsDefaults(t *testing.T) {
 
 func TestParseFlagsEnvironment(t *testing.T) {
 	env := map[string]string{
-		"NODE_NAME":             "n1",
-		"KUBECONFIG":            "/kubeconfig",
-		"KUBE_API_QPS":          "7.5",
-		"KUBE_API_BURST":        "20",
-		"CDI_ROOT":              "/etc/cdi",
-		"CONFIG_STR":            "{}",
-		"NRI_PLUGIN_NAME":       "cxl",
-		"NRI_PLUGIN_IDX":        "40",
-		"NRI_SOCKET":            "/nri.sock",
-		"POOL_DRIVER_NAME":      "",
-		"POOL_PREPARE_TIMEOUT":  "1m",
-		"LEASES":                "false",
-		"LEASE_CLI":             "/plugins/cxl-request",
-		"LEASE_CLI_SOURCE":      "/bin/cxl-request",
-		"LEASE_WAIT":            "5s",
-		"LEASE_COMPANION_IMAGE": "pause:test",
-		"LEASE_MAX_CONNECTIONS": "8",
-		"LEASE_IDLE_TIMEOUT":    "1h",
-		"LEASE_MAX_PER_POD":     "4",
+		"NODE_NAME":                 "n1",
+		"KUBECONFIG":                "/kubeconfig",
+		"KUBE_API_QPS":              "7.5",
+		"KUBE_API_BURST":            "20",
+		"CDI_ROOT":                  "/etc/cdi",
+		"CONFIG_STR":                "{}",
+		"NRI_PLUGIN_NAME":           "cxl",
+		"NRI_PLUGIN_IDX":            "40",
+		"NRI_SOCKET":                "/nri.sock",
+		"POOL_DRIVER_NAME":          "",
+		"POOL_PREPARE_TIMEOUT":      "1m",
+		"LEASES":                    "false",
+		"LEASE_CLI":                 "/plugins/cxl-request",
+		"LEASE_CLI_SOURCE":          "/bin/cxl-request",
+		"LEASE_WAIT":                "5s",
+		"LEASE_COMPANION_IMAGE":     "pause:test",
+		"LEASE_MAX_CONNECTIONS":     "8",
+		"LEASE_IDLE_TIMEOUT":        "1h",
+		"LEASE_MAX_PER_POD":         "4",
+		"LEASE_REQUESTS_PER_MINUTE": "6",
 	}
 	f, err := testParseFlags(nil, env)
 	if err != nil {
@@ -117,7 +118,7 @@ func TestParseFlagsEnvironment(t *testing.T) {
 		LeaseCLISource:      "/bin/cxl-request",
 		LeaseWait:           5 * time.Second,
 		LeaseCompanionImage: "pause:test",
-		LeaseLimits:         leases.Limits{Connections: 8, Idle: time.Hour, LeasesPerPod: 4},
+		LeaseLimits:         leases.Limits{Connections: 8, Idle: time.Hour, LeasesPerPod: 4, RequestsPerMinute: 6},
 	}
 	if !reflect.DeepEqual(f, want) {
 		t.Fatalf("flags\n%+v, expected\n%+v", f, want)

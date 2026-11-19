@@ -144,6 +144,7 @@ var flagEnvs = []struct{ flag, env string }{
 	{"lease-max-connections", "LEASE_MAX_CONNECTIONS"},
 	{"lease-idle-timeout", "LEASE_IDLE_TIMEOUT"},
 	{"lease-max-per-pod", "LEASE_MAX_PER_POD"},
+	{"lease-requests-per-minute", "LEASE_REQUESTS_PER_MINUTE"},
 }
 
 // flagAliases maps short flags to their long names.
@@ -178,6 +179,7 @@ func parseFlags(fs *flag.FlagSet, args []string, lookupEnv func(string) (string,
 	fs.IntVar(&f.LeaseLimits.Connections, "lease-max-connections", leases.DefaultMaxConnections, "open connections of the lease socket of a lease claim")
 	fs.DurationVar(&f.LeaseLimits.Idle, "lease-idle-timeout", leases.DefaultIdle, "how long a connection of a lease socket may stay without a request")
 	fs.IntVar(&f.LeaseLimits.LeasesPerPod, "lease-max-per-pod", leases.DefaultMaxLeasesPerPod, "leases of the containers of a pod")
+	fs.IntVar(&f.LeaseLimits.RequestsPerMinute, "lease-requests-per-minute", leases.DefaultRequestsPerMinute, "lease requests of a lease claim per minute, also their burst")
 	fs.BoolVar(&f.NewState, "new-state", false, "start with a new state.json when neither state.json nor state.json.prev can be read")
 	f.Provenance.Register(fs)
 	for _, fe := range flagEnvs {

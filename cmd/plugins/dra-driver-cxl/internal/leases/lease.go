@@ -344,9 +344,8 @@ func (b *Broker) release(l *state.Lease) {
 			return // continued by the next plugin instance
 		case <-time.After(delay):
 		}
-		if delay < 5*time.Second {
-			delay *= 2
-		}
+		// a bind can stay busy as long as a file of it is mapped
+		delay = min(2*delay, b.t.Reconcile)
 	}
 	if b.removeLease(l) {
 		klog.Infof("lease broker: lease %s: released", l.ID)

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/flowcontrol"
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
@@ -258,10 +259,33 @@ func (b *Broker) authenticate(claimUID string, proc *peer, procErr error) (Reque
 	case err != nil:
 		return Requester{}, fmt.Errorf("%w (pid %d: %v)", errNotOurPod, pid, err)
 	}
-	if !hasPod(lc, who.Pod.UID) && !b.refreshClaimPods(lc, who.Pod.UID) {
-		return Requester{}, fmt.Errorf("%w (pid %d is in %s/%s/%s)", errNotOurPod, pid, who.Pod.Namespace, who.Pod.Name, who.Container)
+	if !hasPod(lc, who.Pod.UID) {
+		if !b.allowRequest(claimUID) {
+			return Requester{}, errTooManyRequests
+		}
+		if !b.refreshClaimPods(lc, who.Pod.UID) {
+			return Requester{}, fmt.Errorf("%w (pid %d is in %s/%s/%s)", errNotOurPod, pid, who.Pod.Namespace, who.Pod.Name, who.Container)
+		}
 	}
 	return who, nil
+}
+
+// allowRequest takes a token from the bucket of a lease claim and reports
+// whether it had one; true for a claim without a listener. The bucket holds
+// Limits.RequestsPerMinute tokens and gets as many per minute.
+func (b *Broker) allowRequest(claimUID string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	bucket := b.requests[claimUID]
+	if bucket == nil {
+		if b.listeners[claimUID] == nil {
+			return true // closed: the request is refused later
+		}
+		n := b.opts.Limits.RequestsPerMinute
+		bucket = flowcontrol.NewTokenBucketPassiveRateLimiter(float32(n)/60, n)
+		b.requests[claimUID] = bucket
+	}
+	return bucket.TryAccept()
 }
 
 // reauthenticate returns the identity of a later request of a connection:
@@ -316,6 +340,9 @@ func (b *Broker) refreshClaimPods(lc *state.LeaseClaim, podUID string) bool {
 // handle runs one authenticated request. It returns the response and the
 // device whose fd goes with it.
 func (b *Broker) handle(claimUID string, who Requester, req *api.Request) (*api.Response, leaseFd) {
+	if req.Op == api.OpRequest && !b.allowRequest(claimUID) {
+		return &api.Response{Error: errTooManyRequests.Error()}, leaseFd{}
+	}
 	if err := req.Validate(); err != nil {
 		return &api.Response{Lease: req.Lease, Error: err.Error()}, leaseFd{}
 	}

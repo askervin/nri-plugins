@@ -323,6 +323,7 @@ The plugin refuses further requests that only it can judge:
 | `--source pool`, or the serial of a pool device, while the pool driver is disabled (a request without `--source` is served by local devices then) | `pool driver disabled (--pool-driver-name)` |
 | `--mode fs` with the `--name` (or default name) of another lease of the lease claim, in any state | `name "..." is in use by lease <id>` |
 | any request while NRI is not connected | `lending unavailable: NRI not connected` |
+| `request` beyond `--lease-requests-per-minute` of the lease claim (the claim has a bucket of that many requests, refilled at that rate per minute); also any request of a pod that the plugin has not yet seen in the claim | `too many requests (--lease-requests-per-minute)` |
 | `fd` on a lease in mode `numa` or `fs` | `lease <id> is not a dax or block lease; use env` |
 
 A serial that names a shared device of volatile memory makes the mode
@@ -655,7 +656,8 @@ and cannot make it the companion of a lease it did not request.
   5 s. It does not wait for the companions to be gone: kubelet unprepares
   the companion claim of a local lease through the same driver
   (`cxl.nri.io`), one call at a time. A lease stays Releasing until its
-  companion pod and claim are gone, also across a plugin restart.
+  companion pod and claim are gone, also across a plugin restart. The
+  plugin checks them at growing intervals, at most 60 s apart.
 - Companion pod deleted or evicted behind the plugin's back: the driver
   of the device revokes before it releases the device; the lease becomes
   Failed and is dropped by the reconcile.
@@ -667,6 +669,8 @@ and cannot make it the companion of a lease it did not request.
   lacks is updated again), and deletes the pods and claims labelled
   `cxl.nri.io/node=<node>` and `cxl.nri.io/lease` that are named
   `cxl-lease-<value of the lease label>` and have no lease in the table.
+  The reconcile lists these labelled pods and claims once. A companion pod
+  without the labels counts as gone.
 - Plugin restart: the sockets of the lease claims are created again in
   the mounted directories, leases continue.
 - Node reboot: the lease table records the boot id of the kernel

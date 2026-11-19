@@ -29,6 +29,7 @@ import (
 
 	resourcev1 "k8s.io/api/resource/v1"
 	coreclientset "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/util/flowcontrol"
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
@@ -64,6 +65,7 @@ var (
 	errLendingUnavailable = lend.ErrLendingUnavailable
 	errNotOurPod          = errors.New("not a container of the claim's pod")
 	errPoolDisabled       = errors.New("pool driver disabled (--pool-driver-name)")
+	errTooManyRequests    = errors.New("too many requests (--lease-requests-per-minute)")
 )
 
 // Timeouts are the waits and periods of the broker; zero for the
@@ -150,6 +152,9 @@ type Limits struct {
 	// LeasesPerPod is the number of leases of a pod; 0:
 	// DefaultMaxLeasesPerPod.
 	LeasesPerPod int
+	// RequestsPerMinute is the rate of the lease requests of a lease
+	// claim, and their burst; 0: DefaultRequestsPerMinute.
+	RequestsPerMinute int
 }
 
 const (
@@ -161,6 +166,9 @@ const (
 	DefaultIdle = 10 * time.Minute
 	// DefaultMaxLeasesPerPod is the default limit of the leases of a pod.
 	DefaultMaxLeasesPerPod = 64
+	// DefaultRequestsPerMinute is the default rate of the lease requests
+	// of a lease claim.
+	DefaultRequestsPerMinute = 32
 )
 
 // withDefaults returns the limits with the defaults for the zero ones.
@@ -168,6 +176,7 @@ func (l Limits) withDefaults() Limits {
 	l.Connections = cmp.Or(l.Connections, DefaultMaxConnections)
 	l.Idle = cmp.Or(l.Idle, DefaultIdle)
 	l.LeasesPerPod = cmp.Or(l.LeasesPerPod, DefaultMaxLeasesPerPod)
+	l.RequestsPerMinute = cmp.Or(l.RequestsPerMinute, DefaultRequestsPerMinute)
 	return l
 }
 
@@ -224,6 +233,9 @@ type Broker struct {
 	// open connections.
 	listeners map[string]*net.UnixListener
 	conns     map[string]map[*net.UnixConn]bool
+	// requests are the token buckets of the lease claims (uid) for the
+	// requests that make API calls.
+	requests map[string]flowcontrol.PassiveRateLimiter
 	// specHashes are the hashes of the specs of the companion claims that
 	// the broker created, by lease (lend.SpecHash).
 	specHashes map[string]string
@@ -275,6 +287,7 @@ func New(opts Options) (*Broker, error) {
 		t:          opts.Timeouts.withDefaults(),
 		listeners:  map[string]*net.UnixListener{},
 		conns:      map[string]map[*net.UnixConn]bool{},
+		requests:   map[string]flowcontrol.PassiveRateLimiter{},
 		specHashes: map[string]string{},
 		releasing:  map[string]bool{},
 		removing:   map[string]chan struct{}{},

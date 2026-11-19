@@ -1402,6 +1402,48 @@ func TestPersistBounded(t *testing.T) {
 	}
 }
 
+// The reconcile releases the leases whose companion pod is gone, being
+// deleted or finished. One list of the companion pods answers for all
+// leases.
+func TestReconcileCompanionGone(t *testing.T) {
+	e := brokerEnv(t)
+	e.openClaim()
+	e.start()
+	kept, gone, deleting, failed := e.readyNUMA(), e.readyNUMA(), e.readyNUMA(), e.readyNUMA()
+	calls := len(e.client.Actions())
+	e.b.reconcile()
+	var got []string
+	for _, a := range e.client.Actions()[calls:] {
+		got = append(got, a.GetVerb()+" "+a.GetResource().Resource)
+	}
+	if want := []string{"list pods", "list resourceclaims"}; !slices.Equal(got, want) {
+		t.Fatalf("API calls of the reconcile %v, expected %v", got, want)
+	}
+
+	ctx := context.Background()
+	pods := e.client.CoreV1().Pods(envNS)
+	mustOK(t, pods.Delete(ctx, CompanionName(gone), metav1.DeleteOptions{}))
+	p, err := pods.Get(ctx, CompanionName(deleting), metav1.GetOptions{})
+	mustOK(t, err)
+	p.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+	_, err = pods.Update(ctx, p, metav1.UpdateOptions{})
+	mustOK(t, err)
+	p, err = pods.Get(ctx, CompanionName(failed), metav1.GetOptions{})
+	mustOK(t, err)
+	p.Status.Phase = corev1.PodFailed
+	_, err = pods.UpdateStatus(ctx, p, metav1.UpdateOptions{})
+	mustOK(t, err)
+	e.b.reconcile()
+	e.waitState(gone, state.LeaseNone)
+	e.waitState(failed, state.LeaseNone)
+	if l := e.lease(deleting); l == nil || l.State != state.LeaseReleasing {
+		t.Fatalf("lease of a companion being deleted %+v", l)
+	}
+	if l := e.lease(kept); l == nil || l.State != state.LeaseReady {
+		t.Fatalf("lease of a running companion %+v", l)
+	}
+}
+
 // The reconcile releases a FAILED lease whose companion still runs: its
 // companion is deleted and the lease goes.
 func TestReconcileReleasesFailedLease(t *testing.T) {
@@ -1587,6 +1629,37 @@ func TestLimits(t *testing.T) {
 	start := time.Now()
 	if data, err := io.ReadAll(r1); err != nil || len(data) != 0 || time.Since(start) > 4*time.Second {
 		t.Fatalf("an idle connection: %q %v after %v", data, err, time.Since(start))
+	}
+}
+
+// A lease claim answers as many lease requests at once as its bucket
+// holds, then "too many requests"; other requests are answered. A pod that
+// is not in the claim's record takes from the bucket before the claim is
+// read.
+func TestTooManyRequests(t *testing.T) {
+	const tooMany = "too many requests (--lease-requests-per-minute)"
+	e := brokerEnv(t)
+	e.opts = func(o *Options) { o.Limits = Limits{RequestsPerMinute: 2} }
+	e.restart()
+	e.openClaim()
+	e.start()
+	for i, want := range []string{"", "", tooMany} {
+		if r, _ := e.call(api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s"}); r.Error != want {
+			t.Fatalf("request %d: %+v", i, r)
+		}
+	}
+	if r, _ := e.call(api.Request{Op: api.OpList}); r.Error != "" {
+		t.Fatalf("list: %+v", r)
+	}
+	e.ctrs.setPeer(&Requester{Pod: state.PodRef{Namespace: envNS, Name: "second", UID: "pod-uid-2"}, Container: "x"})
+	calls := len(e.client.Actions())
+	if r, _ := e.call(api.Request{Op: api.OpList}); r.Error != tooMany {
+		t.Fatalf("list of a pod not in the record: %+v", r)
+	}
+	for _, a := range e.client.Actions()[calls:] {
+		if a.GetResource().Resource == "resourceclaims" {
+			t.Fatalf("the lease claim read for a pod beyond the bucket: %v", a)
+		}
 	}
 }
 
