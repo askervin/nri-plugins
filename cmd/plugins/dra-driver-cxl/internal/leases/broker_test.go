@@ -1495,26 +1495,31 @@ func TestLimits(t *testing.T) {
 	e.restart()
 	e.openClaim()
 	e.start()
+	// the connection of a call is gone: the next one is within the limit
+	noConns := func() {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+			e.b.mu.Lock()
+			n := len(e.b.conns[envLeaseClaim])
+			e.b.mu.Unlock()
+			if n == 0 {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%d connections left", n)
+			}
+		}
+	}
 	r, _ := e.call(api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s"})
 	if r.Error != "" {
 		t.Fatalf("request %+v", r)
 	}
+	noConns()
 	resp, _ := e.call(api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s"})
 	if resp.Error != "pod demo/borrower has 1 leases, the limit of --lease-max-per-pod" {
 		t.Fatalf("a request beyond the leases of the pod %+v", resp)
 	}
-	// the connections of the calls are gone
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		e.b.mu.Lock()
-		n := len(e.b.conns[envLeaseClaim])
-		e.b.mu.Unlock()
-		if n == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d connections left", n)
-		}
-	}
+	noConns()
 	c1, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: e.sock(), Net: "unix"})
 	mustOK(t, err)
 	defer func() { _ = c1.Close() }()
