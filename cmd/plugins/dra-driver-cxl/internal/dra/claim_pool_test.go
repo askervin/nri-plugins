@@ -112,6 +112,37 @@ func TestPoolNUMATwoClaims(t *testing.T) {
 	e.wantClean()
 }
 
+// A prepared pool claim over restarts: the start writes its CDI device,
+// a Prepare again returns its result without a command; a memdev gone
+// while the drivers are down keeps its claim until the Unprepare, and its
+// hollow region while its memory is online.
+func TestPoolRestart(t *testing.T) {
+	e := newDriverEnv(t, nil, poolSpec(serialPoolX))
+	claim := poolClaim("u1", "pooled0", poolExclusiveData)
+	res := e.mustPrepare(e.pool, claim)
+	mustOK(t, os.RemoveAll(e.cdiDir))
+	e.restart()
+	if e.cdiDevice(e.pool, "claim-u1-0") == nil {
+		t.Fatal("no CDI device after the restart")
+	}
+	e.mark()
+	if again := e.mustPrepare(e.pool, claim); !reflect.DeepEqual(again, res) {
+		t.Fatalf("result %+v, expected %+v", again, res)
+	}
+	e.wantNoCommands("a Prepare again")
+	e.k.Unplug(serialPoolX)
+	e.restart()
+	e.wantState(e.pool, "u1", state.PreparationPrepared)
+	if !e.pool.Serials()[serialPoolX] {
+		t.Fatalf("serials %v", e.pool.Serials())
+	}
+	e.mustUnprepare(e.pool, "u1")
+	r := e.records()
+	if len(r.Preparations)+len(r.Grants) > 0 || len(r.Regions) != 1 || r.Regions[0].State != state.RegionHollowOwned {
+		t.Fatalf("records left: preparations %+v grants %+v regions %+v", r.Preparations, r.Grants, r.Regions)
+	}
+}
+
 // A pool device of volatile memory in mode dax, and a shared one used by
 // two claims: devdax devices as CDI device nodes, read-only by the
 // configuration. A claim of either device that does not fit how it is

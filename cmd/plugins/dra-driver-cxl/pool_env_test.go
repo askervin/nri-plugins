@@ -21,7 +21,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -40,7 +39,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
-	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -144,72 +142,6 @@ func (e *poolTestEnv) preparation(uid string) *state.Preparation {
 	return e.records().Preparation(device.PoolDriverName, uid)
 }
 
-// poolDevice is what the tests of the pool driver check of the device of
-// a result of a claim in any state: the records of its grant (Size the
-// size it got, else the one it asked), its memdev and region, and the
-// settings of the result.
-type poolDevice struct {
-	Serial                state.Serial
-	Mode                  string
-	ReadOnly, Persistent  bool
-	Size                  uint64
-	Memdev, Region        string
-	DaxDevice             string
-	DaxMajor, DaxMinor    int
-	NumaNode              int
-	NdRegion, Namespace   string
-	BlockDevice           string
-	BlockMajor            int
-	Access, Path, FsType  string
-	NodeMount, LoopDevice string
-	ResultSettings        config.ResultSettings
-}
-
-// device returns the device of the result n of the claim uid, failing the
-// test without one.
-func (e *poolTestEnv) device(p *dra.Plugin, uid string, n int) poolDevice {
-	e.t.Helper()
-	r := e.records()
-	prep := r.Preparation(p.Name(), uid)
-	if prep == nil || prep.Result(n) == nil || prep.Result(n).Grant == nil {
-		e.t.Fatalf("claim %s has no grant of result %d", uid, n)
-	}
-	g := r.Grant(*prep.Result(n).Grant)
-	if g == nil {
-		e.t.Fatalf("claim %s: the grant of result %d has no record", uid, n)
-	}
-	d := poolDevice{Serial: g.Serial, Mode: string(g.Asked.Mode), ReadOnly: g.Asked.ReadOnly, Size: g.Got.Size,
-		Region: string(g.Got.Region), NumaNode: state.NumaNodeOf(g.Got.NumaNode), Namespace: g.Got.Namespace,
-		Access: string(g.Got.Mount), ResultSettings: prep.Result(n).Settings}
-	if d.Size == 0 {
-		d.Size = g.Asked.Size
-	}
-	if m := r.Memdev(g.Serial); m != nil {
-		d.Memdev = m.Name
-	}
-	dev := r.DaxDevOf(g)
-	d.DaxMajor, d.DaxMinor = dev.Major, dev.Minor
-	if g.Asked.Mode == state.ModeDax && g.Got.Dax != "" {
-		d.DaxDevice = filepath.Join(e.k.DevRoot(), g.Got.Dax)
-	}
-	if g.Asked.Mode == state.ModeBlock || g.Asked.Mode == state.ModeFs {
-		d.Persistent = true
-		if reg := r.Region(g.Got.Region); reg != nil && reg.Pmem != nil {
-			d.NdRegion = reg.Pmem.NdRegion
-		}
-		if bd := g.Got.BlockDevice; bd != nil {
-			d.BlockDevice, d.BlockMajor = bd.Name, bd.Dev.Major
-		}
-	}
-	if g.Asked.Mode == state.ModeFs {
-		d.Path = g.Asked.Path
-		if m := r.MountOf(g); m != nil {
-			d.NodeMount, d.LoopDevice, d.FsType = m.Path, m.Loop, m.FsType
-		}
-	}
-	return d
-}
-
 // cdiSpec returns the pool CDI spec on disk, nil if there is none.
 func (e *poolTestEnv) cdiSpec(t *testing.T) *cdiSpecs.Spec {
 	t.Helper()
@@ -233,19 +165,6 @@ func cdiDeviceByName(spec *cdiSpecs.Spec, name string) *cdiSpecs.Device {
 		}
 	}
 	return nil
-}
-
-// wantCDIDevice returns the CDI device with the name and the env.
-func (e *poolTestEnv) wantCDIDevice(t *testing.T, name string, env []string) *cdiSpecs.Device {
-	t.Helper()
-	cd := cdiDeviceByName(e.cdiSpec(t), name)
-	if cd == nil {
-		t.Fatalf("no CDI device %s in %+v", name, e.cdiSpec(t))
-	}
-	if !slices.Equal(cd.ContainerEdits.Env, env) {
-		t.Fatalf("CDI device %s env %v, expected %v", name, cd.ContainerEdits.Env, env)
-	}
-	return cd
 }
 
 // wantClean checks that nothing is prepared: no CDI spec, no serials, no
@@ -283,16 +202,6 @@ func (e *poolTestEnv) commands() string {
 	return e.k.CommandsSince(e.base)
 }
 
-// wantNoClaims checks that the pool driver has no claim: no CDI spec, no
-// preparation and no grant.
-func (e *poolTestEnv) wantNoClaims(t *testing.T, p *dra.Plugin) {
-	t.Helper()
-	r := e.records()
-	if e.cdiSpec(t) != nil || len(r.Grants) > 0 || slices.ContainsFunc(r.Preparations, func(x state.Preparation) bool { return x.Driver == device.PoolDriverName }) {
-		t.Fatalf("claims left: CDI spec %+v, preparations %+v, grants %+v", e.cdiSpec(t), r.Preparations, r.Grants)
-	}
-}
-
 // poolConsumed returns the consumed capacity of an allocation result of
 // a pool device with the status data: of a shared device all of its
 // shares (exclusive) or one, nil otherwise.
@@ -306,6 +215,10 @@ func poolConsumed(data string) map[resourceapi.QualifiedName]resource.Quantity {
 	}
 	return map[resourceapi.QualifiedName]resource.Quantity{device.CapacityShares: resource.MustParse("1")}
 }
+
+// exclusiveData is the status data of the pool device of an exclusive
+// claim.
+const exclusiveData = `{"serial":"0xc1ee0001","shared":false,"size":268435456,"host":"n1"}`
 
 // poolClaim returns a claim allocated a pool device, with the status
 // entry written by the pool controller (data "" for none) and the shares

@@ -42,6 +42,7 @@ func TestPrepareRefusedBeforeDevices(t *testing.T) {
 		return c
 	}
 	badConfig := `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"memory"}}`
+	region := e.addRegion("region5", 4, 1<<30)
 	sizeZero := func() func() {
 		devs := e.pub.Devices()
 		info := *devs[localDev]
@@ -68,6 +69,16 @@ func TestPrepareRefusedBeforeDevices(t *testing.T) {
 			"could not find allocatable device memdev-77 (pool node1)", nil},
 		{"local config", e.local, localClaim("u1", localDev, 0, badConfig),
 			`claim demo/claim-u1: request mem: MemoryConfig: device.mode: invalid mode "memory" (numa or dax)`, nil},
+		{"local config of another request", e.local,
+			addConfig(localClaim("u1", localDev, 0), device.DriverName, []string{"other"}, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"online":"all"}}`),
+			`cxl.nri.io: claim demo/claim-u1: MemoryConfig: FromClaim config 0: json: unknown field "device.online"`, nil},
+		{"local steering", e.local, localClaim("u1", localDev, 0, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"steering":{"policy":"off"}}}`),
+			`cxl.nri.io: claim demo/claim-u1: request mem: MemoryConfig: container.steering.policy: invalid policy "off"`, nil},
+		{"local region of a second result", e.local,
+			addConfig(addLocalResult(localClaim("u1", localDev, envBlockSize), "region", region, 64*mib), device.DriverName, []string{"region"}, cfgDax),
+			"cxl.nri.io: claim demo/claim-u1: request region: MemoryConfig: device: a region is used as numa only", nil},
+		{"local lease device", e.local, localClaim("u1", device.LeaseDeviceName, 0, cfgNUMA),
+			"cxl.nri.io: claim demo/claim-u1: request mem: MemoryConfig: device: the lease device has no device settings", nil},
 		{"local shares of a sliced memdev", e.local, localClaim("u1", localDev, -1),
 			"claim demo/claim-u1: request mem: device 0xc100e2e1: allocated as a shared device, which it is not any more", nil},
 		{"local size 0", e.local, localClaim("u1", localDev, 0), "cxl.nri.io: claim demo/claim-u1: device memdev-c100e2e1: size 0", sizeZero},

@@ -20,10 +20,13 @@ import (
 	"slices"
 	"testing"
 
+	resourcev1 "k8s.io/api/resource/v1"
+
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state/statetest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
+	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -139,6 +142,69 @@ func TestClaimReaders(t *testing.T) {
 	if _, _, ok := e.pool.PreparedResult("p1", 0); ok || e.local.ClaimInfo("l1") != nil {
 		t.Fatal("the readers of an unprepared claim")
 	}
+}
+
+// The container settings of each result, as the MemoryConfig entries of
+// the driver for its request resolve them, with their origins, in the
+// device of the result that the readers give, after a restart too: the
+// entries of a device class come first, null removes a preset, an entry of
+// the other driver is not read.
+func TestResultSettings(t *testing.T) {
+	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, poolSpec(serialPoolX))
+	const (
+		class = resourcev1.AllocationConfigSourceClass
+		claim = resourcev1.AllocationConfigSourceClaim
+	)
+	entry := func(c *resourcev1.ResourceClaim, driver string, source resourcev1.AllocationConfigSource, requests []string, container string) {
+		addConfig(c, driver, requests, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":`+container+`}`)
+		c.Status.Allocation.Devices.Config[len(c.Status.Allocation.Devices.Config)-1].Source = source
+	}
+	requests := func(c *resourcev1.ResourceClaim, classes ...string) {
+		for i, r := range c.Status.Allocation.Devices.Results {
+			c.Spec.Devices.Requests = append(c.Spec.Devices.Requests,
+				resourcev1.DeviceRequest{Name: r.Request, Exactly: &resourcev1.ExactDeviceRequest{DeviceClassName: classes[i]}})
+		}
+	}
+	l := addLocalResult(localClaim("l1", localDev, envBlockSize), "region", e.addRegion("region5", 4, 1<<30), 64*mib)
+	requests(l, "cxl-local", "cxl-region")
+	entry(l, device.DriverName, claim, []string{"region"}, `{"steering":{"policy":"first-dram","maxStep":"1Gi"}}`)
+	entry(l, device.DriverName, class, nil, `{"steering":{"policy":"auto"}}`)
+	entry(l, device.DriverName, claim, []string{"mem"}, `{"steering":{"policy":null}}`)
+	p := poolClaim("p1", "pooled0", poolExclusiveData)
+	requests(p, "cxl-pool", "cxl-dram")
+	entry(p, device.PoolDriverName, claim, []string{"mem"}, `{"steering":{"maxStep":"64Mi"}}`)
+	entry(p, device.PoolDriverName, class, nil, `{"steering":{"policy":"auto"}}`)
+	entry(p, device.DriverName, claim, nil, `{"steering":{"policy":"none"}}`)
+	e.mustPrepare(e.local, l)
+	e.mustPrepare(e.pool, p)
+	byClaim := func(request string) map[string]string {
+		return map[string]string{config.FieldPolicy: "claim demo/claim-l1 request " + request, config.FieldMaxStep: "claim demo/claim-l1 request " + request}
+	}
+	want := []config.ResultSettings{
+		{},
+		{Container: &config.Container{Steering: &config.Steering{Policy: config.PolicyFirstDRAM, MaxStep: "1Gi"}}, Origins: byClaim("region")},
+		{Container: &config.Container{Steering: &config.Steering{Policy: config.PolicyAuto, MaxStep: "64Mi"}},
+			Origins: map[string]string{config.FieldPolicy: "class cxl-pool", config.FieldMaxStep: "claim demo/claim-p1 request mem"}},
+	}
+	check := func(when string) {
+		t.Helper()
+		info := e.local.ClaimInfo("l1")
+		_, d, ok := e.pool.PreparedResult("p1", 0)
+		if info == nil || len(info.Devices) != 2 || !ok {
+			t.Fatalf("%s: claim info %+v, pool result %v", when, info, ok)
+		}
+		for i, got := range []config.ResultSettings{info.Devices[0].ResultSettings, info.Devices[1].ResultSettings, d.ResultSettings} {
+			if !reflect.DeepEqual(got, want[i]) {
+				t.Errorf("%s: settings %d %+v %v, expected %+v %v", when, i, got.Container, got.Origins, want[i].Container, want[i].Origins)
+			}
+		}
+	}
+	check("prepared")
+	e.restart()
+	check("after a restart")
+	e.mustUnprepare(e.local, "l1")
+	e.mustUnprepare(e.pool, "p1")
+	e.wantClean()
 }
 
 // The devices of the results of every kind, derived from the records of

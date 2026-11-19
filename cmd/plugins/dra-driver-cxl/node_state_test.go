@@ -18,7 +18,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,8 +31,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
-	"github.com/containers/nri-plugins/pkg/cxl/api"
-	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
@@ -155,15 +152,6 @@ func injectDevices(e *localTestEnv, infos ...*dra.DeviceInfo) {
 	}
 }
 
-// wantPrefixed fails the test when errors of the device settings of a
-// region, the DRAM or the lease device lacked the claim and the request.
-func wantPrefixed(t *testing.T, unprefixed []string) {
-	t.Helper()
-	if len(unprefixed) > 0 {
-		t.Errorf("the error of the device settings of a region, the DRAM or the lease device does not name the claim and the request: %q", unprefixed)
-	}
-}
-
 // fakeLeaseClaims records the lease claims whose sockets are open, with
 // their records in the store st as the lease broker keeps them.
 type fakeLeaseClaims struct {
@@ -224,9 +212,10 @@ func memoryConfigEntry(source resourcev1.AllocationConfigSource, requests []stri
 	return e
 }
 
-// The MemoryConfig entries of results of every device type: presets of
-// classes, settings with origins, markers; refused entries touch no device.
-func TestPrepareMemoryConfig(t *testing.T) {
+// A container gets the management of the prepared results that it uses,
+// as the MemoryConfig entries of their requests say: the NRI plugin finds
+// each result in the driver by the marker of the result in its env.
+func TestContainerOfResultSettings(t *testing.T) {
 	e := newLocalTestEnv(t)
 	e.start()
 	leases := &fakeLeaseClaims{st: e.st}
@@ -248,43 +237,7 @@ func TestPrepareMemoryConfig(t *testing.T) {
 		memoryConfigEntry(claim, []string{"numa"}, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"steering":{"policy":null}}}`),
 	)
 	e.mustPrepare(c)
-	info := e.s.ClaimInfo("u1")
-	auto := func(origin string) config.ResultSettings {
-		return config.ResultSettings{Container: &config.Container{Steering: &config.Steering{Policy: config.PolicyAuto}}, Origins: map[string]string{config.FieldPolicy: origin}}
-	}
-	for i, want := range []config.ResultSettings{
-		{},
-		auto("class cxl-region"),
-		{Container: &config.Container{Steering: &config.Steering{Policy: config.PolicyFirstDRAM, MaxStep: "1Gi"}},
-			Origins: map[string]string{config.FieldPolicy: "claim demo/claim-u1 request dram", config.FieldMaxStep: "claim demo/claim-u1 request dram"}},
-		auto("class cxl-lease"),
-	} {
-		if d := info.Devices[i]; d.Result != i || !sameSettings(d.ResultSettings, want) {
-			t.Errorf("result %d (%s): %d %+v %v, expected %+v %v", i, d.RequestName, d.Result, d.Container, d.Origins, want.Container, want.Origins)
-		}
-	}
 	node := localRegionNode(e)
-	if d := info.Devices[0]; d.Mode != api.ModeNUMA || !slices.Equal(d.NUMANodes, []int{node}) {
-		t.Fatalf("numa slice %+v", d)
-	}
-	// one CDI device per result, with the marker of the result
-	for n, wantID := range []string{"claim-u1-0", "claim-u1-1", "claim-u1-2", "claim-u1-3"} {
-		d := cdiDeviceByName(e.cdiSpec(), wantID)
-		marker := resultEnvVarName("u1", n) + "=1"
-		if d == nil || !slices.Contains(d.ContainerEdits.Env, marker) {
-			t.Fatalf("CDI device %s: %+v, expected %s", wantID, d, marker)
-		}
-		for _, env := range d.ContainerEdits.Env {
-			if strings.HasPrefix(env, "CXL_CLAIM_") && env != marker {
-				t.Fatalf("CDI device %s has the marker %s", wantID, env)
-			}
-		}
-	}
-	if !leases.open["u1"] {
-		t.Fatal("no lease socket")
-	}
-
-	// a container gets the management of the results it uses
 	for _, tc := range []struct {
 		results []int
 		want    string
@@ -305,70 +258,5 @@ func TestPrepareMemoryConfig(t *testing.T) {
 	wantErr(t, err, "container demo/pod/ctr: container.steering.policy: class cxl-region says auto, claim demo/claim-u1 request dram says first-dram")
 	noErr(t, leases.CloseClaim(context.Background(), "u1"))
 	e.mustUnprepare("u1")
-
-	// the device rules of every result are checked before any device is
-	// touched
-	commands := e.commands()
-	var unprefixed []string
-	for _, tc := range []struct{ request, params, err string }{
-		{"lease", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"numa"}}`,
-			"claim demo/claim-u9: request lease: MemoryConfig: device: the lease device has no device settings"},
-		{"region", localDaxConfig, "claim demo/claim-u9: request region: MemoryConfig: device: a region is used as numa only"},
-		{"dram", localROConfig, "claim demo/claim-u9: request dram: MemoryConfig: device: a dram is used as numa only"},
-	} {
-		err := e.prepare(memoryConfigClaim("u9", memoryConfigEntry(claim, []string{tc.request}, tc.params)))
-		wantErr(t, err, strings.TrimPrefix(tc.err, "claim demo/claim-u9: request "+tc.request+": "))
-		if !strings.Contains(err.Error(), tc.err) {
-			unprefixed = append(unprefixed, err.Error())
-		}
-		if len(e.prepared()) != 0 || e.inUse() || leases.open["u9"] {
-			t.Fatalf("%s: prepared %v, memdev in use %v", tc.err, e.prepared(), e.inUse())
-		}
-	}
-
-	// the entries and the values of all results are checked before any
-	// device is touched
-	for _, tc := range []struct {
-		configs []resourcev1.DeviceAllocationConfiguration
-		err     string
-	}{
-		{[]resourcev1.DeviceAllocationConfiguration{memoryConfigEntry(class, nil, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","pool":{"opaque":{"fake-cxl-pool":{"numaNode":1}}}}`)},
-			"claim demo/claim-u9: MemoryConfig: pool: only for devices of cxl-pool.nri.io"},
-		{[]resourcev1.DeviceAllocationConfiguration{memoryConfigEntry(class, nil, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"fencing":"none"}}`)},
-			"claim demo/claim-u9: MemoryConfig: container.fencing: set by the driver configuration only (defaults.container.fencing)"},
-		{[]resourcev1.DeviceAllocationConfiguration{memoryConfigEntry(claim, nil, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"steering":{"policy":"off"}}}`)},
-			`claim demo/claim-u9: request numa: MemoryConfig: container.steering.policy: invalid policy "off" (none, auto, first-dram, first-cxl, start-interleaved, end-interleaved or waypoints)`},
-		{[]resourcev1.DeviceAllocationConfiguration{memoryConfigEntry(claim, []string{"dram"}, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"steering":{"policy":"none","maxStep":"1Gi"}}}`)},
-			"claim demo/claim-u9: request dram: MemoryConfig: container.steering.maxStep needs a policy other than none"},
-		{[]resourcev1.DeviceAllocationConfiguration{memoryConfigEntry(claim, nil, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","mode":"dax"}`)},
-			`claim demo/claim-u9: MemoryConfig: FromClaim config 0: kind "DeviceConfig", expected "MemoryConfig"`},
-		{[]resourcev1.DeviceAllocationConfiguration{memoryConfigEntry(claim, nil, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryPolicyConfig","memoryUseOrder":"first-dram"}`)},
-			`claim demo/claim-u9: MemoryConfig: FromClaim config 0: kind "MemoryPolicyConfig", expected "MemoryConfig"`},
-		{[]resourcev1.DeviceAllocationConfiguration{memoryConfigEntry(claim, nil, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"MemoryConfig"}`)},
-			`claim demo/claim-u9: MemoryConfig: FromClaim config 0: apiVersion "cxl-pool.nri.io/v1alpha1", expected "cxl.nri.io/v1alpha1"`},
-		// every entry of the driver is checked, also of other requests
-		{[]resourcev1.DeviceAllocationConfiguration{
-			memoryConfigEntry(class, nil, localDaxConfig),
-			memoryConfigEntry(claim, []string{"other"}, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"online":"all"}}`)},
-			`claim demo/claim-u9: MemoryConfig: FromClaim config 0: json: unknown field "device.online"`},
-	} {
-		wantErr(t, e.prepare(memoryConfigClaim("u9", tc.configs...)), tc.err)
-		if len(e.prepared()) != 0 || e.inUse() || leases.open["u9"] {
-			t.Fatalf("%s: prepared %v, memdev in use %v", tc.err, e.prepared(), e.inUse())
-		}
-	}
-	if got := e.commands(); got != commands {
-		t.Fatalf("a refused config touched the memdev:\n%s", strings.TrimPrefix(got, commands))
-	}
 	e.wantClean()
-	wantPrefixed(t, unprefixed)
-}
-
-// sameSettings tells whether two container settings are equal, an empty
-// map of origins as none.
-func sameSettings(a, b config.ResultSettings) bool {
-	if len(a.Origins) == 0 && len(b.Origins) == 0 {
-		a.Origins, b.Origins = nil, nil
-	}
-	return reflect.DeepEqual(a, b)
 }

@@ -20,7 +20,6 @@ import (
 
 	resourceapi "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
@@ -76,17 +75,4 @@ func companionClaim(id string) *resourceapi.ResourceClaim {
 		Labels:          map[string]string{device.LeaseLabel: id},
 		OwnerReferences: []metav1.OwnerReference{{APIVersion: "v1", Kind: "Pod", Name: testPod, UID: testPodUID, Controller: ptr(true)}},
 	}}
-}
-
-// withDriverConfig appends an opaque config of driver to a claim's
-// allocation.
-func withDriverConfig(c *resourceapi.ResourceClaim, driver string, source resourceapi.AllocationConfigSource, requests []string, params string) *resourceapi.ResourceClaim {
-	c.Status.Allocation.Devices.Config = append(c.Status.Allocation.Devices.Config, resourceapi.DeviceAllocationConfiguration{
-		Source:   source,
-		Requests: requests,
-		DeviceConfiguration: resourceapi.DeviceConfiguration{Opaque: &resourceapi.OpaqueDeviceConfiguration{
-			Driver: driver, Parameters: runtime.RawExtension{Raw: []byte(params)},
-		}},
-	})
-	return c
 }
