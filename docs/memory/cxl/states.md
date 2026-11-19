@@ -23,7 +23,7 @@ Triggers:
 - `a-reconcile`: the periodic lease reconcile and repair pass.
 - `OnLending`: the companion claim's Prepare passing the companion gate.
 - `OnPrepared`: the companion claim's Prepare handing over the lent devices.
-- `OnLendFailed`: a bind or lend error of the companion claim's Prepare.
+- `OnLendFailed`: a bind or lend error of the companion claim's Prepare, or an error that its retries cannot heal.
 - `OnReleasing`: the companion claim's Unprepare.
 
 ## Preparation
@@ -385,7 +385,7 @@ States: NONE, CREATING, PENDING, LENDING, READY, RELEASING, RELEASING_BUSY, FAIL
 | LENDING | READY | `OnPrepared`: the companion's Prepare hands over the lent devices | the mode of the device matches (fs and block) | commit (d) of Got and of the Lend (the NUMA node of numa, the bind target of fs); the waiting client gets the response (the fd of dax and block) |
 | READY | (unchanged) | `OnPrepared`: the companion's Prepare announced again (kubelet prepares a prepared claim again) | - | commit (d) of Got and the Lend again |
 | LENDING, READY | FAILED | `OnPrepared`: the companion prepared a device of another mode (fs or block against another) | - | commit (d); the release starts |
-| CREATING, PENDING, LENDING, READY | FAILED | `OnLendFailed`: a bind or lend error of the companion's Prepare | - | commit (d); the release starts |
+| CREATING, PENDING, LENDING, READY | FAILED | `OnLendFailed`: a bind or lend error of the companion's Prepare, or an error that its retries cannot heal | - | commit (d); the release starts |
 | CREATING, PENDING, LENDING, READY, FAILED | FAILED | `OnReleasing`: the companion claim unprepared behind the broker (the companion pod deleted or evicted) | - | commit (d); the next reconcile releases it |
 | CREATING, PENDING, LENDING, READY | RELEASING | `a-request`: the request's --wait ended (READY: the companion's Prepare made it READY meanwhile) | - | the client gets Failed "timeout: not Ready after D"; commit (d) of ReleaseRequested |
 | CREATING, PENDING, LENDING, READY | RELEASING | `a-release`, `a-unprepare`, `a-reconcile`: a release by the client; the requester gone; CloseClaim of the lease claim; the reconcile (companion gone, requester done, CREATING for longer than 2 min: left over by a crash) | - | commit (d) of ReleaseRequested; the node revoked; pod and claim deleted (Foreground); DeletionRequested (d) |

@@ -137,6 +137,20 @@ func consumedShares(serial uint64, r *resourcev1.DeviceRequestAllocationResult) 
 	return q.Value(), nil
 }
 
+// lastingError is an error of a Prepare that its retries cannot heal: the
+// MemoryConfig or the allocation of the claim does not fit its device.
+type lastingError struct{ error }
+
+func (e lastingError) Unwrap() error { return e.error }
+
+// lasting marks an error of a Prepare that its retries cannot heal.
+func lasting(err error) error {
+	if err == nil {
+		return nil
+	}
+	return lastingError{err}
+}
+
 // shareUse returns how an allocation result that consumed shares of a device
 // of total shares uses it: "exclusive" when it consumed all of them, else
 // "1 share" or "<n> shares".
@@ -170,7 +184,8 @@ type LocalConfig struct {
 // validate returns the Prepare of a claim, or an error when the claim cannot
 // be prepared: no allocation, a MemoryConfig that does not decode, a result
 // that cannot be prepared (localResult, poolResult), a companion claim that
-// cannot be lent; a lease that cannot be bound is told to the broker.
+// cannot be lent. The broker hears of a companion claim that passed its
+// gate whose lease cannot be bound or whose error is lasting.
 func (p *Plugin) validate(claim *resourcev1.ResourceClaim) (*prepare, error) {
 	if claim.Status.Allocation == nil {
 		return nil, errors.New("no allocation")
@@ -194,7 +209,7 @@ func (p *Plugin) validate(claim *resourcev1.ResourceClaim) (*prepare, error) {
 	}
 	err = p.results(claim, pr, allocatable, resolved)
 	var be *engine.BindError
-	if errors.As(err, &be) {
+	if pr.lend != nil && (errors.As(err, &be) || errors.As(err, new(lastingError))) {
 		p.lender.Failed(pr.lend.Lease, err)
 	}
 	return pr, err
@@ -365,7 +380,7 @@ func (p *Plugin) memdevRequest(pr *prepare, r *resourcev1.DeviceRequestAllocatio
 		mode, err = cfg.MemdevMode(dev.Shared)
 	}
 	if err != nil {
-		return req, fmt.Errorf("request %s: %w", r.Request, err)
+		return req, fmt.Errorf("request %s: %w", r.Request, lasting(err))
 	}
 	req.Asked.Mode = state.Mode(mode)
 	if dev.Shared {
@@ -374,7 +389,7 @@ func (p *Plugin) memdevRequest(pr *prepare, r *resourcev1.DeviceRequestAllocatio
 		return req, nil
 	}
 	if _, ok := r.ConsumedCapacity[device.CapacityShares]; ok {
-		return req, fmt.Errorf("request %s: device %s: allocated as a shared device, which it is not any more", r.Request, api.FormatSerial(dev.Serial))
+		return req, lasting(fmt.Errorf("request %s: device %s: allocated as a shared device, which it is not any more", r.Request, api.FormatSerial(dev.Serial)))
 	}
 	size := dev.Size
 	if dev.BlockSize > 0 {
@@ -395,7 +410,7 @@ func (p *Plugin) memdevRequest(pr *prepare, r *resourcev1.DeviceRequestAllocatio
 // configuration and the allocation give them.
 func (p *Plugin) persistentRequest(pr *prepare, req *engine.GrantRequest, r *resourcev1.DeviceRequestAllocationResult, key string, dev *Memdev, cfg config.Device) error {
 	fail := func(err error) error {
-		return fmt.Errorf("request %s: %w", r.Request, err)
+		return fmt.Errorf("request %s: %w", r.Request, lasting(err))
 	}
 	if _, ok := r.ConsumedCapacity[device.CapacityMemory]; ok {
 		return fail(fmt.Errorf("device %s: allocated as a device of volatile memory, which it is not any more", api.FormatSerial(dev.Serial)))
@@ -454,12 +469,12 @@ func (p *Plugin) poolResult(claim *resourcev1.ResourceClaim, pr *prepare, r *res
 		// before the device is touched: shares "0" fits next to an
 		// exclusive holder
 		if _, err := consumedShares(data.Serial, r); err != nil {
-			return nil, err
+			return nil, lasting(err)
 		}
 	}
 	mode, err := cfg.PoolMode(poolFacts(data))
 	if err != nil {
-		return nil, fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, err)
+		return nil, fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, lasting(err))
 	}
 	asked := state.Asked{Source: state.SourcePool, Kind: grantKind(data.Shared, data.Persistent), Mode: state.Mode(mode),
 		ReadOnly: cfg.IsReadOnly(), Size: data.Size, Shared: data.Shared}

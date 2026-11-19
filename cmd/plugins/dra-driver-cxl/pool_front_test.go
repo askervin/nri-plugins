@@ -346,6 +346,27 @@ func TestPoolRemountCompanion(t *testing.T) {
 	e.wantClean(t, p)
 }
 
+// A companion claim refused after the gate of the broker: the lease fails
+// at once when the MemoryConfig of the claim does not fit its device, not
+// while the pool has not written the status data of its device yet.
+func TestPoolCompanionRefused(t *testing.T) {
+	e := newPoolTestEnv(t)
+	p := e.driver(t)
+	hooks := &fakeHooks{}
+	p.Lender().Set(newFakeLender(), hooks)
+	c := numaCompanion("l1")
+	c.Status.Devices = nil
+	wantErr(t, prepare(t, p, c).Err, "not attached by the pool controller yet")
+	c = persistentClaim("uid-"+companionName("l2"), exclusiveData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"fs"}}`)
+	c.ObjectMeta = companionClaim("l2").ObjectMeta
+	mismatch := "device llm0 serial 0xc1ee0001: MemoryConfig: device.mode fs needs a persistent device"
+	wantErr(t, prepare(t, p, c).Err, mismatch)
+	if log := hooks.log(); log != "lending l1 cxl-lease-l1\nlending l2 cxl-lease-l2\nfailed l2: "+mismatch {
+		t.Fatalf("hooks:\n%s", log)
+	}
+	e.wantClean(t, p)
+}
+
 // Companions of another boot: a stale numa companion's Unprepare revokes
 // nothing, also before the lender is set up; its Prepare again refused at
 // the lease keeps it STALE; a stale fs companion's Unprepare removes the

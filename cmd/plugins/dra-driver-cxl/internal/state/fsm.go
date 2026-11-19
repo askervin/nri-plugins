@@ -57,7 +57,7 @@ const (
 	// the lent devices.
 	TriggerOnPrepared Trigger = "OnPrepared"
 	// TriggerOnLendFailed is a bind or lend error of the companion
-	// claim's Prepare.
+	// claim's Prepare, or an error that its retries cannot heal.
 	TriggerOnLendFailed Trigger = "OnLendFailed"
 	// TriggerOnReleasing is the companion claim's Unprepare.
 	TriggerOnReleasing Trigger = "OnReleasing"

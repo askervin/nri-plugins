@@ -224,7 +224,7 @@ var LeaseTable = Table[LeaseState]{
 		},
 		{
 			From: fsm.List(LeaseCreating, LeasePending, LeaseLending, LeaseReady), To: LeaseFailed, Triggers: fsm.List(TriggerOnLendFailed),
-			When:    "a bind or lend error of the companion's Prepare",
+			When:    "a bind or lend error of the companion's Prepare, or an error that its retries cannot heal",
 			Effects: "commit (d); the release starts",
 		},
 		{
