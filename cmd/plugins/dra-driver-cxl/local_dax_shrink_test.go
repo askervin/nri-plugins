@@ -22,7 +22,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
@@ -35,36 +34,31 @@ import (
 // mapping, and the release, forever (drivers/dax/bus.c). The Unprepare
 // ends.
 func TestRescanDuringDaxShrink(t *testing.T) {
-	e := newSliceTestEnv(t)
+	e := newDriverTestEnv(t)
 	e.start()
+	e.synchronize()
 	ctx := context.Background()
-	e.mustPrepare(localClaim("u1", localBlockSize, localDaxConfig))
-	e.mustPrepare(localClaim("u2", localBlockSize))
+	e.mustPrepare(e.d.local, localClaim("u1", localBlockSize, localDaxConfig))
+	e.mustPrepare(e.d.local, localClaim("u2", localBlockSize))
 	if g1, g2 := e.grant("u1", 0), e.grant("u2", 0); g1.Got.Dax != "dax0.0" || g2.Got.Dax != "dax0.1" {
 		t.Fatalf("slices %+v and %+v, expected dax0.0 and dax0.1", g1.Got, g2.Got)
 	}
-	// the publisher of the driver: its scan of the kernel (driver.go)
-	pub, err := dra.NewPublisher(dra.PublishOptions{
-		Config:    e.publishConfig(),
-		NodeName:  testNode,
-		Scan:      e.k.Kernel().ObserveTopology,
-		Store:     e.st,
-		Probes:    e.node.Engine.Probes,
-		BlockSize: e.k.Kernel().BlockSize,
-	})
-	noErr(t, err)
+	pub, eng := e.d.publisher, e.d.local.Engine()
+	// this rescan waits for the first publish of the driver: it holds the
+	// scans until the informer of its controller has synced
+	pub.Rescan(ctx, false)
 	scanned := pub.LastScan()
 	var verify *kernel.Snapshot
 	var verifyErr error
 	var rescanned, verified bool
 	var rescanDone, verifyDone <-chan struct{}
 	e.k.Before("write bus/dax/devices/dax0.0/size 0", func() {
-		verified, verifyDone = fake.ReadWithin(func() { verify, verifyErr = e.node.Engine.Observe(ctx) })
+		verified, verifyDone = fake.ReadWithin(func() { verify, verifyErr = eng.Observe(ctx) })
 		rescanned, rescanDone = fake.ReadWithin(func() { pub.Rescan(ctx, false) })
 	})
 	unprepared := make(chan error, 1)
 	go func() {
-		res, err := e.s.UnprepareResourceClaims(ctx, []kubeletplugin.NamespacedObject{{UID: types.UID("u1")}})
+		res, err := e.d.local.UnprepareResourceClaims(ctx, []kubeletplugin.NamespacedObject{{UID: types.UID("u1")}})
 		if err == nil {
 			err = res["u1"]
 		}
@@ -92,5 +86,5 @@ func TestRescanDuringDaxShrink(t *testing.T) {
 		t.Fatalf("dax0.0 of the verify observation %+v, expected no memory", d)
 	}
 	e.check("unprepared u1")
-	e.mustUnprepare("u2")
+	e.mustUnprepare(e.d.local, "u2")
 }

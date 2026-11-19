@@ -15,19 +15,12 @@
 package main
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
-
-	resourcev1 "k8s.io/api/resource/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	k8sfake "k8s.io/client-go/kubernetes/fake"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
@@ -38,66 +31,45 @@ import (
 // state, and nothing is written: the document and the CDI specs stay as
 // they are and no other JSON file appears.
 func TestStartOnALostStore(t *testing.T) {
-	root := t.TempDir()
-	local, pool := filepath.Join(root, device.DriverName), filepath.Join(root, device.PoolDriverName)
-	noErr(t, os.MkdirAll(local, 0o750))
+	e := newDriverTestEnv(t)
+	e.config.Flags.Leases = true
+	local := e.config.KubeletPluginDir
+	pool := filepath.Join(filepath.Dir(local), device.PoolDriverName)
 	noErr(t, os.WriteFile(filepath.Join(local, store.FileName), []byte("{"), 0o600))
-	for _, d := range []string{"sys/bus/cxl/devices", "sys/devices/system/node", "cdi"} {
-		noErr(t, os.MkdirAll(filepath.Join(root, d), 0o755))
-	}
 	// the CDI specs of claims prepared before the store was lost
 	specs := map[string]string{}
 	for name, kind := range map[string]string{device.ClaimsCDISpecName: device.CDIKind(device.DriverName),
 		device.PoolCDISpecName: device.CDIKind(device.PoolDriverName)} {
 		specs[name] = `{"cdiVersion":"0.6.0","kind":"` + kind + `","devices":[{"name":"claim-u0-0","containerEdits":{"env":["A=1"]}}]}`
-		noErr(t, os.WriteFile(filepath.Join(root, "cdi", name), []byte(specs[name]), 0o600))
+		noErr(t, os.WriteFile(filepath.Join(e.config.Flags.CDIRoot, name), []byte(specs[name]), 0o600))
 	}
-	ctx := context.Background()
-	st, err := store.Open(ctx, store.Options{Dir: local, BootID: "boot-1"})
-	noErr(t, err)
-	defer func() { noErr(t, st.Close()) }()
-	if st.Lost() == nil {
-		t.Fatal("the store is not lost")
+	e.start()
+	if r := e.d.pool.Records(); len(r.Preparations) != 0 || len(e.d.pool.Serials()) != 0 {
+		t.Errorf("pool driver: preparations %v, serials %v", r.Preparations, e.d.pool.Serials())
 	}
-
-	flags := &CXLFlags{PoolDriverName: device.PoolDriverName, PoolPrepareTimeout: time.Second, CDIRoot: filepath.Join(root, "cdi"), NodeName: "n1"}
-	config := &pluginConfig{Flags: flags, KubeletPluginDir: local}
-	node, err := dra.NewNode(nodeOptions(config, &DriverConfig{}, kernelAt(root), st))
-	noErr(t, err)
-	_, err = node.Recover(ctx)
-	noErr(t, err)
-	p, ns := node.Pool, node.Local
-	if r := p.Records(); len(r.Preparations) != 0 || len(p.Serials()) != 0 {
-		t.Errorf("pool driver: preparations %v, serials %v", r.Preparations, p.Serials())
-	}
-	if uses := node.Publisher.LocalSnapshot().Uses; len(uses) != 0 {
+	if uses := e.d.publisher.LocalSnapshot().Uses; len(uses) != 0 {
 		t.Errorf("local uses %v", uses)
 	}
-	b, err := leases.New(leases.Options{Store: st, Client: k8sfake.NewClientset(), NodeName: testNode, DataDir: local,
-		CLI: filepath.Join(root, "cxl-request"), WaitDefault: time.Second, PoolDriver: device.PoolDriverName})
-	noErr(t, err)
-	defer b.Stop()
-	noErr(t, node.WriteCDI())
-
-	node.Publisher.SetDevices(dra.DevicesInfo{"dram": {Name: "dram", Dev: &dra.DRAM{Nodes: []int{0}, Size: 1 << 30}}})
-	claim := &resourcev1.ResourceClaim{
-		ObjectMeta: metav1.ObjectMeta{UID: "u1", Name: "c", Namespace: "ns"},
-		Status: resourcev1.ResourceClaimStatus{Allocation: &resourcev1.AllocationResult{Devices: resourcev1.DeviceAllocationResult{
-			Results: []resourcev1.DeviceRequestAllocationResult{{Request: "mem", Driver: device.DriverName, Pool: "n1", Device: "dram"}}}}},
-	}
-	if err := prepareOn(ctx, ns, claim); err == nil || !strings.Contains(err.Error(), "the driver state is lost") ||
+	e.synchronize()
+	// the memdev is held back: the pool serials are lost
+	injectDevices(e, &dra.DeviceInfo{Name: "dram", Dev: &dra.DRAM{Nodes: []int{0}, Size: 1 << 30}})
+	claim := localClaim("u1", 0)
+	claim.Status.Allocation.Devices.Results[0].Device = "dram"
+	claim.Status.Allocation.Devices.Results[0].ConsumedCapacity = nil
+	if err := e.prepare(e.d.local, claim); err == nil || !strings.Contains(err.Error(), "the driver state is lost") ||
 		!strings.Contains(err.Error(), "--new-state") {
 		t.Errorf("Prepare in LOST mode: %v", err)
 	}
-	if ns.ClaimInfo("u1") != nil {
+	if e.d.local.ClaimInfo("u1") != nil {
 		t.Error("the claim is prepared")
 	}
-	noErr(t, unprepareOn(ctx, ns, "u1"))
+	noErr(t, e.unprepare(e.d.local, "u1"))
+	e.stop()
 	if data, err := os.ReadFile(filepath.Join(local, store.FileName)); err != nil || string(data) != "{" {
 		t.Errorf("the lost document was rewritten: %q %v", data, err)
 	}
 	for name, want := range specs {
-		if data, err := os.ReadFile(filepath.Join(root, "cdi", name)); err != nil || string(data) != want {
+		if data, err := os.ReadFile(filepath.Join(e.config.Flags.CDIRoot, name)); err != nil || string(data) != want {
 			t.Errorf("CDI spec %s changed in LOST mode: %q %v", name, data, err)
 		}
 	}

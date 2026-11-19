@@ -20,12 +20,14 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 // testParseFlags returns the flags of args with the environment env.
@@ -202,4 +204,68 @@ func TestEnsureDir(t *testing.T) {
 	if err := ensureDir(file); err == nil {
 		t.Fatal("a file: expected an error")
 	}
+}
+
+// newDriver starts the NRI plugin after the first list of the pool
+// devices and after the CDI specs of the prepared claims are written
+// again, and before the kubelet plugins are registered and the node's
+// ResourceSlices are published.
+func TestStartOrder(t *testing.T) {
+	e := newDriverTestEnv(t)
+	e.start()
+	e.synchronize()
+	e.mustPrepare(e.d.local, localClaim("u1", localBlockSize))
+	e.mustPrepare(e.d.pool, poolClaim("u2"))
+	e.stop()
+	specs := []string{filepath.Join(e.config.Flags.CDIRoot, device.ClaimsCDISpecName), filepath.Join(e.config.Flags.CDIRoot, device.PoolCDISpecName)}
+	for _, spec := range specs {
+		noErr(t, os.Remove(spec))
+	}
+	sockets := func() []string {
+		socks, err := filepath.Glob(filepath.Join(e.config.KubeletPluginsRegistryDir, "*.sock"))
+		noErr(t, err)
+		return socks
+	}
+	if socks := sockets(); len(socks) > 0 {
+		t.Fatalf("registration sockets left after the stop: %v", socks)
+	}
+	hasAction := func(verb string) bool {
+		return slices.ContainsFunc(e.client.Actions(), func(a k8stesting.Action) bool { return a.Matches(verb, "resourceslices") })
+	}
+	e.client.ClearActions()
+	started := false
+	e.runtime.onStart = func() error {
+		started = true
+		if !hasAction("list") || hasAction("create") {
+			t.Errorf("NRI started with the actions %v: want a list of ResourceSlices and no create", e.client.Actions())
+		}
+		if socks := sockets(); len(socks) > 0 {
+			t.Errorf("NRI started after the registration of %v", socks)
+		}
+		for _, spec := range specs {
+			if _, err := os.Stat(spec); err != nil {
+				t.Errorf("NRI started before the CDI spec is written: %v", err)
+			}
+		}
+		return nil
+	}
+	e.start()
+	if !started {
+		t.Fatal("NRI did not start")
+	}
+	want := []string{filepath.Join(e.config.KubeletPluginsRegistryDir, device.DriverName+"-reg.sock"),
+		filepath.Join(e.config.KubeletPluginsRegistryDir, device.PoolDriverName+"-reg.sock")}
+	slices.Sort(want)
+	if socks := sockets(); !slices.Equal(socks, want) {
+		t.Errorf("registration sockets %v, want %v", socks, want)
+	}
+	for deadline := time.Now().Add(5 * time.Second); !hasAction("create"); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("no ResourceSlice published in 5 s")
+		}
+	}
+	e.synchronize()
+	e.mustUnprepare(e.d.local, "u1")
+	e.mustUnprepare(e.d.pool, "u2")
+	e.wantClean()
 }

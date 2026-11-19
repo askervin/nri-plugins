@@ -15,32 +15,29 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
-	"slices"
+	"maps"
 	"strconv"
 	"strings"
 	"testing"
 
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
 // localRegionNode returns the NUMA node of the region of the local memdev
 // in the kernel.
-func localRegionNode(e *localTestEnv) int {
+func localRegionNode(e *driverTestEnv) int {
 	e.t.Helper()
-	rs := e.regions(localSerial)
+	k := e.k.Kernel()
+	rs := k.Regions(e.k.Memdev(localSerial))
 	if len(rs) != 1 {
 		e.t.Fatalf("regions %v", rs)
 	}
-	ri, err := e.k.Kernel().Region(rs[0])
+	ri, err := k.Region(rs[0])
 	noErr(e.t, err)
 	if ri.NumaNode < 0 {
 		e.t.Fatalf("region %+v without a node", ri)
@@ -49,45 +46,13 @@ func localRegionNode(e *localTestEnv) int {
 }
 
 // injectDevices adds devices of regions, DRAM or the lease device to the
-// devices of the scan of the node state of the env.
-func injectDevices(e *localTestEnv, infos ...*dra.DeviceInfo) {
-	e.t.Helper()
-	devs, err := e.allocatable()
-	noErr(e.t, err)
+// devices of the last scan of the driver.
+func injectDevices(e *driverTestEnv, infos ...*dra.DeviceInfo) {
+	devs := maps.Clone(e.d.publisher.Devices())
 	for _, d := range infos {
 		devs[d.Name] = d
 	}
-}
-
-// fakeLeaseClaims records the lease claims whose sockets are open, with
-// their records in the store st as the lease broker keeps them.
-type fakeLeaseClaims struct {
-	st   *store.Store
-	open map[string]bool
-}
-
-func (f *fakeLeaseClaims) OpenClaim(claim *resourcev1.ResourceClaim) error {
-	if f.open == nil {
-		f.open = map[string]bool{}
-	}
-	f.open[string(claim.UID)] = true
-	return f.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
-		doc.LeaseClaims = append(doc.LeaseClaims, state.LeaseClaim{UID: string(claim.UID), Namespace: claim.Namespace, Name: claim.Name,
-			State: state.LeaseClaimOpen})
-		return nil
-	})
-}
-
-func (f *fakeLeaseClaims) CloseClaim(ctx context.Context, uid string) error {
-	delete(f.open, uid)
-	return f.st.Commit(ctx, store.Durable, func(doc *store.Document) error {
-		doc.LeaseClaims = slices.DeleteFunc(doc.LeaseClaims, func(c state.LeaseClaim) bool { return c.UID == uid })
-		return nil
-	})
-}
-
-func (f *fakeLeaseClaims) CDIEdits(uid string) cdiSpecs.ContainerEdits {
-	return cdiSpecs.ContainerEdits{Env: []string{"LEASE_" + uid + "=1"}}
+	e.d.publisher.SetDevices(devs)
 }
 
 // memoryConfigClaim returns a claim with the results numa (a slice of the
@@ -123,10 +88,10 @@ func memoryConfigEntry(source resourcev1.AllocationConfigSource, requests []stri
 // as the MemoryConfig entries of their requests say: the NRI plugin finds
 // each result in the driver by the marker of the result in its env.
 func TestContainerOfResultSettings(t *testing.T) {
-	e := newLocalTestEnv(t)
+	e := newDriverTestEnv(t)
+	e.config.Flags.Leases = true
 	e.start()
-	leases := &fakeLeaseClaims{st: e.st}
-	e.s.SetLeases(leases)
+	e.synchronize()
 	injectDevices(e,
 		&dra.DeviceInfo{Name: "region5-node4", Dev: &dra.Region{Name: "region5", NumaNode: 4, Size: 1 << 30}},
 		&dra.DeviceInfo{Name: "dram", Dev: &dra.DRAM{Nodes: []int{0}, Size: 1 << 30}},
@@ -143,7 +108,7 @@ func TestContainerOfResultSettings(t *testing.T) {
 		// null removes the preset of the class
 		memoryConfigEntry(claim, []string{"numa"}, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"steering":{"policy":null}}}`),
 	)
-	e.mustPrepare(c)
+	e.mustPrepare(e.d.local, c)
 	node := localRegionNode(e)
 	for _, tc := range []struct {
 		results []int
@@ -155,15 +120,14 @@ func TestContainerOfResultSettings(t *testing.T) {
 		{[]int{0, 1}, "steered " + strconv.Itoa(node) + ",4 auto from class cxl-region"},
 		{[]int{3}, "fenced  auto from class cxl-lease"},
 	} {
-		c, err := createdContainer(t, e.st, e.s, "u1", tc.results...)
+		c, err := e.createContainer("u1", tc.results...)
 		noErr(t, err)
 		if got := strings.ToLower(string(c.Management)) + " " + c.Claimed.String() + " " + c.Steering; got != tc.want {
 			t.Errorf("results %v: %q, expected %q", tc.results, got, tc.want)
 		}
 	}
-	_, err := createdContainer(t, e.st, e.s, "u1", 1, 2)
+	_, err := e.createContainer("u1", 1, 2)
 	wantErr(t, err, "container demo/pod/ctr: container.steering.policy: class cxl-region says auto, claim demo/claim-u1 request dram says first-dram")
-	noErr(t, leases.CloseClaim(context.Background(), "u1"))
-	e.mustUnprepare("u1")
+	e.mustUnprepare(e.d.local, "u1")
 	e.wantClean()
 }

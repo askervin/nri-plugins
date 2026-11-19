@@ -23,10 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
-
-	nriapi "github.com/containerd/nri/pkg/api"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
@@ -37,11 +34,12 @@ import (
 
 // TestShutdownStopsNRIFirst checks that Shutdown makes a close of the NRI
 // connection no loss before it stops anything else: the runtime may close
-// it while the broker stops (05-review D4).
+// it while the broker stops.
 func TestShutdownStopsNRIFirst(t *testing.T) {
-	e := newLocalTestEnv(t)
-	e.start()
-	nri, err := containers.New(containers.Options{Store: e.st, SysRoot: t.TempDir()})
+	st, err := store.Open(context.Background(), store.Options{Dir: t.TempDir(), BootID: "boot-1"})
+	noErr(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	nri, err := containers.New(containers.Options{Store: st, SysRoot: t.TempDir()})
 	noErr(t, err)
 	stopping := false
 	d := &driver{nri: nri, broker: stopFunc(func() { stopping = nri.Stopping() })}
@@ -49,31 +47,6 @@ func TestShutdownStopsNRIFirst(t *testing.T) {
 	if !stopping {
 		t.Fatal("the broker stopped before the NRI plugin was marked stopping")
 	}
-}
-
-// createdContainer returns the record of a container <namespace>/pod/ctr
-// (the namespace of the claim, demo without a preparation) whose env has
-// the markers of the results of the claim uid, as an NRI plugin with the
-// prepared claims of the driver drv creates it, and the error of its
-// creation.
-func createdContainer(t *testing.T, st *store.Store, drv containers.Results, uid string, results ...int) (containers.Container, error) {
-	t.Helper()
-	p, err := containers.New(containers.Options{Store: st, SysRoot: t.TempDir()})
-	noErr(t, err)
-	p.SetResults(drv)
-	pod := &nriapi.PodSandbox{Id: "sb", Uid: "pod-uid", Namespace: "demo", Name: "pod"}
-	for _, prep := range st.Snapshot().Preparations {
-		if prep.UID == uid {
-			pod.Namespace, _, _ = strings.Cut(prep.ClaimName, "/")
-		}
-	}
-	ctr := &nriapi.Container{Id: "ctr-id", PodSandboxId: "sb", Name: "ctr"}
-	for _, n := range results {
-		ctr.Env = append(ctr.Env, resultEnvVarName(uid, n)+"=1")
-	}
-	_, _, err = p.CreateContainer(context.Background(), pod, ctr)
-	c, _ := p.Record(ctr.Id)
-	return c, err
 }
 
 // TestFenceOf checks the fence that the device engine gets: the NRI
@@ -113,29 +86,27 @@ func TestFenceOf(t *testing.T) {
 // start: those of the prepared numa claims, and on a lost store, which does
 // not know the claims, every NUMA node of online CXL memory.
 func TestFenceSeed(t *testing.T) {
-	ctx := context.Background()
-	e := newLocalTestEnv(t)
+	e := newDriverTestEnv(t)
 	e.start()
-	e.mustPrepare(localClaim("u1", 64*mib))
+	e.synchronize()
+	e.mustPrepare(e.d.local, localClaim("u1", 64*mib))
 	want := dra.NumaNodes(e.records(), device.DriverName)
 	if len(want) != 1 {
 		t.Fatalf("NUMA nodes of the prepared claim %v", want)
 	}
-	got, err := fenceSeed(ctx, e.st, e.k.Kernel(), device.DriverName, device.PoolDriverName)
-	if err != nil || !reflect.DeepEqual(got, want) {
-		t.Fatalf("fence seed %v (%v), want %v", got, err, want)
+	e.restart()
+	if got := e.d.nri.Fenced().List(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("fenced %v, want %v", got, want)
 	}
-	noErr(t, e.st.Close())
+	e.stop()
 	for _, name := range []string{store.FileName, store.PrevName} {
-		noErr(t, os.WriteFile(filepath.Join(e.dir, name), []byte("{"), 0o600))
+		noErr(t, os.WriteFile(filepath.Join(e.config.KubeletPluginDir, name), []byte("{"), 0o600))
 	}
-	e.st, err = store.Open(ctx, store.Options{Dir: e.dir, BootID: e.k.BootID()})
-	noErr(t, err)
-	if e.st.Lost() == nil {
-		t.Fatal("the store is not lost")
+	e.start()
+	if r := e.records(); len(r.Preparations) > 0 {
+		t.Fatalf("preparations of a lost store %+v", r.Preparations)
 	}
-	got, err = fenceSeed(ctx, e.st, e.k.Kernel(), device.DriverName, device.PoolDriverName)
-	if err != nil || !reflect.DeepEqual(got, want) {
-		t.Fatalf("fence seed of a lost store %v (%v), want %v", got, err, want)
+	if got := e.d.nri.Fenced().List(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("fenced on a lost store %v, want %v", got, want)
 	}
 }

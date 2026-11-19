@@ -25,11 +25,10 @@ import (
 	"testing"
 	"time"
 
-	resourceapi "k8s.io/api/resource/v1"
-
+	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
@@ -213,95 +212,77 @@ func TestOpenDriverStore(t *testing.T) {
 }
 
 // A Prepare of either driver waits for the first NRI Synchronize (also of a
-// prepared claim), failing before any device after nriPrepareWait.
+// prepared claim), failing before any device after nriPrepareWait. Without
+// an NRI plugin it does not wait.
 func TestPrepareWaitsForNRI(t *testing.T) {
 	old := nriPrepareWait
 	t.Cleanup(func() { nriPrepareWait = old })
-	ctx := context.Background()
 	const why = "NRI not synchronized yet: context deadline exceeded: the containers of the claims would be created before the NRI plugin sees them; kubelet retries the Prepare"
-	newNRI := func(t *testing.T) *containers.Plugin {
-		t.Helper()
-		st, err := store.Open(ctx, store.Options{Dir: t.TempDir(), BootID: "boot-1"})
-		noErr(t, err)
-		t.Cleanup(func() { _ = st.Close() })
-		p, err := containers.New(containers.Options{Store: st, SysRoot: t.TempDir()})
-		noErr(t, err)
-		return p
-	}
-	// waits runs prepare in the background and checks that it waits until
-	// the NRI plugin synchronizes, then succeeds.
-	waits := func(t *testing.T, nri *containers.Plugin, prepare func() kubeletplugin.PrepareResult) {
-		t.Helper()
-		nriPrepareWait = time.Minute
-		done := make(chan kubeletplugin.PrepareResult, 1)
-		go func() { done <- prepare() }()
-		select {
-		case res := <-done:
-			t.Fatalf("did not wait for NRI: %+v", res)
-		case <-time.After(50 * time.Millisecond):
-		}
-		if _, err := nri.Synchronize(ctx, nil, nil); err != nil {
-			t.Fatal(err)
-		}
-		select {
-		case res := <-done:
-			noErr(t, res.Err)
-		case <-time.After(5 * time.Second):
-			t.Fatal("still waiting after Synchronize")
-		}
-	}
-
-	t.Run(device.DriverName, func(t *testing.T) {
-		e := newLocalTestEnv(t)
-		e.start()
-		nri := newNRI(t)
-		setNRI(e.s, nri)
-		claim := localClaim("u1", 16*mib)
-		prepare := func() kubeletplugin.PrepareResult { return prepareResultOn(ctx, e.s, claim) }
-		nriPrepareWait = 20 * time.Millisecond
-		cmds := e.commands()
-		wantErr(t, prepare().Err, why)
-		_, prepared := e.prepared()[string(claim.UID)]
-		if prepared || e.preparation("u1") != nil || e.commands() != cmds {
-			t.Fatalf("prepared %v, preparation %+v, commands:\n%s", prepared, e.preparation("u1"), strings.TrimPrefix(e.commands(), cmds))
-		}
-		waits(t, nri, prepare)
-		// prepared already: it waits too
-		nri = newNRI(t)
-		setNRI(e.s, nri)
-		waits(t, nri, prepare)
-		// no NRI plugin
-		setNRI(e.s, nil)
-		noErr(t, prepare().Err)
-		e.mustUnprepare("u1")
-		e.wantClean()
-	})
-
-	t.Run(device.PoolDriverName, func(t *testing.T) {
-		e := newPoolTestEnv(t)
-		e.plug(0xc1ee0001)
-		p := e.driver(t)
-		nri := newNRI(t)
-		setNRI(p, nri)
-		claim := poolClaim("u1", "c1", "pooled0", exclusiveData)
-		nriPrepareWait = 20 * time.Millisecond
-		ncmds := e.commands()
-		wantErr(t, prepare(t, p, claim).Err, why)
-		if prep := e.preparation("u1"); prep != nil || e.commands() != ncmds {
-			t.Fatalf("preparation %+v, commands:\n%s", prep, strings.TrimPrefix(e.commands(), ncmds))
-		}
-		waits(t, nri, func() kubeletplugin.PrepareResult {
-			res, err := p.PrepareResourceClaims(ctx, []*resourceapi.ResourceClaim{claim})
-			if err != nil {
-				return kubeletplugin.PrepareResult{Err: err}
+	for _, tc := range []struct {
+		driver string
+		claim  *resourcev1.ResourceClaim
+	}{
+		{device.DriverName, localClaim("u1", 16*mib)},
+		{device.PoolDriverName, poolClaim("u1")},
+	} {
+		t.Run(tc.driver, func(t *testing.T) {
+			e := newDriverTestEnv(t)
+			e.start()
+			// plugin returns the driver of the claim
+			plugin := func() *dra.Plugin {
+				if tc.driver == device.DriverName {
+					return e.d.local
+				}
+				return e.d.pool
 			}
-			return res[claim.UID]
+			prepare := func(p *dra.Plugin) kubeletplugin.PrepareResult {
+				res, err := p.PrepareResourceClaims(context.Background(), []*resourcev1.ResourceClaim{tc.claim})
+				if err != nil {
+					return kubeletplugin.PrepareResult{Err: err}
+				}
+				return res[tc.claim.UID]
+			}
+			// waits runs a Prepare in the background and checks that it
+			// waits until the NRI plugin synchronizes, then succeeds.
+			waits := func() {
+				t.Helper()
+				nriPrepareWait = time.Minute
+				p := plugin()
+				done := make(chan kubeletplugin.PrepareResult, 1)
+				go func() { done <- prepare(p) }()
+				select {
+				case res := <-done:
+					t.Fatalf("did not wait for NRI: %+v", res)
+				case <-time.After(50 * time.Millisecond):
+				}
+				e.synchronize()
+				select {
+				case res := <-done:
+					noErr(t, res.Err)
+				case <-time.After(5 * time.Second):
+					t.Fatal("still waiting after Synchronize")
+				}
+				e.check("prepared u1")
+			}
+
+			nriPrepareWait = 20 * time.Millisecond
+			cmds := e.commands()
+			wantErr(t, prepare(plugin()).Err, why)
+			if prep := e.records().Preparation(tc.driver, "u1"); prep != nil || e.commands() != cmds {
+				t.Fatalf("preparation %+v, commands:\n%s", prep, strings.TrimPrefix(e.commands(), cmds))
+			}
+			waits()
+			// prepared already: it waits too
+			e.restart()
+			waits()
+			// no NRI plugin
+			e.runtime.onStart = func() error { return errors.New("no runtime") }
+			e.restart()
+			noErr(t, prepare(plugin()).Err)
+			e.mustUnprepare(plugin(), "u1")
+			e.wantClean()
 		})
-		setNRI(p, nil)
-		noErr(t, prepare(t, p, claim).Err)
-		noErr(t, unprepare(t, p, "u1"))
-		e.wantClean(t, p)
-	})
+	}
 }
 
 // everyPeriod runs its pass at every period until it is stopped.
