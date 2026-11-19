@@ -266,9 +266,6 @@ type publishedDevice struct {
 // Kubernetes client: the local device of this node first, then a pool
 // device, then a local device of another node.
 func (b *Broker) deviceBySerial(serial uint64) (*publishedDevice, error) {
-	if b.opts.Client == nil {
-		return nil, nil
-	}
 	ctx, cancel := b.apiContext()
 	defer cancel()
 	list, err := b.opts.Client.ResourceV1().ResourceSlices().List(ctx, metav1.ListOptions{})

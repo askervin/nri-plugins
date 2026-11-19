@@ -255,7 +255,8 @@ func (e *leaseEnv) boot() {
 		CLI:         e.cli,
 		WaitDefault: 5 * time.Second,
 		PoolDriver:  device.PoolDriverName,
-		Kernel:      e.k.Kernel(),
+		MountPoints: func() ([]string, error) { return mountPoints(e.k.Kernel()) },
+		OpenDevice:  e.k.Kernel().OpenDevice,
 		Timeouts:    leases.Timeouts{Poll: 5 * time.Millisecond, Reconcile: time.Hour, Close: 2 * time.Second},
 		NewID:       func() string { n++; return fmt.Sprintf("%08x", 0xa0+n) },
 	}

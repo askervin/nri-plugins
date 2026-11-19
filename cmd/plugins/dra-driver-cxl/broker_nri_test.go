@@ -74,7 +74,8 @@ func TestCreateContainerDoesNotWaitForTheBroker(t *testing.T) {
 	nri, err := containers.New(containers.Options{Defaults: config.Container{Fencing: config.FencingNone}, Store: st, Leases: true,
 		SysRoot: root})
 	noErr(t, err)
-	opts := nodeOptions(cfg, &DriverConfig{}, kernelAt(root), st)
+	k := kernelAt(root)
+	opts := nodeOptions(cfg, &DriverConfig{}, k, st)
 	opts.Fence = fenceOf(nri)
 	node, err := dra.NewNode(opts)
 	noErr(t, err)
@@ -82,7 +83,8 @@ func TestCreateContainerDoesNotWaitForTheBroker(t *testing.T) {
 	noErr(t, err)
 	// newBroker's broker, with a client of the test
 	broker, err := leases.New(leases.Options{Store: st, Client: k8sfake.NewClientset(), NodeName: testNode, DataDir: local,
-		CLI: filepath.Join(root, "cxl-request"), WaitDefault: time.Second, PoolDriver: device.PoolDriverName})
+		CLI: filepath.Join(root, "cxl-request"), WaitDefault: time.Second, PoolDriver: device.PoolDriverName,
+		MountPoints: func() ([]string, error) { return mountPoints(k) }, OpenDevice: k.OpenDevice})
 	noErr(t, err)
 	node.Local.SetLeases(broker)
 	broker.Start(wireLenders(nri, broker, node))

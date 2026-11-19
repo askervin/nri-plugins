@@ -33,7 +33,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
-	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 // The lease broker serves the lease sockets of lease claims. A request
@@ -103,8 +102,7 @@ func (t Timeouts) withDefaults() Timeouts {
 type Options struct {
 	// Store keeps the lease and lease claim records.
 	Store *store.Store
-	// Client is the Kubernetes client; nil makes every API step a no-op
-	// or an error.
+	// Client is the Kubernetes client.
 	Client coreclientset.Interface
 	// NodeName is the node of the driver.
 	NodeName string
@@ -118,21 +116,18 @@ type Options struct {
 	WaitDefault time.Duration
 	// PoolDriver is the name of the pool driver, "" when it is disabled.
 	PoolDriver string
-	// Kernel reads the mounts of the plugin's mount namespace and opens
-	// the devices of dax and block leases (nil: kernel.New()).
-	Kernel *kernel.Kernel
-	// Mounts returns the mounts of the plugin's mount namespace; nil:
-	// those of Kernel.
-	Mounts func() ([]kernel.MountInfo, error)
-	// Identity resolves the peers of the sockets when Start gets a
+	// MountPoints returns the mount points of the plugin's mount
+	// namespace.
+	MountPoints func() ([]string, error)
+	// OpenDevice opens the device of a dax or block lease, read-only or
+	// read-write, for passing it to a container.
+	OpenDevice func(ctx context.Context, path string, readOnly bool) (*os.File, error)
+	// identity resolves the peers of the sockets when Start gets a
 	// container plugin (without one every request is refused); nil: the
 	// container table of that plugin.
-	Identity Identity
+	identity Identity
 	// Timeouts are the waits and periods.
 	Timeouts Timeouts
-	// OpenDevice opens the device of a dax or block lease for passing it
-	// to a container; nil: Kernel's OpenDevice.
-	OpenDevice func(path string, readOnly bool) (*os.File, error)
 	// NewID returns a new lease id; nil: 8 random hex digits.
 	NewID func() string
 	// Limits are the limits of the sockets and of the leases of a pod.
@@ -249,17 +244,19 @@ type Broker struct {
 // sockets of the lease claims. Requests are answered with "lending
 // unavailable" until Start.
 func New(opts Options) (*Broker, error) {
-	if opts.Store == nil {
+	switch {
+	case opts.Store == nil:
 		return nil, errors.New("lease broker: the broker needs the state store")
+	case opts.Client == nil:
+		return nil, errors.New("lease broker: the broker needs a Kubernetes client")
+	case opts.MountPoints == nil || opts.OpenDevice == nil:
+		return nil, errors.New("lease broker: the broker needs the mount points and the devices of the node")
 	}
 	if opts.WaitDefault <= 0 {
 		opts.WaitDefault = DefaultWait
 	}
 	opts.Image = cmp.Or(opts.Image, DefaultCompanionImage)
 	opts.Limits = opts.Limits.withDefaults()
-	if opts.Kernel == nil {
-		opts.Kernel = kernel.New()
-	}
 	if opts.NewID == nil {
 		opts.NewID = randomLeaseID
 	}
@@ -307,7 +304,7 @@ func (b *Broker) Start(containers Containers) {
 	b.started = true
 	b.containers = containers
 	if containers != nil {
-		b.identity = b.opts.Identity
+		b.identity = b.opts.identity
 		if b.identity == nil {
 			b.identity = tableIdentity{containers: containers}
 		}
@@ -449,23 +446,6 @@ func leasesOf(r *state.Records, claimUID string) []*state.Lease {
 		}
 	}
 	return out
-}
-
-// mounts returns the mounts of the mount namespace of the plugin.
-func (b *Broker) mounts() ([]kernel.MountInfo, error) {
-	if b.opts.Mounts != nil {
-		return b.opts.Mounts()
-	}
-	return b.opts.Kernel.Mounts()
-}
-
-// openDevice opens the device of a dax or block lease for passing it to a
-// container, read-only or read-write.
-func (b *Broker) openDevice(path string, readOnly bool) (*os.File, error) {
-	if b.opts.OpenDevice != nil {
-		return b.opts.OpenDevice(path, readOnly)
-	}
-	return b.opts.Kernel.OpenDevice(b.ctx, path, readOnly)
 }
 
 // apiContext returns the context of one API call.

@@ -36,6 +36,7 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
@@ -44,7 +45,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
-	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 // numaDevice is the lent device of a pool numa lease on node 2.
@@ -240,7 +240,7 @@ func TestIdentity(t *testing.T) {
 	var fails atomic.Bool
 	e := brokerEnv(t)
 	e.opts = func(o *Options) {
-		o.Identity = identityFunc(func(pid int) (Requester, error) {
+		o.identity = identityFunc(func(pid int) (Requester, error) {
 			if fails.Load() {
 				return Requester{}, errors.New("pod resources unreachable")
 			}
@@ -275,7 +275,8 @@ func (f identityFunc) Resolve(pid int) (Requester, error) { return f(pid) }
 
 // A request without a wait waits --lease-wait, then the lease is released
 // and the response is Failed with the timeout; without --lease-wait the
-// wait is 120 s.
+// wait is 120 s. New refuses options without a store, a client, the mount
+// points or the devices.
 func TestLeaseWaitDefault(t *testing.T) {
 	e := brokerEnv(t)
 	e.opts = func(o *Options) { o.WaitDefault = 300 * time.Millisecond }
@@ -294,7 +295,10 @@ func TestLeaseWaitDefault(t *testing.T) {
 	st, err := store.Open(context.Background(), store.Options{Dir: t.TempDir(), BootID: "boot-1"})
 	mustOK(t, err)
 	defer func() { _ = st.Close() }()
-	b, err := New(Options{Store: st, DataDir: t.TempDir(), NodeName: envNode})
+	opts := Options{Store: st, Client: k8sfake.NewClientset(), DataDir: t.TempDir(), NodeName: envNode,
+		MountPoints: func() ([]string, error) { return nil, nil },
+		OpenDevice:  func(context.Context, string, bool) (*os.File, error) { return nil, errors.ErrUnsupported }}
+	b, err := New(opts)
 	mustOK(t, err)
 	defer b.Stop()
 	if b.opts.WaitDefault != 120*time.Second || b.opts.Image != "registry.k8s.io/pause:3.10" || DefaultCLI != "/usr/local/bin/cxl-request" {
@@ -304,8 +308,17 @@ func TestLeaseWaitDefault(t *testing.T) {
 		SyncWait: 30 * time.Second, Persist: time.Minute}) {
 		t.Fatalf("timeouts %+v", b.t)
 	}
-	if _, err := New(Options{DataDir: t.TempDir()}); err == nil {
-		t.Fatal("a broker without a store")
+	for what, drop := range map[string]func(*Options){
+		"store":        func(o *Options) { o.Store = nil },
+		"client":       func(o *Options) { o.Client = nil },
+		"mount points": func(o *Options) { o.MountPoints = nil },
+		"devices":      func(o *Options) { o.OpenDevice = nil },
+	} {
+		o := opts
+		drop(&o)
+		if _, err := New(o); err == nil {
+			t.Errorf("a broker without the %s", what)
+		}
 	}
 }
 
@@ -1091,7 +1104,7 @@ func TestRemoveFsDirMountsError(t *testing.T) {
 	e := brokerEnv(t)
 	dir := filepath.Join(e.dir, "lease-fs", "gone")
 	mustOK(t, os.MkdirAll(filepath.Join(dir, "x"), 0o755))
-	e.opts = func(o *Options) { o.Mounts = func() ([]kernelMount, error) { return nil, errors.New("no mountinfo") } }
+	e.opts = func(o *Options) { o.MountPoints = func() ([]string, error) { return nil, errors.New("no mountinfo") } }
 	e.restart() // the sweep at start
 	if e.b.removeFsDir("gone") {
 		t.Fatal("removed without mountinfo")
@@ -1108,11 +1121,11 @@ func TestFsLeaseClaims(t *testing.T) {
 	e.openClaim()
 	root := filepath.Join(e.dir, "lease-fs")
 	var mu atomicMounts
-	e.opts = func(o *Options) { o.Mounts = mu.get }
+	e.opts = func(o *Options) { o.MountPoints = mu.get }
 	for _, d := range []string{"gone/x", "gone/y", "held/x", "held/y", "nested/x/sub"} {
 		mustOK(t, os.MkdirAll(filepath.Join(root, d), 0o755))
 	}
-	mu.set([]kernelMount{{Target: filepath.Join(root, "held/x")}, {Target: filepath.Join(root, "nested/x/sub")}})
+	mu.set([]string{filepath.Join(root, "held/x"), filepath.Join(root, "nested/x/sub")})
 	e.restart()
 	e.start()
 	for d, exists := range map[string]bool{"gone": false, "held": true, "held/x": true, "held/y": false, "nested/x/sub": true} {
@@ -1210,18 +1223,15 @@ func TestOtherBoot(t *testing.T) {
 	e.waitClaim(CompanionName(resp.Lease))
 }
 
-// kernelMount is a mount of the fake mount table of a test.
-type kernelMount = kernel.MountInfo
-
-// atomicMounts is a mount table that a test changes while the broker reads
-// it.
+// atomicMounts is a list of mount points that a test changes while the
+// broker reads it.
 type atomicMounts struct {
-	v atomic.Pointer[[]kernelMount]
+	v atomic.Pointer[[]string]
 }
 
-func (m *atomicMounts) set(mounts []kernelMount) { m.v.Store(&mounts) }
+func (m *atomicMounts) set(mounts []string) { m.v.Store(&mounts) }
 
-func (m *atomicMounts) get() ([]kernelMount, error) {
+func (m *atomicMounts) get() ([]string, error) {
 	if p := m.v.Load(); p != nil {
 		return slices.Clone(*p), nil
 	}

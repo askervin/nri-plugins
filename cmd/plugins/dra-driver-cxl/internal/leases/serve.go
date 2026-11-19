@@ -182,7 +182,7 @@ func readLine(r *bufio.Reader) ([]byte, error) {
 // the error.
 func (b *Broker) respond(c *net.UnixConn, resp *api.Response, fd leaseFd) error {
 	if fd.path != "" {
-		f, err := b.openDevice(fd.path, fd.readOnly)
+		f, err := b.opts.OpenDevice(b.ctx, fd.path, fd.readOnly)
 		if err != nil {
 			resp = &api.Response{Lease: resp.Lease, State: resp.State, Error: fmt.Sprintf("opening %s: %v", fd.path, err)}
 		} else {
@@ -294,9 +294,6 @@ func (e *peerGoneError) Unwrap() error { return e.err }
 // shared by several pods is prepared only once), commits it, and reports
 // whether the pod is in it now.
 func (b *Broker) refreshClaimPods(lc *state.LeaseClaim, podUID string) bool {
-	if b.opts.Client == nil {
-		return false
-	}
 	ctx, cancel := b.apiContext()
 	defer cancel()
 	claim, err := b.opts.Client.ResourceV1().ResourceClaims(lc.Namespace).Get(ctx, lc.Name, metav1.GetOptions{})

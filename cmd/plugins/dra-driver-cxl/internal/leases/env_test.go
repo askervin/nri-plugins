@@ -18,6 +18,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net"
@@ -43,7 +44,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
-	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 const (
@@ -169,9 +169,12 @@ func (e *leaseEnv) boot() {
 		CLI:         e.cli,
 		WaitDefault: 5 * time.Second,
 		PoolDriver:  device.PoolDriverName,
-		Mounts:      func() ([]kernel.MountInfo, error) { return nil, nil },
-		Timeouts:    Timeouts{Poll: 5 * time.Millisecond, Reconcile: time.Hour, Close: 2 * time.Second},
-		NewID:       func() string { n++; return fmt.Sprintf("%08x", 0xa0+n) },
+		MountPoints: func() ([]string, error) { return nil, nil },
+		OpenDevice: func(context.Context, string, bool) (*os.File, error) {
+			return nil, errors.New("no device nodes in the lease tests")
+		},
+		Timeouts: Timeouts{Poll: 5 * time.Millisecond, Reconcile: time.Hour, Close: 2 * time.Second},
+		NewID:    func() string { n++; return fmt.Sprintf("%08x", 0xa0+n) },
 	}
 	if e.opts != nil {
 		e.opts(&opts)

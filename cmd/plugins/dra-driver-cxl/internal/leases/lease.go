@@ -441,9 +441,6 @@ func companionBusy(r *state.Records, id string) bool {
 // deleteCompanion deletes the companion pod and claim and reports whether
 // both are gone.
 func (b *Broker) deleteCompanion(ns, name string) (bool, error) {
-	if b.opts.Client == nil {
-		return true, nil
-	}
 	ctx, cancel := b.apiContext()
 	defer cancel()
 	fg := metav1.DeletePropagationForeground

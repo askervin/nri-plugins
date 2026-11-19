@@ -105,13 +105,27 @@ func newBroker(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverCon
 		WaitDefault: cxlFlags.LeaseWait,
 		PoolDriver:  node.Pool.Name(),
 		Limits:      cxlFlags.LeaseLimits,
-		Kernel:      k,
+		MountPoints: func() ([]string, error) { return mountPoints(k) },
+		OpenDevice:  k.OpenDevice,
 	})
 	if err != nil {
 		return nil, err
 	}
 	node.Local.SetLeases(b)
 	return b, nil
+}
+
+// mountPoints returns the mount points of the mount namespace that k reads.
+func mountPoints(k *kernel.Kernel) ([]string, error) {
+	mounts, err := k.Mounts()
+	if err != nil {
+		return nil, err
+	}
+	points := make([]string, 0, len(mounts))
+	for _, m := range mounts {
+		points = append(points, m.Target)
+	}
+	return points, nil
 }
 
 // wireLenders sets the lenders of the companion claims of both drivers of

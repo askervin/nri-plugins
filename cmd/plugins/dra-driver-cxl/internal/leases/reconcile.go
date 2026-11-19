@@ -147,9 +147,6 @@ func (b *Broker) listenAgain() {
 // companionGone reports whether a companion pod no longer holds its claim:
 // deleted, being deleted or finished (evicted), and why.
 func (b *Broker) companionGone(ns, name string) (bool, string) {
-	if b.opts.Client == nil {
-		return false, ""
-	}
 	ctx, cancel := b.apiContext()
 	defer cancel()
 	p, err := b.opts.Client.CoreV1().Pods(ns).Get(ctx, name, metav1.GetOptions{})
@@ -171,9 +168,6 @@ func (b *Broker) companionGone(ns, name string) (bool, string) {
 // or does not restart its containers. A container that restarts keeps
 // its leases (the nodes of numa leases are lent again when it starts).
 func (b *Broker) requesterDone(pod state.PodRef) bool {
-	if b.opts.Client == nil {
-		return false
-	}
 	ctx, cancel := b.apiContext()
 	defer cancel()
 	p, err := b.opts.Client.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
@@ -250,9 +244,6 @@ func (b *Broker) relendContainer(podUID, container string) {
 // cxl-lease-<lease label>. A lost store does not know the leases of the
 // node, so nothing is deleted then.
 func (b *Broker) deleteOrphans() {
-	if b.opts.Client == nil {
-		return
-	}
 	if b.st.Lost() != nil {
 		klog.V(3).Infof("lease broker: the lease table was not decoded, keeping the companions of the node")
 		return

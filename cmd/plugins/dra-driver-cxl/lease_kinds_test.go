@@ -65,7 +65,7 @@ func newFdEnv(t *testing.T, local []fake.MemdevSpec, pool ...fake.MemdevSpec) *f
 	tag := filepath.Join(t.TempDir(), "fake-device")
 	noErr(t, os.WriteFile(tag, []byte("TAG"), 0o600))
 	e.opts = func(o *leases.Options) {
-		o.OpenDevice = func(path string, readOnly bool) (*os.File, error) {
+		o.OpenDevice = func(_ context.Context, path string, readOnly bool) (*os.File, error) {
 			access := "rw"
 			if readOnly {
 				access = "ro"
@@ -838,7 +838,7 @@ func TestBlockLease(t *testing.T) {
 func TestBlockLeaseOpenError(t *testing.T) {
 	e := newBlockEnv(t)
 	e.opts = func(o *leases.Options) {
-		o.OpenDevice = func(string, bool) (*os.File, error) { return nil, syscall.ENXIO }
+		o.OpenDevice = func(context.Context, string, bool) (*os.File, error) { return nil, syscall.ENXIO }
 	}
 	e.restart()
 	e.start()

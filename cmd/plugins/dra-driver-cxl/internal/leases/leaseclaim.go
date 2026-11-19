@@ -31,7 +31,6 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
-	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 // LeaseClaim: a claim on the lease device "lease" of cxl.nri.io, prepared
@@ -386,7 +385,7 @@ func (b *Broker) removeFsDir(uid string) bool {
 		klog.Errorf("lease broker: %v", err)
 		return false
 	}
-	mounts, err := b.mounts()
+	mounts, err := b.opts.MountPoints()
 	if err != nil {
 		klog.Errorf("lease broker: not removing %s: %v", dir, err)
 		return false
@@ -416,11 +415,11 @@ func (b *Broker) removeFsDir(uid string) bool {
 	return true
 }
 
-// mountedAtOrBelow tells whether a mount has the target p or a target
-// below p.
-func mountedAtOrBelow(mounts []kernel.MountInfo, p string) bool {
-	for i := range mounts {
-		if t := mounts[i].Target; t == p || strings.HasPrefix(t, p+"/") {
+// mountedAtOrBelow tells whether p or a path below p is one of the mount
+// points.
+func mountedAtOrBelow(mounts []string, p string) bool {
+	for _, t := range mounts {
+		if t == p || strings.HasPrefix(t, p+"/") {
 			return true
 		}
 	}

@@ -16,7 +16,6 @@ package leases
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"path/filepath"
 
@@ -313,9 +312,6 @@ func poolClass(l *state.Lease) string {
 
 // createCompanion creates the claim, then the pod of a lease.
 func (b *Broker) createCompanion(l *state.Lease) error {
-	if b.opts.Client == nil {
-		return errors.New("no Kubernetes client")
-	}
 	claim, pod, err := b.companionObjects(l)
 	if err != nil {
 		return err
