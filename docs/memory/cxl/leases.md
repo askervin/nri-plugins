@@ -323,6 +323,8 @@ The plugin refuses further requests that only it can judge:
 | `--source pool`, or the serial of a pool device, while the pool driver is disabled (a request without `--source` is served by local devices then) | `pool driver disabled (--pool-driver-name)` |
 | `--mode fs` with the `--name` (or default name) of another lease of the lease claim, in any state | `name "..." is in use by lease <id>` |
 | any request while NRI is not connected | `lending unavailable: NRI not connected` |
+| `request` beyond `--lease-max-per-pod` leases of the pod | `pod <ns>/<name> has N leases, the limit of --lease-max-per-pod` |
+| `request` beyond `--lease-max-per-node` leases of the node | `the node has N leases, the limit of --lease-max-per-node` |
 | `request` beyond `--lease-requests-per-minute` of the lease claim (the claim has a bucket of that many requests, refilled at that rate per minute); also any request of a pod that the plugin has not yet seen in the claim | `too many requests (--lease-requests-per-minute)` |
 | `fd` on a lease in mode `numa` or `fs` | `lease <id> is not a dax or block lease; use env` |
 
@@ -591,7 +593,8 @@ The companion objects of lease `<id>` live in the requester's namespace:
   of the borrower come from its own claims, the lease claim included,
   and the node defaults ([usage.md](usage.md#container-settings)). The
   claim has an ownerReference to the requester pod (controller: true).
-- Pod `cxl-lease-<id>`: ownerReference to the requester pod, required
+- Pod `cxl-lease-<id>`: ownerReference to the requester pod, the
+  `priorityClassName` of the requester pod, required
   node affinity `metadata.name In [<node>]`, `tolerations: [{operator: Exists}]`,
   restartPolicy Always, `automountServiceAccountToken: false`,
   `enableServiceLinks: false`, `terminationGracePeriodSeconds: 1`, one
@@ -818,6 +821,11 @@ and cannot make it the companion of a lease it did not request.
   admission policy limits the plugin's account to the companions of its
   own node ([usage.md](usage.md#rbac-and-admission-policies)); a host
   process with a kubeconfig of another user has no such limit.
+- Every lease is a pod on the requester's node. It requests 100m CPU and
+  16Mi memory. Size the tenants' ResourceQuota and the kubelet's
+  `maxPods` for these pods. `--lease-max-per-pod` (default 16) and
+  `--lease-max-per-node` (default 32) bound the leases
+  ([usage.md](usage.md#nri-dra-driver-cxl-flags)).
 - The plugin must run in the host pid namespace with the NRI socket (the
   DaemonSet of the Helm chart has `hostPID` and mounts `/var/run/nri`; a
   host process has both anyway). SELinux labels of the socket are set

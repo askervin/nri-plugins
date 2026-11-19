@@ -1890,7 +1890,8 @@ variable when it is set. Both `-flag` and `--flag` work.
 | `--lease-companion-image` | `LEASE_COMPANION_IMAGE` | `registry.k8s.io/pause:3.10` | image of the companion pods of leases |
 | `--lease-max-connections` | `LEASE_MAX_CONNECTIONS` | `64` | open connections of the lease socket of one lease claim; one more is closed at once |
 | `--lease-idle-timeout` | `LEASE_IDLE_TIMEOUT` | `10m0s` | how long a connection of a lease socket may stay without a request before the plugin closes it |
-| `--lease-max-per-pod` | `LEASE_MAX_PER_POD` | `64` | leases of the containers of one pod; a request beyond it is refused |
+| `--lease-max-per-pod` | `LEASE_MAX_PER_POD` | `16` | leases of the containers of one pod; a request beyond it is refused |
+| `--lease-max-per-node` | `LEASE_MAX_PER_NODE` | `32` | leases of the node; a request beyond it is refused |
 | `--lease-requests-per-minute` | `LEASE_REQUESTS_PER_MINUTE` | `32` | lease requests of one lease claim per minute, also their burst; a request beyond it is answered `too many requests` |
 | `--new-state` | | `false` | start with a new `state.json` when neither `state.json` nor `state.json.prev` can be read ([Upgrade](#upgrade)) |
 | `--forget-pool-serial` | | (none) | serial (`0x<hex>` or decimal) whose remembered provenance (pool device or local memdev) is removed at start, so that a memdev of it is new again; repeatable, or a comma-separated list ([local.md](local.md#what-the-plugin-publishes)) |

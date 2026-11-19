@@ -1645,6 +1645,47 @@ func TestRequestWaitsForStart(t *testing.T) {
 	}
 }
 
+// A request beyond the leases of the node is refused. A companion pod has
+// the priority class of its requester pod. A request reads the requester
+// pod once. The lists come from the reconcile.
+func TestNodeLimitAndPriority(t *testing.T) {
+	e := brokerEnv(t)
+	e.opts = func(o *Options) { o.Limits = Limits{LeasesPerPod: 3, LeasesPerNode: 2} }
+	e.restart()
+	ctx := context.Background()
+	p := requesterPod()
+	p.Spec.PriorityClassName = "high"
+	_, err := e.client.CoreV1().Pods(envNS).Update(ctx, p, metav1.UpdateOptions{})
+	mustOK(t, err)
+	e.openClaim()
+	e.start()
+	calls := len(e.client.Actions())
+	r, _ := e.call(api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s"})
+	if r.Error != "" {
+		t.Fatalf("request %+v", r)
+	}
+	var got []string
+	for _, a := range e.client.Actions()[calls:] {
+		if a.GetVerb() != "list" {
+			got = append(got, a.GetVerb()+" "+a.GetResource().Resource)
+		}
+	}
+	if want := []string{"get pods", "create resourceclaims", "create pods"}; !slices.Equal(got, want) {
+		t.Fatalf("API calls of a request %v, expected %v", got, want)
+	}
+	cp, err := e.client.CoreV1().Pods(envNS).Get(ctx, CompanionName(r.Lease), metav1.GetOptions{})
+	mustOK(t, err)
+	if cp.Spec.PriorityClassName != "high" {
+		t.Fatalf("companion priority class %q", cp.Spec.PriorityClassName)
+	}
+	if r, _ := e.call(api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s"}); r.Error != "" {
+		t.Fatalf("request %+v", r)
+	}
+	if r, _ := e.call(api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s"}); r.Error != "the node has 2 leases, the limit of --lease-max-per-node" {
+		t.Fatalf("a request beyond the leases of the node %+v", r)
+	}
+}
+
 // The limits of a lease socket and of the leases of a pod: a
 // connection beyond the limit is closed at once, an idle one after the
 // idle limit, a request beyond the leases of a pod refused.

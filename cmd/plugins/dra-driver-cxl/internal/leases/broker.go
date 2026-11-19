@@ -152,6 +152,9 @@ type Limits struct {
 	// LeasesPerPod is the number of leases of a pod; 0:
 	// DefaultMaxLeasesPerPod.
 	LeasesPerPod int
+	// LeasesPerNode is the number of leases of the node; 0:
+	// DefaultMaxLeasesPerNode.
+	LeasesPerNode int
 	// RequestsPerMinute is the rate of the lease requests of a lease
 	// claim, and their burst; 0: DefaultRequestsPerMinute.
 	RequestsPerMinute int
@@ -165,7 +168,10 @@ const (
 	// without a request.
 	DefaultIdle = 10 * time.Minute
 	// DefaultMaxLeasesPerPod is the default limit of the leases of a pod.
-	DefaultMaxLeasesPerPod = 64
+	DefaultMaxLeasesPerPod = 16
+	// DefaultMaxLeasesPerNode is the default limit of the leases of the
+	// node. Each lease has a companion pod on the node.
+	DefaultMaxLeasesPerNode = 32
 	// DefaultRequestsPerMinute is the default rate of the lease requests
 	// of a lease claim.
 	DefaultRequestsPerMinute = 32
@@ -176,6 +182,7 @@ func (l Limits) withDefaults() Limits {
 	l.Connections = cmp.Or(l.Connections, DefaultMaxConnections)
 	l.Idle = cmp.Or(l.Idle, DefaultIdle)
 	l.LeasesPerPod = cmp.Or(l.LeasesPerPod, DefaultMaxLeasesPerPod)
+	l.LeasesPerNode = cmp.Or(l.LeasesPerNode, DefaultMaxLeasesPerNode)
 	l.RequestsPerMinute = cmp.Or(l.RequestsPerMinute, DefaultRequestsPerMinute)
 	return l
 }

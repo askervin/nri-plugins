@@ -97,7 +97,7 @@ type CXLFlags struct {
 	// LeaseCompanionImage is the image of the companion pods.
 	LeaseCompanionImage string
 	// LeaseLimits are the limits of the lease sockets and of the leases of
-	// a pod.
+	// a pod and of the node.
 	LeaseLimits leases.Limits
 
 	// NewState starts with a new state.json when neither state.json nor
@@ -144,6 +144,7 @@ var flagEnvs = []struct{ flag, env string }{
 	{"lease-max-connections", "LEASE_MAX_CONNECTIONS"},
 	{"lease-idle-timeout", "LEASE_IDLE_TIMEOUT"},
 	{"lease-max-per-pod", "LEASE_MAX_PER_POD"},
+	{"lease-max-per-node", "LEASE_MAX_PER_NODE"},
 	{"lease-requests-per-minute", "LEASE_REQUESTS_PER_MINUTE"},
 }
 
@@ -179,6 +180,7 @@ func parseFlags(fs *flag.FlagSet, args []string, lookupEnv func(string) (string,
 	fs.IntVar(&f.LeaseLimits.Connections, "lease-max-connections", leases.DefaultMaxConnections, "open connections of the lease socket of a lease claim")
 	fs.DurationVar(&f.LeaseLimits.Idle, "lease-idle-timeout", leases.DefaultIdle, "how long a connection of a lease socket may stay without a request")
 	fs.IntVar(&f.LeaseLimits.LeasesPerPod, "lease-max-per-pod", leases.DefaultMaxLeasesPerPod, "leases of the containers of a pod")
+	fs.IntVar(&f.LeaseLimits.LeasesPerNode, "lease-max-per-node", leases.DefaultMaxLeasesPerNode, "leases of the node")
 	fs.IntVar(&f.LeaseLimits.RequestsPerMinute, "lease-requests-per-minute", leases.DefaultRequestsPerMinute, "lease requests of a lease claim per minute, also their burst")
 	fs.BoolVar(&f.NewState, "new-state", false, "start with a new state.json when neither state.json nor state.json.prev can be read")
 	f.Provenance.Register(fs)

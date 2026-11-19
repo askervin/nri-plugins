@@ -107,7 +107,7 @@ func (b *Broker) storeCreating(l *state.Lease, req *api.Request) (*state.Lease, 
 			return nil
 		}
 		next := l.Clone()
-		if err := creating(r, &next, req, b.opts.Limits.LeasesPerPod, b.opts.NewID); err != nil {
+		if err := creating(r, &next, req, b.opts.Limits, b.opts.NewID); err != nil {
 			return err
 		}
 		stored, created = next, true
@@ -120,9 +120,9 @@ func (b *Broker) storeCreating(l *state.Lease, req *api.Request) (*state.Lease, 
 }
 
 // creating adds the lease l to the records CREATING, with its id chosen by
-// newID (and the name of an fs lease): the lease claim takes new leases,
-// the pod of the lease has fewer than limit.
-func creating(r *state.Records, l *state.Lease, req *api.Request, limit int, newID func() string) error {
+// newID (and the name of an fs lease). The lease claim must take new
+// leases. The pod and the node must have fewer leases than their limits.
+func creating(r *state.Records, l *state.Lease, req *api.Request, limits Limits, newID func() string) error {
 	if err := claimOpen(r, l.Claim); err != nil {
 		return err
 	}
@@ -132,8 +132,11 @@ func creating(r *state.Records, l *state.Lease, req *api.Request, limit int, new
 			n++
 		}
 	}
-	if n >= limit {
+	if n >= limits.LeasesPerPod {
 		return fmt.Errorf("pod %s/%s has %d leases, the limit of --lease-max-per-pod", l.Pod.Namespace, l.Pod.Name, n)
+	}
+	if n := len(r.Leases); n >= limits.LeasesPerNode {
+		return fmt.Errorf("the node has %d leases, the limit of --lease-max-per-node", n)
 	}
 	if err := fsLeaseOptions(r, l, req, newID); err != nil {
 		return err

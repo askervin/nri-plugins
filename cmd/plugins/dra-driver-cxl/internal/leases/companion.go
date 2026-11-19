@@ -310,7 +310,8 @@ func poolClass(l *state.Lease) string {
 	return device.ClassPool
 }
 
-// createCompanion creates the claim, then the pod of a lease.
+// createCompanion creates the claim, then the pod of a lease. The pod gets
+// the priorityClassName of the requester pod.
 func (b *Broker) createCompanion(l *state.Lease) error {
 	claim, pod, err := b.companionObjects(l)
 	if err != nil {
@@ -318,6 +319,16 @@ func (b *Broker) createCompanion(l *state.Lease) error {
 	}
 	ctx, cancel := b.apiContext()
 	defer cancel()
+	requester, err := b.opts.Client.CoreV1().Pods(l.Pod.Namespace).Get(ctx, l.Pod.Name, metav1.GetOptions{})
+	switch {
+	case err != nil:
+		return fmt.Errorf("reading requester pod %s/%s: %w", l.Pod.Namespace, l.Pod.Name, err)
+	case string(requester.UID) != l.Pod.UID:
+		return fmt.Errorf("requester pod %s/%s is gone", l.Pod.Namespace, l.Pod.Name)
+	}
+	// A preempted companion fails its lease. The companion gets the
+	// priority of the requester.
+	pod.Spec.PriorityClassName = requester.Spec.PriorityClassName
 	created, err := b.opts.Client.ResourceV1().ResourceClaims(claim.Namespace).Create(ctx, claim, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("creating companion claim %s/%s: %w", claim.Namespace, claim.Name, err)

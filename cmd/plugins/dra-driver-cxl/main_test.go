@@ -59,7 +59,7 @@ func TestParseFlagsDefaults(t *testing.T) {
 		LeaseCLI:            "/usr/local/bin/cxl-request",
 		LeaseWait:           120 * time.Second,
 		LeaseCompanionImage: "registry.k8s.io/pause:3.10",
-		LeaseLimits:         leases.Limits{Connections: 64, Idle: 10 * time.Minute, LeasesPerPod: 64, RequestsPerMinute: 32},
+		LeaseLimits:         leases.Limits{Connections: 64, Idle: 10 * time.Minute, LeasesPerPod: 16, LeasesPerNode: 32, RequestsPerMinute: 32},
 	}
 	if !reflect.DeepEqual(f, want) {
 		t.Fatalf("flags\n%+v, expected\n%+v", f, want)
@@ -95,6 +95,7 @@ func TestParseFlagsEnvironment(t *testing.T) {
 		"LEASE_MAX_CONNECTIONS":     "8",
 		"LEASE_IDLE_TIMEOUT":        "1h",
 		"LEASE_MAX_PER_POD":         "4",
+		"LEASE_MAX_PER_NODE":        "5",
 		"LEASE_REQUESTS_PER_MINUTE": "6",
 	}
 	f, err := testParseFlags(nil, env)
@@ -118,7 +119,7 @@ func TestParseFlagsEnvironment(t *testing.T) {
 		LeaseCLISource:      "/bin/cxl-request",
 		LeaseWait:           5 * time.Second,
 		LeaseCompanionImage: "pause:test",
-		LeaseLimits:         leases.Limits{Connections: 8, Idle: time.Hour, LeasesPerPod: 4, RequestsPerMinute: 6},
+		LeaseLimits:         leases.Limits{Connections: 8, Idle: time.Hour, LeasesPerPod: 4, LeasesPerNode: 5, RequestsPerMinute: 6},
 	}
 	if !reflect.DeepEqual(f, want) {
 		t.Fatalf("flags\n%+v, expected\n%+v", f, want)
