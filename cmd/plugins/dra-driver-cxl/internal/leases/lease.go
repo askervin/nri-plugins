@@ -125,8 +125,8 @@ func sourceOf(l *state.Lease) state.Source {
 // serialOf returns the serial of the device of a lease in the protocol's
 // words, the requested one before it has one, "" for none.
 func serialOf(l *state.Lease) string {
-	if g := got(l); g.Serial != 0 {
-		return g.Serial.String()
+	if l.Got != nil {
+		return l.Got.Serial.String()
 	}
 	return askedSerial(&l.Asked)
 }
@@ -172,12 +172,10 @@ func readOnly(l *state.Lease) bool {
 // memory returns what a Ready lease gives its container, false before.
 // The path of a block lease is the host path of its block device.
 func memory(l *state.Lease) (api.Memory, bool) {
-	text := serialOf(l)
-	serial, err := api.ParseSerial(text)
-	if l.State != state.LeaseReady || err != nil {
+	if l.State != state.LeaseReady || l.Got == nil {
 		return api.Memory{}, false
 	}
-	g := got(l)
+	g := *l.Got
 	path := g.Path
 	if l.Asked.Mode == state.ModeBlock {
 		path = g.Block
@@ -188,8 +186,8 @@ func memory(l *state.Lease) (api.Memory, bool) {
 		shared = sharedDevice(l)
 	}
 	m := api.Memory{
-		Key:      api.Key(serial, 1),
-		Serial:   text,
+		Key:      api.Key(uint64(g.Serial), 1),
+		Serial:   g.Serial.String(),
 		Shared:   shared,
 		Mode:     string(l.Asked.Mode),
 		Size:     g.Bytes,
@@ -232,9 +230,9 @@ func fdOf(l *state.Lease) leaseFd {
 	switch {
 	case l.State != state.LeaseReady:
 	case g.Dax != "":
-		return leaseFd{path: g.Dax, readOnly: l.Asked.ReadOnly}
+		return leaseFd{path: g.Dax, readOnly: l.Asked.ReadOnly, lease: l.ID, got: g}
 	case l.Asked.Mode == state.ModeBlock && g.Block != "":
-		return leaseFd{path: g.Block, readOnly: l.Asked.ReadOnly}
+		return leaseFd{path: g.Block, readOnly: l.Asked.ReadOnly, lease: l.ID, got: g}
 	}
 	return leaseFd{}
 }

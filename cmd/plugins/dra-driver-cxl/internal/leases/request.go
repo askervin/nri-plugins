@@ -38,7 +38,7 @@ import (
 // socket of a lease claim, and the device whose fd goes with it: it stores
 // the lease, creates its companion and waits up to wait for it.
 func (b *Broker) requestLease(claimUID string, who Requester, req *api.Request, wait time.Duration) (*api.Response, leaseFd) {
-	if id := requested(b.records(), who, req.RequestID); id != "" {
+	if id := requested(b.records(), claimUID, who, req.RequestID); id != "" {
 		return b.waitReady(id, wait, true)
 	}
 	l := &state.Lease{
@@ -78,13 +78,14 @@ func (b *Broker) requestLease(claimUID string, who Requester, req *api.Request, 
 }
 
 // requested returns the id of the lease of the records that the container
-// asked for with the request id before, "" for none.
-func requested(r *state.Records, who Requester, requestID string) string {
+// asked for with the request id on the socket of the lease claim claimUID
+// before, "" for none.
+func requested(r *state.Records, claimUID string, who Requester, requestID string) string {
 	if requestID == "" {
 		return ""
 	}
 	for i := range r.Leases {
-		if l := &r.Leases[i]; l.RequestID == requestID && l.Pod.UID == who.Pod.UID && l.Container == who.Container {
+		if l := &r.Leases[i]; l.RequestID == requestID && l.Claim == claimUID && l.Pod.UID == who.Pod.UID && l.Container == who.Container {
 			return l.ID
 		}
 	}
@@ -93,15 +94,15 @@ func requested(r *state.Records, who Requester, requestID string) string {
 
 // storeCreating commits a new lease CREATING before any API object exists,
 // with its id (and the name of an fs lease) chosen, and returns it and
-// true; when a lease of the same request id of the container is stored,
-// that one and false. The lease claim must take new leases, the pod must
-// have fewer than Limits.LeasesPerPod.
+// true; when a lease of the container with the same request id and lease
+// claim is stored, that one and false. The lease claim must take new
+// leases, the pod must have fewer than Limits.LeasesPerPod.
 func (b *Broker) storeCreating(l *state.Lease, req *api.Request) (*state.Lease, bool, error) {
 	var stored state.Lease
 	created := false
 	who := Requester{Pod: l.Pod, Container: l.Container}
 	err := b.commit(func(r *state.Records) error {
-		if id := requested(r, who, l.RequestID); id != "" {
+		if id := requested(r, l.Claim, who, l.RequestID); id != "" {
 			stored, created = r.Lease(id).Clone(), false
 			return nil
 		}
@@ -365,11 +366,11 @@ func (b *Broker) releaseFailed(id, msg string) *api.Response {
 	return resp
 }
 
-// ownLease returns the lease of the records if it belongs to the pod of the
-// requester.
-func ownLease(r *state.Records, who Requester, id string) *state.Lease {
+// ownLease returns the lease of the records if it was asked for on the
+// socket of the lease claim claimUID by a container of the requester's pod.
+func ownLease(r *state.Records, claimUID string, who Requester, id string) *state.Lease {
 	l := r.Lease(id)
-	if l == nil || l.Pod.UID != who.Pod.UID {
+	if l == nil || l.Claim != claimUID || l.Pod.UID != who.Pod.UID {
 		return nil
 	}
 	return l
@@ -379,8 +380,8 @@ func ownLease(r *state.Records, who Requester, id string) *state.Lease {
 // socket of the lease claim claimUID and returns its state after waiting up
 // to wait for it to be gone.
 func (b *Broker) releaseOne(claimUID string, who Requester, id string, wait time.Duration) *api.Response {
-	if l := ownLease(b.records(), who, id); l == nil || l.Claim != claimUID {
-		return &api.Response{Lease: id, Error: "no such lease"}
+	if ownLease(b.records(), claimUID, who, id) == nil {
+		return &api.Response{Lease: id, Error: "no such lease of this pod"}
 	}
 	b.startRelease(id, "released by "+who.Container, state.TriggerRelease)
 	return b.waitReleased([]string{id}, wait)[0]
@@ -436,14 +437,17 @@ func (b *Broker) list(claimUID string, who Requester) *api.Response {
 	return &api.Response{Leases: &out}
 }
 
-// waitLease waits until a lease of the pod of the requester is Ready, at
-// most wait, and returns its response, and with withFd the device of a dax
-// or block lease of the requester container whose fd goes with it.
-func (b *Broker) waitLease(who Requester, id string, wait time.Duration, withFd bool) (*api.Response, leaseFd) {
-	l := ownLease(b.records(), who, id)
+// waitLease waits until a lease of the pod of the requester asked for on
+// the socket of the lease claim claimUID is Ready, at most wait. It returns
+// the lease's response, and with withFd the device of a dax or block lease
+// of the requester container whose fd goes with it.
+func (b *Broker) waitLease(claimUID string, who Requester, id string, wait time.Duration, withFd bool) (*api.Response, leaseFd) {
+	l := ownLease(b.records(), claimUID, who, id)
 	switch {
-	case l == nil || (withFd && l.Container != who.Container):
+	case withFd && (l == nil || l.Container != who.Container):
 		return &api.Response{Lease: id, Error: "no such lease of this container"}, leaseFd{}
+	case l == nil:
+		return &api.Response{Lease: id, Error: "no such lease of this pod"}, leaseFd{}
 	case withFd && l.Asked.Mode != state.ModeDax && l.Asked.Mode != state.ModeBlock:
 		resp := leaseInfo(l)
 		resp.Error = fmt.Sprintf("lease %s is not a %s or %s lease; use %s", id, api.ModeDax, api.ModeBlock, api.OpEnv)

@@ -326,6 +326,17 @@ func TestSerialZero(t *testing.T) {
 	}
 }
 
+// A Ready lease whose device has serial 0 tells that serial and its
+// environment.
+func TestReadySerialZero(t *testing.T) {
+	l := &state.Lease{ID: "000000a1", State: state.LeaseReady, Asked: state.LeaseAsked{Mode: state.ModeDax},
+		Got: &state.LeaseGot{Source: state.SourcePool, Bytes: 1 << 28, Dax: "/dev/dax0.0"}}
+	r := leaseInfo(l)
+	if r.Serial != "0x0" || r.Env["CXL_"+api.Key(0, 1)+"_SERIAL"] != "0x0" {
+		t.Fatalf("response %+v", r)
+	}
+}
+
 func TestCompanionClaims(t *testing.T) {
 	e := newSlicesBrokerEnv(t)
 	pod := requester.Pod

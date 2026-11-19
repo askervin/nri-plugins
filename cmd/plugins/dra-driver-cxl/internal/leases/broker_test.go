@@ -29,6 +29,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -213,9 +214,9 @@ func TestAuthRejection(t *testing.T) {
 		{api.Request{Op: "request", Size: "lots"}, `invalid size "lots"`},
 		{api.Request{Op: "request", Size: "0"}, `invalid size "0"`},
 		{api.Request{Op: "lease"}, `unknown op "lease"`},
-		{api.Request{Op: "release", Lease: "nope"}, "no such lease"},
+		{api.Request{Op: "release", Lease: "nope"}, "no such lease of this pod"},
 		{api.Request{Op: "fd", Lease: "nope"}, "no such lease of this container"},
-		{api.Request{Op: "env", Lease: "nope"}, "no such lease of this container"},
+		{api.Request{Op: "env", Lease: "nope"}, "no such lease of this pod"},
 	} {
 		resp, _ := e.call(c.req)
 		if resp.Error != c.err && !strings.HasPrefix(resp.Error, c.err) {
@@ -1291,8 +1292,46 @@ func TestStopClosesConnections(t *testing.T) {
 	}
 }
 
-// A pod with two lease claims lists and releases on the socket of each
-// only the leases asked for on that socket.
+// The fd of a Ready dax lease goes with its response. A lease released
+// while its device is opened gets no fd: the device may be another one.
+func TestFdOfAReleasedLease(t *testing.T) {
+	e := brokerEnv(t)
+	dev := filepath.Join(t.TempDir(), "dax")
+	mustOK(t, os.WriteFile(dev, nil, 0o600))
+	// releaseAtOpen is the id of the lease that the open releases
+	var releaseAtOpen atomic.Pointer[string]
+	e.opts = func(o *Options) {
+		o.OpenDevice = func(context.Context, string, bool) (*os.File, error) {
+			if id := releaseAtOpen.Load(); id != nil {
+				e.b.startRelease(*id, "released at the open", state.TriggerRelease)
+			}
+			return os.Open(dev)
+		}
+	}
+	e.restart()
+	e.openClaim()
+	e.start()
+	resp, _ := e.call(api.Request{Op: api.OpRequest, Mode: api.ModeDax, Size: "256Mi", Wait: "0s"})
+	id := resp.Lease
+	e.waitClaim(CompanionName(id))
+	_, err := e.b.OnLending(id, companionClaim(id))
+	mustOK(t, err)
+	e.b.OnPrepared(id, state.SourcePool, []state.DeviceInfo{withDev(preparedDev(serialPoolS, 1<<28, api.ModeDax, -1), func(d *state.DeviceInfo) { d.DaxDevice = "/dev/dax0.0" })})
+	e.waitState(id, state.LeaseReady)
+	r, fd := e.call(api.Request{Op: api.OpFd, Lease: id})
+	if fd < 0 || r.State != api.StateReady || r.Error != "" {
+		t.Fatalf("fd of a Ready lease: %+v, fd %d", r, fd)
+	}
+	mustOK(t, syscall.Close(fd))
+	releaseAtOpen.Store(&id)
+	r, fd = e.call(api.Request{Op: api.OpFd, Lease: id})
+	if fd >= 0 || !strings.HasPrefix(r.Error, "opening /dev/dax0.0: lease "+id+" is Releas") {
+		t.Fatalf("fd of a lease released at the open: %+v, fd %d", r, fd)
+	}
+}
+
+// A pod with two lease claims requests, lists, releases and reads on the
+// socket of each only the leases asked for on that socket.
 func TestLeaseListAndReleaseOfTheClaim(t *testing.T) {
 	e := brokerEnv(t)
 	e.openClaim()
@@ -1300,13 +1339,18 @@ func TestLeaseListAndReleaseOfTheClaim(t *testing.T) {
 	other.Name, other.UID = "lease2", "lc2"
 	mustOK(t, e.b.OpenClaim(other))
 	e.start()
-	r, _ := e.call(api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s"})
+	r, _ := e.call(api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s", RequestID: "r1"})
 	if r.Error != "" {
 		t.Fatalf("request %+v", r)
 	}
-	r2 := e.callAt("lc2", api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s"})
-	if r2.Error != "" {
-		t.Fatalf("request on lc2 %+v", r2)
+	r2 := e.callAt("lc2", api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s", RequestID: "r1"})
+	if r2.Error != "" || r2.Lease == r.Lease {
+		t.Fatalf("request on lc2 with the request id of a lease of lc1 %+v", r2)
+	}
+	for op, want := range map[string]string{api.OpEnv: "no such lease of this pod", api.OpFd: "no such lease of this container"} {
+		if got := e.callAt("lc2", api.Request{Op: op, Lease: r.Lease, Wait: "0s"}); got.Error != want {
+			t.Fatalf("%s of a lease of lc1 on lc2 %+v", op, got)
+		}
 	}
 	ids := func(resp api.Response) []string {
 		var out []string
@@ -1323,7 +1367,7 @@ func TestLeaseListAndReleaseOfTheClaim(t *testing.T) {
 	if got := e.callAt("lc2", api.Request{Op: api.OpList}); !slices.Equal(ids(got), []string{r2.Lease}) {
 		t.Fatalf("list on lc2 %+v", got)
 	}
-	if got := e.callAt("lc2", api.Request{Op: api.OpRelease, Lease: r.Lease, Wait: "0s"}); got.Error != "no such lease" {
+	if got := e.callAt("lc2", api.Request{Op: api.OpRelease, Lease: r.Lease, Wait: "0s"}); got.Error != "no such lease of this pod" {
 		t.Fatalf("release of a lease of lc1 on lc2 %+v", got)
 	}
 	if got := e.callAt("lc2", api.Request{Op: api.OpRelease, All: true, Wait: "0s"}); !slices.Equal(ids(got), []string{r2.Lease}) {

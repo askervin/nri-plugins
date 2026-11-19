@@ -498,6 +498,8 @@ The variables of `env` are those of
 Ready `dax` or `block` lease to `request` and `fd` carries the fd of its
 device as SCM_RIGHTS on the same write. A device that cannot be opened is
 answered with `opening <device>: <error>` instead, and the lease is kept.
+The plugin sends the fd only if the lease is still Ready after the open.
+Else it answers `opening <device>: lease <id> is <state> now`.
 
 - `wait` blocks until Ready or Failed (`release`: until Released). At the
   timeout of a `request` the lease is released and reported Failed
@@ -505,17 +507,20 @@ answered with `opening <device>: <error>` instead, and the lease is kept.
   their timeout and keep the lease. `"wait":"0s"` returns the current
   state at once and keeps the lease.
 - `requestId`: a repeated request with the same id from the same
-  container returns the same lease (a retry after a lost connection).
+  container on the same socket returns the same lease (a retry after a
+  lost connection).
 - A release waits up to `wait` for the companion objects to disappear and
   answers Released, or Releasing if they are still going.
-- `fd` serves the container that requested the lease only; `env`,
-  `list` and `release` serve every container of the pod.
+- A lease belongs to the lease claim whose socket got its request, and
+  to the pod. `env`, `list` and `release` serve every container of the
+  pod on that socket. `fd` serves only the container that requested the
+  lease.
 - Errors: the validation messages of [cxl-request](#cxl-request),
-  `not a container of the claim's pod`, `no such lease` (`release`),
-  `no such lease of this container` (`fd`, `env`), and the errors of the
-  lend. A lend that fails (for example the container is steered,
-  see [Limitations](#limitations), or not running) makes the lease Failed
-  with that message, and it is released.
+  `not a container of the claim's pod`, `no such lease of this pod`
+  (`release`, `env`), `no such lease of this container` (`fd`), and the
+  errors of the lend. A lend that fails (for example the container is
+  steered, see [Limitations](#limitations), or not running) makes the
+  lease Failed with that message, and it is released.
 
 Caller authentication: the socket identifies the lease claim, and the
 claim's `reservedFor` the pod. SO_PEERCRED gives the caller's pid; the
@@ -524,9 +529,9 @@ container's pod must be a pod of the claim. Every request of a
 connection is authenticated again while the process that connected runs;
 once it has exited (its pidfd, or a start time that differs from that at
 connect, tells), the connection keeps the identity it had. A lease is
-bound to that pod and container: memory is lent to the calling container
-only; any container of the same pod with the socket may list and release
-it.
+bound to the claim, the pod and the container. The plugin lends memory to
+the calling container only. Every container of the pod may list and
+release the lease on the socket of the claim.
 
 ## Companion objects
 

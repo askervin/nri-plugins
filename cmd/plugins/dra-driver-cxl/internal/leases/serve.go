@@ -42,10 +42,13 @@ import (
 // the peer's container then, the connection's once the peer is gone.
 
 // leaseFd names the device of a dax or block lease whose fd goes with a
-// response: none if path is "".
+// response: none if path is "". The fd goes only while the lease is Ready
+// with got.
 type leaseFd struct {
 	path     string
 	readOnly bool
+	lease    string
+	got      state.LeaseGot
 }
 
 // logPeriod is the shortest time between two logged warnings with the same
@@ -239,11 +242,18 @@ func readLine(r *bufio.Reader) ([]byte, error) {
 }
 
 // respond writes a response line, with the open device of fd as
-// SCM_RIGHTS if it names one; a device that does not open is answered with
-// the error.
+// SCM_RIGHTS if it names one. A device that does not open is answered with
+// the error. So is a device whose lease is not Ready with it after the
+// open.
 func (b *Broker) respond(c *net.UnixConn, resp *api.Response, fd leaseFd) error {
 	if fd.path != "" {
 		f, err := b.opts.OpenDevice(b.ctx, fd.path, fd.readOnly)
+		if err == nil && !b.readyWith(fd) {
+			// a released device: another one may have its name now
+			_ = f.Close()
+			resp = infoOf(b.records(), fd.lease)
+			err = fmt.Errorf("lease %s is %s now", fd.lease, resp.State)
+		}
 		if err != nil {
 			resp = &api.Response{Lease: resp.Lease, State: resp.State, Error: fmt.Sprintf("opening %s: %v", fd.path, err)}
 		} else {
@@ -272,6 +282,12 @@ func (b *Broker) respond(c *net.UnixConn, resp *api.Response, fd leaseFd) error 
 	}
 	_, err = c.Write(append(data, '\n'))
 	return err
+}
+
+// readyWith tells whether the lease of fd is Ready with the device of fd.
+func (b *Broker) readyWith(fd leaseFd) bool {
+	l := b.records().Lease(fd.lease)
+	return l != nil && l.State == state.LeaseReady && l.Got != nil && *l.Got == fd.got
 }
 
 // waitIdentity waits, at most Timeouts.SyncWait, until the broker is
@@ -418,9 +434,9 @@ func (b *Broker) handle(claimUID string, who Requester, req *api.Request) (*api.
 	case api.OpList:
 		return b.list(claimUID, who), leaseFd{}
 	case api.OpFd:
-		return b.waitLease(who, req.Lease, wait, true)
+		return b.waitLease(claimUID, who, req.Lease, wait, true)
 	default: // api.OpEnv
-		return b.waitLease(who, req.Lease, wait, false)
+		return b.waitLease(claimUID, who, req.Lease, wait, false)
 	}
 }
 
