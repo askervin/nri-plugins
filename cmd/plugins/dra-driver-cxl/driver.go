@@ -620,6 +620,9 @@ func rescanLoop(stop, stable <-chan struct{}, rescan func()) {
 	}
 }
 
+// Shutdown stops the driver: NRI marked stopping, the periodic passes and
+// the uevents, the kubelet plugins of both drivers, the broker, NRI, the
+// publisher, the watcher and the store.
 func (d *driver) Shutdown(ctx context.Context) error {
 	klog.V(5).Info("Shutting down driver")
 
@@ -634,15 +637,17 @@ func (d *driver) Shutdown(ctx context.Context) error {
 	if d.stopEvents != nil {
 		d.stopEvents()
 	}
+	// The kubelet plugins before NRI: kubelet creates the containers of a
+	// claim that a Prepare finished, and NRI would never see them.
+	d.pool.Stop()
+	d.local.Stop()
 	if d.broker != nil {
 		d.broker.Stop()
 	}
 	if d.nri != nil {
 		d.nri.Stop()
 	}
-	d.pool.Stop()
 	d.publisher.Stop()
-	d.local.Stop()
 	if d.cancelRun != nil {
 		d.cancelRun()
 	}
