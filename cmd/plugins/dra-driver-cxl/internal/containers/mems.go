@@ -162,7 +162,7 @@ func memsDiffer(c *Container, want cpuset.CPUSet, prefix string) (string, bool) 
 // applyMems sets the cpuset.mems of containers with one NRI
 // UpdateContainers and returns the error of each container whose update
 // failed. Called with the update token held and mu not held.
-func applyMems(s nriStub, mems map[string]string, order []string) map[string]error {
+func applyMems(s Stub, mems map[string]string, order []string) map[string]error {
 	updates := make([]*api.ContainerUpdate, 0, len(order))
 	for _, id := range order {
 		u := &api.ContainerUpdate{ContainerId: id}

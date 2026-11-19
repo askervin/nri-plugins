@@ -57,6 +57,9 @@ type Options struct {
 // defaults).
 type Connection struct {
 	Name, Idx, Socket string
+	// Stub, if not nil, is the connection to the runtime: the plugin uses
+	// it instead of an NRI stub of the settings.
+	Stub Stub
 }
 
 // Plugin is the NRI plugin of the node: the table of the containers, the
@@ -106,7 +109,7 @@ type Plugin struct {
 
 	mu sync.Mutex
 	// stub is the NRI stub, nil while NRI is not connected.
-	stub nriStub
+	stub Stub
 	ctrs map[string]*Container
 	seq  uint64
 	// fenced are the fenced NUMA nodes, F.
@@ -126,8 +129,8 @@ type Plugin struct {
 	conn ConnState
 }
 
-// nriStub is the part of stub.Stub that the plugin uses.
-type nriStub interface {
+// Stub is the part of stub.Stub that the plugin uses.
+type Stub interface {
 	Start(context.Context) error
 	Stop()
 	UpdateContainers([]*api.ContainerUpdate) ([]*api.ContainerUpdate, error)
@@ -164,25 +167,18 @@ func New(opts Options) (*Plugin, error) {
 	return p, nil
 }
 
-// Start connects the plugin to the runtime's NRI socket. The plugin
-// receives the container events from now on; a loss of the connection that
-// Stop does not cause ends the process. Without a connection the plugin
-// fences no container and lends fail.
+// Start connects the plugin to the runtime's NRI socket, or through
+// c.Stub. The plugin receives the container events from now on; a loss of
+// the connection that Stop does not cause ends the process. Without a
+// connection the plugin fences no container and lends fail.
 func (p *Plugin) Start(ctx context.Context, c Connection) error {
-	opts := []stub.Option{stub.WithOnClose(func() { p.onClose(ctx) })}
-	if c.Name != "" {
-		opts = append(opts, stub.WithPluginName(c.Name))
-	}
-	if c.Idx != "" {
-		opts = append(opts, stub.WithPluginIdx(c.Idx))
-	}
-	if c.Socket != "" {
-		opts = append(opts, stub.WithSocketPath(c.Socket))
-	}
-	s, err := stub.New(p, opts...)
-	if err != nil {
-		p.connect(nil)
-		return fmt.Errorf("failed to create NRI plugin stub: %w", err)
+	s := c.Stub
+	if s == nil {
+		var err error
+		if s, err = p.newStub(ctx, c); err != nil {
+			p.connect(nil)
+			return fmt.Errorf("failed to create NRI plugin stub: %w", err)
+		}
 	}
 	p.mu.Lock()
 	p.stub = s
@@ -195,6 +191,21 @@ func (p *Plugin) Start(ctx context.Context, c Connection) error {
 	p.connect(s)
 	klog.V(3).Info("NRI plugin started")
 	return nil
+}
+
+// newStub returns the NRI stub of the settings of c.
+func (p *Plugin) newStub(ctx context.Context, c Connection) (Stub, error) {
+	opts := []stub.Option{stub.WithOnClose(func() { p.onClose(ctx) })}
+	if c.Name != "" {
+		opts = append(opts, stub.WithPluginName(c.Name))
+	}
+	if c.Idx != "" {
+		opts = append(opts, stub.WithPluginIdx(c.Idx))
+	}
+	if c.Socket != "" {
+		opts = append(opts, stub.WithSocketPath(c.Socket))
+	}
+	return stub.New(p, opts...)
 }
 
 // SetResults sets the prepared claims of the DRA drivers that the
@@ -212,7 +223,7 @@ func (p *Plugin) Fencing() bool {
 
 // connect sets the stub of the connection, nil when NRI did not start
 // (the connection ABSENT).
-func (p *Plugin) connect(s nriStub) {
+func (p *Plugin) connect(s Stub) {
 	p.mu.Lock()
 	p.stub = s
 	p.mu.Unlock()

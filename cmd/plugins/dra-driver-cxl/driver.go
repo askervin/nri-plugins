@@ -266,8 +266,10 @@ func fenceOf(nri *containers.Plugin) func(ctx context.Context, node int) {
 // when it did not start: then the driver runs without NRI. A Prepare of
 // either driver waits for its first Synchronize; without the lease broker
 // (withBroker false) there are no lends to restore.
-func startNRI(ctx context.Context, nri *containers.Plugin, cxlFlags *CXLFlags, node *dra.Node, withBroker bool) *containers.Plugin {
-	if err := nri.Start(ctx, containers.Connection{Name: cxlFlags.NRIName, Idx: cxlFlags.NRIIdx, Socket: cxlFlags.NRISocket}); err != nil {
+func startNRI(ctx context.Context, nri *containers.Plugin, config *pluginConfig, node *dra.Node, withBroker bool) *containers.Plugin {
+	f := config.Flags
+	c := containers.Connection{Name: f.NRIName, Idx: f.NRIIdx, Socket: f.NRISocket, Stub: config.NRIStub}
+	if err := nri.Start(ctx, c); err != nil {
 		klog.Warningf("Failed to start NRI plugin (continuing without it): %v", err)
 		return nil
 	}

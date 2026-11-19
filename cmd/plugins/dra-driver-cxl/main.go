@@ -39,6 +39,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
+	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/version"
 )
 
@@ -108,8 +109,13 @@ type CXLFlags struct {
 
 // pluginConfig is the configuration of the kubelet plugins of the driver.
 type pluginConfig struct {
-	Flags                     *CXLFlags
-	Client                    coreclientset.Interface
+	Flags  *CXLFlags
+	Client coreclientset.Interface
+	// Kernel is the kernel of the node.
+	Kernel *kernel.Kernel
+	// NRIStub, if not nil, connects the NRI plugin to the runtime instead
+	// of the NRI socket of the flags.
+	NRIStub                   containers.Stub
 	KubeletPluginDir          string
 	KubeletPluginsRegistryDir string
 }
@@ -326,7 +332,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	// store (state.json); the store drops or marks stale what is of another
 	// boot before they are read. Without the boot id the driver does not
 	// start: it could not tell the records of another boot.
-	k := newKernel()
+	k := config.Kernel
 	bootID, err := k.BootID()
 	if err != nil {
 		return nil, fmt.Errorf("the boot id of the running kernel: %w", err)
@@ -352,7 +358,8 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	// region devices. The provenance of the serials is remembered across
 	// restarts: a pool device on the node is never a local memdev, also
 	// while the pool controller has deleted its ResourceSlices.
-	nri, err := containers.New(containers.Options{Defaults: driverConfig.containerDefaults(), Store: st, Leases: cxlFlags.Leases})
+	nri, err := containers.New(containers.Options{Defaults: driverConfig.containerDefaults(), Store: st, Leases: cxlFlags.Leases,
+		SysRoot: filepath.Dir(k.SysRoot)})
 	if err != nil {
 		return nil, err
 	}
@@ -430,7 +437,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	// above. A Prepare still waits for the first Synchronize (waitNRI): the
 	// stub starts when the runtime has configured it, before it
 	// synchronizes.
-	d.nri = startNRI(runCtx, nri, cxlFlags, node, broker != nil)
+	d.nri = startNRI(runCtx, nri, config, node, broker != nil)
 	lender := wireLenders(d.nri, broker, node)
 
 	// 6. The kubelet plugins, the publisher and the watchers.
@@ -467,6 +474,7 @@ func run(ctx context.Context, flags *CXLFlags) error {
 	config := &pluginConfig{
 		Flags:                     flags,
 		Client:                    client,
+		Kernel:                    newKernel(),
 		KubeletPluginDir:          filepath.Join(kubeletPluginsDir, device.DriverName),
 		KubeletPluginsRegistryDir: kubeletPluginsRegistryDir,
 	}
