@@ -27,7 +27,6 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
@@ -581,8 +580,14 @@ func (e *env) readyFence() {
 	e.expectUpdates()
 }
 
+// claimInfo is a prepared claim: its namespace/name and its devices.
+type claimInfo struct {
+	ClaimName string
+	Devices   []state.DeviceInfo
+}
+
 // claimTable is the prepared claims of a driver by uid.
-type claimTable map[string]*dra.ClaimInfo
+type claimTable map[string]*claimInfo
 
 // PreparedResult implements Results.
 func (c claimTable) PreparedResult(uid string, n int) (string, state.DeviceInfo, bool) {
