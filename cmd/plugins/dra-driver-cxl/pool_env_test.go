@@ -429,18 +429,6 @@ func poolClaim(uid, name, dev, data string) *resourceapi.ResourceClaim {
 	return c
 }
 
-// addPoolDevice adds an allocation result of request req for the pool
-// device dev with the status data to a claim.
-func addPoolDevice(c *resourceapi.ResourceClaim, req, dev, data string) *resourceapi.ResourceClaim {
-	c.Status.Allocation.Devices.Results = append(c.Status.Allocation.Devices.Results,
-		resourceapi.DeviceRequestAllocationResult{Request: req, Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: dev, ConsumedCapacity: poolConsumed(data)})
-	if data != "" {
-		c.Status.Devices = append(c.Status.Devices,
-			resourceapi.AllocatedDeviceStatus{Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: dev, Data: &runtime.RawExtension{Raw: []byte(data)}})
-	}
-	return c
-}
-
 func prepare(t *testing.T, p *dra.Plugin, claim *resourceapi.ResourceClaim) kubeletplugin.PrepareResult {
 	t.Helper()
 	res, err := p.PrepareResourceClaims(context.Background(), []*resourceapi.ResourceClaim{claim})
@@ -572,40 +560,6 @@ func (e *poolTestEnv) wantNoMounts(t *testing.T, p *dra.Plugin) {
 // error, as a mount table does.
 func (e *poolTestEnv) mountedErr(target string) (*mountInfo, error) {
 	return e.mounted(target), nil
-}
-
-// setImage writes a filesystem of the types on the fsdax namespace of the
-// persistent memdev, which has no region of the driver.
-func (e *poolTestEnv) setImage(memdev string, types ...string) {
-	e.t.Helper()
-	k := e.k.Kernel()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	// a release of the driver disabled it
-	noErr(e.t, k.EnableMemdev(ctx, memdev))
-	d, err := k.RootDecoder(memdev, kernel.RegionPmem)
-	noErr(e.t, err)
-	region, err := k.CreateRegion(ctx, kernel.CreateRegionRequest{Memdev: memdev, Decoder: d, Type: kernel.RegionPmem})
-	noErr(e.t, err)
-	nd, err := k.WaitNdRegion(ctx, region)
-	noErr(e.t, err)
-	nss, err := k.Namespaces(ctx, nd)
-	noErr(e.t, err)
-	ns := kernel.FsdaxNamespace(nss)
-	if ns == nil {
-		e.t.Fatalf("%s has no fsdax namespace", memdev)
-	}
-	e.k.SetImage(ns.BlockDevice, fake.FsImage(types...))
-	noErr(e.t, k.ReleaseRegion(ctx, region))
-	e.base = e.k.Commands()
-}
-
-// plugPmem hot-adds the pool device of persistent memory with the serial
-// without a namespace (none was ever made on it) and returns its memdev.
-func (e *poolTestEnv) plugPmem(serial uint64) string {
-	// the block device of the namespace that a writer makes
-	e.pmem = filepath.Join(e.k.DevRoot(), "pmem0")
-	return e.k.Plug(fake.MemdevSpec{Serial: serial, Pmem: 512 << 20})
 }
 
 // loop returns the path of the loop device n of the fake.

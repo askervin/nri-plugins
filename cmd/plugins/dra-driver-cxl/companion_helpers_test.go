@@ -20,9 +20,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"testing"
-
-	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
@@ -126,12 +123,3 @@ const (
 	testCtr           = "app"
 	testLeaseClaimUID = "lc1"
 )
-
-// wantNoCDIDevices checks that a prepared claim of one device has no CDI
-// device, and that the CDI spec of the pool driver has none.
-func (e *poolTestEnv) wantNoCDIDevices(t *testing.T, r kubeletplugin.PrepareResult) {
-	t.Helper()
-	if len(r.Devices) != 1 || len(r.Devices[0].CDIDeviceIDs) != 0 || e.cdiSpec(t) != nil {
-		t.Fatalf("CDI devices of a companion claim: %+v, spec %+v", r.Devices, e.cdiSpec(t))
-	}
-}

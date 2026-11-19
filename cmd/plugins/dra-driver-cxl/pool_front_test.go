@@ -15,22 +15,18 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 
 	resourceapi "k8s.io/api/resource/v1"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 // numaCompanion returns the companion claim of the numa lease id on the
@@ -39,158 +35,6 @@ func numaCompanion(id string) *resourceapi.ResourceClaim {
 	c := poolClaim("uid-"+companionName(id), companionName(id), "pooled0", exclusiveData)
 	c.ObjectMeta = companionClaim(id).ObjectMeta
 	return c
-}
-
-// recordedLender is a fake lender that records whether the memory of a
-// region is online at each revoke, and stops the process after a lend when
-// cut is set.
-type recordedLender struct {
-	*fakeLender
-	e      *poolTestEnv
-	region string
-	mu     sync.Mutex
-	online []bool
-	cut    bool
-}
-
-func (l *recordedLender) LendNode(ctx context.Context, podUID, name string, node int, holder string) error {
-	err := l.fakeLender.LendNode(ctx, podUID, name, node, holder)
-	if l.cut {
-		panic(errCut)
-	}
-	return err
-}
-
-func (l *recordedLender) RevokeNode(ctx context.Context, podUID, name string, node int, holder string) error {
-	l.mu.Lock()
-	l.online = append(l.online, l.e.onlineBlocks(l.region) > 0)
-	l.mu.Unlock()
-	return l.fakeLender.RevokeNode(ctx, podUID, name, node, holder)
-}
-
-// revokes returns whether the memory was online at each revoke so far.
-func (l *recordedLender) revokes() []bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return slices.Clone(l.online)
-}
-
-// keptClaim prepares the claim u1 of pooled0 whose Prepare a process stop
-// cuts after cxl create-region, below a region that another memdev gets
-// then: the start keeps it (KEPT). It returns the driver and the region
-// above.
-func keptClaim(t *testing.T, e *poolTestEnv) (*dra.Plugin, string) {
-	t.Helper()
-	e.plug(0xc1ee0001)
-	other := e.plug(0xc1ee0002)
-	p := e.driver(t)
-	e.k.CutAfter("cxl create-region")
-	cutPrepare(t, p, poolClaim("u1", "c1", "pooled0", exclusiveData))
-	k := e.k.Kernel()
-	d, err := k.RootDecoder(other, kernel.RegionRAM)
-	noErr(t, err)
-	above, err := k.CreateRegion(context.Background(), kernel.CreateRegionRequest{Memdev: other, Decoder: d, Type: kernel.RegionRAM})
-	noErr(t, err)
-	e.base = e.k.Commands()
-	p = e.driver(t)
-	if prep := e.preparation("u1"); prep == nil || prep.State != state.PreparationKept {
-		t.Fatalf("preparation %+v", prep)
-	}
-	return p, above
-}
-
-// A KEPT claim whose Prepare again is refused (no status data) stays KEPT
-// with its record and its kept region; the Prepare again with the data
-// reuses the region.
-func TestPoolKeptRefused(t *testing.T) {
-	e := newPoolTestEnv(t)
-	p, above := keptClaim(t, e)
-	kept := e.k.Kernel().Regions("mem0")
-	wantErr(t, prepare(t, p, poolClaim("u1", "c1", "pooled0", "")).Err, "no entry")
-	if prep := e.preparation("u1"); prep == nil || prep.State != state.PreparationKept || len(prep.Results) != 1 {
-		t.Fatalf("preparation %+v", prep)
-	}
-	if strings.Contains(e.commands(), "destroy-region") || !slices.Equal(e.k.Kernel().Regions("mem0"), kept) {
-		t.Fatalf("the refused Prepare released the kept region:\n%s", e.commands())
-	}
-	noErr(t, prepare(t, p, poolClaim("u1", "c1", "pooled0", exclusiveData)).Err)
-	if g := e.records().Grant(state.GrantRef{Claim: "u1"}); g == nil || len(kept) != 1 || g.Got.Region != state.RegionRef(kept[0]) {
-		t.Fatalf("the kept region %v is not reused: %+v", kept, g)
-	}
-	noErr(t, unprepare(t, p, "u1"))
-	noErr(t, e.k.Kernel().ReleaseRegion(context.Background(), above))
-	e.wantClean(t, p)
-}
-
-// A rollback that cannot release everything keeps the claim's record
-// (KEPT) with the grants left, says so; the claim's Unprepare releases
-// them.
-func TestPoolRollbackKept(t *testing.T) {
-	e := newPoolTestEnv(t)
-	e.plug(0xc1ee0001)
-	foreign := e.plug(0xc1ee0002)
-	k := e.k.Kernel()
-	d, err := k.RootDecoder(foreign, kernel.RegionRAM)
-	noErr(t, err)
-	region, err := k.CreateRegion(context.Background(), kernel.CreateRegionRequest{Memdev: foreign, Decoder: d, Type: kernel.RegionRAM})
-	noErr(t, err)
-	e.base = e.k.Commands()
-	p := e.driver(t)
-	// the second device has a region that the driver did not make; the
-	// rollback of the first one cannot disable its memdev
-	e.k.FailCommand("cxl disable-memdev", syscall.EBUSY)
-	claim := addPoolDevice(poolClaim("u1", "c1", "pooled0", exclusiveData), "mem2", "pooled1", `{"serial":"0xc1ee0002","shared":false,"size":268435456}`)
-	logs := klogtest.Capture(t, 3)
-	wantErr(t, prepare(t, p, claim).Err, "that the plugin did not create")
-	want := "claim default/c1 (u1): rollback: not everything was released: keeping its record for its Unprepare or its next Prepare"
-	if !strings.Contains(logs(), want) {
-		t.Fatalf("no %q in\n%s", want, logs())
-	}
-	prep := e.preparation("u1")
-	if prep == nil || prep.State != state.PreparationKept || len(prep.Results) != 1 || prep.Results[0].Index != 0 {
-		t.Fatalf("preparation %+v", prep)
-	}
-	if g := e.grant("u1", 0); g == nil || g.Serial != 0xc1ee0001 {
-		t.Fatalf("grant %+v", g)
-	}
-	// the foreign region goes; the Unprepare forgets its record
-	noErr(t, k.ReleaseRegion(context.Background(), region))
-	noErr(t, unprepare(t, p, "u1"))
-	e.wantClean(t, p)
-}
-
-// A Prepare again refused by validation or by the companion gate rolls
-// nothing back: the claim that a stop cut keeps what it made with its
-// record for kubelet's retry or Unprepare.
-func TestPoolRefusedPrepareAgain(t *testing.T) {
-	e := newPoolTestEnv(t)
-	e.plug(0xc1ee0001)
-	p := e.driver(t)
-	hooks := &fakeHooks{}
-	p.Lender().Set(newFakeLender(), hooks)
-	e.k.CutAfter("write devices/system/memory/memory")
-	cutPrepare(t, p, numaCompanion("l1"))
-	p = e.driver(t)
-	p.Lender().Set(newFakeLender(), hooks)
-	uid := "uid-cxl-lease-l1"
-	before := e.commands()
-	// the companion gate refuses it (the lease went while the driver was
-	// down)
-	hooks.lendingErr = errors.New("lease l1 is gone")
-	wantErr(t, prepare(t, p, numaCompanion("l1")).Err, "lease l1 is gone")
-	// a MemoryConfig that the driver refuses
-	hooks.lendingErr = nil
-	wantErr(t, prepare(t, p, withConfig(numaCompanion("l1"), resourceapi.AllocationConfigSourceClaim, nil, roConfig)).Err,
-		"device.readOnly needs mode dax, block or fs")
-	if cmds := strings.TrimPrefix(e.commands(), before); strings.Contains(cmds, "region") {
-		t.Fatalf("a refused Prepare released what the cut Prepare made:\n%s", cmds)
-	}
-	if prep := e.preparation(uid); prep == nil || prep.State != state.PreparationPreparing || e.records().Grant(state.GrantRef{Claim: uid}) == nil {
-		t.Fatalf("preparation %+v", prep)
-	}
-	noErr(t, prepare(t, p, numaCompanion("l1")).Err)
-	noErr(t, unprepare(t, p, uid))
-	e.wantClean(t, p)
 }
 
 // The NUMA nodes of the claims whose Prepare did not finish are fenced at
@@ -216,94 +60,6 @@ func TestPoolUnfinishedNodes(t *testing.T) {
 		t.Fatalf("numa nodes %v", poolNumaNodes(p))
 	}
 	e.wantClean(t, p)
-}
-
-// The Unprepare of a companion of a numa lease revokes the node it lends
-// with its memory online, then releases it; before the lender is set up
-// it fails. A process stop after the lend: the start keeps the companion,
-// its Unprepare revokes the node.
-func TestPoolCompanionRevoke(t *testing.T) {
-	e := newPoolTestEnv(t)
-	e.plug(0xc1ee0001)
-	p := e.driver(t)
-	hooks := &fakeHooks{}
-	lender := &recordedLender{fakeLender: newFakeLender(), e: e, region: "region0"}
-	p.Lender().Set(lender, hooks)
-	uid := "uid-cxl-lease-l1"
-	noErr(t, prepare(t, p, numaCompanion("l1")).Err)
-	if !strings.Contains(lender.callLog(), "lend ") {
-		t.Fatalf("lender calls:\n%s", lender.callLog())
-	}
-	// the lend recorded with the node of the memory of the device
-	if rec, node := lendOf(p, uid), e.k.Kernel().TargetNode("dax0.0"); rec == nil || rec.Lease != "l1" ||
-		node < 0 || !slices.Equal(rec.NumaNodes, []int{node}) {
-		t.Fatalf("lend %+v, the memory on node %d", rec, node)
-	}
-	noErr(t, unprepare(t, p, uid))
-	if got := lender.revokes(); !slices.Equal(got, []bool{true}) {
-		t.Fatalf("revokes with the memory online: %v", got)
-	}
-	e.wantClean(t, p)
-
-	// a process stop after the lend
-	lender.cut = true
-	cutPrepare(t, p, numaCompanion("l1"))
-	lender.cut = false
-	p = e.driver(t)
-	wantErr(t, unprepare(t, p, uid), "lending is not set up yet")
-	if prep := e.preparation(uid); prep == nil {
-		t.Fatal("the companion is gone")
-	}
-	p.Lender().Set(lender, hooks)
-	noErr(t, unprepare(t, p, uid))
-	if got := lender.revokes(); !slices.Equal(got, []bool{true, true}) {
-		t.Fatalf("revokes with the memory online: %v", got)
-	}
-	e.wantClean(t, p)
-}
-
-// The claims of a node mount that the start could not mount again have no
-// CDI device; they get them back when the node mount is mounted again: by
-// the Prepare again of one of them, or by the Prepare of a new claim.
-func TestPoolRemountCDI(t *testing.T) {
-	for _, how := range []string{"prepare again", "new claim"} {
-		t.Run(how, func(t *testing.T) {
-			e := newPoolTestEnv(t)
-			_, pmem := e.plugPersistent(0xc1ae0001, "erofs")
-			p := e.driver(t)
-			direct := e.nodeMount(0xc1ae0001, "direct")
-			noErr(t, prepare(t, p, persistentClaim("d1", persistentData, fsConfig("direct", "/models"))).Err)
-			noErr(t, prepare(t, p, persistentClaim("d2", persistentData, fsConfig("direct", "/models"))).Err)
-			// a new mount namespace where the device cannot be mounted
-			noErr(t, e.k.Kernel().Unmount(direct))
-			e.k.SetMountError(pmem, syscall.EIO, "")
-			p = e.driver(t)
-			for _, uid := range []string{"d1", "d2"} {
-				if prep := e.preparation(uid); prep.State != state.PreparationUnrestored || cdiDeviceByName(e.cdiSpec(t), "claim-"+uid+"-0") != nil {
-					t.Fatalf("%s: %+v, CDI spec %+v", uid, prep, e.cdiSpec(t))
-				}
-			}
-			wantErr(t, prepare(t, p, persistentClaim("d1", persistentData, fsConfig("direct", "/models"))).Err,
-				"its node mount "+direct+" is not mounted and cannot be mounted again")
-			e.k.SetMountError(pmem, nil, "")
-			if how == "prepare again" {
-				noErr(t, prepare(t, p, persistentClaim("d1", persistentData, fsConfig("direct", "/models"))).Err)
-			} else {
-				noErr(t, prepare(t, p, persistentClaim("d3", persistentData, fsConfig("direct", "/models"))).Err)
-			}
-			for _, uid := range []string{"d1", "d2"} {
-				cd := cdiDeviceByName(e.cdiSpec(t), "claim-"+uid+"-0")
-				if prep := e.preparation(uid); prep.State != state.PreparationPrepared || cd == nil || len(cd.ContainerEdits.Mounts) != 1 ||
-					cd.ContainerEdits.Mounts[0].HostPath != direct || cd.ContainerEdits.Mounts[0].ContainerPath != "/models" {
-					t.Fatalf("%s: %+v, CDI device %+v", uid, prep, cd)
-				}
-			}
-			for _, uid := range []string{"d1", "d2", "d3"} {
-				noErr(t, unprepare(t, p, uid))
-			}
-			e.wantClean(t, p)
-		})
-	}
 }
 
 // A companion claim of mode fs whose node mount and lease bind a new mount

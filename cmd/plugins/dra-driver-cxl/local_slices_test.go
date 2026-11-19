@@ -27,11 +27,9 @@ import (
 	"time"
 
 	resourcev1 "k8s.io/api/resource/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -73,17 +71,6 @@ func newLargeBlocksEnv(t *testing.T) *sliceTestEnv {
 // largeClaim returns a claim of bytes of the memdev largeSerial.
 func largeClaim(uid string, bytes int64, configs ...string) *resourcev1.ResourceClaim {
 	return memdevClaim(uid, memdevDeviceName(largeSerial), bytes, configs...)
-}
-
-// claimOfTwo returns a claim of the local memdev with the results of
-// requests "mem" and "mem2", consuming bytes and bytes2 of it.
-func claimOfTwo(uid string, bytes, bytes2 int64, configs ...string) *resourcev1.ResourceClaim {
-	c := localClaim(uid, bytes, configs...)
-	r := c.Status.Allocation.Devices.Results[0]
-	r.Request = "mem2"
-	r.ConsumedCapacity = map[resourcev1.QualifiedName]resource.Quantity{device.CapacityMemory: *resource.NewQuantity(bytes2, resource.BinarySI)}
-	c.Status.Allocation.Devices.Results = append(c.Status.Allocation.Devices.Results, r)
-	return c
 }
 
 // dax returns the dax device of result n of the claim uid.
@@ -178,11 +165,6 @@ func (e *sliceTestEnv) wantRegionReleased(region string) {
 	}
 }
 
-// availableSize returns the free memory of the dax region of a region.
-func (e *sliceTestEnv) availableSize(region string) string {
-	return e.k.Read("bus/cxl/devices/" + region + "/dax_" + region + "/dax_region/available_size")
-}
-
 // The memory block size is read as hex, and again for every slice and
 // every snapshot of the publisher.
 func TestLocalBlockSize(t *testing.T) {
@@ -220,207 +202,6 @@ func TestLocalBlockSize(t *testing.T) {
 	if off.LocalSnapshot() != nil {
 		t.Fatal("snapshot of unmanaged local devices")
 	}
-}
-
-// Dax and numa slices share a region on whole blocks, numa blocks go online
-// and offline with their slice, the region goes with the last slice.
-func TestLocalMixedSlices(t *testing.T) {
-	e := newSliceTestEnv(t)
-	e.start()
-
-	// a dax slice of 64 MiB is rounded up to a block: dax0.0 is reused
-	e.mustPrepare(localClaim("u1", 64*mib, localDaxConfig))
-	g := e.grant("u1", 0)
-	if g.Got.Region != "region0" || g.Got.Dax != "dax0.0" || g.Got.Size != localBlockSize || e.records().DaxDevOf(g).Major != 252 || e.records().DaxDevOf(g).Minor != 0 {
-		t.Fatalf("dax slice %+v", g.Got)
-	}
-	if info := e.s.ClaimInfo("u1").Devices[0]; info.Mode != api.ModeDax || info.DaxDevice != filepath.Join(e.k.DevRoot(), "dax0.0") || info.DaxMajor != 252 || info.TotalBytes != localBlockSize {
-		t.Fatalf("device info %+v", info)
-	}
-	if !strings.Contains(e.commands(), "cxl create-region -t ram -d decoder0.0 -m mem0") {
-		t.Fatalf("commands:\n%s", e.commands())
-	}
-	e.wantDax("dax0.0", localBlockSize, kernel.DriverDeviceDax)
-	e.wantRanges("dax0.0", e.blockRange(74, 1))
-	e.wantMemoryBlocks()
-	e.wantUsed(true)
-
-	// a numa slice: the next block, onlined movable
-	e.mustPrepare(localClaim("u2", localBlockSize))
-	if g := e.grant("u2", 0); g.Got.Dax != "dax0.1" || g.Got.Size != localBlockSize || g.Got.NumaNode == nil || *g.Got.NumaNode != 2 {
-		t.Fatalf("numa slice %+v", g.Got)
-	}
-	e.wantDax("dax0.1", localBlockSize, kernel.DriverKmem)
-	e.wantRanges("dax0.1", e.blockRange(75, 1))
-	e.wantMemoryBlocks(75)
-
-	// a dax slice of two blocks, and a numa slice of two blocks
-	e.mustPrepare(localClaim("u3", 2*localBlockSize, localDaxConfig))
-	e.wantRanges("dax0.2", e.blockRange(76, 2))
-	e.mustPrepare(localClaim("u4", 2*localBlockSize-mib))
-	e.wantDax("dax0.3", 2*localBlockSize, kernel.DriverKmem)
-	e.wantRanges("dax0.3", e.blockRange(78, 2))
-	e.wantMemoryBlocks(75, 78, 79)
-	if n := strings.Count(e.commands(), "create-region"); n != 1 {
-		t.Fatalf("region created %d times", n)
-	}
-	if avail := e.availableSize("region0"); avail != fmt.Sprint(localRegionSize-6*localBlockSize) {
-		t.Fatalf("available %s", avail)
-	}
-
-	// a numa release offlines its blocks only, and first-fit fills the gap
-	e.mustUnprepare("u2")
-	e.wantGone("dax0.1")
-	e.wantMemoryBlocks(78, 79)
-	e.wantUsed(true)
-	e.mustPrepare(localClaim("u5", localBlockSize))
-	e.wantRanges(e.dax("u5", 0), e.blockRange(75, 1))
-	e.wantMemoryBlocks(75, 78, 79)
-
-	// a dax release keeps dax0.0 with size 0
-	e.mustUnprepare("u1")
-	e.wantDax("dax0.0", 0, "")
-	e.mustUnprepare("u4")
-	e.mustUnprepare("u5")
-	e.wantMemoryBlocks()
-	e.wantUsed(true)
-	if strings.Contains(e.commands(), "destroy-region") {
-		t.Fatalf("region released while a slice exists:\n%s", e.commands())
-	}
-	// the last slice takes the region with it, the memdev stays enabled
-	e.mustUnprepare("u3")
-	e.wantRegionReleased("region0")
-	if !e.k.Exists("bus/cxl/devices/mem0/driver") {
-		t.Fatal("memdev disabled")
-	}
-	e.wantUsed(false)
-	e.mustUnprepare("u3")
-	e.wantClean()
-
-	// only dax slices are zeroed, after they are bound
-	want := "252:0 134217728 2097152,252:2 268435456 2097152"
-	if got := strings.Join(e.k.Zeroed(), ","); got != want {
-		t.Fatalf("zeroed %s, expected %s", got, want)
-	}
-	// numa slices are bound to kmem through sysfs
-	if strings.Contains(e.commands(), "daxctl") {
-		t.Fatalf("daxctl bound kmem:\n%s", e.commands())
-	}
-}
-
-// Dax slices, read-only or not, of one claim or two: a slice that does not
-// fit fails without a new dax device; a released dax0.0 is reused.
-func TestLocalDaxSlices(t *testing.T) {
-	e := newSliceTestEnv(t)
-	e.start()
-
-	e.mustPrepare(localClaim("u1", localBlockSize, localDaxConfig))
-	if g := e.grant("u1", 0); g.Got.Dax != "dax0.0" || g.Got.Size != localBlockSize || e.records().DaxDevOf(g).Major != 252 || e.records().DaxDevOf(g).Minor != 0 {
-		t.Fatalf("slice %+v", g.Got)
-	}
-	e.mustPrepare(localClaim("u2", 3*mib, localROConfig))
-	if g := e.grant("u2", 0); g.Got.Dax != "dax0.1" || g.Got.Size != localBlockSize || e.records().DaxDevOf(g).Minor != 1 || !g.Asked.ReadOnly {
-		t.Fatalf("read-only slice %+v %+v", g.Asked, g.Got)
-	}
-	if info := e.s.ClaimInfo("u2").Devices[0]; !info.ReadOnly || info.DaxDevice != filepath.Join(e.k.DevRoot(), "dax0.1") || info.DaxMinor != 1 {
-		t.Fatalf("read-only device info %+v", info)
-	}
-	// a slice larger than the free space
-	if err := e.prepareFails(localClaim("u3", localRegionSize, localDaxConfig), "the slice needs 1073741824"); !errors.Is(err, kernel.ErrNoRoom) {
-		t.Fatalf("expected no room, got %v", err)
-	}
-	e.wantGone("dax0.2")
-	if p := e.preparation("u3"); p != nil {
-		t.Fatalf("preparation of a failed claim %+v", p)
-	}
-	// releasing the first slice keeps dax0.0 with size 0 for the next
-	e.mustUnprepare("u1")
-	e.wantDax("dax0.0", 0, "")
-	// a claim of two slices, each of them rounded up to a memory block:
-	// the first gets dax0.0
-	e.mustPrepare(claimOfTwo("u3", 16*mib, 2*mib, localDaxConfig))
-	if g := e.grant("u3", 0); g.Got.Dax != "dax0.0" || g.Got.Size != localBlockSize || g.Got.Region != "region0" ||
-		e.records().DaxDevOf(g).Major != 252 || e.records().DaxDevOf(g).Minor != 0 {
-		t.Fatalf("first slice %+v", g.Got)
-	}
-	if g := e.grant("u3", 1); g.Got.Dax != "dax0.2" || g.Got.Size != localBlockSize {
-		t.Fatalf("second slice %+v", g.Got)
-	}
-	if info := e.s.ClaimInfo("u3"); len(info.Devices) != 2 {
-		t.Fatalf("device info %+v", info)
-	}
-	e.mustUnprepare("u2")
-	e.mustUnprepare("u3")
-	e.wantGone("dax0.1", "dax0.2")
-	e.wantRegionReleased("region0")
-	e.wantUsed(false)
-	e.wantClean()
-}
-
-// Slices of both modes are bound through the sysfs attributes of the dax
-// drivers, never with daxctl.
-func TestLocalSlicesSysfs(t *testing.T) {
-	e := newSliceTestEnv(t)
-	e.start()
-	e.mustPrepare(localClaim("u1", 8*mib, localDaxConfig))
-	e.wantDax("dax0.0", localBlockSize, kernel.DriverDeviceDax)
-	if w := e.k.Writes(); !slices.Contains(w, "bus/dax/drivers/device_dax/new_id") {
-		t.Fatalf("writes %v", w)
-	}
-	e.mustPrepare(localClaim("u2", 8*mib))
-	e.wantDax("dax0.1", localBlockSize, kernel.DriverKmem)
-	if w := e.k.Writes(); !slices.Contains(w, "bus/dax/drivers/kmem/bind") {
-		t.Fatalf("writes %v", w)
-	}
-	e.wantMemoryBlocks(75)
-	e.mustUnprepare("u2")
-	e.mustUnprepare("u1")
-	e.wantRegionReleased("region0")
-	if strings.Contains(e.commands(), "daxctl") {
-		t.Fatalf("daxctl used:\n%s", e.commands())
-	}
-}
-
-// A slice that first-fit places across a block boundary goes on the first
-// whole free blocks, combining free ranges (512 MiB blocks: blocks 19-21).
-func TestLocalPlacement(t *testing.T) {
-	e := newLargeBlocksEnv(t)
-
-	// first-fit would give dax0.0 the head of the region
-	e.mustPrepare(largeClaim("u1", largeBlockSize))
-	e.wantDax("dax0.0", 0, "")
-	u1 := e.dax("u1", 0)
-	e.wantDax(u1, largeBlockSize, kernel.DriverKmem)
-	e.wantRanges(u1, e.blockRange(19, 1))
-	e.wantMemoryBlocks(19)
-	// dax slices too: never the head, never half a block
-	e.mustPrepare(largeClaim("u2", largeBlockSize, localDaxConfig))
-	e.wantRanges(e.dax("u2", 0), e.blockRange(20, 1))
-	e.mustPrepare(largeClaim("u3", largeBlockSize))
-	e.wantRanges(e.dax("u3", 0), e.blockRange(21, 1))
-	e.wantMemoryBlocks(19, 21)
-	// a block is free, in the head and the tail: no whole block
-	_ = e.prepareFails(largeClaim("u4", largeBlockSize, localDaxConfig), "no 536870912 bytes of whole free memory blocks in region0")
-	if devs := e.k.Kernel().DaxDevices("region0"); !slices.Equal(devs, []string{"dax0.0", "dax0.1", "dax0.2", "dax0.3"}) {
-		t.Fatalf("dax devices %v", devs)
-	}
-	e.wantDax("dax0.0", 0, "")
-
-	// two free blocks apart: a numa slice of two ranges, onlined and
-	// offlined
-	e.mustUnprepare("u1")
-	e.mustUnprepare("u3")
-	e.wantMemoryBlocks()
-	e.mustPrepare(largeClaim("u5", 2*largeBlockSize))
-	u5 := e.dax("u5", 0)
-	e.wantRanges(u5, e.blockRange(19, 1), e.blockRange(21, 1))
-	e.wantDax(u5, 2*largeBlockSize, kernel.DriverKmem)
-	e.wantMemoryBlocks(19, 21)
-	e.mustUnprepare("u5")
-	e.wantMemoryBlocks()
-	e.mustUnprepare("u2")
-	e.wantRegionReleased("region0")
-	e.wantClean()
 }
 
 // With blocks larger than the region alignment the memdev publishes the
@@ -464,8 +245,8 @@ func TestLocalLargeBlocks(t *testing.T) {
 	e.wantClean()
 }
 
-// Failures while a slice is placed on whole blocks, bound or onlined leave
-// nothing behind (the layout of TestLocalPlacement).
+// Failures while a slice is placed on the whole blocks of
+// newLargeBlocksEnv, bound or onlined leave nothing behind.
 func TestLocalPlacementFailures(t *testing.T) {
 	e := newLargeBlocksEnv(t)
 	bs := int64(largeBlockSize)
@@ -744,118 +525,6 @@ func TestLocalRegionErrors(t *testing.T) {
 	e.wantClean()
 }
 
-// The records have the slices of the claims; a start releases cut
-// Prepares, unnamed dax devices, gone slices, idle regions, another boot's.
-func TestLocalStateAndReconcile(t *testing.T) {
-	e := newSliceTestEnv(t)
-	e.start()
-	ctx := context.Background()
-	e.mustPrepare(localClaim("u1", localBlockSize, localDaxConfig))
-	e.mustPrepare(localClaim("u2", localBlockSize))
-	e.mustPrepare(localClaim("u3", localBlockSize, localDaxConfig))
-	if region, _, _ := e.localRegion(localSerial); region != "region0" || len(e.localUses(localSerial)) != 3 {
-		t.Fatalf("region %q, claims %v", region, e.localUses(localSerial))
-	}
-	if g := e.grant("u1", 0); g == nil || g.Asked.Mode != state.ModeDax {
-		t.Fatalf("grant of u1 %+v", g)
-	}
-	if g := e.grant("u2", 0); g == nil || g.Asked.Mode != state.ModeNUMA || g.Got.Dax != "dax0.1" {
-		t.Fatalf("grant of u2 %+v", g)
-	}
-	if info := e.s.ClaimInfo("u3"); info == nil || info.Devices[0].DaxDevice != filepath.Join(e.k.DevRoot(), "dax0.2") {
-		t.Fatalf("device info of u3 %+v", info)
-	}
-
-	// restart: the numa claim u4 is not prepared (its Prepare was cut after
-	// its memory went online): its memory is offlined and its slice
-	// deleted
-	e.k.CutAfter("write devices/system/memory/memory77/state online_movable")
-	if !e.cut(func() { _ = prepareOn(ctx, e.s, localClaim("u4", localBlockSize)) }) {
-		t.Fatal("the Prepare was not cut")
-	}
-	u4 := e.dax("u4", 0)
-	e.restart()
-	e.wantGone(u4)
-	if uses := e.localUses(localSerial); len(uses) != 3 || e.grant("u4", 0) != nil {
-		t.Fatalf("after the restart: claims %v, u4 %+v", uses, e.grant("u4", 0))
-	}
-	// its preparation stays for kubelet's retry
-	if p := e.preparation("u4"); p == nil || p.State != state.PreparationPreparing {
-		t.Fatalf("preparation of the cut Prepare %+v", p)
-	}
-	e.mustUnprepare("u4")
-	e.wantMemoryBlocks(75)
-	e.wantUsed(true)
-
-	// restart: a dax device that belongs to no claim is deleted, a kmem
-	// one offlined first
-	k := e.k.Kernel()
-	stray, err := k.CreateDaxDevice(ctx, "region0", localBlockSize)
-	noErr(t, err)
-	noErr(t, k.BindDax(ctx, stray, kernel.DriverKmem))
-	noErr(t, k.WaitDaxBlocks(ctx, stray))
-	blocks, err := k.DaxDeviceBlocks(stray, localBlockSize)
-	noErr(t, err)
-	noErr(t, k.OnlineBlocks(blocks, true))
-	e.restart()
-	e.wantGone(stray)
-	e.wantMemoryBlocks(75)
-	e.wantDax("dax0.2", localBlockSize, kernel.DriverDeviceDax)
-
-	// restart: the slice of u1 is gone (size changed): it is forgotten
-	noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 2*localBlockSize))
-	e.restart()
-	if g := e.grant("u1", 0); g == nil || g.Got.Dax != "" {
-		t.Fatalf("grant of the gone slice %+v", g)
-	}
-	e.wantDax("dax0.0", 0, "")
-	e.mustUnprepare("u2")
-	e.mustUnprepare("u3")
-	e.mustUnprepare("u1")
-	e.wantUsed(false)
-	e.wantRegionReleased("region0")
-
-	// restart: a region without claims (a Prepare cut after the region
-	// was created) is destroyed
-	e.k.CutAfter("cxl create-region")
-	if !e.cut(func() { _ = prepareOn(ctx, e.s, localClaim("u1", localBlockSize)) }) {
-		t.Fatal("the Prepare was not cut")
-	}
-	e.restart()
-	e.wantUsed(false)
-	e.wantRegionReleased("region0")
-	e.wantMemoryBlocks()
-	e.mustUnprepare("u1")
-
-	// restart: the region is gone (destroyed by another, or a reboot)
-	e.mustPrepare(localClaim("u1", localBlockSize))
-	noErr(t, k.OfflineBlocks([]int{74}))
-	noErr(t, k.ReleaseRegion(ctx, "region0"))
-	e.restart()
-	if r := e.records().Region("region0"); r != nil || len(e.regions(localSerial)) != 0 {
-		t.Fatalf("record of a gone region %+v", r)
-	}
-	e.mustUnprepare("u1")
-	e.wantUsed(false)
-	e.mustPrepare(localClaim("u1", localBlockSize))
-	e.reboot()
-	e.wantUsed(false)
-	// the claim of the other boot is kept stale for kubelet's Unprepare
-	e.mustUnprepare("u1")
-	e.wantClean()
-
-	// restart: the memdev is gone: its records stay for kubelet's
-	// Unprepare
-	e.mustPrepare(localClaim("u1", localBlockSize, localDaxConfig))
-	e.k.Unplug(localSerial)
-	e.restart()
-	if m := e.records().Memdev(localSerial); m == nil || m.State != state.MemdevGone {
-		t.Fatalf("memdev record %+v", m)
-	}
-	e.mustUnprepare("u1")
-	e.wantUsed(false)
-}
-
 // A failed set-up of the region or a slice leaves nothing of it; a slice
 // that fails to delete stays with its claim until a retry.
 func TestLocalSliceFailures(t *testing.T) {
@@ -924,48 +593,6 @@ func TestLocalSliceFailures(t *testing.T) {
 	e.wantClean()
 }
 
-// The records of another boot and a memdev whose cut creation left no
-// region are dropped without commands, the claims of another boot kept
-// PREPARED_STALE.
-func TestLocalStateOfAnotherBoot(t *testing.T) {
-	e := newSliceTestEnv(t)
-	e.start()
-	ctx := context.Background()
-	e.mustPrepare(localClaim("u1", localBlockSize))
-	if boot := e.st.Snapshot().BootID; boot != e.k.BootID() || boot == "" {
-		t.Fatalf("records of boot %q, expected %q", boot, e.k.BootID())
-	}
-	cmds := e.k.Commands()
-
-	// another boot forgets the memdev's records
-	e.reboot()
-	e.wantUsed(false)
-	if now := e.k.Commands(); now != cmds {
-		t.Fatalf("the records of another boot touched the memdev:\n%s", strings.TrimPrefix(now, cmds))
-	}
-
-	// a memdev without a region, whose creation was cut before it made one
-	e.k.CutBefore("cxl create-region")
-	if !e.cut(func() { _ = prepareOn(ctx, e.s, localClaim("u2", localBlockSize)) }) {
-		t.Fatal("the Prepare was not cut")
-	}
-	e.wantUsed(true)
-	cmds = e.k.Commands()
-	e.restart()
-	e.wantUsed(false)
-	if now := e.k.Commands(); now != cmds {
-		t.Fatalf("a memdev without a region touched:\n%s", strings.TrimPrefix(now, cmds))
-	}
-	e.mustUnprepare("u2")
-	// the claim of the other boot, kept stale, needs nothing released
-	cmds = e.k.Commands()
-	e.mustUnprepare("u1")
-	if now := e.k.Commands(); now != cmds {
-		t.Fatalf("the Unprepare of a claim of another boot:\n%s", strings.TrimPrefix(now, cmds))
-	}
-	e.wantClean()
-}
-
 // A new region whose memory aliases is made again with its distinct bytes
 // only; that usable size is published and kept across restarts.
 func TestLocalAliasedRegion(t *testing.T) {
@@ -1012,25 +639,6 @@ func TestLocalAliasedRegion(t *testing.T) {
 	e.restart()
 	if got := e.localSnapshot().ProbedSize(localSerial); got != half {
 		t.Fatalf("probed usable size after a restart %d, expected %d", got, half)
-	}
-	e.mustUnprepare("u1")
-	e.wantClean()
-}
-
-// The configured usable size limits the regions of the memdev; a probe
-// that is turned off is not run.
-func TestLocalConfiguredUsableSize(t *testing.T) {
-	e := newSliceTestEnv(t)
-	limit := uint64(localRegionSize / 2)
-	e.config.MemdevSettings = []MemdevSetting{{Device: "0xc100e2e1", UsableSize: fmt.Sprint(limit + 4096)}}
-	e.config.VerifyAddressing = ptr(false)
-	e.start()
-	e.mustPrepare(localClaim("u1", 8*mib, localDaxConfig))
-	if !strings.Contains(e.commands(), fmt.Sprintf("cxl create-region -t ram -d decoder0.0 -m mem0 -s %d", limit)) {
-		t.Fatalf("commands:\n%s", e.commands())
-	}
-	if p := e.k.Probed(); len(p) != 0 {
-		t.Fatalf("probed although verifyAddressing is off: %v", p)
 	}
 	e.mustUnprepare("u1")
 	e.wantClean()

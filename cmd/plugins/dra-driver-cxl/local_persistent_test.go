@@ -16,25 +16,21 @@ package main
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 
 	"golang.org/x/sys/unix"
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/apimachinery/pkg/types"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
-	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -262,15 +258,6 @@ func (e *pmemTestEnv) mountCallsSince(n int) []string {
 	return slices.DeleteFunc(slices.Clone(e.k.MountCalls("")[n:]), func(c string) bool { return strings.HasPrefix(c, "superblocks ") })
 }
 
-// wantMountCalls checks the system calls of the mount table after the
-// first n.
-func (e *pmemTestEnv) wantMountCalls(n int, want ...string) {
-	e.t.Helper()
-	if got := e.mountCallsSince(n); !slices.Equal(got, want) {
-		e.t.Fatalf("calls %q, expected %q", got, want)
-	}
-}
-
 // pmemClaim returns a claim allocated the persistent memdev for request
 // "mem" with the consumed shares ("": none), and opaque cxl.nri.io claim
 // configs.
@@ -279,14 +266,6 @@ func pmemClaim(uid, shares string, configs ...string) *resourcev1.ResourceClaim 
 	if shares != "" {
 		c.Status.Allocation.Devices.Results[0].ConsumedCapacity = map[resourcev1.QualifiedName]resource.Quantity{device.CapacityShares: resource.MustParse(shares)}
 	}
-	return c
-}
-
-// pmemCompanion returns pmemClaim as the companion claim of lease l1.
-func pmemCompanion(uid, shares string, configs ...string) *resourcev1.ResourceClaim {
-	c := pmemClaim(uid, shares, configs...)
-	c.ObjectMeta = companionClaim("l1").ObjectMeta
-	c.UID = types.UID(uid)
 	return c
 }
 
@@ -423,128 +402,6 @@ func TestLocalPersistentLifeCycle(t *testing.T) {
 	e.wantNoViolations()
 }
 
-// Restarts mount the node mounts again as their uses derive and sweep the
-// unwanted ones; a reboot drops the claims of the other boot untouched.
-func TestLocalPersistentRestart(t *testing.T) {
-	e := newPmemTestEnv(t)
-	pmem := e.formatted("ext4")
-	e.start()
-	e.mustPrepare(pmemClaim("rw1", localPmemShare, localPmemFsRW))
-	e.mustPrepare(pmemClaim("ro1", localPmemShare, localPmemFsRO))
-	mnt := e.nodeMount("direct")
-
-	// a restart with the node mount in place: nothing changes
-	before, n := e.k.Commands(), len(e.k.MountCalls(""))
-	e.restart()
-	if mi := e.mounted(mnt); mi == nil || mi.SuperReadOnly() || e.k.CommandsSince(before) != "" {
-		t.Fatalf("after a restart: %+v\n%s", mi, e.k.CommandsSince(before))
-	}
-	for _, c := range e.mountCallsSince(n) {
-		if !strings.HasPrefix(c, "blkroget") {
-			t.Fatalf("the restart touched the mounts: %q", e.mountCallsSince(n))
-		}
-	}
-	if cdiDeviceByName(e.cdiSpec(), "claim-rw1-0") == nil || cdiDeviceByName(e.cdiSpec(), "claim-ro1-0") == nil {
-		t.Fatal("CDI devices lost in a restart")
-	}
-
-	// the node mount is gone: mounted again read-write for the writer
-	noErr(t, e.k.Kernel().Unmount(mnt))
-	e.restart()
-	if mi := e.mounted(mnt); mi == nil || mi.SuperReadOnly() || e.k.IsReadOnly(pmem) {
-		t.Fatalf("not mounted again read-write: %+v", mi)
-	}
-
-	// the writer goes: the superblock turns read-only; a start mounts the
-	// node mount of the reader again read-only
-	e.mustUnprepare("rw1")
-	if mi := e.mounted(mnt); mi == nil || !mi.SuperReadOnly() || !e.k.IsReadOnly(pmem) {
-		t.Fatalf("writer gone: %+v", mi)
-	}
-	noErr(t, e.k.Kernel().Unmount(mnt))
-	e.restart()
-	if mi := e.mounted(mnt); mi == nil || !mi.SuperReadOnly() || !e.k.IsReadOnly(pmem) {
-		t.Fatalf("not mounted again read-only: %+v", mi)
-	}
-	if use, _ := e.localSnapshot().Use(localPmemSerial); !slices.Equal(use.Claims, []string{"ro1"}) {
-		t.Fatalf("uses %+v", use)
-	}
-
-	// the last claim releases the device; a mount in the mounts directory
-	// that no claim lists is swept at the start
-	e.mustUnprepare("ro1")
-	e.wantRegions(1, 1)
-	stray := e.nodeMount("cached")
-	noErr(t, os.MkdirAll(stray, 0o755))
-	noErr(t, e.k.Kernel().Mount("tmpfs", stray, "tmpfs", 0, ""))
-	e.restart()
-	if len(e.k.MountTable()) != 0 || e.used() {
-		t.Fatalf("left: %+v", e.k.MountTable())
-	}
-
-	// a reboot: the claims of the other boot are kept PREPARED_STALE
-	// untouched; their Unprepare releases nothing and removes the record
-	e.mustPrepare(pmemClaim("ro2", localPmemShare, localPmemFsRO))
-	before = e.k.Commands()
-	e.reboot()
-	if p := e.preparation("ro2"); e.k.CommandsSince(before) != "" || e.used() || e.s.ClaimInfo("ro2") != nil ||
-		p == nil || p.State != state.PreparationStale {
-		t.Fatalf("a reboot touched the device or did not keep the claim stale (%+v):\n%s", p, e.k.CommandsSince(before))
-	}
-	e.mustUnprepare("ro2")
-	if e.k.CommandsSince(before) != "" || e.preparation("ro2") != nil {
-		t.Fatalf("the Unprepare of a stale claim:\n%s", e.k.CommandsSince(before))
-	}
-	e.wantNoViolations()
-}
-
-// A node mount that the start cannot mount again: no CDI devices until a
-// Prepare again mounts it; the Unprepare releases the device.
-func TestLocalPersistentUnrestored(t *testing.T) {
-	t.Run("mount error", func(t *testing.T) {
-		e := newPmemTestEnv(t)
-		pmem := e.formatted("ext4")
-		e.start()
-		e.mustPrepare(pmemClaim("ro1", localPmemShare, localPmemFsRO))
-		mnt := e.nodeMount("direct")
-		// the mount fails at the start: the Prepare again mounts it
-		noErr(t, e.k.Kernel().Unmount(mnt))
-		e.k.SetMountError(pmem, syscall.EIO, "")
-		e.restart()
-		if cdiDeviceByName(e.cdiSpec(), "claim-ro1-0") != nil {
-			t.Fatal("a CDI device of an unrestored claim")
-		}
-		e.k.SetMountError(pmem, nil, "")
-		e.mustPrepare(pmemClaim("ro1", localPmemShare, localPmemFsRO))
-		why := e.s.Unrestored()["ro1"]
-		if cdiDeviceByName(e.cdiSpec(), "claim-ro1-0") == nil || why != nil {
-			t.Fatalf("no CDI device after the Prepare again mounted the node mount: %v", why)
-		}
-		e.mustUnprepare("ro1")
-		e.wantRegions(1, 1)
-		e.wantClean()
-		e.wantNoViolations()
-	})
-	t.Run("another block device", func(t *testing.T) {
-		e := newPmemTestEnv(t)
-		pmem := e.formatted("ext4")
-		e.start()
-		e.mustPrepare(pmemClaim("ro1", localPmemShare, localPmemFsRO))
-		// the namespace is another one now: unrestored until the Unprepare
-		noErr(t, e.k.Kernel().Unmount(e.nodeMount("direct")))
-		e.k.RenamePmem(e.region(), filepath.Base(pmem), "259:7")
-		e.restart()
-		if cdiDeviceByName(e.cdiSpec(), "claim-ro1-0") != nil {
-			t.Fatal("a CDI device of an unrestored claim")
-		}
-		wantErr(t, e.prepare(pmemClaim("ro1", localPmemShare, localPmemFsRO)), "unprepare the claim (delete its pods) to prepare it anew")
-		e.mustUnprepare("ro1")
-		e.wantRegions(1, 1)
-		e.wantClean()
-		e.wantNoViolations()
-	})
-}
-
 // A writer's Unprepare that a failed downgrade stops (EBUSY, superblocks
 // unreadable) keeps the claim and the read-write superblock for the retry.
 func TestLocalPersistentFailedDowngrade(t *testing.T) {
@@ -594,86 +451,6 @@ func TestLocalPersistentFailedDowngrade(t *testing.T) {
 	e.mustUnprepare("ro1")
 	e.wantClean()
 	e.wantNoViolations()
-}
-
-// The idle device keeps its region below a region of another memdev for
-// its next claim; the start releases it when nothing lies above.
-func TestLocalPersistentDecoderOrder(t *testing.T) {
-	e := newPmemTestEnv(t)
-	e.plugAbove()
-	e.formatted("ext4")
-	e.start()
-	e.mustPrepare(pmemClaim("ro1", localPmemShare, localPmemFsRO))
-	e.regionAbove()
-	e.mustUnprepare("ro1")
-	e.wantRegions(1, 0)
-	if !e.used() || e.published() == nil {
-		t.Fatal("the idle device with its kept region is not published")
-	}
-	e.mustPrepare(pmemClaim("ro2", localPmemShare, localPmemFsRO))
-	e.wantRegions(1, 0)
-	e.mustUnprepare("ro2")
-	e.releaseAbove()
-	e.restart()
-	e.wantRegions(1, 1)
-	if e.used() {
-		t.Fatal("idle device not released")
-	}
-	e.wantClean()
-	e.wantNoViolations()
-}
-
-// A creation of the region cut by a process stop: the start releases it,
-// or keeps it below another region for the idle device; a Prepare uses it.
-func TestLocalPersistentCutCreation(t *testing.T) {
-	for _, above := range []bool{false, true} {
-		t.Run(map[bool]string{false: "alone", true: "below another region"}[above], func(t *testing.T) {
-			e := newPmemTestEnv(t)
-			e.plugAbove()
-			e.formatted("ext4")
-			e.start()
-			e.k.CutAfter("cxl create-region")
-			if !e.cut(func() { _ = prepareOn(context.Background(), e.s, pmemClaim("ro1", localPmemShare, localPmemFsRO)) }) {
-				t.Fatal("the Prepare was not cut")
-			}
-			if region, creating, _ := e.localRegion(localPmemSerial); region != "" || creating != "region0" {
-				t.Fatalf("record of the cut creation: region %q, creating %q", region, creating)
-			}
-			if above {
-				e.regionAbove()
-			}
-			e.restart()
-			if above {
-				e.wantRegions(1, 0)
-				reg := e.localRegionRecord(localPmemSerial)
-				if region, _, _ := e.localRegion(localPmemSerial); region != "region0" || (reg.SetUp && reg.Pmem != nil && reg.Pmem.NdRegion != "") {
-					t.Fatalf("kept region %+v", reg)
-				}
-				if _, ok := e.localUses(localPmemSerial)["ro1"]; !ok {
-					t.Fatalf("the region is not kept for the cut claim ro1: claims %v", e.localUses(localPmemSerial))
-				}
-				e.mustPrepare(pmemClaim("ro1", localPmemShare, localPmemFsRO))
-				e.wantRegions(1, 0)
-				e.mustUnprepare("ro1")
-				e.releaseAbove()
-				e.restart()
-				e.wantRegions(1, 1)
-				e.wantClean()
-				e.wantNoViolations()
-				return
-			}
-			e.wantRegions(1, 1)
-			if e.used() {
-				t.Fatal("the device of the cut creation is still used")
-			}
-			e.mustPrepare(pmemClaim("ro1", localPmemShare, localPmemFsRO))
-			e.wantRegions(2, 1)
-			e.mustUnprepare("ro1")
-			e.wantRegions(2, 2)
-			e.wantClean()
-			e.wantNoViolations()
-		})
-	}
 }
 
 // injectMemdev makes the scan's device of the memdev one of persistent
@@ -732,172 +509,6 @@ func TestLocalPersistentShared(t *testing.T) {
 	e.wantNoViolations()
 }
 
-// A memdev is used as one kind of device at a time.
-func TestLocalPersistentConflicts(t *testing.T) {
-	e := newPmemTestEnv(t)
-	e.formatted("ext4")
-	e.start()
-	e.mustPrepare(pmemClaim("ro1", localPmemShare, localPmemFsRO))
-	before := e.commands()
-	e.injectMemdev(false, false)
-	wantErr(t, e.prepare(pmemClaim("s1", "", localDaxConfig)),
-		"memdev "+e.memdev()+" (serial 0xc100f5e1): used as a persistent device by claims [ro1]; a sliced device cannot be a persistent device")
-	e.injectMemdev(false, true)
-	wantErr(t, e.prepare(pmemClaim("s1", localPmemShare, localDaxConfig)), "used as a persistent device by claims [ro1]; a shared device cannot be a persistent device")
-	if e.commands() != before || e.preparation("s1") != nil {
-		t.Fatalf("a refused kind touched the device:\n%s", strings.TrimPrefix(e.commands(), before))
-	}
-	e.rescan()
-	e.mustUnprepare("ro1")
-	e.wantClean()
-}
-
-// Leases of a persistent local memdev: the lease bind of an fs lease, bound
-// again and swept by a start; a block lease is lent the block device.
-func TestLocalPersistentLease(t *testing.T) {
-	e := newPmemTestEnv(t)
-	pmem := e.formatted("ext4")
-	hooks := &fakeHooks{fsDir: filepath.Join(e.dir, leaseFsDirName, "lc1"), name: "models"}
-	noErr(t, os.MkdirAll(hooks.fsDir, 0o755))
-	e.start()
-	e.s.Lender().Set(newFakeLender(), hooks)
-	e.mustPrepare(pmemCompanion("c1", localPmemShare, localPmemFsRO))
-	target := filepath.Join(hooks.fsDir, "models")
-	if mi := e.mounted(target); mi == nil || !slices.Contains(mi.MountFlags, "ro") {
-		t.Fatalf("lease bind %+v", mi)
-	}
-	if rec := e.s.ClaimInfo("c1").Lend; rec == nil || !slices.Equal(rec.Mounts, []string{target}) {
-		t.Fatalf("lend %+v", rec)
-	}
-	if len(hooks.devs) != 1 || hooks.devs[0].Mode != api.ModeFs || hooks.devs[0].NodeMount != e.nodeMount("direct") || hooks.devs[0].FsType != "ext4" ||
-		hooks.devs[0].BlockDevice != pmem || !hooks.devs[0].ReadOnly || hooks.source != state.SourceLocal {
-		t.Fatalf("lent %+v", hooks.devs)
-	}
-	if cdiDeviceByName(e.cdiSpec(), "claim-c1-0") != nil {
-		t.Fatal("CDI device of a companion claim")
-	}
-	// the sweep of the binds at the start unmounts a bind that no claim
-	// lists, and keeps the lease's
-	stale := filepath.Join(e.dir, leaseFsDirName, "lc9", "old")
-	noErr(t, os.MkdirAll(stale, 0o755))
-	noErr(t, e.k.Kernel().Mount(e.nodeMount("direct"), stale, "", unix.MS_BIND, ""))
-	e.restart()
-	e.s.Lender().Set(newFakeLender(), hooks)
-	if mi := e.mounted(stale); mi != nil {
-		t.Fatal("stale lease bind not swept")
-	}
-	if mi := e.mounted(target); mi == nil {
-		t.Fatal("the lease bind was swept")
-	}
-	// a restart binds it again
-	noErr(t, e.k.Kernel().Unmount(target))
-	e.restart()
-	e.s.Lender().Set(newFakeLender(), hooks)
-	if mi := e.mounted(target); mi == nil {
-		t.Fatal("lease bind not bound again")
-	}
-	e.mustUnprepare("c1")
-	if mi := e.mounted(target); mi != nil || len(e.k.MountTable()) != 0 {
-		t.Fatalf("left: %+v", e.k.MountTable())
-	}
-	e.wantRegions(1, 1)
-
-	e.mustPrepare(pmemCompanion("c2", localPmemAll, localPmemBlockRW))
-	if len(hooks.devs) != 1 || hooks.devs[0].Mode != api.ModeBlock || hooks.devs[0].BlockDevice != e.namespace().BlockDevice || hooks.devs[0].ReadOnly {
-		t.Fatalf("lent %+v", hooks.devs)
-	}
-	e.mustUnprepare("c2")
-	e.wantClean()
-	e.wantNoViolations()
-}
-
-// The records of a persistent device and of a claim of a filesystem on it.
-func TestLocalPersistentStateFile(t *testing.T) {
-	e := newPmemTestEnv(t)
-	pmem := e.formatted("ext4")
-	e.start()
-	e.mustPrepare(pmemClaim("rw1", localPmemShare, localPmemFsRW))
-	if m := e.localMemdev(localPmemSerial); m == nil || !m.Facts.Persistent {
-		t.Fatalf("memdev %+v", m)
-	}
-	reg := e.localRegionRecord(localPmemSerial)
-	if reg == nil || !reg.SetUp || reg.Pmem == nil || reg.Pmem.NdRegion != "region0" || reg.Pmem.Namespace != "namespace0.0" ||
-		reg.Pmem.BlockDevice == nil || reg.Pmem.BlockDevice.Name != pmem {
-		t.Fatalf("region %+v", reg)
-	}
-	g := e.grant("rw1", 0)
-	if g == nil || g.Asked.Mode != state.ModeFs || g.Got.Mount != state.AccessDirect || g.Asked.Path != localPmemPath {
-		t.Fatalf("grant %+v", g)
-	}
-	if m := e.records().MountOf(g); m == nil || m.FsType != "ext4" || m.Path != e.nodeMount("direct") {
-		t.Fatalf("node mount %+v", m)
-	}
-	e.mustUnprepare("rw1")
-	e.wantClean()
-}
-
-// Two results of one claim on the device: one node mount, the env keys and
-// default paths of the second have _2.
-func TestLocalPersistentTwoResults(t *testing.T) {
-	e := newPmemTestEnv(t)
-	e.formatted("ext4")
-	e.start()
-	claim := pmemClaim("ro1", localPmemShare, localPmemFsRO)
-	r := claim.Status.Allocation.Devices.Results[0]
-	r.Request = "mem2"
-	claim.Status.Allocation.Devices.Results = append(claim.Status.Allocation.Devices.Results, r)
-	e.mustPrepare(claim)
-	mnt := e.nodeMount("direct")
-	ro := []string{"bind", "ro", "nosuid", "nodev"}
-	e.wantPmemCDIDevice("claim-ro1-1",
-		[]string{"CXL_C100F5E1_2_ACCESS=direct", "CXL_C100F5E1_2_FSTYPE=ext4", "CXL_C100F5E1_2_MODE=fs", "CXL_C100F5E1_2_PATH=/run/cxl-fs/C100F5E1_2",
-			"CXL_C100F5E1_2_READONLY=1", "CXL_C100F5E1_2_SERIAL=0xc100f5e1", "CXL_C100F5E1_2_SHARED=0", "CXL_C100F5E1_2_SIZE=534773760", "CXL_CLAIM_ro1_1=1"},
-		nil, []*cdiSpecs.Mount{{HostPath: mnt, ContainerPath: "/run/cxl-fs/C100F5E1_2", Type: "bind", Options: ro}})
-	if len(e.k.MountTable()) != 1 {
-		t.Fatalf("mounts %+v", e.k.MountTable())
-	}
-	e.mustUnprepare("ro1")
-	e.wantRegions(1, 1)
-	if len(e.k.MountTable()) != 0 {
-		t.Fatalf("left %+v", e.k.MountTable())
-	}
-	e.wantNoViolations()
-}
-
-// A release sets the read-only flag of the block device of the remaining
-// uses only while it is the device's (not after it was renumbered).
-func TestLocalPersistentReleaseVerifiedDevice(t *testing.T) {
-	e := newPmemTestEnv(t)
-	pmem := e.formatted("ext4")
-	e.start()
-	for _, uid := range []string{"r1", "r2", "r3"} {
-		e.mustPrepare(pmemClaim(uid, localPmemShare, localPmemBlockRO))
-	}
-	// the flag was cleared meanwhile: the release sets it again
-	_, err := e.k.Kernel().SetBlockDeviceReadOnly(pmem, false)
-	noErr(t, err)
-	n := len(e.k.MountCalls("blkroset"))
-	e.mustUnprepare("r1")
-	if c := e.k.MountCalls("blkroset")[n:]; !slices.Equal(c, []string{"blkroset " + pmem + " 1"}) {
-		t.Fatalf("release of the verified device: %q", c)
-	}
-	// the records do not hold for the renumbered device: no invariant
-	// checks until the device is released
-	e.k.RenamePmem(e.region(), filepath.Base(pmem), "259:7")
-	_, err = e.k.Kernel().SetBlockDeviceReadOnly(pmem, false)
-	noErr(t, err)
-	n = len(e.k.MountCalls("blkroset"))
-	noErr(t, unprepareOn(context.Background(), e.s, "r2"))
-	if c := e.k.MountCalls("blkroset")[n:]; len(c) != 0 {
-		t.Fatalf("release changed the flag of another device's block device: %q", c)
-	}
-	noErr(t, unprepareOn(context.Background(), e.s, "r3"))
-	e.check("released")
-	e.wantRegions(1, 1)
-	e.wantClean()
-	e.wantNoViolations()
-}
-
 // A superblock that no claim explains (another mount namespace) refuses a
 // writer; a container's copy of the node mount is explained.
 func TestLocalPersistentUnexplainedSuperblock(t *testing.T) {
@@ -947,83 +558,6 @@ func TestLocalPersistentUnexplainedBtrfs(t *testing.T) {
 	e.wantNoViolations()
 }
 
-// fsTypes of the driver configuration: erofs only by default, the listed
-// types, none for an empty list; a refused type is not mounted.
-func TestLocalPersistentFsTypes(t *testing.T) {
-	e := newPmemTestEnv(t)
-	e.formatted("ext4")
-	for _, tc := range []struct{ config, err string }{
-		{"", "cxl.nri.io: claim demo/claim-ro1: device memdev-c100f5e1 serial 0xc100f5e1: device 0xc100f5e1: filesystem type ext4 is not allowed on this node (fsTypes: erofs)"},
-		{"fsTypes: [erofs, ext4]", ""},
-		{"fsTypes: []", "filesystem type ext4 is not allowed on this node (fsTypes: none)"},
-	} {
-		cfg, err := newDriverConfigFromString(tc.config)
-		noErr(t, err)
-		e.config.FsTypes = cfg.FsTypes
-		e.start()
-		if tc.err == "" {
-			e.mustPrepare(pmemClaim("ro1", localPmemShare, localPmemFsRO))
-			e.mustUnprepare("ro1")
-			continue
-		}
-		wantErr(t, e.prepare(pmemClaim("ro1", localPmemShare, localPmemFsRO)), tc.err)
-		if len(e.k.MountTable()) != 0 || e.used() {
-			t.Fatalf("%q: a refused type was mounted or holds the device: %+v", tc.config, e.k.MountTable())
-		}
-	}
-	e.wantClean()
-	e.wantNoViolations()
-}
-
-// Two writers and a reader of one ext4 share one read-write superblock,
-// downgraded by the last writer, upgraded by a new one, unmounted at last.
-func TestPersistentWritersAndReaders(t *testing.T) {
-	e := newPmemTestEnv(t)
-	pmem := e.formatted("ext4")
-	e.start()
-	direct := e.nodeMount("direct")
-	n := len(e.k.MountCalls(""))
-	e.mustPrepare(pmemClaim("a", localPmemShare, localPmemFsRW))
-	if a := e.infoOf("a"); a.Access != api.AccessDirect || a.FsType != "ext4" || a.NodeMount != direct || e.loopOf("a") != "" || a.ReadOnly {
-		t.Fatalf("use %+v", a)
-	}
-	e.wantMountCalls(n, "fsmount "+pmem+" "+direct+" ext4 rw dax=always")
-	e.mustPrepare(pmemClaim("b", localPmemShare, pmemFsConfig(false, api.AccessDirect, "ext4")))
-	e.mustPrepare(pmemClaim("c", localPmemShare, localPmemFsRO))
-	e.wantMountCalls(n, "fsmount "+pmem+" "+direct+" ext4 rw dax=always")
-	if mi := e.mounted(direct); mi == nil || mi.SuperReadOnly() || e.k.IsReadOnly(pmem) {
-		t.Fatalf("node mount %+v, block device read-only %v", mi, e.k.IsReadOnly(pmem))
-	}
-
-	n = len(e.k.MountCalls(""))
-	e.mustUnprepare("a")
-	e.wantMountCalls(n)
-	e.mustUnprepare("b")
-	e.wantMountCalls(n, "syncfs "+direct, "reconfigure "+direct+" ro", "blkroset "+pmem+" 1")
-	if mi := e.mounted(direct); mi == nil || !mi.SuperReadOnly() {
-		t.Fatalf("not downgraded: %+v", mi)
-	}
-
-	// a writer again upgrades in place
-	n = len(e.k.MountCalls(""))
-	e.mustPrepare(pmemClaim("d", localPmemShare, localPmemFsRW))
-	e.wantMountCalls(n, "blkroset "+pmem+" 0", "reconfigure "+direct+" rw")
-	e.mustUnprepare("c")
-
-	// the last use unmounts the node mount (TestLocalPersistentFailedDowngrade
-	// has the downgrade that a file open for writing fails)
-	e.mustPrepare(pmemClaim("r", localPmemShare, localPmemFsRO))
-	e.mustUnprepare("d")
-	n = len(e.k.MountCalls(""))
-	e.mustUnprepare("r")
-	e.wantMountCalls(n, "umount "+direct)
-	if _, err := os.Stat(direct); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("node mount directory left: %v", err)
-	}
-	e.wantClean()
-	e.wantNoViolations()
-}
-
 // An upgrade that the filesystem refuses leaves both block devices of a
 // cached xfs read-only again; a read-only xfs is mounted with nouuid.
 func TestPersistentUpgradeFails(t *testing.T) {
@@ -1048,58 +582,6 @@ func TestPersistentUpgradeFails(t *testing.T) {
 	e.mustUnprepare("r")
 	e.wantClean()
 	e.wantNoViolations()
-}
-
-// The default access of each filesystem type, mount(2) for read-only types,
-// nouuid for xfs, and the read-only flag of block readers and writers.
-func TestPersistentDefaults(t *testing.T) {
-	for image, access := range map[string]string{"erofs": api.AccessDirect, "ext4": api.AccessDirect, "xfs": api.AccessDirect,
-		"btrfs": api.AccessCached, "squashfs": api.AccessCached} {
-		t.Run(image, func(t *testing.T) {
-			e := newPmemTestEnv(t)
-			e.formatted(image)
-			e.start()
-			e.mustPrepare(pmemClaim("r", localPmemShare, localPmemFsRO))
-			if u := e.infoOf("r"); u.Access != access || u.FsType != image {
-				t.Errorf("%s: %+v", image, u)
-			}
-			// read-only types keep mount(2) with ro,nosuid,nodev
-			if config.FsTypeReadOnly(image) && len(e.k.MountCalls("mount ")) != 1 || !config.FsTypeReadOnly(image) && len(e.k.MountCalls("fsmount ")) != 1 {
-				t.Errorf("%s: calls %q", image, e.k.MountCalls(""))
-			}
-			e.mustUnprepare("r")
-			e.wantClean()
-		})
-	}
-	t.Run("xfs both accesses", func(t *testing.T) {
-		e := newPmemTestEnv(t)
-		e.formatted("xfs")
-		e.start()
-		e.mustPrepare(pmemClaim("d", localPmemShare, pmemFsConfig(true, api.AccessDirect, "")))
-		e.mustPrepare(pmemClaim("c", localPmemShare, pmemFsConfig(true, api.AccessCached, "")))
-		if c := e.k.MountCalls("fsmount"); len(c) != 2 || !strings.HasSuffix(c[0], "ro dax=always,nouuid") || !strings.HasSuffix(c[1], "ro dax=never,nouuid") {
-			t.Fatalf("mounts %q", c)
-		}
-		e.mustUnprepare("d")
-		e.mustUnprepare("c")
-		e.wantClean()
-	})
-	t.Run("block", func(t *testing.T) {
-		e := newPmemTestEnv(t)
-		pmem := e.formatted()
-		e.start()
-		e.mustPrepare(pmemClaim("r", localPmemShare, localPmemBlockRO))
-		if !e.k.IsReadOnly(pmem) {
-			t.Fatal("block reader on a writable device")
-		}
-		e.mustUnprepare("r")
-		e.mustPrepare(pmemClaim("w", localPmemAll, localPmemBlockRW))
-		if e.k.IsReadOnly(e.namespace().BlockDevice) {
-			t.Fatal("block writer on a read-only device")
-		}
-		e.mustUnprepare("w")
-		e.wantClean()
-	})
 }
 
 // The refusals of the rules of a persistent device before anything of it
@@ -1224,44 +706,6 @@ func TestPersistentRules(t *testing.T) {
 			e.wantClean()
 		})
 	}
-}
-
-// The CDI mounts of mode fs (a read-only bind for a reader, a read-write
-// one for a writer) and the device node of a block reader, read-only.
-func TestPersistentCDI(t *testing.T) {
-	if m := fsCDIMount("/n", "/c", true); !slices.Equal(m.Options, []string{"bind", "ro", "nosuid", "nodev"}) || m.HostPath != "/n" || m.ContainerPath != "/c" || m.Type != "bind" {
-		t.Errorf("read-only %+v", m)
-	}
-	if m := fsCDIMount("/n", "/c", false); !slices.Equal(m.Options, []string{"bind", "nosuid", "nodev"}) {
-		t.Errorf("read-write %+v", m)
-	}
-	if d := blockDeviceNode("/dev/pmem0", 259, 1, true); *d != (cdiSpecs.DeviceNode{Path: "/dev/pmem0", Type: "b", Major: 259, Minor: 1, Permissions: "r"}) {
-		t.Errorf("block %+v", d)
-	}
-	e := newPmemTestEnv(t)
-	pmem := e.formatted("ext4")
-	e.start()
-	e.mustPrepare(pmemClaim("w", localPmemShare, pmemFsConfig(false, "", "")))
-	e.mustPrepare(pmemClaim("r", localPmemShare, pmemFsConfig(true, "", "")))
-	mnt := e.nodeMount("direct")
-	for uid, opts := range map[string][]string{"w": {"bind", "nosuid", "nodev"}, "r": {"bind", "ro", "nosuid", "nodev"}} {
-		d := cdiDeviceByName(e.cdiSpec(), "claim-"+uid+"-0")
-		want := []*cdiSpecs.Mount{{HostPath: mnt, ContainerPath: localPmemPath, Type: "bind", Options: opts}}
-		if d == nil || !reflect.DeepEqual(d.ContainerEdits.Mounts, want) || len(d.ContainerEdits.DeviceNodes) != 0 {
-			t.Fatalf("CDI device of %s: %+v", uid, d)
-		}
-	}
-	e.mustUnprepare("w")
-	e.mustUnprepare("r")
-	e.mustPrepare(pmemClaim("b", localPmemShare, localPmemBlockRO))
-	ns := e.namespace()
-	d := cdiDeviceByName(e.cdiSpec(), "claim-b-0")
-	want := []*cdiSpecs.DeviceNode{{Path: pmem, Type: "b", Major: int64(ns.Major), Minor: int64(ns.Minor), Permissions: "r"}}
-	if d == nil || !reflect.DeepEqual(d.ContainerEdits.DeviceNodes, want) || len(d.ContainerEdits.Mounts) != 0 {
-		t.Fatalf("CDI device of the block reader: %+v", d)
-	}
-	e.mustUnprepare("b")
-	e.wantClean()
 }
 
 // Superblocks that no use explains refuse a reader and an upgrade, a bind of

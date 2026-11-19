@@ -260,8 +260,7 @@ func TestCDINames(t *testing.T) {
 // A PREPARED or pending claim whose fs device has no node mount makes the
 // CDI spec an error: a container would start without its filesystem. The
 // kept device of an UNPREPARING claim has none after a failed release, and
-// the spec still writes. A dax device that is gone has no device node, as
-// TestPrepareLocalDax of the main package pins.
+// the spec still writes. A dax device that is gone has no device node.
 func TestCDISpecOfIncompleteDevices(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec(), pmemSpec()})
 	e.formatPmem(serialPmem, "ext4")

@@ -22,7 +22,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -58,6 +57,10 @@ const (
 	localRegionSize = 1 << 30
 	// localBlockSize is the memory block size of the fake kernel.
 	localBlockSize = 128 * mib
+	// localDaxConfig and localROConfig are the configs of claims of mode
+	// dax, writable and read-only.
+	localDaxConfig = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"dax"}}`
+	localROConfig  = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"dax","readOnly":true}}`
 	// fakePmemBytes is the size of the block device of a persistent memdev
 	// of 512 MiB of the fake kernel: its fsdax namespace without the pfn
 	// info block.
@@ -544,25 +547,6 @@ func (e *localTestEnv) cdiSpec() *cdiSpecs.Spec {
 	spec := &cdiSpecs.Spec{}
 	noErr(e.t, json.Unmarshal(data, spec))
 	return spec
-}
-
-// wantCDIDevice checks the env and the device nodes of a CDI device of the
-// claims spec.
-func (e *localTestEnv) wantCDIDevice(name string, env []string, nodes []*cdiSpecs.DeviceNode) {
-	e.t.Helper()
-	d := cdiDeviceByName(e.cdiSpec(), name)
-	if d == nil || !slices.Equal(d.ContainerEdits.Env, env) || !reflect.DeepEqual(d.ContainerEdits.DeviceNodes, nodes) {
-		e.t.Fatalf("CDI device %s: %+v, expected env %v nodes %+v", name, d, env, nodes)
-	}
-}
-
-// wantDeviceInfo checks the info of the first device of a prepared claim.
-func (e *localTestEnv) wantDeviceInfo(uid string, want PreparedDeviceInfo) {
-	e.t.Helper()
-	info := e.s.ClaimInfo(uid)
-	if info == nil || len(info.Devices) == 0 || !reflect.DeepEqual(info.Devices[0], want) {
-		e.t.Fatalf("claim %s: device info\n%+v\nexpected\n%+v", uid, info, want)
-	}
 }
 
 // wantClean fails the test unless nothing is prepared: no CDI device, no

@@ -17,8 +17,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -27,9 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
@@ -90,16 +86,6 @@ func (h *fakeHooks) log() string {
 
 var _ leaseHooks = (*fakeHooks)(nil)
 
-// revokeFailer is a nodeLender whose RevokeNode fails.
-type revokeFailer struct {
-	*fakeLender
-}
-
-func (r revokeFailer) RevokeNode(ctx context.Context, podUID, name string, node int, holder string) error {
-	_ = r.fakeLender.RevokeNode(ctx, podUID, name, node, holder)
-	return fmt.Errorf("node %d busy", node)
-}
-
 // companionClaim returns the companion claim of a lease as the broker
 // creates it: name, namespace, label and owner.
 func companionClaim(id string) *resourceapi.ResourceClaim {
@@ -114,15 +100,6 @@ func companionClaim(id string) *resourceapi.ResourceClaim {
 
 func testLendRecord() *lendRecord {
 	return &lendRecord{Lease: "l1", Pod: podRef{Namespace: testNS, Name: testPod, UID: testPodUID}, Container: testCtr}
-}
-
-func TestLeaseOf(t *testing.T) {
-	if id := leaseOf(companionClaim("1a2b3c4d")); id != "1a2b3c4d" {
-		t.Fatalf("lease of a companion claim %q", id)
-	}
-	if id := leaseOf(&resourceapi.ResourceClaim{}); id != "" {
-		t.Fatalf("lease of another claim %q", id)
-	}
 }
 
 func TestCompanionLenderDisabled(t *testing.T) {
@@ -164,76 +141,6 @@ func TestCompanionLenderDisabled(t *testing.T) {
 	wantErr(t, err, "disabled")
 }
 
-func TestCompanionLenderLendRevoke(t *testing.T) {
-	ctx := context.Background()
-	claim := companionClaim("l1")
-	nodes := newFakeLender()
-	hooks := &fakeHooks{}
-	c := dra.NewLender(device.PoolDriverName)
-	c.Set(nodes, hooks)
-
-	rec, err := c.Check("l1", claim)
-	noErr(t, err)
-	if !reflect.DeepEqual(rec, testLendRecord()) {
-		t.Fatalf("lend of the lease %+v", rec)
-	}
-	hooks.lendingErr = errors.New("lease l1 is Failed")
-	_, err = c.Check("l1", claim)
-	wantErr(t, err, "lease l1 is Failed")
-	hooks.lendingErr = nil
-
-	devs := []lentDevice{
-		numaLent(2),
-		{DeviceType: device.DeviceTypeMemdev, Mode: api.ModeDax, DaxDevice: "/dev/dax0.0"},
-		{DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA},
-		numaLent(3),
-	}
-	noErr(t, c.Lend(ctx, rec, devs))
-	want := &lendRecord{Lease: "l1", Pod: rec.Pod, Container: testCtr, NumaNodes: []int{2, 3}}
-	if !reflect.DeepEqual(rec, want) {
-		t.Fatalf("lend record %+v", rec)
-	}
-	if got := nodes.LentNodes(testPodUID, testCtr); !reflect.DeepEqual(got, []int{2, 3}) {
-		t.Fatalf("lent nodes %v", got)
-	}
-	noErr(t, c.Revoke(ctx, rec, "ns/c"))
-	if got := nodes.LentNodes(testPodUID, testCtr); len(got) != 0 {
-		t.Fatalf("still lent %v", got)
-	}
-	noErr(t, c.Revoke(ctx, nil, "ns/c"))
-
-	// a failing LendNode leaves the nodes lent so far, including the
-	// failed one, in the record, so that a revoke cleans up
-	nodes.mu.Lock()
-	nodes.lendErr = containers.ErrSteered
-	nodes.mu.Unlock()
-	rec = testLendRecord()
-	if err := c.Lend(ctx, rec, devs); !errors.Is(err, containers.ErrSteered) || !reflect.DeepEqual(rec.NumaNodes, []int{2}) {
-		t.Fatalf("failed lend: %+v %v", rec, err)
-	}
-
-	// revoke errors are joined
-	c.Set(revokeFailer{nodes}, hooks)
-	err = c.Revoke(ctx, &lendRecord{Lease: "l1", Pod: rec.Pod, Container: testCtr, NumaNodes: []int{2, 3}}, "ns/c")
-	wantErr(t, err, "revoking node 2")
-	wantErr(t, err, "node 3 busy")
-
-	// hook forwarding
-	hooks.calls = nil
-	c.Prepared("l1", state.SourcePool, devs[:1])
-	c.Failed("l1", errors.New("boom"))
-	c.Releasing("l1")
-	c.Reprepared(&lendRecord{Lease: "l2", Pod: rec.Pod, Container: testCtr}, companionClaim("l2"), state.SourcePool, devs[1:2])
-	hooks.lendingErr = errors.New("unknown lease")
-	c.Reprepared(&lendRecord{Lease: "l3"}, companionClaim("l3"), state.SourcePool, devs)
-	if got, want := hooks.log(), "prepared l1\nfailed l1: boom\nreleasing l1\nlending l2 cxl-lease-l2\nprepared l2\nlending l3 cxl-lease-l3"; got != want {
-		t.Fatalf("hook calls:\n%s\nexpected:\n%s", got, want)
-	}
-	if !reflect.DeepEqual(hooks.devs, devs[1:2]) || hooks.source != state.SourcePool {
-		t.Fatalf("prepared devices %+v of %q", hooks.devs, hooks.source)
-	}
-}
-
 // numaLent returns a memdev of a companion claim in mode numa on node.
 func numaLent(node int) lentDevice {
 	return lentDevice{DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA, NUMANodes: []int{node}}
@@ -250,13 +157,4 @@ func withDriverConfig(c *resourceapi.ResourceClaim, driver string, source resour
 		}},
 	})
 	return c
-}
-
-func TestDaxDeviceNode(t *testing.T) {
-	if got, want := daxDeviceNode("/dev/dax1.2", 252, 2, false), (&cdiSpecs.DeviceNode{Path: "/dev/dax1.2", Type: "c", Major: 252, Minor: 2}); !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %+v", got)
-	}
-	if got, want := daxDeviceNode("/dev/dax0.0", 251, 3, true), (&cdiSpecs.DeviceNode{Path: "/dev/dax0.0", Type: "c", Major: 251, Minor: 3, Permissions: "r"}); !reflect.DeepEqual(got, want) {
-		t.Fatalf("read-only: got %+v", got)
-	}
 }

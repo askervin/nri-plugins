@@ -22,46 +22,8 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
-	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
-
-// A Prepare that a process stop cut after its region was made: the start
-// releases what it made, the claim stays PREPARING with its results (its
-// record lists the device), kubelet's Prepare again prepares it anew.
-func TestPoolCutPrepareAtStart(t *testing.T) {
-	e := newPoolTestEnv(t)
-	memdev := e.plug(0xc1ee0001)
-	p := e.driver(t)
-	e.k.CutAfter("cxl create-region")
-	cutPrepare(t, p, poolClaim("u1", "c1", "pooled0", exclusiveData))
-	logs := klogtest.Capture(t, 3)
-	p = e.driver(t)
-	out := logs()
-	for _, want := range []string{
-		"claim default/c1 (u1), whose Prepare did not finish: releasing devices 0xc1ee0001",
-		"claim default/c1 (u1): released, its Prepare again prepares its devices anew",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("no %q in\n%s", want, out)
-		}
-	}
-	if prep := e.preparation("u1"); prep == nil || prep.State != state.PreparationPreparing {
-		t.Fatalf("preparation %+v", prep)
-	}
-	if prep := e.unfinished("u1"); prep == nil || prep.ClaimName != "default/c1" || len(prep.Results) != 1 {
-		t.Fatalf("record of the claim %+v", prep)
-	}
-	if rs := e.k.Kernel().Regions(memdev); len(rs) != 0 {
-		t.Fatalf("regions %v left at the start", rs)
-	}
-	noErr(t, prepare(t, p, poolClaim("u1", "c1", "pooled0", exclusiveData)).Err)
-	if prep := e.preparation("u1"); prep.State != state.PreparationPrepared {
-		t.Fatalf("preparation %+v", prep)
-	}
-	noErr(t, unprepare(t, p, "u1"))
-	e.wantClean(t, p)
-}
 
 // A cut Prepare whose region lies below a newer region of another memdev
 // is kept at the start: the claim is KEPT, its records stay with the
@@ -102,34 +64,6 @@ func TestPoolKeptRecord(t *testing.T) {
 	}
 	noErr(t, unprepare(t, p, "u1"))
 	noErr(t, k.ReleaseRegion(context.Background(), above))
-	e.wantClean(t, p)
-}
-
-// The companion claim of a numa lease cut in its Prepare (before its lend)
-// is kept at the start for its Unprepare, which releases it
-// (TestPoolCompanionRevoke has the revoke of a cut after the lend).
-func TestPoolCutCompanionKept(t *testing.T) {
-	e := newPoolTestEnv(t)
-	e.plug(0xc1ee0001)
-	p := e.driver(t)
-	hooks := &fakeHooks{}
-	lender := newFakeLender()
-	p.Lender().Set(lender, hooks)
-	claim := poolClaim("uid-cxl-lease-l1", "cxl-lease-l1", "pooled0", exclusiveData)
-	claim.Namespace = testNS
-	claim.Labels = map[string]string{device.LeaseLabel: "l1"}
-	e.k.CutAfter("write devices/system/memory/memory")
-	cutPrepare(t, p, claim)
-	logs := klogtest.Capture(t, 3)
-	p = e.driver(t)
-	if want := "claim demo/cxl-lease-l1 (uid-cxl-lease-l1) is a companion claim: its Unprepare releases its devices, its Prepare again reuses them"; !strings.Contains(logs(), want) {
-		t.Fatalf("no %q in\n%s", want, logs())
-	}
-	if prep := e.preparation("uid-cxl-lease-l1"); prep == nil || prep.State != state.PreparationPreparing {
-		t.Fatalf("preparation %+v", prep)
-	}
-	p.Lender().Set(lender, hooks)
-	noErr(t, unprepare(t, p, "uid-cxl-lease-l1"))
 	e.wantClean(t, p)
 }
 

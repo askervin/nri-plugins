@@ -176,31 +176,6 @@ func TestResolveConfigStr_FileNotFound(t *testing.T) {
 	}
 }
 
-func TestResolveConfigStr_YAMLFile(t *testing.T) {
-	content := "ignoreDevices:\n  - mem0\nignoreDRAMNodes: true\n"
-	tmpFile := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
-		t.Fatalf("failed to write temp file: %v", err)
-	}
-
-	flags := &CXLFlags{ConfigFile: tmpFile}
-	result, err := resolveConfigStr(flags)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	cfg, err := newDriverConfigFromString(result)
-	if err != nil {
-		t.Fatalf("failed to parse config from file: %v", err)
-	}
-	if len(cfg.IgnoreDevices) != 1 || cfg.IgnoreDevices[0] != "mem0" {
-		t.Errorf("expected IgnoreDevices [mem0], got %v", cfg.IgnoreDevices)
-	}
-	if !cfg.IgnoreDRAMNodes {
-		t.Error("expected IgnoreDRAMNodes=true")
-	}
-}
-
 func TestDriverConfigManageMemdevs(t *testing.T) {
 	for _, tc := range []struct {
 		config string

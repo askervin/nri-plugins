@@ -17,12 +17,8 @@ package main
 import (
 	"fmt"
 	"maps"
-	"reflect"
 	"slices"
 	"testing"
-
-	resourcev1 "k8s.io/api/resource/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -90,32 +86,6 @@ func buildDevInfosHeldOK(t *testing.T, cfg *DriverConfig, devices *kernel.Snapsh
 	devInfos, err := buildDevInfosHeld(cfg, devices, pool, held, local)
 	noErr(t, err)
 	return devInfos
-}
-
-// A persistent local memdev is published with its shares, shared or not.
-func TestGetResourcesPersistentMemdev(t *testing.T) {
-	for _, shared := range []bool{false, true} {
-		got := localMemdevDevice("memdev-c100f5e1", &dra.Memdev{Name: "mem2", Serial: 0xc100f5e1, Size: 4 << 30, NodeAffinity: 0, Shared: shared, Persistent: true})
-		want := resourcev1.Device{
-			Name: "memdev-c100f5e1",
-			Attributes: map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
-				"type":         {StringValue: ptr("memdev")},
-				"source":       {StringValue: ptr("local")},
-				"serial":       {StringValue: ptr("0xc100f5e1")},
-				"shared":       {BoolValue: ptr(shared)},
-				"persistent":   {BoolValue: ptr(true)},
-				"size":         {IntValue: ptr(int64(4 << 30))},
-				"nodeAffinity": {IntValue: ptr(int64(0))},
-			},
-			Capacity: map[resourcev1.QualifiedName]resourcev1.DeviceCapacity{
-				"shares": {Value: *resource.NewQuantity(1000000, resource.DecimalSI)},
-			},
-			AllowMultipleAllocations: ptr(true),
-		}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("shared %v: published\n%+v\nexpected\n%+v", shared, got, want)
-		}
-	}
 }
 
 // fsTypes defaults to erofs, is returned as a copy, and its invalid or

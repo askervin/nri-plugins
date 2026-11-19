@@ -24,7 +24,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
@@ -40,31 +39,7 @@ var (
 	memdevDeviceName  = dra.MemdevDeviceName
 	localMemdevDevice = dra.LocalMemdevDevice
 	resultEnvVarName  = state.ResultEnvVarName
-	daxDeviceNode     = dra.DaxDeviceNode
-	blockDeviceNode   = dra.BlockDeviceNode
-	fsCDIMount        = dra.FsCDIMount
 )
-
-var (
-	poolDataFor         = device.PoolStatus
-	parsePoolDeviceData = device.ParsePoolStatusData
-)
-
-// lendOf returns the lend of the prepared companion claim uid of the
-// driver p, nil for another claim.
-func lendOf(p *dra.Plugin, uid string) *lendRecord {
-	if info := p.ClaimInfo(uid); info != nil {
-		return info.Lend
-	}
-	return nil
-}
-
-// buildDevInfos returns the devices that the publisher publishes of the
-// observation of the node with the configuration (validated first, as at
-// load), the pool serials and the uses of the local memdevs.
-func buildDevInfos(cfg *DriverConfig, detected *kernel.Snapshot, poolSerials map[uint64]bool, local *localSnapshot) (dra.DevicesInfo, error) {
-	return buildDevInfosHeld(cfg, detected, poolSerials, nil, local)
-}
 
 // buildDevInfosHeld is buildDevInfos with the serials of the new memdevs
 // that are held.
@@ -152,9 +127,4 @@ func setNRI(p *dra.Plugin, nri *containers.Plugin) {
 		return
 	}
 	p.SetWaitNRI(func(ctx context.Context) error { return waitNRI(ctx, nri) })
-}
-
-// leaseOf returns the lease id of a companion claim, "" for other claims.
-func leaseOf(claim *resourceapi.ResourceClaim) string {
-	return dra.LeaseOf(claim)
 }
