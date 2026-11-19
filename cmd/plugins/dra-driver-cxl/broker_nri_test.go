@@ -84,7 +84,7 @@ func TestCreateContainerDoesNotWaitForTheBroker(t *testing.T) {
 	// newBroker's broker, with a client of the test
 	broker, err := leases.New(leases.Options{Store: st, Client: k8sfake.NewClientset(), NodeName: testNode, DataDir: local,
 		CLI: filepath.Join(root, "cxl-request"), WaitDefault: time.Second, PoolDriver: device.PoolDriverName,
-		MountPoints: func() ([]string, error) { return mountPoints(k) }, OpenDevice: k.OpenDevice})
+		MountPoints: func() ([]string, error) { return mountPoints(k) }, OpenDevice: k.OpenDevice, PublishedDevice: publishedDevice(node)})
 	noErr(t, err)
 	node.Local.SetLeases(broker)
 	broker.Start(wireLenders(nri, broker, node))

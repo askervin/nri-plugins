@@ -23,7 +23,6 @@ import (
 
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
@@ -193,11 +192,8 @@ func (b *Broker) serialOptions(a *state.LeaseAsked, req *api.Request) error {
 	serial, _ := api.ParseSerial(req.Serial)
 	a.Serial, a.SerialZero = state.Serial(serial), serial == 0
 	text := a.Serial.String()
-	dev, err := b.deviceBySerial(serial)
-	switch {
-	case err != nil:
-		return err
-	case dev == nil:
+	dev := b.deviceBySerial(serial)
+	if dev == nil {
 		return nil
 	}
 	if err := b.deviceRefusal(dev, a, req, text); err != nil {
@@ -224,7 +220,7 @@ func (b *Broker) serialOptions(a *state.LeaseAsked, req *api.Request) error {
 
 // deviceRefusal returns the error of a request for a share of a device
 // without shares and, for a shared or persistent device, of the wrong
-// source or of another node; text is the serial of the device.
+// source; text is the serial of the device.
 func (b *Broker) deviceRefusal(dev *publishedDevice, a *state.LeaseAsked, req *api.Request, text string) error {
 	switch {
 	case !dev.shares && a.Shared:
@@ -234,8 +230,6 @@ func (b *Broker) deviceRefusal(dev *publishedDevice, a *state.LeaseAsked, req *a
 		return fmt.Errorf("device %s: not a local device", text)
 	case req.Source == api.SourcePool && dev.driver == device.DriverName:
 		return fmt.Errorf("device %s: not a pool device", text)
-	case dev.driver == device.DriverName && dev.node != b.opts.NodeName:
-		return fmt.Errorf("device %s: a local device of node %s, not of this node", text, dev.node)
 	}
 	return nil
 }
@@ -258,75 +252,23 @@ type publishedDevice struct {
 	shares     bool   // the device has the capacity shares
 	persistent bool   // a device of persistent memory
 	driver     string // the driver of the ResourceSlice
-	node       string // the node of a ResourceSlice of cxl.nri.io
 }
 
-// deviceBySerial returns the device with the serial in the ResourceSlices
-// of cxl.nri.io and the pool driver, nil if there is none or no
-// Kubernetes client: the local device of this node first, then a pool
-// device, then a local device of another node.
-func (b *Broker) deviceBySerial(serial uint64) (*publishedDevice, error) {
-	ctx, cancel := b.apiContext()
-	defer cancel()
-	list, err := b.opts.Client.ResourceV1().ResourceSlices().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("listing ResourceSlices: %w", err)
-	}
-	// the first device of each preference: this node, the pool, another
-	// node
-	var found [3]*publishedDevice
-	for i := range list.Items {
-		rs := &list.Items[i]
-		if rs.Spec.Driver != device.DriverName && (b.opts.PoolDriver == "" || rs.Spec.Driver != b.opts.PoolDriver) {
-			continue
-		}
-		for j := range rs.Spec.Devices {
-			if dev := publishedDeviceOf(rs, &rs.Spec.Devices[j], serial); dev != nil && found[b.preference(dev)] == nil {
-				found[b.preference(dev)] = dev
-			}
-		}
-		if found[0] != nil {
-			break
-		}
-	}
-	for _, dev := range found {
-		if dev != nil {
-			return dev, nil
-		}
-	}
-	return nil, nil
-}
-
-// preference returns the rank of a device of a serial: 0 for the local
-// device of this node, 1 for a pool device, 2 for a local device of
-// another node.
-func (b *Broker) preference(dev *publishedDevice) int {
-	switch {
-	case dev.driver != device.DriverName:
-		return 1
-	case dev.node == b.opts.NodeName:
-		return 0
-	}
-	return 2
-}
-
-// publishedDeviceOf returns the device d of the ResourceSlice rs when it has
-// the serial, nil otherwise.
-func publishedDeviceOf(rs *resourcev1.ResourceSlice, d *resourcev1.Device, serial uint64) *publishedDevice {
-	if s, ok := deviceSerial(d, rs.Spec.Driver); !ok || s != serial {
+// deviceBySerial returns the published device with the serial, nil if
+// there is none.
+func (b *Broker) deviceBySerial(serial uint64) *publishedDevice {
+	driver, d := b.opts.PublishedDevice(serial)
+	if d == nil {
 		return nil
 	}
-	dev := &publishedDevice{driver: rs.Spec.Driver}
-	if a, ok := deviceAttribute(d, rs.Spec.Driver, device.AttrShared); ok && a.BoolValue != nil {
+	dev := &publishedDevice{driver: driver}
+	if a, ok := deviceAttribute(d, driver, device.AttrShared); ok && a.BoolValue != nil {
 		dev.shared = *a.BoolValue
 	}
-	if a, ok := deviceAttribute(d, rs.Spec.Driver, device.AttrPersistent); ok && a.BoolValue != nil {
+	if a, ok := deviceAttribute(d, driver, device.AttrPersistent); ok && a.BoolValue != nil {
 		dev.persistent = *a.BoolValue
 	}
 	_, dev.shares = d.Capacity[device.CapacityShares]
-	if rs.Spec.Driver == device.DriverName && rs.Spec.NodeName != nil {
-		dev.node = *rs.Spec.NodeName
-	}
 	return dev
 }
 
@@ -339,17 +281,6 @@ func deviceAttribute(d *resourcev1.Device, driver string, name resourcev1.Qualif
 		}
 	}
 	return resourcev1.DeviceAttribute{}, false
-}
-
-// deviceSerial returns the serial attribute of a device of driver, and
-// whether it has a valid one.
-func deviceSerial(d *resourcev1.Device, driver string) (uint64, bool) {
-	if a, ok := deviceAttribute(d, driver, device.AttrSerial); ok && a.StringValue != nil {
-		if v, err := api.ParseSerial(*a.StringValue); err == nil {
-			return v, true
-		}
-	}
-	return 0, false
 }
 
 // fsLeaseOptions chooses the id of a new lease of the records by newID and,

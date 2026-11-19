@@ -285,6 +285,33 @@ func TestPrepareWaitsForNRI(t *testing.T) {
 	}
 }
 
+// The lease broker finds the published local memdev of a serial, else the
+// device of the last list of the pool ResourceSlices, none without the
+// pool driver.
+func TestPublishedDevice(t *testing.T) {
+	e := newDriverTestEnv(t)
+	e.start()
+	node := &dra.Node{Publisher: e.d.publisher, Pool: e.d.pool, Watcher: e.d.watcher}
+	find := publishedDevice(node)
+	for _, tc := range []struct {
+		serial       uint64
+		driver, name string
+	}{
+		{localSerial, device.DriverName, dra.MemdevDeviceName(localSerial)},
+		{poolSerial, device.PoolDriverName, "pooled0"},
+		{0x1234, "", ""},
+	} {
+		driver, d := find(tc.serial)
+		if driver != tc.driver || (d == nil) != (tc.name == "") || (d != nil && d.Name != tc.name) {
+			t.Errorf("serial 0x%x: driver %q, device %+v", tc.serial, driver, d)
+		}
+	}
+	node.Pool = nil
+	if driver, d := find(poolSerial); d != nil {
+		t.Errorf("without the pool driver: driver %q, device %+v", driver, d)
+	}
+}
+
 // everyPeriod runs its pass at every period until it is stopped.
 func TestEveryPeriod(t *testing.T) {
 	stop := make(chan struct{})

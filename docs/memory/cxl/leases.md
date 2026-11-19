@@ -317,7 +317,6 @@ The plugin refuses further requests that only it can judge:
 | `--shared` with the serial of a device without a `shares` capacity (an exclusive pool device, a local memdev of volatile memory that is not configured shared; a persistent local memdev has shares) | `device 0x...: not shareable` |
 | `--source local` with the serial of a pool device | `device 0x...: not a local device` |
 | `--source pool` with the serial of a local device | `device 0x...: not a pool device` |
-| the serial of a local device of another node | `device 0x...: a local device of node <X>, not of this node` |
 | `--mode fs` or `--mode block` with the serial of a device of volatile memory | `device 0x...: mode fs needs a persistent device`, `device 0x...: mode block needs a persistent device` |
 | the serial of a device of persistent memory (local or pool) without `--mode block` or `--mode fs` | `device 0x...: a persistent device needs mode block or fs` |
 | `--mode numa` with the serial of a shared device | `shared memory is never onlined as RAM: use mode dax` |
@@ -332,7 +331,12 @@ A serial that names a shared device of volatile memory makes the mode
 with it. A persistent device is never `block` or `fs` by default: name the
 mode. The checks of a claim of the device (the filesystem, the rules of
 one node, ReadWriteOnce) are those of the companion claim: they fail its
-Prepare, and the lease stays Creating until its `--wait` ends. The plugin's refusals are a JSON line with
+Prepare, and the lease stays Creating until its `--wait` ends. The plugin
+checks a serial against the devices of this node's ResourceSlice and the
+last list of the pool driver's ResourceSlices. The driver lists them at
+every scan of the node. A serial of no such device, for instance of a
+local device of another node, is not refused. Its companion claim cannot
+be allocated on this node. The plugin's refusals are a JSON line with
 `error` on stdout (on stderr for `env` and with `--exec`) and exit code 1,
 3 for `fd` on a `numa` or `fs` lease.
 

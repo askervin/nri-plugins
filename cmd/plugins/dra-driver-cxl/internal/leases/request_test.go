@@ -15,7 +15,6 @@
 package leases
 
 import (
-	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -124,27 +123,33 @@ func persistentPoolSlice() *resourcev1.ResourceSlice {
 	}
 }
 
-// newSlicesBrokerEnv returns a broker env whose client has the pool and
-// the local ResourceSlices, that of node2 with the shared local memdev
-// 0xc100e2e3, and the persistent pool devices.
+// newSlicesBrokerEnv returns a broker env that publishes the pool, the
+// local and the persistent pool ResourceSlices.
 func newSlicesBrokerEnv(t *testing.T) *leaseEnv {
 	e := brokerEnv(t)
-	e.addSlices(poolSlice(), localResourceSlice(), persistentPoolSlice(),
-		nodeResourceSlice("node2", localDeviceOf("0xc100e2e3", true, false), localDeviceOf("0xc100f5e2", false, true)))
+	e.slices = []*resourcev1.ResourceSlice{poolSlice(), localResourceSlice(), persistentPoolSlice()}
 	return e
 }
 
-// addSlices adds the ResourceSlices to the API.
-func (e *leaseEnv) addSlices(slices ...*resourcev1.ResourceSlice) {
-	e.t.Helper()
-	for _, s := range slices {
-		_, err := e.client.ResourceV1().ResourceSlices().Create(context.Background(), s, metav1.CreateOptions{})
-		mustOK(e.t, err)
+// publishedDevice returns the driver and the device of a serial in the
+// published ResourceSlices, nil if there is none.
+func (e *leaseEnv) publishedDevice(serial uint64) (string, *resourcev1.Device) {
+	for _, rs := range e.slices {
+		for i := range rs.Spec.Devices {
+			d := &rs.Spec.Devices[i]
+			if a, ok := deviceAttribute(d, rs.Spec.Driver, device.AttrSerial); ok && a.StringValue != nil {
+				if s, err := api.ParseSerial(*a.StringValue); err == nil && s == serial {
+					return rs.Spec.Driver, d
+				}
+			}
+		}
 	}
+	return "", nil
 }
 
 func TestRequestOptions(t *testing.T) {
 	e := newSlicesBrokerEnv(t)
+	calls := len(e.client.Actions())
 	for _, tc := range []struct {
 		req  api.Request
 		want askedText
@@ -175,11 +180,9 @@ func TestRequestOptions(t *testing.T) {
 		{req: api.Request{Serial: "0xc1ae0001", Mode: "numa"}, err: "shared memory is never onlined as RAM: use mode dax"},
 		{req: api.Request{Serial: "0xc1ae0001", Source: "local"}, err: "device 0xc1ae0001: not a local device"},
 		{req: api.Request{Serial: "0xc100e2e2", Source: "pool"}, err: "device 0xc100e2e2: not a pool device"},
-		{req: api.Request{Serial: "0xc100e2e3", Shared: true}, err: "device 0xc100e2e3: a local device of node node2, not of this node"},
 		{req: api.Request{Serial: "0xc100e2e2", Mode: "numa"}, err: "shared memory is never onlined as RAM: use mode dax"},
 		// the refusals in their order
 		{req: api.Request{Serial: "0xc100e2e2", Source: "pool", Mode: "numa"}, err: "device 0xc100e2e2: not a pool device"},
-		{req: api.Request{Serial: "0xc100e2e3", Mode: "numa"}, err: "device 0xc100e2e3: a local device of node node2, not of this node"},
 		{req: api.Request{Serial: "0xc1ae0001", Source: "local", Mode: "numa"}, err: "device 0xc1ae0001: not a local device"},
 		{req: api.Request{Size: "lots"}, err: `invalid size "lots"`},
 		// mode fs on persistent devices, shared or not
@@ -202,9 +205,8 @@ func TestRequestOptions(t *testing.T) {
 		{req: api.Request{Serial: "0xc100f5e1", Source: "local", Mode: "block"},
 			want: askedText{Source: "local", Serial: "0xc100f5e1", Mode: "block"}},
 		{req: api.Request{Serial: "0xc100f5e1", Mode: "dax"}, err: "device 0xc100f5e1: a persistent device needs mode block or fs"},
-		// the source and node checks of a persistent local memdev that is not shared
+		// the source checks of a persistent local memdev that is not shared
 		{req: api.Request{Serial: "0xc100f5e1", Source: "pool", Mode: "fs"}, err: "device 0xc100f5e1: not a pool device"},
-		{req: api.Request{Serial: "0xc100f5e2", Shared: true, Mode: "fs"}, err: "device 0xc100f5e2: a local device of node node2, not of this node"},
 		{req: api.Request{Serial: "0xc1af0002", Source: "local", Mode: "block"}, err: "device 0xc1af0002: not a local device"},
 		// B3, B4 after the checks of the device and its source
 		{req: api.Request{Serial: "0xc1ae0001", Shared: true, ReadOnly: true, Mode: "fs"}, err: "device 0xc1ae0001: mode fs needs a persistent device"},
@@ -216,7 +218,6 @@ func TestRequestOptions(t *testing.T) {
 		{req: api.Request{Serial: "0xc1af0002", Mode: "dax"}, err: "device 0xc1af0002: a persistent device needs mode block or fs"},
 		{req: api.Request{Serial: "0xc1ee0001", Shared: true, ReadOnly: true, Mode: "fs"}, err: "device 0xc1ee0001: not shareable"},
 		{req: api.Request{Serial: "0xc1af0001", Source: "local", Mode: "numa"}, err: "device 0xc1af0001: not a local device"},
-		{req: api.Request{Serial: "0xc100e2e3", Shared: true, ReadOnly: true, Mode: "fs"}, err: "device 0xc100e2e3: a local device of node node2, not of this node"},
 		// mode block on persistent devices: the whole device, or a share read-only
 		{req: api.Request{Serial: "0xc1af0001", Mode: "block"}, want: askedText{Serial: "0xc1af0001", SharedDevice: true, DeviceSource: "pool", Mode: "block"}},
 		{req: api.Request{Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "block", Source: "pool"},
@@ -238,6 +239,9 @@ func TestRequestOptions(t *testing.T) {
 		case tc.err == "" && (err != nil || !reflect.DeepEqual(a, tc.want.asked())):
 			t.Errorf("%+v: got %+v %v, expected %+v", tc.req, a, err, tc.want)
 		}
+	}
+	if a := e.client.Actions()[calls:]; len(a) != 0 {
+		t.Errorf("the requests called the API server: %v", a)
 	}
 
 	// without the pool driver only local memory can be leased
@@ -300,27 +304,6 @@ func companionConfigsOf(c *resourcev1.ResourceClaim) []opaqueConfig {
 		out = append(out, opaqueConfig{driver: cfg.Opaque.Driver, requests: cfg.Requests, params: string(cfg.Opaque.Parameters.Raw)})
 	}
 	return out
-}
-
-// The local device of this node wins over another node's device with the
-// same serial, whatever the order of the ResourceSlices.
-func TestSerialOfThisNode(t *testing.T) {
-	e := newSlicesBrokerEnv(t)
-	e.addSlices(nodeResourceSlice("node0", localDeviceOf("0xc100e2e2", true, false)))
-	dev, err := e.b.deviceBySerial(serialShared)
-	mustOK(t, err)
-	if dev == nil || dev.node != envNode || dev.driver != device.DriverName {
-		t.Fatalf("device %+v", dev)
-	}
-	var a state.LeaseAsked
-	req := api.Request{Op: api.OpRequest, Serial: "0xc100e2e2", Shared: true, ReadOnly: true}
-	mustOK(t, e.b.requestOptions(&a, &req))
-	if !a.SharedDevice || a.DeviceSource != state.SourceLocal {
-		t.Fatalf("asked %+v", a)
-	}
-	a = state.LeaseAsked{}
-	req.Serial = "0xc100e2e3"
-	wantErrText(t, e.b.requestOptions(&a, &req), "device 0xc100e2e3: a local device of node node2, not of this node")
 }
 
 // A request of serial 0 asks for the device of serial 0: the selector of

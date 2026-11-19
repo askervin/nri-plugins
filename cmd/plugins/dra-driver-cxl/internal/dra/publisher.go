@@ -172,6 +172,17 @@ func (p *Publisher) Published() DevicesInfo {
 	return p.published
 }
 
+// PublishedDevice returns the ResourceSlice device of the local memdev with
+// the serial in Published, false if there is none.
+func (p *Publisher) PublishedDevice(serial uint64) (resourcev1.Device, bool) {
+	for name, d := range p.Published() {
+		if m, ok := d.Dev.(*Memdev); ok && m.Serial == serial {
+			return LocalMemdevDevice(name, m), true
+		}
+	}
+	return resourcev1.Device{}, false
+}
+
 // Devices returns the devices of the last scan, by name.
 func (p *Publisher) Devices() DevicesInfo {
 	p.mu.Lock()

@@ -21,6 +21,7 @@ import (
 	"slices"
 	"time"
 
+	resourcev1 "k8s.io/api/resource/v1"
 	coreclientset "k8s.io/client-go/kubernetes"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	"k8s.io/klog/v2"
@@ -96,17 +97,18 @@ func newBroker(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverCon
 		return nil, nil
 	}
 	b, err := leases.New(leases.Options{
-		Store:       st,
-		Client:      config.Client,
-		NodeName:    config.Flags.NodeName,
-		DataDir:     config.KubeletPluginDir,
-		CLI:         cxlFlags.LeaseCLI,
-		Image:       cxlFlags.LeaseCompanionImage,
-		WaitDefault: cxlFlags.LeaseWait,
-		PoolDriver:  node.Pool.Name(),
-		Limits:      cxlFlags.LeaseLimits,
-		MountPoints: func() ([]string, error) { return mountPoints(k) },
-		OpenDevice:  k.OpenDevice,
+		Store:           st,
+		Client:          config.LeaseClient,
+		NodeName:        config.Flags.NodeName,
+		DataDir:         config.KubeletPluginDir,
+		CLI:             cxlFlags.LeaseCLI,
+		Image:           cxlFlags.LeaseCompanionImage,
+		WaitDefault:     cxlFlags.LeaseWait,
+		PoolDriver:      node.Pool.Name(),
+		Limits:          cxlFlags.LeaseLimits,
+		MountPoints:     func() ([]string, error) { return mountPoints(k) },
+		OpenDevice:      k.OpenDevice,
+		PublishedDevice: publishedDevice(node),
 	})
 	if err != nil {
 		return nil, err
@@ -126,6 +128,23 @@ func mountPoints(k *kernel.Kernel) ([]string, error) {
 		points = append(points, m.Target)
 	}
 	return points, nil
+}
+
+// publishedDevice returns the function that finds the driver and the
+// device of a serial: the local memdev that node publishes, else a device
+// in the last list of the pool ResourceSlices; nil if there is none.
+func publishedDevice(node *dra.Node) func(serial uint64) (string, *resourcev1.Device) {
+	return func(serial uint64) (string, *resourcev1.Device) {
+		if d, ok := node.Publisher.PublishedDevice(serial); ok {
+			return device.DriverName, &d
+		}
+		if pool := node.Pool.Name(); pool != "" {
+			if d, ok := node.Watcher.PoolDevice(serial); ok {
+				return pool, &d
+			}
+		}
+		return "", nil
+	}
 }
 
 // wireLenders sets the lenders of the companion claims of both drivers of

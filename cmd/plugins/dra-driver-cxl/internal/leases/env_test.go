@@ -90,6 +90,8 @@ type leaseEnv struct {
 	ctrs   *fakeContainers
 	st     *store.Store
 	b      *Broker
+	// slices are the ResourceSlices of publishedDevice.
+	slices []*resourcev1.ResourceSlice
 
 	// opts change the options of the broker of the next start, nil for
 	// none; started tells whether the broker was started; newState makes
@@ -173,8 +175,9 @@ func (e *leaseEnv) boot() {
 		OpenDevice: func(context.Context, string, bool) (*os.File, error) {
 			return nil, errors.New("no device nodes in the lease tests")
 		},
-		Timeouts: Timeouts{Poll: 5 * time.Millisecond, Reconcile: time.Hour, Close: 2 * time.Second},
-		NewID:    func() string { n++; return fmt.Sprintf("%08x", 0xa0+n) },
+		PublishedDevice: e.publishedDevice,
+		Timeouts:        Timeouts{Poll: 5 * time.Millisecond, Reconcile: time.Hour, Close: 2 * time.Second},
+		NewID:           func() string { n++; return fmt.Sprintf("%08x", 0xa0+n) },
 	}
 	if e.opts != nil {
 		e.opts(&opts)

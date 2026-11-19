@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	resourcev1 "k8s.io/api/resource/v1"
 	coreclientset "k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
@@ -122,6 +123,10 @@ type Options struct {
 	// OpenDevice opens the device of a dax or block lease, read-only or
 	// read-write, for passing it to a container.
 	OpenDevice func(ctx context.Context, path string, readOnly bool) (*os.File, error)
+	// PublishedDevice returns the driver and the device of a serial in the
+	// ResourceSlices: the local memdev of this node, else a device of the
+	// pool driver; nil if there is none.
+	PublishedDevice func(serial uint64) (driver string, dev *resourcev1.Device)
 	// identity resolves the peers of the sockets when Start gets a
 	// container plugin (without one every request is refused); nil: the
 	// container table of that plugin.
@@ -249,7 +254,7 @@ func New(opts Options) (*Broker, error) {
 		return nil, errors.New("lease broker: the broker needs the state store")
 	case opts.Client == nil:
 		return nil, errors.New("lease broker: the broker needs a Kubernetes client")
-	case opts.MountPoints == nil || opts.OpenDevice == nil:
+	case opts.MountPoints == nil || opts.OpenDevice == nil || opts.PublishedDevice == nil:
 		return nil, errors.New("lease broker: the broker needs the mount points and the devices of the node")
 	}
 	if opts.WaitDefault <= 0 {

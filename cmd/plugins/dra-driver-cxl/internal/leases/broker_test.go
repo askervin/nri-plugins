@@ -296,8 +296,9 @@ func TestLeaseWaitDefault(t *testing.T) {
 	mustOK(t, err)
 	defer func() { _ = st.Close() }()
 	opts := Options{Store: st, Client: k8sfake.NewClientset(), DataDir: t.TempDir(), NodeName: envNode,
-		MountPoints: func() ([]string, error) { return nil, nil },
-		OpenDevice:  func(context.Context, string, bool) (*os.File, error) { return nil, errors.ErrUnsupported }}
+		MountPoints:     func() ([]string, error) { return nil, nil },
+		OpenDevice:      func(context.Context, string, bool) (*os.File, error) { return nil, errors.ErrUnsupported },
+		PublishedDevice: func(uint64) (string, *resourcev1.Device) { return "", nil }}
 	b, err := New(opts)
 	mustOK(t, err)
 	defer b.Stop()
@@ -309,10 +310,11 @@ func TestLeaseWaitDefault(t *testing.T) {
 		t.Fatalf("timeouts %+v", b.t)
 	}
 	for what, drop := range map[string]func(*Options){
-		"store":        func(o *Options) { o.Store = nil },
-		"client":       func(o *Options) { o.Client = nil },
-		"mount points": func(o *Options) { o.MountPoints = nil },
-		"devices":      func(o *Options) { o.OpenDevice = nil },
+		"store":             func(o *Options) { o.Store = nil },
+		"client":            func(o *Options) { o.Client = nil },
+		"mount points":      func(o *Options) { o.MountPoints = nil },
+		"devices":           func(o *Options) { o.OpenDevice = nil },
+		"published devices": func(o *Options) { o.PublishedDevice = nil },
 	} {
 		o := opts
 		drop(&o)

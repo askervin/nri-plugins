@@ -232,6 +232,7 @@ func (e *leaseEnv) boot() {
 		LeaseFsRoot: leases.LeaseFsRoot(e.dir),
 		CDIDir:      e.cdiDir,
 		NodeName:    testNode,
+		Client:      e.client,
 		Local: dra.LocalConfig{Managed: true, UsableSize: func(string, uint64) uint64 { return 0 },
 			Coherent: func(string, uint64) bool { return false }},
 		Publish: e.publishConfig(),
@@ -248,17 +249,18 @@ func (e *leaseEnv) boot() {
 
 	n := 0
 	opts := leases.Options{
-		Store:       st,
-		Client:      e.client,
-		NodeName:    testNode,
-		DataDir:     e.dir,
-		CLI:         e.cli,
-		WaitDefault: 5 * time.Second,
-		PoolDriver:  device.PoolDriverName,
-		MountPoints: func() ([]string, error) { return mountPoints(e.k.Kernel()) },
-		OpenDevice:  e.k.Kernel().OpenDevice,
-		Timeouts:    leases.Timeouts{Poll: 5 * time.Millisecond, Reconcile: time.Hour, Close: 2 * time.Second},
-		NewID:       func() string { n++; return fmt.Sprintf("%08x", 0xa0+n) },
+		Store:           st,
+		Client:          e.client,
+		NodeName:        testNode,
+		DataDir:         e.dir,
+		CLI:             e.cli,
+		WaitDefault:     5 * time.Second,
+		PoolDriver:      device.PoolDriverName,
+		MountPoints:     func() ([]string, error) { return mountPoints(e.k.Kernel()) },
+		OpenDevice:      e.k.Kernel().OpenDevice,
+		PublishedDevice: publishedDevice(e.node),
+		Timeouts:        leases.Timeouts{Poll: 5 * time.Millisecond, Reconcile: time.Hour, Close: 2 * time.Second},
+		NewID:           func() string { n++; return fmt.Sprintf("%08x", 0xa0+n) },
 	}
 	if e.opts != nil {
 		e.opts(&opts)
@@ -936,13 +938,15 @@ func persistentPoolSlice() *resourcev1.ResourceSlice {
 	}
 }
 
-// addSlices adds the ResourceSlices to the API.
+// addSlices adds the ResourceSlices to the API. The watcher lists them, as
+// at a scan.
 func (e *leaseEnv) addSlices(slices ...*resourcev1.ResourceSlice) {
 	e.t.Helper()
 	for _, s := range slices {
 		_, err := e.client.ResourceV1().ResourceSlices().Create(context.Background(), s, metav1.CreateOptions{})
 		noErr(e.t, err)
 	}
+	e.node.Watcher.Serials(context.Background())
 }
 
 // fakeContainers is the container plugin: a table of the running

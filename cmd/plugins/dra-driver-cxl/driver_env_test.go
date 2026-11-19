@@ -121,6 +121,7 @@ func newDriverTestEnv(t *testing.T) *driverTestEnv {
 		Flags: &CXLFlags{NodeName: testNode, CDIRoot: filepath.Join(root, "cdi"), PoolDriverName: device.PoolDriverName,
 			PoolPrepareTimeout: 5 * time.Second, LeaseCLI: filepath.Join(root, "cxl-request"), LeaseWait: time.Second},
 		Client:                    e.client,
+		LeaseClient:               e.client,
 		Kernel:                    e.k.Kernel(),
 		NRIStub:                   e.runtime,
 		KubeletPluginDir:          filepath.Join(root, "plugins", device.DriverName),

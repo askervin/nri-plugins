@@ -77,8 +77,8 @@ type Watcher struct {
 	// mem are the records without st, replaced at each commit.
 	mem *state.Records
 	// serials are the serials of the last successful list, with their
-	// pools; listed the pools with serials in it.
-	serials  map[uint64]string
+	// pools and devices; listed the pools with serials in it.
+	serials  map[uint64]poolDevice
 	listed   map[string]bool
 	known    bool      // a list succeeded
 	failing  bool      // the last list failed
@@ -106,6 +106,12 @@ type Watcher struct {
 	uncommitted map[string]bool
 	// conflicts has the pool serials whose use by local claims is logged.
 	conflicts map[uint64]bool
+}
+
+// poolDevice is a device of a pool ResourceSlice and its pool.
+type poolDevice struct {
+	pool   string
+	device resourcev1.Device
 }
 
 // Options are the settings of a Watcher.
@@ -204,10 +210,10 @@ func (w *Watcher) Serials(ctx context.Context) (map[uint64]bool, bool) {
 }
 
 // listSerials lists the ResourceSlices of the pool driver and returns the
-// serials of their devices with their pools, the records before the list
-// and its error. The list's result is recorded unless a list that started
-// later is, and its serials are made POOL.
-func (w *Watcher) listSerials(ctx context.Context) (map[uint64]string, *state.Records, error) {
+// serials of their devices with their pools and devices, the records
+// before the list and its error. The list's result is recorded unless a
+// list that started later is, and its serials are made POOL.
+func (w *Watcher) listSerials(ctx context.Context) (map[uint64]poolDevice, *state.Records, error) {
 	w.mu.Lock()
 	w.lists++
 	n := w.lists
@@ -235,7 +241,7 @@ func (w *Watcher) listSerials(ctx context.Context) (map[uint64]string, *state.Re
 	}
 	w.commitStep("list", now, r0, func(s *step, r *state.Records) {
 		for _, serial := range slices.Sorted(maps.Keys(serials)) {
-			s.notePool(r, serial, serials[serial], triggerList)
+			s.notePool(r, serial, serials[serial].pool, triggerList)
 		}
 		s.notePools(r, listed, gone)
 	})
@@ -243,15 +249,15 @@ func (w *Watcher) listSerials(ctx context.Context) (map[uint64]string, *state.Re
 }
 
 // list lists the ResourceSlices of the pool driver: the serials of their
-// devices with their pools, and the pools with serials.
-func (w *Watcher) list(ctx context.Context) (map[uint64]string, map[string]bool, error) {
+// devices with their pools and devices, and the pools with serials.
+func (w *Watcher) list(ctx context.Context) (map[uint64]poolDevice, map[string]bool, error) {
 	lctx, cancel := context.WithTimeout(ctx, apiTimeout)
 	defer cancel()
 	items, err := w.listSlices(lctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	serials, listed := map[uint64]string{}, map[string]bool{}
+	serials, listed := map[uint64]poolDevice{}, map[string]bool{}
 	for i := range items {
 		rs := &items[i]
 		if rs.Spec.Driver != w.opts.Driver { // the field selector of a fake client
@@ -260,7 +266,7 @@ func (w *Watcher) list(ctx context.Context) (map[uint64]string, map[string]bool,
 		pool := rs.Spec.Driver + "/" + rs.Spec.Pool.Name
 		for j := range rs.Spec.Devices {
 			if s, ok := DeviceSerial(&rs.Spec.Devices[j], rs.Spec.Driver); ok {
-				serials[s], listed[pool] = pool, true
+				serials[s], listed[pool] = poolDevice{pool: pool, device: rs.Spec.Devices[j]}, true
 			}
 		}
 	}
@@ -284,6 +290,18 @@ func DeviceSerial(d *resourcev1.Device, driver string) (uint64, bool) {
 		return 0, false
 	}
 	return 0, false
+}
+
+// PoolDevice returns the device with the serial in the last successful
+// list of the pool ResourceSlices, false if it has none.
+func (w *Watcher) PoolDevice(serial uint64) (resourcev1.Device, bool) {
+	if w == nil {
+		return resourcev1.Device{}, false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	d, ok := w.serials[serial]
+	return d.device, ok
 }
 
 // PoolSerials returns the serials of the POOL records, without a list; nil
@@ -362,8 +380,8 @@ func (w *Watcher) CheckLocal(ctx context.Context, serial uint64) error {
 		serials = w.serials
 		w.mu.Unlock()
 	}
-	if pool, listed := serials[serial]; listed {
-		return fmt.Errorf("memory device serial 0x%x is a pool device of %s: it is not used as a local memory device", serial, pool)
+	if d, listed := serials[serial]; listed {
+		return fmt.Errorf("memory device serial 0x%x is a pool device of %s: it is not used as a local memory device", serial, d.pool)
 	}
 	if err != nil {
 		return fmt.Errorf("the ResourceSlices of pool controllers cannot be listed (%v): memory device serial 0x%x is not used as a local memory device until a list succeeds",

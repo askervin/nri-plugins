@@ -111,6 +111,9 @@ type CXLFlags struct {
 type pluginConfig struct {
 	Flags  *CXLFlags
 	Client coreclientset.Interface
+	// LeaseClient is the Kubernetes client of the lease broker. Its rate
+	// limiter is not shared with Client.
+	LeaseClient coreclientset.Interface
 	// Kernel is the kernel of the node.
 	Kernel *kernel.Kernel
 	// NRIStub, if not nil, connects the NRI plugin to the runtime instead
@@ -155,8 +158,8 @@ func parseFlags(fs *flag.FlagSet, args []string, lookupEnv func(string) (string,
 	f := &CXLFlags{}
 	fs.StringVar(&f.NodeName, "node-name", "", "name of the node of the driver (required)")
 	fs.StringVar(&f.KubeConfig, "kubeconfig", "", "kubeconfig file, empty for the in-cluster configuration")
-	fs.Float64Var(&f.KubeAPIQPS, "kube-api-qps", defaultKubeAPIQPS, "QPS of the Kubernetes API client")
-	fs.IntVar(&f.KubeAPIBurst, "kube-api-burst", defaultKubeAPIBurst, "burst of the Kubernetes API client")
+	fs.Float64Var(&f.KubeAPIQPS, "kube-api-qps", defaultKubeAPIQPS, "QPS of each Kubernetes API client: the driver's and the lease broker's")
+	fs.IntVar(&f.KubeAPIBurst, "kube-api-burst", defaultKubeAPIBurst, "burst of each Kubernetes API client: the driver's and the lease broker's")
 	fs.StringVar(&f.CDIRoot, "cdi-root", defaultCDIRoot, "directory of the generated CDI specs")
 	fs.StringVar(&f.ConfigStr, "config-str", "", "driver configuration as a JSON or YAML string")
 	fs.StringVar(&f.ConfigStr, "c", "", "shorthand for --config-str")
@@ -471,9 +474,14 @@ func run(ctx context.Context, flags *CXLFlags) error {
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
 	}
+	leaseClient, err := newKubeClient(flags.KubeConfig, flags.KubeAPIQPS, flags.KubeAPIBurst)
+	if err != nil {
+		return fmt.Errorf("create lease broker client: %w", err)
+	}
 	config := &pluginConfig{
 		Flags:                     flags,
 		Client:                    client,
+		LeaseClient:               leaseClient,
 		Kernel:                    newKernel(),
 		KubeletPluginDir:          filepath.Join(kubeletPluginsDir, device.DriverName),
 		KubeletPluginsRegistryDir: kubeletPluginsRegistryDir,

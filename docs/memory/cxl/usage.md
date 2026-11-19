@@ -1873,8 +1873,8 @@ variable when it is set. Both `-flag` and `--flag` work.
 |:-----|:------------|:--------|:-|
 | `--node-name` | `NODE_NAME` | (required) | the node the plugin runs on |
 | `--kubeconfig` | `KUBECONFIG` | (empty: in-cluster config) | |
-| `--kube-api-qps` | `KUBE_API_QPS` | `5` | queries per second of the Kubernetes API client |
-| `--kube-api-burst` | `KUBE_API_BURST` | `10` | burst of the Kubernetes API client |
+| `--kube-api-qps` | `KUBE_API_QPS` | `5` | queries per second of each Kubernetes API client: the driver's and the lease broker's |
+| `--kube-api-burst` | `KUBE_API_BURST` | `10` | burst of each Kubernetes API client: the driver's and the lease broker's |
 | `--cdi-root` | `CDI_ROOT` | `/var/run/cdi` | where the CDI spec files are written |
 | `--config-str`, `-c` | `CONFIG_STR` | (empty) | the [configuration](#configuration-file) as a JSON or YAML string |
 | `--config-file`, `-f` | | | the configuration file, JSON or YAML; not together with `-c` |
