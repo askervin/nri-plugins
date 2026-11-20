@@ -512,12 +512,14 @@ dra-lease-pod-start "$VM2" leaser "$VM2_NAME"
 LEASER_CLAIM_UID="$DRA_LEASE_CLAIM_UID"
 # Without --shared a lease takes the device exclusively, as the writer's
 # claim did, and reads what the writer left in the kept region.
-dra-request "$VM2" leaser request --serial "$DRA_LOCAL_SERIAL" --wait 60s --exec python3 /tools/dax-rw.py --fd 3 read 0
+dra-request "$VM2" leaser request --serial "$DRA_LOCAL_SERIAL" --wait 60s
 [ "$DRA_REQ_STATUS" == 0 ] || error "cxl-request request --serial $DRA_LOCAL_SERIAL exited $DRA_REQ_STATUS"
-[ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "$TEXT0" ] ||
-    error "the exclusive lease read '$(tail -n 1 <<< "$COMMAND_OUTPUT")', expected '$TEXT0'"
 dra-assert "$DRA_REQ_JSON" "(j.get('state'), j.get('source'), j.get('mode'), bool(j.get('shared')), bool(j.get('readOnly'))) == ('Ready', 'local', 'dax', False, False)"
 LEASE=$(dra-value "$DRA_REQ_JSON" "j['lease']")
+dra-exec "$VM2" leaser "$DRA_REQUEST_CTR_BIN" fd --lease "$LEASE" --exec python3 /tools/dax-rw.py --fd 3 read 0 ||
+    command-error "cannot read through the fd of the exclusive lease $LEASE"
+[ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "$TEXT0" ] ||
+    error "the exclusive lease read '$(tail -n 1 <<< "$COMMAND_OUTPUT")', expected '$TEXT0'"
 # shared is what the lease asked for; the device is shared all the same.
 dra-leases "$VM2" leaser
 dra-assert "$DRA_LEASES" "[(l['lease'], bool(l.get('shared')), (l.get('env') or {}).get('CXL_${DRA_LOCAL_HEX}_SHARED')) for l in j] == [('$LEASE', False, '1')]"
