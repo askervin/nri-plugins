@@ -15,8 +15,8 @@
 package main
 
 // The gofmbt model of the State, and the planner interface that the
-// on-line loop, the generator and the experiments use. planner_ext.go
-// implements it (custom coverage, budgets, coverage rounds).
+// on-line loop and the generator use. planner_ext.go implements it
+// (custom coverage, budgets, coverage rounds).
 
 import (
 	"math/rand"

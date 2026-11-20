@@ -50,12 +50,6 @@ type runOpts struct {
 	replay         []string // actions of a replay
 	header         string   // the flags, for mbt-steps.txt
 	now            func() time.Time
-	stepTime       time.Duration // experiment: the oracle's clock advances this much per step, 0: the wall clock
-
-	// experiment: the steps file to write (--steps-out), the oracle's
-	// clock of each settle of a replayed one (--from)
-	stepsOut  string
-	replayNow map[int]int64
 }
 
 // errFailed is returned when the oracle failed a step.

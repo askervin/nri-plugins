@@ -20,7 +20,6 @@
 //	mbt-cxl generate [flags] > code.gen.sh
 //	mbt-cxl generate --from FILE ...    a code.gen.sh of an mbt-steps.txt
 //	mbt-cxl check --step N --expect FILE --observed FILE [--since T]
-//	mbt-cxl experiment [flags]          off-line measurements (P4)
 package main
 
 import (
@@ -68,7 +67,6 @@ commands:
   online      run the line protocol with the bash executor (stdin/stdout)
   generate    print a code.gen.sh (off-line steps and expectations)
   check       check one observation against one expectation
-  experiment  off-line measurements of the model and coverage variants
 run "mbt-cxl COMMAND -h" for the flags of a command
 `)
 }
@@ -85,8 +83,6 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runGenerate(args[1:], stdout, stderr)
 	case "check":
 		return runCheck(args[1:], stdout, stderr)
-	case "experiment":
-		return runExperiment(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		usage(stdout)
 		return 0
@@ -96,7 +92,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return 2
 }
 
-// commonFlags are the flags of online, generate and experiment.
+// commonFlags are the flags of online and generate.
 type commonFlags struct {
 	profile       string
 	seed          int64

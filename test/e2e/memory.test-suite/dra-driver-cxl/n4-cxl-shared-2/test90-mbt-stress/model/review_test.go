@@ -937,8 +937,8 @@ func TestReviewM7SteeringOfUnblockingPod(t *testing.T) {
 	}
 }
 
-// simSteps drives the simulated SUT of seed through action lines as
-// expRun does (the model's state adopted from every check), each line
+// simSteps drives the simulated SUT of seed through action lines (the
+// model's state adopted from every check), each line
 // enabled in the model's state, with a clock that advances dt per
 // action. It returns the first step whose check is not ok ("" if none),
 // the model's and the simulator's states.
@@ -1061,37 +1061,6 @@ func TestReviewM8SimHoldAndHole(t *testing.T) {
 	}
 	if promoted == 0 {
 		t.Fatalf("no seed promoted the stalled any contender")
-	}
-}
-
-// M8: the seed 1 growth run itself (experiment --steps-out), replayed
-// with experiment --from's code and its recorded oracle clock: the
-// settle of step 330 failed with the simulator's never-ending hold.
-func TestReviewM8RecordedRun(t *testing.T) {
-	data, err := os.ReadFile("recorded/m8-mbt-steps.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines, _ := readSteps(string(data))
-	cfg := testConfig(t, "full", true)
-	cfg.Unsettled = 3
-	cov, err := parseCoverage(defaultCoverage)
-	if err != nil {
-		t.Fatal(err)
-	}
-	o := runOpts{cfg: cfg, cov: cov, depth: 1, seed: 1, randomness: 1, replayNow: readNow(string(data))}
-	for _, l := range lines {
-		o.replay = append(o.replay, l.Action)
-	}
-	if len(o.replay) != 330 || len(o.replayNow) != 72 {
-		t.Fatalf("%d steps, %d clock records", len(o.replay), len(o.replayNow))
-	}
-	r, err := expRun(o, len(o.replay), planBudget{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(r.failures) > 0 || r.steps != 330 {
-		t.Fatalf("after %d steps: %v", r.steps, r.failures)
 	}
 }
 

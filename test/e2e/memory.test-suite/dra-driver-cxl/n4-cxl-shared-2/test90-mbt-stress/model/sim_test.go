@@ -14,7 +14,7 @@
 
 package main
 
-// A simulated SUT for the protocol tests and the experiments: it keeps
+// A simulated SUT for the protocol tests: it keeps
 // its own model state as "the truth", decides what the model leaves
 // open (the node of an "any" slot, the outcome of a controller kill,
 // steering in a restart window) at random, keeps the bytes of the
@@ -69,7 +69,7 @@ type sim struct {
 	// next: the truth after the action being done (ref.do: localFree)
 	next *State
 	// now and since: the oracle's clock at the settle being resolved
-	// and at its start (expRun sets them; with ref the reference's
+	// and at its start (the test's clock; with ref the reference's
 	// clock); zero: not known. An unblocking pod's retry and a stalled
 	// contender's promotion are a coin at every settle, but never later
 	// than kubelet's back-off and the scheduler's window allow (A9,

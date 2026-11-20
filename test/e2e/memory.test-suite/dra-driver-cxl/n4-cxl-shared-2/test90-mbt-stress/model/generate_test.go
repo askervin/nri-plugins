@@ -271,25 +271,6 @@ func TestMainCommands(t *testing.T) {
 	}
 }
 
-func TestExperimentQuick(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping test in short mode.")
-	}
-	var out, errb bytes.Buffer
-	if code := runExperiment([]string{"--profile", "tiny", "--exp", "all", "--steps", "30", "--max-depth", "2", "--seed", "3",
-		"--mixes", "C1x3,C2x2,C3;all", "--uncovered"}, &out, &errb); code != 0 {
-		t.Fatalf("exit %d: %s", code, errb.String())
-	}
-	for _, want := range []string{"branching profile=tiny", "plantime profile=tiny coverage=C1x3,C2x2,C3 depth=2", "growth profile=tiny coverage=C1,C2,C3,C4", "uncovered:"} {
-		if !strings.Contains(out.String(), want) {
-			t.Fatalf("no %q in\n%s", want, out.String())
-		}
-	}
-	if strings.Contains(out.String(), "ORACLE DISAGREES") {
-		t.Fatalf("the oracle disagrees with the simulated SUT:\n%s", out.String())
-	}
-}
-
 func TestCoverageParse(t *testing.T) {
 	for in, want := range map[string]string{"C1,C2": "C1,C2", "c1x3, C2X2,C3": "C1x3,C2x2,C3", "all": "C1,C2,C3,C4", "C4x1": "C4"} {
 		c, err := parseCoverage(in)

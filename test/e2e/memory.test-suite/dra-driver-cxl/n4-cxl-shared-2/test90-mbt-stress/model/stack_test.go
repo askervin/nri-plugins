@@ -217,9 +217,9 @@ func TestStackUsersOfOneRegion(t *testing.T) {
 	wantStack(t, s, si, "[]")
 }
 
-// simStep applies one action line to the model and to the simulated SUT,
-// as expRun does: a settle at the oracle's clock now (also the sim's),
-// checked by the oracle; the adopted state.
+// simStep applies one action line to the model and to the simulated SUT:
+// a settle at the oracle's clock now (also the sim's), checked by the
+// oracle; the adopted state.
 func simStep(t *testing.T, sm *sim, model *State, n int, line string, now time.Time) *State {
 	t.Helper()
 	a := mustAct(t, model.cfg, line)
@@ -246,11 +246,9 @@ func simStep(t *testing.T, sm *sim, model *State, n int, line string, now time.T
 // The simulated SUT's retry of an unblocking pod and its promotion of a
 // stalled contender are a coin at every settle, but never later than the
 // oracle allows by its clock (A9: kubelet's back-off is capped at 5 min;
-// A19: --stall-window). Review of 2026-10-29: experiment --exp growth
-// --profile fullp --seed 22 --reboot=guest --step-time 20s failed at
-// step 181, "pod pwr-c@vm2#0: not Running 7m20s after its decoder hole
-// cleared": the truth had kept it Unblocking through 5 settles 80-120 s
-// apart. Here settles come 80 s apart.
+// A19: --stall-window), also when the settles are minutes apart: here
+// they come 80 s apart, and a pod kept Unblocking through 5 of them
+// would be later than the back-off allows.
 func TestSimRetryDeadlines(t *testing.T) {
 	const gap = 80 * time.Second
 	cfg := testConfig(t, "full", true)
