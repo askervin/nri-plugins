@@ -1355,9 +1355,10 @@ is not steered. The plugin logs one warning with the reason: `failed to
 start memory steering: <reason>; memory fenced` (or `none`). So is a
 running container whose process refuses the memory policy of a later
 step (EPERM, for instance from a seccomp profile that applies only at
-the exec of the workload): its steering ends with `memory.high` `max`
-and `cpuset.mems` as before the steering, and the plugin logs `memory
-steering ended: <reason>; memory fenced` (or `none`). Steering
+the exec of the workload): its steering ends with `memory.high` `max`,
+the plugin fences its `cpuset.mems` (with `fencing` `none` it gets back
+the one it had before the steering), and logs `memory steering ended:
+<reason>; memory fenced` (or `none`). Steering
 writes only nodes to `cpuset.mems` that fencing with `allowed-mems` would
 give the container, and never writes `memory.max`.
 

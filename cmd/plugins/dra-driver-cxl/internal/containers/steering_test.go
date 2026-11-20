@@ -435,8 +435,8 @@ func TestCharSynchronizeSteeringLog(t *testing.T) {
 
 // TestSteeringEnded manages a running container whose steering ended on a
 // refused memory policy like a container that is not steered: fenced by
-// the repair pass (or left alone with fencing none), not in the Steered
-// records, memory.high max, with one warning.
+// the repair pass, or with fencing none its cpuset.mems of before the
+// steering, not in the Steered records, memory.high max, with one warning.
 func TestSteeringEnded(t *testing.T) {
 	for _, tc := range []struct {
 		fencing    string
@@ -467,6 +467,9 @@ func TestSteeringEnded(t *testing.T) {
 				t.Fatalf("management %s without a manager, expected steered", e.record("c1").Management)
 			}
 			e.expectUpdates()
+			if got := e.cgroupMems("kubepods/u1/c1"); got != "0,2" {
+				t.Fatalf("cpuset.mems %q of the steered container, expected 0,2", got)
+			}
 			e.p.steeringEnded(c, mgr, errors.New("memory policy refused: pid 101: operation not permitted"))
 			e.passes()
 			if c := e.record("c1"); c.Management != tc.management || len(e.managers()) != 0 {
@@ -479,6 +482,9 @@ func TestSteeringEnded(t *testing.T) {
 				t.Errorf("memory.high %s", got)
 			}
 			e.expectUpdates(tc.updates...)
+			if got := e.cgroupMems("kubepods/u1/c1"); tc.management == ManagementNone && got != "" {
+				t.Errorf("cpuset.mems %q with fencing none, expected the empty one of before the steering", got)
+			}
 			want := "NRI: ctr=ns/pod-u1/app id=c1: memory steering ended: memory policy refused: pid 101: " +
 				"operation not permitted; memory " + tc.management.text()
 			if got := logs(); strings.Count(got, want) != 1 {

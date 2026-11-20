@@ -266,8 +266,8 @@ func TestPastLastWaypoint(t *testing.T) {
 }
 
 // TestPolicyRefused ends the steering when a process refuses the memory
-// policy of a later step: memory.high max, cpuset.mems as before Start,
-// and onEnd with the reason.
+// policy of a later step: memory.high max, cpuset.mems as the steering
+// wrote it until RestoreMems, and onEnd with the reason.
 func TestPolicyRefused(t *testing.T) {
 	if !mpolinject.Supported {
 		t.Skip(mpolinject.ErrUnsupported)
@@ -301,8 +301,10 @@ func TestPolicyRefused(t *testing.T) {
 		t.Fatal("the steering goes on after a refused memory policy")
 	}
 	require.Equal(t, "max", readFile(t, cg, "memory.high"))
-	require.Equal(t, "", readFile(t, cg, "cpuset.mems"))
+	require.Equal(t, "0-1", readFile(t, cg, "cpuset.mems"))
 	m.Stop()
+	m.RestoreMems()
+	require.Equal(t, "", readFile(t, cg, "cpuset.mems"))
 }
 
 // TestCgroupGone ends the steering of a cgroup that is removed, and Stop

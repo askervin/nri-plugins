@@ -120,8 +120,9 @@ func WithName(name string) Option {
 
 // WithOnEnd sets the function that is called once when the steering ends
 // on a memory policy that a process refuses (EPERM, for instance by its
-// seccomp profile), with the reason. memory.high is max and cpuset.mems
-// is as it was before Start by then, and Stop returns at once.
+// seccomp profile), with the reason. memory.high is max by then,
+// cpuset.mems is as the steering wrote it (see RestoreMems), and Stop
+// returns at once.
 func WithOnEnd(fn func(error)) Option {
 	return func(m *Manager) {
 		m.onEnd = fn
@@ -258,9 +259,6 @@ func (m *Manager) loop() {
 	var refused error
 	defer func() {
 		m.release()
-		if refused != nil {
-			m.restoreMems()
-		}
 		close(m.done)
 		if refused != nil && m.onEnd != nil {
 			m.onEnd(refused)
@@ -475,6 +473,12 @@ func (m *Manager) allowNodes(nodes []int) error {
 	m.written = true
 	klog.V(4).Infof("%s: cpuset.mems=%s", m.name, mems)
 	return nil
+}
+
+// RestoreMems writes back the cpuset.mems that the cgroup had before Start,
+// after Stop.
+func (m *Manager) RestoreMems() {
+	m.restoreMems()
 }
 
 // restoreMems writes back the cpuset.mems that the cgroup had before

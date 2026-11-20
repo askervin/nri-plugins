@@ -608,8 +608,8 @@ States: UNDECIDED, STEERED, FENCED, NONE.
 | UNDECIDED | NONE | `NRI CreateContainer`, `NRI Synchronize`, `NRI StartContainer`: not steered (by this process) and fencing none | - | its cpuset.mems is left as the runtime made it |
 | STEERED | FENCED | `NRI StartContainer`: its manager does not start (no cgroup, no own nodes, steering.New or Start fails: memory.high not max, no memory policy set) and fencing allowed-mems | - | its Steered record removed; fenced by the repair pass at its PostStartContainer |
 | STEERED | NONE | `NRI StartContainer`: its manager does not start and fencing none | - | its Steered record removed |
-| STEERED | FENCED | `steering ended`: a process of the running container refuses a memory policy of a later step (EPERM) and fencing allowed-mems | - | its manager set memory.high to max and cpuset.mems back, and stopped; its Steered record removed; fenced by the repair pass of the one container |
-| STEERED | NONE | `steering ended`: a process of the running container refuses a memory policy of a later step and fencing none | - | its manager set memory.high to max and cpuset.mems back, and stopped; its Steered record removed |
+| STEERED | FENCED | `steering ended`: a process of the running container refuses a memory policy of a later step (EPERM) and fencing allowed-mems | - | its manager set memory.high to max and stopped; its Steered record removed; fenced by the repair pass of the one container |
+| STEERED | NONE | `steering ended`: a process of the running container refuses a memory policy of a later step and fencing none | - | its manager set memory.high to max and stopped; its cpuset.mems back as before the steering; its Steered record removed |
 
 Refused:
 

@@ -269,13 +269,14 @@ var ManagementTable = fsm.Table[Management]{
 			From: fsm.List(ManagementSteered), To: ManagementFenced, Triggers: fsm.List(TriggerSteeringEnded),
 			When: "a process of the running container refuses a memory policy of a later step (EPERM) and " +
 				"fencing allowed-mems",
-			Effects: "its manager set memory.high to max and cpuset.mems back, and stopped; its Steered " +
-				"record removed; fenced by the repair pass of the one container",
+			Effects: "its manager set memory.high to max and stopped; its Steered record removed; fenced " +
+				"by the repair pass of the one container",
 		},
 		{
 			From: fsm.List(ManagementSteered), To: ManagementNone, Triggers: fsm.List(TriggerSteeringEnded),
 			When:    "a process of the running container refuses a memory policy of a later step and fencing none",
-			Effects: "its manager set memory.high to max and cpuset.mems back, and stopped; its Steered record removed",
+			Effects: "its manager set memory.high to max and stopped; its cpuset.mems back as before the " +
+				"steering; its Steered record removed",
 		},
 	},
 	Refused: []fsm.Refusal[Management]{

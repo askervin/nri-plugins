@@ -215,9 +215,9 @@ func (p *Plugin) notSteered(c *Container, added bool, why error) {
 
 // steeringEnded manages a running container whose steering ended on a
 // refused memory policy like a container that is not steered: its manager
-// mgr has set memory.high to max and cpuset.mems back; a fenced container
-// gets wantMems by the repair pass. A container that stopped meanwhile is
-// left to its stop.
+// mgr has set memory.high to max. A fenced container gets wantMems by the
+// repair pass; one with fencing none gets back its cpuset.mems of before
+// the steering. A container that stopped meanwhile is left to its stop.
 func (p *Plugin) steeringEnded(c *Container, mgr *steering.Manager, why error) {
 	p.mu.Lock()
 	if p.ctrs[c.ID] != c || c.manager != mgr {
@@ -231,8 +231,11 @@ func (p *Plugin) steeringEnded(c *Container, mgr *steering.Manager, why error) {
 	p.mu.Unlock()
 	p.stopManager(c.ID, c.name(), mgr)
 	klog.Warningf("NRI: ctr=%s id=%s: memory steering ended: %v; memory %s", c.name(), c.ID, why, memory)
-	if repair {
+	switch {
+	case repair:
 		p.repair(c.ID)
+	case memory == ManagementNone.text():
+		mgr.RestoreMems()
 	}
 }
 
