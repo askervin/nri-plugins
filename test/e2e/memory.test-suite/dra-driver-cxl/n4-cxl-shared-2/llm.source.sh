@@ -43,7 +43,7 @@ LLM_MODEL=""                       # llm-model-fetch: the model on the host
 LLM_IMAGE_SIZE=""                  # llm-image-build: the size of $LLM_VM_IMAGE in bytes
 LLM_IMAGE_SHA256=""                # and its sha256
 LLM_WHERE=""                       # llm-where: the mappings of the model, a JSON list
-LLM_LOG=""                         # llm-server-wait, llm-writer-wait: the log of the pod
+LLM_LOG=""                         # llm-server-wait: the log of the pod
 LLM_ANSWER=""                      # llm-ask, llm-serve-sampled: the response of the server, JSON,
 LLM_SAMPLES=""                     # llm-serve-sampled: where the model was while it served,
 LLM_LOOP_READ=""                   # and the bytes read through the loop device meanwhile
@@ -177,57 +177,6 @@ print("the model: one plain extent at offset %s of the image" % exts[0][3])' "$o
     LLM_IMAGE_SHA256=$(sed -n '2s/ .*//p' <<< "$COMMAND_OUTPUT")
     [ -n "$LLM_IMAGE_SIZE" ] && [ -n "$LLM_IMAGE_SHA256" ] || error "llm-image-build: no size and sha256 of $LLM_VM_IMAGE"
     echo "llm-image-build: $label:$LLM_VM_IMAGE, $LLM_IMAGE_SIZE bytes, sha256 $LLM_IMAGE_SHA256"
-}
-
-llm-writer-script() {
-    # Usage: llm-writer-script KEY
-    #
-    # Print the shell script of a writer container (image $DRA_TOOLS_IMAGE,
-    # $LLM_VM_IMAGE mounted from the node) with the block device of device
-    # KEY: show the environment of the device, check that the image fits
-    # in CXL_<KEY>_SIZE, write the image with dd into CXL_<KEY>_PATH and
-    # print the sha256 of as many bytes of the device as the image has
-    # ("device sha256: SUM"). The last line it logs is "writer exit
-    # STATUS".
-    local key="$1"
-    cat <<SCRIPT
-env | grep ^CXL_${key}_ | sort
-dev="\$CXL_${key}_PATH"
-size="\$CXL_${key}_SIZE"
-img=$LLM_VM_IMAGE
-bytes=\$(stat -c %s "\$img")
-ls -l "\$dev"
-if [ -b "\$dev" ]; then echo "block device: \$dev"; else echo "not a block device: \$dev"; fi
-echo "image \$img: \$bytes bytes, device \$dev: \$size bytes"
-if [ "\$bytes" -gt "\$size" ]; then
-    echo "the image does not fit into the device"
-    echo "writer exit 2"
-else
-    dd if="\$img" of="\$dev" bs=2M conv=fsync
-    rc=\$?
-    echo "dd exit \$rc"
-    echo "device sha256: \$(head -c "\$bytes" "\$dev" | sha256sum | cut -d' ' -f1)"
-    echo "writer exit \$rc"
-fi
-SCRIPT
-}
-
-llm-writer-wait() {
-    # Usage: llm-writer-wait VMDIR POD [TIMEOUT]
-    #
-    # Wait until the writer in pod POD logs "writer exit STATUS", TIMEOUT
-    # seconds at most (default 180). Fail the test on timeout or unless
-    # STATUS is 0. LLM_LOG has the log of the pod then.
-    local vmdir="$1" pod="$2" tmo="${3:-180}"
-    retry-until --timeout "$tmo" --interval 1 --message "$pod: the writer exits" \
-        'LLM_LOG=$(dra-pod-log "$vmdir" "$pod") && grep -qE "^writer exit [0-9]+$" <<< "$LLM_LOG"' || {
-        vmdir-command "$vmdir" "kubectl logs -n $DRA_NS $pod; kubectl describe pod -n $DRA_NS $pod | tail -n 20"
-        error "the writer in pod $pod did not exit in ${tmo}s"
-    }
-    grep -qx "writer exit 0" <<< "$LLM_LOG" || {
-        echo "$LLM_LOG"
-        error "the writer in pod $pod failed: $(grep '^writer exit ' <<< "$LLM_LOG")"
-    }
 }
 
 llm-reader-script() {

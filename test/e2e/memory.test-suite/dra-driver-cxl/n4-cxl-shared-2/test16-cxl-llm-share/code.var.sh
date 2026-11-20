@@ -789,18 +789,17 @@ vmdir-command "$VM2" "test ! -e $LLM_VM_MODEL_DIR && test ! -e $LLM_VM_IMAGE && 
 echo "### B: the writer on VM1 takes $LLM_DEVICE exclusively and flashes the erofs image into it"
 dra-apply "$VM2" <<< "$(dra-shared-claim-yaml llm-writer "$LLM_SERIAL" "" "mode: block" cxl-pool-persistent)
 ---
-$(dra-script-pod-yaml writer "$VM1" llm-writer "$(llm-writer-script "$LLM_HEX")" "File:$LLM_VM_IMAGE")"
-llm-writer-wait "$VM2" writer 180
-echo "$LLM_LOG"
-dra-env-assert writer "$LLM_LOG" "$LLM_HEX" \
+$(dra-script-pod-yaml writer "$VM1" llm-writer "$(fs-writer-script "$LLM_HEX" "$LLM_VM_IMAGE")" "File:$LLM_VM_IMAGE")"
+fs-writer-wait "$VM2" writer 180
+dra-env-assert writer "$FS_LOG" "$LLM_HEX" \
     SERIAL="$LLM_SERIAL" SHARED=1 MODE=block "SIZE=[1-9]*" "PATH=/dev/pmem*" READONLY=0
-LLM_NS_SIZE=$(dra-env-value "$LLM_LOG" "CXL_${LLM_HEX}_SIZE")
+LLM_NS_SIZE=$(dra-env-value "$FS_LOG" "CXL_${LLM_HEX}_SIZE")
 [[ "$LLM_NS_SIZE" =~ ^[0-9]+$ ]] && [ "$LLM_NS_SIZE" -ge "$LLM_IMAGE_SIZE" ] && [ "$LLM_NS_SIZE" -le "$LLM_DEV_SIZE" ] ||
     error "the fsdax namespace of the writer has $LLM_NS_SIZE bytes, expected the image ($LLM_IMAGE_SIZE) at least and the device ($LLM_DEV_SIZE) at most"
-grep -qE "^block device: /dev/pmem[0-9]+$" <<< "$LLM_LOG" || error "the writer has no block device: $(grep 'block device' <<< "$LLM_LOG")"
-grep -qx "dd exit 0" <<< "$LLM_LOG" || error "dd of the writer failed: $(grep '^dd exit' <<< "$LLM_LOG")"
-grep -qx "device sha256: $LLM_IMAGE_SHA256" <<< "$LLM_LOG" ||
-    error "the device of the writer does not have the image (sha256 $LLM_IMAGE_SHA256): $(grep '^device sha256:' <<< "$LLM_LOG")"
+grep -qE "^block device: /dev/pmem[0-9]+$" <<< "$FS_LOG" || error "the writer has no block device: $(grep 'block device' <<< "$FS_LOG")"
+grep -qx "dd exit 0" <<< "$FS_LOG" || error "dd of the writer failed: $(grep '^dd exit' <<< "$FS_LOG")"
+grep -qx "device sha256: $LLM_IMAGE_SHA256" <<< "$FS_LOG" ||
+    error "the device of the writer does not have the image (sha256 $LLM_IMAGE_SHA256): $(grep '^device sha256:' <<< "$FS_LOG")"
 dra-json "$VM2" resourceclaim -n "$DRA_NS" llm-writer
 dra-assert "$COMMAND_OUTPUT" "allocated_node() == '$VM1_NAME' and quantity(j['status']['allocation']['devices']['results'][0]['consumedCapacity']['shares']) == $DRA_SHARES"
 dra-assert "$COMMAND_OUTPUT" "device_data('$LLM_DEVICE')['exclusive'] == True and device_data('$LLM_DEVICE').get('persistent') == True"
@@ -810,7 +809,7 @@ echo "CDI device claim-$uid-0: $cdi"
 [ -n "$cdi" ] || error "no CDI device claim-$uid-0 for the writer"
 dra-assert "$cdi" "j['kind'] == '$DRA_POOL_DRIVER/device'"
 # The device node is the CXL_<hex>_PATH of the writer, a block device.
-pmem=$(dra-env-value "$LLM_LOG" "CXL_${LLM_HEX}_PATH")
+pmem=$(dra-env-value "$FS_LOG" "CXL_${LLM_HEX}_PATH")
 dra-assert "$cdi" "any(n.get('path') == '$pmem' and n.get('type') == 'b' for n in j['deviceNodes'])"
 pool-attachments "$LLM_DEVICE"
 pool-assert "$COMMAND_OUTPUT" "[(a['host'], a.get('exclusive', False)) for a in j] == [('$VM1_NAME', True)]"
