@@ -706,6 +706,9 @@ echo "### G: what every component did, in order"
 # Every slice is whole memory blocks: the scheduler rounded every claim
 # up, and the kernel's first-fit kept every slice block-aligned.
 dra-local-slices-aligned "$VM2"
+# The templates of the claims that went with their pods (dra-claim-pod)
+# and of the lease claims.
+dra-delete "$VM2" resourceclaimtemplates --all --wait=true --timeout=60s
 dra-assert-clean "$VM2" "$VM1"
 
 dra-trace-stop

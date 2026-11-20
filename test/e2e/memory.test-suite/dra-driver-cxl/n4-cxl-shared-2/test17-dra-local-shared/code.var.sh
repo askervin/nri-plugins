@@ -619,6 +619,9 @@ dra-local-slices-none "$VM2" unshared
 dra-wait "$VM2" sliced-again resourceslices \
     "attr($LD, 'shared') == False and sorted(k.split('/')[-1] for k in ${LD}['attributes']) == ['memoryBlockSize', 'nodeAffinity', 'persistent', 'serial', 'shared', 'size', 'source', 'type'] and quantity(capacity($LD, 'memory')) == $DRA_LOCAL_SIZE" 60
 
+# The templates of the claims that went with their pods (dra-claim-pod)
+# and of the lease claims.
+dra-delete "$VM2" resourceclaimtemplates --all --wait=true --timeout=60s
 dra-assert-clean "$VM2" "$VM1"
 
 echo "### I: what every component did, in order"
