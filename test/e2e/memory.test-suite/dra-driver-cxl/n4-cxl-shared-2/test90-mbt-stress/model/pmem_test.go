@@ -1218,7 +1218,7 @@ func TestPmemStalledWriterThroughHole(t *testing.T) {
 	for _, w := range []time.Duration{0, 30 * time.Second} {
 		for seed := int64(1); seed <= 10; seed++ {
 			for _, script := range [][]string{stalled, starting} {
-				if f := refScriptIn(t, "fullp", seed, w, script...); f != nil {
+				if f := refScript(t, "fullp", seed, w, script...); f != nil {
 					t.Fatalf("--stall-window %s:\n%s", w, f)
 				}
 				x := sm.truth.cfg.slotIndex("xpb-c@vm1#0")

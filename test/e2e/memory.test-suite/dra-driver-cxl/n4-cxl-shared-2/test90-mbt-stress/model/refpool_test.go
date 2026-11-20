@@ -111,11 +111,6 @@ func fuzzWeight(cfg *Config, a Act) float64 {
 	return 0
 }
 
-// fuzzSequence runs one random sequence; nil if every step was ok.
-func fuzzSequence(cfg *Config, acts []Act, seed int64, maxLen int, st *fuzzStats) *fuzzFailure {
-	return refSequence(cfg, acts, seed, maxLen, nil, st)
-}
-
 // refSequence runs a sequence against the simulated SUT with the
 // reference: random (script nil) or the actions of a script (each must
 // be enabled in the model; then a final settle).
@@ -261,7 +256,7 @@ func runRefFuzz(t *testing.T, m fuzzMode, seqs int, seed0 int64, maxLen int) (ma
 	st := &fuzzStats{verbs: map[Verb]int{}, ref: map[string]int{}}
 	kinds := map[string][]*fuzzFailure{}
 	for k := 0; k < seqs; k++ {
-		if f := fuzzSequence(cfg, acts, seed0+int64(k), maxLen, st); f != nil {
+		if f := refSequence(cfg, acts, seed0+int64(k), maxLen, nil, st); f != nil {
 			key := reNums.ReplaceAllString(f.msg, "N")
 			kinds[key] = append(kinds[key], f)
 		}
@@ -309,21 +304,10 @@ func TestFencingFuzz(t *testing.T) {
 	}
 }
 
-// refScript runs a script against the reference; the failure if any.
-func refScript(t *testing.T, seed int64, lines ...string) *fuzzFailure {
-	t.Helper()
-	return refScriptWindow(t, seed, 0, lines...)
-}
-
-// refScriptWindow is refScript with a --stall-window (0: the default; not
-// above 180 s: strict, and the reference's scheduler has the bug-08 fix).
-func refScriptWindow(t *testing.T, seed int64, window time.Duration, lines ...string) *fuzzFailure {
-	t.Helper()
-	return refScriptIn(t, "full", seed, window, lines...)
-}
-
-// refScriptIn is refScriptWindow with the profile.
-func refScriptIn(t *testing.T, profile string, seed int64, window time.Duration, lines ...string) *fuzzFailure {
+// refScript runs a script of a profile against the reference with a
+// --stall-window (0: the default; not above 180 s: strict, and the
+// reference's scheduler requeues a stalled contender); the failure if any.
+func refScript(t *testing.T, profile string, seed int64, window time.Duration, lines ...string) *fuzzFailure {
 	t.Helper()
 	cfg := testConfig(t, profile, true)
 	cfg.Unsettled = 3
@@ -353,7 +337,7 @@ func TestRefPoolBindingTimeout(t *testing.T) {
 		for seed := int64(1); seed <= 10; seed++ {
 			lines := append(append([]string{"create plain@vm0#0"}, start...), repeat(120, "server-restart b", "settle")...)
 			lines = append(lines, "ctrl-start "+strings.Fields(start[0])[1], "settle")
-			if f := refScript(t, seed, lines...); f != nil {
+			if f := refScript(t, "full", seed, 0, lines...); f != nil {
 				t.Errorf("%s", f)
 				return
 			}
@@ -522,13 +506,13 @@ var refRegressions = []struct {
 func TestRefPoolRegressions(t *testing.T) {
 	for _, r := range refRegressions {
 		steps := strings.Split(r.steps, " | ")
-		f := refScript(t, r.seed, steps...)
+		f := refScript(t, "full", r.seed, 0, steps...)
 		if r.refused > 0 {
 			if f == nil || !strings.HasPrefix(f.msg, "not enabled") || len(f.steps) != r.refused {
 				t.Errorf("%s: want step %d %q refused, got %v", r.why, r.refused, steps[r.refused-1], f)
 				continue
 			}
-			f = refScript(t, r.seed, steps[:r.refused-1]...)
+			f = refScript(t, "full", r.seed, 0, steps[:r.refused-1]...)
 		}
 		if f != nil {
 			t.Errorf("%s:\n%s", r.why, f)
@@ -559,10 +543,10 @@ func d8Steps() []string {
 func TestRefPoolStallWindow(t *testing.T) {
 	steps := d8Steps()
 	for seed := int64(1); seed <= 20; seed++ {
-		if f := refScriptWindow(t, seed, 0, steps...); f != nil {
+		if f := refScript(t, "full", seed, 0, steps...); f != nil {
 			t.Fatalf("default window:\n%s", f)
 		}
-		if f := refScriptWindow(t, seed, 30*time.Second, steps...); f != nil {
+		if f := refScript(t, "full", seed, 30*time.Second, steps...); f != nil {
 			t.Fatalf("30 s, fixed scheduler:\n%s", f)
 		}
 	}
@@ -570,7 +554,7 @@ func TestRefPoolStallWindow(t *testing.T) {
 	defer func() { refUnfixedScheduler = false }()
 	failed := 0
 	for seed := int64(1); seed <= 20; seed++ {
-		if f := refScriptWindow(t, seed, 30*time.Second, steps...); f != nil {
+		if f := refScript(t, "full", seed, 30*time.Second, steps...); f != nil {
 			if !strings.Contains(f.msg, "still not allocated") {
 				t.Fatalf("30 s, old scheduler: %s", f.msg)
 			}
@@ -592,7 +576,7 @@ func TestRefPoolStallWindow(t *testing.T) {
 func TestRefPoolStalledWithoutSlices(t *testing.T) {
 	script := []string{"create sdax-c@any#0", "create pfsc-c@vm2#0", "pwipe c c-pmem1", "delete pfsc-c@vm2#0", "settle",
 		"ctrl-restart c", "create pfsc-c@vm1#0", "ctrl-kill c", "settle"}
-	if f := refScriptIn(t, "fullp", 20031, 30*time.Second, script...); f != nil {
+	if f := refScript(t, "fullp", 20031, 30*time.Second, script...); f != nil {
 		t.Fatalf("%s", f)
 	}
 	s := steps(t, stateAfter(t, "fullp", true, script[:len(script)-1]...), "settle")
@@ -611,7 +595,7 @@ func TestRefPoolStalledWithoutSlices(t *testing.T) {
 	v, adopted := checkState(s, observation(t, truth), "")
 	wantVerdict(t, v, VOK, "ok")
 	wantPhase(t, adopted, "pfsc-c@vm1#0", Unsched)
-	if f := refScript(t, 328, "create xnuma-a@vm2#0", "create sdax-c@vm1#0", "delete xnuma-a@vm2#0", "settle",
+	if f := refScript(t, "full", 328, 0, "create xnuma-a@vm2#0", "create sdax-c@vm1#0", "delete xnuma-a@vm2#0", "settle",
 		"create xdax-a@vm1#0", "ctrl-restart a", "ctrl-kill a", "settle"); f != nil {
 		t.Fatalf("%s", f)
 	}
@@ -627,7 +611,7 @@ func TestRefPoolTruthNamespace(t *testing.T) {
 		"ctrl-restart c", "ctrl-kill c", "create pwr-c@vm2#0", "settle",
 		"driver-kill-at vm0 ns", "driver-kill-at vm2 ns", "kubelet-restart vm0", "settle",
 		"delete pwr-c@vm2#0", "create pfsd-c@vm2#0", "ctrl-start c", "settle"}
-	if f := refScriptIn(t, "pmem", 9442, 0, script...); f != nil {
+	if f := refScript(t, "pmem", 9442, 0, script...); f != nil {
 		t.Fatalf("%s", f)
 	}
 }
@@ -686,7 +670,7 @@ func TestRefPoolAllocatedWithoutSlices(t *testing.T) {
 		"create pfsc-c@vm1#0", "ctrl-restart c", "ctrl-kill c", "settle",
 		"ctrl-start c", "ctrl-kill c", "create pfsd-c@vm1#0", "settle"}
 	for _, w := range []time.Duration{0, 30 * time.Second} {
-		if f := refScriptIn(t, "pmem", 10091, w, script...); f != nil {
+		if f := refScript(t, "pmem", 10091, w, script...); f != nil {
 			t.Fatalf("--stall-window %s:\n%s", w, f)
 		}
 	}
@@ -746,11 +730,11 @@ func TestRefPoolNarrowedAnyNodes(t *testing.T) {
 	wantVerdict(t, v, VFail, "not all enumerated")
 	// against the reference: this window and the fuzz's sequence
 	for seed := int64(1); seed <= 10; seed++ {
-		if f := refScriptIn(t, "fullp", seed, 0, script...); f != nil {
+		if f := refScript(t, "fullp", seed, 0, script...); f != nil {
 			t.Fatalf("%s", f)
 		}
 	}
-	if f := refScriptIn(t, "fullp", 1484, 0, "create ldax@vm2#0", "create xdax-c@vm2#0", "ctrl-kill c", "settle",
+	if f := refScript(t, "fullp", 1484, 0, "create ldax@vm2#0", "create xdax-c@vm2#0", "ctrl-kill c", "settle",
 		"create pwr-c@any#0", "ctrl-kill b", "create pwr-c@vm0#0", "settle", "create ldax@vm0#0", "create sro-b@vm0#0",
 		"delete sro-b@vm0#0", "settle", "driver-kill vm2", "create xnuma-b@vm0#0", "delete xdax-c@vm2#0", "settle",
 		"create sdax-b@vm0#1", "create sdax-b@vm0#0", "create sro-a@vm1#0", "settle", "create lsteer@vm2#0",
@@ -774,7 +758,7 @@ func TestRefPoolKillAfterLeasePut(t *testing.T) {
 	}
 	// (and the new controller detaches what is left)
 	for seed := int64(1); seed <= 20; seed++ {
-		if f := refScriptIn(t, "pmem", seed, 0, "create plse@vm2#0", "settle", "lease-get plse@vm2#0 pbw",
+		if f := refScript(t, "pmem", seed, 0, "create plse@vm2#0", "settle", "lease-get plse@vm2#0 pbw",
 			"lease-put plse@vm2#0", "ctrl-kill c", "settle", "ctrl-start c", "settle"); f != nil {
 			t.Fatalf("%s", f)
 		}
@@ -919,7 +903,7 @@ func fp6Steps(t *testing.T, seed int64) []string {
 
 func TestRefPoolFP6Regressions(t *testing.T) {
 	for _, r := range fp6Regressions {
-		if f := refScriptIn(t, r.profile, r.seed, r.window, strings.Split(r.steps, " | ")...); f != nil {
+		if f := refScript(t, r.profile, r.seed, r.window, strings.Split(r.steps, " | ")...); f != nil {
 			t.Errorf("%s:\n%s", r.why, f)
 		}
 	}
@@ -944,7 +928,7 @@ func TestRefPoolStallAtCtrlStart(t *testing.T) {
 	w := steps(t, adopted, "create pwr-c@vm0#0", "delete pfsc-c@vm1#0")
 	wantPhase(t, w, "pwr-c@vm0#0", Unsched)
 	wantPhase(t, steps(t, w, "ctrl-start c"), "pwr-c@vm0#0", Stalled)
-	if f := refScriptIn(t, "pmem", 4588, 0, fp6Steps(t, 4588)...); f != nil {
+	if f := refScript(t, "pmem", 4588, 0, fp6Steps(t, 4588)...); f != nil {
 		t.Fatalf("%s", f)
 	}
 }
