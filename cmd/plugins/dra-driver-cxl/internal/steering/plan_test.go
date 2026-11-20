@@ -35,15 +35,6 @@ func simulateUsageGrowth(cur NodeMem, nodes []int, bytes int64) {
 	}
 }
 
-// total returns the sum of memory on all nodes.
-func total(nm NodeMem) int64 {
-	var sum int64
-	for _, bytes := range nm {
-		sum += bytes
-	}
-	return sum
-}
-
 // nm constructs a NodeMem from a usage list. The index in the list is
 // the node number and the value is its usage.
 func nm(usage ...int64) NodeMem {
