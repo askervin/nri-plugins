@@ -437,7 +437,7 @@ starts the lease broker without leases (it deletes no companion), and
 holds back new memdevs, since it does not know which are pool devices.
 An operator
 starts it once with `--new-state` to begin with a new document
-([usage.md](usage.md#upgrade)).
+([usage.md](usage.md#an-unreadable-state)).
 
 ## Files on the node
 

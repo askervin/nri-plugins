@@ -86,7 +86,7 @@ reboots, [design.md](design.md#provenance)):
   unless a pool that the plugin remembers has been observed without
   ResourceSlices for less than an hour, the list fails, or the state of
   the plugin could not be read in the last hour (the plugin runs LOST:
-  the log has an error, [usage.md](usage.md#upgrade)). Then it is held back: it is not
+  the log has an error, [usage.md](usage.md#an-unreadable-state)). Then it is held back: it is not
   published at all for up to 5 minutes, until the pool is back. If the
   pool's ResourceSlices list the serial, it is a pool device; otherwise,
   or after the 5 minutes, it is local. The log has

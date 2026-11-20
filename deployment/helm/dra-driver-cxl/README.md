@@ -21,19 +21,10 @@ this page summarizes the chart and points there for detail.
   [feature gates](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#feature-gates)
   of the CXL memory documentation.
 - Helm 3.0.0+
-- Container runtime with CDI and NRI enabled:
-  - containerD:
-    - At least [containerd 1.7.0](https://github.com/containerd/containerd/releases/tag/v1.7.0)
-      release version to use the NRI feature.
-    - Enable NRI feature by following
-      [these](https://github.com/containerd/containerd/blob/main/docs/NRI.md#enabling-nri-support-in-containerd)
-      detailed instructions, or set `nri.runtime.patchConfig` (see below).
-  - CRI-O
-    - At least [v1.26.0](https://github.com/cri-o/cri-o/releases/tag/v1.26.0)
-      release version.
-    - Enable NRI feature by following
-      [these](https://github.com/cri-o/cri-o/blob/main/docs/crio.conf.5.md#crionri-table)
-      detailed instructions, or set `nri.runtime.patchConfig` (see below).
+- A container runtime with CDI and NRI enabled. The driver is tested with
+  containerd 2.x
+  ([enabling NRI](https://github.com/containerd/containerd/blob/main/docs/NRI.md#enabling-nri-support-in-containerd),
+  or set `nri.runtime.patchConfig`, see below); CRI-O is not tested.
 - cgroup v2 and a kernel with CXL regions, device DAX and its kmem
   driver, memory hot-remove and `CONFIG_FS_DAX`; for devices of
   persistent memory (pool devices and persistent local memdevs) also the
@@ -51,7 +42,7 @@ The image contains the `cxl` and `ndctl` tools of ndctl and the
 static `cxl-request` command line tool of leases. The pod runs privileged
 in the host PID namespace, and mounts from the host `/sys`, `/dev`,
 `/lib/modules` (read-only), the NRI socket directory `/var/run/nri`, the
-CDI directories `/etc/cdi` and `/var/run/cdi`, and the kubelet directories
+CDI directory `/var/run/cdi`, and the kubelet directories
 `/var/lib/kubelet/plugins` and `/var/lib/kubelet/plugins_registry`. At start
 the driver copies `cxl-request` to
 `/var/lib/kubelet/plugins/cxl.nri.io/cxl-request` on the host, from where
@@ -87,8 +78,7 @@ whose claims get their block device or a filesystem on it, and
 `cxl-local` and `cxl-local-shared` the other local memdevs), a
 ClusterRole, and two ValidatingAdmissionPolicies that let the driver
 modify only the ResourceSlices and the lease companion pods and claims of
-its own node (they need the `ServiceAccountTokenPodNodeInfo` feature, on
-by default since Kubernetes 1.30; see
+its own node (they need the `ServiceAccountTokenPodNodeInfo` feature; see
 [RBAC and admission policies](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#rbac-and-admission-policies)).
 With `leases.namespaceLabels` a third policy lets only the namespaces with
 those labels lease memory.
@@ -122,14 +112,6 @@ EOF
 
 helm install my-dra-driver-cxl nri-plugins/nri-dra-driver-cxl --namespace kube-system -f myPath/values.yaml
 ```
-
-## Upgrading the Chart
-
-`cxl-local` and `cxl-local-shared` test the attribute `persistent`, which
-the ResourceSlices of an older driver lack, so claims of these classes do
-not allocate until the new driver has published its ResourceSlices again:
-upgrade the DaemonSet before the classes, or expect that window
-([DeviceClasses](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#deviceclasses)).
 
 ## Uninstalling the Chart
 
@@ -172,7 +154,7 @@ customize with their own values, along with the default values.
 | `leases.maxPerNode`      | 32                                                                                                                            | leases of the node (`--lease-max-per-node`) |
 | `config`                 | {}                                                                                                                            | driver configuration file (`--config`)                |
 | `deviceClassConfig`      | {}                                                                                                                            | class name: the body of a `MemoryConfig` (`device`, `container`, `pool`; `container` only for `cxl-lease`), rendered into the `spec.config` of the class |
-| `logLevel`               | 4                                                                                                                             | log verbosity (`-v`)                                 |
+| `logLevel`               | 2                                                                                                                             | log verbosity (`-v`)                                 |
 | `extraEnv`               | {}                                                                                                                            | extra environment variables of the driver, name: value |
 | `initContainerImage.name` | [ghcr.io/containers/nri-plugins/nri-config-manager](https://ghcr.io/containers/nri-plugins/nri-config-manager)               | init container image name                            |
 | `initContainerImage.tag` | unstable                                                                                                                      | init container image tag                             |

@@ -1,6 +1,6 @@
 # The service account of the driver may create, update and delete only the
 # ResourceSlices of the node that its pod runs on. Needs the
-# ServiceAccountTokenPodNodeInfo feature (on by default since Kubernetes 1.30).
+# ServiceAccountTokenPodNodeInfo feature.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:

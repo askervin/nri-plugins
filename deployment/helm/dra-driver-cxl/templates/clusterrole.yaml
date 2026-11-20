@@ -10,15 +10,12 @@ rules:
   verbs: ["get"]
 - apiGroups: ["resource.k8s.io"]
   resources: ["resourceslices"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  verbs: ["list", "watch", "create", "update", "delete"]
 - apiGroups: ["resource.k8s.io"]
   resources: ["resourceclaims"]
   # get: Prepare; the rest: companion claims of leases
-  verbs: ["get", "list", "watch", "create", "delete"]
+  verbs: ["get", "list", "create", "delete"]
 # companion pods of leases, in the requester's namespace
 - apiGroups: [""]
   resources: ["pods"]
-  verbs: ["get", "list", "watch", "create", "delete"]
-- apiGroups: ["", "events.k8s.io"]
-  resources: ["events"]
-  verbs: ["create"]
+  verbs: ["get", "list", "create", "delete"]

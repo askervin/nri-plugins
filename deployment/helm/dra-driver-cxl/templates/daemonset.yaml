@@ -121,8 +121,6 @@ spec:
           - name: kubelet-plugins-registry
             mountPath: /var/lib/kubelet/plugins_registry
           # CDI specs of prepared claims.
-          - name: cdi-etc
-            mountPath: /etc/cdi
           - name: cdi-run
             mountPath: /var/run/cdi
           - name: nrisockets
@@ -134,6 +132,8 @@ spec:
           # /dev/pmem*.
           - name: devfs
             mountPath: /dev
+          # The cxl and ndctl tools look up kernel modules through
+          # libkmod.
           - name: kernel-modules
             mountPath: /lib/modules
             readOnly: true
@@ -151,10 +151,6 @@ spec:
       - name: kubelet-plugins-registry
         hostPath:
           path: /var/lib/kubelet/plugins_registry
-          type: DirectoryOrCreate
-      - name: cdi-etc
-        hostPath:
-          path: /etc/cdi
           type: DirectoryOrCreate
       - name: cdi-run
         hostPath:

@@ -113,7 +113,7 @@ deviceClassConfig: {}
 #       steering: {policy: auto}
 
 # Log verbosity (-v).
-logLevel: 4
+logLevel: 2
 
 # Extra environment variables to inject.
 extraEnv: {}

@@ -8,7 +8,7 @@
 # command, volumes, host namespaces, host ports, privileged containers or
 # added capabilities. Their priority class is one that
 # leases.priorityClassNames allows. Needs the ServiceAccountTokenPodNodeInfo
-# feature (on by default since Kubernetes 1.30).
+# feature.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:

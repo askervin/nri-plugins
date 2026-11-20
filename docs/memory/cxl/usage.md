@@ -21,7 +21,7 @@ The words used below (`source`, `type`, `shared`, `persistent`,
 - [Example claims](#example-claims)
 - [nri-dra-driver-cxl flags](#nri-dra-driver-cxl-flags)
 - [Configuration file](#configuration-file)
-- [Files on the node](#files-on-the-node), [Upgrade](#upgrade)
+- [Files on the node](#files-on-the-node), [An unreadable state](#an-unreadable-state)
 
 Local memory devices are described in [local.md](local.md), pool devices
 and the pool controller contract in [pool.md](pool.md), memory for running
@@ -33,8 +33,8 @@ recovers.
 ## Requirements
 
 - Kubernetes v1.37 or later, see [Feature gates](#feature-gates).
-- A container runtime with CDI support and with NRI enabled (containerd
-  1.7 or newer, CRI-O 1.26 or newer): the driver keeps
+- A container runtime with CDI support and with NRI enabled (the driver is
+  tested with containerd 2.x; CRI-O is not tested): the driver keeps
   containers off the CXL memory they did not claim, steers them, and lends
   memory to them through NRI.
 - cgroup v2.
@@ -192,7 +192,7 @@ The main values of the chart:
 | `leases.maxConnections`, `leases.idleTimeout`, `leases.requestsPerMinute`, `leases.maxPerPod`, `leases.maxPerNode` | `64`, `10m`, `32`, `16`, `32` | `--lease-max-connections`, `--lease-idle-timeout`, `--lease-requests-per-minute`, `--lease-max-per-pod`, `--lease-max-per-node` |
 | `config` | `{}` | the [configuration file](#configuration-file) (`--config`) |
 | `deviceClassConfig` | `{}` | class name: a `MemoryConfig` body for the class, see [Presets in DeviceClasses](#presets-in-deviceclasses) |
-| `logLevel` | `4` | `-v` |
+| `logLevel` | `2` | `-v`; the diagnostics of the driver are at 3 to 5 |
 | `extraEnv` | | more environment variables of the plugin container, name: value |
 | `tolerations`, `affinity`, `nodeSelector` | | where the DaemonSet runs |
 | `podPriorityClassNodeCritical` | `true` | priority class `system-node-critical` |
@@ -231,7 +231,7 @@ detached only after that.
 The ClusterRole `nri-dra-driver-cxl` of the chart lets the driver get
 nodes, change ResourceSlices, read ResourceClaims, create and delete pods
 and ResourceClaims in every namespace (the companions of
-[leases](leases.md#companion-objects)) and create Events. Two
+[leases](leases.md#companion-objects)). Two
 ValidatingAdmissionPolicies of the chart, bound with
 `validationActions: [Deny]`, narrow that down for the user
 `system:serviceaccount:<release namespace>:nri-dra-driver-cxl`:
@@ -256,8 +256,8 @@ ValidatingAdmissionPolicies of the chart, bound with
 
 The API server knows the node of the user from the token of the driver's
 pod (the user extra `authentication.kubernetes.io/node-name`): both
-policies need the `ServiceAccountTokenPodNodeInfo` feature, on by default
-since Kubernetes v1.30, and without it they refuse every request of the
+policies need the `ServiceAccountTokenPodNodeInfo` feature, and without
+it they refuse every request of the
 ServiceAccount that they match. A mutating admission webhook that adds
 volumes or containers to the pods of the requesters' namespaces, or
 rewrites their images (sidecar injection, registry mirrors), makes the
@@ -480,13 +480,6 @@ spec:
   selectors:
   - cel: {expression: 'device.driver == "cxl-pool.nri.io" && device.attributes["cxl-pool.nri.io"].type == "memdev" && device.attributes["cxl-pool.nri.io"].shared == false && device.attributes["cxl-pool.nri.io"].persistent == false'}
 ```
-
-`cxl-local` and `cxl-local-shared` test the attribute `persistent`,
-which the ResourceSlices of an older driver lack: when the chart is
-upgraded, claims of these classes do not allocate until the new driver
-has published its ResourceSlices again. Upgrade the DaemonSet before the
-classes (with a host process, apply `deviceclasses.yaml` after the
-driver), or expect that window.
 
 The classes carry no configuration unless the Helm value
 `deviceClassConfig` gives them one: how a device is prepared and how the
@@ -1943,7 +1936,7 @@ environment variables `NODE_NAME` and `KUBECONFIG`. Both `-flag` and
 | `--lease-max-per-pod` | `16` | leases of the containers of one pod; a request beyond it is refused |
 | `--lease-max-per-node` | `32` | leases of the node; a request beyond it is refused |
 | `--lease-requests-per-minute` | `32` | lease requests of one lease claim per minute, also their burst; a request beyond it is answered `too many requests` |
-| `--new-state` | `false` | start with a new `state.json` when neither `state.json` nor `state.json.prev` can be read ([Upgrade](#upgrade)) |
+| `--new-state` | `false` | start with a new `state.json` when neither `state.json` nor `state.json.prev` can be read ([An unreadable state](#an-unreadable-state)) |
 | `--forget-pool-serial` | (none) | serial (`0x<hex>` or decimal) whose remembered provenance (pool device or local memdev) is removed at start, so that a memdev of it is new again; repeatable, or a comma-separated list ([local.md](local.md#what-the-plugin-publishes)) |
 
 `-v` and the other logging flags of klog are accepted too;
@@ -2064,7 +2057,7 @@ node; `--new-state` acts only when no document can be read, and `--forget-pool-s
 the nodes that remember the serial, but on them at every start while it
 is given.
 
-### Upgrade
+### An unreadable state
 
 A `state.json` that the plugin cannot read, because it was written by a
 plugin of another schema (an older or a newer one) or it is damaged, is
@@ -2078,5 +2071,4 @@ companion), and holds back every new memdev for up to 5 minutes in its
 first hour (the remembered pool serials are lost). It does
 not crash or restart. Drain the node's claims and start it once with
 `--new-state`: it moves both files aside (`.lost`) and starts with a new
-document, and what the lost records named is foreign to it. A downgrade is not supported: an older plugin does
-not read `state.json`.
+document, and what the lost records named is foreign to it.
