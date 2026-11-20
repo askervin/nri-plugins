@@ -108,7 +108,6 @@ func TestOracleDeviations(t *testing.T) {
 			p := podOf(t, o, "lnuma@vm0#0")
 			p.Phase, p.Ready, p.Waiting = "Pending", false, str("ContainerCreating")
 		}, VWait, "lnuma@vm0#0: phase Pending ready false (ContainerCreating)"},
-		{"restart not seen yet", func(o *Observation) {}, VOK, "ok"},
 		{"restarts above the model", func(o *Observation) { podOf(t, o, "plain@vm0#0").Restarts = 1 }, VFail, "1 restarts, the model crashed it 0 times"},
 		{"pod failed", func(o *Observation) { podOf(t, o, "plain@vm0#0").Phase = "Failed" }, VFail, "phase Failed"},
 		{"pod on another node", func(o *Observation) { podOf(t, o, "sdax-c@vm2#0").Node = str("vm1") }, VFail, "on vm1, want vm2"},

@@ -321,8 +321,12 @@ func TestKeyLayoutBounds(t *testing.T) {
 		t.Fatalf("event stack+1 does not fit 3 bits")
 	case int(SteerAny) > 3 || int(LeaseBusy) > 3 || int(nModes) > 8 || int(SlicesUnknown) > 3 || int(TriMaybe) > 3 || len(markerNames) > 7:
 		t.Fatalf("an enum does not fit its bits")
-	case 2*96 > 255:
-		t.Fatalf("users do not fit a byte")
+	}
+	// a user (a slot index, or nSlots + a slot index) fits a byte
+	for name := range profiles {
+		if cfg := testConfig(t, name, true); 2*len(cfg.Slots) > 256 {
+			t.Fatalf("profile %s: the users of %d slots do not fit a byte", name, len(cfg.Slots))
+		}
 	}
 	// escaped counters keep keys distinct
 	cfg := testConfig(t, "small", true)

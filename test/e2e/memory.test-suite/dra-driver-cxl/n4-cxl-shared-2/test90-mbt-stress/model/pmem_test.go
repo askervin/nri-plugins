@@ -229,8 +229,6 @@ func TestPmemDecoderHoles(t *testing.T) {
 	h = steps(t, h, "create pfsc-c@vm1#0", "settle")
 	wantPhase(t, h, "pfsc-c@vm1#0", Running)
 	// a refused-to-be reader through a hole is blocked first
-	b := stateAfter(t, "pmem", true, "create xnuma-c@vm1#0", "settle", "create sdax-c@vm0#0", "settle")
-	_ = b
 	r := stateAfter(t, "fullp", true, "create xnuma-c@vm1#0", "settle", "create sdax-c@vm1#0", "settle", "delete xnuma-c@vm1#0", "settle")
 	wantStack(t, r, stackIndex(VM1, HB1), "[hole,c-shared0]")
 	r = steps(t, r, "create pfsd-c@vm1#0", "settle")

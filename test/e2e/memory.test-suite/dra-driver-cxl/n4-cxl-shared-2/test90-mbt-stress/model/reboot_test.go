@@ -95,10 +95,9 @@ func TestNodeRebootVerb(t *testing.T) {
 func TestNodeRebootPreconditions(t *testing.T) {
 	cfg := rebootConfig(t, "full", true)
 	s := steps(t, newState(cfg), "create plain@vm1#0", "create xdax-b@vm0#0", "!node-reboot vm1", "settle")
-	n := steps(t, s, "node-reboot vm1",
+	steps(t, s, "node-reboot vm1",
 		// forced: only synchronous steps, not on the VM's pods
 		"!create plain@vm0#0", "!crash plain@vm1#0", "!node-reboot vm0", "write xdax-b@vm0#0", "settle", "node-reboot vm0")
-	_ = n
 	steps(t, s, "ctrl-kill a", "settle", "!node-reboot vm1", "!node-reboot vm0", "ctrl-start a", "settle", "node-reboot vm1")
 	// an unblocking pod on the VM: its retry may come before the boot
 	u := steps(t, newState(cfg), "create xnuma-a@vm1#0", "create sdax-a@vm1#0", "settle", "delete xnuma-a@vm1#0", "settle",

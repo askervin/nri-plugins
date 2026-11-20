@@ -317,9 +317,9 @@ var modelFlags = map[string]bool{
 // driver configuration of every node; --reboot is MBT_REBOOT, the
 // node-reboot verb of the executor): a command line value that
 // contradicts the header is an error, never replaced, or the model and
-// the cluster would run in different modes. A header without one has
-// its default (A37, A41: files made before it); a file without a header
-// has no model of its own: the command line's.
+// the cluster would run in different modes. A header without one is
+// not of this mbt-cxl: an error; a file without a header has no model of
+// its own: the command line's.
 var clusterFlags = map[string]bool{"fencing": true, "reboot": true}
 
 // applyHeader sets the model flags of a steps file's header over the
