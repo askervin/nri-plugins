@@ -1,6 +1,6 @@
 # Attaching pooled CXL memory to a running container (leases)
 #
-# test10 and test11 give a pod CXL memory of the pool when the pod is
+# test10 and test19 give a pod CXL memory of the pool when the pod is
 # created: the claim is in the pod spec, and the pod waits until the
 # memory is there. A pod that runs already cannot get new claims: neither
 # the scheduler nor kubelet allocate or prepare devices for a running pod.
@@ -32,7 +32,7 @@
 #   "cxl-request env --lease ID" prints the environment that a claim of
 #   the same memory gives a container (CXL_<KEY>_NODE and the rest).
 # - "cxl-request request --serial 0xc1ae0001 --shared --exec CMD" joins a
-#   shared device (test11). The container gets no device node: the plugin
+#   shared device (test19). The container gets no device node: the plugin
 #   opens the devdax device and passes the open file descriptor over the
 #   socket. cxl-request runs CMD with it as fd 3, CXL_<KEY>_FD=3.
 # - "cxl-request release --lease ID" (or --all) gives it back: the node is
@@ -495,7 +495,7 @@ share() {
     [ "$found" == "$tag" ] || error "cycle $cycle: host: $shared_file has '$found' at 0, expected '$tag'"
     echo "host read at 0 of $shared_file: '$found'"
     # The environment of the lease names the dax device of the VM, as a
-    # claim of shared0 would (test11): read-write, shared.
+    # claim of shared0 would (test19): read-write, shared.
     dra-exec "$VM2" borrower/main "$CXL_REQUEST" env --lease "$lease" ||
         command-error "cycle $cycle: cxl-request env --lease $lease failed"
     lease_env="$COMMAND_OUTPUT"

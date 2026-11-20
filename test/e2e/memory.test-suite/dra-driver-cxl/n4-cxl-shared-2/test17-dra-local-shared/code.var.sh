@@ -3,7 +3,7 @@
 #
 # test14 slices a local CXL memory device: every claim of DeviceClass
 # cxl-local gets a piece of its own, zeroed for it. A local device can be
-# shared instead, like a shared device of the pool (test11, test13): the
+# shared instead, like a shared device of the pool (test13, test19): the
 # driver configuration lists it, sharedDevices: ["<serial>"], and the node
 # plugin then publishes it whole as a shared device, attributes type
 # memdev, source local, shared true, serial, size and nodeAffinity, and

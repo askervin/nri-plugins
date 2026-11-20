@@ -32,8 +32,10 @@
 # "any 512Mi of pool memory" landing on VM0 because pool-b has the only
 # free one; a pod pinned to VM0 that asks for a device of pool-a staying
 # Pending; one pod with devices of two pools (pool-b over QMP, pool-c over
-# HMP) writing to both; a pod on VM2 reading what VM0 wrote into pool-c;
-# and every device back in its pool at the end.
+# HMP) writing to both, and nothing of them on VM2; a pod on VM2 reading
+# what VM0 wrote into pool-c, its claim without a configuration (mode dax);
+# VM0 letting go while VM2 still reads; and every device back in its pool
+# at the end.
 #
 # Run test00-up of n4-cxl-shared-1, -0 and -2 first: they create the VMs
 # and make them one cluster of three nodes. Build fake-cxl-pool with the
@@ -177,6 +179,7 @@ pool-free-wait() {
     #
     # Wait until the server POOL has no attachments, 60 s at most.
     local pool="$1"
+    # shellcheck disable=SC2016 # evaluated by retry-until
     retry-until --timeout 60 --message "no attachments on $pool" \
         'pool-host-client --pool "$pool" -o json attachments >/dev/null && pool-py assert "$COMMAND_OUTPUT" "j in (None, [])"' ||
         error "$pool still has attachments: $COMMAND_OUTPUT"
@@ -437,14 +440,20 @@ for pool in pool-b pool-c; do
     [ "$found" == "$want" ] || error "host: $POOL_DEVICE_DATA of $dev has '$found' at 0, expected '$want'"
     echo "host read at 0 of $POOL_DEVICE_DATA ($pool): '$found'"
 done
+# A node without a claim has nothing of the devices.
+pool-cxl-dump "$VM2" f-no-claim
+cxl-assert "memdevs == [] and regions == []"
 
 echo "### G: shared across racks: a pod on VM2 reads what VM0 wrote into c-shared0"
 # pool-c attaches c-shared0 to VM2 over HMP, on the monitor socket that
 # the test uses too: the monitors of VM2 and VM0 keep answering meanwhile.
+# g-claim has no configuration: a shared device gets mode dax.
 MONITOR_ANSWERS=0
-dra-apply "$VM2" <<< "$(dra-shared-claim-yaml g-claim "$C_SHARED0_SERIAL" 1 "mode: dax")
+dra-apply "$VM2" <<< "$(dra-shared-claim-yaml g-claim "$C_SHARED0_SERIAL" 1)
 ---
-$(pod-yaml g-reader "$VM2_NAME" "python3 /tools/dax-rw.py read \"\$CXL_${C_SHARED0_HEX}_DAX\" 0 || exit 1" g-claim)"
+$(pod-yaml g-reader "$VM2_NAME" "env | grep ^CXL_ | sort
+python3 /tools/dax-rw.py read \"\$CXL_${C_SHARED0_HEX}_DAX\" 0 || exit 1" g-claim)"
+# shellcheck disable=SC2016 # evaluated by retry-until
 retry-until --timeout 60 --message "g-claim attached while the monitors answer" \
     'monitors-answer "$VM2" "$VM0" && dra-json "$VM2" resourceclaim -n "$DRA_NS" g-claim >/dev/null && dra-py assert "$COMMAND_OUTPUT" "condition(\"$DRA_POOL_DRIVER/Attached\") == \"True\""' ||
     error "g-claim was not attached in 60 s"
@@ -454,19 +463,39 @@ retry-until --timeout 60 --message "g-claim attached while the monitors answer" 
     error "the monitors answered only $MONITOR_ANSWERS times before g-claim was attached, expected 4 or more (two rounds of VM2 and VM0)"
 echo "the monitors of VM2 and VM0 answered $MONITOR_ANSWERS times while pool-c attached c-shared0 to VM2"
 dra-assert "$COMMAND_OUTPUT" "allocated_node() == '$VM2_NAME' and [(r['pool'], r['device']) for r in results()] == [('pool-c', 'c-shared0')]"
+G_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
 dra-pod-wait "$VM2" g-reader Running 120
 dra-wait-log "$VM2" g-reader "$TEXT_C" 60
+dra-kubectl "$VM2" "logs -n $DRA_NS g-reader" || command-error "cannot get the log of g-reader"
+G_LOG="$COMMAND_OUTPUT"
+# The environment of the device, read-write, and the marker of result 0
+# of the claim, nothing else.
+dra-env-assert g-reader "$G_LOG" "$C_SHARED0_HEX" \
+    SERIAL="$C_SHARED0_SERIAL" SHARED=1 MODE=dax SIZE=$(( 256 << 20 )) "DAX=/dev/dax*" READONLY=0
+grep -qx "CXL_CLAIM_${G_UID//-/_}_0=1" <<< "$G_LOG" ||
+    error "g-reader has no marker CXL_CLAIM_${G_UID//-/_}_0=1 of result 0 of its claim"
+[ "$(grep -c '^CXL_' <<< "$G_LOG")" == 7 ] ||
+    error "g-reader has other CXL_ variables than the six of $C_SHARED0_SERIAL and the marker of its result: $(grep '^CXL_' <<< "$G_LOG")"
 pool-attachments --pool pool-c c-shared0
 pool-assert "$COMMAND_OUTPUT" "sorted((a['host'], a['state']) for a in j) == sorted([('$VM0_NAME', 'attached'), ('$VM2_NAME', 'attached')])"
 echo "VM2 read '$TEXT_C' from c-shared0 of pool-c, attached to VM0 and VM2"
 
-echo "### H: teardown: every device back in its pool"
-for pod in g-reader f-writer; do
-    dra-delete "$VM2" pod "$pod" --grace-period=2 --wait=true --timeout=60s
-done
-for claim in g-claim f-claim-b f-claim-c; do
+echo "### H: VM0 lets go while VM2 still reads, then every device is back in its pool"
+dra-delete "$VM2" pod f-writer --grace-period=2 --wait=true --timeout=60s
+for claim in f-claim-b f-claim-c; do
     dra-delete "$VM2" resourceclaim "$claim" --wait=true --timeout=60s
 done
+pool-cxl-wait "$VM0" f-released "memdevs == [] and regions == []" 60
+# shellcheck disable=SC2016 # evaluated by retry-until
+retry-until --timeout 60 --message "c-shared0 attached only to VM2" \
+    'pool-host-client --pool pool-c -o json attachments --device c-shared0 >/dev/null && pool-py assert "$COMMAND_OUTPUT" "[a[\"host\"] for a in j or []] == [\"$VM2_NAME\"]"' ||
+    error "c-shared0 is not attached to VM2 only: $COMMAND_OUTPUT"
+dra-exec "$VM2" g-reader/main python3 /tools/dax-rw.py read "$(dra-env-value "$G_LOG" "CXL_${C_SHARED0_HEX}_DAX")" 0 ||
+    command-error "cannot read c-shared0 in g-reader"
+[ "$COMMAND_OUTPUT" == "$TEXT_C" ] ||
+    error "after VM0 let go of c-shared0, VM2 read '$COMMAND_OUTPUT', expected '$TEXT_C'"
+dra-delete "$VM2" pod g-reader --grace-period=2 --wait=true --timeout=60s
+dra-delete "$VM2" resourceclaim g-claim --wait=true --timeout=60s
 for vm in "${VMS[@]}"; do
     pool-cxl-wait "$vm" released "memdevs == [] and regions == []" 60
 done

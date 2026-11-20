@@ -1,7 +1,7 @@
 # Node-local CXL memory with Dynamic Resource Allocation: pods share and
 # slice a local CXL memory device
 #
-# test10 and test11 give pods memory of devices that the pool attaches to
+# test10 and test19 give pods memory of devices that the pool attaches to
 # the node on demand. A CXL memory device can also belong to the node
 # itself: cabled to it, there from boot. nri-dra-driver-cxl offers such a
 # local device whole, as device memdev-<serial> of the node's cxl.nri.io
