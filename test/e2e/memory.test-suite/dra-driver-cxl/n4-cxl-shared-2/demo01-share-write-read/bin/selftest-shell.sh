@@ -600,7 +600,7 @@ setup-name-test() {
     # "on" (far); the demo command and the setup test also take off. Check
     # that demo setup refuses a bad name, and a load that is not with far,
     # before it changes anything.
-    local demo="$BIN/demo" setup="$BIN/../e2e/demo.test-suite/dra-driver-cxl/n4-cxl-shared-2/test90-demo-setup/code.var.sh"
+    local demo="$BIN/demo" setup="$BIN/../../test98-demo-setup/code.var.sh"
     local name sh_want demo_want got out rc
     # NAME, then what latency.sh and what the demo and the setup test print.
     while read -r name sh_want demo_want; do
@@ -647,7 +647,7 @@ EOF
 cleanup-test() {
     # Check that llm-cleanup of the setup test runs latency.sh off when the
     # setup started latency.sh on, and only then.
-    local demo="$TMP/demo" setup="$BIN/../e2e/demo.test-suite/dra-driver-cxl/n4-cxl-shared-2/test90-demo-setup/code.var.sh"
+    local demo="$TMP/demo" setup="$BIN/../../test98-demo-setup/code.var.sh"
     mkdir -p "$demo/bin"
     # shellcheck disable=SC2016 # expanded when the stub runs
     printf '#!/bin/bash\necho "latency.sh $* DEMO_STATE_DIR=$DEMO_STATE_DIR" >> "$STUB_LOG"\n' > "$demo/bin/latency.sh"

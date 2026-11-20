@@ -535,7 +535,7 @@ server for the directory on the host (port 9920, which the VMs reach at
 Teardown stops it. The file name must be exactly the one in the table.
 The URLs, commits and sha256 sums of the other two models are in the table
 `LLM_MODELS` at the top of
-[`test90-demo-setup/code.var.sh`](blob:/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/e2e/demo.test-suite/dra-driver-cxl/n4-cxl-shared-2/test90-demo-setup/code.var.sh).
+[`test98-demo-setup/code.var.sh`](blob:/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test98-demo-setup/code.var.sh).
 A directory on the host is also useful for rehearsals, because the
 download is then local.
 
@@ -560,9 +560,9 @@ and, if you staged the model, `DEMO_LLM_MODEL_DIR` in this shell too:
 demo setup llm-share
 ```
 
-Setup is a test of the e2e framework (`test90-demo-setup`), run through
-`run_tests.sh`. Its log is `run/test90-demo-setup.log` in the demo
-directory. It does this:
+Setup is a test of the e2e suite (`test98-demo-setup`, which a run of the
+suite skips), run through `run_tests.sh`. Its log is
+`run/test98-demo-setup.log` in the demo directory. It does this:
 
 - mounts a tmpfs for the pool memory at `/tmp/fake-cxl-pool-llm`: 2 MiB
   pages where possible (`huge=within_size`), spread evenly over all the

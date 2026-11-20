@@ -1,10 +1,8 @@
 # Demo setup (the demo directory demo01-share-write-read, README.txt):
-# "demo setup local|pool|pool-shared-fs|pool-fs [TYPE]|wizard|llm-share" runs this through
-# the e2e framework, with the helpers of
-# test/e2e/memory.test-suite/dra-driver-cxl (dra.source.sh, pool.source.sh,
-# cxl.source.sh: the files next to this test are links to them).
+# "demo setup local|pool|pool-shared-fs|pool-fs [TYPE]|wizard|llm-share"
+# runs this through the e2e framework; a run of the suite skips it.
 #
-# Leaves running, until "demo teardown" (test91-demo-teardown):
+# Leaves running, until "demo teardown" (test99-demo-teardown):
 # - fake-cxl-pool-server on the host: local demo with the local device of
 #   VM2 attached, pool demo with shared0 (256Mi, shared, 0xc1ae0001),
 #   pool-shared-fs demo with shared0 persistent (its data and LSA files in
@@ -62,6 +60,8 @@
 # background memory traffic on the far socket, with DEMO_LLM_LATENCY=far),
 # DEMO_LLM_REPEAT (bench repetitions, default 3), DEMO_POOL_DIR (the pool
 # directory, default /tmp/fake-cxl-pool-llm).
+
+[ -n "${DEMO_DIR:-}" ] || skip-test "run by bin/demo setup"
 
 DEMO_CASE="${DEMO_CASE:-local}"
 DEMO_SETUP_START=$(date +%s)   # zoom kernel shows the kernel lines since then
@@ -355,8 +355,7 @@ pool-cluster-require
 pool-vm-require "$VM2" "$(basename "$TOPOLOGY_DIR")"
 pool-vm-require "$VM1" n4-cxl-shared-1
 [ "$DEMO_CASE" != llm-share ] || pool-vm-require "$VM0" n4-cxl-shared-0
-# test00-up installed the tools; cxl-tools-install cannot run from here
-# (it finds the source tree through the path of the test).
+# test00-up installed the tools.
 for vm in "${DEMO_VMS[@]}"; do
     vmdir-command-q "$vm" "command -v cxl && command -v daxctl && command -v cxl-dump" >/dev/null ||
         error "$(vmdir-label "$vm") lacks cxl, daxctl or cxl-dump: run memory.test-suite/dra-driver-cxl/n4-cxl-shared-{0,1,2}/test00-up"

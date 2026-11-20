@@ -30,9 +30,9 @@ and the llm-share story from the first command to the results, is in the
 replication guide N/docs/memory/cxl/demo-llm-share.md (N = the nri-plugins
 tree); this file says how to run the demos as a presenter.
 This directory is N/test/e2e/memory.test-suite/dra-driver-cxl/
-n4-cxl-shared-2/demo01-share-write-read. It is no test: run_tests.sh runs
-only the test* directories of a topology, so a run of the suite or of
-n4-cxl-shared-2 leaves it alone (its setup leaves the demo up).
+n4-cxl-shared-2/demo01-share-write-read. It is no test: its setup and
+teardown are the tests test98-demo-setup and test99-demo-teardown of
+n4-cxl-shared-2, which a run of the suite skips (setup leaves the demo up).
 "demo" below is bin/demo of this directory (alias demo=$PWD/bin/demo); it
 finds N by itself (the nearest directory above with the go.mod of
 github.com/containers/nri-plugins), or NRI_PLUGINS_SRC=N.
@@ -80,9 +80,7 @@ github.com/containers/nri-plugins), or NRI_PLUGINS_SRC=N.
   demo reset local      (or pool, pool-shared-fs, pool-fs) deletes the demo pods and
                         their leases: start the script again from step 1;
                         reset wizard is demo wizard delete --all
-Setup runs the e2e framework (run_tests.sh on e2e/demo.test-suite, whose
-helper files are links to memory.test-suite/dra-driver-cxl, made again by
-every setup and teardown; e2e/lib links to N/test/e2e/lib): it checks
+Setup runs the e2e framework (run_tests.sh on test98-demo-setup): it checks
 the cluster shape (now three nodes; vm0 is the second worker, pool A
 reaches vm1 and vm2 only), starts fake-cxl-pool-server on the host
 (local: vm2's local device attached; pool: the device shared0;
@@ -105,7 +103,7 @@ demo-tools (/demo/write, /demo/read, /demo/hold, /demo/env, /demo/mkfs,
 /demo/fswrite in the pods; wizard: /demo/cxl-wizard.py),
 copies the manifests to /root/demo in vm2, labels the nodes
 cxl-demo/node=vm1|vm2 and starts the trace. Everything stays up until
-teardown; run/state.env says what runs. Its log: run/test90-demo-setup.log.
+teardown; run/state.env says what runs. Its log: run/test98-demo-setup.log.
 One demo at a time: to switch, "demo teardown" then "demo setup pool".
 A failed setup cleans up after itself (the EXIT traps of the e2e helpers).
 Teardown unconfigures vm2's shared device first (the driver restarted

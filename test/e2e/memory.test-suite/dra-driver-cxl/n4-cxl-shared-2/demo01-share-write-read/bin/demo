@@ -29,7 +29,6 @@ E2E_DIR="$NRI_SRC/test/e2e"
 # checkout.
 E2E_ROOT="${DEMO_E2E_ROOT:-$E2E_DIR}"
 E2E_SUITE="$E2E_DIR/memory.test-suite/dra-driver-cxl"
-DEMO_SUITE="$DEMO_DIR/e2e/demo.test-suite/dra-driver-cxl"
 export DEMO_DIR
 export DEMO_STATE_DIR="${DEMO_STATE_DIR:-$DEMO_DIR/run}"
 # The pool directory of llm-share: setup mounts a tmpfs there, whose pages
@@ -113,45 +112,21 @@ state-get() {
     sed -n "s/^$1=//p" "$STATE" 2>/dev/null | head -n 1
 }
 
-e2e-links() {
-    # Usage: e2e-links
-    #
-    # Link the helpers of the dra-driver-cxl e2e suite into the demo suite
-    # again, with paths relative to the links: the policy level
-    # (dra.source.sh, helm values), every file of the topology
-    # n4-cxl-shared-2 (sources, vars, tools), and e2e/lib to the e2e lib.
-    local f sub
-    [ -f "$E2E_SUITE/dra.source.sh" ] || die "no e2e suite in $E2E_SUITE"
-    find "$DEMO_SUITE" -maxdepth 2 -type l -delete
-    for sub in "" /n4-cxl-shared-2; do
-        for f in "$E2E_SUITE$sub"/*; do
-            [ -f "$f" ] || continue
-            ln -s "$(realpath -s --relative-to="$DEMO_SUITE$sub" "$f")" "$DEMO_SUITE$sub/${f##*/}" ||
-                die "cannot link $f into $DEMO_SUITE$sub"
-        done
-    done
-    ln -sfn "$(realpath -s --relative-to="$DEMO_DIR/e2e" "$E2E_DIR/lib")" "$DEMO_DIR/e2e/lib" ||
-        die "cannot link $E2E_DIR/lib to $DEMO_DIR/e2e/lib"
-    for f in "$DEMO_SUITE"/* "$DEMO_SUITE"/n4-cxl-shared-2/* "$DEMO_DIR/e2e/lib"; do
-        [ -e "$f" ] || die "broken link $f"
-    done
-}
-
 e2e-run() {
     # Usage: e2e-run TEST
     #
-    # Run the test TEST of the demo suite with run_tests.sh of this tree in
-    # $E2E_ROOT, the way the e2e tests run (one at a time: no other
-    # run_tests.sh may run).
+    # Run the test TEST of n4-cxl-shared-2 (test98-demo-setup or
+    # test99-demo-teardown) with run_tests.sh of this tree in $E2E_ROOT,
+    # the way the e2e tests run (one at a time: no other run_tests.sh may
+    # run).
     local out
     if command -v pgrep >/dev/null && pgrep -x run_tests.sh >/dev/null; then
         die "run_tests.sh runs already: wait until it is done (the VMs serve one run at a time)"
     fi
-    e2e-links
     out="$DEMO_STATE_DIR/$1.log"
     mkdir -p "$DEMO_STATE_DIR"
     echo "demo: running $1 through the e2e framework, log $out"
-    (cd "$E2E_ROOT" && "$E2E_DIR/run_tests.sh" "$DEMO_SUITE/n4-cxl-shared-2/$1") 2>&1 | tee "$out"
+    (cd "$E2E_ROOT" && "$E2E_DIR/run_tests.sh" "$E2E_SUITE/n4-cxl-shared-2/$1") 2>&1 | tee "$out"
     grep -q "^PASS " "$out"
 }
 
@@ -247,9 +222,9 @@ cmd-setup() {
     tar=$(ls -1t "$NRI_SRC"/build/images/nri-dra-driver-cxl-image-*.tar 2>/dev/null | head -n 1)
     [ -n "$tar" ] || die "no image of the driver, build it: make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images"
     echo "demo setup $case${fstype:+ $fstype}: driver image $tar"
-    if ! DEMO_CASE="$case" DEMO_FSTYPE="$fstype" e2e-run test90-demo-setup; then
+    if ! DEMO_CASE="$case" DEMO_FSTYPE="$fstype" e2e-run test98-demo-setup; then
         [ "$case" != llm-share ] || [ "${DEMO_LLM_LATENCY:-off}" == off ] || latency off
-        die "setup failed, see $DEMO_STATE_DIR/test90-demo-setup.log (its EXIT trap cleaned up)"
+        die "setup failed, see $DEMO_STATE_DIR/test98-demo-setup.log (its EXIT trap cleaned up)"
     fi
     echo
     print-commands "$case"
@@ -258,7 +233,7 @@ cmd-setup() {
 cmd-teardown() {
     local vms pool
     vms="$(vm-dirs)" pool="$(state-get DEMO_POOL_DIR)"   # before the state goes
-    e2e-run test91-demo-teardown || die "teardown failed, see $DEMO_STATE_DIR/test91-demo-teardown.log; run it again"
+    e2e-run test99-demo-teardown || die "teardown failed, see $DEMO_STATE_DIR/test99-demo-teardown.log; run it again"
     DEMO_VM_DIRS="$vms" latency off || die "teardown: latency.sh off failed: run demo latency off again"
     # The mount point of the pool tmpfs of latency.sh.
     if [ -n "$pool" ] && [ -d "$pool" ] && ! mountpoint -q "$pool"; then

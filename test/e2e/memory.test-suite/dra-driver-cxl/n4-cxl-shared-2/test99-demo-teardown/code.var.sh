@@ -1,6 +1,6 @@
 # Demo teardown (the demo directory demo01-share-write-read, README.txt):
 # "demo teardown" runs this through the e2e framework. Undoes
-# test90-demo-setup and leaves both VMs without CXL memory devices, the
+# test98-demo-setup and leaves both VMs without CXL memory devices, the
 # host without the pool server:
 # - the demo pods and their leases;
 # - the shared local device unconfigured first: the driver restarted
@@ -23,6 +23,8 @@
 #   the pool directory removed if it is empty and no mount point.
 # Works without the state file of setup too (a setup that failed half
 # way): then it cleans what it finds.
+
+[ -n "${DEMO_DIR:-}" ] || skip-test "run by bin/demo teardown"
 
 DEMO_STATE_DIR="${DEMO_STATE_DIR:-$DEMO_DIR/run}"
 state="$DEMO_STATE_DIR/state.env"

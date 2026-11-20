@@ -1,6 +1,6 @@
 # pool-tmpfs.sh: the tmpfs of the pool directory of the llm-share demo,
 # sourced by latency.sh and by the setup and teardown of the demo
-# (e2e/.../test90-demo-setup and test91-demo-teardown). The pool server
+# (test98-demo-setup and test99-demo-teardown of n4-cxl-shared-2). The pool server
 # creates the backing files of its devices there, so the pages of this
 # tmpfs are the memory of the pool devices: 2 MiB pages where possible
 # (huge=within_size) with and without the latency setup. Without it the
