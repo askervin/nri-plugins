@@ -14,8 +14,8 @@
 
 package main
 
-// The precomputed coverage strings (planner_ext.go covStrings) are the
-// strings that the coverage functions computed per step before.
+// covStrings (planner.go) returns the strings that the coverage functions
+// compute for a step.
 
 import (
 	"math/rand"
@@ -26,7 +26,7 @@ import (
 )
 
 // refStepStrings are the C1, C2 and C4 strings of a step as the coverage
-// functions computed them before covStrings.
+// functions compute them, without covStrings.
 func refStepStrings(mm *mbtModel, cov Coverage, st *m.Step) []string {
 	a := mm.acts[mm.actIndex(st)]
 	from, to := st.StartState().(*State), st.EndState().(*State)

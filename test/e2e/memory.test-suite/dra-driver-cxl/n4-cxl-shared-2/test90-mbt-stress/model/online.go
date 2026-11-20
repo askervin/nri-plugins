@@ -61,7 +61,7 @@ type onlineRun struct {
 	out   io.Writer
 	log   *log.Logger
 	mm    *mbtModel
-	pl    planner
+	pl    *planner
 	st    *State
 	start time.Time
 	steps *os.File
@@ -117,11 +117,7 @@ func newOnlineRun(o runOpts, in io.Reader, out io.Writer, logw io.Writer) (*onli
 		mm:      newMbtModel(o.cfg),
 		noted:   map[string]bool{},
 	}
-	pl, err := newPlanner(r.mm, o.cov, o.depth, o.seed, o.randomness)
-	if err != nil {
-		return nil, err
-	}
-	r.pl = pl
+	r.pl = newPlanner(r.mm, o.cov, o.depth, o.seed, o.randomness)
 	r.st = newState(o.cfg)
 	return r, nil
 }
