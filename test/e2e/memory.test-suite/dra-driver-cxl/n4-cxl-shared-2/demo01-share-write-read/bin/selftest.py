@@ -661,6 +661,17 @@ def argument_test():
     for node in ("vm9", "vm0", "../x"):
         got = refused(zoom, ["driver", node], state)
         expect("zoom driver %s is refused" % node, "NODE is vm1 or vm2, not %r" % node in got, got)
+    for pod in ("a;b", "x'y", "Pod"):
+        got = refused(zoom, ["env", pod], state)
+        expect("zoom env %s is refused" % pod, "POD is a pod name" in got, got)
+    import contextlib
+    import io
+    import wizard
+    for name in ("a;b", "x'y"):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = wizard.cmd_delete(["ok-name", name])
+        expect("wizard delete %s is refused" % name, rc == 2 and "not names of the wizard" in err.getvalue(), err.getvalue())
     for argv in (["mem", "../x"], ["mem", "a", "--since", "b/c"], ["mem", "a b"]):
         got = refused(llm, argv)
         expect("llm %s is refused" % argv, "letters, digits, dot, dash and underscore only" in got, got)

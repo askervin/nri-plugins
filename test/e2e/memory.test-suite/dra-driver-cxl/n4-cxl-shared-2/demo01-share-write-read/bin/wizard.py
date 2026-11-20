@@ -481,7 +481,7 @@ def check(q, v, a, ctx):
             return "mkfs TYPE: TYPE one of %s (the tools of the demo image)" % ", ".join(MKFS_TYPES)
         return None
     if q == "name":
-        if not re.fullmatch(r"[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?", v):
+        if not re.fullmatch(NAME_RE, v):
             return "a DNS label of at most 40 characters (lower-case letters, digits, -)"
         if v in ctx.names:
             return "%s exists: demo wizard delete %s first" % (v, v)
@@ -1251,6 +1251,10 @@ def given_options(args):
     return given, flags
 
 
+# The names of the wizard's objects: DNS labels of at most 40 characters.
+NAME_RE = r"[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?"
+
+
 def usage_error(msg):
     print("wizard: %s" % msg, file=sys.stderr)
     return 2
@@ -1332,6 +1336,9 @@ def cmd_yaml(args):
 def cmd_delete(args):
     if not args:
         return usage_error("delete NAME...|--all")
+    bad = [n for n in args if n != "--all" and not re.fullmatch(NAME_RE, n)]
+    if bad:
+        return usage_error("delete: not names of the wizard: %s" % " ".join(map(repr, bad)))
     state, k8s = load()
     names = sorted(made_names(k8s)) if args == ["--all"] else args
     if not names:

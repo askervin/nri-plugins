@@ -36,6 +36,8 @@ zoom" pages it.
 """
 import json
 import os
+import re
+import shlex
 import sys
 
 import common as c
@@ -235,6 +237,14 @@ def zoom_mounts(state, node):
     zoom_shell(state, node, MOUNTS_SCRIPT)
 
 
+def pod_arg(name):
+    """Return NAME quoted for a shell if it is a pod name (a DNS label);
+    exit otherwise."""
+    if not re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", name):
+        sys.exit("POD is a pod name (lower-case letters, digits, -), not %r" % name)
+    return shlex.quote(name)
+
+
 def zoom_shell(state, node, script, timeout=30):
     rc, out = c.run_vm(vmdir(state, node), script, timeout)
     print(c.short_text(out.rstrip(), state))
@@ -279,9 +289,9 @@ def main():
     elif what == "env" and rest:
         if state.get("DEMO_CASE") == "wizard":
             zoom_shell(state, "vm2", "kubectl exec -n %s %s -- sh -c 'python3 /demo/cxl-wizard.py env; "
-                       "[ -z \"$CXL_LEASE_SOCKET\" ] || /demo/env'" % (ns, rest[0]))
+                       "[ -z \"$CXL_LEASE_SOCKET\" ] || /demo/env'" % (ns, pod_arg(rest[0])))
         else:
-            zoom_shell(state, "vm2", "kubectl exec -n %s %s -- /demo/env" % (ns, rest[0]))
+            zoom_shell(state, "vm2", "kubectl exec -n %s %s -- /demo/env" % (ns, pod_arg(rest[0])))
     elif what == "cdi" and rest:
         zoom_cdi(state, rest[0])
     elif what == "driver" and rest:
