@@ -191,6 +191,7 @@ while :; do
     sleep 0.2 & wait
 done'
 DRA_TRACE_DIR=""                   # $TEST_OUTPUT_DIR/trace of a running trace
+DRA_TRACE_STAMP="$nri_resource_policy_src/test/e2e/memory.test-suite/dra-driver-cxl/dra-trace-stamp.py"
 DRA_TRACE_RUNNING=""
 DRA_TRACE_VMS=()
 # Kill the trace collectors in a VM: each runs in a process group of its own.
@@ -571,8 +572,7 @@ dra-install() {
         dra-wait-node "$v"
     done
 
-    vmdir-command "$vmdir" "kubectl delete pods --all -n $DRA_NS --grace-period=2 --ignore-not-found --wait=true --timeout=60s 2>&1 | grep -v 'No resources found'; kubectl delete namespace $DRA_NS --ignore-not-found --wait=true --timeout=120s && kubectl create namespace $DRA_NS" ||
-        command-error "cannot create namespace $DRA_NS in $label"
+    dra-ns-reset "$vmdir" create || command-error "cannot create namespace $DRA_NS in $label"
 }
 
 dra-controller-run() {
@@ -809,6 +809,15 @@ for a in atts:
         print(a["device"] + "@" + a["host"], a.get("owner"), a.get("state"))' "$1"
 }
 
+dra-ns-reset() {
+    # Usage: dra-ns-reset VMDIR [create]
+    #
+    # Delete the pods of namespace $DRA_NS, then the namespace, in the
+    # cluster of the VM of VMDIR; with create, create the namespace again.
+    # Return the status of the commands.
+    vmdir-command "$1" "kubectl delete pods --all -n $DRA_NS --grace-period=2 --ignore-not-found --wait=true --timeout=60s 2>&1 | grep -v 'No resources found'; kubectl delete namespace $DRA_NS --ignore-not-found --wait=true --timeout=120s${2:+ && kubectl create namespace $DRA_NS}"
+}
+
 dra-uninstall() {
     # Usage: dra-uninstall
     #
@@ -826,7 +835,7 @@ dra-uninstall() {
     [ "${#DRA_INSTALLED_VMS[@]}" -gt 0 ] || return 0
     label=$(vmdir-label "$vmdir")
     echo "dra-uninstall: the cluster of $label"
-    vmdir-command "$vmdir" "kubectl delete pods --all -n $DRA_NS --grace-period=2 --ignore-not-found --wait=true --timeout=60s 2>&1 | grep -v 'No resources found'; kubectl delete namespace $DRA_NS --ignore-not-found --wait=true --timeout=120s"
+    dra-ns-reset "$vmdir"
     retry-until --timeout 60 --interval 2 --message "no ResourceClaims in $DRA_NS" \
         '[ -z "$(vmdir-command-q "$vmdir" "kubectl get resourceclaims -n $DRA_NS -o name 2>/dev/null")" ]' ||
         echo "dra-uninstall: ResourceClaims remain in $DRA_NS"
@@ -3110,7 +3119,6 @@ dra-trace-start() {
     DRA_TRACE_DIR="$TEST_OUTPUT_DIR/trace"
     rm -rf "$DRA_TRACE_DIR"
     mkdir -p "$DRA_TRACE_DIR" || error "dra-trace-start: cannot create $DRA_TRACE_DIR"
-    dra-trace-write-stamper "$DRA_TRACE_DIR/stamp.py"
     : > "$DRA_TRACE_DIR/pids"
     DRA_TRACE_VMS=("$@")
     DRA_TRACE_RUNNING=1
@@ -3179,7 +3187,7 @@ dra-trace-collect() {
     else
         err="$(printf %q "$err")"
     fi
-    setsid bash -c "$cmd 2>$err | python3 -u $(printf %q "$DRA_TRACE_DIR/stamp.py") $(printf %q "$tag") $mode >> $(printf %q "$log")" </dev/null >/dev/null 2>&1 &
+    setsid bash -c "$cmd 2>$err | python3 -u $(printf %q "$DRA_TRACE_STAMP") $(printf %q "$tag") $mode >> $(printf %q "$log")" </dev/null >/dev/null 2>&1 &
     echo "$! $tag" >> "$DRA_TRACE_DIR/pids"
 }
 
@@ -3210,99 +3218,6 @@ dra-trace-collect-vm() {
     # Quoted twice: once for "bash -c" on the host, once for the shell
     # that sshd runs in the VM.
     dra-trace-collect "$tag" "$mode" "ssh -n -F $(printf %q "$vmdir/.ssh-config") -o ControlMaster=no -o ControlPath=none node sudo bash -lc $(printf %q "$(printf %q "$remote")")"
-}
-
-dra-trace-write-stamper() {
-    # Usage: dra-trace-write-stamper FILE
-    cat > "$1" <<'EOF'
-#!/usr/bin/env python3
-"""Stamp lines with the host time of their arrival (dra-trace-start).
-
-Usage: stamp.py TAG lines|claims
-
-lines:  print "<epoch seconds.micro> TAG <line>" for every input line.
-claims: read the JSON stream of
-        "kubectl get resourceclaims -w --output-watch-events -o json"
-        and print one line per change of a claim: event, name,
-        allocated devices, node, reserving pods, device conditions.
-"""
-import json
-import sys
-import time
-
-tag, mode = sys.argv[1], sys.argv[2]
-
-
-def emit(text):
-    sys.stdout.write("%.6f %s %s\n" % (time.time(), tag, text))
-    sys.stdout.flush()
-
-
-def claim_line(obj):
-    o = obj.get("object", obj)
-    md = o.get("metadata") or {}
-    st = o.get("status") or {}
-    alloc = st.get("allocation") or {}
-    res = (alloc.get("devices") or {}).get("results") or []
-    devs = ",".join("%s/%s/%s" % (r.get("driver"), r.get("pool"), r.get("device")) for r in res) or "-"
-    node = "-"
-    for term in (alloc.get("nodeSelector") or {}).get("nodeSelectorTerms") or []:
-        for f in term.get("matchFields") or []:
-            node = ",".join(f.get("values") or []) or node
-    reserved = ",".join(r.get("name", "?") for r in st.get("reservedFor") or []) or "-"
-    conds = []
-    for d in st.get("devices") or []:
-        for c in d.get("conditions") or []:
-            conds.append("%s:%s=%s" % (d.get("device"), c.get("type"), c.get("status")))
-        data = d.get("data") or {}
-        if "serial" in data:
-            conds.append("%s:serial=%s" % (d.get("device"), data["serial"]))
-    text = "claim %s/%s uid=%s allocated=%s node=%s reservedFor=%s status=%s" % (
-        md.get("namespace"), md.get("name"), (md.get("uid") or "")[:8],
-        devs, node, reserved, ",".join(conds) or "-")
-    if md.get("deletionTimestamp"):
-        text += " deleting"
-    return "%s/%s" % (md.get("namespace"), md.get("name")), obj.get("type", "?"), text
-
-
-def lines():
-    for raw in iter(sys.stdin.buffer.readline, b""):
-        emit(raw.decode(errors="replace").rstrip("\r\n"))
-
-
-def claims():
-    decoder = json.JSONDecoder()
-    buf = ""
-    last = {}
-    for raw in iter(sys.stdin.buffer.readline, b""):
-        line = raw.decode(errors="replace")
-        buf += line
-        # kubectl prints one event per line (--output-watch-events) or
-        # indented objects: try to decode whenever a line ends an object.
-        if not line.rstrip().endswith("}"):
-            continue
-        while True:
-            s = buf.lstrip()
-            try:
-                obj, end = decoder.raw_decode(s)
-            except ValueError:
-                buf = s
-                break
-            buf = s[end:]
-            key, event, text = claim_line(obj)
-            if event == "MODIFIED" and last.get(key) == text:
-                continue
-            last[key] = text
-            if event == "DELETED":
-                last.pop(key, None)
-            emit("%s %s" % (event, text))
-        if len(buf) > (1 << 24):
-            emit("unparsable watch output: %s" % buf[:200].replace("\n", " "))
-            buf = ""
-
-
-{"lines": lines, "claims": claims}[mode]()
-EOF
 }
 
 dra-trace-stop() {
