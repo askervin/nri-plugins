@@ -33,7 +33,7 @@ anon_thp N0=0 N1=2097152 N2=0
 func TestParseNumaStat(t *testing.T) {
 	usage, err := parseNumaStat(strings.NewReader(numaStat), []string{"anon", "shmem"})
 	require.NoError(t, err)
-	require.Equal(t, map[int]int64{0: 4096, 1: 2912356, 2: 200}, usage)
+	require.Equal(t, NodeMem{0: 4096, 1: 2912356, 2: 200}, usage)
 
 	usage, err = parseNumaStat(strings.NewReader(numaStat), []string{"missing"})
 	require.NoError(t, err)
@@ -75,25 +75,25 @@ func TestCgroupFileReaders(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.numa_stat"), []byte(numaStat), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "cgroup.procs"), []byte("1\n22\n"), 0644))
 
-	current, err := MemoryCurrent(dir)
+	current, err := memoryCurrent(dir)
 	require.NoError(t, err)
 	require.Equal(t, int64(123456), current)
 
-	usage, err := NumaUsage(dir, "anon")
+	usage, err := numaUsage(dir, "anon")
 	require.NoError(t, err)
-	require.Equal(t, map[int]int64{0: 4096, 1: 2912256, 2: 0}, usage)
+	require.Equal(t, NodeMem{0: 4096, 1: 2912256, 2: 0}, usage)
 
-	pids, err := Procs(dir)
+	pids, err := procs(dir)
 	require.NoError(t, err)
 	require.Equal(t, []int{1, 22}, pids)
 
-	_, err = MemoryCurrent(filepath.Join(dir, "missing"))
+	_, err = memoryCurrent(filepath.Join(dir, "missing"))
 	require.Error(t, err)
 }
 
 func TestCrossingString(t *testing.T) {
-	require.Equal(t, "none", NoCrossing.String())
-	require.Equal(t, "lower", LowerCrossed.String())
-	require.Equal(t, "upper", UpperCrossed.String())
-	require.Equal(t, "Crossing(7)", Crossing(7).String())
+	require.Equal(t, "none", noCrossing.String())
+	require.Equal(t, "lower", lowerCrossed.String())
+	require.Equal(t, "upper", upperCrossed.String())
+	require.Equal(t, "crossing(7)", crossing(7).String())
 }

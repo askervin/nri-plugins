@@ -24,18 +24,18 @@ import (
 	"strings"
 )
 
-// MemoryCurrent returns the memory.current value of the cgroup in bytes.
-func MemoryCurrent(cgroupPath string) (int64, error) {
+// memoryCurrent returns the memory.current value of the cgroup in bytes.
+func memoryCurrent(cgroupPath string) (int64, error) {
 	return readInt64(filepath.Join(cgroupPath, "memory.current"))
 }
 
-// NumaUsage returns the sum of the given memory.numa_stat categories
+// numaUsage returns the sum of the given memory.numa_stat categories
 // in bytes per NUMA node.
 //
 // Parameters:
 //   - cgroupPath: cgroup directory.
 //   - categories: memory.numa_stat row names, for example "anon" and "shmem".
-func NumaUsage(cgroupPath string, categories ...string) (map[int]int64, error) {
+func numaUsage(cgroupPath string, categories ...string) (NodeMem, error) {
 	path := filepath.Join(cgroupPath, "memory.numa_stat")
 	f, err := os.Open(path)
 	if err != nil {
@@ -49,8 +49,8 @@ func NumaUsage(cgroupPath string, categories ...string) (map[int]int64, error) {
 	return usage, nil
 }
 
-// Procs returns the process IDs listed in cgroup.procs of the cgroup.
-func Procs(cgroupPath string) ([]int, error) {
+// procs returns the process IDs listed in cgroup.procs of the cgroup.
+func procs(cgroupPath string) ([]int, error) {
 	path := filepath.Join(cgroupPath, "cgroup.procs")
 	f, err := os.Open(path)
 	if err != nil {
@@ -79,12 +79,12 @@ func readInt64(path string) (int64, error) {
 
 // parseNumaStat returns the sum of the values of the given categories
 // per node. Rows have the format "<category> N<node>=<bytes> ...".
-func parseNumaStat(r io.Reader, categories []string) (map[int]int64, error) {
+func parseNumaStat(r io.Reader, categories []string) (NodeMem, error) {
 	wanted := make(map[string]bool, len(categories))
 	for _, category := range categories {
 		wanted[category] = true
 	}
-	usage := make(map[int]int64)
+	usage := NodeMem{}
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())

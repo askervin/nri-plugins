@@ -239,7 +239,7 @@ func TestManage(t *testing.T) {
 		refs       []resultRef
 		management string // or the error
 		claimed    string
-		policy     string // memory use order of the plan
+		policy     string // steering policy of the plan
 		text       string // steering of the log
 		fencing    string // fencing of the log
 	}{
@@ -277,8 +277,8 @@ func TestManage(t *testing.T) {
 		if string(d.management) != tc.management || d.claimed.String() != tc.claimed {
 			t.Errorf("%s: management %s claimed %q, expected %s %q", tc.name, d.management, d.claimed, tc.management, tc.claimed)
 		}
-		if (d.plan != nil) != (tc.policy != "") || d.policy != tc.policy {
-			t.Errorf("%s: plan %v order %q, expected %q", tc.name, d.plan, d.policy, tc.policy)
+		if (d.plan != nil) != (tc.policy != "") || (d.plan != nil && d.policy.String() != tc.policy) {
+			t.Errorf("%s: plan %v policy %s, expected %q", tc.name, d.plan, d.policy, tc.policy)
 		}
 		if tc.text != "" && d.eff.PolicyText() != tc.text {
 			t.Errorf("%s: steering %q, expected %q", tc.name, d.eff.PolicyText(), tc.text)

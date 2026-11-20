@@ -17,6 +17,6 @@
 package mpolinject
 
 // SetMemoryPolicy returns ErrUnsupported on this platform.
-func SetMemoryPolicy(pids []int, mode Mode, nodes []int) error {
+func SetMemoryPolicy(pids []int, mode int, nodes []int) error {
 	return ErrUnsupported
 }

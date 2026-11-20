@@ -21,65 +21,20 @@ package mpolinject
 import (
 	"errors"
 	"fmt"
-	"os"
-	"strconv"
 )
-
-// Mode is a set_mempolicy mode. The values are the MPOL_* constants
-// of the Linux kernel.
-type Mode int
-
-const (
-	Default            Mode = 0
-	Preferred          Mode = 1
-	Bind               Mode = 2
-	Interleave         Mode = 3
-	Local              Mode = 4
-	PreferredMany      Mode = 5
-	WeightedInterleave Mode = 6
-)
-
-// String returns the name of the mode.
-func (m Mode) String() string {
-	switch m {
-	case Default:
-		return "default"
-	case Preferred:
-		return "preferred"
-	case Bind:
-		return "bind"
-	case Interleave:
-		return "interleave"
-	case Local:
-		return "local"
-	case PreferredMany:
-		return "preferred-many"
-	case WeightedInterleave:
-		return "weighted-interleave"
-	}
-	return "Mode(" + strconv.Itoa(int(m)) + ")"
-}
 
 // ErrUnsupported is returned by SetMemoryPolicy on platforms without
 // an injection implementation.
 var ErrUnsupported = errors.New("memory policy injection is not supported on this platform")
 
-// maxNodes is the largest nodemask size in bits that is passed to
-// set_mempolicy.
+// maxNodes is the limit of the node IDs in a nodemask.
 const maxNodes = 1024
 
-// nodeMask returns the set_mempolicy nodemask for the mode and nodes
-// as 64-bit words. The mask is nil for modes without nodes.
-func nodeMask(mode Mode, nodes []int) ([]uint64, error) {
-	needsNodes := mode != Default && mode != Local
-	if needsNodes && len(nodes) == 0 {
-		return nil, fmt.Errorf("mode %s requires nodes", mode)
-	}
-	if !needsNodes && len(nodes) > 0 {
-		return nil, fmt.Errorf("mode %s does not take nodes", mode)
-	}
+// nodeMask returns the set_mempolicy nodemask of the nodes as 64-bit
+// words.
+func nodeMask(nodes []int) ([]uint64, error) {
 	if len(nodes) == 0 {
-		return nil, nil
+		return nil, errors.New("no nodes")
 	}
 	maxNode := 0
 	for _, node := range nodes {
@@ -93,16 +48,4 @@ func nodeMask(mode Mode, nodes []int) ([]uint64, error) {
 		mask[node/64] |= 1 << (node % 64)
 	}
 	return mask, nil
-}
-
-// ValidateNumaNodes returns an error if any of the nodes does not
-// exist in /sys/devices/system/node.
-func ValidateNumaNodes(nodes []int) error {
-	for _, node := range nodes {
-		path := "/sys/devices/system/node/node" + strconv.Itoa(node)
-		if _, err := os.Stat(path); err != nil {
-			return fmt.Errorf("NUMA node %d does not exist: %w", node, err)
-		}
-	}
-	return nil
 }

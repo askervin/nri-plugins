@@ -33,9 +33,8 @@ import (
 )
 
 const (
-	helperEnv       = "MPOLINJECT_TEST_HELPER"
-	helperThreads   = 4
-	sysGetMempolicy = 239
+	helperEnv     = "MPOLINJECT_TEST_HELPER"
+	helperThreads = 4
 )
 
 // TestMain runs the test helper process when requested, otherwise the
@@ -66,7 +65,7 @@ func runHelper() {
 			<-check
 			var mode int
 			mask := make([]uint64, maxNodes/64)
-			_, _, errno := unix.Syscall6(sysGetMempolicy,
+			_, _, errno := unix.Syscall6(unix.SYS_GET_MEMPOLICY,
 				uintptr(unsafe.Pointer(&mode)), uintptr(unsafe.Pointer(&mask[0])), maxNodes, 0, 0, 0)
 			if errno != 0 {
 				fmt.Printf("policy %d error %v\n", unix.Gettid(), errno)
@@ -135,7 +134,7 @@ func TestSetMemoryPolicyOnChild(t *testing.T) {
 		}
 	}
 
-	err = SetMemoryPolicy([]int{cmd.Process.Pid}, Interleave, []int{node})
+	err = SetMemoryPolicy([]int{cmd.Process.Pid}, unix.MPOL_INTERLEAVE, []int{node})
 	if errors.Is(err, unix.EPERM) {
 		t.Skipf("ptrace not permitted: %v", err)
 	}
@@ -156,7 +155,7 @@ func TestSetMemoryPolicyOnChild(t *testing.T) {
 		policies++
 		fields := strings.Fields(line)
 		require.Len(t, fields, 4, "unexpected helper output %q", line)
-		require.Equal(t, strconv.Itoa(int(Interleave)), fields[2], "tid %s", fields[1])
+		require.Equal(t, strconv.Itoa(unix.MPOL_INTERLEAVE), fields[2], "tid %s", fields[1])
 		require.Equal(t, strconv.Itoa(node), fields[3], "tid %s", fields[1])
 	}
 	require.Equal(t, helperThreads, policies)

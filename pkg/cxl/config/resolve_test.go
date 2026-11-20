@@ -406,9 +406,9 @@ func TestResolveErrors(t *testing.T) {
 			err:     `MemoryConfig: FromClaim config 0: json: unknown field "device.Mode"`,
 		},
 		{
-			name:    "old field name",
-			entries: []cfg{claimed(`"container": {"steering": {"memoryUseOrder": "first-dram"}}`)},
-			err:     `MemoryConfig: FromClaim config 0: json: unknown field "container.steering.memoryUseOrder"`,
+			name:    "unknown nested field",
+			entries: []cfg{claimed(`"container": {"steering": {"order": "first-dram"}}`)},
+			err:     `MemoryConfig: FromClaim config 0: json: unknown field "container.steering.order"`,
 		},
 		{
 			name:    "duplicate field",
@@ -431,14 +431,9 @@ func TestResolveErrors(t *testing.T) {
 			err:     `MemoryConfig: FromClaim config 0: not a JSON object`,
 		},
 		{
-			name:    "old kind",
+			name:    "wrong kind",
 			entries: []cfg{claimed(`{"apiVersion": "cxl.nri.io/v1alpha1", "kind": "DeviceConfig", "mode": "dax"}`).rawParams()},
 			err:     `MemoryConfig: FromClaim config 0: kind "DeviceConfig", expected "MemoryConfig"`,
-		},
-		{
-			name:    "MemoryPolicyConfig",
-			entries: []cfg{claimed(`{"apiVersion": "cxl.nri.io/v1alpha1", "kind": "MemoryPolicyConfig", "memoryUseOrder": "first-dram"}`).rawParams()},
-			err:     `MemoryConfig: FromClaim config 0: kind "MemoryPolicyConfig", expected "MemoryConfig"`,
 		},
 		{
 			name:    "no kind",

@@ -32,8 +32,6 @@ const (
 	// Workers are mostly blocked in wait4, so this does not need to
 	// follow the number of CPUs.
 	maxWorkers = 8
-	// sysSetMempolicy is the set_mempolicy system call number.
-	sysSetMempolicy = 238
 	// stackOffset is the distance below the stack pointer where the
 	// nodemask is written. The 128 bytes right below the stack
 	// pointer are the red zone of the ABI and must not be touched.
@@ -51,13 +49,13 @@ const (
 //
 // Parameters:
 //   - pids: process IDs, for example from cgroup.procs.
-//   - mode: set_mempolicy mode.
-//   - nodes: NUMA node IDs. Empty for Default and Local, non-empty for other modes.
-func SetMemoryPolicy(pids []int, mode Mode, nodes []int) error {
+//   - mode: set_mempolicy mode, unix.MPOL_PREFERRED or unix.MPOL_INTERLEAVE.
+//   - nodes: NUMA node IDs, at least one.
+func SetMemoryPolicy(pids []int, mode int, nodes []int) error {
 	if len(pids) == 0 {
 		return errors.New("no processes")
 	}
-	mask, err := nodeMask(mode, nodes)
+	mask, err := nodeMask(nodes)
 	if err != nil {
 		return err
 	}
@@ -105,7 +103,7 @@ type stoppedThread struct {
 
 // setProcessPolicy stops all threads of the process, injects the
 // set_mempolicy call into each of them and resumes them.
-func setProcessPolicy(pid int, mode Mode, mask []uint64) error {
+func setProcessPolicy(pid int, mode int, mask []uint64) error {
 	threads, errs := stopThreads(pid)
 	defer resumeThreads(threads)
 	for i := range threads {
@@ -219,7 +217,7 @@ func threadIDs(pid int) ([]int, error) {
 // injectSetMempolicy executes set_mempolicy(mode, mask) in the thread,
 // which must be in ptrace-stop, and restores its registers and code.
 // Returns a signal that interrupted the injected call, if any.
-func injectSetMempolicy(tid int, mode Mode, mask []uint64) (sig unix.Signal, err error) {
+func injectSetMempolicy(tid int, mode int, mask []uint64) (sig unix.Signal, err error) {
 	var regs unix.PtraceRegs
 	if err := unix.PtraceGetRegs(tid, &regs); err != nil {
 		return 0, fmt.Errorf("get registers: %w", err)
@@ -261,7 +259,7 @@ func injectSetMempolicy(tid int, mode Mode, mask []uint64) (sig unix.Signal, err
 		}
 	}()
 
-	regs.Rax = sysSetMempolicy
+	regs.Rax = unix.SYS_SET_MEMPOLICY
 	regs.Rdi = uint64(mode)
 	regs.Rsi = maskAddr
 	regs.Rdx = maxnode

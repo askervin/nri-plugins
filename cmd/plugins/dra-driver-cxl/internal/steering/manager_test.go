@@ -74,7 +74,6 @@ func TestAllowNodesFirstWrite(t *testing.T) {
 		cgroupPath: cg,
 		sysRoot:    writeNodes(t, "0-1", ""),
 		name:       "test",
-		log:        log,
 		// the cgroup holds memory on its DRAM nodes already
 		allowed: map[int]bool{0: true, 1: true},
 	}

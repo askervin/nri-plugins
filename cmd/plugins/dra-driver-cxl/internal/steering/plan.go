@@ -16,7 +16,6 @@ package steering
 
 import (
 	"fmt"
-	"maps"
 	"math"
 	"sort"
 	"strconv"
@@ -25,25 +24,6 @@ import (
 
 // NodeMem is memory in bytes per NUMA node.
 type NodeMem map[int]int64
-
-// Total returns the sum of memory on all nodes.
-func (nm NodeMem) Total() int64 {
-	var total int64
-	for _, bytes := range nm {
-		total += bytes
-	}
-	return total
-}
-
-// Copy returns a copy of the map, or nil for a nil map.
-func (nm NodeMem) Copy() NodeMem {
-	if nm == nil {
-		return nil
-	}
-	c := make(NodeMem, len(nm))
-	maps.Copy(c, nm)
-	return c
-}
 
 // String returns "[node:bytes ...]" with nodes in ascending order.
 func (nm NodeMem) String() string {
@@ -59,11 +39,6 @@ func (nm NodeMem) String() string {
 	return "[" + strings.Join(parts, " ") + "]"
 }
 
-// Waypoint is a target memory usage per node.
-type Waypoint struct {
-	Usage NodeMem
-}
-
 // Plan is a route for memory usage: a sequence of waypoints, and the
 // step size bounds used when steering towards them.
 //
@@ -74,7 +49,7 @@ type Waypoint struct {
 // to the next. Past the last waypoint, steering continues in the
 // direction of the last two waypoints.
 type Plan struct {
-	Waypoints []Waypoint
+	Waypoints []NodeMem
 	// MinStep is the smallest amount of new allocations in bytes
 	// after which the route is re-evaluated.
 	MinStep int64
@@ -109,7 +84,7 @@ func (p *Plan) Validate() error {
 	}
 	prev := NodeMem{}
 	for i, wp := range p.Waypoints {
-		for node, usage := range wp.Usage {
+		for node, usage := range wp {
 			if node < 0 {
 				return fmt.Errorf("waypoint %d: invalid node %d", i, node)
 			}
@@ -118,12 +93,12 @@ func (p *Plan) Validate() error {
 			}
 		}
 		for node, usage := range prev {
-			if wp.Usage[node] < usage {
+			if wp[node] < usage {
 				return fmt.Errorf("waypoint %d: usage %d on node %d is less than %d in the previous waypoint",
-					i, wp.Usage[node], node, usage)
+					i, wp[node], node, usage)
 			}
 		}
-		prev = wp.Usage
+		prev = wp
 	}
 	return nil
 }
@@ -132,7 +107,7 @@ func (p *Plan) Validate() error {
 func (p *Plan) String() string {
 	wps := make([]string, len(p.Waypoints))
 	for i, wp := range p.Waypoints {
-		wps[i] = wp.Usage.String()
+		wps[i] = wp.String()
 	}
 	return fmt.Sprintf("waypoints=[%s] minStep=%d maxStep=%d", strings.Join(wps, " "), p.MinStep, p.MaxStep)
 }
@@ -151,7 +126,7 @@ func (p *Plan) NextStep(usage NodeMem) (Step, error) {
 	// Waypoints are non-decreasing, so the reached ones form a
 	// prefix. Find the first waypoint that has not been reached.
 	next := 0
-	for next < len(p.Waypoints) && waypointReached(usage, p.Waypoints[next].Usage, p.MinStep) {
+	for next < len(p.Waypoints) && waypointReached(usage, p.Waypoints[next], p.MinStep) {
 		next++
 	}
 
@@ -163,16 +138,16 @@ func (p *Plan) NextStep(usage NodeMem) (Step, error) {
 		last := len(p.Waypoints) - 1
 		before := NodeMem{}
 		if last > 0 {
-			before = p.Waypoints[last-1].Usage
+			before = p.Waypoints[last-1]
 		}
-		prev = p.Waypoints[last].Usage
+		prev = p.Waypoints[last]
 		target = extrapolateWaypoint(before, prev, usage, p.MaxStep)
 	case next == 0:
 		prev = NodeMem{}
-		target = p.Waypoints[0].Usage
+		target = p.Waypoints[0]
 	default:
-		prev = p.Waypoints[next-1].Usage
-		target = p.Waypoints[next].Usage
+		prev = p.Waypoints[next-1]
+		target = p.Waypoints[next]
 	}
 
 	nodes, bytes, err := nextStep(usage, prev, target, p.MinStep, p.MaxStep)

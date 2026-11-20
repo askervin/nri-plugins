@@ -798,7 +798,7 @@ the entry among the entries of its source, from 0):
   entry without a kind gives `kind ""`)
 - `MemoryConfig: SRC config I: apiVersion "...", expected "cxl.nri.io/v1alpha1"`
 - `MemoryConfig: SRC config I: json: unknown field "F"`, F the dotted path
-  of the field (`x`, `device.online`, `container.steering.memoryUseOrder`)
+  of the field (`x`, `device.online`, `container.steering.order`)
 - `MemoryConfig: SRC config I: json: duplicate field "F"`
 - `MemoryConfig: SRC config I: json: cannot unmarshal ...` (a value of
   the wrong type)

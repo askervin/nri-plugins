@@ -22,6 +22,7 @@ import (
 	"slices"
 
 	"github.com/containerd/nri/pkg/api"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
@@ -51,42 +52,79 @@ const steeredCommitWait = api.DefaultPluginRequestTimeout / 2
 // cgroup (a variable for tests).
 var startManager = (*steering.Manager).Start
 
-// klogLogger writes steering log messages with klog.
-type klogLogger struct{}
+// policies are the steering policies of the settings, all but none and
+// auto.
+var policies = map[string]steering.Policy{
+	config.PolicyFirstDRAM:        steering.PolicyFirstDRAM,
+	config.PolicyFirstCXL:         steering.PolicyFirstCXL,
+	config.PolicyStartInterleaved: steering.PolicyStartInterleaved,
+	config.PolicyEndInterleaved:   steering.PolicyEndInterleaved,
+	config.PolicyWaypoints:        steering.PolicyWaypoints,
+}
 
-func (klogLogger) Debugf(format string, args ...any) { klog.V(4).Infof(format, args...) }
-func (klogLogger) Infof(format string, args ...any)  { klog.Infof(format, args...) }
-func (klogLogger) Warnf(format string, args ...any)  { klog.Warningf(format, args...) }
-func (klogLogger) Errorf(format string, args ...any) { klog.Errorf(format, args...) }
-
-// cgmPolicy returns the policy of the steering settings for the memory
-// types, and false when the policy is none or there are neither DRAM nor
-// CXL nodes. Policy auto is first-cxl for CXL nodes only, first-dram for
-// DRAM nodes only, and start-interleaved for both.
-func cgmPolicy(s *config.Steering, mem steering.MemoryTypes) (steering.Policy, bool) {
-	if s == nil || s.Policy == "" || s.Policy == config.PolicyNone || (len(mem.DRAMNodes) == 0 && len(mem.CXLNodes) == 0) {
-		return steering.Policy{}, false
+// steeringPolicy returns the policy of the steering settings for the
+// memory types, and false when the policy is none or there are neither
+// DRAM nor CXL nodes. Policy auto is first-cxl for CXL nodes only,
+// first-dram for DRAM nodes only, and start-interleaved for both.
+func steeringPolicy(s *config.Steering, mem steering.MemoryTypes) (steering.Policy, bool) {
+	if s == nil || (len(mem.DRAMNodes) == 0 && len(mem.CXLNodes) == 0) {
+		return 0, false
 	}
-	order := s.Policy
-	if order == config.PolicyAuto {
+	if s.Policy == config.PolicyAuto {
 		switch {
 		case len(mem.CXLNodes) == 0:
-			order = steering.MemoryUseFirstDRAM.String()
+			return steering.PolicyFirstDRAM, true
 		case len(mem.DRAMNodes) == 0:
-			order = steering.MemoryUseFirstCXL.String()
-		default:
-			order = steering.MemoryUseStartInterleaved.String()
+			return steering.PolicyFirstCXL, true
 		}
+		return steering.PolicyStartInterleaved, true
 	}
-	pol := steering.Policy{MemoryUseOrder: order, MinStep: s.MinStep, MaxStep: s.MaxStep}
+	policy, ok := policies[s.Policy]
+	return policy, ok
+}
+
+// steeringPlan returns the plan of the policy with the waypoints and steps
+// of the validated steering settings for the memory types.
+func steeringPlan(s *config.Steering, policy steering.Policy, mem steering.MemoryTypes) (*steering.Plan, error) {
+	minStep, err := quantityBytes(s.MinStep)
+	if err != nil {
+		return nil, err
+	}
+	maxStep, err := quantityBytes(s.MaxStep)
+	if err != nil {
+		return nil, err
+	}
+	var waypoints []steering.TypeUsage
+	var usage steering.TypeUsage
 	for _, wp := range s.Waypoints {
-		cwp := steering.MemoryUseWaypoint{}
+		// a memory type that the waypoint does not list keeps its usage
 		for _, tu := range wp.TargetUsages {
-			cwp.TargetUsages = append(cwp.TargetUsages, steering.MemoryUseWaypointEntry{MemoryType: tu.MemoryType, Usage: tu.Usage})
+			bytes, err := quantityBytes(tu.Usage)
+			if err != nil {
+				return nil, err
+			}
+			switch tu.MemoryType {
+			case config.MemoryTypeDRAM:
+				usage.DRAM = bytes
+			case config.MemoryTypeCXL:
+				usage.CXL = bytes
+			}
 		}
-		pol.MemoryUseWaypoints = append(pol.MemoryUseWaypoints, cwp)
+		waypoints = append(waypoints, usage)
 	}
-	return pol, true
+	return steering.NewPlan(policy, mem, waypoints, minStep, maxStep)
+}
+
+// quantityBytes returns the bytes of a quantity, 0 for "".
+func quantityBytes(s string) (int64, error) {
+	if s == "" {
+		return 0, nil
+	}
+	q, err := resource.ParseQuantity(s)
+	if err != nil {
+		return 0, err
+	}
+	return q.Value(), nil
 }
 
 // startSteering starts steering the memory of a container whose task the
@@ -104,7 +142,6 @@ func (p *Plugin) startSteering(c *Container, ctr *api.Container, plan *steering.
 	klog.V(3).Infof("NRI StartContainer: ctr=%s id=%s pid=%d cgroupsPath=%s", name, c.ID, ctr.GetPid(), dir)
 	mgr, err := steering.New(dir, plan,
 		steering.WithName(name),
-		steering.WithLogger(klogLogger{}),
 		steering.WithSysRoot(filepath.Join(p.opts.SysRoot, "/sys")))
 	if err != nil {
 		klog.Warningf("NRI StartContainer: ctr=%s: failed to create memory steering manager: %v", name, err)

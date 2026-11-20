@@ -21,30 +21,18 @@ import (
 )
 
 func TestNodeMask(t *testing.T) {
-	mask, err := nodeMask(Preferred, []int{0})
+	mask, err := nodeMask([]int{0})
 	require.NoError(t, err)
 	require.Equal(t, []uint64{1}, mask)
 
-	mask, err = nodeMask(Interleave, []int{1, 3, 64, 130})
+	mask, err = nodeMask([]int{1, 3, 64, 130})
 	require.NoError(t, err)
 	require.Equal(t, []uint64{0b1010, 1, 1 << 2}, mask)
 
-	mask, err = nodeMask(Default, nil)
-	require.NoError(t, err)
-	require.Nil(t, mask)
-
-	_, err = nodeMask(Interleave, nil)
+	_, err = nodeMask(nil)
 	require.Error(t, err)
-	_, err = nodeMask(Local, []int{0})
+	_, err = nodeMask([]int{-1})
 	require.Error(t, err)
-	_, err = nodeMask(Bind, []int{-1})
+	_, err = nodeMask([]int{maxNodes})
 	require.Error(t, err)
-	_, err = nodeMask(Bind, []int{maxNodes})
-	require.Error(t, err)
-}
-
-func TestModeString(t *testing.T) {
-	require.Equal(t, "preferred", Preferred.String())
-	require.Equal(t, "interleave", Interleave.String())
-	require.Equal(t, "Mode(42)", Mode(42).String())
 }

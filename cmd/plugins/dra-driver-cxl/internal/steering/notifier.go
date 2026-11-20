@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// A Notifier reports when the memory usage of a cgroup v2 leaves
+// A notifier reports when the memory usage of a cgroup v2 leaves
 // configured bounds. The upper bound is enforced by writing
 // it to memory.high, so the kernel throttles the cgroup at the bound
 // and increments the "high" counter in memory.events. The lower
 // bound is checked against memory.current on every wakeup.
 //
-// A Notifier has no goroutines. It is driven by one goroutine that
+// A notifier has no goroutines. It is driven by one goroutine that
 // calls SetBounds, Wait and Close. Interrupt wakes a blocked Wait and
 // may be called from any goroutine.
 
@@ -37,65 +37,65 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Bounds are memory.current thresholds in bytes.
-type Bounds struct {
-	// Lower is the usage below which LowerCrossed is reported. Zero
+// bounds are memory.current thresholds in bytes.
+type bounds struct {
+	// Lower is the usage below which lowerCrossed is reported. Zero
 	// disables the lower bound.
 	Lower int64
-	// Upper is written to memory.high. UpperCrossed is reported when
+	// Upper is written to memory.high. upperCrossed is reported when
 	// the kernel has throttled the cgroup at this limit. Zero removes
 	// the limit.
 	Upper int64
 }
 
-// Crossing tells which bound an Event reports.
-type Crossing int
+// crossing tells which bound an event reports.
+type crossing int
 
 const (
-	// NoCrossing is returned when Wait timed out.
-	NoCrossing Crossing = iota
-	// LowerCrossed means memory.current is below Bounds.Lower.
-	LowerCrossed
-	// UpperCrossed means the kernel has throttled the cgroup at
-	// Bounds.Upper since the last SetBounds.
-	UpperCrossed
+	// noCrossing is returned when Wait timed out.
+	noCrossing crossing = iota
+	// lowerCrossed means memory.current is below bounds.Lower.
+	lowerCrossed
+	// upperCrossed means the kernel has throttled the cgroup at
+	// bounds.Upper since the last SetBounds.
+	upperCrossed
 )
 
 // String returns the name of the crossing.
-func (c Crossing) String() string {
+func (c crossing) String() string {
 	switch c {
-	case NoCrossing:
+	case noCrossing:
 		return "none"
-	case LowerCrossed:
+	case lowerCrossed:
 		return "lower"
-	case UpperCrossed:
+	case upperCrossed:
 		return "upper"
 	}
-	return "Crossing(" + strconv.Itoa(int(c)) + ")"
+	return "crossing(" + strconv.Itoa(int(c)) + ")"
 }
 
-// Event is the result of a Wait that was not interrupted.
-type Event struct {
-	Crossing      Crossing
-	MemoryCurrent int64
+// event is the result of a Wait that was not interrupted.
+type event struct {
+	crossing      crossing
+	memoryCurrent int64
 }
 
-// ErrInterrupted is returned by Wait when Interrupt was called.
-var ErrInterrupted = errors.New("wait interrupted")
+// errInterrupted is returned by Wait when Interrupt was called.
+var errInterrupted = errors.New("wait interrupted")
 
-// Notifier watches the memory usage of one cgroup.
-type Notifier struct {
+// notifier watches the memory usage of one cgroup.
+type notifier struct {
 	cgroupPath string
 	eventsFd   int
 	wakeFd     int
-	bounds     Bounds
+	bounds     bounds
 	highCount  int64
 }
 
-// NewNotifier returns a Notifier for the cgroup with no bounds set. The
+// newNotifier returns a notifier for the cgroup with no bounds set. The
 // cgroup must be a cgroup v2 directory with the memory controller
 // enabled.
-func NewNotifier(cgroupPath string) (*Notifier, error) {
+func newNotifier(cgroupPath string) (*notifier, error) {
 	if _, err := os.Stat(filepath.Join(cgroupPath, "memory.high")); err != nil {
 		return nil, fmt.Errorf("cgroup v2 memory controller not available: %w", err)
 	}
@@ -108,7 +108,7 @@ func NewNotifier(cgroupPath string) (*Notifier, error) {
 		_ = unix.Close(eventsFd)
 		return nil, fmt.Errorf("create eventfd: %w", err)
 	}
-	n := &Notifier{
+	n := &notifier{
 		cgroupPath: cgroupPath,
 		eventsFd:   eventsFd,
 		wakeFd:     wakeFd,
@@ -121,7 +121,7 @@ func NewNotifier(cgroupPath string) (*Notifier, error) {
 }
 
 // SetBounds writes Upper to memory.high and arms both bounds.
-func (n *Notifier) SetBounds(b Bounds) error {
+func (n *notifier) SetBounds(b bounds) error {
 	value := "max\n"
 	if b.Upper > 0 {
 		value = strconv.FormatInt(b.Upper, 10) + "\n"
@@ -138,11 +138,11 @@ func (n *Notifier) SetBounds(b Bounds) error {
 	return nil
 }
 
-// Wait returns the next event: a bound crossing, or NoCrossing when
+// Wait returns the next event: a bound crossing, or noCrossing when
 // timeout expires first. A negative timeout waits without a limit.
-// Wait returns ErrInterrupted when Interrupt was called. A crossing is
+// Wait returns errInterrupted when Interrupt was called. A crossing is
 // reported by every Wait until SetBounds is called.
-func (n *Notifier) Wait(timeout time.Duration) (Event, error) {
+func (n *notifier) Wait(timeout time.Duration) (event, error) {
 	timeoutMs := -1
 	if timeout >= 0 {
 		timeoutMs = int(timeout / time.Millisecond)
@@ -159,36 +159,36 @@ func (n *Notifier) Wait(timeout time.Duration) (Event, error) {
 		if errors.Is(err, unix.EINTR) {
 			continue
 		}
-		return Event{}, fmt.Errorf("poll: %w", err)
+		return event{}, fmt.Errorf("poll: %w", err)
 	}
 	if fds[1].Revents != 0 {
 		var buf [8]byte
 		_, _ = unix.Read(n.wakeFd, buf[:])
-		return Event{}, ErrInterrupted
+		return event{}, errInterrupted
 	}
 
 	// Reading memory.events also clears its pending change, so poll
 	// reports only changes after this read.
 	highCount, err := n.readHighCount()
 	if err != nil {
-		return Event{}, err
+		return event{}, err
 	}
-	current, err := MemoryCurrent(n.cgroupPath)
+	current, err := memoryCurrent(n.cgroupPath)
 	if err != nil {
-		return Event{}, err
+		return event{}, err
 	}
-	event := Event{MemoryCurrent: current}
+	ev := event{memoryCurrent: current}
 	switch {
 	case highCount > n.highCount:
-		event.Crossing = UpperCrossed
+		ev.crossing = upperCrossed
 	case n.bounds.Lower > 0 && current < n.bounds.Lower:
-		event.Crossing = LowerCrossed
+		ev.crossing = lowerCrossed
 	}
-	return event, nil
+	return ev, nil
 }
 
 // Interrupt wakes up a blocked Wait.
-func (n *Notifier) Interrupt() error {
+func (n *notifier) Interrupt() error {
 	var buf [8]byte
 	binary.NativeEndian.PutUint64(buf[:], 1)
 	if _, err := unix.Write(n.wakeFd, buf[:]); err != nil {
@@ -199,7 +199,7 @@ func (n *Notifier) Interrupt() error {
 
 // Close releases the file descriptors of the notifier. memory.high
 // is left as it is.
-func (n *Notifier) Close() error {
+func (n *notifier) Close() error {
 	var errs []error
 	if n.eventsFd >= 0 {
 		errs = append(errs, unix.Close(n.eventsFd))
@@ -213,7 +213,7 @@ func (n *Notifier) Close() error {
 }
 
 // readHighCount returns the "high" counter of memory.events.
-func (n *Notifier) readHighCount() (int64, error) {
+func (n *notifier) readHighCount() (int64, error) {
 	if _, err := unix.Seek(n.eventsFd, 0, unix.SEEK_SET); err != nil {
 		return 0, fmt.Errorf("seek memory.events: %w", err)
 	}

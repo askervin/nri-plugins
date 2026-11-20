@@ -73,8 +73,8 @@ type decision struct {
 	claimed cpuset.CPUSet
 	// plan is the steering plan of a steered container, if built.
 	plan *steering.Plan
-	// policy is the memory use order of the plan.
-	policy string
+	// policy is the steering policy of the plan.
+	policy steering.Policy
 	// mem is the memory to steer.
 	mem steering.MemoryTypes
 	// capacityOnly: the results have DRAM or region memory that is not
@@ -176,10 +176,10 @@ func (p *Plugin) decide(ctrName string, results []result, plan bool) (*decision,
 		return nil, fmt.Errorf("container %s: %w", ctrName, err)
 	}
 	d := &decision{management: ManagementNone, eff: eff, claimed: claimedNodes(results), mem: steeredMemory(results)}
-	if pol, ok := cgmPolicy(eff.Container.Steering, d.mem); ok {
-		d.management, d.policy = ManagementSteered, pol.MemoryUseOrder
+	if policy, ok := steeringPolicy(eff.Container.Steering, d.mem); ok {
+		d.management, d.policy = ManagementSteered, policy
 		if plan {
-			if d.plan, err = pol.Plan(d.mem); err != nil {
+			if d.plan, err = steeringPlan(eff.Container.Steering, policy, d.mem); err != nil {
 				return nil, fmt.Errorf("NRI CreateContainer: ctr=%s: failed to build memory steering plan: %w", ctrName, err)
 			}
 		}
@@ -221,7 +221,7 @@ func logDecision(ctrName string, d *decision, hasResults bool) {
 		ctrName, d.management.text(), d.eff.PolicyText(), d.eff.FencingText())
 	switch {
 	case d.management == ManagementSteered && d.plan != nil:
-		klog.V(5).Infof("NRI CreateContainer: ctr=%s: prepared memory steering (order=%s, dramNodes=%v, cxlNodes=%v, %s)",
+		klog.V(5).Infof("NRI CreateContainer: ctr=%s: prepared memory steering (policy=%s, dramNodes=%v, cxlNodes=%v, %s)",
 			ctrName, d.policy, d.mem.DRAMNodes, d.mem.CXLNodes, d.plan)
 	case d.management == ManagementSteered:
 	case d.eff.Steers() && hasResults:
