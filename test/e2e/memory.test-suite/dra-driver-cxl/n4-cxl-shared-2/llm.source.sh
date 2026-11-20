@@ -49,7 +49,7 @@ LLM_SAMPLES=""                     # llm-serve-sampled: where the model was whil
 LLM_LOOP_READ=""                   # and the bytes read through the loop device meanwhile
 LLM_CONTENT=""                     # and the completion in it
 
-llm-model-fetch() { # script API
+llm-model-fetch() {
     # Usage: llm-model-fetch
     #
     # Set LLM_MODEL to the model on the host: $llm_model if it is set (a
@@ -83,7 +83,7 @@ llm-model-fetch() { # script API
     echo "llm-model-fetch: $LLM_MODEL, sha256 $LLM_MODEL_SHA256"
 }
 
-llm-kernel-require() { # script API
+llm-kernel-require() {
     # Usage: llm-kernel-require VMDIR TOPOLOGY
     #
     # Fail the test unless the running kernel of the VM of VMDIR, created
@@ -111,7 +111,7 @@ llm-vm-put() {
     [ "${COMMAND_OUTPUT%% *}" == "$sum" ] || error "llm-vm-put: $dst in $(vmdir-label "$vmdir") is not a copy of $src"
 }
 
-llm-install() { # script API
+llm-install() {
     # Usage: llm-install VMDIR [model]
     #
     # Install cxl-where.py as $LLM_VM_WHERE in the VM of VMDIR. With
@@ -131,7 +131,7 @@ llm-install() { # script API
     fi
 }
 
-llm-image-build() { # script API
+llm-image-build() {
     # Usage: llm-image-build VMDIR
     #
     # Make $LLM_VM_IMAGE in the VM of VMDIR an erofs image of
@@ -179,7 +179,7 @@ print("the model: one plain extent at offset %s of the image" % exts[0][3])' "$o
     echo "llm-image-build: $label:$LLM_VM_IMAGE, $LLM_IMAGE_SIZE bytes, sha256 $LLM_IMAGE_SHA256"
 }
 
-llm-writer-script() { # script API
+llm-writer-script() {
     # Usage: llm-writer-script KEY
     #
     # Print the shell script of a writer container (image $DRA_TOOLS_IMAGE,
@@ -212,7 +212,7 @@ fi
 SCRIPT
 }
 
-llm-writer-wait() { # script API
+llm-writer-wait() {
     # Usage: llm-writer-wait VMDIR POD [TIMEOUT]
     #
     # Wait until the writer in pod POD logs "writer exit STATUS", TIMEOUT
@@ -230,7 +230,7 @@ llm-writer-wait() { # script API
     }
 }
 
-llm-reader-script() { # script API
+llm-reader-script() {
     # Usage: llm-reader-script KEY THREADS
     #
     # Print the shell script of a reader container (image
@@ -253,7 +253,7 @@ exec /app/llama-server -m "\$p/$LLM_MODEL_FILE" -nr -t $threads -c 512 -np 1 --h
 SCRIPT
 }
 
-llm-lease-reader-script() { # script API
+llm-lease-reader-script() {
     # Usage: llm-lease-reader-script KEY ACCESS NAME THREADS
     #
     # Print the shell script of a reader container (image
@@ -276,7 +276,7 @@ SCRIPT
 }
 
 # shellcheck disable=SC2001 # sed indents every line of SCRIPT
-llm-server-pod-yaml() { # script API
+llm-server-pod-yaml() {
     # Usage: llm-server-pod-yaml NAME VMDIR KIND CLAIM SCRIPT
     #
     # Print pod NAME on the node of VMDIR, restartPolicy Never, running the
@@ -326,7 +326,7 @@ $(sed 's/^/      /' <<< "$script")
 EOF
 }
 
-llm-warm() { # script API
+llm-warm() {
     # Usage: llm-warm VMDIR
     #
     # Read the files of /app of $LLM_SERVER_IMAGE and the libraries of
@@ -339,7 +339,7 @@ llm-warm() { # script API
     dra-delete-pod "$OUTPUT_DIR" llm-warm
 }
 
-llm-pod-ip() { # script API
+llm-pod-ip() {
     # Usage: llm-pod-ip POD
     #
     # Print the IP address of pod POD in $DRA_NS, quietly. Return 1 if it
@@ -363,7 +363,7 @@ llm-server-ready() {
     [ "$(vmdir-command-q "$vmdir" "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://$ip:$LLM_SERVER_PORT/health")" == 200 ]
 }
 
-llm-server-wait() { # script API
+llm-server-wait() {
     # Usage: llm-server-wait VMDIR POD [TIMEOUT]
     #
     # Wait until llama-server in pod POD has loaded the model and serves
@@ -382,7 +382,7 @@ llm-server-wait() { # script API
     fi
 }
 
-llm-ask() { # script API
+llm-ask() {
     # Usage: llm-ask VMDIR POD
     #
     # Ask llama-server in pod POD, from the VM of VMDIR (the node of the
@@ -401,7 +401,7 @@ LLM_ASK_EOF" || command-error "llm-ask: no response of llama-server in pod $pod"
     echo "llm-ask: $pod answered: $LLM_CONTENT"
 }
 
-llm-answer-value() { # script API
+llm-answer-value() {
     # Usage: llm-answer-value EXPRESSION
     #
     # Print the value of the Python EXPRESSION on the last response of
@@ -409,7 +409,7 @@ llm-answer-value() { # script API
     pool-value "$LLM_ANSWER" "$1"
 }
 
-llm-page-cache() { # script API
+llm-page-cache() {
     # Usage: llm-page-cache VMDIR
     #
     # Print the page cache of the VM of VMDIR, the sum of FilePages of its
@@ -417,7 +417,7 @@ llm-page-cache() { # script API
     vmdir-command-q "$1" "cat /sys/devices/system/node/node*/meminfo" | awk '$3 == "FilePages:" { kb += $4 } END { print kb + 0 }'
 }
 
-llm-pod-file() { # script API
+llm-pod-file() {
     # Usage: llm-pod-file VMDIR POD
     #
     # Print the page cache charged to the cgroup of pod POD in $DRA_NS (the
@@ -430,7 +430,7 @@ llm-pod-file() { # script API
     echo "$bytes"
 }
 
-llm-file-charges() { # script API
+llm-file-charges() {
     # Usage: llm-file-charges VMDIR
     #
     # Print the page cache charged to the cgroups of the VM of VMDIR down
@@ -439,7 +439,7 @@ llm-file-charges() { # script API
     vmdir-command-q "$1" "for f in /sys/fs/cgroup/*/memory.stat /sys/fs/cgroup/*/*/memory.stat /sys/fs/cgroup/kubepods.slice/*/*/memory.stat; do [ -f \"\$f\" ] && echo \"\$(( \$(awk '\$1 == \"file\" {print \$2}' \"\$f\") / 1024 )) \${f%/memory.stat}\"; done"
 }
 
-llm-file-charges-delta() { # script API
+llm-file-charges-delta() {
     # Usage: llm-file-charges-delta BEFORE AFTER
     #
     # Print the cgroups whose page cache grew from BEFORE to AFTER (outputs
@@ -453,7 +453,7 @@ grown = sorted(((a[c] - b.get(c, 0), c) for c in a if a[c] > b.get(c, 0)), rever
 print(", ".join("+%d kB %s" % g for g in grown) or "none")' "$1" "$2"
 }
 
-llm-server-pid() { # script API
+llm-server-pid() {
     # Usage: llm-server-pid VMDIR POD
     #
     # Print the pid of llama-server (comm llama-server) in container "main"
@@ -466,7 +466,7 @@ llm-server-pid() { # script API
     echo "$pid"
 }
 
-llm-rss-anon() { # script API
+llm-rss-anon() {
     # Usage: llm-rss-anon VMDIR POD
     #
     # Print RssAnon of llama-server in pod POD, in kB, quietly. Return 1 if
@@ -476,7 +476,7 @@ llm-rss-anon() { # script API
     vmdir-command-q "$1" "awk '\$1 == \"RssAnon:\" {print \$2}' /proc/$pid/status"
 }
 
-llm-where() { # script API
+llm-where() {
     # Usage: llm-where VMDIR POD PATH
     #
     # Show where the page frames of the mappings of the file PATH (the
@@ -515,7 +515,7 @@ for m in maps:
 print("%d bytes mapped, %d of %d pages present, all in %r" % (size, present, sum(m["pages"] for m in maps), chain))' "$@"
 }
 
-llm-where-assert() { # script API
+llm-where-assert() {
     # Usage: llm-where-assert VMDIR POD PATH MIN-BYTES CHAIN [all|present]
     #
     # Fail the test unless llama-server in pod POD (llm-where) maps the
@@ -532,7 +532,7 @@ llm-where-assert() { # script API
     echo "where ok: $pod: the mappings of $path, $mode pages in '$chain'"
 }
 
-llm-loop-reads() { # script API
+llm-loop-reads() {
     # Usage: llm-loop-reads VMDIR [LOOP]
     #
     # Print the bytes read through every loop device of the VM of VMDIR
@@ -542,7 +542,7 @@ llm-loop-reads() { # script API
     vmdir-command-q "$1" "test -d /sys/block || exit 1; for d in /sys/block/${2:-loop[0-9]*}; do [ -f \$d/stat ] || continue; echo \"\${d#/sys/block/} \$(( \$(awk '{print \$3}' \$d/stat) * 512 ))\"; done"
 }
 
-llm-fincore() { # script API
+llm-fincore() {
     # Usage: llm-fincore VMDIR FILE
     #
     # Print how many bytes of FILE in the VM of VMDIR are in its page
@@ -553,7 +553,7 @@ llm-fincore() { # script API
     echo $(( res ))
 }
 
-llm-serve-sampled() { # script API
+llm-serve-sampled() {
     # Usage: llm-serve-sampled VMDIR POD PATH LOOP N-PREDICT
     #
     # Ask llama-server in pod POD, from the VM of VMDIR, for N-PREDICT
@@ -604,7 +604,7 @@ print(json.dumps([samples[k] for k in sorted(samples)]))' <<< "$out")
 }
 
 
-llm-file-sha256() { # script API
+llm-file-sha256() {
     # Usage: llm-file-sha256 FILE [LENGTH]
     #
     # Print the sha256 of the host FILE, or of its first LENGTH bytes, for
@@ -616,7 +616,7 @@ llm-file-sha256() { # script API
     fi
 }
 
-llm-file-zero() { # script API
+llm-file-zero() {
     # Usage: llm-file-zero FILE OFFSET LENGTH
     #
     # Return 0 if the LENGTH bytes at OFFSET of the host FILE are all zero.
@@ -632,7 +632,7 @@ with open(sys.argv[1], "rb") as f:
         left -= len(data)' "$1" "$2" "$3"
 }
 
-llm-file-find() { # script API
+llm-file-find() {
     # Usage: llm-file-find FILE MODEL ALIGN
     #
     # Print the first offset of the host FILE, a multiple of ALIGN, at

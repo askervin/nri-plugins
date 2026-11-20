@@ -128,7 +128,7 @@ exit $?'
 ### Names
 ###
 
-mbt-setup-ids() { # script API
+mbt-setup-ids() {
     # Usage: mbt-setup-ids VM2DIR VM1DIR VM0DIR
     #
     # Map the VM ids of the model to the VMDIRs and the Kubernetes node
@@ -319,7 +319,7 @@ mbt-template-yaml() {
     esac
 }
 
-mbt-templates-apply() { # script API
+mbt-templates-apply() {
     # Usage: mbt-templates-apply
     #
     # Create the ResourceClaimTemplates of every kind and pool in $DRA_NS
@@ -907,7 +907,7 @@ mbt-killat-stop() {
     return 0
 }
 
-mbt-pdev-files() { # script API
+mbt-pdev-files() {
     # Usage: mbt-pdev-files DEV...
     #
     # Set MBT_PDEV_FILES of the persistent devices DEV from their server
@@ -926,7 +926,7 @@ mbt-pdev-files() { # script API
     done
 }
 
-mbt-pdev-files-remove() { # script API
+mbt-pdev-files-remove() {
     # Usage: mbt-pdev-files-remove DIR DEV...
     #
     # Remove the data and LSA files (DEV.raw, DEV.lsa) of the persistent
@@ -941,7 +941,7 @@ mbt-pdev-files-remove() { # script API
     done
 }
 
-mbt-pmem-held() { # script API
+mbt-pmem-held() {
     # Usage: mbt-pmem-held VMDIR
     #
     # Print what in the VM of VMDIR still holds a persistent device, one per
@@ -953,7 +953,7 @@ for f in /sys/block/loop*/loop/backing_file; do [ -f \"\$f\" ] || continue; b=\$
 true"
 }
 
-mbt-pmem-unmount() { # script API
+mbt-pmem-unmount() {
     # Usage: mbt-pmem-unmount VMDIR
     #
     # The error path, after the driver is gone: unmount the lease binds,
@@ -1169,7 +1169,7 @@ mbt-ssh-reset() {
     return 0
 }
 
-mbt-qemu-fixed-require() { # script API
+mbt-qemu-fixed-require() {
     # Usage: mbt-qemu-fixed-require VMDIR...
     #
     # MBT_REBOOT=guest: fail the test unless the qemu process of each VM
@@ -1400,7 +1400,7 @@ mbt-fencing-wait() {
     [ "$got" == "$want" ] || { MBT_ERR="the driver ${pod:-pod} of $vm logged fencing $got, expected $want"; return 1; }
 }
 
-mbt-fencing-check() { # script API
+mbt-fencing-check() {
     # Usage: mbt-fencing-check MODE
     #
     # After dra-install: fail the test unless the driver of every VM logged
@@ -1497,7 +1497,7 @@ kubectl get configmap -n kube-system $MBT_FENCING_CM -o jsonpath='{.data.config\
 ### A step
 ###
 
-mbt-run() { # script API
+mbt-run() {
     # Usage: mbt-run STEP VERB ARGS...
     #
     # Execute step STEP, the action VERB ARGS (contract 4, not settle):
@@ -1560,7 +1560,7 @@ print(json.dumps(r, sort_keys=True, separators=(",", ":")))' "$MBT_RESULT" "$MBT
 ### Observation (contract 6)
 ###
 
-mbt-observer-install() { # script API
+mbt-observer-install() {
     # Usage: mbt-observer-install VMDIR...
     #
     # Copy mbt-observe.py into the VMs ($MBT_OBSERVER_VM) and run it once
@@ -1575,7 +1575,7 @@ mbt-observer-install() { # script API
     done
 }
 
-mbt-observe() { # script API
+mbt-observe() {
     # Usage: mbt-observe STEP POLL
     #
     # Make settle observation POLL of step STEP (contract 6.1): in
@@ -1788,7 +1788,7 @@ mbt-gone() {
     error "mbt: no $1 from the generator in ${MBT_READ_TIMEOUT}s: it exited or hangs, see $MBT_LOG"
 }
 
-mbt-fail() { # script API
+mbt-fail() {
     # Usage: mbt-fail STEP MESSAGE
     #
     # Step STEP failed the oracle: print MESSAGE, keep the last observation
@@ -1854,7 +1854,7 @@ mbt-settle-online() {
     printf '%s\tsettle\t\t0\t%s\t%s\n' "$step" "$secs" "$poll" >> "$MBT_TIMES"
 }
 
-mbt-online() { # script API
+mbt-online() {
     # Usage: mbt-online ARGS...
     #
     # The on-line run (contract 5): start the generator with ARGS
@@ -1891,7 +1891,7 @@ mbt-online() { # script API
     mbt-coproc-stop
 }
 
-mbt-header-flags() { # script API
+mbt-header-flags() {
     # Usage: mbt-header-flags STEPS-FILE
     #
     # Print the model flags of the header of STEPS-FILE (an mbt-steps.txt
@@ -1925,7 +1925,7 @@ for line in open(sys.argv[1]):
     break' "$1"
 }
 
-mbt-header-mode() { # script API
+mbt-header-mode() {
     # Usage: mbt-header-mode FILE FLAG DEFAULT
     #
     # Print the value of --FLAG (fencing, reboot) of the header of FILE
@@ -1968,7 +1968,7 @@ mbt-unchecked() {
         mbt-fail "$MBT_LAST_STEP" "$MBT_LAST_VERB: exit status $MBT_LAST_STATUS (the step has no mbt-expect: a nonzero status fails it)"
 }
 
-mbt-step() { # script API
+mbt-step() {
     # Usage: mbt-step STEP VERB ARGS...
     #
     # Off-line (a code.gen.sh): execute step STEP, and append it to
@@ -1986,7 +1986,7 @@ mbt-step() { # script API
     MBT_LAST_DONE="done $1 $MBT_STATUS $MBT_RESULT"
 }
 
-mbt-expect() { # script API
+mbt-expect() {
     # Usage: mbt-expect STEP <<'EOF'
     #        PREDICTION
     #        EOF
@@ -2038,7 +2038,7 @@ mbt-expect() { # script API
     printf '%s\tsettle\t\t0\t%s\t%s\n' "$step" "$secs" "$poll" >> "$MBT_TIMES"
 }
 
-mbt-offline() { # script API
+mbt-offline() {
     # Usage: mbt-offline SCRIPT
     #
     # The off-line run: source SCRIPT, a code.gen.sh of "mbt-cxl generate"
@@ -2058,7 +2058,7 @@ mbt-offline() { # script API
 
 MBT_KERNEL_FEATURES="ZONE_DEVICE CXL_REGION CXL_PMEM LIBNVDIMM BLK_DEV_PMEM ND_PFN NVDIMM_PFN DEV_DAX FS_DAX FS_DAX_PMD BLK_DEV_LOOP EROFS_FS"
 
-mbt-kernel-require() { # script API
+mbt-kernel-require() {
     # Usage: mbt-kernel-require VMDIR
     #
     # Fail the test unless the kernel of the VM of VMDIR has every feature
@@ -2079,7 +2079,7 @@ for f in $MBT_KERNEL_FEATURES; do echo \"\$f=\$(sed -n \"s/^CONFIG_\$f=//p\" \$c
     echo "$(vmdir-label "$vmdir"): $(head -n 1 <<< "$out"): $(tail -n +2 <<< "$out" | tr '\n' ' ')"
 }
 
-mbt-local-blocks() { # script API
+mbt-local-blocks() {
     # Usage: mbt-local-blocks
     #
     # Print the --local-blocks of the generator: vm2=N,vm1=N,vm0=N, N the
@@ -2112,7 +2112,7 @@ for a in json.loads(sys.argv[1]) or []:
         print("%s@%s %s" % (a.get("device"), a.get("host"), a.get("state")))' "$json"
 }
 
-mbt-restore() { # script API
+mbt-restore() {
     # Usage: mbt-restore
     #
     # Bring back what the faults of the run took away, so that the deletes
@@ -2149,7 +2149,7 @@ mbt-restore() { # script API
     return 0
 }
 
-mbt-teardown() { # script API
+mbt-teardown() {
     # Usage: mbt-teardown
     #
     # The end of a run (the generator has deleted every pod and settled):
@@ -2229,7 +2229,7 @@ mbt-exit-trap() {
     done
 }
 
-mbt-hollow-regions-remove() { # script API
+mbt-hollow-regions-remove() {
     # Usage: mbt-hollow-regions-remove VMDIR
     #
     # Print and delete the hollow CXL regions of the VM of VMDIR: a region

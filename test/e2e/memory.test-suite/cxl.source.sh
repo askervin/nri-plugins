@@ -11,7 +11,7 @@ CXL_BLOCK_SIZE=""  # memory block size in bytes in the VM
 # The evaluator of cxl-py, and of dra-py and pool-py of dra-driver-cxl.
 E2E_JSON="$nri_resource_policy_src/test/e2e/memory.test-suite/e2e_json.py"
 
-cxl-tools-install() { # script API
+cxl-tools-install() {
     # Usage: cxl-tools-install
     #
     # Install the cxl and numactl tools in the VM if they are missing, and
@@ -32,7 +32,7 @@ cxl-tools-install() { # script API
     echo "cxl-tools-install: memory block size $CXL_BLOCK_SIZE bytes"
 }
 
-cxl-block-size-parse() { # script API
+cxl-block-size-parse() {
     # Usage: cxl-block-size-parse TEXT
     #
     # Print the memory block size in bytes that TEXT, the contents of
@@ -46,7 +46,7 @@ cxl-block-size-parse() { # script API
     echo $(( 16#$hex ))
 }
 
-cxl-dump() { # script API
+cxl-dump() {
     # Usage: cxl-dump LABEL
     #
     # Run cxl-dump in the VM and store its output as
@@ -79,7 +79,7 @@ cxl-dump-json() {
     echo "$json" > "$CXL_DUMP_FILE"
 }
 
-cxl-wait() { # script API
+cxl-wait() {
     # Usage: cxl-wait LABEL EXPRESSION [TIMEOUT]
     #
     # Run cxl-dump in the VM until EXPRESSION, a Python expression on its
@@ -101,7 +101,7 @@ cxl-wait() { # script API
     cxl-dump "$label"
 }
 
-cxl-assert() { # script API
+cxl-assert() {
     # Usage: cxl-assert EXPRESSION
     #
     # Fail the test unless EXPRESSION, a Python expression on the output of the
@@ -116,7 +116,7 @@ cxl-assert() { # script API
     echo "cxl-dump ok: $expression"
 }
 
-cxl-value() { # script API
+cxl-value() {
     # Usage: cxl-value EXPRESSION
     #
     # Print the value of EXPRESSION, a Python expression on the output of the

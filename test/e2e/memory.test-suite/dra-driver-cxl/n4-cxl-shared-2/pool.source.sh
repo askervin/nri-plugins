@@ -74,7 +74,7 @@ pool-vm-dir() {
     esac
 }
 
-pool-vm-qmp() { # script API
+pool-vm-qmp() {
     # Usage: pool-vm-qmp VMDIR COMMAND [ARGUMENTS_JSON]
     #
     # vm-qmp on the qemu of the VM of VMDIR, on its qmp-e2e.sock. (qmp.sock
@@ -84,14 +84,14 @@ pool-vm-qmp() { # script API
     VM_QMP="$vmdir/qmp-e2e.sock" vm-qmp "$@"
 }
 
-pool-vm-monitor() { # script API
+pool-vm-monitor() {
     # Usage: pool-vm-monitor VMDIR COMMAND
     #
     # vm-monitor on the qemu of the VM of VMDIR.
     VM_MONITOR="(cd \"$1\" && socat STDIO unix-connect:monitor.sock)" vm-monitor "$2"
 }
 
-pool-vm-require() { # script API
+pool-vm-require() {
     # Usage: pool-vm-require VMDIR TOPOLOGY
     #
     # Fail unless the VM of VMDIR, created from TOPOLOGY, can share CXL
@@ -127,7 +127,7 @@ pool-vm-require() { # script API
     echo "$name: patched qemu, hdm_for_passthrough=on, CONFIG_FS_DAX=y"
 }
 
-pool-vm-tools-install() { # script API
+pool-vm-tools-install() {
     # Usage: pool-vm-tools-install VMDIR
     #
     # Install cxl, daxctl and numactl in the VM of VMDIR if they are
@@ -145,7 +145,7 @@ pool-vm-tools-install() { # script API
             command-error "cannot install cxl, daxctl and numactl in $(basename "$vmdir")"
 }
 
-pool-cluster-require() { # script API
+pool-cluster-require() {
     # Usage: pool-cluster-require [CLUSTER]
     #
     # Fail the test unless the VMs of CLUSTER are one Kubernetes cluster in
@@ -160,7 +160,7 @@ run memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test00-up first"
     echo "pool-cluster-require: cluster \"$(vm-k8s-cluster-names "$cluster")\" is in shape"
 }
 
-pool-vm-decoders() { # script API
+pool-vm-decoders() {
     # Usage: pool-vm-decoders VMDIR
     #
     # Print the CXL ports and endpoints of the VM of VMDIR that have
@@ -183,7 +183,7 @@ done' | sed 's/ $//'
     return "${PIPESTATUS[0]}"
 }
 
-pool-vm-reset() { # script API
+pool-vm-reset() {
     # Usage: pool-vm-reset VMDIR
     #
     # Make sure that the VM of VMDIR has no CXL memory devices, neither in
@@ -215,7 +215,7 @@ pool-vm-reset() { # script API
         command-error "cannot disable automatic onlining of hotplugged memory in $name"
 }
 
-pool-cxl-dump() { # script API
+pool-cxl-dump() {
     # Usage: pool-cxl-dump VMDIR LABEL
     #
     # cxl-dump in the VM of VMDIR. The output files of other VMs than the
@@ -246,7 +246,7 @@ pool-cxl-dump-json() {
     echo "$json" > "$CXL_DUMP_FILE"
 }
 
-pool-cxl-wait() { # script API
+pool-cxl-wait() {
     # Usage: pool-cxl-wait VMDIR LABEL EXPRESSION [TIMEOUT]
     #
     # cxl-wait in the VM of VMDIR.
@@ -271,7 +271,7 @@ pool-port-busy() {
     (exec 3<>"/dev/tcp/127.0.0.1/${1:-$POOL_PORT}") 2>/dev/null
 }
 
-pool-url() { # script API
+pool-url() {
     # Usage: pool-url [NAME]
     #
     # Print the URL of the server NAME (default: the first started server)
@@ -279,7 +279,7 @@ pool-url() { # script API
     pool-server-url "${1:-}" "127.0.0.1"
 }
 
-pool-guest-url() { # script API
+pool-guest-url() {
     # Usage: pool-guest-url [NAME]
     #
     # Print the URL of the server NAME (default: the first started server)
@@ -327,7 +327,7 @@ pool-server-first() {
     POOL_GUEST_URL="http://192.168.76.2:${POOL_SERVER_PORTS[$first]}"
 }
 
-pool-server-start() { # script API
+pool-server-start() {
     # Usage: pool-server-start [OPTIONS] [DEVICES]
     #
     # Build fake-cxl-pool and start a fake-cxl-pool-server on the host, a
@@ -488,7 +488,7 @@ EOF
         command-error "cannot get the status of the server $name"
 }
 
-pool-server-restart() { # script API
+pool-server-restart() {
     # Usage: pool-server-restart NAME
     #
     # Restart the server NAME that pool-server-start started, the way a
@@ -548,7 +548,7 @@ pool-server-kill() {
 }
 
 # shellcheck disable=SC2120 # the tests give NAME
-pool-server-stop() { # script API
+pool-server-stop() {
     # Usage: pool-server-stop [NAME]
     #
     # Stop the server NAME that pool-server-start started, or every server,
@@ -634,7 +634,7 @@ for d in json.load(sys.stdin) or []:
     done
 }
 
-pool-client-install() { # script API
+pool-client-install() {
     # Usage: pool-client-install VMDIR...
     #
     # Copy fake-cxl-pool-client (built static by pool-server-start) and
@@ -651,7 +651,7 @@ pool-client-install() { # script API
     done
 }
 
-pool-client() { # script API
+pool-client() {
     # Usage: pool-client [--pool NAME] VMDIR [-o json] COMMAND [ARGS...]
     #
     # Run fake-cxl-pool-client as root in the VM of VMDIR, connected to the
@@ -670,7 +670,7 @@ pool-client() { # script API
     vmdir-command "$vmdir" "fake-cxl-pool-client$server$(printf ' %q' "$@")"
 }
 
-pool-host-client() { # script API
+pool-host-client() {
     # Usage: pool-host-client [--pool NAME] [-o json] COMMAND [ARGS...]
     #
     # Run fake-cxl-pool-client on the host, connected to the server NAME
@@ -683,7 +683,7 @@ pool-host-client() { # script API
     host-command "$POOL_BIN_DIR/fake-cxl-pool-client --server $url$(printf ' %q' "$@")"
 }
 
-pool-attachments() { # script API
+pool-attachments() {
     # Usage: pool-attachments [--pool NAME] DEVICE
     #
     # Print the attachments of DEVICE on the server NAME (default: the
@@ -697,7 +697,7 @@ pool-attachments() { # script API
     pool-host-client "${pool[@]}" -o json attachments --device "$1" || command-error "cannot list the attachments of $1"
 }
 
-pool-device-files() { # script API
+pool-device-files() {
     # Usage: pool-device-files [--pool NAME] DEVICE
     #
     # Set POOL_DEVICE_DATA to the backing file of DEVICE on the server NAME
@@ -722,7 +722,7 @@ pool-device-files() { # script API
     echo "pool-device-files: $dev: data $POOL_DEVICE_DATA, LSA ${POOL_DEVICE_LSA:-none}"
 }
 
-pool-device-free-wait() { # script API
+pool-device-free-wait() {
     # Usage: pool-device-free-wait [--pool NAME] DEVICE VMDIR...
     #
     # Wait until the VMs of VMDIRs have no CXL memory devices, 60 s at most
@@ -744,7 +744,7 @@ pool-device-free-wait() { # script API
         error "$dev is not free: $COMMAND_OUTPUT"
 }
 
-pool-snapshot() { # script API
+pool-snapshot() {
     # Usage: pool-snapshot LABEL
     #
     # Store what every server says about its hosts, devices and attachments
@@ -781,7 +781,7 @@ pool-py() {
     python3 "$E2E_JSON" "$1" pool "$3" <<< "$2"
 }
 
-pool-assert() { # script API
+pool-assert() {
     # Usage: pool-assert JSON EXPRESSION
     #
     # Fail the test unless the Python EXPRESSION is true. The JSON document,
@@ -793,14 +793,14 @@ on: $(head -c 3000 <<< "$1")"
     echo "fake-cxl-pool ok: $2"
 }
 
-pool-value() { # script API
+pool-value() {
     # Usage: pool-value JSON EXPRESSION
     #
     # Print the value of the Python EXPRESSION on the JSON document j.
     pool-py eval "$1" "$2" || error "fake-cxl-pool expression failed: $2"
 }
 
-pool-file-string() { # script API
+pool-file-string() {
     # Usage: pool-file-string FILE OFFSET
     #
     # Print the NUL-terminated string at byte OFFSET of the host FILE, for

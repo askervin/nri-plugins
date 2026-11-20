@@ -22,7 +22,7 @@ FS_LOG=""            # fs-writer-wait: the log of the writer
 FS_ENV=""            # fs-ctr-env: the CXL_<KEY>_ lines of a container
 FS_PMEM=""           # fs-node-mounts-assert: the pmem block device under the node mounts
 
-fs-kernel-require() { # script API
+fs-kernel-require() {
     # Usage: fs-kernel-require VMDIR TOPOLOGY
     #
     # Fail the test unless the running kernel of the VM of VMDIR, created
@@ -36,7 +36,7 @@ fs-kernel-require() { # script API
     echo "$(vmdir-label "$vmdir"): kernel with ext4, xfs, btrfs, squashfs, erofs and FS_DAX"
 }
 
-fs-tools-install() { # script API
+fs-tools-install() {
     # Usage: fs-tools-install VMDIR COMMAND...
     #
     # Install the packages of the filesystem tools COMMANDs
@@ -54,7 +54,7 @@ fs-tools-install() { # script API
     echo "$(vmdir-label "$vmdir"): $* installed"
 }
 
-fs-image-build() { # script API
+fs-image-build() {
     # Usage: fs-image-build VMDIR TYPE NAME TEXT [SIZE]
     #
     # Build the filesystem image $FS_VM_DIR/NAME.img in the VM of VMDIR
@@ -95,7 +95,7 @@ fs-image-build() { # script API
     echo "fs-image-build: $label:$img, $type, $FS_IMAGE_SIZE bytes, sha256 $FS_IMAGE_SHA256"
 }
 
-fs-writer-script() { # script API
+fs-writer-script() {
     # Usage: fs-writer-script KEY IMAGE
     #
     # Print the shell script of a writer container (image $DRA_TOOLS_IMAGE,
@@ -143,7 +143,7 @@ fs-writer-wait() {
     grep -qx "writer exit 0" <<< "$FS_LOG" || error "the writer in pod $pod failed: $(grep '^writer exit ' <<< "$FS_LOG")"
 }
 
-fs-write() { # script API
+fs-write() {
     # Usage: fs-write VMDIR NAME SERIAL SHARED CLASS
     #
     # Write the image of the last fs-image-build ($FS_IMAGE, built in the
@@ -175,7 +175,7 @@ $(dra-script-pod-yaml "$name" "$vmdir" "$name" "$(fs-writer-script "$key" "$FS_I
     dra-delete "$OUTPUT_DIR" resourceclaim "$name" --wait=true --timeout=60s
 }
 
-fs-claim-pod() { # script API
+fs-claim-pod() {
     # Usage: fs-claim-pod VMDIR NAME SERIAL SHARES PARAMETERS CLASS
     #
     # Create ResourceClaim NAME of DeviceClass CLASS for the device SERIAL
@@ -189,7 +189,7 @@ fs-claim-pod() { # script API
 $(dra-pod-yaml "$2" "$(vmdir-name "$1")" "mem=claim:$2")"
 }
 
-fs-claim-pod-delete() { # script API
+fs-claim-pod-delete() {
     # Usage: fs-claim-pod-delete NAME...
     #
     # Delete the pods NAME, then their claims NAME, and wait until they are
@@ -203,7 +203,7 @@ fs-claim-pod-delete() { # script API
     done
 }
 
-fs-pending-assert() { # script API
+fs-pending-assert() {
     # Usage: fs-pending-assert POD...
     #
     # Fail the test unless every pod POD is Pending without a node: not
@@ -220,7 +220,7 @@ fs-pending-assert() { # script API
 # The pods are in the cluster of the VM of the test: the fs-ctr-*
 # helpers run kubectl exec there, whatever the node of the pod.
 
-fs-ctr-env() { # script API
+fs-ctr-env() {
     # Usage: fs-ctr-env POD KEY
     #
     # Set FS_ENV to the CXL_KEY_ variables of container main of pod POD,
@@ -229,7 +229,7 @@ fs-ctr-env() { # script API
     FS_ENV=$(grep "^CXL_$2_" <<< "$COMMAND_OUTPUT" | LC_ALL=C sort)
 }
 
-fs-ctr-env-assert() { # script API
+fs-ctr-env-assert() {
     # Usage: fs-ctr-env-assert POD KEY FIELD=VALUE...
     #
     # Fail the test unless the CXL_KEY_ variables of container main of pod
@@ -240,7 +240,7 @@ fs-ctr-env-assert() { # script API
     dra-env-assert "$pod" "$FS_ENV" "$key" "$@"
 }
 
-fs-ctr-mount-assert() { # script API
+fs-ctr-mount-assert() {
     # Usage: fs-ctr-mount-assert POD PATH ro|rw TYPE
     #
     # Fail the test unless container main of pod POD has a mount at PATH of
@@ -265,7 +265,7 @@ if f[5].split(",")[0] != rw or post.split()[0] != fstype:
     echo "$pod: $path is a $rw $type mount, no pmem device"
 }
 
-fs-ctr-write() { # script API
+fs-ctr-write() {
     # Usage: fs-ctr-write POD DIR FILE TEXT
     #
     # Write the line TEXT into DIR/FILE in container main of pod POD and
@@ -276,7 +276,7 @@ fs-ctr-write() { # script API
     echo "$1: wrote $2/$3"
 }
 
-fs-ctr-read-assert() { # script API
+fs-ctr-read-assert() {
     # Usage: fs-ctr-read-assert POD DIR FILE TEXT
     #
     # Fail the test unless DIR/FILE in container main of pod POD is the line
@@ -286,7 +286,7 @@ fs-ctr-read-assert() { # script API
     echo "$1: $2/$3 has the expected text"
 }
 
-fs-ctr-write-refused() { # script API
+fs-ctr-write-refused() {
     # Usage: fs-ctr-write-refused POD DIR
     #
     # Fail the test unless creating a file under DIR in container main of
@@ -298,7 +298,7 @@ $DRA_EXEC_STDERR" || error "$1: creating a file under $2 failed for another reas
     echo "$1: a write under $2 is refused: Read-only file system"
 }
 
-fs-node-mounts-assert() { # script API
+fs-node-mounts-assert() {
     # Usage: fs-node-mounts-assert VMDIR DIR ID TYPE ro|rw EXTRA ACCESS...
     #
     # Fail the test unless the node mounts under DIR in the VM of VMDIR are
@@ -359,7 +359,7 @@ print(pmem.pop())' "$COMMAND_OUTPUT" "$dir" "$id" "$type" "$sb" "$extra" "$@") |
     echo "$label: node mounts of $id: $type, superblock $sb, access $*, on $FS_PMEM"
 }
 
-fs-no-mounts-assert() { # script API
+fs-no-mounts-assert() {
     # Usage: fs-no-mounts-assert VMDIR DIR...
     #
     # Fail the test if the VM of VMDIR has a mount under a DIR or a loop
@@ -376,7 +376,7 @@ fs-no-mounts-assert() { # script API
     echo "$label: no mounts under $*, no loop devices over pmem"
 }
 
-fs-pmem-ro-assert() { # script API
+fs-pmem-ro-assert() {
     # Usage: fs-pmem-ro-assert VMDIR DEV 0|1
     #
     # Fail the test unless the block device DEV (/dev/pmemN) of the VM of
@@ -387,7 +387,7 @@ fs-pmem-ro-assert() { # script API
     echo "$(vmdir-label "$1"): /sys/block/${2#/dev/}/ro is $ro"
 }
 
-fs-cdi-assert() { # script API
+fs-cdi-assert() {
     # Usage: fs-cdi-assert VMDIR CLAIM KIND HOSTPATH CTRPATH OPTIONS
     #
     # Fail the test unless the VM of VMDIR has the CDI device
@@ -404,7 +404,7 @@ fs-cdi-assert() { # script API
     dra-assert "$cdi" "[(m.get('hostPath'), m.get('containerPath'), m.get('type'), m.get('options')) for m in j['mounts']] == [('$host', '$ctr', 'bind', $opts)]"
 }
 
-fs-claim-data-assert() { # script API
+fs-claim-data-assert() {
     # Usage: fs-claim-data-assert CLAIM DEVICE EXPRESSION
     #
     # Fail the test unless the Python EXPRESSION is true on d, the data
@@ -419,7 +419,7 @@ fs-claim-data-assert() { # script API
     echo "claim $1: data of $2: $3"
 }
 
-fs-event-wait() { # script API
+fs-event-wait() {
     # Usage: fs-event-wait POD TEXT... [-- TIMEOUT]
     #
     # Wait until an Event of pod POD has every TEXT (fixed strings) in its
@@ -454,7 +454,7 @@ fs-node-state() {
     dra-pmem-loops "$1" || return 1
 }
 
-fs-refused() { # script API
+fs-refused() {
     # Usage: fs-refused VMDIR NAME SERIAL PARAMETERS CLASS TEXT...
     #
     # Create a claim of one share of the device SERIAL with the device
@@ -478,7 +478,7 @@ after:  $after"
     fs-claim-pod-delete "$name"
 }
 
-fs-controller-log-wait() { # script API
+fs-controller-log-wait() {
     # Usage: fs-controller-log-wait UNIT TEXT... [-- TIMEOUT]
     #
     # Wait until the journal of the pool controller UNIT in the VM of the
@@ -504,7 +504,7 @@ fs-controller-log-wait() { # script API
     vmdir-command-q "$OUTPUT_DIR" "$filter" | tail -n 3
 }
 
-fs-unmatched() { # script API
+fs-unmatched() {
     # Usage: fs-unmatched NAME SERIAL CLASS
     #
     # Fail the test unless a claim of DeviceClass CLASS for the device
@@ -521,7 +521,7 @@ $(dra-pod-yaml "$1" "$(vmdir-name "$OUTPUT_DIR")" "mem=claim:$1")"
     echo "class $3 does not select $2"
 }
 
-fs-held() { # script API
+fs-held() {
     # Usage: fs-held VMDIR...
     #
     # Print what still holds persistent devices on the VMs of VMDIRs, one
