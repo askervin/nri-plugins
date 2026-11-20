@@ -21,11 +21,12 @@ spec:
       operations:  ["CREATE"]
       resources:   ["resourceclaims", "resourceclaimtemplates"]
   variables:
+  # A claim without requests has requests: null.
   - name: requests
     expression: >-
-      request.resource.resource == "resourceclaims" ?
-      object.spec.?devices.?requests.orValue([]) :
-      object.spec.spec.?devices.?requests.orValue([])
+      optional.ofNonZeroValue(request.resource.resource == "resourceclaims" ?
+        object.spec.?devices.?requests.orValue([]) :
+        object.spec.spec.?devices.?requests.orValue([])).orValue([])
   - name: requestsLease
     expression: >-
       variables.requests.exists(r, r.?exactly.?deviceClassName.orValue('') == 'cxl-lease' ||

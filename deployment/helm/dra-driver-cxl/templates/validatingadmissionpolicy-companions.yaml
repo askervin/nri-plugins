@@ -80,11 +80,11 @@ spec:
     expression: >-
       ["cxl-local", "cxl-local-shared", "cxl-local-persistent", "cxl-pool", "cxl-pool-shared", "cxl-pool-persistent"]
   # The device requests of a ResourceClaim to create: [] for pods and
-  # deletions.
+  # deletions. A claim without requests has requests: null.
   - name: claimRequests
     expression: >-
       request.operation == "CREATE" && request.resource.resource == "resourceclaims" ?
-      object.spec.?devices.?requests.orValue([]) : []
+      optional.ofNonZeroValue(object.spec.?devices.?requests.orValue([])).orValue([]) : []
   validations:
   - expression: variables.userNodeName != ""
     message: >-
