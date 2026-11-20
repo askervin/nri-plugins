@@ -295,51 +295,12 @@ nothing-left() {
     echo "$label: nothing left"
 }
 
-touch-start() {
-    # Usage: touch-start NODE
-    #
-    # Start numa-touch.py in the background in container main: TOUCH_MIB
-    # MiB that prefer NUMA node NODE, held until touch-stop. Wait until it
-    # has touched every page. TOUCH_PID is its pid in the container.
-    local node="$1"
-    # shellcheck disable=SC2016 # $1 is expanded by sh in the container
-    dra-exec "$VM2" borrower/main sh -c 'setsid python3 /tools/numa-touch.py --hold "$1" "$2" > /tmp/numa-touch.log 2>&1 < /dev/null &' sh "$TOUCH_MIB" "$node" ||
-        command-error "cannot start numa-touch.py"
-    retry-until --timeout 60 --interval 1 --message "numa-touch.py has touched $TOUCH_MIB MiB" \
-        'dra-vm-command-q "$VM2" "kubectl exec -n $DRA_NS borrower -c main -- cat /tmp/numa-touch.log" | grep -qE "^numa-touch: (ready|.*failed)"' ||
-        error "numa-touch.py did not finish touching its memory"
-    dra-exec "$VM2" borrower/main cat /tmp/numa-touch.log
-    grep -q "^numa-touch: ready" <<< "$COMMAND_OUTPUT" || error "numa-touch.py failed: $COMMAND_OUTPUT"
-    TOUCH_PID=$(sed -n 's/^numa-touch: pid \([0-9]*\) .*/\1/p' <<< "$COMMAND_OUTPUT")
-    TOUCH_LOG="$COMMAND_OUTPUT"
-}
-
-touch-pages() {
-    # Usage: touch-pages NODE
-    #
-    # Ask the running numa-touch.py where its pages are now (SIGUSR1).
-    # TOUCH_PAGES is how many of them are on NODE, from its last "pages"
-    # line. Fail the test if numa-touch.py does not run any more.
-    # shellcheck disable=SC2016 # $1 is expanded by sh in the container
-    dra-exec "$VM2" borrower/main sh -c 'kill -0 "$1" && kill -USR1 "$1" && sleep 1 && cat /tmp/numa-touch.log' sh "$TOUCH_PID" ||
-        error "numa-touch.py (pid $TOUCH_PID) is not running any more"
-    TOUCH_PAGES=$(grep '^numa-touch: pages' <<< "$COMMAND_OUTPUT" | tail -n 1 | tr ' ' '\n' | sed -n "s/^N$1=//p")
-    TOUCH_PAGES=${TOUCH_PAGES:-0}
-}
-
-touch-stop() {
-    # Usage: touch-stop
-    [ -n "$TOUCH_PID" ] || return 0
-    dra-exec "$VM2" borrower/main kill "$TOUCH_PID"
-    TOUCH_PID=""
-}
-
 lend-memory() {
     # Usage: lend-memory
     #
     # Container main asks for 512Mi of pooled memory and gets pooled0 as
     # NUMA node MEM_NODE, lease MEM_LEASE, in its cpuset.mems only. It puts
-    # TOUCH_MIB MiB there (touch-start). The lease has the environment of
+    # TOUCH_MIB MiB there (dra-touch-start). The lease has the environment of
     # pooled0 (lease-env-check).
     local json anon pages
     echo "--- cxl-request request --source pool --size 512Mi"
@@ -387,8 +348,8 @@ lend-memory() {
     dra-assert "$DRA_LEASES" "[(l['lease'], l['state'], l.get('source'), l.get('mode'), bool(l.get('shared'))) for l in j] == [('$MEM_LEASE', 'Ready', 'pool', 'numa', False)]"
     lease-env-check
     # Container main uses the memory: 256 MiB on the lent node.
-    touch-start "$MEM_NODE"
-    pages=$(grep '^numa-touch: pages' <<< "$TOUCH_LOG" | tr ' ' '\n' | sed -n "s/^N$MEM_NODE=//p")
+    dra-touch-start "$VM2" borrower/main "$TOUCH_MIB" "$MEM_NODE"
+    pages=$(dra-touch-log-pages "$DRA_TOUCH_LOG" "$MEM_NODE")
     [ "${pages:-0}" -ge $(( (TOUCH_MIB - 16) << 8 )) ] ||
         error "only ${pages:-0} pages of numa-touch.py are on node $MEM_NODE"
     anon=$(dra-container-anon "$VM2" borrower main "$MEM_NODE")
@@ -448,9 +409,9 @@ give-back() {
         '[ "$(dra-container-anon "$VM2" borrower main "$MEM_NODE")" == 0 ]' ||
         error "container main still has memory on node $MEM_NODE after the release"
     dra-container-file "$VM2" borrower main memory.numa_stat
-    touch-pages "$MEM_NODE"
-    [ "$TOUCH_PAGES" == 0 ] || error "numa-touch.py still has $TOUCH_PAGES pages on node $MEM_NODE"
-    echo "numa-touch.py (pid $TOUCH_PID) lives, its pages moved off node $MEM_NODE"
+    dra-touch-pages "$MEM_NODE"
+    [ "$DRA_TOUCH_PAGES" == 0 ] || error "numa-touch.py still has $DRA_TOUCH_PAGES pages on node $MEM_NODE"
+    echo "numa-touch.py (pid $DRA_TOUCH_PID) lives, its pages moved off node $MEM_NODE"
     nodelist-eq "$(cgroup-mems main cpuset.mems)" "$DRAM_NODES" ||
         error "cpuset.mems of container main is not back to $DRAM_NODES"
     nodelist-eq "$(mems-allowed main)" "$DRAM_NODES" ||
@@ -459,7 +420,7 @@ give-back() {
     dra-mems-fenced "$VM2" "$MEM_NODE"
     idle-mems-check
     nothing-left released
-    touch-stop
+    dra-touch-stop
 }
 
 share() {

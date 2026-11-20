@@ -3233,7 +3233,10 @@ dra-trace-start() { # script API
             '[ "$(dra-vm-command-q "$vmdir" "ls /run/dra-trace/ | grep -c .pid\$")" == "$n" ]' ||
             error "dra-trace-start: trace collectors did not start in $(dra-vm-label "$vmdir"), see $DRA_TRACE_DIR"
     done
-    sleep 1   # for the watches to be established
+    # The events watch (--watch-only) prints nothing when it is up, so
+    # there is nothing to wait for: a second for it, else the trace may
+    # miss the first events of the test. Nothing checks the trace.
+    sleep 1
     n=$(wc -l < "$DRA_TRACE_DIR/pids")
     echo "dra-trace-start: $n collectors, streams in $DRA_TRACE_DIR"
 }

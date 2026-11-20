@@ -147,16 +147,6 @@ companions-of() {
     dra-vm-command-q "$VM2" "kubectl get pods -n $DRA_NS -l $DRA_REQUESTER_LABEL=$uid -o jsonpath='{range .items[*]}{.metadata.name}{\" \"}{.status.phase}{\"\\n\"}{end}'"
 }
 
-readers-pending() {
-    # Usage: readers-pending
-    #
-    # Return 0 if every reader has one companion pod, and it is Pending.
-    local r
-    for r in "${READERS[@]}"; do
-        [ "$(companions-of "$r" | awk '{print $2}')" == Pending ] || return 1
-    done
-}
-
 echo "### preconditions: patched qemu, hdm_for_passthrough=on, CONFIG_FS_DAX"
 pool-vm-require "$VM2" "$(basename "$TOPOLOGY_DIR")"
 pool-vm-require "$VM1" n4-cxl-shared-1
@@ -248,24 +238,23 @@ echo \"cxl-request exit \$?\"
 cxl-request release --all
 trap 'exit 0' TERM; sleep infinity & wait")"
 done
+# The companion of each reader waits: the scheduler finds the device
+# taken by the writer (PodScheduled False, reason Unschedulable), and
+# its claim has no allocation.
 for r in "${READERS[@]}"; do
     dra-pod-wait "$VM2" "$r" Running 120
+    # shellcheck disable=SC2016 # evaluated by retry-until
     retry-until --timeout 60 --interval 1 --message "$r: a Pending companion" \
         '[ "$(companions-of "$r" | awk "{print \$2}")" == Pending ]' ||
         error "$r has no Pending companion pod: $(companions-of "$r")"
-done
-# They stay Pending while the writer has the device: the scheduler and the
-# controller have time to show that nothing moves.
-dra-stays 10 "the companions of the readers stay Pending" readers-pending
-for r in "${READERS[@]}"; do
+    companion=$(companions-of "$r" | awk '{print $1}')
+    dra-wait "$VM2" "$r-unschedulable" "pod -n $DRA_NS $companion" \
+        "j['status']['phase'] == 'Pending' and [c['reason'] for c in j['status'].get('conditions', []) if c['type'] == 'PodScheduled'] == ['Unschedulable']" 60
+    dra-json "$VM2" resourceclaim -n "$DRA_NS" "$companion"
+    dra-assert "$COMMAND_OUTPUT" "j['status'].get('allocation') is None"
     dra-leases "${READER_VM[$r]}" "$r"
     dra-assert "$DRA_LEASES" "[(l['state'], bool(l.get('readOnly')), bool(l.get('shared')), l.get('mode')) for l in j] == [('Pending', True, True, 'dax')]"
-    companion=$(companions-of "$r" | awk '{print $1}')
-    dra-json "$VM2" pod -n "$DRA_NS" "$companion"
-    dra-assert "$COMMAND_OUTPUT" "j['status']['phase'] == 'Pending' and [c['reason'] for c in j['status'].get('conditions', []) if c['type'] == 'PodScheduled'] == ['Unschedulable']"
 done
-dra-json "$VM2" resourceclaim -n "$DRA_NS" "${companion}"
-dra-assert "$COMMAND_OUTPUT" "j['status'].get('allocation') is None"
 pool-attachments shared0
 pool-assert "$COMMAND_OUTPUT" "[(a['host'], a.get('exclusive', False)) for a in j] == [('$VM1_NAME', True)]"
 

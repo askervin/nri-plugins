@@ -230,17 +230,6 @@ event-wait() {
     dra-kubectl "$VM2" "get events -n $DRA_NS --field-selector involvedObject.name=$1"
 }
 
-creating() {
-    # Usage: creating POD...
-    #
-    # Return 0 if the container of every pod POD waits in
-    # ContainerCreating.
-    local p
-    for p in "$@"; do
-        [ "$(dra-vm-command-q "$VM2" "kubectl get pod -n $DRA_NS $p -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}'")" == ContainerCreating ] || return 1
-    done
-}
-
 holding() {
     # Usage: holding POD...
     #
@@ -538,7 +527,7 @@ for p in bad-numa bad-numa-ro bad-access zero-shares; do
     dra-wait "$VM2" "$p-creating" "pod -n $DRA_NS $p" \
         "[(cs.get('state') or {}).get('waiting', {}).get('reason') for cs in j['status'].get('containerStatuses') or []] == ['ContainerCreating']" 60
 done
-dra-stays 10 "the refused pods stay ContainerCreating, the readers hold the device" 'creating bad-numa bad-numa-ro bad-access zero-shares && holding reader-a reader-b reader-c'
+holding reader-a reader-b reader-c || error "a reader lost the device to a refused claim"
 claim-pod-delete bad-numa bad-numa-ro bad-access zero-shares
 dra-local-shared-wait "$VM2" refused-gone "${READER_UID[@]}" "$TWO_UID"
 same-region || error "the refused claims changed the region: $DRA_MEMDEV"

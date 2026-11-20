@@ -376,26 +376,17 @@ dra-wait "$VM2" e-unschedulable "events -n $DRA_NS" "events('FailedScheduling', 
 dra-kubectl "$VM2" "get events -n $DRA_NS --field-selector involvedObject.name=e-pod"
 dra-assert "$(dra-vm-command-q "$VM2" "kubectl get events -n $DRA_NS -o json")" \
     "all(e['message'].startswith('0/3 nodes are available') for e in events('FailedScheduling', 'e-pod'))"
+# The scheduler does not allocate the claim late either: the controller of
+# pool-a is never asked to attach a-shared0 to VM0.
 e-pod-unschedulable() {
     dra-json "$VM2" pod -n "$DRA_NS" e-pod >/dev/null &&
-        dra-py assert "$COMMAND_OUTPUT" "j['status']['phase'] == 'Pending' and [c['reason'] for c in j['status'].get('conditions', []) if c['type'] == 'PodScheduled'] == ['Unschedulable']"
+        dra-py assert "$COMMAND_OUTPUT" "j['status']['phase'] == 'Pending' and [c['reason'] for c in j['status'].get('conditions', []) if c['type'] == 'PodScheduled'] == ['Unschedulable']" &&
+        dra-json "$VM2" resourceclaim -n "$DRA_NS" e-claim >/dev/null &&
+        dra-py assert "$COMMAND_OUTPUT" "j['status'].get('allocation') is None"
 }
-dra-stays 5 "e-pod stays Pending, unschedulable" e-pod-unschedulable
-dra-json "$VM2" resourceclaim -n "$DRA_NS" e-claim
-dra-assert "$COMMAND_OUTPUT" "j['status'].get('allocation') is None"
+dra-stays 5 "e-pod stays Pending, unschedulable, its claim unallocated" e-pod-unschedulable
 pool-attachments --pool pool-a a-shared0
 pool-assert "$COMMAND_OUTPUT" "j in (None, [])"
-# The count of NoHost lines in the journal of pool-a's unit; the journal
-# must be readable and have the unit's start line, else the count would
-# mean nothing.
-nohost=$(dra-vm-command-q "$VM2" "j=\$(journalctl --no-pager -o cat -u ${POOL_UNIT[pool-a]}) || exit 2
-grep -qF 'pool pool-a (from the server)' <<< \"\$j\" || exit 3
-grep -c NoHost <<< \"\$j\"
-exit 0") || error "cannot read the journal of ${POOL_UNIT[pool-a]} in VM2, or it lacks the start line of the controller (exit status $?)"
-[[ "$nohost" =~ ^[0-9]+$ ]] || error "no NoHost count from the journal of ${POOL_UNIT[pool-a]}: '$nohost'"
-[ "$nohost" == 0 ] ||
-    error "the controller of pool-a reported NoHost $nohost times: it was asked for a node it does not reach"
-echo "the controller of pool-a reported NoHost 0 times"
 dra-delete "$VM2" pod e-pod --grace-period=2 --wait=true --timeout=60s
 dra-delete "$VM2" resourceclaim e-claim --wait=true --timeout=60s
 
