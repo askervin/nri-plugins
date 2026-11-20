@@ -123,48 +123,16 @@ P9E="device $FS_SERIAL: btrfs is mounted read-only on this node and cannot be re
 fs0-free() {
     # Usage: fs0-free
     #
-    # Wait until neither VM has a CXL memory device and fs0 is free in the
-    # server (pool-device-free-wait), and check that neither VM has a CXL
-    # region, a node mount or a loop device over pmem. Fail the test on
-    # timeout or if something is left.
-    local vm regions
-    pool-device-free-wait "$FS_DEVICE" "$VM2" "$VM1"
-    for vm in "$VM2" "$VM1"; do
-        regions=$(vmdir-command-q "$vm" "ls /sys/bus/cxl/devices/") ||
-            error "cannot list the CXL devices of $(vmdir-label "$vm")"
-        ! grep -q '^region[0-9]' <<< "$regions" ||
-            error "$(vmdir-label "$vm") still has a CXL region: $(grep '^region[0-9]' <<< "$regions" | tr '\n' ' ')"
-        fs-no-mounts-assert "$vm" "$DRA_POOL_MOUNT_DIR"
-    done
-    echo "$FS_DEVICE is free: no CXL memory devices, regions, node mounts or loop devices in either VM"
+    # Wait until fs0 is free and nothing of it is left in VM2 and VM1
+    # (fs-device-free).
+    fs-device-free "$FS_DEVICE" "$VM2" "$VM1"
 }
 
 exit-cleanup() {
     # Usage: exit-cleanup
     #
-    # The EXIT trap after dra-install: dra-cleanup, then pool-cleanup and
-    # the removal of the files of the device, unless a node still has a
-    # mount of a persistent device or a loop device over pmem, or they
-    # cannot be read (fs-held). Then stop the server only, leave the
-    # device, the VMs and the files as they are for debugging, and print
-    # what holds the device and how to clean up by hand.
-    local held
-    dra-cleanup
-    held=$(fs-held "$VM2" "$VM1")
-    if [ -z "$held" ]; then
-        pool-cleanup
-        rm -f "$FS_DATA" "$FS_LSA"
-        return 0
-    fi
-    # Releasing a region under a live filesystem can crash the guest.
-    echo "exit-cleanup: $FS_DEVICE is still held, not releasing or detaching it:
-$held
-  To clean up by hand in each VM above: stop what uses the mount (fuser -vm MOUNT),
-  umount MOUNT (never umount -l; the lease mounts first), check that no /sys/block/loop*/loop/backing_file
-  names the pmem device, then: fake-cxl-pool-client guest release $FS_SERIAL.
-  Or run the test again: it restarts a VM that still has CXL memory devices
-  (pool-vm-reset). Remove $FS_DATA and $FS_LSA after that."
-    pool-server-stop
+    # The EXIT trap after dra-install: fs-exit-cleanup of fs0.
+    fs-exit-cleanup "$FS_DEVICE" "guest release $FS_SERIAL" "$VM2 $VM1" "$FS_DATA" "$FS_LSA"
 }
 
 attached-assert() {

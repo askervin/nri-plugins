@@ -443,6 +443,57 @@ fs-controller-log-wait() {
     vmdir-command-q "$OUTPUT_DIR" "$filter" | tail -n 3
 }
 
+fs-device-free() {
+    # Usage: fs-device-free DEVICE VMDIR...
+    #
+    # Wait until the VMs of VMDIRs have no CXL memory device and DEVICE is
+    # free in the server (pool-device-free-wait), and check that no VM has
+    # a CXL region, a node mount under $DRA_POOL_MOUNT_DIR or a loop device
+    # over pmem. Fail the test on timeout or if something is left.
+    local device="$1" vm regions
+    shift
+    pool-device-free-wait "$device" "$@"
+    for vm in "$@"; do
+        regions=$(vmdir-command-q "$vm" "ls /sys/bus/cxl/devices/") ||
+            error "cannot list the CXL devices of $(vmdir-label "$vm")"
+        ! grep -q '^region[0-9]' <<< "$regions" ||
+            error "$(vmdir-label "$vm") still has a CXL region: $(grep '^region[0-9]' <<< "$regions" | tr '\n' ' ')"
+        fs-no-mounts-assert "$vm" "$DRA_POOL_MOUNT_DIR"
+    done
+    echo "$device is free: no CXL memory devices, regions, node mounts or loop devices in $*"
+}
+
+fs-exit-cleanup() {
+    # Usage: fs-exit-cleanup DEVICE CLIENT-ARGS "VMDIR..." FILE...
+    #
+    # The EXIT trap of a test of the persistent device DEVICE after
+    # dra-install: dra-cleanup, then pool-cleanup and the removal of the
+    # files FILE of the device, unless something holds the device on the
+    # VMs of VMDIRs or that cannot be read (fs-held). Then stop the servers
+    # only, leave the device, the VMs and the files as they are for
+    # debugging, and print what holds the device and how to clean up by
+    # hand: "fake-cxl-pool-client CLIENT-ARGS" in a VM releases it.
+    local device="$1" client="$2" vms held
+    read -r -a vms <<< "$3"
+    shift 3
+    dra-cleanup
+    held=$(fs-held "${vms[@]}")
+    if [ -z "$held" ]; then
+        pool-cleanup
+        rm -f "$@"
+        return 0
+    fi
+    # Releasing a region under a live filesystem can crash the guest.
+    echo "exit-cleanup: $device is still held, not releasing or detaching it:
+$held
+  To clean up by hand in each VM above: stop what uses the mount (fuser -vm MOUNT),
+  umount MOUNT (never umount -l; the lease mounts first), check that no /sys/block/loop*/loop/backing_file
+  names the pmem device, then: fake-cxl-pool-client $client.
+  Or run the test again: it restarts a VM that still has CXL memory devices
+  (pool-vm-reset). Remove $* after that."
+    pool-server-stop
+}
+
 fs-held() {
     # Usage: fs-held VMDIR...
     #

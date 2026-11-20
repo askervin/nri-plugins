@@ -90,29 +90,9 @@ DRA_UNCONTROLLED_POOLS=("$LP_SERVER")
 exit-cleanup() {
     # Usage: exit-cleanup
     #
-    # The EXIT trap after dra-install: dra-cleanup, then pool-cleanup (it
-    # releases and detaches lp0 if it is still attached) and the removal
-    # of the files of lp0, unless VM2 still mounts a persistent device or
-    # has a loop device over pmem, or they cannot be read (fs-held). Then
-    # stop the servers only, leave the device, the VM and the files as
-    # they are for debugging, and print what holds the device.
-    local held
-    dra-cleanup
-    held=$(fs-held "$VM2")
-    if [ -z "$held" ]; then
-        pool-cleanup
-        rm -f "$LP_DATA" "$LP_LSA"
-        return 0
-    fi
-    # Releasing a region under a live filesystem can crash the guest.
-    echo "exit-cleanup: $LP_DEVICE is still held, not releasing or detaching it:
-$held
-  To clean up by hand in VM2: stop what uses the mount (fuser -vm MOUNT), umount MOUNT
-  (never umount -l; the lease mounts first), check that no /sys/block/loop*/loop/backing_file
-  names the pmem device, then: fake-cxl-pool-client --server http://192.168.76.2:$LP_PORT guest release $LP_SERIAL.
-  Or run the test again: it restarts a VM that still has CXL memory devices
-  (pool-vm-reset). Remove $LP_DATA and $LP_LSA after that."
-    pool-server-stop
+    # The EXIT trap after dra-install: fs-exit-cleanup of lp0 (pool-cleanup
+    # releases and detaches lp0 if it is still attached).
+    fs-exit-cleanup "$LP_DEVICE" "--server http://192.168.76.2:$LP_PORT guest release $LP_SERIAL" "$VM2" "$LP_DATA" "$LP_LSA"
 }
 
 region-wait() {

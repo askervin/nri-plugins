@@ -185,71 +185,16 @@ LLM_MIB=$(( 1 << 20 ))
 llm0-free() {
     # Usage: llm0-free
     #
-    # Wait until neither VM has a CXL memory device and the device is free
-    # in the server (pool-device-free-wait), and check that neither VM has
-    # a CXL region. Fail the test on timeout or if a region is left.
-    local vm regions
-    pool-device-free-wait "$LLM_DEVICE" "$VM2" "$VM1"
-    for vm in "$VM2" "$VM1"; do
-        pool-cxl-dump "$vm" "$LLM_DEVICE-free"
-        cxl-assert 'regions == []'
-        regions=$(vmdir-command-q "$vm" "ls /sys/bus/cxl/devices/") ||
-            error "cannot list the CXL devices of $(vmdir-label "$vm")"
-        ! grep -q '^region[0-9]' <<< "$regions" ||
-            error "$(vmdir-label "$vm") still has a CXL region: $(grep '^region[0-9]' <<< "$regions" | tr '\n' ' ')"
-    done
-    echo "$LLM_DEVICE is free, no CXL memory devices or regions in either VM"
+    # Wait until llm0 is free and nothing of it is left in VM2 and VM1
+    # (fs-device-free).
+    fs-device-free "$LLM_DEVICE" "$VM2" "$VM1"
 }
 
 exit-cleanup() {
     # Usage: exit-cleanup
     #
-    # The EXIT trap after dra-install: dra-cleanup, then pool-cleanup and
-    # the removal of the files of the device, unless a node still has a
-    # mount under $DRA_POOL_MOUNT_DIR or $DRA_LEASE_FS_DIR or a loop device
-    # over a pmem device, or they cannot be read. Then stop the server
-    # only, leave the device, the VMs and the files as they are for
-    # debugging, and print what holds the device and how to clean up by
-    # hand.
-    local vm label held="" loops
-    dra-cleanup
-    for vm in "$VM2" "$VM1"; do
-        label=$(vmdir-label "$vm")
-        if ! dra-fs-mounts "$vm" >/dev/null; then
-            held+="
-  $label: cannot read its mounts"
-        elif [ "$COMMAND_OUTPUT" != "[]" ]; then
-            held+="
-  $label: mounts $COMMAND_OUTPUT"
-        fi
-        if ! dra-lease-fs-mounts "$vm" >/dev/null; then
-            held+="
-  $label: cannot read its lease mounts"
-        elif [ "$COMMAND_OUTPUT" != "[]" ]; then
-            held+="
-  $label: lease mounts $COMMAND_OUTPUT"
-        fi
-        if ! loops=$(dra-pmem-loops "$vm"); then
-            held+="
-  $label: cannot list its loop devices"
-        elif [ -n "$loops" ]; then
-            held+="
-  $label: loop devices over pmem: $(tr '\n' ' ' <<< "$loops")"
-        fi
-    done
-    if [ -z "$held" ]; then
-        pool-cleanup
-        rm -f "$LLM_DATA" "$LLM_LSA"
-        return 0
-    fi
-    # Releasing a region under a live erofs can crash the guest.
-    echo "exit-cleanup: $LLM_DEVICE is still held, not releasing or detaching it:$held
-  To clean up by hand in each VM above: stop what uses the mount (fuser -vm MOUNT),
-  umount MOUNT (never umount -l; the lease mounts first), check that no /sys/block/loop*/loop/backing_file
-  names the pmem device, then: fake-cxl-pool-client guest release $LLM_SERIAL.
-  Or run the test again: it restarts a VM that still has CXL memory devices
-  (pool-vm-reset). Remove $LLM_DATA and $LLM_LSA after that."
-    pool-server-stop
+    # The EXIT trap after dra-install: fs-exit-cleanup of llm0.
+    fs-exit-cleanup "$LLM_DEVICE" "guest release $LLM_SERIAL" "$VM2 $VM1" "$LLM_DATA" "$LLM_LSA"
 }
 
 reader-kind() {
