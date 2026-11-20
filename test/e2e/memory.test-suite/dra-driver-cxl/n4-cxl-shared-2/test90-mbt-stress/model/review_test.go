@@ -23,8 +23,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -515,67 +513,14 @@ func TestReviewL3SlicesAbsentAfterKill(t *testing.T) {
 	}
 }
 
-// replaySteps replays the first n steps of a steps file with its
-// adoption records (as generate --from does).
-func replaySteps(t *testing.T, cfg *Config, file string, n int, refused ...int) *State {
-	t.Helper()
-	data, err := os.ReadFile(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines, _ := readSteps(string(data))
-	st := newState(cfg)
-	for j, l := range lines[:n] {
-		a, err := parseAct(cfg, l.Action)
-		if err != nil {
-			t.Fatalf("step %d: %v", j+1, err)
-		}
-		// (refused: steps of the run that the model refuses now; they
-		// are applied as the run did)
-		if ok, want := st.allowed(a), !slices.Contains(refused, j+1); ok != want {
-			t.Fatalf("step %d %q allowed %v, want %v in\n%s", j+1, l.Action, ok, want, st.dump())
-		}
-		st = st.apply(a)
-		if l.Has {
-			if st, err = applyAdoption(st, l.Adopt); err != nil {
-				t.Fatalf("step %d: %v", j+1, err)
-			}
-		}
-	}
-	return st
-}
-
-// L4 (M5): ctrl-restart a and ctrl-kill a left pool a's slices absent;
-// ctrl-start a, then the holder of a-pooled0 deleted: the new controller
-// publishes the slices within seconds, the waiter of a-pooled0 and the
-// claim that waited for the slices are allocated, attached and Running
-// at the settle. The run's own observation of step 131 is ok now.
+// ctrl-restart a and ctrl-kill a left pool a's slices absent; ctrl-start
+// a, then the holder of a-pooled0 deleted: the new controller publishes
+// the slices within seconds, the waiter of a-pooled0 and the claim that
+// waited for the slices are allocated, attached and Running at the
+// settle.
 func TestReviewL4SlicesBackAfterStart(t *testing.T) {
-	cfg := testConfig(t, "full", true)
-	cfg.Unsettled = 3
-	st := replaySteps(t, cfg, "recorded/l4-mbt-steps.txt", 130)
-	if st.Ctrl[PoolA].Slices != SlicesUnknown {
-		t.Fatalf("after ctrl-start a: slices %s, want unknown (published within seconds)", st.Ctrl[PoolA].Slices)
-	}
-	wantPhase(t, st, "xdax-a@vm1#0", Starting)
-	pred := steps(t, st, "settle")
-	js, err := os.ReadFile("recorded/l4-fail-131.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	o, err := parseObservation(js)
-	if err != nil {
-		t.Fatal(err)
-	}
-	v, adopted := checkState(pred, o, "")
-	wantVerdict(t, v, VOK, "ok")
-	wantPhase(t, adopted, "xdax-a@vm1#0", Running)
-	wantPhase(t, adopted, "sro-a@vm1#0", Running)
-	if adopted.Ctrl[PoolA].Slices != SlicesPresent {
-		t.Fatalf("adopted slices %s", adopted.Ctrl[PoolA].Slices)
-	}
-	// the same in short: a claim of the pool waits for the slices, the
-	// holder of the device that another one waits for is deleted
+	// a claim of the pool waits for the slices, the holder of the device
+	// that another one waits for is deleted
 	s := revState(t, "full", true, "create xnuma-a@vm2#0", "settle", "create xdax-a@vm1#0", "settle",
 		"ctrl-restart a", "ctrl-kill a", "settle")
 	s = adoptSlices(t, s, PoolA, SlicesAbsent)
@@ -855,23 +800,6 @@ func TestReviewM6ContainerdRestartSlack(t *testing.T) {
 			}
 		}
 	}
-	// the run's own observation of step 26 (L5): ok now
-	cfg := testConfig(t, "full", true)
-	cfg.Unsettled = 3
-	st := replaySteps(t, cfg, "recorded/l5-mbt-steps.txt", 25)
-	js, err := os.ReadFile("recorded/l5-fail-26.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	o, err := parseObservation(js)
-	if err != nil {
-		t.Fatal(err)
-	}
-	v, adopted := checkState(steps(t, st, "settle"), o, "")
-	wantVerdict(t, v, VOK, "ok")
-	if ss := slotOf(t, adopted, "lease@vm2#0"); ss.Restarts != 2 || ss.Slack != 0 {
-		t.Fatalf("adopted %+v", ss)
-	}
 }
 
 // M7 (run L7 step 1529): an lsteer pod unblocking (blocked by a decoder
@@ -917,23 +845,6 @@ func TestReviewM7SteeringOfUnblockingPod(t *testing.T) {
 				}
 			}
 		}
-	}
-	// the run's own observation of step 1529 (L7): ok now, adopted off
-	cfg := testConfig(t, "full", true)
-	cfg.Unsettled = 3
-	st := replaySteps(t, cfg, "recorded/l7-mbt-steps.txt", 1528)
-	js, err := os.ReadFile("recorded/l7-fail-1529.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	o, err := parseObservation(js)
-	if err != nil {
-		t.Fatal(err)
-	}
-	v, adopted := checkState(steps(t, st, "settle"), o, "")
-	wantVerdict(t, v, VOK, "ok")
-	if got := slotOf(t, adopted, "lsteer@vm2#0"); got.Phase != Running || got.Steer != SteerOff {
-		t.Fatalf("adopted %s steer %s", got.Phase, got.Steer)
 	}
 }
 

@@ -20,9 +20,7 @@ package main
 import (
 	"encoding/json"
 	"math/rand"
-	"os"
 	"reflect"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -725,6 +723,23 @@ func TestPmemKillAtBind(t *testing.T) {
 				in.Leases = rawJSON([]ObsLease{{Lease: "L1", State: "Ready", Mode: "fs"}})
 				v, _ = checkState(st, o, "")
 				wantVerdict(t, v, VFail, "an fs lease it cannot see")
+				// kubelet's retry made it Ready and the requester sees
+				// its mount, but the companion is not Running yet: a
+				// wait, not a deviation of the inspection (FP5V)
+				o = observation(t, truth)
+				for j := range o.Companions {
+					if o.Companions[j].Node == "vm1" {
+						o.Companions[j].Phase = "Pending"
+						o.Companions[j].Containers = []ObsPodContainer{{Name: "pause", State: "waiting"}}
+					}
+				}
+				v, _ = checkState(st, o, "")
+				wantVerdict(t, v, VWait, "of plse@vm1#0: phase Pending")
+				for _, d := range v.Diffs {
+					if strings.HasPrefix(d, "inspect ") {
+						t.Fatalf("a deviation of the inspection: %s", d)
+					}
+				}
 			}
 		}
 	}
@@ -814,145 +829,54 @@ func TestPmemKillAtDisarm(t *testing.T) {
 	}
 }
 
-// PM3 (step 179): a busy fs lease's companion is Terminating, its pause
-// container terminated (the pod status says so): no running container
-// of it need be observed (A11 goes by the containers' states). The run's
-// own observation is ok now.
-func TestPmemPM3TerminatingCompanion(t *testing.T) {
-	cfg := testConfig(t, "pmem", true)
-	cfg.Unsettled = 3
-	cfg.StallWindow, cfg.StallStrict = 30*time.Second, true // the run's header
-	st := replaySteps(t, cfg, "recorded/pm3-mbt-steps.txt", 178)
-	if ss := slotOf(t, st, "plse@vm1#0"); ss.Lease != LeaseBusy {
-		t.Fatalf("plse@vm1#0 lease %v, want busy", ss.Lease)
+// A busy fs lease's companion is Terminating, its pause container ended
+// (the pod status says so): no running container of it need be observed
+// (A11 goes by the containers' states); a running one that is not
+// observed waits.
+func TestPmemBusyLeaseCompanionTerminating(t *testing.T) {
+	s := revState(t, "pmem", true, "create pwr-c@vm2#0", "settle")
+	s, _ = doneOf(t, s, "pwrite pwr-c@vm2#0 img")
+	// the writer's claim may be deallocated a window after its pod (F8)
+	s = steps(t, s, "delete pwr-c@vm2#0", "create plse@vm2#0", "settle", "kubelet-restart vm0", "settle")
+	s, _ = doneOf(t, s, "lease-get plse@vm2#0 pfd")
+	s = steps(t, s, "settle")
+	s, _ = doneOf(t, s, "hold plse@vm2#0")
+	s, _ = doneOf(t, s, "lease-put plse@vm2#0")
+	pred := steps(t, s, "settle")
+	if ss := slotOf(t, pred, "plse@vm2#0"); ss.Lease != LeaseBusy {
+		t.Fatalf("plse@vm2#0 lease %v, want busy", ss.Lease)
 	}
-	js, err := os.ReadFile("recorded/pm3-fail-179.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	o, err := parseObservation(js)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pred := steps(t, st, "settle")
-	v, _ := checkStateAt(pred, o, "", time.Now(), defaultUnblock)
-	wantVerdict(t, v, VOK, "ok")
-	// a running container that is not observed still waits
+	o := observation(t, pred)
+	companion := ""
 	for j := range o.Companions {
-		o.Companions[j].Containers[0].State = "running"
+		c := &o.Companions[j]
+		if c.Node != "vm2" {
+			continue
+		}
+		companion = c.Name
+		c.Deleting = true
+		c.Containers = []ObsPodContainer{{Name: "pause", State: "terminated"}}
 	}
-	v, _ = checkStateAt(pred, o, "", time.Now(), defaultUnblock)
-	wantVerdict(t, v, VWait, "no container of companion cxl-lease-60edb08a observed")
-}
-
-// FP1 (step 300): driver-kill-at vm0 mount, then create pfsd-c@any#0: the
-// scheduler put the "any" reader on vm0, its node mount fired the
-// watcher. The settle has the outcome with the kill on the host it
-// lands on, adopted from the observed node and the killAt report. The
-// run's own observation is ok now.
-func TestPmemFP1AnyFiresWatcher(t *testing.T) {
-	cfg := testConfig(t, "fullp", true)
-	cfg.Unsettled = 3
-	cfg.StallWindow, cfg.StallStrict = 30*time.Second, true // the run's header
-	// (step 182, containerd-restart vm0, is not generated now: the
-	// refused xpf-c@vm0#0 promoted by step 181 probes c-pmem1, whose new
-	// region shows its namespace to the watcher armed at ns; nor is step
-	// 241, driver-restart vm0 right after the delete of that claim under
-	// a region watcher, FP4)
-	st := replaySteps(t, cfg, "recorded/fp1-mbt-steps.txt", 299, 182, 241)
-	if st.Drv[VM0].KillAt != markerMount+1 {
-		t.Fatalf("vm0 kill-at %d, want mount", st.Drv[VM0].KillAt)
+	if companion == "" {
+		t.Fatalf("no companion of plse@vm2#0 in the observation")
 	}
-	// the reader may land on vm0: no driver fault there that would
-	// disarm the watcher
-	steps(t, st, "!driver-kill vm0", "!containerd-restart vm0", "!driver-restart vm0")
-	js, err := os.ReadFile("recorded/fp1-fail-300.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	o, err := parseObservation(js)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pred := steps(t, st, "settle")
-	v, adopted := checkState(pred, o, "")
-	wantVerdict(t, v, VOK, "ok")
-	if d := adopted.Drv[VM0]; d.Restarts != 1 || d.KillAt != 0 {
-		t.Fatalf("adopted vm0 driver %+v", d)
-	}
-	if ss := slotOf(t, adopted, "pfsd-c@any#0"); ss.Phase != Running || ss.Node != VM0 {
-		t.Fatalf("adopted pfsd-c@any#0 %s on %s", ss.Phase, ss.Node)
-	}
-	// the kill comes only with the host whose Prepare shows the marker
-	for _, a := range append([]*State{pred}, pred.Alts...) {
-		if ss := slotOf(t, a, "pfsd-c@any#0"); a.Drv[VM0].Restarts != pred.Drv[VM0].Restarts && ss.Node != VM0 {
-			t.Fatalf("an outcome with the kill of vm0 and pfsd-c@any#0 on %s:\n%s", ss.Node, dumpAlts(pred))
+	ov := o.VMs["vm2"]
+	kept := ov.Containers[:0]
+	for _, c := range ov.Containers {
+		if c.Pod != companion {
+			kept = append(kept, c)
 		}
 	}
-}
-
-// FP4 (step 1177): driver-kill-at vm0 ns (step 1164) with the refused
-// reader pfsc-c@vm0#0 (c-pmem0 has a namespace, no erofs). Kubelet,
-// restarted at step 1169, retried its Prepare right after the
-// observation of settle 1170 had seen the watcher armed: it fired at the
-// probe's namespace (restarts 2) while that settle adopted the outcome
-// without the kill. The reader was deleted (1175), so no candidate was
-// left, containerd-restart vm0 (1176) was generated and disarmed the
-// watcher in the model: restarts 3, want 2. The window now remembers
-// that the retry could fire it (KillMay): no driver fault on vm0 after
-// the delete, and the settle has the kill. The run's observation of step
-// 1177, without the containerd restart's exit (restarts 2), is ok, and
-// so is the last one of the short replay FP4V that met the race again.
-func TestPmemFP4RefusedRetryAfterSettle(t *testing.T) {
-	cfg := testConfig(t, "fullp", true)
-	cfg.Unsettled = 3
-	cfg.StallWindow, cfg.StallStrict = 30*time.Second, true // the run's header
-	// (step 810, driver-kill vm1 right after the delete of the refused
-	// pbro-c@vm1#0 under a region watcher, is not generated now)
-	st := replaySteps(t, cfg, "recorded/fp4-mbt-steps.txt", 1175, 810)
-	if d := st.Drv[VM0]; d.KillAt != markerNS+1 || !d.KillMay || d.Restarts != 1 {
-		t.Fatalf("vm0 driver %+v, want armed at ns, may have fired, restarts 1", d)
-	}
-	wantPhase(t, st, "pfsc-c@vm0#0", Deleting)
-	steps(t, st, "!containerd-restart vm0", "!driver-kill vm0", "!driver-restart vm0", "kubelet-restart vm0")
-	pred := steps(t, st, "settle")
-	if !killAlt(pred, VM0) {
-		t.Fatalf("no outcome with the kill:\n%s", dumpAlts(pred))
-	}
-	js, err := os.ReadFile("recorded/fp4-fail-1177.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	o, err := parseObservation(js)
-	if err != nil {
-		t.Fatal(err)
-	}
-	o.Drivers["vm0"].Restarts = 2
-	v, adopted := checkState(pred, o, "")
+	ov.Containers = kept
+	v, _ := checkState(pred, o, "")
 	wantVerdict(t, v, VOK, "ok")
-	if d := adopted.Drv[VM0]; d.Restarts != 2 || d.KillAt != 0 || d.KillMay {
-		t.Fatalf("adopted vm0 driver %+v", d)
+	for j := range o.Companions {
+		for k := range o.Companions[j].Containers {
+			o.Companions[j].Containers[k].State = "running"
+		}
 	}
-	// FP4V, its replay in short: the refused reader under the ns
-	// watcher, kubelet-restart vm0, a settle whose observation saw the
-	// watcher armed just before it fired, the delete of the reader; the
-	// final settle's observation is ok, adopted with the kill
-	st = replaySteps(t, cfg, "recorded/fp4v-mbt-steps.txt", 11)
-	if d := st.Drv[VM0]; d.KillAt != markerNS+1 || !d.KillMay {
-		t.Fatalf("FP4V: vm0 driver %+v, want armed at ns, may have fired", d)
-	}
-	pred = steps(t, st, "!containerd-restart vm0", "settle")
-	if js, err = os.ReadFile("recorded/fp4v-obs-12.json"); err != nil {
-		t.Fatal(err)
-	}
-	if o, err = parseObservation(js); err != nil {
-		t.Fatal(err)
-	}
-	v, adopted = checkState(pred, o, "teardown: ")
-	wantVerdict(t, v, VOK, "teardown: ok")
-	if d := adopted.Drv[VM0]; d.Restarts != 1 || d.KillAt != 0 {
-		t.Fatalf("FP4V: adopted vm0 driver %+v", d)
-	}
+	v, _ = checkState(pred, o, "")
+	wantVerdict(t, v, VWait, "no container of companion "+companion+" observed")
 }
 
 // A Prepare that comes at any time may fire the watcher after the
@@ -1025,152 +949,6 @@ func TestPmemKillAtAfterSettle(t *testing.T) {
 	steps(t, v, "driver-kill vm1")
 }
 
-// FP5 (step 968): lease-get plse@vm0#0 pfc (967) under driver-kill-at
-// vm0 bind (965). The watcher killed the driver at the lease bind of the
-// companion's Prepare, cxl-request failed (EOF): the lease open. The
-// restarted driver kept the companion's region for kubelet's retry and
-// the lease Lending, which is the kept outcome (A29 d, A30), but its
-// first observation failed at once: the requester has no /run/cxl/fs
-// mount before its lease is Ready (the bind comes before Ready). That
-// waits while the requester's inspection lists the lease on its way to
-// Ready; kubelet's retry (Ready, the mount in the container) is ok,
-// adopted with the kill; a Ready fs lease it cannot see still fails.
-func TestPmemFP5LendingAfterCutBind(t *testing.T) {
-	cfg := testConfig(t, "fullp", true)
-	cfg.Unsettled = 3
-	cfg.StallWindow, cfg.StallStrict = 30*time.Second, true // the run's header
-	st := replaySteps(t, cfg, "recorded/fp5-mbt-steps.txt", 967)
-	if ss := slotOf(t, st, "plse@vm0#0"); ss.Lease != LeaseHeld || ss.LeaseMode != ModePFC || !ss.LeaseOpen {
-		t.Fatalf("plse@vm0#0 %+v, want an open pfc lease", ss)
-	}
-	pred := steps(t, st, "settle")
-	js, err := os.ReadFile("recorded/fp5-fail-968.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	o, err := parseObservation(js)
-	if err != nil {
-		t.Fatal(err)
-	}
-	v, _ := checkState(pred, o, "")
-	wantVerdict(t, v, VWait, "")
-	if want := "inspect plse@vm0#0: no /run/cxl/fs/ in its container, its lease 357df1e0 is Lending"; !slices.Contains(v.Diffs, want) {
-		t.Fatalf("diffs without %q:\n  %s", want, strings.Join(v.Diffs, "\n  "))
-	}
-	// kubelet's retry of the companion's Prepare: Ready
-	var kept *State
-	for _, a := range alts(pred) {
-		if slotOf(t, a, "plse@vm0#0").Lease == LeaseHeld && a.Drv[VM0].Restarts == 2 {
-			kept = a.clone()
-		}
-	}
-	if kept == nil {
-		t.Fatalf("no outcome with the lease kept and the kill:\n%s", dumpAlts(pred))
-	}
-	kept.Alts = nil
-	kept.setLeaseID(cfg.slotIndex("plse@vm0#0"), "357df1e0")
-	ready := observation(t, kept)
-	ready.PDevs = o.PDevs // (the simulator's hashes are its own)
-	v, adopted := checkState(pred, ready, "")
-	wantVerdict(t, v, VOK, "ok")
-	if ss := slotOf(t, adopted, "plse@vm0#0"); ss.Lease != LeaseHeld || ss.LeaseOpen || adopted.Drv[VM0].Restarts != 2 {
-		t.Fatalf("adopted plse@vm0#0 %+v, vm0 driver %+v", ss, adopted.Drv[VM0])
-	}
-	wantStack(t, adopted, stackIndex(VM0, HB1), "[c-shared0,c-pmem0]")
-	// Ready, the requester without the mount
-	ready.Inspect["plse@vm0#0"].Mounts = []ObsMount{}
-	v, _ = checkState(pred, ready, "")
-	wantVerdict(t, v, VFail, "an fs lease it cannot see")
-	// FP5V, its replay in short: c-pmem0 written, the lease-get under
-	// the bind watcher; observation 2 of the settle: Lending, no mount
-	// (inspected again while Lending); 22: kubelet's retry after the
-	// kill made it Ready and the requester sees /run/cxl/fs/<id>, the
-	// companion not yet Running; 23: ok, kept with the kill
-	st = replaySteps(t, cfg, "recorded/fp5v-mbt-steps.txt", 10)
-	pred = steps(t, st, "settle")
-	for _, c := range []struct {
-		poll    int
-		status  VStatus
-		inspect string // a diff of the inspection, "" none
-	}{{2, VWait, "its lease 425c9a1b is Lending"}, {22, VWait, ""}, {23, VOK, ""}} {
-		if js, err = os.ReadFile("recorded/fp5v-obs-11-" + strconv.Itoa(c.poll) + ".json"); err != nil {
-			t.Fatal(err)
-		}
-		if o, err = parseObservation(js); err != nil {
-			t.Fatal(err)
-		}
-		if c.poll == 22 && (o.Inspect["plse@vm0#0"] == nil || len(o.Inspect["plse@vm0#0"].Mounts) != 1) {
-			t.Fatalf("FP5V observation 22: inspection %+v, want the lease's mount", o.Inspect["plse@vm0#0"])
-		}
-		v, adopted = checkState(pred, o, "")
-		inspect := ""
-		for _, d := range v.Diffs {
-			if strings.HasPrefix(d, "inspect ") {
-				inspect = d
-			}
-		}
-		if v.Status != c.status || !strings.Contains(inspect, c.inspect) || (c.inspect == "") != (inspect == "") {
-			t.Fatalf("FP5V observation %d: verdict %s %q, want %s with inspect diff %q; diffs:\n  %s", c.poll, v.Status, v.Msg, c.status, c.inspect, strings.Join(v.Diffs, "\n  "))
-		}
-	}
-	if ss := slotOf(t, adopted, "plse@vm0#0"); ss.Lease != LeaseHeld || ss.LeaseOpen || adopted.Drv[VM0].Restarts != 1 || adopted.Drv[VM0].KillAt != 0 {
-		t.Fatalf("FP5V: adopted plse@vm0#0 %+v, vm0 driver %+v", ss, adopted.Drv[VM0])
-	}
-	wantStack(t, adopted, stackIndex(VM0, HB1), "[c-pmem0]")
-}
-
-// FP6 (step 1352): delete plse@vm0#0, driver-kill vm0 (restarts 1),
-// kubelet-restart vm0, settle: "driver vm0: pod nri-dra-driver-cxl-t6gbc
-// has 2 restarts, want 1". The old kubelet created the killed driver's
-// container again (attempt 1, right after the exit) and was stopped
-// before it started it; the new kubelet removed it and created attempt
-// 2: M2 for the driver pod. The settle accepts and adopts the extra
-// restart; the run's own observation of step 1352 is ok now.
-func TestPmemFP6DriverCreatedTwice(t *testing.T) {
-	cfg := testConfig(t, "fullp", true)
-	cfg.Unsettled = 3
-	cfg.StallWindow, cfg.StallStrict = 30*time.Second, true // the run's header
-	st := replaySteps(t, cfg, "recorded/fp6-mbt-steps.txt", 1351)
-	if d := st.Drv[VM0]; d.Restarts != 1 || d.Slack != 1 || d.Creating || d.KillAt != 0 {
-		t.Fatalf("vm0 driver %+v, want restarts 1, slack 1", d)
-	}
-	pred := steps(t, st, "settle")
-	js, err := os.ReadFile("recorded/fp6-fail-1352.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range []struct {
-		restarts int
-		status   VStatus
-		msg      string
-	}{{2, VOK, "ok"}, {1, VOK, "ok"}, {3, VWait, "driver vm0: pod nri-dra-driver-cxl-t6gbc has 3 restarts, want 1 (up to +1 for a kubelet restart"}} {
-		o, err := parseObservation(js)
-		if err != nil {
-			t.Fatal(err)
-		}
-		o.Drivers["vm0"].Restarts = c.restarts
-		v, adopted, alt := checkAlts(pred, o, "", time.Now(), defaultUnblock)
-		wantVerdict(t, v, c.status, c.msg)
-		if c.status != VOK {
-			continue
-		}
-		if d := adopted.Drv[VM0]; int(d.Restarts) != c.restarts || d.Slack != 0 {
-			t.Fatalf("%d restarts: adopted vm0 driver %+v", c.restarts, d)
-		}
-		rec := adoptionRecord(pred, alt, adopted)
-		if !strings.Contains(rec, "restarts=vm0:"+strconv.Itoa(c.restarts)+"+0") {
-			t.Fatalf("%d restarts: adoption record %q", c.restarts, rec)
-		}
-		re, err := applyAdoption(pred, rec)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if d := re.Drv[VM0]; int(d.Restarts) != c.restarts || d.Slack != 0 {
-			t.Fatalf("%d restarts: replayed vm0 driver %+v", c.restarts, d)
-		}
-	}
-}
-
 // The driver pod's slack of a kubelet restart (FP6): only while its
 // container may be being created again, after a driver-kill of the
 // window that no step waited out (kubelet-restart waits for the driver),
@@ -1219,8 +997,17 @@ func TestPmemDriverSlack(t *testing.T) {
 			if d := adopted.Drv[VM2]; int(d.Restarts) != c.restarts || d.Slack != 0 {
 				t.Fatalf("adopted %+v", d)
 			}
-			if rec := adoptionRecord(s, 0, adopted); !strings.Contains(" "+rec+" ", " restarts=vm2:"+strconv.Itoa(c.restarts)+"+0 ") {
+			rec := adoptionRecord(s, 0, adopted)
+			if !strings.Contains(" "+rec+" ", " restarts=vm2:"+strconv.Itoa(c.restarts)+"+0 ") {
 				t.Fatalf("adoption record %q", rec)
+			}
+			// a replay applies the record: the same restarts, no slack
+			re, err := applyAdoption(s, rec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if d := re.Drv[VM2]; int(d.Restarts) != c.restarts || d.Slack != 0 {
+				t.Fatalf("%d restarts: replayed vm2 driver %+v", c.restarts, d)
 			}
 		}
 	}

@@ -25,7 +25,6 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
-	"os"
 	"regexp"
 	"slices"
 	"sort"
@@ -551,20 +550,19 @@ func TestRefPoolRegressions(t *testing.T) {
 	}
 }
 
-// d8Steps are the actions of the D8 replay (plan-13-gofmbt/06-runs.txt;
-// recorded/d8-steps.txt) without the initial settle.
-func d8Steps(t *testing.T) []string {
-	t.Helper()
-	data, err := os.ReadFile("recorded/d8-steps.txt")
-	if err != nil {
-		t.Fatal(err)
+// d8Steps are the actions of a claim that waits for the attach while the
+// controller is down, its pod deleted and another pod pending on the
+// same device: first the controller stays down for the settle, then it
+// starts right after the delete (without the initial settle).
+func d8Steps() []string {
+	return []string{
+		"ctrl-kill a", "settle", "create xnuma-a@vm1#0", "settle",
+		"create xdax-a@vm1#0", "settle", "delete xnuma-a@vm1#0", "settle",
+		"ctrl-start a", "settle", "delete xdax-a@vm1#0", "settle",
+		"ctrl-kill a", "settle", "create xnuma-a@vm1#0", "settle",
+		"create xdax-a@vm1#0", "settle", "delete xnuma-a@vm1#0", "ctrl-start a",
+		"settle", "delete xdax-a@vm1#0", "settle",
 	}
-	lines, _ := readSteps(string(data))
-	var out []string
-	for _, l := range lines[1:] {
-		out = append(out, l.Action)
-	}
-	return out
 }
 
 // --stall-window against the reference on the D8 sequence: the default
@@ -573,7 +571,7 @@ func d8Steps(t *testing.T) []string {
 // for the promotion) with the fixed one; the short window with the old
 // scheduler fails (the settle that waits for the promotion times out).
 func TestRefPoolStallWindow(t *testing.T) {
-	steps := d8Steps(t)
+	steps := d8Steps()
 	for seed := int64(1); seed <= 20; seed++ {
 		if f := refScriptWindow(t, seed, 0, steps...); f != nil {
 			t.Fatalf("default window:\n%s", f)
