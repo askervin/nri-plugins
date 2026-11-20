@@ -476,15 +476,8 @@ if [ "$DEMO_CASE" == local ]; then
     # configuration (plan-9 section 2).
     dra-local-find "$VM2"
     SERIAL="$DRA_LOCAL_SERIAL"
-    config="sharedDevices: [\"$SERIAL\"]"
-    if declare -p DRA_DRIVER_CONFIG >/dev/null 2>&1; then
-        DRA_DRIVER_CONFIG="$config"
-    else
-        values="$TEST_OUTPUT_DIR/demo-helm-values.yaml"
-        { cat "$DRA_HELM_VALUES"; echo "config:"; echo "  $config"; } > "$values"
-        DRA_HELM_VALUES="$values"
-    fi
-    echo "demo setup: driver configuration $config"
+    DRA_DRIVER_CONFIG="sharedDevices: [\"$SERIAL\"]"
+    echo "demo setup: driver configuration $DRA_DRIVER_CONFIG"
 else
     SERIAL="$SHARED_SERIAL"
 fi
