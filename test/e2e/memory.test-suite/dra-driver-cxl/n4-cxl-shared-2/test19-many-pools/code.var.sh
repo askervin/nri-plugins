@@ -76,28 +76,6 @@ TAG="many-pools $(date +%Y-%m-%dT%H:%M:%S.%N)"
 TEXT_B="$TAG: b-shared0 written on VM0"
 TEXT_C="$TAG: c-shared0 written on VM0"
 
-serial-claim-yaml() {
-    # Usage: serial-claim-yaml NAME SERIAL
-    #
-    # Print ResourceClaim NAME for the exclusive pool device SERIAL, all
-    # of its memory (class cxl-pool), in the default mode (numa).
-    cat <<EOF
-apiVersion: resource.k8s.io/v1
-kind: ResourceClaim
-metadata:
-  name: $1
-spec:
-  devices:
-    requests:
-    - name: mem
-      exactly:
-        deviceClassName: cxl-pool
-        selectors:
-        - cel:
-            expression: 'device.attributes["$DRA_POOL_DRIVER"].serial == "$2"'
-EOF
-}
-
 # shellcheck disable=SC2001 # sed indents every line of SCRIPT
 pod-yaml() {
     # Usage: pod-yaml NAME NODE SCRIPT CLAIM...
@@ -295,7 +273,7 @@ dra-assert "$SLICES" "all(slices('$DRA_LOCAL_DRIVER', n) for n in ['$VM0_NAME', 
 POOL_SLICE_IDS=$(dra-value "$SLICES" "sorted((s['spec']['pool']['name'], s['metadata']['uid']) for s in slices('$DRA_POOL_DRIVER'))")
 
 echo "### B: a pod without a nodeSelector, a claim for b-pooled0: it goes to VM0"
-dra-apply "$VM2" <<< "$(serial-claim-yaml b-claim "$B_POOLED0_SERIAL")
+dra-apply "$VM2" <<< "$(dra-shared-claim-yaml b-claim "$B_POOLED0_SERIAL" "" "" cxl-pool)
 ---
 $(pod-yaml b-consumer "" "env | grep ^CXL_ | sort
 grep -H . /sys/devices/system/node/node*/meminfo | grep MemTotal" b-claim)"
@@ -325,7 +303,7 @@ dra-env-assert b-consumer "$COMMAND_OUTPUT" "$B_POOLED0_HEX" \
 echo "b-pooled0 of pool-b is NUMA node $B_NODE of VM0"
 
 echo "### C: a pod without a nodeSelector, a claim for a-pooled0: it goes to VM1 or VM2"
-dra-apply "$VM2" <<< "$(serial-claim-yaml a-claim "$A_POOLED0_SERIAL")
+dra-apply "$VM2" <<< "$(dra-shared-claim-yaml a-claim "$A_POOLED0_SERIAL" "" "" cxl-pool)
 ---
 $(pod-yaml a-consumer "" "env | grep ^CXL_ | sort" a-claim)"
 dra-wait "$VM2" a-attached "resourceclaim -n $DRA_NS a-claim" \
