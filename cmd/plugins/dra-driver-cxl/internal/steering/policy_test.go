@@ -116,7 +116,7 @@ func TestPolicyPlanDefaultStepsInterleaved(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		step, err := plan.NextStep(cur)
 		require.NoError(t, err)
-		if len(step.Nodes) == 0 {
+		if step.Past {
 			break
 		}
 		require.GreaterOrEqual(t, step.Bytes, plan.MinStep)
@@ -147,6 +147,9 @@ func TestPolicyPlanUserWaypoints(t *testing.T) {
 
 	_, err = NewPlan(PolicyWaypoints, MemoryTypes{DRAMNodes: []int{2}, DRAMQuota: 300 * MiB}, waypoints, 0, 0)
 	require.ErrorContains(t, err, "no CXL memory")
+	_, err = NewPlan(PolicyWaypoints, MemoryTypes{DRAMNodes: []int{2}, CXLNodes: []int{3, 4}, DRAMQuota: 300 * MiB, CXLQuota: 200 * MiB},
+		waypoints, 0, 0)
+	require.ErrorContains(t, err, "waypoint 2: CXL usage 262144000 exceeds the CXL quota 209715200")
 }
 
 func TestPolicyPlanErrors(t *testing.T) {

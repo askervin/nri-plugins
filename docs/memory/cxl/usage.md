@@ -839,6 +839,13 @@ container ns/pod/ctr: MemoryConfig: container.steering.maxStep needs a policy ot
 container ns/pod/ctr: MemoryConfig: container.steering.minStep 2Gi exceeds maxStep 1Gi (minStep 2Gi from claim ns/a request r, maxStep 1Gi (node default))
 ```
 
+Waypoints that the memory of the results cannot carry fail the
+CreateContainer too, with `NRI CreateContainer: ctr=<ctr>: failed to
+build memory steering plan: ` and one of:
+
+- `waypoint I: CXL usage X exceeds the CXL quota Y` (or `DRAM`)
+- `waypoint I: CXL usage specified but no CXL memory` (or `DRAM`)
+
 Of the `device` section, `cxl.nri.io`, in this order, for a memdev of
 volatile memory (`cxl-local`, `cxl-local-shared`), a `region` and a
 `dram` (modes `block` and `fs` are of persistent memdevs, below); the
@@ -1295,7 +1302,14 @@ quota: pool memory is steered like local memory. The policy:
 
 The steering adds the nodes to the container's `cpuset.mems` as the plan
 reaches them (memory is never migrated), sets the memory policy of the
-container's threads, and throttles each step with `memory.high`. When
+container's threads, and throttles each step with `memory.high`. Past the
+last waypoint, when the container has used the quotas, there are no more
+steps: the container keeps the memory policy of the last segment of the
+plan (the CXL nodes for `first-dram`, interleaved DRAM and CXL for
+`end-interleaved`), and `memory.high` is `max`. Its allocations go on in
+that direction, beyond its claims, as far as `memory.max` and the free
+memory of the nodes allow. When its usage drops below the last waypoint
+again, the steering resumes. When
 none of the nodes in `cpuset.mems` has normal (non-movable) memory, as
 for a container with only CXL memory whose nodes are onlined movable,
 the nearest node with normal memory (`/sys/devices/system/node/has_normal_memory`,

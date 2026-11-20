@@ -19,7 +19,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
@@ -187,6 +189,58 @@ func TestStartFailsClosed(t *testing.T) {
 	// the nodes of the plan must be permitted
 	_, err = New(cg, plan, cpuset.New(0), WithSysRoot(sys))
 	require.ErrorContains(t, err, "not in the permitted nodes")
+}
+
+// TestPastLastWaypoint checks that a manager keeps the policy of the last
+// segment past the last waypoint without a memory.high bound, and steers
+// again when the usage is below the last waypoint.
+func TestPastLastWaypoint(t *testing.T) {
+	if !mpolinject.Supported {
+		t.Skip(mpolinject.ErrUnsupported)
+	}
+	var mu sync.Mutex
+	var calls []string
+	oldSet, oldWait := setMemoryPolicy, waitTimeout
+	t.Cleanup(func() { setMemoryPolicy, waitTimeout = oldSet, oldWait })
+	setMemoryPolicy = func(pids []int, mode int, nodes []int) error {
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, fmt.Sprintf("%v mode %d nodes %v", pids, mode, nodes))
+		return nil
+	}
+	waitTimeout = 10 * time.Millisecond
+	called := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), calls...)
+	}
+
+	plan, err := NewPlan(PolicyFirstDRAM, MemoryTypes{DRAMNodes: []int{0}, CXLNodes: []int{1}, DRAMQuota: 8 * MiB, CXLQuota: 8 * MiB},
+		nil, 0, 0)
+	require.NoError(t, err)
+	cg := fakeCgroup(t, "max", "")
+	numaStat := func(n0, n1 int64) {
+		data := fmt.Sprintf("anon N0=%d N1=%d\nshmem N0=0 N1=0\n", n0, n1)
+		require.NoError(t, os.WriteFile(filepath.Join(cg, "memory.numa_stat"), []byte(data), 0o644))
+	}
+	numaStat(8*MiB, 9*MiB)
+	m, err := New(cg, plan, cpuset.New(0, 1), WithSysRoot(writeNodes(t, "0", "")))
+	require.NoError(t, err)
+	require.NoError(t, m.Start())
+	defer m.Stop()
+	preferCXL := fmt.Sprintf("[4242] mode %d nodes [1]", unix.MPOL_PREFERRED)
+	require.Equal(t, []string{preferCXL}, called(), "past the last waypoint: the nodes of the last segment")
+	require.Equal(t, "max", readFile(t, cg, "memory.high"))
+
+	// still past: nothing changes
+	time.Sleep(5 * waitTimeout)
+	require.Equal(t, []string{preferCXL}, called())
+	require.Equal(t, "max", readFile(t, cg, "memory.high"))
+
+	// below the last waypoint again: a bounded step towards it
+	numaStat(8*MiB, 0)
+	require.Eventually(t, func() bool { return readFile(t, cg, "memory.high") != "max" }, 5*time.Second, waitTimeout)
+	require.Equal(t, []string{preferCXL, preferCXL}, called())
 }
 
 // TestRelease removes the memory.high that a killed manager left, leaves

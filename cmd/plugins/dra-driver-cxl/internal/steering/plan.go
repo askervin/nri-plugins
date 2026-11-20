@@ -48,8 +48,8 @@ func (nm NodeMem) String() string {
 // the total usage equals the total of the waypoint. Steering
 // directs only new allocations, it never frees or moves memory, so
 // the usage of every node must be non-decreasing from one waypoint
-// to the next. Past the last waypoint, steering continues in the
-// direction of the last two waypoints.
+// to the next. Past the last waypoint there are no more steps: new
+// allocations go on to the nodes of the last segment.
 type Plan struct {
 	Waypoints []NodeMem
 	// MinStep is the smallest amount of new allocations in bytes
@@ -66,8 +66,11 @@ type Step struct {
 	// when the plan has nothing left to steer.
 	Nodes []int
 	// Bytes is the amount of new allocations after which the next
-	// step is due.
+	// step is due, 0 past the last waypoint.
 	Bytes int64
+	// Past tells that the usage is past the last waypoint: Nodes are
+	// the nodes that the last segment adds usage to.
+	Past bool
 }
 
 // Validate returns an error if the plan is not usable.
@@ -146,15 +149,7 @@ func (p *Plan) NextStep(usage NodeMem) (Step, error) {
 	var prev, target NodeMem
 	switch {
 	case next >= len(p.Waypoints):
-		// Continue past the last waypoint in the direction of the
-		// last segment.
-		last := len(p.Waypoints) - 1
-		before := NodeMem{}
-		if last > 0 {
-			before = p.Waypoints[last-1]
-		}
-		prev = p.Waypoints[last]
-		target = extrapolateWaypoint(before, prev, usage, p.MaxStep)
+		return Step{Nodes: p.lastNodes(), Past: true}, nil
 	case next == 0:
 		prev = NodeMem{}
 		target = p.Waypoints[0]
@@ -359,38 +354,24 @@ func waypointReached(ctp, wpUsage NodeMem, minStep int64) bool {
 	return remainingGap < minStep
 }
 
-// extrapolateWaypoint returns a waypoint beyond last in the direction
-// from prev to last. The waypoint is far enough from ctp that a full
-// maxStep can be allocated on every node with a positive direction
-// component without exceeding it.
-func extrapolateWaypoint(prev, last, ctp NodeMem, maxStep int64) NodeMem {
-	nodeSet := make(map[int]bool)
-	for n := range prev {
-		nodeSet[n] = true
-	}
-	for n := range last {
-		nodeSet[n] = true
-	}
-	for n := range ctp {
-		nodeSet[n] = true
-	}
-
-	// Find the smallest multiplier t >= 1 with
-	// last[n] + t*d[n] >= ctp[n] + maxStep for every node with d[n] > 0.
-	t := int64(1)
-	for n := range nodeSet {
-		d := last[n] - prev[n]
-		if d <= 0 {
-			continue
+// lastNodes returns the nodes that the last segment of the plan adds
+// usage to, of the latest segment that adds any.
+func (p *Plan) lastNodes() []int {
+	for i := len(p.Waypoints) - 1; i >= 0; i-- {
+		prev := NodeMem{}
+		if i > 0 {
+			prev = p.Waypoints[i-1]
 		}
-		if needed := ctp[n] + maxStep - last[n]; needed > 0 {
-			t = max(t, (needed+d-1)/d)
+		var nodes []int
+		for n, usage := range p.Waypoints[i] {
+			if usage > prev[n] {
+				nodes = append(nodes, n)
+			}
+		}
+		if len(nodes) > 0 {
+			sort.Ints(nodes)
+			return nodes
 		}
 	}
-
-	nwp := NodeMem{}
-	for n := range nodeSet {
-		nwp[n] = last[n] + t*(last[n]-prev[n])
-	}
-	return nwp
+	return nil
 }

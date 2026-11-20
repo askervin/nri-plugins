@@ -19,8 +19,9 @@
 # an explicit MPOL_PREFERRED), that numa-u is not steered (memory.high
 # max, its own nodes and N in cpuset.mems, default allocations on DRAM,
 # MPOL_PREFERRED N lands on N), that plain cannot use N, that a steered
-# container's memory on N stays within its claim, that N shrinks when
-# numa-u and numa-b are released, that after a restart of the driver
+# container past its claim keeps allocating on N with memory.high max,
+# that N shrinks when numa-u and numa-b are released, that after a
+# restart of the driver
 # while numa-a holds N only numa-a has N and plain2 gets a cpuset.mems
 # without N at its creation, and that N goes away when the claims are
 # released, leaving no region on the memdev.
@@ -175,14 +176,15 @@ check "numa-a holds >= 90% of 2048 MiB on node $N" test "$(pages_on "$ha" "$N")"
 check "numa-a: the held memory holds what was written" grep -q "verify ok" <<< "$ha"
 check "numa-b holds >= 90% of 1536 MiB on node $N" test "$(pages_on "$hb" "$N")" -ge $((1536 * 256 * 9 / 10))
 
-log "beyond the claim: numa-b (2Gi claim, holding 1.5 GiB) holds 2048 MiB more with the default policy"
+log "past the claim: numa-b (2Gi claim, holding 1.5 GiB) holds 2048 MiB more with the default policy"
 prun numa-b "setsid python3 /tools/alloc-touch.py --hold 2048 > /tmp/more.log 2>&1 < /dev/null &"
 more_ready() { pexec numa-b grep -q ready /tmp/more.log; }
 wait_for 120 "numa-b holds 2048 MiB more" more_ready
 pexec numa-b cat /tmp/more.log | sed 's/^/    /'
 n3=$(pexec numa-b sh -c "grep '^anon ' /sys/fs/cgroup/memory.numa_stat" | tr ' ' '\n' | sed -n "s/^N$N=//p")
 echo "  numa-b: anon memory on node $N $((n3 >> 20)) MiB, memory.high $(pexec numa-b cat /sys/fs/cgroup/memory.high), memory.max $(pexec numa-b cat /sys/fs/cgroup/memory.max), Mems_allowed $(mems_allowed numa-b)"
-check "numa-b: its memory on node $N stays within its 2Gi claim (+64 MiB) ($((n3 >> 20)) MiB)" test "$n3" -le $(((2048 + 64) << 20))
+check "numa-b: past its 2Gi claim, >= 90% of 3584 MiB on node $N ($((n3 >> 20)) MiB)" test "$n3" -ge $(((3584 * 9 / 10) << 20))
+check "numa-b: past its last waypoint, memory.high max" test "$(pexec numa-b cat /sys/fs/cgroup/memory.high)" == max
 pexec numa-b pkill -f alloc-touch.py
 pexec numa-a pkill -f alloc-touch.py
 pexec numa-b pkill -f numa-touch.py

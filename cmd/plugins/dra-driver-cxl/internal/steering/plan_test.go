@@ -446,7 +446,7 @@ func TestPlanSimple(t *testing.T) {
 				for i := 0; i < maxIter; i++ {
 					step, err := plan.NextStep(cur)
 					require.NoError(t, err, "iter %d", i)
-					if len(step.Nodes) == 0 {
+					if len(step.Nodes) == 0 || step.Past {
 						break
 					}
 					simulateUsageGrowth(cur, step.Nodes, step.Bytes)
@@ -495,12 +495,11 @@ func TestPlanFollow(t *testing.T) {
 
 	cur := nm(0, 0, 0, 0)
 
-	// Run the simulation until two steps beyond the last waypoint.
+	// Run the simulation until the usage is past the last waypoint.
 	lastWP := plan.Waypoints[len(plan.Waypoints)-1]
-	lastWPTotal := total(lastWP)
-	roundsBeyond := 0
+	past := false
 	maxIter := 200
-	for i := 0; i < maxIter; i++ {
+	for i := 0; i < maxIter && !past; i++ {
 		step, err := plan.NextStep(cur)
 		require.NoError(t, err, "NextStep iteration %d", i)
 
@@ -510,10 +509,14 @@ func TestPlanFollow(t *testing.T) {
 			float64(cur[2])/GiBf, float64(cur[3])/GiBf,
 			step.Nodes, float64(step.Bytes)/GiBf)
 
-		if len(step.Nodes) == 0 {
-			t.Logf("iter %3d: no nodes, stopping", i)
+		if step.Past {
+			// the nodes of the last segment, no more steps
+			require.Equal(t, []int{1, 2}, step.Nodes)
+			require.Zero(t, step.Bytes)
+			past = true
 			break
 		}
+		require.NotEmpty(t, step.Nodes, "iteration %d", i)
 
 		require.GreaterOrEqual(t, step.Bytes, plan.MinStep,
 			"bytes must be >= MinStep at iteration %d", i)
@@ -521,14 +524,8 @@ func TestPlanFollow(t *testing.T) {
 			"bytes must be <= MaxStep at iteration %d", i)
 
 		simulateUsageGrowth(cur, step.Nodes, step.Bytes)
-
-		if total(cur) > lastWPTotal {
-			roundsBeyond++
-			if roundsBeyond >= 2 {
-				break
-			}
-		}
 	}
+	require.True(t, past, "the usage does not get past the last waypoint")
 
 	// Every node should be close to the last waypoint, with a
 	// tolerance of MaxStep because steering is approximate.
@@ -536,8 +533,53 @@ func TestPlanFollow(t *testing.T) {
 		require.InDelta(t, target, cur[n], float64(plan.MaxStep),
 			"node %d usage should be close to last waypoint target", n)
 	}
-	require.Greater(t, total(cur), lastWPTotal,
-		"total usage should exceed the last waypoint total")
+}
+
+// TestNextStepPastLastWaypoint checks the step of each policy at and past
+// the last waypoint (the nodes of the last segment that adds usage, no
+// bound) and below it again (a bounded step towards it).
+func TestNextStepPastLastWaypoint(t *testing.T) {
+	both := MemoryTypes{DRAMNodes: []int{0}, CXLNodes: []int{1, 2}, DRAMQuota: 4 * GiB, CXLQuota: 8 * GiB}
+	for _, tc := range []struct {
+		policy Policy
+		mem    MemoryTypes
+		nodes  []int
+	}{
+		{PolicyFirstDRAM, both, []int{1, 2}},
+		{PolicyFirstCXL, both, []int{0}},
+		{PolicyStartInterleaved, both, []int{1, 2}},
+		{PolicyEndInterleaved, both, []int{0, 1, 2}},
+		// equal quotas: the last segment adds nothing, the one before
+		// interleaves
+		{PolicyStartInterleaved, MemoryTypes{DRAMNodes: []int{0}, CXLNodes: []int{1}, DRAMQuota: 4 * GiB, CXLQuota: 4 * GiB}, []int{0, 1}},
+		{PolicyFirstDRAM, MemoryTypes{CXLNodes: []int{1, 2}, CXLQuota: 8 * GiB}, []int{1, 2}},
+		{PolicyFirstCXL, MemoryTypes{DRAMNodes: []int{0}, DRAMQuota: 4 * GiB}, []int{0}},
+	} {
+		t.Run(tc.policy.String(), func(t *testing.T) {
+			plan, err := NewPlan(tc.policy, tc.mem, nil, 0, 0)
+			require.NoError(t, err)
+			last := plan.Waypoints[len(plan.Waypoints)-1]
+			beyond := NodeMem{}
+			for n, usage := range last {
+				beyond[n] = usage + 3*GiB
+			}
+			for _, usage := range []NodeMem{last, beyond} {
+				step, err := plan.NextStep(usage)
+				require.NoError(t, err)
+				require.Equal(t, Step{Nodes: tc.nodes, Past: true}, step, "usage %s", usage)
+			}
+			below := NodeMem{}
+			for n, usage := range last {
+				below[n] = usage
+			}
+			below[tc.nodes[0]] -= plan.MinStep
+			step, err := plan.NextStep(below)
+			require.NoError(t, err)
+			require.False(t, step.Past, "usage %s", below)
+			require.Equal(t, []int{tc.nodes[0]}, step.Nodes)
+			require.GreaterOrEqual(t, step.Bytes, plan.MinStep)
+		})
+	}
 }
 
 func TestNodeMemString(t *testing.T) {

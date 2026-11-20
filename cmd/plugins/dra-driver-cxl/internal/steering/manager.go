@@ -42,6 +42,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -56,8 +57,9 @@ import (
 )
 
 // waitTimeout is the interval at which the lower memory bound is
-// checked when no memory.high event arrives.
-const waitTimeout = time.Second
+// checked when no memory.high event arrives, and the plan when no bound
+// is set (a variable for tests).
+var waitTimeout = time.Second
 
 // numaUsageCategories are the memory.numa_stat categories that count
 // as usage steered by the plan.
@@ -82,6 +84,10 @@ type Manager struct {
 	written bool
 	// mems is the cpuset.mems of the cgroup before Start.
 	mems string
+	// unbounded: the last step set no memory.high bound (past the last
+	// waypoint, or nothing to steer), with the policy of nodes.
+	unbounded bool
+	nodes     []int
 	// stop is closed by Stop, done is closed when the steering
 	// goroutine has exited.
 	stop     chan struct{}
@@ -242,10 +248,12 @@ func (m *Manager) loop() {
 			}
 			continue
 		}
-		if ev.crossing == noCrossing {
+		switch {
+		case ev.crossing != noCrossing:
+			klog.V(4).Infof("%s: %s bound crossed, memory.current=%d", m.name, ev.crossing, ev.memoryCurrent)
+		case !m.unbounded:
 			continue
 		}
-		klog.V(4).Infof("%s: %s bound crossed, memory.current=%d", m.name, ev.crossing, ev.memoryCurrent)
 		usage, err := numaUsage(m.cgroupPath, numaUsageCategories...)
 		if err != nil {
 			klog.Errorf("%s: %v", m.name, err)
@@ -317,8 +325,12 @@ func (m *Manager) step(usage NodeMem, first bool) error {
 	if err != nil {
 		return err
 	}
+	if m.unbounded && step.Bytes == 0 && slices.Equal(step.Nodes, m.nodes) {
+		return nil
+	}
 	if len(step.Nodes) == 0 {
-		klog.V(4).Infof("%s: step: usage=%s nothing left to steer, removing memory.high", m.name, usage)
+		klog.V(4).Infof("%s: step: usage=%s nothing to steer, memory.high max", m.name, usage)
+		m.unbounded, m.nodes = true, nil
 		return m.notifier.SetBounds(bounds{})
 	}
 
@@ -345,6 +357,20 @@ func (m *Manager) step(usage NodeMem, first bool) error {
 			klog.Warningf("%s: setting memory policy failed: %v", m.name, err)
 		}
 	}
+
+	if step.Past {
+		if err := m.notifier.SetBounds(bounds{}); err != nil {
+			return err
+		}
+		m.unbounded, m.nodes = true, step.Nodes
+		klog.Infof("%s: past the last waypoint: usage=%s nodes=%v procs=%d cpuset.mems=%s, memory.high max",
+			m.name, usage, step.Nodes, len(pids), m.allowedNodes())
+		return nil
+	}
+	if m.unbounded {
+		klog.Infof("%s: steering resumes: usage=%s", m.name, usage)
+	}
+	m.unbounded, m.nodes = false, step.Nodes
 
 	current, err := memoryCurrent(m.cgroupPath)
 	if err != nil {

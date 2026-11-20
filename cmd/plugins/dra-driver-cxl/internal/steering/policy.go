@@ -225,7 +225,8 @@ func generateWaypoints(policy Policy, mem MemoryTypes) ([]NodeMem, error) {
 }
 
 // userWaypoints returns the waypoints of user target usages spread over
-// the nodes of the memory types.
+// the nodes of the memory types, and an error for a usage above the quota
+// of its type.
 func userWaypoints(usages []TypeUsage, mem MemoryTypes) ([]NodeMem, error) {
 	waypoints := make([]NodeMem, 0, len(usages))
 	for i, usage := range usages {
@@ -234,6 +235,12 @@ func userWaypoints(usages []TypeUsage, mem MemoryTypes) ([]NodeMem, error) {
 		}
 		if usage.CXL > 0 && !mem.hasCXL() {
 			return nil, fmt.Errorf("waypoint %d: CXL usage specified but no CXL memory", i)
+		}
+		if usage.DRAM > mem.DRAMQuota {
+			return nil, fmt.Errorf("waypoint %d: DRAM usage %d exceeds the DRAM quota %d", i, usage.DRAM, mem.DRAMQuota)
+		}
+		if usage.CXL > mem.CXLQuota {
+			return nil, fmt.Errorf("waypoint %d: CXL usage %d exceeds the CXL quota %d", i, usage.CXL, mem.CXLQuota)
 		}
 		waypoints = append(waypoints, typeWaypoint(mem, usage))
 	}
