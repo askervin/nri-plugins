@@ -140,7 +140,7 @@ mbt-setup-ids() { # script API
     MBT_VMDIR=([vm2]="$1" [vm1]="$2" [vm0]="$3")
     MBT_NODES=""
     for vm in "${MBT_VMIDS[@]}"; do
-        MBT_NODE[$vm]=$(dra-vm-name "${MBT_VMDIR[$vm]}")
+        MBT_NODE[$vm]=$(vmdir-name "${MBT_VMDIR[$vm]}")
         MBT_NODES+="${MBT_NODES:+,}$vm=${MBT_NODE[$vm]}"
     done
     MBT_POOL_UNIT=([a]="$DRA_CONTROLLER_UNIT" [b]="$DRA_CONTROLLER_UNIT-pool-b" [c]="$DRA_CONTROLLER_UNIT-pool-c")
@@ -428,7 +428,7 @@ mbt-sh() {
     # its stdout, MBT_ERR its stderr; both go to the executor log with the
     # command. Return its exit status.
     local vm="$1" cmd="$2" rc
-    MBT_OUT=$(dra-vm-command-q "${MBT_VMDIR[$vm]}" "$cmd" 2>"$MBT_TMP/stderr")
+    MBT_OUT=$(vmdir-command-q "${MBT_VMDIR[$vm]}" "$cmd" 2>"$MBT_TMP/stderr")
     rc=$?
     MBT_ERR=$(<"$MBT_TMP/stderr")
     {
@@ -872,7 +872,7 @@ mbt-killat-state() {
         # node-reboot disarmed it: its state of then, /run of the VM is new.
         MBT_KILLAT_JSON=$MBT_KILLAT_LAST
     else
-        MBT_KILLAT_JSON=$(dra-vm-command-q "${MBT_VMDIR[$vm]}" "cat $MBT_KILLAT_STATE 2>/dev/null")
+        MBT_KILLAT_JSON=$(vmdir-command-q "${MBT_VMDIR[$vm]}" "cat $MBT_KILLAT_STATE 2>/dev/null")
         [ -n "$MBT_KILLAT_JSON" ] || MBT_KILLAT_JSON='{"armed": false, "fired": false, "done": true, "error": "no watcher state"}'
     fi
     if dra-py assert "$MBT_KILLAT_JSON" "j is None or j.get('done') is not False" 2>/dev/null; then
@@ -903,7 +903,7 @@ mbt-killat-stop() {
     local vm=$MBT_KILLAT_VM
     [ -n "$vm" ] || return 0
     MBT_KILLAT_VM="" MBT_KILLAT_LAST=""
-    dra-vm-command-q "${MBT_VMDIR[$vm]}" "pkill -f '$MBT_OBSERVER_VM kill-at'; true" > /dev/null 2>&1
+    vmdir-command-q "${MBT_VMDIR[$vm]}" "pkill -f '$MBT_OBSERVER_VM kill-at'; true" > /dev/null 2>&1
     return 0
 }
 
@@ -948,7 +948,7 @@ mbt-pmem-held() { # script API
     # line, quietly: node mounts and lease binds ("mount TARGET") and loop
     # devices over /dev/pmem* ("loop loopN /dev/pmemK"); nothing if free.
     # Return non-zero if the VM cannot be read.
-    dra-vm-command-q "$1" "awk '\$5 ~ \"^($DRA_POOL_MOUNT_DIR|$DRA_LEASE_FS_DIR)/\" {print \"mount \" \$5}' /proc/self/mountinfo | sort -u
+    vmdir-command-q "$1" "awk '\$5 ~ \"^($DRA_POOL_MOUNT_DIR|$DRA_LEASE_FS_DIR)/\" {print \"mount \" \$5}' /proc/self/mountinfo | sort -u
 for f in /sys/block/loop*/loop/backing_file; do [ -f \"\$f\" ] || continue; b=\$(cat \"\$f\"); case \"\$b\" in /dev/pmem*) n=\${f#/sys/block/}; echo \"loop \${n%%/*} \$b\";; esac; done
 true"
 }
@@ -960,7 +960,7 @@ mbt-pmem-unmount() { # script API
     # then the node mounts that are left in the VM of VMDIR, plainly (a
     # busy one stays: never MNT_DETACH; a cached mount's autoclear loop
     # device goes with it).
-    dra-vm-command "$1" "for t in \$(awk '\$5 ~ \"^$DRA_LEASE_FS_DIR/\" {print \$5}' /proc/self/mountinfo | sort -ur) \$(awk '\$5 ~ \"^$DRA_POOL_MOUNT_DIR/\" {print \$5}' /proc/self/mountinfo | sort -ur); do
+    vmdir-command "$1" "for t in \$(awk '\$5 ~ \"^$DRA_LEASE_FS_DIR/\" {print \$5}' /proc/self/mountinfo | sort -ur) \$(awk '\$5 ~ \"^$DRA_POOL_MOUNT_DIR/\" {print \$5}' /proc/self/mountinfo | sort -ur); do
     umount \"\$t\" && echo \"unmounted \$t\" || echo \"cannot unmount \$t\"
 done; true"
 }
@@ -992,7 +992,7 @@ mbt-driver-ready() {
     # (cxl.nri.io and cxl-pool.nri.io dra.sock) exist and the node has its
     # cxl.nri.io ResourceSlice. One ssh. MBT_ERR says what is missing.
     local vmdir=${MBT_VMDIR[$1]} name=${MBT_NODE[$1]}
-    MBT_ERR=$(dra-vm-command-q "$vmdir" "id=\$(crictl ps -q --state running --namespace '^kube-system\$' --name '^$DRA_CONTAINER\$' 2>/dev/null | head -n 1)
+    MBT_ERR=$(vmdir-command-q "$vmdir" "id=\$(crictl ps -q --state running --namespace '^kube-system\$' --name '^$DRA_CONTAINER\$' 2>/dev/null | head -n 1)
 [ -n \"\$id\" ] || { echo 'no running driver container'; exit 1; }
 log=\$(crictl inspect -o go-template --template '{{.status.logPath}}' \$id 2>/dev/null)
 [ -n \"\$log\" ] || { echo \"no log path of \$id\"; exit 1; }
@@ -1049,16 +1049,16 @@ mbt-driver-replace() {
     MBT_DRIVER_NEW=""
     mbt-killat-disarm "$vm" "$verb"
     vmdir=${MBT_VMDIR[$vm]}
-    label=$(dra-vm-label "$vmdir")
+    label=$(vmdir-label "$vmdir")
     name=${MBT_NODE[$vm]}
     old=$(dra-driver-pod "$vmdir") || { MBT_ERR="no running pod of $DRA_DAEMONSET on $name"; return 1; }
-    dra-vm-command-q "$vmdir" "kubectl logs -n kube-system $old -c $DRA_CONTAINER" > "$TEST_OUTPUT_DIR/$DRA_CONTAINER.$label.$old.log" 2>&1
+    vmdir-command-q "$vmdir" "kubectl logs -n kube-system $old -c $DRA_CONTAINER" > "$TEST_OUTPUT_DIR/$DRA_CONTAINER.$label.$old.log" 2>&1
     mbt-sh vm2 "kubectl delete pod -n kube-system $old --wait=true --timeout=60s" || return 1
     retry-until --timeout 120 --interval 1 --message "$label: a new Ready pod of $DRA_DAEMONSET" \
-        'new=$(dra-driver-pod "$vmdir") && [ "$new" != "$old" ] && dra-vm-command-q "$vmdir" "kubectl wait -n kube-system --for=condition=Ready pod/$new --timeout=1s" >/dev/null 2>&1' ||
+        'new=$(dra-driver-pod "$vmdir") && [ "$new" != "$old" ] && vmdir-command-q "$vmdir" "kubectl wait -n kube-system --for=condition=Ready pod/$new --timeout=1s" >/dev/null 2>&1' ||
         { MBT_ERR="no new Ready pod of $DRA_DAEMONSET on $name"; return 1; }
     mbt-driver-ready-wait "$vm" || return 1
-    dra-vm-command-q "$vmdir" "test -x $DRA_REQUEST_NODE_BIN" || { MBT_ERR="no $DRA_REQUEST_NODE_BIN on $name"; return 1; }
+    vmdir-command-q "$vmdir" "test -x $DRA_REQUEST_NODE_BIN" || { MBT_ERR="no $DRA_REQUEST_NODE_BIN on $name"; return 1; }
     MBT_NOTE="$old -> $new"
     MBT_DRIVER_NEW=$new
     MBT_DRIVER_SEEN[$vm]="$new 0"
@@ -1111,7 +1111,7 @@ mbt-driver-restarts() {
     # Print "POD RESTARTS READY" of the driver pod on the node of VM
     # (READY: True or False), quietly. Return non-zero if there is none.
     local out
-    out=$(dra-vm-command-q "$OUTPUT_DIR" "kubectl get pods -n kube-system -l $DRA_POD_LABEL --field-selector spec.nodeName=${MBT_NODE[$1]} -o jsonpath='{range .items[*]}{.metadata.name} {.status.containerStatuses[?(@.name==\"$DRA_CONTAINER\")].restartCount} {.status.conditions[?(@.type==\"Ready\")].status}{\"\\n\"}{end}'" 2>/dev/null | head -n 1)
+    out=$(vmdir-command-q "$OUTPUT_DIR" "kubectl get pods -n kube-system -l $DRA_POD_LABEL --field-selector spec.nodeName=${MBT_NODE[$1]} -o jsonpath='{range .items[*]}{.metadata.name} {.status.containerStatuses[?(@.name==\"$DRA_CONTAINER\")].restartCount} {.status.conditions[?(@.type==\"Ready\")].status}{\"\\n\"}{end}'" 2>/dev/null | head -n 1)
     [ -n "$out" ] || return 1
     echo "$out"
 }
@@ -1184,7 +1184,7 @@ mbt-qemu-fixed-require() { # script API
     # and its times are not looked at (a git checkout touches them).
     local vmdir pid exe bin label
     for vmdir in "$@"; do
-        label=$(dra-vm-label "$vmdir")
+        label=$(vmdir-label "$vmdir")
         pid=$(vm-qemu-pid "$vmdir" | head -n 1)
         [ -n "$pid" ] || error "MBT_REBOOT=guest: no qemu process of $label ($vmdir)"
         exe=$(readlink "/proc/$pid/exe") || error "MBT_REBOOT=guest: cannot read /proc/$pid/exe of the qemu of $label"
@@ -1211,7 +1211,7 @@ mbt-trace-vm-again() {
     # trace runs.
     local vmdir=${MBT_VMDIR[$1]} label
     [ -n "$DRA_TRACE_RUNNING" ] || return 0
-    label=$(dra-vm-label "$vmdir")
+    label=$(vmdir-label "$vmdir")
     dra-trace-collect-vm "$vmdir" "$label.udev" lines "stdbuf -oL udevadm monitor -k -u -s cxl -s dax -s memory -s node"
     dra-trace-collect-vm "$vmdir" "$label.kubelet" lines "journalctl -f -n0 -o cat -u kubelet | grep --line-buffered -iE 'dra|resourceclaim|cxl'"
 }
@@ -1235,7 +1235,7 @@ mbt-local-again() {
         state=$( { dra-local-find --pool "$srv" "$vmdir" >> "$MBT_EXEC_LOG" 2>&1 && echo "$DRA_LOCAL_ATTACHMENT"; } )
         echo "$(date +%T.%N) $vm: the local memdev in $srv: ${state:-not found}" >> "$MBT_EXEC_LOG"
         [ "$state" != detached ] || break
-        if [ "$state" == attached ] && dra-vm-command-q "$vmdir" "grep -qix '$MBT_LOCAL_SERIAL' /sys/bus/cxl/devices/mem*/serial" 2>/dev/null; then
+        if [ "$state" == attached ] && vmdir-command-q "$vmdir" "grep -qix '$MBT_LOCAL_SERIAL' /sys/bus/cxl/devices/mem*/serial" 2>/dev/null; then
             break   # in the new qemu already
         fi
         [ "$SECONDS" -lt "$deadline" ] || { MBT_ERR="$srv lists the local memdev of $vm as '${state:-not found}' 60 s after the qemu restart, not detached"; return 1; }
@@ -1277,7 +1277,7 @@ mbt-act-node-reboot() {
         *) MBT_ERR="node-reboot needs MBT_REBOOT=guest or qemu, this run has ${MBT_REBOOT_RUN:-none}"; return 2;;
     esac
     vmdir=${MBT_VMDIR[$vm]}
-    label=$(dra-vm-label "$vmdir")
+    label=$(vmdir-label "$vmdir")
     MBT_RESULT='{"boot":null}'
     if [ -n "$MBT_KILLAT_VM" ] && [ "$MBT_KILLAT_VM" == "$vm" ]; then
         mbt-killat-disarm "$vm" node-reboot
@@ -1290,7 +1290,7 @@ mbt-act-node-reboot() {
     [ -n "$old_boot" ] || { MBT_ERR="no boot id of $vm"; return 1; }
     if before=$(mbt-driver-restarts "$vm"); then
         read -r pod restarts ready <<< "$before"
-        dra-vm-command-q "$OUTPUT_DIR" "kubectl logs -n kube-system $pod -c $DRA_CONTAINER" \
+        vmdir-command-q "$OUTPUT_DIR" "kubectl logs -n kube-system $pod -c $DRA_CONTAINER" \
             > "$TEST_OUTPUT_DIR/$DRA_CONTAINER.$label.$pod.r$restarts.log" 2>&1
     fi
     MBT_TRACE_REFOLLOW[$vm]=$(mbt-utc 2)
@@ -1378,7 +1378,7 @@ mbt-driver-fencing() {
     # pod or line yet.
     local vm="$1" pod="${2:-}" line
     [ -n "$pod" ] || pod=$(dra-driver-pod "${MBT_VMDIR[$vm]}") || return 1
-    line=$(dra-vm-command-q "$OUTPUT_DIR" "kubectl logs -n kube-system $pod -c $DRA_CONTAINER 2>/dev/null | grep -m1 -o '${MBT_FENCING_LOG}[a-z-]*'" 2>/dev/null)
+    line=$(vmdir-command-q "$OUTPUT_DIR" "kubectl logs -n kube-system $pod -c $DRA_CONTAINER 2>/dev/null | grep -m1 -o '${MBT_FENCING_LOG}[a-z-]*'" 2>/dev/null)
     [ -n "$line" ] || return 1
     echo "${line#"$MBT_FENCING_LOG"}"
 }
@@ -1569,9 +1569,9 @@ mbt-observer-install() { # script API
     # run. Fail the test if it does not print an observation.
     local vmdir
     for vmdir in "$@"; do
-        dra-vm-put-file "$vmdir" "$MBT_OBSERVER" "$MBT_OBSERVER_VM"
-        dra-vm-command "$vmdir" "pkill -f '$MBT_OBSERVER_VM kill-at'; rm -f /run/mbt-observe/kernel.json $MBT_KILLAT_STATE; chmod 755 $MBT_OBSERVER_VM && python3 $MBT_OBSERVER_VM vm --ns $DRA_NS | head -c 300; echo; exit \${PIPESTATUS[0]}" ||
-            command-error "mbt-observe.py does not run in $(dra-vm-label "$vmdir")"
+        vmdir-put-file "$vmdir" "$MBT_OBSERVER" "$MBT_OBSERVER_VM"
+        vmdir-command "$vmdir" "pkill -f '$MBT_OBSERVER_VM kill-at'; rm -f /run/mbt-observe/kernel.json $MBT_KILLAT_STATE; chmod 755 $MBT_OBSERVER_VM && python3 $MBT_OBSERVER_VM vm --ns $DRA_NS | head -c 300; echo; exit \${PIPESTATUS[0]}" ||
+            command-error "mbt-observe.py does not run in $(vmdir-label "$vmdir")"
     done
 }
 
@@ -1605,7 +1605,7 @@ mbt-observe() { # script API
     for vm in "${MBT_VMIDS[@]}"; do
         cmd="timeout -k 5 $MBT_OBS_TIMEOUT python3 $MBT_OBSERVER_VM vm --ns $DRA_NS --stacks-after $(( MBT_OBS_TIMEOUT - 5 ))"
         [ "$vm" != vm2 ] || cmd+=" --cluster --nodes $MBT_NODES --units $MBT_UNITS --pools $MBT_POOLS --inspected '$inspected'"
-        dra-vm-command-q "${MBT_VMDIR[$vm]}" "$cmd" > "$MBT_TMP/obs.$vm" 2> "$MBT_TMP/obs.$vm.err" &
+        vmdir-command-q "${MBT_VMDIR[$vm]}" "$cmd" > "$MBT_TMP/obs.$vm" 2> "$MBT_TMP/obs.$vm.err" &
         pids+=("$!")
         args+=(--vm "$vm=$MBT_TMP/obs.$vm")
     done
@@ -1654,7 +1654,7 @@ mbt-wait-pids() {
     #
     # Wait until the background jobs PID of this shell have exited,
     # TIMEOUT seconds at most; then kill those that run (and their
-    # children: the ssh of a dra-vm-command-q) and reap them. Return 1 if
+    # children: the ssh of a vmdir-command-q) and reap them. Return 1 if
     # some had to be killed.
     local tmo="$1" end pid alive rc=0
     shift
@@ -1690,12 +1690,12 @@ mbt-drivers-seen() {
     [ -f "$MBT_TMP/summary" ] || return 0
     while read -r word vm pod restarts ready; do
         [ "$word" == driver ] && [ -n "${MBT_VMDIR[$vm]:-}" ] || continue
-        label=$(dra-vm-label "${MBT_VMDIR[$vm]}")
+        label=$(vmdir-label "${MBT_VMDIR[$vm]}")
         read -r old_pod old_restarts <<< "${MBT_DRIVER_SEEN[$vm]:-}"
         since=${MBT_TRACE_REFOLLOW[$vm]:-}
         if [ "$pod" == "$old_pod" ] && [ "$restarts" != "$old_restarts" ]; then
             echo "    the driver of $vm restarted in $pod: $old_restarts -> $restarts restarts"
-            dra-vm-command-q "$OUTPUT_DIR" "kubectl logs -n kube-system $pod -c $DRA_CONTAINER --previous" \
+            vmdir-command-q "$OUTPUT_DIR" "kubectl logs -n kube-system $pod -c $DRA_CONTAINER --previous" \
                 > "$TEST_OUTPUT_DIR/$DRA_CONTAINER.$label.$pod.r$(( restarts - 1 )).log" 2>&1
             [ -n "$since" ] || since=$(mbt-utc 10)
         elif [ -n "$old_pod" ] && [ "$pod" != "$old_pod" ]; then
@@ -2069,14 +2069,14 @@ mbt-kernel-require() { # script API
     # with DAX (FS_DAX, FS_DAX_PMD) for access direct and on a loop device
     # (BLK_DEV_LOOP) for access cached, and devdax (DEV_DAX).
     local vmdir="$1" out missing
-    out=$(dra-vm-command-q "$vmdir" "c=/boot/config-\$(uname -r); test -r \$c || { echo \"no \$c\"; exit 1; }
+    out=$(vmdir-command-q "$vmdir" "c=/boot/config-\$(uname -r); test -r \$c || { echo \"no \$c\"; exit 1; }
 echo \"kernel \$(uname -r)\"
 for f in $MBT_KERNEL_FEATURES; do echo \"\$f=\$(sed -n \"s/^CONFIG_\$f=//p\" \$c)\"; done") ||
-        error "cannot read the kernel configuration of $(dra-vm-label "$vmdir"): $out"
+        error "cannot read the kernel configuration of $(vmdir-label "$vmdir"): $out"
     missing=$(grep -E '^[A-Z0-9_]+=$|^[A-Z0-9_]+=[^ym]' <<< "$out" | cut -d= -f1 | tr '\n' ' ')
     [ -z "$missing" ] ||
-        error "the kernel of $(dra-vm-label "$vmdir") ($(head -n 1 <<< "$out")) lacks $missing(CONFIG_*=y or =m): persistent pool devices (block, fs) cannot work. Build it with test/e2e/playbook/files/qemu-cxl-kernel.config (test00-up) and recreate the VM"
-    echo "$(dra-vm-label "$vmdir"): $(head -n 1 <<< "$out"): $(tail -n +2 <<< "$out" | tr '\n' ' ')"
+        error "the kernel of $(vmdir-label "$vmdir") ($(head -n 1 <<< "$out")) lacks $missing(CONFIG_*=y or =m): persistent pool devices (block, fs) cannot work. Build it with test/e2e/playbook/files/qemu-cxl-kernel.config (test00-up) and recreate the VM"
+    echo "$(vmdir-label "$vmdir"): $(head -n 1 <<< "$out"): $(tail -n +2 <<< "$out" | tr '\n' ' ')"
 }
 
 mbt-local-blocks() { # script API
@@ -2087,7 +2087,7 @@ mbt-local-blocks() { # script API
     # of the node of the VM in blocks of $MBT_SLICE. Return non-zero if a
     # node does not publish it.
     local json vm n out=""
-    json=$(dra-vm-command-q "$OUTPUT_DIR" "kubectl get resourceslices -o json") || return 1
+    json=$(vmdir-command-q "$OUTPUT_DIR" "kubectl get resourceslices -o json") || return 1
     for vm in "${MBT_VMIDS[@]}"; do
         n=$(dra-py eval "$json" "quantity(capacity(device('memdev-${MBT_LOCAL_HEX,,}', '$DRA_LOCAL_DRIVER', '${MBT_NODE[$vm]}'), 'memory') or 0) // quantity('$MBT_SLICE')") || return 1
         [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt 0 ] || return 1
@@ -2134,7 +2134,7 @@ mbt-restore() { # script API
     for p in "${MBT_POOL_IDS[@]}"; do
         unit=${MBT_POOL_UNIT[$p]}
         [ -n "${DRA_CONTROLLER_URLS[$unit]:-}" ] || continue
-        if ! dra-vm-command-q "$OUTPUT_DIR" "systemctl -q is-active $unit"; then
+        if ! vmdir-command-q "$OUTPUT_DIR" "systemctl -q is-active $unit"; then
             echo "mbt-restore: $unit is not active, starting it"
             dra-controller-start "$unit" || echo "mbt-restore: cannot start $unit"
         fi
@@ -2143,7 +2143,7 @@ mbt-restore() { # script API
     for vm in "${MBT_VMIDS[@]}"; do
         vmdir=${MBT_VMDIR[$vm]}
         retry-until --timeout 330 --interval 2 --message "mbt-restore: a Ready pod of $DRA_DAEMONSET on ${MBT_NODE[$vm]}" \
-            'dp=$(dra-driver-pod "$vmdir") && dra-vm-command-q "$vmdir" "kubectl wait -n kube-system --for=condition=Ready pod/$dp --timeout=1s" >/dev/null 2>&1' ||
+            'dp=$(dra-driver-pod "$vmdir") && vmdir-command-q "$vmdir" "kubectl wait -n kube-system --for=condition=Ready pod/$dp --timeout=1s" >/dev/null 2>&1' ||
             echo "mbt-restore: the driver is not Ready on ${MBT_NODE[$vm]}"
     done
     return 0
@@ -2161,10 +2161,10 @@ mbt-teardown() { # script API
     local vm p left
     mbt-killat-stop
     mbt-restore
-    dra-vm-command "$OUTPUT_DIR" "kubectl delete pods --all -n $DRA_NS --grace-period=2 --wait=true --timeout=180s 2>&1 | grep -v 'No resources found'; true"
+    vmdir-command "$OUTPUT_DIR" "kubectl delete pods --all -n $DRA_NS --grace-period=2 --wait=true --timeout=180s 2>&1 | grep -v 'No resources found'; true"
     retry-until --timeout 120 --interval 2 --message "no pods and ResourceClaims in $DRA_NS" \
-        '[ -z "$(dra-vm-command-q "$OUTPUT_DIR" "kubectl get pods,resourceclaims -n $DRA_NS -o name")" ]' || {
-        dra-vm-command "$OUTPUT_DIR" "kubectl get pods,resourceclaims -n $DRA_NS -o wide"
+        '[ -z "$(vmdir-command-q "$OUTPUT_DIR" "kubectl get pods,resourceclaims -n $DRA_NS -o name")" ]' || {
+        vmdir-command "$OUTPUT_DIR" "kubectl get pods,resourceclaims -n $DRA_NS -o wide"
         error "mbt-teardown: pods or ResourceClaims are left in $DRA_NS"
     }
     for p in "${MBT_POOL_IDS[@]}"; do
@@ -2179,7 +2179,7 @@ mbt-teardown() { # script API
         left=$(mbt-pmem-held "${MBT_VMDIR[$vm]}") || error "mbt-teardown: cannot read the mounts of $vm"
         [ -z "$left" ] || error "mbt-teardown: $vm still has: $(tr '\n' ' ' <<< "$left")"
         retry-until --timeout 60 --interval 2 --message "$vm: nothing under $DRA_LEASE_FS_DIR and $DRA_POOL_MOUNT_DIR" \
-            'left=$(dra-vm-command-q "${MBT_VMDIR[$vm]}" "find $DRA_LEASE_FS_DIR $DRA_POOL_MOUNT_DIR -mindepth 1 -maxdepth 1 2>/dev/null; true") && [ -z "$left" ]' ||
+            'left=$(vmdir-command-q "${MBT_VMDIR[$vm]}" "find $DRA_LEASE_FS_DIR $DRA_POOL_MOUNT_DIR -mindepth 1 -maxdepth 1 2>/dev/null; true") && [ -z "$left" ]' ||
             error "mbt-teardown: $vm still has $(tr '\n' ' ' <<< "$left")"
     done
 }
@@ -2207,11 +2207,11 @@ mbt-exit-trap() {
     for vmdir in "${MBT_VMDIR[@]}"; do
         left=$(mbt-pmem-held "$vmdir") || left="cannot read its mounts"
         [ -n "$left" ] || continue
-        echo "mbt-exit-trap: $(dra-vm-label "$vmdir") still has: $(tr '\n' ' ' <<< "$left")"
+        echo "mbt-exit-trap: $(vmdir-label "$vmdir") still has: $(tr '\n' ' ' <<< "$left")"
         mbt-pmem-unmount "$vmdir"
         left=$(mbt-pmem-held "$vmdir") || left="cannot read its mounts"
         [ -z "$left" ] || held+="
-  $(dra-vm-label "$vmdir"): $(tr '\n' ' ' <<< "$left")"
+  $(vmdir-label "$vmdir"): $(tr '\n' ' ' <<< "$left")"
     done
     if [ -n "$held" ]; then
         echo "mbt-exit-trap: persistent pool devices are still held, not releasing or detaching anything:$held
@@ -2239,7 +2239,7 @@ mbt-hollow-regions-remove() { # script API
     # memdev was detached. Nothing is behind it, but it keeps its range of
     # the CXL window while it exists; cxl destroy-region refuses it ("error locating decoder for
     # target0"): delete_region of its root decoder. Never fails.
-    dra-vm-command "$1" "for r in /sys/bus/cxl/devices/region[0-9]*; do
+    vmdir-command "$1" "for r in /sys/bus/cxl/devices/region[0-9]*; do
     [ -e \"\$r\" ] || continue
     n=\${r##*/}
     [ \"\$(cat \$r/commit)\" = 0 ] && [ -z \"\$(cat \$r/target* 2>/dev/null | tr -d '[:space:]')\" ] || continue
@@ -2248,5 +2248,5 @@ mbt-hollow-regions-remove() { # script API
         [ -d \"\$d/\$n\" ] && echo \$n > \$d/delete_region && echo \"deleted \$n (\${d##*/})\"
     done
 done; true" > /dev/null
-    [ -z "$COMMAND_OUTPUT" ] || echo "mbt-exit-trap: $(dra-vm-label "$1"): $COMMAND_OUTPUT"
+    [ -z "$COMMAND_OUTPUT" ] || echo "mbt-exit-trap: $(vmdir-label "$1"): $COMMAND_OUTPUT"
 }

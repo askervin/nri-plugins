@@ -243,7 +243,7 @@ llm-mirror-start() {
     echo "llm-mirror-start: $1 on http://127.0.0.1:$LLM_MIRROR_PORT, pid $LLM_MIRROR_PID"
     # shellcheck disable=SC2016 # retry-until evaluates the condition
     retry-until --timeout 30 --message "the model mirror serves $LLM_FILE to VM2" \
-        'dra-vm-command-q "$VM2" "curl -sfI --noproxy \"*\" --max-time 5 http://192.168.76.2:$LLM_MIRROR_PORT/$LLM_FILE" >/dev/null' ||
+        'vmdir-command-q "$VM2" "curl -sfI --noproxy \"*\" --max-time 5 http://192.168.76.2:$LLM_MIRROR_PORT/$LLM_FILE" >/dev/null' ||
         error "the model mirror on port $LLM_MIRROR_PORT does not serve $LLM_FILE to VM2, see $TEST_OUTPUT_DIR/llm-mirror.log"
 }
 
@@ -341,12 +341,12 @@ llm-model-configmap() {
         from+=" --from-literal=$(printf %q "$kv")"
     done
     if [[ "$LLM_URL" != http://192.168.76.2:* ]]; then
-        proxies=$(dra-vm-command-q "$VM2" "grep -E '^(https?|no)_proxy=' /etc/environment | tr -d '\"'")
+        proxies=$(vmdir-command-q "$VM2" "grep -E '^(https?|no)_proxy=' /etc/environment | tr -d '\"'")
         for kv in $proxies; do
             from+=" --from-literal=$(printf %q "$kv")"
         done
     fi
-    dra-vm-command "$VM2" "kubectl create configmap llm-model -n $DRA_NS$from --dry-run=client -o yaml | kubectl apply -f -" ||
+    vmdir-command "$VM2" "kubectl create configmap llm-model -n $DRA_NS$from --dry-run=client -o yaml | kubectl apply -f -" ||
         command-error "cannot create ConfigMap llm-model"
 }
 
@@ -358,8 +358,8 @@ pool-vm-require "$VM1" n4-cxl-shared-1
 # test00-up installed the tools; cxl-tools-install cannot run from here
 # (it finds the source tree through the path of the test).
 for vm in "${DEMO_VMS[@]}"; do
-    pool-vm-command-q "$vm" "command -v cxl && command -v daxctl && command -v cxl-dump" >/dev/null ||
-        error "$(pool-vm-label "$vm") lacks cxl, daxctl or cxl-dump: run memory.test-suite/dra-driver-cxl/n4-cxl-shared-{0,1,2}/test00-up"
+    vmdir-command-q "$vm" "command -v cxl && command -v daxctl && command -v cxl-dump" >/dev/null ||
+        error "$(vmdir-label "$vm") lacks cxl, daxctl or cxl-dump: run memory.test-suite/dra-driver-cxl/n4-cxl-shared-{0,1,2}/test00-up"
 done
 for vm in "${DEMO_VMS[@]}"; do
     pool-vm-reset "$vm"
@@ -373,8 +373,8 @@ if [ "$DEMO_CASE" == wizard ] || [ "$DEMO_CASE" == llm-share ]; then
     [ "$DEMO_CASE" != llm-share ] || fs-kernel-require "$VM0" n4-cxl-shared-0
     for vm in "${DEMO_VMS[@]}"; do
         # shellcheck disable=SC2016 # expanded in the VM
-        pool-vm-command "$vm" 'cd /sys/bus/cxl/devices && for d in decoder0.*; do echo "$d cap_pmem $(cat $d/cap_pmem)"; [ "$(cat $d/cap_pmem)" == 1 ] || exit 1; done' ||
-            error "a root decoder of $(pool-vm-label "$vm") has no cap_pmem: fs0, lp0 or llm0 gets no region there"
+        vmdir-command "$vm" 'cd /sys/bus/cxl/devices && for d in decoder0.*; do echo "$d cap_pmem $(cat $d/cap_pmem)"; [ "$(cat $d/cap_pmem)" == 1 ] || exit 1; done' ||
+            error "a root decoder of $(vmdir-label "$vm") has no cap_pmem: fs0, lp0 or llm0 gets no region there"
     done
 fi
 if [ "$DEMO_CASE" == llm-share ]; then
@@ -562,25 +562,25 @@ if [ "$DEMO_CASE" == llm-share ]; then
         dra-pull-images "$vm" "$LLM_SERVER_IMAGE"
     done
 fi
-dra-vm-command "$VM2" "rm -rf /root/demo && mkdir -p /root/demo/tools /root/demo/$DEMO_CASE" ||
+vmdir-command "$VM2" "rm -rf /root/demo && mkdir -p /root/demo/tools /root/demo/$DEMO_CASE" ||
     command-error "cannot create /root/demo in VM2"
 for f in "${DEMO_TOOLS[@]}"; do
-    dra-vm-put-file "$VM2" "$DEMO_DIR/bin/tools/$f" "/root/demo/tools/$f"
+    vmdir-put-file "$VM2" "$DEMO_DIR/bin/tools/$f" "/root/demo/tools/$f"
 done
 for f in "$DEMO_DIR/manifests/$DEMO_CASE"/*.yaml; do
-    dra-vm-put-file "$VM2" "$f" "/root/demo/$DEMO_CASE/${f##*/}"
+    vmdir-put-file "$VM2" "$f" "/root/demo/$DEMO_CASE/${f##*/}"
 done
 from=""
 for f in "${DEMO_TOOLS[@]}"; do
     from+=" --from-file=$f=/root/demo/tools/$f"
 done
-dra-vm-command "$VM2" "kubectl create configmap demo-tools -n $DRA_NS$from --dry-run=client -o yaml | kubectl apply -f -" ||
+vmdir-command "$VM2" "kubectl create configmap demo-tools -n $DRA_NS$from --dry-run=client -o yaml | kubectl apply -f -" ||
     command-error "cannot create ConfigMap demo-tools"
-dra-vm-command "$VM2" "cp /root/.kube/config /root/demo/kubeconfig && kubectl --kubeconfig /root/demo/kubeconfig config set-context --current --namespace=$DRA_NS" ||
+vmdir-command "$VM2" "cp /root/.kube/config /root/demo/kubeconfig && kubectl --kubeconfig /root/demo/kubeconfig config set-context --current --namespace=$DRA_NS" ||
     command-error "cannot write /root/demo/kubeconfig"
 for vm in "${DEMO_VMS[@]}"; do
-    dra-vm-command "$VM2" "kubectl label node $(dra-vm-name "$vm") cxl-demo/node=${DEMO_VM_LABEL[$vm]} --overwrite" ||
-        command-error "cannot label the node of $(dra-vm-label "$vm")"
+    vmdir-command "$VM2" "kubectl label node $(vmdir-name "$vm") cxl-demo/node=${DEMO_VM_LABEL[$vm]} --overwrite" ||
+        command-error "cannot label the node of $(vmdir-label "$vm")"
 done
 if [ "$DEMO_CASE" == llm-share ]; then
     echo "### demo setup llm-share: the model for the writer"
@@ -606,12 +606,12 @@ if [ -n "$PMEM_CASE" ]; then
     # The pmem block devices: the udev stream of dra-trace-start has cxl,
     # dax, memory and node only. T5 reads <vm>.block.udev as udev events.
     for vm in "${DEMO_VMS[@]}"; do
-        tag="$(dra-vm-label "$vm").block.udev"
+        tag="$(vmdir-label "$vm").block.udev"
         dra-trace-collect-vm "$vm" "$tag" lines "stdbuf -oL udevadm monitor -k -s block"
         # shellcheck disable=SC2016 # retry-until evaluates the condition
         retry-until --timeout 30 --message "trace collector $tag" \
-            '[ -n "$(dra-vm-command-q "$vm" "ls /run/dra-trace/$tag.pid 2>/dev/null")" ]' ||
-            error "the trace collector $tag did not start in $(dra-vm-label "$vm")"
+            '[ -n "$(vmdir-command-q "$vm" "ls /run/dra-trace/$tag.pid 2>/dev/null")" ]' ||
+            error "the trace collector $tag did not start in $(vmdir-label "$vm")"
     done
 fi
 

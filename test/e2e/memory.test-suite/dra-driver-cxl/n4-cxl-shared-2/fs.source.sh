@@ -30,10 +30,10 @@ fs-kernel-require() { # script API
     # in.
     local vmdir="$1" topology="$2" opt
     for opt in EXT4_FS XFS_FS BTRFS_FS SQUASHFS EROFS_FS FS_DAX; do
-        pool-vm-command-q "$vmdir" "grep -qx CONFIG_$opt=y /boot/config-\$(uname -r)" ||
+        vmdir-command-q "$vmdir" "grep -qx CONFIG_$opt=y /boot/config-\$(uname -r)" ||
             error "kernel of $(basename "$vmdir") lacks CONFIG_$opt=y: run memory.test-suite/dra-driver-cxl/$topology/test00-up: it installs the CXL kernel of test/e2e/playbook/files/qemu-cxl-kernel.config"
     done
-    echo "$(pool-vm-label "$vmdir"): kernel with ext4, xfs, btrfs, squashfs, erofs and FS_DAX"
+    echo "$(vmdir-label "$vmdir"): kernel with ext4, xfs, btrfs, squashfs, erofs and FS_DAX"
 }
 
 fs-tools-install() { # script API
@@ -45,13 +45,13 @@ fs-tools-install() { # script API
     shift
     for cmd in "$@"; do
         [ -n "${FS_TOOL_PACKAGE[$cmd]:-}" ] || error "fs-tools-install: no package of $cmd"
-        pool-vm-command-q "$vmdir" "command -v $cmd >/dev/null" || pkgs+=" ${FS_TOOL_PACKAGE[$cmd]}"
+        vmdir-command-q "$vmdir" "command -v $cmd >/dev/null" || pkgs+=" ${FS_TOOL_PACKAGE[$cmd]}"
     done
     if [ -n "$pkgs" ]; then
-        pool-vm-command "$vmdir" "dnf install -y$pkgs" ||
-            command-error "cannot install$pkgs in $(pool-vm-label "$vmdir")"
+        vmdir-command "$vmdir" "dnf install -y$pkgs" ||
+            command-error "cannot install$pkgs in $(vmdir-label "$vmdir")"
     fi
-    echo "$(pool-vm-label "$vmdir"): $* installed"
+    echo "$(vmdir-label "$vmdir"): $* installed"
 }
 
 fs-image-build() { # script API
@@ -66,7 +66,7 @@ fs-image-build() { # script API
     # unless blkid finds the type in the image. Set FS_IMAGE,
     # FS_IMAGE_SIZE and FS_IMAGE_SHA256.
     local vmdir="$1" type="$2" name="$3" text="$4" size="$5" label img dir mk want="$2" out
-    label=$(pool-vm-label "$vmdir")
+    label=$(vmdir-label "$vmdir")
     img="$FS_VM_DIR/$name.img"
     dir="$FS_VM_DIR/$name.d"
     case "$type" in
@@ -78,14 +78,14 @@ fs-image-build() { # script API
         *) error "fs-image-build: unknown type $type";;
     esac
     [ "$type" != ext4-dirty ] || mk+=" && debugfs -w -R 'feature needs_recovery' $img"
-    pool-vm-command "$vmdir" "rm -rf $dir $img && mkdir -p $dir && printf '%s\n' $(printf %q "$text") > $dir/$FS_FILE && $mk" ||
+    vmdir-command "$vmdir" "rm -rf $dir $img && mkdir -p $dir && printf '%s\n' $(printf %q "$text") > $dir/$FS_FILE && $mk" ||
         command-error "cannot build the $type image $img in $label"
-    pool-vm-command "$vmdir" "stat -c %s $img && sha256sum $img && blkid -p -o value -s TYPE $img" ||
+    vmdir-command "$vmdir" "stat -c %s $img && sha256sum $img && blkid -p -o value -s TYPE $img" ||
         command-error "cannot read the image $img in $label"
     out="$COMMAND_OUTPUT"
     [ "$(sed -n 3p <<< "$out")" == "$want" ] || error "fs-image-build: blkid finds $(sed -n 3p <<< "$out") in $img of $label, not $want"
     if [ "$type" == ext4-dirty ]; then
-        pool-vm-command "$vmdir" "dumpe2fs -h $img 2>/dev/null | grep -E '^Filesystem features:'" ||
+        vmdir-command "$vmdir" "dumpe2fs -h $img 2>/dev/null | grep -E '^Filesystem features:'" ||
             command-error "cannot read the superblock of $img in $label"
         grep -qw needs_recovery <<< "$COMMAND_OUTPUT" || error "fs-image-build: $img of $label is not marked needs_recovery"
     fi
@@ -136,7 +136,7 @@ fs-writer-wait() {
     local vmdir="$1" pod="$2" tmo="${3:-180}"
     retry-until --timeout "$tmo" --interval 1 --message "$pod: the writer exits" \
         'FS_LOG=$(dra-pod-log "$vmdir" "$pod") && grep -qE "^writer exit [0-9]+$" <<< "$FS_LOG"' || {
-        dra-vm-command "$vmdir" "kubectl logs -n $DRA_NS $pod; kubectl describe pod -n $DRA_NS $pod | tail -n 20"
+        vmdir-command "$vmdir" "kubectl logs -n $DRA_NS $pod; kubectl describe pod -n $DRA_NS $pod | tail -n 20"
         error "the writer in pod $pod did not exit in ${tmo}s"
     }
     echo "$FS_LOG"
@@ -186,7 +186,7 @@ fs-claim-pod() { # script API
     # Example: fs-claim-pod "$VM2" rw-a 0xc1ae0001 1 "mode: fs, readOnly: false" cxl-pool-persistent
     dra-apply "$OUTPUT_DIR" <<< "$(dra-shared-claim-yaml "$2" "$3" "$4" "$5" "$6")
 ---
-$(dra-pod-yaml "$2" "$(dra-vm-name "$1")" "mem=claim:$2")"
+$(dra-pod-yaml "$2" "$(vmdir-name "$1")" "mem=claim:$2")"
 }
 
 fs-claim-pod-delete() { # script API
@@ -316,7 +316,7 @@ fs-node-mounts-assert() { # script API
     # Set FS_PMEM to /dev/pmemN.
     local vmdir="$1" dir="$2" id="$3" type="$4" sb="$5" extra="$6" label
     shift 6
-    label=$(pool-vm-label "$vmdir")
+    label=$(vmdir-label "$vmdir")
     dra-fs-mounts "$vmdir" "$dir" || error "cannot read the mounts of $label"
     FS_PMEM=$(python3 -c '
 import json, re, sys
@@ -366,7 +366,7 @@ fs-no-mounts-assert() { # script API
     # device over a pmem block device.
     local vmdir="$1" dir label loops
     shift
-    label=$(pool-vm-label "$vmdir")
+    label=$(vmdir-label "$vmdir")
     for dir in "$@"; do
         dra-fs-mounts "$vmdir" "$dir" || error "cannot read the mounts of $label"
         [ "$COMMAND_OUTPUT" == "[]" ] || error "$label has mounts under $dir: $COMMAND_OUTPUT"
@@ -382,9 +382,9 @@ fs-pmem-ro-assert() { # script API
     # Fail the test unless the block device DEV (/dev/pmemN) of the VM of
     # VMDIR is read-only (1) or writable (0): /sys/block/pmemN/ro.
     local ro
-    ro=$(pool-vm-command-q "$1" "cat /sys/block/${2#/dev/}/ro") || error "cannot read /sys/block/${2#/dev/}/ro in $(pool-vm-label "$1")"
-    [ "$ro" == "$3" ] || error "$(pool-vm-label "$1"): /sys/block/${2#/dev/}/ro is $ro, expected $3"
-    echo "$(pool-vm-label "$1"): /sys/block/${2#/dev/}/ro is $ro"
+    ro=$(vmdir-command-q "$1" "cat /sys/block/${2#/dev/}/ro") || error "cannot read /sys/block/${2#/dev/}/ro in $(vmdir-label "$1")"
+    [ "$ro" == "$3" ] || error "$(vmdir-label "$1"): /sys/block/${2#/dev/}/ro is $ro, expected $3"
+    echo "$(vmdir-label "$1"): /sys/block/${2#/dev/}/ro is $ro"
 }
 
 fs-cdi-assert() { # script API
@@ -465,13 +465,13 @@ fs-refused() { # script API
     # refused claim mounted nothing). Then delete the pod and the claim.
     local vmdir="$1" name="$2" serial="$3" params="$4" class="$5" before after
     shift 5
-    before=$(fs-node-state "$vmdir") || error "cannot read the mounts of $(pool-vm-label "$vmdir")"
+    before=$(fs-node-state "$vmdir") || error "cannot read the mounts of $(vmdir-label "$vmdir")"
     fs-claim-pod "$vmdir" "$name" "$serial" 1 "$params" "$class"
     fs-event-wait "$name" "$@"
     dra-wait "$OUTPUT_DIR" "$name-creating" "pod -n $DRA_NS $name" \
         "[(cs.get('state') or {}).get('waiting', {}).get('reason') for cs in j['status'].get('containerStatuses') or []] == ['ContainerCreating']" 60
-    after=$(fs-node-state "$vmdir") || error "cannot read the mounts of $(pool-vm-label "$vmdir")"
-    [ "$after" == "$before" ] || error "$name: the node mounts or loop devices of $(pool-vm-label "$vmdir") changed for the refused claim:
+    after=$(fs-node-state "$vmdir") || error "cannot read the mounts of $(vmdir-label "$vmdir")"
+    [ "$after" == "$before" ] || error "$name: the node mounts or loop devices of $(vmdir-label "$vmdir") changed for the refused claim:
 before: $before
 after:  $after"
     echo "$name: refused, nothing mounted"
@@ -499,9 +499,9 @@ fs-controller-log-wait() { # script API
         filter+=" | grep -F -- $(printf %q "$t")"
     done
     retry-until --timeout "$tmo" --interval 1 --message "the log of $unit has a line with: ${texts[*]}" \
-        '[ -n "$(pool-vm-command-q "$OUTPUT_DIR" "$filter")" ]' ||
+        '[ -n "$(vmdir-command-q "$OUTPUT_DIR" "$filter")" ]' ||
         error "the log of $unit has no line with: ${texts[*]}"
-    pool-vm-command-q "$OUTPUT_DIR" "$filter" | tail -n 3
+    vmdir-command-q "$OUTPUT_DIR" "$filter" | tail -n 3
 }
 
 fs-unmatched() { # script API
@@ -512,7 +512,7 @@ fs-unmatched() { # script API
     # stays unschedulable, the claim without an allocation. Delete both.
     dra-apply "$OUTPUT_DIR" <<< "$(dra-shared-claim-yaml "$1" "$2" "" "" "$3")
 ---
-$(dra-pod-yaml "$1" "$(dra-vm-name "$OUTPUT_DIR")" "mem=claim:$1")"
+$(dra-pod-yaml "$1" "$(vmdir-name "$OUTPUT_DIR")" "mem=claim:$1")"
     dra-wait "$OUTPUT_DIR" "$1-unschedulable" "pod -n $DRA_NS $1" \
         "any(c['type'] == 'PodScheduled' and c['status'] == 'False' and c.get('reason') == 'Unschedulable' and 'cannot allocate all claims' in c.get('message', '') for c in (j.get('status') or {}).get('conditions') or [])" 60
     dra-json "$OUTPUT_DIR" resourceclaim -n "$DRA_NS" "$1"
@@ -531,7 +531,7 @@ fs-held() { # script API
     # holds them.
     local vm label dir loops
     for vm in "$@"; do
-        label=$(pool-vm-label "$vm")
+        label=$(vmdir-label "$vm")
         for dir in "$DRA_POOL_MOUNT_DIR" "$DRA_LOCAL_MOUNT_DIR"; do
             if ! dra-fs-mounts "$vm" "$dir" >/dev/null; then
                 echo "  $label: cannot read its mounts under $dir"

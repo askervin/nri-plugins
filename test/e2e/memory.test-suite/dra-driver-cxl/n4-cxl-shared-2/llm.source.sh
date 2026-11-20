@@ -89,7 +89,7 @@ llm-kernel-require() { # script API
     # Fail the test unless the running kernel of the VM of VMDIR, created
     # from TOPOLOGY, has CONFIG_EROFS_FS=y.
     local vmdir="$1" topology="$2"
-    pool-vm-command "$vmdir" 'uname -r; grep -x CONFIG_EROFS_FS=y /boot/config-$(uname -r)' ||
+    vmdir-command "$vmdir" 'uname -r; grep -x CONFIG_EROFS_FS=y /boot/config-$(uname -r)' ||
         error "kernel of $(basename "$vmdir") lacks CONFIG_EROFS_FS=y: run memory.test-suite/dra-driver-cxl/$topology/test00-up: it installs the CXL kernel of test/e2e/playbook/files/qemu-cxl-kernel.config"
 }
 
@@ -100,15 +100,15 @@ llm-vm-put() {
     # file mode MODE, unless DST has the same sha256 already.
     local vmdir="$1" src="$2" dst="$3" mode="$4" sum
     sum=$(sha256sum "$src" | cut -d' ' -f1)
-    if [ "$(pool-vm-command-q "$vmdir" "sha256sum $dst 2>/dev/null" | cut -d' ' -f1)" == "$sum" ]; then
-        echo "llm-vm-put: $(pool-vm-label "$vmdir"):$dst is up to date"
+    if [ "$(vmdir-command-q "$vmdir" "sha256sum $dst 2>/dev/null" | cut -d' ' -f1)" == "$sum" ]; then
+        echo "llm-vm-put: $(vmdir-label "$vmdir"):$dst is up to date"
         return 0
     fi
-    pool-vm-command "$vmdir" "mkdir -p $(dirname "$dst")" || command-error "cannot create $(dirname "$dst") in $(pool-vm-label "$vmdir")"
-    pool-vm-put-file "$vmdir" "$src" "$dst"
-    pool-vm-command "$vmdir" "chown root:root $dst && chmod $mode $dst && sha256sum $dst" ||
-        command-error "cannot install $dst in $(pool-vm-label "$vmdir")"
-    [ "${COMMAND_OUTPUT%% *}" == "$sum" ] || error "llm-vm-put: $dst in $(pool-vm-label "$vmdir") is not a copy of $src"
+    vmdir-command "$vmdir" "mkdir -p $(dirname "$dst")" || command-error "cannot create $(dirname "$dst") in $(vmdir-label "$vmdir")"
+    vmdir-put-file "$vmdir" "$src" "$dst"
+    vmdir-command "$vmdir" "chown root:root $dst && chmod $mode $dst && sha256sum $dst" ||
+        command-error "cannot install $dst in $(vmdir-label "$vmdir")"
+    [ "${COMMAND_OUTPUT%% *}" == "$sum" ] || error "llm-vm-put: $dst in $(vmdir-label "$vmdir") is not a copy of $src"
 }
 
 llm-install() { # script API
@@ -123,11 +123,11 @@ llm-install() { # script API
     if [ "$with_model" == model ]; then
         [ -n "$LLM_MODEL" ] || error "llm-install: run llm-model-fetch first"
         llm-vm-put "$vmdir" "$LLM_MODEL" "$LLM_VM_MODEL" 0444
-        pool-vm-command "$vmdir" "find $LLM_VM_MODEL_DIR -mindepth 1 ! -path $LLM_VM_MODEL -delete; find $LLM_VM_DIR -mindepth 1 -maxdepth 1 ! -path $LLM_VM_MODEL_DIR ! -path $LLM_VM_IMAGE ! -path $LLM_VM_STAMP -exec rm -rf {} +; ls -la $LLM_VM_DIR $LLM_VM_MODEL_DIR" ||
-            command-error "cannot clean up $LLM_VM_DIR in $(pool-vm-label "$vmdir")"
+        vmdir-command "$vmdir" "find $LLM_VM_MODEL_DIR -mindepth 1 ! -path $LLM_VM_MODEL -delete; find $LLM_VM_DIR -mindepth 1 -maxdepth 1 ! -path $LLM_VM_MODEL_DIR ! -path $LLM_VM_IMAGE ! -path $LLM_VM_STAMP -exec rm -rf {} +; ls -la $LLM_VM_DIR $LLM_VM_MODEL_DIR" ||
+            command-error "cannot clean up $LLM_VM_DIR in $(vmdir-label "$vmdir")"
     else
-        pool-vm-command "$vmdir" "rm -rf $LLM_VM_DIR && mkdir -p $LLM_VM_DIR && ls -la $LLM_VM_DIR" ||
-            command-error "cannot remove the model from $(pool-vm-label "$vmdir")"
+        vmdir-command "$vmdir" "rm -rf $LLM_VM_DIR && mkdir -p $LLM_VM_DIR && ls -la $LLM_VM_DIR" ||
+            command-error "cannot remove the model from $(vmdir-label "$vmdir")"
     fi
 }
 
@@ -142,19 +142,19 @@ llm-image-build() { # script API
     # extent (layout 0) at a 2 MiB-aligned offset of the image. Set
     # LLM_IMAGE_SIZE and LLM_IMAGE_SHA256.
     local vmdir="$1" label stamp out
-    label=$(pool-vm-label "$vmdir")
+    label=$(vmdir-label "$vmdir")
     stamp="model sha256 $LLM_MODEL_SHA256, $LLM_MKFS"
-    pool-vm-command-q "$vmdir" "command -v mkfs.erofs >/dev/null && command -v dump.erofs >/dev/null" ||
-        pool-vm-command "$vmdir" "dnf install -y erofs-utils" ||
+    vmdir-command-q "$vmdir" "command -v mkfs.erofs >/dev/null && command -v dump.erofs >/dev/null" ||
+        vmdir-command "$vmdir" "dnf install -y erofs-utils" ||
             command-error "cannot install erofs-utils in $label"
-    pool-vm-command "$vmdir" "mkfs.erofs --version | head -n 1" || command-error "no mkfs.erofs in $label"
-    if [ "$(pool-vm-command-q "$vmdir" "cat $LLM_VM_STAMP 2>/dev/null && test -f $LLM_VM_IMAGE")" == "$stamp" ]; then
+    vmdir-command "$vmdir" "mkfs.erofs --version | head -n 1" || command-error "no mkfs.erofs in $label"
+    if [ "$(vmdir-command-q "$vmdir" "cat $LLM_VM_STAMP 2>/dev/null && test -f $LLM_VM_IMAGE")" == "$stamp" ]; then
         echo "llm-image-build: $label:$LLM_VM_IMAGE is up to date ($stamp)"
     else
-        pool-vm-command "$vmdir" "rm -f $LLM_VM_STAMP $LLM_VM_IMAGE && $LLM_MKFS $LLM_VM_IMAGE $LLM_VM_MODEL_DIR && echo '$stamp' > $LLM_VM_STAMP" ||
+        vmdir-command "$vmdir" "rm -f $LLM_VM_STAMP $LLM_VM_IMAGE && $LLM_MKFS $LLM_VM_IMAGE $LLM_VM_MODEL_DIR && echo '$stamp' > $LLM_VM_STAMP" ||
             command-error "cannot build the erofs image $LLM_VM_IMAGE in $label"
     fi
-    pool-vm-command "$vmdir" "dump.erofs -e --path=/$LLM_MODEL_FILE $LLM_VM_IMAGE" ||
+    vmdir-command "$vmdir" "dump.erofs -e --path=/$LLM_MODEL_FILE $LLM_VM_IMAGE" ||
         command-error "dump.erofs cannot show /$LLM_MODEL_FILE in $LLM_VM_IMAGE"
     out="$COMMAND_OUTPUT"
     # The extent line: "   0:        0..396705792 | 396705792 :    2097152.. 398802944 | 396705792".
@@ -171,7 +171,7 @@ if int(exts[0][3]) % (2 << 20):
     sys.exit("the model starts at %s of the image, not at a 2 MiB-aligned offset" % exts[0][3])
 print("the model: one plain extent at offset %s of the image" % exts[0][3])' "$out" "$LLM_MODEL_SIZE" ||
         error "llm-image-build: $LLM_VM_IMAGE does not have the model in one plain 2 MiB-aligned extent"
-    pool-vm-command "$vmdir" "stat -c %s $LLM_VM_IMAGE && sha256sum $LLM_VM_IMAGE" ||
+    vmdir-command "$vmdir" "stat -c %s $LLM_VM_IMAGE && sha256sum $LLM_VM_IMAGE" ||
         command-error "cannot read $LLM_VM_IMAGE in $label"
     LLM_IMAGE_SIZE=$(head -n 1 <<< "$COMMAND_OUTPUT")
     LLM_IMAGE_SHA256=$(sed -n '2s/ .*//p' <<< "$COMMAND_OUTPUT")
@@ -221,7 +221,7 @@ llm-writer-wait() { # script API
     local vmdir="$1" pod="$2" tmo="${3:-180}"
     retry-until --timeout "$tmo" --interval 1 --message "$pod: the writer exits" \
         'LLM_LOG=$(dra-pod-log "$vmdir" "$pod") && grep -qE "^writer exit [0-9]+$" <<< "$LLM_LOG"' || {
-        dra-vm-command "$vmdir" "kubectl logs -n $DRA_NS $pod; kubectl describe pod -n $DRA_NS $pod | tail -n 20"
+        vmdir-command "$vmdir" "kubectl logs -n $DRA_NS $pod; kubectl describe pod -n $DRA_NS $pod | tail -n 20"
         error "the writer in pod $pod did not exit in ${tmo}s"
     }
     grep -qx "writer exit 0" <<< "$LLM_LOG" || {
@@ -345,7 +345,7 @@ llm-pod-ip() { # script API
     # Print the IP address of pod POD in $DRA_NS, quietly. Return 1 if it
     # has none.
     local ip
-    ip=$(dra-vm-command-q "$OUTPUT_DIR" "kubectl get pod -n $DRA_NS $1 -o jsonpath={.status.podIP}")
+    ip=$(vmdir-command-q "$OUTPUT_DIR" "kubectl get pod -n $DRA_NS $1 -o jsonpath={.status.podIP}")
     [ -n "$ip" ] || return 1
     echo "$ip"
 }
@@ -357,10 +357,10 @@ llm-server-ready() {
     # pod IP, asked from the VM of VMDIR. Return 2 if the pod has
     # terminated.
     local vmdir="$1" pod="$2" ip phase
-    phase=$(dra-vm-command-q "$OUTPUT_DIR" "kubectl get pod -n $DRA_NS $pod -o jsonpath={.status.phase}")
+    phase=$(vmdir-command-q "$OUTPUT_DIR" "kubectl get pod -n $DRA_NS $pod -o jsonpath={.status.phase}")
     case "$phase" in Succeeded|Failed) return 2;; esac
     ip=$(llm-pod-ip "$pod") || return 1
-    [ "$(dra-vm-command-q "$vmdir" "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://$ip:$LLM_SERVER_PORT/health")" == 200 ]
+    [ "$(vmdir-command-q "$vmdir" "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://$ip:$LLM_SERVER_PORT/health")" == 200 ]
 }
 
 llm-server-wait() { # script API
@@ -376,7 +376,7 @@ llm-server-wait() { # script API
     LLM_LOG=$(dra-pod-log "$OUTPUT_DIR" "$pod")
     if [ "$rc" != 0 ]; then
         echo "$LLM_LOG"
-        dra-vm-command "$OUTPUT_DIR" "kubectl describe pod -n $DRA_NS $pod | tail -n 20"
+        vmdir-command "$OUTPUT_DIR" "kubectl describe pod -n $DRA_NS $pod | tail -n 20"
         [ "$rc" == 2 ] && error "llama-server in pod $pod terminated before it served"
         error "llama-server in pod $pod did not serve in ${tmo}s"
     fi
@@ -392,7 +392,7 @@ llm-ask() { # script API
     # space. Fail the test if there is none.
     local vmdir="$1" pod="$2" ip
     ip=$(llm-pod-ip "$pod") || error "llm-ask: pod $pod has no IP"
-    pool-vm-command "$vmdir" "curl -sS --max-time 120 -H 'Content-Type: application/json' http://$ip:$LLM_SERVER_PORT/completion -d @- <<'LLM_ASK_EOF'
+    vmdir-command "$vmdir" "curl -sS --max-time 120 -H 'Content-Type: application/json' http://$ip:$LLM_SERVER_PORT/completion -d @- <<'LLM_ASK_EOF'
 {\"prompt\": \"$LLM_PROMPT\", \"n_predict\": 32, \"temperature\": 0, \"top_k\": 1}
 LLM_ASK_EOF" || command-error "llm-ask: no response of llama-server in pod $pod"
     LLM_ANSWER="$COMMAND_OUTPUT"
@@ -414,7 +414,7 @@ llm-page-cache() { # script API
     #
     # Print the page cache of the VM of VMDIR, the sum of FilePages of its
     # NUMA nodes, in kB, quietly.
-    pool-vm-command-q "$1" "cat /sys/devices/system/node/node*/meminfo" | awk '$3 == "FilePages:" { kb += $4 } END { print kb + 0 }'
+    vmdir-command-q "$1" "cat /sys/devices/system/node/node*/meminfo" | awk '$3 == "FilePages:" { kb += $4 } END { print kb + 0 }'
 }
 
 llm-pod-file() { # script API
@@ -425,7 +425,7 @@ llm-pod-file() { # script API
     # its memory.stat), quietly. Return 1 if there is no such cgroup.
     local cg bytes
     cg=$(dra-container-cgroup "$1" "$2" main) || return 1
-    bytes=$(pool-vm-command-q "$1" "awk '\$1 == \"file\" {print \$2}' $(dirname "$cg")/memory.stat")
+    bytes=$(vmdir-command-q "$1" "awk '\$1 == \"file\" {print \$2}' $(dirname "$cg")/memory.stat")
     [ -n "$bytes" ] || return 1
     echo "$bytes"
 }
@@ -436,7 +436,7 @@ llm-file-charges() { # script API
     # Print the page cache charged to the cgroups of the VM of VMDIR down
     # to the pods of Kubernetes, one "kB CGROUP" per line ("file" of
     # memory.stat), quietly.
-    pool-vm-command-q "$1" "for f in /sys/fs/cgroup/*/memory.stat /sys/fs/cgroup/*/*/memory.stat /sys/fs/cgroup/kubepods.slice/*/*/memory.stat; do [ -f \"\$f\" ] && echo \"\$(( \$(awk '\$1 == \"file\" {print \$2}' \"\$f\") / 1024 )) \${f%/memory.stat}\"; done"
+    vmdir-command-q "$1" "for f in /sys/fs/cgroup/*/memory.stat /sys/fs/cgroup/*/*/memory.stat /sys/fs/cgroup/kubepods.slice/*/*/memory.stat; do [ -f \"\$f\" ] && echo \"\$(( \$(awk '\$1 == \"file\" {print \$2}' \"\$f\") / 1024 )) \${f%/memory.stat}\"; done"
 }
 
 llm-file-charges-delta() { # script API
@@ -461,7 +461,7 @@ llm-server-pid() { # script API
     # does not run.
     local cg pid
     cg=$(dra-container-cgroup "$1" "$2" main) || return 1
-    pid=$(pool-vm-command-q "$1" "for p in \$(cat $cg/cgroup.procs); do [ \"\$(cat /proc/\$p/comm 2>/dev/null)\" == llama-server ] && echo \$p; done")
+    pid=$(vmdir-command-q "$1" "for p in \$(cat $cg/cgroup.procs); do [ \"\$(cat /proc/\$p/comm 2>/dev/null)\" == llama-server ] && echo \$p; done")
     [ -n "$pid" ] || return 1
     echo "$pid"
 }
@@ -473,7 +473,7 @@ llm-rss-anon() { # script API
     # it does not run.
     local pid
     pid=$(llm-server-pid "$1" "$2") || return 1
-    pool-vm-command-q "$1" "awk '\$1 == \"RssAnon:\" {print \$2}' /proc/$pid/status"
+    vmdir-command-q "$1" "awk '\$1 == \"RssAnon:\" {print \$2}' /proc/$pid/status"
 }
 
 llm-where() { # script API
@@ -485,7 +485,7 @@ llm-where() { # script API
     # one object per mapping (see cxl-where.py).
     local vmdir="$1" pod="$2" path="$3" pid
     pid=$(llm-server-pid "$vmdir" "$pod") || error "llm-where: no llama-server runs in pod $pod"
-    pool-vm-command "$vmdir" "$LLM_VM_WHERE $pid $path" ||
+    vmdir-command "$vmdir" "$LLM_VM_WHERE $pid $path" ||
         command-error "cxl-where.py failed on llama-server of pod $pod"
     LLM_WHERE=$(python3 -c 'import json, sys; print(json.dumps([json.loads(l) for l in sys.stdin if l.startswith("{")]))' <<< "$COMMAND_OUTPUT")
 }
@@ -539,7 +539,7 @@ llm-loop-reads() { # script API
     # since it was created, or through LOOP (loopN) only, "loopN BYTES"
     # per line (sectors read of /sys/block/loopN/stat, 512 bytes each),
     # quietly. Return non-zero if they cannot be read.
-    pool-vm-command-q "$1" "test -d /sys/block || exit 1; for d in /sys/block/${2:-loop[0-9]*}; do [ -f \$d/stat ] || continue; echo \"\${d#/sys/block/} \$(( \$(awk '{print \$3}' \$d/stat) * 512 ))\"; done"
+    vmdir-command-q "$1" "test -d /sys/block || exit 1; for d in /sys/block/${2:-loop[0-9]*}; do [ -f \$d/stat ] || continue; echo \"\${d#/sys/block/} \$(( \$(awk '{print \$3}' \$d/stat) * 512 ))\"; done"
 }
 
 llm-fincore() { # script API
@@ -548,7 +548,7 @@ llm-fincore() { # script API
     # Print how many bytes of FILE in the VM of VMDIR are in its page
     # cache (fincore RES), quietly. Return non-zero if fincore fails.
     local res
-    res=$(pool-vm-command-q "$1" "fincore -b -n -o RES $2") || return 1
+    res=$(vmdir-command-q "$1" "fincore -b -n -o RES $2") || return 1
     [[ "$res" =~ ^[[:space:]]*[0-9]+[[:space:]]*$ ]] || return 1
     echo $(( res ))
 }
@@ -567,7 +567,7 @@ llm-serve-sampled() { # script API
     local vmdir="$1" pod="$2" path="$3" loop="$4" n="$5" ip pid out
     ip=$(llm-pod-ip "$pod") || error "llm-serve-sampled: pod $pod has no IP"
     pid=$(llm-server-pid "$vmdir" "$pod") || error "llm-serve-sampled: no llama-server runs in pod $pod"
-    pool-vm-command "$vmdir" "req=/tmp/llm-serve-$pod.json; res=/tmp/llm-serve-$pod.out
+    vmdir-command "$vmdir" "req=/tmp/llm-serve-$pod.json; res=/tmp/llm-serve-$pod.out
 cat > \$req <<'LLM_SERVE_EOF'
 {\"prompt\": \"$LLM_PROMPT\", \"n_predict\": $n, \"ignore_eos\": true, \"temperature\": 0, \"top_k\": 1}
 LLM_SERVE_EOF

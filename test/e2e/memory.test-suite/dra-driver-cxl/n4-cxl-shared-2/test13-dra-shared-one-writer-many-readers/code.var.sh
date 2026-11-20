@@ -143,8 +143,8 @@ companions-of() {
     #
     # Print "NAME PHASE" of the companion pods of the leases of pod POD.
     local uid
-    uid=$(dra-vm-command-q "$VM2" "kubectl get pod -n $DRA_NS $1 -o jsonpath={.metadata.uid}")
-    dra-vm-command-q "$VM2" "kubectl get pods -n $DRA_NS -l $DRA_REQUESTER_LABEL=$uid -o jsonpath='{range .items[*]}{.metadata.name}{\" \"}{.status.phase}{\"\\n\"}{end}'"
+    uid=$(vmdir-command-q "$VM2" "kubectl get pod -n $DRA_NS $1 -o jsonpath={.metadata.uid}")
+    vmdir-command-q "$VM2" "kubectl get pods -n $DRA_NS -l $DRA_REQUESTER_LABEL=$uid -o jsonpath='{range .items[*]}{.metadata.name}{\" \"}{.status.phase}{\"\\n\"}{end}'"
 }
 
 echo "### preconditions: patched qemu, hdm_for_passthrough=on, CONFIG_FS_DAX"
@@ -266,8 +266,8 @@ for r in "${READERS[@]}"; do
     dra-wait-log "$VM2" "$r" holding 120
 done
 retry-until --timeout 60 --interval 1 --message "the companion of the writer is gone" \
-    '[ -z "$(dra-vm-command-q "$VM2" "kubectl get pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL=$WRITER_LEASE -o name")" ]' ||
-    error "the lease of the writer left $(dra-vm-command-q "$VM2" "kubectl get pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL=$WRITER_LEASE -o name")"
+    '[ -z "$(vmdir-command-q "$VM2" "kubectl get pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL=$WRITER_LEASE -o name")" ]' ||
+    error "the lease of the writer left $(vmdir-command-q "$VM2" "kubectl get pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL=$WRITER_LEASE -o name")"
 
 echo "### E: the readers read the same bytes at the same time, read-only"
 for r in "${READERS[@]}"; do
@@ -312,7 +312,7 @@ dra-assert "$json" "j['state'] == 'Failed' and 'timeout' in j['error']"
 # shellcheck disable=SC2034 # used in the snippet of retry-until
 LATE_LEASE=$(dra-value "$json" "j['lease']")
 retry-until --timeout 60 --interval 1 --message "nothing left of the late exclusive lease" \
-    '[ -z "$(dra-vm-command-q "$VM2" "kubectl get pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL=$LATE_LEASE -o name")" ]' ||
+    '[ -z "$(vmdir-command-q "$VM2" "kubectl get pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL=$LATE_LEASE -o name")" ]' ||
     error "the late exclusive lease left objects behind"
 for r in "${READERS[@]}"; do
     dra-pod-log "$VM2" "$r" | grep -q '^final: ' && error "$r lost its memory to the late exclusive request"
@@ -368,7 +368,7 @@ done
 pool-device-free-wait shared0 "$VM2" "$VM1"
 for vm in "$VM2" "$VM1"; do
     pool-vm-monitor "$vm" "info qtree -b" | grep -q 'dev: cxl-type3' &&
-        error "qemu of $(pool-vm-label "$vm") still has a CXL memory device"
+        error "qemu of $(vmdir-label "$vm") still has a CXL memory device"
 done
 
 dra-assert-clean "$VM2" "$VM1"

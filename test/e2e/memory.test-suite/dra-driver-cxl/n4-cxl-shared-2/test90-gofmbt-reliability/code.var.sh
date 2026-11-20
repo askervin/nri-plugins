@@ -299,10 +299,10 @@ mbt-setup-ids "$VM2" "$VM1" "$VM0"
 dra-install
 [ "${DRA_CONTROLLER_UNITS[*]}" == "${MBT_POOL_UNIT[a]} ${MBT_POOL_UNIT[b]} ${MBT_POOL_UNIT[c]}" ] ||
     error "dra-install started the controllers ${DRA_CONTROLLER_UNITS[*]}, expected one per pool"
-dra-vm-command "$VM2" "systemctl is-active ${DRA_CONTROLLER_UNITS[*]}" ||
+vmdir-command "$VM2" "systemctl is-active ${DRA_CONTROLLER_UNITS[*]}" ||
     command-error "the pool controllers do not all run"
 for p in "${MBT_POOL_IDS[@]}"; do
-    dra-vm-command "$VM2" "journalctl --no-pager -o cat -u ${MBT_POOL_UNIT[$p]} | grep -m1 -F 'pool ${MBT_POOL_SERVER[$p]} (from the server)'" ||
+    vmdir-command "$VM2" "journalctl --no-pager -o cat -u ${MBT_POOL_UNIT[$p]} | grep -m1 -F 'pool ${MBT_POOL_SERVER[$p]} (from the server)'" ||
         command-error "${MBT_POOL_UNIT[$p]} did not take the pool name ${MBT_POOL_SERVER[$p]} from its server"
 done
 echo "### 0: the fencing mode of every driver: $MBT_FENCING_START (MBT_FENCING=$MBT_FENCING)"
@@ -313,7 +313,7 @@ echo "### 0: the local memdev of every VM, attached by the server that knows it"
 for vm in "${VMS[@]}"; do
     dra-local-device --pool "${LOCAL_SERVER[$vm]}" "$vm"
     [ "$DRA_LOCAL_SERIAL" == "$MBT_LOCAL_SERIAL" ] ||
-        error "the local memdev of $(dra-vm-label "$vm") is $DRA_LOCAL_SERIAL, expected $MBT_LOCAL_SERIAL"
+        error "the local memdev of $(vmdir-label "$vm") is $DRA_LOCAL_SERIAL, expected $MBT_LOCAL_SERIAL"
 done
 LOCAL_BLOCKS=$(mbt-local-blocks) ||
     error "a node does not publish the local memdev memdev-${MBT_LOCAL_HEX,,} with its capacity in its cxl.nri.io ResourceSlice"
@@ -325,7 +325,7 @@ for vm in "${VMS[@]}"; do
 done
 dra-dax-tool-install "$VM2" "pmem-rw.py=$TEST_DIR/pmem-rw.py" "hello.erofs.hex=$TEST_DIR/hello.erofs.hex"
 mbt-templates-apply
-dra-vm-command "$VM2" "kubectl get resourceclaimtemplates -n $DRA_NS" ||
+vmdir-command "$VM2" "kubectl get resourceclaimtemplates -n $DRA_NS" ||
     command-error "cannot list the ResourceClaimTemplates"
 mbt-observer-install "$VM2" "$VM1" "$VM0"
 mbt-observe 0 1
@@ -342,7 +342,7 @@ echo "### 0: the kube-scheduler: the stall window of A19/A28"
 # A28: a kube-scheduler with the fix of bug-08 (its image or version has
 # "dra-requeue") promotes a stalled contender within seconds:
 # --stall-window=30s. MBT_STALL_WINDOW set by the user wins.
-sched=$(dra-vm-command-q "$VM2" "p=\$(kubectl get pods -n kube-system -l component=kube-scheduler -o jsonpath='{.items[0].metadata.name}')
+sched=$(vmdir-command-q "$VM2" "p=\$(kubectl get pods -n kube-system -l component=kube-scheduler -o jsonpath='{.items[0].metadata.name}')
 echo \"image \$(kubectl get pod -n kube-system \$p -o jsonpath='{.spec.containers[0].image}')\"
 echo \"version \$(kubectl logs -n kube-system \$p 2>/dev/null | grep -m1 -o 'Starting Kubernetes Scheduler.*version=[^ ]*' | sed 's/.*version=//')\"") ||
     echo "WARNING: cannot read the kube-scheduler of the cluster: $sched"
@@ -411,7 +411,7 @@ echo "### 2: teardown: every pod deleted, every device back"
 mbt-teardown
 for vm in "${VMS[@]}"; do
     pool-vm-monitor "$vm" "info qtree -b" | grep -c 'dev: cxl-type3' | grep -qx 1 ||
-        error "qemu of $(pool-vm-label "$vm") does not have exactly its local CXL memory device: $(pool-vm-monitor "$vm" "info qtree -b" | grep -c 'dev: cxl-type3') devices"
+        error "qemu of $(vmdir-label "$vm") does not have exactly its local CXL memory device: $(pool-vm-monitor "$vm" "info qtree -b" | grep -c 'dev: cxl-type3') devices"
 done
 if [ -n "$DRA_TRACE_RUNNING" ]; then
     dra-trace-stop
@@ -432,7 +432,7 @@ for port in "$POOL_PORT" 9910 9911; do
 done
 for vm in "${VMS[@]}"; do
     pool-vm-monitor "$vm" "info qtree -b" | grep -q 'dev: cxl-type3' &&
-        error "qemu of $(pool-vm-label "$vm") still has a CXL memory device"
+        error "qemu of $(vmdir-label "$vm") still has a CXL memory device"
 done
 [ "$MBT_TRACE" == 0 ] || echo "trace: $TEST_OUTPUT_DIR/trace.txt, summary: $TEST_OUTPUT_DIR/trace-summary.txt"
 echo "mbt: steps $TEST_OUTPUT_DIR/mbt-steps.txt, executor log $MBT_EXEC_LOG, generator log $MBT_LOG"

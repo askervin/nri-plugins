@@ -130,13 +130,13 @@ pool-snapshot shared0-attached
 echo "### D: shared0 as a devdax device in both VMs (mode dax)"
 for vm in "$VM2" "$VM1"; do
     pool-client "$vm" -o json guest region create shared0 --mode dax ||
-        command-error "cannot create a dax region of shared0 in $(pool-vm-label "$vm")"
+        command-error "cannot create a dax region of shared0 in $(vmdir-label "$vm")"
     pool-assert "$COMMAND_OUTPUT" 'j["mode"] == "dax" and j["driver"] == "device_dax" and j["device"].startswith("/dev/dax")'
     dax=$(pool-value "$COMMAND_OUTPUT" 'j["device"]')
-    pool-vm-command "$vm" "ls -l $dax && daxctl list -d ${dax#/dev/}" ||
-        command-error "devdax device $dax is missing in $(pool-vm-label "$vm")"
-    pool-vm-command "$vm" "cat /sys/bus/dax/devices/${dax#/dev/}/size" ||
-        command-error "cannot read the size of $dax in $(pool-vm-label "$vm")"
+    vmdir-command "$vm" "ls -l $dax && daxctl list -d ${dax#/dev/}" ||
+        command-error "devdax device $dax is missing in $(vmdir-label "$vm")"
+    vmdir-command "$vm" "cat /sys/bus/dax/devices/${dax#/dev/}/size" ||
+        command-error "cannot read the size of $dax in $(vmdir-label "$vm")"
     [ "$COMMAND_OUTPUT" == "$MEM_SIZE" ] ||
         error "devdax device $dax has $COMMAND_OUTPUT bytes, expected $MEM_SIZE"
     pool-cxl-dump "$vm" devdax
@@ -152,15 +152,15 @@ echo "devdax devices: VM2 $VM2_DAX, VM1 $VM1_DAX"
 echo "### E: what one VM writes the other reads, and the host finds in the backing file"
 TAG="fake-cxl-pool $(date +%Y-%m-%dT%H:%M:%S.%N)"
 dax-write() { # VMDIR DAX OFFSET TEXT
-    pool-vm-command "$1" "python3 /usr/local/bin/pool-dax-rw.py write $2 $3 '$4'" ||
-        command-error "cannot write to $2 in $(pool-vm-label "$1")"
+    vmdir-command "$1" "python3 /usr/local/bin/pool-dax-rw.py write $2 $3 '$4'" ||
+        command-error "cannot write to $2 in $(vmdir-label "$1")"
 }
 dax-expect() { # VMDIR DAX OFFSET TEXT
-    pool-vm-command "$1" "python3 /usr/local/bin/pool-dax-rw.py read $2 $3" ||
-        command-error "cannot read $2 in $(pool-vm-label "$1")"
+    vmdir-command "$1" "python3 /usr/local/bin/pool-dax-rw.py read $2 $3" ||
+        command-error "cannot read $2 in $(vmdir-label "$1")"
     [ "$COMMAND_OUTPUT" == "$4" ] ||
-        error "$(pool-vm-label "$1") read '$COMMAND_OUTPUT' at $3 of $2, expected '$4'"
-    echo "$(pool-vm-label "$1") read at $3: '$COMMAND_OUTPUT'"
+        error "$(vmdir-label "$1") read '$COMMAND_OUTPUT' at $3 of $2, expected '$4'"
+    echo "$(vmdir-label "$1") read at $3: '$COMMAND_OUTPUT'"
 }
 dax-write "$VM1" "$VM1_DAX" 0 "$TAG from VM1 at 0M"
 dax-write "$VM1" "$VM1_DAX" 128M "$TAG from VM1 at 128M"
@@ -184,7 +184,7 @@ host-command "strings $SHARED_FILE | grep -F '$TAG'" ||
 
 echo "### F: release shared0 in both VMs, detach it from both"
 for vm in "$VM2" "$VM1"; do
-    pool-client "$vm" guest release shared0 || command-error "cannot release shared0 in $(pool-vm-label "$vm")"
+    pool-client "$vm" guest release shared0 || command-error "cannot release shared0 in $(vmdir-label "$vm")"
     pool-cxl-dump "$vm" shared0-released
     cxl-assert "regions == [] and not enabled(by_serial($SHARED_SERIAL))"
 done

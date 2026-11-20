@@ -163,7 +163,7 @@ pod-node() {
     # Usage: pod-node POD
     #
     # Print the node of pod POD in $DRA_NS.
-    dra-vm-command-q "$VM2" "kubectl get pod -n $DRA_NS $1 -o jsonpath={.spec.nodeName}"
+    vmdir-command-q "$VM2" "kubectl get pod -n $DRA_NS $1 -o jsonpath={.spec.nodeName}"
 }
 
 pool-attachments-of() {
@@ -195,7 +195,7 @@ monitors-answer() {
     for vmdir in "$@"; do
         out=$(pool-vm-monitor "$vmdir" "info qtree -b")
         grep -q 'dev: cxl-downstream' <<< "$out" ||
-            error "the monitor of $(pool-vm-label "$vmdir") did not answer info qtree -b: $(head -c 500 <<< "$out")"
+            error "the monitor of $(vmdir-label "$vmdir") did not answer info qtree -b: $(head -c 500 <<< "$out")"
         MONITOR_ANSWERS=$(( MONITOR_ANSWERS + 1 ))
     done
 }
@@ -264,10 +264,10 @@ dra-build
 dra-install
 [ "${DRA_CONTROLLER_UNITS[*]}" == "${POOL_UNIT[pool-a]} ${POOL_UNIT[pool-b]} ${POOL_UNIT[pool-c]}" ] ||
     error "dra-install started the controllers ${DRA_CONTROLLER_UNITS[*]}, expected one per pool"
-dra-vm-command "$VM2" "systemctl is-active ${DRA_CONTROLLER_UNITS[*]}" ||
+vmdir-command "$VM2" "systemctl is-active ${DRA_CONTROLLER_UNITS[*]}" ||
     command-error "the pool controllers do not all run"
 for pool in "${POOLS[@]}"; do
-    dra-vm-command "$VM2" "journalctl --no-pager -o cat -u ${POOL_UNIT[$pool]} | grep -m1 -F 'pool $pool (from the server)'" ||
+    vmdir-command "$VM2" "journalctl --no-pager -o cat -u ${POOL_UNIT[$pool]} | grep -m1 -F 'pool $pool (from the server)'" ||
         command-error "${POOL_UNIT[$pool]} did not take the pool name $pool from its server"
 done
 for vm in "${VMS[@]}"; do
@@ -374,7 +374,7 @@ dra-apply "$VM2" <<< "$(dra-shared-claim-yaml e-claim "$A_SHARED0_SERIAL" 1 "mod
 $(pod-yaml e-pod "$VM0_NAME" "true" e-claim)"
 dra-wait "$VM2" e-unschedulable "events -n $DRA_NS" "events('FailedScheduling', 'e-pod')" 60
 dra-kubectl "$VM2" "get events -n $DRA_NS --field-selector involvedObject.name=e-pod"
-dra-assert "$(dra-vm-command-q "$VM2" "kubectl get events -n $DRA_NS -o json")" \
+dra-assert "$(vmdir-command-q "$VM2" "kubectl get events -n $DRA_NS -o json")" \
     "all(e['message'].startswith('0/3 nodes are available') for e in events('FailedScheduling', 'e-pod'))"
 # The scheduler does not allocate the claim late either: the controller of
 # pool-a is never asked to attach a-shared0 to VM0.
@@ -496,7 +496,7 @@ for pool in "${POOLS[@]}"; do
 done
 for vm in "${VMS[@]}"; do
     pool-vm-monitor "$vm" "info qtree -b" | grep -q 'dev: cxl-type3' &&
-        error "qemu of $(pool-vm-label "$vm") still has a CXL memory device"
+        error "qemu of $(vmdir-label "$vm") still has a CXL memory device"
 done
 grep -E 'attachment c-shared0@.*: (attached|detached)' "${POOL_SERVER_LOGS[pool-c]}" ||
     error "pool-c logged no attach and detach of c-shared0, see ${POOL_SERVER_LOGS[pool-c]}"

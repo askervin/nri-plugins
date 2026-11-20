@@ -131,10 +131,10 @@ fs0-free() {
     local vm regions
     pool-device-free-wait "$FS_DEVICE" "$VM2" "$VM1"
     for vm in "$VM2" "$VM1"; do
-        regions=$(pool-vm-command-q "$vm" "ls /sys/bus/cxl/devices/") ||
-            error "cannot list the CXL devices of $(pool-vm-label "$vm")"
+        regions=$(vmdir-command-q "$vm" "ls /sys/bus/cxl/devices/") ||
+            error "cannot list the CXL devices of $(vmdir-label "$vm")"
         ! grep -q '^region[0-9]' <<< "$regions" ||
-            error "$(pool-vm-label "$vm") still has a CXL region: $(grep '^region[0-9]' <<< "$regions" | tr '\n' ' ')"
+            error "$(vmdir-label "$vm") still has a CXL region: $(grep '^region[0-9]' <<< "$regions" | tr '\n' ' ')"
         fs-no-mounts-assert "$vm" "$DRA_POOL_MOUNT_DIR"
     done
     echo "$FS_DEVICE is free: no CXL memory devices, regions, node mounts or loop devices in either VM"
@@ -217,9 +217,9 @@ superblock-wait() {
     shift 2
     accesses="$*"
     # shellcheck disable=SC2086 # the accesses are words
-    retry-until --timeout 60 --message "$(pool-vm-label "$vm"): the ext4 of $FS_DEVICE $sb" \
+    retry-until --timeout 60 --message "$(vmdir-label "$vm"): the ext4 of $FS_DEVICE $sb" \
         'fs-node-mounts-assert "$vm" "$DRA_POOL_MOUNT_DIR" "$FS_MOUNT_ID" ext4 "$sb" "" $accesses >/dev/null 2>&1' ||
-        error "$(pool-vm-label "$vm"): the superblock of the ext4 of $FS_DEVICE is not $sb"
+        error "$(vmdir-label "$vm"): the superblock of the ext4 of $FS_DEVICE is not $sb"
     fs-node-mounts-assert "$vm" "$DRA_POOL_MOUNT_DIR" "$FS_MOUNT_ID" ext4 "$sb" "" "$@"
 }
 
@@ -228,10 +228,10 @@ ext4-clean-assert() {
     #
     # Fail the test unless the ext4 on DEV in the VM of VMDIR is clean: no
     # needs_recovery feature, state clean (dumpe2fs -h).
-    pool-vm-command "$1" "dumpe2fs -h $2 2>/dev/null | grep -E '^(Filesystem features|Filesystem state):'" ||
-        command-error "cannot read the ext4 superblock of $2 in $(pool-vm-label "$1")"
-    ! grep -qw needs_recovery <<< "$COMMAND_OUTPUT" || error "$(pool-vm-label "$1"): the ext4 on $2 needs recovery after the downgrade"
-    grep -qE '^Filesystem state: +clean$' <<< "$COMMAND_OUTPUT" || error "$(pool-vm-label "$1"): the ext4 on $2 is not clean after the downgrade"
+    vmdir-command "$1" "dumpe2fs -h $2 2>/dev/null | grep -E '^(Filesystem features|Filesystem state):'" ||
+        command-error "cannot read the ext4 superblock of $2 in $(vmdir-label "$1")"
+    ! grep -qw needs_recovery <<< "$COMMAND_OUTPUT" || error "$(vmdir-label "$1"): the ext4 on $2 needs recovery after the downgrade"
+    grep -qE '^Filesystem state: +clean$' <<< "$COMMAND_OUTPUT" || error "$(vmdir-label "$1"): the ext4 on $2 is not clean after the downgrade"
 }
 
 write-image() {
@@ -260,7 +260,7 @@ lease-bind-assert() {
     # at $DRA_LEASE_FS_DIR/CLAIM-UID/NAME: the ext4 of the direct node mount
     # (the same source), with the mount options ro or rw, nosuid and nodev.
     local vm="$1" target="$DRA_LEASE_FS_DIR/$2/$3" rw="$4" nodes label
-    label=$(pool-vm-label "$vm")
+    label=$(vmdir-label "$vm")
     dra-fs-mounts "$vm" || error "cannot read the mounts of $label"
     nodes="$COMMAND_OUTPUT"
     dra-lease-fs-mounts "$vm" || error "cannot read the lease mounts of $label"
@@ -285,7 +285,7 @@ lease-pod-start() {
     # Create pod NAME on the node of VMDIR with a lease claim from
     # $LEASE_TEMPLATE in container main, and wait until it runs. Set
     # LEASE_CLAIM_UID to the uid of its lease claim.
-    dra-apply "$VM2" <<< "$(dra-pod-yaml "$1" "$(dra-vm-name "$2")" "lease=template:$LEASE_TEMPLATE")"
+    dra-apply "$VM2" <<< "$(dra-pod-yaml "$1" "$(vmdir-name "$2")" "lease=template:$LEASE_TEMPLATE")"
     dra-pod-wait "$VM2" "$1" Running 120
     dra-json "$VM2" pod -n "$DRA_NS" "$1"
     dra-json "$VM2" resourceclaim -n "$DRA_NS" "$(dra-value "$COMMAND_OUTPUT" "j['status']['resourceClaimStatuses'][0]['resourceClaimName']")"
@@ -320,7 +320,7 @@ for vm in "$VM2" "$VM1"; do
 done
 fs-tools-install "$VM1" mkfs.ext4 debugfs dumpe2fs mkfs.xfs mkfs.btrfs mksquashfs mkfs.erofs blkid
 fs-tools-install "$VM2" dumpe2fs
-pool-vm-command "$VM1" "rm -rf $FS_VM_DIR && mkdir -p $FS_VM_DIR" || command-error "cannot create $FS_VM_DIR in VM1"
+vmdir-command "$VM1" "rm -rf $FS_VM_DIR && mkdir -p $FS_VM_DIR" || command-error "cannot create $FS_VM_DIR in VM1"
 
 echo "### preconditions: fake-cxl-pool-server with the persistent device $FS_DEVICE, its files new"
 rm -f "$FS_DATA" "$FS_LSA" || error "cannot remove $FS_DATA and $FS_LSA"
@@ -676,15 +676,15 @@ echo "### K: nothing is left"
 fs0-free
 dra-assert-clean "$VM2" "$VM1"
 for vm in "$VM2" "$VM1"; do
-    label=$(pool-vm-label "$vm")
+    label=$(vmdir-label "$vm")
     retry-until --timeout 60 --interval 1 --message "$label has nothing under $DRA_LEASE_FS_DIR" \
-        '[ "$(pool-vm-command-q "$vm" "{ test ! -d $DRA_LEASE_FS_DIR || find $DRA_LEASE_FS_DIR -mindepth 1; } && echo end")" == end ]' ||
-        error "$label still has under $DRA_LEASE_FS_DIR: $(pool-vm-command-q "$vm" "find $DRA_LEASE_FS_DIR -mindepth 1")"
+        '[ "$(vmdir-command-q "$vm" "{ test ! -d $DRA_LEASE_FS_DIR || find $DRA_LEASE_FS_DIR -mindepth 1; } && echo end")" == end ]' ||
+        error "$label still has under $DRA_LEASE_FS_DIR: $(vmdir-command-q "$vm" "find $DRA_LEASE_FS_DIR -mindepth 1")"
     qtree=$(pool-vm-monitor "$vm" "info qtree -b") || error "cannot read the qemu device tree of $label"
     grep -q '^ *bus: ' <<< "$qtree" || error "no qemu device tree of $label: $qtree"
     ! grep -q 'dev: cxl-type3' <<< "$qtree" || error "qemu of $label still has a CXL memory device"
 done
-pool-vm-command "$VM1" "rm -rf $FS_VM_DIR" || command-error "cannot remove $FS_VM_DIR in VM1"
+vmdir-command "$VM1" "rm -rf $FS_VM_DIR" || command-error "cannot remove $FS_VM_DIR in VM1"
 echo "no pods, claims, leases, mounts, lease directories, loop devices, CDI devices, memory devices or regions of $FS_DEVICE left"
 
 echo "### what every component of VM2 and VM1 did, in order"

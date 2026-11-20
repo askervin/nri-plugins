@@ -141,7 +141,7 @@ pool-vm-require "$VM2" "$(basename "$TOPOLOGY_DIR")"
 fs-kernel-require "$VM2" "$(basename "$TOPOLOGY_DIR")"
 # The root decoders (CXL windows) of both host bridges allow persistent
 # memory: the region of lp0 needs one on host bridge 1.
-pool-vm-command "$VM2" 'cd /sys/bus/cxl/devices && for d in decoder0.*; do echo "$d cap_pmem $(cat $d/cap_pmem) targets $(cat $d/target_list)"; [ "$(cat $d/cap_pmem)" == 1 ] || exit 1; done' ||
+vmdir-command "$VM2" 'cd /sys/bus/cxl/devices && for d in decoder0.*; do echo "$d cap_pmem $(cat $d/cap_pmem) targets $(cat $d/target_list)"; [ "$(cat $d/cap_pmem)" == 1 ] || exit 1; done' ||
     error "a root decoder of VM2 has no cap_pmem: a persistent memdev gets no region there"
 
 echo "### preconditions: cxl, daxctl and cxl-dump, no CXL memory devices, e2fsprogs"
@@ -150,7 +150,7 @@ pool-vm-reset "$VM2"
 pool-cxl-dump "$VM2" no-devices
 cxl-assert 'memdevs == [] and regions == [] and endpoints == []'
 fs-tools-install "$VM2" mkfs.ext4 dumpe2fs blkid
-pool-vm-command "$VM2" "rm -rf $FS_VM_DIR && mkdir -p $FS_VM_DIR" || command-error "cannot create $FS_VM_DIR in VM2"
+vmdir-command "$VM2" "rm -rf $FS_VM_DIR && mkdir -p $FS_VM_DIR" || command-error "cannot create $FS_VM_DIR in VM2"
 
 echo "### preconditions: the default server on host bridge 0 with its pool controller, the node plugin on every node"
 pool-server-start --slots "*hb0"
@@ -314,8 +314,8 @@ dra-delete "$VM2" resourceclaimtemplate "$LEASE_TEMPLATE" --wait=true --timeout=
 region-wait no
 dra-assert-clean "$VM2"
 retry-until --timeout 60 --interval 1 --message "VM2 has nothing under $DRA_LEASE_FS_DIR" \
-    '[ "$(pool-vm-command-q "$VM2" "{ test ! -d $DRA_LEASE_FS_DIR || find $DRA_LEASE_FS_DIR -mindepth 1; } && echo end")" == end ]' ||
-    error "VM2 still has under $DRA_LEASE_FS_DIR: $(pool-vm-command-q "$VM2" "find $DRA_LEASE_FS_DIR -mindepth 1")"
+    '[ "$(vmdir-command-q "$VM2" "{ test ! -d $DRA_LEASE_FS_DIR || find $DRA_LEASE_FS_DIR -mindepth 1; } && echo end")" == end ]' ||
+    error "VM2 still has under $DRA_LEASE_FS_DIR: $(vmdir-command-q "$VM2" "find $DRA_LEASE_FS_DIR -mindepth 1")"
 # The memdev is the node's: the driver never disables it. The server's
 # client releases it in the VM, then the server detaches it.
 pool-client --pool "$LP_SERVER" "$VM2" guest release "$LP_SERIAL" ||
@@ -327,7 +327,7 @@ dra-wait "$VM2" lp0-withdrawn resourceslices "$LP is None" 180
 qtree=$(pool-vm-monitor "$VM2" "info qtree -b") || error "cannot read the qemu device tree of VM2"
 grep -q '^ *bus: ' <<< "$qtree" || error "no qemu device tree of VM2: $qtree"
 ! grep -q 'dev: cxl-type3' <<< "$qtree" || error "qemu of VM2 still has a CXL memory device"
-pool-vm-command "$VM2" "rm -rf $FS_VM_DIR" || command-error "cannot remove $FS_VM_DIR in VM2"
+vmdir-command "$VM2" "rm -rf $FS_VM_DIR" || command-error "cannot remove $FS_VM_DIR in VM2"
 echo "no pods, claims, leases, mounts, CDI devices, memory devices or regions of $LP_DEVICE left"
 
 echo "### what every component of VM2 did, in order"

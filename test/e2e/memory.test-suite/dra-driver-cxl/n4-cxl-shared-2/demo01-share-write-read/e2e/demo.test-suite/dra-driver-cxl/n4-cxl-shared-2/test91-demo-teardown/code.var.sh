@@ -98,12 +98,12 @@ if [ -n "$TRACE_DIR" ] && [ -f "$TRACE_DIR/pids" ]; then
 fi
 
 echo "### demo teardown: the demo pods and leases"
-dra-vm-command "$VM2" "kubectl delete pods --all -n $DRA_NS --grace-period=2 --ignore-not-found --wait=true --timeout=60s 2>&1 | grep -v 'No resources found'; true"
+vmdir-command "$VM2" "kubectl delete pods --all -n $DRA_NS --grace-period=2 --ignore-not-found --wait=true --timeout=60s 2>&1 | grep -v 'No resources found'; true"
 # The claims of the wizard and of its setup are no pods' templates.
-dra-vm-command "$VM2" "kubectl delete resourceclaims,resourceclaimtemplates -n $DRA_NS -l 'app in (cxl-demo-wizard,cxl-demo-setup)' --ignore-not-found --wait=true --timeout=90s 2>&1 | grep -v 'No resources found'; true"
+vmdir-command "$VM2" "kubectl delete resourceclaims,resourceclaimtemplates -n $DRA_NS -l 'app in (cxl-demo-wizard,cxl-demo-setup)' --ignore-not-found --wait=true --timeout=90s 2>&1 | grep -v 'No resources found'; true"
 # shellcheck disable=SC2016 # retry-until evaluates the condition
 retry-until --timeout 90 --interval 2 --message "no lease companions in $DRA_NS" \
-    '[ -z "$(dra-vm-command-q "$VM2" "kubectl get pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL -o name 2>/dev/null")" ]' ||
+    '[ -z "$(vmdir-command-q "$VM2" "kubectl get pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL -o name 2>/dev/null")" ]' ||
     echo "demo teardown: WARNING: lease companions remain in $DRA_NS"
 
 echo "### demo teardown: unconfigure the shared local device before detaching it (plan-9 R9)"
@@ -117,7 +117,7 @@ if [ -n "$local_attached" ] && [ "$DEMO_CASE" != wizard ]; then
     pool-cxl-dump-json "$VM2" before-unconfigure
     if ! cxl-py assert "$gone" >/dev/null && dra-driver-pod "$VM2" >/dev/null; then
         helm_name="$DRA_HELM_RELEASE" helm-reconfigure "$DRA_CHART" "$DRA_HELPER_DIR/dra-driver-cxl.helm-values.yaml"
-        dra-vm-command "$VM2" "kubectl rollout status -n kube-system ds/$DRA_DAEMONSET --timeout=120s"
+        vmdir-command "$VM2" "kubectl rollout status -n kube-system ds/$DRA_DAEMONSET --timeout=120s"
         # shellcheck disable=SC2016 # retry-until evaluates the condition
         retry-until --timeout 90 --interval 2 --message "the driver destroys the region of $DRA_LOCAL_SERIAL" \
             'pool-cxl-dump-json "$VM2" unconfigured && cxl-py assert "$gone" >/dev/null' ||
@@ -141,7 +141,7 @@ done
 echo "### demo teardown: no filesystem mounts left in the VMs"
 held=""
 for vm in "${DEMO_VMS[@]}"; do
-    label=$(pool-vm-label "$vm")
+    label=$(vmdir-label "$vm")
     if ! dra-fs-mounts "$vm" >/dev/null; then
         held+="
   $label: cannot read its mounts"
@@ -203,7 +203,7 @@ if [ -n "$DEMO_POOL_DIR" ] && [ -d "$DEMO_POOL_DIR" ] && ! mountpoint -q "$DEMO_
 fi
 pool-port-busy && error "port $POOL_PORT is still busy: a fake-cxl-pool-server that the demo did not start? stop it"
 pool-port-busy "$LP_PORT" && error "port $LP_PORT is still busy: a fake-cxl-pool-server $LP_SERVER that the demo did not start? stop it"
-dra-vm-command "$VM2" "kubectl label node $POOL_VM2_NAME $POOL_VM1_NAME $POOL_VM0_NAME cxl-demo/node- ; rm -rf /root/demo; true"
+vmdir-command "$VM2" "kubectl label node $POOL_VM2_NAME $POOL_VM1_NAME $POOL_VM0_NAME cxl-demo/node- ; rm -rf /root/demo; true"
 
 echo "### demo teardown: the VMs are clean"
 for vm in "${DEMO_VMS[@]}"; do

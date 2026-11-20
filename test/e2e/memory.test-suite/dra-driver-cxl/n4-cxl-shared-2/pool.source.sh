@@ -23,8 +23,8 @@
 #
 # The helpers that work on any VM take the output directory of the VM,
 # VMDIR: $OUTPUT_DIR for VM2, $POOL_VM1_DIR for VM1, $POOL_VM0_DIR for VM0.
-# The commands in other VMs are those of lib/k8s.bash (vmdir-*), under the
-# names that the tests use.
+# Commands in the VMs are those of lib/k8s.bash (vmdir-*); their labels
+# are vm, vm1 and vm0.
 
 POOL_SRC_DIR="$nri_resource_policy_src/scripts/testing/fake-cxl-pool"
 POOL_BIN_DIR="$POOL_SRC_DIR/bin"
@@ -42,6 +42,8 @@ POOL_VM1_DIR="${POOL_VM1_DIR:-$(dirname "$OUTPUT_DIR")/n4-cxl-shared-1${VM_HOSTN
 POOL_VM1_NAME="$(basename "$POOL_VM1_DIR")"
 POOL_VM0_DIR="${POOL_VM0_DIR:-$(dirname "$OUTPUT_DIR")/n4-cxl-shared-0${VM_HOSTNAME#"$(basename "$TOPOLOGY_DIR")"}}"
 POOL_VM0_NAME="$(basename "$POOL_VM0_DIR")"
+# shellcheck disable=SC2034 # the map of lib/k8s.bash, see vmdir-label
+VMDIR_LABELS+=(["$POOL_VM2_DIR"]=vm ["$POOL_VM1_DIR"]=vm1 ["$POOL_VM0_DIR"]=vm0)
 # The first server that pool-server-start started: its pid and log. The
 # URLs above are its URLs.
 POOL_SERVER_PID=""
@@ -59,20 +61,6 @@ POOL_EXIT_TRAP=""
 POOL_DEVICE_DATA=""                             # pool-device-files: the backing file of a device
 POOL_DEVICE_LSA=""                              # and its label storage area file
 
-pool-vm-label() {
-    # Usage: pool-vm-label VMDIR
-    #
-    # Print the short name of a VM in prompts and file names: vm for the
-    # VM of the test, vm1 for the VM of n4-cxl-shared-1, vm0 for the VM of
-    # n4-cxl-shared-0.
-    case "$1" in
-        "$POOL_VM2_DIR") echo "vm";;
-        "$POOL_VM1_DIR") echo "vm1";;
-        "$POOL_VM0_DIR") echo "vm0";;
-        *) basename "$1";;
-    esac
-}
-
 pool-vm-dir() {
     # Usage: pool-vm-dir VMNAME
     #
@@ -84,46 +72,6 @@ pool-vm-dir() {
         "$POOL_VM0_NAME") echo "$POOL_VM0_DIR";;
         *) return 1;;
     esac
-}
-
-other-vm-command() { # script API
-    # Usage: other-vm-command VMDIR COMMAND
-    #
-    # Execute COMMAND as root in the VM of the output directory VMDIR, which
-    # is not the VM of the test, the way vm-command does in the VM of the
-    # test (vmdir-command of lib/k8s.bash).
-    vmdir-command "$1" "$2"
-}
-
-other-vm-command-q() {
-    # Usage: other-vm-command-q VMDIR COMMAND
-    #
-    # Execute COMMAND as root in the VM of VMDIR quietly, like vm-command-q.
-    vmdir-command-q "$1" "$2"
-}
-
-other-vm-put-file() { # script API
-    # Usage: other-vm-put-file VMDIR SRC-HOST-FILE DST-VM-FILE
-    #
-    # Copy a file from the host to the VM of VMDIR, like vm-put-file.
-    vmdir-put-file "$1" "$2" "$3"
-}
-
-pool-vm-command() { # script API
-    # Usage: pool-vm-command VMDIR COMMAND
-    #
-    # vm-command in the VM of VMDIR: the VM of the test or another one.
-    vmdir-command "$1" "$2"
-}
-
-pool-vm-command-q() {
-    # Usage: pool-vm-command-q VMDIR COMMAND
-    vmdir-command-q "$1" "$2"
-}
-
-pool-vm-put-file() { # script API
-    # Usage: pool-vm-put-file VMDIR SRC-HOST-FILE DST-VM-FILE
-    vmdir-put-file "$1" "$2" "$3"
 }
 
 pool-vm-qmp() { # script API
@@ -141,32 +89,6 @@ pool-vm-monitor() { # script API
     #
     # vm-monitor on the qemu of the VM of VMDIR.
     VM_MONITOR="(cd \"$1\" && socat STDIO unix-connect:monitor.sock)" vm-monitor "$2"
-}
-
-pool-vm-ssh-wait() {
-    # Usage: pool-vm-ssh-wait VMDIR [TIMEOUT]
-    #
-    # Wait until ssh to the VM of VMDIR works, TIMEOUT seconds at most
-    # (default 180).
-    vmdir-ssh-wait "$@"
-}
-
-pool-host-wait() { # script API
-    # Usage: pool-host-wait VMDIR HINT
-    #
-    # Make sure that the VM of VMDIR is up. Start it if it is not. Fail
-    # with HINT, how to create the VM, if there is no VM in VMDIR.
-    vmdir-up "$1" "$2"
-    echo "pool-host-wait: $(basename "$1") is up"
-}
-
-pool-vm-restart() { # script API
-    # Usage: pool-vm-restart VMDIR
-    #
-    # Restart qemu of the VM of VMDIR. That is the only way to get rid of a
-    # CXL memory device that qemu cannot delete (a zombie device of a detach
-    # without release).
-    vmdir-restart "$1"
 }
 
 pool-vm-require() { # script API
@@ -200,7 +122,7 @@ pool-vm-require() { # script API
         [ "$response" == '{"return": true}' ] ||
             error "host bridge $hb of $name has no hdm_for_passthrough=on ($response): one region per host bridge only. The VM was created before \"hdm-for-passthrough\" was in the topology, $recreate"
     done
-    pool-vm-command "$vmdir" 'uname -r; grep -x CONFIG_FS_DAX=y /boot/config-$(uname -r)' ||
+    vmdir-command "$vmdir" 'uname -r; grep -x CONFIG_FS_DAX=y /boot/config-$(uname -r)' ||
         error "kernel of $name lacks CONFIG_FS_DAX=y: devdax devices cannot be mmapped. Build the kernel with scripts/testing/fake-cxl-pool/proto/build-kernel-rpms.sh and $recreate"
     echo "$name: patched qemu, hdm_for_passthrough=on, CONFIG_FS_DAX=y"
 }
@@ -216,10 +138,10 @@ pool-vm-tools-install() { # script API
         cxl-tools-install
     else
         [ -f "$OUTPUT_DIR/cxl-dump" ] || error "pool-vm-tools-install: run it on the VM of the test first"
-        pool-vm-put-file "$vmdir" "$OUTPUT_DIR/cxl-dump" /usr/local/bin/cxl-dump
+        vmdir-put-file "$vmdir" "$OUTPUT_DIR/cxl-dump" /usr/local/bin/cxl-dump
     fi
-    pool-vm-command-q "$vmdir" "command -v cxl >/dev/null && command -v daxctl >/dev/null && command -v numactl >/dev/null" ||
-        pool-vm-command "$vmdir" "dnf install -y /usr/bin/cxl daxctl numactl" ||
+    vmdir-command-q "$vmdir" "command -v cxl >/dev/null && command -v daxctl >/dev/null && command -v numactl >/dev/null" ||
+        vmdir-command "$vmdir" "dnf install -y /usr/bin/cxl daxctl numactl" ||
             command-error "cannot install cxl, daxctl and numactl in $(basename "$vmdir")"
 }
 
@@ -252,7 +174,7 @@ pool-vm-decoders() { # script API
     # Linux does not clear that bookkeeping of host bridge and switch
     # decoders when it tears a region down, their registers are zero and
     # the next region reuses them. Return non-zero if the VM cannot be read.
-    pool-vm-command-q "$1" 'cd /sys/bus/cxl/devices || exit 0
+    vmdir-command-q "$1" 'cd /sys/bus/cxl/devices || exit 0
 for f in port*/decoders_committed endpoint*/decoders_committed; do
     [ -f "$f" ] || continue
     n=$(cat "$f") || exit 1
@@ -273,11 +195,11 @@ pool-vm-reset() { # script API
     local vmdir="$1" name plugged guest_devs committed
     name="$(basename "$vmdir")"
     plugged=$(pool-vm-monitor "$vmdir" "info qtree -b" | grep -c 'dev: cxl-type3')
-    guest_devs=$(pool-vm-command-q "$vmdir" "ls /sys/bus/cxl/devices/" | grep -cE '^(mem|region)[0-9]')
+    guest_devs=$(vmdir-command-q "$vmdir" "ls /sys/bus/cxl/devices/" | grep -cE '^(mem|region)[0-9]')
     committed=$(pool-vm-decoders "$vmdir") || error "pool-vm-reset: cannot read the CXL decoders of $name"
     if [ "$plugged" != "0" ] || [ "$guest_devs" != "0" ] || [ -n "$committed" ]; then
         echo "pool-vm-reset: $name has $plugged CXL memory devices in qemu, $guest_devs CXL memory devices or regions in the kernel, committed CXL decoders: ${committed:-none}: restarting it"
-        pool-vm-restart "$vmdir"
+        vmdir-restart "$vmdir"
         plugged=$(pool-vm-monitor "$vmdir" "info qtree -b" | grep -c 'dev: cxl-type3')
         [ "$plugged" == "0" ] || error "pool-vm-reset: $name still has $plugged CXL memory devices after restart"
         committed=$(pool-vm-decoders "$vmdir") || error "pool-vm-reset: cannot read the CXL decoders of $name"
@@ -285,11 +207,11 @@ pool-vm-reset() { # script API
         # The restart keeps the shape of the cluster, but the node, or the
         # whole cluster if the VM is its control plane, needs a while.
         retry-until --timeout 300 --interval 2 --message "node $name Ready after the restart" \
-            'pool-vm-command-q "$vmdir" "kubectl wait --for=condition=Ready node/$name --timeout=10s" >/dev/null 2>&1' ||
+            'vmdir-command-q "$vmdir" "kubectl wait --for=condition=Ready node/$name --timeout=10s" >/dev/null 2>&1' ||
             error "pool-vm-reset: node $name is not Ready after the restart of its VM"
     fi
     echo "pool-vm-reset: $name has no CXL memory devices, regions or committed CXL decoders"
-    pool-vm-command "$vmdir" "echo offline > /sys/devices/system/memory/auto_online_blocks && cat /sys/devices/system/memory/auto_online_blocks" ||
+    vmdir-command "$vmdir" "echo offline > /sys/devices/system/memory/auto_online_blocks && cat /sys/devices/system/memory/auto_online_blocks" ||
         command-error "cannot disable automatic onlining of hotplugged memory in $name"
 }
 
@@ -305,9 +227,9 @@ pool-cxl-dump() { # script API
         cxl-dump "$label"
         return 0
     fi
-    suffix="$(pool-vm-label "$vmdir")"
+    suffix="$(vmdir-label "$vmdir")"
     pool-cxl-dump-json "$vmdir" "$label" || error "pool-cxl-dump: running cxl-dump in $(basename "$vmdir") failed"
-    other-vm-command-q "$vmdir" "grep -s '' /sys/devices/system/memory/block_size_bytes /sys/devices/system/memory/memory*/state; grep -H MemTotal /sys/devices/system/node/node*/meminfo" \
+    vmdir-command-q "$vmdir" "grep -s '' /sys/devices/system/memory/block_size_bytes /sys/devices/system/memory/memory*/state; grep -H MemTotal /sys/devices/system/node/node*/meminfo" \
         > "$TEST_OUTPUT_DIR/memory.$label.$suffix.txt"
     echo "cxl-dump $label ($suffix): $(cxl-value 'summary()')"
 }
@@ -319,8 +241,8 @@ pool-cxl-dump-json() {
         cxl-dump-json "$label"
         return
     fi
-    json=$(other-vm-command-q "$vmdir" "cxl-dump") || return 1
-    CXL_DUMP_FILE="$TEST_OUTPUT_DIR/cxl-dump.$label.$(pool-vm-label "$vmdir").json"
+    json=$(vmdir-command-q "$vmdir" "cxl-dump") || return 1
+    CXL_DUMP_FILE="$TEST_OUTPUT_DIR/cxl-dump.$label.$(vmdir-label "$vmdir").json"
     echo "$json" > "$CXL_DUMP_FILE"
 }
 
@@ -333,7 +255,7 @@ pool-cxl-wait() { # script API
         cxl-wait "$label" "$expression" "$tmo"
         return 0
     fi
-    retry-until --timeout "$tmo" --message "cxl-dump in $(pool-vm-label "$vmdir"): $expression" \
+    retry-until --timeout "$tmo" --message "cxl-dump in $(vmdir-label "$vmdir"): $expression" \
         'pool-cxl-dump-json "$vmdir" "$label" && cxl-py assert "$expression" >/dev/null' || {
         pool-cxl-dump "$vmdir" "$label"
         error "cxl-dump in $(basename "$vmdir") did not show the expected state in ${tmo}s: $expression"
@@ -698,7 +620,7 @@ for a in json.load(sys.stdin) or []:
         for line in "${lines[@]}"; do
             read -r dev host serial <<< "$line"
             vmdir=$(pool-vm-dir "$host") || continue
-            pool-vm-command "$vmdir" "fake-cxl-pool-client guest release $serial"
+            vmdir-command "$vmdir" "fake-cxl-pool-client guest release $serial"
             pool-host-client "${pool[@]}" detach "$dev" --host "$host"
         done
     fi
@@ -722,9 +644,9 @@ pool-client-install() { # script API
         host-command "make -C \"$POOL_SRC_DIR\" bin/fake-cxl-pool-client" ||
             command-error "cannot build fake-cxl-pool-client"
     for vmdir in "$@"; do
-        pool-vm-put-file "$vmdir" "$POOL_BIN_DIR/fake-cxl-pool-client" /usr/local/bin/fake-cxl-pool-client
-        pool-vm-put-file "$vmdir" "$POOL_HELPER_DIR/pool-dax-rw.py" /usr/local/bin/pool-dax-rw.py
-        pool-vm-command "$vmdir" "chmod 755 /usr/local/bin/fake-cxl-pool-client /usr/local/bin/pool-dax-rw.py && fake-cxl-pool-client --help | head -n 1" ||
+        vmdir-put-file "$vmdir" "$POOL_BIN_DIR/fake-cxl-pool-client" /usr/local/bin/fake-cxl-pool-client
+        vmdir-put-file "$vmdir" "$POOL_HELPER_DIR/pool-dax-rw.py" /usr/local/bin/pool-dax-rw.py
+        vmdir-command "$vmdir" "chmod 755 /usr/local/bin/fake-cxl-pool-client /usr/local/bin/pool-dax-rw.py && fake-cxl-pool-client --help | head -n 1" ||
             command-error "cannot run fake-cxl-pool-client in $(basename "$vmdir")"
     done
 }
@@ -745,7 +667,7 @@ pool-client() { # script API
     shift
     # The client's default server is the default port of the host.
     [ "$url" == "http://192.168.76.2:9909" ] || server=" --server $url"
-    pool-vm-command "$vmdir" "fake-cxl-pool-client$server$(printf ' %q' "$@")"
+    vmdir-command "$vmdir" "fake-cxl-pool-client$server$(printf ' %q' "$@")"
 }
 
 pool-host-client() { # script API

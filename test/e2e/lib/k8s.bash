@@ -26,6 +26,9 @@ K8S_REINIT_TIMEOUT="${K8S_REINIT_TIMEOUT:-600}"
 K8S_CNI_FILE=/etc/cni/net.d/10-bridge.conf
 K8S_CNI_TEMPLATE="$nri_resource_policy_src/test/e2e/files/10-bridge.conf.in"
 K8S_NM_PROFILE=e2e-vmnet
+# The short names of VMs in prompts and command output file names, by
+# VMDIR: a suite fills it (vmdir-label).
+declare -A VMDIR_LABELS=()
 
 ###
 ### Commands in any VM
@@ -46,15 +49,23 @@ vmdir-label() {
     # Usage: vmdir-label VMDIR
     #
     # Print the short name of a VM in prompts and command output file names:
-    # vm for the VM of the test; the label of pool.source.sh if it is
-    # sourced (vm1 for the VM of n4-cxl-shared-1); else the VM name.
-    if [ "$1" == "$OUTPUT_DIR" ]; then
+    # its VMDIR_LABELS entry, else vm for the VM of the test and the VM name
+    # for the others.
+    if [ -n "${VMDIR_LABELS[$1]:-}" ]; then
+        echo "${VMDIR_LABELS[$1]}"
+    elif [ "$1" == "$OUTPUT_DIR" ]; then
         echo "vm"
-    elif type -t pool-vm-label >/dev/null; then
-        pool-vm-label "$1"
     else
-        basename "$1"
+        vmdir-name "$1"
     fi
+}
+
+vmdir-name() {
+    # Usage: vmdir-name VMDIR
+    #
+    # Print the name of the VM of VMDIR, the name of the directory: its host
+    # name and Kubernetes node name.
+    basename "$1"
 }
 
 vmdir-command() { # script API
@@ -97,9 +108,9 @@ vmdir-put-file() { # script API
     fi
     tmp="vm-put-file.${src##*/}"
     host-command "scp -F \"$vmdir/.ssh-config\" \"$src\" node:\"$tmp\"" ||
-        command-error "failed to copy $src to $(basename "$vmdir")"
+        command-error "failed to copy $src to $(vmdir-name "$vmdir")"
     vmdir-command "$vmdir" "mkdir -p \"$(dirname "$dst")\" && mv \"$tmp\" \"$dst\"" ||
-        command-error "failed to move $src to $dst in $(basename "$vmdir")"
+        command-error "failed to move $src to $dst in $(vmdir-name "$vmdir")"
 }
 
 vmdir-ssh-wait() {
@@ -108,7 +119,7 @@ vmdir-ssh-wait() {
     # Wait until ssh to the VM of VMDIR works, TIMEOUT seconds at most
     # (default 180).
     local vmdir="$1"
-    retry-until --timeout "${2:-180}" --interval 2 --message "ssh to $(basename "$vmdir")" \
+    retry-until --timeout "${2:-180}" --interval 2 --message "ssh to $(vmdir-name "$vmdir")" \
         '[ -f "$vmdir/.ssh-config" ] && command timeout 15 ssh -F "$vmdir/.ssh-config" -o ConnectTimeout=5 node true'
 }
 
@@ -120,7 +131,7 @@ vmdir-up() { # script API
     # check that it is the VM of VMDIR (its host name is the VM name). Fail
     # with HINT, how to create the VM, if there is no VM in VMDIR.
     local vmdir="$1" hint="${2:-create it first with test00-up of its topology}" name
-    name="$(basename "$vmdir")"
+    name="$(vmdir-name "$vmdir")"
     [ -f "$vmdir/Vagrantfile" ] && [ -d "$vmdir/.vagrant" ] ||
         error "no VM $name in $vmdir: $hint"
     if ! { [ -f "$vmdir/.ssh-config" ] && command timeout 30 ssh -F "$vmdir/.ssh-config" -o ConnectTimeout=5 node true; }; then
@@ -151,7 +162,7 @@ vmdir-restart() { # script API
     # Restart qemu of the VM of VMDIR, so that it starts with the qemu
     # arguments of its Vagrantfile, and wait for ssh.
     local vmdir="$1" name i
-    name="$(basename "$vmdir")"
+    name="$(vmdir-name "$vmdir")"
     if [ "$vmdir" == "$OUTPUT_DIR" ]; then
         timeout=300 vm-reboot || error "cannot restart $name"
         return 0
@@ -202,7 +213,7 @@ vm-vmnet-ensure() { # script API
     # proxy otherwise, and kubeadm copies NO_PROXY into the control plane).
     local vmdir="$1" network="${2:-$vm_network}" name mac ip cidr
     vm-k8s-refuse-hw vm-vmnet-ensure
-    name="$(basename "$vmdir")"
+    name="$(vmdir-name "$vmdir")"
     [ -n "$network" ] ||
         error "vm-vmnet-ensure: no VM network for $name: set vm_network (vm_network.var.sh of the topology)"
     vm-vmnet-record "$vmdir" "$network" || error "vm-vmnet-ensure: cannot record VM network $network for $name"
@@ -290,12 +301,12 @@ vm-k8s-cluster-in-shape() {
     mapfile -t dirs < <(vm-k8s-cluster-dirs "$1")
     cp="${dirs[0]}"
     for vmdir in "${dirs[@]}"; do
-        names+="$(basename "$vmdir") "
+        names+="$(vmdir-name "$vmdir") "
         ips+="$(vm-k8s-node-ip "$vmdir") "
     done
     shape=$(vm-k8s-shape "$cp")
     if [ "${shape%% *}" != "control-plane" ] || [ "${shape#control-plane }" == "unreachable" ]; then
-        echo "$(basename "$cp"): not a working control plane (${shape:0:60})"
+        echo "$(vmdir-name "$cp"): not a working control plane (${shape:0:60})"
         return 1
     fi
     python3 - "${shape#control-plane }" "$names" "$ips" <<'EOF' || return 1
@@ -327,7 +338,7 @@ EOF
         shape=$(vm-k8s-shape "$vmdir")
         server="https://$(vm-k8s-node-ip "$cp"):6443"
         if [ "$shape" != "worker $server" ]; then
-            echo "$(basename "$vmdir"): ${shape:0:60}, expected a worker of $server"
+            echo "$(vmdir-name "$vmdir"): ${shape:0:60}, expected a worker of $server"
             return 1
         fi
     done
@@ -369,9 +380,9 @@ vm-k8s-reinit() { # script API
     #
     # Examples:
     #   vm-k8s-reinit "$OUTPUT_DIR"                    # the VM of the test alone
-    #   vm-k8s-reinit "$POOL_VM2_DIR $POOL_VM1_DIR"    # VM2 control plane, VM1 worker
-    #   vm-k8s-reinit "$POOL_VM2_DIR" "$POOL_VM1_DIR"  # two single-node clusters
-    local force="" timeout="$K8S_REINIT_TIMEOUT" cluster vmdir seen="" dirs why start
+    #   vm-k8s-reinit "$OUTPUT_DIR $VM1"               # the VM of the test control plane, VM1 worker
+    #   vm-k8s-reinit "$OUTPUT_DIR" "$VM1"             # two single-node clusters
+    local force="" timeout="$K8S_REINIT_TIMEOUT" cluster vmdir seen="" dirs why
     while [ $# -gt 0 ]; do
         case "$1" in
             --force) force=1; shift;;
@@ -385,20 +396,19 @@ vm-k8s-reinit() { # script API
         mapfile -t dirs < <(vm-k8s-cluster-dirs "$cluster")
         [ "${#dirs[@]}" -gt 0 ] || error "vm-k8s-reinit: empty cluster \"$cluster\""
         for vmdir in "${dirs[@]}"; do
-            [[ " $seen " != *" $vmdir "* ]] || error "vm-k8s-reinit: $(basename "$vmdir") is in two clusters"
+            [[ " $seen " != *" $vmdir "* ]] || error "vm-k8s-reinit: $(vmdir-name "$vmdir") is in two clusters"
             seen+=" $vmdir"
             vmdir-up "$vmdir"
         done
     done
     for cluster in "$@"; do
-        start=$(date +%s)
         if [ -z "$force" ] && why=$(vm-k8s-cluster-in-shape "$cluster"); then
             echo "vm-k8s-reinit: cluster \"$(vm-k8s-cluster-names "$cluster")\" is in shape already"
             continue
         fi
         echo "vm-k8s-reinit: rebuilding cluster \"$(vm-k8s-cluster-names "$cluster")\"${why:+: $why}"
         vm-k8s-rebuild "$cluster" "$timeout"
-        echo "vm-k8s-reinit: cluster \"$(vm-k8s-cluster-names "$cluster")\" ready in $(( $(date +%s) - start )) s"
+        echo "vm-k8s-reinit: cluster \"$(vm-k8s-cluster-names "$cluster")\" ready"
     done
 }
 
@@ -408,7 +418,7 @@ vm-k8s-cluster-names() {
     # Print the VM names of CLUSTER separated by spaces.
     local vmdir out=""
     for vmdir in $(vm-k8s-cluster-dirs "$1"); do
-        out+="$(basename "$vmdir") "
+        out+="$(vmdir-name "$vmdir") "
     done
     echo "${out% }"
 }
@@ -423,7 +433,7 @@ vm-k8s-rebuild() {
     [ "${#dirs[@]}" -gt 1 ] && multi=1
     for vmdir in "${dirs[@]}"; do
         vmdir-command-q "$vmdir" "test -f $K8S_CNI_FILE || test -f $K8S_CNI_FILE.off" ||
-            error "vm-k8s-reinit: $(basename "$vmdir") has no $K8S_CNI_FILE: only the bridge CNI is supported"
+            error "vm-k8s-reinit: $(vmdir-name "$vmdir") has no $K8S_CNI_FILE: only the bridge CNI is supported"
     done
     if [ -n "$multi" ]; then
         for vmdir in "${dirs[@]}"; do
@@ -434,7 +444,7 @@ vm-k8s-rebuild() {
             error "vm-k8s-reinit: VMs of cluster \"$cluster\" share a VM network address: ${ips[*]}"
         for ip in "${ips[@]:1}"; do
             vmdir-command "$cp" "ping -c 2 -W 2 $ip" ||
-                command-error "vm-k8s-reinit: no inter-VM network: $(basename "$cp") cannot ping $ip"
+                command-error "vm-k8s-reinit: no inter-VM network: $(vmdir-name "$cp") cannot ping $ip"
         done
     fi
     for vmdir in "${dirs[@]}"; do
@@ -470,7 +480,7 @@ vm-k8s-kubeadm-error() {
     # Usage: vm-k8s-kubeadm-error VMDIR KEY
     #
     # Fail the test: the VM of VMDIR has no KEY in $K8S_KUBEADM_CONFIG.
-    error "vm-k8s-reinit: $(basename "$1") has no $2 in $K8S_KUBEADM_CONFIG.
+    error "vm-k8s-reinit: $(vmdir-name "$1") has no $2 in $K8S_KUBEADM_CONFIG.
 Provisioning writes that file: provision the VM again."
 }
 
@@ -480,16 +490,12 @@ vm-k8s-reset-node() {
     # Remove the VM of VMDIR from its cluster and remove the cluster state
     # that kubeadm reset leaves: the kubelet state (kubeadm 1.37 only
     # unmounts in /var/lib/kubelet), iptables rules, the CNI bridge and IP
-    # leases, kubeconfigs. Stop the CXL pool controller of the e2e tests
-    # first, a systemd unit that uses the cluster.
+    # leases, kubeconfigs. A suite stops first what it runs outside pods
+    # against the cluster.
     local vmdir="$1" sock subnet
     sock=$(vm-k8s-kubeadm-value "$vmdir" criSocket) || vm-k8s-kubeadm-error "$vmdir" criSocket
     subnet=$(vm-k8s-kubeadm-value "$vmdir" podSubnet) || vm-k8s-kubeadm-error "$vmdir" podSubnet
-    # The CXL DRA driver of the e2e tests runs in a pod: kubeadm reset
-    # removes its container before the kubelet state is removed, and its
-    # helm release goes with the cluster state.
-    vmdir-command "$vmdir" "systemctl stop fake-cxl-pool-controller 2>/dev/null; systemctl reset-failed fake-cxl-pool-controller 2>/dev/null
-kubeadm reset -f --cleanup-tmp-dir --cri-socket $sock 2>&1 | grep -v '^W[0-9]' | tail -n 5
+    vmdir-command "$vmdir" "kubeadm reset -f --cleanup-tmp-dir --cri-socket $sock 2>&1 | grep -v '^W[0-9]' | tail -n 5
 rc=\${PIPESTATUS[0]}
 systemctl stop kubelet
 for m in \$(findmnt -rn -o TARGET | grep '^/var/lib/kubelet/' | sort -r); do umount -l \"\$m\"; done
@@ -502,7 +508,7 @@ rm -rf /var/lib/cni/networks/*
 rm -f /root/.kube/config \"\$(getent passwd \"\$SUDO_USER\" | cut -d: -f6)/.kube/config\"
 nmcli -t -f NAME con show | grep -qx $K8S_NM_PROFILE && nmcli con modify $K8S_NM_PROFILE ipv4.routes '' && nmcli con up $K8S_NM_PROFILE >/dev/null
 ip route | grep '^${subnet%.*.*}\\.' | grep -v 'dev cni0' | while read -r r; do ip route del \$r; done
-exit \$rc" || command-error "vm-k8s-reinit: kubeadm reset failed in $(basename "$vmdir")"
+exit \$rc" || command-error "vm-k8s-reinit: kubeadm reset failed in $(vmdir-name "$vmdir")"
 }
 
 vm-k8s-kubelet-node-ip() {
@@ -511,7 +517,7 @@ vm-k8s-kubelet-node-ip() {
     # Make kubelet in the VM of VMDIR register with node address IP, or with
     # its default address if IP is empty.
     vmdir-command "$1" "printf 'KUBELET_EXTRA_ARGS=%s\n' '${2:+--node-ip=$2}' > /etc/sysconfig/kubelet && cat /etc/sysconfig/kubelet" ||
-        command-error "vm-k8s-reinit: cannot set the node address of kubelet in $(basename "$1")"
+        command-error "vm-k8s-reinit: cannot set the node address of kubelet in $(vmdir-name "$1")"
 }
 
 vm-k8s-cni-write() {
@@ -524,7 +530,7 @@ vm-k8s-cni-write() {
     vmdir-put-file "$vmdir" "$tmp" "$K8S_CNI_FILE"
     rm -f "$tmp"
     vmdir-command "$vmdir" "chmod 644 $K8S_CNI_FILE && rm -f $K8S_CNI_FILE.off && grep subnet $K8S_CNI_FILE" ||
-        command-error "vm-k8s-reinit: cannot write $K8S_CNI_FILE in $(basename "$vmdir")"
+        command-error "vm-k8s-reinit: cannot write $K8S_CNI_FILE in $(vmdir-name "$vmdir")"
 }
 
 vm-k8s-node-cidr() {
@@ -552,7 +558,7 @@ cp $2 /root/.kube/config
 cp $2 \"\$home/.kube/config\"
 chown -R \"\$SUDO_USER\": \"\$home/.kube\"
 chmod 600 /root/.kube/config \"\$home/.kube/config\"" ||
-        command-error "vm-k8s-reinit: cannot install the kubeconfig in $(basename "$1")"
+        command-error "vm-k8s-reinit: cannot install the kubeconfig in $(vmdir-name "$1")"
 }
 
 vm-k8s-init-config() {
@@ -562,7 +568,7 @@ vm-k8s-init-config() {
     # of the VM with a new InitConfiguration. The node in it has the name of
     # the VM. The CRI socket stays. The API server address is IP if given.
     local cp="$1" ip="$2" name config sock tmp
-    name="$(basename "$cp")"
+    name="$(vmdir-name "$cp")"
     sock=$(vm-k8s-kubeadm-value "$cp" criSocket) || vm-k8s-kubeadm-error "$cp" criSocket
     config=$(vmdir-command-q "$cp" "cat $K8S_KUBEADM_CONFIG") ||
         error "vm-k8s-reinit: cannot read $K8S_KUBEADM_CONFIG in $name"
@@ -595,7 +601,7 @@ vm-k8s-init-cp() {
     # node address and API server address IP if given (a multi-node
     # cluster). Set K8S_JOIN_COMMAND.
     local cp="$1" ip="$2" name subnet
-    name="$(basename "$cp")"
+    name="$(vmdir-name "$cp")"
     vm-k8s-init-config "$cp" "$ip"
     vm-k8s-kubelet-node-ip "$cp" "$ip"
     if [ -z "$ip" ]; then
@@ -627,7 +633,7 @@ vm-k8s-join-worker() {
     # with node address IP, give it the admin kubeconfig of the cluster and
     # the bridge CNI subnet of its pod CIDR.
     local vmdir="$1" cp="$2" join="$3" ip="$4" name tmp subnet sock
-    name="$(basename "$vmdir")"
+    name="$(vmdir-name "$vmdir")"
     sock=$(vm-k8s-kubeadm-value "$vmdir" criSocket) || vm-k8s-kubeadm-error "$vmdir" criSocket
     vm-k8s-kubelet-node-ip "$vmdir" "$ip"
     vmdir-command "$vmdir" "$join --node-name=$name --cri-socket $sock 2>&1 | grep -v '^W[0-9]' | tail -n 15; exit \${PIPESTATUS[0]}" || {
@@ -636,7 +642,7 @@ vm-k8s-join-worker() {
     }
     tmp=$(mktemp) || error "mktemp failed"
     vmdir-command-q "$cp" "cat /etc/kubernetes/admin.conf" > "$tmp" ||
-        error "vm-k8s-reinit: cannot read the admin kubeconfig of $(basename "$cp")"
+        error "vm-k8s-reinit: cannot read the admin kubeconfig of $(vmdir-name "$cp")"
     vmdir-put-file "$vmdir" "$tmp" /root/admin.conf
     rm -f "$tmp"
     vm-k8s-kubeconfig "$vmdir" /root/admin.conf
@@ -656,7 +662,7 @@ vm-k8s-routes() {
         routes=""
         for other in "$@"; do
             [ "$other" != "$vmdir" ] || continue
-            cidr=$(vm-k8s-node-cidr "$cp" "$(basename "$other")")
+            cidr=$(vm-k8s-node-cidr "$cp" "$(vmdir-name "$other")")
             ip=$(vm-k8s-node-ip "$other")
             routes+="ip route replace $cidr via $ip
 nmcli con modify $K8S_NM_PROFILE +ipv4.routes '$cidr $ip'
@@ -666,7 +672,7 @@ nmcli con modify $K8S_NM_PROFILE +ipv4.routes '$cidr $ip'
 nmcli con modify $K8S_NM_PROFILE ipv4.routes ''
 $routes
 ip route | grep ' via $VMNET_CIDR_PREFIX\.'" ||
-            command-error "vm-k8s-reinit: cannot route the pod networks of the other nodes in $(basename "$vmdir")"
+            command-error "vm-k8s-reinit: cannot route the pod networks of the other nodes in $(vmdir-name "$vmdir")"
     done
 }
 
@@ -679,14 +685,14 @@ vm-k8s-wait-cluster() {
     local cp="$1" timeout="$2" vmdir
     shift 2
     for vmdir in "$@"; do
-        vmdir-command "$cp" "kubectl wait --for=condition=Ready node/$(basename "$vmdir") --timeout=${timeout}s" || {
+        vmdir-command "$cp" "kubectl wait --for=condition=Ready node/$(vmdir-name "$vmdir") --timeout=${timeout}s" || {
             vmdir-command "$vmdir" "journalctl -u kubelet --no-pager -n 50"
-            command-error "vm-k8s-reinit: node $(basename "$vmdir") is not Ready"
+            command-error "vm-k8s-reinit: node $(vmdir-name "$vmdir") is not Ready"
         }
     done
     vmdir-command "$cp" "kubectl -n kube-system rollout status ds/kube-proxy --timeout=${timeout}s && kubectl -n kube-system wait deploy/coredns --for=condition=Available --timeout=${timeout}s" || {
         vmdir-command "$cp" "kubectl get pods -A -o wide"
-        command-error "vm-k8s-reinit: kube-proxy or the cluster DNS of $(basename "$cp") did not come up"
+        command-error "vm-k8s-reinit: kube-proxy or the cluster DNS of $(vmdir-name "$cp") did not come up"
     }
     vmdir-command "$cp" "kubectl get nodes -o wide; kubectl get pods -A -o wide"
     if [ -n "$TEST_OUTPUT_DIR" ]; then

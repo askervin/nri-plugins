@@ -203,7 +203,7 @@ waiting() {
     # pod, has no allocation.
     local p json
     for p in "$@"; do
-        json=$(dra-vm-command-q "$VM2" "kubectl get pod,resourceclaim -n $DRA_NS $p -o json") || return 1
+        json=$(vmdir-command-q "$VM2" "kubectl get pod,resourceclaim -n $DRA_NS $p -o json") || return 1
         dra-py assert "$json" "sorted(o['kind'] for o in items) == ['Pod', 'ResourceClaim'] and all(o['status'].get('phase') == 'Pending' for o in items if o['kind'] == 'Pod') and not any((o.get('status') or {}).get('allocation') for o in items if o['kind'] == 'ResourceClaim')" || return 1
     done
 }
@@ -216,7 +216,7 @@ unschedulable-wait() {
     # allocation.
     dra-wait "$VM2" "$1-unschedulable" "pod -n $DRA_NS $1" \
         "any(c['type'] == 'PodScheduled' and c['status'] == 'False' and c.get('reason') == 'Unschedulable' and 'cannot allocate all claims' in c.get('message', '') for c in (j.get('status') or {}).get('conditions') or [])" 60
-    dra-vm-command "$VM2" "kubectl get pod -n $DRA_NS $1 -o jsonpath='{.status.conditions[?(@.type==\"PodScheduled\")].message}'"
+    vmdir-command "$VM2" "kubectl get pod -n $DRA_NS $1 -o jsonpath='{.status.conditions[?(@.type==\"PodScheduled\")].message}'"
     waiting "$1" || error "$1 is not Pending with an unallocated claim"
 }
 
@@ -298,7 +298,7 @@ lease-objects() {
     # Usage: lease-objects LEASE
     #
     # Print the companion pod and claim of lease LEASE that exist, quietly.
-    dra-vm-command-q "$VM2" "kubectl get pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL=$1 -o name"
+    vmdir-command-q "$VM2" "kubectl get pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL=$1 -o name"
 }
 
 lease-companion() {
@@ -334,7 +334,7 @@ hold-log() {
     #
     # Print /tmp/hold.log of pod leaser, the output of its read-only lease
     # (section L), quietly.
-    dra-vm-command-q "$VM2" "kubectl exec -n $DRA_NS leaser -- cat /tmp/hold.log" 2>/dev/null
+    vmdir-command-q "$VM2" "kubectl exec -n $DRA_NS leaser -- cat /tmp/hold.log" 2>/dev/null
 }
 
 no-leases() {
@@ -409,7 +409,7 @@ dra-assert "$COMMAND_OUTPUT" "'shared == false' in by_name('cxl-local')['spec'][
 dra-claim-pod "$VM2" sliced cxl-local "" dax
 dra-wait "$VM2" sliced-unschedulable "pod -n $DRA_NS sliced" \
     "any(c['type'] == 'PodScheduled' and c['status'] == 'False' and c.get('reason') == 'Unschedulable' and 'cannot allocate all claims' in c.get('message', '') for c in (j.get('status') or {}).get('conditions') or [])" 60
-dra-vm-command "$VM2" "kubectl get pod -n $DRA_NS sliced -o jsonpath='{.status.conditions[?(@.type==\"PodScheduled\")].message}'"
+vmdir-command "$VM2" "kubectl get pod -n $DRA_NS sliced -o jsonpath='{.status.conditions[?(@.type==\"PodScheduled\")].message}'"
 dra-delete-pod "$VM2" sliced
 pool-cxl-dump "$VM2" sliced-refused
 cxl-assert "regions == []"
@@ -628,7 +628,7 @@ dra-delete "$VM2" resourceclaimtemplate cxl-lease --wait=true --timeout=60s
 dra-wait "$VM2" no-lease-objects "pods,resourceclaims -n $DRA_NS" "items == []" 60
 retry-until --timeout 60 --interval 1 --message "no leases in $DRA_STATE" no-leases ||
     error "the node plugin still has leases in $DRA_STATE"
-pool-vm-command "$VM2" "test ! -e $DRA_LEASE_DIR/$LEASER_CLAIM_UID && test ! -e $DRA_LEASE_FS_DIR/$LEASER_CLAIM_UID" ||
+vmdir-command "$VM2" "test ! -e $DRA_LEASE_DIR/$LEASER_CLAIM_UID && test ! -e $DRA_LEASE_FS_DIR/$LEASER_CLAIM_UID" ||
     error "the lease directories of the claim of leaser are left in $DRA_LEASE_DIR or $DRA_LEASE_FS_DIR"
 dra-local-shared-wait "$VM2" leases-gone
 same-region || error "the shared device has another region or dax device after the leases: $DRA_MEMDEV"

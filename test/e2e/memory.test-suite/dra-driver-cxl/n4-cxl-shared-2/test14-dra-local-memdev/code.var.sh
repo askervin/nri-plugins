@@ -459,7 +459,7 @@ dra-json "$VM2" resourceclaims -n "$DRA_NS"
 LOCAL_CLAIMS="[c for c in items if any(r['device'] == '$DRA_LOCAL_DEVICE' for r in results(c))]"
 dra-assert "$COMMAND_OUTPUT" "len($LOCAL_CLAIMS) == 4 and sum(consumed(c) for c in $LOCAL_CLAIMS) == $TOTAL"
 dra-local-node-size "$VM2" four-claims "$NUMA_NODE" $(( NUMA_A + NUMA_B ))
-dra-vm-command "$VM2" "daxctl list -R -D 2>/dev/null; ls -l /dev/dax*; numactl -H" || :
+vmdir-command "$VM2" "daxctl list -R -D 2>/dev/null; ls -l /dev/dax*; numactl -H" || :
 
 echo "### B2: a restart of the driver keeps the node to the NUMA pods, a new pod is kept off it"
 # The new driver knows the node from the prepared NUMA claims. Its own
@@ -686,7 +686,7 @@ dra-run "$VM2" steer-cxl "setsid python3 /tools/numa-touch.py --hold $PAST_MIB -
     error "cannot start numa-touch.py in steer-cxl"
 # shellcheck disable=SC2016 # evaluated by retry-until
 retry-until --timeout 120 --interval 1 --message "steer-cxl holds $PAST_MIB MiB" \
-    'dra-vm-command-q "$VM2" "kubectl exec -n $DRA_NS steer-cxl -c main -- cat /tmp/hold.log" | grep -qE "^numa-touch: (ready|.*failed)"' ||
+    'vmdir-command-q "$VM2" "kubectl exec -n $DRA_NS steer-cxl -c main -- cat /tmp/hold.log" | grep -qE "^numa-touch: (ready|.*failed)"' ||
     error "steer-cxl: numa-touch.py did not touch $PAST_MIB MiB"
 dra-exec "$VM2" steer-cxl/main cat /tmp/hold.log
 grep -q "^numa-touch: ready" <<< "$COMMAND_OUTPUT" || error "steer-cxl: numa-touch.py failed: $COMMAND_OUTPUT"

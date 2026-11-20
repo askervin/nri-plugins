@@ -192,61 +192,6 @@ DRA_TRACE_KILL='for f in /run/dra-trace/*.pid; do [ -f "$f" ] || continue; kill 
 ### Commands in the VMs
 ###
 
-dra-vm-command() { # script API
-    # Usage: dra-vm-command VMDIR COMMAND
-    #
-    # vm-command in the VM of VMDIR: through pool-vm-command where
-    # pool.source.sh is sourced, else only in the VM of the test.
-    if type -t pool-vm-command >/dev/null; then
-        pool-vm-command "$1" "$2"
-    else
-        [ "$1" == "$OUTPUT_DIR" ] || error "dra-vm-command: no pool.source.sh, only the VM of the test is available, not $1"
-        vm-command "$2"
-    fi
-}
-
-dra-vm-command-q() {
-    # Usage: dra-vm-command-q VMDIR COMMAND
-    #
-    # Quiet dra-vm-command: print only the output of COMMAND.
-    if type -t pool-vm-command-q >/dev/null; then
-        pool-vm-command-q "$1" "$2"
-    else
-        vm-command-q "$2"
-    fi
-}
-
-dra-vm-put-file() { # script API
-    # Usage: dra-vm-put-file VMDIR SRC-HOST-FILE DST-VM-FILE
-    if type -t pool-vm-put-file >/dev/null; then
-        pool-vm-put-file "$1" "$2" "$3"
-    else
-        vm-put-file "$2" "$3"
-    fi
-}
-
-dra-vm-label() {
-    # Usage: dra-vm-label VMDIR
-    #
-    # Short name of the VM in prompts, file names and trace tags: vm for
-    # the VM of the test, vm1 for the VM of n4-cxl-shared-1.
-    if type -t pool-vm-label >/dev/null; then
-        pool-vm-label "$1"
-    elif [ "$1" == "$OUTPUT_DIR" ]; then
-        echo "vm"
-    else
-        basename "$1"
-    fi
-}
-
-dra-vm-name() {
-    # Usage: dra-vm-name VMDIR
-    #
-    # The host name of the VM, which is also its Kubernetes node name and
-    # its host name in fake-cxl-pool.
-    basename "$1"
-}
-
 dra-kubectl() { # script API
     # Usage: dra-kubectl VMDIR ARGS...
     #
@@ -255,7 +200,7 @@ dra-kubectl() { # script API
     # of the VM.
     local vmdir="$1"
     shift
-    dra-vm-command "$vmdir" "kubectl $*"
+    vmdir-command "$vmdir" "kubectl $*"
 }
 
 dra-apply() { # script API
@@ -268,9 +213,9 @@ dra-apply() { # script API
     # Fail the test if kubectl fails.
     local vmdir="$1" yaml
     yaml=$(cat)
-    dra-vm-command "$vmdir" "kubectl apply -n $DRA_NS -f - <<'DRA_APPLY_EOF'
+    vmdir-command "$vmdir" "kubectl apply -n $DRA_NS -f - <<'DRA_APPLY_EOF'
 $yaml
-DRA_APPLY_EOF" || command-error "kubectl apply failed in $(dra-vm-label "$vmdir")"
+DRA_APPLY_EOF" || command-error "kubectl apply failed in $(vmdir-label "$vmdir")"
 }
 
 dra-delete() { # script API
@@ -281,8 +226,8 @@ dra-delete() { # script API
     # Example: dra-delete "$VM" pod pooled-consumer --grace-period=2
     local vmdir="$1" kind="$2" name="$3"
     shift 3
-    dra-vm-command "$vmdir" "kubectl delete -n $DRA_NS $kind $name --ignore-not-found $*" ||
-        command-error "cannot delete $kind $name in $(dra-vm-label "$vmdir")"
+    vmdir-command "$vmdir" "kubectl delete -n $DRA_NS $kind $name --ignore-not-found $*" ||
+        command-error "cannot delete $kind $name in $(vmdir-label "$vmdir")"
 }
 
 dra-pull-images() { # script API
@@ -293,8 +238,8 @@ dra-pull-images() { # script API
     local vmdir="$1" image
     shift
     for image in "$@"; do
-        dra-vm-command "$vmdir" "crictl pull $image 2>&1 | grep -v 'level=warning'; exit \${PIPESTATUS[0]}" ||
-            command-error "cannot pull $image in $(dra-vm-label "$vmdir")"
+        vmdir-command "$vmdir" "crictl pull $image 2>&1 | grep -v 'level=warning'; exit \${PIPESTATUS[0]}" ||
+            command-error "cannot pull $image in $(vmdir-label "$vmdir")"
     done
 }
 
@@ -312,17 +257,17 @@ dra-dax-tool-install() { # script API
     # and the HOST-FILEs of a test as /tools/NAME (text files).
     local vmdir="$1" spec name file from=""
     shift
-    dra-vm-put-file "$vmdir" "$DRA_DAX_TOOL" /root/dax-rw.py
-    dra-vm-put-file "$vmdir" "$DRA_NUMA_TOOL" /root/numa-touch.py
+    vmdir-put-file "$vmdir" "$DRA_DAX_TOOL" /root/dax-rw.py
+    vmdir-put-file "$vmdir" "$DRA_NUMA_TOOL" /root/numa-touch.py
     for spec in "$@"; do
         name=${spec%%=*} file=${spec#*=}
         [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] && [ -f "$file" ] ||
             error "dra-dax-tool-install: '$spec' is not NAME=HOST-FILE of an existing file"
-        dra-vm-put-file "$vmdir" "$file" "/root/dax-rw.d.$name"
+        vmdir-put-file "$vmdir" "$file" "/root/dax-rw.d.$name"
         from+=" --from-file=$name=/root/dax-rw.d.$name"
     done
-    dra-vm-command "$vmdir" "kubectl create configmap dax-rw -n $DRA_NS --from-file=dax-rw.py=/root/dax-rw.py --from-file=numa-touch.py=/root/numa-touch.py$from --dry-run=client -o yaml | kubectl apply -f -" ||
-        command-error "cannot create ConfigMap dax-rw in $(dra-vm-label "$vmdir")"
+    vmdir-command "$vmdir" "kubectl create configmap dax-rw -n $DRA_NS --from-file=dax-rw.py=/root/dax-rw.py --from-file=numa-touch.py=/root/numa-touch.py$from --dry-run=client -o yaml | kubectl apply -f -" ||
+        command-error "cannot create ConfigMap dax-rw in $(vmdir-label "$vmdir")"
 }
 
 ###
@@ -358,7 +303,7 @@ dra-image-put() { # script API
     # (playbook/nri-dra-driver-cxl-plugin-deploy.yaml). Skip the copy if
     # $DRA_TEST_IMAGE is that image already.
     local vmdir="$1" label tar file id
-    label=$(dra-vm-label "$vmdir")
+    label=$(vmdir-label "$vmdir")
     # shellcheck disable=SC2012 # the newest by mtime, like the playbook
     tar=$(ls -1t "$DRA_IMAGE_DIR"/nri-dra-driver-cxl-image-*.tar 2>/dev/null | head -n 1)
     [ -n "$tar" ] ||
@@ -367,16 +312,16 @@ dra-image-put() { # script API
     id=${file##*-image-}
     id=${id%.tar}
     if [ "${k8scri:-containerd}" == containerd ] &&
-           dra-vm-command-q "$vmdir" "ctr -n k8s.io images ls | awk -v ref=$DRA_TEST_IMAGE -v id=sha256:$id '\$1 == ref {t = \$3} index(\$1, id) == 1 {s = \$3} END {exit !(t != \"\" && t == s)}'"; then
+           vmdir-command-q "$vmdir" "ctr -n k8s.io images ls | awk -v ref=$DRA_TEST_IMAGE -v id=sha256:$id '\$1 == ref {t = \$3} index(\$1, id) == 1 {s = \$3} END {exit !(t != \"\" && t == s)}'"; then
         echo "dra-image-put $label: $DRA_TEST_IMAGE is $file already"
         return 0
     fi
     host-command "scp -F \"$vmdir/.ssh-config\" \"$tar\" node:\"$file\"" ||
         command-error "cannot copy $tar to $label"
     if [ "${k8scri:-containerd}" == containerd ]; then
-        dra-vm-command "$vmdir" "ctr -n k8s.io images import $file && ref=\$(ctr -n k8s.io images ls | grep sha256:$id | tr -s '\t' ' ' | cut -d ' ' -f1 | head -n 1) && [ -n \"\$ref\" ] && ctr -n k8s.io images tag --force \$ref $DRA_TEST_IMAGE; rc=\$?; rm -f $file; exit \$rc"
+        vmdir-command "$vmdir" "ctr -n k8s.io images import $file && ref=\$(ctr -n k8s.io images ls | grep sha256:$id | tr -s '\t' ' ' | cut -d ' ' -f1 | head -n 1) && [ -n \"\$ref\" ] && ctr -n k8s.io images tag --force \$ref $DRA_TEST_IMAGE; rc=\$?; rm -f $file; exit \$rc"
     else
-        dra-vm-command "$vmdir" "ref=\$(podman image load -i $file | sed -n 's/^Loaded image[^:]*: *//p' | tr ',' '\n' | head -n 1) && [ -n \"\$ref\" ] && podman image tag \$ref $DRA_TEST_IMAGE; rc=\$?; rm -f $file; exit \$rc"
+        vmdir-command "$vmdir" "ref=\$(podman image load -i $file | sed -n 's/^Loaded image[^:]*: *//p' | tr ',' '\n' | head -n 1) && [ -n \"\$ref\" ] && podman image tag \$ref $DRA_TEST_IMAGE; rc=\$?; rm -f $file; exit \$rc"
     fi || command-error "cannot import $file as $DRA_TEST_IMAGE in $label"
 }
 
@@ -387,17 +332,17 @@ dra-image-tar-put() { # script API
     # containerd of the VM of VMDIR and tag it REF, unless REF is TAG there
     # already (the same digest), the way dra-image-put imports the driver.
     local vmdir="$1" tar="$2" tag="$3" ref="$4" label file
-    label=$(dra-vm-label "$vmdir")
+    label=$(vmdir-label "$vmdir")
     file=${tar##*/}
     [ "${k8scri:-containerd}" == containerd ] ||
         error "dra-image-tar-put: $tag is imported with ctr, $label runs ${k8scri}"
-    if dra-vm-command-q "$vmdir" "ctr -n k8s.io images ls | awk -v ref=$ref -v tag=$tag '\$1 == ref {r = \$3} \$1 == tag {t = \$3} END {exit !(r != \"\" && r == t)}'"; then
+    if vmdir-command-q "$vmdir" "ctr -n k8s.io images ls | awk -v ref=$ref -v tag=$tag '\$1 == ref {r = \$3} \$1 == tag {t = \$3} END {exit !(r != \"\" && r == t)}'"; then
         echo "dra-image-tar-put $label: $ref is $tag already"
         return 0
     fi
     host-command "scp -F \"$vmdir/.ssh-config\" \"$tar\" node:\"$file\"" ||
         command-error "cannot copy $tar to $label"
-    dra-vm-command "$vmdir" "ctr -n k8s.io images import $file && ctr -n k8s.io images tag --force $tag $ref; rc=\$?; rm -f $file; exit \$rc" ||
+    vmdir-command "$vmdir" "ctr -n k8s.io images import $file && ctr -n k8s.io images tag --force $tag $ref; rc=\$?; rm -f $file; exit \$rc" ||
         command-error "cannot import $file as $ref in $label"
 }
 
@@ -436,7 +381,7 @@ dra-install() { # script API
     # dra-install chains its EXIT trap: dra-cleanup, then pool-cleanup, or
     # $DRA_EXIT_TRAP if it is set.
     local vmdir="$OUTPUT_DIR" label url names name v nodes values i units=() urls=() ref="" where
-    label=$(dra-vm-label "$vmdir")
+    label=$(vmdir-label "$vmdir")
     case "$DRA_CONTROLLER_MODE" in
         systemd)
             [ -x "$DRA_CONTROLLER_BIN" ] || error "dra-install: no $DRA_CONTROLLER_BIN, run dra-build first"
@@ -462,11 +407,11 @@ dra-install() { # script API
     done
     # The nodes of the cluster are VMs next to the VM of the test, named
     # after their output directories, the VM of the test first.
-    names=$(dra-vm-command-q "$vmdir" "kubectl get nodes -o jsonpath='{.items[*].metadata.name}'") ||
+    names=$(vmdir-command-q "$vmdir" "kubectl get nodes -o jsonpath='{.items[*].metadata.name}'") ||
         error "dra-install: cannot list the nodes of the cluster of $label"
     nodes=("$vmdir")
     for name in $names; do
-        [ "$name" != "$(dra-vm-name "$vmdir")" ] || continue
+        [ "$name" != "$(vmdir-name "$vmdir")" ] || continue
         v=$(vmdir-of "$name")
         [ -f "$v/.ssh-config" ] || error "dra-install: node $name of the cluster of $label is not a VM in $v"
         nodes+=("$v")
@@ -486,14 +431,14 @@ dra-install() { # script API
         error "dra-install: pods of $DRA_DAEMONSET of an earlier run are left in the cluster of $label"
     dra-controllers-remove ||
         command-error "cannot remove the pool controllers of an earlier run in $label"
-    dra-vm-command "$vmdir" "kubectl delete deviceclass --ignore-not-found ${DRA_CLASSES[*]}" ||
+    vmdir-command "$vmdir" "kubectl delete deviceclass --ignore-not-found ${DRA_CLASSES[*]}" ||
         command-error "cannot remove the components of an earlier run in $label"
     for v in "${nodes[@]}"; do
         dra-state-cleanup "$v"
     done
     if [ "$DRA_CONTROLLER_MODE" == systemd ]; then
-        dra-vm-put-file "$vmdir" "$DRA_CONTROLLER_BIN" /usr/local/bin/fake-cxl-pool-controller
-        dra-vm-command "$vmdir" "chmod 755 /usr/local/bin/fake-cxl-pool-controller" ||
+        vmdir-put-file "$vmdir" "$DRA_CONTROLLER_BIN" /usr/local/bin/fake-cxl-pool-controller
+        vmdir-command "$vmdir" "chmod 755 /usr/local/bin/fake-cxl-pool-controller" ||
             command-error "cannot install fake-cxl-pool-controller in $label"
     fi
 
@@ -527,14 +472,14 @@ dra-install() { # script API
         fi
         DRA_CONTROLLER_UNITS+=("${units[$i]}")
     done
-    dra-vm-command "$vmdir" "kubectl get deviceclass ${DRA_CLASSES[*]}" ||
+    vmdir-command "$vmdir" "kubectl get deviceclass ${DRA_CLASSES[*]}" ||
         command-error "the chart $DRA_CHART does not create the DeviceClasses ${DRA_CLASSES[*]} in $label"
 
     for v in "${nodes[@]}"; do
         dra-wait-node "$v"
     done
 
-    dra-vm-command "$vmdir" "kubectl delete pods --all -n $DRA_NS --grace-period=2 --ignore-not-found --wait=true --timeout=60s 2>&1 | grep -v 'No resources found'; kubectl delete namespace $DRA_NS --ignore-not-found --wait=true --timeout=120s && kubectl create namespace $DRA_NS" ||
+    vmdir-command "$vmdir" "kubectl delete pods --all -n $DRA_NS --grace-period=2 --ignore-not-found --wait=true --timeout=60s 2>&1 | grep -v 'No resources found'; kubectl delete namespace $DRA_NS --ignore-not-found --wait=true --timeout=120s && kubectl create namespace $DRA_NS" ||
         command-error "cannot create namespace $DRA_NS in $label"
 }
 
@@ -551,7 +496,7 @@ dra-controller-run() {
         echo "dra-controller-run: no pool server URL of $unit: dra-install starts the controllers" >&2
         return 2
     fi
-    dra-vm-command "$OUTPUT_DIR" "systemd-run --unit $unit --property=Restart=no -E KUBECONFIG=/root/.kube/config /usr/local/bin/fake-cxl-pool-controller -server $url -v"
+    vmdir-command "$OUTPUT_DIR" "systemd-run --unit $unit --property=Restart=no -E KUBECONFIG=/root/.kube/config /usr/local/bin/fake-cxl-pool-controller -server $url -v"
 }
 
 dra-controller-units-only() {
@@ -581,7 +526,7 @@ dra-controller-deploy() {
                -e "s/^\( *app\.kubernetes\.io\/instance:\) $DRA_CONTROLLER_UNIT\$/\1 $name/" \
                -e "s|^\( *- \)$DRA_CONTROLLER_MANIFEST_URL\$|\1$url|" "$DRA_CONTROLLER_MANIFEST") ||
         error "dra-controller-deploy: cannot read $DRA_CONTROLLER_MANIFEST"
-    dra-vm-command "$OUTPUT_DIR" "kubectl apply -f - <<'DRA_CONTROLLER_EOF'
+    vmdir-command "$OUTPUT_DIR" "kubectl apply -f - <<'DRA_CONTROLLER_EOF'
 $yaml
 DRA_CONTROLLER_EOF
 kubectl rollout status -n $DRA_CONTROLLER_NS deployment/$name --timeout=90s && kubectl get deployment -n $DRA_CONTROLLER_NS $name -o jsonpath='{.spec.template.spec.containers[0].args}{\"\\n\"}'" ||
@@ -599,7 +544,7 @@ dra-controllers-remove() {
     # Deployments, and the ClusterRole and ClusterRoleBinding of
     # $DRA_CONTROLLER_MANIFEST. A controller deletes the ResourceSlices of
     # its pool when it stops. Return the status of the commands in the VM.
-    dra-vm-command "$OUTPUT_DIR" "systemctl stop '$DRA_CONTROLLER_UNITS_GLOB' 2>/dev/null; systemctl reset-failed '$DRA_CONTROLLER_UNITS_GLOB' 2>/dev/null
+    vmdir-command "$OUTPUT_DIR" "systemctl stop '$DRA_CONTROLLER_UNITS_GLOB' 2>/dev/null; systemctl reset-failed '$DRA_CONTROLLER_UNITS_GLOB' 2>/dev/null
 if kubectl get namespace $DRA_CONTROLLER_NS >/dev/null 2>&1; then kubectl delete namespace $DRA_CONTROLLER_NS --wait=true --timeout=90s || exit 1; fi
 kubectl delete clusterrolebinding,clusterrole $DRA_CONTROLLER_UNIT --ignore-not-found"
 }
@@ -616,11 +561,11 @@ dra-controller-start() { # script API
     # non-zero if it does not start, for instance because it runs already.
     local unit="$1"
     dra-controller-units-only dra-controller-start || return 2
-    dra-vm-command "$OUTPUT_DIR" "systemctl reset-failed $unit 2>/dev/null; systemctl is-active $unit" &&
+    vmdir-command "$OUTPUT_DIR" "systemctl reset-failed $unit 2>/dev/null; systemctl is-active $unit" &&
         { echo "dra-controller-start: $unit is active already" >&2; return 1; }
     dra-controller-run "$unit" || return 1
     retry-until --timeout 10 --interval 1 --message "$unit active" \
-        'dra-vm-command-q "$OUTPUT_DIR" "systemctl -q is-active $unit"'
+        'vmdir-command-q "$OUTPUT_DIR" "systemctl -q is-active $unit"'
 }
 
 dra-controller-stop() { # script API
@@ -631,7 +576,7 @@ dra-controller-stop() { # script API
     # before it exits) and remove the unit (reset-failed). Return non-zero
     # if it is still active.
     dra-controller-units-only dra-controller-stop || return 2
-    dra-vm-command "$OUTPUT_DIR" "systemctl stop $1; systemctl reset-failed $1 2>/dev/null; ! systemctl -q is-active $1"
+    vmdir-command "$OUTPUT_DIR" "systemctl stop $1; systemctl reset-failed $1 2>/dev/null; ! systemctl -q is-active $1"
 }
 
 dra-controller-kill() { # script API
@@ -642,7 +587,7 @@ dra-controller-kill() { # script API
     # until dra-controller-start. Wait until it is not active any more, 5 s
     # at most. Return non-zero if it was not active or is still active.
     dra-controller-units-only dra-controller-kill || return 2
-    dra-vm-command "$OUTPUT_DIR" "systemctl -q is-active $1 || { echo '$1 is not active'; exit 1; }
+    vmdir-command "$OUTPUT_DIR" "systemctl -q is-active $1 || { echo '$1 is not active'; exit 1; }
 systemctl kill --signal=SIGKILL $1 || exit 1
 for i in \$(seq 50); do systemctl -q is-active $1 || break; sleep 0.1; done
 systemctl is-active $1; ! systemctl -q is-active $1"
@@ -697,7 +642,7 @@ dra-state-cleanup() {
     # state.json.prev, which also hold the serials of the pool devices that
     # the driver saw, so that every test starts with the pools of its own
     # servers only) and the lease sockets of lease claims (leases/).
-    dra-vm-command "$1" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the CXL state of the driver'; else rm -fv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/state.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/state.json.prev; rm -rfv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases; fi"
+    vmdir-command "$1" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the CXL state of the driver'; else rm -fv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/state.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/state.json.prev; rm -rfv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases; fi"
 }
 
 dra-wait-node() {
@@ -708,29 +653,29 @@ dra-wait-node() {
     # ResourceSlice of the node, and the node has the kubelet plugin socket
     # of cxl-pool.nri.io and the cxl-request of the driver.
     local vmdir="$1" name label pools controllers
-    name=$(dra-vm-name "$vmdir")
-    label=$(dra-vm-label "$vmdir")
+    name=$(vmdir-name "$vmdir")
+    label=$(vmdir-label "$vmdir")
     pools=$(dra-pool-names | tr '\n' ' ')
     controllers="systemctl status --no-pager '$DRA_CONTROLLER_UNITS_GLOB'; journalctl --no-pager -n 40 -u '$DRA_CONTROLLER_UNITS_GLOB'"
     [ "$DRA_CONTROLLER_MODE" != pod ] ||
         controllers="kubectl get pods -n $DRA_CONTROLLER_NS -o wide; kubectl logs -n $DRA_CONTROLLER_NS -l $DRA_CONTROLLER_POD_LABEL --tail=40"
     retry-until --timeout 60 --interval 2 --message "$label: ResourceSlices of $DRA_POOL_DRIVER${pools:+ (pools ${pools% })} and $DRA_LOCAL_DRIVER on $name, $DRA_POOL_DRIVER kubelet plugin socket, $DRA_REQUEST_NODE_BIN" \
         'dra-install-ready "$vmdir" "$name"' || {
-        dra-vm-command "$vmdir" "kubectl get pods -n kube-system -l $DRA_POD_LABEL -o wide; kubectl logs -n kube-system --tail=40 -c $DRA_CONTAINER \$(kubectl get pods -n kube-system -l $DRA_POD_LABEL --field-selector spec.nodeName=$name -o name | head -n 1); $controllers; kubectl get resourceslices; ls -l /var/lib/kubelet/plugins/*"
+        vmdir-command "$vmdir" "kubectl get pods -n kube-system -l $DRA_POD_LABEL -o wide; kubectl logs -n kube-system --tail=40 -c $DRA_CONTAINER \$(kubectl get pods -n kube-system -l $DRA_POD_LABEL --field-selector spec.nodeName=$name -o name | head -n 1); $controllers; kubectl get resourceslices; ls -l /var/lib/kubelet/plugins/*"
         error "dra-install: the DRA components did not come up in $label"
     }
-    dra-vm-command "$vmdir" "kubectl get resourceslices; ls -l /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/ $DRA_REQUEST_NODE_BIN"
+    vmdir-command "$vmdir" "kubectl get resourceslices; ls -l /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/ $DRA_REQUEST_NODE_BIN"
 }
 
 dra-install-ready() {
     # Usage: dra-install-ready VMDIR NODENAME
     local vmdir="$1" name="$2" json pools="" pool
-    json=$(dra-vm-command-q "$vmdir" "kubectl get resourceslices -o json") || return 1
+    json=$(vmdir-command-q "$vmdir" "kubectl get resourceslices -o json") || return 1
     for pool in $(dra-pool-names); do
         pools+="'$pool', "
     done
     dra-py assert "$json" "slices(\"$DRA_POOL_DRIVER\") and set([$pools]) <= set(s['spec']['pool']['name'] for s in slices(\"$DRA_POOL_DRIVER\")) and slices(\"$DRA_LOCAL_DRIVER\", \"$name\")" || return 1
-    dra-vm-command-q "$vmdir" "test -S /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/dra.sock && test -x $DRA_REQUEST_NODE_BIN"
+    vmdir-command-q "$vmdir" "test -S /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/dra.sock && test -x $DRA_REQUEST_NODE_BIN"
 }
 
 dra-driver-pod() {
@@ -739,7 +684,7 @@ dra-driver-pod() {
     # Print the name of the running pod of the driver on the node of the VM
     # of VMDIR, quietly. Return 1 if there is none.
     local pod
-    pod=$(dra-vm-command-q "$1" "kubectl get pods -n kube-system -l $DRA_POD_LABEL --field-selector spec.nodeName=$(dra-vm-name "$1"),status.phase=Running -o name" 2>/dev/null | head -n 1)
+    pod=$(vmdir-command-q "$1" "kubectl get pods -n kube-system -l $DRA_POD_LABEL --field-selector spec.nodeName=$(vmdir-name "$1"),status.phase=Running -o name" 2>/dev/null | head -n 1)
     [ -n "$pod" ] || return 1
     echo "${pod#pod/}"
 }
@@ -751,9 +696,9 @@ dra-plugin-log-save() {
     # $TEST_OUTPUT_DIR/nri-dra-driver-cxl.<vm>.log, if the driver runs there.
     local pod file
     pod=$(dra-driver-pod "$1") || return 0
-    file="$TEST_OUTPUT_DIR/$DRA_CONTAINER.$(dra-vm-label "$1").log"
-    dra-vm-command-q "$1" "kubectl logs -n kube-system $pod -c $DRA_CONTAINER" > "$file" 2>&1
-    echo "log of $DRA_CONTAINER in $(dra-vm-label "$1"): $file"
+    file="$TEST_OUTPUT_DIR/$DRA_CONTAINER.$(vmdir-label "$1").log"
+    vmdir-command-q "$1" "kubectl logs -n kube-system $pod -c $DRA_CONTAINER" > "$file" 2>&1
+    echo "log of $DRA_CONTAINER in $(vmdir-label "$1"): $file"
 }
 
 dra-pool-names() {
@@ -831,15 +776,15 @@ dra-uninstall() { # script API
     # fails the test: it runs in the EXIT trap.
     local vmdir="$OUTPUT_DIR" label left v host url urls
     [ "${#DRA_INSTALLED_VMS[@]}" -gt 0 ] || return 0
-    label=$(dra-vm-label "$vmdir")
+    label=$(vmdir-label "$vmdir")
     echo "dra-uninstall: the cluster of $label"
-    dra-vm-command "$vmdir" "kubectl delete pods --all -n $DRA_NS --grace-period=2 --ignore-not-found --wait=true --timeout=60s 2>&1 | grep -v 'No resources found'; kubectl delete namespace $DRA_NS --ignore-not-found --wait=true --timeout=120s"
+    vmdir-command "$vmdir" "kubectl delete pods --all -n $DRA_NS --grace-period=2 --ignore-not-found --wait=true --timeout=60s 2>&1 | grep -v 'No resources found'; kubectl delete namespace $DRA_NS --ignore-not-found --wait=true --timeout=120s"
     retry-until --timeout 60 --interval 2 --message "no ResourceClaims in $DRA_NS" \
-        '[ -z "$(dra-vm-command-q "$vmdir" "kubectl get resourceclaims -n $DRA_NS -o name 2>/dev/null")" ]' ||
+        '[ -z "$(vmdir-command-q "$vmdir" "kubectl get resourceclaims -n $DRA_NS -o name 2>/dev/null")" ]' ||
         echo "dra-uninstall: ResourceClaims remain in $DRA_NS"
     urls=$(dra-pool-urls)
     for v in "${DRA_INSTALLED_VMS[@]}"; do
-        host=$(dra-vm-name "$v")
+        host=$(vmdir-name "$v")
         for url in $urls; do
             if [ -n "$(dra-pool-attachments "$host" "$url")" ]; then
                 retry-until --timeout 60 --interval 2 --message "the controller of $url detaches the pool devices of $host" \
@@ -858,9 +803,9 @@ dra-uninstall() { # script API
     dra-controllers-remove ||
         echo "dra-uninstall: cannot remove the pool controllers"
     DRA_CONTROLLER_UNITS=()
-    left=$(dra-vm-command-q "$vmdir" "kubectl get resourceslices -o jsonpath='{range .items[?(@.spec.driver==\"$DRA_POOL_DRIVER\")]}{.metadata.name}{\"\\n\"}{end}'")
+    left=$(vmdir-command-q "$vmdir" "kubectl get resourceslices -o jsonpath='{range .items[?(@.spec.driver==\"$DRA_POOL_DRIVER\")]}{.metadata.name}{\"\\n\"}{end}'")
     if [ -n "$left" ]; then
-        dra-vm-command "$vmdir" "kubectl delete resourceslices $(tr "\n" " " <<< "$left")"
+        vmdir-command "$vmdir" "kubectl delete resourceslices $(tr "\n" " " <<< "$left")"
     fi
     for v in "${DRA_INSTALLED_VMS[@]}"; do
         dra-state-cleanup "$v"
@@ -883,16 +828,16 @@ dra-assert-clean() { # script API
     local vmdir label left
     # shellcheck disable=SC2016 # evaluated by retry-until
     retry-until --timeout 60 --interval 2 --message "nothing left in $DRA_NS" \
-        'left=$(dra-vm-command-q "$OUTPUT_DIR" "kubectl get pods,resourceclaims,resourceclaimtemplates -n $DRA_NS -o name") && [ -z "$left" ]' ||
+        'left=$(vmdir-command-q "$OUTPUT_DIR" "kubectl get pods,resourceclaims,resourceclaimtemplates -n $DRA_NS -o name") && [ -z "$left" ]' ||
         error "objects left in $DRA_NS: $(tr '\n' ' ' <<< "$left")"
     for vmdir in "$@"; do
-        label=$(dra-vm-label "$vmdir")
+        label=$(vmdir-label "$vmdir")
         # shellcheck disable=SC2016 # evaluated by retry-until
         retry-until --timeout 60 --interval 2 --message "$label: nothing of a claim left" \
             'left=$(dra-leftovers "$vmdir") && [ -z "$left" ]' ||
             error "$label: left behind: $left"
     done
-    echo "dra-assert-clean: nothing left in $DRA_NS and in $(for vmdir in "$@"; do dra-vm-label "$vmdir"; done | tr '\n' ' ')"
+    echo "dra-assert-clean: nothing left in $DRA_NS and in $(for vmdir in "$@"; do vmdir-label "$vmdir"; done | tr '\n' ' ')"
 }
 
 dra-leftovers() {
@@ -902,7 +847,7 @@ dra-leftovers() {
     # item per line, nothing if it is clean. Return non-zero if something
     # cannot be read.
     local vmdir="$1" host url atts cdis dir mounts loops regions
-    host=$(dra-vm-name "$vmdir")
+    host=$(vmdir-name "$vmdir")
     for url in $(dra-pool-urls); do
         atts=$(dra-pool-attachments "$host" "$url")
         [ -z "$atts" ] || echo "attachments on $url: $(tr '\n' ' ' <<< "$atts")"
@@ -916,7 +861,7 @@ dra-leftovers() {
     done
     loops=$(dra-pmem-loops "$vmdir") || return 1
     [ -z "$loops" ] || echo "loop devices over pmem: $(tr '\n' ' ' <<< "$loops")"
-    regions=$(dra-vm-command-q "$vmdir" "ls /sys/bus/cxl/devices/ | grep -E '^region[0-9]' || true") || return 1
+    regions=$(vmdir-command-q "$vmdir" "ls /sys/bus/cxl/devices/ | grep -E '^region[0-9]' || true") || return 1
     [ -z "$regions" ] || echo "CXL regions: $(tr '\n' ' ' <<< "$regions")"
 }
 
@@ -932,11 +877,11 @@ dra-cleanup() {
     dra-uninstall
     dra-trace-stop
     for vmdir in "${vms[@]}"; do
-        memdevs=$(dra-vm-command-q "$vmdir" "ls /sys/bus/cxl/devices/ | grep -E '^mem[0-9]'")
+        memdevs=$(vmdir-command-q "$vmdir" "ls /sys/bus/cxl/devices/ | grep -E '^mem[0-9]'")
         if [ -n "$memdevs" ]; then
-            echo "dra-cleanup: $(dra-vm-label "$vmdir") still has CXL memory devices: $(tr "\n" " " <<< "$memdevs")"
+            echo "dra-cleanup: $(vmdir-label "$vmdir") still has CXL memory devices: $(tr "\n" " " <<< "$memdevs")"
         else
-            echo "dra-cleanup: $(dra-vm-label "$vmdir") has no CXL memory devices"
+            echo "dra-cleanup: $(vmdir-label "$vmdir") has no CXL memory devices"
         fi
     done
     return 0
@@ -964,7 +909,7 @@ dra-local-find() {
     fi
     type -t pool-host-client >/dev/null ||
         error "${FUNCNAME[1]}: needs pool.source.sh and fake-cxl-pool-server (pool-server-start)"
-    host=$(dra-vm-name "$1")
+    host=$(vmdir-name "$1")
     pool-host-client "${server[@]}" -o json devices || command-error "cannot list the devices of fake-cxl-pool-server${server[1]:+ ${server[1]}}"
     found=$(pool-value "$COMMAND_OUTPUT" "chr(10).join(' '.join([d['name'], d['serial'], str(d['size']), next((a['state'] for a in d.get('attachments') or [] if a['host'] == '$host'), 'detached')]) for d in j if d.get('scope') == 'local' and not d.get('shared') and d.get('localHost') == '$host')")
     [ -n "$found" ] && [ "$(wc -l <<< "$found")" == 1 ] ||
@@ -1000,8 +945,8 @@ dra-local-device() { # script API
         shift 2
     fi
     vmdir="$1"
-    host=$(dra-vm-name "$vmdir")
-    label=$(dra-vm-label "$vmdir")
+    host=$(vmdir-name "$vmdir")
+    label=$(vmdir-label "$vmdir")
     dra-local-find "${server[@]}" "$vmdir"
     case "$DRA_LOCAL_ATTACHMENT" in
         attached)
@@ -1044,8 +989,8 @@ dra-local-detach() { # script API
         shift 2
     fi
     vmdir="$1"
-    host=$(dra-vm-name "$vmdir")
-    label=$(dra-vm-label "$vmdir")
+    host=$(vmdir-name "$vmdir")
+    label=$(vmdir-label "$vmdir")
     dra-local-find "${server[@]}" "$vmdir"
     if [ "$DRA_LOCAL_ATTACHMENT" == detached ]; then
         echo "dra-local-detach $label: $DRA_LOCAL_NAME is not attached"
@@ -1103,7 +1048,7 @@ for m in /sys/bus/cxl/devices/mem[0-9]*; do
 done
 EOF
 )"
-    text=$(dra-vm-command-q "$vmdir" "$script") || return 1
+    text=$(vmdir-command-q "$vmdir" "$script") || return 1
     DRA_MEMDEV=$(python3 -c '
 import json, sys
 out = {"serial": sys.argv[1], "memdev": None, "enabled": False, "regions": []}
@@ -1128,11 +1073,11 @@ dra-memdev-wait() { # script API
     # JSON in $TEST_OUTPUT_DIR/memdev.LABEL.<vm>.json and in DRA_MEMDEV and
     # COMMAND_OUTPUT. Fail the test on timeout, showing the JSON.
     local vmdir="$1" label="$2" serial="$3" expression="$4" tmo="${5:-60}" file
-    file="$TEST_OUTPUT_DIR/memdev.$label.$(dra-vm-label "$vmdir").json"
-    retry-until --timeout "$tmo" --message "$(dra-vm-label "$vmdir"): sysfs of CXL memory device $serial: $expression" \
+    file="$TEST_OUTPUT_DIR/memdev.$label.$(vmdir-label "$vmdir").json"
+    retry-until --timeout "$tmo" --message "$(vmdir-label "$vmdir"): sysfs of CXL memory device $serial: $expression" \
         'dra-memdev-sysfs "$vmdir" "$serial" && dra-py assert "$DRA_MEMDEV" "$expression" 2>/dev/null' || {
         echo "$DRA_MEMDEV" > "$file"
-        error "$(dra-vm-label "$vmdir"): CXL memory device $serial did not reach the expected state in ${tmo}s: $expression
+        error "$(vmdir-label "$vmdir"): CXL memory device $serial did not reach the expected state in ${tmo}s: $expression
 sysfs: $DRA_MEMDEV"
     }
     echo "$DRA_MEMDEV" > "$file"
@@ -1151,7 +1096,7 @@ dra-block-size() { # script API
     local text
     type -t cxl-block-size-parse >/dev/null ||
         error "${FUNCNAME[1]}: needs cxl.source.sh"
-    text=$(dra-vm-command-q "$1" "cat /sys/devices/system/memory/block_size_bytes") || return 1
+    text=$(vmdir-command-q "$1" "cat /sys/devices/system/memory/block_size_bytes") || return 1
     cxl-block-size-parse "$text"
 }
 
@@ -1164,7 +1109,7 @@ dra-node-memtotal() { # script API
     # number.
     local kb
     [[ "$2" =~ ^[0-9]+$ ]] || return 1
-    kb=$(dra-vm-command-q "$1" "d=/sys/devices/system/node/node$2; if [ -d \$d ]; then awk '\$3 == \"MemTotal:\" {print \$4}' \$d/meminfo; else echo 0; fi") || return 1
+    kb=$(vmdir-command-q "$1" "d=/sys/devices/system/node/node$2; if [ -d \$d ]; then awk '\$3 == \"MemTotal:\" {print \$4}' \$d/meminfo; else echo 0; fi") || return 1
     [[ "$kb" =~ ^[0-9]+$ ]] || return 1
     echo "$kb"
 }
@@ -1177,13 +1122,13 @@ dra-node-wait() { # script API
     # (default 30), and print the line of the node in "numactl -H".
     # DRA_NODE_KB is the last MemTotal read. Fail the test on timeout.
     local vmdir="$1" node="$2" kb="$3" tmo="${4:-30}" label
-    label=$(dra-vm-label "$vmdir")
+    label=$(vmdir-label "$vmdir")
     [[ "$node" =~ ^[0-9]+$ ]] || error "dra-node-wait: NUMA node '$node' is not a number"
     DRA_NODE_KB=""
     retry-until --timeout "$tmo" --interval 1 --message "$label: MemTotal of NUMA node $node is $kb kB" \
         'DRA_NODE_KB=$(dra-node-memtotal "$vmdir" "$node") && [ "$DRA_NODE_KB" == "$kb" ]' ||
         error "$label: MemTotal of NUMA node $node is ${DRA_NODE_KB:-unreadable} kB after ${tmo}s, expected $kb kB"
-    echo "node ok: $label: MemTotal of NUMA node $node is $kb kB, numactl -H: $(dra-vm-command-q "$vmdir" "numactl -H | grep '^node $node size:'" || echo "no node $node")"
+    echo "node ok: $label: MemTotal of NUMA node $node is $kb kB, numactl -H: $(vmdir-command-q "$vmdir" "numactl -H | grep '^node $node size:'" || echo "no node $node")"
 }
 
 dra-node-size-exact() { # script API
@@ -1194,10 +1139,10 @@ dra-node-size-exact() { # script API
     # on it: memory_hotplug.memmap_on_memory is off (the parameter is
     # missing or N).
     local value
-    value=$(dra-vm-command-q "$1" "cat /sys/module/memory_hotplug/parameters/memmap_on_memory 2>/dev/null || echo missing")
-    echo "$(dra-vm-label "$1"): memory_hotplug.memmap_on_memory: $value"
+    value=$(vmdir-command-q "$1" "cat /sys/module/memory_hotplug/parameters/memmap_on_memory 2>/dev/null || echo missing")
+    echo "$(vmdir-label "$1"): memory_hotplug.memmap_on_memory: $value"
     [ "$value" == missing ] || [ "$value" == N ] ||
-        error "memory_hotplug.memmap_on_memory is '$value' in $(dra-vm-label "$1"), expected missing or N: with it, the vmemmap of hotplugged memory blocks comes from the blocks themselves, and MemTotal of a node is not the size of its online blocks. Boot the VM without memory_hotplug.memmap_on_memory"
+        error "memory_hotplug.memmap_on_memory is '$value' in $(vmdir-label "$1"), expected missing or N: with it, the vmemmap of hotplugged memory blocks comes from the blocks themselves, and MemTotal of a node is not the size of its online blocks. Boot the VM without memory_hotplug.memmap_on_memory"
 }
 
 dra-mi() { # script API
@@ -1226,7 +1171,7 @@ dra-local-blocks-require() { # script API
     # VM was created from TOPOLOGY.
     local vmdir="$1" topology="$2" blocks="$3" bs="$DRA_LOCAL_BLOCK_SIZE" mib=$(( 1 << 20 ))
     if ! [[ "$bs" =~ ^[0-9]+$ ]] || (( bs < 16 * mib || bs % (16 * mib) != 0 )); then
-        error "unexpected memory block size '$bs' bytes in $(dra-vm-label "$vmdir")"
+        error "unexpected memory block size '$bs' bytes in $(vmdir-label "$vmdir")"
     fi
     (( DRA_LOCAL_SIZE % bs == 0 && DRA_LOCAL_SIZE >= blocks * bs )) ||
         error "the local device $DRA_LOCAL_NAME has $DRA_LOCAL_SIZE bytes, the test needs $blocks memory blocks of $bs bytes. The VM was created from an older topology.var.json of $topology: recreate it: vagrant destroy in $vmdir, remove the directory, and run
@@ -1307,7 +1252,7 @@ dra-local-claim-check() { # script API
     claim=$(dra-pod-claim "$vmdir" "$pod") || error "pod $pod has no ResourceClaim"
     dra-json "$vmdir" resourceclaim -n "$DRA_NS" "$claim"
     DRA_CLAIM_JSON="$COMMAND_OUTPUT"
-    dra-assert "$DRA_CLAIM_JSON" "[(r['driver'], r['device']) for r in results()] == [('$DRA_LOCAL_DRIVER', '$DRA_LOCAL_DEVICE')] and allocated_node() == '$(dra-vm-name "$vmdir")'"
+    dra-assert "$DRA_CLAIM_JSON" "[(r['driver'], r['device']) for r in results()] == [('$DRA_LOCAL_DRIVER', '$DRA_LOCAL_DEVICE')] and allocated_node() == '$(vmdir-name "$vmdir")'"
     dra-assert "$DRA_CLAIM_JSON" "consumed() == $bytes"
     DRA_CLAIM_UID=$(dra-value "$DRA_CLAIM_JSON" "j['metadata']['uid']")
 }
@@ -1351,7 +1296,7 @@ for f in "$dir"/*.json; do
 done
 EOF2
 )"
-    dra-vm-command-q "$1" "$script"
+    vmdir-command-q "$1" "$script"
 }
 
 dra-cdi-py() {
@@ -1418,7 +1363,7 @@ dra-lease-cdi-assert() { # script API
     local vmdir="$1" uid="$2" cdi
     cdi=$(dra-cdi-device "$vmdir" "lease-$uid")
     echo "CDI device lease-$uid: $cdi"
-    [ -n "$cdi" ] || error "no CDI device lease-$uid in $(dra-vm-label "$vmdir")"
+    [ -n "$cdi" ] || error "no CDI device lease-$uid in $(vmdir-label "$vmdir")"
     dra-assert "$cdi" "j['kind'] == '$DRA_LOCAL_DRIVER/device' and 'CXL_LEASE_SOCKET=/run/cxl/cxl.sock' in j['env']"
     dra-assert "$cdi" "sorted((m.get('hostPath'), m.get('containerPath'), m.get('type'), m.get('options')) for m in j['mounts']) == sorted([('$DRA_LEASE_DIR/$uid', '/run/cxl', 'bind', ['rbind', 'ro']), ('$DRA_LEASE_FS_DIR/$uid', '$DRA_LEASE_FS_CTR_DIR', 'bind', ['rbind', 'ro', 'rslave']), ('$DRA_REQUEST_NODE_BIN', '$DRA_REQUEST_CTR_BIN', 'bind', ['bind', 'ro'])])"
     # The socket directory first: the filesystem directory is mounted inside it.
@@ -1437,7 +1382,7 @@ dra-fs-mounts() { # script API
     # list. Return non-zero if the mounts cannot be read or a line of
     # findmnt cannot be parsed.
     local lines dir="${2:-$DRA_POOL_MOUNT_DIR}"
-    lines=$(dra-vm-command-q "$1" "findmnt -rn -o TARGET,SOURCE,FSTYPE,FS-OPTIONS,VFS-OPTIONS | while read -r t s f o v; do
+    lines=$(vmdir-command-q "$1" "findmnt -rn -o TARGET,SOURCE,FSTYPE,FS-OPTIONS,VFS-OPTIONS | while read -r t s f o v; do
     case \"\$t\" in $dir/*) ;; *) continue;; esac
     o=\${o:--} v=\${v:--} b=- d=- r=-
     case \"\$s\" in /dev/loop[0-9]*) l=/sys/block/\${s#/dev/}; b=\$(cat \$l/loop/backing_file); d=\$(cat \$l/loop/dio); r=\$(cat \$l/ro);; esac
@@ -1464,7 +1409,7 @@ dra-pmem-loops() { # script API
     # Print the loop devices of the VM of VMDIR whose backing file is a
     # pmem block device, one "loopN /dev/pmemK" per line, quietly. Return
     # non-zero if the loop devices cannot be listed.
-    dra-vm-command-q "$1" "test -d /sys/block || exit 1; for f in /sys/block/loop*/loop/backing_file; do [ -f \"\$f\" ] || continue; b=\$(cat \"\$f\") || exit 1; case \"\$b\" in /dev/pmem*) n=\${f#/sys/block/}; echo \"\${n%%/*} \$b\";; esac; done; exit 0"
+    vmdir-command-q "$1" "test -d /sys/block || exit 1; for f in /sys/block/loop*/loop/backing_file; do [ -f \"\$f\" ] || continue; b=\$(cat \"\$f\") || exit 1; case \"\$b\" in /dev/pmem*) n=\${f#/sys/block/}; echo \"\${n%%/*} \$b\";; esac; done; exit 0"
 }
 
 dra-lease-fs-mounts() { # script API
@@ -1477,7 +1422,7 @@ dra-lease-fs-mounts() { # script API
     # ro,nosuid,nodev,relatime). COMMAND_OUTPUT has the list. Return
     # non-zero if the mounts cannot be read.
     local json
-    json=$(dra-vm-command-q "$1" "findmnt -J -l -o TARGET,SOURCE,FSTYPE,FS-OPTIONS,VFS-OPTIONS") || return 1
+    json=$(vmdir-command-q "$1" "findmnt -J -l -o TARGET,SOURCE,FSTYPE,FS-OPTIONS,VFS-OPTIONS") || return 1
     COMMAND_OUTPUT=$(python3 -c '
 import json, sys
 base = sys.argv[1].rstrip("/") + "/"
@@ -1515,7 +1460,7 @@ dra-local-initial-state() { # script API
     dra-local-unchanged "$vmdir"
     [ -z "$(dra-cdi-devices-with "$vmdir" "CXL_${DRA_LOCAL_HEX}_")" ] ||
         error "$label: CDI devices of claims of the local device are left: $(dra-cdi-devices-with "$vmdir" "CXL_${DRA_LOCAL_HEX}_")"
-    dra-vm-command-q "$vmdir" "test -s $DRA_STATE" ||
+    vmdir-command-q "$vmdir" "test -s $DRA_STATE" ||
         error "$label: the node plugin has no $DRA_STATE"
     [ "$(dra-local-state-claims "$vmdir")" == 0 ] ||
         error "$label: the node plugin still has claims of local memdevs in $DRA_STATE"
@@ -1554,7 +1499,7 @@ dra-local-shared-wait() { # script API
     local vmdir="$1" label="$2" vmlabel claims
     shift 2
     claims=("$@")
-    vmlabel=$(dra-vm-label "$vmdir")
+    vmlabel=$(vmdir-label "$vmdir")
     retry-until --timeout 60 --interval 1 --message "$vmlabel: $DRA_STATE has $DRA_LOCAL_SERIAL shared, with claims [$*]" \
         'dra-local-state-shared "$vmdir" "${claims[@]}"' ||
         error "$vmlabel: $DRA_STATE does not have $DRA_LOCAL_SERIAL shared with claims [$*]: $(dra-py eval "$DRA_STATE_JSON" "json.dumps((lambda m: m and dict(m, claims=local_claims(m)))(memdev('$DRA_LOCAL_SERIAL')))")"
@@ -1578,19 +1523,19 @@ dra-local-seed() { # script API
     # test if any step fails.
     local vmdir="$1" text="$2" label region dax off
     shift 2
-    label=$(dra-vm-label "$vmdir")
+    label=$(vmdir-label "$vmdir")
     pool-client "$vmdir" guest region create "$DRA_LOCAL_SERIAL" --mode dax ||
         command-error "cannot create a devdax region of the local device in $label"
     dra-memdev-wait "$vmdir" seed-region "$DRA_LOCAL_SERIAL" "len(j['regions']) == 1 and len(dax_slices()) == 1" 30
     region=$(dra-value "$DRA_MEMDEV" "j['regions'][0]['name']")
     dax=/dev/$(dra-value "$DRA_MEMDEV" "dax_slices()[0]['name']")
     for off in "$@"; do
-        dra-vm-command "$vmdir" "pool-dax-rw.py write $dax $off $(printf %q "$text") && pool-dax-rw.py read $dax $off" ||
+        vmdir-command "$vmdir" "pool-dax-rw.py write $dax $off $(printf %q "$text") && pool-dax-rw.py read $dax $off" ||
             command-error "cannot write to $dax at $off in $label"
         [ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "$text" ] ||
             error "read '$(tail -n 1 <<< "$COMMAND_OUTPUT")' at $off of $dax in $label, expected '$text'"
     done
-    dra-vm-command "$vmdir" "cxl destroy-region -f $region" ||
+    vmdir-command "$vmdir" "cxl destroy-region -f $region" ||
         command-error "cannot destroy $region in $label"
     dra-memdev-wait "$vmdir" seed-gone "$DRA_LOCAL_SERIAL" "j['memdev'] and j['enabled'] and j['regions'] == []" 30
     echo "dra-local-seed $label: '$text' at $* of the local device, $region destroyed"
@@ -1604,9 +1549,9 @@ dra-plugin-log-wait() { # script API
     # seconds at most (default 30), and print the line. Fail the test on
     # timeout.
     local vmdir="$1" text="$2" tmo="${3:-30}"
-    retry-until --timeout "$tmo" --interval 1 --message "$(dra-vm-label "$vmdir"): the log of $DRA_CONTAINER has '$text'" \
+    retry-until --timeout "$tmo" --interval 1 --message "$(vmdir-label "$vmdir"): the log of $DRA_CONTAINER has '$text'" \
         'dra-plugin-log "$vmdir" | grep -qF -- "$text"' ||
-        error "the log of $DRA_CONTAINER in $(dra-vm-label "$vmdir") has no line with '$text'"
+        error "the log of $DRA_CONTAINER in $(vmdir-label "$vmdir") has no line with '$text'"
     dra-plugin-log "$vmdir" | grep -F -- "$text"
 }
 
@@ -1623,7 +1568,7 @@ dra-local-shared-cleanup() { # script API
     # cannot hot-remove it, and pool-vm-reset of the next test restarts the
     # VM. Never fails the test.
     local vmdir="$1" label
-    label=$(dra-vm-label "$vmdir")
+    label=$(vmdir-label "$vmdir")
     dra-cleanup
     if [ -n "$DRA_LOCAL_SERIAL" ] && dra-memdev-sysfs "$vmdir" "$DRA_LOCAL_SERIAL" &&
            dra-py assert "$DRA_MEMDEV" "j['memdev'] and j['regions']"; then
@@ -1651,17 +1596,17 @@ dra-driver-restart() { # script API
     # follows the log of the new pod (dra-trace-driver-follow).
     # DRA_DRIVER_POD is the new pod.
     local vmdir="$1" label old
-    label=$(dra-vm-label "$vmdir")
+    label=$(vmdir-label "$vmdir")
     old=$(dra-driver-pod "$vmdir") ||
-        error "dra-driver-restart: $DRA_DAEMONSET does not run on $(dra-vm-name "$vmdir")"
-    dra-vm-command-q "$vmdir" "kubectl logs -n kube-system $old -c $DRA_CONTAINER" > "$TEST_OUTPUT_DIR/$DRA_CONTAINER.$label.$old.log" 2>&1
+        error "dra-driver-restart: $DRA_DAEMONSET does not run on $(vmdir-name "$vmdir")"
+    vmdir-command-q "$vmdir" "kubectl logs -n kube-system $old -c $DRA_CONTAINER" > "$TEST_OUTPUT_DIR/$DRA_CONTAINER.$label.$old.log" 2>&1
     echo "dra-driver-restart $label: log of $old in $TEST_OUTPUT_DIR/$DRA_CONTAINER.$label.$old.log"
-    dra-vm-command "$vmdir" "kubectl delete pod -n kube-system $old --wait=true --timeout=60s" ||
+    vmdir-command "$vmdir" "kubectl delete pod -n kube-system $old --wait=true --timeout=60s" ||
         command-error "cannot delete the pod $old of $DRA_DAEMONSET in $label"
     DRA_DRIVER_POD=""
     retry-until --timeout 120 --interval 1 --message "$label: a new Ready pod of $DRA_DAEMONSET" \
-        'DRA_DRIVER_POD=$(dra-driver-pod "$vmdir") && [ "$DRA_DRIVER_POD" != "$old" ] && dra-vm-command-q "$vmdir" "kubectl wait -n kube-system --for=condition=Ready pod/$DRA_DRIVER_POD --timeout=1s" >/dev/null 2>&1' || {
-        dra-vm-command "$vmdir" "kubectl get pods -n kube-system -l $DRA_POD_LABEL -o wide"
+        'DRA_DRIVER_POD=$(dra-driver-pod "$vmdir") && [ "$DRA_DRIVER_POD" != "$old" ] && vmdir-command-q "$vmdir" "kubectl wait -n kube-system --for=condition=Ready pod/$DRA_DRIVER_POD --timeout=1s" >/dev/null 2>&1' || {
+        vmdir-command "$vmdir" "kubectl get pods -n kube-system -l $DRA_POD_LABEL -o wide"
         error "dra-driver-restart: no new Ready pod of $DRA_DAEMONSET in $label"
     }
     echo "dra-driver-restart $label: $old replaced by $DRA_DRIVER_POD"
@@ -1679,7 +1624,7 @@ dra-driver-kill() { # script API
     # unlike dra-driver-restart, which replaces the pod. Do not wait for the
     # restart. COMMAND_OUTPUT has "killed POD CONTAINER-ID pid PID". Return
     # non-zero if no container of the driver runs there or the kill fails.
-    dra-vm-command "$1" "id=\$(crictl ps -q --state running --namespace '^kube-system\$' --name '^$DRA_CONTAINER\$' 2>/dev/null | head -n 1)
+    vmdir-command "$1" "id=\$(crictl ps -q --state running --namespace '^kube-system\$' --name '^$DRA_CONTAINER\$' 2>/dev/null | head -n 1)
 [ -n \"\$id\" ] || { echo 'no running container $DRA_CONTAINER'; exit 1; }
 set -- \$(crictl inspect -o go-template --template '{{index .status.labels \"io.kubernetes.pod.name\"}} {{.info.pid}}' \$id 2>/dev/null)
 [ -n \"\$2\" ] && [ \"\$2\" != 0 ] || { echo \"no pid of container \$id\"; exit 1; }
@@ -1696,16 +1641,16 @@ dra-node-service-restart() { # script API
     # TIMEOUT seconds at most (default 120). Return non-zero on failure or
     # timeout.
     local vmdir="$1" service="$2" tmo="${3:-120}" name check
-    name=$(dra-vm-name "$vmdir")
+    name=$(vmdir-name "$vmdir")
     # shellcheck disable=SC2034 # check is used in the snippet of retry-until
     case "$service" in
         kubelet) check="curl -sf --max-time 2 http://127.0.0.1:10248/healthz >/dev/null";;
         containerd) check="crictl info >/dev/null 2>&1";;
         *) echo "dra-node-service-restart: unknown service '$service' (kubelet or containerd)" >&2; return 2;;
     esac
-    dra-vm-command "$vmdir" "systemctl restart $service" || return 1
-    retry-until --timeout "$tmo" --interval 1 --message "$(dra-vm-label "$vmdir"): $service active and answering, node $name Ready" \
-        'dra-vm-command-q "$vmdir" "systemctl -q is-active $service && $check" && dra-node-ready "$vmdir"'
+    vmdir-command "$vmdir" "systemctl restart $service" || return 1
+    retry-until --timeout "$tmo" --interval 1 --message "$(vmdir-label "$vmdir"): $service active and answering, node $name Ready" \
+        'vmdir-command-q "$vmdir" "systemctl -q is-active $service && $check" && dra-node-ready "$vmdir"'
 }
 
 dra-node-ready() {
@@ -1714,7 +1659,7 @@ dra-node-ready() {
     # Return 0 if the node of the VM of VMDIR is Ready in the cluster of the
     # VM of the test.
     local status
-    status=$(dra-vm-command-q "$OUTPUT_DIR" "kubectl get node $(dra-vm-name "$1") -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}'") || return 1
+    status=$(vmdir-command-q "$OUTPUT_DIR" "kubectl get node $(vmdir-name "$1") -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}'") || return 1
     [ "$status" == True ]
 }
 
@@ -1726,8 +1671,8 @@ dra-plugin-log() { # script API
     # the driver does not run there.
     local pod
     pod=$(dra-driver-pod "$1") ||
-        error "dra-plugin-log: $DRA_DAEMONSET does not run on $(dra-vm-name "$1")"
-    dra-vm-command-q "$1" "kubectl logs -n kube-system $pod -c $DRA_CONTAINER"
+        error "dra-plugin-log: $DRA_DAEMONSET does not run on $(vmdir-name "$1")"
+    vmdir-command-q "$1" "kubectl logs -n kube-system $pod -c $DRA_CONTAINER"
 }
 
 dra-local-slices-aligned() { # script API
@@ -1970,7 +1915,7 @@ dra-claim-pod() { # script API
     shift 2
     dra-apply "$vmdir" <<< "$(dra-claim-yaml template "$name" "$@")
 ---
-$(dra-claim-pod-yaml "$name" template "$name" "$(dra-vm-name "$vmdir")")"
+$(dra-claim-pod-yaml "$name" template "$name" "$(vmdir-name "$vmdir")")"
 }
 
 dra-run() { # script API
@@ -2144,9 +2089,9 @@ dra-exec() { # script API
     read -r pod container <<< "$(dra-pod-container "$2")"
     shift 2
     cmd="kubectl exec -n $DRA_NS $pod${container:+ -c $container} --$(printf ' %q' "$@")"
-    echo -e "\e[38;5;13mroot@$(dra-vm-label "$vmdir")>\e[0m $cmd"
+    echo -e "\e[38;5;13mroot@$(vmdir-label "$vmdir")>\e[0m $cmd"
     errfile=$(mktemp)
-    COMMAND_OUTPUT=$(dra-vm-command-q "$vmdir" "$cmd" 2>"$errfile")
+    COMMAND_OUTPUT=$(vmdir-command-q "$vmdir" "$cmd" 2>"$errfile")
     COMMAND_STATUS=$?
     DRA_EXEC_STDERR=$(cat "$errfile")
     rm -f "$errfile"
@@ -2312,7 +2257,7 @@ dra-container-cgroup() { # script API
     # inspect .info.pid, /proc/PID/cgroup). Processes of "kubectl exec" run
     # in the same cgroup.
     local vmdir="$1" pod="$2" container="$3"
-    dra-vm-command-q "$vmdir" "id=\$(kubectl get pod -n $DRA_NS $pod -o jsonpath='{.status.containerStatuses[?(@.name==\"$container\")].containerID}') && id=\${id#*://} && [ -n \"\$id\" ] &&
+    vmdir-command-q "$vmdir" "id=\$(kubectl get pod -n $DRA_NS $pod -o jsonpath='{.status.containerStatuses[?(@.name==\"$container\")].containerID}') && id=\${id#*://} && [ -n \"\$id\" ] &&
         pid=\$(crictl inspect -o go-template --template '{{.info.pid}}' \$id 2>/dev/null) && [ -n \"\$pid\" ] &&
         cg=\$(sed -n 's/^0:://p' /proc/\$pid/cgroup) && [ -d \"/sys/fs/cgroup\$cg\" ] && echo \"/sys/fs/cgroup\$cg\""
 }
@@ -2326,8 +2271,8 @@ dra-container-file() { # script API
     # container or the file cannot be found.
     local vmdir="$1" pod="$2" container="$3" file="$4" cg
     cg=$(dra-container-cgroup "$vmdir" "$pod" "$container") ||
-        error "dra-container-file: no cgroup of container $container of pod $pod in $(dra-vm-label "$vmdir")"
-    dra-vm-command "$vmdir" "cat $cg/$file" ||
+        error "dra-container-file: no cgroup of container $container of pod $pod in $(vmdir-label "$vmdir")"
+    vmdir-command "$vmdir" "cat $cg/$file" ||
         command-error "cannot read $file of container $container of pod $pod"
 }
 
@@ -2339,7 +2284,7 @@ dra-container-read() { # script API
     # file cannot be found.
     local cg
     cg=$(dra-container-cgroup "$1" "$2" "$3") || return 1
-    dra-vm-command-q "$1" "cat $cg/$4"
+    vmdir-command-q "$1" "cat $cg/$4"
 }
 
 dra-mems-wait() { # script API
@@ -2372,7 +2317,7 @@ dra-mems-fenced() { # script API
     local vmdir="$1" node="$2" label wanted table="" status=""
     shift 2
     local ctrs=("$@")
-    label=$(dra-vm-label "$vmdir")
+    label=$(vmdir-label "$vmdir")
     if [ "${#ctrs[@]}" == 0 ]; then
         wanted="of no container"
     else
@@ -2472,7 +2417,7 @@ w = max([len(r[0]) for r in rows] + [1])
 for name, mems, eff, why in sorted(rows):
     print(("%-*s cpuset.mems %-5s effective %-5s%s" % (w, name, mems, eff, "  <- " + why if why else "")).rstrip())
 sys.exit(3 if any(r[3] for r in rows) else 0)'
-    dra-vm-command-q "$vmdir" "python3 -c $(printf %q "$prog")$(printf ' %q' "$@")"
+    vmdir-command-q "$vmdir" "python3 -c $(printf %q "$prog")$(printf ' %q' "$@")"
 }
 
 dra-container-anon() { # script API
@@ -2483,7 +2428,7 @@ dra-container-anon() { # script API
     # node is not listed), quietly.
     local vmdir="$1" pod="$2" container="$3" node="$4" cg
     cg=$(dra-container-cgroup "$vmdir" "$pod" "$container") || return 1
-    dra-vm-command-q "$vmdir" "cat $cg/memory.numa_stat" |
+    vmdir-command-q "$vmdir" "cat $cg/memory.numa_stat" |
         awk -v n="N$node" '$1 == "anon" { for (i = 2; i <= NF; i++) { split($i, kv, "="); if (kv[1] == n) v = kv[2] } } END { print v + 0 }'
 }
 
@@ -2497,7 +2442,7 @@ dra-container-mempolicy() { # script API
     # none of its own, distinct, space-separated, for instance "default",
     # "prefer:2" or "interleave:0-2". Return non-zero if it cannot be read.
     local vmdir="$1" pod="$2" container="$3"
-    dra-vm-command-q "$vmdir" "id=\$(kubectl get pod -n $DRA_NS $pod -o jsonpath='{.status.containerStatuses[?(@.name==\"$container\")].containerID}') && id=\${id#*://} && [ -n \"\$id\" ] &&
+    vmdir-command-q "$vmdir" "id=\$(kubectl get pod -n $DRA_NS $pod -o jsonpath='{.status.containerStatuses[?(@.name==\"$container\")].containerID}') && id=\${id#*://} && [ -n \"\$id\" ] &&
         pid=\$(crictl inspect -o go-template --template '{{.info.pid}}' \$id 2>/dev/null) && [ -n \"\$pid\" ] &&
         p=\$(awk '{print \$2}' /proc/\$pid/numa_maps | sort -u | tr '\n' ' ') && [ -n \"\$p\" ] && echo \"\${p% }\""
 }
@@ -2530,7 +2475,7 @@ dra-memory-wait() { # script API
     # Example: dra-memory-wait "$VM" numa-a main fenced "none (default)"
     local vmdir="$1" pod="$2" container="$3" mgmt="$4" steering="$5" ctr label
     ctr="$DRA_NS/$pod/$container"
-    label=$(dra-vm-label "$vmdir")
+    label=$(vmdir-label "$vmdir")
     case "$mgmt" in
         steered|fenced|none) ;;
         *) error "dra-memory-wait: unknown management '$mgmt'";;
@@ -2554,7 +2499,7 @@ dra-container-bpf-count() {
     # Usage: dra-container-bpf-count VMDIR POD CONTAINER
     local cg
     cg=$(dra-container-cgroup "$1" "$2" "$3") || return 1
-    dra-vm-command-q "$1" "bpftool cgroup show $cg 2>/dev/null | grep -c cgroup_device"
+    vmdir-command-q "$1" "bpftool cgroup show $cg 2>/dev/null | grep -c cgroup_device"
 }
 
 dra-container-devices() { # script API
@@ -2571,7 +2516,7 @@ dra-container-devices() { # script API
     # Quietly. dra-container-bpf-count prints how many are attached.
     local vmdir="$1" pod="$2" container="$3" cg
     cg=$(dra-container-cgroup "$vmdir" "$pod" "$container") || return 1
-    dra-vm-command-q "$vmdir" "id=\$(kubectl get pod -n $DRA_NS $pod -o jsonpath='{.status.containerStatuses[?(@.name==\"$container\")].containerID}'); id=\${id#*://}
+    vmdir-command-q "$vmdir" "id=\$(kubectl get pod -n $DRA_NS $pod -o jsonpath='{.status.containerStatuses[?(@.name==\"$container\")].containerID}'); id=\${id#*://}
         echo \"spec: \$(crictl inspect \$id 2>/dev/null | jq -c .info.runtimeSpec.linux.resources.devices)\"
         echo \"bpf: \$(for p in \$(bpftool cgroup show $cg 2>/dev/null | awk '\$2 == \"cgroup_device\" {print \$1}'); do bpftool prog dump xlated id \$p | sha256sum | cut -c1-16; done | sort -u | tr '\\n' ' ')\""
 }
@@ -2584,7 +2529,7 @@ dra-pod-claim() { # script API
     # from its template (status.resourceClaimStatuses), or the claim it
     # references. Return 1 if there is none yet.
     local vmdir="$1" pod="$2" name="$3" json claim
-    json=$(dra-vm-command-q "$vmdir" "kubectl get pod -n $DRA_NS $pod -o json") || return 1
+    json=$(vmdir-command-q "$vmdir" "kubectl get pod -n $DRA_NS $pod -o json") || return 1
     claim=$(dra-py eval "$json" "next((s.get('resourceClaimName') for s in (j.get('status') or {}).get('resourceClaimStatuses') or [] if '$name' in ('', s.get('name'))), None) or next((c.get('resourceClaimName') for c in j['spec'].get('resourceClaims') or [] if '$name' in ('', c.get('name'))), None) or ''") || return 1
     [ -n "$claim" ] || return 1
     echo "$claim"
@@ -2659,7 +2604,7 @@ dra-touch-start() { # script API
     dra-exec "$vmdir" "$target" sh -c 'setsid python3 /tools/numa-touch.py --hold "$1" "$2" > /tmp/numa-touch.log 2>&1 < /dev/null &' sh "$mib" "$node" ||
         command-error "cannot start numa-touch.py in $target"
     retry-until --timeout 60 --interval 1 --message "numa-touch.py in $target has touched $mib MiB" \
-        'dra-vm-command-q "$vmdir" "$DRA_TOUCH_EXEC cat /tmp/numa-touch.log" | grep -qE "^numa-touch: (ready|.*failed)"' ||
+        'vmdir-command-q "$vmdir" "$DRA_TOUCH_EXEC cat /tmp/numa-touch.log" | grep -qE "^numa-touch: (ready|.*failed)"' ||
         error "numa-touch.py in $target did not finish touching its memory"
     dra-exec "$vmdir" "$target" cat /tmp/numa-touch.log
     grep -q "^numa-touch: ready" <<< "$COMMAND_OUTPUT" || error "numa-touch.py in $target failed: $COMMAND_OUTPUT"
@@ -2714,7 +2659,7 @@ dra-touch-reports() {
     # Print how many "pages" lines the numa-touch.py of dra-touch-start has
     # written (0 if its log cannot be read).
     local n
-    n=$(dra-vm-command-q "$DRA_TOUCH_VM" "$DRA_TOUCH_EXEC grep -c '^numa-touch: pages' /tmp/numa-touch.log")
+    n=$(vmdir-command-q "$DRA_TOUCH_VM" "$DRA_TOUCH_EXEC grep -c '^numa-touch: pages' /tmp/numa-touch.log")
     echo "${n:-0}"
 }
 
@@ -3000,8 +2945,8 @@ dra-json() { # script API
     local vmdir="$1" args status
     shift
     args="$*"
-    echo -e "\e[38;5;13mroot@$(dra-vm-label "$vmdir")>\e[0m kubectl get $args -o json"
-    DRA_JSON=$(dra-vm-command-q "$vmdir" "kubectl get $args -o json")
+    echo -e "\e[38;5;13mroot@$(vmdir-label "$vmdir")>\e[0m kubectl get $args -o json"
+    DRA_JSON=$(vmdir-command-q "$vmdir" "kubectl get $args -o json")
     status=$?
     COMMAND_OUTPUT="$DRA_JSON"
     return $status
@@ -3013,7 +2958,7 @@ dra-state-json() { # script API
     # Print the state document of the driver ($DRA_STATE) in the VM of
     # VMDIR, quietly, for the names of dra-py on it. Return 1 if it cannot
     # be read.
-    dra-vm-command-q "$1" "cat $DRA_STATE"
+    vmdir-command-q "$1" "cat $DRA_STATE"
 }
 
 dra-assert() { # script API
@@ -3043,11 +2988,11 @@ dra-wait() { # script API
     # $TEST_OUTPUT_DIR/dra.LABEL.<vm>.json and in COMMAND_OUTPUT. Fail the
     # test on timeout, showing the JSON.
     local vmdir="$1" label="$2" args="$3" expression="$4" tmo="${5:-60}" file
-    file="$TEST_OUTPUT_DIR/dra.$label.$(dra-vm-label "$vmdir").json"
-    retry-until --timeout "$tmo" --message "$(dra-vm-label "$vmdir"): kubectl get $args: $expression" \
-        'DRA_JSON=$(dra-vm-command-q "$vmdir" "kubectl get $args -o json" 2>&1) && dra-py assert "$DRA_JSON" "$expression" 2>/dev/null' || {
+    file="$TEST_OUTPUT_DIR/dra.$label.$(vmdir-label "$vmdir").json"
+    retry-until --timeout "$tmo" --message "$(vmdir-label "$vmdir"): kubectl get $args: $expression" \
+        'DRA_JSON=$(vmdir-command-q "$vmdir" "kubectl get $args -o json" 2>&1) && dra-py assert "$DRA_JSON" "$expression" 2>/dev/null' || {
         echo "$DRA_JSON" > "$file"
-        error "DRA: $(dra-vm-label "$vmdir") did not reach the expected state in ${tmo}s: $expression
+        error "DRA: $(vmdir-label "$vmdir") did not reach the expected state in ${tmo}s: $expression
 kubectl get $args: $(head -c 3000 <<< "$DRA_JSON")
 (all in $file)"
     }
@@ -3063,9 +3008,9 @@ dra-claim-conditions() { # script API
     # one "device: type=status reason" line each, and the data that the pool
     # controller wrote for the node plugin.
     local vmdir="$1" claim="$2" json
-    json=$(dra-vm-command-q "$vmdir" "kubectl get resourceclaim -n $DRA_NS $claim -o json") ||
-        error "dra-claim-conditions: no ResourceClaim $claim in $(dra-vm-label "$vmdir")"
-    echo "conditions of ResourceClaim $claim in $(dra-vm-label "$vmdir"):"
+    json=$(vmdir-command-q "$vmdir" "kubectl get resourceclaim -n $DRA_NS $claim -o json") ||
+        error "dra-claim-conditions: no ResourceClaim $claim in $(vmdir-label "$vmdir")"
+    echo "conditions of ResourceClaim $claim in $(vmdir-label "$vmdir"):"
     python3 -c '
 import json, sys
 j = json.loads(sys.stdin.read())
@@ -3118,8 +3063,8 @@ while True:
                     p.kill()
                     sys.exit(0)'
     echo "watching ResourceClaim $claim for $ctype=True reason $reason, ${tmo}s at most"
-    dra-vm-command "$vmdir" "python3 -c $(printf %q "$prog")$(printf ' %q' "$DRA_NS" "$claim" "$ctype" "$reason" "$tmo")" ||
-        error "$(dra-vm-label "$vmdir"): ResourceClaim $claim had no device with condition $ctype=True reason $reason in ${tmo}s"
+    vmdir-command "$vmdir" "python3 -c $(printf %q "$prog")$(printf ' %q' "$DRA_NS" "$claim" "$ctype" "$reason" "$tmo")" ||
+        error "$(vmdir-label "$vmdir"): ResourceClaim $claim had no device with condition $ctype=True reason $reason in ${tmo}s"
 }
 
 dra-pod-wait() { # script API
@@ -3129,12 +3074,12 @@ dra-pod-wait() { # script API
     # Succeeded, Failed), TIMEOUT seconds at most (default 120). Fail the
     # test on timeout, and show the pod and its events.
     local vmdir="$1" pod="$2" phase="$3" tmo="${4:-120}"
-    retry-until --timeout "$tmo" --interval 1 --message "$(dra-vm-label "$vmdir"): pod $pod $phase" \
-        '[ "$(dra-vm-command-q "$vmdir" "kubectl get pod -n $DRA_NS $pod -o jsonpath={.status.phase}" 2>/dev/null)" == "$phase" ]' || {
-        dra-vm-command "$vmdir" "kubectl describe pod -n $DRA_NS $pod"
-        error "pod $pod in $(dra-vm-label "$vmdir") is not $phase after ${tmo}s"
+    retry-until --timeout "$tmo" --interval 1 --message "$(vmdir-label "$vmdir"): pod $pod $phase" \
+        '[ "$(vmdir-command-q "$vmdir" "kubectl get pod -n $DRA_NS $pod -o jsonpath={.status.phase}" 2>/dev/null)" == "$phase" ]' || {
+        vmdir-command "$vmdir" "kubectl describe pod -n $DRA_NS $pod"
+        error "pod $pod in $(vmdir-label "$vmdir") is not $phase after ${tmo}s"
     }
-    dra-vm-command "$vmdir" "kubectl get pod -n $DRA_NS $pod -o wide"
+    vmdir-command "$vmdir" "kubectl get pod -n $DRA_NS $pod -o wide"
 }
 
 dra-pod-log() { # script API
@@ -3142,7 +3087,7 @@ dra-pod-log() { # script API
     #
     # Print the log of pod POD in $DRA_NS of the cluster of the VM of
     # VMDIR, quietly.
-    dra-vm-command-q "$1" "kubectl logs -n $DRA_NS $2 2>/dev/null"
+    vmdir-command-q "$1" "kubectl logs -n $DRA_NS $2 2>/dev/null"
 }
 
 dra-wait-log() { # script API
@@ -3155,7 +3100,7 @@ dra-wait-log() { # script API
     local vmdir="$1" pod="$2" line="$3" tmo="${4:-120}"
     retry-until --timeout "$tmo" --interval 1 --message "$pod: \"$line\"" \
         'dra-pod-log "$vmdir" "$pod" | grep -qxF -- "$line"' || {
-        dra-vm-command "$vmdir" "kubectl logs -n $DRA_NS $pod; kubectl describe pod -n $DRA_NS $pod | tail -n 20"
+        vmdir-command "$vmdir" "kubectl logs -n $DRA_NS $pod; kubectl describe pod -n $DRA_NS $pod | tail -n 20"
         error "pod $pod did not log \"$line\" in ${tmo}s"
     }
 }
@@ -3208,10 +3153,10 @@ dra-trace-start() { # script API
     [ "$DRA_CONTROLLER_MODE" != pod ] ||
         controller_log="kubectl logs -n $DRA_CONTROLLER_NS -f --tail=0 --max-log-requests=20 -l $DRA_CONTROLLER_POD_LABEL"
     for vmdir in "$@"; do
-        label=$(dra-vm-label "$vmdir")
-        name=$(dra-vm-name "$vmdir")
+        label=$(vmdir-label "$vmdir")
+        name=$(vmdir-name "$vmdir")
         # Collectors of an aborted trace may still run.
-        dra-vm-command-q "$vmdir" "$DRA_TRACE_KILL; rm -rf /run/dra-trace; mkdir -p /run/dra-trace"
+        vmdir-command-q "$vmdir" "$DRA_TRACE_KILL; rm -rf /run/dra-trace; mkdir -p /run/dra-trace"
         pod=$(dra-driver-pod "$vmdir") ||
             error "dra-trace-start: $DRA_DAEMONSET does not run on $name"
         dra-trace-collect-vm "$vmdir" "$label.driver" lines "kubectl logs -n kube-system -f --tail=0 -c $DRA_CONTAINER $pod"
@@ -3229,9 +3174,9 @@ dra-trace-start() { # script API
     for vmdir in "$@"; do
         n=8
         [ -z "${DRA_WORKERS[$vmdir]}" ] || n=3
-        retry-until --timeout 30 --message "trace collectors in $(dra-vm-label "$vmdir")" \
-            '[ "$(dra-vm-command-q "$vmdir" "ls /run/dra-trace/ | grep -c .pid\$")" == "$n" ]' ||
-            error "dra-trace-start: trace collectors did not start in $(dra-vm-label "$vmdir"), see $DRA_TRACE_DIR"
+        retry-until --timeout 30 --message "trace collectors in $(vmdir-label "$vmdir")" \
+            '[ "$(vmdir-command-q "$vmdir" "ls /run/dra-trace/ | grep -c .pid\$")" == "$n" ]' ||
+            error "dra-trace-start: trace collectors did not start in $(vmdir-label "$vmdir"), see $DRA_TRACE_DIR"
     done
     # The events watch (--watch-only) prints nothing when it is up, so
     # there is nothing to wait for: a second for it, else the trace may
@@ -3268,8 +3213,8 @@ dra-trace-driver-follow() { # script API
     local vmdir="$1" pod
     [ -n "$DRA_TRACE_RUNNING" ] || return 0
     pod=$(dra-driver-pod "$vmdir") ||
-        error "dra-trace-driver-follow: $DRA_DAEMONSET does not run on $(dra-vm-name "$vmdir")"
-    dra-trace-collect-vm "$vmdir" "$(dra-vm-label "$vmdir").${pod##*-}.driver" lines "kubectl logs -n kube-system -f --tail=-1 -c $DRA_CONTAINER $pod"
+        error "dra-trace-driver-follow: $DRA_DAEMONSET does not run on $(vmdir-name "$vmdir")"
+    dra-trace-collect-vm "$vmdir" "$(vmdir-label "$vmdir").${pod##*-}.driver" lines "kubectl logs -n kube-system -f --tail=-1 -c $DRA_CONTAINER $pod"
     echo "dra-trace-driver-follow: the trace follows the log of $pod"
 }
 
@@ -3392,7 +3337,7 @@ dra-trace-stop() { # script API
     [ -n "$DRA_TRACE_RUNNING" ] || return 0
     DRA_TRACE_RUNNING=""
     for vmdir in "${DRA_TRACE_VMS[@]}"; do
-        dra-vm-command-q "$vmdir" "$DRA_TRACE_KILL; rmdir /run/dra-trace 2>/dev/null"
+        vmdir-command-q "$vmdir" "$DRA_TRACE_KILL; rmdir /run/dra-trace 2>/dev/null"
     done
     # tail of the server log: the stamper reads to the end and exits.
     while read -r pid tag; do
@@ -3507,7 +3452,7 @@ with open(out_path, "w") as out:
     for t, tag, text in rows:
         out.write("%s.%06d %+9.3fs %-*s  %s\n" % (time.strftime("%H:%M:%S", time.localtime(t)), int(t % 1 * 1e6), t - t0, width, tag, text))
 ' "$DRA_TRACE_DIR/merged.txt" "$TEST_OUTPUT_DIR/trace-summary.txt" "$DRA_NS" "$(basename "${TEST_DIR:-test}")" \
-        "$(for vmdir in "${DRA_TRACE_VMS[@]}"; do printf '%s = %s ' "$(dra-vm-label "$vmdir")" "$(dra-vm-name "$vmdir")"; done)" ||
+        "$(for vmdir in "${DRA_TRACE_VMS[@]}"; do printf '%s = %s ' "$(vmdir-label "$vmdir")" "$(vmdir-name "$vmdir")"; done)" ||
         error "dra-trace-summary: cannot summarize $DRA_TRACE_DIR/merged.txt"
     echo "### trace summary ($TEST_OUTPUT_DIR/trace-summary.txt)"
     cat "$TEST_OUTPUT_DIR/trace-summary.txt"

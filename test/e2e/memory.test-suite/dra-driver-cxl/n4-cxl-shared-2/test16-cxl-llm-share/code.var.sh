@@ -196,10 +196,10 @@ llm0-free() {
     for vm in "$VM2" "$VM1"; do
         pool-cxl-dump "$vm" "$LLM_DEVICE-free"
         cxl-assert 'regions == []'
-        regions=$(pool-vm-command-q "$vm" "ls /sys/bus/cxl/devices/") ||
-            error "cannot list the CXL devices of $(pool-vm-label "$vm")"
+        regions=$(vmdir-command-q "$vm" "ls /sys/bus/cxl/devices/") ||
+            error "cannot list the CXL devices of $(vmdir-label "$vm")"
         ! grep -q '^region[0-9]' <<< "$regions" ||
-            error "$(pool-vm-label "$vm") still has a CXL region: $(grep '^region[0-9]' <<< "$regions" | tr '\n' ' ')"
+            error "$(vmdir-label "$vm") still has a CXL region: $(grep '^region[0-9]' <<< "$regions" | tr '\n' ' ')"
     done
     echo "$LLM_DEVICE is free, no CXL memory devices or regions in either VM"
 }
@@ -217,7 +217,7 @@ exit-cleanup() {
     local vm label held="" loops
     dra-cleanup
     for vm in "$VM2" "$VM1"; do
-        label=$(pool-vm-label "$vm")
+        label=$(vmdir-label "$vm")
         if ! dra-fs-mounts "$vm" >/dev/null; then
             held+="
   $label: cannot read its mounts"
@@ -317,7 +317,7 @@ reader-start() {
     if [ "${READER_ACCESS[$r]}" == cached ]; then
         # Loop devices keep their counters when they are reused: the
         # baseline is that of every loop device now.
-        loops0=$(llm-loop-reads "$vm") || error "cannot read the loop devices of $(pool-vm-label "$vm")"
+        loops0=$(llm-loop-reads "$vm") || error "cannot read the loop devices of $(vmdir-label "$vm")"
     fi
     before=$(llm-page-cache "$vm")
     if [ "$(reader-kind "$r")" == lease ]; then
@@ -332,20 +332,20 @@ $(llm-server-pod-yaml "$r" "$vm" claim "$r" "$(llm-reader-script "$LLM_HEX" "$LL
     after=$(llm-page-cache "$vm")
     CACHE_DELTA=$(( (after - before) * 1024 ))
     [ "$(reader-kind "$r")" != lease ] || lease-reader-found "$r"
-    echo "page cache charged meanwhile in $(pool-vm-label "$vm"): $(llm-file-charges-delta "$charges" "$(llm-file-charges "$vm")")"
-    echo "page cache of $(pool-vm-label "$vm") around $r: $before kB -> $after kB, $(( CACHE_DELTA >> 10 )) kB, the model $(( LLM_MODEL_SIZE >> 10 )) kB"
+    echo "page cache charged meanwhile in $(vmdir-label "$vm"): $(llm-file-charges-delta "$charges" "$(llm-file-charges "$vm")")"
+    echo "page cache of $(vmdir-label "$vm") around $r: $before kB -> $after kB, $(( CACHE_DELTA >> 10 )) kB, the model $(( LLM_MODEL_SIZE >> 10 )) kB"
     llm-ask "$vm" "$r"
     POD_FILE=$(llm-pod-file "$vm" "$r") || error "$r: no page cache counter of its pod"
     echo "page cache charged to the pod $r: $(( POD_FILE >> 10 )) kB"
     [ "${READER_ACCESS[$r]}" == cached ] || return 0
-    loop=$(dra-pmem-loops "$vm") || error "cannot list the loop devices of $(pool-vm-label "$vm")"
-    [ "$(wc -l <<< "$loop")" == 1 ] && [ -n "$loop" ] || error "$(pool-vm-label "$vm") has not one loop device over pmem: $loop"
+    loop=$(dra-pmem-loops "$vm") || error "cannot list the loop devices of $(vmdir-label "$vm")"
+    [ "$(wc -l <<< "$loop")" == 1 ] && [ -n "$loop" ] || error "$(vmdir-label "$vm") has not one loop device over pmem: $loop"
     loop=${loop%% *}
     READER_LOOP[$r]=$loop
-    now=$(llm-loop-reads "$vm" "$loop") || error "cannot read $loop of $(pool-vm-label "$vm")"
+    now=$(llm-loop-reads "$vm" "$loop") || error "cannot read $loop of $(vmdir-label "$vm")"
     base=$(awk -v l="$loop" '$1 == l {print $2}' <<< "$loops0")
     LOOP_READ=$(( ${now#* } - ${base:-0} ))
-    echo "read through $loop of $(pool-vm-label "$vm") (from CXL) around $r: $LOOP_READ bytes, the model $LLM_MODEL_SIZE"
+    echo "read through $loop of $(vmdir-label "$vm") (from CXL) around $r: $LOOP_READ bytes, the model $LLM_MODEL_SIZE"
 }
 
 cache-cmp() {
@@ -366,7 +366,7 @@ cache-assert() {
     # NODE-OP NODE-LIMIT hold (cache-cmp) for READER, saying WHAT is wrong
     # otherwise.
     local r="$1" vm
-    vm=$(pool-vm-label "${READER_VM[$1]}")
+    vm=$(vmdir-label "${READER_VM[$1]}")
     cache-cmp "$POD_FILE" "$2" "$3" ||
         error "$r: the page cache charged to its pod is $POD_FILE bytes, not $2 $3: $6"
     cache-cmp "$CACHE_DELTA" "$4" "$5" ||
@@ -389,7 +389,7 @@ reader-check() {
     path=$(reader-path "$r")
     log=$(dra-pod-log "$VM2" "$r")
     echo "$log" > "$TEST_OUTPUT_DIR/$r.log"
-    echo "### $r on $(pool-vm-label "$vm"), $access, $(reader-kind "$r") reader, at $path (log: $TEST_OUTPUT_DIR/$r.log):"
+    echo "### $r on $(vmdir-label "$vm"), $access, $(reader-kind "$r") reader, at $path (log: $TEST_OUTPUT_DIR/$r.log):"
     grep -E '^(CXL_|mount: |files: |no pmem devices$|pmem devices: |write under |cxl-request )' <<< "$log"
     dra-env-assert "$r" "$log" "$LLM_HEX" \
         SERIAL="$LLM_SERIAL" SHARED=1 MODE=fs SIZE="$LLM_NS_SIZE" PATH="$path" ACCESS="$access" READONLY=1 FSTYPE=erofs
@@ -524,7 +524,7 @@ lease-companion-check() {
     dra-assert "$json" "device_data('$LLM_DEVICE').get('persistent') == True and not device_data('$LLM_DEVICE').get('exclusive')"
     # The companion pod uses nothing of its claim: no CDI device.
     claim_uid=$(dra-value "$json" "j['metadata']['uid']")
-    cdis=$(dra-cdi-devices-with "$vm" "$claim_uid") || error "cannot read the CDI specs of $(pool-vm-label "$vm")"
+    cdis=$(dra-cdi-devices-with "$vm" "$claim_uid") || error "cannot read the CDI specs of $(vmdir-label "$vm")"
     [ -z "$cdis" ] || error "$r: the companion claim $name has CDI devices: $cdis"
 }
 
@@ -536,7 +536,7 @@ lease-bind-assert() {
     # the erofs of the node mount of its access (the same source and
     # superblock options), with the mount options ro, nosuid and nodev.
     local r="$1" vm="${READER_VM[$1]}" label nodes target
-    label=$(pool-vm-label "$vm")
+    label=$(vmdir-label "$vm")
     target="$DRA_LEASE_FS_DIR/${READER_CLAIM_UID[$r]}/${READER_PATH[$r]##*/}"
     dra-fs-mounts "$vm" || error "cannot read the mounts of $label"
     nodes="$COMMAND_OUTPUT"
@@ -570,7 +570,7 @@ cached-serve-check() {
     # of its mappings of PATH/<model> have present pages, all in System
     # RAM, and its loop device over pmem reads less than 1 MiB from CXL.
     local r="$1" path="$2" vm="${READER_VM[$1]}" label res tokens weights
-    label=$(pool-vm-label "$vm")
+    label=$(vmdir-label "$vm")
     res=$(llm-fincore "$vm" "$DRA_POOL_MOUNT_DIR/$LLM_MOUNT_ID-cached/$LLM_MODEL_FILE") ||
         error "$r: fincore of the model in the cached node mount of $label failed"
     echo "$r: page cache of $label holds $res bytes of the model (fincore), the model $LLM_MODEL_SIZE"
@@ -604,7 +604,7 @@ mounts-assert() {
     # dax=always.
     local vm="$1" label
     shift
-    label=$(pool-vm-label "$vm")
+    label=$(vmdir-label "$vm")
     dra-fs-mounts "$vm" || error "cannot read the mounts of $label"
     python3 -c '
 import json, re, sys
@@ -646,7 +646,7 @@ readers-stop() {
         free=""
         shift
     fi
-    dra-vm-command "$VM2" "kubectl delete pod -n $DRA_NS --grace-period=2 --wait=true --timeout=120s $*" ||
+    vmdir-command "$VM2" "kubectl delete pod -n $DRA_NS --grace-period=2 --wait=true --timeout=120s $*" ||
         command-error "cannot delete the readers"
     for r in "$@"; do
         if [ "$(reader-kind "$r")" == lease ]; then
@@ -673,10 +673,10 @@ lease-dirs-gone() {
     for r in "$@"; do
         vm="${READER_VM[$r]}"
         dirs="$DRA_LEASE_DIR/${READER_CLAIM_UID[$r]} $DRA_LEASE_FS_DIR/${READER_CLAIM_UID[$r]}"
-        retry-until --timeout 60 --interval 1 --message "$(pool-vm-label "$vm") has no $dirs" \
-            'pool-vm-command-q "$vm" "for d in $dirs; do test ! -e \$d || exit 1; done"' ||
-            error "$r: $(pool-vm-label "$vm") still has $(pool-vm-command-q "$vm" "ls -d $dirs 2>/dev/null; findmnt -rn -o TARGET | grep -F $DRA_LEASE_FS_DIR/")"
-        echo "$r: $(pool-vm-label "$vm") has no directories of its lease claim"
+        retry-until --timeout 60 --interval 1 --message "$(vmdir-label "$vm") has no $dirs" \
+            'vmdir-command-q "$vm" "for d in $dirs; do test ! -e \$d || exit 1; done"' ||
+            error "$r: $(vmdir-label "$vm") still has $(vmdir-command-q "$vm" "ls -d $dirs 2>/dev/null; findmnt -rn -o TARGET | grep -F $DRA_LEASE_FS_DIR/")"
+        echo "$r: $(vmdir-label "$vm") has no directories of its lease claim"
     done
 }
 
@@ -685,10 +685,10 @@ vm-region-assert() {
     #
     # Fail the test unless the VM of VMDIR has a CXL region.
     local regions
-    regions=$(pool-vm-command-q "$1" "ls /sys/bus/cxl/devices/") ||
-        error "cannot list the CXL devices of $(pool-vm-label "$1")"
-    grep -q '^region[0-9]' <<< "$regions" || error "$(pool-vm-label "$1") has no CXL region"
-    echo "$(pool-vm-label "$1") has the region $(grep '^region[0-9]' <<< "$regions" | tr '\n' ' ')"
+    regions=$(vmdir-command-q "$1" "ls /sys/bus/cxl/devices/") ||
+        error "cannot list the CXL devices of $(vmdir-label "$1")"
+    grep -q '^region[0-9]' <<< "$regions" || error "$(vmdir-label "$1") has no CXL region"
+    echo "$(vmdir-label "$1") has the region $(grep '^region[0-9]' <<< "$regions" | tr '\n' ' ')"
 }
 
 lease-fs-empty() {
@@ -697,12 +697,12 @@ lease-fs-empty() {
     # Fail the test unless the VM of VMDIR has no mount and no directory
     # under $DRA_LEASE_FS_DIR, waiting 60 s at most for the directories.
     local vm="$1" label
-    label=$(pool-vm-label "$vm")
+    label=$(vmdir-label "$vm")
     dra-lease-fs-mounts "$vm" || error "cannot read the lease mounts of $label"
     [ "$COMMAND_OUTPUT" == "[]" ] || error "$label still has mounts under $DRA_LEASE_FS_DIR: $COMMAND_OUTPUT"
     retry-until --timeout 60 --interval 1 --message "$label has nothing under $DRA_LEASE_FS_DIR" \
-        '[ "$(pool-vm-command-q "$vm" "{ test ! -d $DRA_LEASE_FS_DIR || find $DRA_LEASE_FS_DIR -mindepth 1; } && echo end")" == end ]' ||
-        error "$label still has under $DRA_LEASE_FS_DIR: $(pool-vm-command-q "$vm" "find $DRA_LEASE_FS_DIR -mindepth 1")"
+        '[ "$(vmdir-command-q "$vm" "{ test ! -d $DRA_LEASE_FS_DIR || find $DRA_LEASE_FS_DIR -mindepth 1; } && echo end")" == end ]' ||
+        error "$label still has under $DRA_LEASE_FS_DIR: $(vmdir-command-q "$vm" "find $DRA_LEASE_FS_DIR -mindepth 1")"
 }
 
 echo "### preconditions: patched qemu, hdm_for_passthrough=on, CONFIG_FS_DAX, CONFIG_EROFS_FS"
@@ -788,12 +788,12 @@ dra-apply "$VM2" <<< "$(dra-shared-claim-yaml unmatched "$LLM_SERIAL")
 $(dra-script-pod-yaml unmatched "$VM2" unmatched "echo started")"
 dra-wait "$VM2" unmatched "pod -n $DRA_NS unmatched" \
     "any(c['type'] == 'PodScheduled' and c['status'] == 'False' and c.get('reason') == 'Unschedulable' and 'cannot allocate all claims' in c.get('message', '') for c in (j.get('status') or {}).get('conditions') or [])" 60
-dra-vm-command "$VM2" "kubectl get pod -n $DRA_NS unmatched -o jsonpath='{.status.conditions[?(@.type==\"PodScheduled\")].message}'"
+vmdir-command "$VM2" "kubectl get pod -n $DRA_NS unmatched -o jsonpath='{.status.conditions[?(@.type==\"PodScheduled\")].message}'"
 dra-json "$VM2" resourceclaim -n "$DRA_NS" unmatched
 dra-assert "$COMMAND_OUTPUT" "not (j.get('status') or {}).get('allocation')"
 dra-delete-pod "$VM2" unmatched
 dra-delete "$VM2" resourceclaim unmatched --wait=true --timeout=60s
-pool-vm-command "$VM2" "test ! -e $LLM_VM_MODEL_DIR && test ! -e $LLM_VM_IMAGE && ls -la $LLM_VM_DIR" ||
+vmdir-command "$VM2" "test ! -e $LLM_VM_MODEL_DIR && test ! -e $LLM_VM_IMAGE && ls -la $LLM_VM_DIR" ||
     error "VM2 has the model or its image: its readers must get it from CXL memory only"
 
 echo "### B: the writer on VM1 takes $LLM_DEVICE exclusively and flashes the erofs image into it"
@@ -883,7 +883,7 @@ for r in "${CACHED[@]}"; do
         # One copy: no second one in the page cache of the pmem block
         # device under the loop device (direct I/O).
         cache-cmp "$CACHE_DELTA" -lt "$LLM_ONE_HALF" ||
-            error "$r: the page cache of $(pool-vm-label "$vm") grew by $CACHE_DELTA bytes, not less than 150% of the model ($LLM_ONE_HALF): the model is cached twice"
+            error "$r: the page cache of $(vmdir-label "$vm") grew by $CACHE_DELTA bytes, not less than 150% of the model ($LLM_ONE_HALF): the model is cached twice"
         echo "page cache ok: $r: pod $POD_FILE -ge $LLM_NINETY_PCT, node +$CACHE_DELTA -lt $LLM_ONE_HALF"
         # It pulled the model from CXL: the loop device is the only path.
         cache-cmp "$LOOP_READ" -ge "$LLM_NINETY_PCT" ||
@@ -946,13 +946,13 @@ pool-assert "$COMMAND_OUTPUT" "('$VM2_NAME', 'attached') in [(a['host'], a['stat
 # mount it was the last user of, and keeps the region for the cached
 # readers.
 pid=$(llm-server-pid "$VM2" direct-b) || error "no llama-server runs in direct-b"
-pool-vm-command "$VM2" "kill -KILL $pid" || command-error "cannot kill llama-server (pid $pid) of direct-b"
+vmdir-command "$VM2" "kill -KILL $pid" || command-error "cannot kill llama-server (pid $pid) of direct-b"
 dra-pod-wait "$VM2" direct-b Failed 60
 dra-json "$VM2" pod -n "$DRA_NS" direct-b
 dra-assert "$COMMAND_OUTPUT" "j['status']['containerStatuses'][0]['state']['terminated']['exitCode'] == 137"
 dra-wait "$VM2" d2-lease-b-gone "pods,resourceclaims -n $DRA_NS" "'cxl-lease-$LEASE_B' not in names()" 90
-dra-lease-fs-mounts "$VM2" || error "cannot read the lease mounts of $(pool-vm-label "$VM2")"
-[ "$COMMAND_OUTPUT" == "[]" ] || error "$(pool-vm-label "$VM2") still has mounts under $DRA_LEASE_FS_DIR: $COMMAND_OUTPUT"
+dra-lease-fs-mounts "$VM2" || error "cannot read the lease mounts of $(vmdir-label "$VM2")"
+[ "$COMMAND_OUTPUT" == "[]" ] || error "$(vmdir-label "$VM2") still has mounts under $DRA_LEASE_FS_DIR: $COMMAND_OUTPUT"
 mounts-assert "$VM2" cached
 vm-region-assert "$VM2"
 for r in cached-a cached-b; do
@@ -975,7 +975,7 @@ dra-delete "$VM2" resourceclaimtemplate "$LEASE_TEMPLATE" --wait=true --timeout=
 lease-dirs-gone cached-c
 dra-assert-clean "$VM2" "$VM1"
 for vm in "$VM2" "$VM1"; do
-    label=$(pool-vm-label "$vm")
+    label=$(vmdir-label "$vm")
     lease-fs-empty "$vm"
     qtree=$(pool-vm-monitor "$vm" "info qtree -b") || error "cannot read the qemu device tree of $label"
     grep -q '^ *bus: ' <<< "$qtree" || error "no qemu device tree of $label: $qtree"

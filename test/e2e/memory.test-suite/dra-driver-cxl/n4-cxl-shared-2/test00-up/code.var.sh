@@ -105,8 +105,12 @@ echo "### the cluster: VM2 (this VM) control plane, VM1 and VM0 workers"
 VM0="$POOL_VM0_DIR"
 VM1="$POOL_VM1_DIR"
 VM2="$OUTPUT_DIR"
-pool-host-wait "$VM1" "create VM1 first: ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-1/test00-up"
-pool-host-wait "$VM0" "create VM0 first: ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-0/test00-up"
+vmdir-up "$VM1" "create VM1 first: ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-1/test00-up"
+vmdir-up "$VM0" "create VM0 first: ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-0/test00-up"
+# The pool controllers of earlier tests are systemd units of VM2 that
+# use the cluster: they go before the cluster may be rebuilt.
+vm-command "systemctl stop '$DRA_CONTROLLER_UNITS_GLOB' 2>/dev/null; systemctl reset-failed '$DRA_CONTROLLER_UNITS_GLOB' 2>/dev/null; true" ||
+    command-error "cannot stop the pool controllers"
 vm-k8s-reinit "$VM2 $VM1 $VM0"
 vm-k8s-in-shape "$VM2 $VM1 $VM0" ||
     error "the cluster is not in shape after vm-k8s-reinit: $(vm-k8s-cluster-in-shape "$VM2 $VM1 $VM0")"

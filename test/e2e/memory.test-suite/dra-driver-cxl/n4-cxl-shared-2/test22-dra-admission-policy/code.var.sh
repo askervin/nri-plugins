@@ -87,11 +87,11 @@ admin-kubectl() {
     local yaml
     if [[ " $* " == *" -f - "* ]]; then
         yaml=$(cat)
-        dra-vm-command "$VM2" "kubectl -n $DRA_NS $* <<'DRIVER_KUBECTL_EOF'
+        vmdir-command "$VM2" "kubectl -n $DRA_NS $* <<'DRIVER_KUBECTL_EOF'
 $yaml
 DRIVER_KUBECTL_EOF"
     else
-        dra-vm-command "$VM2" "kubectl -n $DRA_NS $*"
+        vmdir-command "$VM2" "kubectl -n $DRA_NS $*"
     fi
 }
 
@@ -362,11 +362,11 @@ policy-denied "a claim of class cxl-dram" \
     "this user may create only resourceclaims of the device classes cxl-local, cxl-local-shared, cxl-local-persistent, cxl-pool, cxl-pool-shared, cxl-pool-persistent"
 # The API server refuses adminAccess in a namespace without this label
 # before the policies run.
-dra-vm-command "$VM2" "kubectl label namespace $DRA_NS resource.kubernetes.io/admin-access=true" ||
+vmdir-command "$VM2" "kubectl label namespace $DRA_NS resource.kubernetes.io/admin-access=true" ||
     command-error "cannot label namespace $DRA_NS for adminAccess"
 driver-kubectl "$VM2_NAME" create --dry-run=server -f - <<< "$(labelled-claim-yaml cxl-lease-0badcafe "$VM2_NAME" 0badcafe "    - {name: mem, exactly: {deviceClassName: cxl-pool, adminAccess: true}}")"
 policy-denied "a claim with adminAccess" "this user may not create resourceclaims with adminAccess"
-dra-vm-command "$VM2" "kubectl label namespace $DRA_NS resource.kubernetes.io/admin-access-" ||
+vmdir-command "$VM2" "kubectl label namespace $DRA_NS resource.kubernetes.io/admin-access-" ||
     command-error "cannot remove label resource.kubernetes.io/admin-access of namespace $DRA_NS"
 driver-kubectl "" create --dry-run=server -f - <<< "$(companion-pod-yaml "$VM2_NAME" "$VM2_NAME")"
 policy-denied "a companion pod of a user without a node" \
@@ -422,7 +422,7 @@ done
 admin-kubectl create --dry-run=server -f - <<< "$(dra-lease-template-yaml cxl-lease)"
 policy-denied "a template of class cxl-lease in namespace $DRA_NS" \
     "namespace $DRA_NS may not have resourceclaimtemplates of the device class cxl-lease: only namespaces with the labels $NS_LABEL=allowed may" "$NS_POLICY"
-dra-vm-command "$VM2" "kubectl label namespace $DRA_NS $NS_LABEL=allowed" ||
+vmdir-command "$VM2" "kubectl label namespace $DRA_NS $NS_LABEL=allowed" ||
     command-error "cannot label namespace $DRA_NS"
 
 echo "### D: the companion of a real lease, created and deleted by the driver"
@@ -498,7 +498,7 @@ dra-plugin-log "$VM2" | grep -E "lease broker: (deleting companion|lease $LEASE:
 
 echo "### cleanup"
 dra-delete "$VM2" pod borrower --grace-period=2 --wait=true --timeout=60s
-dra-vm-command "$VM2" "kubectl label namespace $DRA_NS $NS_LABEL-" ||
+vmdir-command "$VM2" "kubectl label namespace $DRA_NS $NS_LABEL-" ||
     command-error "cannot remove label $NS_LABEL of namespace $DRA_NS"
 dra-assert-clean "$VM2" "$VM1"
 dra-cleanup
