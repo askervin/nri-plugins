@@ -912,7 +912,7 @@ dra-leftovers() {
     cdis=$(dra-cdi-devices-with "$vmdir" "CXL_") || return 1
     [ -z "$cdis" ] || echo "CDI devices: $(tr '\n' ' ' <<< "$cdis")"
     for dir in "$DRA_LOCAL_MOUNT_DIR" "$DRA_POOL_MOUNT_DIR" "$DRA_LEASE_FS_DIR"; do
-        dra-fs-mounts "$vmdir" "$dir" || return 1
+        dra-fs-mounts "$vmdir" "$dir" >/dev/null || return 1
         mounts=$COMMAND_OUTPUT
         [ "$mounts" == "[]" ] || echo "mounts under $dir: $mounts"
     done
