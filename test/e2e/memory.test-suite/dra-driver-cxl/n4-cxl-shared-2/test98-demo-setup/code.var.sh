@@ -290,7 +290,6 @@ llm-pool-dir() {
     if [ "$DEMO_LLM_LATENCY" != off ]; then
         # After pool-vm-reset (a restarted qemu is not pinned), before the
         # server creates the files of llm0 in the pool directory.
-        [ -x "$DEMO_DIR/bin/latency.sh" ] || error "DEMO_LLM_LATENCY=$DEMO_LLM_LATENCY: no $DEMO_DIR/bin/latency.sh in this tree"
         LLM_LATENCY_ON=1
         host-command "DEMO_VM_DIRS=$(printf %q "$VM0 $VM1 $VM2") DEMO_POOL_DIR=$(printf %q "$DEMO_POOL_DIR") DEMO_STATE_DIR=$(printf %q "$DEMO_STATE_DIR") DEMO_LLM_LATENCY_LOAD=$(printf %q "$DEMO_LLM_LATENCY_LOAD") $(printf %q "$DEMO_DIR/bin/latency.sh") on $DEMO_LLM_LATENCY" ||
             command-error "latency.sh on failed: the end of this setup runs latency.sh off (demo latency off does it by hand)"

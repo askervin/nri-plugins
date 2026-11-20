@@ -154,8 +154,7 @@ latency() {
     # Usage: latency ARGS
     #
     # Run bin/latency.sh ARGS with the pool directory and the VMs of the
-    # demo in its environment. Return its status, 0 if it is not there.
-    [ -x "$DEMO_BIN/latency.sh" ] || return 0
+    # demo in its environment. Return its status.
     DEMO_VM_DIRS="${DEMO_VM_DIRS:-$(vm-dirs)}" DEMO_POOL_DIR="$(state-get DEMO_POOL_DIR | grep . || echo "$DEMO_POOL_DIR")" \
         "$DEMO_BIN/latency.sh" "$@"
 }
@@ -182,7 +181,6 @@ latency-load-check() {
     local load="${DEMO_LLM_LATENCY_LOAD:-off}"
     [ "$load" == off ] && return 0
     [ "${DEMO_LLM_LATENCY:-off}" == far ] || die "DEMO_LLM_LATENCY_LOAD=$load needs DEMO_LLM_LATENCY=far (the local setup starts no load)"
-    [ -x "$DEMO_BIN/latency.sh" ] || die "DEMO_LLM_LATENCY_LOAD=$load: there is no $DEMO_BIN/latency.sh in this tree"
     [[ " $("$DEMO_BIN/latency.sh" levels) " == *" $load "* ]] ||
         die "DEMO_LLM_LATENCY_LOAD is $load: it is off or one of the levels $("$DEMO_BIN/latency.sh" levels)"
 }
@@ -214,8 +212,6 @@ cmd-setup() {
         [[ "${DEMO_LLM_ACCESS:-direct}" =~ ^(direct|cached)$ ]] || die "DEMO_LLM_ACCESS is direct or cached"
         setup=$(latency-setup) || die "DEMO_LLM_LATENCY is $DEMO_LLM_LATENCY: off, local or far (on is far)"
         export DEMO_LLM_LATENCY="$setup"
-        [ "$DEMO_LLM_LATENCY" == off ] || [ -x "$DEMO_BIN/latency.sh" ] ||
-            die "DEMO_LLM_LATENCY=$DEMO_LLM_LATENCY: there is no $DEMO_BIN/latency.sh in this tree"
         latency-load-check
     fi
     # shellcheck disable=SC2012 # the newest by mtime, like the e2e framework
@@ -301,9 +297,7 @@ main() {
         view) exec python3 "$DEMO_BIN/views.py" "$@";;
         local|pool|pool-shared-fs|pool-fs|llm-share) exec python3 "$DEMO_BIN/steps.py" "$cmd" "$@";;
         llm) exec python3 "$DEMO_BIN/llm.py" "$@";;
-        latency)
-            [ -x "$DEMO_BIN/latency.sh" ] || die "latency: not available (no $DEMO_BIN/latency.sh)"
-            latency "$@";;
+        latency) latency "$@";;
         wizard) exec python3 "$DEMO_BIN/wizard.py" "$@";;
         zoom) cmd-zoom "$@";;
         capture) cmd-capture "$@";;

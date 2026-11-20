@@ -266,8 +266,6 @@ def latency_label(rec):
 
 def latency_status(state):
     """Return the lines of "latency.sh status" for the VMs and the pool directory of STATE, or why there are none."""
-    if not os.access(LATENCY, os.X_OK):
-        return "latency.sh: not in this tree"
     env = dict(os.environ, DEMO_VM_DIRS=" ".join(state.get(k) or "" for _, k in VMS).strip(),
                DEMO_POOL_DIR=state.get("DEMO_POOL_DIR") or "", DEMO_STATE_DIR=c.STATE_DIR)
     try:
