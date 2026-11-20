@@ -90,8 +90,8 @@ Environment of setup llm-share:
                            device is made: off (default: VMs unpinned, the
                            model spread over all nodes), local (VMs on
                            socket 0, the model on socket 0's nodes) or far
-                           (VMs on socket 0, the model on socket 1, its
-                           uncore frequencies capped; "on" is far)
+                           (VMs on socket 0, the model on socket 1; "on" is
+                           far)
   DEMO_LLM_LATENCY_LOAD    off (default) or a level of bin/latency.sh (with
                            DEMO_LLM_LATENCY=far): background memory traffic
                            on the far socket, "demo latency levels"

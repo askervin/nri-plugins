@@ -12,27 +12,19 @@
 #   files, a tmpfs mounted with mpol=bind:<the far nodes> and
 #   huge=within_size: the pages of every device are memory of package 1,
 #   the far package, 2 MiB pages where possible;
-# - the uncore and IO-die frequencies of the far package capped to their
-#   minimum (intel_uncore_frequency), where the host has those controls;
 # - with DEMO_LLM_LATENCY_LOAD=LEVEL, a background load on the far package
 #   (cxl-load: writes to the far nodes' memory from the far package's
 #   CPUs), which queues up the far memory controllers and so raises the
-#   latency that the near CPUs see to it, like a busy CXL link or device;
-# - the idle latency from a near CPU to a near and a far node measured
-#   with mlc before and after, if mlc is there.
+#   latency that the near CPUs see to it, like a busy CXL link or device.
 # The local setup is the same without the far package: the same tunables,
 # pinning and memory of the VMs, but the pool directory is a tmpfs mounted
 # with mpol=interleave:<the near nodes> and huge=within_size, so that the
-# device memory is on the nodes of the VMs' own package. It caps no
-# frequency and starts no load: the best placement that the host has for a
-# model in memory, the baseline for the far setup.
+# device memory is on the nodes of the VMs' own package. It starts no
+# load: the best placement that the host has for a model in memory, the
+# baseline for the far setup.
 # Every value that "on" changes is saved in the state file first, and
 # "off" restores them all (it stops the load); an "on" that fails or is
 # interrupted (SIGINT, SIGTERM, SIGHUP) restores what it had changed.
-# The exception is the hardware prefetchers: mlc switches them off for
-# its measurement (MSR 0x1a4) and writes them back itself. latency.sh does
-# not save them; with rdmsr (msr-tools) it reads the register before and
-# after mlc, shows it in "status" and warns if a killed mlc left it changed.
 # Other VMs on the host are never touched: "status" lists them.
 
 LATENCY_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,11 +34,8 @@ DEMO_STATE_DIR="${DEMO_STATE_DIR:-$(dirname "$LATENCY_BIN")/run}"
 STATE="$DEMO_STATE_DIR/latency.state"
 POOL_DIR="${DEMO_POOL_DIR:-}"
 VM_DIRS="${DEMO_VM_DIRS:-}"
-MLC="${MLC:-mlc}"
-PCM_TPMI="${PCM_TPMI:-pcm-tpmi}"
 NODE_SYS=/sys/devices/system/node
 CPU_SYS=/sys/devices/system/cpu
-UNCORE_SYS=$CPU_SYS/intel_uncore_frequency
 NEAR_PKG=0
 FAR_PKG=1
 LATENCY_LOAD="${DEMO_LLM_LATENCY_LOAD:-}"
@@ -55,7 +44,6 @@ LOAD_PIDFILE="$DEMO_STATE_DIR/cxl-load.pid"
 LOAD_READY_SECONDS=180       # how long the load may take to have its buffers
 LOAD_STOP_SECONDS=30         # how long the load may take to stop
 LOAD_LAUNCHED=""             # set once load-start has launched the load
-PREFETCH_BEFORE=""           # the prefetcher register before mlc ran, "" if unknown
 LOAD_SAVED=""                # the level and arguments of the load, for its state line
 SETUP=far                    # the setup of "on": far or local
 TMPFS_SOURCE=cxl-demo-far    # the source name of the pool tmpfs in the mount table
@@ -70,12 +58,11 @@ usage: latency.sh on [far|local] | off | status | levels
            and an "on" that fails or gets SIGINT, SIGTERM or SIGHUP
            restores them. The setup (far if you give none; "on" is far
            too) sets what else happens:
-             far    the tmpfs is memory of package 1 (mpol=bind), the
-                    uncore and IO-die frequencies of package 1 are capped,
-                    the background load of DEMO_LLM_LATENCY_LOAD starts if
-                    it is set, and mlc measures
+             far    the tmpfs is memory of package 1 (mpol=bind) and the
+                    background load of DEMO_LLM_LATENCY_LOAD starts if it
+                    is set
              local  the tmpfs is memory of package 0, spread over its nodes
-                    (mpol=interleave); no cap, no load
+                    (mpol=interleave); no load
   off      stop the load, restore every saved value (nothing to do
            without a state)
   status   show the topology, the settings, the demo VMs and their memory,
@@ -93,18 +80,11 @@ Environment:
                       off (default) or the level of the background load
                       on package 1's memory (the far setup only):
                       $(load-levels). The levels were calibrated on a
-                      two-socket Intel Xeon 6 with sub-NUMA clustering
-                      (SNC2); the higher the level, the busier the far
+                      two-socket host with sub-NUMA clustering (SNC2);
+                      the higher the level, the busier the far
                       memory. See docs/memory/cxl/demo-llm-share.md
   LATENCY_LOAD_ARGS   more arguments for cxl-load after those of the
                       level, which they override (to calibrate a host)
-  MLC                 mlc, a name in PATH (default) or a path; it
-                      switches the hardware prefetchers off while it
-                      measures and back on when it ends, which latency.sh
-                      does not save: with rdmsr (msr-tools) it warns if
-                      a killed mlc left them changed
-  PCM_TPMI            pcm-tpmi, for the die types of the uncore domains: a
-                      name in PATH (default) or a path
   LATENCY_TMPFS_SIZE  the size of the pool tmpfs (default: half of the
                       memory of the nodes that the setup puts it on)
 "on" and "off" need sudo without a password; "status" uses it if it can.
@@ -298,22 +278,6 @@ write-file() {
     # it.
     printf '%s\n' "$2" | sudo -n tee "$1" >/dev/null || return 1
     [ "$(read-file "$1")" == "$2" ]
-}
-
-tool-path() {
-    # Usage: tool-path TOOL
-    #
-    # Print the absolute path of the executable TOOL, a command name in
-    # PATH or a path; fail if there is none.
-    local path="$1"
-    # The caller's PATH finds a bare name here; the secure_path of sudo
-    # may not, so the printed path is what runs under sudo.
-    if [[ "$path" != */* ]]; then
-        path=$(command -v "$path") || return 1
-    fi
-    [ -f "$path" ] && [ -x "$path" ] || return 1
-    [[ "$path" == /* ]] || path="$PWD/$path"
-    echo "$path"
 }
 
 ### The state file: lines of KIND <tab> KEY <tab> VALUE ###
@@ -759,166 +723,6 @@ pool-status() {
     fi
 }
 
-### Uncore frequency ###
-
-agent-type() {
-    # Usage: agent-type DOMAINDIR
-    #
-    # Print the type of the TPMI uncore domain DOMAINDIR from its
-    # agent_types, which newer kernels have: IO, compute (core, cache or
-    # memory), else unknown.
-    local types
-    types=" $(read-file "$1/agent_types") "
-    case "$types" in
-        *" io "*) echo IO;;
-        *" core "*|*" cache "*|*" memory "*) echo compute;;
-        *) echo unknown;;
-    esac
-}
-
-pcm-die-types() {
-    # Usage: pcm-die-types
-    #
-    # Print "PACKAGE ENTRY TYPE" of every uncore frequency die that
-    # pcm-tpmi reads from TPMI UFS_STATUS (bit 23 compute, 24 LLC, 25
-    # memory, 26 IO), TYPE compute or IO, in entry order. Fail without
-    # pcm-tpmi or dies.
-    local tool line value entry pkg bits
-    tool=$(tool-path "$PCM_TPMI") || return 1
-    sudo -n "$tool" 2 0x10 -d 2>/dev/null | while IFS= read -r line; do
-        [[ "$line" =~ Read\ value\ ([0-9]+)\ from\ TPMI\ ID\ 2@16\ for\ entry\ ([0-9]+)\ in\ instance\ ([0-9]+) ]] || continue
-        value="${BASH_REMATCH[1]}" entry="${BASH_REMATCH[2]}" pkg="${BASH_REMATCH[3]}"
-        if [[ "$line" =~ \(socket\ ([0-9]+)\) ]]; then
-            pkg="${BASH_REMATCH[1]}"
-        fi
-        bits=$(( (value >> 23) & 15 ))
-        if (( bits & 8 )); then
-            echo "$pkg $entry IO"
-        elif (( bits & 7 )); then
-            echo "$pkg $entry compute"
-        fi
-    done | sort -k1,1n -k2,2n | grep .
-}
-
-uncore-domains() {
-    # Usage: uncore-domains
-    #
-    # Print one line per uncore frequency domain of the host
-    # (intel_uncore_frequency), sorted by package and domain: its
-    # directory, package, domain (the TPMI domain id, or the die of a
-    # package_XX_die_YY domain), type (compute, IO, uncore for all of the
-    # uncore of a die, or unknown), the source of the type (kernel,
-    # pcm-tpmi or -), its minimum and maximum frequency limit and its
-    # current frequency in kHz ("-" if unknown). The package-level root
-    # domains of TPMI hosts are left out. Fail if the host has none.
-    local d name pkg dom type
-    [ -d "$UNCORE_SYS" ] || return 1
-    {
-        if compgen -G "$UNCORE_SYS/uncore[0-9]*" >/dev/null; then
-            for d in "$UNCORE_SYS"/uncore[0-9]*; do
-                pkg=$(read-file "$d/package_id") || pkg="?"
-                dom=$(read-file "$d/domain_id") || dom="?"
-                type=$(agent-type "$d")
-                echo "$d $pkg $dom $type $([ "$type" == unknown ] && echo - || echo kernel)"
-            done
-        else
-            for d in "$UNCORE_SYS"/package_[0-9]*_die_[0-9]*; do
-                [ -d "$d" ] || continue
-                name="${d##*/package_}"
-                pkg="${name%%_die_*}" dom="${name#*_die_}"
-                echo "$d $((10#$pkg)) $((10#$dom)) uncore kernel"
-            done
-        fi
-    } | sort -k2,2n -k3,3n | uncore-fill-types | while read -r d pkg dom type src; do
-        echo "$d $pkg $dom $type $src $(read-file "$d/min_freq_khz" || echo -) $(read-file "$d/max_freq_khz" || echo -) $(read-file "$d/current_freq_khz" || echo -)"
-    done | grep .
-}
-
-uncore-fill-types() {
-    # Usage: uncore-fill-types < DOMAINS
-    #
-    # Print the domain lines of uncore-domains with their unknown types
-    # filled in from pcm-die-types: the dies of a package in entry order
-    # are its domains in domain id order, if it has as many of both.
-    local domains dies
-    domains=$(cat)
-    if ! grep -q ' unknown ' <<< "$domains" || ! dies=$(pcm-die-types); then
-        echo "$domains"
-        return 0
-    fi
-    printf '%s\n--\n%s\n' "$dies" "$domains" | awk '
-        $0 == "--" { domains = 1; next }
-        !domains { n[$1]++; die[$1, n[$1]] = $3; next }
-        { line[++lines] = $0; k[$2]++; pos[lines] = k[$2] }
-        END {
-            for (i = 1; i <= lines; i++) {
-                $0 = line[i]
-                if ($4 == "unknown" && n[$2] == k[$2]) { $4 = die[$2, pos[i]]; $5 = "pcm-tpmi" }
-                print
-            }
-        }'
-}
-
-domain-label() {
-    # Usage: domain-label DIR PACKAGE DOMAIN TYPE SOURCE
-    #
-    # Print the name of an uncore domain of uncore-domains, like "uncore04
-    # (package 1, domain 0, compute)".
-    local unit=domain
-    [[ "${1##*/}" != package_* ]] || unit=die
-    echo "${1##*/} (package $2, $unit $3, $4$([ "$5" != pcm-tpmi ] || echo ": the die type of pcm-tpmi"))"
-}
-
-uncore-cap() {
-    # Usage: uncore-cap
-    #
-    # Cap the maximum frequency of every uncore domain of the far package
-    # (its compute and IO dies) to the domain's minimum, saving the values
-    # that change, and print the CPUs and nodes of that package. Print that
-    # the host has no such controls if it has none. Fail, and cap nothing,
-    # unless the packages that the domains name are the packages of the
-    # CPUs: the domains say package_id, and only the CPUs say which CPUs
-    # and memory are in a package.
-    local line d pkg dom type src min max cur domain_pkgs
-    local -a domains
-    mapfile -t domains < <(uncore-domains)
-    if [ "${#domains[@]}" -eq 0 ]; then
-        say "uncore/IO-die frequency controls are not available on this host"
-        return 0
-    fi
-    domain_pkgs=$(printf '%s\n' "${domains[@]}" | awk '{ print $2 }' | sort -nu | xargs)
-    if [ "$domain_pkgs" != "$PACKAGES" ]; then
-        warn "the uncore frequency domains are of the packages ${domain_pkgs:-none} but the CPUs are of the packages $PACKAGES: cannot tell which domains are of package $FAR_PKG, nothing capped"
-        return 1
-    fi
-    for line in "${domains[@]}"; do
-        read -r d pkg dom type src min max cur <<< "$line"
-        [ "$pkg" == "$FAR_PKG" ] || continue
-        [ "$min" != - ] || { warn "${d##*/}: no min_freq_khz"; return 1; }
-        set-saved "uncore $(domain-label "$d" "$pkg" "$dom" "$type" "$src") max_freq_khz" "$d/max_freq_khz" "$min" || return 1
-    done
-    say "uncore: the domains of package $FAR_PKG are capped (package $FAR_PKG has the nodes $(list-compact "$FAR_NODES") and the CPUs $FAR_CPUS)"
-}
-
-uncore-status() {
-    # Usage: uncore-status
-    #
-    # Print the uncore frequency domains with their limits and the saved
-    # maximum of each that "on" capped.
-    local line d pkg dom type src min max cur saved
-    local -a domains
-    mapfile -t domains < <(uncore-domains)
-    if [ "${#domains[@]}" -eq 0 ]; then
-        echo "  uncore/IO-die frequency controls are not available on this host"
-        return 0
-    fi
-    for line in "${domains[@]}"; do
-        read -r d pkg dom type src min max cur <<< "$line"
-        saved=$(state-values file "$d/max_freq_khz" | head -n 1)
-        echo "  $(domain-label "$d" "$pkg" "$dom" "$type" "$src"): min $min, max $max${saved:+ (saved: $saved)}, now $cur kHz"
-    done
-}
-
 ### The background load ###
 
 load-levels() {
@@ -936,9 +740,8 @@ load-level-args() {
     # Fail for another level.
     # Every far CPU writes to its own buffer, with a pause of 120 us after
     # each block of 256 KiB at 700, and as fast as it can at 1000, which is
-    # as much as the server of the calibration takes (an Intel Xeon 6 with
-    # two sockets and sub-NUMA clustering (SNC2), the far uncore capped):
-    # its memory channels are full.
+    # as much as the server of the calibration takes (two sockets with
+    # sub-NUMA clustering, SNC2): its memory channels are full.
     case "$1" in
         700) echo "-buffer 64M -writes 100 -pause 120us";;
         1000) echo "-buffer 64M -writes 100 -pause 0";;
@@ -1134,71 +937,6 @@ load-status() {
     done
 }
 
-### mlc ###
-
-mlc-idle() {
-    # Usage: mlc-idle MLC CPU NODE
-    #
-    # Print the idle latency in ns from CPU to the memory of NODE that mlc
-    # measures, or nothing.
-    sudo -n timeout 300 "$1" --idle_latency "-c$2" "-j$3" 2>&1 |
-        sed -nE 's/.*\([[:space:]]*([0-9.]+)[[:space:]]*ns[[:space:]]*\).*/\1/p' | tail -n 1
-}
-
-prefetch-state() {
-    # Usage: prefetch-state
-    #
-    # Print the value of the hardware prefetcher control register (MSR
-    # 0x1a4) of the CPUs, like "0x0 x256" for 256 CPUs with 0, or several
-    # values separated by commas. Print nothing without rdmsr (msr-tools)
-    # and the msr kernel module.
-    command -v rdmsr >/dev/null || return 0
-    sudo -n rdmsr -a 0x1a4 2>/dev/null | sort | uniq -c | awk '{ printf "%s0x%s x%d", sep, $2, $1; sep = ", " } END { if (NR) print "" }'
-}
-
-prefetch-check() {
-    # Usage: prefetch-check
-    #
-    # Warn if the prefetcher register is not what it was when mlc-measure
-    # last started mlc (PREFETCH_BEFORE): mlc switches the prefetchers off
-    # and back on, and a killed mlc may not have. Do nothing if that value
-    # is unknown.
-    local now
-    [ -n "$PREFETCH_BEFORE" ] || return 0
-    now=$(prefetch-state)
-    [ "$now" == "$PREFETCH_BEFORE" ] ||
-        warn "the hardware prefetchers (MSR 0x1a4) are ${now:-unreadable} since mlc ran, they were $PREFETCH_BEFORE: write the old value back with wrmsr -a 0x1a4 VALUE"
-}
-
-mlc-measure() {
-    # Usage: mlc-measure LABEL [NOTE]
-    #
-    # Measure the idle latency from the first CPU of the first near node to
-    # that node and to the first far node (if the host has one) with mlc,
-    # print it with NOTE and save it in the state file under LABEL. Without
-    # mlc print that. Warn if the prefetcher register is not as it was
-    # before mlc (prefetch-check).
-    local label="$1" note="${2:-}" tool near far cpu local_ns far_ns="" far_state="" far_say="" verdict=""
-    tool=$(tool-path "$MLC") || { say "mlc not found (MLC=$MLC; put mlc in PATH or set MLC): no latency measurement $label"; return 0; }
-    near="${NEAR_NODES%% *}" far="${FAR_NODES%% *}"
-    cpu=$(cut -d, -f1 "$NODE_SYS/node$near/cpulist")
-    cpu="${cpu%%-*}"
-    PREFETCH_BEFORE=$(prefetch-state)
-    local_ns=$(mlc-idle "$tool" "$cpu" "$near")
-    if [ -n "$far" ]; then
-        far_ns=$(mlc-idle "$tool" "$cpu" "$far")
-        far_state=", to node $far ${far_ns:-?} ns"
-        far_say=", to node $far (far) ${far_ns:-?} ns"
-    fi
-    prefetch-check
-    if [ -n "$far_ns" ] && [ -n "$local_ns" ]; then
-        verdict=$(awk -v far="$far_ns" -v near="$local_ns" 'BEGIN { printf ", %.1f times the near latency", far / near }')
-    fi
-    verdict+="${note:+, $note}${PREFETCH_BEFORE:+, prefetchers (MSR 0x1a4) $PREFETCH_BEFORE}"
-    state-put info "mlc $label" "CPU $cpu to node $near ${local_ns:-?} ns$far_state$verdict"
-    say "mlc idle latency $label: CPU $cpu to node $near (near) ${local_ns:-?} ns$far_say$verdict"
-}
-
 ### Commands ###
 
 restore-all() {
@@ -1259,11 +997,11 @@ setup-apply() {
     #
     # Make the changes of the setup SETUP, each after saving its old value;
     # fail at the first change that fails. Both setups turn off the tunables,
-    # pin the VMs and mount the pool tmpfs; the far one also caps the
-    # frequencies and starts the background load.
+    # pin the VMs and mount the pool tmpfs; the far one also starts the
+    # background load.
     tunables-on && vms-on && pool-mount || return 1
     [ "$SETUP" == far ] || return 0
-    uncore-cap && load-start
+    load-start
 }
 
 cmd-on() {
@@ -1308,9 +1046,7 @@ cmd-on() {
         state-put info vm "${VM_PIDS[$i]}:${VM_STARTS[$i]} ${VM_PATHS[$i]}"
     done
     say "on, $SETUP setup: $(topology-line | head -n 1)"
-    mlc-measure before
     setup-apply || on-failed "latency on failed"
-    mlc-measure after "${LATENCY_LOAD:+with the background load of level $LATENCY_LOAD}"
     echo "other VMs on this host (latency on does not touch them):"
     DEMO_PIDS="${VM_PIDS[*]}"
     other-vms-status
@@ -1323,8 +1059,7 @@ on-failed() {
     #
     # Print REASON, restore every value that "on" has saved so far, stop a
     # background load that it has launched, and exit 1. If something does
-    # not get restored, keep the state file for "off". Warn if mlc left the
-    # prefetchers changed (prefetch-check).
+    # not get restored, keep the state file for "off".
     trap '' INT TERM HUP
     warn "$1: restoring what it changed"
     load-save-launched || true
@@ -1333,7 +1068,6 @@ on-failed() {
     else
         warn "not everything is restored: the rest is in $STATE, latency.sh off again"
     fi
-    prefetch-check
     exit 1
 }
 
@@ -1364,7 +1098,7 @@ cmd-off() {
 }
 
 cmd-status() {
-    local since setup name pool line problem saved
+    local since setup name pool problem saved
     DEMO_PIDS=""
     topology
     since=$(state-values info since)
@@ -1392,14 +1126,8 @@ cmd-status() {
     vms-status "$pool"
     echo "pool directory:"
     pool-status "$pool"
-    echo "uncore frequency:"
-    uncore-status
     echo "background load:"
     load-status
-    echo "mlc idle latency:"
-    for line in before after; do
-        echo "  $line: $(state-values info "mlc $line" | grep . || echo "not measured")"
-    done
     echo "other VMs on this host (latency on does not touch them):"
     other-vms-status
 }

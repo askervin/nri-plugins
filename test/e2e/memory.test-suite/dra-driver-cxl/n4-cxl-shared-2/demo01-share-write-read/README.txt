@@ -674,12 +674,10 @@ Setup (environment of "demo setup llm-share"):
                                interleaved over socket 0's memory nodes
                                too (mpol=interleave): the best placement
                                of the model in host memory, nearest to
-                               every VM. No frequency cap, no load. Needs
+                               every VM. No load. Needs
                                socket 0 only.
                         far    the same pinning, the model bound to socket
-                               1's nodes (mpol=bind), the uncore and IO
-                               die frequencies of socket 1 capped where
-                               the host allows, and, with
+                               1's nodes (mpol=bind) and, with
                                DEMO_LLM_LATENCY_LOAD, a load: every read
                                of the model crosses the socket link.
                                Needs two sockets.
@@ -688,16 +686,16 @@ Setup (environment of "demo setup llm-share"):
   DEMO_LLM_LATENCY_LOAD
                       off (default) or a level (700 or 1000, "demo latency
                       levels"), with DEMO_LLM_LATENCY=far: latency.sh on
-                      starts cxl-load in the background after the
-                      frequency caps, writing to the memory of the far
-                      socket from its CPUs; the memory controllers queue
-                      up, and the idle latency that mlc measures from a
-                      near CPU to the far memory rises to about the level
-                      in ns, like it does to a busy CXL link or device.
-                      "latency.sh off" and teardown stop it; "demo latency
-                      status" shows it. The levels were calibrated on a
-                      two-socket Intel Xeon 6 server with sub-NUMA
-                      clustering (docs/memory/cxl/demo-llm-share.md);
+                      starts cxl-load in the background, writing to the
+                      memory of the far socket from its CPUs; the memory
+                      controllers queue up, and the latency from a near
+                      CPU to the far memory rises, like it does to a busy
+                      CXL link or device: the higher the level, the
+                      busier the far memory. "latency.sh off" and
+                      teardown stop it; "demo latency status" shows it.
+                      The levels were calibrated on a two-socket server
+                      with sub-NUMA clustering
+                      (docs/memory/cxl/demo-llm-share.md);
                       LATENCY_LOAD_ARGS gives other cxl-load arguments for
                       another host. The saved results name the level in
                       their latency column (far+700). The local setup

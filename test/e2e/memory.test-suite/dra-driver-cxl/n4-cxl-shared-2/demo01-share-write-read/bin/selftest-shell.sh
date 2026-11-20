@@ -104,15 +104,6 @@ EOF
         # shellcheck disable=SC2016 # expanded when the stub runs
         printf '#!/bin/bash\necho "%s $*" >> "$STUB_LOG"\n' "$cmd" > "$STUBS/$cmd"
     done
-    # The prefetcher register of two CPUs, in the file STUB_MSR, and an mlc
-    # that prints a latency and leaves the register as STUB_MLC_LEAVES says.
-    # shellcheck disable=SC2016 # expanded when the stub runs
-    printf '#!/bin/bash\ncat "$STUB_MSR"\n' > "$STUBS/rdmsr"
-    cat > "$STUBS/mlc" <<'EOF'
-#!/bin/bash
-[ -z "${STUB_MLC_LEAVES:-}" ] || printf '%s\n%s\n' "$STUB_MLC_LEAVES" "$STUB_MLC_LEAVES" > "$STUB_MSR"
-echo "Each iteration took 100.0 base frequency clocks ( 123.4 ns )"
-EOF
     # A stand-in for cxl-load: logs, then waits to be stopped.
     printf '#!/bin/bash\necho "cxl-load: placement stub"\nexec sleep 600\n' > "$STUBS/cxl-load"
     chmod +x "$STUBS"/*
@@ -202,17 +193,15 @@ umount-test() {
 }
 
 fake-host() {
-    # Usage: fake-host UNCORE_PACKAGES...
+    # Usage: fake-host
     #
     # Write a fake /sys under TMP/sys: two packages of four CPUs, with
     # FAKE_NODES_PER_PACKAGE nodes each (1 or 2, default 1; CPUs 0-3 and
-    # 4-7 split evenly, 4 GiB per node), and one uncore domain of each
-    # UNCORE_PACKAGES, which is its package_id, with minimum 800000 and
-    # maximum 2200000 kHz.
-    local sys="$TMP/sys" cpu i=0 pkg n per="${FAKE_NODES_PER_PACKAGE:-1}" nodes
+    # 4-7 split evenly, 4 GiB per node).
+    local sys="$TMP/sys" cpu n per="${FAKE_NODES_PER_PACKAGE:-1}" nodes
     nodes=$((2 * per))
     rm -rf "$sys"
-    mkdir -p "$sys/node" "$sys/cpu/intel_uncore_frequency"
+    mkdir -p "$sys/node"
     echo "0-$((nodes - 1))" > "$sys/node/has_memory"
     echo "0-$((nodes - 1))" > "$sys/node/has_cpu"
     for ((n = 0; n < nodes; n++)); do
@@ -223,15 +212,6 @@ fake-host() {
     for cpu in 0 1 2 3 4 5 6 7; do
         mkdir -p "$sys/cpu/cpu$cpu/topology"
         echo $((cpu / 4)) > "$sys/cpu/cpu$cpu/topology/physical_package_id"
-    done
-    for pkg in "$@"; do
-        mkdir -p "$sys/cpu/intel_uncore_frequency/uncore0$i"
-        echo "$pkg" > "$sys/cpu/intel_uncore_frequency/uncore0$i/package_id"
-        echo "$i" > "$sys/cpu/intel_uncore_frequency/uncore0$i/domain_id"
-        echo 800000 > "$sys/cpu/intel_uncore_frequency/uncore0$i/min_freq_khz"
-        echo 2200000 > "$sys/cpu/intel_uncore_frequency/uncore0$i/max_freq_khz"
-        echo 2200000 > "$sys/cpu/intel_uncore_frequency/uncore0$i/current_freq_khz"
-        i=$((i + 1))
     done
 }
 
@@ -248,43 +228,12 @@ latency-source() {
     PATH="$STUBS:$PATH"
     # shellcheck source-path=SCRIPTDIR source=latency.sh
     source "$BIN/latency.sh"
-    NODE_SYS="$TMP/sys/node" CPU_SYS="$TMP/sys/cpu" UNCORE_SYS="$TMP/sys/cpu/intel_uncore_frequency"
-    PCM_TPMI=/nonexistent
+    NODE_SYS="$TMP/sys/node" CPU_SYS="$TMP/sys/cpu"
     POOL_DIR="$DEMO_POOL_DIR"
     VM_DIRS=none
     POOL_SRC_DIR="$TMP" NUMA_PLACE=/bin/true LOAD_BIN="$STUBS/cxl-load"
     vms-find() { VM_PIDS=() VM_STARTS=() VM_NAMES=() VM_PATHS=(); }
     vms-on() { :; }
-}
-
-uncore-test() {
-    # Check which uncore domains uncore-cap caps, and that it refuses when
-    # the packages of the domains are not those of the CPUs.
-    local out rc u
-    fake-host 0 0 1 1
-    out=$( (latency-source; topology; uncore-cap) 2>&1)
-    for u in 00 01; do
-        expect "uncore-cap leaves the near domain uncore$u at its maximum" test "$(cat "$TMP/sys/cpu/intel_uncore_frequency/uncore$u/max_freq_khz")" == 2200000
-    done
-    for u in 02 03; do
-        expect "uncore-cap caps the far domain uncore$u to its minimum" test "$(cat "$TMP/sys/cpu/intel_uncore_frequency/uncore$u/max_freq_khz")" == 800000
-    done
-    expect "uncore-cap saves the two values it changes: $(grep -c . "$TMP/state/latency.state")" test "$(grep -c '^file' "$TMP/state/latency.state")" == 2
-    expect "uncore-cap says which CPUs and nodes the capped package has: $out" contains "$out" "package 1 has the nodes 1 and the CPUs 4-7"
-
-    fake-host 1 1 2 2
-    rc=0
-    out=$( (latency-source; topology; uncore-cap) 2>&1) || rc=$?
-    expect "uncore-cap refuses domains of the packages 1 and 2 on a host of the packages 0 and 1 (rc $rc)" test "$rc" == 1
-    expect "uncore-cap says it capped nothing: $out" contains "$out" "nothing capped"
-    for u in 00 01 02 03; do
-        expect "a refused uncore-cap leaves uncore$u alone" test "$(cat "$TMP/sys/cpu/intel_uncore_frequency/uncore$u/max_freq_khz")" == 2200000
-    done
-
-    fake-host
-    rm -rf "$TMP/sys/cpu/intel_uncore_frequency"
-    out=$( (latency-source; topology; uncore-cap) 2>&1)
-    expect "uncore-cap on a host without the controls says so: $out" contains "$out" "not available"
 }
 
 memory-test() {
@@ -312,65 +261,7 @@ pin-test() {
     expect "vm-pin runs no taskset on it" test ! -s "$STUB_LOG"
 }
 
-tool-test() {
-    # Check that tool-path finds a tool by name in PATH or by path, as an
-    # absolute path, and that latency.sh asks PATH for mlc and pcm-tpmi and
-    # runs mlc by the path that PATH gave, also where the PATH of sudo has no
-    # mlc.
-    local dir="$TMP/tools" got rc=0
-    mkdir -p "$dir/bin"
-    printf '#!/bin/sh\n' > "$dir/bin/mytool"
-    printf '#!/bin/sh\n' > "$dir/bin/notexecutable"
-    chmod +x "$dir/bin/mytool"
-    got=$(PATH="$dir/bin:$PATH" bash -c 'source "$1"; tool-path mytool' _ "$BIN/latency.sh" 2>&1)
-    expect "tool-path finds a name in PATH: want $dir/bin/mytool, got '$got'" test "$got" == "$dir/bin/mytool"
-    got=$(bash -c 'source "$1"; tool-path "$2"' _ "$BIN/latency.sh" "$dir/bin/mytool" 2>&1)
-    expect "tool-path prints a path that is executable: got '$got'" test "$got" == "$dir/bin/mytool"
-    got=$(cd "$dir/bin" && bash -c 'source "$1"; tool-path ./mytool' _ "$BIN/latency.sh" 2>&1)
-    expect "tool-path makes a relative path absolute: got '$got'" test "$got" == "$dir/bin/./mytool"
-    got=$(bash -c 'source "$1"; tool-path mytool' _ "$BIN/latency.sh" 2>&1) || rc=$?
-    expect "tool-path of a name that PATH lacks fails and prints nothing (rc $rc, '$got')" test "$rc/$got" == "1/"
-    rc=0
-    got=$(bash -c 'source "$1"; tool-path "$2"' _ "$BIN/latency.sh" "$dir/bin/notexecutable" 2>&1) || rc=$?
-    expect "tool-path of a file that is not executable fails and prints nothing (rc $rc, '$got')" test "$rc/$got" == "1/"
-    # shellcheck disable=SC2016 # the inner shell expands them
-    got=$(env -u MLC -u PCM_TPMI bash -c 'source "$1"; echo "$MLC $PCM_TPMI"' _ "$BIN/latency.sh" 2>&1)
-    expect "the tools are found in PATH by default: got '$got'" test "$got" == "mlc pcm-tpmi"
-    fake-host
-    # The stubs are in PATH of this shell; the PATH of the stub sudo has only
-    # the system directories.
-    got=$(PATH="$STUBS:$PATH" STUB_SUDO_PATH=/usr/bin:/bin bash -c '
-        source "$1"
-        NODE_SYS="$2/sys/node" DEMO_STATE_DIR="$2/state" STATE="$2/state/latency.state"
-        topology
-        mlc-measure before' _ "$BIN/latency.sh" "$TMP" 2>&1)
-    expect "mlc from the caller's PATH runs under a sudo that does not have it in its PATH: $got" \
-        contains "$got" "mlc idle latency before: CPU 0 to node 0 (near) 123.4 ns"
-    got=$(PATH="$STUBS:$PATH" MLC=/nonexistent/mlc bash -c '
-        source "$1"
-        NODE_SYS="$2/sys/node" DEMO_STATE_DIR="$2/state" STATE="$2/state/latency.state"
-        topology
-        mlc-measure before' _ "$BIN/latency.sh" "$TMP" 2>&1)
-    expect "a missing mlc says so: $got" contains "$got" "mlc not found (MLC=/nonexistent/mlc; put mlc in PATH or set MLC)"
-}
-
 # shellcheck disable=SC2329 # latency.sh calls the functions that this replaces
-prefetch-test() {
-    # Check that mlc-measure records the prefetcher register, says nothing
-    # if mlc leaves it as it was, and warns if it does not.
-    local out
-    fake-host
-    export STUB_MSR="$TMP/msr"
-    printf '0\n0\n' > "$STUB_MSR"
-    out=$( (latency-source; topology; MLC="$STUBS/mlc"; mlc-measure before; grep -h 'mlc before' "$STATE") 2>&1)
-    expect "mlc-measure prints the latency of mlc: $out" contains "$out" "mlc idle latency before: CPU 0 to node 0 (near) 123.4 ns"
-    expect "mlc-measure records the prefetcher register: $out" contains "$out" "prefetchers (MSR 0x1a4) 0x0 x2"
-    expect "mlc-measure does not warn if mlc leaves the register alone: $out" test "${out#*WARNING}" == "$out"
-    printf '0\n0\n' > "$STUB_MSR"
-    out=$( (latency-source; topology; MLC="$STUBS/mlc" STUB_MLC_LEAVES=3; export STUB_MLC_LEAVES; mlc-measure after) 2>&1)
-    expect "mlc-measure warns if mlc leaves the prefetchers changed: $out" contains "$out" "prefetchers (MSR 0x1a4) are 0x3 x2 since mlc ran, they were 0x0 x2"
-}
-
 mount-order-test() {
     # Check that pool-mount saves the mount before it mounts, and takes the
     # line back if the mount fails.
@@ -428,19 +319,19 @@ on-test() {
     # what it changed: the tunable, the tmpfs mount and the load.
     local out rc pid i loadpid
     for how in signal failure; do
-        fake-host 0 0 1 1
-        [ "$how" == signal ] || fake-host 1 1 2 2
+        fake-host
         echo 1 > "$TMP/tunable"
         : > "$STUB_MOUNTS"
         : > "$STUB_LOG"
         rm -f "$TMP/on.out"
         (
             latency-source
-            mlc-measure() { :; }
             tunables-on() { set-saved "a tunable" "$TMP/tunable" 0; }
             if [ "$how" == signal ]; then
                 # Stay in load-start until the signal comes.
                 load-running() { false; }
+            else
+                load-start() { warn "no load"; return 1; }
             fi
             LATENCY_LOAD=700
             cmd-on
@@ -466,7 +357,7 @@ on-test() {
             expect "signal: the message says it was interrupted: $out" contains "$out" "interrupted: restoring what it changed"
             expect "signal: the load is stopped" gone "$loadpid"
         else
-            expect "failure: uncore-cap refused: $out" contains "$out" "nothing capped"
+            expect "failure: the message says on failed: $out" contains "$out" "latency on failed: restoring what it changed"
             expect "failure: the load was never started" test ! -e "$TMP/state/cxl-load.pid"
         fi
     done
@@ -478,7 +369,7 @@ setup-run() {
     #
     # Print what cmd-on SETUP, cmd-status and cmd-off print on the fake host
     # (as the caller made it with fake-host) with the stubs, a tunable in
-    # TMP/tunable, the load LOAD if given, and the pinning, mlc and the lists
+    # TMP/tunable, the load LOAD if given, and the pinning and the lists
     # of other processes left out; MARK lines say what the host looked like
     # after cmd-on and after cmd-off. The state, the mounts and the stub log
     # stay for the caller.
@@ -487,7 +378,6 @@ setup-run() {
     : > "$STUB_LOG"
     (
         latency-source
-        mlc-measure() { :; }
         other-vms-status() { :; }
         tunables-status() { :; }
         vms-status() { :; }
@@ -497,56 +387,53 @@ setup-run() {
         echo "MARK on rc $?"
         echo "MARK mounts: $(cut -f2,3 "$STUB_MOUNTS" | tr '\t' ' ')"
         echo "MARK state: $(tr '\t' ' ' < "$STATE" | grep -E '^(info setup|mount) ' | tr '\n' ';')"
-        echo "MARK max_freq: $(cat "$UNCORE_SYS"/uncore0?/max_freq_khz | tr '\n' ' ')"
         echo "MARK load: $(compgen -G "$TMP/state/cxl-load.pid" || echo none)"
         cmd-status
         cmd-off
         echo "MARK off rc $?"
-        echo "MARK after off: tunable $(cat "$TMP/tunable"), mounts $(grep -c . "$STUB_MOUNTS"), max_freq $(cat "$UNCORE_SYS"/uncore0?/max_freq_khz | tr '\n' ' ')"
+        echo "MARK after off: tunable $(cat "$TMP/tunable"), mounts $(grep -c . "$STUB_MOUNTS")"
     ) 2>&1
 }
 
 far-test() {
-    # Check the far setup: the tmpfs of the far nodes' memory (bind), the
-    # far domains capped, "far" in the state and the status, and all of it
-    # restored by cmd-off. "on" is the far setup too.
+    # Check the far setup: the tmpfs of the far nodes' memory (bind), "far"
+    # in the state and the status, and all of it restored by cmd-off. "on"
+    # is the far setup too.
     local out name
     for name in far on; do
-        FAKE_NODES_PER_PACKAGE=2 fake-host 0 0 1 1
+        FAKE_NODES_PER_PACKAGE=2 fake-host
         out=$(setup-run "$name")
         expect "$name: on succeeds: $out" contains "$out" "MARK on rc 0"
         expect "$name: the pool tmpfs is the far nodes' memory, bound: $out" contains "$out" "MARK mounts: cxl-demo-far rw,huge=within_size,size=4194304k,"
         expect "$name: the pool tmpfs has the policy bind:2-3: $out" contains "$out" "mpol=bind:2-3"
         expect "$name: the state says far: $out" contains "$out" "MARK state: info setup far;mount "
-        expect "$name: only the far domains are capped: $out" contains "$out" "MARK max_freq: 2200000 2200000 800000 800000"
         expect "$name: the status names the setup: $out" contains "$out" "latency: on, far setup, since "
         expect "$name: off succeeds: $out" contains "$out" "MARK off rc 0"
-        expect "$name: off restores the tunable, the mount and the caps: $out" \
-            contains "$out" "MARK after off: tunable 1, mounts 0, max_freq 2200000 2200000 2200000 2200000"
+        expect "$name: off restores the tunable and the mount: $out" \
+            contains "$out" "MARK after off: tunable 1, mounts 0"
     done
 }
 
 local-test() {
     # Check the local setup: the tunables off as in the far one, the pool
-    # tmpfs interleaved over the near nodes, no frequency cap, no load;
+    # tmpfs interleaved over the near nodes, no load;
     # "local" in the state and the status; restored by cmd-off. Check what
     # it needs of a host.
     local out
-    FAKE_NODES_PER_PACKAGE=2 fake-host 0 0 1 1
+    FAKE_NODES_PER_PACKAGE=2 fake-host
     out=$(setup-run local)
     expect "local: on succeeds: $out" contains "$out" "MARK on rc 0"
     expect "local: the pool tmpfs is the near nodes' memory: $out" contains "$out" "MARK mounts: cxl-demo-near rw,huge=within_size,size=4194304k,"
     expect "local: the pool tmpfs is interleaved over the near nodes 0-1: $out" contains "$out" "mpol=interleave:0-1"
     expect "local: the mount forces mount(2) for the comma: $(cat "$STUB_LOG")" grep -q "^mount LIBMOUNT_FORCE_MOUNT2=always .*mpol=interleave:0-1 cxl-demo-near " "$STUB_LOG"
     expect "local: the state says local: $out" contains "$out" "MARK state: info setup local;mount "
-    expect "local: no frequency is capped: $out" contains "$out" "MARK max_freq: 2200000 2200000 2200000 2200000"
     expect "local: no load runs: $out" contains "$out" "MARK load: none"
     expect "local: the tunable is turned off by on: $out" contains "$out" "a tunable: 1 -> 0"
     expect "local: the status names the setup: $out" contains "$out" "latency: on, local setup, since "
     expect "local: the status shows the pool tmpfs of latency on: $out" contains "$out" "the pool tmpfs of latency on: "
     expect "local: off succeeds: $out" contains "$out" "MARK off rc 0"
     expect "local: off restores the tunable and the mount: $out" \
-        contains "$out" "MARK after off: tunable 1, mounts 0, max_freq 2200000 2200000 2200000 2200000"
+        contains "$out" "MARK after off: tunable 1, mounts 0"
     expect "local: the state is kept as .last" test -f "$TMP/state/latency.state.last"
 
     # A background load is refused, before anything changes; "off" is no load.
@@ -578,21 +465,6 @@ local-test() {
     echo "" > "$TMP/sys/node/has_memory"
     out=$( (latency-source; topology; echo "local: $(topology-problem local)") 2>&1)
     expect "package 0 without memory: local is refused: $out" contains "$out" "local: package 0 has no NUMA node with CPUs and memory"
-}
-
-mlc-near-test() {
-    # Check that mlc-measure reports the near node only on a host without a
-    # far node, and both with one.
-    local out
-    fake-host
-    out=$( (latency-source; topology; MLC="$STUBS/mlc"; mlc-measure before) 2>&1)
-    expect "mlc-measure reports a near and a far node: $out" contains "$out" "CPU 0 to node 0 (near) 123.4 ns, to node 1 (far) 123.4 ns, 1.0 times the near latency"
-    rm -rf "$TMP/sys/node/node1"
-    echo 0 > "$TMP/sys/node/has_memory"
-    echo 0 > "$TMP/sys/node/has_cpu"
-    out=$( (latency-source; topology; MLC="$STUBS/mlc"; mlc-measure before; grep -h 'mlc before' "$STATE") 2>&1)
-    expect "mlc-measure reports the near node only on one package: $out" contains "$out" "mlc idle latency before: CPU 0 to node 0 (near) 123.4 ns"
-    expect "mlc-measure does not report a far node on one package: $out" test "${out#*far}" == "$out"
 }
 
 setup-name-test() {
@@ -714,14 +586,10 @@ spread-policy-test
 mount-test
 umount-test
 thp-test
-tool-test
-prefetch-test
 cleanup-test
-uncore-test
 memory-test
 far-test
 local-test
-mlc-near-test
 setup-name-test
 pin-test
 mount-order-test
