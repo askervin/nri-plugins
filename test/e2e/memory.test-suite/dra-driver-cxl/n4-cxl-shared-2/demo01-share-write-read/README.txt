@@ -573,7 +573,8 @@ device with its filesystem and ro/rw) and who uses it; T5 the trace; T6
 both pool servers: devices, attachments (exclusive), the filesystem state
 of fs0 and lp0 in their backing files ("ext4 clean", "ext4 needs
 recovery" while a node writes it).
-A walk (bin/wizard-rules.sh runs one for every rule and checks each result):
+A walk (bin/wizard-rules.sh runs every accepted row on the cluster and
+every refused row against the wizard, and checks each result):
   demo wizard new --name w1 --source local --mode numa --size 256Mi --node vm2
       -> w1: Running; T2 "numa 256Mi c100e2e1", T4 "region0 256M kmem node2"
   demo wizard new --name w12 --source pool --mode dax --serial 0xc1ae0001

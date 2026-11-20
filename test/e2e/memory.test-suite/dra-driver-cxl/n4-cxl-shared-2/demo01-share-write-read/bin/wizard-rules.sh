@@ -3,7 +3,9 @@
 # section 6d): a "demo wizard new" for every rule row of the wizard, in an
 # order in which each one shows what it is about (a holder first, then who
 # waits for it, then the holder goes), with the deletes and waits between
-# them, and every refused choice.
+# them, and every choice that the wizard refuses (its copy of the
+# driver's rules, which wizard_check.py checks; the e2e suite tests the
+# driver's own refusals).
 #
 # Usage: wizard-rules.sh [--dry-run] [--from LINE] [--capture LINE:LABEL]...
 #   (live)     on the demo set up with "demo setup wizard": every row in
@@ -115,7 +117,7 @@ delete w28
 Running   --name w29 --kind claim --source any --memory persistent --sharing shared --mode fs --node vm1 --command read
 list
 delete w29
-# 5. Choices that the driver refuses: each with the reason.
+# 5. Choices that the wizard refuses: each with the reason.
 refused:a_persistent_device_needs_mode_block_or_fs        --memory persistent --mode dax
 refused:mode_fs_needs_a_persistent_device                 --memory volatile --mode fs
 refused:used_as_dax_only                                  --sharing shared --mode numa
