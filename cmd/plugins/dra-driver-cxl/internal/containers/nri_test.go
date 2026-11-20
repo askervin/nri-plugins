@@ -72,6 +72,17 @@ func TestLifecycleOfContainers(t *testing.T) {
 	if v := e.p.Check(); len(v) != 1 || !strings.Contains(v[0], `I11: ctr=ns/pod-u1/fenced id=c1: cpuset.mems "0-2", not 0-1`) {
 		t.Fatalf("violations %q", v)
 	}
+	// a full pass that cannot repair it (the runtime updates the spec
+	// only) logs the violation
+	e.stub.setSpecOnly("c1", true)
+	passLogs := klogtest.Capture(t, 4)
+	e.p.Repair(ctx)
+	e.passes()
+	if out := passLogs(); !strings.Contains(out, `containers invariant: I11: ctr=ns/pod-u1/fenced id=c1: cpuset.mems "0-2", not 0-1`) {
+		t.Fatalf("no violation logged:\n%s", out)
+	}
+	e.stub.setSpecOnly("c1", false)
+	e.expectUpdates("c1 mems=0-1")
 	e.p.Fence(ctx, 3)
 	e.expectUpdates("c1 mems=0-1")
 	e.check()

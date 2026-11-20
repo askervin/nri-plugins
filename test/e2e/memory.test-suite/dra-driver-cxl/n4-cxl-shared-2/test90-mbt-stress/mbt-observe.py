@@ -119,9 +119,10 @@ Where the data comes from:
                 (crictl): its id, pod, attempt, start, the log lines of
                 its log file (status.logPath) that match "panic|fatal
                 error|SIGSEGV" (count, the first 5), invariants (the
-                count of "engine invariant: " lines, the violations
-                of its own invariants that the driver logs at V(4), and
-                the first 5 in invariantErrors), lendsRestored (its
+                count of "engine invariant: " and "containers
+                invariant: " lines, the violations of its own
+                invariants that the driver logs at V(4), and the first
+                5 in invariantErrors), lendsRestored (its
                 log has "NRI fence: lends restored": NRI and lending are
                 up, in every fencing mode, A15), fencing (the mode of
                 its start line "defaults.container.fencing: MODE: ...",
@@ -774,9 +775,10 @@ PANIC = re.compile(r"panic|fatal error|SIGSEGV")
 LENDS_RESTORED = "NRI fence: lends restored"
 # The driver's start line of its fencing mode (D/driver.go logDefaults, A36).
 FENCING_LOG = re.compile(r"defaults\.container\.fencing: ([a-z-]+):")
-# The driver's own invariant checks between requests (D/internal/engine
-# observe.go checkBetween, V(4)).
-INVARIANT = "engine invariant: "
+# The driver's own invariant checks, logged at V(4): of the engine between
+# requests (D/internal/engine observe.go checkBetween), of the fenced
+# containers after a repair pass (D/internal/containers fence.go pass).
+INVARIANT = re.compile(r"(engine|containers) invariant: ")
 # Counted lines of the driver log (A24): the persistent devices' troubles.
 LOG_COUNTS = [
     ("busy", re.compile(r"device or resource busy")),
@@ -845,7 +847,7 @@ def driver_log(errors):
             saved["panics"] += 1
             if len(saved["errors"]) < 5:
                 saved["errors"].append(content[:300])
-        if INVARIANT in content:
+        if INVARIANT.search(content):
             saved["invariants"] += 1
             if len(saved["invariantErrors"]) < 5:
                 saved["invariantErrors"].append(content[:300])

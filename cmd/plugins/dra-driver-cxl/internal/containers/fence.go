@@ -196,6 +196,9 @@ func (p *Plugin) background(id string) {
 // where that changes it (curMems: the cgroup of a container whose task
 // exists), with one NRI UpdateContainers, once fencing of running
 // containers is ready; of the container with the id only if it is not "".
+// A pass of all containers logs the violations of I11 of the containers
+// it found started ("containers invariant: ...", V(4)), but not of those
+// whose update failed: they violate it until the next pass.
 func (p *Plugin) pass(ctx context.Context, only string) {
 	if ctx.Err() != nil {
 		return
@@ -216,11 +219,18 @@ func (p *Plugin) pass(ctx context.Context, only string) {
 		p.mu.Unlock()
 		return
 	}
-	changes := p.passChanges(fenced, only)
-	p.mu.Unlock()
+	mem := p.memNodes()
+	changes := p.passChanges(fenced, mem, only)
+	var checked map[string]bool
+	if only == "" {
+		checked = p.started()
+	}
 	if len(changes) == 0 {
+		p.logViolations(fenced, mem, checked)
+		p.mu.Unlock()
 		return
 	}
+	p.mu.Unlock()
 
 	mems := make(map[string]string, len(changes))
 	order := make([]string, 0, len(changes))
@@ -243,6 +253,22 @@ func (p *Plugin) pass(ctx context.Context, only string) {
 		klog.V(3).Infof("NRI fence: ctr=%s id=%s cpuset.mems=%s (was %q, fenced nodes %s)", ch.c.name(), ch.c.ID, ch.mems, ch.was, fenced)
 	}
 	klog.Infof("NRI fence: %d containers updated, %d failed (fenced nodes %s)", len(changes)-len(failed), len(failed), fenced)
+	for id := range failed {
+		delete(checked, id)
+	}
+	p.logViolations(fenced, mem, checked)
+}
+
+// logViolations logs the violations of I11 of the containers in checked
+// with the fenced nodes and the memory nodes of a pass, nothing if checked
+// is nil. Called with mu held.
+func (p *Plugin) logViolations(fenced cpuset.CPUSet, mem *memNodes, checked map[string]bool) {
+	if checked == nil {
+		return
+	}
+	for _, v := range p.violations(fenced, mem, checked) {
+		klog.V(4).Info("containers invariant: " + v)
+	}
 }
 
 // passChange is an update of the cpuset.mems of a container by a fence
@@ -255,9 +281,8 @@ type passChange struct {
 // passChanges returns the updates of a fence pass of the fenced containers
 // in the order of their creation, of the container only if it is not "".
 // Called with mu held.
-func (p *Plugin) passChanges(fenced cpuset.CPUSet, only string) []passChange {
+func (p *Plugin) passChanges(fenced cpuset.CPUSet, mem *memNodes, only string) []passChange {
 	var changes []passChange
-	mem := p.memNodes()
 	for _, c := range p.sorted() {
 		if (only != "" && c.ID != only) || c.Management != ManagementFenced {
 			continue

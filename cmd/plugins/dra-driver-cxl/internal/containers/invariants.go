@@ -16,6 +16,8 @@ package containers
 
 import (
 	"fmt"
+
+	"k8s.io/utils/cpuset"
 )
 
 // Check returns the violations of the invariant of the fenced containers
@@ -29,19 +31,41 @@ func (p *Plugin) Check() []string {
 	if p.readiness != ReadinessReady || p.fenced.IsEmpty() {
 		return nil
 	}
+	return p.violations(p.fenced, p.memNodes(), nil)
+}
+
+// violations returns the I11 violations of the fenced, started containers
+// with a readable cgroup, with the fenced nodes and the memory nodes
+// given; of the containers in ids only if ids is not nil. Called with mu
+// held.
+func (p *Plugin) violations(fenced cpuset.CPUSet, mem *memNodes, ids map[string]bool) []string {
 	var out []string
-	mem := p.memNodes()
 	for _, c := range p.sorted() {
 		if c.Management != ManagementFenced || c.Lifecycle != LifecycleStarted || c.CgroupDir == "" {
 			continue
 		}
-		want, err := passMems(c, p.fenced, mem)
+		if ids != nil && !ids[c.ID] {
+			continue
+		}
+		want, err := passMems(c, fenced, mem)
 		if err != nil {
 			continue
 		}
 		if cur := curMems(c); !sameMems(want, cur) {
-			out = append(out, fmt.Sprintf("I11: ctr=%s id=%s: cpuset.mems %q, not %s (fenced nodes %s)", c.name(), c.ID, cur, want, p.fenced))
+			out = append(out, fmt.Sprintf("I11: ctr=%s id=%s: cpuset.mems %q, not %s (fenced nodes %s)", c.name(), c.ID, cur, want, fenced))
 		}
 	}
 	return out
+}
+
+// started returns the ids of the fenced, started containers with a
+// readable cgroup. Called with mu held.
+func (p *Plugin) started() map[string]bool {
+	ids := map[string]bool{}
+	for _, c := range p.ctrs {
+		if c.Management == ManagementFenced && c.Lifecycle == LifecycleStarted && c.CgroupDir != "" {
+			ids[c.ID] = true
+		}
+	}
+	return ids
 }
