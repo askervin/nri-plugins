@@ -905,16 +905,14 @@ its feature gates and kubelet settings. `vm-k8s-reinit` and
 Pods run on every node, and every node has the admin kubeconfig. Rebuilding
 is slow: two single-node clusters take several times longer than one
 cluster of two nodes. So a test suite makes its shape once, in one test,
-and the other tests only check it. In `memory.test-suite/dra-driver-cxl`,
-`n4-cxl-shared-2/test00-up` makes one cluster of the VMs of
-`n4-cxl-shared-2` (control plane) and `n4-cxl-shared-1` (worker), and
-every other test of `n4-cxl-shared-2` checks that shape first
-(`pool-cluster-require`) and fails at once, pointing to `test00-up`, if the
+and the other tests only check it: in `memory.test-suite/dra-driver-cxl`,
+`n4-cxl-shared-2/test00-up` makes one cluster of three VMs, and the other
+tests of `n4-cxl-shared-2` fail at once, pointing to `test00-up`, if the
 VMs have another shape.
 
 The VMs of a multi-node cluster need a VM network: their topologies set
 `vm_network` (`vm_network.var.sh`, for instance `cxl-pool` in
-`memory.test-suite/dra-driver-cxl/n4-cxl-shared-{1,2}`). Each such VM gets a
+`memory.test-suite/dra-driver-cxl`). Each such VM gets a
 second NIC on a qemu multicast socket of the host loopback, which needs no
 host privileges. The address and MAC of the VM and the multicast group of
 the network are derived and recorded as `VMNET_*` in the `env` file of the
@@ -926,6 +924,6 @@ Only the bridge CNI is supported.
 
 To bring the VMs back to single-node clusters by hand, call
 `vm-k8s-reinit` with one VM per cluster, for instance in the interactive
-mode of a test (`breakpoint`). `n4-cxl-shared-2/test00-up` makes the
-two-node cluster again.
+mode of a test (`breakpoint`). `n4-cxl-shared-2/test00-up` makes its
+cluster again.
 

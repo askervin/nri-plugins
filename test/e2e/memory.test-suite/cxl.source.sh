@@ -3,7 +3,8 @@
 # cxl-dump prints what package kernel (pkg/cxl/kernel) reads from the sysfs
 # of the VM: memdevs, regions, dax devices, memory blocks and NUMA nodes
 # (kernel.ObserveTopology as JSON). The tests drive the CXL hardware of the
-# VM and check the topology that results.
+# VM and check the topology that results. Every test of memory.test-suite
+# has these helpers.
 
 CXL_DUMP_FILE=""   # cxl-dump output of the last cxl-dump/cxl-wait
 CXL_BLOCK_SIZE=""  # memory block size in bytes in the VM
