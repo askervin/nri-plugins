@@ -25,8 +25,8 @@ nri:
 #     pluginRequestTimeout: 2s
 
 pool:
-  # DRA driver name of the CXL memory pool driver, "" disables it.
-  driverName: cxl-pool.nri.io
+  # Run the pool driver cxl-pool.nri.io and install its DeviceClasses.
+  enabled: true
   # How long the pool driver waits for a hotplugged CXL memory device.
   prepareTimeout: 30s
 
@@ -48,6 +48,15 @@ leases:
   # ResourceClaimTemplates may request the device class cxl-lease. With {}
   # every namespace may.
   namespaceLabels: {}
+  # Limits of the lease sockets: open connections of the socket of a lease
+  # claim, how long a connection may stay without a request, and lease
+  # requests of a lease claim per minute (also their burst).
+  maxConnections: 64
+  idleTimeout: 10m
+  requestsPerMinute: 32
+  # Leases of the containers of a pod, and of the node.
+  maxPerPod: 16
+  maxPerNode: 32
 
 # Driver configuration, see docs/memory/cxl/usage.md. The driver reads it
 # only when it starts; a change restarts the DaemonSet.

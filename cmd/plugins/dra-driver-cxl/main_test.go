@@ -48,12 +48,10 @@ func TestParseFlagsDefaults(t *testing.T) {
 	}
 	want := &CXLFlags{
 		NodeName:            "n1",
-		KubeAPIQPS:          5,
-		KubeAPIBurst:        10,
 		CDIRoot:             "/var/run/cdi",
 		NRIName:             "dra-driver-cxl",
 		NRIIdx:              "30",
-		PoolDriverName:      "cxl-pool.nri.io",
+		Pool:                true,
 		PoolPrepareTimeout:  30 * time.Second,
 		Leases:              true,
 		LeaseCLI:            "/usr/local/bin/cxl-request",
@@ -64,99 +62,69 @@ func TestParseFlagsDefaults(t *testing.T) {
 	if !reflect.DeepEqual(f, want) {
 		t.Fatalf("flags\n%+v, expected\n%+v", f, want)
 	}
-	if device.PoolDriverName != want.PoolDriverName || device.DriverName != "cxl.nri.io" {
-		t.Fatalf("driver names %s %s", device.DriverName, device.PoolDriverName)
+	if f.poolDriver() != "cxl-pool.nri.io" || device.DriverName != "cxl.nri.io" {
+		t.Fatalf("driver names %s %s", device.DriverName, f.poolDriver())
 	}
-	f, err = testParseFlags([]string{"--new-state"}, map[string]string{"NODE_NAME": "n1"})
-	want.NewState = true
-	if err != nil || !reflect.DeepEqual(f, want) {
+	f, err = testParseFlags([]string{"--new-state", "--pool=false"}, map[string]string{"NODE_NAME": "n1"})
+	want.NewState, want.Pool = true, false
+	if err != nil || !reflect.DeepEqual(f, want) || f.poolDriver() != "" {
 		t.Fatalf("flags\n%+v, expected\n%+v, error %v", f, want, err)
 	}
 }
 
+// NODE_NAME and KUBECONFIG are the defaults of --node-name and
+// --kubeconfig; the command line overrides them. No other flag has an
+// environment variable.
 func TestParseFlagsEnvironment(t *testing.T) {
-	env := map[string]string{
-		"NODE_NAME":                 "n1",
-		"KUBECONFIG":                "/kubeconfig",
-		"KUBE_API_QPS":              "7.5",
-		"KUBE_API_BURST":            "20",
-		"CDI_ROOT":                  "/etc/cdi",
-		"CONFIG_STR":                "{}",
-		"NRI_PLUGIN_NAME":           "cxl",
-		"NRI_PLUGIN_IDX":            "40",
-		"NRI_SOCKET":                "/nri.sock",
-		"POOL_DRIVER_NAME":          "",
-		"POOL_PREPARE_TIMEOUT":      "1m",
-		"LEASES":                    "false",
-		"LEASE_CLI":                 "/plugins/cxl-request",
-		"LEASE_CLI_SOURCE":          "/bin/cxl-request",
-		"LEASE_WAIT":                "5s",
-		"LEASE_COMPANION_IMAGE":     "pause:test",
-		"LEASE_MAX_CONNECTIONS":     "8",
-		"LEASE_IDLE_TIMEOUT":        "1h",
-		"LEASE_MAX_PER_POD":         "4",
-		"LEASE_MAX_PER_NODE":        "5",
-		"LEASE_REQUESTS_PER_MINUTE": "6",
-	}
-	f, err := testParseFlags(nil, env)
+	env := map[string]string{"NODE_NAME": "n1", "KUBECONFIG": "/kubeconfig", "LEASES": "false", "CONFIG_STR": "{}"}
+	f, err := testParseFlags([]string{"--config", "/config.yaml"}, env)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := &CXLFlags{
-		NodeName:            "n1",
-		KubeConfig:          "/kubeconfig",
-		KubeAPIQPS:          7.5,
-		KubeAPIBurst:        20,
-		CDIRoot:             "/etc/cdi",
-		ConfigStr:           "{}",
-		NRIName:             "cxl",
-		NRIIdx:              "40",
-		NRISocket:           "/nri.sock",
-		PoolDriverName:      "",
-		PoolPrepareTimeout:  time.Minute,
-		Leases:              false,
-		LeaseCLI:            "/plugins/cxl-request",
-		LeaseCLISource:      "/bin/cxl-request",
-		LeaseWait:           5 * time.Second,
-		LeaseCompanionImage: "pause:test",
-		LeaseLimits:         leases.Limits{Connections: 8, Idle: time.Hour, LeasesPerPod: 4, LeasesPerNode: 5, RequestsPerMinute: 6},
-	}
-	if !reflect.DeepEqual(f, want) {
-		t.Fatalf("flags\n%+v, expected\n%+v", f, want)
-	}
-
-	// The command line overrides the environment, also with short flags.
-	f, err = testParseFlags([]string{"--node-name", "n2", "-c", "a: b", "-leases=true", "--lease-wait=1s"}, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if f.NodeName != "n2" || f.ConfigStr != "a: b" || !f.Leases || f.LeaseWait != time.Second || f.KubeAPIBurst != 20 {
+	if f.NodeName != "n1" || f.KubeConfig != "/kubeconfig" || !f.Leases || f.Config != "/config.yaml" {
 		t.Fatalf("flags %+v", f)
 	}
-	f, err = testParseFlags([]string{"-f", "/config.yaml"}, env)
-	if err != nil || f.ConfigFile != "/config.yaml" || f.ConfigStr != "{}" {
+	f, err = testParseFlags([]string{"--node-name", "n2", "--kubeconfig="}, env)
+	if err != nil || f.NodeName != "n2" || f.KubeConfig != "" {
 		t.Fatalf("flags %+v, error %v", f, err)
+	}
+}
+
+// TestParseFlagsForget pins --forget-pool-serial: repeatable, a
+// comma-separated list of serials in hex or decimal, and an invalid serial
+// refused.
+func TestParseFlagsForget(t *testing.T) {
+	f, err := testParseFlags([]string{"--forget-pool-serial", "0xC1AE2001", "--forget-pool-serial=161, 0xa2,,"}, map[string]string{"NODE_NAME": "n1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(f.ForgetPoolSerials, []uint64{0xc1ae2001, 0xa1, 0xa2}) {
+		t.Fatalf("serials %#x", f.ForgetPoolSerials)
+	}
+	if got := (*serialsFlag)(&f.ForgetPoolSerials).String(); got != "0xc1ae2001,0xa1,0xa2" {
+		t.Fatalf("value %q", got)
+	}
+	if (*serialsFlag)(nil).String() != "" {
+		t.Fatal("the value of no flag")
 	}
 }
 
 func TestParseFlagsErrors(t *testing.T) {
 	for _, tc := range []struct {
 		args []string
-		env  map[string]string
 		want string
 	}{
-		{nil, nil, "--node-name"},
-		{[]string{"--node-name", "n1", "extra"}, nil, "arguments not supported"},
-		{[]string{"--node-name", "n1"}, map[string]string{"KUBE_API_BURST": "many"}, "KUBE_API_BURST"},
-		{[]string{"--node-name", "n1"}, map[string]string{"LEASE_WAIT": "1"}, "LEASE_WAIT"},
-		{[]string{"--node-name", "n1", "--lease-wait", "61m"}, nil, "--lease-wait 1h1m0s: not between 0s and 1h0m0s"},
-		{[]string{"--node-name", "n1", "--lease-wait", "-1s"}, nil, "--lease-wait -1s: not between 0s and 1h0m0s"},
-		{[]string{"--node-name", "n1", "--lease-cli=", "--lease-cli-source", "/bin/cxl-request"}, nil, "--lease-cli"},
-		{[]string{"--no-such-flag"}, nil, "no-such-flag"},
-		{[]string{"--node-name", "n1", "--pool-driver-name", "1.pool.example.com"}, nil, "--pool-driver-name \"1.pool.example.com\": invalid vendor"},
+		{nil, "--node-name"},
+		{[]string{"--node-name", "n1", "extra"}, "arguments not supported"},
+		{[]string{"--node-name", "n1", "--lease-wait", "61m"}, "--lease-wait 1h1m0s: not between 0s and 1h0m0s"},
+		{[]string{"--node-name", "n1", "--lease-wait", "-1s"}, "--lease-wait -1s: not between 0s and 1h0m0s"},
+		{[]string{"--node-name", "n1", "--lease-cli=", "--lease-cli-source", "/bin/cxl-request"}, "--lease-cli"},
+		{[]string{"--no-such-flag"}, "no-such-flag"},
+		{[]string{"--node-name", "n1", "-f", "/config.yaml"}, "provided but not defined: -f"},
+		{[]string{"--node-name", "n1", "--forget-pool-serial", "0xa1,0xzz"}, `invalid value "0xa1,0xzz" for flag -forget-pool-serial: invalid serial "0xzz"`},
 	} {
-		if _, err := testParseFlags(tc.args, tc.env); err == nil || !strings.Contains(err.Error(), tc.want) {
-			t.Errorf("args %v env %v: error %v, expected one with %q", tc.args, tc.env, err, tc.want)
+		if _, err := testParseFlags(tc.args, nil); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("args %v: error %v, expected one with %q", tc.args, err, tc.want)
 		}
 	}
 }

@@ -184,12 +184,13 @@ The main values of the chart:
 | `resources.cpu`, `resources.memory` | `10m`, `128Mi` | requests of the plugin container |
 | `nri.plugin.index` | `30` | `--nri-idx` |
 | `nri.runtime.patchConfig` | `false` | `true`: an init container enables NRI in the configuration of containerd or CRI-O |
-| `pool.driverName` | `cxl-pool.nri.io` | `--pool-driver-name`; empty disables the pool driver |
+| `pool.enabled` | `true` | `--pool`; `false` disables the pool driver and leaves out its DeviceClasses |
 | `pool.prepareTimeout` | `30s` | `--pool-prepare-timeout` |
 | `leases.enabled` | `true` | `--leases` |
 | `leases.wait` | `120s` | `--lease-wait` |
 | `leases.companionImage` | `registry.k8s.io/pause:3.10` | `--lease-companion-image` |
-| `config` | `{}` | the [configuration file](#configuration-file) (`-f`) |
+| `leases.maxConnections`, `leases.idleTimeout`, `leases.requestsPerMinute`, `leases.maxPerPod`, `leases.maxPerNode` | `64`, `10m`, `32`, `16`, `32` | `--lease-max-connections`, `--lease-idle-timeout`, `--lease-requests-per-minute`, `--lease-max-per-pod`, `--lease-max-per-node` |
+| `config` | `{}` | the [configuration file](#configuration-file) (`--config`) |
 | `deviceClassConfig` | `{}` | class name: a `MemoryConfig` body for the class, see [Presets in DeviceClasses](#presets-in-deviceclasses) |
 | `logLevel` | `4` | `-v` |
 | `extraEnv` | | more environment variables of the plugin container, name: value |
@@ -294,7 +295,7 @@ install -m 755 build/bin/nri-dra-driver-cxl build/bin/cxl-request /usr/local/bin
 echo '{}' > /etc/nri-dra-driver-cxl.yaml
 systemd-run --unit nri-dra-driver-cxl -p Restart=on-failure -p RestartSec=5s \
     -E KUBECONFIG=/etc/kubernetes/nri-dra-driver-cxl.conf \
-    /usr/local/bin/nri-dra-driver-cxl --node-name "$(hostname)" -f /etc/nri-dra-driver-cxl.yaml
+    /usr/local/bin/nri-dra-driver-cxl --node-name "$(hostname)" --config /etc/nri-dra-driver-cxl.yaml
 ```
 
 The plugin exits with status 1 when the container runtime closes its NRI
@@ -1919,35 +1920,32 @@ persistent memory `0xc1ae0002` (an erofs) and `0xc1ae0003` (an ext4).
 
 ## nri-dra-driver-cxl flags
 
-Every flag with an environment variable takes its default from the
-variable when it is set. Both `-flag` and `--flag` work.
+`--node-name` and `--kubeconfig` take their defaults from the
+environment variables `NODE_NAME` and `KUBECONFIG`. Both `-flag` and
+`--flag` work.
 
-| flag | environment | default | |
-|:-----|:------------|:--------|:-|
-| `--node-name` | `NODE_NAME` | (required) | the node the plugin runs on |
-| `--kubeconfig` | `KUBECONFIG` | (empty: in-cluster config) | |
-| `--kube-api-qps` | `KUBE_API_QPS` | `5` | queries per second of each Kubernetes API client: the driver's and the lease broker's |
-| `--kube-api-burst` | `KUBE_API_BURST` | `10` | burst of each Kubernetes API client: the driver's and the lease broker's |
-| `--cdi-root` | `CDI_ROOT` | `/var/run/cdi` | where the CDI spec files are written |
-| `--config-str`, `-c` | `CONFIG_STR` | (empty) | the [configuration](#configuration-file) as a JSON or YAML string |
-| `--config-file`, `-f` | | | the configuration file, JSON or YAML; not together with `-c` |
-| `--nri-name` | `NRI_PLUGIN_NAME` | `dra-driver-cxl` | NRI plugin name |
-| `--nri-idx` | `NRI_PLUGIN_IDX` | `30` | NRI plugin index (place in the plugin chain, higher is later) |
-| `--nri-socket` | `NRI_SOCKET` | (empty: the runtime's default) | NRI socket path |
-| `--pool-driver-name` | `POOL_DRIVER_NAME` | `cxl-pool.nri.io` | DRA driver name of the pool driver; empty disables it |
-| `--pool-prepare-timeout` | `POOL_PREPARE_TIMEOUT` | `30s` | how long the pool driver waits for a hotplugged memdev |
-| `--leases` | `LEASES` | `true` | lend memory to running containers: publish the `lease` device, serve lease sockets, create companions (needs NRI) |
-| `--lease-cli` | `LEASE_CLI` | `/usr/local/bin/cxl-request` | host path of the static `cxl-request`, mounted into the containers of lease claims |
-| `--lease-cli-source` | `LEASE_CLI_SOURCE` | (empty) | at start, before any CDI spec is written, copy this file to `--lease-cli` (mode 0755, replaced atomically); the chart copies the `/bin/cxl-request` of the image to the host this way |
-| `--lease-wait` | `LEASE_WAIT` | `120s` | how long a lease request waits for Ready when it does not say; at most `1h` |
-| `--lease-companion-image` | `LEASE_COMPANION_IMAGE` | `registry.k8s.io/pause:3.10` | image of the companion pods of leases |
-| `--lease-max-connections` | `LEASE_MAX_CONNECTIONS` | `64` | open connections of the lease socket of one lease claim; one more is closed at once |
-| `--lease-idle-timeout` | `LEASE_IDLE_TIMEOUT` | `10m0s` | how long a connection of a lease socket may stay without a request before the plugin closes it |
-| `--lease-max-per-pod` | `LEASE_MAX_PER_POD` | `16` | leases of the containers of one pod; a request beyond it is refused |
-| `--lease-max-per-node` | `LEASE_MAX_PER_NODE` | `32` | leases of the node; a request beyond it is refused |
-| `--lease-requests-per-minute` | `LEASE_REQUESTS_PER_MINUTE` | `32` | lease requests of one lease claim per minute, also their burst; a request beyond it is answered `too many requests` |
-| `--new-state` | | `false` | start with a new `state.json` when neither `state.json` nor `state.json.prev` can be read ([Upgrade](#upgrade)) |
-| `--forget-pool-serial` | | (none) | serial (`0x<hex>` or decimal) whose remembered provenance (pool device or local memdev) is removed at start, so that a memdev of it is new again; repeatable, or a comma-separated list ([local.md](local.md#what-the-plugin-publishes)) |
+| flag | default | |
+|:-----|:--------|:-|
+| `--node-name` | `$NODE_NAME` | the node the plugin runs on (required) |
+| `--kubeconfig` | `$KUBECONFIG` | empty: the in-cluster configuration |
+| `--cdi-root` | `/var/run/cdi` | where the CDI spec files are written |
+| `--config` | (none) | the [configuration file](#configuration-file), JSON or YAML |
+| `--nri-name` | `dra-driver-cxl` | NRI plugin name |
+| `--nri-idx` | `30` | NRI plugin index (place in the plugin chain, higher is later) |
+| `--pool` | `true` | run the pool driver `cxl-pool.nri.io`; `false` disables it |
+| `--pool-prepare-timeout` | `30s` | how long the pool driver waits for the memdev of a pool device |
+| `--leases` | `true` | lend memory to running containers: publish the `lease` device, serve lease sockets, create companions (needs NRI) |
+| `--lease-cli` | `/usr/local/bin/cxl-request` | host path of the static `cxl-request`, mounted into the containers of lease claims |
+| `--lease-cli-source` | (empty) | at start, before any CDI spec is written, copy this file to `--lease-cli` (mode 0755, replaced atomically); the chart copies the `/bin/cxl-request` of the image to the host this way |
+| `--lease-wait` | `120s` | how long a lease request waits for Ready when it does not say; at most `1h` |
+| `--lease-companion-image` | `registry.k8s.io/pause:3.10` | image of the companion pods of leases |
+| `--lease-max-connections` | `64` | open connections of the lease socket of one lease claim; one more is closed at once |
+| `--lease-idle-timeout` | `10m0s` | how long a connection of a lease socket may stay without a request before the plugin closes it |
+| `--lease-max-per-pod` | `16` | leases of the containers of one pod; a request beyond it is refused |
+| `--lease-max-per-node` | `32` | leases of the node; a request beyond it is refused |
+| `--lease-requests-per-minute` | `32` | lease requests of one lease claim per minute, also their burst; a request beyond it is answered `too many requests` |
+| `--new-state` | `false` | start with a new `state.json` when neither `state.json` nor `state.json.prev` can be read ([Upgrade](#upgrade)) |
+| `--forget-pool-serial` | (none) | serial (`0x<hex>` or decimal) whose remembered provenance (pool device or local memdev) is removed at start, so that a memdev of it is new again; repeatable, or a comma-separated list ([local.md](local.md#what-the-plugin-publishes)) |
 
 `-v` and the other logging flags of klog are accepted too;
 `nri-dra-driver-cxl -help` lists them all. The plugin stops on SIGTERM and

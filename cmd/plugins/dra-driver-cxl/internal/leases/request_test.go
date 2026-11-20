@@ -251,9 +251,9 @@ func TestRequestOptions(t *testing.T) {
 		want askedText
 		err  string
 	}{
-		{req: api.Request{Size: "1Gi", Source: "pool"}, err: "pool driver disabled (--pool-driver-name)"},
-		{req: api.Request{Size: "1Gi", Source: "pool", Shared: true}, err: "pool driver disabled (--pool-driver-name)"},
-		{req: api.Request{Size: "1Gi", Source: "pool", Mode: "fs", ReadOnly: true}, err: "pool driver disabled (--pool-driver-name)"},
+		{req: api.Request{Size: "1Gi", Source: "pool"}, err: "pool driver disabled (--pool=false)"},
+		{req: api.Request{Size: "1Gi", Source: "pool", Shared: true}, err: "pool driver disabled (--pool=false)"},
+		{req: api.Request{Size: "1Gi", Source: "pool", Mode: "fs", ReadOnly: true}, err: "pool driver disabled (--pool=false)"},
 		// persistent local memdevs serve modes fs and block
 		{req: api.Request{Size: "1Gi", Mode: "fs", ReadOnly: true}, want: askedText{Size: "1Gi", Mode: "fs", ReadOnly: true}},
 		{req: api.Request{Size: "1Gi", Mode: "block"}, want: askedText{Size: "1Gi", Mode: "block"}},
@@ -684,6 +684,6 @@ func TestCompanionClaims(t *testing.T) {
 		{Mode: state.ModeBlock, Serial: serialPoolP, SharedDevice: true, DeviceSource: state.SourcePool},
 	} {
 		_, _, err := e.b.companionObjects(&state.Lease{ID: "x", Asked: a, Pod: pod})
-		wantErrText(t, err, "pool driver disabled (--pool-driver-name)")
+		wantErrText(t, err, "pool driver disabled (--pool=false)")
 	}
 }

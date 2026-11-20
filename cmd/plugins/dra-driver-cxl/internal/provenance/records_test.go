@@ -16,9 +16,7 @@ package provenance
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -226,31 +224,6 @@ func TestLostStore(t *testing.T) {
 	e.wantHeld("a new memdev after the window")
 	e.wantState(0xa2, state.ProvenanceLocal)
 	e.wantState(otherLocalSerial, state.ProvenanceLocal)
-}
-
-// TestFlagsForget pins --forget-pool-serial: repeatable, a comma-separated
-// list of serials in hex or decimal, and an invalid serial refused.
-func TestFlagsForget(t *testing.T) {
-	var f Flags
-	fs := flag.NewFlagSet("test", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	f.Register(fs)
-	noErr(t, fs.Parse([]string{"--forget-pool-serial", "0xC1AE2001", "--forget-pool-serial=161, 0xa2,,"}))
-	if !slices.Equal(f.Forget, []uint64{sharedPoolSerial, 0xa1, 0xa2}) {
-		t.Fatalf("serials %#x", f.Forget)
-	}
-	if got := fs.Lookup("forget-pool-serial").Value.String(); got != "0xc1ae2001,0xa1,0xa2" {
-		t.Fatalf("value %q", got)
-	}
-	var none Flags
-	fs = flag.NewFlagSet("test", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	none.Register(fs)
-	err := fs.Parse([]string{"--forget-pool-serial", "0xa1,0xzz"})
-	wantErr(t, err, `invalid value "0xa1,0xzz" for flag -forget-pool-serial: invalid serial "0xzz"`)
-	if (*serialsFlag)(nil).String() != "" {
-		t.Fatal("the value of no flag")
-	}
 }
 
 // TestForget pins New with Forget: the POOL and LOCAL records of the

@@ -260,14 +260,12 @@
         "pool": {
             "type": "object",
             "required": [
-                "driverName",
+                "enabled",
                 "prepareTimeout"
             ],
             "properties": {
-                "driverName": {
-                    "type": "string",
-                    "$comment": "a DNS subdomain, empty disables the pool driver",
-                    "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)?$"
+                "enabled": {
+                    "type": "boolean"
                 },
                 "prepareTimeout": {
                     "type": "string",
@@ -308,6 +306,27 @@
                     "additionalProperties": {
                         "type": "string"
                     }
+                },
+                "maxConnections": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "idleTimeout": {
+                    "type": "string",
+                    "$comment": "a Go duration",
+                    "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$"
+                },
+                "requestsPerMinute": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "maxPerPod": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "maxPerNode": {
+                    "type": "integer",
+                    "minimum": 1
                 }
             }
         },

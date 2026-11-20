@@ -72,16 +72,16 @@ type leaseBroker interface {
 	Stop()
 }
 
-// loadDriverConfig returns the configuration of the flags (-c or -f), and
+// loadDriverConfig returns the configuration of the file of --config, and
 // logs the container defaults and the filesystem types.
 func loadDriverConfig(cxlFlags *CXLFlags) (*DriverConfig, error) {
-	configStr, err := resolveConfigStr(cxlFlags)
+	configStr, err := readConfig(cxlFlags.Config)
 	if err != nil {
-		return nil, fmt.Errorf("resolveConfigStr: %w", err)
+		return nil, err
 	}
 	driverConfig, err := newDriverConfigFromString(configStr)
 	if err != nil {
-		return nil, fmt.Errorf("newDriverConfigFromString: %w", err)
+		return nil, fmt.Errorf("configuration: %w", err)
 	}
 	driverConfig.logDefaults()
 	driverConfig.logFsTypes()
@@ -301,7 +301,7 @@ func fenceOf(nri *containers.Plugin) func(ctx context.Context, node int) {
 // (withBroker false) there are no lends to restore.
 func startNRI(ctx context.Context, nri *containers.Plugin, config *pluginConfig, node *dra.Node, withBroker bool) *containers.Plugin {
 	f := config.Flags
-	c := containers.Connection{Name: f.NRIName, Idx: f.NRIIdx, Socket: f.NRISocket, Stub: config.NRIStub}
+	c := containers.Connection{Name: f.NRIName, Idx: f.NRIIdx, Stub: config.NRIStub}
 	if err := nri.Start(ctx, c); err != nil {
 		klog.Warningf("Failed to start NRI plugin (continuing without it): %v", err)
 		return nil
@@ -345,7 +345,7 @@ func nodeOptions(config *pluginConfig, driverConfig *DriverConfig, k *kernel.Ker
 		Kernel:          k,
 		Store:           st,
 		Dir:             config.KubeletPluginDir,
-		PoolDriver:      f.PoolDriverName,
+		PoolDriver:      f.poolDriver(),
 		LeaseFsRoot:     leases.LeaseFsRoot(config.KubeletPluginDir),
 		CDIDir:          f.CDIRoot,
 		NodeName:        f.NodeName,
@@ -355,7 +355,7 @@ func nodeOptions(config *pluginConfig, driverConfig *DriverConfig, k *kernel.Ker
 		FsTypes:         driverConfig.fsTypes(),
 		ProbeAddressing: driverConfig.verifyAddressing(),
 		Timeouts:        engine.Timeouts{Memdev: f.PoolPrepareTimeout, Settle: f.PoolPrepareTimeout},
-		Forget:          f.Provenance.Forget,
+		Forget:          f.ForgetPoolSerials,
 	}
 }
 

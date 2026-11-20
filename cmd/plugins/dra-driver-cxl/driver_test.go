@@ -53,7 +53,7 @@ func TestDriverConfigKeys(t *testing.T) {
 	if string(data) != want {
 		t.Errorf("configuration %s, expected %s", data, want)
 	}
-	const parseErr = "failed to parse driver config: error unmarshaling JSON: while decoding JSON: json: "
+	const parseErr = "parse: error unmarshaling JSON: while decoding JSON: json: "
 	const memdevErr = "not a name (mem0, cxl/mem0), major:minor (251:0) or serial in decimal or 0x hex"
 	for _, tc := range []struct {
 		config string
@@ -92,39 +92,14 @@ func TestDriverConfigKeys(t *testing.T) {
 	}
 	file := filepath.Join(t.TempDir(), "config.yaml")
 	noErr(t, os.WriteFile(file, []byte("ignoreDevices: [mem1]"), 0o600))
-	if s, err := resolveConfigStr(&CXLFlags{ConfigFile: file}); err != nil || s != "ignoreDevices: [mem1]" {
+	if s, err := readConfig(file); err != nil || s != "ignoreDevices: [mem1]" {
 		t.Errorf("the configuration file: %q, %v", s, err)
 	}
-	if s, err := resolveConfigStr(&CXLFlags{}); err != nil || s != "" {
+	if s, err := readConfig(""); err != nil || s != "" {
 		t.Errorf("no configuration: %q, %v", s, err)
 	}
-	_, err = resolveConfigStr(&CXLFlags{ConfigFile: file + ".gone"})
-	wantErr(t, err, `failed to read configuration file "`+file+`.gone": open `)
-}
-
-func TestResolveConfigStr_StringOnly(t *testing.T) {
-	flags := &CXLFlags{ConfigStr: `{"ignoreDevices": ["mem0"]}`}
-	result, err := resolveConfigStr(flags)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result != flags.ConfigStr {
-		t.Errorf("expected config string to be returned as-is, got %q", result)
-	}
-}
-
-func TestResolveConfigStr_BothError(t *testing.T) {
-	flags := &CXLFlags{
-		ConfigStr:  `{"ignoreDevices": ["mem0"]}`,
-		ConfigFile: "/some/file.json",
-	}
-	_, err := resolveConfigStr(flags)
-	if err == nil {
-		t.Fatal("expected error when both -c and -f are provided")
-	}
-	if !strings.Contains(err.Error(), "not both") {
-		t.Errorf("expected error about mutual exclusivity, got: %v", err)
-	}
+	_, err = readConfig(file + ".gone")
+	wantErr(t, err, `configuration: open `+file+`.gone: `)
 }
 
 func TestDriverConfigDefaults(t *testing.T) {
@@ -144,7 +119,7 @@ func TestDriverConfigDefaults(t *testing.T) {
 		{"defaults: {container: {steering: {maxStep: 1Gi}}}", "defaults.container.steering.maxStep needs a policy other than none"},
 		{"defaults: {container: {Fencing: none}}", `defaults: json: unknown field "container.Fencing"`},
 		{"defaults: {device: {mode: dax}}", `defaults: json: unknown field "device"`},
-		{"containerMemory: {default: none}", "failed to parse driver config"},
+		{"containerMemory: {default: none}", "parse: "},
 	} {
 		cfg, err := newDriverConfigFromString(tc.config)
 		got := ""

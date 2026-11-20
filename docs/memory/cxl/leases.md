@@ -26,8 +26,8 @@ persistent memory.
 
 ## Opting in
 
-nri-dra-driver-cxl (`--leases`, environment `LEASES`, Helm value
-`leases.enabled`, on by default) publishes the device `lease` in the
+nri-dra-driver-cxl (`--leases`, Helm value `leases.enabled`, on by
+default) publishes the device `lease` in the
 node's `cxl.nri.io` ResourceSlice: attribute `type: lease`, no capacity,
 `allowMultipleAllocations: true`, so any number of pods can claim it. The
 DeviceClass `cxl-lease` of
@@ -68,8 +68,8 @@ Leases need NRI (the plugin lends nodes through NRI and maps callers to
 containers) and the host PID namespace. The DaemonSet of the Helm chart
 has both, and so has a host process ([usage.md](usage.md#build-and-deploy)).
 Leasing local memory, also a persistent local memdev, needs no pool
-driver; with `--pool-driver-name ""` a pool lease fails with
-`pool driver disabled (--pool-driver-name)`.
+driver; with `--pool=false` a pool lease fails with
+`pool driver disabled (--pool=false)`.
 
 NodePrepare of a claim on `lease` creates
 `/var/lib/kubelet/plugins/cxl.nri.io/leases/<claim uid>/cxl.sock` (mode

@@ -585,10 +585,10 @@ nri-dra-driver-cxl registers the `cxl-pool.nri.io` driver with kubelet
 (socket `/var/lib/kubelet/plugins/cxl-pool.nri.io/dra.sock`). It never
 publishes ResourceSlices.
 
-| Flag | Environment | Default | |
-|:-----|:------------|:--------|:-|
-| `--pool-driver-name` | `POOL_DRIVER_NAME` | `cxl-pool.nri.io` | empty disables the pool driver (Helm value `pool.driverName`) |
-| `--pool-prepare-timeout` | `POOL_PREPARE_TIMEOUT` | `30s` | how long to wait for the memory device to appear (Helm value `pool.prepareTimeout`) |
+| Flag | Default | |
+|:-----|:--------|:-|
+| `--pool` | `true` | `false` disables the pool driver (Helm value `pool.enabled`) |
+| `--pool-prepare-timeout` | `30s` | how long to wait for the memory device to appear (Helm value `pool.prepareTimeout`) |
 
 NodePrepareResources, for each allocated device of the driver:
 

@@ -64,7 +64,7 @@ const (
 var (
 	errLendingUnavailable = lend.ErrLendingUnavailable
 	errNotOurPod          = errors.New("not a container of the claim's pod")
-	errPoolDisabled       = errors.New("pool driver disabled (--pool-driver-name)")
+	errPoolDisabled       = errors.New("pool driver disabled (--pool=false)")
 	errTooManyRequests    = errors.New("too many requests (--lease-requests-per-minute)")
 )
 

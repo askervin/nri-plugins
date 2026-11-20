@@ -61,8 +61,7 @@ spec:
           args:
             - --nri-idx
             - "{{ .Values.nri.plugin.index | int | printf "%02d" }}"
-            - --pool-driver-name
-            - {{ .Values.pool.driverName | quote }}
+            - --pool={{ .Values.pool.enabled }}
             - --pool-prepare-timeout
             - {{ .Values.pool.prepareTimeout | quote }}
             - --leases={{ .Values.leases.enabled }}
@@ -70,13 +69,20 @@ spec:
             - {{ .Values.leases.wait | quote }}
             - --lease-companion-image
             - {{ .Values.leases.companionImage | quote }}
+            {{- with .Values.leases }}
+            - --lease-max-connections={{ .maxConnections | default 64 }}
+            - --lease-idle-timeout={{ .idleTimeout | default "10m" }}
+            - --lease-requests-per-minute={{ .requestsPerMinute | default 32 }}
+            - --lease-max-per-pod={{ .maxPerPod | default 16 }}
+            - --lease-max-per-node={{ .maxPerNode | default 32 }}
+            {{- end }}
             # The driver copies cxl-request of the image to the host, from
             # where lease claims mount it into containers.
             - --lease-cli
             - /var/lib/kubelet/plugins/cxl.nri.io/cxl-request
             - --lease-cli-source
             - /bin/cxl-request
-            - -f
+            - --config
             - /etc/nri/dra-driver-cxl/config.yaml
             - -v
             - "{{ .Values.logLevel }}"

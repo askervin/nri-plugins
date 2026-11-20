@@ -41,8 +41,8 @@ plugin manage the device.
 Local and pool devices are told apart by serial. A memdev is a pool
 device when the pool driver prepares it for a claim, or when its serial
 is the `serial` attribute (or `<driver>/serial`) of a device in a
-ResourceSlice of the pool driver (`--pool-driver-name`, by default
-`cxl-pool.nri.io`; the slices of other DRA drivers do not count): a pool
+ResourceSlice of the pool driver `cxl-pool.nri.io` (the slices of other
+DRA drivers do not count): a pool
 controller publishes its devices before it attaches one to a node, so a
 pool device is never offered as a local one, not even between its attach
 and its Prepare, or when its pod never starts. The plugin lists these

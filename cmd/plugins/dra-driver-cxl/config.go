@@ -234,7 +234,7 @@ func parseUdevStableDuration(s string) (time.Duration, error) {
 func newDriverConfigFromString(configStr string) (*DriverConfig, error) {
 	driverConfig := &DriverConfig{}
 	if err := yaml.UnmarshalStrict([]byte(configStr), driverConfig); err != nil {
-		return nil, fmt.Errorf("failed to parse driver config: %v", err)
+		return nil, fmt.Errorf("parse: %w", err)
 	}
 	if err := driverConfig.validate(); err != nil {
 		return nil, err
@@ -242,25 +242,17 @@ func newDriverConfigFromString(configStr string) (*DriverConfig, error) {
 	return driverConfig, nil
 }
 
-// resolveConfigStr returns the configuration string from either the
-// -c flag or the -f flag. It returns an error if both are provided.
-func resolveConfigStr(flags *CXLFlags) (string, error) {
-	hasStr := flags.ConfigStr != ""
-	hasFile := flags.ConfigFile != ""
-
-	if hasStr && hasFile {
-		return "", fmt.Errorf("provide configuration as a file (-f) or as a string (-c), but not both")
+// readConfig returns the content of the configuration file, "" when
+// there is none.
+func readConfig(file string) (string, error) {
+	if file == "" {
+		return "", nil
 	}
-
-	if hasFile {
-		data, err := os.ReadFile(flags.ConfigFile)
-		if err != nil {
-			return "", fmt.Errorf("failed to read configuration file %q: %v", flags.ConfigFile, err)
-		}
-		return string(data), nil
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return "", fmt.Errorf("configuration: %w", err)
 	}
-
-	return flags.ConfigStr, nil
+	return string(data), nil
 }
 
 // publishConfig returns the settings of the publisher of the

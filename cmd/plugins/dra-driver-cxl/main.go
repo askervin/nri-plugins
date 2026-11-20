@@ -24,23 +24,21 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
 	coreclientset "k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
-	cdiparser "tags.cncf.io/container-device-interface/pkg/parser"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/leases"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
+	"github.com/containers/nri-plugins/pkg/kubernetes/client"
 	"github.com/containers/nri-plugins/pkg/version"
 )
 
@@ -52,11 +50,9 @@ const (
 	// sockets of the drivers.
 	kubeletPluginsRegistryDir = "/var/lib/kubelet/plugins_registry"
 
-	defaultCDIRoot      = cdiapi.DefaultDynamicDir
-	defaultKubeAPIQPS   = 5
-	defaultKubeAPIBurst = 10
-	defaultNRIName      = "dra-driver-cxl"
-	defaultNRIIdx       = "30"
+	defaultCDIRoot = cdiapi.DefaultDynamicDir
+	defaultNRIName = "dra-driver-cxl"
+	defaultNRIIdx  = "30"
 	// defaultPoolPrepareTimeout is how long a Prepare of the pool driver
 	// waits for the memdev to appear.
 	defaultPoolPrepareTimeout = 30 * time.Second
@@ -64,21 +60,16 @@ const (
 
 // CXLFlags are the command line flags of the driver.
 type CXLFlags struct {
-	NodeName     string
-	KubeConfig   string
-	KubeAPIQPS   float64
-	KubeAPIBurst int
-	CDIRoot      string
+	NodeName   string
+	KubeConfig string
+	CDIRoot    string
+	// Config is the configuration file, "" for none.
+	Config  string
+	NRIName string
+	NRIIdx  string
 
-	ConfigStr  string
-	ConfigFile string
-	NRIName    string
-	NRIIdx     string
-	NRISocket  string
-
-	// PoolDriverName is the DRA driver name of the pool driver,
-	// empty disables it.
-	PoolDriverName string
+	// Pool enables the pool driver.
+	Pool bool
 	// PoolPrepareTimeout is how long the pool driver waits for a
 	// memdev to appear.
 	PoolPrepareTimeout time.Duration
@@ -104,8 +95,48 @@ type CXLFlags struct {
 	// NewState starts with a new state.json when neither state.json nor
 	// state.json.prev can be read.
 	NewState bool
-	// Provenance are the flags of the provenance records of the serials.
-	Provenance provenance.Flags
+	// ForgetPoolSerials are the serials whose provenance records are
+	// removed at start.
+	ForgetPoolSerials []uint64
+}
+
+// poolDriver returns the DRA driver name of the pool driver, "" when it is
+// disabled.
+func (f *CXLFlags) poolDriver() string {
+	if !f.Pool {
+		return ""
+	}
+	return device.PoolDriverName
+}
+
+// serialsFlag is a list of serials as a flag value.
+type serialsFlag []uint64
+
+// String returns the serials, comma-separated.
+func (s *serialsFlag) String() string {
+	if s == nil {
+		return ""
+	}
+	var out []string
+	for _, v := range *s {
+		out = append(out, api.FormatSerial(v))
+	}
+	return strings.Join(out, ",")
+}
+
+// Set adds the serials of a comma-separated list.
+func (s *serialsFlag) Set(value string) error {
+	for _, text := range strings.Split(value, ",") {
+		if text = strings.TrimSpace(text); text == "" {
+			continue
+		}
+		v, err := api.ParseSerial(text)
+		if err != nil {
+			return err
+		}
+		*s = append(*s, v)
+	}
+	return nil
 }
 
 // pluginConfig is the configuration of the kubelet plugins of the driver.
@@ -124,55 +155,21 @@ type pluginConfig struct {
 	KubeletPluginsRegistryDir string
 }
 
-// flagEnvs maps flags to the environment variables of their defaults.
-var flagEnvs = []struct{ flag, env string }{
-	{"node-name", "NODE_NAME"},
-	{"kubeconfig", "KUBECONFIG"},
-	{"kube-api-qps", "KUBE_API_QPS"},
-	{"kube-api-burst", "KUBE_API_BURST"},
-	{"cdi-root", "CDI_ROOT"},
-	{"config-str", "CONFIG_STR"},
-	{"nri-name", "NRI_PLUGIN_NAME"},
-	{"nri-idx", "NRI_PLUGIN_IDX"},
-	{"nri-socket", "NRI_SOCKET"},
-	{"pool-driver-name", "POOL_DRIVER_NAME"},
-	{"pool-prepare-timeout", "POOL_PREPARE_TIMEOUT"},
-	{"leases", "LEASES"},
-	{"lease-cli", "LEASE_CLI"},
-	{"lease-cli-source", "LEASE_CLI_SOURCE"},
-	{"lease-wait", "LEASE_WAIT"},
-	{"lease-companion-image", "LEASE_COMPANION_IMAGE"},
-	{"lease-max-connections", "LEASE_MAX_CONNECTIONS"},
-	{"lease-idle-timeout", "LEASE_IDLE_TIMEOUT"},
-	{"lease-max-per-pod", "LEASE_MAX_PER_POD"},
-	{"lease-max-per-node", "LEASE_MAX_PER_NODE"},
-	{"lease-requests-per-minute", "LEASE_REQUESTS_PER_MINUTE"},
-}
-
-// flagAliases maps short flags to their long names.
-var flagAliases = map[string]string{
-	"c": "config-str",
-	"f": "config-file",
-}
-
-// parseFlags returns the flags of args registered in fs, with the defaults
-// of unset flags taken from the environment variables of flagEnvs.
+// parseFlags returns the flags of args registered in fs. The defaults of
+// --node-name and --kubeconfig are the environment variables NODE_NAME and
+// KUBECONFIG.
 func parseFlags(fs *flag.FlagSet, args []string, lookupEnv func(string) (string, bool)) (*CXLFlags, error) {
 	f := &CXLFlags{}
-	fs.StringVar(&f.NodeName, "node-name", "", "name of the node of the driver (required)")
-	fs.StringVar(&f.KubeConfig, "kubeconfig", "", "kubeconfig file, empty for the in-cluster configuration")
-	fs.Float64Var(&f.KubeAPIQPS, "kube-api-qps", defaultKubeAPIQPS, "QPS of each Kubernetes API client: the driver's and the lease broker's")
-	fs.IntVar(&f.KubeAPIBurst, "kube-api-burst", defaultKubeAPIBurst, "burst of each Kubernetes API client: the driver's and the lease broker's")
+	nodeName, _ := lookupEnv("NODE_NAME")
+	kubeConfig, _ := lookupEnv("KUBECONFIG")
+	fs.StringVar(&f.NodeName, "node-name", nodeName, "name of the node of the driver (required; default $NODE_NAME)")
+	fs.StringVar(&f.KubeConfig, "kubeconfig", kubeConfig, "kubeconfig file, empty for the in-cluster configuration (default $KUBECONFIG)")
 	fs.StringVar(&f.CDIRoot, "cdi-root", defaultCDIRoot, "directory of the generated CDI specs")
-	fs.StringVar(&f.ConfigStr, "config-str", "", "driver configuration as a JSON or YAML string")
-	fs.StringVar(&f.ConfigStr, "c", "", "shorthand for --config-str")
-	fs.StringVar(&f.ConfigFile, "config-file", "", "path to a JSON or YAML configuration file (mutually exclusive with -c)")
-	fs.StringVar(&f.ConfigFile, "f", "", "shorthand for --config-file")
+	fs.StringVar(&f.Config, "config", "", "configuration file, JSON or YAML")
 	fs.StringVar(&f.NRIName, "nri-name", defaultNRIName, "NRI plugin name to register")
 	fs.StringVar(&f.NRIIdx, "nri-idx", defaultNRIIdx, "NRI plugin index (place in the plugin chain, higher is later)")
-	fs.StringVar(&f.NRISocket, "nri-socket", "", "NRI socket path (empty for default)")
-	fs.StringVar(&f.PoolDriverName, "pool-driver-name", device.PoolDriverName, "DRA driver name of the CXL memory pool driver (empty disables it)")
-	fs.DurationVar(&f.PoolPrepareTimeout, "pool-prepare-timeout", defaultPoolPrepareTimeout, "how long the pool driver waits for a hotplugged CXL memory device to appear")
+	fs.BoolVar(&f.Pool, "pool", true, "run the pool driver "+device.PoolDriverName)
+	fs.DurationVar(&f.PoolPrepareTimeout, "pool-prepare-timeout", defaultPoolPrepareTimeout, "how long the pool driver waits for the memdev of a pool device to appear")
 	fs.BoolVar(&f.Leases, "leases", true, "lend memory to running containers: publish the lease device, serve lease sockets, create companions (needs NRI; pool memory needs the pool driver)")
 	fs.StringVar(&f.LeaseCLI, "lease-cli", leases.DefaultCLI, "host path of the static cxl-request CLI, mounted into containers of lease claims")
 	fs.StringVar(&f.LeaseCLISource, "lease-cli-source", "", "cxl-request CLI that is copied to --lease-cli at start (empty for none)")
@@ -184,10 +181,8 @@ func parseFlags(fs *flag.FlagSet, args []string, lookupEnv func(string) (string,
 	fs.IntVar(&f.LeaseLimits.LeasesPerNode, "lease-max-per-node", leases.DefaultMaxLeasesPerNode, "leases of the node")
 	fs.IntVar(&f.LeaseLimits.RequestsPerMinute, "lease-requests-per-minute", leases.DefaultRequestsPerMinute, "lease requests of a lease claim per minute, also their burst")
 	fs.BoolVar(&f.NewState, "new-state", false, "start with a new state.json when neither state.json nor state.json.prev can be read")
-	f.Provenance.Register(fs)
-	for _, fe := range flagEnvs {
-		fs.Lookup(fe.flag).Usage += " (env " + fe.env + ")"
-	}
+	fs.Var((*serialsFlag)(&f.ForgetPoolSerials), "forget-pool-serial",
+		"serial (0x<hex> or decimal) whose remembered provenance is removed at start, so that a memdev of it is new again; repeatable, or a comma-separated list")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -195,26 +190,6 @@ func parseFlags(fs *flag.FlagSet, args []string, lookupEnv func(string) (string,
 	if fs.NArg() > 0 {
 		return nil, fmt.Errorf("arguments not supported: %v", fs.Args())
 	}
-
-	set := map[string]bool{}
-	fs.Visit(func(fl *flag.Flag) {
-		name := fl.Name
-		if long, ok := flagAliases[name]; ok {
-			name = long
-		}
-		set[name] = true
-	})
-	for _, fe := range flagEnvs {
-		if set[fe.flag] {
-			continue
-		}
-		if value, ok := lookupEnv(fe.env); ok {
-			if err := fs.Set(fe.flag, value); err != nil {
-				return nil, fmt.Errorf("invalid %s=%q: %w", fe.env, value, err)
-			}
-		}
-	}
-
 	if f.NodeName == "" {
 		return nil, errors.New("--node-name or NODE_NAME is required")
 	}
@@ -224,40 +199,7 @@ func parseFlags(fs *flag.FlagSet, args []string, lookupEnv func(string) (string,
 	if f.LeaseWait < 0 || f.LeaseWait > api.MaxWait {
 		return nil, fmt.Errorf("--lease-wait %s: not between 0s and %s", f.LeaseWait, api.MaxWait)
 	}
-	// The pool driver name is the vendor of its CDI kind.
-	if f.PoolDriverName != "" {
-		if err := cdiparser.ValidateVendorName(f.PoolDriverName); err != nil {
-			return nil, fmt.Errorf("--pool-driver-name %q: %w", f.PoolDriverName, err)
-		}
-	}
 	return f, nil
-}
-
-// newKubeClient returns a Kubernetes client of the kubeconfig file, or of
-// the in-cluster configuration if kubeconfig is empty.
-func newKubeClient(kubeconfig string, qps float64, burst int) (coreclientset.Interface, error) {
-	var (
-		cfg *rest.Config
-		err error
-	)
-	if kubeconfig == "" {
-		cfg, err = rest.InClusterConfig()
-		if err != nil {
-			return nil, fmt.Errorf("create in-cluster client configuration: %w", err)
-		}
-	} else {
-		cfg, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
-		if err != nil {
-			return nil, fmt.Errorf("create out-of-cluster client configuration: %w", err)
-		}
-	}
-	cfg.QPS = float32(qps)
-	cfg.Burst = burst
-	client, err := coreclientset.NewForConfig(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("create core client: %w", err)
-	}
-	return client, nil
 }
 
 // ensureDir creates the directory dir if it does not exist, and returns an
@@ -476,19 +418,19 @@ func run(ctx context.Context, flags *CXLFlags) error {
 	klog.Infof("Starting %s version %s (build %s, %s, %s/%s), drivers %s and %q",
 		filepath.Base(os.Args[0]), version.Version, version.Build,
 		runtime.Version(), runtime.GOOS, runtime.GOARCH,
-		device.DriverName, flags.PoolDriverName)
+		device.DriverName, flags.poolDriver())
 
-	client, err := newKubeClient(flags.KubeConfig, flags.KubeAPIQPS, flags.KubeAPIBurst)
+	kubeClient, err := client.New(client.WithKubeOrInClusterConfig(flags.KubeConfig))
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
 	}
-	leaseClient, err := newKubeClient(flags.KubeConfig, flags.KubeAPIQPS, flags.KubeAPIBurst)
+	leaseClient, err := client.New(client.WithKubeOrInClusterConfig(flags.KubeConfig))
 	if err != nil {
 		return fmt.Errorf("create lease broker client: %w", err)
 	}
 	config := &pluginConfig{
 		Flags:                     flags,
-		Client:                    client,
+		Client:                    kubeClient,
 		LeaseClient:               leaseClient,
 		Kernel:                    newKernel(),
 		KubeletPluginDir:          filepath.Join(kubeletPluginsDir, device.DriverName),

@@ -68,7 +68,7 @@ func TestCreateContainerDoesNotWaitForTheBroker(t *testing.T) {
 		return nil
 	}))
 
-	flags := &CXLFlags{PoolDriverName: device.PoolDriverName, PoolPrepareTimeout: time.Second, CDIRoot: filepath.Join(root, "cdi"),
+	flags := &CXLFlags{Pool: true, PoolPrepareTimeout: time.Second, CDIRoot: filepath.Join(root, "cdi"),
 		NodeName: testNode, Leases: true}
 	cfg := &pluginConfig{Flags: flags, KubeletPluginDir: local}
 	nri, err := containers.New(containers.Options{Defaults: config.Container{Fencing: config.FencingNone}, Store: st, Leases: true,

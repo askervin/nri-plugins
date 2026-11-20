@@ -4,8 +4,9 @@
 # steering) is a MemoryConfig (apiVersion cxl.nri.io/v1alpha1) of the
 # claim. The Helm value deviceClassConfig gives a class a MemoryConfig as a
 # preset, which the claims of the class change field by field; the
-# include line at the end of each class, a YAML comment, renders it. This
-# file is plain YAML too: applied with kubectl, the classes have no config.
+# include line at the end of each class, a YAML comment, renders it; the
+# pool classes are rendered with the Helm value pool.enabled. This file is
+# plain YAML too: applied with kubectl, the classes have no config.
 # See docs/memory/cxl/usage.md.
 #
 # cxl-local: a slice of a CXL memory device of volatile memory attached to
@@ -49,6 +50,7 @@ spec:
       expression: 'device.driver == "cxl.nri.io" && device.attributes["cxl.nri.io"].type == "memdev" && device.attributes["cxl.nri.io"].persistent == true'
   # {{- include "dra-driver-cxl.classConfig" (dict "root" $ "class" "cxl-local-persistent" "driver" "cxl.nri.io") }}
 ---
+# {{- if .Values.pool.enabled }}
 # cxl-pool: a whole exclusive device of volatile memory of a memory pool,
 # as a new NUMA node (default) or as a devdax device (device.mode: dax).
 apiVersion: resource.k8s.io/v1
@@ -88,6 +90,7 @@ spec:
       expression: 'device.driver == "cxl-pool.nri.io" && device.attributes["cxl-pool.nri.io"].type == "memdev" && device.attributes["cxl-pool.nri.io"].persistent == true'
   # {{- include "dra-driver-cxl.classConfig" (dict "root" $ "class" "cxl-pool-persistent" "driver" "cxl-pool.nri.io") }}
 ---
+# {{- end }}
 # cxl-region: capacity of a CXL NUMA node of a region that existed before
 # the driver: CXL memory for steering (container.steering).
 apiVersion: resource.k8s.io/v1

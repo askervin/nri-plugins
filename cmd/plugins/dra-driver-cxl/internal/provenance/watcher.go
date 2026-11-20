@@ -16,11 +16,9 @@ package provenance
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"maps"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -465,46 +463,4 @@ func (w *Watcher) claimEvidence(ctx context.Context) (*claimEvidence, error) {
 func attachFailed(c *resourcev1.ResourceClaim, r *resourcev1.DeviceRequestAllocationResult) bool {
 	st := device.StatusOf(c, r)
 	return st != nil && meta.IsStatusConditionPresentAndEqual(st.Conditions, device.AttachFailedCondition(r.Driver), metav1.ConditionTrue)
-}
-
-// Flags are the command line flags of the provenance records.
-type Flags struct {
-	// Forget are the serials of --forget-pool-serial.
-	Forget []uint64
-}
-
-// Register registers the flags in fs.
-func (f *Flags) Register(fs *flag.FlagSet) {
-	fs.Var((*serialsFlag)(&f.Forget), "forget-pool-serial",
-		"serial (0x<hex> or decimal) whose remembered provenance is removed at start, so that a memdev of it is new again; repeatable, or a comma-separated list")
-}
-
-// serialsFlag is a list of serials as a flag value.
-type serialsFlag []uint64
-
-// String returns the serials, comma-separated.
-func (s *serialsFlag) String() string {
-	if s == nil {
-		return ""
-	}
-	var out []string
-	for _, v := range *s {
-		out = append(out, api.FormatSerial(v))
-	}
-	return strings.Join(out, ",")
-}
-
-// Set adds the serials of a comma-separated list.
-func (s *serialsFlag) Set(value string) error {
-	for _, text := range strings.Split(value, ",") {
-		if text = strings.TrimSpace(text); text == "" {
-			continue
-		}
-		v, err := api.ParseSerial(text)
-		if err != nil {
-			return err
-		}
-		*s = append(*s, v)
-	}
-	return nil
 }
