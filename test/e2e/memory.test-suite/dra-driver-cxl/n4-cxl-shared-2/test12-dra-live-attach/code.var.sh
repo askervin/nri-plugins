@@ -577,6 +577,7 @@ nothing-left pod-deleted no-borrower
 vm-command "test ! -e $DRA_LEASE_DIR/$LEASE_CLAIM_UID && test ! -e $DRA_LEASE_FS_DIR/$LEASE_CLAIM_UID" ||
     error "a directory of claim $LEASE_CLAIM is left in $DRA_LEASE_DIR or $DRA_LEASE_FS_DIR"
 echo "leases of the test: ${DRA_LEASE_IDS[*]}"
+dra-delete "$VM2" resourceclaimtemplate cxl-lease --wait=true --timeout=60s
 
 dra-assert-clean "$VM2" "$VM1"
 

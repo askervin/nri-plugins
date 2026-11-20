@@ -346,6 +346,12 @@ for r in "${READERS[@]}"; do
         '[ -z "$(companions-of "$r")" ]' || error "$r still has companions: $(companions-of "$r")"
 done
 pool-device-free-wait shared0 "$VM2" "$VM1"
+# The writer and the readers, done, and the template of their lease
+# claims go too.
+for p in writer "${READERS[@]}"; do
+    dra-delete-pod "$VM2" "$p"
+done
+dra-delete "$VM2" resourceclaimtemplate cxl-lease --wait=true --timeout=60s
 for vm in "$VM2" "$VM1"; do
     pool-vm-monitor "$vm" "info qtree -b" | grep -q 'dev: cxl-type3' &&
         error "qemu of $(vmdir-label "$vm") still has a CXL memory device"

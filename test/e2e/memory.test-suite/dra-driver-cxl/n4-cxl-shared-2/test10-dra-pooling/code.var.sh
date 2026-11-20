@@ -40,9 +40,9 @@
 # pod, not steered, the memory going back to the pool; a claim that opts in
 # to steering and asks the pool for a slot near NUMA node 1, its device
 # under the other host bridge, a NUMA node of its own, the memory of the
-# workload there; a claim with an invalid pool section that the controller
-# refuses; pooled0 as a dax device, written by the pod and read on the
-# host; and at the end the trace summary of what every component did, in
+# workload there; pooled0 as a dax device, written by the pod and read on
+# the host; a claim with an invalid pool section that the controller
+# refuses; and at the end the trace summary of what every component did, in
 # order.
 #
 # Run test00-up of n4-cxl-shared-1, -0 and -2 first (see there for the
@@ -331,7 +331,30 @@ dra-delete "$VM2" pod pooled-steered --grace-period=2 --wait=true --timeout=60s
 dra-delete "$VM2" resourceclaim pooled-steered --wait=true --timeout=60s
 pool-device-free-wait pooled1 "$VM2"
 
-echo "### G: an invalid pool section: the controller refuses the claim and attaches nothing"
+echo "### G: the exclusive device pooled0 as a dax device"
+# Mode dax: the node plugin creates a devdax region on the device, never
+# onlined, and gives the container its device node, read-write. 512Mi:
+# only pooled0 is that large.
+dra-apply "$VM2" <<< "$(dra-claim-yaml claim pooled-dax cxl-pool 512Mi dax)
+---
+$(dra-script-pod-yaml dax-claimer "$VM2" pooled-dax "env | grep ^CXL_${POOLED0_HEX}_ | sort
+python3 /tools/dax-rw.py write \"\$CXL_${POOLED0_HEX}_DAX\" 0 \"$TEXT_DAX\" || exit 1
+echo \"read: \$(python3 /tools/dax-rw.py read \"\$CXL_${POOLED0_HEX}_DAX\" 0)\"")"
+dra-pod-wait "$VM2" dax-claimer Running 120
+dra-wait-log "$VM2" dax-claimer "read: $TEXT_DAX" 60
+dra-kubectl "$VM2" "logs -n $DRA_NS dax-claimer"
+dra-env-assert dax-claimer "$COMMAND_OUTPUT" "$POOLED0_HEX" \
+    SERIAL="$POOLED0_SERIAL" SHARED=0 MODE=dax SIZE="$POOLED0_SIZE" "DAX=/dev/dax*" READONLY=0
+pool-cxl-dump "$VM2" pooled0-dax
+cxl-assert "by_serial($POOLED0_SERIAL) is not None and len(regions) == 1 and online_size(regions[0]) == 0"
+pool-device-files pooled0
+found=$(pool-file-string "$POOL_DEVICE_DATA" 0)
+[ "$found" == "$TEXT_DAX" ] || error "host: $POOL_DEVICE_DATA has '$found' at 0, expected '$TEXT_DAX'"
+dra-delete-pod "$VM2" dax-claimer
+dra-delete "$VM2" resourceclaim pooled-dax --wait=true --timeout=60s
+pool-device-free-wait pooled0 "$VM2"
+
+echo "### H: an invalid pool section: the controller refuses the claim and attaches nothing"
 # A misspelled field in the object of the controller: the controller
 # refuses the allocation with the condition AttachFailed, reason
 # InvalidConfig, without attaching the device. The scheduler deallocates
@@ -353,29 +376,6 @@ dra-json "$VM2" pod -n "$DRA_NS" bad-pool
 dra-assert "$COMMAND_OUTPUT" "j['status']['phase'] == 'Pending' and not j['spec'].get('nodeName')"
 dra-delete "$VM2" pod bad-pool --grace-period=2 --wait=true --timeout=60s
 dra-delete "$VM2" resourceclaim bad-pool --wait=true --timeout=60s
-pool-device-free-wait pooled0 "$VM2"
-
-echo "### H: the exclusive device pooled0 as a dax device"
-# Mode dax: the node plugin creates a devdax region on the device, never
-# onlined, and gives the container its device node, read-write. 512Mi:
-# only pooled0 is that large.
-dra-apply "$VM2" <<< "$(dra-claim-yaml claim pooled-dax cxl-pool 512Mi dax)
----
-$(dra-script-pod-yaml dax-claimer "$VM2" pooled-dax "env | grep ^CXL_${POOLED0_HEX}_ | sort
-python3 /tools/dax-rw.py write \"\$CXL_${POOLED0_HEX}_DAX\" 0 \"$TEXT_DAX\" || exit 1
-echo \"read: \$(python3 /tools/dax-rw.py read \"\$CXL_${POOLED0_HEX}_DAX\" 0)\"")"
-dra-pod-wait "$VM2" dax-claimer Running 120
-dra-wait-log "$VM2" dax-claimer "read: $TEXT_DAX" 60
-dra-kubectl "$VM2" "logs -n $DRA_NS dax-claimer"
-dra-env-assert dax-claimer "$COMMAND_OUTPUT" "$POOLED0_HEX" \
-    SERIAL="$POOLED0_SERIAL" SHARED=0 MODE=dax SIZE="$POOLED0_SIZE" "DAX=/dev/dax*" READONLY=0
-pool-cxl-dump "$VM2" pooled0-dax
-cxl-assert "by_serial($POOLED0_SERIAL) is not None and len(regions) == 1 and online_size(regions[0]) == 0"
-pool-device-files pooled0
-found=$(pool-file-string "$POOL_DEVICE_DATA" 0)
-[ "$found" == "$TEXT_DAX" ] || error "host: $POOL_DEVICE_DATA has '$found' at 0, expected '$TEXT_DAX'"
-dra-delete-pod "$VM2" dax-claimer
-dra-delete "$VM2" resourceclaim pooled-dax --wait=true --timeout=60s
 pool-device-free-wait pooled0 "$VM2"
 
 dra-assert-clean "$VM2" "$VM1"

@@ -221,7 +221,8 @@ pool-assert "$COMMAND_OUTPUT" 'all(d["state"] == "free" for d in j)'
 pool-snapshot end
 deleted=$(grep -c 'event DEVICE_DELETED' "$POOL_SERVER_LOG")
 echo "DEVICE_DELETED events in $POOL_SERVER_LOG: $deleted"
-[ "$deleted" -ge 4 ] || error "expected 4 DEVICE_DELETED events from qemu, see $POOL_SERVER_LOG"
+# One per detach: two in F, one in G.
+[ "$deleted" -ge 3 ] || error "expected 3 DEVICE_DELETED events from qemu, see $POOL_SERVER_LOG"
 grep -E 'attachment .*: (attached|detached)' "$POOL_SERVER_LOG"
 pool-server-stop
 trap - EXIT
