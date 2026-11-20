@@ -443,6 +443,34 @@ fs-controller-log-wait() {
     vmdir-command-q "$OUTPUT_DIR" "$filter" | tail -n 3
 }
 
+fs-lease-bind-assert() {
+    # Usage: fs-lease-bind-assert VMDIR TARGET NODE-MOUNT TYPE ro|rw
+    #
+    # Fail the test unless the VM of VMDIR has exactly one mount at TARGET
+    # under $DRA_LEASE_FS_DIR, the bind of a lease: a TYPE filesystem with
+    # the source and the superblock options of the node mount NODE-MOUNT,
+    # and the mount options ro or rw, nosuid and nodev.
+    local vm="$1" target="$2" node_mount="$3" type="$4" rw="$5" nodes label
+    label=$(vmdir-label "$vm")
+    dra-fs-mounts "$vm" "$(dirname "$node_mount")" || error "cannot read the mounts of $label"
+    nodes="$COMMAND_OUTPUT"
+    dra-lease-fs-mounts "$vm" || error "cannot read the lease mounts of $label"
+    python3 -c '
+import json, sys
+nodes, binds, target, node_mount, fstype, rw = json.loads(sys.argv[1]), json.loads(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
+n = [m for m in nodes if m["target"] == node_mount]
+b = [m for m in binds if m["target"] == target]
+if len(n) != 1 or len(b) != 1:
+    sys.exit("node mount %s: %s, binds at %s: %s" % (node_mount, n, target, b))
+n, b = n[0], b[0]
+vfs = b["vfs"].split(",")
+if b["fstype"] != fstype or b["source"] != n["source"] or b["options"] != n["options"] or vfs[0] != rw or not {"nosuid", "nodev"} <= set(vfs):
+    sys.exit("%s is %s on %s (%s; %s), not a %s,nosuid,nodev %s bind of %s on %s (%s)" % (target, b["fstype"], b["source"], b["options"], b["vfs"], rw, fstype, node_mount, n["source"], n["options"]))
+print("lease bind %s: %s on %s (%s), %s, the node mount %s" % (target, fstype, b["source"], b["options"], b["vfs"], node_mount))' \
+        "$nodes" "$COMMAND_OUTPUT" "$target" "$node_mount" "$type" "$rw" ||
+        error "$label: no $rw $type bind of $node_mount at $target"
+}
+
 fs-device-free() {
     # Usage: fs-device-free DEVICE VMDIR...
     #

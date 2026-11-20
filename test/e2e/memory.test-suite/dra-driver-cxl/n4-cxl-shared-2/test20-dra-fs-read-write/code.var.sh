@@ -215,26 +215,9 @@ lease-bind-assert() {
     # Usage: lease-bind-assert VMDIR CLAIM-UID NAME ro|rw
     #
     # Fail the test unless the node of the VM of VMDIR has exactly one mount
-    # at $DRA_LEASE_FS_DIR/CLAIM-UID/NAME: the ext4 of the direct node mount
-    # (the same source), with the mount options ro or rw, nosuid and nodev.
-    local vm="$1" target="$DRA_LEASE_FS_DIR/$2/$3" rw="$4" nodes label
-    label=$(vmdir-label "$vm")
-    dra-fs-mounts "$vm" || error "cannot read the mounts of $label"
-    nodes="$COMMAND_OUTPUT"
-    dra-lease-fs-mounts "$vm" || error "cannot read the lease mounts of $label"
-    python3 -c '
-import json, sys
-nodes, binds, target, node_mount, rw = json.loads(sys.argv[1]), json.loads(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
-n = [m for m in nodes if m["target"] == node_mount]
-b = [m for m in binds if m["target"] == target]
-if len(n) != 1 or len(b) != 1:
-    sys.exit("node mount %s: %s, binds at %s: %s" % (node_mount, n, target, b))
-n, b = n[0], b[0]
-vfs = b["vfs"].split(",")
-if b["fstype"] != "ext4" or b["source"] != n["source"] or vfs[0] != rw or not {"nosuid", "nodev"} <= set(vfs):
-    sys.exit("%s is %s on %s (%s), not a %s,nosuid,nodev ext4 bind of %s on %s" % (target, b["fstype"], b["source"], b["vfs"], rw, node_mount, n["source"]))
-print("lease bind %s: ext4 on %s, %s" % (target, b["source"], b["vfs"]))' "$nodes" "$COMMAND_OUTPUT" "$target" "$MNT_DIRECT" "$rw" ||
-        error "$label: no $rw bind of $MNT_DIRECT at $target"
+    # at $DRA_LEASE_FS_DIR/CLAIM-UID/NAME: a ro or rw bind of the ext4 of
+    # the direct node mount (fs-lease-bind-assert).
+    fs-lease-bind-assert "$1" "$DRA_LEASE_FS_DIR/$2/$3" "$MNT_DIRECT" ext4 "$4"
 }
 
 lease-pod-start() {

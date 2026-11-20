@@ -260,21 +260,7 @@ dra-assert "$COMMAND_OUTPUT" "[(s['deviceClassName'], s.get('capacity')) for s i
 dra-assert "$COMMAND_OUTPUT" "[(config_section(c, 'device').get('mode'), config_section(c, 'device').get('readOnly')) for c in configs()] == [('fs', True)]"
 # The bind of the lease: the ext4 of the node mount of cxl.nri.io,
 # read-only, nosuid, nodev.
-dra-fs-mounts "$VM2" "$DRA_LOCAL_MOUNT_DIR" || error "cannot read the mounts of VM2"
-NODES="$COMMAND_OUTPUT"
-dra-lease-fs-mounts "$VM2" || error "cannot read the lease mounts of VM2"
-python3 -c '
-import json, sys
-nodes, binds, target, node_mount = json.loads(sys.argv[1]), json.loads(sys.argv[2]), sys.argv[3], sys.argv[4]
-n = [m for m in nodes if m["target"] == node_mount]
-b = [m for m in binds if m["target"] == target]
-if len(n) != 1 or len(b) != 1:
-    sys.exit("node mount %s: %s, binds at %s: %s" % (node_mount, n, target, b))
-vfs = b[0]["vfs"].split(",")
-if b[0]["fstype"] != "ext4" or b[0]["source"] != n[0]["source"] or vfs[0] != "ro" or not {"nosuid", "nodev"} <= set(vfs):
-    sys.exit("%s is %s on %s (%s), not a read-only nosuid nodev ext4 bind of %s" % (target, b[0]["fstype"], b[0]["source"], b[0]["vfs"], node_mount))
-print("lease bind %s: ext4 on %s, %s" % (target, b[0]["source"], b[0]["vfs"]))' "$NODES" "$COMMAND_OUTPUT" "$DRA_LEASE_FS_DIR/$LEASE_CLAIM_UID/data" "$MNT_DIRECT" ||
-    error "VM2: no read-only bind of $MNT_DIRECT for the lease $LEASE"
+fs-lease-bind-assert "$VM2" "$DRA_LEASE_FS_DIR/$LEASE_CLAIM_UID/data" "$MNT_DIRECT" ext4 ro
 # The one superblock of the node, still read-write for fs-rw.
 fs-node-mounts-assert "$VM2" "$DRA_LOCAL_MOUNT_DIR" "$LP_MOUNT_ID" ext4 rw "" direct
 fs-pmem-ro-assert "$VM2" "$PMEM" 0

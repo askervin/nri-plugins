@@ -375,18 +375,13 @@ claim-check() {
     # share of the device on the node of READER, persistent and not
     # exclusive, and its CDI device claim-<uid>-0 of the pool driver is a
     # read-only bind of the node mount of its access at its path, without
-    # device nodes.
-    local r="$1" vm="${READER_VM[$1]}" access="${READER_ACCESS[$1]}" path uid cdi
+    # device nodes (fs-cdi-assert).
+    local r="$1" vm="${READER_VM[$1]}" access="${READER_ACCESS[$1]}" path
     path=$(reader-path "$r")
     dra-json "$VM2" resourceclaim -n "$DRA_NS" "$r"
     dra-assert "$COMMAND_OUTPUT" "allocated_node() == '$(basename "$vm")' and quantity(j['status']['allocation']['devices']['results'][0]['consumedCapacity']['shares']) == 1"
     dra-assert "$COMMAND_OUTPUT" "device_data('$LLM_DEVICE').get('persistent') == True and not device_data('$LLM_DEVICE').get('exclusive')"
-    uid=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
-    cdi=$(dra-cdi-device "$vm" "claim-$uid-0")
-    echo "CDI device claim-$uid-0: $cdi"
-    [ -n "$cdi" ] || error "no CDI device claim-$uid-0 for $r"
-    dra-assert "$cdi" "j['kind'] == '$DRA_POOL_DRIVER/device' and j['deviceNodes'] == []"
-    dra-assert "$cdi" "any(m.get('hostPath') == '$DRA_POOL_MOUNT_DIR/$LLM_MOUNT_ID-$access' and m.get('containerPath') == '$path' and m.get('type') == 'bind' and 'ro' in (m.get('options') or []) for m in j['mounts'])"
+    fs-cdi-assert "$vm" "$r" "$DRA_POOL_DRIVER/device" "$DRA_POOL_MOUNT_DIR/$LLM_MOUNT_ID-$access" "$path" "['bind', 'ro', 'nosuid', 'nodev']"
 }
 
 lease-check() {
@@ -473,31 +468,11 @@ lease-bind-assert() {
     #
     # Fail the test unless the node of the lease reader READER has exactly
     # one mount at $DRA_LEASE_FS_DIR/<lease claim uid>/<name of its path>:
-    # the erofs of the node mount of its access (the same source and
-    # superblock options), with the mount options ro, nosuid and nodev.
-    local r="$1" vm="${READER_VM[$1]}" label nodes target
-    label=$(vmdir-label "$vm")
-    target="$DRA_LEASE_FS_DIR/${READER_CLAIM_UID[$r]}/${READER_PATH[$r]##*/}"
-    dra-fs-mounts "$vm" || error "cannot read the mounts of $label"
-    nodes="$COMMAND_OUTPUT"
-    dra-lease-fs-mounts "$vm" || error "cannot read the lease mounts of $label"
-    python3 -c '
-import json, sys
-nodes, binds, target, node_mount, label = json.loads(sys.argv[1]), json.loads(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
-n = [m for m in nodes if m["target"] == node_mount]
-b = [m for m in binds if m["target"] == target]
-if len(n) != 1:
-    sys.exit("%s: no node mount %s: %s" % (label, node_mount, nodes))
-if len(b) != 1:
-    sys.exit("%s: not one mount at %s: %s" % (label, target, binds))
-n, b = n[0], b[0]
-if b["fstype"] != "erofs" or b["source"] != n["source"] or b["options"] != n["options"]:
-    sys.exit("%s: %s is %s on %s (%s), not the erofs of %s on %s (%s)" % (label, target, b["fstype"], b["source"], b["options"], node_mount, n["source"], n["options"]))
-if not {"ro", "nosuid", "nodev"} <= set(b["vfs"].split(",")):
-    sys.exit("%s: %s has the mount options %s, not ro, nosuid and nodev" % (label, target, b["vfs"]))
-print("%s: lease bind %s: erofs on %s (%s), %s, the node mount %s" % (label, target, b["source"], b["options"], b["vfs"], node_mount))' \
-        "$nodes" "$COMMAND_OUTPUT" "$target" "$DRA_POOL_MOUNT_DIR/$LLM_MOUNT_ID-${READER_ACCESS[$r]}" "$label" ||
-        error "$r: no read-only bind of the node mount of its lease on $label"
+    # a read-only bind of the erofs of the node mount of its access
+    # (fs-lease-bind-assert).
+    local r="$1"
+    fs-lease-bind-assert "${READER_VM[$r]}" "$DRA_LEASE_FS_DIR/${READER_CLAIM_UID[$r]}/${READER_PATH[$r]##*/}" \
+        "$DRA_POOL_MOUNT_DIR/$LLM_MOUNT_ID-${READER_ACCESS[$r]}" erofs ro
 }
 
 cached-serve-check() {
@@ -538,40 +513,9 @@ mounts-assert() {
     # Usage: mounts-assert VMDIR ACCESS...
     #
     # Fail the test unless the node mounts of the VM of VMDIR under
-    # $DRA_POOL_MOUNT_DIR are exactly one erofs per ACCESS of the device:
-    # direct on its pmem block device with dax=always, cached on a
-    # read-only direct-I/O loop device over that pmem block device without
-    # dax=always.
-    local vm="$1" label
-    shift
-    label=$(vmdir-label "$vm")
-    dra-fs-mounts "$vm" || error "cannot read the mounts of $label"
-    python3 -c '
-import json, re, sys
-mounts, base, mid, accesses = json.loads(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[5:]
-want = sorted("%s/%s-%s" % (base, mid, a) for a in accesses)
-got = sorted(m["target"] for m in mounts)
-if got != want:
-    sys.exit("mounts %s, expected %s" % (got, want))
-by = {m["target"].rsplit("-", 1)[1]: m for m in mounts}
-pmem = set()
-for a, m in by.items():
-    if m["fstype"] != "erofs":
-        sys.exit("%s is %s, not erofs" % (m["target"], m["fstype"]))
-    opts = m["options"].split(",")
-    if a == "direct":
-        if not re.match(r"^/dev/pmem[0-9]+$", m["source"]) or "dax=always" not in opts:
-            sys.exit("direct: %s on %s with %s, expected a pmem block device and dax=always" % (m["target"], m["source"], m["options"]))
-        pmem.add(m["source"])
-    else:
-        if not re.match(r"^/dev/loop[0-9]+$", m["source"]) or not re.match(r"^/dev/pmem[0-9]+$", m["backing"]) or m["dio"] != "1" or m["ro"] != "1" or "dax=always" in opts:
-            sys.exit("cached: %s on %s (backing %r, dio %r, ro %r) with %s, expected a read-only direct-I/O loop device over a pmem block device, no dax=always" % (m["target"], m["source"], m["backing"], m["dio"], m["ro"], m["options"]))
-        pmem.add(m["backing"])
-if len(pmem) > 1:
-    sys.exit("the mounts are on different pmem devices: %s" % sorted(pmem))
-print(sys.argv[4] + ": mounts: " + ", ".join("%s on %s%s" % (m["target"], m["source"], " over " + m["backing"] if m["backing"] else "") for m in mounts))' \
-        "$COMMAND_OUTPUT" "$DRA_POOL_MOUNT_DIR" "$LLM_MOUNT_ID" "$label" "$@" ||
-        error "$label: the node mounts of $LLM_DEVICE are not one erofs per access ($*)"
+    # $DRA_POOL_MOUNT_DIR are exactly one read-only erofs of llm0 per
+    # ACCESS (fs-node-mounts-assert).
+    fs-node-mounts-assert "$1" "$DRA_POOL_MOUNT_DIR" "$LLM_MOUNT_ID" erofs ro "" "${@:2}"
 }
 
 readers-stop() {
