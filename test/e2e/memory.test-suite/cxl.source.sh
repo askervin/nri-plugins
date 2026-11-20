@@ -8,6 +8,8 @@
 
 CXL_DUMP_FILE=""   # cxl-dump output of the last cxl-dump/cxl-wait
 CXL_BLOCK_SIZE=""  # memory block size in bytes in the VM
+# The evaluator of cxl-py, and of dra-py and pool-py of dra-driver-cxl.
+E2E_JSON="$nri_resource_policy_src/test/e2e/memory.test-suite/e2e_json.py"
 
 cxl-tools-install() { # script API
     # Usage: cxl-tools-install
@@ -107,7 +109,7 @@ cxl-assert() { # script API
     #
     # The dump is available as d, and its lists as memdevs, regions,
     # daxdevs, blocks and nodes, the endpoint ports of the memdevs as
-    # endpoints. See cxl-py for the helper functions.
+    # endpoints. See kind cxl of e2e_json.py for the helper functions.
     local expression="$1"
     cxl-py assert "$expression" ||
         error "cxl-dump assertion failed: $expression (see $CXL_DUMP_FILE)"
@@ -128,92 +130,7 @@ cxl-py() {
     # Evaluate EXPRESSION on the last cxl-dump output. In the assert mode exit
     # with a non-zero status unless the value is true, in the eval mode print
     # the value. The keys that the dump leaves out when their value is empty
-    # or zero have that value here.
+    # or zero have that value here (kind cxl of e2e_json.py).
     [ -f "$CXL_DUMP_FILE" ] || error "cxl-py: no cxl-dump output, call cxl-dump first"
-    python3 -c '
-import json, sys
-
-path, mode, expression = sys.argv[1], sys.argv[2], sys.argv[3]
-
-d = json.loads(open(path).read())
-memdevs = d.get("memdevs") or []
-regions = d.get("regions") or []
-daxdevs = d.get("daxDevices") or []
-blocks = d.get("blocks") or []
-nodes = d.get("numaNodes") or []
-block_size = d.get("blockSize") or 0
-for m in memdevs:
-    for k, v in (("ramSize", 0), ("pmemSize", 0), ("major", 0), ("minor", 0), ("endpoint", ""), ("ports", []), ("regions", [])):
-        m.setdefault(k, v)
-for r in regions:
-    for k, v in (("locked", False), ("targets", []), ("memdevs", []), ("serials", []), ("rootDecoder", ""), ("daxRegion", ""), ("ndRegion", "")):
-        r.setdefault(k, v)
-for x in daxdevs:
-    for k, v in (("driver", ""), ("major", 0), ("minor", 0)):
-        x.setdefault(k, v)
-for b in blocks:
-    b.setdefault("zones", "")
-endpoints = [m["endpoint"] for m in memdevs if m["endpoint"]]
-
-MiB = 1 << 20
-
-def by_name(objs, name):
-    """Object called name, None if there is no such object."""
-    return next((o for o in objs if o.get("name") == name), None)
-
-def by_serial(serial):
-    """Memory device with the serial number, None if it is not there."""
-    return next((m for m in memdevs if m.get("serial") == serial), None)
-
-def names(objs):
-    """Sorted names of the objects."""
-    return sorted(o["name"] for o in objs or [])
-
-def node(node_id):
-    """NUMA node with the id, None if the node is not online."""
-    return next((n for n in nodes if n.get("id") == node_id), None)
-
-def cpu_nodes():
-    """Ids of the NUMA nodes of the CPUs, that is, all but the CXL ones."""
-    return sorted(set(n["id"] for n in nodes) - set(r["numaNode"] for r in regions))
-
-def enabled(o):
-    """True if a memdev has its driver or a region is enabled."""
-    return o["state"] in ("BOUND", "READY", "ENABLED")
-
-def size(r):
-    """Size of the address range of a region in bytes, 0 without a range."""
-    rg = r["range"]
-    return rg["end"] - rg["start"] + 1 if rg["end"] else 0
-
-def online_size(r):
-    """Bytes of the memory blocks in the address range of a region that are online."""
-    rg = r["range"]
-    if not rg["end"] or not block_size:
-        return 0
-    return block_size * sum(1 for b in blocks if b["state"] == "ONLINE" and
-                            rg["start"] <= b["index"] * block_size and (b["index"] + 1) * block_size - 1 <= rg["end"])
-
-def summary():
-    """One line description of the dump."""
-    return "%d memdevs (%s), %d regions (%s), %d endpoints, nodes %s" % (
-        len(memdevs),
-        ", ".join("%s%s" % (m["name"], "" if enabled(m) else " disabled") for m in memdevs),
-        len(regions),
-        ", ".join("%s node %d %d/%dM online" %
-                  (r["name"], r["numaNode"], online_size(r) // MiB, size(r) // MiB)
-                  for r in regions),
-        len(endpoints),
-        ", ".join("%d:%dM" % (n["id"], n["memTotal"] // MiB) for n in nodes),
-    )
-
-value = eval(expression)
-if mode == "eval":
-    print(value)
-    sys.exit(0)
-if not value:
-    print("expected true: %s" % expression, file=sys.stderr)
-    print("in %s: %s" % (path, summary()), file=sys.stderr)
-    sys.exit(1)
-' "$CXL_DUMP_FILE" "$1" "$2"
+    python3 "$E2E_JSON" "$1" cxl "$2" "$CXL_DUMP_FILE"
 }

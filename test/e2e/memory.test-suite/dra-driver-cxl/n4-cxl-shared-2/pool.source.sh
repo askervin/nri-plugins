@@ -776,22 +776,9 @@ pool-snapshot() { # script API
 pool-py() {
     # Usage: pool-py assert|eval JSON EXPRESSION
     #
-    # Evaluate the Python EXPRESSION with the JSON document parsed as j.
-    python3 -c '
-import json, sys
-mode, expression = sys.argv[1], sys.argv[2]
-text = sys.stdin.read()
-try:
-    j = json.loads(text)
-except ValueError as e:
-    print("pool-py: invalid JSON (%s): %s" % (e, text[:2000]), file=sys.stderr)
-    sys.exit(2)
-value = eval(expression)
-if mode == "eval":
-    print(value)
-    sys.exit(0)
-sys.exit(0 if value else 1)
-' "$1" "$3" <<< "$2"
+    # Evaluate the Python EXPRESSION with the JSON document parsed as j
+    # (kind pool of e2e_json.py).
+    python3 "$E2E_JSON" "$1" pool "$3" <<< "$2"
 }
 
 pool-assert() { # script API
