@@ -253,11 +253,8 @@ func TestOnlineProtocolErrors(t *testing.T) {
 // (refpool.go), on the reference's clock (settle timeout, A19 and
 // binding-timeout times), full profile, with the teardown.
 func TestOnlineRefPool(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping test in short mode.")
-	}
 	for _, seed := range []int64{11} {
-		o := testOpts(t, "full", 120, 2, true)
+		o := testOpts(t, "full", size(120, 20), 2, true)
 		o.seed = seed
 		sm := newSim(o.cfg, seed).withRef(seed + 100)
 		o.now = sm.refWall

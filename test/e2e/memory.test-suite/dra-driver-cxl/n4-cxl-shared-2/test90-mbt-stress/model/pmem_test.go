@@ -506,11 +506,8 @@ func TestPmemExpectationRoundTrip(t *testing.T) {
 // Generated runs of the persistent profiles are reproducible, and every
 // expectation of their scripts holds against the simulated SUT.
 func TestPmemDeterministic(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping test in short mode.")
-	}
 	for _, profile := range []string{"pmem", "fullp"} {
-		o := genOpts(t, profile, 60, 4)
+		o := genOpts(t, profile, size(60, 10), 4)
 		a, b := generateScript(t, o, nil), generateScript(t, o, nil)
 		if a != b {
 			t.Fatalf("%s: two scripts of one seed differ", profile)
@@ -590,14 +587,11 @@ func pmemWalk(t *testing.T, profile string, online bool, seed int64, steps int) 
 // teardown included, against the simulated SUT and against the
 // reference of the pool side.
 func TestPmemOnline(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping test in short mode.")
-	}
 	for _, c := range []struct {
 		profile string
 		ref     bool
 	}{{"pmem", false}, {"pmem", true}, {"fullp", true}} {
-		o := testOpts(t, c.profile, 80, 2, true)
+		o := testOpts(t, c.profile, size(80, 12), 2, true)
 		o.seed = 21
 		sm := newSim(o.cfg, 21)
 		if c.ref {

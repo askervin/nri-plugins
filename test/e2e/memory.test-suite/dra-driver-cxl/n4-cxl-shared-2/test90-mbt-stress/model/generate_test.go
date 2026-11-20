@@ -103,14 +103,11 @@ func runScript(t *testing.T, cfg *Config, script string, seed int64) {
 
 // TestGenerateAgainstSim executes generated scripts on the simulated SUT.
 func TestGenerateAgainstSim(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping test in short mode.")
-	}
 	for _, tc := range []struct {
 		profile string
 		seed    int64
 		steps   int
-	}{{"small", 1, 150}, {"full", 2, 80}, {"tiny", 3, 150}} {
+	}{{"small", 1, size(150, 30)}, {"full", 2, size(80, 15)}, {"tiny", 3, size(150, 30)}} {
 		t.Run(fmt.Sprintf("%s-%d", tc.profile, tc.seed), func(t *testing.T) {
 			o := genOpts(t, tc.profile, tc.steps, tc.seed)
 			script := generateScript(t, o, nil)

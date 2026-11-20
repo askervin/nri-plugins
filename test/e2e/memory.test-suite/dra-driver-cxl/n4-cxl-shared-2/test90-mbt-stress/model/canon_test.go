@@ -202,9 +202,6 @@ func (c *canonWalk) compare(path string, x, y *State, d int) {
 }
 
 func TestCanonicalKeyComplete(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping test in short mode.")
-	}
 	type run struct {
 		profile    string
 		online     bool
@@ -215,15 +212,15 @@ func TestCanonicalKeyComplete(t *testing.T) {
 	}
 	var runs []run
 	for _, online := range []bool{false, true} {
-		for seed := int64(1); seed <= 4; seed++ {
+		for seed := int64(1); seed <= int64(size(4, 1)); seed++ {
 			runs = append(runs, run{"full", online, seed, 2, 30, 0, false})
 		}
 		runs = append(runs, run{"small", online, 7, 3, 30, 0, false})
-		for seed := int64(8); seed <= 9; seed++ {
+		for seed := int64(8); seed <= 9 && !testing.Short(); seed++ {
 			runs = append(runs, run{"full", online, seed, 3, 30, 6, false})
 		}
 		// node-reboot (A42)
-		for seed := int64(10); seed <= 11; seed++ {
+		for seed := int64(10); seed <= int64(size(11, 10)); seed++ {
 			runs = append(runs, run{"full", online, seed, 2, 30, 0, true})
 		}
 	}

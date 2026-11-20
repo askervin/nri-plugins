@@ -486,11 +486,8 @@ func TestFencingHeaderAndExpectation(t *testing.T) {
 // Off-line scripts of the modes none and switch hold on the simulated SUT
 // (A14), and switch generates fencing-switch.
 func TestGenerateFencingAgainstSim(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping test in short mode.")
-	}
 	for j, mode := range []FencingRun{FencingNone, FencingSwitch} {
-		o := genOpts(t, "full", 100, int64(20+j))
+		o := genOpts(t, "full", size(100, 15), int64(20+j))
 		o.cfg.Fencing = mode
 		script := generateScript(t, o, nil)
 		if (mode == FencingSwitch && !strings.Contains(script, " fencing-switch\n")) || !strings.Contains(script, `"fencing":"none"`) {

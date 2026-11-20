@@ -54,6 +54,14 @@ func steps(t *testing.T, s *State, lines ...string) *State {
 	return s
 }
 
+// size returns n, or short under -short.
+func size(n, short int) int {
+	if testing.Short() {
+		return short
+	}
+	return n
+}
+
 // stateAfter returns the state of a profile after action lines (see steps).
 func stateAfter(t *testing.T, profile string, online bool, lines ...string) *State {
 	t.Helper()
