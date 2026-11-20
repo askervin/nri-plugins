@@ -426,7 +426,7 @@ func waitClosed(t *testing.T, p *Plugin) {
 // TestNRIConnectionLostStub: with the NRI stub connected to a runtime,
 // the plugin exits when the runtime closes the connection, and not when
 // Stop closes it (which the stub reports to onClose too); a plugin whose
-// Start fails fences no container.
+// Start fails fences no container. The stub logs through klog.
 func TestNRIConnectionLostStub(t *testing.T) {
 	start := func(t *testing.T, rt *fakeRuntime) *Plugin {
 		t.Helper()
@@ -455,12 +455,16 @@ func TestNRIConnectionLostStub(t *testing.T) {
 	})
 	t.Run("Stop", func(t *testing.T) {
 		exits := recordExits(t)
+		logs := klogtest.Capture(t, 0)
 		rt := newFakeRuntime(t)
 		p := start(t, rt)
 		rt.conn(t)
 		p.Stop()
 		waitClosed(t, p)
 		expectExits(t, exits)
+		if !strings.Contains(logs(), "NRI stub: Created plugin 50-test") {
+			t.Errorf("no line of the NRI stub in the klog output:\n%s", logs())
+		}
 	})
 	t.Run("Start fails", func(t *testing.T) {
 		e := newFenceEnv(t, "0-2")

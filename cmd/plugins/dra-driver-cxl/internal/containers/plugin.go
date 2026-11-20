@@ -186,7 +186,7 @@ func (p *Plugin) Start(ctx context.Context, c Connection) error {
 
 // newStub returns the NRI stub of the settings of c.
 func (p *Plugin) newStub(ctx context.Context, c Connection) (Stub, error) {
-	opts := []stub.Option{stub.WithOnClose(func() { p.onClose(ctx) })}
+	opts := []stub.Option{stub.WithOnClose(func() { p.onClose(ctx) }), stub.WithLogger(stubLogger{})}
 	if c.Name != "" {
 		opts = append(opts, stub.WithPluginName(c.Name))
 	}
@@ -197,6 +197,26 @@ func (p *Plugin) newStub(ctx context.Context, c Connection) (Stub, error) {
 		opts = append(opts, stub.WithSocketPath(c.Socket))
 	}
 	return stub.New(p, opts...)
+}
+
+// stubLogger writes the messages of the NRI stub with klog, its debug
+// messages at verbosity 4.
+type stubLogger struct{}
+
+func (stubLogger) Debugf(_ context.Context, format string, args ...any) {
+	klog.V(4).Infof("NRI stub: "+format, args...)
+}
+
+func (stubLogger) Infof(_ context.Context, format string, args ...any) {
+	klog.Infof("NRI stub: "+format, args...)
+}
+
+func (stubLogger) Warnf(_ context.Context, format string, args ...any) {
+	klog.Warningf("NRI stub: "+format, args...)
+}
+
+func (stubLogger) Errorf(_ context.Context, format string, args ...any) {
+	klog.Errorf("NRI stub: "+format, args...)
 }
 
 // SetResults sets the prepared claims of the DRA drivers that the
