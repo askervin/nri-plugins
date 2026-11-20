@@ -561,6 +561,7 @@ builds them again after a restart. Triggers:
 - `NRI PostStartContainer`: the NRI PostStartContainer of a container: the runtime marked it started.
 - `NRI StopContainer`: the NRI StopContainer or RemoveContainer of a container.
 - `NRI Synchronize`: the NRI Synchronize of the plugin: the containers that the runtime has.
+- `steering ended`: the end of the steering of a running container whose process refuses a memory policy.
 - `lends restored`: the lease broker's word that the lends of the leases are applied again (LendsRestored).
 - `NRI Start`: the return of Start of the NRI stub.
 - `NRI close`: the close of the NRI connection that the stub reports.
@@ -607,6 +608,8 @@ States: UNDECIDED, STEERED, FENCED, NONE.
 | UNDECIDED | NONE | `NRI CreateContainer`, `NRI Synchronize`, `NRI StartContainer`: not steered (by this process) and fencing none | - | its cpuset.mems is left as the runtime made it |
 | STEERED | FENCED | `NRI StartContainer`: its manager does not start (no cgroup, no own nodes, steering.New or Start fails: memory.high not max, no memory policy set) and fencing allowed-mems | - | its Steered record removed; fenced by the repair pass at its PostStartContainer |
 | STEERED | NONE | `NRI StartContainer`: its manager does not start and fencing none | - | its Steered record removed |
+| STEERED | FENCED | `steering ended`: a process of the running container refuses a memory policy of a later step (EPERM) and fencing allowed-mems | - | its manager set memory.high to max and cpuset.mems back, and stopped; its Steered record removed; fenced by the repair pass of the one container |
+| STEERED | NONE | `steering ended`: a process of the running container refuses a memory policy of a later step and fencing none | - | its manager set memory.high to max and cpuset.mems back, and stopped; its Steered record removed |
 
 Refused:
 

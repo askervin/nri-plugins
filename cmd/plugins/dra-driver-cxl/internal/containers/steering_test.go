@@ -433,6 +433,61 @@ func TestCharSynchronizeSteeringLog(t *testing.T) {
 	}
 }
 
+// TestSteeringEnded manages a running container whose steering ended on a
+// refused memory policy like a container that is not steered: fenced by
+// the repair pass (or left alone with fencing none), not in the Steered
+// records, memory.high max, with one warning.
+func TestSteeringEnded(t *testing.T) {
+	for _, tc := range []struct {
+		fencing    string
+		management Management
+		updates    []string
+	}{
+		{"", ManagementFenced, []string{"c1 mems=0-2"}},
+		{config.FencingNone, ManagementNone, nil},
+	} {
+		t.Run(string(tc.management), func(t *testing.T) {
+			e := newEnvWith(t, envOptions{fencing: tc.fencing})
+			e.p.Seed([]int{2, 3})
+			e.hasMemory("0-3")
+			e.local.set(nriClaims())
+			e.readyFence()
+			logs := klogtest.Capture(t, 3)
+			pod := testPod("u1")
+			cg1 := e.proc(101, "kubepods/u1/c1", "0-3", "")
+			steerable(t, cg1, "max")
+			c1 := withClaims(testCtr(pod, "c1", "app", 101), "auto")
+			e.createMems(pod, c1)
+			e.startCtr(pod, c1)
+			e.p.mu.Lock()
+			c := e.p.ctrs["c1"]
+			mgr := c.manager
+			e.p.mu.Unlock()
+			if mgr == nil {
+				t.Fatalf("management %s without a manager, expected steered", e.record("c1").Management)
+			}
+			e.expectUpdates()
+			e.p.steeringEnded(c, mgr, errors.New("memory policy refused: pid 101: operation not permitted"))
+			e.passes()
+			if c := e.record("c1"); c.Management != tc.management || len(e.managers()) != 0 {
+				t.Fatalf("management %s managers %v, expected %s without a manager", c.Management, e.managers(), tc.management)
+			}
+			if ids := e.steered(); len(ids) != 0 {
+				t.Fatalf("steering records %v", ids)
+			}
+			if got := memoryHigh(t, cg1); got != "max" {
+				t.Errorf("memory.high %s", got)
+			}
+			e.expectUpdates(tc.updates...)
+			want := "NRI: ctr=ns/pod-u1/app id=c1: memory steering ended: memory policy refused: pid 101: " +
+				"operation not permitted; memory " + tc.management.text()
+			if got := logs(); strings.Count(got, want) != 1 {
+				t.Errorf("no warning %q:\n%s", want, got)
+			}
+		})
+	}
+}
+
 // TestSteeredRecordBeforeStart checks that the Steered record of a
 // container is in the store when its manager starts to write its cgroup,
 // that a Start that fails leaves no record, and that no manager starts

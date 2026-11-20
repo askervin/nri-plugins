@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -262,6 +263,46 @@ func TestPastLastWaypoint(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(cg, "memory.events"), []byte("low 0\nhigh 1\nmax 0\noom 0\noom_kill 0\n"), 0o644))
 	require.Eventually(t, func() bool { return readFile(t, cg, "memory.high") == "max" }, 5*time.Second, waitTimeout)
 	require.Equal(t, []string{preferCXL, fmt.Sprintf("[4343] mode %d nodes [1]", unix.MPOL_PREFERRED)}, called())
+}
+
+// TestPolicyRefused ends the steering when a process refuses the memory
+// policy of a later step: memory.high max, cpuset.mems as before Start,
+// and onEnd with the reason.
+func TestPolicyRefused(t *testing.T) {
+	if !mpolinject.Supported {
+		t.Skip(mpolinject.ErrUnsupported)
+	}
+	oldSet, oldWait := setMemoryPolicy, waitTimeout
+	t.Cleanup(func() { setMemoryPolicy, waitTimeout = oldSet, oldWait })
+	setMemoryPolicy = func(pids []int, _ int, _ []int) error {
+		if slices.Contains(pids, 4343) {
+			return fmt.Errorf("pid 4343: set_mempolicy: %w", unix.EPERM)
+		}
+		return nil
+	}
+	waitTimeout = 10 * time.Millisecond
+	plan, err := NewPlan(PolicyFirstCXL, MemoryTypes{CXLNodes: []int{1}, CXLQuota: 64 * MiB}, nil, 0, 0)
+	require.NoError(t, err)
+	cg := fakeCgroup(t, "max", "")
+	ended := make(chan error, 1)
+	m, err := New(cg, plan, cpuset.New(0, 1), WithSysRoot(writeNodes(t, "0", "")),
+		WithOnEnd(func(err error) { ended <- err }))
+	require.NoError(t, err)
+	require.NoError(t, m.Start())
+	require.Equal(t, "0-1", readFile(t, cg, "cpuset.mems"))
+
+	// a new process refuses the policy at the next step
+	require.NoError(t, os.WriteFile(filepath.Join(cg, "cgroup.procs"), []byte("4242\n4343\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(cg, "memory.events"), []byte("low 0\nhigh 1\nmax 0\noom 0\noom_kill 0\n"), 0o644))
+	select {
+	case err := <-ended:
+		require.ErrorIs(t, err, unix.EPERM)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the steering goes on after a refused memory policy")
+	}
+	require.Equal(t, "max", readFile(t, cg, "memory.high"))
+	require.Equal(t, "", readFile(t, cg, "cpuset.mems"))
+	m.Stop()
 }
 
 // TestCgroupGone ends the steering of a cgroup that is removed, and Stop

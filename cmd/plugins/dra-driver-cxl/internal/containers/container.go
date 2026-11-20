@@ -147,12 +147,15 @@ const (
 	// TriggerSynchronize is the NRI Synchronize of the plugin: the
 	// containers that the runtime has.
 	TriggerSynchronize Trigger = "NRI Synchronize"
+	// TriggerSteeringEnded is the end of the steering of a running
+	// container whose process refuses a memory policy.
+	TriggerSteeringEnded Trigger = "steering ended"
 )
 
 // Triggers are the triggers of the tables, in the order of the
 // documentation.
 var Triggers = []Trigger{TriggerCreate, TriggerStart, TriggerPostStart, TriggerStop, TriggerSynchronize,
-	TriggerLendsRestored, TriggerNRIStart, TriggerNRIClose, TriggerStopping}
+	TriggerSteeringEnded, TriggerLendsRestored, TriggerNRIStart, TriggerNRIClose, TriggerStopping}
 
 // LifecycleTable is the transition table of Container.Lifecycle.
 var LifecycleTable = fsm.Table[Lifecycle]{
@@ -261,6 +264,18 @@ var ManagementTable = fsm.Table[Management]{
 			From: fsm.List(ManagementSteered), To: ManagementNone, Triggers: fsm.List(TriggerStart),
 			When:    "its manager does not start and fencing none",
 			Effects: "its Steered record removed",
+		},
+		{
+			From: fsm.List(ManagementSteered), To: ManagementFenced, Triggers: fsm.List(TriggerSteeringEnded),
+			When: "a process of the running container refuses a memory policy of a later step (EPERM) and " +
+				"fencing allowed-mems",
+			Effects: "its manager set memory.high to max and cpuset.mems back, and stopped; its Steered " +
+				"record removed; fenced by the repair pass of the one container",
+		},
+		{
+			From: fsm.List(ManagementSteered), To: ManagementNone, Triggers: fsm.List(TriggerSteeringEnded),
+			When:    "a process of the running container refuses a memory policy of a later step and fencing none",
+			Effects: "its manager set memory.high to max and cpuset.mems back, and stopped; its Steered record removed",
 		},
 	},
 	Refused: []fsm.Refusal[Management]{

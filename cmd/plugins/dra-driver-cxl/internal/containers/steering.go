@@ -151,8 +151,10 @@ func (p *Plugin) startSteering(c *Container, ctr *api.Container, plan *steering.
 		p.notSteered(c, false, err)
 		return
 	}
-	mgr, err := steering.New(dir, plan, permitted,
+	var mgr *steering.Manager
+	mgr, err = steering.New(dir, plan, permitted,
 		steering.WithName(name),
+		steering.WithOnEnd(func(why error) { p.steeringEnded(c, mgr, why) }),
 		steering.WithSysRoot(filepath.Join(p.opts.SysRoot, "/sys")))
 	if err != nil {
 		p.notSteered(c, false, err)
@@ -209,6 +211,29 @@ func (p *Plugin) notSteered(c *Container, added bool, why error) {
 	p.manage(c, c.unsteered, TriggerStart)
 	klog.Warningf("NRI StartContainer: ctr=%s id=%s: failed to start memory steering: %v; memory %s",
 		c.name(), c.ID, why, c.Management.text())
+}
+
+// steeringEnded manages a running container whose steering ended on a
+// refused memory policy like a container that is not steered: its manager
+// mgr has set memory.high to max and cpuset.mems back; a fenced container
+// gets wantMems by the repair pass. A container that stopped meanwhile is
+// left to its stop.
+func (p *Plugin) steeringEnded(c *Container, mgr *steering.Manager, why error) {
+	p.mu.Lock()
+	if p.ctrs[c.ID] != c || c.manager != mgr {
+		p.mu.Unlock()
+		return
+	}
+	c.manager = nil
+	p.manage(c, c.unsteered, TriggerSteeringEnded)
+	repair := c.Lifecycle == LifecycleStarted && p.fenceAtStart(c)
+	memory := c.Management.text()
+	p.mu.Unlock()
+	p.stopManager(c.ID, c.name(), mgr)
+	klog.Warningf("NRI: ctr=%s id=%s: memory steering ended: %v; memory %s", c.name(), c.ID, why, memory)
+	if repair {
+		p.repair(c.ID)
+	}
 }
 
 // stopManagers stops the managers of containers that left the table and

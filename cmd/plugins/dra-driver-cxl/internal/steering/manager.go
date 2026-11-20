@@ -63,6 +63,10 @@ import (
 // is set (a variable for tests).
 var waitTimeout = time.Second
 
+// errRefused is the error of a step whose memory policy a process
+// refuses: the steering ends.
+var errRefused = errors.New("memory policy refused")
+
 // numaUsageCategories are the memory.numa_stat categories that count
 // as usage steered by the plan.
 var numaUsageCategories = []string{"anon", "shmem"}
@@ -93,6 +97,8 @@ type Manager struct {
 	// the processes seen have.
 	nodes []int
 	seen  map[int]bool
+	// onEnd is called when the steering ends on a refused memory policy.
+	onEnd func(error)
 	// stop is closed by Stop, done is closed when the steering
 	// goroutine has exited.
 	stop     chan struct{}
@@ -109,6 +115,16 @@ type Option func(*Manager)
 func WithName(name string) Option {
 	return func(m *Manager) {
 		m.name = name
+	}
+}
+
+// WithOnEnd sets the function that is called once when the steering ends
+// on a memory policy that a process refuses (EPERM, for instance by its
+// seccomp profile), with the reason. memory.high is max and cpuset.mems
+// is as it was before Start by then, and Stop returns at once.
+func WithOnEnd(fn func(error)) Option {
+	return func(m *Manager) {
+		m.onEnd = fn
 	}
 }
 
@@ -239,8 +255,17 @@ func gone(err error) bool {
 // loop applies a step whenever the memory usage of the cgroup
 // crosses a bound, until Stop is called or the cgroup is removed.
 func (m *Manager) loop() {
-	defer close(m.done)
-	defer m.release()
+	var refused error
+	defer func() {
+		m.release()
+		if refused != nil {
+			m.restoreMems()
+		}
+		close(m.done)
+		if refused != nil && m.onEnd != nil {
+			m.onEnd(refused)
+		}
+	}()
 	for {
 		ev, err := m.notifier.Wait(waitTimeout)
 		select {
@@ -277,6 +302,10 @@ func (m *Manager) loop() {
 		switch {
 		case gone(err):
 			klog.Infof("%s: cgroup %s is gone, stop steering", m.name, m.cgroupPath)
+			return
+		case errors.Is(err, errRefused):
+			klog.Warningf("%s: %v: steering ends", m.name, err)
+			refused = err
 			return
 		case err != nil:
 			klog.Errorf("%s: step failed: %v", m.name, err)
@@ -376,6 +405,8 @@ func (m *Manager) step(usage NodeMem, first bool) error {
 		switch {
 		case err != nil && first:
 			return fmt.Errorf("setting memory policy: %w", err)
+		case errors.Is(err, unix.EPERM):
+			return fmt.Errorf("%w: %w", errRefused, err)
 		case err != nil:
 			// The bounds are set even if some threads could not be
 			// updated, otherwise the cgroup would stay throttled.
