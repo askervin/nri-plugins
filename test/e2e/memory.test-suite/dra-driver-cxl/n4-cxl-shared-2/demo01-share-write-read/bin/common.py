@@ -49,7 +49,7 @@ CONTENT_ROWS = ROWS - 1
 LEASE_LABEL = "cxl.nri.io/lease"
 REQUESTER_ANNOTATION = "cxl.nri.io/requester"
 REQUESTER_UID_LABEL = "cxl.nri.io/requester-uid"
-SHARES_KEYS = ("shares", "hosts")   # "hosts": drivers before plan-9
+SHARES = "shares"   # the capacity of a shared device
 
 
 def state_value(raw):
@@ -354,18 +354,13 @@ def shares_request(claim):
     """Return the shares quantity a claim requests, None if it requests none."""
     for r in subrequests(claim):
         reqs = (r.get("capacity") or {}).get("requests") or {}
-        for k in SHARES_KEYS:
-            if k in reqs:
-                return reqs[k]
+        if SHARES in reqs:
+            return reqs[SHARES]
     return None
 
 
 def consumed_shares(result):
-    cc = result.get("consumedCapacity") or {}
-    for k in SHARES_KEYS:
-        if k in cc:
-            return cc[k]
-    return None
+    return (result.get("consumedCapacity") or {}).get(SHARES)
 
 
 def device_attr(dev, name):
@@ -386,11 +381,7 @@ def device_attr(dev, name):
 
 
 def device_shares(dev):
-    cap = dev.get("capacity") or {}
-    for k in SHARES_KEYS:
-        if k in cap:
-            return cap[k].get("value")
-    return None
+    return ((dev.get("capacity") or {}).get(SHARES) or {}).get("value")
 
 
 def slice_devices(slices_doc):

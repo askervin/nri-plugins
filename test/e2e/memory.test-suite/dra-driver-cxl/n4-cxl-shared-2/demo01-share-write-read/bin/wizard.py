@@ -154,7 +154,7 @@ def inventory(slices_doc, state):
                    "source": source, "serial": serial, "shared": c.device_attr(d, "shared") is True,
                    "persistent": c.device_attr(d, "persistent") is True, "size": c.device_attr(d, "size") or 0,
                    "node": node, "hosts": hosts if source == "pool" else [node],
-                   "capacity": "shares" if any(k in cap for k in c.SHARES_KEYS) else ("memory" if "memory" in cap else ""),
+                   "capacity": "shares" if c.SHARES in cap else ("memory" if "memory" in cap else ""),
                    "block": c.device_attr(d, "memoryBlockSize")}
             if source == "pool":
                 dev["label"] = d.get("name")
