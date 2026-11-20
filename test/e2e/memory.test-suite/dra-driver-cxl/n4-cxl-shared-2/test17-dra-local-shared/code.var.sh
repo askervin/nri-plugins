@@ -23,6 +23,9 @@
 # when no claim uses it, and what the last writer wrote stays there.
 # The region goes only when the driver runs without the device in
 # sharedDevices; then the device is a sliced local device again.
+# A running container leases the device with cxl-request as it would
+# claim it: the broker makes a companion claim of class cxl-local-shared
+# for each lease, one share or all of them.
 #
 # What you will see: the shared device in the node's ResourceSlice, a
 # claim of cxl-local that it does not match, the writer creating the
@@ -31,17 +34,21 @@
 # a third reader joining, an exclusive claim waiting for the readers, two
 # pods of one claim, refused configurations (mode numa, readOnly with
 # mode numa, access, shares "0" that the scheduler allocates and the
-# driver refuses), the bytes surviving a period without claims and two
-# restarts of the driver, and the region going when the device is no
-# longer shared; at the end the trace of what every component did.
+# driver refuses), the bytes surviving a period without claims, leases of
+# the device (an exclusive one that reads the kept bytes, one share by
+# size, the local device before the pool, a refused pool request, a
+# read-only share mapped when its pod goes), two restarts of the driver,
+# and the region going when the device is no longer shared; at the end
+# the trace of what every component did.
 #
 # The local device is cxl_memdev0 of the topology (1G, host bridge 0),
-# attached through fake-cxl-pool-server as in test14; all pods run on this
-# VM (VM2), the control plane of the cluster of the test; VM1
+# attached through fake-cxl-pool-server as in test14; the pool has the
+# shared device shared0 for the alternative of leases by size. All pods
+# run on this VM (VM2), the control plane of the cluster of the test; VM1
 # (n4-cxl-shared-1) and VM0 (n4-cxl-shared-0), its workers, have no local
 # device attached. Run test00-up of n4-cxl-shared-1, -0 and -2 first: they
 # create the VMs and make them one cluster. The DRA driver comes from its
-# image, build it first:
+# image, which has cxl-request too, build it first:
 #   make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
 
 if [[ "$distro" != *"fedora"* ]]; then
@@ -56,6 +63,8 @@ VM1="$POOL_VM1_DIR"    # a worker of the cluster
 VM2="$OUTPUT_DIR"      # the VM of this test, the control plane
 VM2_NAME="$POOL_VM2_NAME"
 SHARED_CLASS=cxl-local-shared
+SHARED0_SERIAL=0xc1ae0001   # 0xc1ae....: shared pool devices
+PAUSE_IMAGE=registry.k8s.io/pause:3.10   # the image of the companion pods
 TAG="dra-local-shared $(date +%Y-%m-%dT%H:%M:%S.%N)"
 TEXT0="$TAG: at 0, from the writer"
 TEXT1M="$TAG: at 1M, from the writer"
@@ -69,6 +78,10 @@ SHARED_REGION=""       # B: the region of the shared device, kept until H
 SHARED_DAX=""          # its dax device (daxX.Y)
 SHARED_DEV=""          # the major:minor of that
 SHARED_MEMDEV=""       # and the memdev (memN)
+REQ_JSON=""            # lease-request: the response
+REQ_STATUS=""          # its exit status
+REQ_OUT=""             # what cxl-request printed, stdout and stderr
+COMPANION_JSON=""      # lease-companion: the companion claim of a lease
 
 py-str() {
     # Usage: py-str TEXT
@@ -279,6 +292,72 @@ same-region() {
         dra-py assert "$DRA_MEMDEV" "[(r['name'], [d['name'] for d in r['dax'] if d['size']]) for r in j['regions']] == [('$SHARED_REGION', ['$SHARED_DAX'])]"
 }
 
+lease-request() {
+    # Usage: lease-request ARGS...
+    #
+    # Run "cxl-request ARGS..." in pod leaser. REQ_STATUS is its exit
+    # status, REQ_OUT what it printed (stdout, then stderr), REQ_JSON its
+    # last JSON line ("{}" if none).
+    dra-exec "$VM2" leaser "$DRA_REQUEST_CTR_BIN" "$@"
+    REQ_STATUS=$COMMAND_STATUS
+    REQ_OUT="$COMMAND_OUTPUT
+$DRA_EXEC_STDERR"
+    REQ_JSON=$(dra-last-json "$COMMAND_OUTPUT") || REQ_JSON="{}"
+}
+
+lease-objects() {
+    # Usage: lease-objects LEASE
+    #
+    # Print the companion pod and claim of lease LEASE that exist, quietly.
+    dra-vm-command-q "$VM2" "kubectl get pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL=$1 -o name"
+}
+
+lease-companion() {
+    # Usage: lease-companion LEASE
+    #
+    # Wait until the companion claim of lease LEASE, cxl-lease-LEASE, is
+    # allocated to the local device on VM2, and check that it has no CDI
+    # device: the companion pod uses nothing of it. COMPANION_JSON is the
+    # claim.
+    dra-wait "$VM2" "companion-$1" "resourceclaim -n $DRA_NS cxl-lease-$1" \
+        "[(r['driver'], r['device']) for r in results()] == [('$DRA_LOCAL_DRIVER', '$DRA_LOCAL_DEVICE')] and allocated_node() == '$VM2_NAME'" 60
+    COMPANION_JSON="$COMMAND_OUTPUT"
+    [ -z "$(dra-cdi-devices-with "$VM2" "$(dra-value "$COMPANION_JSON" "j['metadata']['uid']")")" ] ||
+        error "lease $1: the companion claim has CDI devices"
+}
+
+lease-release() {
+    # Usage: lease-release LEASE
+    #
+    # Release lease LEASE of pod leaser and wait until its companion pod
+    # and claim are gone.
+    local lease="$1"
+    lease-request release --lease "$lease"
+    dra-assert "$REQ_JSON" "j.get('lease') == '$lease' and j.get('state') == 'Released'"
+    # shellcheck disable=SC2016 # evaluated by retry-until
+    retry-until --timeout 60 --interval 1 --message "nothing left of lease $lease" \
+        '[ -z "$(lease-objects "$lease")" ]' ||
+        error "lease $lease left $(lease-objects "$lease")"
+}
+
+hold-log() {
+    # Usage: hold-log
+    #
+    # Print /tmp/hold.log of pod leaser, the output of its read-only lease
+    # (section L), quietly.
+    dra-vm-command-q "$VM2" "kubectl exec -n $DRA_NS leaser -- cat /tmp/hold.log" 2>/dev/null
+}
+
+no-leases() {
+    # Usage: no-leases
+    #
+    # Return 0 if the state document of the node plugin ($DRA_STATE) has
+    # no leases, or there is no document.
+    local json
+    json=$(dra-state-json "$VM2" 2>/dev/null) || json='{}'
+    dra-py assert "$json" "not j.get('leases')"
+}
+
 echo "### preconditions: patched qemu, hdm_for_passthrough=on, kernel with CONFIG_FS_DAX"
 pool-vm-require "$VM2" "$(basename "$TOPOLOGY_DIR")"
 
@@ -289,8 +368,12 @@ pool-vm-reset "$VM1"
 pool-cxl-dump "$VM2" no-devices
 cxl-assert 'memdevs == [] and regions == [] and endpoints == []'
 
-echo "### preconditions: fake-cxl-pool-server on the host, stale bytes in the local device"
-pool-server-start
+echo "### preconditions: fake-cxl-pool-server on the host with shared0, stale bytes in the local device"
+pool-server-start "
+  - name: shared0
+    size: 256Mi
+    shared: true
+    serial: $SHARED0_SERIAL"
 pool-client-install "$VM2"
 # The local device attached before the driver runs, with non-zero bytes at
 # the start, at 1M and at its end, written through a region of the guest
@@ -305,7 +388,7 @@ DRA_DRIVER_CONFIG="sharedDevices: [\"$DRA_LOCAL_SERIAL\"]"
 DRA_EXIT_TRAP='dra-local-shared-cleanup "$VM2"'
 dra-build
 dra-install
-dra-pull-images "$VM2" "$DRA_TOOLS_IMAGE"
+dra-pull-images "$VM2" "$DRA_TOOLS_IMAGE" "$PAUSE_IMAGE"
 dra-dax-tool-install "$VM2"
 dra-trace-start "$VM2"
 
@@ -488,6 +571,78 @@ same-region || error "after-idle has another region or dax device: $DRA_MEMDEV"
 zeroed=$(dra-plugin-log "$VM2" | grep -c "zeroed new shared ")
 [ "$zeroed" == 1 ] || error "the node plugin zeroed the shared device $zeroed times, expected once, when the region was created"
 claim-pod-delete after-idle
+
+echo "### L: leases of the shared device for a running container"
+dra-apply "$VM2" <<< "$(dra-lease-template-yaml)"
+dra-lease-pod-start "$VM2" leaser "$VM2_NAME"
+LEASER_CLAIM_UID="$DRA_LEASE_CLAIM_UID"
+# Without --shared a lease takes the device exclusively, as the writer's
+# claim did, and reads what the writer left in the kept region.
+lease-request request --serial "$DRA_LOCAL_SERIAL" --wait 60s --exec python3 /tools/dax-rw.py --fd 3 read 0
+[ "$REQ_STATUS" == 0 ] || error "cxl-request request --serial $DRA_LOCAL_SERIAL exited $REQ_STATUS"
+[ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "$TEXT0" ] ||
+    error "the exclusive lease read '$(tail -n 1 <<< "$COMMAND_OUTPUT")', expected '$TEXT0'"
+dra-assert "$REQ_JSON" "(j.get('state'), j.get('source'), j.get('mode'), bool(j.get('shared')), bool(j.get('readOnly'))) == ('Ready', 'local', 'dax', False, False)"
+LEASE=$(dra-value "$REQ_JSON" "j['lease']")
+# shared is what the lease asked for; the device is shared all the same.
+dra-leases "$VM2" leaser
+dra-assert "$DRA_LEASES" "[(l['lease'], bool(l.get('shared')), (l.get('env') or {}).get('CXL_${DRA_LOCAL_HEX}_SHARED')) for l in j] == [('$LEASE', False, '1')]"
+lease-companion "$LEASE"
+dra-assert "$COMPANION_JSON" "[(s['deviceClassName'], s.get('capacity')) for s in subrequests()] == [('$SHARED_CLASS', None)] and quantity((results()[0].get('consumedCapacity') or {}).get('shares', 0)) == $DRA_SHARES"
+same-region || error "the exclusive lease has another region or dax device: $DRA_MEMDEV"
+lease-release "$LEASE"
+# One share by size: the companion request has one share and a size
+# selector.
+lease-request request --source local --shared --size 64Mi --wait 60s
+[ "$REQ_STATUS" == 0 ] || error "cxl-request request --source local --shared --size 64Mi exited $REQ_STATUS"
+dra-assert "$REQ_JSON" "(j.get('state'), j.get('source'), j.get('serial'), j.get('mode'), bool(j.get('shared'))) == ('Ready', 'local', '$DRA_LOCAL_SERIAL', 'dax', True)"
+LEASE=$(dra-value "$REQ_JSON" "j['lease']")
+lease-companion "$LEASE"
+dra-assert "$COMPANION_JSON" "[(s['name'], s['deviceClassName'], s.get('capacity')) for s in subrequests()] == [('lease', '$SHARED_CLASS', {'requests': {'shares': '1'}})]"
+dra-assert "$COMPANION_JSON" "any('size' in (sel.get('cel') or {}).get('expression', '') for sel in subrequests()[0].get('selectors') or [])"
+lease-release "$LEASE"
+# --shared without --source: the local device first, then the pool
+# (shared0 would do), one share of either in a firstAvailable request.
+lease-request request --shared --size 64Mi --wait 60s
+[ "$REQ_STATUS" == 0 ] || error "cxl-request request --shared --size 64Mi exited $REQ_STATUS"
+dra-assert "$REQ_JSON" "(j.get('state'), j.get('source'), j.get('serial')) == ('Ready', 'local', '$DRA_LOCAL_SERIAL')"
+LEASE=$(dra-value "$REQ_JSON" "j['lease']")
+lease-companion "$LEASE"
+dra-assert "$COMPANION_JSON" "[(s['name'], s['deviceClassName'], s.get('capacity')) for s in subrequests()] == [('lease/local', '$SHARED_CLASS', {'requests': {'shares': '1'}}), ('lease/pool', 'cxl-pool-shared', {'requests': {'shares': '1'}})]"
+dra-assert "$COMPANION_JSON" "[r['request'] for r in results()] == ['lease/local']"
+lease-release "$LEASE"
+[ -z "$(dra-pool-attachments "$VM2_NAME")" ] ||
+    error "the pool attached devices for local leases: $(dra-pool-attachments "$VM2_NAME")"
+# The local device is no device of the pool.
+lease-request request --serial "$DRA_LOCAL_SERIAL" --source pool
+[ "$REQ_STATUS" == 1 ] || error "cxl-request request --serial $DRA_LOCAL_SERIAL --source pool exited $REQ_STATUS, expected 1"
+grep -qF "memdev $DRA_LOCAL_SERIAL: not a pool device" <<< "$REQ_OUT" ||
+    error "cxl-request request --serial $DRA_LOCAL_SERIAL --source pool did not print 'not a pool device': $REQ_OUT"
+# A read-only share, mapped when its pod goes: the broker ends the lease,
+# its companion and the lease directories of the pod go, the node plugin
+# has no leases left, and the region stays.
+# shellcheck disable=SC2016 # expanded by sh in the container
+dra-exec "$VM2" leaser sh -c 'setsid sh -c "$1 request --serial $2 --shared --read-only --wait 60s --exec sh -c \"python3 /tools/dax-rw.py --fd 3 check-ro 0; exec python3 /tools/dax-rw.py --fd 3 watch 0 /tmp/stop\"" > /tmp/hold.log 2>&1 < /dev/null &' sh "$DRA_REQUEST_CTR_BIN" "$DRA_LOCAL_SERIAL" ||
+    command-error "cannot start a read-only lease in leaser"
+# shellcheck disable=SC2016 # evaluated by retry-until
+retry-until --timeout 60 --interval 1 --message "leaser holds a read-only share" \
+    'grep -qx holding <<< "$(hold-log)"' ||
+    error "leaser does not hold a read-only share: $(hold-log)"
+log=$(hold-log)
+echo "$log"
+grep -qxF "read: $TEXT0" <<< "$log" || error "the read-only lease did not read '$TEXT0'"
+grep -qxF "writable mapping refused: EACCES" <<< "$log" || error "the read-only lease could map the memory for writing"
+dra-leases "$VM2" leaser
+dra-assert "$DRA_LEASES" "[(l['state'], bool(l.get('shared')), bool(l.get('readOnly'))) for l in j] == [('Ready', True, True)]"
+dra-delete-pod "$VM2" leaser
+dra-delete "$VM2" resourceclaimtemplate cxl-lease --wait=true --timeout=60s
+dra-wait "$VM2" no-lease-objects "pods,resourceclaims -n $DRA_NS" "items == []" 60
+retry-until --timeout 60 --interval 1 --message "no leases in $DRA_STATE" no-leases ||
+    error "the node plugin still has leases in $DRA_STATE"
+pool-vm-command "$VM2" "test ! -e $DRA_LEASE_DIR/$LEASER_CLAIM_UID && test ! -e $DRA_LEASE_FS_DIR/$LEASER_CLAIM_UID" ||
+    error "the lease directories of the claim of leaser are left in $DRA_LEASE_DIR or $DRA_LEASE_FS_DIR"
+dra-local-shared-wait "$VM2" leases-gone
+same-region || error "the shared device has another region or dax device after the leases: $DRA_MEMDEV"
 
 echo "### H: restarts of the driver keep the region; without the configuration it goes"
 claim-pod holder 1 "readOnly: true" "$(reader-script)"

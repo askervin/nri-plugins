@@ -155,6 +155,8 @@ DRA_LOCAL_SHARED_MEMDEV=""         # and the memdev (memN)
 DRA_DRIVER_POD=""                  # dra-driver-restart: the new pod of the driver
 DRA_CLAIM_JSON=""                  # dra-local-claim-check: the claim
 DRA_CLAIM_UID=""                   # and its uid
+DRA_POD_UID=""                     # dra-lease-pod-start: the pod
+DRA_LEASE_CLAIM_UID=""             # and the uid of its lease claim
 DRA_NODE_KB=""                     # dra-node-wait: the last MemTotal of the node in kB
 DRA_TOOLS_IMAGE=docker.io/library/python:3-alpine   # the image of pods that run the tools of dra-dax-tool-install
 DRA_MEMDEV=""                      # JSON of the last dra-memdev-sysfs/dra-memdev-wait
@@ -2252,6 +2254,23 @@ spec:
         exactly:
           deviceClassName: cxl-lease
 EOF2
+}
+
+dra-lease-pod-start() { # script API
+    # Usage: dra-lease-pod-start VMDIR NAME NODE [TEMPLATE]
+    #
+    # Create pod NAME of dra-pod-yaml on Kubernetes node NODE with a claim
+    # "lease" from the ResourceClaimTemplate TEMPLATE (default cxl-lease,
+    # see dra-lease-template-yaml) in its container main, and wait until
+    # it runs. DRA_POD_UID is the uid of the pod, DRA_LEASE_CLAIM_UID the
+    # uid of its lease claim.
+    local vmdir="$1" name="$2"
+    dra-apply "$vmdir" <<< "$(dra-pod-yaml "$name" "$3" "lease=template:${4:-cxl-lease}")"
+    dra-pod-wait "$vmdir" "$name" Running 120
+    dra-json "$vmdir" pod -n "$DRA_NS" "$name"
+    DRA_POD_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
+    dra-json "$vmdir" resourceclaim -n "$DRA_NS" "$(dra-value "$COMMAND_OUTPUT" "j['status']['resourceClaimStatuses'][0]['resourceClaimName']")"
+    DRA_LEASE_CLAIM_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
 }
 
 dra-leases() { # script API
