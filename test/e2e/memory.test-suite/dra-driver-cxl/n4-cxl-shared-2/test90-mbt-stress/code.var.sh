@@ -52,18 +52,11 @@
 # of vm0 and vm1, a qemu whose cxl-type3 device resets its CXL DVSEC at a guest reset (ct3d_reset_device_dvsec of hw/mem/cxl_type3.c), checked at the start),
 # MBT_STALL_WINDOW (--stall-window, A28: the model's default, 6m, unless
 # set), MBT_REPLAY,
-# MBT_SCRIPT, GOFMBT_DIR (unset: the gofmbt of model/go.mod; a checkout
-# of github.com/askervin/gofmbt: the model is built with a go.work that
-# uses it, for developing gofmbt), MBT_ARGS (more flags of mbt-cxl, for
+# MBT_SCRIPT, MBT_ARGS (more flags of mbt-cxl, for
 # instance "--plan-ahead=false"). MBT_POLL is the executor's: the
 # seconds between settle observations. Executor: MBT_TRACE (1: the
 # dra-trace of every component, 0: none), MBT_OBS_KEEP (30 observations
-# kept in mbt-obs/), MBT_STUB=1 (run mbt-stub.py, a fixed list of steps
-# that exercises every action, instead of the model; also when there is no
-# model/; MBT_STUB_LIST=volatile|persistent|all picks its lists, all by
-# default, a long run; reboot, the node-reboot list of the MBT_REBOOT variant;
-# MBT_STUB_STEPS=FILE a list of one's own), MBT_BIN
-# (another generator), MBT_KILLAT_TIMEOUT (60 s: a
+# kept in mbt-obs/), MBT_BIN (another generator than the model), MBT_KILLAT_TIMEOUT (60 s: a
 # driver-kill-at watcher gives up), MBT_REBOOT_WAIT (180 s: node-reboot
 # waits that long for ssh with a new boot id), MBT_PLEASE_PUT_WAIT (20s: lease-put of
 # persistent leases waits that long for Released).
@@ -109,7 +102,6 @@ MBT_AVOID="${MBT_AVOID:-}"
 MBT_REPLAY="${MBT_REPLAY:-}"
 MBT_SCRIPT="${MBT_SCRIPT:-}"
 MBT_TRACE="${MBT_TRACE:-1}"
-GOFMBT_DIR="${GOFMBT_DIR:-}"
 NODE_HB0=2   # the NUMA node of the CXL memory under host bridge 0 (local memdev, pool-a, pool-b)
 NODE_HB1=3   # and under host bridge 1 (pool-c)
 
@@ -169,27 +161,11 @@ echo "### 0: the generator"
 # test at once.
 if [ -n "$MBT_BIN" ]; then
     echo "MBT_BIN is set: the generator is $MBT_BIN"
-elif [ "${MBT_STUB:-0}" == 1 ] || [ ! -f "$TEST_DIR/model/go.mod" ]; then
-    [ "${MBT_STUB:-0}" == 1 ] || echo "WARNING: no $TEST_DIR/model/go.mod: the stub generator runs instead of the model"
-    MBT_BIN="$TEST_DIR/mbt-stub.py"
 else
     # The model is a module of its own (model/go.mod), built without the
-    # main module's go.work (GOWORK=off), or with a go.work of the model
-    # and a gofmbt checkout if GOFMBT_DIR is set. The go.work is for the
-    # model only: other go builds of the test (cxl-dump) are of the main
-    # module.
-    rm -f "$TEST_OUTPUT_DIR/go.work" "$TEST_OUTPUT_DIR/go.work.sum"
-    if [ -n "$GOFMBT_DIR" ]; then
-        [ -f "$GOFMBT_DIR/go.mod" ] || error "GOFMBT_DIR=$GOFMBT_DIR is not a checkout of github.com/askervin/gofmbt"
-        echo "GOFMBT_DIR is set: building the model with a go.work that uses $GOFMBT_DIR instead of the gofmbt of model/go.mod"
-        host-command "cd $(printf %q "$TEST_OUTPUT_DIR") && GOWORK= go work init $(printf %q "$TEST_DIR/model") $(printf %q "$GOFMBT_DIR")" ||
-            command-error "cannot make a go.work of the model and $GOFMBT_DIR"
-        mbt_gowork="$TEST_OUTPUT_DIR/go.work"
-    else
-        mbt_gowork=off
-    fi
-    host-command "cd $(printf %q "$TEST_DIR/model") && GOWORK=$(printf %q "$mbt_gowork") go build -o $(printf %q "$TEST_OUTPUT_DIR/mbt-cxl") . && go version -m $(printf %q "$TEST_OUTPUT_DIR/mbt-cxl") | grep -w github.com/askervin/gofmbt" ||
-        command-error "cannot build the model in $TEST_DIR/model (GOWORK=$mbt_gowork)"
+    # main module's go.work.
+    host-command "cd $(printf %q "$TEST_DIR/model") && GOWORK=off go build -o $(printf %q "$TEST_OUTPUT_DIR/mbt-cxl") . && go version -m $(printf %q "$TEST_OUTPUT_DIR/mbt-cxl") | grep -w github.com/askervin/gofmbt" ||
+        command-error "cannot build the model in $TEST_DIR/model"
     MBT_BIN="$TEST_OUTPUT_DIR/mbt-cxl"
 fi
 [ -x "$MBT_BIN" ] || error "the generator $MBT_BIN is not executable"
