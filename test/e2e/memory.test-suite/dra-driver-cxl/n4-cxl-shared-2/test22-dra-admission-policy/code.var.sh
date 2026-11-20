@@ -495,6 +495,7 @@ dra-wait "$VM2" orphan-deleted "resourceclaims -n $DRA_NS" "'$ORPHAN' not in nam
 
 echo "### cleanup"
 dra-delete "$VM2" pod borrower --grace-period=2 --wait=true --timeout=60s
+dra-delete "$VM2" resourceclaimtemplate cxl-lease --wait=true --timeout=60s
 vmdir-command "$VM2" "kubectl label namespace $DRA_NS $NS_LABEL-" ||
     command-error "cannot remove label $NS_LABEL of namespace $DRA_NS"
 dra-assert-clean "$VM2" "$VM1"
