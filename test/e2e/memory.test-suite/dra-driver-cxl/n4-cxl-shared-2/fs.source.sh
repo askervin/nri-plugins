@@ -28,15 +28,15 @@ fs-kernel-require() {
     # Fail the test unless the running kernel of the VM of VMDIR, created
     # from TOPOLOGY, has every CONFIG_OPTION built in, by default those of
     # ext4, xfs, btrfs, squashfs, erofs and FS_DAX.
-    local vmdir="$1" topology="$2" opt opts
+    local vmdir="$1" topology="$2" opt options
     shift 2
-    opts=("$@")
-    [ ${#opts[@]} -gt 0 ] || opts=(EXT4_FS XFS_FS BTRFS_FS SQUASHFS EROFS_FS FS_DAX)
-    for opt in "${opts[@]}"; do
+    options=("$@")
+    [ ${#options[@]} -gt 0 ] || options=(EXT4_FS XFS_FS BTRFS_FS SQUASHFS EROFS_FS FS_DAX)
+    for opt in "${options[@]}"; do
         vmdir-command-q "$vmdir" "grep -qx CONFIG_$opt=y /boot/config-\$(uname -r)" ||
             error "kernel of $(vmdir-name "$vmdir") lacks CONFIG_$opt=y: run memory.test-suite/dra-driver-cxl/$topology/test00-up: it installs the CXL kernel of test/e2e/playbook/files/qemu-cxl-kernel.config"
     done
-    echo "$(vmdir-label "$vmdir"): kernel with ${opts[*]}"
+    echo "$(vmdir-label "$vmdir"): kernel with ${options[*]}"
 }
 
 fs-tools-install() {
