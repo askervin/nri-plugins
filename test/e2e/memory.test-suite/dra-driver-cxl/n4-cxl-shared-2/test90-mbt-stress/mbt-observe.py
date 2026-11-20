@@ -33,7 +33,6 @@ Usage:
                           --vm ID=FILE... --attachments P=FILE...
                           [--inspected-in FILE] [--inspected-out FILE]
                           [--summary FILE] [--pdev NAME=DATA:LSA...]
-                          [--kill-at ID]
       On the host: merge the outputs of "vm" (FILE: what the VM printed)
       and the attachment lists of the pool servers (FILE: the JSON of
       GET /api/v1/attachments) into the settle observation of contract
@@ -44,8 +43,7 @@ Usage:
       Ready (Creating, Pending, Lending): inspected again next time.
       --summary gets lines for the shell: "driver ID POD RESTARTS READY".
       --pdev: "pdevs" of the persistent device NAME from its backing
-      files DATA and LSA on the host. --kill-at: "killAt", the state of
-      the driver-kill-at watcher of VM ID (A23).
+      files DATA and LSA on the host.
 
 Python 3 standard library only. Every part is read in its own try: a part
 that cannot be read is null, and the reason is in the "errors" list of the
@@ -2300,12 +2298,6 @@ def cmd_assemble(args):
             except Exception as e:
                 errors.append("pdevs %s: %s: %s" % (name, type(e).__name__, e))
                 obs["pdevs"][name] = None
-    if args.kill_at:
-        # A23: the state of the driver-kill-at watcher of that VM.
-        v = obs["vms"].get(args.kill_at)
-        obs["killAt"] = (v or {}).get("killAt") if v is not None else None
-        if v is not None and obs["killAt"] is None:
-            obs["killAt"] = {"armed": False, "fired": False, "done": True, "error": "no watcher state in %s" % args.kill_at}
     obs["errors"] = errors
     if args.inspected_out:
         before = []
@@ -2353,7 +2345,6 @@ def main():
     a.add_argument("--inspected-out")
     a.add_argument("--summary")
     a.add_argument("--pdev", action="append")
-    a.add_argument("--kill-at")
     k = sub.add_parser("kill-at")
     k.add_argument("--marker", required=True, choices=("region", "ns", "mount", "bind"))
     k.add_argument("--timeout", type=float, default=60)

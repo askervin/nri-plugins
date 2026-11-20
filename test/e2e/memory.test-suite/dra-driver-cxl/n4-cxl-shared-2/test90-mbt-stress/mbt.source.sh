@@ -73,8 +73,6 @@ MBT_PLEASE_PUT_WAIT="${MBT_PLEASE_PUT_WAIT:-20s}"   # lease-put of plse: cxl-req
 MBT_KILLAT_TIMEOUT="${MBT_KILLAT_TIMEOUT:-60}"      # driver-kill-at: seconds until the watcher gives up
 MBT_KILLAT_STATE=/run/mbt-killat/state.json         # its state in the VM
 MBT_KILLAT_VM=""                   # the VM id of an armed driver-kill-at watcher not reported done yet
-MBT_KILLAT_JSON=""                 # mbt-killat-state: the state of that watcher
-MBT_KILLAT_LAST=""                 # its state when node-reboot disarmed it (its VM has no /run of it after the boot)
 MBT_REBOOT_RUN=""                  # the reboot variant of the run (MBT_REBOOT of code.var.sh, A41): guest, qemu or none
 MBT_REBOOT_WAIT="${MBT_REBOOT_WAIT:-180}"           # node-reboot: seconds to wait for ssh with a new boot id
 MBT_KERNEL_STATE=/run/mbt-observe/kernel.json       # the observer's state of the kernel log in the VM (mbt-observe.py kernel)
@@ -674,9 +672,8 @@ mbt-act-lease-get() {
     # whole device for a block writer (pbw), a read-only share of its block
     # device (pbr), its erofs read-only, direct at
     # /run/cxl/fs/$MBT_FS_LEASE_NAME (pfd) or cached at /run/cxl/fs/<lease
-    # id> (pfc). The result has the lease id (null if none) and the
-    # response of cxl-request. The next settle observation inspects the pod
-    # again: its leases changed.
+    # id> (pfc). The result has the lease id (null if none). The next
+    # settle observation inspects the pod again: its leases changed.
     local slot="$1" mode="$2" rc json args=() serial=${MBT_PMEM_SERIAL[c]}
     mbt-slot "$slot" || return 2
     case "$MBT_BASE:$mode" in
@@ -695,7 +692,7 @@ mbt-act-lease-get() {
     MBT_RESULT=$(python3 -c '
 import json, sys
 r = json.loads(sys.argv[1]) if sys.argv[1] else None
-print(json.dumps({"lease": (r or {}).get("lease"), "response": r,
+print(json.dumps({"lease": (r or {}).get("lease"),
                   "stderr": sys.argv[2].encode()[:200].decode(errors="replace")}, sort_keys=True, separators=(",", ":")))' "$json" "$MBT_ERR")
     MBT_NOTE="lease $(python3 -c 'import json, sys; print((json.loads(sys.argv[1]) or {}).get("lease"))' "$MBT_RESULT")"
     return "$rc"
@@ -708,9 +705,8 @@ mbt-act-lease-put() {
     # release --all). The next settle observation inspects the pod again.
     # plse: with --wait $MBT_PLEASE_PUT_WAIT, so that an fs lease whose file
     # a process maps (hold), which stays Releasing, ends the step with exit
-    # 3 after the wait instead of the plugin's 120 s; the result has the
-    # response (the states of the leases).
-    local rc wait=() json
+    # 3 after the wait instead of the plugin's 120 s.
+    local rc wait=()
     mbt-slot "$1" || return 2
     case "$MBT_BASE" in
         lease) ;;
@@ -720,10 +716,7 @@ mbt-act-lease-put() {
     mbt-exec-in "$1" "$DRA_REQUEST_CTR_BIN" release --all "${wait[@]}"
     rc=$?
     mbt-forget-inspected "$1"
-    if [ "$MBT_BASE" == plse ]; then
-        json=$(dra-last-json "$MBT_OUT") || json=""
-        MBT_RESULT=$(mbt-json response "@json:$json" stderr "@200:$MBT_ERR")
-    fi
+    [ "$MBT_BASE" != plse ] || MBT_RESULT=$(mbt-json stderr "@200:$MBT_ERR")
     return "$rc"
 }
 
@@ -876,8 +869,7 @@ mbt-act-pwipe() {
     # Make the persistent device DEV of pool POOL fresh again on the host:
     # zeros over its LSA file and the first 4 MiB of its data file (labels,
     # pfn info, the erofs). Refused (status 2) while the server of POOL
-    # lists an attachment of DEV (in any state) or does not answer. The
-    # result has the pdevs entry of DEV afterwards ("pdev").
+    # lists an attachment of DEV (in any state) or does not answer.
     local pool="$1" dev="$2" url json files
     mbt-pool-arg "$pool" || return 2
     [ "${MBT_PDEV_POOL[$dev]:-}" == "$pool" ] || { MBT_ERR="$dev is not a persistent device of pool $pool"; return 2; }
@@ -889,24 +881,16 @@ mbt-act-pwipe() {
 import json, sys
 print(" ".join("%s@%s:%s" % (a.get("device"), a.get("host"), a.get("state")) for a in json.loads(sys.argv[1]) or [] if a.get("device") == sys.argv[2]))' "$json" "$dev")
     [ -z "$MBT_OUT" ] || { MBT_ERR="$dev is attached: $MBT_OUT"; return 2; }
-    MBT_RESULT=$(python3 - "${files%%:*}" "${files#*:}" "$MBT_OBSERVER" <<'EOF'
-import importlib.util, json, sys
-data, lsa, observer = sys.argv[1:4]
+    python3 - "${files%%:*}" "${files#*:}" <<'EOF' || { MBT_ERR="cannot wipe $files"; return 1; }
+import sys
+data, lsa = sys.argv[1:3]
 for path, n in ((lsa, None), (data, 4 << 20)):
     with open(path, "r+b") as f:
         size = f.seek(0, 2)
         f.seek(0)
         f.write(bytes(size if n is None else min(n, size)))
-spec = importlib.util.spec_from_file_location("observe", observer)
-m = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(m)
-print(json.dumps({"pdev": m.pdev(data, lsa)}, sort_keys=True, separators=(",", ":")))
 EOF
-    ) || { MBT_ERR="cannot wipe $files"; MBT_RESULT='{}'; return 1; }
-    {
-        echo "[host] pwipe $dev: $files"
-        echo "$MBT_RESULT"
-    } >> "$MBT_EXEC_LOG"
+    echo "[host] pwipe $dev: $files" >> "$MBT_EXEC_LOG"
     MBT_NOTE="wiped $files"
 }
 
@@ -922,10 +906,8 @@ mbt-act-driver-kill-at() {
     # ends, not fired (reason "driver restarted"); driver-kill,
     # driver-restart and containerd-restart of VM disarm it first
     # (mbt-killat-disarm). Return once it is armed. An armed watcher of
-    # an earlier step is stopped first. The
-    # result has its state ("killAt"); every later done and observe line
-    # has "killAt" too, until the first one that reports it done
-    # (mbt-killat-state).
+    # an earlier step is stopped first. The settle observations of the VM
+    # have its state (killAt).
     local vm="$1" marker="$2" dir=${MBT_KILLAT_STATE%/*}
     mbt-vm-arg "$vm" || return 2
     case "$marker" in
@@ -938,40 +920,12 @@ mbt-act-driver-kill-at() {
 setsid -f python3 $MBT_OBSERVER_VM kill-at --marker $marker --timeout $MBT_KILLAT_TIMEOUT > $dir/watcher.log 2>&1 < /dev/null
 for i in \$(seq 100); do [ -s $MBT_KILLAT_STATE ] && break; sleep 0.05; done
 cat $MBT_KILLAT_STATE" || return 1
-    MBT_KILLAT_JSON=$MBT_OUT
-    MBT_RESULT=$(mbt-json killAt "@json:$MBT_KILLAT_JSON")
-    if ! dra-py assert "$MBT_KILLAT_JSON" "j.get('armed') is True" 2>/dev/null; then
+    if ! dra-py assert "$MBT_OUT" "j.get('armed') is True" 2>/dev/null; then
         MBT_ERR="the watcher is not armed: $MBT_OUT"
         return 1
     fi
     MBT_KILLAT_VM=$vm
-    MBT_NOTE="armed, driver pid $(dra-py eval "$MBT_KILLAT_JSON" "j.get('pid')")"
-}
-
-mbt-killat-state() {
-    # Usage: mbt-killat-state [JSON]
-    #
-    # Set MBT_KILLAT_JSON to the state of the armed driver-kill-at watcher
-    # of MBT_KILLAT_VM: JSON (the killAt of an observation) or read from
-    # the VM. Forget the watcher (MBT_KILLAT_VM "") once its state is done:
-    # it is reported once. Return 1 if no watcher is armed.
-    local vm=$MBT_KILLAT_VM
-    [ -n "$vm" ] || return 1
-    if [ -n "${1:-}" ]; then
-        MBT_KILLAT_JSON=$1
-    elif [ -n "$MBT_KILLAT_LAST" ]; then
-        # node-reboot disarmed it: its state of then, /run of the VM is new.
-        MBT_KILLAT_JSON=$MBT_KILLAT_LAST
-    else
-        MBT_KILLAT_JSON=$(vmdir-command-q "${MBT_VMDIR[$vm]}" "cat $MBT_KILLAT_STATE 2>/dev/null")
-        [ -n "$MBT_KILLAT_JSON" ] || MBT_KILLAT_JSON='{"armed": false, "fired": false, "done": true, "error": "no watcher state"}'
-    fi
-    if dra-py assert "$MBT_KILLAT_JSON" "j is None or j.get('done') is not False" 2>/dev/null; then
-        echo "    driver-kill-at $vm: $(head -c 300 <<< "$MBT_KILLAT_JSON")"
-        echo "$(date +%T.%N) driver-kill-at $vm done: $MBT_KILLAT_JSON" >> "$MBT_EXEC_LOG"
-        MBT_KILLAT_VM="" MBT_KILLAT_LAST=""
-    fi
-    return 0
+    MBT_NOTE="armed, driver pid $(dra-py eval "$MBT_OUT" "j.get('pid')")"
 }
 
 mbt-killat-disarm() {
@@ -980,8 +934,8 @@ mbt-killat-disarm() {
     # Before VERB restarts the driver of VM (driver-kill, driver-restart,
     # containerd-restart, fencing-switch, node-reboot): disarm the driver-kill-at watcher armed there,
     # if any (mbt-observe.py kill-at-disarm): it ends done, not fired,
-    # reason "disarmed by VERB", unless it fired or ended before; the done
-    # line of the step reports it (mbt-run). Never fails.
+    # reason "disarmed by VERB", unless it fired or ended before. Never
+    # fails.
     [ -n "$MBT_KILLAT_VM" ] && [ "$MBT_KILLAT_VM" == "$1" ] || return 0
     mbt-sh "$1" "python3 $MBT_OBSERVER_VM kill-at-disarm --verb $2" || true
 }
@@ -993,7 +947,7 @@ mbt-killat-stop() {
     # of the run). Never fails.
     local vm=$MBT_KILLAT_VM
     [ -n "$vm" ] || return 0
-    MBT_KILLAT_VM="" MBT_KILLAT_LAST=""
+    MBT_KILLAT_VM=""
     vmdir-command-q "${MBT_VMDIR[$vm]}" "pkill -f '$MBT_OBSERVER_VM kill-at'; true" > /dev/null 2>&1
     return 0
 }
@@ -1369,7 +1323,6 @@ mbt-act-node-reboot() {
     MBT_RESULT='{"boot":null}'
     if [ -n "$MBT_KILLAT_VM" ] && [ "$MBT_KILLAT_VM" == "$vm" ]; then
         mbt-killat-disarm "$vm" node-reboot
-        [ "${MBT_OUT:0:1}" != "{" ] || MBT_KILLAT_LAST=$MBT_OUT
     fi
     mbt-sh "$vm" "cat /proc/sys/kernel/random/boot_id" ||
         { MBT_ERR="cannot read the boot id of $vm: $MBT_ERR"; return 1; }
@@ -1620,15 +1573,6 @@ mbt-run() {
             MBT_ERR="unknown verb '$verb'"
             MBT_STATUS=2;;
     esac
-    # A23: the state of an armed driver-kill-at watcher, in every done line
-    # until it is reported done (its own arming step reports it already).
-    if [ "$verb" != driver-kill-at ] && mbt-killat-state; then
-        MBT_RESULT=$(python3 -c '
-import json, sys
-r = json.loads(sys.argv[1] or "{}")
-r["killAt"] = json.loads(sys.argv[2])
-print(json.dumps(r, sort_keys=True, separators=(",", ":")))' "$MBT_RESULT" "$MBT_KILLAT_JSON")
-    fi
     secs=$(printf '%.2f' "$(echo "$EPOCHREALTIME - $t0" | bc)")
     echo "    status $MBT_STATUS, ${secs} s${MBT_NOTE:+, $MBT_NOTE}${MBT_ERR:+, stderr: $(head -c 200 <<< "$MBT_ERR" | tr '\n' ' ')}"
     printf '%s\t%s\t%s\t%s\t%s\t\n' "$step" "$verb" "$*" "$MBT_STATUS" "$secs" >> "$MBT_TIMES"
@@ -1672,15 +1616,12 @@ mbt-observe() {
     # mbt-obs-stacks/obs-STEP-POLL.VM.txt when the part printed nothing or
     # the stacks. Return non-zero if the observation could not be
     # assembled: MBT_OBS is then an observation with the error only.
-    local step="$1" poll="$2" t0=$EPOCHREALTIME vm p pids=() cmd inspected args=() url dev killat stacks
+    local step="$1" poll="$2" t0=$EPOCHREALTIME vm p pids=() cmd inspected args=() url dev stacks
     inspected=$(paste -sd, "$MBT_TMP/inspected")
-    # A24 pdevs from the backing files on the host, A23 killAt of the VM
-    # of an armed driver-kill-at watcher.
+    # A24 pdevs from the backing files on the host.
     for dev in "${!MBT_PDEV_FILES[@]}"; do
         args+=(--pdev "$dev=${MBT_PDEV_FILES[$dev]}")
     done
-    killat=$MBT_KILLAT_VM
-    [ -z "$killat" ] || args+=(--kill-at "$killat")
     for vm in "${MBT_VMIDS[@]}"; do
         cmd="timeout -k 5 $MBT_OBS_TIMEOUT python3 $MBT_OBSERVER_VM vm --ns $DRA_NS --stacks-after $(( MBT_OBS_TIMEOUT - 5 ))"
         [ "$vm" != vm2 ] || cmd+=" --cluster --nodes $MBT_NODES --units $MBT_UNITS --pools $MBT_POOLS --inspected '$inspected'"
@@ -1720,11 +1661,6 @@ mbt-observe() {
     done
     MBT_OBS_SECONDS=$(printf '%.2f' "$(echo "$EPOCHREALTIME - $t0" | bc)")
     printf '%s\t%s\t%s\n' "$step" "$poll" "$MBT_OBS_SECONDS" >> "$MBT_OBS_TIMES"
-    if [ -n "$killat" ] && [ "$killat" == "$MBT_KILLAT_VM" ]; then
-        # The observation of the VM has the state, unless it failed.
-        p=$(python3 -c 'import json, sys; k = json.loads(sys.argv[1]).get("killAt"); print(json.dumps(k) if k else "")' "$MBT_OBS" 2>/dev/null)
-        [ -n "$p" ] && mbt-killat-state "$p"
-    fi
     mbt-drivers-seen
 }
 
