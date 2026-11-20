@@ -97,6 +97,16 @@ func TestOracleStable(t *testing.T) {
 func TestOracleDeviations(t *testing.T) {
 	s := richState(t, false)
 	str := func(x string) *string { return &x }
+	// lease sets a field of the one lease that lease@vm1#0 lists
+	lease := func(o *Observation, key, value string) {
+		var list []map[string]any
+		in := o.Inspect["lease@vm1#0"]
+		if err := json.Unmarshal(in.Leases, &list); err != nil || len(list) != 1 {
+			t.Fatalf("leases %s: %v", in.Leases, err)
+		}
+		list[0][key] = value
+		in.Leases, _ = json.Marshal(list)
+	}
 	cases := []struct {
 		name   string
 		change func(o *Observation)
@@ -115,6 +125,14 @@ func TestOracleDeviations(t *testing.T) {
 			o.Pods = append(o.Pods, ObsPod{Slot: "bogus_vm0_0", Name: "x", Phase: "Running"})
 		}, VFail, "unknown slot"},
 		{"pod of a newer generation", func(o *Observation) { podOf(t, o, "plain@vm0#0").Gen = 2 }, VFail, "generation 2"},
+		{"two pods of a generation", func(o *Observation) {
+			p := *podOf(t, o, "plain@vm0#0")
+			p.Name += "-twin"
+			o.Pods = append(o.Pods, p)
+		}, VFail, "two pods of generation 1 of slot plain@vm0#0"},
+		{"running pod being deleted", func(o *Observation) { podOf(t, o, "plain@vm0#0").Deleting = true }, VFail, "plain@vm0#0: being deleted, want Running"},
+		{"pending pod being deleted", func(o *Observation) { podOf(t, o, "lnuma@vm0#1").Deleting = true }, VFail, "lnuma@vm0#1: being deleted, want Pending"},
+
 		{"old pod terminating", func(o *Observation) {
 			o.Pods = append(o.Pods, ObsPod{Slot: "plain@vm0#0", Name: "old", Gen: 0, Phase: "Running", Deleting: true})
 		}, VWait, "old generation still terminating"},
@@ -255,6 +273,9 @@ func TestOracleDeviations(t *testing.T) {
 			o.Inspect["sro-c@vm2#0"].Env = nil
 		}, VOK, "ok"},
 		{"lease list", func(o *Observation) { o.Inspect["lease@vm1#0"].Leases = json.RawMessage(`[]`) }, VFail, "0 leases listed, want 1"},
+		{"lease failed", func(o *Observation) { lease(o, "state", "Failed") }, VFail, "leases of lease@vm1#0: lease"},
+		{"lease mode", func(o *Observation) { lease(o, "mode", "dax") }, VFail, "mode dax, want numa"},
+		{"inspect of an unknown slot", func(o *Observation) { o.Inspect["bogus@vm0#0"] = o.Inspect["plain@vm0#0"] }, VFail, `inspect: unknown slot "bogus@vm0#0"`},
 		// O8
 		{"driver not ready", func(o *Observation) { o.Drivers["vm1"].Ready = false }, VWait, "driver vm1"},
 		{"no driver container", func(o *Observation) { o.VMs["vm1"].DriverLog.Container = nil }, VWait, "driver vm1: no running driver container"},

@@ -135,6 +135,11 @@ func TestStalledContenderPromoted(t *testing.T) {
 	if ss := slotOf(t, adopted, "xdax-c@any#0"); ss.Phase != Running || ss.Node != VM2 {
 		t.Fatalf("adopted %s on %s", ss.Phase, ss.Node)
 	}
+	o := observation(t, truth)
+	bogus := "vm9"
+	podOf(t, o, "xdax-c@any#0").Node = &bogus
+	v, _ = checkState(s, o, "")
+	wantVerdict(t, v, VFail, `unknown node "vm9"`)
 	// through vm1/hb0 [hole,local]: its Prepare needs a new region
 	h := stateAfter(t, "full", true, "create xnuma-a@vm1#0", "settle", "create lnuma@vm1#0", "settle", "delete xnuma-a@vm1#0", "settle",
 		"ctrl-kill a", "create xnuma-a@vm2#0", "settle", "create xdax-a@vm1#0", "settle", "delete xnuma-a@vm2#0", "ctrl-start a", "settle")
