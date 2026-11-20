@@ -179,8 +179,8 @@ func (c *commonFlags) options(online bool, stderr io.Writer) (runOpts, error) {
 		return runOpts{}, errors.New("--node-hb0 and --node-hb1 must differ")
 	}
 	cfg.Unsettled = c.unsettled
-	if cfg.Unsettled < 1 {
-		return runOpts{}, errors.New("--unsettled must be at least 1")
+	if cfg.Unsettled < 1 || cfg.Unsettled > 255 {
+		return runOpts{}, errors.New("--unsettled must be 1 to 255")
 	}
 	cfg.MaxRestarts = c.maxRestarts
 	cfg.AvoidHoles = c.avoidHoles

@@ -144,6 +144,10 @@ const (
 	LeaseBusy
 )
 
+func (l LeaseSt) String() string {
+	return [...]string{"none", "held", "releasing", "busy"}[l]
+}
+
 // LeaseMode is the mode of a lease: numa or dax of the local memdev
 // (lease kind), or of c-pmem0 (plse, A23): pbw block writer (the whole
 // device), pbr block read-only share, pfd fs direct share (name mbt),
@@ -519,6 +523,7 @@ func (s *State) clone() *State {
 		HeldAt:    s.HeldAt,
 		Unsettled: s.Unsettled,
 		Fence:     s.Fence,
+		Switched:  s.Switched,
 		Reorder:   s.Reorder,
 		Steps:     s.Steps,
 		Last:      s.Last,
@@ -1040,7 +1045,7 @@ func (s *State) dump() string {
 			fmt.Fprintf(&b, " steer %s", ss.Steer)
 		}
 		if ss.Lease != LeaseNone {
-			fmt.Fprintf(&b, " lease %s %s %q", map[LeaseSt]string{LeaseHeld: "held", LeaseReleasing: "releasing"}[ss.Lease], ss.LeaseMode, s.LeaseIDs[i])
+			fmt.Fprintf(&b, " lease %s %s %q", ss.Lease, ss.LeaseMode, s.LeaseIDs[i])
 		}
 		if s.slot(i).Kind == KLDax && ss.Phase != Absent {
 			fmt.Fprintf(&b, " data %s", s.SlotData[i])
@@ -1077,7 +1082,7 @@ func (s *State) dump() string {
 			for d, dev := range poolDevs(p) {
 				for v := VM(0); v < nVMs; v++ {
 					if c.Att[d][v] != TriNo {
-						fmt.Fprintf(&b, " %s@%s=%s", dev, v, map[Tri]string{TriYes: "yes", TriMaybe: "maybe"}[c.Att[d][v]])
+						fmt.Fprintf(&b, " %s@%s=%s", dev, v, triName(c.Att[d][v]))
 					}
 				}
 			}

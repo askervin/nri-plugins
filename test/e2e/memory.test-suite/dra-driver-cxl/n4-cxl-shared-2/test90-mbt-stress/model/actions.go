@@ -1119,7 +1119,7 @@ func (s *State) apply(a Act) *State {
 		n.nodeReboot(a.VM)
 		// the settle comes next (only synchronous steps before it): the
 		// pods come back in kubelet's time, 90-120 s (12-findings 7.2)
-		if u := min(n.cfg.Unsettled, 255) - 1; int(n.Unsettled) < u {
+		if u := n.cfg.Unsettled - 1; int(n.Unsettled) < u {
 			n.Unsettled = uint8(u)
 		}
 	}

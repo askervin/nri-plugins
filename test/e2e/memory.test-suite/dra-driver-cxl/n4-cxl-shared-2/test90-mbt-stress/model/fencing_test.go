@@ -185,6 +185,8 @@ func TestFencingSwitch(t *testing.T) {
 	if !slices.Contains(allActs(cfg), sw) {
 		t.Fatalf("no fencing-switch with --fencing switch")
 	}
+	// one fencing-switch per window, also after other steps of it
+	steps(t, newState(cfg), "fencing-switch", "!fencing-switch", "create plain@vm0#0", "!fencing-switch", "settle", "fencing-switch")
 	s := steps(t, newState(cfg), "create lnuma@vm0#0", "create plain@vm0#0", "create lsteer@vm2#0", "create lease@vm1#0", "settle", "lease-get lease@vm1#0 numa", "settle")
 	if s.Fence != FenceAM || s.Drv[VM0].F == 0 {
 		t.Fatalf("switch starts in allowed-mems:\n%s", s.dump())
