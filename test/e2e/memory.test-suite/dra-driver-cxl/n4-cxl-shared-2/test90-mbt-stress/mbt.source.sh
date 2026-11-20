@@ -1979,52 +1979,28 @@ mbt-online() {
     mbt-coproc-stop
 }
 
-mbt-header-flags() {
-    # Usage: mbt-header-flags STEPS-FILE
+mbt-header-mode() {
+    # Usage: mbt-header-mode FILE FLAG
     #
-    # Print the model flags of the header of STEPS-FILE (an mbt-steps.txt
-    # of mbt-cxl online, or a code.gen.sh of mbt-cxl generate: its first
-    # line "# --profile P --seed S ..."), one --flag=value per line: those
-    # that decide which steps are enabled and how the oracle judges them
-    # (amendment A16). Not the run's budget (--steps, --duration, the
-    # replay runs the file), its files (--out, --replay) or what the
-    # cluster is (--local-blocks, --node-hb0/1: measured). Nothing if the
-    # file has no such header.
+    # Print the value of --FLAG (fencing, reboot) of the header of FILE, an
+    # mbt-steps.txt of mbt-cxl online or a code.gen.sh of mbt-cxl generate
+    # (its first line "# --profile P --seed S ..."). Return 1 if its header
+    # has no --FLAG.
     python3 -c '
 import shlex, sys
-keep = {"profile", "seed", "depth", "coverage", "randomness", "unsettled", "max-restarts", "avoid",
-        "avoid-holes", "max-paths", "settle-timeout", "unblock-timeout", "stall-window", "fencing", "reboot"}
 for line in open(sys.argv[1]):
     if not line.startswith("# --"):
         continue
     words = shlex.split(line[1:])
-    i = 0
-    while i < len(words):
-        w = words[i]
-        i += 1
-        if not w.startswith("--"):
-            continue
+    for i, w in enumerate(words):
         name, eq, value = w[2:].partition("=")
-        if not eq and i < len(words) and not words[i].startswith("--"):
-            value, eq = words[i], "="
-            i += 1
-        if name in keep:
-            print("--%s=%s" % (name, value) if eq else "--" + name)
-    break' "$1"
-}
-
-mbt-header-mode() {
-    # Usage: mbt-header-mode FILE FLAG DEFAULT
-    #
-    # Print the value of --FLAG (fencing, reboot) of the header of FILE
-    # (mbt-header-flags), DEFAULT if the header has no --FLAG (a file of a
-    # generator before amendments A36, A41). Return 1 if FILE has no
-    # header: it has no mode of its own.
-    local flags line
-    grep -q '^# --' "$1" || return 1
-    flags=$(mbt-header-flags "$1") || return 1
-    line=$(grep -m1 -e "^--$2=" <<< "$flags") || { echo "$3"; return 0; }
-    echo "${line#"--$2="}"
+        if w.startswith("--") and name == sys.argv[2]:
+            if not eq and i + 1 < len(words) and not words[i + 1].startswith("--"):
+                value = words[i + 1]
+            print(value)
+            sys.exit(0)
+    break
+sys.exit(1)' "$1" "$2"
 }
 
 mbt-check() {

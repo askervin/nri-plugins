@@ -84,13 +84,6 @@ if [[ "$distro" != *"fedora"* ]]; then
     exit 0
 fi
 
-# The MBT_* that the user set (replay: they override the header of the
-# steps file, amendment A16; MBT_FENCING and MBT_REBOOT must agree with
-# it, below).
-MBT_USER_SET=" "
-for v in MBT_SEED MBT_DEPTH MBT_PROFILE MBT_UNSETTLED MBT_AVOID MBT_STALL_WINDOW MBT_FENCING MBT_REBOOT; do
-    [ -z "${!v+x}" ] || MBT_USER_SET+="$v "
-done
 MBT_MODE="${MBT_MODE:-online}"
 MBT_SEED="${MBT_SEED:-$(date +%s)}"
 MBT_DURATION="${MBT_DURATION:-20m}"
@@ -114,19 +107,21 @@ esac
 # The fencing mode (A36) and the reboot variant (A41) configure both the
 # cluster (the driver configuration, the node-reboot verb) and the model:
 # a replay and an off-line run take them from the header of their file
-# (MBT_REPLAY, MBT_SCRIPT; a header without them: allowed-mems, no
-# reboot). An MBT_FENCING or MBT_REBOOT that the user set (also set to
-# "": MBT_REBOOT= is no reboot) must be the header's, or the test fails
-# here (the model refuses such a contradiction too). Edit the header to
-# run a file in another mode. A file without a header has no mode: the
-# MBT_* or their defaults.
+# (MBT_REPLAY, MBT_SCRIPT). An MBT_FENCING or MBT_REBOOT that the user set
+# (also set to "": MBT_REBOOT= is no reboot) must be the header's, or the
+# test fails here (the model refuses such a contradiction too). Edit the
+# header to run a file in another mode. A file without a header has no
+# mode: the MBT_* or their defaults.
 mbt_mode_file=""
 case "$MBT_MODE" in
     replay) mbt_mode_file=$MBT_REPLAY;;
     offline) mbt_mode_file=$MBT_SCRIPT;;
 esac
-if [ -n "$mbt_mode_file" ] && hdr_fencing=$(mbt-header-mode "$mbt_mode_file" fencing allowed-mems); then
-    hdr_reboot=$(mbt-header-mode "$mbt_mode_file" reboot "")
+if [ -n "$mbt_mode_file" ] && grep -q '^# --' "$mbt_mode_file"; then
+    hdr_fencing=$(mbt-header-mode "$mbt_mode_file" fencing) ||
+        error "the header of $mbt_mode_file has no --fencing: not a file of this mbt-cxl"
+    hdr_reboot=$(mbt-header-mode "$mbt_mode_file" reboot) ||
+        error "the header of $mbt_mode_file has no --reboot: not a file of this mbt-cxl"
     [ -z "${MBT_FENCING+x}" ] || [ "${MBT_FENCING:-allowed-mems}" == "$hdr_fencing" ] ||
         error "MBT_FENCING=$MBT_FENCING, but $mbt_mode_file is of --fencing $hdr_fencing: unset MBT_FENCING, or edit the header of the file"
     [ -z "${MBT_REBOOT+x}" ] || [ "$MBT_REBOOT" == "$hdr_reboot" ] ||
@@ -325,13 +320,11 @@ echo "mbt: stall window: ${MBT_STALL_WINDOW:-the default of the model}"
 
 echo "### 1: the run"
 export MBT_OUT="$TEST_OUTPUT_DIR"
-# Go's flag package keeps the last value of a flag: the flags of the
-# header of a replayed file first, then the MBT_* (in replay only those
-# the user set), the measured facts, MBT_ARGS.
+# The MBT_*, the facts of the cluster, MBT_ARGS. A replayed file's header
+# wins over the MBT_* for the flags of the model (it says so on its
+# stderr, A16); its fencing and reboot are the run's already.
 MBT_FLAGS=()
 if [ "$MBT_MODE" == replay ]; then
-    mapfile -t MBT_FLAGS < <(mbt-header-flags "$MBT_REPLAY")
-    echo "mbt: flags of the header of $MBT_REPLAY: ${MBT_FLAGS[*]:-none}"
     hdr_blocks=$(sed -n 's/^# .*--local-blocks[ =]\([^ ]*\).*/\1/p' "$MBT_REPLAY" | head -n 1)
     [ -z "$hdr_blocks" ] || [ "$hdr_blocks" == "$LOCAL_BLOCKS" ] ||
         echo "WARNING: $MBT_REPLAY was recorded with --local-blocks $hdr_blocks, the cluster has $LOCAL_BLOCKS: the replay may diverge"
@@ -339,20 +332,13 @@ if [ "$MBT_MODE" == replay ]; then
     [ -z "$hdr_stall" ] || [ "$hdr_stall" == "${MBT_STALL_WINDOW:-6m}" ] ||
         echo "WARNING: $MBT_REPLAY was recorded with --stall-window $hdr_stall, this run has ${MBT_STALL_WINDOW:-the default}: the replay may diverge"
 fi
-mbt-flag() {
-    # Usage: mbt-flag VAR FLAG=VALUE: add FLAG=VALUE, in replay only if
-    # the user set VAR.
-    [ "$MBT_MODE" != replay ] || [[ "$MBT_USER_SET" == *" $1 "* ]] || return 0
-    MBT_FLAGS+=("$2")
-}
-mbt-flag MBT_SEED --seed="$MBT_SEED"
-mbt-flag MBT_DEPTH --depth="$MBT_DEPTH"
-mbt-flag MBT_PROFILE --profile="$MBT_PROFILE"
-mbt-flag MBT_UNSETTLED --unsettled="$MBT_UNSETTLED"
-mbt-flag MBT_FENCING --fencing="$MBT_FENCING"
-[ -z "$MBT_AVOID" ] || mbt-flag MBT_AVOID --avoid="$MBT_AVOID"
-[ -z "$MBT_REBOOT" ] || mbt-flag MBT_REBOOT --reboot="$MBT_REBOOT"
 MBT_FLAGS+=(
+    --seed="$MBT_SEED"
+    --depth="$MBT_DEPTH"
+    --profile="$MBT_PROFILE"
+    --unsettled="$MBT_UNSETTLED"
+    --fencing="$MBT_FENCING"
+    --reboot="$MBT_REBOOT"
     --duration="$MBT_DURATION"
     --steps="$MBT_STEPS"
     --settle-timeout="${MBT_SETTLE_TIMEOUT}s"
@@ -361,6 +347,7 @@ MBT_FLAGS+=(
     --node-hb1="$NODE_HB1"
     --out="$TEST_OUTPUT_DIR"
 )
+[ -z "$MBT_AVOID" ] || MBT_FLAGS+=(--avoid="$MBT_AVOID")
 # The stall window follows the cluster's kube-scheduler: the model's
 # default, or the user's.
 [ -z "${MBT_STALL_WINDOW:-}" ] || MBT_FLAGS+=(--stall-window="$MBT_STALL_WINDOW")

@@ -297,7 +297,7 @@ func TestReviewA16Header(t *testing.T) {
 	if err := fs.Parse([]string{"--profile", "full", "--steps", "7", "--avoid", "crash"}); err != nil {
 		t.Fatal(err)
 	}
-	_, header := readSteps("# mbt-cxl online seed=1\n# --profile small --seed 9 --avoid \"\" --avoid-holes=true --local-blocks vm2=8,vm1=1,vm0=2 --steps 40 --plan-ahead=true\nsettle\n")
+	_, header := readSteps("# mbt-cxl online seed=1\n# --profile small --seed 9 --avoid \"\" --avoid-holes=true --local-blocks vm2=8,vm1=1,vm0=2 --steps 40 --plan-ahead=true --fencing allowed-mems --reboot=\nsettle\n")
 	var msgs bytes.Buffer
 	if err := applyHeader(fs, header, &msgs); err != nil {
 		t.Fatal(err)

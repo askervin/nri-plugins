@@ -344,7 +344,7 @@ func applyHeader(fs *flag.FlagSet, header []string, stderr io.Writer) error {
 	if len(header) > 0 {
 		for name := range clusterFlags {
 			if _, ok := inHeader[name]; !ok {
-				inHeader[name] = fs.Lookup(name).DefValue
+				return fmt.Errorf("the header of the steps file has no --%s: not a file of this mbt-cxl", name)
 			}
 		}
 	}

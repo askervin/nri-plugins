@@ -532,10 +532,9 @@ func TestHeaderClusterFlags(t *testing.T) {
 		{hdr, []string{"--reboot=qemu"}, "--reboot=qemu of the command line, but the steps file is of --reboot=guest", "", ""},
 		// MBT_REBOOT= (set, empty) cannot run a file with reboots
 		{hdr, []string{"--reboot="}, "--reboot= of the command line, but the steps file is of --reboot=guest", "", ""},
-		{old, nil, "", "allowed-mems", ""},
-		{old, []string{"--fencing", "allowed-mems", "--reboot="}, "", "allowed-mems", ""},
-		{old, []string{"--fencing", "none"}, "--fencing=none of the command line, but the steps file is of --fencing=allowed-mems", "", ""},
-		{old, []string{"--reboot=guest"}, "--reboot=guest of the command line, but the steps file is of --reboot=", "", ""},
+		// a header without them is not of this mbt-cxl
+		{old, nil, "the header of the steps file has no --", "", ""},
+		{old, []string{"--fencing", "allowed-mems", "--reboot="}, "the header of the steps file has no --", "", ""},
 		{"", []string{"--fencing", "none", "--reboot=qemu"}, "", "none", "qemu"},
 	} {
 		c, err := parse(tc.header, tc.args...)
