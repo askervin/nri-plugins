@@ -666,7 +666,7 @@ echo "### E: steering is opt-in: CXL only, DRAM only, DRAM and CXL, DRAM first a
 # children of the main process (dra-run), allocate without a NUMA
 # preference of their own, and land where the plan of the driver says.
 t0=$EPOCHREALTIME
-dra-claim-pod "$VM2" steer-cxl "$LOCAL_CLASS" "$(dra-mi "$BS")" "container=steering: {policy: auto}"
+dra-claim-pod "$VM2" steer-cxl "$LOCAL_CLASS" "$(dra-mi "$BS")" "container=steering: {policy: auto, maxStep: $(dra-mi "$FIRST_STEP")}"
 dra-claim-pod "$VM2" steer-dram "$DRAM_CLASS" "$(dra-mi "$DRAM_REQ")" "container=steering: {policy: auto}"
 dra-apply "$VM2" <<< "$(dram-cxl-template-yaml steer-mix "policy: auto")
 ---
@@ -732,7 +732,8 @@ dra-mems-wait "$VM2" steer-first main "$NUMA_NODE"
 # Past its claim: steer-cxl holds PAST_MIB, more than its CXL quota of a
 # block. Past the last waypoint of its plan its memory goes on to the CXL
 # node, without a memory.high bound. When the memory is freed, the usage
-# is below the last waypoint again and the steering resumes with a bound.
+# is below the last waypoint again by more than a step (FIRST_STEP) and
+# the steering resumes with a bound.
 dra-run "$VM2" steer-cxl "setsid python3 /tools/numa-touch.py --hold $PAST_MIB - > /tmp/hold.log 2>&1 < /dev/null &" ||
     error "cannot start numa-touch.py in steer-cxl"
 # shellcheck disable=SC2016 # evaluated by retry-until
