@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Write the hand-made samples of the pool-fs views: testdata/pool-fs-*/.
+"""Write the hand-made samples of the pool-fs views: DIR/pool-fs-*/.
 
-Usage: make-samples-pool-fs.py [TESTDATA-DIR]
+Usage: make-samples-pool-fs.py DIR (bin/common.py testdata() runs it)
        make-samples-pool-fs.py --super   (pool-fs-super.json again, with mkfs)
 
 Each scenario is the state of one step R1-R11 of the pool-fs script (one
@@ -437,7 +437,9 @@ def main():
         make_super()
         print("superblocks written to %s" % SUPER_FILE)
         return
-    base = sys.argv[1] if len(sys.argv) > 1 else TESTDATA
+    if len(sys.argv) != 2:
+        sys.exit("usage: %s DIR" % os.path.basename(sys.argv[0]))
+    base = sys.argv[1]
     for fstype in ("ext4", "xfs", "btrfs"):
         for name, (v2, v1, pl) in scenarios(fstype).items():
             sdir = os.path.join(base, name)

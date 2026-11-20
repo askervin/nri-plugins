@@ -5,16 +5,38 @@ Standard library only. The VMs are reached with
 "ssh -F <vm dir>/.ssh-config node"; the .ssh-config of the e2e VMs has
 ControlMaster auto, so repeated calls reuse one connection.
 """
+import atexit
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 BIN_DIR = os.path.dirname(os.path.abspath(__file__))
 DEMO_DIR = os.path.dirname(BIN_DIR)
+
+# The generators of the samples in testdata/ (the scenarios of the views).
+SAMPLE_GENERATORS = ("make-samples.py", "make-samples-pool-fs.py", "make-wizard-samples.py")
+_testdata = None
+
+
+def testdata():
+    """The directory of the samples: a copy of testdata/ with the scenarios
+    that its generators write, made once per process in a temporary
+    directory that goes at the exit."""
+    global _testdata
+    if _testdata is None:
+        src = os.path.join(DEMO_DIR, "testdata")
+        d = tempfile.mkdtemp(prefix="demo-testdata-")
+        atexit.register(shutil.rmtree, d, True)
+        shutil.copytree(src, d, dirs_exist_ok=True)
+        for g in SAMPLE_GENERATORS:
+            subprocess.run([sys.executable, "-B", os.path.join(src, g), d], check=True, stdout=subprocess.DEVNULL)
+        _testdata = d
+    return _testdata
 STATE_DIR = os.environ.get("DEMO_STATE_DIR", os.path.join(DEMO_DIR, "run"))
 STATE_FILE = os.path.join(STATE_DIR, "state.env")
 PROBE = os.path.join(BIN_DIR, "probe.py")

@@ -949,7 +949,9 @@ direct access and 1.4 times with cached access (Qwen3.5-2B), and 2.4 and
   image/Dockerfile    the demo image of pool-shared-fs, pool-fs and
                       llm-share (mkfs.erofs, mkfs.ext4, mkfs.xfs,
                       mkfs.btrfs)
-  bin/selftest.py     the desk check; testdata/ its samples
+  bin/selftest.py     the desk check; testdata/ its samples (it writes the
+                      scenarios with their generators into a temporary
+                      directory first)
   bin/selftest-shell.sh  its checks of bin/pool-tmpfs.sh, bin/latency.sh and
                       the Vagrantfile patch of lib/vm.bash
                       (make-samples.py writes them with the objects and

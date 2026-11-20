@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Write the hand-made samples of the views: testdata/<scenario>/.
+"""Write the hand-made samples of the views: DIR/<scenario>/.
 
-Usage: make-samples.py [TESTDATA-DIR]
+Usage: make-samples.py DIR (bin/common.py testdata() runs it)
 
 Each scenario is the state of one step of a demo script: state.env (as
 demo setup writes it), vm2.json and vm1.json (what probe.py prints in the
@@ -616,7 +616,9 @@ def local_trace(sdir, t0=1792500000.0):
 
 
 def main():
-    base = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.abspath(__file__))
+    if len(sys.argv) != 2:
+        sys.exit("usage: %s DIR" % os.path.basename(sys.argv[0]))
+    base = sys.argv[1]
     for name, (v2, v1) in local_scenarios().items():
         sdir = os.path.join(base, name)
         os.makedirs(sdir, exist_ok=True)

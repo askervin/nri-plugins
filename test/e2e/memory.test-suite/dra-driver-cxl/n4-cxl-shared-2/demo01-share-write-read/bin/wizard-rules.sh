@@ -11,8 +11,9 @@
 #              did not do what it expects. Starts with demo wizard delete
 #              --all and ends with it.
 #   --dry-run  at the desk: every new row with --dry-run against the
-#              sample testdata/wizard-W0 (DEMO_WIZARD_SAMPLE), refused or
-#              accepted as it expects; no deletes, no waits.
+#              sample wizard-W0 of make-wizard-samples.py
+#              (DEMO_WIZARD_SAMPLE), refused or accepted as it expects; no
+#              deletes, no waits.
 #   --from N   start at the row of line N of this file.
 #   --capture N:LABEL
 #              after the row of line N: demo capture LABEL --truth (the
@@ -161,7 +162,11 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -n "$dry" ]; then
-    export DEMO_WIZARD_SAMPLE="$DEMO_DIR/testdata/wizard-W0"
+    samples=$(mktemp -d)
+    trap 'rm -rf "$samples"' EXIT
+    python3 -B "$DEMO_DIR/testdata/make-wizard-samples.py" "$samples" > /dev/null ||
+        die "cannot write the wizard samples"
+    export DEMO_WIZARD_SAMPLE="$samples/wizard-W0"
     STATE="$DEMO_WIZARD_SAMPLE/state.env"
 fi
 [ -f "$STATE" ] || die "no $STATE: demo setup wizard"

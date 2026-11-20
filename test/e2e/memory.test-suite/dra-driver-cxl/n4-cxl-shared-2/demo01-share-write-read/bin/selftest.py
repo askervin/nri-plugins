@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Desk check of the demo: every rendering fits 50 x 10.
 
-Usage: selftest.py [--write] [--quiet]
+Usage: selftest.py [--quiet]
 
-- renders the views of every scenario in testdata/ (t2, t3, t4, t6 from
+- renders the views of every scenario of the samples (testdata/ and what
+  its generators write; t2, t3, t4, t6 from
   vm2.json, vm1.json, pool.json; t5 from trace/ at several points of time)
   and checks: at most 10 lines, at most 50 columns, printable ASCII;
 - runs probe.py on fake /sys, /proc and /dev trees (a ram region with a
@@ -34,8 +35,7 @@ Usage: selftest.py [--write] [--quiet]
 - runs the checks of the wizard (wizard_check.py: its rules, its YAML,
   its question screens, the states of its objects, its scripted set).
 The terminal size is 50 x 10 whatever the terminal.
-Prints the renderings (testdata/renderings.txt with --write) and exits 1
-on the first failed check.
+Prints the renderings and exits 1 on the first failed check.
 """
 import json
 import os
@@ -55,7 +55,7 @@ import steps         # noqa: E402
 import views         # noqa: E402
 import wizard_check  # noqa: E402
 
-TESTDATA = os.path.join(c.DEMO_DIR, "testdata")
+TESTDATA = c.testdata()
 NOW = 1792500067.0
 failures = []
 out = []
@@ -883,9 +883,6 @@ def main():
     shell_test()
     wizard_test()
     report = "\n".join(out) + "\n"
-    if "--write" in sys.argv:
-        with open(os.path.join(TESTDATA, "renderings.txt"), "w") as f:
-            f.write("# demo selftest: every rendering of testdata/, TZ=UTC (bin/selftest.py --write)\n" + report)
     if "--quiet" not in sys.argv:
         sys.stdout.write(report)
     if failures:

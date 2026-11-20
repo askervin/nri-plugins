@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Write the hand-made samples of the case "wizard": testdata/wizard-*/
-and testdata/trace-wizard/.
+"""Write the hand-made samples of the case "wizard": DIR/wizard-*/
+and DIR/trace-wizard/.
 
-Usage: make-wizard-samples.py [TESTDATA-DIR]
+Usage: make-wizard-samples.py DIR (bin/common.py testdata() runs it)
 
 wizard-W0 is the cluster after demo setup wizard: the published devices
 (the local memdevs of vm2 and vm1, lp0 of vm2, pooled0, shared0 and fs0
@@ -326,7 +326,9 @@ def write_scenario(base, name, vm2, vm1, pool):
 
 
 def main():
-    base = sys.argv[1] if len(sys.argv) > 1 else HERE
+    if len(sys.argv) != 2:
+        sys.exit("usage: %s DIR" % os.path.basename(sys.argv[0]))
+    base = sys.argv[1]
     vm2, vm1, pool = scenario_w0()
     write_scenario(base, "wizard-W0", vm2, vm1, pool)
     state = common.load_state(os.path.join(base, "wizard-W0", "state.env"))

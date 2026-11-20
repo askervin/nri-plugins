@@ -44,7 +44,7 @@ import common as c        # noqa: E402
 import wizard as w        # noqa: E402
 import wizard_views as wv  # noqa: E402
 
-TESTDATA = os.path.join(c.DEMO_DIR, "testdata")
+TESTDATA = c.testdata()
 RULES = os.path.join(c.BIN_DIR, "wizard-rules.sh")
 failures = []
 
