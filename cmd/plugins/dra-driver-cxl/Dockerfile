@@ -7,7 +7,6 @@ ARG BUILD_VERSION
 ARG BUILD_BUILDID
 ARG DEBUG=0
 ARG NORACE=0
-ARG COVER=0
 ARG SKIP_LICENSES=0
 
 WORKDIR /go/builder
@@ -28,7 +27,6 @@ RUN --mount=type=cache,target=/go/pkg/mod/ \
          V=$DEBUG \
          DEBUG=$DEBUG \
          NORACE=$NORACE \
-         COVER=$COVER \
          OTHER_IMAGE_TARGETS="" \
          BINARIES=cxl-request \
          PLUGINS=nri-dra-driver-cxl \
@@ -42,6 +40,8 @@ RUN --mount=type=cache,target=/go/pkg/mod/ \
 FROM debian:bookworm AS ndctl
 
 ARG NDCTL_VERSION=85
+# the commit of the tag v85
+ARG NDCTL_COMMIT=15e932c4e1318a9608ad9b799ad83a32a8b5970d
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -50,7 +50,8 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 RUN git clone --depth 1 --branch v${NDCTL_VERSION} \
-        https://github.com/pmem/ndctl.git /src/ndctl
+        https://github.com/pmem/ndctl.git /src/ndctl && \
+    test "$(git -C /src/ndctl rev-parse HEAD)" = "${NDCTL_COMMIT}"
 
 WORKDIR /src/ndctl
 
@@ -101,7 +102,8 @@ FROM gcr.io/distroless/static
 
 COPY --from=builder /go/builder/build/bin/nri-dra-driver-cxl /bin/nri-dra-driver-cxl
 COPY --from=builder /go/builder/build/bin/cxl-request /bin/cxl-request
-COPY --from=builder /go/builder/build/licenses/nri-dra-driver-cxl/ /licenses/nri-dra-driver-cxl/
+# The licenses of cxl-request are those of the driver: the Go standard
+# library and this repository.
 COPY build/licenses/nri-dra-driver-cxl/ /licenses/nri-dra-driver-cxl/
 COPY --from=ndctl /rootfs/ /
 
