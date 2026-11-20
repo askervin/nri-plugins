@@ -90,8 +90,7 @@ Environment of setup llm-share:
                            device is made: off (default: VMs unpinned, the
                            model spread over all nodes), local (VMs on
                            socket 0, the model on socket 0's nodes) or far
-                           (VMs on socket 0, the model on socket 1; "on" is
-                           far)
+                           (VMs on socket 0, the model on socket 1)
   DEMO_LLM_LATENCY_LOAD    off (default) or a level of bin/latency.sh (with
                            DEMO_LLM_LATENCY=far): background memory traffic
                            on the far socket, "demo latency levels"
@@ -163,12 +162,11 @@ latency-setup() {
     # Usage: latency-setup [NAME]
     #
     # Print the latency setup that NAME (default: DEMO_LLM_LATENCY, else
-    # off) stands for: off, local or far ("on" is far). Fail for another
-    # name.
+    # off) stands for: off, local or far. Fail for another name.
     case "${1:-${DEMO_LLM_LATENCY:-off}}" in
         off) echo off;;
         local) echo local;;
-        far|on) echo far;;
+        far) echo far;;
         *) return 1;;
     esac
 }
@@ -210,7 +208,7 @@ cmd-setup() {
     [ ! -f "$STATE" ] || die "a demo ($(state-get DEMO_CASE)) is set up already: demo teardown first"
     if [ "$case" == llm-share ]; then
         [[ "${DEMO_LLM_ACCESS:-direct}" =~ ^(direct|cached)$ ]] || die "DEMO_LLM_ACCESS is direct or cached"
-        setup=$(latency-setup) || die "DEMO_LLM_LATENCY is $DEMO_LLM_LATENCY: off, local or far (on is far)"
+        setup=$(latency-setup) || die "DEMO_LLM_LATENCY is $DEMO_LLM_LATENCY: off, local or far"
         export DEMO_LLM_LATENCY="$setup"
         latency-load-check
     fi

@@ -56,8 +56,8 @@ usage: latency.sh on [far|local] | off | status | levels
            automatic NUMA balancing, KSM and memory demotion, and mount the
            pool directory as a tmpfs; every changed value is saved first,
            and an "on" that fails or gets SIGINT, SIGTERM or SIGHUP
-           restores them. The setup (far if you give none; "on" is far
-           too) sets what else happens:
+           restores them. The setup (far if you give none) sets what
+           else happens:
              far    the tmpfs is memory of package 1 (mpol=bind) and the
                     background load of DEMO_LLM_LATENCY_LOAD starts if it
                     is set
@@ -972,10 +972,9 @@ lock() {
 setup-name() {
     # Usage: setup-name NAME
     #
-    # Print the setup that NAME stands for: far for "far" and for "on", and
-    # local for "local". Fail for another name.
+    # Print the setup NAME, far or local. Fail for another name.
     case "$1" in
-        far|on) echo far;;
+        far) echo far;;
         local) echo local;;
         *) return 1;;
     esac

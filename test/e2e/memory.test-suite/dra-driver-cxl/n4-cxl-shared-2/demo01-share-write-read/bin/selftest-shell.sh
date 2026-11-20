@@ -397,21 +397,18 @@ setup-run() {
 
 far-test() {
     # Check the far setup: the tmpfs of the far nodes' memory (bind), "far"
-    # in the state and the status, and all of it restored by cmd-off. "on"
-    # is the far setup too.
-    local out name
-    for name in far on; do
-        FAKE_NODES_PER_PACKAGE=2 fake-host
-        out=$(setup-run "$name")
-        expect "$name: on succeeds: $out" contains "$out" "MARK on rc 0"
-        expect "$name: the pool tmpfs is the far nodes' memory, bound: $out" contains "$out" "MARK mounts: cxl-demo-far rw,huge=within_size,size=4194304k,"
-        expect "$name: the pool tmpfs has the policy bind:2-3: $out" contains "$out" "mpol=bind:2-3"
-        expect "$name: the state says far: $out" contains "$out" "MARK state: info setup far;mount "
-        expect "$name: the status names the setup: $out" contains "$out" "latency: on, far setup, since "
-        expect "$name: off succeeds: $out" contains "$out" "MARK off rc 0"
-        expect "$name: off restores the tunable and the mount: $out" \
-            contains "$out" "MARK after off: tunable 1, mounts 0"
-    done
+    # in the state and the status, and all of it restored by cmd-off.
+    local out
+    FAKE_NODES_PER_PACKAGE=2 fake-host
+    out=$(setup-run far)
+    expect "far: on succeeds: $out" contains "$out" "MARK on rc 0"
+    expect "far: the pool tmpfs is the far nodes' memory, bound: $out" contains "$out" "MARK mounts: cxl-demo-far rw,huge=within_size,size=4194304k,"
+    expect "far: the pool tmpfs has the policy bind:2-3: $out" contains "$out" "mpol=bind:2-3"
+    expect "far: the state says far: $out" contains "$out" "MARK state: info setup far;mount "
+    expect "far: the status names the setup: $out" contains "$out" "latency: on, far setup, since "
+    expect "far: off succeeds: $out" contains "$out" "MARK off rc 0"
+    expect "far: off restores the tunable and the mount: $out" \
+        contains "$out" "MARK after off: tunable 1, mounts 0"
 }
 
 local-test() {
@@ -468,8 +465,8 @@ local-test() {
 }
 
 setup-name-test() {
-    # Check the names of the latency setups: latency.sh takes far, local and
-    # "on" (far); the demo command and the setup test also take off. Check
+    # Check the names of the latency setups: latency.sh takes far and local;
+    # the demo command and the setup test also take off. Check
     # that demo setup refuses a bad name, and a load that is not with far,
     # before it changes anything.
     local demo="$BIN/demo" setup="$BIN/../../test98-demo-setup/code.var.sh"
@@ -484,7 +481,7 @@ setup-name-test() {
         expect "test90 llm-latency-name $name: want $demo_want, got $got" test "$got" == "$demo_want"
     done <<'EOF'
 far far far
-on far far
+on refused refused
 local local local
 off refused off
 bogus refused refused
@@ -492,8 +489,8 @@ Far refused refused
 EOF
     got=$(eval "$(sed -n '/^latency-setup() {/,/^}/p' "$demo")"; unset DEMO_LLM_LATENCY; latency-setup 2>&1)
     expect "bin/demo latency-setup without a name and DEMO_LLM_LATENCY: want off, got $got" test "$got" == off
-    got=$(eval "$(sed -n '/^latency-setup() {/,/^}/p' "$demo")"; DEMO_LLM_LATENCY=on latency-setup 2>&1)
-    expect "bin/demo latency-setup of DEMO_LLM_LATENCY=on: want far, got $got" test "$got" == far
+    got=$(eval "$(sed -n '/^latency-setup() {/,/^}/p' "$demo")"; DEMO_LLM_LATENCY=local latency-setup 2>&1)
+    expect "bin/demo latency-setup of DEMO_LLM_LATENCY=local: want local, got $got" test "$got" == local
 
     # latency.sh refuses another name before it asks for sudo.
     rc=0
@@ -504,7 +501,7 @@ EOF
     rc=0
     out=$(DEMO_STATE_DIR="$TMP/demo-state" DEMO_LLM_LATENCY=bogus "$demo" setup llm-share 2>&1) || rc=$?
     expect "demo setup refuses DEMO_LLM_LATENCY=bogus (rc $rc): $out" test "$rc" == 1
-    expect "demo setup names the setups: $out" contains "$out" "DEMO_LLM_LATENCY is bogus: off, local or far (on is far)"
+    expect "demo setup names the setups: $out" contains "$out" "DEMO_LLM_LATENCY is bogus: off, local or far"
     rc=0
     out=$(DEMO_STATE_DIR="$TMP/demo-state" DEMO_LLM_LATENCY=local DEMO_LLM_LATENCY_LOAD=700 "$demo" setup llm-share 2>&1) || rc=$?
     expect "demo setup refuses a load with the local setup (rc $rc): $out" test "$rc" == 1

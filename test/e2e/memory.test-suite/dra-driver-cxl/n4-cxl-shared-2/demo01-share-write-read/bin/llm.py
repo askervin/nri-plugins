@@ -254,8 +254,10 @@ def cmd_mem(state, label, since_label):
 
 
 def latency_setup(name):
-    """Return the latency setup that NAME stands for: off, local or far; NAME "on" is far, an empty one off."""
-    return "far" if name == "on" else name or "off"
+    """Return the latency setup NAME: off, local or far; an empty NAME is off, another one "?"."""
+    if not name:
+        return "off"
+    return name if name in ("off", "local", "far") else "?"
 
 
 def latency_label(rec):

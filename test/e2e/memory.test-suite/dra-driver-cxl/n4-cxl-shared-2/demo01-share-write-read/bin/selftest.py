@@ -842,13 +842,13 @@ def llm_test():
     rows = llm.result_rows(rec)
     expect("result_rows", [r[6] for r in rows] == ["r-tool", "r-text"] and rows[0][2:4] == ["within_size", "99%"]
            and rows[0][9].startswith("22 (") and rows[0][10] == "44.4", str(rows))
-    # The latency column names the setup: off, local, far (the old name "on" too) and far with a load.
-    for latency, load, want in (("off", "off", "off"), ("local", "off", "local"), ("far", "off", "far"), ("on", "off", "far"),
-                                ("far", "700", "far+700"), ("on", "1000", "far+1000"), ("local", None, "local")):
+    # The latency column names the setup: off, local, far and far with a load.
+    for latency, load, want in (("off", "off", "off"), ("local", "off", "local"), ("far", "off", "far"),
+                                ("far", "700", "far+700"), ("bogus", "off", "?"), ("local", None, "local")):
         got = llm.result_rows(dict(rec, latency=latency, latencyLoad=load))[0][1]
         expect("result_rows latency %s load %s" % (latency, load), got == want, got)
     got = [llm.latency_setup(name) for name in (None, "", "off", "local", "far", "on")]
-    expect("latency_setup", got == ["off", "off", "off", "local", "far", "far"], str(got))
+    expect("latency_setup", got == ["off", "off", "off", "local", "far", "?"], str(got))
 
 
 def wizard_test():

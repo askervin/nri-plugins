@@ -55,8 +55,8 @@
 # DEMO_LLM_MODEL_URL (where the writer fetches it, default its Hugging Face
 # URL), DEMO_LLM_MODEL_DIR (a host directory with the model file to serve
 # instead), DEMO_LLM_ACCESS (direct or cached: the first access of the
-# readers, for the steps), DEMO_LLM_LATENCY (off, local or far; "on" is
-# far), DEMO_LLM_LATENCY_LOAD (off, or a level of bin/latency.sh:
+# readers, for the steps), DEMO_LLM_LATENCY (off, local or far),
+# DEMO_LLM_LATENCY_LOAD (off, or a level of bin/latency.sh:
 # background memory traffic on the far socket, with DEMO_LLM_LATENCY=far),
 # DEMO_LLM_REPEAT (bench repetitions, default 3), DEMO_POOL_DIR (the pool
 # directory, default /tmp/fake-cxl-pool-llm).
@@ -134,12 +134,12 @@ LLM_URL=""
 llm-latency-name() {
     # Usage: llm-latency-name NAME
     #
-    # Print the latency setup that NAME stands for: off, local or far ("on"
-    # is far). Fail for another name.
+    # Print the latency setup NAME: off, local or far. Fail for another
+    # name.
     case "$1" in
         off) echo off;;
         local) echo local;;
-        far|on) echo far;;
+        far) echo far;;
         *) return 1;;
     esac
 }
@@ -153,7 +153,7 @@ if [ "$DEMO_CASE" == llm-share ]; then
     DRA_EXIT_TRAP="dra-cleanup; pool-cleanup; llm-cleanup"
     [[ "$DEMO_LLM_ACCESS" =~ ^(direct|cached)$ ]] || error "DEMO_LLM_ACCESS is $DEMO_LLM_ACCESS: llm-share takes direct or cached"
     latency=$(llm-latency-name "$DEMO_LLM_LATENCY") ||
-        error "DEMO_LLM_LATENCY is $DEMO_LLM_LATENCY: llm-share takes off, local or far (on is far)"
+        error "DEMO_LLM_LATENCY is $DEMO_LLM_LATENCY: llm-share takes off, local or far"
     DEMO_LLM_LATENCY="$latency"
     [[ "$DEMO_LLM_LATENCY_LOAD" =~ ^(off|[0-9]+)$ ]] || error "DEMO_LLM_LATENCY_LOAD is $DEMO_LLM_LATENCY_LOAD: llm-share takes off or a level of latency.sh"
     [ "$DEMO_LLM_LATENCY_LOAD" == off ] || [ "$DEMO_LLM_LATENCY" == far ] ||

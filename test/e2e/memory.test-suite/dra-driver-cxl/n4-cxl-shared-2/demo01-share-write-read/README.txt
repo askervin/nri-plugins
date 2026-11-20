@@ -639,8 +639,8 @@ Setup (environment of "demo setup llm-share"):
                         curl -LO https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf
   DEMO_LLM_ACCESS     direct (default) or cached: the readers' first
                       access; the steps switch to the other one at M10
-  DEMO_LLM_LATENCY    the latency setup: off (default), local or far
-                      ("on" is far). For local and far bin/latency.sh on
+  DEMO_LLM_LATENCY    the latency setup: off (default), local or far.
+                      For local and far bin/latency.sh on
                       runs in setup after the VMs are reset and before the
                       pool server makes the files of llm0; teardown, and a
                       failed setup, run "latency.sh off". "demo latency on
