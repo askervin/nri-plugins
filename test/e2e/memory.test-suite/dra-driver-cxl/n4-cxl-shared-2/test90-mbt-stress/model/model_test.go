@@ -15,6 +15,8 @@
 package main
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -52,6 +54,12 @@ func steps(t *testing.T, s *State, lines ...string) *State {
 	return s
 }
 
+// stateAfter returns the state of a profile after action lines (see steps).
+func stateAfter(t *testing.T, profile string, online bool, lines ...string) *State {
+	t.Helper()
+	return steps(t, newState(testConfig(t, profile, online)), lines...)
+}
+
 func slotOf(t *testing.T, s *State, name string) *SlotState {
 	t.Helper()
 	i := s.cfg.slotIndex(name)
@@ -69,8 +77,7 @@ func wantPhase(t *testing.T, s *State, name string, ph Phase) {
 }
 
 func TestExclusivePoolDevice(t *testing.T) {
-	s := newState(testConfig(t, "full", false))
-	s = steps(t, s, "create xnuma-a@vm1#0", "create xdax-a@vm2#0", "!create xdax-a@vm1#0")
+	s := stateAfter(t, "full", false, "create xnuma-a@vm1#0", "create xdax-a@vm2#0", "!create xdax-a@vm1#0")
 	wantPhase(t, s, "xnuma-a@vm1#0", Starting)
 	wantPhase(t, s, "xdax-a@vm2#0", Pending)
 	s = steps(t, s, "settle")
@@ -99,17 +106,23 @@ func TestExclusivePoolDevice(t *testing.T) {
 }
 
 func TestMoveInOneWindow(t *testing.T) {
-	s := newState(testConfig(t, "full", false))
-	s = steps(t, s, "create xdax-a@vm1#0", "settle", "delete xdax-a@vm1#0", "create xdax-a@vm2#0")
+	s := stateAfter(t, "full", false, "create xdax-a@vm1#0", "settle", "delete xdax-a@vm1#0", "create xdax-a@vm2#0")
 	// the only candidate for the device being released
 	wantPhase(t, s, "xdax-a@vm2#0", Starting)
 	s = steps(t, s, "!create xnuma-a@vm2#0", "settle")
 	wantPhase(t, s, "xdax-a@vm2#0", Running)
+	// on-line the claim of a pod gone at the last settle may be
+	// deallocated a moment later: one candidate per such device in the
+	// window, and nothing released after a settle without deletes
+	s = stateAfter(t, "full", true, "create xnuma-c@vm1#0", "settle", "delete xnuma-c@vm1#0", "settle")
+	s = steps(t, s, "create xnuma-c@vm1#0", "!create xdax-c@vm2#0", "settle")
+	if s.Released != 0 {
+		t.Fatalf("released %b after a settle without deletes", s.Released)
+	}
 }
 
 func TestSharedDevice(t *testing.T) {
-	s := newState(testConfig(t, "full", false))
-	s = steps(t, s, "create sdax-a@vm1#0", "create sdax-a@vm2#0", "create sro-a@vm2#0", "create sexcl-a@vm2#0", "settle")
+	s := stateAfter(t, "full", false, "create sdax-a@vm1#0", "create sdax-a@vm2#0", "create sro-a@vm2#0", "create sexcl-a@vm2#0", "settle")
 	for _, n := range []string{"sdax-a@vm1#0", "sdax-a@vm2#0", "sro-a@vm2#0"} {
 		wantPhase(t, s, n, Running)
 	}
@@ -134,8 +147,7 @@ func TestSharedDevice(t *testing.T) {
 }
 
 func TestLocalCapacity(t *testing.T) {
-	s := newState(testConfig(t, "full", false))
-	s = steps(t, s, "create lnuma@vm0#0", "create ldax@vm0#0", "create lnuma@vm0#1", "!create lnuma@vm0#1", "settle")
+	s := stateAfter(t, "full", false, "create lnuma@vm0#0", "create ldax@vm0#0", "create lnuma@vm0#1", "!create lnuma@vm0#1", "settle")
 	wantPhase(t, s, "lnuma@vm0#0", Running)
 	wantPhase(t, s, "ldax@vm0#0", Running)
 	wantPhase(t, s, "lnuma@vm0#1", Pending)
@@ -155,8 +167,7 @@ func TestLocalCapacity(t *testing.T) {
 }
 
 func TestLease(t *testing.T) {
-	s := newState(testConfig(t, "full", false))
-	s = steps(t, s, "!lease-get lease@vm0#0 numa", "create lease@vm0#0", "!lease-get lease@vm0#0 numa", "settle",
+	s := stateAfter(t, "full", false, "!lease-get lease@vm0#0 numa", "create lease@vm0#0", "!lease-get lease@vm0#0 numa", "settle",
 		"lease-get lease@vm0#0 numa", "!lease-get lease@vm0#0 dax")
 	ss := slotOf(t, s, "lease@vm0#0")
 	if ss.Lease != LeaseHeld || ss.LeaseMode != ModeNuma {
@@ -207,12 +218,31 @@ func TestCrash(t *testing.T) {
 // alts returns the settled state and its alternatives.
 func alts(s *State) []*State { return append([]*State{s}, s.Alts...) }
 
+// dumpAlts returns the dumps of the settled state and its alternatives.
+func dumpAlts(s *State) string {
+	var b strings.Builder
+	for j, a := range alts(s) {
+		b.WriteString("alt " + strconv.Itoa(j) + ":\n" + a.dump())
+	}
+	return b.String()
+}
+
+// adoptSlices returns the outcome of a settle with the given slices.
+func adoptSlices(t *testing.T, s *State, p Pool, st SliceSt) *State {
+	t.Helper()
+	for _, a := range alts(s) {
+		if a.Ctrl[p].Slices == st {
+			return a
+		}
+	}
+	t.Fatalf("no outcome with the slices of pool %s %s:\n%s", p, st, dumpAlts(s))
+	return nil
+}
+
 func TestControllerKill(t *testing.T) {
 	// off-line a kill may not leave a prepare open
-	off := steps(t, newState(testConfig(t, "full", false)), "create sdax-c@vm0#0", "settle", "create xnuma-c@vm1#0", "!ctrl-kill c")
-	_ = off
-	s := newState(testConfig(t, "full", true))
-	s = steps(t, s, "create sdax-c@vm0#0", "settle", "create xnuma-c@vm1#0", "delete sdax-c@vm0#0", "ctrl-kill c", "!ctrl-kill c",
+	stateAfter(t, "full", false, "create sdax-c@vm0#0", "settle", "create xnuma-c@vm1#0", "!ctrl-kill c")
+	s := stateAfter(t, "full", true, "create sdax-c@vm0#0", "settle", "create xnuma-c@vm1#0", "delete sdax-c@vm0#0", "ctrl-kill c", "!ctrl-kill c",
 		"create sdax-c@vm2#0", "settle")
 	// created before the kill: running (prepared before it) or waiting
 	// for the attach; after it: waits for the attach
@@ -251,9 +281,154 @@ func TestControllerKill(t *testing.T) {
 	}
 }
 
+// At a controller kill the attachments that may have changed since the
+// last settle are open: the attach of a claim deleted before it was bound
+// (in flight at the server), and an attachment that only claims being
+// allocated want (a reconcile may have detached it before them).
+func TestCtrlKillOpensAttachments(t *testing.T) {
+	s := stateAfter(t, "full", true, "create sdax-b@vm0#1", "delete sdax-b@vm0#1", "ctrl-kill b")
+	if got := s.Ctrl[PoolB].Att[1][VM0]; got != TriMaybe {
+		t.Fatalf("b-shared0@vm0 %v, want maybe", got)
+	}
+	o := stateAfter(t, "full", true, "create sro-c@vm2#0", "settle", "ctrl-kill c", "delete sro-c@vm2#0", "settle")
+	if o.Ctrl[PoolC].Att[1][VM2] != TriYes {
+		t.Fatalf("orphan c-shared0@vm2 %v", o.Ctrl[PoolC].Att[1][VM2])
+	}
+	o = steps(t, o, "create sdax-c@vm2#0", "ctrl-start c", "ctrl-kill c")
+	if got := o.Ctrl[PoolC].Att[1][VM2]; got != TriMaybe {
+		t.Fatalf("c-shared0@vm2 %v, want maybe", got)
+	}
+}
+
+// ctrl-restart b, then ctrl-kill b before the new controller published
+// the slices: a claim of the pool created then is unschedulable, not
+// waiting for the attach, until the controller is back.
+func TestSlicesAbsentAfterCtrlRestart(t *testing.T) {
+	s := stateAfter(t, "full", true, "create xnuma-b@vm0#0", "create sdax-b@vm0#1", "settle", "create xdax-b@vm0#0", "settle")
+	wantPhase(t, s, "xdax-b@vm0#0", Pending)
+	// not while a claim of the pool is being allocated
+	steps(t, s, "create sro-b@vm0#0", "!ctrl-restart b")
+	s = steps(t, s, "ctrl-restart b", "ctrl-kill b", "create sro-b@vm0#0", "settle")
+	var phases []string
+	for _, a := range alts(s) {
+		phases = append(phases, slotOf(t, a, "sro-b@vm0#0").Phase.String()+"/"+a.Ctrl[PoolB].Slices.String())
+		wantPhase(t, a, "xdax-b@vm0#0", Pending)
+	}
+	if strings.Join(phases, " ") != "attaching/present unsched/absent" {
+		t.Fatalf("outcomes %v", phases)
+	}
+	// no slices, the claim not allocated
+	truth := s.Alts[0]
+	o := observation(t, truth)
+	v, adopted := checkState(s, o, "")
+	wantVerdict(t, v, VOK, "ok")
+	wantPhase(t, adopted, "sro-b@vm0#0", Unsched)
+	if adopted.Ctrl[PoolB].Slices != SlicesAbsent {
+		t.Fatalf("slices %s", adopted.Ctrl[PoolB].Slices)
+	}
+	// without poolSlices the pod's state decides
+	o.PoolSlices = nil
+	v, adopted = checkState(s, o, "")
+	wantVerdict(t, v, VOK, "ok")
+	wantPhase(t, adopted, "sro-b@vm0#0", Unsched)
+	// slices present while predicted absent: wait
+	o = observation(t, truth)
+	o.PoolSlices["b"] = []ObsPoolSlice{{Name: "x"}}
+	v, _ = checkState(adopted, o, "")
+	wantVerdict(t, v, VWait, "pool b: 1 ResourceSlices, want none")
+	// a new claim of the pool is unschedulable at once; nothing else
+	// may ask for a device that such a claim waits for
+	steps(t, adopted, "!create sexcl-b@vm0#0", "!create sdax-b@vm0#0")
+	n := steps(t, adopted, "delete xnuma-b@vm0#0")
+	wantPhase(t, n, "xdax-b@vm0#0", Unsched)
+	n = steps(t, n, "settle", "!create xnuma-b@vm0#0", "ctrl-start b", "settle")
+	wantPhase(t, n, "sro-b@vm0#0", Running)
+	// xnuma-b's region was below b-shared0's: a hole
+	wantPhase(t, n, "xdax-b@vm0#0", Blocked)
+	wantStack(t, n, stackIndex(VM0, HB0), "[hole,b-shared0]")
+	if n.Ctrl[PoolB].Slices != SlicesPresent || len(n.Alts) != 0 {
+		t.Fatalf("after ctrl-start: slices %s, %d alternatives", n.Ctrl[PoolB].Slices, len(n.Alts))
+	}
+	// off-line a kill does not follow a restart in one window
+	steps(t, stateAfter(t, "full", false, "create plain@vm0#0", "settle", "ctrl-restart b"), "!ctrl-kill b", "settle", "ctrl-kill b")
+	// claims that tried while the pool had no slices are requeued
+	// together when they are published: the scheduler picks one. While
+	// the slices are not known to be back, a claim of the pool is the
+	// only candidate for its device.
+	steps(t, stateAfter(t, "full", true, "ctrl-restart a", "create xdax-a@vm2#0"), "!create xnuma-a@vm1#0", "create sdax-a@vm1#0")
+	a := adoptSlices(t, stateAfter(t, "full", true, "ctrl-restart a", "ctrl-kill a", "settle"), PoolA, SlicesAbsent)
+	a = steps(t, a, "create sdax-a@vm1#0", "settle", "ctrl-start a", "!create sexcl-a@vm2#0", "settle", "create sexcl-a@vm2#0")
+	wantPhase(t, a, "sexcl-a@vm2#0", Pending)
+}
+
+// ctrl-restart a, ctrl-kill a before the new controller published,
+// server-restart a, settle with no pod of the pool starting: the slices
+// may be absent (the outcomes differ only in them: they must not be
+// merged); absent is adopted, and nothing but ctrl-start brings them
+// back.
+func TestSlicesBackOnlyAtCtrlStart(t *testing.T) {
+	s := stateAfter(t, "full", true, "create sexcl-a@vm2#0", "settle", "ctrl-restart a", "write sexcl-a@vm2#0", "ctrl-kill a", "server-restart a", "settle")
+	var worlds []string
+	for _, a := range alts(s) {
+		worlds = append(worlds, a.Ctrl[PoolA].Slices.String())
+	}
+	if strings.Join(worlds, " ") != "present absent" {
+		t.Fatalf("outcomes %v", worlds)
+	}
+	o := observation(t, s.Alts[0])
+	if len(o.PoolSlices["a"]) != 0 {
+		t.Fatalf("simulated slices %v", o.PoolSlices["a"])
+	}
+	v, adopted := checkState(s, o, "")
+	wantVerdict(t, v, VOK, "ok")
+	if adopted.Ctrl[PoolA].Slices != SlicesAbsent {
+		t.Fatalf("adopted slices %s", adopted.Ctrl[PoolA].Slices)
+	}
+	n := steps(t, adopted, "server-restart a", "kubelet-restart vm2", "driver-kill vm2", "containerd-restart vm1", "settle")
+	if n.Ctrl[PoolA].Slices != SlicesAbsent {
+		t.Fatalf("slices %s after other faults", n.Ctrl[PoolA].Slices)
+	}
+	n = steps(t, n, "create xnuma-a@vm1#0")
+	wantPhase(t, n, "xnuma-a@vm1#0", Unsched)
+	n = steps(t, n, "settle", "ctrl-start a", "settle")
+	wantPhase(t, n, "xnuma-a@vm1#0", Running)
+	if n.Ctrl[PoolA].Slices != SlicesPresent {
+		t.Fatalf("slices %s after ctrl-start", n.Ctrl[PoolA].Slices)
+	}
+}
+
+// Pool a's slices absent after ctrl-restart a and ctrl-kill a; ctrl-start
+// a, then the holder of a-pooled0 deleted: the new controller publishes
+// the slices within seconds, the waiter of a-pooled0 and the claim that
+// waited for the slices are allocated, attached and Running at the
+// settle.
+func TestSlicesBackAfterCtrlStart(t *testing.T) {
+	s := stateAfter(t, "full", true, "create xnuma-a@vm2#0", "settle", "create xdax-a@vm1#0", "settle",
+		"ctrl-restart a", "ctrl-kill a", "settle")
+	s = adoptSlices(t, s, PoolA, SlicesAbsent)
+	s = steps(t, s, "create sro-a@vm1#0", "settle")
+	wantPhase(t, s, "sro-a@vm1#0", Unsched)
+	s = steps(t, s, "ctrl-start a", "delete xnuma-a@vm2#0", "settle")
+	for _, a := range alts(s) { // (the order of their two regions races)
+		wantPhase(t, a, "xdax-a@vm1#0", Running)
+		wantPhase(t, a, "sro-a@vm1#0", Running)
+		if a.Ctrl[PoolA].Slices != SlicesPresent {
+			t.Fatalf("slices %s", a.Ctrl[PoolA].Slices)
+		}
+	}
+	// killed again before the publish: present or absent
+	k := steps(t, adoptSlices(t, stateAfter(t, "full", true, "ctrl-restart a", "ctrl-kill a", "settle"), PoolA, SlicesAbsent), "ctrl-start a", "ctrl-kill a", "settle")
+	var worlds []string
+	for _, a := range alts(k) {
+		worlds = append(worlds, a.Ctrl[PoolA].Slices.String())
+	}
+	if strings.Join(worlds, " ") != "present absent" {
+		t.Fatalf("ctrl-start, ctrl-kill: outcomes %v", worlds)
+	}
+}
+
 func TestDriverRestart(t *testing.T) {
-	s := newState(testConfig(t, "full", false))
-	s = steps(t, s, "create lsteer@vm2#0", "!create xnuma-a@vm2#0", "create xnuma-c@vm1#0", "settle", "create xnuma-a@vm2#0", "settle")
+	s := stateAfter(t, "full", false, "create lsteer@vm2#0", "!create xnuma-a@vm2#0", "create xnuma-c@vm1#0", "settle", "create xnuma-a@vm2#0", "settle")
 	if got := slotOf(t, s, "lsteer@vm2#0").Steer; got != SteerOn {
 		t.Fatalf("steer %v", got)
 	}
@@ -294,9 +469,60 @@ func TestDriverRestart(t *testing.T) {
 	}
 }
 
+// After driver-kill, driver-restart and containerd-restart alike a running
+// lsteer container is not steered (memory.high max); restarted, it is
+// steered again. An unblocking one may be created while the driver is
+// away (the new driver's Synchronize sees it CREATED and manages it
+// fenced, memory.high max) or after the restart (steered): either is
+// adopted, and off stays off until its container restarts under a running
+// driver.
+func TestSteeringAfterDriverFaults(t *testing.T) {
+	unblocking := stateAfter(t, "full", true,
+		"create xnuma-a@vm2#0", "settle", "create sdax-a@vm2#0", "settle", // vm2/hb0 [a-pooled0,a-shared0]
+		"delete xnuma-a@vm2#0", "settle", // [hole,a-shared0]
+		"create lsteer@vm2#0", "settle", // blocked
+		"delete sdax-a@vm2#0", "settle") // unblocking
+	wantPhase(t, unblocking, "lsteer@vm2#0", Unblocking)
+	for _, fault := range []string{"driver-kill vm2", "containerd-restart vm2", "driver-restart vm2"} {
+		s := stateAfter(t, "full", false, "create lsteer@vm2#0", "settle", fault, "settle")
+		if got := slotOf(t, s, "lsteer@vm2#0").Steer; got != SteerOff {
+			t.Fatalf("%s: steer %s, want off (max)", fault, got)
+		}
+		s = steps(t, s, "crash lsteer@vm2#0", "settle")
+		if got := slotOf(t, s, "lsteer@vm2#0").Steer; got != SteerOn {
+			t.Fatalf("%s, crash: steer %s, want on", fault, got)
+		}
+		n := steps(t, unblocking, fault, "settle")
+		if st := slotOf(t, n, "lsteer@vm2#0").Steer; st != SteerAny {
+			t.Fatalf("%s, unblocking: steering %s, want either", fault, st)
+		}
+		for _, steer := range []Steer{SteerOff, SteerOn} {
+			truth := n.clone()
+			ss := &truth.Slots[truth.cfg.slotIndex("lsteer@vm2#0")]
+			ss.Phase, ss.Steer = Running, steer
+			truth.setUnblockAt(truth.cfg.slotIndex("lsteer@vm2#0"), 0)
+			truth.Stacks[stackIndex(VM2, HB0)].push(rkLocal)
+			truth.growFence()
+			v, adopted := checkState(n, observation(t, truth), "")
+			wantVerdict(t, v, VOK, "ok")
+			got := slotOf(t, adopted, "lsteer@vm2#0")
+			if got.Phase != Running || got.Steer != steer {
+				t.Fatalf("%s: adopted %s steer %s, want running %s", fault, got.Phase, got.Steer, steer)
+			}
+			if steer == SteerOff {
+				if st := steps(t, adopted, "create plain@vm2#0", "settle"); slotOf(t, st, "lsteer@vm2#0").Steer != SteerOff {
+					t.Fatalf("%s: off not kept", fault)
+				}
+				if st := steps(t, adopted, "crash lsteer@vm2#0", "settle"); slotOf(t, st, "lsteer@vm2#0").Steer != SteerOn {
+					t.Fatalf("%s: not steered after a crash", fault)
+				}
+			}
+		}
+	}
+}
+
 func TestContainerdRestart(t *testing.T) {
-	s := newState(testConfig(t, "full", false))
-	s = steps(t, s, "create lsteer@vm1#0", "create xnuma-c@vm1#0", "settle", "containerd-restart vm1", "!containerd-restart vm1",
+	s := stateAfter(t, "full", false, "create lsteer@vm1#0", "create xnuma-c@vm1#0", "settle", "containerd-restart vm1", "!containerd-restart vm1",
 		"!driver-kill vm1", "!lease-get lease@vm1#0 numa")
 	d := s.Drv[VM1]
 	if d.Restarts != 1 || !d.Killed || d.F != s.fenceBit(2)|s.fenceBit(3) {
@@ -307,6 +533,52 @@ func TestContainerdRestart(t *testing.T) {
 		t.Fatalf("steer %v", got)
 	}
 	s = steps(t, s, "settle", "containerd-restart vm1", "settle", "!containerd-restart vm1", "!driver-kill vm1", "driver-restart vm1", "settle", "containerd-restart vm1")
+}
+
+// A kubelet or a containerd restart allows one more restart of every
+// container of its VM that is being created or started (starting,
+// restarting, unblocking pods): kubelet may create it again. The observed
+// count is adopted. A containerd restart while kubelet re-created a
+// crashed container gave it two restarts for one crash.
+func TestRestartSlack(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		lines   []string
+		slack   map[string]uint8 // of the slots
+		crashed int              // lease@vm2#0's crashes in the model
+	}{
+		{"kubelet", []string{"create lease@vm2#0", "create plain@vm1#0", "kubelet-restart vm2", "settle"},
+			map[string]uint8{"lease@vm2#0": 1, "plain@vm1#0": 0}, 0},
+		{"containerd", []string{"create lease@vm2#0", "create sdax-a@vm2#0", "settle", "lease-get lease@vm2#0 numa",
+			"crash lease@vm2#0", "write sdax-a@vm2#0", "create lnuma@vm2#1", "create plain@vm1#0", "containerd-restart vm2", "settle"},
+			map[string]uint8{"lease@vm2#0": 1, "lnuma@vm2#1": 1, "sdax-a@vm2#0": 0, "plain@vm1#0": 0}, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := stateAfter(t, "full", true, c.lines...)
+			for slot, want := range c.slack {
+				if got := slotOf(t, s, slot).Slack; got != want {
+					t.Fatalf("%s: slack %d, want %d", slot, got, want)
+				}
+			}
+			if got := int(slotOf(t, s, "lease@vm2#0").Restarts); got != c.crashed {
+				t.Fatalf("lease@vm2#0: %d restarts, want %d", got, c.crashed)
+			}
+			for restarts := c.crashed; restarts <= c.crashed+2; restarts++ {
+				o := observation(t, s)
+				podOf(t, o, "lease@vm2#0").Restarts = restarts
+				clear(o.Inspect)
+				v, adopted := checkState(s, o, "")
+				if restarts == c.crashed+2 {
+					wantVerdict(t, v, VFail, fmt.Sprintf("%d restarts, the model crashed it %d times (+1 for kubelet or containerd restarts", restarts, c.crashed))
+					continue
+				}
+				wantVerdict(t, v, VOK, "ok")
+				if ss := slotOf(t, adopted, "lease@vm2#0"); int(ss.Restarts) != restarts || ss.Slack != 0 {
+					t.Fatalf("%d restarts: adopted %+v", restarts, ss)
+				}
+			}
+		})
+	}
 }
 
 func TestData(t *testing.T) {
@@ -393,8 +665,7 @@ func TestAnySlots(t *testing.T) {
 }
 
 func TestAbstractionMemo(t *testing.T) {
-	s := newState(testConfig(t, "small", false))
-	s = steps(t, s, "create lnuma@vm0#0", "create xnuma-a@vm1#0")
+	s := stateAfter(t, "small", false, "create lnuma@vm0#0", "create xnuma-a@vm1#0")
 	a := s.String()
 	if a != s.String() || !strings.Contains(a, "dev a-pooled0 xnuma.new") || !strings.Contains(a, "local vm0 room lnuma.new") {
 		t.Fatalf("abstraction %q", a)

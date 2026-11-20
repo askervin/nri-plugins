@@ -500,11 +500,12 @@ func TestGenerateFencingAgainstSim(t *testing.T) {
 	}
 }
 
-// --fencing and --reboot of a steps file's header also configure the
-// cluster (code.var.sh): a command line that contradicts the header is an
-// error, not replaced by it (review of 2026-10-29); a header without
-// them has the defaults, a file without a header the command line's.
-func TestHeaderClusterFlags(t *testing.T) {
+// A replay and generate --from take the model of the steps file's header.
+// Its --fencing and --reboot also configure the cluster (code.var.sh): a
+// command line that contradicts them is an error, not replaced, and a
+// header without them is not of this mbt-cxl; a file without a header
+// takes the command line's.
+func TestStepsFileHeader(t *testing.T) {
 	parse := func(header string, args ...string) (*commonFlags, error) {
 		t.Helper()
 		fs := flag.NewFlagSet("online", flag.ContinueOnError)
@@ -547,15 +548,25 @@ func TestHeaderClusterFlags(t *testing.T) {
 			t.Errorf("%q %v: --fencing %q --reboot %q, want %q %q", tc.header, tc.args, c.fencing, c.reboot, tc.fencing, tc.reboot)
 		}
 	}
-	// the other model flags are still replaced, with a message (A16)
+	// the other model flags of the header replace the command line's,
+	// with a message; --steps, --seed and the facts of the cluster
+	// (--local-blocks) stay the command line's
 	fs := flag.NewFlagSet("online", flag.ContinueOnError)
 	var c commonFlags
 	c.register(fs, true)
-	_ = fs.Parse([]string{"--profile", "small"})
-	_, h := readSteps(hdr)
+	if err := fs.Parse([]string{"--profile", "full", "--steps", "7", "--avoid", "crash"}); err != nil {
+		t.Fatal(err)
+	}
+	_, h := readSteps("# mbt-cxl online seed=1\n# --profile small --seed 9 --avoid \"\" --avoid-holes=true --local-blocks vm2=8,vm1=1,vm0=2 --steps 40 --plan-ahead=true --fencing allowed-mems --reboot=\nsettle\n")
 	var msgs bytes.Buffer
-	if err := applyHeader(fs, h, &msgs); err != nil || c.profile != "full" || !strings.Contains(msgs.String(), `--profile "small" of the command line replaced by "full"`) {
-		t.Fatalf("profile %q, %v, %q", c.profile, err, msgs.String())
+	if err := applyHeader(fs, h, &msgs); err != nil {
+		t.Fatal(err)
+	}
+	if c.profile != "small" || c.avoid != "" || !c.avoidHoles || c.localBlocks != "vm2=8,vm1=2,vm0=2" || c.steps != 7 || c.seed != 0 {
+		t.Fatalf("flags %+v", c)
+	}
+	if !strings.Contains(msgs.String(), `--profile "full" of the command line replaced by "small"`) {
+		t.Fatalf("no message: %q", msgs.String())
 	}
 	// online --replay and generate --from refuse to start
 	file := filepath.Join(t.TempDir(), "mbt-steps.txt")

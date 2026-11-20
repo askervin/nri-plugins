@@ -609,7 +609,7 @@ func TestRefPoolStalledWithoutSlices(t *testing.T) {
 	if f := refScriptIn(t, "fullp", 20031, 30*time.Second, script...); f != nil {
 		t.Fatalf("%s", f)
 	}
-	s := steps(t, revState(t, "fullp", true, script[:len(script)-1]...), "settle")
+	s := steps(t, stateAfter(t, "fullp", true, script[:len(script)-1]...), "settle")
 	wantPhase(t, s, "pfsc-c@vm1#0", Stalled)
 	var absent *State
 	for _, a := range alts(s) {
@@ -654,7 +654,7 @@ func TestRefPoolTruthNamespace(t *testing.T) {
 // world without the slices has it as with them (attached before the
 // kill or not: either), never Unsched.
 func TestRefPoolAllocatedWithoutSlices(t *testing.T) {
-	s := revState(t, "pmem", true, "create pfsc-c@vm2#0", "delete pfsc-c@vm2#0", "settle", "create pfsc-c@vm1#0")
+	s := stateAfter(t, "pmem", true, "create pfsc-c@vm2#0", "delete pfsc-c@vm2#0", "settle", "create pfsc-c@vm1#0")
 	wantPhase(t, s, "pfsc-c@vm1#0", Stalled)
 	s = steps(t, s, "ctrl-restart c", "ctrl-kill c", "settle")
 	var absent *State
@@ -716,7 +716,7 @@ func TestRefPoolAllocatedWithoutSlices(t *testing.T) {
 func TestRefPoolNarrowedAnyNodes(t *testing.T) {
 	script := []string{"ctrl-kill c", "create xdax-c@any#0", "create sdax-c@any#0", "settle",
 		"create pwr-c@any#0", "settle", "ctrl-start c", "create sdax-c@vm0#0", "settle"}
-	s := revState(t, "fullp", true, script...)
+	s := stateAfter(t, "fullp", true, script...)
 	if !s.Truncated || s.Wide == nil {
 		t.Fatalf("%d outcomes, truncated %v, wide %v: not the case of seed 1484", len(s.Alts)+1, s.Truncated, s.Wide != nil)
 	}
@@ -782,7 +782,7 @@ func TestRefPoolNarrowedAnyNodes(t *testing.T) {
 // its released claim may not have come before the kill, so the
 // attachment is maybe (adopted), not "no".
 func TestRefPoolKillAfterLeasePut(t *testing.T) {
-	s := revState(t, "pmem", true, "create plse@vm2#0", "settle", "lease-get plse@vm2#0 pbw", "lease-put plse@vm2#0", "ctrl-kill c")
+	s := stateAfter(t, "pmem", true, "create plse@vm2#0", "settle", "lease-get plse@vm2#0 pbw", "lease-put plse@vm2#0", "ctrl-kill c")
 	if a := s.Ctrl[PoolC].Att[devIndex(cPmem0)][VM2]; a != TriMaybe {
 		t.Fatalf("c-pmem0@vm2 %v after the kill, want maybe", a)
 	}
@@ -947,7 +947,7 @@ func TestRefPoolFP6Regressions(t *testing.T) {
 // publish, before the hold ended) fails, and nothing requeues it: it is
 // stalled, not starting.
 func TestRefPoolStallAtCtrlStart(t *testing.T) {
-	s := revState(t, "pmem", true, "create pfsc-c@vm2#0", "delete pfsc-c@vm2#0", "settle", "create pfsc-c@vm1#0")
+	s := stateAfter(t, "pmem", true, "create pfsc-c@vm2#0", "delete pfsc-c@vm2#0", "settle", "create pfsc-c@vm1#0")
 	wantPhase(t, s, "pfsc-c@vm1#0", Stalled)
 	s = steps(t, s, "ctrl-restart c", "ctrl-kill c", "settle")
 	truth := adoptSlices(t, s, PoolC, SlicesAbsent).clone()

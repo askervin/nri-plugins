@@ -127,6 +127,103 @@ func TestBlockedUntilHoleClears(t *testing.T) {
 	wantStack(t, s, si, "[local]")
 }
 
+// An "any" pod is not created while a stack of its pool's hosts has an
+// unblocking pod.
+func TestUnblockingStackNoAnyPod(t *testing.T) {
+	s := stateAfter(t, "full", true,
+		"create xnuma-c@vm1#0", "settle", "create sdax-c@vm1#0", "settle", // vm1/hb1 [c-pooled0,c-shared0]
+		"delete xnuma-c@vm1#0", "settle", // [hole,c-shared0]
+		"create xnuma-c@vm1#0", "settle", // blocked
+		"delete sdax-c@vm1#0", "settle") // [] unblocking
+	wantPhase(t, s, "xnuma-c@vm1#0", Unblocking)
+	// (xdax-c@any#0 waits for c-pooled0: no region event, allowed)
+	n := steps(t, s, "!create sdax-c@vm1#0", "!create sdax-c@any#0", "create xdax-c@any#0", "create sdax-a@vm1#0")
+	wantPhase(t, n, "xdax-c@any#0", Pending)
+}
+
+// kubelet retries blocked pods independently: their order is adopted from
+// the decoders.
+func TestUnblockingOrderAdopted(t *testing.T) {
+	s := stateAfter(t, "full", true,
+		"create xnuma-b@vm0#0", "settle", "create lnuma@vm0#0", "settle", "create sdax-b@vm0#0", "settle", // vm0/hb0 [b-pooled0,local,b-shared0]
+		"delete xnuma-b@vm0#0", "settle", // [hole,local,b-shared0]
+		"create xdax-b@vm0#0", "settle", // blocked
+		"delete lnuma@vm0#0", "settle", // [hole,hole,b-shared0]
+		"create ldax@vm0#0", "settle", // blocked
+		"delete sdax-b@vm0#0", "settle") // [] both unblocking
+	for _, sl := range []string{"xdax-b@vm0#0", "ldax@vm0#0"} {
+		wantPhase(t, s, sl, Unblocking)
+	}
+	n := steps(t, s, "create plain@vm0#0", "settle")
+	si := stackIndex(VM0, HB0)
+	for _, order := range [][]RKey{{rkLocal, devKey(pooledDev(PoolB))}, {devKey(pooledDev(PoolB)), rkLocal}} {
+		truth := n.clone()
+		for _, sl := range []string{"xdax-b@vm0#0", "ldax@vm0#0"} {
+			truth.Slots[truth.cfg.slotIndex(sl)].Phase = Running
+		}
+		truth.Stacks[si] = Stack{}
+		for _, k := range order {
+			truth.Stacks[si].push(k)
+		}
+		truth.growFence()
+		v, adopted := checkStateAt(n, observation(t, truth), "", time.Now(), defaultUnblock)
+		wantVerdict(t, v, VOK, "ok")
+		if !adopted.Stacks[si].equal(&truth.Stacks[si]) {
+			t.Fatalf("adopted %s, the SUT has %s", adopted.Stacks[si], truth.Stacks[si])
+		}
+	}
+}
+
+// No region is made in the window that clears a hole with a pod blocked
+// behind it: its retry could come first.
+func TestNoRegionInClearingWindow(t *testing.T) {
+	s := stateAfter(t, "full", true,
+		"create xnuma-c@vm1#0", "settle", "create sdax-c@vm1#0", "settle", // [c-pooled0,c-shared0]
+		"delete xnuma-c@vm1#0", "settle", // [hole,c-shared0]
+		"create xnuma-c@vm1#0", "settle") // blocked
+	wantPhase(t, s, "xnuma-c@vm1#0", Blocked)
+	n := steps(t, s, "delete sdax-c@vm1#0", "!create sexcl-c@vm1#0", "!create sdax-c@vm1#0", "settle")
+	wantPhase(t, n, "xnuma-c@vm1#0", Unblocking)
+}
+
+// Two unblocking users of one region (the local memdev of a VM): one
+// region when they run, whatever the order of their retries.
+func TestUnblockingUsersOfOneRegion(t *testing.T) {
+	s := stateAfter(t, "full", true,
+		"create xnuma-a@vm2#0", "settle", "create sdax-a@vm2#0", "settle", // vm2/hb0 [a-pooled0,a-shared0]
+		"delete xnuma-a@vm2#0", "settle", // [hole,a-shared0]
+		"create lnuma@vm2#0", "settle", "create lsteer@vm2#0", "settle", // both blocked
+		"delete sdax-a@vm2#0", "settle") // [] both unblocking
+	wantPhase(t, s, "lnuma@vm2#0", Unblocking)
+	wantPhase(t, s, "lsteer@vm2#0", Unblocking)
+	truth := s.clone()
+	for _, sl := range []string{"lnuma@vm2#0", "lsteer@vm2#0"} {
+		truth.Slots[truth.cfg.slotIndex(sl)].Phase = Running
+	}
+	truth.Slots[truth.cfg.slotIndex("lsteer@vm2#0")].Steer = SteerOn
+	truth.Stacks[stackIndex(VM2, HB0)].push(rkLocal)
+	truth.growFence()
+	v, adopted := checkState(s, observation(t, truth), "")
+	wantVerdict(t, v, VOK, "ok")
+	wantStack(t, adopted, stackIndex(VM2, HB0), "[local]")
+}
+
+// A pool pod is bound only at PreBind's next poll after its claim is
+// Attached (up to 5 s later): an unblocking pod seen without a node is not
+// settled (its delete would be that of an unbound claim).
+func TestUnblockingPodNotBound(t *testing.T) {
+	s := stateAfter(t, "full", true,
+		"create xnuma-a@vm2#0", "settle", "create sdax-a@vm2#0", "settle", // vm2/hb0 [a-pooled0,a-shared0]
+		"delete xnuma-a@vm2#0", "settle", // [hole,a-shared0]
+		"create xdax-a@vm2#0", "settle", // blocked
+		"delete sdax-a@vm2#0", "settle") // unblocking
+	wantPhase(t, s, "xdax-a@vm2#0", Unblocking)
+	o := observation(t, s)
+	podOf(t, o, "xdax-a@vm2#0").Node = nil
+	v, _ := checkState(s, o, "")
+	wantVerdict(t, v, VWait, "xdax-a@vm2#0: not bound yet")
+}
+
 // TestAdoptedOrder: two regions made in one window on one stack race for
 // the order; on-line the observed order is adopted, and what a later
 // destroy does depends on it.
@@ -215,6 +312,65 @@ func TestStackUsersOfOneRegion(t *testing.T) {
 	wantStack(t, s, si, "[hole,local]")
 	s = steps(t, s, "lease-put lease@vm2#0", "settle")
 	wantStack(t, s, si, "[]")
+}
+
+// A claim that gets a device only once the old users' claims are gone
+// prepares after their Unprepare: the old region is destroyed (here: a
+// hole), never reused. Also when the waiter is promoted while its pool's
+// controller is down and prepares at ctrl-start; a share that fits at once
+// waits for no release and may come first.
+func TestHandover(t *testing.T) {
+	for _, c := range []struct {
+		name, slot string
+		si         int
+		lines      []string
+		outcomes   string // phase and stack of each outcome
+	}{
+		{"exclusive", "xdax-a@vm1#0", stackIndex(VM1, HB0), []string{
+			"create xnuma-a@vm1#0", "settle", "create lnuma@vm1#0", "settle", // vm1/hb0 [a-pooled0,local]
+			"delete xnuma-a@vm1#0", "create xdax-a@vm1#0", "settle"},
+			"blocked [hole,local]"},
+		{"shared taken exclusively", "sexcl-c@vm1#0", stackIndex(VM1, HB1), []string{
+			"create sdax-c@vm1#0", "settle", "create xnuma-c@vm1#0", "settle", // vm1/hb1 [c-shared0,c-pooled0]
+			"delete sdax-c@vm1#0", "create sexcl-c@vm1#0", "settle"},
+			"blocked [hole,c-pooled0]"},
+		{"after every share", "sexcl-a@vm2#0", stackIndex(VM2, HB0), []string{
+			"create sdax-a@vm2#0", "create sdax-a@vm2#1", "settle", "create lnuma@vm2#0", "settle", // vm2/hb0 [a-shared0,local]
+			"create sexcl-a@vm2#0", "settle", // pending
+			"delete sdax-a@vm2#0", "delete sdax-a@vm2#1", "settle"},
+			"blocked [hole,local]"},
+		{"at ctrl-start", "sexcl-a@vm2#0", stackIndex(VM2, HB0), []string{
+			"create sdax-a@vm2#0", "settle", "create lnuma@vm2#0", "settle", // vm2/hb0 [a-shared0,local]
+			"create sexcl-a@vm2#0", "settle", // waits for the share
+			"ctrl-kill a", "delete sdax-a@vm2#0", "ctrl-start a", "settle"},
+			"blocked [hole,local]"},
+		{"share at ctrl-start", "sro-a@vm2#0", stackIndex(VM2, HB0), []string{
+			"create sdax-a@vm2#0", "settle", "create lnuma@vm2#0", "settle",
+			"ctrl-kill a", "delete sdax-a@vm2#0", "create sro-a@vm2#0", "ctrl-start a", "settle"},
+			"blocked [hole,local]; running [a-shared0,local]"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := stateAfter(t, "full", true, c.lines...)
+			var got []string
+			for _, a := range alts(s) {
+				got = append(got, slotOf(t, a, c.slot).Phase.String()+" "+a.Stacks[c.si].String())
+			}
+			if strings.Join(got, "; ") != c.outcomes {
+				t.Fatalf("outcomes %q, want %q:\n%s", strings.Join(got, "; "), c.outcomes, dumpAlts(s))
+			}
+		})
+	}
+	// a SUT that kept the region and reused it fails at once
+	s := stateAfter(t, "full", true,
+		"create xnuma-a@vm1#0", "settle", "create lnuma@vm1#0", "settle",
+		"delete xnuma-a@vm1#0", "create xdax-a@vm1#0", "settle")
+	leaked := s.clone()
+	leaked.Slots[leaked.cfg.slotIndex("xdax-a@vm1#0")].Phase = Running
+	leaked.Stacks[stackIndex(VM1, HB0)] = Stack{}
+	leaked.Stacks[stackIndex(VM1, HB0)].push(devKey(pooledDev(PoolA)))
+	leaked.Stacks[stackIndex(VM1, HB0)].push(rkLocal)
+	v, _ := checkState(s, observation(t, leaked), "")
+	wantVerdict(t, v, VFail, "Running, but its decoder stack vm1/hb0 [hole,local] has a hole")
 }
 
 // simStep applies one action line to the model and to the simulated SUT:

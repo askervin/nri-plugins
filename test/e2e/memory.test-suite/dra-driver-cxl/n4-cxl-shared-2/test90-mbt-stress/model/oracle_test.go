@@ -167,6 +167,10 @@ func TestOracleDeviations(t *testing.T) {
 		}, VWait, "exclusive true, want false"},
 		// O3
 		{"region missing", func(o *Observation) { o.VMs["vm1"].Regions = o.VMs["vm1"].Regions[1:] }, VWait, "vm1: no region of"},
+		{"slice of a pool memdev", func(o *Observation) {
+			o.Slices["vm1"] = append(o.Slices["vm1"], ObsSliceDev{Name: "memdev-c1ee0001", Serial: "0xc1ee0001"})
+		}, VWait, "vm1: cxl.nri.io slice publishes memdev-c1ee0001 (serial 0xc1ee0001 of pool device a-pooled0)"},
+		{"slice without a local memdev", func(o *Observation) { o.Slices["vm2"] = o.Slices["vm2"][1:] }, VWait, "vm2: cxl.nri.io slice without memdev-c100e2e1"},
 		{"region leaked", func(o *Observation) {
 			o.VMs["vm0"].Regions = append(o.VMs["vm0"].Regions, ObsRegion{Name: "region77", Serials: []string{"0xc1ee1001"}})
 		}, VWait, "region region77 of b-pooled0, no claim of it is prepared here"},
@@ -192,11 +196,37 @@ func TestOracleDeviations(t *testing.T) {
 			o.VMs["vm0"].State.UnusedDax = []string{"dax9.1"}
 		}, VWait, "dax devices [dax9.1] of local memdevs without a user"},
 		{"cdi", func(o *Observation) { o.VMs["vm2"].CDI[cdiDir+"/"+poolCDISpec] = nil }, VWait, poolCDISpec},
+		{"cdi not observed", func(o *Observation) { o.VMs["vm0"].CDI = nil }, VWait, "vm0: cdi not observed (null)"},
+		{"state lease claims", func(o *Observation) {
+			o.VMs["vm1"].State.LeaseClaims, o.VMs["vm1"].State.Leases = []string{}, []ObsStoredLease{}
+		}, VWait, "vm1: state.json has lease claims [], want"},
 		{"state unreadable", func(o *Observation) {
 			o.VMs["vm2"].State = nil
 			o.VMs["vm2"].Errors = []string{"state: permission denied"}
 		}, VWait, "vm2: state: permission denied"},
 		// O5
+		{"container not observed", func(o *Observation) {
+			ov := o.VMs["vm0"]
+			var keep []ObsContainer
+			for _, c := range ov.Containers {
+				if !strings.HasPrefix(c.Pod, "mbt-plain") {
+					keep = append(keep, c)
+				}
+			}
+			ov.Containers = keep
+		}, VWait, "vm0: no container of plain@vm0#0 (pod mbt-plain-vm0-0-g1) observed"},
+		{"container missing", func(o *Observation) {
+			o.VMs["vm0"].Missing = []byte(`[{"pod":"mbt-plain-vm0-0-g1","kind":"pod","container":"main","reason":"its cpuset cannot be read"}]`)
+		}, VWait, "vm0: container of pod mbt-plain-vm0-0-g1 missing: its cpuset cannot be read"},
+		{"containers not read", func(o *Observation) { o.VMs["vm0"].Missing = []byte(`null`) }, VWait, "vm0: containers not read (missing: null)"},
+		{"effective cpuset not observed", func(o *Observation) {
+			c := ctrOf(t, o, "vm0", "mbt-plain")
+			c.Mems, c.MemsEffective = "", ""
+		}, VWait, "cpuset.mems.effective not observed"},
+		{"empty cpuset.mems inherits", func(o *Observation) {
+			c := ctrOf(t, o, "vm0", "mbt-plain")
+			c.Mems, c.MemsEffective = "", "0-1"
+		}, VOK, "ok"},
 		{"fenced node visible", func(o *Observation) {
 			c := ctrOf(t, o, "vm0", "mbt-plain")
 			c.MemsEffective = "0-2"
@@ -228,6 +258,20 @@ func TestOracleDeviations(t *testing.T) {
 		{"lease list", func(o *Observation) { o.Inspect["lease@vm1#0"].Leases = json.RawMessage(`[]`) }, VFail, "0 leases listed, want 1"},
 		// O8
 		{"driver not ready", func(o *Observation) { o.Drivers["vm1"].Ready = false }, VWait, "driver vm1"},
+		{"no driver container", func(o *Observation) { o.VMs["vm1"].DriverLog.Container = nil }, VWait, "driver vm1: no running driver container"},
+		{"lends not restored", func(o *Observation) {
+			no := false
+			o.VMs["vm1"].DriverLog.LendsRestored = &no
+		}, VWait, `driver vm1: "NRI fence: lends restored" not logged yet`},
+		{"driver panics", func(o *Observation) {
+			o.VMs["vm1"].DriverLog.Panics = 1
+			o.VMs["vm1"].DriverLog.Errors = []string{"panic: runtime error: nil pointer"}
+		}, VFail, "driver vm1: 1 panics in the log of container drv-vm1-0: panic: runtime error"},
+		{"driver invariant violations", func(o *Observation) {
+			violations := 2
+			o.VMs["vm1"].DriverLog.Invariants = &violations
+			o.VMs["vm1"].DriverLog.InvariantErrors = []string{"engine invariant: I3: claim c has no grant"}
+		}, VFail, "driver vm1: 2 violations of its invariants in the log of container drv-vm1-0: engine invariant: I3"},
 		{"driver restarts", func(o *Observation) { o.Drivers["vm1"].Restarts = 1 }, VWait, "1 restarts, want 0"},
 		{"controller", func(o *Observation) { o.Controllers["b"] = "failed" }, VWait, "controller b: failed, want active"},
 		{"observation errors", func(o *Observation) { o.Errors = []string{"attachments of pool c: timeout"} }, VWait, "observation: attachments"},
@@ -240,6 +284,22 @@ func TestOracleDeviations(t *testing.T) {
 			wantVerdict(t, v, c.status, c.msg)
 		})
 	}
+	// missing parts of the observation are notes, not differences
+	o := observation(t, s)
+	o.Slices = nil
+	o.VMs["vm1"].DriverLog = nil
+	v, _ := checkState(s, o, "")
+	wantVerdict(t, v, VOK, "ok")
+	if len(v.Notes) != 2 {
+		t.Fatalf("notes %v", v.Notes)
+	}
+	// a settle whose outcomes are not all enumerated says so in a failure
+	m := s.clone()
+	m.Truncated = true
+	o = observation(t, m)
+	podOf(t, o, "plain@vm0#0").Restarts = 3
+	v, _ = checkState(m, o, "")
+	wantVerdict(t, v, VFail, "not all enumerated")
 }
 
 func TestOracleAbsent(t *testing.T) {

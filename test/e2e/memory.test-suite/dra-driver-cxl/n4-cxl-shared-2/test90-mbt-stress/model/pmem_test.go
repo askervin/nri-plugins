@@ -52,7 +52,7 @@ func doneOf(t *testing.T, s *State, line string) (*State, *DoneObs) {
 // it mounts it and reads the token, on another VM too (one pair of
 // backing files).
 func TestPmemWriterFirst(t *testing.T) {
-	s := revState(t, "pmem", true, "create pwr-c@vm0#0", "settle")
+	s := stateAfter(t, "pmem", true, "create pwr-c@vm0#0", "settle")
 	wantPhase(t, s, "pwr-c@vm0#0", Running)
 	if pd := pdevOf(s, cPmem0); pd.NS != TriYes || pd.FS != TriNo || pd.Raw != tokZero {
 		t.Fatalf("after the writer's Prepare: %+v", *pd)
@@ -93,7 +93,7 @@ func TestPmemWriterFirst(t *testing.T) {
 // writer gets the device. pbad is refused by its config, without a
 // region.
 func TestPmemReaderBeforeWriter(t *testing.T) {
-	s := revState(t, "fullp", true, "create pfsd-c@vm1#0", "create pbad-c@vm0#0", "settle")
+	s := stateAfter(t, "fullp", true, "create pfsd-c@vm1#0", "create pbad-c@vm0#0", "settle")
 	wantPhase(t, s, "pfsd-c@vm1#0", Refused)
 	wantPhase(t, s, "pbad-c@vm0#0", Refused)
 	wantStack(t, s, stackIndex(VM1, HB1), "[]")
@@ -132,7 +132,7 @@ func TestPmemReaderBeforeWriter(t *testing.T) {
 // (LeaseBusy: its bind, node mount and region stay, pread works) until
 // unhold; a crash of the requester ends the holder too.
 func TestPmemLeaseBusy(t *testing.T) {
-	s := revState(t, "pmem", true, "create pwr-c@vm2#0", "settle")
+	s := stateAfter(t, "pmem", true, "create pwr-c@vm2#0", "settle")
 	s, _ = doneOf(t, s, "pwrite pwr-c@vm2#0 img")
 	s = steps(t, s, "delete pwr-c@vm2#0", "create plse@vm2#0", "settle", "kubelet-restart vm0", "settle")
 	s, d := doneOf(t, s, "lease-get plse@vm2#0 pfd")
@@ -177,7 +177,7 @@ func TestPmemLeaseBusy(t *testing.T) {
 // The token stays across VMs, crashes and every fault; pwipe makes the
 // device fresh again (only without attachments).
 func TestPmemTokensAcrossFaults(t *testing.T) {
-	s := revState(t, "pmem", true, "create pwr-c@vm0#0", "settle")
+	s := stateAfter(t, "pmem", true, "create pwr-c@vm0#0", "settle")
 	s, _ = doneOf(t, s, "pwrite pwr-c@vm0#0 img")
 	want := *pdevOf(s, cPmem0)
 	steps(t, s, "!pwipe c c-pmem0")
@@ -212,14 +212,14 @@ func TestPmemTokensAcrossFaults(t *testing.T) {
 // persistent Prepare, also a refused one's (blocked first, then refused
 // when the hole clears).
 func TestPmemDecoderHoles(t *testing.T) {
-	s := revState(t, "pmem", true, "create xnuma-c@vm1#0", "settle", "create pfsd-c@vm1#0", "settle")
+	s := stateAfter(t, "pmem", true, "create xnuma-c@vm1#0", "settle", "create pfsd-c@vm1#0", "settle")
 	wantStack(t, s, stackIndex(VM1, HB1), "[c-pooled0]")
 	wantPhase(t, s, "pfsd-c@vm1#0", Refused)
 	// a writer first: a region on top
-	w := revState(t, "pmem", true, "create xnuma-c@vm1#0", "create sdax-c@vm0#0", "settle", "create pwr-c@vm2#0", "settle")
+	w := stateAfter(t, "pmem", true, "create xnuma-c@vm1#0", "create sdax-c@vm0#0", "settle", "create pwr-c@vm2#0", "settle")
 	wantStack(t, w, stackIndex(VM2, HB1), "[c-pmem0]")
 	// a hole below: c-pooled0 under a reader's c-pmem0 on vm1
-	h := revState(t, "pmem", true, "create pwr-c@vm0#0", "settle")
+	h := stateAfter(t, "pmem", true, "create pwr-c@vm0#0", "settle")
 	h, _ = doneOf(t, h, "pwrite pwr-c@vm0#0 img")
 	h = steps(t, h, "delete pwr-c@vm0#0", "create xnuma-c@vm1#0", "settle", "create pfsd-c@vm1#0", "settle")
 	wantStack(t, h, stackIndex(VM1, HB1), "[c-pooled0,c-pmem0]")
@@ -229,9 +229,9 @@ func TestPmemDecoderHoles(t *testing.T) {
 	h = steps(t, h, "create pfsc-c@vm1#0", "settle")
 	wantPhase(t, h, "pfsc-c@vm1#0", Running)
 	// a refused-to-be reader through a hole is blocked first
-	b := revState(t, "pmem", true, "create xnuma-c@vm1#0", "settle", "create sdax-c@vm0#0", "settle")
+	b := stateAfter(t, "pmem", true, "create xnuma-c@vm1#0", "settle", "create sdax-c@vm0#0", "settle")
 	_ = b
-	r := revState(t, "fullp", true, "create xnuma-c@vm1#0", "settle", "create sdax-c@vm1#0", "settle", "delete xnuma-c@vm1#0", "settle")
+	r := stateAfter(t, "fullp", true, "create xnuma-c@vm1#0", "settle", "create sdax-c@vm1#0", "settle", "delete xnuma-c@vm1#0", "settle")
 	wantStack(t, r, stackIndex(VM1, HB1), "[hole,c-shared0]")
 	r = steps(t, r, "create pfsd-c@vm1#0", "settle")
 	wantPhase(t, r, "pfsd-c@vm1#0", Blocked)
@@ -255,7 +255,7 @@ func TestPmemDecoderHoles(t *testing.T) {
 // The oracle's invariants of A26 against the simulated observation of a
 // state with every persistent part: ok, and one deviation per check.
 func TestPmemOracleInvariants(t *testing.T) {
-	s := revState(t, "pmem", true, "create pwr-c@vm2#0", "settle")
+	s := stateAfter(t, "pmem", true, "create pwr-c@vm2#0", "settle")
 	s, _ = doneOf(t, s, "pwrite pwr-c@vm2#0 img")
 	s = steps(t, s, "delete pwr-c@vm2#0", "create plse@vm1#0", "settle", "kubelet-restart vm0", "settle", "create pfsd-c@vm1#0", "create pfsc-c@vm1#0", "create pbro-c@vm0#0", "settle")
 	s, _ = doneOf(t, s, "lease-get plse@vm1#0 pfc")
@@ -387,28 +387,28 @@ func TestPmemOracleInvariants(t *testing.T) {
 
 // The generation limits of A27 and the model's own.
 func TestPmemGenerationLimits(t *testing.T) {
-	off := revState(t, "pmem", false)
+	off := stateAfter(t, "pmem", false)
 	steps(t, off, "!driver-kill-at vm0 region", "!hold pfsd-c@vm1#0", "!pwrite pwr-c@vm0#0 img")
-	on := revState(t, "pmem", true)
+	on := stateAfter(t, "pmem", true)
 	steps(t, on, "driver-kill-at vm0 region", "!driver-kill-at vm0 ns", "pwipe c c-pmem0")
 	// pwipe not while a claim may allocate or an attachment is left
 	steps(t, on, "create pfsd-c@vm1#0", "!pwipe c c-pmem0")
 	k := steps(t, on, "ctrl-kill c", "create pwr-c@vm0#0", "settle", "ctrl-start c", "settle", "delete pwr-c@vm0#0", "settle")
 	steps(t, k, "!pwipe c c-pmem0", "kubelet-restart vm0", "settle", "pwipe c c-pmem0")
 	// hold only on a Running fs kind (and not twice)
-	w := revState(t, "pmem", true, "create pwr-c@vm0#0", "settle")
+	w := stateAfter(t, "pmem", true, "create pwr-c@vm0#0", "settle")
 	steps(t, w, "!hold pwr-c@vm0#0", "pwrite pwr-c@vm0#0 junk", "!pwrite pbro-c@vm0#0 img")
 	// a pbro whose Prepare's outcome the window leaves open is not made
-	n := revState(t, "pmem", true, "create pwr-c@vm0#0", "create pbro-c@vm0#0")
+	n := stateAfter(t, "pmem", true, "create pwr-c@vm0#0", "create pbro-c@vm0#0")
 	wantPhase(t, n, "pbro-c@vm0#0", Pending)
 	steps(t, n, "!delete pwr-c@vm0#0")
 	// no lease-get under an armed watcher of the VM, nor with a reader
 	// refused by the content
-	l := revState(t, "pmem", true, "create plse@vm1#0", "settle")
+	l := stateAfter(t, "pmem", true, "create plse@vm1#0", "settle")
 	steps(t, l, "lease-get plse@vm1#0 pbw", "!lease-get plse@vm1#0 pfd", "!lease-get plse@vm1#0 pbr")
 	steps(t, l, "driver-kill-at vm1 region", "!lease-get plse@vm1#0 pbw")
 	// off-line: no Refused next to a pool-c region change on its VM
-	r := revState(t, "pmem", false, "create pfsd-c@vm1#0", "settle")
+	r := stateAfter(t, "pmem", false, "create pfsd-c@vm1#0", "settle")
 	wantPhase(t, r, "pfsd-c@vm1#0", Refused)
 	steps(t, r, "!create xnuma-c@vm1#0", "create sdax-c@vm0#0")
 	// MBT_AVOID names the new verbs
@@ -429,7 +429,7 @@ func TestPmemGenerationLimits(t *testing.T) {
 // observation decides; an armed watcher that did not fire is disarmed
 // 70 s after the settle that first saw it.
 func TestPmemDriverKillAt(t *testing.T) {
-	s := revState(t, "pmem", true, "create pwr-c@vm0#0", "settle")
+	s := stateAfter(t, "pmem", true, "create pwr-c@vm0#0", "settle")
 	s, _ = doneOf(t, s, "pwrite pwr-c@vm0#0 img")
 	s = steps(t, s, "delete pwr-c@vm0#0", "settle", "driver-kill-at vm1 mount", "create pfsd-c@vm1#0", "settle")
 	if len(s.Alts) != 1 || s.Drv[VM1].KillAt == 0 || s.Alts[0].Drv[VM1].Restarts != 1 || s.Alts[0].Drv[VM1].KillAt != 0 {
@@ -458,7 +458,7 @@ func TestPmemDriverKillAt(t *testing.T) {
 		t.Fatalf("not disarmed: %+v", disarmed.Drv[VM1])
 	}
 	// no Prepare at the marker in the window: one outcome
-	n := steps(t, revState(t, "pmem", true), "driver-kill-at vm2 ns", "create pfsd-c@vm1#0", "settle")
+	n := steps(t, stateAfter(t, "pmem", true), "driver-kill-at vm2 ns", "create pfsd-c@vm1#0", "settle")
 	if len(n.Alts) != 0 {
 		t.Fatalf("a kill without its marker:\n%s", dumpAlts(n))
 	}
@@ -467,7 +467,7 @@ func TestPmemDriverKillAt(t *testing.T) {
 // A writer deleted (or its controller killed) while it may have made the
 // namespace leaves it open; the oracle adopts it from pdevs.
 func TestPmemNamespaceAdopted(t *testing.T) {
-	s := revState(t, "pmem", true, "create pwr-c@vm0#0", "delete pwr-c@vm0#0", "settle")
+	s := stateAfter(t, "pmem", true, "create pwr-c@vm0#0", "delete pwr-c@vm0#0", "settle")
 	if pd := pdevOf(s, cPmem0); pd.NS != TriMaybe {
 		t.Fatalf("ns %v", pd.NS)
 	}
@@ -486,7 +486,7 @@ func TestPmemNamespaceAdopted(t *testing.T) {
 
 // Expectations round-trip the persistent state (generate, check).
 func TestPmemExpectationRoundTrip(t *testing.T) {
-	s := revState(t, "fullp", true, "create pwr-c@vm0#0", "create plse@vm1#0", "settle")
+	s := stateAfter(t, "fullp", true, "create pwr-c@vm0#0", "create plse@vm1#0", "settle")
 	s, _ = doneOf(t, s, "pwrite pwr-c@vm0#0 img")
 	s = steps(t, s, "delete pwr-c@vm0#0", "settle", "create pfsd-c@vm2#0", "settle")
 	s, _ = doneOf(t, s, "lease-get plse@vm1#0 pfd")
@@ -617,7 +617,7 @@ func TestPmemOnline(t *testing.T) {
 // busy and held fs leases, held mounts, the device's content, the
 // markers of driver-kill-at; C4 the device's content and its users.
 func TestPmemCoverageStrings(t *testing.T) {
-	s := revState(t, "pmem", true, "create pwr-c@vm2#0", "settle")
+	s := stateAfter(t, "pmem", true, "create pwr-c@vm2#0", "settle")
 	s, _ = doneOf(t, s, "pwrite pwr-c@vm2#0 img")
 	s = steps(t, s, "delete pwr-c@vm2#0", "create plse@vm1#0", "create pbro-c@vm0#0", "settle", "kubelet-restart vm0", "settle")
 	s, _ = doneOf(t, s, "lease-get plse@vm1#0 pfd")
@@ -632,7 +632,7 @@ func TestPmemCoverageStrings(t *testing.T) {
 			t.Fatalf("no %q in %s", want, got)
 		}
 	}
-	r := revState(t, "fullp", true, "create pbad-c@vm0#0", "settle")
+	r := stateAfter(t, "fullp", true, "create pbad-c@vm0#0", "settle")
 	if got := strings.Join(faultContext(r, mustAct(t, r.cfg, "ctrl-kill c")), "|"); !strings.Contains(got, "fault ctrl-kill pbad refused") {
 		t.Fatalf("no refused context in %s", got)
 	}
@@ -657,11 +657,11 @@ func TestPmemKillAtBind(t *testing.T) {
 	if !found {
 		t.Fatalf("driver-kill-at bind not generated")
 	}
-	s := revState(t, "pmem", true, "create pwr-c@vm2#0", "settle")
+	s := stateAfter(t, "pmem", true, "create pwr-c@vm2#0", "settle")
 	s, _ = doneOf(t, s, "pwrite pwr-c@vm2#0 img")
 	s = steps(t, s, "delete pwr-c@vm2#0", "create plse@vm1#0", "settle", "kubelet-restart vm0", "settle", "driver-kill-at vm1 bind")
 	steps(t, s, "lease-get plse@vm1#0 pfd")
-	steps(t, steps(t, revState(t, "pmem", true, "create plse@vm1#0", "settle"), "driver-kill-at vm1 region"), "!lease-get plse@vm1#0 pbw")
+	steps(t, steps(t, stateAfter(t, "pmem", true, "create plse@vm1#0", "settle"), "driver-kill-at vm1 region"), "!lease-get plse@vm1#0 pbw")
 	a := mustAct(t, s.cfg, "lease-get plse@vm1#0 pfd")
 	n := s.apply(a)
 	e := expectDone(s, n, a, int(n.Steps))
@@ -748,7 +748,7 @@ func TestPmemKillAtBind(t *testing.T) {
 // A stalled reader whose Prepare is refused, promoted through a hole on
 // its stack, is blocked first (fuzz, fullp seed 181).
 func TestPmemStalledRefusedThroughHole(t *testing.T) {
-	s := revState(t, "fullp", true, "create xnuma-c@vm1#0", "settle", "create sdax-c@vm1#0", "settle", "delete xnuma-c@vm1#0", "settle",
+	s := stateAfter(t, "fullp", true, "create xnuma-c@vm1#0", "settle", "create sdax-c@vm1#0", "settle", "delete xnuma-c@vm1#0", "settle",
 		"create pfsc-c@vm2#0", "delete pfsc-c@vm2#0", "settle", "create pfsd-c@vm1#0", "settle")
 	wantStack(t, s, stackIndex(VM1, HB1), "[hole,c-shared0]")
 	wantPhase(t, s, "pfsd-c@vm1#0", Stalled)
@@ -767,7 +767,7 @@ func TestPmemStalledRefusedThroughHole(t *testing.T) {
 // A30: the watcher's state on the observe line: done without firing
 // disarms it at once; fired wants the outcome with the kill.
 func TestPmemKillAtState(t *testing.T) {
-	s := steps(t, revState(t, "pmem", true), "driver-kill-at vm2 ns", "create pfsd-c@vm1#0", "settle")
+	s := steps(t, stateAfter(t, "pmem", true), "driver-kill-at vm2 ns", "create pfsd-c@vm1#0", "settle")
 	o := observation(t, s)
 	o.VMs["vm2"].KillAt = json.RawMessage(`{"armed":true,"fired":false,"done":true,"expired":true}`)
 	v, adopted := checkState(s, o, "")
@@ -795,7 +795,7 @@ func TestPmemKillAtState(t *testing.T) {
 // disarm a watcher that may have fired is not generated.
 func TestPmemKillAtDisarm(t *testing.T) {
 	for _, verb := range []string{"driver-restart vm2", "driver-kill vm2", "containerd-restart vm2"} {
-		s := steps(t, revState(t, "pmem", true), "driver-kill-at vm2 region", verb)
+		s := steps(t, stateAfter(t, "pmem", true), "driver-kill-at vm2 region", verb)
 		if s.Drv[VM2].KillAt != 0 {
 			t.Fatalf("%s: still armed", verb)
 		}
@@ -808,12 +808,12 @@ func TestPmemKillAtDisarm(t *testing.T) {
 		v, _ := checkState(s, o, "")
 		wantVerdict(t, v, VOK, "ok")
 	}
-	k := steps(t, revState(t, "pmem", true), "driver-kill-at vm2 region", "kubelet-restart vm2")
+	k := steps(t, stateAfter(t, "pmem", true), "driver-kill-at vm2 region", "kubelet-restart vm2")
 	if k.Drv[VM2].KillAt == 0 {
 		t.Fatalf("kubelet-restart disarmed")
 	}
 	// PM2: a refused reader on vm2, the watcher armed at region
-	r := steps(t, revState(t, "pmem", true, "create pfsd-c@vm2#0", "settle"), "driver-kill-at vm2 region")
+	r := steps(t, stateAfter(t, "pmem", true, "create pfsd-c@vm2#0", "settle"), "driver-kill-at vm2 region")
 	wantPhase(t, r, "pfsd-c@vm2#0", Refused)
 	steps(t, r, "!driver-restart vm2", "!driver-kill vm2", "!containerd-restart vm2", "kubelet-restart vm2")
 	r = steps(t, r, "create pfsc-c@vm1#0", "settle")
@@ -834,7 +834,7 @@ func TestPmemKillAtDisarm(t *testing.T) {
 // (A11 goes by the containers' states); a running one that is not
 // observed waits.
 func TestPmemBusyLeaseCompanionTerminating(t *testing.T) {
-	s := revState(t, "pmem", true, "create pwr-c@vm2#0", "settle")
+	s := stateAfter(t, "pmem", true, "create pwr-c@vm2#0", "settle")
 	s, _ = doneOf(t, s, "pwrite pwr-c@vm2#0 img")
 	// the writer's claim may be deallocated a window after its pod (F8)
 	s = steps(t, s, "delete pwr-c@vm2#0", "create plse@vm2#0", "settle", "kubelet-restart vm0", "settle")
@@ -886,7 +886,7 @@ func TestPmemBusyLeaseCompanionTerminating(t *testing.T) {
 // never marks it.
 func TestPmemKillAtAfterSettle(t *testing.T) {
 	// (c-pmem0 with a namespace, no erofs: pfsc-c is refused)
-	r := revState(t, "fullp", true, "create pwr-c@vm0#0", "settle", "delete pwr-c@vm0#0", "settle", "create pfsc-c@vm0#0", "settle")
+	r := stateAfter(t, "fullp", true, "create pwr-c@vm0#0", "settle", "delete pwr-c@vm0#0", "settle", "create pfsc-c@vm0#0", "settle")
 	wantPhase(t, r, "pfsc-c@vm0#0", Refused)
 	a := steps(t, r, "driver-kill-at vm0 ns", "settle")
 	if a.Drv[VM0].KillAt != markerNS+1 || a.Drv[VM0].KillMay || !killAlt(a, VM0) {
@@ -932,7 +932,7 @@ func TestPmemKillAtAfterSettle(t *testing.T) {
 	}
 	// a reader blocked through a hole (its retry makes the region),
 	// deleted
-	w := revState(t, "fullp", true, "create pwr-c@vm0#0", "settle", "pwrite pwr-c@vm0#0 img", "delete pwr-c@vm0#0", "settle")
+	w := stateAfter(t, "fullp", true, "create pwr-c@vm0#0", "settle", "pwrite pwr-c@vm0#0 img", "delete pwr-c@vm0#0", "settle")
 	h := steps(t, w, "create xnuma-c@vm1#0", "settle", "create sdax-c@vm1#0", "settle", "delete xnuma-c@vm1#0", "settle", "create pfsd-c@vm1#0", "settle")
 	wantPhase(t, h, "pfsd-c@vm1#0", Blocked)
 	h = steps(t, h, "driver-kill-at vm1 region", "settle")
@@ -942,7 +942,7 @@ func TestPmemKillAtAfterSettle(t *testing.T) {
 		t.Fatalf("blocked, deleted: no outcome with the kill:\n%s", dumpAlts(b))
 	}
 	// volatile claims never mark it
-	v := steps(t, revState(t, "fullp", true), "driver-kill-at vm1 region", "settle", "create xnuma-c@vm1#0", "delete xnuma-c@vm1#0")
+	v := steps(t, stateAfter(t, "fullp", true), "driver-kill-at vm1 region", "settle", "create xnuma-c@vm1#0", "delete xnuma-c@vm1#0")
 	if v.Drv[VM1].KillMay {
 		t.Fatalf("volatile: vm1 driver %+v", v.Drv[VM1])
 	}
@@ -970,7 +970,7 @@ func TestPmemDriverSlack(t *testing.T) {
 		{[]string{"containerd-restart vm2", "kubelet-restart vm2"}, [nVMs]uint8{}},
 		{[]string{"driver-restart vm2", "kubelet-restart vm2"}, [nVMs]uint8{}},
 	} {
-		s := revState(t, "fullp", true, c.lines...)
+		s := stateAfter(t, "fullp", true, c.lines...)
 		for v := VM(0); v < nVMs; v++ {
 			if s.Drv[v].Slack != c.slack[v] {
 				t.Fatalf("%v: %s driver %+v, want slack %d", c.lines, v, s.Drv[v], c.slack[v])
@@ -983,7 +983,7 @@ func TestPmemDriverSlack(t *testing.T) {
 			}
 		}
 	}
-	s := revState(t, "fullp", true, "driver-kill vm2", "kubelet-restart vm2", "settle")
+	s := stateAfter(t, "fullp", true, "driver-kill vm2", "kubelet-restart vm2", "settle")
 	for _, c := range []struct {
 		restarts int
 		status   VStatus
@@ -1021,7 +1021,7 @@ func TestPmemDriverSlack(t *testing.T) {
 	o.Drivers["vm2"].Restarts = 2
 	wantVerdict(t, checkSettle(e, o), VOK, "ok")
 	// without the slack an extra restart still waits (FP6 before)
-	n := revState(t, "fullp", true, "kubelet-restart vm2", "driver-kill vm2", "settle")
+	n := stateAfter(t, "fullp", true, "kubelet-restart vm2", "driver-kill vm2", "settle")
 	o = observation(t, n)
 	o.Drivers["vm2"].Restarts = 2
 	v, _ := checkState(n, o, "")
@@ -1032,7 +1032,7 @@ func TestPmemDriverSlack(t *testing.T) {
 	// a watcher that may have fired before the kubelet restart (PM2: a
 	// refused reader's retry makes its region): one more in the world
 	// in which it fired, none in the other
-	r := revState(t, "fullp", true, "create pfsd-c@vm2#0", "settle", "driver-kill-at vm2 region", "kubelet-restart vm2")
+	r := stateAfter(t, "fullp", true, "create pfsd-c@vm2#0", "settle", "driver-kill-at vm2 region", "kubelet-restart vm2")
 	wantPhase(t, r, "pfsd-c@vm2#0", Refused)
 	if d := r.Drv[VM2]; !d.KillSlack || d.Slack != 0 {
 		t.Fatalf("vm2 driver %+v, want kubelet restarted after a possible kill", d)
@@ -1058,7 +1058,7 @@ func TestPmemDriverSlack(t *testing.T) {
 		}
 	}
 	// a kubelet restart before any Prepare that could fire it: none
-	q := revState(t, "fullp", true, "driver-kill-at vm2 region", "kubelet-restart vm2", "create pfsd-c@vm2#0", "settle")
+	q := stateAfter(t, "fullp", true, "driver-kill-at vm2 region", "kubelet-restart vm2", "create pfsd-c@vm2#0", "settle")
 	for _, a := range alts(q) {
 		if a.Drv[VM2].Slack != 0 {
 			t.Fatalf("slack of a kill after the kubelet restart:\n%s", dumpAlts(q))
@@ -1091,12 +1091,12 @@ func killAlt(s *State, v VM) bool {
 // volatile kinds show no marker (ram regions).
 func TestPmemKillAtUnplacedPrepares(t *testing.T) {
 	written := []string{"create pwr-c@vm0#0", "settle", "pwrite pwr-c@vm0#0 img", "delete pwr-c@vm0#0", "settle"}
-	w := revState(t, "fullp", true, written...)
+	w := stateAfter(t, "fullp", true, written...)
 	if pd := w.PDev[pmemIndex(cPmem0)]; pd.NS != TriYes || pd.FS != TriYes {
 		t.Fatalf("c-pmem0 ns %v fs %v", pd.NS, pd.FS)
 	}
 	// (c-pmem0 with a namespace, no erofs)
-	r := revState(t, "fullp", true, "create pwr-c@vm0#0", "settle", "delete pwr-c@vm0#0", "settle")
+	r := stateAfter(t, "fullp", true, "create pwr-c@vm0#0", "settle", "delete pwr-c@vm0#0", "settle")
 	if pd := r.PDev[pmemIndex(cPmem0)]; pd.NS != TriYes || pd.FS != TriNo {
 		t.Fatalf("c-pmem0 ns %v fs %v", pd.NS, pd.FS)
 	}
@@ -1176,7 +1176,7 @@ func TestPmemKillAtUnplacedPrepares(t *testing.T) {
 // maybe, adopted from pdevs), and seen Running it has made it (fuzz,
 // fullp seed 7985).
 func TestPmemUnblockedWriterNamespace(t *testing.T) {
-	h := revState(t, "fullp", true, "create xnuma-c@vm1#0", "settle", "create sdax-c@vm1#0", "settle", "delete xnuma-c@vm1#0", "settle", "create xpb-c@vm1#0", "settle")
+	h := stateAfter(t, "fullp", true, "create xnuma-c@vm1#0", "settle", "create sdax-c@vm1#0", "settle", "delete xnuma-c@vm1#0", "settle", "create xpb-c@vm1#0", "settle")
 	wantStack(t, h, stackIndex(VM1, HB1), "[hole,c-shared0]")
 	wantPhase(t, h, "xpb-c@vm1#0", Blocked)
 	if pd := h.PDev[pmemIndex(cPmem1)]; pd.NS != TriNo {
@@ -1213,7 +1213,7 @@ func TestPmemStalledWriterThroughHole(t *testing.T) {
 	hole := []string{"create xnuma-c@vm1#0", "settle", "create sdax-c@vm1#0", "settle", "delete xnuma-c@vm1#0", "settle"}
 	held := []string{"create xpf-c@vm0#0", "delete xpf-c@vm0#0", "settle"}
 	stalled := append(append(append([]string(nil), hole...), held...), "create xpb-c@vm1#0", "settle")
-	s := revState(t, "fullp", true, stalled...)
+	s := stateAfter(t, "fullp", true, stalled...)
 	wantStack(t, s, stackIndex(VM1, HB1), "[hole,c-shared0]")
 	wantPhase(t, s, "xpb-c@vm1#0", Stalled)
 	if pd := pdevOf(s, cPmem1); pd.NS != TriMaybe {

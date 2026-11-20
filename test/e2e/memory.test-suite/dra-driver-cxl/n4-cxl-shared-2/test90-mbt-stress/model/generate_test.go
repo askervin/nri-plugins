@@ -181,6 +181,32 @@ func TestGenerateFrom(t *testing.T) {
 			}
 		})
 	}
+	// the adoption records follow the run where an "any" pod went;
+	// without them it stops at the first open choice
+	t.Run("any node", func(t *testing.T) {
+		cfg := defaultConfig()
+		cfg.Online = true
+		if err := cfg.loadProfile("full"); err != nil {
+			t.Fatal(err)
+		}
+		cov, _ := parseCoverage(defaultCoverage)
+		o := runOpts{cfg: cfg, cov: cov, depth: 1, seed: 1, header: "test"}
+		acts := []string{"settle", "create sdax-c@any#0", "settle", "create plain@vm0#0", "settle"}
+		var b bytes.Buffer
+		if err := generate(o, stepLines(acts), &b); err == nil || !strings.Contains(err.Error(), "step 3 settle leaves 3 outcomes of races open") {
+			t.Fatalf("want a stop at step 3, got %v", err)
+		}
+		lines, _ := readSteps("settle\n#adopt 1\ncreate sdax-c@any#0\nsettle\n#adopt 3 alt=1\ncreate plain@vm0#0\nsettle\n#adopt 5\n")
+		g, err := parseGenScript(generateScript(t, o, lines))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, sj := range g.Expects[5].Slots {
+			if sj.Slot == "sdax-c@any#0" && (sj.Node != "vm1" || len(g.Expects[5].Alts) != 0) {
+				t.Fatalf("step 5: %+v, %d alternatives", sj, len(g.Expects[5].Alts))
+			}
+		}
+	})
 }
 
 func TestCheckCommand(t *testing.T) {
