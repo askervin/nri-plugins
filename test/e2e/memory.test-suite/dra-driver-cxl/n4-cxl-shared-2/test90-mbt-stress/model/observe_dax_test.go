@@ -33,8 +33,9 @@ func TestObserverDaxReads(t *testing.T) {
 		t.Skip("python3 not found")
 	}
 	script, observer := filepath.Join("testdata", "observe-dax.py"), filepath.Join("testdata", "mbt-observe.py")
-	executor := filepath.Join("..", "mbt.source.sh")
-	// go test caches a result only over the files that the test opens
+	executor := filepath.Join("testdata", "mbt.source.sh")
+	// go test caches a result only over the files of the module that the
+	// test opens: the observer and the executor are links in testdata
 	for _, path := range []string{script, observer, executor} {
 		if _, err := os.ReadFile(path); err != nil {
 			t.Fatal(err)
