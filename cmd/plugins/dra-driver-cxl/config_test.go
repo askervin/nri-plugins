@@ -15,8 +15,15 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"reflect"
+	"slices"
+	"strings"
 	"testing"
+
+	"github.com/containers/nri-plugins/pkg/cxl/config"
 )
 
 // The usable size and the coherence of a local memdev from its
@@ -78,6 +85,67 @@ memdevSettings:
 	} {
 		if _, err := newDriverConfigFromString(bad); err == nil {
 			t.Errorf("no error for %q", bad)
+		}
+	}
+}
+
+// TestChartSchemaKeys checks that the values schema of the Helm chart
+// has the keys of the configuration file and of the MemoryConfig bodies
+// of the classes: the json tags of the Go types that decode them.
+func TestChartSchemaKeys(t *testing.T) {
+	data, err := os.ReadFile("../../../deployment/helm/dra-driver-cxl/values.schema.json")
+	noErr(t, err)
+	var schema map[string]any
+	noErr(t, json.Unmarshal(data, &schema))
+	// keys returns the property names of the schema object at path, the
+	// object of #/definitions/<name> for a "$ref"
+	keys := func(path ...string) []string {
+		var node any = schema
+		for _, p := range path {
+			node = node.(map[string]any)[p]
+			if ref, ok := node.(map[string]any)["$ref"].(string); ok {
+				node = schema["definitions"].(map[string]any)[strings.TrimPrefix(ref, "#/definitions/")]
+			}
+		}
+		var out []string
+		for k := range node.(map[string]any)["properties"].(map[string]any) {
+			out = append(out, k)
+		}
+		slices.Sort(out)
+		return slices.Compact(out)
+	}
+	tags := func(v any) []string {
+		var out []string
+		for f := range reflect.TypeOf(v).Fields() {
+			if name, _, _ := strings.Cut(f.Tag.Get("json"), ","); f.IsExported() && name != "" && name != "-" {
+				out = append(out, name)
+			}
+		}
+		slices.Sort(out)
+		return out
+	}
+	var device []string
+	for _, kind := range []string{"volatileDevice", "sharedDevice", "persistentDevice", "numaDevice", "leaseDevice"} {
+		device = append(device, keys("definitions", kind)...)
+	}
+	slices.Sort(device)
+	body := tags(config.MemoryConfig{})
+	body = slices.DeleteFunc(body, func(k string) bool { return k == "apiVersion" || k == "kind" })
+	for _, tc := range []struct {
+		what      string
+		got, want []string
+	}{
+		{"config", keys("properties", "config"), tags(DriverConfig{})},
+		{"config.memdevSettings[]", keys("properties", "config", "properties", "memdevSettings", "items"), tags(MemdevSetting{})},
+		{"config.defaults", keys("properties", "config", "properties", "defaults"), tags(config.Defaults{})},
+		{"config.defaults.container", keys("properties", "config", "properties", "defaults", "properties", "container"), tags(config.Container{})},
+		{"container", keys("definitions", "container"), []string{"steering"}},
+		{"steering", keys("definitions", "steering"), tags(config.Steering{})},
+		{"device", slices.Compact(device), tags(config.Device{})},
+		{"the body of cxl-pool", keys("properties", "deviceClassConfig", "properties", "cxl-pool"), body},
+	} {
+		if !slices.Equal(tc.got, tc.want) {
+			t.Errorf("%s: the schema has %v, the configuration %v", tc.what, tc.got, tc.want)
 		}
 	}
 }

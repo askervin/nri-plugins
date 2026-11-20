@@ -9,16 +9,50 @@
     ],
     "definitions": {
         "quantity": {
-            "type": ["string", "integer"],
-            "$comment": "a Kubernetes quantity"
+            "type": "string",
+            "$comment": "a Kubernetes quantity",
+            "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$"
         },
-        "device": {
+        "fsType": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"
+        },
+        "volatileDevice": {
             "type": "object",
+            "$comment": "the device section of a class of devices of volatile memory: cxl-local, cxl-pool",
             "additionalProperties": false,
             "properties": {
                 "mode": {
                     "type": "string",
-                    "enum": ["numa", "dax", "block", "fs"]
+                    "enum": ["numa", "dax"]
+                },
+                "readOnly": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "sharedDevice": {
+            "type": "object",
+            "$comment": "the device section of a class of shared devices of volatile memory: cxl-local-shared, cxl-pool-shared",
+            "additionalProperties": false,
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["dax"]
+                },
+                "readOnly": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "persistentDevice": {
+            "type": "object",
+            "$comment": "the device section of a class of devices of persistent memory: cxl-local-persistent, cxl-pool-persistent",
+            "additionalProperties": false,
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["block", "fs"]
                 },
                 "readOnly": {
                     "type": "boolean"
@@ -32,60 +66,83 @@
                     "pattern": "^/"
                 },
                 "fsType": {
+                    "$ref": "#/definitions/fsType"
+                }
+            }
+        },
+        "numaDevice": {
+            "type": "object",
+            "$comment": "the device section of cxl-region and cxl-dram: numa only",
+            "additionalProperties": false,
+            "properties": {
+                "mode": {
                     "type": "string",
-                    "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"
+                    "enum": ["numa"]
+                }
+            }
+        },
+        "leaseDevice": {
+            "type": "object",
+            "$comment": "the device section of cxl-lease: the lease device has no device settings, readOnly false (the default) only",
+            "additionalProperties": false,
+            "properties": {
+                "readOnly": {
+                    "enum": [false]
+                }
+            }
+        },
+        "steering": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "policy": {
+                    "type": "string",
+                    "enum": ["none", "auto", "first-dram", "first-cxl", "start-interleaved", "end-interleaved", "waypoints"]
+                },
+                "waypoints": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "targetUsages": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "required": [
+                                        "memoryType",
+                                        "usage"
+                                    ],
+                                    "properties": {
+                                        "memoryType": {
+                                            "type": "string",
+                                            "enum": ["DRAM", "CXL"]
+                                        },
+                                        "usage": {
+                                            "$ref": "#/definitions/quantity"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "minStep": {
+                    "$ref": "#/definitions/quantity"
+                },
+                "maxStep": {
+                    "$ref": "#/definitions/quantity"
                 }
             }
         },
         "container": {
             "type": "object",
-            "additionalProperties": false,
             "$comment": "fencing is set by config.defaults.container only",
+            "additionalProperties": false,
             "properties": {
                 "steering": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "policy": {
-                            "type": "string",
-                            "enum": ["none", "auto", "first-dram", "first-cxl", "start-interleaved", "end-interleaved", "waypoints"]
-                        },
-                        "waypoints": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": false,
-                                "properties": {
-                                    "targetUsages": {
-                                        "type": "array",
-                                        "items": {
-                                            "type": "object",
-                                            "additionalProperties": false,
-                                            "required": [
-                                                "memoryType",
-                                                "usage"
-                                            ],
-                                            "properties": {
-                                                "memoryType": {
-                                                    "type": "string",
-                                                    "enum": ["DRAM", "CXL"]
-                                                },
-                                                "usage": {
-                                                    "$ref": "#/definitions/quantity"
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        "minStep": {
-                            "$ref": "#/definitions/quantity"
-                        },
-                        "maxStep": {
-                            "$ref": "#/definitions/quantity"
-                        }
-                    }
+                    "$ref": "#/definitions/steering"
                 }
             }
         },
@@ -99,54 +156,6 @@
                     "additionalProperties": {
                         "type": "object"
                     }
-                }
-            }
-        },
-        "localMemoryConfig": {
-            "type": "object",
-            "$comment": "a MemoryConfig body for a class of cxl.nri.io",
-            "additionalProperties": false,
-            "properties": {
-                "device": {
-                    "$ref": "#/definitions/device"
-                },
-                "container": {
-                    "$ref": "#/definitions/container"
-                }
-            }
-        },
-        "leaseMemoryConfig": {
-            "type": "object",
-            "$comment": "a MemoryConfig body for the class of the lease device, which has no device settings: readOnly false (the default) only",
-            "additionalProperties": false,
-            "properties": {
-                "device": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "readOnly": {
-                            "enum": [false]
-                        }
-                    }
-                },
-                "container": {
-                    "$ref": "#/definitions/container"
-                }
-            }
-        },
-        "poolMemoryConfig": {
-            "type": "object",
-            "$comment": "a MemoryConfig body for a class of cxl-pool.nri.io",
-            "additionalProperties": false,
-            "properties": {
-                "device": {
-                    "$ref": "#/definitions/device"
-                },
-                "container": {
-                    "$ref": "#/definitions/container"
-                },
-                "pool": {
-                    "$ref": "#/definitions/pool"
                 }
             }
         }
@@ -332,14 +341,87 @@
         },
         "config": {
             "type": "object",
-            "$comment": "the driver configuration file, validated by the driver; fsTypes (list of filesystem types that mode fs mounts) defaults to [erofs]: adding a type trusts every party that can write the devices raw (read-write block claims and leases on any node of any cluster that shares the pool)",
+            "$comment": "the driver configuration file (docs/memory/cxl/usage.md); fsTypes defaults to [erofs]: every other type trusts the raw writers of the devices",
+            "additionalProperties": false,
             "properties": {
+                "ignoreDevices": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "sharedDevices": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "ignoreRegions": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "ignoreNodes": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer",
+                        "minimum": 0
+                    }
+                },
+                "ignoreDRAMNodes": {
+                    "type": "boolean"
+                },
+                "manageMemdevs": {
+                    "type": "boolean"
+                },
+                "memdevSettings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                            "device"
+                        ],
+                        "properties": {
+                            "device": {
+                                "type": "string"
+                            },
+                            "usableSize": {
+                                "$ref": "#/definitions/quantity"
+                            },
+                            "coherent": {
+                                "type": "boolean"
+                            }
+                        }
+                    }
+                },
                 "fsTypes": {
                     "type": "array",
-                    "$comment": "default [erofs] when absent; every other type trusts the writers of the devices",
                     "items": {
-                        "type": "string",
-                        "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"
+                        "$ref": "#/definitions/fsType"
+                    }
+                },
+                "verifyAddressing": {
+                    "type": "boolean"
+                },
+                "defaults": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "container": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "steering": {
+                                    "$ref": "#/definitions/steering"
+                                },
+                                "fencing": {
+                                    "type": "string",
+                                    "enum": ["allowed-mems", "none"]
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -350,31 +432,121 @@
             "additionalProperties": false,
             "properties": {
                 "cxl-local": {
-                    "$ref": "#/definitions/localMemoryConfig"
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "device": {
+                            "$ref": "#/definitions/volatileDevice"
+                        },
+                        "container": {
+                            "$ref": "#/definitions/container"
+                        }
+                    }
                 },
                 "cxl-local-shared": {
-                    "$ref": "#/definitions/localMemoryConfig"
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "device": {
+                            "$ref": "#/definitions/sharedDevice"
+                        },
+                        "container": {
+                            "$ref": "#/definitions/container"
+                        }
+                    }
                 },
                 "cxl-local-persistent": {
-                    "$ref": "#/definitions/localMemoryConfig"
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "device": {
+                            "$ref": "#/definitions/persistentDevice"
+                        },
+                        "container": {
+                            "$ref": "#/definitions/container"
+                        }
+                    }
                 },
                 "cxl-pool": {
-                    "$ref": "#/definitions/poolMemoryConfig"
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "device": {
+                            "$ref": "#/definitions/volatileDevice"
+                        },
+                        "container": {
+                            "$ref": "#/definitions/container"
+                        },
+                        "pool": {
+                            "$ref": "#/definitions/pool"
+                        }
+                    }
                 },
                 "cxl-pool-shared": {
-                    "$ref": "#/definitions/poolMemoryConfig"
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "device": {
+                            "$ref": "#/definitions/sharedDevice"
+                        },
+                        "container": {
+                            "$ref": "#/definitions/container"
+                        },
+                        "pool": {
+                            "$ref": "#/definitions/pool"
+                        }
+                    }
                 },
                 "cxl-pool-persistent": {
-                    "$ref": "#/definitions/poolMemoryConfig"
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "device": {
+                            "$ref": "#/definitions/persistentDevice"
+                        },
+                        "container": {
+                            "$ref": "#/definitions/container"
+                        },
+                        "pool": {
+                            "$ref": "#/definitions/pool"
+                        }
+                    }
                 },
                 "cxl-region": {
-                    "$ref": "#/definitions/localMemoryConfig"
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "device": {
+                            "$ref": "#/definitions/numaDevice"
+                        },
+                        "container": {
+                            "$ref": "#/definitions/container"
+                        }
+                    }
                 },
                 "cxl-dram": {
-                    "$ref": "#/definitions/localMemoryConfig"
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "device": {
+                            "$ref": "#/definitions/numaDevice"
+                        },
+                        "container": {
+                            "$ref": "#/definitions/container"
+                        }
+                    }
                 },
                 "cxl-lease": {
-                    "$ref": "#/definitions/leaseMemoryConfig"
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "device": {
+                            "$ref": "#/definitions/leaseDevice"
+                        },
+                        "container": {
+                            "$ref": "#/definitions/container"
+                        }
+                    }
                 }
             }
         },
