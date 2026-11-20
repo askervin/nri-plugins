@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A stand-in for mbt-cxl, the generator of test90-gofmbt-reliability.
+"""A stand-in for mbt-cxl, the generator of test90-mbt-stress.
 
 It speaks the protocol of plan-13 (04-contract.txt 5) with a fixed list of
 steps instead of a model, and accepts every action. A settle is "ok" once

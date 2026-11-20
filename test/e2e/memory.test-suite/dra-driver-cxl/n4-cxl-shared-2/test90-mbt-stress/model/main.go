@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // mbt-cxl is the model-based test generator and oracle of the CXL DRA
-// driver's e2e test test90-gofmbt-reliability (plan-13-gofmbt).
+// driver's e2e test test90-mbt-stress (plan-13-gofmbt).
 //
 //	mbt-cxl online [flags]              steps on stdin/stdout (the coproc)
 //	mbt-cxl online --replay FILE ...    the steps of an mbt-steps.txt
@@ -132,7 +132,7 @@ type commonFlags struct {
 const defaultCoverage = "C1x3,C2x2,C3"
 
 func (c *commonFlags) register(fs *flag.FlagSet, online bool) {
-	fs.StringVar(&c.profile, "profile", "full", "slot profile: "+strings.Join(profileNames(), ", "))
+	fs.StringVar(&c.profile, "profile", "fullp", "slot profile: "+strings.Join(profileNames(), ", "))
 	fs.Int64Var(&c.seed, "seed", 0, "random seed (0: time-based, printed)")
 	fs.IntVar(&c.depth, "depth", 3, "search depth of the planner")
 	fs.IntVar(&c.steps, "steps", 0, "steps after the initial settle, teardown not counted (0: no limit)")

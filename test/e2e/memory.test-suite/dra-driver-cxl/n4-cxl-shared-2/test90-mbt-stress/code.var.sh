@@ -22,6 +22,8 @@
 # the observations). A failure stops the run; the steps are in
 # mbt-steps.txt for a replay.
 #
+# A long test: run_tests.sh skips it unless skip_long_tests=no.
+#
 # Modes (MBT_MODE):
 #   online   mbt-cxl runs as a coprocess and sends one step at a time,
 #            planning the next one meanwhile (default)
@@ -30,13 +32,13 @@
 #            "mbt-cxl generate", checked by "mbt-cxl check"
 # Parameters (environment of run_tests.sh; contract 8): MBT_SEED (default
 # time-based), MBT_DURATION (20m), MBT_STEPS (0: no limit), MBT_DEPTH (3),
-# MBT_PROFILE (full), MBT_UNSETTLED (3), MBT_SETTLE_TIMEOUT (180 s),
+# MBT_PROFILE (fullp), MBT_UNSETTLED (3), MBT_SETTLE_TIMEOUT (180 s),
 # MBT_POLL (3 s), MBT_AVOID (verbs or verb:arg to leave out),
 # MBT_FENCING (the fencing mode of the drivers, amendments A36, A37:
-# allowed-mems, the default, the driver's default; none, the driver
-# configuration has "defaults: {container: {fencing: none}}"; switch,
-# starts in allowed-mems and the model may switch the mode of every
-# driver with the step fencing-switch; the model gets --fencing=MODE; a
+# allowed-mems, the driver's default; none, the driver configuration has
+# "defaults: {container: {fencing: none}}"; switch, the default, starts in
+# allowed-mems and the model may switch the mode of every driver with the
+# step fencing-switch; the model gets --fencing=MODE; a
 # replay and an off-line run take it from the header of MBT_REPLAY or
 # MBT_SCRIPT: set, it must be the header's, else the test fails),
 # MBT_REBOOT (the verb node-reboot of vm0 and vm1, amendments A41-A44,
@@ -102,7 +104,7 @@ MBT_SEED="${MBT_SEED:-$(date +%s)}"
 MBT_DURATION="${MBT_DURATION:-20m}"
 MBT_STEPS="${MBT_STEPS:-0}"
 MBT_DEPTH="${MBT_DEPTH:-3}"
-MBT_PROFILE="${MBT_PROFILE:-full}"
+MBT_PROFILE="${MBT_PROFILE:-fullp}"
 MBT_UNSETTLED="${MBT_UNSETTLED:-3}"
 MBT_AVOID="${MBT_AVOID:-}"
 MBT_REPLAY="${MBT_REPLAY:-}"
@@ -141,7 +143,7 @@ if [ -n "$mbt_mode_file" ] && hdr_fencing=$(mbt-header-mode "$mbt_mode_file" fen
     MBT_FENCING=$hdr_fencing MBT_REBOOT=$hdr_reboot
     echo "mbt: the header of $mbt_mode_file: --fencing $MBT_FENCING --reboot='$MBT_REBOOT'"
 fi
-MBT_FENCING="${MBT_FENCING:-allowed-mems}"
+MBT_FENCING="${MBT_FENCING:-switch}"
 case "$MBT_FENCING" in
     allowed-mems|switch) MBT_FENCING_START=allowed-mems;;
     none)

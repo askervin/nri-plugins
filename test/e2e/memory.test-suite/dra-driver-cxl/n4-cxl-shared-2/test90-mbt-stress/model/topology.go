@@ -325,7 +325,7 @@ func defaultConfig() *Config {
 	return &Config{
 		PlanStates:  defaultPlanStates,
 		StallWindow: defaultStallWindow,
-		Profile:     "full",
+		Profile:     "fullp",
 		LocalBlocks: [nVMs]int{VM0: 2, VM1: 2, VM2: 8},
 		NodeHB:      [nBridges]int{HB0: 2, HB1: 3},
 		Unsettled:   3,

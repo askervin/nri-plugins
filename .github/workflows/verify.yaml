@@ -88,7 +88,7 @@ jobs:
               ./pkg/udev/... \
               ./scripts/cxl-dump/... \
               ./scripts/testing/fake-cxl-pool/...
-      - working-directory: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test90-gofmbt-reliability/model
+      - working-directory: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test90-mbt-stress/model
         run: |
           go test -short -timeout 10m ./...
       - working-directory: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read

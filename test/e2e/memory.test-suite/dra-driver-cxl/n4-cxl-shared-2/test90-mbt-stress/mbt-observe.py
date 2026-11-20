@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Observations of test90-gofmbt-reliability (plan-13, 04-contract.txt 6).
+"""Observations of test90-mbt-stress (plan-13, 04-contract.txt 6).
 
 Usage:
   mbt-observe.py vm [--ns NS] [--stacks-after S]
@@ -2373,7 +2373,7 @@ def cmd_assemble(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="observations of test90-gofmbt-reliability")
+    ap = argparse.ArgumentParser(description="observations of test90-mbt-stress")
     sub = ap.add_subparsers(dest="cmd", required=True)
     v = sub.add_parser("vm")
     v.add_argument("--ns", default="cxl-pool-demo")

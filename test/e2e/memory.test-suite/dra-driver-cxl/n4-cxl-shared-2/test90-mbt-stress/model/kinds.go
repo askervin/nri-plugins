@@ -261,8 +261,9 @@ func parseSlot(name string) (Slot, error) {
 	return s, nil
 }
 
-// profiles are the slot lists. "full" and "small" are the contract's;
-// "tiny" is for unit tests and quick runs.
+// profiles are the slot lists. "fullp", the default, is "full" with the
+// persistent slots; "small" is the contract's; "tiny" is for unit tests
+// and quick runs.
 var profiles = map[string][]string{
 	"full": {
 		// pool a

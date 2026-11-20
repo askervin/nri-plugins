@@ -1,4 +1,4 @@
-# The executor of test90-gofmbt-reliability (plan-13 of fake-cxl-pool,
+# The executor of test90-mbt-stress (plan-13 of fake-cxl-pool,
 # scripts/testing/fake-cxl-pool/plan-13-gofmbt/04-contract.txt): the
 # actions of the model mbt-cxl on the cluster of test19-many-pools, the
 # settle observation, and the line protocol with mbt-cxl, on-line (a
