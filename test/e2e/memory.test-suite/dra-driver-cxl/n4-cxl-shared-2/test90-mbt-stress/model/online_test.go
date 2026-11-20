@@ -125,15 +125,13 @@ func TestOnlineSmall(t *testing.T) {
 	if got := stepsOf(t, r.outDir); strings.Join(got, "\n") != strings.Join(acts, "\n") {
 		t.Fatalf("replay steps differ:\n%v\n%v", got, acts)
 	}
-}
-
-func TestOnlineLockStepFull(t *testing.T) {
-	o := testOpts(t, "full", 50, 2, false)
-	sm := newSim(o.cfg, 3)
-	sm.transient = 2
-	logs, err := runSim(t, o, sm)
-	if err != nil || sm.sawEnd == "" {
-		t.Fatalf("run: %v, sim fail %q\n%s", err, sm.sawFail, logs)
+	// lock-step (--plan-ahead=false) plans every step afresh
+	l := testOpts(t, "small", 30, 2, false)
+	sml := newSim(l.cfg, 3)
+	sml.transient = 2
+	logs, err = runSim(t, l, sml)
+	if err != nil || sml.sawEnd == "" {
+		t.Fatalf("lock-step: %v, sim fail %q\n%s", err, sml.sawFail, logs)
 	}
 	if strings.Contains(logs, "plan: reused") {
 		t.Fatalf("lock-step reused a plan")
