@@ -274,7 +274,7 @@ var ManagementTable = fsm.Table[Management]{
 		},
 		{
 			From: fsm.List(ManagementSteered), To: ManagementNone, Triggers: fsm.List(TriggerSteeringEnded),
-			When:    "a process of the running container refuses a memory policy of a later step and fencing none",
+			When: "a process of the running container refuses a memory policy of a later step and fencing none",
 			Effects: "its manager set memory.high to max and stopped; its cpuset.mems back as before the " +
 				"steering; its Steered record removed",
 		},
