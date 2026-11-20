@@ -211,18 +211,14 @@ func (b *Broker) companionRequest(l *state.Lease) (*resourcev1.DeviceRequest, []
 }
 
 // companionConfig returns the opaque MemoryConfig of the driver of the
-// companion claim of a lease for the requests (nil: all): the mode and,
-// for fs, readOnly explicitly and access and fsType only when asked for
-// (no path: the companion pod gets no mount); for the other modes readOnly
-// when asked for.
+// companion claim of a lease for the requests (nil: all): the mode and
+// readOnly explicitly, so that a preset of the class cannot change what the
+// broker gives the requester, and for fs access and fsType when asked for
+// (no path: the companion pod gets no mount).
 func companionConfig(l *state.Lease, driver string, requests []string) (resourcev1.DeviceClaimConfiguration, error) {
-	dev := &config.Device{Mode: string(l.Asked.Mode)}
-	switch {
-	case l.Asked.Mode == state.ModeFs:
-		dev.ReadOnly = ptr(readOnly(l))
+	dev := &config.Device{Mode: string(l.Asked.Mode), ReadOnly: ptr(readOnly(l))}
+	if l.Asked.Mode == state.ModeFs {
 		dev.Access, dev.FsType = string(l.Asked.Access), l.Asked.FsType
-	case l.Asked.ReadOnly:
-		dev.ReadOnly = ptr(true)
 	}
 	cfg := &config.MemoryConfig{APIVersion: config.APIVersion, Kind: config.Kind, Device: dev}
 	params, err := json.Marshal(cfg)

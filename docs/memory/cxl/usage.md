@@ -749,6 +749,10 @@ into the class's `spec.config` with the class's driver, the apiVersion
 and the kind. The values schema of the chart checks the bodies: for
 `cxl-lease` it allows `container` and no `device` settings (only
 `readOnly: false`), which the driver would refuse in every lease claim.
+A preset applies to every claim of the class, also to the companion
+claims of [leases](leases.md#companion-objects): the lease broker sets
+the mode and `readOnly` of a companion itself, and the other fields of
+the preset (`access`, `fsType`, `container`) apply to it as to any claim.
 Steering on for every container with memory of `cxl-local`
 or `cxl-pool`, unless its claim says
 `container: {steering: {policy: none}}`:
