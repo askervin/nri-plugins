@@ -484,6 +484,8 @@ pool-snapshot end
 # The three controllers kept their own slices all along.
 dra-json "$VM2" resourceslices
 dra-assert "$COMMAND_OUTPUT" "sorted((s['spec']['pool']['name'], s['metadata']['uid']) for s in slices('$DRA_POOL_DRIVER')) == $POOL_SLICE_IDS"
+dra-assert-clean "$VM2" "$VM1" "$VM0"
+
 dra-trace-stop
 dra-trace-summary
 

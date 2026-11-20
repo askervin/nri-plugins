@@ -539,6 +539,8 @@ T_UNSHARE=$(echo "$EPOCHREALTIME - $t0" | bc)
 dra-wait "$VM2" sliced-again resourceslices \
     "attr($LD, 'shared') == False and sorted(k.split('/')[-1] for k in ${LD}['attributes']) == ['memoryBlockSize', 'nodeAffinity', 'persistent', 'serial', 'shared', 'size', 'source', 'type'] and quantity(capacity($LD, 'memory')) == $DRA_LOCAL_SIZE" 60
 
+dra-assert-clean "$VM2" "$VM1"
+
 echo "### I: what every component did, in order"
 dra-trace-stop
 dra-trace-summary

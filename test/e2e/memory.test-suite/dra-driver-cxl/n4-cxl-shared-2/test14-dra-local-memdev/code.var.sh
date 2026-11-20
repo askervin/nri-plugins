@@ -883,6 +883,8 @@ echo "### H: what every component did, in order"
 # Every slice is whole memory blocks: the scheduler rounded every claim
 # up, and the kernel's first-fit kept every slice block-aligned.
 dra-local-slices-aligned "$VM2"
+dra-assert-clean "$VM2" "$VM1"
+
 dra-trace-stop
 dra-trace-summary
 printf 'timings (s, test steps, 1 s polling): pod Running after apply: numa-a (region, first NUMA slice) %.1f, dax-1 %.1f, numa-b (two blocks) %.1f, the whole device as one dax slice %.1f; last claim deleted -> initial state %.1f\n' \

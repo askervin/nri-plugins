@@ -688,20 +688,12 @@ dra-delete "$VM2" resourceclaimtemplate "$LEASE_TEMPLATE" --wait=true --timeout=
 
 echo "### K: nothing is left"
 fs0-free
-dra-lease-fs-mounts "$VM2" || error "cannot read the lease mounts of VM2"
-[ "$COMMAND_OUTPUT" == "[]" ] || error "VM2 still has mounts under $DRA_LEASE_FS_DIR: $COMMAND_OUTPUT"
-dra-lease-fs-mounts "$VM1" || error "cannot read the lease mounts of VM1"
-[ "$COMMAND_OUTPUT" == "[]" ] || error "VM1 still has mounts under $DRA_LEASE_FS_DIR: $COMMAND_OUTPUT"
-left=$(dra-vm-command-q "$VM2" "kubectl get pods,resourceclaims,resourceclaimtemplates -n $DRA_NS -o name") ||
-    error "cannot list the pods, claims and claim templates in $DRA_NS"
-[ -z "$left" ] || error "objects left in $DRA_NS: $left"
+dra-assert-clean "$VM2" "$VM1"
 for vm in "$VM2" "$VM1"; do
     label=$(pool-vm-label "$vm")
     retry-until --timeout 60 --interval 1 --message "$label has nothing under $DRA_LEASE_FS_DIR" \
         '[ "$(pool-vm-command-q "$vm" "{ test ! -d $DRA_LEASE_FS_DIR || find $DRA_LEASE_FS_DIR -mindepth 1; } && echo end")" == end ]' ||
         error "$label still has under $DRA_LEASE_FS_DIR: $(pool-vm-command-q "$vm" "find $DRA_LEASE_FS_DIR -mindepth 1")"
-    cdis=$(dra-cdi-devices-with "$vm" "CXL_${FS_HEX}_") || error "cannot read the CDI specs of $label"
-    [ -z "$cdis" ] || error "$label still has CDI devices of $FS_DEVICE: $cdis"
     qtree=$(pool-vm-monitor "$vm" "info qtree -b") || error "cannot read the qemu device tree of $label"
     grep -q '^ *bus: ' <<< "$qtree" || error "no qemu device tree of $label: $qtree"
     ! grep -q 'dev: cxl-type3' <<< "$qtree" || error "qemu of $label still has a CXL memory device"

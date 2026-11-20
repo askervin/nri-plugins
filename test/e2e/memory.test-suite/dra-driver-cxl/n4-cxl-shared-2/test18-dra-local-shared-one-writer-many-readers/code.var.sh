@@ -594,6 +594,8 @@ dra-plugin-log-wait "$VM2" "local memdev $DRA_LOCAL_SERIAL ($SHARED_MEMDEV): not
 dra-local-slices-none "$VM2" unshared
 T_UNSHARE=$(echo "$EPOCHREALTIME - $t0" | bc)
 dra-wait "$VM2" sliced-again resourceslices "attr($LD, 'shared') == False and quantity(capacity($LD, 'memory')) == $DRA_LOCAL_SIZE" 60
+dra-assert-clean "$VM2" "$VM1"
+
 dra-trace-stop
 dra-trace-summary
 echo "TIMING: the writer's request until its lease is Ready (the region created): $T_WRITER_READY s"

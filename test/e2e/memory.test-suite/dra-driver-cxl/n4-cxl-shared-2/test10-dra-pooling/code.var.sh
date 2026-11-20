@@ -358,6 +358,8 @@ dra-delete "$VM2" pod bad-pool --grace-period=2 --wait=true --timeout=60s
 dra-delete "$VM2" resourceclaim bad-pool --wait=true --timeout=60s
 pool-device-free-wait pooled0 "$VM2"
 
+dra-assert-clean "$VM2" "$VM1"
+
 echo "### H: what every component did, in order"
 dra-trace-stop
 dra-trace-summary

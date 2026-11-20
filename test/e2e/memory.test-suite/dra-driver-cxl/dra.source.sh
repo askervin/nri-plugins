@@ -868,6 +868,56 @@ dra-uninstall() { # script API
     return 0
 }
 
+dra-assert-clean() { # script API
+    # Usage: dra-assert-clean VMDIR...
+    #
+    # Wait until a test has left nothing behind, 60 s at most, and fail
+    # the test if it has: no pods, ResourceClaims or ResourceClaimTemplates
+    # in $DRA_NS, and in the VM of every VMDIR no attachment of a pool
+    # server that a claim owns, no CDI device of the driver, no mount under
+    # the mount and lease directories of the driver, no loop device over
+    # pmem and no CXL region. A test calls it at its end, before the
+    # cleanup of the EXIT trap.
+    local vmdir label left
+    # shellcheck disable=SC2016 # evaluated by retry-until
+    retry-until --timeout 60 --interval 2 --message "nothing left in $DRA_NS" \
+        'left=$(dra-vm-command-q "$OUTPUT_DIR" "kubectl get pods,resourceclaims,resourceclaimtemplates -n $DRA_NS -o name") && [ -z "$left" ]' ||
+        error "objects left in $DRA_NS: $(tr '\n' ' ' <<< "$left")"
+    for vmdir in "$@"; do
+        label=$(dra-vm-label "$vmdir")
+        # shellcheck disable=SC2016 # evaluated by retry-until
+        retry-until --timeout 60 --interval 2 --message "$label: nothing of a claim left" \
+            'left=$(dra-leftovers "$vmdir") && [ -z "$left" ]' ||
+            error "$label: left behind: $left"
+    done
+    echo "dra-assert-clean: nothing left in $DRA_NS and in $(for vmdir in "$@"; do dra-vm-label "$vmdir"; done | tr '\n' ' ')"
+}
+
+dra-leftovers() {
+    # Usage: dra-leftovers VMDIR
+    #
+    # Print what claims left in the VM of VMDIR (see dra-assert-clean), one
+    # item per line, nothing if it is clean. Return non-zero if something
+    # cannot be read.
+    local vmdir="$1" host url atts cdis dir mounts loops regions
+    host=$(dra-vm-name "$vmdir")
+    for url in $(dra-pool-urls); do
+        atts=$(dra-pool-attachments "$host" "$url")
+        [ -z "$atts" ] || echo "attachments on $url: $(tr '\n' ' ' <<< "$atts")"
+    done
+    cdis=$(dra-cdi-devices-with "$vmdir" "CXL_") || return 1
+    [ -z "$cdis" ] || echo "CDI devices: $(tr '\n' ' ' <<< "$cdis")"
+    for dir in "$DRA_LOCAL_MOUNT_DIR" "$DRA_POOL_MOUNT_DIR" "$DRA_LEASE_FS_DIR"; do
+        dra-fs-mounts "$vmdir" "$dir" || return 1
+        mounts=$COMMAND_OUTPUT
+        [ "$mounts" == "[]" ] || echo "mounts under $dir: $mounts"
+    done
+    loops=$(dra-pmem-loops "$vmdir") || return 1
+    [ -z "$loops" ] || echo "loop devices over pmem: $(tr '\n' ' ' <<< "$loops")"
+    regions=$(dra-vm-command-q "$vmdir" "ls /sys/bus/cxl/devices/ | grep -E '^region[0-9]' || true") || return 1
+    [ -z "$regions" ] || echo "CXL regions: $(tr '\n' ' ' <<< "$regions")"
+}
+
 dra-cleanup() {
     # Usage: dra-cleanup
     #

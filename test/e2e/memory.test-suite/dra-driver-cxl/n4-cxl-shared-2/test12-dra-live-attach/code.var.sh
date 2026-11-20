@@ -814,6 +814,8 @@ T_DELETE=$(echo "$t_clean - $t_delete" | bc)
 echo "pod deleted with 2 active leases: everything cleaned up in $T_DELETE s"
 dra-plugin-log "$VM2" | grep -iE 'lease|lend|revok' | tail -n 40
 
+dra-assert-clean "$VM2" "$VM1"
+
 echo "### G: what every component did, in order"
 dra-trace-stop
 dra-trace-summary

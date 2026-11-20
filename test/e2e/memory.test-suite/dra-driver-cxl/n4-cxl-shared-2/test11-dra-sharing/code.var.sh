@@ -255,6 +255,8 @@ deleted=$(grep -c 'event DEVICE_DELETED' "$POOL_SERVER_LOG")
 [ "$deleted" -ge 2 ] || error "expected DEVICE_DELETED from both qemus, see $POOL_SERVER_LOG"
 grep -E 'attachment shared0@.*: (attached|detached)|event DEVICE_DELETED' "$POOL_SERVER_LOG"
 
+dra-assert-clean "$VM2" "$VM1"
+
 echo "### E: what every component on VM2 and VM1 did, in order"
 dra-trace-stop
 dra-trace-summary

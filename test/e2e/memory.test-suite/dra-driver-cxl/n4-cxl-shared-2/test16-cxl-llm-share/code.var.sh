@@ -989,19 +989,11 @@ lease-dirs-gone direct-b
 echo "### E: all readers stop, nothing is left"
 readers-stop direct-c "${CACHED[@]}"
 dra-delete "$VM2" resourceclaimtemplate "$LEASE_TEMPLATE" --wait=true --timeout=60s
-left=$(dra-vm-command-q "$VM2" "kubectl get pods,resourceclaims,resourceclaimtemplates -n $DRA_NS -o name") ||
-    error "cannot list the pods, claims and claim templates in $DRA_NS"
-[ -z "$left" ] || error "objects left in $DRA_NS: $left"
 lease-dirs-gone cached-c
+dra-assert-clean "$VM2" "$VM1"
 for vm in "$VM2" "$VM1"; do
     label=$(pool-vm-label "$vm")
-    dra-fs-mounts "$vm" || error "cannot read the mounts of $label"
-    [ "$COMMAND_OUTPUT" == "[]" ] || error "$label still has mounts under $DRA_POOL_MOUNT_DIR: $COMMAND_OUTPUT"
     lease-fs-empty "$vm"
-    loops=$(dra-pmem-loops "$vm") || error "cannot list the loop devices of $label"
-    [ -z "$loops" ] || error "$label still has loop devices over pmem devices: $loops"
-    cdis=$(dra-cdi-devices-with "$vm" "CXL_${LLM_HEX}_") || error "cannot read the CDI specs of $label"
-    [ -z "$cdis" ] || error "$label still has CDI devices of $LLM_DEVICE: $cdis"
     qtree=$(pool-vm-monitor "$vm" "info qtree -b") || error "cannot read the qemu device tree of $label"
     grep -q '^ *bus: ' <<< "$qtree" || error "no qemu device tree of $label: $qtree"
     ! grep -q 'dev: cxl-type3' <<< "$qtree" || error "qemu of $label still has a CXL memory device"

@@ -321,15 +321,10 @@ dra-delete-pod "$VM2" leaser
 fs-claim-pod-delete fs-rw fs-ro
 dra-delete "$VM2" resourceclaimtemplate "$LEASE_TEMPLATE" --wait=true --timeout=60s
 region-wait no
-fs-no-mounts-assert "$VM2" "$DRA_LOCAL_MOUNT_DIR" "$DRA_POOL_MOUNT_DIR"
+dra-assert-clean "$VM2"
 retry-until --timeout 60 --interval 1 --message "VM2 has nothing under $DRA_LEASE_FS_DIR" \
     '[ "$(pool-vm-command-q "$VM2" "{ test ! -d $DRA_LEASE_FS_DIR || find $DRA_LEASE_FS_DIR -mindepth 1; } && echo end")" == end ]' ||
     error "VM2 still has under $DRA_LEASE_FS_DIR: $(pool-vm-command-q "$VM2" "find $DRA_LEASE_FS_DIR -mindepth 1")"
-left=$(dra-vm-command-q "$VM2" "kubectl get pods,resourceclaims,resourceclaimtemplates -n $DRA_NS -o name") ||
-    error "cannot list the pods, claims and claim templates in $DRA_NS"
-[ -z "$left" ] || error "objects left in $DRA_NS: $left"
-cdis=$(dra-cdi-devices-with "$VM2" "CXL_${LP_HEX}_") || error "cannot read the CDI specs of VM2"
-[ -z "$cdis" ] || error "VM2 still has CDI devices of $LP_DEVICE: $cdis"
 # The memdev is the node's: the driver never disables it. The server's
 # client releases it in the VM, then the server detaches it.
 pool-client --pool "$LP_SERVER" "$VM2" guest release "$LP_SERIAL" ||

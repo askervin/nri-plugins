@@ -463,6 +463,8 @@ for vm in "$VM2" "$VM1"; do
         error "qemu of $(pool-vm-label "$vm") still has a CXL memory device"
 done
 
+dra-assert-clean "$VM2" "$VM1"
+
 echo "### I: what every component of VM2 and VM1 did, in order"
 dra-trace-stop
 dra-trace-summary

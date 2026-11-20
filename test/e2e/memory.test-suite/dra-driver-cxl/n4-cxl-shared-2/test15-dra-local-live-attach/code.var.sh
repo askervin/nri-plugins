@@ -848,6 +848,8 @@ echo "### G: what every component did, in order"
 # Every slice is whole memory blocks: the scheduler rounded every claim
 # up, and the kernel's first-fit kept every slice block-aligned.
 dra-local-slices-aligned "$VM2"
+dra-assert-clean "$VM2" "$VM1"
+
 dra-trace-stop
 dra-trace-summary
 printf 'timings (s, test steps): local NUMA lease Ready %.2f; the last NUMA lease of the container given back until its pages left the node %.1f\n' "$T_LOCAL_NUMA" "$T_GIVE_BACK"
