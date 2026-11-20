@@ -1320,10 +1320,10 @@ cannot allocate memory`). The memory policy keeps the allocations of the
 container on the CXL node.
 
 Steering is not for every workload. It narrows `cpuset.mems` to the
-nodes of the plan, sets the memory policy of the threads that exist when
-it starts (processes that are not descendants of them, such as those of
-`kubectl exec`, keep theirs), and holds the cgroup at `memory.high` at
-every step until the plan moves on. Workloads that place their memory
+nodes of the plan, sets the memory policy of the processes of the
+container at each step (a process that `kubectl exec` starts gets it at
+the next step), and holds the cgroup at `memory.high` at every step until
+the plan moves on. Workloads that place their memory
 themselves, such as HPC applications and databases, are better left
 unsteered. A steered container cannot take a `numa` lease
 ([leases.md](leases.md#limitations)). A restart of the plugin, graceful

@@ -283,61 +283,6 @@ func TestSynchronizeReleasesSteering(t *testing.T) {
 	}
 }
 
-// TestSynchronizeReleasesSteeringLegacy: without Steered records in the
-// store (a new store, --new-state, a lost store) a restarted plugin
-// releases the started containers that their settings steer, once, and
-// keeps the records from then on; with a store that it loaded (also from
-// state.json.prev), the containers without a record are left alone.
-func TestSynchronizeReleasesSteeringLegacy(t *testing.T) {
-	for _, tc := range []struct {
-		origin store.Origin
-		legacy bool
-	}{{store.New, true}, {store.NewState, true}, {store.Lost, true}, {store.Loaded, false}, {store.FromPrev, false}} {
-		t.Run(fmtOrigin(tc.origin), func(t *testing.T) {
-			e := newEnvWith(t, envOptions{origin: tc.origin})
-			e.p.Seed([]int{2})
-			e.hasMemory("0-3")
-			e.local.set(nriClaims())
-			if e.p.legacy != tc.legacy {
-				t.Fatalf("legacy %v", e.p.legacy)
-			}
-			ctx := context.Background()
-			p1 := testPod("u1")
-			cg1 := e.proc(101, "kubepods/u1/c1", "0,2", "0,2")
-			steerable(t, cg1, "140668928")
-			cg3 := e.proc(103, "kubepods/u1/c3", "0-3", "")
-			steerable(t, cg3, "1073741824")
-			c1 := withClaims(testCtr(p1, "c1", "app", 101), "auto")
-			c3 := withClaims(testCtr(p1, "c3", "plain", 103), "split")
-			c1.State, c3.State = api.ContainerState_CONTAINER_RUNNING, api.ContainerState_CONTAINER_RUNNING
-			// created, not started: no manager can have written it
-			c4 := withClaims(testCtr(p1, "c4", "late", 0), "auto")
-			c4.State = api.ContainerState_CONTAINER_CREATED
-			_, err := e.p.Synchronize(ctx, []*api.PodSandbox{p1}, []*api.Container{c1, c3, c4})
-			noErr(t, err)
-			want := "140668928"
-			if tc.legacy {
-				want = "max"
-			}
-			if got := memoryHigh(t, cg1); got != want {
-				t.Errorf("memory.high %s of a container that its settings steer, expected %s", got, want)
-			}
-			if got := memoryHigh(t, cg3); got != "1073741824" {
-				t.Errorf("memory.high %s of a container that is not steered", got)
-			}
-			if ids := e.steered(); len(ids) != 0 || e.p.legacy {
-				t.Errorf("steering records %v (legacy %v) after Synchronize", ids, e.p.legacy)
-			}
-		})
-	}
-}
-
-// fmtOrigin returns the name of a store origin.
-func fmtOrigin(o store.Origin) string {
-	return map[store.Origin]string{store.Loaded: "Loaded", store.FromPrev: "FromPrev", store.New: "New",
-		store.NewState: "NewState", store.Lost: "Lost"}[o]
-}
-
 // A container steered by a killed plugin under the old defaults (steering
 // policy auto) is released by the plugin restarted with new defaults (no
 // steering) that do not steer it: the Steered record names it.

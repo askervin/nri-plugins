@@ -165,9 +165,6 @@ type envOptions struct {
 	fencing string
 	// defaults are the container settings (fencing from fencing).
 	defaults config.Container
-	// origin is the origin of the store: Loaded (the default), New,
-	// NewState or Lost.
-	origin store.Origin
 	// steered are the Steered records of the store at the start.
 	steered map[string]string
 	// leases are READY numa leases in the store at the start.
@@ -226,7 +223,7 @@ func newEnvWith(t *testing.T, o envOptions) *env {
 	return e
 }
 
-// openStore returns a store in dir of the origin of o with its records.
+// openStore returns a store in dir with the records of o.
 func openStore(t *testing.T, dir string, o envOptions) *store.Store {
 	t.Helper()
 	ctx := context.Background()
@@ -237,34 +234,18 @@ func openStore(t *testing.T, dir string, o envOptions) *store.Store {
 		noErr(t, err)
 		return st
 	}
-	switch o.origin {
-	case store.FromPrev:
-		// a document and its previous one, then state.json is broken
-		st := open(store.Options{})
-		noErr(t, st.Commit(ctx, store.Durable, func(doc *store.Document) error {
-			doc.Steered = append(doc.Steered, state.Steered{Container: "gone", CgroupDir: "/gone"})
-			return nil
-		}))
-		noErr(t, st.Close())
-		noErr(t, os.WriteFile(filepath.Join(dir, "state.json"), []byte("{bogus"), 0o600))
-	case store.New:
-	case store.NewState, store.Lost:
-		noErr(t, os.MkdirAll(dir, 0o755))
-		noErr(t, os.WriteFile(filepath.Join(dir, "state.json"), []byte("{bogus"), 0o600))
-	default:
-		st := open(store.Options{})
-		noErr(t, st.Commit(ctx, store.Durable, func(doc *store.Document) error {
-			for id, cg := range o.steered {
-				doc.Steered = append(doc.Steered, state.Steered{Container: id, CgroupDir: cg})
-			}
-			doc.Leases = append(doc.Leases, o.leases...)
-			return nil
-		}))
-		noErr(t, st.Close())
-	}
-	st := open(store.Options{NewState: o.origin == store.NewState, WriteFault: o.writeFault})
-	if st.Origin() != o.origin {
-		t.Fatalf("store origin %v, expected %v", st.Origin(), o.origin)
+	st := open(store.Options{})
+	noErr(t, st.Commit(ctx, store.Durable, func(doc *store.Document) error {
+		for id, cg := range o.steered {
+			doc.Steered = append(doc.Steered, state.Steered{Container: id, CgroupDir: cg})
+		}
+		doc.Leases = append(doc.Leases, o.leases...)
+		return nil
+	}))
+	noErr(t, st.Close())
+	st = open(store.Options{WriteFault: o.writeFault})
+	if st.Origin() != store.Loaded {
+		t.Fatalf("store origin %v, expected Loaded", st.Origin())
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	return st

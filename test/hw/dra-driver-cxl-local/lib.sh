@@ -361,7 +361,7 @@ spec:$spec"
 # The main process of the test containers: runs /tmp/run when it appears
 # (see prun), so that the commands are its descendants and inherit the
 # memory policy that the driver sets on it when it steers the container.
-# Commands run with kubectl exec (pexec) do not.
+# Commands run with kubectl exec (pexec) get it only at the next step.
 RUNNER='trap exit TERM; while :; do if [ -f /tmp/run ]; then sh /tmp/run > /tmp/run.out 2>&1; echo $? > /tmp/run.rc; rm -f /tmp/run; fi; sleep 0.2 & wait; done'
 
 prun() { # Usage: prun POD SCRIPT [TIMEOUT] -- run SCRIPT as a child of the main process of POD

@@ -42,7 +42,8 @@ One process on every node has these parts:
   changes them. It reads and changes the kernel through one package that
   observes sysfs and runs the `cxl` and `ndctl` tools; dax devices are
   bound to their drivers through sysfs.
-- The NRI plugin, the one writer of the `cpuset.mems` of containers:
+- The NRI plugin, the one writer of the `cpuset.mems` of containers
+  (through NRI; of a steered container in its cgroup):
   it keeps containers off the CXL memory that they did not claim
   (fencing), starts the steering of the containers that opt in, and
   lends NUMA nodes to running containers.

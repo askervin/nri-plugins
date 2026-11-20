@@ -174,8 +174,8 @@ var LifecycleTable = fsm.Table[Lifecycle]{
 			When:  "Synchronize lists a created, running or paused container that the plugin has no record of",
 			Guard: "the first Synchronize of the process",
 			Effects: "the management decided from its results; not steered by this process; a manager of a " +
-				"previous process (its Steered record, or its settings without any record) released " +
-				"(memory.high max); seeded; no adjustment possible",
+				"previous process (its Steered record) released (memory.high max); seeded; no adjustment " +
+				"possible",
 		},
 		{
 			From: fsm.List(LifecycleUnseen), To: LifecycleStarted, Triggers: fsm.List(TriggerSynchronize),

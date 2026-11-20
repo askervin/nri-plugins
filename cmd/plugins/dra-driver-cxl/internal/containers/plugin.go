@@ -99,10 +99,6 @@ type Plugin struct {
 	fencing bool
 	// hasMemory is the sysfs file of the NUMA nodes with memory.
 	hasMemory string
-	// legacy: the store had no Steered records at start (a new or lost
-	// document): Synchronize releases the started containers that their
-	// settings steer.
-	legacy bool
 
 	fenceMu sync.Mutex
 	token   sync.Mutex
@@ -158,11 +154,6 @@ func New(opts Options) (*Plugin, error) {
 		synced:    make(chan struct{}),
 		readiness: ReadinessWaiting,
 		conn:      ConnNone,
-	}
-	switch opts.Store.Origin() {
-	case store.New, store.NewState, store.Lost:
-		klog.V(3).Info("NRI: no steering records in the store: releasing the containers that their settings steer")
-		p.legacy = true
 	}
 	return p, nil
 }

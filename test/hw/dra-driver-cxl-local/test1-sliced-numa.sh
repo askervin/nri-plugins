@@ -28,8 +28,8 @@
 #
 # The workloads run as descendants of the main process of the containers
 # (prun), which inherit the memory policy that the driver sets when it
-# steers a container; processes of kubectl exec do not, which is shown
-# separately.
+# steers a container; a process of kubectl exec gets it only at the next
+# step, which is shown separately.
 #
 # Needs the driver deployed with "deploy.sh sliced". CONTAINER_FENCING
 # (deploy.sh) none: the fencing checks fail, and numa-u is managed "none".
@@ -104,7 +104,7 @@ check "numa-a: the memory holds what was written" grep -q "verify ok" <<< "$out"
 log "numa-a: 1024 MiB with the default policy in a process of kubectl exec (not a descendant of the steered process)"
 for i in 1 2 3; do
     out=$(pexec numa-a python3 /tools/alloc-touch.py 1024 2>&1)
-    echo "    try $i: $(grep pages <<< "$out") (informational: the policy of the steering is not inherited)"
+    echo "    try $i: $(grep pages <<< "$out") (informational: the policy of the steering comes at the next step)"
 done
 
 log "numa-b: 1024 MiB preferring node $N (numa-touch.py)"

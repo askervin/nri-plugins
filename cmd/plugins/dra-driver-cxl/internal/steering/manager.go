@@ -24,17 +24,19 @@
 // A Manager applies the steps to a cgroup with two mechanisms. The
 // nodes of every step are added to cpuset.mems of the cgroup, which
 // confines all allocations of the cgroup to the nodes used so far.
-// Nodes are only added, so memory is never migrated. When none of the
-// allowed nodes has normal (non-movable) memory, for instance a CXL node
-// whose memory is onlined movable, the nearest node with normal memory
-// is allowed too: unmovable user allocations (pipe buffers, for
-// instance) obey cpuset.mems but cannot use movable memory, and fail
-// with ENOMEM without such a node. The nodes of
-// the current step are set as the memory policy of every thread in
-// the cgroup with mpolinject. The step size is enforced with
-// memory.high through a notifier: the kernel throttles the cgroup
-// when the step has been allocated, the manager computes the next
-// step, updates the policy and raises memory.high again.
+// After the first write nodes are only added, so memory is not
+// migrated. When none of the allowed nodes has normal (non-movable)
+// memory, for instance a CXL node whose memory is onlined movable, the
+// nearest node with normal memory is allowed too: unmovable user
+// allocations (pipe buffers, for instance) obey cpuset.mems but cannot
+// use movable memory, and fail with ENOMEM without such a node. The
+// nodes of the step are set as the memory policy of the processes of
+// the cgroup and of the cgroups below it with mpolinject. The step size
+// is enforced with memory.high through a notifier: the kernel throttles
+// the cgroup when the step has been allocated, the manager computes the
+// next step, updates the policy and raises memory.high again. Past the
+// last waypoint memory.high is max, and the manager reads the usage at
+// every wake until it is below the last waypoint again.
 package steering
 
 import (
@@ -85,9 +87,12 @@ type Manager struct {
 	// mems is the cpuset.mems of the cgroup before Start.
 	mems string
 	// unbounded: the last step set no memory.high bound (past the last
-	// waypoint, or nothing to steer), with the policy of nodes.
+	// waypoint, or nothing to steer).
 	unbounded bool
-	nodes     []int
+	// nodes are the nodes of the memory policy of the last step, which
+	// the processes seen have.
+	nodes []int
+	seen  map[int]bool
 	// stop is closed by Stop, done is closed when the steering
 	// goroutine has exited.
 	stop     chan struct{}
@@ -172,16 +177,21 @@ func (m *Manager) Start() error {
 	if m.mems, err = readTrim(filepath.Join(m.cgroupPath, "cpuset.mems")); err != nil {
 		return err
 	}
-	usage, err := numaUsage(m.cgroupPath, numaUsageCategories...)
+	// Permitted nodes that hold anon or file memory stay allowed: writing
+	// cpuset.mems migrates the pages that the processes map off the other
+	// nodes.
+	held, err := numaUsage(m.cgroupPath, "anon", "file")
 	if err != nil {
 		return err
 	}
-	// Permitted nodes that already hold memory stay allowed, so that
-	// writing cpuset.mems does not migrate that memory.
-	for node, bytes := range usage {
+	for node, bytes := range held {
 		if bytes > 0 && m.permitted.Contains(node) {
 			m.allowed[node] = true
 		}
+	}
+	usage, err := numaUsage(m.cgroupPath, numaUsageCategories...)
+	if err != nil {
+		return err
 	}
 
 	m.notifier, err = newNotifier(m.cgroupPath)
@@ -216,14 +226,20 @@ func (m *Manager) Stop() {
 			klog.Errorf("%s: interrupt failed: %v", m.name, err)
 		}
 		<-m.done
+		m.closeNotifier()
 	})
 }
 
+// gone tells whether an error of a cgroup file says that the cgroup is
+// removed.
+func gone(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ENODEV)
+}
+
 // loop applies a step whenever the memory usage of the cgroup
-// crosses a bound, until Stop is called.
+// crosses a bound, until Stop is called or the cgroup is removed.
 func (m *Manager) loop() {
 	defer close(m.done)
-	defer m.closeNotifier()
 	defer m.release()
 	for {
 		ev, err := m.notifier.Wait(waitTimeout)
@@ -235,7 +251,7 @@ func (m *Manager) loop() {
 		if errors.Is(err, errInterrupted) {
 			continue
 		}
-		if errors.Is(err, os.ErrNotExist) {
+		if gone(err) {
 			klog.Infof("%s: cgroup %s is gone, stop steering", m.name, m.cgroupPath)
 			return
 		}
@@ -255,11 +271,14 @@ func (m *Manager) loop() {
 			continue
 		}
 		usage, err := numaUsage(m.cgroupPath, numaUsageCategories...)
-		if err != nil {
-			klog.Errorf("%s: %v", m.name, err)
-			continue
+		if err == nil {
+			err = m.step(usage, false)
 		}
-		if err := m.step(usage, false); err != nil {
+		switch {
+		case gone(err):
+			klog.Infof("%s: cgroup %s is gone, stop steering", m.name, m.cgroupPath)
+			return
+		case err != nil:
 			klog.Errorf("%s: step failed: %v", m.name, err)
 		}
 	}
@@ -276,7 +295,7 @@ func (m *Manager) closeNotifier() {
 func (m *Manager) release() {
 	err := m.notifier.SetBounds(bounds{})
 	switch {
-	case errors.Is(err, os.ErrNotExist):
+	case gone(err):
 		klog.V(4).Infof("%s: cgroup is gone, memory.high not removed", m.name)
 	case err != nil:
 		klog.Errorf("%s: removing memory.high failed: %v", m.name, err)
@@ -342,12 +361,18 @@ func (m *Manager) step(usage NodeMem, first bool) error {
 	if err != nil {
 		return fmt.Errorf("reading processes: %w", err)
 	}
-	if len(pids) > 0 {
+	// The processes that have the policy of the step already are left
+	// alone: setting a policy stops every thread of a process.
+	targets := pids
+	if slices.Equal(step.Nodes, m.nodes) {
+		targets = slices.DeleteFunc(slices.Clone(pids), func(pid int) bool { return m.seen[pid] })
+	}
+	if len(targets) > 0 {
 		mode := unix.MPOL_PREFERRED
 		if len(step.Nodes) > 1 {
 			mode = unix.MPOL_INTERLEAVE
 		}
-		err := setMemoryPolicy(pids, mode, step.Nodes)
+		err := setMemoryPolicy(targets, mode, step.Nodes)
 		switch {
 		case err != nil && first:
 			return fmt.Errorf("setting memory policy: %w", err)
@@ -357,14 +382,18 @@ func (m *Manager) step(usage NodeMem, first bool) error {
 			klog.Warningf("%s: setting memory policy failed: %v", m.name, err)
 		}
 	}
+	m.seen = make(map[int]bool, len(pids))
+	for _, pid := range pids {
+		m.seen[pid] = true
+	}
 
 	if step.Past {
 		if err := m.notifier.SetBounds(bounds{}); err != nil {
 			return err
 		}
 		m.unbounded, m.nodes = true, step.Nodes
-		klog.Infof("%s: past the last waypoint: usage=%s nodes=%v procs=%d cpuset.mems=%s, memory.high max",
-			m.name, usage, step.Nodes, len(pids), m.allowedNodes())
+		klog.Infof("%s: past the last waypoint: usage=%s nodes=%v procs=%d/%d cpuset.mems=%s, memory.high max",
+			m.name, usage, step.Nodes, len(targets), len(pids), m.allowedNodes())
 		return nil
 	}
 	if m.unbounded {
@@ -383,8 +412,8 @@ func (m *Manager) step(usage NodeMem, first bool) error {
 	if err := m.notifier.SetBounds(b); err != nil {
 		return err
 	}
-	klog.V(4).Infof("%s: step: usage=%s nodes=%v bytes=%d procs=%d cpuset.mems=%s lower=%d upper=%d",
-		m.name, usage, step.Nodes, step.Bytes, len(pids), m.allowedNodes(), b.Lower, b.Upper)
+	klog.V(4).Infof("%s: step: usage=%s nodes=%v bytes=%d procs=%d/%d cpuset.mems=%s lower=%d upper=%d",
+		m.name, usage, step.Nodes, step.Bytes, len(targets), len(pids), m.allowedNodes(), b.Lower, b.Upper)
 	return nil
 }
 
@@ -458,25 +487,25 @@ func normalMemoryFallback(sysRoot string, allowed map[int]bool, permitted cpuset
 			return 0, false
 		}
 	}
-	// distance of near to every node, in node order; unknown distances
-	// leave the lowest normal node
-	var distances []int
-	if b, err := os.ReadFile(filepath.Join(nodeDir, "node"+strconv.Itoa(near), "distance")); err == nil {
-		for _, f := range strings.Fields(string(b)) {
-			d, err := strconv.Atoi(f)
-			if err != nil {
-				distances = nil
-				break
+	// the distances of near to the online nodes, in the order of the
+	// online nodes; unknown distances leave the lowest normal node
+	distance := map[int]int{}
+	b, err = os.ReadFile(filepath.Join(nodeDir, "node"+strconv.Itoa(near), "distance"))
+	if err == nil {
+		online, err := readTrim(filepath.Join(nodeDir, "online"))
+		nodes, perr := cpuset.Parse(online)
+		fields := strings.Fields(string(b))
+		if err == nil && perr == nil && nodes.Size() == len(fields) {
+			for i, n := range nodes.List() {
+				if d, err := strconv.Atoi(fields[i]); err == nil {
+					distance[n] = d
+				}
 			}
-			distances = append(distances, d)
 		}
 	}
 	best, bestDist := -1, 0
 	for _, n := range normal.List() {
-		d := 0
-		if n < len(distances) {
-			d = distances[n]
-		}
+		d := distance[n]
 		if best < 0 || d < bestDist {
 			best, bestDist = n, d
 		}

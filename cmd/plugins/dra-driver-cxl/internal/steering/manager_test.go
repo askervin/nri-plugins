@@ -30,12 +30,18 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/mpolinject"
 )
 
-// writeNodes makes a sysfs with the nodes of has_normal_memory and the
-// distances of node 3 (a movable-only CXL node).
+// writeNodes makes a sysfs with the online nodes 0-3, the nodes of
+// has_normal_memory and the distances of node 3 (a movable-only CXL node).
 func writeNodes(t *testing.T, normal, distance3 string) string {
+	return writeOnlineNodes(t, "0-3", normal, distance3)
+}
+
+// writeOnlineNodes is writeNodes with the online nodes.
+func writeOnlineNodes(t *testing.T, online, normal, distance3 string) string {
 	root := t.TempDir()
 	dir := filepath.Join(root, "devices", "system", "node")
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "node3"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "online"), []byte(online+"\n"), 0o644))
 	if normal != "" {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "has_normal_memory"), []byte(normal+"\n"), 0o644))
 	}
@@ -48,6 +54,7 @@ func writeNodes(t *testing.T, normal, distance3 string) string {
 func TestNormalMemoryFallback(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
+		online    string
 		normal    string
 		distance3 string
 		allowed   []int
@@ -55,16 +62,19 @@ func TestNormalMemoryFallback(t *testing.T) {
 		node      int
 		ok        bool
 	}{
-		{"only movable node allowed: nearest normal node", "0-2", "17 14 15 10", []int{3}, "0-3", 1, true},
-		{"equal distances: lowest normal node", "0-2", "14 14 14 10", []int{3}, "0-3", 0, true},
-		{"no distances: lowest normal node", "1-2", "", []int{3}, "0-3", 1, true},
-		{"a normal node allowed already", "0-2", "17 14 15 10", []int{2, 3}, "0-3", 0, false},
-		{"has_normal_memory unknown", "", "17 14 15 10", []int{3}, "0-3", 0, false},
-		{"nearest permitted normal node", "0-2", "17 14 15 10", []int{3}, "0,2-3", 2, true},
-		{"no permitted normal node", "0-2", "17 14 15 10", []int{3}, "3", 0, false},
+		{"only movable node allowed: nearest normal node", "0-3", "0-2", "17 14 15 10", []int{3}, "0-3", 1, true},
+		{"equal distances: lowest normal node", "0-3", "0-2", "14 14 14 10", []int{3}, "0-3", 0, true},
+		{"no distances: lowest normal node", "0-3", "1-2", "", []int{3}, "0-3", 1, true},
+		{"a normal node allowed already", "0-3", "0-2", "17 14 15 10", []int{2, 3}, "0-3", 0, false},
+		{"has_normal_memory unknown", "0-3", "", "17 14 15 10", []int{3}, "0-3", 0, false},
+		{"nearest permitted normal node", "0-3", "0-2", "17 14 15 10", []int{3}, "0,2-3", 2, true},
+		{"no permitted normal node", "0-3", "0-2", "17 14 15 10", []int{3}, "3", 0, false},
+		// one distance per online node: node 1 is offline
+		{"sparse online nodes", "0,2-3", "0,2", "17 15 10", []int{3}, "0-3", 2, true},
+		{"distances not of the online nodes: lowest normal node", "0,2-3", "0,2", "17 14 15 10", []int{3}, "0-3", 0, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := writeNodes(t, tc.normal, tc.distance3)
+			root := writeOnlineNodes(t, tc.online, tc.normal, tc.distance3)
 			allowed := map[int]bool{}
 			for _, n := range tc.allowed {
 				allowed[n] = true
@@ -237,10 +247,46 @@ func TestPastLastWaypoint(t *testing.T) {
 	require.Equal(t, []string{preferCXL}, called())
 	require.Equal(t, "max", readFile(t, cg, "memory.high"))
 
-	// below the last waypoint again: a bounded step towards it
+	// below the last waypoint again: a bounded step towards it, with the
+	// policy that the process has already
 	numaStat(8*MiB, 0)
 	require.Eventually(t, func() bool { return readFile(t, cg, "memory.high") != "max" }, 5*time.Second, waitTimeout)
-	require.Equal(t, []string{preferCXL, preferCXL}, called())
+	require.Equal(t, []string{preferCXL}, called())
+
+	// a new process in a cgroup below gets the policy at the next step,
+	// when the kernel throttles the cgroup at the bound
+	child := filepath.Join(cg, "init.scope")
+	require.NoError(t, os.Mkdir(child, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(child, "cgroup.procs"), []byte("4343\n"), 0o644))
+	numaStat(8*MiB, 9*MiB)
+	require.NoError(t, os.WriteFile(filepath.Join(cg, "memory.events"), []byte("low 0\nhigh 1\nmax 0\noom 0\noom_kill 0\n"), 0o644))
+	require.Eventually(t, func() bool { return readFile(t, cg, "memory.high") == "max" }, 5*time.Second, waitTimeout)
+	require.Equal(t, []string{preferCXL, fmt.Sprintf("[4343] mode %d nodes [1]", unix.MPOL_PREFERRED)}, called())
+}
+
+// TestCgroupGone ends the steering of a cgroup that is removed, and Stop
+// returns after it.
+func TestCgroupGone(t *testing.T) {
+	if !mpolinject.Supported {
+		t.Skip(mpolinject.ErrUnsupported)
+	}
+	oldSet, oldWait := setMemoryPolicy, waitTimeout
+	t.Cleanup(func() { setMemoryPolicy, waitTimeout = oldSet, oldWait })
+	setMemoryPolicy = func([]int, int, []int) error { return nil }
+	waitTimeout = 10 * time.Millisecond
+	plan, err := NewPlan(PolicyFirstCXL, MemoryTypes{CXLNodes: []int{1}, CXLQuota: 64 * MiB}, nil, 0, 0)
+	require.NoError(t, err)
+	cg := fakeCgroup(t, "max", "")
+	m, err := New(cg, plan, cpuset.New(0, 1), WithSysRoot(writeNodes(t, "0", "")))
+	require.NoError(t, err)
+	require.NoError(t, m.Start())
+	require.NoError(t, os.RemoveAll(cg))
+	select {
+	case <-m.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the steering of a removed cgroup goes on")
+	}
+	m.Stop()
 }
 
 // TestRelease removes the memory.high that a killed manager left, leaves

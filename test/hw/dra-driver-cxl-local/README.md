@@ -91,6 +91,6 @@ and the checks that `plain` cannot use the node, fail.
 ## Workloads
 
 The test containers run their workloads as children of their main process
-(`prun`): the driver sets the memory policy of a steered container on the
-processes that exist when it steers, and their descendants inherit it;
-processes of `kubectl exec` do not.
+(`prun`): the driver sets the memory policy of a steered container on its
+processes at each step, and their descendants inherit it; a process of
+`kubectl exec` gets it only at the next step.

@@ -16,8 +16,10 @@ package steering
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -49,19 +51,37 @@ func numaUsage(cgroupPath string, categories ...string) (NodeMem, error) {
 	return usage, nil
 }
 
-// procs returns the process IDs listed in cgroup.procs of the cgroup.
+// procs returns the process IDs listed in cgroup.procs of the cgroup and
+// of the cgroups below it. A cgroup below it that goes away meanwhile is
+// left out.
 func procs(cgroupPath string) ([]int, error) {
-	path := filepath.Join(cgroupPath, "cgroup.procs")
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	pids, err := parseInts(f)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	return pids, nil
+	var pids []int
+	err := filepath.WalkDir(cgroupPath, func(dir string, d fs.DirEntry, err error) error {
+		switch {
+		case err != nil && dir != cgroupPath && errors.Is(err, fs.ErrNotExist):
+			return fs.SkipDir
+		case err != nil:
+			return err
+		case !d.IsDir():
+			return nil
+		}
+		path := filepath.Join(dir, "cgroup.procs")
+		f, err := os.Open(path)
+		if dir != cgroupPath && errors.Is(err, fs.ErrNotExist) {
+			return fs.SkipDir
+		}
+		if err != nil {
+			return err
+		}
+		defer func() { _ = f.Close() }()
+		ids, err := parseInts(f)
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		pids = append(pids, ids...)
+		return nil
+	})
+	return pids, err
 }
 
 // readTrim returns the content of the file without the surrounding white

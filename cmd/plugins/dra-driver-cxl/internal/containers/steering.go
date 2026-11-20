@@ -239,18 +239,12 @@ func (p *Plugin) stopManager(id, name string, mgr *steering.Manager) {
 // it): the manager of a killed plugin left the memory.high of its last
 // step, which nothing raises any more. The memory.high of a container that
 // no manager steered (created while the plugin was down, or one that is not
-// steered) is left alone: it may be someone else's (MemoryQoS). Without
-// records (legacy) the containers that their settings steer are released,
-// as a started one may have had a manager. Its cpuset.mems and memory
-// policies are left as they are. Called with mu held.
+// steered) is left alone: it may be someone else's (MemoryQoS). Its
+// cpuset.mems and memory policies are left as they are. Called with mu
+// held.
 func (p *Plugin) releaseSteering(c *Container, steers bool) {
 	dir, recorded := p.steeredDir(c.ID)
 	switch {
-	case p.legacy && steers && !c.started():
-		klog.V(3).Infof("NRI Synchronize: ctr=%s id=%s: steering not restarted, memory %s", c.name(), c.ID, c.Management.text())
-		return
-	case p.legacy && steers:
-		dir = c.CgroupDir
 	case !recorded:
 		if steers {
 			klog.V(3).Infof("NRI Synchronize: ctr=%s id=%s: steering not restarted, memory %s; memory.high left alone: no manager steered it",
@@ -330,9 +324,6 @@ func (p *Plugin) syncSteered(keep []string) {
 	if err != nil {
 		klog.Warningf("NRI: steering record: %v", err)
 	}
-	p.mu.Lock()
-	p.legacy = false
-	p.mu.Unlock()
 }
 
 // commitSteered commits the change of the Steered records durably; the
