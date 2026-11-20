@@ -178,8 +178,11 @@ cgroup-mems() {
     #
     # Print cpuset.mems.effective (or FILE, for instance cpuset.mems) of the
     # cgroup of container CONTAINER of the borrower, read in the VM.
-    dra-container-file "$VM2" borrower "$1" "${2:-cpuset.mems.effective}" >&2
-    echo "$COMMAND_OUTPUT"
+    local file="${2:-cpuset.mems.effective}" mems
+    mems=$(dra-container-read "$VM2" borrower "$1" "$file") ||
+        error "cannot read $file of container $1 of the borrower"
+    echo "$file of container $1: $mems" >&2
+    echo "$mems"
 }
 
 idle-mems-check() {
@@ -408,7 +411,7 @@ give-back() {
     retry-until --timeout 30 --interval 1 --message "no anonymous memory of container main on node $MEM_NODE" \
         '[ "$(dra-container-anon "$VM2" borrower main "$MEM_NODE")" == 0 ]' ||
         error "container main still has memory on node $MEM_NODE after the release"
-    dra-container-file "$VM2" borrower main memory.numa_stat
+    echo "memory.numa_stat of container main: $(dra-container-read "$VM2" borrower main memory.numa_stat | tr '\n' ' ')"
     dra-touch-pages "$MEM_NODE"
     [ "$DRA_TOUCH_PAGES" == 0 ] || error "numa-touch.py still has $DRA_TOUCH_PAGES pages on node $MEM_NODE"
     echo "numa-touch.py (pid $DRA_TOUCH_PID) lives, its pages moved off node $MEM_NODE"

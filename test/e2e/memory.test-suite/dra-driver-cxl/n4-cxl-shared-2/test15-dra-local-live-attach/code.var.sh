@@ -295,7 +295,7 @@ numa-slice() {
     # its pod or lease), as the state of the node plugin names it, and
     # check that sysfs has it as a kmem slice of BYTES.
     local dax
-    dax=$(dra-local-claim-slice "$VM2" "$2") ||
+    dax=$(claim-slice "$VM2" "$2") ||
         error "$1: the node plugin has no slice of claim $2 in $DRA_STATE"
     NUMA_SLICES[$1]="$dax $3"
     dra-memdev-wait "$VM2" "slice-$1" "$DRA_LOCAL_SERIAL" \
@@ -452,6 +452,20 @@ nothing-left() {
     fi
     dra-local-initial-state "$VM2" "$label-local" "$NUMA_NODE"
     echo "$label: nothing left"
+}
+
+claim-slice() {
+    # Usage: claim-slice VMDIR CLAIM-UID
+    #
+    # Print the dax device (daxX.Y) of the slice of the claim with
+    # CLAIM-UID in the state of the node plugin in the VM of VMDIR: of the
+    # first grant of the claim that uses a local memdev ($DRA_STATE, see
+    # claim_uses() of dra-py). Return 1 if the claim has no slice there.
+    local json dax
+    json=$(dra-state-json "$1") || return 1
+    dax=$(dra-py eval "$json" "next((u[0]['got']['dax'] for u in (claim_uses(m, '$2') for m in local_memdevs()) if u and (u[0].get('got') or {}).get('dax')), '')") || return 1
+    [ -n "$dax" ] || return 1
+    echo "$dax"
 }
 
 echo "### preconditions: patched qemu, hdm_for_passthrough=on, kernel with CONFIG_FS_DAX"

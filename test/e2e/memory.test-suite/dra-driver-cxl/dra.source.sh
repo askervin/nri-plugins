@@ -1257,20 +1257,6 @@ dra-local-claim-check() { # script API
     DRA_CLAIM_UID=$(dra-value "$DRA_CLAIM_JSON" "j['metadata']['uid']")
 }
 
-dra-local-claim-slice() { # script API
-    # Usage: dra-local-claim-slice VMDIR CLAIM-UID
-    #
-    # Print the dax device (daxX.Y) of the slice of the claim with
-    # CLAIM-UID in the state of the node plugin in the VM of VMDIR: of the
-    # first grant of the claim that uses a local memdev ($DRA_STATE, see
-    # claim_uses() of dra-py). Return 1 if the claim has no slice there.
-    local json dax
-    json=$(dra-state-json "$1") || return 1
-    dax=$(dra-py eval "$json" "next((u[0]['got']['dax'] for u in (claim_uses(m, '$2') for m in local_memdevs()) if u and (u[0].get('got') or {}).get('dax')), '')") || return 1
-    [ -n "$dax" ] || return 1
-    echo "$dax"
-}
-
 dra-delete-pod() { # script API
     # Usage: dra-delete-pod VMDIR POD
     #
@@ -2249,6 +2235,17 @@ print(json.dumps(leases))' <<< "$COMMAND_OUTPUT") ||
     echo "leases of $target: $DRA_LEASES"
 }
 
+dra-container-pid-sh() {
+    # Usage: dra-container-pid-sh POD CONTAINER
+    #
+    # Print a shell command for a VM that sets id to the id of container
+    # CONTAINER of pod POD in $DRA_NS and pid to the pid of its init
+    # process (crictl inspect .info.pid), and fails if either is missing.
+    local pod="$1" container="$2"
+    echo "id=\$(kubectl get pod -n $DRA_NS $pod -o jsonpath='{.status.containerStatuses[?(@.name==\"$container\")].containerID}') && id=\${id#*://} && [ -n \"\$id\" ] &&
+        pid=\$(crictl inspect -o go-template --template '{{.info.pid}}' \$id 2>/dev/null) && [ -n \"\$pid\" ]"
+}
+
 dra-container-cgroup() { # script API
     # Usage: dra-container-cgroup VMDIR POD CONTAINER
     #
@@ -2257,23 +2254,8 @@ dra-container-cgroup() { # script API
     # inspect .info.pid, /proc/PID/cgroup). Processes of "kubectl exec" run
     # in the same cgroup.
     local vmdir="$1" pod="$2" container="$3"
-    vmdir-command-q "$vmdir" "id=\$(kubectl get pod -n $DRA_NS $pod -o jsonpath='{.status.containerStatuses[?(@.name==\"$container\")].containerID}') && id=\${id#*://} && [ -n \"\$id\" ] &&
-        pid=\$(crictl inspect -o go-template --template '{{.info.pid}}' \$id 2>/dev/null) && [ -n \"\$pid\" ] &&
+    vmdir-command-q "$vmdir" "$(dra-container-pid-sh "$pod" "$container") &&
         cg=\$(sed -n 's/^0:://p' /proc/\$pid/cgroup) && [ -d \"/sys/fs/cgroup\$cg\" ] && echo \"/sys/fs/cgroup\$cg\""
-}
-
-dra-container-file() { # script API
-    # Usage: dra-container-file VMDIR POD CONTAINER FILE
-    #
-    # Show cgroup FILE (for instance cpuset.mems.effective or
-    # memory.numa_stat) of container CONTAINER of pod POD, read in the VM
-    # of VMDIR. COMMAND_OUTPUT has its contents. Fail the test if the
-    # container or the file cannot be found.
-    local vmdir="$1" pod="$2" container="$3" file="$4" cg
-    cg=$(dra-container-cgroup "$vmdir" "$pod" "$container") ||
-        error "dra-container-file: no cgroup of container $container of pod $pod in $(vmdir-label "$vmdir")"
-    vmdir-command "$vmdir" "cat $cg/$file" ||
-        command-error "cannot read $file of container $container of pod $pod"
 }
 
 dra-container-read() { # script API
@@ -2442,8 +2424,7 @@ dra-container-mempolicy() { # script API
     # none of its own, distinct, space-separated, for instance "default",
     # "prefer:2" or "interleave:0-2". Return non-zero if it cannot be read.
     local vmdir="$1" pod="$2" container="$3"
-    vmdir-command-q "$vmdir" "id=\$(kubectl get pod -n $DRA_NS $pod -o jsonpath='{.status.containerStatuses[?(@.name==\"$container\")].containerID}') && id=\${id#*://} && [ -n \"\$id\" ] &&
-        pid=\$(crictl inspect -o go-template --template '{{.info.pid}}' \$id 2>/dev/null) && [ -n \"\$pid\" ] &&
+    vmdir-command-q "$vmdir" "$(dra-container-pid-sh "$pod" "$container") &&
         p=\$(awk '{print \$2}' /proc/\$pid/numa_maps | sort -u | tr '\n' ' ') && [ -n \"\$p\" ] && echo \"\${p% }\""
 }
 
@@ -2495,13 +2476,6 @@ dra-memory-wait() { # script API
     echo "memory ok: $label: $ctr $mgmt${steering:+, steering $steering}: memory.high $DRA_MEM_HIGH, memory policy of the main process $DRA_MEMPOLICY"
 }
 
-dra-container-bpf-count() {
-    # Usage: dra-container-bpf-count VMDIR POD CONTAINER
-    local cg
-    cg=$(dra-container-cgroup "$1" "$2" "$3") || return 1
-    vmdir-command-q "$1" "bpftool cgroup show $cg 2>/dev/null | grep -c cgroup_device"
-}
-
 dra-container-devices() { # script API
     # Usage: dra-container-devices VMDIR POD CONTAINER
     #
@@ -2513,10 +2487,10 @@ dra-container-devices() { # script API
     # first runtime update of a container (crictl update, NRI
     # UpdateContainers) attaches one more, different program; later updates
     # add none. Compare the spec line to see whether the rules changed.
-    # Quietly. dra-container-bpf-count prints how many are attached.
+    # Quietly.
     local vmdir="$1" pod="$2" container="$3" cg
     cg=$(dra-container-cgroup "$vmdir" "$pod" "$container") || return 1
-    vmdir-command-q "$vmdir" "id=\$(kubectl get pod -n $DRA_NS $pod -o jsonpath='{.status.containerStatuses[?(@.name==\"$container\")].containerID}'); id=\${id#*://}
+    vmdir-command-q "$vmdir" "$(dra-container-pid-sh "$pod" "$container")
         echo \"spec: \$(crictl inspect \$id 2>/dev/null | jq -c .info.runtimeSpec.linux.resources.devices)\"
         echo \"bpf: \$(for p in \$(bpftool cgroup show $cg 2>/dev/null | awk '\$2 == \"cgroup_device\" {print \$1}'); do bpftool prog dump xlated id \$p | sha256sum | cut -c1-16; done | sort -u | tr '\\n' ' ')\""
 }
@@ -2536,7 +2510,7 @@ dra-pod-claim() { # script API
 }
 
 dra-nodes-py() {
-    # Usage: dra-nodes-py has|eq LIST ARG
+    # Usage: dra-nodes-py has|eq|sub LIST ARG
     #
     # has: return 0 if node ARG is in the node list LIST ("0-1,3").
     # eq:  return 0 if the node lists LIST and ARG have the same nodes

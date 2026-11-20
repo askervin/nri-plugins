@@ -345,16 +345,6 @@ EOF
     return 0
 }
 
-vm-k8s-in-shape() { # script API
-    # Usage: vm-k8s-in-shape CLUSTER...
-    #
-    # Return 0 if every CLUSTER (see vm-k8s-reinit) has its shape already.
-    local cluster
-    for cluster in "$@"; do
-        vm-k8s-cluster-in-shape "$cluster" >/dev/null || return 1
-    done
-}
-
 vm-k8s-reinit() { # script API
     # Usage: vm-k8s-reinit [--force] [--timeout SECS] CLUSTER...
     #

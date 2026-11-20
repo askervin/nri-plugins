@@ -17,7 +17,7 @@ cxl-tools-install() { # script API
     # Install the cxl and numactl tools in the VM if they are missing, and
     # always rebuild and install cxl-dump from the source tree.
     local host_cxl_dump="$OUTPUT_DIR/cxl-dump"
-    local src_dir="${TEST_DIR%%/test/e2e/*}"
+    local src_dir="$nri_resource_policy_src"
 
     vm-command-q "command -v cxl >/dev/null && command -v numactl >/dev/null" ||
         vm-command "dnf install -y /usr/bin/cxl numactl" ||

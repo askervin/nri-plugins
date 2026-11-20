@@ -867,7 +867,7 @@ available:
   | generated test scripts | `run-generated-tests` |
   | ending the test early | `skip-test` |
   | other VMs | `vmdir-of`, `vmdir-command`, `vmdir-put-file`, `vmdir-up`, `vmdir-restart` (`lib/k8s.bash`) |
-  | cluster shapes | `vm-k8s-reinit`, `vm-k8s-in-shape`, `vm-k8s-shape`, `vm-k8s-node-ip`, `vm-vmnet-ensure` (`lib/k8s.bash`) |
+  | cluster shapes | `vm-k8s-reinit`, `vm-k8s-shape`, `vm-k8s-node-ip`, `vm-vmnet-ensure` (`lib/k8s.bash`) |
 
   Some of them are configured by variables a test case can set, notably
   `plugin_log_filter`, which restricts the log assertions to the log lines of

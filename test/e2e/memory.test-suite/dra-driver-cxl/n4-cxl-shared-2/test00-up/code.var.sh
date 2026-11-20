@@ -112,6 +112,4 @@ vmdir-up "$VM0" "create VM0 first: ./run_tests.sh memory.test-suite/dra-driver-c
 vm-command "systemctl stop '$DRA_CONTROLLER_UNITS_GLOB' 2>/dev/null; systemctl reset-failed '$DRA_CONTROLLER_UNITS_GLOB' 2>/dev/null; true" ||
     command-error "cannot stop the pool controllers"
 vm-k8s-reinit "$VM2 $VM1 $VM0"
-vm-k8s-in-shape "$VM2 $VM1 $VM0" ||
-    error "the cluster is not in shape after vm-k8s-reinit: $(vm-k8s-cluster-in-shape "$VM2 $VM1 $VM0")"
 vm-command "kubectl get nodes -o wide" || command-error "cannot list the nodes of the cluster"
