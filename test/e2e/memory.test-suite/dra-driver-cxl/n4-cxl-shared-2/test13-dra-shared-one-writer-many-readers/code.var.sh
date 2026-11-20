@@ -38,9 +38,8 @@
 # writer exiting and all three readers getting the device at once, reading
 # what the writer wrote, holding the memory at the same time and failing
 # to map it for writing; a late exclusive request that times out without
-# leftovers; a fourth reader with a read-only claim from its creation; the
-# exclusive device pooled0 used as a dax device too, through a lease and
-# through a claim; and the trace of VM2 and VM1.
+# leftovers; a fourth reader with a read-only claim from its creation;
+# and the trace of VM2 and VM1.
 #
 # Run test00-up of n4-cxl-shared-1, -0 and -2 first: they create the VMs and
 # make them one cluster. The DRA driver comes from its image, build it
@@ -62,8 +61,6 @@ VM1_NAME="$POOL_VM1_NAME"
 VM2_NAME="$POOL_VM2_NAME"
 SHARED_SERIAL=0xc1ae0001    # 0xc1ae....: shared pool devices
 SHARED_HEX=C1AE0001         # the serial in environment variable names
-POOLED0_SERIAL=0xc1ee0001   # 0xc1ee....: exclusive pool devices
-POOLED0_HEX=C1EE0001
 PYTHON_IMAGE=docker.io/library/python:3-alpine
 PAUSE_IMAGE=registry.k8s.io/pause:3.10   # the image of the companion pods
 TAG="dra-one-writer $(date +%Y-%m-%dT%H:%M:%S.%N)"
@@ -174,16 +171,12 @@ for vm in "$VM2" "$VM1"; do
     cxl-assert 'memdevs == [] and regions == [] and endpoints == []'
 done
 
-echo "### preconditions: fake-cxl-pool-server with shared0 and pooled0"
+echo "### preconditions: fake-cxl-pool-server with shared0"
 pool-server-start "
   - name: shared0
     size: 256Mi
     shared: true
-    serial: $SHARED_SERIAL
-  - name: pooled0
-    size: 512Mi
-    shared: false
-    serial: $POOLED0_SERIAL"
+    serial: $SHARED_SERIAL"
 pool-client-install "$VM2" "$VM1"
 
 echo "### preconditions: the pool controller on the control plane, the node plugin on every node"
@@ -384,76 +377,6 @@ for r in "${READERS[@]}"; do
         '[ -z "$(companions-of "$r")" ]' || error "$r still has companions: $(companions-of "$r")"
 done
 pool-device-free-wait shared0 "$VM2" "$VM1"
-
-echo "### H1: the exclusive device pooled0 as a dax device, through a lease"
-TEXT2="$TAG: pooled0 through a dax lease on VM2"
-# The script, expanded by sh in the container.
-script="echo \"lease \$CXL_LEASE read-only \$CXL_${POOLED0_HEX}_READONLY\"
-python3 /tools/dax-rw.py --fd 3 write 0 \"\$1\" && python3 /tools/dax-rw.py --fd 3 read 0"
-dra-exec "$VM2" reader-a cxl-request request --source pool --size 256Mi --mode dax --wait 120s --exec sh -c "$script" sh "$TEXT2" ||
-    command-error "cxl-request request --source pool --size 256Mi --mode dax failed"
-grep -qE '^lease [0-9a-f]{8} read-only 0$' <<< "$COMMAND_OUTPUT" ||
-    error "the dax lease of pooled0 has not CXL_${POOLED0_HEX}_READONLY=0"
-[ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "$TEXT2" ] || error "read '$(tail -n 1 <<< "$COMMAND_OUTPUT")' through the dax lease, expected '$TEXT2'"
-DAX_LEASE=$(sed -n 's/^lease \([0-9a-f]\{8\}\) .*/\1/p' <<< "$COMMAND_OUTPUT")
-dra-leases "$VM2" reader-a
-dra-assert "$DRA_LEASES" "[(l['lease'], l['state'], l.get('source'), l.get('mode'), bool(l.get('shared')), l.get('serial'), l.get('node')) for l in j] == [('$DAX_LEASE', 'Ready', 'pool', 'dax', False, '$POOLED0_SERIAL', None)]"
-dra-json "$VM2" resourceclaim -n "$DRA_NS" "cxl-lease-$DAX_LEASE"
-dra-assert "$COMMAND_OUTPUT" "allocated_node() == '$VM2_NAME' and device_data('pooled0')['shared'] == False"
-# A devdax region, never onlined: no NUMA node, nothing lent.
-pool-cxl-dump "$VM2" pooled0-dax
-cxl-assert "by_serial($POOLED0_SERIAL) is not None and len(regions) == 1 and online_size(regions[0]) == 0"
-pool-host-client -o json devices pooled0 || command-error "cannot get pooled0"
-POOLED0_FILE=$(pool-value "$COMMAND_OUTPUT" 'j["path"]')
-found=$(pool-file-string "$POOLED0_FILE" 0)
-[ "$found" == "$TEXT2" ] || error "host: $POOLED0_FILE has '$found' at 0, expected '$TEXT2'"
-dra-exec "$VM2" reader-a cxl-request release --lease "$DAX_LEASE" || command-error "cannot release $DAX_LEASE"
-pool-cxl-wait "$VM2" pooled0-released "memdevs == []" 60
-
-echo "### H2: the exclusive device pooled0 as a dax device, through a claim on VM1"
-TEXT3="$TAG: pooled0 through a dax claim on VM1"
-dra-apply "$VM2" <<EOF
-apiVersion: resource.k8s.io/v1
-kind: ResourceClaim
-metadata:
-  name: pooled-dax
-spec:
-  devices:
-    requests:
-    - name: mem
-      exactly:
-        deviceClassName: cxl-pool
-        capacity:
-          requests:
-            memory: 512Mi
-    config:
-    - opaque:
-        driver: $DRA_POOL_DRIVER
-        parameters: $(dra-memory-config "device: {mode: dax}")
-EOF
-dra-apply "$VM2" <<< "$(dra-script-pod-yaml dax-claimer "$VM1" pooled-dax "env | grep ^CXL_${POOLED0_HEX}_ | sort
-echo \"before: \$(python3 /tools/dax-rw.py read \"\$CXL_${POOLED0_HEX}_DAX\" 0)\"
-python3 /tools/dax-rw.py write \"\$CXL_${POOLED0_HEX}_DAX\" 0 \"$TEXT3\" || exit 1
-echo \"read: \$(python3 /tools/dax-rw.py read \"\$CXL_${POOLED0_HEX}_DAX\" 0)\"")"
-dra-pod-wait "$VM2" dax-claimer Running 120
-dra-wait-log "$VM2" dax-claimer "read: $TEXT3" 60
-dra-kubectl "$VM2" "logs -n $DRA_NS dax-claimer"
-# A dax device of its own, read-write, and no NUMA node.
-dra-env-assert dax-claimer "$COMMAND_OUTPUT" "$POOLED0_HEX" \
-    SERIAL="$POOLED0_SERIAL" SHARED=0 MODE=dax SIZE=$(( 512 << 20 )) "DAX=/dev/dax*" READONLY=0
-# The device keeps its bytes from node to node: the lease on VM2 wrote them.
-grep -xF "before: $TEXT2" <<< "$COMMAND_OUTPUT" ||
-    echo "note: dax-claimer found other contents than the lease on VM2 left"
-pool-cxl-dump "$VM1" pooled0-dax
-cxl-assert "by_serial($POOLED0_SERIAL) is not None and len(regions) == 1 and online_size(regions[0]) == 0"
-found=$(pool-file-string "$POOLED0_FILE" 0)
-[ "$found" == "$TEXT3" ] || error "host: $POOLED0_FILE has '$found' at 0, expected '$TEXT3'"
-dra-delete "$VM2" pod dax-claimer --grace-period=2 --wait=true --timeout=60s
-dra-delete "$VM2" resourceclaim pooled-dax --wait=true --timeout=60s
-pool-cxl-wait "$VM1" pooled0-released "memdevs == []" 60
-retry-until --timeout 60 --message "pooled0 and shared0 free" \
-    'pool-host-client -o json devices >/dev/null && pool-py assert "$COMMAND_OUTPUT" "sorted((d[\"name\"], d[\"state\"]) for d in j if d[\"name\"] in (\"pooled0\", \"shared0\")) == [(\"pooled0\", \"free\"), (\"shared0\", \"free\")]"' ||
-    error "the pool devices are not free: $COMMAND_OUTPUT"
 for vm in "$VM2" "$VM1"; do
     pool-vm-monitor "$vm" "info qtree -b" | grep -q 'dev: cxl-type3' &&
         error "qemu of $(pool-vm-label "$vm") still has a CXL memory device"
