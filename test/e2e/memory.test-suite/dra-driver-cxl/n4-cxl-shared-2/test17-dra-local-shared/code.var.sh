@@ -80,38 +80,14 @@ SHARED_DEV=""          # the major:minor of that
 SHARED_MEMDEV=""       # and the memdev (memN)
 COMPANION_JSON=""      # lease-companion: the companion claim of a lease
 
-py-str() {
-    # Usage: py-str TEXT
-    #
-    # Print TEXT as a Python string literal.
-    python3 -c 'import sys; print(repr(sys.argv[1]))' "$1"
-}
-
 claim-pod() {
     # Usage: claim-pod NAME SHARES PARAMETERS SCRIPT
     #
     # Create ResourceClaim NAME of class cxl-local-shared for the local
     # device with SHARES ("1" a share, "" exclusive) and the fields
-    # PARAMETERS of the device section of its MemoryConfig (see
-    # dra-shared-claim-yaml), and pod NAME on VM2 with the
-    # claim, running the shell SCRIPT (see dra-script-pod-yaml).
-    dra-apply "$VM2" <<< "$(dra-shared-claim-yaml "$1" "$DRA_LOCAL_SERIAL" "$2" "$3" "$SHARED_CLASS")
----
-$(dra-script-pod-yaml "$1" "$VM2" "$1" "$4")"
-}
-
-claim-pod-delete() {
-    # Usage: claim-pod-delete NAME...
-    #
-    # Delete pods NAME and then their claims NAME, and wait until they are
-    # gone.
-    local n
-    for n in "$@"; do
-        dra-delete-pod "$VM2" "$n"
-    done
-    for n in "$@"; do
-        dra-delete "$VM2" resourceclaim "$n" --wait=true --timeout=60s
-    done
+    # PARAMETERS of the device section of its MemoryConfig, and pod NAME on
+    # VM2 with the claim, running the shell SCRIPT (dra-serial-claim-pod).
+    dra-serial-claim-pod "$VM2" "$1" "$DRA_LOCAL_SERIAL" "$2" "$3" "$SHARED_CLASS" "$4"
 }
 
 reader-script() {
@@ -211,20 +187,8 @@ unschedulable-wait() {
     # Wait until pod POD is not scheduled because its claim cannot be
     # allocated, and that its claim (named like the pod) has no
     # allocation.
-    dra-wait "$VM2" "$1-unschedulable" "pod -n $DRA_NS $1" \
-        "any(c['type'] == 'PodScheduled' and c['status'] == 'False' and c.get('reason') == 'Unschedulable' and 'cannot allocate all claims' in c.get('message', '') for c in (j.get('status') or {}).get('conditions') or [])" 60
-    vmdir-command "$VM2" "kubectl get pod -n $DRA_NS $1 -o jsonpath='{.status.conditions[?(@.type==\"PodScheduled\")].message}'"
+    dra-unschedulable-wait "$VM2" "$1"
     waiting "$1" || error "$1 is not Pending with an unallocated claim"
-}
-
-event-wait() {
-    # Usage: event-wait POD TEXT
-    #
-    # Wait until an Event of pod POD has TEXT in its message: the kubelet
-    # reports so that the node plugin refused to prepare the claim.
-    dra-wait "$VM2" "$1-event" "events -n $DRA_NS --field-selector involvedObject.name=$1" \
-        "any($(py-str "$2") in (e.get('message') or '') for e in items)" 120
-    dra-kubectl "$VM2" "get events -n $DRA_NS --field-selector involvedObject.name=$1"
 }
 
 holding() {
@@ -391,9 +355,7 @@ dra-assert "$COMMAND_OUTPUT" "'shared == false' in by_name('cxl-local')['spec'][
 # the shared device: the class cxl-local has only devices that are not
 # shared.
 dra-claim-pod "$VM2" sliced cxl-local "" dax
-dra-wait "$VM2" sliced-unschedulable "pod -n $DRA_NS sliced" \
-    "any(c['type'] == 'PodScheduled' and c['status'] == 'False' and c.get('reason') == 'Unschedulable' and 'cannot allocate all claims' in c.get('message', '') for c in (j.get('status') or {}).get('conditions') or [])" 60
-vmdir-command "$VM2" "kubectl get pod -n $DRA_NS sliced -o jsonpath='{.status.conditions[?(@.type==\"PodScheduled\")].message}'"
+dra-unschedulable-wait "$VM2" sliced
 dra-delete-pod "$VM2" sliced
 pool-cxl-dump "$VM2" sliced-refused
 cxl-assert "regions == []"
@@ -441,7 +403,7 @@ done
 dra-stays 10 "reader-a and reader-b stay Pending, their claims unallocated" 'waiting reader-a reader-b'
 
 echo "### D: the writer goes, both readers get the device and read what it wrote"
-claim-pod-delete writer
+dra-claim-pod-delete writer
 for r in reader-a reader-b; do
     dra-pod-wait "$VM2" "$r" Running 60
 done
@@ -476,7 +438,7 @@ same-region || error "reader-c has another region or dax device: $DRA_MEMDEV"
 claim-pod late-writer "" "" "echo started"
 unschedulable-wait late-writer
 dra-stays 10 "late-writer stays Pending while the readers hold the device" 'waiting late-writer && holding reader-a reader-b reader-c'
-claim-pod-delete late-writer
+dra-claim-pod-delete late-writer
 
 echo "### E: two pods of one claim are one share"
 claim-pod two-1 1 "readOnly: true" "echo \"read: \$(python3 /tools/dax-rw.py read \"\$CXL_${DRA_LOCAL_HEX}_DAX\" 0)\""
@@ -502,17 +464,17 @@ claim-pod bad-access 1 "access: cached" "echo started"
 # shares "0" passes the API and fits next to any holder: the scheduler
 # allocates it, consuming nothing, and the node plugin refuses it.
 claim-pod zero-shares 0 "readOnly: true" "echo started"
-event-wait bad-numa "MemoryConfig: device: a shared device is used as dax only"
-event-wait bad-numa-ro "MemoryConfig: device.readOnly needs mode dax"
-event-wait bad-access "MemoryConfig: device.access needs mode fs"
-event-wait zero-shares "device $DRA_LOCAL_SERIAL: consumed shares \"0\" is less than 1: request shares: 1 (a share) or no shares (exclusive)"
+dra-pod-event-wait bad-numa "MemoryConfig: device: a shared device is used as dax only"
+dra-pod-event-wait bad-numa-ro "MemoryConfig: device.readOnly needs mode dax"
+dra-pod-event-wait bad-access "MemoryConfig: device.access needs mode fs"
+dra-pod-event-wait zero-shares "device $DRA_LOCAL_SERIAL: consumed shares \"0\" is less than 1: request shares: 1 (a share) or no shares (exclusive)"
 claim-check zero-shares 0
 for p in bad-numa bad-numa-ro bad-access zero-shares; do
     dra-wait "$VM2" "$p-creating" "pod -n $DRA_NS $p" \
         "[(cs.get('state') or {}).get('waiting', {}).get('reason') for cs in j['status'].get('containerStatuses') or []] == ['ContainerCreating']" 60
 done
 holding reader-a reader-b reader-c || error "a reader lost the device to a refused claim"
-claim-pod-delete bad-numa bad-numa-ro bad-access zero-shares
+dra-claim-pod-delete bad-numa bad-numa-ro bad-access zero-shares
 dra-local-shared-wait "$VM2" refused-gone "${READER_UID[@]}" "$TWO_UID"
 same-region || error "the refused claims changed the region: $DRA_MEMDEV"
 
@@ -523,7 +485,7 @@ for r in reader-a reader-b reader-c; do
 done
 # two-2 first: the claim two-1 goes when no pod has it any more.
 dra-delete-pod "$VM2" two-2
-claim-pod-delete reader-a reader-b reader-c two-1
+dra-claim-pod-delete reader-a reader-b reader-c two-1
 dra-wait "$VM2" no-claims "resourceclaims -n $DRA_NS" "items == []" 60
 # Kept while the device is configured shared: the region, its dax device,
 # the memdev enabled, the device published as before.
@@ -543,7 +505,7 @@ dra-wait-log "$VM2" after-idle "at 1M: $TEXT1M" 10
 same-region || error "after-idle has another region or dax device: $DRA_MEMDEV"
 zeroed=$(dra-plugin-log "$VM2" | grep -c "zeroed new shared ")
 [ "$zeroed" == 1 ] || error "the node plugin zeroed the shared device $zeroed times, expected once, when the region was created"
-claim-pod-delete after-idle
+dra-claim-pod-delete after-idle
 
 echo "### L: leases of the shared device for a running container"
 dra-apply "$VM2" <<< "$(dra-lease-template-yaml)"
@@ -639,7 +601,7 @@ dra-exec "$VM2" holder python3 /tools/dax-rw.py read "$POD_DAX" 0 || command-err
 [ "$COMMAND_OUTPUT" == "$TEXT0" ] || error "holder read '$COMMAND_OUTPUT' after the restart, expected '$TEXT0'"
 dra-exec "$VM2" holder touch /tmp/stop || command-error "cannot stop holder"
 dra-wait-log "$VM2" holder "final: $TEXT0" 30
-claim-pod-delete holder
+dra-claim-pod-delete holder
 dra-local-shared-wait "$VM2" holder-gone
 # No claims, still configured shared: a restart keeps the region.
 dra-driver-restart "$VM2"

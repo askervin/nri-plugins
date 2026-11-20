@@ -199,7 +199,7 @@ dra-json "$VM2" deviceclass "$CLASS" cxl-local
 dra-assert "$COMMAND_OUTPUT" "names() == sorted(['$CLASS', 'cxl-local'])"
 dra-assert "$COMMAND_OUTPUT" "all(t in by_name('$CLASS')['spec']['selectors'][0]['cel']['expression'] for t in ['\"$DRA_LOCAL_DRIVER\"', '\"memdev\"', '.persistent == true'])"
 dra-assert "$COMMAND_OUTPUT" "'.persistent == false' in by_name('cxl-local')['spec']['selectors'][0]['cel']['expression']"
-fs-unmatched unmatched "$LP_SERIAL" cxl-local
+dra-unmatched unmatched "$LP_SERIAL" cxl-local
 
 echo "### B: block claims: a writable one with a shares request is refused, the exclusive writer writes an ext4 image"
 fs-refused "$VM2" blk-share "$LP_SERIAL" "mode: block" "$CLASS" "$F1_LOCAL"
@@ -227,9 +227,9 @@ dra-dax-tool-install "$VM2"
 dra-wait "$VM2" lp0-republished resourceslices "$LP is not None and attr($LP, 'persistent') == True" 360
 
 echo "### C: a read-write and a read-only claim share the ext4 on VM2"
-fs-claim-pod "$VM2" fs-rw "$LP_SERIAL" 1 "mode: fs, readOnly: false" "$CLASS"
+dra-serial-claim-pod "$VM2" fs-rw "$LP_SERIAL" 1 "mode: fs, readOnly: false" "$CLASS"
 dra-pod-wait "$VM2" fs-rw Running 180
-fs-claim-pod "$VM2" fs-ro "$LP_SERIAL" 1 "mode: fs" "$CLASS"
+dra-serial-claim-pod "$VM2" fs-ro "$LP_SERIAL" 1 "mode: fs" "$CLASS"
 dra-pod-wait "$VM2" fs-ro Running 120
 for p in fs-rw fs-ro; do
     ro=0 rw=rw opts="['bind', 'nosuid', 'nodev']"
@@ -309,7 +309,7 @@ dra-wait "$VM2" lease-gone "pods,resourceclaims -n $DRA_NS" "'cxl-lease-$LEASE' 
 
 echo "### E: nothing holds the device: its region goes, the memdev stays; the second server detaches it"
 dra-delete-pod "$VM2" leaser
-fs-claim-pod-delete fs-rw fs-ro
+dra-claim-pod-delete fs-rw fs-ro
 dra-delete "$VM2" resourceclaimtemplate "$LEASE_TEMPLATE" --wait=true --timeout=60s
 region-wait no
 dra-assert-clean "$VM2"

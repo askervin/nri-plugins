@@ -1896,6 +1896,105 @@ EOF
     fi
 }
 
+dra-serial-claim-pod() {
+    # Usage: dra-serial-claim-pod VMDIR NAME SERIAL SHARES PARAMETERS CLASS [SCRIPT]
+    #
+    # Create ResourceClaim NAME of DeviceClass CLASS for the device SERIAL
+    # with SHARES ("1" a share, "" the whole device) and the fields
+    # PARAMETERS of the device section of its MemoryConfig (see
+    # dra-shared-claim-yaml), and pod NAME on the node of VMDIR whose
+    # container "main" uses the claim: it runs the shell SCRIPT
+    # (dra-script-pod-yaml), or the runner of dra-pod-yaml without SCRIPT.
+    # Example: dra-serial-claim-pod "$VM2" rw-a 0xc1ae0001 1 "mode: fs, readOnly: false" cxl-pool-persistent
+    local pod
+    if [ $# -ge 7 ]; then
+        pod=$(dra-script-pod-yaml "$2" "$1" "$2" "$7")
+    else
+        pod=$(dra-pod-yaml "$2" "$(vmdir-name "$1")" "mem=claim:$2")
+    fi
+    dra-apply "$OUTPUT_DIR" <<< "$(dra-shared-claim-yaml "$2" "$3" "$4" "$5" "$6")
+---
+$pod"
+}
+
+dra-claim-pod-delete() {
+    # Usage: dra-claim-pod-delete NAME...
+    #
+    # Delete the pods NAME, then their claims NAME, and wait until they are
+    # gone.
+    local n
+    for n in "$@"; do
+        dra-delete-pod "$OUTPUT_DIR" "$n"
+    done
+    for n in "$@"; do
+        dra-delete "$OUTPUT_DIR" resourceclaim "$n" --wait=true --timeout=60s
+    done
+}
+
+dra-pending-assert() {
+    # Usage: dra-pending-assert POD...
+    #
+    # Fail the test unless every pod POD is Pending without a node: not
+    # bound, its claim not usable anywhere yet.
+    local p
+    for p in "$@"; do
+        dra-json "$OUTPUT_DIR" pod -n "$DRA_NS" "$p"
+        dra-py assert "$COMMAND_OUTPUT" "j['status']['phase'] == 'Pending' and not j['spec'].get('nodeName')" ||
+            error "$p is not Pending without a node: phase $(dra-value "$COMMAND_OUTPUT" "j['status']['phase']"), node $(dra-value "$COMMAND_OUTPUT" "j['spec'].get('nodeName')")"
+        echo "$p: Pending, not bound to a node"
+    done
+}
+
+dra-pod-event-wait() {
+    # Usage: dra-pod-event-wait POD TEXT... [-- TIMEOUT]
+    #
+    # Wait until an Event of pod POD has every TEXT (fixed strings) in its
+    # message, TIMEOUT seconds at most (default 120): kubelet reports so
+    # that the node plugin refused to prepare its claim. Fail the test on
+    # timeout.
+    local pod="$1" texts=() tmo=120 expr
+    shift
+    while [ $# -gt 0 ]; do
+        if [ "$1" == -- ]; then
+            tmo="$2"
+            break
+        fi
+        texts+=("$1")
+        shift
+    done
+    expr=$(python3 -c 'import sys; print("any(all(t in (e.get(\"message\") or \"\") for t in %r) for e in items)" % sys.argv[1:])' "${texts[@]}")
+    dra-wait "$OUTPUT_DIR" "$pod-event" "events -n $DRA_NS --field-selector involvedObject.name=$pod" "$expr" "$tmo"
+    dra-kubectl "$OUTPUT_DIR" "get events -n $DRA_NS --field-selector involvedObject.name=$pod"
+}
+
+dra-unschedulable-wait() {
+    # Usage: dra-unschedulable-wait VMDIR POD
+    #
+    # Wait until pod POD in $DRA_NS is not scheduled because its claims
+    # cannot be allocated (PodScheduled False, reason Unschedulable), 60 s
+    # at most, and print the message of the scheduler. Fail the test on
+    # timeout.
+    dra-wait "$1" "$2-unschedulable" "pod -n $DRA_NS $2" \
+        "any(c['type'] == 'PodScheduled' and c['status'] == 'False' and c.get('reason') == 'Unschedulable' and 'cannot allocate all claims' in c.get('message', '') for c in (j.get('status') or {}).get('conditions') or [])" 60
+    vmdir-command "$1" "kubectl get pod -n $DRA_NS $2 -o jsonpath='{.status.conditions[?(@.type==\"PodScheduled\")].message}'"
+}
+
+dra-unmatched() {
+    # Usage: dra-unmatched NAME SERIAL CLASS
+    #
+    # Fail the test unless a claim of DeviceClass CLASS for the device
+    # SERIAL cannot be allocated: its pod NAME (on the VM of the test)
+    # stays unschedulable, the claim without an allocation. Delete both.
+    dra-apply "$OUTPUT_DIR" <<< "$(dra-shared-claim-yaml "$1" "$2" "" "" "$3")
+---
+$(dra-pod-yaml "$1" "$(vmdir-name "$OUTPUT_DIR")" "mem=claim:$1")"
+    dra-unschedulable-wait "$OUTPUT_DIR" "$1"
+    dra-json "$OUTPUT_DIR" resourceclaim -n "$DRA_NS" "$1"
+    dra-assert "$COMMAND_OUTPUT" "not (j.get('status') or {}).get('allocation')"
+    dra-claim-pod-delete "$1"
+    echo "class $3 does not select $2"
+}
+
 # shellcheck disable=SC2001 # sed indents every line of SCRIPT
 dra-script-pod-yaml() {
     # Usage: dra-script-pod-yaml NAME VMDIR CLAIM SCRIPT [TYPE:PATH...]

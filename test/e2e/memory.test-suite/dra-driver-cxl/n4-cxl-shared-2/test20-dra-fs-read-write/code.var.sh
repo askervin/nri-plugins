@@ -371,11 +371,11 @@ NS_SIZE="$FS_NS_SIZE"
 echo "### C: ReadWriteOnce on VM2: two writers and a reader share the ext4"
 # rw-a first: its claim makes the attachment of VM2 exclusive. rw-b joins
 # the read-write superblock, ro-c gets a read-only bind of it.
-fs-claim-pod "$VM2" rw-a "$FS_SERIAL" 1 "$RW" "$CLASS"
+dra-serial-claim-pod "$VM2" rw-a "$FS_SERIAL" 1 "$RW" "$CLASS"
 dra-pod-wait "$VM2" rw-a Running 180
-fs-claim-pod "$VM2" rw-b "$FS_SERIAL" 1 "$RW" "$CLASS"
+dra-serial-claim-pod "$VM2" rw-b "$FS_SERIAL" 1 "$RW" "$CLASS"
 dra-pod-wait "$VM2" rw-b Running 120
-fs-claim-pod "$VM2" ro-c "$FS_SERIAL" 1 "$RO" "$CLASS"
+dra-serial-claim-pod "$VM2" ro-c "$FS_SERIAL" 1 "$RO" "$CLASS"
 dra-pod-wait "$VM2" ro-c Running 120
 for p in rw-a rw-b ro-c; do
     ro=0 rw=rw opts="$CDI_RW"
@@ -412,11 +412,11 @@ attached-assert "$VM2_NAME:True"
 fs-controller-log-wait "$DRA_CONTROLLER_UNIT" "attach $FS_DEVICE to $VM2_NAME for claim $DRA_NS/rw-a device $FS_DEVICE node $VM2_NAME: exclusive for a read-write filesystem claim"
 
 echo "### D: claims of VM1 wait while VM2 writes: AttachFailed reason Conflict"
-fs-claim-pod "$VM1" ro-d "$FS_SERIAL" 1 "$RO" "$CLASS"
+dra-serial-claim-pod "$VM1" ro-d "$FS_SERIAL" 1 "$RO" "$CLASS"
 conflict-watch ro-d "$VM2_NAME"
-fs-claim-pod "$VM1" rw-e "$FS_SERIAL" 1 "$RW" "$CLASS"
+dra-serial-claim-pod "$VM1" rw-e "$FS_SERIAL" 1 "$RW" "$CLASS"
 conflict-watch rw-e "$VM2_NAME"
-fs-pending-assert ro-d rw-e
+dra-pending-assert ro-d rw-e
 attached-assert "$VM2_NAME:True"
 pool-cxl-dump "$VM1" while-vm2-writes
 cxl-assert 'memdevs == [] and regions == []'
@@ -425,7 +425,7 @@ fs-no-mounts-assert "$VM1" "$DRA_POOL_MOUNT_DIR"
 fs-ctr-read-assert rw-a "$FS_PATH" b.txt "$TEXT_B"
 
 echo "### E: the writers of VM2 go: VM2 downgrades the ext4 to read-only, ro-d starts on VM1"
-fs-claim-pod-delete rw-a rw-b
+dra-claim-pod-delete rw-a rw-b
 superblock-wait "$VM2" ro direct
 fs-pmem-ro-assert "$VM2" "$PMEM2" 1
 dra-plugin-log-wait "$VM2" "remounted $MNT_DIRECT read-only"
@@ -447,20 +447,20 @@ fs-pmem-ro-assert "$VM1" "$FS_PMEM" 1
 attached-wait "$VM1_NAME:False" "$VM2_NAME:False"
 # rw-e would write on VM1 while VM2 has fs0.
 conflict-watch rw-e "$VM2_NAME"
-fs-pending-assert rw-e
+dra-pending-assert rw-e
 fs-claim-data-assert ro-d "$FS_DEVICE" "not d.get('singleHost')"
-fs-claim-pod-delete rw-e
+dra-claim-pod-delete rw-e
 
 echo "### F: a writer of VM2 waits until VM1 lets go, then VM2 upgrades the ext4 under its reader"
-fs-claim-pod "$VM2" rw-f "$FS_SERIAL" 1 "$RW" "$CLASS"
+dra-serial-claim-pod "$VM2" rw-f "$FS_SERIAL" 1 "$RW" "$CLASS"
 conflict-watch rw-f "$VM1_NAME"
-fs-pending-assert rw-f
+dra-pending-assert rw-f
 # Only the claim that wants the exclusive attachment fails: ro-c, of the
 # same attachment, stays attached.
 dra-json "$VM2" resourceclaim -n "$DRA_NS" ro-c
 dra-assert "$COMMAND_OUTPUT" "condition('$DRA_POOL_DRIVER/Attached') == 'True' and condition('$DRA_POOL_DRIVER/AttachFailed') != 'True'"
 fs-ctr-read-assert ro-c "$FS_PATH" b.txt "$TEXT_B"
-fs-claim-pod-delete ro-d
+dra-claim-pod-delete ro-d
 pool-cxl-wait "$VM1" ro-d-released "memdevs == []" 60
 fs-no-mounts-assert "$VM1" "$DRA_POOL_MOUNT_DIR"
 dra-pod-wait "$VM2" rw-f Running 240
@@ -485,7 +485,7 @@ echo "### H: refusals before anything is mounted, squashfs read-only, btrfs read
 fs-refused "$VM2" xfs-on-ext4 "$FS_SERIAL" "mode: fs, fsType: xfs" "$CLASS" "device $FS_SERIAL: " "has a filesystem of type ext4, not xfs"
 fs-node-mounts-assert "$VM2" "$DRA_POOL_MOUNT_DIR" "$FS_MOUNT_ID" ext4 rw "" direct
 fs-ctr-read-assert rw-f "$FS_PATH" f.txt "$TEXT_F"
-fs-claim-pod-delete rw-f ro-c
+dra-claim-pod-delete rw-f ro-c
 fs0-free
 # An ext4 that was not unmounted cleanly: no read-only mount.
 write-image ext4-dirty "$TAG: the dirty ext4 image"
@@ -495,7 +495,7 @@ fs0-free
 # squashfs: read-only, no DAX: access cached by default, a read-only loop
 # device.
 write-image squashfs "$TEXT_SQ"
-fs-claim-pod "$VM2" sq-r "$FS_SERIAL" 1 "$RO" "$CLASS"
+dra-serial-claim-pod "$VM2" sq-r "$FS_SERIAL" 1 "$RO" "$CLASS"
 dra-pod-wait "$VM2" sq-r Running 180
 fs-ctr-env-assert sq-r "$FS_HEX" \
     SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=cached READONLY=1 FSTYPE=squashfs
@@ -503,7 +503,7 @@ fs-ctr-mount-assert sq-r "$FS_PATH" ro squashfs
 fs-ctr-read-assert sq-r "$FS_PATH" "$FS_FILE" "$TEXT_SQ"
 fs-ctr-write-refused sq-r "$FS_PATH"
 fs-node-mounts-assert "$VM2" "$DRA_POOL_MOUNT_DIR" "$FS_MOUNT_ID" squashfs ro "" cached
-fs-claim-pod-delete sq-r
+dra-claim-pod-delete sq-r
 fs0-free
 # erofs is read-only: no read-write claim.
 write-image erofs "$TAG: the erofs image"
@@ -516,18 +516,18 @@ fs0-free
 write-image btrfs "$TEXT_BTRFS"
 fs-refused "$VM2" btrfs-direct "$FS_SERIAL" "mode: fs, access: direct" "$CLASS" "device $FS_SERIAL: btrfs has no DAX: use access cached"
 fs0-free
-fs-claim-pod "$VM2" btrfs-ro "$FS_SERIAL" 1 "$RO" "$CLASS"
+dra-serial-claim-pod "$VM2" btrfs-ro "$FS_SERIAL" 1 "$RO" "$CLASS"
 dra-pod-wait "$VM2" btrfs-ro Running 180
 fs-ctr-env-assert btrfs-ro "$FS_HEX" \
     SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=cached READONLY=1 FSTYPE=btrfs
 fs-ctr-read-assert btrfs-ro "$FS_PATH" "$FS_FILE" "$TEXT_BTRFS"
 fs-ctr-write-refused btrfs-ro "$FS_PATH"
 fs-node-mounts-assert "$VM2" "$DRA_POOL_MOUNT_DIR" "$FS_MOUNT_ID" btrfs ro "" cached
-fs-claim-pod "$VM2" btrfs-rw "$FS_SERIAL" 1 "$RW" "$CLASS"
-fs-event-wait btrfs-rw "$P9E"
+dra-serial-claim-pod "$VM2" btrfs-rw "$FS_SERIAL" 1 "$RW" "$CLASS"
+dra-pod-event-wait btrfs-rw "$P9E"
 fs-node-mounts-assert "$VM2" "$DRA_POOL_MOUNT_DIR" "$FS_MOUNT_ID" btrfs ro "" cached
 fs-ctr-read-assert btrfs-ro "$FS_PATH" "$FS_FILE" "$TEXT_BTRFS"
-fs-claim-pod-delete btrfs-ro
+dra-claim-pod-delete btrfs-ro
 dra-pod-wait "$VM2" btrfs-rw Running 240
 fs-ctr-env-assert btrfs-rw "$FS_HEX" \
     SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=cached READONLY=0 FSTYPE=btrfs
@@ -538,7 +538,7 @@ fs-ctr-read-assert btrfs-rw "$FS_PATH" w.txt "$TEXT_W"
 fs-node-mounts-assert "$VM2" "$DRA_POOL_MOUNT_DIR" "$FS_MOUNT_ID" btrfs rw "" cached
 fs-claim-data-assert btrfs-rw "$FS_DEVICE" "d.get('singleHost') == True"
 attached-assert "$VM2_NAME:True"
-fs-claim-pod-delete btrfs-rw
+dra-claim-pod-delete btrfs-rw
 fs0-free
 # A declared type that the plugin does not know, on the btrfs.
 fs-refused "$VM2" f2fs-on-btrfs "$FS_SERIAL" "mode: fs, fsType: f2fs" "$CLASS" "device $FS_SERIAL: " "has a filesystem of type btrfs, not f2fs"
@@ -546,9 +546,9 @@ fs0-free
 
 echo "### I: xfs: direct and cached readers on VM2 and a reader on VM1 at once, then a writer on VM1"
 write-image xfs "$TEXT_XFS"
-fs-claim-pod "$VM2" ro-x1 "$FS_SERIAL" 1 "mode: fs, access: direct" "$CLASS"
-fs-claim-pod "$VM2" ro-x2 "$FS_SERIAL" 1 "mode: fs, access: cached" "$CLASS"
-fs-claim-pod "$VM1" ro-x3 "$FS_SERIAL" 1 "$RO" "$CLASS"
+dra-serial-claim-pod "$VM2" ro-x1 "$FS_SERIAL" 1 "mode: fs, access: direct" "$CLASS"
+dra-serial-claim-pod "$VM2" ro-x2 "$FS_SERIAL" 1 "mode: fs, access: cached" "$CLASS"
+dra-serial-claim-pod "$VM1" ro-x3 "$FS_SERIAL" 1 "$RO" "$CLASS"
 declare -A X_ACCESS=([ro-x1]=direct [ro-x2]=cached [ro-x3]=direct)
 for p in ro-x1 ro-x2 ro-x3; do
     dra-pod-wait "$VM2" "$p" Running 180
@@ -567,9 +567,9 @@ dra-plugin-log-wait "$VM2" "at $MNT_DIRECT (xfs, ro, "
 dra-plugin-log-wait "$VM2" "at $MNT_CACHED (xfs, ro, "
 fs-node-mounts-assert "$VM1" "$DRA_POOL_MOUNT_DIR" "$FS_MOUNT_ID" xfs ro nouuid direct
 attached-assert "$VM1_NAME:False" "$VM2_NAME:False"
-fs-claim-pod-delete ro-x1 ro-x2 ro-x3
+dra-claim-pod-delete ro-x1 ro-x2 ro-x3
 fs0-free
-fs-claim-pod "$VM1" rw-x "$FS_SERIAL" 1 "$RW" "$CLASS"
+dra-serial-claim-pod "$VM1" rw-x "$FS_SERIAL" 1 "$RW" "$CLASS"
 dra-pod-wait "$VM2" rw-x Running 180
 fs-ctr-env-assert rw-x "$FS_HEX" \
     SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=direct READONLY=0 FSTYPE=xfs
@@ -579,20 +579,20 @@ fs-ctr-read-assert rw-x "$FS_PATH" x.txt "$TEXT_X"
 fs-node-mounts-assert "$VM1" "$DRA_POOL_MOUNT_DIR" "$FS_MOUNT_ID" xfs rw "" direct
 fs-pmem-ro-assert "$VM1" "$FS_PMEM" 0
 attached-assert "$VM1_NAME:True"
-fs-claim-pod-delete rw-x
+dra-claim-pod-delete rw-x
 fs0-free
 
 echo "### J: leases of the ext4 from running containers"
 write-image ext4 "$TEXT_EXT4"
 # First one node, two accesses without a writer: a writer with the other
 # access than the readers' is refused.
-fs-claim-pod "$VM2" ro-j "$FS_SERIAL" 1 "$RO" "$CLASS"
+dra-serial-claim-pod "$VM2" ro-j "$FS_SERIAL" 1 "$RO" "$CLASS"
 dra-pod-wait "$VM2" ro-j Running 180
 fs-refused "$VM2" rw-cached "$FS_SERIAL" "mode: fs, readOnly: false, access: cached" "$CLASS" "$P9D"
 fs-node-mounts-assert "$VM2" "$DRA_POOL_MOUNT_DIR" "$FS_MOUNT_ID" ext4 ro "" direct
-fs-claim-pod-delete ro-j
+dra-claim-pod-delete ro-j
 dra-apply "$VM2" <<< "$(dra-lease-template-yaml "$LEASE_TEMPLATE")"
-fs-claim-pod "$VM2" rw-g "$FS_SERIAL" 1 "$RW" "$CLASS"
+dra-serial-claim-pod "$VM2" rw-g "$FS_SERIAL" 1 "$RW" "$CLASS"
 dra-pod-wait "$VM2" rw-g Running 180
 fs-ctr-write rw-g "$FS_PATH" g.txt "$TEXT_G"
 lease-pod-start lease-a "$VM2"
@@ -668,7 +668,7 @@ lease-release lease-b "$LEASE_B"
 fs-ctr-read-assert rw-g "$FS_PATH" g.txt "$TEXT_G"
 dra-delete-pod "$VM2" lease-a
 dra-delete-pod "$VM2" lease-b
-fs-claim-pod-delete rw-g
+dra-claim-pod-delete rw-g
 dra-wait "$VM2" leases-gone "pods,resourceclaims -n $DRA_NS" "names() == []" 90
 dra-delete "$VM2" resourceclaimtemplate "$LEASE_TEMPLATE" --wait=true --timeout=60s
 

@@ -68,32 +68,14 @@ TEXT="$TAG: written by the exclusive writer"
 READERS=(reader-a reader-b reader-c)
 declare -A READER_VM=([reader-a]="$VM2" [reader-b]="$VM2" [reader-c]="$VM1")
 
-lease-template-yaml() {
-    # Usage: lease-template-yaml
-    #
-    # The template of the lease claims: a pod with one can ask for leases.
-    cat <<EOF
-apiVersion: resource.k8s.io/v1
-kind: ResourceClaimTemplate
-metadata:
-  name: cxl-lease
-spec:
-  spec:
-    devices:
-      requests:
-      - name: lease
-        exactly:
-          deviceClassName: cxl-lease
-EOF
-}
-
 # shellcheck disable=SC2001 # sed indents every line of SCRIPT
 lease-pod-yaml() {
     # Usage: lease-pod-yaml NAME VMDIR SCRIPT
     #
     # Pod NAME on the node of VMDIR, restartPolicy Never, with a lease claim
-    # of its own and the dax-rw tool in /tools, running the shell SCRIPT in
-    # its container "main".
+    # of its own (template cxl-lease) and the dax-rw tool in /tools, running
+    # the shell SCRIPT in its container "main". The pod ends with SCRIPT,
+    # unlike one of dra-script-pod-yaml.
     local name="$1" node script="$3"
     node=$(basename "$2")
     cat <<EOF
@@ -176,7 +158,7 @@ for vm in "$VM2" "$VM1"; do
     dra-pull-images "$vm" "$PYTHON_IMAGE" "$PAUSE_IMAGE"
 done
 dra-dax-tool-install "$VM2"
-dra-apply "$VM2" <<< "$(lease-template-yaml)"
+dra-apply "$VM2" <<< "$(dra-lease-template-yaml)"
 dra-trace-start "$VM2" "$VM1"
 
 echo "### A: one cluster of three nodes, one pool for VM1 and VM2, the lease device on every node"

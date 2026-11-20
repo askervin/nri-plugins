@@ -783,16 +783,7 @@ dra-json "$VM2" deviceclass cxl-pool-persistent cxl-pool-shared
 dra-assert "$COMMAND_OUTPUT" "names() == ['cxl-pool-persistent', 'cxl-pool-shared']"
 # cxl-pool-shared does not match llm0: a pod with a claim of that class for
 # it cannot be scheduled, because its claim cannot be allocated.
-dra-apply "$VM2" <<< "$(dra-shared-claim-yaml unmatched "$LLM_SERIAL")
----
-$(dra-script-pod-yaml unmatched "$VM2" unmatched "echo started")"
-dra-wait "$VM2" unmatched "pod -n $DRA_NS unmatched" \
-    "any(c['type'] == 'PodScheduled' and c['status'] == 'False' and c.get('reason') == 'Unschedulable' and 'cannot allocate all claims' in c.get('message', '') for c in (j.get('status') or {}).get('conditions') or [])" 60
-vmdir-command "$VM2" "kubectl get pod -n $DRA_NS unmatched -o jsonpath='{.status.conditions[?(@.type==\"PodScheduled\")].message}'"
-dra-json "$VM2" resourceclaim -n "$DRA_NS" unmatched
-dra-assert "$COMMAND_OUTPUT" "not (j.get('status') or {}).get('allocation')"
-dra-delete-pod "$VM2" unmatched
-dra-delete "$VM2" resourceclaim unmatched --wait=true --timeout=60s
+dra-unmatched unmatched "$LLM_SERIAL" cxl-pool-shared
 vmdir-command "$VM2" "test ! -e $LLM_VM_MODEL_DIR && test ! -e $LLM_VM_IMAGE && ls -la $LLM_VM_DIR" ||
     error "VM2 has the model or its image: its readers must get it from CXL memory only"
 

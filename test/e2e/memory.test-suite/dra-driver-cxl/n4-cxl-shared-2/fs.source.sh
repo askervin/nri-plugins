@@ -4,7 +4,7 @@
 # into a device by a block writer claim, and pods whose claims mount them
 # (MemoryConfig device {mode: fs}).
 #
-# The pods of fs-claim-pod run $DRA_RUNNER (dra-pod-yaml) and the tests
+# The pods of dra-serial-claim-pod run $DRA_RUNNER (dra-pod-yaml) and the tests
 # run commands in their container "main" with dra-exec. The helpers take
 # VMDIR first, like those of pool.source.sh and dra.source.sh.
 
@@ -173,48 +173,6 @@ $(dra-script-pod-yaml "$name" "$vmdir" "$name" "$(fs-writer-script "$key" "$FS_I
     echo "$name: $FS_IMAGE written into $serial (namespace $FS_NS_SIZE bytes)"
     dra-delete-pod "$OUTPUT_DIR" "$name"
     dra-delete "$OUTPUT_DIR" resourceclaim "$name" --wait=true --timeout=60s
-}
-
-fs-claim-pod() {
-    # Usage: fs-claim-pod VMDIR NAME SERIAL SHARES PARAMETERS CLASS
-    #
-    # Create ResourceClaim NAME of DeviceClass CLASS for the device SERIAL
-    # with SHARES ("1" a share, "" the whole device) and the fields
-    # PARAMETERS of the device section of its MemoryConfig (see
-    # dra-shared-claim-yaml), and pod NAME on the node of VMDIR whose
-    # container "main" uses the claim (dra-pod-yaml).
-    # Example: fs-claim-pod "$VM2" rw-a 0xc1ae0001 1 "mode: fs, readOnly: false" cxl-pool-persistent
-    dra-apply "$OUTPUT_DIR" <<< "$(dra-shared-claim-yaml "$2" "$3" "$4" "$5" "$6")
----
-$(dra-pod-yaml "$2" "$(vmdir-name "$1")" "mem=claim:$2")"
-}
-
-fs-claim-pod-delete() {
-    # Usage: fs-claim-pod-delete NAME...
-    #
-    # Delete the pods NAME, then their claims NAME, and wait until they are
-    # gone.
-    local n
-    for n in "$@"; do
-        dra-delete-pod "$OUTPUT_DIR" "$n"
-    done
-    for n in "$@"; do
-        dra-delete "$OUTPUT_DIR" resourceclaim "$n" --wait=true --timeout=60s
-    done
-}
-
-fs-pending-assert() {
-    # Usage: fs-pending-assert POD...
-    #
-    # Fail the test unless every pod POD is Pending without a node: not
-    # bound, its claim not usable anywhere yet.
-    local p
-    for p in "$@"; do
-        dra-json "$OUTPUT_DIR" pod -n "$DRA_NS" "$p"
-        dra-py assert "$COMMAND_OUTPUT" "j['status']['phase'] == 'Pending' and not j['spec'].get('nodeName')" ||
-            error "$p is not Pending without a node: phase $(dra-value "$COMMAND_OUTPUT" "j['status']['phase']"), node $(dra-value "$COMMAND_OUTPUT" "j['spec'].get('nodeName')")"
-        echo "$p: Pending, not bound to a node"
-    done
 }
 
 # The pods are in the cluster of the VM of the test: the fs-ctr-*
@@ -419,28 +377,6 @@ fs-claim-data-assert() {
     echo "claim $1: data of $2: $3"
 }
 
-fs-event-wait() {
-    # Usage: fs-event-wait POD TEXT... [-- TIMEOUT]
-    #
-    # Wait until an Event of pod POD has every TEXT (fixed strings) in its
-    # message, TIMEOUT seconds at most (default 120): kubelet reports so
-    # that the node plugin refused to prepare its claim. Fail the test on
-    # timeout.
-    local pod="$1" texts=() tmo=120 expr
-    shift
-    while [ $# -gt 0 ]; do
-        if [ "$1" == -- ]; then
-            tmo="$2"
-            break
-        fi
-        texts+=("$1")
-        shift
-    done
-    expr=$(python3 -c 'import sys; print("any(all(t in (e.get(\"message\") or \"\") for t in %r) for e in items)" % sys.argv[1:])' "${texts[@]}")
-    dra-wait "$OUTPUT_DIR" "$pod-event" "events -n $DRA_NS --field-selector involvedObject.name=$pod" "$expr" "$tmo"
-    dra-kubectl "$OUTPUT_DIR" "get events -n $DRA_NS --field-selector involvedObject.name=$pod"
-}
-
 fs-node-state() {
     # Usage: fs-node-state VMDIR
     #
@@ -459,15 +395,15 @@ fs-refused() {
     #
     # Create a claim of one share of the device SERIAL with the device
     # section PARAMETERS and its pod NAME on the node of VMDIR
-    # (fs-claim-pod), wait until an Event of the pod has every TEXT, and
+    # (dra-serial-claim-pod), wait until an Event of the pod has every TEXT, and
     # fail the test unless the pod waits in ContainerCreating and the node
     # mounts and loop devices of the node are what they were before (the
     # refused claim mounted nothing). Then delete the pod and the claim.
     local vmdir="$1" name="$2" serial="$3" params="$4" class="$5" before after
     shift 5
     before=$(fs-node-state "$vmdir") || error "cannot read the mounts of $(vmdir-label "$vmdir")"
-    fs-claim-pod "$vmdir" "$name" "$serial" 1 "$params" "$class"
-    fs-event-wait "$name" "$@"
+    dra-serial-claim-pod "$vmdir" "$name" "$serial" 1 "$params" "$class"
+    dra-pod-event-wait "$name" "$@"
     dra-wait "$OUTPUT_DIR" "$name-creating" "pod -n $DRA_NS $name" \
         "[(cs.get('state') or {}).get('waiting', {}).get('reason') for cs in j['status'].get('containerStatuses') or []] == ['ContainerCreating']" 60
     after=$(fs-node-state "$vmdir") || error "cannot read the mounts of $(vmdir-label "$vmdir")"
@@ -475,7 +411,7 @@ fs-refused() {
 before: $before
 after:  $after"
     echo "$name: refused, nothing mounted"
-    fs-claim-pod-delete "$name"
+    dra-claim-pod-delete "$name"
 }
 
 fs-controller-log-wait() {
@@ -502,23 +438,6 @@ fs-controller-log-wait() {
         '[ -n "$(vmdir-command-q "$OUTPUT_DIR" "$filter")" ]' ||
         error "the log of $unit has no line with: ${texts[*]}"
     vmdir-command-q "$OUTPUT_DIR" "$filter" | tail -n 3
-}
-
-fs-unmatched() {
-    # Usage: fs-unmatched NAME SERIAL CLASS
-    #
-    # Fail the test unless a claim of DeviceClass CLASS for the device
-    # SERIAL cannot be allocated: its pod NAME (on the VM of the test)
-    # stays unschedulable, the claim without an allocation. Delete both.
-    dra-apply "$OUTPUT_DIR" <<< "$(dra-shared-claim-yaml "$1" "$2" "" "" "$3")
----
-$(dra-pod-yaml "$1" "$(vmdir-name "$OUTPUT_DIR")" "mem=claim:$1")"
-    dra-wait "$OUTPUT_DIR" "$1-unschedulable" "pod -n $DRA_NS $1" \
-        "any(c['type'] == 'PodScheduled' and c['status'] == 'False' and c.get('reason') == 'Unschedulable' and 'cannot allocate all claims' in c.get('message', '') for c in (j.get('status') or {}).get('conditions') or [])" 60
-    dra-json "$OUTPUT_DIR" resourceclaim -n "$DRA_NS" "$1"
-    dra-assert "$COMMAND_OUTPUT" "not (j.get('status') or {}).get('allocation')"
-    fs-claim-pod-delete "$1"
-    echo "class $3 does not select $2"
 }
 
 fs-held() {
