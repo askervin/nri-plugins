@@ -604,7 +604,7 @@ func TestPmemOnline(t *testing.T) {
 			sm = sm.withRef(121)
 			o.now = sm.refWall
 		}
-		err, logs := runSim(t, o, sm)
+		logs, err := runSim(t, o, sm)
 		if err != nil || sm.sawEnd == "" {
 			t.Fatalf("%s (ref %v): %v, sim end %q fail %q\n%s", c.profile, c.ref, err, sm.sawEnd, sm.sawFail, logs)
 		}

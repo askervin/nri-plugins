@@ -50,31 +50,31 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *expect == "" || *observed == "" {
-		fmt.Fprintln(stderr, "check: --expect and --observed are required")
+		_, _ = fmt.Fprintln(stderr, "check: --expect and --observed are required")
 		return 2
 	}
 	eb, err := os.ReadFile(*expect)
 	if err != nil {
-		fmt.Fprintf(stdout, "fail check: %v\n", err)
+		_, _ = fmt.Fprintf(stdout, "fail check: %v\n", err)
 		return exitFail
 	}
 	e := &Expectation{}
 	if err := json.Unmarshal(eb, e); err != nil {
-		fmt.Fprintf(stdout, "fail check: expectation %s: %v\n", *expect, err)
+		_, _ = fmt.Fprintf(stdout, "fail check: expectation %s: %v\n", *expect, err)
 		return exitFail
 	}
 	if *step != 0 && e.Step != *step {
-		fmt.Fprintf(stdout, "fail check: the expectation is of step %d, not %d\n", e.Step, *step)
+		_, _ = fmt.Fprintf(stdout, "fail check: the expectation is of step %d, not %d\n", e.Step, *step)
 		return exitFail
 	}
 	ob, err := os.ReadFile(*observed)
 	if err != nil {
-		fmt.Fprintf(stdout, "fail check: %v\n", err)
+		_, _ = fmt.Fprintf(stdout, "fail check: %v\n", err)
 		return exitFail
 	}
 	o, d, err := parseObservedFile(ob)
 	if err != nil {
-		fmt.Fprintf(stdout, "fail check: %s: %v\n", *observed, err)
+		_, _ = fmt.Fprintf(stdout, "fail check: %s: %v\n", *observed, err)
 		return exitFail
 	}
 	var v Verdict
@@ -97,17 +97,17 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	for _, diff := range v.Diffs {
-		fmt.Fprintf(stderr, "  %s\n", diff)
+		_, _ = fmt.Fprintf(stderr, "  %s\n", diff)
 	}
 	msg := strings.ReplaceAll(v.Msg, "\n", " ")
 	switch v.Status {
 	case VOK:
-		fmt.Fprintln(stdout, "ok")
+		_, _ = fmt.Fprintln(stdout, "ok")
 		return exitOK
 	case VWait:
-		fmt.Fprintf(stdout, "wait %s\n", msg)
+		_, _ = fmt.Fprintf(stdout, "wait %s\n", msg)
 		return exitWait
 	}
-	fmt.Fprintf(stdout, "fail %s\n", msg)
+	_, _ = fmt.Fprintf(stdout, "fail %s\n", msg)
 	return exitFail
 }

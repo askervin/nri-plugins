@@ -387,7 +387,7 @@ func TestDualNeverBlocked(t *testing.T) {
 	// not deleted before it is bound
 	s = steps(t, s, "!delete dnuma@vm0#0", "settle", "delete dnuma@vm0#0", "settle")
 	// a hole made in the window after its Prepare could come first
-	s = steps(t, s, "create xnuma-c@vm0#0", "settle", "create sdax-c@vm0#0", "settle", "delete xnuma-c@vm0#0", "!create dnuma@vm0#0")
+	steps(t, s, "create xnuma-c@vm0#0", "settle", "create sdax-c@vm0#0", "settle", "delete xnuma-c@vm0#0", "!create dnuma@vm0#0")
 	// the controller killed while it starts: both claims or none
 	cfg2 := testConfig(t, "full", true)
 	s = steps(t, newState(cfg2), "create dnuma@vm1#0", "ctrl-kill c", "settle")

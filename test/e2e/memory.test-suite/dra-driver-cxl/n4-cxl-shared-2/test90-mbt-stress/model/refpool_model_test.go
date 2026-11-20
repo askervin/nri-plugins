@@ -237,20 +237,6 @@ func (r *refPool) allPods() []*refPod {
 	return append(append([]*refPod(nil), r.pods...), r.comps...)
 }
 
-// live calls f for every live pod and companion.
-func (r *refPool) live(f func(p *refPod)) {
-	for _, p := range r.pods {
-		if p != nil {
-			f(p)
-		}
-	}
-	for _, p := range r.comps {
-		if p != nil {
-			f(p)
-		}
-	}
-}
-
 // refHint is what the simulated SUT tells the reference of an action
 // that the reference cannot know: a claim that is not a pool claim
 // freed, a persistent lease released (its companion deleted).
@@ -853,7 +839,7 @@ func (r *refPool) conflict(rp *refPod) string {
 	sl := r.sl(rp)
 	clash := func(o *refPod) bool {
 		os := r.sl(o)
-		return os.Kind.pooled() && os.Dev == sl.Dev && !(os.Kind.share() && sl.Kind.share())
+		return os.Kind.pooled() && os.Dev == sl.Dev && (!os.Kind.share() || !sl.Kind.share())
 	}
 	for _, o := range r.allPods() {
 		if o != nil && o != rp && o.alloc && clash(o) {

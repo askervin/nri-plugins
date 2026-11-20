@@ -505,7 +505,9 @@ func simDevNodes(st *State, i int) []ObsDevNode {
 // (A44, the executor's forms).
 func simNode(path, typ, dev string) ObsDevNode {
 	var major, minor int
-	fmt.Sscanf(dev, "%d:%d", &major, &minor)
+	if _, err := fmt.Sscanf(dev, "%d:%d", &major, &minor); err != nil {
+		panic(fmt.Sprintf("simNode %s: device %q: %v", path, dev, err))
+	}
 	return ObsDevNode{Path: path, Type: typ, Major: &major, Minor: &minor, Dev: &dev}
 }
 
@@ -993,16 +995,6 @@ func (s *sim) leaseStore(v VM) ([]string, []ObsStoredLease) {
 	return claims, leases
 }
 
-func nodeListString(nodes map[int]bool) string {
-	var parts []string
-	for n := 0; n < 16; n++ {
-		if nodes[n] {
-			parts = append(parts, strconv.Itoa(n))
-		}
-	}
-	return strings.Join(parts, ",")
-}
-
 // transientObservation is a legitimate observation of the SUT on its
 // way from the state before the settle to the truth: pods that were
 // starting are Pending, crashed ones show the old restart count, deleted
@@ -1081,7 +1073,9 @@ func (s *sim) serve(in io.Reader, out io.Writer) error {
 		n, _ := strconv.Atoi(f[1])
 		a, err := parseAct(s.cfg, f[2])
 		if err != nil {
-			fmt.Fprintf(out, "done %d 2 {}\n", n)
+			if _, err := fmt.Fprintf(out, "done %d 2 {}\n", n); err != nil {
+				return err
+			}
 		} else if a.Verb == VSettle {
 			s.do(n, a)
 			poll := 0
@@ -1100,7 +1094,9 @@ func (s *sim) serve(in io.Reader, out io.Writer) error {
 					}
 				}
 				js, _ := json.Marshal(o)
-				fmt.Fprintf(out, "observe %d %s\n", n, js)
+				if _, err := fmt.Fprintf(out, "observe %d %s\n", n, js); err != nil {
+					return err
+				}
 				ans, err := readLine()
 				if err != nil {
 					return err
@@ -1129,7 +1125,9 @@ func (s *sim) serve(in io.Reader, out io.Writer) error {
 				Fencing *string `json:"fencing,omitempty"`
 				Boot    *string `json:"boot,omitempty"`
 			}{d.Text, d.Stderr, d.Lease, d.Fencing, d.Boot})
-			fmt.Fprintf(out, "done %d %d %s\n", n, d.Status, js)
+			if _, err := fmt.Fprintf(out, "done %d %d %s\n", n, d.Status, js); err != nil {
+				return err
+			}
 		}
 		ans, err := readLine()
 		if err != nil {

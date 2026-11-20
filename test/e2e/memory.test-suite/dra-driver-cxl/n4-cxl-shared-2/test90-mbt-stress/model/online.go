@@ -168,17 +168,24 @@ func (r *onlineRun) recordAdoption(n int, rec string) {
 	if r.steps == nil {
 		return
 	}
-	line := strings.TrimSpace(adoptPrefix + strconv.Itoa(n) + " " + rec)
-	fmt.Fprintln(r.steps, line)
-	_ = r.steps.Sync()
+	r.record(strings.TrimSpace(adoptPrefix + strconv.Itoa(n) + " " + rec))
 }
 
 func (r *onlineRun) recordStep(name string) {
 	if r.steps == nil {
 		return
 	}
-	fmt.Fprintln(r.steps, name)
-	_ = r.steps.Sync()
+	r.record(name)
+}
+
+// record writes a line of the steps file to the disk; it logs an error
+// (the run goes on without a complete record).
+func (r *onlineRun) record(line string) {
+	if _, err := fmt.Fprintln(r.steps, line); err != nil {
+		r.log.Printf("steps file: %v", err)
+	} else if err := r.steps.Sync(); err != nil {
+		r.log.Printf("steps file: %v", err)
+	}
 }
 
 // run runs the test: an initial settle, planned (or replayed) steps until
@@ -189,7 +196,7 @@ func (r *onlineRun) run() (err error) {
 	}
 	defer func() {
 		if r.steps != nil {
-			r.steps.Close()
+			_ = r.steps.Close() // every line is synced
 		}
 	}()
 	r.start = r.now()
@@ -524,10 +531,6 @@ func (r *onlineRun) settle(n int, name string, to *State, sent time.Time, final 
 		}
 	}
 }
-
-// dumpKey is a fingerprint of the full state (the abstraction leaves out
-// nodes, lease IDs and data).
-func (s *State) dumpKey() string { return s.dump() }
 
 func parseDoneLine(line string, n int) (int, string, error) {
 	f := strings.SplitN(line, " ", 4)

@@ -93,11 +93,6 @@ func (v Verb) poolFault() bool {
 // fault: a VM fault, a pool fault or fencing-switch (a fault of every VM).
 func (v Verb) fault() bool { return v.vmFault() || v.poolFault() || v == VFencingSwitch }
 
-// observes: the step returns an observation that the oracle checks.
-func (v Verb) observes() bool {
-	return v == VWrite || v == VRead || v == VLeaseGet || v == VPWrite || v == VPRead
-}
-
 // Act is an action.
 type Act struct {
 	Verb Verb
@@ -1583,9 +1578,9 @@ func (n *State) crash(i int) {
 func (n *State) write(i int) {
 	sl := n.slot(i)
 	tok := Token{Known: true, Text: fmt.Sprintf("mbt-%d", n.Steps)}
-	switch {
-	case sl.Kind == KSRo:
-	case sl.Kind == KLDax:
+	switch sl.Kind {
+	case KSRo:
+	case KLDax:
 		n.setSlotData(i, tok)
 	default:
 		n.Data[sl.Dev] = tok
@@ -1831,7 +1826,7 @@ func (n *State) handoverAfterRelease(i int, seq int16) {
 		if f.Kind != evUnprepare || f.Key != key {
 			continue
 		}
-		if j, lease := n.userSlot(f.User); !lease && j != i && !(n.slot(i).Kind.share() && n.slot(j).Kind.share()) {
+		if j, lease := n.userSlot(f.User); !lease && j != i && (!n.slot(i).Kind.share() || !n.slot(j).Kind.share()) {
 			n.setHandover(seq)
 			return
 		}

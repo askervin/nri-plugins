@@ -59,7 +59,7 @@ func testOpts(t *testing.T, profile string, steps, depth int, planAhead bool) ru
 }
 
 // runSim runs the on-line loop against a simulated SUT over pipes.
-func runSim(t *testing.T, o runOpts, sm *sim) (error, string) {
+func runSim(t *testing.T, o runOpts, sm *sim) (string, error) {
 	t.Helper()
 	goIn, simOut := io.Pipe()
 	simIn, goOut := io.Pipe()
@@ -71,16 +71,16 @@ func runSim(t *testing.T, o runOpts, sm *sim) (error, string) {
 	simDone := make(chan error, 1)
 	go func() {
 		err := sm.serve(simIn, simOut)
-		simOut.Close()
+		_ = simOut.Close()
 		_, _ = io.Copy(io.Discard, simIn)
 		simDone <- err
 	}()
 	runErr := r.run()
-	goOut.Close()
+	_ = goOut.Close()
 	if err := <-simDone; err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrClosedPipe) {
 		t.Fatalf("sim: %v\nlog:\n%s", err, logs.String())
 	}
-	return runErr, logs.String()
+	return logs.String(), runErr
 }
 
 func stepsOf(t *testing.T, dir string) []string {
@@ -96,7 +96,7 @@ func TestOnlineSmall(t *testing.T) {
 	o := testOpts(t, "small", 80, 2, true)
 	sm := newSim(o.cfg, 7)
 	sm.transient = 1
-	err, logs := runSim(t, o, sm)
+	logs, err := runSim(t, o, sm)
 	if err != nil || sm.sawEnd == "" {
 		t.Fatalf("run: %v, sim end %q fail %q\n%s", err, sm.sawEnd, sm.sawFail, logs)
 	}
@@ -118,7 +118,7 @@ func TestOnlineSmall(t *testing.T) {
 	r.replay = acts
 	sm2 := newSim(r.cfg, 7)
 	sm2.transient = 1
-	err, logs = runSim(t, r, sm2)
+	logs, err = runSim(t, r, sm2)
 	if err != nil || sm2.sawEnd == "" {
 		t.Fatalf("replay: %v %q\n%s", err, sm2.sawFail, logs)
 	}
@@ -131,7 +131,7 @@ func TestOnlineLockStepFull(t *testing.T) {
 	o := testOpts(t, "full", 50, 2, false)
 	sm := newSim(o.cfg, 3)
 	sm.transient = 2
-	err, logs := runSim(t, o, sm)
+	logs, err := runSim(t, o, sm)
 	if err != nil || sm.sawEnd == "" {
 		t.Fatalf("run: %v, sim fail %q\n%s", err, sm.sawFail, logs)
 	}
@@ -145,7 +145,7 @@ func TestOnlineDeterministic(t *testing.T) {
 	for k := range runs {
 		o := testOpts(t, "tiny", 60, 2, true)
 		sm := newSim(o.cfg, 5)
-		if err, logs := runSim(t, o, sm); err != nil {
+		if logs, err := runSim(t, o, sm); err != nil {
 			t.Fatalf("run %d: %v\n%s", k, err, logs)
 		}
 		runs[k] = stepsOf(t, o.outDir)
@@ -207,7 +207,7 @@ func TestOnlineDeviationFails(t *testing.T) {
 			}
 			sm := newSim(o.cfg, 2)
 			c.setup(sm)
-			err, logs := runSim(t, o, sm)
+			logs, err := runSim(t, o, sm)
 			if !errors.Is(err, errFailed) || !strings.Contains(sm.sawFail, c.msg) {
 				t.Fatalf("run: %v, sim saw fail %q, want %q\n%s", err, sm.sawFail, c.msg, logs)
 			}
@@ -243,7 +243,7 @@ func TestOnlineProtocolErrors(t *testing.T) {
 	o = testOpts(t, "tiny", 0, 1, false)
 	o.replay = []string{"settle", "crash plain@vm0#0"}
 	sm := newSim(o.cfg, 1)
-	if err, _ := runSim(t, o, sm); !errors.Is(err, errFailed) || !strings.Contains(sm.sawFail, "replay diverged at step 2") {
+	if _, err := runSim(t, o, sm); !errors.Is(err, errFailed) || !strings.Contains(sm.sawFail, "replay diverged at step 2") {
 		t.Fatalf("run %v fail %q", err, sm.sawFail)
 	}
 }
@@ -261,7 +261,7 @@ func TestOnlineRefPool(t *testing.T) {
 		o.seed = seed
 		sm := newSim(o.cfg, seed).withRef(seed + 100)
 		o.now = sm.refWall
-		err, logs := runSim(t, o, sm)
+		logs, err := runSim(t, o, sm)
 		if err != nil || sm.sawEnd == "" {
 			t.Fatalf("seed %d: %v, sim end %q fail %q\n%s\n%s", seed, err, sm.sawEnd, sm.sawFail, sm.ref, logs)
 		}

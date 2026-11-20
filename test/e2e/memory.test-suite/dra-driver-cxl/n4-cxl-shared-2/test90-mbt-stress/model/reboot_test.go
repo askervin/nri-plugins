@@ -720,7 +720,7 @@ func TestOnlineReboot(t *testing.T) {
 		"read sdax-a@vm1#0", "node-reboot vm0", "settle", "node-reboot vm1", "settle"}
 	sm := newSim(o.cfg, 5)
 	sm.transient = 2
-	err, logs := runSim(t, o, sm)
+	logs, err := runSim(t, o, sm)
 	if err != nil || sm.sawEnd == "" {
 		t.Fatalf("run: %v, sim fail %q\n%s", err, sm.sawFail, logs)
 	}

@@ -33,7 +33,6 @@ import (
 	"fmt"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -48,10 +47,10 @@ const (
 func devKey(d DevID) RKey { return RKey(1 + d) }
 
 func (k RKey) String() string {
-	switch {
-	case k == rkHole:
+	switch k {
+	case rkHole:
 		return "hole"
-	case k == rkLocal:
+	case rkLocal:
 		return "local"
 	}
 	return DevID(k - 1).String()
@@ -68,14 +67,6 @@ func (k RKey) kind() string {
 		return "shared"
 	}
 	return "pooled"
-}
-
-// serial of the region of a key.
-func (k RKey) serial() uint64 {
-	if k == rkLocal {
-		return localSerial
-	}
-	return devices[k-1].Serial
 }
 
 const maxStack = 8
@@ -384,19 +375,6 @@ type stackOutcome struct {
 	Pushed   bool           // a region was made in the window
 }
 
-func (o *stackOutcome) key() string {
-	var b strings.Builder
-	b.WriteString(o.S.String())
-	for _, m := range []map[int16]bool{o.Prepared, o.Blocked} {
-		b.WriteByte('|')
-		for _, u := range sortedUsers(m) {
-			b.WriteString(strconv.Itoa(int(u)))
-			b.WriteByte(',')
-		}
-	}
-	return b.String()
-}
-
 func sortedUsers(m map[int16]bool) []int16 {
 	us := make([]int16, 0, len(m))
 	for u, on := range m {
@@ -469,26 +447,6 @@ func (p *playState) apply(e *stackEvent) {
 			}
 		}
 	}
-}
-
-func (p *playState) memoKey(mask uint32) string {
-	b := make([]byte, 0, 4+maxStack+len(p.ref)+48)
-	b = append(b, byte(mask), byte(mask>>8), byte(mask>>16), byte(mask>>24), byte(p.S.N))
-	for _, k := range p.S.E[:p.S.N] {
-		b = append(b, byte(k+1))
-	}
-	for _, r := range p.ref {
-		b = append(b, byte(r))
-	}
-	for _, w := range append(p.prepared[:], p.blocked[:]...) {
-		for i := 0; i < 8; i++ {
-			b = append(b, byte(w>>(8*i)))
-		}
-	}
-	if p.pushed {
-		b = append(b, 1)
-	}
-	return string(b)
 }
 
 // outcomes returns the distinct outcomes of the window on a stack, the
@@ -645,21 +603,6 @@ func (s *State) unblockingOn(si int) bool {
 		}
 	}
 	return false
-}
-
-// stacksTouched returns the stacks with events.
-func (s *State) stacksTouched() []int {
-	var touched [nStacks]bool
-	for _, e := range s.Ev {
-		touched[e.Stack] = true
-	}
-	var out []int
-	for si := range touched {
-		if touched[si] {
-			out = append(out, si)
-		}
-	}
-	return out
 }
 
 // setRequired makes the prepare events of a user happen for sure (its
@@ -935,7 +878,7 @@ func (n *State) killWorlds(late bool) [][nVMs]bool {
 	worlds := [][nVMs]bool{{}}
 	for v := VM(0); v < nVMs; v++ {
 		d := &n.Drv[v]
-		if d.KillAt == 0 || !(late && d.KillMay) && !n.killCandidate(v, int(d.KillAt-1)) {
+		if d.KillAt == 0 || (!late || !d.KillMay) && !n.killCandidate(v, int(d.KillAt-1)) {
 			continue
 		}
 		var next [][nVMs]bool
@@ -1030,7 +973,7 @@ func (s *State) killCandidate(v VM, marker int) bool {
 			continue
 		}
 		i, lease := s.userSlot(e.User)
-		if int(e.Stack) != si && !(e.Stack < 0 && !lease && s.mayLandOn(i, v)) {
+		if int(e.Stack) != si && (e.Stack >= 0 || lease || !s.mayLandOn(i, v)) {
 			continue
 		}
 		kind := s.slot(i).Kind

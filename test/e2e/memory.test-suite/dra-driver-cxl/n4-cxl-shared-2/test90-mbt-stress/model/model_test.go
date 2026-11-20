@@ -532,7 +532,7 @@ func TestContainerdRestart(t *testing.T) {
 	if got := slotOf(t, s, "lsteer@vm1#0").Steer; got != SteerOff {
 		t.Fatalf("steer %v", got)
 	}
-	s = steps(t, s, "settle", "containerd-restart vm1", "settle", "!containerd-restart vm1", "!driver-kill vm1", "driver-restart vm1", "settle", "containerd-restart vm1")
+	steps(t, s, "settle", "containerd-restart vm1", "settle", "!containerd-restart vm1", "!driver-kill vm1", "driver-restart vm1", "settle", "containerd-restart vm1")
 }
 
 // A kubelet or a containerd restart allows one more restart of every
@@ -626,7 +626,7 @@ func TestForcedSettleAndAvoid(t *testing.T) {
 	cfg.Unsettled = 2
 	cfg.Avoid = []string{"containerd-restart", "driver-kill:vm1", "crash:lnuma"}
 	s := newState(cfg)
-	s = steps(t, s, "!settle", "create plain@vm0#0", "create sdax-c@vm0#0", "!create lnuma@vm0#0", "!driver-kill vm0", "settle",
+	steps(t, s, "!settle", "create plain@vm0#0", "create sdax-c@vm0#0", "!create lnuma@vm0#0", "!driver-kill vm0", "settle",
 		"write sdax-c@vm0#0", "read sdax-c@vm0#0")
 	mm := newMbtModel(cfg)
 	for _, a := range mm.acts {
@@ -657,7 +657,7 @@ func TestAnySlots(t *testing.T) {
 	if len(nodes) != 3 || nodes[0] != VM0 || nodes[1] != VM1 || nodes[2] != VM2 {
 		t.Fatalf("nodes %v", nodes)
 	}
-	s = steps(t, s, "ctrl-kill c")
+	steps(t, s, "ctrl-kill c")
 	off := testConfig(t, "full", false)
 	if off.slotIndex("xdax-c@any#0") >= 0 {
 		t.Fatalf("off-line profile has an any slot")

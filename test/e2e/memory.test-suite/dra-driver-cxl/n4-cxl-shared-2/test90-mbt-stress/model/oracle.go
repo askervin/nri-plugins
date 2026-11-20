@@ -370,7 +370,7 @@ func (k *checker) resolve() {
 		}
 		if ss.Phase == Either {
 			switch {
-			case !(p.Phase == "Running" || (p.Claim != nil && p.Claim.Attached != nil && *p.Claim.Attached)):
+			case p.Phase != "Running" && (p.Claim == nil || p.Claim.Attached == nil || !*p.Claim.Attached):
 				ss.Phase = Attaching
 			case ss.Refuse:
 				// attached before the kill: its Prepare is refused
@@ -1774,15 +1774,6 @@ func (k *checker) checkRegions(v VM, ov *ObsVM, pr *vmPred) {
 	}
 }
 
-func (pr *vmPred) anyPool() bool {
-	for _, m := range pr.poolMode {
-		if m != 0 {
-			return true
-		}
-	}
-	return false
-}
-
 func (k *checker) checkPoolRegion(v VM, d DevID, numa bool, r *ObsRegion) {
 	dev := devices[d]
 	if r.Mode == "pmem" {
@@ -2383,7 +2374,7 @@ func checkDone(e *Expectation, d *DoneObs) Verdict {
 			switch {
 			case d.Text == nil:
 				k.failf("%s: no text read", what)
-			case want.Text != nil && *d.Text != *want.Text && !(want.OrZero && *d.Text == ""):
+			case want.Text != nil && *d.Text != *want.Text && (!want.OrZero || *d.Text != ""):
 				if want.OrZero {
 					k.failf("%s: read %q, want %q or zeros", what, *d.Text, *want.Text)
 				} else {

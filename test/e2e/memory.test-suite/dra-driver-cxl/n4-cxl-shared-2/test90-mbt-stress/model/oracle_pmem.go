@@ -437,11 +437,9 @@ func (k *checker) checkLeaseBinds(v VM, ov *ObsVM, sources map[mountKey]string) 
 		if p := k.cur[i]; p != nil && p.Claim != nil {
 			w.uid = p.Claim.UID
 		}
-		switch {
-		case ss.LeaseMode == ModePFD:
+		w.name = k.rs.LeaseIDs[i]
+		if ss.LeaseMode == ModePFD {
 			w.name = "mbt"
-		default:
-			w.name = k.rs.LeaseIDs[i]
 		}
 		wants = append(wants, w)
 	}

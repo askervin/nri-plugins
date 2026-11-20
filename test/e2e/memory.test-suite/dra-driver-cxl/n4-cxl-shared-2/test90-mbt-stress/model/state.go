@@ -227,11 +227,6 @@ func orZero(t Token) Token {
 	return t
 }
 
-// accepts tells if a read of text fits the token.
-func (t Token) accepts(text string) bool {
-	return !t.Known || text == t.Text || (t.OrZero && text == "")
-}
-
 var (
 	tokUnknown = Token{}
 	tokZero    = Token{Known: true}

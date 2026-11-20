@@ -62,7 +62,7 @@ func tuneRuntime() {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintf(w, `usage: mbt-cxl COMMAND [flags]
+	_, _ = fmt.Fprintf(w, `usage: mbt-cxl COMMAND [flags]
 commands:
   online      run the line protocol with the bash executor (stdin/stdout)
   generate    print a code.gen.sh (off-line steps and expectations)
@@ -87,7 +87,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		usage(stdout)
 		return 0
 	}
-	fmt.Fprintf(stderr, "mbt-cxl: unknown command %q\n", args[0])
+	_, _ = fmt.Fprintf(stderr, "mbt-cxl: unknown command %q\n", args[0])
 	usage(stderr)
 	return 2
 }
@@ -226,7 +226,7 @@ func (c *commonFlags) options(online bool, stderr io.Writer) (runOpts, error) {
 	seed := c.seed
 	if seed == 0 {
 		seed = time.Now().UnixNano() % 1000000007
-		fmt.Fprintf(stderr, "mbt-cxl: seed %d\n", seed)
+		_, _ = fmt.Fprintf(stderr, "mbt-cxl: seed %d\n", seed)
 	}
 	o := runOpts{
 		cfg:            cfg,
@@ -266,12 +266,12 @@ func runOnline(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		// A16: the model of a replay is the one of the steps file
 		data, err := os.ReadFile(c.replay)
 		if err != nil {
-			fmt.Fprintf(stderr, "mbt-cxl: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "mbt-cxl: %v\n", err)
 			return 2
 		}
 		lines, header := readSteps(string(data))
 		if err := applyHeader(fs, header, stderr); err != nil {
-			fmt.Fprintf(stderr, "mbt-cxl: %s: %v\n", c.replay, err)
+			_, _ = fmt.Fprintf(stderr, "mbt-cxl: %s: %v\n", c.replay, err)
 			return 2
 		}
 		acts = []string{}
@@ -281,7 +281,7 @@ func runOnline(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	o, err := c.options(true, stderr)
 	if err != nil {
-		fmt.Fprintf(stderr, "mbt-cxl: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "mbt-cxl: %v\n", err)
 		return 2
 	}
 	if c.replay != "" {
@@ -290,12 +290,12 @@ func runOnline(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	r, err := newOnlineRun(o, stdin, stdout, stderr)
 	if err != nil {
-		fmt.Fprintf(stderr, "mbt-cxl: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "mbt-cxl: %v\n", err)
 		return 2
 	}
 	if err := r.run(); err != nil {
 		if !errors.Is(err, errFailed) {
-			fmt.Fprintf(stderr, "mbt-cxl: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "mbt-cxl: %v\n", err)
 		}
 		return 1
 	}
@@ -360,7 +360,7 @@ func applyHeader(fs *flag.FlagSet, header []string, stderr io.Writer) error {
 				return fmt.Errorf("--%s=%s of the command line, but the steps file is of --%s=%s (it configures the cluster too: MBT_%s; edit the header to run the file in another mode)",
 					name, old, name, val, strings.ToUpper(name))
 			}
-			fmt.Fprintf(stderr, "mbt-cxl: --%s %q of the command line replaced by %q of the steps file (A16)\n", name, old, val)
+			_, _ = fmt.Fprintf(stderr, "mbt-cxl: --%s %q of the command line replaced by %q of the steps file (A16)\n", name, old, val)
 		}
 		if err := fs.Set(name, val); err != nil {
 			return fmt.Errorf("header --%s %q: %w", name, val, err)
@@ -381,29 +381,29 @@ func runGenerate(args []string, stdout, stderr io.Writer) int {
 	if c.from != "" {
 		data, err := os.ReadFile(c.from)
 		if err != nil {
-			fmt.Fprintf(stderr, "mbt-cxl: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "mbt-cxl: %v\n", err)
 			return 2
 		}
 		lines, header := readSteps(string(data))
 		if err := applyHeader(fs, header, stderr); err != nil {
-			fmt.Fprintf(stderr, "mbt-cxl: %s: %v\n", c.from, err)
+			_, _ = fmt.Fprintf(stderr, "mbt-cxl: %s: %v\n", c.from, err)
 			return 2
 		}
 		from = append([]stepLine{}, lines...)
 	}
 	o, err := c.options(false, stderr)
 	if err != nil {
-		fmt.Fprintf(stderr, "mbt-cxl: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "mbt-cxl: %v\n", err)
 		return 2
 	}
 	if c.from != "" {
 		o.header += " --from " + c.from
 	} else if c.steps <= 0 {
-		fmt.Fprintln(stderr, "mbt-cxl: generate needs --steps (or --from)")
+		_, _ = fmt.Fprintln(stderr, "mbt-cxl: generate needs --steps (or --from)")
 		return 2
 	}
 	if err := generate(o, from, stdout); err != nil {
-		fmt.Fprintf(stderr, "mbt-cxl: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "mbt-cxl: %v\n", err)
 		return 1
 	}
 	return 0

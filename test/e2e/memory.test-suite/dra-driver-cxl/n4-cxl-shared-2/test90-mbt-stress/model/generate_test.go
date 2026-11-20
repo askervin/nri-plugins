@@ -137,7 +137,7 @@ func TestGenerateFrom(t *testing.T) {
 		t.Run(fmt.Sprintf("%s-%d", tc.profile, tc.seed), func(t *testing.T) {
 			o := testOpts(t, tc.profile, 60, 1, false)
 			sm := newSim(o.cfg, tc.seed)
-			if err, logs := runSim(t, o, sm); err != nil {
+			if logs, err := runSim(t, o, sm); err != nil {
 				t.Fatalf("%v\n%s", err, logs)
 			}
 			data, err := os.ReadFile(filepath.Join(o.outDir, "mbt-steps.txt"))

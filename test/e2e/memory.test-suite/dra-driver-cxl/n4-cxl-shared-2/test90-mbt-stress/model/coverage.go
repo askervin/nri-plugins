@@ -38,16 +38,6 @@ type Coverage struct {
 // on tells if criterion Cn (1..4) is in the mix.
 func (c Coverage) on(n int) bool { return c.W[n-1] > 0 }
 
-// weighted: some criterion has a weight above 1.
-func (c Coverage) weighted() bool {
-	for _, w := range c.W {
-		if w > 1 {
-			return true
-		}
-	}
-	return false
-}
-
 // parseCoverage parses a comma list of C1..C4, each with an optional
 // weight xN (C1x3), or "all".
 func parseCoverage(s string) (Coverage, error) {
