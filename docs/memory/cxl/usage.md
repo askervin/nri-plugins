@@ -1309,7 +1309,7 @@ plan (the CXL nodes for `first-dram`, interleaved DRAM and CXL for
 `end-interleaved`), and `memory.high` is `max`. Its allocations go on in
 that direction, beyond its claims, as far as `memory.max` and the free
 memory of the nodes allow. When its usage drops below the last waypoint
-again, the steering resumes. When
+again by `minStep` or more, the steering resumes. When
 none of the nodes in `cpuset.mems` has normal (non-movable) memory, as
 for a container with only CXL memory whose nodes are onlined movable,
 the nearest node with normal memory (`/sys/devices/system/node/has_normal_memory`,
