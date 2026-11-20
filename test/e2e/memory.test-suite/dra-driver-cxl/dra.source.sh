@@ -196,6 +196,90 @@ DRA_TRACE_VMS=()
 # Kill the trace collectors in a VM: each runs in a process group of its own.
 DRA_TRACE_KILL='for f in /run/dra-trace/*.pid; do [ -f "$f" ] || continue; kill -TERM -- "-$(cat "$f")" 2>/dev/null; rm -f "$f"; done'
 
+dra-vm-check() {
+    # Usage: dra-vm-check
+    #
+    # Install the CXL kernel and tools in the VM of the test and check that
+    # it can run the tests of the suite (test00-up of n4-cxl-shared-0, -1
+    # and -2): the kernel with CONFIG_FS_DAX, CONFIG_EROFS_FS and DMI;
+    # qemu answering on QMP, two host bridges with hdm_for_passthrough=on,
+    # cxl-downstream ports that can hot-remove devices; the local device
+    # cxl_memdev0 unplugged and eight free pool slots; no CXL memory device
+    # in the VM.
+    local kernel_tarball kernel_error vm_uuid product_uuid qemu_pid qmp_version response cxl_hw qtree
+    vm-kernel-pkgs-install
+    cxl-tools-install
+    vm-command-q "command -v daxctl >/dev/null" ||
+        vm-command "dnf install -y daxctl" ||
+            command-error "cannot install daxctl in the VM"
+
+    echo "### kernel of the VM"
+    # The kernel comes from the cached kernel tarball of the kernel config, if
+    # there is one. Point at it if the kernel is not the expected one.
+    # shellcheck disable=SC2154 # kernel_getsource and kernel_config: the var files of the suite
+    kernel_tarball=$(python3 -c '
+import hashlib, re, sys
+getsource, config_file, cache_dir = sys.argv[1:4]
+# The name that test/e2e/playbook/custom-kernel.yaml gives the tarball.
+sha = hashlib.sha256(open(config_file).read().rstrip().encode()).hexdigest()
+print("%s/kernel.getsource_%s.config_%s.rpms.tar" % (cache_dir, re.sub("[^a-zA-Z0-9-]+", "_", getsource), sha))
+' "$kernel_getsource" "$nri_resource_policy_src/test/e2e/playbook/files/$kernel_config" "$CACHE_DIR")
+    kernel_error="the VM does not run the kernel of $kernel_tarball, the kernel of $kernel_config that provisioning installs (test/e2e/playbook/custom-kernel.yaml builds it when it is not cached). If the VM had installed older RPMs of the same name, recreate the VM, or remove ~vagrant/.vm-kernel-pkgs.installed_packages and the installed kernel RPM of the same version (sudo rpm -e kernel-<version>; reinstalling over it removes the kernel from /boot) in it and run this test again"
+    vm-command "uname -r; grep -E '^CONFIG_(FS_DAX|EROFS_FS|DMIID)=' /boot/config-\$(uname -r)"
+    # shellcheck disable=SC2016 # expanded in the VM
+    vm-command-q 'grep -q ^CONFIG_FS_DAX=y /boot/config-$(uname -r)' ||
+        error "kernel lacks CONFIG_FS_DAX=y: $kernel_error"
+    # shellcheck disable=SC2016 # expanded in the VM
+    vm-command-q 'grep -q ^CONFIG_EROFS_FS=y /boot/config-$(uname -r)' ||
+        error "kernel lacks CONFIG_EROFS_FS=y: $kernel_error"
+    vm_uuid=$(sed -n 's/^VM_UUID=//p' "$OUTPUT_DIR/env")
+    product_uuid=$(vm-command-q "cat /sys/class/dmi/id/product_uuid")
+    echo "VM_UUID: $vm_uuid, product_uuid in the VM: $product_uuid"
+    [ -n "$vm_uuid" ] || error "no VM_UUID in $OUTPUT_DIR/env, VM created without -uuid?"
+    [ "${product_uuid,,}" == "${vm_uuid,,}" ] ||
+        error "product_uuid '$product_uuid' of the VM differs from VM_UUID '$vm_uuid' (kernel without CONFIG_DMIID?): $kernel_error"
+
+    echo "### qemu of the VM"
+    qemu_pid=$(vm-qemu-pid)
+    [[ "$qemu_pid" =~ ^[0-9]+$ ]] || error "expected one qemu process of $OUTPUT_DIR, found: '$qemu_pid'"
+    tr '\0' ' ' < "/proc/$qemu_pid/cmdline" > "$TEST_OUTPUT_DIR/qemu-cmdline.txt"
+    echo "qemu pid:     $qemu_pid"
+    echo "qemu binary:  $(readlink "/proc/$qemu_pid/exe")"
+    echo "qemu cmdline: $TEST_OUTPUT_DIR/qemu-cmdline.txt"
+    [ "$(grep -o 'pxb-cxl,[^ ]*,hdm_for_passthrough=on' "$TEST_OUTPUT_DIR/qemu-cmdline.txt" | wc -l)" = "2" ] ||
+        error "expected two pxb-cxl host bridges with hdm_for_passthrough=on: recreate the VM from topology.var.json"
+    qmp_version=$(vm-qmp query-version) || error "QMP query-version failed: $qmp_version"
+    echo "qemu version: $qmp_version"
+    python3 -c 'import json, sys; v = json.loads(sys.argv[1])["return"]; print("%(major)d.%(minor)d.%(micro)d" % v["qemu"], v["package"])' "$qmp_version" ||
+        error "unexpected QMP query-version response: $qmp_version"
+    # A pool detaches devices again: qemu must complete their hot-removal.
+    response=$(vm-qmp qom-get '{"path": "/machine/peripheral/cxlsw_ds0_usrp0hb0", "property": "power_controller_present"}')
+    [ "$response" == '{"return": true}' ] ||
+        error "qemu cannot hot-remove CXL memory devices: its cxl-downstream ports have no power_controller_present ($response). Recreate the VM with qemu_bin=/path/to/qemu-system-x86_64 of a qemu that can (docs/memory/cxl/e2e.md, Prerequisites)"
+
+    echo "### qemu CXL memory devices and slots"
+    cxl_hw=$(show_sn=1 show_be=1 vm-cxl-hw)
+    echo "$cxl_hw"
+    grep -q "^cxl_memdev0 sn=0xc100e2e1 volatile-memdev=beram_cxl_memdev0__" <<< "$cxl_hw" ||
+        error "local CXL memory device cxl_memdev0 not found"
+    if grep -q plugged <<< "$cxl_hw"; then
+        error "expected no CXL memory devices plugged in at boot"
+    fi
+    # Every switch port, 4 + 4, is free: neither pool slots nor declared but not
+    # present devices have a cxl-type3 device at boot.
+    qtree=$(vm-monitor "info qtree -b")
+    [ "$(grep -c 'dev: cxl-downstream' <<< "$qtree")" = "8" ] ||
+        error "expected 8 cxl-downstream ports in qemu"
+    if grep -q 'dev: cxl-type3' <<< "$qtree"; then
+        error "expected no cxl-type3 devices in qemu"
+    fi
+
+    echo "### CXL memory devices in the VM"
+    cxl-dump no-devices
+    cxl-assert 'memdevs == [] and regions == [] and endpoints == []'
+    cxl-assert 'len(nodes) == 2'
+}
+
 ###
 ### Commands in the VMs
 ###
@@ -1138,8 +1222,8 @@ dra-local-blocks-require() {
         error "unexpected memory block size '$bs' bytes in $(vmdir-label "$vmdir")"
     fi
     (( DRA_LOCAL_SIZE % bs == 0 && DRA_LOCAL_SIZE >= blocks * bs )) ||
-        error "the local device $DRA_LOCAL_NAME has $DRA_LOCAL_SIZE bytes, the test needs $blocks memory blocks of $bs bytes. The VM was created from an older topology.var.json of $topology: recreate it: vagrant destroy in $vmdir, remove the directory, and run
-  qemu_bin=\$HOME/github.com/qemu/qemu/build/qemu-system-x86_64 ./run_tests.sh memory.test-suite/dra-driver-cxl/$topology/test00-up"
+        error "the local device $DRA_LOCAL_NAME has $DRA_LOCAL_SIZE bytes, the test needs $blocks memory blocks of $bs bytes, as in topology.var.json of $topology: recreate the VM: vagrant destroy in $vmdir, remove the directory, and run
+  qemu_bin=/path/to/qemu-system-x86_64 ./run_tests.sh memory.test-suite/dra-driver-cxl/$topology/test00-up"
     echo "memory block size $bs bytes ($(dra-mi "$bs")), the local device has $(( DRA_LOCAL_SIZE / bs )) blocks"
 }
 

@@ -185,6 +185,19 @@ Worth knowing:
   running any test. Raise `CLUSTER_READY_TIMEOUT` (300 seconds by default) if a
   large topology needs longer.
 
+## Another qemu for a VM
+
+`qemu_bin` gives a VM that a run creates another qemu than the one in the
+`PATH`, for instance one with patches that a test suite needs:
+
+```shell
+qemu_bin=/path/to/qemu-system-x86_64 ./run_tests.sh memory.test-suite/dra-driver-cxl
+```
+
+The VM keeps it: the run records it as `QEMU_BIN` in the `env` file of the
+output directory, and later runs start the VM with it and ignore
+`qemu_bin`.
+
 ## Reusing an output directory
 
 The output directory of a run is named after the VM, so running the tests twice

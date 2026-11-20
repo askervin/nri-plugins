@@ -108,7 +108,7 @@ pool-vm-require() {
     #   corrupts them both.
     local vmdir="$1" topology="$2" name version qemu_bin hb response
     local recreate="recreate the VM: vagrant destroy in $vmdir, remove the directory, and run
-  qemu_bin=\$HOME/github.com/qemu/qemu/build/qemu-system-x86_64 ./run_tests.sh memory.test-suite/dra-driver-cxl/$topology/test00-up"
+  qemu_bin=/path/to/qemu-system-x86_64 ./run_tests.sh memory.test-suite/dra-driver-cxl/$topology/test00-up"
     name="$(basename "$vmdir")"
     version=$(pool-vm-qmp "$vmdir" query-version) ||
         error "QMP query-version failed on $name: $version"
@@ -116,14 +116,14 @@ pool-vm-require() {
     echo "$name: qemu $qemu_bin: $version"
     response=$(pool-vm-qmp "$vmdir" qom-get '{"path": "/machine/peripheral/cxlsw_ds0_usrp0hb0", "property": "power_controller_present"}')
     [ "$response" == '{"return": true}' ] ||
-        error "qemu $qemu_bin of $name cannot hot-remove CXL memory devices: cxl-downstream port has no power_controller_present ($response). A detach would leave a zombie device in qemu. Use the patched qemu (branch 5jL-fix-cxl-hot-remove): set QEMU_BIN in $vmdir/env and restart the VM (vagrant halt; vagrant up --no-provision in $vmdir), or $recreate"
+        error "qemu $qemu_bin of $name cannot hot-remove CXL memory devices: cxl-downstream port has no power_controller_present ($response). A detach would leave a zombie device in qemu. Use a qemu that can hot-remove CXL memory devices (docs/memory/cxl/e2e.md, Prerequisites): set QEMU_BIN in $vmdir/env and restart the VM (vagrant halt; vagrant up --no-provision in $vmdir), or $recreate"
     for hb in cxlhb0 cxlhb1; do
         response=$(pool-vm-qmp "$vmdir" qom-get "{\"path\": \"/machine/peripheral/$hb\", \"property\": \"hdm_for_passthrough\"}")
         [ "$response" == '{"return": true}' ] ||
-            error "host bridge $hb of $name has no hdm_for_passthrough=on ($response): one region per host bridge only. The VM was created before \"hdm-for-passthrough\" was in the topology, $recreate"
+            error "host bridge $hb of $name has no hdm_for_passthrough=on ($response): one region per host bridge only: $recreate"
     done
     vmdir-command "$vmdir" 'uname -r; grep -x CONFIG_FS_DAX=y /boot/config-$(uname -r)' ||
-        error "kernel of $name lacks CONFIG_FS_DAX=y: devdax devices cannot be mmapped. Build the kernel with scripts/testing/fake-cxl-pool/proto/build-kernel-rpms.sh and $recreate"
+        error "kernel of $name lacks CONFIG_FS_DAX=y: devdax devices cannot be mmapped. The kernel of the topology has it: run test00-up of $topology, or $recreate"
     echo "$name: patched qemu, hdm_for_passthrough=on, CONFIG_FS_DAX=y"
 }
 
