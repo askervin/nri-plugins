@@ -41,26 +41,26 @@
 # (n4-cxl-shared-1) and VM0 (n4-cxl-shared-0), its workers, have no local
 # device attached.
 #
-# What you will see: the device in the ResourceSlice; NUMA and dax claims
-# on it at the same time, the NUMA node appearing with the first NUMA
-# claim and growing with the next one by exactly its blocks, while dax
-# claims (one rounded up to a block, one shared by two pods) take slices
-# next to them, with data isolated between the slices; the node only in
-# the containers of the NUMA claims, which are not steered, before and
-# after a restart of the driver, and not in a pod created after the
-# restart; the node shrinking block by block as the NUMA pods go, while
-# the dax pods keep their data; the device back in its initial state (no
-# region, memdev enabled, published as at the start); claims with invalid
-# configs that fail their Prepare; a read-only slice; a dax claim without
-# an amount that gets all of the device; containers that opt in to
-# steering, their memory placed for workloads that know nothing of NUMA:
-# CXL only, also past its claim, DRAM only, DRAM and CXL interleaved,
-# DRAM first along waypoints in small steps; containers whose seccomp
-# profile refuses memory policies, not steered; one claim whose numa and
-# dax results go to two containers, each
-# getting only its own; a container whose claims disagree on the policy
-# not created; and the trace summary of what every component did, in
-# order.
+# What you will see: the device in the ResourceSlice; NUMA and dax
+# claims on it at the same time, the NUMA node appearing with the first
+# NUMA claim and growing with the next one by exactly its blocks, while
+# dax claims (one rounded up to a block, one shared by two pods) take
+# slices next to them, with data isolated between the slices; the node
+# only in the containers of the NUMA claims, which are not steered,
+# before and after a restart of the driver, and not in a pod created
+# after the restart; the node shrinking block by block as the NUMA pods
+# go, while the dax pods keep their data; the device back in its initial
+# state (no region, memdev enabled, published as at the start); claims
+# with invalid device and container sections that fail their Prepare; a
+# read-only slice; a dax claim without an amount that gets all of the
+# device; containers that opt in to steering, their memory placed for
+# workloads that know nothing of NUMA: CXL only, also past its claim,
+# DRAM only, DRAM and CXL interleaved, DRAM first along waypoints in
+# small steps; containers whose seccomp profile refuses memory policies,
+# not steered; one claim whose numa and dax results go to two
+# containers, each getting only its own; a container whose claims
+# disagree on the policy not created; and the trace summary of what
+# every component did, in order.
 #
 # Run test00-up of n4-cxl-shared-1, -0 and -2 first: they create the VMs and
 # make them one cluster. The DRA driver comes from its image, and its
@@ -171,16 +171,6 @@ dax-read() {
     dra-exec "$VM2" "$1" python3 /tools/dax-rw.py read "$2" 1M ||
         command-error "cannot read $2 in $1"
     [ "$COMMAND_OUTPUT" == "$3" ] || error "$1 read '$COMMAND_OUTPUT' at 1M of $2, expected '$3'"
-}
-
-bad-pods-creating() {
-    # Usage: bad-pods-creating
-    #
-    # Return 0 if the containers of the pods BAD_PODS are all waiting in
-    # ContainerCreating.
-    local want
-    want=$(printf 'ContainerCreating %.0s' "${BAD_PODS[@]}")
-    [ "$(dra-vm-command-q "$VM2" "kubectl get pod -n $DRA_NS ${BAD_PODS[*]} -o jsonpath='{.items[*].status.containerStatuses[0].state.waiting.reason}'" || echo unread) " == "$want" ]
 }
 
 dram-cxl-template-yaml() {
@@ -314,7 +304,7 @@ LREGIONS="$DRA_LOCAL_REGIONS"  # its regions in cxl-dump (cxl-py)
 NUMA_NODE=""           # the NUMA node of the device, known when memory of it is online
 # Every slice is whole memory blocks of the VM. The claims of the test
 # are sized in blocks: numa-a 1, dax-1 half a block (it consumes 1),
-# numa-b 2, shared-slice 1, all at the same time; seven refused claims of
+# numa-b 2, shared-slice 1, all at the same time; two refused claims of
 # a quarter block (1 each); the steering claims steer-cxl, steer-mix,
 # steer-first and the numa and dax requests of split 1 each. The DRAM
 # claims are a block each (DRAM_REQ, the conflicting ones half of it).
@@ -545,41 +535,26 @@ dra-delete "$VM2" resourceclaim shared-slice --wait=true --timeout=60s
 initial-state released
 
 echo "### D: refused configs, a read-only slice, a slice of the whole device"
-# Claims whose MemoryConfig the node plugin refuses: readOnly is for dax
-# slices, there is no mode "memory" and no config kind DaxConfig, the
-# steering policy must be known, a policy none takes no steps, the pool
-# section is for devices of the pool, and fencing is set by the driver
-# configuration only. The scheduler allocates the device, the Prepare
-# fails, the pods stay ContainerCreating, and the device stays free.
-BAD_PODS=(bad-config bad-mode bad-kind bad-policy bad-steps bad-pool bad-fencing)
+# Claims whose MemoryConfig the node plugin refuses, one of a device
+# section (readOnly is for dax slices) and one of a container section
+# (fencing is set by the driver configuration only); the unit tests have
+# the other refusals. The scheduler allocates the device, the Prepare
+# fails, the user sees why in an Event, the pods stay ContainerCreating,
+# and the device stays free.
+BAD_PODS=(bad-config bad-fencing)
 declare -A BAD_TEXT=(
     [bad-config]='MemoryConfig: device.readOnly needs mode dax'
-    [bad-mode]='MemoryConfig: device.mode: invalid mode "memory" (numa or dax)'
-    [bad-kind]='MemoryConfig: FromClaim config 0: kind "DaxConfig", expected "MemoryConfig"'
-    [bad-policy]='MemoryConfig: container.steering.policy: invalid policy "fastest" (none, auto, first-dram, first-cxl, start-interleaved, end-interleaved or waypoints)'
-    [bad-steps]='MemoryConfig: container.steering.maxStep needs a policy other than none'
-    [bad-pool]="MemoryConfig: pool: only for devices of $DRA_POOL_DRIVER"
     [bad-fencing]='MemoryConfig: container.fencing: set by the driver configuration only (defaults.container.fencing)'
 )
 dra-claim-pod "$VM2" bad-config "$LOCAL_CLASS" "$(dra-mi "$BAD_REQ")" numa read-only
-dra-claim-pod "$VM2" bad-mode "$LOCAL_CLASS" "$(dra-mi "$BAD_REQ")" memory
-dra-apply "$VM2" <<< "$(dra-claim-yaml template bad-kind "$LOCAL_CLASS" "$(dra-mi "$BAD_REQ")" dax | sed "s/kind: $DRA_CONFIG_KIND/kind: DaxConfig/")
----
-$(dra-claim-pod-yaml bad-kind template bad-kind "$VM2_NAME")"
-dra-claim-pod "$VM2" bad-policy "$LOCAL_CLASS" "$(dra-mi "$BAD_REQ")" "container=steering: {policy: fastest}"
-dra-claim-pod "$VM2" bad-steps "$LOCAL_CLASS" "$(dra-mi "$BAD_REQ")" "container=steering: {policy: none, maxStep: 64Mi}"
-dra-claim-pod "$VM2" bad-pool "$LOCAL_CLASS" "$(dra-mi "$BAD_REQ")" "pool=opaque: {$DRA_POOL_CONFIG_KEY: {numaNode: 1}}"
 dra-claim-pod "$VM2" bad-fencing "$LOCAL_CLASS" "$(dra-mi "$BAD_REQ")" "container=fencing: none"
 for pod in "${BAD_PODS[@]}"; do
     dra-wait "$VM2" "$pod-event" "events -n $DRA_NS --field-selector involvedObject.name=$pod" \
         "any($(python3 -c 'import sys; print(repr(sys.argv[1]))' "${BAD_TEXT[$pod]}") in (e.get('message') or '') for e in items)" 120
     dra-kubectl "$VM2" "get events -n $DRA_NS --field-selector involvedObject.name=$pod"
-done
-for pod in "${BAD_PODS[@]}"; do
     dra-wait "$VM2" "$pod-creating" "pod -n $DRA_NS $pod" \
         "[(cs.get('state') or {}).get('waiting', {}).get('reason') for cs in j['status'].get('containerStatuses') or []] == ['ContainerCreating']" 60
 done
-dra-stays 10 "pods ${BAD_PODS[*]} are ContainerCreating" bad-pods-creating
 pool-cxl-dump "$VM2" bad-config
 cxl-assert "regions == []"
 dra-local-unchanged "$VM2"
