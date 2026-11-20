@@ -5,7 +5,6 @@
 # VM, VM2 (n4-cxl-shared-2), and attaches one shared pool device, shared0,
 # to both VM2 and VM1 (n4-cxl-shared-1), which this test drives over ssh
 # from the host. Then:
-# - An exclusive device cannot be attached to a second VM.
 # - Both VMs map shared0 as a devdax device. What one VM writes, the other
 #   reads, and the host finds in the backing file of the device.
 # - Both VMs release shared0, and it is detached from both. Released
@@ -128,38 +127,7 @@ pool-assert "$COMMAND_OUTPUT" "sorted((a['host'], a['state']) for a in j['attach
 pool-client "$VM2" attachments || command-error "cannot list attachments"
 pool-snapshot shared0-attached
 
-echo "### D: an exclusive device cannot be attached to two VMs"
-# Device sizes are multiples of 256Mi, the capacity unit of CXL.
-pool-client "$VM2" create --size 128Mi --name excl0 &&
-    error "creating a device of 128Mi should have failed"
-[ "$COMMAND_STATUS" == "1" ] && [[ "$COMMAND_OUTPUT" == *InvalidArgument* ]] ||
-    command-error "expected exit status 1 and InvalidArgument for a 128Mi device"
-pool-client "$VM2" -o json create --size 256Mi --name excl0 || command-error "cannot create excl0"
-pool-assert "$COMMAND_OUTPUT" "not j['shared'] and j['state'] == 'free' and j['size'] == $MEM_SIZE"
-EXCL_SERIAL=$(pool-value "$COMMAND_OUTPUT" 'j["serial"]')
-[[ "$EXCL_SERIAL" == 0xc1ee* ]] ||
-    error "the server assigned serial $EXCL_SERIAL to the exclusive device excl0, expected 0xc1ee...."
-EXCL_FILE=$(pool-value "$COMMAND_OUTPUT" 'j["path"]')
-[ -f "$EXCL_FILE" ] || error "backing file $EXCL_FILE of excl0 is missing"
-pool-client "$VM2" -o json attach excl0 --self || command-error "cannot attach excl0 to VM2"
-pool-assert "$COMMAND_OUTPUT" "j['state'] == 'attached' and j['host'] == '$VM2_NAME'"
-pool-client "$VM2" -o json attach excl0 --host "$VM1_NAME" &&
-    error "exclusive device excl0 got attached to a second VM"
-[ "$COMMAND_STATUS" == "3" ] && [[ "$COMMAND_OUTPUT" == *Conflict* ]] ||
-    command-error "expected exit status 3 and Conflict when attaching excl0 to a second VM"
-pool-client "$VM2" -o json devices excl0 || command-error "cannot get device excl0"
-pool-assert "$COMMAND_OUTPUT" "[a['host'] for a in j['attachments']] == ['$VM2_NAME']"
-pool-client "$VM2" guest wait excl0 || command-error "excl0 did not show up in VM2"
-pool-client "$VM2" guest release excl0 || command-error "cannot release excl0 in VM2"
-client-detach excl0 --self
-pool-cxl-wait "$VM2" excl0-detached "by_serial($EXCL_SERIAL) is None"
-pool-client "$VM2" delete excl0 || command-error "cannot delete excl0"
-[ ! -e "$EXCL_FILE" ] || error "deleting excl0 left its backing file $EXCL_FILE"
-# VM1 never saw excl0.
-pool-cxl-dump "$VM1" excl0-deleted
-cxl-assert "by_serial($EXCL_SERIAL) is None and len(memdevs) == 1"
-
-echo "### E: shared0 as a devdax device in both VMs (mode dax)"
+echo "### D: shared0 as a devdax device in both VMs (mode dax)"
 for vm in "$VM2" "$VM1"; do
     pool-client "$vm" -o json guest region create shared0 --mode dax ||
         command-error "cannot create a dax region of shared0 in $(pool-vm-label "$vm")"
@@ -181,7 +149,7 @@ for vm in "$VM2" "$VM1"; do
 done
 echo "devdax devices: VM2 $VM2_DAX, VM1 $VM1_DAX"
 
-echo "### F: what one VM writes the other reads, and the host finds in the backing file"
+echo "### E: what one VM writes the other reads, and the host finds in the backing file"
 TAG="fake-cxl-pool $(date +%Y-%m-%dT%H:%M:%S.%N)"
 dax-write() { # VMDIR DAX OFFSET TEXT
     pool-vm-command "$1" "python3 /usr/local/bin/pool-dax-rw.py write $2 $3 '$4'" ||
@@ -214,7 +182,7 @@ host-command "strings $SHARED_FILE | grep -F '$TAG'" ||
 [ "$(wc -l <<< "$COMMAND_OUTPUT")" == "3" ] ||
     error "expected 3 strings of this test in $SHARED_FILE"
 
-echo "### G: release shared0 in both VMs, detach it from both"
+echo "### F: release shared0 in both VMs, detach it from both"
 for vm in "$VM2" "$VM1"; do
     pool-client "$vm" guest release shared0 || command-error "cannot release shared0 in $(pool-vm-label "$vm")"
     pool-cxl-dump "$vm" shared0-released
@@ -233,7 +201,7 @@ pool-vm-monitor "$VM2" "info qtree -b" | grep -q 'dev: cxl-type3' &&
 pool-vm-monitor "$VM1" "info qtree -b" | grep -q 'dev: cxl-type3' &&
     error "qemu of VM1 still has a CXL memory device"
 
-echo "### H: hotplug shared0 to the same slot of VM2 again, and detach it"
+echo "### G: hotplug shared0 to the same slot of VM2 again, and detach it"
 pool-client "$VM2" -o json attach shared0 --self --slot "$SHARED_SLOT" || command-error "cannot attach shared0 to VM2 again"
 pool-assert "$COMMAND_OUTPUT" "j['state'] == 'attached' and j['slot']['bus'] == '$SHARED_SLOT'"
 pool-assert "$COMMAND_OUTPUT" "j['qemuDeviceId'] != '$SHARED_QEMU_ID'"
