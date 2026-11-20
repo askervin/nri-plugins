@@ -22,7 +22,6 @@ import (
 	"time"
 
 	resourcev1 "k8s.io/api/resource/v1"
-	coreclientset "k8s.io/client-go/kubernetes"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	"k8s.io/klog/v2"
 
@@ -37,8 +36,6 @@ import (
 )
 
 type driver struct {
-	client coreclientset.Interface
-	config *DriverConfig
 	// nri is the NRI plugin, nil when NRI did not start.
 	nri *containers.Plugin
 	// local is cxl.nri.io, pool the pool driver (nil when it is
@@ -48,7 +45,8 @@ type driver struct {
 	pool      *dra.Plugin
 	publisher *dra.Publisher
 	watcher   *provenance.Watcher
-	broker    leaseBroker // nil when lending is disabled
+	// stopBroker stops the lease broker, nil when lending is disabled.
+	stopBroker func()
 	// closeStore writes the pending commits of the state store and
 	// closes it.
 	closeStore func()
@@ -67,11 +65,6 @@ type driver struct {
 	stopEvents func()
 }
 
-// leaseBroker is the lease broker as the driver stops it.
-type leaseBroker interface {
-	Stop()
-}
-
 // loadDriverConfig returns the configuration of the file of --config, and
 // logs the container defaults and the filesystem types.
 func loadDriverConfig(cxlFlags *CXLFlags) (*DriverConfig, error) {
@@ -85,7 +78,6 @@ func loadDriverConfig(cxlFlags *CXLFlags) (*DriverConfig, error) {
 	}
 	driverConfig.logDefaults()
 	driverConfig.logFsTypes()
-	driverConfig.logDeadKeys()
 	return driverConfig, nil
 }
 
@@ -93,7 +85,7 @@ func loadDriverConfig(cxlFlags *CXLFlags) (*DriverConfig, error) {
 // the store st, nil when lending is disabled; cxl.nri.io of node tells it
 // of its lease claims.
 func newBroker(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, st *store.Store, node *dra.Node, k *kernel.Kernel) (*leases.Broker, error) {
-	if !driverConfig.PublishLeaseDevice {
+	if !cxlFlags.Leases {
 		return nil, nil
 	}
 	b, err := leases.New(leases.Options{
@@ -231,28 +223,23 @@ var newKernelEvents = func(stableDuration time.Duration) (kernelEvents, error) {
 	return ev, nil
 }
 
+// udevStableDuration is the quiet time after the last uevent before the
+// ResourceSlice is rescanned.
+const udevStableDuration = 200 * time.Millisecond
+
 // wakeOnUevents starts the one watch of the uevents of the kernel objects,
 // and makes them wake the waits of the kernel k early (they still poll).
 // It returns the events, nil without them (the waits only poll), and their
-// stop; an invalid udevStableDuration is an error unless ignoreNewNodes is
-// set.
-func wakeOnUevents(k *kernel.Kernel, driverConfig *DriverConfig) (kernelEvents, func(), error) {
-	var stableDuration time.Duration
-	if !driverConfig.IgnoreNewNodes {
-		d, err := parseUdevStableDuration(driverConfig.UdevStableDuration)
-		if err != nil {
-			return nil, nil, err
-		}
-		stableDuration = d
-	}
-	ev, err := newKernelEvents(stableDuration)
+// stop.
+func wakeOnUevents(k *kernel.Kernel) (kernelEvents, func()) {
+	ev, err := newKernelEvents(udevStableDuration)
 	if err != nil {
 		klog.Errorf("kernel uevents: %v: the waits for kernel objects only poll, and the ResourceSlice is not rescanned on uevents", err)
-		return nil, func() {}, nil
+		return nil, func() {}
 	}
 	ev.Start()
 	k.Events = ev
-	return ev, ev.Stop, nil
+	return ev, ev.Stop
 }
 
 // repairPeriod is how often the fence pass of the NRI plugin tries the
@@ -274,12 +261,8 @@ func everyPeriod(period time.Duration, stop <-chan struct{}, pass func()) {
 }
 
 // startRescans starts the rescans of the publisher on the stable signal of
-// the uevents unless ignoreNewNodes is set or there are no uevents.
-func (d *driver) startRescans(ctx context.Context, driverConfig *DriverConfig) {
-	if driverConfig.IgnoreNewNodes {
-		klog.V(3).Info("rescans on uevents disabled (ignoreNewNodes=true)")
-		return
-	}
+// the uevents, if there are uevents.
+func (d *driver) startRescans(ctx context.Context) {
 	if d.events == nil {
 		return
 	}
@@ -351,7 +334,7 @@ func nodeOptions(config *pluginConfig, driverConfig *DriverConfig, k *kernel.Ker
 		NodeName:        f.NodeName,
 		Client:          config.Client,
 		Local:           driverConfig.localConfig(),
-		Publish:         driverConfig.publishConfig(),
+		Publish:         driverConfig.publishConfig(config.Flags.Leases),
 		FsTypes:         driverConfig.fsTypes(),
 		ProbeAddressing: driverConfig.verifyAddressing(),
 		Timeouts:        engine.Timeouts{Memdev: f.PoolPrepareTimeout, Settle: f.PoolPrepareTimeout},
@@ -442,7 +425,7 @@ func rescanLoop(stop, stable <-chan struct{}, rescan func()) {
 // Shutdown stops the driver: NRI marked stopping, the periodic passes and
 // the uevents, the kubelet plugins of both drivers, the broker, NRI, the
 // publisher, the watcher and the store.
-func (d *driver) Shutdown(ctx context.Context) error {
+func (d *driver) Shutdown() {
 	klog.V(5).Info("Shutting down driver")
 
 	// First: the runtime may close the NRI connection while the rest
@@ -460,8 +443,8 @@ func (d *driver) Shutdown(ctx context.Context) error {
 	// claim that a Prepare finished, and NRI would never see them.
 	d.pool.Stop()
 	d.local.Stop()
-	if d.broker != nil {
-		d.broker.Stop()
+	if d.stopBroker != nil {
+		d.stopBroker()
 	}
 	if d.nri != nil {
 		d.nri.Stop()
@@ -473,6 +456,4 @@ func (d *driver) Shutdown(ctx context.Context) error {
 	if d.closeStore != nil {
 		d.closeStore()
 	}
-
-	return nil
 }

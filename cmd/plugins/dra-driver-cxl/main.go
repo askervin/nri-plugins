@@ -202,21 +202,6 @@ func parseFlags(fs *flag.FlagSet, args []string, lookupEnv func(string) (string,
 	return f, nil
 }
 
-// ensureDir creates the directory dir if it does not exist, and returns an
-// error if dir is not a directory.
-func ensureDir(dir string) error {
-	info, err := os.Stat(dir)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-		return os.MkdirAll(dir, 0750)
-	case err != nil:
-		return err
-	case !info.IsDir():
-		return fmt.Errorf("%s is not a directory", dir)
-	}
-	return nil
-}
-
 // installLeaseCLI copies the cxl-request CLI src to dst atomically: dst is
 // replaced by an executable copy, labelled for containers on SELinux hosts.
 func installLeaseCLI(src, dst string) (retErr error) {
@@ -316,13 +301,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	if err != nil {
 		return nil, err
 	}
-	events, stopEvents, err := wakeOnUevents(k, driverConfig)
-	if err != nil {
-		return nil, err
-	}
-	// the lease device and the lease broker lend local memdevs and, with
-	// the pool driver, pool devices
-	driverConfig.PublishLeaseDevice = cxlFlags.Leases
+	events, stopEvents := wakeOnUevents(k)
 	fatal := make(chan error, 1)
 	opts := nodeOptions(config, driverConfig, k, st)
 	opts.Fence = fenceOf(nri)
@@ -353,8 +332,6 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	nri.SetResults(node.Local, node.Pool)
 
 	d := &driver{
-		client:     config.Client,
-		config:     driverConfig,
 		local:      node.Local,
 		pool:       node.Pool,
 		publisher:  node.Publisher,
@@ -374,7 +351,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 		return nil, err
 	}
 	if broker != nil {
-		d.broker = broker
+		d.stopBroker = broker.Stop
 	}
 	// The specs of the claims prepared before the start are rewritten, not
 	// removed first: a container created meanwhile finds its devices.
@@ -404,7 +381,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	if d.nri != nil {
 		go everyPeriod(repairPeriod, d.stop, func() { d.nri.Repair(runCtx) })
 	}
-	d.startRescans(runCtx, driverConfig)
+	d.startRescans(runCtx)
 
 	klog.V(3).Info("Finished creating new driver")
 	started = true
@@ -439,7 +416,7 @@ func run(ctx context.Context, flags *CXLFlags) error {
 	if err := os.MkdirAll(config.KubeletPluginDir, 0750); err != nil {
 		return err
 	}
-	if err := ensureDir(flags.CDIRoot); err != nil {
+	if err := os.MkdirAll(flags.CDIRoot, 0o750); err != nil {
 		return fmt.Errorf("CDI root: %w", err)
 	}
 	if flags.LeaseCLISource != "" {
@@ -469,9 +446,7 @@ func run(ctx context.Context, flags *CXLFlags) error {
 	}
 	// a second signal kills the process at once
 	stopSignals()
-	if err := driver.Shutdown(ctx); err != nil {
-		klog.Errorf("Unable to cleanly shut down the driver: %v", err)
-	}
+	driver.Shutdown()
 	return fatal
 }
 

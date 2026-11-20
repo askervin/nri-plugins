@@ -185,7 +185,7 @@ func (e *driverTestEnv) start() {
 // stop shuts the driver down; nothing if it is stopped.
 func (e *driverTestEnv) stop() {
 	if e.d != nil {
-		_ = e.d.Shutdown(context.Background()) // always nil
+		e.d.Shutdown()
 		e.d = nil
 	}
 }
@@ -375,12 +375,6 @@ func poolClaim(uid string) *resourcev1.ResourceClaim {
 		},
 	}
 }
-
-// stopFunc is a lease broker whose Stop calls the function.
-type stopFunc func()
-
-// Stop calls the function.
-func (f stopFunc) Stop() { f() }
 
 // ptr returns a pointer to v.
 func ptr[T any](v T) *T {

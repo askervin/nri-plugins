@@ -37,19 +37,17 @@ import (
 )
 
 // TestDriverConfigKeys checks the decoding of the configuration: its keys
-// are the lower-camel json tags, in JSON or YAML, from the file of -f or
-// none; unknown keys, values of another type and invalid memdevs are
+// are the lower-camel json tags, in JSON or YAML, from the file of --config
+// or none; unknown keys, values of another type and invalid memdevs are
 // refused, and manageMemdevs is true unless set false.
 func TestDriverConfigKeys(t *testing.T) {
 	cfg := &DriverConfig{IgnoreDevices: []string{"mem0"}, IgnoreRegions: []string{"region0"}, IgnoreNodes: []int{1},
-		IgnoreNewMemoryDevices: true, IgnoreNewRegions: true, IgnoreNewNodes: true, IgnoreDRAMNodes: true,
-		UdevStableDuration: "1s", ManageMemdevs: ptr(true), PublishLeaseDevice: true}
+		IgnoreDRAMNodes: true, ManageMemdevs: ptr(true)}
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"ignoreDevices":["mem0"],"ignoreRegions":["region0"],"ignoreNodes":[1],"ignoreNewMemoryDevices":true,"ignoreNewRegions":true,` +
-		`"ignoreNewNodes":true,"ignoreDRAMNodes":true,"udevStableDuration":"1s","manageMemdevs":true}`
+	want := `{"ignoreDevices":["mem0"],"ignoreRegions":["region0"],"ignoreNodes":[1],"ignoreDRAMNodes":true,"manageMemdevs":true}`
 	if string(data) != want {
 		t.Errorf("configuration %s, expected %s", data, want)
 	}
@@ -311,21 +309,6 @@ func TestEveryPeriod(t *testing.T) {
 	}
 }
 
-// The dead keys ignoreNewMemoryDevices and ignoreNewRegions are accepted
-// with a warning that they have no effect.
-func TestDriverConfigDeadKeys(t *testing.T) {
-	logs := klogtest.Capture(t, 3)
-	cfg, err := newDriverConfigFromString("{ignoreNewMemoryDevices: true, ignoreNewRegions: true}")
-	noErr(t, err)
-	cfg.logDeadKeys()
-	out := logs()
-	for _, want := range []string{"ignoreNewMemoryDevices: the key has no effect and is ignored", "ignoreNewRegions: the key has no effect and is ignored"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("no %q in\n%s", want, out)
-		}
-	}
-}
-
 // fakeEvents are kernel uevents for tests.
 type fakeEvents struct {
 	kernel.Changes
@@ -340,7 +323,8 @@ func (f *fakeEvents) Stable() <-chan struct{} { return f.stable }
 // One watch of the uevents of the kernel objects wakes the waits of the
 // engine's kernel and gives the stable signal of the rescans after
 // udevStableDuration; every stable signal rescans once, until the driver
-// stops. Without uevents the waits only poll and nothing rescans.
+// stops. Without uevents the waits only poll and nothing rescans. The
+// removed keys ignoreNewNodes and udevStableDuration are refused.
 func TestWakeOnUevents(t *testing.T) {
 	old := newKernelEvents
 	t.Cleanup(func() { newKernelEvents = old })
@@ -348,27 +332,23 @@ func TestWakeOnUevents(t *testing.T) {
 	var stable time.Duration
 	newKernelEvents = func(d time.Duration) (kernelEvents, error) { stable = d; return ev, nil }
 	k := &kernel.Kernel{}
-	cfg := &DriverConfig{UdevStableDuration: "1s"}
-	got, stop, err := wakeOnUevents(k, cfg)
-	noErr(t, err)
-	if !ev.started || stable != time.Second || got != kernelEvents(ev) || k.Events != kernel.Events(ev) {
+	got, stop := wakeOnUevents(k)
+	if !ev.started || stable != udevStableDuration || got != kernelEvents(ev) || k.Events != kernel.Events(ev) {
 		t.Fatalf("events %+v, stable %v, kernel events %v", ev, stable, k.Events)
 	}
 	stop()
 	if !ev.stopped {
 		t.Fatal("not stopped")
 	}
-	if _, _, err := wakeOnUevents(k, &DriverConfig{UdevStableDuration: "-1s"}); err == nil {
-		t.Fatal("a negative udevStableDuration")
-	}
-	if _, _, err := wakeOnUevents(k, &DriverConfig{UdevStableDuration: "-1s", IgnoreNewNodes: true}); err != nil {
-		t.Fatalf("udevStableDuration with ignoreNewNodes: %v", err)
+	for _, key := range []string{"ignoreNewNodes: true", "udevStableDuration: 1s", "ignoreNewMemoryDevices: true"} {
+		if _, err := newDriverConfigFromString(key); err == nil {
+			t.Errorf("%s accepted", key)
+		}
 	}
 	newKernelEvents = func(time.Duration) (kernelEvents, error) { return nil, errors.New("no netlink") }
 	k = &kernel.Kernel{}
 	logs := klogtest.Capture(t, 3)
-	got, stop, err = wakeOnUevents(k, &DriverConfig{})
-	noErr(t, err)
+	got, stop = wakeOnUevents(k)
 	stop()
 	if got != nil || k.Events != nil {
 		t.Fatalf("kernel events %v without uevents", k.Events)
@@ -398,9 +378,7 @@ func TestWakeOnUevents(t *testing.T) {
 	if !strings.Contains(logs(), "kernel uevents: sysfs stabilized, signaling rescan") {
 		t.Fatalf("no rescan line in\n%s", logs())
 	}
-	// without uevents, and with ignoreNewNodes, nothing rescans
+	// without uevents nothing rescans
 	d := &driver{stop: make(chan struct{})}
-	d.startRescans(context.Background(), &DriverConfig{})
-	d.events = &fakeEvents{stable: signals}
-	d.startRescans(context.Background(), &DriverConfig{IgnoreNewNodes: true})
+	d.startRescans(context.Background())
 }

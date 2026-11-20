@@ -1962,8 +1962,8 @@ the plugin, and lease requests fail with
 
 ## Configuration file
 
-`-f FILE` (or `-c STRING`; the `config` value of the Helm chart), JSON or
-YAML; unknown keys are refused. All keys are optional:
+`--config FILE` (the `config` value of the Helm chart), JSON or YAML;
+unknown keys are refused. All keys are optional:
 
 ```yaml
 ignoreDevices: ["mem0", "0xc100e2e0"]
@@ -1976,7 +1976,6 @@ memdevSettings:
   coherent: true
 fsTypes: [erofs, ext4]          # default [erofs]; ext4 trusts every raw writer of the devices
 verifyAddressing: true
-udevStableDuration: 200ms
 defaults:
   container:
     steering: {policy: none}    # none (default) | auto | first-dram | ...
@@ -1989,11 +1988,7 @@ defaults:
 | `sharedDevices` | list of strings | | local CXL memory devices to publish as shared devices, matched as `ignoreDevices`: claims and leases of such a device map the whole device as devdax ([local.md](local.md#shared-local-devices)) |
 | `ignoreRegions` | list of strings | | CXL regions to leave alone (`region0`) |
 | `ignoreNodes` | list of integers | | NUMA nodes to leave alone |
-| `ignoreNewMemoryDevices` | bool | `false` | ignore memdevs that are hotplugged after the start |
-| `ignoreNewRegions` | bool | `false` | ignore regions that are created after the start |
-| `ignoreNewNodes` | bool | `false` | ignore NUMA nodes that appear after the start |
 | `ignoreDRAMNodes` | bool | `false` | publish no `dram` device |
-| `udevStableDuration` | duration | `200ms` | quiet period after the last udev event before the devices are scanned again |
 | `manageMemdevs` | bool | `true` | publish the local memdevs that have no region and create their regions for claims |
 | `memdevSettings` | list | | settings of individual local memdevs: `device` (name `mem0`, `cxl/mem0`, or serial in decimal or `0x` hex), `usableSize` (quantity): only the first `usableSize` bytes of the memdev are published and mapped by its regions ([local.md](local.md#broken-and-aliased-memory); not for persistent memdevs), and `coherent` (bool, default `false`): the memory of the memdev is coherent between the hosts that share it (`sharedDevices`), so that a cluster filesystem may be read-write on it ([local.md](local.md#persistent-local-memdevs)) |
 | `fsTypes` | list of strings | `[erofs]` | the filesystem types that mode `fs` mounts on the node, for both drivers; a list replaces the default. erofs is the only type designed for untrusted images: every other type in the list (`squashfs`, `ext4`, `xfs`, `btrfs`, `gfs2`, or one that the plugin does not know, class single-host, [Filesystems](#filesystems)) trusts every party that can write the node's devices raw, that is the read-write `block` claims and leases of the devices on any node of any cluster that shares the pool. With the default no read-write mount is possible. `[]` mounts nothing (the refusal says `fsTypes: none`). The plugin logs the list at start: `fsTypes: <t1>, <t2>, ...: the filesystem types that mode fs mounts on this node`, or `fsTypes: none: mode fs mounts no filesystem on this node` |

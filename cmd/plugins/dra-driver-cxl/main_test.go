@@ -161,23 +161,6 @@ func TestInstallLeaseCLI(t *testing.T) {
 	}
 }
 
-func TestEnsureDir(t *testing.T) {
-	dir := t.TempDir()
-	if err := ensureDir(filepath.Join(dir, "a", "b")); err != nil {
-		t.Fatal(err)
-	}
-	if err := ensureDir(filepath.Join(dir, "a", "b")); err != nil {
-		t.Fatal(err)
-	}
-	file := filepath.Join(dir, "file")
-	if err := os.WriteFile(file, nil, 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := ensureDir(file); err == nil {
-		t.Fatal("a file: expected an error")
-	}
-}
-
 // newDriver starts the NRI plugin after the first list of the pool
 // devices and after the CDI specs of the prepared claims are written
 // again, and before the kubelet plugins are registered and the node's

@@ -42,8 +42,8 @@ func TestShutdownStopsNRIFirst(t *testing.T) {
 	nri, err := containers.New(containers.Options{Store: st, SysRoot: t.TempDir()})
 	noErr(t, err)
 	stopping := false
-	d := &driver{nri: nri, broker: stopFunc(func() { stopping = nri.Stopping() })}
-	_ = d.Shutdown(context.Background()) // always nil
+	d := &driver{nri: nri, stopBroker: func() { stopping = nri.Stopping() }}
+	d.Shutdown()
 	if !stopping {
 		t.Fatal("the broker stopped before the NRI plugin was marked stopping")
 	}
