@@ -43,7 +43,6 @@ MBT_OBS_STACKS_MARKER="mbt-observe: the observation is still running, stacks fol
 MBT_NRI_RESTART_WAIT=60                         # containerd-restart: seconds to wait for the driver's restart
 MBT_DRIVER_READY_WAIT="${MBT_DRIVER_READY_WAIT:-120}"   # seconds to wait for a driver to be ready (mbt-driver-ready)
 MBT_LENDS_RESTORED="NRI fence: lends restored"  # the driver's log line when NRI and lending are up
-MBT_NRI_SYNCED="containers tracked"             # and of NRI's first Synchronize: the ready line of fencing none
 MBT_FENCING_LOG="defaults.container.fencing: "  # the driver's start line of its fencing mode (A36)
 MBT_FENCING_CM=nri-dra-driver-cxl-config        # the ConfigMap of the driver configuration (config.yaml), in kube-system
 MBT_FENCING_RUN=""                 # the fencing mode of the run (MBT_FENCING of code.var.sh): allowed-mems, none or switch
@@ -1074,13 +1073,9 @@ mbt-driver-ready() {
     #
     # Return 0 if the driver of VM is ready (amendment A15): a container of
     # it runs on the node, the log of that container (its log file, and
-    # its rotated files) has "$MBT_LENDS_RESTORED" (NRI and lending are up:
-    # the last step of the driver's start; a driver of fencing mode none
-    # with the fix of plan-13 bug-18 logs "$MBT_LENDS_RESTORED (fencing
-    # none)", which matches too; an older one never logs it, it has no
-    # fence to start: "${MBT_FENCING_LOG}none:" and "$MBT_NRI_SYNCED" of
-    # NRI's first Synchronize instead, A36),
-    # both kubelet plugin sockets
+    # its rotated files) has "$MBT_LENDS_RESTORED" (NRI and lending are up,
+    # the last step of the driver's start in every fencing mode), both
+    # kubelet plugin sockets
     # (cxl.nri.io and cxl-pool.nri.io dra.sock) exist and the node has its
     # cxl.nri.io ResourceSlice. One ssh. MBT_ERR says what is missing.
     local vmdir=${MBT_VMDIR[$1]} name=${MBT_NODE[$1]}
@@ -1089,8 +1084,8 @@ mbt-driver-ready() {
 log=\$(crictl inspect -o go-template --template '{{.status.logPath}}' \$id 2>/dev/null)
 [ -n \"\$log\" ] || { echo \"no log path of \$id\"; exit 1; }
 has() { grep -qF \"\$1\" \"\$log\" 2>/dev/null || zgrep -qF \"\$1\" \"\$log\".* 2>/dev/null; }
-has '$MBT_LENDS_RESTORED' || { has '${MBT_FENCING_LOG}none:' && has '$MBT_NRI_SYNCED'; } ||
-    { echo \"no '$MBT_LENDS_RESTORED' (fencing none: '$MBT_NRI_SYNCED') in the log of \${id:0:13} yet\"; exit 1; }
+has '$MBT_LENDS_RESTORED' ||
+    { echo \"no '$MBT_LENDS_RESTORED' in the log of \${id:0:13} yet\"; exit 1; }
 for d in $DRA_LOCAL_DRIVER $DRA_POOL_DRIVER; do
     test -S /var/lib/kubelet/plugins/\$d/dra.sock || { echo \"no /var/lib/kubelet/plugins/\$d/dra.sock\"; exit 1; }
 done
@@ -1213,11 +1208,10 @@ mbt-act-containerd-restart() {
     #
     # Restart containerd in VM (mbt-node-service-restart), then wait until
     # the driver of VM has restarted in place and is Ready again,
-    # MBT_NRI_RESTART_WAIT s at most: a driver with the fix of plan-13
-    # bug-01 exits when it loses its NRI connection (amendment A8). An
-    # older driver does not: after the wait the step goes on, with
-    # MBT_NOTE saying so. Then wait until the driver is ready
-    # (mbt-driver-ready-wait, A15); return non-zero if it is not.
+    # MBT_NRI_RESTART_WAIT s at most: the driver exits when it loses its
+    # NRI connection (amendment A8). Then wait until the driver is ready
+    # (mbt-driver-ready-wait, A15). Return non-zero if it does not
+    # restart or is not ready, MBT_ERR says which.
     local vm="$1" before after pod restarts ready rc
     mbt-vm-arg "$vm" || return 2
     mbt-killat-disarm "$vm" containerd-restart
@@ -1231,7 +1225,8 @@ mbt-act-containerd-restart() {
            'after=$(mbt-driver-restarts "$vm") && read -r _ r a <<< "$after" && [ "${r:-0}" -gt "$restarts" ] && [ "$a" == True ]'; then
         MBT_NOTE="driver $pod restarted in place: $restarts -> $(read -r _ r _ <<< "$after"; echo "$r") restarts"
     else
-        MBT_NOTE="driver $pod did not restart in ${MBT_NRI_RESTART_WAIT}s (a driver without the fix of bug-01): ${after:-$before}"
+        MBT_ERR="the driver $pod did not restart in place in ${MBT_NRI_RESTART_WAIT}s after containerd restarted: ${after:-$before}"
+        return 1
     fi
     mbt-driver-ready-wait "$vm"
 }
@@ -1265,13 +1260,14 @@ mbt-qemu-fixed-require() {
     # Usage: mbt-qemu-fixed-require VMDIR...
     #
     # MBT_REBOOT=guest: fail the test unless the qemu process of each VM
-    # runs a binary with the fix of plan-13 bug-17 (without it a guest
-    # reboot leaves every CXL memdev unusable until qemu restarts): the
+    # runs a binary whose cxl-type3 device resets its CXL DVSEC at a guest
+    # reset (without that a guest reboot leaves every CXL memdev unusable
+    # until qemu restarts): the
     # binary it was started from is still there (its /proc/PID/exe is not
     # "(deleted)", the binary of an older build that a rebuild replaced),
-    # and it has the function of the fix, ct3d_reset_device_dvsec of
+    # and it has the function of that reset, ct3d_reset_device_dvsec of
     # hw/mem/cxl_type3.c, by name (in its debug information: the function
-    # is inlined; an unfixed binary has build_dvsecs only). A binary
+    # is inlined; a binary without it has build_dvsecs only). A binary
     # without debug information cannot tell: a warning. The source tree
     # and its times are not looked at (a git checkout touches them).
     local vmdir pid exe bin label
@@ -1282,13 +1278,13 @@ mbt-qemu-fixed-require() {
         exe=$(readlink "/proc/$pid/exe") || error "MBT_REBOOT=guest: cannot read /proc/$pid/exe of the qemu of $label"
         bin=${exe% (deleted)}
         [ "$bin" == "$exe" ] ||
-            error "MBT_REBOOT=guest: the qemu of $label (pid $pid) runs a binary that is gone ($exe): an older build, maybe without the fix of plan-13 bug-17 (a guest reboot leaves every CXL memdev unusable). Restart its qemu (vmdir-restart, as /tmp/p13-runs/reboot-research/qemu-restart.sh does, with the cluster idle) so that it runs $bin"
+            error "MBT_REBOOT=guest: the qemu of $label (pid $pid) runs a binary that is gone ($exe), maybe without the CXL DVSEC reset at a guest reset (a guest reboot leaves every CXL memdev unusable). Restart its qemu (vmdir-restart, with the cluster idle) so that it runs $bin"
         if grep -qaF ct3d_reset_device_dvsec "$bin"; then
-            echo "$label: qemu pid $pid runs $bin (built $(date -r "$bin" '+%F %T')), with the fix of bug-17"
+            echo "$label: qemu pid $pid runs $bin (built $(date -r "$bin" '+%F %T')), with the CXL DVSEC reset"
         elif grep -qaF build_dvsecs "$bin"; then
-            error "MBT_REBOOT=guest: the qemu binary $bin of $label (pid $pid) does not have the fix of plan-13 bug-17 (no ct3d_reset_device_dvsec): rebuild it with the fix and restart the qemu of the VM"
+            error "MBT_REBOOT=guest: the qemu binary $bin of $label (pid $pid) has no CXL DVSEC reset at a guest reset (no ct3d_reset_device_dvsec): use a qemu whose cxl-type3 device resets its CXL DVSEC at a guest reset (ct3d_reset_device_dvsec of hw/mem/cxl_type3.c) and restart the qemu of the VM"
         else
-            echo "WARNING: MBT_REBOOT=guest: cannot tell if the qemu binary $bin of $label (pid $pid) has the fix of plan-13 bug-17 (no debug information): a guest reboot without it leaves every CXL memdev unusable"
+            echo "WARNING: MBT_REBOOT=guest: cannot tell if the qemu binary $bin of $label (pid $pid) resets the CXL DVSEC at a guest reset (no debug information): a guest reboot without it leaves every CXL memdev unusable"
         fi
     done
 }

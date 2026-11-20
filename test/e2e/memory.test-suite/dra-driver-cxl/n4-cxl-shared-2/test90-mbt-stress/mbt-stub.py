@@ -278,8 +278,8 @@ settle => detached=c-pmem0,pmem=none
 # devices=vm1, as it should.
 REBOOT_STEPS = {
     "guest": """
-# guest: systemctl reboot, qemu keeps its devices (needs the qemu fix of
-# bug-17); a block writer of c-pmem0 on vm1
+# guest: systemctl reboot, qemu keeps its devices (needs a qemu that resets
+# the CXL DVSEC at a guest reset); a block writer of c-pmem0 on vm1
 create xnuma-c@vm1#0
 create pwr-c@vm1#0
 create ldax@vm1#0

@@ -402,12 +402,11 @@ type ObsDriverLog struct {
 	// them in InvariantErrors
 	Invariants      *int     `json:"invariants"`
 	InvariantErrors []string `json:"invariantErrors"`
-	LendsRestored   *bool    `json:"lendsRestored"` // A15: NRI and lending up (fencing none: NRI synchronized)
+	LendsRestored   *bool    `json:"lendsRestored"` // A15: NRI and lending up
 	// Fencing: the mode of the current driver container's start line
-	// (null before it); NRISynced: NRI's first Synchronize (A36)
-	Fencing   *string `json:"fencing"`
-	NRISynced *bool   `json:"nriSynced"`
-	Sockets   *bool   `json:"sockets"` // A15: both dra.sock
+	// (null before it, A36)
+	Fencing *string `json:"fencing"`
+	Sockets *bool   `json:"sockets"` // A15: both dra.sock
 	// A24: counts of lines of persistent devices
 	Busy         *int `json:"busy"`
 	InUse        *int `json:"inUse"`

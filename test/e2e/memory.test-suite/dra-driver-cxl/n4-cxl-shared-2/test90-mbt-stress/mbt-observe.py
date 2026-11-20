@@ -123,13 +123,10 @@ Where the data comes from:
                 of its own invariants that the driver logs at V(4), and
                 the first 5 in invariantErrors), lendsRestored (its
                 log has "NRI fence: lends restored": NRI and lending are
-                up, A15), fencing (the mode of its start line
-                "defaults.container.fencing: MODE: ...", null before
-                it, A36), nriSynced (its log has NRI's first Synchronize,
-                "... containers tracked"; a driver of mode none never
-                logs "lends restored", it has no fence: its lendsRestored
-                is fencing none and nriSynced) and sockets (both dra.sock
-                files exist); the
+                up, in every fencing mode, A15), fencing (the mode of
+                its start line "defaults.container.fencing: MODE: ...",
+                null before it, A36) and sockets (both dra.sock files
+                exist); the
                 file is read incrementally, the position is kept in
                 /run/mbt-observe (A13)
   pods[].events one "kubectl get events -n NS --field-selector
@@ -777,12 +774,6 @@ PANIC = re.compile(r"panic|fatal error|SIGSEGV")
 LENDS_RESTORED = "NRI fence: lends restored"
 # The driver's start line of its fencing mode (D/driver.go logDefaults, A36).
 FENCING_LOG = re.compile(r"defaults\.container\.fencing: ([a-z-]+):")
-# NRI's first Synchronize (D/lend.go "NRI Synchronize: N pods, M containers
-# tracked"): a driver of fencing mode none without the fix of plan-13 bug-18
-# has no fence to start and never logs LENDS_RESTORED; this is its ready
-# line. With the fix it logs "NRI fence: lends restored (fencing none)",
-# which LENDS_RESTORED matches.
-NRI_SYNCED = "containers tracked"
 # The driver's own invariant checks between requests (D/internal/engine
 # observe.go checkBetween, V(4)).
 INVARIANT = "engine invariant: "
@@ -825,7 +816,7 @@ def driver_log(errors):
     os.makedirs(DRIVER_STATE_DIR, exist_ok=True)
     statefile = os.path.join(DRIVER_STATE_DIR, "driverlog-%s.json" % cid)
     saved = {"offset": 0, "panics": 0, "errors": [], "invariants": 0, "invariantErrors": [],
-             "lendsRestored": False, "fencing": None, "nriSynced": False}
+             "lendsRestored": False, "fencing": None}
     saved.update((k, 0) for k, _ in LOG_COUNTS)
     try:
         with open(statefile) as f:
@@ -846,8 +837,6 @@ def driver_log(errors):
         content = line.split(" ", 3)[3] if line.count(" ") >= 3 else line
         if not saved["lendsRestored"] and LENDS_RESTORED in content:
             saved["lendsRestored"] = True
-        if not saved["nriSynced"] and NRI_SYNCED in content:
-            saved["nriSynced"] = True
         if saved["fencing"] is None:
             m = FENCING_LOG.search(content)
             if m:
@@ -871,8 +860,8 @@ def driver_log(errors):
     except OSError as e:
         errors.append("driverLog: %s: %s" % (statefile, e))
     out.update(panics=saved["panics"], errors=saved["errors"], invariants=saved["invariants"],
-               invariantErrors=saved["invariantErrors"], fencing=saved["fencing"], nriSynced=saved["nriSynced"],
-               lendsRestored=saved["lendsRestored"] or (saved["fencing"] == "none" and saved["nriSynced"]))
+               invariantErrors=saved["invariantErrors"], fencing=saved["fencing"],
+               lendsRestored=saved["lendsRestored"])
     out.update((k, saved[k]) for k, _ in LOG_COUNTS)
     return out
 

@@ -48,11 +48,10 @@
 # and the executor the local memdev; empty, the default: none; a reboot
 # step takes far longer than any other step; the model gets --reboot=MODE; a replay and an
 # off-line run take it from the header of their file as MBT_FENCING (set,
-# also empty, it must be the header's); guest needs the qemu fix of
-# plan-13 bug-17 in the qemu processes of vm0 and vm1, checked at the start),
-# MBT_STALL_WINDOW (--stall-window, A28: default 30s if the kube-scheduler
-# of the cluster has the fix of bug-08, its image or version has
-# "dra-requeue", else the model's default, 6m), MBT_REPLAY,
+# also empty, it must be the header's); guest needs, in the qemu processes
+# of vm0 and vm1, a qemu whose cxl-type3 device resets its CXL DVSEC at a guest reset (ct3d_reset_device_dvsec of hw/mem/cxl_type3.c), checked at the start),
+# MBT_STALL_WINDOW (--stall-window, A28: the model's default, 6m, unless
+# set), MBT_REPLAY,
 # MBT_SCRIPT, GOFMBT_DIR (unset: the gofmbt of model/go.mod; a checkout
 # of github.com/askervin/gofmbt: the model is built with a go.work that
 # uses it, for developing gofmbt), MBT_ARGS (more flags of mbt-cxl, for
@@ -217,7 +216,7 @@ pool-vm-require "$VM2" "$(basename "$TOPOLOGY_DIR")"
 pool-vm-require "$VM1" n4-cxl-shared-1
 pool-vm-require "$VM0" n4-cxl-shared-0
 if [ "$MBT_REBOOT" == guest ]; then
-    echo "### 0: preconditions: MBT_REBOOT=guest: the qemu of vm1 and vm0 has the fix of bug-17"
+    echo "### 0: preconditions: MBT_REBOOT=guest: the qemu of vm1 and vm0 resets the CXL DVSEC at a guest reset"
     mbt-qemu-fixed-require "$VM1" "$VM0"
 fi
 echo "### 0: preconditions: the kernel features of persistent pool devices (pmem, fsdax, erofs, loop) in the three VMs"
@@ -340,23 +339,13 @@ dra-py assert "$MBT_OBS" "all(j['pdevs'][d]['lsa'] == 'zero' and not j['pdevs'][
     error "the first observation has persistent devices that are not fresh, or pmem regions, mounts or loop devices: $(head -c 2000 "$MBT_OBS_FILE")"
 [ "$MBT_TRACE" == 0 ] || dra-trace-start "$VM2" "$VM1" "$VM0"
 
-echo "### 0: the kube-scheduler: the stall window of A19/A28"
-# A28: a kube-scheduler with the fix of bug-08 (its image or version has
-# "dra-requeue") promotes a stalled contender within seconds:
-# --stall-window=30s. MBT_STALL_WINDOW set by the user wins.
+echo "### 0: the kube-scheduler, whose requeueing the stall window of A19/A28 follows"
 sched=$(vmdir-command-q "$VM2" "p=\$(kubectl get pods -n kube-system -l component=kube-scheduler -o jsonpath='{.items[0].metadata.name}')
 echo \"image \$(kubectl get pod -n kube-system \$p -o jsonpath='{.spec.containers[0].image}')\"
 echo \"version \$(kubectl logs -n kube-system \$p 2>/dev/null | grep -m1 -o 'Starting Kubernetes Scheduler.*version=[^ ]*' | sed 's/.*version=//')\"") ||
     echo "WARNING: cannot read the kube-scheduler of the cluster: $sched"
 echo "kube-scheduler: $(tr '\n' ' ' <<< "$sched")"
-MBT_STALL_SOURCE="the model's default (6m): the kube-scheduler has no dra-requeue fix"
-if [ -n "${MBT_STALL_WINDOW+x}" ]; then
-    MBT_STALL_SOURCE="MBT_STALL_WINDOW=$MBT_STALL_WINDOW (set by the user)"
-elif grep -q dra-requeue <<< "$sched"; then
-    MBT_STALL_WINDOW=30s
-    MBT_STALL_SOURCE="30s: the kube-scheduler has the dra-requeue fix of bug-08"
-fi
-echo "mbt: stall window: $MBT_STALL_SOURCE"
+echo "mbt: stall window: ${MBT_STALL_WINDOW:-the default of the model}"
 
 echo "### 1: the run"
 export MBT_OUT="$TEST_OUTPUT_DIR"
@@ -396,8 +385,8 @@ MBT_FLAGS+=(
     --node-hb1="$NODE_HB1"
     --out="$TEST_OUTPUT_DIR"
 )
-# The stall window is a fact of the cluster's kube-scheduler, measured
-# above, or the user's.
+# The stall window follows the cluster's kube-scheduler: the model's
+# default, or the user's.
 [ -z "${MBT_STALL_WINDOW:-}" ] || MBT_FLAGS+=(--stall-window="$MBT_STALL_WINDOW")
 # More flags of mbt-cxl, words: for instance --plan-ahead=false.
 read -r -a words <<< "${MBT_ARGS:-}"

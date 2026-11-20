@@ -939,7 +939,7 @@ func (s *sim) observeVM(v VM) *ObsVM {
 		LocalMemdevs: memdevs, UnusedDax: []string{}, LeaseClaims: claims, Leases: leases}
 	ctr, yes := fmt.Sprintf("drv-%s-%d", v, st.Drv[v].Inc), true
 	mode := st.Fence.String()
-	ov.DriverLog = &ObsDriverLog{Container: &ctr, LendsRestored: &yes, Sockets: &yes, Fencing: &mode, NRISynced: &yes}
+	ov.DriverLog = &ObsDriverLog{Container: &ctr, LendsRestored: &yes, Sockets: &yes, Fencing: &mode}
 	ov.Missing = json.RawMessage("[]")
 	for b := Bridge(0); b < nBridges; b++ {
 		stk := &st.Stacks[stackIndex(v, b)]

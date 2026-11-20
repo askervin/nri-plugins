@@ -149,7 +149,7 @@ func (c *commonFlags) register(fs *flag.FlagSet, online bool) {
 	fs.BoolVar(&c.avoidHoles, "avoid-holes", false, "never generate an action that destroys a CXL region below the top of its decoder stack (A9)")
 	fs.StringVar(&c.fencing, "fencing", "allowed-mems", "the fencing mode of the drivers (MBT_FENCING, A36): allowed-mems, none, or switch (starts in allowed-mems, generates fencing-switch)")
 	fs.StringVar(&c.reboot, "reboot", "", "the node-reboot variant (MBT_REBOOT, A41): guest (systemctl reboot) or qemu (the qemu process restarted); empty: no node-reboot")
-	fs.DurationVar(&c.stallWindow, "stall-window", defaultStallWindow, "a stalled contender (A19) is promoted within this long of the settle that first saw it; if not longer than the settle timeout (a kube-scheduler with the bug-08 fix: ~5-15 s), settles wait for its promotion, else it is settled stalled or promoted")
+	fs.DurationVar(&c.stallWindow, "stall-window", defaultStallWindow, "a stalled contender (A19) is promoted within this long of the settle that first saw it; if not longer than the settle timeout, settles wait for its promotion, else it is settled stalled or promoted")
 	if online {
 		fs.DurationVar(&c.duration, "duration", 20*time.Minute, "time budget of the run before the teardown (0: no limit)")
 		fs.DurationVar(&c.settleTimeout, "settle-timeout", 180*time.Second, "a settle that waits longer fails")
