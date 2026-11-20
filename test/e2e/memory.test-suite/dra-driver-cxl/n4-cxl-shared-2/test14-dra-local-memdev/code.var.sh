@@ -54,8 +54,10 @@
 # configs that fail their Prepare; a read-only slice; a dax claim without
 # an amount that gets all of the device; containers that opt in to
 # steering, their memory placed for workloads that know nothing of NUMA:
-# CXL only, DRAM only, DRAM and CXL interleaved, DRAM first in small
-# steps; one claim whose numa and dax results go to two containers, each
+# CXL only, also past its claim, DRAM only, DRAM and CXL interleaved,
+# DRAM first along waypoints in small steps; containers whose seccomp
+# profile refuses memory policies, not steered; one claim whose numa and
+# dax results go to two containers, each
 # getting only its own; a container whose claims disagree on the policy
 # not created; and the trace summary of what every component did, in
 # order.
@@ -262,6 +264,24 @@ touch-child() {
     echo "$1: $2 MiB touched by a child of the main process: $(( TOUCH_CXL >> 8 )) MiB on CXL node $NUMA_NODE, $(( TOUCH_DRAM >> 8 )) MiB on DRAM nodes $DRAM_NODES"
 }
 
+seccomp-pod-yaml() {
+    # Usage: seccomp-pod-yaml NAME ESCALATION
+    #
+    # Print ResourceClaimTemplate NAME for DRAM_REQ of DeviceClass
+    # DRAM_CLASS with steering policy auto, and pod NAME on VM2 whose
+    # container main has the seccomp profile RuntimeDefault and
+    # allowPrivilegeEscalation ESCALATION (true or false; false gives the
+    # process no_new_privs).
+    local pod
+    pod=$(dra-claim-pod-yaml "$1" template "$1" "$VM2_NAME")
+    dra-claim-yaml template "$1" "$DRAM_CLASS" "$(dra-mi "$DRAM_REQ")" "container=steering: {policy: auto}"
+    echo "---"
+    echo "${pod/"    imagePullPolicy: IfNotPresent"/"    imagePullPolicy: IfNotPresent
+    securityContext:
+      seccompProfile: {type: RuntimeDefault}
+      allowPrivilegeEscalation: $2"}"
+}
+
 result-index() {
     # Usage: result-index JSON REQUEST
     #
@@ -324,7 +344,8 @@ TOUCH_MIB=$(( BS / 4 / MiB ))
 DRAM_REQ=$BS                           # the DRAM quota of the steered claims
 STEER_MIB=$(( BS / 2 / MiB ))          # what a steered workload touches, within its quota
 FIRST_STEP=$(( BS / 4 ))               # maxStep of first-dram
-FIRST_MIB=$(( (DRAM_REQ + BS / 2) / MiB ))   # first-dram: all of the DRAM quota, half of the CXL quota
+FIRST_MIB=$(( (DRAM_REQ + BS / 2) / MiB ))   # steer-first: all of the DRAM quota, half of the CXL quota
+PAST_MIB=$(( BS * 3 / 2 / MiB ))       # steer-cxl past its claim of a block
 pool-cxl-dump "$VM2" local-attached
 cxl-assert "by_serial($DRA_LOCAL_SERIAL) is not None and enabled(by_serial($DRA_LOCAL_SERIAL)) and by_serial($DRA_LOCAL_SERIAL)['ramSize'] == $DRA_LOCAL_SIZE"
 cxl-assert "regions == []"
@@ -636,7 +657,7 @@ dra-local-slices-wait "$VM2" whole "$NUMA_NODE" "dax:$DRA_LOCAL_SIZE"
 dra-delete-pod "$VM2" dax-whole
 initial-state whole-deleted
 
-echo "### E: steering is opt-in: CXL only, DRAM only, DRAM and CXL, DRAM first in steps"
+echo "### E: steering is opt-in: CXL only, DRAM only, DRAM and CXL, DRAM first along waypoints"
 # A container section with a steering policy in a claim opts in. Policy
 # auto picks by the memory of the claims of the container: CXL only
 # first-cxl, DRAM only first-dram, both start-interleaved. The driver sets
@@ -651,7 +672,7 @@ dra-apply "$VM2" <<< "$(dram-cxl-template-yaml steer-mix "policy: auto")
 ---
 $(dra-claim-pod-yaml steer-mix template steer-mix "$VM2_NAME")
 ---
-$(dram-cxl-template-yaml steer-first "policy: first-dram, maxStep: $(dra-mi "$FIRST_STEP")")
+$(dram-cxl-template-yaml steer-first "policy: waypoints, maxStep: $(dra-mi "$FIRST_STEP"), waypoints: [{targetUsages: [{memoryType: DRAM, usage: $(dra-mi "$DRAM_REQ")}]}, {targetUsages: [{memoryType: CXL, usage: $(dra-mi "$BS")}]}]")
 ---
 $(dra-claim-pod-yaml steer-first template steer-first "$VM2_NAME")"
 for pod in steer-cxl steer-dram steer-mix steer-first; do
@@ -685,12 +706,13 @@ fi
 touch-child steer-mix "$STEER_MIB"
 [ "$TOUCH_DRAM" -ge $(( (STEER_MIB << 8) / 5 )) ] && [ "$TOUCH_CXL" -ge $(( (STEER_MIB << 8) / 5 )) ] ||
     error "steer-mix: $TOUCH_DRAM pages of the workload on DRAM, $TOUCH_CXL on CXL node $NUMA_NODE, expected at least a fifth on each"
-# DRAM first in steps of FIRST_STEP: before the workload the policy and
-# cpuset.mems name DRAM only. The workload takes the DRAM quota and goes
-# on on CXL: the driver adds the node to cpuset.mems and moves the policy
-# to it when the DRAM quota is used. The DRAM of the workload stays
-# within the quota and one step.
-steered-check steer-first first-dram "$DRAM_NODES"
+# DRAM first along waypoints (the DRAM quota, then the CXL quota), in
+# steps of FIRST_STEP: before the workload the policy and cpuset.mems name
+# DRAM only. The workload takes the DRAM quota and goes on on CXL: the
+# driver adds the node to cpuset.mems and moves the policy to it when the
+# DRAM quota is used. The DRAM of the workload stays within the quota and
+# one step.
+steered-check steer-first waypoints "$DRAM_NODES"
 mems=$(dra-container-read "$VM2" steer-first main cpuset.mems) || error "cannot read cpuset.mems of steer-first"
 dra-nodes-subset "$mems" "$DRAM_NODES" ||
     error "steer-first: cpuset.mems is '$mems' before the workload, expected DRAM nodes of $DRAM_NODES only"
@@ -706,6 +728,58 @@ touch-child steer-first "$FIRST_MIB"
 [ $(( TOUCH_DRAM >> 8 )) -le $(( (DRAM_REQ + FIRST_STEP) / MiB )) ] ||
     error "steer-first: $(( TOUCH_DRAM >> 8 )) MiB of the workload on DRAM, more than the DRAM quota and a step, $(( (DRAM_REQ + FIRST_STEP) / MiB )) MiB"
 dra-mems-wait "$VM2" steer-first main "$NUMA_NODE"
+
+# Past its claim: steer-cxl holds PAST_MIB, more than its CXL quota of a
+# block. Past the last waypoint of its plan its memory goes on to the CXL
+# node, without a memory.high bound. When the memory is freed, the usage
+# is below the last waypoint again and the steering resumes with a bound.
+dra-run "$VM2" steer-cxl "setsid python3 /tools/numa-touch.py --hold $PAST_MIB - > /tmp/hold.log 2>&1 < /dev/null &" ||
+    error "cannot start numa-touch.py in steer-cxl"
+# shellcheck disable=SC2016 # evaluated by retry-until
+retry-until --timeout 120 --interval 1 --message "steer-cxl holds $PAST_MIB MiB" \
+    'dra-vm-command-q "$VM2" "kubectl exec -n $DRA_NS steer-cxl -c main -- cat /tmp/hold.log" | grep -qE "^numa-touch: (ready|.*failed)"' ||
+    error "steer-cxl: numa-touch.py did not touch $PAST_MIB MiB"
+dra-exec "$VM2" steer-cxl/main cat /tmp/hold.log
+grep -q "^numa-touch: ready" <<< "$COMMAND_OUTPUT" || error "steer-cxl: numa-touch.py failed: $COMMAND_OUTPUT"
+past=$(dra-touch-log-pages "$COMMAND_OUTPUT" "$NUMA_NODE")
+[ "$past" -ge $(( (PAST_MIB << 8) * 9 / 10 )) ] ||
+    error "steer-cxl: only $past of $(( PAST_MIB << 8 )) pages past its claim are on CXL node $NUMA_NODE"
+dra-plugin-log-wait "$VM2" "$DRA_NS/steer-cxl/main: past the last waypoint"
+dra-memory-state "$VM2" steer-cxl main || error "cannot read memory.high of steer-cxl"
+[ "$DRA_MEM_HIGH" == max ] || error "steer-cxl: memory.high is '$DRA_MEM_HIGH' past the last waypoint, expected max"
+echo "steer-cxl: $(( past >> 8 )) MiB on CXL node $NUMA_NODE past its claim of $(( BS / MiB )) MiB, memory.high $DRA_MEM_HIGH"
+dra-exec "$VM2" steer-cxl/main pkill -f numa-touch.py || error "cannot stop numa-touch.py in steer-cxl"
+# shellcheck disable=SC2016 # evaluated by retry-until
+retry-until --timeout 30 --interval 1 --message "steer-cxl is steered with a bound again" \
+    'dra-memory-state "$VM2" steer-cxl main && [ "$DRA_MEM_HIGH" != max ]' ||
+    error "steer-cxl: memory.high is '$DRA_MEM_HIGH' after its usage dropped below the last waypoint, expected a bound"
+dra-plugin-log-wait "$VM2" "$DRA_NS/steer-cxl/main: steering resumes"
+
+# A process that refuses memory policies: the seccomp profile RuntimeDefault
+# of containerd allows set_mempolicy only with CAP_SYS_NICE. The profile
+# applies before the start of the container, or (no_new_privs) right
+# before the exec of its workload. Either way the container is not
+# steered: its steering does not start, or ends at the next step, which a
+# workload beyond the DRAM quota brings. It is fenced, with memory.high
+# max.
+dra-apply "$VM2" <<< "$(seccomp-pod-yaml steer-seccomp true)
+---
+$(seccomp-pod-yaml steer-seccomp-nnp false)"
+for pod in steer-seccomp steer-seccomp-nnp; do
+    dra-pod-wait "$VM2" "$pod" Running 120
+    touch-child "$pod" $(( (DRAM_REQ + BS / 4) / MiB ))
+    # shellcheck disable=SC2016 # evaluated by retry-until
+    retry-until --timeout 60 --interval 1 --message "$pod: steering refused" \
+        'dra-plugin-log "$VM2" | grep -qE "ctr=$DRA_NS/$pod/main id=.*: (failed to start memory steering|memory steering ended): .*operation not permitted; memory fenced"' ||
+        error "$pod: the driver did not log that the steering of its container failed"
+    dra-plugin-log "$VM2" | grep -E "ctr=$DRA_NS/$pod/main id=.*(failed to start memory steering|memory steering ended)"
+    dra-memory-state "$VM2" "$pod" main || error "cannot read memory.high of $pod"
+    [ "$DRA_MEM_HIGH" == max ] || error "$pod: memory.high is '$DRA_MEM_HIGH', expected max: not steered"
+    mems=$(dra-container-read "$VM2" "$pod" main cpuset.mems) || error "cannot read cpuset.mems of $pod"
+    ! dra-nodes-has "$mems" "$NUMA_NODE" || error "$pod: cpuset.mems '$mems' has CXL node $NUMA_NODE, expected it fenced"
+    echo "$pod: not steered, fenced: cpuset.mems $mems, memory.high $DRA_MEM_HIGH"
+    dra-delete-pod "$VM2" "$pod"
+done
 
 echo "### F: one claim, two requests, two containers: each gets only the result of its request"
 # Claim split has a request numa and a request dax, both of the local
