@@ -17,6 +17,7 @@ package containers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -24,6 +25,7 @@ import (
 	"github.com/containerd/nri/pkg/api"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/cpuset"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/steering"
@@ -33,7 +35,10 @@ import (
 
 // The steering of the memory of containers: a steering manager of the
 // plugin writes the cpuset.mems, the thread memory policies and
-// memory.high of a steered container directly, never through NRI. The
+// memory.high of a steered container directly, never through NRI. Its
+// cpuset.mems has only nodes that fencing with allowed-mems would give the
+// container (steerNodes). A container whose memory.high is not max at its
+// start is not steered: the manager never replaces a bound of others. The
 // Steered records of the store name the containers whose cgroup a manager
 // writes: a record is committed before the manager writes the cgroup, and
 // removed when the manager has stopped. So the records of a process that
@@ -135,27 +140,30 @@ func (p *Plugin) startSteering(c *Container, ctr *api.Container, plan *steering.
 	name := c.name()
 	dir, err := resolveContainerCgroupDir(ctr)
 	if err != nil {
-		klog.Errorf("NRI StartContainer: ctr=%s id=%s: failed to resolve cgroup directory: %v", name, c.ID, err)
-		p.notSteered(c, false)
+		p.notSteered(c, false, fmt.Errorf("failed to resolve cgroup directory: %w", err))
 		return
 	}
 	klog.V(3).Infof("NRI StartContainer: ctr=%s id=%s pid=%d cgroupsPath=%s", name, c.ID, ctr.GetPid(), dir)
-	mgr, err := steering.New(dir, plan,
+	p.mu.Lock()
+	permitted, err := p.steerNodes(c, plan)
+	p.mu.Unlock()
+	if err != nil {
+		p.notSteered(c, false, err)
+		return
+	}
+	mgr, err := steering.New(dir, plan, permitted,
 		steering.WithName(name),
 		steering.WithSysRoot(filepath.Join(p.opts.SysRoot, "/sys")))
 	if err != nil {
-		klog.Warningf("NRI StartContainer: ctr=%s: failed to create memory steering manager: %v", name, err)
-		p.notSteered(c, false)
+		p.notSteered(c, false, err)
 		return
 	}
 	if err := p.addSteered(c.ID, dir); err != nil {
-		klog.Warningf("NRI StartContainer: ctr=%s: failed to record memory steering: %v", name, err)
-		p.notSteered(c, false)
+		p.notSteered(c, false, fmt.Errorf("failed to record memory steering: %w", err))
 		return
 	}
 	if err := startManager(mgr); err != nil {
-		klog.Warningf("NRI StartContainer: ctr=%s: failed to start memory steering: %v", name, err)
-		p.notSteered(c, true)
+		p.notSteered(c, true, err)
 		return
 	}
 	p.mu.Lock()
@@ -169,23 +177,38 @@ func (p *Plugin) startSteering(c *Container, ctr *api.Container, plan *steering.
 	klog.V(3).Infof("NRI StartContainer: ctr=%s: started memory steering (cgroup=%s)", name, dir)
 }
 
+// steerNodes returns the nodes that the cpuset.mems of a steered
+// container may have: the nodes that fencing with allowed-mems would give
+// it (its own nodes without the fenced nodes, with its claimed nodes) and
+// the nodes of its plan. Called with mu held.
+func (p *Plugin) steerNodes(c *Container, plan *steering.Plan) (cpuset.CPUSet, error) {
+	own, err := ownMems(c, p.memNodes())
+	if err != nil {
+		return cpuset.New(), err
+	}
+	return own.Difference(p.fenced).Union(c.Claimed, plan.Nodes()), nil
+}
+
 // notSteered manages a started container whose steering did not start
 // like a container that is not steered (fenced with allowed-mems): no
 // manager of this process steers it, so it is fenced and may be lent to.
 // Its repair pass runs at its PostStartContainer. A failed Start of a
-// manager (added: its Steered record was committed) has removed memory.high
-// again, so the container leaves the Steered records.
-func (p *Plugin) notSteered(c *Container, added bool) {
+// manager (added: its Steered record was committed) has left the cgroup as
+// it was, so the container leaves the Steered records.
+//   - why: the reason, in the warning
+func (p *Plugin) notSteered(c *Container, added bool, why error) {
 	if added {
 		p.removeSteered(c.ID)
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.ctrs[c.ID] != c || c.manager != nil {
+		klog.V(3).Infof("NRI StartContainer: ctr=%s id=%s: memory steering not started: %v", c.name(), c.ID, why)
 		return
 	}
 	p.manage(c, c.unsteered, TriggerStart)
-	klog.Warningf("NRI StartContainer: ctr=%s id=%s: not steered, memory %s", c.name(), c.ID, c.Management.text())
+	klog.Warningf("NRI StartContainer: ctr=%s id=%s: failed to start memory steering: %v; memory %s",
+		c.name(), c.ID, why, c.Management.text())
 }
 
 // stopManagers stops the managers of containers that left the table and

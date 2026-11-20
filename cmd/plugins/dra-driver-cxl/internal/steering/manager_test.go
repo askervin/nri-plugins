@@ -15,11 +15,17 @@
 package steering
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
+	"k8s.io/utils/cpuset"
+
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/mpolinject"
 )
 
 // writeNodes makes a sysfs with the nodes of has_normal_memory and the
@@ -43,14 +49,17 @@ func TestNormalMemoryFallback(t *testing.T) {
 		normal    string
 		distance3 string
 		allowed   []int
+		permitted string
 		node      int
 		ok        bool
 	}{
-		{"only movable node allowed: nearest normal node", "0-2", "17 14 15 10", []int{3}, 1, true},
-		{"equal distances: lowest normal node", "0-2", "14 14 14 10", []int{3}, 0, true},
-		{"no distances: lowest normal node", "1-2", "", []int{3}, 1, true},
-		{"a normal node allowed already", "0-2", "17 14 15 10", []int{2, 3}, 0, false},
-		{"has_normal_memory unknown", "", "17 14 15 10", []int{3}, 0, false},
+		{"only movable node allowed: nearest normal node", "0-2", "17 14 15 10", []int{3}, "0-3", 1, true},
+		{"equal distances: lowest normal node", "0-2", "14 14 14 10", []int{3}, "0-3", 0, true},
+		{"no distances: lowest normal node", "1-2", "", []int{3}, "0-3", 1, true},
+		{"a normal node allowed already", "0-2", "17 14 15 10", []int{2, 3}, "0-3", 0, false},
+		{"has_normal_memory unknown", "", "17 14 15 10", []int{3}, "0-3", 0, false},
+		{"nearest permitted normal node", "0-2", "17 14 15 10", []int{3}, "0,2-3", 2, true},
+		{"no permitted normal node", "0-2", "17 14 15 10", []int{3}, "3", 0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := writeNodes(t, tc.normal, tc.distance3)
@@ -58,7 +67,9 @@ func TestNormalMemoryFallback(t *testing.T) {
 			for _, n := range tc.allowed {
 				allowed[n] = true
 			}
-			node, ok := normalMemoryFallback(root, allowed, 3)
+			permitted, err := cpuset.Parse(tc.permitted)
+			require.NoError(t, err)
+			node, ok := normalMemoryFallback(root, allowed, permitted, 3)
 			require.Equal(t, tc.ok, ok)
 			if ok {
 				require.Equal(t, tc.node, node)
@@ -74,6 +85,7 @@ func TestAllowNodesFirstWrite(t *testing.T) {
 		cgroupPath: cg,
 		sysRoot:    writeNodes(t, "0-1", ""),
 		name:       "test",
+		permitted:  cpuset.New(0, 1, 2),
 		// the cgroup holds memory on its DRAM nodes already
 		allowed: map[int]bool{0: true, 1: true},
 	}
@@ -93,6 +105,88 @@ func TestAllowNodesFirstWrite(t *testing.T) {
 	data, err = os.ReadFile(mems)
 	require.NoError(t, err)
 	require.Equal(t, "0-2\n", string(data))
+}
+
+// fakeCgroup returns a cgroup directory with the files that a Manager
+// reads: memory.high and cpuset.mems as given, usage on nodes 0 and 3,
+// and one process.
+func fakeCgroup(t *testing.T, high, mems string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for name, data := range map[string]string{
+		"memory.high":      high,
+		"memory.current":   "8192",
+		"memory.events":    "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0",
+		"memory.numa_stat": "anon N0=4096 N1=0 N3=4096\nshmem N0=0 N1=0 N3=0",
+		"cgroup.procs":     "4242",
+		"cpuset.mems":      mems,
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(data+"\n"), 0o644))
+	}
+	return dir
+}
+
+// readFile returns the content of the file of the cgroup without white
+// space around it.
+func readFile(t *testing.T, dir, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, name))
+	require.NoError(t, err)
+	return strings.TrimSpace(string(data))
+}
+
+// TestStartFailsClosed leaves a cgroup as it was when Start fails: on a
+// memory.high of others and on a memory policy that is not set. A started
+// manager writes only permitted nodes to cpuset.mems.
+func TestStartFailsClosed(t *testing.T) {
+	if !mpolinject.Supported {
+		t.Skip(mpolinject.ErrUnsupported)
+	}
+	plan, err := NewPlan(PolicyFirstCXL, MemoryTypes{CXLNodes: []int{1}, CXLQuota: 64 * MiB}, nil, 0, 0)
+	require.NoError(t, err)
+	permitted := cpuset.New(0, 1)
+	sys := writeNodes(t, "0", "")
+	injected := 0
+	injectErr := fmt.Errorf("pid 4242: %w", unix.EPERM)
+	old := setMemoryPolicy
+	t.Cleanup(func() { setMemoryPolicy = old })
+	setMemoryPolicy = func([]int, int, []int) error {
+		injected++
+		return injectErr
+	}
+
+	// a memory.high of others: nothing written
+	cg := fakeCgroup(t, "536870912", "")
+	m, err := New(cg, plan, permitted, WithSysRoot(sys))
+	require.NoError(t, err)
+	require.ErrorContains(t, m.Start(), "memory.high is 536870912, not max")
+	require.Equal(t, "536870912", readFile(t, cg, "memory.high"))
+	require.Equal(t, "", readFile(t, cg, "cpuset.mems"))
+	require.Zero(t, injected)
+
+	// no memory policy set: the cgroup as it was
+	cg = fakeCgroup(t, "max", "")
+	m, err = New(cg, plan, permitted, WithSysRoot(sys))
+	require.NoError(t, err)
+	require.ErrorIs(t, m.Start(), unix.EPERM)
+	require.Equal(t, 1, injected)
+	require.Equal(t, "max", readFile(t, cg, "memory.high"))
+	require.Equal(t, "", readFile(t, cg, "cpuset.mems"))
+
+	// started: the usage on node 3 is not permitted, so node 3 is left out
+	injectErr = nil
+	m, err = New(cg, plan, permitted, WithSysRoot(sys))
+	require.NoError(t, err)
+	require.NoError(t, m.Start())
+	require.Equal(t, 2, injected)
+	require.Equal(t, "0-1", readFile(t, cg, "cpuset.mems"))
+	require.NotEqual(t, "max", readFile(t, cg, "memory.high"))
+	m.Stop()
+	require.Equal(t, "max", readFile(t, cg, "memory.high"))
+
+	// the nodes of the plan must be permitted
+	_, err = New(cg, plan, cpuset.New(0), WithSysRoot(sys))
+	require.ErrorContains(t, err, "not in the permitted nodes")
 }
 
 // TestRelease removes the memory.high that a killed manager left, leaves

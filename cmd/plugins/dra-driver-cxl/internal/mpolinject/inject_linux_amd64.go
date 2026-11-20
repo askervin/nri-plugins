@@ -27,6 +27,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// Supported tells whether SetMemoryPolicy is implemented on this
+// platform.
+const Supported = true
+
 const (
 	// maxWorkers is the number of processes handled in parallel.
 	// Workers are mostly blocked in wait4, so this does not need to

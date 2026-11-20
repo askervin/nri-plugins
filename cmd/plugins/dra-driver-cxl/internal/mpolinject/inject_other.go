@@ -16,6 +16,10 @@
 
 package mpolinject
 
+// Supported tells whether SetMemoryPolicy is implemented on this
+// platform.
+const Supported = false
+
 // SetMemoryPolicy returns ErrUnsupported on this platform.
 func SetMemoryPolicy(pids []int, mode int, nodes []int) error {
 	return ErrUnsupported

@@ -20,6 +20,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"k8s.io/utils/cpuset"
 )
 
 // NodeMem is memory in bytes per NUMA node.
@@ -101,6 +103,17 @@ func (p *Plan) Validate() error {
 		prev = wp
 	}
 	return nil
+}
+
+// Nodes returns the nodes of the waypoints of the plan.
+func (p *Plan) Nodes() cpuset.CPUSet {
+	nodes := cpuset.New()
+	for _, wp := range p.Waypoints {
+		for node := range wp {
+			nodes = nodes.Union(cpuset.New(node))
+		}
+	}
+	return nodes
 }
 
 // String returns the waypoints and step bounds of the plan.

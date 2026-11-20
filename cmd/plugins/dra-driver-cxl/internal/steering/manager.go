@@ -63,6 +63,10 @@ const waitTimeout = time.Second
 // as usage steered by the plan.
 var numaUsageCategories = []string{"anon", "shmem"}
 
+// setMemoryPolicy sets the memory policy of the threads of processes (a
+// variable for tests).
+var setMemoryPolicy = mpolinject.SetMemoryPolicy
+
 // Manager steers the memory allocations of one cgroup along a plan.
 type Manager struct {
 	cgroupPath string
@@ -70,10 +74,14 @@ type Manager struct {
 	name       string
 	plan       *Plan
 	notifier   *notifier
+	// permitted are the nodes that cpuset.mems may have.
+	permitted cpuset.CPUSet
 	// allowed are the nodes written to cpuset.mems so far.
 	allowed map[int]bool
 	// written: cpuset.mems has been written.
 	written bool
+	// mems is the cpuset.mems of the cgroup before Start.
+	mems string
 	// stop is closed by Stop, done is closed when the steering
 	// goroutine has exited.
 	stop     chan struct{}
@@ -103,10 +111,19 @@ func WithSysRoot(root string) Option {
 
 // New returns a Manager for the cgroup and the plan. Nothing is
 // written to the cgroup before Start. The plan must not be modified
-// after this call.
-func New(cgroupPath string, plan *Plan, opts ...Option) (*Manager, error) {
+// after this call. It returns an error when memory policies cannot be
+// set on this platform.
+//   - permitted: the nodes that cpuset.mems may have, the nodes of the
+//     plan among them
+func New(cgroupPath string, plan *Plan, permitted cpuset.CPUSet, opts ...Option) (*Manager, error) {
+	if !mpolinject.Supported {
+		return nil, mpolinject.ErrUnsupported
+	}
 	if err := plan.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid plan: %w", err)
+	}
+	if nodes := plan.Nodes(); !nodes.IsSubsetOf(permitted) {
+		return nil, fmt.Errorf("plan nodes %s are not in the permitted nodes %s", nodes, permitted)
 	}
 	info, err := os.Stat(cgroupPath)
 	if err != nil {
@@ -120,6 +137,7 @@ func New(cgroupPath string, plan *Plan, opts ...Option) (*Manager, error) {
 		sysRoot:    "/sys",
 		name:       filepath.Base(cgroupPath),
 		plan:       plan,
+		permitted:  permitted,
 		allowed:    make(map[int]bool),
 		stop:       make(chan struct{}),
 		done:       make(chan struct{}),
@@ -131,19 +149,31 @@ func New(cgroupPath string, plan *Plan, opts ...Option) (*Manager, error) {
 }
 
 // Start applies the first step of the plan to the cgroup and starts
-// the goroutine that applies the following steps.
+// the goroutine that applies the following steps. It returns an error,
+// with the cgroup as it was, when memory.high of the cgroup is not max
+// or the memory policy of its processes cannot be set.
 func (m *Manager) Start() error {
 	if m.started {
 		return errors.New("manager already started")
+	}
+	high, err := readTrim(filepath.Join(m.cgroupPath, "memory.high"))
+	if err != nil {
+		return err
+	}
+	if high != "max" {
+		return fmt.Errorf("memory.high is %s, not max", high)
+	}
+	if m.mems, err = readTrim(filepath.Join(m.cgroupPath, "cpuset.mems")); err != nil {
+		return err
 	}
 	usage, err := numaUsage(m.cgroupPath, numaUsageCategories...)
 	if err != nil {
 		return err
 	}
-	// Nodes that already hold memory stay allowed, so that writing
-	// cpuset.mems never migrates memory.
+	// Permitted nodes that already hold memory stay allowed, so that
+	// writing cpuset.mems does not migrate that memory.
 	for node, bytes := range usage {
-		if bytes > 0 {
+		if bytes > 0 && m.permitted.Contains(node) {
 			m.allowed[node] = true
 		}
 	}
@@ -153,10 +183,13 @@ func (m *Manager) Start() error {
 		return err
 	}
 	klog.Infof("%s: start steering %s: %s", m.name, m.cgroupPath, m.plan)
-	if err := m.step(usage); err != nil {
+	if err := m.step(usage, true); err != nil {
 		_ = m.notifier.SetBounds(bounds{})
 		_ = m.notifier.Close()
 		m.notifier = nil
+		if m.written {
+			m.restoreMems()
+		}
 		return err
 	}
 	m.started = true
@@ -218,7 +251,7 @@ func (m *Manager) loop() {
 			klog.Errorf("%s: %v", m.name, err)
 			continue
 		}
-		if err := m.step(usage); err != nil {
+		if err := m.step(usage, false); err != nil {
 			klog.Errorf("%s: step failed: %v", m.name, err)
 		}
 	}
@@ -277,7 +310,9 @@ func Release(cgroupPath string) (string, error) {
 // step applies the next step of the plan for the usage: allows the
 // step nodes in cpuset.mems, sets the memory policy of the threads
 // in the cgroup and sets the memory bounds for the next step.
-func (m *Manager) step(usage NodeMem) error {
+//   - first: the step of Start, which fails when a memory policy is
+//     not set
+func (m *Manager) step(usage NodeMem, first bool) error {
 	step, err := m.plan.NextStep(usage)
 	if err != nil {
 		return err
@@ -300,9 +335,13 @@ func (m *Manager) step(usage NodeMem) error {
 		if len(step.Nodes) > 1 {
 			mode = unix.MPOL_INTERLEAVE
 		}
-		// The bounds are set even if some threads could not be
-		// updated, otherwise the cgroup would stay throttled.
-		if err := mpolinject.SetMemoryPolicy(pids, mode, step.Nodes); err != nil {
+		err := setMemoryPolicy(pids, mode, step.Nodes)
+		switch {
+		case err != nil && first:
+			return fmt.Errorf("setting memory policy: %w", err)
+		case err != nil:
+			// The bounds are set even if some threads could not be
+			// updated, otherwise the cgroup would stay throttled.
 			klog.Warningf("%s: setting memory policy failed: %v", m.name, err)
 		}
 	}
@@ -338,7 +377,7 @@ func (m *Manager) allowNodes(nodes []int) error {
 	if !added && m.written {
 		return nil
 	}
-	if node, ok := normalMemoryFallback(m.sysRoot, m.allowed, nodes[0]); ok {
+	if node, ok := normalMemoryFallback(m.sysRoot, m.allowed, m.permitted, nodes[0]); ok {
 		m.allowed[node] = true
 		klog.Infof("%s: nodes %s have no normal (non-movable) memory, allowing node %d for unmovable allocations",
 			m.name, m.allowedNodes().Difference(cpuset.New(node)), node)
@@ -352,6 +391,14 @@ func (m *Manager) allowNodes(nodes []int) error {
 	return nil
 }
 
+// restoreMems writes back the cpuset.mems that the cgroup had before
+// Start.
+func (m *Manager) restoreMems() {
+	if err := os.WriteFile(filepath.Join(m.cgroupPath, "cpuset.mems"), []byte(m.mems+"\n"), 0644); err != nil {
+		klog.Errorf("%s: restoring cpuset.mems %q failed: %v", m.name, m.mems, err)
+	}
+}
+
 // allowedNodes returns the nodes allowed in cpuset.mems so far.
 func (m *Manager) allowedNodes() cpuset.CPUSet {
 	nodes := make([]int, 0, len(m.allowed))
@@ -362,18 +409,22 @@ func (m *Manager) allowedNodes() cpuset.CPUSet {
 	return cpuset.New(nodes...)
 }
 
-// normalMemoryFallback returns the node with normal (non-movable) memory
-// that is nearest to node near, if none of the allowed nodes has normal
-// memory. ok is false if one has, or if the nodes with normal memory are
-// unknown.
-func normalMemoryFallback(sysRoot string, allowed map[int]bool, near int) (node int, ok bool) {
+// normalMemoryFallback returns the permitted node with normal
+// (non-movable) memory that is nearest to node near, if none of the
+// allowed nodes has normal memory. ok is false if one has, or if no
+// permitted node is known to have normal memory.
+func normalMemoryFallback(sysRoot string, allowed map[int]bool, permitted cpuset.CPUSet, near int) (node int, ok bool) {
 	nodeDir := filepath.Join(sysRoot, "devices", "system", "node")
 	b, err := os.ReadFile(filepath.Join(nodeDir, "has_normal_memory"))
 	if err != nil {
 		return 0, false
 	}
 	normal, err := cpuset.Parse(strings.TrimSpace(string(b)))
-	if err != nil || normal.IsEmpty() {
+	if err != nil {
+		return 0, false
+	}
+	normal = normal.Intersection(permitted)
+	if normal.IsEmpty() {
 		return 0, false
 	}
 	for n := range allowed {

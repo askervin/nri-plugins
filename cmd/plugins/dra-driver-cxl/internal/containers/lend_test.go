@@ -249,6 +249,7 @@ func TestLendGoneContainer(t *testing.T) {
 // lifecycle state, and revokes nothing of it.
 func TestLendRefusedWhenSteered(t *testing.T) {
 	e := newEnv(t)
+	e.hasMemory("0-2")
 	e.local.set(fenceClaims())
 	ctx := context.Background()
 	steerable(t, e.proc(101, "kubepods/u1/c1", "0-2", ""), "max")

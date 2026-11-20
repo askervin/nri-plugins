@@ -1322,8 +1322,25 @@ throttled to `max`, as the end of a steering does, also when the
 configuration no longer steers them (the plugin records every steered
 container in `state.json` before its steering starts,
 [Files on the node](#files-on-the-node)), and leaves the `memory.high` of the others
-alone. A container whose steering fails to start (`failed to start
-memory steering`) is managed like a container that is not steered too.
+alone.
+
+Steering needs:
+
+- an amd64 node;
+- ptrace access to the processes of the container: the plugin stops their
+  threads to set their memory policy. This needs `CAP_SYS_PTRACE`, the
+  host PID namespace (the chart runs the driver privileged, with
+  `hostPID`) and a Yama `ptrace_scope` below 3;
+- a seccomp profile of the container that allows `set_mempolicy`:
+  containerd's `RuntimeDefault` allows it only with `CAP_SYS_NICE`;
+- `memory.high` `max` at the start of the container: steering never
+  replaces a bound that others set, such as kubelet's MemoryQoS.
+
+A container whose steering cannot start is managed like a container that
+is not steered. The plugin logs one warning with the reason: `failed to
+start memory steering: <reason>; memory fenced` (or `none`). Steering
+writes only nodes to `cpuset.mems` that fencing with `allowed-mems` would
+give the container, and never writes `memory.max`.
 
 A container that is not steered (policy `none`, or no `numa` memory) is
 managed like a [container without claims](#containers-without-claims):

@@ -605,7 +605,7 @@ States: UNDECIDED, STEERED, FENCED, NONE.
 | UNDECIDED | STEERED | `NRI Synchronize`: the settings of the results of a container that Synchronize finds do not combine | - | taken as steered: neither fenced nor lent to |
 | UNDECIDED | FENCED | `NRI CreateContainer`, `NRI Synchronize`, `NRI StartContainer`: not steered (by this process) and fencing allowed-mems; the defaults for a container whose creation failed or that the plugin has no record of | - | wantMems: its own nodes without the fenced nodes, its claimed and its lent nodes |
 | UNDECIDED | NONE | `NRI CreateContainer`, `NRI Synchronize`, `NRI StartContainer`: not steered (by this process) and fencing none | - | its cpuset.mems is left as the runtime made it |
-| STEERED | FENCED | `NRI StartContainer`: its manager does not start (no cgroup, steering.New or Start fails) and fencing allowed-mems | - | its Steered record removed; fenced by the repair pass at its PostStartContainer |
+| STEERED | FENCED | `NRI StartContainer`: its manager does not start (no cgroup, no own nodes, steering.New or Start fails: memory.high not max, no memory policy set) and fencing allowed-mems | - | its Steered record removed; fenced by the repair pass at its PostStartContainer |
 | STEERED | NONE | `NRI StartContainer`: its manager does not start and fencing none | - | its Steered record removed |
 
 Refused:

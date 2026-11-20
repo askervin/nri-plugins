@@ -64,13 +64,23 @@ func procs(cgroupPath string) ([]int, error) {
 	return pids, nil
 }
 
+// readTrim returns the content of the file without the surrounding white
+// space.
+func readTrim(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
 // readInt64 returns the integer in the file.
 func readInt64(path string) (int64, error) {
-	data, err := os.ReadFile(path)
+	s, err := readTrim(path)
 	if err != nil {
 		return 0, err
 	}
-	value, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	value, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", path, err)
 	}

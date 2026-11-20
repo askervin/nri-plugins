@@ -253,7 +253,8 @@ var ManagementTable = fsm.Table[Management]{
 		},
 		{
 			From: fsm.List(ManagementSteered), To: ManagementFenced, Triggers: fsm.List(TriggerStart),
-			When:    "its manager does not start (no cgroup, steering.New or Start fails) and fencing allowed-mems",
+			When: "its manager does not start (no cgroup, no own nodes, steering.New or Start fails: memory.high " +
+				"not max, no memory policy set) and fencing allowed-mems",
 			Effects: "its Steered record removed; fenced by the repair pass at its PostStartContainer",
 		},
 		{

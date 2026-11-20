@@ -371,22 +371,28 @@ func TestReviewReleaseAfterDefaultsChange(t *testing.T) {
 // A steered container whose manager does not start is managed like a
 // container that is not steered: fenced by the repair pass
 // of its PostStartContainer, lent to, and not in the Steered records.
+// One warning names the reason.
 func TestSteeringStartFails(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		setup func(e *env) // the cgroup of c1 (pid 101)
+		why   string
 	}{
-		{"no cgroup", func(e *env) {}},
+		{"no cgroup", func(e *env) {}, "failed to resolve cgroup directory"},
 		{"manager start fails", func(e *env) {
-			// no memory.numa_stat: the manager cannot read the usage
+			// no memory files: the manager cannot read memory.high
 			e.proc(101, "kubepods/u1/c1", "0-3", "")
-		}},
+		}, "memory.high: no such file or directory"},
+		{"memory.high of others", func(e *env) {
+			steerable(t, e.proc(101, "kubepods/u1/c1", "0-3", ""), "536870912")
+		}, "memory.high is 536870912, not max"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newFenceEnv(t, "0-3", 2, 3)
 			e.local.set(nriClaims())
 			ctx := context.Background()
 			e.readyFence()
+			logs := klogtest.Capture(t, 3)
 			pod := testPod("u1")
 			c1 := withClaims(testCtr(pod, "c1", "app", 101), "auto")
 			if got := e.createMems(pod, c1); got != "-" || e.record("c1").Plan == nil {
@@ -400,6 +406,16 @@ func TestSteeringStartFails(t *testing.T) {
 			if ids := e.steered(); len(ids) != 0 {
 				t.Fatalf("steering records %v", ids)
 			}
+			const warning = "NRI StartContainer: ctr=ns/pod-u1/app id=c1: failed to start memory steering: "
+			var warnings []string
+			for _, line := range strings.Split(logs(), "\n") {
+				if strings.Contains(line, warning) {
+					warnings = append(warnings, line)
+				}
+			}
+			if len(warnings) != 1 || !strings.Contains(warnings[0], tc.why) || !strings.HasSuffix(warnings[0], "; memory fenced") {
+				t.Errorf("warnings %q, expected one with %q", warnings, tc.why)
+			}
 			e.expectUpdates("c1 mems=0-2")
 			if tc.name == "no cgroup" {
 				// its cgroup is unknown: the pass updates its spec
@@ -408,12 +424,18 @@ func TestSteeringStartFails(t *testing.T) {
 			if got := e.cgroupMems("kubepods/u1/c1"); got != "0-2" {
 				t.Fatalf("cgroup cpuset.mems %s", got)
 			}
+			if tc.name == "memory.high of others" {
+				if got := memoryHigh(t, filepath.Join(cgroupRoot, "kubepods/u1/c1")); got != "536870912" {
+					t.Fatalf("memory.high %s of others replaced", got)
+				}
+			}
 			noErr(t, e.p.LendNode(ctx, "u1", "app", 3, "l1"))
 			e.expectUpdates("c1 mems=0-3")
 		})
 	}
 	// fencing none: not steered, its cpuset.mems left alone
 	e := newEnv(t)
+	e.hasMemory("0-3")
 	e.local.set(nriClaims())
 	pod := testPod("u1")
 	c1 := withClaims(testCtr(pod, "c1", "app", 101), "auto")
