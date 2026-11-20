@@ -33,16 +33,20 @@ import (
 	"time"
 )
 
+// The knobs of a longer fuzz by hand, for instance
+// go test -run Fuzz -refpool-seqs 4000 -refpool-len 120.
 var (
-	refSeqs    = flag.Int("refpool-seqs", 400, "random sequences of TestRefPoolFuzz")
-	refSeed    = flag.Int64("refpool-seed", 1, "first seed of TestRefPoolFuzz")
-	refMax     = flag.Int("refpool-len", 60, "longest sequence of TestRefPoolFuzz")
-	refSlow    = flag.Bool("refpool-slow", false, "TestRefPoolFuzz: controllers stay down long (ctrl-start rare)")
-	refProfile = flag.String("refpool-profile", "full", "TestRefPoolFuzz: the profile (pmem, fullp: persistent devices)")
-	refFencing = flag.String("refpool-fencing", "allowed-mems", "TestRefPoolFuzz: --fencing (allowed-mems, none, switch)")
-	refReboot  = flag.String("refpool-reboot", "", "TestRefPoolFuzz: --reboot (guest, qemu; empty: no node-reboot)")
-	refStall   = flag.Duration("refpool-stall-window", 0, "TestRefPoolFuzz: --stall-window (0: the default); not above 180 s: settles wait for stalled contenders, the reference's scheduler has the bug-08 fix")
+	refSeqs = flag.Int("refpool-seqs", 400, "random sequences of TestRefPoolFuzz (a quarter of them for TestFencingFuzz, 1/16 for TestRebootFuzz)")
+	refSeed = flag.Int64("refpool-seed", 1, "first seed of the fuzz tests")
+	refMax  = flag.Int("refpool-len", 60, "longest sequence of the fuzz tests")
 )
+
+// fuzzMode is the configuration of the model in a fuzz.
+type fuzzMode struct {
+	profile string
+	fencing FencingRun
+	reboot  RebootRun
+}
 
 type fuzzStats struct {
 	ref                                  map[string]int
@@ -71,12 +75,7 @@ func fuzzWeight(cfg *Config, a Act) float64 {
 	switch a.Verb {
 	case VSettle:
 		return 4
-	case VCtrlStart:
-		if *refSlow {
-			return 0.02
-		}
-		return 2.5
-	case VCtrlKill, VCtrlRestart:
+	case VCtrlStart, VCtrlKill, VCtrlRestart:
 		return 2.5
 	case VServerRestart:
 		return 1
@@ -253,21 +252,11 @@ var refUnfixedScheduler bool
 var reNums = regexp.MustCompile(`[0-9]+(\.[0-9]+)?`)
 
 // runRefFuzz runs sequences and returns the failures by message kind.
-func runRefFuzz(t *testing.T, profile string, seqs int, seed0 int64, maxLen int) (map[string][]*fuzzFailure, *fuzzStats) {
+func runRefFuzz(t *testing.T, m fuzzMode, seqs int, seed0 int64, maxLen int) (map[string][]*fuzzFailure, *fuzzStats) {
 	t.Helper()
-	cfg := testConfig(t, profile, true)
+	cfg := testConfig(t, m.profile, true)
 	cfg.Unsettled = 3 // MBT_UNSETTLED of the runs
-	fencing, err := parseFencingRun(*refFencing)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Fencing = fencing
-	if cfg.Reboot, err = parseRebootRun(*refReboot); err != nil {
-		t.Fatal(err)
-	}
-	if *refStall > 0 {
-		cfg.StallWindow, cfg.StallStrict = *refStall, *refStall <= 180*time.Second
-	}
+	cfg.Fencing, cfg.Reboot = m.fencing, m.reboot
 	acts := allActs(cfg)
 	st := &fuzzStats{verbs: map[Verb]int{}, ref: map[string]int{}}
 	kinds := map[string][]*fuzzFailure{}
@@ -287,7 +276,7 @@ func TestRefPoolFuzz(t *testing.T) {
 	if testing.Short() {
 		seqs = 50
 	}
-	kinds, st := runRefFuzz(t, *refProfile, seqs, *refSeed, *refMax)
+	kinds, st := runRefFuzz(t, fuzzMode{profile: "full"}, seqs, *refSeed, *refMax)
 	t.Logf("%d sequences (%d failed), %d steps, %d settles, %d polls; adopted: stalled %d, unsched %d, slices absent %d; settles with alternatives %d; verbs %v; reference %v",
 		seqs, seqs-st.seqs, st.steps, st.settles, st.polls, st.stalled, st.unsched, st.absent, st.eitherSeen, st.verbs, st.ref)
 	var keys []string
@@ -310,11 +299,8 @@ func TestFencingFuzz(t *testing.T) {
 	if testing.Short() {
 		seqs = 15
 	}
-	old := *refFencing
-	defer func() { *refFencing = old }()
-	for _, mode := range []string{"none", "switch"} {
-		*refFencing = mode
-		kinds, st := runRefFuzz(t, *refProfile, seqs, *refSeed+1000, *refMax)
+	for _, mode := range []FencingRun{FencingNone, FencingSwitch} {
+		kinds, st := runRefFuzz(t, fuzzMode{profile: "full", fencing: mode}, seqs, *refSeed+1000, *refMax)
 		t.Logf("fencing %s: %d sequences (%d failed), %d steps, %d settles; verbs %v", mode, seqs, seqs-st.seqs, st.steps, st.settles, st.verbs)
 		for k, fs := range kinds {
 			sort.Slice(fs, func(i, j int) bool { return len(fs[i].steps) < len(fs[j].steps) })

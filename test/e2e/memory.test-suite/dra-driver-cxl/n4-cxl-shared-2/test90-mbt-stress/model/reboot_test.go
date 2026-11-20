@@ -562,17 +562,14 @@ func mustCheck(t *testing.T, s *State, o *Observation) Verdict {
 }
 
 // The independent pool reference with node-reboots in the fuzz
-// (-refpool-reboot for TestRefPoolFuzz): guest and qemu.
+// in the fuzz: guest and qemu.
 func TestRebootFuzz(t *testing.T) {
 	seqs := *refSeqs / 16
 	if testing.Short() {
 		seqs = 15
 	}
-	old := *refReboot
-	defer func() { *refReboot = old }()
-	for _, mode := range []string{"guest", "qemu"} {
-		*refReboot = mode
-		kinds, st := runRefFuzz(t, *refProfile, seqs, *refSeed+2000, *refMax)
+	for _, mode := range []RebootRun{RebootGuest, RebootQemu} {
+		kinds, st := runRefFuzz(t, fuzzMode{profile: "full", reboot: mode}, seqs, *refSeed+2000, *refMax)
 		t.Logf("reboot %s: %d sequences (%d failed), %d steps, %d settles; verbs %v", mode, seqs, seqs-st.seqs, st.steps, st.settles, st.verbs)
 		if st.verbs[VNodeReboot] == 0 {
 			t.Errorf("reboot %s: no node-reboot in the fuzz", mode)
