@@ -67,9 +67,6 @@ const (
 	// cpuset.mems of a container that has not claimed or borrowed memory
 	// on them.
 	FencingAllowedMems = "allowed-mems"
-	// FencingMempolicy keeps containers off the CXL nodes of the driver
-	// through the memory policy of their threads (not implemented).
-	FencingMempolicy = "mempolicy"
 	// FencingNone leaves the memory nodes of a container as they are.
 	FencingNone = "none"
 )
@@ -131,7 +128,7 @@ func (d Device) IsReadOnly() bool {
 // Container is how a container that uses a request is managed.
 type Container struct {
 	Steering *Steering `json:"steering,omitempty"`
-	// Fencing is "allowed-mems", "mempolicy" or "none"; set by the driver
+	// Fencing is "allowed-mems" or "none"; set by the driver
 	// configuration only.
 	Fencing string `json:"fencing,omitempty"`
 }

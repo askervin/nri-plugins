@@ -551,7 +551,7 @@ an entry of a claim, *node* the `defaults.container` of the
 | `container.steering.waypoints` | `container` | NRI plugin | list of `{targetUsages: [{memoryType: DRAM or CXL, usage: <quantity>}]}` | | class, claim, node | policy `waypoints` only, which needs them: the target usage per memory type at each waypoint; a type that is not listed keeps its usage of the previous waypoint; usages never decrease |
 | `container.steering.minStep` | `container` | NRI plugin | quantity | the smallest change of the usage of a node between two waypoints, at most `maxStep` | class, claim, node | not with policy `none`: the smallest amount of new allocations after which the route is re-evaluated |
 | `container.steering.maxStep` | `container` | NRI plugin | quantity | the total quota | class, claim, node | not with policy `none`: the largest amount of new allocations after which the route is re-evaluated |
-| `container.fencing` | `container` | NRI plugin | `allowed-mems`, `mempolicy` (not implemented), `none` | `allowed-mems` | node only | whether the containers are kept off the CXL nodes of the driver that they did not claim, see [Containers without claims](#containers-without-claims) |
+| `container.fencing` | `container` | NRI plugin | `allowed-mems`, `none` | `allowed-mems` | node only | whether the containers are kept off the CXL nodes of the driver that they did not claim, see [Containers without claims](#containers-without-claims) |
 | `pool.opaque.<key>` | `pool` | the pool controllers with controller key `<key>` | an object that the controller defines | | class, claim; not in entries of `cxl.nri.io` | settings of one implementation of a pool controller; the reference controller (key `fake-cxl-pool`) takes `slot` and `numaNode`, see [Configuration of a pool controller](pool.md#configuration-of-a-pool-controller) |
 
 The `device` fields per device:
@@ -1449,11 +1449,10 @@ cannot set it:
 | value | |
 |:------|:-|
 | `allowed-mems` | (default, also when `defaults`, `container` or `fencing` is missing) a container that has not claimed memory on a CXL node of the driver does not have that node in its `cpuset.mems` (`Mems_allowed`). It cannot allocate there even with `mbind` or `set_mempolicy`, and a container out of other memory is OOM-killed rather than spilling to CXL memory. |
-| `mempolicy` | through the memory policy of the container's threads; not implemented: the configuration is refused with `defaults.container.fencing: mempolicy is not implemented yet` |
 | `none` | containers are left as they are: one without its own `cpuset.mems` inherits every node with memory, CXL nodes too |
 
 Any other value is refused with `defaults.container.fencing: invalid
-value "X" (allowed-mems, mempolicy or none)`, and the plugin does not
+value "X" (allowed-mems or none)`, and the plugin does not
 start. Steering and leases work with every value. At start the plugin
 logs the node defaults:
 
@@ -1979,7 +1978,7 @@ verifyAddressing: true
 defaults:
   container:
     steering: {policy: none}    # none (default) | auto | first-dram | ...
-    fencing: allowed-mems       # allowed-mems (default) | mempolicy | none
+    fencing: allowed-mems       # allowed-mems (default) | none
 ```
 
 | key | type | default | |
@@ -1994,7 +1993,7 @@ defaults:
 | `fsTypes` | list of strings | `[erofs]` | the filesystem types that mode `fs` mounts on the node, for both drivers; a list replaces the default. erofs is the only type designed for untrusted images: every other type in the list (`squashfs`, `ext4`, `xfs`, `btrfs`, `gfs2`, or one that the plugin does not know, class single-host, [Filesystems](#filesystems)) trusts every party that can write the node's devices raw, that is the read-write `block` claims and leases of the devices on any node of any cluster that shares the pool. With the default no read-write mount is possible. `[]` mounts nothing (the refusal says `fsTypes: none`). The plugin logs the list at start: `fsTypes: <t1>, <t2>, ...: the filesystem types that mode fs mounts on this node`, or `fsTypes: none: mode fs mounts no filesystem on this node` |
 | `verifyAddressing` | bool | `true` | run an address line test on every new region of a local memdev of RAM, and use only the distinct bytes of a memdev whose memory aliases ([local.md](local.md#broken-and-aliased-memory)); persistent memdevs are not probed |
 | `defaults.container.steering` | object | `{policy: none}` | the steering of every container of the node whose results do not set it, the fields of `container.steering` ([MemoryConfig fields](#memoryconfig-fields), [Steering](#steering)); `{policy: auto}` steers every container with `numa` memory |
-| `defaults.container.fencing` | string | `allowed-mems` | how the plugin manages the memory of containers on the CXL nodes it onlines: `allowed-mems`, `mempolicy` (not implemented) or `none` ([Containers without claims](#containers-without-claims)) |
+| `defaults.container.fencing` | string | `allowed-mems` | how the plugin manages the memory of containers on the CXL nodes it onlines: `allowed-mems` or `none` ([Containers without claims](#containers-without-claims)) |
 
 `defaults` has the `container` section of a
 [MemoryConfig](#memoryconfig-fields) only: the node defaults of the
@@ -2008,8 +2007,7 @@ case-sensitively. These errors stop the plugin:
   `memdevSettings[I]: invalid memory device "X": not a name (mem0, cxl/mem0) or serial in decimal or 0x hex`
 - `defaults: json: unknown field "F"` (`device`, `pool`,
   `container.Fencing`, ...)
-- `defaults.container.fencing: invalid value "X" (allowed-mems, mempolicy or none)`,
-  `defaults.container.fencing: mempolicy is not implemented yet`
+- `defaults.container.fencing: invalid value "X" (allowed-mems or none)`
 - the texts of the `container` section
   ([Configuration errors](#configuration-errors)) with `defaults.` instead
   of `MemoryConfig: `, as for an effective steering:

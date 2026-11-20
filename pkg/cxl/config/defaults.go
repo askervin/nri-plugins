@@ -37,8 +37,8 @@ func ParseDefaults(data []byte) (*Defaults, error) {
 }
 
 // Validate returns an error if a value of the defaults is invalid:
-// fencing allowed-mems or none (mempolicy is not implemented), and a
-// steering that is valid as the effective steering of a container.
+// fencing allowed-mems or none, and a steering that is valid as the
+// effective steering of a container.
 func (d *Defaults) Validate() error {
 	if d == nil || d.Container == nil {
 		return nil
@@ -46,11 +46,9 @@ func (d *Defaults) Validate() error {
 	c := d.Container
 	switch c.Fencing {
 	case "", FencingAllowedMems, FencingNone:
-	case FencingMempolicy:
-		return fmt.Errorf("%s%s: %s is not implemented yet", defaultsPrefix, FieldFencing, c.Fencing)
 	default:
-		return fmt.Errorf("%s%s: invalid value %q (%s, %s or %s)", defaultsPrefix, FieldFencing, c.Fencing,
-			FencingAllowedMems, FencingMempolicy, FencingNone)
+		return fmt.Errorf("%s%s: invalid value %q (%s or %s)", defaultsPrefix, FieldFencing, c.Fencing,
+			FencingAllowedMems, FencingNone)
 	}
 	if s := c.normalized(); s != nil {
 		return validateSteering(defaultsPrefix, s.Steering, true, nil)

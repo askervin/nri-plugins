@@ -43,8 +43,7 @@ func TestParseDefaults(t *testing.T) {
 		{name: "unknown container field", data: `{"container": {"memoryLimit": {}}}`, err: `defaults: json: unknown field "container.memoryLimit"`},
 		{name: "case sensitive", data: `{"container": {"Fencing": "none"}}`, err: `defaults: json: unknown field "container.Fencing"`},
 		{name: "duplicate field", data: `{"container": {"fencing": "none", "fencing": "none"}}`, err: `defaults: json: duplicate field "container.fencing"`},
-		{name: "mempolicy", data: `{"container": {"fencing": "mempolicy"}}`, err: `defaults.container.fencing: mempolicy is not implemented yet`},
-		{name: "invalid fencing", data: `{"container": {"fencing": "hard"}}`, err: `defaults.container.fencing: invalid value "hard" (allowed-mems, mempolicy or none)`},
+		{name: "invalid fencing", data: `{"container": {"fencing": "hard"}}`, err: `defaults.container.fencing: invalid value "hard" (allowed-mems or none)`},
 		{
 			name: "invalid policy",
 			data: `{"container": {"steering": {"policy": "off"}}}`,
@@ -80,8 +79,8 @@ func TestDefaultsValidate(t *testing.T) {
 	if c := nilDefaults.ContainerSettings(); c.Steering != nil || c.Fencing != "" {
 		t.Errorf("nil: %+v", c)
 	}
-	d := &Defaults{Container: &Container{Fencing: FencingMempolicy}}
-	if err := d.Validate(); !checkErr(err, "defaults.container.fencing: mempolicy is not implemented yet") {
+	d := &Defaults{Container: &Container{Fencing: "mempolicy"}}
+	if err := d.Validate(); !checkErr(err, `defaults.container.fencing: invalid value "mempolicy" (allowed-mems or none)`) {
 		t.Errorf("mempolicy: %v", err)
 	}
 	d = &Defaults{Container: &Container{Steering: &Steering{Policy: PolicyAuto}, Fencing: FencingNone}}
