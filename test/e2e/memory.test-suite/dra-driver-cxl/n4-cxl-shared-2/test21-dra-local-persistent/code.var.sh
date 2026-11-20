@@ -185,8 +185,6 @@ cxl-assert "$LP_REGIONS == []"
 # up to 5 minutes (poolSerials, docs/memory/cxl/local.md).
 dra-wait "$VM2" lp0-published resourceslices "$LP is not None" 360
 SLICES="$COMMAND_OUTPUT"
-holdback=$(dra-plugin-log "$VM2" | grep -F "pool serials: holding back new memdev")
-echo "hold-back lines of the driver of VM2: ${holdback:-none}"
 dra-kubectl "$VM2" "get resourceslices"
 dra-assert "$SLICES" "attr($LP, 'type') == 'memdev' and attr($LP, 'source') == 'local' and attr($LP, 'serial') == '$LP_SERIAL' and attr($LP, 'shared') == False and attr($LP, 'persistent') == True and attr($LP, 'size') == $LP_SIZE"
 # No memoryBlockSize, no memory capacity: nothing of it is onlined.

@@ -309,10 +309,9 @@ reader-start() {
     # then set POD_FILE to the page cache charged to its pod. For a cached
     # reader set READER_LOOP to the loop device over pmem on its node and
     # LOOP_READ to the bytes read through it meanwhile.
-    local r="$1" vm="${READER_VM[$1]}" params before after charges loops0="" loop now base
+    local r="$1" vm="${READER_VM[$1]}" params before after loops0="" loop now base
     params="mode: fs, readOnly: true, access: ${READER_ACCESS[$r]}"
     [ -z "${READER_PATH[$r]}" ] || params+=", path: ${READER_PATH[$r]}"
-    charges=$(llm-file-charges "$vm")
     if [ "${READER_ACCESS[$r]}" == cached ]; then
         # Loop devices keep their counters when they are reused: the
         # baseline is that of every loop device now.
@@ -331,7 +330,6 @@ $(llm-server-pod-yaml "$r" "$vm" claim "$r" "$(llm-reader-script "$LLM_HEX" "$LL
     after=$(llm-page-cache "$vm")
     CACHE_DELTA=$(( (after - before) * 1024 ))
     [ "$(reader-kind "$r")" != lease ] || lease-reader-found "$r"
-    echo "page cache charged meanwhile in $(vmdir-label "$vm"): $(llm-file-charges-delta "$charges" "$(llm-file-charges "$vm")")"
     echo "page cache of $(vmdir-label "$vm") around $r: $before kB -> $after kB, $(( CACHE_DELTA >> 10 )) kB, the model $(( LLM_MODEL_SIZE >> 10 )) kB"
     llm-ask "$vm" "$r"
     POD_FILE=$(llm-pod-file "$vm" "$r") || error "$r: no page cache counter of its pod"
@@ -424,7 +422,6 @@ reader-check() {
     anon=$(llm-rss-anon "$vm" "$r") || error "$r: no RssAnon of llama-server"
     [ $(( anon * 1024 )) -lt $(( LLM_MODEL_SIZE / 2 )) ] ||
         error "$r has $anon kB of anonymous memory, not less than half the model ($(( LLM_MODEL_SIZE / 2048 )) kB): the weights were copied into the process"
-    echo "memory.stat of $r: $(dra-container-read "$vm" "$r" main memory.stat | grep -E '^(anon|file|file_mapped|shmem) ' | tr '\n' ' ')"
 }
 
 claim-check() {

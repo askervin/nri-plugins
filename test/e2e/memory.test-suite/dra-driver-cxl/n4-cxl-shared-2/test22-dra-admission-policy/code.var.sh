@@ -492,7 +492,6 @@ dra-assert "$DRA_LEASES" "j == []"
 
 echo "### E: the orphan companion claim, deleted by the driver"
 dra-wait "$VM2" orphan-deleted "resourceclaims -n $DRA_NS" "'$ORPHAN' not in names()" 90
-dra-plugin-log "$VM2" | grep -E "lease broker: (deleting companion|lease $LEASE: created companion)" | tail -n 10
 
 echo "### cleanup"
 dra-delete "$VM2" pod borrower --grace-period=2 --wait=true --timeout=60s

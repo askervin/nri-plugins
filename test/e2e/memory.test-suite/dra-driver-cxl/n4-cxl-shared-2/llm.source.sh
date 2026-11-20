@@ -369,29 +369,6 @@ llm-pod-file() {
     echo "$bytes"
 }
 
-llm-file-charges() {
-    # Usage: llm-file-charges VMDIR
-    #
-    # Print the page cache charged to the cgroups of the VM of VMDIR down
-    # to the pods of Kubernetes, one "kB CGROUP" per line ("file" of
-    # memory.stat), quietly.
-    vmdir-command-q "$1" "for f in /sys/fs/cgroup/*/memory.stat /sys/fs/cgroup/*/*/memory.stat /sys/fs/cgroup/kubepods.slice/*/*/memory.stat; do [ -f \"\$f\" ] && echo \"\$(( \$(awk '\$1 == \"file\" {print \$2}' \"\$f\") / 1024 )) \${f%/memory.stat}\"; done"
-}
-
-llm-file-charges-delta() {
-    # Usage: llm-file-charges-delta BEFORE AFTER
-    #
-    # Print the cgroups whose page cache grew from BEFORE to AFTER (outputs
-    # of llm-file-charges), the five largest growths, "+kB CGROUP" each.
-    python3 -c '
-import sys
-def parse(text):
-    return {c: int(k) for k, c in (l.split(None, 1) for l in text.splitlines() if l.strip())}
-b, a = parse(sys.argv[1]), parse(sys.argv[2])
-grown = sorted(((a[c] - b.get(c, 0), c) for c in a if a[c] > b.get(c, 0)), reverse=True)[:5]
-print(", ".join("+%d kB %s" % g for g in grown) or "none")' "$1" "$2"
-}
-
 llm-server-pid() {
     # Usage: llm-server-pid VMDIR POD
     #
