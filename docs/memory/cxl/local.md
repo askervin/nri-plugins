@@ -247,7 +247,7 @@ the block size for every block of a `numa` slice that is prepared, and
 shrinks when the slice is released (N disappears from `numactl -H` or
 has 0 kB when the last `numa` slice is gone). `dax` slices add nothing to
 N. Capacity that no claim has stays offline. The containers whose claims
-or leases are on N share it; `memory.max` and cgmpolmgr's quota of each
+or leases are on N share it; `memory.max` and the steering quota of each
 container (the slice size of its claims) bound what a container uses.
 
 All regions under one CXL host bridge share one NUMA node (the node of
@@ -824,7 +824,7 @@ The plugin protects against such devices in two ways:
 - One region per device, no interleaving across devices.
 - `numa` capacity is online per claim but not isolated per claim:
   `cpuset.mems` is per node, all containers with `numa` claims or leases
-  on the node share its memory; `memory.max` and cgmpolmgr bound each.
+  on the node share its memory; `memory.max` and steering bound each.
   Other containers do not get the node, unless `defaults.container.fencing`
   is `none` ([usage.md](usage.md#containers-without-claims)).
 - Slice sizes are multiples of the memory block size, also for `dax`

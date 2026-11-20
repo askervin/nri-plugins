@@ -798,7 +798,7 @@ and cannot make it the companion of a lease it did not request.
   a NUMA node, and when two leases of a container hold the same node, it
   stays in the container's cpuset.mems until the last of them is released.
   A steered container (one whose settings opt in to steering and whose
-  claims have memory in mode `numa`: memory steered by cgmpolmgr,
+  claims have memory in mode `numa`: memory steered by the driver,
   [usage.md](usage.md#steering)) cannot take a `numa` lease: the lend is
   refused with "lend node N to <container>: container is memory-steered
   (container.steering.policy of its claims or the node defaults); lending
@@ -807,7 +807,7 @@ and cannot make it the companion of a lease it did not request.
   may, also with `numa` claims of its own: the lent node joins the nodes
   of its claims in its cpuset.mems. `dax` leases lend no node and are
   not affected.
-  Both components would own the container's cpuset.mems, and cgmpolmgr
+  Both components would own the container's cpuset.mems, and steering
   writes cgroupfs directly, which the next NRI update reverts.
   nri-resource-policy or the kubelet memory manager would conflict the
   same way; next to an NRI resource policy that sets cpuset.mems

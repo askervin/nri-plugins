@@ -84,10 +84,7 @@ jobs:
           go test -race \
               ./cmd/cxl-request/... \
               ./cmd/plugins/dra-driver-cxl/... \
-              ./pkg/cgmemnotify/... \
-              ./pkg/cgmpolmgr/... \
               ./pkg/cxl/... \
-              ./pkg/mpolinject/... \
               ./pkg/udev/... \
               ./scripts/cxl-dump/... \
               ./scripts/testing/fake-cxl-pool/...

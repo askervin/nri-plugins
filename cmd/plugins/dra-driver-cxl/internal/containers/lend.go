@@ -29,8 +29,8 @@ import (
 // lends and revokes must not be called synchronously from an NRI event
 // handler: the runtime serializes the events and the updates.
 
-// ErrSteered is the error of a lend to a container whose memory cgmpolmgr
-// steers.
+// ErrSteered is the error of a lend to a container whose memory a
+// steering manager steers.
 var ErrSteered = errors.New("container is memory-steered (container.steering.policy of its claims or the node defaults); lending is not supported together with steering yet")
 
 // LendNode lends the NUMA node to the newest container of the pod with the

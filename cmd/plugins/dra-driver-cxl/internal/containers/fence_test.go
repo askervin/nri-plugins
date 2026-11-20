@@ -167,7 +167,7 @@ func TestFenceCreateContainer(t *testing.T) {
 		{withSpecMems(testCtr(pod, "c2", "a", 0), "0-1"), "-", "0-1"},
 		{withSpecMems(testCtr(pod, "c3", "a", 0), "0-2"), "0-1", "0-1"},
 		{withSpecMems(testCtr(pod, "c4", "a", 0), "1"), "-", "1"},
-		// steered: left to cgmpolmgr
+		// steered: left to its steering manager
 		{withClaims(testCtr(pod, "c5", "a", 0), "dram-auto"), "-", ""},
 		{withClaims(testCtr(pod, "c6", "a", 0), "numa-auto", "dax"), "-", ""},
 		// not steered: DRAM is capacity only, numa slices and regions

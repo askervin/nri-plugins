@@ -26,8 +26,8 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/steering"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
-	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
 	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -166,18 +166,18 @@ func TestContainerResults(t *testing.T) {
 	p := newDecider(t, config.Container{})
 	for _, tc := range []struct {
 		refs    []resultRef
-		mem     cgmpolmgr.MemoryTypes
+		mem     steering.MemoryTypes
 		claimed string
 	}{
-		{[]resultRef{{"split", 0}}, cgmpolmgr.MemoryTypes{CXLNodes: []int{2}, CXLQuota: 1 << 30}, "2"},
-		{[]resultRef{{"split", 1}}, cgmpolmgr.MemoryTypes{}, ""},
-		{[]resultRef{{"split", 2}}, cgmpolmgr.MemoryTypes{DRAMNodes: []int{0, 1}, DRAMQuota: 2 << 30}, ""},
-		{[]resultRef{{"split", 3}}, cgmpolmgr.MemoryTypes{CXLNodes: []int{4}, CXLQuota: 1 << 30}, "4"},
+		{[]resultRef{{"split", 0}}, steering.MemoryTypes{CXLNodes: []int{2}, CXLQuota: 1 << 30}, "2"},
+		{[]resultRef{{"split", 1}}, steering.MemoryTypes{}, ""},
+		{[]resultRef{{"split", 2}}, steering.MemoryTypes{DRAMNodes: []int{0, 1}, DRAMQuota: 2 << 30}, ""},
+		{[]resultRef{{"split", 3}}, steering.MemoryTypes{CXLNodes: []int{4}, CXLQuota: 1 << 30}, "4"},
 		{[]resultRef{{"split", 0}, {"split", 2}, {"pool", 0}},
-			cgmpolmgr.MemoryTypes{DRAMNodes: []int{0, 1}, CXLNodes: []int{2, 3}, DRAMQuota: 2 << 30, CXLQuota: 1<<30 + 256<<20}, "2-3"},
-		{[]resultRef{{"pool", 1}, {"lease", 0}}, cgmpolmgr.MemoryTypes{}, ""},
+			steering.MemoryTypes{DRAMNodes: []int{0, 1}, CXLNodes: []int{2, 3}, DRAMQuota: 2 << 30, CXLQuota: 1<<30 + 256<<20}, "2-3"},
+		{[]resultRef{{"pool", 1}, {"lease", 0}}, steering.MemoryTypes{}, ""},
 		// unknown claims and results
-		{[]resultRef{{"split", 7}, {"gone", 0}, {"pool", 2}}, cgmpolmgr.MemoryTypes{}, ""},
+		{[]resultRef{{"split", 7}, {"gone", 0}, {"pool", 2}}, steering.MemoryTypes{}, ""},
 	} {
 		results := p.results(testPod("p"), "ns/pod/ctr", tc.refs)
 		if mem := steeredMemory(results); fmt.Sprint(mem) != fmt.Sprint(tc.mem) {
@@ -293,7 +293,7 @@ func TestManage(t *testing.T) {
 	results := []result{{settings: claimSettings("a", "r", config.Steering{MaxStep: "1Gi"})}}
 	_, err := p.decide("ns/pod/ctr", results, true)
 	wantErr(t, err, "container ns/pod/ctr: MemoryConfig: container.steering.maxStep needs a policy other than none (policy none (default), maxStep 1Gi from claim ns/a request r)")
-	// no plan of a quota that cgmpolmgr refuses
+	// no plan of a quota that the steering package refuses
 	results = []result{{deviceType: device.DeviceTypeDRAM, mode: cxlapi.ModeNUMA, numaNodes: []int{0},
 		settings: claimSettings("a", "r", config.Steering{Policy: config.PolicyFirstDRAM, MinStep: "1Gi"})}}
 	_, err = p.decide("ns/pod/ctr", results, true)

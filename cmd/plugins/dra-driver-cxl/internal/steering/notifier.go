@@ -12,16 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package cgmemnotify reports when the memory usage of a cgroup v2
-// leaves configured bounds. The upper bound is enforced by writing
+// A Notifier reports when the memory usage of a cgroup v2 leaves
+// configured bounds. The upper bound is enforced by writing
 // it to memory.high, so the kernel throttles the cgroup at the bound
 // and increments the "high" counter in memory.events. The lower
 // bound is checked against memory.current on every wakeup.
 //
-// The package has no goroutines. A Notifier is driven by one
-// goroutine that calls SetBounds, Wait and Close. Interrupt wakes a
-// blocked Wait and may be called from any goroutine.
-package cgmemnotify
+// A Notifier has no goroutines. It is driven by one goroutine that
+// calls SetBounds, Wait and Close. Interrupt wakes a blocked Wait and
+// may be called from any goroutine.
+
+package steering
 
 import (
 	"bytes"
@@ -91,10 +92,10 @@ type Notifier struct {
 	highCount  int64
 }
 
-// New returns a Notifier for the cgroup with no bounds set. The
+// NewNotifier returns a Notifier for the cgroup with no bounds set. The
 // cgroup must be a cgroup v2 directory with the memory controller
 // enabled.
-func New(cgroupPath string) (*Notifier, error) {
+func NewNotifier(cgroupPath string) (*Notifier, error) {
 	if _, err := os.Stat(filepath.Join(cgroupPath, "memory.high")); err != nil {
 		return nil, fmt.Errorf("cgroup v2 memory controller not available: %w", err)
 	}

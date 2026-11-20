@@ -18,7 +18,7 @@ import (
 	"k8s.io/utils/cpuset"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/steering"
 	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
@@ -39,7 +39,7 @@ import (
 // only; STARTED, the runtime marked it started (PostStartContainer, or
 // running at Synchronize): updates reach the cgroup; GONE, stopped or
 // removed, the record leaves the table. Management (ManagementTable),
-// decided once when the record is made: STEERED, a cgmpolmgr manager of this
+// decided once when the record is made: STEERED, a steering manager of this
 // process writes its cpuset.mems and memory.high (or will, with its Plan; or
 // its settings do not combine any more), never fenced and never lent to;
 // FENCED, the plugin owns its cpuset.mems through NRI: wantMems; NONE
@@ -90,7 +90,7 @@ type Container struct {
 	// Lends are the nodes lent to it with their holders.
 	Lends Lends
 	// Plan is the steering plan of a steered container until its start.
-	Plan *cgmpolmgr.Plan
+	Plan *steering.Plan
 	// Steering is its effective steering policy with its origin, as the
 	// log lines give it: "auto from claim ns/a request r".
 	Steering string
@@ -98,7 +98,7 @@ type Container struct {
 	// unsteered is its management when its steering does not start.
 	unsteered Management
 	// manager steers its memory from its start until it stops.
-	manager *cgmpolmgr.Manager
+	manager *steering.Manager
 	// seq orders the records by their creation.
 	seq uint64
 }
@@ -253,7 +253,7 @@ var ManagementTable = fsm.Table[Management]{
 		},
 		{
 			From: fsm.List(ManagementSteered), To: ManagementFenced, Triggers: fsm.List(TriggerStart),
-			When:    "its manager does not start (no cgroup, cgmpolmgr.New or Start fails) and fencing allowed-mems",
+			When:    "its manager does not start (no cgroup, steering.New or Start fails) and fencing allowed-mems",
 			Effects: "its Steered record removed; fenced by the repair pass at its PostStartContainer",
 		},
 		{
@@ -346,7 +346,7 @@ func (c *Container) started() bool {
 	return c.Lifecycle == LifecycleTaskCreated || c.Lifecycle == LifecycleStarted
 }
 
-// steered tells whether a manager of cgmpolmgr steers the memory of the
+// steered tells whether a steering manager steers the memory of the
 // container or will at its start.
 func (c *Container) steered() bool {
 	return c.Management == ManagementSteered

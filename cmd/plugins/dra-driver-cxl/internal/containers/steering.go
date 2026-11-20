@@ -25,13 +25,13 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/steering"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
-	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 )
 
-// The steering of the memory of containers by pkg/cgmpolmgr: a manager of
-// the plugin writes the cpuset.mems, the thread memory policies and
+// The steering of the memory of containers: a steering manager of the
+// plugin writes the cpuset.mems, the thread memory policies and
 // memory.high of a steered container directly, never through NRI. The
 // Steered records of the store name the containers whose cgroup a manager
 // writes: a record is committed before the manager writes the cgroup, and
@@ -49,9 +49,9 @@ const steeredCommitWait = api.DefaultPluginRequestTimeout / 2
 
 // startManager starts a steering manager: its first step writes the
 // cgroup (a variable for tests).
-var startManager = (*cgmpolmgr.Manager).Start
+var startManager = (*steering.Manager).Start
 
-// klogLogger writes cgmpolmgr log messages with klog.
+// klogLogger writes steering log messages with klog.
 type klogLogger struct{}
 
 func (klogLogger) Debugf(format string, args ...any) { klog.V(4).Infof(format, args...) }
@@ -59,30 +59,30 @@ func (klogLogger) Infof(format string, args ...any)  { klog.Infof(format, args..
 func (klogLogger) Warnf(format string, args ...any)  { klog.Warningf(format, args...) }
 func (klogLogger) Errorf(format string, args ...any) { klog.Errorf(format, args...) }
 
-// cgmPolicy returns the cgmpolmgr policy of the steering for the memory
+// cgmPolicy returns the policy of the steering settings for the memory
 // types, and false when the policy is none or there are neither DRAM nor
 // CXL nodes. Policy auto is first-cxl for CXL nodes only, first-dram for
 // DRAM nodes only, and start-interleaved for both.
-func cgmPolicy(s *config.Steering, mem cgmpolmgr.MemoryTypes) (cgmpolmgr.Policy, bool) {
+func cgmPolicy(s *config.Steering, mem steering.MemoryTypes) (steering.Policy, bool) {
 	if s == nil || s.Policy == "" || s.Policy == config.PolicyNone || (len(mem.DRAMNodes) == 0 && len(mem.CXLNodes) == 0) {
-		return cgmpolmgr.Policy{}, false
+		return steering.Policy{}, false
 	}
 	order := s.Policy
 	if order == config.PolicyAuto {
 		switch {
 		case len(mem.CXLNodes) == 0:
-			order = cgmpolmgr.MemoryUseFirstDRAM.String()
+			order = steering.MemoryUseFirstDRAM.String()
 		case len(mem.DRAMNodes) == 0:
-			order = cgmpolmgr.MemoryUseFirstCXL.String()
+			order = steering.MemoryUseFirstCXL.String()
 		default:
-			order = cgmpolmgr.MemoryUseStartInterleaved.String()
+			order = steering.MemoryUseStartInterleaved.String()
 		}
 	}
-	pol := cgmpolmgr.Policy{MemoryUseOrder: order, MinStep: s.MinStep, MaxStep: s.MaxStep}
+	pol := steering.Policy{MemoryUseOrder: order, MinStep: s.MinStep, MaxStep: s.MaxStep}
 	for _, wp := range s.Waypoints {
-		cwp := cgmpolmgr.MemoryUseWaypoint{}
+		cwp := steering.MemoryUseWaypoint{}
 		for _, tu := range wp.TargetUsages {
-			cwp.TargetUsages = append(cwp.TargetUsages, cgmpolmgr.MemoryUseWaypointEntry{MemoryType: tu.MemoryType, Usage: tu.Usage})
+			cwp.TargetUsages = append(cwp.TargetUsages, steering.MemoryUseWaypointEntry{MemoryType: tu.MemoryType, Usage: tu.Usage})
 		}
 		pol.MemoryUseWaypoints = append(pol.MemoryUseWaypoints, cwp)
 	}
@@ -93,7 +93,7 @@ func cgmPolicy(s *config.Steering, mem cgmpolmgr.MemoryTypes) (cgmpolmgr.Policy,
 // runtime has created along its plan, recorded in the store before the
 // manager writes its cgroup. A container whose steering does not start is
 // managed as a container that is not steered (notSteered).
-func (p *Plugin) startSteering(c *Container, ctr *api.Container, plan *cgmpolmgr.Plan) {
+func (p *Plugin) startSteering(c *Container, ctr *api.Container, plan *steering.Plan) {
 	name := c.name()
 	dir, err := resolveContainerCgroupDir(ctr)
 	if err != nil {
@@ -102,10 +102,10 @@ func (p *Plugin) startSteering(c *Container, ctr *api.Container, plan *cgmpolmgr
 		return
 	}
 	klog.V(3).Infof("NRI StartContainer: ctr=%s id=%s pid=%d cgroupsPath=%s", name, c.ID, ctr.GetPid(), dir)
-	mgr, err := cgmpolmgr.New(dir, plan,
-		cgmpolmgr.WithName(name),
-		cgmpolmgr.WithLogger(klogLogger{}),
-		cgmpolmgr.WithSysRoot(filepath.Join(p.opts.SysRoot, "/sys")))
+	mgr, err := steering.New(dir, plan,
+		steering.WithName(name),
+		steering.WithLogger(klogLogger{}),
+		steering.WithSysRoot(filepath.Join(p.opts.SysRoot, "/sys")))
 	if err != nil {
 		klog.Warningf("NRI StartContainer: ctr=%s: failed to create memory steering manager: %v", name, err)
 		p.notSteered(c, false)
@@ -167,7 +167,7 @@ func (p *Plugin) stopManagers(gone []*Container) {
 
 // stopManager stops the manager of the container id, which sets its
 // memory.high to max, and then removes its Steered record.
-func (p *Plugin) stopManager(id, name string, mgr *cgmpolmgr.Manager) {
+func (p *Plugin) stopManager(id, name string, mgr *steering.Manager) {
 	mgr.Stop()
 	p.removeSteered(id)
 	klog.V(3).Infof("NRI: stopped memory steering for ctr=%s", name)
@@ -211,7 +211,7 @@ func release(c *Container, dir string) {
 			c.name(), c.ID, memory)
 		return
 	}
-	was, err := cgmpolmgr.Release(dir)
+	was, err := steering.Release(dir)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		klog.V(3).Infof("NRI Synchronize: ctr=%s id=%s: steering not restarted, memory %s; no memory.high: %v",

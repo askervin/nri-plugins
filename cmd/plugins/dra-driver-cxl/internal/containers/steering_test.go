@@ -27,8 +27,8 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/steering"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
-	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 )
 
@@ -487,7 +487,7 @@ func TestSteeredRecordBeforeStart(t *testing.T) {
 	var at map[string]string
 	old := startManager
 	t.Cleanup(func() { startManager = old })
-	startManager = func(m *cgmpolmgr.Manager) error {
+	startManager = func(m *steering.Manager) error {
 		at = e.steered()
 		return old(m)
 	}
@@ -505,7 +505,7 @@ func TestSteeredRecordBeforeStart(t *testing.T) {
 		t.Fatal("not steered")
 	}
 
-	startManager = func(*cgmpolmgr.Manager) error {
+	startManager = func(*steering.Manager) error {
 		at = e.steered()
 		return errors.New("no cgroup any more")
 	}
@@ -525,7 +525,7 @@ func TestSteeredRecordBeforeStart(t *testing.T) {
 	}
 
 	started := false
-	startManager = func(*cgmpolmgr.Manager) error {
+	startManager = func(*steering.Manager) error {
 		started = true
 		return nil
 	}
@@ -548,29 +548,29 @@ func TestSteeredRecordBeforeStart(t *testing.T) {
 }
 
 func TestCgmPolicy(t *testing.T) {
-	dram := cgmpolmgr.MemoryTypes{DRAMNodes: []int{0}, DRAMQuota: 1 << 30}
-	cxl := cgmpolmgr.MemoryTypes{CXLNodes: []int{2}, CXLQuota: 1 << 30}
-	both := cgmpolmgr.MemoryTypes{DRAMNodes: []int{0}, CXLNodes: []int{2}, DRAMQuota: 1 << 30, CXLQuota: 1 << 30}
+	dram := steering.MemoryTypes{DRAMNodes: []int{0}, DRAMQuota: 1 << 30}
+	cxl := steering.MemoryTypes{CXLNodes: []int{2}, CXLQuota: 1 << 30}
+	both := steering.MemoryTypes{DRAMNodes: []int{0}, CXLNodes: []int{2}, DRAMQuota: 1 << 30, CXLQuota: 1 << 30}
 	for _, tc := range []struct {
 		name  string
 		s     *config.Steering
-		mem   cgmpolmgr.MemoryTypes
-		want  cgmpolmgr.Policy
+		mem   steering.MemoryTypes
+		want  steering.Policy
 		steer bool
 	}{
 		{name: "nil", s: nil, mem: both},
 		{name: "no policy", s: &config.Steering{}, mem: both},
 		{name: "none", s: &config.Steering{Policy: config.PolicyNone}, mem: both},
 		{name: "no memory", s: &config.Steering{Policy: config.PolicyAuto}},
-		{name: "auto CXL only", s: &config.Steering{Policy: config.PolicyAuto}, mem: cxl, want: cgmpolmgr.Policy{MemoryUseOrder: "first-cxl"}, steer: true},
-		{name: "auto DRAM only", s: &config.Steering{Policy: config.PolicyAuto}, mem: dram, want: cgmpolmgr.Policy{MemoryUseOrder: "first-dram"}, steer: true},
+		{name: "auto CXL only", s: &config.Steering{Policy: config.PolicyAuto}, mem: cxl, want: steering.Policy{MemoryUseOrder: "first-cxl"}, steer: true},
+		{name: "auto DRAM only", s: &config.Steering{Policy: config.PolicyAuto}, mem: dram, want: steering.Policy{MemoryUseOrder: "first-dram"}, steer: true},
 		{name: "auto both", s: &config.Steering{Policy: config.PolicyAuto, MaxStep: "1Gi"}, mem: both,
-			want: cgmpolmgr.Policy{MemoryUseOrder: "start-interleaved", MaxStep: "1Gi"}, steer: true},
+			want: steering.Policy{MemoryUseOrder: "start-interleaved", MaxStep: "1Gi"}, steer: true},
 		{name: "first-dram", s: &config.Steering{Policy: config.PolicyFirstDRAM, MinStep: "64Mi"}, mem: cxl,
-			want: cgmpolmgr.Policy{MemoryUseOrder: "first-dram", MinStep: "64Mi"}, steer: true},
-		{name: "first-cxl", s: &config.Steering{Policy: config.PolicyFirstCXL}, mem: both, want: cgmpolmgr.Policy{MemoryUseOrder: "first-cxl"}, steer: true},
-		{name: "start-interleaved", s: &config.Steering{Policy: config.PolicyStartInterleaved}, mem: both, want: cgmpolmgr.Policy{MemoryUseOrder: "start-interleaved"}, steer: true},
-		{name: "end-interleaved", s: &config.Steering{Policy: config.PolicyEndInterleaved}, mem: both, want: cgmpolmgr.Policy{MemoryUseOrder: "end-interleaved"}, steer: true},
+			want: steering.Policy{MemoryUseOrder: "first-dram", MinStep: "64Mi"}, steer: true},
+		{name: "first-cxl", s: &config.Steering{Policy: config.PolicyFirstCXL}, mem: both, want: steering.Policy{MemoryUseOrder: "first-cxl"}, steer: true},
+		{name: "start-interleaved", s: &config.Steering{Policy: config.PolicyStartInterleaved}, mem: both, want: steering.Policy{MemoryUseOrder: "start-interleaved"}, steer: true},
+		{name: "end-interleaved", s: &config.Steering{Policy: config.PolicyEndInterleaved}, mem: both, want: steering.Policy{MemoryUseOrder: "end-interleaved"}, steer: true},
 		{
 			name: "waypoints",
 			s: &config.Steering{Policy: config.PolicyWaypoints, MinStep: "64Mi", MaxStep: "1Gi", Waypoints: []config.Waypoint{
@@ -578,9 +578,9 @@ func TestCgmPolicy(t *testing.T) {
 				{TargetUsages: []config.TargetUsage{{MemoryType: config.MemoryTypeDRAM, Usage: "1Gi"}, {MemoryType: config.MemoryTypeCXL, Usage: "1Gi"}}},
 			}},
 			mem: both,
-			want: cgmpolmgr.Policy{MemoryUseOrder: "waypoints", MinStep: "64Mi", MaxStep: "1Gi", MemoryUseWaypoints: []cgmpolmgr.MemoryUseWaypoint{
-				{TargetUsages: []cgmpolmgr.MemoryUseWaypointEntry{{MemoryType: "DRAM", Usage: "512Mi"}}},
-				{TargetUsages: []cgmpolmgr.MemoryUseWaypointEntry{{MemoryType: "DRAM", Usage: "1Gi"}, {MemoryType: "CXL", Usage: "1Gi"}}},
+			want: steering.Policy{MemoryUseOrder: "waypoints", MinStep: "64Mi", MaxStep: "1Gi", MemoryUseWaypoints: []steering.MemoryUseWaypoint{
+				{TargetUsages: []steering.MemoryUseWaypointEntry{{MemoryType: "DRAM", Usage: "512Mi"}}},
+				{TargetUsages: []steering.MemoryUseWaypointEntry{{MemoryType: "DRAM", Usage: "1Gi"}, {MemoryType: "CXL", Usage: "1Gi"}}},
 			}},
 			steer: true,
 		},
@@ -594,7 +594,7 @@ func TestCgmPolicy(t *testing.T) {
 				return
 			}
 			if err := got.Validate(); err != nil {
-				t.Errorf("cgmpolmgr refuses %+v: %v", got, err)
+				t.Errorf("steering refuses %+v: %v", got, err)
 			}
 			if _, err := got.Plan(tc.mem); err != nil {
 				t.Errorf("no plan for %+v: %v", got, err)
@@ -604,10 +604,10 @@ func TestCgmPolicy(t *testing.T) {
 }
 
 func TestPolicyNames(t *testing.T) {
-	// every policy but none and auto is a memory use order of cgmpolmgr
+	// every policy but none and auto is a memory use order of the steering package
 	for _, p := range []string{config.PolicyNone, config.PolicyAuto, config.PolicyFirstDRAM, config.PolicyFirstCXL,
 		config.PolicyStartInterleaved, config.PolicyEndInterleaved, config.PolicyWaypoints} {
-		_, err := cgmpolmgr.ParseMemoryUseOrder(p)
+		_, err := steering.ParseMemoryUseOrder(p)
 		if want := p != config.PolicyNone && p != config.PolicyAuto; (err == nil) != want {
 			t.Errorf("%s: %v", p, err)
 		}

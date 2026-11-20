@@ -14,7 +14,7 @@
 
 // Package containers is the NRI plugin of the CXL driver: the record of
 // each container of the node (Container), how the plugin manages its
-// memory (steered by pkg/cgmpolmgr, fenced, or left alone), the fenced NUMA
+// memory (steered by the steering package, fenced, or left alone), the fenced NUMA
 // nodes and the lends of NUMA nodes of CXL memory to running containers.
 // It is the one writer of the cpuset.mems of the containers that it does
 // not steer: one computation (wantMems) and one writer (applyMems) under the

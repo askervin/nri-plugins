@@ -24,7 +24,7 @@ import (
 	"k8s.io/utils/cpuset"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/steering"
 	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -72,11 +72,11 @@ type decision struct {
 	// claimed are the NUMA nodes of the CXL numa memory of the results.
 	claimed cpuset.CPUSet
 	// plan is the steering plan of a steered container, if built.
-	plan *cgmpolmgr.Plan
+	plan *steering.Plan
 	// policy is the memory use order of the plan.
 	policy string
 	// mem is the memory to steer.
-	mem cgmpolmgr.MemoryTypes
+	mem steering.MemoryTypes
 	// capacityOnly: the results have DRAM or region memory that is not
 	// steered.
 	capacityOnly bool
@@ -261,9 +261,9 @@ func claimedNodes(results []result) cpuset.CPUSet {
 // steeredMemory returns the memory types and quotas of the results: DRAM
 // of dram devices, CXL of numa slices of local memdevs, regions and pool
 // devices in mode numa.
-func steeredMemory(results []result) cgmpolmgr.MemoryTypes {
+func steeredMemory(results []result) steering.MemoryTypes {
 	dram, cxl := cpuset.New(), cpuset.New()
-	var mem cgmpolmgr.MemoryTypes
+	var mem steering.MemoryTypes
 	for i := range results {
 		r := &results[i]
 		switch {

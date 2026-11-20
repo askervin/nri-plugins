@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package cgmpolmgr steers the memory allocations of a cgroup v2
+// Package steering steers the memory allocations of a cgroup v2
 // across NUMA nodes along a Plan.
 //
 // A Plan is a sequence of waypoints, each giving a target memory
@@ -32,10 +32,10 @@
 // with ENOMEM without such a node. The nodes of
 // the current step are set as the memory policy of every thread in
 // the cgroup with mpolinject. The step size is enforced with
-// memory.high through cgmemnotify: the kernel throttles the cgroup
+// memory.high through a Notifier: the kernel throttles the cgroup
 // when the step has been allocated, the manager computes the next
 // step, updates the policy and raises memory.high again.
-package cgmpolmgr
+package steering
 
 import (
 	"errors"
@@ -50,9 +50,8 @@ import (
 
 	"k8s.io/utils/cpuset"
 
-	"github.com/containers/nri-plugins/pkg/cgmemnotify"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/mpolinject"
 	logger "github.com/containers/nri-plugins/pkg/log"
-	"github.com/containers/nri-plugins/pkg/mpolinject"
 )
 
 // Logger is the logging interface used by a Manager. The Logger of
@@ -64,7 +63,7 @@ type Logger interface {
 	Errorf(format string, args ...any)
 }
 
-var log Logger = logger.NewLogger("cgmpolmgr")
+var log Logger = logger.NewLogger("steering")
 
 // waitTimeout is the interval at which the lower memory bound is
 // checked when no memory.high event arrives.
@@ -81,7 +80,7 @@ type Manager struct {
 	name       string
 	plan       *Plan
 	log        Logger
-	notifier   *cgmemnotify.Notifier
+	notifier   *Notifier
 	// allowed are the nodes written to cpuset.mems so far.
 	allowed map[int]bool
 	// written: cpuset.mems has been written.
@@ -106,7 +105,7 @@ func WithName(name string) Option {
 }
 
 // WithLogger sets the logger of the manager. The default is the
-// "cgmpolmgr" logger of pkg/log.
+// "steering" logger of pkg/log.
 func WithLogger(l Logger) Option {
 	return func(m *Manager) {
 		m.log = l
@@ -169,13 +168,13 @@ func (m *Manager) Start() error {
 		}
 	}
 
-	m.notifier, err = cgmemnotify.New(m.cgroupPath)
+	m.notifier, err = NewNotifier(m.cgroupPath)
 	if err != nil {
 		return err
 	}
 	m.log.Infof("%s: start steering %s: %s", m.name, m.cgroupPath, m.plan)
 	if err := m.step(usage); err != nil {
-		_ = m.notifier.SetBounds(cgmemnotify.Bounds{})
+		_ = m.notifier.SetBounds(Bounds{})
 		_ = m.notifier.Close()
 		m.notifier = nil
 		return err
@@ -214,7 +213,7 @@ func (m *Manager) loop() {
 			return
 		default:
 		}
-		if errors.Is(err, cgmemnotify.ErrInterrupted) {
+		if errors.Is(err, ErrInterrupted) {
 			continue
 		}
 		if errors.Is(err, os.ErrNotExist) {
@@ -230,7 +229,7 @@ func (m *Manager) loop() {
 			}
 			continue
 		}
-		if event.Crossing == cgmemnotify.NoCrossing {
+		if event.Crossing == NoCrossing {
 			continue
 		}
 		m.log.Debugf("%s: %s bound crossed, memory.current=%d", m.name, event.Crossing, event.MemoryCurrent)
@@ -254,7 +253,7 @@ func (m *Manager) closeNotifier() {
 
 // release removes memory.high from the cgroup.
 func (m *Manager) release() {
-	err := m.notifier.SetBounds(cgmemnotify.Bounds{})
+	err := m.notifier.SetBounds(Bounds{})
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		m.log.Debugf("%s: cgroup is gone, memory.high not removed", m.name)
@@ -297,7 +296,7 @@ func Release(cgroupPath string) (string, error) {
 
 // numaUsage returns the steered memory usage per node of the cgroup.
 func (m *Manager) numaUsage() (NodeMem, error) {
-	usage, err := cgmemnotify.NumaUsage(m.cgroupPath, numaUsageCategories...)
+	usage, err := NumaUsage(m.cgroupPath, numaUsageCategories...)
 	if err != nil {
 		return nil, fmt.Errorf("reading NUMA usage: %w", err)
 	}
@@ -314,14 +313,14 @@ func (m *Manager) step(usage NodeMem) error {
 	}
 	if len(step.Nodes) == 0 {
 		m.log.Debugf("%s: step: usage=%s nothing left to steer, removing memory.high", m.name, usage)
-		return m.notifier.SetBounds(cgmemnotify.Bounds{})
+		return m.notifier.SetBounds(Bounds{})
 	}
 
 	if err := m.allowNodes(step.Nodes); err != nil {
 		return err
 	}
 
-	pids, err := cgmemnotify.Procs(m.cgroupPath)
+	pids, err := Procs(m.cgroupPath)
 	if err != nil {
 		return fmt.Errorf("reading processes: %w", err)
 	}
@@ -337,11 +336,11 @@ func (m *Manager) step(usage NodeMem) error {
 		}
 	}
 
-	current, err := cgmemnotify.MemoryCurrent(m.cgroupPath)
+	current, err := MemoryCurrent(m.cgroupPath)
 	if err != nil {
 		return fmt.Errorf("reading memory.current: %w", err)
 	}
-	bounds := cgmemnotify.Bounds{Upper: current + step.Bytes}
+	bounds := Bounds{Upper: current + step.Bytes}
 	if current > step.Bytes {
 		bounds.Lower = current - step.Bytes
 	}
