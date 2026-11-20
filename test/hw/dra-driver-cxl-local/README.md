@@ -20,7 +20,7 @@ CXL memdev with RAM capacity.
 | `test3-local-leases.sh` | `cxl-request` leases of local memory in modes `numa` and `dax`, other containers fenced off the leased node |
 | `test4-shared-swmr.sh` | the memdev in `sharedDevices`: single writer, many read-only readers, a read-only shared lease, exclusive claims, persistence |
 | `test5-memory-integrity.sh` | every page of the memdev, and isolation of slices at 128 GiB distance |
-| `alloc-touch.py`, `dax-pattern.py`, `dax-scan.py` | tools that the test pods run (with `numa-touch.py` and `pool-dax-rw.py` of the e2e tests) |
+| `alloc-touch.py`, `dax-pattern.py`, `dax-scan.py` | tools that the test pods run (with `numa-touch.py` and `dax-rw.py` of the e2e tests) |
 
 ## Running
 

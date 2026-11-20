@@ -95,7 +95,7 @@ reader-script() {
     # Print the script of a reader: print its CXL_ variables, check that
     # the device can be neither opened for writing nor mapped writable,
     # and watch the string at offset 0 in the background, holding a
-    # read-only mapping until /tmp/stop exists (pool-dax-rw.py watch: "read:
+    # read-only mapping until /tmp/stop exists (dax-rw.py watch: "read:
     # TEXT", "holding", "final: TEXT").
     cat <<EOF
 env | grep ^CXL_ | sort

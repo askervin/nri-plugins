@@ -13,7 +13,7 @@
 
 LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_DIR=$(cd "$LIB_DIR/../../.." && pwd)
-E2E_TOOLS_DIR="$REPO_DIR/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2"
+E2E_TOOLS_DIR="$REPO_DIR/test/e2e/memory.test-suite/dra-driver-cxl"
 
 TARGET=${TARGET:-root@hostname}
 NS=${NS:-cxl-hw}
@@ -272,7 +272,7 @@ driver_log() { # Usage: driver_log [SINCE] -- log of the driver
 }
 
 tools_configmap() {
-    # ConfigMap "tools" with numa-touch.py and dax-rw.py (pool-dax-rw.py)
+    # ConfigMap "tools" with numa-touch.py and dax-rw.py
     # of the e2e tests and alloc-touch.py and dax-pattern.py, mounted at
     # /tools in the test pods.
     {
@@ -289,7 +289,7 @@ tools_configmap() {
         echo "  numa-touch.py: |"
         sed 's/^/    /' "$E2E_TOOLS_DIR/numa-touch.py"
         echo "  dax-rw.py: |"
-        sed 's/^/    /' "$E2E_TOOLS_DIR/pool-dax-rw.py"
+        sed 's/^/    /' "$E2E_TOOLS_DIR/dax-rw.py"
     } | kapply
 }
 

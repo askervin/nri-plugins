@@ -152,11 +152,11 @@ echo "devdax devices: VM2 $VM2_DAX, VM1 $VM1_DAX"
 echo "### E: what one VM writes the other reads, and the host finds in the backing file"
 TAG="fake-cxl-pool $(date +%Y-%m-%dT%H:%M:%S.%N)"
 dax-write() { # VMDIR DAX OFFSET TEXT
-    vmdir-command "$1" "python3 /usr/local/bin/pool-dax-rw.py write $2 $3 '$4'" ||
+    vmdir-command "$1" "python3 /usr/local/bin/dax-rw.py write $2 $3 '$4'" ||
         command-error "cannot write to $2 in $(vmdir-label "$1")"
 }
 dax-expect() { # VMDIR DAX OFFSET TEXT
-    vmdir-command "$1" "python3 /usr/local/bin/pool-dax-rw.py read $2 $3" ||
+    vmdir-command "$1" "python3 /usr/local/bin/dax-rw.py read $2 $3" ||
         command-error "cannot read $2 in $(vmdir-label "$1")"
     [ "$COMMAND_OUTPUT" == "$4" ] ||
         error "$(vmdir-label "$1") read '$COMMAND_OUTPUT' at $3 of $2, expected '$4'"

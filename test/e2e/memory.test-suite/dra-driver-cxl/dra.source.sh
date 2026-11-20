@@ -139,8 +139,8 @@ DRA_POOL_CONFIG_KEY=fake-cxl-pool
 DRA_NS=cxl-pool-demo               # namespace of the test objects
 DRA_INSTALLED_VMS=()               # dra-install: the VMDIRs of the nodes, the VM of the test first,
 declare -A DRA_WORKERS=()          # and VMDIR -> 1 of the other nodes, the workers
-DRA_DAX_TOOL="$DRA_HELPER_DIR/n4-cxl-shared-2/pool-dax-rw.py"
-DRA_NUMA_TOOL="$DRA_HELPER_DIR/n4-cxl-shared-2/numa-touch.py"
+DRA_DAX_TOOL="$DRA_HELPER_DIR/dax-rw.py"
+DRA_NUMA_TOOL="$DRA_HELPER_DIR/numa-touch.py"
 DRA_JSON=""                        # JSON of the last dra-json/dra-wait
 DRA_LOCAL_NAME=""                  # dra-local-device: the device in fake-cxl-pool-server,
 DRA_LOCAL_SERIAL=""                # its serial (0x<lower-case hex>),
@@ -342,11 +342,11 @@ dra-dax-tool-install() {
     # Create ConfigMap dax-rw in $DRA_NS of the cluster of the VM of VMDIR,
     # with the tools that pods mount at /tools and run with python3 (image
     # $DRA_TOOLS_IMAGE):
-    #   dax-rw.py      = pool-dax-rw.py: write and read strings in a devdax
-    #                    device, or through an inherited fd (--fd N)
-    #   numa-touch.py  = numa-touch.py: allocate and touch memory that
-    #                    prefers one NUMA node, or with the memory policy
-    #                    of the process, report where the pages are
+    #   dax-rw.py      write and read strings in a devdax device, or
+    #                  through an inherited fd (--fd N)
+    #   numa-touch.py  allocate and touch memory that prefers one NUMA
+    #                  node, or with the memory policy of the process,
+    #                  report where the pages are
     # and the HOST-FILEs of a test as /tools/NAME (text files).
     local vmdir="$1" spec name file from=""
     shift
@@ -1573,7 +1573,7 @@ dra-local-seed() {
     region=$(dra-value "$DRA_MEMDEV" "j['regions'][0]['name']")
     dax=/dev/$(dra-value "$DRA_MEMDEV" "dax_slices()[0]['name']")
     for off in "$@"; do
-        vmdir-command "$vmdir" "pool-dax-rw.py write $dax $off $(printf %q "$text") && pool-dax-rw.py read $dax $off" ||
+        vmdir-command "$vmdir" "dax-rw.py write $dax $off $(printf %q "$text") && dax-rw.py read $dax $off" ||
             command-error "cannot write to $dax at $off in $label"
         [ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "$text" ] ||
             error "read '$(tail -n 1 <<< "$COMMAND_OUTPUT")' at $off of $dax in $label, expected '$text'"

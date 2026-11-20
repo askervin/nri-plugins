@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """Write and read strings in CXL memory through a devdax device.
 
-Run in a VM as root. pool.source.sh copies this to the VMs.
+Run in a VM as root (pool-client-install of pool.source.sh copies it to
+/usr/local/bin) or in a pod (/tools of dra-dax-tool-install).
 
 Usage:
-  pool-dax-rw.py write DEV OFFSET TEXT        write TEXT and a NUL byte at OFFSET
-  pool-dax-rw.py read DEV OFFSET              print the NUL-terminated string at OFFSET
-  pool-dax-rw.py watch DEV OFFSET STOPFILE    print "read: STRING" and "holding", keep
+  dax-rw.py write DEV OFFSET TEXT        write TEXT and a NUL byte at OFFSET
+  dax-rw.py read DEV OFFSET              print the NUL-terminated string at OFFSET
+  dax-rw.py watch DEV OFFSET STOPFILE    print "read: STRING" and "holding", keep
                                               the device mapped read-only, print
                                               "changed: STRING" when it changes, and
                                               "final: STRING" when STOPFILE exists
-  pool-dax-rw.py check-ro DEV OFFSET          exit 0 if the device cannot be written:
+  dax-rw.py check-ro DEV OFFSET          exit 0 if the device cannot be written:
                                               open for writing (DEV) and a writable
                                               mapping are refused; print the errors
-  pool-dax-rw.py --fd N OP OFFSET [ARG]       the same through the open fd N
+  dax-rw.py --fd N OP OFFSET [ARG]       the same through the open fd N
 
 DEV is /dev/daxX.Y. OFFSET is in bytes, or with a K, M or G suffix.
 read, watch and check-ro open DEV read-only and map it read-only: they

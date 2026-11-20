@@ -28,7 +28,6 @@
 
 POOL_SRC_DIR="$nri_resource_policy_src/scripts/testing/fake-cxl-pool"
 POOL_BIN_DIR="$POOL_SRC_DIR/bin"
-POOL_HELPER_DIR="$(dirname "${BASH_SOURCE[0]}")"
 POOL_DIR="/tmp/fake-cxl-pool"                   # pool of device backing files of the default server
 POOL_PORT="${FAKE_CXL_POOL_PORT:-9909}"         # the port of a server without --port
 POOL_URL="http://127.0.0.1:$POOL_PORT"          # the first server, seen from the host
@@ -638,15 +637,15 @@ pool-client-install() {
     # Usage: pool-client-install VMDIR...
     #
     # Copy fake-cxl-pool-client (built static by pool-server-start) and
-    # pool-dax-rw.py into the VMs, to /usr/local/bin.
+    # dax-rw.py into the VMs, to /usr/local/bin.
     local vmdir
     [ -x "$POOL_BIN_DIR/fake-cxl-pool-client" ] ||
         host-command "make -C \"$POOL_SRC_DIR\" bin/fake-cxl-pool-client" ||
             command-error "cannot build fake-cxl-pool-client"
     for vmdir in "$@"; do
         vmdir-put-file "$vmdir" "$POOL_BIN_DIR/fake-cxl-pool-client" /usr/local/bin/fake-cxl-pool-client
-        vmdir-put-file "$vmdir" "$POOL_HELPER_DIR/pool-dax-rw.py" /usr/local/bin/pool-dax-rw.py
-        vmdir-command "$vmdir" "chmod 755 /usr/local/bin/fake-cxl-pool-client /usr/local/bin/pool-dax-rw.py && fake-cxl-pool-client --help | head -n 1" ||
+        vmdir-put-file "$vmdir" "$DRA_DAX_TOOL" /usr/local/bin/dax-rw.py
+        vmdir-command "$vmdir" "chmod 755 /usr/local/bin/fake-cxl-pool-client /usr/local/bin/dax-rw.py && fake-cxl-pool-client --help | head -n 1" ||
             command-error "cannot run fake-cxl-pool-client in $(basename "$vmdir")"
     done
 }
