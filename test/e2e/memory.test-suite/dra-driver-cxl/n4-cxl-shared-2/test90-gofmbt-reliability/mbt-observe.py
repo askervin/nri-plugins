@@ -228,7 +228,7 @@ holder check and a concurrent erofs mount would fail):
       In a VM, as root: arm a one-shot watcher (A23 driver-kill-at) and
       print its state once it is armed; mbt.source.sh runs it detached
       (setsid). It SIGKILLs the driver process of the node (crictl, as
-      dra-driver-kill) at the first poll (every MS, default 2) that sees
+      mbt-driver-kill) at the first poll (every MS, default 2) that sees
       the marker of a persistent Prepare that was not there when it was
       armed: region a CXL region of mode pmem; ns a namespace with a
       size in the nvdimm region of such a region; mount a mount under

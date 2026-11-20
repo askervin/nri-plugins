@@ -128,6 +128,99 @@ exit $?'
 ### Names
 ###
 
+mbt-controller-start() {
+    # Usage: mbt-controller-start UNIT
+    #
+    # Start the pool controller UNIT of dra-install (one of
+    # DRA_CONTROLLER_UNITS) again after it stopped or was killed: the unit
+    # is transient with Restart=no, so a killed one stays failed until
+    # "systemctl reset-failed", which also removes it, and systemd-run
+    # creates it again with the command line of dra-install
+    # (dra-controller-run). Wait until it is active, 10 s at most. Return
+    # non-zero if it does not start, for instance because it runs already.
+    local unit="$1"
+    dra-controller-units-only mbt-controller-start || return 2
+    vmdir-command "$OUTPUT_DIR" "systemctl reset-failed $unit 2>/dev/null; systemctl is-active $unit" &&
+        { echo "mbt-controller-start: $unit is active already" >&2; return 1; }
+    dra-controller-run "$unit" || return 1
+    retry-until --timeout 10 --interval 1 --message "$unit active" \
+        'vmdir-command-q "$OUTPUT_DIR" "systemctl -q is-active $unit"'
+}
+
+mbt-controller-stop() {
+    # Usage: mbt-controller-stop UNIT
+    #
+    # Stop the pool controller UNIT of dra-install gracefully (systemctl
+    # stop: SIGTERM, the controller deletes the ResourceSlices of its pool
+    # before it exits) and remove the unit (reset-failed). Return non-zero
+    # if it is still active.
+    dra-controller-units-only mbt-controller-stop || return 2
+    vmdir-command "$OUTPUT_DIR" "systemctl stop $1; systemctl reset-failed $1 2>/dev/null; ! systemctl -q is-active $1"
+}
+
+mbt-controller-kill() {
+    # Usage: mbt-controller-kill UNIT
+    #
+    # Kill the pool controller UNIT of dra-install with SIGKILL: it leaves
+    # its ResourceSlices behind and, with Restart=no, its unit stays failed
+    # until mbt-controller-start. Wait until it is not active any more, 5 s
+    # at most. Return non-zero if it was not active or is still active.
+    dra-controller-units-only mbt-controller-kill || return 2
+    vmdir-command "$OUTPUT_DIR" "systemctl -q is-active $1 || { echo '$1 is not active'; exit 1; }
+systemctl kill --signal=SIGKILL $1 || exit 1
+for i in \$(seq 50); do systemctl -q is-active $1 || break; sleep 0.1; done
+systemctl is-active $1; ! systemctl -q is-active $1"
+}
+
+mbt-driver-kill() {
+    # Usage: mbt-driver-kill VMDIR
+    #
+    # Kill the driver on the node of the VM of VMDIR in place: SIGKILL to
+    # the process of its container (found with crictl in the VM), so that
+    # kubelet starts the container again in the same pod (restartPolicy
+    # Always of the DaemonSet, with the back-off of a crashing container),
+    # unlike dra-driver-restart, which replaces the pod. Do not wait for the
+    # restart. COMMAND_OUTPUT has "killed POD CONTAINER-ID pid PID". Return
+    # non-zero if no container of the driver runs there or the kill fails.
+    vmdir-command "$1" "id=\$(crictl ps -q --state running --namespace '^kube-system\$' --name '^$DRA_CONTAINER\$' 2>/dev/null | head -n 1)
+[ -n \"\$id\" ] || { echo 'no running container $DRA_CONTAINER'; exit 1; }
+set -- \$(crictl inspect -o go-template --template '{{index .status.labels \"io.kubernetes.pod.name\"}} {{.info.pid}}' \$id 2>/dev/null)
+[ -n \"\$2\" ] && [ \"\$2\" != 0 ] || { echo \"no pid of container \$id\"; exit 1; }
+kill -KILL \"\$2\" && echo \"killed \$1 \$id pid \$2\""
+}
+
+mbt-node-service-restart() {
+    # Usage: mbt-node-service-restart VMDIR kubelet|containerd [TIMEOUT]
+    #
+    # Restart kubelet or containerd in the VM of VMDIR (systemctl restart;
+    # the containers keep running) and wait until the service is active
+    # and answers again (kubelet: its healthz endpoint, containerd: crictl
+    # info) and its node is Ready in the cluster of the VM of the test,
+    # TIMEOUT seconds at most (default 120). Return non-zero on failure or
+    # timeout.
+    local vmdir="$1" service="$2" tmo="${3:-120}" name check
+    name=$(vmdir-name "$vmdir")
+    # shellcheck disable=SC2034 # check is used in the snippet of retry-until
+    case "$service" in
+        kubelet) check="curl -sf --max-time 2 http://127.0.0.1:10248/healthz >/dev/null";;
+        containerd) check="crictl info >/dev/null 2>&1";;
+        *) echo "mbt-node-service-restart: unknown service '$service' (kubelet or containerd)" >&2; return 2;;
+    esac
+    vmdir-command "$vmdir" "systemctl restart $service" || return 1
+    retry-until --timeout "$tmo" --interval 1 --message "$(vmdir-label "$vmdir"): $service active and answering, node $name Ready" \
+        'vmdir-command-q "$vmdir" "systemctl -q is-active $service && $check" && mbt-node-ready "$vmdir"'
+}
+
+mbt-node-ready() {
+    # Usage: mbt-node-ready VMDIR
+    #
+    # Return 0 if the node of the VM of VMDIR is Ready in the cluster of the
+    # VM of the test.
+    local status
+    status=$(vmdir-command-q "$OUTPUT_DIR" "kubectl get node $(vmdir-name "$1") -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}'") || return 1
+    [ "$status" == True ]
+}
+
 mbt-setup-ids() {
     # Usage: mbt-setup-ids VM2DIR VM1DIR VM0DIR
     #
@@ -968,12 +1061,12 @@ done; true"
 mbt-act-driver-kill() {
     # Usage: mbt-act-driver-kill VM
     #
-    # SIGKILL to the driver of VM in place (dra-driver-kill), return at
+    # SIGKILL to the driver of VM in place (mbt-driver-kill), return at
     # once: kubelet restarts its container.
     mbt-vm-arg "$1" || return 2
     mbt-killat-disarm "$1" driver-kill
     MBT_TRACE_REFOLLOW[$1]=$(mbt-utc 2)
-    dra-driver-kill "${MBT_VMDIR[$1]}" || return 1
+    mbt-driver-kill "${MBT_VMDIR[$1]}" || return 1
     MBT_NOTE="$COMMAND_OUTPUT"
 }
 
@@ -1069,19 +1162,19 @@ mbt-driver-replace() {
 mbt-act-ctrl-kill() {
     # Usage: mbt-act-ctrl-kill POOL
     mbt-pool-arg "$1" || return 2
-    dra-controller-kill "${MBT_POOL_UNIT[$1]}"
+    mbt-controller-kill "${MBT_POOL_UNIT[$1]}"
 }
 
 mbt-act-ctrl-start() {
     # Usage: mbt-act-ctrl-start POOL
     mbt-pool-arg "$1" || return 2
-    dra-controller-start "${MBT_POOL_UNIT[$1]}"
+    mbt-controller-start "${MBT_POOL_UNIT[$1]}"
 }
 
 mbt-act-ctrl-restart() {
     # Usage: mbt-act-ctrl-restart POOL
     mbt-pool-arg "$1" || return 2
-    dra-controller-stop "${MBT_POOL_UNIT[$1]}" && dra-controller-start "${MBT_POOL_UNIT[$1]}"
+    mbt-controller-stop "${MBT_POOL_UNIT[$1]}" && mbt-controller-start "${MBT_POOL_UNIT[$1]}"
 }
 
 mbt-act-server-restart() {
@@ -1093,14 +1186,14 @@ mbt-act-server-restart() {
 mbt-act-kubelet-restart() {
     # Usage: mbt-act-kubelet-restart VM
     #
-    # Restart the kubelet of VM (dra-node-service-restart), then wait until
+    # Restart the kubelet of VM (mbt-node-service-restart), then wait until
     # its driver is ready (mbt-driver-ready-wait, A15). The stream of the
     # trace that follows the driver log through the kubelet ends: follow
     # it again after the next observation.
     mbt-vm-arg "$1" || return 2
     local t0=$EPOCHREALTIME
     MBT_TRACE_REFOLLOW[$1]=$(mbt-utc 2)
-    dra-node-service-restart "${MBT_VMDIR[$1]}" kubelet || return 1
+    mbt-node-service-restart "${MBT_VMDIR[$1]}" kubelet || return 1
     echo "$(date +%T.%N) $1: kubelet back after $(printf '%.2f' "$(echo "$EPOCHREALTIME - $t0" | bc)") s" >> "$MBT_EXEC_LOG"
     mbt-driver-ready-wait "$1"
 }
@@ -1119,7 +1212,7 @@ mbt-driver-restarts() {
 mbt-act-containerd-restart() {
     # Usage: mbt-act-containerd-restart VM
     #
-    # Restart containerd in VM (dra-node-service-restart), then wait until
+    # Restart containerd in VM (mbt-node-service-restart), then wait until
     # the driver of VM has restarted in place and is Ready again,
     # MBT_NRI_RESTART_WAIT s at most: a driver with the fix of plan-13
     # bug-01 exits when it loses its NRI connection (amendment A8). An
@@ -1131,7 +1224,7 @@ mbt-act-containerd-restart() {
     mbt-killat-disarm "$vm" containerd-restart
     MBT_TRACE_REFOLLOW[$vm]=$(mbt-utc 2)
     before=$(mbt-driver-restarts "$vm") || before=""
-    dra-node-service-restart "${MBT_VMDIR[$vm]}" containerd
+    mbt-node-service-restart "${MBT_VMDIR[$vm]}" containerd
     rc=$?
     [ "$rc" == 0 ] && [ -n "$before" ] || return "$rc"
     read -r pod restarts ready <<< "$before"
@@ -2136,7 +2229,7 @@ mbt-restore() {
         [ -n "${DRA_CONTROLLER_URLS[$unit]:-}" ] || continue
         if ! vmdir-command-q "$OUTPUT_DIR" "systemctl -q is-active $unit"; then
             echo "mbt-restore: $unit is not active, starting it"
-            dra-controller-start "$unit" || echo "mbt-restore: cannot start $unit"
+            mbt-controller-start "$unit" || echo "mbt-restore: cannot start $unit"
         fi
     done
     [ "${#DRA_INSTALLED_VMS[@]}" -gt 0 ] || return 0
