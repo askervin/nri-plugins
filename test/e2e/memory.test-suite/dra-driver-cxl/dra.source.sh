@@ -1744,34 +1744,6 @@ dra-local-slices-aligned() { # script API
     echo "the node plugin's regions and slices were block-aligned: no slice placed explicitly or rounded up"
 }
 
-dra-local-slice-times() { # script API
-    # Usage: dra-local-slice-times VMDIR
-    #
-    # Print how long the node plugin in the VM of VMDIR took, by its log
-    # since it started, for the regions and slices of local devices:
-    # region created and released, slice created, onlined, offlined,
-    # zeroed and deleted, per mode of the slice (count, min, median, max).
-    echo "### regions and slices of local devices, times from the log of $DRA_CONTAINER"
-    dra-plugin-log "$1" | python3 -c '
-import re, statistics, sys
-units = {"s": 1000.0, "ms": 1.0, "us": 0.001, "ns": 0.000001}
-times = {}
-for line in sys.stdin:
-    m = re.search(r"engine: local memdev .*: (?:claim \S+: )?(created|onlined|offlined|zeroed|deleted) slice \S+ mode (\S+) .* in ([0-9.]+)(ms|us|ns|s)$", line) or \
-        re.search(r"engine: local memdev .*: (created|released) region\S*() .*?in ([0-9.]+)(ms|us|ns|s)$", line)
-    if not m:
-        continue
-    what, mode, value, unit = m.groups()
-    key = "%s %s" % (what, "slice (%s)" % mode if mode else "region")
-    times.setdefault(key, []).append(float(value) * units[unit])
-if not times:
-    print("no region or slice times in the log")
-for key in sorted(times):
-    t = sorted(times[key])
-    print("%-24s n=%-3d min %8.3f ms  median %8.3f ms  max %8.3f ms" % (key, len(t), t[0], statistics.median(t), t[-1]))
-'
-}
-
 dra-memory-config() { # script API
     # Usage: dra-memory-config SECTIONS
     #

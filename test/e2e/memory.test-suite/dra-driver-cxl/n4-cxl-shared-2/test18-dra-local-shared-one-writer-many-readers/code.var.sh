@@ -34,16 +34,15 @@
 # requests that the node plugin refuses.
 #
 # What you will see: the shared device and the lease device in the
-# node's ResourceSlice, the writer's lease Ready in a few seconds with the
-# new region, zeros where the test left stale bytes, three readers'
-# leases Pending while the writer holds the device (their companion pods
+# node's ResourceSlice, the writer's lease Ready with the new region,
+# zeros where the test left stale bytes, three readers' leases Pending
+# while the writer holds the device (their companion pods
 # Unschedulable), all three holding the memory at once right after the
 # writer's release, reading the same line, a refused write, the late
 # exclusive request failing, nothing left after the pods are deleted
 # while the readers hold the memory, the bytes surviving the idle device,
-# the region gone when the driver runs without the configuration; the
-# timings of the writer's request and of the readers after the release,
-# and the trace of what every component did.
+# the region gone when the driver runs without the configuration, and the
+# trace of what every component did.
 #
 # The local device is cxl_memdev0 of the topology (1G, host bridge 0),
 # attached through fake-cxl-pool-server as in test14; the pool has the
@@ -79,7 +78,6 @@ declare -A READER_LEASE=()  # reader -> the lease of its share
 REQ_JSON=""                 # request: the response
 REQ_STATUS=""               # its exit status
 REQ_OUT=""                  # what cxl-request printed, stdout and stderr
-REQ_SECONDS=""              # how long it took
 STALE="stale bytes of $TAG" # dra-local-seed: what the node plugin must zero
 COMPANION_JSON=""           # companion-claim: the companion claim of a lease
 COMPANION_UID=""            # and its uid
@@ -164,12 +162,11 @@ request() {
     #
     # Run "cxl-request ARGS..." in pod POD. REQ_STATUS is its exit status,
     # REQ_OUT what it printed (stdout, then stderr), REQ_JSON its last JSON
-    # line ("{}" if none), REQ_SECONDS how long it took.
-    local pod="$1" t0=$EPOCHREALTIME
+    # line ("{}" if none).
+    local pod="$1"
     shift
     dra-exec "$VM2" "$pod" "$CXL_REQUEST" "$@"
     REQ_STATUS=$COMMAND_STATUS
-    REQ_SECONDS=$(echo "$EPOCHREALTIME - $t0" | bc)
     REQ_OUT="$COMMAND_OUTPUT
 $DRA_EXEC_STDERR"
     REQ_JSON=$(dra-last-json "$COMMAND_OUTPUT") || REQ_JSON="{}"
@@ -380,7 +377,6 @@ cxl-assert "regions == []"
 echo "### L2: the writer asks for the whole device, exclusively"
 request writer request --serial "$S" --mode dax --wait 120s
 [ "$REQ_STATUS" == 0 ] || error "cxl-request request --serial $S --mode dax exited $REQ_STATUS"
-T_WRITER_READY="$REQ_SECONDS"
 # A lease of a shared device without --shared: the device exclusively.
 dra-assert "$REQ_JSON" "(j.get('state'), j.get('source'), j.get('mode'), bool(j.get('shared')), bool(j.get('readOnly')), j.get('serial')) == ('Ready', 'local', 'dax', False, False, '$S')"
 WRITER_LEASE=$(dra-value "$REQ_JSON" "j['lease']")
@@ -388,7 +384,6 @@ dra-leases "$VM2" writer
 # shared is the --shared of the lease; the device is shared all the same.
 dra-assert "$DRA_LEASES" "[(l['state'], bool(l.get('shared')), (l.get('env') or {}).get('CXL_${DRA_LOCAL_HEX}_SHARED')) for l in j] == [('Ready', False, '1')]"
 lease-store-check "$WRITER_LEASE" False
-printf 'lease %s of the writer: Ready in %.2f s\n' "$WRITER_LEASE" "$T_WRITER_READY"
 # The companion claim takes the local shared device without a shares
 # request: all shares.
 companion-claim "$WRITER_LEASE"
@@ -434,7 +429,7 @@ for r in "${READERS[@]}"; do
     [ "$REQ_STATUS" == 0 ] || error "$r: cxl-request request --serial $S --shared --read-only --wait 0s exited $REQ_STATUS"
     dra-assert "$REQ_JSON" "(j.get('state'), j.get('mode'), bool(j.get('shared')), bool(j.get('readOnly'))) == ('Pending', 'dax', True, True)"
     READER_LEASE[$r]=$(dra-value "$REQ_JSON" "j['lease']")
-    printf '%s: lease %s Pending, the request returned in %.2f s\n' "$r" "${READER_LEASE[$r]}" "$REQ_SECONDS"
+    echo "$r: lease ${READER_LEASE[$r]} Pending"
 done
 for r in "${READERS[@]}"; do
     retry-until --timeout 60 --interval 1 --message "$r: a Pending, Unschedulable companion" \
@@ -454,15 +449,12 @@ dra-leases "$VM2" writer
 dra-assert "$DRA_LEASES" "[(l['lease'], l['state']) for l in j] == [('$WRITER_LEASE', 'Ready')]"
 
 echo "### L6: the writer is done and releases the device"
-t0=$EPOCHREALTIME
 request writer release --all
 [ "$REQ_STATUS" == 0 ] || error "the writer: cxl-request release --all exited $REQ_STATUS"
 for r in "${READERS[@]}"; do
     retry-until --timeout 120 --interval 1 --message "$r holds the memory" 'holding "$r"' ||
         error "$r does not hold the memory 120 s after the writer's release: $(hold-log "$r")"
 done
-T_READERS=$(echo "$EPOCHREALTIME - $t0" | bc)
-echo "the writer released, all readers hold the memory: $T_READERS s"
 retry-until --timeout 60 --interval 1 --message "the companion of the writer is gone" \
     '[ -z "$(lease-objects "$WRITER_LEASE")" ]' ||
     error "the lease of the writer left $(lease-objects "$WRITER_LEASE")"
@@ -586,21 +578,16 @@ same-region || error "the shared device has another region or dax device after l
 
 echo "### I: without the configuration the region goes; what every component did"
 DRA_DRIVER_CONFIG=""
-t0=$EPOCHREALTIME
 dra-install
 dra-trace-driver-follow "$VM2"
 # The node plugin itself released the region: its log says so.
 dra-plugin-log-wait "$VM2" "local memdev $DRA_LOCAL_SERIAL ($SHARED_MEMDEV): not configured shared any more, releasing its region" 60
 dra-local-slices-none "$VM2" unshared
-T_UNSHARE=$(echo "$EPOCHREALTIME - $t0" | bc)
 dra-wait "$VM2" sliced-again resourceslices "attr($LD, 'shared') == False and quantity(capacity($LD, 'memory')) == $DRA_LOCAL_SIZE" 60
 dra-assert-clean "$VM2" "$VM1"
 
 dra-trace-stop
 dra-trace-summary
-echo "TIMING: the writer's request until its lease is Ready (the region created): $T_WRITER_READY s"
-echo "TIMING: the writer's release until all readers hold the memory: $T_READERS s"
-echo "TIMING: dra-install without sharedDevices until the region is gone: $T_UNSHARE s"
 
 echo "### cleanup"
 dra-cleanup

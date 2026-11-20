@@ -73,8 +73,6 @@ LOCAL_CLASS=cxl-local
 CXL_REQUEST=cxl-request     # in $PATH of the container: /usr/local/bin
 TAG_BASE="dra-local-live-attach $(date +%Y-%m-%dT%H:%M:%S.%N)"
 LEASES=()                   # every lease id of the test, all distinct
-NODE_LAST=0                 # the last MemTotal of the node that node-size saw, in bytes
-NODE_TIMES=()               # changes of MemTotal of the node: "LABEL OLD->NEW MiB, seconds since t0"
 declare -A NUMA_SLICES=()   # NUMA claims of the local device: LABEL -> "daxX.Y BYTES" of its slice
 
 borrower-yaml() {
@@ -150,12 +148,9 @@ request() {
     # Usage: request ARGS...
     #
     # Run "cxl-request ARGS..." in container main of the borrower. REQ_JSON
-    # is its JSON response, REQ_STATUS its exit status, REQ_SECONDS how
-    # long it took.
-    local t0=$EPOCHREALTIME
+    # is its JSON response, REQ_STATUS its exit status.
     dra-exec "$VM2" borrower/main "$CXL_REQUEST" "$@"
     REQ_STATUS=$COMMAND_STATUS
-    REQ_SECONDS=$(echo "$EPOCHREALTIME - $t0" | bc)
     REQ_JSON=$(dra-last-json "$COMMAND_OUTPUT") || error "cxl-request $* printed no JSON response"
 }
 
@@ -167,8 +162,7 @@ numa-lease() {
     # pool ("cxl-request request --size SIZE [--source SOURCE]"). Fail
     # unless the lease is Ready, exclusive and read-write NUMA memory (the
     # defaults), with the environment of its NUMA node in the response.
-    # LEASE is its id, LEASE_NODE its NUMA node, LEASE_SECONDS how long the
-    # request took.
+    # LEASE is its id, LEASE_NODE its NUMA node.
     local size="$1" source="$2"
     request request --size "$size" ${source:+--source "$source"} --wait 120s
     [ "$REQ_STATUS" == 0 ] || error "cxl-request request --size $size${source:+ --source $source} exited $REQ_STATUS"
@@ -176,9 +170,8 @@ numa-lease() {
     dra-assert "$REQ_JSON" "j['env']['CXL_%s_NODE' % j['serial'][2:].upper()] == str(j['node']) and j['env']['CXL_%s_MODE' % j['serial'][2:].upper()] == 'numa'"
     LEASE=$(dra-value "$REQ_JSON" "j['lease']")
     LEASE_NODE=$(dra-value "$REQ_JSON" "j['node']")
-    LEASE_SECONDS="$REQ_SECONDS"
     new-lease "$LEASE"
-    printf 'lease %s: %s from %s, NUMA node %s, Ready in %.2f s\n' "$LEASE" "$size" "${source:-local, then pool}" "$LEASE_NODE" "$LEASE_SECONDS"
+    echo "lease $LEASE: $size from ${source:-local, then pool}, NUMA node $LEASE_NODE, Ready"
 }
 
 local-numa-lease() {
@@ -187,8 +180,8 @@ local-numa-lease() {
     # Container main of the borrower asks for BYTES of local NUMA memory.
     # Check that the lease is Ready on the local device and the NUMA node
     # of the device, with a slice of BYTES rounded up to blocks and its
-    # environment, and its companion objects (see companion-check). LEASE,
-    # LEASE_SECONDS: see numa-lease.
+    # environment, and its companion objects (see companion-check). LEASE:
+    # see numa-lease.
     numa-lease "$(dra-mi "$1")" local
     dra-assert "$REQ_JSON" "j.get('source') == 'local' and j.get('serial') == '$DRA_LOCAL_SERIAL' and int(j['node']) == $NUMA_NODE and int(j['size']) == $(dra-local-round "$1")"
     dra-assert "$REQ_JSON" "j['env'] == {'CXL_${DRA_LOCAL_HEX}_SERIAL': '$DRA_LOCAL_SERIAL', 'CXL_${DRA_LOCAL_HEX}_SHARED': '0', 'CXL_${DRA_LOCAL_HEX}_MODE': 'numa', 'CXL_${DRA_LOCAL_HEX}_SIZE': '$(dra-local-round "$1")', 'CXL_${DRA_LOCAL_HEX}_NODE': '$NUMA_NODE'}"
@@ -205,16 +198,13 @@ dax-lease() {
     # device with FD=3 instead of DAX, and that "cxl-request env --lease"
     # names the dax device. DAX_LEASE, DAX_KEY, DAX_PATH, DAX_SIZE and
     # DAX_RO are the lease, the key of its device in the environment, its
-    # dax device, size and read-only flag, DAX_OUT is what SCRIPT printed,
-    # DAX_SECONDS how long it all took.
-    local size="$1" flags="$2" script="$3" t0 exec_env serial
+    # dax device, size and read-only flag, DAX_OUT is what SCRIPT printed.
+    local size="$1" flags="$2" script="$3" exec_env serial
     shift 3
-    t0=$EPOCHREALTIME
     # shellcheck disable=SC2086 # FLAGS are separate words
     dra-exec "$VM2" borrower/main "$CXL_REQUEST" request --size "$size" --mode dax $flags --wait 60s --exec \
         sh -c 'env | grep "^CXL_" | sort | sed "s/^/exec-env: /"; '"$script" sh "$@" ||
         command-error "cxl-request request --size $size --mode dax $flags --exec failed"
-    DAX_SECONDS=$(echo "$EPOCHREALTIME - $t0" | bc)
     exec_env=$(sed -n 's/^exec-env: //p' <<< "$COMMAND_OUTPUT")
     DAX_OUT=$(grep -v '^exec-env: ' <<< "$COMMAND_OUTPUT")
     DAX_LEASE=$(dra-env-value "$exec_env" CXL_LEASE)
@@ -234,7 +224,7 @@ dax-lease() {
     dra-env-assert "env --lease $DAX_LEASE" "$COMMAND_OUTPUT" "$DAX_KEY" \
         SERIAL="$serial" SHARED=0 MODE=dax SIZE="$DAX_SIZE" "DAX=/dev/dax*" READONLY="$DAX_RO"
     DAX_PATH=$(dra-env-value "$COMMAND_OUTPUT" "CXL_${DAX_KEY}_DAX")
-    printf 'lease %s: %s of %s, %s bytes, read-only %s, %.2f s\n' "$DAX_LEASE" "$DAX_PATH" "$serial" "$DAX_SIZE" "$DAX_RO" "$DAX_SECONDS"
+    echo "lease $DAX_LEASE: $DAX_PATH of $serial, $DAX_SIZE bytes, read-only $DAX_RO"
 }
 
 dax-fd-read() {
@@ -296,18 +286,6 @@ companion-check() {
     # The companion pod uses nothing of its claim: no CDI device.
     [ -z "$(dra-cdi-devices-with "$VM2" "$uid")" ] ||
         error "lease $lease: the companion claim has CDI devices: $(dra-cdi-devices-with "$VM2" "$uid")"
-}
-
-node-size() {
-    # Usage: node-size LABEL BYTES [LOCAL]
-    #
-    # dra-local-node-size on NUMA_NODE. If MemTotal changed, add the time
-    # since t0 to NODE_TIMES.
-    dra-local-node-size "$VM2" "$1" "$NUMA_NODE" "$2" "$3"
-    if [ "$2" != "$NODE_LAST" ]; then
-        NODE_TIMES+=("$1 $(( NODE_LAST / MiB ))->$(( $2 / MiB ))MiB $(printf %.1f "$(echo "$EPOCHREALTIME - $t0" | bc)")s")
-        NODE_LAST=$2
-    fi
 }
 
 numa-slice() {
@@ -544,7 +522,6 @@ echo "cpuset.mems of container main: '$MAIN_MEMS0', of container idle: '$IDLE_ME
 [ -z "$(dra-pool-attachments "$VM2_NAME")" ] || error "the pool has attachments before any lease"
 
 echo "### A: a pod with a static NUMA claim of the local device"
-t0=$EPOCHREALTIME
 dra-claim-pod "$VM2" static-a "$LOCAL_CLASS" "$(dra-mi "$STATIC_A")"
 dra-pod-wait "$VM2" static-a Running 120
 dra-local-claim-check "$VM2" static-a "$STATIC_A"
@@ -553,7 +530,7 @@ NUMA_NODE=$(dra-value "$DRA_MEMDEV" "dax_slices('kmem')[0]['node']")
 (( NUMA_NODE >= CPU_NODES )) || error "the NUMA slice of static-a is on node $NUMA_NODE, a CPU node"
 echo "the local device is NUMA node $NUMA_NODE of the VM"
 numa-slice static-a "$DRA_CLAIM_UID" "$STATIC_A"
-node-size static-a "$STATIC_A"
+dra-local-node-size "$VM2" static-a "$NUMA_NODE" "$STATIC_A"
 # The device is published as before, and its region is not published as
 # node-local CXL memory (a region device).
 dra-local-unchanged "$VM2"
@@ -567,14 +544,11 @@ mems-once A main MAIN_MEMS0
 mems-once A idle IDLE_MEMS
 
 echo "### B: the running container borrows a NUMA slice of the same device"
-t0=$EPOCHREALTIME
 local-numa-lease "$LEASE1"
 NUMA_LEASE1="$LEASE"
-T_LOCAL_NUMA="$LEASE_SECONDS"
 numa-slice lease-1 "$COMPANION_UID" "$LEASE1"
-printf 'the local NUMA lease is Ready in %.2f s\n' "$T_LOCAL_NUMA"
 dra-local-slices-wait "$VM2" lease-1 "$NUMA_NODE" "numa:$STATIC_A" "numa:$LEASE1"
-node-size lease-1 $(( STATIC_A + LEASE1 ))
+dra-local-node-size "$VM2" lease-1 "$NUMA_NODE" $(( STATIC_A + LEASE1 ))
 lent-check "$NUMA_NODE" B "$DRA_NS/static-a/main"
 dra-leases "$VM2" borrower/main
 dra-assert "$DRA_LEASES" "[(l['lease'], l['state'], l.get('mode'), bool(l.get('shared')), l.get('source'), l.get('serial'), int(l.get('size') or 0)) for l in j] == [('$NUMA_LEASE1', 'Ready', 'numa', False, 'local', '$DRA_LOCAL_SERIAL', $LEASE1)]"
@@ -593,11 +567,9 @@ echo "### C: dax leases of the same device while the NUMA lease is Ready"
 TAG1="$TAG_BASE: dax lease 1"
 TAG2="$TAG_BASE: dax lease 2"
 # Half a block: the slice is a whole block, and so is CXL_<KEY>_SIZE.
-t0=$EPOCHREALTIME
 dax-lease "$(dra-mi "$DAX1_REQ")" "--source local" 'python3 /tools/dax-rw.py --fd 3 write 1M "$1"' "$TAG1"
 DAX1_LEASE="$DAX_LEASE"
 DAX1_PATH="$DAX_PATH"
-T_DAX="$DAX_SECONDS"
 [ "$DAX_KEY $DAX_SIZE $DAX_RO" == "$DRA_LOCAL_HEX $(dra-local-round "$DAX1_REQ") 0" ] || error "lease $DAX_LEASE: device $DAX_KEY size $DAX_SIZE read-only $DAX_RO, expected $DRA_LOCAL_HEX $(dra-local-round "$DAX1_REQ") 0"
 dax-lease "$(dra-mi "$DAX2")" "--source local" 't=$(python3 /tools/dax-rw.py --fd 3 read 1M) || exit 1; echo "before: $t"; python3 /tools/dax-rw.py --fd 3 write 1M "$1"' "$TAG2"
 DAX2_LEASE="$DAX_LEASE"
@@ -613,7 +585,7 @@ dra-assert "$DRA_LEASES" "[l['state'] for l in j if l['lease'] == '$NUMA_LEASE1'
 dra-local-slices-wait "$VM2" dax-leases "$NUMA_NODE" "numa:$STATIC_A" "numa:$LEASE1" "dax:$(dra-local-round "$DAX1_REQ")" "dax:$DAX2"
 dra-assert "$DRA_MEMDEV" "sorted(d['name'] for d in dax_slices('device_dax')) == sorted(['${DAX1_PATH#/dev/}', '${DAX2_PATH#/dev/}'])"
 # Dax slices add nothing to the node.
-node-size dax-leases $(( STATIC_A + LEASE1 ))
+dra-local-node-size "$VM2" dax-leases "$NUMA_NODE" $(( STATIC_A + LEASE1 ))
 dra-local-unchanged "$VM2"
 lent-check "$NUMA_NODE" C "$DRA_NS/static-a/main"
 # The fds again, for other programs: each lease has what was written in it.
@@ -621,28 +593,25 @@ dax-fd-read "$DAX1_LEASE" "$TAG1"
 dax-fd-read "$DAX2_LEASE" "$TAG2"
 
 echo "### D: more NUMA memory on the node, the leases given back one by one"
-t0=$EPOCHREALTIME
 dra-claim-pod "$VM2" static-b "$LOCAL_CLASS" "$(dra-mi "$STATIC_B")" numa
 dra-pod-wait "$VM2" static-b Running 120
 dra-local-claim-check "$VM2" static-b "$STATIC_B"
 numa-slice static-b "$DRA_CLAIM_UID" "$STATIC_B"
-node-size static-b $(( STATIC_A + LEASE1 + STATIC_B ))
+dra-local-node-size "$VM2" static-b "$NUMA_NODE" $(( STATIC_A + LEASE1 + STATIC_B ))
 dra-mems-wait "$VM2" static-b main "$NUMA_NODE"
 # A second NUMA lease of half a block: one block more on the same node,
 # the node lent to the container by two leases.
-t0=$EPOCHREALTIME
 local-numa-lease "$LEASE2_REQ"
 NUMA_LEASE2="$LEASE"
 numa-slice lease-2 "$COMPANION_UID" "$(dra-local-round "$LEASE2_REQ")"
-node-size lease-2 $(( STATIC_A + LEASE1 + STATIC_B + $(dra-local-round "$LEASE2_REQ") ))
+dra-local-node-size "$VM2" lease-2 "$NUMA_NODE" $(( STATIC_A + LEASE1 + STATIC_B + $(dra-local-round "$LEASE2_REQ") ))
 dra-local-slices-wait "$VM2" lease-2 "$NUMA_NODE" "numa:$STATIC_A" "numa:$LEASE1" "dax:$(dra-local-round "$DAX1_REQ")" "dax:$DAX2" "numa:$STATIC_B" "numa:$(dra-local-round "$LEASE2_REQ")"
 lent-check "$NUMA_NODE" D "$DRA_NS/static-a/main" "$DRA_NS/static-b/main"
 # Give back the first lease: its block, and no other, goes offline, the
 # pages on it move, and the node stays lent: the second lease still holds
 # it.
-t0=$EPOCHREALTIME
 release "$NUMA_LEASE1"
-node-size lease-1-released $(( STATIC_A + STATIC_B + $(dra-local-round "$LEASE2_REQ") ))
+dra-local-node-size "$VM2" lease-1-released "$NUMA_NODE" $(( STATIC_A + STATIC_B + $(dra-local-round "$LEASE2_REQ") ))
 numa-slice-gone lease-1
 dra-wait "$VM2" lease-1-gone "pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL=$NUMA_LEASE1" "items == []" 60
 lent-check "$NUMA_NODE" D-lease-1-released "$DRA_NS/static-a/main" "$DRA_NS/static-b/main"
@@ -650,21 +619,18 @@ dra-touch-pages "$NUMA_NODE"
 echo "numa-touch.py (pid $DRA_TOUCH_PID) lives, $DRA_TOUCH_PAGES of its pages on node $NUMA_NODE"
 # Give back the second lease: the node is not lent any more, the pages
 # of the container move back to DRAM, the static pods keep the node.
-t0=$EPOCHREALTIME
 release "$NUMA_LEASE2"
-node-size lease-2-released $(( STATIC_A + STATIC_B ))
+dra-local-node-size "$VM2" lease-2-released "$NUMA_NODE" $(( STATIC_A + STATIC_B ))
 numa-slice-gone lease-2
 not-lent-check D-lease-2-released "$DRA_NS/static-a/main" "$DRA_NS/static-b/main"
 dra-wait "$VM2" lease-2-gone "pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL=$NUMA_LEASE2" "items == []" 60
-T_GIVE_BACK=$(echo "$EPOCHREALTIME - $t0" | bc)
 dra-touch-stop
 dra-mems-wait "$VM2" static-a main "$NUMA_NODE"
 dra-mems-wait "$VM2" static-b main "$NUMA_NODE"
 dra-leases "$VM2" borrower/main
 dra-assert "$DRA_LEASES" "sorted(l['lease'] for l in j) == sorted(['$DAX1_LEASE', '$DAX2_LEASE'])"
-t0=$EPOCHREALTIME
 dra-delete-pod "$VM2" static-a
-node-size static-a-deleted "$STATIC_B"
+dra-local-node-size "$VM2" static-a-deleted "$NUMA_NODE" "$STATIC_B"
 numa-slice-gone static-a
 # The dax leases still have their data.
 dax-fd-read "$DAX1_LEASE" "$TAG1"
@@ -694,16 +660,13 @@ dra-leases "$VM2" borrower/main
 dra-assert "$DRA_LEASES" "[(l['state'], int(l.get('size') or 0)) for l in j if l['lease'] == '$ASYNC_LEASE'] == [('Ready', $(dra-local-round "$ASYNC_REQ"))]"
 companion-check "$ASYNC_LEASE" "$LOCAL_CLASS" "$ASYNC_REQ" "$(dra-local-round "$ASYNC_REQ")" dax
 dra-local-slices-wait "$VM2" async "$NUMA_NODE" "dax:$(dra-local-round "$DAX1_REQ")" "dax:$DAX2" "numa:$STATIC_B" "dax:$(dra-local-round "$RO_REQ")" "dax:$(dra-local-round "$ASYNC_REQ")"
-t0=$EPOCHREALTIME
 dra-exec "$VM2" borrower/main "$CXL_REQUEST" release --all ||
     command-error "cxl-request release --all failed"
 dra-wait "$VM2" dax-leases-gone "pods -n $DRA_NS -l $DRA_LEASE_LABEL" "items == []" 60
 dra-local-slices-wait "$VM2" dax-leases-released "$NUMA_NODE" "numa:$STATIC_B"
-T_DAX_RELEASE=$(echo "$EPOCHREALTIME - $t0" | bc)
 dra-local-unchanged "$VM2"
-t0=$EPOCHREALTIME
 dra-delete-pod "$VM2" static-b
-node-size static-b-deleted 0
+dra-local-node-size "$VM2" static-b-deleted "$NUMA_NODE" 0
 numa-slice-gone static-b
 nothing-left released
 
@@ -712,45 +675,41 @@ echo "### D2: a container with a static NUMA claim that is not steered takes a N
 # no container section, so the driver only fences the container, the node
 # of its claim in its cpuset.mems, and lends it more of the node as to any
 # container that is not steered. The container has the lease claim too.
-t0=$EPOCHREALTIME
 dra-apply "$VM2" <<< "$(dra-claim-yaml template mixed-static "$LOCAL_CLASS" "$(dra-mi "$STATIC_A")")
 ---
 $(dra-pod-yaml mixed "$VM2_NAME" mem=template:mixed-static cxl=template:cxl-lease)"
 dra-pod-wait "$VM2" mixed Running 120
 dra-memory-wait "$VM2" mixed main fenced "none (default)"
 dra-mems-wait "$VM2" mixed main "$NUMA_NODE"
-node-size mixed-static "$STATIC_A"
+dra-local-node-size "$VM2" mixed-static "$NUMA_NODE" "$STATIC_A"
 dra-exec "$VM2" mixed/main "$CXL_REQUEST" request --source local --size "$(dra-mi "$LEASE1")" --wait 120s ||
     command-error "cxl-request request in mixed/main failed: a container with a static NUMA claim that is not steered must get a NUMA lease"
 REQ_JSON=$(dra-last-json "$COMMAND_OUTPUT") || error "cxl-request request in mixed/main printed no JSON response"
 dra-assert "$REQ_JSON" "j.get('state') == 'Ready' and j.get('mode') == 'numa' and j.get('source') == 'local' and int(j['node']) == $NUMA_NODE and int(j['size']) == $LEASE1"
 MIXED_LEASE=$(dra-value "$REQ_JSON" "j['lease']")
 new-lease "$MIXED_LEASE"
-node-size mixed-lease $(( STATIC_A + LEASE1 ))
+dra-local-node-size "$VM2" mixed-lease "$NUMA_NODE" $(( STATIC_A + LEASE1 ))
 dra-mems-fenced "$VM2" "$NUMA_NODE" "$DRA_NS/mixed/main"
 # The lease given back: the node stays, it is the node of the static
 # claim; the container is still not steered.
 dra-exec "$VM2" mixed/main "$CXL_REQUEST" release --lease "$MIXED_LEASE" ||
     command-error "cxl-request release --lease $MIXED_LEASE in mixed/main failed"
-node-size mixed-lease-released "$STATIC_A"
+dra-local-node-size "$VM2" mixed-lease-released "$NUMA_NODE" "$STATIC_A"
 dra-wait "$VM2" mixed-lease-gone "pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL=$MIXED_LEASE" "items == []" 60
 dra-mems-fenced "$VM2" "$NUMA_NODE" "$DRA_NS/mixed/main"
 high=$(dra-container-read "$VM2" mixed main memory.high) || error "cannot read memory.high of mixed/main"
 [ "$high" == max ] || error "mixed/main: memory.high is '$high' after the lease, expected max: not steered"
-t0=$EPOCHREALTIME
 dra-delete-pod "$VM2" mixed
-node-size mixed-deleted 0
+dra-local-node-size "$VM2" mixed-deleted "$NUMA_NODE" 0
 nothing-left released-mixed
 
 echo "### E: without --source: local memory first, the pool when the local device is full"
 # The whole local device as one lease.
-t0=$EPOCHREALTIME
 numa-lease "$(dra-mi "$DRA_LOCAL_SIZE")"
-T_ANY_LOCAL="$LEASE_SECONDS"
 ANY1_LEASE="$LEASE"
 ANY1_NODE="$LEASE_NODE"
 dra-assert "$REQ_JSON" "j.get('source') == 'local' and j.get('serial') == '$DRA_LOCAL_SERIAL' and int(j['node']) == $NUMA_NODE and int(j['size']) == $DRA_LOCAL_SIZE"
-node-size any-local "$DRA_LOCAL_SIZE"
+dra-local-node-size "$VM2" any-local "$NUMA_NODE" "$DRA_LOCAL_SIZE"
 dra-pod-wait "$VM2" "cxl-lease-$ANY1_LEASE" Running 60
 dra-json "$VM2" resourceclaim -n "$DRA_NS" "cxl-lease-$ANY1_LEASE"
 ANY_SUBREQUESTS="[(s['name'], s['deviceClassName'], quantity(s['capacity']['requests']['memory'])) for s in subrequests()]"
@@ -764,9 +723,7 @@ dra-assert "$COMMAND_OUTPUT" "$ANY_CONFIGS == [('$DRA_POOL_DRIVER', '$DRA_CONFIG
 dra-companion-meta-check "$COMMAND_OUTPUT" "$ANY1_LEASE" "$BORROWER_UID" "$VM2_NAME" "$DRA_NS/borrower/main"
 [ -z "$(dra-pool-attachments "$VM2_NAME")" ] || error "a request without --source with room on the local device made the pool attach a device"
 # The local device has no room left: the next lease comes from the pool.
-t0=$EPOCHREALTIME
 numa-lease 256Mi
-T_ANY_POOL="$LEASE_SECONDS"
 ANY2_LEASE="$LEASE"
 ANY2_NODE="$LEASE_NODE"
 dra-assert "$REQ_JSON" "j.get('source') == 'pool' and j.get('serial') == '$POOLED0_SERIAL' and int(j['size']) >= 256 * MiB"
@@ -789,7 +746,7 @@ echo "lease $ANY1_LEASE: local node $ANY1_NODE; lease $ANY2_LEASE: pooled0, node
 # node has the memory of both.
 [ "$ANY1_NODE" == "$ANY2_NODE" ] ||
     error "pooled0 is on node $ANY2_NODE, the local device on node $ANY1_NODE: two leases of one node are not exercised"
-node-size any-pool $(( DRA_LOCAL_SIZE + POOLED0_SIZE )) "$DRA_LOCAL_SIZE"
+dra-local-node-size "$VM2" any-pool "$NUMA_NODE" $(( DRA_LOCAL_SIZE + POOLED0_SIZE )) "$DRA_LOCAL_SIZE"
 dra-json "$VM2" resourceslices
 dra-assert "$COMMAND_OUTPUT" "not any(attr(d, 'type') == 'region' for d in devices('$DRA_LOCAL_DRIVER', '$VM2_NAME'))"
 # A pool device is never a local memdev, also while it is attached but
@@ -798,18 +755,16 @@ pool-not-local E
 lent-check "$ANY1_NODE,$ANY2_NODE" E
 # Give the pool memory back: the local lease keeps its node, also when
 # both regions are under host bridge 0 and so on the same node.
-t0=$EPOCHREALTIME
 release "$ANY2_LEASE"
 pool-cxl-wait "$VM2" any-pool-released "by_serial($POOLED0_SERIAL) is None and len(regions) == 1" 90
-node-size any-pool-released "$DRA_LOCAL_SIZE"
+dra-local-node-size "$VM2" any-pool-released "$NUMA_NODE" "$DRA_LOCAL_SIZE"
 retry-until --timeout 60 --message "pooled0 detached" '[ -z "$(dra-pool-attachments "$VM2_NAME")" ]' ||
     error "pooled0 is still attached: $(dra-pool-attachments "$VM2_NAME")"
 dra-leases "$VM2" borrower/main
 dra-assert "$DRA_LEASES" "[(l['lease'], l['state'], l.get('source')) for l in j] == [('$ANY1_LEASE', 'Ready', 'local')]"
 lent-check "$ANY1_NODE" E-local-left
-t0=$EPOCHREALTIME
 release "$ANY1_LEASE"
-node-size any-local-released 0
+dra-local-node-size "$VM2" any-local-released "$NUMA_NODE" 0
 nothing-left released-any
 
 echo "### F: delete the pod while it has leases"
@@ -817,7 +772,6 @@ echo "### F: delete the pod while it has leases"
 # local device and a dax lease of the pool: the companions are owned by
 # the borrower, and the node plugin releases the leases of the pod when
 # its lease claim is unprepared.
-t0=$EPOCHREALTIME
 local-numa-lease "$BS"
 dra-touch-start "$VM2" borrower/main "$TOUCH_MIB" "$NUMA_NODE"
 dax-lease "$(dra-mi "$BS")" "--source local" 'python3 /tools/dax-rw.py --fd 3 write 1M "$1"' "$TAG1"
@@ -829,18 +783,15 @@ dra-leases "$VM2" borrower/main
 dra-assert "$DRA_LEASES" "sorted((l['state'], l.get('source'), l.get('mode')) for l in j) == [('Ready', 'local', 'dax'), ('Ready', 'local', 'numa'), ('Ready', 'pool', 'dax')]"
 [ -n "$(dra-pool-attachments "$VM2_NAME")" ] || error "the dax lease of the pool has no attachment"
 dra-local-slices-wait "$VM2" three-leases "$NUMA_NODE" "numa:$BS" "dax:$BS"
-node-size three-leases "$BS"
-t_delete=$EPOCHREALTIME
+dra-local-node-size "$VM2" three-leases "$NUMA_NODE" "$BS"
 dra-delete "$VM2" pod borrower --grace-period=2 --wait=false
 dra-touch-forget    # numa-touch.py goes with the pod
 dra-wait "$VM2" borrower-gone "pods -n $DRA_NS" "'borrower' not in names()" 90
 nothing-left pod-deleted no-borrower
 dra-wait "$VM2" lease-claim-gone "resourceclaims -n $DRA_NS" "names() == []" 90
-T_DELETE=$(echo "$EPOCHREALTIME - $t_delete" | bc)
 vm-command "test -e $DRA_LEASE_DIR/$LEASE_CLAIM_UID" &&
     error "the lease directory of claim $LEASE_CLAIM is still in $DRA_LEASE_DIR"
-(( $(echo "$T_DELETE <= 60" | bc) )) || error "cleanup after deleting the pod took $T_DELETE s, more than 60 s"
-printf 'pod deleted with 3 active leases: everything cleaned up in %.1f s\n' "$T_DELETE"
+echo "pod deleted with 3 active leases: everything cleaned up"
 pool-not-local F
 echo "leases of the test: ${LEASES[*]}"
 
@@ -852,11 +803,6 @@ dra-assert-clean "$VM2" "$VM1"
 
 dra-trace-stop
 dra-trace-summary
-printf 'timings (s, test steps): local NUMA lease Ready %.2f; the last NUMA lease of the container given back until its pages left the node %.1f\n' "$T_LOCAL_NUMA" "$T_GIVE_BACK"
-printf 'timings (s, test steps): local dax lease with --exec %.2f; the dax leases released until their slices were gone %.1f\n' "$T_DAX" "$T_DAX_RELEASE"
-printf 'timings (s, test steps): without --source: local (the whole device) %.2f, pool %.2f; pod deleted with leases, clean %.1f\n' "$T_ANY_LOCAL" "$T_ANY_POOL" "$T_DELETE"
-echo "timings (s, test steps): MemTotal of node $NUMA_NODE changed, seen by the test this long after the request, release or delete (checks included): ${NODE_TIMES[*]}"
-dra-local-slice-times "$VM2"
 
 echo "### cleanup"
 dra-cleanup

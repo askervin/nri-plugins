@@ -38,16 +38,12 @@ SHARED_SERIAL=0xc1ae0001
 MEM_SIZE=$(( 256 << 20 ))
 MiB=$(( 1 << 20 ))
 
-detach-timed() {
-    # Usage: detach-timed DEVICE --self|--host HOST
+client-detach() {
+    # Usage: client-detach DEVICE --self|--host HOST
     #
     # Detach DEVICE with the client in VM2 and check that it got detached.
-    local start end
-    start=$(date +%s.%N)
     pool-client "$VM2" -o json detach "$@" || command-error "cannot detach $*"
-    end=$(date +%s.%N)
     pool-assert "$COMMAND_OUTPUT" 'j["state"] == "detached"'
-    echo "detach $* took $(printf %.2f "$(echo "$end - $start" | bc)") s"
 }
 
 echo "### preconditions: patched qemu, hdm_for_passthrough=on, kernel with CONFIG_FS_DAX"
@@ -155,7 +151,7 @@ pool-client "$VM2" -o json devices excl0 || command-error "cannot get device exc
 pool-assert "$COMMAND_OUTPUT" "[a['host'] for a in j['attachments']] == ['$VM2_NAME']"
 pool-client "$VM2" guest wait excl0 || command-error "excl0 did not show up in VM2"
 pool-client "$VM2" guest release excl0 || command-error "cannot release excl0 in VM2"
-detach-timed excl0 --self
+client-detach excl0 --self
 pool-cxl-wait "$VM2" excl0-detached "by_serial($EXCL_SERIAL) is None"
 pool-client "$VM2" delete excl0 || command-error "cannot delete excl0"
 [ ! -e "$EXCL_FILE" ] || error "deleting excl0 left its backing file $EXCL_FILE"
@@ -224,8 +220,8 @@ for vm in "$VM2" "$VM1"; do
     pool-cxl-dump "$vm" shared0-released
     cxl-assert "regions == [] and not enabled(by_serial($SHARED_SERIAL))"
 done
-detach-timed shared0 --self
-detach-timed shared0 --host "$VM1_NAME"
+client-detach shared0 --self
+client-detach shared0 --host "$VM1_NAME"
 for vm in "$VM2" "$VM1"; do
     pool-cxl-wait "$vm" shared0-detached "by_serial($SHARED_SERIAL) is None"
     cxl-assert 'memdevs == [] and regions == [] and endpoints == []'
@@ -245,7 +241,7 @@ pool-client "$VM2" guest wait shared0 || command-error "shared0 did not show up 
 pool-cxl-wait "$VM2" shared0-reattached "by_serial($SHARED_SERIAL) is not None"
 cxl-assert "by_serial($SHARED_SERIAL)['ramSize'] == $MEM_SIZE"
 pool-client "$VM2" guest release shared0 || command-error "cannot release shared0 in VM2"
-detach-timed shared0 --self
+client-detach shared0 --self
 pool-cxl-wait "$VM2" shared0-redetached "by_serial($SHARED_SERIAL) is None"
 cxl-assert 'memdevs == [] and regions == []'
 

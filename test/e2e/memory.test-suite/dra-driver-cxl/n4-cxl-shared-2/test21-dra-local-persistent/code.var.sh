@@ -87,7 +87,6 @@ F1_LOCAL="MemoryConfig: device.mode block: the device is writable only exclusive
 P4_DEFAULT="filesystem type ext4 is not allowed on this node (fsTypes: erofs)"
 # local-pmem has no pool controller, also when dra-install runs again.
 DRA_UNCONTROLLED_POOLS=("$LP_SERVER")
-TIMINGS=()
 
 exit-cleanup() {
     # Usage: exit-cleanup
@@ -179,7 +178,6 @@ pool-assert "$COMMAND_OUTPUT" "j['persistent'] == True and j['shared'] == False 
 [ "$POOL_DEVICE_DATA" == "$LP_DATA" ] || error "the data file of $LP_DEVICE is $POOL_DEVICE_DATA, expected $LP_DATA"
 [ "$POOL_DEVICE_LSA" == "$LP_LSA" ] || error "the LSA file of $LP_DEVICE is $POOL_DEVICE_LSA, expected $LP_LSA"
 pool-client-install "$VM2"
-t0=$EPOCHREALTIME
 pool-host-client --pool "$LP_SERVER" -o json attach "$LP_DEVICE" --host "$VM2_NAME" --owner "$LP_OWNER" ||
     command-error "cannot attach $LP_DEVICE to VM2"
 pool-cxl-wait "$VM2" lp0-attached "by_serial($LP_SERIAL) is not None and enabled(by_serial($LP_SERIAL)) and by_serial($LP_SERIAL)['pmemSize'] == $LP_SIZE and by_serial($LP_SERIAL)['ramSize'] == 0" 60
@@ -188,7 +186,6 @@ cxl-assert "$LP_REGIONS == []"
 # up to 5 minutes (poolSerials, docs/memory/cxl/local.md).
 dra-wait "$VM2" lp0-published resourceslices "$LP is not None" 360
 SLICES="$COMMAND_OUTPUT"
-TIMINGS+=("$LP_DEVICE attached until published: $(echo "$EPOCHREALTIME - $t0" | bc) s")
 holdback=$(dra-plugin-log "$VM2" | grep -F "pool serials: holding back new memdev")
 echo "hold-back lines of the driver of VM2: ${holdback:-none}"
 dra-kubectl "$VM2" "get resourceslices"
@@ -209,9 +206,7 @@ fs-refused "$VM2" blk-share "$LP_SERIAL" "mode: block" "$CLASS" "$F1_LOCAL"
 pool-cxl-dump "$VM2" blk-share-refused
 cxl-assert "$LP_REGIONS == []"
 fs-image-build "$VM2" ext4 lp-ext4 "$TEXT_EXT4"
-t0=$EPOCHREALTIME
 fs-write "$VM2" writer "$LP_SERIAL" 0 "$CLASS"
-TIMINGS+=("the block writer: pod created until the image is written and the pod gone: $(echo "$EPOCHREALTIME - $t0" | bc) s")
 NS_SIZE="$FS_NS_SIZE"
 [[ "$NS_SIZE" =~ ^[0-9]+$ ]] && [ "$NS_SIZE" -ge "$FS_IMAGE_SIZE" ] && [ "$NS_SIZE" -le "$LP_SIZE" ] ||
     error "the fsdax namespace of $LP_DEVICE has $NS_SIZE bytes, expected the image ($FS_IMAGE_SIZE) at least and the device ($LP_SIZE) at most"
@@ -232,10 +227,8 @@ dra-dax-tool-install "$VM2"
 dra-wait "$VM2" lp0-republished resourceslices "$LP is not None and attr($LP, 'persistent') == True" 360
 
 echo "### C: a read-write and a read-only claim share the ext4 on VM2"
-t0=$EPOCHREALTIME
 fs-claim-pod "$VM2" fs-rw "$LP_SERIAL" 1 "mode: fs, readOnly: false" "$CLASS"
 dra-pod-wait "$VM2" fs-rw Running 180
-TIMINGS+=("fs-rw: pod created until Running (region, mount): $(echo "$EPOCHREALTIME - $t0" | bc) s")
 fs-claim-pod "$VM2" fs-ro "$LP_SERIAL" 1 "mode: fs" "$CLASS"
 dra-pod-wait "$VM2" fs-ro Running 120
 for p in fs-rw fs-ro; do
@@ -274,10 +267,8 @@ LEASE_SCRIPT='env | grep "^CXL_'"$LP_HEX"'_" | sort
 p="$CXL_'"$LP_HEX"'_PATH"
 echo "read: $(cat "$p/c.txt")"
 if out=$(touch "$p/lease-probe" 2>&1); then echo "write: done"; else echo "write refused: $out"; fi'
-t0=$EPOCHREALTIME
 dra-exec "$VM2" leaser/main "$DRA_REQUEST_CTR_BIN" request --source local --serial "$LP_SERIAL" --shared --mode fs --name data --wait 120s \
     --exec sh -c "$LEASE_SCRIPT" || command-error "leaser: the fs lease of $LP_DEVICE failed"
-TIMINGS+=("the fs lease: requested until its command ran: $(echo "$EPOCHREALTIME - $t0" | bc) s")
 LOG="$COMMAND_OUTPUT"
 dra-env-assert leaser "$LOG" "$LP_HEX" \
     SERIAL="$LP_SERIAL" SHARED=0 MODE=fs SIZE="$NS_SIZE" PATH="$DRA_LEASE_FS_CTR_DIR/data" ACCESS=direct READONLY=1 FSTYPE=ext4
@@ -342,9 +333,6 @@ echo "no pods, claims, leases, mounts, CDI devices, memory devices or regions of
 echo "### what every component of VM2 did, in order"
 dra-trace-stop
 dra-trace-summary
-for t in "${TIMINGS[@]}"; do
-    echo "TIMING: $t"
-done
 
 echo "### cleanup"
 trap - EXIT

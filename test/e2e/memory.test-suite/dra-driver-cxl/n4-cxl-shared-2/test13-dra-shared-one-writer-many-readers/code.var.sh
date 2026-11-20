@@ -277,16 +277,12 @@ pool-attachments shared0
 pool-assert "$COMMAND_OUTPUT" "[(a['host'], a.get('exclusive', False)) for a in j] == [('$VM1_NAME', True)]"
 
 echo "### D: the writer exits, the readers get the device"
-t0=$(date +%s.%N)
 dra-exec "$VM1" writer touch /tmp/done || command-error "cannot tell the writer to finish"
 dra-pod-wait "$VM2" writer Succeeded 60
 dra-wait-log "$VM2" writer "cxl-request exit 0" 10
 for r in "${READERS[@]}"; do
     dra-wait-log "$VM2" "$r" holding 120
 done
-t1=$(date +%s.%N)
-T_READERS=$(echo "$t1 - $t0" | bc)
-echo "the writer exited, all readers hold the memory: $T_READERS s"
 retry-until --timeout 60 --interval 1 --message "the companion of the writer is gone" \
     '[ -z "$(dra-vm-command-q "$VM2" "kubectl get pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL=$WRITER_LEASE -o name")" ]' ||
     error "the lease of the writer left $(dra-vm-command-q "$VM2" "kubectl get pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL=$WRITER_LEASE -o name")"
@@ -468,7 +464,6 @@ dra-assert-clean "$VM2" "$VM1"
 echo "### I: what every component of VM2 and VM1 did, in order"
 dra-trace-stop
 dra-trace-summary
-echo "TIMING: writer exit until all readers hold the memory: $T_READERS s"
 
 echo "### cleanup"
 dra-cleanup

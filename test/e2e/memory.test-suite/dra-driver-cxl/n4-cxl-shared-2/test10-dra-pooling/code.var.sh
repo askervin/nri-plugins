@@ -182,7 +182,6 @@ spec:
       claims:
       - name: pooled
 EOF
-t_apply=$EPOCHREALTIME
 
 echo "### C: the scheduler waits for the attachment"
 # The scheduler allocates pooled0 for the claim, pins the claim to this
@@ -195,7 +194,6 @@ dra-kubectl "$VM2" "get events -n $DRA_NS --field-selector involvedObject.name=p
 dra-wait "$VM2" attached "resourceclaim -n $DRA_NS pooled-memory" \
     "condition('$DRA_POOL_DRIVER/Attached') == 'True'" 60
 CLAIM_JSON="$COMMAND_OUTPUT"
-t_attached=$EPOCHREALTIME
 dra-claim-conditions "$VM2" pooled-memory
 dra-assert "$CLAIM_JSON" "[(r['driver'], r['device']) for r in results()] == [('$DRA_POOL_DRIVER', 'pooled0')]"
 dra-assert "$CLAIM_JSON" "allocated_node() == '$VM2_NAME'"
@@ -210,7 +208,6 @@ echo "### D: the node makes the memory usable"
 # The scheduler binds the pod, kubelet asks the node plugin to prepare the
 # claim: a region on the new memory device, its memory online.
 dra-pod-wait "$VM2" pooled-consumer Running 120
-t_running=$EPOCHREALTIME
 pool-cxl-wait "$VM2" pooled0-prepared \
     "by_serial($POOLED0_SERIAL) is not None and len(regions) == 1 and enabled(regions[0]) and online_size(regions[0]) == $POOLED0_SIZE"
 cxl-assert "sorted(regions[0]['memdevs']) == [by_serial($POOLED0_SERIAL)['name']]"
@@ -267,12 +264,10 @@ echo "### E: delete the pod and the claim, the memory returns to the pool"
 # Kubelet unprepares the claim while the pod terminates: the node plugin
 # offlines the memory and releases the device. Then the claim is
 # deallocated, and the controller detaches the device.
-t_delete=$EPOCHREALTIME
 dra-delete "$VM2" pod pooled-consumer --grace-period=2 --wait=true --timeout=60s
 dra-delete "$VM2" resourceclaim pooled-memory --wait=true --timeout=60s
 dra-wait "$VM2" claim-gone "resourceclaims -n $DRA_NS" "'pooled-memory' not in names()" 60
 pool-cxl-wait "$VM2" pooled0-detached "memdevs == []" 60
-t_detached=$EPOCHREALTIME
 cxl-assert 'regions == [] and endpoints == []'
 retry-until --timeout 30 --message "no attachments in the pool" \
     'pool-client "$VM2" -o json attachments >/dev/null && pool-py assert "$COMMAND_OUTPUT" "j in (None, [])"' ||
@@ -363,8 +358,6 @@ dra-assert-clean "$VM2" "$VM1"
 echo "### H: what every component did, in order"
 dra-trace-stop
 dra-trace-summary
-printf 'timings (test steps, 1 s polling): attached %.1f s, pod Running %.1f s after the claim; detached %.1f s after the delete\n' \
-    "$(echo "$t_attached - $t_apply" | bc)" "$(echo "$t_running - $t_apply" | bc)" "$(echo "$t_detached - $t_delete" | bc)"
 
 echo "### cleanup"
 dra-cleanup

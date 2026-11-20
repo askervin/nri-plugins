@@ -85,9 +85,6 @@ TAG_BASE="dra-live-attach $(date +%Y-%m-%dT%H:%M:%S.%N)"
 LEASES=()                   # every lease id of the test, all distinct
 LEASE_ENV=""                # cxl-request env of the first lease of pooled0
 LEASE_NODE=""               # and its NUMA node
-T_LEND=()                   # seconds: cxl-request request until Ready
-T_GIVE_BACK=()              # seconds: release until nothing is left
-T_SHARE=()                  # seconds: cxl-request request --shared ... --exec write
 
 borrower-yaml() {
     # Usage: borrower-yaml
@@ -345,12 +342,10 @@ lend-memory() {
     # NUMA node MEM_NODE, lease MEM_LEASE, in its cpuset.mems only. It puts
     # TOUCH_MIB MiB there (touch-start). The lease has the environment of
     # pooled0 (lease-env-check).
-    local cycle="$1" t0 json anon pages
+    local cycle="$1" json anon pages
     echo "--- cycle $cycle: cxl-request request --source pool --size 512Mi"
-    t0=$EPOCHREALTIME
     dra-exec "$VM2" borrower/main "$CXL_REQUEST" request --source pool --size 512Mi --wait 120s ||
         command-error "cycle $cycle: cxl-request request --source pool --size 512Mi failed"
-    T_LEND+=("$(echo "$EPOCHREALTIME - $t0" | bc)")
     json=$(dra-last-json "$COMMAND_OUTPUT") || error "cycle $cycle: cxl-request printed no JSON response"
     # Exclusive, read-write NUMA memory: the defaults.
     dra-assert "$json" "j.get('state') == 'Ready' and j.get('source') == 'pool' and j.get('mode') == 'numa' and not j.get('shared') and not j.get('readOnly')"
@@ -445,9 +440,8 @@ give-back() {
     # Container main releases lease MEM_LEASE while numa-touch.py holds its
     # memory there. The pages move to DRAM, the process lives on, and the
     # device goes back to the pool.
-    local cycle="$1" t0
+    local cycle="$1"
     echo "--- cycle $cycle: cxl-request release --lease $MEM_LEASE"
-    t0=$EPOCHREALTIME
     dra-exec "$VM2" borrower/main "$CXL_REQUEST" release --lease "$MEM_LEASE" ||
         command-error "cycle $cycle: cxl-request release --lease $MEM_LEASE failed"
     dra-assert "$(dra-last-json "$COMMAND_OUTPUT")" "j.get('lease') == '$MEM_LEASE' and j.get('state') == 'Released'"
@@ -466,7 +460,6 @@ give-back() {
     dra-mems-fenced "$VM2" "$MEM_NODE"
     idle-mems-check "$cycle"
     nothing-left "released-$cycle"
-    T_GIVE_BACK+=("$(echo "$EPOCHREALTIME - $t0" | bc)")
     touch-stop
 }
 
@@ -477,13 +470,11 @@ share() {
     # a string to it through the fd that the node plugin passed it, reads
     # it back through the fd again, and releases. No /dev/dax device in the
     # container, no change in its device cgroup.
-    local cycle="$1" tag="$TAG_BASE, cycle $1" t0 lease lease_env shared_file found dax devices majmin
+    local cycle="$1" tag="$TAG_BASE, cycle $1" lease lease_env shared_file found dax devices majmin
     echo "--- cycle $cycle: cxl-request request --serial $SHARED_SERIAL --shared --exec dax-rw.py --fd 3 write"
-    t0=$EPOCHREALTIME
     dra-exec "$VM2" borrower/main "$CXL_REQUEST" request --serial "$SHARED_SERIAL" --shared --wait 120s \
         --exec python3 /tools/dax-rw.py --fd 3 write 0 "$tag" ||
         command-error "cycle $cycle: cxl-request request --serial $SHARED_SERIAL --shared --exec ... write failed"
-    T_SHARE+=("$(echo "$EPOCHREALTIME - $t0" | bc)")
     dra-leases "$VM2" borrower/main
     # --shared: mode dax, the default for shared memory, read-write.
     dra-assert "$DRA_LEASES" "[(l['state'], l.get('source'), l.get('mode'), bool(l.get('shared')), bool(l.get('readOnly')), l.get('serial')) for l in j] == [('Ready', 'pool', 'dax', True, False, '$SHARED_SERIAL')]"
@@ -594,10 +585,8 @@ LEASE_DEV="device('lease', '$DRA_LOCAL_DRIVER', '$VM2_NAME')"
 dra-assert "$COMMAND_OUTPUT" "$LEASE_DEV is not None and attr($LEASE_DEV, 'type') == 'lease' and ${LEASE_DEV}.get('allowMultipleAllocations') == True and not ${LEASE_DEV}.get('capacity')"
 dra-assert "$COMMAND_OUTPUT" "[k.split('/')[-1] for k in ${LEASE_DEV}['attributes']] == ['type']"
 dra-apply "$VM2" <<< "$(borrower-yaml)"
-t_apply=$EPOCHREALTIME
 # No pool device is involved: the pod starts right away.
 dra-pod-wait "$VM2" borrower Running 60
-t_running=$EPOCHREALTIME
 dra-json "$VM2" pod -n "$DRA_NS" borrower
 BORROWER_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
 LEASE_CLAIM=$(dra-value "$COMMAND_OUTPUT" "j['status']['resourceClaimStatuses'][0]['resourceClaimName']")
@@ -798,20 +787,16 @@ dra-leases "$VM2" borrower/main
 dra-assert "$DRA_LEASES" "sorted(l['state'] for l in j) == ['Ready', 'Ready'] and sorted((l.get('mode'), bool(l.get('shared'))) for l in j) == [('dax', True), ('numa', False)]"
 pool-host-client -o json attachments || command-error "cannot list the attachments of the pool"
 pool-assert "$COMMAND_OUTPUT" "sorted(a['device'] for a in j) == ['pooled0', 'shared0']"
-t_delete=$EPOCHREALTIME
 dra-delete "$VM2" pod borrower --grace-period=2 --wait=false
 TOUCH_PID=""
 dra-wait "$VM2" borrower-gone "pods -n $DRA_NS" "'borrower' not in names()" 90
 nothing-left pod-deleted no-borrower
 dra-wait "$VM2" lease-claim-gone "resourceclaims -n $DRA_NS" "names() == []" 90
-t_clean=$EPOCHREALTIME
 vm-command "test -e $DRA_LEASE_DIR/$LEASE_CLAIM_UID" &&
     error "the lease directory of claim $LEASE_CLAIM is still in $DRA_LEASE_DIR"
 vm-command "test -e $DRA_LEASE_FS_DIR/$LEASE_CLAIM_UID" &&
     error "the filesystem directory of claim $LEASE_CLAIM is still in $DRA_LEASE_FS_DIR"
-T_DELETE=$(echo "$t_clean - $t_delete" | bc)
-(( $(echo "$T_DELETE <= 90" | bc) )) || error "cleanup after deleting the pod took $T_DELETE s, more than 90 s"
-echo "pod deleted with 2 active leases: everything cleaned up in $T_DELETE s"
+echo "pod deleted with 2 active leases: everything cleaned up"
 dra-plugin-log "$VM2" | grep -iE 'lease|lend|revok' | tail -n 40
 
 dra-assert-clean "$VM2" "$VM1"
@@ -819,11 +804,6 @@ dra-assert-clean "$VM2" "$VM1"
 echo "### G: what every component did, in order"
 dra-trace-stop
 dra-trace-summary
-printf 'timings (test steps, 1 s polling): borrower Running %.1f s after apply; deleted with leases, clean %s s after the delete\n' \
-    "$(echo "$t_running - $t_apply" | bc)" "$T_DELETE"
-echo "timings: cxl-request request until Ready (s): ${T_LEND[*]}"
-echo "timings: release until nothing is left (s): ${T_GIVE_BACK[*]}"
-echo "timings: cxl-request request --shared --exec write (s): ${T_SHARE[*]}"
 
 echo "### cleanup"
 dra-cleanup

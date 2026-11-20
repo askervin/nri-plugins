@@ -83,8 +83,6 @@ MiB=$(( 1 << 20 ))
 LOCAL_CLASS=cxl-local  # a slice of a local memdev: numa (default) or dax (MemoryConfig device.mode)
 DRAM_CLASS=cxl-dram    # DRAM of the node, for steering
 TAG="dra-local-memdev $(date +%Y-%m-%dT%H:%M:%S.%N)"
-NODE_LAST=0            # the last MemTotal of the node that node-size saw, in bytes
-NODE_TIMES=()          # changes of MemTotal of the node: "LABEL OLD->NEW MiB, seconds since t0"
 
 no-region-device() {
     # Usage: no-region-device JSON
@@ -93,18 +91,6 @@ no-region-device() {
     # node: the region of the local device is not published again as
     # node-local CXL memory.
     dra-assert "$1" "not any(attr(d, 'type') == 'region' for d in devices('$DRA_LOCAL_DRIVER', '$VM2_NAME'))"
-}
-
-node-size() {
-    # Usage: node-size LABEL BYTES
-    #
-    # dra-local-node-size on NUMA_NODE. If MemTotal changed, add the time
-    # since t0 to NODE_TIMES.
-    dra-local-node-size "$VM2" "$1" "$NUMA_NODE" "$2"
-    if [ "$2" != "$NODE_LAST" ]; then
-        NODE_TIMES+=("$1 $(( NODE_LAST / MiB ))->$(( $2 / MiB ))MiB $(printf %.1f "$(echo "$EPOCHREALTIME - $t0" | bc)")s")
-        NODE_LAST=$2
-    fi
 }
 
 initial-state() {
@@ -384,10 +370,8 @@ dra-nodes-eq "$COMMAND_OUTPUT" "$DRAM_NODES" || error "memory nodes $COMMAND_OUT
 
 echo "### B: NUMA and dax claims share the device, the NUMA node grows with the NUMA claims"
 # numa-a has no MemoryConfig: mode numa is the default.
-t0=$EPOCHREALTIME
 dra-claim-pod "$VM2" numa-a "$LOCAL_CLASS" "$(dra-mi "$NUMA_A")"
 dra-pod-wait "$VM2" numa-a Running 120
-T_NUMA_A=$(echo "$EPOCHREALTIME - $t0" | bc)
 dra-local-claim-check "$VM2" numa-a "$NUMA_A"
 # The first claim creates a region on the device. Its slice goes online
 # as movable memory of a NUMA node that the VM did not have: the node of
@@ -396,7 +380,7 @@ dra-local-slices-wait "$VM2" numa-a "$NUMA_NODE" "numa:$NUMA_A"
 NUMA_NODE=$(dra-value "$DRA_MEMDEV" "dax_slices('kmem')[0]['node']")
 (( NUMA_NODE >= CPU_NODES )) || error "the NUMA slice is on node $NUMA_NODE, a CPU node"
 echo "the local device is NUMA node $NUMA_NODE of the VM"
-node-size numa-a "$NUMA_A"
+dra-local-node-size "$VM2" numa-a "$NUMA_NODE" "$NUMA_A"
 pool-cxl-wait "$VM2" numa-a-region "len($LREGIONS) == 1 and ${LREGIONS}[0]['numaNode'] == $NUMA_NODE and len(regions) == 1"
 dra-local-unchanged "$VM2"
 no-region-device "$COMMAND_OUTPUT"
@@ -425,27 +409,23 @@ dra-touch-stop
 # next to the NUMA slice. The scheduler rounds its half block up to a
 # block, the step of the capacity, and the slice has that size. It adds
 # nothing to the NUMA node.
-t0=$EPOCHREALTIME
 dra-claim-pod "$VM2" dax-1 "$LOCAL_CLASS" "$(dra-mi "$DAX1_REQ")" dax
 dra-pod-wait "$VM2" dax-1 Running 120
-T_DAX_1=$(echo "$EPOCHREALTIME - $t0" | bc)
 dra-local-claim-check "$VM2" dax-1 "$(dra-local-round "$DAX1_REQ")"
 slice-check dax-1 "$(dra-local-round "$DAX1_REQ")"
 DAX1_DAX="$SLICE_DAX"
 DAX1_DEV="$SLICE_DEV"
 dra-local-slices-wait "$VM2" numa-a-dax-1 "$NUMA_NODE" "numa:$NUMA_A" "dax:$(dra-local-round "$DAX1_REQ")"
-node-size dax-1 "$NUMA_A"
+dra-local-node-size "$VM2" dax-1 "$NUMA_NODE" "$NUMA_A"
 dra-local-unchanged "$VM2"
 no-region-device "$COMMAND_OUTPUT"
 # A second NUMA claim, with device.mode numa in its MemoryConfig: the node
 # grows by its two blocks, both containers have the node.
-t0=$EPOCHREALTIME
 dra-claim-pod "$VM2" numa-b "$LOCAL_CLASS" "$(dra-mi "$NUMA_B")" numa
 dra-pod-wait "$VM2" numa-b Running 120
-T_NUMA_B=$(echo "$EPOCHREALTIME - $t0" | bc)
 dra-local-claim-check "$VM2" numa-b "$NUMA_B"
 dra-local-slices-wait "$VM2" numa-b "$NUMA_NODE" "numa:$NUMA_A" "dax:$(dra-local-round "$DAX1_REQ")" "numa:$NUMA_B"
-node-size numa-b $(( NUMA_A + NUMA_B ))
+dra-local-node-size "$VM2" numa-b "$NUMA_NODE" $(( NUMA_A + NUMA_B ))
 numa-env-check numa-b "$NUMA_B"
 # A MemoryConfig with a device section only does not opt in to steering.
 dra-memory-wait "$VM2" numa-b main fenced "none (default)"
@@ -488,7 +468,7 @@ TOTAL=$(( NUMA_A + $(dra-local-round "$DAX1_REQ") + NUMA_B + SHARED ))
 dra-json "$VM2" resourceclaims -n "$DRA_NS"
 LOCAL_CLAIMS="[c for c in items if any(r['device'] == '$DRA_LOCAL_DEVICE' for r in results(c))]"
 dra-assert "$COMMAND_OUTPUT" "len($LOCAL_CLAIMS) == 4 and sum(consumed(c) for c in $LOCAL_CLAIMS) == $TOTAL"
-node-size four-claims $(( NUMA_A + NUMA_B ))
+dra-local-node-size "$VM2" four-claims "$NUMA_NODE" $(( NUMA_A + NUMA_B ))
 dra-vm-command "$VM2" "daxctl list -R -D 2>/dev/null; ls -l /dev/dax*; numactl -H" || :
 
 echo "### B2: a restart of the driver keeps the node to the NUMA pods, a new pod is kept off it"
@@ -533,17 +513,15 @@ dra-mems-fenced "$VM2" "$NUMA_NODE" "$DRA_NS/numa-a/main" "$DRA_NS/numa-b/main"
 dra-delete-pod "$VM2" plain
 
 echo "### C: the NUMA pods go, the node shrinks by their blocks, the dax slices keep their data"
-t0=$EPOCHREALTIME
 dra-delete-pod "$VM2" numa-a
-node-size numa-a-deleted "$NUMA_B"
+dra-local-node-size "$VM2" numa-a-deleted "$NUMA_NODE" "$NUMA_B"
 dra-local-slices-wait "$VM2" without-numa-a "$NUMA_NODE" "dax:$(dra-local-round "$DAX1_REQ")" "numa:$NUMA_B" "dax:$SHARED"
 dra-mems-wait "$VM2" numa-b main "$NUMA_NODE"
 dax-read dax-1 "$DAX1_DAX" "$TAG: dax-1"
 dax-read dax-s2 "$SHARED_DAX" "$TAG: shared-slice"
 dra-local-unchanged "$VM2"
-t0=$EPOCHREALTIME
 dra-delete-pod "$VM2" numa-b
-node-size numa-b-deleted 0
+dra-local-node-size "$VM2" numa-b-deleted "$NUMA_NODE" 0
 # The region stays for the dax slices. cxl-dump finds its node without
 # any memory online, from the dax devices.
 dra-local-slices-wait "$VM2" without-numa "$NUMA_NODE" "dax:$(dra-local-round "$DAX1_REQ")" "dax:$SHARED"
@@ -561,12 +539,10 @@ dax-read dax-s2 "$SHARED_DAX" "$TAG: shared-slice"
 dra-delete-pod "$VM2" dax-1
 dra-local-slices-wait "$VM2" without-dax-1 "$NUMA_NODE" "dax:$SHARED"
 dax-read dax-s2 "$SHARED_DAX" "$TAG: shared-slice"
-t0=$EPOCHREALTIME
 dra-delete-pod "$VM2" dax-s2
 dra-delete "$VM2" resourceclaim shared-slice --wait=true --timeout=60s
 # The last slice destroys the region.
 initial-state released
-T_RELEASE=$(echo "$EPOCHREALTIME - $t0" | bc)
 
 echo "### D: refused configs, a read-only slice, a slice of the whole device"
 # Claims whose MemoryConfig the node plugin refuses: readOnly is for dax
@@ -647,10 +623,8 @@ dra-delete-pod "$VM2" dax-ro
 initial-state ro-deleted
 # A dax claim without an amount consumes the whole device (the default of
 # the requestPolicy): one slice of all of it.
-t0=$EPOCHREALTIME
 dra-claim-pod "$VM2" dax-whole "$LOCAL_CLASS" "" dax
 dra-pod-wait "$VM2" dax-whole Running 120
-T_WHOLE=$(echo "$EPOCHREALTIME - $t0" | bc)
 dra-local-claim-check "$VM2" dax-whole "$DRA_LOCAL_SIZE"
 slice-check dax-whole "$DRA_LOCAL_SIZE"
 dra-local-slices-wait "$VM2" whole "$NUMA_NODE" "dax:$DRA_LOCAL_SIZE"
@@ -665,7 +639,6 @@ echo "### E: steering is opt-in: CXL only, DRAM only, DRAM and CXL, DRAM first a
 # at every step, and their children inherit it: the workloads here run as
 # children of the main process (dra-run), allocate without a NUMA
 # preference of their own, and land where the plan of the driver says.
-t0=$EPOCHREALTIME
 dra-claim-pod "$VM2" steer-cxl "$LOCAL_CLASS" "$(dra-mi "$BS")" "container=steering: {policy: auto, maxStep: $(dra-mi "$FIRST_STEP")}"
 dra-claim-pod "$VM2" steer-dram "$DRAM_CLASS" "$(dra-mi "$DRAM_REQ")" "container=steering: {policy: auto}"
 dra-apply "$VM2" <<< "$(dram-cxl-template-yaml steer-mix "policy: auto")
@@ -679,7 +652,7 @@ for pod in steer-cxl steer-dram steer-mix steer-first; do
     dra-pod-wait "$VM2" "$pod" Running 120
 done
 dra-local-slices-wait "$VM2" steering "$NUMA_NODE" "numa:$BS" "numa:$BS" "numa:$BS"
-node-size steering $(( 3 * BS ))
+dra-local-node-size "$VM2" steering "$NUMA_NODE" $(( 3 * BS ))
 # CXL only (first-cxl): the policy prefers the CXL node, the memory of the
 # workload is there.
 steered-check steer-cxl auto "$NUMA_NODE"
@@ -790,7 +763,6 @@ echo "### F: one claim, two requests, two containers: each gets only the result 
 # that result, CXL_CLAIM_<uid>_<n>. The driver attributes each container
 # only its result: c-numa is steered to the node; c-dax has no memory to
 # steer and is fenced like a container without claims, without the node.
-t0=$EPOCHREALTIME
 dra-apply "$VM2" <<EOF
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
@@ -837,7 +809,7 @@ if [ "$SPLIT_DAX" -lt "$SPLIT_NUMA" ]; then
     NUMA_KEY="${DRA_LOCAL_HEX}_2" DAX_KEY="$DRA_LOCAL_HEX"
 fi
 dra-local-slices-wait "$VM2" split "$NUMA_NODE" "numa:$BS" "numa:$BS" "numa:$BS" "numa:$BS" "dax:$BS"
-node-size split $(( 4 * BS ))
+dra-local-node-size "$VM2" split "$NUMA_NODE" $(( 4 * BS ))
 claim-env split/c-numa
 dra-env-assert split/c-numa "$CLAIM_ENV" "$NUMA_KEY" \
     SERIAL="$DRA_LOCAL_SERIAL" SHARED=0 MODE=numa SIZE="$BS" NODE="$NUMA_NODE"
@@ -887,10 +859,6 @@ dra-assert-clean "$VM2" "$VM1"
 
 dra-trace-stop
 dra-trace-summary
-printf 'timings (s, test steps, 1 s polling): pod Running after apply: numa-a (region, first NUMA slice) %.1f, dax-1 %.1f, numa-b (two blocks) %.1f, the whole device as one dax slice %.1f; last claim deleted -> initial state %.1f\n' \
-    "$T_NUMA_A" "$T_DAX_1" "$T_NUMA_B" "$T_WHOLE" "$T_RELEASE"
-echo "timings (s, test steps): MemTotal of node $NUMA_NODE changed, seen by the test this long after the apply or delete (pod start and checks included): ${NODE_TIMES[*]}"
-dra-local-slice-times "$VM2"
 
 echo "### cleanup"
 dra-cleanup

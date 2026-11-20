@@ -345,10 +345,8 @@ cxl-assert "regions == []"
 echo "### B: the writer claims the device exclusively and writes"
 # No capacity request: the claim consumes all shares. No MemoryConfig:
 # mode dax, the only mode of a shared device, read-write.
-t0=$EPOCHREALTIME
 claim-pod writer "" "" "env | grep ^CXL_ | sort"
 dra-pod-wait "$VM2" writer Running 120
-T_WRITER=$(echo "$EPOCHREALTIME - $t0" | bc)
 claim-check writer "$DRA_SHARES"
 WRITER_UID="$CLAIM_UID"
 dra-assert "$CLAIM_JSON" "configs() == [] and [s.get('capacity') for s in subrequests()] == [None]"
@@ -387,13 +385,10 @@ done
 dra-stays 10 "reader-a and reader-b stay Pending, their claims unallocated" 'waiting reader-a reader-b'
 
 echo "### D: the writer goes, both readers get the device and read what it wrote"
-t0=$EPOCHREALTIME
 claim-pod-delete writer
 for r in reader-a reader-b; do
     dra-pod-wait "$VM2" "$r" Running 60
 done
-T_READERS=$(echo "$EPOCHREALTIME - $t0" | bc)
-echo "the writer's claim deleted until both readers run: $T_READERS s"
 declare -A READER_UID=()
 for r in reader-a reader-b; do
     claim-check "$r" 1
@@ -502,9 +497,7 @@ claim-check holder 1
 HOLDER_UID="$CLAIM_UID"
 cdi-check "$HOLDER_UID" 1
 CDI_BEFORE="$CDI_NODE"
-t0=$EPOCHREALTIME
 dra-driver-restart "$VM2"
-T_RESTART=$(echo "$EPOCHREALTIME - $t0" | bc)
 # The new node plugin kept the region for the holder's claim (its log
 # says so), the reader keeps its mapping, and the CDI device of the claim
 # has the same device node.
@@ -529,13 +522,11 @@ dra-local-shared-wait "$VM2" restarted-idle
 # region of the idle device and publishes the device for slices again
 # (as test14).
 DRA_DRIVER_CONFIG=""
-t0=$EPOCHREALTIME
 dra-install
 dra-trace-driver-follow "$VM2"
 # The node plugin itself released the region: its log says so.
 dra-plugin-log-wait "$VM2" "local memdev $DRA_LOCAL_SERIAL ($SHARED_MEMDEV): not configured shared any more, releasing its region" 60
 dra-local-slices-none "$VM2" unshared
-T_UNSHARE=$(echo "$EPOCHREALTIME - $t0" | bc)
 dra-wait "$VM2" sliced-again resourceslices \
     "attr($LD, 'shared') == False and sorted(k.split('/')[-1] for k in ${LD}['attributes']) == ['memoryBlockSize', 'nodeAffinity', 'persistent', 'serial', 'shared', 'size', 'source', 'type'] and quantity(capacity($LD, 'memory')) == $DRA_LOCAL_SIZE" 60
 
@@ -544,10 +535,6 @@ dra-assert-clean "$VM2" "$VM1"
 echo "### I: what every component did, in order"
 dra-trace-stop
 dra-trace-summary
-echo "TIMING: writer claim and pod created until Running (the region created): $T_WRITER s"
-echo "TIMING: writer claim deleted until both readers Running: $T_READERS s"
-echo "TIMING: driver restart with a reader until a new Ready pod: $T_RESTART s"
-echo "TIMING: dra-install without sharedDevices until the region is gone: $T_UNSHARE s"
 
 echo "### cleanup"
 dra-cleanup

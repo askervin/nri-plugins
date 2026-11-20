@@ -203,11 +203,9 @@ if [ "\$bytes" -gt "\$size" ]; then
     echo "the image does not fit into the device"
     echo "writer exit 2"
 else
-    t0=\$(python3 -c 'import time; print(time.time())')
     dd if="\$img" of="\$dev" bs=2M conv=fsync
     rc=\$?
-    t1=\$(python3 -c 'import time; print(time.time())')
-    echo "dd exit \$rc in \$(python3 -c "print(round((\$t1 - \$t0) * 1000))") ms"
+    echo "dd exit \$rc"
     echo "device sha256: \$(head -c "\$bytes" "\$dev" | sha256sum | cut -d' ' -f1)"
     echo "writer exit \$rc"
 fi
@@ -407,7 +405,7 @@ llm-answer-value() { # script API
     # Usage: llm-answer-value EXPRESSION
     #
     # Print the value of the Python EXPRESSION on the last response of
-    # llm-ask, j, for instance j["timings"]["predicted_per_second"].
+    # llm-ask, j, for instance j["tokens_predicted"].
     pool-value "$LLM_ANSWER" "$1"
 }
 

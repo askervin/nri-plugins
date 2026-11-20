@@ -120,7 +120,6 @@ PAUSE_IMAGE=registry.k8s.io/pause:3.10   # the image of the companion pods of le
 P9A="device $FS_SERIAL: it is mounted read-write with access direct on this node: access cached would mount it a second time"
 P9D="device $FS_SERIAL: it is mounted with access direct only on this node: a read-write claim with access cached would mount it a second time"
 P9E="device $FS_SERIAL: btrfs is mounted read-only on this node and cannot be remounted read-write: a read-write claim waits until the read-only claims of the node are gone"
-TIMINGS=()
 
 fs0-free() {
     # Usage: fs0-free
@@ -240,11 +239,9 @@ write-image() {
     #
     # Build an image of TYPE with $FS_FILE TEXT in VM1 and write it into
     # fs0 with a writer on VM1, then wait until fs0 is free.
-    local t0=$EPOCHREALTIME
     fs-image-build "$VM1" "$1" "$1" "$2"
     fs-write "$VM1" "writer-$1" "$FS_SERIAL" 1 "$CLASS"
     fs0-free
-    TIMINGS+=("$1 image built and written: $(echo "$EPOCHREALTIME - $t0" | bc) s")
 }
 
 lease-json() {
@@ -374,10 +371,8 @@ NS_SIZE="$FS_NS_SIZE"
 echo "### C: ReadWriteOnce on VM2: two writers and a reader share the ext4"
 # rw-a first: its claim makes the attachment of VM2 exclusive. rw-b joins
 # the read-write superblock, ro-c gets a read-only bind of it.
-t0=$EPOCHREALTIME
 fs-claim-pod "$VM2" rw-a "$FS_SERIAL" 1 "$RW" "$CLASS"
 dra-pod-wait "$VM2" rw-a Running 180
-TIMINGS+=("rw-a: pod created until Running (attach, region, mount): $(echo "$EPOCHREALTIME - $t0" | bc) s")
 fs-claim-pod "$VM2" rw-b "$FS_SERIAL" 1 "$RW" "$CLASS"
 dra-pod-wait "$VM2" rw-b Running 120
 fs-claim-pod "$VM2" ro-c "$FS_SERIAL" 1 "$RO" "$CLASS"
@@ -430,19 +425,16 @@ fs-no-mounts-assert "$VM1" "$DRA_POOL_MOUNT_DIR"
 fs-ctr-read-assert rw-a "$FS_PATH" b.txt "$TEXT_B"
 
 echo "### E: the writers of VM2 go: VM2 downgrades the ext4 to read-only, ro-d starts on VM1"
-t0=$EPOCHREALTIME
 fs-claim-pod-delete rw-a rw-b
 superblock-wait "$VM2" ro direct
 fs-pmem-ro-assert "$VM2" "$PMEM2" 1
 dra-plugin-log-wait "$VM2" "remounted $MNT_DIRECT read-only"
-TIMINGS+=("the writers of VM2 deleted until its superblock is read-only: $(echo "$EPOCHREALTIME - $t0" | bc) s")
 ext4-clean-assert "$VM2" "$PMEM2"
 fs-ctr-read-assert ro-c "$FS_PATH" a.txt "$TEXT_A"
 fs-ctr-write-refused ro-c "$FS_PATH"
 # The attachment of VM2 is not exclusive any more: the scheduler's next
 # attempt of ro-d attaches fs0 to VM1 next to it.
 dra-pod-wait "$VM2" ro-d Running 240
-TIMINGS+=("the writers of VM2 deleted until ro-d runs on VM1: $(echo "$EPOCHREALTIME - $t0" | bc) s")
 fs-ctr-env-assert ro-d "$FS_HEX" \
     SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=direct READONLY=1 FSTYPE=ext4
 fs-ctr-mount-assert ro-d "$FS_PATH" ro ext4
@@ -468,12 +460,10 @@ fs-pending-assert rw-f
 dra-json "$VM2" resourceclaim -n "$DRA_NS" ro-c
 dra-assert "$COMMAND_OUTPUT" "condition('$DRA_POOL_DRIVER/Attached') == 'True' and condition('$DRA_POOL_DRIVER/AttachFailed') != 'True'"
 fs-ctr-read-assert ro-c "$FS_PATH" b.txt "$TEXT_B"
-t0=$EPOCHREALTIME
 fs-claim-pod-delete ro-d
 pool-cxl-wait "$VM1" ro-d-released "memdevs == []" 60
 fs-no-mounts-assert "$VM1" "$DRA_POOL_MOUNT_DIR"
 dra-pod-wait "$VM2" rw-f Running 240
-TIMINGS+=("ro-d deleted until rw-f runs on VM2: $(echo "$EPOCHREALTIME - $t0" | bc) s")
 superblock-wait "$VM2" rw direct
 fs-pmem-ro-assert "$VM2" "$PMEM2" 0
 dra-plugin-log-wait "$VM2" "remounted $MNT_DIRECT read-write"
@@ -537,10 +527,8 @@ fs-claim-pod "$VM2" btrfs-rw "$FS_SERIAL" 1 "$RW" "$CLASS"
 fs-event-wait btrfs-rw "$P9E"
 fs-node-mounts-assert "$VM2" "$DRA_POOL_MOUNT_DIR" "$FS_MOUNT_ID" btrfs ro "" cached
 fs-ctr-read-assert btrfs-ro "$FS_PATH" "$FS_FILE" "$TEXT_BTRFS"
-t0=$EPOCHREALTIME
 fs-claim-pod-delete btrfs-ro
 dra-pod-wait "$VM2" btrfs-rw Running 240
-TIMINGS+=("btrfs-ro deleted until the waiting btrfs-rw runs: $(echo "$EPOCHREALTIME - $t0" | bc) s")
 fs-ctr-env-assert btrfs-rw "$FS_HEX" \
     SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=cached READONLY=0 FSTYPE=btrfs
 fs-ctr-mount-assert btrfs-rw "$FS_PATH" rw btrfs
@@ -656,11 +644,9 @@ fs-ctr-read-assert rw-g "$FS_PATH" l.txt "$TEXT_L"
 # --wait it times out, is released and Failed; with --wait 0s it stays,
 # its companion claim waiting with AttachFailed reason Conflict.
 lease-pod-start lease-b "$VM1"
-t0=$EPOCHREALTIME
 dra-exec "$VM2" lease-b/main "$DRA_REQUEST_CTR_BIN" request --serial "$FS_SERIAL" --shared --mode fs --read-write --wait 30s &&
     error "lease-b: a read-write lease on VM1 got Ready while rw-g writes on VM2"
 [ "$COMMAND_STATUS" == 3 ] || error "lease-b: cxl-request request exited $COMMAND_STATUS, expected 3 (not Ready in time)"
-TIMINGS+=("lease-b: the read-write lease on VM1 not Ready after $(echo "$EPOCHREALTIME - $t0" | bc) s (--wait 30s)")
 LEASE_B_JSON=$(lease-json "$COMMAND_OUTPUT
 $DRA_EXEC_STDERR") || error "lease-b: no response of cxl-request request"
 dra-assert "$LEASE_B_JSON" "j.get('state') == 'Failed' and 'timeout: not Ready after' in (j.get('error') or '')"
@@ -704,9 +690,6 @@ echo "no pods, claims, leases, mounts, lease directories, loop devices, CDI devi
 echo "### what every component of VM2 and VM1 did, in order"
 dra-trace-stop
 dra-trace-summary
-for t in "${TIMINGS[@]}"; do
-    echo "TIMING: $t"
-done
 
 echo "### cleanup"
 trap - EXIT

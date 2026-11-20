@@ -78,14 +78,13 @@
 # frames and page cache counters can.
 #
 # What you will see: VM1 building the erofs image (the first time), the
-# writer on VM1 flashing it into llm0 quickly, the host finding
-# the model in the data file, three direct and three cached llama.cpp
-# servers on two nodes answering "hello" from the one copy in CXL memory or
-# from one page cache copy per node, two of them on a filesystem that
-# appeared in their running container, the frames of their model mappings,
-# the page cache deltas, the tokens per second, a release refused while
-# the model is in use and done once its user is gone, and the trace of
-# both nodes.
+# writer on VM1 flashing it into llm0, the host finding the model in the
+# data file, three direct and three cached llama.cpp servers on two nodes
+# answering "hello" from the one copy in CXL memory or from one page cache
+# copy per node, two of them on a filesystem that appeared in their running
+# container, the frames of their model mappings, the page cache deltas, a
+# release refused while the model is in use and done once its user is
+# gone, and the trace of both nodes.
 #
 # The "shares" capacity of llm0 is 1M without a requestPolicy: every reader
 # claim, and every companion claim of a lease, takes one share of it,
@@ -185,7 +184,6 @@ LOOP_READ=""              # and, for a cached reader, the bytes read meanwhile t
 declare -A READER_LOOP=() # cached reader -> the loop device (loopN) over pmem on its node
 LLM_SERVE_TOKENS=128      # the tokens of the long request to each cached reader
 LLM_MIB=$(( 1 << 20 ))
-TIMINGS=()
 
 llm0-free() {
     # Usage: llm0-free
@@ -312,7 +310,7 @@ reader-start() {
     # then set POD_FILE to the page cache charged to its pod. For a cached
     # reader set READER_LOOP to the loop device over pmem on its node and
     # LOOP_READ to the bytes read through it meanwhile.
-    local r="$1" vm="${READER_VM[$1]}" params before after t0 charges loops0="" loop now base
+    local r="$1" vm="${READER_VM[$1]}" params before after charges loops0="" loop now base
     params="mode: fs, readOnly: true, access: ${READER_ACCESS[$r]}"
     [ -z "${READER_PATH[$r]}" ] || params+=", path: ${READER_PATH[$r]}"
     charges=$(llm-file-charges "$vm")
@@ -322,7 +320,6 @@ reader-start() {
         loops0=$(llm-loop-reads "$vm") || error "cannot read the loop devices of $(pool-vm-label "$vm")"
     fi
     before=$(llm-page-cache "$vm")
-    t0=$(date +%s.%N)
     if [ "$(reader-kind "$r")" == lease ]; then
         dra-apply "$VM2" <<< "$(llm-server-pod-yaml "$r" "$vm" lease "$LEASE_TEMPLATE" \
             "$(llm-lease-reader-script "$LLM_HEX" "${READER_ACCESS[$r]}" "${READER_NAME[$r]}" "$LLM_THREADS")")"
@@ -332,7 +329,6 @@ reader-start() {
 $(llm-server-pod-yaml "$r" "$vm" claim "$r" "$(llm-reader-script "$LLM_HEX" "$LLM_THREADS")")"
     fi
     llm-server-wait "$vm" "$r"
-    TIMINGS+=("$r on $(pool-vm-label "$vm") ($(reader-kind "$r")): pod created until llama-server serves: $(echo "$(date +%s.%N) - $t0" | bc) s")
     after=$(llm-page-cache "$vm")
     CACHE_DELTA=$(( (after - before) * 1024 ))
     [ "$(reader-kind "$r")" != lease ] || lease-reader-found "$r"
@@ -341,7 +337,6 @@ $(llm-server-pod-yaml "$r" "$vm" claim "$r" "$(llm-reader-script "$LLM_HEX" "$LL
     llm-ask "$vm" "$r"
     POD_FILE=$(llm-pod-file "$vm" "$r") || error "$r: no page cache counter of its pod"
     echo "page cache charged to the pod $r: $(( POD_FILE >> 10 )) kB"
-    TIMINGS+=("page cache of $(pool-vm-label "$vm") around $r (${READER_ACCESS[$r]}): $(( CACHE_DELTA >> 10 )) kB, of the pod $(( POD_FILE >> 10 )) kB")
     [ "${READER_ACCESS[$r]}" == cached ] || return 0
     loop=$(dra-pmem-loops "$vm") || error "cannot list the loop devices of $(pool-vm-label "$vm")"
     [ "$(wc -l <<< "$loop")" == 1 ] && [ -n "$loop" ] || error "$(pool-vm-label "$vm") has not one loop device over pmem: $loop"
@@ -351,7 +346,6 @@ $(llm-server-pod-yaml "$r" "$vm" claim "$r" "$(llm-reader-script "$LLM_HEX" "$LL
     base=$(awk -v l="$loop" '$1 == l {print $2}' <<< "$loops0")
     LOOP_READ=$(( ${now#* } - ${base:-0} ))
     echo "read through $loop of $(pool-vm-label "$vm") (from CXL) around $r: $LOOP_READ bytes, the model $LLM_MODEL_SIZE"
-    TIMINGS+=("$r: read from CXL through $loop of $(pool-vm-label "$vm") until it answered: $(( LOOP_READ >> 10 )) kB")
 }
 
 cache-cmp() {
@@ -408,7 +402,6 @@ reader-check() {
         error "$r: $path is not a read-only erofs mount in the container: $(grep '^mount:' <<< "$log")"
     llm-ask "$vm" "$r"
     [ "$LLM_CONTENT" == "$LLM_EXPECT" ] || error "$r answered '$LLM_CONTENT', expected '$LLM_EXPECT'"
-    TIMINGS+=("$r on $(pool-vm-label "$vm"): $(llm-answer-value 'j["tokens_predicted"]') tokens, prompt $(llm-answer-value 'round(j["timings"]["prompt_per_second"], 1)') tokens/s, generation $(llm-answer-value 'round(j["timings"]["predicted_per_second"], 1)') tokens/s on $LLM_THREADS threads")
     if [ "$(reader-kind "$r")" == lease ]; then
         lease-check "$r" "$log"
     else
@@ -433,7 +426,6 @@ reader-check() {
     [ $(( anon * 1024 )) -lt $(( LLM_MODEL_SIZE / 2 )) ] ||
         error "$r has $anon kB of anonymous memory, not less than half the model ($(( LLM_MODEL_SIZE / 2048 )) kB): the weights were copied into the process"
     echo "memory.stat of $r: $(dra-container-read "$vm" "$r" main memory.stat | grep -E '^(anon|file|file_mapped|shmem) ' | tr '\n' ' ')"
-    TIMINGS+=("$r: anonymous memory of llama-server $anon kB")
 }
 
 claim-check() {
@@ -600,7 +592,6 @@ print("%d samples while it served: %s" % (len(json.loads(sys.argv[1])), "; ".joi
         error "$r: ${READER_LOOP[$r]} read $LLM_LOOP_READ bytes from CXL while it served, not less than 1 MiB"
     weights=$(( tokens * LLM_MODEL_SIZE ))
     echo "$r on $label: $tokens tokens, ~$(( weights / 1000000000 )).$(( weights / 100000000 % 10 )) GB of weights read, $LLM_LOOP_READ bytes from CXL (${READER_LOOP[$r]})"
-    TIMINGS+=("$r: $tokens tokens served, ~$(( weights / 1000000000 )).$(( weights / 100000000 % 10 )) GB of weights read, $LLM_LOOP_READ bytes from CXL, generation $(llm-answer-value 'round(j["timings"]["predicted_per_second"], 1)') tokens/s")
 }
 
 mounts-assert() {
@@ -806,12 +797,10 @@ pool-vm-command "$VM2" "test ! -e $LLM_VM_MODEL_DIR && test ! -e $LLM_VM_IMAGE &
     error "VM2 has the model or its image: its readers must get it from CXL memory only"
 
 echo "### B: the writer on VM1 takes $LLM_DEVICE exclusively and flashes the erofs image into it"
-t0=$(date +%s.%N)
 dra-apply "$VM2" <<< "$(dra-shared-claim-yaml llm-writer "$LLM_SERIAL" "" "mode: block" cxl-pool-persistent)
 ---
 $(dra-script-pod-yaml writer "$VM1" llm-writer "$(llm-writer-script "$LLM_HEX")" "File:$LLM_VM_IMAGE")"
 llm-writer-wait "$VM2" writer 180
-T_WRITER=$(echo "$(date +%s.%N) - $t0" | bc)
 echo "$LLM_LOG"
 dra-env-assert writer "$LLM_LOG" "$LLM_HEX" \
     SERIAL="$LLM_SERIAL" SHARED=1 MODE=block "SIZE=[1-9]*" "PATH=/dev/pmem*" READONLY=0
@@ -819,9 +808,7 @@ LLM_NS_SIZE=$(dra-env-value "$LLM_LOG" "CXL_${LLM_HEX}_SIZE")
 [[ "$LLM_NS_SIZE" =~ ^[0-9]+$ ]] && [ "$LLM_NS_SIZE" -ge "$LLM_IMAGE_SIZE" ] && [ "$LLM_NS_SIZE" -le "$LLM_DEV_SIZE" ] ||
     error "the fsdax namespace of the writer has $LLM_NS_SIZE bytes, expected the image ($LLM_IMAGE_SIZE) at least and the device ($LLM_DEV_SIZE) at most"
 grep -qE "^block device: /dev/pmem[0-9]+$" <<< "$LLM_LOG" || error "the writer has no block device: $(grep 'block device' <<< "$LLM_LOG")"
-line=$(grep -E "^dd exit 0 in [0-9]+ ms$" <<< "$LLM_LOG") || error "dd of the writer failed: $(grep '^dd exit' <<< "$LLM_LOG")"
-T_WRITE_MS="${line#dd exit 0 in }"
-T_WRITE_MS="${T_WRITE_MS% ms}"
+grep -qx "dd exit 0" <<< "$LLM_LOG" || error "dd of the writer failed: $(grep '^dd exit' <<< "$LLM_LOG")"
 grep -qx "device sha256: $LLM_IMAGE_SHA256" <<< "$LLM_LOG" ||
     error "the device of the writer does not have the image (sha256 $LLM_IMAGE_SHA256): $(grep '^device sha256:' <<< "$LLM_LOG")"
 dra-json "$VM2" resourceclaim -n "$DRA_NS" llm-writer
@@ -929,11 +916,9 @@ llm-ask "$VM2" direct-b
 # The release cannot finish while llama-server maps the model: the driver
 # cannot unmount the bind (EBUSY), kubelet retries the Unprepare of the
 # companion claim, the companion pod stays Terminating.
-t0=$EPOCHREALTIME
 dra-exec "$VM2" direct-b/main "$DRA_REQUEST_CTR_BIN" release --lease "$LEASE_B" --wait 5s &&
     error "cxl-request release of lease $LEASE_B of direct-b succeeded while llama-server maps the model"
 [ "$COMMAND_STATUS" == 3 ] || error "cxl-request release of lease $LEASE_B exited $COMMAND_STATUS, expected 3 (not Released in time)"
-TIMINGS+=("direct-b: release of the mapped lease $LEASE_B refused (still Releasing) after $(echo "$EPOCHREALTIME - $t0" | bc) s (--wait 5s)")
 dra-assert "$(dra-last-json "$COMMAND_OUTPUT")" "j.get('lease') == '$LEASE_B' and j.get('state') == 'Releasing'"
 busy_re="lease $LEASE_B: unmounting ${BIND_B//./\\.}: .*device or resource busy"
 retry-until --timeout 60 --interval 1 --message "the driver of VM2 cannot unmount $BIND_B: busy" \
@@ -961,13 +946,11 @@ pool-assert "$COMMAND_OUTPUT" "('$VM2_NAME', 'attached') in [(a['host'], a['stat
 # mount it was the last user of, and keeps the region for the cached
 # readers.
 pid=$(llm-server-pid "$VM2" direct-b) || error "no llama-server runs in direct-b"
-t0=$EPOCHREALTIME
 pool-vm-command "$VM2" "kill -KILL $pid" || command-error "cannot kill llama-server (pid $pid) of direct-b"
 dra-pod-wait "$VM2" direct-b Failed 60
 dra-json "$VM2" pod -n "$DRA_NS" direct-b
 dra-assert "$COMMAND_OUTPUT" "j['status']['containerStatuses'][0]['state']['terminated']['exitCode'] == 137"
 dra-wait "$VM2" d2-lease-b-gone "pods,resourceclaims -n $DRA_NS" "'cxl-lease-$LEASE_B' not in names()" 90
-TIMINGS+=("direct-b: lease $LEASE_B and its companion gone $(echo "$EPOCHREALTIME - $t0" | bc) s after llama-server was killed")
 dra-lease-fs-mounts "$VM2" || error "cannot read the lease mounts of $(pool-vm-label "$VM2")"
 [ "$COMMAND_OUTPUT" == "[]" ] || error "$(pool-vm-label "$VM2") still has mounts under $DRA_LEASE_FS_DIR: $COMMAND_OUTPUT"
 mounts-assert "$VM2" cached
@@ -1006,10 +989,6 @@ echo "no pods, claims, leases, mounts, lease directories, loop devices, CDI devi
 echo "### what every component of VM2 and VM1 did, in order"
 dra-trace-stop
 dra-trace-summary
-echo "TIMING: writer pod created until the image is written: $T_WRITER s (dd of $LLM_IMAGE_SIZE bytes: $T_WRITE_MS ms)"
-for t in "${TIMINGS[@]}"; do
-    echo "TIMING: $t"
-done
 
 echo "### cleanup"
 trap - EXIT
