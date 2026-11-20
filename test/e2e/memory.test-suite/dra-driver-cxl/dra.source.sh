@@ -156,6 +156,10 @@ DRA_DRIVER_POD=""                  # dra-driver-restart: the new pod of the driv
 DRA_CLAIM_JSON=""                  # dra-local-claim-check: the claim
 DRA_CLAIM_UID=""                   # and its uid
 DRA_POD_UID=""                     # dra-lease-pod-start: the pod
+DRA_REQ_STATUS=""                  # dra-request: the exit status of cxl-request,
+DRA_REQ_OUT=""                     # what it printed (stdout, then stderr),
+DRA_REQ_JSON=""                    # and its last JSON line ("{}" if none)
+DRA_LEASE_IDS=()                   # dra-lease-new: the lease ids of the test
 DRA_LEASE_CLAIM_UID=""             # and the uid of its lease claim
 DRA_NODE_KB=""                     # dra-node-wait: the last MemTotal of the node in kB
 DRA_TOOLS_IMAGE=docker.io/library/python:3-alpine   # the image of pods that run the tools of dra-dax-tool-install
@@ -2111,6 +2115,50 @@ dra-lease-pod-start() {
     DRA_LEASE_CLAIM_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
 }
 
+dra-request() {
+    # Usage: dra-request VMDIR POD[/CONTAINER] ARGS...
+    #
+    # Run "cxl-request ARGS..." in the container (dra-exec). DRA_REQ_STATUS
+    # is its exit status, which is also returned, DRA_REQ_OUT what it
+    # printed (stdout, then stderr), DRA_REQ_JSON its last JSON line ("{}"
+    # if none).
+    local vmdir="$1" target="$2"
+    shift 2
+    dra-exec "$vmdir" "$target" "$DRA_REQUEST_CTR_BIN" "$@"
+    DRA_REQ_STATUS=$COMMAND_STATUS
+    DRA_REQ_OUT="$COMMAND_OUTPUT
+$DRA_EXEC_STDERR"
+    # shellcheck disable=SC2034 # for the tests
+    DRA_REQ_JSON=$(dra-last-json "$COMMAND_OUTPUT") || DRA_REQ_JSON="{}"
+    return "$DRA_REQ_STATUS"
+}
+
+dra-request-refused() {
+    # Usage: dra-request-refused VMDIR POD[/CONTAINER] STATUS TEXT ARGS...
+    #
+    # Fail the test unless "cxl-request ARGS..." in the container exits
+    # with STATUS and prints TEXT, a fixed string.
+    local vmdir="$1" target="$2" status="$3" text="$4"
+    shift 4
+    dra-request "$vmdir" "$target" "$@"
+    [ "$DRA_REQ_STATUS" == "$status" ] || error "cxl-request $* exited $DRA_REQ_STATUS, expected $status"
+    grep -qF -- "$text" <<< "$DRA_REQ_OUT" || error "cxl-request $* did not print '$text'"
+    echo "refused as expected: cxl-request $*: $text"
+}
+
+dra-lease-new() {
+    # Usage: dra-lease-new LEASE
+    #
+    # Record lease id LEASE in DRA_LEASE_IDS. Fail the test if LEASE is
+    # not a lease id or the test has seen it before.
+    local l
+    [[ "$1" =~ ^[0-9a-f]{8}$ ]] || error "lease id '$1' is not 8 hex digits"
+    for l in "${DRA_LEASE_IDS[@]}"; do
+        [ "$l" != "$1" ] || error "lease id $1 was used before"
+    done
+    DRA_LEASE_IDS+=("$1")
+}
+
 dra-leases() {
     # Usage: dra-leases VMDIR POD[/CONTAINER]
     #
@@ -2190,6 +2238,35 @@ dra-mems-wait() {
     echo "$pod/$container: cpuset.mems $mems (has node $node), effective $(dra-container-read "$vmdir" "$pod" "$container" cpuset.mems.effective)"
     dra-exec "$vmdir" "$pod/$container" grep Mems_allowed_list /proc/self/status ||
         command-error "cannot read Mems_allowed_list in container $container of pod $pod"
+}
+
+dra-mems-allowed() {
+    # Usage: dra-mems-allowed VMDIR POD/CONTAINER
+    #
+    # Print the Mems_allowed_list of a process in the container, as the
+    # container sees it. Fail the test if it cannot be read.
+    dra-exec "$1" "$2" grep Mems_allowed_list /proc/self/status >&2 ||
+        command-error "cannot read Mems_allowed_list in $2"
+    awk '{print $2}' <<< "$COMMAND_OUTPUT"
+}
+
+dra-mems-once() {
+    # Usage: dra-mems-once LABEL VMDIR POD CONTAINER DRAM VAR
+    #
+    # Check that cpuset.mems of container CONTAINER of pod POD is the value
+    # of variable VAR, or, when that is empty, the DRAM nodes DRAM (a node
+    # list), and set VAR to it: an empty cpuset.mems changes once, when the
+    # node plugin fences its first CXL node, and then stays.
+    local label="$1" vmdir="$2" pod="$3" ctr="$4" dram="$5" var="$6" mems
+    mems=$(dra-container-read "$vmdir" "$pod" "$ctr" cpuset.mems) ||
+        error "$label: cannot read cpuset.mems of container $ctr of $pod"
+    [ "$mems" == "${!var}" ] && return 0
+    [ -z "${!var}" ] ||
+        error "$label: cpuset.mems of container $ctr of $pod changed from '${!var}' to '$mems'"
+    dra-nodes-eq "$mems" "$dram" ||
+        error "$label: cpuset.mems of container $ctr of $pod is '$mems', expected '' or its DRAM nodes $dram"
+    echo "$label: cpuset.mems of container $ctr of $pod changed from '' to its DRAM nodes '$mems'"
+    printf -v "$var" '%s' "$mems"
 }
 
 dra-mems-fenced() {
