@@ -5,7 +5,7 @@
 #   kubectl exec lease -c app -- cxl-request request --source pool --size 512Mi --mode dax --exec sh -c 'env | grep ^CXL_'
 #   kubectl exec lease -c app -- cxl-request release --all
 # The pod lease-fs-reader leases the read-only erofs filesystem of the
-# persistent pool device 0xc1ae0001 (see pool-persistent-erofs.yaml for its
+# persistent pool device 0xc1ae0002 (see pool-persistent-erofs.yaml for its
 # writer) and serves the model in it: the filesystem is mounted at
 # /run/cxl/fs/models in the running container, and llama-server maps the
 # model from the memory of the device (access direct). cxl-request exits
@@ -54,7 +54,7 @@ spec:
     - cxl-request
     - request
     - --serial
-    - "0xc1ae0001"
+    - "0xc1ae0002"
     - --shared
     - --read-only
     - --mode
@@ -64,7 +64,7 @@ spec:
     - --exec
     - sh
     - -c
-    - exec /app/llama-server -m "$CXL_C1AE0001_PATH/model.gguf" -nr --host 0.0.0.0 --port 8080
+    - exec /app/llama-server -m "$CXL_C1AE0002_PATH/model.gguf" -nr --host 0.0.0.0 --port 8080
     resources:
       claims:
       - name: lease

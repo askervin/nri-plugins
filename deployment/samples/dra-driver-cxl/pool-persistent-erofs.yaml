@@ -9,10 +9,16 @@
 # file pages are the memory of the device) or cached (the file pages are
 # in the page cache of the node). The image must be built with
 # -Enoinline_data, else access direct silently uses the page cache.
+# Apply it in two steps, the second when the pod of the first has
+# completed:
+#   kubectl apply -f pool-persistent-erofs.yaml -l step=1
+#   kubectl apply -f pool-persistent-erofs.yaml -l step=2
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
   name: persistent-writer
+  labels:
+    step: "1"
 spec:
   devices:
     requests:
@@ -21,7 +27,7 @@ spec:
         deviceClassName: cxl-pool-persistent
         selectors:
         - cel:
-            expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"'
+            expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0002"'
         # no capacity request: the whole device, the only claim of it
     config:
     - opaque:
@@ -36,6 +42,8 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: persistent-writer
+  labels:
+    step: "1"
 spec:
   restartPolicy: Never
   resourceClaims:
@@ -53,8 +61,8 @@ spec:
       head -c 64M /dev/urandom > /tmp/stage/data.bin
       sha256sum /tmp/stage/data.bin
       mkfs.erofs -b4096 --dsunit=512 -Enoinline_data /tmp/image.erofs /tmp/stage
-      dev=$CXL_C1AE0001_PATH
-      [ "$(stat -c %s /tmp/image.erofs)" -le "$CXL_C1AE0001_SIZE" ]
+      dev=$CXL_C1AE0002_PATH
+      [ "$(stat -c %s /tmp/image.erofs)" -le "$CXL_C1AE0002_SIZE" ]
       dd if=/tmp/image.erofs of="$dev" bs=2M oflag=direct conv=fsync
       echo "wrote the image into $dev"
     resources:
@@ -65,6 +73,8 @@ apiVersion: resource.k8s.io/v1
 kind: ResourceClaimTemplate
 metadata:
   name: persistent-reader-direct
+  labels:
+    step: "2"
 spec:
   spec:
     devices:
@@ -74,7 +84,7 @@ spec:
           deviceClassName: cxl-pool-persistent
           selectors:
           - cel:
-              expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"'
+              expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0002"'
           capacity:
             requests:
               shares: "1"  # one share
@@ -93,6 +103,8 @@ apiVersion: resource.k8s.io/v1
 kind: ResourceClaimTemplate
 metadata:
   name: persistent-reader-cached
+  labels:
+    step: "2"
 spec:
   spec:
     devices:
@@ -102,7 +114,7 @@ spec:
           deviceClassName: cxl-pool-persistent
           selectors:
           - cel:
-              expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"'
+              expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0002"'
           capacity:
             requests:
               shares: "1"  # one share
@@ -122,6 +134,8 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: persistent-reader-direct
+  labels:
+    step: "2"
 spec:
   resourceClaims:
   - name: mem
@@ -138,6 +152,8 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: persistent-reader-cached
+  labels:
+    step: "2"
 spec:
   resourceClaims:
   - name: mem

@@ -17,10 +17,16 @@
 # attaches it to the writer's node only; a claim of another node waits
 # (AttachFailed, reason Conflict). The reader's podAffinity puts it on the
 # writer's node.
+# Apply it in two steps, the second when the pod of the first has
+# completed:
+#   kubectl apply -f pool-persistent-fs-rw.yaml -l step=1
+#   kubectl apply -f pool-persistent-fs-rw.yaml -l step=2
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
   name: fs-rw-formatter
+  labels:
+    step: "1"
 spec:
   devices:
     requests:
@@ -29,7 +35,7 @@ spec:
         deviceClassName: cxl-pool-persistent
         selectors:
         - cel:
-            expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"'
+            expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0003"'
         # no capacity request: the whole device, the only claim of it
     config:
     - opaque:
@@ -44,6 +50,8 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: fs-rw-formatter
+  labels:
+    step: "1"
 spec:
   restartPolicy: Never
   resourceClaims:
@@ -57,8 +65,8 @@ spec:
     - -ec
     - |
       dnf install -q -y e2fsprogs
-      mkfs.ext4 -F -b 4096 "$CXL_C1AE0001_PATH"
-      echo "made an ext4 on $CXL_C1AE0001_PATH"
+      mkfs.ext4 -F -b 4096 "$CXL_C1AE0003_PATH"
+      echo "made an ext4 on $CXL_C1AE0003_PATH"
     resources:
       claims:
       - name: mem
@@ -67,6 +75,8 @@ apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
   name: fs-rw-writer
+  labels:
+    step: "2"
 spec:
   devices:
     requests:
@@ -75,7 +85,7 @@ spec:
         deviceClassName: cxl-pool-persistent
         selectors:
         - cel:
-            expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"'
+            expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0003"'
         capacity:
           requests:
             shares: "1"  # one share
@@ -95,6 +105,8 @@ apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
   name: fs-rw-reader
+  labels:
+    step: "2"
 spec:
   devices:
     requests:
@@ -103,7 +115,7 @@ spec:
         deviceClassName: cxl-pool-persistent
         selectors:
         - cel:
-            expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"'
+            expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0003"'
         capacity:
           requests:
             shares: "1"  # one share
@@ -122,6 +134,7 @@ kind: Pod
 metadata:
   name: fs-rw-writer
   labels:
+    step: "2"
     app: fs-rw-writer
 spec:
   resourceClaims:
@@ -139,6 +152,8 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: fs-rw-reader
+  labels:
+    step: "2"
 spec:
   affinity:
     podAffinity:

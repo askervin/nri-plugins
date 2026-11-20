@@ -10,10 +10,16 @@
 # three readers join with one share each (capacity.requests.shares: "1")
 # and MemoryConfig device.readOnly: true: their device node allows reads
 # only.
+# Apply it in two steps, the second when the pod of the first has
+# completed:
+#   kubectl apply -f local-shared-writer-readers.yaml -l step=1
+#   kubectl apply -f local-shared-writer-readers.yaml -l step=2
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
   name: local-shared-writer
+  labels:
+    step: "1"
 spec:
   devices:
     requests:
@@ -29,6 +35,8 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: local-shared-writer
+  labels:
+    step: "1"
 spec:
   restartPolicy: Never
   resourceClaims:
@@ -58,6 +66,8 @@ apiVersion: resource.k8s.io/v1
 kind: ResourceClaimTemplate
 metadata:
   name: local-shared-reader
+  labels:
+    step: "2"
 spec:
   spec:
     devices:
@@ -84,6 +94,8 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: local-shared-reader-a
+  labels:
+    step: "2"
 spec:
   resourceClaims:
   - name: mem
@@ -114,6 +126,8 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: local-shared-reader-b
+  labels:
+    step: "2"
 spec:
   resourceClaims:
   - name: mem
@@ -140,6 +154,8 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: local-shared-reader-c
+  labels:
+    step: "2"
 spec:
   resourceClaims:
   - name: mem
