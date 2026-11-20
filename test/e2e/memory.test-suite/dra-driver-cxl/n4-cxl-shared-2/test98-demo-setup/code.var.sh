@@ -80,8 +80,6 @@ VM1="$POOL_VM1_DIR"    # worker
 VM0="$POOL_VM0_DIR"    # worker, in the demo of llm-share only
 DRA_NS=cxl-demo
 SHARED_SERIAL=0xc1ae0001
-PYTHON_IMAGE=docker.io/library/python:3-alpine
-PAUSE_IMAGE=registry.k8s.io/pause:3.10
 DEMO_TOOLS=(cxl-demo.py write read hold env mkfs fswrite)
 DEMO_IMAGE=localhost/cxl-demo-tools:demo   # the pods of pool-shared-fs and pool-fs
 POOL_DEVICE=shared0
@@ -549,11 +547,11 @@ if [ -n "$PMEM_CASE" ]; then
     done
     rm -f "$DEMO_IMAGE_TAR"
     for vm in "${DEMO_VMS[@]}"; do
-        dra-pull-images "$vm" "$PAUSE_IMAGE"
+        dra-pull-images "$vm" "$DRA_COMPANION_IMAGE"
     done
 else
     for vm in "${DEMO_VMS[@]}"; do
-        dra-pull-images "$vm" "$PYTHON_IMAGE" "$PAUSE_IMAGE"
+        dra-pull-images "$vm" "$DRA_TOOLS_IMAGE" "$DRA_COMPANION_IMAGE"
     done
 fi
 if [ "$DEMO_CASE" == llm-share ]; then
@@ -620,7 +618,7 @@ mkdir -p "$DEMO_STATE_DIR" || error "cannot create $DEMO_STATE_DIR"
 rm -f "$DEMO_STATE_DIR/step.env"   # the last step of an earlier demo
 {
     echo "# demo setup $DEMO_CASE, $(date '+%Y-%m-%d %H:%M:%S'), $TEST_OUTPUT_DIR"
-    image="$PYTHON_IMAGE"
+    image="$DRA_TOOLS_IMAGE"
     [ -z "$PMEM_CASE" ] || image="$DEMO_IMAGE"
     for kv in "DEMO_CASE=$DEMO_CASE" "DEMO_FSTYPE=$DEMO_FSTYPE" "DEMO_SETUP_START=$DEMO_SETUP_START" "VM2_DIR=$VM2" "VM1_DIR=$VM1" \
               "VM2_NODE=$POOL_VM2_NAME" "VM1_NODE=$POOL_VM1_NAME" \

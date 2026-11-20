@@ -321,7 +321,7 @@ echo "local memdevs in blocks of $MBT_SLICE: $LOCAL_BLOCKS"
 
 echo "### 0: images, tools, claim templates, the observer"
 for vm in "${VMS[@]}"; do
-    dra-pull-images "$vm" "$DRA_TOOLS_IMAGE" "$MBT_PAUSE_IMAGE"
+    dra-pull-images "$vm" "$DRA_TOOLS_IMAGE" "$DRA_COMPANION_IMAGE"
 done
 dra-dax-tool-install "$VM2" "pmem-rw.py=$TEST_DIR/pmem-rw.py" "hello.erofs.hex=$TEST_DIR/hello.erofs.hex"
 mbt-templates-apply

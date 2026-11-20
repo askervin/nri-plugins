@@ -61,8 +61,6 @@ VM1_NAME="$POOL_VM1_NAME"
 VM2_NAME="$POOL_VM2_NAME"
 SHARED_SERIAL=0xc1ae0001    # 0xc1ae....: shared pool devices
 SHARED_HEX=C1AE0001         # the serial in environment variable names
-PYTHON_IMAGE=docker.io/library/python:3-alpine
-PAUSE_IMAGE=registry.k8s.io/pause:3.10   # the image of the companion pods
 TAG="dra-one-writer $(date +%Y-%m-%dT%H:%M:%S.%N)"
 TEXT="$TAG: written by the exclusive writer"
 READERS=(reader-a reader-b reader-c)
@@ -97,7 +95,7 @@ spec:
       name: dax-rw
   containers:
   - name: main
-    image: $PYTHON_IMAGE
+    image: $DRA_TOOLS_IMAGE
     imagePullPolicy: IfNotPresent
     command:
     - sh
@@ -155,7 +153,7 @@ echo "### preconditions: the pool controller on the control plane, the node plug
 dra-build
 dra-install
 for vm in "$VM2" "$VM1"; do
-    dra-pull-images "$vm" "$PYTHON_IMAGE" "$PAUSE_IMAGE"
+    dra-pull-images "$vm" "$DRA_TOOLS_IMAGE" "$DRA_COMPANION_IMAGE"
 done
 dra-dax-tool-install "$VM2"
 dra-apply "$VM2" <<< "$(dra-lease-template-yaml)"

@@ -67,10 +67,8 @@ VM2="$OUTPUT_DIR"      # the VM of this test, the control plane
 VM2_NAME="$POOL_VM2_NAME"
 POOLED0_SERIAL=0xc1ee0001   # 0xc1ee....: exclusive pool devices
 POOLED0_SIZE=$(( 512 << 20 ))
-PAUSE_IMAGE=registry.k8s.io/pause:3.10   # the image of the companion pods
 MiB=$(( 1 << 20 ))
 LOCAL_CLASS=cxl-local
-CXL_REQUEST=cxl-request     # in $PATH of the container: /usr/local/bin
 TAG_BASE="dra-local-live-attach $(date +%Y-%m-%dT%H:%M:%S.%N)"
 declare -A NUMA_SLICES=()   # NUMA claims of the local device: LABEL -> "daxX.Y BYTES" of its slice
 
@@ -122,7 +120,7 @@ dax-lease() {
     local size="$1" flags="$2" script="$3" exec_env serial
     shift 3
     # shellcheck disable=SC2086 # FLAGS are separate words
-    dra-exec "$VM2" borrower/main "$CXL_REQUEST" request --size "$size" --mode dax $flags --wait 60s --exec \
+    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" request --size "$size" --mode dax $flags --wait 60s --exec \
         sh -c 'env | grep "^CXL_" | sort | sed "s/^/exec-env: /"; '"$script" sh "$@" ||
         command-error "cxl-request request --size $size --mode dax $flags --exec failed"
     exec_env=$(sed -n 's/^exec-env: //p' <<< "$COMMAND_OUTPUT")
@@ -139,7 +137,7 @@ dax-lease() {
     dra-lease-new "$DAX_LEASE"
     # cxl-request env prints the same environment with the device, as a
     # claim gives it to its containers.
-    dra-exec "$VM2" borrower/main "$CXL_REQUEST" env --lease "$DAX_LEASE" ||
+    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" env --lease "$DAX_LEASE" ||
         command-error "cxl-request env --lease $DAX_LEASE failed"
     dra-env-assert "env --lease $DAX_LEASE" "$COMMAND_OUTPUT" "$DAX_KEY" \
         SERIAL="$serial" SHARED=0 MODE=dax SIZE="$DAX_SIZE" "DAX=/dev/dax*" READONLY="$DAX_RO"
@@ -153,7 +151,7 @@ dax-fd-read() {
     # Read the string at offset 1M of the dax fd of lease LEASE again
     # ("cxl-request fd --lease LEASE --exec"), and fail unless it is
     # EXPECTED.
-    dra-exec "$VM2" borrower/main "$CXL_REQUEST" fd --lease "$1" --exec python3 /tools/dax-rw.py --fd 3 read 1M ||
+    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" fd --lease "$1" --exec python3 /tools/dax-rw.py --fd 3 read 1M ||
         command-error "cxl-request fd --lease $1 --exec ... read failed"
     [ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "$2" ] || error "lease $1: read '$(tail -n 1 <<< "$COMMAND_OUTPUT")', expected '$2'"
 }
@@ -162,7 +160,7 @@ release() {
     # Usage: release LEASE
     #
     # Container main of the borrower gives lease LEASE back.
-    dra-exec "$VM2" borrower/main "$CXL_REQUEST" release --lease "$1" ||
+    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" release --lease "$1" ||
         command-error "cxl-request release --lease $1 failed"
     dra-assert "$(dra-last-json "$COMMAND_OUTPUT")" "j.get('lease') == '$1' and j.get('state') == 'Released'"
 }
@@ -187,7 +185,7 @@ companion-check() {
     dra-assert "$pod_json" "[(o['kind'], o['name'], o['uid']) for o in j['metadata']['ownerReferences']] == [('Pod', 'borrower', '$BORROWER_UID')]"
     dra-companion-meta-check "$pod_json" "$lease" "$BORROWER_UID" "$VM2_NAME" "$DRA_NS/borrower/main"
     dra-assert "$pod_json" "j['spec']['nodeName'] == '$VM2_NAME' and j['spec']['resourceClaims'] == [{'name': 'lease', 'resourceClaimName': '$name'}]"
-    dra-assert "$pod_json" "[c['image'] for c in j['spec']['containers']] == ['$PAUSE_IMAGE'] and not j['spec']['containers'][0]['resources'].get('claims')"
+    dra-assert "$pod_json" "[c['image'] for c in j['spec']['containers']] == ['$DRA_COMPANION_IMAGE'] and not j['spec']['containers'][0]['resources'].get('claims')"
     dra-json "$VM2" resourceclaim -n "$DRA_NS" "$name"
     claim_json="$COMMAND_OUTPUT"
     dra-assert "$claim_json" "[(o['kind'], o['name'], o['uid'], o.get('controller')) for o in j['metadata']['ownerReferences']] == [('Pod', 'borrower', '$BORROWER_UID', True)]"
@@ -384,7 +382,7 @@ pool-client-install "$VM2"
 echo "### preconditions: the pool controller and the node plugin (with cxl-request) run in the cluster"
 dra-build
 dra-install
-dra-pull-images "$VM2" "$DRA_TOOLS_IMAGE" "$PAUSE_IMAGE"
+dra-pull-images "$VM2" "$DRA_TOOLS_IMAGE" "$DRA_COMPANION_IMAGE"
 dra-dax-tool-install "$VM2"
 dra-trace-start "$VM2"
 
@@ -560,14 +558,14 @@ dra-request "$VM2" borrower/main request --source local --size "$(dra-mi "$ASYNC
 dra-assert "$DRA_REQ_JSON" "j.get('state') in ('Creating', 'Pending', 'Lending') and j.get('mode') == 'dax' and j.get('source') == 'local'"
 ASYNC_LEASE=$(dra-value "$DRA_REQ_JSON" "j['lease']")
 dra-lease-new "$ASYNC_LEASE"
-dra-exec "$VM2" borrower/main "$CXL_REQUEST" fd --lease "$ASYNC_LEASE" --wait 60s --exec python3 /tools/dax-rw.py --fd 3 write 1M "$TAG3" ||
+dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" fd --lease "$ASYNC_LEASE" --wait 60s --exec python3 /tools/dax-rw.py --fd 3 write 1M "$TAG3" ||
     command-error "cxl-request fd --lease $ASYNC_LEASE --wait 60s --exec ... write failed"
 dax-fd-read "$ASYNC_LEASE" "$TAG3"
 dra-leases "$VM2" borrower/main
 dra-assert "$DRA_LEASES" "[(l['state'], int(l.get('size') or 0)) for l in j if l['lease'] == '$ASYNC_LEASE'] == [('Ready', $(dra-local-round "$ASYNC_REQ"))]"
 companion-check "$ASYNC_LEASE" "$LOCAL_CLASS" "$ASYNC_REQ" "$(dra-local-round "$ASYNC_REQ")" dax
 dra-local-slices-wait "$VM2" async "$NUMA_NODE" "dax:$(dra-local-round "$DAX1_REQ")" "dax:$DAX2" "numa:$STATIC_B" "dax:$(dra-local-round "$RO_REQ")" "dax:$(dra-local-round "$ASYNC_REQ")"
-dra-exec "$VM2" borrower/main "$CXL_REQUEST" release --all ||
+dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" release --all ||
     command-error "cxl-request release --all failed"
 dra-wait "$VM2" dax-leases-gone "pods -n $DRA_NS -l $DRA_LEASE_LABEL" "items == []" 60
 dra-local-slices-wait "$VM2" dax-leases-released "$NUMA_NODE" "numa:$STATIC_B"
@@ -589,7 +587,7 @@ dra-pod-wait "$VM2" mixed Running 120
 dra-memory-wait "$VM2" mixed main fenced "none (default)"
 dra-mems-wait "$VM2" mixed main "$NUMA_NODE"
 dra-local-node-size "$VM2" mixed-static "$NUMA_NODE" "$STATIC_A"
-dra-exec "$VM2" mixed/main "$CXL_REQUEST" request --source local --size "$(dra-mi "$LEASE1")" --wait 120s ||
+dra-exec "$VM2" mixed/main "$DRA_REQUEST_CTR_BIN" request --source local --size "$(dra-mi "$LEASE1")" --wait 120s ||
     command-error "cxl-request request in mixed/main failed: a container with a static NUMA claim that is not steered must get a NUMA lease"
 DRA_REQ_JSON=$(dra-last-json "$COMMAND_OUTPUT") || error "cxl-request request in mixed/main printed no JSON response"
 dra-assert "$DRA_REQ_JSON" "j.get('state') == 'Ready' and j.get('mode') == 'numa' and j.get('source') == 'local' and int(j['node']) == $NUMA_NODE and int(j['size']) == $LEASE1"
@@ -599,7 +597,7 @@ dra-local-node-size "$VM2" mixed-lease "$NUMA_NODE" $(( STATIC_A + LEASE1 ))
 dra-mems-fenced "$VM2" "$NUMA_NODE" "$DRA_NS/mixed/main"
 # The lease given back: the node stays, it is the node of the static
 # claim; the container is still not steered.
-dra-exec "$VM2" mixed/main "$CXL_REQUEST" release --lease "$MIXED_LEASE" ||
+dra-exec "$VM2" mixed/main "$DRA_REQUEST_CTR_BIN" release --lease "$MIXED_LEASE" ||
     command-error "cxl-request release --lease $MIXED_LEASE in mixed/main failed"
 dra-local-node-size "$VM2" mixed-lease-released "$NUMA_NODE" "$STATIC_A"
 dra-wait "$VM2" mixed-lease-gone "pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL=$MIXED_LEASE" "items == []" 60

@@ -76,10 +76,9 @@ LP_LSA="/tmp/fake-cxl-pool-$LP_SERVER/$LP_DEVICE.lsa"
 LP="device('$LP_NAME', '$DRA_LOCAL_DRIVER', '$VM2_NAME')"   # dra-py
 LP_REGIONS="[r for r in regions if by_serial($LP_SERIAL) is not None and by_serial($LP_SERIAL)['name'] in sorted(r['memdevs'])]"   # cxl-py
 CLASS=cxl-local-persistent
-FS_PATH="/run/cxl-fs/$LP_HEX"     # the mount in a container without "path"
+FS_PATH="$DRA_FS_CTR_DIR/$LP_HEX"     # the mount in a container without "path"
 MNT_DIRECT="$DRA_LOCAL_MOUNT_DIR/$LP_MOUNT_ID-direct"
 LEASE_TEMPLATE=cxl-lease
-PAUSE_IMAGE=registry.k8s.io/pause:3.10   # the image of the companion pods of leases
 TAG="dra-local-persistent $(date +%Y-%m-%dT%H:%M:%S.%N)"
 TEXT_EXT4="$TAG: the ext4 image"
 TEXT_C="$TAG: c.txt, written by fs-rw"
@@ -157,7 +156,7 @@ pool-server-start --slots "*hb0"
 dra-build
 dra-install
 trap exit-cleanup EXIT
-dra-pull-images "$VM2" "$DRA_TOOLS_IMAGE" "$PAUSE_IMAGE"
+dra-pull-images "$VM2" "$DRA_TOOLS_IMAGE" "$DRA_COMPANION_IMAGE"
 dra-dax-tool-install "$VM2"
 dra-trace-start "$VM2"
 

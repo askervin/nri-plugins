@@ -147,7 +147,7 @@ LLM_DATA="$POOL_DIR/$LLM_DEVICE.raw"   # the files of the device on the host
 LLM_LSA="$POOL_DIR/$LLM_DEVICE.lsa"
 LLM_LSA_SIZE=262144
 LLM_NS_SIZE=""          # the size of the fsdax namespace, as the writer got it
-LLM_DEFAULT_PATH="/run/cxl-fs/$LLM_HEX"   # the mount in a container without "path"
+LLM_DEFAULT_PATH="$DRA_FS_CTR_DIR/$LLM_HEX"   # the mount in a container without "path"
 LLM_FIVE_PCT=$(( LLM_MODEL_SIZE * 5 / 100 ))
 LLM_NINETY_PCT=$(( LLM_MODEL_SIZE * 90 / 100 ))
 LLM_HALF=$(( LLM_MODEL_SIZE / 2 ))
@@ -177,7 +177,6 @@ declare -A READER_UID=()       # the uid of its pod,
 declare -A READER_CLAIM=()     # and the name and uid of its lease claim
 declare -A READER_CLAIM_UID=()
 LEASE_TEMPLATE=cxl-lease
-PAUSE_IMAGE=registry.k8s.io/pause:3.10   # the image of the companion pods of leases
 CACHE_DELTA=""            # reader-start: the growth of the page cache of the node in bytes,
 POD_FILE=""               # and the page cache charged to the pod of the reader in bytes,
 LOOP_READ=""              # and, for a cached reader, the bytes read meanwhile through the loop device
@@ -511,7 +510,7 @@ lease-companion-check() {
     dra-assert "$json" "[(o['kind'], o['name'], o['uid']) for o in j['metadata']['ownerReferences']] == [('Pod', '$r', '$uid')]"
     dra-companion-meta-check "$json" "$lease" "$uid" "$node" "$DRA_NS/$r/main"
     dra-assert "$json" "j['spec']['nodeName'] == '$node' and j['spec']['resourceClaims'] == [{'name': 'lease', 'resourceClaimName': '$name'}]"
-    dra-assert "$json" "[c['image'] for c in j['spec']['containers']] == ['$PAUSE_IMAGE'] and not j['spec']['containers'][0]['resources'].get('claims')"
+    dra-assert "$json" "[c['image'] for c in j['spec']['containers']] == ['$DRA_COMPANION_IMAGE'] and not j['spec']['containers'][0]['resources'].get('claims')"
     dra-json "$VM2" resourceclaim -n "$DRA_NS" "$name"
     json="$COMMAND_OUTPUT"
     dra-claim-conditions "$VM2" "$name"
@@ -759,7 +758,7 @@ dra-build
 dra-install
 trap exit-cleanup EXIT
 for vm in "$VM2" "$VM1"; do
-    dra-pull-images "$vm" "$DRA_TOOLS_IMAGE" "$LLM_SERVER_IMAGE" "$PAUSE_IMAGE"
+    dra-pull-images "$vm" "$DRA_TOOLS_IMAGE" "$LLM_SERVER_IMAGE" "$DRA_COMPANION_IMAGE"
 done
 dra-dax-tool-install "$VM2"
 # The first container of an image on a node reads its files into the page

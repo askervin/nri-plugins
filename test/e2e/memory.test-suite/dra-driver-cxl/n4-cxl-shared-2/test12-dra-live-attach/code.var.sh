@@ -76,10 +76,7 @@ POOLED0_SIZE=$(( 512 << 20 ))
 SHARED_SERIAL=0xc1ae0001    # 0xc1ae....: shared pool devices
 SHARED_HEX=C1AE0001
 SHARED_SIZE=$(( 256 << 20 ))
-PYTHON_IMAGE=docker.io/library/python:3-alpine
-PAUSE_IMAGE=registry.k8s.io/pause:3.10   # the image of the companion pods
 TOUCH_MIB=256               # memory that the container puts on the lent node
-CXL_REQUEST=cxl-request     # in $PATH of the container: /usr/local/bin
 TAG="dra-live-attach $(date +%Y-%m-%dT%H:%M:%S.%N)"
 LEASE_ENV=""                # cxl-request env of the lease of pooled0
 LEASE_NODE=""               # and its NUMA node
@@ -118,7 +115,7 @@ companion-check() {
     dra-assert "$pod_json" "j['spec']['resourceClaims'] == [{'name': 'lease', 'resourceClaimName': '$name'}]"
     # The companion only holds the claim: a pause container that uses
     # nothing of it, Guaranteed with 100m CPU and 16Mi memory.
-    dra-assert "$pod_json" "[c['image'] for c in j['spec']['containers']] == ['$PAUSE_IMAGE'] and not j['spec']['containers'][0]['resources'].get('claims')"
+    dra-assert "$pod_json" "[c['image'] for c in j['spec']['containers']] == ['$DRA_COMPANION_IMAGE'] and not j['spec']['containers'][0]['resources'].get('claims')"
     dra-assert "$pod_json" "j['spec']['containers'][0]['resources']['requests'] == j['spec']['containers'][0]['resources']['limits'] == {'cpu': '100m', 'memory': '16Mi'}"
     dra-json "$VM2" resourceclaim -n "$DRA_NS" "$name"
     CLAIM_JSON="$COMMAND_OUTPUT"
@@ -175,7 +172,7 @@ lend-memory() {
     # pooled0 (lease-env-check).
     local json anon pages
     echo "--- cxl-request request --source pool --size 512Mi"
-    dra-exec "$VM2" borrower/main "$CXL_REQUEST" request --source pool --size 512Mi --wait 120s ||
+    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" request --source pool --size 512Mi --wait 120s ||
         command-error "cxl-request request --source pool --size 512Mi failed"
     json=$(dra-last-json "$COMMAND_OUTPUT") || error "cxl-request printed no JSON response"
     # Exclusive, read-write NUMA memory: the defaults.
@@ -238,7 +235,7 @@ lease-env-check() {
     # "fd" refuses a NUMA lease. LEASE_ENV and LEASE_NODE are those of the
     # lease.
     local key="CXL_${POOLED0_HEX}_" script
-    dra-exec "$VM2" borrower/main "$CXL_REQUEST" env --lease "$MEM_LEASE" ||
+    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" env --lease "$MEM_LEASE" ||
         command-error "cxl-request env --lease $MEM_LEASE failed"
     dra-env-assert "lease $MEM_LEASE" "$COMMAND_OUTPUT" "$POOLED0_HEX" \
         SERIAL="$POOLED0_SERIAL" SHARED=0 MODE=numa SIZE="$POOLED0_SIZE" NODE="$MEM_NODE"
@@ -253,11 +250,11 @@ lease-env-check() {
     # The script, expanded by sh in the container:
     # echo "lease=$CXL_LEASE node=$CXL_<KEY>_NODE size=$CXL_<KEY>_SIZE fd=${CXL_<KEY>_FD:-none}"
     script="echo \"lease=\$CXL_LEASE node=\$${key}NODE size=\$${key}SIZE fd=\${${key}FD:-none}\""
-    dra-exec "$VM2" borrower/main "$CXL_REQUEST" env --lease "$MEM_LEASE" --exec sh -c "$script" ||
+    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" env --lease "$MEM_LEASE" --exec sh -c "$script" ||
         command-error "cxl-request env --lease $MEM_LEASE --exec failed"
     [ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "lease=$MEM_LEASE node=$MEM_NODE size=$POOLED0_SIZE fd=none" ] ||
         error "the program of env --exec does not have lease=$MEM_LEASE node=$MEM_NODE size=$POOLED0_SIZE and no fd"
-    dra-exec "$VM2" borrower/main "$CXL_REQUEST" fd --lease "$MEM_LEASE" --exec true &&
+    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" fd --lease "$MEM_LEASE" --exec true &&
         error "cxl-request fd of the NUMA lease $MEM_LEASE succeeded"
     [ "$COMMAND_STATUS" == 3 ] ||
         error "cxl-request fd of the NUMA lease $MEM_LEASE exited $COMMAND_STATUS, expected 3"
@@ -273,7 +270,7 @@ give-back() {
     # memory there. The pages move to DRAM, the process lives on, and the
     # device goes back to the pool.
     echo "--- cxl-request release --lease $MEM_LEASE"
-    dra-exec "$VM2" borrower/main "$CXL_REQUEST" release --lease "$MEM_LEASE" ||
+    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" release --lease "$MEM_LEASE" ||
         command-error "cxl-request release --lease $MEM_LEASE failed"
     dra-assert "$(dra-last-json "$COMMAND_OUTPUT")" "j.get('lease') == '$MEM_LEASE' and j.get('state') == 'Released'"
     retry-until --timeout 30 --interval 1 --message "no anonymous memory of container main on node $MEM_NODE" \
@@ -303,7 +300,7 @@ share() {
     # container, no change in its device cgroup.
     local tag="$TAG" lease lease_env shared_file found dax devices majmin
     echo "--- cxl-request request --serial $SHARED_SERIAL --shared --exec dax-rw.py --fd 3 write"
-    dra-exec "$VM2" borrower/main "$CXL_REQUEST" request --serial "$SHARED_SERIAL" --shared --wait 120s \
+    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" request --serial "$SHARED_SERIAL" --shared --wait 120s \
         --exec python3 /tools/dax-rw.py --fd 3 write 0 "$tag" ||
         command-error "cxl-request request --serial $SHARED_SERIAL --shared --exec ... write failed"
     dra-leases "$VM2" borrower/main
@@ -327,7 +324,7 @@ share() {
     echo "host read at 0 of $shared_file: '$found'"
     # The environment of the lease names the dax device of the VM, as a
     # claim of shared0 would (test19): read-write, shared.
-    dra-exec "$VM2" borrower/main "$CXL_REQUEST" env --lease "$lease" ||
+    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" env --lease "$lease" ||
         command-error "cxl-request env --lease $lease failed"
     lease_env="$COMMAND_OUTPUT"
     dra-env-assert "lease $lease" "$lease_env" "$SHARED_HEX" \
@@ -336,7 +333,7 @@ share() {
     dra-assert "$DRA_LEASES" "j[0].get('dax') == '$dax'"
     # The fd again, for another program: its environment has the fd 3
     # instead of the device, and the lease.
-    dra-exec "$VM2" borrower/main "$CXL_REQUEST" fd --lease "$lease" --exec \
+    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" fd --lease "$lease" --exec \
         sh -c 'env | grep ^CXL_ | sort; readlink /proc/self/fd/3' ||
         command-error "cxl-request fd --lease $lease --exec sh failed"
     dra-env-assert "fd --lease $lease --exec" "$COMMAND_OUTPUT" "$SHARED_HEX" \
@@ -345,7 +342,7 @@ share() {
         error "the environment of fd --exec has no CXL_LEASE=$lease"
     [ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "$dax" ] ||
         error "fd 3 is not $dax"
-    dra-exec "$VM2" borrower/main "$CXL_REQUEST" fd --lease "$lease" --exec \
+    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" fd --lease "$lease" --exec \
         python3 /tools/dax-rw.py --fd 3 read 0 ||
         command-error "cxl-request fd --lease $lease --exec ... read failed"
     [ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "$tag" ] ||
@@ -369,7 +366,7 @@ share() {
         error "opening $dax through mknod failed for another reason than the device cgroup"
     dra-exec "$VM2" borrower/main rm -f "/tmp/${dax#/dev/}"
     echo "the device cgroup of container main denies $dax ($majmin), the fd works"
-    dra-exec "$VM2" borrower/main "$CXL_REQUEST" release --all ||
+    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" release --all ||
         command-error "cxl-request release --all failed"
     nothing-left shared-released
 }
@@ -402,7 +399,7 @@ pool-client-install "$VM2"
 echo "### preconditions: the pool controller and the node plugin (with cxl-request) run in the cluster"
 dra-build
 dra-install
-dra-pull-images "$VM2" "$PYTHON_IMAGE" "$PAUSE_IMAGE"
+dra-pull-images "$VM2" "$DRA_TOOLS_IMAGE" "$DRA_COMPANION_IMAGE"
 dra-dax-tool-install "$VM2"
 dra-trace-start "$VM2"
 
@@ -537,7 +534,7 @@ spec:
     resourceClaimName: pooled-memory
   containers:
   - name: main
-    image: $PYTHON_IMAGE
+    image: $DRA_TOOLS_IMAGE
     imagePullPolicy: IfNotPresent
     command: ["sh", "-c", "env | grep ^CXL_ | sort; trap 'exit 0' TERM; sleep infinity & wait"]
     resources:

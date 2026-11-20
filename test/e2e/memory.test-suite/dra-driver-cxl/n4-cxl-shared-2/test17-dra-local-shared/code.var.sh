@@ -64,7 +64,6 @@ VM2="$OUTPUT_DIR"      # the VM of this test, the control plane
 VM2_NAME="$POOL_VM2_NAME"
 SHARED_CLASS=cxl-local-shared
 SHARED0_SERIAL=0xc1ae0001   # 0xc1ae....: shared pool devices
-PAUSE_IMAGE=registry.k8s.io/pause:3.10   # the image of the companion pods
 TAG="dra-local-shared $(date +%Y-%m-%dT%H:%M:%S.%N)"
 TEXT0="$TAG: at 0, from the writer"
 TEXT1M="$TAG: at 1M, from the writer"
@@ -325,7 +324,7 @@ DRA_DRIVER_CONFIG="sharedDevices: [\"$DRA_LOCAL_SERIAL\"]"
 DRA_EXIT_TRAP='dra-local-shared-cleanup "$VM2"'
 dra-build
 dra-install
-dra-pull-images "$VM2" "$DRA_TOOLS_IMAGE" "$PAUSE_IMAGE"
+dra-pull-images "$VM2" "$DRA_TOOLS_IMAGE" "$DRA_COMPANION_IMAGE"
 dra-dax-tool-install "$VM2"
 dra-trace-start "$VM2"
 

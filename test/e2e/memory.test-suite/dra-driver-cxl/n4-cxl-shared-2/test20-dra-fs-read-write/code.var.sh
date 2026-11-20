@@ -95,7 +95,7 @@ FS_MOUNT_ID=c1ae0001   # the serial in the names of the node mounts
 FS_DEV_SIZE=$(( 512 << 20 ))
 FS_DATA="$POOL_DIR/$FS_DEVICE.raw"   # the files of the device on the host
 FS_LSA="$POOL_DIR/$FS_DEVICE.lsa"
-FS_PATH="/run/cxl-fs/$FS_HEX"        # the mount in a container without "path"
+FS_PATH="$DRA_FS_CTR_DIR/$FS_HEX"        # the mount in a container without "path"
 MNT_DIRECT="$DRA_POOL_MOUNT_DIR/$FS_MOUNT_ID-direct"
 MNT_CACHED="$DRA_POOL_MOUNT_DIR/$FS_MOUNT_ID-cached"
 CLASS=cxl-pool-persistent
@@ -116,7 +116,6 @@ TEXT_X="$TAG: x.txt, written on xfs by rw-x on VM1"
 TEXT_G="$TAG: g.txt, written by rw-g on VM2"
 TEXT_L="$TAG: l.txt, written through a read-write lease on VM2"
 LEASE_TEMPLATE=cxl-lease
-PAUSE_IMAGE=registry.k8s.io/pause:3.10   # the image of the companion pods of leases
 P9A="device $FS_SERIAL: it is mounted read-write with access direct on this node: access cached would mount it a second time"
 P9D="device $FS_SERIAL: it is mounted with access direct only on this node: a read-write claim with access cached would mount it a second time"
 P9E="device $FS_SERIAL: btrfs is mounted read-only on this node and cannot be remounted read-write: a read-write claim waits until the read-only claims of the node are gone"
@@ -346,7 +345,7 @@ dra-build
 dra-install
 trap exit-cleanup EXIT
 for vm in "$VM2" "$VM1"; do
-    dra-pull-images "$vm" "$DRA_TOOLS_IMAGE" "$PAUSE_IMAGE"
+    dra-pull-images "$vm" "$DRA_TOOLS_IMAGE" "$DRA_COMPANION_IMAGE"
 done
 dra-dax-tool-install "$VM2"
 dra-trace-start "$VM2" "$VM1"

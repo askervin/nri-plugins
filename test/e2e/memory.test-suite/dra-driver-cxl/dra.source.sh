@@ -70,6 +70,10 @@ DRA_UNCONTROLLED_POOLS=()
 # containers, and the directory of the per-claim lease sockets on the node.
 DRA_REQUEST_NODE_BIN=/var/lib/kubelet/plugins/cxl.nri.io/cxl-request
 DRA_REQUEST_CTR_BIN=/usr/local/bin/cxl-request
+# shellcheck disable=SC2034 # for the tests: the filesystems of fs claims without "path" in a container
+DRA_FS_CTR_DIR=/run/cxl-fs
+# shellcheck disable=SC2034 # for the tests: leases.companionImage of the chart, the companion pods of leases
+DRA_COMPANION_IMAGE=registry.k8s.io/pause:3.10
 DRA_LEASE_DIR=/var/lib/kubelet/plugins/cxl.nri.io/leases
 # The filesystems of fs leases: the host directory of each lease claim
 # (<claim uid>) under DRA_LEASE_FS_DIR, a read-only slave bind at

@@ -65,8 +65,6 @@ VM1_NAME="$POOL_VM1_NAME"
 VM2="$OUTPUT_DIR"      # the VM of this test, the control plane
 VM2_NAME="$POOL_VM2_NAME"
 POOLED0_SERIAL=0xc1ee0001   # 0xc1ee....: exclusive pool devices
-PYTHON_IMAGE=docker.io/library/python:3-alpine
-PAUSE_IMAGE=registry.k8s.io/pause:3.10   # leases.companionImage of the chart
 DRIVER_USER=system:serviceaccount:kube-system:nri-dra-driver-cxl
 NODE_EXTRA=authentication.kubernetes.io/node-name
 POLICY=lease-companions-policy-nri-dra-driver-cxl
@@ -146,7 +144,7 @@ companion-pod-yaml() {
     # of lease $FAKE_LEASE with node label NODE-LABEL, a required node
     # affinity to AFFINITY-NODE (none if AFFINITY-NODE is ""), no service
     # account token, the claim $FAKE_COMPANION, one container of IMAGE
-    # (default $PAUSE_IMAGE). CONTAINER-LINES are added to the container
+    # (default $DRA_COMPANION_IMAGE). CONTAINER-LINES are added to the container
     # (indented by 4), SPEC-LINES to the spec (indented by 2). SPEC-LINES
     # with resourceClaims replace the claim.
     cat <<EOF
@@ -175,7 +173,7 @@ EOF
   enableServiceLinks: false
   containers:
   - name: pause
-    image: ${5:-$PAUSE_IMAGE}
+    image: ${5:-$DRA_COMPANION_IMAGE}
 EOF
     [ -z "${4:-}" ] || echo "$4"
     [ -z "${3:-}" ] || echo "$3"
@@ -248,7 +246,7 @@ spec:
     resourceClaimTemplateName: cxl-lease
   containers:
   - name: main
-    image: $PYTHON_IMAGE
+    image: $DRA_TOOLS_IMAGE
     imagePullPolicy: IfNotPresent
     command: ["sh", "-c", "trap 'exit 0' TERM; sleep infinity & wait"]
     resources:
@@ -280,7 +278,7 @@ values="$TEST_OUTPUT_DIR/test22-helm-values.yaml"
 DRA_HELM_VALUES="$values"
 dra-build
 dra-install
-dra-pull-images "$VM2" "$PYTHON_IMAGE" "$PAUSE_IMAGE"
+dra-pull-images "$VM2" "$DRA_TOOLS_IMAGE" "$DRA_COMPANION_IMAGE"
 
 echo "### A: the policies of the chart"
 for p in "$SLICE_POLICY" "$POLICY" "$NS_POLICY"; do
@@ -341,11 +339,11 @@ done
 companion-denied "a pod with a privileged container" "this user may not create pods with privileged containers" \
     "" "    securityContext: {privileged: true}"
 companion-denied "a pod with a privileged initContainer" "this user may not create pods with privileged containers" "  initContainers:
-  - {name: init, image: $PAUSE_IMAGE, securityContext: {privileged: true}}"
-image="this user may create only pods whose containers run the companion image $PAUSE_IMAGE"
-companion-denied "a pod of another image" "$image" "" "" "$PYTHON_IMAGE"
+  - {name: init, image: $DRA_COMPANION_IMAGE, securityContext: {privileged: true}}"
+image="this user may create only pods whose containers run the companion image $DRA_COMPANION_IMAGE"
+companion-denied "a pod of another image" "$image" "" "" "$DRA_TOOLS_IMAGE"
 companion-denied "a pod with an initContainer of another image" "$image" "  initContainers:
-  - {name: init, image: $PYTHON_IMAGE}"
+  - {name: init, image: $DRA_TOOLS_IMAGE}"
 companion-denied "a pod with a claim from a template" "this user may create only pods whose ResourceClaims have the name of the pod" \
     "  resourceClaims: [{name: lease, resourceClaimTemplateName: cxl-lease}]"
 companion-denied "a pod with a command" "this user may not create pods with a command or args" "" "    command: [sh]"
@@ -398,7 +396,7 @@ spec:
   nodeSelector:
     test22-no-such-node: none
   containers:
-  - {name: pause, image: $PAUSE_IMAGE}"
+  - {name: pause, image: $DRA_COMPANION_IMAGE}"
 driver-kubectl "$VM2_NAME" delete --dry-run=server resourceclaim unlabelled-object
 policy-denied "the deletion of an unlabelled claim" \
     "this user running on node '$VM2_NAME' may not delete resourceclaims without the label $DRA_NODE_LABEL"
@@ -443,7 +441,7 @@ dra-json "$VM2" pod -n "$DRA_NS" "$COMPANION"
 dra-companion-meta-check "$COMMAND_OUTPUT" "$LEASE" "$BORROWER_UID" "$VM2_NAME" "$DRA_NS/borrower/main"
 dra-assert "$COMMAND_OUTPUT" "j['spec']['affinity']['nodeAffinity']['requiredDuringSchedulingIgnoredDuringExecution']['nodeSelectorTerms'] == [{'matchFields': [{'key': 'metadata.name', 'operator': 'In', 'values': ['$VM2_NAME']}]}]"
 dra-assert "$COMMAND_OUTPUT" "not j['spec'].get('volumes') and not any(j['spec'].get(k) for k in ('hostNetwork', 'hostPID', 'hostIPC'))"
-dra-assert "$COMMAND_OUTPUT" "[(c['image'], bool(c.get('securityContext', {}).get('privileged'))) for c in j['spec']['containers'] + j['spec'].get('initContainers', [])] == [('$PAUSE_IMAGE', False)]"
+dra-assert "$COMMAND_OUTPUT" "[(c['image'], bool(c.get('securityContext', {}).get('privileged'))) for c in j['spec']['containers'] + j['spec'].get('initContainers', [])] == [('$DRA_COMPANION_IMAGE', False)]"
 dra-json "$VM2" resourceclaim -n "$DRA_NS" "$COMPANION" ||
     command-error "no companion claim $COMPANION"
 dra-companion-meta-check "$COMMAND_OUTPUT" "$LEASE" "$BORROWER_UID" "$VM2_NAME" "$DRA_NS/borrower/main"
@@ -473,7 +471,7 @@ spec:
   restartPolicy: Never
   containers:
   - name: main
-    image: $PYTHON_IMAGE
+    image: $DRA_TOOLS_IMAGE
     imagePullPolicy: IfNotPresent
     command: ["sh", "-c", "trap 'exit 0' TERM; sleep infinity & wait"]
 EOF

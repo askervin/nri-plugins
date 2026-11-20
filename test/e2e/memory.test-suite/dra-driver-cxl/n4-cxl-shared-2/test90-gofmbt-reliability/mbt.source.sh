@@ -30,7 +30,6 @@ MBT_HELPER_DIR="$(dirname "${BASH_SOURCE[0]}")"
 MBT_OBSERVER="$MBT_HELPER_DIR/mbt-observe.py"   # the observer, on the host
 MBT_OBSERVER_VM=/usr/local/bin/mbt-observe.py   # and in the VMs (mbt-observer-install)
 MBT_SLOT_LABEL=mbt.slot
-MBT_PAUSE_IMAGE=registry.k8s.io/pause:3.10      # the image of the companion pods of leases
 MBT_LOCAL_SERIAL=0xc100e2e1                     # the local memdev of every VM
 MBT_LOCAL_HEX=C100E2E1
 MBT_SLICE=128Mi                                 # a local claim or lease
