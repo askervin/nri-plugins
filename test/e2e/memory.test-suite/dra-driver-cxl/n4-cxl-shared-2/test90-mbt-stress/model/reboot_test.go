@@ -561,18 +561,6 @@ func mustCheck(t *testing.T, s *State, o *Observation) Verdict {
 	return v
 }
 
-// Off-line generation with --reboot=guest: the scripts run against the
-// simulated SUT with every expectation checked, and have node-reboot.
-func TestGenerateRebootAgainstSim(t *testing.T) {
-	o := genOpts(t, "small", 40, 1)
-	o.cfg.Reboot = RebootGuest
-	script := generateScript(t, o, nil)
-	if !strings.Contains(script, " node-reboot vm") {
-		t.Fatalf("no node-reboot in 40 steps")
-	}
-	runScript(t, o.cfg, script, 1)
-}
-
 // The independent pool reference with node-reboots in the fuzz
 // (-refpool-reboot for TestRefPoolFuzz): guest and qemu.
 func TestRebootFuzz(t *testing.T) {

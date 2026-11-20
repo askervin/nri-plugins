@@ -483,20 +483,6 @@ func TestFencingHeaderAndExpectation(t *testing.T) {
 	}
 }
 
-// Off-line scripts of the modes none and switch hold on the simulated SUT
-// (A14), and switch generates fencing-switch.
-func TestGenerateFencingAgainstSim(t *testing.T) {
-	for j, mode := range []FencingRun{FencingNone, FencingSwitch} {
-		o := genOpts(t, "full", size(100, 15), int64(20+j))
-		o.cfg.Fencing = mode
-		script := generateScript(t, o, nil)
-		if (mode == FencingSwitch && !strings.Contains(script, " fencing-switch\n")) || !strings.Contains(script, `"fencing":"none"`) {
-			t.Fatalf("%s: no fencing-switch, or no step in fencing none", mode)
-		}
-		runScript(t, o.cfg, script, int64(20+j))
-	}
-}
-
 // A replay and generate --from take the model of the steps file's header.
 // Its --fencing and --reboot also configure the cluster (code.var.sh): a
 // command line that contradicts them is an error, not replaced, and a

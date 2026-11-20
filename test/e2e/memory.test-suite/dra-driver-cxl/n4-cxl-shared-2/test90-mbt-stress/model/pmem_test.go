@@ -503,19 +503,6 @@ func TestPmemExpectationRoundTrip(t *testing.T) {
 	}
 }
 
-// Generated runs of the persistent profiles are reproducible, and every
-// expectation of their scripts holds against the simulated SUT.
-func TestPmemDeterministic(t *testing.T) {
-	for _, profile := range []string{"pmem", "fullp"} {
-		o := genOpts(t, profile, size(60, 10), 4)
-		a, b := generateScript(t, o, nil), generateScript(t, o, nil)
-		if a != b {
-			t.Fatalf("%s: two scripts of one seed differ", profile)
-		}
-		runScript(t, o.cfg, a, 4)
-	}
-}
-
 // Random walks of every enabled action, the simulated SUT answering from
 // the model: every settle and done checked.
 func TestPmemWalk(t *testing.T) {

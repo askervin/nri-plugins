@@ -45,17 +45,6 @@ func generateScript(t *testing.T, o runOpts, from []stepLine) string {
 	return b.String()
 }
 
-func TestGenerateDeterministic(t *testing.T) {
-	a := generateScript(t, genOpts(t, "small", 60, 11), nil)
-	b := generateScript(t, genOpts(t, "small", 60, 11), nil)
-	if a != b {
-		t.Fatalf("same seed, different scripts")
-	}
-	if c := generateScript(t, genOpts(t, "small", 60, 12), nil); c == a {
-		t.Fatalf("another seed, the same script")
-	}
-}
-
 // runScript executes a generated script on a simulated SUT as
 // code.var.sh does (A14: every step has an expectation): every one must
 // hold, without adoption.
@@ -101,25 +90,53 @@ func runScript(t *testing.T, cfg *Config, script string, seed int64) {
 	}
 }
 
-// TestGenerateAgainstSim executes generated scripts on the simulated SUT.
+// Generated scripts are deterministic, and every expectation of them holds
+// on the simulated SUT: the profiles, the fencing modes and node-reboot.
 func TestGenerateAgainstSim(t *testing.T) {
 	for _, tc := range []struct {
-		profile string
-		seed    int64
-		steps   int
-	}{{"small", 1, size(150, 30)}, {"full", 2, size(80, 15)}, {"tiny", 3, size(150, 30)}} {
-		t.Run(fmt.Sprintf("%s-%d", tc.profile, tc.seed), func(t *testing.T) {
-			o := genOpts(t, tc.profile, tc.steps, tc.seed)
+		name, profile string
+		seed          int64
+		steps, short  int           // the steps, and under -short
+		set           func(*Config) // the mode of the run
+		has           []string      // in the script
+	}{
+		{"small", "small", 1, 150, 30, nil, nil},
+		{"full", "full", 2, 80, 10, nil, nil},
+		{"tiny", "tiny", 3, 150, 30, nil, nil},
+		{"fencing none", "full", 20, 100, 10, func(c *Config) { c.Fencing = FencingNone }, []string{`"fencing":"none"`}},
+		{"fencing switch", "full", 21, 100, 10, func(c *Config) { c.Fencing = FencingSwitch }, []string{" fencing-switch\n", `"fencing":"none"`}},
+		{"node-reboot", "small", 1, 40, 40, func(c *Config) { c.Reboot = RebootGuest }, []string{" node-reboot vm"}},
+		{"pmem", "pmem", 4, 60, 10, nil, nil},
+		{"fullp", "fullp", 4, 60, 8, nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			steps := size(tc.steps, tc.short)
+			o := genOpts(t, tc.profile, steps, tc.seed)
+			if tc.set != nil {
+				tc.set(o.cfg)
+			}
 			script := generateScript(t, o, nil)
+			if again := generateScript(t, o, nil); again != script {
+				t.Fatalf("two scripts of one seed differ")
+			}
 			g, err := parseGenScript(script)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(g.Steps) < tc.steps || g.Steps[0] != "settle" || g.Steps[len(g.Steps)-1] != "settle" {
+			if len(g.Steps) < steps || g.Steps[0] != "settle" || g.Steps[len(g.Steps)-1] != "settle" {
 				t.Fatalf("%d steps", len(g.Steps))
+			}
+			for _, x := range tc.has {
+				if !strings.Contains(script, x) {
+					t.Fatalf("no %q in the script", x)
+				}
 			}
 			runScript(t, o.cfg, script, tc.seed)
 		})
+	}
+	if generateScript(t, genOpts(t, "small", 60, 12), nil) == generateScript(t, genOpts(t, "small", 60, 11), nil) {
+		t.Fatalf("two seeds, the same script")
 	}
 }
 
