@@ -83,16 +83,6 @@ llm-model-fetch() {
     echo "llm-model-fetch: $LLM_MODEL, sha256 $LLM_MODEL_SHA256"
 }
 
-llm-kernel-require() {
-    # Usage: llm-kernel-require VMDIR TOPOLOGY
-    #
-    # Fail the test unless the running kernel of the VM of VMDIR, created
-    # from TOPOLOGY, has CONFIG_EROFS_FS=y.
-    local vmdir="$1" topology="$2"
-    vmdir-command "$vmdir" 'uname -r; grep -x CONFIG_EROFS_FS=y /boot/config-$(uname -r)' ||
-        error "kernel of $(basename "$vmdir") lacks CONFIG_EROFS_FS=y: run memory.test-suite/dra-driver-cxl/$topology/test00-up: it installs the CXL kernel of test/e2e/playbook/files/qemu-cxl-kernel.config"
-}
-
 llm-vm-put() {
     # Usage: llm-vm-put VMDIR SRC DST MODE
     #

@@ -23,17 +23,20 @@ FS_ENV=""            # fs-ctr-env: the CXL_<KEY>_ lines of a container
 FS_PMEM=""           # fs-node-mounts-assert: the pmem block device under the node mounts
 
 fs-kernel-require() {
-    # Usage: fs-kernel-require VMDIR TOPOLOGY
+    # Usage: fs-kernel-require VMDIR TOPOLOGY [OPTION...]
     #
     # Fail the test unless the running kernel of the VM of VMDIR, created
-    # from TOPOLOGY, has ext4, xfs, btrfs, squashfs, erofs and FS_DAX built
-    # in.
-    local vmdir="$1" topology="$2" opt
-    for opt in EXT4_FS XFS_FS BTRFS_FS SQUASHFS EROFS_FS FS_DAX; do
+    # from TOPOLOGY, has every CONFIG_OPTION built in, by default those of
+    # ext4, xfs, btrfs, squashfs, erofs and FS_DAX.
+    local vmdir="$1" topology="$2" opt opts
+    shift 2
+    opts=("$@")
+    [ ${#opts[@]} -gt 0 ] || opts=(EXT4_FS XFS_FS BTRFS_FS SQUASHFS EROFS_FS FS_DAX)
+    for opt in "${opts[@]}"; do
         vmdir-command-q "$vmdir" "grep -qx CONFIG_$opt=y /boot/config-\$(uname -r)" ||
-            error "kernel of $(basename "$vmdir") lacks CONFIG_$opt=y: run memory.test-suite/dra-driver-cxl/$topology/test00-up: it installs the CXL kernel of test/e2e/playbook/files/qemu-cxl-kernel.config"
+            error "kernel of $(vmdir-name "$vmdir") lacks CONFIG_$opt=y: run memory.test-suite/dra-driver-cxl/$topology/test00-up: it installs the CXL kernel of test/e2e/playbook/files/qemu-cxl-kernel.config"
     done
-    echo "$(vmdir-label "$vmdir"): kernel with ext4, xfs, btrfs, squashfs, erofs and FS_DAX"
+    echo "$(vmdir-label "$vmdir"): kernel with ${opts[*]}"
 }
 
 fs-tools-install() {

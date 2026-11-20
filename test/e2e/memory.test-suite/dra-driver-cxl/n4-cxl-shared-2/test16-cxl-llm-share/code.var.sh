@@ -707,8 +707,8 @@ lease-fs-empty() {
 echo "### preconditions: patched qemu, hdm_for_passthrough=on, CONFIG_FS_DAX, CONFIG_EROFS_FS"
 pool-vm-require "$VM2" "$(basename "$TOPOLOGY_DIR")"
 pool-vm-require "$VM1" n4-cxl-shared-1
-llm-kernel-require "$VM2" "$(basename "$TOPOLOGY_DIR")"
-llm-kernel-require "$VM1" n4-cxl-shared-1
+fs-kernel-require "$VM2" "$(basename "$TOPOLOGY_DIR")" EROFS_FS
+fs-kernel-require "$VM1" n4-cxl-shared-1 EROFS_FS
 
 echo "### preconditions: the model on the host"
 llm-model-fetch
