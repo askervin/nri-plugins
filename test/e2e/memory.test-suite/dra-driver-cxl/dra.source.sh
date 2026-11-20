@@ -2319,8 +2319,8 @@ dra-request() {
     #
     # Run "cxl-request ARGS..." in the container (dra-exec). DRA_REQ_STATUS
     # is its exit status, which is also returned, DRA_REQ_OUT what it
-    # printed (stdout, then stderr), DRA_REQ_JSON its last JSON line ("{}"
-    # if none).
+    # printed (stdout, then stderr), DRA_REQ_JSON the last JSON line of
+    # them ("{}" if none): with --exec the lease's is on stderr.
     local vmdir="$1" target="$2"
     shift 2
     dra-exec "$vmdir" "$target" "$DRA_REQUEST_CTR_BIN" "$@"
@@ -2328,7 +2328,7 @@ dra-request() {
     DRA_REQ_OUT="$COMMAND_OUTPUT
 $DRA_EXEC_STDERR"
     # shellcheck disable=SC2034 # for the tests
-    DRA_REQ_JSON=$(dra-last-json "$COMMAND_OUTPUT") || DRA_REQ_JSON="{}"
+    DRA_REQ_JSON=$(dra-last-json "$DRA_REQ_OUT") || DRA_REQ_JSON="{}"
     return "$DRA_REQ_STATUS"
 }
 
