@@ -1354,7 +1354,7 @@ mbt-act-node-reboot() {
     # ready (mbt-driver-ready-wait, A15). The result has the new boot id
     # ("boot", null until there is one). Return 2 for a VM that is not
     # vm0 or vm1 or in a run without MBT_REBOOT, 1 on a failure (MBT_ERR).
-    local vm="$1" vmdir label old_boot new_boot="" kstate before pod restarts ready since t0=$EPOCHREALTIME
+    local vm="$1" vmdir label old_boot new_boot="" before pod restarts ready since t0=$EPOCHREALTIME
     local qold="" qnew="" t_ssh t_ready deadline notes=""
     case "$vm" in
         vm0|vm1) ;;
@@ -1371,10 +1371,9 @@ mbt-act-node-reboot() {
         mbt-killat-disarm "$vm" node-reboot
         [ "${MBT_OUT:0:1}" != "{" ] || MBT_KILLAT_LAST=$MBT_OUT
     fi
-    mbt-sh "$vm" "cat /proc/sys/kernel/random/boot_id; cat $MBT_KERNEL_STATE 2>/dev/null; true" ||
+    mbt-sh "$vm" "cat /proc/sys/kernel/random/boot_id" ||
         { MBT_ERR="cannot read the boot id of $vm: $MBT_ERR"; return 1; }
     old_boot=$(head -n 1 <<< "$MBT_OUT")
-    kstate=$(tail -n +2 <<< "$MBT_OUT")
     [ -n "$old_boot" ] || { MBT_ERR="no boot id of $vm"; return 1; }
     if before=$(mbt-driver-restarts "$vm"); then
         read -r pod restarts ready <<< "$before"
@@ -1417,19 +1416,11 @@ mbt-act-node-reboot() {
     MBT_RESULT=$(mbt-json boot "$new_boot")
     echo "$(date +%T.%N) $vm: ssh with boot $new_boot after $t_ssh s" >> "$MBT_EXEC_LOG"
     mbt-ssh-reset "$vmdir"
-    # The observer's kernel state (A24) of the old boot, its counts kept:
-    # every record of the new boot is read, the boot's own too.
-    kstate=$(python3 -c '
-import json, sys
-try:
-    st = json.loads(sys.argv[1])
-except ValueError:
-    st = {}
-print(json.dumps({"seq": -1, "badTotal": st.get("badTotal", 0), "badFirst": st.get("badFirst", []), "rebootFrom": sys.argv[2]}))' "$kstate" "$old_boot")
+    # The observer's kernel position (A24) from the start: it reads every
+    # record of the new boot, the boot's own too.
     mbt-sh "$vm" "echo offline > /sys/devices/system/memory/auto_online_blocks && cat /sys/devices/system/memory/auto_online_blocks
-mkdir -p ${MBT_KERNEL_STATE%/*} && cat > $MBT_KERNEL_STATE <<'MBT_EOF'
-$kstate
-MBT_EOF" || { MBT_ERR="$vm after the boot: cannot set auto_online_blocks offline: $MBT_ERR"; return 1; }
+mkdir -p ${MBT_KERNEL_STATE%/*} && echo '{\"seq\": -1}' > $MBT_KERNEL_STATE" ||
+        { MBT_ERR="$vm after the boot: cannot set auto_online_blocks offline: $MBT_ERR"; return 1; }
     if [ "$MBT_REBOOT_RUN" == qemu ]; then
         mbt-local-again "$vm" || return 1
         notes+=", local memdev attached again"

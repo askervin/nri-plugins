@@ -91,8 +91,8 @@ Where the data comes from:
                 the cgroup v2 directory of each container is that of its
                 init process (/proc/PID/cgroup). mems is cpuset.mems, or,
                 when that file is empty (the cgroup sets no nodes and
-                has its parent's), cpuset.mems.effective with
-                mems_inherited true: never "" (amendment A11). A field
+                has its parent's), cpuset.mems.effective: never ""
+                (amendment A11). A field
                 that cannot be read is null, with an error. Left out:
                 containers that are not running (crictl ps lists
                 running ones; one that exits between the listing and
@@ -116,7 +116,7 @@ Where the data comes from:
                 all of them): the dax devices of "regions", the block
                 devices of the namespaces of "pmem"
   driverLog     the running nri-dra-driver-cxl container of the node
-                (crictl): its id, pod, attempt, start, the log lines of
+                (crictl): its id, the log lines of
                 its log file (status.logPath) that match "panic|fatal
                 error|SIGSEGV" (count, the first 5), invariants (the
                 count of "engine invariant: " and "containers
@@ -135,17 +135,10 @@ Where the data comes from:
                 pod (by uid), newest first, at most 5: reason, message
                 (at most 4000 bytes: a longer one keeps its first 1900
                 and last 2000 bytes around " [...] ", so that the end,
-                where the driver's reason is, stays), count,
-                lastTimestamp, firstTimestamp, series; "event" is the
-                first of them, null if none (A10, A12). count and
-                lastTimestamp are the apiserver's: of an events.k8s.io
-                series (series true; the kube-scheduler's
-                FailedScheduling) the recorder (client-go tools/events)
-                writes them at the second occurrence and then only every
-                30 min and when the series ends, 6 min after its last
-                occurrence; meanwhile the count stays, though the
-                scheduler retries (FR1b). firstTimestamp is the first
-                occurrence (eventTime or firstTimestamp)
+                where the driver's reason is, stays); "event" is the
+                first of them, null if none (A10, A12). Newest is by the
+                apiserver's time of the event's last occurrence (of a
+                series: lastObservedTime)
   pods[].claims every claim of the pod in the order of its spec, each as
                 "claim" (which is the first one): [] for none; two for
                 dnuma (A39), c0 of mbt-lnuma and c1 of mbt-xnuma-c
@@ -185,7 +178,7 @@ holder check and a concurrent erofs mount would fail):
                 lease-fs/<uid>, which are mount points: not followed),
                 leases/ and mounts/
   loops         loop devices whose backing file is /dev/pmem*: name,
-                backing, dio, ro, autoclear
+                backing, dio, ro
   ctrMounts     per running container of NS (as containers): its erofs
                 mounts from /proc/PID/mountinfo: target, source, root,
                 vfsopts
@@ -196,15 +189,14 @@ holder check and a concurrent erofs mount would fail):
                 grant does not have) and lend (of a companion claim:
                 lease, pod, container, fsDir, name, mounts; else null)
   cdiPool       the CDI devices of the pool driver's spec (cxl-pool-claims.json):
-                per device name its env, deviceNodes (path, type, major,
-                minor, permissions) and mounts (hostPath, containerPath,
-                type, options)
+                per device name its deviceNodes (path, type,
+                permissions) and mounts (hostPath, containerPath,
+                options)
   kernel        /dev/kmsg records since the last observation that match
                 BUG:|Oops|WARNING:|general protection|nd_pmem|pfn|erofs
                 (lines, the first 20; count; bad: of them, those of
-                BUG:|Oops|WARNING:|general protection), and badTotal and
-                badFirst since the first observation of the run (state
-                in /run/mbt-observe/kernel.json)
+                BUG:|Oops|WARNING:|general protection); the position is
+                kept in /run/mbt-observe/kernel.json
   killAt        the state of a driver-kill-at watcher (kill-at below) in
                 /run/mbt-killat/state.json, null if none
   driverLog     also the count of lines with "not mounting" or "not
@@ -362,8 +354,7 @@ def memdevs(errors):
                 size += int(read("%s/%s/size" % (p, kind)), 0)
             except (OSError, ValueError):
                 pass
-        out.append({"name": name, "serial": serial, "size": size,
-                    "enabled": os.path.exists(p + "/driver")})
+        out.append({"name": name, "serial": serial, "size": size})
     return out
 
 
@@ -470,7 +461,7 @@ def regions(errors):
             if mem:
                 r["serials"].append(serials.get(mem, mem))
         r["dax"] = dax_devices(p, bs, iomem, errors)
-        nodes = sorted(set(d["node"] for d in r["dax"] if d["node"] is not None))
+        nodes = sorted(set(d.pop("node") for d in r["dax"]) - {None})
         if nodes:
             r["node"] = nodes[0]
             if len(nodes) > 1:
@@ -720,11 +711,9 @@ def containers(ns, errors, ctr_mounts=None):
         entry = {
             "ns": lb.get("io.kubernetes.pod.namespace"),
             "pod": lb.get("io.kubernetes.pod.name"),
-            "uid": lb.get("io.kubernetes.pod.uid"),
             "name": lb.get("io.kubernetes.container.name") or md.get("name"),
             "id": st.get("id"),
-            "attempt": md.get("attempt"),
-            "mems": None, "mems_effective": None, "mems_inherited": None, "memory_high": None,
+            "mems": None, "mems_effective": None, "memory_high": None,
             "devices": None, "devicesFrom": None,
         }
         pid = (c.get("info") or {}).get("pid") or 0
@@ -744,7 +733,6 @@ def containers(ns, errors, ctr_mounts=None):
                 raise OSError("empty cpuset.mems.effective in %s" % cg)
             entry["mems_effective"] = eff
             entry["mems"] = mems or eff
-            entry["mems_inherited"] = not mems
             if entry["memory_high"] is None:
                 errors.append("container %s/%s/%s: empty memory.high" % (entry["ns"], entry["pod"], entry["name"]))
         except (OSError, IndexError) as e:
@@ -754,7 +742,7 @@ def containers(ns, errors, ctr_mounts=None):
                 continue  # it exited meanwhile
         out.append(entry)
         if ctr_mounts is not None:
-            cm = {"pod": entry["pod"], "uid": entry["uid"], "name": entry["name"], "id": entry["id"], "mounts": None}
+            cm = {"pod": entry["pod"], "name": entry["name"], "mounts": None}
             try:
                 cm["mounts"] = [{"target": m["target"], "source": m["source"], "root": m["root"],
                                  "vfsopts": m["vfsopts"], "superopts": m["superopts"]}
@@ -787,7 +775,7 @@ LOG_COUNTS = [
 def driver_log(errors):
     """The running driver container of the node and what its log says
     (amendment A13, A15, A24)."""
-    out = {"container": None, "pod": None, "attempt": None, "started": None, "panics": 0, "errors": [],
+    out = {"container": None, "panics": 0, "errors": [],
            "invariants": 0, "invariantErrors": [], "lendsRestored": False, "fencing": None, "sockets": all(os.path.exists("/var/lib/kubelet/plugins/%s/dra.sock" % d)
                                                    for d in ("cxl.nri.io", "cxl-pool.nri.io"))}
     out.update((k, 0) for k, _ in LOG_COUNTS)
@@ -805,8 +793,7 @@ def driver_log(errors):
         return out  # it exited meanwhile
     st = info[0].get("status") or {}
     cid = st.get("id") or ids[0]
-    out.update(container=cid, pod=(st.get("labels") or {}).get("io.kubernetes.pod.name"),
-               attempt=(st.get("metadata") or {}).get("attempt"), started=st.get("startedAt"))
+    out["container"] = cid
     path = st.get("logPath")
     if not path:
         raise RuntimeError("no logPath of container %s" % cid)
@@ -1102,23 +1089,20 @@ def mountinfo(path="/proc/self/mountinfo"):
 
 
 def loop_info(name):
-    """A loop device (loopN): its backing file, dio, ro, autoclear.
-    backing_file is the path as the process that set the loop up saw
-    it: after that process's mount namespace is gone (a driver
-    container restarted), a /dev/pmemN shows as /pmemN, relative to the
-    devtmpfs root. backing is normalized to /dev/pmemN then, backingRaw
-    keeps what the kernel said."""
+    """A loop device (loopN): its backing file, dio, ro. backing_file is
+    the path as the process that set the loop up saw it: after that
+    process's mount namespace is gone (a driver container restarted), a
+    /dev/pmemN shows as /pmemN, relative to the devtmpfs root. backing is
+    normalized to /dev/pmemN then."""
     base = "/sys/block/%s" % name
-    out = {"name": name, "backing": None, "backingRaw": None, "dio": None, "ro": None, "autoclear": None}
-    for key, path in (("backing", "loop/backing_file"), ("dio", "loop/dio"), ("ro", "ro"),
-                      ("autoclear", "loop/autoclear")):
+    out = {"name": name, "backing": None, "dio": None, "ro": None}
+    for key, path in (("backing", "loop/backing_file"), ("dio", "loop/dio"), ("ro", "ro")):
         try:
             v = read(os.path.join(base, path))
             out[key] = v if key == "backing" else v == "1"
         except OSError:
             pass
     raw = out["backing"]
-    out["backingRaw"] = raw
     if raw and re.fullmatch(r"/pmem\d+(\.\d+)?s?", raw) and os.path.exists("/dev" + raw):
         out["backing"] = "/dev" + raw
     return out
@@ -1140,7 +1124,7 @@ def mounts_under(entries, base):
              "superopts": m["superopts"], "vfsopts": m["vfsopts"], "count": 1}
         if re.fullmatch(r"/dev/loop\d+", m["source"]):
             li = loop_info(os.path.basename(m["source"]))
-            e.update(backing=li["backing"], backingRaw=li["backingRaw"], dio=li["dio"], ro=li["ro"])
+            e.update(backing=li["backing"], dio=li["dio"], ro=li["ro"])
         out[m["target"]] = e
     return [out[t] for t in sorted(out)]
 
@@ -1274,8 +1258,8 @@ def pmem(errors):
 
 
 def cdi_pool(errors):
-    """The CDI devices of the pool driver's spec file: name -> env,
-    deviceNodes, mounts."""
+    """The CDI devices of the pool driver's spec file: name -> deviceNodes,
+    mounts."""
     out = {}
     path = CDI_DIR + "/cxl-pool-claims.json"
     try:
@@ -1289,11 +1273,9 @@ def cdi_pool(errors):
     for dev in (spec or {}).get("devices") or []:
         ed = dev.get("containerEdits") or {}
         out[dev.get("name")] = {
-            "file": path,
-            "env": sorted(e for e in ed.get("env") or [] if not str(e).startswith("CXL_CLAIM_")),
-            "deviceNodes": [{k: n.get(k) for k in ("path", "type", "major", "minor", "permissions")}
+            "deviceNodes": [{k: n.get(k) for k in ("path", "type", "permissions")}
                             for n in ed.get("deviceNodes") or []],
-            "mounts": [{k: m.get(k) for k in ("hostPath", "containerPath", "type", "options")}
+            "mounts": [{k: m.get(k) for k in ("hostPath", "containerPath", "options")}
                        for m in ed.get("mounts") or []],
         }
     return out
@@ -1315,8 +1297,8 @@ def kernel(errors):
     except (OSError, ValueError):
         pass
     first = st is None
-    st = st or {"seq": -1, "badTotal": 0, "badFirst": []}
-    out = {"lines": [], "count": 0, "bad": 0, "badTotal": st["badTotal"], "badFirst": st["badFirst"], "seq": st["seq"]}
+    st = st or {"seq": -1}
+    out = {"lines": [], "count": 0, "bad": 0, "seq": st["seq"]}
     fd = os.open("/dev/kmsg", os.O_RDONLY | os.O_NONBLOCK)
     try:
         while True:
@@ -1346,12 +1328,8 @@ def kernel(errors):
                 out["lines"].append(line)
             if KERNEL_BAD.search(msg):
                 out["bad"] += 1
-                st["badTotal"] += 1
-                if len(st["badFirst"]) < 5:
-                    st["badFirst"].append(line)
     finally:
         os.close(fd)
-    out["badTotal"], out["badFirst"] = st["badTotal"], st["badFirst"]
     try:
         os.makedirs(DRIVER_STATE_DIR, exist_ok=True)
         with open(KERNEL_STATE + ".tmp", "w") as f:
@@ -1483,8 +1461,7 @@ def claim_part(pod, claims, index=0):
             attached = attached and ok
     return {"name": name, "uid": (claim.get("metadata") or {}).get("uid"),
             "allocated": alloc is not None, "devices": devices, "attached": attached,
-            "attachFailed": attach_failed,
-            "deleting": bool((claim.get("metadata") or {}).get("deletionTimestamp"))}
+            "attachFailed": attach_failed}
 
 
 def event_time(e):
@@ -1514,19 +1491,14 @@ def short_message(text):
 
 def warning_events(items):
     """Pod uid -> its Warning events, newest first, at most MAX_EVENTS:
-    reason, message, count, lastTimestamp (the apiserver's, of a series
-    as its recorder last wrote it), firstTimestamp, series."""
+    reason, message."""
     by_uid = {}
     for e in items:
         io = e.get("involvedObject") or {}
         if io.get("kind") != "Pod" or not io.get("uid"):
             continue
-        last = (e.get("series") or {}).get("lastObservedTime") or e.get("lastTimestamp") or e.get("eventTime") \
-            or (e.get("metadata") or {}).get("creationTimestamp")
         by_uid.setdefault(io["uid"], []).append((event_time(e), {
-            "reason": e.get("reason"), "message": short_message(e.get("message")),
-            "count": (e.get("series") or {}).get("count") or e.get("count") or 1, "lastTimestamp": last,
-            "firstTimestamp": e.get("eventTime") or e.get("firstTimestamp"), "series": e.get("series") is not None}))
+            "reason": e.get("reason"), "message": short_message(e.get("message"))}))
     return {uid: [ev for _, ev in sorted(evs, key=lambda x: x[0], reverse=True)[:MAX_EVENTS]]
             for uid, evs in by_uid.items()}
 
@@ -1605,7 +1577,6 @@ def pod_part(pod, claims, vm_of, events=None):
     m = re.search(r"-g(\d+)$", md.get("name") or "")
     node = (pod.get("spec") or {}).get("nodeName")
     waiting = ((cs.get("state") or {}).get("waiting") or {}).get("reason")
-    last = ((cs.get("lastState") or {}).get("terminated") or {}).get("exitCode")
     return {
         "slot": slot_of_label((md.get("labels") or {}).get(SLOT_LABEL)),
         "name": md.get("name"),
@@ -1617,7 +1588,6 @@ def pod_part(pod, claims, vm_of, events=None):
         "deleting": bool(md.get("deletionTimestamp")),
         "restarts": cs.get("restartCount") or 0,
         "waiting": waiting,
-        "lastExit": last,
         "unschedulable": bool(sched and sched.get("status") == "False" and sched.get("reason") == "Unschedulable"),
         "claim": claim_part(pod, claims),
         "claims": claim_parts(pod, claims),
@@ -1636,18 +1606,12 @@ def driver_part(pods, vm_of):
         cs = container_status(p, DRIVER_CONTAINER) or {}
         ready = condition(p, "Ready")
         entry = {"pod": md.get("name"), "ready": bool(ready and ready.get("status") == "True"),
-                 "restarts": cs.get("restartCount") or 0, "phase": (p.get("status") or {}).get("phase"),
-                 "deleting": bool(md.get("deletionTimestamp")), "count": 1}
-        old = by_vm.get(vm)
-        if old is None:
-            by_vm[vm] = entry
-            continue
+                 "restarts": cs.get("restartCount") or 0}
+        rank = (bool(md.get("deletionTimestamp")), not entry["ready"])
         # The pod of the node, not a terminating one of an earlier restart.
-        count = old["count"] + 1
-        if (old["deleting"], not old["ready"]) > (entry["deleting"], not entry["ready"]):
-            by_vm[vm] = entry
-        by_vm[vm]["count"] = count
-    return by_vm
+        if vm not in by_vm or by_vm[vm][0] > rank:
+            by_vm[vm] = (rank, entry)
+    return {vm: entry for vm, (_, entry) in by_vm.items()}
 
 
 # The states of a lease on its way to Ready (pkg/cxl/api).
@@ -1859,11 +1823,9 @@ def cluster_observation(ns, nodes, units, inspected, pools=None):
                 md = p.get("metadata") or {}
                 labels = md.get("labels") or {}
                 node = (p.get("spec") or {}).get("nodeName")
-                ready = condition(p, "Ready")
                 comp.append({"name": md.get("name"), "node": vm_of.get(node, node) if node else None,
-                             "uid": md.get("uid"), "containers": container_states(p),
+                             "containers": container_states(p),
                              "phase": (p.get("status") or {}).get("phase"),
-                             "ready": bool(ready and ready.get("status") == "True"),
                              "deleting": bool(md.get("deletionTimestamp")),
                              "lease": labels.get(LEASE_LABEL),
                              "requester": by_uid.get(labels.get(REQUESTER_LABEL))})
@@ -2263,7 +2225,7 @@ def attachments(path, vm_of):
     out = []
     for a in j:
         host = a.get("host")
-        out.append({"device": a.get("device"), "host": vm_of.get(host, host), "serial": a.get("serial"),
+        out.append({"device": a.get("device"), "host": vm_of.get(host, host),
                     "state": a.get("state"), "exclusive": bool(a.get("exclusive")),
                     "adopted": bool(a.get("adopted")), "owner": a.get("owner") or ""})
     return sorted(out, key=lambda a: (a["device"] or "", a["host"] or ""))
