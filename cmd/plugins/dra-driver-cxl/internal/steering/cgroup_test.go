@@ -15,6 +15,7 @@
 package steering
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,24 +57,11 @@ func TestParseMemoryEvents(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestParseInts(t *testing.T) {
-	values, err := parseInts(strings.NewReader("12\n\n345\n"))
-	require.NoError(t, err)
-	require.Equal(t, []int{12, 345}, values)
-
-	values, err = parseInts(strings.NewReader(""))
-	require.NoError(t, err)
-	require.Empty(t, values)
-
-	_, err = parseInts(strings.NewReader("12\nabc\n"))
-	require.Error(t, err)
-}
-
 func TestCgroupFileReaders(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.current"), []byte("123456\n"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.numa_stat"), []byte(numaStat), 0644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "cgroup.procs"), []byte("1\n22\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "cgroup.procs"), []byte("1\n\n22\n"), 0644))
 
 	current, err := memoryCurrent(dir)
 	require.NoError(t, err)
@@ -89,11 +77,70 @@ func TestCgroupFileReaders(t *testing.T) {
 
 	_, err = memoryCurrent(filepath.Join(dir, "missing"))
 	require.Error(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "cgroup.procs"), []byte("1\nabc\n"), 0644))
+	_, err = procs(dir)
+	require.Error(t, err)
 }
 
-func TestCrossingString(t *testing.T) {
-	require.Equal(t, "none", noCrossing.String())
-	require.Equal(t, "lower", lowerCrossed.String())
-	require.Equal(t, "upper", upperCrossed.String())
-	require.Equal(t, "crossing(7)", crossing(7).String())
+// TestNotifierWait checks the events of a notifier over regular files:
+// the kernel's "high" counter, the lower bound by memory.current, a
+// timeout, Interrupt and a removed cgroup.
+func TestNotifierWait(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, data string) {
+		t.Helper()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(data+"\n"), 0644))
+	}
+	events := func(high int) {
+		t.Helper()
+		write("memory.events", fmt.Sprintf("low 0\nhigh %d\nmax 0\noom 0\noom_kill 0", high))
+	}
+	write("memory.high", "max")
+	write("memory.current", "1000")
+	events(0)
+	n, err := newNotifier(dir)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, n.Close()) }()
+
+	require.NoError(t, n.SetBounds(bounds{Lower: 500, Upper: 2000}))
+	data, err := os.ReadFile(filepath.Join(dir, "memory.high"))
+	require.NoError(t, err)
+	require.Equal(t, "2000\n", string(data))
+	ev, err := n.Wait(0)
+	require.NoError(t, err)
+	require.Equal(t, event{crossing: noCrossing, memoryCurrent: 1000}, ev)
+
+	// the kernel throttled the cgroup at the bound
+	events(1)
+	ev, err = n.Wait(0)
+	require.NoError(t, err)
+	require.Equal(t, upperCrossed, ev.crossing)
+	// until the next SetBounds
+	ev, err = n.Wait(0)
+	require.NoError(t, err)
+	require.Equal(t, upperCrossed, ev.crossing)
+	require.NoError(t, n.SetBounds(bounds{Lower: 500, Upper: 2000}))
+	ev, err = n.Wait(0)
+	require.NoError(t, err)
+	require.Equal(t, noCrossing, ev.crossing)
+
+	write("memory.current", "400")
+	ev, err = n.Wait(0)
+	require.NoError(t, err)
+	require.Equal(t, event{crossing: lowerCrossed, memoryCurrent: 400}, ev)
+
+	require.NoError(t, n.Interrupt())
+	_, err = n.Wait(-1)
+	require.ErrorIs(t, err, errInterrupted)
+
+	// no bounds: memory.high max
+	require.NoError(t, n.SetBounds(bounds{}))
+	data, err = os.ReadFile(filepath.Join(dir, "memory.high"))
+	require.NoError(t, err)
+	require.Equal(t, "max\n", string(data))
+
+	require.NoError(t, os.Remove(filepath.Join(dir, "memory.current")))
+	_, err = n.Wait(0)
+	require.True(t, gone(err), "%v", err)
 }

@@ -382,107 +382,41 @@ func TestPlanNextStepNothingToSteer(t *testing.T) {
 	require.Equal(t, int64(0), step.Bytes)
 }
 
-func TestPlanSimple(t *testing.T) {
-	type wpCase struct {
+// TestPlanFollow simulates the usage that follows the steps of plans of
+// several shapes and step settings: every step is within the step bounds,
+// every waypoint is reached, and past the last one the step has the nodes
+// of the last segment and no bound, with each node close to its target.
+func TestPlanFollow(t *testing.T) {
+	type shape struct {
 		name      string
 		waypoints []NodeMem
+		last      []int // the nodes of the last segment
 	}
-	wpCases := []wpCase{
-		{
-			name: "DRAM-then-CXL",
-			waypoints: []NodeMem{
-				nm(20*GiB, 0),
-				nm(20*GiB, 100*GiB),
-			},
-		},
-		{
-			name: "CXL-then-DRAM",
-			waypoints: []NodeMem{
-				nm(0, 100*GiB),
-				nm(20*GiB, 100*GiB),
-			},
-		},
-		{
-			name: "interleave-start",
-			waypoints: []NodeMem{
-				nm(20*GiB, 20*GiB),
-				nm(20*GiB, 100*GiB),
-			},
-		},
-		{
-			name: "interleave-end",
-			waypoints: []NodeMem{
-				nm(0, 80*GiB),
-				nm(20*GiB, 100*GiB),
-			},
-		},
+	shapes := []shape{
+		{"DRAM-then-CXL", []NodeMem{nm(20*GiB, 0), nm(20*GiB, 100*GiB)}, []int{1}},
+		{"CXL-then-DRAM", []NodeMem{nm(0, 100*GiB), nm(20*GiB, 100*GiB)}, []int{0}},
+		{"interleave-start", []NodeMem{nm(20*GiB, 20*GiB), nm(20*GiB, 100*GiB)}, []int{1}},
+		{"interleave-end", []NodeMem{nm(0, 80*GiB), nm(20*GiB, 100*GiB)}, []int{0, 1}},
 	}
-
-	type stepCase struct {
-		name    string
-		minStep int64
-		maxStep int64
+	type tcase struct {
+		name string
+		plan Plan
+		last []int
 	}
-	stepCases := []stepCase{
-		{"min1-max1", 1 * GiB, 1 * GiB},
-		{"min20-max20", 20 * GiB, 20 * GiB},
-		{"min5-max20", 5 * GiB, 20 * GiB},
-	}
-
-	for _, wc := range wpCases {
-		for _, sc := range stepCases {
-			t.Run(wc.name+"/"+sc.name, func(t *testing.T) {
-				plan := &Plan{
-					Waypoints: wc.waypoints,
-					MinStep:   sc.minStep,
-					MaxStep:   sc.maxStep,
-				}
-
-				cur := nm(0, 0)
-				lastWP := plan.Waypoints[len(plan.Waypoints)-1]
-				wpReached := make([]bool, len(plan.Waypoints))
-
-				maxIter := 1000
-				for i := 0; i < maxIter; i++ {
-					step, err := plan.NextStep(cur)
-					require.NoError(t, err, "iter %d", i)
-					if len(step.Nodes) == 0 || step.Past {
-						break
-					}
-					simulateUsageGrowth(cur, step.Nodes, step.Bytes)
-
-					for wi, wp := range plan.Waypoints {
-						if wpReached[wi] {
-							continue
-						}
-						reached := true
-						for n, target := range wp {
-							if cur[n] < target {
-								reached = false
-								break
-							}
-						}
-						wpReached[wi] = reached
-					}
-
-					// Stop once past the last waypoint total.
-					if total(cur) > total(lastWP)+plan.MaxStep {
-						break
-					}
-				}
-
-				for wi, reached := range wpReached {
-					require.True(t, reached,
-						"waypoint %d not reached; cur=%s, wp=%s",
-						wi, cur, plan.Waypoints[wi])
-				}
-			})
+	var tcases []tcase
+	for _, s := range shapes {
+		for _, steps := range []struct {
+			name             string
+			minStep, maxStep int64
+		}{
+			{"min1-max1", 1 * GiB, 1 * GiB},
+			{"min20-max20", 20 * GiB, 20 * GiB},
+			{"min5-max20", 5 * GiB, 20 * GiB},
+		} {
+			tcases = append(tcases, tcase{s.name + "/" + steps.name, Plan{Waypoints: s.waypoints, MinStep: steps.minStep, MaxStep: steps.maxStep}, s.last})
 		}
 	}
-}
-
-func TestPlanFollow(t *testing.T) {
-	plan := &Plan{
+	tcases = append(tcases, tcase{"four nodes", Plan{
 		Waypoints: []NodeMem{
 			nm(0*GiB, 2*GiB, 0*GiB, 5*GiB),
 			nm(1*GiB, 3*GiB, 1*GiB, 5*GiB),
@@ -491,47 +425,45 @@ func TestPlanFollow(t *testing.T) {
 		},
 		MinStep: 1 * GiB,
 		MaxStep: 4 * GiB,
-	}
+	}, []int{1, 2}})
 
-	cur := nm(0, 0, 0, 0)
-
-	// Run the simulation until the usage is past the last waypoint.
-	lastWP := plan.Waypoints[len(plan.Waypoints)-1]
-	past := false
-	maxIter := 200
-	for i := 0; i < maxIter && !past; i++ {
-		step, err := plan.NextStep(cur)
-		require.NoError(t, err, "NextStep iteration %d", i)
-
-		t.Logf("iter %3d: curGiB=(%.1f,%.1f,%.1f,%.1f) nodes=%v/%.1f GiB",
-			i,
-			float64(cur[0])/GiBf, float64(cur[1])/GiBf,
-			float64(cur[2])/GiBf, float64(cur[3])/GiBf,
-			step.Nodes, float64(step.Bytes)/GiBf)
-
-		if step.Past {
-			// the nodes of the last segment, no more steps
-			require.Equal(t, []int{1, 2}, step.Nodes)
-			require.Zero(t, step.Bytes)
-			past = true
-			break
-		}
-		require.NotEmpty(t, step.Nodes, "iteration %d", i)
-
-		require.GreaterOrEqual(t, step.Bytes, plan.MinStep,
-			"bytes must be >= MinStep at iteration %d", i)
-		require.LessOrEqual(t, step.Bytes, plan.MaxStep,
-			"bytes must be <= MaxStep at iteration %d", i)
-
-		simulateUsageGrowth(cur, step.Nodes, step.Bytes)
-	}
-	require.True(t, past, "the usage does not get past the last waypoint")
-
-	// Every node should be close to the last waypoint, with a
-	// tolerance of MaxStep because steering is approximate.
-	for n, target := range lastWP {
-		require.InDelta(t, target, cur[n], float64(plan.MaxStep),
-			"node %d usage should be close to last waypoint target", n)
+	for _, tc := range tcases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := &tc.plan
+			cur := NodeMem{}
+			reached := make([]bool, len(plan.Waypoints))
+			past := false
+			for i := 0; i < 1000 && !past; i++ {
+				step, err := plan.NextStep(cur)
+				require.NoError(t, err, "iteration %d", i)
+				t.Logf("iteration %3d: usage %s step %v/%d", i, cur, step.Nodes, step.Bytes)
+				if step.Past {
+					require.Equal(t, Step{Nodes: tc.last, Past: true}, step)
+					past = true
+					break
+				}
+				require.NotEmpty(t, step.Nodes, "iteration %d", i)
+				require.GreaterOrEqual(t, step.Bytes, plan.MinStep, "iteration %d", i)
+				require.LessOrEqual(t, step.Bytes, plan.MaxStep, "iteration %d", i)
+				simulateUsageGrowth(cur, step.Nodes, step.Bytes)
+				// reached: less than MinStep short of the waypoint in total
+				for wi, wp := range plan.Waypoints {
+					var short int64
+					for n, target := range wp {
+						short += max(0, target-cur[n])
+					}
+					reached[wi] = reached[wi] || short < plan.MinStep
+				}
+			}
+			require.True(t, past, "the usage does not get past the last waypoint")
+			for wi, ok := range reached {
+				require.True(t, ok, "waypoint %d %s not reached, usage %s", wi, plan.Waypoints[wi], cur)
+			}
+			// steering is approximate: each node within MaxStep of its target
+			for n, target := range plan.Waypoints[len(plan.Waypoints)-1] {
+				require.InDelta(t, target, cur[n], float64(plan.MaxStep), "node %d", n)
+			}
+		})
 	}
 }
 
