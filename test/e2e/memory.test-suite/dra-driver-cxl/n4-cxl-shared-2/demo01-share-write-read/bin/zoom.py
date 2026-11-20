@@ -17,7 +17,7 @@ Usage: zoom.py WHAT [ARGS]
   driver NODE [N]   the last N (30) lines of the driver's log
   kernel NODE       the kernel lines of cxl, dax, memory since demo setup
                     (the journal, the host's clock)
-  cxl NODE          cxl list -M -R -X -i (memdevs, disabled ones too,
+  cxl NODE          cxl list -M -R -X -u -i (memdevs, disabled ones too,
                     regions, dax)
   pool              the pool server's devices and attachments
   fs                the erofs in the pool device's backing file: the

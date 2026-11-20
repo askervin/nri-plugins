@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write the hand-made samples of the case "wizard": DIR/wizard-*/
+"""Write the generated samples of the case "wizard": DIR/wizard-*/
 and DIR/trace-wizard/.
 
 Usage: make-wizard-samples.py DIR (bin/common.py testdata() runs it)
@@ -46,7 +46,7 @@ BLOCK = 128 * MI
 
 def state_text():
     return "\n".join([
-        "# hand-made state of demo setup wizard (make-wizard-samples.py)",
+        "# generated state of demo setup wizard (make-wizard-samples.py)",
         "DEMO_CASE=wizard", "VM2_DIR=/nonexistent/n4-cxl-shared-2-fedora-43-containerd",
         "VM1_DIR=/nonexistent/n4-cxl-shared-1-fedora-43-containerd", "VM2_NODE=" + VM2, "VM1_NODE=" + VM1,
         "NS=" + NS, "SERIAL=" + FS0, "POOL_DEVICE=fs0", "POOL_URL=http://127.0.0.1:9909",

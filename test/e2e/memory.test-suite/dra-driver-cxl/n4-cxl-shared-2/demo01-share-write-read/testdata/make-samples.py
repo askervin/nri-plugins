@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write the hand-made samples of the views: DIR/<scenario>/.
+"""Write the generated samples of the views: DIR/<scenario>/.
 
 Usage: make-samples.py DIR (bin/common.py testdata() runs it)
 
@@ -8,7 +8,7 @@ demo setup writes it), vm2.json and vm1.json (what probe.py prints in the
 VMs: Kubernetes objects, CXL in the kernel, the bytes), pool.json (the
 pool server's device and the first bytes of its backing file, or in
 pool-shared-fs the file system in it as common.erofs_files reads the real
-image hello.erofs.hex). trace-local and trace-fs are hand-made trace
+image hello.erofs.hex). trace-local and trace-fs are generated trace
 streams of the local and the pool-shared-fs scripts, with the log lines of
 the current driver and controller (cmd/plugins/dra-driver-cxl,
 scripts/testing/fake-cxl-pool/pkg/controller). The object shapes follow
@@ -213,7 +213,7 @@ def write(sdir, name, obj):
 
 def state(case, serial):
     return "\n".join([
-        "# hand-made state of demo setup %s (make-samples.py)" % case,
+        "# generated state of demo setup %s (make-samples.py)" % case,
         "DEMO_CASE=" + case, "VM2_DIR=/nonexistent/n4-cxl-shared-2-fedora-43-containerd",
         "VM1_DIR=/nonexistent/n4-cxl-shared-1-fedora-43-containerd", "VM2_NODE=" + VM2, "VM1_NODE=" + VM1,
         "NS=" + NS, "SERIAL=" + serial, "POOL_DEVICE=shared0", "POOL_URL=http://127.0.0.1:9909",

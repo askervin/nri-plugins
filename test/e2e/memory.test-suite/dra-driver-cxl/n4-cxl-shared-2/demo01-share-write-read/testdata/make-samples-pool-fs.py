@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write the hand-made samples of the pool-fs views: DIR/pool-fs-*/.
+"""Write the generated samples of the pool-fs views: DIR/pool-fs-*/.
 
 Usage: make-samples-pool-fs.py DIR (bin/common.py testdata() runs it)
        make-samples-pool-fs.py --super   (pool-fs-super.json again, with mkfs)

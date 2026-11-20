@@ -27,7 +27,7 @@ Usage: wizard.py check [--quiet] [--block]
   with the label cxl-demo/node (vm1, vm2): vm0 has no demo image;
 - the state file read as setup writes it (printf %q; the file of a live
   setup, testdata/state-wizard-setup.env).
-Exit status 1 on the first failed check, after the report.
+Runs every check; exit status 1 if one failed, after the report.
 """
 import json
 import os

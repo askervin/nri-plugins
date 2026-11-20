@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Desk check of the demo: every rendering fits 50 x 10.
+"""Desk check of the demo: its views, probes, trace, wizard, client and
+shell scripts, and every rendering fits 50 x 10.
 
 Usage: selftest.py [--quiet]
 
@@ -35,7 +36,8 @@ Usage: selftest.py [--quiet]
 - runs the checks of the wizard (wizard_check.py: its rules, its YAML,
   its question screens, the states of its objects, its scripted set).
 The terminal size is 50 x 10 whatever the terminal.
-Prints the renderings and exits 1 on the first failed check.
+Prints the renderings, runs every check and exits 1 if one failed,
+after printing the failures.
 """
 import json
 import os
