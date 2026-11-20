@@ -252,7 +252,7 @@ func TestReviewR10Truncated(t *testing.T) {
 	wantVerdict(t, v, VFail, "not all enumerated")
 }
 
-// A13: panics, slices, the leases of state.json.
+// A13: panics, invariant violations, slices, the leases of state.json.
 func TestReviewA13Checks(t *testing.T) {
 	s := revState(t, "full", false, "create lease@vm1#0", "create xnuma-a@vm1#0", "settle", "lease-get lease@vm1#0 numa", "settle")
 	o := observation(t, s)
@@ -262,6 +262,12 @@ func TestReviewA13Checks(t *testing.T) {
 	o.VMs["vm1"].DriverLog.Errors = []string{"panic: runtime error: nil pointer"}
 	v, _ = checkState(s, o, "")
 	wantVerdict(t, v, VFail, "driver vm1: 1 panics in the log of container drv-vm1-0: panic: runtime error")
+	o = observation(t, s)
+	violations := 2
+	o.VMs["vm1"].DriverLog.Invariants = &violations
+	o.VMs["vm1"].DriverLog.InvariantErrors = []string{"engine invariant: I3: claim c has no grant"}
+	v, _ = checkState(s, o, "")
+	wantVerdict(t, v, VFail, "driver vm1: 2 violations of its invariants in the log of container drv-vm1-0: engine invariant: I3")
 	o = observation(t, s)
 	o.Slices["vm1"] = append(o.Slices["vm1"], ObsSliceDev{Name: "memdev-c1ee0001", Serial: "0xc1ee0001"})
 	v, _ = checkState(s, o, "")

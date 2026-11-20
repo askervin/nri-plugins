@@ -118,7 +118,10 @@ Where the data comes from:
   driverLog     the running nri-dra-driver-cxl container of the node
                 (crictl): its id, pod, attempt, start, the log lines of
                 its log file (status.logPath) that match "panic|fatal
-                error|SIGSEGV" (count, the first 5), lendsRestored (its
+                error|SIGSEGV" (count, the first 5), invariants (the
+                count of "engine invariant: " lines, the violations
+                of its own invariants that the driver logs at V(4), and
+                the first 5 in invariantErrors), lendsRestored (its
                 log has "NRI fence: lends restored": NRI and lending are
                 up, A15), fencing (the mode of its start line
                 "defaults.container.fencing: MODE: ...", null before
@@ -780,6 +783,9 @@ FENCING_LOG = re.compile(r"defaults\.container\.fencing: ([a-z-]+):")
 # line. With the fix it logs "NRI fence: lends restored (fencing none)",
 # which LENDS_RESTORED matches.
 NRI_SYNCED = "containers tracked"
+# The driver's own invariant checks between requests (D/internal/engine
+# observe.go checkBetween, V(4)).
+INVARIANT = "engine invariant: "
 # Counted lines of the driver log (A24): the persistent devices' troubles.
 LOG_COUNTS = [
     ("busy", re.compile(r"device or resource busy")),
@@ -794,7 +800,7 @@ def driver_log(errors):
     """The running driver container of the node and what its log says
     (amendment A13, A15, A24)."""
     out = {"container": None, "pod": None, "attempt": None, "started": None, "panics": 0, "errors": [],
-           "lendsRestored": False, "fencing": None, "sockets": all(os.path.exists("/var/lib/kubelet/plugins/%s/dra.sock" % d)
+           "invariants": 0, "invariantErrors": [], "lendsRestored": False, "fencing": None, "sockets": all(os.path.exists("/var/lib/kubelet/plugins/%s/dra.sock" % d)
                                                    for d in ("cxl.nri.io", "cxl-pool.nri.io"))}
     out.update((k, 0) for k, _ in LOG_COUNTS)
     r = run(["crictl", "ps", "-q", "--state", "running", "--namespace", "^kube-system$",
@@ -818,7 +824,8 @@ def driver_log(errors):
         raise RuntimeError("no logPath of container %s" % cid)
     os.makedirs(DRIVER_STATE_DIR, exist_ok=True)
     statefile = os.path.join(DRIVER_STATE_DIR, "driverlog-%s.json" % cid)
-    saved = {"offset": 0, "panics": 0, "errors": [], "lendsRestored": False, "fencing": None, "nriSynced": False}
+    saved = {"offset": 0, "panics": 0, "errors": [], "invariants": 0, "invariantErrors": [],
+             "lendsRestored": False, "fencing": None, "nriSynced": False}
     saved.update((k, 0) for k, _ in LOG_COUNTS)
     try:
         with open(statefile) as f:
@@ -849,6 +856,10 @@ def driver_log(errors):
             saved["panics"] += 1
             if len(saved["errors"]) < 5:
                 saved["errors"].append(content[:300])
+        if INVARIANT in content:
+            saved["invariants"] += 1
+            if len(saved["invariantErrors"]) < 5:
+                saved["invariantErrors"].append(content[:300])
         for k, rx in LOG_COUNTS:
             if rx.search(content):
                 saved[k] += 1
@@ -859,7 +870,8 @@ def driver_log(errors):
         os.replace(statefile + ".tmp", statefile)
     except OSError as e:
         errors.append("driverLog: %s: %s" % (statefile, e))
-    out.update(panics=saved["panics"], errors=saved["errors"], fencing=saved["fencing"], nriSynced=saved["nriSynced"],
+    out.update(panics=saved["panics"], errors=saved["errors"], invariants=saved["invariants"],
+               invariantErrors=saved["invariantErrors"], fencing=saved["fencing"], nriSynced=saved["nriSynced"],
                lendsRestored=saved["lendsRestored"] or (saved["fencing"] == "none" and saved["nriSynced"]))
     out.update((k, saved[k]) for k, _ in LOG_COUNTS)
     return out

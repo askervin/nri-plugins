@@ -807,8 +807,8 @@ func (p *ObsPod) blockedEvent() bool {
 	return false
 }
 
-// checkDriverLog: no panic in the log of the current driver container
-// (A13).
+// checkDriverLog: no panic and no violation of the driver's own
+// invariants in the log of the current driver container (A13).
 func (k *checker) checkDriverLog(v VM, ov *ObsVM) {
 	if ov.DriverLog == nil {
 		k.notef("vms.%s.driverLog not observed: no check of driver panics", v)
@@ -825,6 +825,13 @@ func (k *checker) checkDriverLog(v VM, ov *ObsVM) {
 			first = ": " + firstLine(dl.Errors[0])
 		}
 		k.failf("driver %s: %d panics in the log of container %s%s", v, dl.Panics, ctr, first)
+	}
+	if dl.Invariants != nil && *dl.Invariants > 0 {
+		first := ""
+		if len(dl.InvariantErrors) > 0 {
+			first = ": " + firstLine(dl.InvariantErrors[0])
+		}
+		k.failf("driver %s: %d violations of its invariants in the log of container %s%s", v, *dl.Invariants, ctr, first)
 	}
 	// A15: a driver is ready when it runs with NRI, lending and its
 	// sockets up

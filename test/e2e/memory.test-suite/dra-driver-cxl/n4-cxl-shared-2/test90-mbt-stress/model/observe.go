@@ -395,10 +395,14 @@ type ObsSliceDev struct {
 // ObsDriverLog is the summary of the current driver container's log
 // (A13).
 type ObsDriverLog struct {
-	Container     *string  `json:"container"`
-	Panics        int      `json:"panics"`
-	Errors        []string `json:"errors"`
-	LendsRestored *bool    `json:"lendsRestored"` // A15: NRI and lending up (fencing none: NRI synchronized)
+	Container *string  `json:"container"`
+	Panics    int      `json:"panics"`
+	Errors    []string `json:"errors"`
+	// Invariants: the driver's "engine invariant: " lines, the first of
+	// them in InvariantErrors
+	Invariants      *int     `json:"invariants"`
+	InvariantErrors []string `json:"invariantErrors"`
+	LendsRestored   *bool    `json:"lendsRestored"` // A15: NRI and lending up (fencing none: NRI synchronized)
 	// Fencing: the mode of the current driver container's start line
 	// (null before it); NRISynced: NRI's first Synchronize (A36)
 	Fencing   *string `json:"fencing"`
