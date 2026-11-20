@@ -791,6 +791,8 @@ nothing-left pod-deleted no-borrower
 dra-wait "$VM2" lease-claim-gone "resourceclaims -n $DRA_NS" "names() == []" 90
 vm-command "test -e $DRA_LEASE_DIR/$LEASE_CLAIM_UID" &&
     error "the lease directory of claim $LEASE_CLAIM is still in $DRA_LEASE_DIR"
+vm-command "test -e $DRA_LEASE_FS_DIR/$LEASE_CLAIM_UID" &&
+    error "the filesystem directory of claim $LEASE_CLAIM is still in $DRA_LEASE_FS_DIR"
 echo "pod deleted with 3 active leases: everything cleaned up"
 pool-not-local F
 echo "leases of the test: ${LEASES[*]}"

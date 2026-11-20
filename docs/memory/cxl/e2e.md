@@ -252,7 +252,7 @@ tests of `n4-cxl-shared-2`):
 | `test00-up` | create and check the VM of the topology; `n4-cxl-shared-2/test00-up` also makes the three-node cluster |
 | `test01-shared-cxl` | CXL memory shared by VM1 and VM2 through fake-cxl-pool, without Kubernetes |
 | `test10-dra-pooling` | pool devices for pods: exclusive devices as NUMA nodes (pool devices as dax devices are in `test13`); the pool's slice is for the nodes it reaches, VM1 and VM2 |
-| `test12-dra-live-attach` | leases of pool memory for running containers; the directory of the lease socket in the container of a lease claim, read-only, and the directory of the filesystems of fs leases, empty and read-only; refused requests, among them fs leases of a volatile device (read-only by default or `--read-write`), access, name, `--fs-type` or `--read-write` without mode `fs`, an invalid `--fs-type`, `--read-only` with `--read-write`, and block leases that share a device writably or are of a volatile device |
+| `test12-dra-live-attach` | leases of pool memory for running containers; the directory of the lease socket in the container of a lease claim, read-only, and the directory of the filesystems of fs leases, empty and read-only; requests that the node plugin refuses: a shared lease of an exclusive device, fs and block leases of a volatile device |
 | `test13-dra-shared-one-writer-many-readers` | single-writer sharing on two nodes: an exclusive writer, then read-only readers on VM1 and VM2 |
 | `test14-dra-local-memdev` | slices of a local memdev, `numa` and `dax` |
 | `test15-dra-local-live-attach` | leases of local memory for running containers |
