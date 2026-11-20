@@ -407,10 +407,7 @@ type ObsDriverLog struct {
 	// (null before it, A36)
 	Fencing *string `json:"fencing"`
 	Sockets *bool   `json:"sockets"` // A15: both dra.sock
-	// A24: counts of lines of persistent devices
-	Busy         *int `json:"busy"`
-	InUse        *int `json:"inUse"`
-	StaleBind    *int `json:"staleBind"`
+	// A24: lines of a persistent device not mounted or bound again
 	NotRemounted *int `json:"notRemounted"`
 }
 
