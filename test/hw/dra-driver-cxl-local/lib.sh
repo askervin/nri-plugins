@@ -139,6 +139,10 @@ pod_events() { # Usage: pod_events POD -- the events of POD, one line each
     kn get events --field-selector "involvedObject.name=$1" -o jsonpath='{range .items[*]}{.reason}: {.message}{"\n"}{end}'
 }
 
+unschedulable() { # Usage: unschedulable POD -- the scheduler has failed to place POD
+    pod_events "$1" | grep -q '^FailedScheduling:'
+}
+
 pexec() { # Usage: pexec POD CMD... -- run CMD in container "main" of POD
     kn exec "$1" -c main -- "${@:2}"
 }
@@ -231,7 +235,7 @@ check_fenced() {
         [ $((EPOCHSECONDS - t0)) -lt 30 ] || break
         sleep 1
     done
-    echo "  containers of the node (cpuset.mems, effective), after $((EPOCHSECONDS - t0)) s:"
+    echo "  containers of the node (cpuset.mems, effective):"
     sed 's/^/    /' <<< "$table"
     if [ -z "$table" ]; then
         fail "node $n fenced: no running container listed on $TARGET"

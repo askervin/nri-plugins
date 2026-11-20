@@ -33,10 +33,8 @@ check "the shared device has the capacity shares" test "$(jget "$D" 'j["capacity
 SIZE=$(jget "$D" 'j["attributes"]["size"]["int"]')
 
 log "the first claim (writer, one read-write share) creates the region and zeroes all $((SIZE >> 30)) GiB"
-t0=$EPOCHSECONDS
 { claim_yaml writer cxl-local-shared shares=1; echo ---; pod_yaml writer claim=writer; } | kapply
 wait_pod writer Running 600 || fail "pod writer is not Running"
-log "writer Running after $((EPOCHSECONDS - t0)) s"
 driver_log 10m | grep -E "zeroed new shared" | sed 's/^[^]]*] //; s/^/    /'
 echo "  env of writer:"
 pod_env writer | sed 's/^/    /'
@@ -111,7 +109,7 @@ pexec writer python3 /tools/dax-rw.py write "$DAX" 0 "$TEXT2" >/dev/null
 
 log "an exclusive claim waits while sharers hold the device"
 { claim_yaml excl cxl-local-shared; echo ---; pod_yaml excl claim=excl; } | kapply
-sleep 15
+check "the scheduler cannot place excl while sharers hold the device" wait_for 60 "a FailedScheduling event of excl" unschedulable excl
 check "excl is Pending while sharers hold the device" pod_is excl Pending
 pod_events excl | tail -n 2 | sed 's/^/    event: /'
 pexec lease-r "$CXL_REQUEST" release --all --wait 60s >/dev/null 2>&1
@@ -123,7 +121,7 @@ got=$(pexec excl python3 /tools/dax-rw.py read "$DAX" 0)
 echo "    excl: $got"
 check "excl reads what the writer left (not zeroed between claims)" grep -qF "$TEXT2" <<< "$got"
 { pod_yaml late template=reader; } | kapply
-sleep 15
+check "the scheduler cannot place late while excl holds the device" wait_for 60 "a FailedScheduling event of late" unschedulable late
 check "a new reader is Pending while excl holds the device" pod_is late Pending
 kn delete pod excl --grace-period=1 --wait=true --timeout=300s >/dev/null
 kn delete resourceclaim excl --wait=true --timeout=120s >/dev/null

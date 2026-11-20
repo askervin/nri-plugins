@@ -33,10 +33,6 @@
 # pods and claims of the device first.
 set -o pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-if [ -n "$CONTAINER_MEMORY" ]; then
-    echo "CONTAINER_MEMORY is gone, use CONTAINER_FENCING (defaults.container.fencing)" >&2
-    exit 2
-fi
 
 RELEASE=${RELEASE:-cxl}
 CHART_DIR="$REPO_DIR/deployment/helm/dra-driver-cxl"

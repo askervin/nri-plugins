@@ -32,7 +32,6 @@ check "the memdev is published as a sliced local device" \
     test "$(jget "$(slice_json)" 'j["attributes"]["shared"]["bool"]')" == False
 
 log "creating claims dax-shared, dax-ro, numa-c and pods writer, reader-a, reader-b, ro, numa-c, plain"
-t0=$EPOCHSECONDS
 {
     claim_yaml dax-shared cxl-local memory=2Gi mode=dax; echo ---
     claim_yaml dax-ro cxl-local memory=2Gi mode=dax readonly; echo ---
@@ -45,7 +44,7 @@ t0=$EPOCHSECONDS
 for p in writer reader-a reader-b ro numa-c plain; do
     wait_pod "$p" Running 300 || fail "pod $p is not Running"
 done
-log "all pods Running after $((EPOCHSECONDS - t0)) s"
+log "all pods Running"
 
 for p in writer reader-a ro; do
     echo "  env of $p:"
@@ -100,7 +99,6 @@ pexec writer python3 /tools/dax-rw.py write "$DAX" 0 "$TEXT2" >/dev/null
 changed() { pexec reader-a grep -qF "changed: $TEXT2" /tmp/watch.log; }
 check "reader-a sees the second write live in its mapping" wait_for 30 "reader-a sees the change" changed
 pexec reader-a touch /tmp/stop
-sleep 2
 pexec reader-a cat /tmp/watch.log | sed 's/^/    reader-a: /'
 
 log "the whole 2 GiB slice end to end: writer writes a pattern, reader-b verifies it"

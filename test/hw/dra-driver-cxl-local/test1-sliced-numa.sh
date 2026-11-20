@@ -43,11 +43,8 @@ check "the memdev is published as a sliced local device" \
     test "$(jget "$(slice_json)" 'j["attributes"]["shared"]["bool"]')" == False
 
 log "creating claims numa-a (4Gi, steered), numa-b (2Gi, steered), numa-u (2Gi) and pods numa-a, numa-b, numa-u, plain"
-t0=$EPOCHSECONDS
 { claim_yaml numa-a cxl-local memory=4Gi steering=auto; echo ---; pod_yaml numa-a claim=numa-a; } | kapply
 wait_pod numa-a Running 300
-log "numa-a Running after $((EPOCHSECONDS - t0)) s"
-t0=$EPOCHSECONDS
 {
     claim_yaml numa-b cxl-local memory=2Gi steering=auto; echo ---; pod_yaml numa-b claim=numa-b; echo ---
     claim_yaml numa-u cxl-local memory=2Gi; echo ---; pod_yaml numa-u claim=numa-u; echo ---
@@ -56,7 +53,6 @@ t0=$EPOCHSECONDS
 wait_pod numa-b Running 300
 wait_pod numa-u Running 300
 wait_pod plain Running 300
-log "numa-b, numa-u and plain Running after $((EPOCHSECONDS - t0)) s"
 
 for p in numa-a numa-b numa-u; do
     echo "  env of $p:"
@@ -188,15 +184,13 @@ check "numa-b: past its last waypoint, memory.high max" test "$(pexec numa-b cat
 pexec numa-b pkill -f alloc-touch.py
 pexec numa-a pkill -f alloc-touch.py
 pexec numa-b pkill -f numa-touch.py
-sleep 2
 
 log "releasing numa-b: node $N shrinks to the 4Gi of numa-a"
-t0=$EPOCHSECONDS
 kn delete pod numa-b --wait=true --timeout=300s >/dev/null
 kn delete resourceclaim numa-b --wait=true --timeout=300s >/dev/null
 shrunk() { [ "$(node_mib "$N")" -le 4096 ]; }
 check "node $N shrinks to <= 4096 MiB in 120 s" wait_for 120 "node $N shrinks" shrunk
-log "node $N has $(node_mib "$N") MiB, $((EPOCHSECONDS - t0)) s after the delete"
+log "node $N has $(node_mib "$N") MiB"
 check "numa-a still runs with node $N in Mems_allowed" in_list "$N" "$(mems_allowed numa-a)"
 
 driver_pod() { # the Running driver pod
@@ -205,24 +199,20 @@ driver_pod() { # the Running driver pod
 log "restarting the driver while numa-a holds node $N"
 old_pod=$(driver_pod)
 log_before=$(driver_log)
-t0=$EPOCHSECONDS
 k delete pod -n kube-system "$old_pod" --wait=true --timeout=180s >/dev/null
 new_pod() { local p; p=$(driver_pod) && [ -n "$p" ] && [ "$p" != "$old_pod" ]; }
 check "a new driver pod is Running" wait_for 180 "a new driver pod Running" new_pod
 DRIVER_POD=$(driver_pod)
 seeded() { k logs -n kube-system "$DRIVER_POD" | grep -q "NRI fence: fencing CXL nodes .* of prepared claims"; }
 check "driver: fences the CXL nodes of the prepared claims at start" wait_for 60 "the fence log of $DRIVER_POD" seeded
-log "driver $DRIVER_POD Running and fencing after $((EPOCHSECONDS - t0)) s"
 seed=$(k logs -n kube-system "$DRIVER_POD" | sed -n 's/.*NRI fence: fencing CXL nodes \(.*\) of prepared claims.*/\1/p' | tail -n 1)
 echo "  fenced nodes of the prepared claims: $seed"
 check "driver: node $N is among the fenced nodes of the prepared claims ($seed)" in_list "$N" "$(tr -d '[]' <<< "$seed" | tr ' ' ',')"
 check_fenced "$N" numa-a
 
 log "creating pod plain2 (no claim) after the restart"
-t0=$EPOCHSECONDS
 pod_yaml plain2 | kapply
 wait_pod plain2 Running 300
-log "plain2 Running after $((EPOCHSECONDS - t0)) s"
 m2=$(pexec plain2 cat /sys/fs/cgroup/cpuset.mems)
 ma2=$(mems_allowed plain2)
 echo "  plain2: cpuset.mems $m2, cpuset.mems.effective $(pexec plain2 cat /sys/fs/cgroup/cpuset.mems.effective), Mems_allowed $ma2"
@@ -233,12 +223,10 @@ check "driver: sets cpuset.mems of plain2 at its creation" wait_for 30 "the adju
 k logs -n kube-system "$DRIVER_POD" | grep -E "NRI fence|NRI CreateContainer: ctr=$NS/plain2/main: cpuset.mems=" | sed 's/^[^]]*] //; s/^/    /' | cut -c1-300 | tail -n 20
 
 log "releasing numa-a, plain and plain2: node $N goes away, no region is left"
-t0=$EPOCHSECONDS
 delete_all
 gone() { [ "$(node_mib "$N")" == 0 ]; }
 check "node $N has no memory in 120 s" wait_for 120 "node $N empty" gone
 check "no CXL region is left on the memdev" wait_for 60 "no regions" no_regions
-log "released in $((EPOCHSECONDS - t0)) s"
 
 log "driver log of the steering of numa-a and numa-b (numa-u is not steered)"
 { echo "$log_before"; driver_log 15m; } | grep -E "numa-[abu]/main: " | sed 's/^[^]]*] //; s/^/    /' | cut -c1-300 | tail -n 40

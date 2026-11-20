@@ -34,11 +34,10 @@ log "Mems_allowed before leases: lease-a=$base_a lease-b=$(mems_allowed lease-b)
 last_json() { grep '^{' <<< "$1" | tail -n 1; }
 
 log "lease-a: cxl-request request --source local --size 2Gi (mode numa)"
-t0=$EPOCHREALTIME
 out=$(pexec lease-a "$CXL_REQUEST" request --source local --size 2Gi --wait 120s 2>&1)
 rc=$?
 echo "    $out" | cut -c1-400
-log "lease-a: request returned $rc after $(echo "$EPOCHREALTIME - $t0" | bc) s"
+log "lease-a: request returned $rc"
 J=$(last_json "$out")
 check "lease-a: the numa lease is Ready" test "$(jget "$J" 'j.get("state")' 2>/dev/null)" == Ready
 LEASE_A=$(jget "$J" 'j.get("lease")' 2>/dev/null)
@@ -82,15 +81,17 @@ echo "$out" | sed 's/^/    plain: /'
 check "plain: set_mempolicy(MPOL_PREFERRED, $N) is refused (exit $rc)" test "$rc" == 1
 
 log "lease-a releases its lease while it holds memory on node $N"
-t0=$EPOCHREALTIME
 out=$(pexec lease-a "$CXL_REQUEST" release --lease "$LEASE_A" --wait 120s 2>&1)
 echo "    $out" | cut -c1-300
-log "release returned after $(echo "$EPOCHREALTIME - $t0" | bc) s"
 ma=$(mems_allowed lease-a)
 check "lease-a: node $N is not in Mems_allowed any more ($ma)" eval "! in_list $N $ma"
 check_fenced "$N" lease-b
+# numa-touch.py prints a "pages" line for every SIGUSR1
+reports() { pexec lease-a grep -c pages /tmp/hold.log; }
+before=$(reports)
 pexec lease-a pkill -USR1 -f numa-touch.py
-sleep 1
+reported() { [ "$(reports)" -gt "$before" ]; }
+check "lease-a: numa-touch.py reports its pages" wait_for 30 "the pages report of lease-a" reported
 out=$(pexec lease-a cat /tmp/hold.log)
 echo "    lease-a: $(grep pages <<< "$out" | tail -n 1)"
 check "lease-a: its pages moved off node $N" test "$(pages_on "$out" "$N")" == 0
