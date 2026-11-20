@@ -110,10 +110,7 @@
 # (/tmp/fake-cxl-pool/llm0.raw and llm0.lsa, host RAM) are removed at the
 # end, also after a failure.
 #
-# Configuration (environment variables):
-#   llm_threads=N      threads of each reader, default 2
-#   llm_expect=TEXT    the expected answer, default
-#                      "Hello! How can I assist you today?"
+# Configuration (environment variable):
 #   llm_model=PATH     a local copy of the model instead of the download
 #                      into $CACHE_DIR/llm
 #
@@ -130,8 +127,9 @@ fi
 echo "### preconditions: one cluster, VM2 control plane, VM1 and VM0 workers (test00-up)"
 pool-cluster-require
 
-LLM_THREADS="${llm_threads:-2}"
-LLM_EXPECT="${llm_expect:-Hello! How can I assist you today?}"
+LLM_THREADS=2   # of each reader
+# The answer of the pinned model, which answers greedily.
+LLM_EXPECT="Hello! How can I assist you today?"
 
 VM1="$POOL_VM1_DIR"    # worker, the node of the writer
 VM2="$OUTPUT_DIR"      # control plane, the VM of this test
@@ -348,7 +346,8 @@ $(llm-server-pod-yaml "$r" "$vm" claim "$r" "$(llm-reader-script "$LLM_HEX" "$LL
 cache-cmp() {
     # Usage: cache-cmp VALUE -lt|-ge LIMIT
     #
-    # Return 0 if VALUE is less than (-lt) or at least (-ge) LIMIT.
+    # Return 0 if VALUE is less than (-lt) or at least (-ge) LIMIT: the
+    # operator of cache-assert as a word.
     case "$2" in
         -lt) (( $1 < $3 ));;
         -ge) (( $1 >= $3 ));;
@@ -570,7 +569,7 @@ cached-serve-check() {
     res=$(llm-fincore "$vm" "$DRA_POOL_MOUNT_DIR/$LLM_MOUNT_ID-cached/$LLM_MODEL_FILE") ||
         error "$r: fincore of the model in the cached node mount of $label failed"
     echo "$r: page cache of $label holds $res bytes of the model (fincore), the model $LLM_MODEL_SIZE"
-    cache-cmp "$res" -ge "$LLM_NINETY_PCT" ||
+    [ "$res" -ge "$LLM_NINETY_PCT" ] ||
         error "$r: only $res bytes of the model are in the page cache of $label, less than 90% ($LLM_NINETY_PCT)"
     llm-serve-sampled "$vm" "$r" "$path/$LLM_MODEL_FILE" "${READER_LOOP[$r]}" "$LLM_SERVE_TOKENS"
     tokens=$(llm-answer-value 'j["tokens_predicted"]')
@@ -584,7 +583,7 @@ print("%d samples while it served: %s" % (len(json.loads(sys.argv[1])), "; ".joi
     python3 -c 'import json, sys; [print(json.dumps(s)) for s in json.loads(sys.argv[1])]' "$LLM_SAMPLES" | while read -r sample; do
         llm-where-check "$sample" "$LLM_MAPPED_MIN" "$CHAIN_RAM" present >/dev/null || exit 1
     done || error "$r: a sample while it served has no present page, or frames outside System RAM: $LLM_SAMPLES"
-    cache-cmp "$LLM_LOOP_READ" -lt "$LLM_MIB" ||
+    [ "$LLM_LOOP_READ" -lt "$LLM_MIB" ] ||
         error "$r: ${READER_LOOP[$r]} read $LLM_LOOP_READ bytes from CXL while it served, not less than 1 MiB"
     weights=$(( tokens * LLM_MODEL_SIZE ))
     echo "$r on $label: $tokens tokens, ~$(( weights / 1000000000 )).$(( weights / 100000000 % 10 )) GB of weights read, $LLM_LOOP_READ bytes from CXL (${READER_LOOP[$r]})"
@@ -864,20 +863,20 @@ for r in "${CACHED[@]}"; do
         # cache of the node, once, and is charged for it: the charge of
         # its pod is the measure, the growth of the page cache of the node
         # an upper bound only.
-        cache-cmp "$POD_FILE" -ge "$LLM_NINETY_PCT" ||
+        [ "$POD_FILE" -ge "$LLM_NINETY_PCT" ] ||
             error "$r: the page cache charged to its pod is $POD_FILE bytes, less than 90% of the model ($LLM_NINETY_PCT): the first cached reader of the node did not read the model into the page cache"
         # One copy: no second one in the page cache of the pmem block
         # device under the loop device (direct I/O).
-        cache-cmp "$CACHE_DELTA" -lt "$LLM_ONE_HALF" ||
+        [ "$CACHE_DELTA" -lt "$LLM_ONE_HALF" ] ||
             error "$r: the page cache of $(vmdir-label "$vm") grew by $CACHE_DELTA bytes, not less than 150% of the model ($LLM_ONE_HALF): the model is cached twice"
         echo "page cache ok: $r: pod $POD_FILE -ge $LLM_NINETY_PCT, node +$CACHE_DELTA -lt $LLM_ONE_HALF"
         # It pulled the model from CXL: the loop device is the only path.
-        cache-cmp "$LOOP_READ" -ge "$LLM_NINETY_PCT" ||
+        [ "$LOOP_READ" -ge "$LLM_NINETY_PCT" ] ||
             error "$r: ${READER_LOOP[$r]} read $LOOP_READ bytes from CXL, less than 90% of the model ($LLM_NINETY_PCT)"
     else
         # The others of the node share that copy and read nothing from CXL.
         cache-assert "$r" -lt "$LLM_FIVE_PCT" -lt "$LLM_HALF" "a second copy of the model in the page cache of the node"
-        cache-cmp "$LOOP_READ" -lt "$LLM_FIVE_PCT" ||
+        [ "$LOOP_READ" -lt "$LLM_FIVE_PCT" ] ||
             error "$r: ${READER_LOOP[$r]} read $LOOP_READ bytes from CXL, not less than 5% of the model ($LLM_FIVE_PCT)"
     fi
 done

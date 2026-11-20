@@ -243,15 +243,6 @@ write-image() {
     fs0-free
 }
 
-lease-json() {
-    # Usage: lease-json TEXT
-    #
-    # Print the last JSON object of TEXT (cxl-request output, also after a
-    # "cxl-request: " prefix on stderr).
-    # shellcheck disable=SC2001 # sed strips the prefix of every line
-    dra-last-json "$(sed 's/^cxl-request: //' <<< "$1")"
-}
-
 lease-bind-assert() {
     # Usage: lease-bind-assert VMDIR CLAIM-UID NAME ro|rw
     #
@@ -298,7 +289,7 @@ lease-release() {
     # unless it is Released within 60 s and its companion objects are gone.
     dra-exec "$VM2" "$1/main" "$DRA_REQUEST_CTR_BIN" release --lease "$2" --wait 60s ||
         command-error "$1: cxl-request release --lease $2 failed"
-    dra-assert "$(lease-json "$COMMAND_OUTPUT")" "j.get('lease') == '$2' and j.get('state') == 'Released'"
+    dra-assert "$(dra-last-json "$COMMAND_OUTPUT")" "j.get('lease') == '$2' and j.get('state') == 'Released'"
     dra-wait "$VM2" "lease-$2-gone" "pods,resourceclaims -n $DRA_NS" "'cxl-lease-$2' not in names()" 90
 }
 
@@ -646,14 +637,14 @@ lease-pod-start lease-b "$VM1"
 dra-exec "$VM2" lease-b/main "$DRA_REQUEST_CTR_BIN" request --serial "$FS_SERIAL" --shared --mode fs --read-write --wait 30s &&
     error "lease-b: a read-write lease on VM1 got Ready while rw-g writes on VM2"
 [ "$COMMAND_STATUS" == 3 ] || error "lease-b: cxl-request request exited $COMMAND_STATUS, expected 3 (not Ready in time)"
-LEASE_B_JSON=$(lease-json "$COMMAND_OUTPUT
+LEASE_B_JSON=$(dra-last-json "$COMMAND_OUTPUT
 $DRA_EXEC_STDERR") || error "lease-b: no response of cxl-request request"
 dra-assert "$LEASE_B_JSON" "j.get('state') == 'Failed' and 'timeout: not Ready after' in (j.get('error') or '')"
 LEASE_B=$(dra-value "$LEASE_B_JSON" "j['lease']")
 dra-wait "$VM2" "lease-$LEASE_B-gone" "pods,resourceclaims -n $DRA_NS" "'cxl-lease-$LEASE_B' not in names()" 90
 dra-exec "$VM2" lease-b/main "$DRA_REQUEST_CTR_BIN" request --serial "$FS_SERIAL" --shared --mode fs --read-write --wait 0s ||
     command-error "lease-b: cxl-request request --wait 0s failed"
-LEASE_B_JSON=$(lease-json "$COMMAND_OUTPUT") || error "lease-b: no response of cxl-request request"
+LEASE_B_JSON=$(dra-last-json "$COMMAND_OUTPUT") || error "lease-b: no response of cxl-request request"
 dra-assert "$LEASE_B_JSON" "j.get('state') in ('Creating', 'Pending', 'Lending') and j.get('lease')"
 LEASE_B=$(dra-value "$LEASE_B_JSON" "j['lease']")
 dra-wait "$VM2" lease-b-companion "resourceclaims -n $DRA_NS" "'cxl-lease-$LEASE_B' in names()" 60

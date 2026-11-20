@@ -2105,13 +2105,16 @@ dra-last-json() {
     # Usage: dra-last-json TEXT
     #
     # Print the last line of TEXT that is a JSON object, for instance the
-    # response of "cxl-request request --size 512Mi" among other output.
-    # Return 1 if there is none.
+    # response of "cxl-request request --size 512Mi" among other output,
+    # also after the "cxl-request: " prefix of its lines on stderr. Return 1
+    # if there is none.
     python3 -c '
 import json, sys
 last = None
 for line in sys.stdin.read().splitlines():
     line = line.strip()
+    if line.startswith("cxl-request: "):
+        line = line[len("cxl-request: "):]
     if not line.startswith("{"):
         continue
     try:
