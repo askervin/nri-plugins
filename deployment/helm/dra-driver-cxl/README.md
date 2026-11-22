@@ -125,3 +125,7 @@ deviceClassConfig:
   cxl-pool:
     container: {steering: {policy: auto}}
 ```
+
+Steering is unsafe for threaded programs: read
+[steering](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#steering)
+before you turn it on for a class.

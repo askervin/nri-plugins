@@ -16,6 +16,19 @@
 // by injecting a set_mempolicy system call into every thread of the
 // process with ptrace. The processes must be ptraceable by the
 // caller. Injection is implemented for linux/amd64 only.
+//
+// The injection is unsafe for threaded programs. It writes a syscall
+// and an int3 instruction at the instruction pointer of each stopped
+// thread, runs them and writes the code back. A task that shares the
+// memory of the process and runs meanwhile can execute the written
+// code and die of SIGTRAP: a thread that the injector could not stop,
+// a thread that appeared after its last listing, or a child made with
+// vfork. The int3 resets a SIGTRAP handler or ignore of the target to
+// the default. A signal that arrives while a thread is stopped can be
+// lost. A 32-bit process gets SIGILL or another system call. The
+// nodemask is written below the stack pointer of each thread and stays
+// there; on a stack that a runtime allocates, such as a goroutine
+// stack, that can be other memory of the process.
 package mpolinject
 
 import (

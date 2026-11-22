@@ -3,7 +3,8 @@
 # DeviceClass cxl-dram and 64Mi of cxl-region, and a MemoryConfig with
 # container.steering.policy first-dram (auto would interleave DRAM and
 # CXL). Without container.steering the container is not steered. It
-# prints its CXL_* environment and its cpuset.mems.
+# prints its CXL_* environment and its cpuset.mems. Steering is unsafe
+# for threaded programs: see Steering in docs/memory/cxl/usage.md.
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:

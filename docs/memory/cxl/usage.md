@@ -585,6 +585,22 @@ the next step. Workloads that place their memory themselves, such as HPC
 applications and databases, are better left unsteered. A steered
 container cannot take a `numa` lease ([leases.md](leases.md#limitations)).
 
+Steering can crash or disturb the programs that it steers. The NRI
+plugin sets the memory policy of a running process by injecting a
+`set_mempolicy` system call into each of its threads with ptrace. For a
+moment the injection writes that system call and a breakpoint
+instruction into the code of the process. A task that shares the memory
+of the process and runs meanwhile can execute that code and kill the
+process with SIGTRAP: a thread that the plugin could not stop, a thread
+that appeared during the injection, or a child made with `vfork`. The
+injection can also reset a SIGTRAP handler of the process to the
+default, lose a signal that arrives meanwhile, kill a 32-bit process,
+and leave the nodemask in the memory below the stack pointer of each
+thread. Threaded programs may misbehave. Use steering for experiments,
+or with programs that are simple enough: few threads, no `vfork`, no
+tracer, no use of SIGTRAP. Steering is off unless a claim, a DeviceClass
+or the node defaults opt in.
+
 A restart of the driver does not restart the steering of running
 containers, nor steers those created while it was down: they are
 managed like containers that are not steered, and keep their memory

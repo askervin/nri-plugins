@@ -18,7 +18,8 @@ process runs on every node and has four parts:
   attaches them to the node of the claim ([pool.md](pool.md)).
 - an NRI plugin (`dra-driver-cxl`, index 30): it keeps containers off the
   CXL memory they did not claim, steers the memory of the containers that
-  opt in, and lends memory to running containers.
+  opt in (unsafe for threaded programs, [Steering](usage.md#steering)),
+  and lends memory to running containers.
 - the lease broker: running containers ask it for memory with
   `cxl-request` ([leases.md](leases.md)).
 
