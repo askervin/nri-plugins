@@ -100,9 +100,9 @@ container: cxl-request release --lease L
   to the container over the socket (SCM_RIGHTS). The container needs no
   device node and no device cgroup rule. `cxl-request request --exec CMD`
   runs CMD with the fd as fd 3. A read-only fd allows mappings for
-  reading only: a writable mapping fails with EACCES, a store raises
-  SIGSEGV, and reopening the fd through `/proc/self/fd` is refused by the
-  device cgroup.
+  reading only. A writable mapping fails with EACCES, and a store raises
+  SIGSEGV. The device cgroup refuses to open the fd again through
+  `/proc/self/fd`.
 - `block`: the fd model of `dax` applied to the block device `/dev/pmemK`
   of a persistent device. Without `--share` the lease has the whole
   device and may write it (the writer of an image); `--share --read-only`
@@ -376,12 +376,16 @@ of the chart admits only such objects of the driver
 ([usage.md](usage.md#rbac-and-admission-policies)).
 
 A claim with the label `cxl.nri.io/lease` is a companion claim. Before
-it touches a device, the driver checks that the lease is being created
-(or Lending or Ready, for a Prepare again after a restart), that the
-name, namespace and owner of the claim are those of the lease, and, at
-the first Prepare, that its spec is the one that the driver created. A
-claim that carries the label and fails a check fails its Prepare with
-`claim <ns>/<name>: not the companion of lease <id>`. So a user who may
+it touches a device, the driver checks the claim against its lease:
+
+- the lease is being created, or is Lending or Ready for a Prepare again
+  after a restart;
+- the name, namespace and owner of the claim are those of the lease;
+- at the first Prepare, the spec of the claim is the one that the driver
+  created.
+
+A claim that carries the label and fails a check fails its Prepare with
+`claim <ns>/<name>: not the companion of lease <id>`. A user who may
 create claims can make a claim with the label only in their own
 namespace, and cannot make it the companion of a lease that they did not
 request.

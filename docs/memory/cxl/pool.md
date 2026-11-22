@@ -96,9 +96,9 @@ holds the settings of the pool controller
 In mode `numa` the memory blocks of the device are onlined movable as a
 new NUMA node. A container that opts in is steered to it like to local
 CXL memory, with the device size as its quota
-([usage.md](usage.md#steering)); any other container that uses the
-device gets the NUMA node in its `cpuset.mems`, and the containers
-without the claim do not ([usage.md](usage.md#containers-without-claims)).
+([usage.md](usage.md#steering)). Any other container that uses the
+device gets the NUMA node in its `cpuset.mems`. The containers without
+the claim do not get it ([usage.md](usage.md#containers-without-claims)).
 In mode `dax` the memory is never onlined: two kernels that use the same
 bytes as RAM would corrupt each other. Applications `mmap` the dax
 device (`MAP_SHARED`, aligned to 2 MiB) and agree on the layout of the
@@ -119,9 +119,9 @@ complete; [usage.md](usage.md#example-claims) lists them all.
 The writer claims the shared device without a capacity request, so it
 has the device alone, and writes. The readers claim one share each with
 `device: {readOnly: true}`. A reader that asks while the writer has the
-device waits, its pod or lease pending, until the writer's claim is
-deallocated: the writer's pod has finished or is deleted, or its lease
-is released.
+device waits, and its pod or lease stays pending. It waits until the
+writer's claim is deallocated: the writer's pod has finished or is
+deleted, or its lease is released.
 [pool-shared-writer-readers.yaml](blob:/deployment/samples/dra-driver-cxl/pool-shared-writer-readers.yaml)
 has a writer and its readers.
 
@@ -393,8 +393,8 @@ The node cannot see other hosts; the controller can:
   or when `config.NeedsSingleHost(res, coherent)` is true for its
   resolved `MemoryConfig` and the `coherent` attribute of its device. A
   device that is not shared is attached to one host anyway. An
-  attachment of a device to a host serves every claim of the host, and
-  it is single-host when any of them wants it so: then no other host
+  attachment of a device to a host serves every claim of the host. It
+  is single-host when any of them wants it so: then no other host
   gets the device, also not from another cluster that shares the pool,
   until no claim of the host wants it any more.
 - Write `singleHost: true` into the status data of every result that
@@ -482,10 +482,10 @@ config:
           fake-cxl-pool: {numaNode: 1}
 ```
 
-The settings place a new attachment only: an attachment that exists
-already (a shared device attached for another claim on the node, or one
-found after a restart) stays in its slot, because the device may be in
-use; the `Attached` message names the slot.
+The settings place a new attachment only. An attachment that exists
+already stays in its slot, because the device may be in use: a shared
+device attached for another claim of the node, or one found after a
+restart. The `Attached` message names the slot.
 
 ### What the driver does
 
@@ -495,19 +495,19 @@ ResourceSlices. `--pool=false` (Helm value `pool.enabled`) disables it;
 `--pool-prepare-timeout` (`pool.prepareTimeout`) is how long a Prepare
 waits for the memdev to appear.
 
-At Prepare it reads the claim status entry (a missing entry or data
-fails, and kubelet retries), resolves the `MemoryConfig` of the result,
-waits for a memdev with the serial, and creates a region on it in the
-mode of the claim. The CDI device of the result has the variables of
+At Prepare it reads the claim status entry; a missing entry or data
+fails the Prepare, and kubelet retries. Then it resolves the
+`MemoryConfig` of the result, waits for a memdev with the serial, and
+creates a region on it in the mode of the claim. The CDI device of the result has the variables of
 [usage.md](usage.md#environment-variables). A claim that wants a device
 in another mode than another claim on the node prepared it fails. When
 one device of a claim fails, the devices prepared for it are released
 again.
 
-At Unprepare, when no other prepared claim on the node uses the device,
-it offlines the memory (mode `numa`), waits until nothing holds the
-block device of a persistent device, destroys the region and disables
-the memdev, so that the pool can hot-remove it. A device that is gone
+The Unprepare of the last claim of a device on the node releases the
+device, so that the pool can hot-remove it. It offlines the memory (mode
+`numa`), waits until nothing holds the block device of a persistent
+device, destroys the region and disables the memdev. A device that is gone
 already is not an error. [design.md](design.md#a-pool-device) has the
 steps, and [design.md](design.md#how-a-restart-recovers) what a restart
 and a reboot do with them.
