@@ -389,7 +389,7 @@ func TestSteeringStartFails(t *testing.T) {
 	}
 	e.proc(101, "kubepods/u1/c1", "0-3", "")
 	e.startCtr(pod, c1)
-	if c := e.record("c1"); c.Management != ManagementNone || len(e.managers()) != 0 || len(e.steered()) != 0 {
+	if c := e.record("c1"); c.Management != ManagementUnfenced || len(e.managers()) != 0 || len(e.steered()) != 0 {
 		t.Fatalf("record %+v, managers %v", c, e.managers())
 	}
 	noErr(t, e.p.LendNUMANode(context.Background(), "u1", "app", 3, "l1"))
@@ -444,7 +444,7 @@ func TestSteeringEnded(t *testing.T) {
 		updates    []string
 	}{
 		{"", ManagementFenced, []string{"c1 mems=0-2"}},
-		{config.FencingNone, ManagementNone, nil},
+		{config.FencingNone, ManagementUnfenced, nil},
 	} {
 		t.Run(string(tc.management), func(t *testing.T) {
 			e := newEnvWith(t, envOptions{fencing: tc.fencing})
@@ -482,7 +482,7 @@ func TestSteeringEnded(t *testing.T) {
 				t.Errorf("memory.high %s", got)
 			}
 			e.expectUpdates(tc.updates...)
-			if got := e.cgroupMems("kubepods/u1/c1"); tc.management == ManagementNone && got != "" {
+			if got := e.cgroupMems("kubepods/u1/c1"); tc.management == ManagementUnfenced && got != "" {
 				t.Errorf("cpuset.mems %q with fencing none, expected the empty one of before the steering", got)
 			}
 			want := "NRI: ctr=ns/pod-u1/app id=c1: memory steering ended: memory policy refused: pid 101: " +

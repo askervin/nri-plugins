@@ -175,7 +175,7 @@ func (p *Plugin) decide(ctrName string, results []result, plan bool) (*decision,
 	if err != nil {
 		return nil, fmt.Errorf("container %s: %w", ctrName, err)
 	}
-	d := &decision{management: ManagementNone, eff: eff, claimed: claimedNodes(results), mem: steeredMemory(results)}
+	d := &decision{management: ManagementUnfenced, eff: eff, claimed: claimedNodes(results), mem: steeredMemory(results)}
 	if policy, ok := steeringPolicy(eff.Container.Steering, d.mem); ok {
 		d.management, d.policy = ManagementSteered, policy
 		if plan {
@@ -201,7 +201,7 @@ func unsteered(eff *config.Effective) Management {
 	if eff.Container.Fencing == config.FencingAllowedMems {
 		return ManagementFenced
 	}
-	return ManagementNone
+	return ManagementUnfenced
 }
 
 // defaultManagement returns the management of the memory of a container
@@ -209,7 +209,7 @@ func unsteered(eff *config.Effective) Management {
 func (p *Plugin) defaultManagement() Management {
 	eff, err := config.Combine(nil, p.opts.Defaults)
 	if err != nil {
-		return ManagementNone
+		return ManagementUnfenced
 	}
 	return unsteered(eff)
 }
@@ -240,7 +240,7 @@ func (m Management) text() string {
 		return "steered"
 	case ManagementFenced:
 		return "fenced"
-	case ManagementNone:
+	case ManagementUnfenced:
 		return "none"
 	}
 	return string(m)

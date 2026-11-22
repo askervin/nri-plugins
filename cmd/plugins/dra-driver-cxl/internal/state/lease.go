@@ -83,10 +83,10 @@ type LeaseAsked struct {
 	// no source was requested.
 	DeviceSource Source `json:"deviceSource,omitempty"`
 	// Mode is the effective mode.
-	Mode   Mode `json:"mode"`
-	Shared bool `json:"shared,omitempty"`
-	// SharedDevice: the ResourceSlice has the device as a shared one.
-	SharedDevice bool `json:"sharedDevice,omitempty"`
+	Mode  Mode `json:"mode"`
+	Share bool `json:"shared,omitempty"`
+	// Shared: the ResourceSlice has the device as a shared one.
+	Shared bool `json:"sharedDevice,omitempty"`
 	// ReadOnly of dax and block: the fd is read-only.
 	ReadOnly bool `json:"readOnly,omitempty"`
 	// ReadWrite of fs: the opt-in to mount read-write.
@@ -112,9 +112,9 @@ func (a *LeaseAsked) AsksSerial() bool {
 type LeaseGot struct {
 	Source Source `json:"source,omitempty"`
 	Serial Serial `json:"serial,omitzero"`
-	// SharedDevice: the prepared device is a shared device.
-	SharedDevice bool   `json:"sharedDevice,omitempty"`
-	Size         uint64 `json:"bytes,omitempty"`
+	// Shared: the prepared device is a shared device.
+	Shared bool   `json:"sharedDevice,omitempty"`
+	Size   uint64 `json:"bytes,omitempty"`
 	// Dax and Block are the host paths of the device of a dax or block
 	// lease.
 	Dax    string `json:"dax,omitempty"`

@@ -62,7 +62,7 @@ func (b *Broker) requestLease(claimUID string, who Requester, req *api.Request, 
 	}
 	a := &l.Asked
 	klog.Infof("lease broker: lease %s: %s/%s/%s requests size %q serial %q (source %q, mode %s, shared %v, shared device %v, read-only %v, access %q, name %q)",
-		l.ID, l.Pod.Namespace, l.Pod.Name, l.Container, a.Size, askedSerial(a), a.Source, a.Mode, a.Shared, a.SharedDevice, a.ReadOnly, a.Access, a.Name)
+		l.ID, l.Pod.Namespace, l.Pod.Name, l.Container, a.Size, askedSerial(a), a.Source, a.Mode, a.Share, a.Shared, a.ReadOnly, a.Access, a.Name)
 
 	if err := b.createCompanion(l); err != nil {
 		klog.Errorf("lease broker: lease %s: %v", l.ID, err)
@@ -132,7 +132,7 @@ func creating(r *state.Records, l *state.Lease, req *api.Request, limits Limits,
 			n++
 		}
 	}
-	if n >= limits.LeasesPerPod {
+	if n >= limits.MaxPerPod {
 		return fmt.Errorf("pod %s/%s has %d leases, the limit of --lease-max-per-pod", l.Pod.Namespace, l.Pod.Name, n)
 	}
 	if n := len(r.Leases); n >= limits.LeasesPerNode {
@@ -166,8 +166,8 @@ func (b *Broker) requestOptions(a *state.LeaseAsked, req *api.Request) error {
 	if b.opts.PoolDriver == "" && req.Source == api.SourcePool {
 		return errPoolDisabled
 	}
-	a.Source, a.Shared, a.ReadOnly, a.Mode = state.Source(req.Source), req.Share, req.ReadOnly, state.Mode(req.EffectiveMode())
-	a.SharedDevice = req.Share
+	a.Source, a.Share, a.ReadOnly, a.Mode = state.Source(req.Source), req.Share, req.ReadOnly, state.Mode(req.EffectiveMode())
+	a.Shared = req.Share
 	if a.Mode == state.ModeFS {
 		// read-only unless readWrite; access "": by the type of the
 		// filesystem, decided by the driver of the device
@@ -214,7 +214,7 @@ func (b *Broker) serialOptions(a *state.LeaseAsked, req *api.Request) error {
 	case req.Mode == api.ModeNUMA:
 		return errors.New("shared memory is never onlined as RAM: use mode dax")
 	}
-	a.SharedDevice = true
+	a.Shared = true
 	if !dev.persistent {
 		a.Mode = state.ModeDax
 	}
@@ -227,7 +227,7 @@ func (b *Broker) serialOptions(a *state.LeaseAsked, req *api.Request) error {
 // source; text is the serial of the device.
 func (b *Broker) deviceRefusal(dev *publishedDevice, a *state.LeaseAsked, req *api.Request, text string) error {
 	switch {
-	case !dev.shares && a.Shared:
+	case !dev.shares && a.Share:
 		return fmt.Errorf("memdev %s: not shareable", text)
 	case !dev.shared && !dev.persistent:
 	case req.Source == api.SourceLocal && dev.driver != device.DriverName:

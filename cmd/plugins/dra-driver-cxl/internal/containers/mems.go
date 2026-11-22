@@ -36,7 +36,7 @@ import (
 // keeps the cpuset.mems that the runtime gave it. If that is empty (the
 // usual case) the container has the memory nodes of its parent, every node
 // with memory, also those whose memory goes online later, and a lend or a
-// revoke only records the holders of the node: an update with an empty
+// revoke only records the leases of the node: an update with an empty
 // cpuset.mems changes nothing, so the container would not inherit any
 // more, and a revoke would take a node that still has memory off it. A
 // container with a cpuset.mems of its own (set by the runtime, such as by
@@ -89,10 +89,10 @@ func wantMems(c *Container, fenced cpuset.CPUSet, changed int, lent cpuset.CPUSe
 		}
 		base := own.Difference(fenced).Difference(without)
 		return base.Union(c.Claimed, lent), base, true, nil
-	case c.Management == ManagementNone && curMems(c) != "":
+	case c.Management == ManagementUnfenced && curMems(c) != "":
 		base := c.Base.Difference(without).Union(c.OwnClaimed)
 		return base.Union(lent), base, true, nil
-	case c.Management == ManagementNone:
+	case c.Management == ManagementUnfenced:
 		return cpuset.New(), c.Base.Difference(without), false, nil
 	}
 	return cpuset.New(), c.Base, false, nil

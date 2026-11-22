@@ -136,9 +136,9 @@ func serialOf(l *state.Lease) string {
 // sharedDevice tells whether the device of a lease is a shared device.
 func sharedDevice(l *state.Lease) bool {
 	if l.Got != nil {
-		return l.Got.SharedDevice
+		return l.Got.Shared
 	}
-	return l.Asked.SharedDevice
+	return l.Asked.Shared
 }
 
 // accessOf and fsTypeOf return the access and the filesystem type of an fs
@@ -183,7 +183,7 @@ func memory(l *state.Lease) (api.Memory, bool) {
 		path = g.Block
 	}
 	// a persistent device: its attribute shared, whatever the share
-	shared := l.Asked.Shared || sharedDevice(l)
+	shared := l.Asked.Share || sharedDevice(l)
 	if api.PersistentMode(string(l.Asked.Mode)) {
 		shared = sharedDevice(l)
 	}
@@ -209,7 +209,7 @@ func memory(l *state.Lease) (api.Memory, bool) {
 func leaseInfo(l *state.Lease) *api.Response {
 	g := got(l)
 	r := &api.Response{Lease: l.ID, State: stateName(l.State), Source: string(sourceOf(l)), Mode: string(l.Asked.Mode),
-		Share: l.Asked.Shared, ReadOnly: readOnly(l), Access: string(accessOf(l)), FSType: fsTypeOf(l), Path: g.Path,
+		Share: l.Asked.Share, ReadOnly: readOnly(l), Access: string(accessOf(l)), FSType: fsTypeOf(l), Path: g.Path,
 		Serial: serialOf(l), Dax: g.Dax, Block: g.Block, Error: l.Error, Size: g.Size}
 	if n := numaNodeOf(l); n >= 0 {
 		r.NUMANode = &n

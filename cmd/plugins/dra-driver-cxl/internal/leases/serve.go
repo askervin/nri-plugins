@@ -99,7 +99,7 @@ func (b *Broker) serveConn(claimUID string, c *net.UnixConn) {
 		return
 	}
 	defer b.removeConn(claimUID, c)
-	proc, procErr := openPeer(c)
+	proc, procErr := openProcess(c)
 	defer proc.close()
 	who, authErr := b.authenticate(claimUID, proc, procErr)
 	if authErr != nil {
@@ -109,7 +109,7 @@ func (b *Broker) serveConn(claimUID string, c *net.UnixConn) {
 	r := bufio.NewReaderSize(c, 4096)
 	for first := true; ; first = false {
 		// a connection without a request for Limits.Idle is closed
-		if err := c.SetReadDeadline(time.Now().Add(b.opts.Limits.Idle)); err != nil {
+		if err := c.SetReadDeadline(time.Now().Add(b.opts.Limits.IdleTimeout)); err != nil {
 			return
 		}
 		line, err := readLine(r)
@@ -146,7 +146,7 @@ func (b *Broker) addConn(claimUID string, c *net.UnixConn) bool {
 	if b.listeners[claimUID] == nil {
 		return false
 	}
-	if n := len(b.conns[claimUID]); n >= b.opts.Limits.Connections {
+	if n := len(b.conns[claimUID]); n >= b.opts.Limits.MaxConnections {
 		b.warnLocked(claimUID, "refusing a connection", fmt.Errorf("%d are open, the limit of --lease-max-connections", n))
 		return false
 	}
@@ -318,7 +318,7 @@ func (b *Broker) waitIdentity() {
 // authenticate maps the peer to a container of a pod of the lease claim,
 // after the identity of the peers is known (waitIdentity); procErr is the
 // error of reading the peer's credentials.
-func (b *Broker) authenticate(claimUID string, proc *peer, procErr error) (Requester, error) {
+func (b *Broker) authenticate(claimUID string, proc *connProcess, procErr error) (Requester, error) {
 	b.waitIdentity()
 	b.mu.Lock()
 	identity := b.identity
@@ -336,8 +336,8 @@ func (b *Broker) authenticate(claimUID string, proc *peer, procErr error) (Reque
 	pid := proc.pid
 	who, err := identity.Resolve(pid)
 	switch {
-	case errors.Is(err, ErrUnknownPeer):
-		return Requester{}, &peerGoneError{fmt.Errorf("%w (pid %d is in no known container)", errNotOurPod, pid)}
+	case errors.Is(err, ErrUnknownProcess):
+		return Requester{}, &processGoneError{fmt.Errorf("%w (pid %d is in no known container)", errNotOurPod, pid)}
 	case err != nil:
 		return Requester{}, fmt.Errorf("%w (pid %d: %v)", errNotOurPod, pid, err)
 	}
@@ -374,7 +374,7 @@ func (b *Broker) allowRequest(claimUID string) bool {
 // that of its peer now while the process that connected runs, else the
 // identity of the connection (connected, connectedErr). A peer in no known
 // container keeps an identity that the connection had.
-func (b *Broker) reauthenticate(claimUID string, proc *peer, connected Requester, connectedErr error) (Requester, error) {
+func (b *Broker) reauthenticate(claimUID string, proc *connProcess, connected Requester, connectedErr error) (Requester, error) {
 	if proc == nil || !proc.running() {
 		return connected, connectedErr
 	}
@@ -383,18 +383,18 @@ func (b *Broker) reauthenticate(claimUID string, proc *peer, connected Requester
 	if !proc.running() {
 		return connected, connectedErr
 	}
-	if pe := (*peerGoneError)(nil); connectedErr == nil && errors.As(err, &pe) {
+	if pe := (*processGoneError)(nil); connectedErr == nil && errors.As(err, &pe) {
 		return connected, nil
 	}
 	return who, err
 }
 
-// peerGoneError is the refusal of a peer whose process is in no known
+// processGoneError is the refusal of a peer whose process is in no known
 // container: it has exited, or it is not in a container of the node.
-type peerGoneError struct{ err error }
+type processGoneError struct{ err error }
 
-func (e *peerGoneError) Error() string { return e.err.Error() }
-func (e *peerGoneError) Unwrap() error { return e.err }
+func (e *processGoneError) Error() string { return e.err.Error() }
+func (e *processGoneError) Unwrap() error { return e.err }
 
 // refreshClaimPods reads the reservedFor of a lease claim again (a claim
 // shared by several pods is prepared only once), commits it, and reports

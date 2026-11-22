@@ -57,7 +57,7 @@ func TestParseFlagsDefaults(t *testing.T) {
 		LeaseCLI:            "/usr/local/bin/cxl-request",
 		LeaseWait:           120 * time.Second,
 		LeaseCompanionImage: "registry.k8s.io/pause:3.10",
-		LeaseLimits:         leases.Limits{Connections: 64, Idle: 10 * time.Minute, LeasesPerPod: 16, LeasesPerNode: 32, RequestsPerMinute: 32},
+		LeaseLimits:         leases.Limits{MaxConnections: 64, IdleTimeout: 10 * time.Minute, MaxPerPod: 16, LeasesPerNode: 32, RequestsPerMinute: 32},
 	}
 	if !reflect.DeepEqual(f, want) {
 		t.Fatalf("flags\n%+v, expected\n%+v", f, want)

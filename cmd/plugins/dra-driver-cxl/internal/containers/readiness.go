@@ -45,13 +45,13 @@ type ConnState string
 
 // The states of the NRI connection.
 const (
-	// ConnNone: Start has not returned.
-	ConnNone ConnState = "NONE"
+	// ConnNew: Start has not returned.
+	ConnNew ConnState = "NONE"
 	// ConnStarted: the stub started.
 	ConnStarted ConnState = "STARTED"
-	// ConnAbsent: the stub could not be made or started: no container is
+	// ConnFailed: the stub could not be made or started: no container is
 	// fenced, lends fail.
-	ConnAbsent ConnState = "ABSENT"
+	ConnFailed ConnState = "ABSENT"
 	// ConnClosed: the runtime closed the connection before Start returned.
 	ConnClosed ConnState = "CLOSED"
 	// ConnStopping: the driver stops, a close is no loss.
@@ -112,20 +112,20 @@ var ReadinessTable = fsm.Table[Readiness]{
 var ConnTable = fsm.Table[ConnState]{
 	Object: "Plugin",
 	Field:  "Conn",
-	States: fsm.List(ConnNone, ConnStarted, ConnAbsent, ConnClosed, ConnStopping, ConnStopped, ConnLost),
+	States: fsm.List(ConnNew, ConnStarted, ConnFailed, ConnClosed, ConnStopping, ConnStopped, ConnLost),
 	Rows: []fsm.Transition[ConnState]{
 		{
-			From: fsm.List(ConnNone), To: ConnStarted, Triggers: fsm.List(TriggerNRIStart),
+			From: fsm.List(ConnNew), To: ConnStarted, Triggers: fsm.List(TriggerNRIStart),
 			When:    "Start of the stub succeeded",
 			Effects: "the plugin gets the container events",
 		},
 		{
-			From: fsm.List(ConnNone, ConnClosed), To: ConnAbsent, Triggers: fsm.List(TriggerNRIStart),
+			From: fsm.List(ConnNew, ConnClosed), To: ConnFailed, Triggers: fsm.List(TriggerNRIStart),
 			When:    "the stub could not be made or started",
 			Effects: "Fence records a node only (warned), lends fail with \"lending unavailable: NRI not connected\"",
 		},
 		{
-			From: fsm.List(ConnNone), To: ConnClosed, Triggers: fsm.List(TriggerNRIClose),
+			From: fsm.List(ConnNew), To: ConnClosed, Triggers: fsm.List(TriggerNRIClose),
 			When: "the runtime closed the connection before Start returned",
 		},
 		{
@@ -138,7 +138,7 @@ var ConnTable = fsm.Table[ConnState]{
 			When: "the connection is closed after it started, after the context of Start ended",
 		},
 		{
-			From: fsm.List(ConnNone, ConnStarted, ConnAbsent, ConnClosed), To: ConnStopping, Triggers: fsm.List(TriggerStopping),
+			From: fsm.List(ConnNew, ConnStarted, ConnFailed, ConnClosed), To: ConnStopping, Triggers: fsm.List(TriggerStopping),
 			When:    "the driver stops",
 			Effects: "a close of the connection from now on is no loss",
 		},
@@ -147,7 +147,7 @@ var ConnTable = fsm.Table[ConnState]{
 			When: "the connection closed while stopping",
 		},
 		{
-			From: fsm.List(ConnStopping, ConnStopped, ConnAbsent, ConnLost), Stays: true,
+			From: fsm.List(ConnStopping, ConnStopped, ConnFailed, ConnLost), Stays: true,
 			Triggers: fsm.List(TriggerNRIStart, TriggerNRIClose, TriggerStopping),
 			When:     "a Start, close or stop of a connection that is stopping, gone or absent",
 		},

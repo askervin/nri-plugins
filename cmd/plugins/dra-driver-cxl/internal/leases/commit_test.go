@@ -329,7 +329,7 @@ func TestFailedCommitUnrestored(t *testing.T) {
 // lease is left unreleased on a lease claim that its Unprepare closed.
 func TestConcurrentRequestsCheckedInTheirCommit(t *testing.T) {
 	e := brokerEnv(t)
-	e.opts = func(o *Options) { o.Limits = Limits{LeasesPerPod: 3} }
+	e.opts = func(o *Options) { o.Limits = Limits{MaxPerPod: 3} }
 	e.restart()
 	e.openClaim()
 	e.start()
@@ -358,7 +358,7 @@ func TestConcurrentRequestsCheckedInTheirCommit(t *testing.T) {
 		t.Fatalf("leases %v (of request id %v), %d stored", ids, same, e.numLeases())
 	}
 
-	e.opts = func(o *Options) { o.Limits = Limits{LeasesPerPod: 100} }
+	e.opts = func(o *Options) { o.Limits = Limits{MaxPerPod: 100} }
 	e.restart()
 	e.start()
 	chans = nil

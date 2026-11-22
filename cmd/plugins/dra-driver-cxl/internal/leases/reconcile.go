@@ -119,7 +119,7 @@ func (b *Broker) reconcile() {
 		}
 	}
 	if err == nil {
-		b.deleteOrphans(pods)
+		b.deleteUnowned(pods)
 	}
 	b.sweepFsDirs(state.TriggerReconcile)
 	b.listenAgain()
@@ -276,11 +276,11 @@ func (b *Broker) relendContainer(podUID, container string) {
 	}
 }
 
-// deleteOrphans deletes the companion pods (of pods) and claims of this
+// deleteUnowned deletes the companion pods (of pods) and claims of this
 // node that have no lease: the objects with the node and lease labels
 // whose name is cxl-lease-<lease label>. A lost store does not know the
 // leases of the node, so nothing is deleted then.
-func (b *Broker) deleteOrphans(pods map[types.NamespacedName]*corev1.Pod) {
+func (b *Broker) deleteUnowned(pods map[types.NamespacedName]*corev1.Pod) {
 	if b.st.Lost() != nil {
 		klog.V(3).Infof("lease broker: the lease table was not decoded, keeping the companions of the node")
 		return
@@ -289,7 +289,7 @@ func (b *Broker) deleteOrphans(pods map[types.NamespacedName]*corev1.Pod) {
 	defer cancel()
 	sel := companionSelector(b.opts.NodeName)
 	// orphan tells whether an object is a companion without a lease.
-	orphan := func(o metav1.ObjectMeta) bool {
+	unowned := func(o metav1.ObjectMeta) bool {
 		id := o.Labels[device.LeaseLabel]
 		if o.Name != CompanionName(id) || o.DeletionTimestamp != nil {
 			return false
@@ -297,7 +297,7 @@ func (b *Broker) deleteOrphans(pods map[types.NamespacedName]*corev1.Pod) {
 		return b.records().Lease(id) == nil
 	}
 	for _, p := range pods {
-		if orphan(p.ObjectMeta) {
+		if unowned(p.ObjectMeta) {
 			klog.Infof("lease broker: deleting companion pod %s/%s without a lease", p.Namespace, p.Name)
 			if err := b.opts.Client.CoreV1().Pods(p.Namespace).Delete(ctx, p.Name, metav1.DeleteOptions{Preconditions: metav1.NewUIDPreconditions(string(p.UID))}); err != nil && !apierrors.IsNotFound(err) {
 				klog.Warningf("lease broker: %v", err)
@@ -308,7 +308,7 @@ func (b *Broker) deleteOrphans(pods map[types.NamespacedName]*corev1.Pod) {
 		klog.Warningf("lease broker: listing companion claims: %v", err)
 	} else {
 		for _, c := range claims.Items {
-			if orphan(c.ObjectMeta) {
+			if unowned(c.ObjectMeta) {
 				klog.Infof("lease broker: deleting companion claim %s/%s without a lease", c.Namespace, c.Name)
 				if err := b.opts.Client.ResourceV1().ResourceClaims(c.Namespace).Delete(ctx, c.Name, metav1.DeleteOptions{Preconditions: metav1.NewUIDPreconditions(string(c.UID))}); err != nil && !apierrors.IsNotFound(err) {
 					klog.Warningf("lease broker: %v", err)

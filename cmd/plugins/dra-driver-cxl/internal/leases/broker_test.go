@@ -1670,7 +1670,7 @@ func TestRequestWaitsForStart(t *testing.T) {
 // pod once. The lists come from the reconcile.
 func TestNodeLimitAndPriority(t *testing.T) {
 	e := brokerEnv(t)
-	e.opts = func(o *Options) { o.Limits = Limits{LeasesPerPod: 3, LeasesPerNode: 2} }
+	e.opts = func(o *Options) { o.Limits = Limits{MaxPerPod: 3, LeasesPerNode: 2} }
 	e.restart()
 	ctx := context.Background()
 	p := requesterPod()
@@ -1711,7 +1711,9 @@ func TestNodeLimitAndPriority(t *testing.T) {
 // idle limit, a request beyond the leases of a pod refused.
 func TestLimits(t *testing.T) {
 	e := brokerEnv(t)
-	e.opts = func(o *Options) { o.Limits = Limits{Connections: 1, Idle: 300 * time.Millisecond, LeasesPerPod: 1} }
+	e.opts = func(o *Options) {
+		o.Limits = Limits{MaxConnections: 1, IdleTimeout: 300 * time.Millisecond, MaxPerPod: 1}
+	}
 	e.restart()
 	e.openClaim()
 	e.start()
@@ -1770,7 +1772,7 @@ func TestLimits(t *testing.T) {
 func TestRefusalWarnings(t *testing.T) {
 	const reason = "refusing a connection"
 	e := brokerEnv(t)
-	e.opts = func(o *Options) { o.Limits = Limits{Connections: 1} }
+	e.opts = func(o *Options) { o.Limits = Limits{MaxConnections: 1} }
 	e.restart()
 	e.openClaim()
 	e.start()
@@ -1871,15 +1873,15 @@ func TestGotOfPrepared(t *testing.T) {
 	}{
 		"numa": {state.LeaseAsked{Mode: state.ModeNUMA}, preparedDev(serialPoolX, 1<<28, api.ModeNUMA, 2),
 			state.LeaseGot{Source: state.SourcePool, Serial: serialPoolX, Size: 1 << 28}, &state.LeaseLend{NUMANode: state.NUMANodePtr(2)}},
-		"numa shared lease": {state.LeaseAsked{Mode: state.ModeNUMA, SharedDevice: true}, preparedDev(serialPoolX, 1<<28, api.ModeNUMA, -1),
-			state.LeaseGot{Source: state.SourcePool, Serial: serialPoolX, SharedDevice: true, Size: 1 << 28}, nil},
+		"numa shared lease": {state.LeaseAsked{Mode: state.ModeNUMA, Shared: true}, preparedDev(serialPoolX, 1<<28, api.ModeNUMA, -1),
+			state.LeaseGot{Source: state.SourcePool, Serial: serialPoolX, Shared: true, Size: 1 << 28}, nil},
 		"dax": {state.LeaseAsked{Mode: state.ModeDax}, shared(withDev(preparedDev(serialPoolS, 1<<28, api.ModeDax, -1), func(d *state.DeviceInfo) { d.DaxDevice = "/dev/dax0.0" })),
-			state.LeaseGot{Source: state.SourcePool, Serial: serialPoolS, SharedDevice: true, Size: 1 << 28, Dax: "/dev/dax0.0"}, nil},
-		"block": {state.LeaseAsked{Mode: state.ModeBlock, SharedDevice: true}, withDev(preparedDev(serialPoolP, pmemBytes, api.ModeBlock, -1), func(d *state.DeviceInfo) { d.BlockDevice = "/dev/pmem0" }),
+			state.LeaseGot{Source: state.SourcePool, Serial: serialPoolS, Shared: true, Size: 1 << 28, Dax: "/dev/dax0.0"}, nil},
+		"block": {state.LeaseAsked{Mode: state.ModeBlock, Shared: true}, withDev(preparedDev(serialPoolP, pmemBytes, api.ModeBlock, -1), func(d *state.DeviceInfo) { d.BlockDevice = "/dev/pmem0" }),
 			state.LeaseGot{Source: state.SourcePool, Serial: serialPoolP, Size: pmemBytes, Block: "/dev/pmem0"}, nil},
 		"fs": {state.LeaseAsked{Mode: state.ModeFS, Name: "data"}, shared(withDev(preparedDev(serialPoolP, pmemBytes, api.ModeFS, -1), func(d *state.DeviceInfo) {
 			d.Access, d.FSType, d.BlockDevice = api.AccessDirect, "ext4", "/dev/pmem0"
-		})), state.LeaseGot{Source: state.SourcePool, Serial: serialPoolP, SharedDevice: true, Size: pmemBytes, Access: state.Access(api.AccessDirect),
+		})), state.LeaseGot{Source: state.SourcePool, Serial: serialPoolP, Shared: true, Size: pmemBytes, Access: state.Access(api.AccessDirect),
 			FSType: "ext4", Path: api.FSDir + "/data"}, nil},
 	} {
 		got, lend := gotOf(&state.Records{}, &state.Lease{Asked: tc.asked}, state.SourcePool, &tc.dev, "/lease-fs")

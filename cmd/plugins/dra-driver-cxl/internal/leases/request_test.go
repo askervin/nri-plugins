@@ -285,7 +285,7 @@ type askedText struct {
 func (a askedText) asked() state.LeaseAsked {
 	serial, _ := api.ParseSerial(a.Serial)
 	return state.LeaseAsked{Source: state.Source(a.Source), DeviceSource: state.Source(a.DeviceSource), Mode: state.Mode(a.Mode),
-		Shared: a.Shared, SharedDevice: a.SharedDevice, ReadOnly: a.ReadOnly, ReadWrite: a.ReadWrite, Access: state.Access(a.Access),
+		Share: a.Shared, Shared: a.SharedDevice, ReadOnly: a.ReadOnly, ReadWrite: a.ReadWrite, Access: state.Access(a.Access),
 		FSType: a.FsType, Name: a.Name, Size: a.Size, Serial: state.Serial(serial), SerialZero: a.Serial != "" && serial == 0}
 }
 
@@ -679,9 +679,9 @@ func TestCompanionClaims(t *testing.T) {
 	// pool memory without the pool driver
 	e.b.opts.PoolDriver = ""
 	for _, a := range []state.LeaseAsked{
-		{Source: state.SourcePool, Shared: true, Mode: state.ModeDax},
-		{Source: state.SourcePool, Shared: true, ReadOnly: true, Mode: state.ModeFS, Access: state.AccessDirect},
-		{Mode: state.ModeBlock, Serial: serialPoolP, SharedDevice: true, DeviceSource: state.SourcePool},
+		{Source: state.SourcePool, Share: true, Mode: state.ModeDax},
+		{Source: state.SourcePool, Share: true, ReadOnly: true, Mode: state.ModeFS, Access: state.AccessDirect},
+		{Mode: state.ModeBlock, Serial: serialPoolP, Shared: true, DeviceSource: state.SourcePool},
 	} {
 		_, _, err := e.b.companionObjects(&state.Lease{ID: "x", Asked: a, Pod: pod})
 		wantErrText(t, err, "pool driver disabled (--pool=false)")

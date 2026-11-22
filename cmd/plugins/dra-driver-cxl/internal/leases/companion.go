@@ -277,7 +277,7 @@ func (b *Broker) companionDevices(l *state.Lease, source state.Source) (*resourc
 		if l.Asked.Size != "" {
 			cel = append(cel, fmt.Sprintf(`device.attributes[%q].%s >= %d`, driver, device.AttrSize, size.Value()))
 		}
-		if l.Asked.Shared {
+		if l.Asked.Share {
 			exact.Capacity = &resourcev1.CapacityRequirements{
 				Requests: map[resourcev1.QualifiedName]resource.Quantity{device.CapacityShares: resource.MustParse("1")},
 			}
@@ -292,7 +292,7 @@ func (b *Broker) companionDevices(l *state.Lease, source state.Source) (*resourc
 // deviceShares tells whether the device of a lease is a shared device:
 // one share of it, or the whole device.
 func deviceShares(l *state.Lease) bool {
-	return l.Asked.Shared || l.Asked.SharedDevice
+	return l.Asked.Share || l.Asked.Shared
 }
 
 // poolClass returns the DeviceClass of the pool device of a lease.
@@ -489,9 +489,9 @@ func gotOf(r *state.Records, l *state.Lease, source state.Source, d *state.Devic
 	g := &state.LeaseGot{Source: source, Serial: d.Serial, Size: d.TotalBytes}
 	if api.PersistentMode(d.Mode) {
 		// the attribute shared of the device, whatever the share
-		g.SharedDevice = d.Shared
+		g.Shared = d.Shared
 	} else {
-		g.SharedDevice = l.Asked.SharedDevice || d.Shared
+		g.Shared = l.Asked.Shared || d.Shared
 	}
 	switch d.Mode {
 	case api.ModeDax:

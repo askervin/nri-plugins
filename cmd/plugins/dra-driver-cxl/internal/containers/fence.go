@@ -99,7 +99,7 @@ func (p *Plugin) fence(node int) {
 	p.mu.Unlock()
 
 	klog.Infof("NRI fence: fencing CXL node %d (fenced nodes %s)", node, nodes)
-	if p.absent() {
+	if p.startFailed() {
 		klog.Warningf("NRI fence: NRI not connected, containers are not fenced from CXL node %d", node)
 		return
 	}
@@ -210,8 +210,8 @@ func (p *Plugin) pass(ctx context.Context, only string) {
 	if !ready {
 		return
 	}
-	p.token.Lock()
-	defer p.token.Unlock()
+	p.updateMu.Lock()
+	defer p.updateMu.Unlock()
 
 	p.mu.Lock()
 	fenced, s := p.fenced, p.stub

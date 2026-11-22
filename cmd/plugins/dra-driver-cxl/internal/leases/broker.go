@@ -143,15 +143,15 @@ type Options struct {
 
 // Limits bound what the containers of a pod can make the broker hold.
 type Limits struct {
-	// Connections is the number of open connections of the socket of a
+	// MaxConnections is the number of open connections of the socket of a
 	// lease claim; 0: DefaultMaxConnections.
-	Connections int
-	// Idle is how long a connection may stay without a request; 0:
+	MaxConnections int
+	// IdleTimeout is how long a connection may stay without a request; 0:
 	// DefaultIdle.
-	Idle time.Duration
-	// LeasesPerPod is the number of leases of a pod; 0:
+	IdleTimeout time.Duration
+	// MaxPerPod is the number of leases of a pod; 0:
 	// DefaultMaxLeasesPerPod.
-	LeasesPerPod int
+	MaxPerPod int
 	// LeasesPerNode is the number of leases of the node; 0:
 	// DefaultMaxLeasesPerNode.
 	LeasesPerNode int
@@ -179,9 +179,9 @@ const (
 
 // withDefaults returns the limits with the defaults for the zero ones.
 func (l Limits) withDefaults() Limits {
-	l.Connections = cmp.Or(l.Connections, DefaultMaxConnections)
-	l.Idle = cmp.Or(l.Idle, DefaultIdle)
-	l.LeasesPerPod = cmp.Or(l.LeasesPerPod, DefaultMaxLeasesPerPod)
+	l.MaxConnections = cmp.Or(l.MaxConnections, DefaultMaxConnections)
+	l.IdleTimeout = cmp.Or(l.IdleTimeout, DefaultIdle)
+	l.MaxPerPod = cmp.Or(l.MaxPerPod, DefaultMaxLeasesPerPod)
 	l.LeasesPerNode = cmp.Or(l.LeasesPerNode, DefaultMaxLeasesPerNode)
 	l.RequestsPerMinute = cmp.Or(l.RequestsPerMinute, DefaultRequestsPerMinute)
 	return l

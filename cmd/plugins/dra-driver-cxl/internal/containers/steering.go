@@ -234,7 +234,7 @@ func (p *Plugin) steeringEnded(c *Container, mgr *steering.Manager, why error) {
 	switch {
 	case repair:
 		p.repair(c.ID)
-	case memory == ManagementNone.text():
+	case memory == ManagementUnfenced.text():
 		mgr.RestoreMems()
 	}
 }

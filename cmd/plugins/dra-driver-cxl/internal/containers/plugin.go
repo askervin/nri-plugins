@@ -100,8 +100,8 @@ type Plugin struct {
 	// hasMemory is the sysfs file of the NUMA nodes with memory.
 	hasMemory string
 
-	fenceMu sync.Mutex
-	token   sync.Mutex
+	fenceMu  sync.Mutex
+	updateMu sync.Mutex
 
 	mu sync.Mutex
 	// stub is the NRI stub, nil while NRI is not connected.
@@ -153,7 +153,7 @@ func New(opts Options) (*Plugin, error) {
 		fenced:    cpuset.New(),
 		synced:    make(chan struct{}),
 		readiness: ReadinessWaiting,
-		conn:      ConnNone,
+		conn:      ConnNew,
 	}
 	return p, nil
 }
@@ -241,7 +241,7 @@ func (p *Plugin) connect(s Stub) {
 	if s == nil {
 		p.connMu.Lock()
 		defer p.connMu.Unlock()
-		p.connTo(ConnAbsent, TriggerNRIStart)
+		p.connTo(ConnFailed, TriggerNRIStart)
 	}
 }
 
@@ -249,18 +249,18 @@ func (p *Plugin) connect(s Stub) {
 // refuses is logged and leaves it as it is. Called with connMu held.
 func (p *Plugin) connTo(to ConnState, trigger Trigger) {
 	if p.conn == "" {
-		p.conn = ConnNone
+		p.conn = ConnNew
 	}
 	if err := fsm.Apply(&ConnTable, &p.conn, to, trigger); err != nil {
 		klog.Warningf("NRI: %v", err)
 	}
 }
 
-// absent tells whether the stub could not be made or started.
-func (p *Plugin) absent() bool {
+// startFailed tells whether the stub could not be made or started.
+func (p *Plugin) startFailed() bool {
 	p.connMu.Lock()
 	defer p.connMu.Unlock()
-	return p.conn == ConnAbsent
+	return p.conn == ConnFailed
 }
 
 // Stop shuts the plugin down: the steering managers stop, then the
@@ -324,7 +324,7 @@ func (p *Plugin) onClose(ctx context.Context) {
 	p.connMu.Lock()
 	defer p.connMu.Unlock()
 	switch p.conn {
-	case "", ConnNone:
+	case "", ConnNew:
 		p.connTo(ConnClosed, TriggerNRIClose)
 	case ConnStarted:
 		p.closedLocked(ctx, TriggerNRIClose)
@@ -342,7 +342,7 @@ func (p *Plugin) connStarted(ctx context.Context) {
 	p.connMu.Lock()
 	defer p.connMu.Unlock()
 	switch p.conn {
-	case "", ConnNone:
+	case "", ConnNew:
 		p.connTo(ConnStarted, TriggerNRIStart)
 	case ConnClosed:
 		p.closedLocked(ctx, TriggerNRIStart)
@@ -468,8 +468,8 @@ func (p *Plugin) Record(id string) (Container, bool) {
 	}
 	out := *c
 	out.Lends = nil
-	for n, holders := range c.Lends {
-		out.Lends = out.Lends.set(n, maps.Clone(holders))
+	for n, leases := range c.Lends {
+		out.Lends = out.Lends.set(n, maps.Clone(leases))
 	}
 	out.manager = nil
 	return out, true

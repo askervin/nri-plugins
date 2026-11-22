@@ -168,7 +168,7 @@ func TestLifecycleOfContainers(t *testing.T) {
 	// revoke
 	i := newEnv(t)
 	c7 := i.run(pod, "c7", "inherits", 107, "0-2")
-	if c := i.record("c7"); c.Lifecycle != LifecycleStarted || c.Management != ManagementNone {
+	if c := i.record("c7"); c.Lifecycle != LifecycleStarted || c.Management != ManagementUnfenced {
 		t.Fatalf("record %+v", c)
 	}
 	noErr(t, i.p.LendNUMANode(ctx, "u1", "inherits", 2, "l1"))

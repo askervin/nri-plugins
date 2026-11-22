@@ -71,9 +71,9 @@ type Identity interface {
 	Resolve(pid int) (Requester, error)
 }
 
-// ErrUnknownPeer is the error of an Identity for a process that is in no
+// ErrUnknownProcess is the error of an Identity for a process that is in no
 // known container.
-var ErrUnknownPeer = errors.New("in no known container")
+var ErrUnknownProcess = errors.New("in no known container")
 
 // tableIdentity is the Identity of the container table of the container
 // plugin.
@@ -85,14 +85,14 @@ type tableIdentity struct {
 func (t tableIdentity) Resolve(pid int) (Requester, error) {
 	pod, name, ok := t.containers.ContainerByPid(pid)
 	if !ok {
-		return Requester{}, ErrUnknownPeer
+		return Requester{}, ErrUnknownProcess
 	}
 	return Requester{Pod: pod, Container: name}, nil
 }
 
-// peer is the process that connected to a lease socket, fixed at connect:
+// connProcess is the process that connected to a lease socket, fixed at connect:
 // a pid alone names whichever process holds it now.
-type peer struct {
+type connProcess struct {
 	pid int
 	// start is the start time of the process at connect, "" when unknown.
 	start string
@@ -121,14 +121,14 @@ var processStartTime = func(pid int) (string, error) {
 	return fields[19], nil
 }
 
-// openPeer returns the process that connected: its pid from SO_PEERCRED,
+// openProcess returns the process that connected: its pid from SO_PEERCRED,
 // its start time and, where the kernel has SO_PEERPIDFD, its pidfd.
-func openPeer(c *net.UnixConn) (*peer, error) {
+func openProcess(c *net.UnixConn) (*connProcess, error) {
 	raw, err := c.SyscallConn()
 	if err != nil {
 		return nil, err
 	}
-	p := &peer{pidfd: -1}
+	p := &connProcess{pidfd: -1}
 	var credErr error
 	if err := raw.Control(func(fd uintptr) {
 		var cred *unix.Ucred
@@ -152,7 +152,7 @@ func openPeer(c *net.UnixConn) (*peer, error) {
 
 // running tells whether the process that connected still runs: a process
 // that exited, or a pid whose start time differs, is gone.
-func (p *peer) running() bool {
+func (p *connProcess) running() bool {
 	if p.pidfd >= 0 && unix.PidfdSendSignal(p.pidfd, 0, nil, 0) != nil {
 		return false
 	}
@@ -161,7 +161,7 @@ func (p *peer) running() bool {
 }
 
 // close releases the pidfd of the process.
-func (p *peer) close() {
+func (p *connProcess) close() {
 	if p != nil && p.pidfd >= 0 {
 		_ = unix.Close(p.pidfd)
 		p.pidfd = -1

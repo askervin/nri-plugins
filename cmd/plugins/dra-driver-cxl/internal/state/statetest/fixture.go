@@ -376,9 +376,9 @@ func Records() state.Records {
 			},
 			{
 				ID: LeaseFs, Claim: ClaimLease, Pod: requester, Container: "main",
-				Asked: state.LeaseAsked{Mode: state.ModeFS, Serial: SerialPoolFs, Name: "mbt", Access: state.AccessCached, SharedDevice: true},
+				Asked: state.LeaseAsked{Mode: state.ModeFS, Serial: SerialPoolFs, Name: "mbt", Access: state.AccessCached, Shared: true},
 				Got: &state.LeaseGot{
-					Source: state.SourcePool, Serial: SerialPoolFs, SharedDevice: true, Size: gi,
+					Source: state.SourcePool, Serial: SerialPoolFs, Shared: true, Size: gi,
 					Access: state.AccessCached, FSType: "erofs", Path: "/run/cxl/fs/mbt",
 				},
 				State: state.LeaseReleasingBusy, ReleaseRequested: true, DeletionRequested: true,

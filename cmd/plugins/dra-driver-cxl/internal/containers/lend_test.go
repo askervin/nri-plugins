@@ -146,18 +146,18 @@ func TestLendMemsArithmetic(t *testing.T) {
 	}
 }
 
-// TestLendTwoHolders lends one node for two leases: the node stays in
+// TestLendTwoLeases lends one node for two leases: the node stays in
 // cpuset.mems until both have revoked it.
-func TestLendTwoHolders(t *testing.T) {
+func TestLendTwoLeases(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
 	e.runPinned(testPod("u1"), "c1", "app", 101, "0-1")
 	steps := []struct {
-		lend   bool
-		holder string
-		want   string // update, "" for none
-		lent   []int
-		mems   string // cpuset.mems of the cgroup after the step, "" unchanged
+		lend  bool
+		lease string
+		want  string // update, "" for none
+		lent  []int
+		mems  string // cpuset.mems of the cgroup after the step, "" unchanged
 	}{
 		{true, "a", "c1 mems=0-2", []int{2}, "0-2"},
 		{true, "b", "", []int{2}, ""},
@@ -165,16 +165,16 @@ func TestLendTwoHolders(t *testing.T) {
 		// b holds the node: no shrink, although cpuset.mems has it
 		{false, "a", "", []int{2}, ""},
 		{false, "a", "", []int{2}, ""}, // idempotent
-		{false, "x", "", []int{2}, ""}, // not a holder
+		{false, "x", "", []int{2}, ""}, // not a lease
 		{false, "b", "c1 mems=0-1", []int{}, "0-1"},
 		{false, "b", "", []int{}, ""}, // idempotent
 	}
 	for i, s := range steps {
 		var err error
 		if s.lend {
-			err = e.p.LendNUMANode(ctx, "u1", "app", 2, s.holder)
+			err = e.p.LendNUMANode(ctx, "u1", "app", 2, s.lease)
 		} else {
-			err = e.p.RevokeNUMANode(ctx, "u1", "app", 2, s.holder)
+			err = e.p.RevokeNUMANode(ctx, "u1", "app", 2, s.lease)
 		}
 		if err != nil {
 			t.Fatalf("step %d: %v", i, err)
@@ -192,13 +192,13 @@ func TestLendTwoHolders(t *testing.T) {
 		}
 	}
 
-	// two nodes, each with its own holders
+	// two nodes, each with its own leases
 	for _, l := range []struct {
-		node   int
-		holder string
-		want   string
+		node  int
+		lease string
+		want  string
 	}{{2, "a", "c1 mems=0-2"}, {3, "a", "c1 mems=0-3"}, {3, "b", ""}} {
-		noErr(t, e.p.LendNUMANode(ctx, "u1", "app", l.node, l.holder))
+		noErr(t, e.p.LendNUMANode(ctx, "u1", "app", l.node, l.lease))
 		if l.want == "" {
 			e.expectUpdates()
 		} else {
@@ -454,10 +454,10 @@ func TestLendNoneInherits(t *testing.T) {
 	// node 2 has memory, a numa slice of another pod
 	e.run(pod, "c1", "main", 101, "0-2")
 	for i, s := range []struct {
-		lend   bool
-		node   int
-		holder string
-		lent   []int
+		lend  bool
+		node  int
+		lease string
+		lent  []int
 	}{
 		{true, 2, "l1", []int{2}},
 		{true, 2, "l1", []int{2}}, // the reconcile of the broker
@@ -469,9 +469,9 @@ func TestLendNoneInherits(t *testing.T) {
 		{false, 3, "l3", []int{}},
 	} {
 		if s.lend {
-			noErr(t, e.p.LendNUMANode(ctx, "u1", "main", s.node, s.holder))
+			noErr(t, e.p.LendNUMANode(ctx, "u1", "main", s.node, s.lease))
 		} else {
-			noErr(t, e.p.RevokeNUMANode(ctx, "u1", "main", s.node, s.holder))
+			noErr(t, e.p.RevokeNUMANode(ctx, "u1", "main", s.node, s.lease))
 		}
 		e.expectUpdates()
 		if got := e.p.LentNodes("u1", "main"); !reflect.DeepEqual(got, s.lent) {
@@ -483,7 +483,7 @@ func TestLendNoneInherits(t *testing.T) {
 	}
 	out := logs()
 	if n := strings.Count(out, "cpuset.mems left empty, it has the nodes of its parent (fencing none"); n != 6 {
-		t.Errorf("%d \"left empty\" lines, expected 6 (one per change of the holders):\n%s", n, out)
+		t.Errorf("%d \"left empty\" lines, expected 6 (one per change of the leases):\n%s", n, out)
 	}
 	if strings.Contains(out, "cpuset.mems=") {
 		t.Errorf("cpuset.mems set:\n%s", out)
@@ -670,7 +670,7 @@ func TestLendNoneSkipNeedsSpec(t *testing.T) {
 // TestLendNoneParentRestricts checks that a lend to an
 // inheriting container whose cpuset.mems.effective lacks the node (a
 // parent cgroup restricts it) is recorded, without an update, and warned
-// about once per new holder.
+// about once per new lease.
 func TestLendNoneParentRestricts(t *testing.T) {
 	e := newEnv(t)
 	logs := klogtest.Capture(t, 3)

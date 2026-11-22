@@ -573,7 +573,7 @@ Container is the plugin's record of a container of a pod on the node: how the pl
 
 **States.** Lifecycle (LifecycleTable): UNSEEN, created while the plugin was not connected and found by Synchronize, its CreateContainer adjustment was never applied; CREATED, its CreateContainer seen, the spec holds cpuset.mems, the cgroup may not exist; TASK_CREATED, StartContainer seen, the runtime made the cgroup from the spec and an update reaches the spec only; STARTED, the runtime marked it started (PostStartContainer, or running at Synchronize): updates reach the cgroup; GONE, stopped or removed, the record leaves the table. Management (ManagementTable), decided once when the record is made: STEERED, a steering manager of this process writes its cpuset.mems and memory.high (or will, with its Plan; or its settings do not combine any more), never fenced and never lent to; FENCED, the plugin owns its cpuset.mems through NRI: wantMems; NONE (fencing none): its cpuset.mems is left as the runtime made it, a lend changes only one that has a cpuset.mems of its own.
 
-**Transitions.** LifecycleTable and ManagementTable below; a transition not in them is refused. A lend or a revoke changes no state; its rules: a lend to a STEERED container is refused (ErrSteered); a lend to a container that has not started (UNSEEN, CREATED) is done when the container was lent the node at its creation (the READY numa leases of its pod and name, seeded), an error otherwise; a revoke of a seeded node drops its holder, and of a FENCED container takes the node off its spec; a lend or a revoke of a started container (TASK_CREATED, STARTED) recomputes wantMems and sends one UpdateContainers outside the table mutex when its cpuset.mems changes.
+**Transitions.** LifecycleTable and ManagementTable below; a transition not in them is refused. A lend or a revoke changes no state; its rules: a lend to a STEERED container is refused (ErrSteered); a lend to a container that has not started (UNSEEN, CREATED) is done when the container was lent the node at its creation (the READY numa leases of its pod and name, seeded), an error otherwise; a revoke of a seeded node drops its lease, and of a FENCED container takes the node off its spec; a lend or a revoke of a started container (TASK_CREATED, STARTED) recomputes wantMems and sends one UpdateContainers outside the table mutex when its cpuset.mems changes.
 
 ### Container.Lifecycle
 
@@ -613,7 +613,7 @@ Refused:
 
 - FENCED, NONE -> STEERED: a container is steered only by a plan of its creation; a re-created container is a new record
 
-**Invariants.** A FENCED container's cpuset.mems is wantMems or an update is pending (I11); Claimed are the NUMA nodes of the CXL numa memory of the results that it uses; a lent node has a holder; Plan only while STEERED and not started; manager only while STEERED.
+**Invariants.** A FENCED container's cpuset.mems is wantMems or an update is pending (I11); Claimed are the NUMA nodes of the CXL numa memory of the results that it uses; a lent node has a lease; Plan only while STEERED and not started; manager only while STEERED.
 
 **Persistence.** None, the table is in memory; Synchronize builds it again after a restart, the leases of the store seed the lends, and a Steered record of the store names a container whose manager was of a previous process.
 

@@ -356,7 +356,7 @@ func (p *Plugin) seedLends(c *Container) cpuset.CPUSet {
 	if !p.opts.Leases || c.PodUID == "" || len(c.Lends) != 0 || c.steered() {
 		return cpuset.New()
 	}
-	var kept Lends
+	var kept lentNUMANodes
 	for node, ids := range state.LeaseLends(&p.opts.Store.Snapshot().Records, c.PodUID, c.Name) {
 		for _, id := range ids {
 			if node >= 0 {

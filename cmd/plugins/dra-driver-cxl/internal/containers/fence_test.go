@@ -125,12 +125,12 @@ func TestFenceWantMems(t *testing.T) {
 		{"fenced, lent", &Container{Management: ManagementFenced, SpecMems: "0-2", Claimed: cpuset.New(4)}, 2, cpuset.New(2), "0-2,4", "0-1"},
 		// fencing none with a cpuset.mems of its own: never below the
 		// claimed nodes that it had before any lend
-		{"pinned", &Container{Management: ManagementNone, SpecMems: "0-2", Base: cpuset.New(0, 1, 2), OwnClaimed: cpuset.New(2)}, 2,
+		{"pinned", &Container{Management: ManagementUnfenced, SpecMems: "0-2", Base: cpuset.New(0, 1, 2), OwnClaimed: cpuset.New(2)}, 2,
 			cpuset.New(3), "0-3", "0-2"},
-		{"pinned, revoke", &Container{Management: ManagementNone, SpecMems: "0-3", Base: cpuset.New(0, 1, 3)}, 3, cpuset.New(),
+		{"pinned, revoke", &Container{Management: ManagementUnfenced, SpecMems: "0-3", Base: cpuset.New(0, 1, 3)}, 3, cpuset.New(),
 			"0-1", "0-1"},
 		// fencing none, inheriting: no value, the base without the node
-		{"inherits", &Container{Management: ManagementNone, Base: cpuset.New(0, 1, 2)}, 2, cpuset.New(2), "-", "0-1"},
+		{"inherits", &Container{Management: ManagementUnfenced, Base: cpuset.New(0, 1, 2)}, 2, cpuset.New(2), "-", "0-1"},
 		{"steered", &Container{Management: ManagementSteered, SpecMems: "0", Base: cpuset.New(0, 2)}, 2, cpuset.New(2), "-", "0,2"},
 	} {
 		want, base, ok, err := wantMems(tc.c, cpuset.New(3), tc.changed, tc.lent, mem)

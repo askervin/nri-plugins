@@ -51,7 +51,7 @@ import (
 // a STEERED container is refused (ErrSteered); a lend to a container that
 // has not started (UNSEEN, CREATED) is done when the container was lent the
 // node at its creation (the READY numa leases of its pod and name, seeded),
-// an error otherwise; a revoke of a seeded node drops its holder, and of a
+// an error otherwise; a revoke of a seeded node drops its lease, and of a
 // FENCED container takes the node off its spec; a lend or a revoke of a
 // started container (TASK_CREATED, STARTED) recomputes wantMems and sends
 // one UpdateContainers outside the table mutex when its cpuset.mems
@@ -59,7 +59,7 @@ import (
 //
 // Invariants: a FENCED container's cpuset.mems is wantMems or an update is
 // pending (I11); Claimed are the NUMA nodes of the CXL numa memory of the
-// results that it uses; a lent node has a holder; Plan only while STEERED
+// results that it uses; a lent node has a lease; Plan only while STEERED
 // and not started; manager only while STEERED.
 //
 // Persistence: none, the table is in memory; Synchronize builds it again
@@ -87,8 +87,8 @@ type Container struct {
 	// Claimed are the NUMA nodes of the CXL numa memory of its results;
 	// OwnClaimed those of them that its cpuset.mems had before any lend.
 	Claimed, OwnClaimed cpuset.CPUSet
-	// Lends are the nodes lent to it with their holders.
-	Lends Lends
+	// Lends are the nodes lent to it with their leases.
+	Lends lentNUMANodes
 	// Plan is the steering plan of a steered container until its start.
 	Plan *steering.Plan
 	// Steering is its effective steering policy with its origin, as the
@@ -126,7 +126,7 @@ const (
 	ManagementUndecided Management = "UNDECIDED"
 	ManagementSteered   Management = "STEERED"
 	ManagementFenced    Management = "FENCED"
-	ManagementNone      Management = "NONE"
+	ManagementUnfenced  Management = "NONE"
 )
 
 // Trigger names the NRI event that causes a transition.
@@ -227,7 +227,7 @@ var LifecycleTable = fsm.Table[Lifecycle]{
 var ManagementTable = fsm.Table[Management]{
 	Object: "Container",
 	Field:  "Management",
-	States: fsm.List(ManagementUndecided, ManagementSteered, ManagementFenced, ManagementNone),
+	States: fsm.List(ManagementUndecided, ManagementSteered, ManagementFenced, ManagementUnfenced),
 	Rows: []fsm.Transition[Management]{
 		{
 			From: fsm.List(ManagementUndecided), To: ManagementSteered, Triggers: fsm.List(TriggerCreate),
@@ -249,7 +249,7 @@ var ManagementTable = fsm.Table[Management]{
 			Effects: "wantMems: its own nodes without the fenced nodes, its claimed and its lent nodes",
 		},
 		{
-			From: fsm.List(ManagementUndecided), To: ManagementNone,
+			From: fsm.List(ManagementUndecided), To: ManagementUnfenced,
 			Triggers: fsm.List(TriggerCreate, TriggerSynchronize, TriggerStart),
 			When:     "not steered (by this process) and fencing none",
 			Effects:  "its cpuset.mems is left as the runtime made it",
@@ -261,7 +261,7 @@ var ManagementTable = fsm.Table[Management]{
 			Effects: "its Steered record removed; fenced by the repair pass at its PostStartContainer",
 		},
 		{
-			From: fsm.List(ManagementSteered), To: ManagementNone, Triggers: fsm.List(TriggerStart),
+			From: fsm.List(ManagementSteered), To: ManagementUnfenced, Triggers: fsm.List(TriggerStart),
 			When:    "its manager does not start and fencing none",
 			Effects: "its Steered record removed",
 		},
@@ -273,14 +273,14 @@ var ManagementTable = fsm.Table[Management]{
 				"by the repair pass of the one container",
 		},
 		{
-			From: fsm.List(ManagementSteered), To: ManagementNone, Triggers: fsm.List(TriggerSteeringEnded),
+			From: fsm.List(ManagementSteered), To: ManagementUnfenced, Triggers: fsm.List(TriggerSteeringEnded),
 			When: "a process of the running container refuses a memory policy of a later step and fencing none",
 			Effects: "its manager set memory.high to max and stopped; its cpuset.mems back as before the " +
 				"steering; its Steered record removed",
 		},
 	},
 	Refused: []fsm.Refusal[Management]{
-		{From: fsm.List(ManagementFenced, ManagementNone), To: fsm.List(ManagementSteered),
+		{From: fsm.List(ManagementFenced, ManagementUnfenced), To: fsm.List(ManagementSteered),
 			Why: "a container is steered only by a plan of its creation; a re-created container is a new record"},
 	},
 }
@@ -294,55 +294,55 @@ func Catalogue() []state.Object {
 	}
 }
 
-// Lends maps the nodes lent to a container to their holders (the lease
+// lentNUMANodes maps the nodes lent to a container to their leases (the lease
 // ids): devices under one CXL host bridge share a NUMA node, so two leases
-// of a container may hold one node, which stays lent until its last holder
+// of a container may hold one node, which stays lent until its last lease
 // revokes it.
-type Lends map[int]map[string]bool
+type lentNUMANodes map[int]map[string]bool
 
-// nodes returns the lent nodes that have a holder.
-func (l Lends) nodes() cpuset.CPUSet {
+// nodes returns the lent nodes that have a lease.
+func (l lentNUMANodes) nodes() cpuset.CPUSet {
 	nodes := make([]int, 0, len(l))
-	for n, holders := range l {
-		if len(holders) > 0 {
+	for n, leases := range l {
+		if len(leases) > 0 {
 			nodes = append(nodes, n)
 		}
 	}
 	return cpuset.New(nodes...)
 }
 
-// with returns the holders of node after holder lends (lend) or revokes
+// with returns the leases of node after lease lends (lend) or revokes
 // (!lend) it.
-func (l Lends) with(node int, holder string, lend bool) map[string]bool {
-	holders := make(map[string]bool, len(l[node])+1)
+func (l lentNUMANodes) with(node int, lease string, lend bool) map[string]bool {
+	leases := make(map[string]bool, len(l[node])+1)
 	for h := range l[node] {
-		holders[h] = true
+		leases[h] = true
 	}
 	if lend {
-		holders[holder] = true
+		leases[lease] = true
 	} else {
-		delete(holders, holder)
+		delete(leases, lease)
 	}
-	return holders
+	return leases
 }
 
-// after returns the lent nodes that have a holder when node has holders.
-func (l Lends) after(node int, holders map[string]bool) cpuset.CPUSet {
-	if len(holders) > 0 {
+// after returns the lent nodes that have a lease when node has leases.
+func (l lentNUMANodes) after(node int, leases map[string]bool) cpuset.CPUSet {
+	if len(leases) > 0 {
 		return l.nodes().Union(cpuset.New(node))
 	}
 	return l.nodes().Difference(cpuset.New(node))
 }
 
-// set returns the lends with the holders of node.
-func (l Lends) set(node int, holders map[string]bool) Lends {
+// set returns the lends with the leases of node.
+func (l lentNUMANodes) set(node int, leases map[string]bool) lentNUMANodes {
 	if l == nil {
-		l = Lends{}
+		l = lentNUMANodes{}
 	}
-	if len(holders) == 0 {
+	if len(leases) == 0 {
 		delete(l, node)
 	} else {
-		l[node] = holders
+		l[node] = leases
 	}
 	return l
 }

@@ -25,7 +25,7 @@ import (
 
 // Lends of NUMA nodes of CXL memory to containers: a lend adds the node to
 // the cpuset.mems of the container, a revoke takes it off when its last
-// holder (lease) revokes it, through NRI UpdateContainers (mems.go). The
+// lease revokes it, through NRI UpdateContainers (mems.go). The
 // lends and revokes must not be called synchronously from an NRI event
 // handler: the runtime serializes the events and the updates.
 
@@ -37,7 +37,7 @@ var ErrSteered = errors.New("container is memory-steered (container.steering.pol
 // the name for the lease: the NUMA node is in its cpuset.mems. Idempotent
 // per NUMA node and lease.
 func (p *Plugin) LendNUMANode(ctx context.Context, podUID, name string, numaNode int, lease string) error {
-	return p.changeLend(ctx, lendChange{podUID: podUID, name: name, numaNode: numaNode, holder: lease, lend: true})
+	return p.changeLend(ctx, lendChange{podUID: podUID, name: name, numaNode: numaNode, lease: lease, lend: true})
 }
 
 // RevokeNUMANode drops the lease of the NUMA node lent to the newest
@@ -45,15 +45,15 @@ func (p *Plugin) LendNUMANode(ctx context.Context, podUID, name string, numaNode
 // (its pages migrate back) when it has no lease left. Idempotent per NUMA
 // node and lease; a container that is gone is not an error.
 func (p *Plugin) RevokeNUMANode(ctx context.Context, podUID, name string, numaNode int, lease string) error {
-	return p.changeLend(ctx, lendChange{podUID: podUID, name: name, numaNode: numaNode, holder: lease})
+	return p.changeLend(ctx, lendChange{podUID: podUID, name: name, numaNode: numaNode, lease: lease})
 }
 
 // lendChange is a lend (lend) or a revoke of a node to a container for a
-// holder.
+// lease.
 type lendChange struct {
 	podUID, name string
 	numaNode     int
-	holder       string
+	lease        string
 	lend         bool
 }
 
@@ -68,10 +68,10 @@ func (l *lendChange) op() string {
 // lendPlan is what a lend change makes of the cpuset.mems of a container.
 type lendPlan struct {
 	c *Container
-	// holders are the holders of the node after the change, lent the
+	// leases are the leases of the node after the change, lent the
 	// lent nodes.
-	holders map[string]bool
-	lent    cpuset.CPUSet
+	leases map[string]bool
+	lent   cpuset.CPUSet
 	// base are its own nodes after the change, mems its cpuset.mems.
 	base cpuset.CPUSet
 	mems string
@@ -93,8 +93,8 @@ func (p *Plugin) changeLend(ctx context.Context, l lendChange) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	p.token.Lock()
-	defer p.token.Unlock()
+	p.updateMu.Lock()
+	defer p.updateMu.Unlock()
 
 	p.mu.Lock()
 	plan, err := p.planLend(l)
@@ -104,7 +104,7 @@ func (p *Plugin) changeLend(ctx context.Context, l lendChange) error {
 	}
 	c := plan.c
 	if !plan.needed {
-		changed := c.Lends[l.numaNode][l.holder] != l.lend
+		changed := c.Lends[l.numaNode][l.lease] != l.lend
 		p.recordLend(plan, l, false)
 		p.mu.Unlock()
 		plan.logUnchanged(l, changed)
@@ -118,7 +118,7 @@ func (p *Plugin) changeLend(ctx context.Context, l lendChange) error {
 	s := p.stub
 	p.mu.Unlock()
 
-	klog.V(3).Infof("NRI lend: %s node %d for %s: ctr=%s id=%s cpuset.mems=%s (base=%s lent=%s)", l.op(), l.numaNode, l.holder,
+	klog.V(3).Infof("NRI lend: %s node %d for %s: ctr=%s id=%s cpuset.mems=%s (base=%s lent=%s)", l.op(), l.numaNode, l.lease,
 		c.name(), c.ID, plan.mems, plan.base, plan.lent)
 	if err := applyMems(s, map[string]string{c.ID: plan.mems}, []string{c.ID})[c.ID]; err != nil {
 		return fmt.Errorf("%s node %d: ctr=%s: %w", l.op(), l.numaNode, c.name(), err)
@@ -152,8 +152,8 @@ func (p *Plugin) planLend(l lendChange) (*lendPlan, error) {
 			return nil, err
 		}
 	}
-	holders := c.Lends.with(l.numaNode, l.holder, l.lend)
-	plan := &lendPlan{c: c, holders: holders, lent: c.Lends.after(l.numaNode, holders)}
+	leases := c.Lends.with(l.numaNode, l.lease, l.lend)
+	plan := &lendPlan{c: c, leases: leases, lent: c.Lends.after(l.numaNode, leases)}
 	want, base, ok, err := wantMems(c, p.fenced, l.numaNode, plan.lent, p.memNodes())
 	if err != nil {
 		return nil, fmt.Errorf("%s node %d: ctr=%s: base memory nodes unknown: %w", l.op(), l.numaNode, c.name(), err)
@@ -164,7 +164,7 @@ func (p *Plugin) planLend(l lendChange) (*lendPlan, error) {
 		// sent when it differs from its cpuset.mems
 		plan.mems = want.String()
 		_, plan.needed = memsDiffer(c, want, "NRI lend")
-	case c.Management == ManagementNone && !ok:
+	case c.Management == ManagementUnfenced && !ok:
 		plan.inherits, plan.ownBase = true, true
 		if l.lend {
 			// unless a parent cgroup restricts its nodes
@@ -186,10 +186,10 @@ func (p *Plugin) planLend(l lendChange) (*lendPlan, error) {
 // them is done, a revoke drops it, but from the spec of a fenced container
 // by an update.
 func lendNotStarted(c *Container, l lendChange) (bool, error) {
-	seeded := c.Lends[l.numaNode][l.holder]
+	seeded := c.Lends[l.numaNode][l.lease]
 	switch {
 	case l.lend && seeded:
-		klog.V(4).Infof("NRI lend: lend node %d for %s: ctr=%s: lent at its creation, not started yet", l.numaNode, l.holder, c.name())
+		klog.V(4).Infof("NRI lend: lend node %d for %s: ctr=%s: lent at its creation, not started yet", l.numaNode, l.lease, c.name())
 		return true, nil
 	case l.lend:
 		return true, fmt.Errorf("lend node %d to %s: container not started yet", l.numaNode, c.name())
@@ -197,8 +197,8 @@ func lendNotStarted(c *Container, l lendChange) (bool, error) {
 		return true, nil
 	case c.Management != ManagementFenced:
 		// its spec has the nodes of the runtime: lent by updates only
-		c.Lends = c.Lends.set(l.numaNode, c.Lends.with(l.numaNode, l.holder, false))
-		klog.V(3).Infof("NRI lend: revoke node %d for %s: ctr=%s: not started yet", l.numaNode, l.holder, c.name())
+		c.Lends = c.Lends.set(l.numaNode, c.Lends.with(l.numaNode, l.lease, false))
+		klog.V(3).Infof("NRI lend: revoke node %d for %s: ctr=%s: not started yet", l.numaNode, l.lease, c.name())
 		return true, nil
 	}
 	return false, nil
@@ -214,7 +214,7 @@ func pinnedNeeded(plan *lendPlan, l lendChange, want cpuset.CPUSet) bool {
 	c, base := plan.c, plan.base
 	needed := !sameSet(plan.lent, c.Lends.nodes()) || !sameSet(base, c.Base.Union(c.OwnClaimed))
 	switch {
-	case !l.lend && !needed && len(plan.holders) == 0:
+	case !l.lend && !needed && len(plan.leases) == 0:
 		// Not lent as far as we know, but a lend from before a plugin
 		// restart that is not re-applied still shows in cpuset.mems.
 		needed = !base.Contains(l.numaNode) && cgroupMemsContain(c.CgroupDir, l.numaNode)
@@ -234,12 +234,12 @@ func pinnedNeeded(plan *lendPlan, l lendChange, want cpuset.CPUSet) bool {
 	return needed && (base.IsEmpty() || !sameMems(want, curMems(c)) || !sameMems(want, c.SpecMems))
 }
 
-// recordLend records the holders of the node of a lend change, its base
+// recordLend records the leases of the node of a lend change, its base
 // when it is recorded without an update, and with an update (updated) its
 // base and cpuset.mems. Called with mu held.
 func (p *Plugin) recordLend(plan *lendPlan, l lendChange, updated bool) {
 	c := plan.c
-	c.Lends = c.Lends.set(l.numaNode, plan.holders)
+	c.Lends = c.Lends.set(l.numaNode, plan.leases)
 	if updated || plan.ownBase {
 		c.Base = plan.base
 	}
@@ -249,18 +249,18 @@ func (p *Plugin) recordLend(plan *lendPlan, l lendChange, updated bool) {
 }
 
 // logUnchanged logs a lend change that sends no update.
-//   - changed: the change added or dropped the holder
+//   - changed: the change added or dropped the lease
 func (plan *lendPlan) logUnchanged(l lendChange, changed bool) {
 	c := plan.c
 	if plan.inherits && changed {
 		klog.V(3).Infof("NRI lend: %s node %d for %s: ctr=%s id=%s: cpuset.mems left empty, it has the nodes of its parent (fencing none, lent=%s)",
-			l.op(), l.numaNode, l.holder, c.name(), c.ID, plan.lent)
+			l.op(), l.numaNode, l.lease, c.name(), c.ID, plan.lent)
 		if !plan.unusable.IsEmpty() {
 			klog.Warningf("NRI lend: lend node %d for %s: ctr=%s id=%s: its cpuset.mems.effective lacks the lent nodes %s (a parent cgroup restricts it, or they have no memory): it cannot use them",
-				l.numaNode, l.holder, c.name(), c.ID, plan.unusable)
+				l.numaNode, l.lease, c.name(), c.ID, plan.unusable)
 		}
 		return
 	}
-	klog.V(4).Infof("NRI lend: %s node %d for %s: ctr=%s: cpuset.mems unchanged (base=%s lent=%s, node holders %d)",
-		l.op(), l.numaNode, l.holder, c.name(), plan.base, plan.lent, len(plan.holders))
+	klog.V(4).Infof("NRI lend: %s node %d for %s: ctr=%s: cpuset.mems unchanged (base=%s lent=%s, node leases %d)",
+		l.op(), l.numaNode, l.lease, c.name(), plan.base, plan.lent, len(plan.leases))
 }
