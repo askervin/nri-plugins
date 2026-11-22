@@ -345,7 +345,7 @@ func TestPlanValidate(t *testing.T) {
 		},
 		{
 			name: "negative node",
-			plan: Plan{Waypoints: []NodeMem{NodeMem{-1: 1}}, MinStep: 1, MaxStep: 1},
+			plan: Plan{Waypoints: []NodeMem{{-1: 1}}, MinStep: 1, MaxStep: 1},
 			err:  "invalid NUMA node",
 		},
 	}
