@@ -135,7 +135,6 @@ mbt-controller-start() {
     # (dra-controller-run). Wait until it is active, 10 s at most. Return
     # non-zero if it does not start, for instance because it runs already.
     local unit="$1"
-    dra-controller-units-only mbt-controller-start || return 2
     vmdir-command "$OUTPUT_DIR" "systemctl reset-failed $unit 2>/dev/null; systemctl is-active $unit" &&
         { echo "mbt-controller-start: $unit is active already" >&2; return 1; }
     dra-controller-run "$unit" || return 1
@@ -150,7 +149,6 @@ mbt-controller-stop() {
     # stop: SIGTERM, the controller deletes the ResourceSlices of its pool
     # before it exits) and remove the unit (reset-failed). Return non-zero
     # if it is still active.
-    dra-controller-units-only mbt-controller-stop || return 2
     vmdir-command "$OUTPUT_DIR" "systemctl stop $1; systemctl reset-failed $1 2>/dev/null; ! systemctl -q is-active $1"
 }
 
@@ -161,7 +159,6 @@ mbt-controller-kill() {
     # its ResourceSlices behind and, with Restart=no, its unit stays failed
     # until mbt-controller-start. Wait until it is not active any more, 5 s
     # at most. Return non-zero if it was not active or is still active.
-    dra-controller-units-only mbt-controller-kill || return 2
     vmdir-command "$OUTPUT_DIR" "systemctl -q is-active $1 || { echo '$1 is not active'; exit 1; }
 systemctl kill --signal=SIGKILL $1 || exit 1
 for i in \$(seq 50); do systemctl -q is-active $1 || break; sleep 0.1; done

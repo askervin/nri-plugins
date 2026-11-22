@@ -160,11 +160,6 @@ if [ "$DEMO_CASE" == llm-share ]; then
         error "DEMO_LLM_LATENCY_LOAD=$DEMO_LLM_LATENCY_LOAD needs DEMO_LLM_LATENCY=far (the local setup starts no load)"
     [[ "$DEMO_LLM_REPEAT" =~ ^[1-9][0-9]*$ ]] || error "DEMO_LLM_REPEAT is $DEMO_LLM_REPEAT: a number of repetitions"
 fi
-# Everything but the pool server runs in pods: dra-build builds the image
-# of the controller, dra-install deploys it.
-# shellcheck disable=SC2034 # dra.source.sh reads it
-DRA_CONTROLLER_MODE=pod
-
 wizard-format() {
     # Usage: wizard-format NAME SERIAL CLASS DRIVER
     #
@@ -470,6 +465,9 @@ else
 fi
 pool-client-install "${DEMO_VMS[@]}"
 dra-build
+# Everything but the pool server runs in pods: the controller too
+# (controller.source.sh), from its image.
+demo-controller-image-build
 
 if [ "$DEMO_CASE" == local ]; then
     # The serial of VM2's local device, before the driver runs, for its

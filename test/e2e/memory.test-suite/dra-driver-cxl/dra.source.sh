@@ -4,8 +4,8 @@
 # VM of the test as a DaemonSet that helm installs from
 # deployment/helm/dra-driver-cxl, fake-cxl-pool-controller (the pool
 # controller of fake-cxl-pool, see scripts/testing/fake-cxl-pool) runs in
-# the VM of the test as a transient systemd unit, one per pool server (or
-# as a Deployment in the cluster: DRA_CONTROLLER_MODE=pod),
+# the VM of the test as a transient systemd unit, one per pool server
+# (dra-controller-start; a test may start them otherwise),
 # fake-cxl-pool-server runs on the host (pool.source.sh), once per pool.
 #
 # The driver comes from its image, built like the images of the other
@@ -102,23 +102,9 @@ DRA_CONTROLLER_UNIT=fake-cxl-pool-controller
 DRA_CONTROLLER_UNITS_GLOB="$DRA_CONTROLLER_UNIT*"
 DRA_CONTROLLER_UNITS=()
 declare -A DRA_CONTROLLER_URLS=()  # dra-install: unit -> the URL of its pool server, seen from the VMs
-# How dra-install runs the pool controllers: "systemd" (the default), the
-# transient systemd units above, or "pod": Deployments of the same names in
-# namespace $DRA_CONTROLLER_NS, made from the manifest
-# $DRA_CONTROLLER_MANIFEST (its Deployment has the pool server URL
-# $DRA_CONTROLLER_MANIFEST_URL), with the image that dra-build builds
-# ($DRA_CONTROLLER_IMAGE_TAR, "make image" of fake-cxl-pool, its content
-# tag in $DRA_CONTROLLER_IMAGE_REF) imported into every node as
-# $DRA_CONTROLLER_IMAGE. The pods of all of them have the label
-# $DRA_CONTROLLER_POD_LABEL.
-DRA_CONTROLLER_MODE="${DRA_CONTROLLER_MODE:-systemd}"
-DRA_CONTROLLER_MANIFEST="$nri_resource_policy_src/scripts/testing/fake-cxl-pool/deploy/fake-cxl-pool-controller.yaml"
-DRA_CONTROLLER_MANIFEST_URL=http://192.168.76.2:9909
+# The namespace of pool controllers that run as Deployments (the demo's
+# setup, test98-demo-setup): dra-install removes them too.
 DRA_CONTROLLER_NS=fake-cxl-pool
-DRA_CONTROLLER_IMAGE=localhost/fake-cxl-pool-controller:testing
-DRA_CONTROLLER_IMAGE_TAR="$nri_resource_policy_src/scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-controller-image.tar"
-DRA_CONTROLLER_IMAGE_REF="$nri_resource_policy_src/scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-controller-image.ref"
-DRA_CONTROLLER_POD_LABEL=app.kubernetes.io/name=fake-cxl-pool-controller
 DRA_POOL_DRIVER=cxl-pool.nri.io    # pool devices, published by the controller
 # The node mounts of the file systems of persistent pool devices (mode fs),
 # one per device and access: <serial hex without 0x>-<direct|cached>.
@@ -371,20 +357,13 @@ dra-build() {
     # Usage: dra-build
     #
     # Build fake-cxl-pool (server, client and controller) on the host, static
-    # amd64 binaries, and with DRA_CONTROLLER_MODE=pod the image of the
-    # controller ($DRA_CONTROLLER_IMAGE_TAR). dra-install copies the
-    # controller or its image to the VMs. The driver is not built here: it
+    # amd64 binaries. dra-install copies the controller to the VM of the
+    # test. The driver is not built here: it
     # comes from its image, see the top of this file.
     host-command "make -C \"$nri_resource_policy_src/scripts/testing/fake-cxl-pool\"" ||
         command-error "cannot build fake-cxl-pool"
     [ -x "$DRA_CONTROLLER_BIN" ] ||
         error "dra-build: make did not build $DRA_CONTROLLER_BIN"
-    if [ "$DRA_CONTROLLER_MODE" == pod ]; then
-        host-command "make -C \"$nri_resource_policy_src/scripts/testing/fake-cxl-pool\" image" ||
-            command-error "cannot build the image of fake-cxl-pool-controller (docker)"
-        [ -f "$DRA_CONTROLLER_IMAGE_TAR" ] && [ -s "$DRA_CONTROLLER_IMAGE_REF" ] ||
-            error "dra-build: make image did not save $DRA_CONTROLLER_IMAGE_TAR and $DRA_CONTROLLER_IMAGE_REF"
-    fi
 }
 
 dra-image-put() {
@@ -418,27 +397,6 @@ dra-image-put() {
     fi || command-error "cannot import $file as $DRA_TEST_IMAGE in $label"
 }
 
-dra-image-tar-put() {
-    # Usage: dra-image-tar-put VMDIR TAR TAG REF
-    #
-    # Import the image TAG of the docker save tarball TAR into the
-    # containerd of the VM of VMDIR and tag it REF, unless REF is TAG there
-    # already (the same digest), the way dra-image-put imports the driver.
-    local vmdir="$1" tar="$2" tag="$3" ref="$4" label file
-    label=$(vmdir-label "$vmdir")
-    file=${tar##*/}
-    [ "${k8scri:-containerd}" == containerd ] ||
-        error "dra-image-tar-put: $tag is imported with ctr, $label runs ${k8scri}"
-    if vmdir-command-q "$vmdir" "ctr -n k8s.io images ls | awk -v ref=$ref -v tag=$tag '\$1 == ref {r = \$3} \$1 == tag {t = \$3} END {exit !(r != \"\" && r == t)}'"; then
-        echo "dra-image-tar-put $label: $ref is $tag already"
-        return 0
-    fi
-    host-command "scp -F \"$vmdir/.ssh-config\" \"$tar\" node:\"$file\"" ||
-        command-error "cannot copy $tar to $label"
-    vmdir-command "$vmdir" "ctr -n k8s.io images import $file && ctr -n k8s.io images tag --force $tag $ref; rc=\$?; rm -f $file; exit \$rc" ||
-        command-error "cannot import $file as $ref in $label"
-}
-
 dra-install() {
     # Usage: dra-install
     #
@@ -463,30 +421,17 @@ dra-install() {
     # Wait until the cluster has the pool ResourceSlices of the controllers
     # and the driver is up on every node (dra-wait-node).
     #
-    # With DRA_CONTROLLER_MODE=pod the controllers are Deployments of the
-    # names of the units in namespace $DRA_CONTROLLER_NS instead, with the
-    # ServiceAccount and RBAC of $DRA_CONTROLLER_MANIFEST
-    # (dra-controller-deploy): every node gets the image of the controller
-    # first (dra-image-tar-put), and the controllers of an earlier run are
-    # removed in either mode (dra-controllers-remove).
+    # dra-controller-start starts each controller; a test that runs them
+    # otherwise redefines it (and dra-controllers-status-cmd and
+    # dra-controllers-log-cmd). The controllers of an earlier run are
+    # removed whatever ran them (dra-controllers-remove).
     #
     # Call pool-server-start first: the controller needs the server, and
     # dra-install chains its EXIT trap: dra-cleanup, then pool-cleanup, or
     # $DRA_EXIT_TRAP if it is set.
-    local vmdir="$OUTPUT_DIR" label url names name v nodes values i units=() urls=() ref="" where
+    local vmdir="$OUTPUT_DIR" label url names name v nodes values i units=() urls=()
     label=$(vmdir-label "$vmdir")
-    case "$DRA_CONTROLLER_MODE" in
-        systemd)
-            [ -x "$DRA_CONTROLLER_BIN" ] || error "dra-install: no $DRA_CONTROLLER_BIN, run dra-build first"
-            where="in $label";;
-        pod)
-            ref=$(cat "$DRA_CONTROLLER_IMAGE_REF" 2>/dev/null)
-            [ -f "$DRA_CONTROLLER_IMAGE_TAR" ] && [ -n "$ref" ] ||
-                error "dra-install: no image of fake-cxl-pool-controller ($DRA_CONTROLLER_IMAGE_TAR), run dra-build with DRA_CONTROLLER_MODE=pod first"
-            where="as Deployments in namespace $DRA_CONTROLLER_NS";;
-        *)
-            error "dra-install: DRA_CONTROLLER_MODE is \"$DRA_CONTROLLER_MODE\", not systemd or pod";;
-    esac
+    [ -x "$DRA_CONTROLLER_BIN" ] || error "dra-install: no $DRA_CONTROLLER_BIN, run dra-build first"
     values=$(dra-helm-values) || error "dra-install: no helm values file, see above"
     url="${POOL_GUEST_URL:-http://192.168.76.2:${FAKE_CXL_POOL_PORT:-9909}}"
     # One controller per pool server, the first one with the URL above.
@@ -513,11 +458,6 @@ dra-install() {
     for v in "${nodes[@]:1}"; do
         dra-image-put "$v"
     done
-    if [ "$DRA_CONTROLLER_MODE" == pod ]; then
-        for v in "${nodes[@]}"; do
-            dra-image-tar-put "$v" "$DRA_CONTROLLER_IMAGE_TAR" "$ref" "$DRA_CONTROLLER_IMAGE"
-        done
-    fi
 
     echo "dra-install: removing components of an earlier run, if any"
     dra-helm-uninstall ||
@@ -529,13 +469,11 @@ dra-install() {
     for v in "${nodes[@]}"; do
         dra-state-cleanup "$v"
     done
-    if [ "$DRA_CONTROLLER_MODE" == systemd ]; then
-        vmdir-put-file "$vmdir" "$DRA_CONTROLLER_BIN" /usr/local/bin/fake-cxl-pool-controller
-        vmdir-command "$vmdir" "chmod 755 /usr/local/bin/fake-cxl-pool-controller" ||
-            command-error "cannot install fake-cxl-pool-controller in $label"
-    fi
+    vmdir-put-file "$vmdir" "$DRA_CONTROLLER_BIN" /usr/local/bin/fake-cxl-pool-controller
+    vmdir-command "$vmdir" "chmod 755 /usr/local/bin/fake-cxl-pool-controller" ||
+        command-error "cannot install fake-cxl-pool-controller in $label"
 
-    echo "dra-install: installing $DRA_CHART with helm on ${#nodes[@]} nodes, starting ${units[*]} $where"
+    echo "dra-install: installing $DRA_CHART with helm on ${#nodes[@]} nodes, starting ${units[*]}"
     DRA_INSTALLED_VMS=("${nodes[@]}")
     DRA_WORKERS=()
     for v in "${nodes[@]:1}"; do
@@ -557,12 +495,7 @@ dra-install() {
     DRA_CONTROLLER_URLS=()
     for i in "${!units[@]}"; do
         DRA_CONTROLLER_URLS["${units[$i]}"]="${urls[$i]}"
-        if [ "$DRA_CONTROLLER_MODE" == pod ]; then
-            dra-controller-deploy "${units[$i]}" "${urls[$i]}"
-        else
-            dra-controller-run "${units[$i]}" ||
-                command-error "cannot start ${units[$i]} in $label"
-        fi
+        dra-controller-start "${units[$i]}"
         DRA_CONTROLLER_UNITS+=("${units[$i]}")
     done
     vmdir-command "$vmdir" "kubectl get deviceclass ${DRA_CLASSES[*]}" ||
@@ -583,7 +516,6 @@ dra-controller-run() {
     # (DRA_CONTROLLER_URLS), Restart=no and the admin kubeconfig of the VM:
     # the command line of dra-install. Return the status of systemd-run.
     local unit="$1" url="${DRA_CONTROLLER_URLS[$1]:-}"
-    dra-controller-units-only dra-controller-run || return 2
     if [ -z "$url" ]; then
         echo "dra-controller-run: no pool server URL of $unit: dra-install starts the controllers" >&2
         return 2
@@ -591,51 +523,48 @@ dra-controller-run() {
     vmdir-command "$OUTPUT_DIR" "systemd-run --unit $unit --property=Restart=no -E KUBECONFIG=/root/.kube/config /usr/local/bin/fake-cxl-pool-controller -server $url -v"
 }
 
-dra-controller-units-only() {
-    # Usage: dra-controller-units-only FUNCTION
+dra-controller-start() {
+    # Usage: dra-controller-start NAME
     #
-    # Return 0 if the pool controllers are systemd units
-    # (DRA_CONTROLLER_MODE=systemd), else print that FUNCTION works on
-    # those only and return 2.
-    [ "$DRA_CONTROLLER_MODE" != systemd ] || return 0
-    echo "$1: the pool controllers are systemd units only with DRA_CONTROLLER_MODE=systemd, not $DRA_CONTROLLER_MODE" >&2
-    return 2
+    # Start the pool controller NAME of dra-install for its pool server
+    # (DRA_CONTROLLER_URLS): the transient systemd unit NAME
+    # (dra-controller-run). Fail the test if it does not start. A test that
+    # runs the controllers otherwise redefines this function.
+    dra-controller-run "$1" || command-error "cannot start $1 in $(vmdir-label "$OUTPUT_DIR")"
 }
 
-dra-controller-deploy() {
-    # Usage: dra-controller-deploy NAME URL
+dra-controllers-status-cmd() {
+    # Usage: dra-controllers-status-cmd
     #
-    # Apply the manifest of the pool controller, $DRA_CONTROLLER_MANIFEST,
-    # in the cluster of the VM of the test with its Deployment named NAME
-    # (and labeled app.kubernetes.io/instance=NAME) for the pool server at
-    # URL, and wait until the Deployment is rolled out, 90 s at most. Fail
-    # the test unless the Deployment runs with -server URL.
-    local name="$1" url="$2" yaml
-    # The Deployment of the manifest is named $DRA_CONTROLLER_UNIT and has
-    # -server $DRA_CONTROLLER_MANIFEST_URL; the other objects are shared
-    # by all controllers.
-    yaml=$(sed -e "/^kind: Deployment\$/,/^---\$/ s/^\(  name:\) $DRA_CONTROLLER_UNIT\$/\1 $name/" \
-               -e "s/^\( *app\.kubernetes\.io\/instance:\) $DRA_CONTROLLER_UNIT\$/\1 $name/" \
-               -e "s|^\( *- \)$DRA_CONTROLLER_MANIFEST_URL\$|\1$url|" "$DRA_CONTROLLER_MANIFEST") ||
-        error "dra-controller-deploy: cannot read $DRA_CONTROLLER_MANIFEST"
-    vmdir-command "$OUTPUT_DIR" "kubectl apply -f - <<'DRA_CONTROLLER_EOF'
-$yaml
-DRA_CONTROLLER_EOF
-kubectl rollout status -n $DRA_CONTROLLER_NS deployment/$name --timeout=90s && kubectl get deployment -n $DRA_CONTROLLER_NS $name -o jsonpath='{.spec.template.spec.containers[0].args}{\"\\n\"}'" ||
-        command-error "the Deployment $name of fake-cxl-pool-controller does not roll out in namespace $DRA_CONTROLLER_NS"
-    grep -qF "\"$url\"" <<< "$COMMAND_OUTPUT" ||
-        error "dra-controller-deploy: the Deployment $name runs without -server $url: has $DRA_CONTROLLER_MANIFEST the Deployment $DRA_CONTROLLER_UNIT with $DRA_CONTROLLER_MANIFEST_URL?"
+    # Print a command for the VM of the test that shows the state and the
+    # last log lines of the pool controllers (dra-wait-node).
+    echo "systemctl status --no-pager '$DRA_CONTROLLER_UNITS_GLOB'; journalctl --no-pager -n 40 -u '$DRA_CONTROLLER_UNITS_GLOB'"
+}
+
+dra-controllers-log-cmd() {
+    # Usage: dra-controllers-log-cmd
+    #
+    # Print a command for the VM of the test that follows the log of every
+    # pool controller from now on (dra-trace-start). journalctl -f resolves
+    # a unit pattern only once, to the units that have logged already: it
+    # names the units that dra-install started.
+    local name args=""
+    for name in "${DRA_CONTROLLER_UNITS[@]}"; do
+        args+=" -u $name"
+    done
+    [ -n "$args" ] || args=" -u '$DRA_CONTROLLER_UNITS_GLOB'"
+    echo "journalctl -f -n0 -o cat$args"
 }
 
 dra-controllers-remove() {
     # Usage: dra-controllers-remove
     #
-    # Stop and remove every pool controller of either mode in the cluster
-    # of the VM of the test: the systemd units $DRA_CONTROLLER_UNITS_GLOB
+    # Stop and remove every pool controller in the cluster of the VM of the
+    # test, however it ran: the systemd units $DRA_CONTROLLER_UNITS_GLOB
     # (stop, reset-failed), namespace $DRA_CONTROLLER_NS with the
-    # Deployments, and the ClusterRole and ClusterRoleBinding of
-    # $DRA_CONTROLLER_MANIFEST. A controller deletes the ResourceSlices of
-    # its pool when it stops. Return the status of the commands in the VM.
+    # Deployments of the demo, and the ClusterRole and ClusterRoleBinding
+    # of their manifest. A controller deletes the ResourceSlices of its
+    # pool when it stops. Return the status of the commands in the VM.
     vmdir-command "$OUTPUT_DIR" "systemctl stop '$DRA_CONTROLLER_UNITS_GLOB' 2>/dev/null; systemctl reset-failed '$DRA_CONTROLLER_UNITS_GLOB' 2>/dev/null
 if kubectl get namespace $DRA_CONTROLLER_NS >/dev/null 2>&1; then kubectl delete namespace $DRA_CONTROLLER_NS --wait=true --timeout=90s || exit 1; fi
 kubectl delete clusterrolebinding,clusterrole $DRA_CONTROLLER_UNIT --ignore-not-found"
@@ -704,9 +633,7 @@ dra-wait-node() {
     name=$(vmdir-name "$vmdir")
     label=$(vmdir-label "$vmdir")
     pools=$(dra-pool-names | tr '\n' ' ')
-    controllers="systemctl status --no-pager '$DRA_CONTROLLER_UNITS_GLOB'; journalctl --no-pager -n 40 -u '$DRA_CONTROLLER_UNITS_GLOB'"
-    [ "$DRA_CONTROLLER_MODE" != pod ] ||
-        controllers="kubectl get pods -n $DRA_CONTROLLER_NS -o wide; kubectl logs -n $DRA_CONTROLLER_NS -l $DRA_CONTROLLER_POD_LABEL --tail=40"
+    controllers=$(dra-controllers-status-cmd)
     retry-until --timeout 60 --interval 2 --message "$label: ResourceSlices of $DRA_POOL_DRIVER${pools:+ (pools ${pools% })} and $DRA_LOCAL_DRIVER on $name, $DRA_POOL_DRIVER kubelet plugin socket, $DRA_REQUEST_NODE_BIN" \
         'dra-install-ready "$vmdir" "$name"' || {
         vmdir-command "$vmdir" "kubectl get pods -n kube-system -l $DRA_POD_LABEL -o wide; kubectl logs -n kube-system --tail=40 -c $DRA_CONTAINER \$(kubectl get pods -n kube-system -l $DRA_POD_LABEL --field-selector spec.nodeName=$name -o name | head -n 1); $controllers; kubectl get resourceslices; ls -l /var/lib/kubelet/plugins/*"
@@ -3113,7 +3040,7 @@ dra-trace-start() {
     # <vm>.<component>, for instance vm.controller or vm1.udev; the first
     # pool server is "server", the others <name>.server. The controllers
     # share the tag <vm>.controller: their lines name their pools.
-    local vmdir label name n pod journal_units="" controller_log
+    local vmdir label name n pod controller_log
     [ -z "$DRA_TRACE_RUNNING" ] || error "dra-trace-start: a trace is running already"
     [ $# -gt 0 ] || set -- "$OUTPUT_DIR"
     DRA_TRACE_DIR="$TEST_OUTPUT_DIR/trace"
@@ -3129,16 +3056,7 @@ dra-trace-start() {
         # shellcheck disable=SC2153 # POOL_SERVER_LOGS is of pool.source.sh
         dra-trace-collect "$name.server" lines "tail -n0 -F $(printf %q "${POOL_SERVER_LOGS[$name]}")"
     done
-    # journalctl -f resolves a unit pattern only once, to the units that
-    # have logged already: name the units that dra-install started. The
-    # pods of pod mode log the same lines.
-    for name in "${DRA_CONTROLLER_UNITS[@]}"; do
-        journal_units+=" -u $name"
-    done
-    [ -n "$journal_units" ] || journal_units=" -u '$DRA_CONTROLLER_UNITS_GLOB'"
-    controller_log="journalctl -f -n0 -o cat$journal_units"
-    [ "$DRA_CONTROLLER_MODE" != pod ] ||
-        controller_log="kubectl logs -n $DRA_CONTROLLER_NS -f --tail=0 --max-log-requests=20 -l $DRA_CONTROLLER_POD_LABEL"
+    controller_log=$(dra-controllers-log-cmd)
     for vmdir in "$@"; do
         label=$(vmdir-label "$vmdir")
         name=$(vmdir-name "$vmdir")

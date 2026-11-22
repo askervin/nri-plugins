@@ -384,10 +384,9 @@ ssh -F test/e2e/<vm>/.ssh-config vagrant@node sudo ctr -n k8s.io images import f
 kubectl apply -f scripts/testing/fake-cxl-pool/deploy/fake-cxl-pool-controller.yaml
 ```
 
-The e2e helpers do the same with `DRA_CONTROLLER_MODE=pod` (`dra-install`
-of test/e2e/memory.test-suite/dra-driver-cxl/dra.source.sh: a Deployment
-per server, named like the systemd units below), which the demo
-demo01-share-write-read uses.
+The setup of the demo demo01-share-write-read does the same
+(test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test98-demo-setup/controller.source.sh:
+a Deployment per server, named like the systemd units below).
 
 ### Where a device is attached
 
