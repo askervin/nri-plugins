@@ -39,7 +39,7 @@ func searchView(s *State) *State {
 	v.Data = [nDevs]Token{}
 	for x := range v.PDev {
 		v.PDev[x].Tok, v.PDev[x].Raw, v.PDev[x].UUID = Token{}, Token{}, ""
-		v.PDev[x].LsaSha, v.PDev[x].HeadSha = "", ""
+		v.PDev[x].LSAHash, v.PDev[x].HeadHash = "", ""
 	}
 	for d := range v.Drv {
 		v.Drv[d].KillAtAt = 0

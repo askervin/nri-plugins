@@ -223,7 +223,7 @@ func refSequence(cfg *Config, acts []Act, seed int64, maxLen int, script []strin
 					}
 				}
 				for p := range adopted.Ctrl {
-					if adopted.Ctrl[p].Slices == SlicesAbsent {
+					if adopted.Ctrl[p].ResourceSlices == SlicesAbsent {
 						st.absent++
 					}
 				}
@@ -776,7 +776,7 @@ func TestRefPoolStalledWithoutSlices(t *testing.T) {
 	wantPhase(t, s, "pfsc-c@vm1#0", Stalled)
 	var absent *State
 	for _, a := range alts(s) {
-		if a.Ctrl[PoolC].Slices == SlicesAbsent {
+		if a.Ctrl[PoolC].ResourceSlices == SlicesAbsent {
 			absent = a
 		}
 	}
@@ -807,7 +807,7 @@ func TestRefPoolAllocatedWithoutSlices(t *testing.T) {
 	s = steps(t, s, "ctrl-restart c", "ctrl-kill c", "settle")
 	var absent *State
 	for _, a := range alts(s) {
-		if a.Ctrl[PoolC].Slices == SlicesAbsent {
+		if a.Ctrl[PoolC].ResourceSlices == SlicesAbsent {
 			absent = a
 		}
 	}
@@ -819,13 +819,13 @@ func TestRefPoolAllocatedWithoutSlices(t *testing.T) {
 	v, adopted := checkState(s, observation(t, truth), "")
 	wantVerdict(t, v, VOK, "ok")
 	wantPhase(t, adopted, "pfsc-c@vm1#0", Attaching)
-	if adopted.Ctrl[PoolC].Slices != SlicesAbsent {
-		t.Fatalf("adopted slices %v", adopted.Ctrl[PoolC].Slices)
+	if adopted.Ctrl[PoolC].ResourceSlices != SlicesAbsent {
+		t.Fatalf("adopted slices %v", adopted.Ctrl[PoolC].ResourceSlices)
 	}
 	r := steps(t, adopted, "ctrl-start c", "ctrl-kill c", "settle")
 	found := false
 	for _, a := range alts(r) {
-		if a.Ctrl[PoolC].Slices != SlicesAbsent {
+		if a.Ctrl[PoolC].ResourceSlices != SlicesAbsent {
 			continue
 		}
 		found = true

@@ -171,7 +171,7 @@ func (s *sim) refMismatch(st *State) int {
 		if c.Up != rc.running {
 			n++
 		}
-		if (c.Slices == SlicesPresent) != rc.slices || c.Slices == SlicesUnknown {
+		if (c.ResourceSlices == SlicesPresent) != rc.slices || c.ResourceSlices == SlicesUnknown {
 			n++
 		}
 		for d, dev := range poolDevs(p) {
@@ -370,7 +370,7 @@ func (s *sim) resolveRef(pred *State) *State {
 	for x := range n.PDev {
 		if pd := &n.PDev[x]; pd.NS == TriMaybe && s.prev != nil && !s.refWriterPrepared(n, cPmem0+DevID(x)) {
 			p := &s.prev.PDev[x]
-			pd.NS, pd.LsaSha, pd.HeadSha = p.NS, p.LsaSha, p.HeadSha
+			pd.NS, pd.LSAHash, pd.HeadHash = p.NS, p.LSAHash, p.HeadHash
 		}
 	}
 	s.fixPDev(n)

@@ -60,8 +60,8 @@ func TestMoveInOneWindow(t *testing.T) {
 	// window, and nothing released after a settle without deletes
 	s = stateAfter(t, "full", true, "create xnuma-c@vm1#0", "settle", "delete xnuma-c@vm1#0", "settle")
 	s = steps(t, s, "create xnuma-c@vm1#0", "!create xdax-c@vm2#0", "settle")
-	if s.Released != 0 {
-		t.Fatalf("released %b after a settle without deletes", s.Released)
+	if s.Deallocating != 0 {
+		t.Fatalf("released %b after a settle without deletes", s.Deallocating)
 	}
 }
 
@@ -114,7 +114,7 @@ func TestLease(t *testing.T) {
 	s := stateAfter(t, "full", false, "!lease-get lease@vm0#0 numa", "create lease@vm0#0", "!lease-get lease@vm0#0 numa", "settle",
 		"lease-get lease@vm0#0 numa", "!lease-get lease@vm0#0 dax")
 	ss := slotOf(t, s, "lease@vm0#0")
-	if ss.Lease != LeaseHeld || ss.LeaseMode != ModeNuma {
+	if ss.Lease != LeaseHeld || ss.LeaseMode != ModeNUMA {
 		t.Fatalf("lease %v %v", ss.Lease, ss.LeaseMode)
 	}
 	if s.Drv[VM0].F&s.fenceBit(2) == 0 {
@@ -231,7 +231,7 @@ func TestSlicesAbsentAfterCtrlRestart(t *testing.T) {
 	s = steps(t, s, "ctrl-restart b", "ctrl-kill b", "create sro-b@vm0#0", "settle")
 	var phases []string
 	for _, a := range alts(s) {
-		phases = append(phases, slotOf(t, a, "sro-b@vm0#0").Phase.String()+"/"+a.Ctrl[PoolB].Slices.String())
+		phases = append(phases, slotOf(t, a, "sro-b@vm0#0").Phase.String()+"/"+a.Ctrl[PoolB].ResourceSlices.String())
 		wantPhase(t, a, "xdax-b@vm0#0", Pending)
 	}
 	if strings.Join(phases, " ") != "attaching/present unsched/absent" {
@@ -243,8 +243,8 @@ func TestSlicesAbsentAfterCtrlRestart(t *testing.T) {
 	v, adopted := checkState(s, o, "")
 	wantVerdict(t, v, VOK, "ok")
 	wantPhase(t, adopted, "sro-b@vm0#0", Unsched)
-	if adopted.Ctrl[PoolB].Slices != SlicesAbsent {
-		t.Fatalf("slices %s", adopted.Ctrl[PoolB].Slices)
+	if adopted.Ctrl[PoolB].ResourceSlices != SlicesAbsent {
+		t.Fatalf("slices %s", adopted.Ctrl[PoolB].ResourceSlices)
 	}
 	// without poolSlices the pod's state decides
 	o.PoolSlices = nil
@@ -266,8 +266,8 @@ func TestSlicesAbsentAfterCtrlRestart(t *testing.T) {
 	// xnuma-b's region was below b-shared0's: a hole
 	wantPhase(t, n, "xdax-b@vm0#0", Blocked)
 	wantStack(t, n, stackIndex(VM0, HB0), "[hole,b-shared0]")
-	if n.Ctrl[PoolB].Slices != SlicesPresent || len(n.Alts) != 0 {
-		t.Fatalf("after ctrl-start: slices %s, %d alternatives", n.Ctrl[PoolB].Slices, len(n.Alts))
+	if n.Ctrl[PoolB].ResourceSlices != SlicesPresent || len(n.Alts) != 0 {
+		t.Fatalf("after ctrl-start: slices %s, %d alternatives", n.Ctrl[PoolB].ResourceSlices, len(n.Alts))
 	}
 	// off-line a kill does not follow a restart in one window
 	steps(t, stateAfter(t, "full", false, "create plain@vm0#0", "settle", "ctrl-restart b"), "!ctrl-kill b", "settle", "ctrl-kill b")
@@ -290,7 +290,7 @@ func TestSlicesBackOnlyAtCtrlStart(t *testing.T) {
 	s := stateAfter(t, "full", true, "create sexcl-a@vm2#0", "settle", "ctrl-restart a", "write sexcl-a@vm2#0", "ctrl-kill a", "server-restart a", "settle")
 	var worlds []string
 	for _, a := range alts(s) {
-		worlds = append(worlds, a.Ctrl[PoolA].Slices.String())
+		worlds = append(worlds, a.Ctrl[PoolA].ResourceSlices.String())
 	}
 	if strings.Join(worlds, " ") != "present absent" {
 		t.Fatalf("outcomes %v", worlds)
@@ -301,19 +301,19 @@ func TestSlicesBackOnlyAtCtrlStart(t *testing.T) {
 	}
 	v, adopted := checkState(s, o, "")
 	wantVerdict(t, v, VOK, "ok")
-	if adopted.Ctrl[PoolA].Slices != SlicesAbsent {
-		t.Fatalf("adopted slices %s", adopted.Ctrl[PoolA].Slices)
+	if adopted.Ctrl[PoolA].ResourceSlices != SlicesAbsent {
+		t.Fatalf("adopted slices %s", adopted.Ctrl[PoolA].ResourceSlices)
 	}
 	n := steps(t, adopted, "server-restart a", "kubelet-restart vm2", "driver-kill vm2", "containerd-restart vm1", "settle")
-	if n.Ctrl[PoolA].Slices != SlicesAbsent {
-		t.Fatalf("slices %s after other faults", n.Ctrl[PoolA].Slices)
+	if n.Ctrl[PoolA].ResourceSlices != SlicesAbsent {
+		t.Fatalf("slices %s after other faults", n.Ctrl[PoolA].ResourceSlices)
 	}
 	n = steps(t, n, "create xnuma-a@vm1#0")
 	wantPhase(t, n, "xnuma-a@vm1#0", Unsched)
 	n = steps(t, n, "settle", "ctrl-start a", "settle")
 	wantPhase(t, n, "xnuma-a@vm1#0", Running)
-	if n.Ctrl[PoolA].Slices != SlicesPresent {
-		t.Fatalf("slices %s after ctrl-start", n.Ctrl[PoolA].Slices)
+	if n.Ctrl[PoolA].ResourceSlices != SlicesPresent {
+		t.Fatalf("slices %s after ctrl-start", n.Ctrl[PoolA].ResourceSlices)
 	}
 }
 
@@ -332,15 +332,15 @@ func TestSlicesBackAfterCtrlStart(t *testing.T) {
 	for _, a := range alts(s) { // (the order of their two regions races)
 		wantPhase(t, a, "xdax-a@vm1#0", Running)
 		wantPhase(t, a, "sro-a@vm1#0", Running)
-		if a.Ctrl[PoolA].Slices != SlicesPresent {
-			t.Fatalf("slices %s", a.Ctrl[PoolA].Slices)
+		if a.Ctrl[PoolA].ResourceSlices != SlicesPresent {
+			t.Fatalf("slices %s", a.Ctrl[PoolA].ResourceSlices)
 		}
 	}
 	// killed again before the publish: present or absent
 	k := steps(t, adoptSlices(t, stateAfter(t, "full", true, "ctrl-restart a", "ctrl-kill a", "settle"), PoolA, SlicesAbsent), "ctrl-start a", "ctrl-kill a", "settle")
 	var worlds []string
 	for _, a := range alts(k) {
-		worlds = append(worlds, a.Ctrl[PoolA].Slices.String())
+		worlds = append(worlds, a.Ctrl[PoolA].ResourceSlices.String())
 	}
 	if strings.Join(worlds, " ") != "present absent" {
 		t.Fatalf("ctrl-start, ctrl-kill: outcomes %v", worlds)

@@ -60,7 +60,7 @@ package main
 //	            action from the step (gofmbt's Action) instead
 //	HeldAt      the oracle's clock of Held (the bit itself is in the key)
 //	Drv.KillAtAt the oracle's clock of KillAt (KillAt is in the key)
-//	PDev[x].LsaSha, .HeadSha  hashes adopted from observations
+//	PDev[x].LSAHash, .HeadHash  hashes adopted from observations
 //	UnblockAt   the oracle's clock of Unblocking, Stalled, Attaching
 //	Drv.Pod, Drv.PodBefore, Drv.PodGen, Drv.Inc
 //	            driver pod names and incarnations: the oracle and the
@@ -102,7 +102,7 @@ func (s *State) appendKey(b []byte) []byte {
 	}
 	for p := range s.Ctrl {
 		c := &s.Ctrl[p]
-		x := uint32(b2u(c.Up)) | uint32(c.Slices)<<1
+		x := uint32(b2u(c.Up)) | uint32(c.ResourceSlices)<<1
 		for d := range c.Att {
 			for v := range c.Att[d] {
 				x |= uint32(c.Att[d][v]) << (3 + 2*(nVMs*d+v))
@@ -130,7 +130,7 @@ func (s *State) appendKey(b []byte) []byte {
 		}
 	}
 	b = append(b, byte(s.Contested), byte(s.Contested>>8), byte(s.Held), byte(s.Held>>8),
-		byte(s.Released), byte(s.Released>>8), s.Unsettled, byte(s.Fence)|b2u(s.Switched)<<1)
+		byte(s.Deallocating), byte(s.Deallocating>>8), s.Unsettled, byte(s.Fence)|b2u(s.Switched)<<1)
 	var rebooted byte
 	for v := range s.Drv {
 		rebooted |= b2u(s.Drv[v].Rebooted) << uint(v)

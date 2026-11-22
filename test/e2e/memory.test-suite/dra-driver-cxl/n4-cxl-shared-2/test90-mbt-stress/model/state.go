@@ -155,7 +155,7 @@ func (l LeaseSt) String() string {
 type LeaseMode uint8
 
 const (
-	ModeNuma LeaseMode = iota
+	ModeNUMA LeaseMode = iota
 	ModeDax
 	ModePBW
 	ModePBR
@@ -310,7 +310,7 @@ type DriverState struct {
 	Inc       uint16 // incarnations: kills and restarts
 	Killed    bool   // driver-kill in the current window
 	Restarted bool   // driver-restart in the current window
-	F, FMaybe uint8  // fenced host bridges (bit b: node NodeHB[b]); maybe
+	F, FMaybe uint8  // fenced host bridges (bit b: NUMA node NUMANodeHB[b]); maybe
 	Pod       string // the pod name, learnt at a settle
 	PodBefore string // driver-restart: the pod that must be gone
 	// KillAt: driver-kill-at armed in the current window (marker+1):
@@ -382,7 +382,7 @@ type PDev struct {
 	// the hashes of the LSA and of the first 4 MiB of the data file as
 	// observed (pdevs); "": not known (after an event that changes
 	// them: adopted at the next settle)
-	LsaSha, HeadSha string
+	LSAHash, HeadHash string
 }
 
 // freshPDev is a device without labels and data (zeros).
@@ -393,23 +393,23 @@ var freshPDev = PDev{NS: TriNo, FS: TriNo, Raw: tokZero}
 // is down; when it is up, the attachments are derived from the claims at
 // every settle.
 type CtrlState struct {
-	Up     bool
-	Att    [devsPerPool][nVMs]Tri
-	Slices SliceSt // the pool's ResourceSlices (A18)
+	Up             bool
+	Att            [devsPerPool][nVMs]Tri
+	ResourceSlices ResourceSlicesState // the pool's ResourceSlices (A18)
 }
 
-// SliceSt tells if a pool's controller has published its ResourceSlices.
-type SliceSt uint8
+// ResourceSlicesState tells if a pool's controller has published its ResourceSlices.
+type ResourceSlicesState uint8
 
 const (
-	SlicesPresent SliceSt = iota
-	SlicesAbsent          // deleted by a graceful stop, not published again
-	SlicesUnknown         // a graceful restart: published again soon, or not
+	SlicesPresent ResourceSlicesState = iota
+	SlicesAbsent                      // deleted by a graceful stop, not published again
+	SlicesUnknown                     // a graceful restart: published again soon, or not
 )
 
-var sliceNames = []string{"present", "absent", "unknown"}
+var resourceSliceNames = []string{"present", "absent", "unknown"}
 
-func (s SliceSt) String() string { return sliceNames[s] }
+func (s ResourceSlicesState) String() string { return resourceSliceNames[s] }
 
 // State is the model state.
 type State struct {
@@ -442,13 +442,13 @@ type State struct {
 	// clears the bit heldSeconds after it).
 	Held   uint16
 	HeldAt [nDevs]int64
-	// Released: pool devices whose claim was deleted in the window that
+	// Deallocating: pool devices whose claim was deleted in the window that
 	// the last settle ended: the claim may still be deallocated a
 	// moment after its pod is gone; a claim created now may
 	// fail its first attempt and wait for that event, and a second one
 	// would race with it: one candidate (contested) per such device
-	Released  uint16
-	Unsettled uint8
+	Deallocating uint16
+	Unsettled    uint8
 	// Fence: the fencing mode of the drivers now (fencing-switch flips
 	// it, A37); with none no driver fences (F and FMaybe stay empty)
 	Fence FenceMode
@@ -501,27 +501,27 @@ func newState(cfg *Config) *State {
 
 func (s *State) clone() *State {
 	n := &State{
-		cfg:       s.cfg,
-		Slots:     append([]SlotState(nil), s.Slots...),
-		Ctrl:      s.Ctrl,
-		Drv:       s.Drv,
-		Data:      s.Data,
-		PDev:      s.PDev,
-		SlotData:  s.SlotData,
-		LeaseIDs:  s.LeaseIDs,
-		UnblockAt: s.UnblockAt,
-		Stacks:    s.Stacks,
-		Ev:        s.Ev,
-		Contested: s.Contested,
-		Held:      s.Held,
-		Released:  s.Released,
-		HeldAt:    s.HeldAt,
-		Unsettled: s.Unsettled,
-		Fence:     s.Fence,
-		Switched:  s.Switched,
-		Reorder:   s.Reorder,
-		Steps:     s.Steps,
-		Last:      s.Last,
+		cfg:          s.cfg,
+		Slots:        append([]SlotState(nil), s.Slots...),
+		Ctrl:         s.Ctrl,
+		Drv:          s.Drv,
+		Data:         s.Data,
+		PDev:         s.PDev,
+		SlotData:     s.SlotData,
+		LeaseIDs:     s.LeaseIDs,
+		UnblockAt:    s.UnblockAt,
+		Stacks:       s.Stacks,
+		Ev:           s.Ev,
+		Contested:    s.Contested,
+		Held:         s.Held,
+		Deallocating: s.Deallocating,
+		HeldAt:       s.HeldAt,
+		Unsettled:    s.Unsettled,
+		Fence:        s.Fence,
+		Switched:     s.Switched,
+		Reorder:      s.Reorder,
+		Steps:        s.Steps,
+		Last:         s.Last,
 	}
 	return n
 }
@@ -773,19 +773,19 @@ func (s *State) anyUnknownHolder(p Pool) bool {
 
 // fenceBit is the bit of a NUMA node in DriverState.F.
 func (s *State) fenceBit(node int) uint8 {
-	b := s.cfg.nodeBridge(node)
+	b := s.cfg.NUMANodeBridge(node)
 	if b < 0 {
 		return 0
 	}
 	return 1 << uint(b)
 }
 
-// bitNodes returns the nodes of fence bits.
-func (s *State) bitNodes(bits uint8) []int {
+// fenceNUMANodes returns the nodes of fence bits.
+func (s *State) fenceNUMANodes(bits uint8) []int {
 	var nodes []int
 	for b := Bridge(0); b < nBridges; b++ {
 		if bits&(1<<uint(b)) != 0 {
-			nodes = append(nodes, s.cfg.NodeHB[b])
+			nodes = append(nodes, s.cfg.NUMANodeHB[b])
 		}
 	}
 	return nodes
@@ -979,13 +979,13 @@ func (s *State) computeAbstract() []string {
 			continue
 		}
 		st := "up"
-		if s.Ctrl[p].Slices != SlicesPresent {
-			st = "up-" + s.Ctrl[p].Slices.String()
+		if s.Ctrl[p].ResourceSlices != SlicesPresent {
+			st = "up-" + s.Ctrl[p].ResourceSlices.String()
 		}
 		if !s.Ctrl[p].Up {
 			st = "down"
-			if s.Ctrl[p].Slices != SlicesPresent {
-				st += "-slices-" + s.Ctrl[p].Slices.String()
+			if s.Ctrl[p].ResourceSlices != SlicesPresent {
+				st += "-slices-" + s.Ctrl[p].ResourceSlices.String()
 			}
 			for _, row := range s.Ctrl[p].Att {
 				for _, t := range row {
@@ -1070,8 +1070,8 @@ func (s *State) dump() string {
 	for p := Pool(0); p < nPools; p++ {
 		c := &s.Ctrl[p]
 		fmt.Fprintf(&b, "  pool %s: controller up %v", p, c.Up)
-		if c.Slices != SlicesPresent {
-			fmt.Fprintf(&b, " slices %s", c.Slices)
+		if c.ResourceSlices != SlicesPresent {
+			fmt.Fprintf(&b, " slices %s", c.ResourceSlices)
 		}
 		if !c.Up {
 			for d, dev := range poolDevs(p) {
@@ -1087,7 +1087,7 @@ func (s *State) dump() string {
 	for v := VM(0); v < nVMs; v++ {
 		d := &s.Drv[v]
 		fmt.Fprintf(&b, "  driver %s: pod gen %d restarts %d inc %d killed %v F %v maybe %v pod %q",
-			v, d.PodGen, d.Restarts, d.Inc, d.Killed, s.bitNodes(d.F), s.bitNodes(d.FMaybe), d.Pod)
+			v, d.PodGen, d.Restarts, d.Inc, d.Killed, s.fenceNUMANodes(d.F), s.fenceNUMANodes(d.FMaybe), d.Pod)
 		if d.KillAt > 0 {
 			fmt.Fprintf(&b, " kill-at %s", markerNames[d.KillAt-1])
 		}
@@ -1182,30 +1182,30 @@ func (s *State) contestedString() string {
 	return strings.Join(rs, ",")
 }
 
-// claimNodes are the CXL nodes that the claims and leases of the pod of
+// claimNUMANodes are the CXL nodes that the claims and leases of the pod of
 // slot i give its container (E of A38): the numa nodes of its claims and
 // the node that a held numa lease lends it.
-func (s *State) claimNodes(i int) nodeSet {
+func (s *State) claimNUMANodes(i int) numaSet {
 	sl, ss := s.slot(i), &s.Slots[i]
-	e := nodesOf(sl.numaNodes(s.cfg))
-	if sl.Kind == KLease && ss.Lease == LeaseHeld && ss.LeaseMode == ModeNuma {
-		e |= nodeBit(s.cfg.bridgeNode(HB0))
+	e := numaSetOf(sl.numaNodes(s.cfg))
+	if sl.Kind == KLease && ss.Lease == LeaseHeld && ss.LeaseMode == ModeNUMA {
+		e |= numaBit(s.cfg.bridgeNUMANode(HB0))
 	}
 	return e
 }
 
-// memNodes are the CXL nodes of VM v with memory (M of A38) in a settled
+// memNUMANodes are the CXL nodes of VM v with memory (M of A38) in a settled
 // state: the numa memory of its Running pods and of its held numa leases
 // (the oracle's vmPred.memTotal).
-func (s *State) memNodes(v VM) nodeSet {
-	var m nodeSet
+func (s *State) memNUMANodes(v VM) numaSet {
+	var m numaSet
 	for i := range s.Slots {
 		sl, ss := s.slot(i), &s.Slots[i]
-		if sl.Kind == KLease && sl.VM == v && ss.Lease == LeaseHeld && ss.LeaseMode == ModeNuma {
-			m |= nodeBit(s.cfg.bridgeNode(HB0))
+		if sl.Kind == KLease && sl.VM == v && ss.Lease == LeaseHeld && ss.LeaseMode == ModeNUMA {
+			m |= numaBit(s.cfg.bridgeNUMANode(HB0))
 		}
 		if ss.Phase == Running && ss.Node == v {
-			m |= nodesOf(sl.numaNodes(s.cfg))
+			m |= numaSetOf(sl.numaNodes(s.cfg))
 		}
 	}
 	return m

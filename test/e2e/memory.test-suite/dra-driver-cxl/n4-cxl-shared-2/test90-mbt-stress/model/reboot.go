@@ -78,7 +78,7 @@ func (s *State) rebootOK(v VM) bool {
 		return false
 	}
 	for p := range s.Ctrl {
-		if !s.Ctrl[p].Up || s.Ctrl[p].Slices != SlicesPresent {
+		if !s.Ctrl[p].Up || s.Ctrl[p].ResourceSlices != SlicesPresent {
 			return false
 		}
 	}
@@ -155,7 +155,7 @@ func (n *State) nodeReboot(v VM) {
 		switch {
 		case sl.Kind == KLDax:
 			n.setSlotData(i, tokZero)
-		case sl.Kind == KXNuma || sl.Kind == KDNuma:
+		case sl.Kind == KXNUMA || sl.Kind == KDNUMA:
 			n.Data[sl.Dev] = tokUnknown
 		case sl.Kind.dax() && ss.Phase == Restarting:
 			n.Data[sl.Dev] = orZero(n.Data[sl.Dev])

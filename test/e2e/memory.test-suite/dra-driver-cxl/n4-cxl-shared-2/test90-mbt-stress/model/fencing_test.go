@@ -68,7 +68,7 @@ func checkMemsCases(t *testing.T, s *State, cases []memsCase) {
 func TestFencingExactAllowedMems(t *testing.T) {
 	cfg := fencingConfig(t, FencingAM)
 	s := steps(t, newState(cfg), "create lnuma@vm0#0", "create xnuma-c@vm0#0", "create plain@vm0#0", "settle")
-	if got := s.bitNodes(s.Drv[VM0].F); !slices.Equal(got, []int{2, 3}) {
+	if got := s.fenceNUMANodes(s.Drv[VM0].F); !slices.Equal(got, []int{2, 3}) {
 		t.Fatalf("vm0 fenced %v, want [2 3]", got)
 	}
 	checkMemsCases(t, s, []memsCase{
@@ -85,7 +85,7 @@ func TestFencingExactAllowedMems(t *testing.T) {
 	// both nodes in one container (A39)
 	s = steps(t, newState(cfg), "create dnuma@vm1#0", "create plain@vm1#0", "settle")
 	wantPhase(t, s, "dnuma@vm1#0", Running)
-	if e, m := s.claimNodes(cfg.slotIndex("dnuma@vm1#0")), s.memNodes(VM1); e.String() != "2,3" || m.String() != "2,3" {
+	if e, m := s.claimNUMANodes(cfg.slotIndex("dnuma@vm1#0")), s.memNUMANodes(VM1); e.String() != "2,3" || m.String() != "2,3" {
 		t.Fatalf("E %s M %s, want 2,3 and 2,3", e, m)
 	}
 	checkMemsCases(t, s, []memsCase{
@@ -117,11 +117,11 @@ func TestFencingExactAllowedMems(t *testing.T) {
 
 // The rule itself: FMaybe either way, nodes without memory never.
 func TestFencingRule(t *testing.T) {
-	d := nodesOf([]int{0, 1})
-	n2, n3 := nodeBit(2), nodeBit(3)
+	d := numaSetOf([]int{0, 1})
+	n2, n3 := numaBit(2), numaBit(3)
 	for _, c := range []struct {
 		mode           FenceMode
-		e, f, fm, m    nodeSet
+		e, f, fm, m    numaSet
 		steered, loose bool
 		must, allowed  string
 	}{
@@ -148,7 +148,7 @@ func TestFencingExactNone(t *testing.T) {
 	s := steps(t, newState(cfg), "create lnuma@vm0#0", "create xnuma-c@vm0#0", "create plain@vm0#0", "settle")
 	for v := VM(0); v < nVMs; v++ {
 		if s.Drv[v].F != 0 || s.Drv[v].FMaybe != 0 {
-			t.Fatalf("driver %s fences %v %v with fencing none", v, s.bitNodes(s.Drv[v].F), s.bitNodes(s.Drv[v].FMaybe))
+			t.Fatalf("driver %s fences %v %v with fencing none", v, s.fenceNUMANodes(s.Drv[v].F), s.fenceNUMANodes(s.Drv[v].FMaybe))
 		}
 	}
 	checkMemsCases(t, s, []memsCase{
@@ -227,7 +227,7 @@ func TestFencingSwitch(t *testing.T) {
 	if n.Fence != FenceAM || slotOf(t, n, "lnuma@vm0#0").Loose || slotOf(t, n, "lease@vm1#0").CompLoose {
 		t.Fatalf("after the switch to allowed-mems:\n%s", n.dump())
 	}
-	if got := n.bitNodes(n.Drv[VM0].F); !slices.Equal(got, []int{2}) {
+	if got := n.fenceNUMANodes(n.Drv[VM0].F); !slices.Equal(got, []int{2}) {
 		t.Fatalf("vm0 fenced %v after the switch, want [2] (reseeded)", got)
 	}
 	checkMemsCases(t, n, []memsCase{
@@ -350,7 +350,7 @@ func TestDualOccupancy(t *testing.T) {
 	wantVerdict(t, v, VWait, "of cxl.nri.io is not prepared")
 	// MemTotal of both nodes
 	o = observation(t, s)
-	o.VMs["vm1"].Nodes["3"] = ObsNode{MemTotal: 0}
+	o.VMs["vm1"].Nodes["3"] = ObsNUMANode{MemTotal: 0}
 	v, _ = checkState(s, o, "")
 	wantVerdict(t, v, VWait, "vm1: node 3 MemTotal 0")
 	// deleted: both regions go, the waiter of c-pooled0 gets it

@@ -48,14 +48,14 @@ type Observation struct {
 
 // ObsPDev is the content of a persistent device's backing files (A24).
 type ObsPDev struct {
-	LSA     string  `json:"lsa"` // zero or labels
-	LsaSha  string  `json:"lsaSha"`
-	HeadSha string  `json:"headSha"`
-	PFN     bool    `json:"pfn"`
-	DataOff *uint64 `json:"dataoff"`
-	Erofs   bool    `json:"erofs"`
-	Token   *string `json:"token"`
-	Raw     *string `json:"raw"`
+	LSA      string  `json:"lsa"` // zero or labels
+	LSAHash  string  `json:"lsaSha"`
+	HeadHash string  `json:"headSha"`
+	PFN      bool    `json:"pfn"`
+	DataOff  *uint64 `json:"dataoff"`
+	Erofs    bool    `json:"erofs"`
+	Token    *string `json:"token"`
+	Raw      *string `json:"raw"`
 }
 
 type ObsPod struct {
@@ -197,20 +197,20 @@ type ObsDriver struct {
 
 // ObsVM is the observation of mbt-observe.py in a VM (6.3).
 type ObsVM struct {
-	BootID     string              `json:"bootID"`
-	Memdevs    []ObsMemdev         `json:"memdevs"`
-	Regions    []ObsRegion         `json:"regions"`
-	Nodes      map[string]ObsNode  `json:"nodes"`
-	State      *ObsDriverState     `json:"state"`
-	CDI        map[string][]string `json:"cdi"`
-	Containers []ObsContainer      `json:"containers"`
-	Ports      []ObsPort           `json:"ports"`     // A10: committed decoders
-	DriverLog  *ObsDriverLog       `json:"driverLog"` // A13
-	Missing    json.RawMessage     `json:"missing"`   // A11 (executor): running containers not observed
+	BootID     string                 `json:"bootID"`
+	Memdevs    []ObsMemdev            `json:"memdevs"`
+	Regions    []ObsRegion            `json:"regions"`
+	Nodes      map[string]ObsNUMANode `json:"nodes"`
+	State      *ObsDriverState        `json:"state"`
+	CDI        map[string][]string    `json:"cdi"`
+	Containers []ObsContainer         `json:"containers"`
+	Ports      []ObsPort              `json:"ports"`     // A10: committed decoders
+	DriverLog  *ObsDriverLog          `json:"driverLog"` // A13
+	Missing    json.RawMessage        `json:"missing"`   // A11 (executor): running containers not observed
 	// persistent devices (A24), raw: absent = not checked (noted), null
 	// = not read (wait)
 	Pmem       json.RawMessage `json:"pmem,omitempty"`
-	FsMounts   json.RawMessage `json:"fsMounts,omitempty"`
+	FSMounts   json.RawMessage `json:"fsMounts,omitempty"`
 	LeaseBinds json.RawMessage `json:"leaseBinds,omitempty"`
 	LeaseDirs  json.RawMessage `json:"leaseDirs,omitempty"`
 	Loops      json.RawMessage `json:"loops,omitempty"`
@@ -296,7 +296,7 @@ type ObsMount struct {
 	Count     int     `json:"count"`
 	Backing   *string `json:"backing"` // a loop device source
 	Dio       *bool   `json:"dio"`
-	Ro        *bool   `json:"ro"`
+	RO        *bool   `json:"ro"`
 }
 
 // ObsLoop is a loop device over /dev/pmem* (A24 loops).
@@ -310,7 +310,7 @@ type ObsLoop struct {
 // ObsLeaseDirs are the names in lease-fs/, leases/ and the pool's
 // mounts/ (A24 leaseDirs).
 type ObsLeaseDirs struct {
-	LeaseFs map[string][]string `json:"leaseFs"`
+	LeaseFS map[string][]string `json:"leaseFs"`
 	Leases  []string            `json:"leases"`
 	Mounts  []string            `json:"mounts"`
 }
@@ -449,7 +449,7 @@ type ObsDax struct {
 	Online uint64  `json:"online"`
 }
 
-type ObsNode struct {
+type ObsNUMANode struct {
 	MemTotal uint64 `json:"memtotal"`
 }
 
@@ -622,8 +622,8 @@ func parseObservedFile(data []byte) (*Observation, *DoneObs, error) {
 	return nil, d, nil
 }
 
-// parseNodeList parses a cpuset list ("0-1,3").
-func parseNodeList(s string) (map[int]bool, error) {
+// parseNUMAList parses a cpuset list ("0-1,3").
+func parseNUMAList(s string) (map[int]bool, error) {
 	nodes := map[int]bool{}
 	s = strings.TrimSpace(s)
 	if s == "" {

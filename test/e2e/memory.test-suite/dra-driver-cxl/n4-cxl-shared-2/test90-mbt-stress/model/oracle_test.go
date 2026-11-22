@@ -148,7 +148,7 @@ func TestOracleDeviations(t *testing.T) {
 			r := &o.VMs["vm0"].Regions[len(o.VMs["vm0"].Regions)-1]
 			r.Dax = r.Dax[:len(r.Dax)-1]
 		}, VWait, "local region region9: 1 numa and 0 dax slices (0 others), want 1 and 1"},
-		{"memtotal", func(o *Observation) { o.VMs["vm0"].Nodes["2"] = ObsNode{MemTotal: 0} }, VWait, "vm0: node 2 MemTotal 0"},
+		{"memtotal", func(o *Observation) { o.VMs["vm0"].Nodes["2"] = ObsNUMANode{MemTotal: 0} }, VWait, "vm0: node 2 MemTotal 0"},
 		{"memdev not detached", func(o *Observation) {
 			o.VMs["vm0"].Memdevs = append(o.VMs["vm0"].Memdevs, ObsMemdev{Name: "mem9", Serial: "0xc1ee1001"})
 		}, VWait, "memdev of b-pooled0 present"},
@@ -460,7 +460,7 @@ func TestParseObservedFile(t *testing.T) {
 			t.Fatalf("%q: %v %v %v", in, o, d, err)
 		}
 	}
-	nodes, err := parseNodeList("0-1,3")
+	nodes, err := parseNUMAList("0-1,3")
 	if err != nil || !nodes[0] || !nodes[1] || nodes[2] || !nodes[3] {
 		t.Fatalf("nodes %v %v", nodes, err)
 	}

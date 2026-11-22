@@ -306,7 +306,7 @@ func allActs(cfg *Config) []Act {
 			add(Act{Verb: VRead, Slot: int16(i), VM: VMAny, Pool: noPool})
 		}
 		if sl.Kind == KLease {
-			add(Act{Verb: VLeaseGet, Slot: int16(i), VM: VMAny, Pool: noPool, Mode: ModeNuma})
+			add(Act{Verb: VLeaseGet, Slot: int16(i), VM: VMAny, Pool: noPool, Mode: ModeNUMA})
 			add(Act{Verb: VLeaseGet, Slot: int16(i), VM: VMAny, Pool: noPool, Mode: ModeDax})
 			add(Act{Verb: VLeasePut, Slot: int16(i), VM: VMAny, Pool: noPool})
 		}
@@ -763,7 +763,7 @@ func (s *State) allowed(a Act) bool {
 	case VCtrlKill:
 		// off-line, a kill right after a graceful restart would leave
 		// open whether the slices came back (A18)
-		return s.Ctrl[a.Pool].Up && !s.anyUnknownHolder(a.Pool) && (s.cfg.Online || s.Ctrl[a.Pool].Slices != SlicesUnknown)
+		return s.Ctrl[a.Pool].Up && !s.anyUnknownHolder(a.Pool) && (s.cfg.Online || s.Ctrl[a.Pool].ResourceSlices != SlicesUnknown)
 	case VCtrlStart:
 		return !s.Ctrl[a.Pool].Up
 	case VCtrlRestart:
@@ -796,7 +796,7 @@ func (s *State) allowed(a Act) bool {
 // pwipeOK: nothing holds, wants or has attached the device (the server
 // would refuse the wipe, and a claim may be allocating).
 func (s *State) pwipeOK(d DevID) bool {
-	if s.contested(Res(d)) || s.held(Res(d)) || s.Released&(1<<uint(d)) != 0 {
+	if s.contested(Res(d)) || s.held(Res(d)) || s.Deallocating&(1<<uint(d)) != 0 {
 		return false
 	}
 	for i := range s.Slots {
@@ -868,12 +868,12 @@ func (s *State) pleaseOK(i int, m LeaseMode) bool {
 	sl := s.slot(i)
 	c := &s.Ctrl[PoolC]
 	// (under an armed watcher only "bind", whose outcome A29 d defines)
-	if k := s.Drv[sl.VM].KillAt; !c.Up || c.Slices != SlicesPresent || s.Drv[sl.VM].Killed || (k != 0 && int(k-1) != markerBind) {
+	if k := s.Drv[sl.VM].KillAt; !c.Up || c.ResourceSlices != SlicesPresent || s.Drv[sl.VM].Killed || (k != 0 && int(k-1) != markerBind) {
 		return false
 	}
 	r := Res(cPmem0)
 	o := s.occ()
-	if o.waiter[r] >= 0 || s.contested(r) || s.held(r) || s.Released&(1<<uint(r)) != 0 || s.unschedHolder(r) {
+	if o.waiter[r] >= 0 || s.contested(r) || s.held(r) || s.Deallocating&(1<<uint(r)) != 0 || s.unschedHolder(r) {
 		return false
 	}
 	if m == ModePBW {
@@ -1081,7 +1081,7 @@ func (s *State) apply(a Act) *State {
 		// controller publishes them again (A18): unknown until a
 		// settle sees the controller up (then present), kept by a kill.
 		// The attachments stay.
-		n.Ctrl[a.Pool].Slices = SlicesUnknown
+		n.Ctrl[a.Pool].ResourceSlices = SlicesUnknown
 	case VServerRestart:
 		// The specification: nothing observable changes: the pool
 		// server reloads its state file.
@@ -1237,7 +1237,7 @@ func (n *State) prepareEvent(i int, after int16) int16 {
 	if sl.Kind.dual() {
 		// and its local slice, after the same event (the pod was bound
 		// after it: kubelet prepares both claims)
-		n.addEvent(n.leaseUser(i), evPrepare, false, after)
+		n.addEvent(n.secondUser(i), evPrepare, false, after)
 	}
 	return seq
 }
@@ -1250,7 +1250,7 @@ func (n *State) pwrite(i int, junk bool) {
 		return
 	}
 	pd := &n.PDev[pmemIndex(n.pdevOf(i))]
-	pd.HeadSha = ""
+	pd.HeadHash = ""
 	if junk {
 		pd.FS, pd.Raw, pd.Tok = TriNo, tokZero, tokUnknown
 		return
@@ -1296,7 +1296,7 @@ func (n *State) leaseGetP(i int, m LeaseMode) {
 	ss := &n.Slots[i]
 	ss.Lease, ss.LeaseMode, ss.Hold, ss.CompLoose = LeaseHeld, m, false, false
 	n.setLeaseID(i, "")
-	n.addEvent(n.leaseUser(i), evPrepare, true, -1)
+	n.addEvent(n.secondUser(i), evPrepare, true, -1)
 	if m == ModePBW {
 		n.madeNamespace(cPmem0)
 	}
@@ -1309,7 +1309,7 @@ func (n *State) madeNamespace(d DevID) {
 	if pd.NS == TriYes {
 		return
 	}
-	pd.NS, pd.UUID, pd.LsaSha, pd.HeadSha = TriYes, "", "", ""
+	pd.NS, pd.UUID, pd.LSAHash, pd.HeadHash = TriYes, "", "", ""
 	pd.Raw = tokZero
 }
 
@@ -1318,7 +1318,7 @@ func (n *State) madeNamespace(d DevID) {
 // last user), the device to a waiter.
 func (n *State) releasePLease(i int) {
 	n.Slots[i].Lease = LeaseReleasing
-	seq := n.addEvent(n.leaseUser(i), evUnprepare, false, -1)
+	seq := n.addEvent(n.secondUser(i), evUnprepare, false, -1)
 	n.promote(Res(cPmem0), seq, false)
 }
 
@@ -1364,7 +1364,7 @@ func (n *State) create(i int) {
 		return
 	}
 	now, later := n.fits(i)
-	if sl.Kind.pooled() && (n.Ctrl[sl.Pool].Slices == SlicesUnknown || n.Released&(1<<uint(sl.Res)) != 0) {
+	if sl.Kind.pooled() && (n.Ctrl[sl.Pool].ResourceSlices == SlicesUnknown || n.Deallocating&(1<<uint(sl.Res)) != 0) {
 		// it may try before the slices are published again (F4), or
 		// before the claim deleted in the last window is deallocated
 		// (F8), and wait for that with every other claim that did:
@@ -1373,7 +1373,7 @@ func (n *State) create(i int) {
 		n.Contested |= 1 << uint(sl.Res)
 	}
 	switch {
-	case now && sl.Kind.pooled() && n.held(sl.Res) && n.Ctrl[sl.Pool].Slices != SlicesAbsent:
+	case now && sl.Kind.pooled() && n.held(sl.Res) && n.Ctrl[sl.Pool].ResourceSlices != SlicesAbsent:
 		// the scheduler may still hold the device in flight for a
 		// claim deleted before the last settle (A19)
 		n.Contested |= 1 << uint(sl.Res)
@@ -1389,7 +1389,7 @@ func (n *State) create(i int) {
 		if sl.Kind.dual() {
 			n.Contested |= 1 << uint(localRes(sl.VM))
 		}
-		if (n.unboundDeleting(sl.Res) || n.held(sl.Res)) && n.Ctrl[sl.Pool].Slices != SlicesAbsent {
+		if (n.unboundDeleting(sl.Res) || n.held(sl.Res)) && n.Ctrl[sl.Pool].ResourceSlices != SlicesAbsent {
 			n.stall(i)
 			return
 		}
@@ -1406,7 +1406,7 @@ func (n *State) start(i int, after int16) int16 {
 	ss := &n.Slots[i]
 	sl := n.slot(i)
 	ss.RaceKill, ss.Alloc = false, false
-	if sl.Kind.pooled() && n.Ctrl[sl.Pool].Slices == SlicesAbsent {
+	if sl.Kind.pooled() && n.Ctrl[sl.Pool].ResourceSlices == SlicesAbsent {
 		// no slices: the scheduler cannot allocate it (A18)
 		ss.Phase = Unsched
 		return -1
@@ -1420,7 +1420,7 @@ func (n *State) start(i int, after int16) int16 {
 	switch sl.Kind {
 	case KLSteer:
 		ss.Steer = n.newSteer(sl.VM)
-	case KXNuma, KDNuma:
+	case KXNUMA, KDNUMA:
 		// onlined as system RAM: the bytes are gone
 		n.Data[sl.Dev] = tokUnknown
 	case KLDax:
@@ -1473,7 +1473,7 @@ func (n *State) delete(i int) {
 	}
 	if sl.Kind.dual() && seq >= 0 {
 		// and its local slice
-		lseq = n.addEvent(n.leaseUser(i), evUnprepare, false, -1)
+		lseq = n.addEvent(n.secondUser(i), evUnprepare, false, -1)
 	}
 	ss.Hold = false
 	released := false
@@ -1482,7 +1482,7 @@ func (n *State) delete(i int) {
 		// with its container)
 		ss.Lease, ss.LeaseOpen = LeaseReleasing, false
 		released = true
-		lseq = n.addEvent(n.leaseUser(i), evUnprepare, false, -1)
+		lseq = n.addEvent(n.secondUser(i), evUnprepare, false, -1)
 	}
 	if prev.holding() {
 		// a pool claim deleted before its pod was bound (waiting for
@@ -1522,7 +1522,7 @@ func (n *State) promote(r Res, after int16, stall bool) {
 		// window, or before the last settle, was not bound; a dnuma
 		// pod promoted by a local release: of its pool device)
 		pr := wsl.Res
-		if wsl.Kind.pooled() && (stall && r == pr || n.unboundDeleting(pr) || n.held(pr)) && n.Ctrl[wsl.Pool].Slices != SlicesAbsent {
+		if wsl.Kind.pooled() && (stall && r == pr || n.unboundDeleting(pr) || n.held(pr)) && n.Ctrl[wsl.Pool].ResourceSlices != SlicesAbsent {
 			n.stall(w)
 			return
 		}
@@ -1538,7 +1538,7 @@ func (n *State) stall(i int) {
 	ss.Phase, ss.RaceKill = Stalled, false
 	ss.Refuse = n.refusedNow(i)
 	n.setUnblockAt(i, 0)
-	if sl := n.slot(i); sl.Kind == KXNuma || sl.Kind == KDNuma {
+	if sl := n.slot(i); sl.Kind == KXNUMA || sl.Kind == KDNUMA {
 		n.Data[sl.Dev] = tokUnknown
 	}
 }
@@ -1595,11 +1595,11 @@ func (n *State) leaseGet(i int, m LeaseMode) {
 	ss.LeaseMode = m
 	ss.CompLoose = false
 	n.setLeaseID(i, "")
-	n.addEvent(n.leaseUser(i), evPrepare, true, -1)
-	if m == ModeNuma && n.Fence == FenceAM {
+	n.addEvent(n.secondUser(i), evPrepare, true, -1)
+	if m == ModeNUMA && n.Fence == FenceAM {
 		// the companion's slice is fenced before it goes online
 		d := &n.Drv[n.slot(i).VM]
-		d.F |= n.fenceBit(n.cfg.bridgeNode(HB0))
+		d.F |= n.fenceBit(n.cfg.bridgeNUMANode(HB0))
 	}
 }
 
@@ -1616,7 +1616,7 @@ func (n *State) leasePut(i int) {
 		return
 	}
 	n.Slots[i].Lease = LeaseReleasing
-	seq := n.addEvent(n.leaseUser(i), evUnprepare, false, -1)
+	seq := n.addEvent(n.secondUser(i), evUnprepare, false, -1)
 	n.promote(localRes(n.slot(i).VM), seq, false)
 }
 
@@ -1631,8 +1631,8 @@ func (n *State) driverRestarted(v VM, running Steer) {
 	for i := range n.Slots {
 		ss := &n.Slots[i]
 		sl := n.slot(i)
-		if sl.Kind == KLease && sl.VM == v && ss.Lease != LeaseNone && ss.LeaseMode == ModeNuma {
-			bit := n.fenceBit(n.cfg.bridgeNode(HB0))
+		if sl.Kind == KLease && sl.VM == v && ss.Lease != LeaseNone && ss.LeaseMode == ModeNUMA {
+			bit := n.fenceBit(n.cfg.bridgeNUMANode(HB0))
 			if ss.Lease == LeaseHeld {
 				def |= bit
 			} else {
@@ -1763,11 +1763,11 @@ func (n *State) ctrlKill(p Pool) {
 // get it, and prepare.
 func (n *State) ctrlStart(p Pool) {
 	n.Ctrl[p].Up = true
-	if n.Ctrl[p].Slices == SlicesAbsent {
+	if n.Ctrl[p].ResourceSlices == SlicesAbsent {
 		// the new controller publishes them within seconds (M5): the
 		// claims of the window are allocated (one that tried before
 		// the publish is requeued by it), unless a kill comes first
-		n.Ctrl[p].Slices = SlicesUnknown
+		n.Ctrl[p].ResourceSlices = SlicesUnknown
 	}
 	for i := range n.Slots {
 		sl := n.slot(i)
@@ -1837,13 +1837,13 @@ func (n *State) handoverAfterRelease(i int, seq int16) {
 // in flight.
 func (n *State) settle() {
 	n.settlePDevs()
-	n.Released = 0
+	n.Deallocating = 0
 	for i := range n.Slots {
 		ss, sl := &n.Slots[i], n.slot(i)
 		if ss.Phase != Deleting || !sl.Kind.pooled() || !ss.Prev.holding() {
 			continue
 		}
-		n.Released |= 1 << uint(sl.Res)
+		n.Deallocating |= 1 << uint(sl.Res)
 		// a claim deleted before its pod was bound: its device may stay
 		// in flight in the scheduler after the settle (A19)
 		if ss.Prev.unbound() {
@@ -1898,7 +1898,7 @@ func (n *State) settle() {
 	for p := Pool(0); p < nPools; p++ {
 		if n.Ctrl[p].Up {
 			// a controller that runs publishes its slices
-			n.Ctrl[p].Slices = SlicesPresent
+			n.Ctrl[p].ResourceSlices = SlicesPresent
 			n.deriveAtt(p)
 		}
 	}
@@ -1943,7 +1943,7 @@ func (n *State) settlePDevs() {
 			// (a stalled writer may be promoted and prepare any time
 			// its controller attaches it; an unblocking one's retry
 			// comes any time)
-			pd.NS, pd.LsaSha, pd.HeadSha = TriMaybe, "", ""
+			pd.NS, pd.LSAHash, pd.HeadHash = TriMaybe, "", ""
 		}
 	}
 }
@@ -1972,8 +1972,8 @@ func (n *State) growFence() {
 	for i := range n.Slots {
 		ss := &n.Slots[i]
 		sl := n.slot(i)
-		if sl.Kind == KLease && ss.Lease == LeaseHeld && ss.LeaseMode == ModeNuma {
-			n.Drv[sl.VM].F |= n.fenceBit(n.cfg.bridgeNode(HB0))
+		if sl.Kind == KLease && ss.Lease == LeaseHeld && ss.LeaseMode == ModeNUMA {
+			n.Drv[sl.VM].F |= n.fenceBit(n.cfg.bridgeNUMANode(HB0))
 		}
 		if !sl.Kind.numa() || ss.Node == VMAny {
 			continue

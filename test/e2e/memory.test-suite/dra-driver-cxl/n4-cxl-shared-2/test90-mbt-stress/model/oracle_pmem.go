@@ -116,11 +116,11 @@ func (k *checker) resolvePersistent() {
 					pd.NS = TriNo
 				}
 			}
-			if pd.LsaSha == "" {
-				pd.LsaSha = ob.LsaSha
+			if pd.LSAHash == "" {
+				pd.LSAHash = ob.LSAHash
 			}
-			if pd.HeadSha == "" {
-				pd.HeadSha = ob.HeadSha
+			if pd.HeadHash == "" {
+				pd.HeadHash = ob.HeadHash
 			}
 		}
 		if pd.NS == TriYes && pd.UUID == "" {
@@ -319,7 +319,7 @@ func (k *checker) checkPersistentVM(v VM, ov *ObsVM) {
 			want[mk] = true
 		}
 	}
-	sources := k.checkFsMounts(v, ov, want, either)
+	sources := k.checkFSMounts(v, ov, want, either)
 	k.checkLeaseBinds(v, ov, sources)
 	k.checkLoops(v, ov, want, either)
 	blockdevs := k.checkPmemRegions(v, ov, users)
@@ -348,14 +348,14 @@ func (k *checker) part(v VM, name string, raw []byte, into any) bool {
 	return ok
 }
 
-// checkFsMounts (P1): the node mounts of a VM are one per device and
+// checkFSMounts (P1): the node mounts of a VM are one per device and
 // access of its prepared fs claims and leases, direct an erofs with
 // dax=always on the namespace's block device, cached an erofs on a
 // read-only direct-I/O loop device over it, ro,nosuid,nodev; nothing
 // else under mounts/. It returns the source of each node mount.
-func (k *checker) checkFsMounts(v VM, ov *ObsVM, want, either map[mountKey]bool) map[mountKey]string {
+func (k *checker) checkFSMounts(v VM, ov *ObsVM, want, either map[mountKey]bool) map[mountKey]string {
 	var mounts []ObsMount
-	if !k.part(v, "fsMounts", ov.FsMounts, &mounts) {
+	if !k.part(v, "fsMounts", ov.FSMounts, &mounts) {
 		return nil
 	}
 	sources := map[mountKey]string{}
@@ -387,7 +387,7 @@ func (k *checker) checkFsMounts(v VM, ov *ObsVM, want, either map[mountKey]bool)
 		switch {
 		case !strings.HasPrefix(m.Source, "/dev/loop") || m.Backing == nil || !strings.HasPrefix(*m.Backing, "/dev/pmem"):
 			k.waitf("%s: node mount %s: %s, want a loop device over /dev/pmem*", v, m.Target, m.Source)
-		case m.Dio == nil || !*m.Dio || m.Ro == nil || !*m.Ro:
+		case m.Dio == nil || !*m.Dio || m.RO == nil || !*m.RO:
 			k.waitf("%s: node mount %s: loop device %s not read-only with direct I/O", v, m.Target, m.Source)
 		case strings.Contains(m.Superopts, "dax=always"):
 			k.waitf("%s: node mount %s: cached with dax=always", v, m.Target)
@@ -601,7 +601,7 @@ func (k *checker) checkLeaseDirs(v VM, ov *ObsVM, want, either map[mountKey]bool
 			claims[p.Claim.UID] = true
 		}
 	}
-	for uid, names := range dirs.LeaseFs {
+	for uid, names := range dirs.LeaseFS {
 		if !claims[uid] && len(names) == 0 {
 			k.waitf("%s: lease-fs/%s of no prepared lease claim", v, uid)
 		}
@@ -778,11 +778,11 @@ func (k *checker) checkPDevs() {
 				k.failf("pdevs: %s: bytes 0-63 %q, want %q (data changed)", d, raw, pd.Raw.Text)
 			}
 		}
-		if pd.LsaSha != "" && ob.LsaSha != "" && ob.LsaSha != pd.LsaSha {
-			k.failf("pdevs: %s: the LSA changed (sha %s, was %s) without a writer's Prepare on a fresh device or pwipe", d, short(ob.LsaSha), short(pd.LsaSha))
+		if pd.LSAHash != "" && ob.LSAHash != "" && ob.LSAHash != pd.LSAHash {
+			k.failf("pdevs: %s: the LSA changed (sha %s, was %s) without a writer's Prepare on a fresh device or pwipe", d, short(ob.LSAHash), short(pd.LSAHash))
 		}
-		if pd.HeadSha != "" && ob.HeadSha != "" && ob.HeadSha != pd.HeadSha {
-			k.failf("pdevs: %s: the data changed (sha %s, was %s) without a writer's Prepare, pwrite or pwipe", d, short(ob.HeadSha), short(pd.HeadSha))
+		if pd.HeadHash != "" && ob.HeadHash != "" && ob.HeadHash != pd.HeadHash {
+			k.failf("pdevs: %s: the data changed (sha %s, was %s) without a writer's Prepare, pwrite or pwipe", d, short(ob.HeadHash), short(pd.HeadHash))
 		}
 	}
 }

@@ -181,13 +181,13 @@ func (s Stack) String() string {
 // the companion slice of the lease of a lease slot (user = nSlots +
 // slot index). A dnuma pod has two claims (A39): its pool claim is the
 // slot's user, its local slice the second one (nSlots + slot index).
-func (s *State) leaseUser(i int) int16 { return int16(len(s.Slots) + i) }
+func (s *State) secondUser(i int) int16 { return int16(len(s.Slots) + i) }
 
 // claimUsers are the users of the claims of the pod of slot i: the slot,
 // and for a dnuma pod its local claim.
 func (s *State) claimUsers(i int) []int16 {
 	if s.slot(i).Kind.dual() {
-		return []int16{int16(i), s.leaseUser(i)}
+		return []int16{int16(i), s.secondUser(i)}
 	}
 	return []int16{int16(i)}
 }
@@ -196,7 +196,7 @@ func (s *State) claimUsers(i int) []int16 {
 // claim is user u, -1 for other users.
 func (s *State) dualUser(u int16) int16 {
 	if int(u) < len(s.Slots) && s.slot(int(u)).Kind.dual() {
-		return s.leaseUser(int(u))
+		return s.secondUser(int(u))
 	}
 	return -1
 }
@@ -639,7 +639,7 @@ func (n *State) settleAll() *State {
 			// show its marker, FP1; the order of the worlds is as
 			// before)
 			for _, fired := range k.killWorlds(late) {
-				for _, w := range k.expandSlices() {
+				for _, w := range k.expandResourceSlices() {
 					for _, h := range w.expandAnyNodes() {
 						if f := h.fireKillAt(fired, late); f != nil {
 							bases = append(bases, f)
@@ -1086,7 +1086,7 @@ func (s *State) nodeMountKept(v VM, d DevID, cached bool) bool {
 		case sl.Kind.fsKind() && sl.Dev == d && ss.Node == v && (sl.Kind == KPFsc) == cached:
 			u = int16(i)
 		case sl.Kind == KPlse && d == cPmem0 && sl.VM == v && ss.LeaseMode.fs() && (ss.LeaseMode == ModePFC) == cached:
-			u = s.leaseUser(i)
+			u = s.secondUser(i)
 		}
 		if u >= 0 && s.preparedAtStart(u) && !s.hasUnprepare(u) {
 			return true
@@ -1095,24 +1095,24 @@ func (s *State) nodeMountKept(v VM, d DevID, cached bool) bool {
 	return false
 }
 
-// expandSlices returns a state per world of the pools whose controller is
+// expandResourceSlices returns a state per world of the pools whose controller is
 // down while it is not known whether it published its slices again
 // after a graceful restart (A18): present (as is) and absent (the claims
 // of the pool that are being allocated cannot be: Unsched, no prepare;
 // one allocated before, Alloc, keeps its allocation: it waits for the
 // attach, or prepares if attached before the kill).
-func (n *State) expandSlices() []*State {
+func (n *State) expandResourceSlices() []*State {
 	states := []*State{n}
 	for p := Pool(0); p < nPools; p++ {
-		if n.Ctrl[p].Up || n.Ctrl[p].Slices != SlicesUnknown {
+		if n.Ctrl[p].Up || n.Ctrl[p].ResourceSlices != SlicesUnknown {
 			continue
 		}
 		var next []*State
 		for _, b := range states {
 			present := b.clone()
-			present.Ctrl[p].Slices = SlicesPresent
+			present.Ctrl[p].ResourceSlices = SlicesPresent
 			absent := b.clone()
-			absent.Ctrl[p].Slices = SlicesAbsent
+			absent.Ctrl[p].ResourceSlices = SlicesAbsent
 			var ev []stackEvent
 			for i := range absent.Slots {
 				sl := absent.slot(i)
@@ -1259,7 +1259,7 @@ func (a *State) applyDual(b *State, sis []int, outs [][]*stackOutcome, idx []int
 		if !sl.Kind.dual() || ss.Phase == Deleting || ss.Phase == Absent {
 			continue
 		}
-		u, lu := int16(i), a.leaseUser(i)
+		u, lu := int16(i), a.secondUser(i)
 		if !b.hasPrepare(u) && !b.hasPrepare(lu) && !b.blockedAtStart(u) {
 			continue
 		}
@@ -1302,7 +1302,7 @@ func (s *State) altKey() string {
 	// attachments of a pool are different outcomes (L3, M4)
 	for p := range s.Ctrl {
 		c := &s.Ctrl[p]
-		b = append(b, byte(c.Slices))
+		b = append(b, byte(c.ResourceSlices))
 		for _, row := range c.Att {
 			for _, t := range row {
 				b = append(b, byte(t))

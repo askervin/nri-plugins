@@ -241,7 +241,7 @@ type Config struct {
 	Profile     string
 	Slots       []Slot
 	LocalBlocks [nVMs]int     // blocks of 128Mi of the local memdev of each VM
-	NodeHB      [nBridges]int // NUMA node of the regions under each host bridge
+	NUMANodeHB  [nBridges]int // NUMA node of the regions under each host bridge
 	Unsettled   int           // operations in flight before a forced settle
 	MaxRestarts int           // crash/driver-kill only below this many restarts
 	Online      bool          // "any" slots and nondeterministic outcomes
@@ -262,8 +262,8 @@ type Config struct {
 	// Reboot: the node-reboot variant of the run (--reboot, A41): none
 	// (the verb is not generated), a guest reboot or a qemu restart
 	Reboot RebootRun
-	// DRAMNodes are the NUMA nodes of DRAM of every VM (D of A38)
-	DRAMNodes []int
+	// DRAMNUMANodes are the NUMA nodes of DRAM of every VM (D of A38)
+	DRAMNUMANodes []int
 	// Verbs that the generator may use; nil: every verb.
 	slotByName map[string]int
 }
@@ -323,15 +323,15 @@ func rebootVM(v VM) bool { return v == VM0 || v == VM1 }
 // defaultConfig returns the configuration of the contract's defaults.
 func defaultConfig() *Config {
 	return &Config{
-		PlanStates:  defaultPlanStates,
-		StallWindow: defaultStallWindow,
-		Profile:     "fullp",
-		LocalBlocks: [nVMs]int{VM0: 2, VM1: 2, VM2: 8},
-		NodeHB:      [nBridges]int{HB0: 2, HB1: 3},
-		Unsettled:   3,
-		MaxRestarts: 2,
-		Online:      true,
-		DRAMNodes:   []int{0, 1},
+		PlanStates:    defaultPlanStates,
+		StallWindow:   defaultStallWindow,
+		Profile:       "fullp",
+		LocalBlocks:   [nVMs]int{VM0: 2, VM1: 2, VM2: 8},
+		NUMANodeHB:    [nBridges]int{HB0: 2, HB1: 3},
+		Unsettled:     3,
+		MaxRestarts:   2,
+		Online:        true,
+		DRAMNUMANodes: []int{0, 1},
 	}
 }
 
@@ -362,16 +362,16 @@ func formatLocalBlocks(b [nVMs]int) string {
 	return fmt.Sprintf("vm2=%d,vm1=%d,vm0=%d", b[VM2], b[VM1], b[VM0])
 }
 
-// bridgeNode is the NUMA node of the regions under a host bridge.
-func (c *Config) bridgeNode(b Bridge) int { return c.NodeHB[b] }
+// bridgeNUMANode is the NUMA node of the regions under a host bridge.
+func (c *Config) bridgeNUMANode(b Bridge) int { return c.NUMANodeHB[b] }
 
-// cxlNodes are the NUMA nodes of CXL memory (fenced nodes are among them).
-func (c *Config) cxlNodes() []int { return []int{c.NodeHB[HB0], c.NodeHB[HB1]} }
+// cxlNUMANodes are the NUMA nodes of CXL memory (fenced nodes are among them).
+func (c *Config) cxlNUMANodes() []int { return []int{c.NUMANodeHB[HB0], c.NUMANodeHB[HB1]} }
 
-// nodeBridge returns the host bridge of a NUMA node, -1 for others.
-func (c *Config) nodeBridge(node int) Bridge {
+// NUMANodeBridge returns the host bridge of a NUMA node, -1 for others.
+func (c *Config) NUMANodeBridge(node int) Bridge {
 	for b := Bridge(0); b < nBridges; b++ {
-		if c.NodeHB[b] == node {
+		if c.NUMANodeHB[b] == node {
 			return b
 		}
 	}

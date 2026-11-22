@@ -75,9 +75,9 @@ func (s *sim) fixPDev(n *State) {
 // simPDev is the pdevs entry of a persistent device in the truth.
 func simPDev(pd *PDev) *ObsPDev {
 	ob := &ObsPDev{LSA: "zero", PFN: pd.NS == TriYes}
-	ob.LsaSha = shaOf("lsa:" + pd.UUID)
+	ob.LSAHash = shaOf("lsa:" + pd.UUID)
 	content := fmt.Sprintf("ns=%v fs=%v tok=%v raw=%v", pd.NS, pd.FS, pd.Tok, pd.Raw)
-	ob.HeadSha = shaOf(content)
+	ob.HeadHash = shaOf(content)
 	if pd.NS == TriYes {
 		ob.LSA = "labels"
 		off := uint64(2 << 20)
@@ -191,14 +191,14 @@ func (s *sim) observePmemVM(st *State, v VM, ov *ObsVM) {
 				Superopts: "ro,dax=always", Vfsopts: "ro,nosuid,nodev,relatime", Count: 1}
 			if cached {
 				back, t := simBlockdev(d), true
-				m.Source, m.Superopts, m.Backing, m.Dio, m.Ro = simLoop(d), "ro", &back, &t, &t
+				m.Source, m.Superopts, m.Backing, m.Dio, m.RO = simLoop(d), "ro", &back, &t, &t
 				loops = append(loops, ObsLoop{Name: strings.TrimPrefix(simLoop(d), "/dev/"), Backing: &back, Dio: &t, Ro: &t})
 			}
 			mounts = append(mounts, m)
 			names = append(names, mk.name())
 		}
 	}
-	ov.FsMounts = rawJSON(nonNil(mounts))
+	ov.FSMounts = rawJSON(nonNil(mounts))
 	ov.Loops = rawJSON(nonNil(loops))
 	var binds []ObsMount
 	leaseFs := map[string][]string{}
@@ -212,7 +212,7 @@ func (s *sim) observePmemVM(st *State, v VM, ov *ObsVM) {
 		leaseFs[b.uid] = append(leaseFs[b.uid], b.name)
 	}
 	ov.LeaseBinds = rawJSON(nonNil(binds))
-	ov.LeaseDirs = rawJSON(ObsLeaseDirs{LeaseFs: leaseFs, Leases: []string{}, Mounts: nonNil(names)})
+	ov.LeaseDirs = rawJSON(ObsLeaseDirs{LeaseFS: leaseFs, Leases: []string{}, Mounts: nonNil(names)})
 	claims := map[string]ObsPoolClaim{}
 	cdi := map[string]ObsCDIDevice{}
 	for _, i := range p.claims {

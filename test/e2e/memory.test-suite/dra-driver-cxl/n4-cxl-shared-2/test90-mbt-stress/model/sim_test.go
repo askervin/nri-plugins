@@ -705,7 +705,7 @@ func (s *sim) observe(step, poll int) *Observation {
 	o.PoolSlices = map[string][]ObsPoolSlice{}
 	for _, p := range cfg.poolsUsed() {
 		list := []ObsPoolSlice{}
-		if st.Ctrl[p].Slices == SlicesPresent {
+		if st.Ctrl[p].ResourceSlices == SlicesPresent {
 			var nodes []string
 			for _, v := range poolHosts[p] {
 				nodes = append(nodes, v.String())
@@ -761,7 +761,7 @@ func (s *sim) observeVM(v VM) *ObsVM {
 		BootID:  simBootID(v, st.Drv[v].Reboots),
 		Memdevs: []ObsMemdev{{Name: "mem1", Serial: formatSerial(localSerial), Size: uint64(cfg.LocalBlocks[v]) * blockSize}},
 		Regions: []ObsRegion{},
-		Nodes:   map[string]ObsNode{"0": {MemTotal: 4 << 30}, "1": {MemTotal: 4 << 30}},
+		Nodes:   map[string]ObsNUMANode{"0": {MemTotal: 4 << 30}, "1": {MemTotal: 4 << 30}},
 		CDI:     map[string][]string{},
 	}
 	for p := Pool(0); p < nPools; p++ {
@@ -786,7 +786,7 @@ func (s *sim) observeVM(v VM) *ObsVM {
 		localClaims[uid] = 1
 		if numa {
 			localDax = append(localDax, ObsDax{Name: simDaxName(localNo, k), Size: blockSize, Driver: &kmem, Online: blockSize})
-			mem[cfg.bridgeNode(HB0)] += blockSize
+			mem[cfg.bridgeNUMANode(HB0)] += blockSize
 		} else {
 			localDax = append(localDax, ObsDax{Name: simDaxName(localNo, k), Size: blockSize, Driver: &ddax})
 		}
@@ -795,42 +795,42 @@ func (s *sim) observeVM(v VM) *ObsVM {
 	containers := []ObsContainer{}
 	// the cpuset.mems.effective of the containers as the driver makes
 	// it (D/lend.go wantMems, A38): the CXL nodes with memory first
-	var memNodes nodeSet
+	var memNUMANodes numaSet
 	for i := range st.Slots {
 		ss, sl := &st.Slots[i], st.slot(i)
-		if sl.Kind == KLease && sl.VM == v && ss.Lease == LeaseHeld && ss.LeaseMode == ModeNuma {
-			memNodes |= nodeBit(cfg.bridgeNode(HB0))
+		if sl.Kind == KLease && sl.VM == v && ss.Lease == LeaseHeld && ss.LeaseMode == ModeNUMA {
+			memNUMANodes |= numaBit(cfg.bridgeNUMANode(HB0))
 		}
 		if ss.Phase != Running || ss.Node != v {
 			continue
 		}
 		switch sl.Kind {
-		case KXNuma:
-			memNodes |= nodeBit(cfg.bridgeNode(poolBridge[sl.Pool]))
-		case KLNuma, KLSteer:
-			memNodes |= nodeBit(cfg.bridgeNode(HB0))
-		case KDNuma:
-			memNodes |= nodeBit(cfg.bridgeNode(HB0)) | nodeBit(cfg.bridgeNode(HB1))
+		case KXNUMA:
+			memNUMANodes |= numaBit(cfg.bridgeNUMANode(poolBridge[sl.Pool]))
+		case KLNUMA, KLSteer:
+			memNUMANodes |= numaBit(cfg.bridgeNUMANode(HB0))
+		case KDNUMA:
+			memNUMANodes |= numaBit(cfg.bridgeNUMANode(HB0)) | numaBit(cfg.bridgeNUMANode(HB1))
 		}
 	}
-	fenced := nodesOf(st.bitNodes(st.Drv[v].F | st.Drv[v].FMaybe))
+	fenced := numaSetOf(st.fenceNUMANodes(st.Drv[v].F | st.Drv[v].FMaybe))
 	if st.Fence == FenceAM {
 		// a node is fenced before its memory goes online (D/fence.go)
-		fenced |= memNodes
+		fenced |= memNUMANodes
 	}
-	dram := nodeBit(0) | nodeBit(1)
-	effective := func(claimed nodeSet, loose, steered bool) string {
-		var n nodeSet
+	dram := numaBit(0) | numaBit(1)
+	effective := func(claimed numaSet, loose, steered bool) string {
+		var n numaSet
 		switch {
 		case steered:
 			// the manager's steps and the nearest DRAM node
-			n = nodeBit(0) | claimed
+			n = numaBit(0) | claimed
 		case loose:
 			n = dram | claimed
 		case st.Fence == FenceNone:
-			n = dram | memNodes
+			n = dram | memNUMANodes
 		default:
-			n = dram | claimed | (memNodes &^ fenced)
+			n = dram | claimed | (memNUMANodes &^ fenced)
 		}
 		return n.String()
 	}
@@ -840,7 +840,7 @@ func (s *sim) observeVM(v VM) *ObsVM {
 		if sl.Kind == KLease && sl.VM == v && ss.Lease == LeaseHeld {
 			id := st.LeaseIDs[i]
 			prepared = append(prepared, companionUID(id))
-			slice(companionUID(id), ss.LeaseMode == ModeNuma, 1+len(st.Slots)+i)
+			slice(companionUID(id), ss.LeaseMode == ModeNUMA, 1+len(st.Slots)+i)
 			ms := effective(0, ss.CompLoose, false)
 			containers = append(containers, ObsContainer{Ns: "mbt", Pod: companionName(id), Name: "pause", Mems: ms, MemsEffective: ms, MemoryHigh: "max"})
 		}
@@ -871,11 +871,11 @@ func (s *sim) observeVM(v VM) *ObsVM {
 			prepared = append(prepared, luid)
 			claimsCDI = append(claimsCDI, "claim-"+luid+"-0")
 			slice(luid, true, 1+i)
-			mems[cfg.bridgeNode(HB0)] = true
+			mems[cfg.bridgeNUMANode(HB0)] = true
 		case sl.Kind.pooled():
 			pool = append(pool, uid)
 			poolCDI = append(poolCDI, "claim-"+uid+"-0")
-			if sl.Kind == KXNuma {
+			if sl.Kind == KXNUMA {
 				poolMode[sl.Dev] = 1
 				mem[sl.numaNode(cfg)] += devices[sl.Dev].Size
 				mems[sl.numaNode(cfg)] = true
@@ -893,8 +893,8 @@ func (s *sim) observeVM(v VM) *ObsVM {
 			prepared = append(prepared, uid)
 			claimsCDI = append(claimsCDI, "claim-"+uid+"-0")
 			leasesCDI = append(leasesCDI, "lease-"+uid)
-			if ss.Lease == LeaseHeld && ss.LeaseMode == ModeNuma {
-				mems[cfg.bridgeNode(HB0)] = true
+			if ss.Lease == LeaseHeld && ss.LeaseMode == ModeNUMA {
+				mems[cfg.bridgeNUMANode(HB0)] = true
 			}
 		}
 		high := "max"
@@ -913,7 +913,7 @@ func (s *sim) observeVM(v VM) *ObsVM {
 			continue
 		}
 		dev := devices[d]
-		node := cfg.bridgeNode(poolBridge[dev.Pool])
+		node := cfg.bridgeNUMANode(poolBridge[dev.Pool])
 		no := simRegionNo(st, v, int(d))
 		r := ObsRegion{Name: fmt.Sprintf("region%d", no), Serials: []string{formatSerial(dev.Serial)}, Mode: "ram", Size: dev.Size, Node: &node}
 		if poolMode[d] == 1 {
@@ -926,15 +926,15 @@ func (s *sim) observeVM(v VM) *ObsVM {
 	}
 	memdevs := []ObsLocalMemdev{}
 	if len(localDax) > 0 {
-		node := cfg.bridgeNode(HB0)
+		node := cfg.bridgeNUMANode(HB0)
 		dax := append([]ObsDax{{Name: simDaxName(localNo, 0), Size: 0, Driver: &ddax}}, localDax...)
 		region := fmt.Sprintf("region%d", localNo)
 		ov.Regions = append(ov.Regions, ObsRegion{Name: region, Serials: []string{formatSerial(localSerial)}, Mode: "ram",
 			Size: uint64(cfg.LocalBlocks[v]) * blockSize, Node: &node, Dax: dax})
 		memdevs = append(memdevs, ObsLocalMemdev{Serial: formatSerial(localSerial), Claims: localClaims})
 	}
-	for _, n := range cfg.cxlNodes() {
-		ov.Nodes[strconv.Itoa(n)] = ObsNode{MemTotal: mem[n]}
+	for _, n := range cfg.cxlNUMANodes() {
+		ov.Nodes[strconv.Itoa(n)] = ObsNUMANode{MemTotal: mem[n]}
 	}
 	claims, leases := s.leaseStore(v)
 	ov.State = &ObsDriverState{BootID: ov.BootID, Prepared: map[string][]string{localDriver: prepared, poolDriver: pool},

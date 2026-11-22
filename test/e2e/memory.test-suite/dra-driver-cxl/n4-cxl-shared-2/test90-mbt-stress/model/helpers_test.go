@@ -106,10 +106,10 @@ func dumpAlts(s *State) string {
 }
 
 // adoptSlices returns the outcome of a settle with the given slices.
-func adoptSlices(t *testing.T, s *State, p Pool, st SliceSt) *State {
+func adoptSlices(t *testing.T, s *State, p Pool, st ResourceSlicesState) *State {
 	t.Helper()
 	for _, a := range alts(s) {
-		if a.Ctrl[p].Slices == st {
+		if a.Ctrl[p].ResourceSlices == st {
 			return a
 		}
 	}

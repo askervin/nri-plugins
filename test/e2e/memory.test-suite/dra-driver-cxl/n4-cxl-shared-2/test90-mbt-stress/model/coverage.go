@@ -178,8 +178,8 @@ func faultContext(s *State, a Act) []string {
 func memsStrings(s *State) []string {
 	var out []string
 	for v := VM(0); v < nVMs; v++ {
-		f, m := nodesOf(s.bitNodes(s.Drv[v].F)), s.memNodes(v)
-		str := func(e nodeSet) string {
+		f, m := numaSetOf(s.fenceNUMANodes(s.Drv[v].F)), s.memNUMANodes(v)
+		str := func(e numaSet) string {
 			return "mems|" + s.Fence.short() + "|e=" + e.String() + "|f=" + f.String() + "|m=" + m.String()
 		}
 		for i := range s.Slots {
@@ -189,7 +189,7 @@ func memsStrings(s *State) []string {
 				out = append(out, str(0))
 			}
 			if ss.Phase == Running && ss.Node == v {
-				out = append(out, str(s.claimNodes(i)))
+				out = append(out, str(s.claimNUMANodes(i)))
 			}
 		}
 	}
@@ -286,7 +286,7 @@ func leaseChances(s *State) []string {
 		if !sl.Kind.leaseKind() || s.Slots[i].Phase != Running {
 			continue
 		}
-		modes := []LeaseMode{ModeNuma}
+		modes := []LeaseMode{ModeNUMA}
 		if sl.Kind == KPlse {
 			modes = []LeaseMode{ModePBW, ModePBR, ModePFD, ModePFC}
 		}

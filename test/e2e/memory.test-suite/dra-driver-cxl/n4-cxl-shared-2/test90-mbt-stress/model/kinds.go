@@ -27,12 +27,12 @@ import (
 type Kind int8
 
 const (
-	KXNuma  Kind = iota // exclusive pool device, numa
+	KXNUMA  Kind = iota // exclusive pool device, numa
 	KXDax               // exclusive pool device, dax
 	KSDax               // a share of the shared pool device, dax
 	KSRo                // a read-only share
 	KSExcl              // the shared pool device without shares: exclusive
-	KLNuma              // a 128Mi numa slice of the local memdev
+	KLNUMA              // a 128Mi numa slice of the local memdev
 	KLDax               // a 128Mi dax slice
 	KLSteer             // a numa slice with steering policy auto
 	KLease              // a lease claim
@@ -48,7 +48,7 @@ const (
 	KPlse // a lease claim whose leases are of c-pmem0 (pbw, pbr, pfd, pfc)
 	// two claims in one container (A39): a local numa slice (node 2) and
 	// pool-c's exclusive device c-pooled0 in numa (node 3)
-	KDNuma
+	KDNUMA
 	nKinds
 )
 
@@ -59,20 +59,20 @@ var kindNames = [nKinds]string{"xnuma", "xdax", "sdax", "sro", "sexcl", "lnuma",
 func (k Kind) String() string { return kindNames[k] }
 
 // pooled: the kind has a pool device.
-func (k Kind) pooled() bool { return k <= KSExcl || k.persistent() || k == KDNuma }
+func (k Kind) pooled() bool { return k <= KSExcl || k.persistent() || k == KDNUMA }
 
 // poolSuffix: the kind's name has its pool (xnuma-a); dnuma has pool c
 // only.
-func (k Kind) poolSuffix() bool { return k.pooled() && k != KDNuma }
+func (k Kind) poolSuffix() bool { return k.pooled() && k != KDNUMA }
 
 // dual: the pod has two claims, its pool device and a local slice (A39).
 // Its pool claim is the slot's claim (Res, Dev); the local one is a
-// second user of the decoder stacks (State.leaseUser) and holds a block
+// second user of the decoder stacks (State.secondUser) and holds a block
 // of the local memdev of its VM.
-func (k Kind) dual() bool { return k == KDNuma }
+func (k Kind) dual() bool { return k == KDNUMA }
 
 // hasLocal: the kind holds a block of the local memdev of its VM.
-func (k Kind) hasLocal() bool { return k.local() || k == KDNuma }
+func (k Kind) hasLocal() bool { return k.local() || k == KDNUMA }
 
 // persistent: the kind has a persistent pool device (A22).
 func (k Kind) persistent() bool { return k >= KPWr && k <= KXPf }
@@ -95,10 +95,10 @@ func (k Kind) wholeShared() bool { return k == KSExcl || k == KPWr }
 func (k Kind) leaseKind() bool { return k == KLease || k == KPlse }
 
 // local: the kind has a slice of the local memdev.
-func (k Kind) local() bool { return k == KLNuma || k == KLDax || k == KLSteer }
+func (k Kind) local() bool { return k == KLNUMA || k == KLDax || k == KLSteer }
 
 // numa: the kind's memory is online on a node of the container.
-func (k Kind) numa() bool { return k == KXNuma || k == KLNuma || k == KLSteer || k == KDNuma }
+func (k Kind) numa() bool { return k == KXNUMA || k == KLNUMA || k == KLSteer || k == KDNUMA }
 
 // dax: the container has a dax device to write and read.
 func (k Kind) dax() bool {
@@ -125,7 +125,7 @@ func parseKind(s string) (Kind, Pool, error) {
 		if k.poolSuffix() != hasPool {
 			break
 		}
-		if k == KDNuma {
+		if k == KDNUMA {
 			return k, PoolC, nil
 		}
 		if !hasPool {
@@ -181,10 +181,10 @@ func (s *Slot) hostOK(v VM) bool {
 // (dnuma: of its pool claim).
 func (s *Slot) numaNode(c *Config) int {
 	switch s.Kind {
-	case KXNuma, KDNuma:
-		return c.bridgeNode(poolBridge[s.Pool])
-	case KLNuma, KLSteer:
-		return c.bridgeNode(HB0)
+	case KXNUMA, KDNUMA:
+		return c.bridgeNUMANode(poolBridge[s.Pool])
+	case KLNUMA, KLSteer:
+		return c.bridgeNUMANode(HB0)
 	}
 	return -1
 }
@@ -193,8 +193,8 @@ func (s *Slot) numaNode(c *Config) int {
 // A38 without lent nodes).
 func (s *Slot) numaNodes(c *Config) []int {
 	switch {
-	case s.Kind == KDNuma:
-		return []int{c.bridgeNode(HB0), c.bridgeNode(HB1)}
+	case s.Kind == KDNUMA:
+		return []int{c.bridgeNUMANode(HB0), c.bridgeNUMANode(HB1)}
 	case s.Kind.numa():
 		return []int{s.numaNode(c)}
 	}
@@ -204,7 +204,7 @@ func (s *Slot) numaNodes(c *Config) []int {
 // holdsRes: the slot's claims take the resource (dnuma: its pool device
 // and the local memdev of its VM).
 func (s *Slot) holdsRes(r Res) bool {
-	return r != resNone && (s.Res == r || (s.Kind == KDNuma && r == localRes(s.VM)))
+	return r != resNone && (s.Res == r || (s.Kind == KDNUMA && r == localRes(s.VM)))
 }
 
 // parseSlot parses KIND@VM#I.
@@ -242,7 +242,7 @@ func parseSlot(name string) (Slot, error) {
 			s.Dev = cPmem1
 		case k.persistent():
 			s.Dev = cPmem0
-		case k == KDNuma && vm == VMAny:
+		case k == KDNUMA && vm == VMAny:
 			return Slot{}, fmt.Errorf("slot %q: a local kind needs a VM", name)
 		case k.onShared():
 			s.Dev = sharedDev(p)

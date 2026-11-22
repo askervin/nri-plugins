@@ -104,7 +104,7 @@ func adoptionRecord(pred *State, alt int, adopted *State) string {
 		}
 	}
 	for p := Pool(0); p < nPools; p++ {
-		if x := adopted.Ctrl[p].Slices; x != base.Ctrl[p].Slices && x != SlicesUnknown {
+		if x := adopted.Ctrl[p].ResourceSlices; x != base.Ctrl[p].ResourceSlices && x != SlicesUnknown {
 			items = append(items, "slices="+p.String()+":"+x.String())
 		}
 	}
@@ -122,7 +122,7 @@ func adoptionRecord(pred *State, alt int, adopted *State) string {
 		for _, f := range []struct {
 			item string
 			a, b string
-		}{{"puuid", a.UUID, b.UUID}, {"plsa", a.LsaSha, b.LsaSha}, {"phead", a.HeadSha, b.HeadSha}} {
+		}{{"puuid", a.UUID, b.UUID}, {"plsa", a.LSAHash, b.LSAHash}, {"phead", a.HeadHash, b.HeadHash}} {
 			if f.a != f.b && f.a != "" {
 				items = append(items, f.item+"="+name+":"+url.QueryEscape(f.a))
 			}
@@ -318,9 +318,9 @@ func (n *State) applyItem(kind, key, val string) error {
 		}
 		switch val {
 		case "present":
-			n.Ctrl[p].Slices = SlicesPresent
+			n.Ctrl[p].ResourceSlices = SlicesPresent
 		case "absent":
-			n.Ctrl[p].Slices = SlicesAbsent
+			n.Ctrl[p].ResourceSlices = SlicesAbsent
 		default:
 			return fmt.Errorf("invalid slices %q", val)
 		}
@@ -345,9 +345,9 @@ func (n *State) applyItem(kind, key, val string) error {
 		case "puuid":
 			pd.UUID = text
 		case "plsa":
-			pd.LsaSha = text
+			pd.LSAHash = text
 		case "phead":
-			pd.HeadSha = text
+			pd.HeadHash = text
 		case "ptok":
 			pd.Tok = Token{Known: true, Text: text}
 		case "praw":

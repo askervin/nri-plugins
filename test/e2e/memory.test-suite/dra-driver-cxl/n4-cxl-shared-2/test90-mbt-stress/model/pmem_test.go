@@ -261,7 +261,7 @@ func TestPmemOracleInvariants(t *testing.T) {
 	base := observation(t, s)
 	v, adopted := checkState(s, base, "")
 	wantVerdict(t, v, VOK, "ok")
-	if pd := pdevOf(adopted, cPmem0); pd.UUID == "" || pd.LsaSha == "" || pd.HeadSha == "" {
+	if pd := pdevOf(adopted, cPmem0); pd.UUID == "" || pd.LSAHash == "" || pd.HeadHash == "" {
 		t.Fatalf("not adopted: %+v", *pd)
 	}
 	s = adopted
@@ -279,14 +279,14 @@ func TestPmemOracleInvariants(t *testing.T) {
 	}{
 		{"P1 stale node mount", func(o *Observation) {
 			var m []ObsMount
-			vmPart(o, "vm0", &o.VMs["vm0"].FsMounts, func(any) any {
+			vmPart(o, "vm0", &o.VMs["vm0"].FSMounts, func(any) any {
 				return append(m, ObsMount{Target: simPoolMounts + "/c1ae2002-direct", Source: "/dev/pmem0", Fstype: "erofs", Superopts: "ro,dax=always", Vfsopts: "ro,nosuid,nodev"})
 			}, &m)
 		}, VWait, "stale node mount"},
-		{"P1 node mount gone", func(o *Observation) { o.VMs["vm1"].FsMounts = json.RawMessage("[]") }, VWait, "no node mount c1ae2002-direct"},
+		{"P1 node mount gone", func(o *Observation) { o.VMs["vm1"].FSMounts = json.RawMessage("[]") }, VWait, "no node mount c1ae2002-direct"},
 		{"P1 direct without dax", func(o *Observation) {
 			var m []ObsMount
-			vmPart(o, "vm1", &o.VMs["vm1"].FsMounts, func(any) any {
+			vmPart(o, "vm1", &o.VMs["vm1"].FSMounts, func(any) any {
 				for j := range m {
 					m[j].Superopts = "ro"
 				}
@@ -318,7 +318,7 @@ func TestPmemOracleInvariants(t *testing.T) {
 		{"P5 labels changed", func(o *Observation) {
 			var m map[string]*ObsPDev
 			_ = json.Unmarshal(o.PDevs, &m)
-			m["c-pmem0"].LsaSha = "beef"
+			m["c-pmem0"].LSAHash = "beef"
 			o.PDevs = rawJSON(m)
 		}, VFail, "the LSA changed"},
 		{"P6 token changed", func(o *Observation) {
@@ -352,7 +352,7 @@ func TestPmemOracleInvariants(t *testing.T) {
 			}, &m)
 		}, VWait, "permissions rw"},
 		{"null part", func(o *Observation) { o.VMs["vm1"].Pmem = json.RawMessage("null") }, VWait, "pmem not observed (null)"},
-		{"absent part: not checked", func(o *Observation) { o.VMs["vm1"].FsMounts = nil }, VOK, "ok"},
+		{"absent part: not checked", func(o *Observation) { o.VMs["vm1"].FSMounts = nil }, VOK, "ok"},
 	}
 	for _, c := range cases {
 		o := observation(t, s)

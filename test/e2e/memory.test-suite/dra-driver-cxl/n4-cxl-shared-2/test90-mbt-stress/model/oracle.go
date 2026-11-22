@@ -424,7 +424,7 @@ func (k *checker) resolve() {
 				} else {
 					ss.Phase = Attaching
 				}
-			case rs.Ctrl[sl.Pool].Slices == SlicesAbsent && p.Unschedulable && !p.Deleting:
+			case rs.Ctrl[sl.Pool].ResourceSlices == SlicesAbsent && p.Unschedulable && !p.Deleting:
 				// not allocated and its pool's slices are gone (a
 				// world without them): unschedulable like the
 				// claims that wait for them, not stalled
@@ -1197,7 +1197,7 @@ func (k *checker) checkPoolSlices() {
 			k.waitf("pool %s: slices not observed", p)
 			continue
 		}
-		switch st := k.rs.Ctrl[p].Slices; {
+		switch st := k.rs.Ctrl[p].ResourceSlices; {
 		case st == SlicesPresent && len(list) == 0:
 			k.waitf("pool %s: no ResourceSlices, want them published", p)
 		case st == SlicesAbsent && len(list) > 0:
@@ -1314,35 +1314,35 @@ func (k *checker) checkAttachments() {
 
 // predicted per-VM facts, after resolution
 type vmPred struct {
-	poolMode  [nDevs]int8 // 0 not prepared, 1 numa, 2 dax, 3 pmem, 4 pmem maybe (refused)
-	slicesN   int         // local numa slices (pods and leases)
-	slicesD   int         // local dax slices
-	memdev    [nDevs]Tri  // pool memdevs present
-	memTotal  map[int]uint64
-	localUIDs map[string]bool // claims of local and lease slots prepared here
-	poolUIDs  map[string]bool // pool claims prepared here
-	leaseUIDs map[string]bool // lease claims prepared here
-	leases    int             // companions prepared here
-	pcomp     int             // companions of persistent leases prepared here
+	poolMode        [nDevs]int8 // 0 not prepared, 1 numa, 2 dax, 3 pmem, 4 pmem maybe (refused)
+	localSlicesNUMA int         // local numa slices (pods and leases)
+	localSlicesDax  int         // local dax slices
+	memdev          [nDevs]Tri  // pool memdevs present
+	memTotal        map[int]uint64
+	localUIDs       map[string]bool // claims of local and lease slots prepared here
+	poolUIDs        map[string]bool // pool claims prepared here
+	leaseUIDs       map[string]bool // lease claims prepared here
+	leases          int             // companions prepared here
+	pcomp           int             // companions of persistent leases prepared here
 }
 
 func (k *checker) predictVM(v VM) *vmPred {
 	rs := k.rs
 	pr := &vmPred{memTotal: map[int]uint64{}, localUIDs: map[string]bool{}, poolUIDs: map[string]bool{}, leaseUIDs: map[string]bool{}}
-	for _, n := range k.cfg.cxlNodes() {
+	for _, n := range k.cfg.cxlNUMANodes() {
 		pr.memTotal[n] = 0
 	}
-	hb0 := k.cfg.bridgeNode(HB0)
+	hb0 := k.cfg.bridgeNUMANode(HB0)
 	for i := range rs.Slots {
 		ss := &rs.Slots[i]
 		sl := rs.slot(i)
 		if sl.Kind == KLease && sl.VM == v && ss.Lease == LeaseHeld {
 			pr.leases++
-			if ss.LeaseMode == ModeNuma {
-				pr.slicesN++
+			if ss.LeaseMode == ModeNUMA {
+				pr.localSlicesNUMA++
 				pr.memTotal[hb0] += blockSize
 			} else {
-				pr.slicesD++
+				pr.localSlicesDax++
 			}
 		}
 		if sl.Kind == KPlse && sl.VM == v && (ss.Lease == LeaseHeld || ss.Lease == LeaseBusy) && ss.LeaseMode.persistent() {
@@ -1371,8 +1371,8 @@ func (k *checker) predictVM(v VM) *vmPred {
 		case sl.Kind.dual():
 			// c-pooled0 in numa and a numa slice (A39)
 			pr.poolMode[sl.Dev] = 1
-			pr.memTotal[k.cfg.bridgeNode(poolBridge[sl.Pool])] += devices[sl.Dev].Size
-			pr.slicesN++
+			pr.memTotal[k.cfg.bridgeNUMANode(poolBridge[sl.Pool])] += devices[sl.Dev].Size
+			pr.localSlicesNUMA++
 			pr.memTotal[hb0] += blockSize
 			if uid != "" {
 				pr.poolUIDs[uid] = true
@@ -1382,9 +1382,9 @@ func (k *checker) predictVM(v VM) *vmPred {
 			}
 		case sl.Kind.pooled():
 			mode := int8(2)
-			if sl.Kind == KXNuma {
+			if sl.Kind == KXNUMA {
 				mode = 1
-				pr.memTotal[k.cfg.bridgeNode(poolBridge[sl.Pool])] += devices[sl.Dev].Size
+				pr.memTotal[k.cfg.bridgeNUMANode(poolBridge[sl.Pool])] += devices[sl.Dev].Size
 			}
 			pr.poolMode[sl.Dev] = mode
 			if uid != "" {
@@ -1392,9 +1392,9 @@ func (k *checker) predictVM(v VM) *vmPred {
 			}
 		case sl.Kind.local():
 			if sl.Kind == KLDax {
-				pr.slicesD++
+				pr.localSlicesDax++
 			} else {
-				pr.slicesN++
+				pr.localSlicesNUMA++
 				pr.memTotal[hb0] += blockSize
 			}
 			if uid != "" {
@@ -1735,7 +1735,7 @@ func (k *checker) checkRegions(v VM, ov *ObsVM, pr *vmPred) {
 		}
 	}
 	r := find(localSerial)
-	n := pr.slicesN + pr.slicesD
+	n := pr.localSlicesNUMA + pr.localSlicesDax
 	switch {
 	case n == 0 && r != nil:
 		if km, dd, _, _, _, _ := daxSummary(r); km+dd > 0 {
@@ -1748,8 +1748,8 @@ func (k *checker) checkRegions(v VM, ov *ObsVM, pr *vmPred) {
 		k.waitf("%s: no local region, want %d slices", v, n)
 	default:
 		km, dd, kms, dds, online, other := daxSummary(r)
-		if km != pr.slicesN || dd != pr.slicesD || other > 0 {
-			k.waitf("%s: local region %s: %d numa and %d dax slices (%d others), want %d and %d", v, r.Name, km, dd, other, pr.slicesN, pr.slicesD)
+		if km != pr.localSlicesNUMA || dd != pr.localSlicesDax || other > 0 {
+			k.waitf("%s: local region %s: %d numa and %d dax slices (%d others), want %d and %d", v, r.Name, km, dd, other, pr.localSlicesNUMA, pr.localSlicesDax)
 		}
 		for _, s := range append(kms, dds...) {
 			if s != blockSize {
@@ -1763,8 +1763,8 @@ func (k *checker) checkRegions(v VM, ov *ObsVM, pr *vmPred) {
 				break
 			}
 		}
-		if km > 0 && r.Node != nil && *r.Node != k.cfg.bridgeNode(HB0) {
-			k.waitf("%s: local region %s on node %d, want %d (--node-hb0)", v, r.Name, *r.Node, k.cfg.bridgeNode(HB0))
+		if km > 0 && r.Node != nil && *r.Node != k.cfg.bridgeNUMANode(HB0) {
+			k.waitf("%s: local region %s on node %d, want %d (--node-hb0)", v, r.Name, *r.Node, k.cfg.bridgeNUMANode(HB0))
 		}
 	}
 	for j := range ov.Regions {
@@ -1784,7 +1784,7 @@ func (k *checker) checkPoolRegion(v VM, d DevID, numa bool, r *ObsRegion) {
 	}
 	km, dd, _, _, online, other := daxSummary(r)
 	if numa {
-		want := k.cfg.bridgeNode(poolBridge[dev.Pool])
+		want := k.cfg.bridgeNUMANode(poolBridge[dev.Pool])
 		switch {
 		case km != 1 || dd != 0 || other != 0:
 			k.waitf("%s: region %s of %s: %d kmem and %d device_dax devices, want numa (one kmem)", v, r.Name, d, km, dd)
@@ -1805,7 +1805,7 @@ func (k *checker) checkNodes(v VM, ov *ObsVM, pr *vmPred) {
 		k.waitf("%s: nodes not observed", v)
 		return
 	}
-	for _, n := range k.cfg.cxlNodes() {
+	for _, n := range k.cfg.cxlNUMANodes() {
 		got := ov.Nodes[strconv.Itoa(n)].MemTotal
 		if got != pr.memTotal[n] {
 			k.waitf("%s: node %d MemTotal %d (%dMi), want %d (%dMi)", v, n, got, got>>20, pr.memTotal[n], pr.memTotal[n]>>20)
@@ -1850,7 +1850,7 @@ func (k *checker) checkStateFiles(v VM, ov *ObsVM, pr *vmPred) {
 		k.waitf("%s: state.json: dax devices %v of local memdevs without a user", v, st.UnusedDax)
 	}
 	if st.LocalMemdevs != nil {
-		n := pr.slicesN + pr.slicesD
+		n := pr.localSlicesNUMA + pr.localSlicesDax
 		found := false
 		for j := range st.LocalMemdevs {
 			m := &st.LocalMemdevs[j]
@@ -1957,15 +1957,15 @@ func sameSet(a, b map[string]bool) bool {
 func (k *checker) checkFencing(v VM, ov *ObsVM, pr *vmPred) {
 	rs := k.rs
 	d := &rs.Drv[v]
-	var mem nodeSet
+	var mem numaSet
 	for n, b := range pr.memTotal {
 		if b > 0 {
-			mem |= nodeBit(n)
+			mem |= numaBit(n)
 		}
 	}
-	dram := nodesOf(k.cfg.DRAMNodes)
-	cxl := nodesOf(k.cfg.cxlNodes())
-	fenced, maybe := nodesOf(rs.bitNodes(d.F)), nodesOf(rs.bitNodes(d.FMaybe))
+	dram := numaSetOf(k.cfg.DRAMNUMANodes)
+	cxl := numaSetOf(k.cfg.cxlNUMANodes())
+	fenced, maybe := numaSetOf(rs.fenceNUMANodes(d.F)), numaSetOf(rs.fenceNUMANodes(d.FMaybe))
 	podSlot := map[string]int{}
 	for i, p := range k.cur {
 		if p != nil {
@@ -2010,7 +2010,7 @@ func (k *checker) checkFencing(v VM, ov *ObsVM, pr *vmPred) {
 		if !isSlot && !isComp {
 			continue
 		}
-		var claimed nodeSet
+		var claimed numaSet
 		name := "companion " + c.Pod
 		steer := SteerNone
 		loose := isComp && lslot >= 0 && rs.Slots[lslot].CompLoose
@@ -2022,7 +2022,7 @@ func (k *checker) checkFencing(v VM, ov *ObsVM, pr *vmPred) {
 			if ss.Phase != Running || ss.Node != v {
 				continue
 			}
-			claimed = rs.claimNodes(i)
+			claimed = rs.claimNUMANodes(i)
 			steer = ss.Steer
 			if sl.Kind == KLSteer && steer == SteerNone {
 				steer = SteerOn
@@ -2041,7 +2041,7 @@ func (k *checker) checkFencing(v VM, ov *ObsVM, pr *vmPred) {
 			k.waitf("%s: container of %s: cpuset.mems.effective not observed", v, name)
 			continue
 		}
-		got, err := parseNodeList(memsStr)
+		got, err := parseNUMAList(memsStr)
 		if err != nil {
 			k.waitf("%s: container %s: %v", v, name, err)
 			continue
@@ -2050,9 +2050,9 @@ func (k *checker) checkFencing(v VM, ov *ObsVM, pr *vmPred) {
 		gotSet := nodesOfMap(got)
 		for _, n := range (r.must &^ gotSet).nodes() {
 			switch {
-			case claimed&nodeBit(n) != 0:
+			case claimed&numaBit(n) != 0:
 				k.waitf("%s: container of %s: cpuset.mems %q lacks its node %d (%s)", v, name, memsStr, n, r)
-			case dram&nodeBit(n) != 0:
+			case dram&numaBit(n) != 0:
 				k.waitf("%s: container of %s: cpuset.mems %q lacks DRAM node %d (%s)", v, name, memsStr, n, r)
 			default:
 				k.waitf("%s: container of %s: cpuset.mems %q lacks CXL node %d with memory (%s)", v, name, memsStr, n, r)
@@ -2060,9 +2060,9 @@ func (k *checker) checkFencing(v VM, ov *ObsVM, pr *vmPred) {
 		}
 		for _, n := range (gotSet &^ r.allowed).nodes() {
 			switch {
-			case fenced&nodeBit(n) != 0:
+			case fenced&numaBit(n) != 0:
 				k.waitf("%s: container of %s: cpuset.mems %q has fenced CXL node %d (%s)", v, name, memsStr, n, r)
-			case cxl&nodeBit(n) != 0:
+			case cxl&numaBit(n) != 0:
 				k.waitf("%s: container of %s: cpuset.mems %q has CXL node %d (%s)", v, name, memsStr, n, r)
 			default:
 				k.waitf("%s: container of %s: cpuset.mems %q has node %d (%s)", v, name, memsStr, n, r)
@@ -2082,39 +2082,39 @@ func (k *checker) checkFencing(v VM, ov *ObsVM, pr *vmPred) {
 	}
 }
 
-// nodeSet is a set of NUMA nodes: bit n is node n (0..63).
-type nodeSet uint64
+// numaSet is a set of NUMA nodes: bit n is node n (0..63).
+type numaSet uint64
 
-func nodeBit(n int) nodeSet {
+func numaBit(n int) numaSet {
 	if n < 0 || n > 63 {
 		return 0
 	}
 	return 1 << uint(n)
 }
 
-func nodesOf(ns []int) nodeSet {
-	var s nodeSet
+func numaSetOf(ns []int) numaSet {
+	var s numaSet
 	for _, n := range ns {
-		s |= nodeBit(n)
+		s |= numaBit(n)
 	}
 	return s
 }
 
-func nodesOfMap(m map[int]bool) nodeSet {
-	var s nodeSet
+func nodesOfMap(m map[int]bool) numaSet {
+	var s numaSet
 	for n, on := range m {
 		if on {
-			s |= nodeBit(n)
+			s |= numaBit(n)
 		}
 	}
 	return s
 }
 
 // nodes returns the nodes of the set in order.
-func (s nodeSet) nodes() []int {
+func (s numaSet) nodes() []int {
 	var out []int
 	for n := 0; n < 64; n++ {
-		if s&nodeBit(n) != 0 {
+		if s&numaBit(n) != 0 {
 			out = append(out, n)
 		}
 	}
@@ -2122,7 +2122,7 @@ func (s nodeSet) nodes() []int {
 }
 
 // String is the set as a list "0,1,3", "-" if empty.
-func (s nodeSet) String() string {
+func (s numaSet) String() string {
 	ns := s.nodes()
 	if len(ns) == 0 {
 		return "-"
@@ -2137,7 +2137,7 @@ func (s nodeSet) String() string {
 // memsWant is what cpuset.mems.effective of a container must have
 // (must) and may have (allowed, a superset of must).
 type memsWant struct {
-	must, allowed nodeSet
+	must, allowed numaSet
 	why           string
 }
 
@@ -2155,7 +2155,7 @@ func (r memsWant) String() string {
 // its steps' nodes and the nearest DRAM node with normal memory); a loose
 // one (A37) D + E and no CXL node outside E + M. A node without memory
 // is never in mems.effective (E is in M).
-func memsRule(mode FenceMode, d, e, f, fmaybe, m nodeSet, steered, loose bool) memsWant {
+func memsRule(mode FenceMode, d, e, f, fmaybe, m numaSet, steered, loose bool) memsWant {
 	switch {
 	case steered:
 		return memsWant{must: e, allowed: d | e | m, why: "steered"}
@@ -2251,11 +2251,11 @@ func envWant(cfg *Config, sl *Slot) map[string]string {
 		}
 	}
 	switch k := sl.Kind; {
-	case k == KDNuma:
+	case k == KDNUMA:
 		// both claims (A39)
 		dev := devices[sl.Dev]
-		add(dev.Serial, "numa", dev.Size, false, false, cfg.bridgeNode(poolBridge[sl.Pool]))
-		add(localSerial, "numa", blockSize, false, false, cfg.bridgeNode(HB0))
+		add(dev.Serial, "numa", dev.Size, false, false, cfg.bridgeNUMANode(poolBridge[sl.Pool]))
+		add(localSerial, "numa", blockSize, false, false, cfg.bridgeNUMANode(HB0))
 	case k.persistent():
 		// A22: block MODE PATH READONLY, fs MODE ACCESS PATH READONLY
 		// FSTYPE
@@ -2281,14 +2281,14 @@ func envWant(cfg *Config, sl *Slot) map[string]string {
 	case k.pooled():
 		dev := devices[sl.Dev]
 		mode := "dax"
-		if k == KXNuma {
+		if k == KXNUMA {
 			mode = "numa"
 		}
-		add(dev.Serial, mode, dev.Size, dev.Shared, k == KSRo, cfg.bridgeNode(poolBridge[sl.Pool]))
+		add(dev.Serial, mode, dev.Size, dev.Shared, k == KSRo, cfg.bridgeNUMANode(poolBridge[sl.Pool]))
 	case k == KLDax:
 		add(localSerial, "dax", blockSize, false, false, 0)
 	case k.local():
-		add(localSerial, "numa", blockSize, false, false, cfg.bridgeNode(HB0))
+		add(localSerial, "numa", blockSize, false, false, cfg.bridgeNUMANode(HB0))
 	case k == KLease || k == KPlse:
 		w["CXL_LEASE_SOCKET"] = "/run/cxl/cxl.sock"
 	}

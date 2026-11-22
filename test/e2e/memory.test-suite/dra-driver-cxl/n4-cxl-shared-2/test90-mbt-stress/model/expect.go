@@ -38,7 +38,7 @@ type Expectation struct {
 	Profile     string        `json:"profile"`
 	Online      bool          `json:"online"`
 	LocalBlocks [nVMs]int     `json:"localBlocks"`
-	NodeHB      [nBridges]int `json:"nodeHB"`
+	NUMANodeHB  [nBridges]int `json:"nodeHB"`
 	// StallWindow (seconds; 0: the default) and StallStrict: A19's
 	// window of stalled contenders, and whether settles wait for them
 	StallWindow int  `json:"stallWindow,omitempty"`
@@ -90,14 +90,14 @@ type SlotJSON struct {
 
 // PDevJSON is the content of a persistent device (A25).
 type PDevJSON struct {
-	Dev     string `json:"dev"`
-	NS      string `json:"ns"`  // no, yes, maybe
-	FS      string `json:"fs"`  // no, yes (the template erofs)
-	Tok     string `json:"tok"` // hello.txt: quoted, "?" unknown
-	Raw     string `json:"raw"` // bytes 0-63
-	UUID    string `json:"uuid,omitempty"`
-	LsaSha  string `json:"lsaSha,omitempty"`
-	HeadSha string `json:"headSha,omitempty"`
+	Dev      string `json:"dev"`
+	NS       string `json:"ns"`  // no, yes, maybe
+	FS       string `json:"fs"`  // no, yes (the template erofs)
+	Tok      string `json:"tok"` // hello.txt: quoted, "?" unknown
+	Raw      string `json:"raw"` // bytes 0-63
+	UUID     string `json:"uuid,omitempty"`
+	LSAHash  string `json:"lsaSha,omitempty"`
+	HeadHash string `json:"headSha,omitempty"`
 }
 
 // PoolJSON is a pool controller; Att is what is known of the attachments
@@ -183,7 +183,7 @@ func (s *State) expect(step int, action string) *Expectation {
 		Profile:     s.cfg.Profile,
 		Online:      s.cfg.Online,
 		LocalBlocks: s.cfg.LocalBlocks,
-		NodeHB:      s.cfg.NodeHB,
+		NUMANodeHB:  s.cfg.NUMANodeHB,
 		StallStrict: s.cfg.StallStrict,
 	}
 	if s.Fence != FenceAM {
@@ -236,8 +236,8 @@ func (s *State) expect(step int, action string) *Expectation {
 	for p := Pool(0); p < nPools; p++ {
 		c := &s.Ctrl[p]
 		pj := PoolJSON{Pool: p.String(), Up: c.Up}
-		if c.Slices != SlicesPresent {
-			pj.Slices = c.Slices.String()
+		if c.ResourceSlices != SlicesPresent {
+			pj.Slices = c.ResourceSlices.String()
 		}
 		if !c.Up {
 			pj.Att = map[string]string{}
@@ -263,8 +263,8 @@ func (s *State) expect(step int, action string) *Expectation {
 			Inc:        int(d.Inc),
 			Pod:        d.Pod,
 			PodBefore:  d.PodBefore,
-			F:          s.bitNodes(d.F),
-			FMaybe:     s.bitNodes(d.FMaybe),
+			F:          s.fenceNUMANodes(d.F),
+			FMaybe:     s.fenceNUMANodes(d.FMaybe),
 			KillAt:     killAtName(d.KillAt),
 			KillAtAt:   d.KillAtAt,
 			KillMay:    d.KillMay,
@@ -285,7 +285,7 @@ func (s *State) expect(step int, action string) *Expectation {
 		}
 		pd := &s.PDev[x]
 		e.PDevs = append(e.PDevs, PDevJSON{Dev: d.String(), NS: triName(pd.NS), FS: triName(pd.FS), Tok: tokenJSON(pd.Tok),
-			Raw: tokenJSON(pd.Raw), UUID: pd.UUID, LsaSha: pd.LsaSha, HeadSha: pd.HeadSha})
+			Raw: tokenJSON(pd.Raw), UUID: pd.UUID, LSAHash: pd.LSAHash, HeadHash: pd.HeadHash})
 	}
 	for si := 0; si < nStacks; si++ {
 		st := &s.Stacks[si]
@@ -397,7 +397,7 @@ func (e *Expectation) config() (*Config, error) {
 		return nil, err
 	}
 	cfg.LocalBlocks = e.LocalBlocks
-	cfg.NodeHB = e.NodeHB
+	cfg.NUMANodeHB = e.NUMANodeHB
 	if e.StallWindow > 0 {
 		cfg.StallWindow = time.Duration(e.StallWindow) * time.Second
 	}
@@ -485,7 +485,7 @@ func (e *Expectation) state() (*State, error) {
 		c.Up = pj.Up
 		for st := SlicesPresent; st <= SlicesUnknown; st++ {
 			if pj.Slices == st.String() {
-				c.Slices = st
+				c.ResourceSlices = st
 			}
 		}
 		for k, v := range pj.Att {
@@ -540,7 +540,7 @@ func (e *Expectation) state() (*State, error) {
 		if pd.Raw, err = parseTokenJSON(pj.Raw); err != nil {
 			return nil, fmt.Errorf("expectation: %w", err)
 		}
-		pd.UUID, pd.LsaSha, pd.HeadSha = pj.UUID, pj.LsaSha, pj.HeadSha
+		pd.UUID, pd.LSAHash, pd.HeadHash = pj.UUID, pj.LSAHash, pj.HeadHash
 	}
 	for d := 0; d < len(e.Data) && d < nDevs; d++ {
 		t, err := parseTokenJSON(e.Data[d])

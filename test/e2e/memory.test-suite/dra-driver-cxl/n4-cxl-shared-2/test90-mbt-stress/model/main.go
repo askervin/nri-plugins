@@ -170,7 +170,7 @@ func (c *commonFlags) options(online bool, stderr io.Writer) (runOpts, error) {
 	if err := parseLocalBlocks(c.localBlocks, &cfg.LocalBlocks); err != nil {
 		return runOpts{}, err
 	}
-	cfg.NodeHB = [nBridges]int{HB0: c.nodeHB0, HB1: c.nodeHB1}
+	cfg.NUMANodeHB = [nBridges]int{HB0: c.nodeHB0, HB1: c.nodeHB1}
 	if c.nodeHB0 == c.nodeHB1 {
 		return runOpts{}, errors.New("--node-hb0 and --node-hb1 must differ")
 	}

@@ -157,7 +157,7 @@ func TestNodeRebootTransition(t *testing.T) {
 	if got := n.Data[sharedDev(PoolA)]; !got.OrZero || got.Text != tok.Text || n.SlotData[cfg.slotIndex("ldax@vm1#0")] != tokZero {
 		t.Fatalf("data: a-shared0 %s (before %s), ldax %s", got, tok, n.SlotData[cfg.slotIndex("ldax@vm1#0")])
 	}
-	if got := n.bitNodes(n.Drv[VM1].F); !slices.Equal(got, []int{2, 3}) {
+	if got := n.fenceNUMANodes(n.Drv[VM1].F); !slices.Equal(got, []int{2, 3}) {
 		t.Fatalf("vm1 fenced %v, want [2 3]", got)
 	}
 	// the observation: the stack in another order is adopted; any other
@@ -283,7 +283,7 @@ func TestNodeRebootLeases(t *testing.T) {
 	wantStack(t, s, stackIndex(VM1, HB0), "[a-pooled0,local]")
 	n = steps(t, s, "node-reboot vm1", "settle")
 	wantStack(t, n, stackIndex(VM1, HB0), "[a-pooled0]")
-	if got := n.bitNodes(n.Drv[VM1].F); n.Reorder != 0 || !slices.Equal(got, []int{2}) {
+	if got := n.fenceNUMANodes(n.Drv[VM1].F); n.Reorder != 0 || !slices.Equal(got, []int{2}) {
 		t.Fatalf("after the reboot:\n%s", n.dump())
 	}
 	v, _ = checkState(n, observation(t, n), "")
@@ -301,7 +301,7 @@ func TestNodeRebootDual(t *testing.T) {
 		t.Fatalf("dnuma after the reboot:\n%s", n.dump())
 	}
 	wantStack(t, n, stackIndex(VM1, HB1), "[c-pooled0]")
-	if got := n.bitNodes(n.Drv[VM1].F); !slices.Equal(got, []int{2, 3}) {
+	if got := n.fenceNUMANodes(n.Drv[VM1].F); !slices.Equal(got, []int{2, 3}) {
 		t.Fatalf("vm1 fenced %v", got)
 	}
 	v, _ := checkState(n, observation(t, n), "")
@@ -334,7 +334,7 @@ func TestNodeRebootFencing(t *testing.T) {
 	})
 	// and allowed-mems: fenced again from the claims of the new boot
 	n = steps(t, n, "fencing-switch", "settle", "node-reboot vm1", "settle")
-	if got := n.bitNodes(n.Drv[VM1].F); !slices.Equal(got, []int{2}) {
+	if got := n.fenceNUMANodes(n.Drv[VM1].F); !slices.Equal(got, []int{2}) {
 		t.Fatalf("vm1 fenced %v, want [2]", got)
 	}
 	checkMemsCases(t, n, []memsCase{
@@ -489,7 +489,7 @@ func TestDevNodes(t *testing.T) {
 	}
 	// a NODE whose memory is gone: a wait (O3's MemTotal says it too)
 	o = observation(t, s)
-	o.VMs["vm1"].Nodes["2"] = ObsNode{}
+	o.VMs["vm1"].Nodes["2"] = ObsNUMANode{}
 	v, _ = checkState(s, o, "")
 	if v.Status != VWait || !slices.ContainsFunc(v.Diffs, func(x string) bool { return strings.Contains(x, "CXL_C100E2E1_NODE=2 has no memory on vm1") }) {
 		t.Fatalf("node without memory: %s %q; diffs:\n  %s", v.Status, v.Msg, strings.Join(v.Diffs, "\n  "))
