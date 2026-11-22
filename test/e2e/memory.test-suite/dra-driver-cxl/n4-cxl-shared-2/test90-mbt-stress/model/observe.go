@@ -14,7 +14,7 @@
 
 package main
 
-// Observations (04-contract.txt 6). Decoding is lenient: unknown fields
+// Observations (contract.txt 6). Decoding is lenient: unknown fields
 // are ignored, a part that bash could not read is null (and listed in
 // "errors"), and the oracle waits for it.
 
@@ -132,7 +132,7 @@ type ObsPodContainer struct {
 
 // runningContainer tells if a pod has a running container that must be
 // observed in its VM (A11): by the containers' states of the pod status
-// when observed (PM3: a Terminating companion whose container ended),
+// when observed (a Terminating companion whose container ended),
 // else by the pod's phase.
 func runningContainer(cs []ObsPodContainer, phase string) bool {
 	if cs == nil {

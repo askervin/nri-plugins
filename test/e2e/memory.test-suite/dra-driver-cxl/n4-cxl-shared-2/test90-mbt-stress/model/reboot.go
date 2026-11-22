@@ -14,9 +14,8 @@
 
 package main
 
-// node-reboot VM (contract A41-A44, plan-13-gofmbt/14-design-reboot.txt,
-// 12-findings-reboot.txt 7.4): a guest reboot or a qemu restart of vm0 or
-// vm1, with the driver fixed (bug-15: a claim prepared in another boot is
+// node-reboot VM (contract A41-A44): a guest reboot or a qemu restart
+// of vm0 or vm1 (A42, A43: a claim prepared in another boot is
 // prepared anew at kubelet's Prepare after the boot; the leases of
 // another boot are released and their companions deleted).
 //
@@ -32,7 +31,7 @@ package main
 //     claim may restart once more (Slack 1, adopted): its container does
 //     not wait for the driver, and the boot's first kubelet may have
 //     created it before it was stopped (kubelet started twice in the
-//     boot, 12-findings 3.1: M2's race). The driver pod: +1, Slack 1 too.
+//     boot, A43). The driver pod: +1, Slack 1 too.
 //   - the decoder stacks of the VM are empty at the boot; kubelet
 //     prepares every claim again in its own order (back-off of its
 //     first Prepares that fail before the driver registers): the
@@ -50,7 +49,7 @@ package main
 //     at its start and its first reconcile deletes their companions; a
 //     waiter of what they held gets it. A Prepare of a companion's claim
 //     after the boot fails before it touches a device (OnLending: no
-//     such lease; bug-15 fix), so it makes no region.
+//     such lease, A42), so it makes no region.
 //   - volatile dax content: the token or zeros until a write or a read
 //     (Token.OrZero); ldax slices are new (zeros); numa memory is
 //     onlined again (unknown bytes); persistent content is kept.
@@ -58,7 +57,7 @@ package main
 //     (the driver starts with none prepared); lsteer containers are
 //     steered (created after the driver is up); no container is loose.
 //   - attachments: guest: unchanged; qemu: dropped by the pool servers
-//     and attached again by the controllers (bug-16), the same set at
+//     and attached again by the controllers (A44), the same set at
 //     the settle; the local memdev again by the executor (A42).
 //   - the driver's armed driver-kill-at watcher is disarmed (A42); the
 //     boot id must change (A44).
@@ -146,8 +145,7 @@ func (n *State) nodeReboot(v VM) {
 			// Prepare, which comes after the new driver registered. A
 			// driver that serves a Prepare before its NRI plugin is up
 			// leaves the container unsteered (the driver's race after a
-			// boot: plan-13-gofmbt/bug-19-prepare-before-nri-loses-
-			// steering.txt, fixed in the driver): a run with such a
+			// boot, A43): a run with such a
 			// driver fails here, which is intended. Do not relax to
 			// SteerAny.
 			ss.Steer = SteerOn

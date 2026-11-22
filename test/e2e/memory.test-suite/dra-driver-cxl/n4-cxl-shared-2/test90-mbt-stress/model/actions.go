@@ -14,9 +14,8 @@
 
 package main
 
-// Actions (04-contract.txt 4): their preconditions and what they change
-// in the model. The rules and the code and documents they rest on are in
-// plan-13-gofmbt/04-status-MODEL.txt ("Prediction rules").
+// Actions (contract.txt 4): their preconditions and what they change
+// in the model. The rules are those of contract.txt.
 
 import (
 	"fmt"
@@ -487,7 +486,7 @@ func (s *State) next(a Act) *State {
 // One that waits for the releases of its device gets it after them
 // (handover): those are no race. One stalled only by the scheduler's
 // hold (it fits now) may get it at any moment, also before the release
-// of another share of its device there (M9, A21); the prepares of
+// of another share of its device there (A21); the prepares of
 // other shares make the region once in any order.
 func (n *State) stallStacksQuiet(s *State) bool {
 	for i := range n.Slots {
@@ -630,7 +629,7 @@ func (s *State) stackRulesOK(a Act, n *State) bool {
 	for _, si := range changedStacks(s.Ev, n.Ev) {
 		if si < 0 {
 			// an "any" pod: its node is not known yet, every host of
-			// its pool may get its region (R3); also when the event
+			// its pool may get its region (A9); also when the event
 			// comes from another action (ctrl-start)
 			if s.unblockingAnyHost(n.anyPools(s.Ev)) {
 				return false
@@ -642,7 +641,7 @@ func (s *State) stackRulesOK(a Act, n *State) bool {
 		}
 		// a window that clears a hole with pods blocked behind it
 		// makes no region: their retries (at kubelet's resync, any
-		// time) would race with it for the order (R4, A12)
+		// time) would race with it for the order (A12)
 		for _, o := range n.outcomes(si) {
 			if o.Cleared && o.Pushed && (len(o.Blocked) > 0 || s.blockedOn(si)) {
 				return false
@@ -834,7 +833,7 @@ func (s *State) killAtMayHaveFired(v VM) bool {
 
 // markKillMay remembers for the window that an armed watcher may have
 // fired before a step (killAnyTime): a step may take the claim whose
-// Prepare could show its marker (FP4: a refused reader's retry fired
+// Prepare could show its marker (A32: a refused reader's retry fired
 // the watcher after the settle's observation had seen it armed, and its
 // delete hid the kill from the next settle and let a containerd-restart
 // be generated).
@@ -1041,11 +1040,11 @@ func (s *State) apply(a Act) *State {
 		n.driverRestarted(a.VM, SteerOff)
 	case VContainerdRestart:
 		// The driver exits on the loss of its NRI connection and its
-		// container restarts in place (contract A8, bug-01): like
+		// container restarts in place (contract A8): like
 		// driver-kill (A17: also for steering). The containers keep
 		// running. A container being created or started then fails
 		// ("error reading from server: EOF") and kubelet creates it
-		// again: restarts +1 (M6, run L5), as for a kubelet restart.
+		// again: restarts +1 (A8), as for a kubelet restart.
 		d := &n.Drv[a.VM]
 		d.KillAt, d.KillAtAt, d.KillMay, d.KillSlack = 0, 0, false, false // (A31)
 		d.Restarts++
@@ -1070,8 +1069,8 @@ func (s *State) apply(a Act) *State {
 	case VKubeletRestart:
 		// A kubelet restart keeps the containers; one that it was
 		// creating is created again by the new kubelet: restarts +1
-		// without a crash (04-status-EXEC M2). The node's cxl.nri.io
-		// slice is gone for a while (S3, the sync delay of the
+		// without a crash (A34). The node's cxl.nri.io
+		// slice is gone for a while (the sync delay of the
 		// resourceslice controller): local claims wait, which the
 		// settle waits for.
 		n.restartSlack(a.VM)
@@ -1113,7 +1112,7 @@ func (s *State) apply(a Act) *State {
 	case VNodeReboot:
 		n.nodeReboot(a.VM)
 		// the settle comes next (only synchronous steps before it): the
-		// pods come back in kubelet's time, 90-120 s (12-findings 7.2)
+		// pods come back in kubelet's time (A43)
 		if u := n.cfg.Unsettled - 1; int(n.Unsettled) < u {
 			n.Unsettled = uint8(u)
 		}
@@ -1324,7 +1323,7 @@ func (n *State) releasePLease(i int) {
 
 // restartSlack: a kubelet or containerd restart on a VM may restart once
 // more every container of it that is being created or started in the
-// window (M2, M6): a pod starting, restarting after a crash, or whose
+// window (A34): a pod starting, restarting after a crash, or whose
 // Prepare is being retried after its decoder hole cleared.
 func (n *State) restartSlack(v VM) {
 	for i := range n.Slots {
@@ -1337,7 +1336,7 @@ func (n *State) restartSlack(v VM) {
 
 // driverSlack: a kubelet restart on a VM may restart the driver pod
 // once more if its container may be being created again after a kill
-// (M2 for the driver pod, FP6: the old kubelet created it after
+// (A34, for the driver pod: the old kubelet created it after
 // driver-kill and stopped before starting it, the new one created it
 // again), and in the world in which an armed watcher that may have
 // fired before this step did (fireKillAt). The verb waits for the
@@ -1431,7 +1430,7 @@ func (n *State) start(i int, after int16) int16 {
 }
 
 // handover marks the prepare of a pool claim that got its device after
-// the old holders: after every earlier unprepare of its region (R1).
+// the old holders: after every earlier unprepare of its region (A21).
 // The local memdev keeps the plain rule: one release is enough.
 func (n *State) handover(i int, seq int16) {
 	if n.slot(i).Kind.pooled() {
@@ -1532,7 +1531,7 @@ func (n *State) promote(r Res, after int16, stall bool) {
 
 // stall makes a contender Stalled (A19). Its promotion may come at any
 // time: a numa claim onlines its device then (the bytes are gone, as in
-// start; M9).
+// start; A21).
 func (n *State) stall(i int) {
 	ss := &n.Slots[i]
 	ss.Phase, ss.RaceKill = Stalled, false
@@ -1624,7 +1623,7 @@ func (n *State) leasePut(i int) {
 // nodes are seeded from the claims prepared at its start (uncertain for
 // claims in flux), and steering managers of running containers are gone:
 // the new driver sets their memory.high to max and fences them with
-// their claims (bug-04 fix, A17), running says it (SteerOff). A
+// their claims (A17), running says it (SteerOff). A
 // container (re)started in the window is steered or not by timing.
 func (n *State) driverRestarted(v VM, running Steer) {
 	var def, maybe uint8
@@ -1666,7 +1665,7 @@ func (n *State) driverRestarted(v VM, running Steer) {
 				// its container may be created or started while the
 				// driver is away: the new driver's Synchronize sees
 				// it CREATED and manages it fenced, not steered
-				// (bug-04 rule; M7, run L7), or it comes after
+				// (A17), or it comes after
 				ss.Steer = SteerAny
 			}
 		}
@@ -1764,7 +1763,7 @@ func (n *State) ctrlKill(p Pool) {
 func (n *State) ctrlStart(p Pool) {
 	n.Ctrl[p].Up = true
 	if n.Ctrl[p].ResourceSlices == SlicesAbsent {
-		// the new controller publishes them within seconds (M5): the
+		// the new controller publishes them within seconds (A20): the
 		// claims of the window are allocated (one that tried before
 		// the publish is requeued by it), unless a kill comes first
 		n.Ctrl[p].ResourceSlices = SlicesUnknown
@@ -1813,10 +1812,10 @@ func (n *State) ctrlStart(p Pool) {
 }
 
 // handoverAfterRelease marks the prepare (seq) that a controller start
-// adds for a pod of its pool as a handover (R1) when a claim that the
+// adds for a pod of its pool as a handover (A21) when a claim that the
 // pod's claim could not share the device with was released in this
 // window: the pod was allocated after that claim's Unprepare, the
-// controller being down only delayed its attach (M9).
+// controller being down only delayed its attach (A21).
 func (n *State) handoverAfterRelease(i int, seq int16) {
 	if seq < 0 {
 		return

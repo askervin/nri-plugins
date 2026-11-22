@@ -18,8 +18,7 @@ package main
 // the simulated SUT (sim.go): the pool controllers, the pool servers'
 // attachments, kube-scheduler's allocation of pool claims with binding
 // conditions and the resourceclaim controller. It is written from
-// contract A18/A19, plan-13-gofmbt/08-analysis-claim-after-pod-deleted.txt
-// and the controller's code (scripts/testing/fake-cxl-pool/pkg/controller:
+// contract A18/A19 and the controller's code (scripts/testing/fake-cxl-pool/pkg/controller:
 // Run, sync, publish, reconcile, attach, writeStatus, detach, shutdown),
 // NOT from the model's prediction functions: it knows the static
 // topology (slots, devices, pool hosts) and nothing of the model's
@@ -66,7 +65,7 @@ package main
 //     requeueing event that comes while the deleted claim is still in
 //     flight in the scheduler: the HOLD of A19), and the scheduler drops
 //     the in-flight allocation at the next PreBind poll after the claim
-//     is deleted, without an event (bug-08).
+//     is deleted, without an event (A19).
 // What it does not model: the node side (Prepare, regions, decoder
 // stacks, fencing), which the simulated SUT takes from the model.
 
@@ -179,8 +178,8 @@ type refPool struct {
 	hist     []string
 	// Count counts what happened, by event
 	Count map[string]int
-	// RequeueOnUnreserve: kube-scheduler with the bug-08 fix (P13/
-	// 10-scheduler-requeue-fix.txt): the release of a deleted claim's
+	// RequeueOnUnreserve: a kube-scheduler that requeues at once (A28):
+	// the release of a deleted claim's
 	// in-flight allocation by Unreserve requeues the pods that
 	// DynamicResources rejected
 	RequeueOnUnreserve bool
@@ -345,7 +344,7 @@ func (r *refPool) do(a Act, h refHint) {
 		r.logf("server-restart %s: up at %.1fs", a.Pool, float64(c.serverUpAt)/1000)
 	case VKubeletRestart:
 		cost = r.rnd(800, 3000)
-		// the node's slice is removed and published again (bug-06):
+		// the node's slice is removed and published again:
 		// a ResourceSlice add, sometimes before the settle
 		if r.rng.Intn(2) == 0 {
 			r.requeueAt(r.now + r.rnd(1000, 3000))
@@ -359,11 +358,11 @@ func (r *refPool) do(a Act, h refHint) {
 		// the VM goes down: a guest reboot keeps the attachments; a
 		// qemu restart ends the qemu process soon after the step (the
 		// first advance below) and the pool servers drop its attachments
-		// (bug-16), the controllers attach them into the new qemu once
+		// (A44), the controllers attach them into the new qemu once
 		// the servers have discovered it. ssh answers much later and the
-		// driver is ready later still (the second advance; 12-findings
-		// 3.1, 4.1): the lease broker of the new boot releases the
-		// VM's leases (bug-15), their companions go; the node's slice
+		// driver is ready later still (the second advance; A43): the
+		// lease broker of the new boot releases the
+		// VM's leases (A42), their companions go; the node's slice
 		// is published again.
 		r.advance(r.now + r.rnd(3000, 5500))
 		if r.cfg.Reboot == RebootQemu {
@@ -389,7 +388,7 @@ func (r *refPool) do(a Act, h refHint) {
 // dropHost: the qemu of VM v restarted: the pool servers drop its
 // attachments; an attach fails (503) until a server has discovered the
 // new qemu (2-6 s), then the controllers' reconcile attaches what their
-// claims want (bug-16).
+// claims want (A44).
 func (r *refPool) dropHost(v VM) {
 	atts := r.atts[:0]
 	for _, a := range r.atts {
@@ -584,7 +583,7 @@ func (r *refPool) step() {
 			r.Count["hold"]++
 			if r.RequeueOnUnreserve {
 				r.logf("in-flight allocation of %s g%d dropped (Unreserve, AssignedPodDelete)", sl.Name, p.gen)
-				r.requeueAll("Unreserve of " + sl.Name + " (bug-08 fix)")
+				r.requeueAll("Unreserve of " + sl.Name + " (requeue)")
 			} else {
 				r.logf("in-flight allocation of %s g%d dropped (Unreserve, no event)", sl.Name, p.gen)
 			}

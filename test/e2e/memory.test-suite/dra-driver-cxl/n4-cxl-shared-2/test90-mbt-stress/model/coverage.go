@@ -14,7 +14,7 @@
 
 package main
 
-// Coverage criteria (02-design.txt 6):
+// Coverage criteria (the flag --coverage):
 //   C1 every action (gofmbt action names)
 //   C2 fault in context: per fault step, fault|kind|phase of every pod
 //      that the fault affects (custom, incremental)
@@ -164,8 +164,8 @@ func faultContext(s *State, a Act) []string {
 			}
 		}
 	}
-	// a fault that affects nothing is no context (06-runs P1: faults on
-	// an empty cluster); C1 covers the verb once
+	// a fault that affects nothing is no context (a fault of an empty
+	// cluster); C1 covers the verb once
 	sort.Strings(out)
 	return uniq(out)
 }
@@ -246,8 +246,7 @@ func contextKind(sl *Slot, ss *SlotState) string {
 	return kind
 }
 
-// crashContext is C2 of a crash (a fault of one container, 05-review
-// R11): the kind of the pod and what its container has that a restart
+// crashContext is C2 of a crash (a fault of one container): the kind of the pod and what its container has that a restart
 // must give back: a held lease and its mode, steering, the hole of its
 // stack.
 func crashContext(s *State, a Act) []string {
@@ -277,7 +276,7 @@ func crashContext(s *State, a Act) []string {
 }
 
 // leaseChances are C1 strings of a state: the lease actions it allows
-// (05-review R11: lease-get needs a free local block and a quiet hb0
+// (lease-get needs a free local block and a quiet hb0
 // stack, which the search reaches only with a reward on the way).
 func leaseChances(s *State) []string {
 	var out []string
@@ -309,7 +308,7 @@ func leaseChances(s *State) []string {
 // c1Strings are the C1 strings of an action: its name, weighed w times;
 // a fault counts by its verb only, once, whatever its VM or pool: what
 // matters of faults is their context (C2), and the planner must not
-// spend the first steps on faults of an empty cluster (06-runs P1).
+// spend the first steps on faults of an empty cluster.
 func c1Strings(cfg *Config, a Act, w int) []string {
 	if a.Verb.fault() {
 		return []string{"C1.fault " + faultVerb(a)}

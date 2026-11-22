@@ -14,7 +14,7 @@
 
 package main
 
-// Adoption records (05-review R5): what an on-line run adopted from its
+// Adoption records (A35): what an on-line run adopted from its
 // observations, written to mbt-steps.txt after the step as
 //
 //	#adopt N any=SLOT:VM,SLOT:bound|unbound alt=J phase=SLOT:PHASE
@@ -24,7 +24,7 @@ package main
 //
 // (one line, items separated by spaces, TEXT query-escaped): the
 // nodes of "any" pods and the bindings of race-kill pods by which a
-// truncated settle was narrowed (R10),
+// truncated settle was narrowed (the outcome bound, A35),
 // the alternative of the settle that fitted and what the observation
 // decided beyond it. `generate --from` replays them, so that its
 // expectations follow the run, and replays ignore them (they observe
@@ -242,7 +242,7 @@ func (n *State) applyItem(kind, key, val string) error {
 			return fmt.Errorf("invalid restarts %q", val)
 		}
 		if v, err := parseVM(key); err == nil && v != VMAny {
-			// the driver pod of the VM (FP6)
+			// the driver pod of the VM (A34)
 			n.Drv[v].Restarts, n.Drv[v].Slack = uint8(nr), uint8(ns)
 			return nil
 		}

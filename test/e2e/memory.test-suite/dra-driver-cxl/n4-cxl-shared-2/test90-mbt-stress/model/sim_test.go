@@ -244,11 +244,11 @@ func (s *sim) resolve(st *State) *State {
 	s.reorderStacks(n)
 	// The scheduler's hold of a device whose claim was deleted before
 	// its pod was bound ends within a PreBind poll period (5 s) of the delete
-	// (A19, bug-08): here it lasts through the window after the settle that ended the
+	// (A19): here it lasts through the window after the settle that ended the
 	// delete's window. Never longer: the oracle ends it at a settle at
 	// least heldSeconds after that one, and a contender that the truth
 	// stalls after the model's hold has ended would be a difference of
-	// the simulator's (M8). The step of that settle is kept in HeldAt
+	// the simulator's. The step of that settle is kept in HeldAt
 	// (the oracle keeps its clock there).
 	for d := DevID(0); d < nDevs; d++ {
 		switch {
@@ -358,7 +358,7 @@ func (s *sim) resolve(st *State) *State {
 // is being created again after a kill (a driver-kill, or a watcher that
 // fired before the step) gives the driver pod one more restart, at
 // random: the old kubelet created the container and stopped before it
-// started it, the new one creates it again (FP6). The verbs that wait
+// started it, the new one creates it again (A34). The verbs that wait
 // for the driver end the race. Independent of the model's Slack.
 func (s *sim) driverRace(a Act) {
 	switch a.Verb {
@@ -406,7 +406,7 @@ func (s *sim) keepKillAt(n *State) {
 
 // fireLate fires a watcher that the truth kept (keepKillAt) before a
 // step, at random, when a Prepare that comes at any time shows its
-// marker (killAnyTime): FP4's refused reader retried by kubelet right
+// marker (killAnyTime): A32's refused reader retried by kubelet right
 // after the settle's observation, and deleted later in the window.
 func (s *sim) fireLate(st *State) *State {
 	var fired [nVMs]bool
@@ -458,7 +458,7 @@ func rebootFreesBlock(st *State, a Act) bool {
 // The names of the simulated devices: the regions of a boot of a VM
 // (pool device d, or -1 for the local memdev), their dax devices and
 // major:minor, the boot ids. A boot gives every region a new number, as
-// the kernel would (12-findings-reboot.txt 3.5).
+// the kernel would (A43).
 func simBootID(v VM, reboots uint8) string { return fmt.Sprintf("boot-%s-%d", v, reboots) }
 
 func simRegionNo(st *State, v VM, d int) int {

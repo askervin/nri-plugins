@@ -15,7 +15,7 @@
 package main
 
 // Fencing modes, the exact O5, the two-claim kind dnuma and the cpuset.mems
-// coverage strings (A36-A40, plan-13-gofmbt/13-design-fencing.txt).
+// coverage strings (A36-A40).
 
 import (
 	"bytes"
@@ -245,10 +245,10 @@ func TestFencingSwitch(t *testing.T) {
 	}
 }
 
-// The executor's evidence (04-status-EXEC 17, the EXEC notes of A36-A39):
+// The executor's side of A36-A39:
 // the done of fencing-switch names the new mode, the driver log the mode
-// of the driver, and in mode none a lease-put narrows nothing (bug-18 is
-// the driver's: no tolerance for it).
+// of the driver, and in mode none a lease-put narrows nothing (A38: no
+// tolerance for a driver that narrows).
 func TestFencingExecutorEvidence(t *testing.T) {
 	cfg := fencingConfig(t, FencingSwitch)
 	s := steps(t, newState(cfg), "create lnuma@vm1#0", "settle")
@@ -272,7 +272,7 @@ func TestFencingExecutorEvidence(t *testing.T) {
 	o := observation(t, n)
 	v, _ := checkState(n, o, "")
 	wantVerdict(t, v, VOK, "ok")
-	ctrOf(t, o, "vm1", "mbt-lease").MemsEffective = "0-1" // bug-18
+	ctrOf(t, o, "vm1", "mbt-lease").MemsEffective = "0-1" // a revoke that narrows (A38)
 	v, _ = checkState(n, o, "")
 	wantVerdict(t, v, VWait, "lacks CXL NUMA node 2 with memory")
 	o = observation(t, n)

@@ -17,8 +17,8 @@ package main
 // The oracle of A44: boot ids, the device nodes of the containers, the
 // memory of a numa claim's node. The device-node check needs no reboot:
 // a container started with the CDI devices of an old boot, or of another
-// claim, has a node that is not the current device of its claim (R1 of
-// 12-findings-reboot.txt: an rw container of c-pmem1 read c-pmem0).
+// claim, has a node that is not the current device of its claim (A44:
+// an rw container of c-pmem1 must not read c-pmem0).
 
 import (
 	"path"

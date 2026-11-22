@@ -60,7 +60,7 @@ type Expectation struct {
 	// Alts are the other outcomes that races for the decoder stacks
 	// can have; the oracle takes the one that fits.
 	Alts []*Expectation `json:"alts,omitempty"`
-	// Truncated: the outcomes were not all enumerated (R10)
+	// Truncated: the outcomes were not all enumerated (the outcome bound, A35)
 	Truncated bool      `json:"truncated,omitempty"`
 	Done      *DoneJSON `json:"done,omitempty"`
 }
@@ -121,8 +121,8 @@ type DriverJSON struct {
 	FMaybe    []int  `json:"fencedMaybe,omitempty"`
 	KillAt    string `json:"killAt,omitempty"` // A23: the marker of an armed watcher
 	KillAtAt  int64  `json:"killAtAt,omitempty"`
-	KillMay   bool   `json:"killAtMay,omitempty"` // it may have fired in the window (FP4)
-	Slack     int    `json:"slack,omitempty"`     // restarts it may have more (FP6)
+	KillMay   bool   `json:"killAtMay,omitempty"` // it may have fired in the window (A32)
+	Slack     int    `json:"slack,omitempty"`     // restarts it may have more (A34)
 	// node-reboot (A42-A44): in its window or the window its settle
 	// ended, the reboots, the boot id learnt and the one that must be
 	// gone

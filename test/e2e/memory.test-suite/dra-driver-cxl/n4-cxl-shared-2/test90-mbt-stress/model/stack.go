@@ -14,7 +14,7 @@
 
 package main
 
-// Decoder stacks (contract A9, bug-02): Linux allocates the HDM decoders
+// Decoder stacks (contract A9): Linux allocates the HDM decoders
 // of a CXL port as a stack. Per (VM, host bridge) the model keeps the
 // regions through it in creation order: a new region is pushed (only if
 // there is no hole), destroying the top pops it and every hole below,
@@ -259,7 +259,7 @@ type stackEvent struct {
 	After int16 // happens after the event of this Seq (a handover), -1
 	// Handover: the claim got its device only when the earlier
 	// holders of it were gone: its prepare comes after every earlier
-	// unprepare of the same region (R1 of 05-review: the scheduler
+	// unprepare of the same region (the scheduler
 	// allocates it after their claims are deallocated, which is after
 	// their Unprepare)
 	Handover bool
@@ -630,13 +630,13 @@ func (n *State) settleAll() *State {
 	truncated := false
 	var bases []*State
 	// (the worlds of the watchers that may have fired earlier in the
-	// window, FP4, come last: the alternatives of a settle keep their
+	// window (A32) come last: the alternatives of a settle keep their
 	// order, and the "#adopt N alt=J" of older steps files their meaning)
 	for _, late := range []bool{false, true} {
 		for _, k := range n.expandLeaseOpen() {
 			// (a watcher fires in the worlds of the slices and of the
 			// hosts of the "any" pods where a Prepare on its VM may
-			// show its marker, FP1; the order of the worlds is as
+			// show its marker (A32); the order of the worlds is as
 			// before)
 			for _, fired := range k.killWorlds(late) {
 				for _, w := range k.expandResourceSlices() {
@@ -766,7 +766,7 @@ func (n *State) unplacedAny() []int {
 	return anys
 }
 
-// narrowed settles a truncated settle (R10) again with the nodes of some
+// narrowed settles a truncated settle (the outcome bound, A35) again with the nodes of some
 // of its "any" pods known (observed bound), and whether some of its
 // race-kill pods are bound (observed bound or Attached: their optional
 // Prepares come; neither: they do not): settleAll's worlds are those of
@@ -952,11 +952,11 @@ func (n *State) fireKillAt(fired [nVMs]bool, late bool) *State {
 }
 
 // killCandidate: a persistent Prepare on VM v may show the marker in
-// the window (FP1): one of the window's events there, also of an "any"
+// the window (A32): one of the window's events there, also of an "any"
 // pod not placed yet that may land on v, or a Prepare that comes at any
 // time without an event: a stalled contender's promotion, an unblocking
 // pod's retry (whole Prepares), a refused claim's retry (makes and rolls
-// back its region, which is probed: A25, PM2) and a blocked pod's retry
+// back its region, which is probed: A25, A31) and a blocked pod's retry
 // (its cxl create-region makes the region before the hole refuses it).
 // What the watcher sees (T/mbt-observe.py Marker): region, a new pmem
 // region; ns, a namespace with a size in a new pmem region (from the
@@ -994,7 +994,7 @@ func (s *State) killCandidate(v VM, marker int) bool {
 // killAnyTime: a Prepare on VM v that comes at any time, without an
 // event of the window, may show the marker (killCandidate). It may come
 // right after the observation of a settle that saw the watcher armed
-// and its claim may be gone by the next settle: FP4's refused reader,
+// and its claim may be gone by the next settle: A32's refused reader,
 // retried by kubelet right after the observation and deleted four steps
 // later (apply keeps it in KillMay).
 func (s *State) killAnyTime(v VM, marker int) bool {
@@ -1299,7 +1299,7 @@ func (s *State) altKey() string {
 		}
 	}
 	// the pools: worlds that differ only in the slices or the
-	// attachments of a pool are different outcomes (L3, M4)
+	// attachments of a pool are different outcomes (A18, A20)
 	for p := range s.Ctrl {
 		c := &s.Ctrl[p]
 		b = append(b, byte(c.ResourceSlices))

@@ -14,7 +14,7 @@
 
 package main
 
-// `mbt-cxl check` (04-contract.txt 5, off-line): one observation against
+// `mbt-cxl check` (contract.txt 5, off-line): one observation against
 // one expectation of a code.gen.sh. The settle timeout needs the time
 // since the first poll: bash passes --since (Unix seconds of its first
 // poll of the step, `date +%s`) or --elapsed (seconds).

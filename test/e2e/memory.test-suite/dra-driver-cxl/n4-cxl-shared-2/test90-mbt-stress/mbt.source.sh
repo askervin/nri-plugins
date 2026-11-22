@@ -1,5 +1,4 @@
-# The executor of test90-mbt-stress (plan-13 of fake-cxl-pool,
-# scripts/testing/fake-cxl-pool/plan-13-gofmbt/04-contract.txt): the
+# The executor of test90-mbt-stress (contract.txt): the
 # actions of the model mbt-cxl on the cluster of test19-many-pools, the
 # settle observation, and the line protocol with mbt-cxl, on-line (a
 # coprocess) and off-line (a generated code.gen.sh).
@@ -1183,7 +1182,7 @@ mbt-act-containerd-restart() {
 }
 
 ###
-### Node reboot (amendments A41-A44, 12-findings-reboot.txt)
+### Node reboot (rules A41-A44)
 ###
 
 mbt-boot-id() {
@@ -2050,7 +2049,7 @@ mbt-kernel-require() {
     # Usage: mbt-kernel-require VMDIR
     #
     # Fail the test unless the kernel of the VM of VMDIR has every feature
-    # that persistent pool devices need (11-findings-persistent.txt 2.3),
+    # that persistent pool devices need (A22),
     # =y or =m in /boot/config-$(uname -r): pmem regions (CXL_PMEM,
     # CXL_REGION, LIBNVDIMM), the fsdax namespace and its block device
     # (BLK_DEV_PMEM, ND_PFN, NVDIMM_PFN, ZONE_DEVICE), erofs (EROFS_FS)
@@ -2223,7 +2222,7 @@ mbt-hollow-regions-remove() {
     # Print and delete the hollow CXL regions of the VM of VMDIR: a region
     # that is not committed and has no target, what a pmem region becomes
     # when the driver forgot it (killed in a Prepare, the claim released
-    # before kubelet retried it: 04-status-EXEC.txt 14.7 B1) and its
+    # before kubelet retried it) and its
     # memdev was detached. Nothing is behind it, but it keeps its range of
     # the CXL window while it exists; cxl destroy-region refuses it ("error locating decoder for
     # target0"): delete_region of its root decoder. Never fails.

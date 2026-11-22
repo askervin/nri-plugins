@@ -40,7 +40,7 @@ func TestStackPrimitives(t *testing.T) {
 	}
 }
 
-// TestBlockedUntilHoleClears: bug-02's sequence on vm0 hb0. A pod that
+// TestBlockedUntilHoleClears: the sequence of A9 on vm0 hb0. A pod that
 // needs a new region through a stack with a hole is blocked; it starts
 // only after the region above the hole is gone.
 func TestBlockedUntilHoleClears(t *testing.T) {

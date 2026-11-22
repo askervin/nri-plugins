@@ -240,7 +240,7 @@ func refSequence(cfg *Config, acts []Act, seed int64, maxLen int, script []strin
 
 var dbgPred func(*State, *sim)
 
-// refUnfixedScheduler: the reference's scheduler without the bug-08 fix
+// refUnfixedScheduler: the reference's scheduler that does not requeue at once
 // also in strict stall mode (a test of the mode's failure).
 var refUnfixedScheduler bool
 
@@ -470,7 +470,7 @@ var refSequences = []struct {
 			"xdax-c@any#0 | delete sdax-a@vm2#1 | settle | delete sdax-c@vm0#0 | delete xdax-c@vm2#0 | " +
 			"create xdax-a@vm2#0 | settle | server-restart c | ctrl-start c | create xnuma-a@vm2#0 | " +
 			"settle | create sdax-c@vm0#0 | driver-kill vm1 | create lease@vm1#0 | settle"},
-	{why: "M5: ctrl-start after the slices were absent: published again (L4)", profile: "full", seed: 860,
+	{why: "ctrl-start after the slices were absent: published again (A20)", profile: "full", seed: 860,
 		steps: "create xnuma-a@vm1#0 | ctrl-restart c | ctrl-kill c | settle | ctrl-start c | create " +
 			"sdax-c@vm0#0 | server-restart c | settle"},
 	{why: "reference: an attach that conflicts with a wanted attachment on another host (AttachFailed, scheduled again)", profile: "full", seed: 9745,
@@ -730,7 +730,7 @@ func d8Steps() []string {
 
 // --stall-window against the reference on the D8 sequence: the default
 // (6m: stalled contenders settled in both states) with the scheduler of
-// the cluster before the bug-08 fix, a short window (30 s: settles wait
+// a cluster that does not requeue at once, a short window (30 s: settles wait
 // for the promotion) with the fixed one; the short window with the old
 // scheduler fails (the settle that waits for the promotion times out).
 func TestRefPoolStallWindow(t *testing.T) {
@@ -854,7 +854,7 @@ func TestRefPoolAllocatedWithoutSlices(t *testing.T) {
 	}
 }
 
-// R10, narrowed (fuzz, fullp --refpool-len 120 seed 1484): ctrl-start c
+// The outcome bound, narrowed (fuzz, fullp --refpool-len 120 seed 1484): ctrl-start c
 // prepares three "any" pods that waited for the attach: 27 worlds of
 // their hosts, each with up to 6 orders of the regions on their stacks;
 // the settle's first 64 outcomes (truncated) all had xdax-c@any#0 on vm0
@@ -885,7 +885,7 @@ func TestRefPoolNarrowedAnyNodes(t *testing.T) {
 		}
 	}
 	if truth == nil {
-		t.Fatalf("every narrowed outcome is enumerated: the settle is no case of R10 any more")
+		t.Fatalf("every narrowed outcome is enumerated: the settle is no case of the outcome bound any more")
 	}
 	o := observation(t, truth.clone())
 	v, adopted, alt := checkAltsSince(s, o, "", time.Now(), time.Now(), defaultUnblock)
@@ -957,7 +957,7 @@ func TestRefPoolStallAtCtrlStart(t *testing.T) {
 	refSequenceSteps(t, "pmem", 4588)
 }
 
-// A truncated settle (R10) narrowed by the bindings of its race-kill pods
+// A truncated settle (the outcome bound, A35) narrowed by the bindings of its race-kill pods
 // (review fuzz, fullp fencing none, seed 710078): six pods whose Prepares
 // were optional (a ctrl-kill c), a dnuma one with two of them, on four
 // stacks; the 64 outcomes enumerated all had the dnuma pod's Prepare
@@ -1001,7 +1001,7 @@ func TestRefPoolNarrowedRaceKill(t *testing.T) {
 	}
 	for _, a := range alts(last) {
 		if a.Slots[d].Phase != Running {
-			t.Fatalf("an enumerated outcome has dnuma@vm0#0 %s: no case of R10 any more", a.Slots[d].Phase)
+			t.Fatalf("an enumerated outcome has dnuma@vm0#0 %s: no case of the outcome bound any more", a.Slots[d].Phase)
 		}
 	}
 	n := last.narrowed(nil, map[int]bool{d: false})

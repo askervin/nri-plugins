@@ -14,7 +14,7 @@
 
 package main
 
-// Allocation kinds (04-contract.txt 2) and slots (3).
+// Allocation kinds (contract.txt 2) and slots (3).
 
 import (
 	"fmt"
@@ -298,7 +298,7 @@ var profiles = map[string][]string{
 		"xnuma-a@vm1#0", "xdax-a@vm2#0", "sdax-c@vm0#0", "sexcl-c@vm1#0",
 		"lnuma@vm0#0", "ldax@vm0#0", "lsteer@vm2#0", "lease@vm0#0", "plain@vm0#0",
 	},
-	// persistent devices, first trials (11-findings-persistent.txt 3.3):
+	// persistent devices (A22):
 	// a writer on two VMs, both accesses on two VMs, a block reader,
 	// fs leases, volatile hb1 neighbours for A9
 	"pmem": {

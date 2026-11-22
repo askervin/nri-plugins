@@ -14,7 +14,7 @@
 
 package main
 
-// The off-line mode (04-contract.txt 5): a code.gen.sh of mbt-step and
+// The off-line mode (contract.txt 5): a code.gen.sh of mbt-step and
 // mbt-expect lines. Without the observations nothing is adopted: the
 // "any" slots are left out of the profile, and what a race leaves open
 // (the outcome of a controller kill, steering in a driver restart
@@ -102,7 +102,7 @@ func generate(o runOpts, from []stepLine, w io.Writer) (err error) {
 				}
 			case a.Verb == VSettle:
 				if open := next.openChoice(); open != "" {
-					return fmt.Errorf("--from: step %d settle leaves %s open, and the steps file has no adoption record of it (\"#adopt %d ...\", written by on-line runs since R5): the expectations after it would not follow the run", next.Steps, open, next.Steps)
+					return fmt.Errorf("--from: step %d settle leaves %s open, and the steps file has no adoption record of it (\"#adopt %d ...\", written by on-line runs since A35): the expectations after it would not follow the run", next.Steps, open, next.Steps)
 				}
 			}
 			st = next

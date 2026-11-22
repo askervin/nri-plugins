@@ -623,7 +623,7 @@ func TestPmemCoverageStrings(t *testing.T) {
 	}
 }
 
-// A29 d, A30 (S4): a lease-get of an fs lease while driver-kill-at bind
+// A29 d, A30 (A29 d): a lease-get of an fs lease while driver-kill-at bind
 // is armed on its VM returns 0 with the lease Ready, or nonzero (EOF)
 // with the lease released or still Lending until kubelet's retry makes
 // it Ready; all are accepted and adopted, with and without the kill.
@@ -684,14 +684,14 @@ func TestPmemKillAtBind(t *testing.T) {
 			}
 			if lease == LeaseNone {
 				wantStack(t, adopted, stackIndex(VM1, HB1), "[]")
-				// a bind left behind (S4) is seen
+				// a bind left behind (A29 d) is seen
 				o := observation(t, truth)
 				o.VMs["vm1"].LeaseBinds = rawJSON([]ObsMount{{Target: simLeaseFS + "/u/mbt", Source: "/dev/pmem0", Fstype: "erofs", Vfsopts: "ro,nosuid,nodev"}})
 				v, _ = checkState(st, o, "")
 				wantVerdict(t, v, VWait, "bind left")
 			}
 			if lease == LeaseHeld && c.open {
-				// kept, before kubelet's retry (FP5): Lending, no
+				// kept, before kubelet's retry (A33): Lending, no
 				// mount in the requester's container yet
 				o := observation(t, truth)
 				in := o.Inspect["plse@vm1#0"]
@@ -765,7 +765,7 @@ func TestPmemKillAtState(t *testing.T) {
 	wantVerdict(t, v, VWait, "driver-kill-at fired, want the outcome with the kill")
 }
 
-// A31 (run PM2: driver-kill-at vm2 region, driver-restart vm2, ...): a
+// A31 (driver-kill-at vm2 region, driver-restart vm2, ...): a
 // driver-kill, driver-restart or containerd-restart disarms the watcher
 // of its VM (done, fired false, "disarmed by VERB"); kubelet-restart
 // does not. A fired report must account for its restart: a refused
@@ -791,7 +791,7 @@ func TestPmemKillAtDisarm(t *testing.T) {
 	if k.Drv[VM2].KillAt == 0 {
 		t.Fatalf("kubelet-restart disarmed")
 	}
-	// PM2: a refused reader on vm2, the watcher armed at region
+	// a refused reader on vm2, the watcher armed at region
 	r := steps(t, stateAfter(t, "pmem", true, "create pfsd-c@vm2#0", "settle"), "driver-kill-at vm2 region")
 	wantPhase(t, r, "pfsd-c@vm2#0", Refused)
 	steps(t, r, "!driver-restart vm2", "!driver-kill vm2", "!containerd-restart vm2", "kubelet-restart vm2")
@@ -860,7 +860,7 @@ func TestPmemBusyLeaseCompanionTerminating(t *testing.T) {
 
 // A Prepare that comes at any time may fire the watcher after the
 // observation of the settle that saw it armed: the next window keeps
-// that when its claim goes (FP4: a refused claim; also a blocked one); a
+// that when its claim goes (A32: a refused claim; also a blocked one); a
 // settle that sees it armed again starts afresh, and a volatile claim
 // never marks it.
 func TestPmemKillAtAfterSettle(t *testing.T) {
@@ -928,7 +928,7 @@ func TestPmemKillAtAfterSettle(t *testing.T) {
 	steps(t, v, "driver-kill vm1")
 }
 
-// The driver pod's slack of a kubelet restart (FP6): only while its
+// The driver pod's slack of a kubelet restart (A34): only while its
 // container may be being created again, after a driver-kill of the
 // window that no step waited out (kubelet-restart waits for the driver),
 // or in the world in which an armed watcher that may have fired before
@@ -999,7 +999,7 @@ func TestPmemDriverSlack(t *testing.T) {
 	o := observation(t, s)
 	o.Drivers["vm2"].Restarts = 2
 	wantVerdict(t, checkSettle(e, o), VOK, "ok")
-	// without the slack an extra restart still waits (FP6 before)
+	// without the slack an extra restart still waits (A34 before)
 	n := stateAfter(t, "fullp", true, "kubelet-restart vm2", "driver-kill vm2", "settle")
 	o = observation(t, n)
 	o.Drivers["vm2"].Restarts = 2
@@ -1008,7 +1008,7 @@ func TestPmemDriverSlack(t *testing.T) {
 	if strings.Contains(v.Msg, "up to") {
 		t.Fatalf("a slack note without slack: %q", v.Msg)
 	}
-	// a watcher that may have fired before the kubelet restart (PM2: a
+	// a watcher that may have fired before the kubelet restart (A31: a
 	// refused reader's retry makes its region): one more in the world
 	// in which it fired, none in the other
 	r := stateAfter(t, "fullp", true, "create pfsd-c@vm2#0", "settle", "driver-kill-at vm2 region", "kubelet-restart vm2")
@@ -1059,7 +1059,7 @@ func killAlt(s *State, v VM) bool {
 	return false
 }
 
-// FP1 and what else prepares where the window does not tell: a
+// A32 and what else prepares where the window does not tell: a
 // persistent Prepare may show the watcher's marker on its VM also when
 // it is an "any" pod's (on the host it lands on), a stalled contender's
 // promotion, an unblocking pod's retry, a blocked pod's retry (region:

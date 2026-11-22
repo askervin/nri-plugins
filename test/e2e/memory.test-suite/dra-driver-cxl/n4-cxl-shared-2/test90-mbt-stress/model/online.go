@@ -14,7 +14,7 @@
 
 package main
 
-// The on-line mode (04-contract.txt 5): the line protocol with the bash
+// The on-line mode (contract.txt 5): the line protocol with the bash
 // executor, planning the next step while bash executes the current one,
 // the oracle, and the files mbt-steps.txt and mbt-fail.txt.
 
@@ -483,7 +483,7 @@ func (r *onlineRun) settle(n int, name string, to *State, sent time.Time, final 
 			if to.Wide != nil {
 				how = "narrowed by the nodes of its \"any\" pods once they are seen bound, and by the bindings of its race-kill pods"
 			}
-			r.log.Printf("step %d settle: the outcomes of its races were not all enumerated (R10): %s", n, how)
+			r.log.Printf("step %d settle: the outcomes of its races were not all enumerated (the outcome bound, A35): %s", n, how)
 		}
 		v, adopted, alt := checkAltsSince(to, o, prefix, r.now(), sent, r.unblockTimeout)
 		for _, note := range v.Notes {

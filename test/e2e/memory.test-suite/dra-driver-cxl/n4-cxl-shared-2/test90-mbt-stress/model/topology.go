@@ -15,7 +15,7 @@
 package main
 
 // The fixed cluster of test19-many-pools with a local memdev on every VM
-// (04-contract.txt 1): three VMs, three pools of two devices each, the
+// (contract.txt 1): three VMs, three pools of two devices each, the
 // NUMA nodes of the two CXL host bridges.
 
 import (
@@ -251,7 +251,7 @@ type Config struct {
 	// StallWindow: a stalled contender (A19) must be promoted this long
 	// after the settle that first saw it stalled (--stall-window).
 	// StallStrict (the window is not longer than the settle timeout: a
-	// fixed kube-scheduler, bug-08): a stalled contender is not
+	// kube-scheduler that requeues at once, A28): a stalled contender is not
 	// settled, the settle waits for its promotion; else it is settled
 	// in both states.
 	StallWindow time.Duration
@@ -317,7 +317,7 @@ func parseRebootRun(s string) (RebootRun, error) {
 }
 
 // rebootVM: a VM that node-reboot may reboot: vm0 and vm1; vm2 runs the
-// control plane (12-findings-reboot.txt 5).
+// control plane (A42).
 func rebootVM(v VM) bool { return v == VM0 || v == VM1 }
 
 // defaultConfig returns the configuration of the contract's defaults.

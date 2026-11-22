@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // mbt-cxl is the model-based test generator and oracle of the CXL DRA
-// driver's e2e test test90-mbt-stress (plan-13-gofmbt).
+// driver's e2e test test90-mbt-stress (../contract.txt).
 //
 //	mbt-cxl online [flags]              steps on stdin/stdout (the coproc)
 //	mbt-cxl online --replay FILE ...    the steps of an mbt-steps.txt
@@ -122,8 +122,7 @@ type commonFlags struct {
 	reboot        string
 }
 
-// defaultCoverage is the default mix, chosen by the P4 experiments
-// (plan-13-gofmbt/04-status-MODEL.txt): actions weighed 3, faults in
+// defaultCoverage is the default mix: actions weighed 3, faults in
 // context 2, pairs of actions 1.
 const defaultCoverage = "C1x3,C2x2,C3"
 

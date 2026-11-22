@@ -170,7 +170,10 @@ the test reads commands from the terminal until `exit`.
 The tests need the ports 9909 to 9912 of the host for their pool
 servers. `test90-mbt-stress` takes its parameters (`MBT_DURATION`,
 `MBT_PROFILE`, `MBT_FENCING` and others) from the environment; its
-`code.var.sh` lists them.
+`code.var.sh` lists them. Its model and its executor follow the
+[contract](blob:/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test90-mbt-stress/contract.txt):
+the kinds of pods, the actions, the protocol, the observations, the
+oracle and the rules A1 to A44 that the code cites.
 
 The tests on real hardware are in
 [`test/hw/dra-driver-cxl-local`](tree:/test/hw/dra-driver-cxl-local).

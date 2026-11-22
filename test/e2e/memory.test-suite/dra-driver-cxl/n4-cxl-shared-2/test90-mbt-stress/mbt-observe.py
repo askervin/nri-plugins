@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Observations of test90-mbt-stress (plan-13, 04-contract.txt 6).
+"""Observations of test90-mbt-stress (contract.txt 6).
 
 Usage:
   mbt-observe.py vm [--ns NS] [--stacks-after S]
@@ -68,7 +68,7 @@ Where the data comes from:
                 host bridge's uport; the topologies of test90 have
                 cxl-fmw.K -> cxlhbK), the decoders 0..N-1 (N =
                 decoders_committed: committed, or pinned below a
-                committed one, plan-13 bug-02) with region ("" for none),
+                committed one, A9) with region ("" for none),
                 start and size
   nodes         /sys/devices/system/node/nodeN/meminfo MemTotal
   state         the records of the driver's document
@@ -2312,7 +2312,7 @@ def cmd_assemble(args):
             # A pod with a lease on its way to Ready is inspected again:
             # an fs lease is in its container only once Ready, and a
             # lease whose companion's Prepare was cut stays Lending
-            # until kubelet's retry (A29 d, A30; FP5).
+            # until kubelet's retry (A29 d, A30, A33).
             keep += ["%s:%s:%s" % (i["uid"], i["restarts"], slot) for slot, i in (obs["inspect"] or {}).items()
                      if not leases_unready(i.get("leases"))]
         with open(args.inspected_out, "w") as f:

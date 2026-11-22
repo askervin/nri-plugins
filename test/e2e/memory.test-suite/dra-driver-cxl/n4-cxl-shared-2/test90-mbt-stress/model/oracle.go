@@ -14,7 +14,7 @@
 
 package main
 
-// The oracle (04-contract.txt 7): the checks O1-O8 of a settle
+// The oracle (contract.txt 7): the checks O1-O8 of a settle
 // observation against the model state, and of done observations.
 //
 // The "stable" rule: a difference that the SUT may still be on its way
@@ -179,7 +179,7 @@ func checkAlts(st *State, o *Observation, prefix string, now time.Time, unblock 
 // checkAltsSince is checkAlts for a settle that started at since (the
 // clock of stalled contenders, A19).
 //
-// A truncated settle (R10) with "any" pods whose nodes were not known,
+// A truncated settle (the outcome bound, A35) with "any" pods whose nodes were not known,
 // or with race-kill pods (optional Prepares), is settled again with the
 // nodes and the bindings observed (narrowed); the outcome adopted from it
 // says so (Narrow, the adoption record's any=), and the alternative's
@@ -197,7 +197,7 @@ func checkAltsSince(st *State, o *Observation, prefix string, now, since time.Ti
 		}
 	}
 	if best.Status != VOK && truncated {
-		// R10: say it, do not hide it
+		// the outcome bound: say it, do not hide it
 		best.Msg += " (the outcomes of this settle's races were not all enumerated: the observed one may be legal)"
 	}
 	return best, bestRS, bestJ
@@ -380,7 +380,7 @@ func (k *checker) resolve() {
 			}
 		}
 		if ss.Slack > 0 && p.Restarts >= int(ss.Restarts) && p.Restarts <= int(ss.Restarts)+int(ss.Slack) && p.Phase == "Running" && p.Ready {
-			// adopt the restarts that a kubelet restart gave (M2)
+			// adopt the restarts that a kubelet restart gave (A34)
 			ss.Restarts, ss.Slack = uint8(p.Restarts), 0
 		}
 		if ss.Phase == Stalled {
@@ -575,7 +575,7 @@ func (k *checker) resolve() {
 			d.PodBefore = ""
 			if d.Slack > 0 && od.Restarts >= int(d.Restarts) && od.Restarts <= int(d.Restarts)+int(d.Slack) {
 				// adopt the restart that a kubelet restart gave
-				// (M2 for the driver pod, FP6)
+				// (A34)
 				d.Restarts, d.Slack = uint8(od.Restarts), 0
 			}
 		}
@@ -878,7 +878,7 @@ func (k *checker) checkMissing(v VM, ov *ObsVM) {
 }
 
 // checkSlices: the cxl.nri.io ResourceSlice of a node publishes the
-// local memdev and no pool serial (A13, D I12).
+// local memdev and no pool serial (A13).
 func (k *checker) checkSlices(v VM) {
 	if k.o.Slices == nil {
 		k.notef("ResourceSlices not observed: no check of the cxl.nri.io ResourceSlices")
@@ -907,7 +907,7 @@ func (k *checker) checkSlices(v VM) {
 }
 
 // checkLeaseStore: state.json of a VM has the lease claims of its running
-// lease pods and their leases (A13, D I11).
+// lease pods and their leases (A13).
 func (k *checker) checkLeaseStore(v VM, ov *ObsVM) {
 	if ov.State == nil {
 		return
@@ -1080,7 +1080,7 @@ func (k *checker) checkRunning(i int, name string) {
 		if c.AttachFailed != nil && *c.AttachFailed {
 			// the controller's attach into the new qemu of a VM fails
 			// with 503 until the pool server has discovered it
-			// (bug-16): only in the settle of the reboot
+			// (A44 4): only in the settle of the reboot
 			if ss.Node != VMAny && k.rs.Drv[ss.Node].Rebooted {
 				k.waitf("%s: claim AttachFailed (after the node-reboot of %s)", name, ss.Node)
 			} else {

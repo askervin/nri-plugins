@@ -18,7 +18,7 @@ package main
 // adoption of what the model leaves open (a namespace that a writer may
 // have made, its UUID, the hashes of the backing files, an armed
 // driver-kill-at watcher), and the invariants P1-P11 of
-// 11-findings-persistent.txt 3.9 against the observation fields of A24.
+// A26 against the observation fields of A24.
 // A field that is absent is not checked (noted once per run), a null one
 // is a wait (A11).
 
@@ -329,7 +329,7 @@ func (k *checker) checkPersistentVM(v VM, ov *ObsVM) {
 	k.checkKernel(v, ov)
 	k.checkKillAt(v, ov)
 	if dl := ov.DriverLog; dl != nil && dl.NotRemounted != nil && *dl.NotRemounted > 0 {
-		k.notef("%s: the driver logged %d times that it did not mount or bind again (S7)", v, *dl.NotRemounted)
+		k.notef("%s: the driver logged %d times that it did not mount or bind again (A24)", v, *dl.NotRemounted)
 	}
 }
 
@@ -821,7 +821,7 @@ func (k *checker) checkInspectPersistent(i int, in *ObsInspect) {
 			case l != nil:
 				// the bind comes before Ready: a lease whose
 				// companion's Prepare was cut at the bind (A29 d,
-				// A30) has none until kubelet's retry (FP5)
+				// A30) has none until kubelet's retry (A33)
 				k.waitf("inspect %s: no /run/cxl/fs/%s in its container, its lease %s is %s", sl.Name, name, l.Lease, l.State)
 			default:
 				k.failf("inspect %s: no /run/cxl/fs/%s in its container (an fs lease it cannot see)", sl.Name, name)

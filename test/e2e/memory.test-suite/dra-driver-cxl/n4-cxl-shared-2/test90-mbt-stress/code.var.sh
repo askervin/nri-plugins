@@ -1,5 +1,5 @@
 # Model-based reliability test of the CXL DRA driver and the pool
-# controllers with gofmbt (scripts/testing/fake-cxl-pool/plan-13-gofmbt).
+# controllers with gofmbt (contract.txt).
 #
 # The cluster of test19-many-pools (three nodes, three pool servers, three
 # pool controllers) with the local memdev of every VM attached, where a
@@ -18,7 +18,7 @@
 # the steps that change the cluster a "settle" observes the pods, claims,
 # pool attachments, the CXL devices of the VMs, the driver's state files
 # and CDI specs and the cpusets of the containers, and the model compares
-# that with its prediction (04-contract.txt: the actions, the protocol,
+# that with its prediction (contract.txt: the actions, the protocol,
 # the observations). A failure stops the run; the steps are in
 # mbt-steps.txt for a replay.
 #
@@ -41,8 +41,8 @@
 # step fencing-switch; the model gets --fencing=MODE; a
 # replay and an off-line run take it from the header of MBT_REPLAY or
 # MBT_SCRIPT: set, it must be the header's, else the test fails),
-# MBT_REBOOT (the verb node-reboot of vm0 and vm1, amendments A41-A44,
-# 12-findings-reboot.txt: guest, a guest reboot, systemctl reboot, qemu
+# MBT_REBOOT (the verb node-reboot of vm0 and vm1, rules A41-A44:
+# guest, a guest reboot, systemctl reboot, qemu
 # keeps running with its devices; qemu, a restart of the qemu process, a
 # power cycle after which the pool controllers attach their devices again
 # and the executor the local memdev; empty, the default: none; a reboot

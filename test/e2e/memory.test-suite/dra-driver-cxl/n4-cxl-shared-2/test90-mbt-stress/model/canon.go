@@ -14,8 +14,7 @@
 
 package main
 
-// Canonical states and the per-plan transition cache (plan-13-gofmbt/
-// 20-mbtopt-02-design.txt B1, D4). Two states that differ only in what
+// Canonical states and the per-plan transition cache. Two states that differ only in what
 // the search never reads (the step number, the action that led to them,
 // the oracle's clocks, tokens and names, the other outcomes of a settle)
 // behave the same in next() and in the coverage functions: the planner
@@ -188,17 +187,15 @@ type planWalk struct {
 }
 
 // defaultPlanStates is the default of --plan-states (Config.PlanStates):
-// no cache. The cache trades memory for plan time (20-mbtopt-05-results.txt:
-// at maxPlanStates ~30% of the plan time at depth 3 for ~0.7 GB RSS, little
-// at depth 4 where the trees exceed the bound), which the default of a test
+// no cache. The cache trades memory for plan time (it saves little at
+// depth 4, where the trees exceed the bound), which the default of a test
 // generator should not spend unasked.
 const defaultPlanStates = 0
 
 // maxPlanStates caches a whole depth-3 plan of the full profile: ~1.7-2 KB per state (the
 // state, its slots, its key, its step, its coverage strings), ~300 MB
 // live at the bound. A depth-3 plan of the full profile has at most
-// ~135k distinct states, a depth-4 one ~430k (20-mbtopt-04-status-
-// MODEL.txt). Beyond the bound new states are walked as without the
+// about 135k distinct states, a depth-4 one about 430k. Beyond the bound new states are walked as without the
 // cache: the same steps, only slower.
 const maxPlanStates = 150000
 

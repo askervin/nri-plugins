@@ -14,7 +14,7 @@
 
 package main
 
-// The model state: the slot model of 02-design.txt 4 (M1). Every slot
+// The model state: the slots of contract.txt 3. Every slot
 // holds at most one pod; what the pods hold (pool devices, local blocks,
 // leases) is derived from the slots. The state is immutable once a
 // transition has returned it; String() and the coverage abstraction are
@@ -69,7 +69,7 @@ const (
 	// only candidate for it then).
 	Unsched
 	// Stalled: the contender of a device whose holder was deleted
-	// while its claim waited for the binding conditions (A19, bug-08):
+	// while its claim waited for the binding conditions (A19):
 	// the scheduler may keep it Pending (claim not allocated) until a
 	// requeueing event or the scheduler's unschedulable flush (pods
 	// unschedulable for 5 min, flushed every 30 s) after the delete, or
@@ -254,7 +254,7 @@ type SlotState struct {
 	Steer     Steer
 	Lease     LeaseSt
 	LeaseMode LeaseMode
-	// Slack: restarts the pod may have more than its crashes (M2: a
+	// Slack: restarts the pod may have more than its crashes (A34: a
 	// kubelet restart while its container is being created)
 	Slack uint8
 	// Hold: a process of the container maps hello.txt of its fs claim
@@ -323,9 +323,9 @@ type DriverState struct {
 	// KillMay: the armed watcher may have fired in the current window: a
 	// Prepare that comes at any time (killAnyTime) could show its marker
 	// before one of the window's steps, also when its claim is gone by
-	// the settle (FP4)
+	// the settle (A32)
 	KillMay bool
-	// Slack: restarts the pod may have more than its kills (FP6, M2 for
+	// Slack: restarts the pod may have more than its kills (A34 for
 	// the driver pod: a kubelet restart while its container was being
 	// created again after a kill); adopted at the settle
 	Slack uint8
@@ -794,7 +794,7 @@ func (s *State) fenceNUMANodes(bits uint8) []int {
 // --- abstraction (C4) and String ---
 
 // abstract returns the coverage abstraction of the state (C4 of
-// 02-design.txt 6): per pool device its users by kind and phase class,
+// the flag --coverage): per pool device its users by kind and phase class,
 // per local memdev its fill and users, per driver and controller their
 // state. Memoized.
 func (s *State) abstract() []string {

@@ -130,7 +130,7 @@ func TestGenerateAgainstSim(t *testing.T) {
 }
 
 // TestGenerateFrom: --from of an on-line run follows what the run
-// adopted (R5): the script, executed on an SUT that behaves as the run's
+// adopted (A35): the script, executed on an SUT that behaves as the run's
 // did, passes every expectation.
 func TestGenerateFrom(t *testing.T) {
 	for _, tc := range []struct {

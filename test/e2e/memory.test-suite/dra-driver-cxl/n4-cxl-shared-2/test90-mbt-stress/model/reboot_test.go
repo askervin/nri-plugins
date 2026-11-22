@@ -14,7 +14,7 @@
 
 package main
 
-// node-reboot (A41-A44, plan-13-gofmbt/14-design-reboot.txt): the verb,
+// node-reboot (A41-A44): the verb,
 // the transition per kind, leases and dnuma at a reboot, fencing modes,
 // the boot ids, the device nodes of the containers, generation.
 
@@ -246,7 +246,7 @@ func TestNodeRebootTransition(t *testing.T) {
 
 // Leases at a reboot: released, the companion gone, the waiter of the
 // block promoted; the companion's claim makes no region after the boot
-// (its Prepare fails before it touches a device, bug-15 fix).
+// (its Prepare fails before it touches a device, A42).
 func TestNodeRebootLeases(t *testing.T) {
 	cfg := rebootConfig(t, "full", true)
 	s := steps(t, newState(cfg), "create lease@vm1#0", "create lnuma@vm1#0", "settle", "lease-get lease@vm1#0 dax", "settle",
@@ -509,7 +509,7 @@ func TestDevNodes(t *testing.T) {
 
 // AttachFailed of a Running pod's claim: a wait in the settle of a
 // node-reboot (the attach into the new qemu fails until the pool server
-// discovers it, bug-16), a fail otherwise.
+// discovers it, A44), a fail otherwise.
 func TestNodeRebootAttachFailed(t *testing.T) {
 	cfg := rebootConfig(t, "full", true)
 	cfg.Reboot = RebootQemu
