@@ -85,12 +85,6 @@
       "regions": [
         "region3"
       ],
-      "stale": [
-        {
-          "path": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/11111111-0000-0000-0000-000000000007/mbt",
-          "kind": "bind"
-        }
-      ],
       "grants": [
         {
           "claim": "33333333-0000-0000-0000-000000000002",
@@ -101,7 +95,10 @@
           "result": 0
         }
       ],
-      "state": "ACTIVE"
+      "state": "ACTIVE",
+      "staleBinds": [
+        "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/11111111-0000-0000-0000-000000000007/mbt"
+      ]
     },
     {
       "serial": "0xc1ae2003",
@@ -1050,7 +1047,7 @@
       "got": {
         "source": "local",
         "serial": "0xc100e2e1",
-        "bytes": 134217728
+        "size": 134217728
       },
       "state": "READY",
       "lend": {
@@ -1078,10 +1075,10 @@
         "source": "pool",
         "serial": "0xc1ae2002",
         "sharedDevice": true,
-        "bytes": 1073741824,
         "access": "cached",
         "fsType": "erofs",
-        "path": "/run/cxl/fs/mbt"
+        "path": "/run/cxl/fs/mbt",
+        "size": 1073741824
       },
       "state": "RELEASING_BUSY",
       "releaseRequested": true,

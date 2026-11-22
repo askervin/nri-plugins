@@ -54,11 +54,12 @@ type Memdev struct {
 	// Hollow are the hollow regions of ours on the memdev, deleted when
 	// their blocks are offline.
 	Hollow []RegionRef `json:"hollow,omitempty"`
-	// Stale are the lease binds whose unmount failed busy, retried at
-	// every release of the memdev and by the periodic pass.
-	Stale  []StalePath `json:"stale,omitempty"`
-	Grants []GrantRef  `json:"grants,omitempty"`
-	State  MemdevState `json:"state"`
+	// StaleBinds are the paths of the lease binds whose unmount failed
+	// busy, retried at every release of the memdev and by the periodic
+	// pass.
+	StaleBinds []string    `json:"staleBinds,omitempty"`
+	Grants     []GrantRef  `json:"grants,omitempty"`
+	State      MemdevState `json:"state"`
 }
 
 // MemdevFacts are what the driver knows of a memdev from the kernel, the
@@ -66,26 +67,13 @@ type Memdev struct {
 type MemdevFacts struct {
 	// UsableSize is the number of bytes the driver uses, 0 for all of it (the
 	// configured usable size and the address line probe).
-	UsableSize uint64 `json:"usable,omitempty"`
+	UsableSize uint64 `json:"usableSize,omitempty"`
 	Shared     bool   `json:"shared,omitempty"`
 	Persistent bool   `json:"persistent,omitempty"`
 	Coherent   bool   `json:"coherent,omitempty"`
 	// NUMAAffinity is the CPU NUMA node of the memdev.
 	NUMAAffinity *int `json:"numaAffinity,omitempty"`
 }
-
-// StalePath is a lease bind whose unmount failed busy.
-type StalePath struct {
-	Path string    `json:"path"`
-	Kind StaleKind `json:"kind"`
-}
-
-// StaleKind is what a StalePath is.
-type StaleKind string
-
-const (
-	StaleBind StaleKind = "bind"
-)
 
 // MemdevState is the state of a Memdev.
 type MemdevState string

@@ -765,7 +765,7 @@ func TestRecoverOtherSources(t *testing.T) {
 				State: state.PreparationPrepared, Results: []state.Result{grantResult("lfs", 0)}})
 		doc.Memdevs = append(doc.Memdevs, state.Memdev{Serial: serialL, Source: state.SourceLocal, State: state.MemdevActive,
 			Grants: []state.GrantRef{ref, fsRef}, Regions: []state.RegionRef{"region7"},
-			Stale: []state.StalePath{{Path: staleBind, Kind: state.StaleBind}}})
+			StaleBinds: []string{staleBind}})
 		doc.Grants = append(doc.Grants, state.Grant{Ref: ref, Serial: serialL, State: state.GrantJournaled,
 			Asked: state.Asked{Source: state.SourceLocal, Mode: state.ModeDax, Kind: state.KindLocal}},
 			state.Grant{Ref: fsRef, Serial: serialL, State: state.GrantRealised,
@@ -1156,7 +1156,7 @@ func TestRecoverBusyBindIsStale(t *testing.T) {
 	}
 	v.f.SetBusy(target, true)
 	v.restart()
-	if m := v.records().Memdev(serialP); len(m.Stale) != 1 || m.Stale[0].Path != target {
+	if m := v.records().Memdev(serialP); len(m.StaleBinds) != 1 || m.StaleBinds[0] != target {
 		t.Fatalf("memdev %+v", m)
 	}
 	v.f.SetBusy(target, false)

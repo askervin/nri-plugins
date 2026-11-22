@@ -156,7 +156,7 @@ func (e *Engine) verifyBind(u *pmemGrant, target string, node *kernel.MountInfo)
 	}
 	if uerr := e.locked(func() error { return e.k.Unmount(target) }); uerr != nil {
 		klog.Errorf("engine: %s memdev %s: unmounting %s: %v; trying again at the next release", u.source, s, target, uerr)
-		e.addStale(u.serial, target, state.StaleBind)
+		e.addStale(u.serial, target)
 	} else {
 		e.removeMountDir(target)
 	}
@@ -248,11 +248,10 @@ func boundTo(r *state.Records, ref state.GrantRef, target string, to state.BindS
 		return err
 	}
 	if m := r.Memdev(rg.Serial); m != nil {
-		stale := state.StalePath{Path: target, Kind: state.StaleBind}
 		if to == state.BindStale {
-			m.Stale = addRef(m.Stale, stale)
+			m.StaleBinds = addRef(m.StaleBinds, target)
 		} else {
-			m.Stale = removeRef(m.Stale, stale)
+			m.StaleBinds = removeRef(m.StaleBinds, target)
 		}
 	}
 	return nil
@@ -308,15 +307,15 @@ func (e *Engine) unbindStale(source state.Source, target string) error {
 // addStale records a node mount or lease bind of the memdev with the
 // serial whose unmount failed, once, in a lazy commit; a memdev without a
 // record keeps nothing.
-func (e *Engine) addStale(serial state.Serial, path string, kind state.StaleKind) {
+func (e *Engine) addStale(serial state.Serial, path string) {
 	err := e.commitAs(context.Background(), store.Lazy, func(r *state.Records) error {
 		if m := r.Memdev(serial); m != nil {
-			m.Stale = addRef(m.Stale, state.StalePath{Path: path, Kind: kind})
+			m.StaleBinds = addRef(m.StaleBinds, path)
 		}
 		return nil
 	})
 	if err != nil {
-		klog.Errorf("engine: memdev %s: recording stale %s %s: %v", serial, kind, path, err)
+		klog.Errorf("engine: memdev %s: recording stale lease bind %s: %v", serial, path, err)
 	}
 }
 
@@ -340,7 +339,7 @@ func (e *Engine) RetryStaleBinds(ctx context.Context, trigger state.Trigger) {
 // disabled). Errors are logged.
 func (e *Engine) retryAllStale(ctx context.Context, trigger state.Trigger) {
 	for _, m := range e.records().Memdevs {
-		if len(m.Stale) == 0 || !e.owns(m.Source) || !slices.ContainsFunc(m.Stale, func(sp state.StalePath) bool { return sp.Kind == state.StaleBind }) {
+		if len(m.StaleBinds) == 0 || !e.owns(m.Source) {
 			continue
 		}
 		e.retryStale(ctx, m.Serial, trigger)
@@ -397,23 +396,20 @@ func (e *Engine) retryStale(ctx context.Context, serial state.Serial, trigger st
 		return
 	}
 	source := m.Source
-	var forget []state.StalePath
+	var forget []string
 	gone, left := false, false
-	for _, sp := range m.Stale {
-		if sp.Kind != state.StaleBind {
-			continue
-		}
-		if e.bindUsed(sp.Path, state.GrantRef{}) {
+	for _, path := range m.StaleBinds {
+		if e.bindUsed(path, state.GrantRef{}) {
 			// a Prepare again bound it for its grant
-			forget = append(forget, sp)
+			forget = append(forget, path)
 			continue
 		}
-		if err := e.unbindStale(source, sp.Path); err != nil {
-			klog.Errorf("engine: unmounting stale lease bind %s: %v", sp.Path, err)
+		if err := e.unbindStale(source, path); err != nil {
+			klog.Errorf("engine: unmounting stale lease bind %s: %v", path, err)
 			left = true
 			continue
 		}
-		forget = append(forget, sp)
+		forget = append(forget, path)
 		gone = true
 	}
 	if len(forget) == 0 {
@@ -512,15 +508,15 @@ func (e *Engine) logAfterStale(source state.Source, serial state.Serial, errs []
 // forgetStale removes the stale lease binds gone of the memdev with the
 // serial, the binds of their grants that are STALE ABSENT (a BOUND one of
 // a grant that lists it again stays).
-func forgetStale(r *state.Records, serial state.Serial, gone []state.StalePath, trigger state.Trigger) error {
+func forgetStale(r *state.Records, serial state.Serial, gone []string, trigger state.Trigger) error {
 	m := r.Memdev(serial)
 	if m == nil {
 		return nil
 	}
-	for _, sp := range gone {
-		m.Stale = removeRef(m.Stale, sp)
+	for _, path := range gone {
+		m.StaleBinds = removeRef(m.StaleBinds, path)
 		for i := range r.Grants {
-			if b := r.Grants[i].Got.Bind; b != nil && b.Target == sp.Path && b.State == state.BindStale {
+			if b := r.Grants[i].Got.Bind; b != nil && b.Target == path && b.State == state.BindStale {
 				if err := state.Apply(&state.BindTable, &b.State, state.BindAbsent, trigger); err != nil {
 					return err
 				}

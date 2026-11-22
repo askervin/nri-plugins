@@ -64,8 +64,8 @@ func TestPersistentBindBusy(t *testing.T) {
 	if b := v.grant("c", 0).Got.Bind; b.State != state.BindStale {
 		t.Fatalf("bind %+v", b)
 	}
-	if m := v.records().Memdev(serialP); len(m.Stale) != 1 {
-		t.Fatalf("stale %+v", m.Stale)
+	if m := v.records().Memdev(serialP); len(m.StaleBinds) != 1 {
+		t.Fatalf("stale %+v", m.StaleBinds)
 	}
 	v.f.SetBusy(req.BindTarget, false)
 	v.mustUnprepare(poolDriver, "c")
@@ -220,7 +220,7 @@ func TestRetryStalePeriodic(t *testing.T) {
 	v.f.SetBusy(target, true)
 	v.e.RetryStaleBinds(context.Background(), state.TriggerUnprepare)
 	v.mustBeMounted("a busy stale bind after the pass", target)
-	if m := v.records().Memdev(serialP); m == nil || len(m.Stale) != 1 {
+	if m := v.records().Memdev(serialP); m == nil || len(m.StaleBinds) != 1 {
 		t.Fatalf("memdev %+v", m)
 	}
 	v.f.SetBusy(target, false)

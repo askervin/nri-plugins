@@ -517,7 +517,7 @@ func releasedGrant(r *state.Records, ref state.GrantRef, trigger state.Trigger) 
 // unused tells whether nothing is left of a memdev record: no grant, no
 // region of ours, no hollow region and no stale lease bind or node mount.
 func unused(m *state.Memdev) bool {
-	return len(m.Grants) == 0 && len(m.Regions) == 0 && len(m.Hollow) == 0 && len(m.Stale) == 0
+	return len(m.Grants) == 0 && len(m.Regions) == 0 && len(m.Hollow) == 0 && len(m.StaleBinds) == 0
 }
 
 // dropMemdev removes the record of the memdev with the serial (NONE).

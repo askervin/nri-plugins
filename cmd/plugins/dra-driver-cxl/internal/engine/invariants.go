@@ -371,8 +371,8 @@ func checkI7(c *checker) {
 func checkI8(c *checker) {
 	listed := c.listedMounts()
 	for _, m := range c.r.Memdevs {
-		for _, sp := range m.Stale {
-			listed[sp.Path] = true
+		for _, path := range m.StaleBinds {
+			listed[path] = true
 		}
 	}
 	inMountsDir := func(target string) bool {

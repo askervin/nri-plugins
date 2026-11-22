@@ -218,7 +218,7 @@ func (m *Memdev) Clone() Memdev {
 	c.Facts.NUMAAffinity = clonePtr(m.Facts.NUMAAffinity)
 	c.Regions = slices.Clone(m.Regions)
 	c.Hollow = slices.Clone(m.Hollow)
-	c.Stale = slices.Clone(m.Stale)
+	c.StaleBinds = slices.Clone(m.StaleBinds)
 	c.Grants = slices.Clone(m.Grants)
 	return c
 }

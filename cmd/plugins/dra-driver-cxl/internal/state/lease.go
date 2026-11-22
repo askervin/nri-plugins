@@ -112,7 +112,7 @@ type LeaseGot struct {
 	Serial Serial `json:"serial,omitzero"`
 	// Shared: the prepared device is a shared device.
 	Shared bool   `json:"sharedDevice,omitempty"`
-	Size   uint64 `json:"bytes,omitempty"`
+	Size   uint64 `json:"size,omitempty"`
 	// Dax and Block are the host paths of the device of a dax or block
 	// lease.
 	Dax    string `json:"dax,omitempty"`

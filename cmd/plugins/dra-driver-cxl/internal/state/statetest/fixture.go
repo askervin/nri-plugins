@@ -115,10 +115,10 @@ func Records() state.Records {
 			},
 			{
 				Serial: SerialPoolFs, Name: "mem3", Source: state.SourcePool, State: state.MemdevActive,
-				Facts:   state.MemdevFacts{Persistent: true, Shared: true},
-				Regions: []state.RegionRef{"region3"},
-				Stale:   []state.StalePath{{Path: bindTarget, Kind: state.StaleBind}},
-				Grants:  []state.GrantRef{ref(ClaimPoolFs, 0), ref(ClaimPoolLeaseC, 0)},
+				Facts:      state.MemdevFacts{Persistent: true, Shared: true},
+				Regions:    []state.RegionRef{"region3"},
+				StaleBinds: []string{bindTarget},
+				Grants:     []state.GrantRef{ref(ClaimPoolFs, 0), ref(ClaimPoolLeaseC, 0)},
 			},
 			{
 				Serial: SerialPoolNUMA, Name: "mem4", Source: state.SourcePool, State: state.MemdevActive,

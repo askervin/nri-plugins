@@ -816,7 +816,7 @@ func (e *Engine) sweepBinds(ctx context.Context) {
 		if err := e.locked(func() error { return e.k.Unmount(target) }); err != nil {
 			klog.Errorf("engine: unmounting %s: %v; trying again at the next release", target, err)
 			if ok {
-				e.addStale(serial, target, state.StaleBind)
+				e.addStale(serial, target)
 			} else {
 				e.addUnownedBind(target)
 			}
@@ -830,12 +830,11 @@ func (e *Engine) sweepBinds(ctx context.Context) {
 // forgetSwept forgets a lease bind that the sweep unmounted when the memdev
 // with the serial had it as stale.
 func (e *Engine) forgetSwept(ctx context.Context, serial state.Serial, target string) {
-	sp := state.StalePath{Path: target, Kind: state.StaleBind}
-	if m := e.records().Memdev(serial); m == nil || !slices.Contains(m.Stale, sp) {
+	if m := e.records().Memdev(serial); m == nil || !slices.Contains(m.StaleBinds, target) {
 		return
 	}
 	if err := e.commit(ctx, func(r *state.Records) error {
-		return forgetStale(r, serial, []state.StalePath{sp}, state.TriggerRecover)
+		return forgetStale(r, serial, []string{target}, state.TriggerRecover)
 	}); err != nil {
 		klog.Errorf("engine: memdev %s: forgetting stale %s: %v", serial, target, err)
 	}
