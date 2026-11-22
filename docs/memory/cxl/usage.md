@@ -570,12 +570,12 @@ in that direction, beyond its claims, as far as `memory.max` and the
 free memory of the NUMA nodes allow. When its usage drops below the last
 waypoint again by `minStep` or more, the steering resumes.
 
-When none of the NUMA nodes in `cpuset.mems` has normal (not movable)
-memory, as for a container with only CXL memory onlined movable, the
-nearest NUMA node with normal memory is added too: unmovable user
-allocations, such as pipe buffers, obey `cpuset.mems` but cannot use
-movable memory, and the container would not start. The memory policy
-keeps the allocations of the container on the CXL NUMA node.
+A container with only CXL memory onlined movable has no NUMA node with
+normal (not movable) memory in its `cpuset.mems`. The steering adds the
+nearest NUMA node with normal memory to it. Unmovable user allocations,
+such as pipe buffers, obey `cpuset.mems` but cannot use movable memory:
+without that node the container would not start. The memory policy keeps
+the allocations of the container on the CXL NUMA node.
 
 Steering is not for every workload. It narrows `cpuset.mems` to the
 NUMA nodes of the plan, sets the memory policy of the processes of the
@@ -1002,12 +1002,12 @@ it logs
 store: the driver state is lost: state.json: <error>; state.json.prev: <error>; start the driver with --new-state to create a new one
 ```
 
-It writes nothing, releases nothing, recovers nothing at start, fails
-every Prepare with that error, keeps the CDI specs, fences every NUMA
-node of online CXL memory, starts the lease broker without leases (it
-deletes no companion), and holds every new memdev for up to 5 minutes in
-its first hour (the remembered provenance is lost). It does not crash or
-restart. Drain the claims of the node and start the driver once with
+A LOST driver does not crash or restart. It writes nothing, releases
+nothing and recovers nothing at start. It fails every Prepare with that
+error and keeps the CDI specs. It fences every NUMA node of online CXL
+memory. Its lease broker has no leases and deletes no companion. The
+remembered provenance is lost, so it holds every new memdev for up to 5
+minutes in its first hour. Drain the claims of the node and start the driver once with
 `--new-state`: it moves both files aside (`.lost`) and starts with a new
 document, and what the lost records named is foreign to it.
 

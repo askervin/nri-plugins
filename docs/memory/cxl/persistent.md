@@ -272,10 +272,10 @@ memdevSettings:
   coherent: true   # the hardware keeps the memory coherent between the hosts
 ```
 
-The pool controller then makes no single-host attachment. Two hosts that
-use the memory at the same time, one of them writing, need memory that
-the hardware keeps coherent between them (CXL shared memory with
-back-invalidation); without it one host reads stale cache lines of the
+The pool controller then makes no single-host attachment. When two hosts
+use the memory at the same time and one of them writes, the hardware must
+keep the memory coherent between them (CXL shared memory with
+back-invalidation). Without that, one host reads stale cache lines of the
 other's writes, and a cluster filesystem is corrupted like a single-host
 one. The cluster stack (corosync and `dlm_controld`) is the node
 admin's; without it the mount fails.

@@ -236,9 +236,9 @@ overwrites the slice of another claim below it, in modes `numa` and
   For every power of two P from 4 KiB up to the region size it writes a
   marker at a few offsets X and X+P, bypassing the CPU caches, and reads
   X back. When X holds the marker of X+P, only the first P bytes are
-  distinct: the region is created again with only those bytes, the
-  memdev is published with that size from the next scan on, and the
-  result is kept in `localProbes.json`, also across reboots. A marker
+  distinct. Then the driver creates the region again with only those
+  bytes and publishes the memdev with that size from the next scan on. It
+  keeps the result in `localProbes.json`, also across reboots. A marker
   that reads back as something else fails the claim.
 
   ```
