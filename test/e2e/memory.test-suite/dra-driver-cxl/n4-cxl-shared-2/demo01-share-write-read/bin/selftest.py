@@ -16,7 +16,7 @@ Usage: selftest.py [--quiet]
 - checks the trace lines of trace-fs (block and fs leases, binds, node
   mounts) and the translation of the log lines of the current driver and
   controller, written with their format strings (trace_formats_test);
-- checks the trace lines of trace-pool-fs (a writer's exclusive attach, a
+- checks the trace lines of trace-pool-fs (a writer's single-host attach, a
   reader's Conflict once however often the scheduler retries, the
   remount read-only) and the superblocks of testdata/pool-fs-super.json (fsinfo);
 - lays out the presenter terminal (T1) of every step of the five scripts
@@ -353,7 +353,7 @@ def trace_fs_test():
                  "vm2 reader-a: lease Ready fs hello", "vm2 reader-a: unmount busy, retry",
                  "vm2 reader-a: unmounted hello", "vm1 remove pmem0 region0",
                  "vm2 pmem0 read-only", "vm2 node mount pmem0 erofs ro", "vm1 node mount pmem0 erofs ro",
-                 "vm2 node mount unmounted", "vm1 node mount unmounted", "shared0 on vm1: not exclusive",
+                 "vm2 node mount unmounted", "vm1 node mount unmounted", "shared0 on vm1: not single-host",
                  "reader-c: shared0 on vm1 already", "vm2 reader-a releases: ctr gone", "vm2 disabled mem0",
                  "shared0 detaching from vm2", "vm1 disabled mem0", "vm1 bind mem0"):
         expect("trace-fs", want in texts, "no %r" % want)
@@ -480,7 +480,7 @@ def trace_poolfs_test():
     texts = [tr.text(text) for _, _, text in tr.events]
     for want in ("vm1 writer asks fs rw share", "writer: fs0 excl: rw filesystem", "vm1 node mount pmem0 ext4 rw",
                  "vm1 writer: prepared ext4 rw direct", "vm1 writer: lease Ready fs data", "vm1 reader-c: lease Ready fs data",
-                 "vm1 node mount now read-only", "vm1 pmem0 read-only", "fs0 on vm1: not exclusive",
+                 "vm1 node mount now read-only", "vm1 pmem0 read-only", "fs0 on vm1: not single-host",
                  "reader-a waits: claim deallocated",
                  "reader-a: attach fs0 to vm2", "vm2 node mount pmem0 ext4 ro", "vm2 reader-b: lease Ready fs data"):
         expect("trace-pool-fs", want in texts, "no %r" % want)

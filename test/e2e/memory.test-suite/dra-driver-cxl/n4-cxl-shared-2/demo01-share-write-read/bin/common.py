@@ -699,7 +699,7 @@ GREEN, YELLOW, RED, BOLD, RESET = "\033[32m", "\033[33m", "\033[31m", "\033[1m",
 _COLOR_WORDS = [
     (RED, r"\b(refused|Failed|ERROR|error|restarting|down|EACCES|failed)\b"),
     (YELLOW, r"\b(waiting|waits|Pending|releasing|stale|Exiting|attaching|detaching)\b"),
-    (GREEN, r"\b(Ready|Running|ok|allocated|excl|share|exclusive|shared|attached)\b"),
+    (GREEN, r"\b(Ready|Running|ok|allocated|excl|share|exclusive|single-host|shared|attached)\b"),
 ]
 
 

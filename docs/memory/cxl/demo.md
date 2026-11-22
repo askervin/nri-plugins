@@ -294,7 +294,7 @@ reader-b on VM2, reader-c on VM1. T6 is the pool server: the device,
 where it is attached, and its bytes as the backing file on the host
 holds them. What is new:
 
-- L2: the device is hot-plugged into VM1 (T6 `attached: vm1 exclusive`,
+- L2: the device is hot-plugged into VM1 (T6 `attached: vm1 single-host`,
   T4 mem0 with its region on VM1), and the lease is Ready after the
   attach: the scheduler waits for it.
 - L3: T6 shows the line from the host's side: the bytes are in the pool.

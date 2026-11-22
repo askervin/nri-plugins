@@ -66,7 +66,7 @@ list
 delete w1 w2 w3 w4 w5 w6 w7 w8
 Running   --name w9 --kind claim --source local --memory volatile --share=false --mode dax --size whole --serial $VM1_LOCAL_SERIAL --node vm1 --command read
 delete w9
-# 2. Volatile pool devices: the exclusive pooled0 by its least size, too
+# 2. Volatile pool devices: the unshared pooled0 by its least size, too
 #    large a size, shared0 exclusively and a lease that waits for it, a
 #    share of it, a lease of the whole pooled0.
 Running   --name w10 --kind claim --source pool --memory volatile --share=false --mode numa --size 512Mi --node any --command env

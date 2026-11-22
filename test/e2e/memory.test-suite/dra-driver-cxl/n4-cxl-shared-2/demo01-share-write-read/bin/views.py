@@ -518,7 +518,7 @@ def render_t6_pool(data, state, now=None, stale=False):
         words.append(w)
     excl = any(a.get("singleHost") for a in atts)
     if words:
-        rows += c.wrap_list("  attached: ", words + (["exclusive"] if excl else []), indent=4,
+        rows += c.wrap_list("  attached: ", words + (["single-host"] if excl else []), indent=4,
                             sep="," if not excl else "")
     else:
         rows.append("  attached: nowhere")
@@ -897,7 +897,7 @@ class Trace:
             if what == "single host false":
                 # No single-host attachment any more: the next attempts are shown.
                 self.retrying.clear()
-            self.emit(t, "pool", "%s on %s: %s" % (dev, host, "exclusive" if what == "single host true" else "not exclusive"))
+            self.emit(t, "pool", "%s on %s: %s" % (dev, host, "single-host" if what == "single host true" else "not single-host"))
 
     def on_controller(self, t, tag, text):
         text = re.sub(r"^fake-cxl-pool-controller: \S+ \S+ ", "", text)
