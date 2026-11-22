@@ -7,7 +7,7 @@
 # include line at the end of each class, a YAML comment, renders it; the
 # pool classes are rendered with the Helm value pool.enabled. This file is
 # plain YAML too: applied with kubectl, the classes have no config.
-# See docs/memory/cxl/usage.md.
+# See docs/memory/cxl/index.md (DeviceClasses) and usage.md (MemoryConfig).
 #
 # cxl-local: a slice of a local memdev of volatile memory, as RAM of its
 # NUMA node (default) or as a devdax device (device.mode: dax).

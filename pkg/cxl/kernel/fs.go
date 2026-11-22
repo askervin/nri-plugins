@@ -26,7 +26,7 @@ import (
 
 // The filesystem of a block device of a persistent device is known by the
 // signatures of the known types in its first FSProbeBytes
-// (docs/memory/cxl/usage.md "Persistent memory").
+// (docs/memory/cxl/persistent.md "Filesystems").
 
 const (
 	// FSProbeBytes is how much of a block device the probe reads.

@@ -66,7 +66,7 @@ those labels may have such claims and their templates
 
 Leases need NRI (the plugin lends nodes through NRI and maps callers to
 containers) and the host PID namespace. The DaemonSet of the Helm chart
-has both, and so has a host process ([usage.md](usage.md#build-and-deploy)).
+has both, and so has a host process ([usage.md](usage.md#install-with-helm)).
 Leasing local memory, also a persistent local memdev, needs no pool
 driver; with `--pool=false` a pool lease fails with
 `pool driver disabled (--pool=false)`.
@@ -163,7 +163,7 @@ the lease is Ready.
 
 A lease in mode `block` is the fd model of `dax` leases applied to the
 block device of a device of persistent memory (attribute
-`persistent: true`, [usage.md](usage.md#persistent-memory)): no device
+`persistent: true`, [usage.md](persistent.md)): no device
 node in the container, no mount:
 
 ```
@@ -187,7 +187,7 @@ as for `dax` fds. `CXL_<KEY>_SIZE` is the size of the fsdax namespace.
 
 A lease in mode `fs` gives the container the filesystem of a device of
 persistent memory (attribute `persistent: true`,
-[usage.md](usage.md#persistent-memory)), of any type that the node
+[usage.md](persistent.md)), of any type that the node
 mounts, read-only unless the request says `--read-only=false`; no fd
 and no device node:
 
@@ -224,7 +224,7 @@ them into the page cache of the node; the default is `direct` for the
 types with DAX (erofs, ext4, xfs), `cached` otherwise. A lease and the
 claims of a device on a node share one node mount per access, and the
 rules of one node of
-[usage.md](usage.md#one-node-superblock-block-device-binds) count the
+[usage.md](persistent.md#one-node) count the
 companion claims of leases with the claims. `CXL_<KEY>_PATH` is
 `/run/cxl/fs/<name>`, `CXL_<KEY>_FS_TYPE` the type of the filesystem
 (also `fsType` of the response and of `cxl-request list`), and
@@ -244,7 +244,7 @@ a cluster filesystem on coherent memory, as for a claim.
 ## cxl-request
 
 `cxl-request` is a static binary (in the image of the driver, see
-[usage.md](usage.md#build-the-image)) that talks to `$CXL_LEASE_SOCKET`.
+[usage.md](usage.md#install-with-helm)) that talks to `$CXL_LEASE_SOCKET`.
 The first word is the operation; every other input is `--opt` or
 `--opt ARG` (`--opt=ARG` too); `--exec` ends the options, the rest of the
 line is the command.
@@ -774,7 +774,7 @@ and cannot make it the companion of a lease it did not request.
   such as `mkfs.erofs`, writes a file that is then copied through the fd).
   Mode `fs` mounts the filesystem types that the node allows (`fsTypes`,
   erofs only by default,
-  [usage.md](usage.md#filesystems)), read-only or read-write.
+  [usage.md](persistent.md#filesystems)), read-only or read-write.
 - The filesystem of an `fs` lease is visible in every container of the
   lease claim that has `/run/cxl/fs` (every container that lists the
   claim), not only in the requesting one.
@@ -844,7 +844,7 @@ and cannot make it the companion of a lease it did not request.
   16Mi memory. Size the tenants' ResourceQuota and the kubelet's
   `maxPods` for these pods. `--lease-max-per-pod` (default 16) and
   `--lease-max-per-node` (default 32) bound the leases
-  ([usage.md](usage.md#nri-dra-driver-cxl-flags)).
+  ([usage.md](usage.md#flags)).
 - The plugin must run in the host pid namespace with the NRI socket (the
   DaemonSet of the Helm chart has `hostPID` and mounts `/var/run/nri`; a
   host process has both anyway). SELinux labels of the socket are set

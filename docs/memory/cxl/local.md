@@ -12,7 +12,7 @@ lease local memory and give it back
 (`cxl-request request --source local --size 64Mi`, see
 [leases.md](leases.md)). A device that the configuration declares shared
 is not sliced: all its claims and leases map the same bytes, see
-[Shared local devices](#shared-local-devices). A memdev of persistent
+[Shared local devices](#shared-local-memdevs). A memdev of persistent
 memory gives its claims its block device or a filesystem, see
 [Persistent local memdevs](#persistent-local-memdevs).
 
@@ -21,7 +21,7 @@ RAM) are published as `region` devices
 ([usage.md](usage.md#devices-of-cxlnriio)); this document is about the
 devices the plugin manages itself.
 
-## What the plugin publishes
+## What the driver publishes
 
 A memdev is published as a device of type `memdev` when it is enabled
 (bound to the `cxl_mem` driver; the kernel enables a hotplugged memdev,
@@ -31,7 +31,7 @@ only), is not a pool device (prepared by the pool driver, see [pool.md](pool.md)
 excluded by `ignoreMemdevs` (name, `cxl/memN`, `major:minor` or serial)
 and has no region that the plugin did not create itself. A memdev listed
 in `sharedMemdevs` is published as a shared device instead; the sections
-up to [Shared local devices](#shared-local-devices) describe sliced
+up to [Shared local devices](#shared-local-memdevs) describe sliced
 memdevs. A memdev with a
 foreign region is left alone: its RAM region with online memory is a
 `region` device, a foreign region without online memory (offline,
@@ -156,7 +156,7 @@ again.
 | `type` | `memdev` |
 | `source` | `local` (pool devices have `source: pool`) |
 | `serial` | serial of the memdev, `0x` and lower-case hex, as the pool controller publishes serials |
-| `shared` | `false`: every claim gets a slice of its own (`true` for a [shared local device](#shared-local-devices)) |
+| `shared` | `false`: every claim gets a slice of its own (`true` for a [shared local device](#shared-local-memdevs)) |
 | `persistent` | `false` (`true` for a [persistent local memdev](#persistent-local-memdevs)) |
 | `size` | RAM capacity of the memdev in bytes |
 | `resource.kubernetes.io/numaNode` | CPU NUMA node of the memdev; absent if unknown |
@@ -203,7 +203,7 @@ modes share a device at the same time:
 
 The mode, and `readOnly` for `dax` slices, is the `device` section of a
 `MemoryConfig` of the claim or its class
-([usage.md](usage.md#opaque-configurations)):
+([usage.md](usage.md#memoryconfig)):
 
 ```yaml
 config:
@@ -424,7 +424,7 @@ during the reboot) finds nothing to release. A `dax` slice
 that is gone gets no device node and no `CXL_<KEY>_DAX` in its CDI
 device.
 
-## Shared local devices
+## Shared local memdevs
 
 A local memdev that the [configuration file](usage.md#configuration-file)
 lists in `sharedMemdevs` is not sliced. It is one devdax device of the
@@ -520,7 +520,7 @@ with `cxl-request request --serial 0xc100e2e1` (exclusively) or
 1. The mode (`dax`) and `readOnly` come from the `device` section; the size
    is that of the device's dax device. A claim that consumed less than one share is refused
    before any device is touched
-   ([usage.md](usage.md#configuration-errors)).
+   ([usage.md](usage.md#errors)).
 2. The first claim of the device creates its devdax region. The region's
    dax device `daxX.0` is the shared device: bound to `device_dax`, the
    size of the region, never resized. The plugin writes zeros to the
@@ -611,7 +611,7 @@ and the reboots of the node. The plugin publishes it as a device of
 persistent memory, used like a pool device of persistent memory: its
 claims get its block device (mode `block`) or a filesystem on it (mode
 `fs`, read-only or read-write), see
-[usage.md](usage.md#persistent-memory). The rules and the code of
+[usage.md](persistent.md). The rules and the code of
 persistent devices are the same for both drivers.
 
 ### The published persistent device
@@ -687,7 +687,7 @@ has a writer and a reader. A running container leases the device with
    section; the facts of the device from the configuration
    ([Shared persistent memdevs](#shared-persistent-memdevs)). The checks
    and their texts are those of persistent pool devices
-   ([usage.md](usage.md#configuration-errors)), prefixed with
+   ([usage.md](usage.md#errors)), prefixed with
    `claim <ns>/<name>: request <req>: `.
 2. The first claim of the device on the node creates a pmem region on the
    memdev under a root decoder with persistent capacity. The region is
@@ -702,7 +702,7 @@ has a writer and a reader. A running container leases the device with
    is detected and mounted at the node mount
    `/var/lib/kubelet/plugins/cxl.nri.io/mounts/<serial hex>-<access>`,
    with the rules of one node of
-   [usage.md](usage.md#one-node-superblock-block-device-binds) (one
+   [usage.md](persistent.md#one-node) (one
    read-write superblock, a read-only block device without a writer,
    upgrade and downgrade).
 5. The claim's CDI device `cxl.nri.io/device=claim-<claim uid>-<n>` has
@@ -728,7 +728,7 @@ restored as those of pool devices; a reboot leaves no region, and the
 next claim creates one again on the same data and labels.
 
 The plugin logs (the node mounts, upgrades and downgrades with the lines
-of [usage.md](usage.md#one-node-superblock-block-device-binds), source
+of [usage.md](persistent.md#one-node), source
 `local`):
 
 ```
@@ -875,31 +875,6 @@ The plugin protects against such devices in two ways:
 
 ## Node requirements
 
-- Kernel with CXL regions (`CONFIG_CXL_REGION`), `CONFIG_DEV_DAX`,
-  `CONFIG_DEV_DAX_KMEM`, `CONFIG_MEMORY_HOTREMOVE`, and `CONFIG_FS_DAX`
-  for the `dax` mode (without it every devdax `mmap` fails); for
-  persistent memdevs also what pool devices of persistent memory need
-  ([usage.md](usage.md#requirements)): `CONFIG_CXL_PMEM`,
-  `CONFIG_LIBNVDIMM`, `CONFIG_BLK_DEV_PMEM`, `CONFIG_ND_PFN`,
-  `CONFIG_BLK_DEV_LOOP` and the filesystems that the node mounts, and the
-  `ndctl` tool.
-- The `cxl` (ndctl) tool. The plugin makes slices and binds dax devices
-  to their drivers through sysfs itself. The container image of the
-  driver has `cxl` and `ndctl`; a host process needs them installed on
-  the node.
-- `/sys/devices/system/memory/auto_online_blocks` should be `offline`:
-  the plugin onlines the blocks of `numa` slices movable itself (kmem is
-  bound through sysfs). Region creation also adds the
-  whole region through kmem for a moment (the kernel binds the dax device
-  of a new RAM region to kmem) before the plugin switches it to
-  `device_dax`: with `online` the kernel onlines the whole region in a
-  kernel zone, and the offline before the switch can fail.
-- No udev rule that onlines hot-added memory, such as `40-redhat.rules`
-  of RHEL, CentOS Stream and Fedora (override it, see
-  [usage.md](usage.md#requirements)). Such a rule onlines the blocks of a
-  new region after the plugin offlined them: the plugin offlines them
-  again until they stay offline for 500 ms (logging `memoryN: online again
-  after offlining it (auto-onlined by udev?)`) and fails the Prepare after
-  30 s. The plugin never destroys a region whose memory is online after
-  it is disabled (the kernel could not remove it): online memory without
-  its region would read garbage.
+The node needs what [usage.md](usage.md#requirements) lists: the kernel
+options, the memory onlining and the udev rule. Devices of persistent
+memory need the options of persistent memory too.

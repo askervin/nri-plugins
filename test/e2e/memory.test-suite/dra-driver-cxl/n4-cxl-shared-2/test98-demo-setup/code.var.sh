@@ -486,7 +486,7 @@ if [ "$DEMO_CASE" == pool-fs ]; then
     echo "demo setup: NOTE: the nodes mount $DEMO_FSTYPE now, a type that is not hardened against crafted images:"
     echo "  this trusts every party that can write fs0 raw (a read-write block claim or lease of it, as the"
     echo "  writer's of R2, on any node of any cluster that shares the pool, and a read-write fs claim);"
-    echo "  erofs alone, the default, trusts nobody (docs/memory/cxl/usage.md, Filesystems)"
+    echo "  erofs alone, the default, trusts nobody (docs/memory/cxl/persistent.md, Filesystems)"
 fi
 if [ "$DEMO_CASE" == wizard ]; then
     SERIAL="$FS0_SERIAL"
@@ -495,7 +495,7 @@ if [ "$DEMO_CASE" == wizard ]; then
     echo "demo setup: NOTE: the nodes mount ext4, xfs and btrfs too, types that are not hardened against"
     echo "  crafted images: this trusts every party that can write fs0 or lp0 raw (a read-write block claim"
     echo "  or lease of it, on any node of any cluster that shares the pool, and a read-write fs claim);"
-    echo "  erofs alone, the default, trusts nobody (docs/memory/cxl/usage.md, Filesystems)"
+    echo "  erofs alone, the default, trusts nobody (docs/memory/cxl/persistent.md, Filesystems)"
 fi
 
 echo "### demo setup $DEMO_CASE: the driver on every node, the pool controller in a pod"

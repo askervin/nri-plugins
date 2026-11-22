@@ -161,7 +161,7 @@ exclusive attachment keeps out every other host, of any cluster.
 ## Build
 
 In the root of the repository, the image of the driver (as for the other
-plugins, see [Build the image](usage.md#build-the-image)) and the
+plugins, see [Build the image](usage.md#install-with-helm)) and the
 fake-cxl-pool binaries (static, copied into the VMs as they are):
 
 ```bash

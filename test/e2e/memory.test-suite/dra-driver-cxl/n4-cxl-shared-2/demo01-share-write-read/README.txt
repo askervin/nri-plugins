@@ -360,7 +360,7 @@ default is erofs only). ext4, xfs and btrfs are not hardened against
 crafted images: a node that mounts them trusts every party that can write
 the device raw (a read-write block claim or lease of it, as the writer's
 in R2, on any node of any cluster that shares the pool, and a read-write
-fs claim). erofs alone trusts nobody (docs/memory/cxl/usage.md,
+fs claim). erofs alone trusts nobody (docs/memory/cxl/persistent.md,
 Filesystems). Setup prints this note.
 T2 labels the writer's lease "fs rw (vm1 only)": it is one share of fs0
 (readers of vm1 can share it), and the pool attaches fs0 to vm1 alone
@@ -496,7 +496,7 @@ ext4, xfs, btrfs]. Trust: ext4, xfs and btrfs are not hardened against
 crafted images: a node that mounts them trusts every party that can write
 the device raw (a read-write block claim or lease of it, on any node of
 any cluster that shares the pool, and a read-write fs claim); erofs alone,
-the default, trusts nobody (docs/memory/cxl/usage.md, Filesystems).
+the default, trusts nobody (docs/memory/cxl/persistent.md, Filesystems).
 Setup prints this note.
 T1 runs "demo wizard": fifteen questions, each with its choices numbered,
 the default marked "*" (Enter takes it), and the choices that the driver

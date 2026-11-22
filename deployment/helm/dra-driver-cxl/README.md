@@ -72,7 +72,7 @@ The command above deploys the driver on the Kubernetes cluster within the
 the chart installs the DeviceClasses `cxl-local`, `cxl-local-shared`,
 `cxl-local-persistent`, `cxl-pool`, `cxl-pool-shared`,
 `cxl-pool-persistent`, `cxl-region`, `cxl-dram` and `cxl-lease`
-([DeviceClasses](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#deviceclasses):
+([DeviceClasses](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/index.md#deviceclasses):
 `cxl-local-persistent` selects the local memdevs of persistent memory,
 whose claims get their block device or a filesystem on it, and
 `cxl-local` and `cxl-local-shared` the other local memdevs), a

@@ -209,7 +209,7 @@ a device of the node, HELD for a new memdev whose source is uncertain,
 which is not published for a while. The pools whose ResourceSlices the
 driver has listed are kept as [ListedPool](states.md#listedpool)
 records. An operator removes the provenance of a serial with
-`--forget-provenance` ([local.md](local.md#what-the-plugin-publishes)).
+`--forget-provenance` ([local.md](local.md#what-the-driver-publishes)).
 
 ### Probe
 
@@ -316,7 +316,7 @@ mount is verified to map the device's memory. The container gets a bind
 of the node mount. A writer is allowed only when no other host may
 write the device, or with a cluster filesystem on coherent memory. A
 persistent device is never zeroed: its data and namespace labels outlive
-the claims. [usage.md](usage.md#persistent-memory) has the rules.
+the claims. [usage.md](persistent.md) has the rules.
 
 ### A lease
 

@@ -170,7 +170,7 @@ publish further attributes under a domain of its own (for example
   host may read stale lines of its CPU caches while another host writes;
   the node driver then allows read-write filesystems on one host at a
   time only (ReadWriteOnce,
-  [usage.md](usage.md#several-nodes-readwriteonce-and-cluster-filesystems)).
+  [usage.md](persistent.md#several-nodes)).
   A controller that does not know publishes no `coherent`.
 
 ## DeviceClasses and claims
@@ -183,7 +183,7 @@ of the Helm chart select pool devices:
 |:------|:--------|:-----|
 | `cxl-pool` | `type == "memdev"`, `shared == false`, `persistent == false` | a whole exclusive pool device: a new NUMA node (default) or a devdax device (`mode: dax`) |
 | `cxl-pool-shared` | `type == "memdev"`, `shared == true`, `persistent == false` | a shared pool device as devdax: exclusively (no capacity request), or one share with `capacity.requests.shares: "1"` |
-| `cxl-pool-persistent` | `type == "memdev"`, `persistent == true` | a pool device of persistent memory, shared or not: its block device (`mode: block`) or a filesystem on it (`mode: fs`, read-only, or read-write with `readOnly: false`), see [usage.md](usage.md#persistent-memory) |
+| `cxl-pool-persistent` | `type == "memdev"`, `persistent == true` | a pool device of persistent memory, shared or not: its block device (`mode: block`) or a filesystem on it (`mode: fs`, read-only, or read-write with `readOnly: false`), see [usage.md](persistent.md) |
 
 Claims:
 
@@ -227,7 +227,7 @@ Complete examples with pods:
 
 An opaque configuration of driver `cxl-pool.nri.io`, kind `MemoryConfig`
 (apiVersion `cxl.nri.io/v1alpha1`, the same as for `cxl.nri.io`, see
-[usage.md](usage.md#opaque-configurations)), has three sections: `device`
+[usage.md](usage.md#memoryconfig)), has three sections: `device`
 selects how the node plugin prepares a pool device, `container` how the
 containers that use it are managed (steering, as for local memory), and
 `pool` the settings of the pool controller
@@ -250,14 +250,14 @@ An opaque configuration of `cxl-pool.nri.io` of another kind fails the
 Prepare with
 `MemoryConfig: FromClaim config 0: kind "...", expected "MemoryConfig"`
 (with the source and the index of the entry,
-[usage.md](usage.md#configuration-errors)).
+[usage.md](usage.md#errors)).
 
 | field | values | |
 |---|---|---|
-| `device.mode` | `numa`, `dax`, `block`, `fs` | `numa`: the memory becomes a NUMA node (exclusive devices only, their default). `dax`: a devdax device `/dev/daxX.Y` that containers `mmap` (the default and only mode of shared devices). Devices of persistent memory have `block` and `fs` only, and no default ([usage.md](usage.md#persistent-memory)). |
+| `device.mode` | `numa`, `dax`, `block`, `fs` | `numa`: the memory becomes a NUMA node (exclusive devices only, their default). `dax`: a devdax device `/dev/daxX.Y` that containers `mmap` (the default and only mode of shared devices). Devices of persistent memory have `block` and `fs` only, and no default ([usage.md](persistent.md)). |
 | `device.readOnly` | `false`, `true` | `dax`, `block`: the container gets the device node with CDI permissions `r`, so its device cgroup lets it open the device for reading only (default `false`). `fs`: absent or `true` mounts the filesystem read-only, `false` read-write. |
 | `device.access` | `direct`, `cached` | `fs` only, default `direct` when the filesystem has DAX (erofs, ext4, xfs), else `cached`: file pages in the device (DAX) or in the page cache of the node |
-| `device.fsType` | filesystem type | `fs` only, default detected: the expected type of the filesystem ([usage.md](usage.md#filesystems)) |
+| `device.fsType` | filesystem type | `fs` only, default detected: the expected type of the filesystem ([usage.md](persistent.md#filesystems)) |
 | `device.path` | absolute path | `fs` only, default `/run/cxl-fs/<KEY>`: where the filesystem is in the container |
 | `container.steering` | | mode `numa`: the steering of the containers that use the device, default policy `none` ([usage.md](usage.md#steering)) |
 | `pool.opaque.<key>` | an object | the settings of the pool controllers with controller key `<key>`, for example `fake-cxl-pool: {numaNode: 1}` ([Configuration of a pool controller](#configuration-of-a-pool-controller)) |
@@ -300,7 +300,7 @@ it; the default is erofs only) is ReadWriteOnce: the claims of
 its node, read-write and read-only, share the device, also with one share
 each, and claims of other nodes wait (`AttachFailed` reason `Conflict`)
 until the writing claims are deallocated
-([usage.md](usage.md#several-nodes-readwriteonce-and-cluster-filesystems)).
+([usage.md](persistent.md#several-nodes)).
 A cluster filesystem (gfs2 with `lock_dlm`) on a `coherent` device is
 read-write on several hosts at a time.
 
@@ -370,7 +370,7 @@ The node takes a device that is not shared, or a claim with `exclusive`,
 as single-host too. Without `singleHost`, `exclusive` or a cluster
 filesystem on a `coherent` device, a read-write `fs` claim of a shared
 device fails its Prepare
-([usage.md](usage.md#configuration-errors)): a controller that does not
+([usage.md](usage.md#errors)): a controller that does not
 know the rule makes writes fail, never corrupt the data.
 
 On failure the controller sets `cxl-pool.nri.io/AttachFailed` to True
@@ -451,7 +451,7 @@ read-write (mode `fs`, `readOnly: false`, a type that is not a cluster
 filesystem on a coherent device) must have the device on its node only,
 because another host that reads or writes the filesystem meanwhile
 corrupts or misreads it
-([usage.md](usage.md#several-nodes-readwriteonce-and-cluster-filesystems)).
+([usage.md](persistent.md#several-nodes)).
 The node cannot see other hosts; the controller can:
 
 - For each allocation result of a shared device, the attachment that
@@ -595,11 +595,11 @@ NodePrepareResources, for each allocated device of the driver:
 1. Read `serial`, `shared`, `size`, `exclusive`, `persistent`,
    `singleHost` and `coherent` from the claim status entry. A missing entry or missing data is an error;
    kubelet retries. An allocation of a shared device that consumed less
-   than one share fails ([usage.md](usage.md#configuration-errors)).
+   than one share fails ([usage.md](usage.md#errors)).
 2. Resolve the `MemoryConfig` of the result: the entries of the driver
    in the class and the claim that apply to its request, merged
    ([usage.md](usage.md#merge-order)); an invalid one fails the Prepare
-   ([usage.md](usage.md#configuration-errors)). The plugin reads the
+   ([usage.md](usage.md#errors)). The plugin reads the
    `device` and `container` sections, and checks only the structure of
    `pool`.
 3. Wait until a CXL memory device with the serial appears
@@ -635,7 +635,7 @@ NodePrepareResources, for each allocated device of the driver:
    namespace with map `mem` of its nvdimm region (a writable `block` claim
    creates it if there is none), and give the container its block device
    or a bind of the node mount of its filesystem, read-only or
-   read-write, see [usage.md](usage.md#persistent-memory). The rules of
+   read-write, see [usage.md](persistent.md). The rules of
    one node (one read-write superblock, a read-only block device without
    a writer) are the same as for persistent local memdevs, in the same
    code.
@@ -688,7 +688,7 @@ A device that is already gone is not an error.
 The `cxl.nri.io` driver publishes neither a memory device that the pool
 driver prepared or whose serial a pool controller publishes, nor a region
 on such a device, so pool memory is not offered twice
-([local.md](local.md#what-the-plugin-publishes)). It remembers these
+([local.md](local.md#what-the-driver-publishes)). It remembers these
 serials: a pool device stays one while its controller is stopped and has
 deleted its ResourceSlices, also across a restart of the node plugin.
 
@@ -710,23 +710,9 @@ another host has the device. See [leases.md](leases.md).
 
 ## Node requirements
 
-- The `cxl` (ndctl) command line tool, and `ndctl` for devices of
-  persistent memory; the plugin binds dax devices to their drivers
-  through sysfs itself. The container image of the driver includes them;
-  a host process
-  ([usage.md](usage.md#as-a-host-process)) needs them installed on the
-  node.
-- Kernel with CXL regions (`CONFIG_CXL_REGION`), `CONFIG_DEV_DAX`,
-  `CONFIG_DEV_DAX_KMEM`, `CONFIG_FS_DAX` (devdax mmap) and
-  `CONFIG_MEMORY_HOTREMOVE`; for devices of persistent memory
-  `CONFIG_CXL_PMEM`, `CONFIG_LIBNVDIMM`, `CONFIG_BLK_DEV_PMEM`,
-  `CONFIG_ND_PFN`, `CONFIG_BLK_DEV_LOOP` and the filesystems that the node
-  mounts (`CONFIG_EROFS_FS`, `CONFIG_EXT4_FS`, ...,
-  [usage.md](usage.md#filesystems)).
-- `/sys/devices/system/memory/auto_online_blocks` should be `offline`,
-  so that the kernel never onlines shared devices as RAM on its own, and
-  no udev rule may online hot-added memory (`40-redhat.rules` of RHEL and
-  its derivatives does, see [usage.md](usage.md#requirements)).
+The node needs what [usage.md](usage.md#requirements) lists: the kernel
+options, the memory onlining and the udev rule. Devices of persistent
+memory need the options of persistent memory too.
 
 ## Ordering and failure semantics
 
@@ -755,12 +741,12 @@ another host has the device. See [leases.md](leases.md).
   devices as pool devices by the serials that it remembers, holds back a
   new memory device while a pool claim of the node is not attached yet,
   and for up to 5 minutes while the pool has no ResourceSlices
-  ([local.md](local.md#what-the-plugin-publishes)).
+  ([local.md](local.md#what-the-driver-publishes)).
 - Node plugin restart: the prepared claims file restores the prepared
   devices; regions are found again by serial. The superblock of a node
   mount and the read-only flag of the block device follow from the
   prepared claims (read-write while a writer is prepared), as at a
-  Prepare ([usage.md](usage.md#one-node-superblock-block-device-binds)).
+  Prepare ([usage.md](persistent.md#one-node)).
   Node mounts of mode `fs` are checked by the device number of the block
   device: a loop device of
   a cached node mount that the previous plugin container set up shows its
