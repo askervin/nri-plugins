@@ -59,11 +59,11 @@ type want struct {
 	writer bool
 	// fsType: device.fsType of the MemoryConfig of the result
 	fsType string
-	// exclusive: allShares or writer, attached with
+	// singleHost: allShares or writer, attached with
 	// AttachRequest.SingleHost
-	exclusive bool
+	singleHost bool
 	// keepSingleHost: the want is attached and its MemoryConfig cannot be
-	// resolved: it is exclusive if its attachment is
+	// resolved: it is single-host if its attachment is
 	keepSingleHost bool
 	// settings: where to attach, from the MemoryConfig of the result
 	settings PoolSettings
@@ -84,11 +84,11 @@ func (c *Controller) allShares(r *resourceapi.DeviceRequestAllocationResult) boo
 	return !ok || q.Value() >= device.SharesUnlimited
 }
 
-// firstShared returns the first want that is not exclusive, nil if
+// firstShared returns the first want that is not single-host, nil if
 // every want is.
 func firstShared(ws []*want) *want {
 	for _, w := range ws {
-		if !w.exclusive {
+		if !w.singleHost {
 			return w
 		}
 	}
@@ -102,8 +102,7 @@ func firstShared(ws []*want) *want {
 const devicesCoherent = true
 
 // writerResult reports whether an allocation result of a shared device
-// with the resolved MemoryConfig makes its attachment exclusive to the
-// host: a read-write filesystem that is not a cluster filesystem on
+// with the resolved MemoryConfig makes its attachment single-host: a read-write filesystem that is not a cluster filesystem on
 // coherent memory.
 func (c *Controller) writerResult(r *resourceapi.DeviceRequestAllocationResult, res *config.Resolved) bool {
 	d, ok := c.devices[r.Device]
@@ -114,10 +113,10 @@ func (c *Controller) writerResult(r *resourceapi.DeviceRequestAllocationResult, 
 }
 
 // anySingleHost reports whether one of the wants of an attachment is
-// exclusive.
+// single-host.
 func anySingleHost(ws []*want) bool {
 	for _, w := range ws {
-		if w.exclusive {
+		if w.singleHost {
 			return true
 		}
 	}
@@ -139,8 +138,8 @@ func (w *want) String() string {
 type failure struct {
 	reason  string
 	message string
-	// singleHostOnly: making an existing attachment exclusive failed; the
-	// wants that are not exclusive keep the attachment
+	// singleHostOnly: making an existing attachment single-host failed; the
+	// wants that are not single-host keep the attachment
 	singleHostOnly bool
 }
 
@@ -190,12 +189,12 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 				w.fsType = res.Config.DeviceSection().FSType
 			}
 			w.writer = c.writerResult(&r, res)
-			w.exclusive = w.allShares || w.writer
+			w.singleHost = w.allShares || w.writer
 			if w.cfgErr != nil {
 				cfgSeen[c.logConfigError(w)] = true
 				if hasCondition(claim, r, c.condAttached()) != nil {
 					// attached already: a device in use is never detached,
-					// and an unknown writer keeps its exclusive flag
+					// and an unknown writer keeps its single-host flag
 					w.cfgErr = nil
 					w.keepSingleHost = res == nil
 				}
@@ -230,16 +229,16 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 		}
 	}
 	for _, w := range wants {
-		if a, ok := actual[w.key()]; ok && w.keepSingleHost && a.SingleHost && !w.exclusive {
-			c.debugf("%s: configuration not resolved: attachment %s stays exclusive", w, a.ID)
-			w.exclusive = true
+		if a, ok := actual[w.key()]; ok && w.keepSingleHost && a.SingleHost && !w.singleHost {
+			c.debugf("%s: configuration not resolved: attachment %s stays single-host", w, a.ID)
+			w.singleHost = true
 		}
 	}
 
-	// 3. attach, or set the exclusive flag of an attachment to that of
+	// 3. attach, or set the single-host flag of an attachment to that of
 	// its claims (an attachment serves all claims of the node), or take
 	// over an attachment without owner (the attach request gives it ours)
-	// Attachments that exist come first: dropping the exclusive flag of
+	// Attachments that exist come first: dropping the single-host flag of
 	// the attachment of one node lets the new attachments of the other
 	// nodes in, in the same reconcile.
 	failures := map[attKey]failure{}
@@ -250,12 +249,12 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 		return ei && !ej
 	})
 	for _, k := range keys {
-		exclusive := anySingleHost(desired[k])
-		if a, ok := actual[k]; ok && (a.State != api.AttachmentAttached || a.SingleHost == exclusive) {
+		singleHost := anySingleHost(desired[k])
+		if a, ok := actual[k]; ok && (a.State != api.AttachmentAttached || a.SingleHost == singleHost) {
 			continue
 		}
 		w := desired[k][0]
-		if exclusive {
+		if singleHost {
 			c.logWriter(k, desired[k])
 		}
 		_, exists := actual[k]
@@ -264,15 +263,15 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 				k.device, k.host, w, o.ID, o.State, o.Adopted, o.QemuDeviceID)
 			exists = true
 		}
-		a, f := c.attach(ctx, w, k, exclusive, exists, actual, desired)
-		if f != nil && exclusive && f.reason == ReasonConflict {
+		a, f := c.attach(ctx, w, k, singleHost, exists, actual, desired)
+		if f != nil && singleHost && f.reason == ReasonConflict {
 			if _, ok := actual[k]; ok {
 				// an existing attachment stays for the other wants
 				f.singleHostOnly = true
 			} else if r := firstShared(desired[k]); r != nil {
 				// a new attachment: the other wants may have one that
-				// is not exclusive
-				c.logf("attach %s to %s for %s: not exclusive for the claims that do not need it", k.device, k.host, r)
+				// is not single-host
+				c.logf("attach %s to %s for %s: not single-host for the claims that do not need it", k.device, k.host, r)
 				// no answer (attaching continues, waiting for a
 				// detach): the other wants wait, they are not refused
 				if ra, rf := c.attach(ctx, r, k, false, exists, actual, desired); rf == nil {
@@ -317,8 +316,8 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 	return nil
 }
 
-// logWriter logs the wants of an exclusive attachment that are exclusive
-// because they write a single-host filesystem, unless one of the wants
+// logWriter logs the wants of a single-host attachment that are
+// single-host because they write a single-host filesystem, unless one of the wants
 // has all shares of the device.
 func (c *Controller) logWriter(k attKey, ws []*want) {
 	for _, w := range ws {
@@ -364,13 +363,13 @@ func cmpAttKey(a, b attKey) int {
 // attach attaches the device of a desired key (exists: it is attached
 // already). It returns the attachment, or a failure, or neither
 // (attaching continues, or waiting for a detach).
-func (c *Controller) attach(ctx context.Context, w *want, k attKey, exclusive, exists bool, actual map[attKey]api.Attachment, desired map[attKey][]*want) (*api.Attachment, *failure) {
+func (c *Controller) attach(ctx context.Context, w *want, k attKey, singleHost, exists bool, actual map[attKey]api.Attachment, desired map[attKey][]*want) (*api.Attachment, *failure) {
 	owner := c.Owner(w.claim.UID)
 	req := api.AttachRequest{
 		Host:       k.host,
 		Owner:      owner,
 		Timeout:    c.cfg.AttachTimeout.String(),
-		SingleHost: exclusive,
+		SingleHost: singleHost,
 	}
 	// the settings place a new attachment; an existing one stays where it
 	// is
@@ -433,7 +432,7 @@ func (c *Controller) writeStatus(ctx context.Context, w *want, actual map[attKey
 	case w.host == nil:
 		f = &failure{reason: ReasonNoHost, message: fmt.Sprintf("node %q is not a host of the pool", w.node)}
 	default:
-		if x, ok := failures[w.key()]; ok && (w.exclusive || !x.singleHostOnly) {
+		if x, ok := failures[w.key()]; ok && (w.singleHost || !x.singleHostOnly) {
 			f = &x
 		} else if a, ok := actual[w.key()]; ok && a.State == api.AttachmentFailed {
 			// The server keeps a failed attachment until its qemu device
@@ -450,9 +449,9 @@ func (c *Controller) writeStatus(ctx context.Context, w *want, actual map[attKey
 		return
 	}
 	a, ok := actual[w.key()]
-	if !ok || a.State != api.AttachmentAttached || (w.exclusive && !a.SingleHost) {
+	if !ok || a.State != api.AttachmentAttached || (w.singleHost && !a.SingleHost) {
 		if ok {
-			c.debugf("%s: attachment %s is %s (single host %v, wanted %v)", w, a.ID, a.State, a.SingleHost, w.exclusive)
+			c.debugf("%s: attachment %s is %s (single host %v, wanted %v)", w, a.ID, a.State, a.SingleHost, w.singleHost)
 		}
 		return
 	}
@@ -468,7 +467,7 @@ func (c *Controller) writeStatus(ctx context.Context, w *want, actual map[attKey
 			Size:       new(uint64(d.Size)),
 			Exclusive:  w.allShares,
 			Persistent: d.Persistent,
-			SingleHost: w.exclusive && a.SingleHost,
+			SingleHost: w.singleHost && a.SingleHost,
 			Coherent:   devicesCoherent,
 		},
 		Host:         a.Host,

@@ -294,9 +294,9 @@ func (s *Server) checkAttachLocked(d *device, h *host, req api.AttachRequest) er
 		case !d.Shared:
 			return api.Conflict("device %q is not shared and it is attached to %q", d.Name, a.Host)
 		case req.SingleHost:
-			return api.Conflict("device %q is attached to %q: an exclusive attach needs it attached nowhere else", d.Name, a.Host)
+			return api.Conflict("device %q is attached to %q: a single-host attach needs it attached nowhere else", d.Name, a.Host)
 		case a.SingleHost:
-			return api.Conflict("device %q is attached exclusively to %q", d.Name, a.Host)
+			return api.Conflict("device %q has a single-host attachment to %q", d.Name, a.Host)
 		}
 	}
 	if d.Scope == api.ScopeLocal {
@@ -682,7 +682,7 @@ func (s *Server) updateExistingLocked(d *device, h *host, a *attachment, req api
 		if req.SingleHost {
 			for _, o := range s.deviceAttachmentsLocked(d.Name) {
 				if o.Host != h.name {
-					return api.Conflict("device %q is attached to %q: an exclusive attach needs it attached nowhere else", d.Name, o.Host)
+					return api.Conflict("device %q is attached to %q: a single-host attach needs it attached nowhere else", d.Name, o.Host)
 				}
 			}
 		}

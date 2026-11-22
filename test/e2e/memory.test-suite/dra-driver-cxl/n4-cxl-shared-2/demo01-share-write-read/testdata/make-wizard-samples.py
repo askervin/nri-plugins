@@ -208,7 +208,7 @@ def scenario_w8(ctx0):
     c5 = allocate(static_claim(a5, ctx0), VM2, "cxl-pool.nri.io", "fake-cxl-pool", "fs0", {"shares": "1"})
     c5["status"]["devices"] = [{"driver": "cxl-pool.nri.io", "pool": "fake-cxl-pool", "device": "fs0", "conditions": [
         {"type": "cxl-pool.nri.io/AttachFailed", "status": "True", "reason": "Conflict",
-         "message": "fs0 is attached exclusively to %s for a read-write ext4 claim" % VM1}]}]
+         "message": 'attach fs0 to %s: Conflict: device "fs0" has a single-host attachment to "%s"' % (VM2, VM1)}]}]
     c6 = allocate(static_claim(a6, ctx0), VM2, "cxl.nri.io", VM2, "memdev-c100f5e1", {"shares": "1M"})
     c7 = static_claim(a7, ctx0)
     c8 = allocate(companion(a8, ctx0, "8b8b0008"), VM1, "cxl.nri.io", VM1, "memdev-c100e2e1", {"memory": "128Mi"}, request="lease")
@@ -307,8 +307,8 @@ def wizard_trace(sdir, t0=1792700000.0):
     klog(15, "vm1.driver", "persistent.go:573", "engine: pool memdev %s: mounted /dev/pmem0 at /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0002-direct (ext4, rw, dax=always)" % FS0)
     cl(20, "ADDED", "w5", "5a7e0005")
     cl(20.2, "MODIFIED", "w5", "5a7e0005", "cxl-pool.nri.io/fake-cxl-pool/fs0", VM2)
-    ctrl(21, "ERROR: Conflict for claim %s/w5 device fs0 node %s: fs0 is attached exclusively to %s for a read-write ext4 claim" % (NS, VM2, VM1))
-    ev(21.2, "ResourceClaim", "w5", "AttachFailed", "Conflict: fs0 is attached exclusively to %s" % VM1)
+    ctrl(21, 'ERROR: Conflict for claim %s/w5 device fs0 node %s: attach fs0 to %s: Conflict: device "fs0" has a single-host attachment to "%s"' % (NS, VM2, VM2, VM1))
+    ev(21.2, "ResourceClaim", "w5", "AttachFailed", 'attach fs0 to %s: Conflict: device "fs0" has a single-host attachment to "%s"' % (VM2, VM1))
     ev(30, "Pod", "w7", "FailedScheduling", "0/3 nodes are available: 3 cannot allocate all claims.")
     for tag, lines in streams.items():
         with open(os.path.join(tdir, tag + ".log"), "w") as f:

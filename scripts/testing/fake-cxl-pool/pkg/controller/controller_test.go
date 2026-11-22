@@ -176,7 +176,7 @@ func (p *fakePool) handler() http.Handler {
 				writeErr(w, api.Conflict("device %q is not shared and it is attached to %q", name, a.Host))
 				return
 			case req.SingleHost || a.SingleHost:
-				writeErr(w, api.Conflict("device %q is attached to %q (exclusive attach)", name, a.Host))
+				writeErr(w, api.Conflict("device %q has a single-host attachment to %q", name, a.Host))
 				return
 			}
 		}
@@ -1054,12 +1054,12 @@ func TestExclusiveResult(t *testing.T) {
 			t.Errorf("%s: exclusive %v, want %v", tc.name, got, tc.want)
 		}
 	}
-	// after a conflict of an exclusive attach, the first want that is not
-	// exclusive attaches without the flag
-	if w := firstShared([]*want{{exclusive: true}, {exclusive: false}}); w == nil || w.exclusive {
+	// after a conflict of a single-host attach, the first want that is not
+	// single-host attaches without the flag
+	if w := firstShared([]*want{{singleHost: true}, {singleHost: false}}); w == nil || w.singleHost {
 		t.Fatalf("first shared want %+v", w)
 	}
-	if w := firstShared([]*want{{exclusive: true}}); w != nil {
+	if w := firstShared([]*want{{singleHost: true}}); w != nil {
 		t.Fatalf("first shared want of exclusive wants %+v", w)
 	}
 }

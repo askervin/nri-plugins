@@ -668,7 +668,7 @@ class Trace:
         who = self.lease_who(name)
         node = re.search(r" to (\S+)$", msg)
         if who in self.retrying and reason in ("Scheduled", "BindingConditionsPending", "FailedScheduling", "AttachFailed"):
-            return   # the scheduler's next attempts while the device is attached exclusively elsewhere
+            return   # the scheduler's next attempts while another host has the device alone
         conflict = re.match(r"attach (\S+) to (\S+): (Conflict): ", msg) if reason == "AttachFailed" else None
         if conflict:
             self.retrying.add(who)
@@ -895,7 +895,7 @@ class Trace:
             self.emit(t, "pool", "%s on %s: attachment failed" % (dev, host))
         else:
             if what == "single host false":
-                # Nothing is attached exclusively any more: the next attempts are shown.
+                # No single-host attachment any more: the next attempts are shown.
                 self.retrying.clear()
             self.emit(t, "pool", "%s on %s: %s" % (dev, host, "exclusive" if what == "single host true" else "not exclusive"))
 

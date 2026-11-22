@@ -509,7 +509,7 @@ func TestAttachSingleHost(t *testing.T) {
 	}
 	_, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm2"})
 	mustCode(t, err, api.CodeConflict)
-	if !strings.Contains(err.Error(), "attached exclusively to") {
+	if !strings.Contains(err.Error(), "has a single-host attachment to") {
 		t.Fatalf("conflict %v", err)
 	}
 	// an attach of vm1 without the flag drops it: vm2 can attach then

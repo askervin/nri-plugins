@@ -100,8 +100,8 @@ func (e *env) wantAttached(name string, singleHost bool) map[string]any {
 func (e *env) wantConflict(name string) {
 	e.t.Helper()
 	c, _ := e.condition(name, condFailed)
-	if c == nil || c.Reason != ReasonConflict || !strings.Contains(c.Message, "exclusive") {
-		e.t.Fatalf("claim %s: AttachFailed %+v, expected reason Conflict naming the exclusive attachment", name, c)
+	if c == nil || c.Reason != ReasonConflict || !strings.Contains(c.Message, "single-host") {
+		e.t.Fatalf("claim %s: AttachFailed %+v, expected reason Conflict naming the single-host attachment", name, c)
 	}
 	if c, _ := e.condition(name, condAttached); c != nil {
 		e.t.Fatalf("claim %s: Attached next to AttachFailed: %+v", name, c)

@@ -51,7 +51,7 @@ CUIDS = {k: "c1a1%04x-0000-4000-8000-000000000000" % (0x10 + i) for i, k in enum
 NODE_MOUNT = "/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-%s"
 LEASE_FS = "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/%s/data"
 ATTACHED, FAILED = "cxl-pool.nri.io/Attached", "cxl-pool.nri.io/AttachFailed"
-CONFLICT = 'attach fs0 to %s: Conflict: device "fs0" is attached exclusively to "%s"' % (VM2, VM1)
+CONFLICT = 'attach fs0 to %s: Conflict: device "fs0" has a single-host attachment to "%s"' % (VM2, VM1)
 
 
 def make_super():
