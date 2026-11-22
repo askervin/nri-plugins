@@ -463,7 +463,7 @@ func (m *Manager) allowNodes(nodes []int) error {
 	}
 	if node, ok := normalMemoryFallback(m.sysRoot, m.allowed, m.permitted, nodes[0]); ok {
 		m.allowed[node] = true
-		klog.Infof("%s: nodes %s have no normal (non-movable) memory, allowing node %d for unmovable allocations",
+		klog.Infof("%s: NUMA nodes %s have no normal (non-movable) memory, allowing NUMA node %d for unmovable allocations",
 			m.name, m.allowedNodes().Difference(cpuset.New(node)), node)
 	}
 	mems := m.allowedNodes().String()

@@ -36,11 +36,11 @@ type PoolSettings struct {
 func (s PoolSettings) String() string {
 	switch {
 	case s.Slot != "" && s.NUMANode != nil:
-		return fmt.Sprintf("slot %s, numa node %d", s.Slot, *s.NUMANode)
+		return fmt.Sprintf("slot %s, NUMA node %d", s.Slot, *s.NUMANode)
 	case s.Slot != "":
 		return "slot " + s.Slot
 	case s.NUMANode != nil:
-		return fmt.Sprintf("numa node %d", *s.NUMANode)
+		return fmt.Sprintf("NUMA node %d", *s.NUMANode)
 	}
 	return ""
 }

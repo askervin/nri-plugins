@@ -31,7 +31,7 @@ import (
 // errForeignRegion is the kind of the error of a grant on a memdev with a
 // region that no record of the driver names: the driver never uses or
 // touches it.
-var errForeignRegion = errors.New("a region that the plugin did not create")
+var errForeignRegion = errors.New("a region that the driver did not create")
 
 // foreignRegionError is the error of a grant on the memdev with a region
 // that no record names.
@@ -41,7 +41,7 @@ type foreignRegionError struct {
 
 // Error returns the refusal in words.
 func (e *foreignRegionError) Error() string {
-	return fmt.Sprintf("memdev %s has region %s that the plugin did not create", e.memdev, e.region)
+	return fmt.Sprintf("memdev %s has region %s that the driver did not create", e.memdev, e.region)
 }
 
 // Is tells whether target is ErrForeignRegion.

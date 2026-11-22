@@ -39,7 +39,7 @@ func nodeMask(nodes []int) ([]uint64, error) {
 	maxNode := 0
 	for _, node := range nodes {
 		if node < 0 || node >= maxNodes {
-			return nil, fmt.Errorf("invalid node %d", node)
+			return nil, fmt.Errorf("invalid NUMA node %d", node)
 		}
 		maxNode = max(maxNode, node)
 	}

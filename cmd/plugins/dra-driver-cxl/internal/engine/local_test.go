@@ -129,7 +129,7 @@ func TestLocalGuard(t *testing.T) {
 
 // A region creation of a local memdev that fails with add_dev is tried
 // once more; a second failure fails the grant and leaves nothing. A region
-// that the plugin did not create is refused untouched, and a memdev that
+// that the driver did not create is refused untouched, and a memdev that
 // is gone is not found.
 func TestLocalRegionErrors(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
@@ -170,7 +170,7 @@ func TestLocalRegionErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	refused("foreign region", "memdev mem0 has region region0 that the plugin did not create", errForeignRegion)
+	refused("foreign region", "memdev mem0 has region region0 that the driver did not create", errForeignRegion)
 	if err := k.DestroyRegion(ctx, region); err != nil {
 		t.Fatal(err)
 	}
@@ -507,7 +507,7 @@ func TestLocalWholeDeviceRows(t *testing.T) {
 	tr = v.trail("region0", "dax0.0")
 	v.mustPrepare(localDriver, "k", sliceReq("k", 0, state.ModeDax, 256*mib))
 	tr.want(t, "DEVICE_DAX whole users=0 size=1073741824", "SIZED part users=1 size=268435456")
-	wantLog(t, logs(), "engine: local memdev 0x11 (mem0): set up kept region0 (devdax, dax dax0.0, node 2) in ")
+	wantLog(t, logs(), "engine: local memdev 0x11 (mem0): set up kept region0 (devdax, dax dax0.0, NUMA node 2) in ")
 	dropRaw(t, v, above)
 	v.mustUnprepare(localDriver, "k")
 	v.clean("unprepared")
@@ -705,13 +705,13 @@ func TestLocalLogLines(t *testing.T) {
 		v.mustUnprepare(localDriver, "d")
 		out := logs()
 		wantMessages(t, out,
-			memdev+"created region0 (devdax, dax dax0.0, node 2) in <t>",
+			memdev+"created region0 (devdax, dax dax0.0, NUMA node 2) in <t>",
 			memdev+"destroyed region0 in <t>",
 			memdev+"claim d: zeroed slice dax0.0 mode dax size 134217728 in <t>",
 			memdev+"claim d: created slice dax0.0 mode dax size 134217728 at [0x250000000-0x257ffffff] in <t>",
 			memdev+"claim d: deleted slice dax0.0 mode dax size 134217728 in <t>",
 			memdev+"claim n: created slice dax0.1 mode numa size 134217728 at [0x258000000-0x25fffffff] in <t>",
-			memdev+"claim n: onlined slice dax0.1 mode numa size 134217728 blocks [75] node 2 in <t>",
+			memdev+"claim n: onlined slice dax0.1 mode numa size 134217728 blocks [75] NUMA node 2 in <t>",
 			memdev+"claim n: offlined slice dax0.1 mode numa size 134217728 blocks [75] in <t>",
 			memdev+"claim n: deleted slice dax0.1 mode numa size 134217728 in <t>",
 			memdev+"claim n: slice of 104857600 bytes rounded up to 134217728 (memory block size 134217728, align 2097152)")

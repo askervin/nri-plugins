@@ -444,9 +444,9 @@ def fs_trace(sdir, t0=1792600000.0):
 
     def ready(dt, who, mode):
         if mode == "block":
-            what = 'read-only false, node -1, dax "", block "/dev/pmem0", access "", fs "", path ""'
+            what = 'read-only false, NUMA node -1, dax "", block "/dev/pmem0", access "", fs "", path ""'
         else:
-            what = 'read-only true, node -1, dax "", block "", access "direct", fs "erofs", path "/run/cxl/fs/hello"'
+            what = 'read-only true, NUMA node -1, dax "", block "", access "direct", fs "erofs", path "/run/cxl/fs/hello"'
         klog(dt, where[who], "broker.go:1646", "lease broker: lease %s: Ready (source pool, serial %s, mode %s, %s, %d bytes)"
              % (LEASES[who], SHARED, mode, what, nsize))
 
@@ -579,10 +579,10 @@ def local_trace(sdir, t0=1792500000.0):
     udev(t + 1, "add", region, "cxl")
     udev(t + 1.1, "add", region + "/dax_region0", "cxl")
     udev(t + 1.2, "add", region + "/dax_region0/dax0.0", "dax")
-    klog(t + 1.25, "local.go:779", "engine: local memdev %s (mem0): created region0 (devdax, dax dax0.0, node 2) in 412ms" % LOCAL)
+    klog(t + 1.25, "local.go:779", "engine: local memdev %s (mem0): created region0 (devdax, dax dax0.0, NUMA node 2) in 412ms" % LOCAL)
     klog(t + 1.3, "plugin.go:362", "cxl.nri.io: claim %s/cxl-lease-3f2a91c0: prepared memdev-c100e2e1 (serial %s, shared true, mode dax, read-only false) as mem0 region0 dax dax0.0 size %d node -1 exclusive" % (NS, LOCAL, GI))
     klog(t + 1.27, "local.go:643", "engine: local memdev %s (mem0): zeroed new shared dax0.0 size %d in 210ms" % (LOCAL, GI))
-    klog(t + 1.5, "broker.go:1646", 'lease broker: lease 3f2a91c0: Ready (source local, serial %s, mode dax, read-only false, node -1, dax "/dev/dax0.0", block "", access "", fs "", path "", %d bytes)' % (LOCAL, GI))
+    klog(t + 1.5, "broker.go:1646", 'lease broker: lease 3f2a91c0: Ready (source local, serial %s, mode dax, read-only false, NUMA node -1, dax "/dev/dax0.0", block "", access "", fs "", path "", %d bytes)' % (LOCAL, GI))
     t = 60
     for i, r in enumerate(READERS):
         ev(t - 5 + i, "Pod", r, "Scheduled", "Successfully assigned %s/%s to %s" % (NS, r, VM2))
@@ -601,7 +601,7 @@ def local_trace(sdir, t0=1792500000.0):
         cl(t + 2 + i * 0.1, "MODIFIED", "cxl-lease-" + LEASES[r], "c1a1%04x" % (10 + i), "cxl.nri.io/%s/memdev-c100e2e1" % VM2, VM2)
         ev(t + 2.2 + i * 0.1, "Pod", "cxl-lease-" + LEASES[r], "Scheduled", "Successfully assigned %s/cxl-lease-%s to %s" % (NS, LEASES[r], VM2))
         klog(t + 3 + i * 0.2, "plugin.go:362", "cxl.nri.io: claim %s/cxl-lease-%s: prepared memdev-c100e2e1 (serial %s, shared true, mode dax, read-only true) as mem0 region0 dax dax0.0 size %d node -1 1 share" % (NS, LEASES[r], LOCAL, GI))
-        klog(t + 3.1 + i * 0.2, "broker.go:1646", 'lease broker: lease %s: Ready (source local, serial %s, mode dax, read-only true, node -1, dax "/dev/dax0.0", block "", access "", fs "", path "", %d bytes)' % (LEASES[r], LOCAL, GI))
+        klog(t + 3.1 + i * 0.2, "broker.go:1646", 'lease broker: lease %s: Ready (source local, serial %s, mode dax, read-only true, NUMA node -1, dax "/dev/dax0.0", block "", access "", fs "", path "", %d bytes)' % (LEASES[r], LOCAL, GI))
     t = 160
     for i, r in enumerate(READERS):
         klog(t + i * 0.3, "broker.go:1189", "lease broker: lease %s: releasing (requester container gone, was Ready)" % LEASES[r])

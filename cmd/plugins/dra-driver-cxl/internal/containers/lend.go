@@ -112,16 +112,16 @@ func (p *Plugin) changeLend(ctx context.Context, l lendChange) error {
 	}
 	if plan.base.IsEmpty() {
 		p.mu.Unlock()
-		return fmt.Errorf("%s node %d: ctr=%s: base memory nodes unknown, refusing to set cpuset.mems without them",
+		return fmt.Errorf("%s NUMA node %d: ctr=%s: base memory nodes unknown, refusing to set cpuset.mems without them",
 			l.op(), l.numaNode, c.name())
 	}
 	s := p.stub
 	p.mu.Unlock()
 
-	klog.V(3).Infof("NRI lend: %s node %d for %s: ctr=%s id=%s cpuset.mems=%s (base=%s lent=%s)", l.op(), l.numaNode, l.lease,
+	klog.V(3).Infof("NRI lend: %s NUMA node %d for %s: ctr=%s id=%s cpuset.mems=%s (base=%s lent=%s)", l.op(), l.numaNode, l.lease,
 		c.name(), c.ID, plan.mems, plan.base, plan.lent)
 	if err := applyMems(s, map[string]string{c.ID: plan.mems}, []string{c.ID})[c.ID]; err != nil {
-		return fmt.Errorf("%s node %d: ctr=%s: %w", l.op(), l.numaNode, c.name(), err)
+		return fmt.Errorf("%s NUMA node %d: ctr=%s: %w", l.op(), l.numaNode, c.name(), err)
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -135,17 +135,17 @@ func (p *Plugin) changeLend(ctx context.Context, l lendChange) error {
 // change is done without one, or an error. Called with mu held.
 func (p *Plugin) planLend(l lendChange) (*lendPlan, error) {
 	if p.stub == nil {
-		return nil, fmt.Errorf("%s node %d: lending unavailable: NRI not connected", l.op(), l.numaNode)
+		return nil, fmt.Errorf("%s NUMA node %d: lending unavailable: NRI not connected", l.op(), l.numaNode)
 	}
 	c := p.lookup(l.podUID, l.name)
 	switch {
 	case c == nil && l.lend:
-		return nil, fmt.Errorf("lend node %d: container %q of pod %s not found", l.numaNode, l.name, l.podUID)
+		return nil, fmt.Errorf("lend NUMA node %d: container %q of pod %s not found", l.numaNode, l.name, l.podUID)
 	case c == nil:
-		klog.V(3).Infof("NRI lend: revoke node %d from pod %s container %s: container gone", l.numaNode, l.podUID, l.name)
+		klog.V(3).Infof("NRI lend: revoke NUMA node %d from pod %s container %s: container gone", l.numaNode, l.podUID, l.name)
 		return nil, nil
 	case l.lend && c.steered():
-		return nil, fmt.Errorf("lend node %d to %s: %w", l.numaNode, c.name(), ErrSteered)
+		return nil, fmt.Errorf("lend NUMA node %d to %s: %w", l.numaNode, c.name(), ErrSteered)
 	}
 	if !c.started() {
 		if done, err := lendNotStarted(c, l); done {
@@ -156,7 +156,7 @@ func (p *Plugin) planLend(l lendChange) (*lendPlan, error) {
 	plan := &lendPlan{c: c, leases: leases, lent: c.Lends.after(l.numaNode, leases)}
 	want, base, ok, err := wantMems(c, p.fenced, l.numaNode, plan.lent, p.memNodes())
 	if err != nil {
-		return nil, fmt.Errorf("%s node %d: ctr=%s: base memory nodes unknown: %w", l.op(), l.numaNode, c.name(), err)
+		return nil, fmt.Errorf("%s NUMA node %d: ctr=%s: base memory nodes unknown: %w", l.op(), l.numaNode, c.name(), err)
 	}
 	plan.base = base
 	switch {
@@ -189,16 +189,16 @@ func lendNotStarted(c *Container, l lendChange) (bool, error) {
 	seeded := c.Lends[l.numaNode][l.lease]
 	switch {
 	case l.lend && seeded:
-		klog.V(4).Infof("NRI lend: lend node %d for %s: ctr=%s: lent at its creation, not started yet", l.numaNode, l.lease, c.name())
+		klog.V(4).Infof("NRI lend: lend NUMA node %d for %s: ctr=%s: lent at its creation, not started yet", l.numaNode, l.lease, c.name())
 		return true, nil
 	case l.lend:
-		return true, fmt.Errorf("lend node %d to %s: container not started yet", l.numaNode, c.name())
+		return true, fmt.Errorf("lend NUMA node %d to %s: container not started yet", l.numaNode, c.name())
 	case !seeded:
 		return true, nil
 	case c.Management != ManagementFenced:
 		// its spec has the nodes of the runtime: lent by updates only
 		c.Lends = c.Lends.set(l.numaNode, c.Lends.with(l.numaNode, l.lease, false))
-		klog.V(3).Infof("NRI lend: revoke node %d for %s: ctr=%s: not started yet", l.numaNode, l.lease, c.name())
+		klog.V(3).Infof("NRI lend: revoke NUMA node %d for %s: ctr=%s: not started yet", l.numaNode, l.lease, c.name())
 		return true, nil
 	}
 	return false, nil
@@ -223,7 +223,7 @@ func pinnedNeeded(plan *lendPlan, l lendChange, want cpuset.CPUSet) bool {
 			// lost only if an update had them (not a seeded lend: lent at
 			// its creation without an update)
 			if memsContain(c.SpecMems, missing) {
-				klog.Infof("NRI lend: ctr=%s id=%s: the cpuset.mems of its cgroup lacks the lent nodes %s, updating again", c.name(), c.ID, missing)
+				klog.Infof("NRI lend: ctr=%s id=%s: the cpuset.mems of its cgroup lacks the lent NUMA nodes %s, updating again", c.name(), c.ID, missing)
 			}
 			needed = true
 		}
@@ -253,14 +253,14 @@ func (p *Plugin) recordLend(plan *lendPlan, l lendChange, updated bool) {
 func (plan *lendPlan) logUnchanged(l lendChange, changed bool) {
 	c := plan.c
 	if plan.inherits && changed {
-		klog.V(3).Infof("NRI lend: %s node %d for %s: ctr=%s id=%s: cpuset.mems left empty, it has the nodes of its parent (fencing none, lent=%s)",
+		klog.V(3).Infof("NRI lend: %s NUMA node %d for %s: ctr=%s id=%s: cpuset.mems left empty, it has the nodes of its parent (fencing none, lent=%s)",
 			l.op(), l.numaNode, l.lease, c.name(), c.ID, plan.lent)
 		if !plan.unusable.IsEmpty() {
-			klog.Warningf("NRI lend: lend node %d for %s: ctr=%s id=%s: its cpuset.mems.effective lacks the lent nodes %s (a parent cgroup restricts it, or they have no memory): it cannot use them",
+			klog.Warningf("NRI lend: lend NUMA node %d for %s: ctr=%s id=%s: its cpuset.mems.effective lacks the lent NUMA nodes %s (a parent cgroup restricts it, or they have no memory): it cannot use them",
 				l.numaNode, l.lease, c.name(), c.ID, plan.unusable)
 		}
 		return
 	}
-	klog.V(4).Infof("NRI lend: %s node %d for %s: ctr=%s: cpuset.mems unchanged (base=%s lent=%s, node leases %d)",
+	klog.V(4).Infof("NRI lend: %s NUMA node %d for %s: ctr=%s: cpuset.mems unchanged (base=%s lent=%s, node leases %d)",
 		l.op(), l.numaNode, l.lease, c.name(), plan.base, plan.lent, len(plan.leases))
 }

@@ -374,7 +374,7 @@ func (p *Plugin) logPrepared(pr *prepare) {
 		}
 		// the shares of a shared local memdev that the claim uses
 		uses := strings.TrimRight(" "+pr.uses[req.Ref], " ")
-		klog.Infof("%s dax %s size %d node %d%s", what, g.Got.Dax, g.Got.Size, state.NUMANodeOf(g.Got.NUMANode), uses)
+		klog.Infof("%s dax %s size %d NUMA node %d%s", what, g.Got.Dax, g.Got.Size, state.NUMANodeOf(g.Got.NUMANode), uses)
 	}
 }
 
@@ -458,7 +458,7 @@ func (p *Plugin) finish(ctx context.Context, pr *prepare) kubeletplugin.PrepareR
 		return failed(err)
 	}
 	if rec != nil {
-		klog.Infof("%s: claim %s: companion of lease %s of %s/%s/%s prepared (nodes %v, binds %v)",
+		klog.Infof("%s: claim %s: companion of lease %s of %s/%s/%s prepared (NUMA nodes %v, binds %v)",
 			p.rules.Name, pr.claimName, rec.Lease, rec.Pod.Namespace, rec.Pod.Name, rec.Container, rec.NUMANodes, rec.Mounts)
 	}
 	after()
@@ -688,7 +688,7 @@ func (p *Plugin) restoreMounts(ctx context.Context, prep *state.Preparation) err
 		if prep.Lease != "" {
 			has = "its lease binds"
 		}
-		klog.Infof("%s: claim %s (%s) has %s again (it had none: %v); mounted again: %v",
+		klog.Infof("%s: claim %s (%s) has %s again (it had none: %v); restored: %v",
 			p.rules.Name, prep.ClaimName, prep.UID, has, why, mounts)
 	}
 	return errors.Join(err, p.writeCDI(""))

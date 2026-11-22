@@ -175,7 +175,7 @@ func TestPoolForeignRegion(t *testing.T) {
 	}
 	before := v.f.Commands()
 	err := v.prepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindExclusive))
-	const refusal = "memdev mem0 has region region0 that the plugin did not create"
+	const refusal = "memdev mem0 has region region0 that the driver did not create"
 	if !errors.Is(err, errForeignRegion) || !strings.Contains(err.Error(), refusal) {
 		t.Fatalf("error %v", err)
 	}

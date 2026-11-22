@@ -64,7 +64,7 @@ func optIn(policy string) config.ResultSettings {
 //     2 DRAM on nodes 0-1, result 3 a region on node 4
 //   - auto: a numa slice on node 2 that opts in with policy auto
 //   - none: a numa slice on node 2 that says policy none
-//   - dram: DRAM on node 0 with policy first-dram and maxStep 64Mi
+//   - dram: DRAM on NUMA node 0 with policy first-dram and maxStep 64Mi
 //   - lease: the lease device
 func nriClaims() claimTable {
 	auto := claimSettings("auto", "mem", config.Steering{Policy: config.PolicyAuto})
@@ -370,7 +370,7 @@ func TestCharCreateContainerLogLines(t *testing.T) {
 	for _, line := range []string{
 		"NRI CreateContainer: ctr=ns/pod-u1/g: memory fenced (steering none (default), fencing allowed-mems (default))",
 		"NRI CreateContainer: ctr=ns/pod-u1/g: dram and region memory is not steered: the claims reserve capacity only",
-		"NRI CreateContainer: ctr=ns/pod-u1/g: cpuset.mems=0-1,4 (fenced nodes 2)",
+		"NRI CreateContainer: ctr=ns/pod-u1/g: cpuset.mems=0-1,4 (fenced NUMA nodes 2)",
 	} {
 		if !strings.Contains(logs(), line) {
 			t.Errorf("no line %q:\n%s", line, logs())

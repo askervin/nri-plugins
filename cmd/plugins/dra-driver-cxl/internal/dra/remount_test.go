@@ -65,7 +65,7 @@ func TestRemountLocal(t *testing.T) {
 	wantLogText(t, logs(), "cxl.nri.io: claim demo/claim-r1 (r1) has no CDI device: node mount \""+mnt+"\": "+why.Error()+
 		"; a new container of it fails on its CDI device, its Prepare again tries to mount it again, its Unprepare releases the device")
 	res := e.prepare(e.local, claim)
-	if want := "cxl.nri.io: claim demo/claim-r1: memdev 0xc100f5e1: its node mount " + mnt + " is not mounted and cannot be mounted again: " +
+	if want := "cxl.nri.io: claim demo/claim-r1: memdev 0xc100f5e1: its node mount " + mnt + " is not mounted and cannot be restored: " +
 		why.Error() + "; unprepare the claim (delete its pods) to prepare it anew"; res.Err == nil || res.Err.Error() != want {
 		t.Fatalf("error %v, expected %q", res.Err, want)
 	}
@@ -74,7 +74,7 @@ func TestRemountLocal(t *testing.T) {
 	e.mustPrepare(e.local, claim)
 	e.wantState(e.local, "r1", state.PreparationPrepared)
 	log := logs()
-	wantLogText(t, log, "cxl.nri.io: claim demo/claim-r1 (r1) has its CDI devices again (it had none: "+why.Error()+"); mounted again: ["+mnt+"]")
+	wantLogText(t, log, "cxl.nri.io: claim demo/claim-r1 (r1) has its CDI devices again (it had none: "+why.Error()+"); restored: ["+mnt+"]")
 	if e.cdiDevice(e.local, "claim-r1-0") == nil || e.local.Unrestored()["r1"] != nil {
 		t.Fatalf("not restored: %v", e.local.Unrestored())
 	}
@@ -101,7 +101,7 @@ func TestRemountPool(t *testing.T) {
 	e.k.SetMountError(dev, nil, "")
 	e.mustPrepare(e.pool, claim)
 	e.wantState(e.pool, "r1", state.PreparationPrepared)
-	wantLogText(t, logs(), "cxl-pool.nri.io: claim demo/claim-r1 (r1) has its CDI devices again (it had none: "+why.Error()+"); mounted again: ["+mnt+"]")
+	wantLogText(t, logs(), "cxl-pool.nri.io: claim demo/claim-r1 (r1) has its CDI devices again (it had none: "+why.Error()+"); restored: ["+mnt+"]")
 	if e.cdiDevice(e.pool, "claim-r1-0") == nil {
 		t.Fatal("no CDI device after the remount")
 	}
@@ -130,14 +130,14 @@ func TestRemountCompanion(t *testing.T) {
 	logs := klogCapture(t)
 	why := e.unrestore(e.pool, "c1", mnt, dev)
 	wantErrText(t, e.prepare(e.pool, claim).Err, "cxl-pool.nri.io: claim demo/cxl-lease-l1: memdev 0xc1af0001: its node mount "+mnt+
-		" is not mounted and cannot be mounted again: "+why.Error()+"; unprepare the claim (delete its pods) to prepare it anew")
+		" is not mounted and cannot be restored: "+why.Error()+"; unprepare the claim (delete its pods) to prepare it anew")
 	e.wantState(e.pool, "c1", state.PreparationUnrestored)
 	e.wantEvents("unrestored")
 	e.k.SetMountError(dev, nil, "")
 	e.mustPrepare(e.pool, claim)
 	e.wantState(e.pool, "c1", state.PreparationPrepared)
 	e.wantEvents("remounted", "lending l1 cxl-lease-l1", "prepared l1")
-	wantLogText(t, logs(), "cxl-pool.nri.io: claim demo/cxl-lease-l1 (c1) has its lease binds again (it had none: "+why.Error()+"); mounted again: ["+mnt+"]")
+	wantLogText(t, logs(), "cxl-pool.nri.io: claim demo/cxl-lease-l1 (c1) has its lease binds again (it had none: "+why.Error()+"); restored: ["+mnt+"]")
 	if mi, err := e.k.Kernel().Mounted(target); err != nil || mi == nil {
 		t.Fatalf("lease bind %s not mounted again: %v", target, err)
 	}

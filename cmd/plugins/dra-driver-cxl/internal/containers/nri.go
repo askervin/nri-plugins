@@ -176,7 +176,7 @@ func (p *Plugin) CreateContainer(_ context.Context, pod *api.PodSandbox, ctr *ap
 	if mems == "" {
 		return nil, nil, nil
 	}
-	klog.V(3).Infof("NRI CreateContainer: ctr=%s: cpuset.mems=%s (fenced nodes %s)", name, mems, fenced)
+	klog.V(3).Infof("NRI CreateContainer: ctr=%s: cpuset.mems=%s (fenced NUMA nodes %s)", name, mems, fenced)
 	adjust := &api.ContainerAdjustment{}
 	adjust.SetLinuxCPUSetMems(mems)
 	return adjust, nil, nil

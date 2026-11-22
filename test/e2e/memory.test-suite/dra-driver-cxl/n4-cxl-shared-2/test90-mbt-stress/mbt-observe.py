@@ -197,7 +197,7 @@ holder check and a concurrent erofs mount would fail):
                 kept in /run/mbt-observe/kernel.json
   killAt        the state of a driver-kill-at watcher (kill-at below) in
                 /run/mbt-killat/state.json, null if none
-  driverLog     also the count of lines with "not mounting" or "not
+  driverLog     also the count of lines with "not restoring" or "not
                 binding" (notRemounted)
   inspect       of the persistent kinds and plse, one kubectl exec: env,
                 "mount" (the mountinfo entry of CXL_<KEY>_PATH, null if
@@ -766,7 +766,7 @@ INVARIANT = re.compile(r"(engine|containers) invariant: ")
 # Counted lines of the driver log (A24): a persistent device not mounted or
 # bound again.
 LOG_COUNTS = [
-    ("notRemounted", re.compile(r"not mounting|not binding")),
+    ("notRemounted", re.compile(r"not restoring|not binding")),
 ]
 
 

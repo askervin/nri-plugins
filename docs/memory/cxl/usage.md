@@ -991,7 +991,7 @@ the lock protocol of gfs2 is that of its superblock.
   `fsType` must name one of them;
 - no signature: a declared type that the plugin does not know is mounted
   as declared (class single-host, no DAX); without `fsType`, or with a
-  type that the plugin knows, the claim is refused;
+  type that the driver knows, the claim is refused;
 - when the node mount of the device and access exists already, its type
   is the detected type.
 
@@ -1172,10 +1172,10 @@ with `memdev 0x<serial>: ` (`<dev>` `/dev/pmemK`):
 - `no fsdax namespace in regionK: has a writer written the device?`:
   mode `fs` or a read-only `block` claim on a region without an fsdax
   namespace with map `mem`.
-- `<dev> has no filesystem of a type that the plugin knows (erofs, squashfs, ext4, xfs, btrfs or gfs2): set device.fsType`
+- `<dev> has no filesystem of a type that the driver knows (erofs, squashfs, ext4, xfs, btrfs or gfs2): set device.fsType`
 - `<dev> has signatures of several filesystems (<t1>, <t2>): set device.fsType`
 - `<dev> has a filesystem of type <found>, not <declared>`
-- `<dev> has no filesystem of type <declared> (no signature of a type that the plugin knows)`:
+- `<dev> has no filesystem of type <declared> (no signature of a type that the driver knows)`:
   a known type is declared, and the device has no signature of any.
 - `filesystem type <t> is not allowed on this node (fsTypes: <t1>, <t2>, ...)`:
   with the default `fsTypes` every type but erofs (`fsTypes: erofs`), with
@@ -1454,8 +1454,8 @@ start. Steering and leases work with every value. At start the plugin
 logs the node defaults:
 
 ```
-defaults.container.fencing: allowed-mems: containers get the CXL nodes of the driver only by claims and leases
-defaults.container.fencing: none: containers are not kept off the CXL nodes of the driver
+defaults.container.fencing: allowed-mems: containers get the CXL NUMA nodes of the driver only by claims and leases
+defaults.container.fencing: none: containers are not kept off the CXL NUMA nodes of the driver
 defaults.container.steering.policy: none: containers are steered only when their claims opt in
 defaults.container.steering.policy: auto: containers with numa claims are steered unless their claims say none
 ```
@@ -1464,14 +1464,14 @@ defaults.container.steering.policy: auto: containers with numa claims are steere
 keeping a node away, before the memory of the node goes online, it logs
 
 ```
-NRI fence: fencing CXL node N (fenced nodes S)
+NRI fence: fencing CXL NUMA node N (fenced NUMA nodes S)
 ```
 
 with `S` every node kept away (cpuset syntax), and at start, for the
 nodes of the claims that are prepared in this boot,
 
 ```
-NRI fence: fencing CXL nodes S of prepared claims
+NRI fence: fencing CXL NUMA nodes S of prepared claims
 ```
 
 While no node is kept away (no CXL memory onlined by the plugin since

@@ -269,7 +269,7 @@ func (b *Broker) relendContainer(podUID, container string) {
 		for _, id := range lends[node] {
 			ctx, cancel := b.apiContext()
 			if err := containers.LendNUMANode(ctx, podUID, container, node, id); err != nil {
-				klog.Errorf("lease broker: lease %s: re-applying node %d: %v", id, node, err)
+				klog.Errorf("lease broker: lease %s: re-applying NUMA node %d: %v", id, node, err)
 			}
 			cancel()
 		}

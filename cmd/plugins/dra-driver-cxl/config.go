@@ -116,9 +116,9 @@ func (c *DriverConfig) steeringPolicy() string {
 // logDefaults logs the container defaults.
 func (c *DriverConfig) logDefaults() {
 	if fencing := c.fencing(); fencing == config.FencingAllowedMems {
-		klog.Infof("defaults.container.fencing: %s: containers get the CXL nodes of the driver only by claims and leases", fencing)
+		klog.Infof("defaults.container.fencing: %s: containers get the CXL NUMA nodes of the driver only by claims and leases", fencing)
 	} else {
-		klog.Infof("defaults.container.fencing: %s: containers are not kept off the CXL nodes of the driver", fencing)
+		klog.Infof("defaults.container.fencing: %s: containers are not kept off the CXL NUMA nodes of the driver", fencing)
 	}
 	if policy := c.steeringPolicy(); policy == config.PolicyNone {
 		klog.Infof("defaults.container.steering.policy: %s: containers are steered only when their claims opt in", policy)

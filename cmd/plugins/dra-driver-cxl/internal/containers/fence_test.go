@@ -833,25 +833,25 @@ func TestCharFenceLogLines(t *testing.T) {
 	ctx := context.Background()
 	e.readyFence()
 	e.p.Fence(ctx, 3)
-	const fenced = "NRI fence: fencing CXL node 3 (fenced nodes 3)"
+	const fenced = "NRI fence: fencing CXL NUMA node 3 (fenced NUMA nodes 3)"
 	if n := strings.Count(logs(), fenced); n != 1 {
 		t.Fatalf("%d lines %q, expected 1:\n%s", n, fenced, logs())
 	}
 	e.p.Fence(ctx, 3)
-	if n := strings.Count(logs(), "NRI fence: fencing CXL node"); n != 1 {
+	if n := strings.Count(logs(), "NRI fence: fencing CXL NUMA node"); n != 1 {
 		t.Fatalf("a fenced node logged again:\n%s", logs())
 	}
 
 	n := newFenceEnv(t, "0-2")
 	n.p.connect(nil)
 	n.p.Fence(ctx, 3)
-	const noNRI = "NRI fence: NRI not connected, containers are not fenced from CXL node 3"
+	const noNRI = "NRI fence: NRI not connected, containers are not fenced from CXL NUMA node 3"
 	if !strings.Contains(logs(), noNRI) {
 		t.Fatalf("no line %q:\n%s", noNRI, logs())
 	}
 	n.p.Seed([]int{2})
 	line := lineWith(logs(), "of prepared claims")
-	if !strings.HasSuffix(line, "NRI fence: fencing CXL nodes 2 of prepared claims") {
+	if !strings.HasSuffix(line, "NRI fence: fencing CXL NUMA nodes 2 of prepared claims") {
 		t.Fatalf("seed line %q:\n%s", line, logs())
 	}
 }

@@ -77,7 +77,7 @@ func TestConfigSettingsPassed(t *testing.T) {
 		{
 			name:   "numa node",
 			config: []resourceapi.DeviceAllocationConfiguration{claimConfig(`"pool": {"opaque": {"fake-cxl-pool": {"numaNode": 1}}}`)},
-			want:   "numa node 1",
+			want:   "NUMA node 1",
 			slot:   "ds1",
 		},
 		{
@@ -93,13 +93,13 @@ func TestConfigSettingsPassed(t *testing.T) {
 					Driver: "other.example.com", Parameters: runtime.RawExtension{Raw: []byte(`{"anything": true}`)},
 				}}},
 			},
-			want: "slot ds7, numa node 1",
+			want: "slot ds7, NUMA node 1",
 			slot: "ds7",
 		},
 		{
 			name:   "null removes the setting of the class",
 			config: []resourceapi.DeviceAllocationConfiguration{memoryConfig(resourceapi.AllocationConfigSourceClass, device.PoolDriverName, `"pool": {"opaque": {"fake-cxl-pool": {"numaNode": 0, "slot": "ds2"}}}`), claimConfig(`"pool": {"opaque": {"fake-cxl-pool": {"slot": null}}}`)},
-			want:   "numa node 0",
+			want:   "NUMA node 0",
 			slot:   "ds1",
 		},
 		{

@@ -212,7 +212,7 @@ func (e *Engine) setUpLocal(ctx context.Context, req *GrantRequest, memdev strin
 	case created:
 		e.logCreated(memdev, req.Serial, region, whole, bs, start)
 	case again:
-		klog.Infof("engine: local memdev %s (%s): set up kept %s (devdax, dax %s, node %d) in %s", s, memdev, region, whole,
+		klog.Infof("engine: local memdev %s (%s): set up kept %s (devdax, dax %s, NUMA node %d) in %s", s, memdev, region, whole,
 			e.k.TargetNode(whole), since(start))
 	}
 	return region, whole, created || again, nil
@@ -241,7 +241,7 @@ func (e *Engine) remakeAliased(ctx context.Context, req *GrantRequest, memdev, r
 // not start at a boundary of the memory blocks of bs bytes.
 func (e *Engine) logCreated(memdev string, serial state.Serial, region, whole string, bs uint64, start time.Time) {
 	s := serial.String()
-	klog.Infof("engine: local memdev %s (%s): created %s (devdax, dax %s, node %d) in %s", s, memdev, region, whole,
+	klog.Infof("engine: local memdev %s (%s): created %s (devdax, dax %s, NUMA node %d) in %s", s, memdev, region, whole,
 		e.k.TargetNode(whole), since(start))
 	if r, err := e.k.RegionRange(region); err == nil && bs > 0 && r.Start%bs != 0 {
 		usable, end := uint64(0), (r.End+1)/bs*bs
@@ -621,7 +621,7 @@ func (e *Engine) onlineSlice(ctx context.Context, req *GrantRequest, memdev, reg
 	case node < 0:
 		return -1, fmt.Errorf("cannot find the NUMA node of %s", dax)
 	}
-	klog.Infof("engine: local memdev %s (%s): claim %s: onlined slice %s mode %s size %d blocks %v node %d in %s",
+	klog.Infof("engine: local memdev %s (%s): claim %s: onlined slice %s mode %s size %d blocks %v NUMA node %d in %s",
 		req.Serial.String(), memdev, req.Ref.Claim, dax, req.Asked.Mode, size, blocks, node, since(start))
 	return node, nil
 }

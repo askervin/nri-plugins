@@ -40,7 +40,7 @@ const killAtDisarm = 70
 const (
 	refusedWritable = "writable only exclusively"
 	refusedNoNS     = "no fsdax namespace"
-	refusedNoErofs  = "has no filesystem of a type that the plugin knows"
+	refusedNoErofs  = "has no filesystem of a type that the driver knows"
 )
 
 // pdevs decodes the observation's pdevs (nil, false: not observed).

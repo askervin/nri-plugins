@@ -197,7 +197,7 @@ func TestLendsAtCreationAndStart(t *testing.T) {
 		t.Fatalf("adjustment %s", got)
 	}
 	noErr(t, e.p.LendNUMANode(ctx, "u1", "main", 2, "l1"))
-	wantErr(t, e.p.LendNUMANode(ctx, "u1", "main", 3, "l2"), "lend node 3 to ns/pod-u1/main: container not started yet")
+	wantErr(t, e.p.LendNUMANode(ctx, "u1", "main", 3, "l2"), "lend NUMA node 3 to ns/pod-u1/main: container not started yet")
 	e.expectUpdates()
 	e.proc(101, "kubepods/u1/c1", "0-2", "0-2")
 	e.startCtr(pod, c1)
@@ -485,7 +485,7 @@ func TestNRIConnectionLostStub(t *testing.T) {
 		wantErr(t, err, "failed to start NRI plugin")
 		logs := klogtest.Capture(t, 3)
 		p.Fence(context.Background(), 2)
-		if !strings.Contains(logs(), "NRI fence: NRI not connected, containers are not fenced from CXL node 2") {
+		if !strings.Contains(logs(), "NRI fence: NRI not connected, containers are not fenced from CXL NUMA node 2") {
 			t.Fatalf("no warning:\n%s", logs())
 		}
 		wantErr(t, p.LendNUMANode(context.Background(), "u1", "app", 2, "l1"), "lending unavailable: NRI not connected")

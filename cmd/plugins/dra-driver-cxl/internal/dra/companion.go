@@ -62,7 +62,7 @@ type NUMALender interface {
 var (
 	// errLendingStarting is the error of a revoke before the lender is set
 	// up: kubelet retries the Unprepare.
-	errLendingStarting = errors.New("lending is not set up yet (the plugin is starting)")
+	errLendingStarting = errors.New("lending is not set up yet (the driver is starting)")
 )
 
 // LeaseOf returns the lease id of a companion claim (its label
@@ -177,9 +177,9 @@ func (c *Lender) Lend(ctx context.Context, rec *lend.Companion, devs []state.Dev
 		}
 		rec.NUMANodes = append(rec.NUMANodes, node)
 		if err := nodes.LendNUMANode(ctx, rec.Pod.UID, rec.Container, node, rec.Lease); err != nil {
-			return fmt.Errorf("lease %s: lending node %d to %s/%s/%s: %w", rec.Lease, node, rec.Pod.Namespace, rec.Pod.Name, rec.Container, err)
+			return fmt.Errorf("lease %s: lending NUMA node %d to %s/%s/%s: %w", rec.Lease, node, rec.Pod.Namespace, rec.Pod.Name, rec.Container, err)
 		}
-		klog.Infof("%s: lease %s: lent node %d to %s/%s/%s", c.driver, rec.Lease, node, rec.Pod.Namespace, rec.Pod.Name, rec.Container)
+		klog.Infof("%s: lease %s: lent NUMA node %d to %s/%s/%s", c.driver, rec.Lease, node, rec.Pod.Namespace, rec.Pod.Name, rec.Container)
 	}
 	return nil
 }
@@ -205,7 +205,7 @@ func (c *Lender) Revoke(ctx context.Context, rec *lend.Companion, claimName stri
 	var errs []error
 	for _, n := range rec.NUMANodes {
 		if err := nodes.RevokeNUMANode(ctx, rec.Pod.UID, rec.Container, n, rec.Lease); err != nil {
-			errs = append(errs, fmt.Errorf("lease %s: revoking node %d from %s/%s/%s: %w", rec.Lease, n, rec.Pod.Namespace, rec.Pod.Name, rec.Container, err))
+			errs = append(errs, fmt.Errorf("lease %s: revoking NUMA node %d from %s/%s/%s: %w", rec.Lease, n, rec.Pod.Namespace, rec.Pod.Name, rec.Container, err))
 		}
 	}
 	return errors.Join(errs...)

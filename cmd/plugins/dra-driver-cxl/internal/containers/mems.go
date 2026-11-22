@@ -118,7 +118,7 @@ func passMems(c *Container, fenced cpuset.CPUSet, mem *memNodes) (cpuset.CPUSet,
 	want, _, _, err := wantMems(c, fenced, -1, c.Lends.nodes(), mem)
 	if err == nil && want.IsEmpty() {
 		own, _ := ownMems(c, mem)
-		err = fmt.Errorf("no memory nodes left of %s without the fenced nodes %s", own, fenced)
+		err = fmt.Errorf("no memory nodes left of %s without the fenced NUMA nodes %s", own, fenced)
 	}
 	return want, err
 }

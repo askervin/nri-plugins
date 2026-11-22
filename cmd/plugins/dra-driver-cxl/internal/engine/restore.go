@@ -377,7 +377,7 @@ func (e *Engine) restoreNodeMount(u *pmemGrant, writer bool, explained []string)
 		klog.Infof("engine: %s memdev %s: %s is not mounted, mounting it again", u.source, u.serial.String(), u.nodeMount)
 		if err := e.checkRecordedBlockDevice(u.serial, u.blockDevice); err != nil {
 			e.removeMountDir(u.nodeMount)
-			return "", fmt.Errorf("not mounting %s again: %w", u.nodeMount, err)
+			return "", fmt.Errorf("not restoring %s: %w", u.nodeMount, err)
 		}
 		return e.mountNode(u.source, u.serial, u.blockDevice, u.access, u.fsType, u.nodeMount, writer, explained)
 	}
@@ -507,7 +507,7 @@ func (e *Engine) remountGrant(ctx context.Context, req *GrantRequest) error {
 	if i >= 0 && grants[i].nodeMount != "" {
 		l, err := e.restoreNodeMount(&grants[i], firstWriter(grants) != nil, nodeMounts(grants))
 		if err != nil {
-			return fmt.Errorf("memdev %s: its node mount %s is not mounted and cannot be mounted again: %w",
+			return fmt.Errorf("memdev %s: its node mount %s is not mounted and cannot be restored: %w",
 				g.Serial.String(), grants[i].nodeMount, err)
 		}
 		loop = l

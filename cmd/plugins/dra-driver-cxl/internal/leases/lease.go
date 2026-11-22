@@ -315,7 +315,7 @@ func (b *Broker) release(l *state.Lease) {
 		if err := containers.RevokeNUMANode(ctx, l.Pod.UID, l.Container, n, l.ID); err != nil {
 			// The driver of the device revokes again before it
 			// releases it, and fails (kubelet retries) while it cannot.
-			klog.Errorf("lease broker: lease %s: revoking node %d: %v", l.ID, n, err)
+			klog.Errorf("lease broker: lease %s: revoking NUMA node %d: %v", l.ID, n, err)
 		}
 		cancel()
 	}

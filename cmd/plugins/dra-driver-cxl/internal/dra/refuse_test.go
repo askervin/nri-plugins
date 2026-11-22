@@ -252,7 +252,7 @@ func TestPrepareFailedAfterIntent(t *testing.T) {
 	mustOK(t, err)
 	res = e.prepare(e.local, localClaim("u2", localDev, envBlockSize))
 	wantErrText(t, res.Err, "claim demo/claim-u2: device "+localDev+" (memdev 0xc100e2e1): ")
-	wantErrText(t, res.Err, "that the plugin did not create")
+	wantErrText(t, res.Err, "that the driver did not create")
 	e.wantState(e.local, "u2", state.PreparationNone)
 	if reg := e.records().Region(state.RegionRef(region)); reg == nil || reg.State != state.RegionForeign {
 		t.Fatalf("region record %+v", reg)

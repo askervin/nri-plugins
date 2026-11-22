@@ -52,7 +52,7 @@ func (p *Plugin) violations(fenced cpuset.CPUSet, mem *memNodes, ids map[string]
 			continue
 		}
 		if cur := curMems(c); !sameMems(want, cur) {
-			out = append(out, fmt.Sprintf("I11: ctr=%s id=%s: cpuset.mems %q, not %s (fenced nodes %s)", c.name(), c.ID, cur, want, fenced))
+			out = append(out, fmt.Sprintf("I11: ctr=%s id=%s: cpuset.mems %q, not %s (fenced NUMA nodes %s)", c.name(), c.ID, cur, want, fenced))
 		}
 	}
 	return out

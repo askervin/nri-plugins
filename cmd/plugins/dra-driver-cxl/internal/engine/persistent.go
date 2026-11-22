@@ -1315,7 +1315,7 @@ func (e *Engine) firstBlockDevice(g *state.Grant, call *releaseCall) string {
 	recorded := g.Got.BlockDevice.Name
 	var err error
 	if path := call.unrestored[g.Ref]; path != "" {
-		err = fmt.Errorf("its node mount %s was not mounted again at start", path)
+		err = fmt.Errorf("its node mount %s was not restored at start", path)
 	} else {
 		err = e.checkBlockDevice(g)
 	}
@@ -1365,9 +1365,9 @@ func fsType(s kernel.FSSignature, serial, dev, declared string) (string, error) 
 	case len(s.Types) > 1:
 		return "", fmt.Errorf("%s%s has signatures of several filesystems (%s): set device.fsType", prefix, dev, strings.Join(s.Types, ", "))
 	case declared == "":
-		return "", fmt.Errorf("%s%s has no filesystem of a type that the plugin knows (%s): set device.fsType", prefix, dev, listOr(api.KnownFSTypes))
+		return "", fmt.Errorf("%s%s has no filesystem of a type that the driver knows (%s): set device.fsType", prefix, dev, listOr(api.KnownFSTypes))
 	case api.KnownFSType(declared):
-		return "", fmt.Errorf("%s%s has no filesystem of type %s (no signature of a type that the plugin knows)", prefix, dev, declared)
+		return "", fmt.Errorf("%s%s has no filesystem of type %s (no signature of a type that the driver knows)", prefix, dev, declared)
 	}
 	return declared, nil
 }

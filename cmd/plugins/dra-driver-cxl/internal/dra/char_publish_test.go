@@ -62,7 +62,7 @@ func TestCharIgnoreNodes(t *testing.T) {
 	if got := pubNames(devs); !slices.Equal(got, []string{"dram", "region0-numa2"}) {
 		t.Fatalf("published %v", got)
 	}
-	wantLogLineText(t, logs(), `- ignoring region device "region1": region is on node 3`)
+	wantLogLineText(t, logs(), `- ignoring region device "region1": region is on NUMA node 3`)
 
 	logs = klogtest.Capture(t, 4)
 	cfg = PublishConfig{IgnoreRegions: []string{"region0"}, IgnoreNUMANodes: []int{2}}
@@ -72,7 +72,7 @@ func TestCharIgnoreNodes(t *testing.T) {
 	}
 	out := logs()
 	wantLogLineText(t, out, `- ignoring region device "region0": region name "region0"`)
-	if strings.Contains(out, "region is on node 2") {
+	if strings.Contains(out, "region is on NUMA node 2") {
 		t.Fatalf("region0 logged with a second reason:\n%s", out)
 	}
 }

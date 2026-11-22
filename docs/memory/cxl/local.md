@@ -366,9 +366,9 @@ The plugin logs every step of a slice with its dax device, mode, size and
 duration (`<t>`):
 
 ```
-engine: local memdev 0xc100e2e1 (mem1): created region0 (devdax, dax dax0.0, node 2) in <t>
+engine: local memdev 0xc100e2e1 (mem1): created region0 (devdax, dax dax0.0, NUMA node 2) in <t>
 engine: local memdev 0xc100e2e1 (mem1): claim <uid>: created slice dax0.1 mode numa size 134217728 at [0x258000000-0x25fffffff] in <t>
-engine: local memdev 0xc100e2e1 (mem1): claim <uid>: onlined slice dax0.1 mode numa size 134217728 blocks [75] node 2 in <t>
+engine: local memdev 0xc100e2e1 (mem1): claim <uid>: onlined slice dax0.1 mode numa size 134217728 blocks [75] NUMA node 2 in <t>
 engine: local memdev 0xc100e2e1 (mem1): claim <uid>: zeroed slice dax0.0 mode dax size 134217728 in <t>
 engine: local memdev 0xc100e2e1 (mem1): claim <uid>: offlined slice dax0.1 mode numa size 134217728 blocks [75] in <t>
 engine: local memdev 0xc100e2e1 (mem1): claim <uid>: deleted slice dax0.1 mode numa size 134217728 in <t>
@@ -555,7 +555,7 @@ disappeared while the plugin ran:
 ```
 engine: local memdev 0xc100e2e1 (mem1): zeroed new shared dax0.0 size 1073741824 in <t>
 engine: local memdev 0xc100e2e1 (mem1): region0 of the shared device is gone, forgetting it and its claims [<uids>]
-cxl.nri.io: claim <ns>/<name>: prepared memdev-c100e2e1 (memdev 0xc100e2e1, share true, mode dax, read-only false) as mem1 region0 dax dax0.0 size 1073741824 node -1 exclusive
+cxl.nri.io: claim <ns>/<name>: prepared memdev-c100e2e1 (memdev 0xc100e2e1, share true, mode dax, read-only false) as mem1 region0 dax dax0.0 size 1073741824 NUMA node -1 exclusive
 engine: local memdev 0xc100e2e1 (mem1): claim <uid>: released shared dax0.0, claims left [<uids>]
 engine: local memdev 0xc100e2e1 (mem1): keeping region0 and dax0.0 of the idle shared device
 ```

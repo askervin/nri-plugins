@@ -114,7 +114,7 @@ func TestSerials(t *testing.T) {
 	mustOK(t, err)
 	region, err := k.CreateRegion(t.Context(), kernel.CreateRegionRequest{Memdev: memdev, Decoder: d, Type: kernel.RegionRAM})
 	mustOK(t, err)
-	wantErrText(t, e.prepare(e.local, localClaim("s1", MemdevDeviceName(serialShared), -1, cfgDax)).Err, "that the plugin did not create")
+	wantErrText(t, e.prepare(e.local, localClaim("s1", MemdevDeviceName(serialShared), -1, cfgDax)).Err, "that the driver did not create")
 	if !slices.Equal(inflight, []uint64{serialSliced, serialShared}) {
 		t.Fatalf("serials in the Prepare %v", inflight)
 	}

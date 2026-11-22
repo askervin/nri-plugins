@@ -116,7 +116,7 @@ func TestRestoreFlags(t *testing.T) {
 			// a pool claim is unrestored for its node mount, with the line
 			// that the observer counts; a local claim for its block device,
 			// with the line of its memdev only
-			want := "not mounting " + direct + " again: " + changed
+			want := "not restoring " + direct + ": " + changed
 			line, notRemounted := "engine: claim ns/r: "+want, true
 			if source == state.SourceLocal {
 				want, line, notRemounted = changed, "engine: local memdev 0x91 (mem0): "+changed, false
@@ -130,7 +130,7 @@ func TestRestoreFlags(t *testing.T) {
 			wantLog(t, lines, line)
 			counted := ""
 			for _, l := range strings.Split(lines, "\n") {
-				if (strings.Contains(l, "not mounting") || strings.Contains(l, "not binding")) && counted == "" {
+				if (strings.Contains(l, "not restoring") || strings.Contains(l, "not binding")) && counted == "" {
 					counted = l
 				}
 			}
@@ -184,7 +184,7 @@ func TestRecoverUnrestored(t *testing.T) {
 		t.Fatalf("preparation again %s", p.State)
 	}
 	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{fsGrant("w", false, "")}); err == nil ||
-		!strings.Contains(err.Error(), "cannot be mounted again") {
+		!strings.Contains(err.Error(), "cannot be restored") {
 		t.Fatalf("Prepare again: %v", err)
 	}
 	if g := v.grant("w", 0); g.State != state.GrantUnrestored {
@@ -194,7 +194,7 @@ func TestRecoverUnrestored(t *testing.T) {
 	// now, not of the one as prepared
 	logs := klogtest.Capture(t, 3)
 	v.mustUnprepare(poolDriver, "w")
-	want := fmt.Sprintf("claim ns/w: its node mount %s was not mounted again at start; the release of pool memdev 0x91 waits for the holders of %s, the block device of its region now, not of %s",
+	want := fmt.Sprintf("claim ns/w: its node mount %s was not restored at start; the release of pool memdev 0x91 waits for the holders of %s, the block device of its region now, not of %s",
 		direct, filepath.Join(v.f.DevRoot(), "pmem3"), filepath.Join(v.f.DevRoot(), "pmem0"))
 	if out := logs(); !strings.Contains(out, want) {
 		t.Fatalf("no %q in\n%s", want, out)

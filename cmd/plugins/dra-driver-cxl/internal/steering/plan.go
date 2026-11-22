@@ -91,15 +91,15 @@ func (p *Plan) Validate() error {
 	for i, wp := range p.Waypoints {
 		for node, usage := range wp {
 			if node < 0 {
-				return fmt.Errorf("waypoint %d: invalid node %d", i, node)
+				return fmt.Errorf("waypoint %d: invalid NUMA node %d", i, node)
 			}
 			if usage < 0 {
-				return fmt.Errorf("waypoint %d: negative usage %d on node %d", i, usage, node)
+				return fmt.Errorf("waypoint %d: negative usage %d on NUMA node %d", i, usage, node)
 			}
 		}
 		for node, usage := range prev {
 			if wp[node] < usage {
-				return fmt.Errorf("waypoint %d: usage %d on node %d is less than %d in the previous waypoint",
+				return fmt.Errorf("waypoint %d: usage %d on NUMA node %d is less than %d in the previous waypoint",
 					i, wp[node], node, usage)
 			}
 		}

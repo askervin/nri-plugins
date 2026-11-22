@@ -251,7 +251,7 @@ func TestCompanionLendNUMA(t *testing.T) {
 				t.Fatal("a CDI device of a companion claim")
 			}
 			if !local {
-				wantLogText(t, logs(), "cxl-pool.nri.io: claim demo/cxl-lease-l1: companion of lease l1 of demo/borrower/app prepared (nodes [2], binds [])")
+				wantLogText(t, logs(), "cxl-pool.nri.io: claim demo/cxl-lease-l1: companion of lease l1 of demo/borrower/app prepared (NUMA nodes [2], binds [])")
 			}
 			if info := p.ClaimInfo("c1"); info == nil || info.Lend == nil || info.Lend.Lease != "l1" || !slices.Equal(info.Lend.NUMANodes, []int{2}) ||
 				info.Lend.Pod.UID != envPodUID || info.Lend.Container != envCtr {
@@ -425,7 +425,7 @@ func TestCompanionLendFails(t *testing.T) {
 			var online []bool
 			nodes.onRevoke = func(int) { online = append(online, e.onlineBlocks() > 0) }
 			res := e.prepare(p, e.companionOf(p))
-			lendErr := "lease l1: lending node 2 to demo/borrower/app: " + errFake.Error()
+			lendErr := "lease l1: lending NUMA node 2 to demo/borrower/app: " + errFake.Error()
 			wantErrText(t, res.Err, e.prefix(p)+lendErr)
 			e.wantEvents("failed", "lending l1 cxl-lease-l1", "lend pod-uid-1/app 2 l1", "revoke pod-uid-1/app 2 l1", "failed l1: "+lendErr)
 			if !slices.Equal(online, []bool{true}) {
@@ -574,7 +574,7 @@ func TestCompanionRevokeEveryNode(t *testing.T) {
 	err := e.pool.Lender().Revoke(context.Background(), rec, "demo/cxl-lease-l1")
 	e.wantEvents("revoke", "revoke pod-uid-1/app 2 l1", "revoke pod-uid-1/app 3 l1")
 	for _, n := range []int{2, 3} {
-		if want := fmt.Sprintf("lease l1: revoking node %d from demo/borrower/app: %v", n, errFake); err == nil || !strings.Contains(err.Error(), want) {
+		if want := fmt.Sprintf("lease l1: revoking NUMA node %d from demo/borrower/app: %v", n, errFake); err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %v, expected %q in it", err, want)
 		}
 	}

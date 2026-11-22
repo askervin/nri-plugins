@@ -52,10 +52,10 @@ func TestParseQtreeFull(t *testing.T) {
 	text := CleanHMPOutput(rawSession(t, "hmp-raw-info-qtree-full-crio.txt"))
 	tree := ParseQtree(text)
 	if hb := tree.HostBridge("cxlhb1"); hb == nil || hb.NUMANode != 1 {
-		t.Fatalf("expected cxlhb1 on numa node 1: %+v", tree.HostBridges)
+		t.Fatalf("expected cxlhb1 on NUMA node 1: %+v", tree.HostBridges)
 	}
 	if hb := tree.HostBridge("cxlhb0"); hb == nil || hb.NUMANode != 0 {
-		t.Fatalf("expected cxlhb0 on numa node 0: %+v", tree.HostBridges)
+		t.Fatalf("expected cxlhb0 on NUMA node 0: %+v", tree.HostBridges)
 	}
 	d := treeDevice(tree, "cxl_memdev2.hp3")
 	if d == nil {

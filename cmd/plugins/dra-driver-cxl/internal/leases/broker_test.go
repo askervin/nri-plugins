@@ -548,9 +548,9 @@ func TestLendFailed(t *testing.T) {
 	stay.Store(true)
 	_, err := e.b.OnLending("000000a1", claim)
 	mustOK(t, err)
-	e.b.OnLendFailed("000000a1", errors.New("lease 000000a1: lending node 2 to demo/borrower/app: container is steered"))
+	e.b.OnLendFailed("000000a1", errors.New("lease 000000a1: lending NUMA node 2 to demo/borrower/app: container is steered"))
 	resp := <-ch
-	if resp.State != api.StateFailed || resp.Error != "lease 000000a1: lending node 2 to demo/borrower/app: container is steered" {
+	if resp.State != api.StateFailed || resp.Error != "lease 000000a1: lending NUMA node 2 to demo/borrower/app: container is steered" {
 		t.Fatalf("response %+v", resp)
 	}
 	l := e.lease("000000a1")

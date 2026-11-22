@@ -155,7 +155,7 @@ func TestPoolLendFailure(t *testing.T) {
 	wantErr(t, e.prepare(e.pool, allocatedPool(claim, "pooled0", poolExclusiveData)).Err, "memory-steered")
 	e.wantNoRegions()
 	resp := <-ch
-	if resp.State != api.StateFailed || resp.Error != "lease 000000a1: lending node 2 to demo/borrower/app: container is memory-steered" {
+	if resp.State != api.StateFailed || resp.Error != "lease 000000a1: lending NUMA node 2 to demo/borrower/app: container is memory-steered" {
 		t.Fatalf("lend failure response %+v", resp)
 	}
 	e.waitState("000000a1", state.LeaseNone)

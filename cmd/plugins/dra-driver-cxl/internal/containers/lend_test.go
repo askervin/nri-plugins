@@ -305,7 +305,7 @@ func TestLendUpdateFailures(t *testing.T) {
 
 	// No stub: NRI not connected.
 	e.p.connect(nil)
-	if err := e.p.LendNUMANode(ctx, "u1", "app", 3, "l1"); err == nil || !strings.Contains(err.Error(), "lend node 3: lending unavailable: NRI not connected") {
+	if err := e.p.LendNUMANode(ctx, "u1", "app", 3, "l1"); err == nil || !strings.Contains(err.Error(), "lend NUMA node 3: lending unavailable: NRI not connected") {
 		t.Fatalf("expected NRI not connected, got %v", err)
 	}
 	cctx, cancel := context.WithCancel(ctx)
@@ -489,10 +489,10 @@ func TestLendNoneInherits(t *testing.T) {
 		t.Errorf("cpuset.mems set:\n%s", out)
 	}
 	// node 3 has no memory yet: not in its cpuset.mems.effective
-	if !strings.Contains(out, "lend node 3 for l3: ctr=ns/pod-u1/main id=c1: its cpuset.mems.effective lacks the lent nodes 3 (") {
+	if !strings.Contains(out, "lend NUMA node 3 for l3: ctr=ns/pod-u1/main id=c1: its cpuset.mems.effective lacks the lent NUMA nodes 3 (") {
 		t.Errorf("no warning of node 3:\n%s", out)
 	}
-	if n := strings.Count(out, "cpuset.mems.effective lacks"); n != strings.Count(out, "lacks the lent nodes 3 (") {
+	if n := strings.Count(out, "cpuset.mems.effective lacks"); n != strings.Count(out, "lacks the lent NUMA nodes 3 (") {
 		t.Errorf("warning of another node:\n%s", out)
 	}
 
@@ -675,7 +675,7 @@ func TestLendNoneParentRestricts(t *testing.T) {
 	e := newEnv(t)
 	logs := klogtest.Capture(t, 3)
 	ctx := context.Background()
-	const warning = "NRI lend: lend node 2 for l1: ctr=ns/pod-u1/main id=c1: its cpuset.mems.effective lacks the lent nodes 2 (a parent cgroup restricts it, or they have no memory): it cannot use them"
+	const warning = "NRI lend: lend NUMA node 2 for l1: ctr=ns/pod-u1/main id=c1: its cpuset.mems.effective lacks the lent NUMA nodes 2 (a parent cgroup restricts it, or they have no memory): it cannot use them"
 	// node 2 has memory, but a parent cgroup gives it 0-1 only
 	e.run(testPod("u1"), "c1", "main", 101, "0-1")
 	noErr(t, e.p.LendNUMANode(ctx, "u1", "main", 2, "l1"))

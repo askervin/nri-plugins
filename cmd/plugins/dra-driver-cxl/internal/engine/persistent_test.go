@@ -267,7 +267,7 @@ func TestPersistentRules(t *testing.T) {
 			setup: func(v *env, dev string) { v.f.SetSuperOpts(dev, "ro", "dax=never") },
 			err:   "memdev 0x91: ext4 on $DEV was mounted without DAX"},
 		{name: "no known filesystem", req: fs("x", true, "", ""),
-			err: "memdev 0x91: $DEV has no filesystem of a type that the plugin knows (erofs, squashfs, ext4, xfs, btrfs or gfs2): set device.fsType"},
+			err: "memdev 0x91: $DEV has no filesystem of a type that the driver knows (erofs, squashfs, ext4, xfs, btrfs or gfs2): set device.fsType"},
 		{name: "type other than the node mount's", image: "ext4", req: fs("x", true, "", "xfs"), setup: reader("r", ""),
 			err: "memdev 0x91: $DEV has a filesystem of type ext4, not xfs"},
 	} {
@@ -811,9 +811,9 @@ func TestFsSignatureType(t *testing.T) {
 		{[]string{"ext4", "xfs"}, "xfs", "xfs", ""},                                                                                             // several, declared
 		{[]string{"ext4", "xfs"}, "", "", "memdev 0xc1ae0001: /dev/pmem0 has signatures of several filesystems (ext4, xfs): set device.fsType"}, // P2
 		{[]string{"ext4", "xfs"}, "btrfs", "", "has signatures of several filesystems (ext4, xfs)"},
-		{nil, "", "", "memdev 0xc1ae0001: /dev/pmem0 has no filesystem of a type that the plugin knows (erofs, squashfs, ext4, xfs, btrfs or gfs2): set device.fsType"}, // P1
+		{nil, "", "", "memdev 0xc1ae0001: /dev/pmem0 has no filesystem of a type that the driver knows (erofs, squashfs, ext4, xfs, btrfs or gfs2): set device.fsType"}, // P1
 		{nil, "f2fs", "f2fs", ""}, // mounted as declared
-		{nil, "xfs", "", "memdev 0xc1ae0001: /dev/pmem0 has no filesystem of type xfs (no signature of a type that the plugin knows)"}, // P3b
+		{nil, "xfs", "", "memdev 0xc1ae0001: /dev/pmem0 has no filesystem of type xfs (no signature of a type that the driver knows)"}, // P3b
 	} {
 		got, err := fsType(kernel.FSSignature{Types: tc.types}, "0xc1ae0001", dev, tc.declared)
 		switch {

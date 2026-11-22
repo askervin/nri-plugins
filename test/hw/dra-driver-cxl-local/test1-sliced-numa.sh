@@ -203,9 +203,9 @@ k delete pod -n kube-system "$old_pod" --wait=true --timeout=180s >/dev/null
 new_pod() { local p; p=$(driver_pod) && [ -n "$p" ] && [ "$p" != "$old_pod" ]; }
 check "a new driver pod is Running" wait_for 180 "a new driver pod Running" new_pod
 DRIVER_POD=$(driver_pod)
-seeded() { k logs -n kube-system "$DRIVER_POD" | grep -q "NRI fence: fencing CXL nodes .* of prepared claims"; }
+seeded() { k logs -n kube-system "$DRIVER_POD" | grep -q "NRI fence: fencing CXL NUMA nodes .* of prepared claims"; }
 check "driver: fences the CXL nodes of the prepared claims at start" wait_for 60 "the fence log of $DRIVER_POD" seeded
-seed=$(k logs -n kube-system "$DRIVER_POD" | sed -n 's/.*NRI fence: fencing CXL nodes \(.*\) of prepared claims.*/\1/p' | tail -n 1)
+seed=$(k logs -n kube-system "$DRIVER_POD" | sed -n 's/.*NRI fence: fencing CXL NUMA nodes \(.*\) of prepared claims.*/\1/p' | tail -n 1)
 echo "  fenced nodes of the prepared claims: $seed"
 check "driver: node $N is among the fenced nodes of the prepared claims ($seed)" in_list "$N" "$(tr -d '[]' <<< "$seed" | tr ' ' ',')"
 check_fenced "$N" numa-a

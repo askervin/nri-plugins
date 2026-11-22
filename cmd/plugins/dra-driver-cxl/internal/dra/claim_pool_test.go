@@ -269,7 +269,7 @@ func TestPoolRollbackKept(t *testing.T) {
 	claim := addPoolResult(poolClaim("u1", "pooled0", poolExclusiveData), "mem2", "pooled1",
 		`{"serial":"0xc1ee0002","shared":false,"size":268435456}`)
 	logs := klogCapture(t)
-	wantErrText(t, e.prepare(e.pool, claim).Err, "that the plugin did not create")
+	wantErrText(t, e.prepare(e.pool, claim).Err, "that the driver did not create")
 	wantLogText(t, logs(), "cxl-pool.nri.io: claim demo/claim-u1 (u1): rollback: not everything was released: "+
 		"keeping its record for its Unprepare or its next Prepare")
 	prep := e.preparation(e.pool, "u1")

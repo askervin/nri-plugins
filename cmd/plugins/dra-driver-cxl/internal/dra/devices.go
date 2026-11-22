@@ -327,7 +327,7 @@ func regionIgnoreReason(cfg PublishConfig, r *kernel.RegionInfo, node int, mems 
 		return fmt.Sprintf("region name %q", r.Name)
 	}
 	if slices.Contains(cfg.IgnoreNUMANodes, node) {
-		return fmt.Sprintf("region is on node %d", node)
+		return fmt.Sprintf("region is on NUMA node %d", node)
 	}
 	for i := range mems {
 		if m := memdevMatches(cfg.IgnoreDevices, &mems[i]); m != "" {
@@ -353,12 +353,12 @@ func addDRAM(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snapshot, cxl
 			ignoreReason = fmt.Sprintf("node ID %d is in ignoreNUMANodes", node.ID)
 		}
 		if ignoreReason != "" {
-			klog.V(4).Infof("- ignoring DRAM on node %d: %s", node.ID, ignoreReason)
+			klog.V(4).Infof("- ignoring DRAM on NUMA node %d: %s", node.ID, ignoreReason)
 			continue
 		}
 		dramDev.NUMANodes = append(dramDev.NUMANodes, node.ID)
 		dramDev.Size += node.MemTotal
-		klog.V(4).Infof("discovered DRAM memory on node %d: size %d bytes", node.ID, node.MemTotal)
+		klog.V(4).Infof("discovered DRAM on NUMA node %d: size %d bytes", node.ID, node.MemTotal)
 	}
 	if dramDev.Size > 0 {
 		devInfos[device.DRAMDeviceName] = &DeviceInfo{
@@ -640,7 +640,7 @@ func localRefusal(cfg PublishConfig, memDev *kernel.MemdevInfo, size, bs uint64,
 	case held[memDev.Serial]:
 		return heldReason
 	case len(regions) > 0 && !used:
-		return fmt.Sprintf("it has regions %v that the plugin did not create", regions)
+		return fmt.Sprintf("it has regions %v that the driver did not create", regions)
 	case use.Persistent && len(use.Claims) > 0:
 		return fmt.Sprintf("used as a persistent device by claims %v", use.Claims)
 	case use.Shared && len(use.Claims) > 0:
@@ -676,7 +676,7 @@ func addLocalShared(devInfos DevicesInfo, memDev *kernel.MemdevInfo, size uint64
 	case memDev.State == kernel.MemdevUnbound:
 		reason = "memory device is disabled"
 	case len(regions) > 0 && !used:
-		reason = fmt.Sprintf("it has regions %v that the plugin did not create", regions)
+		reason = fmt.Sprintf("it has regions %v that the driver did not create", regions)
 	case use.Persistent && len(use.Claims) > 0:
 		reason = fmt.Sprintf("used as a persistent device by claims %v", use.Claims)
 	case !use.Shared && len(use.Claims) > 0:
@@ -721,7 +721,7 @@ func addLocalPersistent(devInfos DevicesInfo, cfg PublishConfig, memDev *kernel.
 	case memDev.State == kernel.MemdevUnbound:
 		reason = "memory device is disabled"
 	case len(regions) > 0 && !used:
-		reason = fmt.Sprintf("it has regions %v that the plugin did not create", regions)
+		reason = fmt.Sprintf("it has regions %v that the driver did not create", regions)
 	case len(use.Claims) == 0:
 	case !use.Persistent && use.Shared:
 		reason = fmt.Sprintf("used shared by claims %v", use.Claims)

@@ -151,10 +151,10 @@ func (mem MemoryTypes) validate() error {
 	seen := make(map[int]bool)
 	for _, node := range append(append([]int{}, mem.DRAMNUMANodes...), mem.CXLNUMANodes...) {
 		if node < 0 {
-			return fmt.Errorf("invalid node %d", node)
+			return fmt.Errorf("invalid NUMA node %d", node)
 		}
 		if seen[node] {
-			return fmt.Errorf("node %d listed more than once", node)
+			return fmt.Errorf("NUMA node %d listed more than once", node)
 		}
 		seen[node] = true
 	}

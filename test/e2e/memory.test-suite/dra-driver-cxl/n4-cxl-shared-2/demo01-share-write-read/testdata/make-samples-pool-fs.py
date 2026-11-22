@@ -298,9 +298,9 @@ def trace(sdir, t0=1792700000.0):
 
     def ready(dt, key, who, mode, ro=True):
         if mode == "block":
-            what = 'read-only false, node -1, dax "", block "/dev/pmem0", access "", fs "", path ""'
+            what = 'read-only false, NUMA node -1, dax "", block "/dev/pmem0", access "", fs "", path ""'
         else:
-            what = 'read-only %s, node -1, dax "", block "", access "direct", fs "ext4", path "/run/cxl/fs/data"' % ("true" if ro else "false")
+            what = 'read-only %s, NUMA node -1, dax "", block "", access "direct", fs "ext4", path "/run/cxl/fs/data"' % ("true" if ro else "false")
         klog(dt, WHERE[who], "broker.go:1646", "lease broker: lease %s: Ready (source pool, serial %s, mode %s, %s, %d bytes)"
              % (LEASES[key], SERIAL, mode, what, NS_SIZE))
 

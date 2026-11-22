@@ -475,7 +475,7 @@ func (b *Broker) PreparedStep(id string, source state.Source, devs []state.Devic
 			b.startRelease(id, "wrong mode", state.TriggerOnPrepared)
 		case ready != nil:
 			l, g := ready, ready.Got
-			klog.Infof("lease broker: lease %s: Ready (source %s, serial %s, mode %s, read-only %v, node %d, dax %q, block %q, access %q, fs %q, path %q, %d bytes)",
+			klog.Infof("lease broker: lease %s: Ready (source %s, serial %s, mode %s, read-only %v, NUMA node %d, dax %q, block %q, access %q, fs %q, path %q, %d bytes)",
 				l.ID, g.Source, g.Serial, l.Asked.Mode, l.Asked.ReadOnly, numaNodeOf(l), g.Dax, g.Block, accessOf(l), fsTypeOf(l), g.Path, g.Size)
 		}
 	}

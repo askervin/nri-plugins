@@ -211,7 +211,7 @@ lend-memory() {
     dra-exec "$VM2" borrower/idle python3 /tools/numa-touch.py 16 "$MEM_NODE" &&
         error "container idle could allocate memory on node $MEM_NODE"
     grep -q "set_mempolicy.*Invalid argument" <<< "$COMMAND_OUTPUT" ||
-        error "numa-touch.py in idle failed for another reason than an invalid node"
+        error "numa-touch.py in idle failed for another reason than an invalid NUMA node"
     dra-leases "$VM2" borrower/main
     dra-assert "$DRA_LEASES" "[(l['lease'], l['state'], l.get('source'), l.get('mode'), bool(l.get('share'))) for l in j] == [('$MEM_LEASE', 'Ready', 'pool', 'numa', False)]"
     lease-env-check

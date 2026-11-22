@@ -796,7 +796,7 @@ and cannot make it the companion of a lease it did not request.
   A steered container (one whose settings opt in to steering and whose
   claims have memory in mode `numa`: memory steered by the driver,
   [usage.md](usage.md#steering)) cannot take a `numa` lease: the lend is
-  refused with "lend node N to <container>: container is memory-steered
+  refused with "lend NUMA node N to <container>: container is memory-steered
   (container.steering.policy of its claims or the node defaults); lending
   is not supported together with steering yet", and the lease becomes
   Failed. A container that is not steered

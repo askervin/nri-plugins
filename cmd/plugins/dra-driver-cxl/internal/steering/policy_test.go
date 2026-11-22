@@ -160,7 +160,7 @@ func TestPolicyPlanErrors(t *testing.T) {
 	_, err = NewPlan(PolicyFirstDRAM, MemoryTypes{DRAMNUMANodes: []int{0}, CXLNUMANodes: []int{0}, DRAMQuota: 1, CXLQuota: 1}, nil, 0, 0)
 	require.ErrorContains(t, err, "more than once")
 	_, err = NewPlan(PolicyFirstDRAM, MemoryTypes{DRAMNUMANodes: []int{-1}, DRAMQuota: 1}, nil, 0, 0)
-	require.ErrorContains(t, err, "invalid node")
+	require.ErrorContains(t, err, "invalid NUMA node")
 	both := MemoryTypes{DRAMNUMANodes: []int{0}, CXLNUMANodes: []int{1}, DRAMQuota: 1, CXLQuota: 1}
 	_, err = NewPlan(Policy(42), both, nil, 0, 0)
 	require.ErrorContains(t, err, "Policy(42)")

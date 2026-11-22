@@ -378,7 +378,7 @@ def trace_formats_test():
         'shared device true, read-only false, access "", name "data")',
         'lease broker: lease 51aa7b09: cxl-demo/reader-b/main requests size "" serial "0xc1ae0001" (source "", mode dax, shared true, '
         'shared device true, read-only true, access "", name "")',
-        'lease broker: lease 3f2a91c0: Ready (source pool, serial 0xc1ae0001, mode fs, read-only false, node -1, dax "", block "", '
+        'lease broker: lease 3f2a91c0: Ready (source pool, serial 0xc1ae0001, mode fs, read-only false, NUMA node -1, dax "", block "", '
         'access "direct", fs "ext4", path "/run/cxl/fs/data", 534773760 bytes)',
         'lease broker: lease 3f2a91c0: releasing (released by main, was Ready)',
         'lease broker: lease 3f2a91c0: released',

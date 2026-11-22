@@ -108,7 +108,7 @@ func TestUnprepareRevokeFails(t *testing.T) {
 			e.mustPrepare(p, e.companionOf(p))
 			nodes.setErrors(nil, errFake)
 			err := e.unprepare(p, "c1")
-			revokeErr := "lease l1: revoking node 2 from demo/borrower/app: " + errFake.Error()
+			revokeErr := "lease l1: revoking NUMA node 2 from demo/borrower/app: " + errFake.Error()
 			wantErrText(t, err, p.Name()+": claim demo/cxl-lease-l1: "+revokeErr)
 			e.wantState(p, "c1", state.PreparationUnpreparing)
 			if e.onlineBlocks() == 0 {
@@ -118,7 +118,7 @@ func TestUnprepareRevokeFails(t *testing.T) {
 			e.lent = false
 			e.restart()
 			p = e.pluginOf(local)
-			wantErrText(t, e.unprepare(p, "c1"), "lending is not set up yet (the plugin is starting)")
+			wantErrText(t, e.unprepare(p, "c1"), "lending is not set up yet (the driver is starting)")
 			e.wantState(p, "c1", state.PreparationUnpreparing)
 			nodes.setErrors(nil, nil)
 			e.lend(nodes, e.hooks)

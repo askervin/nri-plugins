@@ -650,7 +650,7 @@ func TestBuildDevInfosPersistentMemdevs(t *testing.T) {
 // TestPersistentMemdevRefusals pins the line of a persistent memdev that is
 // not published, as the documentation quotes it, at klog V(4): a pool
 // device, a held memdev, a disabled one, an ignored one, one with a region
-// of persistent memory that the plugin did not create, one that claims use
+// of persistent memory that the driver did not create, one that claims use
 // as slices or with the other sharing; one that claims use shared while it
 // is not shared now is published again when they are gone.
 func TestPersistentMemdevRefusals(t *testing.T) {
@@ -680,7 +680,7 @@ func TestPersistentMemdevRefusals(t *testing.T) {
 		{nil, nil, true, nil, `memory device name "mem3"`, func(cfg *PublishConfig, _ *kernel.Snapshot) {
 			cfg.IgnoreDevices = memdevSpecs(t, "mem3")
 		}},
-		{nil, nil, true, nil, "it has regions [region0] that the plugin did not create", func(_ *PublishConfig, s *kernel.Snapshot) {
+		{nil, nil, true, nil, "it has regions [region0] that the driver did not create", func(_ *PublishConfig, s *kernel.Snapshot) {
 			pubRegion(s, "region0", 2, 512*pubMiB, 0xc100f5e1)
 			s.Regions[0].Mode = kernel.RegionPmem
 		}},

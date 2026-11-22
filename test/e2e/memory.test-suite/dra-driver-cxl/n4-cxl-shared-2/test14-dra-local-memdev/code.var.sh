@@ -467,7 +467,7 @@ echo "### B2: a restart of the driver keeps the node to the NUMA pods, a new pod
 # container was created while no driver ran, with every node: the driver
 # fences it like every other container once it runs. The slices stay.
 dra-driver-restart "$VM2"
-dra-plugin-log-wait "$VM2" "NRI fence: fencing CXL nodes $NUMA_NODE of prepared claims"
+dra-plugin-log-wait "$VM2" "NRI fence: fencing CXL NUMA nodes $NUMA_NODE of prepared claims"
 dra-mems-fenced "$VM2" "$NUMA_NODE" "$DRA_NS/numa-a/main" "$DRA_NS/numa-b/main"
 dra-local-slices-wait "$VM2" restarted "$NUMA_NODE" "numa:$NUMA_A" "dax:$(dra-local-round "$DAX1_REQ")" "numa:$NUMA_B" "dax:$SHARED"
 # A pod without a claim, created after the restart, gets an explicit

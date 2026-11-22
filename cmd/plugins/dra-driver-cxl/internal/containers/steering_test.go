@@ -84,7 +84,7 @@ func TestLendToUnsteeredNUMAClaim(t *testing.T) {
 		t.Fatalf("adjustment %s of a steered container", got)
 	}
 	err := e.p.LendNUMANode(ctx, "u1", "steered", 3, "l1")
-	if !errors.Is(err, ErrSteered) || !strings.Contains(err.Error(), "lend node 3 to ns/pod-u1/steered: container is memory-steered") {
+	if !errors.Is(err, ErrSteered) || !strings.Contains(err.Error(), "lend NUMA node 3 to ns/pod-u1/steered: container is memory-steered") {
 		t.Fatalf("lend to a steered container: %v", err)
 	}
 	e.expectUpdates()

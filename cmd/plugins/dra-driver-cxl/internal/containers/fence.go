@@ -47,7 +47,7 @@ func (p *Plugin) Seed(nodes []int) {
 	if !p.fencing || set.IsEmpty() {
 		return
 	}
-	klog.Infof("NRI fence: fencing CXL nodes %s of prepared claims", set)
+	klog.Infof("NRI fence: fencing CXL NUMA nodes %s of prepared claims", set)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.fenced = p.fenced.Union(set)
@@ -80,7 +80,7 @@ func (p *Plugin) Fence(ctx context.Context, node int) {
 	select {
 	case <-done:
 	case <-ctx.Done():
-		klog.V(3).Infof("NRI fence: fencing CXL node %d goes on in the background: %v", node, ctx.Err())
+		klog.V(3).Infof("NRI fence: fencing CXL NUMA node %d goes on in the background: %v", node, ctx.Err())
 	}
 }
 
@@ -98,9 +98,9 @@ func (p *Plugin) fence(node int) {
 	nodes := p.fenced
 	p.mu.Unlock()
 
-	klog.Infof("NRI fence: fencing CXL node %d (fenced nodes %s)", node, nodes)
+	klog.Infof("NRI fence: fencing CXL NUMA node %d (fenced NUMA nodes %s)", node, nodes)
 	if p.startFailed() {
-		klog.Warningf("NRI fence: NRI not connected, containers are not fenced from CXL node %d", node)
+		klog.Warningf("NRI fence: NRI not connected, containers are not fenced from CXL NUMA node %d", node)
 		return
 	}
 	p.pass(context.Background(), "")
@@ -250,9 +250,9 @@ func (p *Plugin) pass(ctx context.Context, only string) {
 		if p.ctrs[ch.c.ID] == ch.c {
 			ch.c.SpecMems = ch.mems
 		}
-		klog.V(3).Infof("NRI fence: ctr=%s id=%s cpuset.mems=%s (was %q, fenced nodes %s)", ch.c.name(), ch.c.ID, ch.mems, ch.was, fenced)
+		klog.V(3).Infof("NRI fence: ctr=%s id=%s cpuset.mems=%s (was %q, fenced NUMA nodes %s)", ch.c.name(), ch.c.ID, ch.mems, ch.was, fenced)
 	}
-	klog.Infof("NRI fence: %d containers updated, %d failed (fenced nodes %s)", len(changes)-len(failed), len(failed), fenced)
+	klog.Infof("NRI fence: %d containers updated, %d failed (fenced NUMA nodes %s)", len(changes)-len(failed), len(failed), fenced)
 	for id := range failed {
 		delete(checked, id)
 	}
