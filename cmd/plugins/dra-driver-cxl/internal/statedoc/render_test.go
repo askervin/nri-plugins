@@ -24,7 +24,6 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 const (
@@ -124,7 +123,7 @@ func TestEveryObjectHasItsHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, o := range state.Catalogue() {
+	for _, o := range stateObjects() {
 		h, ok := docs[o.Name]
 		if !ok {
 			t.Errorf("%s: no header", o.Name)
@@ -148,7 +147,7 @@ func TestEveryObjectHasItsHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, o := range containers.Catalogue() {
+	for _, o := range containerObjects() {
 		h, ok := docs[o.Name]
 		if !ok || len(h.purpose) == 0 {
 			t.Errorf("%s: no header", o.Name)
@@ -174,7 +173,7 @@ func TestEveryKernelObjectHasItsHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, o := range kernel.Catalogue() {
+	for _, o := range kernelObjects() {
 		h := docs[o.Name]
 		if len(h) == 0 || h[0].label != "" || !strings.HasPrefix(h[0].text, o.Name+": ") {
 			t.Errorf("%s: no header comment", o.Name)

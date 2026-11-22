@@ -101,17 +101,13 @@ func TestTable(t *testing.T) {
 	if !errors.Is(err, fsm.ErrTransition) || err.Error() != "RegionInfo.State: ENABLED -> HOLLOW: transition not in the table" {
 		t.Fatalf("error %v", err)
 	}
-	tables := 0
-	for _, o := range kernel.Catalogue() {
-		for _, tt := range o.Tables {
-			tables++
-			if !tt.Observed || len(tt.Rows) == 0 {
-				t.Errorf("%s: table %s.%s: observed %v, %d rows", o.Name, tt.Object, tt.Field, tt.Observed, len(tt.Rows))
-			}
+	for _, tt := range []fsm.TableText{
+		kernel.MemdevTransitions.Text(), kernel.RegionTransitions.Text(), kernel.DaxTransitions.Text(),
+		kernel.BlockTransitions.Text(), kernel.NdRegionTransitions.Text(), kernel.NamespaceTransitions.Text(),
+	} {
+		if !tt.Observed || len(tt.Rows) == 0 {
+			t.Errorf("table %s.%s: observed %v, %d rows", tt.Object, tt.Field, tt.Observed, len(tt.Rows))
 		}
-	}
-	if tables != 6 {
-		t.Errorf("%d tables in the catalogue", tables)
 	}
 	// the names of the states, in JSON too (cxl-dump)
 	if b, err := json.Marshal(kernel.DaxKmem); err != nil || string(b) != `"KMEM"` {

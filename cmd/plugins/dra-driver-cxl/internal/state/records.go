@@ -20,7 +20,6 @@ import (
 	"slices"
 
 	"github.com/containers/nri-plugins/pkg/cxl/config"
-	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
 // Records are the sections of the store's document: every record that the
@@ -35,31 +34,6 @@ type Records struct {
 	Provenance   []Provenance  `json:"provenance,omitempty"`
 	Steered      []Steered     `json:"steered,omitempty"`
 	ListedPools  []ListedPool  `json:"listedPools,omitempty"`
-}
-
-// Object is a record type with the transition tables of its State fields.
-type Object struct {
-	Name   string
-	Tables []fsm.TableText
-}
-
-// Catalogue returns the record types in the order of the documentation.
-func Catalogue() []Object {
-	return []Object{
-		{Name: "Preparation", Tables: []fsm.TableText{PreparationTable.Text()}},
-		{Name: "Grant", Tables: []fsm.TableText{GrantTable.Text()}},
-		{Name: "Bind", Tables: []fsm.TableText{BindTable.Text()}},
-		{Name: "Memdev", Tables: []fsm.TableText{MemdevTable.Text()}},
-		{Name: "Region", Tables: []fsm.TableText{RegionTable.Text(), RegionSetUpTable.Text()}},
-		{Name: "DaxDevice", Tables: []fsm.TableText{DaxDeviceTable.Text()}},
-		{Name: "Mount", Tables: []fsm.TableText{MountTable.Text()}},
-		{Name: "Provenance", Tables: []fsm.TableText{ProvenanceTable.Text()}},
-		{Name: "Lease", Tables: []fsm.TableText{LeaseTable.Text()}},
-		{Name: "LeaseClaim", Tables: []fsm.TableText{LeaseClaimTable.Text()}},
-		{Name: "Steered"},
-		{Name: "ListedPool"},
-		{Name: "Probe"},
-	}
 }
 
 // Preparation returns the preparation of the claim uid by the driver, nil

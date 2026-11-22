@@ -90,22 +90,26 @@ func checkTable[S comparable](t *testing.T, tb *fsm.Table[S]) string {
 // TestTables checks every transition table of the records, and that every
 // trigger is in a row.
 func TestTables(t *testing.T) {
-	checked := []string{
-		checkTable(t, &PreparationTable), checkTable(t, &GrantTable), checkTable(t, &BindTable),
-		checkTable(t, &MemdevTable), checkTable(t, &RegionTable), checkTable(t, &RegionSetUpTable),
-		checkTable(t, &DaxDeviceTable), checkTable(t, &MountTable), checkTable(t, &ProvenanceTable),
-		checkTable(t, &LeaseTable), checkTable(t, &LeaseClaimTable),
-	}
+	checkTable(t, &PreparationTable)
+	checkTable(t, &GrantTable)
+	checkTable(t, &BindTable)
+	checkTable(t, &MemdevTable)
+	checkTable(t, &RegionTable)
+	checkTable(t, &RegionSetUpTable)
+	checkTable(t, &DaxDeviceTable)
+	checkTable(t, &MountTable)
+	checkTable(t, &ProvenanceTable)
+	checkTable(t, &LeaseTable)
+	checkTable(t, &LeaseClaimTable)
 	used := map[string]bool{}
-	for _, o := range Catalogue() {
-		for _, tt := range o.Tables {
-			if !slices.Contains(checked, tt.Object+"."+tt.Field) {
-				t.Errorf("table %s.%s is not checked", tt.Object, tt.Field)
-			}
-			for _, r := range tt.Rows {
-				for _, tr := range r.Triggers {
-					used[tr] = true
-				}
+	for _, tt := range []fsm.TableText{
+		PreparationTable.Text(), GrantTable.Text(), BindTable.Text(), MemdevTable.Text(), RegionTable.Text(),
+		RegionSetUpTable.Text(), DaxDeviceTable.Text(), MountTable.Text(), ProvenanceTable.Text(),
+		LeaseTable.Text(), LeaseClaimTable.Text(),
+	} {
+		for _, r := range tt.Rows {
+			for _, tr := range r.Triggers {
+				used[tr] = true
 			}
 		}
 	}

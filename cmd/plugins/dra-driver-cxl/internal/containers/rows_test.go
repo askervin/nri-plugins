@@ -111,10 +111,6 @@ func TestTables(t *testing.T) {
 			t.Errorf("trigger %s is used by no row", tr)
 		}
 	}
-	if got := Catalogue(); len(got) != 2 || got[0].Name != "Container" || len(got[0].Tables) != 2 || got[1].Name != "Plugin" ||
-		len(got[1].Tables) != 2 {
-		t.Fatalf("catalogue %+v", got)
-	}
 	// a transition that its table refuses leaves the record as it is
 	c := &Container{Lifecycle: LifecycleStarted, Management: ManagementFenced}
 	p := &Plugin{}

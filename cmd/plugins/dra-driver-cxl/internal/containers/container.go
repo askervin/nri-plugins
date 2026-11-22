@@ -289,15 +289,6 @@ var ManagementTable = fsm.Table[Management]{
 	},
 }
 
-// Catalogue returns the records of the package with their tables, for the
-// documentation.
-func Catalogue() []state.Object {
-	return []state.Object{
-		{Name: "Container", Tables: []fsm.TableText{LifecycleTable.Text(), ManagementTable.Text()}},
-		{Name: "Plugin", Tables: []fsm.TableText{ReadinessTable.Text(), ConnTable.Text()}},
-	}
-}
-
 // lentNUMANodes maps the nodes lent to a container to their leases (the lease
 // ids): devices under one CXL host bridge share a NUMA node, so two leases
 // of a container may hold one node, which stays lent until its last lease

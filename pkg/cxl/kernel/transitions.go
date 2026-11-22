@@ -16,8 +16,6 @@ package kernel
 
 import (
 	"fmt"
-
-	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
 // The states of the kernel objects are the kernel's: this package observes
@@ -26,30 +24,6 @@ import (
 // next to its state type; an observed change that the table does not have
 // is a fact that the design does not know (Table.Check with
 // fsm.AnyTrigger).
-
-// ObjectTables is a kind of kernel object, by the name that its header
-// comment gives it, with the transition tables of its states.
-type ObjectTables struct {
-	Name   string
-	Tables []fsm.TableText
-}
-
-// Catalogue returns the kinds of kernel objects in the order of the
-// documentation.
-func Catalogue() []ObjectTables {
-	return []ObjectTables{
-		{Name: "Memdev", Tables: []fsm.TableText{MemdevTransitions.Text()}},
-		{Name: "Port"},
-		{Name: "Region", Tables: []fsm.TableText{RegionTransitions.Text()}},
-		{Name: "DaxRegion and DaxDevice", Tables: []fsm.TableText{DaxTransitions.Text()}},
-		{Name: "MemoryBlock", Tables: []fsm.TableText{BlockTransitions.Text()}},
-		{Name: "NUMANode"},
-		{Name: "NdRegion, Namespace and BlockDevice",
-			Tables: []fsm.TableText{NdRegionTransitions.Text(), NamespaceTransitions.Text()}},
-		{Name: "Superblock and Mount"},
-		{Name: "LoopDevice"},
-	}
-}
 
 // stateText returns the name of a state, or "state(n)" for a value without
 // a name.

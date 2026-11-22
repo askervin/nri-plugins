@@ -30,7 +30,6 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/engine"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/fsm"
-	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
 // labels are the sections of the header of a record type, in order.
@@ -73,7 +72,7 @@ func render(stateDir, containersDir, engineDir, kernelDir string) ([]byte, error
 		fmt.Fprintf(&b, "- `%s`: %s\n", tr, escape(triggers[string(tr)]))
 	}
 	b.WriteString("\n")
-	if err := renderObjects(&b, state.Catalogue(), docs, stateDir, ""); err != nil {
+	if err := renderObjects(&b, stateObjects(), docs, stateDir, ""); err != nil {
 		return nil, err
 	}
 	b.WriteString("## Invariants over the document\n\n")
@@ -95,7 +94,7 @@ func render(stateDir, containersDir, engineDir, kernelDir string) ([]byte, error
 		fmt.Fprintf(&b, "- `%s`: %s\n", tr, escape(ctrTriggers[string(tr)]))
 	}
 	b.WriteString("\n")
-	if err := renderObjects(&b, containers.Catalogue(), ctrDocs, containersDir, " (in memory)"); err != nil {
+	if err := renderObjects(&b, containerObjects(), ctrDocs, containersDir, " (in memory)"); err != nil {
 		return nil, err
 	}
 	if err := renderKernel(&b, kernelDocs, kernelDir); err != nil {
@@ -107,7 +106,7 @@ func render(stateDir, containersDir, engineDir, kernelDir string) ([]byte, error
 // renderObjects writes the sections of the record types of a catalogue:
 // the header of each from docs (of the Go files in dir), with suffix after
 // its name, and the tables of its states.
-func renderObjects(b *bytes.Buffer, objects []state.Object, docs map[string]header, dir, suffix string) error {
+func renderObjects(b *bytes.Buffer, objects []object, docs map[string]header, dir, suffix string) error {
 	for _, o := range objects {
 		h, ok := docs[o.Name]
 		if !ok {
@@ -138,7 +137,7 @@ func renderKernel(b *bytes.Buffer, docs map[string][]kernelParagraph, kernelDir 
 	b.WriteString("the changes that the operations of the package and the kernel's events make, also those that one\n")
 	b.WriteString("operation makes between two observations; the engine logs an observed change that is not a row of\n")
 	b.WriteString("its table at debug level (\"kernel transition not in table\").\n\n")
-	for _, o := range kernel.Catalogue() {
+	for _, o := range kernelObjects() {
 		h, ok := docs[o.Name]
 		if !ok {
 			return fmt.Errorf("%s: no header comment of %s", kernelDir, o.Name)
@@ -234,7 +233,7 @@ func parseKernel(dir string) (map[string][]kernelParagraph, error) {
 // kernelObjectName tells whether text is the name of a kind of kernel
 // object of the catalogue.
 func kernelObjectName(text string) bool {
-	for _, o := range kernel.Catalogue() {
+	for _, o := range kernelObjects() {
 		if o.Name == text {
 			return true
 		}
