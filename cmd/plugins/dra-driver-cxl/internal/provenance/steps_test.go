@@ -150,7 +150,7 @@ func TestFailedCommitLocal(t *testing.T) {
 		t.Fatalf("holding %v, retrying %v", e.w.Holding(), e.w.retrying())
 	}
 	out := logs()
-	if n := countLogLines(out, "is a local memory device"); n != 0 {
+	if n := countLogLines(out, "is a local memdev"); n != 0 {
 		t.Fatalf("%d lines of a change not committed:\n%s", n, out)
 	}
 	wantLogLine(t, out, "provenance: writing "+e.name()+": "+errDisk.Error())
@@ -183,7 +183,7 @@ func TestFailedCommitExpire(t *testing.T) {
 	if !e.w.Holding() {
 		t.Fatal("an expiry without its commit")
 	}
-	if n := countLogLines(logs(), "as a local memory device after holding it back"); n != 0 {
+	if n := countLogLines(logs(), "as a local memdev after holding it back"); n != 0 {
 		t.Fatalf("%d lines of a change not committed:\n%s", n, logs())
 	}
 	restore()

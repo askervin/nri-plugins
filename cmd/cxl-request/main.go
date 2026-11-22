@@ -14,7 +14,7 @@
 
 // Command cxl-request requests CXL memory for the running container, of
 // the node's local memdevs or of a memory pool, from nri-dra-driver-cxl
-// through the lease socket $CXL_LEASE_SOCKET, which the plugin mounts into
+// through the lease socket $CXL_LEASE_SOCKET, which the driver mounts into
 // containers of claims on DeviceClass cxl-lease. See
 // docs/memory/cxl/leases.md.
 //
@@ -28,7 +28,7 @@
 //	cxl-request env --lease ID [--wait DURATION] [--exec CMD [ARG...]]
 //	cxl-request help
 //
-// request, release and list print the plugin's JSON response line, env
+// request, release and list print the driver's JSON response line, env
 // prints the environment of the lease as sorted KEY=VALUE lines. With
 // --exec CMD runs with the environment of the lease, and with the fd of a
 // dax lease (a devdax device) or a block lease (the block device of a
@@ -94,7 +94,7 @@ request: memory for this container, the whole device unless --share:
   --size      at least this much, a quantity such as 512Mi
   --serial    this device (0x hex or decimal)
   --wait      until Ready (Go duration; 0s returns at once); default: the
-              plugin's --lease-wait; release: until Released
+              driver's --lease-wait; release: until Released
   --request-id the same id returns the same lease
   --exec      run CMD with the lease's environment and a dax or block lease's fd 3
 release, fd, env: --lease ID of a lease of this pod; release --all: all of them.

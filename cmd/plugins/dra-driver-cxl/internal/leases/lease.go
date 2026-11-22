@@ -71,7 +71,7 @@ import (
 // Locks and waits: the commits of the store (the broker's releasing holds
 // a release from before its commit, see Broker); the release worker waits
 // for the companion with a backoff of 0.5 s to 8 s and calls the API and the
-// container plugin without the broker's mutex.
+// NRI plugin without the broker's mutex.
 
 // stateName returns the protocol's word for a lease state.
 func stateName(s state.LeaseState) string {

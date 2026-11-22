@@ -130,14 +130,14 @@ func (k *Kernel) memdevSerial(name string) (uint64, error) {
 // memdev without a device serial number cannot be told from another one.
 func (k *Kernel) FindMemdev(serial uint64) (string, error) {
 	if serial == 0 {
-		return "", errorf(ErrNotFound, "no CXL memory device with the serial 0x0: a memdev without a device serial number is not used")
+		return "", errorf(ErrNotFound, "no memdev with the serial 0x0: a memdev without a device serial number is not used")
 	}
 	for _, name := range k.memdevNames() {
 		if v, err := k.memdevSerial(name); err == nil && v == serial {
 			return name, nil
 		}
 	}
-	return "", errorf(ErrNotFound, "no CXL memory device with the serial 0x%x", serial)
+	return "", errorf(ErrNotFound, "no memdev with the serial 0x%x", serial)
 }
 
 // Memdev returns the observation of the memdev with the serial, in state
@@ -321,7 +321,7 @@ func (k *Kernel) WaitMemdev(ctx context.Context, serial uint64, want MemdevState
 		return got.State >= want, nil
 	})
 	if err != nil {
-		return "", fmt.Errorf("timeout waiting for CXL memory device with serial 0x%x: %w", serial, err)
+		return "", fmt.Errorf("timeout waiting for the memdev with serial 0x%x: %w", serial, err)
 	}
 	return got.Name, nil
 }

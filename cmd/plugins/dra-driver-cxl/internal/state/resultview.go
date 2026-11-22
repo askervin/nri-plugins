@@ -34,7 +34,7 @@ type DeviceInfo struct {
 	Mode           string
 	SysfsPath      string // sysfs path of the CXL region
 	NUMANodes      []int  // NUMA node(s) for this device
-	NodeAffinities []int  // CPU NUMA affinities of backing memory devices (local memdevs only)
+	NodeAffinities []int  // CPU NUMA affinities of backing memdevs (local memdevs only)
 	TotalBytes     uint64 // total device memory capacity (memdev: the size of the grant)
 	ConsumedBytes  int64  // allocated capacity from ConsumedCapacity
 

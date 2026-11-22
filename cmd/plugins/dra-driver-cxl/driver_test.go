@@ -67,8 +67,8 @@ func TestDriverConfigKeys(t *testing.T) {
 		{`sharedDevice: ["0xc100e2e1"]`, parseErr + `unknown field "sharedDevice"`},
 		{`sharedMemdevs: "0xc100e2e1"`, parseErr + "cannot unmarshal string into "},
 		{"sharedMemdevs: [{serial: 1}]", parseErr + "cannot unmarshal object into "},
-		{`sharedMemdevs: ["c100e2e1"]`, `sharedMemdevs: invalid memory device "c100e2e1": ` + memdevErr},
-		{`ignoreMemdevs: ["mem0", "cxl/c100e2e1"]`, `ignoreMemdevs: invalid memory device "cxl/c100e2e1": ` + memdevErr},
+		{`sharedMemdevs: ["c100e2e1"]`, `sharedMemdevs: invalid memdev "c100e2e1": ` + memdevErr},
+		{`ignoreMemdevs: ["mem0", "cxl/c100e2e1"]`, `ignoreMemdevs: invalid memdev "cxl/c100e2e1": ` + memdevErr},
 	} {
 		cfg, err := newDriverConfigFromString(tc.config)
 		got := ""

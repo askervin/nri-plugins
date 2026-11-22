@@ -146,5 +146,5 @@ func TestCharPersistentCapacityOfRAMMemdev(t *testing.T) {
 	if bs := attrs[device.AttrMemoryBlockSize].IntValue; bs == nil || *bs != pubBlockSize {
 		t.Fatalf("attributes %+v", attrs)
 	}
-	wantLogLineText(t, logs(), `- memory device "mem0": persistent capacity of a memdev with RAM capacity is not used`)
+	wantLogLineText(t, logs(), `- memdev "mem0": persistent capacity of a memdev with RAM capacity is not used`)
 }

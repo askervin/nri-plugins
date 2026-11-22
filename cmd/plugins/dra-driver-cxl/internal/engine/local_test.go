@@ -176,7 +176,7 @@ func TestLocalRegionErrors(t *testing.T) {
 	}
 
 	v.f.Unplug(serialL)
-	refused("memdev gone", "no CXL memory device with the serial 0x11", kernel.ErrNotFound)
+	refused("memdev gone", "no memdev with the serial 0x11", kernel.ErrNotFound)
 	v.clean("refused")
 }
 

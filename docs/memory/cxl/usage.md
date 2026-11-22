@@ -1999,9 +1999,9 @@ settings of containers, which their results override field by field
 case-sensitively. These errors stop the plugin:
 
 - `fsTypes: invalid filesystem type "X" (lower-case letters, digits, "_" and "-")`
-- `ignoreMemdevs: invalid memory device "X": not a name (mem0, cxl/mem0), major:minor (251:0) or serial in decimal or 0x hex`,
+- `ignoreMemdevs: invalid memdev "X": not a name (mem0, cxl/mem0), major:minor (251:0) or serial in decimal or 0x hex`,
   the same for `sharedMemdevs`, and
-  `memdevSettings[I]: invalid memory device "X": not a name (mem0, cxl/mem0) or serial in decimal or 0x hex`
+  `memdevSettings[I]: invalid memdev "X": not a name (mem0, cxl/mem0) or serial in decimal or 0x hex`
 - `defaults: json: unknown field "F"` (`device`, `pool`,
   `container.Fencing`, ...)
 - `defaults.container.fencing: invalid value "X" (allowed-mems or none)`

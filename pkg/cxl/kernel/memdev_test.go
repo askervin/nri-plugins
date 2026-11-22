@@ -31,7 +31,7 @@ import (
 func TestFindAndWaitMemdev(t *testing.T) {
 	f := fake.New(t)
 	k := f.Kernel()
-	if _, err := k.FindMemdev(serial0); !errors.Is(err, kernel.ErrNotFound) || !strings.Contains(err.Error(), "no CXL memory device with the serial 0xc1f00001") {
+	if _, err := k.FindMemdev(serial0); !errors.Is(err, kernel.ErrNotFound) || !strings.Contains(err.Error(), "no memdev with the serial 0xc1f00001") {
 		t.Fatalf("expected not found, got %v", err)
 	}
 	if m := k.Memdev(serial0); m.State != kernel.MemdevAbsent || m.Name != "" {
@@ -46,7 +46,7 @@ func TestFindAndWaitMemdev(t *testing.T) {
 		t.Fatalf("wait: %q %v", name, err)
 	}
 	if _, err := k.WaitMemdev(ctxTimeout(t, 20*time.Millisecond), 0x1234, kernel.MemdevBound); !errors.Is(err, context.DeadlineExceeded) ||
-		!strings.Contains(err.Error(), "timeout waiting for CXL memory device with serial 0x1234") {
+		!strings.Contains(err.Error(), "timeout waiting for the memdev with serial 0x1234") {
 		t.Fatalf("expected timeout, got %v", err)
 	}
 	m := k.Memdev(serial0)

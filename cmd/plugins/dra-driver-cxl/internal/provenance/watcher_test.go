@@ -96,7 +96,7 @@ func TestPoolSlicesFirstListFails(t *testing.T) {
 	if known || !e.w.Failing() || len(serials) != 0 {
 		t.Fatalf("serials %v known %v failing %v before the first successful list", serials, known, e.w.Failing())
 	}
-	wantLogLine(t, logs(), "listing the ResourceSlices of pool controllers: apiserver unavailable; no local memory device is published "+
+	wantLogLine(t, logs(), "listing the ResourceSlices of pool controllers: apiserver unavailable; no local memdev is published "+
 		"until a list succeeds")
 	e.plug(localSerial)
 	e.wantHeld("never listed", localSerial)
@@ -136,8 +136,8 @@ func TestHeldUntilPoolBack(t *testing.T) {
 	e.publish("0xc1ee2001")
 	e.wantHeld("pool-c back")
 	e.wantState(otherLocalSerial, state.ProvenanceLocal)
-	wantLogLine(t, logs(), "provenance: publishing memdev 0xa1 (mem0) as a local memory device: no pool is missing now")
-	wantLogLine(t, logs(), "provenance: memdev 0xa1 (mem0) is a local memory device")
+	wantLogLine(t, logs(), "provenance: publishing memdev 0xa1 (mem0) as a local memdev: no pool is missing now")
+	wantLogLine(t, logs(), "provenance: memdev 0xa1 (mem0) is a local memdev")
 	if r := e.record(otherLocalSerial); r == nil || r.State != state.ProvenanceLocal || r.Pool != "" || !r.LastSeen.Equal(e.now()) {
 		t.Fatalf("record %+v", r)
 	}
@@ -360,7 +360,7 @@ func TestCheckLocalRefusals(t *testing.T) {
 	// pool-c lists it now, before any scan
 	e.publish("0xc1ee2001", "0xc100e2e1")
 	wantErr(t, e.w.CheckLocal(ctx, localSerial),
-		"memory device serial 0xc100e2e1 is a pool device of "+poolC+": it is not used as a local memory device")
+		"memdev 0xc100e2e1 is a pool device of "+poolC+": it is not used as a local memdev")
 	snapshotState := func(serial uint64) state.ProvenanceState {
 		if r := e.st.Snapshot().ProvenanceOf(state.Serial(serial)); r != nil {
 			return r.State
@@ -531,7 +531,7 @@ func TestCheckLocalListFails(t *testing.T) {
 	})
 	fail.Store(true)
 	wantErr(t, e.w.CheckLocal(ctx, localSerial), "the ResourceSlices of pool controllers cannot be listed (apiserver unavailable): "+
-		"memory device serial 0xc100e2e1 is not used as a local memory device until a list succeeds")
+		"memdev 0xc100e2e1 is not used as a local memdev until a list succeeds")
 	fail.Store(false)
 	noErr(t, e.w.CheckLocal(ctx, localSerial))
 }
@@ -582,11 +582,11 @@ func TestCheckLocalOwnList(t *testing.T) {
 			err := e.w.CheckLocal(ctx, localSerial)
 			endScan()
 			if tc == "listed" {
-				wantErr(t, err, "memory device serial 0xc100e2e1 is a pool device of "+device.PoolDriverName+"/pool-c: "+
-					"it is not used as a local memory device")
+				wantErr(t, err, "memdev 0xc100e2e1 is a pool device of "+device.PoolDriverName+"/pool-c: "+
+					"it is not used as a local memdev")
 			} else {
 				wantErr(t, err, "the ResourceSlices of pool controllers cannot be listed (apiserver unavailable): "+
-					"memory device serial 0xc100e2e1 is not used as a local memory device until a list succeeds")
+					"memdev 0xc100e2e1 is not used as a local memdev until a list succeeds")
 			}
 			e.w.mu.Lock()
 			_, listed := e.w.serials[localSerial]

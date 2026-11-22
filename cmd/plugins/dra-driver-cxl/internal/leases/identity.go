@@ -28,7 +28,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 )
 
-// Containers is what the broker needs of the container plugin of the node:
+// Containers is what the broker needs of the NRI plugin of the node:
 // the running containers, the NUMA nodes lent to them and the events of
 // their life.
 type Containers interface {
@@ -50,7 +50,7 @@ type Containers interface {
 	// OnContainerStarted registers fn, called in a goroutine of its own
 	// once a container has started.
 	OnContainerStarted(fn func(pod state.PodRef, container string))
-	// WaitSynchronized returns once the plugin has synchronized with the
+	// WaitSynchronized returns once the NRI plugin has synchronized with the
 	// runtime, or the error of ctx.
 	WaitSynchronized(ctx context.Context) error
 	// LendsRestored tells that the lends of the leases are restored.

@@ -47,7 +47,7 @@ const (
 	// DeviceTypeMemdev is a CXL memory device: a slice of a local memdev
 	// or a whole pool device per claim.
 	DeviceTypeMemdev = "memdev"
-	// DeviceTypeRegion is a region that existed before the plugin, online
+	// DeviceTypeRegion is a region that existed before the driver, online
 	// as a NUMA node.
 	DeviceTypeRegion = "region"
 	// DeviceTypeDRAM is the system DRAM of the node.

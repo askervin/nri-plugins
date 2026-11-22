@@ -31,7 +31,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
-// Recovered is what the recovery tells the front-ends; the records tell
+// Recovered is what the recovery tells the kubelet plugins; the records tell
 // the rest.
 type Recovered struct {
 	// Why are the reasons of the grants of prepared claims whose node

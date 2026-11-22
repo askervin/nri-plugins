@@ -119,7 +119,7 @@ type Options struct {
 	WaitDefault time.Duration
 	// PoolDriver is the name of the pool driver, "" when it is disabled.
 	PoolDriver string
-	// MountPoints returns the mount points of the plugin's mount
+	// MountPoints returns the mount points of the driver's mount
 	// namespace.
 	MountPoints func() ([]string, error)
 	// OpenDevice opens the device of a dax or block lease, read-only or
@@ -130,7 +130,7 @@ type Options struct {
 	// pool driver; nil if there is none.
 	PublishedDevice func(serial uint64) (driver string, dev *resourcev1.Device)
 	// identity resolves the peers of the sockets when Start gets a
-	// container plugin (without one every request is refused); nil: the
+	// NRI plugin (without one every request is refused); nil: the
 	// container table of that plugin.
 	identity Identity
 	// Timeouts are the waits and periods.
@@ -194,7 +194,7 @@ func (l Limits) withDefaults() Limits {
 //
 // States: the records of state.Lease and state.LeaseClaim (lease.go,
 // leaseclaim.go) in the store, their only copy. Process memory, not
-// records: the container plugin and the identity of the peers, the sockets
+// records: the NRI plugin and the identity of the peers, the sockets
 // and their connections, the running releases, the claims whose directories are being removed (CLOSED
 // and REMOVING) and the leases failed at the start.
 //
@@ -217,7 +217,7 @@ func (l Limits) withDefaults() Limits {
 //
 // Locks and waits: mu guards the process memory; a leaf lock among the
 // driver's locks, held across the file operations of a socket, never
-// across a commit, an API call or a call of the container plugin. A commit
+// across a commit, an API call or a call of the NRI plugin. A commit
 // function changes only the records: it takes no lock and waits for
 // nothing, as it runs inside the store's commit (the DRA driver runs the
 // step of PreparedStep inside its own commit). A commit waits at most
@@ -229,7 +229,7 @@ type Broker struct {
 
 	// mu guards the fields below: a leaf lock.
 	mu sync.Mutex
-	// containers is the container plugin (nil: NRI not connected) and
+	// containers is the NRI plugin (nil: NRI not connected) and
 	// started: Start ran; identity the identity of the peers (nil:
 	// requests are refused).
 	started    bool
@@ -320,7 +320,7 @@ func randomLeaseID() string {
 	return hex.EncodeToString(buf[:])
 }
 
-// Start sets the container plugin (nil: NRI is not connected, requests
+// Start sets the NRI plugin (nil: NRI is not connected, requests
 // fail), registers its callbacks, releases the leases that failed at the
 // start and starts the reconcile loop.
 func (b *Broker) Start(containers Containers) {

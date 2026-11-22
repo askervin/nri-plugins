@@ -211,7 +211,7 @@ func mergeFacts(old, req state.MemdevFacts) state.MemdevFacts {
 
 // localGuard returns an error if a local grant on the serial must not be
 // made: the provenance of the serial is POOL or HELD, a pool grant uses
-// it, or the front-end's guard refuses it.
+// it, or the kubelet plugin's guard refuses it.
 func (e *Engine) localGuard(ctx context.Context, serial state.Serial) error {
 	r := e.records()
 	if p := r.ProvenanceOf(serial); p != nil && (p.State == state.ProvenancePool || p.State == state.ProvenanceHeld) {
@@ -338,7 +338,7 @@ func addDaxUser(reg *state.Region, dax string, ref state.GrantRef) error {
 // rollback releases the grants of the claims of reqs that the store has,
 // those of this Prepare and of earlier ones that did not finish (Policy
 // ReleaseRollback), and returns those that it did not release (the
-// front-end logs that it keeps their claim's record). The grants of a
+// kubelet plugin logs that it keeps their claim's record). The grants of a
 // claim that is prepared (a Prepare again that failed) stay. Errors are
 // logged.
 func (e *Engine) rollback(ctx context.Context, reqs []GrantRequest, failed state.GrantRef, why error) []state.Grant {

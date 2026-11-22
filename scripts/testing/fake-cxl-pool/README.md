@@ -303,7 +303,7 @@ the server, the controller and the driver in the e2e VMs. The controller:
   qemuDeviceID, exclusive, singleHost, coherent; the last three only when
   true) into
   `claim.status.devices[]`, which releases the
-  scheduler's binding wait and tells the node plugin which memdev to wait
+  scheduler's binding wait and tells the pool driver which memdev to wait
   for. A node that is not a pool host, a 409, a failed attachment of the
   device on the host or another error gives `AttachFailed=True` (reason
   `NoHost`, `Conflict`, `Timeout`, `AttachError`), and the scheduler
@@ -329,7 +329,7 @@ the server, the controller and the driver in the e2e VMs. The controller:
   claim ...: not exclusive for the claims that do not need it`); only when
   that conflicts too, every claim of the node gets `AttachFailed`.
 - detaches a device when no allocated claim wants it on that node any more.
-  The node plugin has released it in NodeUnprepare by then; if the guest
+  The pool driver has released it in NodeUnprepare by then; if the guest
   still holds it, the attachment stays `detaching` (or `failed`) and the
   controller only logs it.
 
@@ -449,7 +449,7 @@ A cluster that spans several pool appliances (one per rack, say) runs a
 server and a controller per appliance. Every controller publishes its own
 pool under the driver `cxl-pool.nri.io`, for the nodes its server reaches,
 and the scheduler puts a pod on a node that reaches a pool with a free
-device for its claim. The node plugin needs no change: it matches claims by
+device for its claim. The pool driver needs no change: it matches claims by
 (driver, pool, device) and finds devices by serial. A VM may be cabled to
 several servers.
 

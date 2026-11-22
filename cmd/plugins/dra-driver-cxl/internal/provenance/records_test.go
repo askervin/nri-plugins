@@ -208,7 +208,7 @@ func TestLostStore(t *testing.T) {
 	e.advance(time.Second)
 	e.wantHeld("lost records, held back for long enough")
 	e.wantState(localSerial, state.ProvenanceLocal)
-	wantLogLine(t, logs(), "provenance: publishing memdev 0xc100e2e1 (mem0) as a local memory device after holding it for 5m0s "+
+	wantLogLine(t, logs(), "provenance: publishing memdev 0xc100e2e1 (mem0) as a local memdev after holding it for 5m0s "+
 		"(the remembered pool serials are lost (")
 	// the store refuses the commits: not tried, nothing logged
 	if n := countLogLines(logs(), "provenance: writing "); n != 0 {

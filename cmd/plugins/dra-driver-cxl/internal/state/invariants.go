@@ -74,7 +74,7 @@ var DocumentInvariants = []Invariant{
 			"Every grant belongs to one result of one preparation and is listed by the memdev of its serial " +
 			"(except the grants of a PREPARED_STALE preparation); what Got names lists the grant among its users, " +
 			"and every user of a dax device or a node mount names it back; a grant result names a grant record, " +
-			"but of a PREPARING or UNPREPARING preparation (not journaled yet, or released before the front-end's " +
+			"but of a PREPARING or UNPREPARING preparation (not journaled yet, or released before the kubelet plugin's " +
 			"commit) and of a PREPARED_STALE one (a reboot cut that Prepare or Unprepare). A PREPARED preparation's grants are " +
 			"REALISED, a PREPARED_UNRESTORED one's REALISED or REALISED_UNRESTORED. A lease lends only while READY, " +
 			"releasing or FAILED.",
@@ -391,7 +391,7 @@ func checkGrantResult(r *Records, p *Preparation, res *Result, add addFunc) {
 	switch {
 	case g == nil && (p.State == PreparationPreparing || p.State == PreparationUnpreparing || p.State == PreparationStale):
 		// not journaled yet, or released by a rollback, the recovery or
-		// the Unprepare before the front-end's commit; a stale preparation
+		// the Unprepare before the kubelet plugin's commit; a stale preparation
 		// is such a PREPARING or UNPREPARING one of another boot, whose
 		// Prepare again or Unprepare has nothing of the grant to release
 	case g == nil:

@@ -478,7 +478,7 @@ func (p *Publisher) ScanInput(ctx context.Context) (PublishConfig, map[uint64]bo
 	if known || !cfg.ManageMemdevs {
 		return cfg, serials
 	}
-	klog.Warning("not publishing local memory devices: the devices of the pool controllers are not known")
+	klog.Warning("not publishing local memdevs: the devices of the pool controllers are not known")
 	cfg.ManageMemdevs = false
 	return cfg, serials
 }

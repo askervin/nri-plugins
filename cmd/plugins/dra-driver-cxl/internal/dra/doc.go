@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package dra is the DRA front-end of the driver: one Plugin type with two
-// instances, cxl.nri.io (the local memdevs, regions, DRAM and the lease
-// device of the node; it publishes the node's ResourceSlices) and the pool
-// driver, that differ only in their SourceRules. A claim is one Preparation
-// record per driver (internal/state) with a result per allocation result:
-// a grant on a memdev that the device engine realises, a region, the DRAM,
-// or the lease claim. The package has the companion gate of lease claims,
-// the CDI spec of each driver built from the records, and the publisher of
-// the node's ResourceSlices. The transition table of Preparation.State is in
-// docs/memory/cxl/states.md.
+// Package dra is the DRA side of the driver, its kubelet plugins: one Plugin
+// type with two instances, cxl.nri.io (the local memdevs, regions, DRAM and
+// the lease device of the node; it publishes the node's ResourceSlices) and
+// the pool driver, that differ only in their SourceRules. A claim is one
+// Preparation record per driver (internal/state) with a result per allocation
+// result: a grant on a memdev that the device engine realises, a region, the
+// DRAM, or the lease claim. The package has the companion gate of lease
+// claims, the CDI spec of each driver built from the records, and the
+// publisher of the node's ResourceSlices. The transition table of
+// Preparation.State is in docs/memory/cxl/states.md.
 package dra

@@ -315,7 +315,7 @@ func (b *Broker) stopListening(uid string) {
 // directory. While a bind is in lease-fs/<uid>, leases/<uid> stays with
 // the mount point of api.FSDir in it: an rmdir of that mount point would
 // detach the bind lazily in a container that is still there. Nothing is
-// mounted below leases/<uid> in the plugin's mount namespace. Called
+// mounted below leases/<uid> in the driver's mount namespace. Called
 // without b.mu: the removal of what a container wrote may take long; the
 // claim's socket is not started meanwhile (listen). A removal of the
 // claim's directories in progress is waited for, then it is decided again.
@@ -497,7 +497,7 @@ func (b *Broker) listen(uid string) error {
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", tmp, err)
 	}
-	// The socket is removed explicitly (CloseClaim): a plugin that stops
+	// The socket is removed explicitly (CloseClaim): a driver that stops
 	// must leave the path to the next instance.
 	l.SetUnlinkOnClose(false)
 	sock := filepath.Join(dir, leaseSocketName)

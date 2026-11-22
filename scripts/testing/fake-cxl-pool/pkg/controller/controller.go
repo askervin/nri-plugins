@@ -21,7 +21,7 @@
 // and detaches the device when the claim is deallocated. Each server has a
 // controller of its own. The controller is a stateless,
 // level-triggered reconciler: desired attachments come from ResourceClaims,
-// actual ones from the server. The contract with the node plugin is
+// actual ones from the server. The contract with the pool driver is
 // docs/memory/cxl/pool.md.
 package controller
 

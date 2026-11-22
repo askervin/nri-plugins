@@ -274,7 +274,7 @@ func (n *Node) Recover(ctx context.Context) (*engine.Recovered, error) {
 	n.setShared(SharedSerials(cfg, snap.Memdevs, poolSerials))
 	if n.opts.Local.Managed {
 		if _, err := k.BlockSize(); err != nil {
-			klog.Warningf("publisher: memory block size: %v: local memory devices are not published until the memory block size is known", err)
+			klog.Warningf("publisher: memory block size: %v: local memdevs are not published until the memory block size is known", err)
 		}
 	}
 	if err := n.Publisher.ScanWith(ctx, cfg, poolSerials); err != nil {
@@ -326,7 +326,7 @@ func (n *Node) localGuard(ctx context.Context, serial state.Serial) error {
 		return nil
 	}
 	if n.Pool.Serials()[uint64(serial)] {
-		return fmt.Errorf("memory device serial 0x%x is prepared by the pool driver %s: it is not used as a local memory device", uint64(serial), n.Pool.Name())
+		return fmt.Errorf("memdev 0x%x is prepared by the pool driver %s: it is not used as a local memdev", uint64(serial), n.Pool.Name())
 	}
 	return n.Watcher.CheckLocal(ctx, uint64(serial))
 }

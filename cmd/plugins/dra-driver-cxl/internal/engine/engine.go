@@ -100,7 +100,7 @@ type Engine struct {
 	// afterCommit is called after every commit of the engine that the store
 	// applied, nil outside the tests that stop the process at a commit of
 	// the engine. The store's AfterCommit sees the commits of the
-	// front-ends too.
+	// kubelet plugins too.
 	afterCommit func()
 }
 
@@ -244,7 +244,7 @@ func (e *Engine) settle(source state.Source) time.Duration {
 	return e.opts.Timeouts.Settle
 }
 
-// GrantRequest is a grant that a front-end asks the engine to realise: the
+// GrantRequest is a grant that a kubelet plugin asks the engine to realise: the
 // result of a claim on a memdev, with what it asks and the facts of the
 // memdev.
 type GrantRequest struct {
@@ -263,8 +263,8 @@ type GrantRequest struct {
 	BindTarget string
 	// Lend is the lend of a grant of a companion claim, nil for others:
 	// the engine binds the lease of mode fs; the NUMA node of mode numa is
-	// lent by the front-end after PrepareGrants returned, recorded before
-	// (RecordLend), and revoked by the front-end before ReleaseGrants, by
+	// lent by the kubelet plugin after PrepareGrants returned, recorded before
+	// (RecordLend), and revoked by the kubelet plugin before ReleaseGrants, by
 	// the engine (Options.Revoke) before the rollback of a later Prepare
 	// of the claim releases the grant.
 	Lend *state.GrantLend

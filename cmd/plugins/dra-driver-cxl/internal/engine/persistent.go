@@ -1351,7 +1351,7 @@ func (e *Engine) otherBlockDevice(bd *state.BlockDevice) bool {
 
 // fsType returns the type of the filesystem of the block device dev of the
 // device with the serial with the signatures s and the declared type ("":
-// none). A type that the plugin does not know is taken as declared when
+// none). A type that the driver does not know is taken as declared when
 // the device has no signature of a known type.
 func fsType(s kernel.FSSignature, serial, dev, declared string) (string, error) {
 	prefix := "memdev " + serial + ": "

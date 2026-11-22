@@ -99,8 +99,8 @@ remembers of the memdev and lists the ResourceSlices of the pool driver
 again. Prepare fails with `memdev 0x... is a pool device (HELD): not
 used as a local memdev` for a memdev that is held back, `memdev 0x... is
 a pool device (POOL): not used as a local memdev` for a remembered pool
-device, and `memory device serial 0x... is a pool device of ...: it is
-not used as a local memory device` for a memdev that the ResourceSlices
+device, and `memdev 0x... is a pool device of ...: it is
+not used as a local memdev` for a memdev that the ResourceSlices
 of a pool list at that moment.
 
 Memdevs that are on the node when the plugin first starts (as local
@@ -455,7 +455,7 @@ at verbosity 4 at every scan otherwise (no RAM capacity, disabled,
 regions that the plugin did not create, slices of prepared claims):
 
 ```
-- not publishing memory device "<memN>" as a shared local device: <reason>
+- not publishing memdev "<memN>" as a shared local device: <reason>
 ```
 
 The configuration is read at start: a change of `sharedMemdevs` takes
@@ -628,7 +628,7 @@ apply to persistent capacity. A memdev that is not published is logged at
 verbosity 4:
 
 ```
-- not publishing memory device "<memN>" as a persistent local memory device: <reason>
+- not publishing memdev "<memN>" as a persistent local memdev: <reason>
 ```
 
 ```yaml

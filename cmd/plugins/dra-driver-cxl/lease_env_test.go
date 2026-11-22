@@ -96,7 +96,7 @@ var requester = leases.Requester{Pod: state.PodRef{Namespace: testNS, Name: envP
 // plugin. Like kubelet, the fake client unprepares a companion claim
 // through the plugin that prepared it when the claim is deleted, and keeps
 // the claim while that fails. The kernel, the files, the client and the
-// container plugin outlive a restart.
+// NRI plugin outlive a restart.
 type leaseEnv struct {
 	t *testing.T
 	k *fake.Fake
@@ -271,13 +271,13 @@ func (e *leaseEnv) boot() {
 	noErr(t, e.node.WriteCDI())
 }
 
-// start starts the broker with the env's container plugin and makes it the
+// start starts the broker with the env's NRI plugin and makes it the
 // lender of both drivers.
 func (e *leaseEnv) start() {
 	e.startWith(e.ctrs)
 }
 
-// startWith starts the broker with the container plugin c (nil: NRI is not
+// startWith starts the broker with the NRI plugin c (nil: NRI is not
 // connected).
 func (e *leaseEnv) startWith(c leases.Containers) {
 	var nodes dra.NUMALender
@@ -949,7 +949,7 @@ func (e *leaseEnv) addSlices(slices ...*resourcev1.ResourceSlice) {
 	e.node.Watcher.ListPoolSerials(context.Background())
 }
 
-// fakeContainers is the container plugin: a table of the running
+// fakeContainers is the NRI plugin: a table of the running
 // containers by pod uid and name, the peer of every connection (byPid),
 // the lent nodes with their holders, the calls.
 type fakeContainers struct {
@@ -964,7 +964,7 @@ type fakeContainers struct {
 	restored chan string
 }
 
-// newFakeContainers returns a container plugin with the running containers
+// newFakeContainers returns a NRI plugin with the running containers
 // of refs, the first the peer of every connection.
 func newFakeContainers(refs ...leases.Requester) *fakeContainers {
 	f := &fakeContainers{running: map[string]bool{}, lent: map[string]map[int][]string{}}

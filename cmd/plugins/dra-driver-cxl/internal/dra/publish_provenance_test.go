@@ -313,10 +313,10 @@ func TestProvenanceSliceDeleted(t *testing.T) {
 	if e.w.Holding() {
 		t.Fatal("a remembered pool device is held back as a new memdev")
 	}
-	if n := logMatches(logs(), "discovered local memory device memdev-c1ae2001"); n != 0 {
+	if n := logMatches(logs(), "discovered local memdev memdev-c1ae2001"); n != 0 {
 		t.Fatalf("the pool device was published as a local one:\n%s", logs())
 	}
-	if n := logMatches(logs(), "discovered local memory device memdev-c100e2e1"); n == 0 {
+	if n := logMatches(logs(), "discovered local memdev memdev-c100e2e1"); n == 0 {
 		t.Fatalf("no line of the local memdev:\n%s", logs())
 	}
 	// the store has the pool serials and the local memdev
@@ -719,7 +719,7 @@ func TestProvenanceCheckLocal(t *testing.T) {
 	// pool-c lists it now, before any rescan
 	e.publish("0xc1ee2001", "0xc100e2e1")
 	if err := e.w.CheckLocal(ctx, pubLocalSerial); err == nil ||
-		!strings.Contains(err.Error(), "memory device serial 0xc100e2e1 is a pool device of "+device.PoolDriverName+"/pool-c") {
+		!strings.Contains(err.Error(), "memdev 0xc100e2e1 is a pool device of "+device.PoolDriverName+"/pool-c") {
 		t.Fatalf("expected a refusal, got %v", err)
 	}
 	e.publish()
@@ -892,7 +892,7 @@ func TestPoolSlicesFirstListFails(t *testing.T) {
 	if !cfg.ManageMemdevs {
 		t.Fatal("the configuration was changed")
 	}
-	wantLogLineText(t, logs(), "not publishing local memory devices: the devices of the pool controllers are not known")
+	wantLogLineText(t, logs(), "not publishing local memdevs: the devices of the pool controllers are not known")
 	fail.Store(false)
 	if got, _ := scanNames(t, ctx, st, w); !slices.Equal(got, []string{pubLocalDeviceName}) || w.Failing() {
 		t.Fatalf("published %v after the first successful list (failing %v)", got, w.Failing())

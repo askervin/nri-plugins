@@ -32,7 +32,7 @@ package state
 // Persistence: intent; committed durably before the manager starts, on a
 // small bounded commit path, and removed after it stopped.
 //
-// Locks and waits: the container plugin's table mutex.
+// Locks and waits: the NRI plugin's table mutex.
 type Steered struct {
 	Container string `json:"container"`
 	// CgroupDir is the cgroup directory of the container that the

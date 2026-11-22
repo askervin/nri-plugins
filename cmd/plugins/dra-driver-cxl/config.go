@@ -33,12 +33,12 @@ import (
 
 // DriverConfig is the configuration file of the driver.
 type DriverConfig struct {
-	// IgnoreMemdevs is a list of CXL memory devices: a device is
+	// IgnoreMemdevs is a list of memdevs: a device is
 	// its name, uevent DEVNAME, <major>:<minor>, or serial number in
 	// decimal or 0x hex (dra.MemdevSpec). Example: ["mem0",
 	// "cxl/mem0", "251:0", "3238060771", "0xc100e2e0"]
 	IgnoreMemdevs []string `json:"ignoreMemdevs,omitempty"`
-	// SharedMemdevs is a list of local CXL memory devices that are
+	// SharedMemdevs is a list of local memdevs that are
 	// published as shared devices (class cxl-local-shared): one devdax
 	// device for all claims, never sliced, onlined or zeroed. Matched
 	// like IgnoreDevices; IgnoreDevices and pool devices take
@@ -59,7 +59,7 @@ type DriverConfig struct {
 	// exposed in DRAM ResourceSlices.
 	IgnoreDRAMNodes bool `json:"ignoreDRAM,omitempty"`
 
-	// ManageMemdevs publishes the local CXL memory devices that have
+	// ManageMemdevs publishes the local memdevs that have
 	// no regions as memdev devices, and creates and destroys their
 	// regions for claims. Default: true.
 	ManageMemdevs *bool `json:"manageMemdevs,omitempty"`
@@ -72,7 +72,7 @@ type DriverConfig struct {
 	// for the local and the pool driver; nil is defaultFSTypes (erofs
 	// only), an empty list mounts none. The node kernel parses what the
 	// writer of a device wrote: a type other than erofs trusts every party
-	// that can write the devices raw. A type that the plugin does not know
+	// that can write the devices raw. A type that the driver does not know
 	// is single-host. Example: ["erofs", "ext4"]
 	FSTypes []string `json:"fsTypes,omitempty"`
 

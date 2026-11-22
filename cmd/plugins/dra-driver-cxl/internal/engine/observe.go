@@ -89,7 +89,7 @@ func (e *Engine) UnknownSeen() []string {
 // requestKey is the key of the engine of a request in its context.
 type requestKey struct{}
 
-// Request marks a request of a front-end in progress (a Prepare or an
+// Request marks a request of a kubelet plugin in progress (a Prepare or an
 // Unprepare of a claim, whose calls of the engine get the context that it
 // returns) until the function that it returns is called. The invariants of
 // the records and the kernel hold between requests: at the end of a request

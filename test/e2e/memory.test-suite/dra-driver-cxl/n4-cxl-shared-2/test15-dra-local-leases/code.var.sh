@@ -310,7 +310,7 @@ pool-not-local() {
     # Check that the node plugin, since it started, has never published
     # pooled0 as a local memdev (device memdev-<serial of pooled0>).
     local n
-    n=$(dra-driver-log "$VM2" | grep -c "discovered local memory device memdev-${POOLED0_SERIAL#0x}")
+    n=$(dra-driver-log "$VM2" | grep -c "discovered local memdev memdev-${POOLED0_SERIAL#0x}")
     echo "$1: nri-dra-driver-cxl published memdev-${POOLED0_SERIAL#0x} $n times"
     [ "$n" == 0 ] ||
         error "$1: nri-dra-driver-cxl published the pool device pooled0 as local device memdev-${POOLED0_SERIAL#0x}"

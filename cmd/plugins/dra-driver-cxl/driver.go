@@ -393,7 +393,7 @@ var nriPrepareWait = 30 * time.Second
 // CreateContainer is never seen: a container that its claims steer is
 // never steered, a fenced one runs with the fenced nodes until the first
 // fence pass. Once Synchronize has returned, the runtime creates no
-// container before the plugin gets its CreateContainer. No wait without an
+// container before the NRI plugin gets its CreateContainer. No wait without an
 // NRI plugin (nil: it failed to start, and the driver runs without it). The
 // lends do not need to be restored: a new container gets the kept lends of
 // its leases at its creation.

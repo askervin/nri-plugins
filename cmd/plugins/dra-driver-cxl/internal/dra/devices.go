@@ -375,7 +375,7 @@ func addDRAM(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snapshot, cxl
 func poolIgnoreReason(mems []kernel.MemdevInfo, poolSerials, held map[uint64]bool) string {
 	for _, memDev := range mems {
 		if poolSerials[memDev.Serial] {
-			return fmt.Sprintf("pool device (%s), memory device serial 0x%x", device.PoolDriverName, memDev.Serial)
+			return fmt.Sprintf("pool device (%s), memdev 0x%x", device.PoolDriverName, memDev.Serial)
 		}
 		if held[memDev.Serial] {
 			return fmt.Sprintf("memdev 0x%x is held: it may be a pool device", memDev.Serial)
@@ -393,7 +393,7 @@ const heldReason = "held: it may be a pool device"
 func localIgnoreReason(mems []kernel.MemdevInfo, local *localRecords) string {
 	for _, memDev := range mems {
 		if local.known(memDev.Serial) {
-			return fmt.Sprintf("created by the plugin on local memory device %s", MemdevDeviceName(memDev.Serial))
+			return fmt.Sprintf("created by the driver on local memdev %s", MemdevDeviceName(memDev.Serial))
 		}
 	}
 	return ""
@@ -438,7 +438,7 @@ func ParseMemdevSpec(spec string) (MemdevSpec, error) {
 		s.form, s.serial = specSerial, serial
 	}
 	if s.form == specNone {
-		return s, fmt.Errorf("invalid memory device %q: not a name (mem0, cxl/mem0), major:minor (251:0) or serial in decimal or 0x hex", spec)
+		return s, fmt.Errorf("invalid memdev %q: not a name (mem0, cxl/mem0), major:minor (251:0) or serial in decimal or 0x hex", spec)
 	}
 	return s, nil
 }
@@ -462,7 +462,7 @@ func ParseMemdevSpecs(specs []string) ([]MemdevSpec, error) {
 func ParseMemdevID(spec string) (MemdevSpec, error) {
 	s, err := ParseMemdevSpec(spec)
 	if err == nil && s.form == specDevNum {
-		return s, fmt.Errorf("invalid memory device %q: not a name (mem0, cxl/mem0) or serial in decimal or 0x hex", spec)
+		return s, fmt.Errorf("invalid memdev %q: not a name (mem0, cxl/mem0) or serial in decimal or 0x hex", spec)
 	}
 	return s, err
 }
@@ -482,13 +482,13 @@ func isMemdevName(name string) bool {
 func (s MemdevSpec) Match(memDev *kernel.MemdevInfo) string {
 	switch {
 	case s.form == specName && s.name == memDev.Name:
-		return fmt.Sprintf("memory device name %q", s.spec)
+		return fmt.Sprintf("memdev name %q", s.spec)
 	case s.form == specDevName && s.name == memDev.Name:
 		return fmt.Sprintf("memory uevent device name %q", s.spec)
 	case s.form == specDevNum && s.major == memDev.Major && s.minor == memDev.Minor:
-		return fmt.Sprintf("memory device with major:minor %q", s.spec)
+		return fmt.Sprintf("memdev with major:minor %q", s.spec)
 	case s.form == specSerial && s.serial == memDev.Serial:
-		return fmt.Sprintf("memory device serial %q", s.spec)
+		return fmt.Sprintf("memdev serial %q", s.spec)
 	}
 	return ""
 }
@@ -557,7 +557,7 @@ var sharedRefusalsLogged sync.Map
 // as a shared local device.
 func logSharedRefusal(memDev *kernel.MemdevInfo, reason string) {
 	if _, logged := sharedRefusalsLogged.LoadOrStore(memDev.Name+"\x00"+reason, true); !logged {
-		klog.Infof("- not publishing memory device %q as a shared local device: %s", memDev.Name, reason)
+		klog.Infof("- not publishing memdev %q as a shared local device: %s", memDev.Name, reason)
 	}
 }
 
@@ -593,7 +593,7 @@ func addLocalMemdevs(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snaps
 			continue
 		}
 		if memDev.PmemSize > 0 {
-			klog.V(3).Infof("- memory device %q: persistent capacity of a memdev with RAM capacity is not used", memDev.Name)
+			klog.V(3).Infof("- memdev %q: persistent capacity of a memdev with RAM capacity is not used", memDev.Name)
 		}
 		if listed && refusal == "" {
 			addLocalShared(devInfos, memDev, memdevUsableSize(cfg, memDev, local), regions[memDev.Serial], local, bs)
@@ -601,7 +601,7 @@ func addLocalMemdevs(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snaps
 		}
 		size := memdevUsableSize(cfg, memDev, local)
 		if reason := localRefusal(cfg, memDev, size, bs, poolSerials, held, regions[memDev.Serial], local); reason != "" {
-			klog.V(4).Infof("- not publishing memory device %q as a local memory device: %s", memDev.Name, reason)
+			klog.V(4).Infof("- not publishing memdev %q as a local memdev: %s", memDev.Name, reason)
 			continue
 		}
 		name := MemdevDeviceName(memDev.Serial)
@@ -615,7 +615,7 @@ func addLocalMemdevs(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snaps
 				BlockSize:    bs,
 			},
 		}
-		klog.V(3).Infof("discovered local memory device %s: %s serial 0x%x size %d (RAM capacity %d) memory block size %d", name, memDev.Name, memDev.Serial, size, memDev.RamSize, bs)
+		klog.V(3).Infof("discovered local memdev %s: %s serial 0x%x size %d (RAM capacity %d) memory block size %d", name, memDev.Name, memDev.Serial, size, memDev.RamSize, bs)
 	}
 }
 
@@ -634,7 +634,7 @@ func localRefusal(cfg PublishConfig, memDev *kernel.MemdevInfo, size, bs uint64,
 	case LocalUsableSize(size, bs) == 0:
 		return fmt.Sprintf("usable RAM capacity %d is not sure to hold a whole memory block of %d bytes", size, bs)
 	case memDev.State == kernel.MemdevUnbound:
-		return "memory device is disabled"
+		return "memdev is disabled"
 	case poolSerials[memDev.Serial]:
 		return "pool device"
 	case held[memDev.Serial]:
@@ -674,7 +674,7 @@ func addLocalShared(devInfos DevicesInfo, memDev *kernel.MemdevInfo, size uint64
 	case memDev.RamSize == 0:
 		reason = "no RAM capacity"
 	case memDev.State == kernel.MemdevUnbound:
-		reason = "memory device is disabled"
+		reason = "memdev is disabled"
 	case len(regions) > 0 && !used:
 		reason = fmt.Sprintf("it has regions %v that the driver did not create", regions)
 	case use.Persistent && len(use.Claims) > 0:
@@ -683,7 +683,7 @@ func addLocalShared(devInfos DevicesInfo, memDev *kernel.MemdevInfo, size uint64
 		reason = fmt.Sprintf("used as a local device by claims %v", use.Claims)
 	}
 	if reason != "" {
-		klog.V(4).Infof("- not publishing memory device %q as a shared local device: %s", memDev.Name, reason)
+		klog.V(4).Infof("- not publishing memdev %q as a shared local device: %s", memDev.Name, reason)
 		return
 	}
 	name := MemdevDeviceName(memDev.Serial)
@@ -698,7 +698,7 @@ func addLocalShared(devInfos DevicesInfo, memDev *kernel.MemdevInfo, size uint64
 			Shared:       true,
 		},
 	}
-	klog.V(3).Infof("discovered shared local memory device %s: %s serial 0x%x size %d", name, memDev.Name, memDev.Serial, memDev.RamSize)
+	klog.V(3).Infof("discovered shared local memdev %s: %s serial 0x%x size %d", name, memDev.Name, memDev.Serial, memDev.RamSize)
 }
 
 // addLocalPersistent adds a memdev of persistent memory to devInfos as a
@@ -719,7 +719,7 @@ func addLocalPersistent(devInfos DevicesInfo, cfg PublishConfig, memDev *kernel.
 	case held[memDev.Serial]:
 		reason = heldReason
 	case memDev.State == kernel.MemdevUnbound:
-		reason = "memory device is disabled"
+		reason = "memdev is disabled"
 	case len(regions) > 0 && !used:
 		reason = fmt.Sprintf("it has regions %v that the driver did not create", regions)
 	case len(use.Claims) == 0:
@@ -731,7 +731,7 @@ func addLocalPersistent(devInfos DevicesInfo, cfg PublishConfig, memDev *kernel.
 		reason = fmt.Sprintf("used as a %s local-persistent device by claims %v", sharedWord(use.Shared), use.Claims)
 	}
 	if reason != "" {
-		klog.V(4).Infof("- not publishing memory device %q as a persistent local memory device: %s", memDev.Name, reason)
+		klog.V(4).Infof("- not publishing memdev %q as a persistent local memdev: %s", memDev.Name, reason)
 		return
 	}
 	name := MemdevDeviceName(memDev.Serial)
@@ -746,7 +746,7 @@ func addLocalPersistent(devInfos DevicesInfo, cfg PublishConfig, memDev *kernel.
 			Persistent:   true,
 		},
 	}
-	klog.V(3).Infof("discovered persistent local memory device %s: %s serial 0x%x size %d shared %v", name, memDev.Name, memDev.Serial, memDev.PmemSize, shared)
+	klog.V(3).Infof("discovered persistent local memdev %s: %s serial 0x%x size %d shared %v", name, memDev.Name, memDev.Serial, memDev.PmemSize, shared)
 }
 
 // sharedWord returns "shared" or "not shared".

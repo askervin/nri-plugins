@@ -490,13 +490,13 @@ func TestParseMemdevSpec(t *testing.T) {
 		{Name: "mem1", Serial: 0x100, Major: 251, Minor: 1},
 	}
 	for spec, want := range map[string]string{
-		"mem0":       `mem0: memory device name "mem0"`,
+		"mem0":       `mem0: memdev name "mem0"`,
 		"cxl/mem1":   `mem1: memory uevent device name "cxl/mem1"`,
-		"251:0":      `mem0: memory device with major:minor "251:0"`,
-		"3238060768": `mem0: memory device serial "3238060768"`,
-		"0xc100e2e0": `mem0: memory device serial "0xc100e2e0"`,
-		"0XC100E2E0": `mem0: memory device serial "0XC100E2E0"`,
-		"256":        `mem1: memory device serial "256"`,
+		"251:0":      `mem0: memdev with major:minor "251:0"`,
+		"3238060768": `mem0: memdev serial "3238060768"`,
+		"0xc100e2e0": `mem0: memdev serial "0xc100e2e0"`,
+		"0XC100E2E0": `mem0: memdev serial "0XC100E2E0"`,
+		"256":        `mem1: memdev serial "256"`,
 		"100":        "",
 		"mem2":       "",
 	} {
@@ -557,7 +557,7 @@ func TestSharedLocalPrecedence(t *testing.T) {
 		mem  *kernel.MemdevInfo
 		want string
 	}{
-		{ignored, `ignored by memory device serial "0xa5"`},
+		{ignored, `ignored by memdev serial "0xa5"`},
 		{pooled, "pool device"},
 		{byName, ""},
 		{sliced, ""},
@@ -602,10 +602,10 @@ func TestSharedRefusalLogged(t *testing.T) {
 		t.Fatalf("published %v", pubNames(devs))
 	}
 	out := logs()
-	if n := logMatches(out, `- not publishing memory device "mem31" as a shared local device: `+heldReason); n != 1 {
+	if n := logMatches(out, `- not publishing memdev "mem31" as a shared local device: `+heldReason); n != 1 {
 		t.Fatalf("%d lines of the held refusal:\n%s", n, out)
 	}
-	if n := logMatches(out, `- not publishing memory device "mem31" as a shared local device: pool device`); n != 1 {
+	if n := logMatches(out, `- not publishing memdev "mem31" as a shared local device: pool device`); n != 1 {
 		t.Fatalf("%d lines of the pool refusal:\n%s", n, out)
 	}
 }
@@ -642,7 +642,7 @@ func TestBuildDevInfosPersistentMemdevs(t *testing.T) {
 	if m := devs["memdev-b3"].Dev.(*Memdev); m.Persistent || m.Shared || m.Size != 1<<30 {
 		t.Fatalf("memdev with RAM and persistent memory %+v", m)
 	}
-	if n := logMatches(logs(), `- not publishing memory device "mem4" as a local memory device: used as a local-persistent device by claims [u3]`); n != 1 {
+	if n := logMatches(logs(), `- not publishing memdev "mem4" as a local memdev: used as a local-persistent device by claims [u3]`); n != 1 {
 		t.Fatalf("%d lines of the refusal of mem4:\n%s", n, logs())
 	}
 }
@@ -676,8 +676,8 @@ func TestPersistentMemdevRefusals(t *testing.T) {
 	}{
 		{serial, nil, true, nil, "pool device", nil},
 		{nil, serial, true, nil, heldReason, nil},
-		{nil, nil, false, nil, "memory device is disabled", nil},
-		{nil, nil, true, nil, `memory device name "mem3"`, func(cfg *PublishConfig, _ *kernel.Snapshot) {
+		{nil, nil, false, nil, "memdev is disabled", nil},
+		{nil, nil, true, nil, `memdev name "mem3"`, func(cfg *PublishConfig, _ *kernel.Snapshot) {
 			cfg.IgnoreDevices = memdevSpecs(t, "mem3")
 		}},
 		{nil, nil, true, nil, "it has regions [region0] that the driver did not create", func(_ *PublishConfig, s *kernel.Snapshot) {
@@ -699,7 +699,7 @@ func TestPersistentMemdevRefusals(t *testing.T) {
 		if devs := BuildDevices(c, s, tc.pool, tc.held, local); len(devs) != 0 {
 			t.Fatalf("%s: published %v", tc.reason, pubNames(devs))
 		}
-		if n := logMatches(logs(), `- not publishing memory device "mem3" as a persistent local memory device: `+tc.reason); n != 1 {
+		if n := logMatches(logs(), `- not publishing memdev "mem3" as a persistent local memdev: `+tc.reason); n != 1 {
 			t.Fatalf("%d lines with %q:\n%s", n, tc.reason, logs())
 		}
 	}

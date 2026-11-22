@@ -266,7 +266,7 @@ func TestIdentity(t *testing.T) {
 	if want := fmt.Sprintf("not a container of the claim's pod (pid %d: pod resources unreachable)", os.Getpid()); resp.Error != want {
 		t.Fatalf("list: %+v", resp)
 	}
-	// without the container plugin: unavailable whatever the identity
+	// without the NRI plugin: unavailable whatever the identity
 	e.restart()
 	e.startWith(nil)
 	if resp, _ := e.call(api.Request{Op: api.OpList}); resp.Error != "lending unavailable: NRI not connected" {

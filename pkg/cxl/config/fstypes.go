@@ -82,7 +82,7 @@ func FSTypeRemountable(name string) bool {
 	return name == api.FSTypeExt4 || name == api.FSTypeXfs
 }
 
-// FSMountData returns the mount options that the plugin passes when it
+// FSMountData returns the mount options that the driver passes when it
 // mounts a filesystem of the type, as "key" or "key=value" items in
 // order: dax=always (access direct) or dax=never (access cached) for the
 // DAX types, nouuid for read-only xfs, spectator for read-only gfs2;

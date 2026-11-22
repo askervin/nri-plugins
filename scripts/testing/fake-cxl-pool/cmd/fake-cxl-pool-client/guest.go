@@ -331,7 +331,7 @@ func (c *cli) regionInfo(ctx context.Context, serial uint64) (*regionInfo, error
 	}
 	m := snap.Memdev(serial)
 	if m.State == kernel.MemdevAbsent {
-		return nil, fmt.Errorf("no CXL memory device with the serial 0x%x", serial)
+		return nil, fmt.Errorf("no memdev with the serial 0x%x", serial)
 	}
 	ri := &regionInfo{Memdev: m.Name, Node: -1}
 	if len(m.Regions) == 0 {

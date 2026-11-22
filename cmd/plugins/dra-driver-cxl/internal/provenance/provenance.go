@@ -276,7 +276,7 @@ func (s *step) noteLocal(r *state.Records, m *kernel.MemdevInfo, trigger state.T
 	}
 	if changed {
 		name, serial := m.Name, m.Serial
-		s.log(func() { klog.Infof("provenance: memdev 0x%x (%s) is a local memory device", serial, name) })
+		s.log(func() { klog.Infof("provenance: memdev 0x%x (%s) is a local memdev", serial, name) })
 	}
 	if p != nil {
 		s.seen = append(s.seen, m.Serial)
@@ -778,7 +778,7 @@ func (g *gateScan) observeNew(s *step, r *state.Records, m *kernel.MemdevInfo, p
 	if why == "" {
 		if p != nil && p.State == state.ProvenanceHeld {
 			s.log(func() {
-				klog.Infof("provenance: publishing memdev 0x%x (%s) as a local memory device: no pool is missing now", serial, name)
+				klog.Infof("provenance: publishing memdev 0x%x (%s) as a local memdev: no pool is missing now", serial, name)
 			})
 		}
 		s.noteLocal(r, m, triggerObserve)
@@ -788,7 +788,7 @@ func (g *gateScan) observeNew(s *step, r *state.Records, m *kernel.MemdevInfo, p
 		return true
 	}
 	s.log(func() {
-		klog.Warningf("provenance: publishing memdev 0x%x (%s) as a local memory device after holding it for %v (%s)",
+		klog.Warningf("provenance: publishing memdev 0x%x (%s) as a local memdev after holding it for %v (%s)",
 			serial, name, MaxHold, why)
 	})
 	s.noteLocal(r, m, triggerExpire)

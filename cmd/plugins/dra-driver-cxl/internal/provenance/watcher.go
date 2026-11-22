@@ -197,7 +197,7 @@ func (w *Watcher) ListPoolSerials(ctx context.Context) (map[uint64]bool, bool) {
 		if known {
 			klog.Warningf("listing the ResourceSlices of pool controllers: %v; using the serials of the last list", err)
 		} else {
-			klog.Warningf("listing the ResourceSlices of pool controllers: %v; no local memory device is published until a list succeeds", err)
+			klog.Warningf("listing the ResourceSlices of pool controllers: %v; no local memdev is published until a list succeeds", err)
 		}
 		return out, known
 	}
@@ -364,7 +364,7 @@ func (w *Watcher) NotePrepared(serials map[uint64]bool) {
 }
 
 // CheckLocal returns an error if the memdev with the serial must not be
-// used as a local memory device: a fresh list of the pool ResourceSlices
+// used as a local memdev: a fresh list of the pool ResourceSlices
 // lists it (the last successful list if it fails), or the list fails. It
 // decides on its own list, not on a list that ends meanwhile. The listed
 // serials are made POOL.
@@ -379,10 +379,10 @@ func (w *Watcher) CheckLocal(ctx context.Context, serial uint64) error {
 		w.mu.Unlock()
 	}
 	if d, listed := serials[serial]; listed {
-		return fmt.Errorf("memory device serial 0x%x is a pool device of %s: it is not used as a local memory device", serial, d.pool)
+		return fmt.Errorf("memdev 0x%x is a pool device of %s: it is not used as a local memdev", serial, d.pool)
 	}
 	if err != nil {
-		return fmt.Errorf("the ResourceSlices of pool controllers cannot be listed (%v): memory device serial 0x%x is not used as a local memory device until a list succeeds",
+		return fmt.Errorf("the ResourceSlices of pool controllers cannot be listed (%v): memdev 0x%x is not used as a local memdev until a list succeeds",
 			err, serial)
 	}
 	return nil

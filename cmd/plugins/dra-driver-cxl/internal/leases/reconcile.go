@@ -30,7 +30,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
-// The reconcile: at the start once the container plugin is synchronized,
+// The reconcile: at the start once the NRI plugin is synchronized,
 // then every Timeouts.Reconcile. It releases the leases whose requester
 // or companion is gone and the CREATING ones left over by a crash, starts
 // the releases that a stop cut again, lends the nodes of the READY numa
@@ -38,10 +38,10 @@ import (
 // removes the directories of closed lease claims. It also does again what
 // a failed commit left undone: it fails the leases whose companion the
 // start did not restore, and listens on the lease claims that are OPEN
-// without a socket. The container plugin hears after the first one that
+// without a socket. The NRI plugin hears after the first one that
 // the lends are restored.
 
-// reconcileLoop reconciles at the start (once the container plugin is
+// reconcileLoop reconciles at the start (once the NRI plugin is
 // synchronized) and periodically.
 func (b *Broker) reconcileLoop(containers Containers) {
 	defer b.wg.Done()

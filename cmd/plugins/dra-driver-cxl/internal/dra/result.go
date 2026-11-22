@@ -219,7 +219,7 @@ func lendOf(doc *store.Document, p *state.Preparation) *lend.Companion {
 	return v
 }
 
-// deviceMemory returns what a prepared memory device gives a container,
+// deviceMemory returns what a prepared memdev gives a container,
 // with its env key from keys, and false for the lease device.
 func deviceMemory(d *state.DeviceInfo, keys envKeys) (api.Memory, bool) {
 	m := api.Memory{Mode: d.Mode, Size: d.TotalBytes, NUMANode: -1}

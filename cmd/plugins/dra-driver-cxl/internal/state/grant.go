@@ -286,7 +286,7 @@ var GrantTable = Table[GrantState]{
 			When: "a persistent refusal (no fsdax namespace for a reader; no allowed filesystem type; a block " +
 				"writer that is not exclusive) or a config refusal found after kernel work; or any other " +
 				"failure (decoder hole, no room, EBUSY online, timeout)",
-			Effects: "Reason the error of the step, the Prepare's error (a typed error to the front-end); " +
+			Effects: "Reason the error of the step, the Prepare's error (a typed error to the kubelet plugin); " +
 				"rollback: the objects this grant made are released per Policy (trigger rollback); " +
 				"an Unprepare of a grant that a failed release at the start left REALISING releases it the same way",
 		},

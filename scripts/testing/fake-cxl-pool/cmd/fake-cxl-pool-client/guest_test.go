@@ -77,7 +77,7 @@ func guestInfo(t *testing.T, c *cli, args ...string) regionInfo {
 func TestGuestWaitAndMemdev(t *testing.T) {
 	f := fake.New(t)
 	c := guestCLI(f)
-	if rc, _, errs := guest(t, c, "memdev", serial0); rc != exitError || !strings.Contains(errs, "no CXL memory device with the serial 0xc1f00001") {
+	if rc, _, errs := guest(t, c, "memdev", serial0); rc != exitError || !strings.Contains(errs, "no memdev with the serial 0xc1f00001") {
 		t.Fatalf("memdev of an absent device: rc %d %q", rc, errs)
 	}
 	go func() {

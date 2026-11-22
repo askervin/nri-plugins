@@ -187,12 +187,12 @@ func (e *leaseEnv) boot() {
 	e.started = false
 }
 
-// start starts the broker with the env's container plugin.
+// start starts the broker with the env's NRI plugin.
 func (e *leaseEnv) start() {
 	e.startWith(e.ctrs)
 }
 
-// startWith starts the broker with the container plugin c (nil: NRI is not
+// startWith starts the broker with the NRI plugin c (nil: NRI is not
 // connected).
 func (e *leaseEnv) startWith(c Containers) {
 	e.b.Start(c)
@@ -426,7 +426,7 @@ func wantErrText(t testing.TB, err error, substr string) {
 	}
 }
 
-// fakeContainers is the container plugin: a table of the running
+// fakeContainers is the NRI plugin: a table of the running
 // containers by pod uid and name, the peer of every connection (byPid),
 // the lent nodes with their holders, the calls.
 type fakeContainers struct {
@@ -450,7 +450,7 @@ var (
 	_ lend.LeaseClaims = (*Broker)(nil)
 )
 
-// newFakeContainers returns a container plugin with the running containers
+// newFakeContainers returns a NRI plugin with the running containers
 // of refs, the first the peer of every connection.
 func newFakeContainers(refs ...Requester) *fakeContainers {
 	f := &fakeContainers{running: map[string]bool{}, lent: map[string]map[int][]string{}}

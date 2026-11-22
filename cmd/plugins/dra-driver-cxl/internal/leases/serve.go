@@ -297,7 +297,7 @@ func (b *Broker) readyWith(fd leaseFd) bool {
 }
 
 // waitIdentity waits, at most Timeouts.SyncWait, until the broker is
-// started and the container plugin has synchronized with the runtime: the
+// started and the NRI plugin has synchronized with the runtime: the
 // identity of a peer is known only then.
 func (b *Broker) waitIdentity() {
 	ctx, cancel := context.WithTimeout(b.ctx, b.t.SyncWait)

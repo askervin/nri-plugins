@@ -143,7 +143,7 @@ func TestNodeLocalGuardPoolSerial(t *testing.T) {
 	e := newDriverEnv(t, nil, poolSpec(serialPoolX))
 	e.mustPrepare(e.pool, poolClaim("u1", "pooled0", poolExclusiveData))
 	wantErrText(t, e.node.localGuard(ctx, serialPoolX),
-		"memory device serial 0xc1ee0001 is prepared by the pool driver "+device.PoolDriverName+": it is not used as a local memory device")
+		"memdev 0xc1ee0001 is prepared by the pool driver "+device.PoolDriverName+": it is not used as a local memdev")
 	mustOK(t, e.node.localGuard(ctx, serialLocal))
 	e.mustUnprepare(e.pool, "u1")
 	mustOK(t, e.node.localGuard(ctx, serialPoolX))
@@ -162,8 +162,8 @@ func TestPrepareLocalPoolDevice(t *testing.T) {
 		pubSerialAttr(string(device.AttrSerial), api.FormatSerial(serialShared))), metav1.CreateOptions{})
 	mustOK(t, err)
 	e.mark()
-	const refusal = " is a pool device of " + device.PoolDriverName + "/pool-c: it is not used as a local memory device"
-	wantErrText(t, e.prepare(e.local, localClaim("u1", localDev, envBlockSize)).Err, "memory device serial 0xc100e2e1"+refusal)
+	const refusal = " is a pool device of " + device.PoolDriverName + "/pool-c: it is not used as a local memdev"
+	wantErrText(t, e.prepare(e.local, localClaim("u1", localDev, envBlockSize)).Err, "memdev 0xc100e2e1"+refusal)
 	wantErrText(t, e.prepare(e.local, localClaim("u2", MemdevDeviceName(serialShared), -1, cfgDax)).Err, "is a pool device")
 	if cmds := e.commands(); strings.Contains(cmds, "create-region") {
 		t.Fatalf("the pool devices were used:\n%s", cmds)
