@@ -388,11 +388,11 @@ func (p *Publisher) publish(ctx context.Context) error {
 	n := 0
 	for _, s := range res.Pools[p.opts.NodeName].Slices {
 		for i := range s.Devices {
-			klog.V(5).Infof("Processing allocatable device %v: %+v", s.Devices[i].Name, s.Devices[i])
+			klog.V(5).Infof("publisher: device %s: %+v", s.Devices[i].Name, s.Devices[i])
 		}
 		n += len(s.Devices)
 	}
-	klog.FromContext(ctx).Info("Publishing resources", "len", n)
+	klog.Infof("publisher: publishing %d devices", n)
 	if ctl != nil {
 		ctl.Update(&res) // a deep copy
 	} else {
