@@ -50,7 +50,7 @@ func (e *driverEnv) companionOf(p *Plugin, configs ...string) *resourcev1.Resour
 // lendEnv returns a node with the sliced local memdev and the pool device
 // pooled0, without lending.
 func lendEnv(t *testing.T) *driverEnv {
-	return newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, poolSpec(serialPoolX))
+	return newDriverEnv(t, []fake.MemdevSpec{localSpec()}, poolSpec(serialPoolX))
 }
 
 // prefix returns the prefix of the errors of a Prepare of the companion
@@ -225,7 +225,7 @@ func TestCompanionLendNUMA(t *testing.T) {
 			Serial: serialPoolX, TotalBytes: 256 << 20, ConsumedBytes: 256 << 20, NUMANodes: []int{2}}
 		if local {
 			p, pool, source = e.local, envNode, state.SourceLocal
-			want.DeviceName, want.Serial, want.TotalBytes, want.ConsumedBytes = localDev, serialSliced, uint64(envBlockSize), envBlockSize
+			want.DeviceName, want.Serial, want.TotalBytes, want.ConsumedBytes = localDev, serialLocal, uint64(envBlockSize), envBlockSize
 		}
 		t.Run(p.Name(), func(t *testing.T) {
 			e.t = t
@@ -359,7 +359,7 @@ func TestCompanionLendDax(t *testing.T) {
 			var claim *resourcev1.ResourceClaim
 			if tc.shared {
 				e = newDriverEnv(t, []fake.MemdevSpec{{Serial: 0xc100e2e0}, sharedOne()})
-				e.setShared(serialSliced)
+				e.setShared(serialLocal)
 				claim = companion(localClaim("c1", localDev, -1, cfgDaxRO), "l1")
 			} else {
 				e = lendEnv(t)

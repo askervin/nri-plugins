@@ -32,7 +32,7 @@ import (
 // region also below a newer region of another memdev (a hole); a rollback
 // and a recovery keep it below one (KEPT, the grant JOURNALED, the
 // preparation KEPT).
-func TestLocalPolicySliced(t *testing.T) {
+func TestPolicyLocal(t *testing.T) {
 	t.Run("unprepare destroys below a newer region", func(t *testing.T) {
 		v := newEnv(t, stackSpecs...)
 		v.mustPrepare(localDriver, "l", sliceReq("l", 0, state.ModeDax, 256*mib))
@@ -299,7 +299,7 @@ func TestLocalPolicySharedNew(t *testing.T) {
 // A local memdev used shared that is not configured shared any more: the
 // Unprepare of its last claim and the recovery destroy its region, also
 // below a newer region of another memdev.
-func TestLocalPolicyUnshared(t *testing.T) {
+func TestPolicyLocalSharedUnlisted(t *testing.T) {
 	t.Run("unprepare", func(t *testing.T) {
 		v := newEnv(t, stackSpecs...)
 		shared := true

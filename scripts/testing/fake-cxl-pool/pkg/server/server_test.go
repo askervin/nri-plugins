@@ -394,7 +394,7 @@ func TestCreateDevice(t *testing.T) {
 	mustCode(t, e.c.DeleteDevice(ctx, "nosuch", false), api.CodeNotFound)
 }
 
-func TestAttachDetachExclusive(t *testing.T) {
+func TestAttachDetach(t *testing.T) {
 	e := newTestEnv(t, "")
 	a, status, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"})
 	if err != nil || status != 201 {
@@ -500,7 +500,7 @@ func TestAttachShared(t *testing.T) {
 	mustCode(t, err, api.CodeNotFound)
 }
 
-func TestAttachSharedExclusive(t *testing.T) {
+func TestAttachSingleHost(t *testing.T) {
 	e := newTestEnv(t, "")
 	// exclusive to vm1: vm2 cannot attach
 	a1, _, err := e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", SingleHost: true})

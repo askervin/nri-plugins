@@ -286,7 +286,7 @@ func TestFailedCommitRefusesPeer(t *testing.T) {
 	lc.Status.ReservedFor = append(lc.Status.ReservedFor, resourcev1.ResourceClaimConsumerReference{Resource: "pods", Name: "second", UID: "pod-uid-2"})
 	_, err := e.client.ResourceV1().ResourceClaims(envNS).Update(context.Background(), lc, metav1.UpdateOptions{})
 	mustOK(t, err)
-	e.ctrs.setPeer(&Requester{Pod: state.PodRef{Namespace: envNS, Name: "second", UID: "pod-uid-2"}, Container: "x"})
+	e.ctrs.setProcess(&Requester{Pod: state.PodRef{Namespace: envNS, Name: "second", UID: "pod-uid-2"}, Container: "x"})
 	e.failWrites(true)
 	if resp, _ := e.call(api.Request{Op: api.OpList}); !strings.HasPrefix(resp.Error, "not a container of the claim's pod") {
 		t.Fatalf("peer of a pod whose commit failed %+v", resp)

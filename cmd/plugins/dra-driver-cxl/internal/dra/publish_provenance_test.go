@@ -168,7 +168,7 @@ func (e *pubSerialsEnv) publish(serials ...string) {
 	for _, s := range serials {
 		attrs = append(attrs, pubSerialAttr("serial", s))
 	}
-	_, err := e.client.ResourceV1().ResourceSlices().Create(ctx, pubSlice("pool-c", device.PoolDriverName, attrs...), metav1.CreateOptions{})
+	_, err := e.client.ResourceV1().ResourceSlices().Create(ctx, pubResourceSlice("pool-c", device.PoolDriverName, attrs...), metav1.CreateOptions{})
 	pubNoErr(e.t, err)
 }
 
@@ -274,9 +274,9 @@ func (e *pubSerialsEnv) claim(name, node, dev, serial string) {
 	pubNoErr(e.t, err)
 }
 
-// pubSlice returns a ResourceSlice of the driver whose devices have the
-// attributes.
-func pubSlice(name, driver string, attrs ...map[resourcev1.QualifiedName]resourcev1.DeviceAttribute) *resourcev1.ResourceSlice {
+// pubResourceSlice returns a ResourceSlice of the driver whose devices have
+// the attributes.
+func pubResourceSlice(name, driver string, attrs ...map[resourcev1.QualifiedName]resourcev1.DeviceAttribute) *resourcev1.ResourceSlice {
 	rs := &resourcev1.ResourceSlice{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec:       resourcev1.ResourceSliceSpec{Driver: driver, Pool: resourcev1.ResourcePool{Name: name, ResourceSliceCount: 1}},
@@ -847,9 +847,9 @@ func scanNames(t *testing.T, ctx context.Context, st *store.Store, w *provenance
 // (the serials of the last one).
 func TestPoolSlicesSerials(t *testing.T) {
 	client := fake.NewClientset(
-		pubSlice("pool", device.PoolDriverName, pubSerialAttr("serial", "0xC1EE0001"), pubSerialAttr("serial", "bogus"), nil),
-		pubSlice("other", "other.example.com", pubSerialAttr("other.example.com/serial", "3238060770")),
-		pubSlice("node1", device.DriverName, pubSerialAttr("serial", "0xc100e2e1")),
+		pubResourceSlice("pool", device.PoolDriverName, pubSerialAttr("serial", "0xC1EE0001"), pubSerialAttr("serial", "bogus"), nil),
+		pubResourceSlice("other", "other.example.com", pubSerialAttr("other.example.com/serial", "3238060770")),
+		pubResourceSlice("node1", device.DriverName, pubSerialAttr("serial", "0xc100e2e1")),
 	)
 	w := provenance.New(provenance.Options{Client: client, NodeName: pubNode})
 	st := pubStore(t)
@@ -872,7 +872,7 @@ func TestPoolSlicesSerials(t *testing.T) {
 // watcher (no pool controllers) every memdev.
 func TestPoolSlicesFirstListFails(t *testing.T) {
 	logs := klogtest.Capture(t, 0)
-	client := fake.NewClientset(pubSlice("pool", device.PoolDriverName, pubSerialAttr("serial", "0xc1ee0001")))
+	client := fake.NewClientset(pubResourceSlice("pool", device.PoolDriverName, pubSerialAttr("serial", "0xc1ee0001")))
 	var fail atomic.Bool
 	fail.Store(true)
 	client.PrependReactor("list", "resourceslices", func(k8stesting.Action) (bool, runtime.Object, error) {

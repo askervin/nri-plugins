@@ -35,7 +35,7 @@ import (
 // has the node's slice. The publisher stops at the end of the test.
 func (e *driverEnv) publishing() *k8sfake.Clientset {
 	e.t.Helper()
-	client := sliceTestClient(envNode, nil)
+	client := resourceSliceTestClient(envNode, nil)
 	e.client = client
 	e.restart()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -45,7 +45,7 @@ func (e *driverEnv) publishing() *k8sfake.Clientset {
 		pub.Stop()
 		cancel()
 	})
-	waitNodeSlice(e.t, client, envNode, 5*time.Second, pubNames(pub.Devices())...)
+	waitNodeResourceSlice(e.t, client, envNode, 5*time.Second, pubNames(pub.Devices())...)
 	return client
 }
 
@@ -63,9 +63,9 @@ func takeTrigger(p *Publisher) (asked, urgent bool) {
 	return asked, urgent
 }
 
-// sliceWrites returns how many creates, updates, patches and deletes of
-// ResourceSlices the API server got.
-func sliceWrites(client *k8sfake.Clientset) int {
+// resourceSliceWrites returns how many creates, updates, patches and deletes
+// of ResourceSlices the API server got.
+func resourceSliceWrites(client *k8sfake.Clientset) int {
 	n := 0
 	for _, a := range client.Actions() {
 		switch a.GetVerb() {
@@ -94,7 +94,7 @@ func waitScans(t *testing.T, scans *atomic.Int32, want int32) {
 // Prepare of a prepared claim and an Unprepare of a claim without records
 // commit nothing and ask for none.
 func TestRequestsAskForRescan(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec(), pmemSpec()}, poolSpec(serialPoolX))
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec(), pmemSpec()}, poolSpec(serialPoolX))
 	takeTrigger(e.pub)
 	var scans atomic.Int32
 	e.setOnScan(func() { scans.Add(1) })
@@ -135,9 +135,9 @@ func TestRequestsAskForRescan(t *testing.T) {
 // Prepares and Unprepares of both drivers rescan, and the slice is written
 // once, when it is created; a change of the devices then updates it once.
 func TestUnchangedRescanWritesNoSlice(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, poolSpec(serialPoolX))
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec()}, poolSpec(serialPoolX))
 	client := e.publishing()
-	if n := sliceWrites(client); n != 1 {
+	if n := resourceSliceWrites(client); n != 1 {
 		t.Fatalf("%d writes of the slice at the start, expected its create", n)
 	}
 	var scans atomic.Int32
@@ -156,15 +156,15 @@ func TestUnchangedRescanWritesNoSlice(t *testing.T) {
 	// the controller syncs an update of the devices at once: a write would
 	// come within milliseconds
 	for deadline := time.Now().Add(300 * time.Millisecond); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		if n := sliceWrites(client); n != 1 {
+		if n := resourceSliceWrites(client); n != 1 {
 			t.Fatalf("%d writes of the slice after %d rescans of unchanged devices, expected none but its create", n, scans.Load())
 		}
 	}
 	// a change of the devices is written once
 	e.plugLocal(pmemSpec())
 	e.pub.Trigger(ctx, false)
-	waitNodeSlice(t, client, envNode, 5*time.Second, device.DRAMDeviceName, device.LeaseDeviceName, localDev, pmemDev)
-	if n := sliceWrites(client); n != 2 {
+	waitNodeResourceSlice(t, client, envNode, 5*time.Second, device.DRAMDeviceName, device.LeaseDeviceName, localDev, pmemDev)
+	if n := resourceSliceWrites(client); n != 2 {
 		t.Fatalf("%d writes of the slice after a change of the devices, expected its create and one update", n)
 	}
 }
@@ -185,9 +185,9 @@ func TestUnprepareRepublishesWithoutRescan(t *testing.T) {
 	e.mu.Unlock()
 	client := e.publishing()
 	e.pub.Rescan(context.Background(), false)
-	waitNodeSlice(t, client, envNode, 5*time.Second, device.DRAMDeviceName, device.LeaseDeviceName)
+	waitNodeResourceSlice(t, client, envNode, 5*time.Second, device.DRAMDeviceName, device.LeaseDeviceName)
 	e.mustUnprepare(e.local, "u1")
-	waitNodeSlice(t, client, envNode, 2*time.Second, device.DRAMDeviceName, device.LeaseDeviceName, shared)
+	waitNodeResourceSlice(t, client, envNode, 2*time.Second, device.DRAMDeviceName, device.LeaseDeviceName, shared)
 	if d := e.pub.Published()[shared]; d == nil || d.Dev.(*Memdev).Shared {
 		t.Fatalf("published %+v, expected the memdev sliced", d)
 	}
@@ -201,11 +201,11 @@ func TestPoolPrepareRepublishesLocalSlice(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{poolSpec(serialPoolX)})
 	client := e.publishing()
 	pooled := MemdevDeviceName(serialPoolX)
-	if got := nodeSliceDevices(t, client, envNode); !slices.Contains(got, pooled) {
+	if got := nodeResourceSliceDevices(t, client, envNode); !slices.Contains(got, pooled) {
 		t.Fatalf("slice %v without %s", got, pooled)
 	}
 	e.mustPrepare(e.pool, poolClaim("p1", "pooled0", poolExclusiveData))
-	waitNodeSlice(t, client, envNode, 2*time.Second, device.DRAMDeviceName, device.LeaseDeviceName)
+	waitNodeResourceSlice(t, client, envNode, 2*time.Second, device.DRAMDeviceName, device.LeaseDeviceName)
 	e.mustUnprepare(e.pool, "p1")
 }
 
@@ -214,7 +214,7 @@ func TestPoolPrepareRepublishesLocalSlice(t *testing.T) {
 // that ended while it ran.
 func TestPrepareBurstCoalescesRescans(t *testing.T) {
 	const burst = 8
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()})
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec()})
 	e.publishing()
 	var scans atomic.Int32
 	started, release := make(chan struct{}), make(chan struct{})

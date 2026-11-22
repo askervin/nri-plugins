@@ -944,7 +944,7 @@ func TestRecoverSweepsBindsBeforeNodeMounts(t *testing.T) {
 // A lease bind whose node mount is gone belongs to no memdev: the start
 // unmounts it, and when that fails, every release tries again until it is
 // gone.
-func TestRecoverOrphanBind(t *testing.T) {
+func TestRecoverUnownedBind(t *testing.T) {
 	v := pmemEnv(t, "ext4")
 	v.f.Plug(fake.MemdevSpec{Serial: serialA})
 	k := v.f.Kernel()

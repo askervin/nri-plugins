@@ -144,7 +144,7 @@ func TestNodeLocalGuardPoolSerial(t *testing.T) {
 	e.mustPrepare(e.pool, poolClaim("u1", "pooled0", poolExclusiveData))
 	wantErrText(t, e.node.localGuard(ctx, serialPoolX),
 		"memory device serial 0xc1ee0001 is prepared by the pool driver "+device.PoolDriverName+": it is not used as a local memory device")
-	mustOK(t, e.node.localGuard(ctx, serialSliced))
+	mustOK(t, e.node.localGuard(ctx, serialLocal))
 	e.mustUnprepare(e.pool, "u1")
 	mustOK(t, e.node.localGuard(ctx, serialPoolX))
 }
@@ -153,12 +153,12 @@ func TestNodeLocalGuardPoolSerial(t *testing.T) {
 // memdev is touched, sliced and shared.
 func TestPrepareLocalPoolDevice(t *testing.T) {
 	ctx := context.Background()
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec(), sharedSpec()})
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec(), sharedSpec()})
 	client := k8sfake.NewClientset()
 	e.client = client
 	e.setShared(serialShared)
-	_, err := client.ResourceV1().ResourceSlices().Create(ctx, pubSlice("pool-c", device.PoolDriverName,
-		pubSerialAttr(string(device.AttrSerial), api.FormatSerial(serialSliced)),
+	_, err := client.ResourceV1().ResourceSlices().Create(ctx, pubResourceSlice("pool-c", device.PoolDriverName,
+		pubSerialAttr(string(device.AttrSerial), api.FormatSerial(serialLocal)),
 		pubSerialAttr(string(device.AttrSerial), api.FormatSerial(serialShared))), metav1.CreateOptions{})
 	mustOK(t, err)
 	e.mark()

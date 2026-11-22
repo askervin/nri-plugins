@@ -127,7 +127,7 @@ func TestLocalRecoverPersistent(t *testing.T) {
 // The start releases the region of a sliced local memdev without claims,
 // and deletes the parts that belong to no claim first, the memory of a
 // numa part offlined.
-func TestLocalRecoverSlicedIdle(t *testing.T) {
+func TestLocalRecoverIdle(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
 	v.mustPrepare(localDriver, "d", sliceReq("d", 0, state.ModeDax, 256*mib))
 	v.mustPrepare(localDriver, "n", sliceReq("n", 0, state.ModeNUMA, 128*mib))
@@ -154,7 +154,7 @@ func TestLocalRecoverSlicedIdle(t *testing.T) {
 // The start forgets the parts of prepared claims whose dax device is gone
 // or has another size: the grant keeps its region without the device, and
 // a device of another size is deleted as belonging to no claim.
-func TestLocalRecoverGoneParts(t *testing.T) {
+func TestLocalRecoverGoneSlices(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		do   func(t *testing.T, v *env)
@@ -326,7 +326,7 @@ func TestLocalForgetLocal(t *testing.T) {
 // cells say, with the line of each kind: a part released, also before its
 // region was made, a new shared region released, an established one kept
 // idle, a persistent region released.
-func TestLocalRecoverCutPrepares(t *testing.T) {
+func TestRecoverCutPrepares(t *testing.T) {
 	shared := func(v *env) { v.configure(func(o *Options) { o.Shared = func(state.Serial) bool { return true } }) }
 	realised := func(v *env) { cutWhenRealised(v, "c") }
 	for _, c := range []struct {

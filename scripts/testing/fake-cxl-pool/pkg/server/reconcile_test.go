@@ -95,7 +95,7 @@ func TestStaleTreeKeepsNewAttachment(t *testing.T) {
 }
 
 // Adoption respects the exclusive rule.
-func TestAdoptionRespectsExclusive(t *testing.T) {
+func TestAdoptionRespectsUnshared(t *testing.T) {
 	dir := t.TempDir()
 	f1, f2 := newVMFake(), newVMFake()
 	srv := newServerWith(t, poolConfig(dir, pooled0), map[string]qemu.Monitor{"vm1": f1, "vm2": f2})

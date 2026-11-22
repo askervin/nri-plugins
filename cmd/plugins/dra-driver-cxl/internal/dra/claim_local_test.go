@@ -35,7 +35,7 @@ import (
 )
 
 // localDev is the device name of the sliced local memdev.
-var localDev = MemdevDeviceName(serialSliced)
+var localDev = MemdevDeviceName(serialLocal)
 
 // wantResult fails the test unless a PrepareResult has the devices of the
 // requests, pools and devices with the CDI ids, in order.
@@ -54,8 +54,8 @@ func resultDevice(request, pool, dev string, cdi ...string) kubeletplugin.Device
 // A slice of mode numa of a sliced local memdev: onlined on the node of
 // its region, its CDI device and env, its device info; the Unprepare
 // offlines and releases it.
-func TestLocalSlicedNUMA(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()})
+func TestLocalSliceNUMA(t *testing.T) {
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec()})
 	logs := klogCapture(t)
 	res := e.mustPrepare(e.local, localClaim("u1", localDev, 64*mib))
 	wantResult(t, res, resultDevice("mem", envNode, localDev, "cxl.nri.io/device=claim-u1-0"))
@@ -70,7 +70,7 @@ func TestLocalSlicedNUMA(t *testing.T) {
 	info := e.local.ClaimInfo("u1")
 	want := state.DeviceInfo{RequestName: "mem", DeviceName: localDev, DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA,
 		SysfsPath: e.k.P("bus/cxl/devices/region0"), NUMANodes: []int{node}, NodeAffinities: []int{0},
-		TotalBytes: uint64(envBlockSize), ConsumedBytes: envBlockSize, Serial: serialSliced}
+		TotalBytes: uint64(envBlockSize), ConsumedBytes: envBlockSize, Serial: serialLocal}
 	if info == nil || info.ClaimName != envNS+"/claim-u1" || len(info.Devices) != 1 ||
 		!reflect.DeepEqual(info.Devices[0], want) {
 		t.Fatalf("claim info %+v, expected device %+v", info, want)
@@ -93,8 +93,8 @@ func TestLocalSlicedNUMA(t *testing.T) {
 
 // A slice of mode dax of a sliced local memdev: a devdax device of the
 // region, read-only or not, as a CDI device node.
-func TestLocalSlicedDax(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()})
+func TestLocalSliceDax(t *testing.T) {
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec()})
 	e.mustPrepare(e.local, localClaim("u1", localDev, envBlockSize, cfgDaxRO))
 	info := e.local.ClaimInfo("u1").Devices[0]
 	if info.Mode != api.ModeDax || info.DaxDevice == "" || !info.ReadOnly || info.TotalBytes != uint64(envBlockSize) || len(info.NUMANodes) != 0 {
@@ -120,7 +120,7 @@ func TestLocalSlicedDax(t *testing.T) {
 func TestLocalSharedDax(t *testing.T) {
 	// the shared memdev is mem1, as in the documented line
 	e := newDriverEnv(t, []fake.MemdevSpec{{Serial: 0xc100e2e0}, sharedOne()})
-	e.setShared(serialSliced)
+	e.setShared(serialLocal)
 	logs := klogCapture(t)
 	e.mustPrepare(e.local, localClaim("w1", localDev, -device.SharesUnlimited, cfgDax))
 	e.mustPrepare(e.local, localClaim("r1", localDev, -1, cfgDaxRO))
@@ -135,18 +135,18 @@ func TestLocalSharedDax(t *testing.T) {
 	if !w.Shared || w.ReadOnly || !r.Shared || !r.ReadOnly || r.DaxDevice != w.DaxDevice || w.DaxDevice == "" || w.TotalBytes != 1<<30 {
 		t.Fatalf("device infos %+v %+v", w, r)
 	}
-	if !e.isShared(serialSliced) {
+	if !e.isShared(serialLocal) {
 		t.Fatal("OnShared was not told the serial")
 	}
 	e.mustUnprepare(e.local, "w1")
 	e.mustUnprepare(e.local, "r1")
-	if len(e.k.Kernel().Regions(e.k.Memdev(serialSliced))) != 1 {
+	if len(e.k.Kernel().Regions(e.k.Memdev(serialLocal))) != 1 {
 		t.Fatal("the idle shared device lost its region")
 	}
 }
 
-// sharedOne returns the spec of the memdev serialSliced of 1 GiB.
-func sharedOne() fake.MemdevSpec { return fake.MemdevSpec{Serial: serialSliced, Ram: 1 << 30} }
+// sharedOne returns the spec of the memdev serialLocal of 1 GiB.
+func sharedOne() fake.MemdevSpec { return fake.MemdevSpec{Serial: serialLocal, Ram: 1 << 30} }
 
 // pmemDev is the device name of the persistent local memdev.
 var pmemDev = MemdevDeviceName(serialPmem)
@@ -165,9 +165,9 @@ func hasEnv(t *testing.T, cd *cdiSpecs.Device, vars ...string) {
 }
 
 // A persistent local memdev in mode block: readers before a writer are
-// refused without a namespace or a region, the exclusive writer makes the fsdax
-// namespace, a reader gets the block device read-only; both as CDI device
-// nodes.
+// refused without a namespace or a region, the exclusive writer makes the
+// fsdax namespace, a reader gets the block device read-only; both as CDI
+// device nodes.
 func TestLocalPersistentBlock(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{pmemSpec()})
 	e.mark()
@@ -211,7 +211,7 @@ func TestLocalPersistentBlock(t *testing.T) {
 // line of the documentation.
 func TestLocalPersistentFs(t *testing.T) {
 	// the persistent memdev is mem1 with region1, as in the documented line
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec(), pmemSpec()})
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec(), pmemSpec()})
 	e.formatPmem(serialPmem, "ext4")
 	e.mustPrepare(e.local, localClaim("u0", localDev, envBlockSize))
 	logs := klogCapture(t)
@@ -337,7 +337,7 @@ func TestLocalLeaseDevice(t *testing.T) {
 // result of the driver (the lease device's lease-<uid> too), the share id
 // of a result; the results of other drivers are not the driver's.
 func TestLocalPrepareResult(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()})
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec()})
 	e.setLeases()
 	region := e.addRegion("region5", 4, 1<<30)
 	c := localClaim("u1", localDev, envBlockSize)

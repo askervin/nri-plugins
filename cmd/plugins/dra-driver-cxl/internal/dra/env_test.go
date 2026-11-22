@@ -69,7 +69,7 @@ const (
 
 	// serials of the local memdevs: sliced (1 GiB of RAM), shared (1 GiB
 	// of RAM) and persistent (512 MiB of persistent memory).
-	serialSliced = 0xc100e2e1
+	serialLocal  = 0xc100e2e1
 	serialShared = 0xc100e2e2
 	serialPmem   = 0xc100f5e1
 	// serials of the pool devices: one of volatile memory, one shared, one
@@ -182,8 +182,8 @@ func newDriverEnv(t *testing.T, localSpecs []fake.MemdevSpec, poolSpecs ...fake.
 	return e
 }
 
-// slicedSpec, sharedSpec and pmemSpec are the specs of the local memdevs.
-func slicedSpec() fake.MemdevSpec { return fake.MemdevSpec{Serial: serialSliced, Ram: 1 << 30} }
+// localSpec, sharedSpec and pmemSpec are the specs of the local memdevs.
+func localSpec() fake.MemdevSpec  { return fake.MemdevSpec{Serial: serialLocal, Ram: 1 << 30} }
 func sharedSpec() fake.MemdevSpec { return fake.MemdevSpec{Serial: serialShared, Ram: 1 << 30} }
 func pmemSpec() fake.MemdevSpec {
 	return fake.MemdevSpec{Serial: serialPmem, Pmem: 512 << 20, HostBridge: 24}

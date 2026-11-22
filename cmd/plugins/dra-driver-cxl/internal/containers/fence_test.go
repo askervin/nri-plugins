@@ -718,7 +718,7 @@ func TestLendSynchronizeKept(t *testing.T) {
 // at every pass and every lend for the lifetime of the container with an
 // "updating again" line each time. A lease requester in
 // another child cgroup of the container is found in it.
-func TestReviewSubCgroupUpdatesForever(t *testing.T) {
+func TestFenceContainerCgroupAboveInit(t *testing.T) {
 	e := newFenceEnv(t, "0-2", 2)
 	logs := klogtest.Capture(t, 3)
 	ctx := context.Background()

@@ -54,7 +54,7 @@ func (e *driverEnv) unrestore(p *Plugin, uid, mnt, dev string) error {
 // no CDI device, logged at the start; a Prepare again that fails keeps it
 // unrestored, one that mounts the node mount again gives it its CDI device
 // again.
-func TestRemountLocal(t *testing.T) {
+func TestRestoreLocal(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{pmemSpec()})
 	dev := e.formatPmem(serialPmem, "ext4")
 	claim := localClaim("r1", pmemDev, -1, cfgFsRO)
@@ -84,7 +84,7 @@ func TestRemountLocal(t *testing.T) {
 
 // A claim of the pool driver whose node mount the start could not mount
 // again; its Unprepare while unrestored releases it.
-func TestRemountPool(t *testing.T) {
+func TestRestorePool(t *testing.T) {
 	e := newDriverEnv(t, nil, poolPmemSpec(serialPoolP))
 	dev := e.formatPmem(serialPoolP, "erofs")
 	claim := poolClaim("r1", "llm0", poolPmemData, cfgFsRO)
@@ -148,7 +148,7 @@ func TestRemountCompanion(t *testing.T) {
 // Two claims of one node mount that the start could not mount again: the
 // Prepare again of one mounts it again for both, and both have their CDI
 // devices again.
-func TestRemountTwoClaims(t *testing.T) {
+func TestRestoreTwoClaims(t *testing.T) {
 	for _, local := range []bool{true, false} {
 		e := newDriverEnv(t, []fake.MemdevSpec{pmemSpec()}, poolPmemSpec(serialPoolP))
 		p := e.pluginOf(local)

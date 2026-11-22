@@ -161,13 +161,13 @@ func TestLeaseClaimSocketAndCDI(t *testing.T) {
 func TestAuthRejection(t *testing.T) {
 	e := brokerEnv(t)
 	e.openClaim()
-	e.ctrs.setPeer(&Requester{Pod: state.PodRef{Namespace: envNS, Name: "intruder", UID: "other-pod"}, Container: "x"})
+	e.ctrs.setProcess(&Requester{Pod: state.PodRef{Namespace: envNS, Name: "intruder", UID: "other-pod"}, Container: "x"})
 	e.start()
 	resp, _ := e.call(api.Request{Op: api.OpRequest, Size: "512Mi"})
 	if resp.Error != "not a container of the claim's pod (pid "+fmt.Sprint(os.Getpid())+" is in demo/intruder/x)" {
 		t.Fatalf("intruder: %+v", resp)
 	}
-	e.ctrs.setPeer(nil)
+	e.ctrs.setProcess(nil)
 	resp, _ = e.call(api.Request{Op: api.OpList})
 	if resp.Error != "not a container of the claim's pod (pid "+fmt.Sprint(os.Getpid())+" is in no known container)" {
 		t.Fatalf("unknown process: %+v", resp)
@@ -181,7 +181,7 @@ func TestAuthRejection(t *testing.T) {
 	lc.Status.ReservedFor = append(lc.Status.ReservedFor, resourcev1.ResourceClaimConsumerReference{Resource: "pods", Name: "second", UID: "pod-uid-2"})
 	_, err := e.client.ResourceV1().ResourceClaims(envNS).Update(context.Background(), lc, metav1.UpdateOptions{})
 	mustOK(t, err)
-	e.ctrs.setPeer(&Requester{Pod: state.PodRef{Namespace: envNS, Name: "second", UID: "pod-uid-2"}, Container: "x"})
+	e.ctrs.setProcess(&Requester{Pod: state.PodRef{Namespace: envNS, Name: "second", UID: "pod-uid-2"}, Container: "x"})
 	resp, _ = e.call(api.Request{Op: api.OpList})
 	if resp.Error != "" {
 		t.Fatalf("second pod rejected: %+v", resp)
@@ -190,7 +190,7 @@ func TestAuthRejection(t *testing.T) {
 		t.Fatalf("pods of the lease claim %+v", c)
 	}
 
-	e.ctrs.setPeer(&requester)
+	e.ctrs.setProcess(&requester)
 	for _, c := range []struct {
 		req api.Request
 		err string
@@ -256,7 +256,7 @@ func TestIdentity(t *testing.T) {
 	}
 	e.restart()
 	e.openClaim()
-	e.ctrs.setPeer(nil)
+	e.ctrs.setProcess(nil)
 	e.start()
 	if resp, _ := e.call(api.Request{Op: api.OpList}); resp.Error != "" {
 		t.Fatalf("list: %+v", resp)
@@ -359,7 +359,7 @@ func TestLeaseRequestID(t *testing.T) {
 	}
 	other := requester
 	other.Container = "sidecar"
-	e.ctrs.setPeer(&other)
+	e.ctrs.setProcess(&other)
 	own, _ := e.call(req)
 	if own.Lease == "" || own.Lease == first.Lease || own.Error != "" {
 		t.Fatalf("other container's request %+v", own)
@@ -368,7 +368,7 @@ func TestLeaseRequestID(t *testing.T) {
 
 	e.restart()
 	e.start()
-	e.ctrs.setPeer(&requester)
+	e.ctrs.setProcess(&requester)
 	again, _ := e.call(req)
 	if again.Lease != first.Lease || again.State != api.StateReady {
 		t.Fatalf("after a restart %+v", again)
@@ -922,7 +922,7 @@ func TestCloseClaimDoesNotWaitForCompanions(t *testing.T) {
 	r, _ := e.call(api.Request{Op: api.OpRequest, Size: "64Mi", Source: "local", Wait: "0s"})
 	_, err := e.b.OnLending(r.Lease, companionClaim(r.Lease))
 	mustOK(t, err)
-	e.b.OnPrepared(r.Lease, state.SourceLocal, []state.DeviceInfo{preparedDev(serialSliced, 64<<20, api.ModeNUMA, 2)})
+	e.b.OnPrepared(r.Lease, state.SourceLocal, []state.DeviceInfo{preparedDev(serialLocal, 64<<20, api.ModeNUMA, 2)})
 	mustOK(t, e.ctrs.LendNUMANode(context.Background(), envPodUID, envCtr, 2, r.Lease))
 	stay.Store(true)
 
@@ -1574,11 +1574,11 @@ func TestIdentityPerRequest(t *testing.T) {
 	if line := list(); !strings.Contains(line, `"leases":[]`) {
 		t.Fatalf("first request %q", line)
 	}
-	e.ctrs.setPeer(&Requester{Pod: state.PodRef{Namespace: envNS, Name: "intruder", UID: "other-pod"}, Container: "x"})
+	e.ctrs.setProcess(&Requester{Pod: state.PodRef{Namespace: envNS, Name: "intruder", UID: "other-pod"}, Container: "x"})
 	if line := list(); !strings.Contains(line, "is in demo/intruder/x") {
 		t.Fatalf("a peer in another pod %q", line)
 	}
-	e.ctrs.setPeer(nil)
+	e.ctrs.setProcess(nil)
 	if line := list(); !strings.Contains(line, `"leases":[]`) {
 		t.Fatalf("a peer that exited %q", line)
 	}
@@ -1616,7 +1616,7 @@ func TestIdentityPidReuse(t *testing.T) {
 	if line := list(); !strings.Contains(line, `"leases":[]`) {
 		t.Fatalf("first request %q", line)
 	}
-	e.ctrs.setPeer(&Requester{Pod: state.PodRef{Namespace: envNS, Name: "intruder", UID: "other-pod"}, Container: "x"})
+	e.ctrs.setProcess(&Requester{Pod: state.PodRef{Namespace: envNS, Name: "intruder", UID: "other-pod"}, Container: "x"})
 	if line := list(); !strings.Contains(line, "is in demo/intruder/x") {
 		t.Fatalf("the same process in another pod %q", line)
 	}
@@ -1845,7 +1845,7 @@ func TestTooManyRequests(t *testing.T) {
 	if r, _ := e.call(api.Request{Op: api.OpList}); r.Error != "" {
 		t.Fatalf("list: %+v", r)
 	}
-	e.ctrs.setPeer(&Requester{Pod: state.PodRef{Namespace: envNS, Name: "second", UID: "pod-uid-2"}, Container: "x"})
+	e.ctrs.setProcess(&Requester{Pod: state.PodRef{Namespace: envNS, Name: "second", UID: "pod-uid-2"}, Container: "x"})
 	calls := len(e.client.Actions())
 	if r, _ := e.call(api.Request{Op: api.OpList}); r.Error != tooMany {
 		t.Fatalf("list of a pod not in the record: %+v", r)

@@ -35,7 +35,7 @@ import (
 // waiting for the Prepare of another claim, which holds the memdev for long
 // when it zeroes a whole shared device.
 func TestUnprepareUnknownDoesNotWait(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()})
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec()})
 	entered, release := make(chan struct{}), make(chan struct{})
 	e.k.Before("cxl create-region", func() {
 		close(entered)
@@ -132,7 +132,7 @@ func TestUnprepareRevokeFails(t *testing.T) {
 // the retry releases it.
 func TestUnprepareReleaseFails(t *testing.T) {
 	t.Run("cxl.nri.io", func(t *testing.T) {
-		e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()})
+		e := newDriverEnv(t, []fake.MemdevSpec{localSpec()})
 		e.mustPrepare(e.local, localClaim("u1", localDev, envBlockSize, cfgDax))
 		dax := e.records().Grant(state.GrantRef{Claim: "u1"}).Got.Dax
 		e.k.FailWrite("bus/dax/devices/"+dax+"/size", syscall.EBUSY)
@@ -188,7 +188,7 @@ func TestUnprepareReleaseFails(t *testing.T) {
 // to release and writes the spec.
 func TestUnprepareCDIFails(t *testing.T) {
 	for _, local := range []bool{true, false} {
-		e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, poolSpec(serialPoolX), fake.MemdevSpec{Serial: serialPoolS, HostBridge: 24})
+		e := newDriverEnv(t, []fake.MemdevSpec{localSpec()}, poolSpec(serialPoolX), fake.MemdevSpec{Serial: serialPoolS, HostBridge: 24})
 		p := e.pluginOf(local)
 		t.Run(p.Name(), func(t *testing.T) {
 			e.t = t
@@ -232,7 +232,7 @@ func TestUnprepareCDIFails(t *testing.T) {
 // writes, so the next Prepare and a start succeed, and kubelet's retry
 // finishes the release.
 func TestUnprepareFailedAfterUnmount(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec(), pmemSpec()})
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec(), pmemSpec()})
 	e.formatPmem(serialPmem, "ext4")
 	e.mustPrepare(e.local, localClaim("w1", pmemDev, -device.SharesUnlimited, cfgFsRW))
 	mnt := e.local.ClaimInfo("w1").Devices[0].NodeMount

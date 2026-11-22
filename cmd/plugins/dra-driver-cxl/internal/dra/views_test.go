@@ -32,10 +32,10 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
-// NUMANodes has the NUMA nodes of the grants of mode numa of the prepared claims
-// of the drivers asked for, sorted, without those of dax slices.
+// NUMANodes has the NUMA nodes of the grants of mode numa of the prepared
+// claims of the drivers asked for, sorted, without those of dax slices.
 func TestNumaNodes(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, fake.MemdevSpec{Serial: serialPoolX, HostBridge: 24})
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec()}, fake.MemdevSpec{Serial: serialPoolX, HostBridge: 24})
 	e.mustPrepare(e.pool, poolClaim("p1", "pooled0", poolExclusiveData))
 	e.mustPrepare(e.local, localClaim("l1", localDev, envBlockSize))
 	e.mustPrepare(e.local, localClaim("l2", localDev, envBlockSize))
@@ -89,14 +89,14 @@ func TestNumaNodesUnfinished(t *testing.T) {
 // Serials has the serials of the grants of the driver's source and of the
 // Prepares in progress, until the Prepare ends.
 func TestSerials(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec(), sharedSpec()}, poolSpec(serialPoolX))
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec(), sharedSpec()}, poolSpec(serialPoolX))
 	e.setShared(serialShared)
 	e.mustPrepare(e.pool, poolClaim("p1", "pooled0", poolExclusiveData))
 	e.mustPrepare(e.local, localClaim("l1", localDev, envBlockSize))
 	if got := e.pool.Serials(); !reflect.DeepEqual(got, map[uint64]bool{serialPoolX: true}) {
 		t.Fatalf("pool serials %v", got)
 	}
-	if got := e.local.Serials(); !reflect.DeepEqual(got, map[uint64]bool{serialSliced: true}) {
+	if got := e.local.Serials(); !reflect.DeepEqual(got, map[uint64]bool{serialLocal: true}) {
 		t.Fatalf("local serials %v", got)
 	}
 	// a Prepare in progress before its grant is recorded: OnShared is told
@@ -115,10 +115,10 @@ func TestSerials(t *testing.T) {
 	region, err := k.CreateRegion(t.Context(), kernel.CreateRegionRequest{Memdev: memdev, Decoder: d, Type: kernel.RegionRAM})
 	mustOK(t, err)
 	wantErrText(t, e.prepare(e.local, localClaim("s1", MemdevDeviceName(serialShared), -1, cfgDax)).Err, "that the driver did not create")
-	if !slices.Equal(inflight, []uint64{serialSliced, serialShared}) {
+	if !slices.Equal(inflight, []uint64{serialLocal, serialShared}) {
 		t.Fatalf("serials in the Prepare %v", inflight)
 	}
-	if got := e.local.Serials(); !reflect.DeepEqual(got, map[uint64]bool{serialSliced: true}) {
+	if got := e.local.Serials(); !reflect.DeepEqual(got, map[uint64]bool{serialLocal: true}) {
 		t.Fatalf("serials after the Prepare %v", got)
 	}
 	mustOK(t, k.DestroyRegion(t.Context(), region))
@@ -136,7 +136,7 @@ func TestSerials(t *testing.T) {
 // The readers of the prepared claims, of either driver: PreparedResult
 // and ClaimInfo of prepared claims only.
 func TestClaimReaders(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, poolSpec(serialPoolX))
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec()}, poolSpec(serialPoolX))
 	e.mustPrepare(e.pool, poolClaim("p1", "pooled0", poolExclusiveData))
 	e.mustPrepare(e.local, localClaim("l1", localDev, envBlockSize))
 	name, d, ok := e.pool.PreparedResult("p1", 0)
@@ -173,7 +173,7 @@ func TestClaimReaders(t *testing.T) {
 // entries of a device class come first, null removes a preset, an entry of
 // the other driver is not read.
 func TestResultSettings(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, poolSpec(serialPoolX))
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec()}, poolSpec(serialPoolX))
 	const (
 		class = resourcev1.AllocationConfigSourceClass
 		claim = resourcev1.AllocationConfigSourceClaim

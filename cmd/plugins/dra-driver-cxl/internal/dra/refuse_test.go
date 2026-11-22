@@ -32,7 +32,7 @@ import (
 // drivers, in the words of each: no kernel command, no record. set changes
 // the node for a case and returns what restores it.
 func TestPrepareRefusedBeforeDevices(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec(), pmemSpec()}, poolSpec(serialPoolX))
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec(), pmemSpec()}, poolSpec(serialPoolX))
 	noAlloc := func(c *resourcev1.ResourceClaim) *resourcev1.ResourceClaim {
 		c.Status.Allocation = nil
 		return c
@@ -183,7 +183,7 @@ func TestPrepareRefusedKeepsPreparing(t *testing.T) {
 // anew; the Unprepare of a pool one releases its memdev by its serial, of
 // a local one runs no command; both remove the record.
 func TestPrepareRefusedKeepsStale(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, poolSpec(serialPoolX), fake.MemdevSpec{Serial: serialPoolS, HostBridge: 24})
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec()}, poolSpec(serialPoolX), fake.MemdevSpec{Serial: serialPoolS, HostBridge: 24})
 	e.mustPrepare(e.pool, poolClaim("u1", "pooled0", poolExclusiveData))
 	e.mustPrepare(e.pool, poolClaim("u2", "shared0", poolSharedData))
 	e.mustPrepare(e.local, localClaim("l1", localDev, envBlockSize))
@@ -238,14 +238,14 @@ func TestPrepareRefusedKeepsStale(t *testing.T) {
 // A Prepare that fails after its intent: its record removed when its
 // rollback released everything, in the words of each driver.
 func TestPrepareFailedAfterIntent(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()})
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec()})
 	// a pool device that does not appear
 	res := e.prepare(e.pool, poolClaim("u1", "pooled9", poolExclusiveData))
 	wantErrText(t, res.Err, "cxl-pool.nri.io: claim demo/claim-u1: device pooled9 (memdev 0xc1ee0001): ")
 	e.wantState(e.pool, "u1", state.PreparationNone)
 	// a local memdev with a region that the driver did not make
 	k := e.k.Kernel()
-	memdev := e.k.Memdev(serialSliced)
+	memdev := e.k.Memdev(serialLocal)
 	d, err := k.RootDecoder(memdev, kernel.RegionRAM)
 	mustOK(t, err)
 	region, err := k.CreateRegion(context.Background(), kernel.CreateRegionRequest{Memdev: memdev, Decoder: d, Type: kernel.RegionRAM})
@@ -272,7 +272,7 @@ func TestPrepareFailedAfterIntent(t *testing.T) {
 // A Prepare whose CDI spec cannot be written is rolled back; the spec of
 // the other prepared claim cannot be written either, which is logged.
 func TestPrepareCDIFails(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()})
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec()})
 	e.mustPrepare(e.local, localClaim("u0", localDev, envBlockSize))
 	mustOK(t, os.RemoveAll(e.cdiDir))
 	mustOK(t, os.WriteFile(e.cdiDir, nil, 0o644))

@@ -1082,8 +1082,8 @@ func (f *fakeContainers) forget() {
 	f.calls = nil
 }
 
-// setPeer makes r the peer of every connection (nil: an unknown process).
-func (f *fakeContainers) setPeer(r *leases.Requester) {
+// setProcess makes r the peer of every connection (nil: an unknown process).
+func (f *fakeContainers) setProcess(r *leases.Requester) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.byPid = r

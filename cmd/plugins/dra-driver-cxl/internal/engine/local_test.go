@@ -37,7 +37,7 @@ import (
 // (its Whole device resized), the next ones new dax devices; numa parts
 // online movable on the node fenced before, dax parts device_dax and
 // zeroed; the Unprepare of the last part destroys the region.
-func TestLocalSliced(t *testing.T) {
+func TestLocal(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
 	at := v.onlineAtFence()
 	v.mustPrepare(localDriver, "n1", localReq("n1", 0, serialL, state.ModeNUMA, state.KindLocal, 256*mib))
@@ -183,9 +183,9 @@ func TestLocalRegionErrors(t *testing.T) {
 // A first part whose set-up fails leaves nothing: the region does not come
 // up in devdax mode, its zeroing fails, kmem cannot be bound, the memory
 // not onlined, the part rounded up to whole memory blocks does not fit or
-// the memory block size cannot be read. A later part that fails to resize, to come up in devdax
-// mode or to online goes alone; a part that fails to delete stays with its
-// claim until a retry.
+// the memory block size cannot be read. A later part that fails to resize, to
+// come up in devdax mode or to online goes alone; a part that fails to delete
+// stays with its claim until a retry.
 func TestLocalSliceFailures(t *testing.T) {
 	enable := errors.New("device_dax: enable failed")
 	numa := func(uid string, size uint64) GrantRequest {

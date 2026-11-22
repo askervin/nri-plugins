@@ -110,7 +110,7 @@ func TestStackRecoveryTopMostFirst(t *testing.T) {
 // Unprepare of the local claim below the pool region destroys its region
 // and leaves a hole; the next creation through the port fails (the hole
 // text) until the pool region goes, which reaps the hole.
-func TestStackLocalSlicedHole(t *testing.T) {
+func TestStackLocalHole(t *testing.T) {
 	v := newEnv(t, stackSpecs...)
 	v.mustPrepare(localDriver, "l", sliceReq("l", 0, state.ModeDax, 256*mib))
 	v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeDax, state.KindPool))

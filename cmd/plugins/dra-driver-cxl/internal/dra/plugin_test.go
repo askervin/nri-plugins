@@ -41,7 +41,7 @@ import (
 func TestPreparedCommitWaitsForItsWrite(t *testing.T) {
 	defer func(d time.Duration) { commitTimeout = d }(commitTimeout)
 	commitTimeout = 200 * time.Millisecond
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()})
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec()})
 	claim := localClaim("u1", localDev, envBlockSize, cfgDax)
 	// the first write after the CDI spec names the claim's device is the
 	// write of PREPARED
@@ -82,7 +82,7 @@ func TestPreparedCommitWaitsForItsWrite(t *testing.T) {
 // fails every claim of the call, with a warning, before any device or
 // record.
 func TestWaitNRI(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, poolSpec(serialPoolX))
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec()}, poolSpec(serialPoolX))
 	errWait := errors.New("NRI has not synchronized")
 	waited := 0
 	wait := func(ctx context.Context) error {

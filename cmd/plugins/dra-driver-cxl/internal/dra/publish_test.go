@@ -777,7 +777,7 @@ func TestLocalSnapshot(t *testing.T) {
 // publishes them with its line.
 func TestRescanBeforeStart(t *testing.T) {
 	logs := klogtest.Capture(t, 0)
-	client := sliceTestClient(pubNode, nil)
+	client := resourceSliceTestClient(pubNode, nil)
 	p := pubPublisher(t, PublishOptions{
 		Config:   PublishConfig{IgnoreDRAM: true, PublishLeaseDevice: true},
 		NodeName: pubNode,
@@ -802,7 +802,7 @@ func TestRescanBeforeStart(t *testing.T) {
 
 	p.Start(ctx)
 	defer p.Stop()
-	waitNodeSlice(t, client, pubNode, 5*time.Second, device.LeaseDeviceName)
+	waitNodeResourceSlice(t, client, pubNode, 5*time.Second, device.LeaseDeviceName)
 	p.Rescan(ctx, false)
 	if n := published(); n != 1 {
 		t.Fatalf("%d lines of a publish after the start:\n%s", n, logs())
@@ -814,7 +814,7 @@ func TestRescanBeforeStart(t *testing.T) {
 // up in: that of the last publication, the last scan's before the
 // first one; a scan that is not published leaves it.
 func TestPublishedTable(t *testing.T) {
-	client := sliceTestClient(pubNode, nil)
+	client := resourceSliceTestClient(pubNode, nil)
 	var dram atomic.Bool
 	p := pubPublisher(t, PublishOptions{
 		Config:   PublishConfig{PublishLeaseDevice: true},
@@ -830,7 +830,7 @@ func TestPublishedTable(t *testing.T) {
 	}
 	p.Start(ctx)
 	defer p.Stop()
-	waitNodeSlice(t, client, pubNode, 5*time.Second, device.LeaseDeviceName)
+	waitNodeResourceSlice(t, client, pubNode, 5*time.Second, device.LeaseDeviceName)
 	// a scan that finds the DRAM device, not published
 	dram.Store(true)
 	pubNoErr(t, p.Scan(ctx))

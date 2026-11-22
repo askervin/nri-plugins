@@ -165,7 +165,7 @@ func TestPersistentDefaults(t *testing.T) {
 // A read-write claim with access cached of a device that a reader mounts
 // with access direct only is refused with the text of the e2e tests, and
 // the refusal mounts and changes nothing.
-func TestPersistentP9D(t *testing.T) {
+func TestPersistentRefusesSecondAccess(t *testing.T) {
 	v := pmemEnv(t, "ext4")
 	v.mustPrepare(poolDriver, "r", fsGrant("r", true, state.AccessDirect))
 	n := mountCalls(v)

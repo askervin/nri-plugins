@@ -38,12 +38,12 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
-// sliceTestClient returns a fake clientset with the node, whose creates and
-// updates of ResourceSlices do what the API server does and the fake does
-// not: a name from GenerateName, a resource version (the mutation cache of
-// the controller needs one). stored, if not nil, changes a slice as it is
-// stored.
-func sliceTestClient(node string, stored func(*resourcev1.ResourceSlice)) *fake.Clientset {
+// resourceSliceTestClient returns a fake clientset with the node, whose
+// creates and updates of ResourceSlices do what the API server does and the
+// fake does not: a name from GenerateName, a resource version (the mutation
+// cache of the controller needs one). stored, if not nil, changes a slice as
+// it is stored.
+func resourceSliceTestClient(node string, stored func(*resourcev1.ResourceSlice)) *fake.Clientset {
 	client := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: node, UID: types.UID("uid-" + node)}})
 	var mu sync.Mutex
 	rv := 0
@@ -66,9 +66,9 @@ func sliceTestClient(node string, stored func(*resourcev1.ResourceSlice)) *fake.
 	return client
 }
 
-// nodeSliceDevices returns the device names of the node's cxl.nri.io
+// nodeResourceSliceDevices returns the device names of the node's cxl.nri.io
 // slices, nil if it has none.
-func nodeSliceDevices(t *testing.T, client *fake.Clientset, node string) []string {
+func nodeResourceSliceDevices(t *testing.T, client *fake.Clientset, node string) []string {
 	t.Helper()
 	list, err := client.ResourceV1().ResourceSlices().List(context.Background(), metav1.ListOptions{})
 	pubNoErr(t, err)
@@ -90,13 +90,13 @@ func nodeSliceDevices(t *testing.T, client *fake.Clientset, node string) []strin
 	return names
 }
 
-// waitNodeSlice waits at most timeout until the node's slice has the
+// waitNodeResourceSlice waits at most timeout until the node's slice has the
 // devices, and returns how long it took.
-func waitNodeSlice(t *testing.T, client *fake.Clientset, node string, timeout time.Duration, want ...string) time.Duration {
+func waitNodeResourceSlice(t *testing.T, client *fake.Clientset, node string, timeout time.Duration, want ...string) time.Duration {
 	t.Helper()
 	start := time.Now()
 	for {
-		got := nodeSliceDevices(t, client, node)
+		got := nodeResourceSliceDevices(t, client, node)
 		if fmt.Sprint(got) == fmt.Sprint(want) {
 			return time.Since(start)
 		}
@@ -123,7 +123,7 @@ func waitLog(t *testing.T, logs func() string, text string, n int) {
 // after the library's default of 30 s. The driver's own publishes are not
 // delayed, and after Stop nothing puts the slice back.
 func TestNodeSliceBackAfterKubeletWipe(t *testing.T) {
-	client := sliceTestClient(pubNode, nil)
+	client := resourceSliceTestClient(pubNode, nil)
 	var dram atomic.Bool
 	p := pubPublisher(t, PublishOptions{
 		Config:   PublishConfig{PublishLeaseDevice: true},
@@ -136,7 +136,7 @@ func TestNodeSliceBackAfterKubeletWipe(t *testing.T) {
 	pubNoErr(t, p.Scan(ctx))
 	p.Start(ctx)
 	defer p.Stop()
-	waitNodeSlice(t, client, pubNode, 5*time.Second, device.LeaseDeviceName)
+	waitNodeResourceSlice(t, client, pubNode, 5*time.Second, device.LeaseDeviceName)
 
 	// kubelet's wipe: DeleteCollection of spec.nodeName (the fake
 	// implements no DeleteCollection, and no field selectors).
@@ -145,10 +145,10 @@ func TestNodeSliceBackAfterKubeletWipe(t *testing.T) {
 	for _, rs := range list.Items {
 		pubNoErr(t, client.ResourceV1().ResourceSlices().Delete(ctx, rs.Name, metav1.DeleteOptions{}))
 	}
-	if got := nodeSliceDevices(t, client, pubNode); got != nil {
+	if got := nodeResourceSliceDevices(t, client, pubNode); got != nil {
 		t.Fatalf("slice not deleted: %v", got)
 	}
-	took := waitNodeSlice(t, client, pubNode, resourceSliceSyncDelay+5*time.Second, device.LeaseDeviceName)
+	took := waitNodeResourceSlice(t, client, pubNode, resourceSliceSyncDelay+5*time.Second, device.LeaseDeviceName)
 	t.Logf("slice back %v after the wipe (sync delay %v)", took.Round(time.Millisecond), resourceSliceSyncDelay)
 
 	// A publish of the driver (e.g. a udev rescan) syncs at once, also
@@ -157,7 +157,7 @@ func TestNodeSliceBackAfterKubeletWipe(t *testing.T) {
 	// is still far below the default sync delay of 30 s.
 	dram.Store(true)
 	p.Rescan(ctx, false)
-	took = waitNodeSlice(t, client, pubNode, 10*time.Second, device.DRAMDeviceName, device.LeaseDeviceName)
+	took = waitNodeResourceSlice(t, client, pubNode, 10*time.Second, device.DRAMDeviceName, device.LeaseDeviceName)
 	if took >= 5*time.Second {
 		t.Errorf("publish took %v, expected at once", took)
 	}
@@ -174,7 +174,7 @@ func TestNodeSliceBackAfterKubeletWipe(t *testing.T) {
 	pubNoErr(t, client.ResourceV1().ResourceSlices().Delete(ctx, list.Items[0].Name, metav1.DeleteOptions{}))
 	p.Rescan(ctx, false)
 	time.Sleep(resourceSliceSyncDelay + 500*time.Millisecond)
-	if got := nodeSliceDevices(t, client, pubNode); got != nil {
+	if got := nodeResourceSliceDevices(t, client, pubNode); got != nil {
 		t.Errorf("slice re-created after Stop: %v", got)
 	}
 }
@@ -188,7 +188,7 @@ func TestNodeSliceBackAfterKubeletWipe(t *testing.T) {
 func TestDroppedNodeAllocatable(t *testing.T) {
 	logs := klogtest.Capture(t, 0)
 	var dropMultiple atomic.Bool
-	client := sliceTestClient(pubNode, func(rs *resourcev1.ResourceSlice) {
+	client := resourceSliceTestClient(pubNode, func(rs *resourcev1.ResourceSlice) {
 		for i := range rs.Spec.Devices {
 			rs.Spec.Devices[i].NodeAllocatableResources = nil
 			if dropMultiple.Load() {
@@ -212,7 +212,7 @@ func TestDroppedNodeAllocatable(t *testing.T) {
 	}
 	p.Start(ctx)
 	defer p.Stop()
-	waitNodeSlice(t, client, pubNode, 5*time.Second, device.DRAMDeviceName, device.LeaseDeviceName)
+	waitNodeResourceSlice(t, client, pubNode, 5*time.Second, device.DRAMDeviceName, device.LeaseDeviceName)
 	const warning = "the API server drops nodeAllocatableResources"
 	waitLog(t, logs, warning, 1)
 	for range 3 {
@@ -221,7 +221,7 @@ func TestDroppedNodeAllocatable(t *testing.T) {
 	// the controller syncs an update of the devices at once: a write would
 	// come within milliseconds
 	for deadline := time.Now().Add(300 * time.Millisecond); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		if n := sliceWrites(client); n != 1 {
+		if n := resourceSliceWrites(client); n != 1 {
 			t.Fatalf("%d writes of the slice after the rescans of unchanged devices, expected its create", n)
 		}
 	}
@@ -238,7 +238,7 @@ func TestDroppedNodeAllocatable(t *testing.T) {
 // before, so the controller writes the slice again at every publish.
 func TestDroppedOtherField(t *testing.T) {
 	logs := klogtest.Capture(t, 0)
-	client := sliceTestClient(pubNode, func(rs *resourcev1.ResourceSlice) {
+	client := resourceSliceTestClient(pubNode, func(rs *resourcev1.ResourceSlice) {
 		for i := range rs.Spec.Devices {
 			rs.Spec.Devices[i].AllowMultipleAllocations = nil
 		}
@@ -256,12 +256,12 @@ func TestDroppedOtherField(t *testing.T) {
 	pubNoErr(t, p.Scan(ctx))
 	p.Start(ctx)
 	defer p.Stop()
-	waitNodeSlice(t, client, pubNode, 5*time.Second, device.DRAMDeviceName, device.LeaseDeviceName)
+	waitNodeResourceSlice(t, client, pubNode, 5*time.Second, device.DRAMDeviceName, device.LeaseDeviceName)
 	waitLog(t, logs, "some fields were dropped", 1)
 	for range 2 {
-		writes := sliceWrites(client)
+		writes := resourceSliceWrites(client)
 		p.Rescan(ctx, false)
-		for deadline := time.Now().Add(5 * time.Second); sliceWrites(client) == writes; time.Sleep(10 * time.Millisecond) {
+		for deadline := time.Now().Add(5 * time.Second); resourceSliceWrites(client) == writes; time.Sleep(10 * time.Millisecond) {
 			if time.Now().After(deadline) {
 				t.Fatalf("no write of the slice after a publish")
 			}
@@ -282,7 +282,7 @@ func TestDroppedOtherField(t *testing.T) {
 // server: the slice is published once the controller's informer has
 // synced, and Stop returns also while it waits.
 func TestStartWithoutAPIServer(t *testing.T) {
-	client := sliceTestClient(pubNode, nil)
+	client := resourceSliceTestClient(pubNode, nil)
 	var down atomic.Bool
 	var lists atomic.Int32
 	down.Store(true)
@@ -323,11 +323,11 @@ func TestStartWithoutAPIServer(t *testing.T) {
 		}
 	}
 	time.Sleep(300 * time.Millisecond)
-	if got := nodeSliceDevices(t, client, pubNode); got != nil {
+	if got := nodeResourceSliceDevices(t, client, pubNode); got != nil {
 		t.Fatalf("slice %v published while the list fails", got)
 	}
 	down.Store(false)
-	took := waitNodeSlice(t, client, pubNode, 15*time.Second, device.LeaseDeviceName)
+	took := waitNodeResourceSlice(t, client, pubNode, 15*time.Second, device.LeaseDeviceName)
 	t.Logf("slice published %v after the API server came back", took.Round(time.Millisecond))
 
 	down.Store(true)
@@ -352,7 +352,7 @@ func TestSliceChunks(t *testing.T) {
 		snap.Memdevs = append(snap.Memdevs, pubMem(fmt.Sprintf("mem%d", i), uint64(i), 1<<30, 0))
 		pubRegion(snap, fmt.Sprintf("region%d", i), i, 1<<30, uint64(i))
 	}
-	client := sliceTestClient(pubNode, nil)
+	client := resourceSliceTestClient(pubNode, nil)
 	p := pubPublisher(t, PublishOptions{
 		Config:   PublishConfig{PublishLeaseDevice: true},
 		NodeName: pubNode,
@@ -377,7 +377,7 @@ func TestSliceChunks(t *testing.T) {
 	defer p.Stop()
 	slices.Sort(names)
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		got := nodeSliceDevices(t, client, pubNode)
+		got := nodeResourceSliceDevices(t, client, pubNode)
 		slices.Sort(got)
 		if slices.Equal(got, names) {
 			break

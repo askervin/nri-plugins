@@ -58,7 +58,7 @@ const (
 	envLeaseClaim = "lc1"
 
 	// serials of the local memdevs of this node: sliced, shared.
-	serialSliced = 0xc100e2e1
+	serialLocal  = 0xc100e2e1
 	serialShared = 0xc100e2e2
 	// serials of the pool devices: volatile memory, shared, persistent.
 	serialPoolX = 0xc1ee0001
@@ -571,8 +571,8 @@ func (f *fakeContainers) forget() {
 	f.calls = nil
 }
 
-// setPeer makes r the peer of every connection (nil: an unknown process).
-func (f *fakeContainers) setPeer(r *Requester) {
+// setProcess makes r the peer of every connection (nil: an unknown process).
+func (f *fakeContainers) setProcess(r *Requester) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.byPid = r

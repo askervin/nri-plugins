@@ -332,9 +332,9 @@ func TestCgroupGone(t *testing.T) {
 	m.Stop()
 }
 
-// TestRelease removes the memory.high that a killed manager left, leaves
-// max as it is and creates no file.
-func TestRelease(t *testing.T) {
+// TestResetMemoryHigh removes the memory.high that a killed manager left,
+// leaves max as it is and creates no file.
+func TestResetMemoryHigh(t *testing.T) {
 	cg := t.TempDir()
 	high := filepath.Join(cg, "memory.high")
 	readHigh := func() string {

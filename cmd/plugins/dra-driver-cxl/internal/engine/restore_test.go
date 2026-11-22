@@ -37,7 +37,7 @@ import (
 // block device first. A node mount that is gone and whose block device is
 // another one now is not mounted again, with the line that the observer
 // counts.
-func TestRestoreFlags(t *testing.T) {
+func TestRecoverRestoresFlags(t *testing.T) {
 	for _, source := range sources {
 		t.Run(string(source), func(t *testing.T) {
 			driver := driverOf(source)

@@ -158,9 +158,10 @@ func deviceConfigOf(t *testing.T, c *resourcev1.ResourceClaim, driver string) *c
 	return nil
 }
 
-// A pool numa lease: the node lent at the Prepare, the response, the requestId, list, env and fd; a started
-// container gets the node again; the release revokes it, deletes the
-// companion, whose Unprepare releases the region.
+// A pool numa lease: the node lent at the Prepare, the response, the
+// requestId, list, env and fd; a started container gets the node again; the
+// release revokes it, deletes the companion, whose Unprepare releases the
+// region.
 func TestPoolNumaLease(t *testing.T) {
 	e := newLeaseEnv(t, nil, fake.MemdevSpec{Serial: poolSerial})
 	e.openClaim()
@@ -298,14 +299,14 @@ func TestPoolSharedLeaseFd(t *testing.T) {
 	// the fd is only for the requester container
 	other := requester
 	other.Container = "sidecar"
-	e.ctrs.setPeer(&other)
+	e.ctrs.setProcess(&other)
 	if resp, fd := e.call(api.Request{Op: api.OpFd, Lease: "000000a1"}); fd >= 0 || resp.Error != "no such lease of this container" {
 		t.Fatalf("fd of another container %+v %d", resp, fd)
 	}
 	if resp, _ := e.call(api.Request{Op: api.OpEnv, Lease: "000000a1"}); resp.Error != "" || resp.State != api.StateReady {
 		t.Fatalf("env of another container %+v", resp)
 	}
-	e.ctrs.setPeer(&requester)
+	e.ctrs.setProcess(&requester)
 	e.wantReleaseAll(1)
 	e.wantGone("cxl-lease-000000a1")
 

@@ -45,7 +45,7 @@ func nm(usage ...int64) NodeMem {
 	return m
 }
 
-func TestNextStepSteeringTowardsPath(t *testing.T) {
+func TestNextStepTowardsSegment(t *testing.T) {
 	// node1
 	//   ^ ctpY                     nwp
 	// 80x-                      +---x
@@ -236,7 +236,7 @@ func TestNextStepSteeringTowardsPath(t *testing.T) {
 	}
 }
 
-func TestInterestingNextSteps(t *testing.T) {
+func TestNextStepCases(t *testing.T) {
 	t.Run("all-in one lagging node", func(t *testing.T) {
 		// n0: pwp-nwp increase, ctp-nwp flat already there
 		// n1: pwp-nwp flat, ctp-nwp a lot behind (n1 needs to grow)

@@ -42,7 +42,7 @@ import (
 // lease claim, nothing of a result of another driver or of a companion
 // claim.
 func TestClaimsCDISpec(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()})
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec()})
 	e.lending()
 	e.setLeases()
 	region := e.addRegion("region0", 2, 2<<30)
@@ -80,7 +80,7 @@ func TestClaimsCDISpec(t *testing.T) {
 // finishing are left out, UNPREPARING ones are kept; the spec of no device
 // is removed.
 func TestCDISpecOfClaims(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, fake.MemdevSpec{Serial: serialPoolS, HostBridge: 24})
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec()}, fake.MemdevSpec{Serial: serialPoolS, HostBridge: 24})
 	b := addLocalResult(localClaim("b", localDev, envBlockSize), "second", localDev, envBlockSize)
 	e.mustPrepare(e.local, b)
 	e.mustPrepare(e.local, localClaim("a", device.DRAMDeviceName, 64*mib))
@@ -146,7 +146,7 @@ func TestCDISpecOfClaims(t *testing.T) {
 // The drivers on a LOST store write and remove no CDI spec: the records of
 // the prepared claims are unknown, not absent.
 func TestCDISpecsOfALostStore(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, fake.MemdevSpec{Serial: serialPoolS, HostBridge: 24})
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec()}, fake.MemdevSpec{Serial: serialPoolS, HostBridge: 24})
 	e.mustPrepare(e.local, localClaim("a", device.DRAMDeviceName, 64*mib))
 	e.mustPrepare(e.pool, poolClaim("p1", "shared0", poolSharedData))
 	files := func() map[string]string {
@@ -263,7 +263,7 @@ func TestCDINames(t *testing.T) {
 // kept device of an UNPREPARING claim has none after a failed release, and
 // the spec still writes. A dax device that is gone has no device node.
 func TestCDISpecOfIncompleteDevices(t *testing.T) {
-	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec(), pmemSpec()})
+	e := newDriverEnv(t, []fake.MemdevSpec{localSpec(), pmemSpec()})
 	e.formatPmem(serialPmem, "ext4")
 	e.mustPrepare(e.local, localClaim("f", pmemDev, -1, cfgFsRO))
 	e.mustPrepare(e.local, localClaim("d", localDev, envBlockSize, cfgDax))
