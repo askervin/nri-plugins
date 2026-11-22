@@ -45,7 +45,7 @@ import (
 // publisher goroutine starts the controller of the node's slices, then
 // every scan is published) and stopped (nothing is published). A latch:
 // the API server drops nodeAllocatableResources. The configuration is
-// that of NewPublisher.
+// that of newPublisher.
 //
 // Transitions: a scan (at the start, then on udev events, the watch's
 // ticks and after the Prepares and Unprepares that changed the records,
@@ -69,17 +69,17 @@ import (
 // synced or Stop); mu guards the table, the controller and the latch, never
 // held across a scan or a publish.
 type Publisher struct {
-	opts PublishOptions
+	opts publishOptions
 
 	scanMu  sync.Mutex
 	scanned atomic.Int64
 
 	// mu guards the fields below up to triggerMu: a leaf lock.
 	mu      sync.Mutex
-	devices DevicesInfo
+	devices devicesInfo
 	// published is the table of the last publication, nil before the
 	// first.
-	published DevicesInfo
+	published devicesInfo
 	// ctl publishes the node's slices, nil before the first publish and
 	// after Stop.
 	ctl *resourceslice.Controller
@@ -100,8 +100,8 @@ type Publisher struct {
 	stopped       bool
 }
 
-// PublishOptions are the settings of a Publisher.
-type PublishOptions struct {
+// publishOptions are the settings of a Publisher.
+type publishOptions struct {
 	// Config are the settings of the configuration of the driver, fixed
 	// for the life of the publisher.
 	Config PublishConfig
@@ -151,19 +151,19 @@ func (c *PublishConfig) usableSize(memdev string, serial uint64) uint64 {
 	return c.UsableSize(memdev, serial)
 }
 
-// NewPublisher returns the publisher of the node's ResourceSlices of the
+// newPublisher returns the publisher of the node's ResourceSlices of the
 // scans of opts.Scan and the records of opts.Store; it publishes after
 // Start.
-func NewPublisher(opts PublishOptions) (*Publisher, error) {
+func newPublisher(opts publishOptions) (*Publisher, error) {
 	if opts.Store == nil || opts.Scan == nil || opts.NodeName == "" {
 		return nil, errors.New("the publisher needs the state store, the scan of the devices and the node name")
 	}
-	return &Publisher{opts: opts, devices: DevicesInfo{}, logged: map[string]time.Time{}, trigger: make(chan struct{}, 1)}, nil
+	return &Publisher{opts: opts, devices: devicesInfo{}, logged: map[string]time.Time{}, trigger: make(chan struct{}, 1)}, nil
 }
 
 // Published returns the devices of the last publication, by name, those of
 // the last scan before the first publication.
-func (p *Publisher) Published() DevicesInfo {
+func (p *Publisher) Published() devicesInfo {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.published == nil {
@@ -184,14 +184,14 @@ func (p *Publisher) PublishedDevice(serial uint64) (resourcev1.Device, bool) {
 }
 
 // Devices returns the devices of the last scan, by name.
-func (p *Publisher) Devices() DevicesInfo {
+func (p *Publisher) Devices() devicesInfo {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.devices
 }
 
 // SetDevices sets the devices of the table, as a scan does.
-func (p *Publisher) SetDevices(devs DevicesInfo) {
+func (p *Publisher) SetDevices(devs devicesInfo) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.devices = devs
@@ -215,7 +215,7 @@ func (p *Publisher) Resources() resourceslice.DriverResources {
 // devices of a table, sorted by name, in slices of at most
 // ResourceSliceMaxDevices, one empty slice for no devices; without
 // nodeAllocatableResources if noAllocatable.
-func (p *Publisher) resourcesOf(devs DevicesInfo, noAllocatable bool) resourceslice.DriverResources {
+func (p *Publisher) resourcesOf(devs devicesInfo, noAllocatable bool) resourceslice.DriverResources {
 	out := resources(devs)
 	if noAllocatable {
 		for i := range out {
@@ -413,7 +413,7 @@ func (p *Publisher) publish(ctx context.Context) error {
 // scan returns the devices to publish of a scan of the node: the serials of
 // the pool driver's devices and of the pool slices noted, the memdevs held
 // or remembered as pool devices left out.
-func (p *Publisher) scan(ctx context.Context) (DevicesInfo, error) {
+func (p *Publisher) scan(ctx context.Context) (devicesInfo, error) {
 	cfg, poolSerials := p.ScanInput(ctx)
 	return p.scanWith(ctx, cfg, poolSerials)
 }
@@ -434,7 +434,7 @@ func (p *Publisher) ScanWith(ctx context.Context, cfg PublishConfig, poolSerials
 
 // scanWith returns the devices to publish of a scan of the node with the
 // configuration and the serials of pool devices of ScanInput.
-func (p *Publisher) scanWith(ctx context.Context, cfg PublishConfig, poolSerials map[uint64]bool) (DevicesInfo, error) {
+func (p *Publisher) scanWith(ctx context.Context, cfg PublishConfig, poolSerials map[uint64]bool) (devicesInfo, error) {
 	snap, err := p.opts.Scan(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to detect devices: %v", err)

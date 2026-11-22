@@ -107,7 +107,7 @@ func (e *pubSerialsEnv) restart() {
 // publisher returns a publisher of the env (not started: it does not
 // publish) whose scans detect the devices of scan.
 func (e *pubSerialsEnv) publisher(scan func(context.Context) (*kernel.Snapshot, error)) *Publisher {
-	return pubPublisher(e.t, PublishOptions{
+	return pubPublisher(e.t, publishOptions{
 		Config:    PublishConfig{IgnoreDRAM: true, ManageMemdevs: true},
 		NodeName:  pubNode,
 		Scan:      scan,
@@ -511,7 +511,7 @@ func TestProvenancePrepared(t *testing.T) {
 	e.wantScan("restarted")
 	// the pool driver's serials of a scan
 	e.plug(pubOtherLocalSerial)
-	e.p = pubPublisher(t, PublishOptions{
+	e.p = pubPublisher(t, publishOptions{
 		Config:      PublishConfig{IgnoreDRAM: true, ManageMemdevs: true},
 		NodeName:    pubNode,
 		Scan:        func(context.Context) (*kernel.Snapshot, error) { return e.devices(), nil },
@@ -830,7 +830,7 @@ func poolTestDevices() *kernel.Snapshot {
 // the publisher after it.
 func scanNames(t *testing.T, ctx context.Context, st *store.Store, w *provenance.Watcher) ([]string, PublishConfig) {
 	t.Helper()
-	p := pubPublisher(t, PublishOptions{
+	p := pubPublisher(t, publishOptions{
 		Config:    PublishConfig{IgnoreDRAM: true, ManageMemdevs: true},
 		NodeName:  pubNode,
 		Scan:      func(context.Context) (*kernel.Snapshot, error) { return poolTestDevices(), nil },

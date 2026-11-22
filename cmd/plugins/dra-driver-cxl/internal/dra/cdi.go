@@ -50,9 +50,9 @@ func ClaimCDIDeviceName(claimUID string, n int) string {
 	return "claim-" + claimUID + "-" + strconv.Itoa(n)
 }
 
-// LeaseCDIDeviceName is the CDI device name of a claim on the lease
+// leaseCDIDeviceName is the CDI device name of a claim on the lease
 // device: its socket directory, lease-fs directory and CLI.
-func LeaseCDIDeviceName(claimUID string) string {
+func leaseCDIDeviceName(claimUID string) string {
 	return "lease-" + claimUID
 }
 
@@ -83,9 +83,9 @@ func daxDeviceNode(path string, major, minor int, readOnly bool) *cdiSpecs.Devic
 	return node
 }
 
-// BlockDeviceNode returns the CDI device node of a block device, with
+// blockDeviceNode returns the CDI device node of a block device, with
 // permissions "r" when read-only.
-func BlockDeviceNode(dev string, major, minor int, readOnly bool) *cdiSpecs.DeviceNode {
+func blockDeviceNode(dev string, major, minor int, readOnly bool) *cdiSpecs.DeviceNode {
 	node := &cdiSpecs.DeviceNode{Path: dev, Type: "b", Major: int64(major), Minor: int64(minor)}
 	if readOnly {
 		node.Permissions = "r"
@@ -145,7 +145,7 @@ func buildCDISpec(doc *store.Document, driver, kind string, rs roots, pending st
 	}
 	if leases != nil {
 		for _, lc := range doc.LeaseClaims {
-			spec.Devices = append(spec.Devices, cdiSpecs.Device{Name: LeaseCDIDeviceName(lc.UID), ContainerEdits: leases.CDIEdits(lc.UID)})
+			spec.Devices = append(spec.Devices, cdiSpecs.Device{Name: leaseCDIDeviceName(lc.UID), ContainerEdits: leases.CDIEdits(lc.UID)})
 		}
 	}
 	return spec, errors.Join(errs...)
@@ -172,7 +172,7 @@ func cdiDevice(uid string, d *state.DeviceInfo, keys envKeys) cdiSpecs.Device {
 	case d.Mode == api.ModeDax && d.DaxDevice != "":
 		edits.DeviceNodes = []*cdiSpecs.DeviceNode{daxDeviceNode(d.DaxDevice, d.DaxMajor, d.DaxMinor, d.ReadOnly)}
 	case d.Persistent && d.Mode == api.ModeBlock:
-		edits.DeviceNodes = []*cdiSpecs.DeviceNode{BlockDeviceNode(d.BlockDevice, d.BlockMajor, d.BlockMinor, d.ReadOnly)}
+		edits.DeviceNodes = []*cdiSpecs.DeviceNode{blockDeviceNode(d.BlockDevice, d.BlockMajor, d.BlockMinor, d.ReadOnly)}
 	case d.Persistent && d.Mode == api.ModeFS && d.NodeMount != "":
 		edits.Mounts = []*cdiSpecs.Mount{fsCDIMount(d.NodeMount, d.Path, d.ReadOnly)}
 	}

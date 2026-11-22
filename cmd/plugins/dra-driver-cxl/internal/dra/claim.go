@@ -199,7 +199,7 @@ func (p *Plugin) validate(claim *resourcev1.ResourceClaim) (*prepare, error) {
 	}
 	allocatable := p.allocatable()
 	pr := newPrepare(claim)
-	if id := LeaseOf(claim); id != "" {
+	if id := leaseOf(claim); id != "" {
 		if !p.memdevsOnly(claim, allocatable) {
 			return nil, fmt.Errorf("the companion claim of lease %s needs %s devices only", id, device.DeviceTypeMemdev)
 		}
@@ -224,7 +224,7 @@ func (p *Plugin) ofDriver(r *resourcev1.DeviceRequestAllocationResult) bool {
 // memdevsOnly tells whether the allocation results of the driver in a claim
 // are memdevs, at least one, as a companion claim needs: every device of
 // the pool driver is, cxl.nri.io looks its devices up in allocatable.
-func (p *Plugin) memdevsOnly(claim *resourcev1.ResourceClaim, allocatable DevicesInfo) bool {
+func (p *Plugin) memdevsOnly(claim *resourcev1.ResourceClaim, allocatable devicesInfo) bool {
 	n := 0
 	for i := range claim.Status.Allocation.Devices.Results {
 		r := &claim.Status.Allocation.Devices.Results[i]
@@ -249,7 +249,7 @@ func (p *Plugin) memdevsOnly(claim *resourcev1.ResourceClaim, allocatable Device
 // a claim: one for every allocation result of the driver, as its
 // MemoryConfig (resolved) says, of a device of the node in allocatable
 // (localResult) or of a pool device (poolResult).
-func (p *Plugin) results(claim *resourcev1.ResourceClaim, pr *prepare, allocatable DevicesInfo, resolved map[int]*config.Resolved) error {
+func (p *Plugin) results(claim *resourcev1.ResourceClaim, pr *prepare, allocatable devicesInfo, resolved map[int]*config.Resolved) error {
 	// the env keys of the memdevs, as the CDI spec counts them
 	keys := envKeys{}
 	fs := 0
@@ -292,7 +292,7 @@ func (p *Plugin) results(claim *resourcev1.ResourceClaim, pr *prepare, allocatab
 // localResult returns the request to the engine of an allocation result r of
 // cxl.nri.io on a local memdev in allocatable (memdevRequest), or sets the
 // result of another device of the node (otherResult) and returns no request.
-func (p *Plugin) localResult(pr *prepare, result *state.Result, r *resourcev1.DeviceRequestAllocationResult, allocatable DevicesInfo, keys envKeys, cfg config.Device) (*engine.GrantRequest, error) {
+func (p *Plugin) localResult(pr *prepare, result *state.Result, r *resourcev1.DeviceRequestAllocationResult, allocatable devicesInfo, keys envKeys, cfg config.Device) (*engine.GrantRequest, error) {
 	dev, found := allocatable[r.Device]
 	if !found {
 		return nil, fmt.Errorf("could not find allocatable device %v (pool %v)", r.Device, r.Pool)
@@ -393,7 +393,7 @@ func (p *Plugin) memdevRequest(pr *prepare, r *resourcev1.DeviceRequestAllocatio
 	}
 	size := dev.Size
 	if dev.BlockSize > 0 {
-		size = LocalUsableSize(dev.Size, dev.BlockSize)
+		size = localUsableSize(dev.Size, dev.BlockSize)
 	}
 	if consumed, ok := r.ConsumedCapacity[device.CapacityMemory]; ok && consumed.Value() > 0 {
 		size = uint64(consumed.Value())

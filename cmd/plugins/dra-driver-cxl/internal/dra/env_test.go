@@ -140,7 +140,7 @@ type driverEnv struct {
 	onScan  func()
 	onWrite func() error
 
-	// nodes and hooks are the lender of both drivers (Lender.Set) after
+	// nodes and hooks are the lender of both drivers (lender.Set) after
 	// lend, leases the lease claims of cxl.nri.io after setLeases.
 	nodes  *fakeNodes
 	hooks  lend.LeaseHooks

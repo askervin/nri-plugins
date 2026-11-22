@@ -67,8 +67,8 @@ func (e *driverEnv) prefix(p *Plugin) string {
 // local memdevs only. A claim without the label is no companion.
 func TestCompanionGate(t *testing.T) {
 	e := lendEnv(t)
-	if LeaseOf(e.companionOf(e.local)) != "l1" || LeaseOf(localClaim("u1", localDev, 0)) != "" {
-		t.Fatal("LeaseOf")
+	if leaseOf(e.companionOf(e.local)) != "l1" || leaseOf(localClaim("u1", localDev, 0)) != "" {
+		t.Fatal("leaseOf")
 	}
 	for _, p := range []*Plugin{e.local, e.pool} {
 		e.t = t
@@ -106,7 +106,7 @@ func TestCompanionGate(t *testing.T) {
 }
 
 // Without NRI a lend of numa devices fails and one of dax devices passes:
-// the broker passes them as an fd; a revoke only warns. A nil Lender, the
+// the broker passes them as an fd; a revoke only warns. A nil lender, the
 // lender of a plugin that is not there, is disabled and calls no hook.
 func TestCompanionLenderWithoutNRI(t *testing.T) {
 	e := lendEnv(t)
@@ -131,7 +131,7 @@ func TestCompanionLenderWithoutNRI(t *testing.T) {
 		t.Fatalf("no %q in\n%s", line, got)
 	}
 
-	var n *Lender
+	var n *lender
 	n.Set(&fakeNodes{e: e}, hooks)
 	n.Prepared("l1", state.SourceLocal, nil)
 	n.Failed("l1", errors.New("lend failed"))

@@ -36,16 +36,16 @@ type SourceRules struct {
 	MountsDir string
 }
 
-// LocalRules returns the rules of cxl.nri.io: the local memdevs of the node,
+// localRules returns the rules of cxl.nri.io: the local memdevs of the node,
 // found in the last scan; node mounts in mountsDir.
-func LocalRules(mountsDir string) SourceRules {
+func localRules(mountsDir string) SourceRules {
 	return SourceRules{Name: device.DriverName, Source: state.SourceLocal, MountsDir: mountsDir}
 }
 
-// PoolRules returns the rules of the pool driver name: the devices that a
+// poolRules returns the rules of the pool driver name: the devices that a
 // pool controller attached to the node for a claim, found by the serial of
 // the claim's status data; node mounts in mountsDir.
-func PoolRules(name, mountsDir string) SourceRules {
+func poolRules(name, mountsDir string) SourceRules {
 	return SourceRules{Name: name, Source: state.SourcePool, MountsDir: mountsDir}
 }
 

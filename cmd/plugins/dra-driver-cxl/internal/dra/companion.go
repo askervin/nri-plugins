@@ -65,14 +65,14 @@ var (
 	errLendingStarting = errors.New("lending is not set up yet (the driver is starting)")
 )
 
-// LeaseOf returns the lease id of a companion claim (its label
+// leaseOf returns the lease id of a companion claim (its label
 // device.LeaseLabel), "" for other claims.
-func LeaseOf(claim *resourcev1.ResourceClaim) string {
+func leaseOf(claim *resourcev1.ResourceClaim) string {
 	return claim.Labels[device.LeaseLabel]
 }
 
-// Lender lends the companion claims of one driver to running containers.
-// A nil or zero Lender has lending disabled.
+// lender lends the companion claims of one driver to running containers.
+// A nil or zero lender has lending disabled.
 //
 // Identity: one per DRA driver.
 //
@@ -87,7 +87,7 @@ func LeaseOf(claim *resourcev1.ResourceClaim) string {
 // Persistence: none; the lends are in the grants of the companion claims.
 //
 // Locks and waits: mu guards the fields, never held across a hook or a lend.
-type Lender struct {
+type lender struct {
 	driver string
 	// mu guards the fields below: a leaf lock.
 	mu    sync.Mutex
@@ -96,16 +96,16 @@ type Lender struct {
 	isSet bool
 }
 
-// NewLender returns the lender of the companion claims of driver, with
+// newLender returns the lender of the companion claims of driver, with
 // lending disabled until Set is called.
-func NewLender(driver string) *Lender {
-	return &Lender{driver: driver}
+func newLender(driver string) *lender {
+	return &lender{driver: driver}
 }
 
 // Set enables lending: nodes lends NUMA nodes (nil when NRI is not
 // connected, then companion claims fail), hooks is the lease broker (nil
 // disables lending).
-func (c *Lender) Set(nodes NUMALender, hooks lend.LeaseHooks) {
+func (c *lender) Set(nodes NUMALender, hooks lend.LeaseHooks) {
 	if c == nil {
 		return
 	}
@@ -117,7 +117,7 @@ func (c *Lender) Set(nodes NUMALender, hooks lend.LeaseHooks) {
 }
 
 // get returns the node lender and the hooks.
-func (c *Lender) get() (NUMALender, lend.LeaseHooks) {
+func (c *lender) get() (NUMALender, lend.LeaseHooks) {
 	if c == nil {
 		return nil, nil
 	}
@@ -129,7 +129,7 @@ func (c *Lender) get() (NUMALender, lend.LeaseHooks) {
 // Check is the companion gate of the lease broker for a companion claim of
 // the lease id, before any device is touched: it marks the lease Lending and
 // returns the lend of the lease's container.
-func (c *Lender) Check(id string, claim *resourcev1.ResourceClaim) (*lend.Companion, error) {
+func (c *lender) Check(id string, claim *resourcev1.ResourceClaim) (*lend.Companion, error) {
 	nodes, hooks := c.get()
 	if hooks == nil {
 		return nil, fmt.Errorf("lease %s: lending to running containers is disabled (--leases=false)", id)
@@ -165,7 +165,7 @@ func checkSpecHash(hooks lend.LeaseHooks, id string, claim *resourcev1.ResourceC
 // container of the lend, held by its lease, and records them in rec. Dax
 // and block devices are passed as an fd by the broker. On error rec lists
 // the nodes lent so far.
-func (c *Lender) Lend(ctx context.Context, rec *lend.Companion, devs []state.DeviceInfo) error {
+func (c *lender) Lend(ctx context.Context, rec *lend.Companion, devs []state.DeviceInfo) error {
 	nodes, _ := c.get()
 	for i := range devs {
 		node := deviceNUMANode(&devs[i])
@@ -189,7 +189,7 @@ func (c *Lender) Lend(ctx context.Context, rec *lend.Companion, devs []state.Dev
 // cannot be revoked: the release then migrates the pages anyway, but the
 // stale node stays in the container's cpuset.mems. Before the lender is set
 // up it is an error.
-func (c *Lender) Revoke(ctx context.Context, rec *lend.Companion, claimName string) error {
+func (c *lender) Revoke(ctx context.Context, rec *lend.Companion, claimName string) error {
 	if rec == nil || len(rec.NUMANodes) == 0 {
 		return nil
 	}
@@ -215,7 +215,7 @@ func (c *Lender) Revoke(ctx context.Context, rec *lend.Companion, claimName stri
 // the companion claim of a lease is prepared and lent, with its memdevs of
 // the source, to commit with its preparation PREPARED, and what follows the
 // commit: Prepared, when the broker takes no change.
-func (c *Lender) preparedStep(id string, source state.Source, devs []state.DeviceInfo) (func(r *state.Records), func()) {
+func (c *lender) preparedStep(id string, source state.Source, devs []state.DeviceInfo) (func(r *state.Records), func()) {
 	if _, hooks := c.get(); hooks != nil {
 		if s, ok := hooks.(lend.PreparedStepper); ok {
 			return s.PreparedStep(id, source, devs)
@@ -226,7 +226,7 @@ func (c *Lender) preparedStep(id string, source state.Source, devs []state.Devic
 
 // Prepared tells the broker that the companion claim of a lease is prepared
 // and lent, with its memdevs of the source.
-func (c *Lender) Prepared(id string, source state.Source, devs []state.DeviceInfo) {
+func (c *lender) Prepared(id string, source state.Source, devs []state.DeviceInfo) {
 	if _, hooks := c.get(); hooks != nil {
 		hooks.OnPrepared(id, source, devs)
 	}
@@ -234,7 +234,7 @@ func (c *Lender) Prepared(id string, source state.Source, devs []state.DeviceInf
 
 // PreparedAgain tells the broker again that a stored companion claim is
 // prepared and lent, as kubelet asks to prepare a prepared claim again.
-func (c *Lender) PreparedAgain(rec *lend.Companion, claim *resourcev1.ResourceClaim, source state.Source, devs []state.DeviceInfo) {
+func (c *lender) PreparedAgain(rec *lend.Companion, claim *resourcev1.ResourceClaim, source state.Source, devs []state.DeviceInfo) {
 	_, hooks := c.get()
 	if hooks == nil || rec == nil {
 		return
@@ -246,7 +246,7 @@ func (c *Lender) PreparedAgain(rec *lend.Companion, claim *resourcev1.ResourceCl
 
 // Failed tells the broker that lending the companion claim of a lease
 // failed.
-func (c *Lender) Failed(id string, err error) {
+func (c *lender) Failed(id string, err error) {
 	if _, hooks := c.get(); hooks != nil {
 		hooks.OnLendFailed(id, err)
 	}
@@ -254,14 +254,14 @@ func (c *Lender) Failed(id string, err error) {
 
 // Releasing tells the broker that the companion claim of a lease is being
 // unprepared.
-func (c *Lender) Releasing(id string) {
+func (c *lender) Releasing(id string) {
 	if _, hooks := c.get(); hooks != nil {
 		hooks.OnReleasing(id)
 	}
 }
 
 // ready tells whether the lender has been set up (Set). A nil lender is.
-func (c *Lender) ready() bool {
+func (c *lender) ready() bool {
 	if c == nil {
 		return true
 	}
@@ -271,7 +271,7 @@ func (c *Lender) ready() bool {
 }
 
 // name returns the driver name for logs.
-func (c *Lender) name() string {
+func (c *lender) name() string {
 	if c == nil {
 		return ""
 	}
@@ -280,7 +280,7 @@ func (c *Lender) name() string {
 
 // RevokeGrant revokes the NUMA node that one grant of a companion claim
 // lends, for the engine's rollback of a later Prepare of the claim.
-func (c *Lender) RevokeGrant(ctx context.Context, gl state.GrantLend, claimName string) error {
+func (c *lender) RevokeGrant(ctx context.Context, gl state.GrantLend, claimName string) error {
 	rec := &lend.Companion{Lease: gl.Lease, Pod: gl.Pod, Container: gl.Container}
 	if gl.NUMANode != nil {
 		rec.NUMANodes = []int{*gl.NUMANode}

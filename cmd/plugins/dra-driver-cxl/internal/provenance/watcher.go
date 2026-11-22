@@ -91,7 +91,7 @@ type Watcher struct {
 	prepared map[uint64]bool
 	// absent and poolAbsent have when the serials and pools not seen at
 	// the last observation were first observed absent, over observations
-	// no more than ObservationGap apart; lastObs is the time of the last
+	// no more than observationGap apart; lastObs is the time of the last
 	// observation of the memdevs (Gate).
 	absent     map[uint64]time.Time
 	poolAbsent map[string]time.Time
@@ -264,7 +264,7 @@ func (w *Watcher) list(ctx context.Context) (map[uint64]poolDevice, map[string]b
 		}
 		pool := rs.Spec.Driver + "/" + rs.Spec.Pool.Name
 		for j := range rs.Spec.Devices {
-			if s, ok := DeviceSerial(&rs.Spec.Devices[j], rs.Spec.Driver); ok {
+			if s, ok := deviceSerial(&rs.Spec.Devices[j], rs.Spec.Driver); ok {
 				serials[s], listed[pool] = poolDevice{pool: pool, device: rs.Spec.Devices[j]}, true
 			}
 		}
@@ -272,10 +272,10 @@ func (w *Watcher) list(ctx context.Context) (map[uint64]poolDevice, map[string]b
 	return serials, listed, nil
 }
 
-// DeviceSerial returns the serial attribute of a device of a ResourceSlice
+// deviceSerial returns the serial attribute of a device of a ResourceSlice
 // of driver, unqualified or qualified with the driver name, and whether it
 // has a valid one.
-func DeviceSerial(d *resourcev1.Device, driver string) (uint64, bool) {
+func deviceSerial(d *resourcev1.Device, driver string) (uint64, bool) {
 	for _, k := range []resourcev1.QualifiedName{device.AttrSerial, resourcev1.QualifiedName(driver + "/" + string(device.AttrSerial))} {
 		a, ok := d.Attributes[k]
 		if !ok {

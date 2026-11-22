@@ -79,7 +79,7 @@ type Plugin struct {
 	engine   *engine.Engine
 	nodeName string
 	roots    roots
-	lender   *Lender
+	lender   *lender
 	local    LocalConfig
 	onShared func(serial uint64)
 	// shutdown is told a fatal error of the kubelet plugin helper, nil
@@ -131,13 +131,13 @@ type Options struct {
 }
 
 // New returns the plugin of the rules over the store and the engine. Its
-// lender has lending disabled until it is set (Lender).
+// lender has lending disabled until it is set (Plugin.Lender).
 func New(opts Options) (*Plugin, error) {
 	if opts.Store == nil || opts.Engine == nil {
 		return nil, fmt.Errorf("%s: the plugin needs the state store and the device engine", opts.Rules.Name)
 	}
 	if opts.Rules.Source != state.SourceLocal && opts.Rules.Source != state.SourcePool {
-		return nil, fmt.Errorf("%s: rules of source %q: not those of LocalRules or PoolRules", opts.Rules.Name, opts.Rules.Source)
+		return nil, fmt.Errorf("%s: rules of source %q: not those of localRules or poolRules", opts.Rules.Name, opts.Rules.Source)
 	}
 	if opts.Rules.publishes() && opts.Publisher == nil {
 		return nil, fmt.Errorf("%s: the plugin publishes and needs the publisher", opts.Rules.Name)
@@ -153,7 +153,7 @@ func New(opts Options) (*Plugin, error) {
 		onShared:   opts.OnShared,
 		shutdown:   opts.Shutdown,
 		publisher:  opts.Publisher,
-		lender:     NewLender(opts.Rules.Name),
+		lender:     newLender(opts.Rules.Name),
 		inflight:   map[uint64]int{},
 		unrestored: map[string]error{},
 	}, nil
@@ -179,7 +179,7 @@ func (p *Plugin) Rules() SourceRules {
 
 // Lender returns the lender of the companion claims of the driver, nil for
 // a nil plugin.
-func (p *Plugin) Lender() *Lender {
+func (p *Plugin) Lender() *lender {
 	if p == nil {
 		return nil
 	}
@@ -256,7 +256,7 @@ func (p *Plugin) commit(ctx context.Context, fn func(doc *store.Document) error)
 // allocatable returns the devices of the last publication of the node's
 // ResourceSlice (the scheduler allocated from it), nil for a driver that
 // does not publish.
-func (p *Plugin) allocatable() DevicesInfo {
+func (p *Plugin) allocatable() devicesInfo {
 	if p.publisher == nil || !p.rules.publishes() {
 		return nil
 	}
@@ -419,7 +419,7 @@ func (p *Plugin) realise(ctx context.Context, pr *prepare) error {
 // realised (a companion claim has none), commits it PREPARED and tells the
 // broker of a companion claim: in the same commit when the broker's hooks
 // are a lend.PreparedStepper (the lease READY with its preparation
-// PREPARED), else after the commit (Lender.preparedStep); a failure rolls
+// PREPARED), else after the commit (lender.preparedStep); a failure rolls
 // the Prepare back, and tells the broker that the lend failed.
 func (p *Plugin) finish(ctx context.Context, pr *prepare) kubeletplugin.PrepareResult {
 	result := prepareResult(p.preparation(pr.uid), p.rules.CDIKind())

@@ -41,8 +41,8 @@ type DeviceInfo struct {
 	Dev any
 }
 
-// DevicesInfo are the devices of the table of the publisher by name.
-type DevicesInfo map[string]*DeviceInfo
+// devicesInfo are the devices of the table of the publisher by name.
+type devicesInfo map[string]*DeviceInfo
 
 // DRAM is the Dev of the DRAM device.
 type DRAM struct {
@@ -142,10 +142,10 @@ func (l *localRecords) claims() map[uint64][]string {
 	return out
 }
 
-// LocalUsableSize returns the bytes of whole memory blocks of bs bytes that
+// localUsableSize returns the bytes of whole memory blocks of bs bytes that
 // a region on a memdev of size bytes is sure to hold, wherever in its
 // window it starts.
-func LocalUsableSize(size, bs uint64) uint64 {
+func localUsableSize(size, bs uint64) uint64 {
 	if bs == 0 {
 		return 0
 	}
@@ -262,7 +262,7 @@ func regionMemdevs(snap *kernel.Snapshot, r *kernel.RegionInfo) []kernel.MemdevI
 // devices, neither they nor their regions are published. Regions on memdevs
 // that the device engine uses (local) are skipped too: the engine created
 // them, and the memdevs are published as memdev devices.
-func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held map[uint64]bool, local *localRecords) DevicesInfo {
+func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held map[uint64]bool, local *localRecords) devicesInfo {
 	cxlNUMANodes := make(map[int]bool)
 	devInfos := make(map[string]*DeviceInfo)
 	for i := range snap.Regions {
@@ -339,7 +339,7 @@ func regionIgnoreReason(cfg PublishConfig, r *kernel.RegionInfo, node int, mems 
 
 // addDRAM adds the DRAM device of the NUMA nodes with memory that are not CXL
 // NUMA nodes to devInfos.
-func addDRAM(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snapshot, cxlNUMANodes map[int]bool) {
+func addDRAM(devInfos devicesInfo, cfg PublishConfig, snap *kernel.Snapshot, cxlNUMANodes map[int]bool) {
 	dramDev := &DRAM{}
 	for _, node := range numaNodesByName(snap) {
 		if cxlNUMANodes[node.ID] {
@@ -420,9 +420,9 @@ const (
 	specSerial
 )
 
-// ParseMemdevSpec returns the memdev of a spec of the configuration, an
+// parseMemdevSpec returns the memdev of a spec of the configuration, an
 // error if the spec is none of the forms of a MemdevSpec.
-func ParseMemdevSpec(spec string) (MemdevSpec, error) {
+func parseMemdevSpec(spec string) (MemdevSpec, error) {
 	s := MemdevSpec{spec: spec}
 	if name, ok := strings.CutPrefix(spec, "cxl/"); ok && isMemdevName(name) {
 		s.form, s.name = specDevName, name
@@ -448,7 +448,7 @@ func ParseMemdevSpec(spec string) (MemdevSpec, error) {
 func ParseMemdevSpecs(specs []string) ([]MemdevSpec, error) {
 	var parsed []MemdevSpec
 	for _, spec := range specs {
-		s, err := ParseMemdevSpec(spec)
+		s, err := parseMemdevSpec(spec)
 		if err != nil {
 			return nil, err
 		}
@@ -460,7 +460,7 @@ func ParseMemdevSpecs(specs []string) ([]MemdevSpec, error) {
 // ParseMemdevID returns the memdev of a spec by its name or serial, an
 // error for a <major>:<minor>, which MatchID cannot match.
 func ParseMemdevID(spec string) (MemdevSpec, error) {
-	s, err := ParseMemdevSpec(spec)
+	s, err := parseMemdevSpec(spec)
 	if err == nil && s.form == specDevNum {
 		return s, fmt.Errorf("invalid memdev %q: not a name (mem0, cxl/mem0) or serial in decimal or 0x hex", spec)
 	}
@@ -535,10 +535,10 @@ func sharedListing(cfg PublishConfig, memDev *kernel.MemdevInfo, poolSerials, he
 	return true, ""
 }
 
-// SharedSerials returns the serials of the memdevs that are shared local
+// sharedSerials returns the serials of the memdevs that are shared local
 // devices of the configuration: SharedDevices lists them, and they are
 // neither ignored nor pool devices.
-func SharedSerials(cfg PublishConfig, memDevs []kernel.MemdevInfo, poolSerials map[uint64]bool) map[uint64]bool {
+func sharedSerials(cfg PublishConfig, memDevs []kernel.MemdevInfo, poolSerials map[uint64]bool) map[uint64]bool {
 	out := map[uint64]bool{}
 	for i := range memDevs {
 		memDev := &memDevs[i]
@@ -570,7 +570,7 @@ func logSharedRefusal(memDev *kernel.MemdevInfo, reason string) {
 // and no claims of slices. An unshared local memdev is published when it is
 // enabled, its RAM capacity is sure to hold a whole memory block, it has no
 // regions but the engine's and no claims that use it shared or persistent.
-func addLocalMemdevs(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held map[uint64]bool, local *localRecords) {
+func addLocalMemdevs(devInfos devicesInfo, cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held map[uint64]bool, local *localRecords) {
 	bs := uint64(0)
 	if local != nil {
 		bs = local.BlockSize
@@ -630,7 +630,7 @@ func localRefusal(cfg PublishConfig, memDev *kernel.MemdevInfo, size, bs uint64,
 		return "no RAM capacity"
 	case bs == 0:
 		return "the memory block size is unknown"
-	case LocalUsableSize(size, bs) == 0:
+	case localUsableSize(size, bs) == 0:
 		return fmt.Sprintf("usable RAM capacity %d is not sure to hold a whole memory block of %d bytes", size, bs)
 	case memDev.State == kernel.MemdevUnbound:
 		return "memdev is disabled"
@@ -666,7 +666,7 @@ func memdevUsableSize(cfg PublishConfig, memDev *kernel.MemdevInfo, local *local
 // the engine did not create or claims that use it as slices.
 //   - regions: the regions on the memdev
 //   - bs: the memory block size, 0 if unknown
-func addLocalShared(devInfos DevicesInfo, memDev *kernel.MemdevInfo, size uint64, regions []string, local *localRecords, bs uint64) {
+func addLocalShared(devInfos devicesInfo, memDev *kernel.MemdevInfo, size uint64, regions []string, local *localRecords, bs uint64) {
 	use, used := local.memdev(memDev.Serial)
 	reason := ""
 	switch {
@@ -708,7 +708,7 @@ func addLocalShared(devInfos DevicesInfo, memDev *kernel.MemdevInfo, size uint64
 //   - shared: sharedMemdevs lists the memdev, which is neither ignored nor
 //     a pool device
 //   - regions: the regions on the memdev
-func addLocalPersistent(devInfos DevicesInfo, cfg PublishConfig, memDev *kernel.MemdevInfo, shared bool, poolSerials, held map[uint64]bool, regions []string, local *localRecords) {
+func addLocalPersistent(devInfos devicesInfo, cfg PublishConfig, memDev *kernel.MemdevInfo, shared bool, poolSerials, held map[uint64]bool, regions []string, local *localRecords) {
 	use, used := local.memdev(memDev.Serial)
 	reason := memdevMatches(cfg.IgnoreDevices, memDev)
 	switch {
@@ -764,7 +764,7 @@ func MemdevDeviceName(serial uint64) string {
 
 // resources returns the devices of the node's ResourceSlices of the table,
 // sorted by name.
-func resources(devs DevicesInfo) []resourcev1.Device {
+func resources(devs devicesInfo) []resourcev1.Device {
 	out := []resourcev1.Device{}
 	for _, name := range slices.Sorted(maps.Keys(devs)) {
 		allocatable := devs[name]
@@ -822,7 +822,7 @@ func regionDevice(name string, dev *Region) resourcev1.Device {
 		Name:                     name,
 		Attributes:               attrs,
 		Capacity:                 memoryCapacity(dev.Size),
-		NodeAllocatableResources: MemoryNodeAllocatableResources(),
+		NodeAllocatableResources: memoryNodeAllocatableResources(),
 		AllowMultipleAllocations: ptr(true),
 	}
 }
@@ -855,7 +855,7 @@ func dramDevice(name string, dev *DRAM) resourcev1.Device {
 			device.AttrSize:            {IntValue: ptr(int64(dev.Size))},
 		},
 		Capacity:                 memoryCapacity(dev.Size),
-		NodeAllocatableResources: MemoryNodeAllocatableResources(),
+		NodeAllocatableResources: memoryNodeAllocatableResources(),
 		AllowMultipleAllocations: ptr(true),
 	}
 }
@@ -884,11 +884,11 @@ func LocalMemdevDevice(name string, dev *Memdev) resourcev1.Device {
 		Capacity: map[resourcev1.QualifiedName]resourcev1.DeviceCapacity{
 			device.CapacityMemory: {
 				// the whole memory blocks that the region is sure to hold
-				Value:         *resource.NewQuantity(int64(LocalUsableSize(dev.Size, dev.BlockSize)), resource.BinarySI),
-				RequestPolicy: LocalRequestPolicy(dev.Size, dev.BlockSize),
+				Value:         *resource.NewQuantity(int64(localUsableSize(dev.Size, dev.BlockSize)), resource.BinarySI),
+				RequestPolicy: localRequestPolicy(dev.Size, dev.BlockSize),
 			},
 		},
-		NodeAllocatableResources: MemoryNodeAllocatableResources(),
+		NodeAllocatableResources: memoryNodeAllocatableResources(),
 		AllowMultipleAllocations: ptr(true),
 	}
 }
@@ -920,13 +920,13 @@ func sharedMemdevDevice(name string, dev *Memdev) resourcev1.Device {
 	}
 }
 
-// LocalRequestPolicy returns the memory capacity request policy of a local
+// localRequestPolicy returns the memory capacity request policy of a local
 // memdev of size bytes with memory blocks of bs bytes: a request is rounded
 // up to a multiple of bs, and a request without an amount gets the whole
-// blocks that the region is sure to hold (LocalUsableSize). A memdev of one
+// blocks that the region is sure to hold (localUsableSize). A memdev of one
 // such block has it as the only valid amount. Nil for a memdev without one.
-func LocalRequestPolicy(size, bs uint64) *resourcev1.CapacityRequestPolicy {
-	usable := LocalUsableSize(size, bs)
+func localRequestPolicy(size, bs uint64) *resourcev1.CapacityRequestPolicy {
+	usable := localUsableSize(size, bs)
 	if usable == 0 {
 		return nil
 	}
@@ -944,7 +944,7 @@ func LocalRequestPolicy(size, bs uint64) *resourcev1.CapacityRequestPolicy {
 	}
 }
 
-// MemoryNodeAllocatableResources maps the memory capacity that a claim
+// memoryNodeAllocatableResources maps the memory capacity that a claim
 // consumes from a device to the node allocatable "memory" resource, so that
 // kubelet accounts claimed memory in the pod and container cgroups. Memory
 // capacity (device and node) is in bytes, hence capacityMultiplier is 1.
@@ -952,7 +952,7 @@ func LocalRequestPolicy(size, bs uint64) *resourcev1.CapacityRequestPolicy {
 // Requires DRANodeAllocatableResources feature gate. Without it the
 // apiserver drops the field from published ResourceSlices, and the
 // publisher logs a warning once and publishes the devices without it.
-func MemoryNodeAllocatableResources() map[v1.ResourceName]resourcev1.NodeAllocatableResource {
+func memoryNodeAllocatableResources() map[v1.ResourceName]resourcev1.NodeAllocatableResource {
 	return map[v1.ResourceName]resourcev1.NodeAllocatableResource{
 		v1.ResourceMemory: {
 			Mapping: &resourcev1.NodeAllocatableMapping{

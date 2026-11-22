@@ -49,7 +49,7 @@ func TestPrepareRefusedBeforeDevices(t *testing.T) {
 		m := *info.Dev.(*Memdev)
 		m.Size = 0
 		info.Dev = &m
-		e.pub.SetDevices(DevicesInfo{localDev: &info})
+		e.pub.SetDevices(devicesInfo{localDev: &info})
 		return func() { e.pub.SetDevices(devs) }
 	}
 	unmanaged := func() func() {

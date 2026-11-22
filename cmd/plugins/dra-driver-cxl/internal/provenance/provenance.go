@@ -58,7 +58,7 @@ import (
 //
 // Absence is observed: the watch scans at least every Poll (plus a tick),
 // also without udev events. An absence counts from the first observation
-// that missed it, over observations no more than ObservationGap apart: a
+// that missed it, over observations no more than observationGap apart: a
 // longer gap (a stopped driver, a starved process, a failing list, a step
 // of the clock) starts it again. Absence is not committed: after a restart
 // it starts again; a hold goes on from its HeldSince.
@@ -83,7 +83,7 @@ import (
 // store: its write may still fail, and then the next scan takes it again.
 // A step refreshes LastSeen of the records that it sees, and Listed of the
 // pools, when it changes the records or one of the times is older than
-// Refresh. Without a store, or with a LOST one, which refuses every
+// refresh. Without a store, or with a LOST one, which refuses every
 // commit, the records are process memory.
 //
 // Locks and waits: the steps take no lock; Watcher.mu guards the records
@@ -99,12 +99,12 @@ var (
 	// MaxHold is how long a new memdev is held at most while a pool is
 	// missing.
 	MaxHold = 5 * time.Minute
-	// Refresh is how often the times of last sight are committed at most
+	// refresh is how often the times of last sight are committed at most
 	// when nothing else changes.
-	Refresh = time.Hour
-	// ObservationGap is the longest time between two observations over
+	refresh = time.Hour
+	// observationGap is the longest time between two observations over
 	// which an absence continues.
-	ObservationGap = 5 * time.Minute
+	observationGap = 5 * time.Minute
 	// commitTimeout bounds a commit of the records.
 	commitTimeout = time.Minute
 )
@@ -380,7 +380,7 @@ func (s *step) notePools(r *state.Records, listed map[string]bool, gone []poolGo
 
 // finish refreshes the times of last sight of the records and the pools
 // that the step saw, when the step changed the records or one of the
-// times is older than Refresh.
+// times is older than refresh.
 func (s *step) finish(r *state.Records) {
 	var times []*time.Time
 	for _, serial := range s.seen {
@@ -393,7 +393,7 @@ func (s *step) finish(r *state.Records) {
 			times = append(times, &r.ListedPools[i].Listed)
 		}
 	}
-	stale := slices.ContainsFunc(times, func(t *time.Time) bool { return s.now.Sub(*t) >= Refresh })
+	stale := slices.ContainsFunc(times, func(t *time.Time) bool { return s.now.Sub(*t) >= refresh })
 	if !s.changed && !stale {
 		return
 	}
@@ -589,9 +589,9 @@ func (w *Watcher) observePoolsLocked(r *state.Records, listed map[string]bool, n
 }
 
 // observedSince tells whether an observation at now continues the one at
-// last: there was one, and no more than ObservationGap ago.
+// last: there was one, and no more than observationGap ago.
 func observedSince(last, now time.Time) bool {
-	return !last.IsZero() && !now.Before(last) && now.Sub(last) <= ObservationGap
+	return !last.IsZero() && !now.Before(last) && now.Sub(last) <= observationGap
 }
 
 // orPrepared returns where a pool serial was seen for the log lines.

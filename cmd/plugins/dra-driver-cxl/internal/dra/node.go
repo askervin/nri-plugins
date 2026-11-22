@@ -137,14 +137,14 @@ func NewNode(opts NodeOptions) (*Node, error) {
 		Shared:          n.isShared,
 		Revoke:          n.revoke,
 	}
-	local := LocalRules(filepath.Join(opts.Dir, mountsDirName))
+	local := localRules(filepath.Join(opts.Dir, mountsDirName))
 	var pool SourceRules
 	if opts.PoolDriver != "" {
 		poolDir := filepath.Join(filepath.Dir(opts.Dir), opts.PoolDriver)
 		if err := os.MkdirAll(poolDir, 0o750); err != nil {
 			return nil, fmt.Errorf("pool driver data directory: %w", err)
 		}
-		pool = PoolRules(opts.PoolDriver, filepath.Join(poolDir, mountsDirName))
+		pool = poolRules(opts.PoolDriver, filepath.Join(poolDir, mountsDirName))
 		eopts.Sources = append(eopts.Sources, state.SourcePool)
 		eopts.MountsDirs[state.SourcePool] = pool.MountsDir
 	}
@@ -173,7 +173,7 @@ func NewNode(opts NodeOptions) (*Node, error) {
 			Forget:   opts.Forget,
 		})
 	}
-	n.Publisher, err = NewPublisher(PublishOptions{
+	n.Publisher, err = newPublisher(publishOptions{
 		Config:      opts.Publish,
 		NodeName:    opts.NodeName,
 		Client:      opts.Client,
@@ -247,7 +247,7 @@ func (n *Node) Recover(ctx context.Context) (*engine.Recovered, error) {
 	known := map[uint64]bool{}
 	maps.Copy(known, n.Pool.Serials())
 	maps.Copy(known, n.Watcher.RecordedPoolSerials())
-	n.setShared(SharedSerials(n.opts.Publish, snap.Memdevs, known))
+	n.setShared(sharedSerials(n.opts.Publish, snap.Memdevs, known))
 	rec := &engine.Recovered{Why: map[state.GrantRef]error{}}
 	if err := n.opts.Store.Lost(); err != nil {
 		klog.Errorf("%v: the devices of the drivers are not recovered", err)
@@ -271,7 +271,7 @@ func (n *Node) Recover(ctx context.Context) (*engine.Recovered, error) {
 	// the first list of the pool ResourceSlices gates the publication of
 	// local memdevs
 	cfg, poolSerials := n.Publisher.ScanInput(ctx)
-	n.setShared(SharedSerials(cfg, snap.Memdevs, poolSerials))
+	n.setShared(sharedSerials(cfg, snap.Memdevs, poolSerials))
 	if n.opts.Local.Managed {
 		if _, err := k.BlockSize(); err != nil {
 			klog.Warningf("publisher: memory block size: %v: local memdevs are not published until the memory block size is known", err)

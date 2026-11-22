@@ -262,7 +262,7 @@ func TestStepDurableAtApply(t *testing.T) {
 	// a LOCAL record whose LastSeen the scan refreshes lazily
 	noErr(t, e.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
 		doc.Provenance = append(doc.Provenance, state.Provenance{Serial: localSerial, State: state.ProvenanceLocal,
-			LastSeen: e.now().Add(-2 * Refresh)})
+			LastSeen: e.now().Add(-2 * refresh)})
 		return nil
 	}))
 	var ds []store.Durability

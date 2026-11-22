@@ -224,7 +224,7 @@ func TestWriteCDISpec(t *testing.T) {
 	st, err := store.Open(t.Context(), store.Options{Dir: t.TempDir(), BootID: "b1"})
 	mustOK(t, err)
 	defer func() { _ = st.Close() }()
-	p := &Plugin{rules: PoolRules(device.PoolDriverName, ""), st: st}
+	p := &Plugin{rules: poolRules(device.PoolDriverName, ""), st: st}
 	mustOK(t, p.WriteCDI())
 }
 

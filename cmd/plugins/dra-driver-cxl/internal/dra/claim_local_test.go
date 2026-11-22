@@ -189,7 +189,7 @@ func TestLocalPersistentBlock(t *testing.T) {
 	}
 	cd := e.cdiDevice(e.local, "claim-w1-0")
 	hasEnv(t, cd, "CXL_C100F5E1_MODE=block", "CXL_C100F5E1_PATH="+w.BlockDevice, "CXL_C100F5E1_READ_ONLY=0", "CXL_CLAIM_w1_0=1")
-	if want := []*cdiSpecs.DeviceNode{BlockDeviceNode(w.BlockDevice, w.BlockMajor, w.BlockMinor, false)}; !reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, want) {
+	if want := []*cdiSpecs.DeviceNode{blockDeviceNode(w.BlockDevice, w.BlockMajor, w.BlockMinor, false)}; !reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, want) {
 		t.Fatalf("device nodes %+v", cd.ContainerEdits.DeviceNodes)
 	}
 	e.mustUnprepare(e.local, "w1")

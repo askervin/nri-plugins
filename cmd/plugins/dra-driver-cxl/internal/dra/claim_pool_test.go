@@ -194,7 +194,7 @@ func TestPoolPersistent(t *testing.T) {
 	w := e.devices(e.pool, "w1")[0]
 	cd := e.cdiDevice(e.pool, "claim-w1-0")
 	if !w.Persistent || w.Mode != api.ModeBlock || w.BlockDevice == "" || cd == nil ||
-		!reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, []*cdiSpecs.DeviceNode{BlockDeviceNode(w.BlockDevice, w.BlockMajor, w.BlockMinor, false)}) {
+		!reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, []*cdiSpecs.DeviceNode{blockDeviceNode(w.BlockDevice, w.BlockMajor, w.BlockMinor, false)}) {
 		t.Fatalf("device %+v, CDI device %+v", w, cd)
 	}
 	hasEnv(t, cd, "CXL_C1AF0001_MODE=block", "CXL_C1AF0001_PATH="+w.BlockDevice, "CXL_C1AF0001_SHARED=1")

@@ -125,7 +125,7 @@ func waitLog(t *testing.T, logs func() string, text string, n int) {
 func TestNodeSliceBackAfterKubeletWipe(t *testing.T) {
 	client := resourceSliceTestClient(pubNode, nil)
 	var dram atomic.Bool
-	p := pubPublisher(t, PublishOptions{
+	p := pubPublisher(t, publishOptions{
 		Config:   PublishConfig{PublishLeaseDevice: true},
 		NodeName: pubNode,
 		Client:   client,
@@ -198,7 +198,7 @@ func TestDroppedNodeAllocatable(t *testing.T) {
 	})
 	var dram atomic.Bool
 	dram.Store(true)
-	p := pubPublisher(t, PublishOptions{
+	p := pubPublisher(t, publishOptions{
 		Config:   PublishConfig{PublishLeaseDevice: true},
 		NodeName: pubNode,
 		Client:   client,
@@ -245,7 +245,7 @@ func TestDroppedOtherField(t *testing.T) {
 	})
 	var dram atomic.Bool
 	dram.Store(true)
-	p := pubPublisher(t, PublishOptions{
+	p := pubPublisher(t, publishOptions{
 		Config:   PublishConfig{PublishLeaseDevice: true},
 		NodeName: pubNode,
 		Client:   client,
@@ -298,7 +298,7 @@ func TestStartWithoutAPIServer(t *testing.T) {
 		return false, nil, nil
 	})
 	newPublisher := func() *Publisher {
-		p := pubPublisher(t, PublishOptions{
+		p := pubPublisher(t, publishOptions{
 			Config:   PublishConfig{PublishLeaseDevice: true},
 			NodeName: pubNode,
 			Client:   client,
@@ -353,7 +353,7 @@ func TestSliceChunks(t *testing.T) {
 		pubRegion(snap, fmt.Sprintf("region%d", i), i, 1<<30, uint64(i))
 	}
 	client := resourceSliceTestClient(pubNode, nil)
-	p := pubPublisher(t, PublishOptions{
+	p := pubPublisher(t, publishOptions{
 		Config:   PublishConfig{PublishLeaseDevice: true},
 		NodeName: pubNode,
 		Client:   client,
@@ -392,7 +392,7 @@ func TestSliceChunks(t *testing.T) {
 		t.Fatalf("%d slices, expected 2 of a pool of 2", len(list.Items))
 	}
 
-	empty := pubPublisher(t, PublishOptions{NodeName: pubNode})
+	empty := pubPublisher(t, publishOptions{NodeName: pubNode})
 	pubNoErr(t, empty.Scan(ctx))
 	if s := empty.Resources().Pools[pubNode].Slices; len(s) != 1 || len(s[0].Devices) != 0 {
 		t.Fatalf("slices %+v of no devices, expected one empty", s)

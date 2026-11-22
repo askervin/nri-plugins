@@ -215,7 +215,7 @@ func TestLocalBecomesPool(t *testing.T) {
 	if r := e.st.Snapshot().ProvenanceOf(0xa2); r == nil || r.State != state.ProvenancePool || r.Pool != "" {
 		t.Fatalf("record of a prepared serial %+v", r)
 	}
-	// seen again: its LastSeen is refreshed a Refresh after its change
+	// seen again: its LastSeen is refreshed a refresh after its change
 	changed := e.now()
 	e.advance(time.Minute)
 	e.wantHeld("seen again")
@@ -223,7 +223,7 @@ func TestLocalBecomesPool(t *testing.T) {
 	if seen := e.watched(localSerial).LastSeen; !seen.Equal(changed) {
 		t.Fatalf("last seen %v, expected %v", seen, changed)
 	}
-	e.advance(Refresh)
+	e.advance(refresh)
 	e.wantHeld("seen a refresh later")
 	if seen := e.watched(localSerial).LastSeen; !seen.Equal(e.now()) {
 		t.Fatalf("last seen %v, expected %v", seen, e.now())
@@ -236,7 +236,7 @@ func TestLocalBecomesPool(t *testing.T) {
 
 // TestAbsenceExpires pins the observed absence: POOL and LOCAL serials are
 // forgotten, and so is a pool, after Retention of observations at most
-// ObservationGap apart; a longer gap starts the absence again.
+// observationGap apart; a longer gap starts the absence again.
 func TestAbsenceExpires(t *testing.T) {
 	logs := klogtest.Capture(t, 4)
 	e := newWatchEnv(t)
@@ -251,7 +251,7 @@ func TestAbsenceExpires(t *testing.T) {
 	e.wantState(0xc1ee2001, state.ProvenancePool)
 	e.wantState(localSerial, state.ProvenanceLocal)
 	// observed, but with a gap
-	e.advance(ObservationGap + time.Second)
+	e.advance(observationGap + time.Second)
 	e.wantHeld("after a gap")
 	e.idle(Retention - time.Minute)
 	e.wantState(0xc1ee2001, state.ProvenancePool)

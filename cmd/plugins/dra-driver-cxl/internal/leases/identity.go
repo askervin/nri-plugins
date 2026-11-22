@@ -67,13 +67,13 @@ type Requester struct {
 // socket is in.
 type Identity interface {
 	// Resolve returns the container of the process pid, an error that is
-	// ErrUnknownProcess when the process is in no known container.
+	// errUnknownProcess when the process is in no known container.
 	Resolve(pid int) (Requester, error)
 }
 
-// ErrUnknownProcess is the error of an Identity for a process that is in no
+// errUnknownProcess is the error of an Identity for a process that is in no
 // known container.
-var ErrUnknownProcess = errors.New("in no known container")
+var errUnknownProcess = errors.New("in no known container")
 
 // tableIdentity is the Identity of the container table of the container
 // plugin.
@@ -85,7 +85,7 @@ type tableIdentity struct {
 func (t tableIdentity) Resolve(pid int) (Requester, error) {
 	pod, name, ok := t.containers.ContainerByPid(pid)
 	if !ok {
-		return Requester{}, ErrUnknownProcess
+		return Requester{}, errUnknownProcess
 	}
 	return Requester{Pod: pod, Container: name}, nil
 }

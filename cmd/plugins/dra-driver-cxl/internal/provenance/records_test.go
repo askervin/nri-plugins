@@ -83,7 +83,7 @@ func TestRecordsCommitted(t *testing.T) {
 }
 
 // TestRecordsRefresh pins when the times of last sight of the records are
-// committed: not before Refresh since they were, then at the next list or
+// committed: not before refresh since they were, then at the next list or
 // observation that sees them; a change of the records is committed at
 // once, with the times of the records that its step saw.
 func TestRecordsRefresh(t *testing.T) {
@@ -95,7 +95,7 @@ func TestRecordsRefresh(t *testing.T) {
 	e.flush()
 	gen := e.st.Snapshot().Generation
 	// seen again: LastSeen changes in memory only
-	e.advance(Refresh - time.Minute)
+	e.advance(refresh - time.Minute)
 	e.wantHeld("seen again")
 	e.flush()
 	if g := e.st.Snapshot().Generation; g != gen {
@@ -107,18 +107,18 @@ func TestRecordsRefresh(t *testing.T) {
 	if r := e.record(localSerial); r == nil || !r.LastSeen.Equal(t0) {
 		t.Fatalf("record %+v, expected LastSeen %v", r, t0)
 	}
-	// a Refresh after the last commit: the list and the observation of
+	// a refresh after the last commit: the list and the observation of
 	// the memdevs commit the times of their sight
 	e.advance(time.Minute)
 	e.wantHeld("a refresh later")
-	if r := e.record(0xc1ee2001); r == nil || !r.LastSeen.Equal(t0.Add(Refresh)) {
-		t.Fatalf("record %+v, expected LastSeen %v", r, t0.Add(Refresh))
+	if r := e.record(0xc1ee2001); r == nil || !r.LastSeen.Equal(t0.Add(refresh)) {
+		t.Fatalf("record %+v, expected LastSeen %v", r, t0.Add(refresh))
 	}
-	if r := e.record(localSerial); r == nil || !r.LastSeen.Equal(t0.Add(Refresh)) {
-		t.Fatalf("record %+v, expected LastSeen %v", r, t0.Add(Refresh))
+	if r := e.record(localSerial); r == nil || !r.LastSeen.Equal(t0.Add(refresh)) {
+		t.Fatalf("record %+v, expected LastSeen %v", r, t0.Add(refresh))
 	}
-	if _, pools := e.records(); len(pools) != 1 || !pools[0].Listed.Equal(t0.Add(Refresh)) {
-		t.Fatalf("listed pools %+v, expected Listed %v", pools, t0.Add(Refresh))
+	if _, pools := e.records(); len(pools) != 1 || !pools[0].Listed.Equal(t0.Add(refresh)) {
+		t.Fatalf("listed pools %+v, expected Listed %v", pools, t0.Add(refresh))
 	}
 	gen = e.st.Snapshot().Generation
 	// a change is committed at once

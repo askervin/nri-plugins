@@ -128,7 +128,7 @@ func pubStore(t *testing.T) *store.Store {
 
 // pubPublisher returns the publisher of opts, with a new store and a scan
 // of no devices where opts has none.
-func pubPublisher(t *testing.T, opts PublishOptions) *Publisher {
+func pubPublisher(t *testing.T, opts publishOptions) *Publisher {
 	t.Helper()
 	if opts.Store == nil {
 		opts.Store = pubStore(t)
@@ -136,7 +136,7 @@ func pubPublisher(t *testing.T, opts PublishOptions) *Publisher {
 	if opts.Scan == nil {
 		opts.Scan = pubNoScan
 	}
-	p, err := NewPublisher(opts)
+	p, err := newPublisher(opts)
 	pubNoErr(t, err)
 	return p
 }
@@ -156,7 +156,7 @@ func dramScan(dram *atomic.Bool) func(context.Context) (*kernel.Snapshot, error)
 }
 
 // pubNames returns the names of the devices, sorted.
-func pubNames(devs DevicesInfo) []string {
+func pubNames(devs devicesInfo) []string {
 	return slices.Sorted(maps.Keys(devs))
 }
 
@@ -259,7 +259,7 @@ func TestBuildDevInfosLocalMemdevs(t *testing.T) {
 func TestGetResourcesLocalMemdev(t *testing.T) {
 	devs := BuildDevices(PublishConfig{IgnoreDRAM: true, ManageMemdevs: true}, &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{pubMemdev()}},
 		nil, nil, &localRecords{BlockSize: pubBlockSize})
-	p := pubPublisher(t, PublishOptions{NodeName: pubNode})
+	p := pubPublisher(t, publishOptions{NodeName: pubNode})
 	p.SetDevices(devs)
 	got := p.Resources().Pools[pubNode].Slices[0].Devices
 	q := func(v int64) *resource.Quantity { return resource.NewQuantity(v, resource.BinarySI) }
@@ -284,7 +284,7 @@ func TestGetResourcesLocalMemdev(t *testing.T) {
 				},
 			},
 		},
-		NodeAllocatableResources: MemoryNodeAllocatableResources(),
+		NodeAllocatableResources: memoryNodeAllocatableResources(),
 		AllowMultipleAllocations: ptr(true),
 	}}
 	if !reflect.DeepEqual(got, want) {
@@ -311,7 +311,7 @@ func TestGetResourcesRegionDRAMLease(t *testing.T) {
 	pubRegion(devices, "region0", 2, 2<<30, 1, 2)
 	pubRegion(devices, "region1", 3, 1<<30, 3, 4)
 	devs := BuildDevices(PublishConfig{PublishLeaseDevice: true}, devices, nil, nil, nil)
-	p := pubPublisher(t, PublishOptions{NodeName: pubNode})
+	p := pubPublisher(t, publishOptions{NodeName: pubNode})
 	p.SetDevices(devs)
 	got := map[string]resourcev1.Device{}
 	for _, d := range p.Resources().Pools[pubNode].Slices[0].Devices {
@@ -389,7 +389,7 @@ func TestLocalRequestPolicy(t *testing.T) {
 		{4 << 30, 2 << 30, &resourcev1.CapacityRequestPolicy{Default: q(2 << 30),
 			ValidValues: []resource.Quantity{*q(2 << 30)}}},
 	} {
-		if got := LocalRequestPolicy(tc.size, tc.bs); !reflect.DeepEqual(got, tc.want) {
+		if got := localRequestPolicy(tc.size, tc.bs); !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("size %d, block size %d: policy %+v, expected %+v", tc.size, tc.bs, got, tc.want)
 		}
 	}
@@ -500,7 +500,7 @@ func TestParseMemdevSpec(t *testing.T) {
 		"100":        "",
 		"mem2":       "",
 	} {
-		s, err := ParseMemdevSpec(spec)
+		s, err := parseMemdevSpec(spec)
 		mustOK(t, err)
 		var got []string
 		for i := range mems {
@@ -513,7 +513,7 @@ func TestParseMemdevSpec(t *testing.T) {
 		}
 	}
 	for _, spec := range []string{"", "a5", "c100e2e0", "mem", "memx", "mem-1", "cxl/", "cxl/a5", "251:", "251:x", "-1", "0x", "0xg"} {
-		if _, err := ParseMemdevSpec(spec); err == nil {
+		if _, err := parseMemdevSpec(spec); err == nil {
 			t.Errorf("%q parsed", spec)
 		}
 	}
@@ -566,7 +566,7 @@ func TestSharedLocalPrecedence(t *testing.T) {
 			t.Errorf("%s: refusal %q, expected %q", tc.mem.Name, got, tc.want)
 		}
 	}
-	if got := SharedSerials(cfg, devices.Memdevs, pool); !maps.Equal(got, map[uint64]bool{0xa1: true, 0xa2: true, 0xa3: true, 0xa4: true, 0xa8: true, 0xaa: true}) {
+	if got := sharedSerials(cfg, devices.Memdevs, pool); !maps.Equal(got, map[uint64]bool{0xa1: true, 0xa2: true, 0xa3: true, 0xa4: true, 0xa8: true, 0xaa: true}) {
 		t.Fatalf("shared serials %v", got)
 	}
 
@@ -757,7 +757,7 @@ func TestLocalSnapshot(t *testing.T) {
 	}
 	bs, err := uint64(0), errors.New("no block_size_bytes")
 	blockSize := func() (uint64, error) { return bs, err }
-	opts := PublishOptions{NodeName: pubNode, Config: PublishConfig{ManageMemdevs: true}, Probes: probes, BlockSize: blockSize}
+	opts := publishOptions{NodeName: pubNode, Config: PublishConfig{ManageMemdevs: true}, Probes: probes, BlockSize: blockSize}
 	p := pubPublisher(t, opts)
 	if got := p.LocalRecords(); !maps.Equal(got.Probed, map[uint64]uint64{0x11: 512 << 20}) || got.BlockSize != 0 {
 		t.Fatalf("probed %v, block size %d while it is unknown", got.Probed, got.BlockSize)
@@ -778,7 +778,7 @@ func TestLocalSnapshot(t *testing.T) {
 func TestRescanBeforeStart(t *testing.T) {
 	logs := klogtest.Capture(t, 0)
 	client := resourceSliceTestClient(pubNode, nil)
-	p := pubPublisher(t, PublishOptions{
+	p := pubPublisher(t, publishOptions{
 		Config:   PublishConfig{IgnoreDRAM: true, PublishLeaseDevice: true},
 		NodeName: pubNode,
 		Client:   client,
@@ -816,7 +816,7 @@ func TestRescanBeforeStart(t *testing.T) {
 func TestPublishedTable(t *testing.T) {
 	client := resourceSliceTestClient(pubNode, nil)
 	var dram atomic.Bool
-	p := pubPublisher(t, PublishOptions{
+	p := pubPublisher(t, publishOptions{
 		Config:   PublishConfig{PublishLeaseDevice: true},
 		NodeName: pubNode,
 		Client:   client,

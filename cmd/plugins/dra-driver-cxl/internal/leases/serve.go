@@ -337,7 +337,7 @@ func (b *Broker) authenticate(claimUID string, proc *connProcess, procErr error)
 	pid := proc.pid
 	who, err := identity.Resolve(pid)
 	switch {
-	case errors.Is(err, ErrUnknownProcess):
+	case errors.Is(err, errUnknownProcess):
 		return Requester{}, &processGoneError{fmt.Errorf("%w (pid %d is in no known container)", errNotOurPod, pid)}
 	case err != nil:
 		return Requester{}, fmt.Errorf("%w (pid %d: %v)", errNotOurPod, pid, err)

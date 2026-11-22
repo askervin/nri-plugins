@@ -74,7 +74,7 @@ func prepareResult(p *state.Preparation, kind string) kubeletplugin.PrepareResul
 		if p.Lease == "" {
 			d.CDIDeviceIDs = []string{kind + "=" + ClaimCDIDeviceName(p.UID, r.Index)}
 			if r.Kind == state.ResultLeaseClaim {
-				d.CDIDeviceIDs = append(d.CDIDeviceIDs, kind+"="+LeaseCDIDeviceName(p.UID))
+				d.CDIDeviceIDs = append(d.CDIDeviceIDs, kind+"="+leaseCDIDeviceName(p.UID))
 			}
 		}
 		if r.ShareID != "" {

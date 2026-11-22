@@ -83,14 +83,14 @@ func TestCharIgnoreNodes(t *testing.T) {
 // them.
 func TestCharPublishOrder(t *testing.T) {
 	names := []string{"memdev-a5", device.DRAMDeviceName, "memdev-a1", "region0-numa2", device.LeaseDeviceName}
-	devs := DevicesInfo{
+	devs := devicesInfo{
 		"memdev-a5":            {Name: "memdev-a5", Dev: &Memdev{Name: "mem5", Serial: 0xa5, Size: 1 << 30, NUMAAffinity: -1, BlockSize: pubBlockSize}},
 		device.DRAMDeviceName:  {Name: device.DRAMDeviceName, Dev: &DRAM{NUMANodes: []int{0}, Size: 1 << 30}},
 		"memdev-a1":            {Name: "memdev-a1", Dev: &Memdev{Name: "mem1", Serial: 0xa1, Size: 1 << 30, NUMAAffinity: -1, BlockSize: pubBlockSize}},
 		"region0-numa2":        {Name: "region0-numa2", Dev: &Region{Name: "region0", Size: 1 << 30, NUMANode: 2}},
 		device.LeaseDeviceName: {Name: device.LeaseDeviceName, Dev: &Lease{}},
 	}
-	p := pubPublisher(t, PublishOptions{NodeName: pubNode})
+	p := pubPublisher(t, publishOptions{NodeName: pubNode})
 	p.SetDevices(devs)
 	order := func() []string {
 		var out []string
@@ -107,7 +107,7 @@ func TestCharPublishOrder(t *testing.T) {
 		t.Fatal("two calls of Resources differ")
 	}
 
-	q := pubPublisher(t, PublishOptions{
+	q := pubPublisher(t, publishOptions{
 		Config:   PublishConfig{IgnoreDRAM: true, PublishLeaseDevice: true},
 		NodeName: pubNode,
 		Scan:     pubNoScan,
