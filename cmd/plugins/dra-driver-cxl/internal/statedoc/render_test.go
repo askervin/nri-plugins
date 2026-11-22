@@ -149,9 +149,9 @@ func TestPolicyMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"| local sliced | destroy | in order | in order | destroy |",
+		"| local | destroy | in order | in order | destroy |",
 		"| local persistent | in order, kept idle | in order | in order, kept idle | in order, kept idle |",
-		"| pool exclusive | destroy | destroy | destroy; keep | destroy |",
+		"| pool | destroy | destroy | destroy; keep | destroy |",
 		"- `keep idle`: Leaves the region as it is for the idle memdev",
 	} {
 		if !strings.Contains(b.String(), want) {

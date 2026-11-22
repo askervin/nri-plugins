@@ -132,7 +132,7 @@ func TestPersistentDefaults(t *testing.T) {
 	} {
 		t.Run(tc.typ, func(t *testing.T) {
 			v := pmemEnv(t, tc.typ)
-			v.configure(func(o *Options) { o.FsTypes = []string{tc.typ} })
+			v.configure(func(o *Options) { o.FSTypes = []string{tc.typ} })
 			n := mountCalls(v)
 			v.mustPrepare(poolDriver, "r", fsGrant("r", true, ""))
 			if g := v.grant("r", 0); g.Got.Mount != tc.access {
@@ -277,7 +277,7 @@ func TestPersistentRules(t *testing.T) {
 			if fsTypes == nil {
 				fsTypes = known
 			}
-			v.configure(func(o *Options) { o.FsTypes = fsTypes })
+			v.configure(func(o *Options) { o.FSTypes = fsTypes })
 			dev := filepath.Join(v.f.DevRoot(), "pmem0")
 			if tc.setup != nil {
 				tc.setup(v, dev)
@@ -395,7 +395,7 @@ func TestPersistentUnexplainedSuperblocks(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib}, fake.MemdevSpec{Serial: serialB})
 			v.formatPmem("mem0", c.image)
-			v.configure(func(o *Options) { o.FsTypes = []string{"ext4", "btrfs"} })
+			v.configure(func(o *Options) { o.FSTypes = []string{"ext4", "btrfs"} })
 			dev := filepath.Join(v.f.DevRoot(), "pmem0")
 			// the region stays idle under a region above it, its block
 			// device writable as a block writer leaves it

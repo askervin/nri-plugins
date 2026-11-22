@@ -43,29 +43,28 @@ const (
 type Kind string
 
 const (
-	// KindLocalParts is a local memdev whose grants have parts of it.
-	KindLocalParts Kind = "local sliced"
+	// KindLocal is a local memdev whose grants have slices of it, or
+	// one used shared that is not configured shared any more whose region
+	// is new.
+	KindLocal Kind = "local"
 	// KindLocalShared is a local memdev configured shared whose region is
 	// established: set up and zeroed, or kept by an earlier release.
 	KindLocalShared Kind = "local shared"
 	// KindLocalSharedNew is a local memdev configured shared whose region a
 	// Prepare made and did not set up or zero (it failed or was cut).
 	KindLocalSharedNew Kind = "local shared, new region"
-	// KindLocalUnshared is a local memdev used shared that is not
-	// configured shared any more, its region established.
-	KindLocalUnshared Kind = "local unshared"
-	// KindLocalUnsharedNew is a local memdev used shared that is not
-	// configured shared any more, its region new (as of a local shared
-	// memdev, new region).
-	KindLocalUnsharedNew Kind = "local unshared, new region"
+	// KindLocalSharedUnlisted is a local memdev used shared that is not
+	// configured shared any more (not in sharedMemdevs), its region
+	// established.
+	KindLocalSharedUnlisted Kind = "local shared, not in sharedMemdevs"
 	// KindLocalPersistent is a local memdev of persistent memory whose
 	// region is established: set up, or kept by an earlier release.
 	KindLocalPersistent Kind = "local persistent"
 	// KindLocalPersistentNew is a local memdev of persistent memory whose
 	// region a Prepare made and did not set up (it failed or was cut).
 	KindLocalPersistentNew Kind = "local persistent, new region"
-	// KindPoolExclusive is a pool device of one grant.
-	KindPoolExclusive Kind = "pool exclusive"
+	// KindPool is a pool device of one grant.
+	KindPool Kind = "pool"
 	// KindPoolShared is a pool device that several grants share.
 	KindPoolShared Kind = "pool shared"
 	// KindPoolPersistent is a pool device of persistent memory.
@@ -133,16 +132,15 @@ type PolicyRow struct {
 // above it.
 var PolicyRows = []PolicyRow{
 	// kind, unprepare, rollback, recovery, recovery above, idle
-	{KindLocalParts, Destroy, InOrder, InOrder, InOrder, Destroy},
+	{KindLocal, Destroy, InOrder, InOrder, InOrder, Destroy},
 	{KindLocalShared, KeepIdle, KeepIdle, KeepIdle, KeepIdle, KeepIdle},
 	{KindLocalSharedNew, KeepIdle, InOrder, InOrder, InOrder, KeepIdle},
-	{KindLocalUnshared, Destroy, InOrder, Destroy, Destroy, Destroy},
-	{KindLocalUnsharedNew, Destroy, InOrder, InOrder, InOrder, Destroy},
+	{KindLocalSharedUnlisted, Destroy, InOrder, Destroy, Destroy, Destroy},
 	{KindLocalPersistent, InOrderIdle, InOrder, InOrderIdle, InOrderIdle, InOrderIdle},
 	{KindLocalPersistentNew, InOrderIdle, InOrder, InOrder, InOrder, InOrderIdle},
 	// a kept pool region would block the hot-remove of the device; a
 	// recovery keeps one below regions of other memdevs for its claim
-	{KindPoolExclusive, Destroy, Destroy, Destroy, Keep, Destroy},
+	{KindPool, Destroy, Destroy, Destroy, Keep, Destroy},
 	{KindPoolShared, Destroy, Destroy, Destroy, Keep, Destroy},
 	{KindPoolPersistent, Destroy, Destroy, Destroy, Keep, Destroy},
 }
@@ -193,7 +191,7 @@ func kindOf(asked state.Asked, shared, established bool) Kind {
 		case state.KindShared:
 			return KindPoolShared
 		}
-		return KindPoolExclusive
+		return KindPool
 	}
 	switch {
 	case asked.Kind == state.KindPersistent && established:
@@ -205,11 +203,9 @@ func kindOf(asked state.Asked, shared, established bool) Kind {
 	case asked.Kind == state.KindShared && shared:
 		return KindLocalSharedNew
 	case asked.Kind == state.KindShared && established:
-		return KindLocalUnshared
-	case asked.Kind == state.KindShared:
-		return KindLocalUnsharedNew
+		return KindLocalSharedUnlisted
 	}
-	return KindLocalParts
+	return KindLocal
 }
 
 // kindOf returns the row of the release policy of the memdev of the grant g
@@ -252,7 +248,7 @@ func established(r *state.Records, serial state.Serial, persistent bool) bool {
 // region above.
 func (e *Engine) decision(g *state.Grant, memdev string, release Release) (Decision, []string) {
 	var above []string
-	if r := e.records(); release == ReleaseRecovery && ownRegions(r, r.Memdev(g.Serial)) {
+	if r := e.records(); release == ReleaseRecovery && hasOwnRegion(r, r.Memdev(g.Serial)) {
 		var err error
 		if above, err = e.k.RegionsAbove(memdev); err != nil {
 			above = []string{"(" + err.Error() + ")"}

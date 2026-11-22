@@ -218,14 +218,14 @@ func TestRetryStalePeriodic(t *testing.T) {
 	v := pmemEnv(t, "ext4")
 	target := busyCompanion(t, v)
 	v.f.SetBusy(target, true)
-	v.e.RetryStale(context.Background(), state.TriggerUnprepare)
+	v.e.RetryStaleBinds(context.Background(), state.TriggerUnprepare)
 	v.mustBeMounted("a busy stale bind after the pass", target)
 	if m := v.records().Memdev(serialP); m == nil || len(m.Stale) != 1 {
 		t.Fatalf("memdev %+v", m)
 	}
 	v.f.SetBusy(target, false)
 	logs := klogtest.Capture(t, 3)
-	v.e.RetryStale(context.Background(), state.TriggerUnprepare)
+	v.e.RetryStaleBinds(context.Background(), state.TriggerUnprepare)
 	v.mustNotBeMounted("after the pass", target)
 	if out := logs(); !strings.Contains(out, "memdev 0x91 (mem0): released") {
 		t.Errorf("the memdev is not released:\n%s", out)

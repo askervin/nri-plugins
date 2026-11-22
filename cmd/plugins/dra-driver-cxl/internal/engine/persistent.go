@@ -474,12 +474,12 @@ func (e *Engine) checkFsType(req *GrantRequest, typ string, sig *signature) (str
 	fail := func(format string, args ...any) (string, error) {
 		return "", fmt.Errorf("device "+sig.serial+": "+format, args...)
 	}
-	allowed := strings.Join(e.opts.FsTypes, ", ")
+	allowed := strings.Join(e.opts.FSTypes, ", ")
 	if allowed == "" {
 		allowed = "none"
 	}
 	switch {
-	case !slices.Contains(e.opts.FsTypes, typ):
+	case !slices.Contains(e.opts.FSTypes, typ):
 		return fail("filesystem type %s is not allowed on this node (fsTypes: %s)", typ, allowed)
 	case e.nodevType(typ):
 		return fail("filesystem type %s does not mount a block device", typ)
@@ -563,12 +563,12 @@ func (e *Engine) nodeMount(req *GrantRequest, u *pmemGrant, typ, access, mnt str
 		return "", fmt.Errorf("device %s: %s is mounted read-only on this node and cannot be remounted read-write: a read-write claim waits until the read-only claims of the node are gone",
 			sig.serial, typ)
 	case u.writer() && mi.SuperReadOnly():
-		if err := e.upgrade(source, serial, dev, loop, mnt, append(nodeMounts(others), mnt)); err != nil {
+		if err := e.remountReadWrite(source, serial, dev, loop, mnt, append(nodeMounts(others), mnt)); err != nil {
 			return "", err
 		}
 	case !writer && !mi.SuperReadOnly():
 		// a rw superblock without a writer (a release that failed)
-		if err := e.downgrade(source, serial, dev, loop, mnt); err != nil {
+		if err := e.remountReadOnly(source, serial, dev, loop, mnt); err != nil {
 			klog.Errorf("engine: %v", err)
 		}
 	}
@@ -686,7 +686,7 @@ func (e *Engine) mountNode(source state.Source, serial state.Serial, dev, access
 	src := dev
 	var loop kernel.Loop
 	if access == api.AccessCached {
-		l, err := e.attachCachedLoop(source, serial, dev, mnt, readOnlyType, ro)
+		l, err := e.configureCachedLoop(source, serial, dev, mnt, readOnlyType, ro)
 		if err != nil {
 			return "", err
 		}
@@ -726,7 +726,7 @@ func (e *Engine) mountFs(source state.Source, serial state.Serial, dev, src, fsT
 	})
 	if err != nil {
 		if loop != nil {
-			e.detachLoop(source, serial, loop)
+			e.clearLoop(source, serial, loop)
 		}
 		e.removeMountDir(mnt)
 		if ro && errors.Is(err, syscall.EROFS) {
@@ -742,10 +742,10 @@ func (e *Engine) mountFs(source state.Source, serial state.Serial, dev, src, fsT
 	return nil
 }
 
-// attachCachedLoop returns a new direct-I/O loop device over the block
+// configureCachedLoop returns a new direct-I/O loop device over the block
 // device dev for a cached node mount at mnt, read-only for a read-only type,
 // else with the read-only flag ro; on an error nothing of it is left.
-func (e *Engine) attachCachedLoop(source state.Source, serial state.Serial, dev, mnt string, readOnlyType, ro bool) (kernel.Loop, error) {
+func (e *Engine) configureCachedLoop(source state.Source, serial state.Serial, dev, mnt string, readOnlyType, ro bool) (kernel.Loop, error) {
 	var l kernel.Loop
 	err := e.locked(func() error {
 		var err error
@@ -758,7 +758,7 @@ func (e *Engine) attachCachedLoop(source state.Source, serial state.Serial, dev,
 	}
 	if !readOnlyType {
 		if err := e.setReadOnly(source, serial, l.Path(), ro); err != nil {
-			e.detachLoop(source, serial, l)
+			e.clearLoop(source, serial, l)
 			e.removeMountDir(mnt)
 			return nil, err
 		}
@@ -787,18 +787,18 @@ func (e *Engine) verifyNodeDax(source state.Source, serial state.Serial, dev, fs
 	return err
 }
 
-// detachLoop detaches a loop device that no mount uses.
-func (e *Engine) detachLoop(source state.Source, serial state.Serial, loop kernel.Loop) {
+// clearLoop detaches a loop device that no mount uses.
+func (e *Engine) clearLoop(source state.Source, serial state.Serial, loop kernel.Loop) {
 	if err := e.locked(func() error { return loop.Clear() }); err != nil {
 		klog.Errorf("engine: %s memdev %s: detaching %s: %v", source, serial.String(), loop.Path(), err)
 	}
 }
 
-// upgrade makes the read-only superblock of the node mount mnt read-write:
+// remountReadWrite makes the read-only superblock of the node mount mnt read-write:
 // the block device, then the loop device of a cached mount, then the
 // superblock. On error both are read-only again. It refuses while the
 // device has a superblock that the node mounts explained do not have.
-func (e *Engine) upgrade(source state.Source, serial state.Serial, dev, loop, mnt string, explained []string) error {
+func (e *Engine) remountReadWrite(source state.Source, serial state.Serial, dev, loop, mnt string, explained []string) error {
 	s := serial.String()
 	if err := e.checkUnexplained(serial, dev, explained); err != nil {
 		return err
@@ -829,10 +829,10 @@ func (e *Engine) upgrade(source state.Source, serial state.Serial, dev, loop, mn
 	return nil
 }
 
-// downgrade makes the read-write superblock of the node mount mnt
+// remountReadOnly makes the read-write superblock of the node mount mnt
 // read-only: its data written, the superblock, then the loop device of a
 // cached mount, then the block device.
-func (e *Engine) downgrade(source state.Source, serial state.Serial, dev, loop, mnt string) error {
+func (e *Engine) remountReadOnly(source state.Source, serial state.Serial, dev, loop, mnt string) error {
 	s := serial.String()
 	if err := e.locked(func() error { return e.k.Syncfs(mnt) }); err != nil {
 		return fmt.Errorf("device %s: remounting %s read-only: %w", s, mnt, err)
@@ -1005,7 +1005,7 @@ func (e *Engine) releasePmemGrants(source state.Source, serial state.Serial, gon
 			loops = append(loops, loop)
 		}
 		if !mi.SuperReadOnly() {
-			if err := e.downgrade(source, serial, dev, loop, mnt); err != nil {
+			if err := e.remountReadOnly(source, serial, dev, loop, mnt); err != nil {
 				return err
 			}
 		}
@@ -1152,13 +1152,13 @@ func (e *Engine) currentBlockDevice(serial state.Serial) string {
 	return ""
 }
 
-// releaseMount releases the block device or node mount of the
+// leaveNodeMount releases the block device or node mount of the
 // persistent grants of the call on the memdev of a grant next to the other
 // grants of the memdev, once, and removes those grants from the users of
 // their node mount in one commit. The node mount of a grant that a cut
 // Prepare left is the one of its intent when a mount of its device is
 // there.
-func (e *Engine) releaseMount(ctx context.Context, g *state.Grant, call *releaseCall) error {
+func (e *Engine) leaveNodeMount(ctx context.Context, g *state.Grant, call *releaseCall) error {
 	if g.Asked.Kind != state.KindPersistent {
 		return nil
 	}
@@ -1296,7 +1296,7 @@ func leftMount(m *state.Mount, writer bool, trigger state.Trigger) (bool, error)
 	return false, nil
 }
 
-// blockDeviceOf returns the block device whose holders the release of the
+// firstBlockDevice returns the block device whose holders the release of the
 // last grant of a memdev, of the call, waits for: the recorded one unless
 // the start did not mount its node mount again or it is not the one of its
 // region now (checkBlockDevice: the region is gone, or its namespace has
@@ -1305,7 +1305,7 @@ func leftMount(m *state.Mount, writer bool, trigger state.Trigger) (bool, error)
 // no region. The recorded one stays when the block device of the region is
 // not known now: none would release it without the holder check. A grant
 // of a cut Prepare waits for the current one.
-func (e *Engine) blockDeviceOf(g *state.Grant, call *releaseCall) string {
+func (e *Engine) firstBlockDevice(g *state.Grant, call *releaseCall) string {
 	if g.Asked.Kind != state.KindPersistent {
 		return ""
 	}

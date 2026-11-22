@@ -387,11 +387,11 @@ func (e *Engine) restoreNodeMount(u *pmemGrant, writer bool, explained []string)
 	}
 	switch {
 	case writer && mi.SuperReadOnly() && config.FSTypeRemountable(mi.FSType):
-		err = e.upgrade(u.source, u.serial, u.blockDevice, loop, u.nodeMount, explained)
+		err = e.remountReadWrite(u.source, u.serial, u.blockDevice, loop, u.nodeMount, explained)
 	case writer && mi.SuperReadOnly():
 		err = fmt.Errorf("device %s: %s is mounted read-only and cannot be remounted read-write (%s)", u.serial.String(), u.nodeMount, mi.FSType)
 	case !writer && !mi.SuperReadOnly():
-		err = e.downgrade(u.source, u.serial, u.blockDevice, loop, u.nodeMount)
+		err = e.remountReadOnly(u.source, u.serial, u.blockDevice, loop, u.nodeMount)
 	}
 	if err != nil {
 		klog.Errorf("engine: %v", err)

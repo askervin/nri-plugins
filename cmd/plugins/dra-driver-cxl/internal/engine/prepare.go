@@ -112,7 +112,7 @@ func (e *Engine) prepareGrant(ctx context.Context, req *GrantRequest) error {
 	if err := e.checkLocalKind(ctx, req); err != nil {
 		return err
 	}
-	if err := e.releaseIdleLeftover(ctx, req); err != nil {
+	if err := e.destroyIdleLeftover(ctx, req); err != nil {
 		return err
 	}
 	if err := e.journal(ctx, req); err != nil {
@@ -121,11 +121,11 @@ func (e *Engine) prepareGrant(ctx context.Context, req *GrantRequest) error {
 	return e.realise(ctx, req)
 }
 
-// releaseIdleLeftover releases the region of a local persistent memdev that
+// destroyIdleLeftover releases the region of a local persistent memdev that
 // was kept idle when the next Prepare of the memdev finds no region above it
 // any more (the release policy's idle leftover), the memdev's queue held:
 // the Prepare makes it anew.
-func (e *Engine) releaseIdleLeftover(ctx context.Context, req *GrantRequest) error {
+func (e *Engine) destroyIdleLeftover(ctx context.Context, req *GrantRequest) error {
 	m := e.records().Memdev(req.Serial)
 	if req.Asked.Source != state.SourceLocal || req.Asked.Kind != state.KindPersistent || m == nil || m.State != state.MemdevIdleKept {
 		return nil
@@ -255,7 +255,7 @@ func (e *Engine) realise(ctx context.Context, req *GrantRequest) error {
 	case req.Asked.Kind == state.KindShared:
 		return e.realiseLocalShared(ctx, req, memdev)
 	}
-	return e.realiseLocalParts(ctx, req, memdev)
+	return e.realiseLocal(ctx, req, memdev)
 }
 
 // memdevOf returns the name of the memdev of a grant. A pool grant waits

@@ -377,7 +377,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	if broker != nil {
 		broker.Start(lender)
 	}
-	go everyPeriod(staleBindPeriod, d.stop, func() { node.RetryStale(runCtx) })
+	go everyPeriod(staleBindPeriod, d.stop, func() { node.RetryStaleBinds(runCtx) })
 	if d.nri != nil {
 		go everyPeriod(repairPeriod, d.stop, func() { d.nri.Repair(runCtx) })
 	}

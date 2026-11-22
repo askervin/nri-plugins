@@ -566,11 +566,11 @@ func (e *Engine) onlineMemory(ctx context.Context, region, dax string, blocks []
 	})
 }
 
-// releaseRegions releases the regions of ours of the memdev with the serial
+// destroyRegions releases the regions of ours of the memdev with the serial
 // by decision (Destroy, or in order), and tells whether a region was kept
 // for the claim forClaim; one kept below newer regions of another memdev is
 // KEPT for forClaim, or the memdev IDLE_KEPT with it when forClaim is "".
-func (e *Engine) releaseRegions(ctx context.Context, serial state.Serial, memdev string, decision Decision, forClaim string, trigger state.Trigger) (bool, error) {
+func (e *Engine) destroyRegions(ctx context.Context, serial state.Serial, memdev string, decision Decision, forClaim string, trigger state.Trigger) (bool, error) {
 	m := e.records().Memdev(serial)
 	if m == nil {
 		return false, nil

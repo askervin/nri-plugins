@@ -257,7 +257,7 @@ func (e *Engine) releaseGrant(ctx context.Context, ref state.GrantRef, call *rel
 	}
 	cur := e.records().Grant(ref).Clone()
 	call.noteUnrestored(e.records(), &cur)
-	if err := e.releaseObjects(ctx, &cur, call); err != nil {
+	if err := e.undoGrant(ctx, &cur, call); err != nil {
 		return err
 	}
 	return e.releaseLast(ctx, &cur, call)
@@ -283,7 +283,7 @@ func (e *Engine) releaseLast(ctx context.Context, cur *state.Grant, call *releas
 		klog.Infof("engine: %s is still used by another claim", memdevText(cur.Asked.Source, cur.Serial))
 	}
 	if !others && !ofCall {
-		kept, err := e.releaseMemdev(ctx, cur, call)
+		kept, err := e.applyPolicy(ctx, cur, call)
 		if err != nil {
 			return err
 		}
@@ -337,7 +337,7 @@ func (e *Engine) memdevUsers(serial state.Serial, ref state.GrantRef, call *rele
 	r := e.records()
 	if m := r.Memdev(serial); m != nil {
 		for _, o := range m.Grants {
-			if o == ref || !holdsRegion(r, m, o) {
+			if o == ref || !usesRegion(r, m, o) {
 				continue
 			}
 			others = others || !call.refs[o]
@@ -347,13 +347,13 @@ func (e *Engine) memdevUsers(serial state.Serial, ref state.GrantRef, call *rele
 	return others, ofCall
 }
 
-// holdsRegion tells whether the grant ref of the memdev record m may hold a
+// usesRegion tells whether the grant ref of the memdev record m may hold a
 // region of it: every grant but the one of a Prepare that did not finish
 // (of a PREPARING or KEPT claim) before it named a region, and the one of
 // an unfinished Unprepare (RELEASING, of an UNPREPARING claim) that no dax
 // device or node mount of its regions lists as a user, of mode block whose
 // Got names no region (its region is gone; a new one may have its name).
-func holdsRegion(r *state.Records, m *state.Memdev, ref state.GrantRef) bool {
+func usesRegion(r *state.Records, m *state.Memdev, ref state.GrantRef) bool {
 	g := r.Grant(ref)
 	switch {
 	case g != nil && g.Got.Region == "" && g.Intent.Region == "" && r.PrepareUnfinished(g):
@@ -411,17 +411,17 @@ func (e *Engine) keepForRecovery(ctx context.Context, serial state.Serial, refs 
 	return nil
 }
 
-// releaseObjects releases what a grant has of its own or shares: its lease
+// undoGrant releases what a grant has of its own or shares: its lease
 // bind, its node mount and block device next to the other grants of the
 // memdev, its own dax device.
-func (e *Engine) releaseObjects(ctx context.Context, g *state.Grant, call *releaseCall) error {
-	if err := e.releaseBind(ctx, g, call.trigger); err != nil {
+func (e *Engine) undoGrant(ctx context.Context, g *state.Grant, call *releaseCall) error {
+	if err := e.unbindGrant(ctx, g, call.trigger); err != nil {
 		return err
 	}
-	if err := e.releaseMount(ctx, g, call); err != nil {
+	if err := e.leaveNodeMount(ctx, g, call); err != nil {
 		return err
 	}
-	return e.releaseDax(ctx, g, call.trigger)
+	return e.deleteSlice(ctx, g, call.trigger)
 }
 
 // recoveryAbove returns the regions of other memdevs above the regions of
@@ -445,8 +445,8 @@ func (e *Engine) recoveryAbove(serial state.Serial, refs []state.GrantRef) []str
 	return nil
 }
 
-// ownRegions tells whether the memdev record m names a region of ours.
-func ownRegions(r *state.Records, m *state.Memdev) bool {
+// hasOwnRegion tells whether the memdev record m names a region of ours.
+func hasOwnRegion(r *state.Records, m *state.Memdev) bool {
 	return m != nil && slices.ContainsFunc(m.Regions, func(ref state.RegionRef) bool {
 		reg := r.Region(ref)
 		return reg != nil && reg.Ours()
@@ -556,19 +556,19 @@ func leaveUsers(r *state.Records, ref state.GrantRef, trigger state.Trigger) err
 // errHolder is the kind of the error of a holder wait that did not end.
 var errHolder = errors.New("its block device is held")
 
-// releaseMemdev releases what the memdev of a grant has when the grant is
+// applyPolicy releases what the memdev of a grant has when the grant is
 // its last one: the holder wait of a persistent block device, the regions
 // of ours per Policy, and a pool memdev disabled so that the pool can
 // detach it. A memdev that is gone is not an error: its regions of ours
 // that the kernel left hollow are deleted. It tells whether the region was
 // kept for the claim of the grant (a rollback or a recovery below a newer
 // region of another memdev).
-func (e *Engine) releaseMemdev(ctx context.Context, g *state.Grant, call *releaseCall) (bool, error) {
+func (e *Engine) applyPolicy(ctx context.Context, g *state.Grant, call *releaseCall) (bool, error) {
 	release, trigger := call.release, call.trigger
 	source, serial := g.Asked.Source, g.Serial
 	memdev, err := e.k.FindMemdev(uint64(serial))
 	if errors.Is(err, kernel.ErrNotFound) {
-		return false, e.releaseGone(ctx, g, trigger)
+		return false, e.deleteGoneHollow(ctx, g, trigger)
 	}
 	if err != nil {
 		return false, &releaseError{serial: serial, err: err}
@@ -579,7 +579,7 @@ func (e *Engine) releaseMemdev(ctx context.Context, g *state.Grant, call *releas
 		e.keptIdle(g, memdev, decision, release)
 		return forClaim, e.keepMemdev(ctx, serial, trigger, forClaim)
 	}
-	if dev := e.blockDeviceOf(g, call); dev != "" {
+	if dev := e.firstBlockDevice(g, call); dev != "" {
 		if err := e.waitNoHolder(ctx, source, serial, dev, call.holderDeadline(g.Ref.Claim)); err != nil {
 			return false, &releaseError{serial: serial, held: true, err: err}
 		}
@@ -588,7 +588,7 @@ func (e *Engine) releaseMemdev(ctx context.Context, g *state.Grant, call *releas
 	if forClaim {
 		claim = g.Ref.Claim
 	}
-	kept, err := e.releaseRegions(ctx, serial, memdev, decision, claim, trigger)
+	kept, err := e.destroyRegions(ctx, serial, memdev, decision, claim, trigger)
 	if err == nil && !kept && source == state.SourcePool {
 		err = e.disableMemdev(ctx, source, serial, memdev)
 	}
@@ -630,7 +630,7 @@ func (e *Engine) releaseIdle(ctx context.Context, m *state.Memdev, kind Kind, ho
 			return &releaseError{serial: serial, held: true, err: err}
 		}
 	}
-	_, err = e.releaseRegions(ctx, serial, memdev, decision, "", trigger)
+	_, err = e.destroyRegions(ctx, serial, memdev, decision, "", trigger)
 	if err == nil && source == state.SourcePool {
 		err = e.disableMemdev(ctx, source, serial, memdev)
 	}
@@ -648,9 +648,9 @@ func (e *Engine) releaseIdle(ctx context.Context, m *state.Memdev, kind Kind, ho
 	return nil
 }
 
-// releaseGone releases what is left of a memdev that is gone: its regions
+// deleteGoneHollow releases what is left of a memdev that is gone: its regions
 // of ours that the kernel left hollow.
-func (e *Engine) releaseGone(ctx context.Context, g *state.Grant, trigger state.Trigger) error {
+func (e *Engine) deleteGoneHollow(ctx context.Context, g *state.Grant, trigger state.Trigger) error {
 	klog.Infof("engine: %s is gone, nothing to release", memdevText(g.Asked.Source, g.Serial))
 	return e.deleteHollow(ctx, g.Serial, trigger, "its memdev was removed before the region was destroyed")
 }

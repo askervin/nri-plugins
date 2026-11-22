@@ -180,16 +180,16 @@ func isLeaseBind(mi, node *kernel.MountInfo, readOnly bool) bool {
 // leaseBindType tells whether a mount may be a lease bind: of a block
 // device, of a filesystem type that mode fs mounts.
 func (e *Engine) leaseBindType(mi *kernel.MountInfo) bool {
-	return strings.HasPrefix(mi.Source, e.devRoot()+"/") && (api.KnownFSType(mi.FSType) || slices.Contains(e.opts.FsTypes, mi.FSType))
+	return strings.HasPrefix(mi.Source, e.devRoot()+"/") && (api.KnownFSType(mi.FSType) || slices.Contains(e.opts.FSTypes, mi.FSType))
 }
 
-// releaseBind unbinds the lease bind of a companion grant. A bind that is
+// unbindGrant unbinds the lease bind of a companion grant. A bind that is
 // busy (a file of it mapped) becomes STALE, recorded with its memdev, and
 // the release fails.
-func (e *Engine) releaseBind(ctx context.Context, g *state.Grant, trigger state.Trigger) error {
+func (e *Engine) unbindGrant(ctx context.Context, g *state.Grant, trigger state.Trigger) error {
 	b := g.Got.Bind
 	if b == nil {
-		return e.releaseCutBind(g)
+		return e.unbindCut(g)
 	}
 	if b.State != state.BindBound && b.State != state.BindStale {
 		return nil
@@ -222,10 +222,10 @@ func bindWhat(g *state.Grant) string {
 	return "grant " + g.Ref.String()
 }
 
-// releaseCutBind unbinds the lease bind that the intent of a grant of a cut
+// unbindCut unbinds the lease bind that the intent of a grant of a cut
 // Prepare names, when a lease bind is mounted there: the bind is made
 // before the grant records it.
-func (e *Engine) releaseCutBind(g *state.Grant) error {
+func (e *Engine) unbindCut(g *state.Grant) error {
 	target := g.Intent.BindTarget
 	if target == "" || (g.State != state.GrantJournaled && g.State != state.GrantRealising) {
 		return nil
@@ -320,12 +320,12 @@ func (e *Engine) addStale(serial state.Serial, path string, kind state.StaleKind
 	}
 }
 
-// RetryStale unmounts the stale lease binds of every memdev and the lease
+// RetryStaleBinds unmounts the stale lease binds of every memdev and the lease
 // binds of no memdev again, as every release does first, and finishes the
 // releases that they kept, with the transitions of the trigger: an
 // Unprepare for the periodic pass, a Prepare for a refused one. Errors are
 // logged.
-func (e *Engine) RetryStale(ctx context.Context, trigger state.Trigger) {
+func (e *Engine) RetryStaleBinds(ctx context.Context, trigger state.Trigger) {
 	ctx, end := e.Request(ctx)
 	defer end()
 	e.retryAllStale(ctx, trigger)
@@ -345,26 +345,26 @@ func (e *Engine) retryAllStale(ctx context.Context, trigger state.Trigger) {
 		}
 		e.retryStale(ctx, m.Serial, trigger)
 	}
-	e.retryOrphanBinds()
+	e.retryUnownedBinds()
 }
 
-// addOrphanBind keeps a lease bind of no memdev whose unmount failed, once,
+// addUnownedBind keeps a lease bind of no memdev whose unmount failed, once,
 // for the next release.
-func (e *Engine) addOrphanBind(target string) {
+func (e *Engine) addUnownedBind(target string) {
 	e.qmu.Lock()
 	defer e.qmu.Unlock()
-	if !slices.Contains(e.orphanBinds, target) {
-		e.orphanBinds = append(e.orphanBinds, target)
+	if !slices.Contains(e.unownedBinds, target) {
+		e.unownedBinds = append(e.unownedBinds, target)
 	}
 }
 
-// retryOrphanBinds unmounts again the lease binds of no memdev that a start
+// retryUnownedBinds unmounts again the lease binds of no memdev that a start
 // could not unmount, and forgets those that are gone or that a prepared
 // grant lists again; the others are tried again at the next release.
-func (e *Engine) retryOrphanBinds() {
+func (e *Engine) retryUnownedBinds() {
 	e.qmu.Lock()
-	binds := e.orphanBinds
-	e.orphanBinds = nil
+	binds := e.unownedBinds
+	e.unownedBinds = nil
 	e.qmu.Unlock()
 	var left []string
 	for _, target := range binds {
@@ -377,7 +377,7 @@ func (e *Engine) retryOrphanBinds() {
 		}
 	}
 	for _, target := range left {
-		e.addOrphanBind(target)
+		e.addUnownedBind(target)
 	}
 }
 

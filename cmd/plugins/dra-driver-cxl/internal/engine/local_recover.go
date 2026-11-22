@@ -33,17 +33,17 @@ import (
 // it), a persistent one without claims released in order when nothing
 // holds its block device, a sliced one without claims released.
 
-// forgetGoneParts forgets the dax devices of the realised grants of
+// forgetGoneSlices forgets the dax devices of the realised grants of
 // prepared claims of local memdevs that are gone or have another size than
 // recorded (a reboot that the boot ids do not tell, another tool): the
 // grant keeps its region without a device node, which no container gets;
 // a dax device of another size there belongs to no grant then.
-func (e *Engine) forgetGoneParts(ctx context.Context) {
+func (e *Engine) forgetGoneSlices(ctx context.Context) {
 	r := e.records()
 	var gone []state.GrantRef
 	for i := range r.Grants {
 		g := &r.Grants[i]
-		d := e.ownPart(r, g)
+		d := e.ownSlice(r, g)
 		if d == nil {
 			continue
 		}
@@ -66,14 +66,14 @@ func (e *Engine) forgetGoneParts(ctx context.Context) {
 		_, err := e.k.DaxDevice(g.Got.Dax)
 		present[g.Got.Dax] = err == nil
 	}
-	if err := e.commit(ctx, func(r *state.Records) error { return forgotParts(r, gone, present) }); err != nil {
+	if err := e.commit(ctx, func(r *state.Records) error { return forgotSlices(r, gone, present) }); err != nil {
 		klog.Errorf("engine: %v", err)
 	}
 }
 
-// ownPart returns the dax device of its own of a realised grant of a
+// ownSlice returns the dax device of its own of a realised grant of a
 // prepared claim on a sliced local memdev, nil for another grant.
-func (e *Engine) ownPart(r *state.Records, g *state.Grant) *state.DaxDevice {
+func (e *Engine) ownSlice(r *state.Records, g *state.Grant) *state.DaxDevice {
 	p := r.PreparationOf(g.Ref)
 	if g.Asked.Source != state.SourceLocal || !e.owns(g.Asked.Source) || g.Asked.Kind != state.KindExclusive || g.Got.Dax == "" ||
 		!prepared(g) || p == nil || !p.Prepared() {
@@ -89,10 +89,10 @@ func (e *Engine) ownPart(r *state.Records, g *state.Grant) *state.DaxDevice {
 	return nil
 }
 
-// forgotParts records the dax devices of the grants gone forgotten: the
+// forgotSlices records the dax devices of the grants gone forgotten: the
 // grants without them, a device that the kernel has (present) without
 // users, one that it has not dropped.
-func forgotParts(r *state.Records, gone []state.GrantRef, present map[string]bool) error {
+func forgotSlices(r *state.Records, gone []state.GrantRef, present map[string]bool) error {
 	for _, ref := range gone {
 		g := r.Grant(ref)
 		reg := r.Region(g.Got.Region)

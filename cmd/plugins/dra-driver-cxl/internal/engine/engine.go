@@ -76,7 +76,7 @@ type Engine struct {
 	// mu is the engine lock.
 	mu sync.Mutex
 
-	// qmu guards queues, last, unknown, orphanBinds, running,
+	// qmu guards queues, last, unknown, unownedBinds, running,
 	// started, observed, hollowLogged and probes: a leaf lock.
 	qmu    sync.Mutex
 	queues map[state.Serial]chan struct{}
@@ -84,10 +84,10 @@ type Engine struct {
 	// unknown are the latest changes of kernel objects that no row of
 	// their tables has, as Observe logged them, until UnknownSeen.
 	unknown []string
-	// orphanBinds are the lease binds of no memdev (their node mount is
+	// unownedBinds are the lease binds of no memdev (their node mount is
 	// gone) that a start could not unmount, unmounted again at every
 	// release.
-	orphanBinds []string
+	unownedBinds []string
 	// running is the number of requests in progress (Request), started
 	// the number of those that started, observed the value of started at
 	// the latest observation (last).
@@ -116,13 +116,13 @@ type Options struct {
 	// LeaseFsRoot is the directory of the lease-fs directories of the
 	// lease claims, "" for no sweep of lease binds.
 	LeaseFsRoot string
-	// FsTypes are the filesystem types that mode fs may mount, none when
+	// FSTypes are the filesystem types that mode fs may mount, none when
 	// empty.
-	FsTypes []string
+	FSTypes []string
 	// Fence fences a NUMA node before memory of it goes online, nil for
 	// no fencing; it returns once the node is fenced or the fence is not
 	// ready, or when its context (Timeouts.Fence) ends.
-	Fence func(ctx context.Context, node int)
+	Fence func(ctx context.Context, numaNode int)
 	// LocalGuard returns an error if a local grant on the serial must not
 	// be made: the serial is listed by a pool ResourceSlice now (a fresh
 	// list; a failed list is an error). Nil: no such check.

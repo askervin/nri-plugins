@@ -129,7 +129,7 @@ func NewNode(opts NodeOptions) (*Node, error) {
 		// an engine without sources owns nothing, nil sources own all
 		Sources:         []state.Source{},
 		LeaseFsRoot:     opts.LeaseFsRoot,
-		FsTypes:         opts.FsTypes,
+		FSTypes:         opts.FsTypes,
 		Fence:           opts.Fence,
 		ProbeAddressing: opts.ProbeAddressing,
 		Timeouts:        opts.Timeouts,
@@ -308,14 +308,14 @@ func (n *Node) SetLenders(nodes NodeLender, hooks lend.LeaseHooks) {
 	n.Pool.Lender().Set(nodes, hooks)
 }
 
-// RetryStale unmounts the stale lease binds again and finishes the
-// releases that they kept (engine.RetryStale). With a LOST store it does
+// RetryStaleBinds unmounts the stale lease binds again and finishes the
+// releases that they kept (engine.RetryStaleBinds). With a LOST store it does
 // nothing: then nothing is released.
-func (n *Node) RetryStale(ctx context.Context) {
+func (n *Node) RetryStaleBinds(ctx context.Context) {
 	if n.opts.Store.Lost() != nil {
 		return
 	}
-	n.Engine.RetryStale(ctx, state.TriggerUnprepare)
+	n.Engine.RetryStaleBinds(ctx, state.TriggerUnprepare)
 }
 
 // localGuard returns an error for a local memdev that the pool driver

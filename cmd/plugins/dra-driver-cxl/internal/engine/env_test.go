@@ -139,7 +139,7 @@ func (v *env) startEngine() {
 		},
 		Sources:     v.sources,
 		LeaseFsRoot: filepath.Join(v.dir, localDriver, "lease-fs"),
-		FsTypes:     []string{api.FSTypeErofs, api.FSTypeExt4, api.FSTypeXfs},
+		FSTypes:     []string{api.FSTypeErofs, api.FSTypeExt4, api.FSTypeXfs},
 		Fence: func(_ context.Context, node int) {
 			v.fenceMu.Lock()
 			defer v.fenceMu.Unlock()

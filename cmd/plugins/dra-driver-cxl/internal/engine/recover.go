@@ -91,7 +91,7 @@ func (e *Engine) Recover(ctx context.Context) (*Recovered, error) {
 	}
 	e.sweepBinds(ctx)
 	e.sweepNodeMounts()
-	e.forgetGoneParts(ctx)
+	e.forgetGoneSlices(ctx)
 	e.deleteUnowned(ctx)
 	for _, m := range e.records().Memdevs {
 		if len(m.Hollow) > 0 && e.owns(m.Source) {
@@ -818,7 +818,7 @@ func (e *Engine) sweepBinds(ctx context.Context) {
 			if ok {
 				e.addStale(serial, target, state.StaleBind)
 			} else {
-				e.addOrphanBind(target)
+				e.addUnownedBind(target)
 			}
 			continue
 		}

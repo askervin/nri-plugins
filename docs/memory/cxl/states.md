@@ -512,27 +512,25 @@ has the second when regions of other memdevs lie above the region in the decoder
 
 | kind | unprepare | rollback | recovery | idle |
 |:-----|:---|:---|:---|:---|
-| local sliced | destroy | in order | in order | destroy |
+| local | destroy | in order | in order | destroy |
 | local shared | keep idle | keep idle | keep idle | keep idle |
 | local shared, new region | keep idle | in order | in order | keep idle |
-| local unshared | destroy | in order | destroy | destroy |
-| local unshared, new region | destroy | in order | in order | destroy |
+| local shared, not in sharedMemdevs | destroy | in order | destroy | destroy |
 | local persistent | in order, kept idle | in order | in order, kept idle | in order, kept idle |
 | local persistent, new region | in order, kept idle | in order | in order | in order, kept idle |
-| pool exclusive | destroy | destroy | destroy; keep | destroy |
+| pool | destroy | destroy | destroy; keep | destroy |
 | pool shared | destroy | destroy | destroy; keep | destroy |
 | pool persistent | destroy | destroy | destroy; keep | destroy |
 
 Kinds:
 
-- `local sliced`: A local memdev whose grants have parts of it.
+- `local`: A local memdev whose grants have slices of it, or one used shared that is not configured shared any more whose region is new.
 - `local shared`: A local memdev configured shared whose region is established: set up and zeroed, or kept by an earlier release.
 - `local shared, new region`: A local memdev configured shared whose region a Prepare made and did not set up or zero (it failed or was cut).
-- `local unshared`: A local memdev used shared that is not configured shared any more, its region established.
-- `local unshared, new region`: A local memdev used shared that is not configured shared any more, its region new (as of a local shared memdev, new region).
+- `local shared, not in sharedMemdevs`: A local memdev used shared that is not configured shared any more (not in sharedMemdevs), its region established.
 - `local persistent`: A local memdev of persistent memory whose region is established: set up, or kept by an earlier release.
 - `local persistent, new region`: A local memdev of persistent memory whose region a Prepare made and did not set up (it failed or was cut).
-- `pool exclusive`: A pool device of one grant.
+- `pool`: A pool device of one grant.
 - `pool shared`: A pool device that several grants share.
 - `pool persistent`: A pool device of persistent memory.
 
