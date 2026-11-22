@@ -1,12 +1,12 @@
 #!/bin/bash
-# Usage: deploy.sh [--image TAR] [--prepare-node] sliced|shared
+# Usage: deploy.sh [--image TAR] [--prepare-node] local|local-shared
 #
 # Deploy nri-dra-driver-cxl with the Helm chart of this repository on the
 # single-node cluster of TARGET (see lib.sh), or reconfigure it:
 #
-#   sliced   the local memdev $CXL_SERIAL is sliced (DeviceClass cxl-local,
+#   local    the local memdev $CXL_SERIAL is sliced (DeviceClass cxl-local,
 #            modes numa and dax), the default configuration
-#   shared   the memdev is in sharedMemdevs: one devdax device of the
+#   local-shared  the memdev is in sharedMemdevs: one devdax device of the
 #            whole memdev that claims of cxl-local-shared map
 #
 # --image TAR       copy the image tarball TAR to TARGET and import it into
@@ -29,7 +29,7 @@
 #                      unset: not in the configuration, the driver's
 #                      default allowed-mems applies
 #
-# Switching between sliced and shared needs an idle device: delete the
+# Switching between local and local-shared needs an idle device: delete the
 # pods and claims of the device first.
 set -o pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -44,12 +44,12 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --image) tar="$2"; shift ;;
         --prepare-node) prepare=1 ;;
-        sliced|shared) mode="$1" ;;
-        *) echo "usage: $0 [--image TAR] [--prepare-node] sliced|shared" >&2; exit 2 ;;
+        local|local-shared) mode="$1" ;;
+        *) echo "usage: $0 [--image TAR] [--prepare-node] local|local-shared" >&2; exit 2 ;;
     esac
     shift
 done
-[ -n "$mode" ] || { echo "usage: $0 [--image TAR] [--prepare-node] sliced|shared" >&2; exit 2; }
+[ -n "$mode" ] || { echo "usage: $0 [--image TAR] [--prepare-node] local|local-shared" >&2; exit 2; }
 
 set -e
 if [ -n "$tar" ]; then
@@ -114,7 +114,7 @@ values="image:
   pullPolicy: Never
 logLevel: 4"
 config=""
-if [ "$mode" == shared ]; then
+if [ "$mode" == local-shared ]; then
     config+="
   sharedMemdevs: [\"$S\"]"
 fi
@@ -135,7 +135,7 @@ t "helm upgrade --install -n kube-system $RELEASE /root/dra-driver-cxl-chart -f 
 t "kubectl rollout status -n kube-system ds/nri-dra-driver-cxl --timeout=180s"
 
 want=False
-[ "$mode" == shared ] && want=True
+[ "$mode" == local-shared ] && want=True
 published() {
     local d
     d=$(slice_json) && [ "$(jget "$d" 'j["attributes"]["shared"]["bool"]')" == "$want" ]

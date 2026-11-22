@@ -15,7 +15,7 @@
 # in mode dax passes a devdax fd to the container, which writes and reads
 # it.
 #
-# Needs the driver deployed with "deploy.sh sliced".
+# Needs the driver deployed with "deploy.sh local".
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 TEST_NAME=test3-local-leases
 CXL_REQUEST=/usr/local/bin/cxl-request
@@ -55,7 +55,7 @@ J=$(last_json "$out")
 LEASE_B=$(jget "$J" 'j.get("lease")' 2>/dev/null)
 check "lease-b: the numa lease $LEASE_B is Ready on node $N" \
     test "$(jget "$J" 'j.get("state")' 2>/dev/null)" == Ready -a "$(jget "$J" 'j.get("node")' 2>/dev/null)" == "$N"
-mib=$(node_mib "$N")
+mib=$(numa_node_mib "$N")
 check "node $N has both 2Gi leases (MemTotal $mib MiB)" test "$mib" -le 4096 -a "$mib" -ge $((4096 - 256))
 check "lease-b: node $N is in Mems_allowed ($(mems_allowed lease-b))" in_list "$N" "$(mems_allowed lease-b)"
 check_fenced "$N" lease-a lease-b
@@ -96,7 +96,7 @@ out=$(pexec lease-a cat /tmp/hold.log)
 echo "    lease-a: $(grep pages <<< "$out" | tail -n 1)"
 check "lease-a: its pages moved off node $N" test "$(pages_on "$out" "$N")" == 0
 check "lease-a: numa-touch.py lives on" pexec lease-a pgrep -f numa-touch.py
-shrunk() { [ "$(node_mib "$N")" -le 2048 ]; }
+shrunk() { [ "$(numa_node_mib "$N")" -le 2048 ]; }
 check "node $N shrinks to the lease of lease-b" wait_for 120 "node $N shrinks" shrunk
 
 log "lease-b: a dax lease (cxl-request request --source local --mode dax --size 2Gi)"
@@ -117,7 +117,7 @@ echo "    list: $list" | cut -c1-400
 log "releasing every lease and pod: no region is left"
 pexec lease-b "$CXL_REQUEST" release --all --wait 120s >/dev/null 2>&1
 delete_all
-gone() { [ "$(node_mib "$N")" == 0 ]; }
+gone() { [ "$(numa_node_mib "$N")" == 0 ]; }
 check "node $N has no memory in 120 s" wait_for 120 "node $N empty" gone
 check "no CXL region is left on the memdev" wait_for 120 "no regions" no_regions
 check "no companion pods or claims are left" test -z "$(kn get pods,resourceclaims -o name 2>/dev/null)"

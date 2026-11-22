@@ -13,7 +13,7 @@
 #    claim filler (all but 4Gi) and claim c (2Gi dax, the last slice). a
 #    writes a pattern, c writes another, a verifies its own slice.
 #
-# Needs the driver deployed with "deploy.sh sliced" and an idle memdev.
+# Needs the driver deployed with "deploy.sh local" and an idle memdev.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 TEST_NAME=test5-memory-integrity
 GiB=$((1 << 30))

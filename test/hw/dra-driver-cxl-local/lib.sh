@@ -251,7 +251,7 @@ check_fenced() {
     return 1
 }
 
-node_mib() { # Usage: node_mib N -- MemTotal of NUMA node N in MiB, 0 if it has none
+numa_node_mib() { # Usage: numa_node_mib N -- MemTotal of NUMA node N in MiB, 0 if it has none
     t "awk '/MemTotal/ {print int(\$4/1024)}' /sys/devices/system/node/node$1/meminfo 2>/dev/null || echo 0"
 }
 

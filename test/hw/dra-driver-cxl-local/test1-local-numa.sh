@@ -31,10 +31,10 @@
 # steers a container; a process of kubectl exec gets it only at the next
 # step, which is shown separately.
 #
-# Needs the driver deployed with "deploy.sh sliced". CONTAINER_FENCING
+# Needs the driver deployed with "deploy.sh local". CONTAINER_FENCING
 # (deploy.sh) none: the fencing checks fail, and numa-u is managed "none".
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-TEST_NAME=test1-sliced-numa
+TEST_NAME=test1-local-numa
 GiB=$((1 << 30))
 
 log "$TEST_NAME: memdev $(serial) on $TARGET, memory block size $(block_bytes)"
@@ -69,7 +69,7 @@ NU=$(pod_env_value numa-u NODE)
 check "numa-a, numa-b and numa-u are on the same node ($N, $NB, $NU)" test -n "$N" -a "$N" == "$NB" -a "$N" == "$NU"
 log "CXL node N=$N"
 t "numactl -H | grep -E '^available|^node $N '" | sed 's/^/    /'
-mib=$(node_mib "$N")
+mib=$(numa_node_mib "$N")
 check "node $N has the memory of the three slices, 8192 MiB (MemTotal $mib MiB)" \
     test "$mib" -le 8192 -a "$mib" -ge $((8192 - 256))
 
@@ -146,7 +146,7 @@ driver_log | grep -E "NRI CreateContainer: ctr=$NS/numa-[abu]/main: (memory|cpus
 log "releasing numa-u: node $N shrinks to the 6Gi of numa-a and numa-b"
 kn delete pod numa-u --wait=true --timeout=300s >/dev/null
 kn delete resourceclaim numa-u --wait=true --timeout=300s >/dev/null
-shrunk_u() { [ "$(node_mib "$N")" -le 6144 ]; }
+shrunk_u() { [ "$(numa_node_mib "$N")" -le 6144 ]; }
 check "node $N shrinks to <= 6144 MiB in 120 s" wait_for 120 "node $N shrinks" shrunk_u
 
 log "plain: numa-touch.py preferring node $N must fail (not in Mems_allowed)"
@@ -188,9 +188,9 @@ pexec numa-b pkill -f numa-touch.py
 log "releasing numa-b: node $N shrinks to the 4Gi of numa-a"
 kn delete pod numa-b --wait=true --timeout=300s >/dev/null
 kn delete resourceclaim numa-b --wait=true --timeout=300s >/dev/null
-shrunk() { [ "$(node_mib "$N")" -le 4096 ]; }
+shrunk() { [ "$(numa_node_mib "$N")" -le 4096 ]; }
 check "node $N shrinks to <= 4096 MiB in 120 s" wait_for 120 "node $N shrinks" shrunk
-log "node $N has $(node_mib "$N") MiB"
+log "node $N has $(numa_node_mib "$N") MiB"
 check "numa-a still runs with node $N in Mems_allowed" in_list "$N" "$(mems_allowed numa-a)"
 
 driver_pod() { # the Running driver pod
@@ -224,7 +224,7 @@ k logs -n kube-system "$DRIVER_POD" | grep -E "NRI fence|NRI CreateContainer: ct
 
 log "releasing numa-a, plain and plain2: node $N goes away, no region is left"
 delete_all
-gone() { [ "$(node_mib "$N")" == 0 ]; }
+gone() { [ "$(numa_node_mib "$N")" == 0 ]; }
 check "node $N has no memory in 120 s" wait_for 120 "node $N empty" gone
 check "no CXL region is left on the memdev" wait_for 60 "no regions" no_regions
 

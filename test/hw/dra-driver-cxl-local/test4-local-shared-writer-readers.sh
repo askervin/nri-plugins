@@ -2,7 +2,7 @@
 # Test 4: the local memdev as a shared device (sharedMemdevs), single
 # writer and many readers.
 #
-# Reconfigures the driver with "deploy.sh shared": the memdev is one devdax
+# Reconfigures the driver with "deploy.sh local-shared": the memdev is one devdax
 # device of the whole memdev that every claim of DeviceClass
 # cxl-local-shared maps, the same bytes.
 #
@@ -16,16 +16,16 @@
 # end with a pattern, that readers cannot write, that an exclusive claim
 # waits while sharers hold the device and runs alone when they are gone,
 # that the data survives idle times (the region stays), and that switching
-# back to "deploy.sh sliced" releases the region.
+# back to "deploy.sh local" releases the region.
 #
 # Needs an idle memdev: no claims of the sliced configuration.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-TEST_NAME=test4-shared-swmr
+TEST_NAME=test4-local-shared-writer-readers
 CXL_REQUEST=/usr/local/bin/cxl-request
 
 log "$TEST_NAME: memdev $(serial) on $TARGET"
 reset_ns
-"$LIB_DIR/deploy.sh" shared 2>&1 | grep -E '^\[' | sed 's/^/  deploy: /'
+"$LIB_DIR/deploy.sh" local-shared 2>&1 | grep -E '^\[' | sed 's/^/  deploy: /'
 D=$(slice_json)
 echo "  published: $D"
 check "the memdev is published shared" test "$(jget "$D" 'j["attributes"]["shared"]["bool"]')" == True
@@ -143,7 +143,7 @@ log "driver log of the shared device (its prepared claims)"
 driver_log 30m | grep -E "cxl.nri.io: claim [^ ]+: prepared" | sed 's/^[^]]*] //; s/^/    /' | tail -n 20
 
 log "switching back to the sliced configuration releases the region"
-"$LIB_DIR/deploy.sh" sliced 2>&1 | grep -E '^\[' | sed 's/^/  deploy: /'
+"$LIB_DIR/deploy.sh" local 2>&1 | grep -E '^\[' | sed 's/^/  deploy: /'
 check "no CXL region is left on the memdev" wait_for 120 "no regions" no_regions
 check "the memdev is published sliced again" \
     test "$(jget "$(slice_json)" 'j["attributes"]["shared"]["bool"]')" == False

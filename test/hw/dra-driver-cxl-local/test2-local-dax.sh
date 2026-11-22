@@ -21,9 +21,9 @@
 # that a new slice on the memory of a released one is zeroed, and that the
 # region goes away with the last claim.
 #
-# Needs the driver deployed with "deploy.sh sliced".
+# Needs the driver deployed with "deploy.sh local".
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-TEST_NAME=test2-sliced-dax
+TEST_NAME=test2-local-dax
 GiB=$((1 << 30))
 
 log "$TEST_NAME: memdev $(serial) on $TARGET, memory block size $(block_bytes)"
@@ -70,7 +70,7 @@ t "daxctl list" | sed 's/^/    /'
 
 N=$(pod_env_value numa-c NODE)
 check "numa-c: CXL_<KEY>_MODE=numa on node $N" test "$(pod_env_value numa-c MODE)" == numa -a -n "$N"
-mib=$(node_mib "$N")
+mib=$(numa_node_mib "$N")
 check "node $N has only the 2Gi numa slice, dax slices add nothing (MemTotal $mib MiB)" \
     test "$mib" -le 2048 -a "$mib" -ge $((2048 - 128))
 check_fenced "$N" numa-c
@@ -130,7 +130,7 @@ check "new: the new slice $NEW_DAX is all zeroes (no data of dax-shared)" grep -
 
 log "releasing everything: no region is left"
 delete_all
-gone() { [ "$(node_mib "$N")" == 0 ]; }
+gone() { [ "$(numa_node_mib "$N")" == 0 ]; }
 check "node $N has no memory in 120 s" wait_for 120 "node $N empty" gone
 check "no CXL region is left on the memdev" wait_for 60 "no regions" no_regions
 
