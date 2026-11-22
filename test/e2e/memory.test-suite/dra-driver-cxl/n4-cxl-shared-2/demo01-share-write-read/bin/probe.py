@@ -157,7 +157,7 @@ def memdevs():
     return devs, endpoints
 
 
-def regions(endpoints, devs):
+def regions(endpoints):
     base = "/sys/bus/cxl/devices"
     out = []
     for name in listdir(base):
@@ -175,8 +175,6 @@ def regions(endpoints, devs):
             if m and m.group(1) in endpoints:
                 r["memdevs"].append(endpoints[m.group(1)])
             i += 1
-        if not r["memdevs"] and i == 1 and len(devs) == 1:
-            r["memdevs"].append(devs[0]["name"])
         rnum = name[len("region"):]
         dax_dir = "%s/%s/dax_region%s" % (base, name, rnum)
         for d in listdir(dax_dir):
@@ -368,7 +366,7 @@ def fs_mounts(blocks):
 def node(errors):
     try:
         devs, endpoints = memdevs()
-        regs = regions(endpoints, devs)
+        regs = regions(endpoints)
         blocks = [n["block"] for r in regs for n in r.get("namespaces") or [] if n.get("block")]
         pids = pod_pids()
         out = {"hostname": read("/proc/sys/kernel/hostname", ""), "memdevs": devs, "regions": regs}
@@ -394,7 +392,7 @@ def read_bytes(serial, length, errors):
     names = [d["name"] for d in devs if int_any(d["serial"]) == serial]
     if not names:
         return {"error": "no memdev with serial 0x%x" % (serial or 0)}
-    for r in regions(endpoints, devs):
+    for r in regions(endpoints):
         if names[0] in r["memdevs"] and r["dax"]:
             dax = r["dax"][0]
             try:
