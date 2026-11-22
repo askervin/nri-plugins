@@ -973,12 +973,11 @@ func (e *Engine) unmountNode(source state.Source, serial state.Serial, mnt strin
 }
 
 // releasePmemGrants releases the grants gone of the memdev with the serial
-// while the grants remaining stay: the node mounts that no remaining grant
-// has are unmounted, the superblock of a node mount whose remaining grants
-// have no writer is made read-only, and so are the block devices when no
-// writer remains (the block device of the remaining grants only when it is
-// the one of the region now). An error (a busy unmount or remount read-only) stops
-// it.
+// while the grants remaining stay: the node mounts that no remaining grant has
+// are unmounted, the superblock of a node mount whose remaining grants have no
+// writer is made read-only, and so are the block devices when no writer
+// remains (the block device of the remaining grants only when it is the one of
+// the region now). An error (a busy unmount or remount read-only) stops it.
 func (e *Engine) releasePmemGrants(source state.Source, serial state.Serial, gone, remaining []pmemGrant) error {
 	used := nodeMounts(remaining)
 	for _, mnt := range nodeMounts(gone) {

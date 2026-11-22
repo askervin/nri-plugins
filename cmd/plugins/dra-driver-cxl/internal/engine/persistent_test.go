@@ -311,8 +311,8 @@ func TestPersistentWithoutPmem(t *testing.T) {
 	finish(t, v, "unprepared")
 }
 
-// A remount read-write that the filesystem refuses leaves both block devices of a
-// cached xfs read-only again; a read-only xfs is mounted with nouuid.
+// A remount read-write that the filesystem refuses leaves both block devices
+// of a cached xfs read-only again; a read-only xfs is mounted with nouuid.
 func TestPersistentRemountReadWriteFails(t *testing.T) {
 	v := pmemEnv(t, "xfs")
 	v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFS, true, state.AccessCached))
@@ -578,12 +578,11 @@ func TestPersistentLogLines(t *testing.T) {
 	})
 }
 
-// A grant of a local persistent memdev whose release failed holds the
-// device until its release is done: the node mount of a reader whose
-// unmount is busy, the read-write superblock of a writer whose remount read-only is
-// busy. The rules of one node refuse the Prepares of other claims next to
-// it, which mount and change nothing; a reader of its node mount reuses it
-// as it is.
+// A grant of a local persistent memdev whose release failed holds the device
+// until its release is done: the node mount of a reader whose unmount is busy,
+// the read-write superblock of a writer whose remount read-only is busy. The
+// rules of one node refuse the Prepares of other claims next to it, which
+// mount and change nothing; a reader of its node mount reuses it as it is.
 func TestPersistentReleasingGrants(t *testing.T) {
 	refused := func(t *testing.T, v *env, req GrantRequest, want string) {
 		t.Helper()

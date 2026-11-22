@@ -637,12 +637,12 @@ func (w *Watcher) uncertainLocked(r *state.Records, now time.Time) (string, stat
 	return strings.Join(why, "; "), reason
 }
 
-// Gate observes the memdevs of a snapshot. It returns the serials of pool devices (those
-// of poolSerials, the POOL records and those in the status of pool claims
-// of the node) and the new memdevs that are HELD, which the scan does not
-// publish, and makes LOCAL the memdevs that it takes as local. local has the
-// claims of the local memdevs that the device engine has records of, by
-// serial: they are local unless they are serials of pool devices.
+// Gate observes the memdevs of a snapshot. It returns the serials of pool
+// devices (those of poolSerials, the POOL records and those in the status of
+// pool claims of the node) and the new memdevs that are HELD, which the scan
+// does not publish, and makes LOCAL the memdevs that it takes as local. local
+// has the claims of the local memdevs that the device engine has records of,
+// by serial: they are local unless they are serials of pool devices.
 func (w *Watcher) Gate(ctx context.Context, snap *kernel.Snapshot, poolSerials map[uint64]bool, local map[uint64][]string) (map[uint64]bool, map[uint64]bool) {
 	if w == nil || snap == nil {
 		return poolSerials, nil
@@ -674,9 +674,9 @@ func (w *Watcher) Gate(ctx context.Context, snap *kernel.Snapshot, poolSerials m
 }
 
 // gateScan is one observation of the memdevs of a scan: the memdevs, the
-// serials of pool devices and the local uses that the scan has, the evidence of the
-// pool claims of the node (nil when they were not listed), whether a list
-// succeeded, the reason for doubt of a new memdev ("" for none) and the
+// serials of pool devices and the local uses that the scan has, the evidence
+// of the pool claims of the node (nil when they were not listed), whether a
+// list succeeded, the reason for doubt of a new memdev ("" for none) and the
 // recorded serials observed absent for Retention, with the start of their
 // absence.
 type gateScan struct {

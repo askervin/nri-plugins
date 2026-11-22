@@ -28,13 +28,13 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
-// The start makes the superblock of a node mount and the read-only flag of
-// its block device what the prepared uses derive: a node mount that is gone
-// is mounted again read-write for a writer, the block device that was left
-// read-only made writable first; a read-write superblock without a writer
-// (the Prepare of the writer cut after its remount read-write) is made read-only, then
-// the block device; a read-only one under a writer is made read-write, the
-// block device first. A node mount that is gone and whose block device is
+// The start makes the superblock of a node mount and the read-only flag of its
+// block device what the prepared uses derive: a node mount that is gone is
+// mounted again read-write for a writer, the block device that was left
+// read-only made writable first; a read-write superblock without a writer (the
+// Prepare of the writer cut after its remount read-write) is made read-only,
+// then the block device; a read-only one under a writer is made read-write,
+// the block device first. A node mount that is gone and whose block device is
 // another one now is not mounted again, with the line that the observer
 // counts.
 func TestRecoverRestoresFlags(t *testing.T) {

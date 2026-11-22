@@ -337,8 +337,8 @@ func regionIgnoreReason(cfg PublishConfig, r *kernel.RegionInfo, node int, mems 
 	return ""
 }
 
-// addDRAM adds the DRAM device of the NUMA nodes with memory that are not CXL NUMA nodes
-// to devInfos.
+// addDRAM adds the DRAM device of the NUMA nodes with memory that are not CXL
+// NUMA nodes to devInfos.
 func addDRAM(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snapshot, cxlNUMANodes map[int]bool) {
 	dramDev := &DRAM{}
 	for _, node := range numaNodesByName(snap) {

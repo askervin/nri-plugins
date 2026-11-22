@@ -102,7 +102,8 @@ type Watcher struct {
 	lostAt time.Time
 	// uncommitted has the kinds of the steps whose last commit failed.
 	uncommitted map[string]bool
-	// conflicts has the serials of pool devices whose use by local claims is logged.
+	// conflicts has the serials of pool devices whose use by local claims is
+	// logged.
 	conflicts map[uint64]bool
 }
 
@@ -175,11 +176,11 @@ func New(opts Options) *Watcher {
 	return w
 }
 
-// ListPoolSerials lists the ResourceSlices and returns the serials of the devices
-// of the pool driver and the remembered serials of pool devices, and whether the
-// ResourceSlices are known; the listed serials are made POOL. After a
-// failed list it returns the serials of the last successful one and the
-// remembered ones, not known before the first one succeeded. A nil watcher
+// ListPoolSerials lists the ResourceSlices and returns the serials of the
+// devices of the pool driver and the remembered serials of pool devices, and
+// whether the ResourceSlices are known; the listed serials are made POOL.
+// After a failed list it returns the serials of the last successful one and
+// the remembered ones, not known before the first one succeeded. A nil watcher
 // knows that there are none.
 func (w *Watcher) ListPoolSerials(ctx context.Context) (map[uint64]bool, bool) {
 	if w == nil {

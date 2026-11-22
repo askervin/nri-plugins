@@ -130,8 +130,8 @@ func TestRecordsRefresh(t *testing.T) {
 	}
 }
 
-// TestRecordsLoaded pins the load of the records at New: the line with
-// their counts and the name, serials of state POOL that stay pool devices without
+// TestRecordsLoaded pins the load of the records at New: the line with their
+// counts and the name, serials of state POOL that stay pool devices without
 // their slices, LOCAL ones that are local at once, and the listed pools.
 func TestRecordsLoaded(t *testing.T) {
 	logs := klogtest.Capture(t, 4)

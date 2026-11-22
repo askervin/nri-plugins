@@ -24,13 +24,13 @@ import (
 )
 
 // The fence (defaults.container.fencing allowed-mems): the NUMA nodes F on
-// which the driver onlines CXL memory, numa slices of local memdevs and
-// pool devices in mode numa. A fenced container has a fenced node in its
-// cpuset.mems only when one of its allocation results has numa memory on it
-// or it has a lease of it (wantMems). F is seeded at the start from the grants of
+// which the driver onlines CXL memory, numa slices of local memdevs and pool
+// devices in mode numa. A fenced container has a fenced node in its
+// cpuset.mems only when one of its allocation results has numa memory on it or
+// it has a lease of it (wantMems). F is seeded at the start from the grants of
 // this boot (Seed) and only grows; a node is fenced before its memory goes
-// online: Fence returns after the containers have been updated through NRI,
-// or at the end of its context, the pass finishing in the background. With
+// online: Fence returns after the containers have been updated through NRI, or
+// at the end of its context, the pass finishing in the background. With
 // fencing none F stays empty.
 //
 // A fence pass applies wantMems to the fenced containers of the table under
