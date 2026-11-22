@@ -731,7 +731,7 @@ sudo cxl list -M
 ```
 
 Never force-delete a pod that uses pool memory
-([pool.md](pool.md#ordering-and-failure-semantics)).
+([pool.md](pool.md#force-deletion)).
 
 ## Example d: a shared pool device on two nodes
 

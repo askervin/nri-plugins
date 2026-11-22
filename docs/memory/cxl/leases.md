@@ -852,4 +852,4 @@ and cannot make it the companion of a lease it did not request.
 - Leases follow the pod object: a finished but undeleted pod keeps its
   leases until its lease claim is unprepared.
 - Do not force-delete a companion pod while it holds a device (the force
-  deletion hazard of [pool.md](pool.md#ordering-and-failure-semantics)).
+  deletion hazard of [pool.md](pool.md#force-deletion)).

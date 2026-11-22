@@ -365,8 +365,12 @@ short grace, and creates a region over it. Mode `numa`: the node joins
 the fence, and the memory blocks of the region are onlined movable as a
 new NUMA node. Mode `dax`: the region's dax device is bound to
 `device_dax`; the memory is never onlined and never zeroed (a shared
-device has the same bytes on every host that has it).
-[pool.md](pool.md#what-the-node-plugin-does) has the details.
+device has the same bytes on every host that has it). Modes `block` and
+`fs` are those of [a persistent device](#a-persistent-device). The
+Unprepare of the last claim of the device on the node offlines its
+memory, destroys its region and disables the memdev, so that the pool
+can hot-remove it; [pool.md](pool.md#ordering) has the order of attach,
+Prepare, Unprepare and detach.
 
 ### A persistent device
 
@@ -538,6 +542,73 @@ holds back new memdevs, since it does not know which are pool devices.
 An operator
 starts it once with `--new-state` to begin with a new document
 ([usage.md](usage.md#an-unreadable-state)).
+
+### Node mounts after a restart
+
+The node mounts of mode `fs` are found again by the device number of
+their block device: a loop device of a cached node mount that the
+previous driver container set up shows its backing file in sysfs
+relative to the root of that container's `/dev` (`/pmem1`), which is
+not a path the driver can compare. A missing node mount is mounted again
+when the fsdax namespace of the region is the one prepared (its name,
+its block device and the numbers of that). The claims of a node mount
+that is not mounted after that (the region is gone, the namespace or
+block device is another one, the mount failed) stay prepared without a
+CDI device ([PREPARED_UNRESTORED](states.md#preparationstate)), so that
+their containers fail at creation on an unresolvable CDI device rather
+than bind a missing directory. The next start, kubelet's Prepare again
+of such a claim and the Prepare of another claim of the node mount
+mount it again if they can; the Prepare again fails with the reason
+otherwise (`its node mount ... is not mounted and cannot be mounted
+again: ...; unprepare the claim (delete its pods) to prepare it anew`).
+Before the release of such a claim the Unprepare waits for the block
+device of the region now, not the recorded one, which may be another
+device's. Companion claims have no CDI device; their lease bind is bound
+again only with the node mount.
+
+### A Prepare cut on a pool device
+
+The region of a cut Prepare is the newest one in the decoders of its
+host bridge and switch at that moment. Kept until kubelet's retry, it
+would lie below the regions that other claims get meanwhile, and its
+release by a retry that fails, or by the claim's Unprepare, would leave
+a hole. So the start releases the device of a cut Prepare before kubelet
+can call, as for a prepared claim, and forgets the claim; kubelet's
+Prepare again makes the region anew. It keeps the claim, KEPT, when it
+is a companion claim of a lease, when a region of another memdev lies
+above its region already, or when something could not be released (a
+busy node mount); the NUMA node of such a `numa` device is fenced.
+kubelet then prepares the claim again, which reuses the region, or
+unprepares it, which revokes the NUMA nodes that a companion claim may
+have lent, unmounts its lease bind and releases the device. An Unprepare
+that would revoke lent NUMA nodes before the driver has connected to NRI
+fails, and kubelet retries it.
+
+At a reboot a stale preparation of a pool device releases the device at
+its Unprepare (`cxl disable-memdev`) before the controller detaches it,
+also when the device was away at a start. The driver does not start
+when it cannot read the boot id.
+
+### Hollow regions
+
+A hollow region (no target, not committed, its address range kept in
+the root decoder) is what the kernel leaves of a region whose memdev was
+removed before the region was destroyed (a forced deletion), and what a
+`cxl create-region` that was killed before it set the target leaves. No
+decoder maps its address range any more; memory of it that `kmem` could
+not remove stays online until a reboot. `cxl destroy-region` refuses it
+("error locating decoder for target0"); writing its name to
+`/sys/bus/cxl/devices/<root decoder>/delete_region` removes it. The
+driver deletes only the hollow regions that it knows as its own
+([HOLLOW_OWNED](states.md#regionstate)), while none of their memory
+blocks is online: the region of a prepared claim whose memdev is gone
+(at its Unprepare), and the regions recorded for a Prepare that did not
+finish. The scan of `cxl.nri.io` skips every hollow region; it warns
+once, with that command, about each one that is not the driver's.
+
+`cxl create-region` right after a hotplug can fail once with
+"add_dev() failed"; the pool driver tries a region creation once more
+after 3 s.
 
 ## Files on the node
 

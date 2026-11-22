@@ -185,7 +185,7 @@ the memdev was idle. A hot-remove is refused while the region exists:
 remove the memdev from `sharedMemdevs` and restart the driver first.
 
 The configuration is read at start; the chart restarts the DaemonSet
-when its `config` value changes. A memdev switches between sliced and
+when its `config` value changes. A memdev switches between unshared and
 shared use only when it is idle: while claims of the other use are
 prepared it is not published, and the driver keeps serving those claims.
 A memdev that left `sharedMemdevs` loses its region with its last claim
