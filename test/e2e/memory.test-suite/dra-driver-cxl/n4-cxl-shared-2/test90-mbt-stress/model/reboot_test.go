@@ -477,8 +477,8 @@ func TestDevNodes(t *testing.T) {
 		{"env of an old boot", func(o *Observation) { o.Inspect["xdax-a@vm1#0"].Env["CXL_C1EE0001_DAX"] = "/dev/dax5.0" }, VFail, "is no dax device of 0xc1ee0001 on vm1 now (stale"},
 		{"env with another claim's block device", func(o *Observation) { o.Inspect["pwr-c@vm0#0"].Env["CXL_C1AE2002_PATH"] = "/dev/pmem1" }, VFail, "is no pmem device"},
 		{"a numa node without memory", func(o *Observation) {
-			o.Inspect["lnuma@vm1#0"].Env["CXL_C100E2E1_NODE"] = "3"
-		}, VFail, "CXL_C100E2E1_NODE=3, want 2"},
+			o.Inspect["lnuma@vm1#0"].Env["CXL_C100E2E1_NUMA_NODE"] = "3"
+		}, VFail, "CXL_C100E2E1_NUMA_NODE=3, want 2"},
 	} {
 		o := observation(t, s)
 		c.change(o)
@@ -487,11 +487,11 @@ func TestDevNodes(t *testing.T) {
 			t.Errorf("%s: verdict %s %q, want %s with %q; diffs:\n  %s", c.name, v.Status, v.Msg, c.status, c.want, strings.Join(v.Diffs, "\n  "))
 		}
 	}
-	// a NODE whose memory is gone: a wait (O3's MemTotal says it too)
+	// a NUMA node whose memory is gone: a wait (O3's MemTotal says it too)
 	o = observation(t, s)
 	o.VMs["vm1"].Nodes["2"] = ObsNUMANode{}
 	v, _ = checkState(s, o, "")
-	if v.Status != VWait || !slices.ContainsFunc(v.Diffs, func(x string) bool { return strings.Contains(x, "CXL_C100E2E1_NODE=2 has no memory on vm1") }) {
+	if v.Status != VWait || !slices.ContainsFunc(v.Diffs, func(x string) bool { return strings.Contains(x, "CXL_C100E2E1_NUMA_NODE=2 has no memory on vm1") }) {
 		t.Fatalf("node without memory: %s %q; diffs:\n  %s", v.Status, v.Msg, strings.Join(v.Diffs, "\n  "))
 	}
 	// after a reboot the devices have new names: the old nodes are stale

@@ -236,39 +236,39 @@ func TestEnv(t *testing.T) {
 	}{
 		{"memdev numa", Memory{Key: Key(0xc100e2e1, 1), Serial: "0xc100e2e1", Mode: ModeNUMA, Size: 134217728, NUMANode: 2},
 			map[string]string{"CXL_C100E2E1_SERIAL": "0xc100e2e1", "CXL_C100E2E1_SHARED": "0", "CXL_C100E2E1_MODE": "numa",
-				"CXL_C100E2E1_SIZE": "134217728", "CXL_C100E2E1_NODE": "2"}},
+				"CXL_C100E2E1_SIZE": "134217728", "CXL_C100E2E1_NUMA_NODE": "2"}},
 		{"memdev dax read-only", Memory{Key: Key(0xc100e2e1, 1), Serial: "0xc100e2e1", Mode: ModeDax, Size: 134217728, Dax: "/dev/dax0.1", ReadOnly: true},
 			map[string]string{"CXL_C100E2E1_SERIAL": "0xc100e2e1", "CXL_C100E2E1_SHARED": "0", "CXL_C100E2E1_MODE": "dax",
-				"CXL_C100E2E1_SIZE": "134217728", "CXL_C100E2E1_DAX": "/dev/dax0.1", "CXL_C100E2E1_READONLY": "1"}},
+				"CXL_C100E2E1_SIZE": "134217728", "CXL_C100E2E1_DAX": "/dev/dax0.1", "CXL_C100E2E1_READ_ONLY": "1"}},
 		{"shared pool device dax", Memory{Key: Key(0xc1ae0001, 1), Serial: "0xc1ae0001", Shared: true, Mode: ModeDax, Size: 268435456, Dax: "/dev/dax0.0"},
 			map[string]string{"CXL_C1AE0001_SERIAL": "0xc1ae0001", "CXL_C1AE0001_SHARED": "1", "CXL_C1AE0001_MODE": "dax",
-				"CXL_C1AE0001_SIZE": "268435456", "CXL_C1AE0001_DAX": "/dev/dax0.0", "CXL_C1AE0001_READONLY": "0"}},
+				"CXL_C1AE0001_SIZE": "268435456", "CXL_C1AE0001_DAX": "/dev/dax0.0", "CXL_C1AE0001_READ_ONLY": "0"}},
 		{"second slice", Memory{Key: Key(0xc100e2e1, 2), Serial: "0xc100e2e1", Mode: ModeNUMA, Size: 134217728, NUMANode: 0},
 			map[string]string{"CXL_C100E2E1_2_SERIAL": "0xc100e2e1", "CXL_C100E2E1_2_SHARED": "0", "CXL_C100E2E1_2_MODE": "numa",
-				"CXL_C100E2E1_2_SIZE": "134217728", "CXL_C100E2E1_2_NODE": "0"}},
+				"CXL_C100E2E1_2_SIZE": "134217728", "CXL_C100E2E1_2_NUMA_NODE": "0"}},
 		{"region", Memory{Key: RegionKey("region0"), Mode: ModeNUMA, Size: 67108864, NUMANode: 2},
-			map[string]string{"CXL_REGION0_MODE": "numa", "CXL_REGION0_SIZE": "67108864", "CXL_REGION0_NODE": "2"}},
+			map[string]string{"CXL_REGION0_MODE": "numa", "CXL_REGION0_SIZE": "67108864", "CXL_REGION0_NUMA_NODE": "2"}},
 		{"dram", Memory{Key: DRAMKey, Mode: ModeNUMA, Size: 67108864, NUMANodes: "0-1"},
-			map[string]string{"CXL_DRAM_MODE": "numa", "CXL_DRAM_SIZE": "67108864", "CXL_DRAM_NODES": "0-1"}},
+			map[string]string{"CXL_DRAM_MODE": "numa", "CXL_DRAM_SIZE": "67108864", "CXL_DRAM_NUMA_NODES": "0-1"}},
 		{"pool device block", Memory{Key: Key(0xc1ae0001, 1), Serial: "0xc1ae0001", Shared: true, Mode: ModeBlock, Size: 534773760, Path: "/dev/pmem1"},
 			map[string]string{"CXL_C1AE0001_SERIAL": "0xc1ae0001", "CXL_C1AE0001_SHARED": "1", "CXL_C1AE0001_MODE": "block",
-				"CXL_C1AE0001_SIZE": "534773760", "CXL_C1AE0001_PATH": "/dev/pmem1", "CXL_C1AE0001_READONLY": "0"}},
+				"CXL_C1AE0001_SIZE": "534773760", "CXL_C1AE0001_PATH": "/dev/pmem1", "CXL_C1AE0001_READ_ONLY": "0"}},
 		{"pool device fs", Memory{Key: Key(0xc1ae0001, 2), Serial: "0xc1ae0001", Shared: true, Mode: ModeFS, Size: 534773760,
 			Path: "/run/cxl-fs/C1AE0001_2", Access: AccessCached, ReadOnly: true},
 			map[string]string{"CXL_C1AE0001_2_SERIAL": "0xc1ae0001", "CXL_C1AE0001_2_SHARED": "1", "CXL_C1AE0001_2_MODE": "fs",
 				"CXL_C1AE0001_2_SIZE": "534773760", "CXL_C1AE0001_2_PATH": "/run/cxl-fs/C1AE0001_2", "CXL_C1AE0001_2_ACCESS": "cached",
-				"CXL_C1AE0001_2_READONLY": "1"}},
+				"CXL_C1AE0001_2_READ_ONLY": "1"}},
 		{"pool device fs read-write", Memory{Key: Key(0xc1af0001, 1), Serial: "0xc1af0001", Shared: true, Mode: ModeFS, Size: 534773760,
 			Path: "/data", Access: AccessDirect, FSType: "ext4"},
 			map[string]string{"CXL_C1AF0001_SERIAL": "0xc1af0001", "CXL_C1AF0001_SHARED": "1", "CXL_C1AF0001_MODE": "fs",
 				"CXL_C1AF0001_SIZE": "534773760", "CXL_C1AF0001_PATH": "/data", "CXL_C1AF0001_ACCESS": "direct",
-				"CXL_C1AF0001_READONLY": "0", "CXL_C1AF0001_FSTYPE": "ext4"}},
-		{"block has no FSTYPE", Memory{Key: Key(0xc1af0001, 1), Serial: "0xc1af0001", Mode: ModeBlock, Size: 1, Path: "/dev/pmem0", FSType: "ext4"},
+				"CXL_C1AF0001_READ_ONLY": "0", "CXL_C1AF0001_FS_TYPE": "ext4"}},
+		{"block has no FS_TYPE", Memory{Key: Key(0xc1af0001, 1), Serial: "0xc1af0001", Mode: ModeBlock, Size: 1, Path: "/dev/pmem0", FSType: "ext4"},
 			map[string]string{"CXL_C1AF0001_SERIAL": "0xc1af0001", "CXL_C1AF0001_SHARED": "0", "CXL_C1AF0001_MODE": "block",
-				"CXL_C1AF0001_SIZE": "1", "CXL_C1AF0001_PATH": "/dev/pmem0", "CXL_C1AF0001_READONLY": "0"}},
+				"CXL_C1AF0001_SIZE": "1", "CXL_C1AF0001_PATH": "/dev/pmem0", "CXL_C1AF0001_READ_ONLY": "0"}},
 		{"dax lease without a device path", Memory{Key: Key(0xc1ee0001, 1), Serial: "0xc1ee0001", Mode: ModeDax, Size: 1},
 			map[string]string{"CXL_C1EE0001_SERIAL": "0xc1ee0001", "CXL_C1EE0001_SHARED": "0", "CXL_C1EE0001_MODE": "dax",
-				"CXL_C1EE0001_SIZE": "1", "CXL_C1EE0001_READONLY": "0"}},
+				"CXL_C1EE0001_SIZE": "1", "CXL_C1EE0001_READ_ONLY": "0"}},
 	} {
 		if got := Env(c.mem); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: env\n%v\nwant\n%v", c.name, got, c.want)
@@ -278,31 +278,31 @@ func TestEnv(t *testing.T) {
 
 func TestExecEnv(t *testing.T) {
 	dax := Env(Memory{Key: Key(0xc1ee0001, 1), Serial: "0xc1ee0001", Mode: ModeDax, Size: 536870912, Dax: "/dev/dax0.0"})
-	want := []string{"CXL_C1EE0001_FD=3", "CXL_C1EE0001_MODE=dax", "CXL_C1EE0001_READONLY=0", "CXL_C1EE0001_SERIAL=0xc1ee0001",
+	want := []string{"CXL_C1EE0001_FD=3", "CXL_C1EE0001_MODE=dax", "CXL_C1EE0001_READ_ONLY=0", "CXL_C1EE0001_SERIAL=0xc1ee0001",
 		"CXL_C1EE0001_SHARED=0", "CXL_C1EE0001_SIZE=536870912", "CXL_LEASE=1a2b3c4d"}
 	if got := ExecEnv(dax, "1a2b3c4d", 3); !reflect.DeepEqual(got, want) {
 		t.Fatalf("dax exec env\n%v\nwant\n%v", got, want)
 	}
 	// without an fd the device path stays
-	want = []string{"CXL_C1EE0001_DAX=/dev/dax0.0", "CXL_C1EE0001_MODE=dax", "CXL_C1EE0001_READONLY=0", "CXL_C1EE0001_SERIAL=0xc1ee0001",
+	want = []string{"CXL_C1EE0001_DAX=/dev/dax0.0", "CXL_C1EE0001_MODE=dax", "CXL_C1EE0001_READ_ONLY=0", "CXL_C1EE0001_SERIAL=0xc1ee0001",
 		"CXL_C1EE0001_SHARED=0", "CXL_C1EE0001_SIZE=536870912", "CXL_LEASE=1a2b3c4d"}
 	if got := ExecEnv(dax, "1a2b3c4d", -1); !reflect.DeepEqual(got, want) {
 		t.Fatalf("dax exec env without fd\n%v\nwant\n%v", got, want)
 	}
 	numa := Env(Memory{Key: Key(0xc100e2e1, 1), Serial: "0xc100e2e1", Mode: ModeNUMA, Size: 134217728, NUMANode: 2})
-	want = []string{"CXL_C100E2E1_MODE=numa", "CXL_C100E2E1_NODE=2", "CXL_C100E2E1_SERIAL=0xc100e2e1", "CXL_C100E2E1_SHARED=0",
+	want = []string{"CXL_C100E2E1_MODE=numa", "CXL_C100E2E1_NUMA_NODE=2", "CXL_C100E2E1_SERIAL=0xc100e2e1", "CXL_C100E2E1_SHARED=0",
 		"CXL_C100E2E1_SIZE=134217728", "CXL_LEASE=00000001"}
 	if got := ExecEnv(numa, "00000001", -1); !reflect.DeepEqual(got, want) {
 		t.Fatalf("numa exec env\n%v\nwant\n%v", got, want)
 	}
 	// a block lease: the fd takes the place of the device path
 	block := Env(Memory{Key: Key(0xc1ae0001, 1), Serial: "0xc1ae0001", Shared: true, Mode: ModeBlock, Size: 534773760, Path: "/dev/pmem0"})
-	want = []string{"CXL_C1AE0001_FD=3", "CXL_C1AE0001_MODE=block", "CXL_C1AE0001_READONLY=0", "CXL_C1AE0001_SERIAL=0xc1ae0001",
+	want = []string{"CXL_C1AE0001_FD=3", "CXL_C1AE0001_MODE=block", "CXL_C1AE0001_READ_ONLY=0", "CXL_C1AE0001_SERIAL=0xc1ae0001",
 		"CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=534773760", "CXL_LEASE=000000a3"}
 	if got := ExecEnv(block, "000000a3", 3); !reflect.DeepEqual(got, want) {
 		t.Fatalf("block exec env\n%v\nwant\n%v", got, want)
 	}
-	want = []string{"CXL_C1AE0001_MODE=block", "CXL_C1AE0001_PATH=/dev/pmem0", "CXL_C1AE0001_READONLY=0", "CXL_C1AE0001_SERIAL=0xc1ae0001",
+	want = []string{"CXL_C1AE0001_MODE=block", "CXL_C1AE0001_PATH=/dev/pmem0", "CXL_C1AE0001_READ_ONLY=0", "CXL_C1AE0001_SERIAL=0xc1ae0001",
 		"CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=534773760", "CXL_LEASE=000000a3"}
 	if got := ExecEnv(block, "000000a3", -1); !reflect.DeepEqual(got, want) {
 		t.Fatalf("block exec env without fd\n%v\nwant\n%v", got, want)
@@ -310,7 +310,7 @@ func TestExecEnv(t *testing.T) {
 	// an fs lease keeps its path, also with an fd
 	fs := Env(Memory{Key: Key(0xc1af0001, 1), Serial: "0xc1af0001", Shared: true, Mode: ModeFS, Size: 534773760, Path: "/run/cxl/fs/models",
 		Access: AccessDirect, ReadOnly: true})
-	want = []string{"CXL_C1AF0001_ACCESS=direct", "CXL_C1AF0001_MODE=fs", "CXL_C1AF0001_PATH=/run/cxl/fs/models", "CXL_C1AF0001_READONLY=1",
+	want = []string{"CXL_C1AF0001_ACCESS=direct", "CXL_C1AF0001_MODE=fs", "CXL_C1AF0001_PATH=/run/cxl/fs/models", "CXL_C1AF0001_READ_ONLY=1",
 		"CXL_C1AF0001_SERIAL=0xc1af0001", "CXL_C1AF0001_SHARED=1", "CXL_C1AF0001_SIZE=534773760", "CXL_LEASE=000000a4"}
 	for _, fd := range []int{-1, 3} {
 		if got := ExecEnv(fs, "000000a4", fd); !reflect.DeepEqual(got, want) {

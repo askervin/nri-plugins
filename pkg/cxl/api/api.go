@@ -380,10 +380,10 @@ func Nth(key string, n int) string {
 }
 
 // Env returns the environment variables CXL_<KEY>_<FIELD> of a memory:
-// SERIAL and SHARED of memdevs, MODE and SIZE always, NODE or NODES of
-// numa memory, DAX and READONLY of dax memory, PATH and READONLY of block
-// memory, PATH, ACCESS, READONLY and FSTYPE (when the type is known) of fs
-// memory.
+// SERIAL and SHARED of memdevs, MODE and SIZE always, NUMA_NODE or
+// NUMA_NODES of numa memory, DAX and READ_ONLY of dax memory, PATH and
+// READ_ONLY of block memory, PATH, ACCESS, READ_ONLY and FS_TYPE (when the
+// type is known) of fs memory.
 func Env(m Memory) map[string]string {
 	p := "CXL_" + m.Key + "_"
 	env := map[string]string{
@@ -399,21 +399,21 @@ func Env(m Memory) map[string]string {
 		if m.Dax != "" {
 			env[p+"DAX"] = m.Dax
 		}
-		env[p+"READONLY"] = boolEnv(m.ReadOnly)
+		env[p+"READ_ONLY"] = boolEnv(m.ReadOnly)
 	case m.Mode == ModeBlock:
 		env[p+"PATH"] = m.Path
-		env[p+"READONLY"] = boolEnv(m.ReadOnly)
+		env[p+"READ_ONLY"] = boolEnv(m.ReadOnly)
 	case m.Mode == ModeFS:
 		env[p+"PATH"] = m.Path
 		env[p+"ACCESS"] = m.Access
-		env[p+"READONLY"] = boolEnv(m.ReadOnly)
+		env[p+"READ_ONLY"] = boolEnv(m.ReadOnly)
 		if m.FSType != "" {
-			env[p+"FSTYPE"] = m.FSType
+			env[p+"FS_TYPE"] = m.FSType
 		}
 	case m.NUMANodes != "":
-		env[p+"NODES"] = m.NUMANodes
+		env[p+"NUMA_NODES"] = m.NUMANodes
 	default:
-		env[p+"NODE"] = strconv.Itoa(m.NUMANode)
+		env[p+"NUMA_NODE"] = strconv.Itoa(m.NUMANode)
 	}
 	return env
 }

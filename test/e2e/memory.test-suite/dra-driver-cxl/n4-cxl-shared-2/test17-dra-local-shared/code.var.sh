@@ -133,7 +133,7 @@ env-check() {
         command-error "cannot read the environment of $pod"
     POD_ENV="$COMMAND_OUTPUT"
     dra-env-assert "$pod" "$POD_ENV" "$DRA_LOCAL_HEX" \
-        SERIAL="$DRA_LOCAL_SERIAL" SHARED=1 MODE=dax SIZE="$DRA_LOCAL_SIZE" "DAX=/dev/dax*" READONLY="$ro"
+        SERIAL="$DRA_LOCAL_SERIAL" SHARED=1 MODE=dax SIZE="$DRA_LOCAL_SIZE" "DAX=/dev/dax*" READ_ONLY="$ro"
     [ "$(grep -cE '^CXL_CLAIM_[0-9a-f_]+_0=1$' <<< "$POD_ENV")" == 1 ] && [ "$(grep -c '^CXL_' <<< "$POD_ENV")" == 7 ] ||
         error "$pod does not have the six variables of the device and one marker of result 0 of a claim: $POD_ENV"
     POD_DAX=$(dra-env-value "$POD_ENV" "CXL_${DRA_LOCAL_HEX}_DAX")
@@ -162,7 +162,7 @@ cdi-check() {
     else
         dra-assert "$cdi" "not any('permissions' in n for n in j['deviceNodes'])"
     fi
-    dra-assert "$cdi" "'CXL_${DRA_LOCAL_HEX}_READONLY=$ro' in j['env'] and 'CXL_CLAIM_${uid//-/_}_0=1' in j['env']"
+    dra-assert "$cdi" "'CXL_${DRA_LOCAL_HEX}_READ_ONLY=$ro' in j['env'] and 'CXL_CLAIM_${uid//-/_}_0=1' in j['env']"
     [ "$(dra-cdi-devices-with "$VM2" "$uid")" == "claim-$uid-0" ] ||
         error "the claim $uid has other CDI devices than claim-$uid-0: $(dra-cdi-devices-with "$VM2" "$uid")"
     CDI_NODE=$(dra-value "$cdi" "j['deviceNodes']")

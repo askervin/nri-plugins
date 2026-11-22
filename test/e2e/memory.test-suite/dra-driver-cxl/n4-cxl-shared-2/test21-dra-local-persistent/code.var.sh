@@ -215,7 +215,7 @@ for p in fs-rw fs-ro; do
     fi
     claim-local-assert "$p"
     fs-ctr-env-assert "$p" "$LP_HEX" \
-        SERIAL="$LP_SERIAL" SHARED=0 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=direct READONLY="$ro" FSTYPE=ext4
+        SERIAL="$LP_SERIAL" SHARED=0 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=direct READ_ONLY="$ro" FS_TYPE=ext4
     fs-ctr-mount-assert "$p" "$FS_PATH" "$rw" ext4
     fs-ctr-read-assert "$p" "$FS_PATH" "$FS_FILE" "$TEXT_EXT4"
     fs-cdi-assert "$VM2" "$p" "$DRA_LOCAL_DRIVER/device" "$MNT_DIRECT" "$FS_PATH" "$opts"
@@ -248,7 +248,7 @@ dra-exec "$VM2" leaser/main "$DRA_REQUEST_CTR_BIN" request --source local --seri
     --exec sh -c "$LEASE_SCRIPT" || command-error "leaser: the fs lease of $LP_DEVICE failed"
 LOG="$COMMAND_OUTPUT"
 dra-env-assert leaser "$LOG" "$LP_HEX" \
-    SERIAL="$LP_SERIAL" SHARED=0 MODE=fs SIZE="$NS_SIZE" PATH="$DRA_LEASE_FS_CTR_DIR/data" ACCESS=direct READONLY=1 FSTYPE=ext4
+    SERIAL="$LP_SERIAL" SHARED=0 MODE=fs SIZE="$NS_SIZE" PATH="$DRA_LEASE_FS_CTR_DIR/data" ACCESS=direct READ_ONLY=1 FS_TYPE=ext4
 grep -qxF "read: $TEXT_C" <<< "$LOG" || error "leaser: the lease did not read what fs-rw wrote: $(grep '^read:' <<< "$LOG")"
 grep -qE "^write refused: .*Read-only file system$" <<< "$LOG" ||
     error "leaser: a write through the read-only lease did not fail with \"Read-only file system\": $(grep '^write' <<< "$LOG")"

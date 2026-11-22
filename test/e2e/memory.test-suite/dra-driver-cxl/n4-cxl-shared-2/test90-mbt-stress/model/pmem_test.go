@@ -376,7 +376,7 @@ func TestPmemOracleInvariants(t *testing.T) {
 		if slot == "pfsd-c@vm1#0" {
 			in.PmemNodes = []string{"/dev/pmem0"}
 		} else {
-			in.Env["CXL_C1AE2002_READONLY"] = "0"
+			in.Env["CXL_C1AE2002_READ_ONLY"] = "0"
 		}
 		v, _ := checkState(s, o, "")
 		wantVerdict(t, v, VFail, slot)

@@ -597,7 +597,7 @@ def helper_test():
     expect("check_lease block", steps.check_lease({}, block, 0) == ["lease 3f2a91c0 Ready block rw (exclusive)", "block /dev/pmem0"],
            str(steps.check_lease({}, block, 0)))
     fs = ('{"lease": "8c1d02e4", "state": "Ready", "mode": "fs", "readOnly": true, "shared": true, "access": "direct", "fsType": "erofs", '
-          '"path": "/run/cxl/fs/hello", "env": {"CXL_C1AE0001_FSTYPE": "erofs"}}')
+          '"path": "/run/cxl/fs/hello", "env": {"CXL_C1AE0001_FS_TYPE": "erofs"}}')
     expect("check_lease fs", steps.check_lease({}, fs, 0) == ["lease 8c1d02e4 Ready fs ro (share) (direct)", "path /run/cxl/fs/hello"],
            str(steps.check_lease({}, fs, 0)))
     text = "Hello from the writer, 12:01:12"

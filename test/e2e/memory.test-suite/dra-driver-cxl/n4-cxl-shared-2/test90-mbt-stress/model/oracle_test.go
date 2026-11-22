@@ -217,10 +217,10 @@ func TestOracleDeviations(t *testing.T) {
 			ctrOf(t, o, "vm0", "mbt-lnuma").MemoryHigh = "100000"
 		}, VWait, "want max"},
 		// O6
-		{"env value", func(o *Observation) { o.Inspect["xnuma-a@vm1#0"].Env["CXL_C1EE0001_NODE"] = "3" }, VFail, "CXL_C1EE0001_NODE=3, want 2"},
+		{"env value", func(o *Observation) { o.Inspect["xnuma-a@vm1#0"].Env["CXL_C1EE0001_NUMA_NODE"] = "3" }, VFail, "CXL_C1EE0001_NUMA_NODE=3, want 2"},
 		{"env missing", func(o *Observation) { delete(o.Inspect["ldax@vm0#0"].Env, "CXL_C100E2E1_DAX") }, VFail, "CXL_C100E2E1_DAX missing"},
 		{"env extra", func(o *Observation) { o.Inspect["plain@vm0#0"].Env["CXL_C100E2E1_MODE"] = "numa" }, VFail, "unexpected CXL_C100E2E1_MODE"},
-		{"env read-only", func(o *Observation) { o.Inspect["sro-c@vm2#0"].Env["CXL_C1AE2001_READONLY"] = "0" }, VFail, "READONLY=0, want 1"},
+		{"env read-only", func(o *Observation) { o.Inspect["sro-c@vm2#0"].Env["CXL_C1AE2001_READ_ONLY"] = "0" }, VFail, "READ_ONLY=0, want 1"},
 		{"env of an old pod", func(o *Observation) {
 			o.Inspect["sro-c@vm2#0"].UID = "old"
 			o.Inspect["sro-c@vm2#0"].Env = nil
@@ -422,7 +422,7 @@ func TestEnvWant(t *testing.T) {
 	sl := cfg.Slots[cfg.slotIndex("xnuma-c@vm1#0")]
 	w := envWant(cfg, &sl)
 	want := map[string]string{"CXL_C1EE2001_MODE": "numa", "CXL_C1EE2001_SIZE": "268435456", "CXL_C1EE2001_SERIAL": "0xc1ee2001",
-		"CXL_C1EE2001_SHARED": "0", "CXL_C1EE2001_NODE": "3"}
+		"CXL_C1EE2001_SHARED": "0", "CXL_C1EE2001_NUMA_NODE": "3"}
 	if len(w) != len(want) {
 		t.Fatalf("env %v", w)
 	}
@@ -432,7 +432,7 @@ func TestEnvWant(t *testing.T) {
 		}
 	}
 	sl = cfg.Slots[cfg.slotIndex("sexcl-a@vm2#0")]
-	if w := envWant(cfg, &sl); w["CXL_C1AE0001_SHARED"] != "1" || w["CXL_C1AE0001_READONLY"] != "0" || w["CXL_C1AE0001_SIZE"] != "268435456" {
+	if w := envWant(cfg, &sl); w["CXL_C1AE0001_SHARED"] != "1" || w["CXL_C1AE0001_READ_ONLY"] != "0" || w["CXL_C1AE0001_SIZE"] != "268435456" {
 		t.Fatalf("env %v", w)
 	}
 	// the serial in any case

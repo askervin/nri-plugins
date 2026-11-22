@@ -176,7 +176,7 @@ echo "### B: the writer on VM1 gets shared0 exclusively and writes"
 # Without --shared, a request of a shared device takes all of its shares.
 dra-apply "$VM2" <<< "$(lease-pod-yaml writer "$VM1" "echo \"writer: cxl-request request --serial $SHARED_SERIAL\"
 cxl-request request --serial $SHARED_SERIAL --wait 120s --exec sh -c '
-echo \"lease \$CXL_LEASE read-only \$CXL_${SHARED_HEX}_READONLY shared \$CXL_${SHARED_HEX}_SHARED fd \$CXL_${SHARED_HEX}_FD\"
+echo \"lease \$CXL_LEASE read-only \$CXL_${SHARED_HEX}_READ_ONLY shared \$CXL_${SHARED_HEX}_SHARED fd \$CXL_${SHARED_HEX}_FD\"
 python3 /tools/dax-rw.py --fd 3 write 0 \"\$1\" || exit 1
 echo \"written\"
 while [ ! -f /tmp/done ]; do sleep 0.2; done
@@ -186,7 +186,7 @@ dra-wait-log "$VM2" writer written 120
 WRITER_LEASE=$(lease-of writer)
 [ -n "$WRITER_LEASE" ] || error "the writer logged no lease id"
 dra-pod-log "$VM2" writer | grep -qx "lease $WRITER_LEASE read-only 0 shared 1 fd 3" ||
-    error "the writer has not CXL_${SHARED_HEX}_READONLY=0, _SHARED=1 and _FD=3"
+    error "the writer has not CXL_${SHARED_HEX}_READ_ONLY=0, _SHARED=1 and _FD=3"
 dra-wait "$VM2" writer-companion "resourceclaim -n $DRA_NS cxl-lease-$WRITER_LEASE" \
     "condition('$DRA_POOL_DRIVER/Attached') == 'True'" 30
 # The companion asks for the shared device exclusively: one request of
@@ -211,7 +211,7 @@ echo "### C: three readers ask meanwhile, two on VM2 and one on VM1: they wait"
 for r in "${READERS[@]}"; do
     dra-apply "$VM2" <<< "$(lease-pod-yaml "$r" "${READER_VM[$r]}" "echo \"$r: cxl-request request --serial $SHARED_SERIAL --shared --read-only\"
 cxl-request request --serial $SHARED_SERIAL --shared --read-only --wait 300s --exec sh -c '
-echo \"lease \$CXL_LEASE read-only \$CXL_${SHARED_HEX}_READONLY\"
+echo \"lease \$CXL_LEASE read-only \$CXL_${SHARED_HEX}_READ_ONLY\"
 python3 /tools/dax-rw.py --fd 3 check-ro 0 || exit 1
 exec python3 /tools/dax-rw.py --fd 3 watch 0 /tmp/stop'
 echo \"cxl-request exit \$?\"
@@ -308,7 +308,7 @@ dra-wait-log "$VM2" reader-d "read: $TEXT" 60
 dra-kubectl "$VM2" "logs -n $DRA_NS reader-d"
 # readOnly without a mode: mode dax, the only mode of a shared device.
 dra-env-assert reader-d "$COMMAND_OUTPUT" "$SHARED_HEX" \
-    SERIAL="$SHARED_SERIAL" SHARED=1 MODE=dax SIZE=$(( 256 << 20 )) "DAX=/dev/dax*" READONLY=1
+    SERIAL="$SHARED_SERIAL" SHARED=1 MODE=dax SIZE=$(( 256 << 20 )) "DAX=/dev/dax*" READ_ONLY=1
 for line in "open for writing refused: EPERM" "writable mapping refused: EACCES"; do
     grep -qxF "$line" <<< "$COMMAND_OUTPUT" || error "reader-d did not log '$line'"
 done
@@ -323,7 +323,7 @@ cdi=$(dra-cdi-device "$VM1" "claim-$RO_CLAIM_UID-0")
 echo "CDI device claim-$RO_CLAIM_UID-0: $cdi"
 [ -n "$cdi" ] || error "no CDI device claim-$RO_CLAIM_UID-0 in VM1"
 dra-assert "$cdi" "j['kind'] == '$DRA_POOL_DRIVER/device' and any(n.get('permissions') == 'r' for n in j['deviceNodes'])"
-dra-assert "$cdi" "'CXL_${SHARED_HEX}_READONLY=1' in j['env'] and 'CXL_CLAIM_${RO_CLAIM_UID//-/_}_0=1' in j['env']"
+dra-assert "$cdi" "'CXL_${SHARED_HEX}_READ_ONLY=1' in j['env'] and 'CXL_CLAIM_${RO_CLAIM_UID//-/_}_0=1' in j['env']"
 [ "$(dra-cdi-devices-with "$VM1" "$RO_CLAIM_UID")" == "claim-$RO_CLAIM_UID-0" ] ||
     error "the claim of reader-d has other CDI devices than claim-$RO_CLAIM_UID-0: $(dra-cdi-devices-with "$VM1" "$RO_CLAIM_UID")"
 for r in "${READERS[@]}"; do

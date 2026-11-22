@@ -2245,9 +2245,9 @@ func envWant(cfg *Config, sl *Slot) map[string]string {
 		w[p+"SHARED"] = boolEnv(shared)
 		if mode == "dax" {
 			w[p+"DAX"] = "/dev/dax*"
-			w[p+"READONLY"] = boolEnv(readOnly)
+			w[p+"READ_ONLY"] = boolEnv(readOnly)
 		} else {
-			w[p+"NODE"] = strconv.Itoa(node)
+			w[p+"NUMA_NODE"] = strconv.Itoa(node)
 		}
 	}
 	switch k := sl.Kind; {
@@ -2257,8 +2257,8 @@ func envWant(cfg *Config, sl *Slot) map[string]string {
 		add(dev.Serial, "numa", dev.Size, false, false, cfg.bridgeNUMANode(poolBridge[sl.Pool]))
 		add(localSerial, "numa", blockSize, false, false, cfg.bridgeNUMANode(HB0))
 	case k.persistent():
-		// A22: block MODE PATH READONLY, fs MODE ACCESS PATH READONLY
-		// FSTYPE
+		// A22: block MODE PATH READ_ONLY, fs MODE ACCESS PATH READ_ONLY
+		// FS_TYPE
 		dev := devices[sl.Dev]
 		p := "CXL_" + serialKey(dev.Serial) + "_"
 		w[p+"SIZE"] = strconv.FormatUint(nsSize, 10)
@@ -2271,12 +2271,12 @@ func envWant(cfg *Config, sl *Slot) map[string]string {
 				w[p+"ACCESS"] = "cached"
 			}
 			w[p+"PATH"] = fsPath(sl)
-			w[p+"READONLY"] = "1"
-			w[p+"FSTYPE"] = "erofs"
+			w[p+"READ_ONLY"] = "1"
+			w[p+"FS_TYPE"] = "erofs"
 		} else {
 			w[p+"MODE"] = "block"
 			w[p+"PATH"] = "/dev/pmem*"
-			w[p+"READONLY"] = boolEnv(!k.writer())
+			w[p+"READ_ONLY"] = boolEnv(!k.writer())
 		}
 	case k.pooled():
 		dev := devices[sl.Dev]

@@ -30,7 +30,7 @@
 #   to cpuset.mems of that container (only), through NRI. Every other
 #   container of the node is kept off the node, whatever its cpuset.mems.
 #   "cxl-request env --lease ID" prints the environment that a claim of
-#   the same memory gives a container (CXL_<KEY>_NODE and the rest).
+#   the same memory gives a container (CXL_<KEY>_NUMA_NODE and the rest).
 # - "cxl-request request --serial 0xc1ae0001 --shared --exec CMD" joins a
 #   shared device (test19). The container gets no device node: the plugin
 #   opens the devdax device and passes the open file descriptor over the
@@ -183,7 +183,7 @@ lend-memory() {
     dra-lease-new "$MEM_LEASE"
     echo "lease $MEM_LEASE, pooled memory is NUMA node $MEM_NODE"
     # The response has the environment that a claim of pooled0 gives.
-    dra-assert "$json" "j.get('env') == {'CXL_${POOLED0_HEX}_SERIAL': '$POOLED0_SERIAL', 'CXL_${POOLED0_HEX}_SHARED': '0', 'CXL_${POOLED0_HEX}_MODE': 'numa', 'CXL_${POOLED0_HEX}_SIZE': '$POOLED0_SIZE', 'CXL_${POOLED0_HEX}_NODE': '$MEM_NODE'}"
+    dra-assert "$json" "j.get('env') == {'CXL_${POOLED0_HEX}_SERIAL': '$POOLED0_SERIAL', 'CXL_${POOLED0_HEX}_SHARED': '0', 'CXL_${POOLED0_HEX}_MODE': 'numa', 'CXL_${POOLED0_HEX}_SIZE': '$POOLED0_SIZE', 'CXL_${POOLED0_HEX}_NUMA_NODE': '$MEM_NODE'}"
     companion-check "$MEM_LEASE" pooled0 cxl-pool numa
     dra-assert "$CLAIM_JSON" "[quantity(s['capacity']['requests']['memory']) for s in subrequests()] == [$POOLED0_SIZE]"
     # The node is the region of pooled0, onlined as system RAM.
@@ -238,7 +238,7 @@ lease-env-check() {
     dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" env --lease "$MEM_LEASE" ||
         command-error "cxl-request env --lease $MEM_LEASE failed"
     dra-env-assert "lease $MEM_LEASE" "$COMMAND_OUTPUT" "$POOLED0_HEX" \
-        SERIAL="$POOLED0_SERIAL" SHARED=0 MODE=numa SIZE="$POOLED0_SIZE" NODE="$MEM_NODE"
+        SERIAL="$POOLED0_SERIAL" SHARED=0 MODE=numa SIZE="$POOLED0_SIZE" NUMA_NODE="$MEM_NODE"
     [ "$COMMAND_OUTPUT" == "$(LC_ALL=C sort <<< "$COMMAND_OUTPUT")" ] ||
         error "cxl-request env did not print sorted KEY=VALUE lines"
     grep -qx "CXL_LEASE=$MEM_LEASE" <<< "$COMMAND_OUTPUT" ||
@@ -248,8 +248,8 @@ lease-env-check() {
     LEASE_ENV=$(grep "^$key" <<< "$COMMAND_OUTPUT")
     LEASE_NODE="$MEM_NODE"
     # The script, expanded by sh in the container:
-    # echo "lease=$CXL_LEASE node=$CXL_<KEY>_NODE size=$CXL_<KEY>_SIZE fd=${CXL_<KEY>_FD:-none}"
-    script="echo \"lease=\$CXL_LEASE node=\$${key}NODE size=\$${key}SIZE fd=\${${key}FD:-none}\""
+    # echo "lease=$CXL_LEASE node=$CXL_<KEY>_NUMA_NODE size=$CXL_<KEY>_SIZE fd=${CXL_<KEY>_FD:-none}"
+    script="echo \"lease=\$CXL_LEASE node=\$${key}NUMA_NODE size=\$${key}SIZE fd=\${${key}FD:-none}\""
     dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" env --lease "$MEM_LEASE" --exec sh -c "$script" ||
         command-error "cxl-request env --lease $MEM_LEASE --exec failed"
     [ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "lease=$MEM_LEASE node=$MEM_NODE size=$POOLED0_SIZE fd=none" ] ||
@@ -328,7 +328,7 @@ share() {
         command-error "cxl-request env --lease $lease failed"
     lease_env="$COMMAND_OUTPUT"
     dra-env-assert "lease $lease" "$lease_env" "$SHARED_HEX" \
-        SERIAL="$SHARED_SERIAL" SHARED=1 MODE=dax SIZE="$SHARED_SIZE" "DAX=/dev/dax*" READONLY=0
+        SERIAL="$SHARED_SERIAL" SHARED=1 MODE=dax SIZE="$SHARED_SIZE" "DAX=/dev/dax*" READ_ONLY=0
     dax=$(dra-env-value "$lease_env" "CXL_${SHARED_HEX}_DAX")
     dra-assert "$DRA_LEASES" "j[0].get('dax') == '$dax'"
     # The fd again, for another program: its environment has the fd 3
@@ -337,7 +337,7 @@ share() {
         sh -c 'env | grep ^CXL_ | sort; readlink /proc/self/fd/3' ||
         command-error "cxl-request fd --lease $lease --exec sh failed"
     dra-env-assert "fd --lease $lease --exec" "$COMMAND_OUTPUT" "$SHARED_HEX" \
-        SERIAL="$SHARED_SERIAL" SHARED=1 MODE=dax SIZE="$SHARED_SIZE" FD=3 READONLY=0
+        SERIAL="$SHARED_SERIAL" SHARED=1 MODE=dax SIZE="$SHARED_SIZE" FD=3 READ_ONLY=0
     grep -qx "CXL_LEASE=$lease" <<< "$COMMAND_OUTPUT" ||
         error "the environment of fd --exec has no CXL_LEASE=$lease"
     [ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "$dax" ] ||
@@ -554,8 +554,8 @@ grep -qx "CXL_CLAIM_${CLAIMER_UID//-/_}_0=1" <<< "$COMMAND_OUTPUT" ||
     error "claimer has other CXL_ variables than the five of $POOLED0_SERIAL and the marker of its result"
 CLAIMER_ENV=$(grep "^CXL_${POOLED0_HEX}_" <<< "$COMMAND_OUTPUT")
 dra-env-assert claimer "$CLAIMER_ENV" "$POOLED0_HEX" \
-    SERIAL="$POOLED0_SERIAL" SHARED=0 MODE=numa SIZE="$POOLED0_SIZE" NODE="$CLAIM_NODE"
-[ "$(grep -v "_NODE=" <<< "$CLAIMER_ENV")" == "$(grep -v "_NODE=" <<< "$LEASE_ENV")" ] ||
+    SERIAL="$POOLED0_SERIAL" SHARED=0 MODE=numa SIZE="$POOLED0_SIZE" NUMA_NODE="$CLAIM_NODE"
+[ "$(grep -v "_NUMA_NODE=" <<< "$CLAIMER_ENV")" == "$(grep -v "_NUMA_NODE=" <<< "$LEASE_ENV")" ] ||
     error "the claim of pooled0 gives
 $CLAIMER_ENV
 the lease of pooled0 gave (on node $LEASE_NODE)

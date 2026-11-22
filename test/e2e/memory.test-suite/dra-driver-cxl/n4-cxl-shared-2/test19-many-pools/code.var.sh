@@ -296,10 +296,10 @@ pool-cxl-wait "$VM0" b-pooled0-prepared \
     "by_serial($B_POOLED0_SERIAL) is not None and len(regions) == 1 and enabled(regions[0]) and online_size(regions[0]) == $(( 512 << 20 ))"
 cxl-assert "regions[0]['numaNode'] >= $VM0_CPU_NODES"
 B_NODE=$(cxl-value "regions[0]['numaNode']")
-dra-wait-log "$VM2" b-consumer "CXL_${B_POOLED0_HEX}_NODE=$B_NODE" 60
+dra-wait-log "$VM2" b-consumer "CXL_${B_POOLED0_HEX}_NUMA_NODE=$B_NODE" 60
 dra-kubectl "$VM2" "logs -n $DRA_NS b-consumer" || command-error "cannot get the log of b-consumer"
 dra-env-assert b-consumer "$COMMAND_OUTPUT" "$B_POOLED0_HEX" \
-    SERIAL="$B_POOLED0_SERIAL" SHARED=0 MODE=numa SIZE=$(( 512 << 20 )) NODE="$B_NODE"
+    SERIAL="$B_POOLED0_SERIAL" SHARED=0 MODE=numa SIZE=$(( 512 << 20 )) NUMA_NODE="$B_NODE"
 echo "b-pooled0 of pool-b is NUMA node $B_NODE of VM0"
 
 echo "### C: a pod without a nodeSelector, a claim for a-pooled0: it goes to VM1 or VM2"
@@ -387,9 +387,9 @@ dra-wait-log "$VM2" f-writer written 60
 dra-kubectl "$VM2" "logs -n $DRA_NS f-writer" || command-error "cannot get the log of f-writer"
 F_LOG="$COMMAND_OUTPUT"
 dra-env-assert f-writer "$F_LOG" "$B_SHARED0_HEX" \
-    SERIAL="$B_SHARED0_SERIAL" SHARED=1 MODE=dax SIZE=$(( 256 << 20 )) "DAX=/dev/dax*" READONLY=0
+    SERIAL="$B_SHARED0_SERIAL" SHARED=1 MODE=dax SIZE=$(( 256 << 20 )) "DAX=/dev/dax*" READ_ONLY=0
 dra-env-assert f-writer "$F_LOG" "$C_SHARED0_HEX" \
-    SERIAL="$C_SHARED0_SERIAL" SHARED=1 MODE=dax SIZE=$(( 256 << 20 )) "DAX=/dev/dax*" READONLY=0
+    SERIAL="$C_SHARED0_SERIAL" SHARED=1 MODE=dax SIZE=$(( 256 << 20 )) "DAX=/dev/dax*" READ_ONLY=0
 [ "$(dra-env-value "$F_LOG" "CXL_${B_SHARED0_HEX}_DAX")" != "$(dra-env-value "$F_LOG" "CXL_${C_SHARED0_HEX}_DAX")" ] ||
     error "f-writer has the same dax device for both claims"
 # pool-b attached its device over QMP under host bridge 0 of VM0, pool-c
@@ -440,7 +440,7 @@ G_LOG="$COMMAND_OUTPUT"
 # The environment of the device, read-write, and the marker of result 0
 # of the claim, nothing else.
 dra-env-assert g-reader "$G_LOG" "$C_SHARED0_HEX" \
-    SERIAL="$C_SHARED0_SERIAL" SHARED=1 MODE=dax SIZE=$(( 256 << 20 )) "DAX=/dev/dax*" READONLY=0
+    SERIAL="$C_SHARED0_SERIAL" SHARED=1 MODE=dax SIZE=$(( 256 << 20 )) "DAX=/dev/dax*" READ_ONLY=0
 grep -qx "CXL_CLAIM_${G_UID//-/_}_0=1" <<< "$G_LOG" ||
     error "g-reader has no marker CXL_CLAIM_${G_UID//-/_}_0=1 of result 0 of its claim"
 [ "$(grep -c '^CXL_' <<< "$G_LOG")" == 7 ] ||

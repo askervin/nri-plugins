@@ -824,7 +824,7 @@ direct access and 1.4 times with cached access (Qwen3.5-2B), and 2.4 and
   demo zoom pod POD          why POD's lease waits (PodScheduled message);
                              of a pod of the wizard also why the pod waits
   demo zoom env POD          the CXL_* variables of POD's leases (fs:
-                             CXL_<KEY>_FSTYPE too); of a pod of the wizard
+                             CXL_<KEY>_FS_TYPE too); of a pod of the wizard
                              also those of its container
   demo zoom cdi vm1|vm2      the CDI specs of the node's claims, leases
   demo zoom driver vm1|vm2 [N]  the last N lines of the driver's log

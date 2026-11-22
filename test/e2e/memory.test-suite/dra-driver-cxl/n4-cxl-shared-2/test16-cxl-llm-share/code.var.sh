@@ -333,7 +333,7 @@ reader-check() {
     echo "### $r on $(vmdir-label "$vm"), $access, $(reader-kind "$r") reader, at $path (log: $TEST_OUTPUT_DIR/$r.log):"
     grep -E '^(CXL_|mount: |files: |no pmem devices$|pmem devices: |write under |cxl-request )' <<< "$log"
     dra-env-assert "$r" "$log" "$LLM_HEX" \
-        SERIAL="$LLM_SERIAL" SHARED=1 MODE=fs SIZE="$LLM_NS_SIZE" PATH="$path" ACCESS="$access" READONLY=1 FSTYPE=erofs
+        SERIAL="$LLM_SERIAL" SHARED=1 MODE=fs SIZE="$LLM_NS_SIZE" PATH="$path" ACCESS="$access" READ_ONLY=1 FS_TYPE=erofs
     grep -qx "no pmem devices" <<< "$log" ||
         error "$r has pmem devices: $(grep '^pmem devices:' <<< "$log")"
     grep -qE "^write under $path refused: .*Read-only file system$" <<< "$log" ||
@@ -399,7 +399,7 @@ lease-check() {
     local r="$1" log="$2" vm="${READER_VM[$1]}" access="${READER_ACCESS[$1]}" lease="${READER_LEASE[$1]}" path="${READER_PATH[$1]}" env want
     [ "$(dra-env-value "$log" CXL_LEASE)" == "$lease" ] ||
         error "$r: the command of cxl-request has CXL_LEASE=$(dra-env-value "$log" CXL_LEASE), expected $lease"
-    env=$(grep -E "^CXL_${LLM_HEX}_[A-Z]+=" <<< "$log" | LC_ALL=C sort)
+    env=$(grep -E "^CXL_${LLM_HEX}_[A-Z][A-Z_]*=" <<< "$log" | LC_ALL=C sort)
     dra-leases "$VM2" "$r/main"
     dra-assert "$DRA_LEASES" "[(l['lease'], l['state'], l.get('source'), l.get('mode'), l.get('access'), l.get('fsType'), l.get('shared'), l.get('readOnly'), l.get('serial'), int(l.get('size', 0)), l.get('path')) for l in j] == [('$lease', 'Ready', 'pool', 'fs', '$access', 'erofs', True, True, '$LLM_SERIAL', $LLM_NS_SIZE, '$path')]"
     dra-assert "$DRA_LEASES" "'node' not in j[0] and 'dax' not in j[0]"
@@ -677,7 +677,7 @@ dra-apply "$VM2" <<< "$(dra-shared-claim-yaml llm-writer "$LLM_SERIAL" "" "mode:
 $(dra-script-pod-yaml writer "$VM1" llm-writer "$(fs-writer-script "$LLM_HEX" "$LLM_VM_IMAGE")" "File:$LLM_VM_IMAGE")"
 fs-writer-wait "$VM2" writer 180
 dra-env-assert writer "$FS_LOG" "$LLM_HEX" \
-    SERIAL="$LLM_SERIAL" SHARED=1 MODE=block "SIZE=[1-9]*" "PATH=/dev/pmem*" READONLY=0
+    SERIAL="$LLM_SERIAL" SHARED=1 MODE=block "SIZE=[1-9]*" "PATH=/dev/pmem*" READ_ONLY=0
 LLM_NS_SIZE=$(dra-env-value "$FS_LOG" "CXL_${LLM_HEX}_SIZE")
 [[ "$LLM_NS_SIZE" =~ ^[0-9]+$ ]] && [ "$LLM_NS_SIZE" -ge "$LLM_IMAGE_SIZE" ] && [ "$LLM_NS_SIZE" -le "$LLM_DEV_SIZE" ] ||
     error "the fsdax namespace of the writer has $LLM_NS_SIZE bytes, expected the image ($LLM_IMAGE_SIZE) at least and the device ($LLM_DEV_SIZE) at most"

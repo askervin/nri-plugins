@@ -76,7 +76,7 @@ func TestLocalSlicedNUMA(t *testing.T) {
 		t.Fatalf("claim info %+v, expected device %+v", info, want)
 	}
 	cd := e.cdiDevice(e.local, "claim-u1-0")
-	wantEnv := []string{"CXL_C100E2E1_MODE=numa", "CXL_C100E2E1_NODE=" + strconv.Itoa(node), "CXL_C100E2E1_SERIAL=0xc100e2e1",
+	wantEnv := []string{"CXL_C100E2E1_MODE=numa", "CXL_C100E2E1_NUMA_NODE=" + strconv.Itoa(node), "CXL_C100E2E1_SERIAL=0xc100e2e1",
 		"CXL_C100E2E1_SHARED=0", "CXL_C100E2E1_SIZE=134217728", "CXL_CLAIM_u1_0=1"}
 	if cd == nil || !slices.Equal(cd.ContainerEdits.Env, wantEnv) || len(cd.ContainerEdits.DeviceNodes) != 0 {
 		t.Fatalf("CDI device %+v, expected env %v", cd, wantEnv)
@@ -102,7 +102,7 @@ func TestLocalSlicedDax(t *testing.T) {
 	}
 	cd := e.cdiDevice(e.local, "claim-u1-0")
 	wantNodes := []*cdiSpecs.DeviceNode{{Path: info.DaxDevice, Type: "c", Major: int64(info.DaxMajor), Minor: int64(info.DaxMinor), Permissions: "r"}}
-	wantEnv := []string{"CXL_C100E2E1_DAX=" + info.DaxDevice, "CXL_C100E2E1_MODE=dax", "CXL_C100E2E1_READONLY=1",
+	wantEnv := []string{"CXL_C100E2E1_DAX=" + info.DaxDevice, "CXL_C100E2E1_MODE=dax", "CXL_C100E2E1_READ_ONLY=1",
 		"CXL_C100E2E1_SERIAL=0xc100e2e1", "CXL_C100E2E1_SHARED=0", "CXL_C100E2E1_SIZE=134217728", "CXL_CLAIM_u1_0=1"}
 	if cd == nil || !reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, wantNodes) || !slices.Equal(cd.ContainerEdits.Env, wantEnv) {
 		t.Fatalf("CDI device %+v, expected nodes %+v env %v", cd, wantNodes, wantEnv)
@@ -188,7 +188,7 @@ func TestLocalPersistentBlock(t *testing.T) {
 		t.Fatalf("device info %+v", w)
 	}
 	cd := e.cdiDevice(e.local, "claim-w1-0")
-	hasEnv(t, cd, "CXL_C100F5E1_MODE=block", "CXL_C100F5E1_PATH="+w.BlockDevice, "CXL_C100F5E1_READONLY=0", "CXL_CLAIM_w1_0=1")
+	hasEnv(t, cd, "CXL_C100F5E1_MODE=block", "CXL_C100F5E1_PATH="+w.BlockDevice, "CXL_C100F5E1_READ_ONLY=0", "CXL_CLAIM_w1_0=1")
 	if want := []*cdiSpecs.DeviceNode{BlockDeviceNode(w.BlockDevice, w.BlockMajor, w.BlockMinor, false)}; !reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, want) {
 		t.Fatalf("device nodes %+v", cd.ContainerEdits.DeviceNodes)
 	}
@@ -196,7 +196,7 @@ func TestLocalPersistentBlock(t *testing.T) {
 	e.mustPrepare(e.local, localClaim("r1", pmemDev, -1, cfgBlockRO))
 	r := e.local.ClaimInfo("r1").Devices[0]
 	cd = e.cdiDevice(e.local, "claim-r1-0")
-	hasEnv(t, cd, "CXL_C100F5E1_MODE=block", "CXL_C100F5E1_READONLY=1")
+	hasEnv(t, cd, "CXL_C100F5E1_MODE=block", "CXL_C100F5E1_READ_ONLY=1")
 	if !r.ReadOnly || len(cd.ContainerEdits.DeviceNodes) != 1 || cd.ContainerEdits.DeviceNodes[0].Permissions != "r" {
 		t.Fatalf("reader %+v, CDI device %+v", r, cd.ContainerEdits)
 	}
@@ -229,7 +229,7 @@ func TestLocalPersistentFs(t *testing.T) {
 		readOnly bool
 	}{{"w1", false}, {"r1", true}} {
 		cd := e.cdiDevice(e.local, "claim-"+c.uid+"-0")
-		hasEnv(t, cd, "CXL_C100F5E1_MODE=fs", "CXL_C100F5E1_FSTYPE=ext4", "CXL_C100F5E1_ACCESS=direct", "CXL_C100F5E1_PATH=/run/cxl-fs/C100F5E1")
+		hasEnv(t, cd, "CXL_C100F5E1_MODE=fs", "CXL_C100F5E1_FS_TYPE=ext4", "CXL_C100F5E1_ACCESS=direct", "CXL_C100F5E1_PATH=/run/cxl-fs/C100F5E1")
 		if want := []*cdiSpecs.Mount{fsCDIMount(w.NodeMount, w.Path, c.readOnly)}; !reflect.DeepEqual(cd.ContainerEdits.Mounts, want) {
 			t.Fatalf("%s: mounts %+v, expected %+v", c.uid, cd.ContainerEdits.Mounts, want)
 		}
@@ -258,7 +258,7 @@ func TestLocalRegion(t *testing.T) {
 		t.Fatalf("device info %+v, expected %+v", info.Devices, want)
 	}
 	cd := e.cdiDevice(e.local, "claim-u1-0")
-	if want := []string{"CXL_CLAIM_u1_0=1", "CXL_REGION5_MODE=numa", "CXL_REGION5_NODE=4", "CXL_REGION5_SIZE=67108864"}; !slices.Equal(cd.ContainerEdits.Env, want) {
+	if want := []string{"CXL_CLAIM_u1_0=1", "CXL_REGION5_MODE=numa", "CXL_REGION5_NUMA_NODE=4", "CXL_REGION5_SIZE=67108864"}; !slices.Equal(cd.ContainerEdits.Env, want) {
 		t.Fatalf("env %v", cd.ContainerEdits.Env)
 	}
 	e.mustUnprepare(e.local, "u1")
@@ -277,7 +277,7 @@ func TestLocalDRAM(t *testing.T) {
 		t.Fatalf("device info %+v", d)
 	}
 	cd := e.cdiDevice(e.local, "claim-u1-0")
-	if want := []string{"CXL_CLAIM_u1_0=1", "CXL_DRAM_MODE=numa", "CXL_DRAM_NODES=0-1", "CXL_DRAM_SIZE=67108864"}; !slices.Equal(cd.ContainerEdits.Env, want) {
+	if want := []string{"CXL_CLAIM_u1_0=1", "CXL_DRAM_MODE=numa", "CXL_DRAM_NUMA_NODES=0-1", "CXL_DRAM_SIZE=67108864"}; !slices.Equal(cd.ContainerEdits.Env, want) {
 		t.Fatalf("env %v", cd.ContainerEdits.Env)
 	}
 	// a device section that is not numa

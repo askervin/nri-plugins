@@ -327,12 +327,12 @@ func TestDualOccupancy(t *testing.T) {
 	wantVerdict(t, v, VOK, "ok")
 	// the env of both claims (O6)
 	in := o.Inspect["dnuma@vm1#0"]
-	if in == nil || in.Env["CXL_C1EE2001_NODE"] != "3" || in.Env["CXL_C100E2E1_NODE"] != "2" || in.Env["CXL_C1EE2001_SIZE"] != "268435456" {
+	if in == nil || in.Env["CXL_C1EE2001_NUMA_NODE"] != "3" || in.Env["CXL_C100E2E1_NUMA_NODE"] != "2" || in.Env["CXL_C1EE2001_SIZE"] != "268435456" {
 		t.Fatalf("env %v", in)
 	}
-	o.Inspect["dnuma@vm1#0"].Env["CXL_C100E2E1_NODE"] = "3"
+	o.Inspect["dnuma@vm1#0"].Env["CXL_C100E2E1_NUMA_NODE"] = "3"
 	v, _ = checkState(s, o, "")
-	wantVerdict(t, v, VFail, "CXL_C100E2E1_NODE=3, want 2")
+	wantVerdict(t, v, VFail, "CXL_C100E2E1_NUMA_NODE=3, want 2")
 	// its claims: both are needed, in either order
 	o = observation(t, s)
 	p := podOf(t, o, "dnuma@vm1#0")

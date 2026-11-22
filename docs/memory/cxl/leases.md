@@ -226,7 +226,7 @@ claims of a device on a node share one node mount per access, and the
 rules of one node of
 [usage.md](usage.md#one-node-superblock-block-device-binds) count the
 companion claims of leases with the claims. `CXL_<KEY>_PATH` is
-`/run/cxl/fs/<name>`, `CXL_<KEY>_FSTYPE` the type of the filesystem
+`/run/cxl/fs/<name>`, `CXL_<KEY>_FS_TYPE` the type of the filesystem
 (also `fsType` of the response and of `cxl-request list`), and
 `CXL_<KEY>_SHARED` of a device of persistent memory (modes `fs` and
 `block`) its attribute `shared`, whatever `--shared`.
@@ -375,9 +375,9 @@ passes no fd and keeps `CXL_<KEY>_DAX`. The same for a `block` lease, with
 `env --exec`) `CXL_<KEY>_PATH` is the host path `/dev/pmemK` of the block
 device, informational, as `CXL_<KEY>_DAX` is; the container has no such
 node. A `numa` lease has no fd: CMD
-gets `CXL_<KEY>_NODE` and the rest. An `fs` lease has no fd either: CMD
+gets `CXL_<KEY>_NUMA_NODE` and the rest. An `fs` lease has no fd either: CMD
 gets `CXL_<KEY>_PATH=/run/cxl/fs/<name>`, `CXL_<KEY>_ACCESS`,
-`CXL_<KEY>_FSTYPE`, `CXL_<KEY>_READONLY` (`0` with `--read-write`, else
+`CXL_<KEY>_FS_TYPE`, `CXL_<KEY>_READ_ONLY` (`0` with `--read-write`, else
 `1`), `CXL_<KEY>_MODE=fs`, `CXL_<KEY>_SIZE` (the size of the fsdax
 namespace), `CXL_<KEY>_SERIAL`, `CXL_<KEY>_SHARED` and `CXL_LEASE`; the filesystem is mounted at the path when CMD starts. CMD's exit code is passed through
 (128+signal when it is killed by a signal), and SIGTERM, SIGINT, SIGHUP
@@ -406,7 +406,7 @@ cxl-request request --size 512Mi
       "size":536870912,"serial":"0xc100e2e1","node":2,"env":{"CXL_C100E2E1_MODE":"numa",...}}
 cxl-request request --source pool --size 512Mi --mode dax --exec python3 app.py
   -> app.py sees CXL_C1EE0001_FD=3 CXL_C1EE0001_MODE=dax CXL_C1EE0001_SIZE=536870912
-     CXL_C1EE0001_SERIAL=0xc1ee0001 CXL_C1EE0001_SHARED=0 CXL_C1EE0001_READONLY=0 CXL_LEASE=1a2b3c4d
+     CXL_C1EE0001_SERIAL=0xc1ee0001 CXL_C1EE0001_SHARED=0 CXL_C1EE0001_READ_ONLY=0 CXL_LEASE=1a2b3c4d
 cxl-request request --source local --size 64Mi --mode dax --read-only --exec prog
 cxl-request request --serial 0xc1ae0001                       # the shared device, exclusively (writer)
 cxl-request request --serial 0xc1ae0001 --shared --read-only --exec prog   # a reader
@@ -432,7 +432,7 @@ cxl-request fd --lease 1a2b3c4f --exec sh -c 'cat /tmp/model.erofs >&3'   # the 
 cxl-request request --serial 0xc1ae0002 --shared --read-only --mode block --exec prog   # a reader of the block device
 cxl-request env --lease 1a2b3c4d                              # KEY=VALUE lines (DAX, not FD)
 cxl-request fd --lease 1a2b3c4d --wait 60s --exec prog        # the fd again after a restart of prog
-cxl-request env --lease 1a2b3c4d --exec numactl --membind=2 prog   # a numa lease: CXL_C100E2E1_NODE=2
+cxl-request env --lease 1a2b3c4d --exec numactl --membind=2 prog   # a numa lease: CXL_C100E2E1_NUMA_NODE=2
 cxl-request list
 cxl-request release --lease 1a2b3c4d
 cxl-request release --all

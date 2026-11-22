@@ -651,12 +651,12 @@ NodePrepareResources, for each allocated device of the driver:
    CXL_<KEY>_SHARED=0|1
    CXL_<KEY>_MODE=numa|dax|block|fs
    CXL_<KEY>_SIZE=<bytes>
-   CXL_<KEY>_NODE=<N>                 (numa)
+   CXL_<KEY>_NUMA_NODE=<N>            (numa)
    CXL_<KEY>_DAX=/dev/daxX.Y          (dax)
    CXL_<KEY>_PATH=/dev/pmemK|<dir>    (block, fs)
    CXL_<KEY>_ACCESS=direct|cached     (fs)
-   CXL_<KEY>_FSTYPE=<type>            (fs)
-   CXL_<KEY>_READONLY=0|1             (dax, block, fs)
+   CXL_<KEY>_FS_TYPE=<type>           (fs)
+   CXL_<KEY>_READ_ONLY=0|1            (dax, block, fs)
    ```
 
    `<KEY>` is the serial in upper-case hex without `0x` (`<KEY>_2`, ...

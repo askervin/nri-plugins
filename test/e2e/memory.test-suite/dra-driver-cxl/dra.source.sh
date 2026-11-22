@@ -2155,7 +2155,7 @@ dra-env-assert() {
     # (docs/memory/cxl/usage.md). KEY is the upper-case hex serial of a memdev,
     # REGION<n> or DRAM. VALUE is a shell pattern, for instance
     # DAX=/dev/dax*.
-    # Example: dra-env-assert consumer "$LOG" C1EE0001 SERIAL=0xc1ee0001 SHARED=0 MODE=numa SIZE=536870912 NODE=2
+    # Example: dra-env-assert consumer "$LOG" C1EE0001 SERIAL=0xc1ee0001 SHARED=0 MODE=numa SIZE=536870912 NUMA_NODE=2
     local label="$1" text="$2" key="$3"
     shift 3
     python3 -c '
@@ -2165,8 +2165,8 @@ prefix = "CXL_%s_" % key
 got = {}
 for line in text.splitlines():
     name, sep, value = line.strip().partition("=")
-    # A field is a word without "_": CXL_C100E2E1_2_SIZE is another key.
-    if sep and name.startswith(prefix) and "_" not in name[len(prefix):]:
+    # A field starts with a letter: CXL_C100E2E1_2_SIZE is another key.
+    if sep and name.startswith(prefix) and name[len(prefix):][:1].isalpha():
         got[name[len(prefix):]] = value
 want = dict(w.partition("=")[::2] for w in want)
 bad = sorted(set(got) ^ set(want)) + sorted(f for f in set(got) & set(want) if not fnmatch.fnmatchcase(got[f], want[f]))

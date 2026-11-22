@@ -194,11 +194,11 @@ func TestRunRefusesFs(t *testing.T) {
 func TestRunExecFs(t *testing.T) {
 	resp := `{"lease":"000000b1","state":"Ready","source":"pool","mode":"fs","shared":true,"readOnly":true,"access":"cached","path":"/run/cxl/fs/models",` +
 		`"size":534773760,"serial":"0xc1ae0001","env":{"CXL_C1AE0001_ACCESS":"cached","CXL_C1AE0001_MODE":"fs","CXL_C1AE0001_PATH":"/run/cxl/fs/models",` +
-		`"CXL_C1AE0001_READONLY":"1","CXL_C1AE0001_SERIAL":"0xc1ae0001","CXL_C1AE0001_SHARED":"1","CXL_C1AE0001_SIZE":"534773760"}}`
+		`"CXL_C1AE0001_READ_ONLY":"1","CXL_C1AE0001_SERIAL":"0xc1ae0001","CXL_C1AE0001_SHARED":"1","CXL_C1AE0001_SIZE":"534773760"}}`
 	sock, reqs := fakeServer(t, resp, "")
 	t.Setenv(api.SocketEnv, sock)
 	var out, errb bytes.Buffer
-	script := `echo "$CXL_C1AE0001_PATH $CXL_C1AE0001_ACCESS $CXL_C1AE0001_MODE $CXL_C1AE0001_READONLY $CXL_LEASE ${CXL_C1AE0001_FD-nofd}"; ` +
+	script := `echo "$CXL_C1AE0001_PATH $CXL_C1AE0001_ACCESS $CXL_C1AE0001_MODE $CXL_C1AE0001_READ_ONLY $CXL_LEASE ${CXL_C1AE0001_FD-nofd}"; ` +
 		`if (exec 9<&3) 2>/dev/null; then echo fd3; else echo nofd3; fi`
 	code := run([]string{"request", "--serial", "0xc1ae0001", "--shared", "--read-only", "--mode", "fs", "--access", "cached", "--name", "models",
 		"--exec", "/bin/sh", "-c", script}, &out, &errb)
@@ -217,7 +217,7 @@ func TestRunExecFs(t *testing.T) {
 	if code := run([]string{"env", "--lease", "000000b1"}, &out, &errb); code != exitOK {
 		t.Fatalf("env: exit %d", code)
 	}
-	want := "CXL_C1AE0001_ACCESS=cached\nCXL_C1AE0001_MODE=fs\nCXL_C1AE0001_PATH=/run/cxl/fs/models\nCXL_C1AE0001_READONLY=1\n" +
+	want := "CXL_C1AE0001_ACCESS=cached\nCXL_C1AE0001_MODE=fs\nCXL_C1AE0001_PATH=/run/cxl/fs/models\nCXL_C1AE0001_READ_ONLY=1\n" +
 		"CXL_C1AE0001_SERIAL=0xc1ae0001\nCXL_C1AE0001_SHARED=1\nCXL_C1AE0001_SIZE=534773760\nCXL_LEASE=000000b1\n"
 	if out.String() != want {
 		t.Fatalf("env output\n%s\nwant\n%s", out.String(), want)
@@ -242,11 +242,11 @@ func TestRunExecBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp := `{"lease":"000000c1","state":"Ready","source":"pool","mode":"block","shared":false,"readOnly":false,"size":534773760,"serial":"0xc1ae0001","block":"/dev/pmem0",` +
-		`"env":{"CXL_C1AE0001_MODE":"block","CXL_C1AE0001_PATH":"/dev/pmem0","CXL_C1AE0001_READONLY":"0","CXL_C1AE0001_SERIAL":"0xc1ae0001","CXL_C1AE0001_SHARED":"1","CXL_C1AE0001_SIZE":"534773760"}}`
+		`"env":{"CXL_C1AE0001_MODE":"block","CXL_C1AE0001_PATH":"/dev/pmem0","CXL_C1AE0001_READ_ONLY":"0","CXL_C1AE0001_SERIAL":"0xc1ae0001","CXL_C1AE0001_SHARED":"1","CXL_C1AE0001_SIZE":"534773760"}}`
 	sock, reqs := fakeServer(t, resp, pmem)
 	t.Setenv(api.SocketEnv, sock)
 	var out, errb bytes.Buffer
-	script := `echo "$CXL_C1AE0001_FD $CXL_LEASE ${CXL_C1AE0001_PATH-nopath} $CXL_C1AE0001_MODE $CXL_C1AE0001_SIZE $CXL_C1AE0001_READONLY"; head -c 8 <&3; exit 5`
+	script := `echo "$CXL_C1AE0001_FD $CXL_LEASE ${CXL_C1AE0001_PATH-nopath} $CXL_C1AE0001_MODE $CXL_C1AE0001_SIZE $CXL_C1AE0001_READ_ONLY"; head -c 8 <&3; exit 5`
 	code := run([]string{"request", "--serial", "0xc1ae0001", "--mode", "block", "--exec", "/bin/sh", "-c", script}, &out, &errb)
 	if code != 5 {
 		t.Fatalf("exit %d (stderr %s)", code, errb.String())
@@ -392,14 +392,14 @@ func TestRunPrintsResponse(t *testing.T) {
 
 func TestRunEnv(t *testing.T) {
 	resp := `{"lease":"1a2b3c4d","state":"Ready","source":"pool","mode":"dax","shared":false,"readOnly":false,"size":536870912,"serial":"0xc1ee0001","dax":"/dev/dax0.0",` +
-		`"env":{"CXL_C1EE0001_DAX":"/dev/dax0.0","CXL_C1EE0001_MODE":"dax","CXL_C1EE0001_READONLY":"0","CXL_C1EE0001_SERIAL":"0xc1ee0001","CXL_C1EE0001_SHARED":"0","CXL_C1EE0001_SIZE":"536870912"}}`
+		`"env":{"CXL_C1EE0001_DAX":"/dev/dax0.0","CXL_C1EE0001_MODE":"dax","CXL_C1EE0001_READ_ONLY":"0","CXL_C1EE0001_SERIAL":"0xc1ee0001","CXL_C1EE0001_SHARED":"0","CXL_C1EE0001_SIZE":"536870912"}}`
 	sock, reqs := fakeServer(t, resp, "")
 	t.Setenv(api.SocketEnv, sock)
 	var out, errb bytes.Buffer
 	if code := run([]string{"env", "--lease", "1a2b3c4d"}, &out, &errb); code != exitOK {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
-	want := "CXL_C1EE0001_DAX=/dev/dax0.0\nCXL_C1EE0001_MODE=dax\nCXL_C1EE0001_READONLY=0\nCXL_C1EE0001_SERIAL=0xc1ee0001\n" +
+	want := "CXL_C1EE0001_DAX=/dev/dax0.0\nCXL_C1EE0001_MODE=dax\nCXL_C1EE0001_READ_ONLY=0\nCXL_C1EE0001_SERIAL=0xc1ee0001\n" +
 		"CXL_C1EE0001_SHARED=0\nCXL_C1EE0001_SIZE=536870912\nCXL_LEASE=1a2b3c4d\n"
 	if out.String() != want {
 		t.Fatalf("env output\n%s\nwant\n%s", out.String(), want)
@@ -425,11 +425,11 @@ func TestRunExecDax(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp := `{"lease":"000000a2","state":"Ready","source":"pool","mode":"dax","shared":true,"readOnly":true,"size":268435456,"serial":"0xc1ae0001","dax":"/dev/dax0.0",` +
-		`"env":{"CXL_C1AE0001_DAX":"/dev/dax0.0","CXL_C1AE0001_MODE":"dax","CXL_C1AE0001_READONLY":"1","CXL_C1AE0001_SERIAL":"0xc1ae0001","CXL_C1AE0001_SHARED":"1","CXL_C1AE0001_SIZE":"268435456"}}`
+		`"env":{"CXL_C1AE0001_DAX":"/dev/dax0.0","CXL_C1AE0001_MODE":"dax","CXL_C1AE0001_READ_ONLY":"1","CXL_C1AE0001_SERIAL":"0xc1ae0001","CXL_C1AE0001_SHARED":"1","CXL_C1AE0001_SIZE":"268435456"}}`
 	sock, reqs := fakeServer(t, resp, dax)
 	t.Setenv(api.SocketEnv, sock)
 	var out, errb bytes.Buffer
-	script := `echo "$CXL_C1AE0001_FD $CXL_LEASE ${CXL_C1AE0001_DAX-none} $CXL_C1AE0001_SIZE $CXL_C1AE0001_READONLY $CXL_C1AE0001_SHARED"; head -c 8 <&3; exit 7`
+	script := `echo "$CXL_C1AE0001_FD $CXL_LEASE ${CXL_C1AE0001_DAX-none} $CXL_C1AE0001_SIZE $CXL_C1AE0001_READ_ONLY $CXL_C1AE0001_SHARED"; head -c 8 <&3; exit 7`
 	code := run([]string{"request", "--serial", "0xc1ae0001", "--shared", "--read-only", "--exec", "/bin/sh", "-c", script}, &out, &errb)
 	if code != 7 {
 		t.Fatalf("exit %d (stderr %s)", code, errb.String())
@@ -467,11 +467,11 @@ func TestRunExecDax(t *testing.T) {
 
 func TestRunExecNUMA(t *testing.T) {
 	resp := `{"lease":"000000a4","state":"Ready","source":"local","mode":"numa","shared":false,"readOnly":false,"size":134217728,"serial":"0xc100e2e1","node":2,` +
-		`"env":{"CXL_C100E2E1_MODE":"numa","CXL_C100E2E1_NODE":"2","CXL_C100E2E1_SERIAL":"0xc100e2e1","CXL_C100E2E1_SHARED":"0","CXL_C100E2E1_SIZE":"134217728"}}`
+		`"env":{"CXL_C100E2E1_MODE":"numa","CXL_C100E2E1_NUMA_NODE":"2","CXL_C100E2E1_SERIAL":"0xc100e2e1","CXL_C100E2E1_SHARED":"0","CXL_C100E2E1_SIZE":"134217728"}}`
 	sock, _ := fakeServer(t, resp, "")
 	t.Setenv(api.SocketEnv, sock)
 	var out, errb bytes.Buffer
-	script := `echo "$CXL_C100E2E1_NODE $CXL_C100E2E1_SIZE $CXL_LEASE ${CXL_C100E2E1_FD-nofd}"; exec 3<&- 2>/dev/null; exit 0`
+	script := `echo "$CXL_C100E2E1_NUMA_NODE $CXL_C100E2E1_SIZE $CXL_LEASE ${CXL_C100E2E1_FD-nofd}"; exec 3<&- 2>/dev/null; exit 0`
 	if code := run([]string{"request", "--size", "128Mi", "--exec", "/bin/sh", "-c", script}, &out, &errb); code != exitOK {
 		t.Fatalf("exit %d (stderr %s)", code, errb.String())
 	}

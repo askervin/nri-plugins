@@ -491,7 +491,7 @@ spec:
     - -c
     - |
       env | grep ^CXL_ | sort
-      node=$(env | sed -n 's/^CXL_.*_NODE=//p')
+      node=$(env | sed -n 's/^CXL_.*_NUMA_NODE=//p')
       echo "cpuset.mems: $(cat /sys/fs/cgroup/cpuset.mems.effective)"
       grep MemTotal /sys/devices/system/node/node$node/meminfo
       sleep infinity
@@ -505,7 +505,7 @@ kubectl logs local-numa
 
 ```
 CXL_C100E2E1_MODE=numa
-CXL_C100E2E1_NODE=2
+CXL_C100E2E1_NUMA_NODE=2
 CXL_C100E2E1_SERIAL=0xc100e2e1
 CXL_C100E2E1_SHARED=0
 CXL_C100E2E1_SIZE=268435456
@@ -514,7 +514,7 @@ cpuset.mems: 0-2
 Node 2 MemTotal:         262144 kB
 ```
 
-`CXL_C100E2E1_NODE` is the NUMA node of the slice; the container is in
+`CXL_C100E2E1_NUMA_NODE` is the NUMA node of the slice; the container is in
 its `cpuset.mems`. On the node, the region, its two memory blocks online
 and the state of the driver:
 
@@ -589,7 +589,7 @@ spec:
       import mmap, os, time
       key = [k[:-len("DAX")] for k in os.environ if k.startswith("CXL_") and k.endswith("_DAX")][0]
       dax, size = os.environ[key + "DAX"], int(os.environ[key + "SIZE"])
-      print("device", dax, "size", size, "read-only", os.environ[key + "READONLY"])
+      print("device", dax, "size", size, "read-only", os.environ[key + "READ_ONLY"])
       # devdax: MAP_SHARED, a length that is a multiple of the device
       # alignment (2 MiB): map the whole slice
       m = mmap.mmap(os.open(dax, os.O_RDWR), size, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE)
@@ -680,7 +680,7 @@ spec:
     - -c
     - |
       env | grep ^CXL_ | sort
-      node=$(env | sed -n 's/^CXL_.*_NODE=//p')
+      node=$(env | sed -n 's/^CXL_.*_NUMA_NODE=//p')
       grep MemTotal /sys/devices/system/node/node$node/meminfo
       sleep infinity
     resources:
@@ -694,7 +694,7 @@ kubectl get resourceclaim pool-numa -o jsonpath='{.status.devices[0].conditions[
 
 ```
 CXL_C1EE0001_MODE=numa
-CXL_C1EE0001_NODE=2
+CXL_C1EE0001_NUMA_NODE=2
 CXL_C1EE0001_SERIAL=0xc1ee0001
 CXL_C1EE0001_SHARED=0
 CXL_C1EE0001_SIZE=536870912
@@ -855,7 +855,7 @@ shared-reader-mem-4whx5   n4-cxl-shared-1-fedora-43-containerd   1
 shared-writer-mem-rf9kh   n4-cxl-shared-2-fedora-43-containerd   1
 CXL_C1AE0001_DAX=/dev/dax0.0
 CXL_C1AE0001_MODE=dax
-CXL_C1AE0001_READONLY=0
+CXL_C1AE0001_READ_ONLY=0
 CXL_C1AE0001_SERIAL=0xc1ae0001
 CXL_C1AE0001_SHARED=1
 CXL_C1AE0001_SIZE=268435456
@@ -957,7 +957,7 @@ kubectl get pods,resourceclaims -l cxl.nri.io/lease
 ```
 
 ```
-{"lease":"319ab5d0","state":"Ready","source":"local","mode":"numa","shared":false,"readOnly":false,"size":134217728,"serial":"0xc100e2e1","node":2,"env":{"CXL_C100E2E1_MODE":"numa","CXL_C100E2E1_NODE":"2","CXL_C100E2E1_SERIAL":"0xc100e2e1","CXL_C100E2E1_SHARED":"0","CXL_C100E2E1_SIZE":"134217728"}}
+{"lease":"319ab5d0","state":"Ready","source":"local","mode":"numa","shared":false,"readOnly":false,"size":134217728,"serial":"0xc100e2e1","node":2,"env":{"CXL_C100E2E1_MODE":"numa","CXL_C100E2E1_NUMA_NODE":"2","CXL_C100E2E1_SERIAL":"0xc100e2e1","CXL_C100E2E1_SHARED":"0","CXL_C100E2E1_SIZE":"134217728"}}
 0-2
 NAME                     READY   STATUS              RESTARTS   AGE
 pod/cxl-lease-319ab5d0   0/1     ContainerCreating   0          1s
@@ -984,7 +984,7 @@ kubectl exec borrower -- cxl-request list
 ```
 CXL_C1EE0001_FD=3
 CXL_C1EE0001_MODE=dax
-CXL_C1EE0001_READONLY=0
+CXL_C1EE0001_READ_ONLY=0
 CXL_C1EE0001_SERIAL=0xc1ee0001
 CXL_C1EE0001_SHARED=0
 CXL_C1EE0001_SIZE=536870912
@@ -1081,7 +1081,7 @@ data:
         if len(keys) != 1:
             sys.exit("expected one CXL_<KEY>_DAX variable, found %d" % len(keys))
         key = keys[0]
-        return os.environ[key + "DAX"], int(os.environ[key + "SIZE"]), os.environ[key + "READONLY"]
+        return os.environ[key + "DAX"], int(os.environ[key + "SIZE"]), os.environ[key + "READ_ONLY"]
 
 
     def write(dax, size, path, text):

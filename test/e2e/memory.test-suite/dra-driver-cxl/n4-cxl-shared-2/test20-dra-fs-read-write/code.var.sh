@@ -6,7 +6,7 @@
 # mount them read-write with MemoryConfig device {mode: fs, readOnly:
 # false}, the explicit opt-in; without readOnly a claim of mode fs is
 # read-only. The driver detects the filesystem from its superblock
-# (CXL_<KEY>_FSTYPE), and a single-host filesystem (ext4, xfs, btrfs) is
+# (CXL_<KEY>_FS_TYPE), and a single-host filesystem (ext4, xfs, btrfs) is
 # read-write on one node at a time:
 # - ReadWriteOnce: a claim that writes makes the pool attachment of its
 #   node exclusive (fake-cxl-pool-controller, NeedsSingleHost), and writes
@@ -324,7 +324,7 @@ for p in rw-a rw-b ro-c; do
         ro=1 rw=ro opts="$CDI_RO"
     fi
     fs-ctr-env-assert "$p" "$FS_HEX" \
-        SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=direct READONLY="$ro" FSTYPE=ext4
+        SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=direct READ_ONLY="$ro" FS_TYPE=ext4
     fs-ctr-mount-assert "$p" "$FS_PATH" "$rw" ext4
     fs-ctr-read-assert "$p" "$FS_PATH" "$FS_FILE" "$TEXT_EXT4"
     fs-cdi-assert "$VM2" "$p" "$DRA_POOL_DRIVER/device" "$MNT_DIRECT" "$FS_PATH" "$opts"
@@ -377,7 +377,7 @@ fs-ctr-write-refused ro-c "$FS_PATH"
 # attempt of ro-d attaches fs0 to VM1 next to it.
 dra-pod-wait "$VM2" ro-d Running 240
 fs-ctr-env-assert ro-d "$FS_HEX" \
-    SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=direct READONLY=1 FSTYPE=ext4
+    SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=direct READ_ONLY=1 FS_TYPE=ext4
 fs-ctr-mount-assert ro-d "$FS_PATH" ro ext4
 # What VM2 wrote, read on VM1.
 fs-ctr-read-assert ro-d "$FS_PATH" a.txt "$TEXT_A"
@@ -410,7 +410,7 @@ fs-pmem-ro-assert "$VM2" "$PMEM2" 0
 dra-plugin-log-wait "$VM2" "remounted $MNT_DIRECT read-write"
 attached-assert "$VM2_NAME:True"
 fs-ctr-env-assert rw-f "$FS_HEX" \
-    SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=direct READONLY=0 FSTYPE=ext4
+    SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=direct READ_ONLY=0 FS_TYPE=ext4
 fs-ctr-write rw-f "$FS_PATH" f.txt "$TEXT_F"
 # ro-c kept its read-only bind through the upgrade and sees the new file.
 fs-ctr-mount-assert ro-c "$FS_PATH" ro ext4
@@ -439,7 +439,7 @@ write-image squashfs "$TEXT_SQ"
 dra-serial-claim-pod "$VM2" sq-r "$FS_SERIAL" 1 "$RO" "$CLASS"
 dra-pod-wait "$VM2" sq-r Running 180
 fs-ctr-env-assert sq-r "$FS_HEX" \
-    SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=cached READONLY=1 FSTYPE=squashfs
+    SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=cached READ_ONLY=1 FS_TYPE=squashfs
 fs-ctr-mount-assert sq-r "$FS_PATH" ro squashfs
 fs-ctr-read-assert sq-r "$FS_PATH" "$FS_FILE" "$TEXT_SQ"
 fs-ctr-write-refused sq-r "$FS_PATH"
@@ -460,7 +460,7 @@ fs0-free
 dra-serial-claim-pod "$VM2" btrfs-ro "$FS_SERIAL" 1 "$RO" "$CLASS"
 dra-pod-wait "$VM2" btrfs-ro Running 180
 fs-ctr-env-assert btrfs-ro "$FS_HEX" \
-    SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=cached READONLY=1 FSTYPE=btrfs
+    SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=cached READ_ONLY=1 FS_TYPE=btrfs
 fs-ctr-read-assert btrfs-ro "$FS_PATH" "$FS_FILE" "$TEXT_BTRFS"
 fs-ctr-write-refused btrfs-ro "$FS_PATH"
 fs-node-mounts-assert "$VM2" "$DRA_POOL_MOUNT_DIR" "$FS_MOUNT_ID" btrfs ro "" cached
@@ -471,7 +471,7 @@ fs-ctr-read-assert btrfs-ro "$FS_PATH" "$FS_FILE" "$TEXT_BTRFS"
 dra-claim-pod-delete btrfs-ro
 dra-pod-wait "$VM2" btrfs-rw Running 240
 fs-ctr-env-assert btrfs-rw "$FS_HEX" \
-    SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=cached READONLY=0 FSTYPE=btrfs
+    SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=cached READ_ONLY=0 FS_TYPE=btrfs
 fs-ctr-mount-assert btrfs-rw "$FS_PATH" rw btrfs
 fs-ctr-read-assert btrfs-rw "$FS_PATH" "$FS_FILE" "$TEXT_BTRFS"
 fs-ctr-write btrfs-rw "$FS_PATH" w.txt "$TEXT_W"
@@ -496,7 +496,7 @@ for p in ro-x1 ro-x2 ro-x3; do
 done
 for p in ro-x1 ro-x2 ro-x3; do
     fs-ctr-env-assert "$p" "$FS_HEX" \
-        SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS="${X_ACCESS[$p]}" READONLY=1 FSTYPE=xfs
+        SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS="${X_ACCESS[$p]}" READ_ONLY=1 FS_TYPE=xfs
     fs-ctr-mount-assert "$p" "$FS_PATH" ro xfs
     fs-ctr-read-assert "$p" "$FS_PATH" "$FS_FILE" "$TEXT_XFS"
     fs-ctr-write-refused "$p" "$FS_PATH"
@@ -513,7 +513,7 @@ fs0-free
 dra-serial-claim-pod "$VM1" rw-x "$FS_SERIAL" 1 "$RW" "$CLASS"
 dra-pod-wait "$VM2" rw-x Running 180
 fs-ctr-env-assert rw-x "$FS_HEX" \
-    SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=direct READONLY=0 FSTYPE=xfs
+    SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=direct READ_ONLY=0 FS_TYPE=xfs
 fs-ctr-mount-assert rw-x "$FS_PATH" rw xfs
 fs-ctr-write rw-x "$FS_PATH" x.txt "$TEXT_X"
 fs-ctr-read-assert rw-x "$FS_PATH" x.txt "$TEXT_X"
@@ -549,7 +549,7 @@ dra-exec "$VM2" lease-a/main "$DRA_REQUEST_CTR_BIN" request --serial "$FS_SERIAL
     --exec sh -c "$LEASE_SCRIPT" sh g.txt || command-error "lease-a: the read-only lease of $FS_DEVICE failed"
 LOG_RO="$COMMAND_OUTPUT"
 dra-env-assert "lease-a ro" "$LOG_RO" "$FS_HEX" \
-    SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$DRA_LEASE_FS_CTR_DIR/ro" ACCESS=direct READONLY=1 FSTYPE=ext4
+    SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$DRA_LEASE_FS_CTR_DIR/ro" ACCESS=direct READ_ONLY=1 FS_TYPE=ext4
 grep -qxF "read: $TEXT_G" <<< "$LOG_RO" || error "lease-a: the read-only lease did not read what rw-g wrote: $(grep '^read:' <<< "$LOG_RO")"
 grep -qE "^write refused: .*Read-only file system$" <<< "$LOG_RO" ||
     error "lease-a: a write through the read-only lease did not fail with \"Read-only file system\": $(grep '^write' <<< "$LOG_RO")"
@@ -564,7 +564,7 @@ dra-exec "$VM2" lease-a/main "$DRA_REQUEST_CTR_BIN" request --serial "$FS_SERIAL
     command-error "lease-a: the read-write lease of $FS_DEVICE failed"
 LOG_RW="$COMMAND_OUTPUT"
 dra-env-assert "lease-a rw" "$LOG_RW" "$FS_HEX" \
-    SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$DRA_LEASE_FS_CTR_DIR/rw" ACCESS=direct READONLY=0 FSTYPE=ext4
+    SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$DRA_LEASE_FS_CTR_DIR/rw" ACCESS=direct READ_ONLY=0 FS_TYPE=ext4
 grep -qx "write: done" <<< "$LOG_RW" || error "lease-a: the write through the read-write lease failed"
 fs-ctr-read-assert rw-g "$FS_PATH" l.txt "$TEXT_L"
 dra-leases "$VM2" lease-a/main

@@ -85,7 +85,7 @@ numa-lease() {
     dra-request "$VM2" borrower/main request --size "$size" ${source:+--source "$source"} --wait 120s
     [ "$DRA_REQ_STATUS" == 0 ] || error "cxl-request request --size $size${source:+ --source $source} exited $DRA_REQ_STATUS"
     dra-assert "$DRA_REQ_JSON" "j.get('state') == 'Ready' and j.get('mode') == 'numa' and not j.get('shared') and not j.get('readOnly') and int(j['node']) >= $CPU_NODES"
-    dra-assert "$DRA_REQ_JSON" "j['env']['CXL_%s_NODE' % j['serial'][2:].upper()] == str(j['node']) and j['env']['CXL_%s_MODE' % j['serial'][2:].upper()] == 'numa'"
+    dra-assert "$DRA_REQ_JSON" "j['env']['CXL_%s_NUMA_NODE' % j['serial'][2:].upper()] == str(j['node']) and j['env']['CXL_%s_MODE' % j['serial'][2:].upper()] == 'numa'"
     LEASE=$(dra-value "$DRA_REQ_JSON" "j['lease']")
     LEASE_NODE=$(dra-value "$DRA_REQ_JSON" "j['node']")
     dra-lease-new "$LEASE"
@@ -102,7 +102,7 @@ local-numa-lease() {
     # see numa-lease.
     numa-lease "$(dra-mi "$1")" local
     dra-assert "$DRA_REQ_JSON" "j.get('source') == 'local' and j.get('serial') == '$DRA_LOCAL_SERIAL' and int(j['node']) == $NUMA_NODE and int(j['size']) == $(dra-local-round "$1")"
-    dra-assert "$DRA_REQ_JSON" "j['env'] == {'CXL_${DRA_LOCAL_HEX}_SERIAL': '$DRA_LOCAL_SERIAL', 'CXL_${DRA_LOCAL_HEX}_SHARED': '0', 'CXL_${DRA_LOCAL_HEX}_MODE': 'numa', 'CXL_${DRA_LOCAL_HEX}_SIZE': '$(dra-local-round "$1")', 'CXL_${DRA_LOCAL_HEX}_NODE': '$NUMA_NODE'}"
+    dra-assert "$DRA_REQ_JSON" "j['env'] == {'CXL_${DRA_LOCAL_HEX}_SERIAL': '$DRA_LOCAL_SERIAL', 'CXL_${DRA_LOCAL_HEX}_SHARED': '0', 'CXL_${DRA_LOCAL_HEX}_MODE': 'numa', 'CXL_${DRA_LOCAL_HEX}_SIZE': '$(dra-local-round "$1")', 'CXL_${DRA_LOCAL_HEX}_NUMA_NODE': '$NUMA_NODE'}"
     companion-check "$LEASE" "$LOCAL_CLASS" "$1" "$(dra-local-round "$1")" numa
 }
 
@@ -130,17 +130,17 @@ dax-lease() {
     [[ "$DAX_LEASE" =~ ^[0-9a-f]{8}$ && "$DAX_KEY" =~ ^[0-9A-F]+$ ]] ||
         error "cxl-request --exec: no CXL_LEASE and one CXL_<KEY>_FD=3 in the environment: $exec_env"
     DAX_SIZE=$(dra-env-value "$exec_env" "CXL_${DAX_KEY}_SIZE")
-    DAX_RO=$(dra-env-value "$exec_env" "CXL_${DAX_KEY}_READONLY")
+    DAX_RO=$(dra-env-value "$exec_env" "CXL_${DAX_KEY}_READ_ONLY")
     serial=$(dra-env-value "$exec_env" "CXL_${DAX_KEY}_SERIAL")
     dra-env-assert "--exec of lease $DAX_LEASE" "$exec_env" "$DAX_KEY" \
-        SERIAL="0x${DAX_KEY,,}" SHARED=0 MODE=dax SIZE="$DAX_SIZE" FD=3 READONLY="$DAX_RO"
+        SERIAL="0x${DAX_KEY,,}" SHARED=0 MODE=dax SIZE="$DAX_SIZE" FD=3 READ_ONLY="$DAX_RO"
     dra-lease-new "$DAX_LEASE"
     # cxl-request env prints the same environment with the device, as a
     # claim gives it to its containers.
     dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" env --lease "$DAX_LEASE" ||
         command-error "cxl-request env --lease $DAX_LEASE failed"
     dra-env-assert "env --lease $DAX_LEASE" "$COMMAND_OUTPUT" "$DAX_KEY" \
-        SERIAL="$serial" SHARED=0 MODE=dax SIZE="$DAX_SIZE" "DAX=/dev/dax*" READONLY="$DAX_RO"
+        SERIAL="$serial" SHARED=0 MODE=dax SIZE="$DAX_SIZE" "DAX=/dev/dax*" READ_ONLY="$DAX_RO"
     DAX_PATH=$(dra-env-value "$COMMAND_OUTPUT" "CXL_${DAX_KEY}_DAX")
     echo "lease $DAX_LEASE: $DAX_PATH of $serial, $DAX_SIZE bytes, read-only $DAX_RO"
 }

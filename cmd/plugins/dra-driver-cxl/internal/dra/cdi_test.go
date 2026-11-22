@@ -57,9 +57,9 @@ func TestClaimsCDISpec(t *testing.T) {
 	e.mustPrepare(e.local, companion(localClaim("u3", localDev, 64*mib), "l1"))
 	want := []cdiSpecs.Device{
 		{Name: "claim-u1-0", ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{
-			"CXL_CLAIM_u1_0=1", "CXL_DRAM_MODE=numa", "CXL_DRAM_NODES=0-1", "CXL_DRAM_SIZE=67108864"}}},
+			"CXL_CLAIM_u1_0=1", "CXL_DRAM_MODE=numa", "CXL_DRAM_NUMA_NODES=0-1", "CXL_DRAM_SIZE=67108864"}}},
 		{Name: "claim-u1-2", ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{
-			"CXL_CLAIM_u1_2=1", "CXL_REGION0_MODE=numa", "CXL_REGION0_NODE=2", "CXL_REGION0_SIZE=67108864"}}},
+			"CXL_CLAIM_u1_2=1", "CXL_REGION0_MODE=numa", "CXL_REGION0_NUMA_NODE=2", "CXL_REGION0_SIZE=67108864"}}},
 		{Name: "claim-u2-0", ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{"CXL_CLAIM_u2_0=1"}}},
 		{Name: "lease-u2", ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{"LEASE_u2=1"}}},
 	}

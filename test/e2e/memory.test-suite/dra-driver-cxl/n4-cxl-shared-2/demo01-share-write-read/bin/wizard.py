@@ -801,7 +801,7 @@ def describe(a, ctx):
         excl = ("Its own slice: other claims get other slices." if a["source"] == "local" else
                 "Exclusive: the pool device is attached to this pod's node only.")
     sentences.append(excl)
-    mode = {"numa": "As RAM of a NUMA node (mode numa): CXL_<KEY>_NODE names it.",
+    mode = {"numa": "As RAM of a NUMA node (mode numa): CXL_<KEY>_NUMA_NODE names it.",
             "dax": "As a devdax device to mmap (mode dax), %s." % ("read-only" if read_only(a) else "read-write"),
             "block": "As the block device of its fsdax namespace (mode block), %s." % ("read-only" if read_only(a) else "writable"),
             "fs": "As the filesystem on it (mode fs), %s." % ("read-only" if read_only(a) else

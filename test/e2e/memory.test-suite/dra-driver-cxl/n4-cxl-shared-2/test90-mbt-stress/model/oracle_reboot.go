@@ -176,7 +176,7 @@ func kindOr(kind string) string {
 }
 
 // checkInspectDevices: in the env of an inspected pod, a numa claim's
-// CXL_<KEY>_NODE has memory on the pod's VM, and a dax or block claim's
+// CXL_<KEY>_NUMA_NODE has memory on the pod's VM, and a dax or block claim's
 // CXL_<KEY>_DAX or _PATH is the current device of its claim there (A44):
 // fatal, as the env checks (an inspection is not repeated).
 func (k *checker) checkInspectDevices(i int, in *ObsInspect) {
@@ -186,7 +186,7 @@ func (k *checker) checkInspectDevices(i int, in *ObsInspect) {
 		return
 	}
 	for key, val := range in.Env {
-		if !strings.HasPrefix(key, "CXL_") || !strings.HasSuffix(key, "_NODE") || ov.Nodes == nil {
+		if !strings.HasPrefix(key, "CXL_") || !strings.HasSuffix(key, "_NUMA_NODE") || ov.Nodes == nil {
 			continue
 		}
 		n, err := strconv.Atoi(val)

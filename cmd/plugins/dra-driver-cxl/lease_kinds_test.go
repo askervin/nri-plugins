@@ -179,7 +179,7 @@ func TestPoolNumaLease(t *testing.T) {
 	if got := e.ctrs.lentNodes(envPodUID, envCtr); !slices.Equal(got, []int{2}) {
 		t.Fatalf("lent nodes %v", got)
 	}
-	numaEnv := map[string]string{"CXL_C1EE0001_MODE": "numa", "CXL_C1EE0001_NODE": "2", "CXL_C1EE0001_SERIAL": "0xc1ee0001",
+	numaEnv := map[string]string{"CXL_C1EE0001_MODE": "numa", "CXL_C1EE0001_NUMA_NODE": "2", "CXL_C1EE0001_SERIAL": "0xc1ee0001",
 		"CXL_C1EE0001_SHARED": "0", "CXL_C1EE0001_SIZE": "268435456"}
 	wantResponse(t, <-ch, api.Response{State: api.StateReady, Source: "pool", Mode: "numa", NUMANode: ptr(2), Size: 268435456, Serial: "0xc1ee0001", Env: numaEnv})
 	if info := e.pool.ClaimInfo(string(alloc.UID)); info == nil || info.Lend == nil || info.Lend.Lease != "000000a1" ||
@@ -199,7 +199,7 @@ func TestPoolNumaLease(t *testing.T) {
 		t.Fatalf("retry with requestId: %+v", again)
 	}
 	list, _ := e.call(api.Request{Op: api.OpList})
-	if list.Leases == nil || len(*list.Leases) != 1 || (*list.Leases)[0].Lease != "000000a1" || (*list.Leases)[0].Env["CXL_C1EE0001_NODE"] != "2" {
+	if list.Leases == nil || len(*list.Leases) != 1 || (*list.Leases)[0].Lease != "000000a1" || (*list.Leases)[0].Env["CXL_C1EE0001_NUMA_NODE"] != "2" {
 		t.Fatalf("list %+v", list)
 	}
 	env, fd := e.call(api.Request{Op: api.OpEnv, Lease: "000000a1"})
@@ -245,7 +245,7 @@ func TestPoolDaxLease(t *testing.T) {
 	dax := filepath.Join(e.k.DevRoot(), "dax0.0")
 	wantFd(t, r.fd)
 	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "pool", Mode: "dax", Size: 268435456, Serial: "0xc1ee0001", Dax: dax,
-		Env: map[string]string{"CXL_C1EE0001_DAX": dax, "CXL_C1EE0001_MODE": "dax", "CXL_C1EE0001_READONLY": "0", "CXL_C1EE0001_SERIAL": "0xc1ee0001",
+		Env: map[string]string{"CXL_C1EE0001_DAX": dax, "CXL_C1EE0001_MODE": "dax", "CXL_C1EE0001_READ_ONLY": "0", "CXL_C1EE0001_SERIAL": "0xc1ee0001",
 			"CXL_C1EE0001_SHARED": "0", "CXL_C1EE0001_SIZE": "268435456"}})
 	if got := e.k.DaxDriver("dax0.0"); got != "device_dax" || e.onlineBlocks() != 0 {
 		t.Fatalf("dax driver %s, %d memory blocks online", got, e.onlineBlocks())
@@ -280,7 +280,7 @@ func TestPoolSharedLeaseFd(t *testing.T) {
 		t.Fatalf("shared request %+v", claim.Spec.Devices.Requests[0].Exactly)
 	}
 	dax := filepath.Join(e.k.DevRoot(), "dax0.0")
-	sharedEnv := map[string]string{"CXL_C1AE0001_DAX": dax, "CXL_C1AE0001_MODE": "dax", "CXL_C1AE0001_READONLY": "0",
+	sharedEnv := map[string]string{"CXL_C1AE0001_DAX": dax, "CXL_C1AE0001_MODE": "dax", "CXL_C1AE0001_READ_ONLY": "0",
 		"CXL_C1AE0001_SERIAL": "0xc1ae0001", "CXL_C1AE0001_SHARED": "1", "CXL_C1AE0001_SIZE": "268435456"}
 	wantFd(t, r.fd)
 	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "pool", Mode: "dax", Share: true, Size: 268435456, Serial: "0xc1ae0001",
@@ -318,7 +318,7 @@ func TestPoolSharedLeaseFd(t *testing.T) {
 		t.Fatalf("companion device section %+v", dc)
 	}
 	wantFd(t, r.fd)
-	sharedEnv["CXL_C1AE0001_READONLY"] = "1"
+	sharedEnv["CXL_C1AE0001_READ_ONLY"] = "1"
 	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "pool", Mode: "dax", ReadOnly: true, Size: 268435456, Serial: "0xc1ae0001",
 		Dax: dax, Env: sharedEnv})
 	resp, fd = e.call(api.Request{Op: api.OpFd, Lease: "000000a2"})
@@ -341,7 +341,7 @@ func TestLocalNumaLease(t *testing.T) {
 		t.Fatalf("local request %+v", claim.Spec.Devices.Requests[0])
 	}
 	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "local", Mode: "numa", NUMANode: ptr(2), Size: 128 << 20, Serial: "0xc100e2e1",
-		Env: map[string]string{"CXL_C100E2E1_MODE": "numa", "CXL_C100E2E1_NODE": "2", "CXL_C100E2E1_SERIAL": "0xc100e2e1",
+		Env: map[string]string{"CXL_C100E2E1_MODE": "numa", "CXL_C100E2E1_NUMA_NODE": "2", "CXL_C100E2E1_SERIAL": "0xc100e2e1",
 			"CXL_C100E2E1_SHARED": "0", "CXL_C100E2E1_SIZE": "134217728"}})
 	if got := e.ctrs.lentNodes(envPodUID, envCtr); !slices.Equal(got, []int{2}) {
 		t.Fatalf("lent %v", got)
@@ -395,7 +395,7 @@ func TestLocalDaxLease(t *testing.T) {
 	wantFd(t, r.fd)
 	dax := filepath.Join(e.k.DevRoot(), "dax0.0")
 	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "local", Mode: "dax", ReadOnly: true, Size: 128 << 20, Serial: "0xc100e2e1",
-		Dax: dax, Env: map[string]string{"CXL_C100E2E1_DAX": dax, "CXL_C100E2E1_MODE": "dax", "CXL_C100E2E1_READONLY": "1",
+		Dax: dax, Env: map[string]string{"CXL_C100E2E1_DAX": dax, "CXL_C100E2E1_MODE": "dax", "CXL_C100E2E1_READ_ONLY": "1",
 			"CXL_C100E2E1_SERIAL": "0xc100e2e1", "CXL_C100E2E1_SHARED": "0", "CXL_C100E2E1_SIZE": "134217728"}})
 	if got := e.opens(); !slices.Equal(got, []string{dax + " ro"}) {
 		t.Fatalf("opens %v", got)
@@ -420,7 +420,7 @@ func TestLocalSharedLease(t *testing.T) {
 	wantFd(t, r.fd)
 	dax := filepath.Join(e.k.DevRoot(), "dax0.0")
 	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "local", Mode: "dax", Share: true, ReadOnly: true, Size: 1 << 30,
-		Serial: "0xc100e2e2", Dax: dax, Env: map[string]string{"CXL_C100E2E2_DAX": dax, "CXL_C100E2E2_MODE": "dax", "CXL_C100E2E2_READONLY": "1",
+		Serial: "0xc100e2e2", Dax: dax, Env: map[string]string{"CXL_C100E2E2_DAX": dax, "CXL_C100E2E2_MODE": "dax", "CXL_C100E2E2_READ_ONLY": "1",
 			"CXL_C100E2E2_SERIAL": "0xc100e2e2", "CXL_C100E2E2_SHARED": "1", "CXL_C100E2E2_SIZE": "1073741824"}})
 	if got := e.k.DaxDriver("dax0.0"); got != "device_dax" || e.onlineBlocks() != 0 {
 		t.Fatalf("dax driver %s, %d memory blocks online", got, e.onlineBlocks())
@@ -483,8 +483,8 @@ func newFsEnv(t *testing.T, typ string) *leaseEnv {
 
 // fsEnv returns the environment of an fs lease of llm0.
 func fsEnv(fsType, access, path, readOnly string) map[string]string {
-	return map[string]string{"CXL_C1AF0001_ACCESS": access, "CXL_C1AF0001_FSTYPE": fsType, "CXL_C1AF0001_MODE": "fs", "CXL_C1AF0001_PATH": path,
-		"CXL_C1AF0001_READONLY": readOnly, "CXL_C1AF0001_SERIAL": "0xc1af0001", "CXL_C1AF0001_SHARED": "1", "CXL_C1AF0001_SIZE": "534773760"}
+	return map[string]string{"CXL_C1AF0001_ACCESS": access, "CXL_C1AF0001_FS_TYPE": fsType, "CXL_C1AF0001_MODE": "fs", "CXL_C1AF0001_PATH": path,
+		"CXL_C1AF0001_READ_ONLY": readOnly, "CXL_C1AF0001_SERIAL": "0xc1af0001", "CXL_C1AF0001_SHARED": "1", "CXL_C1AF0001_SIZE": "534773760"}
 }
 
 // fs leases through the pool driver: the companion claim, the bind in the
@@ -762,7 +762,7 @@ func newBlockEnv(t *testing.T) *fdEnv {
 
 // blockEnv returns the environment of a block lease of llm0.
 func blockEnv(dev, readOnly string) map[string]string {
-	return map[string]string{"CXL_C1AF0001_MODE": "block", "CXL_C1AF0001_PATH": dev, "CXL_C1AF0001_READONLY": readOnly,
+	return map[string]string{"CXL_C1AF0001_MODE": "block", "CXL_C1AF0001_PATH": dev, "CXL_C1AF0001_READ_ONLY": readOnly,
 		"CXL_C1AF0001_SERIAL": "0xc1af0001", "CXL_C1AF0001_SHARED": "1", "CXL_C1AF0001_SIZE": "534773760"}
 }
 

@@ -323,9 +323,9 @@ For every allocated `memdev` device of a claim:
    CXL_<KEY>_SHARED=0
    CXL_<KEY>_MODE=numa                (or dax)
    CXL_<KEY>_SIZE=<slice bytes>
-   CXL_<KEY>_NODE=<N>                 (numa)
+   CXL_<KEY>_NUMA_NODE=<N>            (numa)
    CXL_<KEY>_DAX=/dev/daxX.Y          (dax)
-   CXL_<KEY>_READONLY=0|1             (dax)
+   CXL_<KEY>_READ_ONLY=0|1            (dax)
    ```
 
    `<KEY>` is the serial in upper-case hex without `0x`, `<serial>` in
@@ -707,7 +707,7 @@ has a writer and a reader. A running container leases the device with
    upgrade and downgrade).
 5. The claim's CDI device `cxl.nri.io/device=claim-<claim uid>-<n>` has
    the marker, the variables of
-   [usage.md](usage.md#environment-variables) (`CXL_<KEY>_FSTYPE` in
+   [usage.md](usage.md#environment-variables) (`CXL_<KEY>_FS_TYPE` in
    mode `fs`), and the block device node (permissions `r` when
    read-only) or the bind mount of the node mount.
 

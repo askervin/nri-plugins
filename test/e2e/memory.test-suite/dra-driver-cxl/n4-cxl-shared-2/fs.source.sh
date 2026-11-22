@@ -167,7 +167,7 @@ fs-write() {
 $(dra-script-pod-yaml "$name" "$vmdir" "$name" "$(fs-writer-script "$key" "$FS_IMAGE")" "File:$FS_IMAGE")"
     fs-writer-wait "$OUTPUT_DIR" "$name"
     dra-env-assert "$name" "$FS_LOG" "$key" \
-        SERIAL="$serial" SHARED="$shared" MODE=block "SIZE=[1-9]*" "PATH=/dev/pmem*" READONLY=0
+        SERIAL="$serial" SHARED="$shared" MODE=block "SIZE=[1-9]*" "PATH=/dev/pmem*" READ_ONLY=0
     FS_NS_SIZE=$(dra-env-value "$FS_LOG" "CXL_${key}_SIZE")
     grep -qE "^block device: /dev/pmem[0-9]+$" <<< "$FS_LOG" || error "$name: the writer has no block device"
     grep -qx "dd exit 0" <<< "$FS_LOG" || error "$name: dd of the writer failed: $(grep '^dd exit' <<< "$FS_LOG")"

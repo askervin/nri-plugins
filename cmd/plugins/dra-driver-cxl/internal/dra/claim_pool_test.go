@@ -70,7 +70,7 @@ func TestPoolNUMA(t *testing.T) {
 		t.Fatalf("CDI spec %+v", spec)
 	}
 	cd := e.cdiDevice(e.pool, "claim-u1-0")
-	want := []string{"CXL_C1EE0001_MODE=numa", "CXL_C1EE0001_NODE=2", "CXL_C1EE0001_SERIAL=0xc1ee0001", "CXL_C1EE0001_SHARED=0",
+	want := []string{"CXL_C1EE0001_MODE=numa", "CXL_C1EE0001_NUMA_NODE=2", "CXL_C1EE0001_SERIAL=0xc1ee0001", "CXL_C1EE0001_SHARED=0",
 		"CXL_C1EE0001_SIZE=268435456", "CXL_CLAIM_u1_0=1"}
 	if cd == nil || !slices.Equal(cd.ContainerEdits.Env, want) || len(cd.ContainerEdits.DeviceNodes) != 0 {
 		t.Fatalf("CDI device %+v, expected env %v", cd, want)

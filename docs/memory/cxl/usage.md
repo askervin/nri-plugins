@@ -947,8 +947,8 @@ namespaces of the labels of the device.
   accesses within the rules of [One node](#one-node-superblock-block-device-binds);
   a volatile preparation of the serial is refused.
 
-`CXL_<KEY>_FSTYPE` is the type of the filesystem, `CXL_<KEY>_ACCESS` the
-effective access and `CXL_<KEY>_READONLY` `0` for a read-write claim
+`CXL_<KEY>_FS_TYPE` is the type of the filesystem, `CXL_<KEY>_ACCESS` the
+effective access and `CXL_<KEY>_READ_ONLY` `0` for a read-write claim
 ([Environment variables](#environment-variables)).
 
 #### Filesystems
@@ -1368,7 +1368,7 @@ plus the nodes of its `numa` results (memdev slices, regions, pool
 devices) and of its `numa` leases; its memory policy and `memory.high`
 are left alone. The kernel allocates its memory from the nodes of its
 CPUs first, and the workload binds memory to the CXL node itself with the
-node number of `CXL_<KEY>_NODE`, for example with `numactl --membind` or
+node number of `CXL_<KEY>_NUMA_NODE`, for example with `numactl --membind` or
 `mbind`. It may take `numa` leases. Its `dram` and `region` results
 reserve capacity only. With `fencing` `none` its `cpuset.mems` are left
 as they are.
@@ -1503,14 +1503,14 @@ container the same set of variables:
 | `CXL_<KEY>_SHARED` | `0` or `1` | memdevs: `1` for a shared device, also when the claim or lease uses it exclusively; of a persistent local memdev its attribute `shared`, whatever the `shares` request |
 | `CXL_<KEY>_MODE` | `numa`, `dax`, `block` or `fs` | every memory device |
 | `CXL_<KEY>_SIZE` | bytes | every memory device: what the claim or lease got (the slice of a local memdev, the whole pool device, the consumed capacity of a region or DRAM; of modes `block` and `fs` the size of the fsdax namespace) |
-| `CXL_<KEY>_NODE` | NUMA node | mode `numa`: memdev slices, pool devices, regions |
-| `CXL_<KEY>_NODES` | cpuset syntax | `dram` |
+| `CXL_<KEY>_NUMA_NODE` | NUMA node | mode `numa`: memdev slices, pool devices, regions |
+| `CXL_<KEY>_NUMA_NODES` | cpuset syntax | `dram` |
 | `CXL_<KEY>_DAX` | `/dev/daxX.Y` | mode `dax`: the device node of a claim; of a lease, the host path (informational: the container has no such node) |
 | `CXL_<KEY>_FD` | file descriptor number | leases of modes `dax` and `block`, the command of `cxl-request request --exec` and `cxl-request fd --exec`: instead of `DAX` (`dax`) or `PATH` (`block`) |
 | `CXL_<KEY>_PATH` | path | mode `block`: the block device node `/dev/pmemK` of a claim; of a lease, the host path (informational: the container has no such node); mode `fs`: the directory of the filesystem in the container (`path` of a claim, `/run/cxl/fs/<name>` of a lease) |
 | `CXL_<KEY>_ACCESS` | `direct` or `cached` | mode `fs`: the effective access |
-| `CXL_<KEY>_FSTYPE` | filesystem type (`erofs`, `ext4`, ...) | mode `fs`: the type that is mounted |
-| `CXL_<KEY>_READONLY` | `0` or `1` | modes `dax`, `block` and `fs` |
+| `CXL_<KEY>_FS_TYPE` | filesystem type (`erofs`, `ext4`, ...) | mode `fs`: the type that is mounted |
+| `CXL_<KEY>_READ_ONLY` | `0` or `1` | modes `dax`, `block` and `fs` |
 
 `<KEY>`:
 
@@ -1613,7 +1613,7 @@ persistent memory `0xc1ae0002` (an erofs) and `0xc1ae0003` (an ext4).
 
    ```
    CXL_C100E2E1_MODE=numa
-   CXL_C100E2E1_NODE=2
+   CXL_C100E2E1_NUMA_NODE=2
    CXL_C100E2E1_SERIAL=0xc100e2e1
    CXL_C100E2E1_SHARED=0
    CXL_C100E2E1_SIZE=134217728
@@ -1633,7 +1633,7 @@ persistent memory `0xc1ae0002` (an erofs) and `0xc1ae0003` (an ext4).
    ```
    CXL_C100E2E1_DAX=/dev/dax0.1
    CXL_C100E2E1_MODE=dax
-   CXL_C100E2E1_READONLY=1
+   CXL_C100E2E1_READ_ONLY=1
    CXL_C100E2E1_SERIAL=0xc100e2e1
    CXL_C100E2E1_SHARED=0
    CXL_C100E2E1_SIZE=134217728
@@ -1660,7 +1660,7 @@ persistent memory `0xc1ae0002` (an erofs) and `0xc1ae0003` (an ext4).
 
    ```
    CXL_C1EE0001_MODE=numa
-   CXL_C1EE0001_NODE=3
+   CXL_C1EE0001_NUMA_NODE=3
    CXL_C1EE0001_SERIAL=0xc1ee0001
    CXL_C1EE0001_SHARED=0
    CXL_C1EE0001_SIZE=536870912
@@ -1678,7 +1678,7 @@ persistent memory `0xc1ae0002` (an erofs) and `0xc1ae0003` (an ext4).
    ```
    CXL_C1EE0001_DAX=/dev/dax0.0
    CXL_C1EE0001_MODE=dax
-   CXL_C1EE0001_READONLY=0
+   CXL_C1EE0001_READ_ONLY=0
    ...
    ```
 
@@ -1694,7 +1694,7 @@ persistent memory `0xc1ae0002` (an erofs) and `0xc1ae0003` (an ext4).
    ```
    CXL_C1AE0001_DAX=/dev/dax0.0
    CXL_C1AE0001_MODE=dax
-   CXL_C1AE0001_READONLY=0
+   CXL_C1AE0001_READ_ONLY=0
    CXL_C1AE0001_SERIAL=0xc1ae0001
    CXL_C1AE0001_SHARED=1
    CXL_C1AE0001_SIZE=268435456
@@ -1715,7 +1715,7 @@ persistent memory `0xc1ae0002` (an erofs) and `0xc1ae0003` (an ext4).
    ```
 
    ```
-   CXL_C1AE0001_READONLY=1
+   CXL_C1AE0001_READ_ONLY=1
    ...
    ```
 
@@ -1754,10 +1754,10 @@ persistent memory `0xc1ae0002` (an erofs) and `0xc1ae0003` (an ext4).
     CXL_CLAIM_<uid>_0=1
     CXL_CLAIM_<uid>_1=1
     CXL_DRAM_MODE=numa
-    CXL_DRAM_NODES=0-1
+    CXL_DRAM_NUMA_NODES=0-1
     CXL_DRAM_SIZE=67108864
     CXL_REGION0_MODE=numa
-    CXL_REGION0_NODE=2
+    CXL_REGION0_NUMA_NODE=2
     CXL_REGION0_SIZE=67108864
     ```
 
@@ -1790,7 +1790,7 @@ persistent memory `0xc1ae0002` (an erofs) and `0xc1ae0003` (an ext4).
     ```
     CXL_C1AE0002_MODE=block
     CXL_C1AE0002_PATH=/dev/pmem1
-    CXL_C1AE0002_READONLY=0
+    CXL_C1AE0002_READ_ONLY=0
     CXL_C1AE0002_SERIAL=0xc1ae0002
     CXL_C1AE0002_SHARED=1
     CXL_C1AE0002_SIZE=534773760
@@ -1807,10 +1807,10 @@ persistent memory `0xc1ae0002` (an erofs) and `0xc1ae0003` (an ext4).
 
     ```
     CXL_C1AE0002_ACCESS=direct
-    CXL_C1AE0002_FSTYPE=erofs
+    CXL_C1AE0002_FS_TYPE=erofs
     CXL_C1AE0002_MODE=fs
     CXL_C1AE0002_PATH=/models
-    CXL_C1AE0002_READONLY=1
+    CXL_C1AE0002_READ_ONLY=1
     ...
     ```
 
@@ -1830,7 +1830,7 @@ persistent memory `0xc1ae0002` (an erofs) and `0xc1ae0003` (an ext4).
     ```
     CXL_C100E2E2_DAX=/dev/dax0.0
     CXL_C100E2E2_MODE=dax
-    CXL_C100E2E2_READONLY=0
+    CXL_C100E2E2_READ_ONLY=0
     CXL_C100E2E2_SERIAL=0xc100e2e2
     CXL_C100E2E2_SHARED=1
     CXL_C100E2E2_SIZE=1073741824
@@ -1851,7 +1851,7 @@ persistent memory `0xc1ae0002` (an erofs) and `0xc1ae0003` (an ext4).
     ```
 
     ```
-    CXL_C100E2E2_READONLY=1
+    CXL_C100E2E2_READ_ONLY=1
     ...
     ```
 
@@ -1875,10 +1875,10 @@ persistent memory `0xc1ae0002` (an erofs) and `0xc1ae0003` (an ext4).
 
     ```
     CXL_C1AE0003_ACCESS=direct
-    CXL_C1AE0003_FSTYPE=ext4
+    CXL_C1AE0003_FS_TYPE=ext4
     CXL_C1AE0003_MODE=fs
     CXL_C1AE0003_PATH=/data
-    CXL_C1AE0003_READONLY=0
+    CXL_C1AE0003_READ_ONLY=0
     CXL_C1AE0003_SERIAL=0xc1ae0003
     CXL_C1AE0003_SHARED=1
     CXL_C1AE0003_SIZE=534773760
@@ -1889,7 +1889,7 @@ persistent memory `0xc1ae0002` (an erofs) and `0xc1ae0003` (an ext4).
     pod with a `podAffinity` to the writer's pod (`topologyKey:
     kubernetes.io/hostname`): on another node it would wait until the
     writer is gone ([Several nodes](#several-nodes-readwriteonce-and-cluster-filesystems)).
-    `CXL_C1AE0003_READONLY=1`; it reads what the writer writes.
+    `CXL_C1AE0003_READ_ONLY=1`; it reads what the writer writes.
 
 17. A persistent local memdev `0xc100f5e1`: a writer in mode `block`
     without a capacity request stores an ext4 in it; then claims of one
@@ -1905,10 +1905,10 @@ persistent memory `0xc1ae0002` (an erofs) and `0xc1ae0003` (an ext4).
 
     ```
     CXL_C100F5E1_ACCESS=direct
-    CXL_C100F5E1_FSTYPE=ext4
+    CXL_C100F5E1_FS_TYPE=ext4
     CXL_C100F5E1_MODE=fs
     CXL_C100F5E1_PATH=/data
-    CXL_C100F5E1_READONLY=0
+    CXL_C100F5E1_READ_ONLY=0
     CXL_C100F5E1_SERIAL=0xc100f5e1
     CXL_C100F5E1_SHARED=0
     ...

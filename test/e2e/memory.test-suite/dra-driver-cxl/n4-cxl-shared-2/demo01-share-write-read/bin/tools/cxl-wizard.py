@@ -110,7 +110,7 @@ def do_read(key, mode):
         p = os.path.join(var(key, "PATH"), FS_FILE)
         try:
             with open(p) as f:
-                print('%s: read %s (%s): "%s"' % (key, p, var(key, "FSTYPE", "?"), f.readline().rstrip("\n")))
+                print('%s: read %s (%s): "%s"' % (key, p, var(key, "FS_TYPE", "?"), f.readline().rstrip("\n")))
         except OSError as e:
             print("%s: cannot read %s: %s; the directory has: %s" % (key, p, e.strerror,
                                                                    " ".join(sorted(os.listdir(var(key, "PATH")))) or "nothing"))

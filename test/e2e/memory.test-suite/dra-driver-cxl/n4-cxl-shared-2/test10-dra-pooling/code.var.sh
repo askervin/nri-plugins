@@ -21,7 +21,7 @@
 #   prepares the claim: it finds the hotplugged memory device by its
 #   serial number, creates a region on it and onlines its memory. The
 #   memory becomes a new NUMA node, and the container gets its id in the
-#   environment variable CXL_<KEY>_NODE, next to CXL_<KEY>_MODE=numa,
+#   environment variable CXL_<KEY>_NUMA_NODE, next to CXL_<KEY>_MODE=numa,
 #   _SIZE, _SERIAL and _SHARED, and the node in its cpuset.mems. No other
 #   container of the node has the node. When the pod is gone, the node
 #   plugin releases the device, the controller detaches it, and the memory
@@ -224,7 +224,7 @@ grep -q "^node $CXL_NODE size: 512 MB" <<< "$COMMAND_OUTPUT" ||
 dra-kubectl "$VM2" "logs -n $DRA_NS pooled-consumer" || command-error "cannot get the log of pooled-consumer"
 POD_LOG="$COMMAND_OUTPUT"
 dra-env-assert pooled-consumer "$POD_LOG" "$POOLED0_HEX" \
-    SERIAL="$POOLED0_SERIAL" SHARED=0 MODE=numa SIZE="$POOLED0_SIZE" NODE="$CXL_NODE"
+    SERIAL="$POOLED0_SERIAL" SHARED=0 MODE=numa SIZE="$POOLED0_SIZE" NUMA_NODE="$CXL_NODE"
 grep -qx "CXL_CLAIM_${CLAIM_UID//-/_}_0=1" <<< "$POD_LOG" ||
     error "pooled-consumer has no marker CXL_CLAIM_${CLAIM_UID//-/_}_0=1 of result 0 of its claim"
 [ "$(grep -c '^CXL_' <<< "$POD_LOG")" == 6 ] ||
@@ -313,7 +313,7 @@ echo "pooled1 is NUMA node $POOL_NODE of the VM, the CXL window of host bridge 1
 dra-exec "$VM2" pooled-steered sh -c 'env | grep ^CXL_ | sort' ||
     command-error "cannot read the environment of pooled-steered"
 dra-env-assert pooled-steered "$COMMAND_OUTPUT" "$POOLED1_HEX" \
-    SERIAL="$POOLED1_SERIAL" SHARED=0 MODE=numa SIZE="$POOLED1_SIZE" NODE="$POOL_NODE"
+    SERIAL="$POOLED1_SERIAL" SHARED=0 MODE=numa SIZE="$POOLED1_SIZE" NUMA_NODE="$POOL_NODE"
 # Pool numa memory is steered like local memory: CXL only, policy
 # first-cxl, the memory policy of the main process prefers the pool node.
 # A workload that runs as a child of the main process and has no NUMA
@@ -344,7 +344,7 @@ dra-pod-wait "$VM2" dax-claimer Running 120
 dra-wait-log "$VM2" dax-claimer "read: $TEXT_DAX" 60
 dra-kubectl "$VM2" "logs -n $DRA_NS dax-claimer"
 dra-env-assert dax-claimer "$COMMAND_OUTPUT" "$POOLED0_HEX" \
-    SERIAL="$POOLED0_SERIAL" SHARED=0 MODE=dax SIZE="$POOLED0_SIZE" "DAX=/dev/dax*" READONLY=0
+    SERIAL="$POOLED0_SERIAL" SHARED=0 MODE=dax SIZE="$POOLED0_SIZE" "DAX=/dev/dax*" READ_ONLY=0
 pool-cxl-dump "$VM2" pooled0-dax
 cxl-assert "by_serial($POOLED0_SERIAL) is not None and len(regions) == 1 and online_size(regions[0]) == 0"
 pool-device-files pooled0

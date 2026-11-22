@@ -16,7 +16,7 @@
 #   the NUMA node of the device. The node grows by the memory blocks of
 #   every such claim and shrinks by them when the claim goes. The
 #   containers of the claims get the node in their cpuset.mems and in
-#   CXL_<KEY>_NODE. No other container of the node has the node, also
+#   CXL_<KEY>_NUMA_NODE. No other container of the node has the node, also
 #   after a restart of the driver. Steering is opt-in: without a container
 #   section (steering policy none) a container is only fenced, the node in
 #   its cpuset.mems, no memory policy, no memory.high; the workload places
@@ -126,7 +126,7 @@ numa-env-check() {
     # else.
     claim-env "$1"
     dra-env-assert "$1" "$CLAIM_ENV" "$DRA_LOCAL_HEX" \
-        SERIAL="$DRA_LOCAL_SERIAL" SHARED=0 MODE=numa SIZE="$2" NODE="$NUMA_NODE"
+        SERIAL="$DRA_LOCAL_SERIAL" SHARED=0 MODE=numa SIZE="$2" NUMA_NODE="$NUMA_NODE"
     [ "$(grep -c '^CXL_' <<< "$CLAIM_ENV")" == 6 ] || error "$1 has other CXL_ variables: $CLAIM_ENV"
 }
 
@@ -135,8 +135,8 @@ slice-check() {
     #
     # Check the dax slice of the claim of pod POD: the environment of
     # container main names the device, its size BYTES, the serial of the
-    # local device, mode dax, not shared and READONLY=1 with ro, else
-    # READONLY=0, and has the claim marker, nothing else; the device is a
+    # local device, mode dax, not shared and READ_ONLY=1 with ro, else
+    # READ_ONLY=0, and has the claim marker, nothing else; the device is a
     # character device in the container with the numbers of a dax device
     # of BYTES of the local device, bound to device_dax, in the VM.
     # SLICE_DAX is its path, SLICE_DEV its "major:minor".
@@ -144,7 +144,7 @@ slice-check() {
     [ "$3" != ro ] || ro=1
     claim-env "$pod"
     dra-env-assert "$pod" "$CLAIM_ENV" "$DRA_LOCAL_HEX" \
-        SERIAL="$DRA_LOCAL_SERIAL" SHARED=0 MODE=dax SIZE="$size" "DAX=/dev/dax*" READONLY="$ro"
+        SERIAL="$DRA_LOCAL_SERIAL" SHARED=0 MODE=dax SIZE="$size" "DAX=/dev/dax*" READ_ONLY="$ro"
     [ "$(grep -c '^CXL_' <<< "$CLAIM_ENV")" == 7 ] || error "$pod has other CXL_ variables: $CLAIM_ENV"
     SLICE_DAX=$(dra-env-value "$CLAIM_ENV" "CXL_${DRA_LOCAL_HEX}_DAX")
     dra-exec "$VM2" "$pod" python3 -c 'import os, stat, sys; s = os.stat(sys.argv[1]); print("%s %d:%d" % ("c" if stat.S_ISCHR(s.st_mode) else "-", os.major(s.st_rdev), os.minor(s.st_rdev)))' "$SLICE_DAX" ||
@@ -592,7 +592,7 @@ cdi=$(dra-cdi-device "$VM2" "claim-$RO_UID-0")
 echo "CDI device claim-$RO_UID-0: $cdi"
 [ -n "$cdi" ] || error "no CDI device claim-$RO_UID-0 in the VM"
 dra-assert "$cdi" "j['kind'] == '$DRA_LOCAL_DRIVER/device' and any(n.get('permissions') == 'r' for n in j['deviceNodes'])"
-dra-assert "$cdi" "'CXL_${DRA_LOCAL_HEX}_READONLY=1' in j['env'] and 'CXL_CLAIM_${RO_UID//-/_}_0=1' in j['env']"
+dra-assert "$cdi" "'CXL_${DRA_LOCAL_HEX}_READ_ONLY=1' in j['env'] and 'CXL_CLAIM_${RO_UID//-/_}_0=1' in j['env']"
 [ "$(dra-cdi-devices-with "$VM2" "$RO_UID")" == "claim-$RO_UID-0" ] ||
     error "the claim of dax-ro has other CDI devices than claim-$RO_UID-0: $(dra-cdi-devices-with "$VM2" "$RO_UID")"
 dra-delete-pod "$VM2" dax-ro
@@ -788,12 +788,12 @@ dra-local-slices-wait "$VM2" split "$NUMA_NODE" "numa:$BS" "numa:$BS" "numa:$BS"
 dra-local-node-size "$VM2" split "$NUMA_NODE" $(( 4 * BS ))
 claim-env split/c-numa
 dra-env-assert split/c-numa "$CLAIM_ENV" "$NUMA_KEY" \
-    SERIAL="$DRA_LOCAL_SERIAL" SHARED=0 MODE=numa SIZE="$BS" NODE="$NUMA_NODE"
+    SERIAL="$DRA_LOCAL_SERIAL" SHARED=0 MODE=numa SIZE="$BS" NUMA_NODE="$NUMA_NODE"
 [ "$(grep '^CXL_CLAIM_' <<< "$CLAIM_ENV")" == "CXL_CLAIM_${SPLIT_UID//-/_}_$SPLIT_NUMA=1" ] && [ "$(grep -c '^CXL_' <<< "$CLAIM_ENV")" == 6 ] ||
     error "split/c-numa has other CXL_ variables than those of result $SPLIT_NUMA (numa) of claim split: $CLAIM_ENV"
 claim-env split/c-dax
 dra-env-assert split/c-dax "$CLAIM_ENV" "$DAX_KEY" \
-    SERIAL="$DRA_LOCAL_SERIAL" SHARED=0 MODE=dax SIZE="$BS" "DAX=/dev/dax*" READONLY=0
+    SERIAL="$DRA_LOCAL_SERIAL" SHARED=0 MODE=dax SIZE="$BS" "DAX=/dev/dax*" READ_ONLY=0
 [ "$(grep '^CXL_CLAIM_' <<< "$CLAIM_ENV")" == "CXL_CLAIM_${SPLIT_UID//-/_}_$SPLIT_DAX=1" ] && [ "$(grep -c '^CXL_' <<< "$CLAIM_ENV")" == 7 ] ||
     error "split/c-dax has other CXL_ variables than those of result $SPLIT_DAX (dax) of claim split: $CLAIM_ENV"
 dra-memory-wait "$VM2" split c-numa steered "auto from claim $DRA_NS/split request numa"

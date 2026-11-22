@@ -469,7 +469,7 @@ def command_test():
         os.makedirs(fsdir)
         with open(os.path.join(fsdir, "hello.txt"), "w") as f:
             f.write("Hello from the desk\n")
-        env = dict(os.environ, CXL_K_MODE="fs", CXL_K_PATH=fsdir, CXL_K_FSTYPE="ext4", CXL_WIZARD_LOG=os.path.join(d, "log"))
+        env = dict(os.environ, CXL_K_MODE="fs", CXL_K_PATH=fsdir, CXL_K_FS_TYPE="ext4", CXL_WIZARD_LOG=os.path.join(d, "log"))
         given, _ = opts("--memory persistent --source local --sharing shared --command read", {})
         a = w.resolve(given, ctx)
         cmd = w.pod_doc(a, {})["spec"]["containers"][0]["command"]
