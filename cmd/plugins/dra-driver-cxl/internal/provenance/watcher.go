@@ -126,7 +126,7 @@ type Options struct {
 	// of Store).
 	Name string
 	// Forget are the serials whose records the operator removes at the
-	// start (--forget-pool-serial).
+	// start (--forget-provenance).
 	Forget []uint64
 	// Now is the clock, nil for time.Now.
 	Now func() time.Time

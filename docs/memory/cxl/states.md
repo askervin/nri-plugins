@@ -349,7 +349,7 @@ States: UNKNOWN, HELD, LOCAL, POOL.
 | POOL | (unchanged) | `list`, `observe`, `prepare`: seen again | - | LastSeen (l, at most hourly) |
 | POOL | UNKNOWN | `expire`: 24 h of observed absence (observations at most 5 min apart; the absence timer restarts after a gap) and no grant | - | commit (l) removing the record |
 | LOCAL | UNKNOWN | `expire`: the memdev absent for 24 h of observed absence | - | commit (l) removing the record |
-| POOL, LOCAL | UNKNOWN | `load`: the operator names the serial with --forget-pool-serial at the start | - | commit (d) removing the record; a memdev of the serial is new again |
+| POOL, LOCAL | UNKNOWN | `load`: the operator names the serial with --forget-provenance at the start | - | commit (d) removing the record; a memdev of the serial is new again |
 
 Refused:
 

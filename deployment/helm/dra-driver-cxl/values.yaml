@@ -27,7 +27,7 @@ nri:
 pool:
   # Run the pool driver cxl-pool.nri.io and install its DeviceClasses.
   enabled: true
-  # How long the pool driver waits for a hotplugged CXL memory device.
+  # How long the pool driver waits for the memdev of a pool device to appear.
   prepareTimeout: 30s
 
 leases:

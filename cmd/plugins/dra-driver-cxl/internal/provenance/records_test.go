@@ -239,9 +239,9 @@ func TestForget(t *testing.T) {
 	e.forget = []uint64{sharedPoolSerial, localSerial, 0xbeef}
 	e.restart()
 	out := logs()
-	wantLogLine(t, out, "pool serials: forgetting serial 0xc1ae2001 (POOL, --forget-pool-serial)")
-	wantLogLine(t, out, "pool serials: forgetting serial 0xc100e2e1 (LOCAL, --forget-pool-serial)")
-	wantLogLine(t, out, "pool serials: --forget-pool-serial 0xbeef: no record of the serial")
+	wantLogLine(t, out, "pool serials: forgetting serial 0xc1ae2001 (POOL, --forget-provenance)")
+	wantLogLine(t, out, "pool serials: forgetting serial 0xc100e2e1 (LOCAL, --forget-provenance)")
+	wantLogLine(t, out, "pool serials: --forget-provenance 0xbeef: no record of the serial")
 	if recs := e.st.Snapshot().Provenance; len(recs) != 0 {
 		t.Fatalf("records %+v after forgetting them", recs)
 	}
@@ -258,7 +258,7 @@ func TestForget(t *testing.T) {
 	// pool-c is remembered, and missing: both memdevs are new
 	e.plug(sharedPoolSerial)
 	e.wantHeld("forgotten serials", localSerial, sharedPoolSerial)
-	// a second restart without --forget-pool-serial keeps that
+	// a second restart without --forget-provenance keeps that
 	e.forget = nil
 	e.restart()
 	wantLogLine(t, logs(), fmt.Sprintf("pool serials: loaded 0 serials (0 pool serials) and 1 pools from %s", e.name()))

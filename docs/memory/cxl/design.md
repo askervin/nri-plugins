@@ -209,7 +209,7 @@ a device of the node, HELD for a new memdev whose source is uncertain,
 which is not published for a while. The pools whose ResourceSlices the
 driver has listed are kept as [ListedPool](states.md#listedpool)
 records. An operator removes the provenance of a serial with
-`--forget-pool-serial` ([local.md](local.md#what-the-plugin-publishes)).
+`--forget-provenance` ([local.md](local.md#what-the-plugin-publishes)).
 
 ### Probe
 
@@ -442,7 +442,7 @@ starts it once with `--new-state` to begin with a new document
 ## Files on the node
 
 Only the driver writes its files; do not edit them, and do not copy
-them to another node. The flags `--forget-pool-serial` and
+them to another node. The flags `--forget-provenance` and
 `--new-state` are the changes that an operator makes. [usage.md](usage.md#files-on-the-node) lists every file with its
 path.
 

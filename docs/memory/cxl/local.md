@@ -121,10 +121,10 @@ and upgrade while the pool controllers run.
 
 A pool device that stays attached stays a pool device. To use a former
 pool device as a local memdev without detaching it, restart the plugin
-once with `--forget-pool-serial 0x...` (repeatable, or a comma-separated
+once with `--forget-provenance 0x...` (repeatable, or a comma-separated
 list; see [usage.md](usage.md#files-on-the-node) for the DaemonSet): the
 start removes the record of the serial and logs
-`pool serials: forgetting serial 0x... (POOL, --forget-pool-serial)`, and
+`pool serials: forgetting serial 0x... (POOL, --forget-provenance)`, and
 a memdev of it is new again. While a ResourceSlice of the pool driver
 lists the serial, the plugin learns it as a pool device again. Remove the
 flag after the start: while it is given, every start forgets the serial

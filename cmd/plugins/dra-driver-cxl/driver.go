@@ -338,7 +338,7 @@ func nodeOptions(config *pluginConfig, driverConfig *DriverConfig, k *kernel.Ker
 		FSTypes:         driverConfig.fsTypes(),
 		ProbeAddressing: driverConfig.verifyAddressing(),
 		Timeouts:        engine.Timeouts{Memdev: f.PoolPrepareTimeout, Settle: f.PoolPrepareTimeout},
-		Forget:          f.ForgetPoolSerials,
+		Forget:          f.ForgetProvenance,
 	}
 }
 

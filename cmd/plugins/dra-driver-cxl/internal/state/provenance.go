@@ -165,7 +165,7 @@ var ProvenanceTable = Table[ProvenanceState]{
 		},
 		{
 			From: fsm.List(ProvenancePool, ProvenanceLocal), To: ProvenanceUnknown, Triggers: fsm.List(TriggerLoad),
-			When:    "the operator names the serial with --forget-pool-serial at the start",
+			When:    "the operator names the serial with --forget-provenance at the start",
 			Effects: "commit (d) removing the record; a memdev of the serial is new again",
 		},
 	},

@@ -95,9 +95,9 @@ type flags struct {
 	// NewState starts with a new state.json when neither state.json nor
 	// state.json.prev can be read.
 	NewState bool
-	// ForgetPoolSerials are the serials whose provenance records are
+	// ForgetProvenance are the serials whose provenance records are
 	// removed at start.
-	ForgetPoolSerials []uint64
+	ForgetProvenance []uint64
 }
 
 // poolDriver returns the DRA driver name of the pool driver, "" when it is
@@ -181,7 +181,7 @@ func parseFlags(fs *flag.FlagSet, args []string, lookupEnv func(string) (string,
 	fs.IntVar(&f.LeaseLimits.LeasesPerNode, "lease-max-per-node", leases.DefaultMaxLeasesPerNode, "leases of the node")
 	fs.IntVar(&f.LeaseLimits.RequestsPerMinute, "lease-requests-per-minute", leases.DefaultRequestsPerMinute, "lease requests of a lease claim per minute, also their burst")
 	fs.BoolVar(&f.NewState, "new-state", false, "start with a new state.json when neither state.json nor state.json.prev can be read")
-	fs.Var((*serialsFlag)(&f.ForgetPoolSerials), "forget-pool-serial",
+	fs.Var((*serialsFlag)(&f.ForgetProvenance), "forget-provenance",
 		"serial (0x<hex> or decimal) whose remembered provenance is removed at start, so that a memdev of it is new again; repeatable, or a comma-separated list")
 
 	if err := fs.Parse(args); err != nil {

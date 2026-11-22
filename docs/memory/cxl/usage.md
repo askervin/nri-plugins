@@ -1941,7 +1941,7 @@ environment variables `NODE_NAME` and `KUBECONFIG`. Both `-flag` and
 | `--lease-max-per-node` | `32` | leases of the node; a request beyond it is refused |
 | `--lease-requests-per-minute` | `32` | lease requests of one lease claim per minute, also their burst; a request beyond it is answered `too many requests` |
 | `--new-state` | `false` | start with a new `state.json` when neither `state.json` nor `state.json.prev` can be read ([An unreadable state](#an-unreadable-state)) |
-| `--forget-pool-serial` | (none) | serial (`0x<hex>` or decimal) whose remembered provenance (pool device or local memdev) is removed at start, so that a memdev of it is new again; repeatable, or a comma-separated list ([local.md](local.md#what-the-plugin-publishes)) |
+| `--forget-provenance` | (none) | serial (`0x<hex>` or decimal) whose remembered provenance (pool device or local memdev) is removed at start, so that a memdev of it is new again; repeatable, or a comma-separated list ([local.md](local.md#what-the-plugin-publishes)) |
 
 `-v` and the other logging flags of klog are accepted too;
 `nri-dra-driver-cxl -help` lists them all. The plugin stops on SIGTERM and
@@ -2024,7 +2024,7 @@ The plugin keeps the records of both drivers in one document,
 before it acts on what a record says
 ([design.md](design.md#files-on-the-node)). Only the plugin writes the
 files below: do not edit them, and do not copy them to another node. The
-flags `--forget-pool-serial` and `--new-state` are the changes that an
+flags `--forget-provenance` and `--new-state` are the changes that an
 operator makes to them. `D` is
 `/var/lib/kubelet/plugins/cxl.nri.io`, `P` the plugin data directory of
 the pool driver, `/var/lib/kubelet/plugins/cxl-pool.nri.io`.
@@ -2057,7 +2057,7 @@ The flags of the files are no values of the Helm chart: add one to the
 `args` of the container of the DaemonSet
 (`kubectl -n kube-system edit daemonset nri-dra-driver-cxl`), and remove
 it again when the plugin has started. The DaemonSet passes it on every
-node; `--new-state` acts only when no document can be read, and `--forget-pool-serial` only on
+node; `--new-state` acts only when no document can be read, and `--forget-provenance` only on
 the nodes that remember the serial, but on them at every start while it
 is given.
 

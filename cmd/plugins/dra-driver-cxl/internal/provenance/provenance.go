@@ -313,12 +313,12 @@ func (s *step) hold(r *state.Records, m *kernel.MemdevInfo, p *state.Provenance,
 }
 
 // forget removes the POOL or LOCAL record of the serial, as the operator
-// orders with --forget-pool-serial.
+// orders with --forget-provenance.
 func (s *step) forget(r *state.Records, serial uint64) {
 	p := recordOf(r, serial)
 	if p == nil || !recorded(p) {
 		s.log(func() {
-			klog.Warningf("pool serials: --forget-pool-serial %s: no record of the serial", api.FormatSerial(serial))
+			klog.Warningf("pool serials: --forget-provenance %s: no record of the serial", api.FormatSerial(serial))
 		})
 		return
 	}
@@ -326,7 +326,7 @@ func (s *step) forget(r *state.Records, serial uint64) {
 	if s.remove(r, serial, triggerLoad) {
 		s.durable = true
 		s.forgotten = append(s.forgotten, serial)
-		s.log(func() { klog.Infof("pool serials: forgetting serial 0x%x (%s, --forget-pool-serial)", serial, old) })
+		s.log(func() { klog.Infof("pool serials: forgetting serial 0x%x (%s, --forget-provenance)", serial, old) })
 	}
 }
 
@@ -550,7 +550,7 @@ func (w *Watcher) open() {
 }
 
 // forget removes the records of the serials, as the operator orders with
-// --forget-pool-serial.
+// --forget-provenance.
 func (w *Watcher) forget(serials []uint64) {
 	if len(serials) == 0 {
 		return

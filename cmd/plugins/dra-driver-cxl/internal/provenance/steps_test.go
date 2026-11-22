@@ -246,7 +246,7 @@ func TestFailedCommitForget(t *testing.T) {
 	}
 	e.forget = []uint64{sharedPoolSerial}
 	e.restart()
-	wantLogLine(t, logs(), "pool serials: forgetting serial 0xc1ae2001 (POOL, --forget-pool-serial)")
+	wantLogLine(t, logs(), "pool serials: forgetting serial 0xc1ae2001 (POOL, --forget-provenance)")
 	e.wantState(sharedPoolSerial, state.ProvenanceUnknown)
 }
 

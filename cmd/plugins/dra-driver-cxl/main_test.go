@@ -90,18 +90,18 @@ func TestParseFlagsEnvironment(t *testing.T) {
 	}
 }
 
-// TestParseFlagsForget pins --forget-pool-serial: repeatable, a
+// TestParseFlagsForget pins --forget-provenance: repeatable, a
 // comma-separated list of serials in hex or decimal, and an invalid serial
 // refused.
 func TestParseFlagsForget(t *testing.T) {
-	f, err := testParseFlags([]string{"--forget-pool-serial", "0xC1AE2001", "--forget-pool-serial=161, 0xa2,,"}, map[string]string{"NODE_NAME": "n1"})
+	f, err := testParseFlags([]string{"--forget-provenance", "0xC1AE2001", "--forget-provenance=161, 0xa2,,"}, map[string]string{"NODE_NAME": "n1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(f.ForgetPoolSerials, []uint64{0xc1ae2001, 0xa1, 0xa2}) {
-		t.Fatalf("serials %#x", f.ForgetPoolSerials)
+	if !slices.Equal(f.ForgetProvenance, []uint64{0xc1ae2001, 0xa1, 0xa2}) {
+		t.Fatalf("serials %#x", f.ForgetProvenance)
 	}
-	if got := (*serialsFlag)(&f.ForgetPoolSerials).String(); got != "0xc1ae2001,0xa1,0xa2" {
+	if got := (*serialsFlag)(&f.ForgetProvenance).String(); got != "0xc1ae2001,0xa1,0xa2" {
 		t.Fatalf("value %q", got)
 	}
 	if (*serialsFlag)(nil).String() != "" {
@@ -121,7 +121,7 @@ func TestParseFlagsErrors(t *testing.T) {
 		{[]string{"--node-name", "n1", "--lease-cli=", "--lease-cli-source", "/bin/cxl-request"}, "--lease-cli"},
 		{[]string{"--no-such-flag"}, "no-such-flag"},
 		{[]string{"--node-name", "n1", "-f", "/config.yaml"}, "provided but not defined: -f"},
-		{[]string{"--node-name", "n1", "--forget-pool-serial", "0xa1,0xzz"}, `invalid value "0xa1,0xzz" for flag -forget-pool-serial: invalid serial "0xzz"`},
+		{[]string{"--node-name", "n1", "--forget-provenance", "0xa1,0xzz"}, `invalid value "0xa1,0xzz" for flag -forget-provenance: invalid serial "0xzz"`},
 	} {
 		if _, err := testParseFlags(tc.args, nil); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("args %v: error %v, expected one with %q", tc.args, err, tc.want)

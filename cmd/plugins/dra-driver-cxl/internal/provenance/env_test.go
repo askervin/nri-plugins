@@ -60,7 +60,7 @@ type watchEnv struct {
 	dir    string
 	st     *store.Store
 	w      *Watcher
-	// forget are the serials of --forget-pool-serial of the next restart.
+	// forget are the serials of --forget-provenance of the next restart.
 	forget []uint64
 
 	mu      sync.Mutex
