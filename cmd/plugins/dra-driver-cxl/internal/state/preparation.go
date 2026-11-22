@@ -170,7 +170,7 @@ var PreparationTable = Table[PreparationState]{
 			From: fsm.List(PreparationPreparing), To: PreparationNone, Triggers: fsm.List(TriggerPrepare, TriggerUnprepare),
 			When: "the Prepare failed and its rollback released everything; or an Unprepare released everything " +
 				"recorded",
-			Guard:   "no KEPT region, no Stale entry",
+			Guard:   "no KEPT region, no stale bind",
 			Effects: "commit (d) removing the record; kubelet gets the error (Prepare) or nil (Unprepare)",
 		},
 		{

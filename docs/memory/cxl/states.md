@@ -44,7 +44,7 @@ States: NONE, PREPARING, PREPARED, PREPARED_UNRESTORED, PREPARED_STALE, UNPREPAR
 |:-----|:---|:--------|:------|:--------|
 | NONE | PREPARING | `prepare`: validation and the companion gate passed | allocation present; config decodes; local: device in the last published ResourceSlice; pool: status data present | commit (d) of the preparation with its results (the intent); companion: lease LENDING in the same commit |
 | PREPARING | PREPARED | `prepare`: every result realised, CDI spec written (none for a companion) | all grants REALISED | commit (d) jointly with lease READY (companion) or lease claim OPEN (lease result); kubelet gets the result |
-| PREPARING | NONE | `prepare`, `unprepare`: the Prepare failed and its rollback released everything; or an Unprepare released everything recorded | no KEPT region, no Stale entry | commit (d) removing the record; kubelet gets the error (Prepare) or nil (Unprepare) |
+| PREPARING | NONE | `prepare`, `unprepare`: the Prepare failed and its rollback released everything; or an Unprepare released everything recorded | no KEPT region, no stale bind | commit (d) removing the record; kubelet gets the error (Prepare) or nil (Unprepare) |
 | PREPARING | KEPT | `prepare`, `recover`: the Prepare failed and its rollback kept a region (in-order release refused); or the recovery kept a cut region below newer regions | Policy says keep | commit (d); error to kubelet (retry) or nothing (recovery) |
 | PREPARING | (unchanged) | `recover`: the recovery of a cut Prepare: leftovers released, the record stays for kubelet's retry | - | commit (d) of the grants back to JOURNALED or NONE |
 | PREPARING | (unchanged) | `prepare`: Prepare retried by kubelet: continues per result | REALISED grants that verify are reused | as the first Prepare |
@@ -130,7 +130,7 @@ Bind is the bind of a node mount into the lease-fs directory of a lease claim, t
 
 **Identity.** Target, lease-fs/&lt;lease claim uid>/&lt;name>.
 
-**States.** BindState. ABSENT: not bound. BOUND: bound and verified. STALE: the unmount failed with EBUSY (a file of the bind is mapped): also in the memdev's Stale list, retried. A start leaves what else is mounted at a target, or a target that another prepared claim lists, as it is, without a record.
+**States.** BindState. ABSENT: not bound. BOUND: bound and verified. STALE: the unmount failed with EBUSY (a file of the bind is mapped): also in the memdev's StaleBinds, retried. A start leaves what else is mounted at a target, or a target that another prepared claim lists, as it is, without a record.
 
 **Transitions.** BindTable below; a transition not in it is refused.
 
@@ -142,7 +142,7 @@ States: ABSENT, BOUND, STALE.
 |:-----|:---|:--------|:------|:--------|
 | ABSENT | BOUND | `prepare`: companion Prepare of an fs lease, after the node mount exists | the name is unused; the node mount is mounted | plain bind of a read-only node mount, or a read-only bind of a writable type; verified; commit (d) of the target in Got |
 | BOUND | ABSENT | `unprepare`, `prepare`, `recover`: companion Unprepare (after the revoke); the rollback of the companion Prepare; the recovery sweep of a bind that no REALISED grant of a PREPARED preparation lists | - | unmount (never detached); commit (d) |
-| BOUND | STALE | `unprepare`, `prepare`, `recover`: the unmount failed with EBUSY (a file of the bind is mapped) | - | the memdev's Stale list gets the target; the lease RELEASING_BUSY; retried at every release and by the periodic pass |
+| BOUND | STALE | `unprepare`, `prepare`, `recover`: the unmount failed with EBUSY (a file of the bind is mapped) | - | the memdev's StaleBinds gets the target; the lease RELEASING_BUSY; retried at every release and by the periodic pass |
 | STALE | ABSENT | `unprepare`, `prepare`, `recover`, `reconcile`: a retry unmounts it (the holder ended) | - | commit (d) |
 | ABSENT, BOUND | BOUND | `recover`: the recovery binds a REALISED fs companion again whose node mount is mounted, unless its claim is UNPREPARING; an existing mount at a listed target is kept | - | - |
 | BOUND | BOUND | `prepare`: a Prepare again mounts the node mount of an unrestored fs companion again and binds it again as the recovery does | - | - |
@@ -169,7 +169,7 @@ States: NONE, ACTIVE, IDLE_KEPT, GONE.
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| NONE | ACTIVE | `prepare`: the first grant of the serial is JOURNALED | provenance allows the source | commit (d) with the facts (usable, shared, persistent, coherent, NUMA affinity); pool: provenance POOL in the same commit |
+| NONE | ACTIVE | `prepare`: the first grant of the serial is JOURNALED | provenance allows the source | commit (d) with the facts (usable size, shared, persistent, coherent, NUMA affinity); pool: provenance POOL in the same commit |
 | ACTIVE | (unchanged) | `prepare`, `unprepare`, `recover`: grants come and go while at least one remains | - | commits with the grants |
 | ACTIVE | NONE | `unprepare`, `prepare`, `recover`: the last grant NONE and Policy says destroy (local sliced, local shared not configured any more, pool) | the region destroyed; a pool memdev disabled | commit (d) removing the record |
 | ACTIVE | IDLE_KEPT | `unprepare`, `prepare`, `recover`: the last grant NONE and Policy says keep (local shared while configured; local persistent with regions above; a rollback or recovery that keeps) | - | commit (d) |

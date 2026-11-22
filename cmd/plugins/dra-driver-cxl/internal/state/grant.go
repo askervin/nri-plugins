@@ -222,7 +222,7 @@ type GrantLend struct {
 //
 // States: BindState. ABSENT: not bound. BOUND: bound and verified. STALE:
 // the unmount failed with EBUSY (a file of the bind is mapped): also in
-// the memdev's Stale list, retried. A start leaves what else is mounted at
+// the memdev's StaleBinds, retried. A start leaves what else is mounted at
 // a target, or a target that another prepared claim lists, as it is,
 // without a record.
 //
@@ -401,7 +401,7 @@ var BindTable = Table[BindState]{
 		{
 			From: fsm.List(BindBound), To: BindStale, Triggers: fsm.List(TriggerUnprepare, TriggerPrepare, TriggerRecover),
 			When: "the unmount failed with EBUSY (a file of the bind is mapped)",
-			Effects: "the memdev's Stale list gets the target; the lease RELEASING_BUSY; retried at every release " +
+			Effects: "the memdev's StaleBinds gets the target; the lease RELEASING_BUSY; retried at every release " +
 				"and by the periodic pass",
 		},
 		{

@@ -238,7 +238,7 @@ func (e *Engine) unbindCut(g *state.Grant) error {
 }
 
 // boundTo records the lease bind of a grant in state to (ABSENT, or STALE
-// with its memdev's Stale entry).
+// with its memdev's StaleBinds entry).
 func boundTo(r *state.Records, ref state.GrantRef, target string, to state.BindState, trigger state.Trigger) error {
 	rg := r.Grant(ref)
 	if rg == nil || rg.Got.Bind == nil {

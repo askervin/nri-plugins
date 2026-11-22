@@ -95,7 +95,7 @@ var MemdevTable = Table[MemdevState]{
 			From: fsm.List(MemdevNone), To: MemdevActive, Triggers: fsm.List(TriggerPrepare),
 			When:  "the first grant of the serial is JOURNALED",
 			Guard: "provenance allows the source",
-			Effects: "commit (d) with the facts (usable, shared, persistent, coherent, NUMA affinity); " +
+			Effects: "commit (d) with the facts (usable size, shared, persistent, coherent, NUMA affinity); " +
 				"pool: provenance POOL in the same commit",
 		},
 		{
