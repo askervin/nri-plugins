@@ -58,7 +58,7 @@ func TestFailedCommitPool(t *testing.T) {
 	e.wantState(localSerial, state.ProvenanceLocal)
 	e.wantState(0xa2, state.ProvenanceUnknown)
 	if ps := e.w.RecordedPoolSerials(); ps[localSerial] || ps[0xa2] {
-		t.Fatalf("pool serials %v without their commit", ps)
+		t.Fatalf("serials of pool devices %v without their commit", ps)
 	}
 	if g := e.generation(); g != gen {
 		t.Fatalf("generation %d, expected %d", g, gen)

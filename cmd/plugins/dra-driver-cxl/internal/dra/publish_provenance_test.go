@@ -297,7 +297,7 @@ func pubSerialAttr(key, serial string) map[resourcev1.QualifiedName]resourcev1.D
 // that is attached to the node for a claim that is not prepared: pool-c's
 // controller stops gracefully and deletes its slice; a rescan, and a
 // driver restart while the slice is absent, do not publish it; the store
-// has the pool serials, the local memdev and pool-c.
+// has the serials of pool devices, the local memdev and pool-c.
 func TestProvenanceSliceDeleted(t *testing.T) {
 	logs := klogtest.Capture(t, 3)
 	e := newPubSerialsEnv(t)
@@ -311,7 +311,7 @@ func TestProvenanceSliceDeleted(t *testing.T) {
 	e.restart()
 	e.wantScan("driver restarted without the slice", pubLocalDeviceName)
 	if e.w.Holding() {
-		t.Fatal("a remembered pool device is held back as a new memdev")
+		t.Fatal("a remembered pool device is held as a new memdev")
 	}
 	if n := logMatches(logs(), "discovered local memdev memdev-c1ae2001"); n != 0 {
 		t.Fatalf("the pool device was published as a local one:\n%s", logs())
@@ -319,7 +319,7 @@ func TestProvenanceSliceDeleted(t *testing.T) {
 	if n := logMatches(logs(), "discovered local memdev memdev-c100e2e1"); n == 0 {
 		t.Fatalf("no line of the local memdev:\n%s", logs())
 	}
-	// the store has the pool serials and the local memdev
+	// the store has the serials of pool devices and the local memdev
 	e.flush()
 	doc := e.st.Snapshot()
 	got := map[string]bool{}
@@ -358,7 +358,7 @@ func TestProvenanceHotAddWhileSliceDeleted(t *testing.T) {
 
 // TestProvenanceNewMemdevHeld pins a pool device whose serial the
 // driver never saw in a slice, attached while pool-c has no slice: it is
-// held back, and is a pool device once pool-c lists it.
+// held, and is a pool device once pool-c lists it.
 func TestProvenanceNewMemdevHeld(t *testing.T) {
 	logs := klogtest.Capture(t, 0)
 	e := newPubSerialsEnv(t)
@@ -369,25 +369,25 @@ func TestProvenanceNewMemdevHeld(t *testing.T) {
 	e.plug(pubSharedPoolSerial)
 	e.wantScan("new memdev while pool-c is missing", pubLocalDeviceName)
 	if !e.w.Holding() {
-		t.Fatal("the new memdev is not held back")
+		t.Fatal("the new memdev is not held")
 	}
 	out := logs()
 	if logMatches(out, "provenance: holding new memdev") != 1 {
 		t.Fatalf("no line of the hold:\n%s", out)
 	}
 	e.advance(provenance.MaxHold / 2)
-	e.wantScan("half the hold back time later", pubLocalDeviceName)
+	e.wantScan("half the hold time later", pubLocalDeviceName)
 	e.publish("0xc1ee2001", "0xc1ae2001")
 	e.wantScan("pool-c lists it", pubLocalDeviceName)
 	if e.w.Holding() {
-		t.Fatal("a pool device is held back")
+		t.Fatal("a pool device is held")
 	}
 	e.publish()
 	e.advance(2 * provenance.MaxHold)
 	e.wantScan("pool-c missing again", pubLocalDeviceName)
 }
 
-// TestProvenanceHoldEnds pins a new memdev held back while a pool is
+// TestProvenanceHoldEnds pins a new memdev held while a pool is
 // missing: published as a local one after MaxHold, and at once when the
 // pool is back without it; a pool observed missing for longer than
 // MissingWindow holds back nothing, but only when its absence was observed.
@@ -397,15 +397,15 @@ func TestProvenanceHoldEnds(t *testing.T) {
 	e.wantScan("no memdevs")
 	e.publish()
 	e.plug(pubLocalSerial)
-	e.wantScan("held back")
+	e.wantScan("held")
 	e.advance(provenance.MaxHold)
-	e.wantScan("after the hold back time", pubLocalDeviceName)
+	e.wantScan("after the hold time", pubLocalDeviceName)
 	if e.w.Holding() {
 		t.Fatal("still holding")
 	}
 	// another new memdev, and pool-c comes back without it
 	e.plug(pubOtherLocalSerial)
-	e.wantScan("second new memdev held back", pubLocalDeviceName)
+	e.wantScan("second new memdev held", pubLocalDeviceName)
 	e.publish("0xc1ee2001")
 	e.wantScan("pool-c back", "memdev-a1", pubLocalDeviceName)
 	// a pool observed missing for longer than MissingWindow holds back
@@ -498,7 +498,7 @@ func TestProvenanceLocalAllocatorUses(t *testing.T) {
 }
 
 // TestProvenancePrepared pins the memdevs that the pool driver prepares:
-// remembered as pool serials, also after a restart.
+// remembered as serials of pool devices, also after a restart.
 func TestProvenancePrepared(t *testing.T) {
 	e := newPubSerialsEnv(t)
 	e.publish("0xc1ee2001")
@@ -527,7 +527,7 @@ func TestProvenancePrepared(t *testing.T) {
 }
 
 // TestProvenanceBadFile pins a store whose state.json does not decode
-// (LOST): the remembered serials are lost, a new memdev is held back as
+// (LOST): the remembered serials are lost, a new memdev is held as
 // while a pool is missing, for MaxHold within MissingWindow. The LOST
 // store is not written.
 func TestProvenanceBadFile(t *testing.T) {
@@ -536,7 +536,7 @@ func TestProvenanceBadFile(t *testing.T) {
 	e.plug(pubLocalSerial)
 	e.wantScan("bad file")
 	e.advance(provenance.MaxHold)
-	e.wantScan("bad file, held back for long enough", pubLocalDeviceName)
+	e.wantScan("bad file, held for long enough", pubLocalDeviceName)
 	e.idle(provenance.MissingWindow)
 	e.plug(pubOtherLocalSerial)
 	e.wantScan("an hour later", "memdev-a1", pubLocalDeviceName)
@@ -567,7 +567,7 @@ func TestProvenanceTruncatedFile(t *testing.T) {
 // TestProvenanceQuietNodeWindow pins pool-c listed at the last scan 2 h
 // ago, no udev event since, and a pool device that the node never saw in a
 // slice attached while pool-c's slices are gone: its absence is observed
-// from that scan on, the new memdev is held back; after MissingWindow of
+// from that scan on, the new memdev is held; after MissingWindow of
 // observed absence nothing is.
 func TestProvenanceQuietNodeWindow(t *testing.T) {
 	e := newPubSerialsEnv(t)
@@ -603,7 +603,7 @@ func TestProvenanceQuietNodeForget(t *testing.T) {
 	e.plug(pubSharedPoolSerial)
 	e.wantScan("pool device attached", pubLocalDeviceName)
 	if e.w.Holding() {
-		t.Fatal("a remembered pool serial is held back")
+		t.Fatal("a remembered pool serial is held")
 	}
 }
 
@@ -658,7 +658,7 @@ func TestProvenanceClaimEvidence(t *testing.T) {
 }
 
 // TestProvenanceHoldWhileNotListed pins a new memdev while no list of the
-// pool slices has succeeded: held back without the hold-back time running,
+// pool slices has succeeded: held without the hold time running,
 // which counts from the first successful list on.
 func TestProvenanceHoldWhileNotListed(t *testing.T) {
 	e := newPubSerialsEnv(t)
@@ -684,7 +684,7 @@ func TestProvenanceHoldWhileNotListed(t *testing.T) {
 	fail.Store(false)
 	e.wantScan("listed, pool-c missing")
 	e.advance(provenance.MaxHold)
-	e.wantScan("held back for long enough", pubLocalDeviceName)
+	e.wantScan("held for long enough", pubLocalDeviceName)
 }
 
 // TestProvenanceHeldRegion pins the regions of a memdev that is held
@@ -775,7 +775,7 @@ func TestRescanSerialized(t *testing.T) {
 }
 
 // TestPoolWatch pins the watch of the publisher: it rescans while a memdev
-// is held back, and also without udev events every Poll, so that a local
+// is held, and also without udev events every Poll, so that a local
 // memdev that a returning pool slice lists is withdrawn.
 func TestPoolWatch(t *testing.T) {
 	oldRetry, oldPoll := provenance.ListRetry, provenance.Poll
@@ -806,7 +806,7 @@ func TestPoolWatch(t *testing.T) {
 		}
 		t.Fatalf("devices %v, expected %v", pubNames(p.Devices()), want)
 	}
-	// held back: the ticks rescan, it is published after the hold-back
+	// held: the ticks rescan, it is published after the hold-back
 	provenance.ListRetry, provenance.Poll = 5*time.Millisecond, time.Hour
 	e.advance(provenance.MaxHold)
 	watch("memdev-a1", pubLocalDeviceName)

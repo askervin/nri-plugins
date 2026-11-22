@@ -67,7 +67,7 @@ type Memdev struct {
 	Size         uint64 // RAM capacity, bytes (persistent capacity of a persistent memdev)
 	NUMAAffinity int    // CPU NUMA node of the memdev, -1 if unknown
 	BlockSize    uint64 // memory block size, bytes: slices are multiples of it
-	Shared       bool   // published shared: one devdax device for all claims
+	Shared       bool   // published shared: one dax device for all claims
 	// Persistent is true for a memdev of persistent memory: modes block
 	// and fs, one pmem region for all claims.
 	Persistent bool
@@ -337,7 +337,7 @@ func regionIgnoreReason(cfg PublishConfig, r *kernel.RegionInfo, node int, mems 
 	return ""
 }
 
-// addDRAM adds the DRAM device of the memory nodes that are not CXL nodes
+// addDRAM adds the DRAM device of the NUMA nodes with memory that are not CXL NUMA nodes
 // to devInfos.
 func addDRAM(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snapshot, cxlNUMANodes map[int]bool) {
 	dramDev := &DRAM{}

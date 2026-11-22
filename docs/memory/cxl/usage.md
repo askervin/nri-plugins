@@ -2072,7 +2072,7 @@ writes nothing, releases nothing, recovers nothing at start, fails every
 Prepare with that error, keeps the CDI specs, fences every NUMA node of
 online CXL memory, starts the lease broker without leases (it deletes no
 companion), and holds back every new memdev for up to 5 minutes in its
-first hour (the remembered pool serials are lost). It does
+first hour (the remembered provenance is lost). It does
 not crash or restart. Drain the node's claims and start it once with
 `--new-state`: it moves both files aside (`.lost`) and starts with a new
 document, and what the lost records named is foreign to it.

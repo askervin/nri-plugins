@@ -18,7 +18,7 @@ import (
 	"testing"
 )
 
-// refSettings is the object of the reference pool controller.
+// refSettings is the object of the fake pool controller.
 type refSettings struct {
 	Slot     string `json:"slot,omitempty"`
 	NUMANode *int   `json:"numaNode,omitempty"`

@@ -33,7 +33,7 @@ import (
 const (
 	// Serial scheme: 0xc1 = CXL, 0x00 in the next byte = present at boot
 	// (e2e topology local devices are 0xc100e2e0+i), 0xae = shared pool
-	// devices, 0xee = exclusive pool devices.
+	// devices, 0xee = unshared pool devices.
 	DefaultSharedSerialBase = 0xc1ae0000
 	DefaultSerialBase       = 0xc1ee0000
 	DefaultDir              = "/tmp/fake-cxl-pool"

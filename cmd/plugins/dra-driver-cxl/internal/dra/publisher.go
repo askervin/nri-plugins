@@ -418,7 +418,7 @@ func (p *Publisher) scan(ctx context.Context) (DevicesInfo, error) {
 	return p.scanWith(ctx, cfg, poolSerials)
 }
 
-// ScanWith scans the node with the configuration and the pool serials of
+// ScanWith scans the node with the configuration and the serials of pool devices of
 // ScanInput and sets the table, without publishing it.
 func (p *Publisher) ScanWith(ctx context.Context, cfg PublishConfig, poolSerials map[uint64]bool) error {
 	p.scanMu.Lock()
@@ -433,7 +433,7 @@ func (p *Publisher) ScanWith(ctx context.Context, cfg PublishConfig, poolSerials
 }
 
 // scanWith returns the devices to publish of a scan of the node with the
-// configuration and the pool serials of ScanInput.
+// configuration and the serials of pool devices of ScanInput.
 func (p *Publisher) scanWith(ctx context.Context, cfg PublishConfig, poolSerials map[uint64]bool) (DevicesInfo, error) {
 	snap, err := p.opts.Scan(ctx)
 	if err != nil {
@@ -458,9 +458,9 @@ func (p *Publisher) ours() func(name string) bool {
 	}
 }
 
-// ScanInput returns the configuration and the pool serials of a scan: the
+// ScanInput returns the configuration and the serials of pool devices of a scan: the
 // serials of the memdevs that the pool driver prepares, of the devices that
-// pool controllers publish, and the remembered pool serials. While the
+// pool controllers publish, and the remembered serials of pool devices. While the
 // devices of the pool controllers are not known, the configuration
 // publishes no local memdevs.
 func (p *Publisher) ScanInput(ctx context.Context) (PublishConfig, map[uint64]bool) {

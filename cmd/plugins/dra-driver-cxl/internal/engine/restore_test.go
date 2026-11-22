@@ -32,7 +32,7 @@ import (
 // its block device what the prepared uses derive: a node mount that is gone
 // is mounted again read-write for a writer, the block device that was left
 // read-only made writable first; a read-write superblock without a writer
-// (the Prepare of the writer cut after its upgrade) is made read-only, then
+// (the Prepare of the writer cut after its remount read-write) is made read-only, then
 // the block device; a read-only one under a writer is made read-write, the
 // block device first. A node mount that is gone and whose block device is
 // another one now is not mounted again, with the line that the observer
@@ -67,7 +67,7 @@ func TestRecoverRestoresFlags(t *testing.T) {
 			wantMountCalls(t, v, n, "blkroset "+pmem+" 0", "fsmount "+pmem+" "+direct+" ext4 rw dax=always")
 			wantFlags("mounted again", direct, false)
 
-			// the writer is gone, its Prepare again cut after the upgrade:
+			// the writer is gone, its Prepare again cut after the remount read-write:
 			// made read-only
 			v.mustUnprepare(driver, "w")
 			v.f.CutMount(direct)
@@ -80,7 +80,7 @@ func TestRecoverRestoresFlags(t *testing.T) {
 				t.Fatalf("recovered %+v", out)
 			}
 			wantMountCalls(t, v, n, "syncfs "+direct, "remount "+direct+" ro", "blkroset "+pmem+" 1")
-			wantFlags("downgraded", direct, true)
+			wantFlags("remounted read-only", direct, true)
 
 			// a writer again, the superblock and the block device made
 			// read-only behind it: made read-write
@@ -94,7 +94,7 @@ func TestRecoverRestoresFlags(t *testing.T) {
 			n = mountCalls(v)
 			v.restart()
 			wantMountCalls(t, v, n, "blkroset "+pmem+" 0", "remount "+direct+" rw")
-			wantFlags("upgraded", direct, false)
+			wantFlags("remounted read-write", direct, false)
 			if viol := v.f.Violations(); len(viol) > 0 {
 				t.Fatalf("violations %v", viol)
 			}

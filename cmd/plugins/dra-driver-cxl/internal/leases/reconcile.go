@@ -288,7 +288,7 @@ func (b *Broker) deleteUnowned(pods map[types.NamespacedName]*corev1.Pod) {
 	ctx, cancel := b.apiContext()
 	defer cancel()
 	sel := companionSelector(b.opts.NodeName)
-	// orphan tells whether an object is a companion without a lease.
+	// unowned tells whether an object is a companion without a lease.
 	unowned := func(o metav1.ObjectMeta) bool {
 		id := o.Labels[device.LeaseLabel]
 		if o.Name != CompanionName(id) || o.DeletionTimestamp != nil {

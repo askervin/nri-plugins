@@ -103,7 +103,7 @@ func (s *Server) hostAttachmentsLocked(name string) []*attachment {
 }
 
 // deviceState computes the state of a device from its attachments. A
-// failed attachment makes an exclusive device "error" (it cannot be given to
+// failed attachment makes an unshared device "error" (it cannot be given to
 // anyone until that qemu restarts); for a shared device it only affects that
 // attachment, unless it is the only one.
 func deviceState(shared bool, atts []*attachment) string {

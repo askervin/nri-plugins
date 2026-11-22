@@ -88,7 +88,7 @@ func TestPoolNUMA(t *testing.T) {
 	e.mustUnprepare(e.pool, "u1")
 }
 
-// Two claims of one exclusive pool device in mode numa, an allocation that
+// Two claims of one unshared pool device in mode numa, an allocation that
 // the scheduler does not make: the second gets the region of the first,
 // its memory onlined again without a command, on the same node; the last
 // Unprepare releases the region.
@@ -144,7 +144,7 @@ func TestPoolRestart(t *testing.T) {
 }
 
 // A pool device of volatile memory in mode dax, and a shared one used by
-// two claims: devdax devices as CDI device nodes, read-only by the
+// two claims: dax devices as CDI device nodes, read-only by the
 // configuration. A claim of either device that does not fit how it is
 // prepared is refused.
 func TestPoolDaxAndShared(t *testing.T) {

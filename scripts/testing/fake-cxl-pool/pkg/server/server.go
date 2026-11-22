@@ -822,7 +822,7 @@ func (s *Server) reconcile(ctx context.Context, hs []*host) {
 					key := h.name + "/" + t3.ID
 					if !s.adoptWarned[key] {
 						s.adoptWarned[key] = true
-						s.logf("WARNING: host %s has qemu device %s of exclusive device %s, which is attached to %s: not adopted",
+						s.logf("WARNING: host %s has qemu device %s of unshared device %s, which is attached to %s: not adopted",
 							h.name, t3.ID, d.Name, other.Host)
 					}
 					continue

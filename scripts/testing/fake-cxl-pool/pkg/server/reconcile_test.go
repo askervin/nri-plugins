@@ -90,7 +90,7 @@ func TestStaleTreeKeepsNewAttachment(t *testing.T) {
 	srv.refreshTrees(ctx)
 	as, _ := srv.Attachments(AttachmentFilter{Device: "pooled0"})
 	if len(as) != 1 || as[0].Host != "vm1" || as[0].Adopted {
-		t.Fatalf("exclusive device pooled0 has attachments %+v", as)
+		t.Fatalf("unshared device pooled0 has attachments %+v", as)
 	}
 }
 
@@ -102,7 +102,7 @@ func TestAdoptionRespectsUnshared(t *testing.T) {
 	if _, _, err := srv.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm2"}); err != nil {
 		t.Fatal(err)
 	}
-	// someone plugs the same exclusive device into vm1 behind the server
+	// someone plugs the same unshared device into vm1 behind the server
 	obj := "fcp_pooled0.hp7"
 	f1.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: obj, Size: 256 << 20, MemPath: filepath.Join(dir, "pool", "pooled0.raw"), Share: true})
 	if err := f1.PlugDevice(qemu.CXLType3{ID: obj, Bus: "ds0_hb0", VolatileMemdev: obj, Serial: 0xc1ee0001}); err != nil {
@@ -111,7 +111,7 @@ func TestAdoptionRespectsUnshared(t *testing.T) {
 	srv.refreshTrees(ctx)
 	as, _ := srv.Attachments(AttachmentFilter{Device: "pooled0"})
 	if len(as) != 1 || as[0].Host != "vm2" {
-		t.Fatalf("exclusive device adopted twice: %+v", as)
+		t.Fatalf("unshared device adopted twice: %+v", as)
 	}
 	// a shared device may be adopted on another host
 	sh := "devices:\n  - name: s0\n    size: 256M\n    shared: true\n    serial: 0xc1ae0001\n"

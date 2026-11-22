@@ -311,9 +311,9 @@ func TestPersistentWithoutPmem(t *testing.T) {
 	finish(t, v, "unprepared")
 }
 
-// An upgrade that the filesystem refuses leaves both block devices of a
+// A remount read-write that the filesystem refuses leaves both block devices of a
 // cached xfs read-only again; a read-only xfs is mounted with nouuid.
-func TestPersistentUpgradeFails(t *testing.T) {
+func TestPersistentRemountReadWriteFails(t *testing.T) {
 	v := pmemEnv(t, "xfs")
 	v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFS, true, state.AccessCached))
 	m := v.mount("r", 0)
@@ -326,7 +326,7 @@ func TestPersistentUpgradeFails(t *testing.T) {
 		t.Fatalf("error %v, want %q", err, want)
 	}
 	if !v.f.IsReadOnly(filepath.Join(v.f.DevRoot(), "pmem0")) || !v.f.IsReadOnly(m.Loop) {
-		t.Fatal("block devices writable after a failed upgrade")
+		t.Fatal("block devices writable after a failed remount read-write")
 	}
 	if mi, _ := v.f.Kernel().Mounted(m.Path); mi == nil || !mi.SuperReadOnly() {
 		t.Fatalf("node mount %+v", mi)
@@ -383,9 +383,9 @@ func TestPersistentUnexplainedSuperblocks(t *testing.T) {
 		// a btrfs superblock has a device number of its own
 		{name: "block writer, btrfs", image: "btrfs", target: "/mnt/x", req: blockClaim("x", false), err: unexplained("$DEV", "rw", "/mnt/x")},
 		{name: "block reader, btrfs", image: "btrfs", target: "/mnt/x", req: blockClaim("x", true), err: notReadOnly},
-		{name: "upgrade, loop device", image: "ext4", held: fsClaim("r", true), target: "/mnt/old", loop: true, ro: true,
+		{name: "remount read-write, loop device", image: "ext4", held: fsClaim("r", true), target: "/mnt/old", loop: true, ro: true,
 			req: fsClaim("x", false), err: unexplained("$SRC", "ro", "/mnt/old")},
-		{name: "upgrade, bind of the node mount", image: "ext4", held: fsClaim("r", true), target: "/run/cxl/fs/ro", ro: true,
+		{name: "remount read-write, bind of the node mount", image: "ext4", held: fsClaim("r", true), target: "/run/cxl/fs/ro", ro: true,
 			req: fsClaim("x", false)},
 		{name: "writer, copy of the node mount in a container", image: "ext4", held: fsClaim("w", false), target: "/data",
 			req: fsClaim("x", false)},
@@ -580,7 +580,7 @@ func TestPersistentLogLines(t *testing.T) {
 
 // A grant of a local persistent memdev whose release failed holds the
 // device until its release is done: the node mount of a reader whose
-// unmount is busy, the read-write superblock of a writer whose downgrade is
+// unmount is busy, the read-write superblock of a writer whose remount read-only is
 // busy. The rules of one node refuse the Prepares of other claims next to
 // it, which mount and change nothing; a reader of its node mount reuses it
 // as it is.
@@ -641,12 +641,12 @@ func TestPersistentReleasingGrants(t *testing.T) {
 	})
 }
 
-// The Unprepare of a writer whose downgrade fails does not finish: its
+// The Unprepare of a writer whose remount read-only fails does not finish: its
 // claim stays UNPREPARING and its grant RELEASING through a start, which
 // leaves the read-write node mount as it is for kubelet's retry; the retry
 // makes the node mount and the block device read-only for the reader. A
-// downgrade fails closed when the superblocks cannot be read.
-func TestPersistentFailedDowngrade(t *testing.T) {
+// remount read-only fails closed when the superblocks cannot be read.
+func TestPersistentRemountReadOnlyFails(t *testing.T) {
 	v := pmemEnv(t, "ext4")
 	dev := filepath.Join(v.f.DevRoot(), "pmem0")
 	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFS, false, ""))
@@ -666,7 +666,7 @@ func TestPersistentFailedDowngrade(t *testing.T) {
 	if err := v.unprepare(localDriver, "w"); err == nil || err.Error() != "releasing w/0 (memdev 0x91): memdev 0x91: remounting "+direct+" read-only: device or resource busy" {
 		t.Fatalf("error %v", err)
 	}
-	writable("failed downgrade")
+	writable("failed remount read-only")
 	n := mountCalls(v)
 	v.restart()
 	writable("restarted")
@@ -674,7 +674,7 @@ func TestPersistentFailedDowngrade(t *testing.T) {
 	v.f.SetWriting(direct, false)
 	v.mustUnprepare(localDriver, "w")
 	if mi, _ := v.f.Kernel().Mounted(direct); mi == nil || !mi.SuperReadOnly() || !v.f.IsReadOnly(dev) {
-		t.Fatalf("downgraded: node mount %+v, block device read-only %v", mi, v.f.IsReadOnly(dev))
+		t.Fatalf("remounted read-only: node mount %+v, block device read-only %v", mi, v.f.IsReadOnly(dev))
 	}
 	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFS, false, ""))
 	v.f.HideProc(true)

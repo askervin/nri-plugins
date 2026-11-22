@@ -94,7 +94,7 @@ func TestSerials(t *testing.T) {
 	e.mustPrepare(e.pool, poolClaim("p1", "pooled0", poolExclusiveData))
 	e.mustPrepare(e.local, localClaim("l1", localDev, envBlockSize))
 	if got := e.pool.Serials(); !reflect.DeepEqual(got, map[uint64]bool{serialPoolX: true}) {
-		t.Fatalf("pool serials %v", got)
+		t.Fatalf("serials of pool devices %v", got)
 	}
 	if got := e.local.Serials(); !reflect.DeepEqual(got, map[uint64]bool{serialLocal: true}) {
 		t.Fatalf("local serials %v", got)

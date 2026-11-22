@@ -51,7 +51,7 @@ func TestStartOnALostStore(t *testing.T) {
 		t.Errorf("local uses %v", uses)
 	}
 	e.synchronize()
-	// the memdev is held back: the pool serials are lost
+	// the memdev is held: the serials of pool devices are lost
 	injectDevices(e, &dra.DeviceInfo{Name: "dram", Dev: &dra.DRAM{NUMANodes: []int{0}, Size: 1 << 30}})
 	claim := localClaim("u1", 0)
 	claim.Status.Allocation.Devices.Results[0].Device = "dram"

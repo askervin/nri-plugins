@@ -232,7 +232,7 @@ func scanOnline(t *testing.T, k *kernel.Kernel, region string) {
 
 // scanFakeRegions is a node with regions that the driver did not create:
 // with online memory, with offline memory, with an empty dax device only,
-// with two devdax devices beside the empty one, a disabled one with online
+// with two dax devices beside the empty one, a disabled one with online
 // memory left, and two regions on one memdev.
 func scanFakeRegions(t *testing.T) scanTopology {
 	ctx := context.Background()

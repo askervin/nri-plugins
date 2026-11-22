@@ -63,8 +63,8 @@ var policies = []string{PolicyNone, PolicyAuto, PolicyFirstDRAM, PolicyFirstCXL,
 
 // The values of container.fencing.
 const (
-	// FencingAllowedMems keeps the CXL nodes of the driver out of
-	// cpuset.mems of a container that has not claimed or borrowed memory
+	// FencingAllowedMems keeps the CXL NUMA nodes of the driver out of
+	// cpuset.mems of a container that has not claimed or leased memory
 	// on them.
 	FencingAllowedMems = "allowed-mems"
 	// FencingNone leaves the memory nodes of a container as they are.

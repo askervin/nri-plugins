@@ -949,8 +949,8 @@ func TestRecoverUnownedBind(t *testing.T) {
 	v.f.Plug(fake.MemdevSpec{Serial: serialA})
 	k := v.f.Kernel()
 	gone := filepath.Join(v.dir, "gone")
-	orphan := filepath.Join(v.dir, localDriver, "lease-fs", "lc3", "x")
-	for _, dir := range []string{gone, orphan} {
+	unowned := filepath.Join(v.dir, localDriver, "lease-fs", "lc3", "x")
+	for _, dir := range []string{gone, unowned} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -958,33 +958,33 @@ func TestRecoverUnownedBind(t *testing.T) {
 	if err := k.FSMount(filepath.Join(v.e.devRoot(), "pmem6"), gone, "ext4", true, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := k.Mount(gone, orphan, "", unix.MS_BIND, ""); err != nil {
+	if err := k.Mount(gone, unowned, "", unix.MS_BIND, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := k.Unmount(gone); err != nil {
 		t.Fatal(err)
 	}
-	v.f.SetBusy(orphan, true)
+	v.f.SetBusy(unowned, true)
 	logs := klogtest.Capture(t, 3)
 	v.restart()
-	wantLog(t, logs(), orphan+" belongs to no prepared claim, unmounting it",
-		"unmounting "+orphan+": device or resource busy; trying again at the next release")
-	if mi, _ := k.Mounted(orphan); mi == nil {
+	wantLog(t, logs(), unowned+" belongs to no prepared claim, unmounting it",
+		"unmounting "+unowned+": device or resource busy; trying again at the next release")
+	if mi, _ := k.Mounted(unowned); mi == nil {
 		t.Fatal("the busy bind is gone")
 	}
 	// a release while it is busy keeps it, the next one unmounts it
 	v.mustPrepare(poolDriver, "p", poolReq("p", 0, serialA, state.ModeDax, state.KindPool))
 	v.mustUnprepare(poolDriver, "p")
-	wantLog(t, logs(), "unmounting stale lease bind "+orphan+": device or resource busy")
-	if mi, _ := k.Mounted(orphan); mi == nil {
+	wantLog(t, logs(), "unmounting stale lease bind "+unowned+": device or resource busy")
+	if mi, _ := k.Mounted(unowned); mi == nil {
 		t.Fatal("the busy bind is gone")
 	}
-	v.f.SetBusy(orphan, false)
+	v.f.SetBusy(unowned, false)
 	v.mustPrepare(poolDriver, "p", poolReq("p", 0, serialA, state.ModeDax, state.KindPool))
 	v.mustUnprepare(poolDriver, "p")
-	wantLog(t, logs(), "unbound stale lease bind "+orphan)
-	if mi, _ := k.Mounted(orphan); mi != nil {
-		t.Fatalf("the orphan bind is still mounted: %+v", mi)
+	wantLog(t, logs(), "unbound stale lease bind "+unowned)
+	if mi, _ := k.Mounted(unowned); mi != nil {
+		t.Fatalf("the unowned bind is still mounted: %+v", mi)
 	}
 }
 

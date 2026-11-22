@@ -79,7 +79,7 @@ func TestPoolSlicesSerials(t *testing.T) {
 }
 
 // TestPoolSlicesFirstListFails pins the watcher before the first
-// successful list: not known, failing, only the remembered pool serials;
+// successful list: not known, failing, only the remembered serials of pool devices;
 // a new memdev is held without expiry; after a list it is known.
 func TestPoolSlicesFirstListFails(t *testing.T) {
 	logs := klogtest.Capture(t, 4)

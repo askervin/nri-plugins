@@ -31,7 +31,7 @@ import (
 )
 
 // Companion claims: a claim with the label cxl.nri.io/lease=<id> is the
-// companion of a lease of the lease broker, whose running container borrows
+// companion of a lease of the lease broker, whose running container gets
 // the memory of the claim's devices (docs/memory/cxl/leases.md). Either
 // driver prepares it like any claim, but without CDI devices, after the
 // companion gate:

@@ -242,7 +242,7 @@ func (n *Node) Recover(ctx context.Context) (*engine.Recovered, error) {
 	if !k.HasCXLBus() {
 		klog.Warningf("no CXL bus in %s: the node has no CXL memdevs or regions (are the CXL modules loaded?)", k.SysRoot)
 	}
-	// the pool serials of the records: those that the pool driver
+	// the serials of pool devices in the records: those that the pool driver
 	// prepares and the remembered ones
 	known := map[uint64]bool{}
 	maps.Copy(known, n.Pool.Serials())

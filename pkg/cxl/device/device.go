@@ -40,7 +40,7 @@ const (
 	// DriverName is the DRA driver of the devices attached to a node.
 	DriverName = "cxl.nri.io"
 	// PoolDriverName is the default DRA driver name of the pool driver,
-	// which prepares CXL memory devices hotplugged from a memory pool.
+	// which prepares the memdevs of pool devices.
 	// See docs/memory/cxl/pool.md.
 	PoolDriverName = "cxl-pool.nri.io"
 
@@ -86,7 +86,7 @@ const (
 	// is one share.
 	CapacityShares resourcev1.QualifiedName = "shares"
 	// SharesUnlimited is the shares value of local shared devices and of
-	// the reference pool: the most claims that may hold a device at a
+	// the fake pool: the most claims that may hold a device at a
 	// time, a bound of the model rather than a limit.
 	SharesUnlimited = 1000000
 

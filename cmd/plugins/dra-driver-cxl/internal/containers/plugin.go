@@ -226,7 +226,7 @@ func (p *Plugin) SetResults(results ...Results) {
 	p.opts.Results = results
 }
 
-// Fencing tells whether the plugin fences the CXL nodes of the driver:
+// Fencing tells whether the plugin fences the CXL NUMA nodes of the driver:
 // defaults.container.fencing is allowed-mems.
 func (p *Plugin) Fencing() bool {
 	return p.fencing

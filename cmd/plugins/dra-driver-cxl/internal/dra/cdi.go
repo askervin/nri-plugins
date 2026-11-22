@@ -66,7 +66,7 @@ func (k envKeys) next(base string) string {
 	return api.Nth(base, k[base])
 }
 
-// daxDeviceNode returns the CDI device node of a devdax device. A read-only
+// daxDeviceNode returns the CDI device node of a dax device. A read-only
 // node has permissions "r": the runtime turns that into a device cgroup
 // rule that refuses opens for writing, whatever the container's
 // capabilities.

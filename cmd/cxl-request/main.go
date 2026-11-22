@@ -31,7 +31,7 @@
 // request, release and list print the driver's JSON response line, env
 // prints the environment of the lease as sorted KEY=VALUE lines. With
 // --exec CMD runs with the environment of the lease, and with the fd of a
-// dax lease (a devdax device) or a block lease (the block device of a
+// dax lease (a dax device) or a block lease (the block device of a
 // persistent device) as fd 3; an fs lease has its filesystem at
 // CXL_<KEY>_PATH. Exit codes: 0 ok, 1 error, 2 usage, 3 the lease is
 // Failed, not Ready (request, fd, env) or not Released (release) within

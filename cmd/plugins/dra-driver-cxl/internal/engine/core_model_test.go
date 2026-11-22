@@ -744,7 +744,7 @@ func (s *coreState) fsUsers(md int) (users, writer bool) {
 
 // mountAfter returns the node mount of the memdev after a grant of mode fs
 // left it (5.5 as ruled, D2): unmounted when no grant is a user of it,
-// downgraded when no listed writer remains, else as it is.
+// remounted read-only when no listed writer remains, else as it is.
 func (s *coreState) mountAfter(md int) string {
 	users, writer := s.fsUsers(md)
 	switch mount := s.mds[md].mount; {

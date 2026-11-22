@@ -404,7 +404,7 @@ func (c *Controller) attach(ctx context.Context, w *want, k attKey, exclusive, e
 		f.reason = ReasonTimeout
 	case api.IsCode(err, api.CodeConflict):
 		f.reason = ReasonConflict
-		// An exclusive device that moves between our nodes: the old
+		// An unshared device that moves between our nodes: the old
 		// attachment is detached in this reconcile, attach again in the next
 		// one instead of failing the new allocation.
 		for ok, oa := range actual {

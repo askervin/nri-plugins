@@ -306,7 +306,7 @@ var GrantTable = Table[GrantState]{
 		},
 		{
 			From: fsm.List(GrantReleasing), To: GrantNone, Triggers: releasers,
-			When: "mounts unmounted or downgraded, blocks offline, dax device deleted, the region per Policy " +
+			When: "mounts unmounted or remounted read-only, blocks offline, dax device deleted, the region per Policy " +
 				"when the grant was its last user",
 			Effects: "commit (d) removing the grant; the Memdev's grants and the users of the region's objects " +
 				"updated",

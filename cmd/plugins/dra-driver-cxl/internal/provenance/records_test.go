@@ -131,18 +131,18 @@ func TestRecordsRefresh(t *testing.T) {
 }
 
 // TestRecordsLoaded pins the load of the records at New: the line with
-// their counts and the name, POOL serials that stay pool devices without
+// their counts and the name, serials of state POOL that stay pool devices without
 // their slices, LOCAL ones that are local at once, and the listed pools.
 func TestRecordsLoaded(t *testing.T) {
 	logs := klogtest.Capture(t, 4)
 	e := newWatchEnv(t)
-	wantLogLine(t, logs(), fmt.Sprintf("provenance: loaded 0 serials (0 pool serials) and 0 pools from %s", e.name()))
+	wantLogLine(t, logs(), fmt.Sprintf("provenance: loaded 0 serials (0 of pool devices) and 0 pools from %s", e.name()))
 	e.publish("0xc1ee2001", "0xc1ae2001")
 	e.plug(localSerial)
 	e.wantHeld("first start")
 	e.publish()
 	e.restart()
-	wantLogLine(t, logs(), fmt.Sprintf("provenance: loaded 3 serials (2 pool serials) and 1 pools from %s", e.name()))
+	wantLogLine(t, logs(), fmt.Sprintf("provenance: loaded 3 serials (2 of pool devices) and 1 pools from %s", e.name()))
 	e.wantState(0xc1ee2001, state.ProvenancePool)
 	e.wantState(sharedPoolSerial, state.ProvenancePool)
 	e.wantState(localSerial, state.ProvenanceLocal)
@@ -154,7 +154,7 @@ func TestRecordsLoaded(t *testing.T) {
 	e.wantHeld("restarted without the slice")
 	pool, _ := e.w.Gate(t.Context(), e.devices(), nil, nil)
 	if !pool[sharedPoolSerial] || pool[localSerial] {
-		t.Fatalf("pool serials %v", pool)
+		t.Fatalf("serials of pool devices %v", pool)
 	}
 }
 
@@ -191,7 +191,7 @@ func TestLostStore(t *testing.T) {
 	e.lose("{bogus")
 	lost := e.st.Lost().Error()
 	out := logs()
-	wantLogLine(t, out, fmt.Sprintf("provenance: %s: %s: the remembered pool serials are lost; new memdevs are held for up "+
+	wantLogLine(t, out, fmt.Sprintf("provenance: %s: %s: the remembered provenance is lost; new memdevs are held for up "+
 		"to 5m0s each in the next 1h0m0s", e.name(), lost))
 	if e.w.lost != lost {
 		t.Fatalf("lost %q, expected %q", e.w.lost, lost)
@@ -199,17 +199,17 @@ func TestLostStore(t *testing.T) {
 	e.plug(localSerial)
 	e.wantHeld("lost records", localSerial)
 	wantLogLine(t, logs(), fmt.Sprintf(holdingBack+" 0xc100e2e1 (mem0): it may be a pool device: "+
-		"the remembered pool serials are lost (%s)", lost))
+		"the remembered provenance is lost (%s)", lost))
 	if reason := e.watched(localSerial).HeldReason; reason != state.HeldLost {
 		t.Fatalf("held reason %q", reason)
 	}
 	e.advance(MaxHold - time.Second)
-	e.wantHeld("lost records, before the hold back time", localSerial)
+	e.wantHeld("lost records, before the hold time", localSerial)
 	e.advance(time.Second)
-	e.wantHeld("lost records, held back for long enough")
+	e.wantHeld("lost records, held for long enough")
 	e.wantState(localSerial, state.ProvenanceLocal)
 	wantLogLine(t, logs(), "provenance: publishing memdev 0xc100e2e1 (mem0) as a local memdev after holding it for 5m0s "+
-		"(the remembered pool serials are lost (")
+		"(the remembered provenance is lost (")
 	// the store refuses the commits: not tried, nothing logged
 	if n := countLogLines(logs(), "provenance: writing "); n != 0 {
 		t.Fatalf("%d failed commits logged:\n%s", n, logs())
@@ -261,5 +261,5 @@ func TestForget(t *testing.T) {
 	// a second restart without --forget-provenance keeps that
 	e.forget = nil
 	e.restart()
-	wantLogLine(t, logs(), fmt.Sprintf("provenance: loaded 0 serials (0 pool serials) and 1 pools from %s", e.name()))
+	wantLogLine(t, logs(), fmt.Sprintf("provenance: loaded 0 serials (0 of pool devices) and 1 pools from %s", e.name()))
 }

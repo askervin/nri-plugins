@@ -44,14 +44,14 @@ const (
 	// CXL_CLAIM_<uid with underscores>=1 of the claims of both drivers.
 	ClaimEnvPrefix = "CXL_CLAIM_"
 
-	// SourceLocal is memory of a CXL device attached to the node.
+	// SourceLocal is memory of a local memdev of the node.
 	SourceLocal = "local"
 	// SourcePool is memory of a device of a memory pool.
 	SourcePool = "pool"
 
 	// ModeNUMA gives memory as system RAM of a NUMA node.
 	ModeNUMA = "numa"
-	// ModeDax gives memory as a devdax device (claims) or its fd
+	// ModeDax gives memory as a dax device (claims) or its fd
 	// (leases).
 	ModeDax = "dax"
 	// ModeBlock gives persistent memory as the block device of its fsdax

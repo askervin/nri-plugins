@@ -585,7 +585,7 @@ func TestPublish(t *testing.T) {
 		!ptr.Deref(p.BindsToNode, false) ||
 		strings.Join(p.BindingConditions, ",") != "cxl-pool.nri.io/Attached" ||
 		strings.Join(p.BindingFailureConditions, ",") != "cxl-pool.nri.io/AttachFailed" {
-		t.Fatalf("unexpected exclusive device %+v", p)
+		t.Fatalf("unexpected unshared device %+v", p)
 	}
 	sh := byName["shared0"]
 	// shares 1M without a requestPolicy: no request is exclusive

@@ -91,7 +91,7 @@ func TestLocalSliceNUMA(t *testing.T) {
 	e.wantClean()
 }
 
-// A slice of mode dax of an unshared local memdev: a devdax device of the
+// A slice of mode dax of an unshared local memdev: a dax device of the
 // region, read-only or not, as a CDI device node.
 func TestLocalSliceDax(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{localSpec()})
