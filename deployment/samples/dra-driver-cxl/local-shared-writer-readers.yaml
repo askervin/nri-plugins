@@ -1,6 +1,6 @@
 # Single-writer data sharing with a shared local device: a CXL memory
-# device of the node that the driver configuration lists in sharedDevices
-# (Helm value config.sharedDevices: ["0xc100e2e2"]), published with
+# device of the node that the driver configuration lists in sharedMemdevs
+# (Helm value config.sharedMemdevs: ["0xc100e2e2"]), published with
 # shared: true and selected by the DeviceClass cxl-local-shared. Every
 # claim maps the whole device as devdax; the plugin zeroes it only when it
 # creates its region, never while the region exists.

@@ -4,7 +4,7 @@
 # test14 slices a local CXL memory device: every claim of DeviceClass
 # cxl-local gets a piece of its own, zeroed for it. A local device can be
 # shared instead, like a shared device of the pool (test13, test19): the
-# driver configuration lists it, sharedDevices: ["<serial>"], and the node
+# driver configuration lists it, sharedMemdevs: ["<serial>"], and the node
 # plugin then publishes it whole as a shared device, attributes type
 # memdev, source local, shared true, serial, size and nodeAffinity, and
 # one capacity, "shares", 1M without a requestPolicy. Claims of class
@@ -22,7 +22,7 @@
 # claim; the region stays while the device is configured shared, also
 # when no claim uses it, and what the last writer wrote stays there.
 # The region goes only when the driver runs without the device in
-# sharedDevices; then the device is a sliced local device again.
+# sharedMemdevs; then the device is a sliced local device again.
 # A running container leases the device with cxl-request as it would
 # claim it: the broker makes a companion claim of class cxl-local-shared
 # for each lease, one share or all of them.
@@ -319,7 +319,7 @@ SEED_OFFSETS=(0 1M $(( DRA_LOCAL_SIZE - 4096 )))
 dra-local-seed "$VM2" "$STALE" "${SEED_OFFSETS[@]}"
 
 echo "### preconditions: the driver with the local device shared"
-DRA_DRIVER_CONFIG="sharedDevices: [\"$DRA_LOCAL_SERIAL\"]"
+DRA_DRIVER_CONFIG="sharedMemdevs: [\"$DRA_LOCAL_SERIAL\"]"
 # Never pool-cleanup while a region of the shared device exists.
 DRA_EXIT_TRAP='dra-local-shared-cleanup "$VM2"'
 dra-build

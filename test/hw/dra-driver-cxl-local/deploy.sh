@@ -6,7 +6,7 @@
 #
 #   sliced   the local memdev $CXL_SERIAL is sliced (DeviceClass cxl-local,
 #            modes numa and dax), the default configuration
-#   shared   the memdev is in sharedDevices: one devdax device of the
+#   shared   the memdev is in sharedMemdevs: one devdax device of the
 #            whole memdev that claims of cxl-local-shared map
 #
 # --image TAR       copy the image tarball TAR to TARGET and import it into
@@ -116,7 +116,7 @@ logLevel: 4"
 config=""
 if [ "$mode" == shared ]; then
     config+="
-  sharedDevices: [\"$S\"]"
+  sharedMemdevs: [\"$S\"]"
 fi
 if [ -n "$CONTAINER_FENCING" ]; then
     config+="

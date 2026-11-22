@@ -203,8 +203,8 @@ another one, and the DaemonSet only on the nodes that have CXL memory:
 ```bash
 cat > cxl-values.yaml <<'EOF'
 config:
-  ignoreDevices: ["0xc100e2e0"]
-  sharedDevices: ["0xc100e2e2"]
+  ignoreMemdevs: ["0xc100e2e0"]
+  sharedMemdevs: ["0xc100e2e2"]
 nodeSelector:
   example.com/cxl: "true"
 EOF
@@ -340,7 +340,7 @@ name), in ResourceSlices of at most 128 devices, under the driver
     memory: {value: 1Gi, requestPolicy: {default: 1Gi, validRange: {min: 128Mi, step: 128Mi}}}
   allowMultipleAllocations: true
   nodeAllocatableResources: {memory: {mapping: {capacityKey: memory, capacityMultiplier: "1"}}}
-- name: memdev-c100e2e2              # a shared local device (sharedDevices)
+- name: memdev-c100e2e2              # a shared local device (sharedMemdevs)
   attributes:
     type:            {string: memdev}
     source:          {string: local}
@@ -357,7 +357,7 @@ name), in ResourceSlices of at most 128 devices, under the driver
     type:            {string: memdev}
     source:          {string: local}
     serial:          {string: "0xc100f5e1"}
-    shared:          {bool: false}              # true when in sharedDevices
+    shared:          {bool: false}              # true when in sharedMemdevs
     persistent:      {bool: true}
     size:            {int: 536870912}           # persistent capacity of the memdev
     nodeAffinity:    {int: 0}
@@ -395,7 +395,7 @@ name), in ResourceSlices of at most 128 devices, under the driver
 | `source` | `memdev`, `region`, `dram` | `local` (pool devices have `pool`) |
 | `size` | `memdev`, `region`, `dram` | bytes: the RAM capacity of a memdev (the persistent capacity of a persistent memdev), the online memory of a region, the DRAM of the nodes |
 | `serial` | `memdev` | `0x` and lower-case hex |
-| `shared` | `memdev` | `false`: every claim gets a slice of its own, or a persistent memdev that no other host uses; `true`: a shared local device, whose claims map the same bytes, or a persistent memdev in `sharedDevices` |
+| `shared` | `memdev` | `false`: every claim gets a slice of its own, or a persistent memdev that no other host uses; `true`: a shared local device, whose claims map the same bytes, or a persistent memdev in `sharedMemdevs` |
 | `persistent` | `memdev` | `true`: a memdev of persistent memory, used in modes `block` and `fs`; `false`: every other memdev |
 | `node` | `region` | the NUMA node of the region |
 | `nodes` | `dram` | the DRAM NUMA nodes, cpuset syntax |
@@ -404,7 +404,7 @@ name), in ResourceSlices of at most 128 devices, under the driver
 
 - `memdev-<serial hex>`, type `memdev`: a CXL memory device without a
   region; every claim gets a slice of it, created when the claim is
-  prepared ([local.md](local.md)). A device listed in `sharedDevices` of
+  prepared ([local.md](local.md)). A device listed in `sharedMemdevs` of
   the [configuration file](#configuration-file) has `shared: true` and a
   `shares` capacity instead: every claim maps the whole device as devdax
   ([local.md](local.md#shared-local-devices)).
@@ -420,7 +420,7 @@ name), in ResourceSlices of at most 128 devices, under the driver
   never published. Claims consume its capacity, and their containers that
   opt in to steering are steered to N.
 - `dram`, type `dram`: one device for all DRAM nodes, for steering;
-  absent with `ignoreDRAMNodes`.
+  absent with `ignoreDRAM`.
 - `lease`, type `lease`: the device of lease claims
   ([leases.md](leases.md)); absent with `--leases=false`.
 
@@ -582,7 +582,7 @@ The `device` fields per device:
 | persistent pool device | `mode: block`, `readOnly: true` | the block device, read-only |
 | persistent pool device | `mode: fs` | the filesystem on it at `path`, read-only, `access` direct (default for erofs, ext4 and xfs) or `cached` |
 | persistent pool device | `mode: fs`, `readOnly: false` | the filesystem at `path`, read-write; no other host has the device meanwhile (ReadWriteOnce), unless it is a cluster filesystem on coherent memory |
-| persistent local memdev (`cxl-local-persistent`) | `mode: block`, `mode: fs` | as a persistent pool device; read-write only while no other host uses the memdev (not in `sharedDevices`), or a cluster filesystem on coherent memory |
+| persistent local memdev (`cxl-local-persistent`) | `mode: block`, `mode: fs` | as a persistent pool device; read-write only while no other host uses the memdev (not in `sharedMemdevs`), or a cluster filesystem on coherent memory |
 
 Read-only is enforced by the kernel for every process of the container,
 whatever its capabilities, except in privileged containers (their device
@@ -863,7 +863,7 @@ A persistent local memdev (`cxl-local-persistent`) is checked like a
 persistent pool device, with the texts of `cxl-pool.nri.io` below
 (`invalid mode "..." (numa, dax, block or fs)` included); its
 facts come from the configuration file instead of the claim status
-(shared: in `sharedDevices`; single host: not in `sharedDevices`;
+(shared: in `sharedMemdevs`; single host: not in `sharedMemdevs`;
 coherent: `memdevSettings[].coherent`).
 
 Of the `device` section, `cxl-pool.nri.io`, first those of the section
@@ -890,7 +890,7 @@ status data `persistent`, `shared`, `exclusive`, `singleHost` and
   (a writable `block` claim with a `shares` request)
 - `MemoryConfig: device.mode block: other hosts may use the device: it is not written in mode block`
   (a writable `block` claim of a persistent local memdev in
-  `sharedDevices`, which no pool controller keeps from other hosts)
+  `sharedMemdevs`, which no pool controller keeps from other hosts)
 - `MemoryConfig: device.readOnly: false: other hosts may use the device: read-write needs it on this node only (claim status singleHost), or a cluster filesystem (device.fsType gfs2) on coherent memory`
   (a read-write `fs` claim without the single host fact, unless it
   declares `fsType: gfs2` on a coherent device; the filesystem on the
@@ -925,7 +925,7 @@ namespaces of the labels of the device.
   regionK -m fsdax -M mem`), which writes the labels of the device. A
   shared device is writable only by a claim that has it exclusively,
   without a `shares` request, and a persistent local memdev in
-  `sharedDevices` is never written in mode `block` (other hosts may use
+  `sharedMemdevs` is never written in mode `block` (other hosts may use
   it). A read-only claim never creates a namespace. `CXL_<KEY>_PATH` is
   the device node, `CXL_<KEY>_SIZE` the size of the namespace.
 - `mode: fs` gives the container a filesystem of the fsdax namespace at
@@ -1140,9 +1140,9 @@ node only, as a Kubernetes volume of access mode ReadWriteOnce:
   CPU caches of a CXL region when it commits and tears it down, so what
   host A wrote, synced and released, host B reads after it creates its
   region, on any hardware.
-- A persistent local memdev that is not in `sharedDevices` is on one
+- A persistent local memdev that is not in `sharedMemdevs` is on one
   host by construction: its claims write as the claims of one node do. A
-  memdev in `sharedDevices` may be used by other hosts that no pool
+  memdev in `sharedMemdevs` may be used by other hosts that no pool
   controller coordinates: it is not written in mode `block`, and in mode
   `fs` only by a cluster filesystem on coherent memory.
 
@@ -1599,7 +1599,7 @@ spec:
 
 The claims show `spec.devices` and the environment the container sees,
 with the local memdev `0xc100e2e1`, the shared local device `0xc100e2e2`
-(listed in `sharedDevices`), the exclusive pool device `0xc1ee0001`,
+(listed in `sharedMemdevs`), the exclusive pool device `0xc1ee0001`,
 the shared pool device `0xc1ae0001` and the shared pool devices of
 persistent memory `0xc1ae0002` (an erofs) and `0xc1ae0003` (an ext4).
 
@@ -1962,13 +1962,13 @@ the plugin, and lease requests fail with
 unknown keys are refused. All keys are optional:
 
 ```yaml
-ignoreDevices: ["mem0", "0xc100e2e0"]
-sharedDevices: ["0xc100e2e2"]
+ignoreMemdevs: ["mem0", "0xc100e2e0"]
+sharedMemdevs: ["0xc100e2e2"]
 manageMemdevs: true
 memdevSettings:
-- device: "0xc1ffe2ef"
+- memdev: "0xc1ffe2ef"
   usableSize: 128Gi
-- device: "0xc100f5e2"
+- memdev: "0xc100f5e2"
   coherent: true
 fsTypes: [erofs, ext4]          # default [erofs]; ext4 trusts every raw writer of the devices
 verifyAddressing: true
@@ -1980,13 +1980,13 @@ defaults:
 
 | key | type | default | |
 |:----|:-----|:--------|:-|
-| `ignoreDevices` | list of strings | | CXL memory devices to leave alone: device name (`mem0`, `cxl/mem0`), `major:minor` (`251:0`), or serial in decimal or `0x` hex of any case |
-| `sharedDevices` | list of strings | | local CXL memory devices to publish as shared devices, matched as `ignoreDevices`: claims and leases of such a device map the whole device as devdax ([local.md](local.md#shared-local-devices)) |
+| `ignoreMemdevs` | list of strings | | CXL memory devices to leave alone: device name (`mem0`, `cxl/mem0`), `major:minor` (`251:0`), or serial in decimal or `0x` hex of any case |
+| `sharedMemdevs` | list of strings | | local CXL memory devices to publish as shared devices, matched as `ignoreMemdevs`: claims and leases of such a device map the whole device as devdax ([local.md](local.md#shared-local-devices)) |
 | `ignoreRegions` | list of strings | | CXL regions to leave alone (`region0`) |
-| `ignoreNodes` | list of integers | | NUMA nodes to leave alone |
-| `ignoreDRAMNodes` | bool | `false` | publish no `dram` device |
+| `ignoreNUMANodes` | list of integers | | NUMA nodes to leave alone |
+| `ignoreDRAM` | bool | `false` | publish no `dram` device |
 | `manageMemdevs` | bool | `true` | publish the local memdevs that have no region and create their regions for claims |
-| `memdevSettings` | list | | settings of individual local memdevs: `device` (name `mem0`, `cxl/mem0`, or serial in decimal or `0x` hex), `usableSize` (quantity): only the first `usableSize` bytes of the memdev are published and mapped by its regions ([local.md](local.md#broken-and-aliased-memory); not for persistent memdevs), and `coherent` (bool, default `false`): the memory of the memdev is coherent between the hosts that share it (`sharedDevices`), so that a cluster filesystem may be read-write on it ([local.md](local.md#persistent-local-memdevs)) |
+| `memdevSettings` | list | | settings of individual local memdevs: `memdev` (name `mem0`, `cxl/mem0`, or serial in decimal or `0x` hex), `usableSize` (quantity): only the first `usableSize` bytes of the memdev are published and mapped by its regions ([local.md](local.md#broken-and-aliased-memory); not for persistent memdevs), and `coherent` (bool, default `false`): the memory of the memdev is coherent between the hosts that share it (`sharedMemdevs`), so that a cluster filesystem may be read-write on it ([local.md](local.md#persistent-local-memdevs)) |
 | `fsTypes` | list of strings | `[erofs]` | the filesystem types that mode `fs` mounts on the node, for both drivers; a list replaces the default. erofs is the only type designed for untrusted images: every other type in the list (`squashfs`, `ext4`, `xfs`, `btrfs`, `gfs2`, or one that the plugin does not know, class single-host, [Filesystems](#filesystems)) trusts every party that can write the node's devices raw, that is the read-write `block` claims and leases of the devices on any node of any cluster that shares the pool. With the default no read-write mount is possible. `[]` mounts nothing (the refusal says `fsTypes: none`). The plugin logs the list at start: `fsTypes: <t1>, <t2>, ...: the filesystem types that mode fs mounts on this node`, or `fsTypes: none: mode fs mounts no filesystem on this node` |
 | `verifyAddressing` | bool | `true` | run an address line test on every new region of a local memdev of RAM, and use only the distinct bytes of a memdev whose memory aliases ([local.md](local.md#broken-and-aliased-memory)); persistent memdevs are not probed |
 | `defaults.container.steering` | object | `{policy: none}` | the steering of every container of the node whose results do not set it, the fields of `container.steering` ([MemoryConfig fields](#memoryconfig-fields), [Steering](#steering)); `{policy: auto}` steers every container with `numa` memory |
@@ -1999,8 +1999,8 @@ settings of containers, which their results override field by field
 case-sensitively. These errors stop the plugin:
 
 - `fsTypes: invalid filesystem type "X" (lower-case letters, digits, "_" and "-")`
-- `ignoreDevices: invalid memory device "X": not a name (mem0, cxl/mem0), major:minor (251:0) or serial in decimal or 0x hex`,
-  the same for `sharedDevices`, and
+- `ignoreMemdevs: invalid memory device "X": not a name (mem0, cxl/mem0), major:minor (251:0) or serial in decimal or 0x hex`,
+  the same for `sharedMemdevs`, and
   `memdevSettings[I]: invalid memory device "X": not a name (mem0, cxl/mem0) or serial in decimal or 0x hex`
 - `defaults: json: unknown field "F"` (`device`, `pool`,
   `container.Fencing`, ...)
@@ -2014,7 +2014,7 @@ case-sensitively. These errors stop the plugin:
 
 [local.md](local.md#what-the-plugin-publishes) describes
 `manageMemdevs`. The configuration is read at start: a change of
-`sharedDevices`, or of any other key, takes effect when the plugin
+`sharedMemdevs`, or of any other key, takes effect when the plugin
 restarts.
 
 ## Files on the node

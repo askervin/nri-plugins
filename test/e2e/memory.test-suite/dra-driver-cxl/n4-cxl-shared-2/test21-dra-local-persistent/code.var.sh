@@ -12,7 +12,7 @@
 # namespace of a pmem region that the driver creates on the memdev, and
 # fs, a filesystem on it that the driver detects and mounts at
 # /var/lib/kubelet/plugins/cxl.nri.io/mounts/<serial hex>-<access>. Not
-# in sharedDevices it is single-host by construction: a claim of one
+# in sharedMemdevs it is single-host by construction: a claim of one
 # share may mount it read-write.
 #
 # The e2e VMs have no persistent local memdev, and none is made by

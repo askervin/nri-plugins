@@ -37,27 +37,27 @@ type DriverConfig struct {
 	// its name, uevent DEVNAME, <major>:<minor>, or serial number in
 	// decimal or 0x hex (dra.MemdevSpec). Example: ["mem0",
 	// "cxl/mem0", "251:0", "3238060771", "0xc100e2e0"]
-	IgnoreMemdevs []string `json:"ignoreDevices,omitempty"`
+	IgnoreMemdevs []string `json:"ignoreMemdevs,omitempty"`
 	// SharedMemdevs is a list of local CXL memory devices that are
 	// published as shared devices (class cxl-local-shared): one devdax
 	// device for all claims, never sliced, onlined or zeroed. Matched
 	// like IgnoreDevices; IgnoreDevices and pool devices take
 	// precedence. Example: ["0xc100e2e1"]
-	SharedMemdevs []string `json:"sharedDevices,omitempty"`
-	// ignoreDevices and sharedDevices are IgnoreDevices and
+	SharedMemdevs []string `json:"sharedMemdevs,omitempty"`
+	// ignoreMemdevs and sharedMemdevs are IgnoreDevices and
 	// SharedDevices parsed by validate.
-	ignoreDevices, sharedDevices []dra.MemdevSpec
+	ignoreMemdevs, sharedMemdevs []dra.MemdevSpec
 	// IgnoreRegions is a list of CXL memory regions ["region0"]
 	// to be ignored by the driver.
 	IgnoreRegions []string `json:"ignoreRegions,omitempty"`
 	// IgnoreNUMANodes is a list of NUMA nodes to be ignored by the
 	// driver.
-	IgnoreNUMANodes []int `json:"ignoreNodes,omitempty"`
+	IgnoreNUMANodes []int `json:"ignoreNUMANodes,omitempty"`
 
 	// If IgnoreDRAMNodes is true, NUMA nodes with DRAM memory
 	// will be ignored by the driver. By default, DRAM nodes are
 	// exposed in DRAM ResourceSlices.
-	IgnoreDRAMNodes bool `json:"ignoreDRAMNodes,omitempty"`
+	IgnoreDRAMNodes bool `json:"ignoreDRAM,omitempty"`
 
 	// ManageMemdevs publishes the local CXL memory devices that have
 	// no regions as memdev devices, and creates and destroys their
@@ -131,11 +131,11 @@ func (c *DriverConfig) logDefaults() {
 // and decodes the defaults.
 func (c *DriverConfig) validate() error {
 	var err error
-	if c.ignoreDevices, err = dra.ParseMemdevSpecs(c.IgnoreMemdevs); err != nil {
-		return fmt.Errorf("ignoreDevices: %w", err)
+	if c.ignoreMemdevs, err = dra.ParseMemdevSpecs(c.IgnoreMemdevs); err != nil {
+		return fmt.Errorf("ignoreMemdevs: %w", err)
 	}
-	if c.sharedDevices, err = dra.ParseMemdevSpecs(c.SharedMemdevs); err != nil {
-		return fmt.Errorf("sharedDevices: %w", err)
+	if c.sharedMemdevs, err = dra.ParseMemdevSpecs(c.SharedMemdevs); err != nil {
+		return fmt.Errorf("sharedMemdevs: %w", err)
 	}
 	if err = c.validateMemdevSettings(); err != nil {
 		return err
@@ -214,8 +214,8 @@ func readConfig(file string) (string, error) {
 // configuration, with the lease device if leases is set.
 func (c *DriverConfig) publishConfig(leases bool) dra.PublishConfig {
 	return dra.PublishConfig{
-		IgnoreDevices:      c.ignoreDevices,
-		SharedDevices:      c.sharedDevices,
+		IgnoreDevices:      c.ignoreMemdevs,
+		SharedDevices:      c.sharedMemdevs,
 		IgnoreRegions:      c.IgnoreRegions,
 		IgnoreNUMANodes:    c.IgnoreNUMANodes,
 		IgnoreDRAM:         c.IgnoreDRAMNodes,
@@ -243,7 +243,7 @@ func (c *DriverConfig) localConfig() dra.LocalConfig {
 type memdevSetting struct {
 	// Memdev matches a memdev by name (mem0, cxl/mem0) or serial (decimal
 	// or 0x hex).
-	Memdev string `json:"device"`
+	Memdev string `json:"memdev"`
 	// spec is Device parsed by validate.
 	spec dra.MemdevSpec
 	// UsableSize is a quantity ("128Gi"): only the first UsableSize bytes
@@ -252,7 +252,7 @@ type memdevSetting struct {
 	// multiple of 256 MiB.
 	UsableSize string `json:"usableSize,omitempty"`
 	// Coherent tells that the memory of the memdev is coherent between
-	// the hosts that share it (sharedDevices): other hosts' writes are
+	// the hosts that share it (sharedMemdevs): other hosts' writes are
 	// visible without cache maintenance.
 	Coherent bool `json:"coherent,omitempty"`
 }
@@ -262,7 +262,7 @@ func (c *DriverConfig) validateMemdevSettings() error {
 	for i := range c.MemdevSettings {
 		s := &c.MemdevSettings[i]
 		if s.Memdev == "" {
-			return fmt.Errorf("memdevSettings[%d]: no device", i)
+			return fmt.Errorf("memdevSettings[%d]: no memdev", i)
 		}
 		spec, err := dra.ParseMemdevID(s.Memdev)
 		if err != nil {

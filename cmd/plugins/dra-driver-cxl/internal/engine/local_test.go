@@ -611,9 +611,9 @@ func TestLocalKindConflicts(t *testing.T) {
 			localReq("x", 0, serialL, state.ModeBlock, state.KindPersistent, 0),
 			"memdev mem0 (serial 0x11): used shared by claims [u1]; a persistent device cannot be used so"},
 		{"unshared on shared persistent", fake.MemdevSpec{Serial: serialP, Pmem: gib}, sharedPmem("w", true), sharedPmem("x", false),
-			"memdev mem0 (serial 0x91): used as a shared persistent device by claims [w]; it is not shared now (sharedDevices)"},
+			"memdev mem0 (serial 0x91): used as a shared persistent device by claims [w]; it is not shared now (sharedMemdevs)"},
 		{"shared on unshared persistent", fake.MemdevSpec{Serial: serialP, Pmem: gib}, sharedPmem("w", false), sharedPmem("x", true),
-			"memdev mem0 (serial 0x91): used as a not shared persistent device by claims [w]; it is shared now (sharedDevices)"},
+			"memdev mem0 (serial 0x91): used as a not shared persistent device by claims [w]; it is shared now (sharedMemdevs)"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			v := newEnv(t, c.spec)

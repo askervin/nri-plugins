@@ -91,9 +91,9 @@ values.yaml file and provide it using the `-f` flag. For example:
 # Install the driver with custom values specified in a custom values.yaml file
 cat <<EOF > myPath/values.yaml
 config:
-  ignoreDevices: ["mem0"]
+  ignoreMemdevs: ["mem0"]
   # local devices shared by the claims of class cxl-local-shared
-  sharedDevices: ["0xc100e2e1"]
+  sharedMemdevs: ["0xc100e2e1"]
   # the filesystem types that mode fs mounts on the nodes (default: erofs
   # only); ext4 trusts everyone who can write the devices raw
   fsTypes: [erofs, ext4]
@@ -176,7 +176,7 @@ trusts every party that can write the devices raw, that is every
 read-write block claim and lease of a persistent device on any node of
 any cluster that shares the pool. The chart sets no `fsTypes`.
 `config.memdevSettings[].coherent` declares the memory of a local memdev
-in `config.sharedDevices` coherent between the hosts that share it, so
+in `config.sharedMemdevs` coherent between the hosts that share it, so
 that a cluster filesystem may be read-write on it.
 `config.defaults.container`
 holds the node defaults of the settings of containers:

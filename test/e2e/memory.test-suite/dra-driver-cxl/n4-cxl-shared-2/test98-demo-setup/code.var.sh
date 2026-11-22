@@ -27,7 +27,7 @@
 # - nri-dra-driver-cxl on every node of the three-node cluster (helm,
 #   DaemonSet; VM0 is the second worker, pool A reaches VM1 and VM2
 #   only), the local demo with
-#   sharedDevices: [<the serial of the local device of VM2>], the pool-fs
+#   sharedMemdevs: [<the serial of the local device of VM2>], the pool-fs
 #   demo with fsTypes: [erofs, $DEMO_FSTYPE], the wizard demo with
 #   fsTypes: [erofs, ext4, xfs, btrfs];
 # - fake-cxl-pool-controller in a pod, as a cluster runs the controller of
@@ -474,7 +474,7 @@ if [ "$DEMO_CASE" == local ]; then
     # configuration (plan-9 section 2).
     dra-local-find "$VM2"
     SERIAL="$DRA_LOCAL_SERIAL"
-    DRA_DRIVER_CONFIG="sharedDevices: [\"$SERIAL\"]"
+    DRA_DRIVER_CONFIG="sharedMemdevs: [\"$SERIAL\"]"
     echo "demo setup: driver configuration $DRA_DRIVER_CONFIG"
 else
     SERIAL="$SHARED_SERIAL"
@@ -504,7 +504,7 @@ if [ "$DEMO_CASE" == local ]; then
     dra-local-device "$VM2"
     shared=$(dra-value "$DRA_LOCAL_PUBLISHED" "j['attributes']['shared']['bool']")
     [ "$shared" == True ] ||
-        error "the driver publishes $DRA_LOCAL_DEVICE with shared $shared: it does not know sharedDevices (plan-9), build its image again"
+        error "the driver publishes $DRA_LOCAL_DEVICE with shared $shared: it does not know sharedMemdevs (plan-9), build its image again"
 fi
 if [ "$DEMO_CASE" == wizard ]; then
     # The local devices of both nodes, sliced.

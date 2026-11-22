@@ -364,8 +364,8 @@ The release policy, by kind of memdev:
   rollback or a recovery releases it in order only: one below a newer
   region of another memdev stays for its claim.
 - A shared local device: its region stays while the device is in
-  `sharedDevices`, zeroed only when it was made; once the device is no
-  longer in `sharedDevices`, its region is destroyed with its last claim.
+  `sharedMemdevs`, zeroed only when it was made; once the device is no
+  longer in `sharedMemdevs`, its region is destroyed with its last claim.
 - A persistent local memdev: its region stays idle while regions of
   other memdevs lie above it, and is destroyed otherwise.
 - A pool device: its region is destroyed with its last grant, also below

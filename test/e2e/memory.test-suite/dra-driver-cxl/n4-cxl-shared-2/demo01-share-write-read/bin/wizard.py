@@ -378,9 +378,9 @@ def rw_reason(a, ctx):
         if is_shared(a):
             return "the device is writable in mode block only exclusively (no shares request)"
         if d and d["source"] == "local" and d["shared"]:
-            return "other hosts may use the device (sharedDevices): it is not written in mode block"
+            return "other hosts may use the device (sharedMemdevs): it is not written in mode block"
     if mode == "fs" and d and d["source"] == "local" and d["shared"]:
-        return "other hosts may use the device (sharedDevices): read-write needs a cluster filesystem (gfs2) on coherent memory"
+        return "other hosts may use the device (sharedMemdevs): read-write needs a cluster filesystem (gfs2) on coherent memory"
     return None
 
 

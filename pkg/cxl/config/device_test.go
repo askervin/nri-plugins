@@ -235,10 +235,10 @@ func TestPoolMode(t *testing.T) {
 }
 
 func TestPersistentMode(t *testing.T) {
-	// a local persistent memdev that is not in sharedDevices: all shares, a share
+	// a local persistent memdev that is not in sharedMemdevs: all shares, a share
 	all := DeviceFacts{Exclusive: true, SingleHost: true}
 	share := DeviceFacts{SingleHost: true}
-	// a local persistent memdev in sharedDevices
+	// a local persistent memdev in sharedMemdevs
 	sharedAll := DeviceFacts{Shared: true, Exclusive: true}
 	sharedShare := DeviceFacts{Shared: true}
 	sharedCoherent := DeviceFacts{Shared: true, Coherent: true}

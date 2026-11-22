@@ -49,7 +49,7 @@ github.com/containers/nri-plugins), or NRI_PLUGINS_SRC=N.
     ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test00-up
   (the patched qemu, see .github/skills/run-e2e-tests/SKILL.md, qemu_bin;
   how to build it and the rest: N/docs/memory/cxl/demo-llm-share.md).
-- The driver image with shared local devices (sharedDevices, plan-9):
+- The driver image with shared local devices (sharedMemdevs, plan-9):
     cd N && make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
 - Nothing else runs on the VMs: no run_tests.sh, no other
   fake-cxl-pool-server (port 9909). demo refuses to start a setup while
@@ -89,7 +89,7 @@ and shared0.lsa removed first, so that it has no file system; pool-fs:
 fs0 persistent, 512Mi, its files fs0.raw and fs0.lsa removed first;
 wizard: the devices of section 6d, a second server local-pmem for lp0),
 installs
-the driver on every node with helm (local: sharedDevices: [<the serial
+the driver on every node with helm (local: sharedMemdevs: [<the serial
 of vm2's device>]; pool-fs: fsTypes: [erofs, <type>], with the trust note
 of section 6c; wizard: fsTypes: [erofs, ext4, xfs, btrfs], the trust note
 of section 6d), starts the pool controller in a pod (a Deployment in
@@ -107,7 +107,7 @@ teardown; run/state.env says what runs. Its log: run/test98-demo-setup.log.
 One demo at a time: to switch, "demo teardown" then "demo setup pool".
 A failed setup cleans up after itself (the EXIT traps of the e2e helpers).
 Teardown unconfigures vm2's shared device first (the driver restarted
-without sharedDevices destroys its region), then removes the rest and
+without sharedMemdevs destroys its region), then removes the rest and
 checks that neither VM has CXL memory devices left. Before it detaches a
 pool device it checks that no filesystem mount, lease bind or loop device
 over pmem is left in the VMs: if one is, it stops with a WARNING and the

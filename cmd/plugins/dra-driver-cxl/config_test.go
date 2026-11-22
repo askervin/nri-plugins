@@ -32,14 +32,14 @@ import (
 func TestMemdevSettings(t *testing.T) {
 	cfg, err := newDriverConfigFromString(`
 memdevSettings:
-- device: "0x0badc0dedeadbeef"
+- memdev: "0x0badc0dedeadbeef"
   usableSize: 128Gi
-- device: mem1
+- memdev: mem1
   usableSize: 1000Mi
   coherent: true
-- device: "3238065634"
+- memdev: "3238065634"
   usableSize: 1Gi
-- device: "0x00c100f5e1"
+- memdev: "0x00c100f5e1"
   coherent: true
 `)
 	noErr(t, err)
@@ -69,7 +69,7 @@ memdevSettings:
 		t.Fatal("coherent without a configuration")
 	}
 	for spec, want := range map[string]bool{"mem0": true, "cxl/mem0": true, "0xc100f5e1": true, "0XC100F5E1": true, "3238065633": true, "0x1": false, "mem1": false} {
-		cfg, err := newDriverConfigFromString(fmt.Sprintf("memdevSettings: [{device: %q, coherent: true}]", spec))
+		cfg, err := newDriverConfigFromString(fmt.Sprintf("memdevSettings: [{memdev: %q, coherent: true}]", spec))
 		noErr(t, err)
 		if got := cfg.memdevCoherent("mem0", 0xc100f5e1); got != want {
 			t.Errorf("device %q: coherent %v, expected %v", spec, got, want)
@@ -77,11 +77,11 @@ memdevSettings:
 	}
 	for _, bad := range []string{
 		"memdevSettings: [{usableSize: 1Gi}]",
-		"memdevSettings: [{device: mem0, usableSize: 1x}]",
-		"memdevSettings: [{device: mem0, usableSize: 100Mi}]",
-		`memdevSettings: [{device: "c100f5e1"}]`,
-		`memdevSettings: [{device: "251:0"}]`,
-		`memdevSettings: [{device: "0x"}]`,
+		"memdevSettings: [{memdev: mem0, usableSize: 1x}]",
+		"memdevSettings: [{memdev: mem0, usableSize: 100Mi}]",
+		`memdevSettings: [{memdev: "c100f5e1"}]`,
+		`memdevSettings: [{memdev: "251:0"}]`,
+		`memdevSettings: [{memdev: "0x"}]`,
 	} {
 		if _, err := newDriverConfigFromString(bad); err == nil {
 			t.Errorf("no error for %q", bad)

@@ -47,7 +47,7 @@ func TestDriverConfigKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"ignoreDevices":["mem0"],"ignoreRegions":["region0"],"ignoreNodes":[1],"ignoreDRAMNodes":true,"manageMemdevs":true}`
+	want := `{"ignoreMemdevs":["mem0"],"ignoreRegions":["region0"],"ignoreNUMANodes":[1],"ignoreDRAM":true,"manageMemdevs":true}`
 	if string(data) != want {
 		t.Errorf("configuration %s, expected %s", data, want)
 	}
@@ -59,16 +59,16 @@ func TestDriverConfigKeys(t *testing.T) {
 	}{
 		{"", "{}"},
 		{"{}", "{}"},
-		{`{"ignoreDevices": ["mem0"], "manageMemdevs": false}`, `{"ignoreDevices":["mem0"],"manageMemdevs":false}`},
-		{"ignoreDevices: [mem0, mem1]\nignoreRegions: [region0]\nignoreNodes: [1, 3]\nignoreDRAMNodes: true\nmanageMemdevs: true",
-			`{"ignoreDevices":["mem0","mem1"],"ignoreRegions":["region0"],"ignoreNodes":[1,3],"ignoreDRAMNodes":true,"manageMemdevs":true}`},
-		{`sharedDevices: ["0xc100e2e1", "mem1"]`, `{"sharedDevices":["0xc100e2e1","mem1"]}`},
+		{`{"ignoreMemdevs": ["mem0"], "manageMemdevs": false}`, `{"ignoreMemdevs":["mem0"],"manageMemdevs":false}`},
+		{"ignoreMemdevs: [mem0, mem1]\nignoreRegions: [region0]\nignoreNUMANodes: [1, 3]\nignoreDRAM: true\nmanageMemdevs: true",
+			`{"ignoreMemdevs":["mem0","mem1"],"ignoreRegions":["region0"],"ignoreNUMANodes":[1,3],"ignoreDRAM":true,"manageMemdevs":true}`},
+		{`sharedMemdevs: ["0xc100e2e1", "mem1"]`, `{"sharedMemdevs":["0xc100e2e1","mem1"]}`},
 		{"ignoreDevice: [mem0]", parseErr + `unknown field "ignoreDevice"`},
 		{`sharedDevice: ["0xc100e2e1"]`, parseErr + `unknown field "sharedDevice"`},
-		{`sharedDevices: "0xc100e2e1"`, parseErr + "cannot unmarshal string into "},
-		{"sharedDevices: [{serial: 1}]", parseErr + "cannot unmarshal object into "},
-		{`sharedDevices: ["c100e2e1"]`, `sharedDevices: invalid memory device "c100e2e1": ` + memdevErr},
-		{`ignoreDevices: ["mem0", "cxl/c100e2e1"]`, `ignoreDevices: invalid memory device "cxl/c100e2e1": ` + memdevErr},
+		{`sharedMemdevs: "0xc100e2e1"`, parseErr + "cannot unmarshal string into "},
+		{"sharedMemdevs: [{serial: 1}]", parseErr + "cannot unmarshal object into "},
+		{`sharedMemdevs: ["c100e2e1"]`, `sharedMemdevs: invalid memory device "c100e2e1": ` + memdevErr},
+		{`ignoreMemdevs: ["mem0", "cxl/c100e2e1"]`, `ignoreMemdevs: invalid memory device "cxl/c100e2e1": ` + memdevErr},
 	} {
 		cfg, err := newDriverConfigFromString(tc.config)
 		got := ""
@@ -89,8 +89,8 @@ func TestDriverConfigKeys(t *testing.T) {
 		t.Error("manageMemdevs is not true unless set false")
 	}
 	file := filepath.Join(t.TempDir(), "config.yaml")
-	noErr(t, os.WriteFile(file, []byte("ignoreDevices: [mem1]"), 0o600))
-	if s, err := readConfig(file); err != nil || s != "ignoreDevices: [mem1]" {
+	noErr(t, os.WriteFile(file, []byte("ignoreMemdevs: [mem1]"), 0o600))
+	if s, err := readConfig(file); err != nil || s != "ignoreMemdevs: [mem1]" {
 		t.Errorf("the configuration file: %q, %v", s, err)
 	}
 	if s, err := readConfig(""); err != nil || s != "" {

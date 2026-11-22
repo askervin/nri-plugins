@@ -28,9 +28,9 @@ A memdev is published as a device of type `memdev` when it is enabled
 and the plugin never disables a local one), has RAM capacity (or, a
 [persistent memdev](#persistent-local-memdevs), persistent capacity
 only), is not a pool device (prepared by the pool driver, see [pool.md](pool.md)), is not
-excluded by `ignoreDevices` (name, `cxl/memN`, `major:minor` or serial)
+excluded by `ignoreMemdevs` (name, `cxl/memN`, `major:minor` or serial)
 and has no region that the plugin did not create itself. A memdev listed
-in `sharedDevices` is published as a shared device instead; the sections
+in `sharedMemdevs` is published as a shared device instead; the sections
 up to [Shared local devices](#shared-local-devices) describe sliced
 memdevs. A memdev with a
 foreign region is left alone: its RAM region with online memory is a
@@ -427,7 +427,7 @@ device.
 ## Shared local devices
 
 A local memdev that the [configuration file](usage.md#configuration-file)
-lists in `sharedDevices` is not sliced. It is one devdax device of the
+lists in `sharedMemdevs` is not sliced. It is one devdax device of the
 whole memdev that every claim and lease of the device maps: the same
 bytes, zeroed by the plugin only when it creates the device's region,
 mode `dax` only. A claim without a
@@ -435,21 +435,21 @@ mode `dax` only. A claim without a
 data sharing); a claim with `shares: "1"` is one of its sharers (the
 readers, usually `readOnly: true`). This is the model of shared pool
 devices ([pool.md](pool.md)) on one node. This section is about memdevs
-of volatile memory; a persistent memdev in `sharedDevices` is a
+of volatile memory; a persistent memdev in `sharedMemdevs` is a
 [shared persistent memdev](#shared-persistent-memdevs).
 
 ### Configuration
 
 ```yaml
-sharedDevices: ["0xc100e2e1"]   # as ignoreDevices: memN, cxl/memN, major:minor, serial
+sharedMemdevs: ["0xc100e2e1"]   # as ignoreMemdevs: memN, cxl/memN, major:minor, serial
 ```
 
-An entry is matched as in `ignoreDevices`. The serial is the stable
+An entry is matched as in `ignoreMemdevs`. The serial is the stable
 form; `memN` changes with the probe order of the devices. A memdev
 matched by more than one setting is used by the first of
-`ignoreDevices`, pool device (its serial is in a pool ResourceSlice, or
-the pool driver prepared it), `sharedDevices`, and is otherwise sliced. A
-device of `sharedDevices` that is not published shared is logged with the
+`ignoreMemdevs`, pool device (its serial is in a pool ResourceSlice, or
+the pool driver prepared it), `sharedMemdevs`, and is otherwise sliced. A
+device of `sharedMemdevs` that is not published shared is logged with the
 reason, once per memdev and reason when it is ignored or a pool device,
 at verbosity 4 at every scan otherwise (no RAM capacity, disabled,
 regions that the plugin did not create, slices of prepared claims):
@@ -458,7 +458,7 @@ regions that the plugin did not create, slices of prepared claims):
 - not publishing memory device "<memN>" as a shared local device: <reason>
 ```
 
-The configuration is read at start: a change of `sharedDevices` takes
+The configuration is read at start: a change of `sharedMemdevs` takes
 effect with a restart of the plugin (the Helm chart restarts the
 DaemonSet when its `config` value changes). A device switches between
 sliced and shared use only when it is idle: while claims of the other
@@ -586,18 +586,18 @@ The two errors about the other use are prefixed with
 
 | event | what happens |
 |:------|:-------------|
-| the device appears, listed in `sharedDevices` | published shared; no region yet |
+| the device appears, listed in `sharedMemdevs` | published shared; no region yet |
 | first claim or lease | the devdax region is created, `daxX.0` bound to `device_dax` and zeroed once; mapped by the claim's containers or passed as an fd |
 | more claims | the same `daxX.0`, each with its own CDI device or fd and its own `readOnly` |
 | the region disappears while the plugin runs | the plugin forgets the region and its claims; the next claim creates a new region and zeroes it |
 | an exclusive claim (no `shares` request) | no other claim is allocated until it is gone; waiting claims are Pending (Unschedulable) |
 | the last claim is gone | the claim is dropped; the region, `daxX.0` and the bytes stay; the ResourceSlice is unchanged; `cxl list` shows the region on an idle node |
-| plugin start, the device in `sharedDevices` | the state of the same boot names the device shared with its region: the region is found by serial, `daxX.0` by name, both kept; claims that are not prepared are dropped. Without state nothing happens until the first claim |
-| plugin start, the device not in `sharedDevices` | the state says shared: with prepared claims the device stays as it is and serves them, and is not published; without claims the region is destroyed, the state entry dropped, and the device is published as a sliced memdev at the next scan |
+| plugin start, the device in `sharedMemdevs` | the state of the same boot names the device shared with its region: the region is found by serial, `daxX.0` by name, both kept; claims that are not prepared are dropped. Without state nothing happens until the first claim |
+| plugin start, the device not in `sharedMemdevs` | the state says shared: with prepared claims the device stays as it is and serves them, and is not published; without claims the region is destroyed, the state entry dropped, and the device is published as a sliced memdev at the next scan |
 | plugin restart | as plugin start (the same boot) |
 | node reboot | the region and the bytes are gone (volatile); the state of another boot is dropped without touching any region; the first claim creates the region again and zeroes it |
-| hot-remove | refused by the kernel while the region exists: remove the device from `sharedDevices` and restart the plugin first; a device that is gone anyway is forgotten |
-| the device joins `sharedDevices` | after the restart: not published while slices of prepared claims exist; published shared when idle, with no region until the first claim |
+| hot-remove | refused by the kernel while the region exists: remove the device from `sharedMemdevs` and restart the plugin first; a device that is gone anyway is forgotten |
+| the device joins `sharedMemdevs` | after the restart: not published while slices of prepared claims exist; published shared when idle, with no region until the first claim |
 
 The memdev stays enabled. A shared device has no memory blocks and no
 alignment rule of its own: it is the whole region as one `device_dax`
@@ -618,9 +618,9 @@ persistent devices are the same for both drivers.
 
 A memdev with persistent capacity and no RAM capacity is published as
 a persistent memdev when it is enabled, is not a pool device, is not
-excluded by `ignoreDevices`, has no region that the plugin did not create
+excluded by `ignoreMemdevs`, has no region that the plugin did not create
 and no claims that use it otherwise (as slices, as a shared device of
-volatile memory, or with the other sharing of `sharedDevices`), and
+volatile memory, or with the other sharing of `sharedMemdevs`), and
 `manageMemdevs` is not `false`. The hold-back rules of new memdevs above
 apply to it too: a hot-added persistent memdev may be held back while a
 pool lacks its ResourceSlices. `usableSize` and `verifyAddressing` do not
@@ -637,7 +637,7 @@ verbosity 4:
     type:         {string: memdev}
     source:       {string: local}
     serial:       {string: "0xc100f5e1"}
-    shared:       {bool: false}       # true when the memdev is in sharedDevices
+    shared:       {bool: false}       # true when the memdev is in sharedMemdevs
     persistent:   {bool: true}
     size:         {int: 536870912}    # persistent capacity of the memdev
     nodeAffinity: {int: 0}            # absent if unknown
@@ -713,7 +713,7 @@ has a writer and a reader. A running container leases the device with
 
 Unprepare follows the rules of one node (downgrade, unmount); the last
 claim of the device on the node waits until nothing holds `/dev/pmemK`
-and releases the region, also of a device in `sharedDevices` (unlike a
+and releases the region, also of a device in `sharedMemdevs` (unlike a
 shared device of volatile memory, whose region stays). A release that
 fails keeps the claim, and kubelet retries. When regions of other memdevs
 lie above the pmem region (the decoder order of
@@ -743,12 +743,12 @@ engine: local memdev 0xc100f5e1 (mem1): keeping persistent region1, claims [<uid
 memdev come from stale allocations only (the memdev is not published
 meanwhile): `memdev <memN> (serial 0x<hex>): used <how> by claims [<uids>]; a persistent device cannot be used so`,
 `memdev <memN> (serial 0x<hex>): used as a persistent device by claims [<uids>]; <use> cannot be a persistent device`,
-and `memdev <memN> (serial 0x<hex>): used as a shared persistent device by claims [<uids>]; it is not shared now (sharedDevices)`
+and `memdev <memN> (serial 0x<hex>): used as a shared persistent device by claims [<uids>]; it is not shared now (sharedMemdevs)`
 (or the reverse).
 
 ### Shared persistent memdevs
 
-A persistent memdev in `sharedDevices` (`shared: true`) is memory that
+A persistent memdev in `sharedMemdevs` (`shared: true`) is memory that
 other hosts may use at the same time, and no pool controller keeps them
 off it. The single host fact of the device is false, so:
 
@@ -760,9 +760,9 @@ off it. The single host fact of the device is false, so:
   [configuration file](usage.md#configuration-file):
 
   ```yaml
-  sharedDevices: ["0xc100f5e2"]
+  sharedMemdevs: ["0xc100f5e2"]
   memdevSettings:
-  - device: "0xc100f5e2"
+  - memdev: "0xc100f5e2"
     coherent: true   # the hardware keeps the memory coherent between the hosts
   ```
 
@@ -774,7 +774,7 @@ this node see a consistent filesystem only while no other host writes
 it: that is for the hosts to agree on. The rules of shared local devices
 of volatile memory (one devdax device, zeroed at the creation of its
 region, kept while idle) do not apply to a persistent memdev. A change of
-`sharedDevices` for a persistent memdev takes effect when it is idle: it
+`sharedMemdevs` for a persistent memdev takes effect when it is idle: it
 is not published while claims of the other sharing are prepared.
 
 ## Broken and aliased memory
@@ -816,7 +816,7 @@ The plugin protects against such devices in two ways:
 
   ```yaml
   memdevSettings:
-  - device: "0x..."
+  - memdev: "0x..."
     usableSize: 128Gi
   ```
 
@@ -853,8 +853,8 @@ The plugin protects against such devices in two ways:
   memdev: the plugin hides every region of the memdevs it uses.
 - A memdev that is shared with other hosts but not managed by a pool
   controller looks like a local device. Onlining it as RAM corrupts the
-  other hosts' data: exclude it with `ignoreDevices`, or declare it in
-  `sharedDevices`: the plugin then never onlines it and shares it dax
+  other hosts' data: exclude it with `ignoreMemdevs`, or declare it in
+  `sharedMemdevs`: the plugin then never onlines it and shares it dax
   only (a persistent one read-only, or read-write by a cluster
   filesystem on coherent memory); exclusivity across hosts is not
   coordinated by one node's plugin.

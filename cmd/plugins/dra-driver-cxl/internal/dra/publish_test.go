@@ -519,9 +519,9 @@ func TestParseMemdevSpec(t *testing.T) {
 	}
 }
 
-// TestSharedLocalPrecedence pins the precedence per memdev: ignoreDevices
-// over pool devices over sharedDevices over sliced; any spec form of
-// ignoreDevices and sharedDevices matches; a memdev used one way by claims
+// TestSharedLocalPrecedence pins the precedence per memdev: ignoreMemdevs
+// over pool devices over sharedMemdevs over sliced; any spec form of
+// ignoreMemdevs and sharedMemdevs matches; a memdev used one way by claims
 // is not published the other way until it has none.
 func TestSharedLocalPrecedence(t *testing.T) {
 	devices := &kernel.Snapshot{}
@@ -581,7 +581,7 @@ func TestSharedLocalPrecedence(t *testing.T) {
 	}
 }
 
-// TestSharedRefusalLogged pins the line of a memdev of sharedDevices that
+// TestSharedRefusalLogged pins the line of a memdev of sharedMemdevs that
 // is not published as a shared local device, as the documentation quotes
 // it, logged once per reason: held, and a pool device.
 func TestSharedRefusalLogged(t *testing.T) {
@@ -612,7 +612,7 @@ func TestSharedRefusalLogged(t *testing.T) {
 
 // TestBuildDevInfosPersistentMemdevs pins the persistent local memdevs that
 // a scan publishes: a memdev of persistent memory only, shared when
-// sharedDevices lists it; a memdev with RAM is a sliced one, and claims
+// sharedMemdevs lists it; a memdev with RAM is a sliced one, and claims
 // that use it as a persistent device keep it from being published.
 func TestBuildDevInfosPersistentMemdevs(t *testing.T) {
 	logs := klogtest.Capture(t, 4)

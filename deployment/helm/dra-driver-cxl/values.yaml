@@ -65,10 +65,10 @@ config: {}
 # Example:
 #
 # config:
-#   ignoreDevices: ["mem0"]
+#   ignoreMemdevs: ["mem0"]
 #   manageMemdevs: true
 #   # local devices shared by the claims of class cxl-local-shared
-#   sharedDevices: ["0xc100e2e1"]
+#   sharedMemdevs: ["0xc100e2e1"]
 #   # the filesystem types that mode fs mounts on the node; without the
 #   # key erofs only, the type built for images of untrusted writers. The
 #   # node's kernel parses what the writer of a device wrote: adding a type
@@ -78,9 +78,9 @@ config: {}
 #   # shares the pool
 #   fsTypes: [erofs, ext4]
 #   # settings of individual local memdevs: coherent declares the memory
-#   # of a memdev of sharedDevices coherent between the hosts that share it
+#   # of a memdev of sharedMemdevs coherent between the hosts that share it
 #   memdevSettings:
-#   - device: "0xc100e2e1"
+#   - memdev: "0xc100e2e1"
 #     coherent: true
 #   # node defaults of the settings of containers, which the
 #   # MemoryConfigs of their claims override

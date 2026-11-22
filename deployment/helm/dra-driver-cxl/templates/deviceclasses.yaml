@@ -23,7 +23,7 @@ spec:
   # {{- include "dra-driver-cxl.classConfig" (dict "root" $ "class" "cxl-local" "driver" "cxl.nri.io") }}
 ---
 # cxl-local-shared: a whole CXL memory device of volatile memory attached to
-# the node that the driver configuration declares shared (sharedDevices), as
+# the node that the driver configuration declares shared (sharedMemdevs), as
 # a devdax device; exclusive unless capacity.requests.shares: 1.
 apiVersion: resource.k8s.io/v1
 kind: DeviceClass

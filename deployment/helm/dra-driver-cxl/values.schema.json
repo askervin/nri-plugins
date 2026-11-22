@@ -344,13 +344,13 @@
             "$comment": "the driver configuration file (docs/memory/cxl/usage.md); fsTypes defaults to [erofs]: every other type trusts the raw writers of the devices",
             "additionalProperties": false,
             "properties": {
-                "ignoreDevices": {
+                "ignoreMemdevs": {
                     "type": "array",
                     "items": {
                         "type": "string"
                     }
                 },
-                "sharedDevices": {
+                "sharedMemdevs": {
                     "type": "array",
                     "items": {
                         "type": "string"
@@ -362,14 +362,14 @@
                         "type": "string"
                     }
                 },
-                "ignoreNodes": {
+                "ignoreNUMANodes": {
                     "type": "array",
                     "items": {
                         "type": "integer",
                         "minimum": 0
                     }
                 },
-                "ignoreDRAMNodes": {
+                "ignoreDRAM": {
                     "type": "boolean"
                 },
                 "manageMemdevs": {
@@ -381,10 +381,10 @@
                         "type": "object",
                         "additionalProperties": false,
                         "required": [
-                            "device"
+                            "memdev"
                         ],
                         "properties": {
-                            "device": {
+                            "memdev": {
                                 "type": "string"
                             },
                             "usableSize": {

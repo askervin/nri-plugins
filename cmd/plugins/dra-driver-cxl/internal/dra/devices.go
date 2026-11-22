@@ -307,7 +307,7 @@ func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held ma
 // memory on node (-1 for none) that is not hollow is not published, "" if
 // it is: on a pool or held memdev, on a memdev of the engine, disabled, of
 // persistent memory, without online memory, in ignoreRegions, on a node of
-// ignoreNodes, with a memdev of ignoreDevices; the first reason only.
+// ignoreNUMANodes, with a memdev of ignoreMemdevs; the first reason only.
 func regionIgnoreReason(cfg PublishConfig, r *kernel.RegionInfo, node int, mems []kernel.MemdevInfo, poolSerials, held map[uint64]bool, local *localRecords) string {
 	reason := poolIgnoreReason(mems, poolSerials, held)
 	if reason == "" {
@@ -350,7 +350,7 @@ func addDRAM(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snapshot, cxl
 		case node.MemTotal == 0:
 			ignoreReason = "node has 0 size"
 		case slices.Contains(cfg.IgnoreNUMANodes, node.ID):
-			ignoreReason = fmt.Sprintf("node ID %d is in ignoreNodes", node.ID)
+			ignoreReason = fmt.Sprintf("node ID %d is in ignoreNUMANodes", node.ID)
 		}
 		if ignoreReason != "" {
 			klog.V(4).Infof("- ignoring DRAM on node %d: %s", node.ID, ignoreReason)
@@ -562,10 +562,10 @@ func logSharedRefusal(memDev *kernel.MemdevInfo, reason string) {
 }
 
 // addLocalMemdevs adds the local memdevs that the engine can use to
-// devInfos. Per memdev, ignoreDevices takes precedence over pool devices,
-// pool devices over sharedDevices, and sharedDevices over sliced memdevs. A
+// devInfos. Per memdev, ignoreMemdevs takes precedence over pool devices,
+// pool devices over sharedMemdevs, and sharedMemdevs over sliced memdevs. A
 // memdev of persistent memory only (no RAM capacity) is a persistent
-// memdev, shared when sharedDevices lists it (addLocalPersistent). A shared
+// memdev, shared when sharedMemdevs lists it (addLocalPersistent). A shared
 // memdev is published when it is enabled, has RAM capacity, no regions but
 // the engine's and no claims of slices. A sliced memdev is published when it
 // is enabled, its RAM capacity is sure to hold a whole memory block, it has
@@ -623,7 +623,7 @@ func addLocalMemdevs(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snaps
 // blocks of bs bytes is not published as a sliced local memdev, "" if it
 // is: no RAM, an unknown block size, too small, disabled, a pool or held
 // memdev, regions that the engine did not create, claims that use it
-// persistent or shared, ignoreDevices.
+// persistent or shared, ignoreMemdevs.
 func localRefusal(cfg PublishConfig, memDev *kernel.MemdevInfo, size, bs uint64, poolSerials, held map[uint64]bool, regions []string, local *localRecords) string {
 	use, used := local.memdev(memDev.Serial)
 	switch {
@@ -662,7 +662,7 @@ func memdevUsableSize(cfg PublishConfig, memDev *kernel.MemdevInfo, local *local
 	return size
 }
 
-// addLocalShared adds a memdev of sharedDevices to devInfos as a shared
+// addLocalShared adds a memdev of sharedMemdevs to devInfos as a shared
 // local device, unless it is disabled, has no RAM capacity, has regions that
 // the engine did not create or claims that use it as slices.
 //   - regions: the regions on the memdev
@@ -702,11 +702,11 @@ func addLocalShared(devInfos DevicesInfo, memDev *kernel.MemdevInfo, size uint64
 }
 
 // addLocalPersistent adds a memdev of persistent memory to devInfos as a
-// persistent local device, shared when sharedDevices lists it, unless it is
+// persistent local device, shared when sharedMemdevs lists it, unless it is
 // ignored, a pool device or held, disabled, has regions that the engine did
 // not create, or claims that use it as slices, as a volatile shared device,
 // or as a persistent device of the other sharing.
-//   - shared: sharedDevices lists the memdev, which is neither ignored nor
+//   - shared: sharedMemdevs lists the memdev, which is neither ignored nor
 //     a pool device
 //   - regions: the regions on the memdev
 func addLocalPersistent(devInfos DevicesInfo, cfg PublishConfig, memDev *kernel.MemdevInfo, shared bool, poolSerials, held map[uint64]bool, regions []string, local *localRecords) {

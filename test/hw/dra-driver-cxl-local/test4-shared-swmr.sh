@@ -1,5 +1,5 @@
 #!/bin/bash
-# Test 4: the local memdev as a shared device (sharedDevices), single
+# Test 4: the local memdev as a shared device (sharedMemdevs), single
 # writer and many readers.
 #
 # Reconfigures the driver with "deploy.sh shared": the memdev is one devdax

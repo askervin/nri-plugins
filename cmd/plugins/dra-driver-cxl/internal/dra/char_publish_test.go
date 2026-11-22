@@ -52,9 +52,9 @@ func TestCharIgnoreRegions(t *testing.T) {
 	wantLogLineText(t, logs(), `- ignoring region device "region0": region name "region0"`)
 }
 
-// TestCharIgnoreNodes: a region on a node of ignoreNodes is not published,
+// TestCharIgnoreNodes: a region on a node of ignoreNUMANodes is not published,
 // with the reason at klog V(4); a region that both ignoreRegions and
-// ignoreNodes refuse has the reason of ignoreRegions only.
+// ignoreNUMANodes refuse has the reason of ignoreRegions only.
 func TestCharIgnoreNodes(t *testing.T) {
 	logs := klogtest.Capture(t, 4)
 	cfg := PublishConfig{IgnoreNUMANodes: []int{3}}

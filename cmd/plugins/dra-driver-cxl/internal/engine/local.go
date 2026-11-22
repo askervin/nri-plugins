@@ -332,7 +332,7 @@ func (e *Engine) checkLocalKind(ctx context.Context, req *GrantRequest) error {
 func kindConflict(f state.MemdevFacts, persistent, shared bool) (string, string) {
 	switch {
 	case f.Persistent && persistent:
-		return fmt.Sprintf("as a %s persistent device", sharedWord(f.Shared)), fmt.Sprintf("it is %s now (sharedDevices)", sharedWord(shared))
+		return fmt.Sprintf("as a %s persistent device", sharedWord(f.Shared)), fmt.Sprintf("it is %s now (sharedMemdevs)", sharedWord(shared))
 	case f.Persistent && shared:
 		return "as a persistent device", "a shared device cannot be a persistent device"
 	case f.Persistent:

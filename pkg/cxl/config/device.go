@@ -33,7 +33,7 @@ type DeviceFacts struct {
 	// Persistent: the device is persistent memory.
 	Persistent bool
 	// Shared: other hosts may use the device at the same time (a shared
-	// pool device, a local memdev listed in sharedDevices).
+	// pool device, a local memdev listed in sharedMemdevs).
 	Shared bool
 	// Exclusive: no other claim has the device while this one is
 	// allocated (the result consumed all shares; a pool device that is
@@ -42,7 +42,7 @@ type DeviceFacts struct {
 	// SingleHost: no other host has the device while this claim is
 	// allocated (status data singleHost or exclusive of a pool device, a
 	// pool device that is not shared, a local memdev that is not in
-	// sharedDevices).
+	// sharedMemdevs).
 	SingleHost bool
 	// Coherent: other hosts' writes are visible without cache
 	// maintenance (status data coherent of a pool device, memdevSettings

@@ -4,7 +4,7 @@
 # host without the pool server:
 # - the demo pods and their leases;
 # - the shared local device unconfigured first: the driver restarted
-#   without sharedDevices destroys its region (plan-9 D4, R9), so that it
+#   without sharedMemdevs destroys its region (plan-9 D4, R9), so that it
 #   can be detached;
 # - the trace stopped, its summary in the output of this test;
 # - the driver, the controller, the namespace (dra-uninstall);
@@ -123,7 +123,7 @@ if [ -n "$local_attached" ] && [ "$DEMO_CASE" != wizard ]; then
         # shellcheck disable=SC2016 # retry-until evaluates the condition
         retry-until --timeout 90 --interval 2 --message "the driver destroys the region of $DRA_LOCAL_SERIAL" \
             'pool-cxl-dump-json "$VM2" unconfigured && cxl-py assert "$gone" >/dev/null' ||
-            echo "demo teardown: WARNING: the region of $DRA_LOCAL_SERIAL is still there after the restart without sharedDevices; the guest release of dra-local-detach destroys it"
+            echo "demo teardown: WARNING: the region of $DRA_LOCAL_SERIAL is still there after the restart without sharedMemdevs; the guest release of dra-local-detach destroys it"
     fi
 fi
 

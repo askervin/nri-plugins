@@ -1,7 +1,7 @@
 # A read-write filesystem on a CXL memory device of persistent memory
 # attached to the node (DeviceClass cxl-local-persistent), with a writer
 # and a reader. The device is local to its node: no other host has it
-# (unless the driver configuration lists it in sharedDevices), so a
+# (unless the driver configuration lists it in sharedMemdevs), so a
 # read-write filesystem on it is safe, and both pods run on its node.
 # The formatter's claim requests no shares (the whole device, exclusive:
 # a persistent local device is writable in mode block only so) and

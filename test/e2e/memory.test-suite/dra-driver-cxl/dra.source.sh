@@ -56,7 +56,7 @@ DRA_CLASSES=(cxl-local cxl-local-shared cxl-local-persistent cxl-pool cxl-pool-s
 DRA_SHARES=1000000
 # The configuration file of the driver (YAML, .Values.config of the chart,
 # docs/memory/cxl/usage.md), "" for none: dra-install gives it to the chart.
-# Example: DRA_DRIVER_CONFIG="sharedDevices: [\"$DRA_LOCAL_SERIAL\"]"
+# Example: DRA_DRIVER_CONFIG="sharedMemdevs: [\"$DRA_LOCAL_SERIAL\"]"
 DRA_DRIVER_CONFIG=""
 # The EXIT trap that dra-install sets, "" for "dra-cleanup; pool-cleanup".
 DRA_EXIT_TRAP=""
@@ -1529,7 +1529,7 @@ dra-local-shared-cleanup() {
     # Usage: dra-local-shared-cleanup VMDIR
     #
     # The EXIT trap of a test that configures the local device of the VM of
-    # VMDIR shared (DRA_DRIVER_CONFIG sharedDevices): such a device keeps
+    # VMDIR shared (DRA_DRIVER_CONFIG sharedMemdevs): such a device keeps
     # its region while the driver runs. dra-cleanup, then, with the driver
     # gone, release the regions of the device in the VM (fake-cxl-pool-client
     # guest release) and wait until none is left, then pool-cleanup, which

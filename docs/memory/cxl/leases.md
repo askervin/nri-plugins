@@ -238,7 +238,7 @@ the pool controller attach the device to the node exclusively
 and while another host has the device its companion claim gets
 `AttachFailed` reason `Conflict`: the lease stays Creating until its
 `--wait` ends, and is then released and Failed. A read-write `fs` lease
-of a persistent local memdev in `sharedDevices` is refused, unless it is
+of a persistent local memdev in `sharedMemdevs` is refused, unless it is
 a cluster filesystem on coherent memory, as for a claim.
 
 ## cxl-request
