@@ -56,7 +56,7 @@ type DeviceData struct {
 	Host         string `json:"host"`
 	HostUUID     string `json:"hostUUID,omitempty"`
 	Attachment   string `json:"attachment"`
-	QemuDeviceID string `json:"qemuDeviceId"`
+	QemuDeviceID string `json:"qemuDeviceID"`
 }
 
 // hasCondition returns the condition of the status entry of a result if it

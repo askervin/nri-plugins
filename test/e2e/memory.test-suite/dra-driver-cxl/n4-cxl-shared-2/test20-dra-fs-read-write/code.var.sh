@@ -136,29 +136,29 @@ exit-cleanup() {
 }
 
 attached-assert() {
-    # Usage: attached-assert HOST:EXCLUSIVE...
+    # Usage: attached-assert HOST:SINGLE_HOST...
     #
     # Fail the test unless the attachments of fs0 in the pool server are
-    # exactly those of the HOSTs, each attached and exclusive (True) or
+    # exactly those of the HOSTs, each attached and single host (True) or
     # not (False).
     local want="" a
     for a in "$@"; do
         want+="('${a%%:*}', ${a#*:}, 'attached'), "
     done
     pool-attachments "$FS_DEVICE"
-    pool-assert "$COMMAND_OUTPUT" "sorted((a['host'], a.get('exclusive', False), a['state']) for a in j or []) == sorted([$want])"
+    pool-assert "$COMMAND_OUTPUT" "sorted((a['host'], a.get('singleHost', False), a['state']) for a in j or []) == sorted([$want])"
 }
 
 attached-wait() {
-    # Usage: attached-wait HOST:EXCLUSIVE...
+    # Usage: attached-wait HOST:SINGLE_HOST...
     #
-    # Wait until attached-assert HOST:EXCLUSIVE... holds, 60 s at most.
+    # Wait until attached-assert HOST:SINGLE_HOST... holds, 60 s at most.
     local want="" a
     for a in "$@"; do
         want+="('${a%%:*}', ${a#*:}, 'attached'), "
     done
     retry-until --timeout 60 --message "the attachments of $FS_DEVICE: $*" \
-        'pool-host-client -o json attachments --device "$FS_DEVICE" >/dev/null && pool-py assert "$COMMAND_OUTPUT" "sorted((a[\"host\"], a.get(\"exclusive\", False), a[\"state\"]) for a in j or []) == sorted([$want])"' ||
+        'pool-host-client -o json attachments --device "$FS_DEVICE" >/dev/null && pool-py assert "$COMMAND_OUTPUT" "sorted((a[\"host\"], a.get(\"singleHost\", False), a[\"state\"]) for a in j or []) == sorted([$want])"' ||
         error "the attachments of $FS_DEVICE are not $*: $COMMAND_OUTPUT"
     attached-assert "$@"
 }
@@ -350,7 +350,7 @@ fs-claim-data-assert ro-c "$FS_DEVICE" "d.get('coherent') == True and d.get('per
 attached-assert "$VM2_NAME:True"
 # The attach request of the first writer made the attachment exclusive;
 # rw-b joined it without a request.
-fs-controller-log-wait "$DRA_CONTROLLER_UNIT" "attach $FS_DEVICE to $VM2_NAME for claim $DRA_NS/rw-a device $FS_DEVICE node $VM2_NAME: exclusive for a read-write filesystem claim"
+fs-controller-log-wait "$DRA_CONTROLLER_UNIT" "attach $FS_DEVICE to $VM2_NAME for claim $DRA_NS/rw-a device $FS_DEVICE node $VM2_NAME: single host for a read-write filesystem claim"
 
 echo "### D: claims of VM1 wait while VM2 writes: AttachFailed reason Conflict"
 dra-serial-claim-pod "$VM1" ro-d "$FS_SERIAL" 1 "$RO" "$CLASS"

@@ -53,7 +53,7 @@ Commands:
   devices [NAME]
   create --size 256Mi [--shared] [--persistent] [--name N] [--serial 0x..]
   delete NAME [--force]
-  attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--timeout 30s] [--exclusive]
+  attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--timeout 30s] [--single-host]
   detach DEVICE (--self | --host HOST) [--timeout 30s] [--force]
   attachments [--self | --host H] [--device D]
   events                                  stream server events (JSON lines)
@@ -521,10 +521,10 @@ func (c *cli) cmdAttach(ctx context.Context, args []string) error {
 	numa := fs.Int("numa", -1, "prefer a slot on this NUMA node")
 	owner := fs.String("owner", "", "attachment owner")
 	timeout := fs.String("timeout", "", "qemu timeout (default 30s)")
-	exclusive := fs.Bool("exclusive", false, "shared device: no other host may attach it meanwhile")
+	exclusive := fs.Bool("single-host", false, "shared device: no other host may attach it meanwhile")
 	pos, err := parse(fs, args)
 	if err != nil || len(pos) != 1 {
-		return firstErr(err, usagef("attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--exclusive]"))
+		return firstErr(err, usagef("attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--single-host]"))
 	}
 	h, err := c.hostArg(ctx, *host, *self)
 	if err != nil {

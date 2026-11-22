@@ -100,7 +100,7 @@ echo "### B: attach shared0 to VM2, it shows up with its serial"
 pool-client "$VM2" -o json attach shared0 --self || command-error "cannot attach shared0 to VM2"
 pool-assert "$COMMAND_OUTPUT" "j['state'] == 'attached' and j['host'] == '$VM2_NAME' and j['serial'] == '$SHARED_SERIAL'"
 SHARED_SLOT=$(pool-value "$COMMAND_OUTPUT" 'j["slot"]["bus"]')
-SHARED_QEMU_ID=$(pool-value "$COMMAND_OUTPUT" 'j["qemuDeviceId"]')
+SHARED_QEMU_ID=$(pool-value "$COMMAND_OUTPUT" 'j["qemuDeviceID"]')
 echo "shared0 in VM2: slot $SHARED_SLOT, qemu device $SHARED_QEMU_ID"
 pool-client "$VM2" guest wait shared0 || command-error "shared0 did not show up in VM2"
 VM2_MEM="$COMMAND_OUTPUT"
@@ -204,7 +204,7 @@ pool-vm-monitor "$VM1" "info qtree -b" | grep -q 'dev: cxl-type3' &&
 echo "### G: hotplug shared0 to the same slot of VM2 again, and detach it"
 pool-client "$VM2" -o json attach shared0 --self --slot "$SHARED_SLOT" || command-error "cannot attach shared0 to VM2 again"
 pool-assert "$COMMAND_OUTPUT" "j['state'] == 'attached' and j['slot']['bus'] == '$SHARED_SLOT'"
-pool-assert "$COMMAND_OUTPUT" "j['qemuDeviceId'] != '$SHARED_QEMU_ID'"
+pool-assert "$COMMAND_OUTPUT" "j['qemuDeviceID'] != '$SHARED_QEMU_ID'"
 pool-client "$VM2" guest wait shared0 || command-error "shared0 did not show up in VM2 again"
 pool-cxl-wait "$VM2" shared0-reattached "by_serial($SHARED_SERIAL) is not None"
 cxl-assert "by_serial($SHARED_SERIAL)['ramSize'] == $MEM_SIZE"

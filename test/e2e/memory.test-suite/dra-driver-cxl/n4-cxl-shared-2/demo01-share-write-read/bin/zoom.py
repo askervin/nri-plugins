@@ -319,7 +319,7 @@ def main():
                                                              o.get("scope"), "  file " + o["path"] if o.get("path") else ""))
                     else:
                         print("%s %s%s owner %s" % (c.short_text(o.get("id", "?"), state), o.get("state"),
-                                                   " exclusive" if o.get("exclusive") else "", o.get("owner") or "-"))
+                                                   " single host" if o.get("singleHost") else "", o.get("owner") or "-"))
             except OSError as e:
                 print("pool server: %s" % e)
     elif what == "fs":

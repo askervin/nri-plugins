@@ -60,7 +60,7 @@ type want struct {
 	// fsType: device.fsType of the MemoryConfig of the result
 	fsType string
 	// exclusive: allShares or writer, attached with
-	// AttachRequest.Exclusive
+	// AttachRequest.SingleHost
 	exclusive bool
 	// keepSingleHost: the want is attached and its MemoryConfig cannot be
 	// resolved: it is exclusive if its attachment is
@@ -334,7 +334,7 @@ func (c *Controller) logWriter(k attKey, ws []*want) {
 		if fsType == "" {
 			fsType = "filesystem"
 		}
-		c.logf("attach %s to %s for %s: exclusive for a read-write %s claim", k.device, k.host, w, fsType)
+		c.logf("attach %s to %s for %s: single host for a read-write %s claim", k.device, k.host, w, fsType)
 	}
 }
 
@@ -388,9 +388,9 @@ func (c *Controller) attach(ctx context.Context, w *want, k attKey, exclusive, e
 		case http.StatusAccepted:
 			c.logf("attach %s to %s for %s: still attaching after %s", k.device, k.host, w, c.cfg.AttachTimeout)
 		case http.StatusOK:
-			c.logf("attach %s to %s for %s: already attached (%s, owner %q, exclusive %v)", k.device, k.host, w, a.State, a.Owner, a.SingleHost)
+			c.logf("attach %s to %s for %s: already attached (%s, owner %q, single host %v)", k.device, k.host, w, a.State, a.Owner, a.SingleHost)
 		default:
-			c.logf("attached %s to %s (node %s, slot %s, qemu device %s, owner %s, exclusive %v) for %s/%s",
+			c.logf("attached %s to %s (node %s, slot %s, qemu device %s, owner %s, single host %v) for %s/%s",
 				k.device, k.host, w.node, a.Slot.Bus, a.QemuDeviceID, owner, a.SingleHost, w.claim.Namespace, w.claim.Name)
 		}
 		return a, nil
@@ -452,7 +452,7 @@ func (c *Controller) writeStatus(ctx context.Context, w *want, actual map[attKey
 	a, ok := actual[w.key()]
 	if !ok || a.State != api.AttachmentAttached || (w.exclusive && !a.SingleHost) {
 		if ok {
-			c.debugf("%s: attachment %s is %s (exclusive %v, wanted %v)", w, a.ID, a.State, a.SingleHost, w.exclusive)
+			c.debugf("%s: attachment %s is %s (single host %v, wanted %v)", w, a.ID, a.State, a.SingleHost, w.exclusive)
 		}
 		return
 	}

@@ -687,7 +687,7 @@ func (s *Server) updateExistingLocked(d *device, h *host, a *attachment, req api
 			}
 		}
 		a.SingleHost = req.SingleHost
-		s.logf("attachment %s: exclusive %v", a.ID, a.SingleHost)
+		s.logf("attachment %s: single host %v", a.ID, a.SingleHost)
 		changed = true
 	}
 	if a.Owner == "" && req.Owner != "" {

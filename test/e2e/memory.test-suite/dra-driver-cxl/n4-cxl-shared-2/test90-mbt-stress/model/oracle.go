@@ -1299,8 +1299,8 @@ func (k *checker) checkAttachments() {
 					switch {
 					case a == nil:
 						k.waitf("attachment %s@%s: missing", dev, v)
-					case c.Up && a.State == "attached" && a.Exclusive != k.excl[p][d][v]:
-						k.waitf("attachment %s@%s: exclusive %v, want %v", dev, v, a.Exclusive, k.excl[p][d][v])
+					case c.Up && a.State == "attached" && a.SingleHost != k.excl[p][d][v]:
+						k.waitf("attachment %s@%s: single host %v, want %v", dev, v, a.SingleHost, k.excl[p][d][v])
 					}
 				case TriNo:
 					if a != nil && a.State == "attached" {

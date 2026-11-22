@@ -324,7 +324,7 @@ def attached_words(dev, state):
         w = c.short_node(a.get("host"), state)
         if a.get("state") != "attached":
             w += " " + (a.get("state") or "?")
-        if a.get("exclusive"):
+        if a.get("singleHost"):
             w += " exclusive"
         words.append(w)
     return words

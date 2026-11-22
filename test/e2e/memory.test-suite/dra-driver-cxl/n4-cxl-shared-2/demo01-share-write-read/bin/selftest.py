@@ -407,12 +407,12 @@ def trace_formats_test():
         'engine: pool memdev 0xc1ae0001 (mem0): disabled',
     ]
     controller = [
-        'attach fs0 to %s for %s: exclusive for a read-write ext4 claim' % (vm1, want),
+        'attach fs0 to %s for %s: single host for a read-write ext4 claim' % (vm1, want),
         'ERROR: Conflict for claim cxl-demo/cxl-lease-51aa7b09 device fs0 node %s: attach fs0 to %s: conflict' % (vm2, vm2),
         'attached fs0 to %s (node %s, slot cxlsw_ds0_usrp0hb0, qemu device fcp_fs0.hp1, owner k8s:resourceclaim/c1a10006, '
-        'exclusive true) for cxl-demo/cxl-lease-3f2a91c0' % (vm1, vm1),
+        'single host true) for cxl-demo/cxl-lease-3f2a91c0' % (vm1, vm1),
         'detached fs0 from %s (node %s, owner k8s:resourceclaim/c1a10006)' % (vm1, vm1),
-        'attach fs0 to %s for %s: already attached (attached, owner "k8s:resourceclaim/c1a10006", exclusive false)' % (vm1, want),
+        'attach fs0 to %s for %s: already attached (attached, owner "k8s:resourceclaim/c1a10006", single host false)' % (vm1, want),
     ]
     with tempfile.TemporaryDirectory() as tdir:
         with open(os.path.join(tdir, "vm1.driver.log"), "w") as f:

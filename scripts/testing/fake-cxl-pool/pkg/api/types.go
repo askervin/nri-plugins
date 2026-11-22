@@ -103,7 +103,7 @@ type Slot struct {
 	// LocalDevice is the local device whose pre-declared backend names this
 	// slot (beram_/befile_..._bus_<slot>_...). The server gives such slots
 	// to other devices only when no other slot is free.
-	LocalDevice string `json:"reservedFor,omitempty"`
+	LocalDevice string `json:"localDevice,omitempty"`
 }
 
 // Device backends.
@@ -165,9 +165,9 @@ type AttachRequest struct {
 	Timeout  string `json:"timeout,omitempty"`
 	// SingleHost attaches a shared device to this host only: the attach
 	// fails while the device is attached to another host, and attaching it
-	// to another host fails while this attachment is exclusive. An attach
+	// to another host fails while this attachment is single host. An attach
 	// of an attached device sets the flag of the attachment.
-	SingleHost bool `json:"exclusive,omitempty"`
+	SingleHost bool `json:"singleHost,omitempty"`
 }
 
 // Attachment states.
@@ -186,11 +186,11 @@ type Attachment struct {
 	Host         string `json:"host"`
 	Serial       string `json:"serial"`
 	Slot         Slot   `json:"slot"`
-	QemuDeviceID string `json:"qemuDeviceId"`
-	QemuObjectID string `json:"qemuObjectId"`
+	QemuDeviceID string `json:"qemuDeviceID"`
+	QemuObjectID string `json:"qemuObjectID"`
 	// QemuLSAObjectID is the label storage area backend of a persistent
 	// device, "" for volatile devices.
-	QemuLSAObjectID string `json:"qemuLsaObjectId,omitempty"`
+	QemuLSAObjectID string `json:"qemuLSAObjectID,omitempty"`
 	State           string `json:"state"`
 	Error           string `json:"error,omitempty"`
 	// Owner is the owner given in the attach request that created the
@@ -199,7 +199,7 @@ type Attachment struct {
 	Owner string `json:"owner,omitempty"`
 	// SingleHost is the flag of the last attach request: no other host may
 	// attach the device meanwhile.
-	SingleHost bool      `json:"exclusive,omitempty"`
+	SingleHost bool      `json:"singleHost,omitempty"`
 	Adopted    bool      `json:"adopted,omitempty"`
 	Created    time.Time `json:"created"`
 	Updated    time.Time `json:"updated"`

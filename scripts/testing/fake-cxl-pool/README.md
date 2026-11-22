@@ -182,7 +182,7 @@ fake-cxl-pool-client [--server URL] [-o table|json] COMMAND
   devices [NAME]
   create --size 256Mi [--shared] [--persistent] [--name N] [--serial 0x..]
   delete NAME [--force]
-  attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--timeout 30s] [--exclusive]
+  attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--timeout 30s] [--single-host]
   detach DEVICE (--self | --host HOST) [--timeout 30s] [--force]
   attachments [--self | --host H] [--device D]
   events
@@ -208,7 +208,7 @@ The `devices` table has the columns `NAME SERIAL SIZE SHARED PERSISTENT
 SCOPE STATE ATTACHED-TO`; `devices NAME` prints `memory: persistent`
 (or `volatile`) and, for a persistent device, `lsa: <file>`.
 
-`attach --exclusive` makes an exclusive attachment: no other host can
+`attach --single-host` makes a single-host attachment: no other host can
 attach the device until it is detached, also a shared device. It is the
 pool side of the exclusive use of a shared device: fake-cxl-pool-controller
 attaches exclusively for a claim that requests no `shares` of a shared
@@ -300,7 +300,7 @@ the server, the controller and the driver in the e2e VMs. The controller:
   ignored), else the host whose name is the node name. Then it writes
   `cxl-pool.nri.io/Attached=True` and the device data (serial, shared,
   persistent (only when true), size, host, hostUUID, attachment,
-  qemuDeviceId, exclusive, singleHost, coherent; the last three only when
+  qemuDeviceID, exclusive, singleHost, coherent; the last three only when
   true) into
   `claim.status.devices[]`, which releases the
   scheduler's binding wait and tells the node plugin which memdev to wait
@@ -316,7 +316,7 @@ the server, the controller and the driver in the e2e VMs. The controller:
   read-write (`device.mode: fs`, `readOnly: false`), unless it is a
   cluster filesystem (`device.fsType: gfs2`) on a coherent device
   (`config.NeedsSingleHost`; ReadWriteOnce, log: `attach D to H for claim
-  ...: exclusive for a read-write <fsType or "filesystem"> claim`). The
+  ...: single host for a read-write <fsType or "filesystem"> claim`). The
   device data of a claim whose attachment is exclusive for it has
   `singleHost: true` (the node mounts read-write only then). The other
   claims of that node share the attachment; claims of other nodes get

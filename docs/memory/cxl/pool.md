@@ -345,7 +345,7 @@ status:
       host: node1
       hostUUID: <the host's uuid>
       attachment: shared0@node1
-      qemuDeviceId: <qemu device id>
+      qemuDeviceID: <qemu device id>
       exclusive: true            # only when the allocation consumed the whole shares value
       persistent: true           # only for a device of persistent memory
       singleHost: true           # only for a claim that needs the attachment exclusive
@@ -570,7 +570,7 @@ the device may be in use; the `Attached` message names the slot.
 
 It attaches a device exclusively for a read-write `fs` claim and logs,
 when it sends that attach request,
-`attach <device> to <host> for claim <ns>/<name> device <device> node <node>: exclusive for a read-write <fsType> claim`
+`attach <device> to <host> for claim <ns>/<name> device <device> node <node>: single host for a read-write <fsType> claim`
 (`filesystem` for `<fsType>` when the claim declares none; no line for a
 writer that joins an attachment that is exclusive already, nor when a
 claim of all shares makes it exclusive). A new attachment that it

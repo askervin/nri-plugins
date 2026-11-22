@@ -516,7 +516,7 @@ def render_t6_pool(data, state, now=None, stale=False):
         if a.get("state") != "attached":
             w += " " + (a.get("state") or "?")
         words.append(w)
-    excl = any(a.get("exclusive") for a in atts)
+    excl = any(a.get("singleHost") for a in atts)
     if words:
         rows += c.wrap_list("  attached: ", words + (["exclusive"] if excl else []), indent=4,
                             sep="," if not excl else "")
@@ -881,7 +881,7 @@ class Trace:
         self.emit(t, "kern", "%s %s" % (head, name))
 
     def on_server(self, t, tag, text):
-        m = re.search(r"attachment (\S+)@(\S+): (attached|detached|detaching|failed|exclusive \w+)", text)
+        m = re.search(r"attachment (\S+)@(\S+): (attached|detached|detaching|failed|single host \w+)", text)
         if not m:
             return
         dev, host, what = m.group(1), m.group(2), m.group(3)
@@ -894,19 +894,19 @@ class Trace:
         elif what == "failed":
             self.emit(t, "pool", "%s on %s: attachment failed" % (dev, host))
         else:
-            if what == "exclusive false":
+            if what == "single host false":
                 # Nothing is attached exclusively any more: the next attempts are shown.
                 self.retrying.clear()
-            self.emit(t, "pool", "%s on %s: %s" % (dev, host, "exclusive" if what == "exclusive true" else "not exclusive"))
+            self.emit(t, "pool", "%s on %s: %s" % (dev, host, "exclusive" if what == "single host true" else "not exclusive"))
 
     def on_controller(self, t, tag, text):
         text = re.sub(r"^fake-cxl-pool-controller: \S+ \S+ ", "", text)
         m = re.match(r"(attached|detached) (\S+) (to|from) (\S+)(.*?)(?: for \S+?/(\S+))?$", text)
-        wm = re.match(r"attach (\S+) to (\S+) for claim \S+?/(\S+) .*: exclusive for a read-write (\S+) claim$", text)
+        wm = re.match(r"attach (\S+) to (\S+) for claim \S+?/(\S+) .*: single host for a read-write (\S+) claim$", text)
         fm = re.match(r"ERROR: (\w+) for claim \S+?/(\S+) device (\S+) node (\S+): ", text)
         am = re.match(r"attach (\S+) to (\S+) for claim \S+?/(\S+) .*: already attached", text)
         if m:
-            excl = " excl" if "exclusive true" in (m.group(5) or "") else ""
+            excl = " excl" if "single host true" in (m.group(5) or "") else ""
             who = self.lease_who(m.group(6)) + ": " if m.group(6) else ""
             if m.group(6):
                 self.retrying.discard(self.lease_who(m.group(6)))

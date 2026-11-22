@@ -2224,7 +2224,7 @@ def attachments(path, vm_of):
     for a in j:
         host = a.get("host")
         out.append({"device": a.get("device"), "host": vm_of.get(host, host),
-                    "state": a.get("state"), "exclusive": bool(a.get("exclusive")),
+                    "state": a.get("state"), "singleHost": bool(a.get("singleHost")),
                     "adopted": bool(a.get("adopted")), "owner": a.get("owner") or ""})
     return sorted(out, key=lambda a: (a["device"] or "", a["host"] or ""))
 

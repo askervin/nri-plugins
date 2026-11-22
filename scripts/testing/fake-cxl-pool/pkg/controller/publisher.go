@@ -75,7 +75,7 @@ func (c *Controller) convertDevice(name string, d api.Device) resourceapi.Device
 		// allocation would consume it
 		// no requestPolicy: a claim without a shares request consumes
 		// the whole value and has the device exclusively (attached with
-		// AttachRequest.Exclusive), shares: "1" is one sharer
+		// AttachRequest.SingleHost), shares: "1" is one sharer
 		rd.AllowMultipleAllocations = ptr.To(true)
 		rd.Capacity = map[resourceapi.QualifiedName]resourceapi.DeviceCapacity{
 			device.CapacityShares: {Value: *resource.NewQuantity(device.SharesUnlimited, resource.DecimalSI)},

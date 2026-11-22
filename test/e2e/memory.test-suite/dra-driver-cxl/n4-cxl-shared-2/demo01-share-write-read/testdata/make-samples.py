@@ -280,7 +280,7 @@ def pool_scenarios():
     def pool(atts, text, state="attached", owner=None):
         dev = {"name": "shared0", "serial": SHARED, "size": 256 * MI, "shared": True, "state": state, "scope": "pool",
                "path": "/tmp/fake-cxl-pool/shared0.mem", "static": True,
-               "attachments": [{"device": "shared0", "host": h, "state": "attached", "exclusive": ex} for h, ex in atts],
+               "attachments": [{"device": "shared0", "host": h, "state": "attached", "singleHost": ex} for h, ex in atts],
                "allocation": {"owner": owner} if owner else None}
         return {"device": dev, "hex": text_hex(text)}
 
@@ -340,7 +340,7 @@ def fs_scenarios():
         dev = {"name": "shared0", "serial": SHARED, "size": 256 * MI, "shared": True, "persistent": True, "state": state,
                "scope": "pool", "path": "/tmp/fake-cxl-pool/shared0.raw", "lsaPath": "/tmp/fake-cxl-pool/shared0.lsa",
                "static": True,
-               "attachments": [{"device": "shared0", "host": h, "state": "attached", "exclusive": ex} for h, ex in atts],
+               "attachments": [{"device": "shared0", "host": h, "state": "attached", "singleHost": ex} for h, ex in atts],
                "allocation": {"owner": owner} if owner else None}
         return {"device": dev, "fs": fs}
 
@@ -494,8 +494,8 @@ def fs_trace(sdir, t0=1792600000.0):
     for i, r in enumerate(READERS):
         cl(t + 3 + i * 0.1, "MODIFIED", "cxl-lease-" + LEASES[r], "c1a1%04x" % (10 + i), "cxl-pool.nri.io/fake-cxl-pool/shared0", where[r])
     # shared0 stays on vm1, not exclusive any more; vm2 gets it too
-    server(t + 3.5, "attachment shared0@%s: exclusive false" % VM1)
-    ctrl(t + 3.9, "attach shared0 to %s for claim %s/cxl-lease-%s device shared0 node %s: already attached (attached, owner \"%s\", exclusive false)"
+    server(t + 3.5, "attachment shared0@%s: single host false" % VM1)
+    ctrl(t + 3.9, "attach shared0 to %s for claim %s/cxl-lease-%s device shared0 node %s: already attached (attached, owner \"%s\", single host false)"
          % (VM1, NS, LEASES["reader-c"], VM1, "k8s:resourceclaim/c1a10006-0000-4000-8000-000000000000"))
     attach(t + 4, VM2, LEASES["reader-a"], False)
     udev(t + 6.5, VM1, "bind", memdev_path, "cxl")

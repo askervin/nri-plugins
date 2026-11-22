@@ -181,12 +181,12 @@ type ObsCompanion struct {
 }
 
 type ObsAttachment struct {
-	Device    string `json:"device"`
-	Host      string `json:"host"`
-	State     string `json:"state"`
-	Exclusive bool   `json:"exclusive"`
-	Adopted   bool   `json:"adopted"`
-	Owner     string `json:"owner"`
+	Device     string `json:"device"`
+	Host       string `json:"host"`
+	State      string `json:"state"`
+	SingleHost bool   `json:"singleHost"`
+	Adopted    bool   `json:"adopted"`
+	Owner      string `json:"owner"`
 }
 
 type ObsDriver struct {

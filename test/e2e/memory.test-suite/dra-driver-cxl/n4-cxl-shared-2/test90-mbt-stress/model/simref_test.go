@@ -523,7 +523,7 @@ func (s *sim) refOverride(o *Observation) {
 		}
 		for _, a := range r.atts {
 			if devices[a.dev].Pool == p {
-				list = append(list, ObsAttachment{Device: devices[a.dev].Name, Host: a.host.String(), State: a.state, Exclusive: a.excl, Owner: "k8s:resourceclaim/x"})
+				list = append(list, ObsAttachment{Device: devices[a.dev].Name, Host: a.host.String(), State: a.state, SingleHost: a.excl, Owner: "k8s:resourceclaim/x"})
 			}
 		}
 		o.Attachments[p.String()] = list

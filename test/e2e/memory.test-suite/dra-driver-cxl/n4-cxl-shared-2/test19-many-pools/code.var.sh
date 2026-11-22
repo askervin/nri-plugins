@@ -287,7 +287,7 @@ dra-pod-wait "$VM2" b-consumer Running 120
 [ "$(pod-node b-consumer)" == "$VM0_NAME" ] || error "b-consumer runs on '$(pod-node b-consumer)', expected $VM0_NAME"
 pool-attachments --pool pool-b b-pooled0
 pool-assert "$COMMAND_OUTPUT" "[(a['host'], a.get('owner'), a['state']) for a in j] == [('$VM0_NAME', 'k8s:resourceclaim/$B_CLAIM_UID', 'attached')]"
-pool-assert "$COMMAND_OUTPUT" "j[0]['qemuDeviceId'].startswith('fcp_b-pooled0.hp') and j[0]['slot']['hostBridge'] == 'cxlhb0'"
+pool-assert "$COMMAND_OUTPUT" "j[0]['qemuDeviceID'].startswith('fcp_b-pooled0.hp') and j[0]['slot']['hostBridge'] == 'cxlhb0'"
 for pool in pool-a pool-c; do
     pool-attachments-of "$pool"
     pool-assert "$COMMAND_OUTPUT" "j in (None, [])"

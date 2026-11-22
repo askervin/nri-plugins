@@ -248,7 +248,7 @@ def pool_json(devs, lp_atts, fs):
     for name, serial, size, shared, persistent, atts, state, owner in devs:
         d = {"name": name, "serial": serial, "size": size, "shared": shared, "persistent": persistent, "state": state,
              "scope": "pool", "static": True, "path": "/tmp/fake-cxl-pool/%s.%s" % (name, "raw" if persistent else "mem"),
-             "attachments": [{"device": name, "host": h, "state": "attached", "exclusive": ex} for h, ex in atts],
+             "attachments": [{"device": name, "host": h, "state": "attached", "singleHost": ex} for h, ex in atts],
              "allocation": {"owner": owner} if owner else None}
         if persistent:
             d["lsaPath"] = "/tmp/fake-cxl-pool/%s.lsa" % name
@@ -256,7 +256,7 @@ def pool_json(devs, lp_atts, fs):
     lp = {"name": "lp0", "serial": LP, "size": 512 * MI, "shared": False, "persistent": True, "state": "allocated",
           "scope": "pool", "static": True, "path": "/tmp/fake-cxl-pool-local-pmem/lp0.raw",
           "lsaPath": "/tmp/fake-cxl-pool-local-pmem/lp0.lsa",
-          "attachments": [{"device": "lp0", "host": h, "state": "attached", "exclusive": ex} for h, ex in lp_atts],
+          "attachments": [{"device": "lp0", "host": h, "state": "attached", "singleHost": ex} for h, ex in lp_atts],
           "allocation": {"owner": "demo:wizard"}}
     return {"devices": out, "lp": lp, "fs": fs}
 
@@ -302,8 +302,8 @@ def wizard_trace(sdir, t0=1792700000.0):
     cl(10, "ADDED", "w4", "5a7e0004")
     cl(10.2, "MODIFIED", "w4", "5a7e0004", "cxl-pool.nri.io/fake-cxl-pool/fs0", VM1)
     ev(10.3, "Pod", "w4", "BindingConditionsPending", "waiting for binding conditions")
-    ctrl(11, "attach fs0 to %s for claim %s/w4 device fs0 node %s: exclusive for a read-write ext4 claim" % (VM1, NS, VM1))
-    ctrl(12, "attached fs0 to %s (node %s, slot cxlsw_ds0_usrp0hb1, qemu device fcp_fs0.hp1, owner k8s:resourceclaim/5a7e0004-0000-4000-8000-000000000000, exclusive true) for %s/w4" % (VM1, VM1, NS))
+    ctrl(11, "attach fs0 to %s for claim %s/w4 device fs0 node %s: single host for a read-write ext4 claim" % (VM1, NS, VM1))
+    ctrl(12, "attached fs0 to %s (node %s, slot cxlsw_ds0_usrp0hb1, qemu device fcp_fs0.hp1, owner k8s:resourceclaim/5a7e0004-0000-4000-8000-000000000000, single host true) for %s/w4" % (VM1, VM1, NS))
     klog(15, "vm1.driver", "persistent.go:573", "engine: pool memdev %s: mounted /dev/pmem0 at /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0002-direct (ext4, rw, dax=always)" % FS0)
     cl(20, "ADDED", "w5", "5a7e0005")
     cl(20.2, "MODIFIED", "w5", "5a7e0005", "cxl-pool.nri.io/fake-cxl-pool/fs0", VM2)

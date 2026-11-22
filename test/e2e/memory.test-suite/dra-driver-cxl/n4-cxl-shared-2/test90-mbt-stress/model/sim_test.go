@@ -683,7 +683,7 @@ func (s *sim) observe(step, poll int) *Observation {
 			for v := VM(0); v < nVMs; v++ {
 				if c.Att[d][v] == TriYes {
 					list = append(list, ObsAttachment{Device: devices[dev].Name, Host: v.String(), State: "attached",
-						Exclusive: c.Up && excl[d][v], Owner: "k8s:resourceclaim/x"})
+						SingleHost: c.Up && excl[d][v], Owner: "k8s:resourceclaim/x"})
 				}
 			}
 		}

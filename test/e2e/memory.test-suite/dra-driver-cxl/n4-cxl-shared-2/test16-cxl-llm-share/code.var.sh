@@ -697,7 +697,7 @@ dra-assert "$cdi" "j['kind'] == '$DRA_POOL_DRIVER/device'"
 pmem=$(dra-env-value "$FS_LOG" "CXL_${LLM_HEX}_PATH")
 dra-assert "$cdi" "any(n.get('path') == '$pmem' and n.get('type') == 'b' for n in j['deviceNodes'])"
 pool-attachments "$LLM_DEVICE"
-pool-assert "$COMMAND_OUTPUT" "[(a['host'], a.get('exclusive', False)) for a in j] == [('$VM1_NAME', True)]"
+pool-assert "$COMMAND_OUTPUT" "[(a['host'], a.get('singleHost', False)) for a in j] == [('$VM1_NAME', True)]"
 # The host: the labels of the namespace in the LSA file, the model in the
 # data file at a 2 MiB-aligned offset (the fsdax namespace data and the
 # erofs file data are both 2 MiB aligned).
@@ -736,7 +736,7 @@ for vm in "$VM2" "$VM1"; do
     mounts-assert "$vm" direct
 done
 pool-attachments "$LLM_DEVICE"
-pool-assert "$COMMAND_OUTPUT" "sorted((a['host'], a.get('exclusive', False), a['state']) for a in j) == sorted([('$VM1_NAME', False, 'attached'), ('$VM2_NAME', False, 'attached')])"
+pool-assert "$COMMAND_OUTPUT" "sorted((a['host'], a.get('singleHost', False), a['state']) for a in j) == sorted([('$VM1_NAME', False, 'attached'), ('$VM2_NAME', False, 'attached')])"
 
 echo "### D: three cached readers map the model from the page cache of their node, started one by one (cached-c dynamically)"
 for r in "${CACHED[@]}"; do

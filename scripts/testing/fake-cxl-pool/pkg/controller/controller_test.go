@@ -722,7 +722,7 @@ func TestAttachAndStatus(t *testing.T) {
 	}
 	if data["serial"] != "0xc1ee0001" || data["shared"] != false || data["size"] != float64(512<<20) ||
 		data["host"] != "vm1" || data["hostUUID"] != "b6a78455-edb1-558d-8cf1-01a259f76e97" ||
-		data["attachment"] != "pooled0@vm1" || data["qemuDeviceId"] != "fcp_pooled0.hp1" || st.ShareID != nil {
+		data["attachment"] != "pooled0@vm1" || data["qemuDeviceID"] != "fcp_pooled0.hp1" || st.ShareID != nil {
 		t.Fatalf("unexpected data %s", st.Data.Raw)
 	}
 	if ev := e.events(); len(ev) != 1 || !strings.HasPrefix(ev[0], "Normal Attached pooled0 attached to vm1") {
@@ -752,7 +752,7 @@ func TestAttachAndStatus(t *testing.T) {
 	})
 	_, st = e.condition("pooled-memory", "cxl-pool.nri.io/Attached")
 	data = nil
-	if err := json.Unmarshal(st.Data.Raw, &data); err != nil || data["qemuDeviceId"] != "fcp_pooled0.hp9" {
+	if err := json.Unmarshal(st.Data.Raw, &data); err != nil || data["qemuDeviceID"] != "fcp_pooled0.hp9" {
 		t.Fatalf("unexpected data %s %v", st.Data.Raw, err)
 	}
 	// steady state again: no status write

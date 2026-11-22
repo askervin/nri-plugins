@@ -130,11 +130,11 @@ func TestOracleDeviations(t *testing.T) {
 			o.Attachments["b"] = append(o.Attachments["b"], ObsAttachment{Device: "b-pooled0", Host: "vm0", State: "failed", Owner: "e2e:other"})
 		}, VOK, "ok"},
 		{"attachment failed", func(o *Observation) { o.Attachments["c"][0].State = "failed" }, VFail, "failed"},
-		{"attachment exclusive", func(o *Observation) {
+		{"attachment single host", func(o *Observation) {
 			for j := range o.Attachments["c"] {
-				o.Attachments["c"][j].Exclusive = true
+				o.Attachments["c"][j].SingleHost = true
 			}
-		}, VWait, "exclusive true, want false"},
+		}, VWait, "single host true, want false"},
 		// O3
 		{"region missing", func(o *Observation) { o.VMs["vm1"].Regions = o.VMs["vm1"].Regions[1:] }, VWait, "vm1: no region of"},
 		{"slice of a pool memdev", func(o *Observation) {

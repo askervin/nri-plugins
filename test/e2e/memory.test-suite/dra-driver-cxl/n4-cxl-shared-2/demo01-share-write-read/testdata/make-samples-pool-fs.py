@@ -110,7 +110,7 @@ def device_status(node, single_host=False, failed=None, exclusive=False):
     st["conditions"] = [{"type": ATTACHED, "status": "True", "reason": "Attached",
                          "message": "fs0 attached to %s (slot cxlsw_ds0_usrp0hb0)" % node, "lastTransitionTime": "2026-11-03T12:01:00Z"}]
     data = {"serial": SERIAL[2:], "shared": True, "persistent": True, "size": DEV_SIZE, "host": node,
-            "attachment": "fs0@" + node, "qemuDeviceId": "fcp_fs0.hp1", "coherent": True}
+            "attachment": "fs0@" + node, "qemuDeviceID": "fcp_fs0.hp1", "coherent": True}
     if single_host:
         data["singleHost"] = True
     if exclusive:
@@ -184,7 +184,7 @@ def scenarios(fstype):
     def pool(atts, data, state="allocated", owner=None):
         dev = {"name": DEV, "serial": SERIAL, "size": DEV_SIZE, "shared": True, "persistent": True, "state": state,
                "scope": "pool", "path": "/tmp/fake-cxl-pool/fs0.raw", "lsaPath": "/tmp/fake-cxl-pool/fs0.lsa", "static": True,
-               "attachments": [{"device": DEV, "host": h, "state": "attached", "exclusive": ex} for h, ex in atts],
+               "attachments": [{"device": DEV, "host": h, "state": "attached", "singleHost": ex} for h, ex in atts],
                "allocation": {"owner": owner} if owner else None}
         return {"device": dev, "fsOffset": 2 * MI, "super": fsinfo.fs_super(data)}
 
@@ -361,7 +361,7 @@ def trace(sdir, t0=1792700000.0):
     cl(t + 0.1, "ADDED", "writer")
     cl(t + 0.2, "MODIFIED", "writer", alloc, VM1)
     # The fsType of the log is the claim's, none here (the driver detects ext4).
-    ctrl(t + 0.5, "attach fs0 to %s for %s: exclusive for a read-write filesystem claim" % (VM1, want("writer", "writer")))
+    ctrl(t + 0.5, "attach fs0 to %s for %s: single host for a read-write filesystem claim" % (VM1, want("writer", "writer")))
     attach(t + 1, VM1, "writer", True)
     device_log(t + 4.0, VM1, "persistent.go:679", "/dev/pmem0 read-write")
     device_log(t + 4.1, VM1, "persistent.go:573", "mounted /dev/pmem0 at %s (ext4, rw, dax=always)" % direct)
@@ -391,7 +391,7 @@ def trace(sdir, t0=1792700000.0):
     device_log(t + 1.0, VM1, "persistent.go:679", "/dev/pmem0 read-only")
     unprepared(t + 1.1, "writer", "writer")
     cl(t + 1.5, "DELETED", "writer", alloc, VM1, deleting=True)
-    server(t + 1.8, "attachment fs0@%s: exclusive false" % VM1)
+    server(t + 1.8, "attachment fs0@%s: single host false" % VM1)
     ev(t + 1.9, "Pod", "cxl-lease-" + LEASES["reader-a"], "FailedScheduling",
        "0/3 nodes are available: 1 resourceclaim not available on the node, 2 node(s) didn't satisfy plugin(s) [NodeAffinity]. "
        "deallocation of ResourceClaim completed, preemption: 0/3 nodes are available: 3 Preemption is not helpful for scheduling.")

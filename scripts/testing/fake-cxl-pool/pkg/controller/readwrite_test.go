@@ -131,7 +131,7 @@ func TestReadWriteFsExclusive(t *testing.T) {
 	if data := e.wantAttached("rw-a", true); data["exclusive"] != nil || data["shared"] != true {
 		t.Fatalf("claim rw-a: data %v, expected shared and no exclusive (one share)", data)
 	}
-	if line := "attach fs0 to vm1 for claim default/rw-a device fs0 node node1: exclusive for a read-write filesystem claim"; !strings.Contains(e.logs.String(), line) {
+	if line := "attach fs0 to vm1 for claim default/rw-a device fs0 node node1: single host for a read-write filesystem claim"; !strings.Contains(e.logs.String(), line) {
 		t.Fatalf("log lacks %q", line)
 	}
 
@@ -191,7 +191,7 @@ func TestReadWriteFsJoinsReadersOfTwoNodes(t *testing.T) {
 	e.waitStatus("ro-2", 1)
 	e.share("rw-1", "node1", rwExt4)
 	e.sync()
-	if line := "attach fs0 to vm1 for claim default/rw-1 device fs0 node node1: exclusive for a read-write ext4 claim"; !strings.Contains(e.logs.String(), line) {
+	if line := "attach fs0 to vm1 for claim default/rw-1 device fs0 node node1: single host for a read-write ext4 claim"; !strings.Contains(e.logs.String(), line) {
 		t.Fatalf("log lacks %q", line)
 	}
 	att, _ := e.pool.calls()

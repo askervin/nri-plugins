@@ -700,7 +700,7 @@ CXL_C1EE0001_SHARED=0
 CXL_C1EE0001_SIZE=536870912
 CXL_CLAIM_<uid>_0=1
 Node 2 MemTotal:         524288 kB
-cxl-pool.nri.io/Attached=True {"attachment":"pooled0@n4-cxl-shared-2-fedora-43-containerd","host":"n4-cxl-shared-2-fedora-43-containerd","hostUUID":"1b6d55a2-ae4a-52f8-bbba-2e3f9adca1b1","qemuDeviceId":"fcp_pooled0.hp2","serial":"0xc1ee0001","shared":false,"size":536870912}
+cxl-pool.nri.io/Attached=True {"attachment":"pooled0@n4-cxl-shared-2-fedora-43-containerd","host":"n4-cxl-shared-2-fedora-43-containerd","hostUUID":"1b6d55a2-ae4a-52f8-bbba-2e3f9adca1b1","qemuDeviceID":"fcp_pooled0.hp2","serial":"0xc1ee0001","shared":false,"size":536870912}
 ```
 
 The pool slot of `pooled0` is under the first host bridge, as the local
