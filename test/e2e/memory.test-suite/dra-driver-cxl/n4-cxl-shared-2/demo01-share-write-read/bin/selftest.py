@@ -398,7 +398,7 @@ def trace_formats_test():
         'engine: lease 3f2a91c0: unbound %s' % lease_fs,
         'engine: pool memdev 0xc1ae0001: unmounted %s' % mnt,
         # local.go
-        'engine: local memdev 0xc100e2e1 (mem0): destroyed region0 in 35ms',
+        'engine: local memdev 0xc100e2e1 (mem0): destroyed region0 in 10ms',
         'engine: local memdev 0xc100e2e1 (mem0): not in sharedMemdevs any more, destroying its region',
         'engine: local memdev 0xc100e2e1 (mem0): not in sharedMemdevs any more: keeping region0 for claims [a b], '
         'not publishing the memdev until they are gone',
@@ -557,7 +557,7 @@ def presenter_test():
             expect("T1 %s %d caption" % (case, n), len(caption) <= 2, st.caption)
             lines = [c.title("PRESENTER %s %s%d/%d" % (case, steps.step_letter(case), n, len(all_steps)), now=NOW)]
             lines += caption + steps.wrap_command(st.command)
-            lines += steps.result_lines(["r" * 60, "r" * 60], st.rows) + ["   12.3 s (command 10.1 s); Enter: next "]
+            lines += steps.result_lines(["r" * 60, "r" * 60], st.rows) + ["   2.0 s (command 1.0 s); Enter: next  "]
             check("T1 %s%s %s%d" % (case, " " + fstype if fstype else "", steps.step_letter(case), n), lines)
 
 
@@ -817,18 +817,18 @@ def llm_test():
     for srv in set(servers.values()):
         srv.shutdown()
     out = ("page cache of the VM before the fetch: 3100 MiB\n"
-           "fetched Qwen3-0.6B-Q4_K_M.gguf: 378 MiB in 1.6 s (243 MB/s), sha256 ok\n"
-           "made an erofs of it: 380 MiB in 0.2 s\n"
-           "streamed /tmp/model.erofs through the fd of the lease: 398802944 bytes in 1.7 s\n"
+           "fetched Qwen3-0.6B-Q4_K_M.gguf: 378 MiB in 2.0 s (200 MB/s), sha256 ok\n"
+           "made an erofs of it: 380 MiB in 1.0 s\n"
+           "streamed /tmp/model.erofs through the fd of the lease: 398802944 bytes in 3.0 s\n"
            "removed /tmp/model.erofs: page cache of the VM now 3104 MiB\n"
            "wrote erofs (398802944 bytes) with Qwen3-0.6B-Q4_K_M.gguf\n")
     expect("check_model", steps.check_model({}, out, 0) == [
-        "fetched 378 MiB in 1.6 s (243 MB/s), sha256 ok", "erofs of 380 MiB in 0.2 s, written in 1.7 s",
+        "fetched 378 MiB in 2.0 s (200 MB/s), sha256 ok", "erofs of 380 MiB in 1.0 s, written in 3.0 s",
         "VM page cache +4 MiB (3100 -> 3104 MiB)"], str(steps.check_model({}, out, 0)))
 
-    ask = 'reader-0: get_weather {"city":"Helsinki","unit":"celsius"} (TTFT 3.9 s, 40 tokens)\nreader-1: not serving: timed out\n'
+    ask = 'reader-0: get_weather {"city":"Helsinki","unit":"celsius"} (TTFT 1.0 s, 40 tokens)\nreader-1: not serving: timed out\n'
     got = steps.check_answers({}, ask, 0)
-    expect("check_answers", got == ['reader-0 3.9 s: get_weather {"city":"Helsink...', "reader-1: not serving: timed out"], str(got))
+    expect("check_answers", got == ['reader-0 1.0 s: get_weather {"city":"Helsink...', "reader-1: not serving: timed out"], str(got))
 
     def snap(cached, anon):
         g = {r: {"cgFileKb": cached, "cachedKb": 3000000 + cached, "ggufRssKb": 381596, "memAvailableKb": 6000000 - cached, "pgsteal": 0}

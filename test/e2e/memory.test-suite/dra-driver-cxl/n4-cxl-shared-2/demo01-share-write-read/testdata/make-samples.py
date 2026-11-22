@@ -579,9 +579,9 @@ def local_trace(sdir, t0=1792500000.0):
     udev(t + 1, "add", region, "cxl")
     udev(t + 1.1, "add", region + "/dax_region0", "cxl")
     udev(t + 1.2, "add", region + "/dax_region0/dax0.0", "dax")
-    klog(t + 1.25, "local.go:779", "engine: local memdev %s (mem0): created region0 (devdax, dax dax0.0, NUMA node 2) in 412ms" % LOCAL)
+    klog(t + 1.25, "local.go:779", "engine: local memdev %s (mem0): created region0 (devdax, dax dax0.0, NUMA node 2) in 100ms" % LOCAL)
     klog(t + 1.3, "plugin.go:362", "cxl.nri.io: claim %s/cxl-lease-3f2a91c0: prepared memdev-c100e2e1 (memdev %s, share true, mode dax, read-only false) as mem0 region0 dax dax0.0 size %d NUMA node -1 exclusive" % (NS, LOCAL, GI))
-    klog(t + 1.27, "local.go:643", "engine: local memdev %s (mem0): zeroed new shared dax0.0 size %d in 210ms" % (LOCAL, GI))
+    klog(t + 1.27, "local.go:643", "engine: local memdev %s (mem0): zeroed new shared dax0.0 size %d in 100ms" % (LOCAL, GI))
     klog(t + 1.5, "broker.go:1646", 'lease broker: lease 3f2a91c0: Ready (source local, serial %s, mode dax, read-only false, NUMA node -1, dax "/dev/dax0.0", block "", access "", fs "", path "", %d bytes)' % (LOCAL, GI))
     t = 60
     for i, r in enumerate(READERS):

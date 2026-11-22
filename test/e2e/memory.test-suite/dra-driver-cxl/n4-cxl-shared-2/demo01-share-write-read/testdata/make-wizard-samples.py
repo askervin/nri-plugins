@@ -297,7 +297,7 @@ def wizard_trace(sdir, t0=1792700000.0):
     cl(1, "ADDED", "w1", "5a7e0001")
     cl(1.2, "MODIFIED", "w1", "5a7e0001", "cxl.nri.io/%s/memdev-c100e2e1" % VM2, VM2)
     ev(1.3, "Pod", "w1", "Scheduled", "Successfully assigned %s/w1 to %s" % (NS, VM2))
-    klog(2, "vm.driver", "local.go:779", "engine: local memdev %s (mem0): created region0 (devdax, dax dax0.0, 268435456 bytes) in 1.2s" % VM2_LOCAL)
+    klog(2, "vm.driver", "local.go:779", "engine: local memdev %s (mem0): created region0 (devdax, dax dax0.0, 268435456 bytes) in 1.0s" % VM2_LOCAL)
     klog(2.5, "vm.driver", "draplugin.go:300", "cxl.nri.io: claim %s/w1: prepared memdev-c100e2e1 (serial %s, mode numa, read-only false) as mem0 region0 dax dax0.0 node 2" % (NS, VM2_LOCAL))
     cl(10, "ADDED", "w4", "5a7e0004")
     cl(10.2, "MODIFIED", "w4", "5a7e0004", "cxl-pool.nri.io/fake-cxl-pool/fs0", VM1)
