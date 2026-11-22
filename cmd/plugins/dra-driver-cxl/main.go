@@ -12,6 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Command nri-dra-driver-cxl is the CXL DRA driver of a node: the kubelet
+// plugins of cxl.nri.io (the memory of the node) and cxl-pool.nri.io (the
+// devices of a CXL memory pool), the NRI plugin that keeps containers off
+// the CXL memory that they did not claim and steers the memory of the
+// containers that opt in, and the lease broker of running containers.
+// main.go has the flags and the start and stop of the process, driver.go
+// puts the parts together, config.go reads the configuration file. The
+// parts are the packages of internal: dra (the kubelet plugins and the
+// publisher), engine (the kernel objects), store and state (the records),
+// containers, steering and mpolinject (the NRI plugin), leases and lend
+// (the lease broker), provenance (pool devices or local memdevs). The
+// design is in docs/memory/cxl/design.md.
 package main
 
 import (
