@@ -6,11 +6,11 @@ This page tells how `nri-dra-driver-cxl` works inside: the objects it
 keeps, how a claim becomes memory that a container uses, how a restart
 of the driver finds its way back, and which files it keeps on the node.
 It is written for the developers who change the driver, and for users
-who want to know what it does with their devices. [usage.md](usage.md) tells
-how to deploy and use the driver; [states.md](states.md), generated from
-the code, lists every state of every record and every transition that
-the driver allows, with its trigger, guard and effects. This page links
-to it for every state that it names.
+who want to know what it does with their devices. [usage.md](usage.md)
+tells how to deploy and use the driver. [states.md](states.md) is
+generated from the code: it lists every state of every record and every
+transition that the driver allows, with its trigger, guard and effects.
+This page links to it for every state that it names.
 
 - [The parts of the driver](#the-parts-of-the-driver)
 - [The objects](#the-objects)
@@ -28,9 +28,10 @@ One process on every node has these parts:
   node (local memdevs, regions, DRAM, the lease device) and the pool
   driver (`cxl-pool.nri.io` by default) for the devices of a CXL memory
   pool. They differ only in a few source rules: where the serial and the
-  facts of a device come from (the node's own ResourceSlice for local
-  devices, the claim status that the pool controller writes for pool
-  devices), where their node mounts live, and whether they publish.
+  facts of a device come from, where their node mounts live, and whether
+  they publish. The facts of a local memdev come from the node's own
+  ResourceSlice, those of a pool device from the claim status that the
+  pool controller writes.
 - The publisher, which writes the ResourceSlice of `cxl.nri.io` for the
   node. It scans the node after udev events, after the Prepares and
   Unprepares of both drivers that changed the records, and on the ticks
@@ -43,11 +44,11 @@ One process on every node has these parts:
   changes them. It reads and changes the kernel through one package that
   observes sysfs and runs the `cxl` and `ndctl` tools; dax devices are
   bound to their drivers through sysfs.
-- The NRI plugin, the one writer of the `cpuset.mems` of containers
-  (through NRI; of a steered container in its cgroup):
-  it keeps containers off the CXL memory that they did not claim
-  (fencing), starts the steering of the containers that opt in, and
-  lends NUMA nodes to running containers.
+- The NRI plugin, the one writer of the `cpuset.mems` of containers. It
+  writes them through NRI, and in the cgroup of a steered container. It
+  keeps containers off the CXL memory that they did not claim (fencing),
+  starts the steering of the containers that opt in, and lends NUMA
+  nodes to running containers.
 - The lease broker: the sockets of lease claims, the leases that running
   containers ask for on them, and the companion claims and pods that
   hold the memory of the leases.
@@ -81,10 +82,10 @@ A memdev is a CXL memory device of the node, `memN`, known by its serial
 [Memdev](states.md#memdev) record while it uses one: with its facts (RAM
 and persistent capacity, shared, persistent, block size, host bridge),
 the regions of the driver on it and its grants. A memdev with grants is
-[ACTIVE](states.md#memdevstate); one whose region is kept without grants
-(a configured shared device, a persistent device below newer regions) is
-IDLE_KEPT; one that went away while grants exist (a pool device detached
-under its claims) is GONE. A memdev of no grant and no region of the
+[ACTIVE](states.md#memdevstate). One whose region is kept without grants
+is IDLE_KEPT: a configured shared device, or a persistent device below
+newer regions. One that went away while grants exist is GONE, such as a
+pool device detached under its claims. A memdev of no grant and no region of the
 driver has no record. How the kernel shows it is
 [Memdev (kernel)](states.md#memdev-kernel).
 
@@ -93,18 +94,18 @@ driver has no record. How the kernel shows it is
 A region maps the memory of one or more memdevs into the address space
 of the host. The driver keeps a [Region](states.md#region) record of
 every region on the memdevs it uses. A region of its own goes through
-the [states](states.md#regionstate) NOTED (the name that
-`cxl create-region` will give is written down first), OWNED,
-KEPT (disabled and kept: its release would leave a hole in the decoders
-of a port, or it waits for the claim whose Prepare did not finish) and
-HOLLOW_OWNED (its memdev went; deleted when its memory is offline). A
-region that the driver did not create is never touched: it is published
+the [states](states.md#regionstate) NOTED, OWNED, KEPT and HOLLOW_OWNED.
+NOTED: the name that `cxl create-region` will give is written down
+first. KEPT: disabled and kept, because its release would leave a hole
+in the decoders of a port, or because it waits for the claim whose
+Prepare did not finish. HOLLOW_OWNED: its memdev went; it is deleted
+when its memory is offline. A region that the driver did not create is never touched: it is published
 as a `region` device when it is online RAM, and its memdevs are not
 published as memdevs. On a memdev that the driver uses it gets a FOREIGN
 record (a Prepare that it refuses, or a start, records it), and the
 record goes with the region.
 
-Linux commits the decoders of a CXL port in order: destroying a region
+Linux commits the decoders of a CXL port in order. Destroying a region
 below a newer region of another memdev on the same host bridge or switch
 leaves a hole, and no new region goes through that port until the
 regions above are gone. So the release of a region follows a release
@@ -138,13 +139,16 @@ kubelet retries it.
 ### Grant
 
 A grant is the memory that one allocation result of a claim gets on one
-memdev ([Grant](states.md#grant)). It has three parts: what the result
-asks for (mode, read-only, access, filesystem type, path, size, shares
-or exclusive), its intent (what the driver may create for it: the noted
-region name, the namespace, the mount path, the bind target, the lend)
-and what it got (the region, the dax device, the NUMA node, the
-namespace and block device, the mount, the bind, the lend). A grant
-references the region, dax device and mount that it uses; those list
+memdev ([Grant](states.md#grant)). It has three parts:
+
+- What the result asks for: mode, read-only, access, filesystem type,
+  path, size, shares or exclusive.
+- Its intent, what the driver may create for it: the noted region name,
+  the namespace, the mount path, the bind target, the lend.
+- What it got: the region, the dax device, the NUMA node, the namespace
+  and block device, the mount, the bind, the lend.
+
+A grant references the region, dax device and mount that it uses; those list
 the grant among their users, so that several grants can share one
 object. Its [states](states.md#grantstate): JOURNALED (the intent is
 written), REALISING (kernel work in progress), REALISED (usable),
@@ -174,7 +178,7 @@ have at `/run/cxl/cxl.sock`, its `lease-fs` directory, which they have at
 a running container for memory on that socket ([Lease](states.md#lease)),
 known by 8 hex digits. Its memory comes from a companion claim
 `cxl-lease-<id>` of a companion pod, which a driver prepares like any
-claim; the lease owns its lend: the NUMA node lent to the requester's
+claim. The lease owns its lend: the NUMA node lent to the requester's
 `cpuset.mems`, the file descriptor passed to it, or the bind in its
 `lease-fs` directory. The companion's grant records the lend too, so
 that an Unprepare can revoke it also after the lease record is gone.
@@ -182,10 +186,11 @@ that an Unprepare can revoke it also after the lease record is gone.
 ### Container and fence
 
 The NRI plugin keeps a record of every container of the node in memory
-([Container (in memory)](states.md#container-in-memory)): how the NRI
-plugin manages its memory (STEERED, FENCED or UNFENCED, decided once when the
-container is created), its own NUMA nodes, the nodes of its results and
-the nodes lent to it. The record is built again from the runtime after a
+([Container (in memory)](states.md#container-in-memory)). It holds how
+the NRI plugin manages the memory of the container: STEERED, FENCED or
+UNFENCED, decided once when the container is created. It also holds the
+container's own NUMA nodes, the nodes of its results and the nodes lent
+to it. The record is built again from the runtime after a
 restart. The fence is the set of NUMA nodes on which the driver onlined
 CXL memory since it started: a FENCED container has its own nodes
 without the fenced ones, plus the nodes of its results and leases. A
@@ -208,10 +213,10 @@ memory pool that a pool controller attached. The Kubernetes API does not
 always tell: a pool controller deletes its ResourceSlices when it stops,
 while its devices stay attached. The provenance of a serial
 ([Provenance](states.md#provenance)) is the driver's sticky knowledge of
-it: POOL once a ResourceSlice or a claim of the pool driver names it (it
-stays POOL until the serial was observed absent for 24 hours), LOCAL for
-a device of the node, HELD for a new memdev whose source is uncertain,
-which is not published for a while. The pools whose ResourceSlices the
+it. It is POOL once a ResourceSlice or a claim of the pool driver names
+it, and stays POOL until the serial was observed absent for 24 hours. It
+is LOCAL for a device of the node, and HELD for a new memdev whose
+source is uncertain, which is not published for a while. The pools whose ResourceSlices the
 driver has listed are kept as [ListedPool](states.md#listedpool)
 records. An operator removes the provenance of a serial with
 `--forget-provenance` ([local.md](local.md#what-the-driver-publishes)).
@@ -246,7 +251,7 @@ minutes plus at most 30 seconds):
   once. The hour of a pool without slices starts again at a restart.
 - Before it creates a region on a local memdev or onlines its memory,
   the engine reads the provenance again and lists the slices of the pool
-  driver: the Prepare of a local claim on a HELD or POOL memdev, or on a
+  driver. The Prepare of a local claim on a HELD or POOL memdev, or on a
   serial that a pool lists, fails with `memdev 0x... is a pool device
   (HELD|POOL): not used as a local memdev`.
 
@@ -299,10 +304,10 @@ Every Prepare of either driver goes the same way:
 Then kubelet creates the containers. The CDI device of every result has
 a marker variable; at CreateContainer the NRI plugin finds the results
 of the container by their markers and sets its `cpuset.mems` or starts
-its steering. A marker of a claim of another namespace, or of a lease
-claim whose recorded `reservedFor` does not have the pod, is ignored with
-a warning: a container cannot take the memory of another pod's claim by
-setting the variable itself.
+its steering. The NRI plugin ignores, with a warning, a marker of a
+claim of another namespace, and one of a lease claim whose recorded
+`reservedFor` does not have the pod. A container cannot take the memory
+of another pod's claim by setting the variable itself.
 
 A Prepare that fails rolls back: it releases what its grants made, with
 the release policy of a rollback. A region that it cannot release
@@ -312,10 +317,11 @@ its Unprepare releases it.
 
 ### A local memdev
 
-On the first claim of an unshared local memdev the engine notes the name of the
-region to come, creates a RAM region over the memdev and, with
-`verifyAddressing`, runs the address line probe on it (a region whose
-memory aliases is made again with the usable size). Every claim gets a
+On the first claim of an unshared local memdev the engine notes the
+name of the region to come and creates a RAM region over the memdev.
+With `verifyAddressing` it runs the address line probe on the region; a
+region whose memory aliases is made again with the usable size. Every
+claim gets a
 slice of its own: a dax device of the region on whole memory blocks.
 Mode `numa`: the NUMA node of the region joins the fence (the running
 containers are updated first), the slice is bound to `kmem` and its
@@ -324,9 +330,9 @@ memory blocks are onlined movable. Mode `dax`: the slice is bound to
 has one dax device over the whole region, bound to `device_dax` and
 zeroed once when the region is made; every claim maps it. Before any
 kernel work on a local memdev, the engine checks that the memdev is not
-a pool device: its provenance is not POOL or HELD, a fresh list of the
-pool driver's ResourceSlices does not name it, and no pool grant uses
-it.
+a pool device. Its provenance must not be POOL or HELD, a fresh list of
+the pool driver's ResourceSlices must not name it, and no pool grant may
+use it.
 
 The size of a slice is the consumed capacity of the allocation (the
 whole memdev without one), rounded up to the memory block size, which is
@@ -335,8 +341,8 @@ else does, every other slice is a new dax device that the kernel places
 first-fit. Because every slice is a multiple of the block size, the
 placement keeps every slice and every free gap of a block-aligned region
 block-aligned, also after releases. The engine checks every range of
-every slice before it binds a driver; a slice that first-fit placed
-across a block boundary (a region that does not start at one) is
+every slice before it binds a driver. First-fit places a slice across a
+block boundary when the region does not start at one. Such a slice is
 deleted and made again on the first whole free blocks, combining free
 ranges when one is not enough, so that the head and tail of such a
 region are never used. A region with less free memory than the slice
@@ -396,19 +402,23 @@ the claims. [usage.md](persistent.md) has the rules.
 ### A lease
 
 A container with a claim on `cxl-lease` asks on its socket with
-`cxl-request`. The broker finds the requester's container from the
-process id of the peer (through the container table of the NRI plugin,
-for every request), checks the limits of the claim and the pod, and
-commits the lease as CREATING before it creates any API object. Then it
-creates the companion claim and pod (PENDING); the scheduler allocates
-the claim, and kubelet asks the driver of the device to prepare it. The
-companion gate passes the claim to the lease (LENDING), the grant is
-realised like that of any claim, and at the end of the Prepare the lend
-is made and the lease is READY: the NUMA node of a `numa` lease is added
-to the requester's `cpuset.mems` through NRI, the file descriptor of a
-`dax` or `block` lease is passed to the client, the node mount of an
-`fs` lease is bound into the claim's `lease-fs` directory, where the
-container sees it at `/run/cxl/fs/<name>`.
+`cxl-request`. For every request the broker finds the requester's
+container from the id of the process that connected, through the
+container table of the NRI plugin. It checks the limits of the claim and
+the pod, and commits the lease as CREATING before it creates any API
+object. Then it creates the companion claim and pod (PENDING); the
+scheduler allocates the claim, and kubelet asks the driver of the device
+to prepare it. The companion gate passes the claim to the lease
+(LENDING), and the grant is realised like that of any claim. At the end
+of the Prepare the lend is made and the lease is READY:
+
+- The NUMA node of a `numa` lease is added to the requester's
+  `cpuset.mems` through NRI.
+- The file descriptor of a `dax` or `block` lease is passed to the
+  client.
+- The node mount of an `fs` lease is bound into the claim's `lease-fs`
+  directory, where the container sees it at `/run/cxl/fs/<name>`.
+
 [leases.md](leases.md#flow) has the protocol and the flow.
 
 ### Regions and DRAM
@@ -422,10 +432,10 @@ claim consumes capacity, and its containers get the NUMA nodes for their
 kubelet's Unprepare of a claim first closes its lease claims (their
 leases are released) and, for a companion claim, revokes the lend and
 unbinds the bind. Then the preparation is committed as UNPREPARING and
-the engine releases each grant: it unmounts the node mounts that no other
-grant needs (or makes a mount read-only when its last writer goes),
-offlines the memory blocks of the grant, deletes its dax device, and,
-when the grant was the last of its memdev, releases the region by the
+the engine releases each grant. It unmounts the node mounts that no
+other grant needs, or makes a mount read-only when its last writer goes.
+It offlines the memory blocks of the grant and deletes its dax device.
+When the grant was the last of its memdev, it releases the region by the
 release policy. A pool memdev is disabled after its region is
 destroyed, so that the pool can hot-remove it. A step that fails (memory
 that cannot be offlined, a busy mount) fails the Unprepare with every
@@ -455,10 +465,10 @@ The release policy, by kind of memdev:
   newer regions, because a kept region would block the hot-removal of
   the device; the hole closes when the regions above go.
 
-The release in the running driver checks again after
-`cxl disable-region`, under the lock of the region creations, that no
-region came above it meanwhile (a pool Prepare on the same host bridge);
-if one did, the region stays, disabled, and is KEPT. A kept region has
+After `cxl disable-region`, the release in the running driver checks
+again, under the lock of the region creations, that no region came above
+it meanwhile, such as one of a pool Prepare on the same host bridge. If
+one did, the region stays, disabled, and is KEPT. A kept region has
 no slices. The next Prepare of its claim sets it up like a new one:
 enabled again, its dax devices deleted, `daxX.0` made over the whole
 region, bound to `device_dax`, probed, and zeroed for a shared memdev.
@@ -476,19 +486,23 @@ may exist and finishes or undoes it. The start goes in this order:
 
 1. Read the boot id and open the store: lock `state.lock`, read
    `state.json` (or `state.json.prev` when `state.json` cannot be read).
-2. Recovery, before NRI and before kubelet can call: observe the kernel;
-   mount again the node mounts of the prepared claims, found by the
-   identity of their block device, and verify their dax and block
-   devices (a mismatch makes the claim PREPARED_UNRESTORED); bind the
-   binds of prepared `fs` companions again, but not of those being
-   unprepared; release what the grants of the Prepares that did not
-   finish made, the top-most region first, or keep it by the release
-   policy (the preparation stays PREPARING or becomes KEPT), and keep
-   what the `numa` companions whose Prepare did not finish have for
-   kubelet's Unprepare or Prepare again; unmount the mounts and binds
-   under the driver's directories that no prepared claim lists; delete
-   the dax devices of the driver's regions that no grant uses, and its
-   hollow regions; write the CDI specs again from the records.
+2. Recovery, before NRI and before kubelet can call:
+   - Observe the kernel.
+   - Mount again the node mounts of the prepared claims, found by the
+     identity of their block device. Verify their dax and block
+     devices; a mismatch makes the claim PREPARED_UNRESTORED.
+   - Bind the binds of prepared `fs` companions again, but not of those
+     being unprepared.
+   - Release what the grants of the Prepares that did not finish made,
+     the top-most region first, or keep it by the release policy. The
+     preparation stays PREPARING or becomes KEPT.
+   - Keep what the `numa` companions whose Prepare did not finish have,
+     for kubelet's Unprepare or Prepare again.
+   - Unmount the mounts and binds under the driver's directories that
+     no prepared claim lists.
+   - Delete the dax devices of the driver's regions that no grant uses,
+     and its hollow regions.
+   - Write the CDI specs again from the records.
 3. The first list of the pool driver's ResourceSlices, which gates the
    publication of local memdevs, and the fence: the NUMA nodes of the
    claims prepared in this boot.
@@ -513,8 +527,8 @@ published. On a memdev that is a pool device now nothing is touched.
 The document records the boot id of the kernel
 (`/proc/sys/kernel/random/boot_id`). At the first start of a new boot
 the records of regions and slices of the other boot are dropped without
-touching any region, so that a region that firmware or an admin created
-under the same name is never taken for the driver's.
+touching any region. A region that firmware or an admin created under
+the same name is then never taken for the driver's.
 
 What a restart keeps, and what a reboot changes:
 
@@ -534,34 +548,38 @@ nothing of what its Prepare made exists any more, and the new boot gives
 the names and numbers of those devices to other devices. It has no CDI
 device and no NUMA node in the fence, and nothing is released for it at
 start. kubelet prepares the claim again before it starts the pod's
-containers, which makes a new preparation; or it unprepares it (the pod
-went during the reboot), which disables a pool memdev that no claim of
-this boot uses.
+containers, which makes a new preparation. Or it unprepares the claim,
+when the pod went during the reboot; that disables a pool memdev that
+no claim of this boot uses.
 
 When neither `state.json` nor `state.json.prev` can be read, the driver
-starts LOST instead of crash-looping: it writes nothing, releases
-nothing, recovers nothing, fails every Prepare with the error of the
-loss, keeps the CDI specs, fences every NUMA node of online CXL memory,
-starts the lease broker without leases (it deletes no companion), and
-holds back new memdevs, since it does not know which are pool devices.
-An operator
-starts it once with `--new-state` to begin with a new document
-([usage.md](usage.md#an-unreadable-state)).
+starts LOST instead of crash-looping:
+
+- It writes nothing, releases nothing and recovers nothing.
+- It fails every Prepare with the error of the loss and keeps the CDI
+  specs.
+- It fences every NUMA node of online CXL memory.
+- It starts the lease broker without leases, and deletes no companion.
+- It holds back new memdevs, since it does not know which are pool
+  devices.
+
+An operator starts it once with `--new-state` to begin with a new
+document ([usage.md](usage.md#an-unreadable-state)).
 
 ### Node mounts after a restart
 
 The node mounts of mode `fs` are found again by the device number of
-their block device: a loop device of a cached node mount that the
-previous driver container set up shows its backing file in sysfs
-relative to the root of that container's `/dev` (`/pmem1`), which is
-not a path the driver can compare. A missing node mount is mounted again
-when the fsdax namespace of the region is the one prepared (its name,
-its block device and the numbers of that). The claims of a node mount
-that is not mounted after that (the region is gone, the namespace or
-block device is another one, the mount failed) stay prepared without a
-CDI device ([PREPARED_UNRESTORED](states.md#preparationstate)), so that
-their containers fail at creation on an unresolvable CDI device rather
-than bind a missing directory. The next start, kubelet's Prepare again
+their block device. A path would not do: a loop device of a cached node
+mount that the previous driver container set up shows its backing file
+in sysfs relative to the root of that container's `/dev` (`/pmem1`). A
+missing node mount is mounted again when the fsdax namespace of the
+region is the one prepared: its name, its block device and the numbers
+of that. A node mount may stay unmounted after that: the region is
+gone, the namespace or block device is another one, or the mount
+failed. Its claims stay prepared without a CDI device
+([PREPARED_UNRESTORED](states.md#preparationstate)). Their containers
+then fail at creation on an unresolvable CDI device rather than bind a
+missing directory. The next start, kubelet's Prepare again
 of such a claim and the Prepare of another claim of the node mount
 mount it again if they can; the Prepare again fails with the reason
 otherwise (`its node mount ... is not mounted and cannot be mounted
@@ -579,13 +597,14 @@ would lie below the regions that other claims get meanwhile, and its
 release by a retry that fails, or by the claim's Unprepare, would leave
 a hole. So the start releases the device of a cut Prepare before kubelet
 can call, as for a prepared claim, and forgets the claim; kubelet's
-Prepare again makes the region anew. It keeps the claim, KEPT, when it
-is a companion claim of a lease, when a region of another memdev lies
-above its region already, or when something could not be released (a
-busy node mount); the NUMA node of such a `numa` device is fenced.
-kubelet then prepares the claim again, which reuses the region, or
-unprepares it, which revokes the NUMA nodes that a companion claim may
-have lent, unmounts its lease bind and releases the device. An Unprepare
+Prepare again makes the region anew. The start keeps the claim, KEPT, in
+three cases: it is a companion claim of a lease, a region of another
+memdev lies above its region already, or something could not be
+released, such as a busy node mount. The NUMA node of such a `numa`
+device is fenced. kubelet then prepares the claim again, which reuses
+the region. Or it unprepares the claim, which revokes the NUMA nodes
+that a companion claim may have lent, unmounts its lease bind and
+releases the device. An Unprepare
 that would revoke lent NUMA nodes before the driver has connected to NRI
 fails, and kubelet retries it.
 
@@ -596,19 +615,20 @@ when it cannot read the boot id.
 
 ### Hollow regions
 
-A hollow region (no target, not committed, its address range kept in
-the root decoder) is what the kernel leaves of a region whose memdev was
-removed before the region was destroyed (a forced deletion), and what a
-`cxl create-region` that was killed before it set the target leaves. No
+A hollow region has no target and is not committed, and its address
+range is kept in the root decoder. The kernel leaves one of a region
+whose memdev was removed before the region was destroyed (a forced
+deletion), and a `cxl create-region` that was killed before it set the
+target leaves one. No
 decoder maps its address range any more; memory of it that `kmem` could
 not remove stays online until a reboot. `cxl destroy-region` refuses it
 ("error locating decoder for target0"); writing its name to
 `/sys/bus/cxl/devices/<root decoder>/delete_region` removes it. The
 driver deletes only the hollow regions that it knows as its own
-([HOLLOW_OWNED](states.md#regionstate)), while none of their memory
-blocks is online: the region of a prepared claim whose memdev is gone
-(at its Unprepare), and the regions recorded for a Prepare that did not
-finish. The scan of `cxl.nri.io` skips every hollow region; it warns
+([HOLLOW_OWNED](states.md#regionstate)), and only while none of their
+memory blocks is online. These are the region of a prepared claim whose
+memdev is gone, at its Unprepare, and the regions recorded for a Prepare
+that did not finish. The scan of `cxl.nri.io` skips every hollow region; it warns
 once, with that command, about each one that is not the driver's.
 
 `cxl create-region` right after a hotplug can fail once with
@@ -617,7 +637,7 @@ after 3 s.
 
 ## The life of a lease
 
-The lease is committed before any companion object is created, and the
+The lease is committed before any companion object is created. The
 driver that prepares the companion claim records the lend with the
 claim's grant, so that an Unprepare revokes it also after a restart or
 after the lease record is gone. A start without a readable state (LOST)
@@ -646,7 +666,7 @@ The bind of an `fs` lease is the lend, made when the companion claim is
 prepared. A read-only lease of a writable type gets a read-only clone of
 the node mount (`open_tree` and `mount_setattr` with `ro`, `nosuid`,
 `nodev`), which stays read-only when a writer of the node makes the
-superblock read-write; a read-only lease of erofs or squashfs, and a
+superblock read-write. A read-only lease of erofs or squashfs, and a
 read-write lease, get a plain bind with the flags of the node mount.
 After the bind its mountinfo must show the type and source of the node
 mount and the flags of the lease, else the driver unmounts it and the
@@ -662,33 +682,38 @@ devices and exclusive opens), so the release does not wait for it; no
 DAX mapping is involved, so this cannot crash the node.
 
 The Unprepare of a lease claim starts the release of all leases of the
-pod, waits up to 5 s until their NUMA nodes are revoked and the deletion
-of their companions is requested, and does not wait for the companions
-to be gone: kubelet unprepares the companion claim of a local lease
-through the same driver, one call at a time. A lease stays Releasing
-until its companion pod and claim are gone, also across a restart; the
-broker checks them at growing intervals, at most 60 s apart. A
-restarted requester container is created with the NUMA nodes of its
-`numa` leases in its `cpuset.mems` (in the CreateContainer adjustment
-when it is fenced: containerd applies an update before the start to the
-spec only), and they are checked against its cgroup once it has started.
+pod. It waits up to 5 s until their NUMA nodes are revoked and the
+deletion of their companions is requested. It does not wait for the
+companions to be gone: kubelet unprepares the companion claim of a local
+lease through the same driver, one call at a time. A lease stays
+Releasing until its companion pod and claim are gone, also across a
+restart; the broker checks them at growing intervals, at most 60 s
+apart. A restarted requester container is created with the NUMA nodes
+of its `numa` leases in its `cpuset.mems`, and they are checked against
+its cgroup once it has started. A fenced container gets them in the
+CreateContainer adjustment, because containerd applies an update before
+the start to the spec only.
 
-The reconcile runs at start, after NRI has synchronized, and every 60 s.
-It restarts interrupted releases; releases the leases left in Creating,
-those whose companion pod is gone or finished and those whose requester
-will not come back; applies the `numa` lends of Ready leases again (so a
-restart restores them, and a lend that a cgroup lacks is updated again);
-and deletes the pods and claims labelled with the node and a lease,
-named `cxl-lease-<lease>`, that have no lease in the table. A companion
-pod without the labels counts as gone. At the first start of a new boot
-the leases of the other boot are dropped; the first reconcile deletes
-their companions, whose claims the drivers then unprepare.
+The reconcile runs at start, after NRI has synchronized, and every 60 s:
+
+- It restarts interrupted releases.
+- It releases the leases left in Creating, those whose companion pod is
+  gone or finished and those whose requester will not come back.
+- It applies the `numa` lends of Ready leases again, so that a restart
+  restores them, and a lend that a cgroup lacks is updated again.
+- It deletes the pods and claims labelled with the node and a lease,
+  named `cxl-lease-<lease>`, that have no lease in the table. A
+  companion pod without the labels counts as gone.
+
+At the first start of a new boot the leases of the other boot are
+dropped; the first reconcile deletes their companions, whose claims the
+drivers then unprepare.
 
 When a lease claim is unprepared, its socket is removed, then
 `lease-fs/<claim uid>`, then `leases/<claim uid>` (its entries removed by
 name). While a bind is still in `lease-fs/<claim uid>` both directories
 stay, because removing the mount point of `/run/cxl/fs` would detach the
-bind lazily in a container that is still there; they are removed when
+bind lazily in a container that is still there. They are removed when
 the last lease of the claim is dropped, and by the reconcile and the
 start, which remove the directories of lease claims that are gone. Under
 `lease-fs` only empty directories without a mount are removed, never
@@ -696,14 +721,14 @@ recursively, and nothing is removed while the lease table cannot be
 decoded.
 
 At start the driver binds again a missing bind of a prepared companion
-claim (when its node mount is there or could be mounted again, and the
-claim is not being unprepared), and unmounts the mounts under `lease-fs`
-that belong to no prepared companion claim (a crash between the bind and
-the write of its record), so that they do not hold the device. A bind of
-no prepared companion that cannot be unmounted (busy) is
-[STALE](states.md#bindstate) and is unmounted at the next Unprepare or
-failed Prepare of any pool claim on the node; once it is gone, the
-region of its device is released if no claim of the node has the device
+claim, when its node mount is there or could be mounted again and the
+claim is not being unprepared. It unmounts the mounts under `lease-fs`
+that belong to no prepared companion claim, so that they do not hold
+the device; a crash between the bind and the write of its record leaves
+such a mount. A bind of no prepared companion that cannot be unmounted
+(busy) is [STALE](states.md#bindstate) and is unmounted at the next
+Unprepare or failed Prepare of any pool claim on the node. Once it is
+gone, the region of its device is released if no claim of the node has the device
 and nothing holds `/dev/pmemK` within 10 s. The driver never detaches a
 mount and releases a region only when nothing holds its block device: a
 bind left mounted keeps the device and never crashes the node.
@@ -712,8 +737,8 @@ bind left mounted keeps the device and never crashes the node.
 
 Only the driver writes its files; do not edit them, and do not copy
 them to another node. The flags `--forget-provenance` and
-`--new-state` are the changes that an operator makes. [usage.md](usage.md#files-on-the-node) lists every file with its
-path.
+`--new-state` are the changes that an operator makes.
+[usage.md](usage.md#files-on-the-node) lists every file with its path.
 
 - `state.json` in the plugin data directory of `cxl.nri.io` is the one
   document of both drivers. A change is a function of the document; the
