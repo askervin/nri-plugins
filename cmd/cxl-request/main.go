@@ -60,11 +60,11 @@ import (
 )
 
 const (
-	exitOK      = 0
-	exitError   = 1
-	exitUsage   = 2
-	exitNotUsed = 3 // failed, not Ready or not Released in time, not a dax or block lease
-	execFd      = 3 // the fd of a dax or block lease in the command
+	exitOK         = 0
+	exitError      = 1
+	exitUsage      = 2
+	exitLeaseState = 3 // failed, not Ready or not Released in time, not a dax or block lease
+	execFd         = 3 // the fd of a dax or block lease in the command
 )
 
 const usage = `usage:
@@ -174,7 +174,7 @@ func parseArgs(args []string) (*command, error) {
 // values returns the options with a value of the command.
 func (cmd *command) values() map[string]*string {
 	return map[string]*string{
-		"--source": &cmd.req.Source, "--mode": &cmd.req.Mode, "--access": &cmd.req.Access, "--fs-type": &cmd.req.FsType, "--name": &cmd.req.Name,
+		"--source": &cmd.req.Source, "--mode": &cmd.req.Mode, "--access": &cmd.req.Access, "--fs-type": &cmd.req.FSType, "--name": &cmd.req.Name,
 		"--size": &cmd.req.Size, "--serial": &cmd.req.Serial,
 		"--wait": &cmd.req.Wait, "--request-id": &cmd.req.RequestID, "--lease": &cmd.req.Lease,
 	}
@@ -182,7 +182,7 @@ func (cmd *command) values() map[string]*string {
 
 // flags returns the options without a value of the command.
 func (cmd *command) flags() map[string]*bool {
-	return map[string]*bool{"--shared": &cmd.req.Shared, "--read-only": &cmd.req.ReadOnly, "--read-write": &cmd.req.ReadWrite, "--all": &cmd.req.All}
+	return map[string]*bool{"--shared": &cmd.req.Share, "--read-only": &cmd.req.ReadOnly, "--read-write": &cmd.req.ReadWrite, "--all": &cmd.req.All}
 }
 
 // isFlag tells whether an option takes no value.
@@ -283,7 +283,7 @@ func output(cmd *command, resp *api.Response, line []byte, stdout, stderr io.Wri
 func execute(cmd *command, resp *api.Response, line []byte, fd int, stdout, stderr io.Writer) int {
 	code := exitCode(&cmd.req, resp)
 	if code == exitOK && resp.State != api.StateReady {
-		code = exitNotUsed // CMD needs the memory
+		code = exitLeaseState // CMD needs the memory
 	}
 	if code != exitOK {
 		closeFd(fd)
@@ -308,9 +308,9 @@ func execute(cmd *command, resp *api.Response, line []byte, fd int, stdout, stde
 func exitCode(req *api.Request, resp *api.Response) int {
 	switch {
 	case resp.State == api.StateFailed:
-		return exitNotUsed
+		return exitLeaseState
 	case req.Op == api.OpFd && resp.Mode != "" && !hasFd(resp.Mode):
-		return exitNotUsed
+		return exitLeaseState
 	case resp.Error != "":
 		return exitError
 	}
@@ -319,10 +319,10 @@ func exitCode(req *api.Request, resp *api.Response) int {
 		if d, err := time.ParseDuration(req.Wait); resp.State == api.StateReady || (err == nil && d == 0) {
 			return exitOK
 		}
-		return exitNotUsed
+		return exitLeaseState
 	case api.OpFd, api.OpEnv:
 		if resp.State != api.StateReady {
-			return exitNotUsed
+			return exitLeaseState
 		}
 	case api.OpRelease:
 		return releaseExitCode(resp)
@@ -345,7 +345,7 @@ func releaseExitCode(resp *api.Response) int {
 	}
 	for _, l := range all {
 		if l.State != api.StateReleased {
-			return exitNotUsed
+			return exitLeaseState
 		}
 	}
 	return exitOK

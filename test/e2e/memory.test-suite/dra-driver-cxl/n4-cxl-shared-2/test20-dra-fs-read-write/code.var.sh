@@ -9,7 +9,7 @@
 # (CXL_<KEY>_FSTYPE), and a single-host filesystem (ext4, xfs, btrfs) is
 # read-write on one node at a time:
 # - ReadWriteOnce: a claim that writes makes the pool attachment of its
-#   node exclusive (fake-cxl-pool-controller, ExclusiveHost), and writes
+#   node exclusive (fake-cxl-pool-controller, NeedsSingleHost), and writes
 #   singleHost: true into its status data, which the node needs before it
 #   mounts read-write. Claims of other nodes, readers too, get AttachFailed
 #   reason Conflict and wait: the scheduler allocates them again until the

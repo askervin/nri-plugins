@@ -193,14 +193,14 @@ func memory(l *state.Lease) (api.Memory, bool) {
 		Shared:   shared,
 		Mode:     string(l.Asked.Mode),
 		Size:     g.Bytes,
-		Node:     numaNodeOf(l),
+		NUMANode: numaNodeOf(l),
 		Dax:      g.Dax,
 		Path:     path,
 		Access:   string(accessOf(l)),
 		ReadOnly: readOnly(l),
 	}
 	if l.Asked.Mode == state.ModeFs {
-		m.FsType = fsTypeOf(l)
+		m.FSType = fsTypeOf(l)
 	}
 	return m, true
 }
@@ -209,10 +209,10 @@ func memory(l *state.Lease) (api.Memory, bool) {
 func leaseInfo(l *state.Lease) *api.Response {
 	g := got(l)
 	r := &api.Response{Lease: l.ID, State: stateName(l.State), Source: string(sourceOf(l)), Mode: string(l.Asked.Mode),
-		Shared: l.Asked.Shared, ReadOnly: readOnly(l), Access: string(accessOf(l)), FsType: fsTypeOf(l), Path: g.Path,
+		Share: l.Asked.Shared, ReadOnly: readOnly(l), Access: string(accessOf(l)), FSType: fsTypeOf(l), Path: g.Path,
 		Serial: serialOf(l), Dax: g.Dax, Block: g.Block, Error: l.Error, Size: g.Bytes}
 	if n := numaNodeOf(l); n >= 0 {
-		r.Node = &n
+		r.NUMANode = &n
 	}
 	if r.Size == 0 && l.Asked.Size != "" {
 		if q, err := resource.ParseQuantity(l.Asked.Size); err == nil {

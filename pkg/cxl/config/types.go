@@ -112,15 +112,15 @@ type Device struct {
 	Access string `json:"access,omitempty"`
 	// Path is the directory of the filesystem of mode fs in the container.
 	Path string `json:"path,omitempty"`
-	// FsType is the filesystem type of mode fs; "" is the detected type.
-	FsType string `json:"fsType,omitempty"`
+	// FSType is the filesystem type of mode fs; "" is the detected type.
+	FSType string `json:"fsType,omitempty"`
 }
 
 // IsReadOnly returns whether the device is read-only: readOnly when it is
 // set, else true for mode fs and false for the other modes.
 func (d Device) IsReadOnly() bool {
 	if d.ReadOnly == nil {
-		return d.Mode == api.ModeFs
+		return d.Mode == api.ModeFS
 	}
 	return *d.ReadOnly
 }

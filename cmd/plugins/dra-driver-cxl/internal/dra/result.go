@@ -222,12 +222,12 @@ func lendOf(doc *store.Document, p *state.Preparation) *lend.Lend {
 // deviceMemory returns what a prepared memory device gives a container,
 // with its env key from keys, and false for the lease device.
 func deviceMemory(d *state.DeviceInfo, keys envKeys) (api.Memory, bool) {
-	m := api.Memory{Mode: d.Mode, Size: d.TotalBytes, Node: -1}
+	m := api.Memory{Mode: d.Mode, Size: d.TotalBytes, NUMANode: -1}
 	if d.ConsumedBytes > 0 {
 		m.Size = uint64(d.ConsumedBytes)
 	}
 	if len(d.NUMANodes) > 0 {
-		m.Node = d.NUMANodes[0]
+		m.NUMANode = d.NUMANodes[0]
 	}
 	switch d.DeviceType {
 	case device.DeviceTypeMemdev:
@@ -239,13 +239,13 @@ func deviceMemory(d *state.DeviceInfo, keys envKeys) (api.Memory, bool) {
 		switch {
 		case d.Persistent && d.Mode == api.ModeBlock:
 			m.Path = d.BlockDevice
-		case d.Persistent && d.Mode == api.ModeFs:
-			m.Path, m.Access, m.FsType = d.Path, d.Access, d.FsType
+		case d.Persistent && d.Mode == api.ModeFS:
+			m.Path, m.Access, m.FSType = d.Path, d.Access, d.FsType
 		}
 	case device.DeviceTypeRegion:
 		m.Key = keys.next(api.RegionKey(d.Region))
 	case device.DeviceTypeDRAM:
-		m.Key, m.Nodes = keys.next(api.DRAMKey), cpuset.New(d.NUMANodes...).String()
+		m.Key, m.NUMANodes = keys.next(api.DRAMKey), cpuset.New(d.NUMANodes...).String()
 	default:
 		return m, false
 	}

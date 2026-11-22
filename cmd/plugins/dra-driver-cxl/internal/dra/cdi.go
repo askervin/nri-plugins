@@ -154,7 +154,7 @@ func buildCDISpec(doc *store.Document, driver, kind string, rs roots, pending st
 // incomplete returns an error if a prepared device of mode fs has no node
 // mount for its CDI mount.
 func incomplete(d *state.DeviceInfo) error {
-	if d.Persistent && d.Mode == api.ModeFs && d.NodeMount == "" {
+	if d.Persistent && d.Mode == api.ModeFS && d.NodeMount == "" {
 		return fmt.Errorf("result %d: no node mount", d.Result)
 	}
 	return nil
@@ -173,7 +173,7 @@ func cdiDevice(uid string, d *state.DeviceInfo, keys envKeys) cdiSpecs.Device {
 		edits.DeviceNodes = []*cdiSpecs.DeviceNode{DaxDeviceNode(d.DaxDevice, d.DaxMajor, d.DaxMinor, d.ReadOnly)}
 	case d.Persistent && d.Mode == api.ModeBlock:
 		edits.DeviceNodes = []*cdiSpecs.DeviceNode{BlockDeviceNode(d.BlockDevice, d.BlockMajor, d.BlockMinor, d.ReadOnly)}
-	case d.Persistent && d.Mode == api.ModeFs && d.NodeMount != "":
+	case d.Persistent && d.Mode == api.ModeFS && d.NodeMount != "":
 		edits.Mounts = []*cdiSpecs.Mount{FsCDIMount(d.NodeMount, d.Path, d.ReadOnly)}
 	}
 	edits.Env = api.EnvList(env)

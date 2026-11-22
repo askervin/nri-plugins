@@ -205,7 +205,7 @@ func TestPoolPersistent(t *testing.T) {
 	e.mustPrepare(e.pool, poolClaim("r2", "llm0", poolPmemData, cfgFsRO))
 	r1, r2 := e.devices(e.pool, "r1")[0], e.devices(e.pool, "r2")[0]
 	mnt := filepath.Join(e.poolDir, "mounts", "c1af0001-direct")
-	if r1.Mode != api.ModeFs || r1.NodeMount != mnt || r2.NodeMount != mnt || r1.FsType != "erofs" || r1.Access != api.AccessDirect ||
+	if r1.Mode != api.ModeFS || r1.NodeMount != mnt || r2.NodeMount != mnt || r1.FsType != "erofs" || r1.Access != api.AccessDirect ||
 		r1.Path != "/run/cxl-fs/C1AF0001" || !r1.ReadOnly {
 		t.Fatalf("devices %+v %+v", r1, r2)
 	}

@@ -56,7 +56,7 @@ var numaDevice = preparedDev(serialPoolX, 1<<28, api.ModeNUMA, 2)
 // none).
 func preparedDev(serial, size uint64, mode string, node int) state.DeviceInfo {
 	d := state.DeviceInfo{DeviceType: device.DeviceTypeMemdev, Serial: state.Serial(serial), TotalBytes: size, Mode: mode,
-		Persistent: mode == api.ModeBlock || mode == api.ModeFs}
+		Persistent: mode == api.ModeBlock || mode == api.ModeFS}
 	if node >= 0 {
 		d.NUMANodes = []int{node}
 	}
@@ -197,14 +197,14 @@ func TestAuthRejection(t *testing.T) {
 	}{
 		{api.Request{Op: "request", Size: "1Gi", Source: "any"}, `invalid source "any" (local or pool)`},
 		{api.Request{Op: "request", Size: "1Gi", Mode: "devdax"}, `invalid mode "devdax" (numa, dax, fs or block)`},
-		{api.Request{Op: "request", Shared: true, Mode: "numa"}, "shared memory is never onlined as RAM: use mode dax"},
+		{api.Request{Op: "request", Share: true, Mode: "numa"}, "shared memory is never onlined as RAM: use mode dax"},
 		{api.Request{Op: "request", Size: "1Gi", ReadOnly: true}, "readOnly needs mode dax, fs or block"},
 		{api.Request{Op: "request", Size: "64Mi", Mode: "fs", ReadOnly: true, Access: "slow"}, `invalid access "slow" (direct or cached)`},
 		{api.Request{Op: "request", Size: "64Mi", Access: "cached"}, "access needs mode fs"},
 		{api.Request{Op: "request", Size: "64Mi", Name: "x"}, "name needs mode fs"},
 		{api.Request{Op: "request", Size: "64Mi", Mode: "fs", ReadOnly: true, Name: "a/b"}, `invalid name "a/b" (letters, digits, ".", "_" and "-", not "." or "..")`},
-		{api.Request{Op: "request", Size: "64Mi", Mode: "dax", FsType: "ext4"}, "fsType needs mode fs"},
-		{api.Request{Op: "request", Size: "64Mi", Mode: "fs", FsType: "Ext4"}, `invalid fsType "Ext4" (lower-case letters, digits, "_" and "-")`},
+		{api.Request{Op: "request", Size: "64Mi", Mode: "dax", FSType: "ext4"}, "fsType needs mode fs"},
+		{api.Request{Op: "request", Size: "64Mi", Mode: "fs", FSType: "Ext4"}, `invalid fsType "Ext4" (lower-case letters, digits, "_" and "-")`},
 		{api.Request{Op: "request", Size: "64Mi", Mode: "block", ReadWrite: true}, "readWrite needs mode fs"},
 		{api.Request{Op: "request", Size: "64Mi", Mode: "fs", ReadOnly: true, ReadWrite: true}, "readOnly and readWrite exclude each other"},
 		{api.Request{Op: "request"}, "size or serial is required"},
@@ -584,12 +584,12 @@ func TestReleaseBusy(t *testing.T) {
 	})
 	e.openClaim()
 	e.start()
-	ch := e.async(api.Request{Op: api.OpRequest, Shared: true, ReadOnly: true, Mode: "fs", Size: "64Mi", Wait: "5s"})
+	ch := e.async(api.Request{Op: api.OpRequest, Share: true, ReadOnly: true, Mode: "fs", Size: "64Mi", Wait: "5s"})
 	claim := e.waitClaim(CompanionName("000000a1"))
 	_, err := e.b.OnLending("000000a1", claim)
 	mustOK(t, err)
 	e.b.OnPrepared("000000a1", state.SourcePool, []state.DeviceInfo{
-		withDev(preparedDev(serialPoolP, pmemBytes, api.ModeFs, -1), func(d *state.DeviceInfo) { d.Access = "direct" })})
+		withDev(preparedDev(serialPoolP, pmemBytes, api.ModeFS, -1), func(d *state.DeviceInfo) { d.Access = "direct" })})
 	if r := <-ch; r.State != api.StateReady {
 		t.Fatalf("response %+v", r)
 	}
@@ -630,16 +630,16 @@ func TestPreparedModeMismatch(t *testing.T) {
 		dev state.DeviceInfo
 		err string
 	}{
-		{api.Request{Op: "request", Shared: true, ReadOnly: true, Mode: "fs", Size: "64Mi", Wait: "5s"},
+		{api.Request{Op: "request", Share: true, ReadOnly: true, Mode: "fs", Size: "64Mi", Wait: "5s"},
 			withDev(preparedDev(serialPoolS, 1<<28, api.ModeDax, -1), func(d *state.DeviceInfo) { d.DaxDevice = "/dev/dax0.0" }),
 			"companion prepared mode dax, lease is mode fs"},
 		{api.Request{Op: "request", Source: "pool", Mode: "dax", Size: "64Mi", Wait: "5s"},
-			withDev(preparedDev(serialPoolP, pmemBytes, api.ModeFs, -1), func(d *state.DeviceInfo) { d.Access = "direct" }),
+			withDev(preparedDev(serialPoolP, pmemBytes, api.ModeFS, -1), func(d *state.DeviceInfo) { d.Access = "direct" }),
 			"companion prepared mode fs, lease is mode dax"},
-		{api.Request{Op: "request", Shared: true, ReadOnly: true, Mode: "block", Size: "64Mi", Wait: "5s"},
-			withDev(preparedDev(serialPoolP, pmemBytes, api.ModeFs, -1), func(d *state.DeviceInfo) { d.Access, d.BlockDevice = "direct", "/dev/pmem0" }),
+		{api.Request{Op: "request", Share: true, ReadOnly: true, Mode: "block", Size: "64Mi", Wait: "5s"},
+			withDev(preparedDev(serialPoolP, pmemBytes, api.ModeFS, -1), func(d *state.DeviceInfo) { d.Access, d.BlockDevice = "direct", "/dev/pmem0" }),
 			"companion prepared mode fs, lease is mode block"},
-		{api.Request{Op: "request", Shared: true, ReadOnly: true, Mode: "fs", Size: "64Mi", Wait: "5s"},
+		{api.Request{Op: "request", Share: true, ReadOnly: true, Mode: "fs", Size: "64Mi", Wait: "5s"},
 			withDev(preparedDev(serialPoolP, pmemBytes, api.ModeBlock, -1), func(d *state.DeviceInfo) { d.ReadOnly, d.BlockDevice = true, "/dev/pmem0" }),
 			"companion prepared mode block, lease is mode fs"},
 		{api.Request{Op: "request", Source: "pool", Mode: "block", Size: "64Mi", Wait: "5s"},
@@ -846,7 +846,7 @@ func TestCompanionGoneAndContainerGone(t *testing.T) {
 	e.openClaim()
 	e.start()
 	r1, _ := e.call(api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s"})
-	r2, _ := e.call(api.Request{Op: api.OpRequest, Serial: "0xc1ae0001", Shared: true, Wait: "0s"})
+	r2, _ := e.call(api.Request{Op: api.OpRequest, Serial: "0xc1ae0001", Share: true, Wait: "0s"})
 	e.waitClaim(CompanionName(r2.Lease))
 
 	e.b.OnReleasing(r1.Lease)
@@ -1069,7 +1069,7 @@ func TestCloseClaimWaitsForRemoval(t *testing.T) {
 
 // What a container of before the read-only mount of its socket directory
 // put there is never followed: a symlink at the socket path does not get
-// the mode of the socket, a symlink at the mount point of api.FsDir is
+// the mode of the socket, a symlink at the mount point of api.FSDir is
 // replaced by a directory, and the entries that the container wrote are
 // removed with the claim, not their targets.
 func TestLeaseSocketNoFollow(t *testing.T) {
@@ -1877,10 +1877,10 @@ func TestGotOfPrepared(t *testing.T) {
 			state.LeaseGot{Source: state.SourcePool, Serial: serialPoolS, SharedDevice: true, Bytes: 1 << 28, Dax: "/dev/dax0.0"}, nil},
 		"block": {state.LeaseAsked{Mode: state.ModeBlock, SharedDevice: true}, withDev(preparedDev(serialPoolP, pmemBytes, api.ModeBlock, -1), func(d *state.DeviceInfo) { d.BlockDevice = "/dev/pmem0" }),
 			state.LeaseGot{Source: state.SourcePool, Serial: serialPoolP, Bytes: pmemBytes, Block: "/dev/pmem0"}, nil},
-		"fs": {state.LeaseAsked{Mode: state.ModeFs, Name: "data"}, shared(withDev(preparedDev(serialPoolP, pmemBytes, api.ModeFs, -1), func(d *state.DeviceInfo) {
+		"fs": {state.LeaseAsked{Mode: state.ModeFs, Name: "data"}, shared(withDev(preparedDev(serialPoolP, pmemBytes, api.ModeFS, -1), func(d *state.DeviceInfo) {
 			d.Access, d.FsType, d.BlockDevice = api.AccessDirect, "ext4", "/dev/pmem0"
 		})), state.LeaseGot{Source: state.SourcePool, Serial: serialPoolP, SharedDevice: true, Bytes: pmemBytes, Access: state.Access(api.AccessDirect),
-			FsType: "ext4", Path: api.FsDir + "/data"}, nil},
+			FsType: "ext4", Path: api.FSDir + "/data"}, nil},
 	} {
 		got, lend := gotOf(&state.Records{}, &state.Lease{Asked: tc.asked}, state.SourcePool, &tc.dev, "/lease-fs")
 		if !reflect.DeepEqual(*got, tc.got) || !reflect.DeepEqual(lend, tc.lend) {

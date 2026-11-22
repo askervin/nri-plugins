@@ -98,7 +98,7 @@ func TestUnrestoredCompanionFails(t *testing.T) {
 			e.addSlices(persistentPoolSlice())
 			e.openClaim()
 			e.start()
-			_, r := e.requestPool("000000a1", api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Shared: true, Mode: "fs", Wait: "5s"}, "llm0", poolPmemData)
+			_, r := e.requestPool("000000a1", api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Share: true, Mode: "fs", Wait: "5s"}, "llm0", poolPmemData)
 			if r.resp.State != api.StateReady {
 				t.Fatalf("response %+v", r.resp)
 			}

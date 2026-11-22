@@ -62,8 +62,8 @@ const (
 	AttrShared          resourcev1.QualifiedName = "shared"
 	AttrPersistent      resourcev1.QualifiedName = "persistent"
 	AttrSize            resourcev1.QualifiedName = "size"
-	AttrNode            resourcev1.QualifiedName = "node"
-	AttrNodes           resourcev1.QualifiedName = "nodes"
+	AttrMemoryNUMANode  resourcev1.QualifiedName = "node"
+	AttrMemoryNUMANodes resourcev1.QualifiedName = "nodes"
 	AttrNodeAffinity    resourcev1.QualifiedName = "nodeAffinity"
 	AttrMemoryBlockSize resourcev1.QualifiedName = "memoryBlockSize"
 	// AttrCoherent of a pool device tells whether the hardware keeps its

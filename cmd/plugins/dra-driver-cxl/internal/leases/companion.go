@@ -218,7 +218,7 @@ func (b *Broker) companionRequest(l *state.Lease) (*resourcev1.DeviceRequest, []
 func companionConfig(l *state.Lease, driver string, requests []string) (resourcev1.DeviceClaimConfiguration, error) {
 	dev := &config.Device{Mode: string(l.Asked.Mode), ReadOnly: ptr(readOnly(l))}
 	if l.Asked.Mode == state.ModeFs {
-		dev.Access, dev.FsType = string(l.Asked.Access), l.Asked.FsType
+		dev.Access, dev.FSType = string(l.Asked.Access), l.Asked.FsType
 	}
 	cfg := &config.MemoryConfig{APIVersion: config.APIVersion, Kind: config.Kind, Device: dev}
 	params, err := json.Marshal(cfg)
@@ -496,8 +496,8 @@ func gotOf(r *state.Records, l *state.Lease, source state.Source, d *state.Devic
 	switch d.Mode {
 	case api.ModeDax:
 		g.Dax = d.DaxDevice
-	case api.ModeFs:
-		g.Access, g.FsType, g.Path = state.Access(d.Access), d.FsType, api.FsDir+"/"+l.Asked.Name
+	case api.ModeFS:
+		g.Access, g.FsType, g.Path = state.Access(d.Access), d.FsType, api.FSDir+"/"+l.Asked.Name
 		fsDir := ""
 		if lc := r.LeaseClaim(l.Claim); lc != nil {
 			fsDir = filepath.Join(fsRoot, lc.UID)

@@ -293,7 +293,7 @@ func (c *Lender) RevokeGrant(ctx context.Context, gl state.GrantLend, claimName 
 func leaseBindTarget(lend *lend.Lend) (string, error) {
 	switch {
 	case lend.Name == "":
-		return "", fmt.Errorf("lease %s: the device is of mode %s, the lease is not", lend.Lease, api.ModeFs)
+		return "", fmt.Errorf("lease %s: the device is of mode %s, the lease is not", lend.Lease, api.ModeFS)
 	case lend.FsDir == "":
 		return "", fmt.Errorf("lease %s: its lease claim has no filesystem directory", lend.Lease)
 	case !api.ValidName(lend.Name):

@@ -271,7 +271,7 @@ func TestDeviceInfo(t *testing.T) {
 	if d := info(statetest.LocalDriver, statetest.ClaimLease).Devices[0]; d.DeviceType != device.DeviceTypeLease || d.Mode != "" {
 		t.Errorf("lease device %+v", d)
 	}
-	if d := info(statetest.LocalDriver, statetest.ClaimFs).Devices[0]; !d.Persistent || d.Mode != api.ModeFs || d.BlockDevice != "/dev/pmem7" ||
+	if d := info(statetest.LocalDriver, statetest.ClaimFs).Devices[0]; !d.Persistent || d.Mode != api.ModeFS || d.BlockDevice != "/dev/pmem7" ||
 		d.Access != api.AccessDirect || d.NodeMount == "" || d.FsType != "erofs" || !d.ReadOnly {
 		t.Errorf("persistent fs device %+v", d)
 	}

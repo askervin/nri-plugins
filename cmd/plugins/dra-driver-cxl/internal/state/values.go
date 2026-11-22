@@ -60,14 +60,14 @@ const (
 )
 
 // Mode is how a container gets the memory of a grant: api.ModeNUMA,
-// api.ModeDax, api.ModeBlock or api.ModeFs.
+// api.ModeDax, api.ModeBlock or api.ModeFS.
 type Mode string
 
 const (
 	ModeNUMA  Mode = api.ModeNUMA
 	ModeDax   Mode = api.ModeDax
 	ModeBlock Mode = api.ModeBlock
-	ModeFs    Mode = api.ModeFs
+	ModeFs    Mode = api.ModeFS
 )
 
 // Access is how a node mount maps its file pages: api.AccessDirect or

@@ -299,7 +299,7 @@ func (k *Kernel) unmatchedBtrfs(devs map[string]string, found []Superblock) []Su
 			continue
 		}
 		fsid := filepath.Base(filepath.Dir(filepath.Dir(m[0])))
-		out = append(out, Superblock{Device: d, Source: d, FSType: api.FsTypeBtrfs, Where: "btrfs " + fsid + ", no mount of it found"})
+		out = append(out, Superblock{Device: d, Source: d, FSType: api.FSTypeBtrfs, Where: "btrfs " + fsid + ", no mount of it found"})
 	}
 	return out
 }

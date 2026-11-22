@@ -86,7 +86,7 @@ const (
 	// lease claims in the plugin data directory. Only the plugin writes
 	// them; containers have them read-only.
 	leaseFsDirName = "lease-fs"
-	// leaseFsMountPoint is the mount point of api.FsDir in the socket
+	// leaseFsMountPoint is the mount point of api.FSDir in the socket
 	// directory of a lease claim, as runc would create it.
 	leaseFsMountPoint = "fs"
 	// leaseContainerDir is where the directory of a lease claim is
@@ -313,7 +313,7 @@ func (b *Broker) stopListening(uid string) {
 // leases/<uid> by name (with whatever a container of before its read-only
 // mount wrote into its /run/cxl; never following a symlink) and the
 // directory. While a bind is in lease-fs/<uid>, leases/<uid> stays with
-// the mount point of api.FsDir in it: an rmdir of that mount point would
+// the mount point of api.FSDir in it: an rmdir of that mount point would
 // detach the bind lazily in a container that is still there. Nothing is
 // mounted below leases/<uid> in the plugin's mount namespace. Called
 // without b.mu: the removal of what a container wrote may take long; the
@@ -519,7 +519,7 @@ func (b *Broker) listen(uid string) error {
 }
 
 // makeFsDirs creates, for the lease claim uid, the mount point of
-// api.FsDir in its socket directory and its lease-fs directory.
+// api.FSDir in its socket directory and its lease-fs directory.
 func (b *Broker) makeFsDirs(uid string) error {
 	fsDir := b.leaseFsDir(uid)
 	mp := filepath.Join(b.leaseDir(uid), leaseFsMountPoint)
@@ -590,7 +590,7 @@ func (b *Broker) CDIEdits(claimUID string) cdiSpecs.ContainerEdits {
 	}
 	edits.Mounts = append(edits.Mounts, &cdiSpecs.Mount{
 		HostPath:      b.leaseFsDir(claimUID),
-		ContainerPath: api.FsDir,
+		ContainerPath: api.FSDir,
 		Type:          "bind",
 		Options:       []string{"rbind", "ro", "rslave"},
 	})

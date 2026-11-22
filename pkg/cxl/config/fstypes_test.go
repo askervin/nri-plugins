@@ -21,9 +21,9 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 )
 
-func TestFsTypeTable(t *testing.T) {
-	if len(fsTypes) != len(api.KnownFsTypes) {
-		t.Fatalf("%d types in the table, %d known", len(fsTypes), len(api.KnownFsTypes))
+func TestFSTypeTable(t *testing.T) {
+	if len(fsTypes) != len(api.KnownFSTypes) {
+		t.Fatalf("%d types in the table, %d known", len(fsTypes), len(api.KnownFSTypes))
 	}
 	for _, tc := range []struct {
 		name       string
@@ -46,8 +46,8 @@ func TestFsTypeTable(t *testing.T) {
 		{"", false, fsClassSingleHost, false, false, false, false},
 	} {
 		_, inTable := fsTypes[tc.name]
-		known, class, readOnly, dax, cluster, upgradable := api.KnownFsType(tc.name), fsTypeClass(tc.name), FsTypeReadOnly(tc.name),
-			FsTypeDAX(tc.name), FsTypeCluster(tc.name), FsTypeUpgradable(tc.name)
+		known, class, readOnly, dax, cluster, upgradable := api.KnownFSType(tc.name), fsTypeClass(tc.name), FSTypeReadOnly(tc.name),
+			FSTypeDax(tc.name), FSTypeCluster(tc.name), FSTypeRemountable(tc.name)
 		if known != tc.known || inTable != tc.known || class != tc.class || readOnly != tc.readOnly || dax != tc.dax ||
 			cluster != tc.cluster || upgradable != tc.upgradable {
 			t.Errorf("%q: known %v (table %v) class %s read-only %v DAX %v cluster %v upgradable %v, expected %v %s %v %v %v %v",
@@ -56,7 +56,7 @@ func TestFsTypeTable(t *testing.T) {
 	}
 }
 
-func TestFsMountData(t *testing.T) {
+func TestFSMountData(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		access   string
@@ -81,7 +81,7 @@ func TestFsMountData(t *testing.T) {
 		{"f2fs", api.AccessCached, true, ""},
 		{"f2fs", api.AccessCached, false, ""},
 	} {
-		if got := strings.Join(FsMountData(tc.name, tc.access, tc.readOnly), ","); got != tc.want {
+		if got := strings.Join(FSMountData(tc.name, tc.access, tc.readOnly), ","); got != tc.want {
 			t.Errorf("%s %s read-only %v: data %q, expected %q", tc.name, tc.access, tc.readOnly, got, tc.want)
 		}
 	}

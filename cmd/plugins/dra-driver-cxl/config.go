@@ -141,7 +141,7 @@ func (c *DriverConfig) validate() error {
 		return err
 	}
 	for _, t := range c.FsTypes {
-		if !api.ValidFsType(t) {
+		if !api.ValidFSType(t) {
 			return fmt.Errorf(`fsTypes: invalid filesystem type %q (lower-case letters, digits, "_" and "-")`, t)
 		}
 	}
@@ -159,7 +159,7 @@ func (c *DriverConfig) validate() error {
 // defaultFsTypes are the filesystem types that mode fs mounts when the
 // configuration has no fsTypes: erofs only, the type that is designed for
 // images from untrusted writers.
-var defaultFsTypes = []string{api.FsTypeErofs}
+var defaultFsTypes = []string{api.FSTypeErofs}
 
 // fsTypes returns the filesystem types that mode fs mounts on the node:
 // FsTypes, defaultFsTypes when it is not set.

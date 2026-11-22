@@ -188,7 +188,7 @@ func TestFailedCommitNoReady(t *testing.T) {
 	_, err = e.b.OnLending(id, claim)
 	mustOK(t, err)
 	e.b.OnPrepared(id, state.SourcePool, []state.DeviceInfo{numaDevice})
-	if resp := <-ch; resp.State != api.StateReady || resp.Node == nil || *resp.Node != 2 {
+	if resp := <-ch; resp.State != api.StateReady || resp.NUMANode == nil || *resp.NUMANode != 2 {
 		t.Fatalf("response %+v", resp)
 	}
 }
@@ -205,7 +205,7 @@ func TestFailedCommitNoFailure(t *testing.T) {
 	e.failWrites(true)
 	e.b.OnLendFailed(id, errors.New("boom"))
 	e.b.OnReleasing(id)
-	e.b.OnPrepared(id, state.SourcePool, []state.DeviceInfo{preparedDev(serialPoolP, pmemBytes, api.ModeFs, -1)})
+	e.b.OnPrepared(id, state.SourcePool, []state.DeviceInfo{preparedDev(serialPoolP, pmemBytes, api.ModeFS, -1)})
 	if l := e.stored(id); l.State != state.LeaseLending || l.Error != "" || l.ReleaseRequested {
 		t.Fatalf("lease after failed commits %+v", l)
 	}

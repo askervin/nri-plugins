@@ -444,7 +444,7 @@ unknown ones and never looks into the objects.
 driver (how the device is prepared, how containers are managed). A
 controller does not interpret them, except for the one question below
 that only the controller can enforce, which it asks through
-`config.ExclusiveHost`.
+`config.NeedsSingleHost`.
 
 **ReadWriteOnce.** A claim that mounts a single-host filesystem
 read-write (mode `fs`, `readOnly: false`, a type that is not a cluster
@@ -456,7 +456,7 @@ The node cannot see other hosts; the controller can:
 
 - For each allocation result of a shared device, the attachment that
   the result wants is exclusive when the result consumed all shares (as
-  before) or when `config.ExclusiveHost(res, coherent)` is true for its
+  before) or when `config.NeedsSingleHost(res, coherent)` is true for its
   resolved `MemoryConfig` and the `coherent` attribute of its device. A
   device that is not shared is attached to one host anyway. An
   attachment of a device to a host serves every claim of the host, and it
@@ -518,7 +518,7 @@ res, err := config.Resolve(claim, driver, r.Request)               // the merged
 var s Settings
 found, err := config.PoolOpaque(res, key, &s)                     // pool.opaque.<key>, other keys ignored
 // any err: AttachFailed=True, reason InvalidConfig, message err.Error()
-exclusive := allSharesConsumed(r) || (deviceShared && config.ExclusiveHost(res.Config, deviceCoherent)) // the attachment of the host
+exclusive := allSharesConsumed(r) || (deviceShared && config.NeedsSingleHost(res.Config, deviceCoherent)) // the attachment of the host
 ```
 
 The error texts start with `MemoryConfig: `, for example
@@ -526,7 +526,7 @@ The error texts start with `MemoryConfig: `, for example
 `MemoryConfig: pool.opaque.fake-cxl-pool: json: unknown field "port"`.
 `Resolve` also validates the values of the `container` section (an
 invalid steering policy fails it); it checks no device fields.
-`ExclusiveHost` is true for mode `fs` with `readOnly: false`, unless
+`NeedsSingleHost` is true for mode `fs` with `readOnly: false`, unless
 `fsType` is a cluster filesystem (gfs2) and the device is coherent.
 
 **The reference controller.** fake-cxl-pool-controller has the key

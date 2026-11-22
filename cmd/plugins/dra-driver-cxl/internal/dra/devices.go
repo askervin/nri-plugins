@@ -811,10 +811,10 @@ func memoryCapacity(size uint64) map[resourcev1.QualifiedName]resourcev1.DeviceC
 // regionDevice returns the ResourceSlice device of a region.
 func regionDevice(name string, dev *Region) resourcev1.Device {
 	attrs := map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
-		device.AttrType:   {StringValue: ptr(device.DeviceTypeRegion)},
-		device.AttrSource: {StringValue: ptr(api.SourceLocal)},
-		device.AttrNode:   {IntValue: ptr(int64(dev.NumaNode))},
-		device.AttrSize:   {IntValue: ptr(int64(dev.Size))},
+		device.AttrType:           {StringValue: ptr(device.DeviceTypeRegion)},
+		device.AttrSource:         {StringValue: ptr(api.SourceLocal)},
+		device.AttrMemoryNUMANode: {IntValue: ptr(int64(dev.NumaNode))},
+		device.AttrSize:           {IntValue: ptr(int64(dev.Size))},
 	}
 	if a, ok := regionNodeAffinity(dev); ok {
 		attrs[device.AttrNodeAffinity] = resourcev1.DeviceAttribute{IntValue: ptr(int64(a))}
@@ -850,10 +850,10 @@ func dramDevice(name string, dev *DRAM) resourcev1.Device {
 	return resourcev1.Device{
 		Name: name,
 		Attributes: map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
-			device.AttrType:   {StringValue: ptr(device.DeviceTypeDRAM)},
-			device.AttrSource: {StringValue: ptr(api.SourceLocal)},
-			device.AttrNodes:  {StringValue: ptr(cpuset.New(dev.Nodes...).String())},
-			device.AttrSize:   {IntValue: ptr(int64(dev.Size))},
+			device.AttrType:            {StringValue: ptr(device.DeviceTypeDRAM)},
+			device.AttrSource:          {StringValue: ptr(api.SourceLocal)},
+			device.AttrMemoryNUMANodes: {StringValue: ptr(cpuset.New(dev.Nodes...).String())},
+			device.AttrSize:            {IntValue: ptr(int64(dev.Size))},
 		},
 		Capacity:                 memoryCapacity(dev.Size),
 		NodeAllocatableResources: MemoryNodeAllocatableResources(),

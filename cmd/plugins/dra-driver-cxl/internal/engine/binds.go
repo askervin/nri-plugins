@@ -116,7 +116,7 @@ func (e *Engine) bindLease(u *pmemGrant, target string, otherBind func(string) b
 		return true, checkExistingBind(u, target, mi, node, otherBind)
 	}
 	err = e.locked(func() error {
-		if u.readOnly && !config.FsTypeReadOnly(node.FSType) {
+		if u.readOnly && !config.FSTypeReadOnly(node.FSType) {
 			return e.k.BindReadOnly(u.nodeMount, target)
 		}
 		return e.k.Mount(u.nodeMount, target, "", syscall.MS_BIND, "")
@@ -180,7 +180,7 @@ func isLeaseBind(mi, node *kernel.MountInfo, readOnly bool) bool {
 // leaseBindType tells whether a mount may be a lease bind: of a block
 // device, of a filesystem type that mode fs mounts.
 func (e *Engine) leaseBindType(mi *kernel.MountInfo) bool {
-	return strings.HasPrefix(mi.Source, e.devRoot()+"/") && (api.KnownFsType(mi.FSType) || slices.Contains(e.opts.FsTypes, mi.FSType))
+	return strings.HasPrefix(mi.Source, e.devRoot()+"/") && (api.KnownFSType(mi.FSType) || slices.Contains(e.opts.FsTypes, mi.FSType))
 }
 
 // releaseBind unbinds the lease bind of a companion grant. A bind that is

@@ -218,7 +218,7 @@ func TestLocalPersistentFs(t *testing.T) {
 	e.mustPrepare(e.local, localClaim("w1", pmemDev, -device.SharesUnlimited, cfgFsRW))
 	e.mustPrepare(e.local, localClaim("r1", pmemDev, -1, cfgFsRO))
 	w, r := e.local.ClaimInfo("w1").Devices[0], e.local.ClaimInfo("r1").Devices[0]
-	if !w.Persistent || w.Mode != api.ModeFs || w.NodeMount == "" || w.FsType != "ext4" || w.Access != api.AccessDirect ||
+	if !w.Persistent || w.Mode != api.ModeFS || w.NodeMount == "" || w.FsType != "ext4" || w.Access != api.AccessDirect ||
 		w.Path != "/run/cxl-fs/C100F5E1" || w.ReadOnly || r.NodeMount != w.NodeMount || !r.ReadOnly {
 		t.Fatalf("device infos %+v %+v", w, r)
 	}

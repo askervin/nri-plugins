@@ -37,14 +37,14 @@ type fsType struct {
 	dax   bool
 }
 
-// fsTypes are the known filesystem types (api.KnownFsTypes) by name.
+// fsTypes are the known filesystem types (api.KnownFSTypes) by name.
 var fsTypes = map[string]fsType{
-	api.FsTypeErofs:    {class: fsClassReadOnly, dax: true},
-	api.FsTypeSquashfs: {class: fsClassReadOnly},
-	api.FsTypeExt4:     {class: fsClassSingleHost, dax: true},
-	api.FsTypeXfs:      {class: fsClassSingleHost, dax: true},
-	api.FsTypeBtrfs:    {class: fsClassSingleHost},
-	api.FsTypeGfs2:     {class: fsClassCluster},
+	api.FSTypeErofs:    {class: fsClassReadOnly, dax: true},
+	api.FSTypeSquashfs: {class: fsClassReadOnly},
+	api.FSTypeExt4:     {class: fsClassSingleHost, dax: true},
+	api.FSTypeXfs:      {class: fsClassSingleHost, dax: true},
+	api.FSTypeBtrfs:    {class: fsClassSingleHost},
+	api.FSTypeGfs2:     {class: fsClassCluster},
 }
 
 // fsTypeClass returns the class of a filesystem type: fsClassReadOnly,
@@ -57,39 +57,39 @@ func fsTypeClass(name string) string {
 	return fsClassSingleHost
 }
 
-// FsTypeReadOnly returns true if a filesystem of the type is never
+// FSTypeReadOnly returns true if a filesystem of the type is never
 // mounted read-write (erofs, squashfs).
-func FsTypeReadOnly(name string) bool {
+func FSTypeReadOnly(name string) bool {
 	return fsTypeClass(name) == fsClassReadOnly
 }
 
-// FsTypeCluster returns true if the type is a cluster filesystem (gfs2).
-func FsTypeCluster(name string) bool {
+// FSTypeCluster returns true if the type is a cluster filesystem (gfs2).
+func FSTypeCluster(name string) bool {
 	return fsTypeClass(name) == fsClassCluster
 }
 
-// FsTypeDAX returns true if a filesystem of the type can be mounted with
+// FSTypeDax returns true if a filesystem of the type can be mounted with
 // access direct (erofs, ext4, xfs).
-func FsTypeDAX(name string) bool {
+func FSTypeDax(name string) bool {
 	return fsTypes[name].dax
 }
 
-// FsTypeUpgradable returns true if a read-only superblock of the type that
+// FSTypeRemountable returns true if a read-only superblock of the type that
 // was mounted on a read-only block device can be made read-write in place
 // once the block device is writable (ext4, xfs; btrfs keeps its device
 // open read-only, gfs2 mounts read-only claims as spectator).
-func FsTypeUpgradable(name string) bool {
-	return name == api.FsTypeExt4 || name == api.FsTypeXfs
+func FSTypeRemountable(name string) bool {
+	return name == api.FSTypeExt4 || name == api.FSTypeXfs
 }
 
-// FsMountData returns the mount options that the plugin passes when it
+// FSMountData returns the mount options that the plugin passes when it
 // mounts a filesystem of the type, as "key" or "key=value" items in
 // order: dax=always (access direct) or dax=never (access cached) for the
 // DAX types, nouuid for read-only xfs, spectator for read-only gfs2;
 // none for other types.
-func FsMountData(name, access string, readOnly bool) []string {
+func FSMountData(name, access string, readOnly bool) []string {
 	var data []string
-	if FsTypeDAX(name) {
+	if FSTypeDax(name) {
 		if access == api.AccessDirect {
 			data = append(data, "dax=always")
 		} else {
@@ -98,9 +98,9 @@ func FsMountData(name, access string, readOnly bool) []string {
 	}
 	switch {
 	case !readOnly:
-	case name == api.FsTypeXfs:
+	case name == api.FSTypeXfs:
 		data = append(data, "nouuid")
-	case name == api.FsTypeGfs2:
+	case name == api.FSTypeGfs2:
 		data = append(data, "spectator")
 	}
 	return data

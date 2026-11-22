@@ -483,15 +483,15 @@ func (e *Engine) checkFsType(req *GrantRequest, typ string, sig *signature) (str
 		return fail("filesystem type %s is not allowed on this node (fsTypes: %s)", typ, allowed)
 	case e.nodevType(typ):
 		return fail("filesystem type %s does not mount a block device", typ)
-	case !req.Asked.ReadOnly && config.FsTypeReadOnly(typ):
+	case !req.Asked.ReadOnly && config.FSTypeReadOnly(typ):
 		return fail("%s is a read-only filesystem: set readOnly: true", typ)
-	case req.Asked.Access == state.AccessDirect && !config.FsTypeDAX(typ):
+	case req.Asked.Access == state.AccessDirect && !config.FSTypeDax(typ):
 		return fail("%s has no DAX: use access cached", typ)
 	}
 	access := string(req.Asked.Access)
 	if access == "" {
 		access = api.AccessCached
-		if config.FsTypeDAX(typ) {
+		if config.FSTypeDax(typ) {
 			access = api.AccessDirect
 		}
 	}
@@ -559,7 +559,7 @@ func (e *Engine) nodeMount(req *GrantRequest, u *pmemGrant, typ, access, mnt str
 		return "", err
 	}
 	switch {
-	case u.writer() && mi.SuperReadOnly() && !config.FsTypeUpgradable(typ):
+	case u.writer() && mi.SuperReadOnly() && !config.FSTypeRemountable(typ):
 		return "", fmt.Errorf("device %s: %s is mounted read-only on this node and cannot be remounted read-write: a read-write claim waits until the read-only claims of the node are gone",
 			sig.serial, typ)
 	case u.writer() && mi.SuperReadOnly():
@@ -578,7 +578,7 @@ func (e *Engine) nodeMount(req *GrantRequest, u *pmemGrant, typ, access, mnt str
 // mountFresh mounts the node mount mnt that is not mounted (mountNode),
 // refusing an ext4 that needs recovery when no grant writes.
 func (e *Engine) mountFresh(source state.Source, serial state.Serial, dev, access, typ, mnt string, writer bool, explained []string, sig *signature) (string, error) {
-	if !writer && typ == api.FsTypeExt4 {
+	if !writer && typ == api.FSTypeExt4 {
 		sg, err := sig.get()
 		if err != nil {
 			return "", err
@@ -668,14 +668,14 @@ func remountedUsers(r *state.Records, m *state.Mount, ref state.GrantRef) error 
 // while the device has a superblock that the node mounts explained do not
 // have.
 func (e *Engine) mountNode(source state.Source, serial state.Serial, dev, access, fsType, mnt string, writer bool, explained []string) (string, error) {
-	readOnlyType := config.FsTypeReadOnly(fsType)
+	readOnlyType := config.FSTypeReadOnly(fsType)
 	if !readOnlyType {
 		if err := e.checkUnexplained(serial, dev, explained); err != nil {
 			return "", err
 		}
 	}
 	ro := !writer || readOnlyType
-	data := config.FsMountData(fsType, access, ro)
+	data := config.FSMountData(fsType, access, ro)
 	if err := os.MkdirAll(mnt, 0o755); err != nil {
 		return "", err
 	}
@@ -695,7 +695,7 @@ func (e *Engine) mountNode(source state.Source, serial state.Serial, dev, access
 	if err := e.mountFs(source, serial, dev, src, fsType, mnt, ro, data, loop); err != nil {
 		return "", err
 	}
-	if access == api.AccessDirect && config.FsTypeDAX(fsType) {
+	if access == api.AccessDirect && config.FSTypeDax(fsType) {
 		if err := e.verifyNodeDax(source, serial, dev, fsType, mnt); err != nil {
 			return "", err
 		}
@@ -719,7 +719,7 @@ func (e *Engine) mountNode(source state.Source, serial state.Serial, dev, access
 func (e *Engine) mountFs(source state.Source, serial state.Serial, dev, src, fsType, mnt string, ro bool, data []string, loop kernel.Loop) error {
 	s := serial.String()
 	err := e.locked(func() error {
-		if config.FsTypeReadOnly(fsType) {
+		if config.FSTypeReadOnly(fsType) {
 			return e.k.Mount(src, mnt, fsType, fsMountFlags, strings.Join(data, ","))
 		}
 		return e.k.FSMount(src, mnt, fsType, !ro, data)
@@ -942,7 +942,7 @@ func (e *Engine) checkNodeMount(serial state.Serial, dev, access, fsType string,
 	if access == api.AccessCached {
 		return mi.Source, nil
 	}
-	if config.FsTypeDAX(mi.FSType) && !mi.HasSuperOpt(daxAlways) {
+	if config.FSTypeDax(mi.FSType) && !mi.HasSuperOpt(daxAlways) {
 		return "", fmt.Errorf("device %s: %s on %s was mounted without DAX", s, mi.FSType, dev)
 	}
 	return "", nil
@@ -1365,8 +1365,8 @@ func fsType(s kernel.FSSignature, serial, dev, declared string) (string, error) 
 	case len(s.Types) > 1:
 		return "", fmt.Errorf("%s%s has signatures of several filesystems (%s): set device.fsType", prefix, dev, strings.Join(s.Types, ", "))
 	case declared == "":
-		return "", fmt.Errorf("%s%s has no filesystem of a type that the plugin knows (%s): set device.fsType", prefix, dev, listOr(api.KnownFsTypes))
-	case api.KnownFsType(declared):
+		return "", fmt.Errorf("%s%s has no filesystem of a type that the plugin knows (%s): set device.fsType", prefix, dev, listOr(api.KnownFSTypes))
+	case api.KnownFSType(declared):
 		return "", fmt.Errorf("%s%s has no filesystem of type %s (no signature of a type that the plugin knows)", prefix, dev, declared)
 	}
 	return declared, nil
@@ -1377,7 +1377,7 @@ func fsType(s kernel.FSSignature, serial, dev, declared string) (string, error) 
 // single-host.
 func cluster(s kernel.FSSignature, fsType string) (bool, string) {
 	switch {
-	case !config.FsTypeCluster(fsType):
+	case !config.FSTypeCluster(fsType):
 		return false, fsType + " is a single-host filesystem"
 	case s.Gfs2LockProto == kernel.Gfs2LockProtoDLM:
 		return true, ""

@@ -169,7 +169,7 @@ func (m *mountTable) allMounts() []kernel.MountInfo {
 // type: an anonymous device number (major 0) for btrfs, as the kernel gives
 // it, else the number of the block device. Called with m.mu held.
 func (m *mountTable) devNum(source, fstype string) string {
-	if fstype == api.FsTypeBtrfs {
+	if fstype == api.FSTypeBtrfs {
 		if _, ok := m.anon[source]; !ok {
 			m.anon[source] = "0:" + strconv.Itoa(40+len(m.anon))
 		}
@@ -316,7 +316,7 @@ func (m *mountTable) FSMount(source, target, fstype string, readWrite bool, opti
 		// a new superblock: another one of the same image is another cache
 		for _, mi := range m.mounts {
 			if mi.Source != source && m.image(mi.Source) == img {
-				if fstype == api.FsTypeXfs && !slices.Contains(options, "nouuid") {
+				if fstype == api.FSTypeXfs && !slices.Contains(options, "nouuid") {
 					return fmt.Errorf("%w: Filesystem has duplicate UUID", syscall.EINVAL)
 				}
 				if readWrite || !mi.SuperReadOnly() {

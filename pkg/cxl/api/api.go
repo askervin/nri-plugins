@@ -35,9 +35,9 @@ const (
 	SocketEnv = "CXL_LEASE_SOCKET"
 	// DefaultSocket is the path of the lease socket in containers.
 	DefaultSocket = "/run/cxl/cxl.sock"
-	// FsDir is the directory of the mounts of fs leases in containers of
+	// FSDir is the directory of the mounts of fs leases in containers of
 	// lease claims.
-	FsDir = "/run/cxl/fs"
+	FSDir = "/run/cxl/fs"
 	// LeaseEnv is the lease id in the environment of cxl-request --exec.
 	LeaseEnv = "CXL_LEASE"
 	// ClaimEnvPrefix is the prefix of the claim marker
@@ -57,10 +57,10 @@ const (
 	// ModeBlock gives persistent memory as the block device of its fsdax
 	// namespace (claims) or its fd (leases).
 	ModeBlock = "block"
-	// ModeFs gives persistent memory as a filesystem mounted from its
+	// ModeFS gives persistent memory as a filesystem mounted from its
 	// fsdax namespace, read-only unless the claim or lease opts in to
 	// read-write.
-	ModeFs = "fs"
+	ModeFS = "fs"
 
 	// AccessDirect is a mode fs mount whose file pages are the device's
 	// memory (dax=always).
@@ -69,13 +69,13 @@ const (
 	// cache of the node (dax=never).
 	AccessCached = "cached"
 
-	// The filesystem types that the drivers know (KnownFsTypes).
-	FsTypeErofs    = "erofs"
-	FsTypeSquashfs = "squashfs"
-	FsTypeExt4     = "ext4"
-	FsTypeXfs      = "xfs"
-	FsTypeBtrfs    = "btrfs"
-	FsTypeGfs2     = "gfs2"
+	// The filesystem types that the drivers know (KnownFSTypes).
+	FSTypeErofs    = "erofs"
+	FSTypeSquashfs = "squashfs"
+	FSTypeExt4     = "ext4"
+	FSTypeXfs      = "xfs"
+	FSTypeBtrfs    = "btrfs"
+	FSTypeGfs2     = "gfs2"
 
 	// Operations of a request.
 	OpRequest = "request"
@@ -108,11 +108,11 @@ type Request struct {
 	Op        string `json:"op"`
 	Source    string `json:"source,omitempty"`
 	Mode      string `json:"mode,omitempty"`
-	Shared    bool   `json:"shared,omitempty"`
+	Share     bool   `json:"shared,omitempty"`
 	ReadOnly  bool   `json:"readOnly,omitempty"`
 	ReadWrite bool   `json:"readWrite,omitempty"`
 	Access    string `json:"access,omitempty"`
-	FsType    string `json:"fsType,omitempty"`
+	FSType    string `json:"fsType,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Size      string `json:"size,omitempty"`
 	Serial    string `json:"serial,omitempty"`
@@ -133,14 +133,14 @@ type Response struct {
 	State    string            `json:"state,omitempty"`
 	Source   string            `json:"source,omitempty"`
 	Mode     string            `json:"mode,omitempty"`
-	Shared   bool              `json:"shared"`
+	Share    bool              `json:"shared"`
 	ReadOnly bool              `json:"readOnly"`
 	Access   string            `json:"access,omitempty"`
-	FsType   string            `json:"fsType,omitempty"`
+	FSType   string            `json:"fsType,omitempty"`
 	Path     string            `json:"path,omitempty"`
 	Size     uint64            `json:"size,omitempty"`
 	Serial   string            `json:"serial,omitempty"`
-	Node     *int              `json:"node,omitempty"`
+	NUMANode *int              `json:"node,omitempty"`
 	Dax      string            `json:"dax,omitempty"`
 	Block    string            `json:"block,omitempty"`
 	Env      map[string]string `json:"env,omitempty"`
@@ -154,7 +154,7 @@ func (r *Request) EffectiveMode() string {
 	switch {
 	case r.Mode != "":
 		return r.Mode
-	case r.Shared:
+	case r.Share:
 		return ModeDax
 	}
 	return ModeNUMA
@@ -204,27 +204,27 @@ func (r *Request) validateRequest() error {
 	}
 	mode := r.EffectiveMode()
 	switch {
-	case r.Shared && r.Mode == ModeNUMA:
+	case r.Share && r.Mode == ModeNUMA:
 		return errors.New("shared memory is never onlined as RAM: use mode dax")
-	case r.Access != "" && mode != ModeFs:
+	case r.Access != "" && mode != ModeFS:
 		return errors.New("access needs mode fs")
-	case r.Name != "" && mode != ModeFs:
+	case r.Name != "" && mode != ModeFS:
 		return errors.New("name needs mode fs")
 	case r.Name != "" && !ValidName(r.Name):
 		return fmt.Errorf(`invalid name %q (letters, digits, ".", "_" and "-", not "." or "..")`, r.Name)
-	case r.FsType != "" && mode != ModeFs:
+	case r.FSType != "" && mode != ModeFS:
 		return errors.New("fsType needs mode fs")
-	case r.FsType != "" && !ValidFsType(r.FsType):
-		return fmt.Errorf(`invalid fsType %q (lower-case letters, digits, "_" and "-")`, r.FsType)
-	case r.ReadWrite && mode != ModeFs:
+	case r.FSType != "" && !ValidFSType(r.FSType):
+		return fmt.Errorf(`invalid fsType %q (lower-case letters, digits, "_" and "-")`, r.FSType)
+	case r.ReadWrite && mode != ModeFS:
 		return errors.New("readWrite needs mode fs")
 	case r.ReadOnly && r.ReadWrite:
 		return errors.New("readOnly and readWrite exclude each other")
-	case mode == ModeBlock && r.Shared && !r.ReadOnly:
+	case mode == ModeBlock && r.Share && !r.ReadOnly:
 		return errors.New("mode block with shared needs readOnly")
-	case r.ReadOnly && mode != ModeDax && mode != ModeFs && mode != ModeBlock:
+	case r.ReadOnly && mode != ModeDax && mode != ModeFS && mode != ModeBlock:
 		return errors.New("readOnly needs mode dax, fs or block")
-	case !r.Shared && r.Serial == "" && r.Size == "":
+	case !r.Share && r.Serial == "" && r.Size == "":
 		return errors.New("size or serial is required")
 	}
 	if r.Serial != "" {
@@ -241,8 +241,8 @@ func (r *Request) validateValues() error {
 	switch {
 	case r.Source != "" && r.Source != SourceLocal && r.Source != SourcePool:
 		return fmt.Errorf("invalid source %q (%s or %s)", r.Source, SourceLocal, SourcePool)
-	case r.Mode != "" && r.Mode != ModeNUMA && r.Mode != ModeDax && r.Mode != ModeFs && r.Mode != ModeBlock:
-		return fmt.Errorf("invalid mode %q (%s, %s, %s or %s)", r.Mode, ModeNUMA, ModeDax, ModeFs, ModeBlock)
+	case r.Mode != "" && r.Mode != ModeNUMA && r.Mode != ModeDax && r.Mode != ModeFS && r.Mode != ModeBlock:
+		return fmt.Errorf("invalid mode %q (%s, %s, %s or %s)", r.Mode, ModeNUMA, ModeDax, ModeFS, ModeBlock)
 	case r.Access != "" && r.Access != AccessDirect && r.Access != AccessCached:
 		return fmt.Errorf("invalid access %q (%s or %s)", r.Access, AccessDirect, AccessCached)
 	}
@@ -286,24 +286,24 @@ func validLease(id string) bool {
 	return true
 }
 
-// KnownFsTypes are the filesystem types that the drivers know.
-var KnownFsTypes = []string{FsTypeErofs, FsTypeSquashfs, FsTypeExt4, FsTypeXfs, FsTypeBtrfs, FsTypeGfs2}
+// KnownFSTypes are the filesystem types that the drivers know.
+var KnownFSTypes = []string{FSTypeErofs, FSTypeSquashfs, FSTypeExt4, FSTypeXfs, FSTypeBtrfs, FSTypeGfs2}
 
-// KnownFsType returns true if the drivers know the filesystem type.
-func KnownFsType(name string) bool {
-	return slices.Contains(KnownFsTypes, name)
+// KnownFSType returns true if the drivers know the filesystem type.
+func KnownFSType(name string) bool {
+	return slices.Contains(KnownFSTypes, name)
 }
 
 // PersistentMode tells whether a mode is a mode of persistent memory
 // (ModeBlock, ModeFs).
 func PersistentMode(mode string) bool {
-	return mode == ModeBlock || mode == ModeFs
+	return mode == ModeBlock || mode == ModeFS
 }
 
-// ValidFsType returns true if name is a valid filesystem type name: 1 to
+// ValidFSType returns true if name is a valid filesystem type name: 1 to
 // 32 bytes of lower-case letters, digits, "_" and "-", starting with a
 // letter or a digit.
-func ValidFsType(name string) bool {
+func ValidFSType(name string) bool {
 	if name == "" || len(name) > 32 {
 		return false
 	}
@@ -336,18 +336,18 @@ func ValidFsType(name string) bool {
 //   - ReadOnly: dax and block memory allows reads only, fs memory is
 //     mounted read-only
 type Memory struct {
-	Key      string
-	Serial   string
-	Shared   bool
-	Mode     string
-	Size     uint64
-	Node     int
-	Nodes    string
-	Dax      string
-	Path     string
-	Access   string
-	FsType   string
-	ReadOnly bool
+	Key       string
+	Serial    string
+	Shared    bool
+	Mode      string
+	Size      uint64
+	NUMANode  int
+	NUMANodes string
+	Dax       string
+	Path      string
+	Access    string
+	FSType    string
+	ReadOnly  bool
 }
 
 // Key returns the env key of the n-th memory of the memdev with the serial
@@ -403,17 +403,17 @@ func Env(m Memory) map[string]string {
 	case m.Mode == ModeBlock:
 		env[p+"PATH"] = m.Path
 		env[p+"READONLY"] = boolEnv(m.ReadOnly)
-	case m.Mode == ModeFs:
+	case m.Mode == ModeFS:
 		env[p+"PATH"] = m.Path
 		env[p+"ACCESS"] = m.Access
 		env[p+"READONLY"] = boolEnv(m.ReadOnly)
-		if m.FsType != "" {
-			env[p+"FSTYPE"] = m.FsType
+		if m.FSType != "" {
+			env[p+"FSTYPE"] = m.FSType
 		}
-	case m.Nodes != "":
-		env[p+"NODES"] = m.Nodes
+	case m.NUMANodes != "":
+		env[p+"NODES"] = m.NUMANodes
 	default:
-		env[p+"NODE"] = strconv.Itoa(m.Node)
+		env[p+"NODE"] = strconv.Itoa(m.NUMANode)
 	}
 	return env
 }

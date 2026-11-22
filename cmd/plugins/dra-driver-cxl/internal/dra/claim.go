@@ -431,8 +431,8 @@ func (p *Plugin) persistentRequest(pr *prepare, req *engine.GrantRequest, r *res
 		return fail(err)
 	}
 	req.Asked.Kind, req.Asked.Mode, req.Asked.Shared = state.KindPersistent, state.Mode(mode), dev.Shared
-	req.Asked.Access, req.Asked.FsType = state.Access(cfg.Access), cfg.FsType
-	if mode == api.ModeFs {
+	req.Asked.Access, req.Asked.FsType = state.Access(cfg.Access), cfg.FSType
+	if mode == api.ModeFS {
 		if req.Asked.Path = cfg.Path; req.Asked.Path == "" {
 			req.Asked.Path = defaultFsPath(key)
 		}
@@ -479,9 +479,9 @@ func (p *Plugin) poolResult(claim *resourcev1.ResourceClaim, pr *prepare, r *res
 	asked := state.Asked{Source: state.SourcePool, Kind: grantKind(data.Shared, data.Persistent), Mode: state.Mode(mode),
 		ReadOnly: cfg.IsReadOnly(), Size: data.Size, Shared: data.Shared}
 	key := keys.next(api.Key(data.Serial, 1))
-	if mode == api.ModeFs {
+	if mode == api.ModeFS {
 		// access "": by the type of the filesystem, at its Prepare
-		asked.Access, asked.Path, asked.FsType = state.Access(cfg.Access), cmp.Or(cfg.Path, defaultFsPath(key)), cfg.FsType
+		asked.Access, asked.Path, asked.FsType = state.Access(cfg.Access), cmp.Or(cfg.Path, defaultFsPath(key)), cfg.FSType
 	}
 	if err := p.checkSamePreparation(data, asked, pr.uid); err != nil {
 		return nil, fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, err)

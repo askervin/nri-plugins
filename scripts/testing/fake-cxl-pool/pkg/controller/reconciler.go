@@ -55,7 +55,7 @@ type want struct {
 	// capacity
 	allShares bool
 	// writer: a share of a shared device that the result writes with a
-	// single-host filesystem (config.ExclusiveHost)
+	// single-host filesystem (config.NeedsSingleHost)
 	writer bool
 	// fsType: device.fsType of the MemoryConfig of the result
 	fsType string
@@ -110,7 +110,7 @@ func (c *Controller) writerResult(r *resourceapi.DeviceRequestAllocationResult, 
 	if !ok || !d.Shared || res == nil {
 		return false
 	}
-	return config.ExclusiveHost(res.Config, devicesCoherent)
+	return config.NeedsSingleHost(res.Config, devicesCoherent)
 }
 
 // anyExclusive reports whether one of the wants of an attachment is
@@ -187,7 +187,7 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 			var res *config.Resolved
 			w.settings, res, w.cfgErr = c.poolSettings(claim, &r)
 			if res != nil {
-				w.fsType = res.Config.DeviceSection().FsType
+				w.fsType = res.Config.DeviceSection().FSType
 			}
 			w.writer = c.writerResult(&r, res)
 			w.exclusive = w.allShares || w.writer

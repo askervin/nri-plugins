@@ -315,7 +315,7 @@ the server, the controller and the driver in the e2e VMs. The controller:
   device data), and for a share whose `MemoryConfig` mounts a filesystem
   read-write (`device.mode: fs`, `readOnly: false`), unless it is a
   cluster filesystem (`device.fsType: gfs2`) on a coherent device
-  (`config.ExclusiveHost`; ReadWriteOnce, log: `attach D to H for claim
+  (`config.NeedsSingleHost`; ReadWriteOnce, log: `attach D to H for claim
   ...: exclusive for a read-write <fsType or "filesystem"> claim`). The
   device data of a claim whose attachment is exclusive for it has
   `singleHost: true` (the node mounts read-write only then). The other

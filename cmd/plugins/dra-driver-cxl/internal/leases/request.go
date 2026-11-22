@@ -166,12 +166,12 @@ func (b *Broker) requestOptions(a *state.LeaseAsked, req *api.Request) error {
 	if b.opts.PoolDriver == "" && req.Source == api.SourcePool {
 		return errPoolDisabled
 	}
-	a.Source, a.Shared, a.ReadOnly, a.Mode = state.Source(req.Source), req.Shared, req.ReadOnly, state.Mode(req.EffectiveMode())
-	a.SharedDevice = req.Shared
+	a.Source, a.Shared, a.ReadOnly, a.Mode = state.Source(req.Source), req.Share, req.ReadOnly, state.Mode(req.EffectiveMode())
+	a.SharedDevice = req.Share
 	if a.Mode == state.ModeFs {
 		// read-only unless readWrite; access "": by the type of the
 		// filesystem, decided by the driver of the device
-		a.Access, a.Name, a.FsType, a.ReadWrite = state.Access(req.Access), req.Name, req.FsType, req.ReadWrite
+		a.Access, a.Name, a.FsType, a.ReadWrite = state.Access(req.Access), req.Name, req.FSType, req.ReadWrite
 		a.ReadOnly = !req.ReadWrite
 	}
 	if req.Size != "" {
@@ -207,7 +207,7 @@ func (b *Broker) serialOptions(a *state.LeaseAsked, req *api.Request) error {
 	case api.PersistentMode(string(a.Mode)) && !dev.persistent:
 		return fmt.Errorf("memdev %s: mode %s needs a persistent device", text, a.Mode)
 	case !api.PersistentMode(string(a.Mode)) && dev.persistent:
-		return fmt.Errorf("memdev %s: a persistent device needs mode %s or %s", text, api.ModeBlock, api.ModeFs)
+		return fmt.Errorf("memdev %s: a persistent device needs mode %s or %s", text, api.ModeBlock, api.ModeFS)
 	case !dev.shared:
 		a.DeviceSource = deviceSourceOf(dev, req)
 		return nil

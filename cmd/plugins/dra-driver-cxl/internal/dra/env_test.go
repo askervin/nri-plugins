@@ -161,7 +161,7 @@ func newDriverEnv(t *testing.T, localSpecs []fake.MemdevSpec, poolSpecs ...fake.
 		cdiDir:  filepath.Join(dir, "cdi"),
 		memdevs: map[uint64]kernel.MemdevInfo{},
 		shared:  map[uint64]bool{},
-		fsTypes: slices.Clone(api.KnownFsTypes),
+		fsTypes: slices.Clone(api.KnownFSTypes),
 	}
 	for _, d := range []string{e.dir, e.poolDir, e.cdiDir} {
 		mustOK(t, os.MkdirAll(d, 0o755))

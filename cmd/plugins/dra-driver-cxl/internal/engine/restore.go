@@ -341,7 +341,7 @@ func (e *Engine) restoreFlags(serial state.Serial, dev string, grants []pmemGran
 	source := grants[0].source
 	var loops []string
 	for _, mnt := range nodeMounts(grants) {
-		if mi, err := e.k.Mounted(mnt); err == nil && mi != nil && e.loopOf(mi) != "" && !config.FsTypeReadOnly(mi.FSType) {
+		if mi, err := e.k.Mounted(mnt); err == nil && mi != nil && e.loopOf(mi) != "" && !config.FSTypeReadOnly(mi.FSType) {
 			loops = append(loops, e.loopOf(mi))
 		}
 	}
@@ -386,7 +386,7 @@ func (e *Engine) restoreNodeMount(u *pmemGrant, writer bool, explained []string)
 		return loop, err
 	}
 	switch {
-	case writer && mi.SuperReadOnly() && config.FsTypeUpgradable(mi.FSType):
+	case writer && mi.SuperReadOnly() && config.FSTypeRemountable(mi.FSType):
 		err = e.upgrade(u.source, u.serial, u.blockDevice, loop, u.nodeMount, explained)
 	case writer && mi.SuperReadOnly():
 		err = fmt.Errorf("device %s: %s is mounted read-only and cannot be remounted read-write (%s)", u.serial.String(), u.nodeMount, mi.FSType)

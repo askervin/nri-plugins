@@ -237,7 +237,7 @@ func (e *leaseEnv) boot() {
 			Coherent: func(string, uint64) bool { return false }},
 		Publish: e.publishConfig(),
 		Scan:    func(context.Context) (*kernel.Snapshot, error) { return e.detected(), nil },
-		FsTypes: api.KnownFsTypes,
+		FsTypes: api.KnownFSTypes,
 		Timeouts: engine.Timeouts{Memdev: 300 * time.Millisecond, ProbeGrace: 20 * time.Millisecond, RegionRetry: 10 * time.Millisecond,
 			Settle: 2 * time.Second, LocalSettle: 2 * time.Second, Restore: time.Second, Holder: 50 * time.Millisecond,
 			OfflineSettle: 20 * time.Millisecond, Offline: time.Second},

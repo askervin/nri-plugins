@@ -62,9 +62,9 @@ func TestMemdevMode(t *testing.T) {
 		{dev: Device{Mode: "block"}, err: `MemoryConfig: device.mode: invalid mode "block" (numa or dax)`},
 		{dev: Device{Access: "direct"}, err: "MemoryConfig: device.access needs mode fs"},
 		{dev: Device{Mode: "dax", Path: "/models"}, err: "MemoryConfig: device.path needs mode fs"},
-		{dev: Device{Mode: "dax", Path: "/models", FsType: "ext4"}, err: "MemoryConfig: device.path needs mode fs"},
-		{dev: Device{FsType: "ext4"}, err: "MemoryConfig: device.fsType needs mode fs"},
-		{dev: Device{Mode: "dax", FsType: "Bad"}, shared: true, err: "MemoryConfig: device.fsType needs mode fs"},
+		{dev: Device{Mode: "dax", Path: "/models", FSType: "ext4"}, err: "MemoryConfig: device.path needs mode fs"},
+		{dev: Device{FSType: "ext4"}, err: "MemoryConfig: device.fsType needs mode fs"},
+		{dev: Device{Mode: "dax", FSType: "Bad"}, shared: true, err: "MemoryConfig: device.fsType needs mode fs"},
 	} {
 		got, err := tc.dev.MemdevMode(tc.shared)
 		if !checkErr(err, tc.err) || (tc.err == "" && got != tc.want) {
@@ -88,7 +88,7 @@ func TestNUMAOnly(t *testing.T) {
 		{Device{Mode: "kmem"}, device.DeviceTypeDRAM, `MemoryConfig: device.mode: invalid mode "kmem" (numa or dax)`},
 		{Device{Access: "cached"}, device.DeviceTypeRegion, "MemoryConfig: device.access needs mode fs"},
 		{Device{Path: "/x"}, device.DeviceTypeDRAM, "MemoryConfig: device.path needs mode fs"},
-		{Device{FsType: "xfs"}, device.DeviceTypeRegion, "MemoryConfig: device.fsType needs mode fs"},
+		{Device{FSType: "xfs"}, device.DeviceTypeRegion, "MemoryConfig: device.fsType needs mode fs"},
 	} {
 		if err := tc.dev.NUMAOnly(tc.what); !checkErr(err, tc.err) {
 			t.Errorf("%s %s: %v, expected %q", show(tc.dev), tc.what, err, tc.err)
@@ -108,8 +108,8 @@ func TestCheckLease(t *testing.T) {
 		{Device{ReadOnly: ro}, msg},
 		{Device{Access: "direct"}, msg},
 		{Device{Path: "/models"}, msg},
-		{Device{FsType: "ext4"}, msg},
-		{Device{FsType: "ext4", ReadOnly: rw}, msg},
+		{Device{FSType: "ext4"}, msg},
+		{Device{FSType: "ext4", ReadOnly: rw}, msg},
 	} {
 		if err := tc.dev.CheckLease(); !checkErr(err, tc.err) {
 			t.Errorf("%s: %v, expected %q", show(tc.dev), err, tc.err)
@@ -127,7 +127,7 @@ func TestIsReadOnly(t *testing.T) {
 		{Device{Mode: "dax"}, false},
 		{Device{Mode: "block"}, false},
 		{Device{Mode: "fs"}, true},
-		{Device{Mode: "fs", FsType: "ext4", Access: "cached"}, true},
+		{Device{Mode: "fs", FSType: "ext4", Access: "cached"}, true},
 		{Device{ReadOnly: ro}, true},
 		{Device{ReadOnly: rw}, false},
 		{Device{Mode: "dax", ReadOnly: ro}, true},
@@ -179,27 +179,27 @@ func TestPoolMode(t *testing.T) {
 		{dev: Device{Mode: "block", ReadOnly: rw}, f: private, want: api.ModeBlock},
 		{dev: Device{Mode: "block", ReadOnly: ro}, f: reader, want: api.ModeBlock},
 		// mode fs read-only: absent or true
-		{dev: Device{Mode: "fs"}, f: reader, want: api.ModeFs},
-		{dev: Device{Mode: "fs", ReadOnly: ro}, f: reader, want: api.ModeFs},
-		{dev: Device{Mode: "fs", ReadOnly: ro, Access: "cached", Path: "/models"}, f: writer, want: api.ModeFs},
-		{dev: Device{Mode: "fs", ReadOnly: ro, Access: "direct"}, f: private, want: api.ModeFs},
-		{dev: Device{Mode: "fs", FsType: "xfs"}, f: reader, want: api.ModeFs},
-		{dev: Device{Mode: "fs", FsType: "my_fs-1"}, f: reader, want: api.ModeFs},
+		{dev: Device{Mode: "fs"}, f: reader, want: api.ModeFS},
+		{dev: Device{Mode: "fs", ReadOnly: ro}, f: reader, want: api.ModeFS},
+		{dev: Device{Mode: "fs", ReadOnly: ro, Access: "cached", Path: "/models"}, f: writer, want: api.ModeFS},
+		{dev: Device{Mode: "fs", ReadOnly: ro, Access: "direct"}, f: private, want: api.ModeFS},
+		{dev: Device{Mode: "fs", FSType: "xfs"}, f: reader, want: api.ModeFS},
+		{dev: Device{Mode: "fs", FSType: "my_fs-1"}, f: reader, want: api.ModeFS},
 		// mode fs read-write: on this host only, or a cluster filesystem on coherent memory
-		{dev: Device{Mode: "fs", ReadOnly: rw}, f: host, want: api.ModeFs},
-		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "ext4"}, f: writer, want: api.ModeFs},
-		{dev: Device{Mode: "fs", ReadOnly: rw, Access: "cached"}, f: private, want: api.ModeFs},
-		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "gfs2"}, f: coherent, want: api.ModeFs},
-		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "gfs2"}, f: host, want: api.ModeFs},
+		{dev: Device{Mode: "fs", ReadOnly: rw}, f: host, want: api.ModeFS},
+		{dev: Device{Mode: "fs", ReadOnly: rw, FSType: "ext4"}, f: writer, want: api.ModeFS},
+		{dev: Device{Mode: "fs", ReadOnly: rw, Access: "cached"}, f: private, want: api.ModeFS},
+		{dev: Device{Mode: "fs", ReadOnly: rw, FSType: "gfs2"}, f: coherent, want: api.ModeFS},
+		{dev: Device{Mode: "fs", ReadOnly: rw, FSType: "gfs2"}, f: host, want: api.ModeFS},
 		// the section alone, in this order
 		{dev: Device{Mode: "ext4", Access: "bogus"}, f: reader, err: `MemoryConfig: device.mode: invalid mode "ext4" (numa, dax, block or fs)`},
-		{dev: Device{Mode: "block", Access: "bogus", Path: "rel", FsType: "Ext4"}, f: reader, err: "MemoryConfig: device.access needs mode fs"},
+		{dev: Device{Mode: "block", Access: "bogus", Path: "rel", FSType: "Ext4"}, f: reader, err: "MemoryConfig: device.access needs mode fs"},
 		{dev: Device{Access: "direct"}, f: volatile, err: "MemoryConfig: device.access needs mode fs"},
-		{dev: Device{Mode: "dax", Path: "rel", FsType: "Ext4"}, f: reader, err: "MemoryConfig: device.path needs mode fs"},
-		{dev: Device{Mode: "block", FsType: "Ext4", ReadOnly: ro}, f: reader, err: "MemoryConfig: device.fsType needs mode fs"},
-		{dev: Device{FsType: "ext4"}, f: volatile, err: "MemoryConfig: device.fsType needs mode fs"},
-		{dev: Device{Mode: "fs", FsType: "Ext4", Access: "dax", Path: "rel"}, f: volatile, err: badFs},
-		{dev: Device{Mode: "fs", FsType: "fuse.x"}, f: reader, err: `MemoryConfig: device.fsType: invalid filesystem type "fuse.x" (lower-case letters, digits, "_" and "-")`},
+		{dev: Device{Mode: "dax", Path: "rel", FSType: "Ext4"}, f: reader, err: "MemoryConfig: device.path needs mode fs"},
+		{dev: Device{Mode: "block", FSType: "Ext4", ReadOnly: ro}, f: reader, err: "MemoryConfig: device.fsType needs mode fs"},
+		{dev: Device{FSType: "ext4"}, f: volatile, err: "MemoryConfig: device.fsType needs mode fs"},
+		{dev: Device{Mode: "fs", FSType: "Ext4", Access: "dax", Path: "rel"}, f: volatile, err: badFs},
+		{dev: Device{Mode: "fs", FSType: "fuse.x"}, f: reader, err: `MemoryConfig: device.fsType: invalid filesystem type "fuse.x" (lower-case letters, digits, "_" and "-")`},
 		{dev: Device{Mode: "fs", Access: "dax", Path: "rel"}, f: volatile, err: `MemoryConfig: device.access: invalid access "dax" (direct or cached)`},
 		{dev: Device{Mode: "fs", Path: "/run/cxl/fs"}, f: volatile,
 			err: `MemoryConfig: device.path: invalid path "/run/cxl/fs" (an absolute path outside /dev, /proc, /sys, /run/cxl and /var/run/cxl)`},
@@ -220,9 +220,9 @@ func TestPoolMode(t *testing.T) {
 		{dev: Device{Mode: "block"}, f: DeviceFacts{Shared: true, Persistent: true, Exclusive: true}, err: f2},
 		// F3
 		{dev: Device{Mode: "fs", ReadOnly: rw}, f: reader, err: f3},
-		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "ext4"}, f: coherent, err: f3},
-		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "gfs2"}, f: reader, err: f3},
-		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "erofs"}, f: DeviceFacts{Shared: true, Persistent: true, Exclusive: true}, err: f3},
+		{dev: Device{Mode: "fs", ReadOnly: rw, FSType: "ext4"}, f: coherent, err: f3},
+		{dev: Device{Mode: "fs", ReadOnly: rw, FSType: "gfs2"}, f: reader, err: f3},
+		{dev: Device{Mode: "fs", ReadOnly: rw, FSType: "erofs"}, f: DeviceFacts{Shared: true, Persistent: true, Exclusive: true}, err: f3},
 		// volatile devices
 		{dev: Device{Mode: "numa"}, f: shared, err: "MemoryConfig: device: a shared device is used as dax only"},
 		{dev: Device{ReadOnly: ro}, f: volatile, err: roMode},
@@ -256,11 +256,11 @@ func TestPersistentMode(t *testing.T) {
 		{dev: Device{Mode: "block"}, f: all, want: api.ModeBlock},
 		{dev: Device{Mode: "block", ReadOnly: ro}, f: share, want: api.ModeBlock},
 		{dev: Device{Mode: "block", ReadOnly: ro}, f: sharedShare, want: api.ModeBlock},
-		{dev: Device{Mode: "fs"}, f: sharedShare, want: api.ModeFs},
-		{dev: Device{Mode: "fs", ReadOnly: rw}, f: share, want: api.ModeFs},
-		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "btrfs"}, f: all, want: api.ModeFs},
-		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "gfs2"}, f: sharedCoherent, want: api.ModeFs},
-		{dev: Device{Mode: "dax", FsType: "ext4"}, f: all, err: "MemoryConfig: device.fsType needs mode fs"},
+		{dev: Device{Mode: "fs"}, f: sharedShare, want: api.ModeFS},
+		{dev: Device{Mode: "fs", ReadOnly: rw}, f: share, want: api.ModeFS},
+		{dev: Device{Mode: "fs", ReadOnly: rw, FSType: "btrfs"}, f: all, want: api.ModeFS},
+		{dev: Device{Mode: "fs", ReadOnly: rw, FSType: "gfs2"}, f: sharedCoherent, want: api.ModeFS},
+		{dev: Device{Mode: "dax", FSType: "ext4"}, f: all, err: "MemoryConfig: device.fsType needs mode fs"},
 		{dev: Device{}, f: all, err: "MemoryConfig: device: a persistent device needs mode block or fs"},
 		{dev: Device{Mode: "dax"}, f: share, err: "MemoryConfig: device: a persistent device needs mode block or fs"},
 		{dev: Device{Mode: "block"}, f: share, err: f1},
@@ -268,8 +268,8 @@ func TestPersistentMode(t *testing.T) {
 		{dev: Device{Mode: "block"}, f: sharedAll, err: f2},
 		{dev: Device{Mode: "block"}, f: DeviceFacts{Shared: true, Exclusive: true, Coherent: true}, err: f2},
 		{dev: Device{Mode: "fs", ReadOnly: rw}, f: sharedAll, err: f3},
-		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "gfs2"}, f: sharedShare, err: f3},
-		{dev: Device{Mode: "fs", ReadOnly: rw, FsType: "xfs"}, f: sharedCoherent, err: f3},
+		{dev: Device{Mode: "fs", ReadOnly: rw, FSType: "gfs2"}, f: sharedShare, err: f3},
+		{dev: Device{Mode: "fs", ReadOnly: rw, FSType: "xfs"}, f: sharedCoherent, err: f3},
 	} {
 		got, err := tc.dev.PersistentMode(tc.f)
 		if !checkErr(err, tc.err) || (tc.err == "" && got != tc.want) {
@@ -278,7 +278,7 @@ func TestPersistentMode(t *testing.T) {
 	}
 }
 
-func TestExclusiveHost(t *testing.T) {
+func TestNeedsSingleHost(t *testing.T) {
 	for _, tc := range []struct {
 		dev      *Device
 		coherent bool
@@ -291,16 +291,16 @@ func TestExclusiveHost(t *testing.T) {
 		{&Device{Mode: "block", ReadOnly: rw}, false, false},
 		{&Device{Mode: "fs"}, false, false},
 		{&Device{Mode: "fs", ReadOnly: ro}, false, false},
-		{&Device{Mode: "fs", ReadOnly: ro, FsType: "ext4"}, false, false},
+		{&Device{Mode: "fs", ReadOnly: ro, FSType: "ext4"}, false, false},
 		{&Device{Mode: "fs", ReadOnly: rw}, false, true},
 		{&Device{Mode: "fs", ReadOnly: rw}, true, true},
-		{&Device{Mode: "fs", ReadOnly: rw, FsType: "ext4"}, true, true},
-		{&Device{Mode: "fs", ReadOnly: rw, FsType: "unknownfs"}, true, true},
-		{&Device{Mode: "fs", ReadOnly: rw, FsType: "gfs2"}, false, true},
-		{&Device{Mode: "fs", ReadOnly: rw, FsType: "gfs2"}, true, false},
+		{&Device{Mode: "fs", ReadOnly: rw, FSType: "ext4"}, true, true},
+		{&Device{Mode: "fs", ReadOnly: rw, FSType: "unknownfs"}, true, true},
+		{&Device{Mode: "fs", ReadOnly: rw, FSType: "gfs2"}, false, true},
+		{&Device{Mode: "fs", ReadOnly: rw, FSType: "gfs2"}, true, false},
 	} {
 		cfg := MemoryConfig{APIVersion: APIVersion, Kind: Kind, Device: tc.dev}
-		if got := ExclusiveHost(cfg, tc.coherent); got != tc.want {
+		if got := NeedsSingleHost(cfg, tc.coherent); got != tc.want {
 			t.Errorf("%s coherent %v: exclusive %v, expected %v", cfg.Compact(), tc.coherent, got, tc.want)
 		}
 	}
@@ -311,7 +311,7 @@ func show(d Device) string {
 	return (&MemoryConfig{Device: &d}).Compact()
 }
 
-func TestValidFsPath(t *testing.T) {
+func TestValidFSPath(t *testing.T) {
 	for p, want := range map[string]bool{
 		"/models": true, "/run/cxl-fs/C1AE0001": true, "/run/cxl-fs": true, "/devices": true, "/run/cxlfs": true, "/a/b": true,
 		"": false, "/": false, "models": false, "/models/": false, "/a/../b": false, "/a//b": false,

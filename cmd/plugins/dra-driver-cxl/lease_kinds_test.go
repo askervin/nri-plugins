@@ -181,7 +181,7 @@ func TestPoolNumaLease(t *testing.T) {
 	}
 	numaEnv := map[string]string{"CXL_C1EE0001_MODE": "numa", "CXL_C1EE0001_NODE": "2", "CXL_C1EE0001_SERIAL": "0xc1ee0001",
 		"CXL_C1EE0001_SHARED": "0", "CXL_C1EE0001_SIZE": "268435456"}
-	wantResponse(t, <-ch, api.Response{State: api.StateReady, Source: "pool", Mode: "numa", Node: ptr(2), Size: 268435456, Serial: "0xc1ee0001", Env: numaEnv})
+	wantResponse(t, <-ch, api.Response{State: api.StateReady, Source: "pool", Mode: "numa", NUMANode: ptr(2), Size: 268435456, Serial: "0xc1ee0001", Env: numaEnv})
 	if info := e.pool.ClaimInfo(string(alloc.UID)); info == nil || info.Lend == nil || info.Lend.Lease != "000000a1" ||
 		!slices.Equal(info.Lend.NumaNodes, []int{2}) {
 		t.Fatalf("lend not in the results of the pool claim: %+v", info)
@@ -270,7 +270,7 @@ func TestPoolDaxLease(t *testing.T) {
 // sent again.
 func TestPoolSharedLeaseFd(t *testing.T) {
 	e := newFdEnv(t, nil, fake.MemdevSpec{Serial: serialPoolS})
-	claim, r := e.requestPool("000000a1", api.Request{Op: api.OpRequest, Serial: "0xC1AE0001", Shared: true, Source: "pool"}, "shared0", poolSharedData)
+	claim, r := e.requestPool("000000a1", api.Request{Op: api.OpRequest, Serial: "0xC1AE0001", Share: true, Source: "pool"}, "shared0", poolSharedData)
 	want := resourcev1.ExactDeviceRequest{
 		DeviceClassName: "cxl-pool-shared",
 		Selectors:       []resourcev1.DeviceSelector{{CEL: &resourcev1.CELDeviceSelector{Expression: `device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"`}}},
@@ -283,7 +283,7 @@ func TestPoolSharedLeaseFd(t *testing.T) {
 	sharedEnv := map[string]string{"CXL_C1AE0001_DAX": dax, "CXL_C1AE0001_MODE": "dax", "CXL_C1AE0001_READONLY": "0",
 		"CXL_C1AE0001_SERIAL": "0xc1ae0001", "CXL_C1AE0001_SHARED": "1", "CXL_C1AE0001_SIZE": "268435456"}
 	wantFd(t, r.fd)
-	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "pool", Mode: "dax", Shared: true, Size: 268435456, Serial: "0xc1ae0001",
+	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "pool", Mode: "dax", Share: true, Size: 268435456, Serial: "0xc1ae0001",
 		Dax: dax, Env: sharedEnv})
 	resp, fd := e.call(api.Request{Op: api.OpFd, Lease: "000000a1", Wait: "1s"})
 	wantFd(t, fd)
@@ -340,7 +340,7 @@ func TestLocalNumaLease(t *testing.T) {
 	if ex := claim.Spec.Devices.Requests[0].Exactly; ex == nil || ex.DeviceClassName != device.ClassLocal {
 		t.Fatalf("local request %+v", claim.Spec.Devices.Requests[0])
 	}
-	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "local", Mode: "numa", Node: ptr(2), Size: 128 << 20, Serial: "0xc100e2e1",
+	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "local", Mode: "numa", NUMANode: ptr(2), Size: 128 << 20, Serial: "0xc100e2e1",
 		Env: map[string]string{"CXL_C100E2E1_MODE": "numa", "CXL_C100E2E1_NODE": "2", "CXL_C100E2E1_SERIAL": "0xc100e2e1",
 			"CXL_C100E2E1_SHARED": "0", "CXL_C100E2E1_SIZE": "134217728"}})
 	if got := e.ctrs.lentNodes(envPodUID, envCtr); !slices.Equal(got, []int{2}) {
@@ -412,14 +412,14 @@ func TestLocalDaxLease(t *testing.T) {
 func TestLocalSharedLease(t *testing.T) {
 	e := newFdEnv(t, []fake.MemdevSpec{{Serial: serialShared, Ram: 1 << 30}})
 	e.setShared(serialShared)
-	claim, r := e.requestLocal("000000a1", api.Request{Op: api.OpRequest, Serial: "0xc100e2e2", Shared: true, ReadOnly: true, Source: "local", Wait: "5s"}, serialShared)
+	claim, r := e.requestLocal("000000a1", api.Request{Op: api.OpRequest, Serial: "0xc100e2e2", Share: true, ReadOnly: true, Source: "local", Wait: "5s"}, serialShared)
 	ex := claim.Spec.Devices.Requests[0].Exactly
 	if q := ex.Capacity.Requests[device.CapacityShares]; ex.DeviceClassName != device.ClassLocalShared || q.String() != "1" {
 		t.Fatalf("companion request %+v", ex)
 	}
 	wantFd(t, r.fd)
 	dax := filepath.Join(e.k.DevRoot(), "dax0.0")
-	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "local", Mode: "dax", Shared: true, ReadOnly: true, Size: 1 << 30,
+	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "local", Mode: "dax", Share: true, ReadOnly: true, Size: 1 << 30,
 		Serial: "0xc100e2e2", Dax: dax, Env: map[string]string{"CXL_C100E2E2_DAX": dax, "CXL_C100E2E2_MODE": "dax", "CXL_C100E2E2_READONLY": "1",
 			"CXL_C100E2E2_SERIAL": "0xc100e2e2", "CXL_C100E2E2_SHARED": "1", "CXL_C100E2E2_SIZE": "1073741824"}})
 	if got := e.k.DaxDriver("dax0.0"); got != "device_dax" || e.onlineBlocks() != 0 {
@@ -441,7 +441,7 @@ func TestTwoLeasesOneNode(t *testing.T) {
 	_, pool := e.requestPool("000000a2", api.Request{Op: api.OpRequest, Size: "256Mi", Source: "pool", Wait: "5s"}, "pooled0", poolExclusiveData)
 	ids := []string{local.resp.Lease, pool.resp.Lease}
 	for _, r := range []fdResponse{local, pool} {
-		if r.resp.State != api.StateReady || r.resp.Node == nil || *r.resp.Node != 2 {
+		if r.resp.State != api.StateReady || r.resp.NUMANode == nil || *r.resp.NUMANode != 2 {
 			t.Fatalf("response %+v", r.resp)
 		}
 	}
@@ -498,7 +498,7 @@ func TestFsLease(t *testing.T) {
 	ctx := context.Background()
 	fsDir := filepath.Join(e.dir, "lease-fs", envLeaseClaim)
 
-	claim, r := e.requestPool("000000a1", api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "fs", Wait: "5s"},
+	claim, r := e.requestPool("000000a1", api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Share: true, ReadOnly: true, Mode: "fs", Wait: "5s"},
 		"llm0", poolPmemData)
 	params := `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"fs","readOnly":true}}`
 	wantSpec := resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{
@@ -518,7 +518,7 @@ func TestFsLease(t *testing.T) {
 	if r.fd >= 0 {
 		t.Fatalf("fd %d with an fs lease", r.fd)
 	}
-	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "pool", Mode: "fs", FsType: "erofs", Shared: true, ReadOnly: true, Access: "direct",
+	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "pool", Mode: "fs", FSType: "erofs", Share: true, ReadOnly: true, Access: "direct",
 		Path: "/run/cxl/fs/000000a1", Size: pmemBytes, Serial: "0xc1af0001", Env: fsEnv("erofs", "direct", "/run/cxl/fs/000000a1", "1")})
 	bind := filepath.Join(fsDir, "000000a1")
 	direct, cached := e.nodeMount(serialPoolP, "direct"), e.nodeMount(serialPoolP, "cached")
@@ -539,9 +539,9 @@ func TestFsLease(t *testing.T) {
 		t.Fatalf("fd of an fs lease %+v fd %d", r, fd)
 	}
 
-	_, r = e.requestPool("000000a2", api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "fs", Access: "cached",
+	_, r = e.requestPool("000000a2", api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Share: true, ReadOnly: true, Mode: "fs", Access: "cached",
 		Name: "models", Wait: "5s"}, "llm0", poolPmemData)
-	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "pool", Mode: "fs", FsType: "erofs", Shared: true, ReadOnly: true, Access: "cached",
+	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "pool", Mode: "fs", FSType: "erofs", Share: true, ReadOnly: true, Access: "cached",
 		Path: "/run/cxl/fs/models", Size: pmemBytes, Serial: "0xc1af0001", Env: fsEnv("erofs", "cached", "/run/cxl/fs/models", "1")})
 	models := filepath.Join(fsDir, "models")
 	if mi := e.mounted(models); mi == nil || mi.Source != filepath.Join(e.k.DevRoot(), "loop0") || len(e.k.MountCalls(fake.BindCall(cached, models))) != 1 {
@@ -551,7 +551,7 @@ func TestFsLease(t *testing.T) {
 		{"models", `name "models" is in use by lease 000000a2`},
 		{"000000a1", `name "000000a1" is in use by lease 000000a1`},
 	} {
-		r, _ := e.call(api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "fs", Name: c.name})
+		r, _ := e.call(api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Share: true, ReadOnly: true, Mode: "fs", Name: c.name})
 		if r.Error != c.err || r.Lease != "" {
 			t.Errorf("name %s: %+v, expected %q", c.name, r, c.err)
 		}
@@ -629,9 +629,9 @@ func TestFsLease(t *testing.T) {
 // the opt-in.
 func TestFsLeaseReadWrite(t *testing.T) {
 	e := newFsEnv(t, "ext4")
-	_, rw := e.requestPool("000000a1", api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Shared: true, ReadWrite: true, Mode: "fs", Name: "rw", Wait: "5s"},
+	_, rw := e.requestPool("000000a1", api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Share: true, ReadWrite: true, Mode: "fs", Name: "rw", Wait: "5s"},
 		"llm0", poolPmemRWData)
-	wantResponse(t, rw.resp, api.Response{State: api.StateReady, Source: "pool", Mode: "fs", FsType: "ext4", Shared: true, Access: "direct",
+	wantResponse(t, rw.resp, api.Response{State: api.StateReady, Source: "pool", Mode: "fs", FSType: "ext4", Share: true, Access: "direct",
 		Path: "/run/cxl/fs/rw", Size: pmemBytes, Serial: "0xc1af0001", Env: fsEnv("ext4", "direct", "/run/cxl/fs/rw", "0")})
 	fsDir := filepath.Join(e.dir, "lease-fs", envLeaseClaim)
 	direct := e.nodeMount(serialPoolP, "direct")
@@ -641,9 +641,9 @@ func TestFsLeaseReadWrite(t *testing.T) {
 	if mi := e.mounted(direct); mi == nil || len(mi.SuperOpts) == 0 || mi.SuperOpts[0] != "rw" {
 		t.Fatalf("node mount %+v", mi)
 	}
-	_, ro := e.requestPool("000000a2", api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Shared: true, Mode: "fs", Name: "ro", Wait: "5s"},
+	_, ro := e.requestPool("000000a2", api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Share: true, Mode: "fs", Name: "ro", Wait: "5s"},
 		"llm0", poolPmemData)
-	wantResponse(t, ro.resp, api.Response{State: api.StateReady, Source: "pool", Mode: "fs", FsType: "ext4", Shared: true, ReadOnly: true, Access: "direct",
+	wantResponse(t, ro.resp, api.Response{State: api.StateReady, Source: "pool", Mode: "fs", FSType: "ext4", Share: true, ReadOnly: true, Access: "direct",
 		Path: "/run/cxl/fs/ro", Size: pmemBytes, Serial: "0xc1af0001", Env: fsEnv("ext4", "direct", "/run/cxl/fs/ro", "1")})
 	if c := e.k.MountCalls("robind"); !slices.Equal(c, []string{"robind " + direct + " " + filepath.Join(fsDir, "ro")}) {
 		t.Fatalf("read-only bind calls %q", c)
@@ -675,11 +675,11 @@ func TestLocalFsLease(t *testing.T) {
 	e.addSlices(localResourceSlice())
 	e.openClaim()
 	e.start()
-	claim, r := e.requestLocal("000000a1", api.Request{Op: api.OpRequest, Serial: "0xc100f5e1", Shared: true, Mode: "fs", Source: "local", Wait: "5s"}, serialPmem)
+	claim, r := e.requestLocal("000000a1", api.Request{Op: api.OpRequest, Serial: "0xc100f5e1", Share: true, Mode: "fs", Source: "local", Wait: "5s"}, serialPmem)
 	if ex := claim.Spec.Devices.Requests[0].Exactly; ex == nil || ex.DeviceClassName != device.ClassLocalPersistent {
 		t.Fatalf("local persistent request %+v", claim.Spec.Devices.Requests[0])
 	}
-	if r.resp.State != api.StateReady || r.resp.Source != "local" || r.resp.Mode != "fs" || r.resp.FsType != "erofs" || r.resp.Path != "/run/cxl/fs/000000a1" {
+	if r.resp.State != api.StateReady || r.resp.Source != "local" || r.resp.Mode != "fs" || r.resp.FSType != "erofs" || r.resp.Path != "/run/cxl/fs/000000a1" {
 		t.Fatalf("response %+v", r.resp)
 	}
 	bind := filepath.Join(e.dir, "lease-fs", envLeaseClaim, "000000a1")
@@ -707,7 +707,7 @@ func TestFsLeaseCloseRace(t *testing.T) {
 		closed = errors.Is(err, os.ErrNotExist)
 	}}
 	e.pool.Lender().Set(e.ctrs, hooks)
-	ch := e.async(api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "fs", Name: "models", Wait: "5s"})
+	ch := e.async(api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Share: true, ReadOnly: true, Mode: "fs", Name: "models", Wait: "5s"})
 	claim := e.waitClaim(leases.CompanionName("000000a1"))
 	noErr(t, e.prepare(e.pool, allocatedPool(claim, "llm0", poolPmemData)).Err)
 	if !closed {
@@ -813,10 +813,10 @@ func TestBlockLease(t *testing.T) {
 	e.wantGone(leases.CompanionName("000000a1"))
 	e.wantNoRegions()
 
-	_, r = e.requestPool("000000a1", api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "block", Wait: "5s"},
+	_, r = e.requestPool("000000a1", api.Request{Op: api.OpRequest, Serial: "0xc1af0001", Share: true, ReadOnly: true, Mode: "block", Wait: "5s"},
 		"llm0", poolPmemData)
 	wantFd(t, r.fd)
-	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "pool", Mode: "block", Shared: true, ReadOnly: true, Block: pmem,
+	wantResponse(t, r.resp, api.Response{State: api.StateReady, Source: "pool", Mode: "block", Share: true, ReadOnly: true, Block: pmem,
 		Size: pmemBytes, Serial: "0xc1af0001", Env: blockEnv(pmem, "1")})
 	if n := strings.Count(e.k.Commands(), "ndctl create-namespace"); n != 1 {
 		t.Fatalf("ndctl create-namespace ran %d times", n)

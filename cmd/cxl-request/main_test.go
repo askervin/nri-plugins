@@ -45,11 +45,11 @@ func TestParseArgs(t *testing.T) {
 			api.Request{Op: "request", Source: "pool", Size: "512Mi", Mode: "dax"}, []string{"python3", "app.py"}, ""},
 		{[]string{"request", "--serial", "0xc1ae0001"}, api.Request{Op: "request", Serial: "0xc1ae0001"}, nil, ""},
 		{[]string{"request", "--serial", "0xc1ae0001", "--shared", "--read-only", "--exec", "prog"},
-			api.Request{Op: "request", Serial: "0xc1ae0001", Shared: true, ReadOnly: true}, []string{"prog"}, ""},
-		{[]string{"request", "--shared", "--size", "256Mi"}, api.Request{Op: "request", Shared: true, Size: "256Mi"}, nil, ""},
-		{[]string{"request", "--shared=true", "--size", "256Mi"}, api.Request{Op: "request", Shared: true, Size: "256Mi"}, nil, ""},
-		{[]string{"request", "--shared", "--source", "local", "--size", "64Mi"}, api.Request{Op: "request", Shared: true, Source: "local", Size: "64Mi"}, nil, ""},
-		{[]string{"request", "--serial", "0xc100e2e1", "--shared", "--read-only"}, api.Request{Op: "request", Serial: "0xc100e2e1", Shared: true, ReadOnly: true}, nil, ""},
+			api.Request{Op: "request", Serial: "0xc1ae0001", Share: true, ReadOnly: true}, []string{"prog"}, ""},
+		{[]string{"request", "--shared", "--size", "256Mi"}, api.Request{Op: "request", Share: true, Size: "256Mi"}, nil, ""},
+		{[]string{"request", "--shared=true", "--size", "256Mi"}, api.Request{Op: "request", Share: true, Size: "256Mi"}, nil, ""},
+		{[]string{"request", "--shared", "--source", "local", "--size", "64Mi"}, api.Request{Op: "request", Share: true, Source: "local", Size: "64Mi"}, nil, ""},
+		{[]string{"request", "--serial", "0xc100e2e1", "--shared", "--read-only"}, api.Request{Op: "request", Serial: "0xc100e2e1", Share: true, ReadOnly: true}, nil, ""},
 		{[]string{"request", "--size", "1Gi", "--wait", "0s", "--request-id", "r1"}, api.Request{Op: "request", Size: "1Gi", Wait: "0s", RequestID: "r1"}, nil, ""},
 		{[]string{"release", "--lease", "1a2b3c4d"}, api.Request{Op: "release", Lease: "1a2b3c4d"}, nil, ""},
 		{[]string{"release", "--all", "--wait=1m"}, api.Request{Op: "release", All: true, Wait: "1m"}, nil, ""},
@@ -59,24 +59,24 @@ func TestParseArgs(t *testing.T) {
 		{[]string{"env", "--lease=1a2b3c4d", "--exec", "numactl", "--membind=2", "prog"}, api.Request{Op: "env", Lease: "1a2b3c4d"}, []string{"numactl", "--membind=2", "prog"}, ""},
 		// mode fs
 		{[]string{"request", "--serial", "0xc1ae0001", "--shared", "--read-only", "--mode", "fs", "--access", "cached", "--name", "models", "--exec", "sh", "/tmp/r.sh"},
-			api.Request{Op: "request", Serial: "0xc1ae0001", Shared: true, ReadOnly: true, Mode: "fs", Access: "cached", Name: "models"}, []string{"sh", "/tmp/r.sh"}, ""},
+			api.Request{Op: "request", Serial: "0xc1ae0001", Share: true, ReadOnly: true, Mode: "fs", Access: "cached", Name: "models"}, []string{"sh", "/tmp/r.sh"}, ""},
 		{[]string{"request", "--serial=0xc1ae0001", "--read-only", "--mode=fs", "--access=direct", "--name=m.1"},
 			api.Request{Op: "request", Serial: "0xc1ae0001", ReadOnly: true, Mode: "fs", Access: "direct", Name: "m.1"}, nil, ""},
 		{[]string{"request", "--source", "pool", "--mode", "fs", "--read-only", "--shared", "--size", "64Mi"},
-			api.Request{Op: "request", Source: "pool", Mode: "fs", ReadOnly: true, Shared: true, Size: "64Mi"}, nil, ""},
+			api.Request{Op: "request", Source: "pool", Mode: "fs", ReadOnly: true, Share: true, Size: "64Mi"}, nil, ""},
 		{[]string{"request", "--serial", "0xc1af0001", "--shared", "--mode", "fs"},
-			api.Request{Op: "request", Serial: "0xc1af0001", Shared: true, Mode: "fs"}, nil, ""},
+			api.Request{Op: "request", Serial: "0xc1af0001", Share: true, Mode: "fs"}, nil, ""},
 		{[]string{"request", "--serial", "0xc1af0001", "--shared", "--mode", "fs", "--read-write", "--fs-type", "ext4", "--exec", "sh", "/tmp/w.sh"},
-			api.Request{Op: "request", Serial: "0xc1af0001", Shared: true, Mode: "fs", ReadWrite: true, FsType: "ext4"}, []string{"sh", "/tmp/w.sh"}, ""},
+			api.Request{Op: "request", Serial: "0xc1af0001", Share: true, Mode: "fs", ReadWrite: true, FSType: "ext4"}, []string{"sh", "/tmp/w.sh"}, ""},
 		{[]string{"request", "--source=local", "--serial=0xc100f5e1", "--mode=fs", "--read-write=true", "--fs-type=xfs", "--access=cached", "--name=data"},
-			api.Request{Op: "request", Source: "local", Serial: "0xc100f5e1", Mode: "fs", ReadWrite: true, FsType: "xfs", Access: "cached", Name: "data"}, nil, ""},
+			api.Request{Op: "request", Source: "local", Serial: "0xc100f5e1", Mode: "fs", ReadWrite: true, FSType: "xfs", Access: "cached", Name: "data"}, nil, ""},
 		{[]string{"request", "--serial", "0xc1af0001", "--mode", "fs", "--read-write=false", "--fs-type", "btrfs"},
-			api.Request{Op: "request", Serial: "0xc1af0001", Mode: "fs", FsType: "btrfs"}, nil, ""},
+			api.Request{Op: "request", Serial: "0xc1af0001", Mode: "fs", FSType: "btrfs"}, nil, ""},
 		// mode block
 		{[]string{"request", "--serial", "0xc1ae0001", "--mode", "block", "--exec", "sh", "/tmp/w.sh"},
 			api.Request{Op: "request", Serial: "0xc1ae0001", Mode: "block"}, []string{"sh", "/tmp/w.sh"}, ""},
 		{[]string{"request", "--serial=0xc1ae0001", "--shared", "--read-only", "--mode=block", "--source", "pool"},
-			api.Request{Op: "request", Serial: "0xc1ae0001", Shared: true, ReadOnly: true, Mode: "block", Source: "pool"}, nil, ""},
+			api.Request{Op: "request", Serial: "0xc1ae0001", Share: true, ReadOnly: true, Mode: "block", Source: "pool"}, nil, ""},
 		{[]string{"request", "--source", "local", "--serial", "0xc100f5e1", "--mode", "block"},
 			api.Request{Op: "request", Source: "local", Serial: "0xc100f5e1", Mode: "block"}, nil, ""},
 		// validation errors
@@ -205,7 +205,7 @@ func TestRunExecFs(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("exit %d (stderr %s)", code, errb.String())
 	}
-	if r := <-reqs; r != (api.Request{Op: "request", Serial: "0xc1ae0001", Shared: true, ReadOnly: true, Mode: "fs", Access: "cached", Name: "models"}) {
+	if r := <-reqs; r != (api.Request{Op: "request", Serial: "0xc1ae0001", Share: true, ReadOnly: true, Mode: "fs", Access: "cached", Name: "models"}) {
 		t.Fatalf("request %+v", r)
 	}
 	if want := "/run/cxl/fs/models cached fs 1 000000b1 nofd\nnofd3\n"; out.String() != want {
@@ -229,7 +229,7 @@ func TestRunExecFs(t *testing.T) {
 	fs := `{"lease":"000000b1","state":"Ready","mode":"fs","shared":true,"readOnly":true,"error":"lease 000000b1 is not a dax or block lease; use env"}`
 	sock, _ = fakeServer(t, fs, "")
 	t.Setenv(api.SocketEnv, sock)
-	if code := run([]string{"fd", "--lease", "000000b1", "--exec", "/bin/true"}, &out, &errb); code != exitNotUsed ||
+	if code := run([]string{"fd", "--lease", "000000b1", "--exec", "/bin/true"}, &out, &errb); code != exitLeaseState ||
 		!strings.Contains(errb.String(), "lease 000000b1 is not a dax or block lease; use env") {
 		t.Fatalf("fd of an fs lease: exit %d %s", code, errb.String())
 	}
@@ -295,25 +295,25 @@ func TestExitCode(t *testing.T) {
 		code int
 	}{
 		{api.Request{Op: "request"}, api.Response{State: "Ready"}, exitOK},
-		{api.Request{Op: "request"}, api.Response{State: "Pending"}, exitNotUsed},
+		{api.Request{Op: "request"}, api.Response{State: "Pending"}, exitLeaseState},
 		{api.Request{Op: "request", Wait: "0s"}, api.Response{State: "Pending"}, exitOK},
 		{api.Request{Op: "request", Wait: "0"}, api.Response{State: "Pending"}, exitOK},
-		{api.Request{Op: "request"}, api.Response{State: "Failed", Error: "timeout"}, exitNotUsed},
+		{api.Request{Op: "request"}, api.Response{State: "Failed", Error: "timeout"}, exitLeaseState},
 		{api.Request{Op: "request"}, api.Response{Error: "not a container of the claim's pod"}, exitError},
 		{api.Request{Op: "release"}, api.Response{State: "Released"}, exitOK},
-		{api.Request{Op: "release"}, api.Response{State: "Releasing"}, exitNotUsed},
+		{api.Request{Op: "release"}, api.Response{State: "Releasing"}, exitLeaseState},
 		{api.Request{Op: "release", All: true}, api.Response{Leases: &released}, exitOK},
-		{api.Request{Op: "release", All: true}, api.Response{Leases: &releasing}, exitNotUsed},
+		{api.Request{Op: "release", All: true}, api.Response{Leases: &releasing}, exitLeaseState},
 		{api.Request{Op: "list"}, api.Response{Leases: &[]api.Response{}}, exitOK},
 		{api.Request{Op: "fd"}, api.Response{State: "Ready", Mode: "dax"}, exitOK},
 		{api.Request{Op: "fd"}, api.Response{State: "Ready", Mode: "block"}, exitOK},
-		{api.Request{Op: "fd"}, api.Response{State: "Pending", Mode: "block"}, exitNotUsed},
-		{api.Request{Op: "fd"}, api.Response{State: "Ready", Mode: "fs", Error: "lease 1a2b3c4d is not a dax or block lease; use env"}, exitNotUsed},
-		{api.Request{Op: "fd"}, api.Response{State: "Pending", Mode: "dax"}, exitNotUsed},
-		{api.Request{Op: "fd"}, api.Response{State: "Ready", Mode: "numa", Error: "lease 1a2b3c4d is not a dax or block lease; use env"}, exitNotUsed},
+		{api.Request{Op: "fd"}, api.Response{State: "Pending", Mode: "block"}, exitLeaseState},
+		{api.Request{Op: "fd"}, api.Response{State: "Ready", Mode: "fs", Error: "lease 1a2b3c4d is not a dax or block lease; use env"}, exitLeaseState},
+		{api.Request{Op: "fd"}, api.Response{State: "Pending", Mode: "dax"}, exitLeaseState},
+		{api.Request{Op: "fd"}, api.Response{State: "Ready", Mode: "numa", Error: "lease 1a2b3c4d is not a dax or block lease; use env"}, exitLeaseState},
 		{api.Request{Op: "fd"}, api.Response{Error: "no such lease of this container"}, exitError},
 		{api.Request{Op: "env"}, api.Response{State: "Ready", Mode: "numa"}, exitOK},
-		{api.Request{Op: "env", Wait: "0s"}, api.Response{State: "Pending"}, exitNotUsed},
+		{api.Request{Op: "env", Wait: "0s"}, api.Response{State: "Pending"}, exitLeaseState},
 	} {
 		if got := exitCode(&c.req, &c.resp); got != c.code {
 			t.Errorf("%+v %+v: exit %d, want %d", c.req, c.resp, got, c.code)
@@ -413,7 +413,7 @@ func TestRunEnvNotReady(t *testing.T) {
 	sock, _ := fakeServer(t, `{"lease":"1a2b3c4d","state":"Pending","mode":"numa","shared":false,"readOnly":false}`, "")
 	t.Setenv(api.SocketEnv, sock)
 	var out, errb bytes.Buffer
-	if code := run([]string{"env", "--lease", "1a2b3c4d", "--wait", "0s"}, &out, &errb); code != exitNotUsed || out.Len() != 0 {
+	if code := run([]string{"env", "--lease", "1a2b3c4d", "--wait", "0s"}, &out, &errb); code != exitLeaseState || out.Len() != 0 {
 		t.Fatalf("exit %d output %q", code, out.String())
 	}
 }
@@ -434,7 +434,7 @@ func TestRunExecDax(t *testing.T) {
 	if code != 7 {
 		t.Fatalf("exit %d (stderr %s)", code, errb.String())
 	}
-	if r := <-reqs; r != (api.Request{Op: "request", Serial: "0xc1ae0001", Shared: true, ReadOnly: true}) {
+	if r := <-reqs; r != (api.Request{Op: "request", Serial: "0xc1ae0001", Share: true, ReadOnly: true}) {
 		t.Fatalf("request %+v", r)
 	}
 	want := "3 000000a2 none 268435456 1 1\nTAG-1234"
@@ -487,7 +487,7 @@ func TestRunExecNUMA(t *testing.T) {
 	numa := `{"lease":"000000a4","state":"Ready","mode":"numa","shared":false,"readOnly":false,"error":"lease 000000a4 is not a dax or block lease; use env"}`
 	sock, _ = fakeServer(t, numa, "")
 	t.Setenv(api.SocketEnv, sock)
-	if code := run([]string{"fd", "--lease", "000000a4", "--exec", "/bin/true"}, &out, &errb); code != exitNotUsed || !strings.Contains(errb.String(), "not a dax or block lease") {
+	if code := run([]string{"fd", "--lease", "000000a4", "--exec", "/bin/true"}, &out, &errb); code != exitLeaseState || !strings.Contains(errb.String(), "not a dax or block lease") {
 		t.Fatalf("fd of a numa lease: exit %d %s", code, errb.String())
 	}
 }
@@ -496,7 +496,7 @@ func TestRunExecNotReady(t *testing.T) {
 	sock, _ := fakeServer(t, `{"lease":"000000a3","state":"Failed","mode":"dax","shared":true,"readOnly":false,"error":"timeout: not Ready after 2m0s"}`, "")
 	t.Setenv(api.SocketEnv, sock)
 	var out, errb bytes.Buffer
-	if code := run([]string{"request", "--serial", "0x1", "--shared", "--exec", "/bin/true"}, &out, &errb); code != exitNotUsed {
+	if code := run([]string{"request", "--serial", "0x1", "--shared", "--exec", "/bin/true"}, &out, &errb); code != exitLeaseState {
 		t.Fatalf("exit %d", code)
 	}
 	if !strings.Contains(errb.String(), "timeout") {
@@ -508,7 +508,7 @@ func TestRunExecNotReady(t *testing.T) {
 	if code := run([]string{"request", "--size", "1Gi", "--wait", "0s"}, &out, &errb); code != exitOK {
 		t.Fatalf("wait 0s: exit %d", code)
 	}
-	if code := run([]string{"request", "--size", "1Gi", "--wait", "0s", "--exec", "/bin/true"}, &out, &errb); code != exitNotUsed {
+	if code := run([]string{"request", "--size", "1Gi", "--wait", "0s", "--exec", "/bin/true"}, &out, &errb); code != exitLeaseState {
 		t.Fatalf("wait 0s --exec: exit %d", code)
 	}
 }
