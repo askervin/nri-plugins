@@ -136,7 +136,7 @@ func TestChartSchemaKeys(t *testing.T) {
 		got, want []string
 	}{
 		{"config", keys("properties", "config"), tags(DriverConfig{})},
-		{"config.memdevSettings[]", keys("properties", "config", "properties", "memdevSettings", "items"), tags(MemdevSetting{})},
+		{"config.memdevSettings[]", keys("properties", "config", "properties", "memdevSettings", "items"), tags(memdevSetting{})},
 		{"config.defaults", keys("properties", "config", "properties", "defaults"), tags(config.Defaults{})},
 		{"config.defaults.container", keys("properties", "config", "properties", "defaults", "properties", "container"), tags(config.Container{})},
 		{"container", keys("definitions", "container"), []string{"steering"}},

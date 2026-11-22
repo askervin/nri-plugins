@@ -73,10 +73,10 @@ type NodeOptions struct {
 	Publish PublishConfig
 	// Scan observes the node, nil for Kernel.ObserveTopology.
 	Scan func(ctx context.Context) (*kernel.Snapshot, error)
-	// Fence, FsTypes, ProbeAddressing and Timeouts go to the engine
+	// Fence, FSTypes, ProbeAddressing and Timeouts go to the engine
 	// (engine.Options).
 	Fence           func(ctx context.Context, node int)
-	FsTypes         []string
+	FSTypes         []string
 	ProbeAddressing bool
 	Timeouts        engine.Timeouts
 	// Forget are the serials whose provenance records the watcher
@@ -129,7 +129,7 @@ func NewNode(opts NodeOptions) (*Node, error) {
 		// an engine without sources owns nothing, nil sources own all
 		Sources:         []state.Source{},
 		LeaseFsRoot:     opts.LeaseFsRoot,
-		FSTypes:         opts.FsTypes,
+		FSTypes:         opts.FSTypes,
 		Fence:           opts.Fence,
 		ProbeAddressing: opts.ProbeAddressing,
 		Timeouts:        opts.Timeouts,

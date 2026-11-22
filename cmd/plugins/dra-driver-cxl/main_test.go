@@ -31,7 +31,7 @@ import (
 )
 
 // testParseFlags returns the flags of args with the environment env.
-func testParseFlags(args []string, env map[string]string) (*CXLFlags, error) {
+func testParseFlags(args []string, env map[string]string) (*flags, error) {
 	fs := flag.NewFlagSet("test", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	return parseFlags(fs, args, func(name string) (string, bool) {
@@ -46,7 +46,7 @@ func TestParseFlagsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := &CXLFlags{
+	want := &flags{
 		NodeName:            "n1",
 		CDIRoot:             "/var/run/cdi",
 		NRIName:             "dra-driver-cxl",

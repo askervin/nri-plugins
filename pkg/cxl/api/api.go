@@ -125,7 +125,7 @@ type Request struct {
 // Response is one response line on a lease socket. The response of a
 // Ready dax or block lease to request and fd carries the open fd of its
 // device (SCM_RIGHTS). Path is the directory of the filesystem of a Ready
-// fs lease in the container, FsType its filesystem type. Dax and Block are the host paths of the
+// fs lease in the container, FSType its filesystem type. Dax and Block are the host paths of the
 // devices of Ready dax and block leases, informational: the container has
 // no such device nodes.
 type Response struct {
@@ -332,7 +332,7 @@ func ValidFSType(name string) bool {
 //   - Path: the device node (/dev/pmemK) of block memory (of a lease: the
 //     host path), the directory in the container of fs memory
 //   - Access: AccessDirect or AccessCached of fs memory
-//   - FsType: the filesystem type of fs memory
+//   - FSType: the filesystem type of fs memory
 //   - ReadOnly: dax and block memory allows reads only, fs memory is
 //     mounted read-only
 type Memory struct {

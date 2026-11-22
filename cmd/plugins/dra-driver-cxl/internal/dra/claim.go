@@ -324,7 +324,7 @@ func otherResult(res *state.Result, r *resourcev1.DeviceRequestAllocationResult,
 		if err := cfg.NUMAOnly(device.DeviceTypeRegion); err != nil {
 			return err
 		}
-		reg := &state.RegionResult{Name: d.Name, NUMANode: d.NumaNode, Size: d.Size, Consumed: consumed}
+		reg := &state.RegionResult{Name: d.Name, NUMANode: d.NUMANode, Size: d.Size, Consumed: consumed}
 		for _, a := range d.NodeAffinity {
 			if a >= 0 {
 				reg.NUMAAffinity = append(reg.NUMAAffinity, a)

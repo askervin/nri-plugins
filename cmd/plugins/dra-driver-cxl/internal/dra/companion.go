@@ -289,7 +289,7 @@ func (c *Lender) RevokeGrant(ctx context.Context, gl state.GrantLend, claimName 
 }
 
 // leaseBindTarget returns the lease bind of the device of mode fs of a
-// companion claim, <FsDir>/<Name> of its lend.
+// companion claim, <FSDir>/<Name> of its lend.
 func leaseBindTarget(lend *lend.Companion) (string, error) {
 	switch {
 	case lend.Name == "":

@@ -33,26 +33,26 @@ import (
 
 // DriverConfig is the configuration file of the driver.
 type DriverConfig struct {
-	// IgnoreDevices is a list of CXL memory devices: a device is
+	// IgnoreMemdevs is a list of CXL memory devices: a device is
 	// its name, uevent DEVNAME, <major>:<minor>, or serial number in
 	// decimal or 0x hex (dra.MemdevSpec). Example: ["mem0",
 	// "cxl/mem0", "251:0", "3238060771", "0xc100e2e0"]
-	IgnoreDevices []string `json:"ignoreDevices,omitempty"`
-	// SharedDevices is a list of local CXL memory devices that are
+	IgnoreMemdevs []string `json:"ignoreDevices,omitempty"`
+	// SharedMemdevs is a list of local CXL memory devices that are
 	// published as shared devices (class cxl-local-shared): one devdax
 	// device for all claims, never sliced, onlined or zeroed. Matched
 	// like IgnoreDevices; IgnoreDevices and pool devices take
 	// precedence. Example: ["0xc100e2e1"]
-	SharedDevices []string `json:"sharedDevices,omitempty"`
+	SharedMemdevs []string `json:"sharedDevices,omitempty"`
 	// ignoreDevices and sharedDevices are IgnoreDevices and
 	// SharedDevices parsed by validate.
 	ignoreDevices, sharedDevices []dra.MemdevSpec
 	// IgnoreRegions is a list of CXL memory regions ["region0"]
 	// to be ignored by the driver.
 	IgnoreRegions []string `json:"ignoreRegions,omitempty"`
-	// IgnoreNodes is a list of NUMA nodes to be ignored by the
+	// IgnoreNUMANodes is a list of NUMA nodes to be ignored by the
 	// driver.
-	IgnoreNodes []int `json:"ignoreNodes,omitempty"`
+	IgnoreNUMANodes []int `json:"ignoreNodes,omitempty"`
 
 	// If IgnoreDRAMNodes is true, NUMA nodes with DRAM memory
 	// will be ignored by the driver. By default, DRAM nodes are
@@ -66,15 +66,15 @@ type DriverConfig struct {
 
 	// MemdevSettings are settings of individual local memdevs, such as
 	// the usable part of a memdev whose memory aliases.
-	MemdevSettings []MemdevSetting `json:"memdevSettings,omitempty"`
+	MemdevSettings []memdevSetting `json:"memdevSettings,omitempty"`
 
-	// FsTypes are the filesystem types that mode fs mounts on the node,
+	// FSTypes are the filesystem types that mode fs mounts on the node,
 	// for the local and the pool driver; nil is defaultFsTypes (erofs
 	// only), an empty list mounts none. The node kernel parses what the
 	// writer of a device wrote: a type other than erofs trusts every party
 	// that can write the devices raw. A type that the plugin does not know
 	// is single-host. Example: ["erofs", "ext4"]
-	FsTypes []string `json:"fsTypes,omitempty"`
+	FSTypes []string `json:"fsTypes,omitempty"`
 
 	// VerifyAddressing runs an address line test on every new region of
 	// a local memdev before it is used: a memdev whose memory aliases
@@ -131,16 +131,16 @@ func (c *DriverConfig) logDefaults() {
 // and decodes the defaults.
 func (c *DriverConfig) validate() error {
 	var err error
-	if c.ignoreDevices, err = dra.ParseMemdevSpecs(c.IgnoreDevices); err != nil {
+	if c.ignoreDevices, err = dra.ParseMemdevSpecs(c.IgnoreMemdevs); err != nil {
 		return fmt.Errorf("ignoreDevices: %w", err)
 	}
-	if c.sharedDevices, err = dra.ParseMemdevSpecs(c.SharedDevices); err != nil {
+	if c.sharedDevices, err = dra.ParseMemdevSpecs(c.SharedMemdevs); err != nil {
 		return fmt.Errorf("sharedDevices: %w", err)
 	}
 	if err = c.validateMemdevSettings(); err != nil {
 		return err
 	}
-	for _, t := range c.FsTypes {
+	for _, t := range c.FSTypes {
 		if !api.ValidFSType(t) {
 			return fmt.Errorf(`fsTypes: invalid filesystem type %q (lower-case letters, digits, "_" and "-")`, t)
 		}
@@ -156,22 +156,22 @@ func (c *DriverConfig) validate() error {
 	return nil
 }
 
-// defaultFsTypes are the filesystem types that mode fs mounts when the
+// defaultFSTypes are the filesystem types that mode fs mounts when the
 // configuration has no fsTypes: erofs only, the type that is designed for
 // images from untrusted writers.
-var defaultFsTypes = []string{api.FSTypeErofs}
+var defaultFSTypes = []string{api.FSTypeErofs}
 
 // fsTypes returns the filesystem types that mode fs mounts on the node:
-// FsTypes, defaultFsTypes when it is not set.
+// FSTypes, defaultFSTypes when it is not set.
 func (c *DriverConfig) fsTypes() []string {
-	if c == nil || c.FsTypes == nil {
-		return slices.Clone(defaultFsTypes)
+	if c == nil || c.FSTypes == nil {
+		return slices.Clone(defaultFSTypes)
 	}
-	return slices.Clone(c.FsTypes)
+	return slices.Clone(c.FSTypes)
 }
 
-// logFsTypes logs the filesystem types that mode fs mounts on the node.
-func (c *DriverConfig) logFsTypes() {
+// logFSTypes logs the filesystem types that mode fs mounts on the node.
+func (c *DriverConfig) logFSTypes() {
 	types := c.fsTypes()
 	if len(types) == 0 {
 		klog.Infof("fsTypes: none: mode fs mounts no filesystem on this node")
@@ -217,7 +217,7 @@ func (c *DriverConfig) publishConfig(leases bool) dra.PublishConfig {
 		IgnoreDevices:      c.ignoreDevices,
 		SharedDevices:      c.sharedDevices,
 		IgnoreRegions:      c.IgnoreRegions,
-		IgnoreNUMANodes:    c.IgnoreNodes,
+		IgnoreNUMANodes:    c.IgnoreNUMANodes,
 		IgnoreDRAM:         c.IgnoreDRAMNodes,
 		ManageMemdevs:      c.manageMemdevs(),
 		PublishLeaseDevice: leases,
@@ -239,11 +239,11 @@ func (c *DriverConfig) localConfig() dra.LocalConfig {
 // engine makes the regions of the memdev with only the usable size and the
 // publisher publishes only that.
 
-// MemdevSetting is a setting of the local memdevs that Device matches.
-type MemdevSetting struct {
-	// Device matches a memdev by name (mem0, cxl/mem0) or serial (decimal
+// memdevSetting is a setting of the local memdevs that Device matches.
+type memdevSetting struct {
+	// Memdev matches a memdev by name (mem0, cxl/mem0) or serial (decimal
 	// or 0x hex).
-	Device string `json:"device"`
+	Memdev string `json:"device"`
 	// spec is Device parsed by validate.
 	spec dra.MemdevSpec
 	// UsableSize is a quantity ("128Gi"): only the first UsableSize bytes
@@ -261,10 +261,10 @@ type MemdevSetting struct {
 func (c *DriverConfig) validateMemdevSettings() error {
 	for i := range c.MemdevSettings {
 		s := &c.MemdevSettings[i]
-		if s.Device == "" {
+		if s.Memdev == "" {
 			return fmt.Errorf("memdevSettings[%d]: no device", i)
 		}
-		spec, err := dra.ParseMemdevID(s.Device)
+		spec, err := dra.ParseMemdevID(s.Memdev)
 		if err != nil {
 			return fmt.Errorf("memdevSettings[%d]: %w", i, err)
 		}
@@ -285,7 +285,7 @@ func (c *DriverConfig) validateMemdevSettings() error {
 
 // memdevSetting returns the first memdev setting that matches the memdev
 // name or serial, nil if none.
-func (c *DriverConfig) memdevSetting(memdev string, serial uint64) *MemdevSetting {
+func (c *DriverConfig) memdevSetting(memdev string, serial uint64) *memdevSetting {
 	if c == nil {
 		return nil
 	}

@@ -87,7 +87,7 @@ func TestCharPublishOrder(t *testing.T) {
 		"memdev-a5":            {Name: "memdev-a5", Dev: &Memdev{Name: "mem5", Serial: 0xa5, Size: 1 << 30, NodeAffinity: -1, BlockSize: pubBlockSize}},
 		device.DRAMDeviceName:  {Name: device.DRAMDeviceName, Dev: &DRAM{Nodes: []int{0}, Size: 1 << 30}},
 		"memdev-a1":            {Name: "memdev-a1", Dev: &Memdev{Name: "mem1", Serial: 0xa1, Size: 1 << 30, NodeAffinity: -1, BlockSize: pubBlockSize}},
-		"region0-node2":        {Name: "region0-node2", Dev: &Region{Name: "region0", Size: 1 << 30, NumaNode: 2}},
+		"region0-node2":        {Name: "region0-node2", Dev: &Region{Name: "region0", Size: 1 << 30, NUMANode: 2}},
 		device.LeaseDeviceName: {Name: device.LeaseDeviceName, Dev: &LeaseToken{}},
 	}
 	p := pubPublisher(t, PublishOptions{NodeName: pubNode})

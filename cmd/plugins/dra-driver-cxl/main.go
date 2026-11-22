@@ -58,8 +58,8 @@ const (
 	defaultPoolPrepareTimeout = 30 * time.Second
 )
 
-// CXLFlags are the command line flags of the driver.
-type CXLFlags struct {
+// flags are the command line flags of the driver.
+type flags struct {
 	NodeName   string
 	KubeConfig string
 	CDIRoot    string
@@ -102,7 +102,7 @@ type CXLFlags struct {
 
 // poolDriver returns the DRA driver name of the pool driver, "" when it is
 // disabled.
-func (f *CXLFlags) poolDriver() string {
+func (f *flags) poolDriver() string {
 	if !f.Pool {
 		return ""
 	}
@@ -141,7 +141,7 @@ func (s *serialsFlag) Set(value string) error {
 
 // pluginConfig is the configuration of the kubelet plugins of the driver.
 type pluginConfig struct {
-	Flags  *CXLFlags
+	Flags  *flags
 	Client coreclientset.Interface
 	// LeaseClient is the Kubernetes client of the lease broker. Its rate
 	// limiter is not shared with Client.
@@ -158,8 +158,8 @@ type pluginConfig struct {
 // parseFlags returns the flags of args registered in fs. The defaults of
 // --node-name and --kubeconfig are the environment variables NODE_NAME and
 // KUBECONFIG.
-func parseFlags(fs *flag.FlagSet, args []string, lookupEnv func(string) (string, bool)) (*CXLFlags, error) {
-	f := &CXLFlags{}
+func parseFlags(fs *flag.FlagSet, args []string, lookupEnv func(string) (string, bool)) (*flags, error) {
+	f := &flags{}
 	nodeName, _ := lookupEnv("NODE_NAME")
 	kubeConfig, _ := lookupEnv("KUBECONFIG")
 	fs.StringVar(&f.NodeName, "node-name", nodeName, "name of the node of the driver (required; default $NODE_NAME)")
@@ -391,7 +391,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 // run runs the driver until SIGTERM, SIGINT or a fatal error of the
 // kubelet plugins stops it, and returns the fatal error. A signal during
 // the start ends its waits.
-func run(ctx context.Context, flags *CXLFlags) error {
+func run(ctx context.Context, flags *flags) error {
 	klog.Infof("Starting %s version %s (build %s, %s, %s/%s), drivers %s and %q",
 		filepath.Base(os.Args[0]), version.Version, version.Build,
 		runtime.Version(), runtime.GOOS, runtime.GOARCH,

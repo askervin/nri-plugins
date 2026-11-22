@@ -196,7 +196,7 @@ func TestRequestOptions(t *testing.T) {
 			want: askedText{Shared: true, SharedDevice: true, Mode: "fs", ReadOnly: true, Size: "256Mi"}},
 		// read-only without readOnly, read-write by the opt-in, a type
 		{req: api.Request{Serial: "0xc1af0001", Share: true, Mode: "fs", FSType: "ext4"},
-			want: askedText{Serial: "0xc1af0001", Shared: true, SharedDevice: true, DeviceSource: "pool", Mode: "fs", ReadOnly: true, FsType: "ext4"}},
+			want: askedText{Serial: "0xc1af0001", Shared: true, SharedDevice: true, DeviceSource: "pool", Mode: "fs", ReadOnly: true, FSType: "ext4"}},
 		{req: api.Request{Serial: "0xc1af0001", Share: true, Mode: "fs", ReadWrite: true, Access: "cached"},
 			want: askedText{Serial: "0xc1af0001", Shared: true, SharedDevice: true, DeviceSource: "pool", Mode: "fs", ReadWrite: true, Access: "cached"}},
 		// a persistent local memdev: a share although it is not shared
@@ -277,7 +277,7 @@ func TestRequestOptions(t *testing.T) {
 
 // askedText is what a lease asks for in words.
 type askedText struct {
-	Source, Mode, DeviceSource, Access, FsType, Name, Size, Serial string
+	Source, Mode, DeviceSource, Access, FSType, Name, Size, Serial string
 	Shared, SharedDevice, ReadOnly, ReadWrite                      bool
 }
 
@@ -286,7 +286,7 @@ func (a askedText) asked() state.LeaseAsked {
 	serial, _ := api.ParseSerial(a.Serial)
 	return state.LeaseAsked{Source: state.Source(a.Source), DeviceSource: state.Source(a.DeviceSource), Mode: state.Mode(a.Mode),
 		Share: a.Shared, Shared: a.SharedDevice, ReadOnly: a.ReadOnly, ReadWrite: a.ReadWrite, Access: state.Access(a.Access),
-		FSType: a.FsType, Name: a.Name, Size: a.Size, Serial: state.Serial(serial), SerialZero: a.Serial != "" && serial == 0}
+		FSType: a.FSType, Name: a.Name, Size: a.Size, Serial: state.Serial(serial), SerialZero: a.Serial != "" && serial == 0}
 }
 
 // opaqueConfig is a companion claim config: its driver, the requests it

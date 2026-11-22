@@ -137,7 +137,7 @@ type Options struct {
 	ProbeAddressing bool
 	ProbesFile      string
 	// Revoke revokes the NUMA node that the grant ref of a companion claim
-	// lends (lend.NumaNode), nil for no lends.
+	// lends (lend.NUMANodes), nil for no lends.
 	Revoke func(ctx context.Context, ref state.GrantRef, lend state.GrantLend) error
 	// Sources are the sources whose records the engine owns, nil for all.
 	Sources []state.Source
@@ -259,7 +259,7 @@ type GrantRequest struct {
 	// exclusive, or a device that is not shared.
 	SingleHost bool
 	// BindTarget is the lease bind of the grant of mode fs of a companion
-	// claim, <lease claim FsDir>/<name>; "" for none.
+	// claim, <lease claim FSDir>/<name>; "" for none.
 	BindTarget string
 	// Lend is the lend of a grant of a companion claim, nil for others:
 	// the engine binds the lease of mode fs; the NUMA node of mode numa is

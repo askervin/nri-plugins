@@ -330,7 +330,7 @@ func (k *Kernel) StayedOffline(ctx context.Context, blocks []int, settle time.Du
 	return -1, nil
 }
 
-// NumaNode: a NUMA node nodeN (/sys/devices/system/node). The NUMA node of
+// NUMANode: a NUMA node nodeN (/sys/devices/system/node). The NUMA node of
 // a CFMWS window is fixed at boot; its nodeN directory exists while it has
 // memory blocks. States: has memory or not (has_memory); MemTotal is the
 // sum of its online memory.

@@ -248,7 +248,7 @@ func (e *driverEnv) start() {
 			Coherent: func(string, uint64) bool { return false }},
 		Publish: e.publishConfig(),
 		Scan:    e.scan,
-		FsTypes: e.fsTypes,
+		FSTypes: e.fsTypes,
 		Timeouts: engine.Timeouts{Memdev: 300 * time.Millisecond, ProbeGrace: 20 * time.Millisecond, RegionRetry: 10 * time.Millisecond,
 			Settle: 2 * time.Second, LocalSettle: 2 * time.Second, Restore: time.Second, Holder: 50 * time.Millisecond,
 			OfflineSettle: 20 * time.Millisecond, Offline: time.Second},
@@ -797,7 +797,7 @@ func (f *fakeNodes) setErrors(lend, revoke error) {
 type fakeHooks struct {
 	e  *driverEnv
 	mu sync.Mutex
-	// lendingErr is the error of OnLending; fsDir and name are the FsDir
+	// lendingErr is the error of OnLending; fsDir and name are the FSDir
 	// and the Name of the lends of OnLending.
 	lendingErr  error
 	fsDir, name string

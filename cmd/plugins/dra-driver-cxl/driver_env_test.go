@@ -119,7 +119,7 @@ func newDriverTestEnv(t *testing.T) *driverTestEnv {
 	e.k.Plug(fake.MemdevSpec{Serial: poolSerial})
 	e.base = e.k.Commands()
 	e.config = &pluginConfig{
-		Flags: &CXLFlags{NodeName: testNode, CDIRoot: filepath.Join(root, "cdi"), Pool: true,
+		Flags: &flags{NodeName: testNode, CDIRoot: filepath.Join(root, "cdi"), Pool: true,
 			PoolPrepareTimeout: 5 * time.Second, LeaseCLI: filepath.Join(root, "cxl-request"), LeaseWait: time.Second},
 		Client:                    e.client,
 		LeaseClient:               e.client,

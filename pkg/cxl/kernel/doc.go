@@ -30,7 +30,7 @@
 //     the blocks wholly in its memory is online;
 //   - the NUMA node of a region is the target_node of a dax device of the
 //     region with memory, else the node of a memory block of the region
-//     (RegionInfo.NumaNode).
+//     (RegionInfo.NUMANode).
 //
 // The operations of Kernel (EnableMemdev, CreateRegion, DestroyRegionInOrder,
 // BindDax, OnlineBlocks, CreateFsdaxNamespace, Mount, ...) return typed errors
@@ -48,7 +48,7 @@
 // Names: the observation of an object that the driver also keeps a record of
 // has the suffix Info (MemdevInfo, RegionInfo, DaxDeviceInfo, MountInfo);
 // the other objects keep the kernel's words (Port, DaxRegion, MemoryBlock,
-// NumaNode, NdRegion, Namespace, BlockDevice, Superblock, LoopDevice).
+// NUMANode, NdRegion, Namespace, BlockDevice, Superblock, LoopDevice).
 //
 // Each object file starts with the object's purpose, identity, states, the
 // transitions of its states (a Table next to the type), its invariants, and

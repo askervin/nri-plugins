@@ -437,7 +437,7 @@ func TestCompanionLendFails(t *testing.T) {
 	}
 }
 
-// The lease bind of a lend of a device of mode fs is <FsDir>/<Name>; a lend
+// The lease bind of a lend of a device of mode fs is <FSDir>/<Name>; a lend
 // without a name, or with one that is not a valid name, or of a lease
 // claim without a filesystem directory is refused.
 func TestLeaseBindTarget(t *testing.T) {

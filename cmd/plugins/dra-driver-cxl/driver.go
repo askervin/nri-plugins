@@ -67,7 +67,7 @@ type driver struct {
 
 // loadDriverConfig returns the configuration of the file of --config, and
 // logs the container defaults and the filesystem types.
-func loadDriverConfig(cxlFlags *CXLFlags) (*DriverConfig, error) {
+func loadDriverConfig(cxlFlags *flags) (*DriverConfig, error) {
 	configStr, err := readConfig(cxlFlags.Config)
 	if err != nil {
 		return nil, err
@@ -77,14 +77,14 @@ func loadDriverConfig(cxlFlags *CXLFlags) (*DriverConfig, error) {
 		return nil, fmt.Errorf("configuration: %w", err)
 	}
 	driverConfig.logDefaults()
-	driverConfig.logFsTypes()
+	driverConfig.logFSTypes()
 	return driverConfig, nil
 }
 
 // newBroker returns the lease broker of the lease claims and the leases of
 // the store st, nil when lending is disabled; cxl.nri.io of node tells it
 // of its lease claims.
-func newBroker(config *pluginConfig, cxlFlags *CXLFlags, driverConfig *DriverConfig, st *store.Store, node *dra.Node, k *kernel.Kernel) (*leases.Broker, error) {
+func newBroker(config *pluginConfig, cxlFlags *flags, driverConfig *DriverConfig, st *store.Store, node *dra.Node, k *kernel.Kernel) (*leases.Broker, error) {
 	if !cxlFlags.Leases {
 		return nil, nil
 	}
@@ -305,7 +305,7 @@ const storeLockWait = 2 * time.Minute
 
 // openDriverStore opens the state store in the plugin data directory of
 // cxl.nri.io, and returns it and its close.
-func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFlags, bootID string) (*store.Store, func(), error) {
+func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *flags, bootID string) (*store.Store, func(), error) {
 	// a driver pod that still runs holds the lock: wait for its exit
 	ctx, cancel := context.WithTimeout(ctx, storeLockWait)
 	defer cancel()
@@ -335,7 +335,7 @@ func nodeOptions(config *pluginConfig, driverConfig *DriverConfig, k *kernel.Ker
 		Client:          config.Client,
 		Local:           driverConfig.localConfig(),
 		Publish:         driverConfig.publishConfig(config.Flags.Leases),
-		FsTypes:         driverConfig.fsTypes(),
+		FSTypes:         driverConfig.fsTypes(),
 		ProbeAddressing: driverConfig.verifyAddressing(),
 		Timeouts:        engine.Timeouts{Memdev: f.PoolPrepareTimeout, Settle: f.PoolPrepareTimeout},
 		Forget:          f.ForgetPoolSerials,

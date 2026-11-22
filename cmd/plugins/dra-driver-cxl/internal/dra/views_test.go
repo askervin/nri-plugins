@@ -32,7 +32,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
-// NumaNodes has the nodes of the grants of mode numa of the prepared claims
+// NUMANodes has the NUMA nodes of the grants of mode numa of the prepared claims
 // of the drivers asked for, sorted, without those of dax slices.
 func TestNumaNodes(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()}, fake.MemdevSpec{Serial: serialPoolX, HostBridge: 24})

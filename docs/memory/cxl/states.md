@@ -836,9 +836,9 @@ States: ABSENT, OFFLINE, ONLINE.
 | OFFLINE | ABSENT | kmem unbound (UnbindDax, DeleteDaxDevice), DisableRegion, hot-remove of its memdev | - | - |
 | ONLINE | ABSENT | DestroyRegion (offline, then disable), observed across it; a numa slice release (OfflineBlocks, then UnbindDax) | its pages can be moved | - |
 
-## NumaNode (kernel)
+## NUMANode (kernel)
 
-NumaNode: a NUMA node nodeN (/sys/devices/system/node). The NUMA node of a CFMWS window is fixed at boot; its nodeN directory exists while it has memory blocks. States: has memory or not (has_memory); MemTotal is the sum of its online memory.
+NUMANode: a NUMA node nodeN (/sys/devices/system/node). The NUMA node of a CFMWS window is fixed at boot; its nodeN directory exists while it has memory blocks. States: has memory or not (has_memory); MemTotal is the sum of its online memory.
 
 ## NdRegion, Namespace and BlockDevice (kernel)
 

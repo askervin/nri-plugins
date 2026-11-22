@@ -137,7 +137,7 @@ func (fe *frontEnd) NewEngine(o engine.Options) (*engine.Engine, error) {
 		Publish:         dra.PublishConfig{ManageMemdevs: true, SharedDevices: shared},
 		Scan:            fe.scan,
 		Fence:           o.Fence,
-		FsTypes:         o.FSTypes,
+		FSTypes:         o.FSTypes,
 		ProbeAddressing: o.ProbeAddressing,
 		Timeouts:        o.Timeouts,
 	})

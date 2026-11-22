@@ -53,7 +53,7 @@ type DRAM struct {
 // Region is the Dev of a region device (DeviceTypeRegion).
 type Region struct {
 	Name     string // regionN
-	NumaNode int    // NUMA node of its online memory
+	NUMANode int    // NUMA node of its online memory
 	Size     uint64 // bytes of its online memory
 	// NodeAffinity are the CPU NUMA nodes of its memdevs, -1 for one not
 	// known.
@@ -281,7 +281,7 @@ func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held ma
 			klog.V(4).Infof("- ignoring region device %q: %s", r.Name, reason)
 			continue
 		}
-		dev := &Region{Name: r.Name, NumaNode: node, Size: size}
+		dev := &Region{Name: r.Name, NUMANode: node, Size: size}
 		for _, m := range mems {
 			dev.NodeAffinity = append(dev.NodeAffinity, m.NUMAAffinity)
 		}
@@ -813,7 +813,7 @@ func regionDevice(name string, dev *Region) resourcev1.Device {
 	attrs := map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
 		device.AttrType:           {StringValue: ptr(device.DeviceTypeRegion)},
 		device.AttrSource:         {StringValue: ptr(api.SourceLocal)},
-		device.AttrMemoryNUMANode: {IntValue: ptr(int64(dev.NumaNode))},
+		device.AttrMemoryNUMANode: {IntValue: ptr(int64(dev.NUMANode))},
 		device.AttrSize:           {IntValue: ptr(int64(dev.Size))},
 	}
 	if a, ok := regionNodeAffinity(dev); ok {

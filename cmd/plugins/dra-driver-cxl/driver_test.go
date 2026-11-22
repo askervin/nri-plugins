@@ -41,7 +41,7 @@ import (
 // or none; unknown keys, values of another type and invalid memdevs are
 // refused, and manageMemdevs is true unless set false.
 func TestDriverConfigKeys(t *testing.T) {
-	cfg := &DriverConfig{IgnoreDevices: []string{"mem0"}, IgnoreRegions: []string{"region0"}, IgnoreNodes: []int{1},
+	cfg := &DriverConfig{IgnoreMemdevs: []string{"mem0"}, IgnoreRegions: []string{"region0"}, IgnoreNUMANodes: []int{1},
 		IgnoreDRAMNodes: true, ManageMemdevs: ptr(true)}
 	data, err := json.Marshal(cfg)
 	if err != nil {
@@ -152,7 +152,7 @@ func TestDriverConfigFsTypes(t *testing.T) {
 		t.Fatalf("default fsTypes %v", got)
 	}
 	cfg.fsTypes()[0] = "x"
-	if cfg.fsTypes()[0] != "erofs" || defaultFsTypes[0] != "erofs" {
+	if cfg.fsTypes()[0] != "erofs" || defaultFSTypes[0] != "erofs" {
 		t.Fatal("fsTypes() is not a copy")
 	}
 	cfg, err = newDriverConfigFromString("fsTypes: [erofs, f2fs]")
@@ -174,7 +174,7 @@ func TestDriverConfigFsTypes(t *testing.T) {
 // The state store is in the plugin data directory of cxl.nri.io.
 func TestOpenDriverStore(t *testing.T) {
 	dir := t.TempDir()
-	config := &pluginConfig{Flags: &CXLFlags{}, KubeletPluginDir: dir}
+	config := &pluginConfig{Flags: &flags{}, KubeletPluginDir: dir}
 	_, closeStore, err := openDriverStore(context.Background(), config, config.Flags, "b0")
 	noErr(t, err)
 	closeStore()

@@ -43,7 +43,7 @@ func Catalogue() []ObjectTables {
 		{Name: "Region", Tables: []fsm.TableText{RegionTransitions.Text()}},
 		{Name: "DaxRegion and DaxDevice", Tables: []fsm.TableText{DaxTransitions.Text()}},
 		{Name: "MemoryBlock", Tables: []fsm.TableText{BlockTransitions.Text()}},
-		{Name: "NumaNode"},
+		{Name: "NUMANode"},
 		{Name: "NdRegion, Namespace and BlockDevice",
 			Tables: []fsm.TableText{NdRegionTransitions.Text(), NamespaceTransitions.Text()}},
 		{Name: "Superblock and Mount"},
