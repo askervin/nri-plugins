@@ -554,8 +554,8 @@ func poolReq(uid string, n int, serial uint64, mode state.Mode, kind state.Grant
 	return GrantRequest{
 		Ref:    state.GrantRef{Claim: uid, Result: n},
 		Serial: state.Serial(serial),
-		Asked:  state.Asked{Source: state.SourcePool, Kind: kind, Mode: mode, Size: 256 * mib, Shared: kind == state.KindShared},
-		Facts:  state.MemdevFacts{Shared: kind == state.KindShared, Persistent: kind == state.KindPersistent},
+		Asked:  state.Asked{Source: state.SourcePool, Kind: kind, Mode: mode, Size: 256 * mib, Shared: kind == state.KindPoolShared},
+		Facts:  state.MemdevFacts{Shared: kind.Shared(), Persistent: kind.Persistent()},
 	}
 }
 
@@ -565,8 +565,8 @@ func localReq(uid string, n int, serial uint64, mode state.Mode, kind state.Gran
 	return GrantRequest{
 		Ref:    state.GrantRef{Claim: uid, Result: n},
 		Serial: state.Serial(serial),
-		Asked:  state.Asked{Source: state.SourceLocal, Kind: kind, Mode: mode, Size: size, Shared: kind == state.KindShared},
-		Facts:  state.MemdevFacts{Shared: kind == state.KindShared, Persistent: kind == state.KindPersistent},
+		Asked:  state.Asked{Source: state.SourceLocal, Kind: kind, Mode: mode, Size: size, Shared: kind == state.KindLocalShared},
+		Facts:  state.MemdevFacts{Shared: kind.Shared(), Persistent: kind.Persistent()},
 	}
 }
 
@@ -662,20 +662,20 @@ func releaseIdleShared(v *env) {
 // sliceReq returns the request of a part of the local sliced memdev
 // serialL for result n of the claim uid.
 func sliceReq(uid string, n int, mode state.Mode, size uint64) GrantRequest {
-	return localReq(uid, n, serialL, mode, state.KindExclusive, size)
+	return localReq(uid, n, serialL, mode, state.KindLocal, size)
 }
 
 // sharedReq returns the request of a grant of the local shared memdev
 // serialL for the claim uid.
 func sharedReq(uid string) GrantRequest {
-	return localReq(uid, 0, serialL, state.ModeDax, state.KindShared, gib)
+	return localReq(uid, 0, serialL, state.ModeDax, state.KindLocalShared, gib)
 }
 
 // localPmemReq returns the request of a grant of mode fs (access, readOnly)
 // or block of the local persistent memdev serialP for result n of the
 // claim uid.
 func localPmemReq(uid string, n int, mode state.Mode, readOnly bool, access state.Access) GrantRequest {
-	req := localReq(uid, n, serialP, mode, state.KindPersistent, 0)
+	req := localReq(uid, n, serialP, mode, state.KindLocalPersistent, 0)
 	if mode == state.ModeFS {
 		return fsReq(req, readOnly, access)
 	}
@@ -774,7 +774,7 @@ func pmemEnv(t *testing.T, typ string) *env {
 
 // fsGrant returns the request of a pool grant of mode fs on serialP.
 func fsGrant(uid string, readOnly bool, access state.Access) GrantRequest {
-	return fsReq(poolReq(uid, 0, serialP, state.ModeFS, state.KindPersistent), readOnly, access)
+	return fsReq(poolReq(uid, 0, serialP, state.ModeFS, state.KindPoolPersistent), readOnly, access)
 }
 
 // sources are the sources of the grants of the engine.

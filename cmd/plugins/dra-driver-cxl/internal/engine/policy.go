@@ -184,25 +184,22 @@ func Policy(release Release, kind Kind, regionsAbove []string) Decision {
 // configured shared now, established whether its region is set up (and
 // zeroed, of a shared memdev) or kept by an earlier release.
 func kindOf(asked state.Asked, shared, established bool) Kind {
-	if asked.Source == state.SourcePool {
-		switch asked.Kind {
-		case state.KindPersistent:
-			return KindPoolPersistent
-		case state.KindShared:
-			return KindPoolShared
-		}
+	switch k := asked.Kind; {
+	case k == state.KindPoolPersistent:
+		return KindPoolPersistent
+	case k == state.KindPoolShared:
+		return KindPoolShared
+	case k == state.KindPool:
 		return KindPool
-	}
-	switch {
-	case asked.Kind == state.KindPersistent && established:
+	case k == state.KindLocalPersistent && established:
 		return KindLocalPersistent
-	case asked.Kind == state.KindPersistent:
+	case k == state.KindLocalPersistent:
 		return KindLocalPersistentNew
-	case asked.Kind == state.KindShared && shared && established:
+	case k == state.KindLocalShared && shared && established:
 		return KindLocalShared
-	case asked.Kind == state.KindShared && shared:
+	case k == state.KindLocalShared && shared:
 		return KindLocalSharedNew
-	case asked.Kind == state.KindShared && established:
+	case k == state.KindLocalShared && established:
 		return KindLocalSharedUnlisted
 	}
 	return KindLocal
@@ -212,7 +209,7 @@ func kindOf(asked state.Asked, shared, established bool) Kind {
 // now: shared as configured (Options.Shared), its region established or
 // new.
 func (e *Engine) kindOf(g *state.Grant) Kind {
-	return kindOf(g.Asked, e.configuredShared(g.Serial), established(e.records(), g.Serial, g.Asked.Kind == state.KindPersistent))
+	return kindOf(g.Asked, e.configuredShared(g.Serial), established(e.records(), g.Serial, g.Asked.Kind.Persistent()))
 }
 
 // idleKind returns the row of the release policy of the memdev m without

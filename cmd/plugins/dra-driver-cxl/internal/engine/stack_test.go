@@ -34,14 +34,14 @@ import (
 // above is gone, then succeeds.
 func TestStackBlockedUntilHoleClears(t *testing.T) {
 	v := newEnv(t, stackSpecs...)
-	v.mustPrepare(localDriver, "ldax", localReq("ldax", 0, serialL, state.ModeDax, state.KindExclusive, 256*mib))
-	v.mustPrepare(poolDriver, "xdax-b", poolReq("xdax-b", 0, serialB, state.ModeDax, state.KindExclusive))
-	v.mustPrepare(poolDriver, "sdax-b", poolReq("sdax-b", 0, serialC, state.ModeDax, state.KindShared))
+	v.mustPrepare(localDriver, "ldax", localReq("ldax", 0, serialL, state.ModeDax, state.KindLocal, 256*mib))
+	v.mustPrepare(poolDriver, "xdax-b", poolReq("xdax-b", 0, serialB, state.ModeDax, state.KindPool))
+	v.mustPrepare(poolDriver, "sdax-b", poolReq("sdax-b", 0, serialC, state.ModeDax, state.KindPoolShared))
 	wantStack(t, v, serialL, serialB, serialC)
 	v.mustUnprepare(poolDriver, "xdax-b")
 	wantStack(t, v, serialL, 0, serialC)
 
-	err := v.prepare(poolDriver, "xnuma-b", poolReq("xnuma-b", 0, serialB, state.ModeNUMA, state.KindExclusive))
+	err := v.prepare(poolDriver, "xnuma-b", poolReq("xnuma-b", 0, serialB, state.ModeNUMA, state.KindPool))
 	var hole *kernel.ErrDecoderHole
 	if !errors.As(err, &hole) || !strings.Contains(err.Error(), "CXL decoders released out of order") {
 		t.Fatalf("error %v", err)
@@ -51,7 +51,7 @@ func TestStackBlockedUntilHoleClears(t *testing.T) {
 
 	v.mustUnprepare(poolDriver, "sdax-b")
 	wantStack(t, v, serialL)
-	v.mustPrepare(poolDriver, "xnuma-b", poolReq("xnuma-b", 0, serialB, state.ModeNUMA, state.KindExclusive))
+	v.mustPrepare(poolDriver, "xnuma-b", poolReq("xnuma-b", 0, serialB, state.ModeNUMA, state.KindPool))
 	wantStack(t, v, serialL, serialB)
 	v.mustUnprepare(poolDriver, "xnuma-b")
 	v.mustUnprepare(localDriver, "ldax")
@@ -63,9 +63,9 @@ func TestStackBlockedUntilHoleClears(t *testing.T) {
 // local region, which the release of the local region reaps.
 func TestStackUsersOfOneRegion(t *testing.T) {
 	v := newEnv(t, stackSpecs...)
-	v.mustPrepare(poolDriver, "sdax-c0", poolReq("sdax-c0", 0, serialC, state.ModeDax, state.KindShared))
-	v.mustPrepare(localDriver, "lnuma", localReq("lnuma", 0, serialL, state.ModeNUMA, state.KindExclusive, 128*mib))
-	v.mustPrepare(poolDriver, "sdax-c1", poolReq("sdax-c1", 0, serialC, state.ModeDax, state.KindShared))
+	v.mustPrepare(poolDriver, "sdax-c0", poolReq("sdax-c0", 0, serialC, state.ModeDax, state.KindPoolShared))
+	v.mustPrepare(localDriver, "lnuma", localReq("lnuma", 0, serialL, state.ModeNUMA, state.KindLocal, 128*mib))
+	v.mustPrepare(poolDriver, "sdax-c1", poolReq("sdax-c1", 0, serialC, state.ModeDax, state.KindPoolShared))
 	wantStack(t, v, serialC, serialL)
 	v.mustUnprepare(poolDriver, "sdax-c0")
 	wantStack(t, v, serialC, serialL)
@@ -91,7 +91,7 @@ func TestStackRecoveryTopMostFirst(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{poolReq(c.uid, 0, c.serial, state.ModeDax, state.KindExclusive)}); err != nil {
+		if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{poolReq(c.uid, 0, c.serial, state.ModeDax, state.KindPool)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -113,7 +113,7 @@ func TestStackRecoveryTopMostFirst(t *testing.T) {
 func TestStackLocalSlicedHole(t *testing.T) {
 	v := newEnv(t, stackSpecs...)
 	v.mustPrepare(localDriver, "l", sliceReq("l", 0, state.ModeDax, 256*mib))
-	v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeDax, state.KindExclusive))
+	v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeDax, state.KindPool))
 	wantStack(t, v, serialL, serialB)
 	v.mustUnprepare(localDriver, "l")
 	wantStack(t, v, 0, serialB)
@@ -122,7 +122,7 @@ func TestStackLocalSlicedHole(t *testing.T) {
 		req    GrantRequest
 	}{
 		{localDriver, sliceReq("l2", 0, state.ModeNUMA, 256*mib)},
-		{poolDriver, poolReq("c", 0, serialC, state.ModeDax, state.KindExclusive)},
+		{poolDriver, poolReq("c", 0, serialC, state.ModeDax, state.KindPool)},
 	} {
 		err := v.prepare(c.driver, c.req.Ref.Claim, c.req)
 		var hole *kernel.ErrDecoderHole
@@ -153,13 +153,13 @@ func TestStackLocalRollbackBelowPool(t *testing.T) {
 		o.LocalGuard = func(_ context.Context, serial state.Serial) error {
 			if serial == serialM && !pooled {
 				pooled = true
-				v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeDax, state.KindExclusive))
+				v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeDax, state.KindPool))
 				v.f.FailCommand("cxl create-region", errors.New("cxl region: cmd_create_region: failed"))
 			}
 			return nil
 		}
 	})
-	reqs := []GrantRequest{sliceReq("k", 0, state.ModeDax, 256*mib), localReq("k", 1, serialM, state.ModeDax, state.KindExclusive, 256*mib)}
+	reqs := []GrantRequest{sliceReq("k", 0, state.ModeDax, 256*mib), localReq("k", 1, serialM, state.ModeDax, state.KindLocal, 256*mib)}
 	logs := klogtest.Capture(t, 3)
 	if err := v.prepare(localDriver, "k", reqs...); err == nil {
 		t.Fatal("the Prepare succeeded")
@@ -201,7 +201,7 @@ func TestStackLocalRecoveryTopMostFirst(t *testing.T) {
 			v := newEnv(t, stackSpecs...)
 			reqs := map[string]GrantRequest{
 				"l": sliceReq("l", 0, state.ModeNUMA, 256*mib),
-				"b": poolReq("b", 0, serialB, state.ModeDax, state.KindExclusive),
+				"b": poolReq("b", 0, serialB, state.ModeDax, state.KindPool),
 			}
 			drivers := map[string]string{"l": localDriver, "b": poolDriver}
 			for _, uid := range c.order {

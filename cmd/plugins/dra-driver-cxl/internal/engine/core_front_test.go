@@ -235,15 +235,15 @@ func (fe *frontEnd) claim(sl engine.CoreSlot, uid string) *resourcev1.ResourceCl
 	case sl.Source == state.SourcePool:
 		r.Driver, r.Pool, r.Device = device.PoolDriverName, frontPool, "pooled-"+sl.ID
 		data := fmt.Sprintf(`{"serial":"%s","shared":%v,"size":268435456,"persistent":%v}`, api.FormatSerial(sl.Serial),
-			sl.Kind == state.KindShared, sl.Kind == state.KindPersistent)
-		if sl.Kind == state.KindShared {
+			sl.Kind.Shared(), sl.Kind.Persistent())
+		if sl.Kind.Shared() {
 			r.ConsumedCapacity = shares(1)
 		}
 		c.Status.Devices = []resourcev1.AllocatedDeviceStatus{{Driver: r.Driver, Pool: r.Pool, Device: r.Device,
 			Data: &runtime.RawExtension{Raw: []byte(data)}}}
-	case sl.Kind == state.KindExclusive:
+	case sl.Kind == state.KindLocal:
 		r.ConsumedCapacity = map[resourcev1.QualifiedName]resource.Quantity{device.CapacityMemory: *resource.NewQuantity(256<<20, resource.BinarySI)}
-	case sl.Kind == state.KindPersistent && !sl.ReadOnly:
+	case sl.Kind.Persistent() && !sl.ReadOnly:
 		r.ConsumedCapacity = shares(device.SharesUnlimited)
 	default:
 		r.ConsumedCapacity = shares(1)

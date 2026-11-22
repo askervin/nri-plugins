@@ -36,7 +36,7 @@ func TestLocalPolicySliced(t *testing.T) {
 	t.Run("unprepare destroys below a newer region", func(t *testing.T) {
 		v := newEnv(t, stackSpecs...)
 		v.mustPrepare(localDriver, "l", sliceReq("l", 0, state.ModeDax, 256*mib))
-		v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeDax, state.KindExclusive))
+		v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeDax, state.KindPool))
 		wantStack(t, v, serialL, serialB)
 		v.mustUnprepare(localDriver, "l")
 		wantStack(t, v, 0, serialB)
@@ -150,7 +150,7 @@ func TestLocalPolicySharedConfigured(t *testing.T) {
 		v.mustPrepare(localDriver, "s1", sharedReq("s1"))
 		v.mustUnprepare(localDriver, "s1")
 		v.f.FailCommand("cxl create-region", errors.New("cxl region: cmd_create_region: failed"))
-		if err := v.prepare(localDriver, "s2", sharedReq("s2"), poolReq("s2", 1, serialA, state.ModeDax, state.KindExclusive)); err == nil {
+		if err := v.prepare(localDriver, "s2", sharedReq("s2"), poolReq("s2", 1, serialA, state.ModeDax, state.KindPool)); err == nil {
 			t.Fatal("the Prepare succeeded")
 		}
 		wantPreparation(t, v, localDriver, "s2", "")
@@ -305,7 +305,7 @@ func TestLocalPolicyUnshared(t *testing.T) {
 		shared := true
 		v.e.opts.Shared = func(state.Serial) bool { return shared }
 		v.mustPrepare(localDriver, "s1", sharedReq("s1"))
-		v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeDax, state.KindExclusive))
+		v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeDax, state.KindPool))
 		shared = false
 		v.mustUnprepare(localDriver, "s1")
 		wantStack(t, v, 0, serialB)
@@ -317,7 +317,7 @@ func TestLocalPolicyUnshared(t *testing.T) {
 		v.configure(func(o *Options) { o.Shared = func(state.Serial) bool { return true } })
 		v.mustPrepare(localDriver, "s1", sharedReq("s1"))
 		v.mustUnprepare(localDriver, "s1")
-		v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeDax, state.KindExclusive))
+		v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeDax, state.KindPool))
 		v.configure(nil)
 		cutWhenRealised(v, "s2")
 		if !v.cut(func() { _ = v.prepare(localDriver, "s2", sharedReq("s2")) }) {
@@ -414,7 +414,7 @@ func TestPoolPolicyRollbackDestroysBelow(t *testing.T) {
 	port := v.f.Kernel().Memdev(serialA).Ports[0]
 	regionAboveNext(t, v, "mem1")
 	v.f.FailWrite("bus/dax/drivers/kmem/unbind", syscall.EBUSY)
-	if err := v.prepare(poolDriver, "a", poolReq("a", 0, serialA, state.ModeDax, state.KindExclusive)); err == nil {
+	if err := v.prepare(poolDriver, "a", poolReq("a", 0, serialA, state.ModeDax, state.KindPool)); err == nil {
 		t.Fatal("the Prepare succeeded")
 	}
 	v.check("rolled back")
@@ -443,7 +443,7 @@ func TestLocalPersistentRetryKeepsDisabledRegion(t *testing.T) {
 		t.Fatal("the release succeeded")
 	}
 	v.check("release failed")
-	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialC, state.ModeDax, state.KindExclusive))
+	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialC, state.ModeDax, state.KindPool))
 	v.mustUnprepare(localDriver, "w")
 	wantRegion(t, v, string(region), state.RegionKept)
 	v.mustUnprepare(poolDriver, "c")
@@ -457,9 +457,9 @@ func TestLocalPersistentRetryKeepsDisabledRegion(t *testing.T) {
 func TestLocalPersistentIdleLeftoverAtPrepare(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialB}, fake.MemdevSpec{Serial: serialP, Pmem: gib}, fake.MemdevSpec{Serial: serialC})
 	v.formatPmem("mem1", "ext4")
-	v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeDax, state.KindExclusive))
+	v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeDax, state.KindPool))
 	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFS, false, ""))
-	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialC, state.ModeDax, state.KindExclusive))
+	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialC, state.ModeDax, state.KindPool))
 	v.mustUnprepare(localDriver, "w")
 	v.mustUnprepare(poolDriver, "b")
 	v.mustUnprepare(poolDriver, "c")

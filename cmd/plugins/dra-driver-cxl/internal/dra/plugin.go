@@ -395,7 +395,7 @@ func (p *Plugin) commitPreparing(ctx context.Context, pr *prepare) error {
 // a failed lease bind told to the broker.
 func (p *Plugin) realise(ctx context.Context, pr *prepare) error {
 	for _, req := range pr.reqs {
-		if req.Asked.Kind == state.KindShared && req.Asked.Source == state.SourceLocal && p.onShared != nil {
+		if req.Asked.Kind == state.KindLocalShared && p.onShared != nil {
 			p.onShared(uint64(req.Serial))
 		}
 	}

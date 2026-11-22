@@ -642,9 +642,9 @@ func localRefusal(cfg PublishConfig, memDev *kernel.MemdevInfo, size, bs uint64,
 	case len(regions) > 0 && !used:
 		return fmt.Sprintf("it has regions %v that the driver did not create", regions)
 	case use.Persistent && len(use.Claims) > 0:
-		return fmt.Sprintf("used as a persistent device by claims %v", use.Claims)
+		return fmt.Sprintf("used as a local-persistent device by claims %v", use.Claims)
 	case use.Shared && len(use.Claims) > 0:
-		return fmt.Sprintf("used shared by claims %v", use.Claims)
+		return fmt.Sprintf("used as a local-shared device by claims %v", use.Claims)
 	}
 	return memdevMatches(cfg.IgnoreDevices, memDev)
 }
@@ -678,9 +678,9 @@ func addLocalShared(devInfos DevicesInfo, memDev *kernel.MemdevInfo, size uint64
 	case len(regions) > 0 && !used:
 		reason = fmt.Sprintf("it has regions %v that the driver did not create", regions)
 	case use.Persistent && len(use.Claims) > 0:
-		reason = fmt.Sprintf("used as a persistent device by claims %v", use.Claims)
+		reason = fmt.Sprintf("used as a local-persistent device by claims %v", use.Claims)
 	case !use.Shared && len(use.Claims) > 0:
-		reason = fmt.Sprintf("used as slices by claims %v", use.Claims)
+		reason = fmt.Sprintf("used as a local device by claims %v", use.Claims)
 	}
 	if reason != "" {
 		klog.V(4).Infof("- not publishing memory device %q as a shared local device: %s", memDev.Name, reason)
@@ -724,11 +724,11 @@ func addLocalPersistent(devInfos DevicesInfo, cfg PublishConfig, memDev *kernel.
 		reason = fmt.Sprintf("it has regions %v that the driver did not create", regions)
 	case len(use.Claims) == 0:
 	case !use.Persistent && use.Shared:
-		reason = fmt.Sprintf("used shared by claims %v", use.Claims)
+		reason = fmt.Sprintf("used as a local-shared device by claims %v", use.Claims)
 	case !use.Persistent:
-		reason = fmt.Sprintf("used as slices by claims %v", use.Claims)
+		reason = fmt.Sprintf("used as a local device by claims %v", use.Claims)
 	case use.Shared != shared:
-		reason = fmt.Sprintf("used as a %s persistent device by claims %v", sharedWord(use.Shared), use.Claims)
+		reason = fmt.Sprintf("used as a %s local-persistent device by claims %v", sharedWord(use.Shared), use.Claims)
 	}
 	if reason != "" {
 		klog.V(4).Infof("- not publishing memory device %q as a persistent local memory device: %s", memDev.Name, reason)

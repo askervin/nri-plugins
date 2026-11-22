@@ -40,7 +40,7 @@ import (
 func TestLocalSliced(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
 	at := v.onlineAtFence()
-	v.mustPrepare(localDriver, "n1", localReq("n1", 0, serialL, state.ModeNUMA, state.KindExclusive, 256*mib))
+	v.mustPrepare(localDriver, "n1", localReq("n1", 0, serialL, state.ModeNUMA, state.KindLocal, 256*mib))
 	g := v.grant("n1", 0)
 	if g.Got.Dax != "dax0.0" || state.NUMANodeOf(g.Got.NUMANode) != 2 || v.f.DaxDriver("dax0.0") != kernel.DriverKmem {
 		t.Fatalf("numa part %+v", g.Got)
@@ -48,7 +48,7 @@ func TestLocalSliced(t *testing.T) {
 	if !slices.Equal(v.fenced, []int{2}) || !slices.Equal(*at, []string{"2: []"}) {
 		t.Fatalf("fenced %v, online at the fences %v", v.fenced, *at)
 	}
-	v.mustPrepare(localDriver, "d1", localReq("d1", 0, serialL, state.ModeDax, state.KindExclusive, 200*mib))
+	v.mustPrepare(localDriver, "d1", localReq("d1", 0, serialL, state.ModeDax, state.KindLocal, 200*mib))
 	g = v.grant("d1", 0)
 	if g.Got.Dax != "dax0.1" || g.Got.Size != 256*mib || v.f.DaxDriver("dax0.1") != kernel.DriverDeviceDax {
 		t.Fatalf("dax part %+v", g.Got)
@@ -61,7 +61,7 @@ func TestLocalSliced(t *testing.T) {
 		t.Fatalf("dax0.0 after its part went: %+v", d)
 	}
 	// the seed is sized again for the next part
-	v.mustPrepare(localDriver, "n2", localReq("n2", 0, serialL, state.ModeNUMA, state.KindExclusive, 128*mib))
+	v.mustPrepare(localDriver, "n2", localReq("n2", 0, serialL, state.ModeNUMA, state.KindLocal, 128*mib))
 	if g := v.grant("n2", 0); g.Got.Dax != "dax0.0" {
 		t.Fatalf("part of the seed %+v", g.Got)
 	}
@@ -83,8 +83,8 @@ func TestLocalShared(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
 	shared := true
 	v.e.opts.Shared = func(state.Serial) bool { return shared }
-	v.mustPrepare(localDriver, "s1", localReq("s1", 0, serialL, state.ModeDax, state.KindShared, gib))
-	v.mustPrepare(localDriver, "s2", localReq("s2", 0, serialL, state.ModeDax, state.KindShared, gib))
+	v.mustPrepare(localDriver, "s1", localReq("s1", 0, serialL, state.ModeDax, state.KindLocalShared, gib))
+	v.mustPrepare(localDriver, "s2", localReq("s2", 0, serialL, state.ModeDax, state.KindLocalShared, gib))
 	if z := v.f.Zeroed(); len(z) != 1 {
 		t.Fatalf("zeroed %v", z)
 	}
@@ -98,7 +98,7 @@ func TestLocalShared(t *testing.T) {
 	}
 	v.check("idle shared")
 	// configured shared again later: the kept region, not zeroed again
-	v.mustPrepare(localDriver, "s3", localReq("s3", 0, serialL, state.ModeDax, state.KindShared, gib))
+	v.mustPrepare(localDriver, "s3", localReq("s3", 0, serialL, state.ModeDax, state.KindLocalShared, gib))
 	if z := v.f.Zeroed(); len(z) != 1 {
 		t.Fatalf("zeroed again %v", z)
 	}
@@ -117,7 +117,7 @@ func TestLocalGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := v.f.Commands()
-	err := v.prepare(localDriver, "l1", localReq("l1", 0, serialA, state.ModeDax, state.KindExclusive, 256*mib))
+	err := v.prepare(localDriver, "l1", localReq("l1", 0, serialA, state.ModeDax, state.KindLocal, 256*mib))
 	if err == nil || !strings.Contains(err.Error(), "pool device") {
 		t.Fatalf("error %v", err)
 	}
@@ -134,7 +134,7 @@ func TestLocalGuard(t *testing.T) {
 func TestLocalRegionErrors(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
 	ctx := context.Background()
-	req := localReq("l1", 0, serialL, state.ModeDax, state.KindExclusive, 128*mib)
+	req := localReq("l1", 0, serialL, state.ModeDax, state.KindLocal, 128*mib)
 	refused := func(what, want string, is error) {
 		t.Helper()
 		before := v.f.Commands()
@@ -189,10 +189,10 @@ func TestLocalRegionErrors(t *testing.T) {
 func TestLocalSliceFailures(t *testing.T) {
 	enable := errors.New("device_dax: enable failed")
 	numa := func(uid string, size uint64) GrantRequest {
-		return localReq(uid, 0, serialL, state.ModeNUMA, state.KindExclusive, size)
+		return localReq(uid, 0, serialL, state.ModeNUMA, state.KindLocal, size)
 	}
 	dax := func(uid string) GrantRequest {
-		return localReq(uid, 0, serialL, state.ModeDax, state.KindExclusive, 128*mib)
+		return localReq(uid, 0, serialL, state.ModeDax, state.KindLocal, 128*mib)
 	}
 	noDevdax := func(v *env) {
 		v.f.FailWrite("bus/dax/drivers/device_dax/new_id", enable)
@@ -296,8 +296,8 @@ func TestLocalPlacementFailures(t *testing.T) {
 	v := newEnv(t)
 	v.f.SetBlockSize(bs)
 	v.f.Plug(fake.MemdevSpec{Serial: serialL, Ram: 2 * gib})
-	numa := localReq("n1", 0, serialL, state.ModeNUMA, state.KindExclusive, bs)
-	dax := localReq("n1", 0, serialL, state.ModeDax, state.KindExclusive, bs)
+	numa := localReq("n1", 0, serialL, state.ModeNUMA, state.KindLocal, bs)
+	dax := localReq("n1", 0, serialL, state.ModeDax, state.KindLocal, bs)
 	failed := func(what string, req GrantRequest, want string) {
 		t.Helper()
 		if err := v.prepare(localDriver, "n1", req); err == nil || err.Error() != want {
@@ -317,7 +317,7 @@ func TestLocalPlacementFailures(t *testing.T) {
 	failed("first-fit device not deleted", numa, "memdev 0x11 (mem0): dax0.0: set size 0: input/output error")
 	v.clean("first-fit device not deleted")
 
-	v.mustPrepare(localDriver, "d1", localReq("d1", 0, serialL, state.ModeDax, state.KindExclusive, bs))
+	v.mustPrepare(localDriver, "d1", localReq("d1", 0, serialL, state.ModeDax, state.KindLocal, bs))
 	d1 := v.grant("d1", 0).Got.Dax
 	v.f.FailWrite("bus/dax/devices/dax0.2/mapping", syscall.EIO)
 	failed("not mapped", numa, "memdev 0x11 (mem0): dax0.2: map 0x280000000-0x29fffffff: input/output error")
@@ -344,8 +344,8 @@ func TestLocalPlacementFailures(t *testing.T) {
 	v.f.NoKmemBlocks, v.prepareTimeout = false, 0
 
 	// the free memory is left only across block boundaries
-	v.mustPrepare(localDriver, "d2", localReq("d2", 0, serialL, state.ModeDax, state.KindExclusive, bs))
-	v.mustPrepare(localDriver, "d3", localReq("d3", 0, serialL, state.ModeDax, state.KindExclusive, bs))
+	v.mustPrepare(localDriver, "d2", localReq("d2", 0, serialL, state.ModeDax, state.KindLocal, bs))
+	v.mustPrepare(localDriver, "d3", localReq("d3", 0, serialL, state.ModeDax, state.KindLocal, bs))
 	err = v.prepare(localDriver, "n1", numa)
 	if want := "memdev 0x11 (mem0): no room for the slice: no 536870912 bytes of whole free memory blocks in region0 " +
 		"(free [0x250000000-0x25fffffff 0x2c0000000-0x2cfffffff], memory block size 536870912)"; !errors.Is(err, kernel.ErrNoRoom) || err.Error() != want {
@@ -371,8 +371,8 @@ func TestLocalSlicesOnWholeBlocks(t *testing.T) {
 	v := newEnv(t)
 	v.f.SetBlockSize(512 * mib)
 	v.f.Plug(fake.MemdevSpec{Serial: serialL, Ram: 4 * gib})
-	v.mustPrepare(localDriver, "n1", localReq("n1", 0, serialL, state.ModeNUMA, state.KindExclusive, 512*mib))
-	v.mustPrepare(localDriver, "n2", localReq("n2", 0, serialL, state.ModeDax, state.KindExclusive, 512*mib))
+	v.mustPrepare(localDriver, "n1", localReq("n1", 0, serialL, state.ModeNUMA, state.KindLocal, 512*mib))
+	v.mustPrepare(localDriver, "n2", localReq("n2", 0, serialL, state.ModeDax, state.KindLocal, 512*mib))
 	for _, uid := range []string{"n1", "n2"} {
 		g := v.grant(uid, 0)
 		for _, r := range v.f.DaxRanges(g.Got.Dax) {
@@ -391,14 +391,14 @@ func TestLocalSlicesOnWholeBlocks(t *testing.T) {
 // whole free blocks.
 func TestLocalNewSliceMisplaced(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
-	v.mustPrepare(localDriver, "n1", localReq("n1", 0, serialL, state.ModeDax, state.KindExclusive, 128*mib))
+	v.mustPrepare(localDriver, "n1", localReq("n1", 0, serialL, state.ModeDax, state.KindLocal, 128*mib))
 	k := v.f.Kernel()
 	ctx := context.Background()
 	stray, err := k.CreateDaxDevice(ctx, "region0", 64*mib)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := v.prepare(localDriver, "n2", localReq("n2", 0, serialL, state.ModeDax, state.KindExclusive, 128*mib)); err != nil {
+	if err := v.prepare(localDriver, "n2", localReq("n2", 0, serialL, state.ModeDax, state.KindLocal, 128*mib)); err != nil {
 		t.Fatal(err)
 	}
 	g := v.grant("n2", 0)
@@ -542,10 +542,10 @@ func TestLocalReleaseOrder(t *testing.T) {
 	const serialM = 0x22
 	v := newEnv(t, fake.MemdevSpec{Serial: serialM, Ram: gib, HostBridge: 24}, fake.MemdevSpec{Serial: serialL, Ram: gib})
 	reqs := []GrantRequest{
-		localReq("c", 0, serialM, state.ModeDax, state.KindExclusive, 256*mib),
-		localReq("c", 1, serialL, state.ModeDax, state.KindExclusive, 256*mib),
-		localReq("c", 2, serialM, state.ModeDax, state.KindExclusive, 256*mib),
-		localReq("c", 3, serialL, state.ModeDax, state.KindExclusive, 256*mib),
+		localReq("c", 0, serialM, state.ModeDax, state.KindLocal, 256*mib),
+		localReq("c", 1, serialL, state.ModeDax, state.KindLocal, 256*mib),
+		localReq("c", 2, serialM, state.ModeDax, state.KindLocal, 256*mib),
+		localReq("c", 3, serialL, state.ModeDax, state.KindLocal, 256*mib),
 	}
 	v.mustPrepare(localDriver, "c", reqs...)
 	part := func(n int) string {
@@ -595,25 +595,25 @@ func TestLocalKindConflicts(t *testing.T) {
 		want  string
 	}{
 		{"sliced on shared", fake.MemdevSpec{Serial: serialL, Ram: gib}, sharedReq("u1"), sliceReq("x", 0, state.ModeDax, 256*mib),
-			"memdev 0x11 (mem0): used shared by claims [u1]; a sliced device cannot be shared"},
+			"memdev 0x11 (mem0): used as a local-shared device by claims [u1]; a local request cannot use it"},
 		{"shared on sliced", fake.MemdevSpec{Serial: serialL, Ram: gib}, sliceReq("n1", 0, state.ModeNUMA, 256*mib), sharedReq("x"),
-			"memdev 0x11 (mem0): used as slices by claims [n1]; a shared device cannot be sliced"},
+			"memdev 0x11 (mem0): used as a local device by claims [n1]; a local-shared request cannot use it"},
 		{"sliced on persistent", fake.MemdevSpec{Serial: serialP, Pmem: gib}, sharedPmem("w", false),
-			localReq("x", 0, serialP, state.ModeDax, state.KindExclusive, 256*mib),
-			"memdev 0x91 (mem0): used as a persistent device by claims [w]; a sliced device cannot be a persistent device"},
+			localReq("x", 0, serialP, state.ModeDax, state.KindLocal, 256*mib),
+			"memdev 0x91 (mem0): used as a local-persistent device by claims [w]; a local request cannot use it"},
 		{"shared on persistent", fake.MemdevSpec{Serial: serialP, Pmem: gib}, sharedPmem("w", false),
-			localReq("x", 0, serialP, state.ModeDax, state.KindShared, gib),
-			"memdev 0x91 (mem0): used as a persistent device by claims [w]; a shared device cannot be a persistent device"},
+			localReq("x", 0, serialP, state.ModeDax, state.KindLocalShared, gib),
+			"memdev 0x91 (mem0): used as a local-persistent device by claims [w]; a local-shared request cannot use it"},
 		{"persistent on sliced", fake.MemdevSpec{Serial: serialL, Ram: gib}, sliceReq("n1", 0, state.ModeNUMA, 256*mib),
-			localReq("x", 0, serialL, state.ModeBlock, state.KindPersistent, 0),
-			"memdev 0x11 (mem0): used as slices by claims [n1]; a persistent device cannot be used so"},
+			localReq("x", 0, serialL, state.ModeBlock, state.KindLocalPersistent, 0),
+			"memdev 0x11 (mem0): used as a local device by claims [n1]; a local-persistent request cannot use it"},
 		{"persistent on shared", fake.MemdevSpec{Serial: serialL, Ram: gib}, sharedReq("u1"),
-			localReq("x", 0, serialL, state.ModeBlock, state.KindPersistent, 0),
-			"memdev 0x11 (mem0): used shared by claims [u1]; a persistent device cannot be used so"},
+			localReq("x", 0, serialL, state.ModeBlock, state.KindLocalPersistent, 0),
+			"memdev 0x11 (mem0): used as a local-shared device by claims [u1]; a local-persistent request cannot use it"},
 		{"unshared on shared persistent", fake.MemdevSpec{Serial: serialP, Pmem: gib}, sharedPmem("w", true), sharedPmem("x", false),
-			"memdev 0x91 (mem0): used as a shared persistent device by claims [w]; it is not shared now (sharedMemdevs)"},
+			"memdev 0x91 (mem0): used as a shared local-persistent device by claims [w]; it is not shared now (sharedMemdevs)"},
 		{"shared on unshared persistent", fake.MemdevSpec{Serial: serialP, Pmem: gib}, sharedPmem("w", false), sharedPmem("x", true),
-			"memdev 0x91 (mem0): used as a not shared persistent device by claims [w]; it is shared now (sharedMemdevs)"},
+			"memdev 0x91 (mem0): used as a not shared local-persistent device by claims [w]; it is shared now (sharedMemdevs)"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			v := newEnv(t, c.spec)
@@ -824,7 +824,7 @@ func TestLocalSettle(t *testing.T) {
 			time.AfterFunc(100*time.Millisecond, bind)
 		})
 		start = time.Now()
-		v.mustPrepare(poolDriver, "p", poolReq("p", 0, serialA, state.ModeNUMA, state.KindExclusive))
+		v.mustPrepare(poolDriver, "p", poolReq("p", 0, serialA, state.ModeNUMA, state.KindPool))
 		if took := time.Since(start); took < 100*time.Millisecond {
 			t.Fatalf("the pool grant was prepared in %v, before its dax device was bound", took)
 		}

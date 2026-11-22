@@ -109,7 +109,7 @@ func (e *Engine) ensureRegion(ctx context.Context, req *GrantRequest, memdev str
 // the driver ran), with what its grants got of it, and tells whether it
 // did: a new region is made then.
 func (e *Engine) forgetGoneRegion(ctx context.Context, req *GrantRequest, memdev string, reg *state.Region) (bool, error) {
-	if req.Asked.Source != state.SourceLocal || req.Asked.Kind == state.KindExclusive {
+	if req.Asked.Kind != state.KindLocalShared && req.Asked.Kind != state.KindLocalPersistent {
 		return false, nil
 	}
 	name := string(reg.Ref())
@@ -117,7 +117,7 @@ func (e *Engine) forgetGoneRegion(ctx context.Context, req *GrantRequest, memdev
 		return false, nil
 	}
 	what := "shared"
-	if req.Asked.Kind == state.KindPersistent {
+	if req.Asked.Kind.Persistent() {
 		what = "persistent"
 	}
 	claims := []string{}

@@ -410,7 +410,7 @@
       "serial": "0xc100e2e1",
       "asked": {
         "source": "local",
-        "kind": "exclusive",
+        "kind": "local",
         "mode": "numa",
         "size": 134217728
       },
@@ -433,7 +433,7 @@
       "serial": "0xc100e2e1",
       "asked": {
         "source": "local",
-        "kind": "exclusive",
+        "kind": "local",
         "mode": "dax",
         "readOnly": true,
         "size": 134217728
@@ -456,7 +456,7 @@
       "serial": "0xc100e2e2",
       "asked": {
         "source": "local",
-        "kind": "shared",
+        "kind": "local-shared",
         "mode": "dax",
         "shared": true
       },
@@ -473,7 +473,7 @@
       "serial": "0xc100e2e2",
       "asked": {
         "source": "local",
-        "kind": "shared",
+        "kind": "local-shared",
         "mode": "dax",
         "readOnly": true,
         "shared": true
@@ -491,7 +491,7 @@
       "serial": "0xc100e2e1",
       "asked": {
         "source": "local",
-        "kind": "exclusive",
+        "kind": "local",
         "mode": "numa",
         "size": 134217728
       },
@@ -508,7 +508,7 @@
       "serial": "0xc1ae2001",
       "asked": {
         "source": "local",
-        "kind": "persistent",
+        "kind": "local-persistent",
         "mode": "fs",
         "readOnly": true,
         "path": "/run/cxl-fs/C1AE2001"
@@ -528,7 +528,7 @@
       "serial": "0xc100e2e9",
       "asked": {
         "source": "local",
-        "kind": "exclusive",
+        "kind": "local",
         "mode": "numa",
         "size": 134217728
       },
@@ -542,7 +542,7 @@
       "serial": "0xc100e2e1",
       "asked": {
         "source": "local",
-        "kind": "exclusive",
+        "kind": "local",
         "mode": "numa",
         "size": 134217728
       },
@@ -585,7 +585,7 @@
       "serial": "0xc1ae2003",
       "asked": {
         "source": "pool",
-        "kind": "exclusive",
+        "kind": "pool",
         "mode": "numa",
         "size": 1073741824
       },
@@ -608,7 +608,7 @@
       "serial": "0xc1ae2002",
       "asked": {
         "source": "pool",
-        "kind": "persistent",
+        "kind": "pool-persistent",
         "mode": "fs",
         "readOnly": true,
         "access": "cached",
@@ -644,7 +644,7 @@
       "serial": "0xc1ae2004",
       "asked": {
         "source": "pool",
-        "kind": "shared",
+        "kind": "pool-shared",
         "mode": "dax",
         "size": 1073741824,
         "shared": true
@@ -667,7 +667,7 @@
       "serial": "0xc1ae2002",
       "asked": {
         "source": "pool",
-        "kind": "persistent",
+        "kind": "pool-persistent",
         "mode": "fs",
         "readOnly": true,
         "access": "cached",

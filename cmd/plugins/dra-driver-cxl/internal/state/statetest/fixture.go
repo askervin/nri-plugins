@@ -209,42 +209,42 @@ func Records() state.Records {
 		Grants: []state.Grant{
 			{
 				Ref: ref(ClaimNUMA, 0), Serial: SerialLocal, State: state.GrantRealised,
-				Asked:  state.Asked{Source: state.SourceLocal, Kind: state.KindExclusive, Mode: state.ModeNUMA, Size: 128 * mi},
+				Asked:  state.Asked{Source: state.SourceLocal, Kind: state.KindLocal, Mode: state.ModeNUMA, Size: 128 * mi},
 				Intent: state.Intent{Region: "region0"},
 				Got:    state.Got{Region: "region0", Dax: "dax0.1", NUMANode: node(2), Size: 128 * mi},
 			},
 			{
 				Ref: ref(ClaimDax, 0), Serial: SerialLocal, State: state.GrantRealised,
-				Asked:  state.Asked{Source: state.SourceLocal, Kind: state.KindExclusive, Mode: state.ModeDax, ReadOnly: true, Size: 128 * mi},
+				Asked:  state.Asked{Source: state.SourceLocal, Kind: state.KindLocal, Mode: state.ModeDax, ReadOnly: true, Size: 128 * mi},
 				Intent: state.Intent{Region: "region0"},
 				Got:    state.Got{Region: "region0", Dax: "dax0.2", Size: 128 * mi},
 			},
 			{
 				Ref: ref(ClaimKept, 0), Serial: SerialLocal, State: state.GrantJournaled,
-				Asked:  state.Asked{Source: state.SourceLocal, Kind: state.KindExclusive, Mode: state.ModeNUMA, Size: 128 * mi},
+				Asked:  state.Asked{Source: state.SourceLocal, Kind: state.KindLocal, Mode: state.ModeNUMA, Size: 128 * mi},
 				Intent: state.Intent{Region: "region0"},
 			},
 			{
 				Ref: ref(ClaimCompanion, 0), Serial: SerialLocal, State: state.GrantRealised,
-				Asked:  state.Asked{Source: state.SourceLocal, Kind: state.KindExclusive, Mode: state.ModeNUMA, Size: 128 * mi},
+				Asked:  state.Asked{Source: state.SourceLocal, Kind: state.KindLocal, Mode: state.ModeNUMA, Size: 128 * mi},
 				Intent: state.Intent{Region: "region0", Lend: numaLend},
 				Got:    state.Got{Region: "region0", Dax: "dax0.3", NUMANode: node(2), Size: 128 * mi, Lend: numaLend},
 			},
 			{
 				Ref: ref(ClaimShared, 0), Serial: SerialShared, State: state.GrantRealised,
-				Asked:  state.Asked{Source: state.SourceLocal, Kind: state.KindShared, Mode: state.ModeDax, Shared: true},
+				Asked:  state.Asked{Source: state.SourceLocal, Kind: state.KindLocalShared, Mode: state.ModeDax, Shared: true},
 				Intent: state.Intent{Region: "region1"},
 				Got:    state.Got{Region: "region1", Dax: "dax1.0", Size: 512 * mi},
 			},
 			{
 				Ref: ref(ClaimMixed, 1), Serial: SerialShared, State: state.GrantRealised,
-				Asked:  state.Asked{Source: state.SourceLocal, Kind: state.KindShared, Mode: state.ModeDax, ReadOnly: true, Shared: true},
+				Asked:  state.Asked{Source: state.SourceLocal, Kind: state.KindLocalShared, Mode: state.ModeDax, ReadOnly: true, Shared: true},
 				Intent: state.Intent{Region: "region1"},
 				Got:    state.Got{Region: "region1", Dax: "dax1.0", Size: 512 * mi},
 			},
 			{
 				Ref: ref(ClaimFs, 0), Serial: SerialPersistent, State: state.GrantRealised,
-				Asked:  state.Asked{Source: state.SourceLocal, Kind: state.KindPersistent, Mode: state.ModeFS, ReadOnly: true, Path: "/run/cxl-fs/C1AE2001"},
+				Asked:  state.Asked{Source: state.SourceLocal, Kind: state.KindLocalPersistent, Mode: state.ModeFS, ReadOnly: true, Path: "/run/cxl-fs/C1AE2001"},
 				Intent: state.Intent{Region: "region2", NdRegion: "region7", MountPath: localFsMount},
 				Got: state.Got{
 					Region: "region2", Size: gi, Namespace: "namespace7.0", Mount: state.AccessDirect,
@@ -253,18 +253,18 @@ func Records() state.Records {
 			},
 			{
 				Ref: ref(ClaimStale, 0), Serial: SerialStale, State: state.GrantRealised,
-				Asked: state.Asked{Source: state.SourceLocal, Kind: state.KindExclusive, Mode: state.ModeNUMA, Size: 128 * mi},
+				Asked: state.Asked{Source: state.SourceLocal, Kind: state.KindLocal, Mode: state.ModeNUMA, Size: 128 * mi},
 			},
 			{
 				Ref: ref(ClaimPoolNUMA, 0), Serial: SerialPoolNUMA, State: state.GrantRealised,
-				Asked:  state.Asked{Source: state.SourcePool, Kind: state.KindExclusive, Mode: state.ModeNUMA, Size: gi},
+				Asked:  state.Asked{Source: state.SourcePool, Kind: state.KindPool, Mode: state.ModeNUMA, Size: gi},
 				Intent: state.Intent{Region: "region4"},
 				Got:    state.Got{Region: "region4", Dax: "dax4.0", NUMANode: node(4), Size: gi},
 			},
 			{
 				Ref: ref(ClaimPoolFs, 0), Serial: SerialPoolFs, State: state.GrantRealised,
 				Asked: state.Asked{
-					Source: state.SourcePool, Kind: state.KindPersistent, Mode: state.ModeFS, ReadOnly: true, Access: state.AccessCached,
+					Source: state.SourcePool, Kind: state.KindPoolPersistent, Mode: state.ModeFS, ReadOnly: true, Access: state.AccessCached,
 					Path: "/run/cxl-fs/C1AE2002", Size: gi, Shared: true,
 				},
 				Intent: state.Intent{Region: "region3", NdRegion: "region8", MountPath: poolFsMount},
@@ -275,14 +275,14 @@ func Records() state.Records {
 			},
 			{
 				Ref: ref(ClaimPoolDax, 0), Serial: SerialPoolDax, State: state.GrantRealised,
-				Asked:  state.Asked{Source: state.SourcePool, Kind: state.KindShared, Mode: state.ModeDax, Size: gi, Shared: true},
+				Asked:  state.Asked{Source: state.SourcePool, Kind: state.KindPoolShared, Mode: state.ModeDax, Size: gi, Shared: true},
 				Intent: state.Intent{Region: "region6"},
 				Got:    state.Got{Region: "region6", Dax: "dax6.0", Size: gi},
 			},
 			{
 				Ref: ref(ClaimPoolLeaseC, 0), Serial: SerialPoolFs, State: state.GrantRealised,
 				Asked: state.Asked{
-					Source: state.SourcePool, Kind: state.KindPersistent, Mode: state.ModeFS, ReadOnly: true, Access: state.AccessCached,
+					Source: state.SourcePool, Kind: state.KindPoolPersistent, Mode: state.ModeFS, ReadOnly: true, Access: state.AccessCached,
 					Path: "/run/cxl-fs/C1AE2002", Size: gi, Shared: true,
 				},
 				Intent: state.Intent{Region: "region3", NdRegion: "region8", MountPath: poolFsMount, BindTarget: bindTarget, Lend: fsLend},

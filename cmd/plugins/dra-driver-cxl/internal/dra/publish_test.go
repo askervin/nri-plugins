@@ -642,7 +642,7 @@ func TestBuildDevInfosPersistentMemdevs(t *testing.T) {
 	if m := devs["memdev-b3"].Dev.(*Memdev); m.Persistent || m.Shared || m.Size != 1<<30 {
 		t.Fatalf("memdev with RAM and persistent memory %+v", m)
 	}
-	if n := logMatches(logs(), `- not publishing memory device "mem4" as a local memory device: used as a persistent device by claims [u3]`); n != 1 {
+	if n := logMatches(logs(), `- not publishing memory device "mem4" as a local memory device: used as a local-persistent device by claims [u3]`); n != 1 {
 		t.Fatalf("%d lines of the refusal of mem4:\n%s", n, logs())
 	}
 }
@@ -684,9 +684,9 @@ func TestPersistentMemdevRefusals(t *testing.T) {
 			pubRegion(s, "region0", 2, 512*pubMiB, 0xc100f5e1)
 			s.Regions[0].Mode = kernel.RegionPmem
 		}},
-		{nil, nil, true, sliceUse, "used as slices by claims [s1]", nil},
-		{nil, nil, true, sharedUse, "used as a shared persistent device by claims [ro1]", nil},
-		{nil, nil, true, exclusiveUse, "used as a not shared persistent device by claims [rw1]", func(cfg *PublishConfig, _ *kernel.Snapshot) {
+		{nil, nil, true, sliceUse, "used as a local device by claims [s1]", nil},
+		{nil, nil, true, sharedUse, "used as a shared local-persistent device by claims [ro1]", nil},
+		{nil, nil, true, exclusiveUse, "used as a not shared local-persistent device by claims [rw1]", func(cfg *PublishConfig, _ *kernel.Snapshot) {
 			cfg.SharedDevices = memdevSpecs(t, "mem3")
 		}},
 	} {

@@ -75,7 +75,7 @@ func (e *Engine) forgetGoneSlices(ctx context.Context) {
 // prepared claim on a sliced local memdev, nil for another grant.
 func (e *Engine) ownSlice(r *state.Records, g *state.Grant) *state.DaxDevice {
 	p := r.PreparationOf(g.Ref)
-	if g.Asked.Source != state.SourceLocal || !e.owns(g.Asked.Source) || g.Asked.Kind != state.KindExclusive || g.Got.Dax == "" ||
+	if g.Asked.Source != state.SourceLocal || !e.owns(g.Asked.Source) || g.Asked.Kind != state.KindLocal || g.Got.Dax == "" ||
 		!prepared(g) || p == nil || !p.Prepared() {
 		return nil
 	}

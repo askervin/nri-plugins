@@ -266,9 +266,9 @@ func grantRequest(i int, uid string) GrantRequest {
 	switch {
 	case d.source == state.SourcePool:
 		req = poolReq(uid, 0, d.serial, sl.mode, d.kind)
-	case d.kind == state.KindPersistent:
+	case d.kind.Persistent():
 		req = localReq(uid, 0, d.serial, sl.mode, d.kind, 0)
-	case d.kind == state.KindShared:
+	case d.kind.Shared():
 		req = localReq(uid, 0, d.serial, sl.mode, d.kind, gib)
 	default:
 		req = localReq(uid, 0, d.serial, sl.mode, d.kind, 256*mib)
@@ -623,7 +623,7 @@ func (x *coreExec) observe(from *coreState, class string) (*coreState, []string)
 				m.plugged = true
 			}
 		}
-		if d.kind == state.KindPersistent {
+		if d.kind.Persistent() {
 			m.mount = x.mountOf(snap, d.source)
 		}
 	}

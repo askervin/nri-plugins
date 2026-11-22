@@ -579,8 +579,8 @@ The two errors about the other use are prefixed with
 |:-----|:------|
 | zeroing the new region of a shared device fails | `memdev 0x<hex> (<memN>): zeroing new shared dax0.0: <cause>` |
 | a claim that consumed shares of a memdev that is not configured shared any more | `claim <ns>/<name>: request <req>: memdev 0x<serial>: allocated as a shared device, which it is not any more` |
-| a claim of a shared device whose state has slices | `memdev 0x<hex> (<memN>): used as slices by claims [<uids>]; a shared device cannot be sliced` |
-| a claim of a sliced device whose state is shared | `memdev 0x<hex> (<memN>): used shared by claims [<uids>]; a sliced device cannot be shared` |
+| a local-shared claim of a memdev that local claims use | `memdev 0x<hex> (<memN>): used as a local device by claims [<uids>]; a local-shared request cannot use it` |
+| a local claim of a memdev that local-shared claims use | `memdev 0x<hex> (<memN>): used as a local-shared device by claims [<uids>]; a local request cannot use it` |
 
 ### Life cycle of a shared local device
 
@@ -741,9 +741,9 @@ engine: local memdev 0xc100f5e1 (mem1): keeping persistent region1, claims [<uid
 
 (the last one at start). Errors of the Prepare about other uses of the
 memdev come from stale allocations only (the memdev is not published
-meanwhile): `memdev 0x<hex> (<memN>): used <how> by claims [<uids>]; a persistent device cannot be used so`,
-`memdev 0x<hex> (<memN>): used as a persistent device by claims [<uids>]; <use> cannot be a persistent device`,
-and `memdev 0x<hex> (<memN>): used as a shared persistent device by claims [<uids>]; it is not shared now (sharedMemdevs)`
+meanwhile): `memdev 0x<hex> (<memN>): used <how> by claims [<uids>]; a local-persistent request cannot use it`,
+`memdev 0x<hex> (<memN>): used as a local-persistent device by claims [<uids>]; a <kind> request cannot use it`,
+and `memdev 0x<hex> (<memN>): used as a shared local-persistent device by claims [<uids>]; it is not shared now (sharedMemdevs)`
 (or the reverse).
 
 ### Shared persistent memdevs

@@ -32,7 +32,7 @@ import (
 func TestInvariantViolations(t *testing.T) {
 	v := pmemEnv(t, "ext4")
 	v.f.Plug(fake.MemdevSpec{Serial: serialA})
-	v.mustPrepare(poolDriver, "n", poolReq("n", 0, serialA, state.ModeNUMA, state.KindExclusive))
+	v.mustPrepare(poolDriver, "n", poolReq("n", 0, serialA, state.ModeNUMA, state.KindPool))
 	v.mustPrepare(poolDriver, "w", fsGrant("w", false, ""))
 	k := v.f.Kernel()
 	snap, err := k.Observe(context.Background())

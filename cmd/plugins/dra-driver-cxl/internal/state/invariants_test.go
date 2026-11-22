@@ -121,6 +121,13 @@ func TestInvariantViolations(t *testing.T) {
 			invariant: "records", text: "with owner",
 		},
 		{
+			name: "a grant whose kind is of another source",
+			change: func(r *state.Records) {
+				r.Grant(state.GrantRef{Claim: statetest.ClaimDax, Result: 0}).Asked.Kind = state.KindPool
+			},
+			invariant: "records", text: "kind pool of source local",
+		},
+		{
 			name: "a grant that no preparation has",
 			change: func(r *state.Records) {
 				p := r.Preparation(statetest.LocalDriver, statetest.ClaimDax)

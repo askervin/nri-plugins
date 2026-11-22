@@ -305,8 +305,8 @@ func (e *Engine) checkLocalKind(ctx context.Context, req *GrantRequest) error {
 	if m == nil || m.Source != state.SourceLocal {
 		return nil
 	}
-	persistent, shared := req.Asked.Kind == state.KindPersistent, req.Facts.Shared
-	if req.Asked.Kind == state.KindShared {
+	persistent, shared := req.Asked.Kind.Persistent(), req.Facts.Shared
+	if req.Asked.Kind.Shared() {
 		shared = true
 	}
 	if m.Facts.Persistent == persistent && m.Facts.Shared == shared {
@@ -326,25 +326,15 @@ func (e *Engine) checkLocalKind(ctx context.Context, req *GrantRequest) error {
 	return e.releaseIdle(ctx, m, e.idleKind(m, shared), time.Now(), state.TriggerPrepare)
 }
 
-// kindConflict returns how the grants of a memdev with the facts use it
-// and why a request (persistent, shared) cannot use it so, in the words of
-// the refusal.
+// kindConflict returns how the grants of a local memdev with the facts
+// use it and why a request (persistent, shared) cannot use it so, in the
+// words of the refusal: the kinds of their DeviceClasses.
 func kindConflict(f state.MemdevFacts, persistent, shared bool) (string, string) {
-	switch {
-	case f.Persistent && persistent:
-		return fmt.Sprintf("as a %s persistent device", sharedWord(f.Shared)), fmt.Sprintf("it is %s now (sharedMemdevs)", sharedWord(shared))
-	case f.Persistent && shared:
-		return "as a persistent device", "a shared device cannot be a persistent device"
-	case f.Persistent:
-		return "as a persistent device", "a sliced device cannot be a persistent device"
-	case persistent && f.Shared:
-		return "shared", "a persistent device cannot be used so"
-	case persistent:
-		return "as slices", "a persistent device cannot be used so"
-	case f.Shared:
-		return "shared", "a sliced device cannot be shared"
+	used := kindOfFacts(f)
+	if f.Persistent && persistent {
+		return fmt.Sprintf("as a %s %s device", sharedWord(f.Shared), used), fmt.Sprintf("it is %s now (sharedMemdevs)", sharedWord(shared))
 	}
-	return "as slices", "a shared device cannot be sliced"
+	return fmt.Sprintf("as a %s device", used), fmt.Sprintf("a %s request cannot use it", state.KindOf(state.SourceLocal, shared, persistent))
 }
 
 // sharedWord returns "shared" or "not shared".
@@ -355,15 +345,9 @@ func sharedWord(shared bool) string {
 	return "not shared"
 }
 
-// kindOfFacts returns the grant kind of a memdev with the facts.
+// kindOfFacts returns the grant kind of a local memdev with the facts.
 func kindOfFacts(f state.MemdevFacts) state.GrantKind {
-	switch {
-	case f.Persistent:
-		return state.KindPersistent
-	case f.Shared:
-		return state.KindShared
-	}
-	return state.KindExclusive
+	return state.KindOf(state.SourceLocal, f.Shared, f.Persistent)
 }
 
 // otherClaims returns the claims but uid of the grants of a memdev, in
@@ -669,19 +653,19 @@ func (e *Engine) logReleased(g *state.Grant, release Release) {
 		left = []string{}
 	}
 	switch {
-	case release == ReleaseRecovery && g.Asked.Kind == state.KindShared:
+	case release == ReleaseRecovery && g.Asked.Kind.Shared():
 		klog.Infof("engine: local memdev %s (%s): claim %s of the shared device is not prepared, dropping it", s, memdev, claim)
-	case release == ReleaseRecovery && g.Asked.Kind == state.KindPersistent:
+	case release == ReleaseRecovery && g.Asked.Kind.Persistent():
 		klog.Infof("engine: local memdev %s (%s): claim %s of the persistent device is not prepared, dropping it", s, memdev, claim)
 	case release == ReleaseRecovery:
 		klog.Infof("engine: local memdev %s (%s): claim %s is not prepared, releasing it", s, memdev, claim)
-	case g.Asked.Kind == state.KindShared:
+	case g.Asked.Kind.Shared():
 		dax := ""
 		if reg := ownRegion(e.records(), g.Serial, state.RegionRAM); reg != nil {
 			dax = reg.FirstDax()
 		}
 		klog.Infof("engine: local memdev %s (%s): claim %s: released shared %s, claims left %v", s, memdev, claim, dax, left)
-	case g.Asked.Kind == state.KindPersistent && len(left) > 0:
+	case g.Asked.Kind.Persistent() && len(left) > 0:
 		dev := ""
 		if g.Got.BlockDevice != nil {
 			dev = g.Got.BlockDevice.Name

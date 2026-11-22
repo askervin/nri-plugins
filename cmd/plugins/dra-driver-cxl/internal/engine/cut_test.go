@@ -49,7 +49,7 @@ var cutScenarios = []cutScenario{
 		name:  "pool numa",
 		specs: []fake.MemdevSpec{{Serial: serialA}},
 		run: func(v *env) {
-			_ = v.prepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeNUMA, state.KindExclusive))
+			_ = v.prepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeNUMA, state.KindPool))
 			_ = v.unprepare(poolDriver, "c")
 		},
 	},
@@ -57,8 +57,8 @@ var cutScenarios = []cutScenario{
 		name:  "pool shared dax",
 		specs: []fake.MemdevSpec{{Serial: serialA}},
 		run: func(v *env) {
-			_ = v.prepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindShared))
-			_ = v.prepare(poolDriver, "c2", poolReq("c2", 0, serialA, state.ModeDax, state.KindShared))
+			_ = v.prepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindPoolShared))
+			_ = v.prepare(poolDriver, "c2", poolReq("c2", 0, serialA, state.ModeDax, state.KindPoolShared))
 			_ = v.unprepare(poolDriver, "c1")
 			_ = v.unprepare(poolDriver, "c2")
 		},
@@ -100,7 +100,7 @@ var cutScenarios = []cutScenario{
 			v.f.SetBusy(companionTarget(v), true)
 			_ = v.unprepare(poolDriver, "comp")
 			v.f.SetBusy(companionTarget(v), false)
-			_ = v.prepare(poolDriver, "a", poolReq("a", 0, serialA, state.ModeDax, state.KindExclusive))
+			_ = v.prepare(poolDriver, "a", poolReq("a", 0, serialA, state.ModeDax, state.KindPool))
 			_ = v.unprepare(poolDriver, "a")
 			_ = v.unprepare(poolDriver, "comp")
 		},
@@ -124,7 +124,7 @@ var cutScenarios = []cutScenario{
 		setup: func(v *env) { v.formatPmem("mem0", "ext4") },
 		run: func(v *env) {
 			v.f.FailCommand("cxl create-region", nil, errors.New("cxl region: cmd_create_region: failed"))
-			reqs := []GrantRequest{fsGrant("c", true, ""), poolReq("c", 1, serialA, state.ModeDax, state.KindExclusive)}
+			reqs := []GrantRequest{fsGrant("c", true, ""), poolReq("c", 1, serialA, state.ModeDax, state.KindPool)}
 			_ = v.prepare(poolDriver, "c", reqs...)
 			_ = v.prepare(poolDriver, "c", reqs...)
 			_ = v.unprepare(poolDriver, "c")
@@ -134,8 +134,8 @@ var cutScenarios = []cutScenario{
 		name:  "local sliced",
 		specs: []fake.MemdevSpec{{Serial: serialL, Ram: gib}},
 		run: func(v *env) {
-			_ = v.prepare(localDriver, "n", localReq("n", 0, serialL, state.ModeNUMA, state.KindExclusive, 256*mib))
-			_ = v.prepare(localDriver, "d", localReq("d", 0, serialL, state.ModeDax, state.KindExclusive, 256*mib))
+			_ = v.prepare(localDriver, "n", localReq("n", 0, serialL, state.ModeNUMA, state.KindLocal, 256*mib))
+			_ = v.prepare(localDriver, "d", localReq("d", 0, serialL, state.ModeDax, state.KindLocal, 256*mib))
 			_ = v.unprepare(localDriver, "n")
 			_ = v.unprepare(localDriver, "d")
 		},

@@ -321,6 +321,9 @@ func checkGrant(r *Records, g *Grant, add addFunc) {
 			}
 		}
 	}
+	if g.Asked.Kind.Source() != g.Asked.Source {
+		add(grantID(g), "kind %s of source %s", g.Asked.Kind, g.Asked.Source)
+	}
 	if owners != 1 {
 		add(grantID(g), "belongs to %d preparation results", owners)
 	}

@@ -35,7 +35,7 @@ import (
 // the memdev, leaving the namespace in the labels.
 func TestPersistentBlockWriter(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib})
-	v.mustPrepare(poolDriver, "b1", poolReq("b1", 0, serialP, state.ModeBlock, state.KindPersistent))
+	v.mustPrepare(poolDriver, "b1", poolReq("b1", 0, serialP, state.ModeBlock, state.KindPoolPersistent))
 	g := v.grant("b1", 0)
 	if g.Got.BlockDevice == nil || g.Got.Namespace == "" || g.Intent.NdRegion == "" || v.f.IsReadOnly(g.Got.BlockDevice.Name) {
 		t.Fatalf("grant %+v", g)
@@ -304,7 +304,7 @@ func TestPersistentRules(t *testing.T) {
 // A persistent grant of a memdev without persistent memory is refused.
 func TestPersistentWithoutPmem(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
-	err := v.prepare(poolDriver, "x", fsReq(poolReq("x", 0, serialA, state.ModeFS, state.KindPersistent), true, ""))
+	err := v.prepare(poolDriver, "x", fsReq(poolReq("x", 0, serialA, state.ModeFS, state.KindPoolPersistent), true, ""))
 	if want := "memdev 0xa1: mem0 has no persistent memory"; err == nil || err.Error() != want {
 		t.Fatalf("error %v, want %q", err, want)
 	}

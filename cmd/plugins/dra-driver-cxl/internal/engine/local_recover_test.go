@@ -280,7 +280,7 @@ func TestLocalForgetLocal(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib}, fake.MemdevSpec{Serial: serialB})
 			v.configure(func(o *Options) { probeOptions(v, o) })
-			v.mustPrepare(localDriver, "b", localReq("b", 0, serialB, state.ModeDax, state.KindExclusive, 256*mib))
+			v.mustPrepare(localDriver, "b", localReq("b", 0, serialB, state.ModeDax, state.KindLocal, 256*mib))
 			c.cut(v)
 			if !v.cut(func() { _ = v.prepare(localDriver, "l", sliceReq("l", 0, state.ModeDax, 256*mib)) }) {
 				t.Fatal("not cut")
@@ -659,7 +659,7 @@ func TestLocalKeptRegionSetUpAgain(t *testing.T) {
 		regionAboveNext(t, v, "mem1")
 		v.f.Before("cxl create-region -t ram -d decoder0.1", func() { shared = false })
 		v.f.FailCommand("cxl create-region -t ram -d decoder0.1", errors.New("cxl region: cmd_create_region: failed"))
-		if err := v.prepare(localDriver, "u1", sharedReq("u1"), localReq("u1", 1, serialC, state.ModeDax, state.KindExclusive, 256*mib)); err == nil {
+		if err := v.prepare(localDriver, "u1", sharedReq("u1"), localReq("u1", 1, serialC, state.ModeDax, state.KindLocal, 256*mib)); err == nil {
 			t.Fatal("the Prepare succeeded")
 		}
 		wantRegion(t, v, "region0", state.RegionKept)
@@ -688,7 +688,7 @@ func TestLocalKeptRegionEnabledAgainCut(t *testing.T) {
 	if err := v.unprepare(localDriver, "d"); err == nil {
 		t.Fatal("the release succeeded")
 	}
-	v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeDax, state.KindExclusive))
+	v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeDax, state.KindPool))
 	v.f.CutAfter("cxl enable-region")
 	if !v.cut(func() { _ = v.prepare(localDriver, "n", sliceReq("n", 0, state.ModeNUMA, 256*mib)) }) {
 		t.Fatal("not cut")
@@ -735,7 +735,7 @@ func TestLocalForgetLocalPersistent(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib})
 	v.f.CutAfter("ndctl create-namespace")
 	if !v.cut(func() {
-		_ = v.prepare(localDriver, "p", localReq("p", 0, serialP, state.ModeBlock, state.KindPersistent, 0))
+		_ = v.prepare(localDriver, "p", localReq("p", 0, serialP, state.ModeBlock, state.KindLocalPersistent, 0))
 	}) {
 		t.Fatal("not cut")
 	}

@@ -1159,7 +1159,7 @@ func (e *Engine) currentBlockDevice(serial state.Serial) string {
 // Prepare left is the one of its intent when a mount of its device is
 // there.
 func (e *Engine) leaveNodeMount(ctx context.Context, g *state.Grant, call *releaseCall) error {
-	if g.Asked.Kind != state.KindPersistent {
+	if !g.Asked.Kind.Persistent() {
 		return nil
 	}
 	if err, done := call.released[g.Serial]; done {
@@ -1217,7 +1217,7 @@ func callGrants(r *state.Records, g *state.Grant, call *releaseCall) []*state.Gr
 	grants := []*state.Grant{g}
 	if m := r.Memdev(g.Serial); m != nil {
 		for _, ref := range m.Grants {
-			if o := r.Grant(ref); o != nil && ref != g.Ref && call.refs[ref] && o.Asked.Kind == state.KindPersistent {
+			if o := r.Grant(ref); o != nil && ref != g.Ref && call.refs[ref] && o.Asked.Kind.Persistent() {
 				grants = append(grants, o)
 			}
 		}
@@ -1306,7 +1306,7 @@ func leftMount(m *state.Mount, writer bool, trigger state.Trigger) (bool, error)
 // not known now: none would release it without the holder check. A grant
 // of a cut Prepare waits for the current one.
 func (e *Engine) firstBlockDevice(g *state.Grant, call *releaseCall) string {
-	if g.Asked.Kind != state.KindPersistent {
+	if !g.Asked.Kind.Persistent() {
 		return ""
 	}
 	if g.Got.BlockDevice == nil {

@@ -161,7 +161,7 @@ func grantInfo(doc *store.Document, g *state.Grant, d *state.DeviceInfo, rs root
 
 // sharedGrant tells whether a grant maps its memdev shared.
 func sharedGrant(g *state.Grant) bool {
-	return g.Asked.Shared || g.Asked.Kind == state.KindShared
+	return g.Asked.Shared || g.Asked.Kind.Shared()
 }
 
 // numaAffinity returns the CPU NUMA nodes of the local memdev of a grant,

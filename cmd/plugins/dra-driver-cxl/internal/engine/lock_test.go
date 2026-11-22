@@ -45,7 +45,7 @@ func TestEngineLockSerializesKernelCalls(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			errs[0] = v.prepare(poolDriver, "p", poolReq("p", 0, serialB, state.ModeNUMA, state.KindExclusive))
+			errs[0] = v.prepare(poolDriver, "p", poolReq("p", 0, serialB, state.ModeNUMA, state.KindPool))
 		}()
 		go func() {
 			defer wg.Done()

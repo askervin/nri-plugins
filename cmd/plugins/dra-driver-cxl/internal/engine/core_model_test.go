@@ -76,13 +76,13 @@ var coreHostBridges = []int{12, 24}
 // persistent P. Each has one region at most, so that a port's decoder stack
 // never exceeds the 4 decoders of the fake.
 var coreMemdevs = []coreMemdev{
-	{"A", serialA, state.SourcePool, state.KindExclusive, 0, fake.MemdevSpec{Serial: serialA}},
-	{"B", serialB, state.SourcePool, state.KindExclusive, 0, fake.MemdevSpec{Serial: serialB}},
-	{"L", serialL, state.SourceLocal, state.KindExclusive, 0, fake.MemdevSpec{Serial: serialL, Ram: gib}},
-	{"S", serialS, state.SourceLocal, state.KindShared, 0, fake.MemdevSpec{Serial: serialS, Ram: gib}},
-	{"C", serialC, state.SourcePool, state.KindShared, 1, fake.MemdevSpec{Serial: serialC, HostBridge: 24}},
-	{"Q", serialQ, state.SourcePool, state.KindPersistent, 1, fake.MemdevSpec{Serial: serialQ, Pmem: gib, HostBridge: 24}},
-	{"P", serialP, state.SourceLocal, state.KindPersistent, 1, fake.MemdevSpec{Serial: serialP, Pmem: gib, HostBridge: 24}},
+	{"A", serialA, state.SourcePool, state.KindPool, 0, fake.MemdevSpec{Serial: serialA}},
+	{"B", serialB, state.SourcePool, state.KindPool, 0, fake.MemdevSpec{Serial: serialB}},
+	{"L", serialL, state.SourceLocal, state.KindLocal, 0, fake.MemdevSpec{Serial: serialL, Ram: gib}},
+	{"S", serialS, state.SourceLocal, state.KindLocalShared, 0, fake.MemdevSpec{Serial: serialS, Ram: gib}},
+	{"C", serialC, state.SourcePool, state.KindPoolShared, 1, fake.MemdevSpec{Serial: serialC, HostBridge: 24}},
+	{"Q", serialQ, state.SourcePool, state.KindPoolPersistent, 1, fake.MemdevSpec{Serial: serialQ, Pmem: gib, HostBridge: 24}},
+	{"P", serialP, state.SourceLocal, state.KindLocalPersistent, 1, fake.MemdevSpec{Serial: serialP, Pmem: gib, HostBridge: 24}},
 }
 
 // coreSlot is a slot of claims of one kind: it holds one claim at a time,
@@ -795,9 +795,9 @@ const (
 func unprepareDestroys(s *coreState, md int) string {
 	d := &coreMemdevs[md]
 	switch {
-	case d.source == state.SourcePool, d.kind == state.KindExclusive:
+	case d.source == state.SourcePool, d.kind == state.KindLocal:
 		return policyDestroy
-	case d.kind == state.KindShared:
+	case d.kind.Shared():
 		return policyKeep
 	case s.regionsAbove(md):
 		return policyKeep
@@ -1135,7 +1135,7 @@ func (s *coreState) predictPrepare(i int) []*coreState {
 	switch {
 	case arm == nil:
 		md := coreSlots[i].md
-		if m := &s.mds[md]; m.rec == state.MemdevIdleKept && coreMemdevs[md].kind == state.KindPersistent &&
+		if m := &s.mds[md]; m.rec == state.MemdevIdleKept && coreMemdevs[md].kind.Persistent() &&
 			!s.regionsAbove(md) {
 			// the keep reason of an idle persistent region is gone: the
 			// next Prepare destroys it first (5.4 the idle row, T3
@@ -1303,7 +1303,7 @@ func (s *coreState) cutPrepare(i int, arm *coreArm, w *coreState, made int) []*c
 		// enabled again: not established (a shared region in use is set
 		// up again with its zeroing, D-100)
 		md := coreSlots[i].md
-		if made != madeUsed || coreMemdevs[md].kind == state.KindShared && coreMemdevs[md].source == state.SourceLocal {
+		if made != madeUsed || coreMemdevs[md].kind.Shared() && coreMemdevs[md].source == state.SourceLocal {
 			n := mid.clone()
 			n.mds[md].est = false
 			mids = append(mids, n)
@@ -1406,7 +1406,7 @@ func (s *coreState) failedRelease(i int, fail string) *coreState {
 	// device of a region lists every grant of the memdev until the region
 	// goes (5.2)
 	d := &coreMemdevs[sl.md]
-	if sl.mode == state.ModeFS || d.source == state.SourceLocal && d.kind == state.KindExclusive {
+	if sl.mode == state.ModeFS || d.kind == state.KindLocal {
 		ss.user = false
 	}
 	if sl.mode == state.ModeNUMA {
@@ -1617,12 +1617,12 @@ func (w *coreState) restarted() []*coreState {
 	for _, a := range out {
 		for md := range a.mds {
 			m := &a.mds[md]
-			if coreMemdevs[md].kind == state.KindPersistent {
+			if coreMemdevs[md].kind.Persistent() {
 				if users, _ := a.fsUsers(md); !users {
 					m.mount = ""
 				}
 			}
-			if m.rec == state.MemdevIdleKept && coreMemdevs[md].kind == state.KindPersistent && !a.regionsAbove(md) &&
+			if m.rec == state.MemdevIdleKept && coreMemdevs[md].kind.Persistent() && !a.regionsAbove(md) &&
 				len(a.usersOf(md)) == 0 {
 				a.destroy(md)
 			}
@@ -1680,7 +1680,7 @@ func (w *coreState) releaseKeptOf(md int, kept []int) []*coreState {
 		for _, i := range kept {
 			r.slots[i] = coreSlotState{}
 		}
-		if d := &coreMemdevs[md]; !others && (d.source == state.SourcePool || d.kind == state.KindExclusive) {
+		if d := &coreMemdevs[md]; !others && (d.source == state.SourcePool || d.kind == state.KindLocal) {
 			return []*coreState{r, w.clone()}
 		}
 		return []*coreState{r}
@@ -1696,9 +1696,9 @@ func (w *coreState) releaseKeptOf(md int, kept []int) []*coreState {
 		m := &r.mds[md]
 		d := &coreMemdevs[md]
 		switch {
-		case d.source == state.SourceLocal && d.kind != state.KindExclusive:
+		case d.source == state.SourceLocal && d.kind != state.KindLocal:
 			r.slots[last] = coreSlotState{}
-			if d.kind == state.KindShared || r.regionsAbove(md) {
+			if d.kind.Shared() || r.regionsAbove(md) {
 				m.rec = state.MemdevIdleKept
 			} else {
 				r.destroy(md)
@@ -1760,14 +1760,14 @@ func (w *coreState) releaseCut(i int) []*coreState {
 		return []*coreState{r}
 	}
 	d := &coreMemdevs[md]
-	idle := d.source == state.SourceLocal && d.kind != state.KindExclusive && m.est
+	idle := d.source == state.SourceLocal && d.kind != state.KindLocal && m.est
 	if !r.regionsAbove(md) {
 		for _, o := range keptToo {
 			r.slots[o] = coreSlotState{}
 		}
 	}
 	switch {
-	case idle && d.kind == state.KindPersistent && !r.regionsAbove(md):
+	case idle && d.kind.Persistent() && !r.regionsAbove(md):
 		r.destroy(md)
 		return []*coreState{r}
 	case idle:

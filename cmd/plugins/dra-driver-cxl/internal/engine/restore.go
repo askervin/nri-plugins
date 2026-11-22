@@ -138,7 +138,7 @@ func (e *Engine) restoreSerial(serial state.Serial, why map[state.GrantRef]error
 // a pool grant of mode block (a pool grant of mode fs is verified by its
 // node mount).
 func blockChecked(g *state.Grant) bool {
-	if g.Asked.Kind != state.KindPersistent || g.Got.BlockDevice == nil {
+	if !g.Asked.Kind.Persistent() || g.Got.BlockDevice == nil {
 		return false
 	}
 	return g.Asked.Source == state.SourceLocal || g.Asked.Mode == state.ModeBlock

@@ -36,7 +36,7 @@ func TestUnknownTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeNUMA, state.KindExclusive))
+	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeNUMA, state.KindPool))
 	after, err := k.Observe(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +98,7 @@ func TestObserveHollowOncePerRegion(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
 	logs := klogtest.Capture(t, 3)
 	for range 2 {
-		v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive))
+		v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeDax, state.KindPool))
 		v.f.Unplug(serialA)
 		for range 2 {
 			if _, err := v.e.Observe(context.Background()); err != nil {
@@ -129,7 +129,7 @@ func TestQueuesPerMemdev(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialB})
 	done := make(chan error, 1)
 	go func() {
-		_, err := v.e.PrepareGrants(context.Background(), []GrantRequest{poolReq("wait", 0, serialA, state.ModeDax, state.KindExclusive)})
+		_, err := v.e.PrepareGrants(context.Background(), []GrantRequest{poolReq("wait", 0, serialA, state.ModeDax, state.KindPool)})
 		done <- err
 	}()
 	// the grant is JOURNALED before the request waits for its memdev
@@ -140,7 +140,7 @@ func TestQueuesPerMemdev(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	start := time.Now()
-	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{poolReq("other", 0, serialB, state.ModeDax, state.KindExclusive)}); err != nil {
+	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{poolReq("other", 0, serialB, state.ModeDax, state.KindPool)}); err != nil {
 		t.Fatal(err)
 	}
 	if time.Since(start) > time.Second {
@@ -176,7 +176,7 @@ func TestVerifyStepLogs(t *testing.T) {
 	last.Memdevs = append(append([]kernel.MemdevInfo(nil), last.Memdevs...), kernel.MemdevInfo{Serial: serialB, State: kernel.MemdevReady})
 	v.e.last = &last
 	v.e.qmu.Unlock()
-	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive)}); err != nil {
+	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{poolReq("c", 0, serialA, state.ModeDax, state.KindPool)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
@@ -212,7 +212,7 @@ func TestVerifyStepBetweenRequests(t *testing.T) {
 	v.onZero = func() {
 		// the dax part of l is sized and bound, its grant REALISING
 		ran = true
-		if err := v.prepare(poolDriver, "p", poolReq("p", 0, serialA, state.ModeDax, state.KindExclusive)); err != nil {
+		if err := v.prepare(poolDriver, "p", poolReq("p", 0, serialA, state.ModeDax, state.KindPool)); err != nil {
 			t.Error(err)
 		}
 	}
@@ -259,7 +259,7 @@ func TestRequestChecksAtItsEnd(t *testing.T) {
 	ran := false
 	v.beforePrepared = func() {
 		ran = true
-		if err := v.prepare(poolDriver, "p", poolReq("p", 0, serialA, state.ModeDax, state.KindExclusive)); err != nil {
+		if err := v.prepare(poolDriver, "p", poolReq("p", 0, serialA, state.ModeDax, state.KindPool)); err != nil {
 			t.Error(err)
 		}
 	}

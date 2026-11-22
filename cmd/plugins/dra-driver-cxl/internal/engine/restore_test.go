@@ -275,7 +275,7 @@ func TestRestoredBind(t *testing.T) {
 // the prepared one again restores it.
 func TestRecoverPoolBlockChanged(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib})
-	v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialP, state.ModeBlock, state.KindPersistent))
+	v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialP, state.ModeBlock, state.KindPoolPersistent))
 	v.f.RenamePmem("region0", "pmem3", "259:9")
 	out := v.restart()
 	if !slices.Equal(out.Unrestored, []state.GrantRef{{Claim: "b"}}) || out.Why[state.GrantRef{Claim: "b"}] == nil {
@@ -285,7 +285,7 @@ func TestRecoverPoolBlockChanged(t *testing.T) {
 		t.Fatalf("grant %s", g.State)
 	}
 	wantPreparation(t, v, poolDriver, "b", state.PreparationUnrestored)
-	req := poolReq("b", 0, serialP, state.ModeBlock, state.KindPersistent)
+	req := poolReq("b", 0, serialP, state.ModeBlock, state.KindPoolPersistent)
 	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{req}); err == nil || !strings.Contains(err.Error(), "as prepared") {
 		t.Fatalf("Prepare again with another block device: %v", err)
 	}

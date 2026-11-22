@@ -384,7 +384,7 @@ func (p *Plugin) memdevRequest(pr *prepare, r *resourcev1.DeviceRequestAllocatio
 	}
 	req.Asked.Mode = state.Mode(mode)
 	if dev.Shared {
-		req.Asked.Kind, req.Asked.Shared = state.KindShared, true
+		req.Asked.Kind, req.Asked.Shared = state.KindLocalShared, true
 		pr.uses[req.Ref] = sharesText(shares, device.SharesUnlimited)
 		return req, nil
 	}
@@ -401,7 +401,7 @@ func (p *Plugin) memdevRequest(pr *prepare, r *resourcev1.DeviceRequestAllocatio
 	if size == 0 {
 		return req, fmt.Errorf("device %s: size 0", r.Device)
 	}
-	req.Asked.Kind, req.Asked.Size = state.KindExclusive, size
+	req.Asked.Kind, req.Asked.Size = state.KindLocal, size
 	return req, nil
 }
 
@@ -430,7 +430,7 @@ func (p *Plugin) persistentRequest(pr *prepare, req *engine.GrantRequest, r *res
 	if err != nil {
 		return fail(err)
 	}
-	req.Asked.Kind, req.Asked.Mode, req.Asked.Shared = state.KindPersistent, state.Mode(mode), dev.Shared
+	req.Asked.Kind, req.Asked.Mode, req.Asked.Shared = state.KindLocalPersistent, state.Mode(mode), dev.Shared
 	req.Asked.Access, req.Asked.FSType = state.Access(cfg.Access), cfg.FSType
 	if mode == api.ModeFS {
 		if req.Asked.Path = cfg.Path; req.Asked.Path == "" {
@@ -476,7 +476,7 @@ func (p *Plugin) poolResult(claim *resourcev1.ResourceClaim, pr *prepare, r *res
 	if err != nil {
 		return nil, fmt.Errorf("device %s (memdev 0x%x): %w", r.Device, data.Serial, lasting(err))
 	}
-	asked := state.Asked{Source: state.SourcePool, Kind: grantKind(data.Shared, data.Persistent), Mode: state.Mode(mode),
+	asked := state.Asked{Source: state.SourcePool, Kind: state.KindOf(state.SourcePool, data.Shared, data.Persistent), Mode: state.Mode(mode),
 		ReadOnly: cfg.IsReadOnly(), Size: data.Size, Shared: data.Shared}
 	key := keys.next(api.Key(data.Serial, 1))
 	if mode == api.ModeFS {
@@ -501,18 +501,6 @@ func poolRequest(pr *prepare, n int, data *device.PoolDevice, asked state.Asked)
 		SingleHost: poolFacts(data).SingleHost,
 		Lend:       pr.grantLend(),
 	}
-}
-
-// grantKind returns the kind of a grant on a memdev that is shared or of
-// persistent memory.
-func grantKind(shared, persistent bool) state.GrantKind {
-	switch {
-	case persistent:
-		return state.KindPersistent
-	case shared:
-		return state.KindShared
-	}
-	return state.KindExclusive
 }
 
 // preparedGrant returns a grant of a prepared claim of the driver other

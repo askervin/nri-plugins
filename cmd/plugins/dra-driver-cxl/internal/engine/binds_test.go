@@ -168,7 +168,7 @@ func TestReleaseStaleRetrySkipsBusyQueue(t *testing.T) {
 	v := pmemEnv(t, "ext4")
 	v.f.Plug(fake.MemdevSpec{Serial: serialA})
 	target := busyCompanion(t, v)
-	v.mustPrepare(poolDriver, "a", poolReq("a", 0, serialA, state.ModeDax, state.KindExclusive))
+	v.mustPrepare(poolDriver, "a", poolReq("a", 0, serialA, state.ModeDax, state.KindPool))
 	leave, err := v.e.acquire(context.Background(), serialP)
 	if err != nil {
 		t.Fatal(err)
@@ -196,7 +196,7 @@ func TestReleaseRetriesStaleBindsOfEveryMemdev(t *testing.T) {
 	v.f.Plug(fake.MemdevSpec{Serial: serialA})
 	target := busyCompanion(t, v)
 	logs := klogtest.Capture(t, 3)
-	v.mustPrepare(poolDriver, "a", poolReq("a", 0, serialA, state.ModeDax, state.KindExclusive))
+	v.mustPrepare(poolDriver, "a", poolReq("a", 0, serialA, state.ModeDax, state.KindPool))
 	v.mustUnprepare(poolDriver, "a")
 	out := logs()
 	for _, want := range []string{"unbound stale lease bind " + target, "memdev 0x91 (mem0): disabled"} {

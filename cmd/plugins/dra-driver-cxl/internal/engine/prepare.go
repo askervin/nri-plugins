@@ -127,7 +127,7 @@ func (e *Engine) prepareGrant(ctx context.Context, req *GrantRequest) error {
 // the Prepare makes it anew.
 func (e *Engine) destroyIdleLeftover(ctx context.Context, req *GrantRequest) error {
 	m := e.records().Memdev(req.Serial)
-	if req.Asked.Source != state.SourceLocal || req.Asked.Kind != state.KindPersistent || m == nil || m.State != state.MemdevIdleKept {
+	if req.Asked.Kind != state.KindLocalPersistent || m == nil || m.State != state.MemdevIdleKept {
 		return nil
 	}
 	idle := *m
@@ -248,11 +248,11 @@ func (e *Engine) realise(ctx context.Context, req *GrantRequest) error {
 		return err
 	}
 	switch {
-	case req.Asked.Kind == state.KindPersistent:
+	case req.Asked.Kind.Persistent():
 		return e.realisePersistent(ctx, req, memdev)
 	case req.Asked.Source == state.SourcePool:
 		return e.realisePoolRam(ctx, req, memdev)
-	case req.Asked.Kind == state.KindShared:
+	case req.Asked.Kind.Shared():
 		return e.realiseLocalShared(ctx, req, memdev)
 	}
 	return e.realiseLocal(ctx, req, memdev)

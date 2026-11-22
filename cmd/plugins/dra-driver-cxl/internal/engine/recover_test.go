@@ -39,7 +39,7 @@ import (
 func TestRecoverPreparedVerifies(t *testing.T) {
 	v := pmemEnv(t, "ext4")
 	v.f.Plug(fake.MemdevSpec{Serial: serialA})
-	v.mustPrepare(poolDriver, "n", poolReq("n", 0, serialA, state.ModeNUMA, state.KindExclusive))
+	v.mustPrepare(poolDriver, "n", poolReq("n", 0, serialA, state.ModeNUMA, state.KindPool))
 	v.mustPrepare(poolDriver, "w", fsGrant("w", false, ""))
 	before := v.f.Commands()
 	out := v.restart()
@@ -71,7 +71,7 @@ func TestRecoverUnrestoredOfTwo(t *testing.T) {
 	v.formatPmem("mem0", "ext4")
 	v.formatPmem("mem1", "ext4")
 	v.mustPrepare(poolDriver, "w", fsGrant("w", false, ""),
-		fsReq(poolReq("w", 1, serialQ, state.ModeFS, state.KindPersistent), false, ""))
+		fsReq(poolReq("w", 1, serialQ, state.ModeFS, state.KindPoolPersistent), false, ""))
 	for i := range 2 {
 		g := v.grant("w", i)
 		if err := v.f.Kernel().Unmount(v.mount("w", i).Path); err != nil {
@@ -92,7 +92,7 @@ func TestRecoverUnrestoredOfTwo(t *testing.T) {
 // start, nothing is released then, kubelet's Unprepare retry finishes it.
 func TestRecoverCutUnprepare(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
-	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeNUMA, state.KindExclusive))
+	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeNUMA, state.KindPool))
 	v.cutAfter(1)
 	if !v.cut(func() { _ = v.unprepare(poolDriver, "c") }) {
 		t.Fatal("not cut")
@@ -114,7 +114,7 @@ func TestRecoverCutUnprepare(t *testing.T) {
 func TestRecoverCutPrepare(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
 	v.f.After("cxl create-region", func() { panic(fake.ErrCut) })
-	if !v.cut(func() { _ = v.prepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeNUMA, state.KindExclusive)) }) {
+	if !v.cut(func() { _ = v.prepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeNUMA, state.KindPool)) }) {
 		t.Fatal("not cut")
 	}
 	v.f.After("cxl create-region", func() {})
@@ -138,7 +138,7 @@ func TestRecoverCutPrepare(t *testing.T) {
 		t.Fatalf("regions %v left at the start", rs)
 	}
 	v.check("recovered")
-	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeNUMA, state.KindExclusive))
+	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeNUMA, state.KindPool))
 	v.mustUnprepare(poolDriver, "c")
 	v.clean("unprepared")
 }
@@ -156,7 +156,7 @@ func TestRecoverCutRollback(t *testing.T) {
 			panic(fake.ErrCut)
 		}
 	}
-	reqs := []GrantRequest{fsGrant("c", true, ""), poolReq("c", 1, serialA, state.ModeDax, state.KindExclusive)}
+	reqs := []GrantRequest{fsGrant("c", true, ""), poolReq("c", 1, serialA, state.ModeDax, state.KindPool)}
 	if !v.cut(func() { _ = v.prepare(poolDriver, "c", reqs...) }) {
 		t.Fatal("not cut")
 	}
@@ -182,8 +182,8 @@ func TestRecoverCutRollback(t *testing.T) {
 // region.
 func TestRecoverClaimKeptInPart(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialB}, fake.MemdevSpec{Serial: serialC, HostBridge: 24})
-	free := poolReq("c", 0, serialC, state.ModeDax, state.KindExclusive)
-	below := poolReq("c", 1, serialA, state.ModeDax, state.KindExclusive)
+	free := poolReq("c", 0, serialC, state.ModeDax, state.KindPool)
+	below := poolReq("c", 1, serialA, state.ModeDax, state.KindPool)
 	if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
 		doc.Preparations = append(doc.Preparations, state.Preparation{UID: "c", Driver: poolDriver, ClaimName: "ns/c",
 			State: state.PreparationPreparing, Results: []state.Result{grantResult("c", 0), grantResult("c", 1)}})
@@ -254,8 +254,8 @@ func TestRecoverKeptReleasedInPart(t *testing.T) {
 	const serialD = 0xd1
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialB},
 		fake.MemdevSpec{Serial: serialC, HostBridge: 24}, fake.MemdevSpec{Serial: serialD, HostBridge: 24})
-	first := poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive)
-	second := poolReq("c", 1, serialC, state.ModeDax, state.KindExclusive)
+	first := poolReq("c", 0, serialA, state.ModeDax, state.KindPool)
+	second := poolReq("c", 1, serialC, state.ModeDax, state.KindPool)
 	if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
 		doc.Preparations = append(doc.Preparations, state.Preparation{UID: "c", Driver: poolDriver, ClaimName: "ns/c",
 			State: state.PreparationPreparing, Results: []state.Result{grantResult("c", 0), grantResult("c", 1)}})
@@ -308,7 +308,7 @@ func TestRecoverKeptReleasedInPart(t *testing.T) {
 func TestRecoverCutPrepareBelow(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialB})
 	v.cutAfter(4)
-	if !v.cut(func() { _ = v.prepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive)) }) {
+	if !v.cut(func() { _ = v.prepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeDax, state.KindPool)) }) {
 		t.Fatal("not cut")
 	}
 	k := v.f.Kernel()
@@ -337,7 +337,7 @@ func TestRecoverCutPrepareBelow(t *testing.T) {
 // (OWNED, set up) for a Prepare again, which reuses them.
 func TestRecoverRealisedBelow(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialB})
-	req := poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive)
+	req := poolReq("c", 0, serialA, state.ModeDax, state.KindPool)
 	v.beforePrepared = func() { panic(fake.ErrCut) }
 	if !v.cut(func() { _ = v.prepare(poolDriver, "c", req) }) {
 		t.Fatal("not cut")
@@ -373,12 +373,12 @@ func TestRecoverRealisedOfPreparing(t *testing.T) {
 	if _, err := v.e.PrepareGrants(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
-	companion := poolReq("comp", 0, serialC, state.ModeNUMA, state.KindExclusive)
+	companion := poolReq("comp", 0, serialC, state.ModeNUMA, state.KindPool)
 	companion.Lend = &state.GrantLend{Lease: "0123abcd", Container: "c"}
 	for _, c := range []struct {
 		uid string
 		req GrantRequest
-	}{{"plain", poolReq("plain", 0, serialA, state.ModeNUMA, state.KindExclusive)}, {"comp", companion}} {
+	}{{"plain", poolReq("plain", 0, serialA, state.ModeNUMA, state.KindPool)}, {"comp", companion}} {
 		if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
 			doc.Preparations = append(doc.Preparations, state.Preparation{UID: c.uid, Driver: poolDriver,
 				State: state.PreparationPreparing, Results: []state.Result{grantResult(c.uid, 0)}})
@@ -433,8 +433,8 @@ func TestRecoverUnpreparing(t *testing.T) {
 // again of another prepares anew.
 func TestRecoverStale(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialB})
-	v.mustPrepare(poolDriver, "a", poolReq("a", 0, serialA, state.ModeDax, state.KindExclusive))
-	v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeNUMA, state.KindExclusive))
+	v.mustPrepare(poolDriver, "a", poolReq("a", 0, serialA, state.ModeDax, state.KindPool))
+	v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeNUMA, state.KindPool))
 	v.f.Reboot()
 	before := v.f.Commands()
 	out := v.restart()
@@ -451,7 +451,7 @@ func TestRecoverStale(t *testing.T) {
 	if !strings.Contains(v.f.CommandsSince(before), "disable-memdev mem0") {
 		t.Fatalf("commands %q", v.f.CommandsSince(before))
 	}
-	v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeNUMA, state.KindExclusive))
+	v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeNUMA, state.KindPool))
 	if g := v.grant("b", 0); g.State != state.GrantRealised || g.Got.Region == "" {
 		t.Fatalf("prepared anew %+v", g)
 	}
@@ -473,7 +473,7 @@ func TestRecoverKept(t *testing.T) {
 		}
 	})
 	v.f.FailWrite("bus/dax/devices/dax0.0/size", syscall.EBUSY)
-	if err := v.prepare(localDriver, "k", localReq("k", 0, serialL, state.ModeDax, state.KindExclusive, 256*mib)); err == nil {
+	if err := v.prepare(localDriver, "k", localReq("k", 0, serialL, state.ModeDax, state.KindLocal, 256*mib)); err == nil {
 		t.Fatal("the Prepare succeeded")
 	}
 	if p := v.records().Preparation(localDriver, "k"); p == nil || p.State != state.PreparationKept {
@@ -482,7 +482,7 @@ func TestRecoverKept(t *testing.T) {
 	if reg := v.records().Region("region0"); reg == nil || reg.State != state.RegionKept {
 		t.Fatalf("region %+v", reg)
 	}
-	v.mustPrepare(localDriver, "k", localReq("k", 0, serialL, state.ModeDax, state.KindExclusive, 256*mib))
+	v.mustPrepare(localDriver, "k", localReq("k", 0, serialL, state.ModeDax, state.KindLocal, 256*mib))
 	if g := v.grant("k", 0); g.Got.Region != "region0" {
 		t.Fatalf("grant %+v", g.Got)
 	}
@@ -496,10 +496,10 @@ func TestRecoverKept(t *testing.T) {
 // Unprepare, which deletes its hollow region; also those of a cut Prepare.
 func TestRecoverMemdevGone(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialB})
-	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive))
+	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeDax, state.KindPool))
 	v.f.CutAfter("cxl create-region")
 	if !v.cut(func() {
-		_ = v.prepare(poolDriver, "cut", poolReq("cut", 0, serialB, state.ModeDax, state.KindExclusive))
+		_ = v.prepare(poolDriver, "cut", poolReq("cut", 0, serialB, state.ModeDax, state.KindPool))
 	}) {
 		t.Fatal("not cut")
 	}
@@ -525,7 +525,7 @@ func TestRecoverMemdevGone(t *testing.T) {
 // A memdev that is back at a later start: its records ACTIVE again.
 func TestRecoverMemdevBack(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
-	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive))
+	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeDax, state.KindPool))
 	v.f.Unplug(serialA)
 	v.restart()
 	if m := v.records().Memdev(serialA); m.State != state.MemdevGone {
@@ -544,7 +544,7 @@ func TestRecoverMemdevBack(t *testing.T) {
 func TestRecoverHollowNoted(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
 	v.f.CutBefore("cxl create-region")
-	if !v.cut(func() { _ = v.prepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive)) }) {
+	if !v.cut(func() { _ = v.prepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeDax, state.KindPool)) }) {
 		t.Fatal("not cut")
 	}
 	reg := v.records().Regions[0]
@@ -639,10 +639,10 @@ func TestRecoverRealisedKeptInOrder(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{localReq("n", 0, serialL, state.ModeDax, state.KindExclusive, 256*mib)}); err != nil {
+	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{localReq("n", 0, serialL, state.ModeDax, state.KindLocal, 256*mib)}); err != nil {
 		t.Fatal(err)
 	}
-	v.mustPrepare(poolDriver, "p", poolReq("p", 0, serialB, state.ModeDax, state.KindExclusive))
+	v.mustPrepare(poolDriver, "p", poolReq("p", 0, serialB, state.ModeDax, state.KindPool))
 	out := v.restart()
 	if !slices.Equal(out.Kept, []state.GrantRef{{Claim: "n"}}) {
 		t.Fatalf("recovered %+v", out)
@@ -661,7 +661,7 @@ func TestRecoverRealisedKeptInOrder(t *testing.T) {
 func TestRecoverStaleCut(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
 	v.f.CutAfter("cxl create-region")
-	if !v.cut(func() { _ = v.prepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive)) }) {
+	if !v.cut(func() { _ = v.prepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeDax, state.KindPool)) }) {
 		t.Fatal("not cut")
 	}
 	v.f.Reboot()
@@ -683,9 +683,9 @@ func TestRecoverStaleCut(t *testing.T) {
 // Prepare again of the cut one.
 func TestRecoverRebootAfterReleasedCut(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialB})
-	v.mustPrepare(poolDriver, "p", poolReq("p", 0, serialA, state.ModeNUMA, state.KindExclusive))
+	v.mustPrepare(poolDriver, "p", poolReq("p", 0, serialA, state.ModeNUMA, state.KindPool))
 	v.f.CutAfter("cxl create-region")
-	if !v.cut(func() { _ = v.prepare(poolDriver, "c", poolReq("c", 0, serialB, state.ModeNUMA, state.KindExclusive)) }) {
+	if !v.cut(func() { _ = v.prepare(poolDriver, "c", poolReq("c", 0, serialB, state.ModeNUMA, state.KindPool)) }) {
 		t.Fatal("not cut")
 	}
 	out := v.restart()
@@ -703,7 +703,7 @@ func TestRecoverRebootAfterReleasedCut(t *testing.T) {
 		}
 	}
 	v.mustUnprepare(poolDriver, "p")
-	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialB, state.ModeNUMA, state.KindExclusive))
+	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialB, state.ModeNUMA, state.KindPool))
 	if g := v.grant("c", 0); g.State != state.GrantRealised || g.Got.Region == "" {
 		t.Fatalf("prepared anew %+v", g)
 	}
@@ -719,7 +719,7 @@ func TestRecoverRestoreBeforeRelease(t *testing.T) {
 	v.mustPrepare(poolDriver, "r", fsGrant("r", true, ""))
 	direct := v.mount("r", 0).Path
 	v.f.CutAfter("cxl create-region")
-	if !v.cut(func() { _ = v.prepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive)) }) {
+	if !v.cut(func() { _ = v.prepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeDax, state.KindPool)) }) {
 		t.Fatal("not cut")
 	}
 	k := v.f.Kernel()
@@ -767,9 +767,9 @@ func TestRecoverOtherSources(t *testing.T) {
 			Grants: []state.GrantRef{ref, fsRef}, Regions: []state.RegionRef{"region7"},
 			Stale: []state.StalePath{{Path: staleBind, Kind: state.StaleBind}}})
 		doc.Grants = append(doc.Grants, state.Grant{Ref: ref, Serial: serialL, State: state.GrantJournaled,
-			Asked: state.Asked{Source: state.SourceLocal, Mode: state.ModeDax, Kind: state.KindExclusive}},
+			Asked: state.Asked{Source: state.SourceLocal, Mode: state.ModeDax, Kind: state.KindLocal}},
 			state.Grant{Ref: fsRef, Serial: serialL, State: state.GrantRealised,
-				Asked: state.Asked{Source: state.SourceLocal, Mode: state.ModeFS, Kind: state.KindPersistent}})
+				Asked: state.Asked{Source: state.SourceLocal, Mode: state.ModeFS, Kind: state.KindLocalPersistent}})
 		doc.Regions = append(doc.Regions, state.Region{Name: "region7", Mode: state.RegionRAM, Targets: []state.Serial{serialL},
 			Owner: state.OwnerOurs, State: state.RegionOwned})
 		return nil
@@ -802,7 +802,7 @@ func TestRecoverOtherSources(t *testing.T) {
 		t.Fatalf("release of another source: %v", err)
 	}
 	gen := v.st.Snapshot().Generation
-	_, err = v.e.PrepareGrants(context.Background(), []GrantRequest{localReq("l2", 0, serialL, state.ModeDax, state.KindExclusive, 256*mib)})
+	_, err = v.e.PrepareGrants(context.Background(), []GrantRequest{localReq("l2", 0, serialL, state.ModeDax, state.KindLocal, 256*mib)})
 	if err == nil || !strings.Contains(err.Error(), "are not the engine's") || v.st.Snapshot().Generation != gen {
 		t.Fatalf("prepare of another source: %v (generation %d -> %d)", err, gen, v.st.Snapshot().Generation)
 	}
@@ -857,14 +857,14 @@ func TestRecoverClaimLines(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialC, HostBridge: 24},
 		fake.MemdevSpec{Serial: serialP, Pmem: gib})
 	v.formatPmem("mem2", "ext4")
-	companion := poolReq("comp", 0, serialC, state.ModeNUMA, state.KindExclusive)
+	companion := poolReq("comp", 0, serialC, state.ModeNUMA, state.KindPool)
 	companion.Lend = &state.GrantLend{Lease: "0123abcd", Container: "c"}
 	target := filepath.Join(v.dir, localDriver, "lease-fs", "lc1", "data")
 	for _, c := range []struct {
 		uid string
 		req GrantRequest
 	}{
-		{"plain", poolReq("plain", 0, serialA, state.ModeNUMA, state.KindExclusive)},
+		{"plain", poolReq("plain", 0, serialA, state.ModeNUMA, state.KindPool)},
 		{"comp", companion},
 		// a companion of mode fs is released at the start, its bind too
 		{"fscomp", bindReq("fscomp", target)},
@@ -973,14 +973,14 @@ func TestRecoverOrphanBind(t *testing.T) {
 		t.Fatal("the busy bind is gone")
 	}
 	// a release while it is busy keeps it, the next one unmounts it
-	v.mustPrepare(poolDriver, "p", poolReq("p", 0, serialA, state.ModeDax, state.KindExclusive))
+	v.mustPrepare(poolDriver, "p", poolReq("p", 0, serialA, state.ModeDax, state.KindPool))
 	v.mustUnprepare(poolDriver, "p")
 	wantLog(t, logs(), "unmounting stale lease bind "+orphan+": device or resource busy")
 	if mi, _ := k.Mounted(orphan); mi == nil {
 		t.Fatal("the busy bind is gone")
 	}
 	v.f.SetBusy(orphan, false)
-	v.mustPrepare(poolDriver, "p", poolReq("p", 0, serialA, state.ModeDax, state.KindExclusive))
+	v.mustPrepare(poolDriver, "p", poolReq("p", 0, serialA, state.ModeDax, state.KindPool))
 	v.mustUnprepare(poolDriver, "p")
 	wantLog(t, logs(), "unbound stale lease bind "+orphan)
 	if mi, _ := k.Mounted(orphan); mi != nil {
@@ -1011,7 +1011,7 @@ func TestRecoverCutPrepareOnForeignBelow(t *testing.T) {
 	below := rawRegion(t, v, "mem1")
 	above := rawRegion(t, v, "mem0")
 	v.cutAfter(1)
-	if !v.cut(func() { _ = v.prepare(poolDriver, "c", poolReq("c", 0, serialB, state.ModeDax, state.KindExclusive)) }) {
+	if !v.cut(func() { _ = v.prepare(poolDriver, "c", poolReq("c", 0, serialB, state.ModeDax, state.KindPool)) }) {
 		t.Fatal("not cut")
 	}
 	out := v.restart()
@@ -1073,7 +1073,7 @@ func TestRecoverKeptWithoutGrant(t *testing.T) {
 		}
 	})
 	v.f.FailWrite("bus/dax/devices/dax0.0/size", syscall.EBUSY)
-	if err := v.prepare(localDriver, "k", localReq("k", 0, serialL, state.ModeDax, state.KindExclusive, 256*mib)); err == nil {
+	if err := v.prepare(localDriver, "k", localReq("k", 0, serialL, state.ModeDax, state.KindLocal, 256*mib)); err == nil {
 		t.Fatal("the Prepare succeeded")
 	}
 	if p := v.records().Preparation(localDriver, "k"); p == nil || p.State != state.PreparationKept {

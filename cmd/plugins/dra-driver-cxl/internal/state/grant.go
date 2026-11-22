@@ -97,19 +97,62 @@ type Asked struct {
 	Shared bool `json:"shared,omitempty"`
 }
 
-// GrantKind is how a grant uses its memdev.
+// GrantKind is the kind of device that a grant uses: its DeviceClass
+// without "cxl-", the source and whether the device is shared or of
+// persistent memory (Asked.Shared tells whether a persistent one is
+// shared).
 type GrantKind string
 
 const (
-	// KindExclusive is a part of a local memdev (the memdev is sliced)
-	// or a whole pool device, for one grant.
-	KindExclusive GrantKind = "exclusive"
-	// KindShared is a device that several grants map at a time.
-	KindShared GrantKind = "shared"
-	// KindPersistent is a device of persistent memory in mode block or
-	// fs.
-	KindPersistent GrantKind = "persistent"
+	// KindLocal is a slice of a local memdev for one grant.
+	KindLocal GrantKind = "local"
+	// KindLocalShared is a local memdev that several grants map at a time.
+	KindLocalShared GrantKind = "local-shared"
+	// KindLocalPersistent is a local memdev of persistent memory in mode
+	// block or fs.
+	KindLocalPersistent GrantKind = "local-persistent"
+	// KindPool is a whole pool device for one grant.
+	KindPool GrantKind = "pool"
+	// KindPoolShared is a pool device that several grants map at a time.
+	KindPoolShared GrantKind = "pool-shared"
+	// KindPoolPersistent is a pool device of persistent memory in mode
+	// block or fs.
+	KindPoolPersistent GrantKind = "pool-persistent"
 )
+
+// KindOf returns the kind of a device of the source that is shared or of
+// persistent memory.
+func KindOf(source Source, shared, persistent bool) GrantKind {
+	kind := KindLocal
+	if source == SourcePool {
+		kind = KindPool
+	}
+	switch {
+	case persistent:
+		return kind + "-persistent"
+	case shared:
+		return kind + "-shared"
+	}
+	return kind
+}
+
+// Source returns the source of the kind's devices.
+func (k GrantKind) Source() Source {
+	if k == KindPool || k == KindPoolShared || k == KindPoolPersistent {
+		return SourcePool
+	}
+	return SourceLocal
+}
+
+// Shared tells whether the kind is a shared device of volatile memory.
+func (k GrantKind) Shared() bool {
+	return k == KindLocalShared || k == KindPoolShared
+}
+
+// Persistent tells whether the kind is a device of persistent memory.
+func (k GrantKind) Persistent() bool {
+	return k == KindLocalPersistent || k == KindPoolPersistent
+}
 
 // Intent names what the realisation of a grant may create, committed
 // before the first kernel action that creates it.

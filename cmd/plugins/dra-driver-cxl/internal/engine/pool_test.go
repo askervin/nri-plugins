@@ -37,7 +37,7 @@ import (
 func TestPoolNuma(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
 	at := v.onlineAtFence()
-	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeNUMA, state.KindExclusive))
+	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeNUMA, state.KindPool))
 	g := v.grant("c1", 0)
 	if g.State != state.GrantRealised || g.Got.Region != "region0" || g.Got.Dax != "dax0.0" || state.NUMANodeOf(g.Got.NUMANode) != 2 {
 		t.Fatalf("grant %+v", g)
@@ -56,7 +56,7 @@ func TestPoolNuma(t *testing.T) {
 	}
 	// Prepare again: the realised grant verifies and is reused
 	before := v.f.Commands()
-	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{poolReq("c1", 0, serialA, state.ModeNUMA, state.KindExclusive)}); err != nil {
+	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{poolReq("c1", 0, serialA, state.ModeNUMA, state.KindPool)}); err != nil {
 		t.Fatal(err)
 	}
 	if cmds := v.f.CommandsSince(before); cmds != "" {
@@ -74,7 +74,7 @@ func TestPoolNuma(t *testing.T) {
 // last one goes.
 func TestPoolDax(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
-	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindExclusive))
+	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindPool))
 	g := v.grant("c1", 0)
 	if g.Got.Dax != "dax0.0" || v.records().DaxDevOf(g).IsZero() || v.f.DaxDriver("dax0.0") != kernel.DriverDeviceDax {
 		t.Fatalf("grant %+v, driver %s", g, v.f.DaxDriver("dax0.0"))
@@ -88,8 +88,8 @@ func TestPoolDax(t *testing.T) {
 
 func TestPoolSharedDax(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
-	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindShared))
-	v.mustPrepare(poolDriver, "c2", poolReq("c2", 1, serialA, state.ModeDax, state.KindShared))
+	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindPoolShared))
+	v.mustPrepare(poolDriver, "c2", poolReq("c2", 1, serialA, state.ModeDax, state.KindPoolShared))
 	d := v.records().Region("region0").DaxDevice("dax0.0")
 	if len(d.Users) != 2 {
 		t.Fatalf("users %v", d.Users)
@@ -110,13 +110,13 @@ func TestPoolWaitsForMemdev(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		v.f.Plug(fake.MemdevSpec{Serial: serialA})
 	}()
-	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindExclusive))
+	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindPool))
 	v.mustUnprepare(poolDriver, "c1")
 
 	v.e.opts.Timeouts.Memdev = 100 * time.Millisecond
 	before := v.f.Commands()
 	start := time.Now()
-	err := v.prepare(poolDriver, "c2", poolReq("c2", 0, serialB, state.ModeDax, state.KindExclusive))
+	err := v.prepare(poolDriver, "c2", poolReq("c2", 0, serialB, state.ModeDax, state.KindPool))
 	took := time.Since(start)
 	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "0xb1") || took < 100*time.Millisecond || took > 2*time.Second {
 		t.Fatalf("error %v after %v", err, took)
@@ -174,7 +174,7 @@ func TestPoolForeignRegion(t *testing.T) {
 		}
 	}
 	before := v.f.Commands()
-	err := v.prepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindExclusive))
+	err := v.prepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindPool))
 	const refusal = "memdev mem0 has region region0 that the driver did not create"
 	if !errors.Is(err, errForeignRegion) || !strings.Contains(err.Error(), refusal) {
 		t.Fatalf("error %v", err)
@@ -198,12 +198,12 @@ func TestPoolForeignRegion(t *testing.T) {
 
 	// gone at the next Prepare, which creates a region of the name
 	foreign()
-	if err := v.prepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindExclusive)); !errors.Is(err, errForeignRegion) {
+	if err := v.prepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindPool)); !errors.Is(err, errForeignRegion) {
 		t.Fatalf("error %v", err)
 	}
 	wantForeign("refused again", 1)
 	destroy("region0")
-	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindExclusive))
+	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindPool))
 	if reg := v.records().Region("region0"); reg == nil || !reg.Ours() || reg.State != state.RegionOwned {
 		t.Fatalf("region %+v", reg)
 	}
@@ -219,7 +219,7 @@ func TestPoolEndpointRetry(t *testing.T) {
 	v.f.Plug(fake.MemdevSpec{Serial: serialA})
 	v.e.opts.Timeouts.ProbeGrace = time.Millisecond
 	v.e.opts.Timeouts.RegionRetry = 200 * time.Millisecond
-	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindExclusive))
+	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindPool))
 	v.mustUnprepare(poolDriver, "c1")
 	v.clean("unprepared")
 }
@@ -228,7 +228,7 @@ func TestPoolEndpointRetry(t *testing.T) {
 // records; the retry releases.
 func TestPoolReleaseBusy(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
-	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeNUMA, state.KindExclusive))
+	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeNUMA, state.KindPool))
 	snap, _ := v.f.Kernel().Observe(context.Background())
 	blocks := snap.Region("region0").Range.Blocks(snap.BlockSize)
 	v.f.FailWrite(blockState(blocks[0]), syscall.EBUSY)
@@ -247,7 +247,7 @@ func TestPoolReleaseBusy(t *testing.T) {
 func TestPoolLeftDeviceDaxID(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
 	v.f.SetDaxID(kernel.DriverDeviceDax, "dax0.0")
-	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive))
+	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeDax, state.KindPool))
 	if d := v.records().Region("region0").DaxDevice("dax0.0"); d.State != state.DaxDeviceDax {
 		t.Fatalf("dax device %+v", d)
 	}
@@ -260,7 +260,7 @@ func TestPoolLeftDeviceDaxID(t *testing.T) {
 func TestPoolLeftDeviceDaxIDNuma(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
 	v.f.SetDaxID(kernel.DriverDeviceDax, "dax0.0")
-	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeNUMA, state.KindExclusive))
+	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeNUMA, state.KindPool))
 	if d := v.records().Region("region0").DaxDevice("dax0.0"); d.State != state.DaxKmemOnline {
 		t.Fatalf("dax device %+v", d)
 	}
@@ -290,7 +290,7 @@ func TestFenceDeadline(t *testing.T) {
 		<-ctx.Done()
 	}
 	logs := klogtest.Capture(t, 0)
-	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeNUMA, state.KindExclusive))
+	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeNUMA, state.KindPool))
 	if !strings.Contains(logs(), "fencing NUMA node 2 did not finish in 20ms: its memory goes online anyway") {
 		t.Fatalf("logs %s", logs())
 	}
@@ -312,7 +312,7 @@ func TestPoolAddDevRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	logs := klogtest.Capture(t, 3)
-	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindExclusive))
+	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeDax, state.KindPool))
 	if out := logs(); !strings.Contains(out, "engine: claim ns/c1: device pooled0: ") || !strings.Contains(out, "retrying once in") {
 		t.Fatalf("no retry line in\n%s", out)
 	}
@@ -331,8 +331,8 @@ func TestPoolRollbackReturnsKept(t *testing.T) {
 		t.Fatal(err)
 	}
 	v.f.FailCommand("cxl disable-memdev", syscall.EBUSY)
-	b := poolReq("c", 1, serialB, state.ModeDax, state.KindExclusive)
-	kept, err := v.e.PrepareGrants(context.Background(), []GrantRequest{poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive), b})
+	b := poolReq("c", 1, serialB, state.ModeDax, state.KindPool)
+	kept, err := v.e.PrepareGrants(context.Background(), []GrantRequest{poolReq("c", 0, serialA, state.ModeDax, state.KindPool), b})
 	if !errors.Is(err, errForeignRegion) {
 		t.Fatalf("error %v", err)
 	}
@@ -346,7 +346,7 @@ func TestPoolRollbackReturnsKept(t *testing.T) {
 // memory goes offline.
 func TestPoolRollbackRevokesLend(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialB})
-	companion := poolReq("c", 0, serialA, state.ModeNUMA, state.KindExclusive)
+	companion := poolReq("c", 0, serialA, state.ModeNUMA, state.KindPool)
 	companion.Lend = &state.GrantLend{Lease: "0123abcd", Pod: state.PodRef{UID: "p1", Namespace: "ns", Name: "pod"}, Container: "ctr"}
 	if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
 		doc.Preparations = append(doc.Preparations, state.Preparation{UID: "c", Driver: poolDriver, ClaimName: "ns/c", Lease: "0123abcd",
@@ -375,7 +375,7 @@ func TestPoolRollbackRevokesLend(t *testing.T) {
 		return nil
 	}
 	v.f.FailCommand("cxl create-region", errors.New("cxl region: cmd_create_region: failed"))
-	_, err := v.e.PrepareGrants(context.Background(), []GrantRequest{companion, poolReq("c", 1, serialB, state.ModeDax, state.KindExclusive)})
+	_, err := v.e.PrepareGrants(context.Background(), []GrantRequest{companion, poolReq("c", 1, serialB, state.ModeDax, state.KindPool)})
 	if err == nil {
 		t.Fatal("the Prepare did not fail")
 	}
@@ -394,13 +394,13 @@ func TestPoolRollbackRevokesLend(t *testing.T) {
 func TestPoolRegionLeftDisabledIsSetUpAgain(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialC})
 	v.configure(func(o *Options) { o.Timeouts.Settle = 300 * time.Millisecond })
-	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialC, state.ModeDax, state.KindShared))
+	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialC, state.ModeDax, state.KindPoolShared))
 	v.f.FailCommand("cxl destroy-region", errors.New("cxl region: cmd_destroy_region: failed"))
 	if err := v.unprepare(poolDriver, "c1"); err == nil {
 		t.Fatal("the release succeeded")
 	}
 	v.check("release failed")
-	v.mustPrepare(poolDriver, "c2", poolReq("c2", 0, serialC, state.ModeDax, state.KindShared))
+	v.mustPrepare(poolDriver, "c2", poolReq("c2", 0, serialC, state.ModeDax, state.KindPoolShared))
 	v.mustUnprepare(poolDriver, "c1")
 	if g := v.grant("c2", 0); v.f.DaxDriver(g.Got.Dax) != "device_dax" {
 		t.Fatalf("dax device %s of c2: driver %q", g.Got.Dax, v.f.DaxDriver(g.Got.Dax))

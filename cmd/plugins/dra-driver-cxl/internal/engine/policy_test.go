@@ -91,17 +91,17 @@ func TestKindOf(t *testing.T) {
 		established bool
 		want        Kind
 	}{
-		{state.Asked{Source: state.SourcePool, Kind: state.KindExclusive}, false, true, KindPool},
-		{state.Asked{Source: state.SourcePool, Kind: state.KindShared, Shared: true}, false, false, KindPoolShared},
-		{state.Asked{Source: state.SourcePool, Kind: state.KindPersistent}, false, true, KindPoolPersistent},
-		{state.Asked{Source: state.SourceLocal, Kind: state.KindExclusive}, false, false, KindLocal},
-		{state.Asked{Source: state.SourceLocal, Kind: state.KindExclusive}, true, true, KindLocal},
-		{state.Asked{Source: state.SourceLocal, Kind: state.KindShared}, true, true, KindLocalShared},
-		{state.Asked{Source: state.SourceLocal, Kind: state.KindShared}, true, false, KindLocalSharedNew},
-		{state.Asked{Source: state.SourceLocal, Kind: state.KindShared}, false, true, KindLocalSharedUnlisted},
-		{state.Asked{Source: state.SourceLocal, Kind: state.KindShared}, false, false, KindLocal},
-		{state.Asked{Source: state.SourceLocal, Kind: state.KindPersistent}, true, true, KindLocalPersistent},
-		{state.Asked{Source: state.SourceLocal, Kind: state.KindPersistent}, false, false, KindLocalPersistentNew},
+		{state.Asked{Source: state.SourcePool, Kind: state.KindPool}, false, true, KindPool},
+		{state.Asked{Source: state.SourcePool, Kind: state.KindPoolShared, Shared: true}, false, false, KindPoolShared},
+		{state.Asked{Source: state.SourcePool, Kind: state.KindPoolPersistent}, false, true, KindPoolPersistent},
+		{state.Asked{Source: state.SourceLocal, Kind: state.KindLocal}, false, false, KindLocal},
+		{state.Asked{Source: state.SourceLocal, Kind: state.KindLocal}, true, true, KindLocal},
+		{state.Asked{Source: state.SourceLocal, Kind: state.KindLocalShared}, true, true, KindLocalShared},
+		{state.Asked{Source: state.SourceLocal, Kind: state.KindLocalShared}, true, false, KindLocalSharedNew},
+		{state.Asked{Source: state.SourceLocal, Kind: state.KindLocalShared}, false, true, KindLocalSharedUnlisted},
+		{state.Asked{Source: state.SourceLocal, Kind: state.KindLocalShared}, false, false, KindLocal},
+		{state.Asked{Source: state.SourceLocal, Kind: state.KindLocalPersistent}, true, true, KindLocalPersistent},
+		{state.Asked{Source: state.SourceLocal, Kind: state.KindLocalPersistent}, false, false, KindLocalPersistentNew},
 	} {
 		if got := kindOf(c.asked, c.shared, c.established); got != c.want {
 			t.Errorf("kindOf(%+v, %v, %v) = %s, want %s", c.asked, c.shared, c.established, got, c.want)

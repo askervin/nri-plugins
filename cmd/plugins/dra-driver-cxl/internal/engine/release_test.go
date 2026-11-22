@@ -44,7 +44,7 @@ func twoPmemEnv(t *testing.T) *env {
 
 // qGrant returns the request of a reader of mode fs on serialQ.
 func qGrant(uid string, n int) GrantRequest {
-	return fsReq(poolReq(uid, n, serialQ, state.ModeFS, state.KindPersistent), true, "")
+	return fsReq(poolReq(uid, n, serialQ, state.ModeFS, state.KindPoolPersistent), true, "")
 }
 
 // The grants of a memdev are released when the first of them is gone by
