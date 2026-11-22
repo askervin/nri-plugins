@@ -54,11 +54,11 @@ DAX=$(pod_env_value writer DAX)
 RO_DAX=$(pod_env_value ro DAX)
 check "writer: CXL_<KEY>_MODE=dax" test "$(pod_env_value writer MODE)" == dax
 check "writer: CXL_<KEY>_SIZE=2Gi" test "$(pod_env_value writer SIZE)" == $((2 * GiB))
-check "writer: CXL_<KEY>_READONLY=0" test "$(pod_env_value writer READONLY)" == 0
+check "writer: CXL_<KEY>_READ_ONLY=0" test "$(pod_env_value writer READ_ONLY)" == 0
 check "reader-a and reader-b have the slice of writer ($DAX)" \
     test "$(pod_env_value reader-a DAX)" == "$DAX" -a "$(pod_env_value reader-b DAX)" == "$DAX"
-check "ro: a slice of its own ($RO_DAX), CXL_<KEY>_READONLY=1" \
-    test -n "$RO_DAX" -a "$RO_DAX" != "$DAX" -a "$(pod_env_value ro READONLY)" == 1
+check "ro: a slice of its own ($RO_DAX), CXL_<KEY>_READ_ONLY=1" \
+    test -n "$RO_DAX" -a "$RO_DAX" != "$DAX" -a "$(pod_env_value ro READ_ONLY)" == 1
 for p in writer reader-a reader-b ro; do
     d=$(pod_env_value "$p" DAX)
     echo "  $p: $(pexec "$p" ls -l "$d")"
@@ -68,7 +68,7 @@ check "plain: has no $DAX" eval "! pexec plain test -e $DAX"
 check "numa-c: has no $DAX" eval "! pexec numa-c test -e $DAX"
 t "daxctl list" | sed 's/^/    /'
 
-N=$(pod_env_value numa-c NODE)
+N=$(pod_env_value numa-c NUMA_NODE)
 check "numa-c: CXL_<KEY>_MODE=numa on node $N" test "$(pod_env_value numa-c MODE)" == numa -a -n "$N"
 mib=$(numa_node_mib "$N")
 check "node $N has only the 2Gi numa slice, dax slices add nothing (MemTotal $mib MiB)" \

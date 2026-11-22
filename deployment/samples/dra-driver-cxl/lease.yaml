@@ -55,7 +55,7 @@ spec:
     - request
     - --serial
     - "0xc1ae0002"
-    - --shared
+    - --share
     - --read-only
     - --mode
     - fs

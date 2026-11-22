@@ -63,9 +63,9 @@ check "numa-b: CXL_<KEY>_MODE=numa" test "$(pod_env_value numa-b MODE)" == numa
 check "numa-a: CXL_<KEY>_SIZE=4Gi" test "$(pod_env_value numa-a SIZE)" == $((4 * GiB))
 check "numa-b: CXL_<KEY>_SIZE=2Gi" test "$(pod_env_value numa-b SIZE)" == $((2 * GiB))
 check "numa-u: CXL_<KEY>_SIZE=2Gi" test "$(pod_env_value numa-u SIZE)" == $((2 * GiB))
-N=$(pod_env_value numa-a NODE)
-NB=$(pod_env_value numa-b NODE)
-NU=$(pod_env_value numa-u NODE)
+N=$(pod_env_value numa-a NUMA_NODE)
+NB=$(pod_env_value numa-b NUMA_NODE)
+NU=$(pod_env_value numa-u NUMA_NODE)
 check "numa-a, numa-b and numa-u are on the same node ($N, $NB, $NU)" test -n "$N" -a "$N" == "$NB" -a "$N" == "$NU"
 log "CXL node N=$N"
 t "numactl -H | grep -E '^available|^node $N '" | sed 's/^/    /'

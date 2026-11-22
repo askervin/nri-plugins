@@ -329,7 +329,7 @@ The plugin refuses further requests that only it can judge:
 | `--mode fs` or `--mode block` with the serial of a device of volatile memory | `memdev 0x...: mode fs needs a persistent device`, `memdev 0x...: mode block needs a persistent device` |
 | the serial of a device of persistent memory (local or pool) without `--mode block` or `--mode fs` | `memdev 0x...: a persistent device needs mode block or fs` |
 | `--mode numa` with the serial of a shared device | `shared memory is never onlined as RAM: use mode dax` |
-| `--source pool`, or the serial of a pool device, while the pool driver is disabled (a request without `--source` is served by local devices then) | `pool driver disabled (--pool-driver-name)` |
+| `--source pool`, or the serial of a pool device, while the pool driver is disabled (a request without `--source` is served by local devices then) | `pool driver disabled (--pool=false)` |
 | `--mode fs` with the `--name` (or default name) of another lease of the lease claim, in any state | `name "..." is in use by lease <id>` |
 | any request while NRI is not connected | `lending unavailable: NRI not connected` |
 | `request` beyond `--lease-max-per-pod` leases of the pod | `pod <ns>/<name> has N leases, the limit of --lease-max-per-pod` |

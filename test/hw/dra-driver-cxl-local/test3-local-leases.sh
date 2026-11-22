@@ -41,7 +41,7 @@ log "lease-a: request returned $rc"
 J=$(last_json "$out")
 check "lease-a: the numa lease is Ready" test "$(jget "$J" 'j.get("state")' 2>/dev/null)" == Ready
 LEASE_A=$(jget "$J" 'j.get("lease")' 2>/dev/null)
-N=$(jget "$J" 'j.get("node")' 2>/dev/null)
+N=$(jget "$J" 'j.get("numaNode")' 2>/dev/null)
 check "lease-a: lease $LEASE_A has node N=$N, mode numa, size 2Gi" \
     test -n "$N" -a "$(jget "$J" 'j.get("mode")' 2>/dev/null)" == numa -a "$(jget "$J" 'j.get("size")' 2>/dev/null)" == $((2 << 30))
 ma=$(mems_allowed lease-a)
@@ -54,7 +54,7 @@ out=$(pexec lease-b "$CXL_REQUEST" request --source local --size 2Gi --wait 120s
 J=$(last_json "$out")
 LEASE_B=$(jget "$J" 'j.get("lease")' 2>/dev/null)
 check "lease-b: the numa lease $LEASE_B is Ready on node $N" \
-    test "$(jget "$J" 'j.get("state")' 2>/dev/null)" == Ready -a "$(jget "$J" 'j.get("node")' 2>/dev/null)" == "$N"
+    test "$(jget "$J" 'j.get("state")' 2>/dev/null)" == Ready -a "$(jget "$J" 'j.get("numaNode")' 2>/dev/null)" == "$N"
 mib=$(numa_node_mib "$N")
 check "node $N has both 2Gi leases (MemTotal $mib MiB)" test "$mib" -le 4096 -a "$mib" -ge $((4096 - 256))
 check "lease-b: node $N is in Mems_allowed ($(mems_allowed lease-b))" in_list "$N" "$(mems_allowed lease-b)"

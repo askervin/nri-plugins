@@ -40,7 +40,7 @@ echo "  env of writer:"
 pod_env writer | sed 's/^/    /'
 DAX=$(pod_env_value writer DAX)
 check "writer: CXL_<KEY>_SHARED=1, MODE=dax, READONLY=0" \
-    test "$(pod_env_value writer SHARED)$(pod_env_value writer MODE)$(pod_env_value writer READONLY)" == 1dax0
+    test "$(pod_env_value writer SHARED)$(pod_env_value writer MODE)$(pod_env_value writer READ_ONLY)" == 1dax0
 check "writer: CXL_<KEY>_SIZE is the whole memdev ($SIZE)" test "$(pod_env_value writer SIZE)" == "$SIZE"
 out=$(pexec writer python3 /tools/dax-pattern.py zero "$DAX" 2>&1)
 echo "    writer: $out"
@@ -88,8 +88,8 @@ rc=$?
 echo "    reader-b write: $out"
 check "reader-b: a write attempt fails" test "$rc" != 0
 
-log "a read-only shared lease of a running container (cxl-request --serial --shared --read-only)"
-out=$(pexec lease-r "$CXL_REQUEST" request --serial "$(serial)" --shared --read-only --wait 120s --exec python3 /tools/dax-rw.py --fd 3 read 0 2>&1)
+log "a read-only shared lease of a running container (cxl-request --serial --share --read-only)"
+out=$(pexec lease-r "$CXL_REQUEST" request --serial "$(serial)" --share --read-only --wait 120s --exec python3 /tools/dax-rw.py --fd 3 read 0 2>&1)
 echo "$out" | sed 's/^/    lease-r: /' | cut -c1-300
 check "lease-r: reads what writer wrote through a leased read-only fd" grep -qF "$TEXT2" <<< "$out"
 LEASE_R=$(pexec lease-r "$CXL_REQUEST" list 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["leases"][0]["lease"])' 2>/dev/null)
@@ -116,7 +116,7 @@ pexec lease-r "$CXL_REQUEST" release --all --wait 60s >/dev/null 2>&1
 kn delete pod writer reader-a reader-b reader-c lease-r --grace-period=1 --wait=true --timeout=300s >/dev/null
 kn delete resourceclaim writer --wait=true --timeout=120s >/dev/null
 check "excl runs when the sharers are gone" wait_pod excl Running 300
-check "excl: CXL_<KEY>_READONLY=0 on $DAX" test "$(pod_env_value excl READONLY)$(pod_env_value excl DAX)" == "0$DAX"
+check "excl: CXL_<KEY>_READ_ONLY=0 on $DAX" test "$(pod_env_value excl READ_ONLY)$(pod_env_value excl DAX)" == "0$DAX"
 got=$(pexec excl python3 /tools/dax-rw.py read "$DAX" 0)
 echo "    excl: $got"
 check "excl reads what the writer left (not zeroed between claims)" grep -qF "$TEXT2" <<< "$got"
