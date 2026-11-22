@@ -102,6 +102,9 @@ func (d *Document) dropEmpty() {
 	if len(r.Steered) == 0 {
 		r.Steered = nil
 	}
+	if len(r.ListedPools) == 0 {
+		r.ListedPools = nil
+	}
 }
 
 // Clone returns a deep copy of the document.

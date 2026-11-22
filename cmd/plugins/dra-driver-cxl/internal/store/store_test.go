@@ -821,3 +821,22 @@ func TestWriteFault(t *testing.T) {
 		t.Fatalf("a commit after the fault: %v, snapshot %v", err, steered(s.Snapshot()))
 	}
 }
+
+// TestDropEmptyCoversEverySection sets every section of the records to an
+// empty slice: dropEmpty must make each nil, as a decoded document has
+// it, or a commit that empties a section writes an unchanged document.
+func TestDropEmptyCoversEverySection(t *testing.T) {
+	var d Document
+	v := reflect.ValueOf(&d.Records).Elem()
+	for i := range v.NumField() {
+		if f := v.Field(i); f.Kind() == reflect.Slice {
+			f.Set(reflect.MakeSlice(f.Type(), 0, 0))
+		}
+	}
+	d.dropEmpty()
+	for i := range v.NumField() {
+		if f := v.Field(i); f.Kind() == reflect.Slice && !f.IsNil() {
+			t.Errorf("section %s empty but not nil after dropEmpty", v.Type().Field(i).Name)
+		}
+	}
+}
