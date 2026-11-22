@@ -150,7 +150,7 @@ type Tree struct {
 // TreeHostBridge is a pxb-cxl host bridge.
 type TreeHostBridge struct {
 	ID       string // pxb-cxl id == name of its bus
-	NumaNode int    // -1 if unknown
+	NUMANode int    // -1 if unknown
 }
 
 // Port kinds.

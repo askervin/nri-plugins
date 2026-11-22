@@ -27,20 +27,20 @@ import (
 type PoolSettings struct {
 	// Slot is an exact CXL slot (bus) of the host, "" for any.
 	Slot string `json:"slot,omitempty"`
-	// NumaNode prefers the slots of the host bridges on that NUMA node of
+	// NUMANode prefers the slots of the host bridges on that NUMA node of
 	// the host.
-	NumaNode *int `json:"numaNode,omitempty"`
+	NUMANode *int `json:"numaNode,omitempty"`
 }
 
 // String returns the settings for logs, "" when nothing is set.
 func (s PoolSettings) String() string {
 	switch {
-	case s.Slot != "" && s.NumaNode != nil:
-		return fmt.Sprintf("slot %s, numa node %d", s.Slot, *s.NumaNode)
+	case s.Slot != "" && s.NUMANode != nil:
+		return fmt.Sprintf("slot %s, numa node %d", s.Slot, *s.NUMANode)
 	case s.Slot != "":
 		return "slot " + s.Slot
-	case s.NumaNode != nil:
-		return fmt.Sprintf("numa node %d", *s.NumaNode)
+	case s.NUMANode != nil:
+		return fmt.Sprintf("numa node %d", *s.NUMANode)
 	}
 	return ""
 }
@@ -61,11 +61,11 @@ func (c *Controller) poolSettings(claim *resourceapi.ResourceClaim, r *resourcea
 	if err != nil {
 		return s, nil, err
 	}
-	if _, err := config.PoolOpaque(res, c.cfg.ConfigKey, &s); err != nil {
+	if _, err := config.PoolOpaque(res, c.cfg.ControllerKey, &s); err != nil {
 		return PoolSettings{}, res, err
 	}
-	if s.NumaNode != nil && *s.NumaNode < 0 {
-		return PoolSettings{}, res, fmt.Errorf("MemoryConfig: pool.opaque.%s.numaNode: invalid NUMA node %d", c.cfg.ConfigKey, *s.NumaNode)
+	if s.NUMANode != nil && *s.NUMANode < 0 {
+		return PoolSettings{}, res, fmt.Errorf("MemoryConfig: pool.opaque.%s.numaNode: invalid NUMA node %d", c.cfg.ControllerKey, *s.NUMANode)
 	}
 	return s, res, nil
 }

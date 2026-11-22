@@ -56,7 +56,7 @@ func (p *fakePool) requests() []api.AttachRequest {
 }
 
 func reqSettings(r api.AttachRequest) string {
-	return PoolSettings{Slot: r.Slot, NumaNode: r.NumaNode}.String()
+	return PoolSettings{Slot: r.Slot, NUMANode: r.NUMANode}.String()
 }
 
 func TestConfigSettingsPassed(t *testing.T) {
@@ -114,7 +114,7 @@ func TestConfigSettingsPassed(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			e := newEnvWith(t, func(_ *fakePool, c *Config) { c.ConfigKey = tc.key })
+			e := newEnvWith(t, func(_ *fakePool, c *Config) { c.ControllerKey = tc.key })
 			e.createClaimConfig("c", "pooled0", "node1", "", 0, tc.config)
 			e.sync()
 			reqs := e.pool.requests()
@@ -280,7 +280,7 @@ func TestConfigExistingAttachmentKept(t *testing.T) {
 		QemuDeviceID: "fcp_shared0.hp7"})
 	e.sync()
 	reqs := e.pool.requests()
-	if len(reqs) != 1 || !reqs[0].Exclusive || reqSettings(reqs[0]) != "" {
+	if len(reqs) != 1 || !reqs[0].SingleHost || reqSettings(reqs[0]) != "" {
 		t.Fatalf("unexpected attach requests %+v", reqs)
 	}
 	c, st := e.condition("w", "cxl-pool.nri.io/Attached")

@@ -34,12 +34,12 @@ const (
 	// Serial scheme: 0xc1 = CXL, 0x00 in the next byte = present at boot
 	// (e2e topology local devices are 0xc100e2e0+i), 0xae = shared pool
 	// devices, 0xee = exclusive pool devices.
-	DefaultSharedSerialBase    = 0xc1ae0000
-	DefaultExclusiveSerialBase = 0xc1ee0000
-	DefaultDir                 = "/tmp/fake-cxl-pool"
-	DefaultDiscoveryPeriod     = 10 * time.Second
-	DefaultDetachTimeout       = 15 * time.Second
-	DefaultAttachTimeout       = 30 * time.Second
+	DefaultSharedSerialBase = 0xc1ae0000
+	DefaultSerialBase       = 0xc1ee0000
+	DefaultDir              = "/tmp/fake-cxl-pool"
+	DefaultDiscoveryPeriod  = 10 * time.Second
+	DefaultDetachTimeout    = 15 * time.Second
+	DefaultAttachTimeout    = 30 * time.Second
 	// CapacityMultiplier: CXL device capacity is reported in 256 MiB units.
 	CapacityMultiplier = 256 << 20
 )
@@ -54,10 +54,11 @@ type Config struct {
 	// fake-cxl-pool-controller.
 	Name   string `json:"name,omitempty"`
 	Listen string `json:"listen,omitempty"`
-	// SharedSerialBase and ExclusiveSerialBase: devices without a serial
-	// get the next free serial above the base of their kind.
-	SharedSerialBase    *api.Serial `json:"sharedSerialBase,omitempty"`
-	ExclusiveSerialBase *api.Serial `json:"exclusiveSerialBase,omitempty"`
+	// SharedSerialBase and SerialBase: devices without a serial
+	// get the next free serial above the base of shared devices or of the
+	// others.
+	SharedSerialBase *api.Serial `json:"sharedSerialBase,omitempty"`
+	SerialBase       *api.Serial `json:"exclusiveSerialBase,omitempty"`
 	// Dir is the directory of the device backing files.
 	Dir           string          `json:"dir,omitempty"`
 	Devices       []DeviceConfig  `json:"devices,omitempty"`
@@ -155,9 +156,9 @@ func (c *Config) Complete() error {
 		sb := api.Serial(DefaultSharedSerialBase)
 		c.SharedSerialBase = &sb
 	}
-	if c.ExclusiveSerialBase == nil {
-		sb := api.Serial(DefaultExclusiveSerialBase)
-		c.ExclusiveSerialBase = &sb
+	if c.SerialBase == nil {
+		sb := api.Serial(DefaultSerialBase)
+		c.SerialBase = &sb
 	}
 	if c.Dir == "" {
 		c.Dir = DefaultDir

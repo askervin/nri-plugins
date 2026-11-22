@@ -173,7 +173,7 @@ func New(cfg *Config, opts Options) (*Server, error) {
 		opts:    opts,
 		log:     opts.Logger,
 		started: time.Now(),
-		serials: newSerials(uint64(*cfg.SharedSerialBase), uint64(*cfg.ExclusiveSerialBase)),
+		serials: newSerials(uint64(*cfg.SharedSerialBase), uint64(*cfg.SerialBase)),
 		devices: map[string]*device{},
 		hosts:   map[string]*host{},
 		atts:    map[string]*attachment{},

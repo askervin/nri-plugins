@@ -98,7 +98,7 @@ func TestSlotPatterns(t *testing.T) {
 	}
 	// the automatic choice takes matching slots only, NUMA preference
 	// notwithstanding
-	a, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", NumaNode: new(1)})
+	a, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", NUMANode: new(1)})
 	if err != nil || a.Slot.HostBridge != "cxlhb0" {
 		t.Fatalf("pooled0: %+v %v", a, err)
 	}

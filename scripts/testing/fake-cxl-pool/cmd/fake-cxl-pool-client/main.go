@@ -259,7 +259,7 @@ func firstErr(errs ...error) error {
 func freeSlots(h api.Host) int {
 	n := 0
 	for _, s := range h.Slots {
-		if s.Device == "" && s.Attachment == "" && s.ReservedFor == "" {
+		if s.Device == "" && s.Attachment == "" && s.LocalDevice == "" {
 			n++
 		}
 	}
@@ -320,11 +320,11 @@ func (c *cli) printHost(h api.Host) error {
 	// A line without a tab ends a table of w.
 	_, _ = fmt.Fprintf(w, "\nhost bridges:\nID\tNUMA\tFMW-SIZE\tATTACHED\n")
 	for _, hb := range h.HostBridges {
-		_, _ = fmt.Fprintf(w, "%s\t%d\t%s\t%s\n", hb.ID, hb.NumaNode, api.FormatSize(hb.FMWSize), api.FormatSize(hb.AttachedBytes))
+		_, _ = fmt.Fprintf(w, "%s\t%d\t%s\t%s\n", hb.ID, hb.NUMANode, api.FormatSize(hb.FMWSize), api.FormatSize(hb.AttachedBytes))
 	}
 	_, _ = fmt.Fprintf(w, "\nslots:\nBUS\tKIND\tHOST-BRIDGE\tNUMA\tDEVICE\tATTACHMENT\tRESERVED-FOR\n")
 	for _, s := range h.Slots {
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n", s.Bus, s.Kind, s.HostBridge, s.NumaNode, dash(s.Device), dash(s.Attachment), dash(s.ReservedFor))
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n", s.Bus, s.Kind, s.HostBridge, s.NUMANode, dash(s.Device), dash(s.Attachment), dash(s.LocalDevice))
 	}
 	if len(h.Attachments) > 0 {
 		_, _ = fmt.Fprintf(w, "\nattachments:\n")
@@ -439,7 +439,7 @@ func (c *cli) printAttachments(as []api.Attachment) error {
 	w := c.table()
 	_, _ = fmt.Fprintln(w, "ID\tSLOT\tNUMA\tQEMU-DEVICE\tQEMU-OBJECT\tSERIAL\tSTATE\tERROR")
 	for _, a := range as {
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n", a.ID, a.Slot.Bus, a.Slot.NumaNode, a.QemuDeviceID, a.QemuObjectID, a.Serial, a.State, dash(a.Error))
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n", a.ID, a.Slot.Bus, a.Slot.NUMANode, a.QemuDeviceID, a.QemuObjectID, a.Serial, a.State, dash(a.Error))
 	}
 	return w.Flush()
 }
@@ -530,9 +530,9 @@ func (c *cli) cmdAttach(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	req := api.AttachRequest{Host: h, Slot: *slot, Owner: *owner, Timeout: *timeout, Exclusive: *exclusive}
+	req := api.AttachRequest{Host: h, Slot: *slot, Owner: *owner, Timeout: *timeout, SingleHost: *exclusive}
 	if *numa >= 0 {
-		req.NumaNode = numa
+		req.NUMANode = numa
 	}
 	a, _, err := c.client().Attach(ctx, pos[0], req)
 	if err != nil {

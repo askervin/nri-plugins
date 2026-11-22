@@ -19,19 +19,19 @@ import (
 	"sync"
 )
 
-// serials allocates serial numbers: shared devices from one base,
-// exclusive devices from another. Uniqueness is checked over all serials.
+// serials allocates serial numbers: shared devices from sharedBase, the
+// others from base. Uniqueness is checked over all serials.
 type serials struct {
-	mu            sync.Mutex
-	sharedBase    uint64
-	exclusiveBase uint64
-	used          map[uint64]string // serial -> device
+	mu         sync.Mutex
+	sharedBase uint64
+	base       uint64
+	used       map[uint64]string // serial -> device
 }
 
-// newSerials returns a serial allocator with the bases of shared and
-// exclusive devices.
-func newSerials(sharedBase, exclusiveBase uint64) *serials {
-	return &serials{sharedBase: sharedBase, exclusiveBase: exclusiveBase, used: map[uint64]string{}}
+// newSerials returns a serial allocator with the bases of shared devices
+// and of the others.
+func newSerials(sharedBase, base uint64) *serials {
+	return &serials{sharedBase: sharedBase, base: base, used: map[uint64]string{}}
 }
 
 // Use marks a serial used by a device. It fails if another device has it.
@@ -45,8 +45,8 @@ func (s *serials) Use(serial uint64, device string) error {
 	return nil
 }
 
-// Release frees a serial.
-func (s *serials) Release(serial uint64) {
+// Free frees a serial.
+func (s *serials) Free(serial uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.used, serial)
@@ -62,7 +62,7 @@ func (s *serials) Next(device string, shared bool) uint64 {
 func (s *serials) NextExcept(device string, shared bool, skip func(uint64) bool) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	base := s.exclusiveBase
+	base := s.base
 	if shared {
 		base = s.sharedBase
 	}

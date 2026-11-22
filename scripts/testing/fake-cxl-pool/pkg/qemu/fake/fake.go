@@ -73,7 +73,7 @@ func NewQemu(hostBridges map[string]int, slots map[string]string) *Qemu {
 		noSerial:   map[string]bool{},
 	}
 	for id, numa := range hostBridges {
-		f.hostBridges = append(f.hostBridges, qemu.TreeHostBridge{ID: id, NumaNode: numa})
+		f.hostBridges = append(f.hostBridges, qemu.TreeHostBridge{ID: id, NUMANode: numa})
 	}
 	sort.Slice(f.hostBridges, func(i, j int) bool { return f.hostBridges[i].ID < f.hostBridges[j].ID })
 	for bus, hb := range slots {

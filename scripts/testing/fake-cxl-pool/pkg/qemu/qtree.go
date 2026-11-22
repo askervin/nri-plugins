@@ -106,7 +106,7 @@ func ParseQtree(text string) *Tree {
 			case "pxb-cxl-host":
 				for _, c := range n.children {
 					if c.isBus {
-						t.HostBridges = append(t.HostBridges, TreeHostBridge{ID: c.name, NumaNode: -1})
+						t.HostBridges = append(t.HostBridges, TreeHostBridge{ID: c.name, NUMANode: -1})
 						for _, cc := range c.children {
 							walk(cc, c.name)
 						}
@@ -161,7 +161,7 @@ func ParseQtree(text string) *Tree {
 	}
 	for i := range t.HostBridges {
 		if v, ok := numa[t.HostBridges[i].ID]; ok {
-			t.HostBridges[i].NumaNode = v
+			t.HostBridges[i].NUMANode = v
 		}
 	}
 	return t

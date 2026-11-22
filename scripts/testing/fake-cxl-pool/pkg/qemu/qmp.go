@@ -414,10 +414,10 @@ func (q *QMP) queryTreeQOM(ctx context.Context) (*Tree, error) {
 	for _, p := range paths {
 		drv := driver[p]
 		if drv == "pxb-cxl" {
-			hb := TreeHostBridge{ID: id(p), NumaNode: -1}
+			hb := TreeHostBridge{ID: id(p), NUMANode: -1}
 			var n int
 			if err := q.qomGet(ctx, p, "numa_node", &n); err == nil {
-				hb.NumaNode = numaOrUnknown(n)
+				hb.NUMANode = numaOrUnknown(n)
 			}
 			t.HostBridges = append(t.HostBridges, hb)
 			continue

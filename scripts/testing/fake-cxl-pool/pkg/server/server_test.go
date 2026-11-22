@@ -320,10 +320,10 @@ func TestHostsAndResolve(t *testing.T) {
 		h.UUID != "6ba7b810-9dad-11d1-80b4-00c04fd430c8" {
 		t.Fatalf("unexpected host %+v", h)
 	}
-	if len(h.Slots) != 4 || h.Slots[0].Bus != "ds0_hb0" || h.Slots[2].NumaNode != 1 {
+	if len(h.Slots) != 4 || h.Slots[0].Bus != "ds0_hb0" || h.Slots[2].NUMANode != 1 {
 		t.Fatalf("unexpected slots %+v", h.Slots)
 	}
-	if len(h.HostBridges) != 2 || h.HostBridges[1].FMWSize != 4<<30 || h.HostBridges[1].NumaNode != 1 {
+	if len(h.HostBridges) != 2 || h.HostBridges[1].FMWSize != 4<<30 || h.HostBridges[1].NUMANode != 1 {
 		t.Fatalf("unexpected host bridges %+v", h.HostBridges)
 	}
 	if len(h.LocalDevices) != 1 || h.LocalDevices[0] != "vm1.memdev0" {
@@ -439,8 +439,8 @@ func TestAttachDetachExclusive(t *testing.T) {
 	_, _, err = e.c.Detach(ctx, "pooled0", "vm1", client.DetachOptions{})
 	mustCode(t, err, api.CodeNotFound)
 	// attach again: a new qemu id
-	a3, status, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm2", NumaNode: new(1)})
-	if err != nil || status != 201 || a3.QemuDeviceID != "fcp_pooled0.hp1" || a3.Slot.NumaNode != 1 || a3.Slot.Bus != "ds0_hb1" {
+	a3, status, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm2", NUMANode: new(1)})
+	if err != nil || status != 201 || a3.QemuDeviceID != "fcp_pooled0.hp1" || a3.Slot.NUMANode != 1 || a3.Slot.Bus != "ds0_hb1" {
 		t.Fatalf("attach to vm2: %d %v %+v", status, err, a3)
 	}
 	_, _, err = e.c.Detach(ctx, "pooled0", "vm2", client.DetachOptions{})
@@ -503,8 +503,8 @@ func TestAttachShared(t *testing.T) {
 func TestAttachSharedExclusive(t *testing.T) {
 	e := newTestEnv(t, "")
 	// exclusive to vm1: vm2 cannot attach
-	a1, _, err := e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", Exclusive: true})
-	if err != nil || !a1.Exclusive {
+	a1, _, err := e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", SingleHost: true})
+	if err != nil || !a1.SingleHost {
 		t.Fatalf("exclusive attach: %+v %v", a1, err)
 	}
 	_, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm2"})
@@ -514,7 +514,7 @@ func TestAttachSharedExclusive(t *testing.T) {
 	}
 	// an attach of vm1 without the flag drops it: vm2 can attach then
 	a1, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1"})
-	if err != nil || a1.Exclusive {
+	if err != nil || a1.SingleHost {
 		t.Fatalf("attach again without exclusive: %+v %v", a1, err)
 	}
 	if _, _, err := e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm2"}); err != nil {
@@ -522,7 +522,7 @@ func TestAttachSharedExclusive(t *testing.T) {
 	}
 	// attached to two hosts: neither can become exclusive
 	for _, h := range []string{"vm1", "vm2"} {
-		_, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: h, Exclusive: true})
+		_, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: h, SingleHost: true})
 		mustCode(t, err, api.CodeConflict)
 		if !strings.Contains(err.Error(), "needs it attached nowhere else") {
 			t.Fatalf("conflict %v", err)
@@ -532,11 +532,11 @@ func TestAttachSharedExclusive(t *testing.T) {
 	if _, _, err := e.c.Detach(ctx, "shared0", "vm2", client.DetachOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if a1, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", Exclusive: true}); err != nil || !a1.Exclusive {
+	if a1, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", SingleHost: true}); err != nil || !a1.SingleHost {
 		t.Fatalf("exclusive after detach: %+v %v", a1, err)
 	}
 	as, err := e.c.Attachments(ctx, "", "shared0")
-	if err != nil || len(as) != 1 || !as[0].Exclusive {
+	if err != nil || len(as) != 1 || !as[0].SingleHost {
 		t.Fatalf("attachments %+v %v", as, err)
 	}
 	// a detach ends the exclusive attachment: vm2 can attach
@@ -594,13 +594,13 @@ func TestSlotSelection(t *testing.T) {
 	// a slot reserved for a local device is used only when no other slot
 	// is free, even if it is on the requested NUMA node
 	e := newTestEnv(t, "")
-	a, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", NumaNode: new(1)})
+	a, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", NUMANode: new(1)})
 	if err != nil || a.Slot.Bus != "ds0_hb1" {
 		t.Fatalf("attach on node 1: %+v %v", a, err)
 	}
 	// only ds1_hb1 (reserved for vm1.memdev0) is left on node 1
-	a, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", NumaNode: new(1)})
-	if err != nil || a.Slot.NumaNode != 0 {
+	a, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", NUMANode: new(1)})
+	if err != nil || a.Slot.NUMANode != 0 {
 		t.Fatalf("attach took the reserved slot: %+v %v", a, err)
 	}
 
@@ -622,7 +622,7 @@ func TestSlotSelection(t *testing.T) {
 	_, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", Slot: "ds0_hb0"})
 	mustCode(t, err, api.CodeConflict)
 	// numa 0 is full now: falls back to numa 1, avoiding the local device slot
-	a, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", NumaNode: new(0)})
+	a, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", NUMANode: new(0)})
 	if err != nil || a.Slot.Bus != "ds0_hb1" {
 		t.Fatalf("fallback slot: %+v %v", a, err)
 	}
@@ -922,7 +922,7 @@ func TestConfigErrors(t *testing.T) {
 	}
 	cfg := DefaultConfig()
 	if cfg.Listen != "127.0.0.1:9909" || cfg.Dir != "/tmp/fake-cxl-pool" || cfg.StateFile != "/tmp/fake-cxl-pool.state.json" ||
-		uint64(*cfg.ExclusiveSerialBase) != 0xc1ee0000 || uint64(*cfg.SharedSerialBase) != 0xc1ae0000 ||
+		uint64(*cfg.SerialBase) != 0xc1ee0000 || uint64(*cfg.SharedSerialBase) != 0xc1ae0000 ||
 		cfg.Name != "fake-cxl-pool" || cfg.Discovery.Control != "" || cfg.Discovery.Slots != nil {
 		t.Fatalf("unexpected defaults %+v", cfg)
 	}
@@ -1061,14 +1061,14 @@ func TestFMWCapacityAndHotRemove(t *testing.T) {
 		t.Fatalf("interleaved fmw counted per target: %+v", h2.HostBridges)
 	}
 	// pooled0 (512M) fills cxlhb0
-	a, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", NumaNode: new(0)})
+	a, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1", NUMANode: new(0)})
 	if err != nil || a.Slot.HostBridge != "cxlhb0" {
 		t.Fatalf("attach: %+v %v", a, err)
 	}
 	// shared0 (256M) does not fit under cxlhb0 any more
 	_, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", Slot: "ds1_hb0"})
 	mustCode(t, err, api.CodeConflict)
-	a, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", NumaNode: new(0)})
+	a, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", NUMANode: new(0)})
 	if err != nil || a.Slot.HostBridge != "cxlhb1" {
 		t.Fatalf("attach falls back to cxlhb1: %+v %v", a, err)
 	}

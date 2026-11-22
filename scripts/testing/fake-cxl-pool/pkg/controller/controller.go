@@ -52,9 +52,9 @@ const (
 	DefaultDetachTimeout = 60 * time.Second
 	DefaultOwnerPrefix   = "k8s:"
 	DefaultDebounce      = 500 * time.Millisecond
-	// DefaultConfigKey is the key of the controller's settings in
+	// DefaultControllerKey is the key of the controller's settings in
 	// pool.opaque of a MemoryConfig.
-	DefaultConfigKey = "fake-cxl-pool"
+	DefaultControllerKey = "fake-cxl-pool"
 	// Component is the event source component.
 	Component = "fake-cxl-pool-controller"
 )
@@ -63,16 +63,16 @@ const (
 // (GET /status).
 type Config struct {
 	DriverName    string
-	PoolName      string
+	DRAPoolName   string
 	SyncInterval  time.Duration
 	AttachTimeout time.Duration
 	DetachTimeout time.Duration
 	// OwnerPrefix is the prefix of the attachment owners of this
 	// controller: "<prefix>resourceclaim/<claim uid>".
 	OwnerPrefix string
-	// ConfigKey is the key of the controller's settings (PoolSettings)
+	// ControllerKey is the key of the controller's settings (PoolSettings)
 	// in pool.opaque of a MemoryConfig.
-	ConfigKey string
+	ControllerKey string
 	// Debounce delays a reconcile after an informer or server event.
 	Debounce time.Duration
 	Verbose  bool
@@ -96,8 +96,8 @@ func (c *Config) complete() {
 		// never "": that would claim the attachments of every owner
 		c.OwnerPrefix = DefaultOwnerPrefix
 	}
-	if c.ConfigKey == "" {
-		c.ConfigKey = DefaultConfigKey
+	if c.ControllerKey == "" {
+		c.ControllerKey = DefaultControllerKey
 	}
 	if c.Debounce <= 0 {
 		c.Debounce = DefaultDebounce
@@ -123,14 +123,14 @@ type Controller struct {
 	trigger chan struct{}
 
 	// Owned by the goroutine of Run.
-	slices     *resourceslice.Controller
-	published  *resourceslice.DriverResources // last given to slices
-	devices    map[string]api.Device          // published device name -> server device
-	nameWarned map[string]bool
-	noLabel    map[string]bool // nodes without a hostname label (warned once)
-	hostMapStr string
-	attLogged  map[string]string // attachment id -> last logged state of undesired attachments
-	cfgLogged  map[string]string // claim uid/request -> last logged configuration error
+	resourceSlices *resourceslice.Controller
+	published      *resourceslice.DriverResources // last given to slices
+	devices        map[string]api.Device          // published device name -> server device
+	nameWarned     map[string]bool
+	noLabel        map[string]bool // nodes without a hostname label (warned once)
+	hostMapStr     string
+	attLogged      map[string]string // attachment id -> last logged state of undesired attachments
+	cfgLogged      map[string]string // claim uid/request -> last logged configuration error
 }
 
 // New creates a controller. recorder may be nil (no events).
@@ -199,14 +199,14 @@ func (c *Controller) start(ctx context.Context) error {
 // resolvePoolName sets the pool name to the name of the server unless one
 // is configured. It returns true if the name came from the server.
 func (c *Controller) resolvePoolName(ctx context.Context) (bool, error) {
-	if c.cfg.PoolName != "" {
+	if c.cfg.DRAPoolName != "" {
 		return false, nil
 	}
 	st, err := c.pool.Status(ctx)
 	if err != nil {
 		return false, err
 	}
-	c.cfg.PoolName = st.Name
+	c.cfg.DRAPoolName = st.Name
 	return true, nil
 }
 
@@ -227,9 +227,9 @@ func (c *Controller) Run(ctx context.Context) error {
 		fromServer, err = c.resolvePoolName(ctx)
 	}
 	if fromServer {
-		c.logf("driver %s, pool %s (from the server), server %s, sync interval %s, config key %s", c.cfg.DriverName, c.cfg.PoolName, c.pool.BaseURL, c.cfg.SyncInterval, c.cfg.ConfigKey)
+		c.logf("driver %s, pool %s (from the server), server %s, sync interval %s, config key %s", c.cfg.DriverName, c.cfg.DRAPoolName, c.pool.BaseURL, c.cfg.SyncInterval, c.cfg.ControllerKey)
 	} else {
-		c.logf("driver %s, pool %s, server %s, sync interval %s, config key %s", c.cfg.DriverName, c.cfg.PoolName, c.pool.BaseURL, c.cfg.SyncInterval, c.cfg.ConfigKey)
+		c.logf("driver %s, pool %s, server %s, sync interval %s, config key %s", c.cfg.DriverName, c.cfg.DRAPoolName, c.pool.BaseURL, c.cfg.SyncInterval, c.cfg.ControllerKey)
 	}
 	if err := c.start(ctx); err != nil {
 		if ctx.Err() != nil {
@@ -313,13 +313,13 @@ func (c *Controller) watchServerEvents(ctx context.Context) {
 // shutdown stops publishing and deletes the pool slices: they have no
 // owner, nothing else garbage collects them.
 func (c *Controller) shutdown() {
-	if c.slices != nil {
-		c.slices.Stop()
-		c.slices = nil
+	if c.resourceSlices != nil {
+		c.resourceSlices.Stop()
+		c.resourceSlices = nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := c.deleteSlices(ctx); err != nil {
+	if err := c.deleteResourceSlices(ctx); err != nil {
 		c.logf("ERROR: delete ResourceSlices: %v", err)
 	}
 }

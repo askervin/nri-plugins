@@ -114,7 +114,7 @@ func (e *env) exclusiveAttachment(host string) (bool, bool) {
 	e.pool.mu.Lock()
 	defer e.pool.mu.Unlock()
 	a, ok := e.pool.atts[api.AttachmentID("fs0", host)]
-	return ok, a.Exclusive
+	return ok, a.SingleHost
 }
 
 // ReadWriteOnce: a read-write share of a single-host filesystem makes the
@@ -282,7 +282,7 @@ func TestReadWriteFsNewAttachmentReaderAndWriter(t *testing.T) {
 func TestReadWriteFsNewAttachmentConflict(t *testing.T) {
 	t.Parallel()
 	e := newFsEnv(t)
-	e.pool.addAttachment(api.Attachment{Device: "fs0", Host: "foreign", Owner: "k8s:resourceclaim/other-cluster", Exclusive: true})
+	e.pool.addAttachment(api.Attachment{Device: "fs0", Host: "foreign", Owner: "k8s:resourceclaim/other-cluster", SingleHost: true})
 	e.share("rw-1", "node1", rwFs)
 	e.share("ro-1", "node1", roFs)
 	e.sync()
@@ -345,7 +345,7 @@ func TestReadWriteFsUnresolvedWriterKeepsExclusive(t *testing.T) {
 	t.Parallel()
 	e := newFsEnv(t)
 	e.share("rw-a", "node1", []resourceapi.DeviceAllocationConfiguration{claimConfig(`"device": {"mode": "fs", "readOnly": false, "bogus": 1}`)})
-	e.pool.addAttachment(api.Attachment{Device: "fs0", Host: "vm1", Owner: e.c.Owner("uid-rw-a"), Exclusive: true, Slot: api.Slot{Bus: "ds9"}})
+	e.pool.addAttachment(api.Attachment{Device: "fs0", Host: "vm1", Owner: e.c.Owner("uid-rw-a"), SingleHost: true, Slot: api.Slot{Bus: "ds9"}})
 	e.markAttached("rw-a")
 	e.share("ro-c", "node1", roFs)
 	e.sync()
@@ -412,7 +412,7 @@ func TestReadWriteFsFallbackNoAnswer(t *testing.T) {
 	defer cancel()
 	e.pool.mu.Lock()
 	e.pool.attachHook = func(name string, req api.AttachRequest) string {
-		if name == "fs0" && req.Host == "node2" && !req.Exclusive {
+		if name == "fs0" && req.Host == "node2" && !req.SingleHost {
 			cancel()
 			return api.CodeConflict
 		}

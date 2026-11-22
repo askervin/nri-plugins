@@ -153,7 +153,7 @@ func (p *fakePool) handler() http.Handler {
 			return
 		}
 		call := api.AttachmentID(name, req.Host) + " " + req.Owner
-		if req.Exclusive {
+		if req.SingleHost {
 			call += " exclusive"
 		}
 		p.attaches = append(p.attaches, call)
@@ -175,13 +175,13 @@ func (p *fakePool) handler() http.Handler {
 			case !d.Shared:
 				writeErr(w, api.Conflict("device %q is not shared and it is attached to %q", name, a.Host))
 				return
-			case req.Exclusive || a.Exclusive:
+			case req.SingleHost || a.SingleHost:
 				writeErr(w, api.Conflict("device %q is attached to %q (exclusive attach)", name, a.Host))
 				return
 			}
 		}
 		if a, ok := p.atts[id]; ok {
-			a.Exclusive = req.Exclusive
+			a.SingleHost = req.SingleHost
 			if a.Owner == "" {
 				a.Owner = req.Owner // taken over
 			}
@@ -199,7 +199,7 @@ func (p *fakePool) handler() http.Handler {
 			Slot:         api.Slot{Bus: bus},
 			QemuDeviceID: fmt.Sprintf("fcp_%s.hp%d", name, p.counter),
 			State:        api.AttachmentAttached,
-			Exclusive:    req.Exclusive,
+			SingleHost:   req.SingleHost,
 		}
 		p.atts[id] = a
 		writeJSON(w, 201, a)
@@ -336,8 +336,8 @@ func newEnvWith(t *testing.T, setup func(*fakePool, *Config)) *env {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if c.slices != nil {
-			c.slices.Stop()
+		if c.resourceSlices != nil {
+			c.resourceSlices.Stop()
 		}
 		cancel()
 		c.factory.Shutdown()
@@ -1050,7 +1050,7 @@ func TestExclusiveResult(t *testing.T) {
 		{"not shared", "pooled0", all, false},
 	} {
 		r := &resourceapi.DeviceRequestAllocationResult{Device: tc.device, ConsumedCapacity: tc.consumed}
-		if got := c.exclusiveResult(r); got != tc.want {
+		if got := c.allShares(r); got != tc.want {
 			t.Errorf("%s: exclusive %v, want %v", tc.name, got, tc.want)
 		}
 	}

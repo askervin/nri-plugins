@@ -29,7 +29,7 @@ func TestExampleConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	// one value of each section
-	if cfg.Name != "fake-cxl-pool" || cfg.Listen != "127.0.0.1:9909" || uint64(*cfg.ExclusiveSerialBase) != 0xc1ee0000 ||
+	if cfg.Name != "fake-cxl-pool" || cfg.Listen != "127.0.0.1:9909" || uint64(*cfg.SerialBase) != 0xc1ee0000 ||
 		cfg.Dir != "/tmp/fake-cxl-pool" || len(cfg.Devices) != 3 || !cfg.Devices[2].Persistent ||
 		time.Duration(cfg.Discovery.Interval) != 10*time.Second || time.Duration(cfg.DetachTimeout) != 15*time.Second {
 		t.Fatalf("unexpected config %+v", cfg)

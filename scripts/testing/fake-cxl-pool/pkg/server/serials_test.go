@@ -41,7 +41,7 @@ func TestSerials(t *testing.T) {
 	if sn := s.Next("e", false); sn != 0xc1ee0004 {
 		t.Fatalf("unexpected serial 0x%x", sn)
 	}
-	s.Release(0xc1ee0001)
+	s.Free(0xc1ee0001)
 	if sn := s.Next("d", false); sn != 0xc1ee0001 {
 		t.Fatalf("unexpected serial 0x%x", sn)
 	}

@@ -178,7 +178,7 @@ func (s *Server) CreateDevice(req api.DeviceCreate) (api.Device, error) {
 		d.LSAPath = lsaPath(path)
 	}
 	if err := ensureFiles(d.Path, d.LSAPath, d.Size); err != nil {
-		s.serials.Release(sn)
+		s.serials.Free(sn)
 		removeDeviceFiles(d, s.logf)
 		return api.Device{}, api.Internal("cannot create backing file: %v", err)
 	}
@@ -234,7 +234,7 @@ func (s *Server) DeleteDevice(ctx context.Context, name string, force bool) erro
 	if filepath.Dir(d.Path) == filepath.Clean(s.cfg.Dir) {
 		removeDeviceFiles(d, s.logf)
 	}
-	s.serials.Release(d.serial)
+	s.serials.Free(d.serial)
 	s.logf("device %s: deleted", name)
 	s.saveStateLocked()
 	v := d.Device
@@ -293,9 +293,9 @@ func (s *Server) checkAttachLocked(d *device, h *host, req api.AttachRequest) er
 		case a.Host == h.name:
 		case !d.Shared:
 			return api.Conflict("device %q is not shared and it is attached to %q", d.Name, a.Host)
-		case req.Exclusive:
+		case req.SingleHost:
 			return api.Conflict("device %q is attached to %q: an exclusive attach needs it attached nowhere else", d.Name, a.Host)
-		case a.Exclusive:
+		case a.SingleHost:
 			return api.Conflict("device %q is attached exclusively to %q", d.Name, a.Host)
 		}
 	}
@@ -399,7 +399,7 @@ func (s *Server) chooseSlotLocked(h *host, b *binding, req api.AttachRequest, si
 		if !reserved[p.Bus] {
 			score += 4
 		}
-		if req.NumaNode != nil && sl.NumaNode == *req.NumaNode {
+		if req.NUMANode != nil && sl.NUMANode == *req.NUMANode {
 			score += 2
 		}
 		if score > bestScore {
@@ -552,7 +552,7 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 			QemuLSAObjectID: t3.LSA,
 			State:           api.AttachmentAttaching,
 			Owner:           req.Owner,
-			Exclusive:       req.Exclusive,
+			SingleHost:      req.SingleHost,
 			Created:         now,
 			Updated:         now,
 		},
@@ -678,16 +678,16 @@ func (s *Server) attachStoppedLocked(h *host, a *attachment) error {
 // attachments that it owns.
 func (s *Server) updateExistingLocked(d *device, h *host, a *attachment, req api.AttachRequest) error {
 	changed := false
-	if a.Exclusive != req.Exclusive {
-		if req.Exclusive {
+	if a.SingleHost != req.SingleHost {
+		if req.SingleHost {
 			for _, o := range s.deviceAttachmentsLocked(d.Name) {
 				if o.Host != h.name {
 					return api.Conflict("device %q is attached to %q: an exclusive attach needs it attached nowhere else", d.Name, o.Host)
 				}
 			}
 		}
-		a.Exclusive = req.Exclusive
-		s.logf("attachment %s: exclusive %v", a.ID, a.Exclusive)
+		a.SingleHost = req.SingleHost
+		s.logf("attachment %s: exclusive %v", a.ID, a.SingleHost)
 		changed = true
 	}
 	if a.Owner == "" && req.Owner != "" {

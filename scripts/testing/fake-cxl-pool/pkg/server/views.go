@@ -145,11 +145,11 @@ func (s *Server) deviceViewLocked(d *device) api.Device {
 	return v
 }
 
-// hostNumaLocked returns the NUMA node of a host bridge, -1 if unknown.
-func hostNumaLocked(h *host, hb string) int {
+// hostNUMALocked returns the NUMA node of a host bridge, -1 if unknown.
+func hostNUMALocked(h *host, hb string) int {
 	if h.tree != nil {
 		if t := h.tree.HostBridge(hb); t != nil {
-			return t.NumaNode
+			return t.NUMANode
 		}
 	}
 	return -1
@@ -157,7 +157,7 @@ func hostNumaLocked(h *host, hb string) int {
 
 // slotLocked returns the Slot of a bus in a host.
 func (s *Server) slotLocked(h *host, bus string) api.Slot {
-	sl := api.Slot{Bus: bus, NumaNode: -1}
+	sl := api.Slot{Bus: bus, NUMANode: -1}
 	if h.tree != nil {
 		if p := h.tree.Port(bus); p != nil {
 			sl = portSlot(h, p)
@@ -165,7 +165,7 @@ func (s *Server) slotLocked(h *host, bus string) api.Slot {
 	}
 	for _, d := range s.devices {
 		if b := d.localTo(h.name); b != nil && b.Bus == bus {
-			sl.ReservedFor = d.Name
+			sl.LocalDevice = d.Name
 		}
 	}
 	for _, a := range s.atts {
@@ -188,7 +188,7 @@ func portSlot(h *host, p *qemu.Port) api.Slot {
 		Bus:        p.Bus,
 		Kind:       kind,
 		HostBridge: p.HostBridge,
-		NumaNode:   hostNumaLocked(h, p.HostBridge),
+		NUMANode:   hostNUMALocked(h, p.HostBridge),
 		Device:     p.Occupant(),
 	}
 }
@@ -262,7 +262,7 @@ func (s *Server) hostViewLocked(h *host) api.Host {
 	}
 	sort.Slice(hbIDs, func(i, j int) bool { return naturalLess(hbIDs[i], hbIDs[j]) })
 	for _, id := range hbIDs {
-		hb := api.HostBridge{ID: id, NumaNode: hostNumaLocked(h, id), FMWSize: fmwSizeLocked(h, id), AttachedBytes: s.attachedBytesLocked(h, id)}
+		hb := api.HostBridge{ID: id, NUMANode: hostNUMALocked(h, id), FMWSize: fmwSizeLocked(h, id), AttachedBytes: s.attachedBytesLocked(h, id)}
 		v.HostBridges = append(v.HostBridges, hb)
 	}
 	for _, d := range sortedDevices(s.devices) {

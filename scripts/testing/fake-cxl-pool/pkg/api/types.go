@@ -81,7 +81,7 @@ func NormUUID(u string) string {
 // HostBridge is a CXL host bridge (pxb-cxl) of a host.
 type HostBridge struct {
 	ID            string `json:"id"`
-	NumaNode      int    `json:"numaNode"`
+	NUMANode      int    `json:"numaNode"`
 	FMWSize       int64  `json:"fmwSize"`
 	AttachedBytes int64  `json:"attachedBytes"`
 }
@@ -97,13 +97,13 @@ type Slot struct {
 	Bus        string `json:"bus"`
 	Kind       string `json:"kind"`
 	HostBridge string `json:"hostBridge"`
-	NumaNode   int    `json:"numaNode"`
+	NUMANode   int    `json:"numaNode"`
 	Device     string `json:"device"`
 	Attachment string `json:"attachment"`
-	// ReservedFor is the local device whose pre-declared backend names this
+	// LocalDevice is the local device whose pre-declared backend names this
 	// slot (beram_/befile_..._bus_<slot>_...). The server gives such slots
 	// to other devices only when no other slot is free.
-	ReservedFor string `json:"reservedFor,omitempty"`
+	LocalDevice string `json:"reservedFor,omitempty"`
 }
 
 // Device backends.
@@ -160,14 +160,14 @@ type DeviceCreate struct {
 type AttachRequest struct {
 	Host     string `json:"host"`
 	Slot     string `json:"slot,omitempty"`
-	NumaNode *int   `json:"numaNode,omitempty"`
+	NUMANode *int   `json:"numaNode,omitempty"`
 	Owner    string `json:"owner,omitempty"`
 	Timeout  string `json:"timeout,omitempty"`
-	// Exclusive attaches a shared device to this host only: the attach
+	// SingleHost attaches a shared device to this host only: the attach
 	// fails while the device is attached to another host, and attaching it
 	// to another host fails while this attachment is exclusive. An attach
 	// of an attached device sets the flag of the attachment.
-	Exclusive bool `json:"exclusive,omitempty"`
+	SingleHost bool `json:"exclusive,omitempty"`
 }
 
 // Attachment states.
@@ -197,12 +197,12 @@ type Attachment struct {
 	// attachment ("" if none, or adopted). An attachment without owner
 	// takes the owner of the first attach request that has one.
 	Owner string `json:"owner,omitempty"`
-	// Exclusive is the flag of the last attach request: no other host may
+	// SingleHost is the flag of the last attach request: no other host may
 	// attach the device meanwhile.
-	Exclusive bool      `json:"exclusive,omitempty"`
-	Adopted   bool      `json:"adopted,omitempty"`
-	Created   time.Time `json:"created"`
-	Updated   time.Time `json:"updated"`
+	SingleHost bool      `json:"exclusive,omitempty"`
+	Adopted    bool      `json:"adopted,omitempty"`
+	Created    time.Time `json:"created"`
+	Updated    time.Time `json:"updated"`
 }
 
 // AttachmentID returns the id of the attachment of a device to a host.

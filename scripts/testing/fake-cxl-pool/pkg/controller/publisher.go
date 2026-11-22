@@ -169,7 +169,7 @@ func (c *Controller) driverResources(devs []resourceapi.Device, sel *corev1.Node
 	if len(pool.Slices) == 0 {
 		pool.Slices = []resourceslice.Slice{{Devices: devs}}
 	}
-	res.Pools[c.cfg.PoolName] = pool
+	res.Pools[c.cfg.DRAPoolName] = pool
 	return res
 }
 
@@ -186,7 +186,7 @@ func (c *Controller) publish(ctx context.Context, hm hostMap) error {
 	c.devices = byName
 	sel := c.nodeSelector(hm)
 	res := c.driverResources(devs, sel)
-	if c.slices == nil {
+	if c.resourceSlices == nil {
 		sc, err := resourceslice.StartController(ctx, resourceslice.Options{
 			DriverName: c.cfg.DriverName,
 			KubeClient: c.kube,
@@ -196,23 +196,23 @@ func (c *Controller) publish(ctx context.Context, hm hostMap) error {
 				c.logf("ERROR: ResourceSlice: %s: %v", msg, err)
 			},
 			// other pools of the driver belong to other controllers
-			ReconcilePoolWithName: c.cfg.PoolName,
+			ReconcilePoolWithName: c.cfg.DRAPoolName,
 		})
 		if err != nil {
 			return err
 		}
-		c.slices = sc
+		c.resourceSlices = sc
 	} else {
 		if reflect.DeepEqual(res, c.published) {
 			return nil
 		}
-		c.slices.Update(res)
+		c.resourceSlices.Update(res)
 	}
 	c.published = res
 	if sel == nil {
-		c.logf("pool %s: no node of the cluster is a host of the server, publishing nothing", c.cfg.PoolName)
+		c.logf("pool %s: no node of the cluster is a host of the server, publishing nothing", c.cfg.DRAPoolName)
 	} else {
-		c.logf("publishing pool %s for nodes %s: %d devices %s", c.cfg.PoolName, sel.NodeSelectorTerms[0].MatchExpressions[0].Values, len(devs), deviceNames(devs))
+		c.logf("publishing pool %s for nodes %s: %d devices %s", c.cfg.DRAPoolName, sel.NodeSelectorTerms[0].MatchExpressions[0].Values, len(devs), deviceNames(devs))
 	}
 	return nil
 }
@@ -225,8 +225,8 @@ func deviceNames(devs []resourceapi.Device) []string {
 	return ns
 }
 
-// deleteSlices deletes the cluster-scoped slices of the driver and pool.
-func (c *Controller) deleteSlices(ctx context.Context) error {
+// deleteResourceSlices deletes the cluster-scoped slices of the driver and pool.
+func (c *Controller) deleteResourceSlices(ctx context.Context) error {
 	rs := c.kube.ResourceV1().ResourceSlices()
 	list, err := rs.List(ctx, metav1.ListOptions{
 		FieldSelector: fields.OneTermEqualSelector("spec.driver", c.cfg.DriverName).String(),
@@ -235,7 +235,7 @@ func (c *Controller) deleteSlices(ctx context.Context) error {
 		return err
 	}
 	for _, s := range list.Items {
-		if s.Spec.Driver != c.cfg.DriverName || s.Spec.Pool.Name != c.cfg.PoolName || ptr.Deref(s.Spec.NodeName, "") != "" {
+		if s.Spec.Driver != c.cfg.DriverName || s.Spec.Pool.Name != c.cfg.DRAPoolName || ptr.Deref(s.Spec.NodeName, "") != "" {
 			continue
 		}
 		if err := rs.Delete(ctx, s.Name, metav1.DeleteOptions{}); err != nil {

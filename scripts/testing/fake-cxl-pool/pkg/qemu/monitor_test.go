@@ -132,7 +132,7 @@ func TestHMPClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if treeDevice(tree, "cxl_memdev2.hp3") == nil || tree.HostBridge("cxlhb1").NumaNode != 1 {
+	if treeDevice(tree, "cxl_memdev2.hp3") == nil || tree.HostBridge("cxlhb1").NUMANode != 1 {
 		t.Fatalf("unexpected tree %+v", tree)
 	}
 	err = h.DeviceDel(ctx, "nosuch")
@@ -531,7 +531,7 @@ func TestQMPTreeFromQOM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tree.HostBridges) != 1 || tree.HostBridges[0].ID != "cxlhb0" || tree.HostBridges[0].NumaNode != 0 {
+	if len(tree.HostBridges) != 1 || tree.HostBridges[0].ID != "cxlhb0" || tree.HostBridges[0].NUMANode != 0 {
 		t.Fatalf("unexpected host bridges %+v", tree.HostBridges)
 	}
 	if len(tree.Ports) != 4 {

@@ -124,8 +124,8 @@ func TestPublishNodeSelector(t *testing.T) {
 func TestPoolNameFromServer(t *testing.T) {
 	t.Parallel()
 	e := newEnvWith(t, func(p *fakePool, _ *Config) { p.name = "pool-x" })
-	if e.c.cfg.PoolName != "pool-x" {
-		t.Fatalf("pool name %q", e.c.cfg.PoolName)
+	if e.c.cfg.DRAPoolName != "pool-x" {
+		t.Fatalf("pool name %q", e.c.cfg.DRAPoolName)
 	}
 	e.sync()
 	e.eventually("slice of pool-x", func() bool {
@@ -133,9 +133,9 @@ func TestPoolNameFromServer(t *testing.T) {
 		return len(l) == 1 && l[0].Spec.Pool.Name == "pool-x"
 	})
 	// the configured name wins, the server is not asked
-	e = newEnvWith(t, func(p *fakePool, c *Config) { p.name = "pool-x"; c.PoolName = "flag-pool" })
-	if e.c.cfg.PoolName != "flag-pool" || e.pool.statuses != 0 {
-		t.Fatalf("pool name %q, %d status requests", e.c.cfg.PoolName, e.pool.statuses)
+	e = newEnvWith(t, func(p *fakePool, c *Config) { p.name = "pool-x"; c.DRAPoolName = "flag-pool" })
+	if e.c.cfg.DRAPoolName != "flag-pool" || e.pool.statuses != 0 {
+		t.Fatalf("pool name %q, %d status requests", e.c.cfg.DRAPoolName, e.pool.statuses)
 	}
 }
 
@@ -144,7 +144,7 @@ func TestRunCancelledAtStart(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	c := New(Config{PoolName: "pool-x", Logger: log.New(testWriter{t}, "", 0)}, fake.NewClientset(), client.New("http://127.0.0.1:1"), nil)
+	c := New(Config{DRAPoolName: "pool-x", Logger: log.New(testWriter{t}, "", 0)}, fake.NewClientset(), client.New("http://127.0.0.1:1"), nil)
 	if err := c.Run(ctx); err != nil {
 		t.Fatalf("Run cancelled at start: %v", err)
 	}

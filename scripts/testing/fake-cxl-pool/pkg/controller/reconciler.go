@@ -62,20 +62,20 @@ type want struct {
 	// exclusive: allShares or writer, attached with
 	// AttachRequest.Exclusive
 	exclusive bool
-	// keepExclusive: the want is attached and its MemoryConfig cannot be
+	// keepSingleHost: the want is attached and its MemoryConfig cannot be
 	// resolved: it is exclusive if its attachment is
-	keepExclusive bool
+	keepSingleHost bool
 	// settings: where to attach, from the MemoryConfig of the result
 	settings PoolSettings
 	// cfgErr: the MemoryConfig of the result is invalid, no attach
 	cfgErr error
 }
 
-// exclusiveResult reports whether an allocation result of a shared device
+// allShares reports whether an allocation result of a shared device
 // consumes all of its shares, or none is recorded (no shares request):
 // then no other host may attach the device while it is attached for the
 // claim.
-func (c *Controller) exclusiveResult(r *resourceapi.DeviceRequestAllocationResult) bool {
+func (c *Controller) allShares(r *resourceapi.DeviceRequestAllocationResult) bool {
 	d, ok := c.devices[r.Device]
 	if !ok || !d.Shared {
 		return false
@@ -113,9 +113,9 @@ func (c *Controller) writerResult(r *resourceapi.DeviceRequestAllocationResult, 
 	return config.NeedsSingleHost(res.Config, devicesCoherent)
 }
 
-// anyExclusive reports whether one of the wants of an attachment is
+// anySingleHost reports whether one of the wants of an attachment is
 // exclusive.
-func anyExclusive(ws []*want) bool {
+func anySingleHost(ws []*want) bool {
 	for _, w := range ws {
 		if w.exclusive {
 			return true
@@ -139,9 +139,9 @@ func (w *want) String() string {
 type failure struct {
 	reason  string
 	message string
-	// exclusiveOnly: making an existing attachment exclusive failed; the
+	// singleHostOnly: making an existing attachment exclusive failed; the
 	// wants that are not exclusive keep the attachment
-	exclusiveOnly bool
+	singleHostOnly bool
 }
 
 // Owner returns the attachment owner of a claim.
@@ -174,10 +174,10 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 		}
 		node := device.AllocationNode(claim.Status.Allocation)
 		for _, r := range claim.Status.Allocation.Devices.Results {
-			if r.Driver != c.cfg.DriverName || r.Pool != c.cfg.PoolName {
+			if r.Driver != c.cfg.DriverName || r.Pool != c.cfg.DRAPoolName {
 				continue
 			}
-			w := &want{claim: claim, result: r, node: node, allShares: c.exclusiveResult(&r)}
+			w := &want{claim: claim, result: r, node: node, allShares: c.allShares(&r)}
 			if d, ok := c.devices[r.Device]; ok {
 				w.device = d.Name
 			}
@@ -197,7 +197,7 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 					// attached already: a device in use is never detached,
 					// and an unknown writer keeps its exclusive flag
 					w.cfgErr = nil
-					w.keepExclusive = res == nil
+					w.keepSingleHost = res == nil
 				}
 			}
 			wants = append(wants, w)
@@ -230,7 +230,7 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 		}
 	}
 	for _, w := range wants {
-		if a, ok := actual[w.key()]; ok && w.keepExclusive && a.Exclusive && !w.exclusive {
+		if a, ok := actual[w.key()]; ok && w.keepSingleHost && a.SingleHost && !w.exclusive {
 			c.debugf("%s: configuration not resolved: attachment %s stays exclusive", w, a.ID)
 			w.exclusive = true
 		}
@@ -250,8 +250,8 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 		return ei && !ej
 	})
 	for _, k := range keys {
-		exclusive := anyExclusive(desired[k])
-		if a, ok := actual[k]; ok && (a.State != api.AttachmentAttached || a.Exclusive == exclusive) {
+		exclusive := anySingleHost(desired[k])
+		if a, ok := actual[k]; ok && (a.State != api.AttachmentAttached || a.SingleHost == exclusive) {
 			continue
 		}
 		w := desired[k][0]
@@ -268,7 +268,7 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 		if f != nil && exclusive && f.reason == ReasonConflict {
 			if _, ok := actual[k]; ok {
 				// an existing attachment stays for the other wants
-				f.exclusiveOnly = true
+				f.singleHostOnly = true
 			} else if r := firstShared(desired[k]); r != nil {
 				// a new attachment: the other wants may have one that
 				// is not exclusive
@@ -276,7 +276,7 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 				// no answer (attaching continues, waiting for a
 				// detach): the other wants wait, they are not refused
 				if ra, rf := c.attach(ctx, r, k, false, exists, actual, desired); rf == nil {
-					a, f.exclusiveOnly = ra, true
+					a, f.singleHostOnly = ra, true
 				}
 			}
 		}
@@ -367,15 +367,15 @@ func cmpAttKey(a, b attKey) int {
 func (c *Controller) attach(ctx context.Context, w *want, k attKey, exclusive, exists bool, actual map[attKey]api.Attachment, desired map[attKey][]*want) (*api.Attachment, *failure) {
 	owner := c.Owner(w.claim.UID)
 	req := api.AttachRequest{
-		Host:      k.host,
-		Owner:     owner,
-		Timeout:   c.cfg.AttachTimeout.String(),
-		Exclusive: exclusive,
+		Host:       k.host,
+		Owner:      owner,
+		Timeout:    c.cfg.AttachTimeout.String(),
+		SingleHost: exclusive,
 	}
 	// the settings place a new attachment; an existing one stays where it
 	// is
 	if !exists {
-		req.Slot, req.NumaNode = w.settings.Slot, w.settings.NumaNode
+		req.Slot, req.NUMANode = w.settings.Slot, w.settings.NUMANode
 		if s := w.settings.String(); s != "" {
 			c.debugf("attach %s to %s for %s: %s", k.device, k.host, w, s)
 		}
@@ -388,10 +388,10 @@ func (c *Controller) attach(ctx context.Context, w *want, k attKey, exclusive, e
 		case http.StatusAccepted:
 			c.logf("attach %s to %s for %s: still attaching after %s", k.device, k.host, w, c.cfg.AttachTimeout)
 		case http.StatusOK:
-			c.logf("attach %s to %s for %s: already attached (%s, owner %q, exclusive %v)", k.device, k.host, w, a.State, a.Owner, a.Exclusive)
+			c.logf("attach %s to %s for %s: already attached (%s, owner %q, exclusive %v)", k.device, k.host, w, a.State, a.Owner, a.SingleHost)
 		default:
 			c.logf("attached %s to %s (node %s, slot %s, qemu device %s, owner %s, exclusive %v) for %s/%s",
-				k.device, k.host, w.node, a.Slot.Bus, a.QemuDeviceID, owner, a.Exclusive, w.claim.Namespace, w.claim.Name)
+				k.device, k.host, w.node, a.Slot.Bus, a.QemuDeviceID, owner, a.SingleHost, w.claim.Namespace, w.claim.Name)
 		}
 		return a, nil
 	}
@@ -429,11 +429,11 @@ func (c *Controller) writeStatus(ctx context.Context, w *want, actual map[attKey
 	case w.cfgErr != nil:
 		f = &failure{reason: ReasonInvalidConfig, message: w.cfgErr.Error()}
 	case w.device == "":
-		f = &failure{reason: ReasonAttachError, message: fmt.Sprintf("device %s is not in pool %s", w.result.Device, c.cfg.PoolName)}
+		f = &failure{reason: ReasonAttachError, message: fmt.Sprintf("device %s is not in pool %s", w.result.Device, c.cfg.DRAPoolName)}
 	case w.host == nil:
 		f = &failure{reason: ReasonNoHost, message: fmt.Sprintf("node %q is not a host of the pool", w.node)}
 	default:
-		if x, ok := failures[w.key()]; ok && (w.exclusive || !x.exclusiveOnly) {
+		if x, ok := failures[w.key()]; ok && (w.exclusive || !x.singleHostOnly) {
 			f = &x
 		} else if a, ok := actual[w.key()]; ok && a.State == api.AttachmentFailed {
 			// The server keeps a failed attachment until its qemu device
@@ -450,9 +450,9 @@ func (c *Controller) writeStatus(ctx context.Context, w *want, actual map[attKey
 		return
 	}
 	a, ok := actual[w.key()]
-	if !ok || a.State != api.AttachmentAttached || (w.exclusive && !a.Exclusive) {
+	if !ok || a.State != api.AttachmentAttached || (w.exclusive && !a.SingleHost) {
 		if ok {
-			c.debugf("%s: attachment %s is %s (exclusive %v, wanted %v)", w, a.ID, a.State, a.Exclusive, w.exclusive)
+			c.debugf("%s: attachment %s is %s (exclusive %v, wanted %v)", w, a.ID, a.State, a.SingleHost, w.exclusive)
 		}
 		return
 	}
@@ -468,7 +468,7 @@ func (c *Controller) writeStatus(ctx context.Context, w *want, actual map[attKey
 			Size:       new(uint64(d.Size)),
 			Exclusive:  w.allShares,
 			Persistent: d.Persistent,
-			SingleHost: w.exclusive && a.Exclusive,
+			SingleHost: w.exclusive && a.SingleHost,
 			Coherent:   devicesCoherent,
 		},
 		Host:         a.Host,

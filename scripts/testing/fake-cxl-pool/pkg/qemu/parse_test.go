@@ -51,10 +51,10 @@ func rawSession(t *testing.T, name string) string {
 func TestParseQtreeFull(t *testing.T) {
 	text := CleanHMPOutput(rawSession(t, "hmp-raw-info-qtree-full-crio.txt"))
 	tree := ParseQtree(text)
-	if hb := tree.HostBridge("cxlhb1"); hb == nil || hb.NumaNode != 1 {
+	if hb := tree.HostBridge("cxlhb1"); hb == nil || hb.NUMANode != 1 {
 		t.Fatalf("expected cxlhb1 on numa node 1: %+v", tree.HostBridges)
 	}
-	if hb := tree.HostBridge("cxlhb0"); hb == nil || hb.NumaNode != 0 {
+	if hb := tree.HostBridge("cxlhb0"); hb == nil || hb.NUMANode != 0 {
 		t.Fatalf("expected cxlhb0 on numa node 0: %+v", tree.HostBridges)
 	}
 	d := treeDevice(tree, "cxl_memdev2.hp3")
@@ -137,7 +137,7 @@ func TestParseQtreeRootPortSlot(t *testing.T) {
 	if d == nil || d.VolatileMemdev != "fcp_x.hp1" || d.Serial != 0xc1f00001 || d.Bus != "cxlrp1hb0" {
 		t.Fatalf("unexpected device %+v", d)
 	}
-	if tree.HostBridge("cxlhb0").NumaNode != 0 || tree.HostBridge("cxlhb1").NumaNode != -1 {
+	if tree.HostBridge("cxlhb0").NUMANode != 0 || tree.HostBridge("cxlhb1").NUMANode != -1 {
 		t.Fatalf("unexpected numa %+v", tree.HostBridges)
 	}
 }
