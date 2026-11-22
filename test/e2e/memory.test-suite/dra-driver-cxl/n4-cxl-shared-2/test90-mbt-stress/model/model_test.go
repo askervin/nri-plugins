@@ -16,73 +16,9 @@ package main
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"testing"
 )
-
-func testConfig(t *testing.T, profile string, online bool) *Config {
-	t.Helper()
-	cfg := defaultConfig()
-	cfg.Online = online
-	cfg.Unsettled = 100 // the tests settle when they want
-	if err := cfg.loadProfile(profile); err != nil {
-		t.Fatal(err)
-	}
-	return cfg
-}
-
-// steps applies action lines; "!line" must be disabled.
-func steps(t *testing.T, s *State, lines ...string) *State {
-	t.Helper()
-	for _, line := range lines {
-		want := true
-		if strings.HasPrefix(line, "!") {
-			want, line = false, line[1:]
-		}
-		a, err := parseAct(s.cfg, line)
-		if err != nil {
-			t.Fatalf("%q: %v", line, err)
-		}
-		if got := s.enabled(a); got != want {
-			t.Fatalf("%q: enabled %v, want %v in\n%s", line, got, want, s.dump())
-		}
-		if want {
-			s = s.apply(a)
-		}
-	}
-	return s
-}
-
-// size returns n, or short under -short.
-func size(n, short int) int {
-	if testing.Short() {
-		return short
-	}
-	return n
-}
-
-// stateAfter returns the state of a profile after action lines (see steps).
-func stateAfter(t *testing.T, profile string, online bool, lines ...string) *State {
-	t.Helper()
-	return steps(t, newState(testConfig(t, profile, online)), lines...)
-}
-
-func slotOf(t *testing.T, s *State, name string) *SlotState {
-	t.Helper()
-	i := s.cfg.slotIndex(name)
-	if i < 0 {
-		t.Fatalf("no slot %s", name)
-	}
-	return &s.Slots[i]
-}
-
-func wantPhase(t *testing.T, s *State, name string, ph Phase) {
-	t.Helper()
-	if got := slotOf(t, s, name).Phase; got != ph {
-		t.Fatalf("%s: phase %s, want %s in\n%s", name, got, ph, s.dump())
-	}
-}
 
 func TestExclusivePoolDevice(t *testing.T) {
 	s := stateAfter(t, "full", false, "create xnuma-a@vm1#0", "create xdax-a@vm2#0", "!create xdax-a@vm1#0")
@@ -221,30 +157,6 @@ func TestCrash(t *testing.T) {
 	if got := s.SlotData[cfg.slotIndex("ldax@vm1#0")]; !got.Known || !strings.HasPrefix(got.Text, "mbt-") {
 		t.Fatalf("data %v", got)
 	}
-}
-
-// alts returns the settled state and its alternatives.
-func alts(s *State) []*State { return append([]*State{s}, s.Alts...) }
-
-// dumpAlts returns the dumps of the settled state and its alternatives.
-func dumpAlts(s *State) string {
-	var b strings.Builder
-	for j, a := range alts(s) {
-		b.WriteString("alt " + strconv.Itoa(j) + ":\n" + a.dump())
-	}
-	return b.String()
-}
-
-// adoptSlices returns the outcome of a settle with the given slices.
-func adoptSlices(t *testing.T, s *State, p Pool, st SliceSt) *State {
-	t.Helper()
-	for _, a := range alts(s) {
-		if a.Ctrl[p].Slices == st {
-			return a
-		}
-	}
-	t.Fatalf("no outcome with the slices of pool %s %s:\n%s", p, st, dumpAlts(s))
-	return nil
 }
 
 func TestControllerKill(t *testing.T) {
@@ -618,15 +530,6 @@ func TestData(t *testing.T) {
 	if tok := s.Data[pooledDev(PoolC)]; !tok.Known {
 		t.Fatalf("token %v", tok)
 	}
-}
-
-func mustAct(t *testing.T, cfg *Config, line string) Act {
-	t.Helper()
-	a, err := parseAct(cfg, line)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return a
 }
 
 func TestForcedSettleAndAvoid(t *testing.T) {

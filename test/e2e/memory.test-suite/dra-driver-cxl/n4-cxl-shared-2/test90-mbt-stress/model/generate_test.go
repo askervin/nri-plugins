@@ -25,17 +25,6 @@ import (
 	"time"
 )
 
-func genOpts(t *testing.T, profile string, steps int, seed int64) runOpts {
-	t.Helper()
-	cfg := defaultConfig()
-	cfg.Online = false
-	if err := cfg.loadProfile(profile); err != nil {
-		t.Fatal(err)
-	}
-	cov, _ := parseCoverage("C1,C2,C3,C4")
-	return runOpts{cfg: cfg, cov: cov, depth: 2, seed: seed, randomness: 1, maxSteps: steps, header: "test"}
-}
-
 func generateScript(t *testing.T, o runOpts, from []stepLine) string {
 	t.Helper()
 	var b bytes.Buffer

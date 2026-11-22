@@ -26,63 +26,6 @@ import (
 	"time"
 )
 
-// syncBuffer is a log buffer that the test may read while the run logs.
-type syncBuffer struct {
-	mu sync.Mutex
-	b  bytes.Buffer
-}
-
-func (s *syncBuffer) Write(p []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.b.Write(p)
-}
-
-func (s *syncBuffer) String() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.b.String()
-}
-
-func testOpts(t *testing.T, profile string, steps, depth int, planAhead bool) runOpts {
-	t.Helper()
-	cfg := defaultConfig()
-	cfg.Online = true
-	if err := cfg.loadProfile(profile); err != nil {
-		t.Fatal(err)
-	}
-	cov, _ := parseCoverage("C1,C2,C3,C4")
-	return runOpts{
-		cfg: cfg, cov: cov, depth: depth, seed: 1, randomness: 1, maxSteps: steps,
-		settleTimeout: 180 * time.Second, planAhead: planAhead, outDir: t.TempDir(), header: "test",
-	}
-}
-
-// runSim runs the on-line loop against a simulated SUT over pipes.
-func runSim(t *testing.T, o runOpts, sm *sim) (string, error) {
-	t.Helper()
-	goIn, simOut := io.Pipe()
-	simIn, goOut := io.Pipe()
-	logs := &syncBuffer{}
-	r, err := newOnlineRun(o, goIn, goOut, logs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	simDone := make(chan error, 1)
-	go func() {
-		err := sm.serve(simIn, simOut)
-		_ = simOut.Close()
-		_, _ = io.Copy(io.Discard, simIn)
-		simDone <- err
-	}()
-	runErr := r.run()
-	_ = goOut.Close()
-	if err := <-simDone; err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrClosedPipe) {
-		t.Fatalf("sim: %v\nlog:\n%s", err, logs.String())
-	}
-	return logs.String(), runErr
-}
-
 func stepsOf(t *testing.T, dir string) []string {
 	t.Helper()
 	acts, err := readActions(filepath.Join(dir, "mbt-steps.txt"))

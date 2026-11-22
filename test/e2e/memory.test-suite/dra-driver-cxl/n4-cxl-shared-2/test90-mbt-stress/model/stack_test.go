@@ -20,13 +20,6 @@ import (
 	"time"
 )
 
-func wantStack(t *testing.T, s *State, si int, want string) {
-	t.Helper()
-	if got := s.Stacks[si].String(); got != want {
-		t.Fatalf("stack %s %s, want %s in\n%s", stackName(si), got, want, s.dump())
-	}
-}
-
 func TestStackPrimitives(t *testing.T) {
 	var st Stack
 	for _, k := range []RKey{rkLocal, devKey(2), devKey(3)} {
