@@ -516,7 +516,7 @@ dra-request "$VM2" leaser request --serial "$DRA_LOCAL_SERIAL" --wait 60s
 [ "$DRA_REQ_STATUS" == 0 ] || error "cxl-request request --serial $DRA_LOCAL_SERIAL exited $DRA_REQ_STATUS"
 dra-assert "$DRA_REQ_JSON" "(j.get('state'), j.get('source'), j.get('mode'), bool(j.get('share')), bool(j.get('readOnly'))) == ('Ready', 'local', 'dax', False, False)"
 LEASE=$(dra-value "$DRA_REQ_JSON" "j['lease']")
-dra-exec "$VM2" leaser "$DRA_REQUEST_CTR_BIN" fd --lease "$LEASE" --exec python3 /tools/dax-rw.py --fd 3 read 0 ||
+dra-exec "$VM2" leaser "$DRA_REQUEST_CTR_BIN" env --lease "$LEASE" --exec python3 /tools/dax-rw.py --fd 3 read 0 ||
     command-error "cannot read through the fd of the exclusive lease $LEASE"
 [ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "$TEXT0" ] ||
     error "the exclusive lease read '$(tail -n 1 <<< "$COMMAND_OUTPUT")', expected '$TEXT0'"

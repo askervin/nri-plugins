@@ -106,9 +106,9 @@ J=$(last_json "$out")
 LEASE_D=$(jget "$J" 'j.get("lease")' 2>/dev/null)
 check "lease-b: the dax lease $LEASE_D is Ready" test "$(jget "$J" 'j.get("state")' 2>/dev/null)" == Ready
 TEXT="written through a leased fd at $(date +%T)"
-out=$(pexec lease-b "$CXL_REQUEST" fd --lease "$LEASE_D" --exec python3 /tools/dax-rw.py --fd 3 write 0 "$TEXT" 2>&1)
+out=$(pexec lease-b "$CXL_REQUEST" env --lease "$LEASE_D" --exec python3 /tools/dax-rw.py --fd 3 write 0 "$TEXT" 2>&1)
 echo "    $out"
-out=$(pexec lease-b "$CXL_REQUEST" fd --lease "$LEASE_D" --exec python3 /tools/dax-rw.py --fd 3 read 0 2>&1)
+out=$(pexec lease-b "$CXL_REQUEST" env --lease "$LEASE_D" --exec python3 /tools/dax-rw.py --fd 3 read 0 2>&1)
 echo "    $out"
 check "lease-b: reads what it wrote through the dax fd" grep -qF "$TEXT" <<< "$out"
 list=$(pexec lease-b "$CXL_REQUEST" list 2>&1)

@@ -145,7 +145,6 @@ cxl-request request [--source local|pool] [--mode numa|dax|fs|block] [--share]
                     [--request-id ID] [--exec CMD [ARG...]]
 cxl-request release (--lease ID | --all) [--wait DURATION]
 cxl-request list
-cxl-request fd  --lease ID [--wait DURATION] --exec CMD [ARG...]
 cxl-request env --lease ID [--wait DURATION] [--exec CMD [ARG...]]
 cxl-request help
 ```
@@ -155,8 +154,7 @@ cxl-request help
 | `request` | create a lease, wait until it is Ready, print the response; with `--exec` run CMD with the lease's environment (and its fd for `dax` and `block`, its mount for `fs`) |
 | `release` | release a lease of the pod, or all of them, and wait until Released |
 | `list` | print the leases of the pod |
-| `fd` | get the fd of a Ready `dax` or `block` lease again and run CMD with it, for example after CMD restarted |
-| `env` | print the lease's environment as `KEY=VALUE` lines, or run CMD with it |
+| `env` | print the lease's environment as `KEY=VALUE` lines, or run CMD with it and the fd of a `dax` or `block` lease, for example after CMD restarted |
 
 | option | values, default | |
 |:-------|:----------------|:-|
@@ -169,9 +167,9 @@ cxl-request help
 | `--name` | 1 to 255 letters, digits, `.`, `_`, `-`, not `.` or `..`; default the lease id | `fs`: the mount point `/run/cxl/fs/NAME`, unique among the leases of the lease claim |
 | `--size` | quantity, for example `512Mi` | at least this much |
 | `--serial` | `0x` hex or decimal | this device |
-| `--wait` | Go duration, at most `1h`; omitted: the driver's `--lease-wait`; `0s`: do not wait | `request`, `fd`, `env`: until Ready; `release`: until Released |
+| `--wait` | Go duration, at most `1h`; omitted: the driver's `--lease-wait`; `0s`: do not wait | `request`, `env`: until Ready; `release`: until Released |
 | `--request-id` | 1 to 64 letters, digits, `.`, `_`, `-` | the same id from the same container returns the same lease: repeat the whole command after a lost connection |
-| `--lease` | 8 lower-case hex digits | the lease of `release`, `fd` and `env` |
+| `--lease` | 8 lower-case hex digits | the lease of `release` and `env` |
 | `--all` | | `release`: every lease of the pod |
 | `--exec` | CMD ARG... | run CMD with the lease's environment, and the fd of a `dax` or `block` lease as fd 3 |
 
@@ -204,9 +202,11 @@ works. With `--exec`, CMD runs once the lease is Ready, with the
 environment of `cxl-request` plus the variables of the lease:
 
 - `dax` and `block`: the fd is fd 3 of CMD (`request --exec`,
-  `fd --exec`), and `CXL_<KEY>_FD=3` takes the place of `CXL_<KEY>_DAX`
-  or `CXL_<KEY>_PATH`. Without the fd (`env`) those name the host path of
-  the device, informational: the container has no such node.
+  `env --exec`), and `CXL_<KEY>_FD=3` takes the place of `CXL_<KEY>_DAX`
+  or `CXL_<KEY>_PATH`. `env --exec` asks the driver for the fd again, in
+  the container that requested the lease only. `env` without `--exec`
+  prints those two as the host path of the device, informational: the
+  container has no such node.
 - `numa`: `CXL_<KEY>_NUMA_NODE` and the rest.
 - `fs`: `CXL_<KEY>_PATH=/run/cxl/fs/<name>`, `CXL_<KEY>_ACCESS`,
   `CXL_<KEY>_FS_TYPE`, `CXL_<KEY>_READ_ONLY` and the rest; the
@@ -216,9 +216,9 @@ CMD's exit code is passed through (128+signal when a signal kills it),
 and SIGTERM, SIGINT, SIGHUP and SIGQUIT to `cxl-request` are forwarded
 to CMD. Exit codes: 0 ok; 1 error (no socket, connection, invalid
 response, an error from the driver, CMD could not start); 2 usage; 3 the
-lease is Failed, not Ready within `--wait` (`request`, `fd`, `env`; with
-`--exec` CMD is not started), not Released within `--wait` (`release`),
-or `fd` on a lease that is neither `dax` nor `block`. Without `--exec`,
+lease is Failed, not Ready within `--wait` (`request`, `env`; with
+`--exec` CMD is not started), or not Released within `--wait`
+(`release`). Without `--exec`,
 `request --wait 0s` exits with 0 whatever the state of the lease, unless
 it is Failed. Without `$CXL_LEASE_SOCKET` it exits with 1 and
 `CXL_LEASE_SOCKET is not set (the pod needs a claim on DeviceClass cxl-lease)`.
@@ -237,7 +237,7 @@ cxl-request env --lease 1a2b3c4d --exec numactl --membind=2 prog   # CXL_C100E2E
 cxl-request request --source pool --size 512Mi --mode dax --exec python3 app.py
   -> app.py sees CXL_C1EE0001_FD=3 CXL_C1EE0001_MODE=dax CXL_C1EE0001_SIZE=536870912
      CXL_C1EE0001_SERIAL=0xc1ee0001 CXL_C1EE0001_SHARED=0 CXL_C1EE0001_READ_ONLY=0 CXL_LEASE=1a2b3c4e
-cxl-request fd --lease 1a2b3c4e --wait 60s --exec python3 app.py   # the fd again after a restart of app.py
+cxl-request env --lease 1a2b3c4e --wait 60s --exec python3 app.py  # the fd again after a restart of app.py
 cxl-request request --serial 0xc1ae0001                         # the shared device alone (the writer)
 cxl-request request --serial 0xc1ae0001 --share --read-only --exec prog   # a reader
 cxl-request request --serial 0xc100e2e2 --share --read-only     # one read-only share of the shared local memdev
@@ -396,7 +396,7 @@ request.
   finished, is gone or has `restartPolicy: Never`, its leases are
   released. Otherwise they are kept, and the restarted container gets
   the NUMA nodes of its `numa` leases again. A `dax` or `block` fd goes
-  with the process: get it again with `cxl-request fd --lease ID --exec ...`.
+  with the process: get it again with `cxl-request env --lease ID --exec ...`.
 - The requester pod is deleted: the companion pods are garbage collected
   (owner references), and the Unprepare of the lease claim releases all
   leases of the pod. It fails with `still releasing N leases, retry`

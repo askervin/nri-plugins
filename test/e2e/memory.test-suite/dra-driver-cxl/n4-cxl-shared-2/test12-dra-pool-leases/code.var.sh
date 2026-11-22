@@ -231,9 +231,8 @@ lease-env-check() {
     #
     # The environment of the NUMA lease MEM_LEASE of pooled0: "cxl-request
     # env" prints it, sorted: the variables of pooled0 that a claim gives
-    # (test10) and CXL_LEASE; "env --exec" runs a program with them, no fd;
-    # "fd" refuses a NUMA lease. LEASE_ENV and LEASE_NODE are those of the
-    # lease.
+    # (test10) and CXL_LEASE; "env --exec" runs a program with them, no fd.
+    # LEASE_ENV and LEASE_NODE are those of the lease.
     local key="CXL_${POOLED0_HEX}_" script
     dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" env --lease "$MEM_LEASE" ||
         command-error "cxl-request env --lease $MEM_LEASE failed"
@@ -254,13 +253,6 @@ lease-env-check() {
         command-error "cxl-request env --lease $MEM_LEASE --exec failed"
     [ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "lease=$MEM_LEASE node=$MEM_NODE size=$POOLED0_SIZE fd=none" ] ||
         error "the program of env --exec does not have lease=$MEM_LEASE node=$MEM_NODE size=$POOLED0_SIZE and no fd"
-    dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" fd --lease "$MEM_LEASE" --exec true &&
-        error "cxl-request fd of the NUMA lease $MEM_LEASE succeeded"
-    [ "$COMMAND_STATUS" == 3 ] ||
-        error "cxl-request fd of the NUMA lease $MEM_LEASE exited $COMMAND_STATUS, expected 3"
-    grep -qF "lease $MEM_LEASE is not a dax or block lease; use env" <<< "$COMMAND_OUTPUT
-$DRA_EXEC_STDERR" ||
-        error "cxl-request fd of the NUMA lease $MEM_LEASE did not print 'lease $MEM_LEASE is not a dax or block lease; use env'"
 }
 
 give-back() {
@@ -333,18 +325,18 @@ share() {
     dra-assert "$DRA_LEASES" "j[0].get('dax') == '$dax'"
     # The fd again, for another program: its environment has the fd 3
     # instead of the device, and the lease.
-    dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" fd --lease "$lease" --exec \
+    dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" env --lease "$lease" --exec \
         sh -c 'env | grep ^CXL_ | sort; readlink /proc/self/fd/3' ||
-        command-error "cxl-request fd --lease $lease --exec sh failed"
-    dra-env-assert "fd --lease $lease --exec" "$COMMAND_OUTPUT" "$SHARED_HEX" \
+        command-error "cxl-request env --lease $lease --exec sh failed"
+    dra-env-assert "env --lease $lease --exec" "$COMMAND_OUTPUT" "$SHARED_HEX" \
         SERIAL="$SHARED_SERIAL" SHARED=1 MODE=dax SIZE="$SHARED_SIZE" FD=3 READ_ONLY=0
     grep -qx "CXL_LEASE=$lease" <<< "$COMMAND_OUTPUT" ||
-        error "the environment of fd --exec has no CXL_LEASE=$lease"
+        error "the environment of env --exec has no CXL_LEASE=$lease"
     [ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "$dax" ] ||
         error "fd 3 is not $dax"
-    dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" fd --lease "$lease" --exec \
+    dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" env --lease "$lease" --exec \
         python3 /tools/dax-rw.py --fd 3 read 0 ||
-        command-error "cxl-request fd --lease $lease --exec ... read failed"
+        command-error "cxl-request env --lease $lease --exec ... read failed"
     [ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "$tag" ] ||
         error "read '$(tail -n 1 <<< "$COMMAND_OUTPUT")' through the fd, expected '$tag'"
     # Nothing of this is a device of the container.

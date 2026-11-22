@@ -33,7 +33,7 @@ read-write fs lease for fswrite; cxl-request list); DEMO_LEASE=ID picks
 one. Images are written through the fd in chunks, never read into memory
 whole, and removed when they are written; the pages that the write left
 in the page cache of the block device are dropped. The fd comes from
-"cxl-request fd --lease ID --exec": the container needs no device node. A
+"cxl-request env --lease ID --exec": the container needs no device node. A
 read-only lease's fd refuses a writable mapping: write prints "refused:
 read-only (EACCES)"; mkfs prints "refused: read-only (EBADF)"; mkfs --model
 prints "refused: the device is too small for the image of N bytes (ENOSPC)"
@@ -97,7 +97,7 @@ def lease(modes=("dax",)):
 
 def with_fd(op, *args, background=False, modes=("dax",)):
     """Run this tool's internal OP with the fd of a lease of MODES as fd 3."""
-    cmd = ["cxl-request", "fd", "--lease", lease(modes), "--wait", "120s", "--exec",
+    cmd = ["cxl-request", "env", "--lease", lease(modes), "--wait", "120s", "--exec",
            sys.executable, os.path.abspath(__file__), op] + list(args)
     if not background:
         os.execvp(cmd[0], cmd)

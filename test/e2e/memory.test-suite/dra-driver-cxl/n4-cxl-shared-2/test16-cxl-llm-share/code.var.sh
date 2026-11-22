@@ -391,11 +391,10 @@ lease-check() {
     # exactly its lease in "cxl-request list": Ready, a read-only share of
     # the persistent pool device in mode fs with its access, the detected
     # filesystem type erofs, the namespace size, its path and the
-    # environment of the log; "cxl-request env"
-    # prints that environment and CXL_LEASE; "cxl-request fd" refuses the
-    # lease (exit status 3); and the companion objects (lease-companion-check),
-    # the CDI device of its lease claim (dra-lease-cdi-assert) and the bind
-    # on its node (lease-bind-assert) are those of the lease.
+    # environment of the log; "cxl-request env" prints that environment
+    # and CXL_LEASE; and the companion objects (lease-companion-check), the
+    # CDI device of its lease claim (dra-lease-cdi-assert) and the bind on
+    # its node (lease-bind-assert) are those of the lease.
     local r="$1" log="$2" vm="${READER_VM[$1]}" access="${READER_ACCESS[$1]}" lease="${READER_LEASE[$1]}" path="${READER_PATH[$1]}" env want
     [ "$(dra-env-value "$log" CXL_LEASE)" == "$lease" ] ||
         error "$r: the command of cxl-request has CXL_LEASE=$(dra-env-value "$log" CXL_LEASE), expected $lease"
@@ -414,11 +413,6 @@ CXL_LEASE=$lease")
 $COMMAND_OUTPUT
 expected
 $want"
-    dra-exec "$VM2" "$r/main" "$DRA_REQUEST_CTR_BIN" fd --lease "$lease" --exec true &&
-        error "$r: cxl-request fd of the fs lease $lease succeeded"
-    [ "$COMMAND_STATUS" == 3 ] || error "$r: cxl-request fd of the fs lease $lease exited $COMMAND_STATUS, expected 3"
-    grep -qF "lease $lease is not a dax or block lease; use env" <<< "$COMMAND_OUTPUT
-$DRA_EXEC_STDERR" || error "$r: cxl-request fd of the fs lease $lease did not print 'lease $lease is not a dax or block lease; use env'"
     lease-companion-check "$r"
     dra-lease-cdi-assert "$vm" "${READER_CLAIM_UID[$r]}"
     lease-bind-assert "$r"

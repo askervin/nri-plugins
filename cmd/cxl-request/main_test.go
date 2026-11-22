@@ -54,7 +54,6 @@ func TestParseArgs(t *testing.T) {
 		{[]string{"release", "--lease", "1a2b3c4d"}, api.Request{Op: "release", Lease: "1a2b3c4d"}, nil, ""},
 		{[]string{"release", "--all", "--wait=1m"}, api.Request{Op: "release", All: true, Wait: "1m"}, nil, ""},
 		{[]string{"list"}, api.Request{Op: "list"}, nil, ""},
-		{[]string{"fd", "--lease", "1a2b3c4d", "--wait", "60s", "--exec", "prog"}, api.Request{Op: "fd", Lease: "1a2b3c4d", Wait: "60s"}, []string{"prog"}, ""},
 		{[]string{"env", "--lease", "1a2b3c4d"}, api.Request{Op: "env", Lease: "1a2b3c4d"}, nil, ""},
 		{[]string{"env", "--lease=1a2b3c4d", "--exec", "numactl", "--membind=2", "prog"}, api.Request{Op: "env", Lease: "1a2b3c4d"}, []string{"numactl", "--membind=2", "prog"}, ""},
 		// mode fs
@@ -86,9 +85,8 @@ func TestParseArgs(t *testing.T) {
 		{[]string{"request", "--size", "1Gi", "--read-only"}, api.Request{}, nil, "readOnly needs mode dax, fs or block"},
 		{[]string{"request"}, api.Request{}, nil, "size or serial is required"},
 		{[]string{"request", "--serial", "zz"}, api.Request{}, nil, `invalid serial "zz"`},
-		{[]string{"release", "--all", "--exec", "cat"}, api.Request{}, nil, "--exec is for request, fd and env"},
-		{[]string{"list", "--exec", "cat"}, api.Request{}, nil, "--exec is for request, fd and env"},
-		{[]string{"fd", "--lease", "1a2b3c4d"}, api.Request{}, nil, "fd needs --exec"},
+		{[]string{"release", "--all", "--exec", "cat"}, api.Request{}, nil, "--exec is for request and env"},
+		{[]string{"list", "--exec", "cat"}, api.Request{}, nil, "--exec is for request and env"},
 		{[]string{"release"}, api.Request{}, nil, "release takes lease or all"},
 		{[]string{"release", "--lease", "1a2b3c4d", "--all"}, api.Request{}, nil, "release takes lease or all"},
 		{[]string{"request", "--size", "1Gi", "--wait", "soon"}, api.Request{}, nil, `invalid wait "soon"`},
@@ -96,6 +94,7 @@ func TestParseArgs(t *testing.T) {
 		// other usage errors
 		{nil, api.Request{}, nil, "no operation"},
 		{[]string{"memory", "512Mi"}, api.Request{}, nil, `unknown operation "memory"`},
+		{[]string{"fd", "--lease", "1a2b3c4d", "--exec", "prog"}, api.Request{}, nil, `unknown operation "fd"`},
 		{[]string{"request", "512Mi"}, api.Request{}, nil, `unexpected argument "512Mi"`},
 		{[]string{"request", "--size"}, api.Request{}, nil, "--size needs a value"},
 		{[]string{"request", "--dax", "--size", "1Gi"}, api.Request{}, nil, "unknown option --dax"},
@@ -104,7 +103,6 @@ func TestParseArgs(t *testing.T) {
 		{[]string{"list", "--all"}, api.Request{}, nil, "--all is not an option of list"},
 		{[]string{"env", "--lease", "1a2b3c4d", "--read-only"}, api.Request{}, nil, "--read-only is not an option of env"},
 		{[]string{"env"}, api.Request{}, nil, "env needs lease"},
-		{[]string{"fd", "--exec", "cat"}, api.Request{}, nil, "fd needs lease"},
 		{[]string{"request", "--size", "1Gi", "--exec"}, api.Request{}, nil, "--exec needs a command"},
 		{[]string{"request", "--share=maybe"}, api.Request{}, nil, `--share: invalid value "maybe"`},
 		{[]string{"request", "--size", "1Gi", "--name"}, api.Request{}, nil, "--name needs a value"},
@@ -114,7 +112,6 @@ func TestParseArgs(t *testing.T) {
 		{[]string{"request", "--mode", "fs", "--size", "1Gi", "--read-only=rw"}, api.Request{}, nil, `--read-only: invalid value "rw"`},
 		{[]string{"request", "--mode", "fs", "--size", "1Gi", "--read-write"}, api.Request{}, nil, "unknown option --read-write"},
 		{[]string{"env", "--lease", "1a2b3c4d", "--read-only"}, api.Request{}, nil, "--read-only is not an option of env"},
-		{[]string{"fd", "--lease", "1a2b3c4d", "--fs-type", "ext4", "--exec", "cat"}, api.Request{}, nil, "--fs-type is not an option of fd"},
 	} {
 		cmd, err := parseArgs(c.args)
 		if c.err != "" {
@@ -223,14 +220,17 @@ func TestRunExecFs(t *testing.T) {
 	}
 	<-reqs
 
-	// an fs lease has no fd
-	errb.Reset()
-	fs := `{"lease":"000000b1","state":"Ready","mode":"fs","share":true,"readOnly":true,"error":"lease 000000b1 is not a dax or block lease; use env"}`
-	sock, _ = fakeServer(t, fs, "")
-	t.Setenv(api.SocketEnv, sock)
-	if code := run([]string{"fd", "--lease", "000000b1", "--exec", "/bin/true"}, &out, &errb); code != exitLeaseState ||
-		!strings.Contains(errb.String(), "lease 000000b1 is not a dax or block lease; use env") {
-		t.Fatalf("fd of an fs lease: exit %d %s", code, errb.String())
+	// env --exec of an fs lease asks env alone and passes no fd
+	out.Reset()
+	if code := run([]string{"env", "--lease", "000000b1", "--exec", "/bin/sh", "-c", script}, &out, &errb); code != exitOK ||
+		out.String() != "/run/cxl/fs/models cached fs 1 000000b1 nofd\nnofd3\n" {
+		t.Fatalf("env --exec: exit %d output %q", code, out.String())
+	}
+	if r := <-reqs; !reflect.DeepEqual(r, api.Request{Op: "env", Lease: "000000b1"}) {
+		t.Fatalf("request %+v", r)
+	}
+	if len(reqs) != 0 {
+		t.Fatalf("env --exec of an fs lease sent %d requests more", len(reqs))
 	}
 }
 
@@ -258,22 +258,16 @@ func TestRunExecBlock(t *testing.T) {
 		t.Fatalf("output %q, want %q", out.String(), want)
 	}
 
-	// fd: the same environment and fd
+	// env --exec: the same environment and fd, by op env and then op fd
 	out.Reset()
-	if code := run([]string{"fd", "--lease", "000000c1", "--exec", "/bin/sh", "-c", script}, &out, &errb); code != 5 || out.String() != want {
-		t.Fatalf("fd: exit %d output %q", code, out.String())
-	}
-	if r := <-reqs; !reflect.DeepEqual(r, api.Request{Op: "fd", Lease: "000000c1"}) {
-		t.Fatalf("request %+v", r)
-	}
-
-	// env: the host path of the device, no fd
-	out.Reset()
-	if code := run([]string{"env", "--lease", "000000c1", "--exec", "/bin/sh", "-c", `echo "${CXL_C1AE0001_FD-nofd} $CXL_C1AE0001_PATH"`}, &out, &errb); code != exitOK ||
-		out.String() != "nofd /dev/pmem0\n" {
+	if code := run([]string{"env", "--lease", "000000c1", "--exec", "/bin/sh", "-c", script}, &out, &errb); code != 5 || out.String() != want {
 		t.Fatalf("env --exec: exit %d output %q", code, out.String())
 	}
-	<-reqs
+	for _, want := range []api.Request{{Op: "env", Lease: "000000c1"}, {Op: "fd", Lease: "000000c1", Wait: "0s"}} {
+		if r := <-reqs; !reflect.DeepEqual(r, want) {
+			t.Fatalf("request %+v, want %+v", r, want)
+		}
+	}
 
 	// a block response without its fd is an error
 	errb.Reset()
@@ -304,14 +298,10 @@ func TestExitCode(t *testing.T) {
 		{api.Request{Op: "release", All: true}, api.Response{Leases: &released}, exitOK},
 		{api.Request{Op: "release", All: true}, api.Response{Leases: &releasing}, exitLeaseState},
 		{api.Request{Op: "list"}, api.Response{Leases: &[]api.Response{}}, exitOK},
-		{api.Request{Op: "fd"}, api.Response{State: "Ready", Mode: "dax"}, exitOK},
-		{api.Request{Op: "fd"}, api.Response{State: "Ready", Mode: "block"}, exitOK},
-		{api.Request{Op: "fd"}, api.Response{State: "Pending", Mode: "block"}, exitLeaseState},
-		{api.Request{Op: "fd"}, api.Response{State: "Ready", Mode: "fs", Error: "lease 1a2b3c4d is not a dax or block lease; use env"}, exitLeaseState},
-		{api.Request{Op: "fd"}, api.Response{State: "Pending", Mode: "dax"}, exitLeaseState},
-		{api.Request{Op: "fd"}, api.Response{State: "Ready", Mode: "numa", Error: "lease 1a2b3c4d is not a dax or block lease; use env"}, exitLeaseState},
-		{api.Request{Op: "fd"}, api.Response{Error: "no such lease of this container"}, exitError},
 		{api.Request{Op: "env"}, api.Response{State: "Ready", Mode: "numa"}, exitOK},
+		{api.Request{Op: "env"}, api.Response{State: "Ready", Mode: "dax"}, exitOK},
+		{api.Request{Op: "env"}, api.Response{State: "Pending", Mode: "block"}, exitLeaseState},
+		{api.Request{Op: "env"}, api.Response{Error: "no such lease of this container"}, exitError},
 		{api.Request{Op: "env", Wait: "0s"}, api.Response{State: "Pending"}, exitLeaseState},
 	} {
 		if got := exitCode(&c.req, &c.resp); got != c.code {
@@ -323,6 +313,14 @@ func TestExitCode(t *testing.T) {
 // fakeServer answers one request per connection with resp, and with the
 // file as SCM_RIGHTS if fdFile is not empty.
 func fakeServer(t *testing.T, resp string, fdFile string) (string, chan api.Request) {
+	t.Helper()
+	return fakeServerOf(t, func(api.Request) string { return resp }, fdFile)
+}
+
+// fakeServerOf answers one request per connection with the response that
+// respond gives for it, and with the file as SCM_RIGHTS if fdFile is not
+// empty.
+func fakeServerOf(t *testing.T, respond func(api.Request) string, fdFile string) (string, chan api.Request) {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "cxlreq")
 	if err != nil {
@@ -346,6 +344,7 @@ func fakeServer(t *testing.T, resp string, fdFile string) (string, chan api.Requ
 			var r api.Request
 			_ = json.Unmarshal(line, &r)
 			reqs <- r
+			resp := respond(r)
 			if fdFile != "" {
 				f, _ := os.Open(fdFile)
 				_, _, _ = c.WriteMsgUnix([]byte(resp+"\n"), syscall.UnixRights(int(f.Fd())), nil)
@@ -441,20 +440,15 @@ func TestRunExecDax(t *testing.T) {
 		t.Fatalf("output %q, want %q", out.String(), want)
 	}
 
-	// fd: the same environment and fd
+	// env --exec: the same environment and fd, by op env and then op fd
 	out.Reset()
-	if code := run([]string{"fd", "--lease", "000000a2", "--exec", "/bin/sh", "-c", script}, &out, &errb); code != 7 || out.String() != want {
-		t.Fatalf("fd: exit %d output %q", code, out.String())
-	}
-	if r := <-reqs; !reflect.DeepEqual(r, api.Request{Op: "fd", Lease: "000000a2"}) {
-		t.Fatalf("request %+v", r)
-	}
-
-	// env --exec: no fd, the device path stays
-	out.Reset()
-	if code := run([]string{"env", "--lease", "000000a2", "--exec", "/bin/sh", "-c", `echo "${CXL_C1AE0001_FD-nofd} $CXL_C1AE0001_DAX"`}, &out, &errb); code != exitOK ||
-		out.String() != "nofd /dev/dax0.0\n" {
+	if code := run([]string{"env", "--lease", "000000a2", "--exec", "/bin/sh", "-c", script}, &out, &errb); code != 7 || out.String() != want {
 		t.Fatalf("env --exec: exit %d output %q", code, out.String())
+	}
+	for _, want := range []api.Request{{Op: "env", Lease: "000000a2"}, {Op: "fd", Lease: "000000a2", Wait: "0s"}} {
+		if r := <-reqs; !reflect.DeepEqual(r, want) {
+			t.Fatalf("request %+v, want %+v", r, want)
+		}
 	}
 
 	// without --exec the JSON is printed and the fd dropped
@@ -481,13 +475,27 @@ func TestRunExecNUMA(t *testing.T) {
 	if code := run([]string{"env", "--lease", "000000a4", "--exec", "/bin/sh", "-c", script}, &out, &errb); code != exitOK || out.String() != "2 134217728 000000a4 nofd\n" {
 		t.Fatalf("env --exec: exit %d output %q", code, out.String())
 	}
-	// a numa lease has no fd
-	errb.Reset()
-	numa := `{"lease":"000000a4","state":"Ready","mode":"numa","share":false,"readOnly":false,"error":"lease 000000a4 is not a dax or block lease; use env"}`
-	sock, _ = fakeServer(t, numa, "")
+}
+
+// env --exec of a dax lease in a container of the pod that did not request
+// it: the driver answers op env, and refuses op fd; the command does not
+// run.
+func TestRunExecDaxOtherContainer(t *testing.T) {
+	ready := `{"lease":"000000a8","state":"Ready","mode":"dax","share":true,"readOnly":true,"env":{"CXL_C1AE0001_MODE":"dax"}}`
+	sock, reqs := fakeServerOf(t, func(r api.Request) string {
+		if r.Op == api.OpFd {
+			return `{"lease":"000000a8","error":"no such lease of this container"}`
+		}
+		return ready
+	}, "")
 	t.Setenv(api.SocketEnv, sock)
-	if code := run([]string{"fd", "--lease", "000000a4", "--exec", "/bin/true"}, &out, &errb); code != exitLeaseState || !strings.Contains(errb.String(), "not a dax or block lease") {
-		t.Fatalf("fd of a numa lease: exit %d %s", code, errb.String())
+	var out, errb bytes.Buffer
+	if code := run([]string{"env", "--lease", "000000a8", "--exec", "/bin/echo", "ran"}, &out, &errb); code != exitError ||
+		out.Len() != 0 || !strings.Contains(errb.String(), "no such lease of this container") {
+		t.Fatalf("exit %d output %q stderr %q", code, out.String(), errb.String())
+	}
+	if r1, r2 := <-reqs, <-reqs; r1.Op != api.OpEnv || r2.Op != api.OpFd {
+		t.Fatalf("requests %+v %+v", r1, r2)
 	}
 }
 

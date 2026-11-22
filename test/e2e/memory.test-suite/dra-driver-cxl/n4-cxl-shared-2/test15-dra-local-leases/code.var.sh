@@ -149,10 +149,10 @@ dax-fd-read() {
     # Usage: dax-fd-read LEASE EXPECTED
     #
     # Read the string at offset 1M of the dax fd of lease LEASE again
-    # ("cxl-request fd --lease LEASE --exec"), and fail unless it is
+    # ("cxl-request env --lease LEASE --exec"), and fail unless it is
     # EXPECTED.
-    dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" fd --lease "$1" --exec python3 /tools/dax-rw.py --fd 3 read 1M ||
-        command-error "cxl-request fd --lease $1 --exec ... read failed"
+    dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" env --lease "$1" --exec python3 /tools/dax-rw.py --fd 3 read 1M ||
+        command-error "cxl-request env --lease $1 --exec ... read failed"
     [ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "$2" ] || error "lease $1: read '$(tail -n 1 <<< "$COMMAND_OUTPUT")', expected '$2'"
 }
 
@@ -550,7 +550,7 @@ grep -qxF "writable mapping refused: EACCES" <<< "$DAX_OUT" || error "the read-o
 companion-check "$RO_LEASE" "$LOCAL_CLASS" "$RO_REQ" "$(dra-local-round "$RO_REQ")" dax ro
 dra-local-slices-wait "$VM2" read-only "$NUMA_NODE" "dax:$(dra-local-round "$DAX1_REQ")" "dax:$DAX2" "numa:$STATIC_B" "dax:$(dra-local-round "$RO_REQ")"
 # A request that does not wait (--wait 0s) returns the lease before it is
-# Ready; "cxl-request fd --wait" waits until it is Ready and runs the
+# Ready; "cxl-request env --wait" waits until it is Ready and runs the
 # program with its fd.
 TAG3="$TAG_BASE: dax lease 3"
 dra-request "$VM2" requester/main request --source local --size "$(dra-mi "$ASYNC_REQ")" --mode dax --wait 0s
@@ -558,8 +558,8 @@ dra-request "$VM2" requester/main request --source local --size "$(dra-mi "$ASYN
 dra-assert "$DRA_REQ_JSON" "j.get('state') in ('Creating', 'Pending', 'Lending') and j.get('mode') == 'dax' and j.get('source') == 'local'"
 ASYNC_LEASE=$(dra-value "$DRA_REQ_JSON" "j['lease']")
 dra-lease-new "$ASYNC_LEASE"
-dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" fd --lease "$ASYNC_LEASE" --wait 60s --exec python3 /tools/dax-rw.py --fd 3 write 1M "$TAG3" ||
-    command-error "cxl-request fd --lease $ASYNC_LEASE --wait 60s --exec ... write failed"
+dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" env --lease "$ASYNC_LEASE" --wait 60s --exec python3 /tools/dax-rw.py --fd 3 write 1M "$TAG3" ||
+    command-error "cxl-request env --lease $ASYNC_LEASE --wait 60s --exec ... write failed"
 dax-fd-read "$ASYNC_LEASE" "$TAG3"
 dra-leases "$VM2" requester/main
 dra-assert "$DRA_LEASES" "[(l['state'], int(l.get('size') or 0)) for l in j if l['lease'] == '$ASYNC_LEASE'] == [('Ready', $(dra-local-round "$ASYNC_REQ"))]"

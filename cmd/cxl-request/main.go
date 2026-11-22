@@ -24,7 +24,6 @@
 //	                    [--request-id ID] [--exec CMD [ARG...]]
 //	cxl-request release (--lease ID | --all) [--wait DURATION]
 //	cxl-request list
-//	cxl-request fd  --lease ID [--wait DURATION] --exec CMD [ARG...]
 //	cxl-request env --lease ID [--wait DURATION] [--exec CMD [ARG...]]
 //	cxl-request help
 //
@@ -33,10 +32,11 @@
 // --exec CMD runs with the environment of the lease, and with the fd of a
 // dax lease (a dax device) or a block lease (the block device of a
 // persistent device) as fd 3; an fs lease has its filesystem at
-// CXL_<KEY>_PATH. Exit codes: 0 ok, 1 error, 2 usage, 3 the lease is
-// Failed, not Ready (request, fd, env) or not Released (release) within
-// --wait, or fd of a lease that is neither a dax nor a block lease. With
-// --exec the exit code of CMD is passed through.
+// CXL_<KEY>_PATH. env --exec of a dax or block lease gets its fd again,
+// in the container that requested the lease only. Exit codes: 0 ok, 1
+// error, 2 usage, 3 the lease is Failed, not Ready (request, env) or not
+// Released (release) within --wait. With --exec the exit code of CMD is
+// passed through.
 package main
 
 import (
@@ -63,7 +63,7 @@ const (
 	exitOK         = 0
 	exitError      = 1
 	exitUsage      = 2
-	exitLeaseState = 3 // failed, not Ready or not Released in time, not a dax or block lease
+	exitLeaseState = 3 // failed, not Ready or not Released in time
 	execFd         = 3 // the fd of a dax or block lease in the command
 )
 
@@ -74,7 +74,6 @@ const usage = `usage:
                       [--request-id ID] [--exec CMD [ARG...]]
   cxl-request release (--lease ID | --all) [--wait DURATION]
   cxl-request list
-  cxl-request fd  --lease ID [--wait DURATION] --exec CMD [ARG...]
   cxl-request env --lease ID [--wait DURATION] [--exec CMD [ARG...]]
   cxl-request help
 request: memory for this container, the whole device unless --share:
@@ -97,7 +96,8 @@ request: memory for this container, the whole device unless --share:
               driver's --lease-wait; release: until Released
   --request-id the same id returns the same lease
   --exec      run CMD with the lease's environment and a dax or block lease's fd 3
-release, fd, env: --lease ID of a lease of this pod; release --all: all of them.
+release, env: --lease ID of a lease of this pod; release --all: all of them.
+env --exec of a dax or block lease: in the container that requested it.
 The socket is $CXL_LEASE_SOCKET.
 `
 
@@ -107,7 +107,6 @@ var options = map[string][]string{
 		"--request-id", "--exec"},
 	api.OpRelease: {"--lease", "--all", "--wait"},
 	api.OpList:    {},
-	api.OpFd:      {"--lease", "--wait", "--exec"},
 	api.OpEnv:     {"--lease", "--wait", "--exec"},
 }
 
@@ -164,9 +163,6 @@ func parseArgs(args []string) (*command, error) {
 			return nil, err
 		}
 	}
-	if cmd.req.Op == api.OpFd && cmd.exec == nil {
-		return nil, errors.New("fd needs --exec")
-	}
 	return cmd, cmd.req.Validate()
 }
 
@@ -203,7 +199,7 @@ func (cmd *command) checkOption(name, arg string) error {
 	case cmd.values()[name] == nil && !cmd.isFlag(name) && name != "--exec":
 		return fmt.Errorf("unknown option %s", name)
 	case name == "--exec" && (cmd.req.Op == api.OpRelease || cmd.req.Op == api.OpList):
-		return errors.New("--exec is for request, fd and env")
+		return errors.New("--exec is for request and env")
 	case !slices.Contains(options[cmd.req.Op], name):
 		return fmt.Errorf("%s is not an option of %s", name, cmd.req.Op)
 	}
@@ -245,22 +241,37 @@ func run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "cxl-request: %s is not set (the pod needs a claim on DeviceClass cxl-lease)\n", api.SocketEnv)
 		return exitError
 	}
-	line, fd, err := roundTrip(sock, &cmd.req)
+	resp, line, fd, err := call(sock, &cmd.req)
+	if err == nil && cmd.exec != nil && cmd.req.Op == api.OpEnv && exitCode(&cmd.req, resp) == exitOK && hasFd(resp.Mode) {
+		// The fd of a dax or block lease comes with op fd, which the
+		// driver answers in the container that requested the lease.
+		closeFd(fd)
+		resp, line, fd, err = call(sock, &api.Request{Op: api.OpFd, Lease: cmd.req.Lease, Wait: "0s"})
+	}
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "cxl-request: %v\n", err)
 		return exitError
 	}
+	if cmd.exec == nil {
+		closeFd(fd)
+		return output(cmd, resp, line, stdout, stderr)
+	}
+	return execute(cmd, resp, line, fd, stdout, stderr)
+}
+
+// call sends the request and returns its response, the response line and
+// the fd that came with it (-1 for none).
+func call(sock string, req *api.Request) (*api.Response, []byte, int, error) {
+	line, fd, err := roundTrip(sock, req)
+	if err != nil {
+		return nil, nil, -1, err
+	}
 	var resp api.Response
 	if err := json.Unmarshal(line, &resp); err != nil {
 		closeFd(fd)
-		_, _ = fmt.Fprintf(stderr, "cxl-request: invalid response %q: %v\n", line, err)
-		return exitError
+		return nil, nil, -1, fmt.Errorf("invalid response %q: %v", line, err)
 	}
-	if cmd.exec == nil {
-		closeFd(fd)
-		return output(cmd, &resp, line, stdout, stderr)
-	}
-	return execute(cmd, &resp, line, fd, stdout, stderr)
+	return &resp, line, fd, nil
 }
 
 // output prints the response of a command without --exec, and returns the
@@ -282,8 +293,7 @@ func output(cmd *command, resp *api.Response, line []byte, stdout, stderr io.Wri
 }
 
 // execute runs the command of --exec with the environment of a Ready
-// lease, and its fd for a dax or block lease of request and fd, and
-// returns its exit code.
+// lease, and its fd for a dax or block lease, and returns its exit code.
 func execute(cmd *command, resp *api.Response, line []byte, fd int, stdout, stderr io.Writer) int {
 	code := exitCode(&cmd.req, resp)
 	if code == exitOK && resp.State != api.StateReady {
@@ -296,7 +306,7 @@ func execute(cmd *command, resp *api.Response, line []byte, fd int, stdout, stde
 	}
 	envFd := -1
 	switch {
-	case cmd.req.Op == api.OpEnv || !hasFd(resp.Mode):
+	case !hasFd(resp.Mode):
 		closeFd(fd)
 		fd = -1
 	case fd < 0:
@@ -313,8 +323,6 @@ func exitCode(req *api.Request, resp *api.Response) int {
 	switch {
 	case resp.State == api.StateFailed:
 		return exitLeaseState
-	case req.Op == api.OpFd && resp.Mode != "" && !hasFd(resp.Mode):
-		return exitLeaseState
 	case resp.Error != "":
 		return exitError
 	}
@@ -324,7 +332,7 @@ func exitCode(req *api.Request, resp *api.Response) int {
 			return exitOK
 		}
 		return exitLeaseState
-	case api.OpFd, api.OpEnv:
+	case api.OpEnv:
 		if resp.State != api.StateReady {
 			return exitLeaseState
 		}

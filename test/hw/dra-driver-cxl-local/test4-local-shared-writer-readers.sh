@@ -94,7 +94,7 @@ echo "$out" | sed 's/^/    lease-r: /' | cut -c1-300
 check "lease-r: reads what writer wrote through a leased read-only fd" grep -qF "$TEXT2" <<< "$out"
 LEASE_R=$(pexec lease-r "$CXL_REQUEST" list 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["leases"][0]["lease"])' 2>/dev/null)
 echo "    lease-r: lease $LEASE_R"
-out=$(pexec lease-r "$CXL_REQUEST" fd --lease "$LEASE_R" --exec python3 /tools/dax-rw.py --fd 3 check-ro 0 2>&1)
+out=$(pexec lease-r "$CXL_REQUEST" env --lease "$LEASE_R" --exec python3 /tools/dax-rw.py --fd 3 check-ro 0 2>&1)
 rc=$?
 echo "$out" | sed 's/^/    lease-r: /'
 check "lease-r: the leased fd cannot be written" test "$rc" == 0

@@ -744,7 +744,7 @@ mbt-act-pwrite() {
     # Block kinds: the device node CXL_<KEY>_PATH, opened read-write (a
     # read-only claim fails: EPERM); fs kinds: hello.txt under the mount
     # (fails: EROFS); plse: its newest Ready lease, a block lease through
-    # its fd (cxl-request fd --exec; a read-only fd fails: EBADF), an fs
+    # its fd (cxl-request env --exec; a read-only fd fails: EBADF), an fs
     # lease under its path (fails). The result has the token written
     # ("" for junk; null on failure); the status is that of the command in
     # the container.

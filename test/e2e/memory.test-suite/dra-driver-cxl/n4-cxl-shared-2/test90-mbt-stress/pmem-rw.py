@@ -16,7 +16,7 @@ Usage:
   pmem-rw.py read DEV            print the NUL-terminated string in bytes 0-63
   pmem-rw.py --fd N image|junk|read [TOKEN]
                                  the same through the inherited fd N (a block
-                                 lease: cxl-request fd --lease L --exec ...)
+                                 lease: cxl-request env --lease L --exec ...)
   pmem-rw.py read-file DIR       print hello.txt of the erofs at DIR, stripped
   pmem-rw.py write-file DIR TOKEN
                                  try to write hello.txt under DIR (a read-only
@@ -27,7 +27,7 @@ Usage:
                                  OP on the newest Ready (or Releasing) lease of
                                  the mode of this container (cxl-request
                                  list): a block lease through its fd
-                                 (cxl-request fd --exec) with image, junk or
+                                 (cxl-request env --exec) with image, junk or
                                  read; an fs lease at its path with read-file,
                                  write-file or hold, image and junk being
                                  write-file and read read-file there; when the
@@ -205,7 +205,7 @@ def lease(mode, op, args):
     if l.get("mode") == "block":
         if op not in ("image", "junk", "read"):
             fail("lease %s is a block lease: no %s" % (l.get("lease"), op))
-        cmd = [CXL_REQUEST, "fd", "--lease", l["lease"], "--wait", "30s", "--exec",
+        cmd = [CXL_REQUEST, "env", "--lease", l["lease"], "--wait", "30s", "--exec",
                sys.executable, os.path.abspath(__file__), "--fd", "3", op] + args[:1]
         os.execvp(cmd[0], cmd)
     path = l.get("path")
