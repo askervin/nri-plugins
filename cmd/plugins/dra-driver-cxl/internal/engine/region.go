@@ -332,7 +332,7 @@ func (e *Engine) wholeDevice(ctx context.Context, req *GrantRequest, region, dri
 		return "", nil
 	}
 	// set up before (a kept region): its first device may be unbound or
-	// smaller after a cut resize or driver switch, or the seed that a part
+	// smaller after a cut resize or driver switch, or the seed that a slice
 	// on it left
 	again := reg != nil && len(reg.DaxDevices) > 0
 	ctx, cancel := context.WithTimeout(ctx, e.settle(req.Asked.Source))

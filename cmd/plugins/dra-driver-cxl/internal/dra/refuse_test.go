@@ -79,7 +79,7 @@ func TestPrepareRefusedBeforeDevices(t *testing.T) {
 			"cxl.nri.io: claim demo/claim-u1: request region: MemoryConfig: device: a region is used as numa only", nil},
 		{"local lease device", e.local, localClaim("u1", device.LeaseDeviceName, 0, cfgNUMA),
 			"cxl.nri.io: claim demo/claim-u1: request mem: MemoryConfig: device: the lease device has no device settings", nil},
-		{"local shares of a sliced memdev", e.local, localClaim("u1", localDev, -1),
+		{"local shares of an unshared memdev", e.local, localClaim("u1", localDev, -1),
 			"claim demo/claim-u1: request mem: memdev 0xc100e2e1: allocated as a shared device, which it is not any more", nil},
 		{"local persistent writer of a share", e.local, localClaim("u1", pmemDev, -1, cfgBlock),
 			"cxl.nri.io: claim demo/claim-u1: request mem: MemoryConfig: device.mode block: the device is writable only exclusively (no shares request)", nil},

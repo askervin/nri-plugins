@@ -123,7 +123,7 @@ func TestCharPublishOrder(t *testing.T) {
 }
 
 // TestCharPersistentCapacityOfRAMMemdev: a memdev with RAM and persistent
-// capacity is published by its RAM as a sliced local memdev, and the
+// capacity is published by its RAM as an unshared local memdev, and the
 // unused persistent capacity is logged at klog V(3).
 func TestCharPersistentCapacityOfRAMMemdev(t *testing.T) {
 	logs := klogtest.Capture(t, 3)

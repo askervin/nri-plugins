@@ -33,7 +33,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
-// The parts of a local sliced memdev: the first one is daxN.0 of the region
+// The parts of a local memdev: the first one is daxN.0 of the region
 // (its Whole device resized), the next ones new dax devices; numa parts
 // online movable on the node fenced before, dax parts device_dax and
 // zeroed; the Unprepare of the last part destroys the region.
@@ -594,17 +594,17 @@ func TestLocalKindConflicts(t *testing.T) {
 		req   GrantRequest
 		want  string
 	}{
-		{"sliced on shared", fake.MemdevSpec{Serial: serialL, Ram: gib}, sharedReq("u1"), sliceReq("x", 0, state.ModeDax, 256*mib),
+		{"local on local-shared", fake.MemdevSpec{Serial: serialL, Ram: gib}, sharedReq("u1"), sliceReq("x", 0, state.ModeDax, 256*mib),
 			"memdev 0x11 (mem0): used as a local-shared device by claims [u1]; a local request cannot use it"},
-		{"shared on sliced", fake.MemdevSpec{Serial: serialL, Ram: gib}, sliceReq("n1", 0, state.ModeNUMA, 256*mib), sharedReq("x"),
+		{"local-shared on local", fake.MemdevSpec{Serial: serialL, Ram: gib}, sliceReq("n1", 0, state.ModeNUMA, 256*mib), sharedReq("x"),
 			"memdev 0x11 (mem0): used as a local device by claims [n1]; a local-shared request cannot use it"},
-		{"sliced on persistent", fake.MemdevSpec{Serial: serialP, Pmem: gib}, sharedPmem("w", false),
+		{"local on local-persistent", fake.MemdevSpec{Serial: serialP, Pmem: gib}, sharedPmem("w", false),
 			localReq("x", 0, serialP, state.ModeDax, state.KindLocal, 256*mib),
 			"memdev 0x91 (mem0): used as a local-persistent device by claims [w]; a local request cannot use it"},
 		{"shared on persistent", fake.MemdevSpec{Serial: serialP, Pmem: gib}, sharedPmem("w", false),
 			localReq("x", 0, serialP, state.ModeDax, state.KindLocalShared, gib),
 			"memdev 0x91 (mem0): used as a local-persistent device by claims [w]; a local-shared request cannot use it"},
-		{"persistent on sliced", fake.MemdevSpec{Serial: serialL, Ram: gib}, sliceReq("n1", 0, state.ModeNUMA, 256*mib),
+		{"local-persistent on local", fake.MemdevSpec{Serial: serialL, Ram: gib}, sliceReq("n1", 0, state.ModeNUMA, 256*mib),
 			localReq("x", 0, serialL, state.ModeBlock, state.KindLocalPersistent, 0),
 			"memdev 0x11 (mem0): used as a local device by claims [n1]; a local-persistent request cannot use it"},
 		{"persistent on shared", fake.MemdevSpec{Serial: serialL, Ram: gib}, sharedReq("u1"),
@@ -696,7 +696,7 @@ func wantMessages(t *testing.T, logs string, want ...string) {
 // newer region.
 func TestLocalLogLines(t *testing.T) {
 	const memdev = "engine: local memdev 0x11 (mem0): "
-	t.Run("sliced", func(t *testing.T) {
+	t.Run("local", func(t *testing.T) {
 		v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
 		logs := klogtest.Capture(t, 3)
 		v.mustPrepare(localDriver, "d", sliceReq("d", 0, state.ModeDax, 128*mib))

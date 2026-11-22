@@ -20,14 +20,13 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 )
 
-// The values of the release policy: every cell of the matrix, with and
-// without a region of another memdev above. The local cells are those of
-// the local allocator that the engine replaces: a sliced region released
-// in order for a claim whose Prepare did not finish, else destroyed; a
-// shared region kept idle once it is established (set up and zeroed, or
-// kept by an earlier release), a new one released in order for its claim;
-// an unshared one destroyed; a persistent one released in order, kept for
-// the claim of a rollback, idle otherwise.
+// The values of the release policy: every cell of the matrix, with and without
+// a region of another memdev above. The local cells: the region of an unshared
+// memdev released in order for a claim whose Prepare did not finish, else
+// destroyed; a shared region kept idle once it is established (set up and
+// zeroed, or kept by an earlier release), a new one released in order for its
+// claim; an unshared one destroyed; a persistent one released in order, kept
+// for the claim of a rollback, idle otherwise.
 func TestPolicy(t *testing.T) {
 	above := []string{"region9"}
 	for _, c := range []struct {

@@ -71,7 +71,7 @@ const (
 var coreHostBridges = []int{12, 24}
 
 // coreMemdevs are the memdevs of the node: host bridge 12 has the pool
-// devices A and B, the local sliced L and the local shared S; host bridge 24
+// devices A and B, the local L and the local shared S; host bridge 24
 // the shared pool device C, the persistent pool device Q and the local
 // persistent P. Each has one region at most, so that a port's decoder stack
 // never exceeds the 4 decoders of the fake.
@@ -788,7 +788,7 @@ const (
 )
 
 // unprepareDestroys returns the policy of the Unprepare of the last grant
-// of the memdev (5.4, column Unprepare): pool devices and local sliced
+// of the memdev (5.4, column Unprepare): pool devices and local
 // memdevs destroy always (a hole is ok), a local shared memdev keeps its
 // region while configured shared, a local persistent memdev keeps its
 // region idle while regions lie above it.
@@ -1637,7 +1637,7 @@ func (w *coreState) restarted() []*coreState {
 // cut Prepare's grant on its memdev, is not the region's last holder and is
 // released; one that holds the region alone goes by the recovery column of
 // the release policy: kept for the claim below newer regions in order
-// (pool, local sliced), released with the region destroyed on top; on a
+// (pool, local), released with the region destroyed on top; on a
 // local shared or persistent memdev released, the region kept idle (while
 // regions lie above it, persistent) or destroyed.
 func (w *coreState) releaseKept() []*coreState {
@@ -1726,7 +1726,7 @@ func (w *coreState) hasCut(md int) bool {
 
 // releaseCut returns the states after the recovery released the grant of
 // the cut Prepare of the slot (5.6) per the recovery column of the release
-// policy (the matrix that rules 5.4, D3): pool devices and local sliced in
+// policy (the matrix that rules 5.4, D3): pool devices and local in
 // order; local shared established keep idle; local persistent established
 // in order idle; a new (not established) local region in order. A region
 // kept in order is KEPT for the claim, the preparation KEPT (D4), the

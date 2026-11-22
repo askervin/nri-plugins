@@ -111,7 +111,7 @@ type Pmem struct {
 }
 
 // DaxDevice is a dax device of a region of ours with the grants that use
-// it: one user for an exclusive part of a memdev, every grant of the memdev
+// it: one user for a slice of an unshared memdev, every grant of the memdev
 // for the Whole device of a shared memdev, more for a lease that joins a
 // claim's device.
 //
@@ -141,8 +141,8 @@ type DaxDevice struct {
 	Driver DaxDriver      `json:"driver,omitempty"`
 	State  DaxDeviceState `json:"state"`
 	Users  []GrantRef     `json:"users,omitempty"`
-	// Whole is the device of the whole region (the seed of a sliced
-	// region, the shared device of a shared memdev).
+	// Whole is the device of the whole region (the seed of the region
+	// of an unshared memdev, the shared device of a shared memdev).
 	Whole bool `json:"whole,omitempty"`
 }
 
@@ -264,7 +264,7 @@ var RegionTable = Table[RegionState]{
 		},
 		{
 			From: fsm.List(RegionKept), To: RegionNone, Triggers: releasers,
-			When:    "a release with Policy destroy (top of the stack now; an Unprepare of local sliced; pool)",
+			When:    "a release with Policy destroy (top of the stack now; an Unprepare of local; pool)",
 			Guard:   "blocks offline",
 			Effects: "cxl destroy-region; commit (d)",
 		},
@@ -382,14 +382,14 @@ var DaxDeviceTable = Table[DaxDeviceState]{
 		},
 		{
 			From: fsm.List(DaxDeviceDax), To: DaxUnbound, Triggers: fsm.List(TriggerPrepare),
-			When: "the unused Whole device daxN.0 of a sliced region resized for the first part of a grant (unbound " +
+			When: "the unused Whole device daxN.0 of the region of an unshared memdev resized for the first slice of a grant (unbound " +
 				"by the resize), or unbound from device_dax for a switch to kmem",
 			Guard:   "no user",
-			Effects: "commit (d); a part: Users the grant, no longer the Whole device",
+			Effects: "commit (d); a slice: Users the grant, no longer the Whole device",
 		},
 		{
 			From: fsm.List(DaxUnbound, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline), To: DaxSeed, Triggers: releasers,
-			When: "daxN.0 resized to 0: the seed of a sliced region; or daxN.0 released with Users empty and not " +
+			When: "daxN.0 resized to 0: the seed of the region of an unshared memdev; or daxN.0 released with Users empty and not " +
 				"kept: the kernel keeps it at size 0",
 			Effects: "kmem: blocks offlined (EBUSY: stays, error up); unbound; resized to 0; commit (d)",
 		},
@@ -418,7 +418,7 @@ var DaxDeviceTable = Table[DaxDeviceState]{
 		},
 		{
 			From: daxBound, Stays: true, Triggers: releasers,
-			When: "a second grant uses the device (a shared device, a shared part, a lease joining), or a user " +
+			When: "a second grant uses the device (a shared device, a shared slice, a lease joining), or a user " +
 				"grant RELEASING",
 			Guard:   "a new user: the device is shareable for that kind",
 			Effects: "Users gets the grant or loses it; commit (d)",
@@ -565,7 +565,7 @@ func (r *Region) WholeDevice() *DaxDevice {
 }
 
 // FirstDax returns the name of the first dax device of the region: its
-// Whole device, else its daxN.0 (also once a part reuses it), "" for none.
+// Whole device, else its daxN.0 (also once a slice reuses it), "" for none.
 func (r *Region) FirstDax() string {
 	if w := r.WholeDevice(); w != nil {
 		return w.Name

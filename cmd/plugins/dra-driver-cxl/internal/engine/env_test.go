@@ -659,7 +659,7 @@ func releaseIdleShared(v *env) {
 	v.restart()
 }
 
-// sliceReq returns the request of a part of the local sliced memdev
+// sliceReq returns the request of a slice of the unshared local memdev
 // serialL for result n of the claim uid.
 func sliceReq(uid string, n int, mode state.Mode, size uint64) GrantRequest {
 	return localReq(uid, n, serialL, mode, state.KindLocal, size)

@@ -28,13 +28,13 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
-// Local memdevs: a sliced memdev gives each grant a part of its region (a
-// dax device on whole memory blocks: kmem with its memory online movable in
-// mode numa, device_dax zeroed in mode dax); a shared memdev gives every
-// grant the Whole device of its region (device_dax, zeroed once when the
-// region is new or set up again after it was kept for a claim). A new
-// region of either is made with the usable size of the memdev and probed
-// for aliasing (probe.go).
+// Local memdevs: an unshared local memdev gives each grant a slice of its
+// region (a dax device on whole memory blocks: kmem with its memory online
+// movable in mode numa, device_dax zeroed in mode dax); a shared memdev gives
+// every grant the Whole device of its region (device_dax, zeroed once when the
+// region is new or set up again after it was kept for a claim). A new region
+// of either is made with the usable size of the memdev and probed for aliasing
+// (probe.go).
 
 // realiseLocalShared realises a grant of a local memdev configured shared:
 // the Whole device of its region, zeroed when the region was not zeroed
@@ -80,7 +80,7 @@ func (e *Engine) realiseLocalShared(ctx context.Context, req *GrantRequest, memd
 		state.DevNumbers{Major: major, Minor: minor})
 }
 
-// realiseLocal realises a grant of a part of a local memdev: the
+// realiseLocal realises a grant of a slice of a local memdev: the
 // region of the memdev (its Whole device bound to device_dax), a dax device
 // of the asked size rounded up to whole memory blocks, placed on whole
 // blocks, then kmem and online movable (mode numa, the node fenced first) or
@@ -91,7 +91,7 @@ func (e *Engine) realiseLocal(ctx context.Context, req *GrantRequest, memdev str
 		return err
 	}
 	if got, ok := e.sliceMade(req); ok {
-		// a numa part that a Prepare cut after it went online
+		// a numa slice that a Prepare cut after it went online
 		return e.realised(ctx, req, got, state.DevNumbers{})
 	}
 	if err := e.deleteLeftSlice(ctx, req); err != nil {
@@ -109,7 +109,7 @@ func (e *Engine) realiseLocal(ctx context.Context, req *GrantRequest, memdev str
 }
 
 // sliceMade returns what a grant of a Prepare that did not finish got of
-// its part of mode numa when the part is online (KMEM_ONLINE), and whether
+// its slice of mode numa when the slice is online (KMEM_ONLINE), and whether
 // it is: the Prepare again reuses it (a numa companion kept at a start).
 func (e *Engine) sliceMade(req *GrantRequest) (state.Got, bool) {
 	r := e.records()
@@ -128,9 +128,9 @@ func (e *Engine) sliceMade(req *GrantRequest) (state.Got, bool) {
 	return state.Got{Region: g.Got.Region, Dax: d.Name, Size: d.Size, NUMANode: state.NUMANodePtr(*reg.NUMANode)}, true
 }
 
-// deleteLeftSlice releases the part that a grant of a Prepare that did not
+// deleteLeftSlice deletes the slice that a grant of a Prepare that did not
 // finish left (its dax device offlined and deleted), before the grant gets
-// a part anew.
+// a slice anew.
 func (e *Engine) deleteLeftSlice(ctx context.Context, req *GrantRequest) error {
 	g := e.records().Grant(req.Ref)
 	if g == nil || g.Got.Dax == "" {
@@ -140,7 +140,7 @@ func (e *Engine) deleteLeftSlice(ctx context.Context, req *GrantRequest) error {
 	return e.deleteSlice(ctx, &cur, state.TriggerPrepare)
 }
 
-// realiseSlice makes the part of a grant of a sliced local memdev in its
+// realiseSlice makes the slice of a grant of an unshared local memdev in its
 // region (addSlice) and binds it for its mode, and returns what the grant
 // got.
 func (e *Engine) realiseSlice(ctx context.Context, req *GrantRequest, memdev, region string, bs uint64) (state.Got, error) {
@@ -292,8 +292,8 @@ func (e *localKindError) Error() string {
 }
 
 // checkLocalKind returns an error when grants of other claims use the local
-// memdev of a request in another way than it asks (sliced, shared,
-// persistent; a persistent memdev shared or not); a memdev that no grant
+// memdev of a request in another way than it asks (local, local-shared,
+// local-persistent; a persistent memdev shared or not); a memdev that no grant
 // uses but whose region is of another way is released first as an idle one
 // (a persistent one when nothing holds its block device).
 func (e *Engine) checkLocalKind(ctx context.Context, req *GrantRequest) error {
@@ -371,7 +371,7 @@ func roundUp(v, step uint64) uint64 {
 	return (v/step + 1) * step
 }
 
-// addSlice makes the dax device of a part of the memdev for a grant and
+// addSlice makes the dax device of a slice of the memdev for a grant and
 // returns it with its size: the unused Whole device daxN.0 or the seed
 // resized, else a new device placed first-fit by the kernel, on the first
 // whole free blocks instead when first-fit crossed a block boundary. The
@@ -413,9 +413,9 @@ func (e *Engine) addSlice(ctx context.Context, req *GrantRequest, memdev, region
 	return aligned, size, nil
 }
 
-// sliceRoom returns the device that a part of the memdev for a grant
+// sliceRoom returns the device that a slice of the memdev for a grant
 // reuses (the unused daxN.0 that kmem does not have, "" for a new one) and
-// the size of the part: the asked size rounded up to the memory block size
+// the size of the slice: the asked size rounded up to the memory block size
 // bs and the align of the dax region; an error when the region has no room.
 func (e *Engine) sliceRoom(req *GrantRequest, memdev, region string, bs uint64) (string, uint64, error) {
 	dr, err := e.k.DaxRegion(region)
@@ -447,7 +447,7 @@ func (e *Engine) sliceRoom(req *GrantRequest, memdev, region string, bs uint64) 
 	return first, size, nil
 }
 
-// sizedSlice records the dax device of a part placed: UNBOUND, with its
+// sizedSlice records the dax device of a slice placed: UNBOUND, with its
 // size, memory and numbers, the grant its user.
 func sizedSlice(r *state.Records, ref state.GrantRef, region, dax string, size uint64, dev state.DevNumbers) error {
 	d := r.Region(state.RegionRef(region)).DaxDevice(dax)
@@ -460,7 +460,7 @@ func sizedSlice(r *state.Records, ref state.GrantRef, region, dax string, size u
 	return nil
 }
 
-// sliceRecord records the dax device of a new part: the Whole device
+// sliceRecord records the dax device of a new slice: the Whole device
 // daxN.0 resized (DEVICE_DAX -> UNBOUND, no longer the Whole device), the
 // seed sized again, or a new device (NONE -> CREATING).
 func sliceRecord(r *state.Records, ref state.GrantRef, region, dax string, reused bool) error {
@@ -488,7 +488,7 @@ func sliceRecord(r *state.Records, ref state.GrantRef, region, dax string, reuse
 	return nil
 }
 
-// alignSlice returns the dax device of a part of size bytes with memory
+// alignSlice returns the dax device of a slice of size bytes with memory
 // on whole memory blocks of bs bytes: dax, or a new device on the first
 // whole free blocks of the region, in address order, that replaces dax.
 func (e *Engine) alignSlice(ctx context.Context, req *GrantRequest, memdev, region, dax string, size, bs uint64) (string, error) {
@@ -530,7 +530,7 @@ func (e *Engine) alignSlice(ctx context.Context, req *GrantRequest, memdev, regi
 	return placed, e.commit(ctx, func(r *state.Records) error { return sliceRecord(r, req.Ref, region, placed, false) })
 }
 
-// deletedSlice records the dax device of a part whose placement failed as
+// deletedSlice records the dax device of a slice whose placement failed as
 // deleted: the seed for daxN.0, else gone.
 func deletedSlice(r *state.Records, ref state.GrantRef, region, dax string) error {
 	reg := r.Region(state.RegionRef(region))
@@ -572,7 +572,7 @@ func blockRanges(ranges []kernel.Range, size, bs uint64) []kernel.Range {
 	return out
 }
 
-// onlineSlice binds the dax device of a part of mode numa to kmem, onlines
+// onlineSlice binds the dax device of a slice of mode numa to kmem, onlines
 // its memory blocks movable and returns the NUMA node of the memory. The
 // node is fenced before the memory goes online when the dax device tells
 // it, else right after.
@@ -610,7 +610,7 @@ func (e *Engine) onlineSlice(ctx context.Context, req *GrantRequest, memdev, reg
 	return node, nil
 }
 
-// bindSlice binds the dax device of a part of mode dax to device_dax,
+// bindSlice binds the dax device of a slice of mode dax to device_dax,
 // and zeroes it.
 func (e *Engine) bindSlice(ctx context.Context, req *GrantRequest, memdev, region, dax string, size uint64) error {
 	if err := e.locked(func() error { return e.k.BindDax(ctx, dax, kernel.DriverDeviceDax) }); err != nil {
@@ -685,8 +685,8 @@ func (e *Engine) keptIdle(g *state.Grant, memdev string, decision Decision, rele
 	}
 }
 
-// deleteSlice releases the dax device of a grant: its own one (a part of a
-// sliced memdev) offlined and deleted, or the grant removed from the users
+// deleteSlice deletes the dax device of a grant: its own one (a slice of an
+// unshared memdev) offlined and deleted, or the grant removed from the users
 // of a shared one.
 func (e *Engine) deleteSlice(ctx context.Context, g *state.Grant, trigger state.Trigger) error {
 	if g.Got.Region == "" || g.Got.Dax == "" {

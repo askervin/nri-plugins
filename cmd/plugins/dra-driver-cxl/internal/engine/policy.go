@@ -125,7 +125,7 @@ type PolicyRow struct {
 }
 
 // PolicyRows are the release policy, in the order of the documentation: a
-// sliced local memdev is released in the order that the user chose (a hole
+// unshared local memdev is released in the order that the user chose (a hole
 // is allowed), a shared one is kept while it is configured shared (zeroed
 // once), a persistent one is kept idle while regions of other memdevs lie
 // above it; a pool region is destroyed unless a recovery finds regions

@@ -27,11 +27,11 @@ import (
 )
 
 // The start of the local memdevs, after the release of the cut Prepares:
-// the parts of prepared claims whose dax device is gone are forgotten, and
+// the slices of prepared claims whose dax device is gone are forgotten, and
 // every local memdev is kept or released as its use and the configuration
 // say: a shared one is kept while configured shared (and while claims use
 // it), a persistent one without claims released in order when nothing
-// holds its block device, a sliced one without claims released.
+// holds its block device, an unshared one without claims released.
 
 // forgetGoneSlices forgets the dax devices of the realised grants of
 // prepared claims of local memdevs that are gone or have another size than
@@ -72,7 +72,7 @@ func (e *Engine) forgetGoneSlices(ctx context.Context) {
 }
 
 // ownSlice returns the dax device of its own of a realised grant of a
-// prepared claim on a sliced local memdev, nil for another grant.
+// prepared claim on an unshared local memdev, nil for another grant.
 func (e *Engine) ownSlice(r *state.Records, g *state.Grant) *state.DaxDevice {
 	p := r.PreparationOf(g.Ref)
 	if g.Asked.Source != state.SourceLocal || !e.owns(g.Asked.Source) || g.Asked.Kind != state.KindLocal || g.Got.Dax == "" ||
@@ -215,7 +215,7 @@ func (e *Engine) releaseIdleQueued(ctx context.Context, m *state.Memdev, trigger
 // ForgetLocal forgets the records of the local memdevs with the serials
 // whose region was being made, without touching their regions: they are
 // pool devices now. A region is being made while it is NOTED or CREATING,
-// and while no grant of the memdev got anything of it (a part or a block
+// and while no grant of the memdev got anything of it (a slice or a block
 // device), all of them of Prepares that the process stop cut; those grants
 // go with the records.
 func (e *Engine) ForgetLocal(ctx context.Context, serials []state.Serial) error {

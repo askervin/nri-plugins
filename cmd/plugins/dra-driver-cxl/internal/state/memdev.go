@@ -105,7 +105,7 @@ var MemdevTable = Table[MemdevState]{
 		},
 		{
 			From: fsm.List(MemdevActive), To: MemdevNone, Triggers: releasers,
-			When: "the last grant NONE and Policy says destroy (local sliced, local shared not configured any " +
+			When: "the last grant NONE and Policy says destroy (local, local-shared not in sharedMemdevs any " +
 				"more, pool)",
 			Guard:   "the region destroyed; a pool memdev disabled",
 			Effects: "commit (d) removing the record",

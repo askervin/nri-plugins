@@ -34,7 +34,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
-// localDev is the device name of the sliced local memdev.
+// localDev is the device name of the unshared local memdev.
 var localDev = MemdevDeviceName(serialLocal)
 
 // wantResult fails the test unless a PrepareResult has the devices of the
@@ -51,7 +51,7 @@ func resultDevice(request, pool, dev string, cdi ...string) kubeletplugin.Device
 	return kubeletplugin.Device{Requests: []string{request}, PoolName: pool, DeviceName: dev, CDIDeviceIDs: cdi}
 }
 
-// A slice of mode numa of a sliced local memdev: onlined on the node of
+// A slice of mode numa of an unshared local memdev: onlined on the node of
 // its region, its CDI device and env, its device info; the Unprepare
 // offlines and releases it.
 func TestLocalSliceNUMA(t *testing.T) {
@@ -91,7 +91,7 @@ func TestLocalSliceNUMA(t *testing.T) {
 	e.wantClean()
 }
 
-// A slice of mode dax of a sliced local memdev: a devdax device of the
+// A slice of mode dax of an unshared local memdev: a devdax device of the
 // region, read-only or not, as a CDI device node.
 func TestLocalSliceDax(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{localSpec()})

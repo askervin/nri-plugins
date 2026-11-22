@@ -520,7 +520,7 @@ func TestParseMemdevSpec(t *testing.T) {
 }
 
 // TestSharedLocalPrecedence pins the precedence per memdev: ignoreMemdevs
-// over pool devices over sharedMemdevs over sliced; any spec form of
+// over pool devices over sharedMemdevs over unshared local memdevs; any spec form of
 // ignoreMemdevs and sharedMemdevs matches; a memdev used one way by claims
 // is not published the other way until it has none.
 func TestSharedLocalPrecedence(t *testing.T) {
@@ -530,7 +530,7 @@ func TestSharedLocalPrecedence(t *testing.T) {
 		m.Major, m.Minor = 251, int(m.Serial&0xf)
 		devices.Memdevs = append(devices.Memdevs, m)
 	}
-	byName, ignored, pooled, sliced := &devices.Memdevs[0], &devices.Memdevs[4], &devices.Memdevs[5], &devices.Memdevs[6]
+	byName, ignored, pooled, unshared := &devices.Memdevs[0], &devices.Memdevs[4], &devices.Memdevs[5], &devices.Memdevs[6]
 	pubRegion(devices, "region9", 3, 1<<30, 0xaa)
 	cfg := PublishConfig{
 		IgnoreDevices: memdevSpecs(t, "0xa5"),
@@ -560,7 +560,7 @@ func TestSharedLocalPrecedence(t *testing.T) {
 		{ignored, `ignored by memdev serial "0xa5"`},
 		{pooled, "pool device"},
 		{byName, ""},
-		{sliced, ""},
+		{unshared, ""},
 	} {
 		if _, got := sharedListing(cfg, tc.mem, pool, nil); got != tc.want {
 			t.Errorf("%s: refusal %q, expected %q", tc.mem.Name, got, tc.want)
@@ -612,7 +612,7 @@ func TestSharedRefusalLogged(t *testing.T) {
 
 // TestBuildDevInfosPersistentMemdevs pins the persistent local memdevs that
 // a scan publishes: a memdev of persistent memory only, shared when
-// sharedMemdevs lists it; a memdev with RAM is a sliced one, and claims
+// sharedMemdevs lists it; a memdev with RAM is an unshared one, and claims
 // that use it as a persistent device keep it from being published.
 func TestBuildDevInfosPersistentMemdevs(t *testing.T) {
 	logs := klogtest.Capture(t, 4)

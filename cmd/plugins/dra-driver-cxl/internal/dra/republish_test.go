@@ -171,14 +171,14 @@ func TestUnchangedRescanWritesNoSlice(t *testing.T) {
 
 // The last Unprepare of a memdev used shared that is not configured shared
 // any more (the driver restarted with another configuration) has the
-// memdev published again as a sliced one within the rescan that it asks
+// memdev published again as an unshared one within the rescan that it asks
 // for: with no kernel event that the publisher sees and no other rescan.
 func TestUnprepareRepublishesWithoutRescan(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{sharedSpec()})
 	e.setShared(serialShared)
 	shared := MemdevDeviceName(serialShared)
 	e.mustPrepare(e.local, localClaim("u1", shared, -1, cfgDax))
-	// configured sliced after the restart of publishing: hidden while it
+	// configured unshared after the restart of publishing: hidden while it
 	// is used shared
 	e.mu.Lock()
 	delete(e.shared, serialShared)
@@ -189,7 +189,7 @@ func TestUnprepareRepublishesWithoutRescan(t *testing.T) {
 	e.mustUnprepare(e.local, "u1")
 	waitNodeResourceSlice(t, client, envNode, 2*time.Second, device.DRAMDeviceName, device.LeaseDeviceName, shared)
 	if d := e.pub.Published()[shared]; d == nil || d.Dev.(*Memdev).Shared {
-		t.Fatalf("published %+v, expected the memdev sliced", d)
+		t.Fatalf("published %+v, expected the memdev unshared", d)
 	}
 }
 

@@ -38,7 +38,7 @@ import (
 )
 
 // companionOf returns the companion claim c1 of lease l1 of the driver of
-// the plugin on its device of the env: a slice of 64 MiB of the sliced
+// the plugin on its device of the env: a slice of 64 MiB of the unshared
 // local memdev, or the pool device pooled0, with the configs.
 func (e *driverEnv) companionOf(p *Plugin, configs ...string) *resourcev1.ResourceClaim {
 	if p == e.local {
@@ -47,7 +47,7 @@ func (e *driverEnv) companionOf(p *Plugin, configs ...string) *resourcev1.Resour
 	return companion(poolClaim("c1", "pooled0", poolExclusiveData, configs...), "l1")
 }
 
-// lendEnv returns a node with the sliced local memdev and the pool device
+// lendEnv returns a node with the unshared local memdev and the pool device
 // pooled0, without lending.
 func lendEnv(t *testing.T) *driverEnv {
 	return newDriverEnv(t, []fake.MemdevSpec{localSpec()}, poolSpec(serialPoolX))
@@ -142,7 +142,7 @@ func TestCompanionLenderWithoutNRI(t *testing.T) {
 	e.wantEvents("lender without NRI and nil lender")
 }
 
-// specClaim returns the companion claim c1 of the sliced local memdev with
+// specClaim returns the companion claim c1 of the unshared local memdev with
 // a spec.
 func specClaim() *resourcev1.ResourceClaim {
 	c := companion(localClaim("c1", localDev, 64*mib), "l1")

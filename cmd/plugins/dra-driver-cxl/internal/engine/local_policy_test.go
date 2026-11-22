@@ -28,7 +28,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
-// The release policy of a local sliced memdev: its Unprepare destroys the
+// The release policy of a local memdev: its Unprepare destroys the
 // region also below a newer region of another memdev (a hole); a rollback
 // and a recovery keep it below one (KEPT, the grant JOURNALED, the
 // preparation KEPT).

@@ -131,7 +131,7 @@ var cutScenarios = []cutScenario{
 		},
 	},
 	{
-		name:  "local sliced",
+		name:  "local",
 		specs: []fake.MemdevSpec{{Serial: serialL, Ram: gib}},
 		run: func(v *env) {
 			_ = v.prepare(localDriver, "n", localReq("n", 0, serialL, state.ModeNUMA, state.KindLocal, 256*mib))
@@ -294,7 +294,7 @@ const (
 // localCutScenarios are the life cycles of every kind of local grant.
 var localCutScenarios = []cutScenario{
 	{
-		name:  "local sliced numa",
+		name:  "local numa",
 		specs: []fake.MemdevSpec{{Serial: serialL, Ram: gib}},
 		tune:  probeOptions,
 		run: func(v *env) {
@@ -305,7 +305,7 @@ var localCutScenarios = []cutScenario{
 		},
 	},
 	{
-		name:  "local sliced dax",
+		name:  "local dax",
 		specs: []fake.MemdevSpec{{Serial: serialL, Ram: gib}},
 		run: func(v *env) {
 			_ = v.prepare(localDriver, "d1", sliceReq("d1", 0, state.ModeDax, 256*mib))
@@ -325,7 +325,7 @@ var localCutScenarios = []cutScenario{
 	{
 		// the second part fails: the rollback releases the first one; the
 		// Prepare again makes both
-		name:  "local sliced rollback",
+		name:  "local rollback",
 		specs: []fake.MemdevSpec{{Serial: serialL, Ram: gib}},
 		run: func(v *env) {
 			v.f.FailWrite("bus/dax/devices/dax0.1/size", syscall.EBUSY)

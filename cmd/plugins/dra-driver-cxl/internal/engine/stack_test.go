@@ -106,7 +106,7 @@ func TestStackRecoveryTopMostFirst(t *testing.T) {
 	finish(t, v, "recovered")
 }
 
-// A local sliced memdev and a pool memdev under one host bridge port: the
+// A local memdev and a pool memdev under one host bridge port: the
 // Unprepare of the local claim below the pool region destroys its region
 // and leaves a hole; the next creation through the port fails (the hole
 // text) until the pool region goes, which reaps the hole.
@@ -186,7 +186,7 @@ func TestStackLocalRollbackBelowPool(t *testing.T) {
 	v.clean("unprepared")
 }
 
-// Cut Prepares of a local sliced memdev and a pool memdev of one stack are
+// Cut Prepares of a local memdev and a pool memdev of one stack are
 // released at the start top-most first, whichever is above: no hole is
 // left.
 func TestStackLocalRecoveryTopMostFirst(t *testing.T) {

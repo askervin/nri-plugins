@@ -561,16 +561,15 @@ func logSharedRefusal(memDev *kernel.MemdevInfo, reason string) {
 	}
 }
 
-// addLocalMemdevs adds the local memdevs that the engine can use to
-// devInfos. Per memdev, ignoreMemdevs takes precedence over pool devices,
-// pool devices over sharedMemdevs, and sharedMemdevs over sliced memdevs. A
-// memdev of persistent memory only (no RAM capacity) is a persistent
-// memdev, shared when sharedMemdevs lists it (addLocalPersistent). A shared
-// memdev is published when it is enabled, has RAM capacity, no regions but
-// the engine's and no claims of slices. A sliced memdev is published when it
-// is enabled, its RAM capacity is sure to hold a whole memory block, it has
-// no regions but the engine's and no claims that use it shared or
-// persistent.
+// addLocalMemdevs adds the local memdevs that the engine can use to devInfos.
+// Per memdev, ignoreMemdevs takes precedence over pool devices, pool devices
+// over sharedMemdevs, and sharedMemdevs over unshared local memdevs. A memdev
+// of persistent memory only (no RAM capacity) is a persistent memdev, shared
+// when sharedMemdevs lists it (addLocalPersistent). A shared memdev is
+// published when it is enabled, has RAM capacity, no regions but the engine's
+// and no claims of slices. An unshared local memdev is published when it is
+// enabled, its RAM capacity is sure to hold a whole memory block, it has no
+// regions but the engine's and no claims that use it shared or persistent.
 func addLocalMemdevs(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held map[uint64]bool, local *localRecords) {
 	bs := uint64(0)
 	if local != nil {
@@ -620,7 +619,7 @@ func addLocalMemdevs(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snaps
 }
 
 // localRefusal returns why a memdev of usable size bytes with memory
-// blocks of bs bytes is not published as a sliced local memdev, "" if it
+// blocks of bs bytes is not published as an unshared local memdev, "" if it
 // is: no RAM, an unknown block size, too small, disabled, a pool or held
 // memdev, regions that the engine did not create, claims that use it
 // persistent or shared, ignoreMemdevs.

@@ -491,7 +491,7 @@ func (r *Records) InUse(d *DaxDevice) bool {
 
 // UnfinishedUser tells whether a user of the dax device is a grant of a
 // Prepare that did not finish (JOURNALED, REALISING) that the start kept
-// with its part for its Unprepare: one of a numa companion, or one of a
+// with its slice for its Unprepare: one of a numa companion, or one of a
 // KEPT preparation whose release at the start failed.
 func (r *Records) UnfinishedUser(d *DaxDevice) bool {
 	for _, u := range d.Users {
@@ -509,8 +509,8 @@ func (r *Records) UnfinishedUser(d *DaxDevice) bool {
 // RegionInMaking tells whether the region reg of the local memdev m is
 // still being made for a Prepare: NOTED, or a ram region OWNED
 // while every grant of the memdev is of a Prepare that did not finish
-// (JOURNALED, REALISING) and got no part of it yet (it is set up, probed and
-// zeroed before its first part).
+// (JOURNALED, REALISING) and got no slice of it yet (it is set up, probed and
+// zeroed before its first slice).
 func (r *Records) RegionInMaking(m *Memdev, reg *Region) bool {
 	switch {
 	case reg.State == RegionNoted:

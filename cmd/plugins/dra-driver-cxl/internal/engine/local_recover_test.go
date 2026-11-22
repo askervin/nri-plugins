@@ -124,7 +124,7 @@ func TestLocalRecoverPersistent(t *testing.T) {
 	v.clean("released")
 }
 
-// The start releases the region of a sliced local memdev without claims,
+// The start releases the region of an unshared local memdev without claims,
 // and deletes the parts that belong to no claim first, the memory of a
 // numa part offlined.
 func TestLocalRecoverIdle(t *testing.T) {
@@ -338,9 +338,9 @@ func TestRecoverCutPrepares(t *testing.T) {
 		line    string
 		regions int
 	}{
-		{"sliced", []fake.MemdevSpec{{Serial: serialL, Ram: gib}}, nil, realised, sliceReq("c", 0, state.ModeNUMA, 256*mib),
+		{"local", []fake.MemdevSpec{{Serial: serialL, Ram: gib}}, nil, realised, sliceReq("c", 0, state.ModeNUMA, 256*mib),
 			"engine: local memdev 0x11 (mem0): claim c is not prepared, releasing it", 0},
-		{"sliced before its region", []fake.MemdevSpec{{Serial: serialL, Ram: gib}}, nil, func(v *env) { v.f.CutBefore("cxl create-region") },
+		{"local before its region", []fake.MemdevSpec{{Serial: serialL, Ram: gib}}, nil, func(v *env) { v.f.CutBefore("cxl create-region") },
 			sliceReq("c", 0, state.ModeNUMA, 256*mib), "engine: local memdev 0x11 (mem0): claim c is not prepared, releasing it", 0},
 		{"shared new", []fake.MemdevSpec{{Serial: serialL, Ram: gib}}, shared, func(v *env) { v.cutZeroing(true) }, sharedReq("c"),
 			"engine: local memdev 0x11 (mem0): claim c of the shared device is not prepared, dropping it", 0},
@@ -514,14 +514,14 @@ func TestLocalReleasingGrantHoldsNoNewRegion(t *testing.T) {
 }
 
 // A region that a start kept for the claim of a cut Prepare, below a newer
-// region of another memdev, and that a later start does not keep for it:
-// that start releases the claim, which then holds nothing (its Unprepare
-// runs no command, its Prepare again prepares it anew). A sliced region
-// whose region above went goes at that start; a shared one stays with the
-// idle memdev, and the Prepare again sets it up and zeroes it once.
+// region of another memdev, and that a later start does not keep for it: that
+// start releases the claim, which then holds nothing (its Unprepare runs no
+// command, its Prepare again prepares it anew). The region of an unshared
+// memdev whose region above went goes at that start; a shared one stays with
+// the idle memdev, and the Prepare again sets it up and zeroes it once.
 func TestLocalKeptRegionReleasedLater(t *testing.T) {
 	for _, shared := range []bool{false, true} {
-		t.Run(map[bool]string{false: "sliced", true: "shared"}[shared], func(t *testing.T) {
+		t.Run(map[bool]string{false: "local", true: "local-shared"}[shared], func(t *testing.T) {
 			v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib}, fake.MemdevSpec{Serial: serialB})
 			v.configure(func(o *Options) { probeOptions(v, o) })
 			req := sliceReq("u1", 0, state.ModeNUMA, 256*mib)

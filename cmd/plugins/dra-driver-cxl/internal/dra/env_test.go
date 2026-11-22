@@ -67,7 +67,7 @@ const (
 	// envBlockSize is the memory block size of the fake kernel.
 	envBlockSize = 128 * mib
 
-	// serials of the local memdevs: sliced (1 GiB of RAM), shared (1 GiB
+	// serials of the local memdevs: unshared (1 GiB of RAM), shared (1 GiB
 	// of RAM) and persistent (512 MiB of persistent memory).
 	serialLocal  = 0xc100e2e1
 	serialShared = 0xc100e2e2

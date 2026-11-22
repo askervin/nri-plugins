@@ -171,7 +171,7 @@ States: NONE, ACTIVE, IDLE_KEPT, GONE.
 |:-----|:---|:--------|:------|:--------|
 | NONE | ACTIVE | `prepare`: the first grant of the serial is JOURNALED | provenance allows the source | commit (d) with the facts (usable size, shared, persistent, coherent, NUMA affinity); pool: provenance POOL in the same commit |
 | ACTIVE | (unchanged) | `prepare`, `unprepare`, `recover`: grants come and go while at least one remains | - | commits with the grants |
-| ACTIVE | NONE | `unprepare`, `prepare`, `recover`: the last grant NONE and Policy says destroy (local sliced, local shared not configured any more, pool) | the region destroyed; a pool memdev disabled | commit (d) removing the record |
+| ACTIVE | NONE | `unprepare`, `prepare`, `recover`: the last grant NONE and Policy says destroy (local, local-shared not in sharedMemdevs any more, pool) | the region destroyed; a pool memdev disabled | commit (d) removing the record |
 | ACTIVE | IDLE_KEPT | `unprepare`, `prepare`, `recover`: the last grant NONE and Policy says keep (local shared while configured; local persistent with regions above; a rollback or recovery that keeps) | - | commit (d) |
 | IDLE_KEPT | ACTIVE | `prepare`: a new grant JOURNALED | the kept region enabled and set up again if needed | commit (d) |
 | IDLE_KEPT | NONE | `recover`, `prepare`: the recovery or the next Prepare of the memdev finds the keep reason gone (shared not configured any more; nothing above a kept persistent region; an idle leftover) | Policy says destroy | region destroyed; commit (d) removing the record |
@@ -213,7 +213,7 @@ States: NONE, NOTED, OWNED, KEPT, HOLLOW_OWNED, FOREIGN.
 | NOTED | HOLLOW_OWNED | `recover`: the recovery finds a hollow region of the noted name | - | the memdev's Hollow gets the name; commit (l) |
 | OWNED | KEPT | `unprepare`, `prepare`, `recover`: a release with Policy "in order" found a newer region of another memdev above after cxl disable-region; or the recovery keeps a cut Prepare's region untouched below a newer region (Policy keep) and no grant of it was REALISED; or prepare (5.3) or an idle keep finds an OWNED region that the kernel has disabled (a release failed after cxl disable-region): recorded KEPT, enabled and set up again by the Prepare | - | the region stays disabled (in order) or as it is (recovery); SetUp false; commit (d) |
 | KEPT | OWNED | `prepare`: a new grant needs the region | enable-region succeeded | commit (d); set up again (SetUp true after the first device) |
-| KEPT | NONE | `unprepare`, `prepare`, `recover`: a release with Policy destroy (top of the stack now; an Unprepare of local sliced; pool) | blocks offline | cxl destroy-region; commit (d) |
+| KEPT | NONE | `unprepare`, `prepare`, `recover`: a release with Policy destroy (top of the stack now; an Unprepare of local; pool) | blocks offline | cxl destroy-region; commit (d) |
 | OWNED | NONE | `unprepare`, `prepare`, `recover`: the last user released and Policy says destroy; or the recovery finds the region missing | blocks offline | disable and destroy under the engine lock (the in-order check repeated after the disable); commit (d); a missing region: the record cleared, the grants kept for kubelet |
 | OWNED, KEPT | HOLLOW_OWNED | `observe`, `recover`: the memdev was removed under the region | - | the memdev's Hollow gets the name; commit (l) |
 | HOLLOW_OWNED | NONE | `unprepare`, `prepare`, `recover`: the hollow region deleted | every block of its range offline | delete_region written under the engine lock; commit (d) |
@@ -243,7 +243,7 @@ States: false, true.
 
 ## DaxDevice
 
-DaxDevice is a dax device of a region of ours with the grants that use it: one user for an exclusive part of a memdev, every grant of the memdev for the Whole device of a shared memdev, more for a lease that joins a claim's device.
+DaxDevice is a dax device of a region of ours with the grants that use it: one user for a slice of an unshared memdev, every grant of the memdev for the Whole device of a shared memdev, more for a lease that joins a claim's device.
 
 **Identity.** Name (daxN.M) in its region.
 
@@ -263,13 +263,13 @@ States: NONE, CREATING, UNBOUND, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE, SEED.
 | NONE | KMEM_OFFLINE | `prepare`: the first device (daxN.0) of a new ram region appeared, bound to kmem by the kernel | - | its blocks offlined and held offline; commit (d) |
 | NONE | DEVICE_DAX | `prepare`: the first device (daxN.0) of a new ram region appeared bound to device_dax (an id of its name that another tool left in device_dax) | - | commit (d) |
 | KMEM_OFFLINE | UNBOUND | `prepare`: kmem unbound from the offline device (the set-up of a region for device_dax or for slices) | - | commit (d) |
-| DEVICE_DAX | UNBOUND | `prepare`: the unused Whole device daxN.0 of a sliced region resized for the first part of a grant (unbound by the resize), or unbound from device_dax for a switch to kmem | no user | commit (d); a part: Users the grant, no longer the Whole device |
-| UNBOUND, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | SEED | `unprepare`, `prepare`, `recover`: daxN.0 resized to 0: the seed of a sliced region; or daxN.0 released with Users empty and not kept: the kernel keeps it at size 0 | - | kmem: blocks offlined (EBUSY: stays, error up); unbound; resized to 0; commit (d) |
+| DEVICE_DAX | UNBOUND | `prepare`: the unused Whole device daxN.0 of the region of an unshared memdev resized for the first slice of a grant (unbound by the resize), or unbound from device_dax for a switch to kmem | no user | commit (d); a slice: Users the grant, no longer the Whole device |
+| UNBOUND, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | SEED | `unprepare`, `prepare`, `recover`: daxN.0 resized to 0: the seed of the region of an unshared memdev; or daxN.0 released with Users empty and not kept: the kernel keeps it at size 0 | - | kmem: blocks offlined (EBUSY: stays, error up); unbound; resized to 0; commit (d) |
 | SEED | UNBOUND | `prepare`: the seed sized again (the Whole device of a region set up again) | room in the dax region | commit (d) |
 | UNBOUND | DEVICE_DAX | `prepare`: bound to device_dax by sysfs | - | zeroed (a local dax grant, a new shared region); commit (d) |
 | UNBOUND | KMEM_OFFLINE | `prepare`: bound to kmem by sysfs bind (never new_id) | fenced before its blocks go online (KMEM_OFFLINE -> KMEM_ONLINE) | wait for the blocks; commit (d) |
 | KMEM_OFFLINE | KMEM_ONLINE | `prepare`: the blocks onlined movable | all blocks exist; the udev online settled | commit (d); the NUMA node's MemTotal grows |
-| DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | (unchanged) | `unprepare`, `prepare`, `recover`: a second grant uses the device (a shared device, a shared part, a lease joining), or a user grant RELEASING | a new user: the device is shareable for that kind | Users gets the grant or loses it; commit (d) |
+| DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | (unchanged) | `unprepare`, `prepare`, `recover`: a second grant uses the device (a shared device, a shared slice, a lease joining), or a user grant RELEASING | a new user: the device is shareable for that kind | Users gets the grant or loses it; commit (d) |
 | UNBOUND, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | NONE | `unprepare`, `prepare`: Users empty and not kept (the Whole device of a configured shared memdev stays) | - | kmem: blocks offlined (EBUSY: stays, error up); unbound; resized to 0; delete written; commit (d) |
 | CREATING, UNBOUND, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | NONE | `recover`: the recovery deletes a dax device of a region of ours without users and not the kept Whole device, or releases the device of a grant that it releases | blocks offline first | deleted |
 

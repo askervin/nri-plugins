@@ -57,7 +57,7 @@ const (
 	// envLeaseClaim is the uid of the lease claim of the requester pod.
 	envLeaseClaim = "lc1"
 
-	// serials of the local memdevs of this node: sliced, shared.
+	// serials of the local memdevs of this node: unshared, shared.
 	serialLocal  = 0xc100e2e1
 	serialShared = 0xc100e2e2
 	// serials of the pool devices: volatile memory, shared, persistent.

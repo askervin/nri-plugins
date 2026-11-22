@@ -459,7 +459,7 @@ func TestRecoverStale(t *testing.T) {
 	v.clean("unprepared")
 }
 
-// A local sliced claim whose rollback finds a region of another memdev
+// A local claim whose rollback finds a region of another memdev
 // above its region keeps it (KEPT); its Prepare again reuses it, its
 // Unprepare destroys it.
 func TestRecoverKept(t *testing.T) {
@@ -627,7 +627,7 @@ func TestRecoverForeignMount(t *testing.T) {
 	v.clean("unprepared")
 }
 
-// A local sliced claim cut after its grant was REALISED (the preparation
+// A local claim cut after its grant was REALISED (the preparation
 // PREPARING), below a newer pool region: the recovery releases the part and
 // keeps the region in order for the claim (RELEASING -> JOURNALED).
 func TestRecoverRealisedKeptInOrder(t *testing.T) {

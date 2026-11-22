@@ -92,7 +92,7 @@ type Asked struct {
 	Path string `json:"path,omitempty"`
 	// Size is the size in bytes that the allocation result asks for.
 	Size uint64 `json:"size,omitempty"`
-	// Shared: one share of a shared device; false: the device or the part
+	// Shared: one share of a shared device; false: the device or the slice
 	// of it exclusively.
 	Shared bool `json:"shared,omitempty"`
 }

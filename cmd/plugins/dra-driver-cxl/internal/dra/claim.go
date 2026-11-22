@@ -348,8 +348,8 @@ func otherResult(res *state.Result, r *resourcev1.DeviceRequestAllocationResult,
 }
 
 // memdevRequest returns the request to the engine of the allocation result
-// n of a Prepare on a local memdev, by the device settings cfg: a part of a
-// sliced memdev (mode numa or dax), the device of a shared one (mode dax),
+// n of a Prepare on a local memdev, by the device settings cfg: a slice of an
+// unshared memdev (mode numa or dax), the device of a shared one (mode dax),
 // or a use of a persistent one (mode block or fs, the default path of mode
 // fs by the env key of the result).
 func (p *Plugin) memdevRequest(pr *prepare, r *resourcev1.DeviceRequestAllocationResult, n int, key string, dev *Memdev, cfg config.Device) (engine.GrantRequest, error) {

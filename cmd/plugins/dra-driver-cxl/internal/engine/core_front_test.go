@@ -220,7 +220,7 @@ func leaseOf(uid string) string {
 
 // claim returns the claim uid of a slot as the scheduler allocated it: a
 // pool device with the status data of its controller, or a local memdev of
-// the node with the size (sliced) or the shares it consumed; the
+// the node with the size (local) or the shares it consumed; the
 // MemoryConfig of the slot's mode; a companion claim of its lease.
 func (fe *frontEnd) claim(sl engine.CoreSlot, uid string) *resourcev1.ResourceClaim {
 	c := &resourcev1.ResourceClaim{
