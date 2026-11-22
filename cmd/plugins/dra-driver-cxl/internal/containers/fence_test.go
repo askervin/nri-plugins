@@ -803,7 +803,7 @@ func TestContainerCgroupDir(t *testing.T) {
 // to its DRAM nodes (kubelet memory manager): the first lend after its
 // start is not logged as a lost update ("updating again"): nothing was sent
 // before.
-func TestReviewSeededNoneLogsUpdatingAgain(t *testing.T) {
+func TestFenceNoneFirstLendNotUpdatingAgain(t *testing.T) {
 	e := newEnvWith(t, envOptions{fencing: config.FencingNone, leases: []state.Lease{readyLease("l1", "u1", "main", 2)}})
 	logs := klogtest.Capture(t, 3)
 	ctx := context.Background()
