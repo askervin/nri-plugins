@@ -1,4 +1,4 @@
-# Demo teardown (the demo directory demo01-share-write-read, README.txt):
+# Demo teardown (demo01-share-write-read, docs/memory/cxl/demo.md):
 # "demo teardown" runs this through the e2e framework. Undoes
 # test98-demo-setup and leaves both VMs without CXL memory devices, the
 # host without the pool server:

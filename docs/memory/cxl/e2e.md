@@ -165,7 +165,7 @@ the test reads commands from the terminal until `exit`.
 | `test21-dra-local-persistent` | a persistent local memdev: a block writer, `fsTypes`, read-write and read-only claims, an fs lease |
 | `test22-dra-admission-policy` | the admission policies of the chart, rule by rule |
 | `test90-mbt-stress` | model-based stress (gofmbt): pods, claims, leases, writes and faults chosen by a model, the cluster checked after each step; a long test, run with `skip_long_tests=no` |
-| `test98-demo-setup`, `test99-demo-teardown` | the setup and teardown of the demo ([demo-llm-share.md](demo-llm-share.md)); a run of the suite skips them |
+| `test98-demo-setup`, `test99-demo-teardown` | the setup and teardown of the demo ([demo.md](demo.md)); a run of the suite skips them |
 
 The tests need the ports 9909 to 9912 of the host for their pool
 servers. `test90-mbt-stress` takes its parameters (`MBT_DURATION`,

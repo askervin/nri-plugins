@@ -43,7 +43,7 @@ class Step:
 
 
 def steps(case, serial, fstype="ext4", access="direct", repeat=3):
-    """Return the steps of CASE (README.txt sections 5, 6, 6b, 6c and 6e), the device SERIAL, pool-fs's FSTYPE and llm-share's first ACCESS and bench REPEAT in the commands."""
+    """Return the steps of CASE (the stories of docs/memory/cxl/demo.md), the device SERIAL, pool-fs's FSTYPE and llm-share's first ACCESS and bench REPEAT in the commands."""
     S = serial
     if case == "pool-fs":
         return poolfs_steps(S, fstype)

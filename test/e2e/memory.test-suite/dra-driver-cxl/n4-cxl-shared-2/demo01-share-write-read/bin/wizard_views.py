@@ -1,4 +1,5 @@
-"""The views of the demo case "wizard" (README.txt section 6d): T2 the
+"""The views of the demo case "wizard" (docs/memory/cxl/demo.md, The
+wizard): T2 the
 pods of the wizard with their claims or leases and what they got, T3 every
 published memory device with its holders and the claims that wait, T4 both
 nodes with a line per memdev and who uses its memory, T6 the devices of

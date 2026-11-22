@@ -1,4 +1,4 @@
-# Demo setup (the demo directory demo01-share-write-read, README.txt):
+# Demo setup (demo01-share-write-read, docs/memory/cxl/demo.md):
 # "demo setup local|pool|pool-shared-fs|pool-fs [TYPE]|wizard|llm-share"
 # runs this through the e2e framework; a run of the suite skips it.
 #

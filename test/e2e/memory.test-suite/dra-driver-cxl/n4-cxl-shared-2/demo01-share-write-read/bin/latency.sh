@@ -1,6 +1,6 @@
 #!/bin/bash
 # latency.sh: realistic CXL memory latency for the demo ("demo latency
-# on|off|status", README.txt of this directory). "on" has two setups. On a
+# on|off|status", docs/memory/cxl/demo.md). "on" has two setups. On a
 # host of two packages (sockets) the far setup makes the VMs of the demo
 # cross the socket boundary when, and only when, they access their CXL
 # memory devices:
@@ -82,7 +82,7 @@ Environment:
                       $(load-levels). The levels were calibrated on a
                       two-socket host with sub-NUMA clustering (SNC2);
                       the higher the level, the busier the far
-                      memory. See docs/memory/cxl/demo-llm-share.md
+                      memory. See docs/memory/cxl/demo.md
   LATENCY_LOAD_ARGS   more arguments for cxl-load after those of the
                       level, which they override (to calibrate a host)
   LATENCY_TMPFS_SIZE  the size of the pool tmpfs (default: half of the

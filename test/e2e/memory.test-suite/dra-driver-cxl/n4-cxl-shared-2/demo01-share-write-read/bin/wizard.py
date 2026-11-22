@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The wizard of the demo case "wizard": a pod and a claim (or a lease) of
 any kind of CXL memory that the driver offers, its YAML, created and
-deleted in the demo namespace (README.txt section 6d).
+deleted in the demo namespace (docs/memory/cxl/demo.md, The wizard).
 
 Usage:
   wizard.py                      interactive: questions, preview, create

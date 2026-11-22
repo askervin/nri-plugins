@@ -1,6 +1,6 @@
 #!/bin/bash
-# wizard-rules.sh: the scripted set of the case "wizard" (README.txt
-# section 6d): a "demo wizard new" for every rule row of the wizard, in an
+# wizard-rules.sh: the scripted set of the case "wizard"
+# (docs/memory/cxl/demo.md, The wizard): a "demo wizard new" for every rule row of the wizard, in an
 # order in which each one shows what it is about (a holder first, then who
 # waits for it, then the holder goes), with the deletes and waits between
 # them, and every choice that the wizard refuses (its copy of the

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Zooms for questions: details the views leave out (README.txt section 7).
+"""Zooms for questions: details the views leave out (docs/memory/cxl/demo.md, Look inside).
 
 Usage: zoom.py WHAT [ARGS]
   slice [DEVICE]    the ResourceSlice entry of DEVICE (default: every memdev):

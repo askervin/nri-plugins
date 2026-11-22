@@ -1,5 +1,5 @@
 #!/bin/bash
-# demo: the live demo of CXL memory sharing (README.txt of this directory).
+# demo: the live demo of CXL memory sharing (docs/memory/cxl/demo.md).
 
 DEMO_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_DIR="$(dirname "$DEMO_BIN")"
