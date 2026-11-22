@@ -1,62 +1,37 @@
 # CXL DRA Driver
 
-This chart deploys the dra-driver-cxl Node Resource Interface (NRI) plugin.
-The plugin is a Dynamic Resource Allocation (DRA) driver for CXL memory: it
-publishes the CXL memory devices, regions and DRAM of every node as DRA
-devices (driver `cxl.nri.io`), prepares claims of CXL memory pool devices
-(driver `cxl-pool.nri.io`), keeps containers off the CXL memory they did
-not claim, steers the memory of the containers that opt in to their
-claimed memory, and lends memory to running containers (leases).
+This chart deploys `nri-dra-driver-cxl`, a Dynamic Resource Allocation (DRA)
+driver for CXL memory and a Node Resource Interface (NRI) plugin. It
+publishes the CXL memory of every node (driver `cxl.nri.io`), prepares the
+claims of CXL memory pool devices (driver `cxl-pool.nri.io`), keeps
+containers off the CXL memory that they did not claim, steers the memory of
+the containers that opt in, and lends memory to running containers.
 
 CAUTION: experimental. Interfaces may change.
 
-How to use the driver, its DeviceClasses, configurations and leases are
-described in the
-[CXL memory documentation](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md);
-this page summarizes the chart and points there for detail.
+The [CXL memory documentation](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/index.md)
+describes the driver;
+[Deploy and configure](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md)
+has the details of this chart.
 
 ## Prerequisites
 
-- Kubernetes 1.37+, with the DRA
+- Kubernetes 1.37+, with the
   [feature gates](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#feature-gates)
-  of the CXL memory documentation.
+  of the driver.
 - Helm 3.0.0+
-- A container runtime with CDI and NRI enabled. The driver is tested with
-  containerd 2.x
+- A container runtime with CDI and NRI enabled: the driver is tested with
+  containerd 2
   ([enabling NRI](https://github.com/containerd/containerd/blob/main/docs/NRI.md#enabling-nri-support-in-containerd),
-  or set `nri.runtime.patchConfig`, see below); CRI-O is not tested.
-- cgroup v2 and a kernel with CXL regions, device DAX and its kmem
-  driver, memory hot-remove and `CONFIG_FS_DAX`; for devices of
-  persistent memory (pool devices and persistent local memdevs) also the
-  CXL pmem, libnvdimm, pmem block device and pfn options, the
-  filesystems that mode `fs` mounts and the loop device. The
-  [requirements](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#requirements)
-  list the kernel options.
-- `/sys/devices/system/memory/auto_online_blocks` set to `offline`, and
-  no udev rule that onlines hot-added memory (`40-redhat.rules` of RHEL,
-  CentOS Stream and Fedora does: override it as the
-  [requirements](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#requirements)
-  show).
+  or set `nri.runtime.patchConfig`); CRI-O is not tested.
+- The kernel, memory onlining and udev settings of the
+  [requirements](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#requirements).
 
-The image contains the `cxl` and `ndctl` tools of ndctl and the
-static `cxl-request` command line tool of leases. The pod runs privileged
-in the host PID namespace, and mounts from the host `/sys`, `/dev`,
-`/lib/modules` (read-only), the NRI socket directory `/var/run/nri`, the
-CDI directory `/var/run/cdi`, and the kubelet directories
-`/var/lib/kubelet/plugins` and `/var/lib/kubelet/plugins_registry`. At start
-the driver copies `cxl-request` to
-`/var/lib/kubelet/plugins/cxl.nri.io/cxl-request` on the host, from where
-lease claims mount it into containers. `/var/lib/kubelet/plugins` is
-mounted with `mountPropagation: Bidirectional`: the filesystems that both
-drivers mount for mode `fs`, those of persistent local memdevs under
-`/var/lib/kubelet/plugins/cxl.nri.io/mounts` and those of pool devices
-under `/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts`, and the binds of
-`fs` leases under `/var/lib/kubelet/plugins/cxl.nri.io/lease-fs`, must
-reach the host, where the container runtime binds them into containers
-(kubelet makes `/var/lib/kubelet` a shared mount, and Bidirectional needs
-a privileged container). The
-[files on the node](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#files-on-the-node)
-are listed in the CXL memory documentation.
+The pod of the DaemonSet runs privileged in the host PID namespace and
+mounts the kubelet plugin directories with `mountPropagation:
+Bidirectional`, so that the filesystems that the driver mounts reach the
+containers
+([files on the node](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#files-on-the-node)).
 
 ## Installing the Chart
 
@@ -67,67 +42,37 @@ helm repo add nri-plugins https://containers.github.io/nri-plugins
 helm install my-dra-driver-cxl nri-plugins/nri-dra-driver-cxl --namespace kube-system
 ```
 
-The command above deploys the driver on the Kubernetes cluster within the
-`kube-system` namespace with default configuration. Besides the DaemonSet
-the chart installs the DeviceClasses `cxl-local`, `cxl-local-shared`,
-`cxl-local-persistent`, `cxl-pool`, `cxl-pool-shared`,
-`cxl-pool-persistent`, `cxl-region`, `cxl-dram` and `cxl-lease`
-([DeviceClasses](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/index.md#deviceclasses):
-`cxl-local-persistent` selects the local memdevs of persistent memory,
-whose claims get their block device or a filesystem on it, and
-`cxl-local` and `cxl-local-shared` the other local memdevs), a
-ClusterRole, and two ValidatingAdmissionPolicies that let the driver
-modify only the ResourceSlices and the lease companion pods and claims of
-its own node (they need the `ServiceAccountTokenPodNodeInfo` feature; see
-[RBAC and admission policies](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#rbac-and-admission-policies)).
-With `leases.namespaceLabels` a third policy lets only the namespaces with
-those labels lease memory.
-To customize the available parameters as
-described in the [Configuration options](#configuration-options) below, you
-have two options: you can use the `--set` flag or create a custom
-values.yaml file and provide it using the `-f` flag. For example:
+The command above deploys the driver in the `kube-system` namespace with
+the default configuration. Besides the DaemonSet the chart installs the
+nine [DeviceClasses](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/index.md#deviceclasses),
+a ClusterRole, and the
+[admission policies](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#rbac-and-admission-policies)
+that let the driver change only the ResourceSlices and the lease companions
+of its own node. Use `--set` or a values file with `-f` for the
+[configuration options](#configuration-options). For example:
 
 ```sh
-# Install the driver with custom values specified in a custom values.yaml file
-cat <<EOF > myPath/values.yaml
+cat > myPath/values.yaml <<'VALUES'
 config:
   ignoreMemdevs: ["mem0"]
-  # local devices shared by the claims of class cxl-local-shared
-  sharedMemdevs: ["0xc100e2e1"]
-  # the filesystem types that mode fs mounts on the nodes (default: erofs
-  # only); ext4 trusts everyone who can write the devices raw
-  fsTypes: [erofs, ext4]
-  defaults:
-    container:
-      fencing: allowed-mems
-
+  sharedMemdevs: ["0xc100e2e2"]   # shared by the claims of class cxl-local-shared
+  fsTypes: [erofs, ext4]          # ext4 trusts every party that can write the devices raw
 leases:
   enabled: false
-
-tolerations:
-- key: "node-role.kubernetes.io/control-plane"
-  operator: "Exists"
-  effect: "NoSchedule"
-EOF
-
+VALUES
 helm install my-dra-driver-cxl nri-plugins/nri-dra-driver-cxl --namespace kube-system -f myPath/values.yaml
 ```
 
 ## Uninstalling the Chart
 
-To uninstall the driver run the following command:
+Delete the pods that use CXL claims first, so that the driver can
+unprepare their claims, then:
 
 ```sh
 helm delete my-dra-driver-cxl --namespace kube-system
 ```
 
-Delete the pods that use CXL claims before uninstalling the driver, so that
-it can unprepare their claims.
-
 ## Configuration options
-
-The tables below present an overview of the parameters available for users to
-customize with their own values, along with the default values.
 
 | Name                     | Default                                                                                                                       | Description                                          |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
@@ -164,37 +109,14 @@ customize with their own values, along with the default values.
 | `nodeSelector`           | {}                                                                                                                            | specify node selector labels                         |
 | `podPriorityClassNodeCritical` | true                                                                                                                    | enable [marking Pod as node critical](https://kubernetes.io/docs/tasks/administer-cluster/guaranteed-scheduling-critical-addon-pods/#marking-pod-as-critical) |
 
-The keys of `config` are described in the
+`config` is the
 [configuration file](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#configuration-file)
-section of the CXL memory documentation. `config.fsTypes` lists the
-filesystem types that `device.mode: fs` mounts on the nodes, for local
-and pool devices; without it the nodes mount erofs only, the type that is
-built for images of untrusted writers, and `[]` mounts none. The node's
-kernel parses what the writer of a device wrote, and ext4, xfs, btrfs,
-squashfs and gfs2 are not hardened against crafted images: adding a type
-trusts every party that can write the devices raw, that is every
-read-write block claim and lease of a persistent device on any node of
-any cluster that shares the pool. The chart sets no `fsTypes`.
-`config.memdevSettings[].coherent` declares the memory of a local memdev
-in `config.sharedMemdevs` coherent between the hosts that share it, so
-that a cluster filesystem may be read-write on it.
-`config.defaults.container`
-holds the node defaults of the settings of containers:
-`fencing` (`allowed-mems` by default) keeps the CXL nodes of the driver
-away from the containers that have not claimed memory on them; with an
-NRI resource policy that sets `cpuset.mems` (nri-resource-policy balloons
-or topology-aware) set it to `none`, see
-[containers without claims](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#containers-without-claims).
-`steering` (`{policy: none}` by default) steers every container of the
-node with `numa` memory when its policy is `auto` or another policy, see
-[steering](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#steering).
-
-`deviceClassConfig` gives the DeviceClasses of the chart a `MemoryConfig`
-as a preset: the chart renders the body of each class into an opaque
-entry of the class's driver with apiVersion `cxl.nri.io/v1alpha1` and
-kind `MemoryConfig`, and the claims of the class change it field by
-field. For example, steering on for every container with local or pool
-CXL memory, unless its claim says `container: {steering: {policy: none}}`:
+of the driver. `deviceClassConfig` gives the DeviceClasses of the chart a
+`MemoryConfig` as a
+[preset](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#presets-in-deviceclasses),
+which the claims of a class change field by field. For example, steering on
+for every container with local or pool CXL memory, unless its claim says
+`container: {steering: {policy: none}}`:
 
 ```yaml
 deviceClassConfig:
@@ -203,6 +125,3 @@ deviceClassConfig:
   cxl-pool:
     container: {steering: {policy: auto}}
 ```
-
-See
-[presets in DeviceClasses](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#presets-in-deviceclasses).
