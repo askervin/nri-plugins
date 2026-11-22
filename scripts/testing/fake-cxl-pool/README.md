@@ -211,8 +211,8 @@ SCOPE STATE ATTACHED-TO`; `devices NAME` prints `memory: persistent`
 `attach --single-host` makes a single-host attachment: no other host can
 attach the device until it is detached, also a shared device. It is the
 pool side of the exclusive use of a shared device: fake-cxl-pool-controller
-attaches exclusively for a claim that requests no `shares` of a shared
-device (`AttachRequest.exclusive` in the REST API).
+makes a single-host attachment for a claim that requests no `shares` of
+a shared device (`AttachRequest.singleHost` in the REST API).
 
 ### Sharing a device between two VMs (mode dax)
 
@@ -310,7 +310,7 @@ the server, the controller and the driver in the e2e VMs. The controller:
   allocates again.
 - attaches where the claim says: `pool.opaque.fake-cxl-pool` of the
   claim's `MemoryConfig` (below).
-- attaches exclusively (`AttachRequest.exclusive`) for a claim that
+- makes a single-host attachment (`AttachRequest.singleHost`) for a claim that
   consumes all `shares` of a shared device (`exclusive: true` in its
   device data), and for a share whose `MemoryConfig` mounts a filesystem
   read-write (`device.mode: fs`, `readOnly: false`), unless it is a
@@ -490,7 +490,7 @@ GET    /hosts                     GET /hosts/{name|uuid}
 GET    /hosts/resolve?hostname=H&uuid=U
 GET    /devices?scope=
 POST   /devices                   GET|DELETE /devices/{name}[?force=true]
-POST   /devices/{name}/attachments                       {"host": ..., "slot", "numaNode", "owner", "timeout", "exclusive"}
+POST   /devices/{name}/attachments                       {"host": ..., "slot", "numaNode", "owner", "timeout", "singleHost"}
 DELETE /devices/{name}/attachments/{host}?timeout=&force=
 GET    /attachments?host=&device=
 GET    /events                    (text/event-stream)

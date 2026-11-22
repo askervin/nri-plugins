@@ -200,7 +200,7 @@ dra-assert "$COMMAND_OUTPUT" "[(c['driver'], c['parameters']['apiVersion'], c['p
 dra-assert "$COMMAND_OUTPUT" "j['metadata']['labels']['$DRA_LEASE_LABEL'] == '$WRITER_LEASE' and j['metadata']['annotations']['$DRA_REQUESTER_ANNOTATION'] == '$DRA_NS/writer/main'"
 dra-claim-conditions "$VM2" "cxl-lease-$WRITER_LEASE"
 pool-attachments shared0
-pool-assert "$COMMAND_OUTPUT" "[(a['host'], a.get('exclusive', False)) for a in j] == [('$VM1_NAME', True)]"
+pool-assert "$COMMAND_OUTPUT" "[(a['host'], a.get('singleHost', False)) for a in j] == [('$VM1_NAME', True)]"
 pool-host-client -o json devices shared0 || command-error "cannot get shared0"
 SHARED_FILE=$(pool-value "$COMMAND_OUTPUT" 'j["path"]')
 found=$(pool-file-string "$SHARED_FILE" 0)
@@ -236,7 +236,7 @@ for r in "${READERS[@]}"; do
     dra-assert "$DRA_LEASES" "[(l['state'], bool(l.get('readOnly')), bool(l.get('share')), l.get('mode')) for l in j] == [('Pending', True, True, 'dax')]"
 done
 pool-attachments shared0
-pool-assert "$COMMAND_OUTPUT" "[(a['host'], a.get('exclusive', False)) for a in j] == [('$VM1_NAME', True)]"
+pool-assert "$COMMAND_OUTPUT" "[(a['host'], a.get('singleHost', False)) for a in j] == [('$VM1_NAME', True)]"
 
 echo "### D: the writer exits, the readers get the device"
 dra-exec "$VM1" writer touch /tmp/done || command-error "cannot tell the writer to finish"
@@ -265,7 +265,7 @@ for r in "${READERS[@]}"; do
     dra-pod-log "$VM2" "$r" | grep -q '^final: ' && error "$r stopped holding before the others read"
 done
 pool-attachments shared0
-pool-assert "$COMMAND_OUTPUT" "sorted((a['host'], a.get('exclusive', False), a['state']) for a in j) == sorted([('$VM1_NAME', False, 'attached'), ('$VM2_NAME', False, 'attached')])"
+pool-assert "$COMMAND_OUTPUT" "sorted((a['host'], a.get('singleHost', False), a['state']) for a in j) == sorted([('$VM1_NAME', False, 'attached'), ('$VM2_NAME', False, 'attached')])"
 # The companion claims of the readers ask for read-only devices, one share
 # of shared0 each. The readers get read-only fds from the node plugin
 # (check-ro above); the companion pods use nothing of their claims, which
