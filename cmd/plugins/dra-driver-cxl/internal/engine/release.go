@@ -236,8 +236,8 @@ func (e *Engine) releaseGroup(ctx context.Context, serial state.Serial, refs []s
 // it is), its lease bind unbound, its node mount and block device released
 // next to the other grants of the memdev, its own dax device deleted, the
 // region per Policy when it was the last grant of the memdev, then
-// RELEASED. A grant of a cut Prepare (JOURNALED, REALISING) that the
-// recovery releases goes to RELEASED directly. A region that the policy
+// NONE. A grant of a cut Prepare (JOURNALED, REALISING) that the
+// recovery releases goes to NONE directly. A region that the policy
 // keeps for the claim (a rollback below a newer region of another memdev)
 // is kept with the grant JOURNALED; the recovery decides what it keeps
 // before (keepForRecovery).
@@ -273,7 +273,7 @@ func (c *releaseCall) noteUnrestored(r *state.Records, g *state.Grant) {
 
 // releaseLast releases what the memdev of a grant whose own objects are
 // released has when the grant is its last one of no other call, and
-// records the grant RELEASED, or JOURNALED with the region that the policy
+// records the grant NONE, or JOURNALED with the region that the policy
 // keeps for its claim.
 func (e *Engine) releaseLast(ctx context.Context, cur *state.Grant, call *releaseCall) error {
 	ref, trigger := cur.Ref, call.trigger
@@ -297,7 +297,7 @@ func (e *Engine) releaseLast(ctx context.Context, cur *state.Grant, call *releas
 // startReleases commits the grants refs RELEASING in one commit, but those
 // that are released otherwise: of PREPARED_STALE preparations (by their
 // serial), and of cut Prepares (JOURNALED, REALISING) that the recovery
-// releases (RELEASED directly).
+// releases (NONE directly).
 func (e *Engine) startReleases(ctx context.Context, refs []state.GrantRef, call *releaseCall) error {
 	r := e.records()
 	var start []state.GrantRef
@@ -479,9 +479,9 @@ func (e *Engine) keptForClaim(ctx context.Context, ref state.GrantRef, trigger s
 	})
 }
 
-// releasedGrant removes a released grant (RELEASING -> RELEASED) from the
+// releasedGrant removes a released grant (RELEASING -> NONE) from the
 // records and from its memdev, and the memdev record when nothing of it is
-// left (UNUSED).
+// left (NONE).
 func releasedGrant(r *state.Records, ref state.GrantRef, trigger state.Trigger) error {
 	g := r.Grant(ref)
 	if g == nil {
@@ -520,7 +520,7 @@ func unused(m *state.Memdev) bool {
 	return len(m.Grants) == 0 && len(m.Regions) == 0 && len(m.Hollow) == 0 && len(m.Stale) == 0
 }
 
-// dropMemdev removes the record of the memdev with the serial (UNUSED).
+// dropMemdev removes the record of the memdev with the serial (NONE).
 func dropMemdev(r *state.Records, serial state.Serial, trigger state.Trigger) error {
 	m := r.Memdev(serial)
 	if m == nil {

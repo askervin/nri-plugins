@@ -46,12 +46,12 @@ type ConnState string
 // The states of the NRI connection.
 const (
 	// ConnNew: Start has not returned.
-	ConnNew ConnState = "NONE"
+	ConnNew ConnState = "NEW"
 	// ConnStarted: the stub started.
 	ConnStarted ConnState = "STARTED"
 	// ConnFailed: the stub could not be made or started: no container is
 	// fenced, lends fail.
-	ConnFailed ConnState = "ABSENT"
+	ConnFailed ConnState = "FAILED"
 	// ConnClosed: the runtime closed the connection before Start returned.
 	ConnClosed ConnState = "CLOSED"
 	// ConnStopping: the driver stops, a close is no loss.

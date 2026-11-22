@@ -38,7 +38,7 @@ var notDriven = map[string]string{
 	"Preparation.State UNPREPARING -> (unchanged) on recover": "a start leaves an UNPREPARING preparation " +
 		"as it is, with no commit",
 	"Preparation.State KEPT -> (unchanged) on recover": "the engine's recovery of a kept region",
-	"Preparation.State KEPT -> UNKNOWN on recover":     "the engine's recovery of a kept region",
+	"Preparation.State KEPT -> NONE on recover":        "the engine's recovery of a kept region",
 }
 
 // TestMain counts the rows of the table of the preparations that the tests

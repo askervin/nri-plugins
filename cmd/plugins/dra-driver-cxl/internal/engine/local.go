@@ -391,7 +391,7 @@ func roundUp(v, step uint64) uint64 {
 // returns it with its size: the unused Whole device daxN.0 or the seed
 // resized, else a new device placed first-fit by the kernel, on the first
 // whole free blocks instead when first-fit crossed a block boundary. The
-// device is recorded SIZED with the grant its user.
+// device is recorded UNBOUND with the grant its user.
 func (e *Engine) addSlice(ctx context.Context, req *GrantRequest, memdev, region string, bs uint64) (string, uint64, error) {
 	first, size, err := e.sliceRoom(req, memdev, region, bs)
 	if err != nil {
@@ -463,7 +463,7 @@ func (e *Engine) sliceRoom(req *GrantRequest, memdev, region string, bs uint64) 
 	return first, size, nil
 }
 
-// sizedSlice records the dax device of a part placed: SIZED, with its
+// sizedSlice records the dax device of a part placed: UNBOUND, with its
 // size, memory and numbers, the grant its user.
 func sizedSlice(r *state.Records, ref state.GrantRef, region, dax string, size uint64, dev state.DevNumbers) error {
 	d := r.Region(state.RegionRef(region)).DaxDevice(dax)
@@ -477,8 +477,8 @@ func sizedSlice(r *state.Records, ref state.GrantRef, region, dax string, size u
 }
 
 // sliceRecord records the dax device of a new part: the Whole device
-// daxN.0 resized (DEVICE_DAX -> SIZED, no longer the Whole device), the
-// seed sized again, or a new device (ABSENT -> CREATING).
+// daxN.0 resized (DEVICE_DAX -> UNBOUND, no longer the Whole device), the
+// seed sized again, or a new device (NONE -> CREATING).
 func sliceRecord(r *state.Records, ref state.GrantRef, region, dax string, reused bool) error {
 	reg := r.Region(state.RegionRef(region))
 	d := reg.DaxDevice(dax)
@@ -763,7 +763,7 @@ func (e *Engine) offlineDax(ctx context.Context, dax string) ([]int, error) {
 }
 
 // deletedOwnSlice records the own dax device of a grant deleted: a device that
-// a cut Prepare made goes (CREATING -> ABSENT), another one becomes the
+// a cut Prepare made goes (CREATING -> NONE), another one becomes the
 // seed (daxN.0) or goes.
 func deletedOwnSlice(r *state.Records, ref state.GrantRef, region state.RegionRef, dax string, trigger state.Trigger) error {
 	reg := r.Region(region)

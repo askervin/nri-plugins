@@ -32,21 +32,21 @@ Preparation is the record of one claim as one driver prepares it: the record tha
 
 **Identity.** The claim UID and the driver (cxl.nri.io or the pool driver); ClaimName is &lt;namespace>/&lt;name> of the claim.
 
-**States.** PreparationState. UNKNOWN is no record. PREPARING: the record and the grants it may realise are committed before any kernel object is touched; a process stop here is a cut Prepare. PREPARED: every grant realised, the CDI spec written. PREPARED_UNRESTORED: a grant's node mount, dax or block device did not verify at a start; no CDI device until a Prepare again restores it. PREPARED_STALE: prepared in another boot; nothing of it exists in the kernel. UNPREPARING: being released. KEPT: not prepared, but a region is kept for the claim because its release would leave a decoder hole.
+**States.** PreparationState. NONE is no record. PREPARING: the record and the grants it may realise are committed before any kernel object is touched; a process stop here is a cut Prepare. PREPARED: every grant realised, the CDI spec written. PREPARED_UNRESTORED: a grant's node mount, dax or block device did not verify at a start; no CDI device until a Prepare again restores it. PREPARED_STALE: prepared in another boot; nothing of it exists in the kernel. UNPREPARING: being released. KEPT: not prepared, but a region is kept for the claim because its release would leave a decoder hole.
 
 **Transitions.** PreparationTable below; a transition not in it is refused.
 
 ### Preparation.State
 
-States: UNKNOWN, PREPARING, PREPARED, PREPARED_UNRESTORED, PREPARED_STALE, UNPREPARING, KEPT.
+States: NONE, PREPARING, PREPARED, PREPARED_UNRESTORED, PREPARED_STALE, UNPREPARING, KEPT.
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| UNKNOWN | PREPARING | `prepare`: validation and the companion gate passed | allocation present; config decodes; local: device in the last published ResourceSlice; pool: status data present | commit (d) of the preparation with its results (the intent); companion: lease LENDING in the same commit |
+| NONE | PREPARING | `prepare`: validation and the companion gate passed | allocation present; config decodes; local: device in the last published ResourceSlice; pool: status data present | commit (d) of the preparation with its results (the intent); companion: lease LENDING in the same commit |
 | PREPARING | PREPARED | `prepare`: every result realised, CDI spec written (none for a companion) | all grants REALISED | commit (d) jointly with lease READY (companion) or lease claim OPEN (lease result); kubelet gets the result |
-| PREPARING | UNKNOWN | `prepare`, `unprepare`: the Prepare failed and its rollback released everything; or an Unprepare released everything recorded | no KEPT region, no Stale entry | commit (d) removing the record; kubelet gets the error (Prepare) or nil (Unprepare) |
+| PREPARING | NONE | `prepare`, `unprepare`: the Prepare failed and its rollback released everything; or an Unprepare released everything recorded | no KEPT region, no Stale entry | commit (d) removing the record; kubelet gets the error (Prepare) or nil (Unprepare) |
 | PREPARING | KEPT | `prepare`, `recover`: the Prepare failed and its rollback kept a region (in-order release refused); or the recovery kept a cut region below newer regions | Policy says keep | commit (d); error to kubelet (retry) or nothing (recovery) |
-| PREPARING | (unchanged) | `recover`: the recovery of a cut Prepare: leftovers released, the record stays for kubelet's retry | - | commit (d) of the grants back to JOURNALED or RELEASED |
+| PREPARING | (unchanged) | `recover`: the recovery of a cut Prepare: leftovers released, the record stays for kubelet's retry | - | commit (d) of the grants back to JOURNALED or NONE |
 | PREPARING | (unchanged) | `prepare`: Prepare retried by kubelet: continues per result | REALISED grants that verify are reused | as the first Prepare |
 | PREPARED | (unchanged) | `prepare`: Prepare again (kubelet restart, companion re-announce) | - | no commit; companion: OnLending and OnPrepared announced again |
 | PREPARED | PREPARED_UNRESTORED | `recover`: a grant's objects do not verify (mount, dax or block identity) | - | commit (l); no CDI device for the claim; logged |
@@ -54,24 +54,24 @@ States: UNKNOWN, PREPARING, PREPARED, PREPARED_UNRESTORED, PREPARED_STALE, UNPRE
 | PREPARED_UNRESTORED | (unchanged) | `recover`: the recovery at a restart fails again, or fails for another grant of the claim | - | logged; for another grant, commit (l) of it REALISED_UNRESTORED |
 | PREPARED_UNRESTORED | (unchanged) | `prepare`: Prepare again fails | - | error to kubelet |
 | PREPARING, PREPARED, PREPARED_UNRESTORED, PREPARED_STALE, UNPREPARING, KEPT | PREPARED_STALE | `load`: the document's boot id differs from the running boot | - | commit (l): grants keep Serial, Source and Asked, Got and Intent cleared; no CDI device; nothing released at start |
-| PREPARED_STALE | PREPARING | `prepare`: Prepare again (kubelet after a reboot) | - | the old grants dropped in the same commit (d); then as UNKNOWN -> PREPARING |
+| PREPARED_STALE | PREPARING | `prepare`: Prepare again (kubelet after a reboot) | - | the old grants dropped in the same commit (d); then as NONE -> PREPARING |
 | PREPARED_STALE | (unchanged) | `prepare`: a Prepare again fails validation or the companion gate | - | error to kubelet; the record stays for the next Prepare or the Unprepare |
-| PREPARED_STALE | UNKNOWN | `unprepare` | - | release by serial: a pool memdev disabled iff no grant of this boot uses the serial; no revoke; commit (d) removing the record |
+| PREPARED_STALE | NONE | `unprepare` | - | release by serial: a pool memdev disabled iff no grant of this boot uses the serial; no revoke; commit (d) removing the record |
 | PREPARED, PREPARED_UNRESTORED | UNPREPARING | `unprepare` | lease claim: CloseClaim returned; companion: OnReleasing done | commit (d) |
-| UNPREPARING | UNKNOWN | `unprepare`: every grant RELEASED | - | commit (d) removing the record; kubelet gets nil |
+| UNPREPARING | NONE | `unprepare`: every grant NONE | - | commit (d) removing the record; kubelet gets nil |
 | UNPREPARING | (unchanged) | `unprepare`: a release step failed (EBUSY, a revoke before the lender is set up) | - | error to kubelet (retried about every second); records unchanged; the retry finds out from the kernel what exists |
 | UNPREPARING | (unchanged) | `recover`: the record at the start: no remount; the CDI spec keeps the claim's devices until kubelet's Unprepare retry removes them | - | nothing at start |
 | UNPREPARING | (unchanged) | `prepare`: a Prepare again before kubelet's Unprepare retry | - | the result is returned as prepared (both drivers); a companion is announced again; no commit |
 | KEPT | PREPARING | `prepare`: Prepare again | - | the kept region is enabled and set up again |
 | KEPT | (unchanged) | `prepare`: a Prepare again fails validation or the companion gate | - | error to kubelet; the record and the kept region stay for the next Prepare or the Unprepare |
-| KEPT | UNKNOWN | `unprepare` | - | the kept region destroyed per Policy; commit (d) removing the record |
+| KEPT | NONE | `unprepare` | - | the kept region destroyed per Policy; commit (d) removing the record |
 | KEPT | (unchanged) | `recover`: the recovery at a later start released some of its kept grants and kept the others | - | commit (d) dropping the results of the released grants |
-| KEPT | UNKNOWN | `recover`: the recovery at a later start released every grant that it kept (nothing lies above its regions any more, or its idle shared memdev keeps its region) | - | commit (d) removing the record; kubelet's Prepare again prepares the claim anew, its Unprepare finds nothing |
+| KEPT | NONE | `recover`: the recovery at a later start released every grant that it kept (nothing lies above its regions any more, or its idle shared memdev keeps its region) | - | commit (d) removing the record; kubelet's Prepare again prepares the claim anew, its Unprepare finds nothing |
 
 Refused:
 
 - PREPARED -> PREPARING: a Prepare again never realises a PREPARED claim anew within a boot
-- UNKNOWN -> PREPARED: nothing is prepared without the intent commit
+- NONE -> PREPARED: nothing is prepared without the intent commit
 
 **Invariants.** A PREPARED preparation's grants are REALISED; a PREPARED_UNRESTORED one's are REALISED or REALISED_UNRESTORED; a result of kind grant names a grant record of the claim with the result's index; a companion claim (Lease set) gives no CDI devices.
 
@@ -85,13 +85,13 @@ Grant is the memory given to one allocation result of a claim on one memdev, loc
 
 **Identity.** Ref, the claim UID and the index of the allocation result; Serial is the memdev.
 
-**States.** GrantState. REQUESTED: decided from the claim and the config, nothing touched, not in the store. JOURNALED: the intent is in the store; a cut after this point is recoverable. REALISING: kernel work in progress. REALISED: usable by a container. REALISED_UNRESTORED: its node mount, dax or block device did not verify at a start: no CDI device. RELEASING: lends revoked, binds and mounts undone, memory offlined, dax device deleted, the region released per Policy when the grant was its last user. RELEASED: gone from the store. A refusal is a Reason on the way to RELEASING, not a state; a decoder hole is a typed error of the Prepare.
+**States.** GrantState. REQUESTED: decided from the claim and the config, nothing touched, not in the store. JOURNALED: the intent is in the store; a cut after this point is recoverable. REALISING: kernel work in progress. REALISED: usable by a container. REALISED_UNRESTORED: its node mount, dax or block device did not verify at a start: no CDI device. RELEASING: lends revoked, binds and mounts undone, memory offlined, dax device deleted, the region released per Policy when the grant was its last user. NONE: gone from the store. A refusal is a Reason on the way to RELEASING, not a state; a decoder hole is a typed error of the Prepare.
 
 **Transitions.** GrantTable below, and BindTable for Got.Bind; a transition not in them is refused.
 
 ### Grant.State
 
-States: REQUESTED, JOURNALED, REALISING, REALISED, REALISED_UNRESTORED, RELEASING, RELEASED.
+States: REQUESTED, JOURNALED, REALISING, REALISED, REALISED_UNRESTORED, RELEASING, NONE.
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
@@ -101,7 +101,7 @@ States: REQUESTED, JOURNALED, REALISING, REALISED, REALISED_UNRESTORED, RELEASIN
 | REALISING | RELEASING | `prepare`, `unprepare`: a persistent refusal (no fsdax namespace for a reader; no allowed filesystem type; a block writer that is not exclusive) or a config refusal found after kernel work; or any other failure (decoder hole, no room, EBUSY online, timeout) | - | Reason the error of the step, the Prepare's error (a typed error to the front-end); rollback: the objects this grant made are released per Policy (trigger rollback); an Unprepare of a grant that a failed release at the start left REALISING releases it the same way |
 | JOURNALED | RELEASING | `prepare`, `unprepare`: the rollback of a Prepare that failed before the grant's first kernel action; an Unprepare of a PREPARING or KEPT preparation | - | Reason the error of the step when the grant's own Prepare failed; release what Got and Intent name (a kept region per Policy); commit (d) |
 | REALISED | RELEASING | `unprepare`, `prepare`, `recover`: an Unprepare; the rollback of a sibling grant of the same claim; the recovery of a PREPARING preparation (unfinished claim) | companion: lends revoked and binds unbound first | commit (d) |
-| RELEASING | RELEASED | `unprepare`, `prepare`, `recover`: mounts unmounted or downgraded, blocks offline, dax device deleted, the region per Policy when the grant was its last user | - | commit (d) removing the grant; the Memdev's grants and the users of the region's objects updated |
+| RELEASING | NONE | `unprepare`, `prepare`, `recover`: mounts unmounted or downgraded, blocks offline, dax device deleted, the region per Policy when the grant was its last user | - | commit (d) removing the grant; the Memdev's grants and the users of the region's objects updated |
 | RELEASING | (unchanged) | `unprepare`, `prepare`, `recover`: a release step failed (EBUSY offline, busy mount, holder) | - | error up (kubelet retries); records unchanged |
 | RELEASING | JOURNALED | `prepare`, `recover`: the rollback of a failed Prepare, or the recovery of a cut Prepare's REALISED grant, released what the grant made but kept its region below a newer region of another memdev (Policy in order refused, or recovery keep) | - | the grant holds the KEPT region for its claim (Intent.Region; Got cleared but Bind and Lend; Reason cleared; the preparation KEPT): its Prepare again reuses it, its Unprepare releases it; commit (d) |
 | REALISED | REALISED_UNRESTORED | `recover`: verification failed (mount: not remountable; dax: name, dev, size or region mismatch; block: namespace, name or dev mismatch) | - | commit (l); no CDI device |
@@ -109,14 +109,14 @@ States: REQUESTED, JOURNALED, REALISING, REALISED, REALISED_UNRESTORED, RELEASIN
 | REALISED_UNRESTORED | RELEASING | `unprepare`, `prepare`, `recover`: an Unprepare or a rollback | - | commit (d); nothing of Got to undo beyond what verifies |
 | JOURNALED, REALISING, REALISED, REALISED_UNRESTORED, RELEASING | (unchanged) | `load`: the preparation became PREPARED_STALE at the load | - | Got and Intent cleared, nothing released at start; commit (l) |
 | JOURNALED, REALISING | JOURNALED | `recover`: the recovery of a cut Prepare kept the region (region KEPT) | Policy (trigger recovery) says keep | commit (d); a numa companion's lend is left to kubelet |
-| JOURNALED, REALISING | RELEASED | `recover`: the recovery of a cut Prepare released the objects named by Got and by Intent | Policy (trigger recovery) says destroy | commit (d) |
-| JOURNALED, REALISING, REALISED, REALISED_UNRESTORED | RELEASED | `prepare`, `unprepare`: a Prepare again or an Unprepare of a PREPARED_STALE preparation (a RELEASING grant goes by the release row) | the preparation is PREPARED_STALE | dropped in the commit (d) of the preparation; an Unprepare releases by serial first |
-| JOURNALED, REALISING, REALISED, REALISED_UNRESTORED, RELEASING | RELEASED | `load`: its preparation of another boot is dropped at the load (the driver drops such records) | - | dropped with the preparation, commit (l) |
+| JOURNALED, REALISING | NONE | `recover`: the recovery of a cut Prepare released the objects named by Got and by Intent | Policy (trigger recovery) says destroy | commit (d) |
+| JOURNALED, REALISING, REALISED, REALISED_UNRESTORED | NONE | `prepare`, `unprepare`: a Prepare again or an Unprepare of a PREPARED_STALE preparation (a RELEASING grant goes by the release row) | the preparation is PREPARED_STALE | dropped in the commit (d) of the preparation; an Unprepare releases by serial first |
+| JOURNALED, REALISING, REALISED, REALISED_UNRESTORED, RELEASING | NONE | `load`: its preparation of another boot is dropped at the load (the driver drops such records) | - | dropped with the preparation, commit (l) |
 
 Refused:
 
 - REQUESTED -> REALISING, REALISED: nothing is created without the intent
-- RELEASED -> any state: a released grant is gone
+- NONE -> any state: a released grant is gone
 
 **Invariants.** Every object named by Got is named by Intent first; Got.Region names a Region record that targets Serial; Got.Dax and Got.Mount name objects of that region that list the grant among their users.
 
@@ -159,32 +159,32 @@ Memdev is the engine's record of one memdev under the driver's care, local or po
 
 **Identity.** Serial. Name is the kernel's memN at the last observation; it changes with the probe order.
 
-**States.** MemdevState. UNUSED: no grant and no region of ours, not in the store. ACTIVE: at least one grant. IDLE_KEPT: no grant, its region kept (a configured shared device; a persistent device below newer regions; a region that a rollback or the recovery kept below newer regions). GONE: the memdev is absent while grants exist (a pool device detached under us, a local hot-remove).
+**States.** MemdevState. NONE: no grant and no region of ours, not in the store. ACTIVE: at least one grant. IDLE_KEPT: no grant, its region kept (a configured shared device; a persistent device below newer regions; a region that a rollback or the recovery kept below newer regions). GONE: the memdev is absent while grants exist (a pool device detached under us, a local hot-remove).
 
 **Transitions.** MemdevTable below; a transition not in it is refused.
 
 ### Memdev.State
 
-States: UNUSED, ACTIVE, IDLE_KEPT, GONE.
+States: NONE, ACTIVE, IDLE_KEPT, GONE.
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| UNUSED | ACTIVE | `prepare`: the first grant of the serial is JOURNALED | provenance allows the source | commit (d) with the facts (usable, shared, persistent, coherent, NUMA affinity); pool: provenance POOL in the same commit |
+| NONE | ACTIVE | `prepare`: the first grant of the serial is JOURNALED | provenance allows the source | commit (d) with the facts (usable, shared, persistent, coherent, NUMA affinity); pool: provenance POOL in the same commit |
 | ACTIVE | (unchanged) | `prepare`, `unprepare`, `recover`: grants come and go while at least one remains | - | commits with the grants |
-| ACTIVE | UNUSED | `unprepare`, `prepare`, `recover`: the last grant RELEASED and Policy says destroy (local sliced, local shared not configured any more, pool) | the region destroyed; a pool memdev disabled | commit (d) removing the record |
-| ACTIVE | IDLE_KEPT | `unprepare`, `prepare`, `recover`: the last grant RELEASED and Policy says keep (local shared while configured; local persistent with regions above; a rollback or recovery that keeps) | - | commit (d) |
+| ACTIVE | NONE | `unprepare`, `prepare`, `recover`: the last grant NONE and Policy says destroy (local sliced, local shared not configured any more, pool) | the region destroyed; a pool memdev disabled | commit (d) removing the record |
+| ACTIVE | IDLE_KEPT | `unprepare`, `prepare`, `recover`: the last grant NONE and Policy says keep (local shared while configured; local persistent with regions above; a rollback or recovery that keeps) | - | commit (d) |
 | IDLE_KEPT | ACTIVE | `prepare`: a new grant JOURNALED | the kept region enabled and set up again if needed | commit (d) |
-| IDLE_KEPT | UNUSED | `recover`, `prepare`: the recovery or the next Prepare of the memdev finds the keep reason gone (shared not configured any more; nothing above a kept persistent region; an idle leftover) | Policy says destroy | region destroyed; commit (d) removing the record |
+| IDLE_KEPT | NONE | `recover`, `prepare`: the recovery or the next Prepare of the memdev finds the keep reason gone (shared not configured any more; nothing above a kept persistent region; an idle leftover) | Policy says destroy | region destroyed; commit (d) removing the record |
 | ACTIVE, IDLE_KEPT | GONE | `recover`, `observe`: the memdev is absent at the start, or it went while grants exist (pool device detached under us; local hot-remove) | - | commit (l); the hollow regions of ours noted in Hollow; grants kept for kubelet's Unprepare |
-| GONE | UNUSED | `unprepare`, `recover`: the last grant RELEASED (by serial) and Hollow empty | hollow regions deleted when their blocks are offline | commit (d) removing the record |
+| GONE | NONE | `unprepare`, `recover`: the last grant NONE (by serial) and Hollow empty | hollow regions deleted when their blocks are offline | commit (d) removing the record |
 | GONE | ACTIVE | `observe`, `recover`: the memdev appeared while grants exist (the same serial attached again) | the grants are of PREPARED_STALE preparations or REALISED with objects to verify | commit (l) |
-| ACTIVE, IDLE_KEPT, GONE | UNUSED | `load`: the document is of another boot | - | the record dropped: its regions, dax devices, mounts and binds did not survive the reboot |
+| ACTIVE, IDLE_KEPT, GONE | NONE | `load`: the document is of another boot | - | the record dropped: its regions, dax devices, mounts and binds did not survive the reboot |
 
 Refused:
 
-- UNUSED -> IDLE_KEPT: a kept region always had a grant or a cut first
+- NONE -> IDLE_KEPT: a kept region always had a grant or a cut first
 
-**Invariants.** Regions name Region records that target the serial; Grants name the grant records of the serial; a memdev in the store is not UNUSED.
+**Invariants.** Regions name Region records that target the serial; Grants name the grant records of the serial; a memdev in the store is not NONE.
 
 **Persistence.** Fact; committed with the grants that change it. A load in another boot drops the record: its regions, dax devices, mounts and binds do not survive a reboot.
 
@@ -247,35 +247,35 @@ DaxDevice is a dax device of a region of ours with the grants that use it: one u
 
 **Identity.** Name (daxN.M) in its region.
 
-**States.** DaxDeviceState. ABSENT: no device. CREATING: dax_region/create written, the name read back. SIZED: sized, unbound. DEVICE_DAX: bound to device_dax. KMEM_OFFLINE, KMEM_ONLINE: bound to kmem, its memory blocks offline or online (movable). SEED: daxN.0 at size 0, which the kernel never deletes.
+**States.** DaxDeviceState. NONE: no device. CREATING: dax_region/create written, the name read back. UNBOUND: sized, unbound. DEVICE_DAX: bound to device_dax. KMEM_OFFLINE, KMEM_ONLINE: bound to kmem, its memory blocks offline or online (movable). SEED: daxN.0 at size 0, which the kernel never deletes.
 
 **Transitions.** DaxDeviceTable below; a transition not in it is refused.
 
 ### DaxDevice.State
 
-States: ABSENT, CREATING, SIZED, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE, SEED.
+States: NONE, CREATING, UNBOUND, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE, SEED.
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| ABSENT | CREATING | `prepare`: a grant needs a dax device (or the Whole device at set-up) | engine lock held | dax_region/create written; the name read back |
-| CREATING | SIZED | `prepare`: size (or explicit ranges) written and verified | room in the dax region; whole-block placement verified (created again through the mapping attribute if not) | commit (d) of name, dev and ranges; Users the grant |
-| CREATING | ABSENT | `prepare`, `unprepare`: size or ranges failed, or the verification failed; or the Unprepare of a claim whose Prepare did not finish (PREPARING or KEPT, 03a T1 PREPARING -> UNKNOWN) deletes the device its cut Prepare was making | - | deleted; error |
-| ABSENT | KMEM_OFFLINE | `prepare`: the first device (daxN.0) of a new ram region appeared, bound to kmem by the kernel | - | its blocks offlined and held offline; commit (d) |
-| ABSENT | DEVICE_DAX | `prepare`: the first device (daxN.0) of a new ram region appeared bound to device_dax (an id of its name that another tool left in device_dax) | - | commit (d) |
-| KMEM_OFFLINE | SIZED | `prepare`: kmem unbound from the offline device (the set-up of a region for device_dax or for slices) | - | commit (d) |
-| DEVICE_DAX | SIZED | `prepare`: the unused Whole device daxN.0 of a sliced region resized for the first part of a grant (unbound by the resize), or unbound from device_dax for a switch to kmem | no user | commit (d); a part: Users the grant, no longer the Whole device |
-| SIZED, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | SEED | `unprepare`, `prepare`, `recover`: daxN.0 resized to 0: the seed of a sliced region; or daxN.0 released with Users empty and not kept: the kernel keeps it at size 0 | - | kmem: blocks offlined (EBUSY: stays, error up); unbound; resized to 0; commit (d) |
-| SEED | SIZED | `prepare`: the seed sized again (the Whole device of a region set up again) | room in the dax region | commit (d) |
-| SIZED | DEVICE_DAX | `prepare`: bound to device_dax by sysfs | - | zeroed (a local dax grant, a new shared region); commit (d) |
-| SIZED | KMEM_OFFLINE | `prepare`: bound to kmem by sysfs bind (never new_id) | fenced before its blocks go online (KMEM_OFFLINE -> KMEM_ONLINE) | wait for the blocks; commit (d) |
+| NONE | CREATING | `prepare`: a grant needs a dax device (or the Whole device at set-up) | engine lock held | dax_region/create written; the name read back |
+| CREATING | UNBOUND | `prepare`: size (or explicit ranges) written and verified | room in the dax region; whole-block placement verified (created again through the mapping attribute if not) | commit (d) of name, dev and ranges; Users the grant |
+| CREATING | NONE | `prepare`, `unprepare`: size or ranges failed, or the verification failed; or the Unprepare of a claim whose Prepare did not finish (PREPARING or KEPT, 03a T1 PREPARING -> NONE) deletes the device its cut Prepare was making | - | deleted; error |
+| NONE | KMEM_OFFLINE | `prepare`: the first device (daxN.0) of a new ram region appeared, bound to kmem by the kernel | - | its blocks offlined and held offline; commit (d) |
+| NONE | DEVICE_DAX | `prepare`: the first device (daxN.0) of a new ram region appeared bound to device_dax (an id of its name that another tool left in device_dax) | - | commit (d) |
+| KMEM_OFFLINE | UNBOUND | `prepare`: kmem unbound from the offline device (the set-up of a region for device_dax or for slices) | - | commit (d) |
+| DEVICE_DAX | UNBOUND | `prepare`: the unused Whole device daxN.0 of a sliced region resized for the first part of a grant (unbound by the resize), or unbound from device_dax for a switch to kmem | no user | commit (d); a part: Users the grant, no longer the Whole device |
+| UNBOUND, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | SEED | `unprepare`, `prepare`, `recover`: daxN.0 resized to 0: the seed of a sliced region; or daxN.0 released with Users empty and not kept: the kernel keeps it at size 0 | - | kmem: blocks offlined (EBUSY: stays, error up); unbound; resized to 0; commit (d) |
+| SEED | UNBOUND | `prepare`: the seed sized again (the Whole device of a region set up again) | room in the dax region | commit (d) |
+| UNBOUND | DEVICE_DAX | `prepare`: bound to device_dax by sysfs | - | zeroed (a local dax grant, a new shared region); commit (d) |
+| UNBOUND | KMEM_OFFLINE | `prepare`: bound to kmem by sysfs bind (never new_id) | fenced before its blocks go online (KMEM_OFFLINE -> KMEM_ONLINE) | wait for the blocks; commit (d) |
 | KMEM_OFFLINE | KMEM_ONLINE | `prepare`: the blocks onlined movable | all blocks exist; the udev online settled | commit (d); the NUMA node's MemTotal grows |
 | DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | (unchanged) | `unprepare`, `prepare`, `recover`: a second grant uses the device (a shared device, a shared part, a lease joining), or a user grant RELEASING | a new user: the device is shareable for that kind | Users gets the grant or loses it; commit (d) |
-| SIZED, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | ABSENT | `unprepare`, `prepare`: Users empty and not kept (the Whole device of a configured shared memdev stays) | - | kmem: blocks offlined (EBUSY: stays, error up); unbound; resized to 0; delete written; commit (d) |
-| CREATING, SIZED, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | ABSENT | `recover`: the recovery deletes a dax device of a region of ours without users and not the kept Whole device, or releases the device of a grant that it releases | blocks offline first | deleted |
+| UNBOUND, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | NONE | `unprepare`, `prepare`: Users empty and not kept (the Whole device of a configured shared memdev stays) | - | kmem: blocks offlined (EBUSY: stays, error up); unbound; resized to 0; delete written; commit (d) |
+| CREATING, UNBOUND, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | NONE | `recover`: the recovery deletes a dax device of a region of ours without users and not the kept Whole device, or releases the device of a grant that it releases | blocks offline first | deleted |
 
 Refused:
 
-- SIZED -> KMEM_ONLINE: never online without the fence step
+- UNBOUND -> KMEM_ONLINE: never online without the fence step
 
 **Invariants.** A device that is not the seed and not the Whole device of a kept region has a user that is REALISED or RELEASING after a Prepare; the recovery deletes the others.
 
@@ -289,31 +289,31 @@ Mount is a node mount of the filesystem of a pmem region with one access, and th
 
 **Identity.** The region and Access; Path is &lt;data dir of the grant's source driver>/mounts/&lt;serial hex>-&lt;access>.
 
-**States.** MountState. ABSENT: not mounted. MOUNTED_RO, MOUNTED_RW: mounted, read-write while a writer grant uses it. FOREIGN: something else is mounted at the path; never used or unmounted. UNRESTORED: at a start the mount of a REALISED grant could not be restored. An unmount that fails busy fails the release, the mount stays as it is: kubelet retries.
+**States.** MountState. NONE: not mounted. MOUNTED_RO, MOUNTED_RW: mounted, read-write while a writer grant uses it. FOREIGN: something else is mounted at the path; never used or unmounted. UNRESTORED: at a start the mount of a REALISED grant could not be restored. An unmount that fails busy fails the release, the mount stays as it is: kubelet retries.
 
 **Transitions.** MountTable below; a transition not in it is refused.
 
 ### Mount.State
 
-States: ABSENT, MOUNTED_RO, MOUNTED_RW, FOREIGN, UNRESTORED.
+States: NONE, MOUNTED_RO, MOUNTED_RW, FOREIGN, UNRESTORED.
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| ABSENT | MOUNTED_RO | `prepare`: the first fs grant of the access, no writer grant | filesystem type allowed and detected; block device set read-only first; the access rules | mount (direct: dax=always verified; cached: loop and dax=never); commit (d) with Users the grant |
-| ABSENT | MOUNTED_RW | `prepare`: the first fs grant is a writer (readOnly false) | a single-host type, or a cluster type on a coherent device; no unexplained superblock (refused otherwise: fail closed) | block device read-write; mount rw; commit (d) |
+| NONE | MOUNTED_RO | `prepare`: the first fs grant of the access, no writer grant | filesystem type allowed and detected; block device set read-only first; the access rules | mount (direct: dax=always verified; cached: loop and dax=never); commit (d) with Users the grant |
+| NONE | MOUNTED_RW | `prepare`: the first fs grant is a writer (readOnly false) | a single-host type, or a cluster type on a coherent device; no unexplained superblock (refused otherwise: fail closed) | block device read-write; mount rw; commit (d) |
 | MOUNTED_RO | MOUNTED_RW | `prepare`: a writer grant arrives on a mounted access | type upgradable (ext4, xfs); no unexplained superblock; no other access mounted | block device, loop device and superblock read-write; commit (d) |
 | MOUNTED_RW | MOUNTED_RO | `unprepare`, `prepare`, `recover`: the last writer grant released, readers remain | - | syncfs, superblock read-only, loop and block device read-only; EBUSY (a file open for write): error up, state unchanged |
 | MOUNTED_RO, MOUNTED_RW | (unchanged) | `unprepare`, `prepare`, `recover`: an fs grant of the same access arrives, or one is released while others remain; or the recovery verified the mount or mounted it again by block device identity | - | Users gets the grant or loses it; commit (d) |
-| MOUNTED_RO, MOUNTED_RW | ABSENT | `unprepare`, `prepare`, `recover`: the last user released | - | unmounted (never detached); directory removed; commit (d); an unmount that fails busy fails the release, the mount unchanged |
-| ABSENT, MOUNTED_RO, MOUNTED_RW, UNRESTORED | UNRESTORED | `recover`: the recovery cannot mount a REALISED grant's node mount again (region gone, namespace or block device changed, mount failed), or fails again at a later start | - | the grants of the mount REALISED_UNRESTORED; commit (l) |
+| MOUNTED_RO, MOUNTED_RW | NONE | `unprepare`, `prepare`, `recover`: the last user released | - | unmounted (never detached); directory removed; commit (d); an unmount that fails busy fails the release, the mount unchanged |
+| NONE, MOUNTED_RO, MOUNTED_RW, UNRESTORED | UNRESTORED | `recover`: the recovery cannot mount a REALISED grant's node mount again (region gone, namespace or block device changed, mount failed), or fails again at a later start | - | the grants of the mount REALISED_UNRESTORED; commit (l) |
 | UNRESTORED | MOUNTED_RO | `prepare`, `recover`: a Prepare again, or the recovery at a restart, mounts it, no writer | identity verified | commit (d) |
 | UNRESTORED | MOUNTED_RW | `prepare`, `recover`: a Prepare again, or the recovery at a restart, mounts it for a writer | identity verified | commit (d) |
-| UNRESTORED | ABSENT | `unprepare`, `prepare`, `recover`: the last user released | - | nothing to unmount; commit (d) |
-| ABSENT, MOUNTED_RO, MOUNTED_RW | FOREIGN | `recover`: the recovery finds something else mounted at the path | - | error logged; never used, never unmounted by the driver; the grants REALISED_UNRESTORED |
+| UNRESTORED | NONE | `unprepare`, `prepare`, `recover`: the last user released | - | nothing to unmount; commit (d) |
+| NONE, MOUNTED_RO, MOUNTED_RW | FOREIGN | `recover`: the recovery finds something else mounted at the path | - | error logged; never used, never unmounted by the driver; the grants REALISED_UNRESTORED |
 
 Refused:
 
-- FOREIGN -> MOUNTED_RO, MOUNTED_RW, ABSENT: a foreign mount is never used or unmounted
+- FOREIGN -> MOUNTED_RO, MOUNTED_RW, NONE: a foreign mount is never used or unmounted
 
 **Invariants.** The block device is read-only iff no writer grant uses the region.
 
@@ -571,7 +571,7 @@ Container is the plugin's record of a container of a pod on the node: how the pl
 
 **Identity.** ID, the container ID. A restart of the container of a pod is a new ID of the same (PodUID, Name), which a lease is bound to; the newest record of the pair is its container.
 
-**States.** Lifecycle (LifecycleTable): UNSEEN, created while the plugin was not connected and found by Synchronize, its CreateContainer adjustment was never applied; CREATED, its CreateContainer seen, the spec holds cpuset.mems, the cgroup may not exist; TASK_CREATED, StartContainer seen, the runtime made the cgroup from the spec and an update reaches the spec only; STARTED, the runtime marked it started (PostStartContainer, or running at Synchronize): updates reach the cgroup; GONE, stopped or removed, the record leaves the table. Management (ManagementTable), decided once when the record is made: STEERED, a steering manager of this process writes its cpuset.mems and memory.high (or will, with its Plan; or its settings do not combine any more), never fenced and never lent to; FENCED, the plugin owns its cpuset.mems through NRI: wantMems; NONE (fencing none): its cpuset.mems is left as the runtime made it, a lend changes only one that has a cpuset.mems of its own.
+**States.** Lifecycle (LifecycleTable): UNSEEN, created while the plugin was not connected and found by Synchronize, its CreateContainer adjustment was never applied; CREATED, its CreateContainer seen, the spec holds cpuset.mems, the cgroup may not exist; TASK_CREATED, StartContainer seen, the runtime made the cgroup from the spec and an update reaches the spec only; STARTED, the runtime marked it started (PostStartContainer, or running at Synchronize): updates reach the cgroup; GONE, stopped or removed, the record leaves the table. Management (ManagementTable), decided once when the record is made: STEERED, a steering manager of this process writes its cpuset.mems and memory.high (or will, with its Plan; or its settings do not combine any more), never fenced and never lent to; FENCED, the plugin owns its cpuset.mems through NRI: wantMems; UNFENCED (fencing none): its cpuset.mems is left as the runtime made it, a lend changes only one that has a cpuset.mems of its own.
 
 **Transitions.** LifecycleTable and ManagementTable below; a transition not in them is refused. A lend or a revoke changes no state; its rules: a lend to a STEERED container is refused (ErrSteered); a lend to a container that has not started (UNSEEN, CREATED) is done when the container was lent the node at its creation (the READY numa leases of its pod and name, seeded), an error otherwise; a revoke of a seeded node drops its lease, and of a FENCED container takes the node off its spec; a lend or a revoke of a started container (TASK_CREATED, STARTED) recomputes wantMems and sends one UpdateContainers outside the table mutex when its cpuset.mems changes.
 
@@ -596,22 +596,22 @@ Refused:
 
 ### Container.Management
 
-States: UNDECIDED, STEERED, FENCED, NONE.
+States: UNDECIDED, STEERED, FENCED, UNFENCED.
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
 | UNDECIDED | STEERED | `NRI CreateContainer`: the effective settings of its results steer and there is DRAM or CXL numa memory to steer | the settings of the results combine and a plan is built (else the creation fails) | the plan kept until its start; no adjustment: it has every node until its manager writes its cgroup |
 | UNDECIDED | STEERED | `NRI Synchronize`: the settings of the results of a container that Synchronize finds do not combine | - | taken as steered: neither fenced nor lent to |
 | UNDECIDED | FENCED | `NRI CreateContainer`, `NRI Synchronize`, `NRI StartContainer`: not steered (by this process) and fencing allowed-mems; the defaults for a container whose creation failed or that the plugin has no record of | - | wantMems: its own nodes without the fenced nodes, its claimed and its lent nodes |
-| UNDECIDED | NONE | `NRI CreateContainer`, `NRI Synchronize`, `NRI StartContainer`: not steered (by this process) and fencing none | - | its cpuset.mems is left as the runtime made it |
+| UNDECIDED | UNFENCED | `NRI CreateContainer`, `NRI Synchronize`, `NRI StartContainer`: not steered (by this process) and fencing none | - | its cpuset.mems is left as the runtime made it |
 | STEERED | FENCED | `NRI StartContainer`: its manager does not start (no cgroup, no own nodes, steering.New or Start fails: memory.high not max, no memory policy set) and fencing allowed-mems | - | its Steered record removed; fenced by the repair pass at its PostStartContainer |
-| STEERED | NONE | `NRI StartContainer`: its manager does not start and fencing none | - | its Steered record removed |
+| STEERED | UNFENCED | `NRI StartContainer`: its manager does not start and fencing none | - | its Steered record removed |
 | STEERED | FENCED | `steering ended`: a process of the running container refuses a memory policy of a later step (EPERM) and fencing allowed-mems | - | its manager set memory.high to max and stopped; its Steered record removed; fenced by the repair pass of the one container |
-| STEERED | NONE | `steering ended`: a process of the running container refuses a memory policy of a later step and fencing none | - | its manager set memory.high to max and stopped; its cpuset.mems back as before the steering; its Steered record removed |
+| STEERED | UNFENCED | `steering ended`: a process of the running container refuses a memory policy of a later step and fencing none | - | its manager set memory.high to max and stopped; its cpuset.mems back as before the steering; its Steered record removed |
 
 Refused:
 
-- FENCED, NONE -> STEERED: a container is steered only by a plan of its creation; a re-created container is a new record
+- FENCED, UNFENCED -> STEERED: a container is steered only by a plan of its creation; a re-created container is a new record
 
 **Invariants.** A FENCED container's cpuset.mems is wantMems or an update is pending (I11); Claimed are the NUMA nodes of the CXL numa memory of the results that it uses; a lent node has a lease; Plan only while STEERED and not started; manager only while STEERED.
 
@@ -625,7 +625,7 @@ Plugin is the NRI plugin of the node: the table of the containers, the fenced NU
 
 **Identity.** One per driver process.
 
-**States.** Readiness, the readiness of fencing of the running containers: WAITING (Fence records a node only, no pass), SYNCHRONIZED, LENDS_RESTORED, READY once NRI has synchronized and the lends of the leases are restored, never back. Conn, the NRI connection: NONE, STARTED, ABSENT (Start failed: the containers are not fenced, lends fail), CLOSED (before Start returned), STOPPING, STOPPED, LOST (the process exits).
+**States.** Readiness, the readiness of fencing of the running containers: WAITING (Fence records a node only, no pass), SYNCHRONIZED, LENDS_RESTORED, READY once NRI has synchronized and the lends of the leases are restored, never back. Conn, the NRI connection: NEW, STARTED, FAILED (Start failed: the containers are not fenced, lends fail), CLOSED (before Start returned), STOPPING, STOPPED, LOST (the process exits).
 
 **Transitions.** ReadinessTable and ConnTable, and the tables of Container; a transition not in them is refused.
 
@@ -646,18 +646,18 @@ Refused:
 
 ### Plugin.Conn
 
-States: NONE, STARTED, ABSENT, CLOSED, STOPPING, STOPPED, LOST.
+States: NEW, STARTED, FAILED, CLOSED, STOPPING, STOPPED, LOST.
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| NONE | STARTED | `NRI Start`: Start of the stub succeeded | - | the plugin gets the container events |
-| NONE, CLOSED | ABSENT | `NRI Start`: the stub could not be made or started | - | Fence records a node only (warned), lends fail with "lending unavailable: NRI not connected" |
-| NONE | CLOSED | `NRI close`: the runtime closed the connection before Start returned | - | - |
+| NEW | STARTED | `NRI Start`: Start of the stub succeeded | - | the plugin gets the container events |
+| NEW, CLOSED | FAILED | `NRI Start`: the stub could not be made or started | - | Fence records a node only (warned), lends fail with "lending unavailable: NRI not connected" |
+| NEW | CLOSED | `NRI close`: the runtime closed the connection before Start returned | - | - |
 | STARTED, CLOSED | LOST | `NRI Start`, `NRI close`: the connection is closed after it started, not stopping, while the context of Start runs | - | exit status 1: the restarted process connects again and gets its state from the store |
 | STARTED, CLOSED | STOPPED | `NRI Start`, `NRI close`: the connection is closed after it started, after the context of Start ended | - | - |
-| NONE, STARTED, ABSENT, CLOSED | STOPPING | `Stop`: the driver stops | - | a close of the connection from now on is no loss |
+| NEW, STARTED, FAILED, CLOSED | STOPPING | `Stop`: the driver stops | - | a close of the connection from now on is no loss |
 | STOPPING | STOPPED | `NRI close`: the connection closed while stopping | - | - |
-| STOPPING, STOPPED, ABSENT, LOST | (unchanged) | `NRI Start`, `NRI close`, `Stop`: a Start, close or stop of a connection that is stopping, gone or absent | - | - |
+| STOPPING, STOPPED, FAILED, LOST | (unchanged) | `NRI Start`, `NRI close`, `Stop`: a Start, close or stop of a connection that is stopping, gone or absent | - | - |
 
 Refused:
 

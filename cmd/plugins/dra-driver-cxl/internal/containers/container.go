@@ -42,7 +42,7 @@ import (
 // decided once when the record is made: STEERED, a steering manager of this
 // process writes its cpuset.mems and memory.high (or will, with its Plan; or
 // its settings do not combine any more), never fenced and never lent to;
-// FENCED, the plugin owns its cpuset.mems through NRI: wantMems; NONE
+// FENCED, the plugin owns its cpuset.mems through NRI: wantMems; UNFENCED
 // (fencing none): its cpuset.mems is left as the runtime made it, a lend
 // changes only one that has a cpuset.mems of its own.
 //
@@ -126,7 +126,7 @@ const (
 	ManagementUndecided Management = "UNDECIDED"
 	ManagementSteered   Management = "STEERED"
 	ManagementFenced    Management = "FENCED"
-	ManagementUnfenced  Management = "NONE"
+	ManagementUnfenced  Management = "UNFENCED"
 )
 
 // Trigger names the NRI event that causes a transition.

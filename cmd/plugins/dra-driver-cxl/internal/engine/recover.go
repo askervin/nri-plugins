@@ -128,7 +128,7 @@ func (e *Engine) removeDaxNodeDirs() {
 	}
 }
 
-// dropUnused removes the memdev records of which nothing is left (UNUSED):
+// dropUnused removes the memdev records of which nothing is left (NONE):
 // no grant, no region of ours, no stale lease bind or node mount.
 func dropUnused(r *state.Records, owns func(state.Source) bool) error {
 	for i := range r.Memdevs {

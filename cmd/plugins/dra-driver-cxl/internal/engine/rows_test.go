@@ -51,9 +51,9 @@ func engineRow(t fsm.TableText, r fsm.RowText) bool {
 var notDriven = map[string]string{
 	"Grant.State JOURNALED,REALISING,REALISED,REALISED_UNRESTORED,RELEASING -> (unchanged) on load": "the store's load " +
 		"of a document of another boot",
-	"Grant.State JOURNALED,REALISING,REALISED,REALISED_UNRESTORED,RELEASING -> RELEASED on load": "the store's load of " +
+	"Grant.State JOURNALED,REALISING,REALISED,REALISED_UNRESTORED,RELEASING -> NONE on load": "the store's load of " +
 		"a document of another boot",
-	"Memdev.State ACTIVE,IDLE_KEPT,GONE -> UNUSED on load": "the store's load of a document of another boot",
+	"Memdev.State ACTIVE,IDLE_KEPT,GONE -> NONE on load": "the store's load of a document of another boot",
 	"Region.State NOTED,OWNED,KEPT,HOLLOW_OWNED,FOREIGN -> NONE on load": "the store's load of a document of " +
 		"another boot",
 	"Preparation.State UNPREPARING -> (unchanged) on recover": "a start leaves an UNPREPARING preparation " +

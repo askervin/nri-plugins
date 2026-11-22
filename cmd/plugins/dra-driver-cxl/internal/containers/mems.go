@@ -32,7 +32,7 @@ import (
 // lend update it when wantMems differs from its cgroup (from its spec
 // before its task exists).
 //
-// A container that is neither fenced nor steered (NONE, fencing none)
+// A container that is neither fenced nor steered (UNFENCED, fencing none)
 // keeps the cpuset.mems that the runtime gave it. If that is empty (the
 // usual case) the container has the memory nodes of its parent, every node
 // with memory, also those whose memory goes online later, and a lend or a

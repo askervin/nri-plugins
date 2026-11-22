@@ -467,16 +467,16 @@ func (tr *daxTrail) want(t *testing.T, want ...string) {
 
 // The Whole device rows of the local paths, by the records after each
 // commit: daxN.0 of a new region KMEM_OFFLINE, set up for device_dax
-// (through SIZED) as the Whole device; the first part reuses it
-// (DEVICE_DAX -> SIZED), its release makes it the seed (SEED), the next
-// part sizes the seed again (SEED -> SIZED); the first device of a KEPT
+// (through UNBOUND) as the Whole device; the first part reuses it
+// (DEVICE_DAX -> UNBOUND), its release makes it the seed (SEED), the next
+// part sizes the seed again (SEED -> UNBOUND); the first device of a KEPT
 // region that a cut resize left smaller is spanned again by its set-up.
 func TestLocalWholeDeviceRows(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib}, fake.MemdevSpec{Serial: serialB})
 	tr := v.trail("region0", "dax0.0")
 	v.mustPrepare(localDriver, "d1", sliceReq("d1", 0, state.ModeDax, 256*mib))
 	tr.want(t, "KMEM_OFFLINE whole users=0 size=1073741824", "DEVICE_DAX whole users=0 size=1073741824",
-		"SIZED part users=1 size=268435456", "DEVICE_DAX part users=1 size=268435456")
+		"UNBOUND part users=1 size=268435456", "DEVICE_DAX part users=1 size=268435456")
 	if reg := v.records().Region("region0"); !reg.SetUp || reg.WholeDevice() != nil {
 		t.Fatalf("region %+v", reg)
 	}
@@ -484,7 +484,7 @@ func TestLocalWholeDeviceRows(t *testing.T) {
 	v.mustUnprepare(localDriver, "d1")
 	tr.want(t, "SEED part users=0 size=0")
 	v.mustPrepare(localDriver, "n3", sliceReq("n3", 0, state.ModeNUMA, 256*mib))
-	tr.want(t, "SIZED part users=1 size=268435456", "KMEM_OFFLINE part users=1 size=268435456", "KMEM_ONLINE part users=1 size=268435456")
+	tr.want(t, "UNBOUND part users=1 size=268435456", "KMEM_OFFLINE part users=1 size=268435456", "KMEM_ONLINE part users=1 size=268435456")
 	v.mustUnprepare(localDriver, "n3")
 	v.mustUnprepare(localDriver, "d2")
 	v.clean("unprepared")
@@ -506,7 +506,7 @@ func TestLocalWholeDeviceRows(t *testing.T) {
 	logs := klogtest.Capture(t, 3)
 	tr = v.trail("region0", "dax0.0")
 	v.mustPrepare(localDriver, "k", sliceReq("k", 0, state.ModeDax, 256*mib))
-	tr.want(t, "DEVICE_DAX whole users=0 size=1073741824", "SIZED part users=1 size=268435456")
+	tr.want(t, "DEVICE_DAX whole users=0 size=1073741824", "UNBOUND part users=1 size=268435456")
 	wantLog(t, logs(), "engine: local memdev 0x11 (mem0): set up kept region0 (devdax, dax dax0.0, NUMA node 2) in ")
 	dropRaw(t, v, above)
 	v.mustUnprepare(localDriver, "k")

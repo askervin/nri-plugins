@@ -27,7 +27,7 @@ import (
 // Identity: Serial. Name is the kernel's memN at the last observation; it
 // changes with the probe order.
 //
-// States: MemdevState. UNUSED: no grant and no region of ours, not in the
+// States: MemdevState. NONE: no grant and no region of ours, not in the
 // store. ACTIVE: at least one grant. IDLE_KEPT: no grant, its region kept
 // (a configured shared device; a persistent device below newer regions; a
 // region that a rollback or the recovery kept below newer regions). GONE:
@@ -37,7 +37,7 @@ import (
 //
 // Invariants: Regions name Region records that target the serial; Grants
 // name the grant records of the serial; a memdev in the store is not
-// UNUSED.
+// NONE.
 //
 // Persistence: fact; committed with the grants that change it. A load in
 // another boot drops the record: its regions, dax devices, mounts and
@@ -91,7 +91,7 @@ const (
 type MemdevState string
 
 const (
-	MemdevNone     MemdevState = "UNUSED"
+	MemdevNone     MemdevState = "NONE"
 	MemdevActive   MemdevState = "ACTIVE"
 	MemdevIdleKept MemdevState = "IDLE_KEPT"
 	MemdevGone     MemdevState = "GONE"
@@ -117,14 +117,14 @@ var MemdevTable = Table[MemdevState]{
 		},
 		{
 			From: fsm.List(MemdevActive), To: MemdevNone, Triggers: releasers,
-			When: "the last grant RELEASED and Policy says destroy (local sliced, local shared not configured any " +
+			When: "the last grant NONE and Policy says destroy (local sliced, local shared not configured any " +
 				"more, pool)",
 			Guard:   "the region destroyed; a pool memdev disabled",
 			Effects: "commit (d) removing the record",
 		},
 		{
 			From: fsm.List(MemdevActive), To: MemdevIdleKept, Triggers: releasers,
-			When: "the last grant RELEASED and Policy says keep (local shared while configured; local persistent " +
+			When: "the last grant NONE and Policy says keep (local shared while configured; local persistent " +
 				"with regions above; a rollback or recovery that keeps)",
 			Effects: "commit (d)",
 		},
@@ -151,7 +151,7 @@ var MemdevTable = Table[MemdevState]{
 		},
 		{
 			From: fsm.List(MemdevGone), To: MemdevNone, Triggers: fsm.List(TriggerUnprepare, TriggerRecover),
-			When:    "the last grant RELEASED (by serial) and Hollow empty",
+			When:    "the last grant NONE (by serial) and Hollow empty",
 			Guard:   "hollow regions deleted when their blocks are offline",
 			Effects: "commit (d) removing the record",
 		},

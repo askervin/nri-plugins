@@ -256,7 +256,7 @@ func TestPoolLeftDeviceDaxID(t *testing.T) {
 }
 
 // The numa twin: daxN.0 found bound to device_dax is switched to kmem
-// (DEVICE_DAX -> SIZED -> KMEM_OFFLINE) and onlined.
+// (DEVICE_DAX -> UNBOUND -> KMEM_OFFLINE) and onlined.
 func TestPoolLeftDeviceDaxIDNuma(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
 	v.f.SetDaxID(kernel.DriverDeviceDax, "dax0.0")

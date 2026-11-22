@@ -932,9 +932,9 @@ func (w *coreState) preparing(i int) {
 }
 
 // rollback releases the grant of the failed Prepare of the slot (03a T2
-// REALISING -> RELEASING -> RELEASED, or -> JOURNALED with the region KEPT)
+// REALISING -> RELEASING -> NONE, or -> JOURNALED with the region KEPT)
 // per the rollback column of 5.4 when it was the last user of the region,
-// and ends the Prepare with the error class (T1 PREPARING -> UNKNOWN or
+// and ends the Prepare with the error class (T1 PREPARING -> NONE or
 // KEPT).
 func (w *coreState) rollback(i, made int, class string) {
 	md := coreSlots[i].md
@@ -1139,7 +1139,7 @@ func (s *coreState) predictPrepare(i int) []*coreState {
 			!s.regionsAbove(md) {
 			// the keep reason of an idle persistent region is gone: the
 			// next Prepare destroys it first (5.4 the idle row, T3
-			// IDLE_KEPT -> UNUSED)
+			// IDLE_KEPT -> NONE)
 			d := s.clone()
 			d.destroy(md)
 			anew, _ := d.prepareOutcome(i)
@@ -1344,7 +1344,7 @@ func (s *coreState) predictUnprepare(i int) []*coreState {
 }
 
 // unprepareOutcome returns the state after the Unprepare of the claim of
-// the slot without a fault (03a T1 -> UNKNOWN; T2 -> RELEASED; 03-design
+// the slot without a fault (03a T1 -> NONE; T2 -> NONE; 03-design
 // 5.5, the region per the Unprepare column of 5.4).
 func (s *coreState) unprepareOutcome(i int) *coreState {
 	w := s.clone()
@@ -1434,7 +1434,7 @@ func (s *coreState) cutUnprepare(i int, arm *coreArm, ws []*coreState) []*coreSt
 	before, after := s.mds[md], w.mds[md]
 	prep := unpreparedState(s.slots[i].prep)
 	// the grant is removed after the region is released (T2 RELEASING ->
-	// RELEASED): a cut after it leaves the kernel as the release does
+	// NONE): a cut after it leaves the kernel as the release does
 	var out []*coreState
 	if coreFront && arm.cut == "commit" && isPrepared(s.slots[i].prep) {
 		// cut after the front-end's UNPREPARING commit (none for an
@@ -1558,13 +1558,13 @@ func (w *coreState) rebooted() {
 // the node mounts that no
 // realised grant of a prepared claim and no grant of an unfinished release
 // lists are swept (D1); an idle persistent region with nothing above goes
-// (T3 IDLE_KEPT -> UNUSED).
+// (T3 IDLE_KEPT -> NONE).
 func (w *coreState) restarted() []*coreState {
 	w.arm = 0
 	for i := range w.slots {
 		if w.slots[i].prep == state.PreparationKept && w.slots[i].grant == "" {
 			// an Unprepare cut after it released the kept grant: nothing
-			// is kept for the claim (03a T1 KEPT -> UNKNOWN on recover)
+			// is kept for the claim (03a T1 KEPT -> NONE on recover)
 			w.slots[i] = coreSlotState{}
 		}
 	}
@@ -1632,7 +1632,7 @@ func (w *coreState) restarted() []*coreState {
 }
 
 // releaseKept returns the states after the start released the KEPT claims
-// as the grants of cut Prepares are (5.6; the code table's KEPT -> UNKNOWN on
+// as the grants of cut Prepares are (5.6; the code table's KEPT -> NONE on
 // recover, D8): a KEPT claim whose region another grant holds, or with a
 // cut Prepare's grant on its memdev, is not the region's last holder and is
 // released; one that holds the region alone goes by the recovery column of

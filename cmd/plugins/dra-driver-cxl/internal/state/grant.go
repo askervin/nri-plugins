@@ -33,7 +33,7 @@ import "github.com/containers/nri-plugins/pkg/cxl/fsm"
 // or block device did not verify at a start: no CDI device. RELEASING:
 // lends revoked, binds and mounts undone, memory offlined, dax device
 // deleted, the region released per Policy when the grant was its last user.
-// RELEASED: gone from the store. A refusal is a Reason on the way to
+// NONE: gone from the store. A refusal is a Reason on the way to
 // RELEASING, not a state; a decoder hole is a typed error of the Prepare.
 //
 // Transitions: GrantTable below, and BindTable for Got.Bind; a transition
@@ -72,7 +72,7 @@ const (
 	GrantRealised   GrantState = "REALISED"
 	GrantUnrestored GrantState = "REALISED_UNRESTORED"
 	GrantReleasing  GrantState = "RELEASING"
-	GrantNone       GrantState = "RELEASED"
+	GrantNone       GrantState = "NONE"
 )
 
 // Asked is what an allocation result and the device section of its

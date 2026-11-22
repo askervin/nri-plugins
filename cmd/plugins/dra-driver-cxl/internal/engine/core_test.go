@@ -172,7 +172,7 @@ func (r *coreRun) coverer() *gofmbt.Coverer {
 		}
 		prep := s.slots[ca.slot].prep
 		if prep == "" {
-			prep = "UNKNOWN"
+			prep = "NONE"
 		}
 		return []string{fmt.Sprintf("fault %s in %s of %s from %s", arm.verb, ca.verb, coreSlots[ca.slot].kind, prep)}
 	})
@@ -453,7 +453,7 @@ func (r *coreRun) teardown() {
 		}
 	}
 	// the shared memdev unconfigured: its idle region is destroyed at the
-	// start (03a T3 IDLE_KEPT -> UNUSED, unconfigured shared)
+	// start (03a T3 IDLE_KEPT -> NONE, unconfigured shared)
 	w := r.state.clone()
 	if m := &w.mds[mdS]; m.rec == state.MemdevIdleKept {
 		w.destroy(mdS)

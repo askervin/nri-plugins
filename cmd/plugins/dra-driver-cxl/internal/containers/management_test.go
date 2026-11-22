@@ -245,7 +245,7 @@ func TestManage(t *testing.T) {
 	}{
 		{name: "no results", management: "FENCED", text: "none (default)", fencing: "allowed-mems (default)"},
 		{name: "numa claim, default none", refs: []resultRef{{"split", 0}}, management: "FENCED", claimed: "2", text: "none (default)"},
-		{name: "numa claim, fencing none", defaults: fencingNone, refs: []resultRef{{"split", 0}}, management: "NONE", claimed: "2",
+		{name: "numa claim, fencing none", defaults: fencingNone, refs: []resultRef{{"split", 0}}, management: "UNFENCED", claimed: "2",
 			fencing: "none (node default)"},
 		{name: "numa claim, auto", refs: []resultRef{{"auto", 0}}, management: "STEERED", claimed: "2", policy: "first-cxl",
 			text: "auto from claim ns/auto request mem"},

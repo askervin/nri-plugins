@@ -608,7 +608,7 @@ func (e *Engine) nodevType(fsType string) bool {
 }
 
 // recordNodeMount records the node mount of a grant of mode fs in its
-// region: a new mount (ABSENT -> MOUNTED_RO or MOUNTED_RW), the grant a
+// region: a new mount (NONE -> MOUNTED_RO or MOUNTED_RW), the grant a
 // user of an existing one, read-write iff writer (a grant of the device
 // writes).
 func (e *Engine) recordNodeMount(ctx context.Context, req *GrantRequest, region string, u pmemGrant, writer bool) error {
@@ -1249,7 +1249,7 @@ func (e *Engine) withCutMount(g *state.Grant, u pmemGrant) pmemGrant {
 }
 
 // leaveMount removes grants from the users of the node mounts that list
-// them: a mount without users is gone (ABSENT), one without a writer left
+// them: a mount without users is gone (NONE), one without a writer left
 // read-only.
 func leaveMount(r *state.Records, refs []state.GrantRef, writer bool, trigger state.Trigger) error {
 	for _, ref := range refs {
@@ -1280,7 +1280,7 @@ func leaveMount(r *state.Records, refs []state.GrantRef, writer bool, trigger st
 	return nil
 }
 
-// leftMount applies the transition of a node mount that users left: ABSENT
+// leftMount applies the transition of a node mount that users left: NONE
 // without users (it is gone), read-only without a writer. A FOREIGN one
 // stays: it goes with its region.
 func leftMount(m *state.Mount, writer bool, trigger state.Trigger) (bool, error) {

@@ -71,8 +71,8 @@ type Connection struct {
 // States: Readiness, the readiness of fencing of the running containers:
 // WAITING (Fence records a node only, no pass), SYNCHRONIZED,
 // LENDS_RESTORED, READY once NRI has synchronized and the lends of the
-// leases are restored, never back. Conn, the NRI connection: NONE,
-// STARTED, ABSENT (Start failed: the containers are not fenced, lends
+// leases are restored, never back. Conn, the NRI connection: NEW,
+// STARTED, FAILED (Start failed: the containers are not fenced, lends
 // fail), CLOSED (before Start returned), STOPPING, STOPPED, LOST (the
 // process exits).
 //
@@ -233,7 +233,7 @@ func (p *Plugin) Fencing() bool {
 }
 
 // connect sets the stub of the connection, nil when NRI did not start
-// (the connection ABSENT).
+// (the connection FAILED).
 func (p *Plugin) connect(s Stub) {
 	p.mu.Lock()
 	p.stub = s

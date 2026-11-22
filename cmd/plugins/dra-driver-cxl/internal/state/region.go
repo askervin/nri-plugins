@@ -117,8 +117,8 @@ type Pmem struct {
 //
 // Identity: Name (daxN.M) in its region.
 //
-// States: DaxDeviceState. ABSENT: no device. CREATING: dax_region/create
-// written, the name read back. SIZED: sized, unbound. DEVICE_DAX: bound to
+// States: DaxDeviceState. NONE: no device. CREATING: dax_region/create
+// written, the name read back. UNBOUND: sized, unbound. DEVICE_DAX: bound to
 // device_dax. KMEM_OFFLINE, KMEM_ONLINE: bound to kmem, its memory blocks
 // offline or online (movable). SEED: daxN.0 at size 0, which the kernel
 // never deletes.
@@ -158,9 +158,9 @@ const (
 type DaxDeviceState string
 
 const (
-	DaxNone        DaxDeviceState = "ABSENT"
+	DaxNone        DaxDeviceState = "NONE"
 	DaxCreating    DaxDeviceState = "CREATING"
-	DaxUnbound     DaxDeviceState = "SIZED"
+	DaxUnbound     DaxDeviceState = "UNBOUND"
 	DaxDeviceDax   DaxDeviceState = "DEVICE_DAX"
 	DaxKmemOffline DaxDeviceState = "KMEM_OFFLINE"
 	DaxKmemOnline  DaxDeviceState = "KMEM_ONLINE"
@@ -173,7 +173,7 @@ const (
 // Identity: the region and Access; Path is <data dir of the grant's source
 // driver>/mounts/<serial hex>-<access>.
 //
-// States: MountState. ABSENT: not mounted. MOUNTED_RO, MOUNTED_RW: mounted,
+// States: MountState. NONE: not mounted. MOUNTED_RO, MOUNTED_RW: mounted,
 // read-write while a writer grant uses it. FOREIGN: something else is
 // mounted at the path; never used or unmounted. UNRESTORED: at a start the
 // mount of a REALISED grant could not be restored. An unmount that fails
@@ -203,7 +203,7 @@ type Mount struct {
 type MountState string
 
 const (
-	MountNone       MountState = "ABSENT"
+	MountNone       MountState = "NONE"
 	MountedRO       MountState = "MOUNTED_RO"
 	MountedRW       MountState = "MOUNTED_RW"
 	MountForeign    MountState = "FOREIGN"
@@ -361,7 +361,7 @@ var DaxDeviceTable = Table[DaxDeviceState]{
 		{
 			From: fsm.List(DaxCreating), To: DaxNone, Triggers: fsm.List(TriggerPrepare, TriggerUnprepare),
 			When: "size or ranges failed, or the verification failed; or the Unprepare of a claim whose Prepare did not " +
-				"finish (PREPARING or KEPT, 03a T1 PREPARING -> UNKNOWN) deletes the device its cut Prepare was making",
+				"finish (PREPARING or KEPT, 03a T1 PREPARING -> NONE) deletes the device its cut Prepare was making",
 			Effects: "deleted; error",
 		},
 		{

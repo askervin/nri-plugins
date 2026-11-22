@@ -29,7 +29,7 @@ import (
 // Identity: the claim UID and the driver (cxl.nri.io or the pool driver);
 // ClaimName is <namespace>/<name> of the claim.
 //
-// States: PreparationState. UNKNOWN is no record. PREPARING: the record and
+// States: PreparationState. NONE is no record. PREPARING: the record and
 // the grants it may realise are committed before any kernel object is
 // touched; a process stop here is a cut Prepare. PREPARED: every grant
 // realised, the CDI spec written. PREPARED_UNRESTORED: a grant's node mount,
@@ -66,7 +66,7 @@ type Preparation struct {
 type PreparationState string
 
 const (
-	PreparationNone        PreparationState = "UNKNOWN"
+	PreparationNone        PreparationState = "NONE"
 	PreparationPreparing   PreparationState = "PREPARING"
 	PreparationPrepared    PreparationState = "PREPARED"
 	PreparationUnrestored  PreparationState = "PREPARED_UNRESTORED"
@@ -183,7 +183,7 @@ var PreparationTable = Table[PreparationState]{
 		{
 			From: fsm.List(PreparationPreparing), Stays: true, Triggers: fsm.List(TriggerRecover),
 			When:    "the recovery of a cut Prepare: leftovers released, the record stays for kubelet's retry",
-			Effects: "commit (d) of the grants back to JOURNALED or RELEASED",
+			Effects: "commit (d) of the grants back to JOURNALED or NONE",
 		},
 		{
 			From: fsm.List(PreparationPreparing), Stays: true, Triggers: fsm.List(TriggerPrepare),
@@ -226,7 +226,7 @@ var PreparationTable = Table[PreparationState]{
 		{
 			From: fsm.List(PreparationStale), To: PreparationPreparing, Triggers: fsm.List(TriggerPrepare),
 			When:    "Prepare again (kubelet after a reboot)",
-			Effects: "the old grants dropped in the same commit (d); then as UNKNOWN -> PREPARING",
+			Effects: "the old grants dropped in the same commit (d); then as NONE -> PREPARING",
 		},
 		{
 			From: fsm.List(PreparationStale), Stays: true, Triggers: fsm.List(TriggerPrepare),
@@ -245,7 +245,7 @@ var PreparationTable = Table[PreparationState]{
 		},
 		{
 			From: fsm.List(PreparationUnpreparing), To: PreparationNone, Triggers: fsm.List(TriggerUnprepare),
-			When:    "every grant RELEASED",
+			When:    "every grant NONE",
 			Effects: "commit (d) removing the record; kubelet gets nil",
 		},
 		{

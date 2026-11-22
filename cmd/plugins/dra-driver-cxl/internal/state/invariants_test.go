@@ -88,7 +88,7 @@ func TestInvariantViolations(t *testing.T) {
 			change: func(r *state.Records) {
 				r.Preparation(statetest.LocalDriver, statetest.ClaimDax).State = state.PreparationNone
 			},
-			invariant: "records", text: `state "UNKNOWN"`,
+			invariant: "records", text: `state "NONE"`,
 		},
 		{
 			name:      "a grant in REQUESTED is stored",

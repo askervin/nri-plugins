@@ -137,7 +137,7 @@ func unpreparing(doc *store.Document, driver, uid string) error {
 }
 
 // remove removes the preparation of the claim uid of the driver (->
-// UNKNOWN) on the trigger; nothing for none.
+// NONE) on the trigger; nothing for none.
 func remove(doc *store.Document, driver, uid string, trigger state.Trigger) error {
 	prep := doc.Preparation(driver, uid)
 	if prep == nil {

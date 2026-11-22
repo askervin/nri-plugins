@@ -465,7 +465,7 @@ func (e *driverEnv) preparation(p *Plugin, uid string) *state.Preparation {
 }
 
 // stateOf returns the state of the preparation of the claim uid of the
-// plugin, UNKNOWN for none.
+// plugin, NONE for none.
 func (e *driverEnv) stateOf(p *Plugin, uid string) state.PreparationState {
 	if prep := e.preparation(p, uid); prep != nil {
 		return prep.State

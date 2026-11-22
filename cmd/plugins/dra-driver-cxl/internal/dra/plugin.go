@@ -47,14 +47,14 @@ import (
 // States: the Preparation of each claim of the driver (state.Preparation,
 // one per claim UID and driver; its table state.PreparationTable).
 //
-// Transitions: Prepare: UNKNOWN, STALE or KEPT -> PREPARING (every result
+// Transitions: Prepare: NONE, STALE or KEPT -> PREPARING (every result
 // checked before, the intent committed before the engine touches a device)
 // -> PREPARED (grants realised, the lend of a companion done or the CDI
-// spec written), or KEPT / UNKNOWN after a failure's rollback; a Prepare of
+// spec written), or KEPT / NONE after a failure's rollback; a Prepare of
 // a prepared claim returns its result (a companion announced again,
 // unrestored node mounts mounted again). Unprepare: lease claims closed
 // first (cxl.nri.io), the companion told and its lend revoked, PREPARED ->
-// UNPREPARING, the grants released, -> UNKNOWN. See the table below in
+// UNPREPARING, the grants released, -> NONE. See the table below in
 // internal/state.
 //
 // Invariants: a PREPARED claim's grants are REALISED; the CDI spec of the
