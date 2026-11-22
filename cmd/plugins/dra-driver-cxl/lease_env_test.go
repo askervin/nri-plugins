@@ -874,8 +874,8 @@ func poolSlice() *resourcev1.ResourceSlice {
 // local memdev 0xc100f5e1.
 func localResourceSlice() *resourcev1.ResourceSlice {
 	return nodeResourceSlice(testNode,
-		dra.LocalMemdevDevice(dra.MemdevDeviceName(localSerial), &dra.Memdev{Serial: localSerial, Size: 1 << 30, NodeAffinity: 0, BlockSize: 128 << 20}),
-		dra.LocalMemdevDevice("memdev-c100e2e2", &dra.Memdev{Serial: serialShared, Size: 1 << 30, NodeAffinity: 0, Shared: true}),
+		dra.LocalMemdevDevice(dra.MemdevDeviceName(localSerial), &dra.Memdev{Serial: localSerial, Size: 1 << 30, NUMAAffinity: 0, BlockSize: 128 << 20}),
+		dra.LocalMemdevDevice("memdev-c100e2e2", &dra.Memdev{Serial: serialShared, Size: 1 << 30, NUMAAffinity: 0, Shared: true}),
 		persistentLocalDevice())
 }
 

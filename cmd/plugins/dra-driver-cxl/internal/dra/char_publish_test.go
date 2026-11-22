@@ -46,8 +46,8 @@ func TestCharIgnoreRegions(t *testing.T) {
 	if got := pubNames(devs); !slices.Equal(got, []string{"dram", "region1-node3"}) {
 		t.Fatalf("published %v", got)
 	}
-	if dram := devs[device.DRAMDeviceName].Dev.(*DRAM); !slices.Equal(dram.Nodes, []int{0}) {
-		t.Fatalf("DRAM nodes %v: the node of an ignored region is not DRAM", dram.Nodes)
+	if dram := devs[device.DRAMDeviceName].Dev.(*DRAM); !slices.Equal(dram.NUMANodes, []int{0}) {
+		t.Fatalf("DRAM nodes %v: the node of an ignored region is not DRAM", dram.NUMANodes)
 	}
 	wantLogLineText(t, logs(), `- ignoring region device "region0": region name "region0"`)
 }
@@ -84,11 +84,11 @@ func TestCharIgnoreNodes(t *testing.T) {
 func TestCharPublishOrder(t *testing.T) {
 	names := []string{"memdev-a5", device.DRAMDeviceName, "memdev-a1", "region0-node2", device.LeaseDeviceName}
 	devs := DevicesInfo{
-		"memdev-a5":            {Name: "memdev-a5", Dev: &Memdev{Name: "mem5", Serial: 0xa5, Size: 1 << 30, NodeAffinity: -1, BlockSize: pubBlockSize}},
-		device.DRAMDeviceName:  {Name: device.DRAMDeviceName, Dev: &DRAM{Nodes: []int{0}, Size: 1 << 30}},
-		"memdev-a1":            {Name: "memdev-a1", Dev: &Memdev{Name: "mem1", Serial: 0xa1, Size: 1 << 30, NodeAffinity: -1, BlockSize: pubBlockSize}},
+		"memdev-a5":            {Name: "memdev-a5", Dev: &Memdev{Name: "mem5", Serial: 0xa5, Size: 1 << 30, NUMAAffinity: -1, BlockSize: pubBlockSize}},
+		device.DRAMDeviceName:  {Name: device.DRAMDeviceName, Dev: &DRAM{NUMANodes: []int{0}, Size: 1 << 30}},
+		"memdev-a1":            {Name: "memdev-a1", Dev: &Memdev{Name: "mem1", Serial: 0xa1, Size: 1 << 30, NUMAAffinity: -1, BlockSize: pubBlockSize}},
 		"region0-node2":        {Name: "region0-node2", Dev: &Region{Name: "region0", Size: 1 << 30, NUMANode: 2}},
-		device.LeaseDeviceName: {Name: device.LeaseDeviceName, Dev: &LeaseToken{}},
+		device.LeaseDeviceName: {Name: device.LeaseDeviceName, Dev: &Lease{}},
 	}
 	p := pubPublisher(t, PublishOptions{NodeName: pubNode})
 	p.SetDevices(devs)

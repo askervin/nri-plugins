@@ -37,7 +37,7 @@ import (
 // ResourceSlice and the device behind it.
 type DeviceInfo struct {
 	Name string
-	// Dev is a *DRAM, *Region, *Memdev or *LeaseToken.
+	// Dev is a *DRAM, *Region, *Memdev or *Lease.
 	Dev any
 }
 
@@ -46,8 +46,8 @@ type DevicesInfo map[string]*DeviceInfo
 
 // DRAM is the Dev of the DRAM device.
 type DRAM struct {
-	Nodes []int
-	Size  uint64
+	NUMANodes []int
+	Size      uint64
 }
 
 // Region is the Dev of a region device (DeviceTypeRegion).
@@ -55,9 +55,9 @@ type Region struct {
 	Name     string // regionN
 	NUMANode int    // NUMA node of its online memory
 	Size     uint64 // bytes of its online memory
-	// NodeAffinity are the CPU NUMA nodes of its memdevs, -1 for one not
+	// NUMAAffinity are the CPU NUMA nodes of its memdevs, -1 for one not
 	// known.
-	NodeAffinity []int
+	NUMAAffinity []int
 }
 
 // Memdev is the Dev of a local memdev device (DeviceTypeMemdev).
@@ -65,7 +65,7 @@ type Memdev struct {
 	Name         string // memN
 	Serial       uint64
 	Size         uint64 // RAM capacity, bytes (persistent capacity of a persistent memdev)
-	NodeAffinity int    // CPU NUMA node of the memdev, -1 if unknown
+	NUMAAffinity int    // CPU NUMA node of the memdev, -1 if unknown
 	BlockSize    uint64 // memory block size, bytes: slices are multiples of it
 	Shared       bool   // published shared: one devdax device for all claims
 	// Persistent is true for a memdev of persistent memory: modes block
@@ -73,9 +73,9 @@ type Memdev struct {
 	Persistent bool
 }
 
-// LeaseToken is the Dev of the lease device: it has no hardware, no
-// capacity and can be allocated any number of times.
-type LeaseToken struct{}
+// Lease is the Dev of the lease device: it has no hardware, no capacity
+// and can be allocated any number of times.
+type Lease struct{}
 
 // localMemdev is how the device engine uses a local memdev.
 type localMemdev struct {
@@ -283,7 +283,7 @@ func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held ma
 		}
 		dev := &Region{Name: r.Name, NUMANode: node, Size: size}
 		for _, m := range mems {
-			dev.NodeAffinity = append(dev.NodeAffinity, m.NUMAAffinity)
+			dev.NUMAAffinity = append(dev.NUMAAffinity, m.NUMAAffinity)
 		}
 		name := fmt.Sprintf("%s-node%d", r.Name, node)
 		devInfos[name] = &DeviceInfo{Name: name, Dev: dev}
@@ -297,7 +297,7 @@ func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held ma
 	if cfg.PublishLeaseDevice {
 		devInfos[device.LeaseDeviceName] = &DeviceInfo{
 			Name: device.LeaseDeviceName,
-			Dev:  &LeaseToken{},
+			Dev:  &Lease{},
 		}
 	}
 	return devInfos
@@ -356,7 +356,7 @@ func addDRAM(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snapshot, cxl
 			klog.V(4).Infof("- ignoring DRAM on node %d: %s", node.ID, ignoreReason)
 			continue
 		}
-		dramDev.Nodes = append(dramDev.Nodes, node.ID)
+		dramDev.NUMANodes = append(dramDev.NUMANodes, node.ID)
 		dramDev.Size += node.MemTotal
 		klog.V(4).Infof("discovered DRAM memory on node %d: size %d bytes", node.ID, node.MemTotal)
 	}
@@ -611,7 +611,7 @@ func addLocalMemdevs(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snaps
 				Name:         memDev.Name,
 				Serial:       memDev.Serial,
 				Size:         size,
-				NodeAffinity: memDev.NUMAAffinity,
+				NUMAAffinity: memDev.NUMAAffinity,
 				BlockSize:    bs,
 			},
 		}
@@ -693,7 +693,7 @@ func addLocalShared(devInfos DevicesInfo, memDev *kernel.MemdevInfo, size uint64
 			Name:         memDev.Name,
 			Serial:       memDev.Serial,
 			Size:         size,
-			NodeAffinity: memDev.NUMAAffinity,
+			NUMAAffinity: memDev.NUMAAffinity,
 			BlockSize:    bs,
 			Shared:       true,
 		},
@@ -741,7 +741,7 @@ func addLocalPersistent(devInfos DevicesInfo, cfg PublishConfig, memDev *kernel.
 			Name:         memDev.Name,
 			Serial:       memDev.Serial,
 			Size:         memDev.PmemSize,
-			NodeAffinity: memDev.NUMAAffinity,
+			NUMAAffinity: memDev.NUMAAffinity,
 			Shared:       shared,
 			Persistent:   true,
 		},
@@ -779,7 +779,7 @@ func resources(devs DevicesInfo) []resourcev1.Device {
 			out = append(out, dramDevice(name, dev))
 		case *Memdev:
 			out = append(out, LocalMemdevDevice(name, dev))
-		case *LeaseToken:
+		case *Lease:
 			out = append(out, leaseDevice(name))
 		default:
 			klog.Warningf("unexpected device type in state.Allocatable: %T", dev)
@@ -816,7 +816,7 @@ func regionDevice(name string, dev *Region) resourcev1.Device {
 		device.AttrMemoryNUMANode: {IntValue: ptr(int64(dev.NUMANode))},
 		device.AttrSize:           {IntValue: ptr(int64(dev.Size))},
 	}
-	if a, ok := regionNodeAffinity(dev); ok {
+	if a, ok := regionNUMAAffinity(dev); ok {
 		attrs[device.AttrNodeAffinity] = resourcev1.DeviceAttribute{IntValue: ptr(int64(a))}
 	}
 	return resourcev1.Device{
@@ -828,11 +828,11 @@ func regionDevice(name string, dev *Region) resourcev1.Device {
 	}
 }
 
-// regionNodeAffinity returns the CPU NUMA node of the memdevs of a region,
+// regionNUMAAffinity returns the CPU NUMA node of the memdevs of a region,
 // and whether they all have the same known one.
-func regionNodeAffinity(dev *Region) (int, bool) {
+func regionNUMAAffinity(dev *Region) (int, bool) {
 	affinity := -1
-	for _, a := range dev.NodeAffinity {
+	for _, a := range dev.NUMAAffinity {
 		switch {
 		case a < 0:
 			return -1, false
@@ -852,7 +852,7 @@ func dramDevice(name string, dev *DRAM) resourcev1.Device {
 		Attributes: map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
 			device.AttrType:            {StringValue: ptr(device.DeviceTypeDRAM)},
 			device.AttrSource:          {StringValue: ptr(api.SourceLocal)},
-			device.AttrMemoryNUMANodes: {StringValue: ptr(cpuset.New(dev.Nodes...).String())},
+			device.AttrMemoryNUMANodes: {StringValue: ptr(cpuset.New(dev.NUMANodes...).String())},
 			device.AttrSize:            {IntValue: ptr(int64(dev.Size))},
 		},
 		Capacity:                 memoryCapacity(dev.Size),
@@ -876,8 +876,8 @@ func LocalMemdevDevice(name string, dev *Memdev) resourcev1.Device {
 		// every slice is a multiple of the memory block size
 		device.AttrMemoryBlockSize: {IntValue: ptr(int64(dev.BlockSize))},
 	}
-	if dev.NodeAffinity >= 0 {
-		attrs[device.AttrNodeAffinity] = resourcev1.DeviceAttribute{IntValue: ptr(int64(dev.NodeAffinity))}
+	if dev.NUMAAffinity >= 0 {
+		attrs[device.AttrNodeAffinity] = resourcev1.DeviceAttribute{IntValue: ptr(int64(dev.NUMAAffinity))}
 	}
 	return resourcev1.Device{
 		Name:       name,
@@ -908,8 +908,8 @@ func sharedMemdevDevice(name string, dev *Memdev) resourcev1.Device {
 		device.AttrPersistent: {BoolValue: ptr(dev.Persistent)},
 		device.AttrSize:       {IntValue: ptr(int64(dev.Size))},
 	}
-	if dev.NodeAffinity >= 0 {
-		attrs[device.AttrNodeAffinity] = resourcev1.DeviceAttribute{IntValue: ptr(int64(dev.NodeAffinity))}
+	if dev.NUMAAffinity >= 0 {
+		attrs[device.AttrNodeAffinity] = resourcev1.DeviceAttribute{IntValue: ptr(int64(dev.NUMAAffinity))}
 	}
 	return resourcev1.Device{
 		Name:       name,

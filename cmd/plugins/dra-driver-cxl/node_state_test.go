@@ -94,8 +94,8 @@ func TestContainerOfResultSettings(t *testing.T) {
 	e.synchronize()
 	injectDevices(e,
 		&dra.DeviceInfo{Name: "region5-node4", Dev: &dra.Region{Name: "region5", NUMANode: 4, Size: 1 << 30}},
-		&dra.DeviceInfo{Name: "dram", Dev: &dra.DRAM{Nodes: []int{0}, Size: 1 << 30}},
-		&dra.DeviceInfo{Name: device.LeaseDeviceName, Dev: &dra.LeaseToken{}})
+		&dra.DeviceInfo{Name: "dram", Dev: &dra.DRAM{NUMANodes: []int{0}, Size: 1 << 30}},
+		&dra.DeviceInfo{Name: device.LeaseDeviceName, Dev: &dra.Lease{}})
 	const (
 		class = resourcev1.AllocationConfigSourceClass
 		claim = resourcev1.AllocationConfigSourceClaim

@@ -211,7 +211,7 @@ func TestBuildDevInfosLocalMemdevs(t *testing.T) {
 			t.Fatalf("device %s named %s", name, d.Name)
 		}
 	}
-	if m, ok := devInfos["memdev-a1"].Dev.(*Memdev); !ok || *m != (Memdev{Name: "mem1", Serial: 0xa1, Size: 1 << 30, NodeAffinity: 1, BlockSize: pubBlockSize}) {
+	if m, ok := devInfos["memdev-a1"].Dev.(*Memdev); !ok || *m != (Memdev{Name: "mem1", Serial: 0xa1, Size: 1 << 30, NUMAAffinity: 1, BlockSize: pubBlockSize}) {
 		t.Fatalf("free memdev %+v", devInfos["memdev-a1"].Dev)
 	}
 	if _, ok := devInfos["memdev-a5"].Dev.(*Memdev); !ok {
@@ -241,7 +241,7 @@ func TestBuildDevInfosLocalMemdevs(t *testing.T) {
 		t.Fatalf("published %v without a block size", got)
 	}
 	// the node of the plugin's region is not DRAM
-	if dram, ok := devInfos["dram"].Dev.(*DRAM); !ok || !slices.Equal(dram.Nodes, []int{0}) {
+	if dram, ok := devInfos["dram"].Dev.(*DRAM); !ok || !slices.Equal(dram.NUMANodes, []int{0}) {
 		t.Fatalf("DRAM %+v", devInfos["dram"].Dev)
 	}
 
@@ -294,7 +294,7 @@ func TestGetResourcesLocalMemdev(t *testing.T) {
 		t.Fatalf("request policy %v %v %v", p.Default, p.ValidRange.Min, p.ValidRange.Step)
 	}
 	// no nodeAffinity when unknown
-	d := LocalMemdevDevice("x", &Memdev{Size: pubRegionSize, NodeAffinity: -1, BlockSize: pubBlockSize})
+	d := LocalMemdevDevice("x", &Memdev{Size: pubRegionSize, NUMAAffinity: -1, BlockSize: pubBlockSize})
 	if _, ok := d.Attributes["nodeAffinity"]; ok {
 		t.Fatalf("memdev %+v", d)
 	}
@@ -345,7 +345,7 @@ func TestGetResourcesRegionDRAMLease(t *testing.T) {
 	if l := got["lease"]; l.Capacity != nil || !*l.AllowMultipleAllocations {
 		t.Errorf("lease device %+v", l)
 	}
-	if _, ok := regionNodeAffinity(&Region{NodeAffinity: []int{-1}}); ok {
+	if _, ok := regionNUMAAffinity(&Region{NUMAAffinity: []int{-1}}); ok {
 		t.Error("an unknown affinity is published")
 	}
 }
@@ -354,7 +354,7 @@ func TestGetResourcesRegionDRAMLease(t *testing.T) {
 // Prepare records: that of their names.
 func TestDRAMNodeOrder(t *testing.T) {
 	devs := BuildDevices(PublishConfig{}, &kernel.Snapshot{NUMANodes: pubNodes(0, 1, 2, 10)}, nil, nil, nil)
-	if dram, ok := devs["dram"].Dev.(*DRAM); !ok || !slices.Equal(dram.Nodes, []int{0, 1, 10, 2}) {
+	if dram, ok := devs["dram"].Dev.(*DRAM); !ok || !slices.Equal(dram.NUMANodes, []int{0, 1, 10, 2}) {
 		t.Fatalf("DRAM %+v", devs["dram"].Dev)
 	}
 }
@@ -405,7 +405,7 @@ func TestBuildDevInfosSkipsPoolRegions(t *testing.T) {
 	if got := pubNames(devInfos); !slices.Equal(got, []string{"dram", "region0-node2"}) {
 		t.Fatalf("published %v", got)
 	}
-	if dram, ok := devInfos["dram"].Dev.(*DRAM); !ok || !slices.Equal(dram.Nodes, []int{0}) {
+	if dram, ok := devInfos["dram"].Dev.(*DRAM); !ok || !slices.Equal(dram.NUMANodes, []int{0}) {
 		t.Fatalf("DRAM %+v", devInfos["dram"].Dev)
 	}
 	if got := pubNames(BuildDevices(PublishConfig{}, devices, nil, nil, nil)); !slices.Equal(got, []string{"dram", "region0-node2", "region1-node3"}) {
@@ -431,8 +431,8 @@ func TestRegionOnlineMemory(t *testing.T) {
 	if r := devs["region0-node2"].Dev.(*Region); r.Size != 2*pubBlockSize {
 		t.Fatalf("region0 of %d bytes, expected its 2 online blocks", r.Size)
 	}
-	if dram := devs[device.DRAMDeviceName].Dev.(*DRAM); !slices.Equal(dram.Nodes, []int{0}) {
-		t.Fatalf("DRAM nodes %v", dram.Nodes)
+	if dram := devs[device.DRAMDeviceName].Dev.(*DRAM); !slices.Equal(dram.NUMANodes, []int{0}) {
+		t.Fatalf("DRAM nodes %v", dram.NUMANodes)
 	}
 	log := logs()
 	wantLogLineText(t, log, `- ignoring region device "region1": region has no online memory`)
@@ -455,7 +455,7 @@ func TestBuildDevInfosHollowRegion(t *testing.T) {
 	if devInfos["region0-node2"] == nil || devInfos["region1-node3"] != nil || len(devInfos) != 2 {
 		t.Fatalf("devices %v", pubNames(devInfos))
 	}
-	if dram, ok := devInfos["dram"].Dev.(*DRAM); !ok || !slices.Equal(dram.Nodes, []int{0}) {
+	if dram, ok := devInfos["dram"].Dev.(*DRAM); !ok || !slices.Equal(dram.NUMANodes, []int{0}) {
 		t.Fatalf("DRAM %+v", devInfos["dram"])
 	}
 
@@ -633,7 +633,7 @@ func TestBuildDevInfosPersistentMemdevs(t *testing.T) {
 	if got := pubNames(devs); !slices.Equal(got, []string{"memdev-b1", "memdev-b2", "memdev-b3"}) {
 		t.Fatalf("published %v", got)
 	}
-	if m := devs["memdev-b1"].Dev.(*Memdev); *m != (Memdev{Name: "mem1", Serial: 0xb1, Size: 4 << 30, NodeAffinity: 1, Persistent: true}) {
+	if m := devs["memdev-b1"].Dev.(*Memdev); *m != (Memdev{Name: "mem1", Serial: 0xb1, Size: 4 << 30, NUMAAffinity: 1, Persistent: true}) {
 		t.Fatalf("persistent memdev %+v", m)
 	}
 	if m := devs["memdev-b2"].Dev.(*Memdev); !m.Persistent || !m.Shared || m.Size != 4<<30 {

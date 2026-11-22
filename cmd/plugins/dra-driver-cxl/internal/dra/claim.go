@@ -325,7 +325,7 @@ func otherResult(res *state.Result, r *resourcev1.DeviceRequestAllocationResult,
 			return err
 		}
 		reg := &state.RegionResult{Name: d.Name, NUMANode: d.NUMANode, Size: d.Size, Consumed: consumed}
-		for _, a := range d.NodeAffinity {
+		for _, a := range d.NUMAAffinity {
 			if a >= 0 {
 				reg.NUMAAffinity = append(reg.NUMAAffinity, a)
 			}
@@ -335,8 +335,8 @@ func otherResult(res *state.Result, r *resourcev1.DeviceRequestAllocationResult,
 		if err := cfg.NUMAOnly(device.DeviceTypeDRAM); err != nil {
 			return err
 		}
-		res.Kind, res.DRAM = state.ResultDRAM, &state.DRAMResult{NUMANodes: slices.Clone(d.Nodes), Size: d.Size, Consumed: consumed}
-	case *LeaseToken:
+		res.Kind, res.DRAM = state.ResultDRAM, &state.DRAMResult{NUMANodes: slices.Clone(d.NUMANodes), Size: d.Size, Consumed: consumed}
+	case *Lease:
 		if err := cfg.CheckLease(); err != nil {
 			return err
 		}
@@ -361,8 +361,8 @@ func (p *Plugin) memdevRequest(pr *prepare, r *resourcev1.DeviceRequestAllocatio
 			UsableSize: p.local.UsableSize(dev.Name, dev.Serial)},
 		Lend: pr.grantLend(),
 	}
-	if dev.NodeAffinity >= 0 {
-		req.Facts.NUMAAffinity = state.NUMANodePtr(dev.NodeAffinity)
+	if dev.NUMAAffinity >= 0 {
+		req.Facts.NUMAAffinity = state.NUMANodePtr(dev.NUMAAffinity)
 	}
 	if !p.local.Managed {
 		return req, fmt.Errorf("device %s: local memdevs are not managed (manageMemdevs: false)", r.Device)
