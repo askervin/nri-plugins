@@ -369,7 +369,7 @@ scripts is a lease of the whole device.
 R1 "a writer starts on vm1; it has no CXL memory yet"
    $ kubectl apply -f pool-fs/writer.yaml
    T3 "fs0 @pool 512Mi shared persistent", "no claims". T4 no CXL memory.
-   T6 "fs0 512Mi shared persistent free", "attached: nowhere", "no file
+   T6 "fs0 512Mi pool persistent shared free", "attached: nowhere", "no file
    system (zeros)" (setup removed its files; a re-run finds the last
    filesystem).
 R2 "the writer asks for the device as a block device"
@@ -514,12 +514,12 @@ The options, in the order of the questions ("demo wizard new --help"):
                          lease claim, and the wizard runs cxl-request in it
   --source local|pool|any        any: firstAvailable, local then pool
   --memory volatile|persistent
-  --sharing exclusive|shared     shared: capacity shares "1"
+  --share[=false]                capacity shares "1"
   --mode numa|dax|block|fs
   --size whole|SIZE              a slice of a local memdev, or the least
                                  size of an exclusive pool device
   --serial any|SERIAL            the published devices that fit are listed
-  --read-only|--read-write       dax, block, fs (fs: read-only unless asked)
+  --read-only[=false]            dax, block, fs (fs: read-only unless asked)
   --fs-type detect|TYPE  --access default|direct|cached
   --path default|PATH            fs, claims
   --steering none|auto|first-dram|...   numa, claims
@@ -579,12 +579,12 @@ every refused row against the wizard, and checks each result):
       -> w1: Running; T2 "numa 256Mi c100e2e1", T4 "region0 256M kmem node2"
   demo wizard new --name w12 --source pool --mode dax --serial 0xc1ae0001
       --node vm1 --command write "Hello"
-  demo wizard new --name w13 --kind lease --source pool --sharing shared
+  demo wizard new --name w13 --kind lease --source pool --share
       --read-only --serial 0xc1ae0001 --node vm2 --command read
       -> w13: waiting: cannot allocate (w12 has shared0 exclusively)
   demo wizard delete w12   -> w13 Ready, its pod's log reads "Hello"
-  demo wizard new --name w18 --source pool --memory persistent --sharing
-      shared --mode fs --read-write --serial 0xc1ae0002 --node vm1
+  demo wizard new --name w18 --source pool --memory persistent --share
+       --mode fs --read-only=false --serial 0xc1ae0002 --node vm1
       -> waits while another node has fs0 (AttachFailed Conflict), then
          vm1 alone has it read-write (T6 "vm1 exclusive; ext4 needs recovery")
   demo wizard yaml w18     -> its claim and pod

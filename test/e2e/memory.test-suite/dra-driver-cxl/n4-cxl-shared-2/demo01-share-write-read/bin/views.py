@@ -508,9 +508,7 @@ def render_t6_pool(data, state, now=None, stale=False):
     if not dev:
         rows.append("no device %s: %s" % (state.get("POOL_DEVICE", "?"), pool.get("error", "?")))
         return lines + rows
-    rows.append("%s %s %s%s  %s" % (dev.get("name"), c.k8s_size(dev.get("size")),
-                                    "shared" if dev.get("shared") else "exclusive",
-                                    " persistent" if dev.get("persistent") else "", dev.get("state")))
+    rows.append("%s %s %s  %s" % (dev.get("name"), c.k8s_size(dev.get("size")), c.device_kind(dev), dev.get("state")))
     atts = dev.get("attachments") or []
     words = []
     for a in sorted(atts, key=lambda a: a.get("host") or ""):

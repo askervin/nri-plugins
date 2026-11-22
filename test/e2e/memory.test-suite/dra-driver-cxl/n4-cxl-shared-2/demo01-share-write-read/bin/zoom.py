@@ -315,7 +315,7 @@ def main():
                 for o in c.http_json("%s/api/v1/%s" % (state["POOL_URL"], kind)) or []:
                     if kind == "devices":
                         print("%s %s %s %s %s scope %s%s" % (o.get("name"), o.get("serial"), c.k8s_size(o.get("size")),
-                                                             "shared" if o.get("shared") else "exclusive", o.get("state"),
+                                                             c.device_kind(o), o.get("state"),
                                                              o.get("scope"), "  file " + o["path"] if o.get("path") else ""))
                     else:
                         print("%s %s%s owner %s" % (c.short_text(o.get("id", "?"), state), o.get("state"),

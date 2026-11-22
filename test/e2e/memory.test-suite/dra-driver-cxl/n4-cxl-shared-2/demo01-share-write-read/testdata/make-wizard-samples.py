@@ -185,21 +185,21 @@ def answers(ctx, **given):
 
 def scenario_w8(ctx0):
     """Return (vm2, vm1, pool) of eight objects of the wizard."""
-    a1 = answers(ctx0, kind="claim", source="local", memory="volatile", sharing="exclusive", mode="numa", size="256Mi",
+    a1 = answers(ctx0, kind="claim", source="local", memory="volatile", share="no", mode="numa", size="256Mi",
                  serial=VM2_LOCAL, node="vm2", command=("env",), name="w1")
-    a2 = answers(ctx0, kind="claim", source="pool", memory="volatile", sharing="exclusive", mode="dax", size="whole",
+    a2 = answers(ctx0, kind="claim", source="pool", memory="volatile", share="no", mode="dax", size="whole",
                  serial=SHARED0, node="vm1", command=("write", "Hello from w2"), name="w2")
-    a3 = answers(ctx0, kind="lease", source="pool", memory="volatile", sharing="shared", mode="dax", serial=SHARED0,
+    a3 = answers(ctx0, kind="lease", source="pool", memory="volatile", share="yes", mode="dax", serial=SHARED0,
                  rw="read-only", node="vm2", command=("read",), name="w3")
-    a4 = answers(ctx0, kind="claim", source="pool", memory="persistent", sharing="shared", mode="fs", serial=FS0,
+    a4 = answers(ctx0, kind="claim", source="pool", memory="persistent", share="yes", mode="fs", serial=FS0,
                  rw="read-write", fs_type="ext4", node="vm1", command=("write", "Hello from w4"), name="w4")
-    a5 = answers(ctx0, kind="claim", source="pool", memory="persistent", sharing="shared", mode="fs", serial=FS0,
+    a5 = answers(ctx0, kind="claim", source="pool", memory="persistent", share="yes", mode="fs", serial=FS0,
                  node="vm2", command=("read",), name="w5")
-    a6 = answers(ctx0, kind="claim", source="local", memory="persistent", sharing="exclusive", mode="block", serial=LP,
+    a6 = answers(ctx0, kind="claim", source="local", memory="persistent", share="no", mode="block", serial=LP,
                  rw="read-write", node="vm2", command=("read",), name="w6")
-    a7 = answers(ctx0, kind="claim", source="pool", memory="volatile", sharing="exclusive", mode="numa", size="1Gi",
+    a7 = answers(ctx0, kind="claim", source="pool", memory="volatile", share="no", mode="numa", size="1Gi",
                  node="any", command=("env",), name="w7")
-    a8 = answers(ctx0, kind="lease", source="local", memory="volatile", sharing="exclusive", mode="dax", size="128Mi",
+    a8 = answers(ctx0, kind="lease", source="local", memory="volatile", share="no", mode="dax", size="128Mi",
                  rw="read-only", node="vm1", command=("read",), name="w8")
     c1 = allocate(static_claim(a1, ctx0), VM2, "cxl.nri.io", VM2, "memdev-c100e2e1", {"memory": "256Mi"})
     c2 = allocate(static_claim(a2, ctx0), VM1, "cxl-pool.nri.io", "fake-cxl-pool", "shared0", {"shares": "1M"})

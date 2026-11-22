@@ -18,12 +18,12 @@ choices that the driver accepts are taken, the others say why not):
                                  cxl-request command that the wizard runs
   --source local|pool|any        any: local first, then pool
   --memory volatile|persistent
-  --sharing exclusive|shared     shared: one share (shares "1")
+  --share[=false]                one share of a shared device (shares "1")
   --mode numa|dax|block|fs
   --size whole|SIZE              a slice of a local memdev, the least size
                                  of an exclusive pool device
   --serial any|SERIAL            one device by its serial
-  --read-only, --read-write      dax, block, fs
+  --read-only[=false]            dax, block, fs
   --fs-type detect|TYPE          fs
   --access default|direct|cached fs
   --path default|PATH            fs, claims
@@ -72,11 +72,11 @@ READ_ONLY_FS_TYPES = ("erofs", "squashfs")
 XFS_MIN = 300 << 20
 STEERING = ("none", "auto", "first-dram", "first-cxl", "start-interleaved", "end-interleaved", "waypoints")
 FORBIDDEN_DIRS = ("/dev", "/proc", "/sys", "/run/cxl", "/var/run/cxl")
-QUESTIONS = ("kind", "source", "memory", "sharing", "mode", "size", "serial", "rw", "fs_type", "access",
+QUESTIONS = ("kind", "source", "memory", "share", "mode", "size", "serial", "rw", "fs_type", "access",
              "path", "steering", "node", "command", "name")
 PROMPTS = {
     "kind": "what does the pod hold?", "source": "which devices?", "memory": "what kind of memory?",
-    "sharing": "alone or with others?", "mode": "how does the container get it?", "size": "how much?",
+    "share": "one share of a shared device?", "mode": "how does the container get it?", "size": "how much?",
     "serial": "which device?", "rw": "may the container write?", "fs_type": "which filesystem type?",
     "access": "file pages in the device or cached?", "path": "where in the container?",
     "steering": "steer the container's memory?", "node": "on which node?", "command": "what does it run?",
@@ -89,8 +89,8 @@ LABELS = {
     ("source", "any"): "local first, then pool",
     ("memory", "volatile"): "RAM: no data kept",
     ("memory", "persistent"): "pmem: data stays",
-    ("sharing", "exclusive"): "no other claim has it",
-    ("sharing", "shared"): "one share of a device",
+    ("share", "no"): "a device or a slice of its own",
+    ("share", "yes"): "one share of a device",
     ("mode", "numa"): "RAM of a NUMA node",
     ("mode", "dax"): "a devdax device to mmap",
     ("mode", "block"): "the pmem block device",
@@ -106,12 +106,24 @@ LABELS = {
     ("command", "mkfs"): "make a filesystem TYPE"}
 
 
+# The questions that a flag answers, as cxl-request's: the flag, the
+# answer of the flag alone (or =true) and that of =false.
+FLAGS = {"share": ("--share", "yes", "no"), "rw": ("--read-only", "read-only", "read-write")}
+
+
+def option_words(q, v):
+    """Return the options of demo wizard new that answer question Q with V."""
+    if q in FLAGS:
+        flag, yes, _ = FLAGS[q]
+        return [flag if v == yes else flag + "=false"]
+    return ["--" + q.replace("_", "-"), v]
+
+
 class Invalid(Exception):
     """A choice that the driver refuses: the question and the reason."""
 
     def __init__(self, question, value, reason):
-        opt = "--%s" % value if question == "rw" else "--%s %s" % (question.replace("_", "-"), value)
-        super().__init__("%s: %s" % (opt, reason))
+        super().__init__("%s: %s" % (" ".join(option_words(question, value)), reason))
         self.question, self.value, self.reason = question, value, reason
 
 
@@ -230,7 +242,7 @@ class Context:
 ###
 
 def is_shared(a):
-    return a.get("sharing") == "shared"
+    return a.get("share") == "yes"
 
 
 def sources(a):
@@ -303,8 +315,8 @@ def options(q, a, ctx):
         return [("local", None), ("pool", None), ("any", None)]
     if q == "memory":
         return [("volatile", None), ("persistent", None)]
-    if q == "sharing":
-        return [("exclusive", None), ("shared", None)]
+    if q == "share":
+        return [("no", None), ("yes", None)]
     if q == "mode":
         if a["memory"] == "persistent":
             no = "a persistent device needs mode block or fs"
@@ -435,7 +447,7 @@ def next_name(ctx):
 
 def check(q, v, a, ctx):
     """Return None if V is a valid answer to question Q after the answers A, else why not."""
-    if q in ("kind", "source", "memory", "sharing", "mode", "rw", "access", "steering", "node"):
+    if q in ("kind", "source", "memory", "share", "mode", "rw", "access", "steering", "node"):
         opts = dict(options(q, a, ctx))
         if v not in opts:
             return "not one of %s" % ", ".join(opts)
@@ -1217,17 +1229,28 @@ def wait_command(name, state, seconds):
     return rc, [l for l in lines if l.strip() and not l.startswith(("CXL_", "lease "))]
 
 
+BOOLS = {v: True for v in ("1", "t", "T", "TRUE", "true", "True")}
+BOOLS.update({v: False for v in ("0", "f", "F", "FALSE", "false", "False")})
+
+
 def given_options(args):
     """Return (answers, flags) of the new options ARGS; exit 2 on a usage error."""
     given, flags = {}, set()
-    keys = {"--" + q.replace("_", "-"): q for q in QUESTIONS if q not in ("rw", "command")}
+    keys = {"--" + q.replace("_", "-"): q for q in QUESTIONS if q not in FLAGS and q != "command"}
+    flag_of = {f[0]: q for q, f in FLAGS.items()}
     i = 0
     while i < len(args):
         a = args[i]
-        if a in ("--read-only", "--read-write"):
-            if "rw" in given and given["rw"] != a[2:]:
-                sys.exit(usage_error("--read-only and --read-write exclude each other"))
-            given["rw"] = a[2:]
+        name, eq, value = a.partition("=")
+        if name in flag_of:
+            q = flag_of[name]
+            on = BOOLS.get(value) if eq else True
+            if on is None:
+                sys.exit(usage_error("%s: invalid value %r" % (name, value)))
+            answer = FLAGS[q][1] if on else FLAGS[q][2]
+            if given.get(q, answer) != answer:
+                sys.exit(usage_error("%s given twice, with different values" % name))
+            given[q] = answer
             i += 1
         elif a == "--dry-run":
             flags.add(a)
@@ -1471,12 +1494,10 @@ def new_args(a):
     for q in QUESTIONS:
         if q not in a:
             continue
-        if q == "rw":
-            out.append("--" + a[q])
-        elif q == "command":
+        if q == "command":
             out += ["--command"] + list(a[q])
         else:
-            out += ["--" + q.replace("_", "-"), a[q]]
+            out += option_words(q, a[q])
     return out
 
 

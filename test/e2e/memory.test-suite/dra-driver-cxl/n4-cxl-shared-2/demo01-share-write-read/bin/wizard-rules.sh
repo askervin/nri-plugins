@@ -54,90 +54,90 @@ rows() {
 #    device of another node (lp0 is vm2's; the local devices of vm1 and
 #    vm2 have the same serial: by its serial a claim gets the one of its
 #    pod's node).
-Running   --name w1 --kind claim --source local --memory volatile --sharing exclusive --mode numa --size 256Mi --serial $VM2_LOCAL_SERIAL --node vm2 --command env
-Running   --name w2 --kind claim --source local --memory volatile --sharing exclusive --mode dax --size 128Mi --serial any --node vm1 --read-write --command write "Hello from w2"
-Running   --name w3 --kind claim --source local --memory volatile --sharing exclusive --mode dax --size 128Mi --node vm1 --read-only --command read
-Ready     --name w4 --kind lease --source local --memory volatile --sharing exclusive --mode numa --size 128Mi --node vm2 --command env
-Running   --name w5 --kind claim --source local --memory volatile --sharing exclusive --mode numa --size 128Mi --node vm2 --steering auto --command idle
-wait!     --name w6 --kind claim --source local --memory volatile --sharing shared --mode dax --node vm2 --read-only --command read
-Running   --name w7 --kind claim --source any --memory volatile --sharing exclusive --mode dax --size 256Mi --node vm2 --command write "Hello from w7"
-wait!     --name w8 --kind claim --source local --memory persistent --sharing shared --mode fs --serial $LP_SERIAL --node vm1
+Running   --name w1 --kind claim --source local --memory volatile --share=false --mode numa --size 256Mi --serial $VM2_LOCAL_SERIAL --node vm2 --command env
+Running   --name w2 --kind claim --source local --memory volatile --share=false --mode dax --size 128Mi --serial any --node vm1 --read-only=false --command write "Hello from w2"
+Running   --name w3 --kind claim --source local --memory volatile --share=false --mode dax --size 128Mi --node vm1 --read-only --command read
+Ready     --name w4 --kind lease --source local --memory volatile --share=false --mode numa --size 128Mi --node vm2 --command env
+Running   --name w5 --kind claim --source local --memory volatile --share=false --mode numa --size 128Mi --node vm2 --steering auto --command idle
+wait!     --name w6 --kind claim --source local --memory volatile --share --mode dax --node vm2 --read-only --command read
+Running   --name w7 --kind claim --source any --memory volatile --share=false --mode dax --size 256Mi --node vm2 --command write "Hello from w7"
+wait!     --name w8 --kind claim --source local --memory persistent --share --mode fs --serial $LP_SERIAL --node vm1
 list
 delete w1 w2 w3 w4 w5 w6 w7 w8
-Running   --name w9 --kind claim --source local --memory volatile --sharing exclusive --mode dax --size whole --serial $VM1_LOCAL_SERIAL --node vm1 --command read
+Running   --name w9 --kind claim --source local --memory volatile --share=false --mode dax --size whole --serial $VM1_LOCAL_SERIAL --node vm1 --command read
 delete w9
 # 2. Volatile pool devices: the exclusive pooled0 by its least size, too
 #    large a size, shared0 exclusively and a lease that waits for it, a
 #    share of it, a lease of the whole pooled0.
-Running   --name w10 --kind claim --source pool --memory volatile --sharing exclusive --mode numa --size 512Mi --node any --command env
-wait!     --name w11 --kind claim --source pool --memory volatile --sharing exclusive --mode dax --size 1Gi --node any
-Running   --name w12 --kind claim --source pool --memory volatile --sharing exclusive --mode dax --size whole --serial $SHARED0_SERIAL --node vm1 --command write "Hello from w12"
-wait      --name w13 --kind lease --source pool --memory volatile --sharing shared --mode dax --serial $SHARED0_SERIAL --read-only --node vm2 --command read
+Running   --name w10 --kind claim --source pool --memory volatile --share=false --mode numa --size 512Mi --node any --command env
+wait!     --name w11 --kind claim --source pool --memory volatile --share=false --mode dax --size 1Gi --node any
+Running   --name w12 --kind claim --source pool --memory volatile --share=false --mode dax --size whole --serial $SHARED0_SERIAL --node vm1 --command write "Hello from w12"
+wait      --name w13 --kind lease --source pool --memory volatile --share --mode dax --serial $SHARED0_SERIAL --read-only --node vm2 --command read
 delete w12
 await w13 Ready 90
-Running   --name w14 --kind claim --source pool --memory volatile --sharing shared --mode dax --read-only --node vm1 --command read
+Running   --name w14 --kind claim --source pool --memory volatile --share --mode dax --read-only --node vm1 --command read
 delete w10 w11
-Ready     --name w15 --kind lease --source pool --memory volatile --sharing exclusive --mode dax --size whole --serial $POOLED0_SERIAL --node vm2 --command write "Hello from w15"
+Ready     --name w15 --kind lease --source pool --memory volatile --share=false --mode dax --size whole --serial $POOLED0_SERIAL --node vm2 --command write "Hello from w15"
 delete w13 w14 w15
 # 3. fs0 of the pool (persistent, shared, the ext4 of the setup):
 #    read-only on both nodes, a read-write claim that waits until the other
 #    node is gone (ReadWriteOnce), a reader of the other node that waits
 #    for the writer; access cached at a path; the block device: mkfs
 #    exclusively, a read-only share.
-Running   --name w16 --kind claim --source pool --memory persistent --sharing shared --mode fs --serial $FS0_SERIAL --node vm1 --command read
-Ready     --name w17 --kind lease --source pool --memory persistent --sharing shared --mode fs --serial $FS0_SERIAL --node vm2 --command read
-wait      --name w18 --kind claim --source pool --memory persistent --sharing shared --mode fs --read-write --fs-type ext4 --serial $FS0_SERIAL --node vm1 --command write "Hello from w18"
+Running   --name w16 --kind claim --source pool --memory persistent --share --mode fs --serial $FS0_SERIAL --node vm1 --command read
+Ready     --name w17 --kind lease --source pool --memory persistent --share --mode fs --serial $FS0_SERIAL --node vm2 --command read
+wait      --name w18 --kind claim --source pool --memory persistent --share --mode fs --read-only=false --fs-type ext4 --serial $FS0_SERIAL --node vm1 --command write "Hello from w18"
 delete w17
 await w18 Running 120
-wait      --name w19 --kind claim --source pool --memory persistent --sharing shared --mode fs --serial $FS0_SERIAL --node vm2 --command read
+wait      --name w19 --kind claim --source pool --memory persistent --share --mode fs --serial $FS0_SERIAL --node vm2 --command read
 delete w16 w18 w19
-Running   --name w20 --kind claim --source pool --memory persistent --sharing shared --mode fs --access cached --path /data --serial $FS0_SERIAL --node vm1 --command read
+Running   --name w20 --kind claim --source pool --memory persistent --share --mode fs --access cached --path /data --serial $FS0_SERIAL --node vm1 --command read
 delete w20
-Running   --name w21 --kind claim --source pool --memory persistent --sharing exclusive --mode block --read-write --serial $FS0_SERIAL --node vm2 --command mkfs ext4
+Running   --name w21 --kind claim --source pool --memory persistent --share=false --mode block --read-only=false --serial $FS0_SERIAL --node vm2 --command mkfs ext4
 delete w21
-Ready     --name w22 --kind lease --source pool --memory persistent --sharing shared --mode block --read-only --serial $FS0_SERIAL --node vm1 --command read
+Ready     --name w22 --kind lease --source pool --memory persistent --share --mode block --read-only --serial $FS0_SERIAL --node vm1 --command read
 delete w22
 # 4. lp0, the persistent local memdev of vm2: a read-write claim and a
 #    read-write lease of one superblock; mkfs xfs (no files: mkfs.xfs of
 #    the image crashes with -p), a writer of hello.txt and a reader next to
 #    it, both declaring xfs; mkfs ext4 through a lease (the fd); a lease
 #    and a claim of any source (local first, then pool).
-Running   --name w23 --kind claim --source local --memory persistent --sharing shared --mode fs --read-write --serial $LP_SERIAL --node vm2 --command write "Hello from w23"
-Ready     --name w24 --kind lease --source local --memory persistent --sharing shared --mode fs --read-write --serial $LP_SERIAL --node vm2 --command write "Hello from w24"
+Running   --name w23 --kind claim --source local --memory persistent --share --mode fs --read-only=false --serial $LP_SERIAL --node vm2 --command write "Hello from w23"
+Ready     --name w24 --kind lease --source local --memory persistent --share --mode fs --read-only=false --serial $LP_SERIAL --node vm2 --command write "Hello from w24"
 delete w23 w24
-Running   --name w25 --kind claim --source local --memory persistent --sharing exclusive --mode block --read-write --serial $LP_SERIAL --node vm2 --command mkfs xfs
+Running   --name w25 --kind claim --source local --memory persistent --share=false --mode block --read-only=false --serial $LP_SERIAL --node vm2 --command mkfs xfs
 delete w25
-Running   --name w26 --kind claim --source local --memory persistent --sharing shared --mode fs --read-write --fs-type xfs --serial $LP_SERIAL --node vm2 --command write "Hello from w26"
-Running   --name w30 --kind claim --source local --memory persistent --sharing shared --mode fs --fs-type xfs --serial $LP_SERIAL --node vm2 --command read
+Running   --name w26 --kind claim --source local --memory persistent --share --mode fs --read-only=false --fs-type xfs --serial $LP_SERIAL --node vm2 --command write "Hello from w26"
+Running   --name w30 --kind claim --source local --memory persistent --share --mode fs --fs-type xfs --serial $LP_SERIAL --node vm2 --command read
 delete w26 w30
-Ready     --name w27 --kind lease --source local --memory persistent --sharing exclusive --mode block --read-write --serial $LP_SERIAL --node vm2 --command mkfs ext4
+Ready     --name w27 --kind lease --source local --memory persistent --share=false --mode block --read-only=false --serial $LP_SERIAL --node vm2 --command mkfs ext4
 delete w27
-Ready     --name w28 --kind lease --source any --memory persistent --sharing shared --mode fs --node vm2 --command read
+Ready     --name w28 --kind lease --source any --memory persistent --share --mode fs --node vm2 --command read
 delete w28
-Running   --name w29 --kind claim --source any --memory persistent --sharing shared --mode fs --node vm1 --command read
+Running   --name w29 --kind claim --source any --memory persistent --share --mode fs --node vm1 --command read
 list
 delete w29
 # 5. Choices that the wizard refuses: each with the reason.
 refused:a_persistent_device_needs_mode_block_or_fs        --memory persistent --mode dax
 refused:mode_fs_needs_a_persistent_device                 --memory volatile --mode fs
-refused:used_as_dax_only                                  --sharing shared --mode numa
+refused:used_as_dax_only                                  --share --mode numa
 refused:readOnly_needs_mode_dax                           --mode numa --read-only
-refused:writable_in_mode_block_only_exclusively           --source local --memory persistent --sharing shared --mode block --read-write
-refused:writable_in_mode_block_only_exclusively           --source pool --memory persistent --sharing shared --mode block --read-write
-refused:erofs_is_a_read-only_filesystem                   --memory persistent --mode fs --read-write --fs-type erofs
+refused:writable_in_mode_block_only_exclusively           --source local --memory persistent --share --mode block --read-only=false
+refused:writable_in_mode_block_only_exclusively           --source pool --memory persistent --share --mode block --read-only=false
+refused:erofs_is_a_read-only_filesystem                   --memory persistent --mode fs --read-only=false --fs-type erofs
 refused:btrfs_has_no_DAX                                  --memory persistent --mode fs --fs-type btrfs --access direct
 refused:not_allowed_on_this_node                          --memory persistent --mode fs --fs-type squashfs
 refused:invalid_path                                      --memory persistent --mode fs --path /run/cxl/data
-refused:a_lease's_filesystem                              --kind lease --memory persistent --mode fs --sharing shared --path /data
+refused:a_lease's_filesystem                              --kind lease --memory persistent --mode fs --share --path /data
 refused:mode_numa_only                                    --mode dax --steering auto
 refused:cxl-request_has_no_steering                       --kind lease --mode numa --size 128Mi --steering auto
 refused:waypoints                                         --mode numa --steering waypoints
-refused:a_shared_device_is_used_whole                     --sharing shared --size 256Mi
+refused:a_shared_device_is_used_whole                     --share --size 256Mi
 refused:a_persistent_device_is_used_whole                 --memory persistent --size 256Mi
 refused:cxl-request_needs                                 --kind lease --source local --mode dax --size whole --serial any
 refused:a_serial_names_a_device_of_one_source             --source any --serial $SHARED0_SERIAL
-refused:not_shareable                                     --source pool --sharing shared --serial $POOLED0_SERIAL
-refused:in_a_pod_of_its_node_only                         --kind lease --source local --memory persistent --sharing shared --serial $LP_SERIAL --node vm1
+refused:not_shareable                                     --source pool --share --serial $POOLED0_SERIAL
+refused:in_a_pod_of_its_node_only                         --kind lease --source local --memory persistent --share --serial $LP_SERIAL --node vm1
 refused:numa_memory                                       --mode numa --command read
 refused:mkfs_writes_a_block_device                        --mode dax --command mkfs ext4
 ROWS

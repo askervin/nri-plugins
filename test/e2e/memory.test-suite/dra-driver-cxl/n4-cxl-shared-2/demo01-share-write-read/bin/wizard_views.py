@@ -342,9 +342,7 @@ def render_t6(data, state, now=None, stale=False):
     elif pool.get("lpError"):
         rows.append("local-pmem: " + pool["lpError"])
     for d in devs:
-        kind = ("shared" if d.get("shared") else "exclusive") + (" persistent" if d.get("persistent") else "")
-        if d.get("server"):
-            kind = "local " + kind.replace("exclusive ", "")
+        kind = c.device_kind(d, "local" if d.get("server") else "pool")
         rows.append("%s %s %s  %s" % (d.get("name"), c.k8s_size(d.get("size")), kind, d.get("state") or "?"))
         words = attached_words(d, state) or ["nowhere"]
         fs = (pool.get("fs") or {}).get(d.get("name"))

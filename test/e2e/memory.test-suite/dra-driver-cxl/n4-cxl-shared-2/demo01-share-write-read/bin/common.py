@@ -363,6 +363,14 @@ def consumed_shares(result):
     return (result.get("consumedCapacity") or {}).get(SHARES)
 
 
+def device_kind(dev, source="pool"):
+    """Return the kind of a device of the pool server (or of local-pmem,
+    SOURCE local) as its DeviceClass says it: "pool", "pool shared", "pool
+    persistent", with " shared" for a shared persistent device."""
+    kind = source + (" persistent" if dev.get("persistent") else "")
+    return kind + (" shared" if dev.get("shared") else "")
+
+
 def device_attr(dev, name):
     """Return the value of attribute NAME of a ResourceSlice device."""
     attrs = dev.get("attributes") or {}

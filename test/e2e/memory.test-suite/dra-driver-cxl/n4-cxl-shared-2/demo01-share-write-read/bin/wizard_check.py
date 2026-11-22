@@ -87,57 +87,57 @@ ACCEPTED = [
     ("--source local --mode dax --read-only", {"cls": "cxl-local", "cap": None, "dev": {"mode": "dax", "readOnly": True}}),
     ("--source local --mode numa --steering auto",
      {"cls": "cxl-local", "dev": {"mode": "numa"}, "container": {"steering": {"policy": "auto"}}}),
-    ("--source local --sharing shared", {"cls": "cxl-local-shared", "cap": {"shares": "1"}, "dev": {"mode": "dax"}}),
+    ("--source local --share", {"cls": "cxl-local-shared", "cap": {"shares": "1"}, "dev": {"mode": "dax"}}),
     ("--source pool --mode numa --size 512Mi", {"cls": "cxl-pool", "cap": {"memory": "512Mi"}, "dev": {"mode": "numa"}}),
     ("--source pool --mode dax --serial $POOLED0_SERIAL --read-only",
      {"cls": "cxl-pool", "cap": None, "dev": {"mode": "dax", "readOnly": True}, "sel": True}),
     ("--source pool --mode dax --serial $SHARED0_SERIAL", {"cls": "cxl-pool-shared", "cap": None, "dev": {"mode": "dax"}}),
-    ("--source pool --sharing shared --read-only", {"cls": "cxl-pool-shared", "cap": {"shares": "1"},
+    ("--source pool --share --read-only", {"cls": "cxl-pool-shared", "cap": {"shares": "1"},
                                                     "dev": {"mode": "dax", "readOnly": True}}),
     ("--source any --mode dax --size 256Mi", {"alt": [("local", "cxl-local"), ("pool", "cxl-pool")],
                                               "cap": {"memory": "256Mi"}, "dev": {"mode": "dax"}}),
-    ("--source any --sharing shared", {"alt": [("local", "cxl-local-shared"), ("pool", "cxl-pool-shared")],
+    ("--source any --share", {"alt": [("local", "cxl-local-shared"), ("pool", "cxl-pool-shared")],
                                        "cap": {"shares": "1"}}),
-    ("--source pool --memory persistent --sharing shared --serial $FS0_SERIAL",
+    ("--source pool --memory persistent --share --serial $FS0_SERIAL",
      {"cls": "cxl-pool-persistent", "cap": {"shares": "1"}, "dev": {"mode": "fs", "readOnly": True}}),
-    ("--source pool --memory persistent --sharing shared --read-write --fs-type ext4 --serial $FS0_SERIAL",
+    ("--source pool --memory persistent --share --read-only=false --fs-type ext4 --serial $FS0_SERIAL",
      {"cls": "cxl-pool-persistent", "dev": {"mode": "fs", "readOnly": False, "fsType": "ext4"}}),
-    ("--source pool --memory persistent --sharing shared --access cached --path /data",
+    ("--source pool --memory persistent --share --access cached --path /data",
      {"cls": "cxl-pool-persistent", "dev": {"mode": "fs", "readOnly": True, "access": "cached", "path": "/data"}}),
     ("--source pool --memory persistent --mode block --serial $FS0_SERIAL --command mkfs ext4",
      {"cls": "cxl-pool-persistent", "cap": None, "dev": {"mode": "block"}}),
-    ("--source pool --memory persistent --sharing shared --mode block --read-only",
+    ("--source pool --memory persistent --share --mode block --read-only",
      {"cls": "cxl-pool-persistent", "cap": {"shares": "1"}, "dev": {"mode": "block", "readOnly": True}}),
     ("--source local --memory persistent --mode block --serial $LP_SERIAL",
      {"cls": "cxl-local-persistent", "cap": None, "dev": {"mode": "block"}}),
-    ("--source local --memory persistent --sharing shared --read-write --serial $LP_SERIAL",
+    ("--source local --memory persistent --share --read-only=false --serial $LP_SERIAL",
      {"cls": "cxl-local-persistent", "cap": {"shares": "1"}, "dev": {"mode": "fs", "readOnly": False}}),
-    ("--source any --memory persistent --sharing shared",
+    ("--source any --memory persistent --share",
      {"alt": [("local", "cxl-local-persistent"), ("pool", "cxl-pool-persistent")], "cap": {"shares": "1"}}),
     ("--kind lease --source local --mode dax --serial $VM1_LOCAL_SERIAL --node vm2",
      {"args": ["request", "--source", "local", "--mode", "dax", "--serial", "0xc100e2e1"]}),
     ("--kind lease --source local --mode numa --size 128Mi",
      {"args": ["request", "--source", "local", "--mode", "numa", "--size", "128Mi"]}),
-    ("--kind lease --source pool --sharing shared --read-only --serial $SHARED0_SERIAL",
+    ("--kind lease --source pool --share --read-only --serial $SHARED0_SERIAL",
      {"args": ["request", "--source", "pool", "--mode", "dax", "--share", "--read-only", "--serial", "0xc1ae0001"]}),
     ("--kind lease --source pool --mode dax --serial $POOLED0_SERIAL",
      {"args": ["request", "--source", "pool", "--mode", "dax", "--serial", "0xc1ee0001"]}),
-    ("--kind lease --source pool --memory persistent --sharing shared --read-write --serial $FS0_SERIAL --name rw1",
+    ("--kind lease --source pool --memory persistent --share --read-only=false --serial $FS0_SERIAL --name rw1",
      {"args": ["request", "--source", "pool", "--mode", "fs", "--share", "--read-only=false", "--name", "rw1", "--serial", "0xc1ae0002"]}),
     ("--kind lease --source local --memory persistent --mode block --serial $LP_SERIAL --command mkfs ext4",
      {"args": ["request", "--source", "local", "--mode", "block", "--serial", "0xc100f5e1"]}),
-    ("--kind lease --source any --memory persistent --sharing shared --name any1",
+    ("--kind lease --source any --memory persistent --share --name any1",
      {"args": ["request", "--mode", "fs", "--share", "--name", "any1"]}),
 ]
 REFUSED = [
     ("--memory persistent --mode dax", "mode", "a persistent device needs mode block or fs"),
     ("--memory volatile --mode fs", "mode", "mode fs needs a persistent device"),
-    ("--sharing shared --mode numa", "mode", "dax only"),
+    ("--share --mode numa", "mode", "dax only"),
     ("--mode numa --read-only", "rw", "readOnly needs mode dax, block or fs"),
-    ("--memory persistent --sharing shared --mode block --read-write", "rw", "writable in mode block only exclusively"),
-    ("--source pool --memory persistent --sharing shared --mode block --read-write", "rw",
+    ("--memory persistent --share --mode block --read-only=false", "rw", "writable in mode block only exclusively"),
+    ("--source pool --memory persistent --share --mode block --read-only=false", "rw",
      "the device is writable in mode block only exclusively"),
-    ("--memory persistent --read-write --fs-type erofs", "fs_type", "erofs is a read-only filesystem"),
+    ("--memory persistent --read-only=false --fs-type erofs", "fs_type", "erofs is a read-only filesystem"),
     ("--memory persistent --fs-type btrfs --access direct", "access", "btrfs has no DAX"),
     ("--memory persistent --fs-type squashfs", "fs_type", "not allowed on this node"),
     ("--memory persistent --fs-type Ext4", "fs_type", "invalid filesystem type"),
@@ -147,19 +147,19 @@ REFUSED = [
     ("--mode dax --steering auto", "steering", "mode numa only"),
     ("--kind lease --mode numa --size 128Mi --steering auto", "steering", "cxl-request has no steering"),
     ("--steering waypoints", "steering", "waypoints"),
-    ("--sharing shared --size 256Mi", "size", "a shared device is used whole"),
+    ("--share --size 256Mi", "size", "a shared device is used whole"),
     ("--memory persistent --size 256Mi", "size", "a persistent device is used whole"),
     ("--size 0", "size", "invalid size"),
     ("--kind lease --source local --serial any", "serial", "cxl-request needs --size, --serial or --share"),
     ("--source any --serial $SHARED0_SERIAL", "serial", "a serial names a device of one source"),
     ("--source local --serial $SHARED0_SERIAL", "serial", "a pool device, not local"),
     ("--source pool --memory persistent --serial $SHARED0_SERIAL", "serial", "volatile memory, not persistent"),
-    ("--source pool --sharing shared --serial $POOLED0_SERIAL", "serial", "not shareable"),
-    ("--source pool --sharing shared --serial $FS0_SERIAL", "serial", "persistent memory"),
+    ("--source pool --share --serial $POOLED0_SERIAL", "serial", "not shareable"),
+    ("--source pool --share --serial $FS0_SERIAL", "serial", "persistent memory"),
     ("--source pool --mode numa --serial $SHARED0_SERIAL", "serial", "a shared device is used as dax only"),
     ("--source pool --mode dax --size 256Mi --serial $SHARED0_SERIAL", "serial", "a shared device is used whole"),
     ("--serial nope", "serial", "invalid serial"),
-    ("--kind lease --source local --memory persistent --sharing shared --serial $LP_SERIAL --node vm1", "node",
+    ("--kind lease --source local --memory persistent --share --serial $LP_SERIAL --node vm1", "node",
      "in a pod of its node only (vm2)"),
     ("--mode numa --command read", "command", "numa memory"),
     ("--mode dax --command mkfs ext4", "command", "mkfs writes a block device"),
@@ -311,7 +311,7 @@ def question_test():
     ctx, state, _ = context("wizard-W8", names={"w%d" % i for i in range(1, 9)})
     env = serials(state)
     for text in ("", "--memory persistent --mode fs", "--memory persistent --mode block --serial $FS0_SERIAL",
-                 "--kind lease --sharing shared", "--source any --mode numa"):
+                 "--kind lease --share", "--source any --mode numa"):
         given, _ = opts(text, env)
         a = {}
         for q in w.QUESTIONS:
@@ -442,8 +442,8 @@ def state_test():
     ctx = w.Context(live, k8s)
     expect("live state fsTypes", ctx.fs_types == ("erofs", "ext4", "xfs", "btrfs"), str(ctx.fs_types))
     expect("live state fs serials", ctx.fs_serials == ["0xc1ae0002", "0xc100f5e1"], str(ctx.fs_serials))
-    for text in ("--memory persistent --source pool --sharing shared --read-write --fs-type ext4",
-                 "--memory persistent --source local --sharing shared --fs-type xfs", "--memory persistent --fs-type erofs"):
+    for text in ("--memory persistent --source pool --share --read-only=false --fs-type ext4",
+                 "--memory persistent --source local --share --fs-type xfs", "--memory persistent --fs-type erofs"):
         given, _ = opts(text, serials(live))
         try:
             w.resolve(given, ctx)
@@ -470,7 +470,7 @@ def command_test():
         with open(os.path.join(fsdir, "hello.txt"), "w") as f:
             f.write("Hello from the desk\n")
         env = dict(os.environ, CXL_K_MODE="fs", CXL_K_PATH=fsdir, CXL_K_FS_TYPE="ext4", CXL_WIZARD_LOG=os.path.join(d, "log"))
-        given, _ = opts("--memory persistent --source local --sharing shared --command read", {})
+        given, _ = opts("--memory persistent --source local --share --command read", {})
         a = w.resolve(given, ctx)
         cmd = w.pod_doc(a, {})["spec"]["containers"][0]["command"]
         script = cmd[2].replace(w.TOOL, tool).replace(w.IDLE, ":")
