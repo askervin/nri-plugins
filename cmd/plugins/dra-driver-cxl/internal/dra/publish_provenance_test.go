@@ -293,12 +293,12 @@ func pubSerialAttr(key, serial string) map[resourcev1.QualifiedName]resourcev1.D
 	return map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{resourcev1.QualifiedName(key): {StringValue: ptr(serial)}}
 }
 
-// TestPoolSerialsSliceDeleted pins a shared pool device in pool-c's slice
+// TestProvenanceSliceDeleted pins a shared pool device in pool-c's slice
 // that is attached to the node for a claim that is not prepared: pool-c's
 // controller stops gracefully and deletes its slice; a rescan, and a
 // driver restart while the slice is absent, do not publish it; the store
 // has the pool serials, the local memdev and pool-c.
-func TestPoolSerialsSliceDeleted(t *testing.T) {
+func TestProvenanceSliceDeleted(t *testing.T) {
 	logs := klogtest.Capture(t, 3)
 	e := newPubSerialsEnv(t)
 	e.plug(pubLocalSerial)
@@ -335,10 +335,10 @@ func TestPoolSerialsSliceDeleted(t *testing.T) {
 	e.wantScan("slice back", pubLocalDeviceName)
 }
 
-// TestPoolSerialsHotAddWhileSliceDeleted pins a pool device detached while
+// TestProvenanceHotAddWhileSliceDeleted pins a pool device detached while
 // the slice lists it, the slice deleted and the device attached again
 // before the controller publishes again: never published.
-func TestPoolSerialsHotAddWhileSliceDeleted(t *testing.T) {
+func TestProvenanceHotAddWhileSliceDeleted(t *testing.T) {
 	e := newPubSerialsEnv(t)
 	e.plug(pubLocalSerial)
 	e.plug(pubSharedPoolSerial)
@@ -356,10 +356,10 @@ func TestPoolSerialsHotAddWhileSliceDeleted(t *testing.T) {
 	e.wantScan("driver restarted", pubLocalDeviceName)
 }
 
-// TestPoolSerialsNewMemdevHeldBack pins a pool device whose serial the
+// TestProvenanceNewMemdevHeld pins a pool device whose serial the
 // driver never saw in a slice, attached while pool-c has no slice: it is
 // held back, and is a pool device once pool-c lists it.
-func TestPoolSerialsNewMemdevHeldBack(t *testing.T) {
+func TestProvenanceNewMemdevHeld(t *testing.T) {
 	logs := klogtest.Capture(t, 0)
 	e := newPubSerialsEnv(t)
 	e.plug(pubLocalSerial)
@@ -387,11 +387,11 @@ func TestPoolSerialsNewMemdevHeldBack(t *testing.T) {
 	e.wantScan("pool-c missing again", pubLocalDeviceName)
 }
 
-// TestPoolSerialsHoldBackEnds pins a new memdev held back while a pool is
+// TestProvenanceHoldEnds pins a new memdev held back while a pool is
 // missing: published as a local one after MaxHold, and at once when the
 // pool is back without it; a pool observed missing for longer than
 // MissingWindow holds back nothing, but only when its absence was observed.
-func TestPoolSerialsHoldBackEnds(t *testing.T) {
+func TestProvenanceHoldEnds(t *testing.T) {
 	e := newPubSerialsEnv(t)
 	e.publish("0xc1ee2001")
 	e.wantScan("no memdevs")
@@ -426,10 +426,10 @@ func TestPoolSerialsHoldBackEnds(t *testing.T) {
 	}
 }
 
-// TestPoolSerialsLocalDevice pins a local memdev hot-added while every pool
+// TestProvenanceLocalDevice pins a local memdev hot-added while every pool
 // has its slices and never in a pool slice: published at once, also after
 // a restart while the pool slices are absent.
-func TestPoolSerialsLocalDevice(t *testing.T) {
+func TestProvenanceLocalDevice(t *testing.T) {
 	e := newPubSerialsEnv(t)
 	e.wantScan("no memdevs, no pools")
 	e.plug(pubLocalSerial)
@@ -448,10 +448,10 @@ func TestPoolSerialsLocalDevice(t *testing.T) {
 	e.wantScan("attached again without the pool slices", pubLocalDeviceName)
 }
 
-// TestPoolSerialsPoolDeviceRemoved pins a pool device detached and a local
+// TestProvenancePoolDeviceRemoved pins a pool device detached and a local
 // memdev with another serial attached later; the pool serial is forgotten
 // after Retention of observed absence, not of a gap without scans.
-func TestPoolSerialsPoolDeviceRemoved(t *testing.T) {
+func TestProvenancePoolDeviceRemoved(t *testing.T) {
 	e := newPubSerialsEnv(t)
 	e.publish("0xc1ee2001", "0xc1ae2001")
 	e.plug(pubSharedPoolSerial)
@@ -482,9 +482,9 @@ func TestPoolSerialsPoolDeviceRemoved(t *testing.T) {
 	}
 }
 
-// TestPoolSerialsLocalAllocatorUses pins a memdev that the device engine
+// TestProvenanceLocalAllocatorUses pins a memdev that the device engine
 // has a record of: local, also when it is new while a pool is missing.
-func TestPoolSerialsLocalAllocatorUses(t *testing.T) {
+func TestProvenanceLocalAllocatorUses(t *testing.T) {
 	e := newPubSerialsEnv(t)
 	e.publish("0xc1ee2001")
 	e.wantScan("no memdevs")
@@ -497,9 +497,9 @@ func TestPoolSerialsLocalAllocatorUses(t *testing.T) {
 	e.wantScan("used by the local allocator", pubLocalDeviceName)
 }
 
-// TestPoolSerialsPrepared pins the memdevs that the pool driver prepares:
+// TestProvenancePrepared pins the memdevs that the pool driver prepares:
 // remembered as pool serials, also after a restart.
-func TestPoolSerialsPrepared(t *testing.T) {
+func TestProvenancePrepared(t *testing.T) {
 	e := newPubSerialsEnv(t)
 	e.publish("0xc1ee2001")
 	e.plug(pubLocalSerial)
@@ -526,11 +526,11 @@ func TestPoolSerialsPrepared(t *testing.T) {
 	}
 }
 
-// TestPoolSerialsBadFile pins a store whose state.json does not decode
+// TestProvenanceBadFile pins a store whose state.json does not decode
 // (LOST): the remembered serials are lost, a new memdev is held back as
 // while a pool is missing, for MaxHold within MissingWindow. The LOST
 // store is not written.
-func TestPoolSerialsBadFile(t *testing.T) {
+func TestProvenanceBadFile(t *testing.T) {
 	e := newPubSerialsEnv(t)
 	e.lose("{bogus")
 	e.plug(pubLocalSerial)
@@ -547,10 +547,10 @@ func TestPoolSerialsBadFile(t *testing.T) {
 	}
 }
 
-// TestPoolSerialsTruncatedFile pins a truncated state.json without a
+// TestProvenanceTruncatedFile pins a truncated state.json without a
 // previous one (LOST) while pool-c's slices are gone: the pool device is
 // not published at once; neither is the local memdev, which is new again.
-func TestPoolSerialsTruncatedFile(t *testing.T) {
+func TestProvenanceTruncatedFile(t *testing.T) {
 	e := newPubSerialsEnv(t)
 	e.plug(pubLocalSerial)
 	e.publish("0xc1ee2001", "0xc1ae2001")
@@ -564,12 +564,12 @@ func TestPoolSerialsTruncatedFile(t *testing.T) {
 	}
 }
 
-// TestPoolSerialsQuietNodeWindow pins pool-c listed at the last scan 2 h
+// TestProvenanceQuietNodeWindow pins pool-c listed at the last scan 2 h
 // ago, no udev event since, and a pool device that the node never saw in a
 // slice attached while pool-c's slices are gone: its absence is observed
 // from that scan on, the new memdev is held back; after MissingWindow of
 // observed absence nothing is.
-func TestPoolSerialsQuietNodeWindow(t *testing.T) {
+func TestProvenanceQuietNodeWindow(t *testing.T) {
 	e := newPubSerialsEnv(t)
 	e.plug(pubLocalSerial)
 	e.publish("0xc1ee2001")
@@ -588,10 +588,10 @@ func TestPoolSerialsQuietNodeWindow(t *testing.T) {
 	e.wantScan("after an hour of observed absence", "memdev-a1", pubLocalDeviceName)
 }
 
-// TestPoolSerialsQuietNodeForget pins a pool serial listed at a scan 25 h
+// TestProvenanceQuietNodeForget pins a pool serial listed at a scan 25 h
 // ago, no scan since; the controller stops gracefully, an unrelated rescan
 // runs, and the device is attached: it is still a pool serial.
-func TestPoolSerialsQuietNodeForget(t *testing.T) {
+func TestProvenanceQuietNodeForget(t *testing.T) {
 	e := newPubSerialsEnv(t)
 	e.plug(pubLocalSerial)
 	e.publish("0xc1ee2001", "0xc1ae2001")
@@ -607,10 +607,10 @@ func TestPoolSerialsQuietNodeForget(t *testing.T) {
 	}
 }
 
-// TestPoolSerialsLocalBecomesPool pins an established local memdev that a
+// TestProvenanceLocalBecomesPool pins an established local memdev that a
 // pool slice lists later: a pool device from then on, also after the slice
 // is gone and a restart.
-func TestPoolSerialsLocalBecomesPool(t *testing.T) {
+func TestProvenanceLocalBecomesPool(t *testing.T) {
 	e := newPubSerialsEnv(t)
 	e.plug(pubLocalSerial)
 	e.wantScan("local", pubLocalDeviceName)
@@ -622,11 +622,11 @@ func TestPoolSerialsLocalBecomesPool(t *testing.T) {
 	e.wantScan("restarted")
 }
 
-// TestPoolSerialsClaimEvidence pins a first start without records while
+// TestProvenanceClaimEvidence pins a first start without records while
 // pool-c's controller is down: the status of the pool claims of the node
 // tells pool devices, and a pool claim of the node that is not attached
 // yet holds back new memdevs for as long as it is not.
-func TestPoolSerialsClaimEvidence(t *testing.T) {
+func TestProvenanceClaimEvidence(t *testing.T) {
 	e := newPubSerialsEnv(t)
 	e.claim("attached", pubNode, "c-shared0", "0xc1ae2001")
 	e.claim("failed", pubNode, "c-pooled1", "failed")
@@ -657,10 +657,10 @@ func TestPoolSerialsClaimEvidence(t *testing.T) {
 	}
 }
 
-// TestPoolSerialsHoldWhileNotListed pins a new memdev while no list of the
+// TestProvenanceHoldWhileNotListed pins a new memdev while no list of the
 // pool slices has succeeded: held back without the hold-back time running,
 // which counts from the first successful list on.
-func TestPoolSerialsHoldWhileNotListed(t *testing.T) {
+func TestProvenanceHoldWhileNotListed(t *testing.T) {
 	e := newPubSerialsEnv(t)
 	e.publish("0xc1ee2001")
 	e.wantScan("pool-c listed")
@@ -687,9 +687,9 @@ func TestPoolSerialsHoldWhileNotListed(t *testing.T) {
 	e.wantScan("held back for long enough", pubLocalDeviceName)
 }
 
-// TestPoolSerialsHeldRegion pins the regions of a memdev that is held
+// TestProvenanceHeldRegion pins the regions of a memdev that is held
 // back: not published either, and the reason is not "pool device".
-func TestPoolSerialsHeldRegion(t *testing.T) {
+func TestProvenanceHeldRegion(t *testing.T) {
 	e := newPubSerialsEnv(t)
 	e.publish("0xc1ee2001")
 	e.wantScan("no memdevs")
@@ -705,11 +705,11 @@ func TestPoolSerialsHeldRegion(t *testing.T) {
 	e.wantScan("published", "region0-numa2")
 }
 
-// TestPoolSerialsCheckLocal pins CheckLocal, the fresh list of the
+// TestProvenanceCheckLocal pins CheckLocal, the fresh list of the
 // engine's guard: it refuses a serial of a current pool slice; a
 // remembered pool serial and a held memdev pass it: their POOL and HELD
 // records, which the engine reads itself, refuse them.
-func TestPoolSerialsCheckLocal(t *testing.T) {
+func TestProvenanceCheckLocal(t *testing.T) {
 	e := newPubSerialsEnv(t)
 	ctx := context.Background()
 	e.plug(pubLocalSerial)
