@@ -97,7 +97,7 @@ dra-controller-start() {
 dra-controllers-status-cmd() {
     # Usage: dra-controllers-status-cmd
     #
-    # The hook of dra-wait-node: the pods of the controllers and their
+    # The hook of dra-driver-wait: the pods of the controllers and their
     # last log lines.
     echo "kubectl get pods -n $DRA_CONTROLLER_NS -o wide; kubectl logs -n $DRA_CONTROLLER_NS -l $DEMO_CONTROLLER_POD_LABEL --tail=40"
 }

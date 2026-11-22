@@ -99,7 +99,7 @@ echo "### preconditions: the pool controller and the node plugin run in the clus
 dra-build
 dra-install
 dra-pull-images "$VM2" docker.io/library/busybox:latest "$DRA_TOOLS_IMAGE"
-dra-dax-tool-install "$VM2"
+dra-tools-install "$VM2"
 dra-trace-start "$VM2"
 
 echo "### A: the pool is visible in Kubernetes"
@@ -158,7 +158,7 @@ spec:
 apiVersion: v1
 kind: Pod
 metadata:
-  name: pooled-consumer
+  name: pooled-pod
 spec:
   nodeSelector:
     kubernetes.io/hostname: $VM2_NAME
@@ -168,7 +168,7 @@ spec:
   - name: pooled
     resourceClaimName: pooled-memory
   containers:
-  - name: consumer
+  - name: main
     image: docker.io/library/busybox:latest
     imagePullPolicy: IfNotPresent
     command:
@@ -189,8 +189,8 @@ echo "### C: the scheduler waits for the attachment"
 # The scheduler allocates pooled0 for the claim, pins the claim to this
 # node, and reports that the binding conditions are pending.
 dra-wait "$VM2" binding-conditions-pending "events -n $DRA_NS" \
-    "events('BindingConditionsPending', 'pooled-consumer')" 60
-dra-kubectl "$VM2" "get events -n $DRA_NS --field-selector involvedObject.name=pooled-consumer"
+    "events('BindingConditionsPending', 'pooled-pod')" 60
+dra-kubectl "$VM2" "get events -n $DRA_NS --field-selector involvedObject.name=pooled-pod"
 # The controller sees the allocation, the pool attaches pooled0 to the VM,
 # and the controller tells the scheduler with the condition Attached.
 dra-wait "$VM2" attached "resourceclaim -n $DRA_NS pooled-memory" \
@@ -209,7 +209,7 @@ pool-assert "$COMMAND_OUTPUT" "[(a['device'], a['host'], a.get('owner')) for a i
 echo "### D: the node makes the memory usable"
 # The scheduler binds the pod, kubelet asks the node plugin to prepare the
 # claim: a region on the new memory device, its memory online.
-dra-pod-wait "$VM2" pooled-consumer Running 120
+dra-pod-wait "$VM2" pooled-pod Running 120
 pool-cxl-wait "$VM2" pooled0-prepared \
     "by_serial($POOLED0_SERIAL) is not None and len(regions) == 1 and enabled(regions[0]) and online_size(regions[0]) == $POOLED0_SIZE"
 cxl-assert "sorted(regions[0]['memdevs']) == [by_serial($POOLED0_SERIAL)['name']]"
@@ -221,28 +221,28 @@ grep -q "^node $CXL_NODE size: 512 MB" <<< "$COMMAND_OUTPUT" ||
     error "numactl -H does not show node $CXL_NODE with 512 MB"
 # The container knows which node has its memory: the environment of the
 # device and the marker of its claim, nothing else.
-dra-kubectl "$VM2" "logs -n $DRA_NS pooled-consumer" || command-error "cannot get the log of pooled-consumer"
+dra-kubectl "$VM2" "logs -n $DRA_NS pooled-pod" || command-error "cannot get the log of pooled-pod"
 POD_LOG="$COMMAND_OUTPUT"
-dra-env-assert pooled-consumer "$POD_LOG" "$POOLED0_HEX" \
+dra-env-assert pooled-pod "$POD_LOG" "$POOLED0_HEX" \
     SERIAL="$POOLED0_SERIAL" SHARED=0 MODE=numa SIZE="$POOLED0_SIZE" NUMA_NODE="$CXL_NODE"
 grep -qx "CXL_CLAIM_${CLAIM_UID//-/_}_0=1" <<< "$POD_LOG" ||
-    error "pooled-consumer has no marker CXL_CLAIM_${CLAIM_UID//-/_}_0=1 of result 0 of its claim"
+    error "pooled-pod has no marker CXL_CLAIM_${CLAIM_UID//-/_}_0=1 of result 0 of its claim"
 [ "$(grep -c '^CXL_' <<< "$POD_LOG")" == 6 ] ||
-    error "pooled-consumer has other CXL_ variables than the five of $POOLED0_SERIAL and the marker of its result: $(grep '^CXL_' <<< "$POD_LOG")"
+    error "pooled-pod has other CXL_ variables than the five of $POOLED0_SERIAL and the marker of its result: $(grep '^CXL_' <<< "$POD_LOG")"
 grep -q "^/sys/devices/system/node/node$CXL_NODE/meminfo:Node $CXL_NODE MemTotal:" <<< "$POD_LOG" ||
-    error "pooled-consumer does not see the memory of node $CXL_NODE"
-echo "pooled-consumer: $(grep "node$CXL_NODE/meminfo" <<< "$POD_LOG")"
-# The node is for the consumer only: its claim puts the node into its
+    error "pooled-pod does not see the memory of node $CXL_NODE"
+echo "pooled-pod: $(grep "node$CXL_NODE/meminfo" <<< "$POD_LOG")"
+# The node is for the pod only: its claim puts the node into its
 # cpuset.mems from its start, while every other container of the node,
 # those of the control plane too, is kept off the node.
 MEMS_ALLOWED=$(sed -n 's/^Mems_allowed_list:[[:space:]]*//p' <<< "$POD_LOG")
-dra-nodes-has "$MEMS_ALLOWED" "$CXL_NODE" ||
-    error "pooled-consumer: node $CXL_NODE is not in its Mems_allowed_list '$MEMS_ALLOWED'"
-echo "pooled-consumer: Mems_allowed_list $MEMS_ALLOWED"
-dra-mems-fenced "$VM2" "$CXL_NODE" "$DRA_NS/pooled-consumer/consumer"
-# Steering is opt-in: the claim has no MemoryConfig, the consumer is fenced,
+dra-numa-nodes-has "$MEMS_ALLOWED" "$CXL_NODE" ||
+    error "pooled-pod: node $CXL_NODE is not in its Mems_allowed_list '$MEMS_ALLOWED'"
+echo "pooled-pod: Mems_allowed_list $MEMS_ALLOWED"
+dra-mems-fenced "$VM2" "$CXL_NODE" "$DRA_NS/pooled-pod/main"
+# Steering is opt-in: the claim has no MemoryConfig, the container is fenced,
 # not steered: no memory policy, no memory.high.
-dra-memory-wait "$VM2" pooled-consumer consumer fenced "none (default)"
+dra-memory-wait "$VM2" pooled-pod main fenced "none (default)"
 
 echo "### D: the pool device is not advertised again as node-local CXL memory"
 # The new region is CXL memory of the node, which the node plugin offers
@@ -250,7 +250,7 @@ echo "### D: the pool device is not advertised again as node-local CXL memory"
 # until the node plugin has rescanned and published after it prepared
 # pooled0 (udev events of the region trigger the rescan).
 rescanned-after-prepare() {
-    dra-plugin-log "$VM2" |
+    dra-driver-log "$VM2" |
         awk -v prepared="$DRA_POOL_DRIVER: claim .*: prepared pooled0" \
             '$0 ~ prepared {p = 1}
              p && /publisher: published / {found = 1}
@@ -258,7 +258,7 @@ rescanned-after-prepare() {
 }
 retry-until --timeout 30 --message "node plugin rescan after preparing pooled0" rescanned-after-prepare ||
     error "nri-dra-driver-cxl did not publish its resources after preparing pooled0"
-dra-plugin-log "$VM2" | grep -E 'prepared pooled0|ignoring region|publisher: '
+dra-driver-log "$VM2" | grep -E 'prepared pooled0|ignoring region|publisher: '
 dra-json "$VM2" resourceslices
 dra-assert "$COMMAND_OUTPUT" "not any(attr(d, 'type') == 'region' for d in devices('$DRA_LOCAL_DRIVER', '$VM2_NAME'))"
 
@@ -266,7 +266,7 @@ echo "### E: delete the pod and the claim, the memory returns to the pool"
 # Kubelet unprepares the claim while the pod terminates: the node plugin
 # offlines the memory and releases the device. Then the claim is
 # deallocated, and the controller detaches the device.
-dra-delete "$VM2" pod pooled-consumer --grace-period=2 --wait=true --timeout=60s
+dra-delete "$VM2" pod pooled-pod --grace-period=2 --wait=true --timeout=60s
 dra-delete "$VM2" resourceclaim pooled-memory --wait=true --timeout=60s
 dra-wait "$VM2" claim-gone "resourceclaims -n $DRA_NS" "'pooled-memory' not in names()" 60
 pool-cxl-wait "$VM2" pooled0-detached "memdevs == []" 60
@@ -278,7 +278,7 @@ pool-client "$VM2" -o json devices pooled0 || command-error "cannot get pooled0"
 pool-assert "$COMMAND_OUTPUT" "j['state'] == 'free' and j['attachments'] in (None, [])"
 pool-vm-monitor "$VM2" "info qtree -b" | grep -q 'dev: cxl-type3' &&
     error "qemu of the VM still has a CXL memory device"
-dra-plugin-log "$VM2" | grep -iE 'unprepar|releas' ||
+dra-driver-log "$VM2" | grep -iE 'unprepar|releas' ||
     error "the node plugin did not log the release of pooled0"
 deleted=$(grep -c 'event DEVICE_DELETED' "$POOL_SERVER_LOG")
 [ "$deleted" -ge 1 ] || error "qemu did not report DEVICE_DELETED, see $POOL_SERVER_LOG"
@@ -319,7 +319,7 @@ dra-env-assert pooled-steered "$COMMAND_OUTPUT" "$POOLED1_HEX" \
 # A workload that runs as a child of the main process and has no NUMA
 # preference of its own gets its memory there.
 dra-memory-wait "$VM2" pooled-steered main steered "auto from claim $DRA_NS/pooled-steered request mem"
-dra-nodes-has "${DRA_MEMPOLICY##*:}" "$POOL_NODE" ||
+dra-numa-nodes-has "${DRA_MEMPOLICY##*:}" "$POOL_NODE" ||
     error "pooled-steered: the memory policy of the main process is '$DRA_MEMPOLICY', expected node $POOL_NODE"
 dra-run "$VM2" pooled-steered "python3 /tools/numa-touch.py $TOUCH_MIB -" ||
     error "numa-touch.py in pooled-steered failed"

@@ -224,10 +224,10 @@ $1
 EOF
 }
 
-borrower-yaml() {
-    # Usage: borrower-yaml
+requester-yaml() {
+    # Usage: requester-yaml
     #
-    # Pod "borrower" on VM2 with a lease claim from a template: its
+    # Pod "requester" on VM2 with a lease claim from a template: its
     # container main may lease memory (test12).
     dra-lease-template-yaml cxl-lease
     cat <<EOF
@@ -235,7 +235,7 @@ borrower-yaml() {
 apiVersion: v1
 kind: Pod
 metadata:
-  name: borrower
+  name: requester
 spec:
   nodeSelector:
     kubernetes.io/hostname: $VM2_NAME
@@ -416,7 +416,7 @@ for claim in unlabelled-object not-a-companion other-node-object; do
     dra-delete "$VM2" resourceclaim "$claim"
 done
 # Namespace $DRA_NS has no label $NS_LABEL yet: nobody may create the
-# template of the lease claim of the borrower in D there.
+# template of the lease claim of the requester in D there.
 admin-kubectl create --dry-run=server -f - <<< "$(dra-lease-template-yaml cxl-lease)"
 policy-denied "a template of class cxl-lease in namespace $DRA_NS" \
     "namespace $DRA_NS may not have resourceclaimtemplates of the device class cxl-lease: only namespaces with the labels $NS_LABEL=allowed may" "$NS_POLICY"
@@ -424,11 +424,11 @@ vmdir-command "$VM2" "kubectl label namespace $DRA_NS $NS_LABEL=allowed" ||
     command-error "cannot label namespace $DRA_NS"
 
 echo "### D: the companion of a real lease, created and deleted by the driver"
-dra-apply "$VM2" <<< "$(borrower-yaml)"
-dra-pod-wait "$VM2" borrower Running 60
-dra-json "$VM2" pod -n "$DRA_NS" borrower
-BORROWER_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
-dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" request --source pool --size 512Mi --wait 120s ||
+dra-apply "$VM2" <<< "$(requester-yaml)"
+dra-pod-wait "$VM2" requester Running 60
+dra-json "$VM2" pod -n "$DRA_NS" requester
+REQUESTER_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
+dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" request --source pool --size 512Mi --wait 120s ||
     command-error "cxl-request request --source pool --size 512Mi failed"
 json=$(dra-last-json "$COMMAND_OUTPUT") || error "cxl-request printed no JSON response"
 dra-assert "$json" "j.get('state') == 'Ready' and j.get('source') == 'pool' and j.get('serial') == '$POOLED0_SERIAL'"
@@ -438,13 +438,13 @@ COMPANION="cxl-lease-$LEASE"
 # (default service account, tolerations): what the policy checked.
 dra-pod-wait "$VM2" "$COMPANION" Running 30
 dra-json "$VM2" pod -n "$DRA_NS" "$COMPANION"
-dra-companion-meta-check "$COMMAND_OUTPUT" "$LEASE" "$BORROWER_UID" "$VM2_NAME" "$DRA_NS/borrower/main"
+dra-companion-meta-check "$COMMAND_OUTPUT" "$LEASE" "$REQUESTER_UID" "$VM2_NAME" "$DRA_NS/requester/main"
 dra-assert "$COMMAND_OUTPUT" "j['spec']['affinity']['nodeAffinity']['requiredDuringSchedulingIgnoredDuringExecution']['nodeSelectorTerms'] == [{'matchFields': [{'key': 'metadata.name', 'operator': 'In', 'values': ['$VM2_NAME']}]}]"
 dra-assert "$COMMAND_OUTPUT" "not j['spec'].get('volumes') and not any(j['spec'].get(k) for k in ('hostNetwork', 'hostPID', 'hostIPC'))"
 dra-assert "$COMMAND_OUTPUT" "[(c['image'], bool(c.get('securityContext', {}).get('privileged'))) for c in j['spec']['containers'] + j['spec'].get('initContainers', [])] == [('$DRA_COMPANION_IMAGE', False)]"
 dra-json "$VM2" resourceclaim -n "$DRA_NS" "$COMPANION" ||
     command-error "no companion claim $COMPANION"
-dra-companion-meta-check "$COMMAND_OUTPUT" "$LEASE" "$BORROWER_UID" "$VM2_NAME" "$DRA_NS/borrower/main"
+dra-companion-meta-check "$COMMAND_OUTPUT" "$LEASE" "$REQUESTER_UID" "$VM2_NAME" "$DRA_NS/requester/main"
 # The driver deletes companions with foreground propagation.
 for kind in resourceclaim pod; do
     driver-kubectl "$VM2_NAME" delete --dry-run=server --cascade=foreground "$kind" "$COMPANION"
@@ -452,7 +452,7 @@ for kind in resourceclaim pod; do
 done
 # The CDI device of the lease claim: the lease socket. A pod that names
 # it in a cdi.k8s.io annotation does not get it.
-LEASE_CLAIM=$(dra-pod-claim "$VM2" borrower) || error "pod borrower has no claim"
+LEASE_CLAIM=$(dra-pod-claim "$VM2" requester) || error "pod requester has no claim"
 dra-json "$VM2" resourceclaim -n "$DRA_NS" "$LEASE_CLAIM" ||
     command-error "no lease claim $LEASE_CLAIM"
 LEASE_CLAIM_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
@@ -482,19 +482,19 @@ dra-exec "$VM2" cdi-annotated/main sh -c 'echo "${CXL_LEASE_SOCKET:-no socket}";
 [ "$COMMAND_OUTPUT" == "no socket
 no /run/cxl" ] || error "pod cdi-annotated got CDI device lease-$LEASE_CLAIM_UID from its annotation: $COMMAND_OUTPUT"
 dra-delete-pod "$VM2" cdi-annotated
-dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" release --lease "$LEASE" ||
+dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" release --lease "$LEASE" ||
     command-error "cxl-request release --lease $LEASE failed"
 dra-assert "$(dra-last-json "$COMMAND_OUTPUT")" "j.get('lease') == '$LEASE' and j.get('state') == 'Released'"
 dra-wait "$VM2" companion-pod-deleted "pods -n $DRA_NS -l $DRA_LEASE_LABEL=$LEASE" "items == []" 90
 dra-wait "$VM2" companion-claim-deleted "resourceclaims -n $DRA_NS" "'$COMPANION' not in names()" 90
-dra-leases "$VM2" borrower/main
+dra-leases "$VM2" requester/main
 dra-assert "$DRA_LEASES" "j == []"
 
 echo "### E: the orphan companion claim, deleted by the driver"
 dra-wait "$VM2" orphan-deleted "resourceclaims -n $DRA_NS" "'$ORPHAN' not in names()" 90
 
 echo "### cleanup"
-dra-delete "$VM2" pod borrower --grace-period=2 --wait=true --timeout=60s
+dra-delete "$VM2" pod requester --grace-period=2 --wait=true --timeout=60s
 dra-delete "$VM2" resourceclaimtemplate cxl-lease --wait=true --timeout=60s
 vmdir-command "$VM2" "kubectl label namespace $DRA_NS $NS_LABEL-" ||
     command-error "cannot remove label $NS_LABEL of namespace $DRA_NS"

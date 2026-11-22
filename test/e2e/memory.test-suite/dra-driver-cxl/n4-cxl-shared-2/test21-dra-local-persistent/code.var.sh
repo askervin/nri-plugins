@@ -137,7 +137,7 @@ dra-build
 dra-install
 trap exit-cleanup EXIT
 dra-pull-images "$VM2" "$DRA_TOOLS_IMAGE" "$DRA_COMPANION_IMAGE"
-dra-dax-tool-install "$VM2"
+dra-tools-install "$VM2"
 dra-trace-start "$VM2"
 
 echo "### A: the second server, without a controller, hot-plugs the persistent device $LP_DEVICE into VM2"
@@ -198,7 +198,7 @@ DRA_DRIVER_CONFIG="fsTypes: [erofs, ext4]"
 dra-install
 trap exit-cleanup EXIT
 dra-trace-driver-follow "$VM2"
-dra-dax-tool-install "$VM2"
+dra-tools-install "$VM2"
 [ "${DRA_CONTROLLER_UNITS[*]}" == "$DRA_CONTROLLER_UNIT" ] ||
     error "pool controllers ${DRA_CONTROLLER_UNITS[*]}, expected $DRA_CONTROLLER_UNIT only"
 dra-wait "$VM2" lp0-republished resourceslices "$LP is not None and attr($LP, 'persistent') == True" 360
@@ -229,7 +229,7 @@ fs-node-mounts-assert "$VM2" "$DRA_LOCAL_MOUNT_DIR" "$LP_MOUNT_ID" ext4 rw "" di
 fs-no-mounts-assert "$VM2" "$DRA_POOL_MOUNT_DIR"
 PMEM="$FS_PMEM"
 fs-pmem-ro-assert "$VM2" "$PMEM" 0
-dra-plugin-log-wait "$VM2" "mounted $PMEM at $MNT_DIRECT (ext4, rw, dax=always)"
+dra-driver-log-wait "$VM2" "mounted $PMEM at $MNT_DIRECT (ext4, rw, dax=always)"
 region-wait yes
 
 echo "### D: an fs lease of one share of the device in a running container reads what fs-rw wrote"

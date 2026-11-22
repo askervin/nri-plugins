@@ -85,10 +85,10 @@ cgroup-mems() {
     # Usage: cgroup-mems CONTAINER [FILE]
     #
     # Print cpuset.mems.effective (or FILE, for instance cpuset.mems) of the
-    # cgroup of container CONTAINER of the borrower, read in the VM.
+    # cgroup of container CONTAINER of the requester, read in the VM.
     local file="${2:-cpuset.mems.effective}" mems
-    mems=$(dra-container-read "$VM2" borrower "$1" "$file") ||
-        error "cannot read $file of container $1 of the borrower"
+    mems=$(dra-container-read "$VM2" requester "$1" "$file") ||
+        error "cannot read $file of container $1 of the requester"
     echo "$file of container $1: $mems" >&2
     echo "$mems"
 }
@@ -97,7 +97,7 @@ companion-check() {
     # Usage: companion-check LEASE DEVICE CLASS MODE
     #
     # The objects of lease LEASE: the companion pod and its claim
-    # cxl-lease-LEASE, both owned by the borrower, labeled and annotated
+    # cxl-lease-LEASE, both owned by the requester, labeled and annotated
     # with the lease and its requester; the claim asks for a device of
     # DeviceClass CLASS, has a MemoryConfig of the pool driver with a
     # device section of mode MODE only and no other config, and is
@@ -107,8 +107,8 @@ companion-check() {
     dra-pod-wait "$VM2" "$name" Running 30
     dra-json "$VM2" pod -n "$DRA_NS" "$name"
     pod_json="$COMMAND_OUTPUT"
-    dra-assert "$pod_json" "[(o['kind'], o['name'], o['uid']) for o in j['metadata']['ownerReferences']] == [('Pod', 'borrower', '$BORROWER_UID')]"
-    dra-companion-meta-check "$pod_json" "$lease" "$BORROWER_UID" "$VM2_NAME" "$DRA_NS/borrower/main"
+    dra-assert "$pod_json" "[(o['kind'], o['name'], o['uid']) for o in j['metadata']['ownerReferences']] == [('Pod', 'requester', '$REQUESTER_UID')]"
+    dra-companion-meta-check "$pod_json" "$lease" "$REQUESTER_UID" "$VM2_NAME" "$DRA_NS/requester/main"
     dra-assert "$pod_json" "j['spec']['nodeName'] == '$VM2_NAME'"
     dra-assert "$pod_json" "j['spec']['affinity']['nodeAffinity']['requiredDuringSchedulingIgnoredDuringExecution']['nodeSelectorTerms'][0]['matchFields'] == [{'key': 'metadata.name', 'operator': 'In', 'values': ['$VM2_NAME']}]"
     dra-assert "$pod_json" "{'operator': 'Exists'} in j['spec']['tolerations']"
@@ -123,11 +123,11 @@ companion-check() {
     dra-assert "$CLAIM_JSON" "condition('$DRA_POOL_DRIVER/Attached') == 'True'"
     dra-assert "$CLAIM_JSON" "[(r['driver'], r['device']) for r in results()] == [('$DRA_POOL_DRIVER', '$dev')] and allocated_node() == '$VM2_NAME'"
     dra-assert "$CLAIM_JSON" "[r['name'] for r in j['status']['reservedFor']] == ['$name']"
-    dra-assert "$CLAIM_JSON" "[(o['kind'], o['name'], o['uid'], o.get('controller')) for o in j['metadata']['ownerReferences']] == [('Pod', 'borrower', '$BORROWER_UID', True)]"
+    dra-assert "$CLAIM_JSON" "[(o['kind'], o['name'], o['uid'], o.get('controller')) for o in j['metadata']['ownerReferences']] == [('Pod', 'requester', '$REQUESTER_UID', True)]"
     # The node plugin knows the claim of the companion by its label, the
     # requester by the lease. The claim says what was asked: the class and
     # the mode.
-    dra-companion-meta-check "$CLAIM_JSON" "$lease" "$BORROWER_UID" "$VM2_NAME" "$DRA_NS/borrower/main"
+    dra-companion-meta-check "$CLAIM_JSON" "$lease" "$REQUESTER_UID" "$VM2_NAME" "$DRA_NS/requester/main"
     dra-assert "$CLAIM_JSON" "[s['deviceClassName'] for s in subrequests()] == ['$class']"
     dra-assert "$CLAIM_JSON" "[(c['driver'], c['parameters'].get('apiVersion'), c['parameters'].get('kind'), sorted(set(c['parameters']) - {'apiVersion', 'kind'}), config_section(c, 'device').get('mode'), bool(config_section(c, 'device').get('readOnly'))) for c in configs()] == [('$DRA_POOL_DRIVER', '$DRA_CONFIG_API', '$DRA_CONFIG_KIND', ['device'], '$mode', False)]"
     claim_uid=$(dra-value "$CLAIM_JSON" "j['metadata']['uid']")
@@ -139,12 +139,12 @@ companion-check() {
 }
 
 nothing-left() {
-    # Usage: nothing-left LABEL [no-borrower]
+    # Usage: nothing-left LABEL [no-requester]
     #
     # Wait until no lease has anything left anywhere: no companion pods, no
     # cxl-lease-* claims, no CXL memory devices or regions in the VM, no
     # attachments in the pool, no cxl-type3 device in qemu, and (unless
-    # no-borrower) no leases in "cxl-request list" of the borrower.
+    # no-requester) no leases in "cxl-request list" of the requester.
     local label="$1"
     dra-wait "$VM2" "$label-no-companions" "pods -n $DRA_NS -l $DRA_LEASE_LABEL" "items == []" 90
     dra-wait "$VM2" "$label-no-lease-claims" "resourceclaims -n $DRA_NS" "not any(n.startswith('cxl-lease-') for n in names())" 90
@@ -156,8 +156,8 @@ nothing-left() {
     pool-assert "$COMMAND_OUTPUT" "sorted((d['name'], d['state']) for d in j if d['name'] in ('pooled0', 'shared0')) == [('pooled0', 'free'), ('shared0', 'free')]"
     pool-vm-monitor "$VM2" "info qtree -b" | grep -q 'dev: cxl-type3' &&
         error "$label: qemu of the VM still has a CXL memory device"
-    if [ "$2" != "no-borrower" ]; then
-        dra-leases "$VM2" borrower/main
+    if [ "$2" != "no-requester" ]; then
+        dra-leases "$VM2" requester/main
         dra-assert "$DRA_LEASES" "j == []"
     fi
     echo "$label: nothing left"
@@ -172,7 +172,7 @@ lend-memory() {
     # pooled0 (lease-env-check).
     local json anon pages
     echo "--- cxl-request request --source pool --size 512Mi"
-    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" request --source pool --size 512Mi --wait 120s ||
+    dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" request --source pool --size 512Mi --wait 120s ||
         command-error "cxl-request request --source pool --size 512Mi failed"
     json=$(dra-last-json "$COMMAND_OUTPUT") || error "cxl-request printed no JSON response"
     # Exclusive, read-write NUMA memory: the defaults.
@@ -192,35 +192,35 @@ lend-memory() {
     # Lent to container main: the node plugin wrote its DRAM nodes and the
     # new node to cpuset.mems of main (through NRI, so that containerd keeps
     # it), and nothing to the other container of the pod.
-    dra-nodes-eq "$(cgroup-mems main cpuset.mems)" "$DRAM_NODES,$MEM_NODE" ||
+    dra-numa-nodes-eq "$(cgroup-mems main cpuset.mems)" "$DRAM_NODES,$MEM_NODE" ||
         error "cpuset.mems of container main is not $DRAM_NODES,$MEM_NODE"
-    dra-nodes-has "$(cgroup-mems main)" "$MEM_NODE" ||
+    dra-numa-nodes-has "$(cgroup-mems main)" "$MEM_NODE" ||
         error "node $MEM_NODE is not in cpuset.mems.effective of container main"
-    dra-nodes-has "$(dra-mems-allowed "$VM2" borrower/main)" "$MEM_NODE" ||
+    dra-numa-nodes-has "$(dra-mems-allowed "$VM2" requester/main)" "$MEM_NODE" ||
         error "node $MEM_NODE is not in Mems_allowed_list of container main"
     # No other container has the node: neither container idle of the same
     # pod nor the companion nor any container of the control plane. The
     # node plugin keeps every container without a claim or a lend of the
     # node off it, also those that inherit their nodes (an empty
     # cpuset.mems).
-    dra-mems-fenced "$VM2" "$MEM_NODE" "$DRA_NS/borrower/main"
-    dra-mems-once lent "$VM2" borrower idle "$DRAM_NODES" IDLE_MEMS
-    dra-nodes-has "$(dra-mems-allowed "$VM2" borrower/idle)" "$MEM_NODE" &&
+    dra-mems-fenced "$VM2" "$MEM_NODE" "$DRA_NS/requester/main"
+    dra-mems-once lent "$VM2" requester idle "$DRAM_NODES" IDLE_MEMS
+    dra-numa-nodes-has "$(dra-mems-allowed "$VM2" requester/idle)" "$MEM_NODE" &&
         error "node $MEM_NODE is in Mems_allowed_list of container idle"
     # The idle container cannot even prefer the node: it is not its node.
-    dra-exec "$VM2" borrower/idle python3 /tools/numa-touch.py 16 "$MEM_NODE" &&
+    dra-exec "$VM2" requester/idle python3 /tools/numa-touch.py 16 "$MEM_NODE" &&
         error "container idle could allocate memory on node $MEM_NODE"
     grep -q "set_mempolicy.*Invalid argument" <<< "$COMMAND_OUTPUT" ||
         error "numa-touch.py in idle failed for another reason than an invalid NUMA node"
-    dra-leases "$VM2" borrower/main
+    dra-leases "$VM2" requester/main
     dra-assert "$DRA_LEASES" "[(l['lease'], l['state'], l.get('source'), l.get('mode'), bool(l.get('share'))) for l in j] == [('$MEM_LEASE', 'Ready', 'pool', 'numa', False)]"
     lease-env-check
     # Container main uses the memory: 256 MiB on the lent node.
-    dra-touch-start "$VM2" borrower/main "$TOUCH_MIB" "$MEM_NODE"
+    dra-touch-start "$VM2" requester/main "$TOUCH_MIB" "$MEM_NODE"
     pages=$(dra-touch-log-pages "$DRA_TOUCH_LOG" "$MEM_NODE")
     [ "${pages:-0}" -ge $(( (TOUCH_MIB - 16) << 8 )) ] ||
         error "only ${pages:-0} pages of numa-touch.py are on node $MEM_NODE"
-    anon=$(dra-container-anon "$VM2" borrower main "$MEM_NODE")
+    anon=$(dra-container-anon "$VM2" requester main "$MEM_NODE")
     echo "memory.numa_stat of container main: anon N$MEM_NODE=$anon"
     [ "${anon:-0}" -gt $(( 200 << 20 )) ] ||
         error "container main has ${anon:-0} bytes anon on node $MEM_NODE, expected > 200 MiB"
@@ -235,7 +235,7 @@ lease-env-check() {
     # "fd" refuses a NUMA lease. LEASE_ENV and LEASE_NODE are those of the
     # lease.
     local key="CXL_${POOLED0_HEX}_" script
-    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" env --lease "$MEM_LEASE" ||
+    dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" env --lease "$MEM_LEASE" ||
         command-error "cxl-request env --lease $MEM_LEASE failed"
     dra-env-assert "lease $MEM_LEASE" "$COMMAND_OUTPUT" "$POOLED0_HEX" \
         SERIAL="$POOLED0_SERIAL" SHARED=0 MODE=numa SIZE="$POOLED0_SIZE" NUMA_NODE="$MEM_NODE"
@@ -250,11 +250,11 @@ lease-env-check() {
     # The script, expanded by sh in the container:
     # echo "lease=$CXL_LEASE node=$CXL_<KEY>_NUMA_NODE size=$CXL_<KEY>_SIZE fd=${CXL_<KEY>_FD:-none}"
     script="echo \"lease=\$CXL_LEASE node=\$${key}NUMA_NODE size=\$${key}SIZE fd=\${${key}FD:-none}\""
-    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" env --lease "$MEM_LEASE" --exec sh -c "$script" ||
+    dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" env --lease "$MEM_LEASE" --exec sh -c "$script" ||
         command-error "cxl-request env --lease $MEM_LEASE --exec failed"
     [ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "lease=$MEM_LEASE node=$MEM_NODE size=$POOLED0_SIZE fd=none" ] ||
         error "the program of env --exec does not have lease=$MEM_LEASE node=$MEM_NODE size=$POOLED0_SIZE and no fd"
-    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" fd --lease "$MEM_LEASE" --exec true &&
+    dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" fd --lease "$MEM_LEASE" --exec true &&
         error "cxl-request fd of the NUMA lease $MEM_LEASE succeeded"
     [ "$COMMAND_STATUS" == 3 ] ||
         error "cxl-request fd of the NUMA lease $MEM_LEASE exited $COMMAND_STATUS, expected 3"
@@ -270,23 +270,23 @@ give-back() {
     # memory there. The pages move to DRAM, the process lives on, and the
     # device goes back to the pool.
     echo "--- cxl-request release --lease $MEM_LEASE"
-    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" release --lease "$MEM_LEASE" ||
+    dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" release --lease "$MEM_LEASE" ||
         command-error "cxl-request release --lease $MEM_LEASE failed"
     dra-assert "$(dra-last-json "$COMMAND_OUTPUT")" "j.get('lease') == '$MEM_LEASE' and j.get('state') == 'Released'"
     retry-until --timeout 30 --interval 1 --message "no anonymous memory of container main on node $MEM_NODE" \
-        '[ "$(dra-container-anon "$VM2" borrower main "$MEM_NODE")" == 0 ]' ||
+        '[ "$(dra-container-anon "$VM2" requester main "$MEM_NODE")" == 0 ]' ||
         error "container main still has memory on node $MEM_NODE after the release"
-    echo "memory.numa_stat of container main: $(dra-container-read "$VM2" borrower main memory.numa_stat | tr '\n' ' ')"
+    echo "memory.numa_stat of container main: $(dra-container-read "$VM2" requester main memory.numa_stat | tr '\n' ' ')"
     dra-touch-pages "$MEM_NODE"
     [ "$DRA_TOUCH_PAGES" == 0 ] || error "numa-touch.py still has $DRA_TOUCH_PAGES pages on node $MEM_NODE"
     echo "numa-touch.py (pid $DRA_TOUCH_PID) lives, its pages moved off node $MEM_NODE"
-    dra-nodes-eq "$(cgroup-mems main cpuset.mems)" "$DRAM_NODES" ||
+    dra-numa-nodes-eq "$(cgroup-mems main cpuset.mems)" "$DRAM_NODES" ||
         error "cpuset.mems of container main is not back to $DRAM_NODES"
-    dra-nodes-eq "$(dra-mems-allowed "$VM2" borrower/main)" "$DRAM_NODES" ||
+    dra-numa-nodes-eq "$(dra-mems-allowed "$VM2" requester/main)" "$DRAM_NODES" ||
         error "Mems_allowed_list of container main is not back to $DRAM_NODES"
     # Nobody has the node now, and container idle keeps its nodes.
     dra-mems-fenced "$VM2" "$MEM_NODE"
-    dra-mems-once given-back "$VM2" borrower idle "$DRAM_NODES" IDLE_MEMS
+    dra-mems-once given-back "$VM2" requester idle "$DRAM_NODES" IDLE_MEMS
     nothing-left released
     dra-touch-stop
 }
@@ -300,10 +300,10 @@ share() {
     # container, no change in its device cgroup.
     local tag="$TAG" lease lease_env shared_file found dax devices majmin
     echo "--- cxl-request request --serial $SHARED_SERIAL --share --exec dax-rw.py --fd 3 write"
-    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" request --serial "$SHARED_SERIAL" --share --wait 120s \
+    dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" request --serial "$SHARED_SERIAL" --share --wait 120s \
         --exec python3 /tools/dax-rw.py --fd 3 write 0 "$tag" ||
         command-error "cxl-request request --serial $SHARED_SERIAL --share --exec ... write failed"
-    dra-leases "$VM2" borrower/main
+    dra-leases "$VM2" requester/main
     # --share: mode dax, the default for shared memory, read-write.
     dra-assert "$DRA_LEASES" "[(l['state'], l.get('source'), l.get('mode'), bool(l.get('share')), bool(l.get('readOnly')), l.get('serial')) for l in j] == [('Ready', 'pool', 'dax', True, False, '$SHARED_SERIAL')]"
     lease=$(dra-value "$DRA_LEASES" "j[0]['lease']")
@@ -324,7 +324,7 @@ share() {
     echo "host read at 0 of $shared_file: '$found'"
     # The environment of the lease names the dax device of the VM, as a
     # claim of shared0 would (test19): read-write, shared.
-    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" env --lease "$lease" ||
+    dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" env --lease "$lease" ||
         command-error "cxl-request env --lease $lease failed"
     lease_env="$COMMAND_OUTPUT"
     dra-env-assert "lease $lease" "$lease_env" "$SHARED_HEX" \
@@ -333,7 +333,7 @@ share() {
     dra-assert "$DRA_LEASES" "j[0].get('dax') == '$dax'"
     # The fd again, for another program: its environment has the fd 3
     # instead of the device, and the lease.
-    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" fd --lease "$lease" --exec \
+    dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" fd --lease "$lease" --exec \
         sh -c 'env | grep ^CXL_ | sort; readlink /proc/self/fd/3' ||
         command-error "cxl-request fd --lease $lease --exec sh failed"
     dra-env-assert "fd --lease $lease --exec" "$COMMAND_OUTPUT" "$SHARED_HEX" \
@@ -342,16 +342,16 @@ share() {
         error "the environment of fd --exec has no CXL_LEASE=$lease"
     [ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "$dax" ] ||
         error "fd 3 is not $dax"
-    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" fd --lease "$lease" --exec \
+    dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" fd --lease "$lease" --exec \
         python3 /tools/dax-rw.py --fd 3 read 0 ||
         command-error "cxl-request fd --lease $lease --exec ... read failed"
     [ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "$tag" ] ||
         error "read '$(tail -n 1 <<< "$COMMAND_OUTPUT")' through the fd, expected '$tag'"
     # Nothing of this is a device of the container.
     # shellcheck disable=SC2016 # expanded by sh in the container
-    dra-exec "$VM2" borrower/main sh -c 'ls /dev | grep -c "^dax" || true'
+    dra-exec "$VM2" requester/main sh -c 'ls /dev | grep -c "^dax" || true'
     [ "$COMMAND_OUTPUT" == 0 ] || error "container main has /dev/dax* devices"
-    devices=$(dra-container-devices "$VM2" borrower main)
+    devices=$(dra-container-devices "$VM2" requester main)
     echo "device cgroup of container main: $devices"
     [ "$(head -n 1 <<< "$devices")" == "$(head -n 1 <<< "$DEVICES_BEFORE")" ] ||
         error "the device rules of container main changed: $devices, before: $DEVICES_BEFORE"
@@ -360,13 +360,13 @@ share() {
     vm-command "cat /sys/bus/dax/devices/${dax#/dev/}/dev" || command-error "no sysfs entry of $dax"
     majmin="$COMMAND_OUTPUT"
     # shellcheck disable=SC2016 # expanded by sh in the container
-    dra-exec "$VM2" borrower/main sh -c 'mknod "/tmp/$1" c "$2" "$3" && echo "mknod ok" && python3 /tools/dax-rw.py read "/tmp/$1" 0' sh "${dax#/dev/}" "${majmin%:*}" "${majmin#*:}" &&
+    dra-exec "$VM2" requester/main sh -c 'mknod "/tmp/$1" c "$2" "$3" && echo "mknod ok" && python3 /tools/dax-rw.py read "/tmp/$1" 0' sh "${dax#/dev/}" "${majmin%:*}" "${majmin#*:}" &&
         error "container main could open $dax ($majmin) through a node of its own"
     { grep -q "^mknod ok" <<< "$COMMAND_OUTPUT" && grep -qE "Operation not permitted|Permission denied" <<< "$DRA_EXEC_STDERR"; } ||
         error "opening $dax through mknod failed for another reason than the device cgroup"
-    dra-exec "$VM2" borrower/main rm -f "/tmp/${dax#/dev/}"
+    dra-exec "$VM2" requester/main rm -f "/tmp/${dax#/dev/}"
     echo "the device cgroup of container main denies $dax ($majmin), the fd works"
-    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" release --all ||
+    dra-exec "$VM2" requester/main "$DRA_REQUEST_CTR_BIN" release --all ||
         command-error "cxl-request release --all failed"
     nothing-left shared-released
 }
@@ -400,7 +400,7 @@ echo "### preconditions: the pool controller and the node plugin (with cxl-reque
 dra-build
 dra-install
 dra-pull-images "$VM2" "$DRA_TOOLS_IMAGE" "$DRA_COMPANION_IMAGE"
-dra-dax-tool-install "$VM2"
+dra-tools-install "$VM2"
 dra-trace-start "$VM2"
 
 echo "### A: a pod that may want CXL memory later"
@@ -414,11 +414,11 @@ dra-assert "$COMMAND_OUTPUT" "$LEASE_DEV is not None and attr($LEASE_DEV, 'type'
 dra-assert "$COMMAND_OUTPUT" "[k.split('/')[-1] for k in ${LEASE_DEV}['attributes']] == ['type']"
 dra-apply "$VM2" <<< "$(dra-lease-template-yaml)
 ---
-$(dra-pod-yaml borrower "$VM2_NAME" cxl=template:cxl-lease -- main=cxl idle)"
+$(dra-pod-yaml requester "$VM2_NAME" cxl=template:cxl-lease -- main=cxl idle)"
 # No pool device is involved: the pod starts right away.
-dra-pod-wait "$VM2" borrower Running 60
-dra-json "$VM2" pod -n "$DRA_NS" borrower
-BORROWER_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
+dra-pod-wait "$VM2" requester Running 60
+dra-json "$VM2" pod -n "$DRA_NS" requester
+REQUESTER_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
 LEASE_CLAIM=$(dra-value "$COMMAND_OUTPUT" "j['status']['resourceClaimStatuses'][0]['resourceClaimName']")
 dra-json "$VM2" resourceclaim -n "$DRA_NS" "$LEASE_CLAIM"
 dra-assert "$COMMAND_OUTPUT" "[(r['driver'], r['device']) for r in results()] == [('$DRA_LOCAL_DRIVER', 'lease')] and allocated_node() == '$VM2_NAME'"
@@ -427,7 +427,7 @@ LEASE_CLAIM_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
 vm-command "ls -l $DRA_LEASE_DIR/$LEASE_CLAIM_UID/ && test -S $DRA_LEASE_DIR/$LEASE_CLAIM_UID/cxl.sock" ||
     command-error "no lease socket of claim $LEASE_CLAIM in $DRA_LEASE_DIR/$LEASE_CLAIM_UID"
 # shellcheck disable=SC2016 # expanded by sh in the container
-dra-exec "$VM2" borrower/main sh -c 'echo "$CXL_LEASE_SOCKET"; test -S /run/cxl/cxl.sock && test -x /usr/local/bin/cxl-request && echo ok' ||
+dra-exec "$VM2" requester/main sh -c 'echo "$CXL_LEASE_SOCKET"; test -S /run/cxl/cxl.sock && test -x /usr/local/bin/cxl-request && echo ok' ||
     command-error "container main has no lease socket or cxl-request"
 [ "$COMMAND_OUTPUT" == "/run/cxl/cxl.sock
 ok" ] || error "container main: expected CXL_LEASE_SOCKET=/run/cxl/cxl.sock, a socket there, and cxl-request"
@@ -438,41 +438,41 @@ ok" ] || error "container main: expected CXL_LEASE_SOCKET=/run/cxl/cxl.sock, a s
 dra-lease-cdi-assert "$VM2" "$LEASE_CLAIM_UID"
 # The container cannot write the host directory of its socket, and the
 # socket still works.
-dra-exec "$VM2" borrower/main touch /run/cxl/x &&
+dra-exec "$VM2" requester/main touch /run/cxl/x &&
     error "container main could create a file in /run/cxl, the read-only directory of its lease socket"
 grep -qF "Read-only file system" <<< "$COMMAND_OUTPUT
 $DRA_EXEC_STDERR" || error "creating a file in /run/cxl failed for another reason than \"Read-only file system\": $DRA_EXEC_STDERR"
 vm-command "test ! -e $DRA_LEASE_DIR/$LEASE_CLAIM_UID/x" || error "the write in /run/cxl reached $DRA_LEASE_DIR/$LEASE_CLAIM_UID on the node"
-dra-leases "$VM2" borrower/main
+dra-leases "$VM2" requester/main
 dra-assert "$DRA_LEASES" "j == []"
 vm-command "ls -la $DRA_LEASE_FS_DIR/$LEASE_CLAIM_UID/" ||
     command-error "no filesystem directory of claim $LEASE_CLAIM in $DRA_LEASE_FS_DIR"
 # In container main an empty read-only directory, mounted as a slave.
 # shellcheck disable=SC2016 # expanded by sh in the container
-dra-exec "$VM2" borrower/main sh -c 'test -d "$1" && ls -A "$1" | wc -l && grep " $1 " /proc/self/mountinfo' sh "$DRA_LEASE_FS_CTR_DIR" ||
+dra-exec "$VM2" requester/main sh -c 'test -d "$1" && ls -A "$1" | wc -l && grep " $1 " /proc/self/mountinfo' sh "$DRA_LEASE_FS_CTR_DIR" ||
     command-error "container main has no directory $DRA_LEASE_FS_CTR_DIR"
 [ "$(head -n 1 <<< "$COMMAND_OUTPUT" | tr -d ' ')" == 0 ] || error "container main: $DRA_LEASE_FS_CTR_DIR is not empty"
 grep -qE " $DRA_LEASE_FS_CTR_DIR ro[, ].* master:[0-9]+" <<< "$COMMAND_OUTPUT" ||
     error "container main: $DRA_LEASE_FS_CTR_DIR is not a read-only slave mount"
-dra-exec "$VM2" borrower/main touch "$DRA_LEASE_FS_CTR_DIR/x" &&
+dra-exec "$VM2" requester/main touch "$DRA_LEASE_FS_CTR_DIR/x" &&
     error "container main could create a file in $DRA_LEASE_FS_CTR_DIR"
 grep -qF "Read-only file system" <<< "$DRA_EXEC_STDERR" ||
     error "creating a file in $DRA_LEASE_FS_CTR_DIR failed for another reason than a read-only file system"
 # Container idle has no claim: no socket, no CLI, no filesystem directory.
-dra-exec "$VM2" borrower/idle sh -c "test -e /run/cxl/cxl.sock || test -e /usr/local/bin/cxl-request || test -e $DRA_LEASE_FS_CTR_DIR" &&
+dra-exec "$VM2" requester/idle sh -c "test -e /run/cxl/cxl.sock || test -e /usr/local/bin/cxl-request || test -e $DRA_LEASE_FS_CTR_DIR" &&
     error "container idle has the lease socket, cxl-request or $DRA_LEASE_FS_CTR_DIR, it has no claim"
-dra-leases "$VM2" borrower/main
+dra-leases "$VM2" requester/main
 dra-assert "$DRA_LEASES" "j == []"
 # The container runs on DRAM only, and the pool has given nothing.
-dra-nodes-eq "$(dra-mems-allowed "$VM2" borrower/main)" "$DRAM_NODES" || error "container main: Mems_allowed_list is not $DRAM_NODES"
+dra-numa-nodes-eq "$(dra-mems-allowed "$VM2" requester/main)" "$DRAM_NODES" || error "container main: Mems_allowed_list is not $DRAM_NODES"
 IDLE_MEMS=$(cgroup-mems idle cpuset.mems)
 echo "cpuset.mems of container idle: '$IDLE_MEMS'"
-DEVICES_BEFORE=$(dra-container-devices "$VM2" borrower main) ||
+DEVICES_BEFORE=$(dra-container-devices "$VM2" requester main) ||
     error "cannot read the device cgroup of container main"
 echo "device cgroup of container main: $DEVICES_BEFORE"
 pool-host-client -o json attachments || command-error "cannot list the attachments of the pool"
 pool-assert "$COMMAND_OUTPUT" "j in (None, [])"
-pool-cxl-dump "$VM2" borrower-running
+pool-cxl-dump "$VM2" requester-running
 cxl-assert 'memdevs == [] and regions == []'
 
 echo "### A2: requests that cxl-request refuses, and some that the node plugin refuses"
@@ -480,16 +480,16 @@ echo "### A2: requests that cxl-request refuses, and some that the node plugin r
 # unit tests have every check), the node plugin checks them again and
 # knows the devices: pooled0 is not shared, shared0 is not persistent.
 # Nothing of a refused request is left.
-dra-request-refused "$VM2" borrower/main 2 "shared memory is never onlined as RAM: use mode dax" request --share --mode numa --size 64Mi
-dra-request-refused "$VM2" borrower/main 1 "memdev $POOLED0_SERIAL: not shareable" request --serial "$POOLED0_SERIAL" --share
+dra-request-refused "$VM2" requester/main 2 "shared memory is never onlined as RAM: use mode dax" request --share --mode numa --size 64Mi
+dra-request-refused "$VM2" requester/main 1 "memdev $POOLED0_SERIAL: not shareable" request --serial "$POOLED0_SERIAL" --share
 # shared0 is volatile: it has no filesystem and no block device. mode fs,
 # read-only by default or with --read-only=false, passes cxl-request and
 # reaches the node plugin.
-dra-request-refused "$VM2" borrower/main 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --share --read-only --mode fs
-dra-request-refused "$VM2" borrower/main 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --share --mode fs
-dra-request-refused "$VM2" borrower/main 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --share --mode fs --read-only=false --fs-type ext4
-dra-request-refused "$VM2" borrower/main 1 "memdev $SHARED_SERIAL: mode block needs a persistent device" request --serial "$SHARED_SERIAL" --mode block
-dra-leases "$VM2" borrower/main
+dra-request-refused "$VM2" requester/main 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --share --read-only --mode fs
+dra-request-refused "$VM2" requester/main 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --share --mode fs
+dra-request-refused "$VM2" requester/main 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --share --mode fs --read-only=false --fs-type ext4
+dra-request-refused "$VM2" requester/main 1 "memdev $SHARED_SERIAL: mode block needs a persistent device" request --serial "$SHARED_SERIAL" --mode block
+dra-leases "$VM2" requester/main
 dra-assert "$DRA_LEASES" "j == []"
 dra-json "$VM2" pods -n "$DRA_NS" -l "$DRA_LEASE_LABEL"
 dra-assert "$COMMAND_OUTPUT" "items == []"
@@ -562,7 +562,7 @@ the lease of pooled0 gave (on node $LEASE_NODE)
 $LEASE_ENV"
 echo "the claim (node $CLAIM_NODE) and the lease (node $LEASE_NODE) of pooled0 have the same environment"
 # The node of the claim is the claimer's only, as a lent node is the
-# borrower's: container main of the borrower has none now.
+# requester's: container main of the requester has none now.
 dra-mems-fenced "$VM2" "$CLAIM_NODE" "$DRA_NS/claimer/main"
 dra-delete "$VM2" pod claimer --grace-period=2 --wait=true --timeout=60s
 dra-delete "$VM2" resourceclaim pooled-memory --wait=true --timeout=60s
@@ -572,8 +572,8 @@ echo "### D: shared memory as a file descriptor"
 share
 
 echo "### E: the pod goes, and the directories of its lease claim"
-dra-delete-pod "$VM2" borrower
-nothing-left pod-deleted no-borrower
+dra-delete-pod "$VM2" requester
+nothing-left pod-deleted no-requester
 vm-command "test ! -e $DRA_LEASE_DIR/$LEASE_CLAIM_UID && test ! -e $DRA_LEASE_FS_DIR/$LEASE_CLAIM_UID" ||
     error "a directory of claim $LEASE_CLAIM is left in $DRA_LEASE_DIR or $DRA_LEASE_FS_DIR"
 echo "leases of the test: ${DRA_LEASE_IDS[*]}"

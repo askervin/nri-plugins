@@ -57,7 +57,7 @@ import (
 
 const (
 	// the requester of the leases
-	envPod    = "borrower"
+	envPod    = "requester"
 	envPodUID = "pod-uid-1"
 	envCtr    = "app"
 	// envLeaseClaim is the uid of the lease claim of the requester pod.

@@ -645,7 +645,7 @@ trap exit-cleanup EXIT
 for vm in "$VM2" "$VM1"; do
     dra-pull-images "$vm" "$DRA_TOOLS_IMAGE" "$LLM_SERVER_IMAGE" "$DRA_COMPANION_IMAGE"
 done
-dra-dax-tool-install "$VM2"
+dra-tools-install "$VM2"
 # The first container of an image on a node reads its files into the page
 # cache: do that before the readers, whose page cache deltas count the
 # model.
@@ -796,9 +796,9 @@ dra-exec "$VM2" direct-b/main "$DRA_REQUEST_CTR_BIN" release --lease "$LEASE_B" 
 dra-assert "$(dra-last-json "$COMMAND_OUTPUT")" "j.get('lease') == '$LEASE_B' and j.get('state') == 'Releasing'"
 busy_re="lease $LEASE_B: unmounting ${BIND_B//./\\.}: .*device or resource busy"
 retry-until --timeout 60 --interval 1 --message "the driver of VM2 cannot unmount $BIND_B: busy" \
-    'dra-plugin-log "$VM2" | grep -qE "$busy_re"' ||
+    'dra-driver-log "$VM2" | grep -qE "$busy_re"' ||
     error "the driver of VM2 did not log that it cannot unmount $BIND_B (lease $LEASE_B: unmounting ...: device or resource busy)"
-dra-plugin-log "$VM2" | grep -E "$busy_re" | tail -n 2
+dra-driver-log "$VM2" | grep -E "$busy_re" | tail -n 2
 lease-bind-assert direct-b
 mounts-assert "$VM2" direct cached
 vm-region-assert "$VM2"

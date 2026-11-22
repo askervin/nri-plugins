@@ -920,7 +920,7 @@ spec:
 apiVersion: v1
 kind: Pod
 metadata:
-  name: borrower
+  name: requester
 spec:
   nodeSelector:
     kubernetes.io/hostname: n4-cxl-shared-2-fedora-43-containerd
@@ -936,8 +936,8 @@ spec:
       claims:
       - name: lease
 EOF
-kubectl wait --for=condition=Ready pod/borrower --timeout=120s
-kubectl exec borrower -- sh -c 'echo $CXL_LEASE_SOCKET; ls -l /usr/local/bin/cxl-request; cat /sys/fs/cgroup/cpuset.mems.effective'
+kubectl wait --for=condition=Ready pod/requester --timeout=120s
+kubectl exec requester -- sh -c 'echo $CXL_LEASE_SOCKET; ls -l /usr/local/bin/cxl-request; cat /sys/fs/cgroup/cpuset.mems.effective'
 ```
 
 ```
@@ -951,8 +951,8 @@ and pod for the lease, prepares a `numa` slice of the local device for
 it, and adds its NUMA node to the `cpuset.mems` of the container:
 
 ```bash
-kubectl exec borrower -- cxl-request request --source local --size 128Mi
-kubectl exec borrower -- cat /sys/fs/cgroup/cpuset.mems.effective
+kubectl exec requester -- cxl-request request --source local --size 128Mi
+kubectl exec requester -- cat /sys/fs/cgroup/cpuset.mems.effective
 kubectl get pods,resourceclaims -l cxl.nri.io/lease
 ```
 
@@ -976,9 +976,9 @@ socket, and `cxl-request` gives it to the command as fd 3. The container
 has no device node for it.
 
 ```bash
-kubectl exec borrower -- cxl-request request --source pool --size 256Mi --mode dax \
+kubectl exec requester -- cxl-request request --source pool --size 256Mi --mode dax \
     --exec sh -c 'env | grep ^CXL_ | sort; readlink /proc/self/fd/3'
-kubectl exec borrower -- cxl-request list
+kubectl exec requester -- cxl-request list
 ```
 
 ```
@@ -1002,15 +1002,15 @@ Give the memory back; the node leaves `cpuset.mems`, the companions go,
 and the pool device is detached:
 
 ```bash
-kubectl exec borrower -- cxl-request release --all
-kubectl exec borrower -- cat /sys/fs/cgroup/cpuset.mems.effective
-kubectl delete pod/borrower resourceclaimtemplate/cxl-lease
+kubectl exec requester -- cxl-request release --all
+kubectl exec requester -- cat /sys/fs/cgroup/cpuset.mems.effective
+kubectl delete pod/requester resourceclaimtemplate/cxl-lease
 ```
 
 ```
 {"share":false,"readOnly":false,"leases":[{"lease":"11ff3fc6","state":"Released","share":false,"readOnly":false},{"lease":"319ab5d0","state":"Released","share":false,"readOnly":false}]}
 0-1
-pod "borrower" deleted from default namespace
+pod "requester" deleted from default namespace
 resourceclaimtemplate.resource.k8s.io "cxl-lease" deleted from default namespace
 ```
 

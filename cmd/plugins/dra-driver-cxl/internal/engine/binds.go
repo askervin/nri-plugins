@@ -258,7 +258,7 @@ func boundTo(r *state.Records, ref state.GrantRef, target string, to state.BindS
 }
 
 // unbind unmounts a lease bind target, never detaching it, and removes its
-// directory. A bind that cannot be unmounted (busy while the borrower has
+// directory. A bind that cannot be unmounted (busy while the requester has
 // files of it open or mapped), or that has another mount on it than a
 // lease bind, is an error.
 func (e *Engine) unbind(source state.Source, what, target string) error {

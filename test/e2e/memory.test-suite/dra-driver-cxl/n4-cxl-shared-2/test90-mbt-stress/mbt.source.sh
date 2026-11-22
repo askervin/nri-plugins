@@ -62,14 +62,14 @@ declare -A MBT_XPMEM_SERIAL=([c]=0xc1ee2002)
 declare -A MBT_PDEV_POOL=([c-pmem0]=c [c-pmem1]=c)   # persistent device -> its pool id
 declare -A MBT_PDEV_FILES=()       # persistent device -> DATA:LSA, its backing files on the host (mbt-pdev-files)
 MBT_PDEV_DIR="/tmp/fake-cxl-pool-${MBT_POOL_SERVER[c]}"   # their directory (pool-server-start --name pool-c)
-MBT_PMEM_TOOL=/tools/pmem-rw.py    # pmem-rw.py in the pods (dra-dax-tool-install)
+MBT_PMEM_TOOL=/tools/pmem-rw.py    # pmem-rw.py in the pods (dra-tools-install)
 MBT_HOLD_STOP=/tmp/mbt-hold.stop   # hold/unhold: the stop file of the holder in the container,
 MBT_HOLD_LOG=/tmp/mbt-hold.log     # and its output
 # The command line of a holder (pgrep -f): anchored, so that it matches
 # no shell whose script names the tool.
 MBT_HOLDER_RE='^python3 [^ ]*pmem-rw\.py (lease fs )?hold '
 MBT_FS_LEASE_NAME=mbt              # lease-get pfd: --name
-MBT_PLEASE_PUT_WAIT="${MBT_PLEASE_PUT_WAIT:-20s}"   # lease-put of plse: cxl-request release --wait
+MBT_LEASE_PUT_WAIT="${MBT_LEASE_PUT_WAIT:-20s}"   # lease-put of plse: cxl-request release --wait
 MBT_KILLAT_TIMEOUT="${MBT_KILLAT_TIMEOUT:-60}"      # driver-kill-at: seconds until the watcher gives up
 MBT_KILLAT_STATE=/run/mbt-killat/state.json         # its state in the VM
 MBT_KILLAT_VM=""                   # the VM id of an armed driver-kill-at watcher not reported done yet
@@ -442,7 +442,7 @@ mbt-pod-yaml() {
     # the node of its VM unless the slot is "any", restartPolicy Always,
     # terminationGracePeriodSeconds 2, its claim c0 from the template of
     # its kind (none for plain), image $DRA_TOOLS_IMAGE with the tools of
-    # dra-dax-tool-install in /tools, main process $MBT_WORKLOAD. dnuma
+    # dra-tools-install in /tools, main process $MBT_WORKLOAD. dnuma
     # (A39): two claims that its container uses, c0 from mbt-lnuma (a
     # local numa slice) and c1 from mbt-xnuma-c (c-pooled0 in numa).
     local slot="$1" name="$2" selector="" claims="" uses="" template
@@ -700,14 +700,14 @@ mbt-act-lease-put() {
     #
     # Release every lease of the pod of the lease kind SLOT (cxl-request
     # release --all). The next settle observation inspects the pod again.
-    # plse: with --wait $MBT_PLEASE_PUT_WAIT, so that an fs lease whose file
+    # plse: with --wait $MBT_LEASE_PUT_WAIT, so that an fs lease whose file
     # a process maps (hold), which stays Releasing, ends the step with exit
     # 3 after the wait instead of the plugin's 120 s.
     local rc wait=()
     mbt-slot "$1" || return 2
     case "$MBT_BASE" in
         lease) ;;
-        plse) wait=(--wait "$MBT_PLEASE_PUT_WAIT");;
+        plse) wait=(--wait "$MBT_LEASE_PUT_WAIT");;
         *) MBT_ERR="$MBT_KIND is not a lease kind (lease, plse)"; return 2;;
     esac
     mbt-exec-in "$1" "$DRA_REQUEST_CTR_BIN" release --all "${wait[@]}"

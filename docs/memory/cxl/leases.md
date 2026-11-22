@@ -44,7 +44,7 @@ spec: {spec: {devices: {requests: [{name: lease, exactly: {deviceClassName: cxl-
 ---
 apiVersion: v1
 kind: Pod
-metadata: {name: borrower}
+metadata: {name: requester}
 spec:
   resourceClaims:
   - {name: lease, resourceClaimTemplateName: cxl-lease}
@@ -599,7 +599,7 @@ The companion objects of lease `<id>` live in the requester's namespace:
   what was asked; in a `firstAvailable` request
   each applies to its subrequest (`requests: [lease/local]`,
   `[lease/pool]`). The claim has no `container` section: the settings
-  of the borrower come from its own claims, the lease claim included,
+  of the requester come from its own claims, the lease claim included,
   and the node defaults ([usage.md](usage.md#container-settings)). The
   claim has an ownerReference to the requester pod (controller: true).
 - Pod `cxl-lease-<id>`: ownerReference to the requester pod, the
@@ -716,7 +716,7 @@ and cannot make it the companion of a lease it did not request.
   device, made by the driver of the device when it prepares the companion
   claim and recorded with its grant; its unmount when the
   companion claim is unprepared is the revoke. The unmount is never lazy:
-  while the borrower has files of the filesystem open or mapped (a
+  while the requester has files of the filesystem open or mapped (a
   running `llama-server` maps its model), it fails with `device or
   resource busy`, the Unprepare fails
   (`cxl-pool.nri.io: claim <ns>/cxl-lease-<id>: lease <id>: unmounting <bind>: device or resource busy`),
@@ -787,7 +787,7 @@ and cannot make it the companion of a lease it did not request.
 - cpuset.mems has one owner: the lend goes through NRI UpdateContainers,
   as does keeping the CXL nodes of the driver away from every container
   that is not steered ([usage.md](usage.md#containers-without-claims)).
-  The other containers of the borrower's pod, and every other container,
+  The other containers of the requester's pod, and every other container,
   do not get the lent node (with `defaults.container.fencing` `none` a
   container without its own cpuset.mems inherits it).
   A node is lent per lease: memory devices under one CXL host bridge share
@@ -825,7 +825,7 @@ and cannot make it the companion of a lease it did not request.
   the scheduler checks the binding condition only by polling (every 5 s),
   and a release takes longer than a request. A local lease takes a few
   seconds. An `fs` lease adds the pmem region and the mounts, as a claim
-  of mode `fs` does; its release waits for the borrower to close the
+  of mode `fs` does; its release waits for the requester to close the
   files. A `block` lease adds the pmem region and, for the writer of a
   fresh device, the fsdax namespace.
 - RBAC: the plugin creates and deletes pods and resourceclaims in every

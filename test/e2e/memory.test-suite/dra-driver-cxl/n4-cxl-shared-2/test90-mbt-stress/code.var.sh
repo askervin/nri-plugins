@@ -58,7 +58,7 @@
 # dra-trace of every component, 0: none), MBT_OBS_KEEP (30 observations
 # kept in mbt-obs/), MBT_BIN (another generator than the model), MBT_KILLAT_TIMEOUT (60 s: a
 # driver-kill-at watcher gives up), MBT_REBOOT_WAIT (180 s: node-reboot
-# waits that long for ssh with a new boot id), MBT_PLEASE_PUT_WAIT (20s: lease-put of
+# waits that long for ssh with a new boot id), MBT_LEASE_PUT_WAIT (20s: lease-put of
 # persistent leases waits that long for Released).
 #
 # Persistent pool devices (A22): pool-c has c-pmem0 (256Mi, shared,
@@ -203,7 +203,7 @@ for vm in "${VMS[@]}"; do
     pool-vm-reset "$vm"
     pool-cxl-dump "$vm" no-devices
     cxl-assert 'memdevs == [] and regions == [] and endpoints == []'
-    dra-node-size-exact "$vm"
+    dra-memmap-on-memory-off "$vm"
 done
 
 echo "### 0: preconditions: three pool servers on the host"
@@ -295,7 +295,7 @@ echo "### 0: images, tools, claim templates, the observer"
 for vm in "${VMS[@]}"; do
     dra-pull-images "$vm" "$DRA_TOOLS_IMAGE" "$DRA_COMPANION_IMAGE"
 done
-dra-dax-tool-install "$VM2" "pmem-rw.py=$TEST_DIR/pmem-rw.py" "hello.erofs.hex=$TEST_DIR/hello.erofs.hex"
+dra-tools-install "$VM2" "pmem-rw.py=$TEST_DIR/pmem-rw.py" "hello.erofs.hex=$TEST_DIR/hello.erofs.hex"
 mbt-templates-apply
 vmdir-command "$VM2" "kubectl get resourceclaimtemplates -n $DRA_NS" ||
     command-error "cannot list the ResourceClaimTemplates"

@@ -548,9 +548,9 @@ func TestLendFailed(t *testing.T) {
 	stay.Store(true)
 	_, err := e.b.OnLending("000000a1", claim)
 	mustOK(t, err)
-	e.b.OnLendFailed("000000a1", errors.New("lease 000000a1: lending NUMA node 2 to demo/borrower/app: container is steered"))
+	e.b.OnLendFailed("000000a1", errors.New("lease 000000a1: lending NUMA node 2 to demo/requester/app: container is steered"))
 	resp := <-ch
-	if resp.State != api.StateFailed || resp.Error != "lease 000000a1: lending NUMA node 2 to demo/borrower/app: container is steered" {
+	if resp.State != api.StateFailed || resp.Error != "lease 000000a1: lending NUMA node 2 to demo/requester/app: container is steered" {
 		t.Fatalf("response %+v", resp)
 	}
 	l := e.lease("000000a1")
@@ -1736,7 +1736,7 @@ func TestLimits(t *testing.T) {
 	}
 	noConns()
 	resp, _ := e.call(api.Request{Op: api.OpRequest, Size: "256Mi", Wait: "0s"})
-	if resp.Error != "pod demo/borrower has 1 leases, the limit of --lease-max-per-pod" {
+	if resp.Error != "pod demo/requester has 1 leases, the limit of --lease-max-per-pod" {
 		t.Fatalf("a request beyond the leases of the pod %+v", resp)
 	}
 	noConns()

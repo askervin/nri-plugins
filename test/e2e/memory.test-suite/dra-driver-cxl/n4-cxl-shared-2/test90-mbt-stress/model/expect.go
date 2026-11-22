@@ -367,7 +367,7 @@ func expectDone(from, to *State, a Act, step int) *Expectation {
 		}
 	case VLeasePut:
 		// a held fs lease stays Releasing: cxl-request release --wait
-		// ends with exit 3 (A25, the executor's MBT_PLEASE_PUT_WAIT)
+		// ends with exit 3 (A25, the executor's MBT_LEASE_PUT_WAIT)
 		if to.Slots[a.Slot].Lease == LeaseBusy {
 			d.Status = "nonzero"
 		}

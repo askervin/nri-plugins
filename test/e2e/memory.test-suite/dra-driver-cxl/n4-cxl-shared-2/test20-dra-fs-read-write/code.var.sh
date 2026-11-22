@@ -289,7 +289,7 @@ trap exit-cleanup EXIT
 for vm in "$VM2" "$VM1"; do
     dra-pull-images "$vm" "$DRA_TOOLS_IMAGE" "$DRA_COMPANION_IMAGE"
 done
-dra-dax-tool-install "$VM2"
+dra-tools-install "$VM2"
 dra-trace-start "$VM2" "$VM1"
 
 echo "### A: one cluster, one pool with the persistent device $FS_DEVICE, coherent between hosts, its class"
@@ -339,7 +339,7 @@ fs-ctr-write-refused ro-c "$FS_PATH"
 fs-node-mounts-assert "$VM2" "$DRA_POOL_MOUNT_DIR" "$FS_MOUNT_ID" ext4 rw "" direct
 PMEM2="$FS_PMEM"
 fs-pmem-ro-assert "$VM2" "$PMEM2" 0
-dra-plugin-log-wait "$VM2" "mounted $PMEM2 at $MNT_DIRECT (ext4, rw, dax=always)"
+dra-driver-log-wait "$VM2" "mounted $PMEM2 at $MNT_DIRECT (ext4, rw, dax=always)"
 # The writers' claims: singleHost (the node mounts read-write only with
 # it), coherent memory, persistent; the reader's claim coherent too, not
 # singleHost.
@@ -369,7 +369,7 @@ echo "### E: the writers of VM2 go: VM2 downgrades the ext4 to read-only, ro-d s
 dra-claim-pod-delete rw-a rw-b
 superblock-wait "$VM2" ro direct
 fs-pmem-ro-assert "$VM2" "$PMEM2" 1
-dra-plugin-log-wait "$VM2" "remounted $MNT_DIRECT read-only"
+dra-driver-log-wait "$VM2" "remounted $MNT_DIRECT read-only"
 ext4-clean-assert "$VM2" "$PMEM2"
 fs-ctr-read-assert ro-c "$FS_PATH" a.txt "$TEXT_A"
 fs-ctr-write-refused ro-c "$FS_PATH"
@@ -407,7 +407,7 @@ fs-no-mounts-assert "$VM1" "$DRA_POOL_MOUNT_DIR"
 dra-pod-wait "$VM2" rw-f Running 240
 superblock-wait "$VM2" rw direct
 fs-pmem-ro-assert "$VM2" "$PMEM2" 0
-dra-plugin-log-wait "$VM2" "remounted $MNT_DIRECT read-write"
+dra-driver-log-wait "$VM2" "remounted $MNT_DIRECT read-write"
 attached-assert "$VM2_NAME:True"
 fs-ctr-env-assert rw-f "$FS_HEX" \
     SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=direct READ_ONLY=0 FS_TYPE=ext4
@@ -504,8 +504,8 @@ done
 # Two superblocks of one xfs on VM2, both read-only: nouuid.
 fs-node-mounts-assert "$VM2" "$DRA_POOL_MOUNT_DIR" "$FS_MOUNT_ID" xfs ro nouuid direct cached
 fs-pmem-ro-assert "$VM2" "$FS_PMEM" 1
-dra-plugin-log-wait "$VM2" "at $MNT_DIRECT (xfs, ro, "
-dra-plugin-log-wait "$VM2" "at $MNT_CACHED (xfs, ro, "
+dra-driver-log-wait "$VM2" "at $MNT_DIRECT (xfs, ro, "
+dra-driver-log-wait "$VM2" "at $MNT_CACHED (xfs, ro, "
 fs-node-mounts-assert "$VM1" "$DRA_POOL_MOUNT_DIR" "$FS_MOUNT_ID" xfs ro nouuid direct
 attached-assert "$VM1_NAME:False" "$VM2_NAME:False"
 dra-claim-pod-delete ro-x1 ro-x2 ro-x3

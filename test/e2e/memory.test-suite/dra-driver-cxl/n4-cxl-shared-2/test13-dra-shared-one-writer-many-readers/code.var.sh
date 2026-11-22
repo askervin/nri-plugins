@@ -155,7 +155,7 @@ dra-install
 for vm in "$VM2" "$VM1"; do
     dra-pull-images "$vm" "$DRA_TOOLS_IMAGE" "$DRA_COMPANION_IMAGE"
 done
-dra-dax-tool-install "$VM2"
+dra-tools-install "$VM2"
 dra-apply "$VM2" <<< "$(dra-lease-template-yaml)"
 dra-trace-start "$VM2" "$VM1"
 

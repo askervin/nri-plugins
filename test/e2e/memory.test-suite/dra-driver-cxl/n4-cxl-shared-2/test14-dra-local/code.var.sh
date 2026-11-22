@@ -222,7 +222,7 @@ steered-check() {
     dra-memory-wait "$VM2" "$1" main steered "$2 from claim $DRA_NS/$claim request "
     [[ "$DRA_MEMPOLICY" == *:* ]] || error "$1: the memory policy of the main process '$DRA_MEMPOLICY' names no nodes"
     nodes=${DRA_MEMPOLICY##*:}
-    dra-nodes-subset "$nodes" "$3" ||
+    dra-numa-nodes-subset "$nodes" "$3" ||
         error "$1: the memory policy of the main process is '$DRA_MEMPOLICY', expected nodes of $3"
 }
 
@@ -278,7 +278,7 @@ cxl-assert 'memdevs == [] and regions == [] and endpoints == []'
 CPU_NODES=$(cxl-value 'len(nodes)')
 vm-command "cat /sys/devices/system/node/has_memory" || command-error "cannot read the memory nodes of the VM"
 DRAM_NODES="$COMMAND_OUTPUT"
-dra-node-size-exact "$VM2"
+dra-memmap-on-memory-off "$VM2"
 
 echo "### preconditions: fake-cxl-pool-server on the host, with one exclusive device"
 pool-server-start "
@@ -292,7 +292,7 @@ echo "### preconditions: the pool controller and the node plugin run in the clus
 dra-build
 dra-install
 dra-pull-images "$VM2" "$DRA_TOOLS_IMAGE"
-dra-dax-tool-install "$VM2"
+dra-tools-install "$VM2"
 dra-trace-start "$VM2"
 
 echo "### A: the local device is a resource of the node"
@@ -357,7 +357,7 @@ dra-assert "$COMMAND_OUTPUT" "'\"memdev\"' in by_name('$LOCAL_CLASS')['spec']['s
 dra-assert "$COMMAND_OUTPUT" "not any(by_name(n)['spec'].get('config') for n in [$(printf "'%s', " "${DRA_CLASSES[@]}")])"
 # No memory of the device is online: the VM has only its DRAM nodes.
 vm-command "cat /sys/devices/system/node/has_memory" || command-error "cannot read the memory nodes of the VM"
-dra-nodes-eq "$COMMAND_OUTPUT" "$DRAM_NODES" || error "memory nodes $COMMAND_OUTPUT before any claim, expected $DRAM_NODES"
+dra-numa-nodes-eq "$COMMAND_OUTPUT" "$DRAM_NODES" || error "memory nodes $COMMAND_OUTPUT before any claim, expected $DRAM_NODES"
 
 echo "### B: NUMA and dax claims share the device, the NUMA node grows with the NUMA claims"
 # numa-a has no MemoryConfig: mode numa is the default.
@@ -371,7 +371,7 @@ dra-local-slices-wait "$VM2" numa-a "$NUMA_NODE" "numa:$NUMA_A"
 NUMA_NODE=$(dra-value "$DRA_MEMDEV" "dax_slices('kmem')[0]['node']")
 (( NUMA_NODE >= CPU_NODES )) || error "the NUMA slice is on node $NUMA_NODE, a CPU node"
 echo "the local device is NUMA node $NUMA_NODE of the VM"
-dra-local-node-size "$VM2" numa-a "$NUMA_NODE" "$NUMA_A"
+dra-local-numa-node-size "$VM2" numa-a "$NUMA_NODE" "$NUMA_A"
 pool-cxl-wait "$VM2" numa-a-region "len($LREGIONS) == 1 and ${LREGIONS}[0]['numaNode'] == $NUMA_NODE and len(regions) == 1"
 dra-local-unchanged "$VM2"
 no-region-device "$COMMAND_OUTPUT"
@@ -407,7 +407,7 @@ slice-check dax-1 "$(dra-local-round "$DAX1_REQ")"
 DAX1_DAX="$SLICE_DAX"
 DAX1_DEV="$SLICE_DEV"
 dra-local-slices-wait "$VM2" numa-a-dax-1 "$NUMA_NODE" "numa:$NUMA_A" "dax:$(dra-local-round "$DAX1_REQ")"
-dra-local-node-size "$VM2" dax-1 "$NUMA_NODE" "$NUMA_A"
+dra-local-numa-node-size "$VM2" dax-1 "$NUMA_NODE" "$NUMA_A"
 dra-local-unchanged "$VM2"
 no-region-device "$COMMAND_OUTPUT"
 # A second NUMA claim, with device.mode numa in its MemoryConfig: the node
@@ -416,7 +416,7 @@ dra-claim-pod "$VM2" numa-b "$LOCAL_CLASS" "$(dra-mi "$NUMA_B")" numa
 dra-pod-wait "$VM2" numa-b Running 120
 dra-local-claim-check "$VM2" numa-b "$NUMA_B"
 dra-local-slices-wait "$VM2" numa-b "$NUMA_NODE" "numa:$NUMA_A" "dax:$(dra-local-round "$DAX1_REQ")" "numa:$NUMA_B"
-dra-local-node-size "$VM2" numa-b "$NUMA_NODE" $(( NUMA_A + NUMA_B ))
+dra-local-numa-node-size "$VM2" numa-b "$NUMA_NODE" $(( NUMA_A + NUMA_B ))
 numa-env-check numa-b "$NUMA_B"
 # A MemoryConfig with a device section only does not opt in to steering.
 dra-memory-wait "$VM2" numa-b main fenced "none (default)"
@@ -459,7 +459,7 @@ TOTAL=$(( NUMA_A + $(dra-local-round "$DAX1_REQ") + NUMA_B + SHARED ))
 dra-json "$VM2" resourceclaims -n "$DRA_NS"
 LOCAL_CLAIMS="[c for c in items if any(r['device'] == '$DRA_LOCAL_DEVICE' for r in results(c))]"
 dra-assert "$COMMAND_OUTPUT" "len($LOCAL_CLAIMS) == 4 and sum(consumed(c) for c in $LOCAL_CLAIMS) == $TOTAL"
-dra-local-node-size "$VM2" four-claims "$NUMA_NODE" $(( NUMA_A + NUMA_B ))
+dra-local-numa-node-size "$VM2" four-claims "$NUMA_NODE" $(( NUMA_A + NUMA_B ))
 vmdir-command "$VM2" "daxctl list -R -D 2>/dev/null; ls -l /dev/dax*; numactl -H" || :
 
 echo "### B2: a restart of the driver keeps the node to the NUMA pods, a new pod is kept off it"
@@ -467,7 +467,7 @@ echo "### B2: a restart of the driver keeps the node to the NUMA pods, a new pod
 # container was created while no driver ran, with every node: the driver
 # fences it like every other container once it runs. The slices stay.
 dra-driver-restart "$VM2"
-dra-plugin-log-wait "$VM2" "NRI fence: fencing CXL NUMA nodes $NUMA_NODE of prepared claims"
+dra-driver-log-wait "$VM2" "NRI fence: fencing CXL NUMA nodes $NUMA_NODE of prepared claims"
 dra-mems-fenced "$VM2" "$NUMA_NODE" "$DRA_NS/numa-a/main" "$DRA_NS/numa-b/main"
 dra-local-slices-wait "$VM2" restarted "$NUMA_NODE" "numa:$NUMA_A" "dax:$(dra-local-round "$DAX1_REQ")" "numa:$NUMA_B" "dax:$SHARED"
 # A pod without a claim, created after the restart, gets an explicit
@@ -490,13 +490,13 @@ spec:
     command: ["sh", "-c", "grep Mems_allowed_list /proc/self/status; trap 'exit 0' TERM; sleep infinity & wait"]
 EOF
 dra-pod-wait "$VM2" plain Running 60
-dra-plugin-log-wait "$VM2" "NRI CreateContainer: ctr=$DRA_NS/plain/main: cpuset.mems="
-PLAIN_MEMS=$(dra-plugin-log "$VM2" | sed -n "s|.*NRI CreateContainer: ctr=$DRA_NS/plain/main: cpuset.mems=\([0-9,-]*\) .*|\1|p" | tail -n 1)
-if [ -z "$PLAIN_MEMS" ] || dra-nodes-has "$PLAIN_MEMS" "$NUMA_NODE"; then
+dra-driver-log-wait "$VM2" "NRI CreateContainer: ctr=$DRA_NS/plain/main: cpuset.mems="
+PLAIN_MEMS=$(dra-driver-log "$VM2" | sed -n "s|.*NRI CreateContainer: ctr=$DRA_NS/plain/main: cpuset.mems=\([0-9,-]*\) .*|\1|p" | tail -n 1)
+if [ -z "$PLAIN_MEMS" ] || dra-numa-nodes-has "$PLAIN_MEMS" "$NUMA_NODE"; then
     error "plain: the driver gave it cpuset.mems '$PLAIN_MEMS' at its creation, expected nodes without $NUMA_NODE"
 fi
 mems=$(dra-container-read "$VM2" plain main cpuset.mems) || error "cannot read cpuset.mems of plain"
-dra-nodes-eq "$mems" "$PLAIN_MEMS" ||
+dra-numa-nodes-eq "$mems" "$PLAIN_MEMS" ||
     error "plain: cpuset.mems is '$mems', the driver gave it '$PLAIN_MEMS' at its creation"
 dra-wait-log "$VM2" plain "Mems_allowed_list:"$'\t'"$mems" 30
 echo "plain: cpuset.mems $mems from its creation, also in Mems_allowed_list of its first process"
@@ -505,14 +505,14 @@ dra-delete-pod "$VM2" plain
 
 echo "### C: the NUMA pods go, the node shrinks by their blocks, the dax slices keep their data"
 dra-delete-pod "$VM2" numa-a
-dra-local-node-size "$VM2" numa-a-deleted "$NUMA_NODE" "$NUMA_B"
+dra-local-numa-node-size "$VM2" numa-a-deleted "$NUMA_NODE" "$NUMA_B"
 dra-local-slices-wait "$VM2" without-numa-a "$NUMA_NODE" "dax:$(dra-local-round "$DAX1_REQ")" "numa:$NUMA_B" "dax:$SHARED"
 dra-mems-wait "$VM2" numa-b main "$NUMA_NODE"
 dax-read dax-1 "$DAX1_DAX" "$TAG: dax-1"
 dax-read dax-s2 "$SHARED_DAX" "$TAG: shared-slice"
 dra-local-unchanged "$VM2"
 dra-delete-pod "$VM2" numa-b
-dra-local-node-size "$VM2" numa-b-deleted "$NUMA_NODE" 0
+dra-local-numa-node-size "$VM2" numa-b-deleted "$NUMA_NODE" 0
 # The region stays for the dax slices. cxl-dump finds its node without
 # any memory online, from the dax devices.
 dra-local-slices-wait "$VM2" without-numa "$NUMA_NODE" "dax:$(dra-local-round "$DAX1_REQ")" "dax:$SHARED"
@@ -628,7 +628,7 @@ for pod in steer-cxl steer-dram steer-mix steer-first; do
     dra-pod-wait "$VM2" "$pod" Running 120
 done
 dra-local-slices-wait "$VM2" steering "$NUMA_NODE" "numa:$BS" "numa:$BS" "numa:$BS"
-dra-local-node-size "$VM2" steering "$NUMA_NODE" $(( 3 * BS ))
+dra-local-numa-node-size "$VM2" steering "$NUMA_NODE" $(( 3 * BS ))
 # CXL only (first-cxl): the policy prefers the CXL node, the memory of the
 # workload is there.
 steered-check steer-cxl auto "$NUMA_NODE"
@@ -640,7 +640,7 @@ touch-child steer-cxl "$STEER_MIB"
 # narrows cpuset.mems to them; the memory of the workload is on DRAM.
 steered-check steer-dram auto "$DRAM_NODES"
 mems=$(dra-container-read "$VM2" steer-dram main cpuset.mems) || error "cannot read cpuset.mems of steer-dram"
-dra-nodes-subset "$mems" "$DRAM_NODES" ||
+dra-numa-nodes-subset "$mems" "$DRAM_NODES" ||
     error "steer-dram: cpuset.mems is '$mems', expected it narrowed to DRAM nodes of $DRAM_NODES"
 echo "steer-dram: cpuset.mems $mems"
 touch-child steer-dram "$STEER_MIB"
@@ -649,7 +649,7 @@ touch-child steer-dram "$STEER_MIB"
 # DRAM and CXL (start-interleaved): the policy interleaves over DRAM and
 # the CXL node, the memory of the workload is on both.
 steered-check steer-mix auto "$DRAM_NODES,$NUMA_NODE"
-if ! dra-nodes-has "${DRA_MEMPOLICY##*:}" "$NUMA_NODE" || dra-nodes-eq "${DRA_MEMPOLICY##*:}" "$NUMA_NODE"; then
+if ! dra-numa-nodes-has "${DRA_MEMPOLICY##*:}" "$NUMA_NODE" || dra-numa-nodes-eq "${DRA_MEMPOLICY##*:}" "$NUMA_NODE"; then
     error "steer-mix: the memory policy of the main process is '$DRA_MEMPOLICY', expected DRAM nodes and CXL node $NUMA_NODE"
 fi
 touch-child steer-mix "$STEER_MIB"
@@ -663,7 +663,7 @@ touch-child steer-mix "$STEER_MIB"
 # one step.
 steered-check steer-first waypoints "$DRAM_NODES"
 mems=$(dra-container-read "$VM2" steer-first main cpuset.mems) || error "cannot read cpuset.mems of steer-first"
-dra-nodes-subset "$mems" "$DRAM_NODES" ||
+dra-numa-nodes-subset "$mems" "$DRAM_NODES" ||
     error "steer-first: cpuset.mems is '$mems' before the workload, expected DRAM nodes of $DRAM_NODES only"
 touch-child steer-first "$FIRST_MIB"
 # The plan counts the DRAM waypoint reached within one step (minStep =
@@ -694,7 +694,7 @@ grep -q "^numa-touch: ready" <<< "$COMMAND_OUTPUT" || error "steer-cxl: numa-tou
 past=$(dra-touch-log-pages "$COMMAND_OUTPUT" "$NUMA_NODE")
 [ "$past" -ge $(( (PAST_MIB << 8) * 9 / 10 )) ] ||
     error "steer-cxl: only $past of $(( PAST_MIB << 8 )) pages past its claim are on CXL node $NUMA_NODE"
-dra-plugin-log-wait "$VM2" "$DRA_NS/steer-cxl/main: past the last waypoint"
+dra-driver-log-wait "$VM2" "$DRA_NS/steer-cxl/main: past the last waypoint"
 dra-memory-state "$VM2" steer-cxl main || error "cannot read memory.high of steer-cxl"
 [ "$DRA_MEM_HIGH" == max ] || error "steer-cxl: memory.high is '$DRA_MEM_HIGH' past the last waypoint, expected max"
 echo "steer-cxl: $(( past >> 8 )) MiB on CXL node $NUMA_NODE past its claim of $(( BS / MiB )) MiB, memory.high $DRA_MEM_HIGH"
@@ -703,7 +703,7 @@ dra-exec "$VM2" steer-cxl/main pkill -f numa-touch.py || error "cannot stop numa
 retry-until --timeout 30 --interval 1 --message "steer-cxl is steered with a bound again" \
     'dra-memory-state "$VM2" steer-cxl main && [ "$DRA_MEM_HIGH" != max ]' ||
     error "steer-cxl: memory.high is '$DRA_MEM_HIGH' after its usage dropped below the last waypoint, expected a bound"
-dra-plugin-log-wait "$VM2" "$DRA_NS/steer-cxl/main: steering resumes"
+dra-driver-log-wait "$VM2" "$DRA_NS/steer-cxl/main: steering resumes"
 
 # A process that refuses memory policies: the seccomp profile RuntimeDefault
 # of containerd allows set_mempolicy only with CAP_SYS_NICE. The profile
@@ -720,13 +720,13 @@ for pod in steer-seccomp steer-seccomp-nnp; do
     touch-child "$pod" $(( (DRAM_REQ + BS / 4) / MiB ))
     # shellcheck disable=SC2016 # evaluated by retry-until
     retry-until --timeout 60 --interval 1 --message "$pod: steering refused" \
-        'dra-plugin-log "$VM2" | grep -qE "ctr=$DRA_NS/$pod/main id=.*: (failed to start memory steering|memory steering ended): .*operation not permitted; memory fenced"' ||
+        'dra-driver-log "$VM2" | grep -qE "ctr=$DRA_NS/$pod/main id=.*: (failed to start memory steering|memory steering ended): .*operation not permitted; memory fenced"' ||
         error "$pod: the driver did not log that the steering of its container failed"
-    dra-plugin-log "$VM2" | grep -E "ctr=$DRA_NS/$pod/main id=.*(failed to start memory steering|memory steering ended)"
+    dra-driver-log "$VM2" | grep -E "ctr=$DRA_NS/$pod/main id=.*(failed to start memory steering|memory steering ended)"
     dra-memory-state "$VM2" "$pod" main || error "cannot read memory.high of $pod"
     [ "$DRA_MEM_HIGH" == max ] || error "$pod: memory.high is '$DRA_MEM_HIGH', expected max: not steered"
     mems=$(dra-container-read "$VM2" "$pod" main cpuset.mems) || error "cannot read cpuset.mems of $pod"
-    ! dra-nodes-has "$mems" "$NUMA_NODE" || error "$pod: cpuset.mems '$mems' has CXL node $NUMA_NODE, expected it fenced"
+    ! dra-numa-nodes-has "$mems" "$NUMA_NODE" || error "$pod: cpuset.mems '$mems' has CXL node $NUMA_NODE, expected it fenced"
     echo "$pod: not steered, fenced: cpuset.mems $mems, memory.high $DRA_MEM_HIGH"
     dra-delete-pod "$VM2" "$pod"
 done
@@ -785,7 +785,7 @@ if [ "$SPLIT_DAX" -lt "$SPLIT_NUMA" ]; then
     NUMA_KEY="${DRA_LOCAL_HEX}_2" DAX_KEY="$DRA_LOCAL_HEX"
 fi
 dra-local-slices-wait "$VM2" split "$NUMA_NODE" "numa:$BS" "numa:$BS" "numa:$BS" "numa:$BS" "dax:$BS"
-dra-local-node-size "$VM2" split "$NUMA_NODE" $(( 4 * BS ))
+dra-local-numa-node-size "$VM2" split "$NUMA_NODE" $(( 4 * BS ))
 claim-env split/c-numa
 dra-env-assert split/c-numa "$CLAIM_ENV" "$NUMA_KEY" \
     SERIAL="$DRA_LOCAL_SERIAL" SHARED=0 MODE=numa SIZE="$BS" NUMA_NODE="$NUMA_NODE"
@@ -798,7 +798,7 @@ dra-env-assert split/c-dax "$CLAIM_ENV" "$DAX_KEY" \
     error "split/c-dax has other CXL_ variables than those of result $SPLIT_DAX (dax) of claim split: $CLAIM_ENV"
 dra-memory-wait "$VM2" split c-numa steered "auto from claim $DRA_NS/split request numa"
 dra-mems-wait "$VM2" split c-numa "$NUMA_NODE"
-dra-plugin-log-wait "$VM2" "NRI CreateContainer: ctr=$DRA_NS/split/c-dax: steering policy auto: no numa memory to steer"
+dra-driver-log-wait "$VM2" "NRI CreateContainer: ctr=$DRA_NS/split/c-dax: steering policy auto: no numa memory to steer"
 dra-memory-wait "$VM2" split c-dax fenced
 # Of all containers of the node only those with CXL memory to use have the
 # node: steer-first since its workload went on to CXL; not steer-dram, not

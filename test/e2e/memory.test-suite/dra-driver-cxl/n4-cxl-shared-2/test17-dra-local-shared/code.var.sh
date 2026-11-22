@@ -215,7 +215,7 @@ plugin-log-has() {
     #
     # Fail the test unless a line of the log of the driver on VM2 has the
     # fixed string TEXT.
-    dra-plugin-log "$VM2" | grep -F -- "$1" ||
+    dra-driver-log "$VM2" | grep -F -- "$1" ||
         error "the log of $DRA_CONTAINER on VM2 has no line with '$1'"
 }
 
@@ -226,8 +226,8 @@ restart-kept() {
     # started, it kept the region of the shared device for the claims
     # CLAIM-UID (none: idle), and did neither zero nor release it.
     local log
-    dra-plugin-log-wait "$VM2" "local memdev $DRA_LOCAL_SERIAL ($SHARED_MEMDEV): keeping shared $SHARED_REGION and $SHARED_DAX, claims [$*]"
-    log=$(dra-plugin-log "$VM2")
+    dra-driver-log-wait "$VM2" "local memdev $DRA_LOCAL_SERIAL ($SHARED_MEMDEV): keeping shared $SHARED_REGION and $SHARED_DAX, claims [$*]"
+    log=$(dra-driver-log "$VM2")
     ! grep -E "zeroed new shared |releasing its region|released $SHARED_REGION" <<< "$log" ||
         error "the restarted node plugin zeroed or released the region of the shared device, see above"
 }
@@ -325,7 +325,7 @@ DRA_EXIT_TRAP='dra-local-shared-cleanup "$VM2"'
 dra-build
 dra-install
 dra-pull-images "$VM2" "$DRA_TOOLS_IMAGE" "$DRA_COMPANION_IMAGE"
-dra-dax-tool-install "$VM2"
+dra-tools-install "$VM2"
 dra-trace-start "$VM2"
 
 echo "### A: the local device is published whole, as a shared device"
@@ -502,7 +502,7 @@ claim-check after-idle "$DRA_SHARES"
 dra-wait-log "$VM2" after-idle "at 0: $TEXT0" 60
 dra-wait-log "$VM2" after-idle "at 1M: $TEXT1M" 10
 same-region || error "after-idle has another region or dax device: $DRA_MEMDEV"
-zeroed=$(dra-plugin-log "$VM2" | grep -c "zeroed new shared ")
+zeroed=$(dra-driver-log "$VM2" | grep -c "zeroed new shared ")
 [ "$zeroed" == 1 ] || error "the node plugin zeroed the shared device $zeroed times, expected once, when the region was created"
 dra-claim-pod-delete after-idle
 
@@ -616,7 +616,7 @@ DRA_DRIVER_CONFIG=""
 dra-install
 dra-trace-driver-follow "$VM2"
 # The node plugin itself released the region: its log says so.
-dra-plugin-log-wait "$VM2" "local memdev $DRA_LOCAL_SERIAL ($SHARED_MEMDEV): not in sharedMemdevs any more, destroying its region" 60
+dra-driver-log-wait "$VM2" "local memdev $DRA_LOCAL_SERIAL ($SHARED_MEMDEV): not in sharedMemdevs any more, destroying its region" 60
 dra-local-slices-none "$VM2" unshared
 dra-wait "$VM2" sliced-again resourceslices \
     "attr($LD, 'shared') == False and sorted(k.split('/')[-1] for k in ${LD}['attributes']) == ['memoryBlockSize', 'numaNode', 'persistent', 'serial', 'shared', 'size', 'source', 'type'] and quantity(capacity($LD, 'memory')) == $DRA_LOCAL_SIZE" 60

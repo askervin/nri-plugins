@@ -2,7 +2,7 @@
 """Write and read strings in CXL memory through a devdax device.
 
 Run in a VM as root (pool-client-install of pool.source.sh copies it to
-/usr/local/bin) or in a pod (/tools of dra-dax-tool-install).
+/usr/local/bin) or in a pod (/tools of dra-tools-install).
 
 Usage:
   dax-rw.py write DEV OFFSET TEXT        write TEXT and a NUL byte at OFFSET

@@ -59,7 +59,7 @@ const (
 	// envPool is the DRA pool of the pool devices.
 	envPool = "fake-cxl-pool"
 	// the requester of the leases of companion claims
-	envPod    = "borrower"
+	envPod    = "requester"
 	envPodUID = "pod-uid-1"
 	envCtr    = "app"
 

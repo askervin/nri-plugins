@@ -374,7 +374,7 @@ func TestCompanionClaims(t *testing.T) {
 	// the claim and the pod of every companion: owned by the requester
 	// pod, the pod pinned to the node
 	wantLabels := map[string]string{"cxl.nri.io/lease": "x", "cxl.nri.io/requester-uid": envPodUID, "cxl.nri.io/node": envNode}
-	wantAnnotations := map[string]string{"cxl.nri.io/requester": "demo/borrower/app"}
+	wantAnnotations := map[string]string{"cxl.nri.io/requester": "demo/requester/app"}
 	owner := metav1.OwnerReference{APIVersion: "v1", Kind: "Pod", Name: envPod, UID: envPodUID}
 	claimOwner := owner
 	claimOwner.Controller = ptr(true)

@@ -324,7 +324,7 @@ func TestFenceLend(t *testing.T) {
 }
 
 // TestFenceRestart checks that a restarted plugin keeps the lent node of a
-// borrower: the lend is re-applied before the first pass.
+// requester: the lend is re-applied before the first pass.
 func TestFenceRestart(t *testing.T) {
 	e := newFenceEnv(t, "0-2", 2)
 	ctx := context.Background()

@@ -82,7 +82,7 @@ pod-yaml() {
     #
     # Print pod NAME, restartPolicy Never, on Kubernetes node NODE ("": no
     # nodeSelector, the scheduler picks the node) with the ResourceClaims
-    # CLAIM as its claims c0, c1, ... and the tools of dra-dax-tool-install
+    # CLAIM as its claims c0, c1, ... and the tools of dra-tools-install
     # in /tools, running the shell SCRIPT in its container "main", then
     # idling until it is deleted.
     local name="$1" node="$2" script="$3" claims="" uses="" n=0 claim selector=""
@@ -251,7 +251,7 @@ done
 for vm in "${VMS[@]}"; do
     dra-pull-images "$vm" "$DRA_TOOLS_IMAGE"
 done
-dra-dax-tool-install "$VM2"
+dra-tools-install "$VM2"
 dra-trace-start "$VM2" "$VM1" "$VM0"
 
 echo "### A: the pools in Kubernetes: one slice each, for the nodes it reaches"

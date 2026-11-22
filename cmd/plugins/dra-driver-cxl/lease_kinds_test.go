@@ -490,7 +490,7 @@ func fsEnv(fsType, access, path, readOnly string) map[string]string {
 
 // fs leases through the pool driver: the companion claim, the bind in the
 // lease-fs directory of the lease claim, the responses, the names; a
-// release while the borrower has files of the bind open waits busy
+// release while the requester has files of the bind open waits busy
 // (RELEASING_BUSY) until the holder ends; a closed lease claim keeps its
 // directories while a bind is in them, also through a reconcile, and the
 // release of its last lease removes them.
@@ -575,7 +575,7 @@ func TestFsLease(t *testing.T) {
 		t.Fatalf("list %+v", list)
 	}
 
-	// release while the borrower has files of the bind open
+	// release while the requester has files of the bind open
 	e.k.SetBusy(bind, true)
 	rel, _ := e.call(api.Request{Op: api.OpRelease, Lease: "000000a1", Wait: "200ms"})
 	if rel.State != api.StateReleasing {

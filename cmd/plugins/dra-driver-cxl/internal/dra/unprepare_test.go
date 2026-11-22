@@ -108,7 +108,7 @@ func TestUnprepareRevokeFails(t *testing.T) {
 			e.mustPrepare(p, e.companionOf(p))
 			nodes.setErrors(nil, errFake)
 			err := e.unprepare(p, "c1")
-			revokeErr := "lease l1: revoking NUMA node 2 from demo/borrower/app: " + errFake.Error()
+			revokeErr := "lease l1: revoking NUMA node 2 from demo/requester/app: " + errFake.Error()
 			wantErrText(t, err, p.Name()+": claim demo/cxl-lease-l1: "+revokeErr)
 			e.wantState(p, "c1", state.PreparationUnpreparing)
 			if e.onlineBlocks() == 0 {

@@ -122,7 +122,7 @@ DRA_LOCAL_MOUNT_DIR=/var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/mounts
 DRA_CONFIG_API=cxl.nri.io/v1alpha1
 DRA_CONFIG_KIND=MemoryConfig
 DRA_POOL_CONFIG_KEY=fake-cxl-pool
-DRA_NS=cxl-pool-demo               # namespace of the test objects
+DRA_NS=cxl-e2e               # namespace of the test objects
 DRA_INSTALLED_VMS=()               # dra-install: the VMDIRs of the nodes, the VM of the test first,
 declare -A DRA_WORKERS=()          # and VMDIR -> 1 of the other nodes, the workers
 DRA_DAX_TOOL="$DRA_HELPER_DIR/dax-rw.py"
@@ -151,8 +151,8 @@ DRA_REQ_OUT=""                     # what it printed (stdout, then stderr),
 DRA_REQ_JSON=""                    # and its last JSON line ("{}" if none)
 DRA_LEASE_IDS=()                   # dra-lease-new: the lease ids of the test
 DRA_LEASE_CLAIM_UID=""             # and the uid of its lease claim
-DRA_NODE_KB=""                     # dra-node-wait: the last MemTotal of the node in kB
-DRA_TOOLS_IMAGE=docker.io/library/python:3-alpine   # the image of pods that run the tools of dra-dax-tool-install
+DRA_NUMA_NODE_KB=""                     # dra-numa-node-wait: the last MemTotal of the node in kB
+DRA_TOOLS_IMAGE=docker.io/library/python:3-alpine   # the image of pods that run the tools of dra-tools-install
 DRA_MEMDEV=""                      # JSON of the last dra-memdev-sysfs/dra-memdev-wait
 DRA_TOUCH_VM=""                    # dra-touch-start: the VM and POD/CONTAINER of numa-touch.py,
 DRA_TOUCH_TARGET=""
@@ -302,7 +302,7 @@ dra-delete() {
     #
     # Delete object NAME of KIND in namespace $DRA_NS of the cluster of the
     # VM of VMDIR. Not found is fine. Fail the test if kubectl fails.
-    # Example: dra-delete "$VM" pod pooled-consumer --grace-period=2
+    # Example: dra-delete "$VM" pod pooled-pod --grace-period=2
     local vmdir="$1" kind="$2" name="$3"
     shift 3
     vmdir-command "$vmdir" "kubectl delete -n $DRA_NS $kind $name --ignore-not-found $*" ||
@@ -322,8 +322,8 @@ dra-pull-images() {
     done
 }
 
-dra-dax-tool-install() {
-    # Usage: dra-dax-tool-install VMDIR [NAME=HOST-FILE...]
+dra-tools-install() {
+    # Usage: dra-tools-install VMDIR [NAME=HOST-FILE...]
     #
     # Create ConfigMap dax-rw in $DRA_NS of the cluster of the VM of VMDIR,
     # with the tools that pods mount at /tools and run with python3 (image
@@ -341,7 +341,7 @@ dra-dax-tool-install() {
     for spec in "$@"; do
         name=${spec%%=*} file=${spec#*=}
         [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] && [ -f "$file" ] ||
-            error "dra-dax-tool-install: '$spec' is not NAME=HOST-FILE of an existing file"
+            error "dra-tools-install: '$spec' is not NAME=HOST-FILE of an existing file"
         vmdir-put-file "$vmdir" "$file" "/root/dax-rw.d.$name"
         from+=" --from-file=$name=/root/dax-rw.d.$name"
     done
@@ -419,7 +419,7 @@ dra-install() {
     # refers to CXL regions which are gone (dra-state-cleanup). Create
     # namespace $DRA_NS empty (delete objects that an earlier run left).
     # Wait until the cluster has the pool ResourceSlices of the controllers
-    # and the driver is up on every node (dra-wait-node).
+    # and the driver is up on every node (dra-driver-wait).
     #
     # dra-controller-start starts each controller; a test that runs them
     # otherwise redefines it (and dra-controllers-status-cmd and
@@ -502,7 +502,7 @@ dra-install() {
         command-error "the chart $DRA_CHART does not create the DeviceClasses ${DRA_CLASSES[*]} in $label"
 
     for v in "${nodes[@]}"; do
-        dra-wait-node "$v"
+        dra-driver-wait "$v"
     done
 
     dra-ns-reset "$vmdir" create || command-error "cannot create namespace $DRA_NS in $label"
@@ -537,7 +537,7 @@ dra-controllers-status-cmd() {
     # Usage: dra-controllers-status-cmd
     #
     # Print a command for the VM of the test that shows the state and the
-    # last log lines of the pool controllers (dra-wait-node).
+    # last log lines of the pool controllers (dra-driver-wait).
     echo "systemctl status --no-pager '$DRA_CONTROLLER_UNITS_GLOB'; journalctl --no-pager -n 40 -u '$DRA_CONTROLLER_UNITS_GLOB'"
 }
 
@@ -622,8 +622,8 @@ dra-state-cleanup() {
     vmdir-command "$1" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the CXL state of the driver'; else rm -fv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/state.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/state.json.prev; rm -rfv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases; fi"
 }
 
-dra-wait-node() {
-    # Usage: dra-wait-node VMDIR
+dra-driver-wait() {
+    # Usage: dra-driver-wait VMDIR
     #
     # Wait until the cluster of the VM of VMDIR has a pool ResourceSlice of
     # every started pool server (dra-pool-names) and the cxl.nri.io
@@ -664,8 +664,8 @@ dra-driver-pod() {
     echo "${pod#pod/}"
 }
 
-dra-plugin-log-save() {
-    # Usage: dra-plugin-log-save VMDIR
+dra-driver-log-save() {
+    # Usage: dra-driver-log-save VMDIR
     #
     # Store the log of the driver on the node of the VM of VMDIR as
     # $TEST_OUTPUT_DIR/nri-dra-driver-cxl.<vm>.log, if the driver runs there.
@@ -753,7 +753,7 @@ dra-uninstall() {
     # detach the devices when the claims are gone), wait until the
     # controllers have detached the devices of every node on every pool
     # server, store the log of the driver of every node
-    # (dra-plugin-log-save), uninstall the driver and its DeviceClasses
+    # (dra-driver-log-save), uninstall the driver and its DeviceClasses
     # (dra-helm-uninstall), stop the controllers of either mode
     # (dra-controllers-remove), delete the pool ResourceSlices they left
     # and remove the driver state of every node (dra-state-cleanup). Never
@@ -780,7 +780,7 @@ dra-uninstall() {
         done
     done
     for v in "${DRA_INSTALLED_VMS[@]}"; do
-        dra-plugin-log-save "$v"
+        dra-driver-log-save "$v"
     done
     dra-helm-uninstall ||
         echo "dra-uninstall: pods of $DRA_DAEMONSET are left"
@@ -1084,8 +1084,8 @@ dra-block-size() {
     cxl-block-size-parse "$text"
 }
 
-dra-node-memtotal() {
-    # Usage: dra-node-memtotal VMDIR NODE
+dra-numa-node-memtotal() {
+    # Usage: dra-numa-node-memtotal VMDIR NODE
     #
     # Print MemTotal of NUMA node NODE of the VM of VMDIR in kB
     # (/sys/devices/system/node/nodeNODE/meminfo), 0 if the node is not
@@ -1098,25 +1098,25 @@ dra-node-memtotal() {
     echo "$kb"
 }
 
-dra-node-wait() {
-    # Usage: dra-node-wait VMDIR NODE KB [TIMEOUT]
+dra-numa-node-wait() {
+    # Usage: dra-numa-node-wait VMDIR NODE KB [TIMEOUT]
     #
     # Wait until MemTotal of NUMA node NODE of the VM of VMDIR is KB kB (0:
     # the node has no memory or is not there), TIMEOUT seconds at most
     # (default 30), and print the line of the node in "numactl -H".
-    # DRA_NODE_KB is the last MemTotal read. Fail the test on timeout.
+    # DRA_NUMA_NODE_KB is the last MemTotal read. Fail the test on timeout.
     local vmdir="$1" node="$2" kb="$3" tmo="${4:-30}" label
     label=$(vmdir-label "$vmdir")
-    [[ "$node" =~ ^[0-9]+$ ]] || error "dra-node-wait: NUMA node '$node' is not a number"
-    DRA_NODE_KB=""
+    [[ "$node" =~ ^[0-9]+$ ]] || error "dra-numa-node-wait: NUMA node '$node' is not a number"
+    DRA_NUMA_NODE_KB=""
     retry-until --timeout "$tmo" --interval 1 --message "$label: MemTotal of NUMA node $node is $kb kB" \
-        'DRA_NODE_KB=$(dra-node-memtotal "$vmdir" "$node") && [ "$DRA_NODE_KB" == "$kb" ]' ||
-        error "$label: MemTotal of NUMA node $node is ${DRA_NODE_KB:-unreadable} kB after ${tmo}s, expected $kb kB"
+        'DRA_NUMA_NODE_KB=$(dra-numa-node-memtotal "$vmdir" "$node") && [ "$DRA_NUMA_NODE_KB" == "$kb" ]' ||
+        error "$label: MemTotal of NUMA node $node is ${DRA_NUMA_NODE_KB:-unreadable} kB after ${tmo}s, expected $kb kB"
     echo "node ok: $label: MemTotal of NUMA node $node is $kb kB, numactl -H: $(vmdir-command-q "$vmdir" "numactl -H | grep '^node $node size:'" || echo "no node $node")"
 }
 
-dra-node-size-exact() {
-    # Usage: dra-node-size-exact VMDIR
+dra-memmap-on-memory-off() {
+    # Usage: dra-memmap-on-memory-off VMDIR
     #
     # Fail the test unless MemTotal of a NUMA node of the VM of VMDIR grows
     # and shrinks by exactly the memory blocks that go online and offline
@@ -1186,17 +1186,17 @@ dra-local-slices-wait() {
         "len(j['regions']) == 1 and sorted((d['driver'], d['size']) for d in dax_slices()) == sorted([$want]) and len(set(d['node'] for d in dax_slices())) == 1${node:+ and dax_slices()[0]['node'] == $node} and j['regions'][0]['available'] == $DRA_LOCAL_SIZE - $total"
 }
 
-dra-local-node-size() {
-    # Usage: dra-local-node-size VMDIR LABEL NODE BYTES [LOCAL]
+dra-local-numa-node-size() {
+    # Usage: dra-local-numa-node-size VMDIR LABEL NODE BYTES [LOCAL]
     #
     # Wait until NUMA node NODE of the VM of VMDIR has BYTES of memory,
     # whole memory blocks (MemTotal; 0: no memory or no node), and until
     # the region of its local device (see dra-local-device), if there is
     # one, has LOCAL bytes online in cxl-dump (default BYTES).
     local vmdir="$1" label="$2" node="$3" bytes="$4" local_bytes="${5:-$4}" bs="$DRA_LOCAL_BLOCK_SIZE" blocks
-    (( bytes % bs == 0 )) || error "dra-local-node-size $label: $bytes bytes are not whole memory blocks of $bs bytes"
+    (( bytes % bs == 0 )) || error "dra-local-numa-node-size $label: $bytes bytes are not whole memory blocks of $bs bytes"
     blocks=$(( bytes / bs ))
-    dra-node-wait "$vmdir" "$node" "$(( blocks * (bs / 1024) ))" 30
+    dra-numa-node-wait "$vmdir" "$node" "$(( blocks * (bs / 1024) ))" 30
     pool-cxl-wait "$vmdir" "node-$label" "len($DRA_LOCAL_REGIONS) <= 1 and all(online_size(r) == $local_bytes for r in $DRA_LOCAL_REGIONS)" 10
 }
 
@@ -1434,7 +1434,7 @@ dra-local-initial-state() {
         error "$label: the node plugin has no $DRA_STATE"
     [ "$(dra-local-state-claims "$vmdir")" == 0 ] ||
         error "$label: the node plugin still has claims of local memdevs in $DRA_STATE"
-    [ -z "$node" ] || dra-node-wait "$vmdir" "$node" 0 10
+    [ -z "$node" ] || dra-numa-node-wait "$vmdir" "$node" 0 10
     echo "$label: the local device is in its initial state"
 }
 
@@ -1511,18 +1511,18 @@ dra-local-seed() {
     echo "dra-local-seed $label: '$text' at $* of the local device, $region destroyed"
 }
 
-dra-plugin-log-wait() {
-    # Usage: dra-plugin-log-wait VMDIR TEXT [TIMEOUT]
+dra-driver-log-wait() {
+    # Usage: dra-driver-log-wait VMDIR TEXT [TIMEOUT]
     #
     # Wait until the log of the driver on the node of the VM of VMDIR (see
-    # dra-plugin-log) has a line with the fixed string TEXT, TIMEOUT
+    # dra-driver-log) has a line with the fixed string TEXT, TIMEOUT
     # seconds at most (default 30), and print the line. Fail the test on
     # timeout.
     local vmdir="$1" text="$2" tmo="${3:-30}"
     retry-until --timeout "$tmo" --interval 1 --message "$(vmdir-label "$vmdir"): the log of $DRA_CONTAINER has '$text'" \
-        'dra-plugin-log "$vmdir" | grep -qF -- "$text"' ||
+        'dra-driver-log "$vmdir" | grep -qF -- "$text"' ||
         error "the log of $DRA_CONTAINER in $(vmdir-label "$vmdir") has no line with '$text'"
-    dra-plugin-log "$vmdir" | grep -F -- "$text"
+    dra-driver-log "$vmdir" | grep -F -- "$text"
 }
 
 dra-local-shared-cleanup() {
@@ -1562,7 +1562,7 @@ dra-driver-restart() {
     # Restart the driver on the node of the VM of VMDIR: store the log of
     # its pod as $TEST_OUTPUT_DIR/nri-dra-driver-cxl.<vm>.<pod>.log, delete
     # the pod, and wait until the DaemonSet runs a new pod there that is
-    # Ready, and the node has what dra-wait-node waits for. A running trace
+    # Ready, and the node has what dra-driver-wait waits for. A running trace
     # follows the log of the new pod (dra-trace-driver-follow).
     # DRA_DRIVER_POD is the new pod.
     local vmdir="$1" label old
@@ -1580,19 +1580,19 @@ dra-driver-restart() {
         error "dra-driver-restart: no new Ready pod of $DRA_DAEMONSET in $label"
     }
     echo "dra-driver-restart $label: $old replaced by $DRA_DRIVER_POD"
-    dra-wait-node "$vmdir"
+    dra-driver-wait "$vmdir"
     dra-trace-driver-follow "$vmdir"
 }
 
-dra-plugin-log() {
-    # Usage: dra-plugin-log VMDIR
+dra-driver-log() {
+    # Usage: dra-driver-log VMDIR
     #
     # Print the log of the driver on the node of the VM of VMDIR since its
     # container started (kubectl logs of its pod), quietly. Fail the test if
     # the driver does not run there.
     local pod
     pod=$(dra-driver-pod "$1") ||
-        error "dra-plugin-log: $DRA_DAEMONSET does not run on $(vmdir-name "$1")"
+        error "dra-driver-log: $DRA_DAEMONSET does not run on $(vmdir-name "$1")"
     vmdir-command-q "$1" "kubectl logs -n kube-system $pod -c $DRA_CONTAINER"
 }
 
@@ -1605,7 +1605,7 @@ dra-local-slices-aligned() {
     # chose was not whole memory blocks) or rounded a slice up (a claim
     # consumed less than whole memory blocks).
     local log
-    log=$(dra-plugin-log "$1")
+    log=$(dra-driver-log "$1")
     if grep -E 'engine: local memdev .*(does not start at a memory block boundary|placing it explicitly|rounded up to)' <<< "$log"; then
         error "the node plugin aligned, placed or rounded regions or slices of local devices itself, see above"
     fi
@@ -1724,7 +1724,7 @@ dra-pod-yaml() {
     # Print pod NAME on Kubernetes node NODE (nodeSelector
     # kubernetes.io/hostname), restartPolicy Never, no memory limits, with
     # containers of $DRA_TOOLS_IMAGE that have the tools of
-    # dra-dax-tool-install in /tools and run $DRA_RUNNER as their main
+    # dra-tools-install in /tools and run $DRA_RUNNER as their main
     # process (see dra-run). Every CLAIM is a claim of the pod:
     #   CNAME=claim:CLAIM        the ResourceClaim CLAIM
     #   CNAME=template:TEMPLATE  a claim made from the ResourceClaimTemplate
@@ -1817,7 +1817,7 @@ dra-claim-pod-yaml() {
     # Print pod NAME on Kubernetes node NODE (see dra-pod-yaml) whose claim
     # "mem" is the ResourceClaim SOURCE (claim) or is made from the
     # ResourceClaimTemplate SOURCE (template): one container "main" that
-    # uses the claim, the tools of dra-dax-tool-install in /tools, its main
+    # uses the claim, the tools of dra-tools-install in /tools, its main
     # process $DRA_RUNNER (see dra-run), no memory limit.
     [ -n "$4" ] || error "dra-claim-pod-yaml: no node for pod $1"
     dra-pod-yaml "$1" "$4" "mem=$2:$3"
@@ -2025,7 +2025,7 @@ dra-script-pod-yaml() {
     #
     # Print pod NAME on the node of VMDIR, restartPolicy Never, with
     # ResourceClaim CLAIM as its claim "mem" and the tools of
-    # dra-dax-tool-install in /tools, running the shell SCRIPT in its
+    # dra-tools-install in /tools, running the shell SCRIPT in its
     # container "main" (image $DRA_TOOLS_IMAGE), then idling until it is
     # deleted. Every TYPE:PATH is a hostPath volume of the node, mounted
     # read-only at the same path: TYPE is its hostPath type (File,
@@ -2104,7 +2104,7 @@ dra-exec() {
     # COMMAND_OUTPUT has what COMMAND printed to stdout, DRA_EXEC_STDERR what
     # it printed to stderr (both are shown), COMMAND_STATUS its exit status,
     # which is also returned.
-    # Example: dra-exec "$VM" borrower/main cxl-request request --size 512Mi
+    # Example: dra-exec "$VM" requester/main cxl-request request --size 512Mi
     local vmdir="$1" pod container cmd errfile
     read -r pod container <<< "$(dra-pod-container "$2")"
     shift 2
@@ -2155,7 +2155,7 @@ dra-env-assert() {
     # (docs/memory/cxl/usage.md). KEY is the upper-case hex serial of a memdev,
     # REGION<n> or DRAM. VALUE is a shell pattern, for instance
     # DAX=/dev/dax*.
-    # Example: dra-env-assert consumer "$LOG" C1EE0001 SERIAL=0xc1ee0001 SHARED=0 MODE=numa SIZE=536870912 NUMA_NODE=2
+    # Example: dra-env-assert pooled-pod "$LOG" C1EE0001 SERIAL=0xc1ee0001 SHARED=0 MODE=numa SIZE=536870912 NUMA_NODE=2
     local label="$1" text="$2" key="$3"
     shift 3
     python3 -c '
@@ -2359,7 +2359,7 @@ dra-mems-wait() {
     # Fail the test on timeout.
     local vmdir="$1" pod="$2" container="$3" node="$4" mems
     retry-until --timeout 30 --interval 1 --message "cpuset.mems of container $container of $pod has node $node" \
-        'mems=$(dra-container-read "$vmdir" "$pod" "$container" cpuset.mems) && dra-nodes-has "$mems" "$node"' ||
+        'mems=$(dra-container-read "$vmdir" "$pod" "$container" cpuset.mems) && dra-numa-nodes-has "$mems" "$node"' ||
         error "cpuset.mems of container $container of pod $pod is '$(dra-container-read "$vmdir" "$pod" "$container" cpuset.mems)', expected that it has node $node"
     echo "$pod/$container: cpuset.mems $mems (has node $node), effective $(dra-container-read "$vmdir" "$pod" "$container" cpuset.mems.effective)"
     dra-exec "$vmdir" "$pod/$container" grep Mems_allowed_list /proc/self/status ||
@@ -2389,7 +2389,7 @@ dra-mems-once() {
     [ "$mems" == "${!var}" ] && return 0
     [ -z "${!var}" ] ||
         error "$label: cpuset.mems of container $ctr of $pod changed from '${!var}' to '$mems'"
-    dra-nodes-eq "$mems" "$dram" ||
+    dra-numa-nodes-eq "$mems" "$dram" ||
         error "$label: cpuset.mems of container $ctr of $pod is '$mems', expected '' or its DRAM nodes $dram"
     echo "$label: cpuset.mems of container $ctr of $pod changed from '' to its DRAM nodes '$mems'"
     printf -v "$var" '%s' "$mems"
@@ -2405,7 +2405,7 @@ dra-mems-fenced() {
     # pod sandboxes are not containers. Fail the test on timeout, naming
     # the offenders: a container that has the node without being listed,
     # one that is listed and lacks it, a listed one that does not run.
-    # Example: dra-mems-fenced "$VM" "$CXL_NODE" "$DRA_NS/pooled-consumer/consumer"
+    # Example: dra-mems-fenced "$VM" "$CXL_NODE" "$DRA_NS/pooled-pod/main"
     local vmdir="$1" node="$2" label wanted table="" status=""
     shift 2
     local ctrs=("$@")
@@ -2571,7 +2571,7 @@ dra-memory-wait() {
         steered|fenced|none) ;;
         *) error "dra-memory-wait: unknown management '$mgmt'";;
     esac
-    dra-plugin-log-wait "$vmdir" "NRI CreateContainer: ctr=$ctr: memory $mgmt (${steering:+steering $steering}" 60
+    dra-driver-log-wait "$vmdir" "NRI CreateContainer: ctr=$ctr: memory $mgmt (${steering:+steering $steering}" 60
     DRA_MEM_HIGH="" DRA_MEMPOLICY=""
     if [ "$mgmt" == steered ]; then
         retry-until --timeout 30 --interval 1 --message "$label: $ctr is steered: memory.high is not max, its main process has a memory policy" \
@@ -2619,8 +2619,8 @@ dra-pod-claim() {
     echo "$claim"
 }
 
-dra-nodes-py() {
-    # Usage: dra-nodes-py has|eq|sub LIST ARG
+dra-numa-nodes-py() {
+    # Usage: dra-numa-nodes-py has|eq|sub LIST ARG
     #
     # has: return 0 if node ARG is in the node list LIST ("0-1,3").
     # eq:  return 0 if the node lists LIST and ARG have the same nodes
@@ -2646,32 +2646,32 @@ else:
 sys.exit(0 if ok else 1)' "$1" "$2" "$3"
 }
 
-dra-nodes-has() {
-    # Usage: dra-nodes-has LIST NODE
+dra-numa-nodes-has() {
+    # Usage: dra-numa-nodes-has LIST NODE
     #
     # Return 0 if NUMA node NODE is in the node list LIST ("0-1,3").
-    dra-nodes-py has "$1" "$2"
+    dra-numa-nodes-py has "$1" "$2"
 }
 
-dra-nodes-eq() {
-    # Usage: dra-nodes-eq LIST1 LIST2
+dra-numa-nodes-eq() {
+    # Usage: dra-numa-nodes-eq LIST1 LIST2
     #
     # Return 0 if the node lists LIST1 and LIST2 have the same nodes.
-    dra-nodes-py eq "$1" "$2"
+    dra-numa-nodes-py eq "$1" "$2"
 }
 
-dra-nodes-subset() {
-    # Usage: dra-nodes-subset LIST1 LIST2
+dra-numa-nodes-subset() {
+    # Usage: dra-numa-nodes-subset LIST1 LIST2
     #
     # Return 0 if the node list LIST1 has nodes and every one of them is in
     # the node list LIST2.
-    dra-nodes-py sub "$1" "$2"
+    dra-numa-nodes-py sub "$1" "$2"
 }
 
 dra-touch-start() {
     # Usage: dra-touch-start VMDIR POD/CONTAINER MIB NODE
     #
-    # Start numa-touch.py (dra-dax-tool-install) in the background in
+    # Start numa-touch.py (dra-tools-install) in the background in
     # container CONTAINER of pod POD in $DRA_NS (kubectl exec: not a child
     # of the main process, see dra-run): MIB MiB that prefer NUMA node NODE
     # ("-": the policy of the process), held until dra-touch-stop. Wait

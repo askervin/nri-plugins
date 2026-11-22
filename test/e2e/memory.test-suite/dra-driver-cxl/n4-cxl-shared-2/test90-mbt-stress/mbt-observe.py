@@ -13,7 +13,7 @@ Usage:
       (amendment A10), NUMA nodes, the state files of the driver,
       the device names of the CDI specs, and the cpuset.mems,
       cpuset.mems.effective and memory.high of every running container of
-      namespace NS (default cxl-pool-demo).
+      namespace NS (default cxl-e2e).
       With --cluster (on the control plane) also "cluster": the parts of
       the settle observation (contract 6.1) that kubectl and systemd give:
       "pods" (one per mbt.slot pod, with its newest Warning event, A10),
@@ -2328,7 +2328,7 @@ def main():
     ap = argparse.ArgumentParser(description="observations of test90-mbt-stress")
     sub = ap.add_subparsers(dest="cmd", required=True)
     v = sub.add_parser("vm")
-    v.add_argument("--ns", default="cxl-pool-demo")
+    v.add_argument("--ns", default="cxl-e2e")
     v.add_argument("--stacks-after", type=float, default=0)
     v.add_argument("--cluster", action="store_true")
     v.add_argument("--nodes", default="")

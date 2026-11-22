@@ -53,7 +53,7 @@ const (
 	frontNS   = "demo"
 	frontPool = "fake-cxl-pool"
 	// the requester of the leases of companion claims
-	frontPod    = "borrower"
+	frontPod    = "requester"
 	frontPodUID = "pod-uid-1"
 	frontCtr    = "app"
 )
