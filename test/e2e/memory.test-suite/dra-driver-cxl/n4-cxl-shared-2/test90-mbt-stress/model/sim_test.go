@@ -794,7 +794,7 @@ func (s *sim) observeVM(v VM) *ObsVM {
 	}
 	containers := []ObsContainer{}
 	// the cpuset.mems.effective of the containers as the driver makes
-	// it (D/lend.go wantMems, A38): the CXL nodes with memory first
+	// it (D/lend.go wantMems, A38): the CXL NUMA nodes with memory first
 	var memNUMANodes numaSet
 	for i := range st.Slots {
 		ss, sl := &st.Slots[i], st.slot(i)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write and read strings in CXL memory through a devdax device.
+"""Write and read strings in CXL memory through a dax device.
 
 Run in a VM as root (pool-client-install of pool.source.sh copies it to
 /usr/local/bin) or in a pod (/tools of dra-tools-install).

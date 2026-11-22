@@ -101,7 +101,7 @@ pool-vm-require() {
     #   would leave a zombie device in qemu until it restarts.
     # - Its host bridges have hdm_for_passthrough=on: HDM decoders, so that
     #   a host bridge can have more than one region.
-    # - Its kernel has CONFIG_FS_DAX=y: without it devdax devices cannot be
+    # - Its kernel has CONFIG_FS_DAX=y: without it dax devices cannot be
     #   mmapped ("vma is not DAX capable"), and devdax is the only safe way
     #   to share memory: onlining the same memory as system RAM in two VMs
     #   corrupts them both.
@@ -122,7 +122,7 @@ pool-vm-require() {
             error "host bridge $hb of $name has no hdm_for_passthrough=on ($response): one region per host bridge only: $recreate"
     done
     vmdir-command "$vmdir" 'uname -r; grep -x CONFIG_FS_DAX=y /boot/config-$(uname -r)' ||
-        error "kernel of $name lacks CONFIG_FS_DAX=y: devdax devices cannot be mmapped. The kernel of the topology has it: run test00-up of $topology, or $recreate"
+        error "kernel of $name lacks CONFIG_FS_DAX=y: dax devices cannot be mmapped. The kernel of the topology has it: run test00-up of $topology, or $recreate"
     echo "$name: patched qemu, hdm_for_passthrough=on, CONFIG_FS_DAX=y"
 }
 
@@ -333,7 +333,7 @@ pool-server-start() {
     # pool appliance. DEVICES is the YAML list of the static devices of the
     # server, the value of "devices:" in its configuration. Serials follow
     # the scheme of the server: 0xc1ae.... for shared and 0xc1ee.... for
-    # exclusive devices (0xc100.... are boot-time devices of the VMs); with
+    # unshared devices (0xc100.... are boot-time devices of the VMs); with
     # several servers 0xc1aeP... and 0xc1eeP..., P the pool index, so that
     # serials are unique in the cluster. Device names must be unique among
     # the servers of a VM. OPTIONS:

@@ -1182,7 +1182,7 @@ func (s *State) contestedString() string {
 	return strings.Join(rs, ",")
 }
 
-// claimNUMANodes are the CXL nodes that the claims and leases of the pod of
+// claimNUMANodes are the CXL NUMA nodes that the claims and leases of the pod of
 // slot i give its container (E of A38): the numa nodes of its claims and
 // the node that a held numa lease lends it.
 func (s *State) claimNUMANodes(i int) numaSet {
@@ -1194,7 +1194,7 @@ func (s *State) claimNUMANodes(i int) numaSet {
 	return e
 }
 
-// memNUMANodes are the CXL nodes of VM v with memory (M of A38) in a settled
+// memNUMANodes are the CXL NUMA nodes of VM v with memory (M of A38) in a settled
 // state: the numa memory of its Running pods and of its held numa leases
 // (the oracle's vmPred.memTotal).
 func (s *State) memNUMANodes(v VM) numaSet {

@@ -118,7 +118,7 @@ DRA_LOCAL_MOUNT_DIR=/var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/mounts
 # kubelet plugin prepares a device), container (how the NRI plugin manages
 # the containers that use it: steering is opt-in, policy none by default)
 # and pool (pool.opaque.<controller key> for the pool controllers). The
-# reference controller's key is fake-cxl-pool (slot, numaNode).
+# fake pool controller's key is fake-cxl-pool (slot, numaNode).
 DRA_CONFIG_API=cxl.nri.io/v1alpha1
 DRA_CONFIG_KIND=MemoryConfig
 DRA_POOL_CONFIG_KEY=fake-cxl-pool
@@ -138,7 +138,7 @@ DRA_LOCAL_LD=""                    # dra-py expression of its ResourceSlice devi
 DRA_LOCAL_REGIONS=""               # cxl-py expression of its regions in cxl-dump,
 DRA_LOCAL_PUBLISHED=""             # its ResourceSlice device as JSON,
 DRA_LOCAL_ATTACHMENT=""            # and the state of its attachment to the VM
-DRA_STATE_JSON=""                  # dra-local-state-shared: the state document of the node plugin
+DRA_STATE_JSON=""                  # dra-local-state-shared: the state document of the driver
 DRA_LOCAL_SHARED_REGION=""         # dra-local-shared-wait: the region of the shared local device
 DRA_LOCAL_SHARED_DAX=""            # its dax device (daxX.Y)
 DRA_LOCAL_SHARED_MEMDEV=""         # and the memdev (memN)
@@ -328,7 +328,7 @@ dra-tools-install() {
     # Create ConfigMap tools in $DRA_NS of the cluster of the VM of VMDIR,
     # with the tools that pods mount at /tools and run with python3 (image
     # $DRA_TOOLS_IMAGE):
-    #   dax-rw.py      write and read strings in a devdax device, or
+    #   dax-rw.py      write and read strings in a dax device, or
     #                  through an inherited fd (--fd N)
     #   numa-touch.py  allocate and touch memory that prefers one NUMA
     #                  node, or with the memory policy of the process,
@@ -1406,7 +1406,7 @@ print(json.dumps(sorted(out, key=lambda m: m["target"]), sort_keys=True))' "$DRA
 dra-local-state-claims() {
     # Usage: dra-local-state-claims VMDIR
     #
-    # Print how many claims the node plugin in the VM of VMDIR has on its
+    # Print how many claims the driver in the VM of VMDIR has on its
     # local memdevs in its state document (0 without one): the
     # local_claims() of dra-py of every local memdev.
     local json
@@ -1424,16 +1424,16 @@ dra-local-initial-state() {
     # (dra-local-unchanged), and no memory on its NUMA node NODE (if
     # given). Check that nothing of its claims is left: no CDI device with
     # an environment variable of the device (CXL_<KEY>_), no claims in the
-    # state of the node plugin, which must have its state file.
+    # state of the driver, which must have its state file.
     local vmdir="$1" label="$2" node="$3"
     dra-local-slices-none "$vmdir" "$label"
     dra-local-unchanged "$vmdir"
     [ -z "$(dra-cdi-devices-with "$vmdir" "CXL_${DRA_LOCAL_HEX}_")" ] ||
         error "$label: CDI devices of claims of the local device are left: $(dra-cdi-devices-with "$vmdir" "CXL_${DRA_LOCAL_HEX}_")"
     vmdir-command-q "$vmdir" "test -s $DRA_STATE" ||
-        error "$label: the node plugin has no $DRA_STATE"
+        error "$label: the driver has no $DRA_STATE"
     [ "$(dra-local-state-claims "$vmdir")" == 0 ] ||
-        error "$label: the node plugin still has claims of local memdevs in $DRA_STATE"
+        error "$label: the driver still has claims of local memdevs in $DRA_STATE"
     [ -z "$node" ] || dra-numa-node-wait "$vmdir" "$node" 0 10
     echo "$label: the local device is in its initial state"
 }
@@ -1441,7 +1441,7 @@ dra-local-initial-state() {
 dra-local-state-shared() {
     # Usage: dra-local-state-shared VMDIR CLAIM-UID...
     #
-    # Return 0 if the state document of the node plugin in the VM of VMDIR
+    # Return 0 if the state document of the driver in the VM of VMDIR
     # ($DRA_STATE) has the local memdev DRA_LOCAL_SERIAL with the fact
     # "shared": true and exactly the claims CLAIM-UID (none: no claims, see
     # local_claims() of dra-py). DRA_STATE_JSON is the document as it was
@@ -1459,7 +1459,7 @@ dra-local-shared-wait() {
     # Wait until the local device of the VM of VMDIR (see dra-local-device)
     # is a shared device that exactly the claims CLAIM-UID use (none: an
     # idle shared device, which keeps its region): the state file of the
-    # node plugin has the device with "shared": true and these claims;
+    # driver has the device with "shared": true and these claims;
     # cxl-dump sees one region of the device, enabled, nothing of
     # it online; in sysfs the memdev is enabled and its one region is the
     # whole device, with one dax device of that size bound to device_dax.
@@ -1599,7 +1599,7 @@ dra-driver-log() {
 dra-local-slices-aligned() {
     # Usage: dra-local-slices-aligned VMDIR
     #
-    # Fail the test if the node plugin in the VM of VMDIR, since it started,
+    # Fail the test if the driver in the VM of VMDIR, since it started,
     # created a region of a local device that does not start at a memory
     # block boundary, placed a slice explicitly (the range that the kernel
     # chose was not whole memory blocks) or rounded a slice up (a claim
@@ -1607,9 +1607,9 @@ dra-local-slices-aligned() {
     local log
     log=$(dra-driver-log "$1")
     if grep -E 'engine: local memdev .*(does not start at a memory block boundary|placing it explicitly|rounded up to)' <<< "$log"; then
-        error "the node plugin aligned, placed or rounded regions or slices of local devices itself, see above"
+        error "the driver aligned, placed or rounded regions or slices of local devices itself, see above"
     fi
-    echo "the node plugin's regions and slices were block-aligned: no slice placed explicitly or rounded up"
+    echo "the driver's regions and slices were block-aligned: no slice placed explicitly or rounded up"
 }
 
 dra-memory-config() {
@@ -1974,7 +1974,7 @@ dra-pod-event-wait() {
     #
     # Wait until an Event of pod POD has every TEXT (fixed strings) in its
     # message, TIMEOUT seconds at most (default 120): kubelet reports so
-    # that the node plugin refused to prepare its claim. Fail the test on
+    # that the driver refused to prepare its claim. Fail the test on
     # timeout.
     local pod="$1" texts=() tmo=120 expr
     shift
@@ -2382,7 +2382,7 @@ dra-mems-once() {
     # Check that cpuset.mems of container CONTAINER of pod POD is the value
     # of variable VAR, or, when that is empty, the DRAM nodes DRAM (a node
     # list), and set VAR to it: an empty cpuset.mems changes once, when the
-    # node plugin fences its first CXL node, and then stays.
+    # driver fences its first CXL node, and then stays.
     local label="$1" vmdir="$2" pod="$3" ctr="$4" dram="$5" var="$6" mems
     mems=$(dra-container-read "$vmdir" "$pod" "$ctr" cpuset.mems) ||
         error "$label: cannot read cpuset.mems of container $ctr of $pod"
@@ -2921,7 +2921,7 @@ dra-claim-conditions() {
     #
     # Print the conditions of the devices of ResourceClaim CLAIM in $DRA_NS,
     # one "device: type=status reason" line each, and the data that the pool
-    # controller wrote for the node plugin.
+    # controller wrote for the driver.
     local vmdir="$1" claim="$2" json
     json=$(vmdir-command-q "$vmdir" "kubectl get resourceclaim -n $DRA_NS $claim -o json") ||
         error "dra-claim-conditions: no ResourceClaim $claim in $(vmdir-label "$vmdir")"
@@ -3193,7 +3193,7 @@ dra-trace-summary() {
     # Pick the lines that tell the story from the trace of dra-trace-stop:
     # claims created, allocated and deleted, binding conditions, attach and
     # detach in the server and the controller, prepare and release in the
-    # node plugin (pool devices, and regions and slices of local devices),
+    # driver (pool devices, and regions and slices of local devices),
     # udev events of the devices, pods starting and stopping.
     # Write them to $TEST_OUTPUT_DIR/trace-summary.txt and print it.
     [ -f "$DRA_TRACE_DIR/merged.txt" ] || error "dra-trace-summary: no trace, run dra-trace-start and dra-trace-stop first"

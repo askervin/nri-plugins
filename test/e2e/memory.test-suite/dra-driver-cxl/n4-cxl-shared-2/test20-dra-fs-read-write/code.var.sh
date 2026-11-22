@@ -37,8 +37,8 @@
 # Phases: A the pool device and its class; B a writer (mode block,
 # exclusive, on VM1) writes an ext4 image built in VM1; C rw-a, rw-b and
 # ro-c on VM2 share the ext4; D ro-d and rw-e on VM1 wait (Conflict); E
-# the writers of VM2 go: VM2 is downgraded, ro-d starts on VM1, rw-e still
-# waits; F rw-f on VM2 waits until ro-d is gone, then VM2 is upgraded
+# the writers of VM2 go: VM2 remounts it read-only, ro-d starts on VM1, rw-e still
+# waits; F rw-f on VM2 waits until ro-d is gone, then VM2 remounts it read-write
 # under ro-c; G access cached next to it is refused; H the refusals,
 # squashfs read-only, btrfs read-write after its reader; I xfs: two
 # accesses on VM2 and a reader on VM1 at once (nouuid), then a writer on
@@ -278,7 +278,7 @@ pool-assert "$COMMAND_OUTPUT" "j['persistent'] == True and j['shared'] == True"
 [ "$POOL_DEVICE_DATA" == "$FS_DATA" ] || error "the data file of $FS_DEVICE is $POOL_DEVICE_DATA, expected $FS_DATA"
 [ "$POOL_DEVICE_LSA" == "$FS_LSA" ] || error "the LSA file of $FS_DEVICE is $POOL_DEVICE_LSA, expected $FS_LSA"
 
-echo "### preconditions: the pool controller on the control plane, the node plugin on every node"
+echo "### preconditions: the pool controller on the control plane, the driver on every node"
 # The driver mounts erofs only unless its configuration lists more types:
 # the others are not hardened against crafted images (test21 shows the
 # default refusing ext4).
@@ -365,7 +365,7 @@ fs-no-mounts-assert "$VM1" "$DRA_POOL_MOUNT_DIR"
 # The writers of VM2 are not disturbed.
 fs-ctr-read-assert rw-a "$FS_PATH" b.txt "$TEXT_B"
 
-echo "### E: the writers of VM2 go: VM2 downgrades the ext4 to read-only, ro-d starts on VM1"
+echo "### E: the writers of VM2 go: VM2 remounts the ext4 read-only, ro-d starts on VM1"
 dra-claim-pod-delete rw-a rw-b
 superblock-wait "$VM2" ro direct
 fs-pmem-ro-assert "$VM2" "$PMEM2" 1
@@ -392,7 +392,7 @@ dra-pending-assert rw-e
 fs-claim-data-assert ro-d "$FS_DEVICE" "not d.get('singleHost')"
 dra-claim-pod-delete rw-e
 
-echo "### F: a writer of VM2 waits until VM1 lets go, then VM2 upgrades the ext4 under its reader"
+echo "### F: a writer of VM2 waits until VM1 lets go, then VM2 remounts the ext4 read-write under its reader"
 dra-serial-claim-pod "$VM2" rw-f "$FS_SERIAL" 1 "$RW" "$CLASS"
 conflict-watch rw-f "$VM1_NAME"
 dra-pending-assert rw-f
@@ -412,7 +412,7 @@ attached-assert "$VM2_NAME:True"
 fs-ctr-env-assert rw-f "$FS_HEX" \
     SERIAL="$FS_SERIAL" SHARED=1 MODE=fs SIZE="$NS_SIZE" PATH="$FS_PATH" ACCESS=direct READ_ONLY=0 FS_TYPE=ext4
 fs-ctr-write rw-f "$FS_PATH" f.txt "$TEXT_F"
-# ro-c kept its read-only bind through the upgrade and sees the new file.
+# ro-c kept its read-only bind through the remount read-write and sees the new file.
 fs-ctr-mount-assert ro-c "$FS_PATH" ro ext4
 fs-ctr-read-assert ro-c "$FS_PATH" f.txt "$TEXT_F"
 fs-ctr-write-refused ro-c "$FS_PATH"
@@ -481,7 +481,7 @@ fs-claim-data-assert btrfs-rw "$FS_DEVICE" "d.get('singleHost') == True"
 attached-assert "$VM2_NAME:True"
 dra-claim-pod-delete btrfs-rw
 fs0-free
-# A declared type that the plugin does not know, on the btrfs.
+# A declared type that the driver does not know, on the btrfs.
 fs-refused "$VM2" f2fs-on-btrfs "$FS_SERIAL" "mode: fs, fsType: f2fs" "$CLASS" "memdev $FS_SERIAL: " "has a filesystem of type btrfs, not f2fs"
 fs0-free
 

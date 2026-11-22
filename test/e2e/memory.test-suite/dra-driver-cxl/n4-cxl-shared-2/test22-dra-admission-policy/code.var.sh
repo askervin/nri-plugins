@@ -42,7 +42,7 @@
 # companion pod and claim the driver creates and, at the release, deletes
 # under the policy. While they run, the driver of VM2 may delete them (dry
 # runs). A pod that names the CDI device of the lease claim in a
-# cdi.k8s.io annotation does not get the device. Last, an orphan companion
+# cdi.k8s.io annotation does not get the device. Last, an unowned companion
 # claim (a lease name, no lease) that the driver deletes at its next
 # reconcile (at most 60 s).
 #
@@ -64,7 +64,7 @@ VM1="$POOL_VM1_DIR"    # a worker of the cluster
 VM1_NAME="$POOL_VM1_NAME"
 VM2="$OUTPUT_DIR"      # the VM of this test, the control plane
 VM2_NAME="$POOL_VM2_NAME"
-POOLED0_SERIAL=0xc1ee0001   # 0xc1ee....: exclusive pool devices
+POOLED0_SERIAL=0xc1ee0001   # 0xc1ee....: unshared pool devices
 DRIVER_USER=system:serviceaccount:kube-system:nri-dra-driver-cxl
 NODE_EXTRA=authentication.kubernetes.io/node-name
 POLICY=lease-companions-policy-nri-dra-driver-cxl
@@ -186,7 +186,7 @@ labelled-claim-yaml() {
     # $FAKE_LEASE) and node label NODE-LABEL, without labels if NODE-LABEL
     # is "" or not given. REQUEST-LINES are its device requests (indented
     # by 4). Without them its spec is empty. No pod uses it. The driver of
-    # the node deletes it as an orphan only when NAME is cxl-lease-LEASE.
+    # the node deletes it as unowned only when NAME is cxl-lease-LEASE.
     cat <<EOF
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
@@ -263,7 +263,7 @@ pool-vm-tools-install "$VM2"
 pool-vm-reset "$VM2"
 pool-vm-reset "$VM1"
 
-echo "### preconditions: fake-cxl-pool-server on the host, one exclusive device"
+echo "### preconditions: fake-cxl-pool-server on the host, one unshared device"
 pool-server-start "
   - name: pooled0
     size: 512Mi
@@ -296,7 +296,7 @@ for p in "$SLICE_POLICY" "$POLICY" "$NS_POLICY"; do
 done
 dra-json "$VM2" validatingadmissionpolicy "$POLICY"
 dra-assert "$COMMAND_OUTPUT" "sorted((r['apiGroups'], r['resources'], sorted(r['operations'])) for r in j['spec']['matchConstraints']['resourceRules']) == [([''], ['pods'], ['CREATE', 'DELETE']), (['resource.k8s.io'], ['resourceclaims'], ['CREATE', 'DELETE'])]"
-# An orphan: a companion claim of VM2 without a lease. The driver of VM2
+# An unowned companion: a companion claim of VM2 without a lease. The driver of VM2
 # deletes it at its next reconcile, checked in E.
 dra-apply "$VM2" <<< "$(labelled-claim-yaml "$ORPHAN" "$VM2_NAME")"
 
@@ -490,7 +490,7 @@ dra-wait "$VM2" companion-claim-deleted "resourceclaims -n $DRA_NS" "'$COMPANION
 dra-leases "$VM2" requester/main
 dra-assert "$DRA_LEASES" "j == []"
 
-echo "### E: the orphan companion claim, deleted by the driver"
+echo "### E: the unowned companion claim, deleted by the driver"
 dra-wait "$VM2" orphan-deleted "resourceclaims -n $DRA_NS" "'$ORPHAN' not in names()" 90
 
 echo "### cleanup"

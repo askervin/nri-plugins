@@ -1951,7 +1951,7 @@ func sameSet(a, b map[string]bool) bool {
 
 // O5: fencing and memory.high of the containers of the test's pods. The
 // cpuset.mems.effective of every container is exact (A38, memsRule): D,
-// the DRAM nodes, M, the CXL nodes with memory (predicted), E, the numa
+// the DRAM nodes, M, the CXL NUMA nodes with memory (predicted), E, the numa
 // nodes of its claims and the nodes lent to it, F and FMaybe, the fenced
 // nodes of the driver.
 func (k *checker) checkFencing(v VM, ov *ObsVM, pr *vmPred) {

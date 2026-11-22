@@ -10,7 +10,7 @@
 # - Qemu has the local CXL memory device of the topology (cxl_memdev0,
 #   serial 0xc100e2e1), unplugged, and the empty pool slots for hotplugging
 #   pool devices. Serials: 0xc100.... boot-time devices of one VM,
-#   0xc1ae.... shared and 0xc1ee.... exclusive pool devices.
+#   0xc1ae.... shared and 0xc1ee.... unshared pool devices.
 # - The VM sees no CXL memory devices.
 #
 # dra-vm-check of dra.source.sh does these checks. The topologies

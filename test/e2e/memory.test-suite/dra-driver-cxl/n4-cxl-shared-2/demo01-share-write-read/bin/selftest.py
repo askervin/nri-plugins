@@ -18,7 +18,7 @@ Usage: selftest.py [--quiet]
   controller, written with their format strings (trace_formats_test);
 - checks the trace lines of trace-pool-fs (a writer's exclusive attach, a
   reader's Conflict once however often the scheduler retries, the
-  downgrade) and the superblocks of testdata/pool-fs-super.json (fsinfo);
+  remount read-only) and the superblocks of testdata/pool-fs-super.json (fsinfo);
 - lays out the presenter terminal (T1) of every step of the five scripts
   with a result of the rows of the step and checks that it fits;
 - runs the client of llm-share (bin/tools/cxl-llm.py) on fake llama-servers

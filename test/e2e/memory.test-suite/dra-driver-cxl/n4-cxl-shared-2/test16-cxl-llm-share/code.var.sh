@@ -638,7 +638,7 @@ pool-assert "$COMMAND_OUTPUT" "j['persistent'] == True and j['shared'] == True"
 llm-file-zero "$LLM_LSA" 0 "$LLM_LSA_SIZE" || error "the new LSA file $LLM_LSA is not all zeros"
 echo "host: $LLM_DATA and $LLM_LSA ($LLM_LSA_SIZE bytes, all zeros)"
 
-echo "### preconditions: the pool controller on the control plane, the node plugin on every node"
+echo "### preconditions: the pool controller on the control plane, the driver on every node"
 dra-build
 dra-install
 trap exit-cleanup EXIT

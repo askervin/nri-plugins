@@ -4,8 +4,8 @@
 # Single-writer data sharing: a writer gets a shared CXL memory device of
 # the pool for itself, writes new contents into it and exits. Then several
 # readers on several nodes use the same memory at the same time, read-only.
-# All of them borrow the memory while they run (test12): "cxl-request
-# request --serial SERIAL" in the container, the plugin passes a dax
+# All of them lease the memory while they run (test12): "cxl-request
+# request --serial SERIAL" in the container, the driver passes a dax
 # device fd.
 #
 # - Exclusive: "cxl-request request --serial SERIAL" without --share asks
@@ -149,7 +149,7 @@ pool-server-start "
     serial: $SHARED_SERIAL"
 pool-client-install "$VM2" "$VM1"
 
-echo "### preconditions: the pool controller on the control plane, the node plugin on every node"
+echo "### preconditions: the pool controller on the control plane, the driver on every node"
 dra-build
 dra-install
 for vm in "$VM2" "$VM1"; do
@@ -267,7 +267,7 @@ done
 pool-attachments shared0
 pool-assert "$COMMAND_OUTPUT" "sorted((a['host'], a.get('singleHost', False), a['state']) for a in j) == sorted([('$VM1_NAME', False, 'attached'), ('$VM2_NAME', False, 'attached')])"
 # The companion claims of the readers ask for read-only devices, one share
-# of shared0 each. The readers get read-only fds from the node plugin
+# of shared0 each. The readers get read-only fds from the driver
 # (check-ro above); the companion pods use nothing of their claims, which
 # get no CDI device.
 READER_A_LEASE=$(lease-of reader-a)

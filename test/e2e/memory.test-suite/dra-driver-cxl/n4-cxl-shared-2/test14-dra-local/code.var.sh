@@ -79,7 +79,7 @@ pool-cluster-require
 VM1="$POOL_VM1_DIR"    # a worker of the cluster
 VM2="$OUTPUT_DIR"      # the VM of this test, the control plane
 VM2_NAME="$POOL_VM2_NAME"
-POOLED0_SERIAL=0xc1ee0001   # 0xc1ee....: exclusive pool devices
+POOLED0_SERIAL=0xc1ee0001   # 0xc1ee....: unshared pool devices
 MiB=$(( 1 << 20 ))
 LOCAL_CLASS=cxl-local  # a slice of a local memdev: numa (default) or dax (MemoryConfig device.mode)
 DRAM_CLASS=cxl-dram    # DRAM of the node, for steering
@@ -280,7 +280,7 @@ vm-command "cat /sys/devices/system/node/has_memory" || command-error "cannot re
 DRAM_NODES="$COMMAND_OUTPUT"
 dra-memmap-on-memory-off "$VM2"
 
-echo "### preconditions: fake-cxl-pool-server on the host, with one exclusive device"
+echo "### preconditions: fake-cxl-pool-server on the host, with one unshared device"
 pool-server-start "
   - name: pooled0
     size: 512Mi
@@ -288,7 +288,7 @@ pool-server-start "
     serial: $POOLED0_SERIAL"
 pool-client-install "$VM2"
 
-echo "### preconditions: the pool controller and the node plugin run in the cluster"
+echo "### preconditions: the pool controller and the driver run in the cluster"
 dra-build
 dra-install
 dra-pull-images "$VM2" "$DRA_TOOLS_IMAGE"
@@ -297,7 +297,7 @@ dra-trace-start "$VM2"
 
 echo "### A: the local device is a resource of the node"
 # Attaching the local device plugs it into its own slot under host bridge
-# 0, as if it had been there from boot. The node plugin publishes it whole,
+# 0, as if it had been there from boot. The driver publishes it whole,
 # with no region yet.
 dra-local-device "$VM2"
 LD="$DRA_LOCAL_LD"             # the device in the ResourceSlices (dra-py)
@@ -536,7 +536,7 @@ dra-delete "$VM2" resourceclaim shared-slice --wait=true --timeout=60s
 initial-state released
 
 echo "### D: refused configs, a read-only slice, a slice of the whole device"
-# Claims whose MemoryConfig the node plugin refuses, one of a device
+# Claims whose MemoryConfig the driver refuses, one of a device
 # section (readOnly is for dax slices) and one of a container section
 # (fencing is set by the driver configuration only); the unit tests have
 # the other refusals. The scheduler allocates the device, the Prepare

@@ -17,14 +17,14 @@
 #   (/run/cxl/fs) where the filesystems of fs leases appear (test16).
 #   Nothing else changes for the pod.
 # - "cxl-request request --source pool --size 512Mi" in the container
-#   asks the node plugin over the socket. The plugin knows the caller by
+#   asks the driver over the socket. The driver knows the requester by
 #   the socket (the pod of the claim) and by the pid of the caller (the
 #   container). It creates a lease: a ResourceClaim for pool memory and a
 #   companion pause pod that holds the claim, both called
 #   cxl-lease-<lease id>, both owned by the requesting pod and labeled
 #   cxl.nri.io/lease=<lease id>. From there it is test10: the scheduler
 #   allocates a device of the pool, fake-cxl-pool-controller attaches it
-#   to this node, kubelet asks the node plugin to prepare the claim of the
+#   to this node, kubelet asks the driver to prepare the claim of the
 #   companion, and the memory becomes a new NUMA node. Then the node
 #   plugin lends the node to the requesting container: it adds the node
 #   to cpuset.mems of that container (only), through NRI. Every other
@@ -32,8 +32,8 @@
 #   "cxl-request env --lease ID" prints the environment that a claim of
 #   the same memory gives a container (CXL_<KEY>_NUMA_NODE and the rest).
 # - "cxl-request request --serial 0xc1ae0001 --share --exec CMD" joins a
-#   shared device (test19). The container gets no device node: the plugin
-#   opens the devdax device and passes the open file descriptor over the
+#   shared device (test19). The container gets no device node: the driver
+#   opens the dax device and passes the open file descriptor over the
 #   socket. cxl-request runs CMD with it as fd 3, CXL_<KEY>_FD=3.
 # - "cxl-request release --lease ID" (or --all) gives it back: the node is
 #   removed from cpuset.mems (the kernel migrates the pages to DRAM, the
@@ -41,7 +41,7 @@
 #   the device goes back to the pool, as in test10.
 #
 # What you will see: a pod that starts without any CXL memory, requests
-# that cxl-request and the node plugin refuse, 512Mi of pooled memory as
+# that cxl-request and the driver refuse, 512Mi of pooled memory as
 # a new NUMA node in one container (not in the other container of the
 # same pod, nor in any other container of the node), 256 MiB of its
 # memory there, the environment of the lease, which a claim of the same
@@ -70,7 +70,7 @@ pool-cluster-require
 VM1="$POOL_VM1_DIR"    # a worker of the cluster
 VM2="$OUTPUT_DIR"      # the VM of this test, the control plane
 VM2_NAME="$POOL_VM2_NAME"
-POOLED0_SERIAL=0xc1ee0001   # 0xc1ee....: exclusive pool devices
+POOLED0_SERIAL=0xc1ee0001   # 0xc1ee....: unshared pool devices
 POOLED0_HEX=C1EE0001        # the serial in environment variable names
 POOLED0_SIZE=$(( 512 << 20 ))
 SHARED_SERIAL=0xc1ae0001    # 0xc1ae....: shared pool devices
@@ -124,7 +124,7 @@ companion-check() {
     dra-assert "$CLAIM_JSON" "[(r['driver'], r['device']) for r in results()] == [('$DRA_POOL_DRIVER', '$dev')] and allocated_node() == '$VM2_NAME'"
     dra-assert "$CLAIM_JSON" "[r['name'] for r in j['status']['reservedFor']] == ['$name']"
     dra-assert "$CLAIM_JSON" "[(o['kind'], o['name'], o['uid'], o.get('controller')) for o in j['metadata']['ownerReferences']] == [('Pod', 'requester', '$REQUESTER_UID', True)]"
-    # The node plugin knows the claim of the companion by its label, the
+    # The driver knows the claim of the companion by its label, the
     # requester by the lease. The claim says what was asked: the class and
     # the mode.
     dra-companion-meta-check "$CLAIM_JSON" "$lease" "$REQUESTER_UID" "$VM2_NAME" "$DRA_NS/requester/main"
@@ -189,7 +189,7 @@ lend-memory() {
     # The node is the region of pooled0, onlined as system RAM.
     pool-cxl-wait "$VM2" lent \
         "by_serial($POOLED0_SERIAL) is not None and [(r['numaNode'], online_size(r)) for r in regions if sorted(r['memdevs']) == [by_serial($POOLED0_SERIAL)['name']]] == [($MEM_NODE, $POOLED0_SIZE)]"
-    # Lent to container main: the node plugin wrote its DRAM nodes and the
+    # Lent to container main: the driver wrote its DRAM nodes and the
     # new node to cpuset.mems of main (through NRI, so that containerd keeps
     # it), and nothing to the other container of the pod.
     dra-numa-nodes-eq "$(cgroup-mems main cpuset.mems)" "$DRAM_NODES,$MEM_NODE" ||
@@ -200,7 +200,7 @@ lend-memory() {
         error "node $MEM_NODE is not in Mems_allowed_list of container main"
     # No other container has the node: neither container idle of the same
     # pod nor the companion nor any container of the control plane. The
-    # node plugin keeps every container without a claim or a lend of the
+    # driver keeps every container without a claim or a lend of the
     # node off it, also those that inherit their nodes (an empty
     # cpuset.mems).
     dra-mems-fenced "$VM2" "$MEM_NODE" "$DRA_NS/requester/main"
@@ -295,7 +295,7 @@ share() {
     # Usage: share
     #
     # Container main joins the shared device (one share of it) and writes
-    # a string to it through the fd that the node plugin passed it, reads
+    # a string to it through the fd that the driver passed it, reads
     # it back through the fd again, and releases. No /dev/dax device in the
     # container, no change in its device cgroup.
     local tag="$TAG" lease lease_env shared_file found dax devices majmin
@@ -396,7 +396,7 @@ pool-server-start "
     serial: $SHARED_SERIAL"
 pool-client-install "$VM2"
 
-echo "### preconditions: the pool controller and the node plugin (with cxl-request) run in the cluster"
+echo "### preconditions: the pool controller and the driver (with cxl-request) run in the cluster"
 dra-build
 dra-install
 dra-pull-images "$VM2" "$DRA_TOOLS_IMAGE" "$DRA_COMPANION_IMAGE"
@@ -404,7 +404,7 @@ dra-tools-install "$VM2"
 dra-trace-start "$VM2"
 
 echo "### A: a pod that may want CXL memory later"
-# The lease device: published by the node plugin with the memory of the
+# The lease device: published by the driver with the memory of the
 # node, no capacity, any number of claims, only a type.
 dra-json "$VM2" deviceclass cxl-lease
 dra-assert "$COMMAND_OUTPUT" "'\"lease\"' in j['spec']['selectors'][0]['cel']['expression'] and '\"$DRA_LOCAL_DRIVER\"' in j['spec']['selectors'][0]['cel']['expression']"
@@ -475,16 +475,16 @@ pool-assert "$COMMAND_OUTPUT" "j in (None, [])"
 pool-cxl-dump "$VM2" requester-running
 cxl-assert 'memdevs == [] and regions == []'
 
-echo "### A2: requests that cxl-request refuses, and some that the node plugin refuses"
+echo "### A2: requests that cxl-request refuses, and some that the driver refuses"
 # cxl-request checks its options before it connects (exit status 2; its
-# unit tests have every check), the node plugin checks them again and
+# unit tests have every check), the driver checks them again and
 # knows the devices: pooled0 is not shared, shared0 is not persistent.
 # Nothing of a refused request is left.
 dra-request-refused "$VM2" requester/main 2 "shared memory is never onlined as RAM: use mode dax" request --share --mode numa --size 64Mi
 dra-request-refused "$VM2" requester/main 1 "memdev $POOLED0_SERIAL: not shareable" request --serial "$POOLED0_SERIAL" --share
 # shared0 is volatile: it has no filesystem and no block device. mode fs,
 # read-only by default or with --read-only=false, passes cxl-request and
-# reaches the node plugin.
+# reaches the driver.
 dra-request-refused "$VM2" requester/main 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --share --read-only --mode fs
 dra-request-refused "$VM2" requester/main 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --share --mode fs
 dra-request-refused "$VM2" requester/main 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --share --mode fs --read-only=false --fs-type ext4

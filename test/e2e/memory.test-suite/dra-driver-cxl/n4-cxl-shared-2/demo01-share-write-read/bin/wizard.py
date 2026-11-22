@@ -21,7 +21,7 @@ choices that the driver accepts are taken, the others say why not):
   --share[=false]                one share of a shared device (shares "1")
   --mode numa|dax|block|fs
   --size whole|SIZE              a slice of a local memdev, the least size
-                                 of an exclusive pool device
+                                 of an unshared pool device
   --serial any|SERIAL            one device by its serial
   --read-only[=false]            dax, block, fs
   --fs-type detect|TYPE          fs
@@ -92,7 +92,7 @@ LABELS = {
     ("share", "no"): "a device or a slice of its own",
     ("share", "yes"): "one share of a device",
     ("mode", "numa"): "RAM of a NUMA node",
-    ("mode", "dax"): "a devdax device to mmap",
+    ("mode", "dax"): "a dax device to mmap",
     ("mode", "block"): "the pmem block device",
     ("mode", "fs"): "the filesystem on it",
     ("rw", "read-write"): "", ("rw", "read-only"): "",
@@ -292,7 +292,7 @@ def fit_reason(d, a):
     if a["memory"] == "volatile":
         if is_shared(a) and not d["shared"]:
             return "not shareable: %s" % ("every claim gets a slice of its own" if d["source"] == "local"
-                                          else "an exclusive pool device has no shares")
+                                          else "an unshared pool device has no shares")
         if d["shared"] and a.get("mode") != "dax":
             return "a shared device is used as dax only"
         if d["shared"] and a.get("size") not in (None, "whole"):
@@ -814,7 +814,7 @@ def describe(a, ctx):
                 "Exclusive: the pool device is attached to this pod's node only.")
     sentences.append(excl)
     mode = {"numa": "As RAM of a NUMA node (mode numa): CXL_<KEY>_NUMA_NODE names it.",
-            "dax": "As a devdax device to mmap (mode dax), %s." % ("read-only" if read_only(a) else "read-write"),
+            "dax": "As a dax device to mmap (mode dax), %s." % ("read-only" if read_only(a) else "read-write"),
             "block": "As the block device of its fsdax namespace (mode block), %s." % ("read-only" if read_only(a) else "writable"),
             "fs": "As the filesystem on it (mode fs), %s." % ("read-only" if read_only(a) else
                                                                "read-write (readOnly: false is the opt-in to write)")}

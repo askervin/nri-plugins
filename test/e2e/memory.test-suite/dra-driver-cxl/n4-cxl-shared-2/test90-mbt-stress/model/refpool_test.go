@@ -287,7 +287,7 @@ func TestRefPoolFuzz(t *testing.T) {
 }
 
 // TestFencingFuzz is TestRefPoolFuzz with the fencing modes none and
-// switch (A36, A37), the two-claim kind on both CXL nodes (A39) in every
+// switch (A36, A37), the two-claim kind on both CXL NUMA nodes (A39) in every
 // sequence's profile.
 func TestFencingFuzz(t *testing.T) {
 	seqs := *refSeqs / 4

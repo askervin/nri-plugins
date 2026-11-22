@@ -131,7 +131,7 @@ cxl-assert 'memdevs == [] and regions == [] and endpoints == []'
 fs-tools-install "$VM2" mkfs.ext4 dumpe2fs blkid
 vmdir-command "$VM2" "rm -rf $FS_VM_DIR && mkdir -p $FS_VM_DIR" || command-error "cannot create $FS_VM_DIR in VM2"
 
-echo "### preconditions: the default server on host bridge 0 with its pool controller, the node plugin on every node"
+echo "### preconditions: the default server on host bridge 0 with its pool controller, the driver on every node"
 pool-server-start --slots "*hb0"
 dra-build
 dra-install

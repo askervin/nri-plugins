@@ -382,7 +382,7 @@ def trace(sdir, t0=1792700000.0):
     for k in range(3):
         conflict(t + 1.5 + 10 * k, "reader-a", "reader-a")
         conflict(t + 2.0 + 10 * k, "reader-b", "reader-b")
-    # R9: the writer leaves: vm1 downgrades, the attachment is not exclusive any more, vm2 attaches.
+    # R9: the writer leaves: vm1 remounts read-only, the attachment is not exclusive any more, vm2 attaches.
     t = 180
     released(t, "writer", "writer")
     cl(t + 0.2, "MODIFIED", "writer", alloc, VM1, deleting=True)

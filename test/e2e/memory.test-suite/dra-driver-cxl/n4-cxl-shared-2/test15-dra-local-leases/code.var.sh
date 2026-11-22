@@ -3,19 +3,19 @@
 # test12 lends pool memory to a running container: "cxl-request request
 # --source pool --size 512Mi" in a container whose pod claims the lease
 # device "lease" creates a lease, a companion pod with a claim of a pool
-# device, and the node plugin lends the NUMA node of the device to the
+# device, and the driver lends the NUMA node of the device to the
 # container. test14 gives pods NUMA memory and dax slices of a local CXL
-# memory device through their claims. Here a running container borrows
+# memory device through their claims. Here a running container leases
 # local memory and gives it back, while it keeps running, next to pods
 # that have static claims of the same device:
 # - "cxl-request request --source local --size 128Mi": the companion
 #   claim asks for 128Mi of DeviceClass cxl-local, with a MemoryConfig of
-#   device.mode numa. Preparing it, the node plugin carves a slice of the
+#   device.mode numa. Preparing it, the driver carves a slice of the
 #   local device, onlines its memory blocks on the NUMA node of the device,
 #   and lends the node to the container (cpuset.mems, through NRI). Nothing
 #   is attached and there is no binding condition to wait for: a local lease
 #   is Ready sooner than a pool lease. Containers that neither claim the
-#   node nor borrow it never have it, whatever their cpuset.mems.
+#   node nor lease it never have it, whatever their cpuset.mems.
 # - "cxl-request request --source local --size 64Mi --mode dax --exec
 #   CMD": the MemoryConfig of the claim says mode dax, the lease gets a
 #   devdax slice of the device of its own, passed to CMD as fd 3
@@ -29,7 +29,7 @@
 # them when it goes. Pods with static claims and leases share the node; a
 # container keeps it lent while any of its leases holds it. Steering is
 # opt-in: a container whose static NUMA claim does not opt in is not
-# steered, only fenced, and may borrow more of the node.
+# steered, only fenced, and may lease more of the node.
 #
 # What you will see: a pod with a static NUMA claim, then the requester's
 # NUMA lease on the same node, the node growing by exactly its blocks,
@@ -65,7 +65,7 @@ pool-cluster-require
 VM1="$POOL_VM1_DIR"    # a worker of the cluster
 VM2="$OUTPUT_DIR"      # the VM of this test, the control plane
 VM2_NAME="$POOL_VM2_NAME"
-POOLED0_SERIAL=0xc1ee0001   # 0xc1ee....: exclusive pool devices
+POOLED0_SERIAL=0xc1ee0001   # 0xc1ee....: unshared pool devices
 POOLED0_SIZE=$(( 512 << 20 ))
 MiB=$(( 1 << 20 ))
 LOCAL_CLASS=cxl-local
@@ -173,7 +173,7 @@ companion-check() {
     # annotated with the lease and its requester. The claim asks for
     # REQUESTED bytes of DeviceClass CLASS, is allocated to the local
     # device on this node, consumes CONSUMED bytes of it, and tells the
-    # node plugin (driver cxl.nri.io) how it prepares the device: one
+    # driver cxl.nri.io how it prepares the device: one
     # MemoryConfig with a device section only, of MODE, read-only with ro.
     # The pool attaches nothing
     # for it. COMPANION_UID is the uid of the claim.
@@ -194,7 +194,7 @@ companion-check() {
     dra-assert "$claim_json" "quantity(j['spec']['devices']['requests'][0]['exactly']['capacity']['requests']['memory']) == $size"
     dra-assert "$claim_json" "[(r['driver'], r['device']) for r in results()] == [('$DRA_LOCAL_DRIVER', '$DRA_LOCAL_DEVICE')] and allocated_node() == '$VM2_NAME' and consumed() == $consumed"
     dra-assert "$claim_json" "[r['name'] for r in j['status']['reservedFor']] == ['$name']"
-    # The opaque config for the node plugin: how it prepares the device.
+    # The opaque config for the driver: how it prepares the device.
     dra-assert "$claim_json" "[(c['driver'], c['parameters'].get('apiVersion'), c['parameters'].get('kind'), sorted(set(c['parameters']) - {'apiVersion', 'kind'}), config_section(c, 'device').get('mode'), bool(config_section(c, 'device').get('readOnly'))) for c in configs()] == [('$DRA_LOCAL_DRIVER', '$DRA_CONFIG_API', '$DRA_CONFIG_KIND', ['device'], '$mode', $ro)]"
     uid=$(dra-value "$claim_json" "j['metadata']['uid']")
     COMPANION_UID="$uid"
@@ -210,11 +210,11 @@ numa-slice() {
     # Usage: numa-slice LABEL CLAIM-UID BYTES
     #
     # Record in NUMA_SLICES the slice of the NUMA claim CLAIM-UID (LABEL:
-    # its pod or lease), as the state of the node plugin names it, and
+    # its pod or lease), as the state of the driver names it, and
     # check that sysfs has it as a kmem slice of BYTES.
     local dax
     dax=$(claim-slice "$VM2" "$2") ||
-        error "$1: the node plugin has no slice of claim $2 in $DRA_STATE"
+        error "$1: the driver has no slice of claim $2 in $DRA_STATE"
     NUMA_SLICES[$1]="$dax $3"
     dra-memdev-wait "$VM2" "slice-$1" "$DRA_LOCAL_SERIAL" \
         "[(d['driver'], d['size']) for d in dax_slices() if d['name'] == '$dax'] == [('kmem', $3)]" 10
@@ -253,7 +253,7 @@ lent-check() {
     #
     # Check that NUMA nodes NODES (a node list) are lent to container main
     # of the requester and to nobody else: cpuset.mems of main is the DRAM
-    # nodes and NODES (the node plugin wrote it through NRI), cpuset.mems
+    # nodes and NODES (the driver wrote it through NRI), cpuset.mems
     # of container idle is as it was at start (see mems-once), and of the
     # running containers of the node only main and the listed containers
     # (those with claims of the nodes) have the nodes.
@@ -307,7 +307,7 @@ not-lent-check() {
 pool-not-local() {
     # Usage: pool-not-local LABEL
     #
-    # Check that the node plugin, since it started, has never published
+    # Check that the driver, since it started, has never published
     # pooled0 as a local memdev (device memdev-<serial of pooled0>).
     local n
     n=$(dra-driver-log "$VM2" | grep -c "discovered local memdev memdev-${POOLED0_SERIAL#0x}")
@@ -347,7 +347,7 @@ claim-slice() {
     # Usage: claim-slice VMDIR CLAIM-UID
     #
     # Print the dax device (daxX.Y) of the slice of the claim with
-    # CLAIM-UID in the state of the node plugin in the VM of VMDIR: of the
+    # CLAIM-UID in the state of the driver in the VM of VMDIR: of the
     # first grant of the claim that uses a local memdev ($DRA_STATE, see
     # claim_uses() of dra-py). Return 1 if the claim has no slice there.
     local json dax
@@ -371,7 +371,7 @@ vm-command "cat /sys/devices/system/node/has_memory" || command-error "cannot re
 DRAM_NODES="$COMMAND_OUTPUT"
 dra-memmap-on-memory-off "$VM2"
 
-echo "### preconditions: fake-cxl-pool-server on the host, with one exclusive device"
+echo "### preconditions: fake-cxl-pool-server on the host, with one unshared device"
 pool-server-start "
   - name: pooled0
     size: 512Mi
@@ -379,7 +379,7 @@ pool-server-start "
     serial: $POOLED0_SERIAL"
 pool-client-install "$VM2"
 
-echo "### preconditions: the pool controller and the node plugin (with cxl-request) run in the cluster"
+echo "### preconditions: the pool controller and the driver (with cxl-request) run in the cluster"
 dra-build
 dra-install
 dra-pull-images "$VM2" "$DRA_TOOLS_IMAGE" "$DRA_COMPANION_IMAGE"
@@ -448,7 +448,7 @@ dra-mems-fenced "$VM2" "$NUMA_NODE" "$DRA_NS/static-a/main"
 dra-mems-once A "$VM2" requester main "$DRAM_NODES" MAIN_MEMS0
 dra-mems-once A "$VM2" requester idle "$DRAM_NODES" IDLE_MEMS
 
-echo "### B: the running container borrows a NUMA slice of the same device"
+echo "### B: the running container leases a NUMA slice of the same device"
 local-numa-lease "$LEASE1"
 NUMA_LEASE1="$LEASE"
 numa-slice lease-1 "$COMPANION_UID" "$LEASE1"
@@ -675,7 +675,7 @@ nothing-left released-any
 echo "### F: delete the pod while it has leases"
 # A NUMA lease of local memory with memory in use, a dax lease of the
 # local device and a dax lease of the pool: the companions are owned by
-# the requester, and the node plugin releases the leases of the pod when
+# the requester, and the driver releases the leases of the pod when
 # its lease claim is unprepared.
 local-numa-lease "$BS"
 dra-touch-start "$VM2" requester/main "$TOUCH_MIB" "$NUMA_NODE"

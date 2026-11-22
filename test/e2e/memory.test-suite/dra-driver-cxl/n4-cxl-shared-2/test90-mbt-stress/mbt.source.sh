@@ -702,7 +702,7 @@ mbt-act-lease-put() {
     # release --all). The next settle observation inspects the pod again.
     # plse: with --wait $MBT_LEASE_PUT_WAIT, so that an fs lease whose file
     # a process maps (hold), which stays Releasing, ends the step with exit
-    # 3 after the wait instead of the plugin's 120 s.
+    # 3 after the wait instead of the driver's 120 s.
     local rc wait=()
     mbt-slot "$1" || return 2
     case "$MBT_BASE" in

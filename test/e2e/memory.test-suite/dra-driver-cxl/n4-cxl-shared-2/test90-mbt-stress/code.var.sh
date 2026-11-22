@@ -262,7 +262,7 @@ for pool in "${POOLS[@]}"; do
 done
 pool-client-install "$VM2" "$VM1" "$VM0"
 
-echo "### 0: preconditions: three pool controllers, the node plugin on every node"
+echo "### 0: preconditions: three pool controllers, the driver on every node"
 dra-build
 # The EXIT trap of dra-install: stop the generator, bring the controllers
 # and drivers back, then the usual dra-cleanup and pool-cleanup.

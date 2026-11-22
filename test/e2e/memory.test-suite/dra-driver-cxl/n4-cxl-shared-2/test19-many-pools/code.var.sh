@@ -23,7 +23,7 @@
 #   sockets, so pool-c uses HMP (monitor.sock, a connection per command,
 #   device removals polled).
 # Serials are unique in the cluster: 0xc1aeP... shared and 0xc1eeP...
-# exclusive devices of pool index P (a 0, b 1, c 2); device names are
+# unshared devices of pool index P (a 0, b 1, c 2); device names are
 # unique across the servers of a VM.
 #
 # What you will see: the three pools and their node selectors; a pod
@@ -237,7 +237,7 @@ for pool in "${POOLS[@]}"; do
 done
 pool-client-install "$VM2" "$VM1" "$VM0"
 
-echo "### 0: preconditions: three pool controllers, the node plugin on every node"
+echo "### 0: preconditions: three pool controllers, the driver on every node"
 dra-build
 dra-install
 [ "${DRA_CONTROLLER_UNITS[*]}" == "${POOL_UNIT[pool-a]} ${POOL_UNIT[pool-b]} ${POOL_UNIT[pool-c]}" ] ||

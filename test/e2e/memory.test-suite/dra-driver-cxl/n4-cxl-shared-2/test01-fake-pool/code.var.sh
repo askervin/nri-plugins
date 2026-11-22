@@ -5,7 +5,7 @@
 # VM, VM2 (n4-cxl-shared-2), and attaches one shared pool device, shared0,
 # to both VM2 and VM1 (n4-cxl-shared-1), which this test drives over ssh
 # from the host. Then:
-# - Both VMs map shared0 as a devdax device. What one VM writes, the other
+# - Both VMs map shared0 as a dax device. What one VM writes, the other
 #   reads, and the host finds in the backing file of the device.
 # - Both VMs release shared0, and it is detached from both. Released
 #   devices are hot-removed for real: hotplugging shared0 to the same slot
@@ -31,7 +31,7 @@ VM1="$POOL_VM1_DIR"    # the other VM, driven over ssh from the host
 VM2="$OUTPUT_DIR"      # the VM of this test
 VM1_NAME="$POOL_VM1_NAME"
 VM2_NAME="$POOL_VM2_NAME"
-# Serials: 0xc1ae.... shared, 0xc1ee.... exclusive pool devices (the server
+# Serials: 0xc1ae.... shared, 0xc1ee.... unshared pool devices (the server
 # assigns those), 0xc100.... boot-time devices of a VM.
 SHARED_SERIAL=0xc1ae0001
 MEM_SIZE=$(( 256 << 20 ))
@@ -127,18 +127,18 @@ pool-assert "$COMMAND_OUTPUT" "sorted((a['host'], a['state']) for a in j['attach
 pool-client "$VM2" attachments || command-error "cannot list attachments"
 pool-snapshot shared0-attached
 
-echo "### D: shared0 as a devdax device in both VMs (mode dax)"
+echo "### D: shared0 as a dax device in both VMs (mode dax)"
 for vm in "$VM2" "$VM1"; do
     pool-client "$vm" -o json guest region create shared0 --mode dax ||
         command-error "cannot create a dax region of shared0 in $(vmdir-label "$vm")"
     pool-assert "$COMMAND_OUTPUT" 'j["mode"] == "dax" and j["driver"] == "device_dax" and j["device"].startswith("/dev/dax")'
     dax=$(pool-value "$COMMAND_OUTPUT" 'j["device"]')
     vmdir-command "$vm" "ls -l $dax && daxctl list -d ${dax#/dev/}" ||
-        command-error "devdax device $dax is missing in $(vmdir-label "$vm")"
+        command-error "dax device $dax is missing in $(vmdir-label "$vm")"
     vmdir-command "$vm" "cat /sys/bus/dax/devices/${dax#/dev/}/size" ||
         command-error "cannot read the size of $dax in $(vmdir-label "$vm")"
     [ "$COMMAND_OUTPUT" == "$MEM_SIZE" ] ||
-        error "devdax device $dax has $COMMAND_OUTPUT bytes, expected $MEM_SIZE"
+        error "dax device $dax has $COMMAND_OUTPUT bytes, expected $MEM_SIZE"
     pool-cxl-dump "$vm" devdax
     cxl-assert 'len(regions) == 1 and enabled(regions[0])'
     cxl-assert "size(regions[0]) == $MEM_SIZE"
@@ -147,7 +147,7 @@ for vm in "$VM2" "$VM1"; do
     cxl-assert 'online_size(regions[0]) == 0'
     if [ "$vm" == "$VM2" ]; then VM2_DAX="$dax"; else VM1_DAX="$dax"; fi
 done
-echo "devdax devices: VM2 $VM2_DAX, VM1 $VM1_DAX"
+echo "dax devices: VM2 $VM2_DAX, VM1 $VM1_DAX"
 
 echo "### E: what one VM writes the other reads, and the host finds in the backing file"
 TAG="fake-cxl-pool $(date +%Y-%m-%dT%H:%M:%S.%N)"

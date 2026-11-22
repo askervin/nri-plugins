@@ -285,7 +285,7 @@ var profiles = map[string][]string{
 		"lease@vm0#0", "lease@vm1#0", "lease@vm2#0",
 		// plain
 		"plain@vm0#0", "plain@vm1#0", "plain@vm2#0",
-		// both CXL nodes of a VM (A39): pool-c numa slots on every VM
+		// both CXL NUMA nodes of a VM (A39): pool-c numa slots on every VM
 		// and the two-claim kind
 		"xnuma-c@vm0#0", "xnuma-c@vm2#0", "dnuma@vm0#0", "dnuma@vm1#0",
 	},

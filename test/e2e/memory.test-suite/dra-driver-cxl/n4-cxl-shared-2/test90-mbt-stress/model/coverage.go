@@ -172,8 +172,8 @@ func faultContext(s *State, a Act) []string {
 
 // memsStrings are the strings of the cpuset.mems of the containers of a
 // settled state (A40): one "mems|MODE|e=E|f=F|m=M" per running container
-// of a slot or a companion, MODE am or none, E its CXL nodes (claimed or
-// lent), F the fenced nodes of its VM, M the CXL nodes with memory there
+// of a slot or a companion, MODE am or none, E its CXL NUMA nodes (claimed or
+// lent), F the fenced nodes of its VM, M the CXL NUMA nodes with memory there
 // ("-" for none). From the predicted state, as the planner sees it.
 func memsStrings(s *State) []string {
 	var out []string

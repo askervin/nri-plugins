@@ -8,7 +8,7 @@
 # plugin then publishes it whole as a shared device, attributes type
 # memdev, source local, shared true, serial, size and numaNode, and
 # one capacity, "shares", 1M without a requestPolicy. Claims of class
-# cxl-local-shared get the whole device as one devdax device:
+# cxl-local-shared get the whole device as one dax device:
 # - A claim without a shares request consumes all shares: the device is
 #   its own, and the scheduler allocates the device to no other claim
 #   until it is gone. Claims that ask meanwhile wait, their pods Pending.
@@ -67,7 +67,7 @@ SHARED0_SERIAL=0xc1ae0001   # 0xc1ae....: shared pool devices
 TAG="dra-local-shared $(date +%Y-%m-%dT%H:%M:%S.%N)"
 TEXT0="$TAG: at 0, from the writer"
 TEXT1M="$TAG: at 1M, from the writer"
-STALE="stale bytes of $TAG"   # dra-local-seed: what the node plugin must zero
+STALE="stale bytes of $TAG"   # dra-local-seed: what the driver must zero
 CLAIM_JSON=""          # claim-check: the claim
 CLAIM_UID=""           # and its uid
 POD_ENV=""             # env-check: the CXL_ variables of the pod
@@ -229,7 +229,7 @@ restart-kept() {
     dra-driver-log-wait "$VM2" "local memdev $DRA_LOCAL_SERIAL ($SHARED_MEMDEV): keeping shared $SHARED_REGION and $SHARED_DAX, claims [$*]"
     log=$(dra-driver-log "$VM2")
     ! grep -E "zeroed new shared |releasing its region|released $SHARED_REGION" <<< "$log" ||
-        error "the restarted node plugin zeroed or released the region of the shared device, see above"
+        error "the restarted driver zeroed or released the region of the shared device, see above"
 }
 
 same-region() {
@@ -287,7 +287,7 @@ hold-log() {
 no-leases() {
     # Usage: no-leases
     #
-    # Return 0 if the state document of the node plugin ($DRA_STATE) has
+    # Return 0 if the state document of the driver ($DRA_STATE) has
     # no leases, or there is no document.
     local json
     json=$(dra-state-json "$VM2" 2>/dev/null) || json='{}'
@@ -367,7 +367,7 @@ dra-pod-wait "$VM2" writer Running 120
 claim-check writer "$DRA_SHARES"
 WRITER_UID="$CLAIM_UID"
 dra-assert "$CLAIM_JSON" "configs() == [] and [s.get('capacity') for s in subrequests()] == [None]"
-# The claim created the region: one devdax device of all of the device,
+# The claim created the region: one dax device of all of the device,
 # nothing online.
 dra-local-shared-wait "$VM2" writer "$WRITER_UID"
 SHARED_REGION="$DRA_LOCAL_SHARED_REGION"
@@ -452,16 +452,16 @@ dra-assert "$CLAIM_JSON" "sorted(r['name'] for r in j['status']['reservedFor']) 
 dra-local-shared-wait "$VM2" two-pods "${READER_UID[@]}" "$TWO_UID"
 same-region || error "two-1 and two-2 have another region or dax device: $DRA_MEMDEV"
 
-echo "### F: configurations and requests that the node plugin refuses"
+echo "### F: configurations and requests that the driver refuses"
 # The scheduler allocates the device to these claims, next to the
-# readers; the node plugin refuses to prepare them, the pods stay
+# readers; the driver refuses to prepare them, the pods stay
 # ContainerCreating. A shared device is dax only, readOnly needs mode dax
 # (checked first), and access is of mode fs.
 claim-pod bad-numa 1 "mode: numa" "echo started"
 claim-pod bad-numa-ro 1 "mode: numa, readOnly: true" "echo started"
 claim-pod bad-access 1 "access: cached" "echo started"
 # shares "0" passes the API and fits next to any holder: the scheduler
-# allocates it, consuming nothing, and the node plugin refuses it.
+# allocates it, consuming nothing, and the driver refuses it.
 claim-pod zero-shares 0 "readOnly: true" "echo started"
 dra-pod-event-wait bad-numa "MemoryConfig: device: a shared device is used as dax only"
 dra-pod-event-wait bad-numa-ro "MemoryConfig: device.readOnly needs mode dax"
@@ -503,7 +503,7 @@ dra-wait-log "$VM2" after-idle "at 0: $TEXT0" 60
 dra-wait-log "$VM2" after-idle "at 1M: $TEXT1M" 10
 same-region || error "after-idle has another region or dax device: $DRA_MEMDEV"
 zeroed=$(dra-driver-log "$VM2" | grep -c "zeroed new shared ")
-[ "$zeroed" == 1 ] || error "the node plugin zeroed the shared device $zeroed times, expected once, when the region was created"
+[ "$zeroed" == 1 ] || error "the driver zeroed the shared device $zeroed times, expected once, when the region was created"
 dra-claim-pod-delete after-idle
 
 echo "### L: leases of the shared device for a running container"
@@ -555,7 +555,7 @@ dra-request "$VM2" leaser request --serial "$DRA_LOCAL_SERIAL" --source pool
 grep -qF "memdev $DRA_LOCAL_SERIAL: not a pool device" <<< "$DRA_REQ_OUT" ||
     error "cxl-request request --serial $DRA_LOCAL_SERIAL --source pool did not print 'not a pool device': $DRA_REQ_OUT"
 # A read-only share, mapped when its pod goes: the broker ends the lease,
-# its companion and the lease directories of the pod go, the node plugin
+# its companion and the lease directories of the pod go, the driver
 # has no leases left, and the region stays.
 # shellcheck disable=SC2016 # expanded by sh in the container
 dra-exec "$VM2" leaser sh -c 'setsid sh -c "$1 request --serial $2 --share --read-only --wait 60s --exec sh -c \"python3 /tools/dax-rw.py --fd 3 check-ro 0; exec python3 /tools/dax-rw.py --fd 3 watch 0 /tmp/stop\"" > /tmp/hold.log 2>&1 < /dev/null &' sh "$DRA_REQUEST_CTR_BIN" "$DRA_LOCAL_SERIAL" ||
@@ -574,7 +574,7 @@ dra-delete-pod "$VM2" leaser
 dra-delete "$VM2" resourceclaimtemplate cxl-lease --wait=true --timeout=60s
 dra-wait "$VM2" no-lease-objects "pods,resourceclaims -n $DRA_NS" "items == []" 60
 retry-until --timeout 60 --interval 1 --message "no leases in $DRA_STATE" no-leases ||
-    error "the node plugin still has leases in $DRA_STATE"
+    error "the driver still has leases in $DRA_STATE"
 vmdir-command "$VM2" "test ! -e $DRA_LEASE_DIR/$LEASER_CLAIM_UID && test ! -e $DRA_LEASE_FS_DIR/$LEASER_CLAIM_UID" ||
     error "the lease directories of the claim of leaser are left in $DRA_LEASE_DIR or $DRA_LEASE_FS_DIR"
 dra-local-shared-wait "$VM2" leases-gone
@@ -589,7 +589,7 @@ HOLDER_UID="$CLAIM_UID"
 cdi-check "$HOLDER_UID" 1
 CDI_BEFORE="$CDI_NODE"
 dra-driver-restart "$VM2"
-# The new node plugin kept the region for the holder's claim (its log
+# The new driver kept the region for the holder's claim (its log
 # says so), the reader keeps its mapping, and the CDI device of the claim
 # has the same device node.
 restart-kept "$HOLDER_UID"
@@ -609,13 +609,13 @@ dra-driver-restart "$VM2"
 restart-kept
 same-region || error "the region changed with the restart: $DRA_MEMDEV"
 dra-local-shared-wait "$VM2" restarted-idle
-# Without the device in the configuration the node plugin destroys the
+# Without the device in the configuration the driver destroys the
 # region of the idle device and publishes the device for slices again
 # (as test14).
 DRA_DRIVER_CONFIG=""
 dra-install
 dra-trace-driver-follow "$VM2"
-# The node plugin itself released the region: its log says so.
+# The driver itself released the region: its log says so.
 dra-driver-log-wait "$VM2" "local memdev $DRA_LOCAL_SERIAL ($SHARED_MEMDEV): not in sharedMemdevs any more, destroying its region" 60
 dra-local-slices-none "$VM2" unshared
 dra-wait "$VM2" sliced-again resourceslices \

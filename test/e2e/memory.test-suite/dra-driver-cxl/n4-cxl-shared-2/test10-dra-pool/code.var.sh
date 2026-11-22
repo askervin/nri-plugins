@@ -29,7 +29,7 @@
 # The claim configures all of them with one opaque MemoryConfig: its pool
 # section for the pool controller (pool.opaque.fake-cxl-pool: slot,
 # numaNode, where the pool attaches the device), its device section for
-# the node plugin, its container section for the NRI plugin of the driver.
+# the kubelet plugin, its container section for the NRI plugin of the driver.
 # Steering is opt-in, as for local memory: without a steering policy the
 # container is only fenced, the workload places its memory itself; with
 # container.steering.policy auto the driver steers the memory of the
@@ -62,7 +62,7 @@ VM1="$POOL_VM1_DIR"    # a worker of the cluster
 VM2="$OUTPUT_DIR"      # the VM of this test, the control plane
 VM1_NAME="$POOL_VM1_NAME"
 VM2_NAME="$POOL_VM2_NAME"
-POOLED0_SERIAL=0xc1ee0001   # 0xc1ee....: exclusive pool devices
+POOLED0_SERIAL=0xc1ee0001   # 0xc1ee....: unshared pool devices
 POOLED0_HEX=C1EE0001        # the serial in environment variable names
 POOLED0_SIZE=$(( 512 << 20 ))
 POOLED1_SERIAL=0xc1ee0002
@@ -83,7 +83,7 @@ pool-cxl-dump "$VM2" no-devices
 cxl-assert 'memdevs == [] and regions == [] and endpoints == []'
 CPU_NODES=$(cxl-value 'len(nodes)')
 
-echo "### preconditions: fake-cxl-pool-server on the host, with two exclusive devices"
+echo "### preconditions: fake-cxl-pool-server on the host, with two unshared devices"
 pool-server-start "
   - name: pooled0
     size: 512Mi
@@ -95,7 +95,7 @@ pool-server-start "
     serial: $POOLED1_SERIAL"
 pool-client-install "$VM2"
 
-echo "### preconditions: the pool controller and the node plugin run in the cluster"
+echo "### preconditions: the pool controller and the driver run in the cluster"
 dra-build
 dra-install
 dra-pull-images "$VM2" docker.io/library/busybox:latest "$DRA_TOOLS_IMAGE"
@@ -106,7 +106,7 @@ echo "### A: the pool is visible in Kubernetes"
 # The controller publishes the devices of the pool in one ResourceSlice
 # for the nodes that the pool can reach: a nodeSelector of their
 # kubernetes.io/hostname, VM1 and VM2, not VM0 and never all nodes. The
-# node plugin publishes the memory of the node (DRAM, and CXL memory that
+# driver publishes the memory of the node (DRAM, and CXL memory that
 # is already in the node) in a slice of its own.
 dra-kubectl "$VM2" "get resourceslices"
 dra-json "$VM2" resourceslices
@@ -199,7 +199,7 @@ CLAIM_JSON="$COMMAND_OUTPUT"
 dra-claim-conditions "$VM2" pooled-memory
 dra-assert "$CLAIM_JSON" "[(r['driver'], r['device']) for r in results()] == [('$DRA_POOL_DRIVER', 'pooled0')]"
 dra-assert "$CLAIM_JSON" "allocated_node() == '$VM2_NAME'"
-# What the node plugin needs to find the device is in the claim status.
+# What the driver needs to find the device is in the claim status.
 dra-assert "$CLAIM_JSON" "device_data('pooled0')['serial'] == '$POOLED0_SERIAL' and device_data('pooled0')['shared'] == False and device_data('pooled0')['size'] == $POOLED0_SIZE"
 CLAIM_UID=$(dra-value "$CLAIM_JSON" "j['metadata']['uid']")
 pool-client "$VM2" attachments || command-error "cannot list the attachments of the pool"
@@ -207,7 +207,7 @@ pool-client "$VM2" -o json attachments || command-error "cannot list the attachm
 pool-assert "$COMMAND_OUTPUT" "[(a['device'], a['host'], a.get('owner')) for a in j] == [('pooled0', '$VM2_NAME', 'k8s:resourceclaim/$CLAIM_UID')]"
 
 echo "### D: the node makes the memory usable"
-# The scheduler binds the pod, kubelet asks the node plugin to prepare the
+# The scheduler binds the pod, kubelet asks the driver to prepare the
 # claim: a region on the new memory device, its memory online.
 dra-pod-wait "$VM2" pooled-pod Running 120
 pool-cxl-wait "$VM2" pooled0-prepared \
@@ -245,9 +245,9 @@ dra-mems-fenced "$VM2" "$CXL_NODE" "$DRA_NS/pooled-pod/main"
 dra-memory-wait "$VM2" pooled-pod main fenced "none (default)"
 
 echo "### D: the pool device is not advertised again as node-local CXL memory"
-# The new region is CXL memory of the node, which the node plugin offers
+# The new region is CXL memory of the node, which the driver offers
 # as cxl.nri.io devices, but not when it is a prepared pool device. Wait
-# until the node plugin has rescanned and published after it prepared
+# until the driver has rescanned and published after it prepared
 # pooled0 (udev events of the region trigger the rescan).
 rescanned-after-prepare() {
     dra-driver-log "$VM2" |
@@ -256,14 +256,14 @@ rescanned-after-prepare() {
              p && /publisher: published / {found = 1}
              END {exit !found}'
 }
-retry-until --timeout 30 --message "node plugin rescan after preparing pooled0" rescanned-after-prepare ||
+retry-until --timeout 30 --message "driver rescan after preparing pooled0" rescanned-after-prepare ||
     error "nri-dra-driver-cxl did not publish its resources after preparing pooled0"
 dra-driver-log "$VM2" | grep -E 'prepared pooled0|ignoring region|publisher: '
 dra-json "$VM2" resourceslices
 dra-assert "$COMMAND_OUTPUT" "not any(attr(d, 'type') == 'region' for d in devices('$DRA_LOCAL_DRIVER', '$VM2_NAME'))"
 
 echo "### E: delete the pod and the claim, the memory returns to the pool"
-# Kubelet unprepares the claim while the pod terminates: the node plugin
+# Kubelet unprepares the claim while the pod terminates: the driver
 # offlines the memory and releases the device. Then the claim is
 # deallocated, and the controller detaches the device.
 dra-delete "$VM2" pod pooled-pod --grace-period=2 --wait=true --timeout=60s
@@ -279,14 +279,14 @@ pool-assert "$COMMAND_OUTPUT" "j['state'] == 'free' and j['attachments'] in (Non
 pool-vm-monitor "$VM2" "info qtree -b" | grep -q 'dev: cxl-type3' &&
     error "qemu of the VM still has a CXL memory device"
 dra-driver-log "$VM2" | grep -iE 'unprepar|releas' ||
-    error "the node plugin did not log the release of pooled0"
+    error "the driver did not log the release of pooled0"
 deleted=$(grep -c 'event DEVICE_DELETED' "$POOL_SERVER_LOG")
 [ "$deleted" -ge 1 ] || error "qemu did not report DEVICE_DELETED, see $POOL_SERVER_LOG"
 grep -E 'attachment pooled0@.*: (attached|detached)|event DEVICE_DELETED' "$POOL_SERVER_LOG"
 
 echo "### F: a claim opts in to steering and asks the pool for a slot near NUMA node 1"
 # pooled1 for a claim with a container section (steering policy auto) and
-# a pool section: the object of the reference controller,
+# a pool section: the object of the fake pool controller,
 # pool.opaque.fake-cxl-pool, asks for a slot under a host bridge on NUMA
 # node 1 of the host (the server prefers such slots); a key of another
 # controller implementation is not this controller's business. Without
@@ -331,8 +331,8 @@ dra-delete "$VM2" pod pooled-steered --grace-period=2 --wait=true --timeout=60s
 dra-delete "$VM2" resourceclaim pooled-steered --wait=true --timeout=60s
 pool-device-free-wait pooled1 "$VM2"
 
-echo "### G: the exclusive device pooled0 as a dax device"
-# Mode dax: the node plugin creates a devdax region on the device, never
+echo "### G: the unshared device pooled0 as a dax device"
+# Mode dax: the driver creates a devdax region on the device, never
 # onlined, and gives the container its device node, read-write. 512Mi:
 # only pooled0 is that large.
 dra-apply "$VM2" <<< "$(dra-claim-yaml claim pooled-dax cxl-pool 512Mi dax)
