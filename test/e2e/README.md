@@ -915,9 +915,8 @@ join`, which loses all cluster state: deploy what the test needs after it.
 control plane VM, `/root/kubeadm-config.yaml`. So the rebuilt cluster keeps
 its feature gates and kubelet settings. `vm-k8s-reinit` and
 `vm-vmnet-ensure` refuse to run against a host which is not a VM.
-Pods run on every node, and every node has the admin kubeconfig. Rebuilding
-is slow: two single-node clusters take several times longer than one
-cluster of two nodes. So a test suite makes its shape once, in one test,
+Pods run on every node, and every node has the admin kubeconfig. A rebuild
+loses all cluster state, so a test suite makes its shape once, in one test,
 and the other tests only check it: in `memory.test-suite/dra-driver-cxl`,
 `n4-cxl-shared-2/test00-up` makes one cluster of three VMs, and the other
 tests of `n4-cxl-shared-2` fail at once, pointing to `test00-up`, if the
