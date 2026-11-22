@@ -462,7 +462,7 @@ func TestPlanFollow(t *testing.T) {
 // the last waypoint (the nodes of the last segment that adds usage, no
 // bound) and below it again (a bounded step towards it).
 func TestNextStepPastLastWaypoint(t *testing.T) {
-	both := MemoryTypes{DRAMNodes: []int{0}, CXLNodes: []int{1, 2}, DRAMQuota: 4 * GiB, CXLQuota: 8 * GiB}
+	both := MemoryTypes{DRAMNUMANodes: []int{0}, CXLNUMANodes: []int{1, 2}, DRAMQuota: 4 * GiB, CXLQuota: 8 * GiB}
 	for _, tc := range []struct {
 		policy Policy
 		mem    MemoryTypes
@@ -474,9 +474,9 @@ func TestNextStepPastLastWaypoint(t *testing.T) {
 		{PolicyEndInterleaved, both, []int{0, 1, 2}},
 		// equal quotas: the last segment adds nothing, the one before
 		// interleaves
-		{PolicyStartInterleaved, MemoryTypes{DRAMNodes: []int{0}, CXLNodes: []int{1}, DRAMQuota: 4 * GiB, CXLQuota: 4 * GiB}, []int{0, 1}},
-		{PolicyFirstDRAM, MemoryTypes{CXLNodes: []int{1, 2}, CXLQuota: 8 * GiB}, []int{1, 2}},
-		{PolicyFirstCXL, MemoryTypes{DRAMNodes: []int{0}, DRAMQuota: 4 * GiB}, []int{0}},
+		{PolicyStartInterleaved, MemoryTypes{DRAMNUMANodes: []int{0}, CXLNUMANodes: []int{1}, DRAMQuota: 4 * GiB, CXLQuota: 4 * GiB}, []int{0, 1}},
+		{PolicyFirstDRAM, MemoryTypes{CXLNUMANodes: []int{1, 2}, CXLQuota: 8 * GiB}, []int{1, 2}},
+		{PolicyFirstCXL, MemoryTypes{DRAMNUMANodes: []int{0}, DRAMQuota: 4 * GiB}, []int{0}},
 	} {
 		t.Run(tc.policy.String(), func(t *testing.T) {
 			plan, err := NewPlan(tc.policy, tc.mem, nil, 0, 0)

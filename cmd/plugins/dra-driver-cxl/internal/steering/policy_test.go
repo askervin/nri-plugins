@@ -22,10 +22,10 @@ import (
 
 func TestPolicyPlanOrders(t *testing.T) {
 	mem := MemoryTypes{
-		DRAMNodes: []int{0},
-		CXLNodes:  []int{1},
-		DRAMQuota: 20 * GiB,
-		CXLQuota:  100 * GiB,
+		DRAMNUMANodes: []int{0},
+		CXLNUMANodes:  []int{1},
+		DRAMQuota:     20 * GiB,
+		CXLQuota:      100 * GiB,
 	}
 	tcases := []struct {
 		policy    Policy
@@ -54,7 +54,7 @@ func TestPolicyPlanOrders(t *testing.T) {
 
 	t.Run("larger DRAM quota with end-interleaved", func(t *testing.T) {
 		plan, err := NewPlan(PolicyEndInterleaved, MemoryTypes{
-			DRAMNodes: []int{0}, CXLNodes: []int{1}, DRAMQuota: 100 * GiB, CXLQuota: 20 * GiB,
+			DRAMNUMANodes: []int{0}, CXLNUMANodes: []int{1}, DRAMQuota: 100 * GiB, CXLQuota: 20 * GiB,
 		}, nil, 0, 0)
 		require.NoError(t, err)
 		require.Equal(t, []NodeMem{nm(80*GiB, 0), nm(100*GiB, 20*GiB)}, plan.Waypoints)
@@ -63,7 +63,7 @@ func TestPolicyPlanOrders(t *testing.T) {
 	t.Run("single type spreads over nodes", func(t *testing.T) {
 		for _, policy := range []Policy{PolicyFirstDRAM, PolicyFirstCXL, PolicyStartInterleaved, PolicyEndInterleaved} {
 			plan, err := NewPlan(policy, MemoryTypes{
-				DRAMNodes: []int{0, 2}, CXLNodes: []int{1}, DRAMQuota: 20 * GiB,
+				DRAMNUMANodes: []int{0, 2}, CXLNUMANodes: []int{1}, DRAMQuota: 20 * GiB,
 			}, nil, 0, 0)
 			require.NoError(t, err, policy)
 			require.Equal(t, []NodeMem{{0: 10 * GiB, 2: 10 * GiB}}, plan.Waypoints, policy)
@@ -73,7 +73,7 @@ func TestPolicyPlanOrders(t *testing.T) {
 }
 
 func TestPolicyPlanSteps(t *testing.T) {
-	mem := MemoryTypes{DRAMNodes: []int{0}, CXLNodes: []int{1}, DRAMQuota: 2 * GiB, CXLQuota: 2 * GiB}
+	mem := MemoryTypes{DRAMNUMANodes: []int{0}, CXLNUMANodes: []int{1}, DRAMQuota: 2 * GiB, CXLQuota: 2 * GiB}
 
 	plan, err := NewPlan(PolicyFirstDRAM, mem, nil, 1*GiB, 0)
 	require.NoError(t, err)
@@ -106,7 +106,7 @@ func TestPolicyPlanDefaultStepsInterleaved(t *testing.T) {
 	// 128Mi of DRAM on two nodes and 128Mi of CXL: the first waypoint
 	// is 64Mi, 64Mi and 128Mi, which no even step of the whole quota
 	// reaches
-	mem := MemoryTypes{DRAMNodes: []int{0, 1}, CXLNodes: []int{2}, DRAMQuota: 128 * MiB, CXLQuota: 128 * MiB}
+	mem := MemoryTypes{DRAMNUMANodes: []int{0, 1}, CXLNUMANodes: []int{2}, DRAMQuota: 128 * MiB, CXLQuota: 128 * MiB}
 	plan, err := NewPlan(PolicyStartInterleaved, mem, nil, 0, 0)
 	require.NoError(t, err)
 	require.Equal(t, 64*MiB, plan.MinStep)
@@ -134,7 +134,7 @@ func TestPolicyPlanUserWaypoints(t *testing.T) {
 		{DRAM: 100 * MiB, CXL: 200 * MiB},
 		{DRAM: 300 * MiB, CXL: 250 * MiB},
 	}
-	mem := MemoryTypes{DRAMNodes: []int{2}, CXLNodes: []int{3, 4}, DRAMQuota: 300 * MiB, CXLQuota: 300 * MiB}
+	mem := MemoryTypes{DRAMNUMANodes: []int{2}, CXLNUMANodes: []int{3, 4}, DRAMQuota: 300 * MiB, CXLQuota: 300 * MiB}
 	plan, err := NewPlan(PolicyWaypoints, mem, waypoints, 20*MiB, 60*MiB)
 	require.NoError(t, err)
 	require.Equal(t, []NodeMem{
@@ -145,9 +145,9 @@ func TestPolicyPlanUserWaypoints(t *testing.T) {
 	require.Equal(t, 20*MiB, plan.MinStep)
 	require.Equal(t, 60*MiB, plan.MaxStep)
 
-	_, err = NewPlan(PolicyWaypoints, MemoryTypes{DRAMNodes: []int{2}, DRAMQuota: 300 * MiB}, waypoints, 0, 0)
+	_, err = NewPlan(PolicyWaypoints, MemoryTypes{DRAMNUMANodes: []int{2}, DRAMQuota: 300 * MiB}, waypoints, 0, 0)
 	require.ErrorContains(t, err, "no CXL memory")
-	_, err = NewPlan(PolicyWaypoints, MemoryTypes{DRAMNodes: []int{2}, CXLNodes: []int{3, 4}, DRAMQuota: 300 * MiB, CXLQuota: 200 * MiB},
+	_, err = NewPlan(PolicyWaypoints, MemoryTypes{DRAMNUMANodes: []int{2}, CXLNUMANodes: []int{3, 4}, DRAMQuota: 300 * MiB, CXLQuota: 200 * MiB},
 		waypoints, 0, 0)
 	require.ErrorContains(t, err, "waypoint 2: CXL usage 262144000 exceeds the CXL quota 209715200")
 }
@@ -155,13 +155,13 @@ func TestPolicyPlanUserWaypoints(t *testing.T) {
 func TestPolicyPlanErrors(t *testing.T) {
 	_, err := NewPlan(PolicyFirstDRAM, MemoryTypes{}, nil, 0, 0)
 	require.ErrorContains(t, err, "no memory type")
-	_, err = NewPlan(PolicyFirstDRAM, MemoryTypes{DRAMNodes: []int{0}, DRAMQuota: -1}, nil, 0, 0)
+	_, err = NewPlan(PolicyFirstDRAM, MemoryTypes{DRAMNUMANodes: []int{0}, DRAMQuota: -1}, nil, 0, 0)
 	require.ErrorContains(t, err, "negative")
-	_, err = NewPlan(PolicyFirstDRAM, MemoryTypes{DRAMNodes: []int{0}, CXLNodes: []int{0}, DRAMQuota: 1, CXLQuota: 1}, nil, 0, 0)
+	_, err = NewPlan(PolicyFirstDRAM, MemoryTypes{DRAMNUMANodes: []int{0}, CXLNUMANodes: []int{0}, DRAMQuota: 1, CXLQuota: 1}, nil, 0, 0)
 	require.ErrorContains(t, err, "more than once")
-	_, err = NewPlan(PolicyFirstDRAM, MemoryTypes{DRAMNodes: []int{-1}, DRAMQuota: 1}, nil, 0, 0)
+	_, err = NewPlan(PolicyFirstDRAM, MemoryTypes{DRAMNUMANodes: []int{-1}, DRAMQuota: 1}, nil, 0, 0)
 	require.ErrorContains(t, err, "invalid node")
-	both := MemoryTypes{DRAMNodes: []int{0}, CXLNodes: []int{1}, DRAMQuota: 1, CXLQuota: 1}
+	both := MemoryTypes{DRAMNUMANodes: []int{0}, CXLNUMANodes: []int{1}, DRAMQuota: 1, CXLQuota: 1}
 	_, err = NewPlan(Policy(42), both, nil, 0, 0)
 	require.ErrorContains(t, err, "Policy(42)")
 	_, err = NewPlan(PolicyWaypoints, both, nil, 0, 0)

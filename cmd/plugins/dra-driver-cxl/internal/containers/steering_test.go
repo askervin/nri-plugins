@@ -576,9 +576,9 @@ func TestSteeredRecordBeforeStart(t *testing.T) {
 }
 
 func TestSteeringPolicy(t *testing.T) {
-	dram := steering.MemoryTypes{DRAMNodes: []int{0}, DRAMQuota: 1 << 30}
-	cxl := steering.MemoryTypes{CXLNodes: []int{2}, CXLQuota: 1 << 30}
-	both := steering.MemoryTypes{DRAMNodes: []int{0}, CXLNodes: []int{2}, DRAMQuota: 1 << 30, CXLQuota: 1 << 30}
+	dram := steering.MemoryTypes{DRAMNUMANodes: []int{0}, DRAMQuota: 1 << 30}
+	cxl := steering.MemoryTypes{CXLNUMANodes: []int{2}, CXLQuota: 1 << 30}
+	both := steering.MemoryTypes{DRAMNUMANodes: []int{0}, CXLNUMANodes: []int{2}, DRAMQuota: 1 << 30, CXLQuota: 1 << 30}
 	for _, tc := range []struct {
 		name    string
 		s       *config.Steering

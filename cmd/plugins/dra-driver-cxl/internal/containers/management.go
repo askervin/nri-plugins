@@ -222,7 +222,7 @@ func logDecision(ctrName string, d *decision, hasResults bool) {
 	switch {
 	case d.management == ManagementSteered && d.plan != nil:
 		klog.V(5).Infof("NRI CreateContainer: ctr=%s: prepared memory steering (policy=%s, dramNodes=%v, cxlNodes=%v, %s)",
-			ctrName, d.policy, d.mem.DRAMNodes, d.mem.CXLNodes, d.plan)
+			ctrName, d.policy, d.mem.DRAMNUMANodes, d.mem.CXLNUMANodes, d.plan)
 	case d.management == ManagementSteered:
 	case d.eff.Steers() && hasResults:
 		klog.V(3).Infof("NRI CreateContainer: ctr=%s: steering policy %s: no numa memory to steer", ctrName, d.eff.Container.Steering.Policy)
@@ -275,7 +275,7 @@ func steeredMemory(results []result) steering.MemoryTypes {
 			mem.CXLQuota += r.bytes
 		}
 	}
-	mem.DRAMNodes, mem.CXLNodes = dram.List(), cxl.List()
+	mem.DRAMNUMANodes, mem.CXLNUMANodes = dram.List(), cxl.List()
 	return mem
 }
 

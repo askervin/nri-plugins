@@ -169,12 +169,12 @@ func TestContainerResults(t *testing.T) {
 		mem     steering.MemoryTypes
 		claimed string
 	}{
-		{[]resultRef{{"split", 0}}, steering.MemoryTypes{CXLNodes: []int{2}, CXLQuota: 1 << 30}, "2"},
+		{[]resultRef{{"split", 0}}, steering.MemoryTypes{CXLNUMANodes: []int{2}, CXLQuota: 1 << 30}, "2"},
 		{[]resultRef{{"split", 1}}, steering.MemoryTypes{}, ""},
-		{[]resultRef{{"split", 2}}, steering.MemoryTypes{DRAMNodes: []int{0, 1}, DRAMQuota: 2 << 30}, ""},
-		{[]resultRef{{"split", 3}}, steering.MemoryTypes{CXLNodes: []int{4}, CXLQuota: 1 << 30}, "4"},
+		{[]resultRef{{"split", 2}}, steering.MemoryTypes{DRAMNUMANodes: []int{0, 1}, DRAMQuota: 2 << 30}, ""},
+		{[]resultRef{{"split", 3}}, steering.MemoryTypes{CXLNUMANodes: []int{4}, CXLQuota: 1 << 30}, "4"},
 		{[]resultRef{{"split", 0}, {"split", 2}, {"pool", 0}},
-			steering.MemoryTypes{DRAMNodes: []int{0, 1}, CXLNodes: []int{2, 3}, DRAMQuota: 2 << 30, CXLQuota: 1<<30 + 256<<20}, "2-3"},
+			steering.MemoryTypes{DRAMNUMANodes: []int{0, 1}, CXLNUMANodes: []int{2, 3}, DRAMQuota: 2 << 30, CXLQuota: 1<<30 + 256<<20}, "2-3"},
 		{[]resultRef{{"pool", 1}, {"lease", 0}}, steering.MemoryTypes{}, ""},
 		// unknown claims and results
 		{[]resultRef{{"split", 7}, {"gone", 0}, {"pool", 2}}, steering.MemoryTypes{}, ""},

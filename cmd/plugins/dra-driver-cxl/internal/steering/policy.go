@@ -58,10 +58,10 @@ func (p Policy) String() string {
 // MemoryTypes lists the NUMA nodes and the byte quota of each memory
 // type. A type with no nodes or a zero quota is absent.
 type MemoryTypes struct {
-	DRAMNodes []int
-	CXLNodes  []int
-	DRAMQuota int64
-	CXLQuota  int64
+	DRAMNUMANodes []int
+	CXLNUMANodes  []int
+	DRAMQuota     int64
+	CXLQuota      int64
 }
 
 // TypeUsage is a target usage in bytes per memory type.
@@ -120,12 +120,12 @@ func NewPlan(policy Policy, mem MemoryTypes, waypoints []TypeUsage, minStep, max
 
 // hasDRAM reports whether DRAM has nodes and a quota.
 func (mem MemoryTypes) hasDRAM() bool {
-	return len(mem.DRAMNodes) > 0 && mem.DRAMQuota > 0
+	return len(mem.DRAMNUMANodes) > 0 && mem.DRAMQuota > 0
 }
 
 // hasCXL reports whether CXL has nodes and a quota.
 func (mem MemoryTypes) hasCXL() bool {
-	return len(mem.CXLNodes) > 0 && mem.CXLQuota > 0
+	return len(mem.CXLNUMANodes) > 0 && mem.CXLQuota > 0
 }
 
 // quota returns the total quota of the present memory types.
@@ -149,7 +149,7 @@ func (mem MemoryTypes) validate() error {
 		return fmt.Errorf("no memory type has both nodes and a quota")
 	}
 	seen := make(map[int]bool)
-	for _, node := range append(append([]int{}, mem.DRAMNodes...), mem.CXLNodes...) {
+	for _, node := range append(append([]int{}, mem.DRAMNUMANodes...), mem.CXLNUMANodes...) {
 		if node < 0 {
 			return fmt.Errorf("invalid node %d", node)
 		}
@@ -179,10 +179,10 @@ func spread(nodes []int, total int64) NodeMem {
 func typeWaypoint(mem MemoryTypes, usage TypeUsage) NodeMem {
 	nm := NodeMem{}
 	if mem.hasDRAM() {
-		maps.Copy(nm, spread(mem.DRAMNodes, usage.DRAM))
+		maps.Copy(nm, spread(mem.DRAMNUMANodes, usage.DRAM))
 	}
 	if mem.hasCXL() {
-		maps.Copy(nm, spread(mem.CXLNodes, usage.CXL))
+		maps.Copy(nm, spread(mem.CXLNUMANodes, usage.CXL))
 	}
 	return nm
 }

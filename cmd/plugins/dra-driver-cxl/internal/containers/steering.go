@@ -72,14 +72,14 @@ var policies = map[string]steering.Policy{
 // DRAM nor CXL nodes. Policy auto is first-cxl for CXL nodes only,
 // first-dram for DRAM nodes only, and start-interleaved for both.
 func steeringPolicy(s *config.Steering, mem steering.MemoryTypes) (steering.Policy, bool) {
-	if s == nil || (len(mem.DRAMNodes) == 0 && len(mem.CXLNodes) == 0) {
+	if s == nil || (len(mem.DRAMNUMANodes) == 0 && len(mem.CXLNUMANodes) == 0) {
 		return 0, false
 	}
 	if s.Policy == config.PolicyAuto {
 		switch {
-		case len(mem.CXLNodes) == 0:
+		case len(mem.CXLNUMANodes) == 0:
 			return steering.PolicyFirstDRAM, true
-		case len(mem.DRAMNodes) == 0:
+		case len(mem.DRAMNUMANodes) == 0:
 			return steering.PolicyFirstCXL, true
 		}
 		return steering.PolicyStartInterleaved, true

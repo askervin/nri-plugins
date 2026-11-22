@@ -155,7 +155,7 @@ func TestStartFailsClosed(t *testing.T) {
 	if !mpolinject.Supported {
 		t.Skip(mpolinject.ErrUnsupported)
 	}
-	plan, err := NewPlan(PolicyFirstCXL, MemoryTypes{CXLNodes: []int{1}, CXLQuota: 64 * MiB}, nil, 0, 0)
+	plan, err := NewPlan(PolicyFirstCXL, MemoryTypes{CXLNUMANodes: []int{1}, CXLQuota: 64 * MiB}, nil, 0, 0)
 	require.NoError(t, err)
 	permitted := cpuset.New(0, 1)
 	sys := writeNodes(t, "0", "")
@@ -226,7 +226,7 @@ func TestPastLastWaypoint(t *testing.T) {
 		return append([]string(nil), calls...)
 	}
 
-	plan, err := NewPlan(PolicyFirstDRAM, MemoryTypes{DRAMNodes: []int{0}, CXLNodes: []int{1}, DRAMQuota: 8 * MiB, CXLQuota: 8 * MiB},
+	plan, err := NewPlan(PolicyFirstDRAM, MemoryTypes{DRAMNUMANodes: []int{0}, CXLNUMANodes: []int{1}, DRAMQuota: 8 * MiB, CXLQuota: 8 * MiB},
 		nil, 0, 0)
 	require.NoError(t, err)
 	cg := fakeCgroup(t, "max", "")
@@ -281,7 +281,7 @@ func TestPolicyRefused(t *testing.T) {
 		return nil
 	}
 	waitTimeout = 10 * time.Millisecond
-	plan, err := NewPlan(PolicyFirstCXL, MemoryTypes{CXLNodes: []int{1}, CXLQuota: 64 * MiB}, nil, 0, 0)
+	plan, err := NewPlan(PolicyFirstCXL, MemoryTypes{CXLNUMANodes: []int{1}, CXLQuota: 64 * MiB}, nil, 0, 0)
 	require.NoError(t, err)
 	cg := fakeCgroup(t, "max", "")
 	ended := make(chan error, 1)
@@ -317,7 +317,7 @@ func TestCgroupGone(t *testing.T) {
 	t.Cleanup(func() { setMemoryPolicy, waitTimeout = oldSet, oldWait })
 	setMemoryPolicy = func([]int, int, []int) error { return nil }
 	waitTimeout = 10 * time.Millisecond
-	plan, err := NewPlan(PolicyFirstCXL, MemoryTypes{CXLNodes: []int{1}, CXLQuota: 64 * MiB}, nil, 0, 0)
+	plan, err := NewPlan(PolicyFirstCXL, MemoryTypes{CXLNUMANodes: []int{1}, CXLQuota: 64 * MiB}, nil, 0, 0)
 	require.NoError(t, err)
 	cg := fakeCgroup(t, "max", "")
 	m, err := New(cg, plan, cpuset.New(0, 1), WithSysRoot(writeNodes(t, "0", "")))

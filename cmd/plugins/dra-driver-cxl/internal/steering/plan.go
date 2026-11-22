@@ -175,9 +175,9 @@ const maxLaggingNodes = 16
 // waypoint to the next waypoint.
 //
 // Parameters:
-//   - ctp: current usage per node.
-//   - pwp: previous waypoint, the last one that has been reached.
-//   - nwp: next waypoint. Must be non-decreasing from pwp on every node.
+//   - usage: current usage per node.
+//   - from: previous waypoint, the last one that has been reached.
+//   - to: next waypoint. At least from on every node.
 //   - minStep: smallest allowed amount of new allocations.
 //   - maxStep: largest allowed amount of new allocations.
 //
@@ -187,37 +187,37 @@ const maxLaggingNodes = 16
 // the next waypoint by at least its share of minStep. New allocations
 // are assumed to spread evenly over the returned nodes. If no memory
 // is freed while the amount is allocated, no returned node exceeds
-// its usage in nwp.
-func nextStep(ctp, pwp, nwp NodeMem, minStep, maxStep int64) ([]int, int64, error) {
-	if ctp == nil || pwp == nil || nwp == nil {
+// its usage in to (the next waypoint).
+func nextStep(usage, from, to NodeMem, minStep, maxStep int64) ([]int, int64, error) {
+	if usage == nil || from == nil || to == nil {
 		return nil, 0, fmt.Errorf("nextStep: nil input")
 	}
 
 	nodeSet := make(map[int]bool)
-	for n := range ctp {
+	for n := range usage {
 		nodeSet[n] = true
 	}
-	for n := range pwp {
+	for n := range from {
 		nodeSet[n] = true
 	}
-	for n := range nwp {
+	for n := range to {
 		nodeSet[n] = true
 	}
 	for n := range nodeSet {
-		if nwp[n] < pwp[n] {
-			return nil, 0, fmt.Errorf("nextStep: nwp[%d]=%d < pwp[%d]=%d: waypoints must be non-decreasing",
-				n, nwp[n], n, pwp[n])
+		if to[n] < from[n] {
+			return nil, 0, fmt.Errorf("nextStep: to[%d]=%d < from[%d]=%d: waypoints must be non-decreasing",
+				n, to[n], n, from[n])
 		}
 	}
 
-	// v = nwp - pwp is the direction of the segment, c = ctp - pwp
+	// v = to - from is the direction of the segment, c = usage - from
 	// is the position relative to its start.
 	v := make(map[int]float64, len(nodeSet))
 	c := make(map[int]float64, len(nodeSet))
 	var vDotV, cDotV, cDotC float64
 	for n := range nodeSet {
-		v[n] = float64(nwp[n] - pwp[n])
-		c[n] = float64(ctp[n] - pwp[n])
+		v[n] = float64(to[n] - from[n])
+		c[n] = float64(usage[n] - from[n])
 		vDotV += v[n] * v[n]
 		cDotV += c[n] * v[n]
 		cDotC += c[n] * c[n]
@@ -231,7 +231,7 @@ func nextStep(ctp, pwp, nwp NodeMem, minStep, maxStep int64) ([]int, int64, erro
 	}
 	var lagging []nodeGap
 	for n := range nodeSet {
-		if gap := nwp[n] - ctp[n]; gap > 0 {
+		if gap := to[n] - usage[n]; gap > 0 {
 			lagging = append(lagging, nodeGap{n, gap})
 		}
 	}
@@ -248,7 +248,7 @@ func nextStep(ctp, pwp, nwp NodeMem, minStep, maxStep int64) ([]int, int64, erro
 	// Drop nodes that cannot fit minStep even when it is shared by
 	// all remaining lagging nodes. With k lagging nodes and even
 	// spreading, each gets at least minStep/k bytes. If the smallest
-	// gap is below that, the node would exceed nwp in any subset of
+	// gap is below that, the node would exceed to in any subset of
 	// size k, and also in any smaller subset where its share grows.
 	for len(lagging) > 0 {
 		k := int64(len(lagging))
@@ -292,7 +292,7 @@ func nextStep(ctp, pwp, nwp NodeMem, minStep, maxStep int64) ([]int, int64, erro
 		}
 
 		// The amount L that minimizes the squared distance from
-		// (ctp + L/k on the subset) to the segment line.
+		// (usage + L/k on the subset) to the segment line.
 		fnumNodes := float64(numNodes)
 		denom := fnumNodes*vDotV - sumV*sumV
 		var optStep float64
@@ -307,7 +307,7 @@ func nextStep(ctp, pwp, nwp NodeMem, minStep, maxStep int64) ([]int, int64, erro
 		}
 		step := int64(math.Round(math.Max(float64(lower), math.Min(optStep, float64(upper)))))
 
-		// Squared distance from q = ctp + step/k on the subset to
+		// Squared distance from q = usage + step/k on the subset to
 		// the segment line: |q|^2 - (q.v)^2/|v|^2.
 		perNode := float64(step) / fnumNodes
 		qDotQ := cDotC + 2*perNode*sumC + fnumNodes*perNode*perNode
@@ -343,13 +343,13 @@ func nextStep(ctp, pwp, nwp NodeMem, minStep, maxStep int64) ([]int, int64, erro
 // waypointReached reports whether the usage has reached the waypoint:
 // some node exceeds its target, or the total gap of the lagging nodes
 // is smaller than minStep so that no step fits before the waypoint.
-func waypointReached(ctp, wpUsage NodeMem, minStep int64) bool {
+func waypointReached(usage, wpUsage NodeMem, minStep int64) bool {
 	var remainingGap int64
 	for n, target := range wpUsage {
-		if ctp[n] > target {
+		if usage[n] > target {
 			return true
 		}
-		remainingGap += target - ctp[n]
+		remainingGap += target - usage[n]
 	}
 	return remainingGap < minStep
 }
