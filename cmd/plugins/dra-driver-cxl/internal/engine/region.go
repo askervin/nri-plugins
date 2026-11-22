@@ -279,7 +279,7 @@ func createdRegion(r *state.Records, req *GrantRequest, noted, created string, m
 		return err
 	}
 	reg.Name, reg.NotedName = created, ""
-	reg.NumaNode = state.NumaNodePtr(ri.NUMANode)
+	reg.NUMANode = state.NUMANodePtr(ri.NUMANode)
 	reg.Size = ri.Range.Size()
 	if m := r.Memdev(req.Serial); m != nil {
 		m.Regions = addRef(removeRef(m.Regions, state.RegionRef(noted)), state.RegionRef(created))
@@ -421,7 +421,7 @@ func (e *Engine) recordWhole(ctx context.Context, req *GrantRequest, region, dax
 		if reg.DaxDevice(dax) != nil {
 			return nil
 		}
-		d := state.DaxDevice{Name: dax, State: state.DaxAbsent, Whole: true}
+		d := state.DaxDevice{Name: dax, State: state.DaxNone, Whole: true}
 		to := state.DaxKmemOffline
 		if driver == kernel.DriverDeviceDax {
 			to = state.DaxDeviceDax
@@ -472,7 +472,7 @@ func bindRecord(d *state.DaxDevice, driver string) error {
 	switch d.State {
 	case state.DaxKmemOffline, state.DaxSeed, state.DaxDeviceDax:
 		// unbound from the other driver first
-		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxSized, state.TriggerPrepare); err != nil {
+		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxUnbound, state.TriggerPrepare); err != nil {
 			return err
 		}
 	}
@@ -558,7 +558,7 @@ func (e *Engine) onlineMemory(ctx context.Context, region, dax string, blocks []
 	return node, e.commit(ctx, func(r *state.Records) error {
 		reg := r.Region(state.RegionRef(region))
 		d := reg.DaxDevice(dax)
-		reg.NumaNode = state.NumaNodePtr(node)
+		reg.NUMANode = state.NUMANodePtr(node)
 		if d.State == state.DaxKmemOffline {
 			return state.Apply(&state.DaxDeviceTable, &d.State, state.DaxKmemOnline, state.TriggerPrepare)
 		}

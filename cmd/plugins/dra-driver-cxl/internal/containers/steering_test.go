@@ -26,9 +26,9 @@ import (
 	"github.com/containerd/nri/pkg/api"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/steering"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
+	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 )
 
@@ -301,7 +301,7 @@ func TestReviewReleaseAfterDefaultsChange(t *testing.T) {
 	cg := e.proc(101, "kubepods/u1/c1", "0,2", "0,2")
 	steerable(t, cg, "140668928")
 	c1 := testCtr(pod, "c1", "app", 101)
-	c1.Env = append(c1.Env, state.ResultEnvVarName("split", 0)+"=1", state.ResultEnvVarName("split", 2)+"=1")
+	c1.Env = append(c1.Env, cxlapi.ResultMarker("split", 0)+"=1", cxlapi.ResultMarker("split", 2)+"=1")
 	c1.State = api.ContainerState_CONTAINER_RUNNING
 	_, err = e.p.Synchronize(context.Background(), []*api.PodSandbox{pod}, []*api.Container{c1})
 	noErr(t, err)

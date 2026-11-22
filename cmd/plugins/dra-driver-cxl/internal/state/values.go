@@ -67,7 +67,7 @@ const (
 	ModeNUMA  Mode = api.ModeNUMA
 	ModeDax   Mode = api.ModeDax
 	ModeBlock Mode = api.ModeBlock
-	ModeFs    Mode = api.ModeFS
+	ModeFS    Mode = api.ModeFS
 )
 
 // Access is how a node mount maps its file pages: api.AccessDirect or
@@ -129,16 +129,16 @@ func (d DevNumbers) IsZero() bool {
 	return d.Major == 0 && d.Minor == 0
 }
 
-// NumaNodeOf returns the NUMA node p points to, -1 for none.
-func NumaNodeOf(p *int) int {
+// NUMANodeOf returns the NUMA node p points to, -1 for none.
+func NUMANodeOf(p *int) int {
 	if p == nil {
 		return -1
 	}
 	return *p
 }
 
-// NumaNodePtr returns a pointer to the NUMA node n, nil for a negative n.
-func NumaNodePtr(n int) *int {
+// NUMANodePtr returns a pointer to the NUMA node n, nil for a negative n.
+func NUMANodePtr(n int) *int {
 	if n < 0 {
 		return nil
 	}

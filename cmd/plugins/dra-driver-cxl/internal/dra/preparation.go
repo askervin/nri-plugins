@@ -69,7 +69,7 @@ func commit(ctx context.Context, st *store.Store, fn func(doc *store.Document) e
 func preparing(doc *store.Document, driver, uid, claimName, lease string, results []state.Result) error {
 	prep := doc.Preparation(driver, uid)
 	if prep == nil {
-		doc.Preparations = append(doc.Preparations, state.Preparation{UID: uid, Driver: driver, State: state.PreparationUnknown})
+		doc.Preparations = append(doc.Preparations, state.Preparation{UID: uid, Driver: driver, State: state.PreparationNone})
 		prep = &doc.Preparations[len(doc.Preparations)-1]
 	}
 	if prep.State == state.PreparationStale {
@@ -143,7 +143,7 @@ func remove(doc *store.Document, driver, uid string, trigger state.Trigger) erro
 	if prep == nil {
 		return nil
 	}
-	if err := state.Apply(&state.PreparationTable, &prep.State, state.PreparationUnknown, trigger); err != nil {
+	if err := state.Apply(&state.PreparationTable, &prep.State, state.PreparationNone, trigger); err != nil {
 		return err
 	}
 	doc.Preparations = slices.DeleteFunc(doc.Preparations, func(x state.Preparation) bool {
@@ -209,14 +209,14 @@ func unfinishedNodes(r *state.Records, prep *state.Preparation) []int {
 		if g == nil || g.Asked.Mode != state.ModeNUMA {
 			continue
 		}
-		node := state.NumaNodeOf(g.Got.NumaNode)
+		node := state.NUMANodeOf(g.Got.NUMANode)
 		if node < 0 {
 			region := g.Got.Region
 			if region == "" {
 				region = g.Intent.Region
 			}
 			if reg := r.Region(region); reg != nil {
-				node = state.NumaNodeOf(reg.NumaNode)
+				node = state.NUMANodeOf(reg.NUMANode)
 			}
 		}
 		if node >= 0 {
@@ -240,8 +240,8 @@ func NumaNodes(r *state.Records, drivers ...string) []int {
 		switch {
 		case prep.Prepared():
 			for _, res := range prep.Results {
-				if g := grantOf(r, &res); g != nil && g.Asked.Mode == state.ModeNUMA && state.NumaNodeOf(g.Got.NumaNode) >= 0 {
-					nodes = append(nodes, *g.Got.NumaNode)
+				if g := grantOf(r, &res); g != nil && g.Asked.Mode == state.ModeNUMA && state.NUMANodeOf(g.Got.NUMANode) >= 0 {
+					nodes = append(nodes, *g.Got.NUMANode)
 				}
 			}
 		case prep.State == state.PreparationPreparing || prep.State == state.PreparationKept:

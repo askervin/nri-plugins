@@ -64,7 +64,7 @@ func TestCreateContainerDoesNotWaitForTheBroker(t *testing.T) {
 	noErr(t, st.Commit(ctx, store.Durable, func(doc *store.Document) error {
 		doc.Leases = append(doc.Leases, state.Lease{ID: "0000aaaa", Claim: "lc0", Pod: state.PodRef{Namespace: "ns", Name: "pod", UID: "u1"},
 			Container: "app", State: state.LeaseReady, Asked: state.LeaseAsked{Mode: state.ModeNUMA, Size: "256Mi"},
-			Lend: &state.Lend{NumaNode: state.NumaNodePtr(2)}, Created: time.Now().UTC()})
+			Lend: &state.LeaseLend{NUMANode: state.NUMANodePtr(2)}, Created: time.Now().UTC()})
 		return nil
 	}))
 

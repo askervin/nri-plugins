@@ -367,8 +367,8 @@ var localCutScenarios = []cutScenario{
 		specs: []fake.MemdevSpec{{Serial: serialP, Pmem: gib}},
 		setup: func(v *env) { v.formatPmem("mem0", "ext4") },
 		run: func(v *env) {
-			_ = v.prepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
-			_ = v.prepare(localDriver, "r", localPmemReq("r", 0, state.ModeFs, true, ""))
+			_ = v.prepare(localDriver, "w", localPmemReq("w", 0, state.ModeFS, false, ""))
+			_ = v.prepare(localDriver, "r", localPmemReq("r", 0, state.ModeFS, true, ""))
 			_ = v.unprepare(localDriver, "w")
 			_ = v.unprepare(localDriver, "r")
 		},
@@ -378,8 +378,8 @@ var localCutScenarios = []cutScenario{
 		specs: []fake.MemdevSpec{{Serial: serialP, Pmem: gib}},
 		setup: func(v *env) { v.formatPmem("mem0", "erofs") },
 		run: func(v *env) {
-			_ = v.prepare(localDriver, "rc", localPmemReq("rc", 0, state.ModeFs, true, state.AccessCached))
-			_ = v.prepare(localDriver, "rd", localPmemReq("rd", 0, state.ModeFs, true, state.AccessDirect))
+			_ = v.prepare(localDriver, "rc", localPmemReq("rc", 0, state.ModeFS, true, state.AccessCached))
+			_ = v.prepare(localDriver, "rd", localPmemReq("rd", 0, state.ModeFS, true, state.AccessDirect))
 			_ = v.unprepare(localDriver, "rc")
 			_ = v.unprepare(localDriver, "rd")
 		},
@@ -406,7 +406,7 @@ var localCutScenarios = []cutScenario{
 			req.Lend = &state.GrantLend{Lease: "0123abcd", Container: "c"}
 			if v.prepare(localDriver, "comp", req) == nil {
 				if g := v.records().Grant(req.Ref); g != nil {
-					_ = v.e.RecordLend(context.Background(), req.Ref, state.NumaNodeOf(g.Got.NumaNode))
+					_ = v.e.RecordLend(context.Background(), req.Ref, state.NUMANodeOf(g.Got.NUMANode))
 				}
 			}
 			_ = v.unprepare(localDriver, "comp")

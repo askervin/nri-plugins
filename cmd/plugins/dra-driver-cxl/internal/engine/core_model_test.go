@@ -104,17 +104,17 @@ var coreSlots = []coreSlot{
 	{"pdax", mdB, state.ModeDax, false, "pool-dax", false},
 	{"psh0", mdC, state.ModeDax, false, "pool-shared", false},
 	{"psh1", mdC, state.ModeDax, false, "pool-shared", false},
-	{"pfsw", mdQ, state.ModeFs, false, "pool-fs-rw", false},
-	{"pfsr", mdQ, state.ModeFs, true, "pool-fs-ro", false},
+	{"pfsw", mdQ, state.ModeFS, false, "pool-fs-rw", false},
+	{"pfsr", mdQ, state.ModeFS, true, "pool-fs-ro", false},
 	{"lnuma", mdL, state.ModeNUMA, false, "local-numa", false},
 	{"ldax", mdL, state.ModeDax, false, "local-dax", false},
 	{"lsh0", mdS, state.ModeDax, false, "local-shared", false},
 	{"lsh1", mdS, state.ModeDax, false, "local-shared", false},
-	{"lfsw", mdP, state.ModeFs, false, "local-fs-rw", false},
-	{"lfsr", mdP, state.ModeFs, true, "local-fs-ro", false},
+	{"lfsw", mdP, state.ModeFS, false, "local-fs-rw", false},
+	{"lfsr", mdP, state.ModeFS, true, "local-fs-ro", false},
 	{"lblk", mdP, state.ModeBlock, false, "local-block-rw", false},
 	{"cnuma", mdL, state.ModeNUMA, false, "local-numa-companion", true},
-	{"cfsr", mdP, state.ModeFs, true, "local-fs-ro-companion", true},
+	{"cfsr", mdP, state.ModeFS, true, "local-fs-ro-companion", true},
 }
 
 // driver returns the driver of the claims of the slot.
@@ -447,7 +447,7 @@ func unpreparedState(prep state.PreparationState) state.PreparationState {
 // node mount again.
 func (s *coreState) mountsAgain(ca *coreAction) bool {
 	sl := &coreSlots[ca.slot]
-	return ca.verb == "prepare" && s.slots[ca.slot].prep == "" && sl.mode == state.ModeFs && !sl.lease && s.unrestored(sl.md)
+	return ca.verb == "prepare" && s.slots[ca.slot].prep == "" && sl.mode == state.ModeFS && !sl.lease && s.unrestored(sl.md)
 }
 
 // unrestored tells whether a claim of this boot of the memdev is
@@ -477,7 +477,7 @@ func (s *coreState) loseEnabled(md int) bool {
 		if sl.md != md || ss.prep == "" {
 			continue
 		}
-		if sl.lease || sl.mode != state.ModeFs || ss.prep != state.PreparationPrepared || ss.grant != state.GrantRealised {
+		if sl.lease || sl.mode != state.ModeFS || ss.prep != state.PreparationPrepared || ss.grant != state.GrantRealised {
 			return false
 		}
 		n++
@@ -623,7 +623,7 @@ func (s *coreState) usersOf(md int, except ...int) []int {
 // block of this boot has a use of its memdev (blockUses): it needs the
 // device alone (P9c).
 func (s *coreState) nextToBlock(i int) bool {
-	if coreSlots[i].mode != state.ModeFs {
+	if coreSlots[i].mode != state.ModeFS {
 		return false
 	}
 	for o, ss := range s.slots {
@@ -732,7 +732,7 @@ func (s *coreState) detach(md int) {
 func (s *coreState) fsUsers(md int) (users, writer bool) {
 	for i, ss := range s.slots {
 		sl := &coreSlots[i]
-		if sl.md != md || sl.mode != state.ModeFs || ss.prep == state.PreparationStale {
+		if sl.md != md || sl.mode != state.ModeFS || ss.prep == state.PreparationStale {
 			continue
 		}
 		if ss.grant == state.GrantRealised || ss.grant == state.GrantReleasing && ss.user {
@@ -885,7 +885,7 @@ func (s *coreState) prepareOutcome(i int) (*coreState, int) {
 	if sl.mode == state.ModeNUMA {
 		m.online, w.slots[i].online = true, true
 	}
-	if sl.mode == state.ModeFs {
+	if sl.mode == state.ModeFS {
 		// joins the node mount as it is; a writer makes it read-write
 		switch {
 		case !sl.readOnly:
@@ -944,7 +944,7 @@ func (w *coreState) rollback(i, made int, class string) {
 	if coreSlots[i].mode == state.ModeNUMA {
 		w.offline(i)
 	}
-	if coreSlots[i].mode == state.ModeFs {
+	if coreSlots[i].mode == state.ModeFS {
 		m.mount = w.mountAfter(md)
 	}
 	if len(w.regionUsers(md)) > 0 {
@@ -1361,7 +1361,7 @@ func (s *coreState) unprepareOutcome(i int) *coreState {
 	if sl.mode == state.ModeNUMA {
 		w.offline(i)
 	}
-	if sl.mode == state.ModeFs {
+	if sl.mode == state.ModeFS {
 		m.mount = w.mountAfter(md)
 	}
 	if len(w.regionUsers(md)) > 0 || m.foreign {
@@ -1406,13 +1406,13 @@ func (s *coreState) failedRelease(i int, fail string) *coreState {
 	// device of a region lists every grant of the memdev until the region
 	// goes (5.2)
 	d := &coreMemdevs[sl.md]
-	if sl.mode == state.ModeFs || d.source == state.SourceLocal && d.kind == state.KindExclusive {
+	if sl.mode == state.ModeFS || d.source == state.SourceLocal && d.kind == state.KindExclusive {
 		ss.user = false
 	}
 	if sl.mode == state.ModeNUMA {
 		w.offline(i)
 	}
-	if sl.mode == state.ModeFs {
+	if sl.mode == state.ModeFS {
 		m.mount = w.mountAfter(sl.md)
 	}
 	if fail == "destroy-region" {
@@ -1551,7 +1551,7 @@ func (w *coreState) rebooted() {
 }
 
 // restarted returns the states after a start of the process (03-design 5.6
-// in its order; 03a T1-T4 on a-recover): memdevs absent at load are
+// in its order; 03a T1-T4 on recover): memdevs absent at load are
 // GONE (T3); a region of ours recorded but gone is forgotten; the grants of
 // cut Prepares (PREPARING) and the kept grants of KEPT claims are released
 // per the recovery column of the release policy (releaseKept, releaseCut);
@@ -1564,7 +1564,7 @@ func (w *coreState) restarted() []*coreState {
 	for i := range w.slots {
 		if w.slots[i].prep == state.PreparationKept && w.slots[i].grant == "" {
 			// an Unprepare cut after it released the kept grant: nothing
-			// is kept for the claim (03a T1 KEPT -> UNKNOWN on a-recover)
+			// is kept for the claim (03a T1 KEPT -> UNKNOWN on recover)
 			w.slots[i] = coreSlotState{}
 		}
 	}
@@ -1589,7 +1589,7 @@ func (w *coreState) restarted() []*coreState {
 	}
 	if coreFront {
 		// the node mounts of unrestored claims mounted again (03a T1
-		// PREPARED_UNRESTORED -> PREPARED on a-recover, D-31)
+		// PREPARED_UNRESTORED -> PREPARED on recover, D-31)
 		for md := range w.mds {
 			for i := range w.slots {
 				if coreSlots[i].md == md && w.slots[i].prep == state.PreparationUnrestored {
@@ -1633,7 +1633,7 @@ func (w *coreState) restarted() []*coreState {
 
 // releaseKept returns the states after the start released the KEPT claims
 // as the grants of cut Prepares are (5.6; the code table's KEPT -> UNKNOWN on
-// a-recover, D8): a KEPT claim whose region another grant holds, or with a
+// recover, D8): a KEPT claim whose region another grant holds, or with a
 // cut Prepare's grant on its memdev, is not the region's last holder and is
 // released; one that holds the region alone goes by the recovery column of
 // the release policy: kept for the claim below newer regions in order
@@ -1740,7 +1740,7 @@ func (w *coreState) releaseCut(i int) []*coreState {
 	if coreSlots[i].mode == state.ModeNUMA {
 		r.offline(i)
 	}
-	if coreSlots[i].mode == state.ModeFs {
+	if coreSlots[i].mode == state.ModeFS {
 		m.mount = r.mountAfter(md)
 	}
 	// the KEPT claims of the memdev that the start did not release go with

@@ -318,7 +318,7 @@ func TestValidFSPath(t *testing.T) {
 		"/dev": false, "/dev/pmem0": false, "/proc/1": false, "/sys": false, "/run/cxl": false, "/run/cxl/fs/x": false,
 		"/var/run/cxl": false, "/var/run/cxl/fs": false, "/var/run/cxl-fs": true,
 	} {
-		if got := validFsPath(p); got != want {
+		if got := validFSPath(p); got != want {
 			t.Errorf("validFsPath(%q) = %v", p, got)
 		}
 	}

@@ -77,7 +77,7 @@ const (
 	// HeldClaimsNotListable: the pool claims of the node cannot be listed.
 	HeldClaimsNotListable HeldReason = "claims not listable"
 	// HeldLost: the record of the serial was lost.
-	HeldLost HeldReason = "file lost"
+	HeldLost HeldReason = "store lost"
 )
 
 // ProvenanceState is the state of a Provenance.
@@ -121,7 +121,7 @@ var ProvenanceTable = Table[ProvenanceState]{
 		},
 		{
 			From: fsm.List(ProvenanceHeld), To: ProvenanceLocal, Triggers: fsm.List(TriggerExpire),
-			When: "the hold expired (5 min) and the reason was: list failing, pool missing for less than 1 h, file " +
+			When: "the hold expired (5 min) and the reason was: list failing, pool missing for less than 1 h, store " +
 				"lost, claims not listable",
 			Guard:   "not \"never listed\", not \"attaching\"",
 			Effects: "commit (d); published",

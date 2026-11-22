@@ -72,7 +72,7 @@ const (
 	GrantRealised   GrantState = "REALISED"
 	GrantUnrestored GrantState = "REALISED_UNRESTORED"
 	GrantReleasing  GrantState = "RELEASING"
-	GrantReleased   GrantState = "RELEASED"
+	GrantNone       GrantState = "RELEASED"
 )
 
 // Asked is what an allocation result and the device section of its
@@ -86,8 +86,8 @@ type Asked struct {
 	ReadOnly bool      `json:"readOnly,omitempty"`
 	// Access of mode fs, "" for the default of the filesystem type.
 	Access Access `json:"access,omitempty"`
-	// FsType of mode fs, "" to detect it.
-	FsType string `json:"fsType,omitempty"`
+	// FSType of mode fs, "" to detect it.
+	FSType string `json:"fsType,omitempty"`
 	// Path of mode fs is the directory in the containers.
 	Path string `json:"path,omitempty"`
 	// Size is the size in bytes that the allocation result asks for.
@@ -137,9 +137,9 @@ type Got struct {
 	// Dax is the name of the dax device of the grant in the region's
 	// DaxDevices.
 	Dax string `json:"dax,omitempty"`
-	// NumaNode is the NUMA node of the memory of a numa grant (-1 when it
+	// NUMANode is the NUMA node of the memory of a numa grant (-1 when it
 	// was not known).
-	NumaNode *int `json:"numaNode,omitempty"`
+	NUMANode *int `json:"numaNode,omitempty"`
 	// Size is the bytes that the grant got.
 	Size        uint64       `json:"size,omitempty"`
 	Namespace   string       `json:"namespace,omitempty"`
@@ -164,11 +164,11 @@ type GrantLend struct {
 	Lease     string `json:"lease"`
 	Pod       PodRef `json:"pod"`
 	Container string `json:"container"`
-	// NumaNode is the lent NUMA node of a numa lease.
-	NumaNode *int `json:"numaNode,omitempty"`
-	// FsDir and Name are the directory of the fs leases of the lease
+	// NUMANode is the lent NUMA node of a numa lease.
+	NUMANode *int `json:"numaNode,omitempty"`
+	// FSDir and Name are the directory of the fs leases of the lease
 	// claim and the mount point of the lease in it.
-	FsDir string `json:"fsDir,omitempty"`
+	FSDir string `json:"fsDir,omitempty"`
 	Name  string `json:"name,omitempty"`
 }
 
@@ -214,7 +214,7 @@ var grantStored = fsm.List(GrantJournaled, GrantRealising, GrantRealised, GrantU
 var GrantTable = Table[GrantState]{
 	Object: "Grant",
 	Field:  "State",
-	States: fsm.List(GrantRequested, GrantJournaled, GrantRealising, GrantRealised, GrantUnrestored, GrantReleasing, GrantReleased),
+	States: fsm.List(GrantRequested, GrantJournaled, GrantRealising, GrantRealised, GrantUnrestored, GrantReleasing, GrantNone),
 	Rows: []Transition[GrantState]{
 		{
 			From: fsm.List(GrantRequested), To: GrantJournaled, Triggers: fsm.List(TriggerPrepare),
@@ -262,7 +262,7 @@ var GrantTable = Table[GrantState]{
 			Effects: "commit (d)",
 		},
 		{
-			From: fsm.List(GrantReleasing), To: GrantReleased, Triggers: releasers,
+			From: fsm.List(GrantReleasing), To: GrantNone, Triggers: releasers,
 			When: "mounts unmounted or downgraded, blocks offline, dax device deleted, the region per Policy " +
 				"when the grant was its last user",
 			Effects: "commit (d) removing the grant; the Memdev's grants and the users of the region's objects " +
@@ -310,14 +310,14 @@ var GrantTable = Table[GrantState]{
 			Effects: "commit (d); a numa companion's lend is left to kubelet",
 		},
 		{
-			From: fsm.List(GrantJournaled, GrantRealising), To: GrantReleased, Triggers: fsm.List(TriggerRecover),
+			From: fsm.List(GrantJournaled, GrantRealising), To: GrantNone, Triggers: fsm.List(TriggerRecover),
 			When:    "the recovery of a cut Prepare released the objects named by Got and by Intent",
 			Guard:   "Policy (trigger recovery) says destroy",
 			Effects: "commit (d)",
 		},
 		{
 			From:     fsm.List(GrantJournaled, GrantRealising, GrantRealised, GrantUnrestored),
-			To:       GrantReleased,
+			To:       GrantNone,
 			Triggers: fsm.List(TriggerPrepare, TriggerUnprepare),
 			When: "a Prepare again or an Unprepare of a PREPARED_STALE preparation (a RELEASING grant goes by the " +
 				"release row)",
@@ -325,14 +325,14 @@ var GrantTable = Table[GrantState]{
 			Effects: "dropped in the commit (d) of the preparation; an Unprepare releases by serial first",
 		},
 		{
-			From: grantStored, To: GrantReleased, Triggers: fsm.List(TriggerLoad),
+			From: grantStored, To: GrantNone, Triggers: fsm.List(TriggerLoad),
 			When:    "its preparation of another boot is dropped at the load (the driver drops such records)",
 			Effects: "dropped with the preparation, commit (l)",
 		},
 	},
 	Refused: []Refusal[GrantState]{
 		{From: fsm.List(GrantRequested), To: fsm.List(GrantRealising, GrantRealised), Why: "nothing is created without the intent"},
-		{From: fsm.List(GrantReleased), Why: "a released grant is gone"},
+		{From: fsm.List(GrantNone), Why: "a released grant is gone"},
 	},
 }
 

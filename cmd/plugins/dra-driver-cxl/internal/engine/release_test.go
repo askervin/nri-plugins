@@ -44,7 +44,7 @@ func twoPmemEnv(t *testing.T) *env {
 
 // qGrant returns the request of a reader of mode fs on serialQ.
 func qGrant(uid string, n int) GrantRequest {
-	return fsReq(poolReq(uid, n, serialQ, state.ModeFs, state.KindPersistent), true, "")
+	return fsReq(poolReq(uid, n, serialQ, state.ModeFS, state.KindPersistent), true, "")
 }
 
 // The grants of a memdev are released when the first of them is gone by
@@ -168,7 +168,7 @@ func TestReleaseRecordedBlockDeviceOfAnother(t *testing.T) {
 		t.Fatal("the release succeeded")
 	}
 	v.check("release failed")
-	v.mustPrepare(localDriver, "p", localPmemReq("p", 0, state.ModeFs, false, ""))
+	v.mustPrepare(localDriver, "p", localPmemReq("p", 0, state.ModeFS, false, ""))
 	if bd := v.grant("p", 0).Got.BlockDevice; bd.Name != recorded.Name || bd.Dev == recorded.Dev {
 		t.Fatalf("block device of p %+v, of q %+v: not the same name with other numbers", bd, recorded)
 	}

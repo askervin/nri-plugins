@@ -42,7 +42,7 @@ func TestLocalSliced(t *testing.T) {
 	at := v.onlineAtFence()
 	v.mustPrepare(localDriver, "n1", localReq("n1", 0, serialL, state.ModeNUMA, state.KindExclusive, 256*mib))
 	g := v.grant("n1", 0)
-	if g.Got.Dax != "dax0.0" || state.NumaNodeOf(g.Got.NumaNode) != 2 || v.f.DaxDriver("dax0.0") != kernel.DriverKmem {
+	if g.Got.Dax != "dax0.0" || state.NUMANodeOf(g.Got.NUMANode) != 2 || v.f.DaxDriver("dax0.0") != kernel.DriverKmem {
 		t.Fatalf("numa part %+v", g.Got)
 	}
 	if !slices.Equal(v.fenced, []int{2}) || !slices.Equal(*at, []string{"2: []"}) {
@@ -583,7 +583,7 @@ func TestLocalReleaseOrder(t *testing.T) {
 // is refused before anything is touched, with the words of the refusal.
 func TestLocalKindConflicts(t *testing.T) {
 	sharedPmem := func(uid string, shared bool) GrantRequest {
-		req := localPmemReq(uid, 0, state.ModeFs, true, "")
+		req := localPmemReq(uid, 0, state.ModeFS, true, "")
 		req.Facts.Shared = shared
 		return req
 	}
@@ -742,8 +742,8 @@ func TestLocalLogLines(t *testing.T) {
 		pmem := filepath.Join(v.f.DevRoot(), "pmem0")
 		const memdev = "engine: local memdev 0x91 (mem0): "
 		logs := klogtest.Capture(t, 3)
-		v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
-		v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFs, true, ""))
+		v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFS, false, ""))
+		v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFS, true, ""))
 		v.mustUnprepare(localDriver, "w")
 		v.restart()
 		above := rawRegion(t, v, "mem1")
@@ -764,7 +764,7 @@ func TestLocalLogLines(t *testing.T) {
 		v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib})
 		v.formatPmem("mem0", "ext4")
 		logs := klogtest.Capture(t, 3)
-		v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
+		v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFS, false, ""))
 		wantMessages(t, logs(), "engine: local memdev 0x91 (mem0): created region0 (pmem, nvdimm region0) in <t>")
 		v.mustUnprepare(localDriver, "w")
 		v.clean("unprepared")
@@ -784,7 +784,7 @@ func TestLocalSettle(t *testing.T) {
 		}
 		v.f.PmemDelay = 200 * time.Millisecond
 		start := time.Now()
-		err := v.prepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
+		err := v.prepare(localDriver, "w", localPmemReq("w", 0, state.ModeFS, false, ""))
 		if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 2*time.Second {
 			t.Fatalf("error %v after %v", err, time.Since(start))
 		}
@@ -865,7 +865,7 @@ func TestLocalCutCompanionPart(t *testing.T) {
 		logs := klogtest.Capture(t, 3)
 		v.mustPrepare(localDriver, "comp", companion())
 		g := v.grant("comp", 0)
-		if g.Got.Dax != dax || state.NumaNodeOf(g.Got.NumaNode) != 2 || g.State != state.GrantRealised {
+		if g.Got.Dax != dax || state.NUMANodeOf(g.Got.NUMANode) != 2 || g.State != state.GrantRealised {
 			t.Fatalf("grant %+v, the part was %s", g, dax)
 		}
 		if got := v.f.Kernel().DaxDevices("region0"); !slices.Equal(got, devices) {

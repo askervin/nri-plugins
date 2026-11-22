@@ -217,8 +217,8 @@ func (b *Broker) companionRequest(l *state.Lease) (*resourcev1.DeviceRequest, []
 // (no path: the companion pod gets no mount).
 func companionConfig(l *state.Lease, driver string, requests []string) (resourcev1.DeviceClaimConfiguration, error) {
 	dev := &config.Device{Mode: string(l.Asked.Mode), ReadOnly: ptr(readOnly(l))}
-	if l.Asked.Mode == state.ModeFs {
-		dev.Access, dev.FSType = string(l.Asked.Access), l.Asked.FsType
+	if l.Asked.Mode == state.ModeFS {
+		dev.Access, dev.FSType = string(l.Asked.Access), l.Asked.FSType
 	}
 	cfg := &config.MemoryConfig{APIVersion: config.APIVersion, Kind: config.Kind, Device: dev}
 	params, err := json.Marshal(cfg)
@@ -365,7 +365,7 @@ func (b *Broker) CompanionSpecHash(id string) (string, bool) {
 // namespace and owner pod those of the requester), commits the lease
 // LENDING and returns the lend of the requester's container, with the
 // filesystem directory of the lease claim and the name of an fs lease.
-func (b *Broker) OnLending(id string, claim *resourcev1.ResourceClaim) (*lend.Lend, error) {
+func (b *Broker) OnLending(id string, claim *resourcev1.ResourceClaim) (*lend.Companion, error) {
 	l, rec, err := b.lending(b.records(), id, claim)
 	switch {
 	case err != nil:
@@ -397,7 +397,7 @@ func (b *Broker) OnLending(id string, claim *resourcev1.ResourceClaim) (*lend.Le
 // lending returns the lease id of the records whose companion the claim is,
 // if it is CREATING, PENDING, LENDING or READY, and the lend of the
 // requester's container.
-func (b *Broker) lending(r *state.Records, id string, claim *resourcev1.ResourceClaim) (*state.Lease, *lend.Lend, error) {
+func (b *Broker) lending(r *state.Records, id string, claim *resourcev1.ResourceClaim) (*state.Lease, *lend.Companion, error) {
 	l := r.Lease(id)
 	if l == nil || claim.Name != CompanionName(id) || claim.Namespace != l.Pod.Namespace || !ownedBy(claim, l.Pod.UID) {
 		return nil, nil, fmt.Errorf("claim %s/%s: not the companion of lease %s", claim.Namespace, claim.Name, id)
@@ -407,10 +407,10 @@ func (b *Broker) lending(r *state.Records, id string, claim *resourcev1.Resource
 	default:
 		return nil, nil, fmt.Errorf("lease %s is %s", l.ID, stateName(l.State))
 	}
-	rec := &lend.Lend{Lease: id, Pod: l.Pod, Container: l.Container}
-	if l.Asked.Mode == state.ModeFs {
+	rec := &lend.Companion{Lease: id, Pod: l.Pod, Container: l.Container}
+	if l.Asked.Mode == state.ModeFS {
 		if lc := r.LeaseClaim(l.Claim); lc != nil {
-			rec.FsDir = b.leaseFsDir(lc.UID)
+			rec.FSDir = b.leaseFsDir(lc.UID)
 		}
 		rec.Name = l.Asked.Name
 	}
@@ -448,7 +448,7 @@ func (b *Broker) PreparedStep(id string, source state.Source, devs []state.Devic
 			return
 		}
 		d := devs[0]
-		if mode := state.Mode(d.Mode); (mode == state.ModeFs) != (l.Asked.Mode == state.ModeFs) || (mode == state.ModeBlock) != (l.Asked.Mode == state.ModeBlock) {
+		if mode := state.Mode(d.Mode); (mode == state.ModeFS) != (l.Asked.Mode == state.ModeFS) || (mode == state.ModeBlock) != (l.Asked.Mode == state.ModeBlock) {
 			mismatch = true
 			if apply(l, state.LeaseFailed, state.TriggerOnPrepared) {
 				l.Error = fmt.Sprintf("companion prepared mode %s, lease is mode %s", d.Mode, l.Asked.Mode)
@@ -476,7 +476,7 @@ func (b *Broker) PreparedStep(id string, source state.Source, devs []state.Devic
 		case ready != nil:
 			l, g := ready, ready.Got
 			klog.Infof("lease broker: lease %s: Ready (source %s, serial %s, mode %s, read-only %v, node %d, dax %q, block %q, access %q, fs %q, path %q, %d bytes)",
-				l.ID, g.Source, g.Serial, l.Asked.Mode, readOnly(l), numaNodeOf(l), g.Dax, g.Block, accessOf(l), fsTypeOf(l), g.Path, g.Bytes)
+				l.ID, g.Source, g.Serial, l.Asked.Mode, readOnly(l), numaNodeOf(l), g.Dax, g.Block, accessOf(l), fsTypeOf(l), g.Path, g.Size)
 		}
 	}
 	return step, after
@@ -485,8 +485,8 @@ func (b *Broker) PreparedStep(id string, source state.Source, devs []state.Devic
 // gotOf returns what the prepared device gives a lease of the records and
 // what the lease lends: the NUMA node of a numa lease, the bind of an fs
 // lease in the filesystem directory of its lease claim under fsRoot.
-func gotOf(r *state.Records, l *state.Lease, source state.Source, d *state.DeviceInfo, fsRoot string) (*state.LeaseGot, *state.Lend) {
-	g := &state.LeaseGot{Source: source, Serial: d.Serial, Bytes: d.TotalBytes}
+func gotOf(r *state.Records, l *state.Lease, source state.Source, d *state.DeviceInfo, fsRoot string) (*state.LeaseGot, *state.LeaseLend) {
+	g := &state.LeaseGot{Source: source, Serial: d.Serial, Size: d.TotalBytes}
 	if api.PersistentMode(d.Mode) {
 		// the attribute shared of the device, whatever the share
 		g.SharedDevice = d.Shared
@@ -497,19 +497,19 @@ func gotOf(r *state.Records, l *state.Lease, source state.Source, d *state.Devic
 	case api.ModeDax:
 		g.Dax = d.DaxDevice
 	case api.ModeFS:
-		g.Access, g.FsType, g.Path = state.Access(d.Access), d.FsType, api.FSDir+"/"+l.Asked.Name
+		g.Access, g.FSType, g.Path = state.Access(d.Access), d.FSType, api.FSDir+"/"+l.Asked.Name
 		fsDir := ""
 		if lc := r.LeaseClaim(l.Claim); lc != nil {
 			fsDir = filepath.Join(fsRoot, lc.UID)
 		}
 		if target := fsBindTarget(fsDir, l.Asked.Name); target != "" {
-			return g, &state.Lend{BindTarget: target}
+			return g, &state.LeaseLend{BindTarget: target}
 		}
 	case api.ModeBlock:
 		g.Block = d.BlockDevice
 	default:
 		if len(d.NUMANodes) > 0 && d.NUMANodes[0] >= 0 {
-			return g, &state.Lend{NumaNode: state.NumaNodePtr(d.NUMANodes[0])}
+			return g, &state.LeaseLend{NUMANode: state.NUMANodePtr(d.NUMANodes[0])}
 		}
 	}
 	return g, nil

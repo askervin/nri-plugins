@@ -151,10 +151,10 @@ func accessOf(l *state.Lease) state.Access {
 }
 
 func fsTypeOf(l *state.Lease) string {
-	if g := got(l); g.FsType != "" {
-		return g.FsType
+	if g := got(l); g.FSType != "" {
+		return g.FSType
 	}
-	return l.Asked.FsType
+	return l.Asked.FSType
 }
 
 // numaNodeOf returns the lent NUMA node of a lease, -1 for none.
@@ -162,13 +162,13 @@ func numaNodeOf(l *state.Lease) int {
 	if l.Lend == nil {
 		return -1
 	}
-	return state.NumaNodeOf(l.Lend.NumaNode)
+	return state.NUMANodeOf(l.Lend.NUMANode)
 }
 
 // readOnly tells whether a lease allows reads only: an fs lease unless it
 // is read-write.
 func readOnly(l *state.Lease) bool {
-	return l.Asked.ReadOnly || (l.Asked.Mode == state.ModeFs && !l.Asked.ReadWrite)
+	return l.Asked.ReadOnly || (l.Asked.Mode == state.ModeFS && !l.Asked.ReadWrite)
 }
 
 // memory returns what a Ready lease gives its container, false before.
@@ -192,14 +192,14 @@ func memory(l *state.Lease) (api.Memory, bool) {
 		Serial:   g.Serial.String(),
 		Shared:   shared,
 		Mode:     string(l.Asked.Mode),
-		Size:     g.Bytes,
+		Size:     g.Size,
 		NUMANode: numaNodeOf(l),
 		Dax:      g.Dax,
 		Path:     path,
 		Access:   string(accessOf(l)),
 		ReadOnly: readOnly(l),
 	}
-	if l.Asked.Mode == state.ModeFs {
+	if l.Asked.Mode == state.ModeFS {
 		m.FSType = fsTypeOf(l)
 	}
 	return m, true
@@ -210,7 +210,7 @@ func leaseInfo(l *state.Lease) *api.Response {
 	g := got(l)
 	r := &api.Response{Lease: l.ID, State: stateName(l.State), Source: string(sourceOf(l)), Mode: string(l.Asked.Mode),
 		Share: l.Asked.Shared, ReadOnly: readOnly(l), Access: string(accessOf(l)), FSType: fsTypeOf(l), Path: g.Path,
-		Serial: serialOf(l), Dax: g.Dax, Block: g.Block, Error: l.Error, Size: g.Bytes}
+		Serial: serialOf(l), Dax: g.Dax, Block: g.Block, Error: l.Error, Size: g.Size}
 	if n := numaNodeOf(l); n >= 0 {
 		r.NUMANode = &n
 	}

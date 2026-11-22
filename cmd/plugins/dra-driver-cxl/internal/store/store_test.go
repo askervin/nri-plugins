@@ -216,7 +216,7 @@ func TestRefusedTransitionFailsTheCommit(t *testing.T) {
 	s := open(t, t.TempDir(), nil, nil)
 	defer closeStore(t, s)
 	err := s.Commit(context.Background(), Durable, func(doc *Document) error {
-		doc.Preparations = append(doc.Preparations, state.Preparation{UID: "u", Driver: "d", State: state.PreparationUnknown})
+		doc.Preparations = append(doc.Preparations, state.Preparation{UID: "u", Driver: "d", State: state.PreparationNone})
 		p := &doc.Preparations[0]
 		return state.Apply(&state.PreparationTable, &p.State, state.PreparationPrepared, state.TriggerPrepare)
 	})

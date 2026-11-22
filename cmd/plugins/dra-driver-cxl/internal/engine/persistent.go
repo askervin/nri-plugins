@@ -82,7 +82,7 @@ func (u *pmemGrant) writer() bool {
 func pmemGrantOf(r *state.Records, g *state.Grant) pmemGrant {
 	u := pmemGrant{ref: g.Ref, source: g.Asked.Source, serial: g.Serial, mode: g.Asked.Mode, readOnly: g.Asked.ReadOnly}
 	if m := r.MountOf(g); m != nil {
-		u.access, u.fsType, u.nodeMount, u.loop = string(m.Access), m.FsType, m.Path, m.Loop
+		u.access, u.fsType, u.nodeMount, u.loop = string(m.Access), m.FSType, m.Path, m.Loop
 	}
 	if g.Got.BlockDevice != nil {
 		u.blockDevice = g.Got.BlockDevice.Name
@@ -116,8 +116,8 @@ func pmemGrants(r *state.Records, serial state.Serial, except ...state.GrantRef)
 	for i := range r.Grants {
 		g := &r.Grants[i]
 		if g.Serial != serial || (!prepared(g) && !unpreparing(r, g)) || slices.Contains(except, g.Ref) ||
-			(g.Asked.Mode != state.ModeBlock && g.Asked.Mode != state.ModeFs) || stale(r, g) ||
-			unpreparing(r, g) && g.Asked.Mode == state.ModeFs && !mounted(r, g) {
+			(g.Asked.Mode != state.ModeBlock && g.Asked.Mode != state.ModeFS) || stale(r, g) ||
+			unpreparing(r, g) && g.Asked.Mode == state.ModeFS && !mounted(r, g) {
 			continue
 		}
 		out = append(out, pmemGrantOf(r, g))
@@ -162,7 +162,7 @@ func firstWriter(grants []pmemGrant) *pmemGrant {
 func fsAccesses(grants []pmemGrant) []string {
 	var out []string
 	for _, u := range grants {
-		if u.mode == state.ModeFs && !slices.Contains(out, u.access) {
+		if u.mode == state.ModeFS && !slices.Contains(out, u.access) {
 			out = append(out, u.access)
 		}
 	}
@@ -253,7 +253,7 @@ func (e *Engine) pmemChain(ctx context.Context, req *GrantRequest, memdev string
 	}
 	wctx, cancel := context.WithTimeout(ctx, e.settle(req.Asked.Source))
 	defer cancel()
-	if reg := ownRegion(e.records(), req.Serial, state.RegionRam); reg != nil {
+	if reg := ownRegion(e.records(), req.Serial, state.RegionRAM); reg != nil {
 		return "", nil, fmt.Errorf("%s: %s is not a region of persistent memory", memdev, reg.Ref())
 	}
 	reg := ownRegion(e.records(), req.Serial, state.RegionPmem)
@@ -305,7 +305,7 @@ func blockDevice(ns *kernel.Namespace) *state.BlockDevice {
 // bindCompanion binds the lease of a companion grant of mode fs at its
 // target and sets what got records of the bind and the lend.
 func (e *Engine) bindCompanion(ctx context.Context, req *GrantRequest, u pmemGrant, got *state.Got) error {
-	if req.BindTarget == "" || req.Asked.Mode != state.ModeFs {
+	if req.BindTarget == "" || req.Asked.Mode != state.ModeFS {
 		return nil
 	}
 	if err := e.bindGrant(ctx, req, u); err != nil {
@@ -331,7 +331,7 @@ func (e *Engine) pmemNamespace(ctx context.Context, req *GrantRequest, nd string
 	if ns := kernel.FsdaxNamespace(nss); ns != nil {
 		return ns, nil
 	}
-	if req.Asked.Mode == state.ModeFs || req.Asked.ReadOnly {
+	if req.Asked.Mode == state.ModeFS || req.Asked.ReadOnly {
 		return nil, fmt.Errorf("device %s: no fsdax namespace in %s: has a writer written the device?", req.Serial.String(), nd)
 	}
 	existing := ""
@@ -367,7 +367,7 @@ func (e *Engine) preparePmemGrant(ctx context.Context, req *GrantRequest, dev st
 	if blockWriter || (req.Asked.Mode == state.ModeBlock && !req.Asked.ReadOnly && len(others) > 0) {
 		return u, fmt.Errorf("device %s: mode block read-write needs the device alone on this node", s)
 	}
-	if req.Asked.Mode != state.ModeFs {
+	if req.Asked.Mode != state.ModeFS {
 		if u.writer() {
 			// others is empty: every superblock of the device is foreign
 			if err := e.checkUnexplained(req.Serial, dev, nil); err != nil {
@@ -452,8 +452,8 @@ func (e *Engine) fsTypeOf(req *GrantRequest, dev string, sig *signature) (string
 		}
 	}
 	if mounted != nil {
-		if req.Asked.FsType != "" && req.Asked.FsType != mounted.FSType {
-			return "", fmt.Errorf("device %s: %s has a filesystem of type %s, not %s", sig.serial, dev, mounted.FSType, req.Asked.FsType)
+		if req.Asked.FSType != "" && req.Asked.FSType != mounted.FSType {
+			return "", fmt.Errorf("device %s: %s has a filesystem of type %s, not %s", sig.serial, dev, mounted.FSType, req.Asked.FSType)
 		}
 		return mounted.FSType, nil
 	}
@@ -461,7 +461,7 @@ func (e *Engine) fsTypeOf(req *GrantRequest, dev string, sig *signature) (string
 	if err != nil {
 		return "", err
 	}
-	return fsType(*sg, sig.serial, dev, req.Asked.FsType)
+	return fsType(*sg, sig.serial, dev, req.Asked.FSType)
 }
 
 // checkFsType returns the access of a grant of the filesystem type (the
@@ -619,7 +619,7 @@ func (e *Engine) recordNodeMount(ctx context.Context, req *GrantRequest, region 
 		reg := r.Region(state.RegionRef(region))
 		m := reg.Mount(state.Access(u.access))
 		if m == nil {
-			reg.Mounts = append(reg.Mounts, state.Mount{Access: state.Access(u.access), Path: u.nodeMount, State: state.MountAbsent})
+			reg.Mounts = append(reg.Mounts, state.Mount{Access: state.Access(u.access), Path: u.nodeMount, State: state.MountNone})
 			m = &reg.Mounts[len(reg.Mounts)-1]
 		}
 		want := state.MountedRO
@@ -629,7 +629,7 @@ func (e *Engine) recordNodeMount(ctx context.Context, req *GrantRequest, region 
 		if err := state.Apply(&state.MountTable, &m.State, want, state.TriggerPrepare); err != nil {
 			return err
 		}
-		m.Path, m.Loop, m.FsType = u.nodeMount, u.loop, u.fsType
+		m.Path, m.Loop, m.FSType = u.nodeMount, u.loop, u.fsType
 		m.Users = addRef(m.Users, req.Ref)
 		g := r.Grant(req.Ref)
 		g.Got.Mount = state.Access(u.access)
@@ -1287,7 +1287,7 @@ func leftMount(m *state.Mount, writer bool, trigger state.Trigger) (bool, error)
 	switch {
 	case m.State == state.MountForeign:
 	case len(m.Users) == 0:
-		return true, state.Apply(&state.MountTable, &m.State, state.MountAbsent, trigger)
+		return true, state.Apply(&state.MountTable, &m.State, state.MountNone, trigger)
 	case m.State == state.MountedRW && !writer:
 		return false, state.Apply(&state.MountTable, &m.State, state.MountedRO, trigger)
 	case m.State == state.MountedRO || m.State == state.MountedRW:

@@ -65,8 +65,8 @@ type Region struct {
 	// Zeroed is a region whose memory was zeroed once (a new shared
 	// local region).
 	Zeroed bool `json:"zeroed,omitempty"`
-	// NumaNode is the NUMA node of the memory of the region.
-	NumaNode   *int        `json:"numaNode,omitempty"`
+	// NUMANode is the NUMA node of the memory of the region.
+	NUMANode   *int        `json:"numaNode,omitempty"`
 	Size       uint64      `json:"size,omitempty"`
 	DaxDevices []DaxDevice `json:"daxDevices,omitempty"`
 	Pmem       *Pmem       `json:"pmem,omitempty"`
@@ -77,7 +77,7 @@ type Region struct {
 type RegionMode string
 
 const (
-	RegionRam  RegionMode = "ram"
+	RegionRAM  RegionMode = "ram"
 	RegionPmem RegionMode = "pmem"
 	// RegionDcd is reserved for dynamic capacity.
 	RegionDcd RegionMode = "dcd"
@@ -158,9 +158,9 @@ const (
 type DaxDeviceState string
 
 const (
-	DaxAbsent      DaxDeviceState = "ABSENT"
+	DaxNone        DaxDeviceState = "ABSENT"
 	DaxCreating    DaxDeviceState = "CREATING"
-	DaxSized       DaxDeviceState = "SIZED"
+	DaxUnbound     DaxDeviceState = "SIZED"
 	DaxDeviceDax   DaxDeviceState = "DEVICE_DAX"
 	DaxKmemOffline DaxDeviceState = "KMEM_OFFLINE"
 	DaxKmemOnline  DaxDeviceState = "KMEM_ONLINE"
@@ -195,7 +195,7 @@ type Mount struct {
 	State  MountState `json:"state"`
 	// Loop is the loop device of a cached mount.
 	Loop   string     `json:"loop,omitempty"`
-	FsType string     `json:"fsType,omitempty"`
+	FSType string     `json:"fsType,omitempty"`
 	Users  []GrantRef `json:"users,omitempty"`
 }
 
@@ -203,7 +203,7 @@ type Mount struct {
 type MountState string
 
 const (
-	MountAbsent     MountState = "ABSENT"
+	MountNone       MountState = "ABSENT"
 	MountedRO       MountState = "MOUNTED_RO"
 	MountedRW       MountState = "MOUNTED_RW"
 	MountForeign    MountState = "FOREIGN"
@@ -252,7 +252,7 @@ var RegionTable = Table[RegionState]{
 			From: fsm.List(RegionOwned), To: RegionKept, Triggers: releasers,
 			When: "a release with Policy \"in order\" found a newer region of another memdev above after cxl " +
 				"disable-region; or the recovery keeps a cut Prepare's region untouched below a newer region (Policy keep) " +
-				"and no grant of it was REALISED; or a-prepare (5.3) or an idle keep finds an OWNED region that the kernel has disabled (a release failed " +
+				"and no grant of it was REALISED; or prepare (5.3) or an idle keep finds an OWNED region that the kernel has disabled (a release failed " +
 				"after cxl disable-region): recorded KEPT, enabled and set up again by the Prepare",
 			Effects: "the region stays disabled (in order) or as it is (recovery); SetUp false; commit (d)",
 		},
@@ -343,69 +343,69 @@ var daxBound = fsm.List(DaxDeviceDax, DaxKmemOffline, DaxKmemOnline)
 var DaxDeviceTable = Table[DaxDeviceState]{
 	Object: "DaxDevice",
 	Field:  "State",
-	States: fsm.List(DaxAbsent, DaxCreating, DaxSized, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline, DaxSeed),
+	States: fsm.List(DaxNone, DaxCreating, DaxUnbound, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline, DaxSeed),
 	Rows: []Transition[DaxDeviceState]{
 		{
-			From: fsm.List(DaxAbsent), To: DaxCreating, Triggers: fsm.List(TriggerPrepare),
+			From: fsm.List(DaxNone), To: DaxCreating, Triggers: fsm.List(TriggerPrepare),
 			When:    "a grant needs a dax device (or the Whole device at set-up)",
 			Guard:   "engine lock held",
 			Effects: "dax_region/create written; the name read back",
 		},
 		{
-			From: fsm.List(DaxCreating), To: DaxSized, Triggers: fsm.List(TriggerPrepare),
+			From: fsm.List(DaxCreating), To: DaxUnbound, Triggers: fsm.List(TriggerPrepare),
 			When: "size (or explicit ranges) written and verified",
 			Guard: "room in the dax region; whole-block placement verified (created again through the mapping " +
 				"attribute if not)",
 			Effects: "commit (d) of name, dev and ranges; Users the grant",
 		},
 		{
-			From: fsm.List(DaxCreating), To: DaxAbsent, Triggers: fsm.List(TriggerPrepare, TriggerUnprepare),
+			From: fsm.List(DaxCreating), To: DaxNone, Triggers: fsm.List(TriggerPrepare, TriggerUnprepare),
 			When: "size or ranges failed, or the verification failed; or the Unprepare of a claim whose Prepare did not " +
 				"finish (PREPARING or KEPT, 03a T1 PREPARING -> UNKNOWN) deletes the device its cut Prepare was making",
 			Effects: "deleted; error",
 		},
 		{
-			From: fsm.List(DaxAbsent), To: DaxKmemOffline, Triggers: fsm.List(TriggerPrepare),
+			From: fsm.List(DaxNone), To: DaxKmemOffline, Triggers: fsm.List(TriggerPrepare),
 			When:    "the first device (daxN.0) of a new ram region appeared, bound to kmem by the kernel",
 			Effects: "its blocks offlined and held offline; commit (d)",
 		},
 		{
-			From: fsm.List(DaxAbsent), To: DaxDeviceDax, Triggers: fsm.List(TriggerPrepare),
+			From: fsm.List(DaxNone), To: DaxDeviceDax, Triggers: fsm.List(TriggerPrepare),
 			When: "the first device (daxN.0) of a new ram region appeared bound to device_dax (an id of its name " +
 				"that another tool left in device_dax)",
 			Effects: "commit (d)",
 		},
 		{
-			From: fsm.List(DaxKmemOffline), To: DaxSized, Triggers: fsm.List(TriggerPrepare),
+			From: fsm.List(DaxKmemOffline), To: DaxUnbound, Triggers: fsm.List(TriggerPrepare),
 			When:    "kmem unbound from the offline device (the set-up of a region for device_dax or for slices)",
 			Effects: "commit (d)",
 		},
 		{
-			From: fsm.List(DaxDeviceDax), To: DaxSized, Triggers: fsm.List(TriggerPrepare),
+			From: fsm.List(DaxDeviceDax), To: DaxUnbound, Triggers: fsm.List(TriggerPrepare),
 			When: "the unused Whole device daxN.0 of a sliced region resized for the first part of a grant (unbound " +
 				"by the resize), or unbound from device_dax for a switch to kmem",
 			Guard:   "no user",
 			Effects: "commit (d); a part: Users the grant, no longer the Whole device",
 		},
 		{
-			From: fsm.List(DaxSized, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline), To: DaxSeed, Triggers: releasers,
+			From: fsm.List(DaxUnbound, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline), To: DaxSeed, Triggers: releasers,
 			When: "daxN.0 resized to 0: the seed of a sliced region; or daxN.0 released with Users empty and not " +
 				"kept: the kernel keeps it at size 0",
 			Effects: "kmem: blocks offlined (EBUSY: stays, error up); unbound; resized to 0; commit (d)",
 		},
 		{
-			From: fsm.List(DaxSeed), To: DaxSized, Triggers: fsm.List(TriggerPrepare),
+			From: fsm.List(DaxSeed), To: DaxUnbound, Triggers: fsm.List(TriggerPrepare),
 			When:    "the seed sized again (the Whole device of a region set up again)",
 			Guard:   "room in the dax region",
 			Effects: "commit (d)",
 		},
 		{
-			From: fsm.List(DaxSized), To: DaxDeviceDax, Triggers: fsm.List(TriggerPrepare),
+			From: fsm.List(DaxUnbound), To: DaxDeviceDax, Triggers: fsm.List(TriggerPrepare),
 			When:    "bound to device_dax by sysfs",
 			Effects: "zeroed (a local dax grant, a new shared region); commit (d)",
 		},
 		{
-			From: fsm.List(DaxSized), To: DaxKmemOffline, Triggers: fsm.List(TriggerPrepare),
+			From: fsm.List(DaxUnbound), To: DaxKmemOffline, Triggers: fsm.List(TriggerPrepare),
 			When:    "bound to kmem by sysfs bind (never new_id)",
 			Guard:   "fenced before its blocks go online (KMEM_OFFLINE -> KMEM_ONLINE)",
 			Effects: "wait for the blocks; commit (d)",
@@ -424,14 +424,14 @@ var DaxDeviceTable = Table[DaxDeviceState]{
 			Effects: "Users gets the grant or loses it; commit (d)",
 		},
 		{
-			From: fsm.List(DaxSized, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline), To: DaxAbsent,
+			From: fsm.List(DaxUnbound, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline), To: DaxNone,
 			Triggers: fsm.List(TriggerUnprepare, TriggerPrepare),
 			When:     "Users empty and not kept (the Whole device of a configured shared memdev stays)",
 			Effects:  "kmem: blocks offlined (EBUSY: stays, error up); unbound; resized to 0; delete written; commit (d)",
 		},
 		{
-			From:     fsm.List(DaxCreating, DaxSized, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline),
-			To:       DaxAbsent,
+			From:     fsm.List(DaxCreating, DaxUnbound, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline),
+			To:       DaxNone,
 			Triggers: fsm.List(TriggerRecover),
 			When: "the recovery deletes a dax device of a region of ours without users and not the kept Whole " +
 				"device, or releases the device of a grant that it releases",
@@ -440,7 +440,7 @@ var DaxDeviceTable = Table[DaxDeviceState]{
 		},
 	},
 	Refused: []Refusal[DaxDeviceState]{
-		{From: fsm.List(DaxSized), To: fsm.List(DaxKmemOnline), Why: "never online without the fence step"},
+		{From: fsm.List(DaxUnbound), To: fsm.List(DaxKmemOnline), Why: "never online without the fence step"},
 	},
 }
 
@@ -451,17 +451,17 @@ var mounted = fsm.List(MountedRO, MountedRW)
 var MountTable = Table[MountState]{
 	Object: "Mount",
 	Field:  "State",
-	States: fsm.List(MountAbsent, MountedRO, MountedRW, MountForeign, MountUnrestored),
+	States: fsm.List(MountNone, MountedRO, MountedRW, MountForeign, MountUnrestored),
 	Rows: []Transition[MountState]{
 		{
-			From: fsm.List(MountAbsent), To: MountedRO, Triggers: fsm.List(TriggerPrepare),
+			From: fsm.List(MountNone), To: MountedRO, Triggers: fsm.List(TriggerPrepare),
 			When:  "the first fs grant of the access, no writer grant",
 			Guard: "filesystem type allowed and detected; block device set read-only first; the access rules",
 			Effects: "mount (direct: dax=always verified; cached: loop and dax=never); commit (d) with Users the " +
 				"grant",
 		},
 		{
-			From: fsm.List(MountAbsent), To: MountedRW, Triggers: fsm.List(TriggerPrepare),
+			From: fsm.List(MountNone), To: MountedRW, Triggers: fsm.List(TriggerPrepare),
 			When: "the first fs grant is a writer (readOnly false)",
 			Guard: "a single-host type, or a cluster type on a coherent device; no unexplained superblock (refused " +
 				"otherwise: fail closed)",
@@ -486,13 +486,13 @@ var MountTable = Table[MountState]{
 			Effects: "Users gets the grant or loses it; commit (d)",
 		},
 		{
-			From: mounted, To: MountAbsent, Triggers: releasers,
+			From: mounted, To: MountNone, Triggers: releasers,
 			When: "the last user released",
 			Effects: "unmounted (never detached); directory removed; commit (d); an unmount that fails busy " +
 				"fails the release, the mount unchanged",
 		},
 		{
-			From: fsm.List(MountAbsent, MountedRO, MountedRW, MountUnrestored), To: MountUnrestored, Triggers: fsm.List(TriggerRecover),
+			From: fsm.List(MountNone, MountedRO, MountedRW, MountUnrestored), To: MountUnrestored, Triggers: fsm.List(TriggerRecover),
 			When: "the recovery cannot mount a REALISED grant's node mount again (region gone, namespace or " +
 				"block device changed, mount failed), or fails again at a later start",
 			Effects: "the grants of the mount REALISED_UNRESTORED; commit (l)",
@@ -510,12 +510,12 @@ var MountTable = Table[MountState]{
 			Effects: "commit (d)",
 		},
 		{
-			From: fsm.List(MountUnrestored), To: MountAbsent, Triggers: releasers,
+			From: fsm.List(MountUnrestored), To: MountNone, Triggers: releasers,
 			When:    "the last user released",
 			Effects: "nothing to unmount; commit (d)",
 		},
 		{
-			From: fsm.List(MountAbsent, MountedRO, MountedRW), To: MountForeign, Triggers: fsm.List(TriggerRecover),
+			From: fsm.List(MountNone, MountedRO, MountedRW), To: MountForeign, Triggers: fsm.List(TriggerRecover),
 			When:    "the recovery finds something else mounted at the path",
 			Effects: "error logged; never used, never unmounted by the driver; the grants REALISED_UNRESTORED",
 		},
@@ -523,7 +523,7 @@ var MountTable = Table[MountState]{
 	Refused: []Refusal[MountState]{
 		{
 			From: fsm.List(MountForeign),
-			To:   fsm.List(MountedRO, MountedRW, MountAbsent),
+			To:   fsm.List(MountedRO, MountedRW, MountNone),
 			Why:  "a foreign mount is never used or unmounted",
 		},
 	},

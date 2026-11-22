@@ -66,7 +66,7 @@ type Preparation struct {
 type PreparationState string
 
 const (
-	PreparationUnknown     PreparationState = "UNKNOWN"
+	PreparationNone        PreparationState = "UNKNOWN"
 	PreparationPreparing   PreparationState = "PREPARING"
 	PreparationPrepared    PreparationState = "PREPARED"
 	PreparationUnrestored  PreparationState = "PREPARED_UNRESTORED"
@@ -117,17 +117,17 @@ type Result struct {
 // the driver.
 type RegionResult struct {
 	Name     string `json:"name"`
-	NumaNode int    `json:"numaNode"`
+	NUMANode int    `json:"numaNode"`
 	Size     uint64 `json:"size"`
 	// Consumed is the memory capacity that the allocation consumed.
 	Consumed int64 `json:"consumed,omitempty"`
-	// NumaAffinity are the CPU NUMA nodes of the memdevs of the region.
-	NumaAffinity []int `json:"numaAffinity,omitempty"`
+	// NUMAAffinity are the CPU NUMA nodes of the memdevs of the region.
+	NUMAAffinity []int `json:"numaAffinity,omitempty"`
 }
 
 // DRAMResult is a result of kind dram.
 type DRAMResult struct {
-	NumaNodes []int  `json:"numaNodes"`
+	NUMANodes []int  `json:"numaNodes"`
 	Size      uint64 `json:"size"`
 	Consumed  int64  `json:"consumed,omitempty"`
 }
@@ -148,11 +148,11 @@ var preparationStored = fsm.List(PreparationPreparing, PreparationPrepared, Prep
 var PreparationTable = Table[PreparationState]{
 	Object: "Preparation",
 	Field:  "State",
-	States: fsm.List(PreparationUnknown, PreparationPreparing, PreparationPrepared, PreparationUnrestored,
+	States: fsm.List(PreparationNone, PreparationPreparing, PreparationPrepared, PreparationUnrestored,
 		PreparationStale, PreparationUnpreparing, PreparationKept),
 	Rows: []Transition[PreparationState]{
 		{
-			From: fsm.List(PreparationUnknown), To: PreparationPreparing, Triggers: fsm.List(TriggerPrepare),
+			From: fsm.List(PreparationNone), To: PreparationPreparing, Triggers: fsm.List(TriggerPrepare),
 			When: "validation and the companion gate passed",
 			Guard: "allocation present; config decodes; local: device in the last published ResourceSlice; pool: " +
 				"status data present",
@@ -167,7 +167,7 @@ var PreparationTable = Table[PreparationState]{
 				"gets the result",
 		},
 		{
-			From: fsm.List(PreparationPreparing), To: PreparationUnknown, Triggers: fsm.List(TriggerPrepare, TriggerUnprepare),
+			From: fsm.List(PreparationPreparing), To: PreparationNone, Triggers: fsm.List(TriggerPrepare, TriggerUnprepare),
 			When: "the Prepare failed and its rollback released everything; or an Unprepare released everything " +
 				"recorded",
 			Guard:   "no KEPT region, no Stale entry",
@@ -234,7 +234,7 @@ var PreparationTable = Table[PreparationState]{
 			Effects: "error to kubelet; the record stays for the next Prepare or the Unprepare",
 		},
 		{
-			From: fsm.List(PreparationStale), To: PreparationUnknown, Triggers: fsm.List(TriggerUnprepare),
+			From: fsm.List(PreparationStale), To: PreparationNone, Triggers: fsm.List(TriggerUnprepare),
 			Effects: "release by serial: a pool memdev disabled iff no grant of this boot uses the serial; no " +
 				"revoke; commit (d) removing the record",
 		},
@@ -244,7 +244,7 @@ var PreparationTable = Table[PreparationState]{
 			Effects: "commit (d)",
 		},
 		{
-			From: fsm.List(PreparationUnpreparing), To: PreparationUnknown, Triggers: fsm.List(TriggerUnprepare),
+			From: fsm.List(PreparationUnpreparing), To: PreparationNone, Triggers: fsm.List(TriggerUnprepare),
 			When:    "every grant RELEASED",
 			Effects: "commit (d) removing the record; kubelet gets nil",
 		},
@@ -276,7 +276,7 @@ var PreparationTable = Table[PreparationState]{
 			Effects: "error to kubelet; the record and the kept region stay for the next Prepare or the Unprepare",
 		},
 		{
-			From: fsm.List(PreparationKept), To: PreparationUnknown, Triggers: fsm.List(TriggerUnprepare),
+			From: fsm.List(PreparationKept), To: PreparationNone, Triggers: fsm.List(TriggerUnprepare),
 			Effects: "the kept region destroyed per Policy; commit (d) removing the record",
 		},
 		{
@@ -285,7 +285,7 @@ var PreparationTable = Table[PreparationState]{
 			Effects: "commit (d) dropping the results of the released grants",
 		},
 		{
-			From: fsm.List(PreparationKept), To: PreparationUnknown, Triggers: fsm.List(TriggerRecover),
+			From: fsm.List(PreparationKept), To: PreparationNone, Triggers: fsm.List(TriggerRecover),
 			When: "the recovery at a later start released every grant that it kept (nothing lies above its " +
 				"regions any more, or its idle shared memdev keeps its region)",
 			Effects: "commit (d) removing the record; kubelet's Prepare again prepares the claim anew, its " +
@@ -298,7 +298,7 @@ var PreparationTable = Table[PreparationState]{
 			To:   fsm.List(PreparationPreparing),
 			Why:  "a Prepare again never realises a PREPARED claim anew within a boot",
 		},
-		{From: fsm.List(PreparationUnknown), To: fsm.List(PreparationPrepared), Why: "nothing is prepared without the intent commit"},
+		{From: fsm.List(PreparationNone), To: fsm.List(PreparationPrepared), Why: "nothing is prepared without the intent commit"},
 	},
 }
 

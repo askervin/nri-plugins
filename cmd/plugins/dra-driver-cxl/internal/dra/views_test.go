@@ -73,7 +73,7 @@ func TestNumaNodesUnfinished(t *testing.T) {
 	e.cutPrepare(e.pool, e.companionOf(e.pool))
 	e.restart()
 	e.wantState(e.pool, "c1", state.PreparationPreparing)
-	if g := e.records().Grant(state.GrantRef{Claim: "c1"}); g == nil || g.Got.NumaNode != nil {
+	if g := e.records().Grant(state.GrantRef{Claim: "c1"}); g == nil || g.Got.NUMANode != nil {
 		t.Fatalf("grant %+v", g)
 	}
 	if got := NumaNodes(e.records(), e.pool.Name()); !slices.Equal(got, []int{2}) || e.pool.ClaimInfo("c1") != nil {
@@ -272,7 +272,7 @@ func TestDeviceInfo(t *testing.T) {
 		t.Errorf("lease device %+v", d)
 	}
 	if d := info(statetest.LocalDriver, statetest.ClaimFs).Devices[0]; !d.Persistent || d.Mode != api.ModeFS || d.BlockDevice != "/dev/pmem7" ||
-		d.Access != api.AccessDirect || d.NodeMount == "" || d.FsType != "erofs" || !d.ReadOnly {
+		d.Access != api.AccessDirect || d.NodeMount == "" || d.FSType != "erofs" || !d.ReadOnly {
 		t.Errorf("persistent fs device %+v", d)
 	}
 	if d := info(statetest.PoolDriver, statetest.ClaimPoolNUMA).Devices[0]; d.DeviceType != device.DeviceTypeMemdev || d.Serial != 0xc1ae2003 ||
@@ -280,7 +280,7 @@ func TestDeviceInfo(t *testing.T) {
 		t.Errorf("pool device %+v", d)
 	}
 	companion := info(statetest.LocalDriver, statetest.ClaimCompanion)
-	if l := companion.Lend; l == nil || l.Lease != statetest.LeaseNUMA || l.Container != "main" || !slices.Equal(l.NumaNodes, []int{2}) {
+	if l := companion.Lend; l == nil || l.Lease != statetest.LeaseNUMA || l.Container != "main" || !slices.Equal(l.NUMANodes, []int{2}) {
 		t.Errorf("lend %+v", companion.Lend)
 	}
 	doc.Grants = slices.DeleteFunc(doc.Grants, func(g state.Grant) bool { return g.Ref.Claim == statetest.ClaimDax })

@@ -163,7 +163,7 @@ func incomplete(d *state.DeviceInfo) error {
 // cdiDevice returns the CDI device of a prepared device of the claim uid,
 // with the env key of its memory from keys.
 func cdiDevice(uid string, d *state.DeviceInfo, keys envKeys) cdiSpecs.Device {
-	env := map[string]string{state.ResultEnvVarName(uid, d.Result): "1"}
+	env := map[string]string{api.ResultMarker(uid, d.Result): "1"}
 	edits := cdiSpecs.ContainerEdits{}
 	if m, ok := deviceMemory(d, keys); ok {
 		maps.Copy(env, api.Env(m))

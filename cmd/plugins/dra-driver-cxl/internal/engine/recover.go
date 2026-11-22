@@ -136,11 +136,11 @@ func dropUnused(r *state.Records, owns func(state.Source) bool) error {
 		if !owns(m.Source) || !unused(m) || m.State == state.MemdevIdleKept {
 			continue
 		}
-		if err := state.Apply(&state.MemdevTable, &m.State, state.MemdevUnused, state.TriggerRecover); err != nil {
+		if err := state.Apply(&state.MemdevTable, &m.State, state.MemdevNone, state.TriggerRecover); err != nil {
 			return err
 		}
 	}
-	removeRecord(&r.Memdevs, func(m *state.Memdev) bool { return m.State == state.MemdevUnused })
+	removeRecord(&r.Memdevs, func(m *state.Memdev) bool { return m.State == state.MemdevNone })
 	return nil
 }
 
@@ -329,7 +329,7 @@ func recoverNoted(r *state.Records, reg *state.Region, k regionSeen) error {
 			return err
 		}
 		reg.Name, reg.NotedName = string(ref), ""
-		reg.NumaNode = state.NumaNodePtr(k.info.NUMANode)
+		reg.NUMANode = state.NUMANodePtr(k.info.NUMANode)
 		reg.Size = k.info.Range.Size()
 	default:
 		if err := state.Apply(&state.RegionTable, &reg.State, state.RegionNone, state.TriggerRecover); err != nil {
@@ -701,7 +701,7 @@ func keptReleased(r *state.Records, released []state.GrantRef) error {
 			}
 			continue
 		}
-		if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationUnknown, state.TriggerRecover); err != nil {
+		if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationNone, state.TriggerRecover); err != nil {
 			return err
 		}
 		gone = append(gone, key{p.UID, p.Driver})
@@ -904,7 +904,7 @@ func (e *Engine) deleteDax(ctx context.Context, reg *state.Region, dax string) e
 		if d == nil {
 			return nil
 		}
-		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxAbsent, state.TriggerRecover); err != nil {
+		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxNone, state.TriggerRecover); err != nil {
 			return err
 		}
 		removeRecord(&reg.DaxDevices, func(x *state.DaxDevice) bool { return x.Name == dax })

@@ -50,7 +50,7 @@ func TestBootOfAnotherBoot(t *testing.T) {
 	for _, g := range doc.Grants {
 		o := orig.Grant(g.Ref)
 		lend := g.Intent.Lend
-		if g.Got != (state.Got{}) || g.Intent.Region != "" || g.Intent.MountPath != "" || (lend != nil && lend.NumaNode != nil) {
+		if g.Got != (state.Got{}) || g.Intent.Region != "" || g.Intent.MountPath != "" || (lend != nil && lend.NUMANode != nil) {
 			t.Errorf("grant %s keeps Got or Intent after a reboot: %+v", g.Ref, g.Intent)
 		}
 		if ol := o.Got.Lend; ol != nil && (lend == nil || lend.Lease != ol.Lease || lend.Pod != ol.Pod) {

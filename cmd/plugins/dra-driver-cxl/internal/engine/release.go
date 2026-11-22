@@ -487,7 +487,7 @@ func releasedGrant(r *state.Records, ref state.GrantRef, trigger state.Trigger) 
 	if g == nil {
 		return nil
 	}
-	if err := state.Apply(&state.GrantTable, &g.State, state.GrantReleased, trigger); err != nil {
+	if err := state.Apply(&state.GrantTable, &g.State, state.GrantNone, trigger); err != nil {
 		return err
 	}
 	serial := g.Serial
@@ -526,7 +526,7 @@ func dropMemdev(r *state.Records, serial state.Serial, trigger state.Trigger) er
 	if m == nil {
 		return nil
 	}
-	if err := state.Apply(&state.MemdevTable, &m.State, state.MemdevUnused, trigger); err != nil {
+	if err := state.Apply(&state.MemdevTable, &m.State, state.MemdevNone, trigger); err != nil {
 		return err
 	}
 	removeRecord(&r.Memdevs, func(x *state.Memdev) bool { return x.Serial == serial })
@@ -542,7 +542,7 @@ func leaveUsers(r *state.Records, ref state.GrantRef, trigger state.Trigger) err
 			if !slices.Contains(d.Users, ref) {
 				continue
 			}
-			if d.State != state.DaxSized && d.State != state.DaxCreating {
+			if d.State != state.DaxUnbound && d.State != state.DaxCreating {
 				if err := state.Apply(&state.DaxDeviceTable, &d.State, d.State, trigger); err != nil {
 					return err
 				}
@@ -688,7 +688,7 @@ func (e *Engine) releaseStale(ctx context.Context, ref state.GrantRef, trigger s
 		if g == nil {
 			return nil
 		}
-		if err := state.Apply(&state.GrantTable, &g.State, state.GrantReleased, trigger); err != nil {
+		if err := state.Apply(&state.GrantTable, &g.State, state.GrantNone, trigger); err != nil {
 			return err
 		}
 		removeRecord(&r.Grants, func(x *state.Grant) bool { return x.Ref == ref })

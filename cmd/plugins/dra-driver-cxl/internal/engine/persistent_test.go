@@ -72,7 +72,7 @@ func TestPersistentFsReadWrite(t *testing.T) {
 	g := v.grant("w", 0)
 	direct := filepath.Join(v.dir, poolDriver, "mounts", "91-direct")
 	m := v.records().Region(g.Got.Region).Mount(state.AccessDirect)
-	if m == nil || m.Path != direct || g.Got.Mount != state.AccessDirect || m.FsType != "ext4" || g.Intent.MountPath != direct {
+	if m == nil || m.Path != direct || g.Got.Mount != state.AccessDirect || m.FSType != "ext4" || g.Intent.MountPath != direct {
 		t.Fatalf("grant %+v, mount %+v", g.Got, m)
 	}
 	if m.State != state.MountedRW {
@@ -102,7 +102,7 @@ func TestPersistentFsReadOnly(t *testing.T) {
 	v := pmemEnv(t, "erofs")
 	v.mustPrepare(poolDriver, "r", fsGrant("r", true, state.AccessCached))
 	g, m := v.grant("r", 0), v.mount("r", 0)
-	if g.Got.Mount != state.AccessCached || m.Loop == "" || m.FsType != "erofs" {
+	if g.Got.Mount != state.AccessCached || m.Loop == "" || m.FSType != "erofs" {
 		t.Fatalf("grant %+v, mount %+v", g.Got, m)
 	}
 	err := v.prepare(poolDriver, "w", fsGrant("w", false, state.AccessCached))
@@ -192,8 +192,8 @@ func TestPersistentP9D(t *testing.T) {
 // is mounted, with their texts, and the rules that let a claim through.
 func TestPersistentRules(t *testing.T) {
 	fs := func(uid string, readOnly bool, access state.Access, fsType string) GrantRequest {
-		req := localPmemReq(uid, 0, state.ModeFs, readOnly, access)
-		req.Asked.FsType = fsType
+		req := localPmemReq(uid, 0, state.ModeFS, readOnly, access)
+		req.Asked.FSType = fsType
 		return req
 	}
 	// shared makes req of a device that other hosts may use
@@ -304,7 +304,7 @@ func TestPersistentRules(t *testing.T) {
 // A persistent grant of a memdev without persistent memory is refused.
 func TestPersistentWithoutPmem(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
-	err := v.prepare(poolDriver, "x", fsReq(poolReq("x", 0, serialA, state.ModeFs, state.KindPersistent), true, ""))
+	err := v.prepare(poolDriver, "x", fsReq(poolReq("x", 0, serialA, state.ModeFS, state.KindPersistent), true, ""))
 	if want := "device 0xa1: mem0 has no persistent memory"; err == nil || err.Error() != want {
 		t.Fatalf("error %v, want %q", err, want)
 	}
@@ -315,13 +315,13 @@ func TestPersistentWithoutPmem(t *testing.T) {
 // cached xfs read-only again; a read-only xfs is mounted with nouuid.
 func TestPersistentUpgradeFails(t *testing.T) {
 	v := pmemEnv(t, "xfs")
-	v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFs, true, state.AccessCached))
+	v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFS, true, state.AccessCached))
 	m := v.mount("r", 0)
 	if c := v.f.MountCalls("fsmount"); m.Loop == "" || !slices.Equal(c, []string{"fsmount " + m.Loop + " " + m.Path + " xfs ro dax=never,nouuid"}) {
 		t.Fatalf("mounts %q, loop device %q", c, m.Loop)
 	}
 	v.f.SetRemountError(m.Path, syscall.EINVAL)
-	err := v.prepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, state.AccessCached))
+	err := v.prepare(localDriver, "w", localPmemReq("w", 0, state.ModeFS, false, state.AccessCached))
 	if want := "device 0x91: remounting " + m.Path + " read-write: invalid argument"; err == nil || err.Error() != want {
 		t.Fatalf("error %v, want %q", err, want)
 	}
@@ -347,7 +347,7 @@ func TestPersistentUpgradeFails(t *testing.T) {
 // it elsewhere is explained. Superblocks that cannot be read refuse a use.
 func TestPersistentUnexplainedSuperblocks(t *testing.T) {
 	fsClaim := func(uid string, readOnly bool) GrantRequest {
-		return localPmemReq(uid, 0, state.ModeFs, readOnly, "")
+		return localPmemReq(uid, 0, state.ModeFS, readOnly, "")
 	}
 	blockClaim := func(uid string, readOnly bool) GrantRequest {
 		return localPmemReq(uid, 0, state.ModeBlock, readOnly, "")
@@ -458,7 +458,7 @@ func TestPersistentUnexplainedSuperblocks(t *testing.T) {
 // persistent memdev serialP of the source.
 func fsUse(source state.Source, uid string, readOnly bool, access state.Access) GrantRequest {
 	if source == state.SourceLocal {
-		return localPmemReq(uid, 0, state.ModeFs, readOnly, access)
+		return localPmemReq(uid, 0, state.ModeFS, readOnly, access)
 	}
 	return fsGrant(uid, readOnly, access)
 }
@@ -597,13 +597,13 @@ func TestPersistentReleasingGrants(t *testing.T) {
 	}
 	t.Run("node mount of a reader", func(t *testing.T) {
 		v := pmemEnv(t, "ext4")
-		v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFs, true, state.AccessCached))
+		v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFS, true, state.AccessCached))
 		cached := v.mount("r", 0).Path
 		v.f.SetBusy(cached, true)
 		if err := v.unprepare(localDriver, "r"); err == nil || !strings.Contains(err.Error(), "unmounting "+cached+": device or resource busy") {
 			t.Fatalf("error %v", err)
 		}
-		refused(t, v, localPmemReq("w", 0, state.ModeFs, false, state.AccessDirect),
+		refused(t, v, localPmemReq("w", 0, state.ModeFS, false, state.AccessDirect),
 			"device 0x91: it is mounted with access cached only on this node: a read-write claim with access direct would mount it a second time")
 		v.f.SetBusy(cached, false)
 		finish(t, v, "finished")
@@ -613,8 +613,8 @@ func TestPersistentReleasingGrants(t *testing.T) {
 	})
 	t.Run("superblock of a writer", func(t *testing.T) {
 		v := pmemEnv(t, "ext4")
-		v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
-		v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFs, true, ""))
+		v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFS, false, ""))
+		v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFS, true, ""))
 		direct := v.mount("w", 0).Path
 		v.f.SetWriting(direct, true)
 		if err := v.unprepare(localDriver, "w"); err == nil || !strings.Contains(err.Error(), "remounting "+direct+" read-only: device or resource busy") {
@@ -622,11 +622,11 @@ func TestPersistentReleasingGrants(t *testing.T) {
 		}
 		other := "device " + api.FormatSerial(serialP) + ": it is mounted read-write with access direct on this node: " +
 			"access cached would mount it a second time"
-		refused(t, v, localPmemReq("c", 0, state.ModeFs, true, state.AccessCached), other)
-		refused(t, v, localPmemReq("w2", 0, state.ModeFs, false, state.AccessCached), other)
+		refused(t, v, localPmemReq("c", 0, state.ModeFS, true, state.AccessCached), other)
+		refused(t, v, localPmemReq("w2", 0, state.ModeFS, false, state.AccessCached), other)
 		// a reader of the node mount: as it is, read-write
 		n := mountCalls(v)
-		v.mustPrepare(localDriver, "r2", localPmemReq("r2", 0, state.ModeFs, true, state.AccessDirect))
+		v.mustPrepare(localDriver, "r2", localPmemReq("r2", 0, state.ModeFS, true, state.AccessDirect))
 		if calls := mountCallsSince(v, n); len(calls) > 0 {
 			t.Errorf("calls %q of the reader", calls)
 		}
@@ -649,8 +649,8 @@ func TestPersistentReleasingGrants(t *testing.T) {
 func TestPersistentFailedDowngrade(t *testing.T) {
 	v := pmemEnv(t, "ext4")
 	dev := filepath.Join(v.f.DevRoot(), "pmem0")
-	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
-	v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFs, true, ""))
+	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFS, false, ""))
+	v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFS, true, ""))
 	direct := v.mount("w", 0).Path
 	writable := func(what string) {
 		t.Helper()
@@ -676,7 +676,7 @@ func TestPersistentFailedDowngrade(t *testing.T) {
 	if mi, _ := v.f.Kernel().Mounted(direct); mi == nil || !mi.SuperReadOnly() || !v.f.IsReadOnly(dev) {
 		t.Fatalf("downgraded: node mount %+v, block device read-only %v", mi, v.f.IsReadOnly(dev))
 	}
-	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
+	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFS, false, ""))
 	v.f.HideProc(true)
 	err := v.unprepare(localDriver, "w")
 	v.f.HideProc(false)
@@ -705,11 +705,11 @@ func TestPersistentStaleGrantHoldsNothing(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib})
 			v.formatPmem("mem0", "ext4")
-			v.mustPrepare(localDriver, "old", localPmemReq("old", 0, state.ModeFs, c.stale, ""))
+			v.mustPrepare(localDriver, "old", localPmemReq("old", 0, state.ModeFS, c.stale, ""))
 			v.f.Reboot()
 			v.restart()
 			wantPreparation(t, v, localDriver, "old", state.PreparationStale)
-			v.mustPrepare(localDriver, "new", localPmemReq("new", 0, state.ModeFs, c.newer, ""))
+			v.mustPrepare(localDriver, "new", localPmemReq("new", 0, state.ModeFS, c.newer, ""))
 			if m := v.mount("new", 0); m.State != c.want {
 				t.Fatalf("node mount %+v, want %s", m, c.want)
 			}
@@ -727,13 +727,13 @@ func TestPersistentStaleGrantHoldsNothing(t *testing.T) {
 func TestPersistentUnmountedGrantHoldsNothing(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib})
 	v.formatPmem("mem0", "ext4")
-	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
+	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFS, false, ""))
 	v.f.FailCommand("cxl disable-region", errors.New("cxl region: cmd_disable_region: failed"))
 	if err := v.unprepare(localDriver, "w"); err == nil {
 		t.Fatal("the release succeeded")
 	}
 	v.check("release failed")
-	v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFs, true, ""))
+	v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFS, true, ""))
 	if m := v.mount("r", 0); m.State != state.MountedRO {
 		t.Fatalf("node mount %+v", m)
 	}
@@ -753,14 +753,14 @@ func TestPersistentUnmountedGrantHoldsNothing(t *testing.T) {
 func TestPersistentReleaseIgnoresGoneBlockDevice(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib})
 	v.formatPmem("mem0", "ext4")
-	v.mustPrepare(localDriver, "a", localPmemReq("a", 0, state.ModeFs, true, ""))
+	v.mustPrepare(localDriver, "a", localPmemReq("a", 0, state.ModeFS, true, ""))
 	v.f.CutAfter("cxl destroy-region")
 	if !v.cut(func() { _ = v.unprepare(localDriver, "a") }) {
 		t.Fatal("not cut")
 	}
 	v.restart()
-	v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFs, true, ""))
-	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
+	v.mustPrepare(localDriver, "r", localPmemReq("r", 0, state.ModeFS, true, ""))
+	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFS, false, ""))
 	v.mustUnprepare(localDriver, "w")
 	if g := v.grant("r", 0); !v.f.IsReadOnly(g.Got.BlockDevice.Name) {
 		t.Fatalf("%s is read-write without a writer", g.Got.BlockDevice.Name)

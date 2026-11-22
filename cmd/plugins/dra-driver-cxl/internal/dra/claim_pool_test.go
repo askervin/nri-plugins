@@ -205,7 +205,7 @@ func TestPoolPersistent(t *testing.T) {
 	e.mustPrepare(e.pool, poolClaim("r2", "llm0", poolPmemData, cfgFsRO))
 	r1, r2 := e.devices(e.pool, "r1")[0], e.devices(e.pool, "r2")[0]
 	mnt := filepath.Join(e.poolDir, "mounts", "c1af0001-direct")
-	if r1.Mode != api.ModeFS || r1.NodeMount != mnt || r2.NodeMount != mnt || r1.FsType != "erofs" || r1.Access != api.AccessDirect ||
+	if r1.Mode != api.ModeFS || r1.NodeMount != mnt || r2.NodeMount != mnt || r1.FSType != "erofs" || r1.Access != api.AccessDirect ||
 		r1.Path != "/run/cxl-fs/C1AF0001" || !r1.ReadOnly {
 		t.Fatalf("devices %+v %+v", r1, r2)
 	}
@@ -300,7 +300,7 @@ func TestPoolSchedulerHold(t *testing.T) {
 	res := e.prepare(e.pool, xnuma)
 	wantErrText(t, res.Err, "cxl-pool.nri.io: claim demo/claim-xnuma: ")
 	e.wantNoCommands("a Prepare without status data")
-	e.wantState(e.pool, "xnuma", state.PreparationUnknown)
+	e.wantState(e.pool, "xnuma", state.PreparationNone)
 	if s := e.pool.Serials(); len(s) != 0 {
 		t.Fatalf("serials %v", s)
 	}
@@ -340,6 +340,6 @@ func TestPoolRollbackOutlivesContext(t *testing.T) {
 	mustOK(t, os.Remove(e.cdiDir))
 	mustOK(t, os.MkdirAll(e.cdiDir, 0o755))
 	e.check("rolled back")
-	e.wantState(e.pool, "u1", state.PreparationUnknown)
+	e.wantState(e.pool, "u1", state.PreparationNone)
 	e.wantClean()
 }

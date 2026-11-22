@@ -40,7 +40,7 @@ type ClaimInfo struct {
 	ClaimName string // namespace/name
 	Devices   []state.DeviceInfo
 	// Lend is the lend of a companion claim.
-	Lend *lend.Lend
+	Lend *lend.Companion
 }
 
 // roots are the directories in the paths of the results: the sysfs mount
@@ -105,12 +105,12 @@ func deviceInfo(doc *store.Document, r *state.Result, rs roots) state.DeviceInfo
 		d.DeviceType, d.Mode = device.DeviceTypeRegion, api.ModeNUMA
 		d.Region = r.Region.Name
 		d.SysfsPath = regionPath(rs, r.Region.Name)
-		d.NUMANodes = []int{r.Region.NumaNode}
-		d.NodeAffinities = slices.Clone(r.Region.NumaAffinity)
+		d.NUMANodes = []int{r.Region.NUMANode}
+		d.NodeAffinities = slices.Clone(r.Region.NUMAAffinity)
 		d.TotalBytes, d.ConsumedBytes = r.Region.Size, r.Region.Consumed
 	case state.ResultDRAM:
 		d.DeviceType, d.Mode = device.DeviceTypeDRAM, api.ModeNUMA
-		d.NUMANodes = slices.Clone(r.DRAM.NumaNodes)
+		d.NUMANodes = slices.Clone(r.DRAM.NUMANodes)
 		d.TotalBytes, d.ConsumedBytes = r.DRAM.Size, r.DRAM.Consumed
 	case state.ResultLeaseClaim:
 		d.DeviceType = device.DeviceTypeLease
@@ -134,8 +134,8 @@ func grantInfo(doc *store.Document, g *state.Grant, d *state.DeviceInfo, rs root
 	d.Shared = sharedGrant(g)
 	switch g.Asked.Mode {
 	case state.ModeNUMA:
-		if g.Got.NumaNode != nil {
-			d.NUMANodes = []int{*g.Got.NumaNode}
+		if g.Got.NUMANode != nil {
+			d.NUMANodes = []int{*g.Got.NUMANode}
 		}
 	case state.ModeDax:
 		if g.Got.Dax != "" {
@@ -144,16 +144,16 @@ func grantInfo(doc *store.Document, g *state.Grant, d *state.DeviceInfo, rs root
 			d.DaxMajor, d.DaxMinor = dev.Major, dev.Minor
 		}
 		d.ReadOnly = g.Asked.ReadOnly
-	case state.ModeBlock, state.ModeFs:
+	case state.ModeBlock, state.ModeFS:
 		d.Persistent = true
 		d.ReadOnly = g.Asked.ReadOnly
 		if bd := g.Got.BlockDevice; bd != nil {
 			d.BlockDevice, d.BlockMajor, d.BlockMinor = bd.Name, bd.Dev.Major, bd.Dev.Minor
 		}
-		if g.Asked.Mode == state.ModeFs {
+		if g.Asked.Mode == state.ModeFS {
 			d.Access, d.Path = string(g.Got.Mount), g.Asked.Path
 			if m := doc.MountOf(g); m != nil {
-				d.NodeMount, d.FsType = m.Path, m.FsType
+				d.NodeMount, d.FSType = m.Path, m.FSType
 			}
 		}
 	}
@@ -170,8 +170,8 @@ func numaAffinity(doc *store.Document, g *state.Grant) []int {
 	if g.Asked.Source != state.SourceLocal {
 		return nil
 	}
-	if m := doc.Memdev(g.Serial); m != nil && m.Facts.NumaAffinity != nil {
-		return []int{*m.Facts.NumaAffinity}
+	if m := doc.Memdev(g.Serial); m != nil && m.Facts.NUMAAffinity != nil {
+		return []int{*m.Facts.NUMAAffinity}
 	}
 	return nil
 }
@@ -187,11 +187,11 @@ func regionPath(rs roots, name string) string {
 // lendOf returns the lend of a companion claim, nil for another claim: the
 // lease and the requester of the first grant with a lend, the lent NUMA
 // nodes of its grants in their order, and their lease binds.
-func lendOf(doc *store.Document, p *state.Preparation) *lend.Lend {
+func lendOf(doc *store.Document, p *state.Preparation) *lend.Companion {
 	if p.Lease == "" {
 		return nil
 	}
-	v := &lend.Lend{Lease: p.Lease}
+	v := &lend.Companion{Lease: p.Lease}
 	identity := false
 	for _, r := range p.Results {
 		if r.Grant == nil {
@@ -206,11 +206,11 @@ func lendOf(doc *store.Document, p *state.Preparation) *lend.Lend {
 			l = g.Intent.Lend
 		}
 		if l != nil && !identity {
-			v.Pod, v.Container, v.FsDir, v.Name = l.Pod, l.Container, l.FsDir, l.Name
+			v.Pod, v.Container, v.FSDir, v.Name = l.Pod, l.Container, l.FSDir, l.Name
 			identity = true
 		}
-		if g.Got.Lend != nil && g.Got.Lend.NumaNode != nil {
-			v.NumaNodes = append(v.NumaNodes, *g.Got.Lend.NumaNode)
+		if g.Got.Lend != nil && g.Got.Lend.NUMANode != nil {
+			v.NUMANodes = append(v.NUMANodes, *g.Got.Lend.NUMANode)
 		}
 		if b := g.Got.Bind; b != nil && (b.State == state.BindBound || b.State == state.BindStale) && !slices.Contains(v.Mounts, b.Target) {
 			v.Mounts = append(v.Mounts, b.Target)
@@ -240,7 +240,7 @@ func deviceMemory(d *state.DeviceInfo, keys envKeys) (api.Memory, bool) {
 		case d.Persistent && d.Mode == api.ModeBlock:
 			m.Path = d.BlockDevice
 		case d.Persistent && d.Mode == api.ModeFS:
-			m.Path, m.Access, m.FSType = d.Path, d.Access, d.FsType
+			m.Path, m.Access, m.FSType = d.Path, d.Access, d.FSType
 		}
 	case device.DeviceTypeRegion:
 		m.Key = keys.next(api.RegionKey(d.Region))

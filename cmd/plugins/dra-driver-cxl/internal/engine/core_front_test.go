@@ -250,7 +250,7 @@ func (fe *frontEnd) claim(sl engine.CoreSlot, uid string) *resourcev1.ResourceCl
 	}
 	c.Status.Allocation.Devices.Results = []resourcev1.DeviceRequestAllocationResult{r}
 	dev := map[string]any{"mode": string(sl.Mode)}
-	if sl.Mode == state.ModeFs || sl.Mode == state.ModeBlock {
+	if sl.Mode == state.ModeFS || sl.Mode == state.ModeBlock {
 		dev["readOnly"] = sl.ReadOnly
 	}
 	params, _ := json.Marshal(map[string]any{"apiVersion": "cxl.nri.io/v1alpha1", "kind": "MemoryConfig", "device": dev})
@@ -342,7 +342,7 @@ func (fe *frontEnd) checkCDIDevice(r *state.Records, snap *kernel.Snapshot, d *c
 	bad := func(format string, args ...any) {
 		out = append(out, fmt.Sprintf("CDI device %s: ", d.Name)+fmt.Sprintf(format, args...))
 	}
-	if marker := state.ResultEnvVarName(prep.UID, res.Index) + "=1"; !slices.Contains(d.ContainerEdits.Env, marker) {
+	if marker := api.ResultMarker(prep.UID, res.Index) + "=1"; !slices.Contains(d.ContainerEdits.Env, marker) {
 		bad("no %s in %v", marker, d.ContainerEdits.Env)
 	}
 	if res.Grant == nil {
@@ -385,7 +385,7 @@ func (fe *frontEnd) checkCDIDevice(r *state.Records, snap *kernel.Snapshot, d *c
 			(nodes[0].Permissions == "r") != g.Asked.ReadOnly:
 			bad("device nodes %s, the kernel has %s %d:%d (read-only %v)", nodeList(nodes), kb.Path, kb.Major, kb.Minor, g.Asked.ReadOnly)
 		}
-	case state.ModeFs:
+	case state.ModeFS:
 		m := r.MountOf(g)
 		switch {
 		case m == nil:
@@ -438,8 +438,8 @@ func (fe *frontEnd) checkLends(doc *store.Document, snap *kernel.Snapshot) []str
 	binds := map[string]bool{}
 	for i := range r.Grants {
 		g := &r.Grants[i]
-		if l := g.Got.Lend; l != nil && l.NumaNode != nil {
-			recorded[fmt.Sprintf("%d %s", *l.NumaNode, l.Lease)] = true
+		if l := g.Got.Lend; l != nil && l.NUMANode != nil {
+			recorded[fmt.Sprintf("%d %s", *l.NUMANode, l.Lease)] = true
 		}
 		if b := g.Got.Bind; b != nil && b.State != state.BindAbsent {
 			binds[b.Target] = true
@@ -469,10 +469,10 @@ func (fe *frontEnd) checkLends(doc *store.Document, snap *kernel.Snapshot) []str
 			g := r.Grant(*res.Grant)
 			switch {
 			case g == nil:
-			case g.Asked.Mode == state.ModeNUMA && g.Got.NumaNode != nil &&
-				!slices.Contains(lent, fmt.Sprintf("%d %s", *g.Got.NumaNode, prep.Lease)):
-				out = append(out, fmt.Sprintf("node %d of PREPARED companion %s is not lent (lent %v)", *g.Got.NumaNode, prep.UID, lent))
-			case g.Asked.Mode == state.ModeFs && (g.Got.Bind == nil || !mounted[g.Got.Bind.Target]):
+			case g.Asked.Mode == state.ModeNUMA && g.Got.NUMANode != nil &&
+				!slices.Contains(lent, fmt.Sprintf("%d %s", *g.Got.NUMANode, prep.Lease)):
+				out = append(out, fmt.Sprintf("node %d of PREPARED companion %s is not lent (lent %v)", *g.Got.NUMANode, prep.UID, lent))
+			case g.Asked.Mode == state.ModeFS && (g.Got.Bind == nil || !mounted[g.Got.Bind.Target]):
 				out = append(out, fmt.Sprintf("the lease bind of PREPARED companion %s is not mounted (%+v)", prep.UID, g.Got.Bind))
 			}
 		}
@@ -532,9 +532,9 @@ type frontHooks struct {
 }
 
 // OnLending returns the lend of the lease's container.
-func (h *frontHooks) OnLending(id string, _ *resourcev1.ResourceClaim) (*lend.Lend, error) {
-	return &lend.Lend{Lease: id, Pod: state.PodRef{Namespace: frontNS, Name: frontPod, UID: frontPodUID}, Container: frontCtr,
-		FsDir: filepath.Join(h.fe.leaseFsRoot, "lc-"+id), Name: "data"}, nil
+func (h *frontHooks) OnLending(id string, _ *resourcev1.ResourceClaim) (*lend.Companion, error) {
+	return &lend.Companion{Lease: id, Pod: state.PodRef{Namespace: frontNS, Name: frontPod, UID: frontPodUID}, Container: frontCtr,
+		FSDir: filepath.Join(h.fe.leaseFsRoot, "lc-"+id), Name: "data"}, nil
 }
 
 // OnPrepared is told the prepared companion.

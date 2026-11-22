@@ -274,7 +274,7 @@ func grantRequest(i int, uid string) GrantRequest {
 		req = localReq(uid, 0, d.serial, sl.mode, d.kind, 256*mib)
 	}
 	switch sl.mode {
-	case state.ModeFs:
+	case state.ModeFS:
 		req = fsReq(req, sl.readOnly, "")
 	case state.ModeBlock:
 		req.Asked.ReadOnly = sl.readOnly

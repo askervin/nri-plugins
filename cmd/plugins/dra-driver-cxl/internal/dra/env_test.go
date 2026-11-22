@@ -470,7 +470,7 @@ func (e *driverEnv) stateOf(p *Plugin, uid string) state.PreparationState {
 	if prep := e.preparation(p, uid); prep != nil {
 		return prep.State
 	}
-	return state.PreparationUnknown
+	return state.PreparationNone
 }
 
 // wantState fails the test unless the preparation of the claim uid of the
@@ -810,11 +810,11 @@ type fakeHooks struct {
 }
 
 // OnLending returns the lend of the lease's container.
-func (h *fakeHooks) OnLending(id string, claim *resourcev1.ResourceClaim) (*lend.Lend, error) {
+func (h *fakeHooks) OnLending(id string, claim *resourcev1.ResourceClaim) (*lend.Companion, error) {
 	h.e.event("lending %s %s", id, claim.Name)
 	h.mu.Lock()
 	err, block, entered := h.lendingErr, h.block[claim.Name], h.entered
-	lend := &lend.Lend{Lease: id, Pod: state.PodRef{Namespace: envNS, Name: envPod, UID: envPodUID}, Container: envCtr, FsDir: h.fsDir, Name: h.name}
+	lend := &lend.Companion{Lease: id, Pod: state.PodRef{Namespace: envNS, Name: envPod, UID: envPodUID}, Container: envCtr, FSDir: h.fsDir, Name: h.name}
 	h.mu.Unlock()
 	if entered != nil {
 		entered <- claim.Name

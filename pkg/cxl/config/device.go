@@ -190,7 +190,7 @@ func (d Device) persistentSection() (string, error) {
 		return "", fmt.Errorf(`%sdevice.fsType: invalid filesystem type %q (lower-case letters, digits, "_" and "-")`, errPrefix, d.FSType)
 	case d.Access != "" && d.Access != api.AccessDirect && d.Access != api.AccessCached:
 		return "", fmt.Errorf("%sdevice.access: invalid access %q (%s or %s)", errPrefix, d.Access, api.AccessDirect, api.AccessCached)
-	case d.Path != "" && !validFsPath(d.Path):
+	case d.Path != "" && !validFSPath(d.Path):
 		return "", fmt.Errorf("%sdevice.path: invalid path %q (an absolute path outside %s)", errPrefix, d.Path, joinList(forbiddenPathDirs, "and"))
 	case d.IsReadOnly() && mode == api.ModeNUMA:
 		return "", errReadOnlyMode()
@@ -218,9 +218,9 @@ func errReadOnlyMode() error {
 	return fmt.Errorf("%sdevice.readOnly needs mode %s, %s or %s", errPrefix, api.ModeDax, api.ModeBlock, api.ModeFS)
 }
 
-// validFsPath tells whether p may be the path of mode fs in a container:
+// validFSPath tells whether p may be the path of mode fs in a container:
 // absolute, clean, not / and not in one of forbiddenPathDirs.
-func validFsPath(p string) bool {
+func validFSPath(p string) bool {
 	if !filepath.IsAbs(p) || filepath.Clean(p) != p || p == "/" {
 		return false
 	}

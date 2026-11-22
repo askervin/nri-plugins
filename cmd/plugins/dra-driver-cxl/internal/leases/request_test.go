@@ -286,7 +286,7 @@ func (a askedText) asked() state.LeaseAsked {
 	serial, _ := api.ParseSerial(a.Serial)
 	return state.LeaseAsked{Source: state.Source(a.Source), DeviceSource: state.Source(a.DeviceSource), Mode: state.Mode(a.Mode),
 		Shared: a.Shared, SharedDevice: a.SharedDevice, ReadOnly: a.ReadOnly, ReadWrite: a.ReadWrite, Access: state.Access(a.Access),
-		FsType: a.FsType, Name: a.Name, Size: a.Size, Serial: state.Serial(serial), SerialZero: a.Serial != "" && serial == 0}
+		FSType: a.FsType, Name: a.Name, Size: a.Size, Serial: state.Serial(serial), SerialZero: a.Serial != "" && serial == 0}
 }
 
 // opaqueConfig is a companion claim config: its driver, the requests it
@@ -330,7 +330,7 @@ func TestSerialZero(t *testing.T) {
 // environment.
 func TestReadySerialZero(t *testing.T) {
 	l := &state.Lease{ID: "000000a1", State: state.LeaseReady, Asked: state.LeaseAsked{Mode: state.ModeDax},
-		Got: &state.LeaseGot{Source: state.SourcePool, Bytes: 1 << 28, Dax: "/dev/dax0.0"}}
+		Got: &state.LeaseGot{Source: state.SourcePool, Size: 1 << 28, Dax: "/dev/dax0.0"}}
 	r := leaseInfo(l)
 	if r.Serial != "0x0" || r.Env["CXL_"+api.Key(0, 1)+"_SERIAL"] != "0x0" {
 		t.Fatalf("response %+v", r)
@@ -680,7 +680,7 @@ func TestCompanionClaims(t *testing.T) {
 	e.b.opts.PoolDriver = ""
 	for _, a := range []state.LeaseAsked{
 		{Source: state.SourcePool, Shared: true, Mode: state.ModeDax},
-		{Source: state.SourcePool, Shared: true, ReadOnly: true, Mode: state.ModeFs, Access: state.AccessDirect},
+		{Source: state.SourcePool, Shared: true, ReadOnly: true, Mode: state.ModeFS, Access: state.AccessDirect},
 		{Mode: state.ModeBlock, Serial: serialPoolP, SharedDevice: true, DeviceSource: state.SourcePool},
 	} {
 		_, _, err := e.b.companionObjects(&state.Lease{ID: "x", Asked: a, Pod: pod})

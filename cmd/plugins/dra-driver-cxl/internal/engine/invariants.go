@@ -449,11 +449,11 @@ func checkI10(c *checker) {
 
 func checkI12(c *checker) {
 	for _, l := range c.r.Leases {
-		if l.State != state.LeaseReady || l.Lend == nil || l.Lend.NumaNode == nil {
+		if l.State != state.LeaseReady || l.Lend == nil || l.Lend.NUMANode == nil {
 			continue
 		}
-		if n, ok := c.s.NUMANode(*l.Lend.NumaNode); !ok || !n.HasMemory {
-			c.add("lease "+l.ID, "lends NUMA node %d, which has no memory online", *l.Lend.NumaNode)
+		if n, ok := c.s.NUMANode(*l.Lend.NUMANode); !ok || !n.HasMemory {
+			c.add("lease "+l.ID, "lends NUMA node %d, which has no memory online", *l.Lend.NUMANode)
 		}
 	}
 }

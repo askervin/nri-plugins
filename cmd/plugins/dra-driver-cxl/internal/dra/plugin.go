@@ -360,13 +360,13 @@ func (p *Plugin) logPrepared(pr *prepare) {
 		what := fmt.Sprintf("%s: claim %s: prepared %s (serial 0x%x, shared %v, mode %s, read-only %v) as %s %s",
 			p.rules.Name, pr.claimName, pr.device(req.Ref), uint64(g.Serial), sharedGrant(g), g.Asked.Mode, g.Asked.ReadOnly,
 			memdev, g.Got.Region)
-		if g.Asked.Mode == state.ModeBlock || g.Asked.Mode == state.ModeFs {
+		if g.Asked.Mode == state.ModeBlock || g.Asked.Mode == state.ModeFS {
 			block, nodeMount, loop, fsType := "", "", "", ""
 			if bd := g.Got.BlockDevice; bd != nil {
 				block = bd.Name
 			}
 			if m := r.MountOf(g); m != nil {
-				nodeMount, loop, fsType = m.Path, m.Loop, m.FsType
+				nodeMount, loop, fsType = m.Path, m.Loop, m.FSType
 			}
 			klog.Infof("%s namespace %s block %s access %q fs %q mount %q loop %q",
 				what, g.Got.Namespace, block, g.Got.Mount, fsType, nodeMount, loop)
@@ -374,7 +374,7 @@ func (p *Plugin) logPrepared(pr *prepare) {
 		}
 		// the shares of a shared local memdev that the claim uses
 		uses := strings.TrimRight(" "+pr.uses[req.Ref], " ")
-		klog.Infof("%s dax %s size %d node %d%s", what, g.Got.Dax, g.Got.Size, state.NumaNodeOf(g.Got.NumaNode), uses)
+		klog.Infof("%s dax %s size %d node %d%s", what, g.Got.Dax, g.Got.Size, state.NUMANodeOf(g.Got.NUMANode), uses)
 	}
 }
 
@@ -423,7 +423,7 @@ func (p *Plugin) realise(ctx context.Context, pr *prepare) error {
 // the Prepare back, and tells the broker that the lend failed.
 func (p *Plugin) finish(ctx context.Context, pr *prepare) kubeletplugin.PrepareResult {
 	result := prepareResult(p.preparation(pr.uid), p.rules.CDIKind())
-	var rec *lend.Lend
+	var rec *lend.Companion
 	// step changes the records in the PREPARED commit, after runs once it
 	// is committed; both do nothing for a claim that is not a companion
 	step, after := func(*state.Records) {}, func() {}
@@ -459,7 +459,7 @@ func (p *Plugin) finish(ctx context.Context, pr *prepare) kubeletplugin.PrepareR
 	}
 	if rec != nil {
 		klog.Infof("%s: claim %s: companion of lease %s of %s/%s/%s prepared (nodes %v, binds %v)",
-			p.rules.Name, pr.claimName, rec.Lease, rec.Pod.Namespace, rec.Pod.Name, rec.Container, rec.NumaNodes, rec.Mounts)
+			p.rules.Name, pr.claimName, rec.Lease, rec.Pod.Namespace, rec.Pod.Name, rec.Container, rec.NUMANodes, rec.Mounts)
 	}
 	after()
 	return result
@@ -553,7 +553,7 @@ func (p *Plugin) lendCompanion(ctx context.Context, pr *prepare) error {
 
 // lendAndDevices returns the lend of a preparation of a companion claim and
 // its memdevs.
-func (p *Plugin) lendAndDevices(prep *state.Preparation) (*lend.Lend, []state.DeviceInfo) {
+func (p *Plugin) lendAndDevices(prep *state.Preparation) (*lend.Companion, []state.DeviceInfo) {
 	if prep == nil {
 		return nil, nil
 	}

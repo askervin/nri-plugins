@@ -104,7 +104,7 @@ func (e *Engine) saveProbe(serial state.Serial, p state.Probe) error {
 // smaller of its configured usable size (Facts.Usable) and the probed one,
 // rounded down to kernel.RegionAlign; 0 for all of it.
 func (e *Engine) usableSize(req *GrantRequest) uint64 {
-	size := req.Facts.Usable
+	size := req.Facts.UsableSize
 	e.qmu.Lock()
 	p, ok := e.probes[req.Serial]
 	e.qmu.Unlock()

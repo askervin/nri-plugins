@@ -25,42 +25,42 @@ type Trigger = fsm.Trigger
 const (
 	// TriggerPrepare is NodePrepareResources of either driver, its
 	// rollback included.
-	TriggerPrepare Trigger = "a-prepare"
+	TriggerPrepare Trigger = "prepare"
 	// TriggerUnprepare is NodeUnprepareResources of either driver.
-	TriggerUnprepare Trigger = "a-unprepare"
+	TriggerUnprepare Trigger = "unprepare"
 	// TriggerRecover is the recovery at the start of the process, both
 	// phases.
-	TriggerRecover Trigger = "a-recover"
+	TriggerRecover Trigger = "recover"
 	// TriggerLoad is the store loading the document at the start of the
 	// process.
 	TriggerLoad Trigger = "load"
 	// TriggerObserve is an observation of the kernel: a scan, a uevent,
 	// a memdev that appeared or went.
-	TriggerObserve Trigger = "a-observe"
+	TriggerObserve Trigger = "observe"
 	// TriggerList is a list of the pool driver's ResourceSlices or of
 	// the pool claims allocated to the node.
-	TriggerList Trigger = "a-list"
+	TriggerList Trigger = "list"
 	// TriggerExpire is a timer of a record that ran out.
 	TriggerExpire Trigger = "expire"
 	// TriggerRequest is a lease request on the socket of a lease claim,
 	// until its response.
-	TriggerRequest Trigger = "a-request"
+	TriggerRequest Trigger = "request"
 	// TriggerRelease is the release of a lease: by its client, at the
 	// end of its requester, at a failure.
-	TriggerRelease Trigger = "a-release"
+	TriggerRelease Trigger = "release"
 	// TriggerReconcile is the periodic lease reconcile and repair pass.
-	TriggerReconcile Trigger = "a-reconcile"
+	TriggerReconcile Trigger = "reconcile"
 	// TriggerOnLending is the companion claim's Prepare passing the
 	// companion gate.
-	TriggerOnLending Trigger = "OnLending"
+	TriggerOnLending Trigger = "lending"
 	// TriggerOnPrepared is the companion claim's Prepare handing over
 	// the lent devices.
-	TriggerOnPrepared Trigger = "OnPrepared"
+	TriggerOnPrepared Trigger = "prepared"
 	// TriggerOnLendFailed is a bind or lend error of the companion
 	// claim's Prepare, or an error that its retries cannot heal.
-	TriggerOnLendFailed Trigger = "OnLendFailed"
+	TriggerOnLendFailed Trigger = "lend-failed"
 	// TriggerOnReleasing is the companion claim's Unprepare.
-	TriggerOnReleasing Trigger = "OnReleasing"
+	TriggerOnReleasing Trigger = "releasing"
 )
 
 // Triggers are all triggers, in the order of the documentation.

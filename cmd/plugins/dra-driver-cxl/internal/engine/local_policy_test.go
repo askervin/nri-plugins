@@ -355,7 +355,7 @@ func TestLocalPolicyPersistent(t *testing.T) {
 	}
 	t.Run("unprepare", func(t *testing.T) {
 		v := newPmem(t)
-		v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
+		v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFS, false, ""))
 		above := rawRegion(t, v, "mem1")
 		logs := klogtest.Capture(t, 3)
 		v.mustUnprepare(localDriver, "w")
@@ -371,7 +371,7 @@ func TestLocalPolicyPersistent(t *testing.T) {
 		v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib}, fake.MemdevSpec{Serial: serialB})
 		regionAboveNext(t, v, "mem1")
 		// a reader of a device that no writer formatted fails
-		if err := v.prepare(localDriver, "r", localPmemReq("r", 0, state.ModeFs, true, "")); err == nil {
+		if err := v.prepare(localDriver, "r", localPmemReq("r", 0, state.ModeFS, true, "")); err == nil {
 			t.Fatal("the Prepare succeeded")
 		}
 		v.check("rolled back")
@@ -387,7 +387,7 @@ func TestLocalPolicyPersistent(t *testing.T) {
 	t.Run("recovery", func(t *testing.T) {
 		v := newPmem(t)
 		cutWhenRealised(v, "w")
-		if !v.cut(func() { _ = v.prepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, "")) }) {
+		if !v.cut(func() { _ = v.prepare(localDriver, "w", localPmemReq("w", 0, state.ModeFS, false, "")) }) {
 			t.Fatal("not cut")
 		}
 		above := rawRegion(t, v, "mem1")
@@ -436,7 +436,7 @@ func TestPoolPolicyRollbackDestroysBelow(t *testing.T) {
 func TestLocalPersistentRetryKeepsDisabledRegion(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib}, fake.MemdevSpec{Serial: serialC})
 	v.formatPmem("mem0", "ext4")
-	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
+	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFS, false, ""))
 	region := v.grant("w", 0).Got.Region
 	v.f.FailCommand("cxl destroy-region", errors.New("cxl region: cmd_destroy_region: failed"))
 	if err := v.unprepare(localDriver, "w"); err == nil {
@@ -458,7 +458,7 @@ func TestLocalPersistentIdleLeftoverAtPrepare(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialB}, fake.MemdevSpec{Serial: serialP, Pmem: gib}, fake.MemdevSpec{Serial: serialC})
 	v.formatPmem("mem1", "ext4")
 	v.mustPrepare(poolDriver, "b", poolReq("b", 0, serialB, state.ModeDax, state.KindExclusive))
-	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
+	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFS, false, ""))
 	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialC, state.ModeDax, state.KindExclusive))
 	v.mustUnprepare(localDriver, "w")
 	v.mustUnprepare(poolDriver, "b")
@@ -467,7 +467,7 @@ func TestLocalPersistentIdleLeftoverAtPrepare(t *testing.T) {
 	if st := v.f.Stack(port); len(st) != 2 || st[0] != "" {
 		t.Fatalf("stack %q, want a hole below the idle region", st)
 	}
-	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
+	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFS, false, ""))
 	if st := v.f.Stack(port); slices.Contains(st, "") {
 		t.Fatalf("stack %q: the hole below the idle region stayed", st)
 	}

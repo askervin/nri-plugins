@@ -86,7 +86,7 @@ func TestCompanionGate(t *testing.T) {
 		wantErrText(t, e.prepare(p, e.companionOf(p)).Err, e.prefix(p)+"claim demo/cxl-lease-l1: not the companion of lease l1")
 		hooks.setLendingErr(nil)
 		e.wantNoCommands(p.Name() + ": a refused companion")
-		e.wantState(p, "c1", state.PreparationUnknown)
+		e.wantState(p, "c1", state.PreparationNone)
 		e.wantEvents(p.Name(), "lending l1 cxl-lease-l1")
 		e.lent, e.nodes, e.hooks = false, nil, nil
 		e.local.Lender().Set(nil, nil)
@@ -114,17 +114,17 @@ func TestCompanionLenderWithoutNRI(t *testing.T) {
 	e.lend(nil, hooks)
 	ctx := context.Background()
 	c := e.local.Lender()
-	rec := &lend.Lend{Lease: "l1", Pod: state.PodRef{Namespace: envNS, Name: envPod, UID: envPodUID}, Container: envCtr}
+	rec := &lend.Companion{Lease: "l1", Pod: state.PodRef{Namespace: envNS, Name: envPod, UID: envPodUID}, Container: envCtr}
 	numa := state.DeviceInfo{DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA, NUMANodes: []int{3}}
-	if err := c.Lend(ctx, rec, []state.DeviceInfo{numa}); !errors.Is(err, lend.ErrLendingUnavailable) || len(rec.NumaNodes) != 0 {
-		t.Fatalf("numa lend: %v, nodes %v", err, rec.NumaNodes)
+	if err := c.Lend(ctx, rec, []state.DeviceInfo{numa}); !errors.Is(err, lend.ErrLendingUnavailable) || len(rec.NUMANodes) != 0 {
+		t.Fatalf("numa lend: %v, nodes %v", err, rec.NUMANodes)
 	}
 	dax := state.DeviceInfo{DeviceType: device.DeviceTypeMemdev, Mode: api.ModeDax, DaxDevice: "/dev/dax0.1"}
-	if err := c.Lend(ctx, rec, []state.DeviceInfo{dax}); err != nil || len(rec.NumaNodes) != 0 {
-		t.Fatalf("dax lend: %v, nodes %v", err, rec.NumaNodes)
+	if err := c.Lend(ctx, rec, []state.DeviceInfo{dax}); err != nil || len(rec.NUMANodes) != 0 {
+		t.Fatalf("dax lend: %v, nodes %v", err, rec.NUMANodes)
 	}
 	logs := klogtest.Capture(t, 0)
-	rec.NumaNodes = []int{3}
+	rec.NUMANodes = []int{3}
 	mustOK(t, c.Revoke(ctx, rec, "demo/cxl-lease-l1"))
 	line := "cxl.nri.io: claim demo/cxl-lease-l1: lease l1: lending unavailable: NRI not connected, cannot revoke nodes [3] from demo/borrower/app"
 	if got := logs(); logMatches(got, line) != 1 {
@@ -233,7 +233,7 @@ func TestCompanionLendNUMA(t *testing.T) {
 			var atLend []string
 			nodes.onLend = func(node int) {
 				g := e.records().Grant(state.GrantRef{Claim: "c1"})
-				atLend = append(atLend, g.Got.Lend.Lease, string(rune('0'+state.NumaNodeOf(g.Got.Lend.NumaNode))))
+				atLend = append(atLend, g.Got.Lend.Lease, string(rune('0'+state.NUMANodeOf(g.Got.Lend.NUMANode))))
 			}
 			logs := klogCapture(t)
 			res := e.mustPrepare(p, e.companionOf(p))
@@ -253,7 +253,7 @@ func TestCompanionLendNUMA(t *testing.T) {
 			if !local {
 				wantLogText(t, logs(), "cxl-pool.nri.io: claim demo/cxl-lease-l1: companion of lease l1 of demo/borrower/app prepared (nodes [2], binds [])")
 			}
-			if info := p.ClaimInfo("c1"); info == nil || info.Lend == nil || info.Lend.Lease != "l1" || !slices.Equal(info.Lend.NumaNodes, []int{2}) ||
+			if info := p.ClaimInfo("c1"); info == nil || info.Lend == nil || info.Lend.Lease != "l1" || !slices.Equal(info.Lend.NUMANodes, []int{2}) ||
 				info.Lend.Pod.UID != envPodUID || info.Lend.Container != envCtr {
 				t.Fatalf("claim info %+v", info)
 			}
@@ -431,7 +431,7 @@ func TestCompanionLendFails(t *testing.T) {
 			if !slices.Equal(online, []bool{true}) {
 				t.Fatalf("memory online at the revokes: %v", online)
 			}
-			e.wantState(p, "c1", state.PreparationUnknown)
+			e.wantState(p, "c1", state.PreparationNone)
 			e.wantClean()
 		})
 	}
@@ -450,7 +450,7 @@ func TestLeaseBindTarget(t *testing.T) {
 		{"..", "/run/cxl/fs/l1", "", `lease l1: invalid name ".."`},
 		{"models", "", "", "lease l1: its lease claim has no filesystem directory"},
 	} {
-		target, err := leaseBindTarget(&lend.Lend{Lease: "l1", Name: c.name, FsDir: c.fsDir})
+		target, err := leaseBindTarget(&lend.Companion{Lease: "l1", Name: c.name, FSDir: c.fsDir})
 		got := ""
 		if err != nil {
 			got = err.Error()
@@ -476,7 +476,7 @@ func TestCompanionLeaseBindFails(t *testing.T) {
 	bindErr := "device 0xc1af0001: " + target + " is a tmpfs mount of tmpfs, not of " + filepath.Join(e.poolDir, "mounts", "c1af0001-direct")
 	wantErrText(t, res.Err, e.prefix(e.pool)+bindErr)
 	e.wantEvents("failed", "lending l1 cxl-lease-l1", "failed l1: "+bindErr)
-	e.wantState(e.pool, "c1", state.PreparationUnknown)
+	e.wantState(e.pool, "c1", state.PreparationNone)
 	mustOK(t, e.k.Kernel().Unmount(target))
 	e.wantClean()
 }
@@ -499,7 +499,7 @@ func TestCompanionLeaseBindRefused(t *testing.T) {
 	wantErrText(t, e.prepare(e.pool, two).Err, e.prefix(e.pool)+twoFs)
 	e.wantEvents("two fs devices", "lending l1 cxl-lease-l1", "failed l1: "+twoFs)
 	e.wantNoCommands("refused lease binds")
-	e.wantState(e.pool, "c1", state.PreparationUnknown)
+	e.wantState(e.pool, "c1", state.PreparationNone)
 	if _, err := os.Stat(hooks.fsDir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("lease directory made: %v", err)
 	}
@@ -521,7 +521,7 @@ func TestCompanionRefusedLasting(t *testing.T) {
 	wantErrText(t, e.prepare(e.pool, e.companionOf(e.pool, cfgFsRO)).Err, e.prefix(e.pool)+mismatch)
 	e.wantEvents("mismatch", "lending l1 cxl-lease-l1", "failed l1: "+mismatch)
 	e.wantNoCommands("refused companions")
-	e.wantState(e.pool, "c1", state.PreparationUnknown)
+	e.wantState(e.pool, "c1", state.PreparationNone)
 	e.wantClean()
 }
 
@@ -570,7 +570,7 @@ func TestCompanionRevokeEveryNode(t *testing.T) {
 	e := lendEnv(t)
 	nodes, _ := e.lending()
 	nodes.setErrors(nil, errSteered)
-	rec := &lend.Lend{Lease: "l1", Pod: state.PodRef{Namespace: envNS, Name: envPod, UID: envPodUID}, Container: envCtr, NumaNodes: []int{2, 3}}
+	rec := &lend.Companion{Lease: "l1", Pod: state.PodRef{Namespace: envNS, Name: envPod, UID: envPodUID}, Container: envCtr, NUMANodes: []int{2, 3}}
 	err := e.pool.Lender().Revoke(context.Background(), rec, "demo/cxl-lease-l1")
 	e.wantEvents("revoke", "revoke pod-uid-1/app 2 l1", "revoke pod-uid-1/app 3 l1")
 	for _, n := range []int{2, 3} {

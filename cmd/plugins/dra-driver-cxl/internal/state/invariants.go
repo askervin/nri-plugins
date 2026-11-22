@@ -134,7 +134,7 @@ func CheckStates(r *Records) error {
 // are defined next to their tables.
 var (
 	memdevStored     = fsm.List(MemdevActive, MemdevIdleKept, MemdevGone)
-	daxDeviceStored  = fsm.List(DaxCreating, DaxSized, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline, DaxSeed)
+	daxDeviceStored  = fsm.List(DaxCreating, DaxUnbound, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline, DaxSeed)
 	mountStored      = fsm.List(MountedRO, MountedRW, MountForeign, MountUnrestored)
 	bindStored       = fsm.List(BindAbsent, BindBound, BindStale)
 	leaseClaimStored = fsm.List(LeaseClaimOpen, LeaseClaimOpenNoListener, LeaseClaimClosing)
@@ -512,7 +512,7 @@ func (r *Records) RegionInMaking(m *Memdev, reg *Region) bool {
 	switch {
 	case reg.State == RegionNoted:
 		return true
-	case reg.State != RegionOwned || reg.Mode != RegionRam || len(m.Grants) == 0:
+	case reg.State != RegionOwned || reg.Mode != RegionRAM || len(m.Grants) == 0:
 		return false
 	}
 	for _, ref := range m.Grants {
@@ -594,7 +594,7 @@ func checkGrantIntent(g *Grant, add addFunc) {
 	}
 	if l := g.Got.Lend; l != nil {
 		il := g.Intent.Lend
-		if il == nil || il.Lease != l.Lease || NumaNodeOf(il.NumaNode) != NumaNodeOf(l.NumaNode) {
+		if il == nil || il.Lease != l.Lease || NUMANodeOf(il.NUMANode) != NUMANodeOf(l.NUMANode) {
 			add(grantID(g), "lend of lease %s is not its intent", l.Lease)
 		}
 	}

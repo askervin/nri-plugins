@@ -49,7 +49,7 @@ const defaultFsPathDir = "/run/cxl-fs"
 // results.
 type prepare struct {
 	uid, claimName string
-	lend           *lend.Lend
+	lend           *lend.Companion
 	reqs           []engine.GrantRequest
 	results        []state.Result
 	// uses are the shares of the grants of shared memdevs, for the log
@@ -81,13 +81,13 @@ func (pr *prepare) grantLend() *state.GrantLend {
 	if l == nil {
 		return nil
 	}
-	return &state.GrantLend{Lease: l.Lease, Pod: l.Pod, Container: l.Container, FsDir: l.FsDir, Name: l.Name}
+	return &state.GrantLend{Lease: l.Lease, Pod: l.Pod, Container: l.Container, FSDir: l.FSDir, Name: l.Name}
 }
 
 // leaseBind sets the lease bind of a request of mode fs of a companion
 // claim; fs counts them: a lease has one filesystem device at most.
 func (pr *prepare) leaseBind(req *engine.GrantRequest, fs *int) error {
-	if req.Asked.Mode != state.ModeFs || pr.lend == nil {
+	if req.Asked.Mode != state.ModeFS || pr.lend == nil {
 		return nil
 	}
 	if *fs++; *fs > 1 {
@@ -324,10 +324,10 @@ func otherResult(res *state.Result, r *resourcev1.DeviceRequestAllocationResult,
 		if err := cfg.NUMAOnly(device.DeviceTypeRegion); err != nil {
 			return err
 		}
-		reg := &state.RegionResult{Name: d.Name, NumaNode: d.NumaNode, Size: d.Size, Consumed: consumed}
+		reg := &state.RegionResult{Name: d.Name, NUMANode: d.NumaNode, Size: d.Size, Consumed: consumed}
 		for _, a := range d.NodeAffinity {
 			if a >= 0 {
-				reg.NumaAffinity = append(reg.NumaAffinity, a)
+				reg.NUMAAffinity = append(reg.NUMAAffinity, a)
 			}
 		}
 		res.Kind, res.Region = state.ResultRegion, reg
@@ -335,7 +335,7 @@ func otherResult(res *state.Result, r *resourcev1.DeviceRequestAllocationResult,
 		if err := cfg.NUMAOnly(device.DeviceTypeDRAM); err != nil {
 			return err
 		}
-		res.Kind, res.DRAM = state.ResultDRAM, &state.DRAMResult{NumaNodes: slices.Clone(d.Nodes), Size: d.Size, Consumed: consumed}
+		res.Kind, res.DRAM = state.ResultDRAM, &state.DRAMResult{NUMANodes: slices.Clone(d.Nodes), Size: d.Size, Consumed: consumed}
 	case *LeaseToken:
 		if err := cfg.CheckLease(); err != nil {
 			return err
@@ -358,11 +358,11 @@ func (p *Plugin) memdevRequest(pr *prepare, r *resourcev1.DeviceRequestAllocatio
 		Serial: state.Serial(dev.Serial),
 		Asked:  state.Asked{Source: state.SourceLocal, ReadOnly: cfg.IsReadOnly()},
 		Facts: state.MemdevFacts{Shared: dev.Shared, Persistent: dev.Persistent,
-			Usable: p.local.UsableSize(dev.Name, dev.Serial)},
+			UsableSize: p.local.UsableSize(dev.Name, dev.Serial)},
 		Lend: pr.grantLend(),
 	}
 	if dev.NodeAffinity >= 0 {
-		req.Facts.NumaAffinity = state.NumaNodePtr(dev.NodeAffinity)
+		req.Facts.NUMAAffinity = state.NUMANodePtr(dev.NodeAffinity)
 	}
 	if !p.local.Managed {
 		return req, fmt.Errorf("device %s: local memdevs are not managed (manageMemdevs: false)", r.Device)
@@ -431,7 +431,7 @@ func (p *Plugin) persistentRequest(pr *prepare, req *engine.GrantRequest, r *res
 		return fail(err)
 	}
 	req.Asked.Kind, req.Asked.Mode, req.Asked.Shared = state.KindPersistent, state.Mode(mode), dev.Shared
-	req.Asked.Access, req.Asked.FsType = state.Access(cfg.Access), cfg.FSType
+	req.Asked.Access, req.Asked.FSType = state.Access(cfg.Access), cfg.FSType
 	if mode == api.ModeFS {
 		if req.Asked.Path = cfg.Path; req.Asked.Path == "" {
 			req.Asked.Path = defaultFsPath(key)
@@ -481,7 +481,7 @@ func (p *Plugin) poolResult(claim *resourcev1.ResourceClaim, pr *prepare, r *res
 	key := keys.next(api.Key(data.Serial, 1))
 	if mode == api.ModeFS {
 		// access "": by the type of the filesystem, at its Prepare
-		asked.Access, asked.Path, asked.FsType = state.Access(cfg.Access), cmp.Or(cfg.Path, defaultFsPath(key)), cfg.FSType
+		asked.Access, asked.Path, asked.FSType = state.Access(cfg.Access), cmp.Or(cfg.Path, defaultFsPath(key)), cfg.FSType
 	}
 	if err := p.checkSamePreparation(data, asked, pr.uid); err != nil {
 		return nil, fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, err)

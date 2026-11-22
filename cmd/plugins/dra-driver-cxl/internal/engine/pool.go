@@ -29,7 +29,7 @@ import (
 // mode numa (the node fenced first, and again when the node is known only
 // after onlining), device_dax in mode dax (never onlined).
 func (e *Engine) realisePoolRam(ctx context.Context, req *GrantRequest, memdev string) error {
-	region, err := e.ensureRegion(ctx, req, memdev, state.RegionRam, 0)
+	region, err := e.ensureRegion(ctx, req, memdev, state.RegionRAM, 0)
 	if err != nil {
 		return err
 	}
@@ -48,7 +48,7 @@ func (e *Engine) realisePoolRam(ctx context.Context, req *GrantRequest, memdev s
 		if err != nil {
 			return err
 		}
-		got.NumaNode = state.NumaNodePtr(node)
+		got.NUMANode = state.NUMANodePtr(node)
 	} else {
 		if d := e.k.DaxDriver(dax); d != kernel.DriverDeviceDax {
 			return fmt.Errorf("%s: %s is bound to %q, not %s", memdev, dax, d, kernel.DriverDeviceDax)

@@ -64,14 +64,14 @@ type Memdev struct {
 // MemdevFacts are what the driver knows of a memdev from the kernel, the
 // configuration and the pool.
 type MemdevFacts struct {
-	// Usable is the number of bytes the driver uses, 0 for all of it (the
+	// UsableSize is the number of bytes the driver uses, 0 for all of it (the
 	// configured usable size and the address line probe).
-	Usable     uint64 `json:"usable,omitempty"`
+	UsableSize uint64 `json:"usable,omitempty"`
 	Shared     bool   `json:"shared,omitempty"`
 	Persistent bool   `json:"persistent,omitempty"`
 	Coherent   bool   `json:"coherent,omitempty"`
-	// NumaAffinity is the CPU NUMA node of the memdev.
-	NumaAffinity *int `json:"numaAffinity,omitempty"`
+	// NUMAAffinity is the CPU NUMA node of the memdev.
+	NUMAAffinity *int `json:"numaAffinity,omitempty"`
 }
 
 // StalePath is a lease bind whose unmount failed busy.
@@ -91,7 +91,7 @@ const (
 type MemdevState string
 
 const (
-	MemdevUnused   MemdevState = "UNUSED"
+	MemdevNone     MemdevState = "UNUSED"
 	MemdevActive   MemdevState = "ACTIVE"
 	MemdevIdleKept MemdevState = "IDLE_KEPT"
 	MemdevGone     MemdevState = "GONE"
@@ -101,10 +101,10 @@ const (
 var MemdevTable = Table[MemdevState]{
 	Object: "Memdev",
 	Field:  "State",
-	States: fsm.List(MemdevUnused, MemdevActive, MemdevIdleKept, MemdevGone),
+	States: fsm.List(MemdevNone, MemdevActive, MemdevIdleKept, MemdevGone),
 	Rows: []Transition[MemdevState]{
 		{
-			From: fsm.List(MemdevUnused), To: MemdevActive, Triggers: fsm.List(TriggerPrepare),
+			From: fsm.List(MemdevNone), To: MemdevActive, Triggers: fsm.List(TriggerPrepare),
 			When:  "the first grant of the serial is JOURNALED",
 			Guard: "provenance allows the source",
 			Effects: "commit (d) with the facts (usable, shared, persistent, coherent, NUMA affinity); " +
@@ -116,7 +116,7 @@ var MemdevTable = Table[MemdevState]{
 			Effects: "commits with the grants",
 		},
 		{
-			From: fsm.List(MemdevActive), To: MemdevUnused, Triggers: releasers,
+			From: fsm.List(MemdevActive), To: MemdevNone, Triggers: releasers,
 			When: "the last grant RELEASED and Policy says destroy (local sliced, local shared not configured any " +
 				"more, pool)",
 			Guard:   "the region destroyed; a pool memdev disabled",
@@ -135,7 +135,7 @@ var MemdevTable = Table[MemdevState]{
 			Effects: "commit (d)",
 		},
 		{
-			From: fsm.List(MemdevIdleKept), To: MemdevUnused, Triggers: fsm.List(TriggerRecover, TriggerPrepare),
+			From: fsm.List(MemdevIdleKept), To: MemdevNone, Triggers: fsm.List(TriggerRecover, TriggerPrepare),
 			When: "the recovery or the next Prepare of the memdev finds the keep reason gone (shared not " +
 				"configured any more; nothing above a kept persistent region; an idle leftover)",
 			Guard:   "Policy says destroy",
@@ -150,7 +150,7 @@ var MemdevTable = Table[MemdevState]{
 			Effects: "commit (l); the hollow regions of ours noted in Hollow; grants kept for kubelet's Unprepare",
 		},
 		{
-			From: fsm.List(MemdevGone), To: MemdevUnused, Triggers: fsm.List(TriggerUnprepare, TriggerRecover),
+			From: fsm.List(MemdevGone), To: MemdevNone, Triggers: fsm.List(TriggerUnprepare, TriggerRecover),
 			When:    "the last grant RELEASED (by serial) and Hollow empty",
 			Guard:   "hollow regions deleted when their blocks are offline",
 			Effects: "commit (d) removing the record",
@@ -162,13 +162,13 @@ var MemdevTable = Table[MemdevState]{
 			Effects: "commit (l)",
 		},
 		{
-			From: fsm.List(MemdevActive, MemdevIdleKept, MemdevGone), To: MemdevUnused, Triggers: fsm.List(TriggerLoad),
+			From: fsm.List(MemdevActive, MemdevIdleKept, MemdevGone), To: MemdevNone, Triggers: fsm.List(TriggerLoad),
 			When:    "the document is of another boot",
 			Effects: "the record dropped: its regions, dax devices, mounts and binds did not survive the reboot",
 		},
 	},
 	Refused: []Refusal[MemdevState]{
-		{From: fsm.List(MemdevUnused), To: fsm.List(MemdevIdleKept), Why: "a kept region always had a grant or a cut first"},
+		{From: fsm.List(MemdevNone), To: fsm.List(MemdevIdleKept), Why: "a kept region always had a grant or a cut first"},
 	},
 }
 

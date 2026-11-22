@@ -88,7 +88,7 @@ func clearGrants(doc *Document, p *state.Preparation) error {
 		}
 		if kept.Lend != nil {
 			l := *kept.Lend
-			l.NumaNode = nil
+			l.NUMANode = nil
 			kept.Lend = &l
 		}
 		g.Got, g.Intent = state.Got{}, kept
@@ -105,7 +105,7 @@ func checkDrops(doc *Document) error {
 		}
 	}
 	for i := range doc.Memdevs {
-		if err := state.MemdevTable.Check(doc.Memdevs[i].State, state.MemdevUnused, state.TriggerLoad); err != nil {
+		if err := state.MemdevTable.Check(doc.Memdevs[i].State, state.MemdevNone, state.TriggerLoad); err != nil {
 			return err
 		}
 	}
@@ -140,7 +140,7 @@ func dropOtherBoot(doc *Document, running string) error {
 	grants := slices.DeleteFunc(slices.Clone(doc.Grants), func(g state.Grant) bool { return !named[g.Ref] })
 	for i := range doc.Grants {
 		if g := &doc.Grants[i]; !named[g.Ref] {
-			if err := state.GrantTable.Check(g.State, state.GrantReleased, state.TriggerLoad); err != nil {
+			if err := state.GrantTable.Check(g.State, state.GrantNone, state.TriggerLoad); err != nil {
 				return err
 			}
 		}

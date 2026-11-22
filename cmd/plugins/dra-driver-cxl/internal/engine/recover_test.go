@@ -71,7 +71,7 @@ func TestRecoverUnrestoredOfTwo(t *testing.T) {
 	v.formatPmem("mem0", "ext4")
 	v.formatPmem("mem1", "ext4")
 	v.mustPrepare(poolDriver, "w", fsGrant("w", false, ""),
-		fsReq(poolReq("w", 1, serialQ, state.ModeFs, state.KindPersistent), false, ""))
+		fsReq(poolReq("w", 1, serialQ, state.ModeFS, state.KindPersistent), false, ""))
 	for i := range 2 {
 		g := v.grant("w", i)
 		if err := v.f.Kernel().Unmount(v.mount("w", i).Path); err != nil {
@@ -769,8 +769,8 @@ func TestRecoverOtherSources(t *testing.T) {
 		doc.Grants = append(doc.Grants, state.Grant{Ref: ref, Serial: serialL, State: state.GrantJournaled,
 			Asked: state.Asked{Source: state.SourceLocal, Mode: state.ModeDax, Kind: state.KindExclusive}},
 			state.Grant{Ref: fsRef, Serial: serialL, State: state.GrantRealised,
-				Asked: state.Asked{Source: state.SourceLocal, Mode: state.ModeFs, Kind: state.KindPersistent}})
-		doc.Regions = append(doc.Regions, state.Region{Name: "region7", Mode: state.RegionRam, Targets: []state.Serial{serialL},
+				Asked: state.Asked{Source: state.SourceLocal, Mode: state.ModeFS, Kind: state.KindPersistent}})
+		doc.Regions = append(doc.Regions, state.Region{Name: "region7", Mode: state.RegionRAM, Targets: []state.Serial{serialL},
 			Owner: state.OwnerOurs, State: state.RegionOwned})
 		return nil
 	}); err != nil {

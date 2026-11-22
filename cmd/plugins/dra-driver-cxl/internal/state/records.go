@@ -215,7 +215,7 @@ func (r *Records) Clone() Records {
 // Clone returns a deep copy of the memdev.
 func (m *Memdev) Clone() Memdev {
 	c := *m
-	c.Facts.NumaAffinity = clonePtr(m.Facts.NumaAffinity)
+	c.Facts.NUMAAffinity = clonePtr(m.Facts.NUMAAffinity)
 	c.Regions = slices.Clone(m.Regions)
 	c.Hollow = slices.Clone(m.Hollow)
 	c.Stale = slices.Clone(m.Stale)
@@ -227,7 +227,7 @@ func (m *Memdev) Clone() Memdev {
 func (r *Region) Clone() Region {
 	c := *r
 	c.Targets = slices.Clone(r.Targets)
-	c.NumaNode = clonePtr(r.NumaNode)
+	c.NUMANode = clonePtr(r.NUMANode)
 	c.DaxDevices = cloneEach(r.DaxDevices, func(d *DaxDevice) DaxDevice {
 		dc := *d
 		dc.Users = slices.Clone(d.Users)
@@ -251,7 +251,7 @@ func (g *Grant) Clone() Grant {
 	c := *g
 	c.Intent.Noted = slices.Clone(g.Intent.Noted)
 	c.Intent.Lend = cloneLend(g.Intent.Lend)
-	c.Got.NumaNode = clonePtr(g.Got.NumaNode)
+	c.Got.NUMANode = clonePtr(g.Got.NUMANode)
 	c.Got.BlockDevice = clonePtr(g.Got.BlockDevice)
 	c.Got.Bind = clonePtr(g.Got.Bind)
 	c.Got.Lend = cloneLend(g.Got.Lend)
@@ -267,12 +267,12 @@ func (p *Preparation) Clone() Preparation {
 		rc.Grant = clonePtr(r.Grant)
 		if r.Region != nil {
 			reg := *r.Region
-			reg.NumaAffinity = slices.Clone(r.Region.NumaAffinity)
+			reg.NUMAAffinity = slices.Clone(r.Region.NUMAAffinity)
 			rc.Region = &reg
 		}
 		if r.DRAM != nil {
 			d := *r.DRAM
-			d.NumaNodes = slices.Clone(r.DRAM.NumaNodes)
+			d.NUMANodes = slices.Clone(r.DRAM.NUMANodes)
 			rc.DRAM = &d
 		}
 		rc.LeaseClaim = clonePtr(r.LeaseClaim)
@@ -294,7 +294,7 @@ func (l *Lease) Clone() Lease {
 	c.Got = clonePtr(l.Got)
 	if l.Lend != nil {
 		lend := *l.Lend
-		lend.NumaNode = clonePtr(l.Lend.NumaNode)
+		lend.NUMANode = clonePtr(l.Lend.NUMANode)
 		c.Lend = &lend
 	}
 	return c
@@ -306,7 +306,7 @@ func cloneLend(l *GrantLend) *GrantLend {
 		return nil
 	}
 	c := *l
-	c.NumaNode = clonePtr(l.NumaNode)
+	c.NUMANode = clonePtr(l.NUMANode)
 	return &c
 }
 

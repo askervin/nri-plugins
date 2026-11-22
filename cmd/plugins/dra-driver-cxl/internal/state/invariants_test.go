@@ -86,7 +86,7 @@ func TestInvariantViolations(t *testing.T) {
 		{
 			name: "a stored record in a state without a record",
 			change: func(r *state.Records) {
-				r.Preparation(statetest.LocalDriver, statetest.ClaimDax).State = state.PreparationUnknown
+				r.Preparation(statetest.LocalDriver, statetest.ClaimDax).State = state.PreparationNone
 			},
 			invariant: "records", text: `state "UNKNOWN"`,
 		},
@@ -185,7 +185,7 @@ func TestInvariantViolations(t *testing.T) {
 			name: "a dax device without a realised user",
 			change: func(r *state.Records) {
 				reg := r.Region("region0")
-				reg.DaxDevices = append(reg.DaxDevices, state.DaxDevice{Name: "dax0.9", State: state.DaxSized, Size: 1 << 27})
+				reg.DaxDevices = append(reg.DaxDevices, state.DaxDevice{Name: "dax0.9", State: state.DaxUnbound, Size: 1 << 27})
 			},
 			invariant: "users", text: "dax device dax0.9 has no realised or releasing user",
 		},
@@ -201,7 +201,7 @@ func TestInvariantViolations(t *testing.T) {
 			name: "a region of ours on a memdev without a record",
 			change: func(r *state.Records) {
 				r.Regions = append(r.Regions, state.Region{
-					NotedName: "region9", Mode: state.RegionRam, Targets: []state.Serial{0x99},
+					NotedName: "region9", Mode: state.RegionRAM, Targets: []state.Serial{0x99},
 					Owner: state.OwnerOurs, State: state.RegionNoted,
 				})
 			},

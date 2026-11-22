@@ -129,7 +129,7 @@ func (c *Lender) get() (NodeLender, lend.LeaseHooks) {
 // Check is the companion gate of the lease broker for a companion claim of
 // the lease id, before any device is touched: it marks the lease Lending and
 // returns the lend of the lease's container.
-func (c *Lender) Check(id string, claim *resourcev1.ResourceClaim) (*lend.Lend, error) {
+func (c *Lender) Check(id string, claim *resourcev1.ResourceClaim) (*lend.Companion, error) {
 	nodes, hooks := c.get()
 	if hooks == nil {
 		return nil, fmt.Errorf("lease %s: lending to running containers is disabled (--leases=false)", id)
@@ -165,7 +165,7 @@ func checkSpecHash(hooks lend.LeaseHooks, id string, claim *resourcev1.ResourceC
 // container of the lend, held by its lease, and records them in rec. Dax
 // and block devices are passed as an fd by the broker. On error rec lists
 // the nodes lent so far.
-func (c *Lender) Lend(ctx context.Context, rec *lend.Lend, devs []state.DeviceInfo) error {
+func (c *Lender) Lend(ctx context.Context, rec *lend.Companion, devs []state.DeviceInfo) error {
 	nodes, _ := c.get()
 	for i := range devs {
 		node := deviceNumaNode(&devs[i])
@@ -175,7 +175,7 @@ func (c *Lender) Lend(ctx context.Context, rec *lend.Lend, devs []state.DeviceIn
 		if nodes == nil {
 			return fmt.Errorf("lease %s: %w", rec.Lease, lend.ErrLendingUnavailable)
 		}
-		rec.NumaNodes = append(rec.NumaNodes, node)
+		rec.NUMANodes = append(rec.NUMANodes, node)
 		if err := nodes.LendNode(ctx, rec.Pod.UID, rec.Container, node, rec.Lease); err != nil {
 			return fmt.Errorf("lease %s: lending node %d to %s/%s/%s: %w", rec.Lease, node, rec.Pod.Namespace, rec.Pod.Name, rec.Container, err)
 		}
@@ -189,21 +189,21 @@ func (c *Lender) Lend(ctx context.Context, rec *lend.Lend, devs []state.DeviceIn
 // cannot be revoked: the release then migrates the pages anyway, but the
 // stale node stays in the container's cpuset.mems. Before the lender is set
 // up it is an error.
-func (c *Lender) Revoke(ctx context.Context, rec *lend.Lend, claimName string) error {
-	if rec == nil || len(rec.NumaNodes) == 0 {
+func (c *Lender) Revoke(ctx context.Context, rec *lend.Companion, claimName string) error {
+	if rec == nil || len(rec.NUMANodes) == 0 {
 		return nil
 	}
 	if !c.ready() {
-		return fmt.Errorf("lease %s: %w: nodes %v of %s/%s/%s not revoked yet", rec.Lease, errLendingStarting, rec.NumaNodes, rec.Pod.Namespace, rec.Pod.Name, rec.Container)
+		return fmt.Errorf("lease %s: %w: nodes %v of %s/%s/%s not revoked yet", rec.Lease, errLendingStarting, rec.NUMANodes, rec.Pod.Namespace, rec.Pod.Name, rec.Container)
 	}
 	nodes, _ := c.get()
 	if nodes == nil {
 		klog.Warningf("%s: claim %s: lease %s: %v, cannot revoke nodes %v from %s/%s/%s",
-			c.name(), claimName, rec.Lease, lend.ErrLendingUnavailable, rec.NumaNodes, rec.Pod.Namespace, rec.Pod.Name, rec.Container)
+			c.name(), claimName, rec.Lease, lend.ErrLendingUnavailable, rec.NUMANodes, rec.Pod.Namespace, rec.Pod.Name, rec.Container)
 		return nil
 	}
 	var errs []error
-	for _, n := range rec.NumaNodes {
+	for _, n := range rec.NUMANodes {
 		if err := nodes.RevokeNode(ctx, rec.Pod.UID, rec.Container, n, rec.Lease); err != nil {
 			errs = append(errs, fmt.Errorf("lease %s: revoking node %d from %s/%s/%s: %w", rec.Lease, n, rec.Pod.Namespace, rec.Pod.Name, rec.Container, err))
 		}
@@ -234,7 +234,7 @@ func (c *Lender) Prepared(id string, source state.Source, devs []state.DeviceInf
 
 // Reprepared tells the broker again that a stored companion claim is
 // prepared and lent, as kubelet asks to prepare a prepared claim again.
-func (c *Lender) Reprepared(rec *lend.Lend, claim *resourcev1.ResourceClaim, source state.Source, devs []state.DeviceInfo) {
+func (c *Lender) Reprepared(rec *lend.Companion, claim *resourcev1.ResourceClaim, source state.Source, devs []state.DeviceInfo) {
 	_, hooks := c.get()
 	if hooks == nil || rec == nil {
 		return
@@ -281,23 +281,23 @@ func (c *Lender) name() string {
 // RevokeGrant revokes the NUMA node that one grant of a companion claim
 // lends, for the engine's rollback of a later Prepare of the claim.
 func (c *Lender) RevokeGrant(ctx context.Context, gl state.GrantLend, claimName string) error {
-	rec := &lend.Lend{Lease: gl.Lease, Pod: gl.Pod, Container: gl.Container}
-	if gl.NumaNode != nil {
-		rec.NumaNodes = []int{*gl.NumaNode}
+	rec := &lend.Companion{Lease: gl.Lease, Pod: gl.Pod, Container: gl.Container}
+	if gl.NUMANode != nil {
+		rec.NUMANodes = []int{*gl.NUMANode}
 	}
 	return c.Revoke(ctx, rec, claimName)
 }
 
 // leaseBindTarget returns the lease bind of the device of mode fs of a
 // companion claim, <FsDir>/<Name> of its lend.
-func leaseBindTarget(lend *lend.Lend) (string, error) {
+func leaseBindTarget(lend *lend.Companion) (string, error) {
 	switch {
 	case lend.Name == "":
 		return "", fmt.Errorf("lease %s: the device is of mode %s, the lease is not", lend.Lease, api.ModeFS)
-	case lend.FsDir == "":
+	case lend.FSDir == "":
 		return "", fmt.Errorf("lease %s: its lease claim has no filesystem directory", lend.Lease)
 	case !api.ValidName(lend.Name):
 		return "", fmt.Errorf("lease %s: invalid name %q", lend.Lease, lend.Name)
 	}
-	return filepath.Join(lend.FsDir, lend.Name), nil
+	return filepath.Join(lend.FSDir, lend.Name), nil
 }

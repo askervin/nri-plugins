@@ -281,7 +281,7 @@ func TestLocalUsableSize(t *testing.T) {
 				v.restart()
 			}
 			req := sliceReq("n", 0, state.ModeDax, 256*mib)
-			req.Facts.Usable = c.usable
+			req.Facts.UsableSize = c.usable
 			v.mustPrepare(localDriver, "n", req)
 			if size := regionSize(t, v, "region0"); size != c.want {
 				t.Fatalf("region0 of %d bytes", size)

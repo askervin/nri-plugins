@@ -106,7 +106,7 @@ func TestWaitNRI(t *testing.T) {
 			if !errors.Is(res[c.UID].Err, errWait) || len(res[c.UID].Devices) != 0 {
 				t.Fatalf("%s: claim %s: %+v", p.Name(), c.UID, res[c.UID])
 			}
-			e.wantState(p, string(c.UID), state.PreparationUnknown)
+			e.wantState(p, string(c.UID), state.PreparationNone)
 		}
 		wantLogText(t, logs(), fmt.Sprintf("%s: preparing 2 claims: %v", p.Name(), errWait))
 		e.wantNoCommands("a Prepare before NRI")

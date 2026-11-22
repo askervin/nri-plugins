@@ -361,7 +361,7 @@ func syncForeign(r *state.Records, seen map[string]kernel.RegionInfo, names []st
 		}
 		if ri.NUMANode >= 0 {
 			node := ri.NUMANode
-			reg.NumaNode = &node
+			reg.NUMANode = &node
 		}
 		if err := state.Apply(&state.RegionTable, &reg.State, state.RegionForeign, trigger); err != nil {
 			return err

@@ -93,7 +93,7 @@ func TestInvariantViolations(t *testing.T) {
 				Asked: state.Asked{Source: state.SourceLocal}, State: state.GrantJournaled})
 		}, "a new local grant on serial 0x11 of provenance HELD"},
 		{"I12", func(r *state.Records, s *kernel.Snapshot, o *checkOptions) {
-			r.Leases = append(r.Leases, state.Lease{ID: "0123abcd", State: state.LeaseReady, Lend: &state.Lend{NumaNode: state.NumaNodePtr(7)}})
+			r.Leases = append(r.Leases, state.Lease{ID: "0123abcd", State: state.LeaseReady, Lend: &state.LeaseLend{NUMANode: state.NUMANodePtr(7)}})
 		}, "lends NUMA node 7, which has no memory online"},
 	} {
 		r := v.records().Clone()
@@ -115,7 +115,7 @@ func TestInvariantViolations(t *testing.T) {
 	// a lease that is released keeps its lend record while the memory of
 	// its companion goes offline
 	r := v.records().Clone()
-	r.Leases = append(r.Leases, state.Lease{ID: "0123abcd", State: state.LeaseReleasing, Lend: &state.Lend{NumaNode: state.NumaNodePtr(7)}})
+	r.Leases = append(r.Leases, state.Lease{ID: "0123abcd", State: state.LeaseReleasing, Lend: &state.LeaseLend{NUMANode: state.NUMANodePtr(7)}})
 	if out := check(&r, snap, opts); len(out) > 0 {
 		t.Errorf("violations of a lease that is released: %v", out)
 	}

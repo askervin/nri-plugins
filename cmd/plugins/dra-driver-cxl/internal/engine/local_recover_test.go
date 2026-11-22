@@ -95,7 +95,7 @@ func TestLocalRecoverShared(t *testing.T) {
 func TestLocalRecoverPersistent(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib}, fake.MemdevSpec{Serial: serialB})
 	v.formatPmem("mem0", "ext4")
-	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, ""))
+	v.mustPrepare(localDriver, "w", localPmemReq("w", 0, state.ModeFS, false, ""))
 	logs := klogtest.Capture(t, 3)
 	v.restart()
 	wantLog(t, logs(), "engine: local memdev 0x91 (mem0): keeping persistent region0, claims [w]")
@@ -215,7 +215,7 @@ func TestLocalRecoverBadBlocks(t *testing.T) {
 		req    GrantRequest
 		format bool
 	}{
-		{"mode fs", localPmemReq("w", 0, state.ModeFs, false, ""), true},
+		{"mode fs", localPmemReq("w", 0, state.ModeFS, false, ""), true},
 		{"mode block", localPmemReq("w", 0, state.ModeBlock, false, ""), false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -350,7 +350,7 @@ func TestLocalRecoverCutPrepares(t *testing.T) {
 			v.mustUnprepare(localDriver, "s")
 		}, realised, sharedReq("c"), "engine: local memdev 0x11 (mem0): claim c of the shared device is not prepared, dropping it", 1},
 		{"persistent", []fake.MemdevSpec{{Serial: serialP, Pmem: gib}}, func(v *env) { v.formatPmem("mem0", "ext4") }, realised,
-			localPmemReq("c", 0, state.ModeFs, true, ""), "engine: local memdev 0x91 (mem0): claim c of the persistent device is not prepared, dropping it", 0},
+			localPmemReq("c", 0, state.ModeFS, true, ""), "engine: local memdev 0x91 (mem0): claim c of the persistent device is not prepared, dropping it", 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			v := newEnv(t, c.specs...)
@@ -435,9 +435,9 @@ func TestLocalRecoverHeldBlockDevice(t *testing.T) {
 func localBusyCompanionNextToReader(t *testing.T, v *env) (string, string) {
 	t.Helper()
 	target := companionTarget(v)
-	r := localPmemReq("r", 0, state.ModeFs, true, "")
+	r := localPmemReq("r", 0, state.ModeFS, true, "")
 	r.Facts.Shared = true
-	c := localPmemReq("c", 0, state.ModeFs, true, "")
+	c := localPmemReq("c", 0, state.ModeFS, true, "")
 	c.Facts.Shared = true
 	c.BindTarget = target
 	c.Lend = &state.GrantLend{Lease: "0123abcd", Name: "data"}

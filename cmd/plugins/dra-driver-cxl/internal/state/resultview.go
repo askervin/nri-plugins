@@ -52,7 +52,7 @@ type DeviceInfo struct {
 	// Persistent is true for a memdev in mode block or fs: BlockDevice is
 	// its block device (/dev/pmemK) with its numbers; fs: Access is the
 	// effective access, Path the directory in the containers, NodeMount
-	// the node mount of the filesystem of type FsType.
+	// the node mount of the filesystem of type FSType.
 	Persistent  bool
 	BlockDevice string
 	BlockMajor  int
@@ -60,7 +60,7 @@ type DeviceInfo struct {
 	Access      string
 	Path        string
 	NodeMount   string
-	FsType      string
+	FSType      string
 	// ResultSettings are the container settings of the resolved
 	// MemoryConfig of the result and their origins.
 	config.ResultSettings

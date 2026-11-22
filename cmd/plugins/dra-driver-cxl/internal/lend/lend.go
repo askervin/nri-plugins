@@ -30,20 +30,20 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 )
 
-// Lend is the lend of a companion claim: the lease and its requester, the
+// Companion is the lend of a companion claim: the lease and its requester, the
 // NUMA nodes lent and the lease binds, as the results of the claim give it.
-type Lend struct {
+type Companion struct {
 	Lease     string
 	Pod       state.PodRef
 	Container string
-	NumaNodes []int // lent NUMA nodes
-	// FsDir is the host directory of the mounts of the fs leases of the
+	NUMANodes []int // lent NUMA nodes
+	// FSDir is the host directory of the mounts of the fs leases of the
 	// lease claim, "" for other leases.
-	FsDir string
-	// Name is the mount point of an fs lease in FsDir.
+	FSDir string
+	// Name is the mount point of an fs lease in FSDir.
 	Name string
 	// Mounts are the host paths of the binds of the node mounts of the fs
-	// devices in FsDir.
+	// devices in FSDir.
 	Mounts []string
 }
 
@@ -54,7 +54,7 @@ type LeaseHooks interface {
 	// OnLending checks that the claim is the companion of the lease,
 	// marks the lease Lending and returns the lend of the lease's
 	// container (without nodes). An error fails the Prepare.
-	OnLending(id string, claim *resourcev1.ResourceClaim) (*Lend, error)
+	OnLending(id string, claim *resourcev1.ResourceClaim) (*Companion, error)
 	// OnPrepared marks the lease Ready with the prepared memdevs of the
 	// companion claim, of the source.
 	OnPrepared(id string, source state.Source, devs []state.DeviceInfo)

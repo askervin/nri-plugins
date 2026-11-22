@@ -174,14 +174,14 @@ func (e *Engine) journal(ctx context.Context, req *GrantRequest) error {
 func journalMemdev(r *state.Records, req *GrantRequest) error {
 	m := r.Memdev(req.Serial)
 	if m == nil {
-		r.Memdevs = append(r.Memdevs, state.Memdev{Serial: req.Serial, Source: req.Asked.Source, State: state.MemdevUnused})
+		r.Memdevs = append(r.Memdevs, state.Memdev{Serial: req.Serial, Source: req.Asked.Source, State: state.MemdevNone})
 		m = &r.Memdevs[len(r.Memdevs)-1]
 	}
 	if m.Source != req.Asked.Source {
 		return fmt.Errorf("memdev %s is a %s memdev, not %s", req.Serial, m.Source, req.Asked.Source)
 	}
 	switch m.State {
-	case state.MemdevUnused, state.MemdevIdleKept:
+	case state.MemdevNone, state.MemdevIdleKept:
 		if err := state.Apply(&state.MemdevTable, &m.State, state.MemdevActive, state.TriggerPrepare); err != nil {
 			return err
 		}
@@ -203,8 +203,8 @@ func journalMemdev(r *state.Records, req *GrantRequest) error {
 // request knows.
 func mergeFacts(old, req state.MemdevFacts) state.MemdevFacts {
 	out := req
-	if out.NumaAffinity == nil {
-		out.NumaAffinity = old.NumaAffinity
+	if out.NUMAAffinity == nil {
+		out.NUMAAffinity = old.NUMAAffinity
 	}
 	return out
 }
@@ -326,7 +326,7 @@ func addDaxUser(reg *state.Region, dax string, ref state.GrantRef) error {
 	if slices.Contains(d.Users, ref) {
 		return nil
 	}
-	if len(d.Users) > 0 && d.State != state.DaxSized {
+	if len(d.Users) > 0 && d.State != state.DaxUnbound {
 		if err := state.Apply(&state.DaxDeviceTable, &d.State, d.State, state.TriggerPrepare); err != nil {
 			return err
 		}
@@ -391,7 +391,7 @@ func (e *Engine) revokeLends(ctx context.Context, refs []state.GrantRef) {
 	r := e.records()
 	for _, ref := range refs {
 		g := r.Grant(ref)
-		if g == nil || g.Got.Lend == nil || g.Got.Lend.NumaNode == nil {
+		if g == nil || g.Got.Lend == nil || g.Got.Lend.NUMANode == nil {
 			continue
 		}
 		if err := e.opts.Revoke(ctx, ref, *g.Got.Lend); err != nil {
@@ -409,7 +409,7 @@ func (e *Engine) RecordLend(ctx context.Context, ref state.GrantRef, node int) e
 		if g == nil || g.Intent.Lend == nil {
 			return fmt.Errorf("grant %s has no lend", ref)
 		}
-		g.Intent.Lend.NumaNode = state.NumaNodePtr(node)
+		g.Intent.Lend.NUMANode = state.NUMANodePtr(node)
 		lend := *g.Intent.Lend
 		g.Got.Lend = &lend
 		return nil

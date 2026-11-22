@@ -28,17 +28,17 @@ import (
 // notDriven are the rows of the table of the preparations that the
 // front-end does not apply, by fsm.TableText.RowName, with the reason. The tests may apply them through the store or the engine.
 var notDriven = map[string]string{
-	"Preparation.State PREPARING -> (unchanged) on a-recover": "the engine's recovery of a cut Prepare",
-	"Preparation.State PREPARED -> PREPARED_UNRESTORED on a-recover": "the engine's recovery of a node mount " +
+	"Preparation.State PREPARING -> (unchanged) on recover": "the engine's recovery of a cut Prepare",
+	"Preparation.State PREPARED -> PREPARED_UNRESTORED on recover": "the engine's recovery of a node mount " +
 		"that does not mount again",
-	"Preparation.State PREPARED_UNRESTORED -> (unchanged) on a-recover": "the engine's recovery of a node " +
+	"Preparation.State PREPARED_UNRESTORED -> (unchanged) on recover": "the engine's recovery of a node " +
 		"mount that does not mount again",
 	"Preparation.State PREPARING,PREPARED,PREPARED_UNRESTORED,PREPARED_STALE,UNPREPARING,KEPT -> " +
 		"PREPARED_STALE on load": "the store's load of the records of another boot",
-	"Preparation.State UNPREPARING -> (unchanged) on a-recover": "a start leaves an UNPREPARING preparation " +
+	"Preparation.State UNPREPARING -> (unchanged) on recover": "a start leaves an UNPREPARING preparation " +
 		"as it is, with no commit",
-	"Preparation.State KEPT -> (unchanged) on a-recover": "the engine's recovery of a kept region",
-	"Preparation.State KEPT -> UNKNOWN on a-recover":     "the engine's recovery of a kept region",
+	"Preparation.State KEPT -> (unchanged) on recover": "the engine's recovery of a kept region",
+	"Preparation.State KEPT -> UNKNOWN on recover":     "the engine's recovery of a kept region",
 }
 
 // TestMain counts the rows of the table of the preparations that the tests

@@ -89,7 +89,7 @@ func extractResults(env []string) []resultRef {
 	seen := make(map[resultRef]bool)
 	var refs []resultRef
 	for _, e := range env {
-		uid, n, ok := state.ResultFromEnvVar(e)
+		uid, n, ok := cxlapi.ParseResultMarker(e)
 		if ref := (resultRef{uid: uid, n: n}); ok && !seen[ref] {
 			seen[ref] = true
 			refs = append(refs, ref)

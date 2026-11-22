@@ -29,6 +29,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
+	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 )
 
@@ -275,7 +276,7 @@ func (e *env) setLeases(podUID, name string, node int, ids ...string) {
 func readyLease(id, podUID, name string, node int) state.Lease {
 	return state.Lease{ID: id, Claim: "lc-" + podUID, Pod: state.PodRef{Namespace: "ns", Name: "pod-" + podUID, UID: podUID},
 		Container: name, State: state.LeaseReady, Asked: state.LeaseAsked{Mode: state.ModeNUMA, Size: "256Mi"},
-		Lend: &state.Lend{NumaNode: state.NumaNodePtr(node)}, Created: time.Now()}
+		Lend: &state.LeaseLend{NUMANode: state.NUMANodePtr(node)}, Created: time.Now()}
 }
 
 // steered returns the Steered records of the store.
@@ -378,7 +379,7 @@ func withSpecMems(ctr *api.Container, mems string) *api.Container {
 // a container.
 func withClaims(ctr *api.Container, uids ...string) *api.Container {
 	for _, uid := range uids {
-		ctr.Env = append(ctr.Env, state.ResultEnvVarName(uid, 0)+"=1")
+		ctr.Env = append(ctr.Env, cxlapi.ResultMarker(uid, 0)+"=1")
 	}
 	return ctr
 }

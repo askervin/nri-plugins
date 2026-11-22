@@ -168,10 +168,10 @@ func (b *Broker) requestOptions(a *state.LeaseAsked, req *api.Request) error {
 	}
 	a.Source, a.Shared, a.ReadOnly, a.Mode = state.Source(req.Source), req.Share, req.ReadOnly, state.Mode(req.EffectiveMode())
 	a.SharedDevice = req.Share
-	if a.Mode == state.ModeFs {
+	if a.Mode == state.ModeFS {
 		// read-only unless readWrite; access "": by the type of the
 		// filesystem, decided by the driver of the device
-		a.Access, a.Name, a.FsType, a.ReadWrite = state.Access(req.Access), req.Name, req.FSType, req.ReadWrite
+		a.Access, a.Name, a.FSType, a.ReadWrite = state.Access(req.Access), req.Name, req.FSType, req.ReadWrite
 		a.ReadOnly = !req.ReadWrite
 	}
 	if req.Size != "" {
@@ -291,7 +291,7 @@ func deviceAttribute(d *resourcev1.Device, driver string, name resourcev1.Qualif
 // for an fs lease, its name: the requested one, or the id. An fs lease
 // needs a name that no other lease of the claim has.
 func fsLeaseOptions(r *state.Records, l *state.Lease, req *api.Request, newID func() string) error {
-	fs := l.Asked.Mode == state.ModeFs
+	fs := l.Asked.Mode == state.ModeFS
 	// a default name never clashes with a name that a request chose
 	for l.ID == "" || r.Lease(l.ID) != nil || (fs && req.Name == "" && nameUser(r, l.Claim, l.ID) != nil) {
 		l.ID = newID()

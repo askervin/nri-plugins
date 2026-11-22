@@ -242,7 +242,7 @@ func established(r *state.Records, serial state.Serial, persistent bool) bool {
 		reg := ownRegion(r, serial, state.RegionPmem)
 		return reg != nil && (reg.State == state.RegionKept || reg.SetUp)
 	}
-	reg := ownRegion(r, serial, state.RegionRam)
+	reg := ownRegion(r, serial, state.RegionRAM)
 	return reg != nil && (reg.State == state.RegionKept || (reg.SetUp && reg.Zeroed))
 }
 

@@ -22,7 +22,7 @@ import (
 func TestLeaseLends(t *testing.T) {
 	pod := PodRef{Namespace: "demo", Name: "borrower", UID: "pod-uid-1"}
 	numa := func(id string, st LeaseState, node int) Lease {
-		return Lease{ID: id, Pod: pod, Container: "app", Asked: LeaseAsked{Mode: ModeNUMA}, State: st, Lend: &Lend{NumaNode: NumaNodePtr(node)}}
+		return Lease{ID: id, Pod: pod, Container: "app", Asked: LeaseAsked{Mode: ModeNUMA}, State: st, Lend: &LeaseLend{NUMANode: NUMANodePtr(node)}}
 	}
 	other := numa("l5", LeaseReady, 2)
 	other.Container = "sidecar"

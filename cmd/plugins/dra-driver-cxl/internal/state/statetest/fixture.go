@@ -75,7 +75,7 @@ const (
 // is held busy, consistent by state.Check.
 func Records() state.Records {
 	created := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
-	node := state.NumaNodePtr
+	node := state.NUMANodePtr
 	ref := func(claim string, n int) state.GrantRef { return state.GrantRef{Claim: claim, Result: n} }
 	requester := state.PodRef{Namespace: "demo", Name: "requester", UID: "55555555-0000-0000-0000-000000000001"}
 	steer := config.ResultSettings{
@@ -86,8 +86,8 @@ func Records() state.Records {
 	bindTarget := fsDir + "/mbt"
 	poolFsMount := PoolDir + "/mounts/c1ae2002-cached"
 	localFsMount := LocalDir + "/mounts/c1ae2001-direct"
-	numaLend := &state.GrantLend{Lease: LeaseNUMA, Pod: requester, Container: "main", NumaNode: node(2)}
-	fsLend := &state.GrantLend{Lease: LeaseFs, Pod: requester, Container: "main", FsDir: fsDir, Name: "mbt"}
+	numaLend := &state.GrantLend{Lease: LeaseNUMA, Pod: requester, Container: "main", NUMANode: node(2)}
+	fsLend := &state.GrantLend{Lease: LeaseFs, Pod: requester, Container: "main", FSDir: fsDir, Name: "mbt"}
 	grantResult := func(claim string, n int, request, pool, device string) state.Result {
 		r := ref(claim, n)
 		return state.Result{Index: n, Kind: state.ResultGrant, Request: request, Pool: pool, Device: device, Grant: &r}
@@ -97,13 +97,13 @@ func Records() state.Records {
 		Memdevs: []state.Memdev{
 			{
 				Serial: SerialLocal, Name: "mem0", Source: state.SourceLocal, State: state.MemdevActive,
-				Facts:   state.MemdevFacts{NumaAffinity: node(0)},
+				Facts:   state.MemdevFacts{NUMAAffinity: node(0)},
 				Regions: []state.RegionRef{"region0"},
 				Grants:  []state.GrantRef{ref(ClaimNUMA, 0), ref(ClaimDax, 0), ref(ClaimKept, 0), ref(ClaimCompanion, 0)},
 			},
 			{
 				Serial: SerialShared, Name: "mem1", Source: state.SourceLocal, State: state.MemdevActive,
-				Facts:   state.MemdevFacts{Shared: true, NumaAffinity: node(0)},
+				Facts:   state.MemdevFacts{Shared: true, NUMAAffinity: node(0)},
 				Regions: []state.RegionRef{"region1"},
 				Grants:  []state.GrantRef{ref(ClaimShared, 0), ref(ClaimMixed, 1)},
 			},
@@ -135,8 +135,8 @@ func Records() state.Records {
 		},
 		Regions: []state.Region{
 			{
-				Name: "region0", NotedName: "region0", Mode: state.RegionRam, Targets: []state.Serial{SerialLocal},
-				Owner: state.OwnerOurs, State: state.RegionOwned, SetUp: true, NumaNode: node(2), Size: gi,
+				Name: "region0", NotedName: "region0", Mode: state.RegionRAM, Targets: []state.Serial{SerialLocal},
+				Owner: state.OwnerOurs, State: state.RegionOwned, SetUp: true, NUMANode: node(2), Size: gi,
 				DaxDevices: []state.DaxDevice{
 					{Name: "dax0.0", Dev: state.DevNumbers{Major: 252, Minor: 0}, State: state.DaxSeed, Whole: true},
 					{
@@ -154,8 +154,8 @@ func Records() state.Records {
 				},
 			},
 			{
-				Name: "region1", NotedName: "region1", Mode: state.RegionRam, Targets: []state.Serial{SerialShared},
-				Owner: state.OwnerOurs, State: state.RegionOwned, SetUp: true, Zeroed: true, NumaNode: node(3), Size: 512 * mi,
+				Name: "region1", NotedName: "region1", Mode: state.RegionRAM, Targets: []state.Serial{SerialShared},
+				Owner: state.OwnerOurs, State: state.RegionOwned, SetUp: true, Zeroed: true, NUMANode: node(3), Size: 512 * mi,
 				DaxDevices: []state.DaxDevice{{
 					Name: "dax1.0", Dev: state.DevNumbers{Major: 252, Minor: 4}, Size: 512 * mi, Driver: state.DriverDeviceDax,
 					State: state.DaxDeviceDax, Whole: true, Users: []state.GrantRef{ref(ClaimShared, 0), ref(ClaimMixed, 1)},
@@ -169,7 +169,7 @@ func Records() state.Records {
 					BlockDevice: &state.BlockDevice{Name: "/dev/pmem7", Dev: state.DevNumbers{Major: 259, Minor: 0}},
 				},
 				Mounts: []state.Mount{{
-					Access: state.AccessDirect, Path: localFsMount, State: state.MountedRO, FsType: "erofs",
+					Access: state.AccessDirect, Path: localFsMount, State: state.MountedRO, FSType: "erofs",
 					Users: []state.GrantRef{ref(ClaimFs, 0)},
 				}},
 			},
@@ -181,25 +181,25 @@ func Records() state.Records {
 					BlockDevice: &state.BlockDevice{Name: "/dev/pmem8", Dev: state.DevNumbers{Major: 259, Minor: 1}},
 				},
 				Mounts: []state.Mount{{
-					Access: state.AccessCached, Path: poolFsMount, State: state.MountedRO, Loop: "/dev/loop0", FsType: "erofs",
+					Access: state.AccessCached, Path: poolFsMount, State: state.MountedRO, Loop: "/dev/loop0", FSType: "erofs",
 					Users: []state.GrantRef{ref(ClaimPoolFs, 0), ref(ClaimPoolLeaseC, 0)},
 				}},
 			},
 			{
-				Name: "region4", NotedName: "region4", Mode: state.RegionRam, Targets: []state.Serial{SerialPoolNUMA},
-				Owner: state.OwnerOurs, State: state.RegionOwned, SetUp: true, NumaNode: node(4), Size: gi,
+				Name: "region4", NotedName: "region4", Mode: state.RegionRAM, Targets: []state.Serial{SerialPoolNUMA},
+				Owner: state.OwnerOurs, State: state.RegionOwned, SetUp: true, NUMANode: node(4), Size: gi,
 				DaxDevices: []state.DaxDevice{{
 					Name: "dax4.0", Dev: state.DevNumbers{Major: 252, Minor: 5}, Size: gi, Driver: state.DriverKmem,
 					State: state.DaxKmemOnline, Whole: true, Users: []state.GrantRef{ref(ClaimPoolNUMA, 0)},
 				}},
 			},
 			{
-				Name: "region5", Mode: state.RegionRam, Targets: []state.Serial{SerialForeign},
-				Owner: state.OwnerForeign, State: state.RegionForeign, NumaNode: node(5), Size: 2 * gi,
+				Name: "region5", Mode: state.RegionRAM, Targets: []state.Serial{SerialForeign},
+				Owner: state.OwnerForeign, State: state.RegionForeign, NUMANode: node(5), Size: 2 * gi,
 			},
 			{
-				Name: "region6", NotedName: "region6", Mode: state.RegionRam, Targets: []state.Serial{SerialPoolDax},
-				Owner: state.OwnerOurs, State: state.RegionOwned, SetUp: true, NumaNode: node(6), Size: gi,
+				Name: "region6", NotedName: "region6", Mode: state.RegionRAM, Targets: []state.Serial{SerialPoolDax},
+				Owner: state.OwnerOurs, State: state.RegionOwned, SetUp: true, NUMANode: node(6), Size: gi,
 				DaxDevices: []state.DaxDevice{{
 					Name: "dax6.0", Dev: state.DevNumbers{Major: 252, Minor: 6}, Size: gi, Driver: state.DriverDeviceDax,
 					State: state.DaxDeviceDax, Whole: true, Users: []state.GrantRef{ref(ClaimPoolDax, 0)},
@@ -211,7 +211,7 @@ func Records() state.Records {
 				Ref: ref(ClaimNUMA, 0), Serial: SerialLocal, State: state.GrantRealised,
 				Asked:  state.Asked{Source: state.SourceLocal, Kind: state.KindExclusive, Mode: state.ModeNUMA, Size: 128 * mi},
 				Intent: state.Intent{Region: "region0"},
-				Got:    state.Got{Region: "region0", Dax: "dax0.1", NumaNode: node(2), Size: 128 * mi},
+				Got:    state.Got{Region: "region0", Dax: "dax0.1", NUMANode: node(2), Size: 128 * mi},
 			},
 			{
 				Ref: ref(ClaimDax, 0), Serial: SerialLocal, State: state.GrantRealised,
@@ -228,7 +228,7 @@ func Records() state.Records {
 				Ref: ref(ClaimCompanion, 0), Serial: SerialLocal, State: state.GrantRealised,
 				Asked:  state.Asked{Source: state.SourceLocal, Kind: state.KindExclusive, Mode: state.ModeNUMA, Size: 128 * mi},
 				Intent: state.Intent{Region: "region0", Lend: numaLend},
-				Got:    state.Got{Region: "region0", Dax: "dax0.3", NumaNode: node(2), Size: 128 * mi, Lend: numaLend},
+				Got:    state.Got{Region: "region0", Dax: "dax0.3", NUMANode: node(2), Size: 128 * mi, Lend: numaLend},
 			},
 			{
 				Ref: ref(ClaimShared, 0), Serial: SerialShared, State: state.GrantRealised,
@@ -244,7 +244,7 @@ func Records() state.Records {
 			},
 			{
 				Ref: ref(ClaimFs, 0), Serial: SerialPersistent, State: state.GrantRealised,
-				Asked:  state.Asked{Source: state.SourceLocal, Kind: state.KindPersistent, Mode: state.ModeFs, ReadOnly: true, Path: "/run/cxl-fs/C1AE2001"},
+				Asked:  state.Asked{Source: state.SourceLocal, Kind: state.KindPersistent, Mode: state.ModeFS, ReadOnly: true, Path: "/run/cxl-fs/C1AE2001"},
 				Intent: state.Intent{Region: "region2", NdRegion: "region7", MountPath: localFsMount},
 				Got: state.Got{
 					Region: "region2", Size: gi, Namespace: "namespace7.0", Mount: state.AccessDirect,
@@ -259,12 +259,12 @@ func Records() state.Records {
 				Ref: ref(ClaimPoolNUMA, 0), Serial: SerialPoolNUMA, State: state.GrantRealised,
 				Asked:  state.Asked{Source: state.SourcePool, Kind: state.KindExclusive, Mode: state.ModeNUMA, Size: gi},
 				Intent: state.Intent{Region: "region4"},
-				Got:    state.Got{Region: "region4", Dax: "dax4.0", NumaNode: node(4), Size: gi},
+				Got:    state.Got{Region: "region4", Dax: "dax4.0", NUMANode: node(4), Size: gi},
 			},
 			{
 				Ref: ref(ClaimPoolFs, 0), Serial: SerialPoolFs, State: state.GrantRealised,
 				Asked: state.Asked{
-					Source: state.SourcePool, Kind: state.KindPersistent, Mode: state.ModeFs, ReadOnly: true, Access: state.AccessCached,
+					Source: state.SourcePool, Kind: state.KindPersistent, Mode: state.ModeFS, ReadOnly: true, Access: state.AccessCached,
 					Path: "/run/cxl-fs/C1AE2002", Size: gi, Shared: true,
 				},
 				Intent: state.Intent{Region: "region3", NdRegion: "region8", MountPath: poolFsMount},
@@ -282,7 +282,7 @@ func Records() state.Records {
 			{
 				Ref: ref(ClaimPoolLeaseC, 0), Serial: SerialPoolFs, State: state.GrantRealised,
 				Asked: state.Asked{
-					Source: state.SourcePool, Kind: state.KindPersistent, Mode: state.ModeFs, ReadOnly: true, Access: state.AccessCached,
+					Source: state.SourcePool, Kind: state.KindPersistent, Mode: state.ModeFS, ReadOnly: true, Access: state.AccessCached,
 					Path: "/run/cxl-fs/C1AE2002", Size: gi, Shared: true,
 				},
 				Intent: state.Intent{Region: "region3", NdRegion: "region8", MountPath: poolFsMount, BindTarget: bindTarget, Lend: fsLend},
@@ -312,12 +312,12 @@ func Records() state.Records {
 				Results: []state.Result{
 					{
 						Index: 0, Kind: state.ResultRegion, Request: "region", Pool: Node, Device: "region5-node5",
-						Region: &state.RegionResult{Name: "region5", NumaNode: 5, Size: 2 * gi, Consumed: int64(gi), NumaAffinity: []int{1}},
+						Region: &state.RegionResult{Name: "region5", NUMANode: 5, Size: 2 * gi, Consumed: int64(gi), NUMAAffinity: []int{1}},
 					},
 					grantResult(ClaimMixed, 1, "shared", Node, "memdev-c100e2e2"),
 					{
 						Index: 2, Kind: state.ResultDRAM, Request: "dram", Pool: Node, Device: "dram",
-						DRAM: &state.DRAMResult{NumaNodes: []int{0, 1}, Size: 64 * gi},
+						DRAM: &state.DRAMResult{NUMANodes: []int{0, 1}, Size: 64 * gi},
 					},
 				},
 			},
@@ -371,18 +371,18 @@ func Records() state.Records {
 			{
 				ID: LeaseNUMA, Claim: ClaimLease, RequestID: "req-1", Pod: requester, Container: "main",
 				Asked: state.LeaseAsked{Source: state.SourceLocal, Mode: state.ModeNUMA, Size: "128Mi"},
-				Got:   &state.LeaseGot{Source: state.SourceLocal, Serial: SerialLocal, Bytes: 128 * mi},
-				State: state.LeaseReady, Lend: &state.Lend{NumaNode: node(2)}, Created: created,
+				Got:   &state.LeaseGot{Source: state.SourceLocal, Serial: SerialLocal, Size: 128 * mi},
+				State: state.LeaseReady, Lend: &state.LeaseLend{NUMANode: node(2)}, Created: created,
 			},
 			{
 				ID: LeaseFs, Claim: ClaimLease, Pod: requester, Container: "main",
-				Asked: state.LeaseAsked{Mode: state.ModeFs, Serial: SerialPoolFs, Name: "mbt", Access: state.AccessCached, SharedDevice: true},
+				Asked: state.LeaseAsked{Mode: state.ModeFS, Serial: SerialPoolFs, Name: "mbt", Access: state.AccessCached, SharedDevice: true},
 				Got: &state.LeaseGot{
-					Source: state.SourcePool, Serial: SerialPoolFs, SharedDevice: true, Bytes: gi,
-					Access: state.AccessCached, FsType: "erofs", Path: "/run/cxl/fs/mbt",
+					Source: state.SourcePool, Serial: SerialPoolFs, SharedDevice: true, Size: gi,
+					Access: state.AccessCached, FSType: "erofs", Path: "/run/cxl/fs/mbt",
 				},
 				State: state.LeaseReleasingBusy, ReleaseRequested: true, DeletionRequested: true,
-				Lend: &state.Lend{BindTarget: bindTarget}, Created: created.Add(time.Minute),
+				Lend: &state.LeaseLend{BindTarget: bindTarget}, Created: created.Add(time.Minute),
 			},
 		},
 		Provenance: []state.Provenance{

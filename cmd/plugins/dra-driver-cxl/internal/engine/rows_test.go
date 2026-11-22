@@ -40,7 +40,7 @@ var engineTables = []fsm.TableText{
 }
 
 // engineRow tells whether the engine drives a row of one of engineTables:
-// a row of the table of the preparations only on a-recover, the front-end
+// a row of the table of the preparations only on recover, the front-end
 // drives the others.
 func engineRow(t fsm.TableText, r fsm.RowText) bool {
 	return t.Object != "Preparation" || slices.Contains(r.Triggers, string(state.TriggerRecover))
@@ -56,7 +56,7 @@ var notDriven = map[string]string{
 	"Memdev.State ACTIVE,IDLE_KEPT,GONE -> UNUSED on load": "the store's load of a document of another boot",
 	"Region.State NOTED,OWNED,KEPT,HOLLOW_OWNED,FOREIGN -> NONE on load": "the store's load of a document of " +
 		"another boot",
-	"Preparation.State UNPREPARING -> (unchanged) on a-recover": "a start leaves an UNPREPARING preparation " +
+	"Preparation.State UNPREPARING -> (unchanged) on recover": "a start leaves an UNPREPARING preparation " +
 		"as it is, with no commit",
 }
 

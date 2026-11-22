@@ -61,7 +61,7 @@ func TestLocalSlicedNUMA(t *testing.T) {
 	wantResult(t, res, resultDevice("mem", envNode, localDev, "cxl.nri.io/device=claim-u1-0"))
 	e.wantState(e.local, "u1", state.PreparationPrepared)
 	g := e.records().Grant(state.GrantRef{Claim: "u1"})
-	node := state.NumaNodeOf(g.Got.NumaNode)
+	node := state.NUMANodeOf(g.Got.NUMANode)
 	if g.State != state.GrantRealised || node < 0 || g.Got.Size != uint64(envBlockSize) {
 		t.Fatalf("grant %+v", g)
 	}
@@ -174,7 +174,7 @@ func TestLocalPersistentBlock(t *testing.T) {
 	for _, cfg := range []string{cfgFsRO, cfgBlockRO} {
 		wantErrText(t, e.prepare(e.local, localClaim("r0", pmemDev, -1, cfg)).Err,
 			"cxl.nri.io: claim demo/claim-r0: device memdev-c100f5e1 serial 0xc100f5e1: device 0xc100f5e1: no fsdax namespace in region0: has a writer written the device?")
-		e.wantState(e.local, "r0", state.PreparationUnknown)
+		e.wantState(e.local, "r0", state.PreparationNone)
 	}
 	if strings.Contains(e.commands(), "ndctl") || len(e.k.Kernel().Regions("mem0")) != 0 {
 		t.Fatalf("a reader made a namespace or left a region:\n%s", e.commands())
@@ -218,7 +218,7 @@ func TestLocalPersistentFs(t *testing.T) {
 	e.mustPrepare(e.local, localClaim("w1", pmemDev, -device.SharesUnlimited, cfgFsRW))
 	e.mustPrepare(e.local, localClaim("r1", pmemDev, -1, cfgFsRO))
 	w, r := e.local.ClaimInfo("w1").Devices[0], e.local.ClaimInfo("r1").Devices[0]
-	if !w.Persistent || w.Mode != api.ModeFS || w.NodeMount == "" || w.FsType != "ext4" || w.Access != api.AccessDirect ||
+	if !w.Persistent || w.Mode != api.ModeFS || w.NodeMount == "" || w.FSType != "ext4" || w.Access != api.AccessDirect ||
 		w.Path != "/run/cxl-fs/C100F5E1" || w.ReadOnly || r.NodeMount != w.NodeMount || !r.ReadOnly {
 		t.Fatalf("device infos %+v %+v", w, r)
 	}
@@ -295,7 +295,7 @@ func TestLocalLeaseDevice(t *testing.T) {
 	e := newDriverEnv(t, nil)
 	res := e.prepare(e.local, localClaim("u1", device.LeaseDeviceName, 0))
 	wantErrText(t, res.Err, "claim demo/claim-u1: lending to running containers is disabled (--leases=false)")
-	e.wantState(e.local, "u1", state.PreparationUnknown)
+	e.wantState(e.local, "u1", state.PreparationNone)
 	e.setLeases()
 	res = e.mustPrepare(e.local, localClaim("u1", device.LeaseDeviceName, 0))
 	wantResult(t, res, resultDevice("mem", envNode, device.LeaseDeviceName, "cxl.nri.io/device=claim-u1-0", "cxl.nri.io/device=lease-u1"))
@@ -313,7 +313,7 @@ func TestLocalLeaseDevice(t *testing.T) {
 	e.leases.setErrors(errSteered, nil)
 	res = e.prepare(e.local, localClaim("u2", device.LeaseDeviceName, 0))
 	wantErrText(t, res.Err, "claim demo/claim-u2: lease socket: "+errSteered.Error())
-	e.wantState(e.local, "u2", state.PreparationUnknown)
+	e.wantState(e.local, "u2", state.PreparationNone)
 	e.leases.setErrors(nil, nil)
 	e.takeEvents()
 	e.mustUnprepare(e.local, "u1")

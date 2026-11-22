@@ -67,9 +67,9 @@ type Lease struct {
 	ReleaseRequested bool `json:"releaseRequested,omitempty"`
 	// DeletionRequested: the deletion of the companion pod and claim was
 	// requested.
-	DeletionRequested bool      `json:"deletionRequested,omitempty"`
-	Lend              *Lend     `json:"lend,omitempty"`
-	Created           time.Time `json:"created"`
+	DeletionRequested bool       `json:"deletionRequested,omitempty"`
+	Lend              *LeaseLend `json:"lend,omitempty"`
+	Created           time.Time  `json:"created"`
 	// SpecHash is the hash of the companion claim's spec as the API server
 	// returned it at its creation (lend.SpecHash).
 	SpecHash string `json:"specHash,omitempty"`
@@ -92,7 +92,7 @@ type LeaseAsked struct {
 	// ReadWrite of fs: the opt-in to mount read-write.
 	ReadWrite bool   `json:"readWrite,omitempty"`
 	Access    Access `json:"access,omitempty"`
-	FsType    string `json:"fsType,omitempty"`
+	FSType    string `json:"fsType,omitempty"`
 	// Name is the mount point of an fs lease, unique per lease claim.
 	Name string `json:"name,omitempty"`
 	// Size is the requested quantity.
@@ -114,22 +114,22 @@ type LeaseGot struct {
 	Serial Serial `json:"serial,omitzero"`
 	// SharedDevice: the prepared device is a shared device.
 	SharedDevice bool   `json:"sharedDevice,omitempty"`
-	Bytes        uint64 `json:"bytes,omitempty"`
+	Size         uint64 `json:"bytes,omitempty"`
 	// Dax and Block are the host paths of the device of a dax or block
 	// lease.
 	Dax    string `json:"dax,omitempty"`
 	Block  string `json:"block,omitempty"`
 	Access Access `json:"access,omitempty"`
-	FsType string `json:"fsType,omitempty"`
+	FSType string `json:"fsType,omitempty"`
 	// Path is the directory of the filesystem of an fs lease in the
 	// container.
 	Path string `json:"path,omitempty"`
 }
 
-// Lend is what a lease lends its requester: a NUMA node added to its
+// LeaseLend is what a lease lends its requester: a NUMA node added to its
 // cpuset.mems (numa) or a bind of a node mount (fs).
-type Lend struct {
-	NumaNode   *int   `json:"numaNode,omitempty"`
+type LeaseLend struct {
+	NUMANode   *int   `json:"numaNode,omitempty"`
 	BindTarget string `json:"bindTarget,omitempty"`
 }
 
@@ -142,13 +142,13 @@ func LeaseLends(r *Records, podUID, container string) map[int][]string {
 	for i := range r.Leases {
 		l := &r.Leases[i]
 		if l.Pod.UID != podUID || l.Container != container || l.Asked.Mode != ModeNUMA || l.State != LeaseReady ||
-			l.Lend == nil || l.Lend.NumaNode == nil {
+			l.Lend == nil || l.Lend.NUMANode == nil {
 			continue
 		}
 		if nodes == nil {
 			nodes = map[int][]string{}
 		}
-		n := *l.Lend.NumaNode
+		n := *l.Lend.NUMANode
 		nodes[n] = append(nodes[n], l.ID)
 	}
 	for _, ids := range nodes {
@@ -201,7 +201,7 @@ var LeaseTable = Table[LeaseState]{
 		{
 			From: fsm.List(LeaseCreating, LeasePending), To: LeaseLending, Triggers: fsm.List(TriggerOnLending),
 			When:    "the companion gate passed: the name, the namespace and the owner of the claim",
-			Effects: "commit (d); the lend of the requester to the driver (with FsDir and the name of an fs lease)",
+			Effects: "commit (d); the lend of the requester to the driver (with FSDir and the name of an fs lease)",
 		},
 		{
 			From: fsm.List(LeaseLending, LeaseReady), Stays: true, Triggers: fsm.List(TriggerOnLending),

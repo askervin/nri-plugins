@@ -11,20 +11,20 @@ objects", has the states of the CXL kernel objects that the driver observes.
 
 Triggers:
 
-- `a-prepare`: NodePrepareResources of either driver, its rollback included.
-- `a-unprepare`: NodeUnprepareResources of either driver.
-- `a-recover`: the recovery at the start of the process, both phases.
+- `prepare`: NodePrepareResources of either driver, its rollback included.
+- `unprepare`: NodeUnprepareResources of either driver.
+- `recover`: the recovery at the start of the process, both phases.
 - `load`: the store loading the document at the start of the process.
-- `a-observe`: an observation of the kernel: a scan, a uevent, a memdev that appeared or went.
-- `a-list`: a list of the pool driver's ResourceSlices or of the pool claims allocated to the node.
+- `observe`: an observation of the kernel: a scan, a uevent, a memdev that appeared or went.
+- `list`: a list of the pool driver's ResourceSlices or of the pool claims allocated to the node.
 - `expire`: a timer of a record that ran out.
-- `a-request`: a lease request on the socket of a lease claim, until its response.
-- `a-release`: the release of a lease: by its client, at the end of its requester, at a failure.
-- `a-reconcile`: the periodic lease reconcile and repair pass.
-- `OnLending`: the companion claim's Prepare passing the companion gate.
-- `OnPrepared`: the companion claim's Prepare handing over the lent devices.
-- `OnLendFailed`: a bind or lend error of the companion claim's Prepare, or an error that its retries cannot heal.
-- `OnReleasing`: the companion claim's Unprepare.
+- `request`: a lease request on the socket of a lease claim, until its response.
+- `release`: the release of a lease: by its client, at the end of its requester, at a failure.
+- `reconcile`: the periodic lease reconcile and repair pass.
+- `lending`: the companion claim's Prepare passing the companion gate.
+- `prepared`: the companion claim's Prepare handing over the lent devices.
+- `lend-failed`: a bind or lend error of the companion claim's Prepare, or an error that its retries cannot heal.
+- `releasing`: the companion claim's Unprepare.
 
 ## Preparation
 
@@ -42,31 +42,31 @@ States: UNKNOWN, PREPARING, PREPARED, PREPARED_UNRESTORED, PREPARED_STALE, UNPRE
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| UNKNOWN | PREPARING | `a-prepare`: validation and the companion gate passed | allocation present; config decodes; local: device in the last published ResourceSlice; pool: status data present | commit (d) of the preparation with its results (the intent); companion: lease LENDING in the same commit |
-| PREPARING | PREPARED | `a-prepare`: every result realised, CDI spec written (none for a companion) | all grants REALISED | commit (d) jointly with lease READY (companion) or lease claim OPEN (lease result); kubelet gets the result |
-| PREPARING | UNKNOWN | `a-prepare`, `a-unprepare`: the Prepare failed and its rollback released everything; or an Unprepare released everything recorded | no KEPT region, no Stale entry | commit (d) removing the record; kubelet gets the error (Prepare) or nil (Unprepare) |
-| PREPARING | KEPT | `a-prepare`, `a-recover`: the Prepare failed and its rollback kept a region (in-order release refused); or the recovery kept a cut region below newer regions | Policy says keep | commit (d); error to kubelet (retry) or nothing (recovery) |
-| PREPARING | (unchanged) | `a-recover`: the recovery of a cut Prepare: leftovers released, the record stays for kubelet's retry | - | commit (d) of the grants back to JOURNALED or RELEASED |
-| PREPARING | (unchanged) | `a-prepare`: Prepare retried by kubelet: continues per result | REALISED grants that verify are reused | as the first Prepare |
-| PREPARED | (unchanged) | `a-prepare`: Prepare again (kubelet restart, companion re-announce) | - | no commit; companion: OnLending and OnPrepared announced again |
-| PREPARED | PREPARED_UNRESTORED | `a-recover`: a grant's objects do not verify (mount, dax or block identity) | - | commit (l); no CDI device for the claim; logged |
-| PREPARED_UNRESTORED | PREPARED | `a-prepare`, `a-recover`: Prepare again, or the recovery at a restart, mounts again or verifies again | all grants REALISED again | commit (d); CDI spec rewritten |
-| PREPARED_UNRESTORED | (unchanged) | `a-recover`: the recovery at a restart fails again, or fails for another grant of the claim | - | logged; for another grant, commit (l) of it REALISED_UNRESTORED |
-| PREPARED_UNRESTORED | (unchanged) | `a-prepare`: Prepare again fails | - | error to kubelet |
+| UNKNOWN | PREPARING | `prepare`: validation and the companion gate passed | allocation present; config decodes; local: device in the last published ResourceSlice; pool: status data present | commit (d) of the preparation with its results (the intent); companion: lease LENDING in the same commit |
+| PREPARING | PREPARED | `prepare`: every result realised, CDI spec written (none for a companion) | all grants REALISED | commit (d) jointly with lease READY (companion) or lease claim OPEN (lease result); kubelet gets the result |
+| PREPARING | UNKNOWN | `prepare`, `unprepare`: the Prepare failed and its rollback released everything; or an Unprepare released everything recorded | no KEPT region, no Stale entry | commit (d) removing the record; kubelet gets the error (Prepare) or nil (Unprepare) |
+| PREPARING | KEPT | `prepare`, `recover`: the Prepare failed and its rollback kept a region (in-order release refused); or the recovery kept a cut region below newer regions | Policy says keep | commit (d); error to kubelet (retry) or nothing (recovery) |
+| PREPARING | (unchanged) | `recover`: the recovery of a cut Prepare: leftovers released, the record stays for kubelet's retry | - | commit (d) of the grants back to JOURNALED or RELEASED |
+| PREPARING | (unchanged) | `prepare`: Prepare retried by kubelet: continues per result | REALISED grants that verify are reused | as the first Prepare |
+| PREPARED | (unchanged) | `prepare`: Prepare again (kubelet restart, companion re-announce) | - | no commit; companion: OnLending and OnPrepared announced again |
+| PREPARED | PREPARED_UNRESTORED | `recover`: a grant's objects do not verify (mount, dax or block identity) | - | commit (l); no CDI device for the claim; logged |
+| PREPARED_UNRESTORED | PREPARED | `prepare`, `recover`: Prepare again, or the recovery at a restart, mounts again or verifies again | all grants REALISED again | commit (d); CDI spec rewritten |
+| PREPARED_UNRESTORED | (unchanged) | `recover`: the recovery at a restart fails again, or fails for another grant of the claim | - | logged; for another grant, commit (l) of it REALISED_UNRESTORED |
+| PREPARED_UNRESTORED | (unchanged) | `prepare`: Prepare again fails | - | error to kubelet |
 | PREPARING, PREPARED, PREPARED_UNRESTORED, PREPARED_STALE, UNPREPARING, KEPT | PREPARED_STALE | `load`: the document's boot id differs from the running boot | - | commit (l): grants keep Serial, Source and Asked, Got and Intent cleared; no CDI device; nothing released at start |
-| PREPARED_STALE | PREPARING | `a-prepare`: Prepare again (kubelet after a reboot) | - | the old grants dropped in the same commit (d); then as UNKNOWN -> PREPARING |
-| PREPARED_STALE | (unchanged) | `a-prepare`: a Prepare again fails validation or the companion gate | - | error to kubelet; the record stays for the next Prepare or the Unprepare |
-| PREPARED_STALE | UNKNOWN | `a-unprepare` | - | release by serial: a pool memdev disabled iff no grant of this boot uses the serial; no revoke; commit (d) removing the record |
-| PREPARED, PREPARED_UNRESTORED | UNPREPARING | `a-unprepare` | lease claim: CloseClaim returned; companion: OnReleasing done | commit (d) |
-| UNPREPARING | UNKNOWN | `a-unprepare`: every grant RELEASED | - | commit (d) removing the record; kubelet gets nil |
-| UNPREPARING | (unchanged) | `a-unprepare`: a release step failed (EBUSY, a revoke before the lender is set up) | - | error to kubelet (retried about every second); records unchanged; the retry finds out from the kernel what exists |
-| UNPREPARING | (unchanged) | `a-recover`: the record at the start: no remount; the CDI spec keeps the claim's devices until kubelet's Unprepare retry removes them | - | nothing at start |
-| UNPREPARING | (unchanged) | `a-prepare`: a Prepare again before kubelet's Unprepare retry | - | the result is returned as prepared (both drivers); a companion is announced again; no commit |
-| KEPT | PREPARING | `a-prepare`: Prepare again | - | the kept region is enabled and set up again |
-| KEPT | (unchanged) | `a-prepare`: a Prepare again fails validation or the companion gate | - | error to kubelet; the record and the kept region stay for the next Prepare or the Unprepare |
-| KEPT | UNKNOWN | `a-unprepare` | - | the kept region destroyed per Policy; commit (d) removing the record |
-| KEPT | (unchanged) | `a-recover`: the recovery at a later start released some of its kept grants and kept the others | - | commit (d) dropping the results of the released grants |
-| KEPT | UNKNOWN | `a-recover`: the recovery at a later start released every grant that it kept (nothing lies above its regions any more, or its idle shared memdev keeps its region) | - | commit (d) removing the record; kubelet's Prepare again prepares the claim anew, its Unprepare finds nothing |
+| PREPARED_STALE | PREPARING | `prepare`: Prepare again (kubelet after a reboot) | - | the old grants dropped in the same commit (d); then as UNKNOWN -> PREPARING |
+| PREPARED_STALE | (unchanged) | `prepare`: a Prepare again fails validation or the companion gate | - | error to kubelet; the record stays for the next Prepare or the Unprepare |
+| PREPARED_STALE | UNKNOWN | `unprepare` | - | release by serial: a pool memdev disabled iff no grant of this boot uses the serial; no revoke; commit (d) removing the record |
+| PREPARED, PREPARED_UNRESTORED | UNPREPARING | `unprepare` | lease claim: CloseClaim returned; companion: OnReleasing done | commit (d) |
+| UNPREPARING | UNKNOWN | `unprepare`: every grant RELEASED | - | commit (d) removing the record; kubelet gets nil |
+| UNPREPARING | (unchanged) | `unprepare`: a release step failed (EBUSY, a revoke before the lender is set up) | - | error to kubelet (retried about every second); records unchanged; the retry finds out from the kernel what exists |
+| UNPREPARING | (unchanged) | `recover`: the record at the start: no remount; the CDI spec keeps the claim's devices until kubelet's Unprepare retry removes them | - | nothing at start |
+| UNPREPARING | (unchanged) | `prepare`: a Prepare again before kubelet's Unprepare retry | - | the result is returned as prepared (both drivers); a companion is announced again; no commit |
+| KEPT | PREPARING | `prepare`: Prepare again | - | the kept region is enabled and set up again |
+| KEPT | (unchanged) | `prepare`: a Prepare again fails validation or the companion gate | - | error to kubelet; the record and the kept region stay for the next Prepare or the Unprepare |
+| KEPT | UNKNOWN | `unprepare` | - | the kept region destroyed per Policy; commit (d) removing the record |
+| KEPT | (unchanged) | `recover`: the recovery at a later start released some of its kept grants and kept the others | - | commit (d) dropping the results of the released grants |
+| KEPT | UNKNOWN | `recover`: the recovery at a later start released every grant that it kept (nothing lies above its regions any more, or its idle shared memdev keeps its region) | - | commit (d) removing the record; kubelet's Prepare again prepares the claim anew, its Unprepare finds nothing |
 
 Refused:
 
@@ -95,22 +95,22 @@ States: REQUESTED, JOURNALED, REALISING, REALISED, REALISED_UNRESTORED, RELEASIN
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| REQUESTED | JOURNALED | `a-prepare`: the grant request is built from the result and the config | no FOREIGN region on the memdev; local: provenance not POOL or HELD, a fresh list of the pool ResourceSlices does not name the serial, no pool grant on it | commit (d) of the intent: serial, mode, what may be created (noted region name, namespace, mount path, bind target, lend) |
-| JOURNALED | REALISING | `a-prepare`: the first kernel action of the grant | memdev ready (pool: waited for; without a driver: enabled after the probe grace) | kernel commands; every created object committed (d) into Got before the next command that depends on it |
-| REALISING | REALISED | `a-prepare`: the last step done (numa: fenced and online; dax: bound and zeroed; block, fs: mounted and verified; companion: bound or lent) | - | commit (d) jointly with the Preparation PREPARED (or per grant for claims of several results, then PREPARED last) |
-| REALISING | RELEASING | `a-prepare`, `a-unprepare`: a persistent refusal (no fsdax namespace for a reader; no allowed filesystem type; a block writer that is not exclusive) or a config refusal found after kernel work; or any other failure (decoder hole, no room, EBUSY online, timeout) | - | Reason the error of the step, the Prepare's error (a typed error to the front-end); rollback: the objects this grant made are released per Policy (trigger rollback); an Unprepare of a grant that a failed release at the start left REALISING releases it the same way |
-| JOURNALED | RELEASING | `a-prepare`, `a-unprepare`: the rollback of a Prepare that failed before the grant's first kernel action; an Unprepare of a PREPARING or KEPT preparation | - | Reason the error of the step when the grant's own Prepare failed; release what Got and Intent name (a kept region per Policy); commit (d) |
-| REALISED | RELEASING | `a-unprepare`, `a-prepare`, `a-recover`: an Unprepare; the rollback of a sibling grant of the same claim; the recovery of a PREPARING preparation (unfinished claim) | companion: lends revoked and binds unbound first | commit (d) |
-| RELEASING | RELEASED | `a-unprepare`, `a-prepare`, `a-recover`: mounts unmounted or downgraded, blocks offline, dax device deleted, the region per Policy when the grant was its last user | - | commit (d) removing the grant; the Memdev's grants and the users of the region's objects updated |
-| RELEASING | (unchanged) | `a-unprepare`, `a-prepare`, `a-recover`: a release step failed (EBUSY offline, busy mount, holder) | - | error up (kubelet retries); records unchanged |
-| RELEASING | JOURNALED | `a-prepare`, `a-recover`: the rollback of a failed Prepare, or the recovery of a cut Prepare's REALISED grant, released what the grant made but kept its region below a newer region of another memdev (Policy in order refused, or recovery keep) | - | the grant holds the KEPT region for its claim (Intent.Region; Got cleared but Bind and Lend; Reason cleared; the preparation KEPT): its Prepare again reuses it, its Unprepare releases it; commit (d) |
-| REALISED | REALISED_UNRESTORED | `a-recover`: verification failed (mount: not remountable; dax: name, dev, size or region mismatch; block: namespace, name or dev mismatch) | - | commit (l); no CDI device |
-| REALISED_UNRESTORED | REALISED | `a-prepare`, `a-recover`: Prepare again, or the recovery at a restart, verifies or mounts again | - | commit (d) |
-| REALISED_UNRESTORED | RELEASING | `a-unprepare`, `a-prepare`, `a-recover`: an Unprepare or a rollback | - | commit (d); nothing of Got to undo beyond what verifies |
+| REQUESTED | JOURNALED | `prepare`: the grant request is built from the result and the config | no FOREIGN region on the memdev; local: provenance not POOL or HELD, a fresh list of the pool ResourceSlices does not name the serial, no pool grant on it | commit (d) of the intent: serial, mode, what may be created (noted region name, namespace, mount path, bind target, lend) |
+| JOURNALED | REALISING | `prepare`: the first kernel action of the grant | memdev ready (pool: waited for; without a driver: enabled after the probe grace) | kernel commands; every created object committed (d) into Got before the next command that depends on it |
+| REALISING | REALISED | `prepare`: the last step done (numa: fenced and online; dax: bound and zeroed; block, fs: mounted and verified; companion: bound or lent) | - | commit (d) jointly with the Preparation PREPARED (or per grant for claims of several results, then PREPARED last) |
+| REALISING | RELEASING | `prepare`, `unprepare`: a persistent refusal (no fsdax namespace for a reader; no allowed filesystem type; a block writer that is not exclusive) or a config refusal found after kernel work; or any other failure (decoder hole, no room, EBUSY online, timeout) | - | Reason the error of the step, the Prepare's error (a typed error to the front-end); rollback: the objects this grant made are released per Policy (trigger rollback); an Unprepare of a grant that a failed release at the start left REALISING releases it the same way |
+| JOURNALED | RELEASING | `prepare`, `unprepare`: the rollback of a Prepare that failed before the grant's first kernel action; an Unprepare of a PREPARING or KEPT preparation | - | Reason the error of the step when the grant's own Prepare failed; release what Got and Intent name (a kept region per Policy); commit (d) |
+| REALISED | RELEASING | `unprepare`, `prepare`, `recover`: an Unprepare; the rollback of a sibling grant of the same claim; the recovery of a PREPARING preparation (unfinished claim) | companion: lends revoked and binds unbound first | commit (d) |
+| RELEASING | RELEASED | `unprepare`, `prepare`, `recover`: mounts unmounted or downgraded, blocks offline, dax device deleted, the region per Policy when the grant was its last user | - | commit (d) removing the grant; the Memdev's grants and the users of the region's objects updated |
+| RELEASING | (unchanged) | `unprepare`, `prepare`, `recover`: a release step failed (EBUSY offline, busy mount, holder) | - | error up (kubelet retries); records unchanged |
+| RELEASING | JOURNALED | `prepare`, `recover`: the rollback of a failed Prepare, or the recovery of a cut Prepare's REALISED grant, released what the grant made but kept its region below a newer region of another memdev (Policy in order refused, or recovery keep) | - | the grant holds the KEPT region for its claim (Intent.Region; Got cleared but Bind and Lend; Reason cleared; the preparation KEPT): its Prepare again reuses it, its Unprepare releases it; commit (d) |
+| REALISED | REALISED_UNRESTORED | `recover`: verification failed (mount: not remountable; dax: name, dev, size or region mismatch; block: namespace, name or dev mismatch) | - | commit (l); no CDI device |
+| REALISED_UNRESTORED | REALISED | `prepare`, `recover`: Prepare again, or the recovery at a restart, verifies or mounts again | - | commit (d) |
+| REALISED_UNRESTORED | RELEASING | `unprepare`, `prepare`, `recover`: an Unprepare or a rollback | - | commit (d); nothing of Got to undo beyond what verifies |
 | JOURNALED, REALISING, REALISED, REALISED_UNRESTORED, RELEASING | (unchanged) | `load`: the preparation became PREPARED_STALE at the load | - | Got and Intent cleared, nothing released at start; commit (l) |
-| JOURNALED, REALISING | JOURNALED | `a-recover`: the recovery of a cut Prepare kept the region (region KEPT) | Policy (trigger recovery) says keep | commit (d); a numa companion's lend is left to kubelet |
-| JOURNALED, REALISING | RELEASED | `a-recover`: the recovery of a cut Prepare released the objects named by Got and by Intent | Policy (trigger recovery) says destroy | commit (d) |
-| JOURNALED, REALISING, REALISED, REALISED_UNRESTORED | RELEASED | `a-prepare`, `a-unprepare`: a Prepare again or an Unprepare of a PREPARED_STALE preparation (a RELEASING grant goes by the release row) | the preparation is PREPARED_STALE | dropped in the commit (d) of the preparation; an Unprepare releases by serial first |
+| JOURNALED, REALISING | JOURNALED | `recover`: the recovery of a cut Prepare kept the region (region KEPT) | Policy (trigger recovery) says keep | commit (d); a numa companion's lend is left to kubelet |
+| JOURNALED, REALISING | RELEASED | `recover`: the recovery of a cut Prepare released the objects named by Got and by Intent | Policy (trigger recovery) says destroy | commit (d) |
+| JOURNALED, REALISING, REALISED, REALISED_UNRESTORED | RELEASED | `prepare`, `unprepare`: a Prepare again or an Unprepare of a PREPARED_STALE preparation (a RELEASING grant goes by the release row) | the preparation is PREPARED_STALE | dropped in the commit (d) of the preparation; an Unprepare releases by serial first |
 | JOURNALED, REALISING, REALISED, REALISED_UNRESTORED, RELEASING | RELEASED | `load`: its preparation of another boot is dropped at the load (the driver drops such records) | - | dropped with the preparation, commit (l) |
 
 Refused:
@@ -140,12 +140,12 @@ States: ABSENT, BOUND, STALE.
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| ABSENT | BOUND | `a-prepare`: companion Prepare of an fs lease, after the node mount exists | the name is unused; the node mount is mounted | plain bind of a read-only node mount, or a read-only bind of a writable type; verified; commit (d) of the target in Got |
-| BOUND | ABSENT | `a-unprepare`, `a-prepare`, `a-recover`: companion Unprepare (after the revoke); the rollback of the companion Prepare; the recovery sweep of a bind that no REALISED grant of a PREPARED preparation lists | - | unmount (never detached); commit (d) |
-| BOUND | STALE | `a-unprepare`, `a-prepare`, `a-recover`: the unmount failed with EBUSY (a file of the bind is mapped) | - | the memdev's Stale list gets the target; the lease RELEASING_BUSY; retried at every release and by the periodic pass |
-| STALE | ABSENT | `a-unprepare`, `a-prepare`, `a-recover`, `a-reconcile`: a retry unmounts it (the holder ended) | - | commit (d) |
-| ABSENT, BOUND | BOUND | `a-recover`: the recovery binds a REALISED fs companion again whose node mount is mounted, unless its claim is UNPREPARING; an existing mount at a listed target is kept | - | - |
-| BOUND | BOUND | `a-prepare`: a Prepare again mounts the node mount of an unrestored fs companion again and binds it again as the recovery does | - | - |
+| ABSENT | BOUND | `prepare`: companion Prepare of an fs lease, after the node mount exists | the name is unused; the node mount is mounted | plain bind of a read-only node mount, or a read-only bind of a writable type; verified; commit (d) of the target in Got |
+| BOUND | ABSENT | `unprepare`, `prepare`, `recover`: companion Unprepare (after the revoke); the rollback of the companion Prepare; the recovery sweep of a bind that no REALISED grant of a PREPARED preparation lists | - | unmount (never detached); commit (d) |
+| BOUND | STALE | `unprepare`, `prepare`, `recover`: the unmount failed with EBUSY (a file of the bind is mapped) | - | the memdev's Stale list gets the target; the lease RELEASING_BUSY; retried at every release and by the periodic pass |
+| STALE | ABSENT | `unprepare`, `prepare`, `recover`, `reconcile`: a retry unmounts it (the holder ended) | - | commit (d) |
+| ABSENT, BOUND | BOUND | `recover`: the recovery binds a REALISED fs companion again whose node mount is mounted, unless its claim is UNPREPARING; an existing mount at a listed target is kept | - | - |
+| BOUND | BOUND | `prepare`: a Prepare again mounts the node mount of an unrestored fs companion again and binds it again as the recovery does | - | - |
 
 **Invariants.** A BOUND bind's node mount is mounted.
 
@@ -169,15 +169,15 @@ States: UNUSED, ACTIVE, IDLE_KEPT, GONE.
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| UNUSED | ACTIVE | `a-prepare`: the first grant of the serial is JOURNALED | provenance allows the source | commit (d) with the facts (usable, shared, persistent, coherent, NUMA affinity); pool: provenance POOL in the same commit |
-| ACTIVE | (unchanged) | `a-prepare`, `a-unprepare`, `a-recover`: grants come and go while at least one remains | - | commits with the grants |
-| ACTIVE | UNUSED | `a-unprepare`, `a-prepare`, `a-recover`: the last grant RELEASED and Policy says destroy (local sliced, local shared not configured any more, pool) | the region destroyed; a pool memdev disabled | commit (d) removing the record |
-| ACTIVE | IDLE_KEPT | `a-unprepare`, `a-prepare`, `a-recover`: the last grant RELEASED and Policy says keep (local shared while configured; local persistent with regions above; a rollback or recovery that keeps) | - | commit (d) |
-| IDLE_KEPT | ACTIVE | `a-prepare`: a new grant JOURNALED | the kept region enabled and set up again if needed | commit (d) |
-| IDLE_KEPT | UNUSED | `a-recover`, `a-prepare`: the recovery or the next Prepare of the memdev finds the keep reason gone (shared not configured any more; nothing above a kept persistent region; an idle leftover) | Policy says destroy | region destroyed; commit (d) removing the record |
-| ACTIVE, IDLE_KEPT | GONE | `a-recover`, `a-observe`: the memdev is absent at the start, or it went while grants exist (pool device detached under us; local hot-remove) | - | commit (l); the hollow regions of ours noted in Hollow; grants kept for kubelet's Unprepare |
-| GONE | UNUSED | `a-unprepare`, `a-recover`: the last grant RELEASED (by serial) and Hollow empty | hollow regions deleted when their blocks are offline | commit (d) removing the record |
-| GONE | ACTIVE | `a-observe`, `a-recover`: the memdev appeared while grants exist (the same serial attached again) | the grants are of PREPARED_STALE preparations or REALISED with objects to verify | commit (l) |
+| UNUSED | ACTIVE | `prepare`: the first grant of the serial is JOURNALED | provenance allows the source | commit (d) with the facts (usable, shared, persistent, coherent, NUMA affinity); pool: provenance POOL in the same commit |
+| ACTIVE | (unchanged) | `prepare`, `unprepare`, `recover`: grants come and go while at least one remains | - | commits with the grants |
+| ACTIVE | UNUSED | `unprepare`, `prepare`, `recover`: the last grant RELEASED and Policy says destroy (local sliced, local shared not configured any more, pool) | the region destroyed; a pool memdev disabled | commit (d) removing the record |
+| ACTIVE | IDLE_KEPT | `unprepare`, `prepare`, `recover`: the last grant RELEASED and Policy says keep (local shared while configured; local persistent with regions above; a rollback or recovery that keeps) | - | commit (d) |
+| IDLE_KEPT | ACTIVE | `prepare`: a new grant JOURNALED | the kept region enabled and set up again if needed | commit (d) |
+| IDLE_KEPT | UNUSED | `recover`, `prepare`: the recovery or the next Prepare of the memdev finds the keep reason gone (shared not configured any more; nothing above a kept persistent region; an idle leftover) | Policy says destroy | region destroyed; commit (d) removing the record |
+| ACTIVE, IDLE_KEPT | GONE | `recover`, `observe`: the memdev is absent at the start, or it went while grants exist (pool device detached under us; local hot-remove) | - | commit (l); the hollow regions of ours noted in Hollow; grants kept for kubelet's Unprepare |
+| GONE | UNUSED | `unprepare`, `recover`: the last grant RELEASED (by serial) and Hollow empty | hollow regions deleted when their blocks are offline | commit (d) removing the record |
+| GONE | ACTIVE | `observe`, `recover`: the memdev appeared while grants exist (the same serial attached again) | the grants are of PREPARED_STALE preparations or REALISED with objects to verify | commit (l) |
 | ACTIVE, IDLE_KEPT, GONE | UNUSED | `load`: the document is of another boot | - | the record dropped: its regions, dax devices, mounts and binds did not survive the reboot |
 
 Refused:
@@ -206,19 +206,19 @@ States: NONE, NOTED, OWNED, KEPT, HOLLOW_OWNED, FOREIGN.
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| NONE | NOTED | `a-prepare`: a Prepare needs a region on the memdev | engine lock held; the next name read from the root decoder | commit (d) of NotedName before cxl create-region |
-| NOTED | OWNED | `a-prepare`: cxl create-region returned (engine lock held for the command); the region's targets are this memdev | the name is NotedName, or the created name read again | commit (d) of Name and Mode |
-| NOTED | NONE | `a-prepare`, `a-recover`: create-region failed with nothing created (decoder hole; endpoint not ready: retried once after 3 s); or the recovery finds no region of the noted name | no region of the noted name exists | commit (d) clearing the note |
-| NOTED | OWNED | `a-recover`: the recovery finds a region of the noted name whose targets are this memdev | - | commit (d) of Name |
-| NOTED | HOLLOW_OWNED | `a-recover`: the recovery finds a hollow region of the noted name | - | the memdev's Hollow gets the name; commit (l) |
-| OWNED | KEPT | `a-unprepare`, `a-prepare`, `a-recover`: a release with Policy "in order" found a newer region of another memdev above after cxl disable-region; or the recovery keeps a cut Prepare's region untouched below a newer region (Policy keep) and no grant of it was REALISED; or a-prepare (5.3) or an idle keep finds an OWNED region that the kernel has disabled (a release failed after cxl disable-region): recorded KEPT, enabled and set up again by the Prepare | - | the region stays disabled (in order) or as it is (recovery); SetUp false; commit (d) |
-| KEPT | OWNED | `a-prepare`: a new grant needs the region | enable-region succeeded | commit (d); set up again (SetUp true after the first device) |
-| KEPT | NONE | `a-unprepare`, `a-prepare`, `a-recover`: a release with Policy destroy (top of the stack now; an Unprepare of local sliced; pool) | blocks offline | cxl destroy-region; commit (d) |
-| OWNED | NONE | `a-unprepare`, `a-prepare`, `a-recover`: the last user released and Policy says destroy; or the recovery finds the region missing | blocks offline | disable and destroy under the engine lock (the in-order check repeated after the disable); commit (d); a missing region: the record cleared, the grants kept for kubelet |
-| OWNED, KEPT | HOLLOW_OWNED | `a-observe`, `a-recover`: the memdev was removed under the region | - | the memdev's Hollow gets the name; commit (l) |
-| HOLLOW_OWNED | NONE | `a-unprepare`, `a-prepare`, `a-recover`: the hollow region deleted | every block of its range offline | delete_region written under the engine lock; commit (d) |
-| NONE | FOREIGN | `a-prepare`, `a-recover`: a Prepare finds a region that no record names on its memdev, or the recovery on a memdev of a record | - | commit (d) of the record (Owner foreign, Targets from the kernel); the Prepare refused, its error naming the region; never touched |
-| FOREIGN | NONE | `a-prepare`, `a-unprepare`, `a-recover`: a Prepare, an Unprepare or the recovery finds the region gone or on other targets, or a Prepare creates a region of its name | - | commit (d) removing the record |
+| NONE | NOTED | `prepare`: a Prepare needs a region on the memdev | engine lock held; the next name read from the root decoder | commit (d) of NotedName before cxl create-region |
+| NOTED | OWNED | `prepare`: cxl create-region returned (engine lock held for the command); the region's targets are this memdev | the name is NotedName, or the created name read again | commit (d) of Name and Mode |
+| NOTED | NONE | `prepare`, `recover`: create-region failed with nothing created (decoder hole; endpoint not ready: retried once after 3 s); or the recovery finds no region of the noted name | no region of the noted name exists | commit (d) clearing the note |
+| NOTED | OWNED | `recover`: the recovery finds a region of the noted name whose targets are this memdev | - | commit (d) of Name |
+| NOTED | HOLLOW_OWNED | `recover`: the recovery finds a hollow region of the noted name | - | the memdev's Hollow gets the name; commit (l) |
+| OWNED | KEPT | `unprepare`, `prepare`, `recover`: a release with Policy "in order" found a newer region of another memdev above after cxl disable-region; or the recovery keeps a cut Prepare's region untouched below a newer region (Policy keep) and no grant of it was REALISED; or prepare (5.3) or an idle keep finds an OWNED region that the kernel has disabled (a release failed after cxl disable-region): recorded KEPT, enabled and set up again by the Prepare | - | the region stays disabled (in order) or as it is (recovery); SetUp false; commit (d) |
+| KEPT | OWNED | `prepare`: a new grant needs the region | enable-region succeeded | commit (d); set up again (SetUp true after the first device) |
+| KEPT | NONE | `unprepare`, `prepare`, `recover`: a release with Policy destroy (top of the stack now; an Unprepare of local sliced; pool) | blocks offline | cxl destroy-region; commit (d) |
+| OWNED | NONE | `unprepare`, `prepare`, `recover`: the last user released and Policy says destroy; or the recovery finds the region missing | blocks offline | disable and destroy under the engine lock (the in-order check repeated after the disable); commit (d); a missing region: the record cleared, the grants kept for kubelet |
+| OWNED, KEPT | HOLLOW_OWNED | `observe`, `recover`: the memdev was removed under the region | - | the memdev's Hollow gets the name; commit (l) |
+| HOLLOW_OWNED | NONE | `unprepare`, `prepare`, `recover`: the hollow region deleted | every block of its range offline | delete_region written under the engine lock; commit (d) |
+| NONE | FOREIGN | `prepare`, `recover`: a Prepare finds a region that no record names on its memdev, or the recovery on a memdev of a record | - | commit (d) of the record (Owner foreign, Targets from the kernel); the Prepare refused, its error naming the region; never touched |
+| FOREIGN | NONE | `prepare`, `unprepare`, `recover`: a Prepare, an Unprepare or the recovery finds the region gone or on other targets, or a Prepare creates a region of its name | - | commit (d) removing the record |
 | NOTED, OWNED, KEPT, HOLLOW_OWNED, FOREIGN | NONE | `load`: the document is of another boot | - | the record dropped: region names are given anew at every boot |
 
 Refused:
@@ -232,8 +232,8 @@ States: false, true.
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| false | true | `a-prepare`: the Whole or first dax device made (local shared: zeroed; pool numa: kmem; pool dax: device_dax), or the nd region settled (pmem) | the region is OWNED | commit (d) |
-| true | false | `a-unprepare`, `a-prepare`, `a-recover`: the region becomes KEPT (disabled) | - | commit (d) with the KEPT state |
+| false | true | `prepare`: the Whole or first dax device made (local shared: zeroed; pool numa: kmem; pool dax: device_dax), or the nd region settled (pmem) | the region is OWNED | commit (d) |
+| true | false | `unprepare`, `prepare`, `recover`: the region becomes KEPT (disabled) | - | commit (d) with the KEPT state |
 
 **Invariants.** A region of ours is exactly one record, in state OWNED, KEPT or HOLLOW_OWNED after a Prepare, referenced by every memdev of Targets.
 
@@ -257,21 +257,21 @@ States: ABSENT, CREATING, SIZED, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE, SEED.
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| ABSENT | CREATING | `a-prepare`: a grant needs a dax device (or the Whole device at set-up) | engine lock held | dax_region/create written; the name read back |
-| CREATING | SIZED | `a-prepare`: size (or explicit ranges) written and verified | room in the dax region; whole-block placement verified (created again through the mapping attribute if not) | commit (d) of name, dev and ranges; Users the grant |
-| CREATING | ABSENT | `a-prepare`, `a-unprepare`: size or ranges failed, or the verification failed; or the Unprepare of a claim whose Prepare did not finish (PREPARING or KEPT, 03a T1 PREPARING -> UNKNOWN) deletes the device its cut Prepare was making | - | deleted; error |
-| ABSENT | KMEM_OFFLINE | `a-prepare`: the first device (daxN.0) of a new ram region appeared, bound to kmem by the kernel | - | its blocks offlined and held offline; commit (d) |
-| ABSENT | DEVICE_DAX | `a-prepare`: the first device (daxN.0) of a new ram region appeared bound to device_dax (an id of its name that another tool left in device_dax) | - | commit (d) |
-| KMEM_OFFLINE | SIZED | `a-prepare`: kmem unbound from the offline device (the set-up of a region for device_dax or for slices) | - | commit (d) |
-| DEVICE_DAX | SIZED | `a-prepare`: the unused Whole device daxN.0 of a sliced region resized for the first part of a grant (unbound by the resize), or unbound from device_dax for a switch to kmem | no user | commit (d); a part: Users the grant, no longer the Whole device |
-| SIZED, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | SEED | `a-unprepare`, `a-prepare`, `a-recover`: daxN.0 resized to 0: the seed of a sliced region; or daxN.0 released with Users empty and not kept: the kernel keeps it at size 0 | - | kmem: blocks offlined (EBUSY: stays, error up); unbound; resized to 0; commit (d) |
-| SEED | SIZED | `a-prepare`: the seed sized again (the Whole device of a region set up again) | room in the dax region | commit (d) |
-| SIZED | DEVICE_DAX | `a-prepare`: bound to device_dax by sysfs | - | zeroed (a local dax grant, a new shared region); commit (d) |
-| SIZED | KMEM_OFFLINE | `a-prepare`: bound to kmem by sysfs bind (never new_id) | fenced before its blocks go online (KMEM_OFFLINE -> KMEM_ONLINE) | wait for the blocks; commit (d) |
-| KMEM_OFFLINE | KMEM_ONLINE | `a-prepare`: the blocks onlined movable | all blocks exist; the udev online settled | commit (d); the NUMA node's MemTotal grows |
-| DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | (unchanged) | `a-unprepare`, `a-prepare`, `a-recover`: a second grant uses the device (a shared device, a shared part, a lease joining), or a user grant RELEASING | a new user: the device is shareable for that kind | Users gets the grant or loses it; commit (d) |
-| SIZED, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | ABSENT | `a-unprepare`, `a-prepare`: Users empty and not kept (the Whole device of a configured shared memdev stays) | - | kmem: blocks offlined (EBUSY: stays, error up); unbound; resized to 0; delete written; commit (d) |
-| CREATING, SIZED, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | ABSENT | `a-recover`: the recovery deletes a dax device of a region of ours without users and not the kept Whole device, or releases the device of a grant that it releases | blocks offline first | deleted |
+| ABSENT | CREATING | `prepare`: a grant needs a dax device (or the Whole device at set-up) | engine lock held | dax_region/create written; the name read back |
+| CREATING | SIZED | `prepare`: size (or explicit ranges) written and verified | room in the dax region; whole-block placement verified (created again through the mapping attribute if not) | commit (d) of name, dev and ranges; Users the grant |
+| CREATING | ABSENT | `prepare`, `unprepare`: size or ranges failed, or the verification failed; or the Unprepare of a claim whose Prepare did not finish (PREPARING or KEPT, 03a T1 PREPARING -> UNKNOWN) deletes the device its cut Prepare was making | - | deleted; error |
+| ABSENT | KMEM_OFFLINE | `prepare`: the first device (daxN.0) of a new ram region appeared, bound to kmem by the kernel | - | its blocks offlined and held offline; commit (d) |
+| ABSENT | DEVICE_DAX | `prepare`: the first device (daxN.0) of a new ram region appeared bound to device_dax (an id of its name that another tool left in device_dax) | - | commit (d) |
+| KMEM_OFFLINE | SIZED | `prepare`: kmem unbound from the offline device (the set-up of a region for device_dax or for slices) | - | commit (d) |
+| DEVICE_DAX | SIZED | `prepare`: the unused Whole device daxN.0 of a sliced region resized for the first part of a grant (unbound by the resize), or unbound from device_dax for a switch to kmem | no user | commit (d); a part: Users the grant, no longer the Whole device |
+| SIZED, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | SEED | `unprepare`, `prepare`, `recover`: daxN.0 resized to 0: the seed of a sliced region; or daxN.0 released with Users empty and not kept: the kernel keeps it at size 0 | - | kmem: blocks offlined (EBUSY: stays, error up); unbound; resized to 0; commit (d) |
+| SEED | SIZED | `prepare`: the seed sized again (the Whole device of a region set up again) | room in the dax region | commit (d) |
+| SIZED | DEVICE_DAX | `prepare`: bound to device_dax by sysfs | - | zeroed (a local dax grant, a new shared region); commit (d) |
+| SIZED | KMEM_OFFLINE | `prepare`: bound to kmem by sysfs bind (never new_id) | fenced before its blocks go online (KMEM_OFFLINE -> KMEM_ONLINE) | wait for the blocks; commit (d) |
+| KMEM_OFFLINE | KMEM_ONLINE | `prepare`: the blocks onlined movable | all blocks exist; the udev online settled | commit (d); the NUMA node's MemTotal grows |
+| DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | (unchanged) | `unprepare`, `prepare`, `recover`: a second grant uses the device (a shared device, a shared part, a lease joining), or a user grant RELEASING | a new user: the device is shareable for that kind | Users gets the grant or loses it; commit (d) |
+| SIZED, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | ABSENT | `unprepare`, `prepare`: Users empty and not kept (the Whole device of a configured shared memdev stays) | - | kmem: blocks offlined (EBUSY: stays, error up); unbound; resized to 0; delete written; commit (d) |
+| CREATING, SIZED, DEVICE_DAX, KMEM_OFFLINE, KMEM_ONLINE | ABSENT | `recover`: the recovery deletes a dax device of a region of ours without users and not the kept Whole device, or releases the device of a grant that it releases | blocks offline first | deleted |
 
 Refused:
 
@@ -299,17 +299,17 @@ States: ABSENT, MOUNTED_RO, MOUNTED_RW, FOREIGN, UNRESTORED.
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| ABSENT | MOUNTED_RO | `a-prepare`: the first fs grant of the access, no writer grant | filesystem type allowed and detected; block device set read-only first; the access rules | mount (direct: dax=always verified; cached: loop and dax=never); commit (d) with Users the grant |
-| ABSENT | MOUNTED_RW | `a-prepare`: the first fs grant is a writer (readOnly false) | a single-host type, or a cluster type on a coherent device; no unexplained superblock (refused otherwise: fail closed) | block device read-write; mount rw; commit (d) |
-| MOUNTED_RO | MOUNTED_RW | `a-prepare`: a writer grant arrives on a mounted access | type upgradable (ext4, xfs); no unexplained superblock; no other access mounted | block device, loop device and superblock read-write; commit (d) |
-| MOUNTED_RW | MOUNTED_RO | `a-unprepare`, `a-prepare`, `a-recover`: the last writer grant released, readers remain | - | syncfs, superblock read-only, loop and block device read-only; EBUSY (a file open for write): error up, state unchanged |
-| MOUNTED_RO, MOUNTED_RW | (unchanged) | `a-unprepare`, `a-prepare`, `a-recover`: an fs grant of the same access arrives, or one is released while others remain; or the recovery verified the mount or mounted it again by block device identity | - | Users gets the grant or loses it; commit (d) |
-| MOUNTED_RO, MOUNTED_RW | ABSENT | `a-unprepare`, `a-prepare`, `a-recover`: the last user released | - | unmounted (never detached); directory removed; commit (d); an unmount that fails busy fails the release, the mount unchanged |
-| ABSENT, MOUNTED_RO, MOUNTED_RW, UNRESTORED | UNRESTORED | `a-recover`: the recovery cannot mount a REALISED grant's node mount again (region gone, namespace or block device changed, mount failed), or fails again at a later start | - | the grants of the mount REALISED_UNRESTORED; commit (l) |
-| UNRESTORED | MOUNTED_RO | `a-prepare`, `a-recover`: a Prepare again, or the recovery at a restart, mounts it, no writer | identity verified | commit (d) |
-| UNRESTORED | MOUNTED_RW | `a-prepare`, `a-recover`: a Prepare again, or the recovery at a restart, mounts it for a writer | identity verified | commit (d) |
-| UNRESTORED | ABSENT | `a-unprepare`, `a-prepare`, `a-recover`: the last user released | - | nothing to unmount; commit (d) |
-| ABSENT, MOUNTED_RO, MOUNTED_RW | FOREIGN | `a-recover`: the recovery finds something else mounted at the path | - | error logged; never used, never unmounted by the driver; the grants REALISED_UNRESTORED |
+| ABSENT | MOUNTED_RO | `prepare`: the first fs grant of the access, no writer grant | filesystem type allowed and detected; block device set read-only first; the access rules | mount (direct: dax=always verified; cached: loop and dax=never); commit (d) with Users the grant |
+| ABSENT | MOUNTED_RW | `prepare`: the first fs grant is a writer (readOnly false) | a single-host type, or a cluster type on a coherent device; no unexplained superblock (refused otherwise: fail closed) | block device read-write; mount rw; commit (d) |
+| MOUNTED_RO | MOUNTED_RW | `prepare`: a writer grant arrives on a mounted access | type upgradable (ext4, xfs); no unexplained superblock; no other access mounted | block device, loop device and superblock read-write; commit (d) |
+| MOUNTED_RW | MOUNTED_RO | `unprepare`, `prepare`, `recover`: the last writer grant released, readers remain | - | syncfs, superblock read-only, loop and block device read-only; EBUSY (a file open for write): error up, state unchanged |
+| MOUNTED_RO, MOUNTED_RW | (unchanged) | `unprepare`, `prepare`, `recover`: an fs grant of the same access arrives, or one is released while others remain; or the recovery verified the mount or mounted it again by block device identity | - | Users gets the grant or loses it; commit (d) |
+| MOUNTED_RO, MOUNTED_RW | ABSENT | `unprepare`, `prepare`, `recover`: the last user released | - | unmounted (never detached); directory removed; commit (d); an unmount that fails busy fails the release, the mount unchanged |
+| ABSENT, MOUNTED_RO, MOUNTED_RW, UNRESTORED | UNRESTORED | `recover`: the recovery cannot mount a REALISED grant's node mount again (region gone, namespace or block device changed, mount failed), or fails again at a later start | - | the grants of the mount REALISED_UNRESTORED; commit (l) |
+| UNRESTORED | MOUNTED_RO | `prepare`, `recover`: a Prepare again, or the recovery at a restart, mounts it, no writer | identity verified | commit (d) |
+| UNRESTORED | MOUNTED_RW | `prepare`, `recover`: a Prepare again, or the recovery at a restart, mounts it for a writer | identity verified | commit (d) |
+| UNRESTORED | ABSENT | `unprepare`, `prepare`, `recover`: the last user released | - | nothing to unmount; commit (d) |
+| ABSENT, MOUNTED_RO, MOUNTED_RW | FOREIGN | `recover`: the recovery finds something else mounted at the path | - | error logged; never used, never unmounted by the driver; the grants REALISED_UNRESTORED |
 
 Refused:
 
@@ -337,16 +337,16 @@ States: UNKNOWN, HELD, LOCAL, POOL.
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| UNKNOWN | POOL | `a-list`, `a-prepare`: a pool ResourceSlice lists the serial; or a pool claim's status data names it; or a pool grant is JOURNALED | - | commit (d) with Pool &lt;driver>/&lt;pool> and LastSeen |
-| UNKNOWN | HELD | `a-observe`: a new memdev appears with a reason for doubt: pool ResourceSlices never listed; a pool claim of the node attaching; a remembered pool's ResourceSlices missing for less than 1 h; the list fails; the record was lost | - | commit (d) with HeldSince and HeldReason; not published |
-| UNKNOWN | LOCAL | `a-observe`: a new memdev appears and there is no reason to hold it | - | commit (l); published per its kind |
-| HELD | (unchanged) | `a-observe`, `a-list`: the reason refreshed by a later observation | - | commit (d) when the reason changed; HeldSince restarts at a change from a reason without expiry |
-| HELD | LOCAL | `expire`: the hold expired (5 min) and the reason was: list failing, pool missing for less than 1 h, file lost, claims not listable | not "never listed", not "attaching" | commit (d); published |
-| HELD | LOCAL | `a-observe`: a later observation finds no reason for doubt any more, or the engine has the memdev as local | not listed by a pool ResourceSlice or claim | commit (d); published |
-| HELD | UNKNOWN | `a-observe`: the memdev is gone before its hold ended | - | commit (d) removing the record |
-| HELD | POOL | `a-list`, `a-prepare`: listed by a ResourceSlice or a claim, or a pool grant | - | commit (d) |
-| LOCAL | POOL | `a-list`, `a-prepare`: a pool ResourceSlice or claim lists it later | - | commit (d); withdrawn from publication; existing local grants logged once (conflict) |
-| POOL | (unchanged) | `a-list`, `a-observe`, `a-prepare`: seen again | - | LastSeen (l, at most hourly) |
+| UNKNOWN | POOL | `list`, `prepare`: a pool ResourceSlice lists the serial; or a pool claim's status data names it; or a pool grant is JOURNALED | - | commit (d) with Pool &lt;driver>/&lt;pool> and LastSeen |
+| UNKNOWN | HELD | `observe`: a new memdev appears with a reason for doubt: pool ResourceSlices never listed; a pool claim of the node attaching; a remembered pool's ResourceSlices missing for less than 1 h; the list fails; the record was lost | - | commit (d) with HeldSince and HeldReason; not published |
+| UNKNOWN | LOCAL | `observe`: a new memdev appears and there is no reason to hold it | - | commit (l); published per its kind |
+| HELD | (unchanged) | `observe`, `list`: the reason refreshed by a later observation | - | commit (d) when the reason changed; HeldSince restarts at a change from a reason without expiry |
+| HELD | LOCAL | `expire`: the hold expired (5 min) and the reason was: list failing, pool missing for less than 1 h, store lost, claims not listable | not "never listed", not "attaching" | commit (d); published |
+| HELD | LOCAL | `observe`: a later observation finds no reason for doubt any more, or the engine has the memdev as local | not listed by a pool ResourceSlice or claim | commit (d); published |
+| HELD | UNKNOWN | `observe`: the memdev is gone before its hold ended | - | commit (d) removing the record |
+| HELD | POOL | `list`, `prepare`: listed by a ResourceSlice or a claim, or a pool grant | - | commit (d) |
+| LOCAL | POOL | `list`, `prepare`: a pool ResourceSlice or claim lists it later | - | commit (d); withdrawn from publication; existing local grants logged once (conflict) |
+| POOL | (unchanged) | `list`, `observe`, `prepare`: seen again | - | LastSeen (l, at most hourly) |
 | POOL | UNKNOWN | `expire`: 24 h of observed absence (observations at most 5 min apart; the absence timer restarts after a gap) and no grant | - | commit (l) removing the record |
 | LOCAL | UNKNOWN | `expire`: the memdev absent for 24 h of observed absence | - | commit (l) removing the record |
 | POOL, LOCAL | UNKNOWN | `load`: the operator names the serial with --forget-pool-serial at the start | - | commit (d) removing the record; a memdev of the serial is new again |
@@ -377,24 +377,24 @@ States: NONE, CREATING, PENDING, LENDING, READY, RELEASING, RELEASING_BUSY, FAIL
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| NONE | CREATING | `a-request`: a request on a lease claim's socket: authenticated, validated, the serial resolved, the id chosen | an fs lease: the name is unused | commit (d) before any API object exists; a failed commit refuses the request |
-| CREATING | PENDING | `a-request`: the companion claim and pod created | still CREATING (OnLending may have won) | commit (d) |
-| CREATING, RELEASING | FAILED | `a-request`: the companion creation failed (AlreadyExists, API error); RELEASING: released meanwhile | - | the release starts, the lease stays FAILED; the client gets Failed with the error |
-| CREATING, PENDING | LENDING | `OnLending`: the companion gate passed: the name, the namespace and the owner of the claim | - | commit (d); the lend of the requester to the driver (with FsDir and the name of an fs lease) |
-| LENDING, READY | (unchanged) | `OnLending`: a retried or announced-again Prepare of the companion (also while kubelet retries a failed one) | - | no commit |
-| LENDING | READY | `OnPrepared`: the companion's Prepare hands over the lent devices | the mode of the device matches (fs and block) | commit (d) of Got and of the Lend (the NUMA node of numa, the bind target of fs); the waiting client gets the response (the fd of dax and block) |
-| READY | (unchanged) | `OnPrepared`: the companion's Prepare announced again (kubelet prepares a prepared claim again) | - | commit (d) of Got and the Lend again |
-| LENDING, READY | FAILED | `OnPrepared`: the companion prepared a device of another mode (fs or block against another) | - | commit (d); the release starts |
-| CREATING, PENDING, LENDING, READY | FAILED | `OnLendFailed`: a bind or lend error of the companion's Prepare, or an error that its retries cannot heal | - | commit (d); the release starts |
-| CREATING, PENDING, LENDING, READY, FAILED | FAILED | `OnReleasing`: the companion claim unprepared behind the broker (the companion pod deleted or evicted) | - | commit (d); the next reconcile releases it |
-| CREATING, PENDING, LENDING, READY | RELEASING | `a-request`: the request's --wait ended (READY: the companion's Prepare made it READY meanwhile) | - | the client gets Failed "timeout: not Ready after D"; commit (d) of ReleaseRequested |
-| CREATING, PENDING, LENDING, READY | RELEASING | `a-release`, `a-unprepare`, `a-reconcile`: a release by the client; the requester gone; CloseClaim of the lease claim; the reconcile (companion gone, requester done, CREATING for longer than 2 min: left over by a crash) | - | commit (d) of ReleaseRequested; the node revoked; pod and claim deleted (Foreground); DeletionRequested (d) |
-| FAILED | (unchanged) | `a-request`, `a-release`, `a-unprepare`, `a-reconcile`, `OnPrepared`, `OnLendFailed`, `a-recover`: the release of a failed lease | - | released in place: commit (d) of ReleaseRequested; the node revoked; pod and claim deleted (Foreground); DeletionRequested (d); the lease stays FAILED so that a list shows why |
-| RELEASING, RELEASING_BUSY | (unchanged) | `a-release`, `a-unprepare`, `a-reconcile`: the release started again: a record of a start (ReleaseRequested set), its release not running | - | the release runs again |
-| RELEASING | RELEASING_BUSY | `a-release`: the companion's bind is STALE: its unbind failed with EBUSY (a file of it is mapped) | - | commit (d); the companion stays Terminating; reads work until the holder ends |
-| RELEASING_BUSY | RELEASING | `a-release`: the companion's bind is not STALE any more (the holder ended, the unbind succeeded), or it is gone | - | commit (d) |
-| RELEASING, FAILED | NONE | `a-release`: pod and claim both NotFound | - | commit (d) removing the lease; the lease claim's directories removed when it is closed and this was its last lease |
-| LENDING, READY | FAILED | `a-recover`: the start did not restore the device of the companion: its Preparation is PREPARED_UNRESTORED | - | commit (d); the release starts; the requester's next list shows the lease Failed |
+| NONE | CREATING | `request`: a request on a lease claim's socket: authenticated, validated, the serial resolved, the id chosen | an fs lease: the name is unused | commit (d) before any API object exists; a failed commit refuses the request |
+| CREATING | PENDING | `request`: the companion claim and pod created | still CREATING (OnLending may have won) | commit (d) |
+| CREATING, RELEASING | FAILED | `request`: the companion creation failed (AlreadyExists, API error); RELEASING: released meanwhile | - | the release starts, the lease stays FAILED; the client gets Failed with the error |
+| CREATING, PENDING | LENDING | `lending`: the companion gate passed: the name, the namespace and the owner of the claim | - | commit (d); the lend of the requester to the driver (with FSDir and the name of an fs lease) |
+| LENDING, READY | (unchanged) | `lending`: a retried or announced-again Prepare of the companion (also while kubelet retries a failed one) | - | no commit |
+| LENDING | READY | `prepared`: the companion's Prepare hands over the lent devices | the mode of the device matches (fs and block) | commit (d) of Got and of the Lend (the NUMA node of numa, the bind target of fs); the waiting client gets the response (the fd of dax and block) |
+| READY | (unchanged) | `prepared`: the companion's Prepare announced again (kubelet prepares a prepared claim again) | - | commit (d) of Got and the Lend again |
+| LENDING, READY | FAILED | `prepared`: the companion prepared a device of another mode (fs or block against another) | - | commit (d); the release starts |
+| CREATING, PENDING, LENDING, READY | FAILED | `lend-failed`: a bind or lend error of the companion's Prepare, or an error that its retries cannot heal | - | commit (d); the release starts |
+| CREATING, PENDING, LENDING, READY, FAILED | FAILED | `releasing`: the companion claim unprepared behind the broker (the companion pod deleted or evicted) | - | commit (d); the next reconcile releases it |
+| CREATING, PENDING, LENDING, READY | RELEASING | `request`: the request's --wait ended (READY: the companion's Prepare made it READY meanwhile) | - | the client gets Failed "timeout: not Ready after D"; commit (d) of ReleaseRequested |
+| CREATING, PENDING, LENDING, READY | RELEASING | `release`, `unprepare`, `reconcile`: a release by the client; the requester gone; CloseClaim of the lease claim; the reconcile (companion gone, requester done, CREATING for longer than 2 min: left over by a crash) | - | commit (d) of ReleaseRequested; the node revoked; pod and claim deleted (Foreground); DeletionRequested (d) |
+| FAILED | (unchanged) | `request`, `release`, `unprepare`, `reconcile`, `prepared`, `lend-failed`, `recover`: the release of a failed lease | - | released in place: commit (d) of ReleaseRequested; the node revoked; pod and claim deleted (Foreground); DeletionRequested (d); the lease stays FAILED so that a list shows why |
+| RELEASING, RELEASING_BUSY | (unchanged) | `release`, `unprepare`, `reconcile`: the release started again: a record of a start (ReleaseRequested set), its release not running | - | the release runs again |
+| RELEASING | RELEASING_BUSY | `release`: the companion's bind is STALE: its unbind failed with EBUSY (a file of it is mapped) | - | commit (d); the companion stays Terminating; reads work until the holder ends |
+| RELEASING_BUSY | RELEASING | `release`: the companion's bind is not STALE any more (the holder ended, the unbind succeeded), or it is gone | - | commit (d) |
+| RELEASING, FAILED | NONE | `release`: pod and claim both NotFound | - | commit (d) removing the lease; the lease claim's directories removed when it is closed and this was its last lease |
+| LENDING, READY | FAILED | `recover`: the start did not restore the device of the companion: its Preparation is PREPARED_UNRESTORED | - | commit (d); the release starts; the requester's next list shows the lease Failed |
 | CREATING, PENDING, LENDING, READY, RELEASING, RELEASING_BUSY, FAILED | NONE | `load`: the document is of another boot | - | dropped; the companions deleted by the first reconcile |
 
 Refused:
@@ -424,22 +424,22 @@ States: NONE, OPEN, OPEN_NO_LISTENER, CLOSING, CLOSED, REMOVING.
 
 | from | to | trigger | guard | effects |
 |:-----|:---|:--------|:------|:--------|
-| NONE | OPEN | `a-prepare`: a Prepare of a claim with a lease result (OpenClaim) | - | commit (d), a failed one fails the Prepare; CDI device lease-&lt;uid>; its lease-fs directory made; the socket created in a private directory and renamed |
-| OPEN | (unchanged) | `a-prepare`, `a-request`: OpenClaim again; Pods refreshed from reservedFor when a peer's pod is unknown | - | commit (d) |
-| OPEN_NO_LISTENER, CLOSING | OPEN | `a-prepare`: OpenClaim of a claim whose socket did not start again, or whose close did not finish | - | commit (d); the socket started; a later Unprepare closes the claim |
-| OPEN, OPEN_NO_LISTENER | OPEN | `a-recover`: the start listens on the socket again | listen succeeded | - |
-| OPEN_NO_LISTENER | OPEN | `a-reconcile`: the reconcile listens on the socket again | listen succeeded | commit (d) |
-| OPEN, OPEN_NO_LISTENER | OPEN_NO_LISTENER | `a-recover`: listening again at the start failed | - | logged; the socket starts at the next OpenClaim |
-| OPEN, OPEN_NO_LISTENER | CLOSING | `a-unprepare`: an Unprepare of the claim (CloseClaim) | - | commit (d); every lease of the claim released; a new lease request on the socket is refused, releases, lists and env are served |
-| CLOSING | (unchanged) | `a-recover`: the start of a claim whose close a stop cut | - | the socket listened again (a failed listen logged); new lease requests refused; kubelet's Unprepare retry closes the claim |
-| CLOSING | (unchanged) | `a-unprepare`: the Unprepare retried: the leases of the claim released again | - | "still releasing N leases" to kubelet while not every lease has DeletionRequested within 5 s |
-| CLOSING | CLOSED | `a-unprepare`: every lease has DeletionRequested (not necessarily gone) | - | the listener and its open connections closed; commit (d) removing the record; CDI device removed; the socket removed |
-| CLOSED | REMOVING | `a-unprepare`, `a-release`, `a-reconcile`, `a-recover`: the directories of a claim without a record are removed: by CloseClaim, by the release of its last lease, by the sweep of the reconcile and of the start | no bind mounted in its lease-fs directory, which is removed (else it stays CLOSED) | the entries of its socket directory removed by name, never following a symlink |
-| REMOVING | NONE | `a-unprepare`, `a-release`, `a-reconcile`, `a-recover`: the socket directory removed | - | - |
+| NONE | OPEN | `prepare`: a Prepare of a claim with a lease result (OpenClaim) | - | commit (d), a failed one fails the Prepare; CDI device lease-&lt;uid>; its lease-fs directory made; the socket created in a private directory and renamed |
+| OPEN | (unchanged) | `prepare`, `request`: OpenClaim again; Pods refreshed from reservedFor when a peer's pod is unknown | - | commit (d) |
+| OPEN_NO_LISTENER, CLOSING | OPEN | `prepare`: OpenClaim of a claim whose socket did not start again, or whose close did not finish | - | commit (d); the socket started; a later Unprepare closes the claim |
+| OPEN, OPEN_NO_LISTENER | OPEN | `recover`: the start listens on the socket again | listen succeeded | - |
+| OPEN_NO_LISTENER | OPEN | `reconcile`: the reconcile listens on the socket again | listen succeeded | commit (d) |
+| OPEN, OPEN_NO_LISTENER | OPEN_NO_LISTENER | `recover`: listening again at the start failed | - | logged; the socket starts at the next OpenClaim |
+| OPEN, OPEN_NO_LISTENER | CLOSING | `unprepare`: an Unprepare of the claim (CloseClaim) | - | commit (d); every lease of the claim released; a new lease request on the socket is refused, releases, lists and env are served |
+| CLOSING | (unchanged) | `recover`: the start of a claim whose close a stop cut | - | the socket listened again (a failed listen logged); new lease requests refused; kubelet's Unprepare retry closes the claim |
+| CLOSING | (unchanged) | `unprepare`: the Unprepare retried: the leases of the claim released again | - | "still releasing N leases" to kubelet while not every lease has DeletionRequested within 5 s |
+| CLOSING | CLOSED | `unprepare`: every lease has DeletionRequested (not necessarily gone) | - | the listener and its open connections closed; commit (d) removing the record; CDI device removed; the socket removed |
+| CLOSED | REMOVING | `unprepare`, `release`, `reconcile`, `recover`: the directories of a claim without a record are removed: by CloseClaim, by the release of its last lease, by the sweep of the reconcile and of the start | no bind mounted in its lease-fs directory, which is removed (else it stays CLOSED) | the entries of its socket directory removed by name, never following a symlink |
+| REMOVING | NONE | `unprepare`, `release`, `reconcile`, `recover`: the socket directory removed | - | - |
 
 Refused:
 
-- CLOSING -> OPEN except on a-prepare: a closing claim is opened again only by a Prepare of the claim
+- CLOSING -> OPEN except on prepare: a closing claim is opened again only by a Prepare of the claim
 
 **Invariants.** A lease claim in the store is OPEN, OPEN_NO_LISTENER or CLOSING; lease-fs/&lt;uid> and leases/&lt;uid> exist only for lease claims of prepared claims.
 

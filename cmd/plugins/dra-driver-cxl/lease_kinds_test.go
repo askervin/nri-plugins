@@ -183,14 +183,14 @@ func TestPoolNumaLease(t *testing.T) {
 		"CXL_C1EE0001_SHARED": "0", "CXL_C1EE0001_SIZE": "268435456"}
 	wantResponse(t, <-ch, api.Response{State: api.StateReady, Source: "pool", Mode: "numa", NUMANode: ptr(2), Size: 268435456, Serial: "0xc1ee0001", Env: numaEnv})
 	if info := e.pool.ClaimInfo(string(alloc.UID)); info == nil || info.Lend == nil || info.Lend.Lease != "000000a1" ||
-		!slices.Equal(info.Lend.NumaNodes, []int{2}) {
+		!slices.Equal(info.Lend.NUMANodes, []int{2}) {
 		t.Fatalf("lend not in the results of the pool claim: %+v", info)
 	}
-	if l := e.stored("000000a1"); l == nil || l.Lend == nil || state.NumaNodeOf(l.Lend.NumaNode) != 2 {
+	if l := e.stored("000000a1"); l == nil || l.Lend == nil || state.NUMANodeOf(l.Lend.NUMANode) != 2 {
 		t.Fatalf("the lease's lend %+v", l)
 	}
 	if g := e.st.Snapshot().Grant(state.GrantRef{Claim: string(alloc.UID)}); g == nil || g.Got.Lend == nil || g.Got.Lend.Lease != "000000a1" ||
-		state.NumaNodeOf(g.Got.Lend.NumaNode) != 2 {
+		state.NUMANodeOf(g.Got.Lend.NUMANode) != 2 {
 		t.Fatalf("the companion grant's lend %+v", g)
 	}
 
@@ -528,7 +528,7 @@ func TestFsLease(t *testing.T) {
 	if len(e.k.MountCalls(fake.BindCall(direct, bind))) != 1 {
 		t.Fatalf("not a bind of the node mount: %q", e.k.MountCalls(""))
 	}
-	if l := e.stored("000000a1"); l == nil || l.Lend == nil || l.Lend.BindTarget != bind || l.Lend.NumaNode != nil {
+	if l := e.stored("000000a1"); l == nil || l.Lend == nil || l.Lend.BindTarget != bind || l.Lend.NUMANode != nil {
 		t.Fatalf("the lease's lend %+v", l)
 	}
 	env, fd := e.call(api.Request{Op: api.OpEnv, Lease: "000000a1"})
@@ -562,7 +562,7 @@ func TestFsLease(t *testing.T) {
 
 	e.restart()
 	e.start()
-	if l := e.lease("000000a2"); l == nil || l.Got == nil || l.Asked.Mode != state.ModeFs || l.Got.Access != state.AccessCached || l.Asked.Name != "models" ||
+	if l := e.lease("000000a2"); l == nil || l.Got == nil || l.Asked.Mode != state.ModeFS || l.Got.Access != state.AccessCached || l.Asked.Name != "models" ||
 		l.Got.Path != "/run/cxl/fs/models" || !l.Asked.ReadOnly {
 		t.Fatalf("lease after a restart %+v", l)
 	}
@@ -657,7 +657,7 @@ func TestFsLeaseReadWrite(t *testing.T) {
 			t.Errorf("%s: config %s", id, got)
 		}
 	}
-	if l := e.stored("000000a1"); l == nil || l.Got == nil || !l.Asked.ReadWrite || l.Asked.ReadOnly || l.Got.FsType != "ext4" {
+	if l := e.stored("000000a1"); l == nil || l.Got == nil || !l.Asked.ReadWrite || l.Asked.ReadOnly || l.Got.FSType != "ext4" {
 		t.Fatalf("lease %+v", l)
 	}
 	if v := e.k.Violations(); len(v) > 0 {
@@ -743,7 +743,7 @@ type closingHooks struct {
 }
 
 // OnLending is the broker's, then closes the lease claim once.
-func (h *closingHooks) OnLending(id string, claim *resourcev1.ResourceClaim) (*lend.Lend, error) {
+func (h *closingHooks) OnLending(id string, claim *resourcev1.ResourceClaim) (*lend.Companion, error) {
 	rec, err := h.Broker.OnLending(id, claim)
 	if err == nil && h.close != nil {
 		h.close()

@@ -31,6 +31,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
+	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
@@ -233,7 +234,7 @@ func TestCDINames(t *testing.T) {
 	if got := ClaimCDIDeviceName("a-b", 3); got != "claim-a-b-3" {
 		t.Fatalf("device name %q", got)
 	}
-	if got := state.ResultEnvVarName("a-b", 3); got != "CXL_CLAIM_a_b_3" {
+	if got := api.ResultMarker("a-b", 3); got != "CXL_CLAIM_a_b_3" {
 		t.Fatalf("marker %q", got)
 	}
 	for _, tc := range []struct {
@@ -250,7 +251,7 @@ func TestCDINames(t *testing.T) {
 		{"CXL_CLAIM__1=1", "", 0, false},
 		{"CXL_DRAM_SIZE=1", "", 0, false},
 	} {
-		uid, n, ok := state.ResultFromEnvVar(tc.env)
+		uid, n, ok := api.ParseResultMarker(tc.env)
 		if uid != tc.uid || n != tc.n || ok != tc.ok {
 			t.Errorf("%s: %q %d %v", tc.env, uid, n, ok)
 		}

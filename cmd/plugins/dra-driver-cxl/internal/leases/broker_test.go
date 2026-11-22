@@ -501,7 +501,7 @@ func TestOnLending(t *testing.T) {
 	}
 	rec, err := e.b.OnLending(id, companionClaim(id))
 	mustOK(t, err)
-	if !reflect.DeepEqual(rec, &lend.Lend{Lease: id, Pod: requester.Pod, Container: envCtr}) {
+	if !reflect.DeepEqual(rec, &lend.Companion{Lease: id, Pod: requester.Pod, Container: envCtr}) {
 		t.Fatalf("lend %+v", rec)
 	}
 	if l := e.stored(id); l == nil || l.State != state.LeaseLending {
@@ -516,7 +516,7 @@ func TestOnLending(t *testing.T) {
 	}
 	e.b.OnPrepared(id, state.SourcePool, []state.DeviceInfo{numaDevice})
 	if l := e.stored(id); l == nil || l.State != state.LeaseReady || l.ReleaseRequested || l.Lend == nil ||
-		state.NumaNodeOf(l.Lend.NumaNode) != 2 {
+		state.NUMANodeOf(l.Lend.NUMANode) != 2 {
 		t.Fatalf("lease after a Prepare again of a READY companion %+v", l)
 	}
 	e.b.OnLendFailed(id, errors.New("boom"))
@@ -672,7 +672,7 @@ func TestRestartAndReconcile(t *testing.T) {
 	if got := state.LeaseLends(&e.st.Snapshot().Records, envPodUID, envCtr); !reflect.DeepEqual(got, map[int][]string{2: {id}}) {
 		t.Fatalf("lends of the store %v", got)
 	}
-	if l := e.stored(id); l == nil || l.Lend == nil || state.NumaNodeOf(l.Lend.NumaNode) != 2 || l.Got == nil || l.Got.Bytes != 1<<28 {
+	if l := e.stored(id); l == nil || l.Lend == nil || state.NUMANodeOf(l.Lend.NUMANode) != 2 || l.Got == nil || l.Got.Size != 1<<28 {
 		t.Fatalf("stored lease %+v", l)
 	}
 
@@ -1867,20 +1867,20 @@ func TestGotOfPrepared(t *testing.T) {
 		asked state.LeaseAsked
 		dev   state.DeviceInfo
 		got   state.LeaseGot
-		lend  *state.Lend
+		lend  *state.LeaseLend
 	}{
 		"numa": {state.LeaseAsked{Mode: state.ModeNUMA}, preparedDev(serialPoolX, 1<<28, api.ModeNUMA, 2),
-			state.LeaseGot{Source: state.SourcePool, Serial: serialPoolX, Bytes: 1 << 28}, &state.Lend{NumaNode: state.NumaNodePtr(2)}},
+			state.LeaseGot{Source: state.SourcePool, Serial: serialPoolX, Size: 1 << 28}, &state.LeaseLend{NUMANode: state.NUMANodePtr(2)}},
 		"numa shared lease": {state.LeaseAsked{Mode: state.ModeNUMA, SharedDevice: true}, preparedDev(serialPoolX, 1<<28, api.ModeNUMA, -1),
-			state.LeaseGot{Source: state.SourcePool, Serial: serialPoolX, SharedDevice: true, Bytes: 1 << 28}, nil},
+			state.LeaseGot{Source: state.SourcePool, Serial: serialPoolX, SharedDevice: true, Size: 1 << 28}, nil},
 		"dax": {state.LeaseAsked{Mode: state.ModeDax}, shared(withDev(preparedDev(serialPoolS, 1<<28, api.ModeDax, -1), func(d *state.DeviceInfo) { d.DaxDevice = "/dev/dax0.0" })),
-			state.LeaseGot{Source: state.SourcePool, Serial: serialPoolS, SharedDevice: true, Bytes: 1 << 28, Dax: "/dev/dax0.0"}, nil},
+			state.LeaseGot{Source: state.SourcePool, Serial: serialPoolS, SharedDevice: true, Size: 1 << 28, Dax: "/dev/dax0.0"}, nil},
 		"block": {state.LeaseAsked{Mode: state.ModeBlock, SharedDevice: true}, withDev(preparedDev(serialPoolP, pmemBytes, api.ModeBlock, -1), func(d *state.DeviceInfo) { d.BlockDevice = "/dev/pmem0" }),
-			state.LeaseGot{Source: state.SourcePool, Serial: serialPoolP, Bytes: pmemBytes, Block: "/dev/pmem0"}, nil},
-		"fs": {state.LeaseAsked{Mode: state.ModeFs, Name: "data"}, shared(withDev(preparedDev(serialPoolP, pmemBytes, api.ModeFS, -1), func(d *state.DeviceInfo) {
-			d.Access, d.FsType, d.BlockDevice = api.AccessDirect, "ext4", "/dev/pmem0"
-		})), state.LeaseGot{Source: state.SourcePool, Serial: serialPoolP, SharedDevice: true, Bytes: pmemBytes, Access: state.Access(api.AccessDirect),
-			FsType: "ext4", Path: api.FSDir + "/data"}, nil},
+			state.LeaseGot{Source: state.SourcePool, Serial: serialPoolP, Size: pmemBytes, Block: "/dev/pmem0"}, nil},
+		"fs": {state.LeaseAsked{Mode: state.ModeFS, Name: "data"}, shared(withDev(preparedDev(serialPoolP, pmemBytes, api.ModeFS, -1), func(d *state.DeviceInfo) {
+			d.Access, d.FSType, d.BlockDevice = api.AccessDirect, "ext4", "/dev/pmem0"
+		})), state.LeaseGot{Source: state.SourcePool, Serial: serialPoolP, SharedDevice: true, Size: pmemBytes, Access: state.Access(api.AccessDirect),
+			FSType: "ext4", Path: api.FSDir + "/data"}, nil},
 	} {
 		got, lend := gotOf(&state.Records{}, &state.Lease{Asked: tc.asked}, state.SourcePool, &tc.dev, "/lease-fs")
 		if !reflect.DeepEqual(*got, tc.got) || !reflect.DeepEqual(lend, tc.lend) {

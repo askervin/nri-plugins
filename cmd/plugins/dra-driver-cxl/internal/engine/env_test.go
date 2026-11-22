@@ -364,7 +364,7 @@ func (v *env) prepare(driver, uid string, reqs ...GrantRequest) error {
 		p := doc.Preparation(driver, uid)
 		if p == nil {
 			doc.Preparations = append(doc.Preparations, state.Preparation{UID: uid, Driver: driver, ClaimName: "ns/" + uid,
-				State: state.PreparationUnknown})
+				State: state.PreparationNone})
 			p = &doc.Preparations[len(doc.Preparations)-1]
 		}
 		if p.State == state.PreparationStale {
@@ -424,7 +424,7 @@ func failedPreparation(r *state.Records, p *state.Preparation) error {
 	if left {
 		return state.Apply(&state.PreparationTable, &p.State, state.PreparationKept, state.TriggerPrepare)
 	}
-	if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationUnknown, state.TriggerPrepare); err != nil {
+	if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationNone, state.TriggerPrepare); err != nil {
 		return err
 	}
 	uid, driver := p.UID, p.Driver
@@ -466,7 +466,7 @@ func (v *env) unprepare(driver, uid string) error {
 		if p == nil {
 			return nil
 		}
-		if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationUnknown, state.TriggerUnprepare); err != nil {
+		if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationNone, state.TriggerUnprepare); err != nil {
 			return err
 		}
 		removeRecord(&doc.Preparations, func(x *state.Preparation) bool { return x.UID == uid && x.Driver == driver })
@@ -572,7 +572,7 @@ func localReq(uid string, n int, serial uint64, mode state.Mode, kind state.Gran
 
 // fsReq returns the request of a grant of mode fs on a persistent device.
 func fsReq(req GrantRequest, readOnly bool, access state.Access) GrantRequest {
-	req.Asked.Mode, req.Asked.ReadOnly, req.Asked.Access = state.ModeFs, readOnly, access
+	req.Asked.Mode, req.Asked.ReadOnly, req.Asked.Access = state.ModeFS, readOnly, access
 	req.Asked.Path = "/mnt/data"
 	req.SingleHost = true
 	return req
@@ -676,7 +676,7 @@ func sharedReq(uid string) GrantRequest {
 // claim uid.
 func localPmemReq(uid string, n int, mode state.Mode, readOnly bool, access state.Access) GrantRequest {
 	req := localReq(uid, n, serialP, mode, state.KindPersistent, 0)
-	if mode == state.ModeFs {
+	if mode == state.ModeFS {
 		return fsReq(req, readOnly, access)
 	}
 	req.Asked.ReadOnly = readOnly
@@ -774,7 +774,7 @@ func pmemEnv(t *testing.T, typ string) *env {
 
 // fsGrant returns the request of a pool grant of mode fs on serialP.
 func fsGrant(uid string, readOnly bool, access state.Access) GrantRequest {
-	return fsReq(poolReq(uid, 0, serialP, state.ModeFs, state.KindPersistent), readOnly, access)
+	return fsReq(poolReq(uid, 0, serialP, state.ModeFS, state.KindPersistent), readOnly, access)
 }
 
 // sources are the sources of the grants of the engine.

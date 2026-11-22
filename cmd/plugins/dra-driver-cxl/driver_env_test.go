@@ -44,6 +44,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/engine"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
@@ -318,7 +319,7 @@ func (e *driverTestEnv) createContainer(uid string, results ...int) (containers.
 	}
 	ctr := &nriapi.Container{Id: fmt.Sprintf("ctr-%d", e.ctrs), PodSandboxId: "sb", Name: "ctr"}
 	for _, n := range results {
-		ctr.Env = append(ctr.Env, state.ResultEnvVarName(uid, n)+"=1")
+		ctr.Env = append(ctr.Env, api.ResultMarker(uid, n)+"=1")
 	}
 	_, _, err := e.d.nri.CreateContainer(context.Background(), pod, ctr)
 	c, _ := e.d.nri.Record(ctr.Id)

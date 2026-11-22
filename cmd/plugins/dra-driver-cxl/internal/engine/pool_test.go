@@ -39,7 +39,7 @@ func TestPoolNuma(t *testing.T) {
 	at := v.onlineAtFence()
 	v.mustPrepare(poolDriver, "c1", poolReq("c1", 0, serialA, state.ModeNUMA, state.KindExclusive))
 	g := v.grant("c1", 0)
-	if g.State != state.GrantRealised || g.Got.Region != "region0" || g.Got.Dax != "dax0.0" || state.NumaNodeOf(g.Got.NumaNode) != 2 {
+	if g.State != state.GrantRealised || g.Got.Region != "region0" || g.Got.Dax != "dax0.0" || state.NUMANodeOf(g.Got.NUMANode) != 2 {
 		t.Fatalf("grant %+v", g)
 	}
 	reg := v.records().Region("region0")
@@ -358,11 +358,11 @@ func TestPoolRollbackRevokesLend(t *testing.T) {
 	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{companion}); err != nil {
 		t.Fatal(err)
 	}
-	node := state.NumaNodeOf(v.grant("c", 0).Got.NumaNode)
+	node := state.NUMANodeOf(v.grant("c", 0).Got.NUMANode)
 	if err := v.e.RecordLend(context.Background(), state.GrantRef{Claim: "c"}, node); err != nil {
 		t.Fatal(err)
 	}
-	if l := v.grant("c", 0).Got.Lend; l == nil || state.NumaNodeOf(l.NumaNode) != node {
+	if l := v.grant("c", 0).Got.Lend; l == nil || state.NUMANodeOf(l.NUMANode) != node {
 		t.Fatalf("lend %+v", l)
 	}
 	k := v.f.Kernel()
@@ -371,7 +371,7 @@ func TestPoolRollbackRevokesLend(t *testing.T) {
 	v.e.opts.Revoke = func(_ context.Context, ref state.GrantRef, lend state.GrantLend) error {
 		blocks, _ := k.RegionBlocks(region)
 		online := len(blocks) > 0 && slices.ContainsFunc(blocks, func(b int) bool { return k.MemoryBlock(b).State == kernel.BlockOnline })
-		revoked = append(revoked, fmt.Sprintf("%s %s node %d online %v", ref, lend.Lease, state.NumaNodeOf(lend.NumaNode), online))
+		revoked = append(revoked, fmt.Sprintf("%s %s node %d online %v", ref, lend.Lease, state.NUMANodeOf(lend.NUMANode), online))
 		return nil
 	}
 	v.f.FailCommand("cxl create-region", errors.New("cxl region: cmd_create_region: failed"))

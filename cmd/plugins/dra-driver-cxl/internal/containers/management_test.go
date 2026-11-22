@@ -145,10 +145,10 @@ func newDecider(t *testing.T, defaults config.Container) *Plugin {
 func TestResultMarkers(t *testing.T) {
 	uid := "0a1b2c3d-0000-1111-2222-333344445555"
 	uid2 := "6a1b2c3d-0000-1111-2222-333344445555"
-	env := []string{"PATH=/bin", state.ResultEnvVarName(uid, 0) + "=1", "CXL_C1EE0001_SIZE=1", state.ResultEnvVarName(uid2, 1) + "=1",
-		state.ResultEnvVarName(uid, 0) + "=1", state.ResultEnvVarName(uid, 2) + "=1", "CXL_CLAIM_u1_01=1", "CXL_CLAIM__1=1",
+	env := []string{"PATH=/bin", cxlapi.ResultMarker(uid, 0) + "=1", "CXL_C1EE0001_SIZE=1", cxlapi.ResultMarker(uid2, 1) + "=1",
+		cxlapi.ResultMarker(uid, 0) + "=1", cxlapi.ResultMarker(uid, 2) + "=1", "CXL_CLAIM_u1_01=1", "CXL_CLAIM__1=1",
 		"CXL_CLAIM_u1=1", "CXL_CLAIM_u1_x=1", "CXL_CLAIM_u1_+1=1", "CXL_CLAIM_u1_-1=1"}
-	if got := state.ResultEnvVarName(uid, 3); got != "CXL_CLAIM_0a1b2c3d_0000_1111_2222_333344445555_3" {
+	if got := cxlapi.ResultMarker(uid, 3); got != "CXL_CLAIM_0a1b2c3d_0000_1111_2222_333344445555_3" {
 		t.Fatalf("marker %s", got)
 	}
 	if got := extractResults(env); !reflect.DeepEqual(got, []resultRef{{uid, 0}, {uid2, 1}, {uid, 2}}) {
@@ -314,7 +314,7 @@ func TestCreateContainerManagement(t *testing.T) {
 	management := func(id string) Management { return e.record(id).Management }
 
 	// a numa claim is not steered by default: fenced with its node, no plan
-	ctr := &api.Container{Id: "c1", PodSandboxId: pod.GetId(), Name: "a", Env: []string{state.ResultEnvVarName("split", 0) + "=1"}}
+	ctr := &api.Container{Id: "c1", PodSandboxId: pod.GetId(), Name: "a", Env: []string{cxlapi.ResultMarker("split", 0) + "=1"}}
 	if got := e.createMems(pod, ctr); got != "0-2" || management("c1") != ManagementFenced || e.record("c1").Plan != nil {
 		t.Fatalf("adjustment %s, management %s", got, management("c1"))
 	}
@@ -322,7 +322,7 @@ func TestCreateContainerManagement(t *testing.T) {
 	if got := e.createMems(pod, withClaims(testCtr(pod, "c2", "b", 0))); got != "0-1" {
 		t.Fatalf("adjustment %s of a container without results", got)
 	}
-	ctr = &api.Container{Id: "c3", PodSandboxId: pod.GetId(), Name: "c", Env: []string{state.ResultEnvVarName("split", 1) + "=1"}}
+	ctr = &api.Container{Id: "c3", PodSandboxId: pod.GetId(), Name: "c", Env: []string{cxlapi.ResultMarker("split", 1) + "=1"}}
 	if got := e.createMems(pod, ctr); got != "0-1" || management("c3") != ManagementFenced {
 		t.Fatalf("adjustment %s of the dax result", got)
 	}
@@ -363,7 +363,7 @@ func TestCharCreateContainerLogLines(t *testing.T) {
 	// DRAM and a region in mode numa with the default steering none: the
 	// claims reserve capacity only (with policy auto the DRAM is steered)
 	ctr := &api.Container{Id: "c7", PodSandboxId: pod.GetId(), Name: "g",
-		Env: []string{state.ResultEnvVarName("split", 2) + "=1", state.ResultEnvVarName("split", 3) + "=1"}}
+		Env: []string{cxlapi.ResultMarker("split", 2) + "=1", cxlapi.ResultMarker("split", 3) + "=1"}}
 	if got := e.createMems(pod, ctr); got != "0-1,4" {
 		t.Fatalf("adjustment %s", got)
 	}

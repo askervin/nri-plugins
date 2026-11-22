@@ -106,7 +106,7 @@ func forgotParts(r *state.Records, gone []state.GrantRef, present map[string]boo
 		if len(d.Users) > 0 || present[dax] {
 			continue
 		}
-		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxAbsent, state.TriggerRecover); err != nil {
+		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxNone, state.TriggerRecover); err != nil {
 			return err
 		}
 		removeRecord(&reg.DaxDevices, func(x *state.DaxDevice) bool { return x.Name == dax })
@@ -258,7 +258,7 @@ func forgetMemdev(r *state.Records, serial state.Serial) error {
 	m := r.Memdev(serial)
 	for _, ref := range m.Grants {
 		if g := r.Grant(ref); g != nil {
-			if err := state.Apply(&state.GrantTable, &g.State, state.GrantReleased, state.TriggerRecover); err != nil {
+			if err := state.Apply(&state.GrantTable, &g.State, state.GrantNone, state.TriggerRecover); err != nil {
 				return err
 			}
 			removeRecord(&r.Grants, func(x *state.Grant) bool { return x.Ref == ref })

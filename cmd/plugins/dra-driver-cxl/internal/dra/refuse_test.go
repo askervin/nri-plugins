@@ -108,7 +108,7 @@ func TestPrepareRefusedBeforeDevices(t *testing.T) {
 			e.mark()
 			wantErrText(t, e.prepare(tc.p, tc.claim).Err, tc.err)
 			e.wantNoCommands("refused")
-			e.wantState(tc.p, "u1", state.PreparationUnknown)
+			e.wantState(tc.p, "u1", state.PreparationNone)
 		})
 	}
 }
@@ -171,7 +171,7 @@ func TestPrepareRefusedKeepsPreparing(t *testing.T) {
 	e.wantNoCommands("a refused Prepare of a PREPARING claim")
 	e.wantState(e.pool, "u1", state.PreparationPreparing)
 	e.mustUnprepare(e.pool, "u2")
-	e.wantState(e.pool, "u2", state.PreparationUnknown)
+	e.wantState(e.pool, "u2", state.PreparationNone)
 	e.mustPrepare(e.pool, poolClaim("u1", "pooled0", poolExclusiveData))
 	e.mustUnprepare(e.pool, "u1")
 	e.wantClean()
@@ -230,7 +230,7 @@ func TestPrepareRefusedKeepsStale(t *testing.T) {
 	e.mark()
 	e.mustUnprepare(e.local, "l2")
 	e.wantNoCommands("the Unprepare of a stale local claim")
-	e.wantState(e.local, "l2", state.PreparationUnknown)
+	e.wantState(e.local, "l2", state.PreparationNone)
 	e.mustUnprepare(e.local, "l1")
 	e.wantClean()
 }
@@ -242,7 +242,7 @@ func TestPrepareFailedAfterIntent(t *testing.T) {
 	// a pool device that does not appear
 	res := e.prepare(e.pool, poolClaim("u1", "pooled9", poolExclusiveData))
 	wantErrText(t, res.Err, "cxl-pool.nri.io: claim demo/claim-u1: device pooled9 serial 0xc1ee0001: ")
-	e.wantState(e.pool, "u1", state.PreparationUnknown)
+	e.wantState(e.pool, "u1", state.PreparationNone)
 	// a local memdev with a region that the driver did not make
 	k := e.k.Kernel()
 	memdev := e.k.Memdev(serialSliced)
@@ -253,7 +253,7 @@ func TestPrepareFailedAfterIntent(t *testing.T) {
 	res = e.prepare(e.local, localClaim("u2", localDev, envBlockSize))
 	wantErrText(t, res.Err, "claim demo/claim-u2: device "+localDev+" serial 0xc100e2e1: ")
 	wantErrText(t, res.Err, "that the plugin did not create")
-	e.wantState(e.local, "u2", state.PreparationUnknown)
+	e.wantState(e.local, "u2", state.PreparationNone)
 	if reg := e.records().Region(state.RegionRef(region)); reg == nil || reg.State != state.RegionForeign {
 		t.Fatalf("region record %+v", reg)
 	}
@@ -280,7 +280,7 @@ func TestPrepareCDIFails(t *testing.T) {
 	res := e.prepare(e.local, localClaim("u1", localDev, envBlockSize))
 	wantErrText(t, res.Err, "cxl.nri.io: claim demo/claim-u1: write CDI spec "+device.ClaimsCDISpecName+": ")
 	wantLogText(t, logs(), "cxl.nri.io: claim demo/claim-u1: rollback: write CDI spec "+device.ClaimsCDISpecName+": ")
-	e.wantState(e.local, "u1", state.PreparationUnknown)
+	e.wantState(e.local, "u1", state.PreparationNone)
 	mustOK(t, os.Remove(e.cdiDir))
 	mustOK(t, os.MkdirAll(e.cdiDir, 0o755))
 	e.mustUnprepare(e.local, "u0")

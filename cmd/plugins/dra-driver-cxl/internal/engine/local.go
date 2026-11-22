@@ -122,10 +122,10 @@ func (e *Engine) partMade(req *GrantRequest) (state.Got, bool) {
 		return state.Got{}, false
 	}
 	d := reg.DaxDevice(g.Got.Dax)
-	if d == nil || d.State != state.DaxKmemOnline || !slices.Equal(d.Users, []state.GrantRef{req.Ref}) || reg.NumaNode == nil {
+	if d == nil || d.State != state.DaxKmemOnline || !slices.Equal(d.Users, []state.GrantRef{req.Ref}) || reg.NUMANode == nil {
 		return state.Got{}, false
 	}
-	return state.Got{Region: g.Got.Region, Dax: d.Name, Size: d.Size, NumaNode: state.NumaNodePtr(*reg.NumaNode)}, true
+	return state.Got{Region: g.Got.Region, Dax: d.Name, Size: d.Size, NUMANode: state.NUMANodePtr(*reg.NUMANode)}, true
 }
 
 // releaseLeftPart releases the part that a grant of a Prepare that did not
@@ -151,7 +151,7 @@ func (e *Engine) realisePart(ctx context.Context, req *GrantRequest, memdev, reg
 	got := state.Got{Region: state.RegionRef(region), Dax: dax, Size: size}
 	if req.Asked.Mode == state.ModeNUMA {
 		node, err := e.onlinePart(ctx, req, memdev, region, dax, size, bs)
-		got.NumaNode = state.NumaNodePtr(node)
+		got.NUMANode = state.NUMANodePtr(node)
 		return got, err
 	}
 	return got, e.bindPart(ctx, req, memdev, region, dax, size)
@@ -186,7 +186,7 @@ func (e *Engine) localRegion(ctx context.Context, req *GrantRequest, memdev stri
 // probed.
 func (e *Engine) setUpLocal(ctx context.Context, req *GrantRequest, memdev string, bs uint64) (string, string, bool, error) {
 	s := req.Serial.String()
-	reg := ownRegion(e.records(), req.Serial, state.RegionRam)
+	reg := ownRegion(e.records(), req.Serial, state.RegionRAM)
 	created, again := reg == nil, reg != nil && !reg.SetUp
 	usable := e.usableSize(req)
 	if ram, err := e.k.RamSize(memdev); err == nil && usable >= ram {
@@ -196,7 +196,7 @@ func (e *Engine) setUpLocal(ctx context.Context, req *GrantRequest, memdev strin
 		klog.Infof("engine: local memdev %s (%s): creating a region of its first %d bytes only (usable size)", s, memdev, usable)
 	}
 	start := time.Now()
-	region, err := e.ensureRegion(ctx, req, memdev, state.RegionRam, usable)
+	region, err := e.ensureRegion(ctx, req, memdev, state.RegionRAM, usable)
 	if err != nil && !errors.Is(err, errForeignRegion) {
 		err = fmt.Errorf("memdev %s (serial %s): %w", memdev, s, err)
 	}
@@ -468,7 +468,7 @@ func (e *Engine) partRoom(req *GrantRequest, memdev, region string, bs uint64) (
 func sizedPart(r *state.Records, ref state.GrantRef, region, dax string, size uint64, dev state.DevNumbers) error {
 	d := r.Region(state.RegionRef(region)).DaxDevice(dax)
 	if d.State == state.DaxCreating {
-		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxSized, state.TriggerPrepare); err != nil {
+		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxUnbound, state.TriggerPrepare); err != nil {
 			return err
 		}
 	}
@@ -483,16 +483,16 @@ func partRecord(r *state.Records, ref state.GrantRef, region, dax string, reused
 	reg := r.Region(state.RegionRef(region))
 	d := reg.DaxDevice(dax)
 	if d == nil {
-		reg.DaxDevices = append(reg.DaxDevices, state.DaxDevice{Name: dax, State: state.DaxAbsent})
+		reg.DaxDevices = append(reg.DaxDevices, state.DaxDevice{Name: dax, State: state.DaxNone})
 		d = &reg.DaxDevices[len(reg.DaxDevices)-1]
 	}
 	switch {
 	case reused && (d.State == state.DaxDeviceDax || d.State == state.DaxSeed):
-		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxSized, state.TriggerPrepare); err != nil {
+		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxUnbound, state.TriggerPrepare); err != nil {
 			return err
 		}
 		d.Whole, d.Driver = false, ""
-	case d.State == state.DaxAbsent:
+	case d.State == state.DaxNone:
 		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxCreating, state.TriggerPrepare); err != nil {
 			return err
 		}
@@ -559,7 +559,7 @@ func deletedPart(r *state.Records, ref state.GrantRef, region, dax string) error
 		d.Size = 0
 		return state.Apply(&state.DaxDeviceTable, &d.State, state.DaxSeed, state.TriggerPrepare)
 	}
-	if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxAbsent, state.TriggerPrepare); err != nil {
+	if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxNone, state.TriggerPrepare); err != nil {
 		return err
 	}
 	removeRecord(&reg.DaxDevices, func(x *state.DaxDevice) bool { return x.Name == dax })
@@ -677,7 +677,7 @@ func (e *Engine) logReleased(g *state.Grant, release Release) {
 		klog.Infof("engine: local memdev %s (%s): claim %s is not prepared, releasing it", s, memdev, claim)
 	case g.Asked.Kind == state.KindShared:
 		dax := ""
-		if reg := ownRegion(e.records(), g.Serial, state.RegionRam); reg != nil {
+		if reg := ownRegion(e.records(), g.Serial, state.RegionRAM); reg != nil {
 			dax = reg.FirstDax()
 		}
 		klog.Infof("engine: local memdev %s (%s): claim %s: released shared %s, claims left %v", s, memdev, claim, dax, left)
@@ -696,7 +696,7 @@ func (e *Engine) keptIdle(g *state.Grant, memdev string, decision Decision, rele
 	if decision != KeepIdle || g.Asked.Source != state.SourceLocal || release == ReleaseRecovery {
 		return
 	}
-	if reg := ownRegion(e.records(), g.Serial, state.RegionRam); reg != nil {
+	if reg := ownRegion(e.records(), g.Serial, state.RegionRAM); reg != nil {
 		klog.Infof("engine: local memdev %s (%s): keeping %s and %s of the idle shared device", g.Serial.String(), memdev, reg.Ref(), reg.FirstDax())
 	}
 }
@@ -772,7 +772,7 @@ func releasedDax(r *state.Records, ref state.GrantRef, region state.RegionRef, d
 		rg.Got.Dax = ""
 	}
 	if d.State == state.DaxCreating {
-		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxAbsent, trigger); err != nil {
+		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxNone, trigger); err != nil {
 			return err
 		}
 		removeRecord(&reg.DaxDevices, func(x *state.DaxDevice) bool { return x.Name == dax })
@@ -783,7 +783,7 @@ func releasedDax(r *state.Records, ref state.GrantRef, region state.RegionRef, d
 		d.Driver, d.Size, d.Dev = "", 0, state.DevNumbers{}
 		return state.Apply(&state.DaxDeviceTable, &d.State, state.DaxSeed, trigger)
 	}
-	if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxAbsent, trigger); err != nil {
+	if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxNone, trigger); err != nil {
 		return err
 	}
 	removeRecord(&reg.DaxDevices, func(x *state.DaxDevice) bool { return x.Name == dax })
