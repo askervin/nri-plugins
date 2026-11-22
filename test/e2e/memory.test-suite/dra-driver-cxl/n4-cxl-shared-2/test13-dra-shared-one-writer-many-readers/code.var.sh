@@ -92,7 +92,7 @@ spec:
   volumes:
   - name: tools
     configMap:
-      name: dax-rw
+      name: tools
   containers:
   - name: main
     image: $DRA_TOOLS_IMAGE

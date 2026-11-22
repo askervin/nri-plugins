@@ -325,7 +325,7 @@ dra-pull-images() {
 dra-tools-install() {
     # Usage: dra-tools-install VMDIR [NAME=HOST-FILE...]
     #
-    # Create ConfigMap dax-rw in $DRA_NS of the cluster of the VM of VMDIR,
+    # Create ConfigMap tools in $DRA_NS of the cluster of the VM of VMDIR,
     # with the tools that pods mount at /tools and run with python3 (image
     # $DRA_TOOLS_IMAGE):
     #   dax-rw.py      write and read strings in a devdax device, or
@@ -342,11 +342,11 @@ dra-tools-install() {
         name=${spec%%=*} file=${spec#*=}
         [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] && [ -f "$file" ] ||
             error "dra-tools-install: '$spec' is not NAME=HOST-FILE of an existing file"
-        vmdir-put-file "$vmdir" "$file" "/root/dax-rw.d.$name"
-        from+=" --from-file=$name=/root/dax-rw.d.$name"
+        vmdir-put-file "$vmdir" "$file" "/root/tools.d.$name"
+        from+=" --from-file=$name=/root/tools.d.$name"
     done
-    vmdir-command "$vmdir" "kubectl create configmap dax-rw -n $DRA_NS --from-file=dax-rw.py=/root/dax-rw.py --from-file=numa-touch.py=/root/numa-touch.py$from --dry-run=client -o yaml | kubectl apply -f -" ||
-        command-error "cannot create ConfigMap dax-rw in $(vmdir-label "$vmdir")"
+    vmdir-command "$vmdir" "kubectl create configmap tools -n $DRA_NS --from-file=dax-rw.py=/root/dax-rw.py --from-file=numa-touch.py=/root/numa-touch.py$from --dry-run=client -o yaml | kubectl apply -f -" ||
+        command-error "cannot create ConfigMap tools in $(vmdir-label "$vmdir")"
 }
 
 ###
@@ -1779,7 +1779,7 @@ spec:
   volumes:
   - name: tools
     configMap:
-      name: dax-rw
+      name: tools
   containers:"
     for a in "${ctrs[@]}"; do
         ctr=${a%%=*} refs=""
@@ -2062,7 +2062,7 @@ spec:
   volumes:
   - name: tools
     configMap:
-      name: dax-rw$volumes
+      name: tools$volumes
   containers:
   - name: main
     image: $DRA_TOOLS_IMAGE
