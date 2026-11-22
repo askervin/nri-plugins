@@ -129,8 +129,8 @@ type Options struct {
 	// ResourceSlices: the local memdev of this node, else a device of the
 	// pool driver; nil if there is none.
 	PublishedDevice func(serial uint64) (driver string, dev *resourcev1.Device)
-	// identity resolves the peers of the sockets when Start gets a
-	// NRI plugin (without one every request is refused); nil: the
+	// identity resolves the processes that connect to the sockets when
+	// Start gets a NRI plugin (without one every request is refused); nil: the
 	// container table of that plugin.
 	identity Identity
 	// Timeouts are the waits and periods.
@@ -194,9 +194,10 @@ func (l Limits) withDefaults() Limits {
 //
 // States: the records of state.Lease and state.LeaseClaim (lease.go,
 // leaseclaim.go) in the store, their only copy. Process memory, not
-// records: the NRI plugin and the identity of the peers, the sockets
-// and their connections, the running releases, the claims whose directories are being removed (CLOSED
-// and REMOVING) and the leases failed at the start.
+// records: the NRI plugin and the identity of the processes that
+// connect, the sockets and their connections, the running releases, the
+// claims whose directories are being removed (CLOSED and REMOVING) and
+// the leases failed at the start.
 //
 // Transitions: state.LeaseTable and state.LeaseClaimTable, applied by
 // apply and applyClaim in the commits of the records with their checks.
@@ -230,8 +231,8 @@ type Broker struct {
 	// mu guards the fields below: a leaf lock.
 	mu sync.Mutex
 	// containers is the NRI plugin (nil: NRI not connected) and
-	// started: Start ran; identity the identity of the peers (nil:
-	// requests are refused).
+	// started: Start ran; identity the identity of the processes that
+	// connect (nil: requests are refused).
 	started    bool
 	containers Containers
 	identity   Identity

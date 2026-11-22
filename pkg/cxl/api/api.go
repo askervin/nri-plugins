@@ -301,7 +301,7 @@ func KnownFSType(name string) bool {
 }
 
 // PersistentMode tells whether a mode is a mode of persistent memory
-// (ModeBlock, ModeFs).
+// (ModeBlock, ModeFS).
 func PersistentMode(mode string) bool {
 	return mode == ModeBlock || mode == ModeFS
 }
@@ -329,11 +329,11 @@ func ValidFSType(name string) bool {
 //   - Serial: 0x<hex> of a memdev, "" for regions and DRAM
 //   - Shared: the memdev is a shared device, which several claims may map
 //     at a time
-//   - Mode: ModeNUMA, ModeDax, ModeBlock or ModeFs
+//   - Mode: ModeNUMA, ModeDax, ModeBlock or ModeFS
 //   - Size: bytes that the claim or lease got; of block and fs memory the
 //     size of the fsdax namespace
-//   - Node: NUMA node of numa memory without Nodes
-//   - Nodes: NUMA nodes of DRAM (cpuset syntax)
+//   - NUMANode: NUMA node of numa memory without NUMANodes
+//   - NUMANodes: NUMA nodes of DRAM (cpuset syntax)
 //   - Dax: /dev/daxX.Y of dax memory
 //   - Path: the device node (/dev/pmemK) of block memory (of a lease: the
 //     host path), the directory in the container of fs memory

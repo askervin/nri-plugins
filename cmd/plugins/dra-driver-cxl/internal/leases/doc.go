@@ -22,7 +22,7 @@
 // Objects: Lease (lease.go) and LeaseClaim (leaseclaim.go), whose records
 // and transition tables are state.Lease and state.LeaseClaim; the Broker
 // (broker.go) that owns them; the companion (companion.go) with the hooks
-// that the drivers call while they prepare it; the identity of the peers
-// of the sockets (identity.go). The states and their transitions are
+// that the drivers call while they prepare it; the identity of the
+// processes that connect to the sockets (identity.go). The states and their transitions are
 // rendered in docs/memory/cxl/states.md.
 package leases

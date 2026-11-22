@@ -38,10 +38,10 @@ import (
 // several requests per connection, a request line of at most
 // maxRequestLine bytes with one object of known fields; the response of a
 // Ready dax or block lease carries the open fd of its device (SCM_RIGHTS)
-// on the write of its line. The peer is the process that connected, fixed
-// at connect by its pid, start time and pidfd; the identity of every
-// request is that of the peer's container then, the connection's once the
-// peer is gone.
+// on the write of its line. The process of a connection is the one that
+// connected, fixed at connect by its pid, start time and pidfd; the
+// identity of every request is that of the process's container then, the
+// connection's once the process is gone.
 
 // leaseFd names the device of a dax or block lease whose fd goes with a
 // response: none if path is "". The fd goes only while the lease is Ready
@@ -298,7 +298,7 @@ func (b *Broker) readyWith(fd leaseFd) bool {
 
 // waitIdentity waits, at most Timeouts.SyncWait, until the broker is
 // started and the NRI plugin has synchronized with the runtime: the
-// identity of a peer is known only then.
+// identity of a process is known only then.
 func (b *Broker) waitIdentity() {
 	ctx, cancel := context.WithTimeout(b.ctx, b.t.SyncWait)
 	defer cancel()
@@ -315,9 +315,10 @@ func (b *Broker) waitIdentity() {
 	}
 }
 
-// authenticate maps the peer to a container of a pod of the lease claim,
-// after the identity of the peers is known (waitIdentity); procErr is the
-// error of reading the peer's credentials.
+// authenticate maps the process that connected to a container of a pod of
+// the lease claim, after the identity of processes is known
+// (waitIdentity); procErr is the error of reading the credentials of the
+// process.
 func (b *Broker) authenticate(claimUID string, proc *connProcess, procErr error) (Requester, error) {
 	b.waitIdentity()
 	b.mu.Lock()
@@ -331,7 +332,7 @@ func (b *Broker) authenticate(claimUID string, proc *connProcess, procErr error)
 		return Requester{}, errNotOurPod
 	}
 	if procErr != nil {
-		return Requester{}, fmt.Errorf("peer credentials: %w", procErr)
+		return Requester{}, fmt.Errorf("credentials of the process: %w", procErr)
 	}
 	pid := proc.pid
 	who, err := identity.Resolve(pid)
@@ -371,9 +372,9 @@ func (b *Broker) allowRequest(claimUID string) bool {
 }
 
 // reauthenticate returns the identity of a later request of a connection:
-// that of its peer now while the process that connected runs, else the
-// identity of the connection (connected, connectedErr). A peer in no known
-// container keeps an identity that the connection had.
+// that of its process now while the process that connected runs, else
+// the identity of the connection (connected, connectedErr). A process in
+// no known container keeps an identity that the connection had.
 func (b *Broker) reauthenticate(claimUID string, proc *connProcess, connected Requester, connectedErr error) (Requester, error) {
 	if proc == nil || !proc.running() {
 		return connected, connectedErr
@@ -389,7 +390,7 @@ func (b *Broker) reauthenticate(claimUID string, proc *connProcess, connected Re
 	return who, err
 }
 
-// processGoneError is the refusal of a peer whose process is in no known
+// processGoneError is the refusal of a process that is in no known
 // container: it has exited, or it is not in a container of the node.
 type processGoneError struct{ err error }
 

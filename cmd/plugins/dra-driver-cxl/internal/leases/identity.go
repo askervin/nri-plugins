@@ -67,7 +67,7 @@ type Requester struct {
 // socket is in.
 type Identity interface {
 	// Resolve returns the container of the process pid, an error that is
-	// ErrUnknownPeer when the process is in no known container.
+	// ErrUnknownProcess when the process is in no known container.
 	Resolve(pid int) (Requester, error)
 }
 
