@@ -316,7 +316,7 @@ def do_fswrite(text, append):
     found = [l for l in leases() if l.get("mode") == "fs" and l.get("readOnly") is False and l.get("state") == "Ready"
              and (not os.environ.get("DEMO_LEASE") or l.get("lease") == os.environ["DEMO_LEASE"])]
     if not found or not found[-1].get("path"):
-        sys.exit("no read-write fs lease: cxl-request request --mode fs --read-write ... first")
+        sys.exit("no read-write fs lease: cxl-request request --mode fs --read-only=false ... first")
     path = os.path.join(found[-1]["path"], FS_FILE)
     try:
         with open(path, "a" if append else "w") as f:

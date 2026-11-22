@@ -18,10 +18,10 @@
 // containers of claims on DeviceClass cxl-lease. See
 // docs/memory/cxl/leases.md.
 //
-//	cxl-request request [--source local|pool] [--mode numa|dax|fs|block] [--shared] [--read-only]
-//	                    [--read-write] [--access direct|cached] [--fs-type TYPE] [--name NAME]
-//	                    [--size SIZE] [--serial SERIAL] [--wait DURATION] [--request-id ID]
-//	                    [--exec CMD [ARG...]]
+//	cxl-request request [--source local|pool] [--mode numa|dax|fs|block] [--shared]
+//	                    [--read-only[=false]] [--access direct|cached] [--fs-type TYPE]
+//	                    [--name NAME] [--size SIZE] [--serial SERIAL] [--wait DURATION]
+//	                    [--request-id ID] [--exec CMD [ARG...]]
 //	cxl-request release (--lease ID | --all) [--wait DURATION]
 //	cxl-request list
 //	cxl-request fd  --lease ID [--wait DURATION] --exec CMD [ARG...]
@@ -68,10 +68,10 @@ const (
 )
 
 const usage = `usage:
-  cxl-request request [--source local|pool] [--mode numa|dax|fs|block] [--shared] [--read-only]
-                      [--read-write] [--access direct|cached] [--fs-type TYPE] [--name NAME]
-                      [--size SIZE] [--serial SERIAL] [--wait DURATION] [--request-id ID]
-                      [--exec CMD [ARG...]]
+  cxl-request request [--source local|pool] [--mode numa|dax|fs|block] [--shared]
+                      [--read-only[=false]] [--access direct|cached] [--fs-type TYPE]
+                      [--name NAME] [--size SIZE] [--serial SERIAL] [--wait DURATION]
+                      [--request-id ID] [--exec CMD [ARG...]]
   cxl-request release (--lease ID | --all) [--wait DURATION]
   cxl-request list
   cxl-request fd  --lease ID [--wait DURATION] --exec CMD [ARG...]
@@ -85,8 +85,7 @@ request: memory for this container, exclusive unless --shared:
               default numa, dax with --shared or for a shared device
   --shared    one share of a shared device (default: the whole device, exclusive)
   --read-only a dax or block fd that allows reads only; fs is read-only
-              without --read-write
-  --read-write fs: mount the filesystem read-write (default read-only)
+              unless --read-only=false
   --access    fs: direct (file pages are the memory of the device) or
               cached (the page cache of the node); default direct when the
               filesystem has DAX, cached otherwise
@@ -104,7 +103,7 @@ The socket is $CXL_LEASE_SOCKET.
 
 // options lists the options of each operation; --exec is the last one.
 var options = map[string][]string{
-	api.OpRequest: {"--source", "--mode", "--shared", "--read-only", "--read-write", "--access", "--fs-type", "--name", "--size", "--serial", "--wait",
+	api.OpRequest: {"--source", "--mode", "--shared", "--read-only", "--access", "--fs-type", "--name", "--size", "--serial", "--wait",
 		"--request-id", "--exec"},
 	api.OpRelease: {"--lease", "--all", "--wait"},
 	api.OpList:    {},
@@ -180,9 +179,14 @@ func (cmd *command) values() map[string]*string {
 	}
 }
 
-// flags returns the options without a value of the command.
-func (cmd *command) flags() map[string]*bool {
-	return map[string]*bool{"--shared": &cmd.req.Share, "--read-only": &cmd.req.ReadOnly, "--read-write": &cmd.req.ReadWrite, "--all": &cmd.req.All}
+// flags returns the setters of the options without a value of the
+// command: true, or the value given inline (--read-only=false).
+func (cmd *command) flags() map[string]func(bool) {
+	return map[string]func(bool){
+		"--shared":    func(b bool) { cmd.req.Share = b },
+		"--read-only": func(b bool) { cmd.req.ReadOnly = &b },
+		"--all":       func(b bool) { cmd.req.All = b },
+	}
 }
 
 // isFlag tells whether an option takes no value.
@@ -209,16 +213,16 @@ func (cmd *command) checkOption(name, arg string) error {
 // setOption sets an option of the command: a flag to true, or to val if
 // it was given inline (--opt=VAL), an option with a value to val.
 func (cmd *command) setOption(name, val string, inline bool) error {
-	flag := cmd.flags()[name]
+	set := cmd.flags()[name]
 	switch {
-	case flag != nil && inline:
+	case set != nil && inline:
 		b, err := strconv.ParseBool(val)
 		if err != nil {
 			return fmt.Errorf("%s: invalid value %q", name, val)
 		}
-		*flag = b
-	case flag != nil:
-		*flag = true
+		set(b)
+	case set != nil:
+		set(true)
 	default:
 		*cmd.values()[name] = val
 	}

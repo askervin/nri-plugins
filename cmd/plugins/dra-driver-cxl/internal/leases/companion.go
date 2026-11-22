@@ -216,7 +216,7 @@ func (b *Broker) companionRequest(l *state.Lease) (*resourcev1.DeviceRequest, []
 // broker gives the requester, and for fs access and fsType when asked for
 // (no path: the companion pod gets no mount).
 func companionConfig(l *state.Lease, driver string, requests []string) (resourcev1.DeviceClaimConfiguration, error) {
-	dev := &config.Device{Mode: string(l.Asked.Mode), ReadOnly: ptr(readOnly(l))}
+	dev := &config.Device{Mode: string(l.Asked.Mode), ReadOnly: ptr(l.Asked.ReadOnly)}
 	if l.Asked.Mode == state.ModeFS {
 		dev.Access, dev.FSType = string(l.Asked.Access), l.Asked.FSType
 	}
@@ -476,7 +476,7 @@ func (b *Broker) PreparedStep(id string, source state.Source, devs []state.Devic
 		case ready != nil:
 			l, g := ready, ready.Got
 			klog.Infof("lease broker: lease %s: Ready (source %s, serial %s, mode %s, read-only %v, node %d, dax %q, block %q, access %q, fs %q, path %q, %d bytes)",
-				l.ID, g.Source, g.Serial, l.Asked.Mode, readOnly(l), numaNodeOf(l), g.Dax, g.Block, accessOf(l), fsTypeOf(l), g.Path, g.Size)
+				l.ID, g.Source, g.Serial, l.Asked.Mode, l.Asked.ReadOnly, numaNodeOf(l), g.Dax, g.Block, accessOf(l), fsTypeOf(l), g.Path, g.Size)
 		}
 	}
 	return step, after

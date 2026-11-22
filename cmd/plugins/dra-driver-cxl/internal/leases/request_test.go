@@ -156,20 +156,20 @@ func TestRequestOptions(t *testing.T) {
 		err  string
 	}{
 		{req: api.Request{Size: "1Gi"}, want: askedText{Size: "1Gi", Mode: "numa"}},
-		{req: api.Request{Size: "1024Mi", Mode: "dax", ReadOnly: true}, want: askedText{Size: "1Gi", Mode: "dax", ReadOnly: true}},
+		{req: api.Request{Size: "1024Mi", Mode: "dax", ReadOnly: ptr(true)}, want: askedText{Size: "1Gi", Mode: "dax", ReadOnly: true}},
 		{req: api.Request{Share: true, Size: "256Mi"}, want: askedText{Shared: true, SharedDevice: true, Size: "256Mi", Mode: "dax"}},
 		// a reader and the writer of a shared device
-		{req: api.Request{Serial: "0xC1AE0001", Share: true, ReadOnly: true}, want: askedText{Serial: "0xc1ae0001", Shared: true, SharedDevice: true, DeviceSource: "pool", Mode: "dax", ReadOnly: true}},
+		{req: api.Request{Serial: "0xC1AE0001", Share: true, ReadOnly: ptr(true)}, want: askedText{Serial: "0xc1ae0001", Shared: true, SharedDevice: true, DeviceSource: "pool", Mode: "dax", ReadOnly: true}},
 		{req: api.Request{Serial: "3249405953"}, want: askedText{Serial: "0xc1ae0001", Mode: "dax", SharedDevice: true, DeviceSource: "pool"}},
-		{req: api.Request{Serial: "0xc1ae0001", Mode: "dax", ReadOnly: true, Source: "pool"}, want: askedText{Source: "pool", Serial: "0xc1ae0001", Mode: "dax", ReadOnly: true, SharedDevice: true}},
+		{req: api.Request{Serial: "0xc1ae0001", Mode: "dax", ReadOnly: ptr(true), Source: "pool"}, want: askedText{Source: "pool", Serial: "0xc1ae0001", Mode: "dax", ReadOnly: true, SharedDevice: true}},
 		// a shared device has no capacity that the broker reads
 		{req: api.Request{Serial: "0xc1ae0002"}, want: askedText{Serial: "0xc1ae0002", Mode: "dax", SharedDevice: true, DeviceSource: "pool"}},
 		// a reader and the writer of a shared local device
-		{req: api.Request{Serial: "0xc100e2e2", Share: true, ReadOnly: true}, want: askedText{Serial: "0xc100e2e2", Shared: true, SharedDevice: true, DeviceSource: "local", Mode: "dax", ReadOnly: true}},
+		{req: api.Request{Serial: "0xc100e2e2", Share: true, ReadOnly: ptr(true)}, want: askedText{Serial: "0xc100e2e2", Shared: true, SharedDevice: true, DeviceSource: "local", Mode: "dax", ReadOnly: true}},
 		{req: api.Request{Serial: "0xc100e2e2", Source: "local"}, want: askedText{Source: "local", Serial: "0xc100e2e2", Mode: "dax", SharedDevice: true}},
 		{req: api.Request{Source: "local", Share: true, Size: "64Mi"}, want: askedText{Source: "local", Shared: true, SharedDevice: true, Size: "64Mi", Mode: "dax"}},
 		{req: api.Request{Size: "64Mi", Source: "local"}, want: askedText{Source: "local", Size: "64Mi", Mode: "numa"}},
-		{req: api.Request{Size: "64Mi", Source: "local", Mode: "dax", ReadOnly: true, Serial: "0xC100E2E1"},
+		{req: api.Request{Size: "64Mi", Source: "local", Mode: "dax", ReadOnly: ptr(true), Serial: "0xC100E2E1"},
 			want: askedText{Source: "local", Size: "64Mi", Mode: "dax", ReadOnly: true, Serial: "0xc100e2e1"}},
 		{req: api.Request{Size: "64Mi", Source: "pool", Serial: "0xc1ee0001"}, want: askedText{Source: "pool", Size: "64Mi", Mode: "numa", Serial: "0xc1ee0001"}},
 		// a serial of no published device
@@ -186,19 +186,19 @@ func TestRequestOptions(t *testing.T) {
 		{req: api.Request{Serial: "0xc1ae0001", Source: "local", Mode: "numa"}, err: "memdev 0xc1ae0001: not a local device"},
 		{req: api.Request{Size: "lots"}, err: `invalid size "lots"`},
 		// mode fs on persistent devices, shared or not
-		{req: api.Request{Serial: "0xc1af0001", Share: true, ReadOnly: true, Mode: "fs"},
+		{req: api.Request{Serial: "0xc1af0001", Share: true, ReadOnly: ptr(true), Mode: "fs"},
 			want: askedText{Serial: "0xc1af0001", Shared: true, SharedDevice: true, DeviceSource: "pool", Mode: "fs", ReadOnly: true}},
-		{req: api.Request{Serial: "0xc1af0001", ReadOnly: true, Mode: "fs", Access: "cached", Name: "models", Source: "pool"},
+		{req: api.Request{Serial: "0xc1af0001", ReadOnly: ptr(true), Mode: "fs", Access: "cached", Name: "models", Source: "pool"},
 			want: askedText{Source: "pool", Serial: "0xc1af0001", SharedDevice: true, Mode: "fs", ReadOnly: true, Access: "cached", Name: "models"}},
-		{req: api.Request{Serial: "0xc1af0002", ReadOnly: true, Mode: "fs", Size: "512Mi"},
+		{req: api.Request{Serial: "0xc1af0002", ReadOnly: ptr(true), Mode: "fs", Size: "512Mi"},
 			want: askedText{Serial: "0xc1af0002", DeviceSource: "pool", Mode: "fs", ReadOnly: true, Size: "512Mi"}},
-		{req: api.Request{Share: true, ReadOnly: true, Mode: "fs", Size: "256Mi"},
+		{req: api.Request{Share: true, ReadOnly: ptr(true), Mode: "fs", Size: "256Mi"},
 			want: askedText{Shared: true, SharedDevice: true, Mode: "fs", ReadOnly: true, Size: "256Mi"}},
-		// read-only without readOnly, read-write by the opt-in, a type
+		// read-only without readOnly, read-write with readOnly false, a type
 		{req: api.Request{Serial: "0xc1af0001", Share: true, Mode: "fs", FSType: "ext4"},
 			want: askedText{Serial: "0xc1af0001", Shared: true, SharedDevice: true, DeviceSource: "pool", Mode: "fs", ReadOnly: true, FSType: "ext4"}},
-		{req: api.Request{Serial: "0xc1af0001", Share: true, Mode: "fs", ReadWrite: true, Access: "cached"},
-			want: askedText{Serial: "0xc1af0001", Shared: true, SharedDevice: true, DeviceSource: "pool", Mode: "fs", ReadWrite: true, Access: "cached"}},
+		{req: api.Request{Serial: "0xc1af0001", Share: true, Mode: "fs", ReadOnly: ptr(false), Access: "cached"},
+			want: askedText{Serial: "0xc1af0001", Shared: true, SharedDevice: true, DeviceSource: "pool", Mode: "fs", Access: "cached"}},
 		// a persistent local memdev: a share although it is not shared
 		{req: api.Request{Serial: "0xc100f5e1", Share: true, Mode: "fs"},
 			want: askedText{Serial: "0xc100f5e1", Shared: true, SharedDevice: true, DeviceSource: "local", Mode: "fs", ReadOnly: true}},
@@ -209,25 +209,25 @@ func TestRequestOptions(t *testing.T) {
 		{req: api.Request{Serial: "0xc100f5e1", Source: "pool", Mode: "fs"}, err: "memdev 0xc100f5e1: not a pool device"},
 		{req: api.Request{Serial: "0xc1af0002", Source: "local", Mode: "block"}, err: "memdev 0xc1af0002: not a local device"},
 		// B3, B4 after the checks of the device and its source
-		{req: api.Request{Serial: "0xc1ae0001", Share: true, ReadOnly: true, Mode: "fs"}, err: "memdev 0xc1ae0001: mode fs needs a persistent device"},
-		{req: api.Request{Serial: "0xc1ee0001", ReadOnly: true, Mode: "fs"}, err: "memdev 0xc1ee0001: mode fs needs a persistent device"},
-		{req: api.Request{Serial: "0xc100e2e2", Share: true, ReadOnly: true, Mode: "fs"}, err: "memdev 0xc100e2e2: mode fs needs a persistent device"},
-		{req: api.Request{Serial: "0xc1af0001", Share: true, ReadOnly: true}, err: "memdev 0xc1af0001: a persistent device needs mode block or fs"},
+		{req: api.Request{Serial: "0xc1ae0001", Share: true, ReadOnly: ptr(true), Mode: "fs"}, err: "memdev 0xc1ae0001: mode fs needs a persistent device"},
+		{req: api.Request{Serial: "0xc1ee0001", ReadOnly: ptr(true), Mode: "fs"}, err: "memdev 0xc1ee0001: mode fs needs a persistent device"},
+		{req: api.Request{Serial: "0xc100e2e2", Share: true, ReadOnly: ptr(true), Mode: "fs"}, err: "memdev 0xc100e2e2: mode fs needs a persistent device"},
+		{req: api.Request{Serial: "0xc1af0001", Share: true, ReadOnly: ptr(true)}, err: "memdev 0xc1af0001: a persistent device needs mode block or fs"},
 		{req: api.Request{Serial: "0xc1af0001", Mode: "numa"}, err: "memdev 0xc1af0001: a persistent device needs mode block or fs"},
 		{req: api.Request{Serial: "0xc1af0002", Size: "64Mi"}, err: "memdev 0xc1af0002: a persistent device needs mode block or fs"},
 		{req: api.Request{Serial: "0xc1af0002", Mode: "dax"}, err: "memdev 0xc1af0002: a persistent device needs mode block or fs"},
-		{req: api.Request{Serial: "0xc1ee0001", Share: true, ReadOnly: true, Mode: "fs"}, err: "memdev 0xc1ee0001: not shareable"},
+		{req: api.Request{Serial: "0xc1ee0001", Share: true, ReadOnly: ptr(true), Mode: "fs"}, err: "memdev 0xc1ee0001: not shareable"},
 		{req: api.Request{Serial: "0xc1af0001", Source: "local", Mode: "numa"}, err: "memdev 0xc1af0001: not a local device"},
 		// mode block on persistent devices: the whole device, or a share read-only
 		{req: api.Request{Serial: "0xc1af0001", Mode: "block"}, want: askedText{Serial: "0xc1af0001", SharedDevice: true, DeviceSource: "pool", Mode: "block"}},
-		{req: api.Request{Serial: "0xc1af0001", Share: true, ReadOnly: true, Mode: "block", Source: "pool"},
+		{req: api.Request{Serial: "0xc1af0001", Share: true, ReadOnly: ptr(true), Mode: "block", Source: "pool"},
 			want: askedText{Source: "pool", Serial: "0xc1af0001", Shared: true, SharedDevice: true, Mode: "block", ReadOnly: true}},
 		{req: api.Request{Serial: "0xc1af0002", Mode: "block", Size: "512Mi"}, want: askedText{Serial: "0xc1af0002", DeviceSource: "pool", Mode: "block", Size: "512Mi"}},
 		{req: api.Request{Size: "256Mi", Mode: "block"}, want: askedText{Size: "256Mi", Mode: "block"}},
 		{req: api.Request{Serial: "0xc1ae0001", Mode: "block"}, err: "memdev 0xc1ae0001: mode block needs a persistent device"},
-		{req: api.Request{Serial: "0xc1ee0001", Mode: "block", ReadOnly: true}, err: "memdev 0xc1ee0001: mode block needs a persistent device"},
-		{req: api.Request{Serial: "0xc100e2e2", Share: true, ReadOnly: true, Mode: "block"}, err: "memdev 0xc100e2e2: mode block needs a persistent device"},
-		{req: api.Request{Serial: "0xc1ee0001", Share: true, ReadOnly: true, Mode: "block"}, err: "memdev 0xc1ee0001: not shareable"},
+		{req: api.Request{Serial: "0xc1ee0001", Mode: "block", ReadOnly: ptr(true)}, err: "memdev 0xc1ee0001: mode block needs a persistent device"},
+		{req: api.Request{Serial: "0xc100e2e2", Share: true, ReadOnly: ptr(true), Mode: "block"}, err: "memdev 0xc100e2e2: mode block needs a persistent device"},
+		{req: api.Request{Serial: "0xc1ee0001", Share: true, ReadOnly: ptr(true), Mode: "block"}, err: "memdev 0xc1ee0001: not shareable"},
 	} {
 		var a state.LeaseAsked
 		tc.req.Op = api.OpRequest
@@ -253,9 +253,9 @@ func TestRequestOptions(t *testing.T) {
 	}{
 		{req: api.Request{Size: "1Gi", Source: "pool"}, err: "pool driver disabled (--pool=false)"},
 		{req: api.Request{Size: "1Gi", Source: "pool", Share: true}, err: "pool driver disabled (--pool=false)"},
-		{req: api.Request{Size: "1Gi", Source: "pool", Mode: "fs", ReadOnly: true}, err: "pool driver disabled (--pool=false)"},
+		{req: api.Request{Size: "1Gi", Source: "pool", Mode: "fs", ReadOnly: ptr(true)}, err: "pool driver disabled (--pool=false)"},
 		// persistent local memdevs serve modes fs and block
-		{req: api.Request{Size: "1Gi", Mode: "fs", ReadOnly: true}, want: askedText{Size: "1Gi", Mode: "fs", ReadOnly: true}},
+		{req: api.Request{Size: "1Gi", Mode: "fs", ReadOnly: ptr(true)}, want: askedText{Size: "1Gi", Mode: "fs", ReadOnly: true}},
 		{req: api.Request{Size: "1Gi", Mode: "block"}, want: askedText{Size: "1Gi", Mode: "block"}},
 		// shared local devices serve --shared
 		{req: api.Request{Share: true, Size: "64Mi"}, want: askedText{Shared: true, SharedDevice: true, Size: "64Mi", Mode: "dax"}},
@@ -278,14 +278,14 @@ func TestRequestOptions(t *testing.T) {
 // askedText is what a lease asks for in words.
 type askedText struct {
 	Source, Mode, DeviceSource, Access, FSType, Name, Size, Serial string
-	Shared, SharedDevice, ReadOnly, ReadWrite                      bool
+	Shared, SharedDevice, ReadOnly                                 bool
 }
 
 // asked returns what a lease asks for.
 func (a askedText) asked() state.LeaseAsked {
 	serial, _ := api.ParseSerial(a.Serial)
 	return state.LeaseAsked{Source: state.Source(a.Source), DeviceSource: state.Source(a.DeviceSource), Mode: state.Mode(a.Mode),
-		Share: a.Shared, Shared: a.SharedDevice, ReadOnly: a.ReadOnly, ReadWrite: a.ReadWrite, Access: state.Access(a.Access),
+		Share: a.Shared, Shared: a.SharedDevice, ReadOnly: a.ReadOnly, Access: state.Access(a.Access),
 		FSType: a.FSType, Name: a.Name, Size: a.Size, Serial: state.Serial(serial), SerialZero: a.Serial != "" && serial == 0}
 }
 
@@ -414,7 +414,7 @@ func TestCompanionClaims(t *testing.T) {
 		},
 		{
 			name: "local dax read-only of a device",
-			req:  api.Request{Size: "64Mi", Source: "local", Mode: "dax", ReadOnly: true, Serial: "0xC100E2E1"},
+			req:  api.Request{Size: "64Mi", Source: "local", Mode: "dax", ReadOnly: ptr(true), Serial: "0xC100E2E1"},
 			want: resourcev1.DeviceRequest{Name: "lease", Exactly: &resourcev1.ExactDeviceRequest{
 				DeviceClassName: "cxl-local", Capacity: memory("64Mi"), Selectors: sel(serial("cxl.nri.io", "0xc100e2e1"))}},
 			configs: []opaqueConfig{{driver: "cxl.nri.io", params: localRO}},
@@ -493,14 +493,14 @@ func TestCompanionClaims(t *testing.T) {
 		},
 		{
 			name: "a reader of a shared pool device without --source",
-			req:  api.Request{Serial: "0xc1ae0001", Share: true, ReadOnly: true},
+			req:  api.Request{Serial: "0xc1ae0001", Share: true, ReadOnly: ptr(true)},
 			want: resourcev1.DeviceRequest{Name: "lease", Exactly: &resourcev1.ExactDeviceRequest{
 				DeviceClassName: "cxl-pool-shared", Capacity: share, Selectors: sel(serial("cxl-pool.nri.io", "0xc1ae0001"))}},
 			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolRO}},
 		},
 		{
 			name: "a reader of a shared local device without --source",
-			req:  api.Request{Serial: "0xc100e2e2", Share: true, ReadOnly: true},
+			req:  api.Request{Serial: "0xc100e2e2", Share: true, ReadOnly: ptr(true)},
 			want: resourcev1.DeviceRequest{Name: "lease", Exactly: &resourcev1.ExactDeviceRequest{
 				DeviceClassName: "cxl-local-shared", Capacity: share, Selectors: sel(serial("cxl.nri.io", "0xc100e2e2"))}},
 			configs: []opaqueConfig{{driver: "cxl.nri.io", params: localRO}},
@@ -548,7 +548,7 @@ func TestCompanionClaims(t *testing.T) {
 		},
 		{
 			name: "a reader of a shared local device",
-			req:  api.Request{Serial: "0xc100e2e2", Share: true, ReadOnly: true, Source: "local"},
+			req:  api.Request{Serial: "0xc100e2e2", Share: true, ReadOnly: ptr(true), Source: "local"},
 			want: resourcev1.DeviceRequest{Name: "lease", Exactly: &resourcev1.ExactDeviceRequest{
 				DeviceClassName: "cxl-local-shared", Capacity: share, Selectors: sel(serial("cxl.nri.io", "0xc100e2e2"))}},
 			configs: []opaqueConfig{{driver: "cxl.nri.io", params: localRO}},
@@ -562,28 +562,28 @@ func TestCompanionClaims(t *testing.T) {
 		},
 		{
 			name: "fs of a share of a shared persistent device",
-			req:  api.Request{Serial: "0xc1af0001", Share: true, ReadOnly: true, Mode: "fs"},
+			req:  api.Request{Serial: "0xc1af0001", Share: true, ReadOnly: ptr(true), Mode: "fs"},
 			want: resourcev1.DeviceRequest{Name: "lease", Exactly: &resourcev1.ExactDeviceRequest{
 				DeviceClassName: "cxl-pool-persistent", Capacity: share, Selectors: sel(serial("cxl-pool.nri.io", "0xc1af0001"))}},
 			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolFs}},
 		},
 		{
 			name: "fs cached of a shared persistent device, whole",
-			req:  api.Request{Serial: "0xc1af0001", ReadOnly: true, Mode: "fs", Access: "cached", Name: "models"},
+			req:  api.Request{Serial: "0xc1af0001", ReadOnly: ptr(true), Mode: "fs", Access: "cached", Name: "models"},
 			want: resourcev1.DeviceRequest{Name: "lease", Exactly: &resourcev1.ExactDeviceRequest{
 				DeviceClassName: "cxl-pool-persistent", Selectors: sel(serial("cxl-pool.nri.io", "0xc1af0001"))}},
 			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolFsCached}},
 		},
 		{
 			name: "fs of an exclusive persistent device",
-			req:  api.Request{Serial: "0xc1af0002", ReadOnly: true, Mode: "fs", Size: "512Mi"},
+			req:  api.Request{Serial: "0xc1af0002", ReadOnly: ptr(true), Mode: "fs", Size: "512Mi"},
 			want: resourcev1.DeviceRequest{Name: "lease", Exactly: &resourcev1.ExactDeviceRequest{
 				DeviceClassName: "cxl-pool-persistent", Capacity: memory("512Mi"), Selectors: sel(serial("cxl-pool.nri.io", "0xc1af0002"))}},
 			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolFs}},
 		},
 		{
 			name: "fs of a share of any persistent device of a size, local then pool",
-			req:  api.Request{Share: true, ReadOnly: true, Mode: "fs", Size: "64Mi"},
+			req:  api.Request{Share: true, ReadOnly: ptr(true), Mode: "fs", Size: "64Mi"},
 			want: resourcev1.DeviceRequest{Name: "lease", FirstAvailable: []resourcev1.DeviceSubRequest{
 				{Name: "local", DeviceClassName: "cxl-local-persistent", Capacity: share, Selectors: sel(`device.attributes["cxl.nri.io"].size >= 67108864`)},
 				{Name: "pool", DeviceClassName: "cxl-pool-persistent", Capacity: share, Selectors: sel(`device.attributes["cxl-pool.nri.io"].size >= 67108864`)},
@@ -595,7 +595,7 @@ func TestCompanionClaims(t *testing.T) {
 		},
 		{
 			name: "fs read-write of a share of a shared persistent device",
-			req:  api.Request{Serial: "0xc1af0001", Share: true, ReadWrite: true, Mode: "fs", Access: "direct", FSType: "ext4"},
+			req:  api.Request{Serial: "0xc1af0001", Share: true, ReadOnly: ptr(false), Mode: "fs", Access: "direct", FSType: "ext4"},
 			want: resourcev1.DeviceRequest{Name: "lease", Exactly: &resourcev1.ExactDeviceRequest{
 				DeviceClassName: "cxl-pool-persistent", Capacity: share, Selectors: sel(serial("cxl-pool.nri.io", "0xc1af0001"))}},
 			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolFsRW}},
@@ -625,7 +625,7 @@ func TestCompanionClaims(t *testing.T) {
 		},
 		{
 			name: "block of a share of a shared persistent device, read-only",
-			req:  api.Request{Serial: "0xc1af0001", Share: true, ReadOnly: true, Mode: "block"},
+			req:  api.Request{Serial: "0xc1af0001", Share: true, ReadOnly: ptr(true), Mode: "block"},
 			want: resourcev1.DeviceRequest{Name: "lease", Exactly: &resourcev1.ExactDeviceRequest{
 				DeviceClassName: "cxl-pool-persistent", Capacity: share, Selectors: sel(serial("cxl-pool.nri.io", "0xc1af0001"))}},
 			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolBlockRO}},

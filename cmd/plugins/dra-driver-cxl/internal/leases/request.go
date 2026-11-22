@@ -166,13 +166,12 @@ func (b *Broker) requestOptions(a *state.LeaseAsked, req *api.Request) error {
 	if b.opts.PoolDriver == "" && req.Source == api.SourcePool {
 		return errPoolDisabled
 	}
-	a.Source, a.Share, a.ReadOnly, a.Mode = state.Source(req.Source), req.Share, req.ReadOnly, state.Mode(req.EffectiveMode())
+	a.Source, a.Share, a.ReadOnly, a.Mode = state.Source(req.Source), req.Share, req.EffectiveReadOnly(), state.Mode(req.EffectiveMode())
 	a.Shared = req.Share
 	if a.Mode == state.ModeFS {
-		// read-only unless readWrite; access "": by the type of the
-		// filesystem, decided by the driver of the device
-		a.Access, a.Name, a.FSType, a.ReadWrite = state.Access(req.Access), req.Name, req.FSType, req.ReadWrite
-		a.ReadOnly = !req.ReadWrite
+		// access "": by the type of the filesystem, decided by the
+		// driver of the device
+		a.Access, a.Name, a.FSType = state.Access(req.Access), req.Name, req.FSType
 	}
 	if req.Size != "" {
 		q, err := resource.ParseQuantity(req.Size)

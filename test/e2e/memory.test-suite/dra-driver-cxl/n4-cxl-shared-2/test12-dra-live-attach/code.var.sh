@@ -482,12 +482,12 @@ echo "### A2: requests that cxl-request refuses, and some that the node plugin r
 # Nothing of a refused request is left.
 dra-request-refused "$VM2" borrower/main 2 "shared memory is never onlined as RAM: use mode dax" request --shared --mode numa --size 64Mi
 dra-request-refused "$VM2" borrower/main 1 "memdev $POOLED0_SERIAL: not shareable" request --serial "$POOLED0_SERIAL" --shared
-# shared0 is volatile: it has no filesystem and no block device. mode fs
-# without readOnly (read-only) and with --read-write passes cxl-request
-# and reaches the node plugin.
+# shared0 is volatile: it has no filesystem and no block device. mode fs,
+# read-only by default or with --read-only=false, passes cxl-request and
+# reaches the node plugin.
 dra-request-refused "$VM2" borrower/main 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --shared --read-only --mode fs
 dra-request-refused "$VM2" borrower/main 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --shared --mode fs
-dra-request-refused "$VM2" borrower/main 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --shared --mode fs --read-write --fs-type ext4
+dra-request-refused "$VM2" borrower/main 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --shared --mode fs --read-only=false --fs-type ext4
 dra-request-refused "$VM2" borrower/main 1 "memdev $SHARED_SERIAL: mode block needs a persistent device" request --serial "$SHARED_SERIAL" --mode block
 dra-leases "$VM2" borrower/main
 dra-assert "$DRA_LEASES" "j == []"

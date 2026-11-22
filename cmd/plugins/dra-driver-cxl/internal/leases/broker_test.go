@@ -198,15 +198,13 @@ func TestAuthRejection(t *testing.T) {
 		{api.Request{Op: "request", Size: "1Gi", Source: "any"}, `invalid source "any" (local or pool)`},
 		{api.Request{Op: "request", Size: "1Gi", Mode: "devdax"}, `invalid mode "devdax" (numa, dax, fs or block)`},
 		{api.Request{Op: "request", Share: true, Mode: "numa"}, "shared memory is never onlined as RAM: use mode dax"},
-		{api.Request{Op: "request", Size: "1Gi", ReadOnly: true}, "readOnly needs mode dax, fs or block"},
-		{api.Request{Op: "request", Size: "64Mi", Mode: "fs", ReadOnly: true, Access: "slow"}, `invalid access "slow" (direct or cached)`},
+		{api.Request{Op: "request", Size: "1Gi", ReadOnly: ptr(true)}, "readOnly needs mode dax, fs or block"},
+		{api.Request{Op: "request", Size: "64Mi", Mode: "fs", ReadOnly: ptr(true), Access: "slow"}, `invalid access "slow" (direct or cached)`},
 		{api.Request{Op: "request", Size: "64Mi", Access: "cached"}, "access needs mode fs"},
 		{api.Request{Op: "request", Size: "64Mi", Name: "x"}, "name needs mode fs"},
-		{api.Request{Op: "request", Size: "64Mi", Mode: "fs", ReadOnly: true, Name: "a/b"}, `invalid name "a/b" (letters, digits, ".", "_" and "-", not "." or "..")`},
+		{api.Request{Op: "request", Size: "64Mi", Mode: "fs", ReadOnly: ptr(true), Name: "a/b"}, `invalid name "a/b" (letters, digits, ".", "_" and "-", not "." or "..")`},
 		{api.Request{Op: "request", Size: "64Mi", Mode: "dax", FSType: "ext4"}, "fsType needs mode fs"},
 		{api.Request{Op: "request", Size: "64Mi", Mode: "fs", FSType: "Ext4"}, `invalid fsType "Ext4" (lower-case letters, digits, "_" and "-")`},
-		{api.Request{Op: "request", Size: "64Mi", Mode: "block", ReadWrite: true}, "readWrite needs mode fs"},
-		{api.Request{Op: "request", Size: "64Mi", Mode: "fs", ReadOnly: true, ReadWrite: true}, "readOnly and readWrite exclude each other"},
 		{api.Request{Op: "request"}, "size or serial is required"},
 		{api.Request{Op: "request", Serial: "xyz"}, `invalid serial "xyz"`},
 		{api.Request{Op: "release"}, "release takes --lease ID or --all"},
@@ -584,7 +582,7 @@ func TestReleaseBusy(t *testing.T) {
 	})
 	e.openClaim()
 	e.start()
-	ch := e.async(api.Request{Op: api.OpRequest, Share: true, ReadOnly: true, Mode: "fs", Size: "64Mi", Wait: "5s"})
+	ch := e.async(api.Request{Op: api.OpRequest, Share: true, ReadOnly: ptr(true), Mode: "fs", Size: "64Mi", Wait: "5s"})
 	claim := e.waitClaim(CompanionName("000000a1"))
 	_, err := e.b.OnLending("000000a1", claim)
 	mustOK(t, err)
@@ -630,16 +628,16 @@ func TestPreparedModeMismatch(t *testing.T) {
 		dev state.DeviceInfo
 		err string
 	}{
-		{api.Request{Op: "request", Share: true, ReadOnly: true, Mode: "fs", Size: "64Mi", Wait: "5s"},
+		{api.Request{Op: "request", Share: true, ReadOnly: ptr(true), Mode: "fs", Size: "64Mi", Wait: "5s"},
 			withDev(preparedDev(serialPoolS, 1<<28, api.ModeDax, -1), func(d *state.DeviceInfo) { d.DaxDevice = "/dev/dax0.0" }),
 			"companion prepared mode dax, lease is mode fs"},
 		{api.Request{Op: "request", Source: "pool", Mode: "dax", Size: "64Mi", Wait: "5s"},
 			withDev(preparedDev(serialPoolP, pmemBytes, api.ModeFS, -1), func(d *state.DeviceInfo) { d.Access = "direct" }),
 			"companion prepared mode fs, lease is mode dax"},
-		{api.Request{Op: "request", Share: true, ReadOnly: true, Mode: "block", Size: "64Mi", Wait: "5s"},
+		{api.Request{Op: "request", Share: true, ReadOnly: ptr(true), Mode: "block", Size: "64Mi", Wait: "5s"},
 			withDev(preparedDev(serialPoolP, pmemBytes, api.ModeFS, -1), func(d *state.DeviceInfo) { d.Access, d.BlockDevice = "direct", "/dev/pmem0" }),
 			"companion prepared mode fs, lease is mode block"},
-		{api.Request{Op: "request", Share: true, ReadOnly: true, Mode: "fs", Size: "64Mi", Wait: "5s"},
+		{api.Request{Op: "request", Share: true, ReadOnly: ptr(true), Mode: "fs", Size: "64Mi", Wait: "5s"},
 			withDev(preparedDev(serialPoolP, pmemBytes, api.ModeBlock, -1), func(d *state.DeviceInfo) { d.ReadOnly, d.BlockDevice = true, "/dev/pmem0" }),
 			"companion prepared mode block, lease is mode fs"},
 		{api.Request{Op: "request", Source: "pool", Mode: "block", Size: "64Mi", Wait: "5s"},

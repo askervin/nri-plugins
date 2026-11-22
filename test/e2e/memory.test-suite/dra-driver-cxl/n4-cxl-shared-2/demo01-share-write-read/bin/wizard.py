@@ -716,7 +716,7 @@ def lease_args(a):
         args.append("--read-only")
     if a["mode"] == "fs":
         if not read_only(a):
-            args.append("--read-write")
+            args.append("--read-only=false")
         if a["fs_type"] != "detect":
             args += ["--fs-type", a["fs_type"]]
         if a["access"] != "default":

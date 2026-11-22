@@ -704,7 +704,7 @@ dax file descriptor. A device of persistent memory is lent in mode
 `--shared --read-only --mode block`), or in mode `fs`: its filesystem is
 mounted into the running container at `/run/cxl/fs/<name>`, read-only
 (`cxl-request request --serial ... --shared --mode fs`) or read-write
-(`--read-write`). The companion claim of a read-write lease is a claim
+(`--read-only=false`). The companion claim of a read-write lease is a claim
 like any other: ReadWriteOnce applies to it, and its lease waits while
 another host has the device. See [leases.md](leases.md).
 

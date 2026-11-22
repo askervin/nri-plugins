@@ -40,16 +40,16 @@ func TestParseArgs(t *testing.T) {
 		// every synopsis line
 		{[]string{"request", "--size", "512Mi"}, api.Request{Op: "request", Size: "512Mi"}, nil, ""},
 		{[]string{"request", "--source", "local", "--mode", "dax", "--read-only", "--size=64Mi", "--serial", "0xc100e2e1", "--wait", "10s", "--request-id", "r1", "--exec", "prog", "--wait"},
-			api.Request{Op: "request", Source: "local", Mode: "dax", ReadOnly: true, Size: "64Mi", Serial: "0xc100e2e1", Wait: "10s", RequestID: "r1"}, []string{"prog", "--wait"}, ""},
+			api.Request{Op: "request", Source: "local", Mode: "dax", ReadOnly: ptr(true), Size: "64Mi", Serial: "0xc100e2e1", Wait: "10s", RequestID: "r1"}, []string{"prog", "--wait"}, ""},
 		{[]string{"request", "--source=pool", "--size", "512Mi", "--mode", "dax", "--exec", "python3", "app.py"},
 			api.Request{Op: "request", Source: "pool", Size: "512Mi", Mode: "dax"}, []string{"python3", "app.py"}, ""},
 		{[]string{"request", "--serial", "0xc1ae0001"}, api.Request{Op: "request", Serial: "0xc1ae0001"}, nil, ""},
 		{[]string{"request", "--serial", "0xc1ae0001", "--shared", "--read-only", "--exec", "prog"},
-			api.Request{Op: "request", Serial: "0xc1ae0001", Share: true, ReadOnly: true}, []string{"prog"}, ""},
+			api.Request{Op: "request", Serial: "0xc1ae0001", Share: true, ReadOnly: ptr(true)}, []string{"prog"}, ""},
 		{[]string{"request", "--shared", "--size", "256Mi"}, api.Request{Op: "request", Share: true, Size: "256Mi"}, nil, ""},
 		{[]string{"request", "--shared=true", "--size", "256Mi"}, api.Request{Op: "request", Share: true, Size: "256Mi"}, nil, ""},
 		{[]string{"request", "--shared", "--source", "local", "--size", "64Mi"}, api.Request{Op: "request", Share: true, Source: "local", Size: "64Mi"}, nil, ""},
-		{[]string{"request", "--serial", "0xc100e2e1", "--shared", "--read-only"}, api.Request{Op: "request", Serial: "0xc100e2e1", Share: true, ReadOnly: true}, nil, ""},
+		{[]string{"request", "--serial", "0xc100e2e1", "--shared", "--read-only"}, api.Request{Op: "request", Serial: "0xc100e2e1", Share: true, ReadOnly: ptr(true)}, nil, ""},
 		{[]string{"request", "--size", "1Gi", "--wait", "0s", "--request-id", "r1"}, api.Request{Op: "request", Size: "1Gi", Wait: "0s", RequestID: "r1"}, nil, ""},
 		{[]string{"release", "--lease", "1a2b3c4d"}, api.Request{Op: "release", Lease: "1a2b3c4d"}, nil, ""},
 		{[]string{"release", "--all", "--wait=1m"}, api.Request{Op: "release", All: true, Wait: "1m"}, nil, ""},
@@ -59,24 +59,24 @@ func TestParseArgs(t *testing.T) {
 		{[]string{"env", "--lease=1a2b3c4d", "--exec", "numactl", "--membind=2", "prog"}, api.Request{Op: "env", Lease: "1a2b3c4d"}, []string{"numactl", "--membind=2", "prog"}, ""},
 		// mode fs
 		{[]string{"request", "--serial", "0xc1ae0001", "--shared", "--read-only", "--mode", "fs", "--access", "cached", "--name", "models", "--exec", "sh", "/tmp/r.sh"},
-			api.Request{Op: "request", Serial: "0xc1ae0001", Share: true, ReadOnly: true, Mode: "fs", Access: "cached", Name: "models"}, []string{"sh", "/tmp/r.sh"}, ""},
+			api.Request{Op: "request", Serial: "0xc1ae0001", Share: true, ReadOnly: ptr(true), Mode: "fs", Access: "cached", Name: "models"}, []string{"sh", "/tmp/r.sh"}, ""},
 		{[]string{"request", "--serial=0xc1ae0001", "--read-only", "--mode=fs", "--access=direct", "--name=m.1"},
-			api.Request{Op: "request", Serial: "0xc1ae0001", ReadOnly: true, Mode: "fs", Access: "direct", Name: "m.1"}, nil, ""},
+			api.Request{Op: "request", Serial: "0xc1ae0001", ReadOnly: ptr(true), Mode: "fs", Access: "direct", Name: "m.1"}, nil, ""},
 		{[]string{"request", "--source", "pool", "--mode", "fs", "--read-only", "--shared", "--size", "64Mi"},
-			api.Request{Op: "request", Source: "pool", Mode: "fs", ReadOnly: true, Share: true, Size: "64Mi"}, nil, ""},
+			api.Request{Op: "request", Source: "pool", Mode: "fs", ReadOnly: ptr(true), Share: true, Size: "64Mi"}, nil, ""},
 		{[]string{"request", "--serial", "0xc1af0001", "--shared", "--mode", "fs"},
 			api.Request{Op: "request", Serial: "0xc1af0001", Share: true, Mode: "fs"}, nil, ""},
-		{[]string{"request", "--serial", "0xc1af0001", "--shared", "--mode", "fs", "--read-write", "--fs-type", "ext4", "--exec", "sh", "/tmp/w.sh"},
-			api.Request{Op: "request", Serial: "0xc1af0001", Share: true, Mode: "fs", ReadWrite: true, FSType: "ext4"}, []string{"sh", "/tmp/w.sh"}, ""},
-		{[]string{"request", "--source=local", "--serial=0xc100f5e1", "--mode=fs", "--read-write=true", "--fs-type=xfs", "--access=cached", "--name=data"},
-			api.Request{Op: "request", Source: "local", Serial: "0xc100f5e1", Mode: "fs", ReadWrite: true, FSType: "xfs", Access: "cached", Name: "data"}, nil, ""},
-		{[]string{"request", "--serial", "0xc1af0001", "--mode", "fs", "--read-write=false", "--fs-type", "btrfs"},
-			api.Request{Op: "request", Serial: "0xc1af0001", Mode: "fs", FSType: "btrfs"}, nil, ""},
+		{[]string{"request", "--serial", "0xc1af0001", "--shared", "--mode", "fs", "--read-only=false", "--fs-type", "ext4", "--exec", "sh", "/tmp/w.sh"},
+			api.Request{Op: "request", Serial: "0xc1af0001", Share: true, Mode: "fs", ReadOnly: ptr(false), FSType: "ext4"}, []string{"sh", "/tmp/w.sh"}, ""},
+		{[]string{"request", "--source=local", "--serial=0xc100f5e1", "--mode=fs", "--read-only=0", "--fs-type=xfs", "--access=cached", "--name=data"},
+			api.Request{Op: "request", Source: "local", Serial: "0xc100f5e1", Mode: "fs", ReadOnly: ptr(false), FSType: "xfs", Access: "cached", Name: "data"}, nil, ""},
+		{[]string{"request", "--serial", "0xc1af0001", "--mode", "fs", "--read-only=true", "--fs-type", "btrfs"},
+			api.Request{Op: "request", Serial: "0xc1af0001", Mode: "fs", ReadOnly: ptr(true), FSType: "btrfs"}, nil, ""},
 		// mode block
 		{[]string{"request", "--serial", "0xc1ae0001", "--mode", "block", "--exec", "sh", "/tmp/w.sh"},
 			api.Request{Op: "request", Serial: "0xc1ae0001", Mode: "block"}, []string{"sh", "/tmp/w.sh"}, ""},
 		{[]string{"request", "--serial=0xc1ae0001", "--shared", "--read-only", "--mode=block", "--source", "pool"},
-			api.Request{Op: "request", Serial: "0xc1ae0001", Share: true, ReadOnly: true, Mode: "block", Source: "pool"}, nil, ""},
+			api.Request{Op: "request", Serial: "0xc1ae0001", Share: true, ReadOnly: ptr(true), Mode: "block", Source: "pool"}, nil, ""},
 		{[]string{"request", "--source", "local", "--serial", "0xc100f5e1", "--mode", "block"},
 			api.Request{Op: "request", Source: "local", Serial: "0xc100f5e1", Mode: "block"}, nil, ""},
 		// validation errors
@@ -111,8 +111,9 @@ func TestParseArgs(t *testing.T) {
 		{[]string{"env", "--lease", "1a2b3c4d", "--access", "direct"}, api.Request{}, nil, "--access is not an option of env"},
 		{[]string{"release", "--all", "--name", "x"}, api.Request{}, nil, "--name is not an option of release"},
 		{[]string{"request", "--mode", "fs", "--size", "1Gi", "--fs-type"}, api.Request{}, nil, "--fs-type needs a value"},
-		{[]string{"request", "--mode", "fs", "--size", "1Gi", "--read-write=rw"}, api.Request{}, nil, `--read-write: invalid value "rw"`},
-		{[]string{"env", "--lease", "1a2b3c4d", "--read-write"}, api.Request{}, nil, "--read-write is not an option of env"},
+		{[]string{"request", "--mode", "fs", "--size", "1Gi", "--read-only=rw"}, api.Request{}, nil, `--read-only: invalid value "rw"`},
+		{[]string{"request", "--mode", "fs", "--size", "1Gi", "--read-write"}, api.Request{}, nil, "unknown option --read-write"},
+		{[]string{"env", "--lease", "1a2b3c4d", "--read-only"}, api.Request{}, nil, "--read-only is not an option of env"},
 		{[]string{"fd", "--lease", "1a2b3c4d", "--fs-type", "ext4", "--exec", "cat"}, api.Request{}, nil, "--fs-type is not an option of fd"},
 	} {
 		cmd, err := parseArgs(c.args)
@@ -126,14 +127,14 @@ func TestParseArgs(t *testing.T) {
 			t.Errorf("%v: %v", c.args, err)
 			continue
 		}
-		if cmd.req != c.req || !reflect.DeepEqual(cmd.exec, c.exec) {
+		if !reflect.DeepEqual(cmd.req, c.req) || !reflect.DeepEqual(cmd.exec, c.exec) {
 			t.Errorf("%v: got %+v %v", c.args, cmd.req, cmd.exec)
 		}
 	}
 }
 
 func TestOptions(t *testing.T) {
-	want := []string{"--source", "--mode", "--shared", "--read-only", "--read-write", "--access", "--fs-type", "--name", "--size", "--serial", "--wait",
+	want := []string{"--source", "--mode", "--shared", "--read-only", "--access", "--fs-type", "--name", "--size", "--serial", "--wait",
 		"--request-id", "--exec"}
 	if got := options[api.OpRequest]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("options of request %v, want %v", got, want)
@@ -144,15 +145,14 @@ func TestOptions(t *testing.T) {
 			t.Errorf("%s is not an option with a value", name)
 		}
 	}
-	for _, name := range []string{"--shared", "--read-only", "--read-write", "--all"} {
+	for _, name := range []string{"--shared", "--read-only", "--all"} {
 		if !cmd.isFlag(name) || cmd.values()[name] != nil {
 			t.Errorf("%s is not a flag", name)
 		}
 	}
-	for _, line := range []string{"[--mode numa|dax|fs|block]", "[--read-write] [--access direct|cached] [--fs-type TYPE] [--name NAME]",
+	for _, line := range []string{"[--mode numa|dax|fs|block]", "[--read-only[=false]] [--access direct|cached] [--fs-type TYPE]",
 		"fs: the mount point /run/cxl/fs/NAME; default the lease id",
-		"--read-only a dax or block fd that allows reads only; fs is read-only\n              without --read-write",
-		"--read-write fs: mount the filesystem read-write (default read-only)",
+		"--read-only a dax or block fd that allows reads only; fs is read-only\n              unless --read-only=false",
 		"--fs-type   fs: the expected filesystem type (default: detected)",
 		"block (an fd of the block device of a persistent device);",
 		"--exec      run CMD with the lease's environment and a dax or block lease's fd 3"} {
@@ -180,8 +180,7 @@ func TestRunRefusesFs(t *testing.T) {
 		{[]string{"request", "--mode", "fs", "--read-only", "--name", "..", "--size", "64Mi"}, `invalid name ".."`},
 		{[]string{"request", "--serial", "0xc1ae0001", "--mode", "dax", "--fs-type", "ext4"}, "fsType needs mode fs"},
 		{[]string{"request", "--serial", "0xc1ae0001", "--mode", "fs", "--fs-type", "Ext4"}, `invalid fsType "Ext4" (lower-case letters, digits, "_" and "-")`},
-		{[]string{"request", "--serial", "0xc1ae0001", "--mode", "block", "--read-write"}, "readWrite needs mode fs"},
-		{[]string{"request", "--serial", "0xc1ae0001", "--mode", "fs", "--read-only", "--read-write"}, "readOnly and readWrite exclude each other"},
+		{[]string{"request", "--serial", "0xc1ae0001", "--shared", "--mode", "block", "--read-only=false"}, "mode block with shared needs readOnly"},
 		{[]string{"request", "--size", "64Mi", "--read-only", "--mode", "numa"}, "readOnly needs mode dax, fs or block"},
 	} {
 		var out, errb bytes.Buffer
@@ -205,7 +204,7 @@ func TestRunExecFs(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("exit %d (stderr %s)", code, errb.String())
 	}
-	if r := <-reqs; r != (api.Request{Op: "request", Serial: "0xc1ae0001", Share: true, ReadOnly: true, Mode: "fs", Access: "cached", Name: "models"}) {
+	if r := <-reqs; !reflect.DeepEqual(r, api.Request{Op: "request", Serial: "0xc1ae0001", Share: true, ReadOnly: ptr(true), Mode: "fs", Access: "cached", Name: "models"}) {
 		t.Fatalf("request %+v", r)
 	}
 	if want := "/run/cxl/fs/models cached fs 1 000000b1 nofd\nnofd3\n"; out.String() != want {
@@ -251,7 +250,7 @@ func TestRunExecBlock(t *testing.T) {
 	if code != 5 {
 		t.Fatalf("exit %d (stderr %s)", code, errb.String())
 	}
-	if r := <-reqs; r != (api.Request{Op: "request", Serial: "0xc1ae0001", Mode: "block"}) {
+	if r := <-reqs; !reflect.DeepEqual(r, api.Request{Op: "request", Serial: "0xc1ae0001", Mode: "block"}) {
 		t.Fatalf("request %+v", r)
 	}
 	want := "3 000000c1 nopath block 534773760 0\nBLK-5678"
@@ -264,7 +263,7 @@ func TestRunExecBlock(t *testing.T) {
 	if code := run([]string{"fd", "--lease", "000000c1", "--exec", "/bin/sh", "-c", script}, &out, &errb); code != 5 || out.String() != want {
 		t.Fatalf("fd: exit %d output %q", code, out.String())
 	}
-	if r := <-reqs; r != (api.Request{Op: "fd", Lease: "000000c1"}) {
+	if r := <-reqs; !reflect.DeepEqual(r, api.Request{Op: "fd", Lease: "000000c1"}) {
 		t.Fatalf("request %+v", r)
 	}
 
@@ -371,7 +370,7 @@ func TestRunPrintsResponse(t *testing.T) {
 	if strings.TrimSpace(out.String()) != resp {
 		t.Fatalf("output %q", out.String())
 	}
-	if r := <-reqs; r != (api.Request{Op: "request", Size: "256Mi", Wait: "30s"}) {
+	if r := <-reqs; !reflect.DeepEqual(r, api.Request{Op: "request", Size: "256Mi", Wait: "30s"}) {
 		t.Fatalf("request %+v", r)
 	}
 
@@ -404,7 +403,7 @@ func TestRunEnv(t *testing.T) {
 	if out.String() != want {
 		t.Fatalf("env output\n%s\nwant\n%s", out.String(), want)
 	}
-	if r := <-reqs; r != (api.Request{Op: "env", Lease: "1a2b3c4d"}) {
+	if r := <-reqs; !reflect.DeepEqual(r, api.Request{Op: "env", Lease: "1a2b3c4d"}) {
 		t.Fatalf("request %+v", r)
 	}
 }
@@ -434,7 +433,7 @@ func TestRunExecDax(t *testing.T) {
 	if code != 7 {
 		t.Fatalf("exit %d (stderr %s)", code, errb.String())
 	}
-	if r := <-reqs; r != (api.Request{Op: "request", Serial: "0xc1ae0001", Share: true, ReadOnly: true}) {
+	if r := <-reqs; !reflect.DeepEqual(r, api.Request{Op: "request", Serial: "0xc1ae0001", Share: true, ReadOnly: ptr(true)}) {
 		t.Fatalf("request %+v", r)
 	}
 	want := "3 000000a2 none 268435456 1 1\nTAG-1234"
@@ -447,7 +446,7 @@ func TestRunExecDax(t *testing.T) {
 	if code := run([]string{"fd", "--lease", "000000a2", "--exec", "/bin/sh", "-c", script}, &out, &errb); code != 7 || out.String() != want {
 		t.Fatalf("fd: exit %d output %q", code, out.String())
 	}
-	if r := <-reqs; r != (api.Request{Op: "fd", Lease: "000000a2"}) {
+	if r := <-reqs; !reflect.DeepEqual(r, api.Request{Op: "fd", Lease: "000000a2"}) {
 		t.Fatalf("request %+v", r)
 	}
 
@@ -555,4 +554,9 @@ func TestRunExecForwardsSignals(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the signal was not forwarded")
 	}
+}
+
+// ptr returns a pointer to v.
+func ptr[T any](v T) *T {
+	return &v
 }

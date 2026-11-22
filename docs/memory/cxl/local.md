@@ -678,7 +678,7 @@ A writable `block` claim with a `shares` request fails its Prepare with
 [local-persistent-fs.yaml](blob:/deployment/samples/dra-driver-cxl/local-persistent-fs.yaml)
 has a writer and a reader. A running container leases the device with
 `cxl-request request --source local --serial 0xc100f5e1 --mode fs`
-(`--read-write` to write, `--mode block` for its block device), see
+(`--read-only=false` to write, `--mode block` for its block device), see
 [leases.md](leases.md#cxl-request).
 
 ### What Prepare does for a persistent memdev

@@ -165,12 +165,6 @@ func numaNodeOf(l *state.Lease) int {
 	return state.NUMANodeOf(l.Lend.NUMANode)
 }
 
-// readOnly tells whether a lease allows reads only: an fs lease unless it
-// is read-write.
-func readOnly(l *state.Lease) bool {
-	return l.Asked.ReadOnly || (l.Asked.Mode == state.ModeFS && !l.Asked.ReadWrite)
-}
-
 // memory returns what a Ready lease gives its container, false before.
 // The path of a block lease is the host path of its block device.
 func memory(l *state.Lease) (api.Memory, bool) {
@@ -197,7 +191,7 @@ func memory(l *state.Lease) (api.Memory, bool) {
 		Dax:      g.Dax,
 		Path:     path,
 		Access:   string(accessOf(l)),
-		ReadOnly: readOnly(l),
+		ReadOnly: l.Asked.ReadOnly,
 	}
 	if l.Asked.Mode == state.ModeFS {
 		m.FSType = fsTypeOf(l)
@@ -209,7 +203,7 @@ func memory(l *state.Lease) (api.Memory, bool) {
 func leaseInfo(l *state.Lease) *api.Response {
 	g := got(l)
 	r := &api.Response{Lease: l.ID, State: stateName(l.State), Source: string(sourceOf(l)), Mode: string(l.Asked.Mode),
-		Share: l.Asked.Share, ReadOnly: readOnly(l), Access: string(accessOf(l)), FSType: fsTypeOf(l), Path: g.Path,
+		Share: l.Asked.Share, ReadOnly: l.Asked.ReadOnly, Access: string(accessOf(l)), FSType: fsTypeOf(l), Path: g.Path,
 		Serial: serialOf(l), Dax: g.Dax, Block: g.Block, Error: l.Error, Size: g.Size}
 	if n := numaNodeOf(l); n >= 0 {
 		r.NUMANode = &n

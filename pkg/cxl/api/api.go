@@ -105,12 +105,13 @@ const maxRequestID = 64
 
 // Request is one request line on a lease socket. Only Op is required.
 type Request struct {
-	Op        string `json:"op"`
-	Source    string `json:"source,omitempty"`
-	Mode      string `json:"mode,omitempty"`
-	Share     bool   `json:"shared,omitempty"`
-	ReadOnly  bool   `json:"readOnly,omitempty"`
-	ReadWrite bool   `json:"readWrite,omitempty"`
+	Op     string `json:"op"`
+	Source string `json:"source,omitempty"`
+	Mode   string `json:"mode,omitempty"`
+	Share  bool   `json:"shared,omitempty"`
+	// ReadOnly absent is the mode's default: read-only for fs, read-write
+	// for dax and block (EffectiveReadOnly).
+	ReadOnly  *bool  `json:"readOnly,omitempty"`
 	Access    string `json:"access,omitempty"`
 	FSType    string `json:"fsType,omitempty"`
 	Name      string `json:"name,omitempty"`
@@ -160,6 +161,15 @@ func (r *Request) EffectiveMode() string {
 	return ModeNUMA
 }
 
+// EffectiveReadOnly returns whether a request asks for memory that allows
+// reads only: ReadOnly, or by default an fs lease.
+func (r *Request) EffectiveReadOnly() bool {
+	if r.ReadOnly != nil {
+		return *r.ReadOnly
+	}
+	return r.EffectiveMode() == ModeFS
+}
+
 // Validate returns an error if the fields of the request do not fit
 // together or have invalid values.
 func (r *Request) Validate() error {
@@ -202,7 +212,7 @@ func (r *Request) validateRequest() error {
 	if err := r.validateValues(); err != nil {
 		return err
 	}
-	mode := r.EffectiveMode()
+	mode, readOnly := r.EffectiveMode(), r.EffectiveReadOnly()
 	switch {
 	case r.Share && r.Mode == ModeNUMA:
 		return errors.New("shared memory is never onlined as RAM: use mode dax")
@@ -216,13 +226,9 @@ func (r *Request) validateRequest() error {
 		return errors.New("fsType needs mode fs")
 	case r.FSType != "" && !ValidFSType(r.FSType):
 		return fmt.Errorf(`invalid fsType %q (lower-case letters, digits, "_" and "-")`, r.FSType)
-	case r.ReadWrite && mode != ModeFS:
-		return errors.New("readWrite needs mode fs")
-	case r.ReadOnly && r.ReadWrite:
-		return errors.New("readOnly and readWrite exclude each other")
-	case mode == ModeBlock && r.Share && !r.ReadOnly:
+	case mode == ModeBlock && r.Share && !readOnly:
 		return errors.New("mode block with shared needs readOnly")
-	case r.ReadOnly && mode != ModeDax && mode != ModeFS && mode != ModeBlock:
+	case readOnly && mode != ModeDax && mode != ModeFS && mode != ModeBlock:
 		return errors.New("readOnly needs mode dax, fs or block")
 	case !r.Share && r.Serial == "" && r.Size == "":
 		return errors.New("size or serial is required")

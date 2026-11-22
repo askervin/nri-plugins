@@ -389,7 +389,7 @@ R3 "the writer makes an empty ext4 filesystem on it"
    container has no device node) and checks the superblock on the device.
 R4 "the writer mounts it read-write instead"
    $ kubectl exec writer -- sh -c 'cxl-request release --all && cxl-request
-     request --serial S --shared --mode fs --read-write --name data'
+     request --serial S --shared --mode fs --read-only=false --name data'
    T1 "lease L Ready ext4 rw (direct)", "path /run/cxl/fs/data", "attached
    to vm1 only (ReadWriteOnce)". T2 writer "fs rw (vm1 only)". T3 "writer
    on vm1 only: writer rw". T4 vm1 "node mount ext4 rw (dax)", "mounted:

@@ -114,7 +114,7 @@ def poolfs_steps(S, fstype):
              "kubectl exec writer -- /demo/mkfs --type %s" % fstype, check_last_line),
         Step("the writer mounts it read-write instead",
              "kubectl exec writer -- sh -c 'cxl-request release --all && cxl-request request --serial %s --shared --mode fs "
-             "--read-write --name data'" % S, check_fs_writer),
+             "--read-only=false --name data'" % S, check_fs_writer),
         Step("the writer writes hello.txt",
              'kubectl exec writer -- /demo/fswrite "Hello from the writer, $(date +%T)"', check_last_line),
         Step("three readers start: two on vm2, one on vm1",

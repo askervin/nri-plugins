@@ -123,7 +123,7 @@ ACCEPTED = [
     ("--kind lease --source pool --mode dax --serial $POOLED0_SERIAL",
      {"args": ["request", "--source", "pool", "--mode", "dax", "--serial", "0xc1ee0001"]}),
     ("--kind lease --source pool --memory persistent --sharing shared --read-write --serial $FS0_SERIAL --name rw1",
-     {"args": ["request", "--source", "pool", "--mode", "fs", "--shared", "--read-write", "--name", "rw1", "--serial", "0xc1ae0002"]}),
+     {"args": ["request", "--source", "pool", "--mode", "fs", "--shared", "--read-only=false", "--name", "rw1", "--serial", "0xc1ae0002"]}),
     ("--kind lease --source local --memory persistent --mode block --serial $LP_SERIAL --command mkfs ext4",
      {"args": ["request", "--source", "local", "--mode", "block", "--serial", "0xc100f5e1"]}),
     ("--kind lease --source any --memory persistent --sharing shared --name any1",

@@ -87,12 +87,10 @@ type LeaseAsked struct {
 	Share bool `json:"shared,omitempty"`
 	// Shared: the ResourceSlice has the device as a shared one.
 	Shared bool `json:"sharedDevice,omitempty"`
-	// ReadOnly of dax and block: the fd is read-only.
-	ReadOnly bool `json:"readOnly,omitempty"`
-	// ReadWrite of fs: the opt-in to mount read-write.
-	ReadWrite bool   `json:"readWrite,omitempty"`
-	Access    Access `json:"access,omitempty"`
-	FSType    string `json:"fsType,omitempty"`
+	// ReadOnly: the fd of dax and block is read-only, the mount of fs.
+	ReadOnly bool   `json:"readOnly,omitempty"`
+	Access   Access `json:"access,omitempty"`
+	FSType   string `json:"fsType,omitempty"`
 	// Name is the mount point of an fs lease, unique per lease claim.
 	Name string `json:"name,omitempty"`
 	// Size is the requested quantity.
