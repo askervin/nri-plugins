@@ -355,12 +355,12 @@ func TestValidFSType(t *testing.T) {
 	invalid := []string{"", "Ext4", "_x", "-x", "fuse.sshfs", "a b", "a/b", strings.Repeat("a", 33)}
 	for _, name := range valid {
 		if !ValidFSType(name) {
-			t.Errorf("ValidFsType(%q) = false", name)
+			t.Errorf("ValidFSType(%q) = false", name)
 		}
 	}
 	for _, name := range invalid {
 		if ValidFSType(name) {
-			t.Errorf("ValidFsType(%q) = true", name)
+			t.Errorf("ValidFSType(%q) = true", name)
 		}
 	}
 }

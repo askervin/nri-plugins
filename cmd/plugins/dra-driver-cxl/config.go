@@ -69,7 +69,7 @@ type DriverConfig struct {
 	MemdevSettings []memdevSetting `json:"memdevSettings,omitempty"`
 
 	// FSTypes are the filesystem types that mode fs mounts on the node,
-	// for the local and the pool driver; nil is defaultFsTypes (erofs
+	// for the local and the pool driver; nil is defaultFSTypes (erofs
 	// only), an empty list mounts none. The node kernel parses what the
 	// writer of a device wrote: a type other than erofs trusts every party
 	// that can write the devices raw. A type that the plugin does not know

@@ -34,7 +34,7 @@ import (
 
 // NUMANodes has the NUMA nodes of the grants of mode numa of the prepared
 // claims of the drivers asked for, sorted, without those of dax slices.
-func TestNumaNodes(t *testing.T) {
+func TestNUMANodes(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{localSpec()}, fake.MemdevSpec{Serial: serialPoolX, HostBridge: 24})
 	e.mustPrepare(e.pool, poolClaim("p1", "pooled0", poolExclusiveData))
 	e.mustPrepare(e.local, localClaim("l1", localDev, envBlockSize))
@@ -66,7 +66,7 @@ func TestNumaNodes(t *testing.T) {
 // The NUMA node of a companion claim whose Prepare a stop cut after its
 // memory came online, before its grant had the node: the node of its
 // region, from the start; the claim has no results for the NRI plugin.
-func TestNumaNodesUnfinished(t *testing.T) {
+func TestNUMANodesCut(t *testing.T) {
 	e := lendEnv(t)
 	e.lending()
 	e.k.CutAfter("write devices/system/memory/memory")

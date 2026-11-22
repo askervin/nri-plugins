@@ -390,7 +390,7 @@ func (e *Engine) prepareFs(ctx context.Context, req *GrantRequest, u pmemGrant, 
 	if err != nil {
 		return u, err
 	}
-	access, err := e.checkFsType(req, typ, sig)
+	access, err := e.checkFSType(req, typ, sig)
 	if err != nil {
 		return u, err
 	}
@@ -464,13 +464,13 @@ func (e *Engine) fsTypeOf(req *GrantRequest, dev string, sig *signature) (string
 	return fsType(*sg, sig.serial, dev, req.Asked.FSType)
 }
 
-// checkFsType returns the access of a grant of the filesystem type (the
+// checkFSType returns the access of a grant of the filesystem type (the
 // asked one, else direct for a DAX type, cached for the others), or an
 // error if the node does not allow the type, the type mounts no block
 // device, a read-only type is asked read-write, a type without DAX is asked
 // direct, or a writer on several hosts has no cluster filesystem on
 // coherent memory.
-func (e *Engine) checkFsType(req *GrantRequest, typ string, sig *signature) (string, error) {
+func (e *Engine) checkFSType(req *GrantRequest, typ string, sig *signature) (string, error) {
 	fail := func(format string, args ...any) (string, error) {
 		return "", fmt.Errorf("memdev "+sig.serial+": "+format, args...)
 	}

@@ -159,7 +159,7 @@ func deviceConfigOf(t *testing.T, c *resourcev1.ResourceClaim, driver string) *c
 }
 
 // A pool numa lease: the node lent at the Prepare, the response, the
-// requestId, list, env and fd; a started container gets the node again; the
+// requestID, list, env and fd; a started container gets the node again; the
 // release revokes it, deletes the companion, whose Unprepare releases the
 // region.
 func TestPoolNumaLease(t *testing.T) {
@@ -197,7 +197,7 @@ func TestPoolNumaLease(t *testing.T) {
 
 	again, _ := e.call(api.Request{Op: api.OpRequest, Source: "pool", Size: "256Mi", RequestID: "r1"})
 	if again.Lease != "000000a1" || again.State != api.StateReady {
-		t.Fatalf("retry with requestId: %+v", again)
+		t.Fatalf("retry with requestID: %+v", again)
 	}
 	list, _ := e.call(api.Request{Op: api.OpList})
 	if list.Leases == nil || len(*list.Leases) != 1 || (*list.Leases)[0].Lease != "000000a1" || (*list.Leases)[0].Env["CXL_C1EE0001_NUMA_NODE"] != "2" {

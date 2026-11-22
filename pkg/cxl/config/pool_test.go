@@ -21,7 +21,7 @@ import (
 // refSettings is the object of the reference pool controller.
 type refSettings struct {
 	Slot     string `json:"slot,omitempty"`
-	NumaNode *int   `json:"numaNode,omitempty"`
+	NUMANode *int   `json:"numaNode,omitempty"`
 }
 
 func TestPoolOpaque(t *testing.T) {
@@ -92,8 +92,8 @@ func TestPoolOpaque(t *testing.T) {
 				return
 			}
 			node := -1
-			if out.NumaNode != nil {
-				node = *out.NumaNode
+			if out.NUMANode != nil {
+				node = *out.NUMANode
 			}
 			if out.Slot != tc.slot || node != tc.node {
 				t.Errorf("got %q %d, expected %q %d", out.Slot, node, tc.slot, tc.node)

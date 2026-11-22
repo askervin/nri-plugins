@@ -331,9 +331,9 @@ func TestLeaseWaitDefault(t *testing.T) {
 	}
 }
 
-// The requestId of a container's request returns the lease of an earlier
+// The requestID of a container's request returns the lease of an earlier
 // request with it, Pending or Ready, also after a restart; another
-// container of the pod with the same requestId gets a lease of its own.
+// container of the pod with the same requestID gets a lease of its own.
 func TestLeaseRequestID(t *testing.T) {
 	e := brokerEnv(t)
 	e.openClaim()

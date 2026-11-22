@@ -145,7 +145,7 @@ func TestDriverConfigDefaults(t *testing.T) {
 
 // fsTypes defaults to erofs, is returned as a copy, and its invalid or
 // misspelt settings are refused.
-func TestDriverConfigFsTypes(t *testing.T) {
+func TestDriverConfigFSTypes(t *testing.T) {
 	cfg, err := newDriverConfigFromString("")
 	noErr(t, err)
 	if got := cfg.fsTypes(); !slices.Equal(got, []string{"erofs"}) {
