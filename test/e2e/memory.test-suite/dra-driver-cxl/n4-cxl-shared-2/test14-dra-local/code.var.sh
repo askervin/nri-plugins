@@ -326,7 +326,7 @@ PAST_MIB=$(( BS * 3 / 2 / MiB ))       # steer-cxl past its claim of a block
 pool-cxl-dump "$VM2" local-attached
 cxl-assert "by_serial($DRA_LOCAL_SERIAL) is not None and enabled(by_serial($DRA_LOCAL_SERIAL)) and by_serial($DRA_LOCAL_SERIAL)['ramSize'] == $DRA_LOCAL_SIZE"
 cxl-assert "regions == []"
-AFFINITY=$(cxl-value "by_serial($DRA_LOCAL_SERIAL)['nodeAffinity']")
+AFFINITY=$(cxl-value "by_serial($DRA_LOCAL_SERIAL)['numaAffinity']")
 dra-kubectl "$VM2" "get resourceslices"
 dra-json "$VM2" resourceslices
 SLICES="$COMMAND_OUTPUT"

@@ -98,7 +98,7 @@ type MemdevInfo struct {
 	PmemSize uint64 `json:"pmemSize,omitempty"`
 	// NUMAAffinity is the NUMA node of the CPUs near the memdev, -1 if not
 	// known.
-	NUMAAffinity int `json:"nodeAffinity"`
+	NUMAAffinity int `json:"numaAffinity"`
 	// Major and Minor are the numbers of its character device.
 	Major int `json:"major,omitempty"`
 	Minor int `json:"minor,omitempty"`

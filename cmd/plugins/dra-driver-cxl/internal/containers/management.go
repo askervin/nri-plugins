@@ -151,7 +151,7 @@ func (p *Plugin) result(ctrName string, ref resultRef) (result, bool) {
 		}
 		klog.V(5).Infof("NRI CreateContainer: ctr=%s claim=%s (%s) result %d: name=%s type=%s mode=%s sysfs=%s numa=%v affinities=%v total=%s consumed=%s request=%s",
 			ctrName, ref.uid, claim, ref.n,
-			d.DeviceName, d.DeviceType, d.Mode, d.SysfsPath, d.NUMANodes, d.NodeAffinities,
+			d.DeviceName, d.DeviceType, d.Mode, d.SysfsPath, d.NUMANodes, d.NUMAAffinities,
 			formatBytes(d.TotalBytes), formatBytes(uint64(d.ConsumedBytes)), d.RequestName)
 		return result{deviceType: d.DeviceType, mode: d.Mode, numaNodes: nonNegative(d.NUMANodes), bytes: d.ConsumedBytes,
 			settings: d.ResultSettings}, true

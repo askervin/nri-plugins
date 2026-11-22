@@ -142,7 +142,7 @@ func TestClaimReaders(t *testing.T) {
 	name, d, ok := e.pool.PreparedResult("p1", 0)
 	if !ok || name != "demo/claim-p1" || d.Result != 0 || d.RequestName != "mem" || d.DeviceName != "pooled0" || d.Serial != serialPoolX ||
 		d.DeviceType != device.DeviceTypeMemdev || d.Mode != api.ModeNUMA || !slices.Equal(d.NUMANodes, []int{2}) || d.ConsumedBytes != 256<<20 ||
-		d.SysfsPath != e.k.P("bus/cxl/devices/region0") || d.NodeAffinities != nil {
+		d.SysfsPath != e.k.P("bus/cxl/devices/region0") || d.NUMAAffinities != nil {
 		t.Fatalf("pool result %q %+v %v", name, d, ok)
 	}
 	name, d, ok = e.local.PreparedResult("l1", 0)
@@ -257,12 +257,12 @@ func TestDeviceInfo(t *testing.T) {
 	region, shared, dram := mixed.Devices[0], mixed.Devices[1], mixed.Devices[2]
 	if region.DeviceType != device.DeviceTypeRegion || region.Mode != api.ModeNUMA || region.Region != "region5" ||
 		region.SysfsPath != "/host/sys/bus/cxl/devices/region5" || !slices.Equal(region.NUMANodes, []int{5}) ||
-		!slices.Equal(region.NodeAffinities, []int{1}) || region.TotalBytes != 2<<30 || region.ConsumedBytes != 1<<30 {
+		!slices.Equal(region.NUMAAffinities, []int{1}) || region.TotalBytes != 2<<30 || region.ConsumedBytes != 1<<30 {
 		t.Errorf("region %+v", region)
 	}
 	if shared.Result != 1 || shared.DeviceType != device.DeviceTypeMemdev || shared.Mode != api.ModeDax || shared.Serial != 0xc100e2e2 ||
 		shared.DaxDevice != "/host/dev/dax1.0" || shared.DaxMajor != 252 || shared.DaxMinor != 4 || !shared.ReadOnly || !shared.Shared ||
-		!slices.Equal(shared.NodeAffinities, []int{0}) || shared.SysfsPath != "/host/sys/bus/cxl/devices/region1" {
+		!slices.Equal(shared.NUMAAffinities, []int{0}) || shared.SysfsPath != "/host/sys/bus/cxl/devices/region1" {
 		t.Errorf("shared slice %+v", shared)
 	}
 	if dram.DeviceType != device.DeviceTypeDRAM || !slices.Equal(dram.NUMANodes, []int{0, 1}) || dram.TotalBytes != 64<<30 {
@@ -276,7 +276,7 @@ func TestDeviceInfo(t *testing.T) {
 		t.Errorf("persistent fs device %+v", d)
 	}
 	if d := info(statetest.PoolDriver, statetest.ClaimPoolNUMA).Devices[0]; d.DeviceType != device.DeviceTypeMemdev || d.Serial != 0xc1ae2003 ||
-		!slices.Equal(d.NUMANodes, []int{4}) || d.NodeAffinities != nil || d.SysfsPath != "/host/sys/bus/cxl/devices/region4" {
+		!slices.Equal(d.NUMANodes, []int{4}) || d.NUMAAffinities != nil || d.SysfsPath != "/host/sys/bus/cxl/devices/region4" {
 		t.Errorf("pool device %+v", d)
 	}
 	companion := info(statetest.LocalDriver, statetest.ClaimCompanion)

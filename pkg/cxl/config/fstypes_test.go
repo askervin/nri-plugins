@@ -26,13 +26,13 @@ func TestFSTypeTable(t *testing.T) {
 		t.Fatalf("%d types in the table, %d known", len(fsTypes), len(api.KnownFSTypes))
 	}
 	for _, tc := range []struct {
-		name       string
-		known      bool
-		class      string
-		readOnly   bool
-		dax        bool
-		cluster    bool
-		upgradable bool
+		name        string
+		known       bool
+		class       string
+		readOnly    bool
+		dax         bool
+		cluster     bool
+		remountable bool
 	}{
 		{"erofs", true, fsClassReadOnly, true, true, false, false},
 		{"squashfs", true, fsClassReadOnly, true, false, false, false},
@@ -46,12 +46,12 @@ func TestFSTypeTable(t *testing.T) {
 		{"", false, fsClassSingleHost, false, false, false, false},
 	} {
 		_, inTable := fsTypes[tc.name]
-		known, class, readOnly, dax, cluster, upgradable := api.KnownFSType(tc.name), fsTypeClass(tc.name), FSTypeReadOnly(tc.name),
+		known, class, readOnly, dax, cluster, remountable := api.KnownFSType(tc.name), fsTypeClass(tc.name), FSTypeReadOnly(tc.name),
 			FSTypeDax(tc.name), FSTypeCluster(tc.name), FSTypeRemountable(tc.name)
 		if known != tc.known || inTable != tc.known || class != tc.class || readOnly != tc.readOnly || dax != tc.dax ||
-			cluster != tc.cluster || upgradable != tc.upgradable {
-			t.Errorf("%q: known %v (table %v) class %s read-only %v DAX %v cluster %v upgradable %v, expected %v %s %v %v %v %v",
-				tc.name, known, inTable, class, readOnly, dax, cluster, upgradable, tc.known, tc.class, tc.readOnly, tc.dax, tc.cluster, tc.upgradable)
+			cluster != tc.cluster || remountable != tc.remountable {
+			t.Errorf("%q: known %v (table %v) class %s read-only %v DAX %v cluster %v remountable %v, expected %v %s %v %v %v %v",
+				tc.name, known, inTable, class, readOnly, dax, cluster, remountable, tc.known, tc.class, tc.readOnly, tc.dax, tc.cluster, tc.remountable)
 		}
 	}
 }

@@ -106,7 +106,7 @@ func deviceInfo(doc *store.Document, r *state.Result, rs roots) state.DeviceInfo
 		d.Region = r.Region.Name
 		d.SysfsPath = regionPath(rs, r.Region.Name)
 		d.NUMANodes = []int{r.Region.NUMANode}
-		d.NodeAffinities = slices.Clone(r.Region.NUMAAffinity)
+		d.NUMAAffinities = slices.Clone(r.Region.NUMAAffinity)
 		d.TotalBytes, d.ConsumedBytes = r.Region.Size, r.Region.Consumed
 	case state.ResultDRAM:
 		d.DeviceType, d.Mode = device.DeviceTypeDRAM, api.ModeNUMA
@@ -130,7 +130,7 @@ func grantInfo(doc *store.Document, g *state.Grant, d *state.DeviceInfo, rs root
 	d.Serial = g.Serial
 	d.SysfsPath = regionPath(rs, string(g.Got.Region))
 	d.TotalBytes, d.ConsumedBytes = g.Got.Size, int64(g.Got.Size)
-	d.NodeAffinities = numaAffinity(doc, g)
+	d.NUMAAffinities = numaAffinity(doc, g)
 	d.Shared = sharedGrant(g)
 	switch g.Asked.Mode {
 	case state.ModeNUMA:

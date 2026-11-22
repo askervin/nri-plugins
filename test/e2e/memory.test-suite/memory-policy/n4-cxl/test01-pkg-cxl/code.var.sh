@@ -133,7 +133,7 @@ cxl-assert "memdevs[0][\"ramSize\"] == $MEM_SIZE"
 cxl-assert 'memdevs[0]["pmemSize"] == 0'
 cxl-assert 'memdevs[0]["major"] > 0'
 # The memory device is behind the host bridge of NUMA node 0.
-cxl-assert 'memdevs[0]["nodeAffinity"] == 0'
+cxl-assert 'memdevs[0]["numaAffinity"] == 0'
 # Its decoder path from the CXL root: the port of the host bridge, the port
 # of the switch, its endpoint port. No region has a decoder of it yet.
 cxl-assert 'len(memdevs[0]["ports"]) == 3 and memdevs[0]["ports"][-1] == memdevs[0]["endpoint"]'
@@ -205,7 +205,7 @@ vm-command "cxl disable-region region0 && cxl destroy-region region0" ||
 cxl-hotplug cxl_memdev1
 cxl-assert 'len(memdevs) == 2 and regions == []'
 cxl-assert 'names(memdevs) == ["mem0", "mem1"]'
-cxl-assert 'all(m["nodeAffinity"] == 0 for m in memdevs)'
+cxl-assert 'all(m["numaAffinity"] == 0 for m in memdevs)'
 vm-command "cxl create-region -t ram -d decoder0.0 -m mem0 mem1" ||
     command-error "cannot create an interleaved region of mem0 and mem1"
 cxl-wait interleaved-region 'len(regions) == 1 and enabled(regions[0]) and [x["driver"] for x in daxdevs] == ["kmem"] and blocks and all(b["state"] == "OFFLINE" for b in blocks)'
@@ -222,7 +222,7 @@ echo "### second region on the other host bridge"
 cxl-hotplug cxl_memdev2
 cxl-assert 'memdevs[-1]["serial"] == 0xc100e2e2'
 # cxl_memdev2 is behind the host bridge of NUMA node 1, unlike mem0 and mem1.
-cxl-assert 'by_serial(0xc100e2e2)["nodeAffinity"] == 1'
+cxl-assert 'by_serial(0xc100e2e2)["numaAffinity"] == 1'
 vm-command "cxl create-region -t ram -d decoder0.1 -m mem2" ||
     command-error "cannot create a region of mem2"
 cxl-wait two-regions 'len(regions) == 2 and all(enabled(r) for r in regions) and len(daxdevs) == 2 and all(x["driver"] == "kmem" for x in daxdevs) and all(b["state"] != "ABSENT" for b in blocks)'

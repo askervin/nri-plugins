@@ -468,7 +468,7 @@ var MountTable = Table[MountState]{
 		{
 			From: fsm.List(MountedRO), To: MountedRW, Triggers: fsm.List(TriggerPrepare),
 			When:    "a writer grant arrives on a mounted access",
-			Guard:   "type upgradable (ext4, xfs); no unexplained superblock; no other access mounted",
+			Guard:   "a type that can be remounted read-write (ext4, xfs); no unexplained superblock; no other access mounted",
 			Effects: "block device, loop device and superblock read-write; commit (d)",
 		},
 		{
