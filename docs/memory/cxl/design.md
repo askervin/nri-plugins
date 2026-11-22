@@ -610,6 +610,99 @@ once, with that command, about each one that is not the driver's.
 "add_dev() failed"; the pool driver tries a region creation once more
 after 3 s.
 
+### The life of a lease
+
+The lease is committed before any companion object is created, and the
+driver that prepares the companion claim records the lend with the
+claim's grant, so that an Unprepare revokes it also after a restart or
+after the lease record is gone. A start without a readable state (LOST)
+has an empty lease table; it deletes no companion and keeps the CDI
+specs.
+
+The Prepare of a lease claim creates
+`/var/lib/kubelet/plugins/cxl.nri.io/leases/<claim uid>/cxl.sock` (mode
+0666; the directory 0755, labelled `container_file_t` when SELinux is
+enabled), the empty mount point `fs` in that directory, and
+`lease-fs/<claim uid>` (0755, labelled the same way). Its CDI device
+`cxl.nri.io/device=lease-<claim uid>` binds the socket directory at
+`/run/cxl` (rbind, ro), the `lease-fs` directory at `/run/cxl/fs`
+(rbind, ro, rslave) and the CLI at `/usr/local/bin/cxl-request` (ro; left
+out with a warning when `--lease-cli` does not exist). The directory,
+not the socket, is mounted, so that a restarted driver can create a new
+socket that the running containers see. `/run/cxl/fs` is a slave of the
+host's mount: a mount that the driver makes in `lease-fs/<claim uid>`
+later appears in every running container of the claim, and its unmount
+takes it away there. The directory is separate from the socket directory
+and read-only in the containers, so a container cannot replace a mount
+point by a symlink and make the privileged driver mount over a host
+path.
+
+The bind of an `fs` lease is the lend, made when the companion claim is
+prepared. A read-only lease of a writable type gets a read-only clone of
+the node mount (`open_tree` and `mount_setattr` with `ro`, `nosuid`,
+`nodev`), which stays read-only when a writer of the node makes the
+superblock read-write; a read-only lease of erofs or squashfs, and a
+read-write lease, get a plain bind with the flags of the node mount.
+After the bind its mountinfo must show the type and source of the node
+mount and the flags of the lease, else the driver unmounts it and the
+Prepare fails (`the bind of <node mount> at <target> is not a read-only
+nosuid nodev <t> mount`). Its unmount when the companion claim is
+unprepared is the revoke, and is never lazy: it fails while files of it
+are open or mapped. The node mount is unmounted, and the region
+released, only after the bind is gone and when no claim of the node uses
+them. A `block` lease binds and lends nothing: the driver opens the block
+device for each response that carries the fd and closes its copy. A
+plain open fd is no holder that the driver sees (it checks mounts, loop
+devices and exclusive opens), so the release does not wait for it; no
+DAX mapping is involved, so this cannot crash the node.
+
+The Unprepare of a lease claim starts the release of all leases of the
+pod, waits up to 5 s until their NUMA nodes are revoked and the deletion
+of their companions is requested, and does not wait for the companions
+to be gone: kubelet unprepares the companion claim of a local lease
+through the same driver, one call at a time. A lease stays Releasing
+until its companion pod and claim are gone, also across a restart; the
+broker checks them at growing intervals, at most 60 s apart. A
+restarted requester container is created with the NUMA nodes of its
+`numa` leases in its `cpuset.mems` (in the CreateContainer adjustment
+when it is fenced: containerd applies an update before the start to the
+spec only), and they are checked against its cgroup once it has started.
+
+The reconcile runs at start, after NRI has synchronized, and every 60 s.
+It restarts interrupted releases; releases the leases left in Creating,
+those whose companion pod is gone or finished and those whose requester
+will not come back; applies the `numa` lends of Ready leases again (so a
+restart restores them, and a lend that a cgroup lacks is updated again);
+and deletes the pods and claims labelled with the node and a lease,
+named `cxl-lease-<lease>`, that have no lease in the table. A companion
+pod without the labels counts as gone. At the first start of a new boot
+the leases of the other boot are dropped; the first reconcile deletes
+their companions, whose claims the drivers then unprepare.
+
+When a lease claim is unprepared, its socket is removed, then
+`lease-fs/<claim uid>`, then `leases/<claim uid>` (its entries removed by
+name). While a bind is still in `lease-fs/<claim uid>` both directories
+stay, because removing the mount point of `/run/cxl/fs` would detach the
+bind lazily in a container that is still there; they are removed when
+the last lease of the claim is dropped, and by the reconcile and the
+start, which remove the directories of lease claims that are gone. Under
+`lease-fs` only empty directories without a mount are removed, never
+recursively, and nothing is removed while the lease table cannot be
+decoded.
+
+At start the driver binds again a missing bind of a prepared companion
+claim (when its node mount is there or could be mounted again, and the
+claim is not being unprepared), and unmounts the mounts under `lease-fs`
+that belong to no prepared companion claim (a crash between the bind and
+the write of its record), so that they do not hold the device. A bind of
+no prepared companion that cannot be unmounted (busy) is
+[STALE](states.md#bindstate) and is unmounted at the next Unprepare or
+failed Prepare of any pool claim on the node; once it is gone, the
+region of its device is released if no claim of the node has the device
+and nothing holds `/dev/pmemK` within 10 s. The driver never detaches a
+mount and releases a region only when nothing holds its block device: a
+bind left mounted keeps the device and never crashes the node.
+
 ## Files on the node
 
 Only the driver writes its files; do not edit them, and do not copy
