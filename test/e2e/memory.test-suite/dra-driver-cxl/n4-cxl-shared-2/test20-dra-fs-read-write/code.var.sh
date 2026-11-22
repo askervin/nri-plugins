@@ -116,9 +116,9 @@ TEXT_X="$TAG: x.txt, written on xfs by rw-x on VM1"
 TEXT_G="$TAG: g.txt, written by rw-g on VM2"
 TEXT_L="$TAG: l.txt, written through a read-write lease on VM2"
 LEASE_TEMPLATE=cxl-lease
-P9A="device $FS_SERIAL: it is mounted read-write with access direct on this node: access cached would mount it a second time"
-P9D="device $FS_SERIAL: it is mounted with access direct only on this node: a read-write claim with access cached would mount it a second time"
-P9E="device $FS_SERIAL: btrfs is mounted read-only on this node and cannot be remounted read-write: a read-write claim waits until the read-only claims of the node are gone"
+TEXT_CACHED_NEXT_TO_RW="memdev $FS_SERIAL: it is mounted read-write with access direct on this node: access cached would mount it a second time"
+TEXT_RW_CACHED_NEXT_TO_DIRECT="memdev $FS_SERIAL: it is mounted with access direct only on this node: a read-write claim with access cached would mount it a second time"
+TEXT_BTRFS_RW_WAITS="memdev $FS_SERIAL: btrfs is mounted read-only on this node and cannot be remounted read-write: a read-write claim waits until the read-only claims of the node are gone"
 
 fs0-free() {
     # Usage: fs0-free
@@ -418,19 +418,19 @@ fs-ctr-read-assert ro-c "$FS_PATH" f.txt "$TEXT_F"
 fs-ctr-write-refused ro-c "$FS_PATH"
 
 echo "### G: one node, two accesses: access cached next to the read-write direct mount is refused"
-fs-refused "$VM2" cached-g "$FS_SERIAL" "mode: fs, access: cached" "$CLASS" "$P9A"
+fs-refused "$VM2" cached-g "$FS_SERIAL" "mode: fs, access: cached" "$CLASS" "$TEXT_CACHED_NEXT_TO_RW"
 fs-node-mounts-assert "$VM2" "$DRA_POOL_MOUNT_DIR" "$FS_MOUNT_ID" ext4 rw "" direct
 
 echo "### H: refusals before anything is mounted, squashfs read-only, btrfs read-write"
 # The node mount exists: its type is the filesystem.
-fs-refused "$VM2" xfs-on-ext4 "$FS_SERIAL" "mode: fs, fsType: xfs" "$CLASS" "device $FS_SERIAL: " "has a filesystem of type ext4, not xfs"
+fs-refused "$VM2" xfs-on-ext4 "$FS_SERIAL" "mode: fs, fsType: xfs" "$CLASS" "memdev $FS_SERIAL: " "has a filesystem of type ext4, not xfs"
 fs-node-mounts-assert "$VM2" "$DRA_POOL_MOUNT_DIR" "$FS_MOUNT_ID" ext4 rw "" direct
 fs-ctr-read-assert rw-f "$FS_PATH" f.txt "$TEXT_F"
 dra-claim-pod-delete rw-f ro-c
 fs0-free
 # An ext4 that was not unmounted cleanly: no read-only mount.
 write-image ext4-dirty "$TAG: the dirty ext4 image"
-fs-refused "$VM2" dirty-ro "$FS_SERIAL" "$RO" "$CLASS" "device $FS_SERIAL: ext4 on /dev/pmem" \
+fs-refused "$VM2" dirty-ro "$FS_SERIAL" "$RO" "$CLASS" "memdev $FS_SERIAL: ext4 on /dev/pmem" \
     "needs recovery (it was not unmounted cleanly): a read-only mount cannot recover it, a read-write claim on one node does"
 fs0-free
 # squashfs: read-only, no DAX: access cached by default, a read-only loop
@@ -448,14 +448,14 @@ dra-claim-pod-delete sq-r
 fs0-free
 # erofs is read-only: no read-write claim.
 write-image erofs "$TAG: the erofs image"
-fs-refused "$VM2" erofs-rw "$FS_SERIAL" "$RW" "$CLASS" "device $FS_SERIAL: erofs is a read-only filesystem: set readOnly: true"
+fs-refused "$VM2" erofs-rw "$FS_SERIAL" "$RW" "$CLASS" "memdev $FS_SERIAL: erofs is a read-only filesystem: set readOnly: true"
 fs0-free
 # btrfs has no DAX: no access direct. It cannot be remounted read-write
 # in place: a writer waits while a reader of the node has it mounted, and
 # mounts it read-write, access cached by default, on a writable loop
 # device once the reader is gone.
 write-image btrfs "$TEXT_BTRFS"
-fs-refused "$VM2" btrfs-direct "$FS_SERIAL" "mode: fs, access: direct" "$CLASS" "device $FS_SERIAL: btrfs has no DAX: use access cached"
+fs-refused "$VM2" btrfs-direct "$FS_SERIAL" "mode: fs, access: direct" "$CLASS" "memdev $FS_SERIAL: btrfs has no DAX: use access cached"
 fs0-free
 dra-serial-claim-pod "$VM2" btrfs-ro "$FS_SERIAL" 1 "$RO" "$CLASS"
 dra-pod-wait "$VM2" btrfs-ro Running 180
@@ -465,7 +465,7 @@ fs-ctr-read-assert btrfs-ro "$FS_PATH" "$FS_FILE" "$TEXT_BTRFS"
 fs-ctr-write-refused btrfs-ro "$FS_PATH"
 fs-node-mounts-assert "$VM2" "$DRA_POOL_MOUNT_DIR" "$FS_MOUNT_ID" btrfs ro "" cached
 dra-serial-claim-pod "$VM2" btrfs-rw "$FS_SERIAL" 1 "$RW" "$CLASS"
-dra-pod-event-wait btrfs-rw "$P9E"
+dra-pod-event-wait btrfs-rw "$TEXT_BTRFS_RW_WAITS"
 fs-node-mounts-assert "$VM2" "$DRA_POOL_MOUNT_DIR" "$FS_MOUNT_ID" btrfs ro "" cached
 fs-ctr-read-assert btrfs-ro "$FS_PATH" "$FS_FILE" "$TEXT_BTRFS"
 dra-claim-pod-delete btrfs-ro
@@ -482,7 +482,7 @@ attached-assert "$VM2_NAME:True"
 dra-claim-pod-delete btrfs-rw
 fs0-free
 # A declared type that the plugin does not know, on the btrfs.
-fs-refused "$VM2" f2fs-on-btrfs "$FS_SERIAL" "mode: fs, fsType: f2fs" "$CLASS" "device $FS_SERIAL: " "has a filesystem of type btrfs, not f2fs"
+fs-refused "$VM2" f2fs-on-btrfs "$FS_SERIAL" "mode: fs, fsType: f2fs" "$CLASS" "memdev $FS_SERIAL: " "has a filesystem of type btrfs, not f2fs"
 fs0-free
 
 echo "### I: xfs: direct and cached readers on VM2 and a reader on VM1 at once, then a writer on VM1"
@@ -529,7 +529,7 @@ write-image ext4 "$TEXT_EXT4"
 # access than the readers' is refused.
 dra-serial-claim-pod "$VM2" ro-j "$FS_SERIAL" 1 "$RO" "$CLASS"
 dra-pod-wait "$VM2" ro-j Running 180
-fs-refused "$VM2" rw-cached "$FS_SERIAL" "mode: fs, readOnly: false, access: cached" "$CLASS" "$P9D"
+fs-refused "$VM2" rw-cached "$FS_SERIAL" "mode: fs, readOnly: false, access: cached" "$CLASS" "$TEXT_RW_CACHED_NEXT_TO_DIRECT"
 fs-node-mounts-assert "$VM2" "$DRA_POOL_MOUNT_DIR" "$FS_MOUNT_ID" ext4 ro "" direct
 dra-claim-pod-delete ro-j
 dra-apply "$VM2" <<< "$(dra-lease-template-yaml "$LEASE_TEMPLATE")"

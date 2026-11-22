@@ -61,7 +61,7 @@ func (b *Broker) requestLease(claimUID string, who Requester, req *api.Request, 
 		return b.waitReady(l.ID, wait, true)
 	}
 	a := &l.Asked
-	klog.Infof("lease broker: lease %s: %s/%s/%s requests size %q serial %q (source %q, mode %s, shared %v, shared device %v, read-only %v, access %q, name %q)",
+	klog.Infof("lease broker: lease %s: %s/%s/%s requests size %q serial %q (source %q, mode %s, share %v, shared device %v, read-only %v, access %q, name %q)",
 		l.ID, l.Pod.Namespace, l.Pod.Name, l.Container, a.Size, askedSerial(a), a.Source, a.Mode, a.Share, a.Shared, a.ReadOnly, a.Access, a.Name)
 
 	if err := b.createCompanion(l); err != nil {

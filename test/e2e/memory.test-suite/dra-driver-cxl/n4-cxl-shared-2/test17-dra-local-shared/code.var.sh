@@ -207,7 +207,7 @@ prepared-line() {
     #
     # Print the log line of the driver of the Prepare of claim NAME of the
     # shared device, READ-ONLY true or false, USES "exclusive" or "1 share".
-    echo "$DRA_LOCAL_DRIVER: claim $DRA_NS/$1: prepared $DRA_LOCAL_DEVICE (serial $DRA_LOCAL_SERIAL, shared true, mode dax, read-only $2) as $SHARED_MEMDEV $SHARED_REGION dax $SHARED_DAX size $DRA_LOCAL_SIZE node -1 $3"
+    echo "$DRA_LOCAL_DRIVER: claim $DRA_NS/$1: prepared $DRA_LOCAL_DEVICE (memdev $DRA_LOCAL_SERIAL, share true, mode dax, read-only $2) as $SHARED_MEMDEV $SHARED_REGION dax $SHARED_DAX size $DRA_LOCAL_SIZE NUMA node -1 $3"
 }
 
 plugin-log-has() {
@@ -466,7 +466,7 @@ claim-pod zero-shares 0 "readOnly: true" "echo started"
 dra-pod-event-wait bad-numa "MemoryConfig: device: a shared device is used as dax only"
 dra-pod-event-wait bad-numa-ro "MemoryConfig: device.readOnly needs mode dax"
 dra-pod-event-wait bad-access "MemoryConfig: device.access needs mode fs"
-dra-pod-event-wait zero-shares "device $DRA_LOCAL_SERIAL: consumed shares \"0\" is less than 1: request shares: 1 (a share) or no shares (exclusive)"
+dra-pod-event-wait zero-shares "memdev $DRA_LOCAL_SERIAL: consumed shares \"0\" is less than 1: request shares: 1 (a share) or no shares (exclusive)"
 claim-check zero-shares 0
 for p in bad-numa bad-numa-ro bad-access zero-shares; do
     dra-wait "$VM2" "$p-creating" "pod -n $DRA_NS $p" \

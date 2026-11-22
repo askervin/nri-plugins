@@ -1058,7 +1058,7 @@ dra-memdev-wait() {
     # COMMAND_OUTPUT. Fail the test on timeout, showing the JSON.
     local vmdir="$1" label="$2" serial="$3" expression="$4" tmo="${5:-60}" file
     file="$TEST_OUTPUT_DIR/memdev.$label.$(vmdir-label "$vmdir").json"
-    retry-until --timeout "$tmo" --message "$(vmdir-label "$vmdir"): sysfs of CXL memory device $serial: $expression" \
+    retry-until --timeout "$tmo" --message "$(vmdir-label "$vmdir"): sysfs of memdev $serial: $expression" \
         'dra-memdev-sysfs "$vmdir" "$serial" && dra-py assert "$DRA_MEMDEV" "$expression" 2>/dev/null' || {
         echo "$DRA_MEMDEV" > "$file"
         error "$(vmdir-label "$vmdir"): CXL memory device $serial did not reach the expected state in ${tmo}s: $expression

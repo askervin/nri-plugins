@@ -293,7 +293,7 @@ def trace(sdir, t0=1792700000.0):
         udev(dt + 0.1, node, "remove", memdev_path, "cxl")
 
     def request(dt, key, who, mode, shared, ro, name):
-        klog(dt, WHERE[who], "broker.go:729", 'lease broker: lease %s: %s/%s/main requests size "" serial "%s" (source "", mode %s, shared %s, shared device true, read-only %s, access "", name "%s")'
+        klog(dt, WHERE[who], "broker.go:729", 'lease broker: lease %s: %s/%s/main requests size "" serial "%s" (source "", mode %s, share %s, shared device true, read-only %s, access "", name "%s")'
              % (LEASES[key], NS, who, SERIAL, mode, "true" if shared else "false", "true" if ro else "false", name))
 
     def ready(dt, key, who, mode, ro=True):
@@ -309,7 +309,7 @@ def trace(sdir, t0=1792700000.0):
             ro_s, access, fstype, mnt = "false", "", "", ""
         else:
             ro_s, access, fstype, mnt = "true" if ro else "false", "direct", "ext4", direct
-        klog(dt, WHERE[who], "pool.go:689", 'cxl-pool.nri.io: claim %s/cxl-lease-%s: prepared fs0 (serial %s, shared true, mode %s, read-only %s) as mem0 region0 namespace namespace0.0 block /dev/pmem0 access "%s" fs "%s" mount "%s" loop ""'
+        klog(dt, WHERE[who], "pool.go:689", 'cxl-pool.nri.io: claim %s/cxl-lease-%s: prepared fs0 (memdev %s, share true, mode %s, read-only %s) as mem0 region0 namespace namespace0.0 block /dev/pmem0 access "%s" fs "%s" mount "%s" loop ""'
              % (NS, LEASES[key], SERIAL, mode, ro_s, access, fstype, mnt))
 
     def unprepared(dt, key, who):

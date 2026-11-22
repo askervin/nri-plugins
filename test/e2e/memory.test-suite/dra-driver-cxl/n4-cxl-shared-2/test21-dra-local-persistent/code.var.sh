@@ -82,8 +82,8 @@ LEASE_TEMPLATE=cxl-lease
 TAG="dra-local-persistent $(date +%Y-%m-%dT%H:%M:%S.%N)"
 TEXT_EXT4="$TAG: the ext4 image"
 TEXT_C="$TAG: c.txt, written by fs-rw"
-F1_LOCAL="MemoryConfig: device.mode block: the device is writable only exclusively (no shares request)"
-P4_DEFAULT="filesystem type ext4 is not allowed on this node (fsTypes: erofs)"
+TEXT_LOCAL_BLOCK_SHARE="MemoryConfig: device.mode block: the device is writable only exclusively (no shares request)"
+TEXT_FSTYPE_NOT_ALLOWED="filesystem type ext4 is not allowed on this node (fsTypes: erofs)"
 # local-pmem has no pool controller, also when dra-install runs again.
 DRA_UNCONTROLLED_POOLS=("$LP_SERVER")
 
@@ -179,7 +179,7 @@ dra-assert "$COMMAND_OUTPUT" "'.persistent == false' in by_name('cxl-local')['sp
 dra-unmatched unmatched "$LP_SERIAL" cxl-local
 
 echo "### B: block claims: a writable one with a shares request is refused, the exclusive writer writes an ext4 image"
-fs-refused "$VM2" blk-share "$LP_SERIAL" "mode: block" "$CLASS" "$F1_LOCAL"
+fs-refused "$VM2" blk-share "$LP_SERIAL" "mode: block" "$CLASS" "$TEXT_LOCAL_BLOCK_SHARE"
 pool-cxl-dump "$VM2" blk-share-refused
 cxl-assert "$LP_REGIONS == []"
 fs-image-build "$VM2" ext4 lp-ext4 "$TEXT_EXT4"
@@ -192,7 +192,7 @@ region-wait no
 fs-no-mounts-assert "$VM2" "$DRA_LOCAL_MOUNT_DIR" "$DRA_POOL_MOUNT_DIR"
 
 echo "### B2: the default configuration mounts erofs only; the driver again with ext4 allowed"
-fs-refused "$VM2" ext4-default "$LP_SERIAL" "mode: fs" "$CLASS" "$P4_DEFAULT"
+fs-refused "$VM2" ext4-default "$LP_SERIAL" "mode: fs" "$CLASS" "$TEXT_FSTYPE_NOT_ALLOWED"
 region-wait no
 DRA_DRIVER_CONFIG="fsTypes: [erofs, ext4]"
 dra-install

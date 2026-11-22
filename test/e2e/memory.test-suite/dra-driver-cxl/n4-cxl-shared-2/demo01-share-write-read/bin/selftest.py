@@ -374,9 +374,9 @@ def trace_formats_test():
     want = 'claim cxl-demo/cxl-lease-3f2a91c0 device fs0 node %s' % vm1
     driver = [
         # broker.go
-        'lease broker: lease 3f2a91c0: cxl-demo/writer/main requests size "" serial "0xc1ae0001" (source "", mode fs, shared false, '
+        'lease broker: lease 3f2a91c0: cxl-demo/writer/main requests size "" serial "0xc1ae0001" (source "", mode fs, share false, '
         'shared device true, read-only false, access "", name "data")',
-        'lease broker: lease 51aa7b09: cxl-demo/reader-b/main requests size "" serial "0xc1ae0001" (source "", mode dax, shared true, '
+        'lease broker: lease 51aa7b09: cxl-demo/reader-b/main requests size "" serial "0xc1ae0001" (source "", mode dax, share true, '
         'shared device true, read-only true, access "", name "")',
         'lease broker: lease 3f2a91c0: Ready (source pool, serial 0xc1ae0001, mode fs, read-only false, NUMA node -1, dax "", block "", '
         'access "direct", fs "ext4", path "/run/cxl/fs/data", 534773760 bytes)',
@@ -386,7 +386,7 @@ def trace_formats_test():
         'cxl-pool.nri.io: claim cxl-demo/cxl-lease-3f2a91c0: prepared fs0 (memdev 0xc1ae0001, share true, mode fs, read-only false) as '
         'mem0 region0 namespace namespace0.0 block /dev/pmem0 access "direct" fs "ext4" mount "%s" loop ""' % mnt,
         'cxl-pool.nri.io: claim cxl-demo/cxl-lease-51aa7b09: prepared shared0 (memdev 0xc1ae0001, share true, mode dax, read-only true) '
-        'as mem0 region0 dax dax0.0 node -1',
+        'as mem0 region0 dax dax0.0 size 268435456 NUMA node -1',
         'cxl-pool.nri.io: unprepared claim cxl-demo/cxl-lease-3f2a91c0 (c1a10006-0000-4000-8000-000000000000)',
         # persistent.go
         'engine: pool memdev 0xc1ae0001: mounted /dev/pmem0 at %s (ext4, rw, dax=always)' % mnt,

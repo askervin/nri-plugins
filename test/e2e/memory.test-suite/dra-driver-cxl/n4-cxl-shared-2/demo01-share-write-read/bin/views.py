@@ -720,7 +720,7 @@ class Trace:
         lm = re.match(r"lease broker: lease ([0-9a-f]{8}): (.*)$", msg)
         if lm:
             lid, rest = lm.group(1), lm.group(2)
-            rq = re.match(r"\S+?/([^/\s]+)/\S+ requests .*mode (\w+), shared (\w+), .*read-only (\w+)[,)]", rest)
+            rq = re.match(r"\S+?/([^/\s]+)/\S+ requests .*mode (\w+), share (\w+), .*read-only (\w+)[,)]", rest)
             if rq:
                 self.who[lid] = rq.group(1)
                 self.emit(t, "drv", "%s %s asks %s %s %s" % (
