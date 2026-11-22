@@ -23,12 +23,14 @@
 // memory of the process and runs meanwhile can execute the written
 // code and die of SIGTRAP: a thread that the injector could not stop,
 // a thread that appeared after its last listing, or a child made with
-// vfork. The int3 resets a SIGTRAP handler or ignore of the target to
+// vfork, as posix_spawn and Go's os/exec make. The int3 resets a SIGTRAP handler or ignore of the target to
 // the default. A signal that arrives while a thread is stopped can be
 // lost. A 32-bit process gets SIGILL or another system call. The
 // nodemask is written below the stack pointer of each thread and stays
 // there; on a stack that a runtime allocates, such as a goroutine
-// stack, that can be other memory of the process.
+// stack, that can be other memory of the process. The wait for a thread
+// to stop has no time limit: a thread in an uninterruptible sleep
+// stalls the injection.
 package mpolinject
 
 import (

@@ -87,7 +87,9 @@ config: {}
 #   defaults:
 #     container:
 #       # none (default): not steered; auto steers every container with
-#       # numa memory
+#       # numa memory. Steering injects system calls into the processes
+#       # of the container with ptrace and can crash threaded programs:
+#       # see Steering in docs/memory/cxl/usage.md
 #       steering: {policy: none}
 #       # keep containers off the CXL nodes of the driver that they did not
 #       # claim: allowed-mems (default) | none; none next to an
@@ -105,7 +107,9 @@ config: {}
 deviceClassConfig: {}
 #
 # Example: steering on for the containers with local CXL memory, unless
-# their claim says container: {steering: {policy: none}}
+# their claim says container: {steering: {policy: none}}. Steering can
+# crash threaded programs: use it for experiments or simple programs
+# (Steering in docs/memory/cxl/usage.md).
 #
 # deviceClassConfig:
 #   cxl-local:

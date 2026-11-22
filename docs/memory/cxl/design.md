@@ -192,10 +192,14 @@ without the fenced ones, plus the nodes of its results and leases. A
 node joins the fence before its memory goes online, and the running
 containers are updated before that (an update that takes longer than
 the fence deadline finishes in the background); it leaves the fence
-only when the driver restarts. A container whose memory a steering manager of the
-driver writes has a [Steered](states.md#steered) record in the store, so
-that the next process releases exactly the containers that its managers
-throttled.
+only when the driver restarts. A container whose memory a steering
+manager of the driver writes has a [Steered](states.md#steered) record
+in the store, so that the next process releases exactly the containers
+that its managers throttled. A steering manager sets the memory policy
+of the processes of its container by injecting a `set_mempolicy` system
+call into their threads with ptrace (package `mpolinject`). The
+injection can crash threaded programs; [usage.md](usage.md#steering)
+lists its risks.
 
 ### Provenance
 

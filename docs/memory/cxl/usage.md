@@ -592,12 +592,21 @@ moment the injection writes that system call and a breakpoint
 instruction into the code of the process. A task that shares the memory
 of the process and runs meanwhile can execute that code and kill the
 process with SIGTRAP: a thread that the plugin could not stop, a thread
-that appeared during the injection, or a child made with `vfork`. The
-injection can also reset a SIGTRAP handler of the process to the
+that appeared during the injection, or a child made with `vfork`. Such
+children are common: glibc's `posix_spawn`, Go's `os/exec` and Python's
+`subprocess` make them to start other programs.
+
+The injection can also reset a SIGTRAP handler of the process to the
 default, lose a signal that arrives meanwhile, kill a 32-bit process,
 and leave the nodemask in the memory below the stack pointer of each
-thread. Threaded programs may misbehave. Use steering for experiments,
-or with programs that are simple enough: few threads, no `vfork`, no
+thread. A thread in an uninterruptible sleep stalls the injection
+without a time limit, and the stop of the container waits for it. The
+first injection comes when the container starts, before the runtime
+executes the workload. Its process is then the init process of the OCI
+runtime, which for runc is a threaded Go program.
+
+Threaded programs may misbehave. Use steering for experiments, or with
+programs that are simple enough: few threads, no subprocesses, no
 tracer, no use of SIGTRAP. Steering is off unless a claim, a DeviceClass
 or the node defaults opt in.
 
