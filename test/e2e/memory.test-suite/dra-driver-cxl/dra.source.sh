@@ -3211,7 +3211,7 @@ patterns = {
     # (leases, companions, lends and revokes, fds sent), the local
     # allocator (regions and slices of local memdevs) and the memdev
     # devices it publishes, errors.
-    "driver": r"(?i)cxl-pool\.nri\.io|pool device|rescanAndPublish|lease|companion|\blend|revok|local:|memdev-|no room for the slice|error|fail",
+    "driver": r"(?i)cxl-pool\.nri\.io|pool device|publisher: |lease|companion|\blend|revok|local memdev|memdev-|no room for the slice|error|fail",
     "scheduler": r"(?i)binding|resourceclaim|claim|bound|error",
     "events": r"",
     "claims": r"",

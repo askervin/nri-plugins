@@ -365,7 +365,7 @@ func serialAttr(key, serial string) map[resourcev1.QualifiedName]resourcev1.Devi
 
 // holdingBack begins the log line of a new memdev that the watcher holds
 // back.
-const holdingBack = "pool serials: holding back new memdev"
+const holdingBack = "provenance: holding back new memdev"
 
 // wantLogLine fails the test unless a line of the log contains text.
 func wantLogLine(t *testing.T, log, text string) {

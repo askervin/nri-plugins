@@ -372,7 +372,7 @@ func TestPoolSerialsNewMemdevHeldBack(t *testing.T) {
 		t.Fatal("the new memdev is not held back")
 	}
 	out := logs()
-	if logMatches(out, "pool serials: holding back new memdev") != 1 {
+	if logMatches(out, "provenance: holding back new memdev") != 1 {
 		t.Fatalf("no line of the hold:\n%s", out)
 	}
 	e.advance(provenance.MaxHold / 2)

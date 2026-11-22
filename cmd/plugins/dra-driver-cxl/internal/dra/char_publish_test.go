@@ -119,7 +119,7 @@ func TestCharPublishOrder(t *testing.T) {
 	if strings.Contains(out, "the periodic rescan changed the devices") {
 		t.Fatalf("a periodic rescan of the same devices changed them:\n%s", out)
 	}
-	wantLogLineText(t, out, "rescanAndPublish: rescanning devices")
+	wantLogLineText(t, out, "publisher: rescanning devices")
 }
 
 // TestCharPersistentCapacityOfRAMMemdev: a memdev with RAM and persistent

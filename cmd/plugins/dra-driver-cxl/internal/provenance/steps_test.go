@@ -64,7 +64,7 @@ func TestFailedCommitPool(t *testing.T) {
 		t.Fatalf("generation %d, expected %d", g, gen)
 	}
 	out := logs()
-	wantLogLine(t, out, "pool serials: writing "+e.name()+": "+errDisk.Error())
+	wantLogLine(t, out, "provenance: writing "+e.name()+": "+errDisk.Error())
 	if n := countLogLines(out, "is a pool device now"); n != 0 {
 		t.Fatalf("%d lines of a change not committed:\n%s", n, out)
 	}
@@ -89,7 +89,7 @@ func TestFailedCommitPool(t *testing.T) {
 	if pool, _ := e.w.Gate(ctx, e.devices(), serials, nil); !pool[localSerial] {
 		t.Fatalf("the slice gone after the commit: pool %v", pool)
 	}
-	wantLogLine(t, logs(), "pool serials: memdev serial 0xc100e2e1 is a pool device now (in a ResourceSlice of "+poolC+")")
+	wantLogLine(t, logs(), "provenance: memdev serial 0xc100e2e1 is a pool device now (in a ResourceSlice of "+poolC+")")
 	if e.w.retrying() {
 		t.Fatal("the watch scans again after the commit")
 	}
@@ -116,7 +116,7 @@ func TestFailedCommitHold(t *testing.T) {
 	if n := countLogLines(out, holdingBack); n != 0 {
 		t.Fatalf("%d lines of a hold not committed:\n%s", n, out)
 	}
-	wantLogLine(t, out, "pool serials: writing "+e.name()+": "+errDisk.Error())
+	wantLogLine(t, out, "provenance: writing "+e.name()+": "+errDisk.Error())
 	if !e.w.retrying() {
 		t.Fatal("the watch does not scan again")
 	}
@@ -153,7 +153,7 @@ func TestFailedCommitLocal(t *testing.T) {
 	if n := countLogLines(out, "is a local memory device"); n != 0 {
 		t.Fatalf("%d lines of a change not committed:\n%s", n, out)
 	}
-	wantLogLine(t, out, "pool serials: writing "+e.name()+": "+errDisk.Error())
+	wantLogLine(t, out, "provenance: writing "+e.name()+": "+errDisk.Error())
 	restore()
 	restore = e.loseWrites()
 	e.wantHeld("published, write lost")
@@ -203,7 +203,7 @@ func TestFailedCommitExpire(t *testing.T) {
 	if !e.w.RecordedPoolSerials()[0xc1ee2001] {
 		t.Fatal("a pool serial forgotten without its commit")
 	}
-	if n := countLogLines(logs(), "pool serials: forgetting "); n != 0 {
+	if n := countLogLines(logs(), "provenance: forgetting "); n != 0 {
 		t.Fatalf("%d lines of a change not committed:\n%s", n, logs())
 	}
 	restore()
@@ -214,8 +214,8 @@ func TestFailedCommitExpire(t *testing.T) {
 		t.Fatalf("listed pools %+v", pools)
 	}
 	out := logs()
-	wantLogLine(t, out, "pool serials: forgetting serial 0xc1ee2001 (pool true, observed absent since "+t0.Format(time.RFC3339)+")")
-	wantLogLine(t, out, "pool serials: forgetting pool "+poolC+" (observed without ResourceSlices since "+t0.Format(time.RFC3339)+")")
+	wantLogLine(t, out, "provenance: forgetting serial 0xc1ee2001 (pool true, observed absent since "+t0.Format(time.RFC3339)+")")
+	wantLogLine(t, out, "provenance: forgetting pool "+poolC+" (observed without ResourceSlices since "+t0.Format(time.RFC3339)+")")
 }
 
 // TestFailedCommitForget pins forget without its commit: the records that
@@ -233,8 +233,8 @@ func TestFailedCommitForget(t *testing.T) {
 	w := New(Options{Store: e.st, Client: e.client, NodeName: testNode, Name: e.name(), Forget: []uint64{sharedPoolSerial},
 		Now: e.now})
 	out := logs()
-	wantLogLine(t, out, "pool serials: writing "+e.name()+": "+store.ErrClosed.Error())
-	if n := countLogLines(out, "pool serials: forgetting serial"); n != 0 {
+	wantLogLine(t, out, "provenance: writing "+e.name()+": "+store.ErrClosed.Error())
+	if n := countLogLines(out, "provenance: forgetting serial"); n != 0 {
 		t.Fatalf("%d lines of a change not committed:\n%s", n, out)
 	}
 	if p := w.records().ProvenanceOf(sharedPoolSerial); p == nil || p.State != state.ProvenancePool {
@@ -246,7 +246,7 @@ func TestFailedCommitForget(t *testing.T) {
 	}
 	e.forget = []uint64{sharedPoolSerial}
 	e.restart()
-	wantLogLine(t, logs(), "pool serials: forgetting serial 0xc1ae2001 (POOL, --forget-provenance)")
+	wantLogLine(t, logs(), "provenance: forgetting serial 0xc1ae2001 (POOL, --forget-provenance)")
 	e.wantState(sharedPoolSerial, state.ProvenanceUnknown)
 }
 

@@ -351,10 +351,10 @@ func (p *Publisher) Rescan(ctx context.Context, periodic bool) {
 	if periodic {
 		logf = klog.V(4).Infof
 	}
-	logf("rescanAndPublish: rescanning devices")
+	logf("publisher: rescanning devices")
 	devs, err := p.scan(ctx)
 	if err != nil {
-		klog.Errorf("rescanAndPublish: %v", err)
+		klog.Errorf("publisher: %v", err)
 		return
 	}
 	p.mu.Lock()
@@ -364,16 +364,16 @@ func (p *Publisher) Rescan(ctx context.Context, periodic bool) {
 	p.mu.Unlock()
 	if periodic && changed {
 		logf = klog.Infof
-		logf("rescanAndPublish: the periodic rescan changed the devices")
+		logf("publisher: the periodic rescan changed the devices")
 	}
 	if !publishing {
 		return
 	}
 	if err := p.publish(ctx); err != nil {
-		klog.Errorf("rescanAndPublish: failed to publish resources: %v", err)
+		klog.Errorf("publisher: publishing: %v", err)
 		return
 	}
-	logf("rescanAndPublish: published updated resources (%d devices)", len(devs))
+	logf("publisher: published %d devices", len(devs))
 }
 
 // publish publishes the table: the first publish starts the controller of

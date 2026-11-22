@@ -795,7 +795,7 @@ func TestRescanBeforeStart(t *testing.T) {
 	if len(list.Items) != 0 {
 		t.Fatalf("published before the start: %+v", list.Items)
 	}
-	published := func() int { return logMatches(logs(), "rescanAndPublish: published updated resources") }
+	published := func() int { return logMatches(logs(), "publisher: published ") }
 	if n := published(); n != 0 {
 		t.Fatalf("%d lines of a publish before the start:\n%s", n, logs())
 	}
@@ -807,7 +807,7 @@ func TestRescanBeforeStart(t *testing.T) {
 	if n := published(); n != 1 {
 		t.Fatalf("%d lines of a publish after the start:\n%s", n, logs())
 	}
-	wantLogLineText(t, logs(), "rescanAndPublish: published updated resources (1 devices)")
+	wantLogLineText(t, logs(), "publisher: published 1 devices")
 }
 
 // TestPublishedTable pins the table that a local Prepare looks its devices

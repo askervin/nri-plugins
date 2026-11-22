@@ -199,7 +199,7 @@ func (s *step) log(line func()) {
 func (s *step) transit(p *state.Provenance, to state.ProvenanceState, trigger state.Trigger) bool {
 	if err := state.Apply(&state.ProvenanceTable, &p.State, to, trigger); err != nil {
 		serial := p.Serial
-		s.log(func() { klog.Errorf("pool serials: serial %s: %v", serial, err) })
+		s.log(func() { klog.Errorf("provenance: serial %s: %v", serial, err) })
 		return false
 	}
 	return true
@@ -248,7 +248,7 @@ func (s *step) notePool(r *state.Records, serial uint64, pool string, trigger st
 		}
 		if local {
 			s.log(func() {
-				klog.Infof("pool serials: memdev serial 0x%x is a pool device now (%s)", serial, orPrepared(pool))
+				klog.Infof("provenance: memdev serial 0x%x is a pool device now (%s)", serial, orPrepared(pool))
 			})
 		}
 		p.HeldSince, p.HeldReason = time.Time{}, ""
@@ -276,7 +276,7 @@ func (s *step) noteLocal(r *state.Records, m *kernel.MemdevInfo, trigger state.T
 	}
 	if changed {
 		name, serial := m.Name, m.Serial
-		s.log(func() { klog.Infof("pool serials: memdev %s (serial 0x%x) is a local memory device", name, serial) })
+		s.log(func() { klog.Infof("provenance: memdev %s (serial 0x%x) is a local memory device", name, serial) })
 	}
 	if p != nil {
 		s.seen = append(s.seen, m.Serial)
@@ -292,7 +292,7 @@ func (s *step) hold(r *state.Records, m *kernel.MemdevInfo, p *state.Provenance,
 	if p == nil {
 		name, serial := m.Name, m.Serial
 		s.log(func() {
-			klog.Warningf("pool serials: holding back new memdev %s (serial 0x%x): it may be a pool device: %s", name, serial, why)
+			klog.Warningf("provenance: holding back new memdev %s (serial 0x%x): it may be a pool device: %s", name, serial, why)
 		})
 		if p = s.add(r, m.Serial, state.ProvenanceHeld, triggerObserve); p == nil {
 			return true
@@ -318,7 +318,7 @@ func (s *step) forget(r *state.Records, serial uint64) {
 	p := recordOf(r, serial)
 	if p == nil || !recorded(p) {
 		s.log(func() {
-			klog.Warningf("pool serials: --forget-provenance %s: no record of the serial", api.FormatSerial(serial))
+			klog.Warningf("provenance: --forget-provenance %s: no record of the serial", api.FormatSerial(serial))
 		})
 		return
 	}
@@ -326,7 +326,7 @@ func (s *step) forget(r *state.Records, serial uint64) {
 	if s.remove(r, serial, triggerLoad) {
 		s.durable = true
 		s.forgotten = append(s.forgotten, serial)
-		s.log(func() { klog.Infof("pool serials: forgetting serial 0x%x (%s, --forget-provenance)", serial, old) })
+		s.log(func() { klog.Infof("provenance: forgetting serial 0x%x (%s, --forget-provenance)", serial, old) })
 	}
 }
 
@@ -341,7 +341,7 @@ func (s *step) expireAbsent(r *state.Records, serial uint64, since time.Time) {
 	if s.remove(r, serial, triggerExpire) {
 		s.forgotten = append(s.forgotten, serial)
 		s.log(func() {
-			klog.Infof("pool serials: forgetting serial 0x%x (pool %v, observed absent since %s)", serial, pool, since.Format(time.RFC3339))
+			klog.Infof("provenance: forgetting serial 0x%x (pool %v, observed absent since %s)", serial, pool, since.Format(time.RFC3339))
 		})
 	}
 }
@@ -372,7 +372,7 @@ func (s *step) notePools(r *state.Records, listed map[string]bool, gone []poolGo
 		s.changed = true
 		s.poolsGone = append(s.poolsGone, g.pool)
 		s.log(func() {
-			klog.Infof("pool serials: forgetting pool %s (observed without ResourceSlices since %s)", g.pool, g.since.Format(time.RFC3339))
+			klog.Infof("provenance: forgetting pool %s (observed without ResourceSlices since %s)", g.pool, g.since.Format(time.RFC3339))
 		})
 	}
 }
@@ -482,7 +482,7 @@ func (w *Watcher) commitStep(kind string, now time.Time, r0 *state.Records, fn s
 		err = w.commit(store.Durable, apply(store.Durable))
 	}
 	if err != nil {
-		klog.Errorf("pool serials: writing %s: %v", w.opts.Name, err)
+		klog.Errorf("provenance: writing %s: %v", w.opts.Name, err)
 		w.mu.Lock()
 		w.uncommitted[kind] = true
 		w.mu.Unlock()
@@ -510,7 +510,7 @@ func (w *Watcher) committed(kind string, s *step) {
 		}
 		w.conflicts[c.serial] = true
 		lines = append(lines, func() {
-			klog.Errorf("pool serials: memdev %s (serial 0x%x) is a pool device, but local claims use it: it is no longer published, and no local claim is prepared on it; release the local claims (%v) and check its memory",
+			klog.Errorf("provenance: memdev %s (serial 0x%x) is a pool device, but local claims use it: it is no longer published, and no local claim is prepared on it; release the local claims (%v) and check its memory",
 				c.name, c.serial, c.claims)
 		})
 	}
@@ -530,7 +530,7 @@ func (w *Watcher) open() {
 	}
 	if err := st.Lost(); err != nil {
 		w.lost = err.Error()
-		klog.Errorf("pool serials: %s: %v: the remembered pool serials are lost; new memory devices are held back for up to %v each in the next %v",
+		klog.Errorf("provenance: %s: %v: the remembered pool serials are lost; new memory devices are held back for up to %v each in the next %v",
 			w.opts.Name, err, MaxHold, MissingWindow)
 		return
 	}
@@ -542,10 +542,10 @@ func (w *Watcher) open() {
 			held++
 		}
 	}
-	klog.Infof("pool serials: loaded %d serials (%d pool serials) and %d pools from %s",
+	klog.Infof("provenance: loaded %d serials (%d pool serials) and %d pools from %s",
 		len(r.Provenance)-held, len(poolSerialsOf(r)), len(r.ListedPools), w.opts.Name)
 	if held > 0 {
-		klog.Infof("pool serials: %d memdevs held back before the restart stay held", held)
+		klog.Infof("provenance: %d memdevs held back before the restart stay held", held)
 	}
 }
 
@@ -778,7 +778,7 @@ func (g *gateScan) observeNew(s *step, r *state.Records, m *kernel.MemdevInfo, p
 	if why == "" {
 		if p != nil && p.State == state.ProvenanceHeld {
 			s.log(func() {
-				klog.Infof("pool serials: publishing memdev %s (serial 0x%x) as a local memory device: no pool is missing now", name, serial)
+				klog.Infof("provenance: publishing memdev %s (serial 0x%x) as a local memory device: no pool is missing now", name, serial)
 			})
 		}
 		s.noteLocal(r, m, triggerObserve)
@@ -788,7 +788,7 @@ func (g *gateScan) observeNew(s *step, r *state.Records, m *kernel.MemdevInfo, p
 		return true
 	}
 	s.log(func() {
-		klog.Warningf("pool serials: publishing memdev %s (serial 0x%x) as a local memory device after holding it back for %v (%s)",
+		klog.Warningf("provenance: publishing memdev %s (serial 0x%x) as a local memory device after holding it back for %v (%s)",
 			name, serial, MaxHold, why)
 	})
 	s.noteLocal(r, m, triggerExpire)
@@ -808,7 +808,7 @@ func (w *Watcher) evidence(ctx context.Context, r *state.Records, snap *kernel.S
 	}
 	ev, err := w.claimEvidence(ctx)
 	if err != nil {
-		klog.Warningf("pool serials: listing the pool claims of the node: %v", err)
+		klog.Warningf("provenance: listing the pool claims of the node: %v", err)
 	}
 	return ev, err
 }

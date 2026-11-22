@@ -253,12 +253,12 @@ rescanned-after-prepare() {
     dra-plugin-log "$VM2" |
         awk -v prepared="$DRA_POOL_DRIVER: claim .*: prepared pooled0" \
             '$0 ~ prepared {p = 1}
-             p && /rescanAndPublish: published updated resources/ {found = 1}
+             p && /publisher: published / {found = 1}
              END {exit !found}'
 }
 retry-until --timeout 30 --message "node plugin rescan after preparing pooled0" rescanned-after-prepare ||
     error "nri-dra-driver-cxl did not publish its resources after preparing pooled0"
-dra-plugin-log "$VM2" | grep -E 'prepared pooled0|ignoring region|rescanAndPublish'
+dra-plugin-log "$VM2" | grep -E 'prepared pooled0|ignoring region|publisher: '
 dra-json "$VM2" resourceslices
 dra-assert "$COMMAND_OUTPUT" "not any(attr(d, 'type') == 'region' for d in devices('$DRA_LOCAL_DRIVER', '$VM2_NAME'))"
 

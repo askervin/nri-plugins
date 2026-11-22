@@ -53,7 +53,7 @@ func resolveContainerCgroupDir(ctr *api.Container) (string, error) {
 		return "", fmt.Errorf("no cgroup v2 entry found in %s (content: %q)", path, string(data))
 	}
 	dir := containerCgroupDir(filepath.Join(cgroupRoot, rel), ctr.GetId())
-	klog.V(5).Infof("resolveContainerCgroupDir: pid=%d /proc cgroup path=%q -> absPath=%s", pid, rel, dir)
+	klog.V(5).Infof("container %s: cgroup %s (pid %d, /proc cgroup path %q)", ctr.GetId(), dir, pid, rel)
 	return dir, nil
 }
 

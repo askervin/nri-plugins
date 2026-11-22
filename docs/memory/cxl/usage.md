@@ -447,7 +447,7 @@ and Unprepare of either driver that changed its records, and at least
 every 2 minutes. After each scan that is not periodic it logs
 
 ```
-rescanAndPublish: published updated resources (N devices)
+publisher: published N devices
 ```
 
 and the slice is written to the API server only when its devices

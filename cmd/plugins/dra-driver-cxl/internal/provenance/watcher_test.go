@@ -136,8 +136,8 @@ func TestHeldUntilPoolBack(t *testing.T) {
 	e.publish("0xc1ee2001")
 	e.wantHeld("pool-c back")
 	e.wantState(otherLocalSerial, state.ProvenanceLocal)
-	wantLogLine(t, logs(), "pool serials: publishing memdev mem0 (serial 0xa1) as a local memory device: no pool is missing now")
-	wantLogLine(t, logs(), "pool serials: memdev mem0 (serial 0xa1) is a local memory device")
+	wantLogLine(t, logs(), "provenance: publishing memdev mem0 (serial 0xa1) as a local memory device: no pool is missing now")
+	wantLogLine(t, logs(), "provenance: memdev mem0 (serial 0xa1) is a local memory device")
 	if r := e.record(otherLocalSerial); r == nil || r.State != state.ProvenanceLocal || r.Pool != "" || !r.LastSeen.Equal(e.now()) {
 		t.Fatalf("record %+v", r)
 	}
@@ -204,12 +204,12 @@ func TestLocalBecomesPool(t *testing.T) {
 	e.publish("0xc100e2e1")
 	e.wantHeld("listed by pool-c")
 	e.wantState(localSerial, state.ProvenancePool)
-	wantLogLine(t, logs(), "pool serials: memdev serial 0xc100e2e1 is a pool device now (in a ResourceSlice of "+poolC+")")
+	wantLogLine(t, logs(), "provenance: memdev serial 0xc100e2e1 is a pool device now (in a ResourceSlice of "+poolC+")")
 	if r := e.record(localSerial); r == nil || r.State != state.ProvenancePool || r.Pool != poolC {
 		t.Fatalf("record %+v", r)
 	}
 	e.w.NotePrepared(map[uint64]bool{otherLocalSerial: true, 0xa2: true})
-	wantLogLine(t, logs(), "pool serials: memdev serial 0xa1 is a pool device now (prepared by the pool driver)")
+	wantLogLine(t, logs(), "provenance: memdev serial 0xa1 is a pool device now (prepared by the pool driver)")
 	e.wantState(otherLocalSerial, state.ProvenancePool)
 	e.wantState(0xa2, state.ProvenancePool)
 	if r := e.st.Snapshot().ProvenanceOf(0xa2); r == nil || r.State != state.ProvenancePool || r.Pool != "" {
@@ -260,9 +260,9 @@ func TestAbsenceExpires(t *testing.T) {
 	e.wantState(0xc1ee2001, state.ProvenanceUnknown)
 	e.wantState(localSerial, state.ProvenanceUnknown)
 	out := logs()
-	wantLogLine(t, out, "pool serials: forgetting serial 0xc1ee2001 (pool true, observed absent since ")
-	wantLogLine(t, out, "pool serials: forgetting serial 0xc100e2e1 (pool false, observed absent since ")
-	wantLogLine(t, out, "pool serials: forgetting pool "+poolC+" (observed without ResourceSlices since ")
+	wantLogLine(t, out, "provenance: forgetting serial 0xc1ee2001 (pool true, observed absent since ")
+	wantLogLine(t, out, "provenance: forgetting serial 0xc100e2e1 (pool false, observed absent since ")
+	wantLogLine(t, out, "provenance: forgetting pool "+poolC+" (observed without ResourceSlices since ")
 	recs, pools := e.records()
 	if len(recs) != 0 || len(pools) != 0 {
 		t.Fatalf("records %+v, pools %+v", recs, pools)
@@ -304,7 +304,7 @@ func TestClaimEvidence(t *testing.T) {
 	e.plug(0xa2)
 	e.wantHeld("claims not listable", 0xa2)
 	out := logs()
-	wantLogLine(t, out, "pool serials: listing the pool claims of the node: apiserver unavailable")
+	wantLogLine(t, out, "provenance: listing the pool claims of the node: apiserver unavailable")
 	wantLogLine(t, out, holdingBack+" mem3 (serial 0xa2): it may be a pool device: the pool claims of the "+
 		"node cannot be listed")
 	e.advance(MaxHold)
@@ -329,7 +329,7 @@ func TestPoolDeviceUsedByLocalClaims(t *testing.T) {
 			t.Fatalf("pool %v held %v", pool, held)
 		}
 	}
-	const text = "pool serials: memdev mem0 (serial 0xc100e2e1) is a pool device, but local claims use it: it is no longer " +
+	const text = "provenance: memdev mem0 (serial 0xc100e2e1) is a pool device, but local claims use it: it is no longer " +
 		"published, and no local claim is prepared on it; release the local claims ([u1]) and check its memory"
 	if n := countLogLines(logs(), text); n != 1 {
 		t.Fatalf("%d lines %q:\n%s", n, text, logs())
