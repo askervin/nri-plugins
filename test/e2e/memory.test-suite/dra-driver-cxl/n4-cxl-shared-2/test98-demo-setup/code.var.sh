@@ -471,7 +471,7 @@ demo-controller-image-build
 
 if [ "$DEMO_CASE" == local ]; then
     # The serial of VM2's local device, before the driver runs, for its
-    # configuration (plan-9 section 2).
+    # configuration (sharedMemdevs).
     dra-local-find "$VM2"
     SERIAL="$DRA_LOCAL_SERIAL"
     DRA_DRIVER_CONFIG="sharedMemdevs: [\"$SERIAL\"]"
@@ -504,7 +504,7 @@ if [ "$DEMO_CASE" == local ]; then
     dra-local-device "$VM2"
     shared=$(dra-value "$DRA_LOCAL_PUBLISHED" "j['attributes']['shared']['bool']")
     [ "$shared" == True ] ||
-        error "the driver publishes $DRA_LOCAL_DEVICE with shared $shared: it does not know sharedMemdevs (plan-9), build its image again"
+        error "the driver publishes $DRA_LOCAL_DEVICE with shared $shared: it does not know sharedMemdevs, build its image again"
 fi
 if [ "$DEMO_CASE" == wizard ]; then
     # The local devices of both nodes, sliced.

@@ -4,7 +4,7 @@
 # host without the pool server:
 # - the demo pods and their leases;
 # - the shared local device unconfigured first: the driver restarted
-#   without sharedMemdevs destroys its region (plan-9 D4, R9), so that it
+#   without sharedMemdevs destroys its region, so that it
 #   can be detached;
 # - the trace stopped, its summary in the output of this test;
 # - the driver, the controller, the namespace (dra-uninstall);
@@ -108,7 +108,7 @@ retry-until --timeout 90 --interval 2 --message "no lease companions in $DRA_NS"
     '[ -z "$(vmdir-command-q "$VM2" "kubectl get pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL -o name 2>/dev/null")" ]' ||
     echo "demo teardown: WARNING: lease companions remain in $DRA_NS"
 
-echo "### demo teardown: unconfigure the shared local device before detaching it (plan-9 R9)"
+echo "### demo teardown: unconfigure the shared local device before detaching it"
 local_attached=""
 if [ -n "$POOL_SERVER_PID" ]; then
     dra-local-find "$VM2"

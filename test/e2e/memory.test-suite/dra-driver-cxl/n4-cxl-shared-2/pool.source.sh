@@ -166,8 +166,8 @@ pool-vm-decoders() {
     # committed HDM decoders, "portN=COUNT" separated by spaces, nothing if
     # none has. COUNT is the kernel's decoders_committed of the port: the
     # decoders 0..COUNT-1 are committed, or released out of order below a
-    # committed one and pinned until it is released (bug-02 of plan-13:
-    # the port then refuses every new region with EBUSY). Without CXL
+    # committed one and pinned until it is released (the port then
+    # refuses every new region with EBUSY). Without CXL
     # memory devices and regions every count is 0. Decoders that only keep
     # the start and size of a destroyed region in sysfs are not committed:
     # Linux does not clear that bookkeeping of host bridge and switch
