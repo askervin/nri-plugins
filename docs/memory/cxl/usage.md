@@ -81,8 +81,8 @@ runs.
 
 The driver needs the first four. Without `DRANodeAllocatableResources`
 the API server drops `nodeAllocatableResources` from the ResourceSlices
-of the driver: the driver logs a warning once and publishes its devices
-without the field, and claimed memory is not accounted against the
+of the driver. The driver then logs a warning once and publishes its
+devices without the field. Claimed memory is not accounted against the
 allocatable memory of the node. A gate is turned on in the API server,
 the scheduler and the kubelet of every node, for instance with kubeadm:
 
@@ -465,9 +465,9 @@ deviceClassConfig:
 ```
 
 A preset applies to every claim of the class, also to the companion
-claims of leases: the lease broker sets the mode and `readOnly` of a
-companion itself, and the other fields of the preset apply to it as to
-any claim. Steering on for every container of a node is
+claims of leases. The lease broker sets the mode and `readOnly` of a
+companion itself; the other fields of the preset apply to it as to any
+claim. Steering on for every container of a node is
 `defaults.container.steering: {policy: auto}` in the
 [configuration file](#configuration-file).
 
@@ -565,7 +565,7 @@ The steering adds the NUMA nodes to the container's `cpuset.mems` as the
 plan reaches them (memory is never migrated), sets the memory policy of
 the container's threads, and throttles each step with `memory.high`.
 Past the last waypoint the container keeps the memory policy of the last
-segment of the plan, and `memory.high` is `max`: its allocations go on
+segment of the plan, and `memory.high` is `max`. Its allocations go on
 in that direction, beyond its claims, as far as `memory.max` and the
 free memory of the NUMA nodes allow. When its usage drops below the last
 waypoint again by `minStep` or more, the steering resumes.
@@ -578,10 +578,10 @@ without that node the container would not start. The memory policy keeps
 the allocations of the container on the CXL NUMA node.
 
 Steering is not for every workload. It narrows `cpuset.mems` to the
-NUMA nodes of the plan, sets the memory policy of the processes of the
-container at each step (a process that `kubectl exec` starts gets it at
-the next step), and holds the cgroup at `memory.high` until the plan
-moves on. Workloads that place their memory themselves, such as HPC
+NUMA nodes of the plan and holds the cgroup at `memory.high` until the
+plan moves on. It sets the memory policy of the processes of the
+container at each step; a process that `kubectl exec` starts gets it at
+the next step. Workloads that place their memory themselves, such as HPC
 applications and databases, are better left unsteered. A steered
 container cannot take a `numa` lease ([leases.md](leases.md#limitations)).
 
@@ -613,12 +613,12 @@ memory steering ended: <reason>; memory fenced
 ```
 
 A container that is not steered (policy `none`, or no `numa` memory) is
-managed like a [container without claims](#containers-without-claims):
-with fencing `allowed-mems` its `cpuset.mems` has the NUMA nodes of its
-`numa` results and leases next to its own, and its memory policy and
+managed like a [container without claims](#containers-without-claims).
+With fencing `allowed-mems` its `cpuset.mems` has the NUMA nodes of its
+`numa` results and leases next to its own. Its memory policy and
 `memory.high` are left alone. The kernel allocates its memory from the
-NUMA nodes of its CPUs first, and the workload binds memory to the CXL
-NUMA node itself with the number in `CXL_<KEY>_NUMA_NODE`, for example
+NUMA nodes of its CPUs first. The workload binds memory to the CXL NUMA
+node itself with the number in `CXL_<KEY>_NUMA_NODE`, for example
 with `numactl --membind` or `mbind`. Its `dram` and `region` results
 reserve capacity only.
 
@@ -632,10 +632,10 @@ NRI CreateContainer: ctr=<ctr>: memory fenced (steering none (default), fencing 
 
 ## Containers without claims
 
-The NUMA nodes on which the driver onlines CXL memory are kept away from
-the containers that have not claimed memory there: the NUMA nodes of
-`numa` slices of local memdevs and of pool devices in mode `numa`, also
-of the companion claims of leases. The NUMA nodes of `region` devices
+The driver keeps the NUMA nodes on which it onlines CXL memory away from
+the containers that have not claimed memory there. These are the NUMA
+nodes of `numa` slices and of pool devices in mode `numa`, also those of
+the companion claims of leases. The NUMA nodes of `region` devices
 (regions that the driver did not create) and DRAM are not among them:
 they are system RAM from boot, used by host processes and running
 containers.
@@ -722,9 +722,9 @@ Other variables:
 
 The variables and device nodes come from CDI devices, one per allocation
 result of a claim: `cxl.nri.io/device=claim-<uid>-<n>` and
-`cxl-pool.nri.io/device=claim-<uid>-<n>`, with the marker, the variables
-and the device node (or, in mode `fs`, the bind mount) of that result
-only. kubelet gives a container the CDI devices of the requests that it
+`cxl-pool.nri.io/device=claim-<uid>-<n>`. Each has the marker, the
+variables and the device node (or, in mode `fs`, the bind mount) of its
+result only. kubelet gives a container the CDI devices of the requests that it
 references, all of them without a request. Two claims of the same
 memdev in one container set the same names; the container sees one
 value of each.
@@ -976,8 +976,8 @@ read ([An unreadable state](#an-unreadable-state)).
 
 ### Forgetting a serial
 
-The driver tells pool devices from local memdevs by their serials, and
-remembers the serials of pool devices across restarts and reboots: a
+The driver tells pool devices from local memdevs by their serials. It
+remembers the serials of pool devices across restarts and reboots, so a
 pool device that stays attached to the node is never published as a
 local memdev ([local.md](local.md#what-the-driver-publishes)). To use it
 as a local memdev, start the driver once with
