@@ -79,8 +79,6 @@ type RegionMode string
 const (
 	RegionRAM  RegionMode = "ram"
 	RegionPmem RegionMode = "pmem"
-	// RegionDcd is reserved for dynamic capacity.
-	RegionDcd RegionMode = "dcd"
 )
 
 // RegionOwner tells whether a region is the driver's.

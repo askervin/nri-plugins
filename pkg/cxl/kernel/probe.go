@@ -59,9 +59,8 @@ var probeBases = []uint64{0, 3 * probePage, 5 << 20, 7<<30 + 5*probePage, 33<<30
 // address bit log2(P). Every store and load bypasses the CPU caches (cache
 // lines are flushed), so that a dirty line of an aliased address cannot
 // hide the aliasing. The probe overwrites 16 bytes at a few hundred
-// offsets: run it before the memory is in use. Takes milliseconds. A device
-// of size 0 has no aliasing. The context ends the wait for the character
-// device.
+// offsets: run it before the memory is in use. A device of size 0 has no
+// aliasing. The context ends the wait for the character device.
 func (k *Kernel) ProbeAliasing(ctx context.Context, dax string) (*Aliasing, error) {
 	size, err := k.DaxDeviceSize(dax)
 	if err != nil {

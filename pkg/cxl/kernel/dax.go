@@ -151,8 +151,8 @@ var DaxTransitions = fsm.Table[DaxState]{
 		{From: fsm.List(DaxDeviceDax), To: DaxKmem, When: "BindDax(kmem)"},
 		{From: fsm.List(DaxOther), To: DaxDeviceDax, When: "BindDax(device_dax)"},
 		{From: fsm.List(DaxOther), To: DaxKmem, When: "BindDax(kmem)"},
-		{From: fsm.List(DaxSeed), To: DaxKmem, When: "ResizeDaxDevice of the seed daxN.0 and BindDax(kmem), observed across them: a numa part on the seed"},
-		{From: fsm.List(DaxSeed), To: DaxDeviceDax, When: "ResizeDaxDevice of the seed daxN.0 and BindDax(device_dax), observed across them: a dax part on the seed"},
+		{From: fsm.List(DaxSeed), To: DaxKmem, When: "ResizeDaxDevice of the seed daxN.0 and BindDax(kmem), observed across them: a numa slice on the seed"},
+		{From: fsm.List(DaxSeed), To: DaxDeviceDax, When: "ResizeDaxDevice of the seed daxN.0 and BindDax(device_dax), observed across them: a dax slice on the seed"},
 	},
 }
 

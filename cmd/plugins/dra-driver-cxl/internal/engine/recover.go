@@ -307,7 +307,7 @@ func regionRefs(r *state.Records) []state.RegionRef {
 	return out
 }
 
-// recoverNoted resolves a NOTED or CREATING region at a start: the region
+// recoverNoted resolves a NOTED region at a start: the region
 // of its name exists on its memdev (OWNED), hollow (HOLLOW_OWNED), or not
 // (the note cleared).
 func recoverNoted(r *state.Records, reg *state.Region, k regionSeen) error {

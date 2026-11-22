@@ -214,7 +214,7 @@ func (e *Engine) releaseIdleQueued(ctx context.Context, m *state.Memdev, trigger
 
 // ForgetLocal forgets the records of the local memdevs with the serials
 // whose region was being made, without touching their regions: they are
-// pool devices now. A region is being made while it is NOTED or CREATING,
+// pool devices now. A region is being made while it is NOTED,
 // and while no grant of the memdev got anything of it (a slice or a block
 // device), all of them of Prepares that the process stop cut; those grants
 // go with the records.

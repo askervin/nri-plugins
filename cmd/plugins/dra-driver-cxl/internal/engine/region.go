@@ -256,7 +256,7 @@ func noteRegion(r *state.Records, req *GrantRequest, name string, mode state.Reg
 }
 
 // createdRegion records the region that a creation made (NOTED ->
-// CREATING -> OWNED) under its name, which replaces the noted one.
+// OWNED) under its name, which replaces the noted one.
 func createdRegion(r *state.Records, req *GrantRequest, noted, created string, mode state.RegionMode, ri kernel.RegionInfo) error {
 	if noted == "" {
 		// the next name could not be read: recorded after the creation
