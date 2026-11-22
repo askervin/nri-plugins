@@ -236,7 +236,7 @@ time, from `test/e2e`:
 
 ```bash
 cd test/e2e
-./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test10-dra-pooling
+./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test10-dra-pool
 ```
 
 or the whole suite in order (`n4-cxl-shared-0/test00-up`,
@@ -250,12 +250,12 @@ tests of `n4-cxl-shared-2`):
 | test | |
 |:-----|:-|
 | `test00-up` | create and check the VM of the topology; `n4-cxl-shared-2/test00-up` also makes the three-node cluster |
-| `test01-shared-cxl` | CXL memory shared by VM1 and VM2 through fake-cxl-pool, without Kubernetes |
-| `test10-dra-pooling` | pool devices for pods: exclusive devices as NUMA nodes and as a dax device; the pool's slice is for the nodes it reaches, VM1 and VM2 |
-| `test12-dra-live-attach` | leases of pool memory for running containers; the directory of the lease socket in the container of a lease claim, read-only, and the directory of the filesystems of fs leases, empty and read-only; requests that the node plugin refuses: a shared lease of an exclusive device, fs and block leases of a volatile device |
+| `test01-fake-pool` | CXL memory shared by VM1 and VM2 through fake-cxl-pool, without Kubernetes |
+| `test10-dra-pool` | pool devices for pods: exclusive devices as NUMA nodes and as a dax device; the pool's slice is for the nodes it reaches, VM1 and VM2 |
+| `test12-dra-pool-leases` | leases of pool memory for running containers; the directory of the lease socket in the container of a lease claim, read-only, and the directory of the filesystems of fs leases, empty and read-only; requests that the node plugin refuses: a shared lease of an exclusive device, fs and block leases of a volatile device |
 | `test13-dra-shared-one-writer-many-readers` | single-writer sharing on two nodes: an exclusive writer, then read-only readers on VM1 and VM2 |
-| `test14-dra-local-memdev` | slices of a local memdev, `numa` and `dax` |
-| `test15-dra-local-live-attach` | leases of local memory for running containers |
+| `test14-dra-local` | slices of a local memdev, `numa` and `dax` |
+| `test15-dra-local-leases` | leases of local memory for running containers |
 | `test16-cxl-llm-share` | an LLM on a shared persistent pool device: a writer flashes an erofs image of the model into it (mode `block`), stock llama.cpp servers on VM1 and VM2 answer from the erofs that the driver mounts (mode `fs`), direct from CXL memory and through the page cache of the node; two of them lease the erofs from their running container (`cxl-request request --mode fs`), one on VM2 next to static mounts of the same device; the release of that lease waits while the model is mapped, and once its server is gone the lease and its mounts go while the device stays for the other readers of the node |
 | `test17-dra-local-shared` | the local memdev of VM2 configured shared (`sharedMemdevs`), through claims of `cxl-local-shared`: an exclusive writer, read-only readers that wait for it and then share it, refused configurations and `shares: "0"`, the region and the bytes kept with no claims and across driver restarts, gone without the configuration; leases of it for a running container: an exclusive one that reads the kept bytes, one share by size, the local device before the pool, a refused pool request, a mapped read-only share whose pod goes |
 | `test19-many-pools` | three pools in the cluster, one server and one controller each: pool-a (VM1, VM2), pool-b (VM0), pool-c (every VM, host bridge 1, over HMP). Their slices and node selectors; pods without a `nodeSelector` scheduled where their claim's pool reaches; "any 512Mi" landing on the only pool with a free one; a pod pinned to a node that its pool does not reach staying Pending; one pod with devices of two pools and nothing of them on a node without a claim; data shared across racks through pool-c, by a claim without a configuration (mode `dax`), with the reader going on when the writer's node lets go |
