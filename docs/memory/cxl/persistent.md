@@ -218,9 +218,9 @@ engine: pool memdev 0xc1ae0002: unmounted <mnt>
 ## Several nodes
 
 A single-host filesystem with a writer on one host and anybody else on
-another corrupts or misleads: two writers have two allocators and
-journals of the same blocks, and a reader next to a writer elsewhere
-sees metadata halfway and keeps stale pages. So a read-write claim of a
+another corrupts or misleads. Two writers have two allocators and
+journals of the same blocks. A reader next to a writer elsewhere sees
+metadata halfway and keeps stale pages. So a read-write claim of a
 single-host filesystem has the device on its node only, as a Kubernetes
 volume of access mode ReadWriteOnce:
 
@@ -243,12 +243,12 @@ volume of access mode ReadWriteOnce:
   `singleHost`, or the device is not shared: a pool controller that does
   not implement this makes the writes fail, never corrupt.
 - The attachment becomes shareable again after the writing claims are
-  deallocated, which follows their Unprepare, which syncs the
-  filesystem: no other host sees the device before the data is in it.
-  pmem writes go through the CPU caches to the memory, and Linux writes
-  back and invalidates the CPU caches of a CXL region when it creates
-  and destroys it, so what host A wrote, synced and released, host B
-  reads after it creates its region.
+  deallocated. Their Unprepare syncs the filesystem before that, so no
+  other host sees the device before the data is in it. pmem writes go
+  through the CPU caches to the memory. Linux writes back and
+  invalidates the CPU caches of a CXL region when it creates and
+  destroys the region. So host B reads what host A wrote, synced and
+  released, after B creates its region.
 
 A persistent local memdev that is not in `sharedMemdevs` is on one host
 by construction: its claims write as the claims of one node do. A
