@@ -154,7 +154,7 @@ request that names such a device by `--serial` without `--share` takes
 the whole device (the writer of single-writer sharing). A local memdev
 of volatile memory that is not configured shared is never shared through
 a lease; several pods share its slice by referencing one ResourceClaim
-([local.md](local.md#claims)).
+([local.md](local.md#slices)).
 
 A local lease waits for no attach and no binding condition: it is Ready a
 few seconds after the request. A `numa` lease reports node N and the

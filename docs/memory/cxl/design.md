@@ -211,6 +211,40 @@ driver has listed are kept as [ListedPool](states.md#listedpool)
 records. An operator removes the provenance of a serial with
 `--forget-provenance` ([local.md](local.md#what-the-driver-publishes)).
 
+The rules, at every scan of the publisher (after udev events, after the
+Prepares and Unprepares that changed the records, and at least every 2
+minutes plus at most 30 seconds):
+
+- The scan lists the ResourceSlices of `cxl-pool.nri.io` (those of
+  other drivers do not count). A serial that a slice lists, that the pool
+  driver prepared, or that the status of a pool claim allocated to the
+  node names is POOL. A failed list keeps the serials of the last good
+  one; until a list has succeeded no memdev is published (regions are),
+  and the list is tried again every 30 seconds.
+- POOL is forgotten after the serial was observed absent (in no slice,
+  not prepared, not on the node) for 24 hours. Absence counts over scans
+  at most 5 minutes apart, and starts again after a longer gap (a stopped
+  driver, failing lists, a step of the clock) and after a restart.
+- A memdev that was published as local stays LOCAL unless the pool
+  driver publishes or prepares its serial; then it is POOL, and the next
+  scan withdraws it. Local claims that use it at that moment keep their
+  memory (the log has an error), and no new local claim is prepared on
+  it.
+- Any other memdev is new. It is HELD while a pool claim allocated to
+  the node is not attached yet (its status has neither a serial nor a
+  failed attach): it may be the device of that claim. It is HELD for up
+  to 5 minutes while a remembered pool has been without ResourceSlices
+  for less than an hour, while the list fails, or in the first hour
+  after a start without a readable state (LOST). Then it is POOL if the
+  slices list it, else LOCAL. Memdevs on the node at the first start,
+  and a memdev hot-added while all pools have their slices, are LOCAL at
+  once. The hour of a pool without slices starts again at a restart.
+- Before it creates a region on a local memdev or onlines its memory,
+  the engine reads the provenance again and lists the slices of the pool
+  driver: the Prepare of a local claim on a HELD or POOL memdev, or on a
+  serial that a pool lists, fails with `memdev 0x... is a pool device
+  (HELD|POOL): not used as a local memdev`.
+
 ### Probe
 
 The address line probe runs on every new region of a local memdev of RAM
@@ -287,7 +321,39 @@ zeroed once when the region is made; every claim maps it. Before any
 kernel work on a local memdev, the engine checks that the memdev is not
 a pool device: its provenance is not POOL or HELD, a fresh list of the
 pool driver's ResourceSlices does not name it, and no pool grant uses
-it. [local.md](local.md#what-prepare-does) has the details.
+it.
+
+The size of a slice is the consumed capacity of the allocation (the
+whole memdev without one), rounded up to the memory block size, which is
+read again for every slice. The first slice uses `daxX.0` when nothing
+else does, every other slice is a new dax device that the kernel places
+first-fit. Because every slice is a multiple of the block size, the
+placement keeps every slice and every free gap of a block-aligned region
+block-aligned, also after releases. The engine checks every range of
+every slice before it binds a driver; a slice that first-fit placed
+across a block boundary (a region that does not start at one) is
+deleted and made again on the first whole free blocks, combining free
+ranges when one is not enough, so that the head and tail of such a
+region are never used. A region with less free memory than the slice
+fails the Prepare with "no room for the slice": the scheduler accounts
+the capacity, so only a smaller usable size found by the probe does
+that.
+
+A `numa` slice is bound to `kmem` through sysfs and its memory blocks
+are onlined movable. A udev rule that onlines hot-added memory onlines
+the blocks of a new region after the engine offlined them: the engine
+offlines them again until they stay offline for 500 ms, and fails the
+Prepare after 30 s. `kmem` is never unbound from memory that is online,
+and a region whose memory is online is never destroyed: the kernel could
+not remove the memory, and online memory without its region would read
+garbage. A `dax` slice is bound to `device_dax` and zeroed. The seed
+`daxX.0` is never deleted: an Unprepare sets it to size 0.
+
+A shared local memdev has one dax device over the whole region. The
+first claim creates the region and zeroes the device; when the zeroing
+fails, the region is destroyed again and the claim gets nothing. A
+region that went away while the driver runs is forgotten with its
+claims, and the next claim makes a new one.
 
 ### A pool device
 
@@ -358,6 +424,14 @@ record as it was; kubelet retries, and the retry finds out from the
 kernel what still exists. A record is removed only by a successful write
 of the document without it.
 
+A slice whose release fails where kubelet does not retry it (the
+release at a start of a claim whose Prepare did not finish, the rollback
+of a failed Prepare) stays recorded with its claim as
+[RELEASING](states.md#grantstate). It is never handed out again; the
+next Prepare or Unprepare of the claim, and every start, release it
+first and fail while they cannot. The region stays while such a slice
+exists.
+
 The release policy, by kind of memdev:
 
 - A sliced local memdev: its region is destroyed with its last slice. A
@@ -371,6 +445,18 @@ The release policy, by kind of memdev:
 - A pool device: its region is destroyed with its last grant, also below
   newer regions, because a kept region would block the hot-removal of
   the device; the hole closes when the regions above go.
+
+The release in the running driver checks again after
+`cxl disable-region`, under the lock of the region creations, that no
+region came above it meanwhile (a pool Prepare on the same host bridge);
+if one did, the region stays, disabled, and is KEPT. A kept region has
+no slices. The next Prepare of its claim sets it up like a new one:
+enabled again, its dax devices deleted, `daxX.0` made over the whole
+region, bound to `device_dax`, probed, and zeroed for a shared memdev.
+When nothing lies above it any more, that Prepare destroys it and
+creates a new one instead. A kept region whose memory aliases is made
+again smaller only when nothing lies above it; the Prepare fails
+meanwhile.
 
 ## How a restart recovers
 
@@ -406,6 +492,20 @@ may exist and finishes or undoes it. The start goes in this order:
 6. The kubelet plugins register, the ResourceSlice is published, the
    watchers and the periodic passes start (stale binds are unmounted
    again, the `cpuset.mems` of fenced containers repaired).
+
+A Prepare cut while it created the region of the first claim of a
+memdev leaves the region (enabled, or disabled by a cut rollback) and
+the noted name. The start destroys that region, and the Prepare again of
+the claim creates a new one; a region that a cut `cxl create-region` left
+without a target is deleted. A region on the memdev with another name
+is not the driver's: it is not touched, and the memdev is not
+published. On a memdev that is a pool device now nothing is touched.
+
+The document records the boot id of the kernel
+(`/proc/sys/kernel/random/boot_id`). At the first start of a new boot
+the records of regions and slices of the other boot are dropped without
+touching any region, so that a region that firmware or an admin created
+under the same name is never taken for the driver's.
 
 What a restart keeps, and what a reboot changes:
 
