@@ -217,3 +217,23 @@ func TestPolicyMatrix(t *testing.T) {
 		t.Error("a policy without the doc comments")
 	}
 }
+
+// TestEngineInvariants reads the engine's invariants from its source:
+// each has a name I<n> of its own and a text.
+func TestEngineInvariants(t *testing.T) {
+	invs, err := invariantDocs(engineDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invs) == 0 {
+		t.Fatal("no invariants")
+	}
+	name := regexp.MustCompile(`^I[0-9]+$`)
+	seen := map[string]bool{}
+	for _, inv := range invs {
+		if !name.MatchString(inv[0]) || seen[inv[0]] || inv[1] == "" {
+			t.Errorf("invariant %q: %q", inv[0], inv[1])
+		}
+		seen[inv[0]] = true
+	}
+}

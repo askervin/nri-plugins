@@ -14,7 +14,8 @@
 
 package main
 
-// The records and transition tables of internal/state, the release policy
-// of internal/engine, the records of internal/containers and the kernel
-// object tables of pkg/cxl/kernel, rendered into the documentation; TestStatesFileIsCurrent fails when the file is stale.
+// The records and transition tables of internal/state, the invariants and the
+// release policy of internal/engine, the records of internal/containers and
+// the kernel object tables of pkg/cxl/kernel, rendered into the
+// documentation; TestStatesFileIsCurrent fails when the file is stale.
 //go:generate go run ./internal/statedoc -state internal/state -o ../../../docs/memory/cxl/states.md

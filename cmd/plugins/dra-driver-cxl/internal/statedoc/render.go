@@ -82,6 +82,9 @@ func render(stateDir, containersDir, engineDir, kernelDir string) ([]byte, error
 	for _, inv := range state.DocumentInvariants {
 		fmt.Fprintf(&b, "- **%s**: %s\n", inv.Name, escape(inv.Text))
 	}
+	if err := renderEngineInvariants(&b, engineDir); err != nil {
+		return nil, err
+	}
 	if err := renderPolicy(&b, engineDir); err != nil {
 		return nil, err
 	}
@@ -473,6 +476,128 @@ func stringsOf[S ~string](values []S) []string {
 		out = append(out, string(v))
 	}
 	return out
+}
+
+// renderEngineInvariants writes the invariants that the engine checks over
+// the records and a kernel observation together: the list invariants in
+// the Go files of engineDir.
+func renderEngineInvariants(b *bytes.Buffer, engineDir string) error {
+	invs, err := invariantDocs(engineDir)
+	if err != nil {
+		return err
+	}
+	if len(invs) == 0 {
+		return fmt.Errorf("no invariants in %s", engineDir)
+	}
+	b.WriteString("\n## Invariants over the document and the kernel\n\n")
+	b.WriteString("Checked by the engine over the records and its last observation of the kernel; a violation\n")
+	b.WriteString("is logged as `engine invariant: <name>: ...`. I11 is the NRI plugin's, of [Container (in memory)](#container-in-memory).\n\n")
+	for _, inv := range invs {
+		fmt.Fprintf(b, "- **%s**: %s\n", inv[0], escape(inv[1]))
+	}
+	b.WriteString("\n")
+	return nil
+}
+
+// invariantDocs returns the names and texts of the elements of the
+// variable invariants in the Go files of dir, in their order: composite
+// literals with the keys Name and Text, a text a literal or a sum of them.
+func invariantDocs(dir string) ([][2]string, error) {
+	names, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		return nil, err
+	}
+	var out [][2]string
+	fset := token.NewFileSet()
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			return nil, err
+		}
+		for _, d := range f.Decls {
+			gd, ok := d.(*ast.GenDecl)
+			if !ok || gd.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				s, ok := spec.(*ast.ValueSpec)
+				if !ok || len(s.Names) != 1 || s.Names[0].Name != "invariants" || len(s.Values) != 1 {
+					continue
+				}
+				list, ok := s.Values[0].(*ast.CompositeLit)
+				if !ok {
+					return nil, fmt.Errorf("%s: invariants is not a composite literal", name)
+				}
+				for _, el := range list.Elts {
+					inv, err := invariantDoc(el)
+					if err != nil {
+						return nil, fmt.Errorf("%s: %w", fset.Position(el.Pos()), err)
+					}
+					out = append(out, inv)
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+// invariantDoc returns the Name and the Text of one element of invariants.
+func invariantDoc(el ast.Expr) ([2]string, error) {
+	var inv [2]string
+	lit, ok := el.(*ast.CompositeLit)
+	if !ok {
+		return inv, fmt.Errorf("an invariant that is not a composite literal")
+	}
+	for _, e := range lit.Elts {
+		kv, ok := e.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok || (key.Name != "Name" && key.Name != "Text") {
+			continue
+		}
+		v, err := stringSum(kv.Value)
+		if err != nil {
+			return inv, fmt.Errorf("%s: %w", key.Name, err)
+		}
+		if key.Name == "Name" {
+			inv[0] = v
+		} else {
+			inv[1] = v
+		}
+	}
+	if inv[0] == "" || inv[1] == "" {
+		return inv, fmt.Errorf("an invariant without a Name or a Text")
+	}
+	return inv, nil
+}
+
+// stringSum returns the value of a string literal or of a sum of them.
+func stringSum(e ast.Expr) (string, error) {
+	switch e := e.(type) {
+	case *ast.BasicLit:
+		if e.Kind != token.STRING {
+			return "", fmt.Errorf("not a string literal")
+		}
+		return strconv.Unquote(e.Value)
+	case *ast.BinaryExpr:
+		if e.Op != token.ADD {
+			return "", fmt.Errorf("not a sum of string literals")
+		}
+		x, err := stringSum(e.X)
+		if err != nil {
+			return "", err
+		}
+		y, err := stringSum(e.Y)
+		return x + y, err
+	case *ast.ParenExpr:
+		return stringSum(e.X)
+	}
+	return "", fmt.Errorf("not a string literal")
 }
 
 // constDocs returns the doc comments of the string constants of the type

@@ -47,9 +47,9 @@ type checkOptions struct {
 	Fenced []int
 }
 
-// invariants are the invariants of the records and the kernel together
-// (I1-I10, I12 of the design; I11 is the containers'); the document
-// invariants of package state are checked with them.
+// invariants are the invariants of the records and the kernel together,
+// rendered into docs/memory/cxl/states.md (I11 is the containers'); the
+// document invariants of package state are checked with them.
 var invariants = []invariant{
 	{Name: "I1", Text: "Every region of ours is exactly one Region record in state OWNED, KEPT or HOLLOW_OWNED that the " +
 		"kernel has on the memdevs of its Targets (enabled when OWNED, or disabled while a grant of it is RELEASING; " +

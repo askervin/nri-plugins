@@ -504,6 +504,23 @@ need the kernel's view.
 - **lease claims**: The lease claim of a lease result of a PREPARED or PREPARED_UNRESTORED preparation has a record, unless the claim's Unprepare runs: it closes the lease claim before the preparation turns UNPREPARING. The engine does not check this invariant: the lease claims are the lease broker's records, which it writes out of order with the preparations.
 - **users**: Between requests and after the recovery, every region of ours is OWNED, KEPT or HOLLOW_OWNED, and every dax device of a region of ours that is OWNED or KEPT and is not the seed has a user grant that is REALISED, REALISED_UNRESTORED or RELEASING, or is the Whole device of a KEPT region, of a memdev that is IDLE_KEPT, or of a region that a grant of a Prepare that did not finish names, or has as its user a grant of a Prepare that did not finish of a numa companion or of a KEPT preparation (kept for its Unprepare); the recovery deletes the others, those of a HOLLOW_OWNED region go with it.
 - **journaled**: Every object that the driver created lies inside a journaled container: a region of ours targets memdevs with a record; the region, bind target and lend of a grant's Got are named by its Intent; a node mount's path is the Intent of a user grant.
+
+## Invariants over the document and the kernel
+
+Checked by the engine over the records and its last observation of the kernel; a violation
+is logged as `engine invariant: <name>: ...`. I11 is the NRI plugin's, of [Container (in memory)](#container-in-memory).
+
+- **I1**: Every region of ours is exactly one Region record in state OWNED, KEPT or HOLLOW_OWNED that the kernel has on the memdevs of its Targets (enabled when OWNED, or disabled while a grant of it is RELEASING; hollow or gone when HOLLOW_OWNED); a region on a memdev of ours that no record names is FOREIGN.
+- **I2**: Every dax device of a region of ours that is not the seed is a record of the region with a user that is REALISED or RELEASING, or the Whole device (daxN.0) of a kept region.
+- **I3**: The objects of a REALISED grant of a memdev that is not GONE exist with the recorded names and numbers: its region on its memdev, its dax device, its block device, its node mount.
+- **I5**: With fencing allowed-mems, memory of a region of ours is online only on a NUMA node that the fence holds.
+- **I6**: A node mount is read-write iff a writer grant of its memdev uses it (but while a user of it is RELEASING).
+- **I7**: The block device of a persistent region of ours with prepared grants is read-only iff no writer grant uses it.
+- **I8**: No mount or bind under the driver's directories without a REALISED or REALISED_UNRESTORED grant of a prepared claim that lists it, except the Stale entries of its memdev, and the node mount and lease bind of a RELEASING grant of an UNPREPARING or KEPT claim (a release that failed, which kubelet's retry finishes).
+- **I9**: Every object that the driver created lies inside a journaled container (the document side is the "journaled" invariant of package state).
+- **I10**: No new local grant on a serial whose provenance is POOL or HELD.
+- **I12**: No lend of a READY lease on a NUMA node whose memory is offline (a releasing or failed lease is revoked before the memory of its companion goes offline, and keeps its lend record until it is gone).
+
 ## Release policy
 
 What the release of the last grant of a memdev does with the region of the memdev

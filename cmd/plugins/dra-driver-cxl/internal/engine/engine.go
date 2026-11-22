@@ -57,8 +57,7 @@ import (
 //
 // Transitions: the tables of package state, applied in store commits.
 //
-// Invariants: invariants.go (I1-I12 of the design over the records and a
-// kernel snapshot).
+// Invariants: invariants.go, over the records and a kernel snapshot.
 //
 // Persistence: the records only; a commit is durable before the next
 // kernel command that depends on it.
