@@ -132,10 +132,6 @@ func (r Range) String() string {
 // Blocks returns the numbers of the memory blocks of bs bytes that lie
 // wholly in the range.
 func (r Range) Blocks(bs uint64) []int {
-	return r.blocks(bs)
-}
-
-func (r Range) blocks(bs uint64) []int {
 	if bs == 0 {
 		return nil
 	}
@@ -150,7 +146,7 @@ func (r Range) blocks(bs uint64) []int {
 // (devices/system/memory/block_size_bytes, hex without 0x).
 func (k *Kernel) BlockSize() (uint64, error) {
 	path := filepath.Join(k.sysRoot(), "devices", "system", "memory", "block_size_bytes")
-	s, err := ReadTrim(path)
+	s, err := readTrim(path)
 	if err != nil {
 		return 0, err
 	}
@@ -181,7 +177,7 @@ func (k *Kernel) onlineBlocks(blocks []int) []int {
 
 // blockState returns the state of memory block n.
 func (k *Kernel) blockState(n int) BlockState {
-	st, err := ReadTrim(k.block(n, "state"))
+	st, err := readTrim(k.block(n, "state"))
 	switch {
 	case os.IsNotExist(err):
 		return BlockAbsent
@@ -199,7 +195,7 @@ func (k *Kernel) MemoryBlock(n int) MemoryBlock {
 	if b.State == BlockAbsent {
 		return b
 	}
-	b.Zones, _ = ReadTrim(k.block(n, "valid_zones"))
+	b.Zones, _ = readTrim(k.block(n, "valid_zones"))
 	b.NUMANode = k.BlocksNUMANode([]int{n})
 	return b
 }
@@ -222,7 +218,7 @@ func (k *Kernel) regionBlocks(region string) ([]int, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	whole := r.blocks(bs)
+	whole := r.Blocks(bs)
 	var out []int
 	for _, b := range whole {
 		if k.blockExists(b) {
@@ -274,14 +270,14 @@ func (k *Kernel) BlocksNUMANode(blocks []int) int {
 func (k *Kernel) setBlocksState(blocks []int, state string) error {
 	want := strings.TrimSuffix(strings.TrimSuffix(state, "_movable"), "_kernel")
 	for _, b := range blocks {
-		cur, err := ReadTrim(k.block(b, "state"))
+		cur, err := readTrim(k.block(b, "state"))
 		if err != nil {
 			return err
 		}
 		if cur == want {
 			// online, but maybe in a zone that cannot be offlined reliably
 			if state == BlockStateOnlineMovable {
-				if z, err := ReadTrim(k.block(b, "valid_zones")); err == nil && z != "" && !strings.HasPrefix(z, "Movable") {
+				if z, err := readTrim(k.block(b, "valid_zones")); err == nil && z != "" && !strings.HasPrefix(z, "Movable") {
 					return fmt.Errorf("memory%d is already online in zone %s, not Movable (auto-onlined?): offline it first", b, z)
 				}
 			}
@@ -351,7 +347,7 @@ func (k *Kernel) NUMANodes() []NUMANode {
 	m, _ := filepath.Glob(filepath.Join(dir, "node[0-9]*"))
 	sortNat(m)
 	hasMemory := map[int]bool{}
-	if s, err := ReadTrim(filepath.Join(dir, "has_memory")); err == nil {
+	if s, err := readTrim(filepath.Join(dir, "has_memory")); err == nil {
 		for _, id := range parseList(s) {
 			hasMemory[id] = true
 		}

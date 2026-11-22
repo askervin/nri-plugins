@@ -276,7 +276,7 @@ func (k *Kernel) probeNamespaceWhy(name string) (Namespace, string, error) {
 	dir := k.ndDev(name)
 	ns := Namespace{Name: name}
 	sizeFile := filepath.Join(dir, "size")
-	size, err := ReadUint(sizeFile)
+	size, err := readUint(sizeFile)
 	if errors.Is(err, os.ErrNotExist) {
 		return ns, "no " + sizeFile, nil // being added
 	}
@@ -289,7 +289,7 @@ func (k *Kernel) probeNamespaceWhy(name string) (Namespace, string, error) {
 	}
 	// An attribute that is not there yet is a probe in progress.
 	holderFile := filepath.Join(dir, "holder")
-	holder, err := ReadTrim(holderFile)
+	holder, err := readTrim(holderFile)
 	if err != nil {
 		return ns, fmt.Sprintf("cannot read %s: %v", holderFile, err), nil
 	}
@@ -344,7 +344,7 @@ func (k *Kernel) probeNamespaceWhy(name string) (Namespace, string, error) {
 	// writer's namespace could be reconfigured.
 	if ns.Mode == NamespaceFsdax {
 		modeFile := filepath.Join(blockDir, "mode")
-		switch m, err := ReadTrim(modeFile); {
+		switch m, err := readTrim(modeFile); {
 		case err != nil:
 			return ns, fmt.Sprintf("cannot read %s: %v", modeFile, err), nil
 		case m == "ram":
@@ -361,14 +361,14 @@ func (k *Kernel) probeNamespaceWhy(name string) (Namespace, string, error) {
 // BlockDeviceInfo returns the device numbers and the size in bytes of a
 // block device (/sys/class/block/<name>).
 func (k *Kernel) BlockDeviceInfo(name string) (major, minor int, size uint64, err error) {
-	v, err := ReadTrim(k.blockDev(name, "dev"))
+	v, err := readTrim(k.blockDev(name, "dev"))
 	if err != nil {
 		return 0, 0, 0, err
 	}
 	if major, minor, err = parseDevNumbers(name, v); err != nil {
 		return 0, 0, 0, err
 	}
-	sectors, err := ReadUint(k.blockDev(name, "size"))
+	sectors, err := readUint(k.blockDev(name, "size"))
 	if err != nil {
 		return 0, 0, 0, err
 	}
@@ -402,7 +402,7 @@ func (k *Kernel) probeNamespaces(ndregion string) ([]Namespace, string, error) {
 	// The kernel registers the namespaces that it found at the probe of
 	// the region asynchronously; init_namespaces counts them.
 	initFile := filepath.Join(dir, "init_namespaces")
-	v, err := ReadTrim(initFile)
+	v, err := readTrim(initFile)
 	if err != nil {
 		return nil, fmt.Sprintf("cannot read %s: %v", initFile, err), nil
 	}

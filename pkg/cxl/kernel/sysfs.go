@@ -30,9 +30,9 @@ import (
 // (block_size_bytes), decimal (dax device size, available_size), 512-byte
 // sectors (block device size), kB (node meminfo).
 
-// ReadTrim returns the content of a file without leading and trailing
+// readTrim returns the content of a file without leading and trailing
 // white space.
-func ReadTrim(path string) (string, error) {
+func readTrim(path string) (string, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
@@ -45,9 +45,9 @@ func ParseHex(s string) (uint64, error) {
 	return strconv.ParseUint(strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X"), 16, 64)
 }
 
-// ReadUint returns the number in a sysfs attribute, decimal or 0x hex.
-func ReadUint(path string) (uint64, error) {
-	s, err := ReadTrim(path)
+// readUint returns the number in a sysfs attribute, decimal or 0x hex.
+func readUint(path string) (uint64, error) {
+	s, err := readTrim(path)
 	if err != nil {
 		return 0, err
 	}
@@ -61,7 +61,7 @@ func ReadUint(path string) (uint64, error) {
 // readInt returns the decimal number in a sysfs attribute, def if it
 // cannot be read.
 func readInt(path string, def int) int {
-	s, err := ReadTrim(path)
+	s, err := readTrim(path)
 	if err != nil {
 		return def
 	}

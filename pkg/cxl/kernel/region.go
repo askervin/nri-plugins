@@ -177,7 +177,7 @@ func (k *Kernel) regionTargets(region string) []string {
 	sortNat(m)
 	var out []string
 	for _, p := range m {
-		if v, err := ReadTrim(p); err == nil && v != "" {
+		if v, err := readTrim(p); err == nil && v != "" {
 			out = append(out, v)
 		}
 	}
@@ -187,14 +187,14 @@ func (k *Kernel) regionTargets(region string) []string {
 // regionCommitted tells whether the region in sysfs directory dir is
 // committed; a region without a commit attribute is not.
 func regionCommitted(dir string) bool {
-	c, err := ReadTrim(filepath.Join(dir, "commit"))
+	c, err := readTrim(filepath.Join(dir, "commit"))
 	return err == nil && c != "0"
 }
 
 // regionLocked tells whether the platform locked the region in sysfs
 // directory dir; a region without a locked attribute is not.
 func regionLocked(dir string) bool {
-	l, err := ReadTrim(filepath.Join(dir, "locked"))
+	l, err := readTrim(filepath.Join(dir, "locked"))
 	return err == nil && l != "0"
 }
 
@@ -206,7 +206,7 @@ func regionHollow(dir string) bool {
 	}
 	targets, _ := filepath.Glob(filepath.Join(dir, "target[0-9]*"))
 	for _, t := range targets {
-		if v, err := ReadTrim(t); err != nil || v != "" {
+		if v, err := readTrim(t); err != nil || v != "" {
 			return false
 		}
 	}
@@ -241,13 +241,13 @@ func (k *Kernel) region(region string, t topology) (RegionInfo, error) {
 		return r, errorf(ErrNotFound, "%s: %w", region, os.ErrNotExist)
 	}
 	var err error
-	r.Mode, err = ReadTrim(filepath.Join(dir, "mode"))
+	r.Mode, err = readTrim(filepath.Join(dir, "mode"))
 	k.factErr(err)
 	r.Committed = regionCommitted(dir)
 	r.Locked = regionLocked(dir)
 	if r.Range, err = k.RegionRange(region); err != nil {
 		// a region without an address range yet has the size 0
-		if size, serr := ReadUint(filepath.Join(dir, "size")); serr != nil || size > 0 {
+		if size, serr := readUint(filepath.Join(dir, "size")); serr != nil || size > 0 {
 			k.factErr(err)
 		}
 	}
@@ -291,16 +291,16 @@ func (k *Kernel) regionNUMANode(region string, rr Range) int {
 	if err != nil {
 		return -1
 	}
-	return k.BlocksNUMANode(rr.blocks(bs))
+	return k.BlocksNUMANode(rr.Blocks(bs))
 }
 
 // RegionRange returns the physical address range of a region.
 func (k *Kernel) RegionRange(region string) (Range, error) {
-	res, err := ReadTrim(k.cxlDev(region, "resource"))
+	res, err := readTrim(k.cxlDev(region, "resource"))
 	if err != nil {
 		return Range{}, err
 	}
-	sz, err := ReadTrim(k.cxlDev(region, "size"))
+	sz, err := readTrim(k.cxlDev(region, "size"))
 	if err != nil {
 		return Range{}, err
 	}
@@ -325,7 +325,7 @@ func (k *Kernel) RegionRootDecoder(region string) (string, error) {
 		return "", err
 	}
 	parent := filepath.Base(filepath.Dir(real))
-	if t, _ := ReadTrim(k.cxlDev(parent, "devtype")); t != "cxl_decoder_root" {
+	if t, _ := readTrim(k.cxlDev(parent, "devtype")); t != "cxl_decoder_root" {
 		return "", fmt.Errorf("%s: its parent device %s is not a root decoder", region, parent)
 	}
 	return parent, nil
@@ -350,17 +350,17 @@ func (k *Kernel) RootDecoder(memdev, regionType string) (string, error) {
 		return "", err
 	}
 	for _, d := range k.listCXL("decoder*") {
-		if t, _ := ReadTrim(k.cxlDev(d, "devtype")); t != "cxl_decoder_root" {
+		if t, _ := readTrim(k.cxlDev(d, "devtype")); t != "cxl_decoder_root" {
 			continue
 		}
 		// a decoder without the attribute can map both types
-		if v, err := ReadTrim(k.cxlDev(d, capAttr)); err == nil && v != "1" {
+		if v, err := readTrim(k.cxlDev(d, capAttr)); err == nil && v != "1" {
 			continue
 		}
-		if ways, err := ReadTrim(k.cxlDev(d, "interleave_ways")); err != nil || ways != "1" {
+		if ways, err := readTrim(k.cxlDev(d, "interleave_ways")); err != nil || ways != "1" {
 			continue
 		}
-		tl, _ := ReadTrim(k.cxlDev(d, "target_list"))
+		tl, _ := readTrim(k.cxlDev(d, "target_list"))
 		if n, err := strconv.Atoi(strings.TrimSpace(tl)); err == nil && n == uid {
 			return d, nil
 		}
@@ -380,7 +380,7 @@ func nextRegionAttr(regionType string) string {
 // NextRegionName returns the name that the root decoder offers for its next
 // region of the type (its create_ram_region or create_pmem_region).
 func (k *Kernel) NextRegionName(decoder, regionType string) (string, error) {
-	return ReadTrim(k.cxlDev(decoder, nextRegionAttr(regionType)))
+	return readTrim(k.cxlDev(decoder, nextRegionAttr(regionType)))
 }
 
 // CreateRegionRequest is a region to create:
@@ -614,7 +614,7 @@ func (k *Kernel) DeleteHollowRegion(region string) error {
 	if err != nil {
 		return err
 	}
-	res, _ := ReadTrim(filepath.Join(dir, "resource"))
+	res, _ := readTrim(filepath.Join(dir, "resource"))
 	attr := k.cxlDev(decoder, "delete_region")
 	if err := k.writeFile(attr, region); err != nil {
 		return fmt.Errorf("%s: deleting hollow %s: %w", attr, region, err)

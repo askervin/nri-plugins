@@ -71,7 +71,7 @@ type BlockDevice struct {
 // BootID returns the boot id of the running kernel
 // (/proc/sys/kernel/random/boot_id).
 func (k *Kernel) BootID() (string, error) {
-	return ReadTrim(filepath.Join(k.procRoot(), "sys", "kernel", "random", "boot_id"))
+	return readTrim(filepath.Join(k.procRoot(), "sys", "kernel", "random", "boot_id"))
 }
 
 // Observe returns a snapshot of the CXL kernel objects of the node. Its
@@ -206,7 +206,7 @@ func (k *Kernel) observeRegion(s *Snapshot, r RegionInfo, problem func(string, .
 		}
 	}
 	if r.Mode == RegionRAM && r.Range != (Range{}) && s.BlockSize > 0 {
-		for _, b := range r.Range.blocks(s.BlockSize) {
+		for _, b := range r.Range.Blocks(s.BlockSize) {
 			s.Blocks = append(s.Blocks, k.MemoryBlock(b))
 		}
 	}
@@ -253,7 +253,7 @@ func (k *Kernel) observeBlockDevices(s *Snapshot, problem func(string, ...any)) 
 		if ma, mi, err := parseDevNumbers(l.Name, l.DevNum); err == nil {
 			d.Major, d.Minor = ma, mi
 		}
-		if sectors, err := ReadUint(k.blockDev(l.Name, "size")); err == nil {
+		if sectors, err := readUint(k.blockDev(l.Name, "size")); err == nil {
 			d.Size = sectors * 512
 		}
 		var err error

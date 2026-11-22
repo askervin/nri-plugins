@@ -111,7 +111,7 @@ func (k *Kernel) Zero(ctx context.Context, dax string) error {
 	align := uint64(0)
 	if real, err := filepath.EvalSymlinks(k.daxDev(dax)); err == nil {
 		// .../regionN/dax_regionN/daxN.M
-		align, _ = ReadUint(filepath.Join(filepath.Dir(real), "dax_region", "align"))
+		align, _ = readUint(filepath.Join(filepath.Dir(real), "dax_region", "align"))
 	}
 	if err := k.sys().ZeroDax(ctx, major, minor, size, align); err != nil {
 		return &ZeroError{Dax: dax, Err: err}

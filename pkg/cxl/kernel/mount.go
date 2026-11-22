@@ -193,7 +193,7 @@ func (k *Kernel) Mounted(target string) (*MountInfo, error) {
 // blockDevNum returns the major:minor of a block device (/dev/<name>) from
 // sysfs.
 func (k *Kernel) blockDevNum(dev string) (string, error) {
-	num, err := ReadTrim(k.blockDev(filepath.Base(dev), "dev"))
+	num, err := readTrim(k.blockDev(filepath.Base(dev), "dev"))
 	if err != nil {
 		return "", fmt.Errorf("the device number of %s: %w", dev, err)
 	}

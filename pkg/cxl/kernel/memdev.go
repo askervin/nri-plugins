@@ -118,7 +118,7 @@ func (k *Kernel) memdevNames() []string {
 
 // memdevSerial returns the serial of the memdev.
 func (k *Kernel) memdevSerial(name string) (uint64, error) {
-	s, err := ReadTrim(k.cxlDev(name, "serial"))
+	s, err := readTrim(k.cxlDev(name, "serial"))
 	if err != nil {
 		return 0, err
 	}
@@ -162,7 +162,7 @@ func (k *Kernel) memdev(name string, endpoints map[string]string) (MemdevInfo, e
 		return MemdevInfo{}, fmt.Errorf("%s: serial: %w", name, err)
 	}
 	m := MemdevInfo{Name: name, Serial: serial, State: MemdevUnbound, NUMAAffinity: -1}
-	numa, err := ReadTrim(k.cxlDev(name, "numa_node"))
+	numa, err := readTrim(k.cxlDev(name, "numa_node"))
 	if err == nil {
 		m.NUMAAffinity, err = strconv.Atoi(numa)
 	}
@@ -171,9 +171,9 @@ func (k *Kernel) memdev(name string, endpoints map[string]string) (MemdevInfo, e
 	}
 	k.factErr(err)
 	var ramErr, pmemErr error
-	m.RamSize, ramErr = ReadUint(k.cxlDev(name, "ram", "size"))
-	m.PmemSize, pmemErr = ReadUint(k.cxlDev(name, "pmem", "size"))
-	dev, err := ReadTrim(k.cxlDev(name, "dev"))
+	m.RamSize, ramErr = readUint(k.cxlDev(name, "ram", "size"))
+	m.PmemSize, pmemErr = readUint(k.cxlDev(name, "pmem", "size"))
+	dev, err := readTrim(k.cxlDev(name, "dev"))
 	if err == nil {
 		m.Major, m.Minor, err = parseDevNumbers(name, dev)
 	}
@@ -241,12 +241,12 @@ func (k *Kernel) endpointRegions(ep string) []string {
 
 // RamSize returns the RAM capacity of a memdev in bytes.
 func (k *Kernel) RamSize(memdev string) (uint64, error) {
-	return ReadUint(k.cxlDev(memdev, "ram", "size"))
+	return readUint(k.cxlDev(memdev, "ram", "size"))
 }
 
 // Persistent tells whether a memdev has persistent memory capacity.
 func (k *Kernel) Persistent(memdev string) (bool, error) {
-	size, err := ReadUint(k.cxlDev(memdev, "pmem", "size"))
+	size, err := readUint(k.cxlDev(memdev, "pmem", "size"))
 	if err != nil {
 		return false, err
 	}

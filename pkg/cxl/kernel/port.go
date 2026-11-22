@@ -172,7 +172,7 @@ func (k *Kernel) memdevPorts(memdev string) []string {
 // what lies above it.
 func readPort(dir string) (Port, error) {
 	p := Port{Name: filepath.Base(dir)}
-	n, err := ReadUint(filepath.Join(dir, "decoders_committed"))
+	n, err := readUint(filepath.Join(dir, "decoders_committed"))
 	if err != nil {
 		return p, fmt.Errorf("the decoders of %s: %w", p.Name, err)
 	}
@@ -180,7 +180,7 @@ func readPort(dir string) (Port, error) {
 	prefix := "decoder" + portID(p.Name) + "."
 	for id := 0; id < p.Committed; id++ {
 		name := prefix + strconv.Itoa(id)
-		region, err := ReadTrim(filepath.Join(dir, name, "region"))
+		region, err := readTrim(filepath.Join(dir, name, "region"))
 		if err != nil {
 			return p, fmt.Errorf("the decoders of %s: %w", p.Name, err)
 		}

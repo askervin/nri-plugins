@@ -220,10 +220,10 @@ func (k *Kernel) DaxRegion(region string) (DaxRegion, error) {
 	dir := k.daxRegionDir(region)
 	d := DaxRegion{Name: filepath.Base(filepath.Dir(dir)), Region: region}
 	var err error
-	if d.Available, err = ReadUint(filepath.Join(dir, "available_size")); err != nil {
+	if d.Available, err = readUint(filepath.Join(dir, "available_size")); err != nil {
 		return d, err
 	}
-	if d.Align, err = ReadUint(filepath.Join(dir, "align")); err != nil {
+	if d.Align, err = readUint(filepath.Join(dir, "align")); err != nil {
 		return d, err
 	}
 	d.Devices = k.DaxDevices(region)
@@ -287,7 +287,7 @@ func (k *Kernel) TargetNode(dax string) int {
 // DaxDevNumbers returns the major and minor numbers of the character device
 // of a dax device (/sys/bus/dax/devices/<dax>/dev, "major:minor").
 func (k *Kernel) DaxDevNumbers(dax string) (major, minor int, err error) {
-	v, err := ReadTrim(k.daxDev(dax, "dev"))
+	v, err := readTrim(k.daxDev(dax, "dev"))
 	if err != nil {
 		return 0, 0, err
 	}
@@ -296,7 +296,7 @@ func (k *Kernel) DaxDevNumbers(dax string) (major, minor int, err error) {
 
 // DaxDeviceSize returns the size of a dax device in bytes.
 func (k *Kernel) DaxDeviceSize(dax string) (uint64, error) {
-	return ReadUint(k.daxDev(dax, "size"))
+	return readUint(k.daxDev(dax, "size"))
 }
 
 // DaxDeviceRanges returns the physical address ranges of the memory of a
@@ -315,11 +315,11 @@ func (k *Kernel) DaxDeviceRanges(dax string) ([]Range, error) {
 	}
 	out := make([]Range, 0, len(dirs))
 	for _, dir := range dirs {
-		start, err := ReadUint(filepath.Join(dir, "start"))
+		start, err := readUint(filepath.Join(dir, "start"))
 		if err != nil {
 			return nil, err
 		}
-		end, err := ReadUint(filepath.Join(dir, "end"))
+		end, err := readUint(filepath.Join(dir, "end"))
 		if err != nil {
 			return nil, err
 		}
@@ -350,7 +350,7 @@ func (k *Kernel) daxBlocks(dax string, bs uint64) ([]int, int, error) {
 	var out []int
 	want := 0
 	for _, r := range ranges {
-		for _, b := range r.blocks(bs) {
+		for _, b := range r.Blocks(bs) {
 			want++
 			if k.blockExists(b) {
 				out = append(out, b)
@@ -620,7 +620,7 @@ func (k *Kernel) newDaxDevice(region string) (string, error) {
 		return "", noRoom(fmt.Errorf("%s: create a dax device: %w", region, err))
 	}
 	// reading create returns the youngest device of the dax region
-	dax, err := ReadTrim(filepath.Join(dir, "create"))
+	dax, err := readTrim(filepath.Join(dir, "create"))
 	if err != nil {
 		return "", err
 	}
