@@ -24,10 +24,9 @@
 #
 # Environment (and the variables of lib.sh):
 #   CONTAINER_FENCING  defaults.container.fencing of the driver
-#                      configuration (allowed-mems or none; mempolicy is
-#                      refused as not implemented);
-#                      unset: not in the configuration, the driver's
-#                      default allowed-mems applies
+#                      configuration, allowed-mems or none; unset: not in
+#                      the configuration, the driver's default
+#                      allowed-mems applies
 #
 # Switching between local and local-shared needs an idle device: delete the
 # pods and claims of the device first.
