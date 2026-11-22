@@ -378,14 +378,14 @@ func poolIgnoreReason(mems []kernel.MemdevInfo, poolSerials, held map[uint64]boo
 			return fmt.Sprintf("pool device (%s), memory device serial 0x%x", device.PoolDriverName, memDev.Serial)
 		}
 		if held[memDev.Serial] {
-			return fmt.Sprintf("memory device serial 0x%x is held back: it may be a pool device", memDev.Serial)
+			return fmt.Sprintf("memdev 0x%x is held: it may be a pool device", memDev.Serial)
 		}
 	}
 	return ""
 }
 
 // heldReason is why a memdev that is held is not published.
-const heldReason = "held back: it may be a pool device"
+const heldReason = "held: it may be a pool device"
 
 // localIgnoreReason returns why a region on the memdevs mems, a local
 // memdev that the engine uses among them, is not published, "" if it is not

@@ -103,7 +103,7 @@ func TestPersistentBindChecks(t *testing.T) {
 	t.Run("another mount at the target", func(t *testing.T) {
 		v, target, node := setup(t)
 		tmpfs(t, v, target)
-		refused(t, v, "c", target, "device 0x91: "+target+" is a tmpfs mount of tmpfs, not of "+node)
+		refused(t, v, "c", target, "memdev 0x91: "+target+" is a tmpfs mount of tmpfs, not of "+node)
 		if mi, _ := v.f.Kernel().Mounted(target); mi == nil || mi.FSType != "tmpfs" {
 			t.Fatalf("the mount at the target was used or unmounted: %+v", mi)
 		}
@@ -123,7 +123,7 @@ func TestPersistentBindChecks(t *testing.T) {
 		t.Run(bind.name, func(t *testing.T) {
 			v, target, node := setup(t)
 			v.f.SetBind(bind.root, bind.flags)
-			refused(t, v, "c", target, "device 0x91: the bind of "+node+" at "+target+" is not a read-only nosuid nodev ext4 mount")
+			refused(t, v, "c", target, "memdev 0x91: the bind of "+node+" at "+target+" is not a read-only nosuid nodev ext4 mount")
 			if mi, _ := v.f.Kernel().Mounted(target); mi != nil {
 				t.Fatalf("the bad bind stays: %+v", mi)
 			}
@@ -134,7 +134,7 @@ func TestPersistentBindChecks(t *testing.T) {
 	t.Run("bind of another lease", func(t *testing.T) {
 		v, target, _ := setup(t)
 		v.mustPrepare(poolDriver, "c", bindReq("c", target))
-		refused(t, v, "d", target, "device 0x91: "+target+" is the bind of another lease")
+		refused(t, v, "d", target, "memdev 0x91: "+target+" is the bind of another lease")
 		finish(t, v, "unprepared")
 	})
 	t.Run("bind there already, then stacked", func(t *testing.T) {
@@ -199,7 +199,7 @@ func TestReleaseRetriesStaleBindsOfEveryMemdev(t *testing.T) {
 	v.mustPrepare(poolDriver, "a", poolReq("a", 0, serialA, state.ModeDax, state.KindExclusive))
 	v.mustUnprepare(poolDriver, "a")
 	out := logs()
-	for _, want := range []string{"unbound stale lease bind " + target, "memdev 0x91 (mem0): released"} {
+	for _, want := range []string{"unbound stale lease bind " + target, "memdev 0x91 (mem0): disabled"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("no %q in\n%s", want, out)
 		}
@@ -227,7 +227,7 @@ func TestRetryStalePeriodic(t *testing.T) {
 	logs := klogtest.Capture(t, 3)
 	v.e.RetryStaleBinds(context.Background(), state.TriggerUnprepare)
 	v.mustNotBeMounted("after the pass", target)
-	if out := logs(); !strings.Contains(out, "memdev 0x91 (mem0): released") {
+	if out := logs(); !strings.Contains(out, "memdev 0x91 (mem0): disabled") {
 		t.Errorf("the memdev is not released:\n%s", out)
 	}
 	if m := v.records().Memdev(serialP); m != nil {

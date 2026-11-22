@@ -775,9 +775,9 @@ class Trace:
             self.emit(t, "drv", "%s %s: unprepared" % (node, self.lease_who(um.group(1))))
             return
         # The pool driver disables a memdev that no claim uses; the detach follows.
-        rm = re.match(r"engine: \w+ memdev \S+ \((mem\d+)\): released$", msg)
+        rm = re.match(r"engine: \w+ memdev \S+ \((mem\d+)\): disabled$", msg)
         if rm:
-            self.emit(t, "drv", "%s released %s" % (node, rm.group(1)))
+            self.emit(t, "drv", "%s disabled %s" % (node, rm.group(1)))
             return
         # The other lines of a shared local device (05-status-DRV section 5).
         sm = re.match(r"engine: local memdev \S+ \(\S+\): (.*)$", msg)
@@ -795,10 +795,10 @@ class Trace:
                 self.emit(t, "drv", "%s zeroed new %s (once)" % (node, rest.split()[3]))
             elif rest.startswith("keeping") and "idle" in rest:
                 self.emit(t, "drv", "%s idle: keeping the region" % node)
-            elif re.match(r"released region\d+", rest):
+            elif re.match(r"destroyed region\d+", rest):
                 self.emit(t, "drv", "%s %s" % (node, rest.split(" in ")[0]))
-            elif rest.startswith("not configured shared"):
-                self.emit(t, "drv", "%s unshared: %s the region" % (node, "keeping" if "keeping" in rest else "releasing"))
+            elif rest.startswith("not in sharedMemdevs"):
+                self.emit(t, "drv", "%s unshared: %s the region" % (node, "keeping" if "keeping" in rest else "destroying"))
             return
         if level in "EF":
             self.emit(t, "drv", "%s ERROR %s" % (node, msg))
@@ -865,7 +865,7 @@ class Trace:
             return
         node = self.node_label(tag)
         # Of the driver binds only that of a memdev enabled again without a new
-        # attach (the driver's "released memN" says the unbind).
+        # attach (the driver's "disabled memN" says the unbind).
         if m.group(1) == "add" and re.fullmatch(r"mem\d+", name):
             self.mem_added[(node, name)] = t
         if m.group(1) == "unbind" or (m.group(1) == "bind" and not (

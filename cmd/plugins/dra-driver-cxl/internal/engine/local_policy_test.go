@@ -186,7 +186,7 @@ func TestLocalPolicySharedConfigured(t *testing.T) {
 		dev := v.f.Read("bus/dax/devices/dax0.0/dev")
 		v.f.Write("bus/dax/devices/dax0.0/dev", "bogus")
 		err := v.prepare(localDriver, "s2", sharedReq("s2"))
-		if want := `memdev mem0 (serial 0x11): dax0.0: dax0.0: cannot parse device numbers "bogus"`; err == nil || err.Error() != want {
+		if want := `memdev 0x11 (mem0): dax0.0: dax0.0: cannot parse device numbers "bogus"`; err == nil || err.Error() != want {
 			t.Fatalf("error %v, want %q", err, want)
 		}
 		wantPreparation(t, v, localDriver, "s2", "")
@@ -223,7 +223,7 @@ func TestLocalPolicySharedNew(t *testing.T) {
 		v.configure(func(o *Options) { o.Shared = func(state.Serial) bool { return true } })
 		v.f.ZeroErr = zeroErr
 		err := v.prepare(localDriver, "s1", sharedReq("s1"))
-		if err == nil || !strings.Contains(err.Error(), "memdev mem0 (serial 0x11): zeroing new shared dax0.0: ") {
+		if err == nil || !strings.Contains(err.Error(), "memdev 0x11 (mem0): zeroing new shared dax0.0: ") {
 			t.Fatalf("error %v", err)
 		}
 		v.check("rolled back")

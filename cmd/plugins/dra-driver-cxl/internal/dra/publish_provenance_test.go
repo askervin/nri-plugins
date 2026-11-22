@@ -372,7 +372,7 @@ func TestPoolSerialsNewMemdevHeldBack(t *testing.T) {
 		t.Fatal("the new memdev is not held back")
 	}
 	out := logs()
-	if logMatches(out, "provenance: holding back new memdev") != 1 {
+	if logMatches(out, "provenance: holding new memdev") != 1 {
 		t.Fatalf("no line of the hold:\n%s", out)
 	}
 	e.advance(provenance.MaxHold / 2)
@@ -696,9 +696,9 @@ func TestPoolSerialsHeldRegion(t *testing.T) {
 	e.publish()
 	e.plug(pubOtherLocalSerial)
 	e.withRegion(pubOtherLocalSerial)
-	e.wantScan("held back")
+	e.wantScan("held")
 	devs := e.devices()
-	if r := poolIgnoreReason(regionMemdevs(devs, &devs.Regions[0]), nil, map[uint64]bool{pubOtherLocalSerial: true}); !strings.Contains(r, "held back") {
+	if r := poolIgnoreReason(regionMemdevs(devs, &devs.Regions[0]), nil, map[uint64]bool{pubOtherLocalSerial: true}); !strings.Contains(r, "is held: ") {
 		t.Fatalf("reason %q", r)
 	}
 	e.advance(provenance.MaxHold)

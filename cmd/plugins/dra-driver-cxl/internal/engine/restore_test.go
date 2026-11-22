@@ -111,7 +111,7 @@ func TestRestoreFlags(t *testing.T) {
 			if !slices.Equal(out.Unrestored, []state.GrantRef{{Claim: "r"}, {Claim: "w"}}) {
 				t.Fatalf("recovered %+v", out)
 			}
-			changed := "device 0x91: its fsdax namespace is namespace0.0 with " + filepath.Join(v.f.DevRoot(), "pmem3") +
+			changed := "memdev 0x91: its fsdax namespace is namespace0.0 with " + filepath.Join(v.f.DevRoot(), "pmem3") +
 				" (259:9), not namespace0.0 with " + pmem + " (259:1) as prepared"
 			// a pool claim is unrestored for its node mount, with the line
 			// that the observer counts; a local claim for its block device,

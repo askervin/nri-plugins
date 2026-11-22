@@ -164,12 +164,12 @@ func (e *Engine) recoverShared(ctx context.Context, m *state.Memdev) error {
 	shared := e.configuredShared(m.Serial)
 	switch {
 	case len(claims) == 0 && !Policy(ReleaseIdle, e.idleKind(m, shared), nil).keeps():
-		klog.Infof("engine: local memdev %s (%s): not configured shared any more, releasing its region", s, memdev)
+		klog.Infof("engine: local memdev %s (%s): not in sharedMemdevs any more, destroying its region", s, memdev)
 		return e.releaseIdleLocal(ctx, m)
 	case shared:
 		klog.Infof("engine: local memdev %s (%s): keeping shared %s and %s, claims %v", s, memdev, region, dax, claims)
 	default:
-		klog.Warningf("engine: local memdev %s (%s): not configured shared any more: keeping %s for claims %v, not publishing the memdev until they are gone",
+		klog.Warningf("engine: local memdev %s (%s): not in sharedMemdevs any more: keeping %s for claims %v, not publishing the memdev until they are gone",
 			s, memdev, region, claims)
 	}
 	return nil

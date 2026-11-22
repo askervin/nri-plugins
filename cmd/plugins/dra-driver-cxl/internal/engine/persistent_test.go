@@ -170,7 +170,7 @@ func TestPersistentP9D(t *testing.T) {
 	v.mustPrepare(poolDriver, "r", fsGrant("r", true, state.AccessDirect))
 	n := mountCalls(v)
 	err := v.prepare(poolDriver, "w", fsGrant("w", false, state.AccessCached))
-	want := "device " + api.FormatSerial(serialP) + ": it is mounted with access direct only on this node: " +
+	want := "memdev " + api.FormatSerial(serialP) + ": it is mounted with access direct only on this node: " +
 		"a read-write claim with access cached would mount it a second time"
 	if err == nil || err.Error() != want {
 		t.Fatalf("error %v, want %q", err, want)
@@ -216,60 +216,60 @@ func TestPersistentRules(t *testing.T) {
 		err string
 	}{
 		{name: "type not allowed", image: "ext4", fsTypes: []string{"erofs", "squashfs"}, req: fs("x", true, "", ""),
-			err: "device 0x91: filesystem type ext4 is not allowed on this node (fsTypes: erofs, squashfs)"},
+			err: "memdev 0x91: filesystem type ext4 is not allowed on this node (fsTypes: erofs, squashfs)"},
 		{name: "no type allowed", image: "erofs", fsTypes: []string{}, req: fs("x", true, "", ""),
-			err: "device 0x91: filesystem type erofs is not allowed on this node (fsTypes: none)"},
+			err: "memdev 0x91: filesystem type erofs is not allowed on this node (fsTypes: none)"},
 		{name: "type without a block device", fsTypes: append(slices.Clone(known), "tmpfs"), req: fs("x", true, "", "tmpfs"),
-			err: "device 0x91: filesystem type tmpfs does not mount a block device"},
+			err: "memdev 0x91: filesystem type tmpfs does not mount a block device"},
 		{name: "read-only type written", image: "erofs", req: fs("x", false, "", ""),
-			err: "device 0x91: erofs is a read-only filesystem: set readOnly: true"},
+			err: "memdev 0x91: erofs is a read-only filesystem: set readOnly: true"},
 		{name: "direct without DAX", image: "btrfs", req: fs("x", true, state.AccessDirect, ""),
-			err: "device 0x91: btrfs has no DAX: use access cached"},
+			err: "memdev 0x91: btrfs has no DAX: use access cached"},
 		{name: "single-host type written by hosts", image: "gfs2-nolock", req: shared(fs("x", false, "", "gfs2"), true),
-			err: "device 0x91: read-write on several hosts needs a cluster filesystem on coherent memory: gfs2 with lock_nolock is a single-host filesystem"},
+			err: "memdev 0x91: read-write on several hosts needs a cluster filesystem on coherent memory: gfs2 with lock_nolock is a single-host filesystem"},
 		{name: "cluster type on memory that is not coherent", image: "gfs2", req: shared(fs("x", false, "", "gfs2"), false),
-			err: "device 0x91: read-write on several hosts needs a cluster filesystem on coherent memory: the device is not coherent between hosts"},
+			err: "memdev 0x91: read-write on several hosts needs a cluster filesystem on coherent memory: the device is not coherent between hosts"},
 		{name: "cluster type written by hosts", image: "gfs2", req: shared(fs("x", false, "", "gfs2"), true)},
 		{name: "cached next to a direct writer", image: "ext4", req: fs("x", true, state.AccessCached, ""),
 			setup: func(v *env, dev string) { v.mustPrepare(localDriver, "w", fs("w", false, state.AccessDirect, "")) },
-			err:   "device 0x91: it is mounted read-write with access direct on this node: access cached would mount it a second time"},
+			err:   "memdev 0x91: it is mounted read-write with access direct on this node: access cached would mount it a second time"},
 		{name: "writer next to both accesses", image: "ext4", req: fs("x", false, state.AccessDirect, ""),
 			setup: func(v *env, dev string) {
 				reader("r1", state.AccessDirect)(v, dev)
 				reader("r2", state.AccessCached)(v, dev)
 			},
-			err: "device 0x91: it is mounted with access direct and cached on this node: a read-write claim needs one access only"},
+			err: "memdev 0x91: it is mounted with access direct and cached on this node: a read-write claim needs one access only"},
 		{name: "direct writer next to a cached reader", image: "ext4", req: fs("x", false, state.AccessDirect, ""), setup: reader("r", state.AccessCached),
-			err: "device 0x91: it is mounted with access cached only on this node: a read-write claim with access direct would mount it a second time"},
+			err: "memdev 0x91: it is mounted with access cached only on this node: a read-write claim with access direct would mount it a second time"},
 		{name: "block writer next to a reader", image: "ext4", req: localPmemReq("x", 0, state.ModeBlock, false, ""), setup: reader("r", ""),
-			err: "device 0x91: mode block read-write needs the device alone on this node"},
+			err: "memdev 0x91: mode block read-write needs the device alone on this node"},
 		{name: "btrfs writer next to a reader", image: "btrfs", req: fs("x", false, "", ""), setup: reader("r", ""),
-			err: "device 0x91: btrfs is mounted read-only on this node and cannot be remounted read-write: a read-write claim waits until the read-only claims of the node are gone"},
+			err: "memdev 0x91: btrfs is mounted read-only on this node and cannot be remounted read-write: a read-write claim waits until the read-only claims of the node are gone"},
 		{name: "reader of a dirty ext4", image: "ext4-dirty", req: fs("x", true, "", ""),
-			err: "device 0x91: ext4 on $DEV needs recovery (it was not unmounted cleanly): a read-only mount cannot recover it, a read-write claim on one node does"},
+			err: "memdev 0x91: ext4 on $DEV needs recovery (it was not unmounted cleanly): a read-only mount cannot recover it, a read-write claim on one node does"},
 		{name: "reader of an xfs that the mount finds dirty", image: "xfs", req: fs("x", true, "", ""),
 			setup: func(v *env, dev string) {
 				// the block device is there while a block reader holds the device
 				v.mustPrepare(localDriver, "b", localPmemReq("b", 0, state.ModeBlock, true, ""))
 				v.f.SetDirty(dev, true)
 			},
-			err: "device 0x91: xfs on $DEV needs recovery (it was not unmounted cleanly): a read-only mount cannot recover it, a read-write claim on one node does"},
+			err: "memdev 0x91: xfs on $DEV needs recovery (it was not unmounted cleanly): a read-only mount cannot recover it, a read-write claim on one node does"},
 		{name: "writer of a dirty ext4", image: "ext4-dirty", req: fs("x", false, "", "")},
 		{name: "mount refused", image: "ext4", req: fs("x", true, "", ""),
 			setup: func(v *env, dev string) {
 				v.f.SetMountError(dev, syscall.EINVAL, "e ext4: unsupported blocksize for DAX")
 			},
-			err: "device 0x91: $DEV has no ext4 filesystem: invalid argument: e ext4: unsupported blocksize for DAX"},
+			err: "memdev 0x91: $DEV has no ext4 filesystem: invalid argument: e ext4: unsupported blocksize for DAX"},
 		{name: "mount of the loop device refused", image: "ext4", req: fs("x", true, state.AccessCached, ""),
 			setup: func(v *env, dev string) { v.f.SetMountError(filepath.Join(v.f.DevRoot(), "loop0"), syscall.EINVAL, "") },
-			err:   "device 0x91: $DEV has no ext4 filesystem: invalid argument"},
+			err:   "memdev 0x91: $DEV has no ext4 filesystem: invalid argument"},
 		{name: "superblock without DAX", image: "ext4", req: fs("x", true, "", ""),
 			setup: func(v *env, dev string) { v.f.SetSuperOpts(dev, "ro", "dax=never") },
-			err:   "device 0x91: ext4 on $DEV was mounted without DAX"},
+			err:   "memdev 0x91: ext4 on $DEV was mounted without DAX"},
 		{name: "no known filesystem", req: fs("x", true, "", ""),
-			err: "device 0x91: $DEV has no filesystem of a type that the plugin knows (erofs, squashfs, ext4, xfs, btrfs or gfs2): set device.fsType"},
+			err: "memdev 0x91: $DEV has no filesystem of a type that the plugin knows (erofs, squashfs, ext4, xfs, btrfs or gfs2): set device.fsType"},
 		{name: "type other than the node mount's", image: "ext4", req: fs("x", true, "", "xfs"), setup: reader("r", ""),
-			err: "device 0x91: $DEV has a filesystem of type ext4, not xfs"},
+			err: "memdev 0x91: $DEV has a filesystem of type ext4, not xfs"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := pmemEnv(t, tc.image)
@@ -305,7 +305,7 @@ func TestPersistentRules(t *testing.T) {
 func TestPersistentWithoutPmem(t *testing.T) {
 	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
 	err := v.prepare(poolDriver, "x", fsReq(poolReq("x", 0, serialA, state.ModeFS, state.KindPersistent), true, ""))
-	if want := "device 0xa1: mem0 has no persistent memory"; err == nil || err.Error() != want {
+	if want := "memdev 0xa1: mem0 has no persistent memory"; err == nil || err.Error() != want {
 		t.Fatalf("error %v, want %q", err, want)
 	}
 	finish(t, v, "unprepared")
@@ -322,7 +322,7 @@ func TestPersistentUpgradeFails(t *testing.T) {
 	}
 	v.f.SetRemountError(m.Path, syscall.EINVAL)
 	err := v.prepare(localDriver, "w", localPmemReq("w", 0, state.ModeFS, false, state.AccessCached))
-	if want := "device 0x91: remounting " + m.Path + " read-write: invalid argument"; err == nil || err.Error() != want {
+	if want := "memdev 0x91: remounting " + m.Path + " read-write: invalid argument"; err == nil || err.Error() != want {
 		t.Fatalf("error %v, want %q", err, want)
 	}
 	if !v.f.IsReadOnly(filepath.Join(v.f.DevRoot(), "pmem0")) || !v.f.IsReadOnly(m.Loop) {
@@ -353,10 +353,10 @@ func TestPersistentUnexplainedSuperblocks(t *testing.T) {
 		return localPmemReq(uid, 0, state.ModeBlock, readOnly, "")
 	}
 	unexplained := func(src, ro, target string) string {
-		return "device 0x91: $DEV has a superblock that no claim of this node explains (" + src + " mounted " + ro + " in pid 4242 at " +
+		return "memdev 0x91: $DEV has a superblock that no claim of this node explains (" + src + " mounted " + ro + " in pid 4242 at " +
 			target + "): it is not used until that mount is gone"
 	}
-	notReadOnly := "device 0x91: not making $DEV read-only: $DEV is mounted read-write in pid 4242 at /mnt/x"
+	notReadOnly := "memdev 0x91: not making $DEV read-only: $DEV is mounted read-write in pid 4242 at /mnt/x"
 	for _, c := range []struct {
 		name  string
 		image string
@@ -604,7 +604,7 @@ func TestPersistentReleasingGrants(t *testing.T) {
 			t.Fatalf("error %v", err)
 		}
 		refused(t, v, localPmemReq("w", 0, state.ModeFS, false, state.AccessDirect),
-			"device 0x91: it is mounted with access cached only on this node: a read-write claim with access direct would mount it a second time")
+			"memdev 0x91: it is mounted with access cached only on this node: a read-write claim with access direct would mount it a second time")
 		v.f.SetBusy(cached, false)
 		finish(t, v, "finished")
 		if viol := v.f.Violations(); len(viol) > 0 {
@@ -620,7 +620,7 @@ func TestPersistentReleasingGrants(t *testing.T) {
 		if err := v.unprepare(localDriver, "w"); err == nil || !strings.Contains(err.Error(), "remounting "+direct+" read-only: device or resource busy") {
 			t.Fatalf("error %v", err)
 		}
-		other := "device " + api.FormatSerial(serialP) + ": it is mounted read-write with access direct on this node: " +
+		other := "memdev " + api.FormatSerial(serialP) + ": it is mounted read-write with access direct on this node: " +
 			"access cached would mount it a second time"
 		refused(t, v, localPmemReq("c", 0, state.ModeFS, true, state.AccessCached), other)
 		refused(t, v, localPmemReq("w2", 0, state.ModeFS, false, state.AccessCached), other)
@@ -663,7 +663,7 @@ func TestPersistentFailedDowngrade(t *testing.T) {
 		}
 	}
 	v.f.SetWriting(direct, true)
-	if err := v.unprepare(localDriver, "w"); err == nil || err.Error() != "releasing w/0 (serial 0x91): device 0x91: remounting "+direct+" read-only: device or resource busy" {
+	if err := v.unprepare(localDriver, "w"); err == nil || err.Error() != "releasing w/0 (memdev 0x91): memdev 0x91: remounting "+direct+" read-only: device or resource busy" {
 		t.Fatalf("error %v", err)
 	}
 	writable("failed downgrade")
@@ -680,7 +680,7 @@ func TestPersistentFailedDowngrade(t *testing.T) {
 	v.f.HideProc(true)
 	err := v.unprepare(localDriver, "w")
 	v.f.HideProc(false)
-	if want := "releasing w/0 (serial 0x91): device 0x91: not making " + dev + " read-only: its superblocks: open " + v.f.ProcRoot() + ": no such file or directory"; err == nil || err.Error() != want {
+	if want := "releasing w/0 (memdev 0x91): memdev 0x91: not making " + dev + " read-only: its superblocks: open " + v.f.ProcRoot() + ": no such file or directory"; err == nil || err.Error() != want {
 		t.Fatalf("error %v, want %q", err, want)
 	}
 	v.check("superblocks unreadable")
@@ -806,14 +806,14 @@ func TestFsSignatureType(t *testing.T) {
 	}{
 		{[]string{"ext4"}, "", "ext4", ""},
 		{[]string{"ext4"}, "ext4", "ext4", ""},
-		{[]string{"ext4"}, "xfs", "", "device 0xc1ae0001: /dev/pmem0 has a filesystem of type ext4, not xfs"},                                   // P3
-		{[]string{"btrfs"}, "f2fs", "", "device 0xc1ae0001: /dev/pmem0 has a filesystem of type btrfs, not f2fs"},                               // P3 unknown
+		{[]string{"ext4"}, "xfs", "", "memdev 0xc1ae0001: /dev/pmem0 has a filesystem of type ext4, not xfs"},                                   // P3
+		{[]string{"btrfs"}, "f2fs", "", "memdev 0xc1ae0001: /dev/pmem0 has a filesystem of type btrfs, not f2fs"},                               // P3 unknown
 		{[]string{"ext4", "xfs"}, "xfs", "xfs", ""},                                                                                             // several, declared
-		{[]string{"ext4", "xfs"}, "", "", "device 0xc1ae0001: /dev/pmem0 has signatures of several filesystems (ext4, xfs): set device.fsType"}, // P2
+		{[]string{"ext4", "xfs"}, "", "", "memdev 0xc1ae0001: /dev/pmem0 has signatures of several filesystems (ext4, xfs): set device.fsType"}, // P2
 		{[]string{"ext4", "xfs"}, "btrfs", "", "has signatures of several filesystems (ext4, xfs)"},
-		{nil, "", "", "device 0xc1ae0001: /dev/pmem0 has no filesystem of a type that the plugin knows (erofs, squashfs, ext4, xfs, btrfs or gfs2): set device.fsType"}, // P1
+		{nil, "", "", "memdev 0xc1ae0001: /dev/pmem0 has no filesystem of a type that the plugin knows (erofs, squashfs, ext4, xfs, btrfs or gfs2): set device.fsType"}, // P1
 		{nil, "f2fs", "f2fs", ""}, // mounted as declared
-		{nil, "xfs", "", "device 0xc1ae0001: /dev/pmem0 has no filesystem of type xfs (no signature of a type that the plugin knows)"}, // P3b
+		{nil, "xfs", "", "memdev 0xc1ae0001: /dev/pmem0 has no filesystem of type xfs (no signature of a type that the plugin knows)"}, // P3b
 	} {
 		got, err := fsType(kernel.FSSignature{Types: tc.types}, "0xc1ae0001", dev, tc.declared)
 		switch {

@@ -164,7 +164,7 @@ func TestUnprepareReleaseFails(t *testing.T) {
 		e.k.SetBusy(mnt, true)
 		err := e.unprepare(e.pool, "u1")
 		wantErrText(t, err, "cxl-pool.nri.io: claim demo/claim-u1: ")
-		wantErrText(t, err, "device 0xc1af0001: unmounting "+mnt+": device or resource busy")
+		wantErrText(t, err, "memdev 0xc1af0001: unmounting "+mnt+": device or resource busy")
 		e.wantState(e.pool, "u1", state.PreparationUnpreparing)
 		if e.cdiDevice(e.pool, "claim-u1-0") == nil {
 			t.Fatal("no CDI device of an UNPREPARING claim")

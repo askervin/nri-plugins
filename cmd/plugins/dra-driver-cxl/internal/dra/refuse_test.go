@@ -80,15 +80,15 @@ func TestPrepareRefusedBeforeDevices(t *testing.T) {
 		{"local lease device", e.local, localClaim("u1", device.LeaseDeviceName, 0, cfgNUMA),
 			"cxl.nri.io: claim demo/claim-u1: request mem: MemoryConfig: device: the lease device has no device settings", nil},
 		{"local shares of a sliced memdev", e.local, localClaim("u1", localDev, -1),
-			"claim demo/claim-u1: request mem: device 0xc100e2e1: allocated as a shared device, which it is not any more", nil},
+			"claim demo/claim-u1: request mem: memdev 0xc100e2e1: allocated as a shared device, which it is not any more", nil},
 		{"local persistent writer of a share", e.local, localClaim("u1", pmemDev, -1, cfgBlock),
 			"cxl.nri.io: claim demo/claim-u1: request mem: MemoryConfig: device.mode block: the device is writable only exclusively (no shares request)", nil},
 		{"local persistent without a mode", e.local, localClaim("u1", pmemDev, -1),
 			"cxl.nri.io: claim demo/claim-u1: request mem: MemoryConfig: device: a persistent device needs mode block or fs", nil},
 		{"local persistent shares 0", e.local, shares0(localClaim("u1", pmemDev, -1, cfgBlockRO)),
-			`cxl.nri.io: claim demo/claim-u1: request mem: device 0xc100f5e1: consumed shares "0" is less than 1`, nil},
+			`cxl.nri.io: claim demo/claim-u1: request mem: memdev 0xc100f5e1: consumed shares "0" is less than 1`, nil},
 		{"local persistent allocated as volatile", e.local, localClaim("u1", pmemDev, envBlockSize, cfgBlockRO),
-			"cxl.nri.io: claim demo/claim-u1: request mem: device 0xc100f5e1: allocated as a device of volatile memory, which it is not any more", nil},
+			"cxl.nri.io: claim demo/claim-u1: request mem: memdev 0xc100f5e1: allocated as a device of volatile memory, which it is not any more", nil},
 		{"local size 0", e.local, localClaim("u1", localDev, 0), "cxl.nri.io: claim demo/claim-u1: device memdev-c100e2e1: size 0", sizeZero},
 		{"local memdevs not managed", e.local, localClaim("u1", localDev, 0),
 			"cxl.nri.io: claim demo/claim-u1: device memdev-c100e2e1: local memdevs are not managed (manageMemdevs: false)", unmanaged},
@@ -96,9 +96,9 @@ func TestPrepareRefusedBeforeDevices(t *testing.T) {
 			"cxl-pool.nri.io: claim demo/claim-u1: no allocation", nil},
 		{"pool no status data", e.pool, poolClaim("u1", "pooled0", ""), "cxl-pool.nri.io: claim demo/claim-u1: ", nil},
 		{"pool shares 0", e.pool, shares0(poolClaim("u1", "shared0", poolSharedData)),
-			`cxl-pool.nri.io: claim demo/claim-u1: device 0xc1ae0001: consumed shares "0" is less than 1: request shares: 1 (a share) or no shares (exclusive)`, nil},
+			`cxl-pool.nri.io: claim demo/claim-u1: memdev 0xc1ae0001: consumed shares "0" is less than 1: request shares: 1 (a share) or no shares (exclusive)`, nil},
 		{"pool config", e.pool, poolClaim("u1", "pooled0", poolExclusiveData, badConfig),
-			`cxl-pool.nri.io: claim demo/claim-u1: device pooled0 serial 0xc1ee0001: MemoryConfig: device.mode: invalid mode "memory"`, nil},
+			`cxl-pool.nri.io: claim demo/claim-u1: device pooled0 (memdev 0xc1ee0001): MemoryConfig: device.mode: invalid mode "memory"`, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e.t = t
@@ -241,7 +241,7 @@ func TestPrepareFailedAfterIntent(t *testing.T) {
 	e := newDriverEnv(t, []fake.MemdevSpec{slicedSpec()})
 	// a pool device that does not appear
 	res := e.prepare(e.pool, poolClaim("u1", "pooled9", poolExclusiveData))
-	wantErrText(t, res.Err, "cxl-pool.nri.io: claim demo/claim-u1: device pooled9 serial 0xc1ee0001: ")
+	wantErrText(t, res.Err, "cxl-pool.nri.io: claim demo/claim-u1: device pooled9 (memdev 0xc1ee0001): ")
 	e.wantState(e.pool, "u1", state.PreparationNone)
 	// a local memdev with a region that the driver did not make
 	k := e.k.Kernel()
@@ -251,7 +251,7 @@ func TestPrepareFailedAfterIntent(t *testing.T) {
 	region, err := k.CreateRegion(context.Background(), kernel.CreateRegionRequest{Memdev: memdev, Decoder: d, Type: kernel.RegionRAM})
 	mustOK(t, err)
 	res = e.prepare(e.local, localClaim("u2", localDev, envBlockSize))
-	wantErrText(t, res.Err, "claim demo/claim-u2: device "+localDev+" serial 0xc100e2e1: ")
+	wantErrText(t, res.Err, "claim demo/claim-u2: device "+localDev+" (memdev 0xc100e2e1): ")
 	wantErrText(t, res.Err, "that the plugin did not create")
 	e.wantState(e.local, "u2", state.PreparationNone)
 	if reg := e.records().Region(state.RegionRef(region)); reg == nil || reg.State != state.RegionForeign {

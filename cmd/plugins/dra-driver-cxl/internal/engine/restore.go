@@ -389,7 +389,7 @@ func (e *Engine) restoreNodeMount(u *pmemGrant, writer bool, explained []string)
 	case writer && mi.SuperReadOnly() && config.FSTypeRemountable(mi.FSType):
 		err = e.remountReadWrite(u.source, u.serial, u.blockDevice, loop, u.nodeMount, explained)
 	case writer && mi.SuperReadOnly():
-		err = fmt.Errorf("device %s: %s is mounted read-only and cannot be remounted read-write (%s)", u.serial.String(), u.nodeMount, mi.FSType)
+		err = fmt.Errorf("memdev %s: %s is mounted read-only and cannot be remounted read-write (%s)", u.serial.String(), u.nodeMount, mi.FSType)
 	case !writer && !mi.SuperReadOnly():
 		err = e.remountReadOnly(u.source, u.serial, u.blockDevice, loop, u.nodeMount)
 	}
@@ -507,7 +507,7 @@ func (e *Engine) remountGrant(ctx context.Context, req *GrantRequest) error {
 	if i >= 0 && grants[i].nodeMount != "" {
 		l, err := e.restoreNodeMount(&grants[i], firstWriter(grants) != nil, nodeMounts(grants))
 		if err != nil {
-			return fmt.Errorf("device %s: its node mount %s is not mounted and cannot be mounted again: %w",
+			return fmt.Errorf("memdev %s: its node mount %s is not mounted and cannot be mounted again: %w",
 				g.Serial.String(), grants[i].nodeMount, err)
 		}
 		loop = l

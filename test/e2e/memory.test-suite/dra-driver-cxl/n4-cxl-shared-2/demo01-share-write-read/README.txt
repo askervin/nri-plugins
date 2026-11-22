@@ -249,7 +249,7 @@ L6 shared0 stays on vm1 (now shared) and is attached to vm2 as well
    not exclusive", "shared0 attached to vm2", ctrl "reader-c: shared0 on
    vm1 already", kern "vm1 bind mem0" (enabled again for reader-c).
 L7 T4 "mapped: reader-c ro" on vm1, "reader-a ro, reader-b ro" on vm2.
-L9 the drivers release the device ("vm2 released mem0" in T5; T4
+L9 the drivers release the device ("vm2 disabled mem0" in T5; T4
    "mem0 c1ae0001 256M  disabled, no region" on both nodes, T6
    "detaching"), then it is detached from both nodes: T6 "attached:
    nowhere", state free, the bytes still there.
@@ -312,7 +312,7 @@ F6 "the writer is done and releases the device"
    reader-b ro, reader-c ro". T2 three "fs ro share". T4 both nodes
    "region0 pmem", "pmem0 254M erofs (block ro)" (a node without a writer
    has the block device read-only), "mounted: reader-c (dax)" on vm1,
-   "mounted: reader-a reader-b (dax)" on vm2. T5 "vm1 released mem0",
+   "mounted: reader-a reader-b (dax)" on vm2. T5 "vm1 disabled mem0",
    "shared0 on vm1: not exclusive" (shared0 stays on vm1), the attach to
    vm2, "vm1 bind mem0", "vm2 pmem0
    read-only", "vm2 node mount pmem0

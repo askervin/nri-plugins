@@ -136,18 +136,18 @@ func (e *Engine) probeRegion(ctx context.Context, req *GrantRequest, memdev, reg
 		return 0, nil
 	}
 	if err != nil {
-		return 0, fmt.Errorf("memdev %s (serial %s): probing %s for address aliasing: %w", memdev, s, region, err)
+		return 0, fmt.Errorf("memdev %s (%s): probing %s for address aliasing: %w", s, memdev, region, err)
 	}
 	klog.Infof("engine: local memdev %s (%s): address line probe of %s (%d bytes): %s in %s", s, memdev, region, size, res, since(start))
 	if res.Offset == 0 {
 		if res.Garbage >= 0 {
-			return 0, fmt.Errorf("memdev %s (serial %s): %s: %s", memdev, s, region, res)
+			return 0, fmt.Errorf("memdev %s (%s): %s: %s", s, memdev, region, res)
 		}
 		return 0, nil
 	}
 	usable := res.Offset / kernel.RegionAlign * kernel.RegionAlign
 	if usable == 0 {
-		return 0, fmt.Errorf("memdev %s (serial %s): %s: %s: less than %d MiB is usable", memdev, s, region, res, kernel.RegionAlign>>20)
+		return 0, fmt.Errorf("memdev %s (%s): %s: %s: less than %d MiB is usable", s, memdev, region, res, kernel.RegionAlign>>20)
 	}
 	klog.Warningf("engine: local memdev %s (%s): %s: %s; using only the first %d bytes of the memdev from now on", s, memdev, region, res, usable)
 	if err := e.saveProbe(req.Serial, state.Probe{UsableSize: usable, Result: res.String(), Region: region, Time: time.Now()}); err != nil {
@@ -168,6 +168,6 @@ type aliasedBelowError struct {
 
 // Error returns the error in words.
 func (e *aliasedBelowError) Error() string {
-	return fmt.Sprintf("memdev %s (serial %s): %s aliases: it is created again with its first %d bytes only once no region of another memory device lies above it in the decoders",
-		e.memdev, e.serial.String(), e.region, e.usable)
+	return fmt.Sprintf("memdev %s (%s): %s aliases: it is created again with its first %d bytes only once no region of another memory device lies above it in the decoders",
+		e.serial.String(), e.memdev, e.region, e.usable)
 }

@@ -42,10 +42,10 @@ func TestConsumedShares(t *testing.T) {
 		{shares: "1M", want: 1000000, use: "exclusive"},
 		{shares: "1", want: 1, use: "1 share"},
 		{shares: "3", want: 3, use: "3 shares"},
-		{shares: "0", err: `device 0xc100e2e1: consumed shares "0" is less than 1: request shares: 1 (a share) or no shares (exclusive)`},
-		{shares: "0.5", err: `device 0xc100e2e1: consumed shares "500m" is less than 1: request shares: 1 (a share) or no shares (exclusive)`},
-		{shares: "", err: `device 0xc100e2e1: consumed shares "" is less than 1: request shares: 1 (a share) or no shares (exclusive)`},
-		{shares: "-1", err: `device 0xc100e2e1: consumed shares "-1" is less than 1: request shares: 1 (a share) or no shares (exclusive)`},
+		{shares: "0", err: `memdev 0xc100e2e1: consumed shares "0" is less than 1: request shares: 1 (a share) or no shares (exclusive)`},
+		{shares: "0.5", err: `memdev 0xc100e2e1: consumed shares "500m" is less than 1: request shares: 1 (a share) or no shares (exclusive)`},
+		{shares: "", err: `memdev 0xc100e2e1: consumed shares "" is less than 1: request shares: 1 (a share) or no shares (exclusive)`},
+		{shares: "-1", err: `memdev 0xc100e2e1: consumed shares "-1" is less than 1: request shares: 1 (a share) or no shares (exclusive)`},
 	} {
 		got, err := consumedShares(0xc100e2e1, result(tc.shares))
 		switch {

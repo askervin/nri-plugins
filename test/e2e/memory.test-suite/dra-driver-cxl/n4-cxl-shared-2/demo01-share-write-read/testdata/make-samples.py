@@ -431,8 +431,8 @@ def fs_trace(sdir, t0=1792600000.0):
         udev(dt + 0.1, node, "remove", region_path, "cxl")
 
     def detach(dt, node):
-        # the driver releases the memdev (pool.go:1479), the server detaches it
-        klog(dt - 0.6, node, "pool.go:1479", "engine: pool memdev %s (mem0): released" % SHARED)
+        # the driver disables the memdev, the server detaches it
+        klog(dt - 0.6, node, "pool.go:1479", "engine: pool memdev %s (mem0): disabled" % SHARED)
         server(dt - 0.5, "attachment shared0@%s: detaching qemu device fcp_shared0.hp1" % node)
         ctrl(dt, "detached shared0 from %s (node %s, owner k8s:resourceclaim/c1a10006-0000-4000-8000-000000000000)" % (node, node))
         server(dt - 0.1, "attachment shared0@%s: detached (qemu device fcp_shared0.hp1)" % node)
@@ -487,7 +487,7 @@ def fs_trace(sdir, t0=1792600000.0):
     cl(t + 0.2, "MODIFIED", w, "c1a10006", "cxl-pool.nri.io/fake-cxl-pool/shared0", VM1, deleting=True)
     release_region(t + 0.8, VM1)
     udev(t + 0.95, VM1, "unbind", memdev_path, "cxl")
-    klog(t + 0.96, VM1, "pool.go:1479", "engine: pool memdev %s (mem0): released" % SHARED)
+    klog(t + 0.96, VM1, "pool.go:1479", "engine: pool memdev %s (mem0): disabled" % SHARED)
     klog(t + 1, VM1, "pool.go:1521", "cxl-pool.nri.io: unprepared claim %s/%s (c1a10006-0000-4000-8000-000000000000)" % (NS, w))
     cl(t + 2.5, "DELETED", w, "c1a10006", "cxl-pool.nri.io/fake-cxl-pool/shared0", VM1, deleting=True)
     klog(t + 2.6, VM1, "broker.go:1258", "lease broker: lease %s: released" % LEASES["writer"])

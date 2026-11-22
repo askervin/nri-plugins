@@ -74,7 +74,7 @@ func TestLocalProbeAliasing(t *testing.T) {
 	wantLog(t, logs(),
 		"engine: local memdev 0x11 (mem0): address line probe of region0 (1073741824 bytes): "+res.String()+" in ",
 		"engine: local memdev 0x11 (mem0): region0: "+res.String()+"; using only the first 536870912 bytes of the memdev from now on",
-		"engine: local memdev 0x11 (mem0): released aliased region0, creating a region of 536870912 bytes",
+		"engine: local memdev 0x11 (mem0): destroyed aliased region0, creating a region of 536870912 bytes",
 		"engine: local memdev 0x11 (mem0): creating a region of its first 536870912 bytes only (usable size)",
 		"engine: local memdev 0x11 (mem0): address line probe of region0 (536870912 bytes): no aliasing in ")
 	path := filepath.Join(v.dir, "localProbes.json")
@@ -136,7 +136,7 @@ func TestLocalProbeStillAliases(t *testing.T) {
 	v.f.Aliasing = aliasing(512 * mib)
 	v.f.After("cxl destroy-region", func() { v.f.Aliasing = aliasing(256 * mib) })
 	err := v.prepare(localDriver, "n", sliceReq("n", 0, state.ModeDax, 256*mib))
-	if err == nil || !strings.Contains(err.Error(), "memdev mem0 (serial 0x11): region0 of 268435456 bytes still aliases") {
+	if err == nil || !strings.Contains(err.Error(), "memdev 0x11 (mem0): region0 of 268435456 bytes still aliases") {
 		t.Fatalf("error %v", err)
 	}
 	v.check("rolled back")
@@ -155,7 +155,7 @@ func TestLocalProbeAliasedBelow(t *testing.T) {
 	regionAboveNext(t, v, "mem1")
 	v.f.Aliasing = aliasing(512 * mib)
 	req := sliceReq("n", 0, state.ModeDax, 256*mib)
-	below := "memdev mem0 (serial 0x11): region0 aliases: it is created again with its first 536870912 bytes only once no region of another memory device lies above it in the decoders"
+	below := "memdev 0x11 (mem0): region0 aliases: it is created again with its first 536870912 bytes only once no region of another memory device lies above it in the decoders"
 	err := v.prepare(localDriver, "n", req)
 	var ab *aliasedBelowError
 	if !errors.As(err, &ab) || err.Error() != below {
@@ -202,9 +202,9 @@ func TestLocalProbeErrors(t *testing.T) {
 		want string
 	}{
 		{"garbage", &kernel.Aliasing{Garbage: 0x1000},
-			"memdev mem0 (serial 0x11): region0: no aliasing, but offset 0x1000 did not read back what was written"},
+			"memdev 0x11 (mem0): region0: no aliasing, but offset 0x1000 did not read back what was written"},
 		{"less than 256 MiB", aliasing(128 * mib),
-			"memdev mem0 (serial 0x11): region0: " + aliasing(128*mib).String() + ": less than 256 MiB is usable"},
+			"memdev 0x11 (mem0): region0: " + aliasing(128*mib).String() + ": less than 256 MiB is usable"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			v := probeEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})

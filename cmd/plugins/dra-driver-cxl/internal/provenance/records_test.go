@@ -173,7 +173,7 @@ func TestLoadHeldRecord(t *testing.T) {
 	e.wantHeld("pool-c missing", otherLocalSerial)
 	e.advance(MaxHold - time.Minute)
 	e.restart()
-	wantLogLine(t, logs(), "provenance: 1 memdevs held back before the restart stay held")
+	wantLogLine(t, logs(), "provenance: 1 memdevs held before the restart stay held")
 	e.wantState(otherLocalSerial, state.ProvenanceHeld)
 	e.wantHeld("held before the restart", otherLocalSerial)
 	e.advance(2 * time.Minute)
@@ -191,14 +191,14 @@ func TestLostStore(t *testing.T) {
 	e.lose("{bogus")
 	lost := e.st.Lost().Error()
 	out := logs()
-	wantLogLine(t, out, fmt.Sprintf("provenance: %s: %s: the remembered pool serials are lost; new memory devices are held "+
-		"back for up to 5m0s each in the next 1h0m0s", e.name(), lost))
+	wantLogLine(t, out, fmt.Sprintf("provenance: %s: %s: the remembered pool serials are lost; new memdevs are held for up "+
+		"to 5m0s each in the next 1h0m0s", e.name(), lost))
 	if e.w.lost != lost {
 		t.Fatalf("lost %q, expected %q", e.w.lost, lost)
 	}
 	e.plug(localSerial)
 	e.wantHeld("lost records", localSerial)
-	wantLogLine(t, logs(), fmt.Sprintf(holdingBack+" mem0 (serial 0xc100e2e1): it may be a pool device: "+
+	wantLogLine(t, logs(), fmt.Sprintf(holdingBack+" 0xc100e2e1 (mem0): it may be a pool device: "+
 		"the remembered pool serials are lost (%s)", lost))
 	if reason := e.watched(localSerial).HeldReason; reason != state.HeldLost {
 		t.Fatalf("held reason %q", reason)
@@ -208,7 +208,7 @@ func TestLostStore(t *testing.T) {
 	e.advance(time.Second)
 	e.wantHeld("lost records, held back for long enough")
 	e.wantState(localSerial, state.ProvenanceLocal)
-	wantLogLine(t, logs(), "provenance: publishing memdev mem0 (serial 0xc100e2e1) as a local memory device after holding it back for 5m0s "+
+	wantLogLine(t, logs(), "provenance: publishing memdev 0xc100e2e1 (mem0) as a local memory device after holding it for 5m0s "+
 		"(the remembered pool serials are lost (")
 	// the store refuses the commits: not tried, nothing logged
 	if n := countLogLines(logs(), "provenance: writing "); n != 0 {

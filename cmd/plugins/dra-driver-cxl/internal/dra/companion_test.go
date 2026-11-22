@@ -473,7 +473,7 @@ func TestCompanionLeaseBindFails(t *testing.T) {
 	mustOK(t, os.MkdirAll(target, 0o755))
 	mustOK(t, e.k.Kernel().Mount("tmpfs", target, "tmpfs", 0, ""))
 	res := e.prepare(e.pool, companion(poolClaim("c1", "llm0", poolPmemData, cfgFsRO), "l1"))
-	bindErr := "device 0xc1af0001: " + target + " is a tmpfs mount of tmpfs, not of " + filepath.Join(e.poolDir, "mounts", "c1af0001-direct")
+	bindErr := "memdev 0xc1af0001: " + target + " is a tmpfs mount of tmpfs, not of " + filepath.Join(e.poolDir, "mounts", "c1af0001-direct")
 	wantErrText(t, res.Err, e.prefix(e.pool)+bindErr)
 	e.wantEvents("failed", "lending l1 cxl-lease-l1", "failed l1: "+bindErr)
 	e.wantState(e.pool, "c1", state.PreparationNone)
@@ -517,7 +517,7 @@ func TestCompanionRefusedLasting(t *testing.T) {
 	c.Status.Devices = nil
 	wantErrText(t, e.prepare(e.pool, c).Err, "not attached by the pool controller yet")
 	e.wantEvents("not attached", "lending l1 cxl-lease-l1")
-	mismatch := "device pooled0 serial 0xc1ee0001: MemoryConfig: device.mode fs needs a persistent device"
+	mismatch := "device pooled0 (memdev 0xc1ee0001): MemoryConfig: device.mode fs needs a persistent device"
 	wantErrText(t, e.prepare(e.pool, e.companionOf(e.pool, cfgFsRO)).Err, e.prefix(e.pool)+mismatch)
 	e.wantEvents("mismatch", "lending l1 cxl-lease-l1", "failed l1: "+mismatch)
 	e.wantNoCommands("refused companions")

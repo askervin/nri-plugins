@@ -66,7 +66,7 @@ func TestLocalSlicedNUMA(t *testing.T) {
 		t.Fatalf("grant %+v", g)
 	}
 	wantLogText(t, logs(), "cxl.nri.io: claim demo/claim-u1: prepared "+localDev+
-		" (serial 0xc100e2e1, shared false, mode numa, read-only false) as mem0 region0 dax "+g.Got.Dax+" size 134217728 node "+strconv.Itoa(node))
+		" (memdev 0xc100e2e1, share false, mode numa, read-only false) as mem0 region0 dax "+g.Got.Dax+" size 134217728 node "+strconv.Itoa(node))
 	info := e.local.ClaimInfo("u1")
 	want := state.DeviceInfo{RequestName: "mem", DeviceName: localDev, DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA,
 		SysfsPath: e.k.P("bus/cxl/devices/region0"), NUMANodes: []int{node}, NodeAffinities: []int{0},
@@ -125,7 +125,7 @@ func TestLocalSharedDax(t *testing.T) {
 	e.mustPrepare(e.local, localClaim("w1", localDev, -device.SharesUnlimited, cfgDax))
 	e.mustPrepare(e.local, localClaim("r1", localDev, -1, cfgDaxRO))
 	log := logs()
-	shared := "(serial 0xc100e2e1, shared true, mode dax, read-only %v) as mem1 region0 dax dax0.0 size 1073741824 node -1 %s"
+	shared := "(memdev 0xc100e2e1, share true, mode dax, read-only %v) as mem1 region0 dax dax0.0 size 1073741824 node -1 %s"
 	wantLogLine(t, log, "cxl.nri.io: claim demo/claim-w1: prepared "+localDev+" "+fmt.Sprintf(shared, false, "exclusive"))
 	lines := logLines(log, " 1 share")
 	if len(lines) != 1 || !strings.HasSuffix(lines[0], "cxl.nri.io: claim demo/claim-r1: prepared "+localDev+" "+fmt.Sprintf(shared, true, "1 share")) {
@@ -173,7 +173,7 @@ func TestLocalPersistentBlock(t *testing.T) {
 	e.mark()
 	for _, cfg := range []string{cfgFsRO, cfgBlockRO} {
 		wantErrText(t, e.prepare(e.local, localClaim("r0", pmemDev, -1, cfg)).Err,
-			"cxl.nri.io: claim demo/claim-r0: device memdev-c100f5e1 serial 0xc100f5e1: device 0xc100f5e1: no fsdax namespace in region0: has a writer written the device?")
+			"cxl.nri.io: claim demo/claim-r0: device memdev-c100f5e1 (memdev 0xc100f5e1): memdev 0xc100f5e1: no fsdax namespace in region0: has a writer written the device?")
 		e.wantState(e.local, "r0", state.PreparationNone)
 	}
 	if strings.Contains(e.commands(), "ndctl") || len(e.k.Kernel().Regions("mem0")) != 0 {
@@ -222,7 +222,7 @@ func TestLocalPersistentFs(t *testing.T) {
 		w.Path != "/run/cxl-fs/C100F5E1" || w.ReadOnly || r.NodeMount != w.NodeMount || !r.ReadOnly {
 		t.Fatalf("device infos %+v %+v", w, r)
 	}
-	wantLogLine(t, logs(), "cxl.nri.io: claim demo/claim-w1: prepared "+pmemDev+" (serial 0xc100f5e1, shared false, mode fs, read-only false)"+
+	wantLogLine(t, logs(), "cxl.nri.io: claim demo/claim-w1: prepared "+pmemDev+" (memdev 0xc100f5e1, share false, mode fs, read-only false)"+
 		" as mem1 region1 namespace namespace1.0 block "+w.BlockDevice+` access "direct" fs "ext4" mount "`+w.NodeMount+`" loop ""`)
 	for _, c := range []struct {
 		uid      string

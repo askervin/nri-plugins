@@ -61,7 +61,7 @@ func (e *Engine) realiseLocalShared(ctx context.Context, req *GrantRequest, memd
 			err = ze.Err
 		}
 		if err != nil {
-			return fmt.Errorf("memdev %s (serial %s): zeroing new shared %s: %w", memdev, req.Serial.String(), dax, err)
+			return fmt.Errorf("memdev %s (%s): zeroing new shared %s: %w", req.Serial.String(), memdev, dax, err)
 		}
 		klog.Infof("engine: local memdev %s (%s): zeroed new shared %s size %d in %s", req.Serial.String(), memdev, dax, size, since(start))
 		if err := e.commit(ctx, func(r *state.Records) error {
@@ -73,7 +73,7 @@ func (e *Engine) realiseLocalShared(ctx context.Context, req *GrantRequest, memd
 	}
 	major, minor, err := e.k.DaxDevNumbers(dax)
 	if err != nil {
-		return fmt.Errorf("memdev %s (serial %s): %s: %w", memdev, req.Serial.String(), dax, err)
+		return fmt.Errorf("memdev %s (%s): %s: %w", req.Serial.String(), memdev, dax, err)
 	}
 	size, _ := e.k.DaxDeviceSize(dax)
 	return e.realised(ctx, req, state.Got{Region: state.RegionRef(region), Dax: dax, Size: size},
@@ -103,7 +103,7 @@ func (e *Engine) realiseLocal(ctx context.Context, req *GrantRequest, memdev str
 	}
 	got, err := e.realiseSlice(ctx, req, memdev, region, bs)
 	if err != nil {
-		return fmt.Errorf("memdev %s (serial %s): %w", memdev, req.Serial.String(), err)
+		return fmt.Errorf("memdev %s (%s): %w", req.Serial.String(), memdev, err)
 	}
 	return e.realised(ctx, req, got, state.DevNumbers{})
 }
@@ -198,7 +198,7 @@ func (e *Engine) setUpLocal(ctx context.Context, req *GrantRequest, memdev strin
 	start := time.Now()
 	region, err := e.ensureRegion(ctx, req, memdev, state.RegionRAM, usable)
 	if err != nil && !errors.Is(err, errForeignRegion) {
-		err = fmt.Errorf("memdev %s (serial %s): %w", memdev, s, err)
+		err = fmt.Errorf("memdev %s (%s): %w", s, memdev, err)
 	}
 	if err != nil {
 		return "", "", false, err
@@ -206,7 +206,7 @@ func (e *Engine) setUpLocal(ctx context.Context, req *GrantRequest, memdev strin
 	whole, err := e.wholeDevice(ctx, req, region, kernel.DriverDeviceDax)
 	switch {
 	case err != nil && again:
-		return "", "", false, fmt.Errorf("memdev %s (serial %s): setting up kept %s: %w", memdev, s, region, err)
+		return "", "", false, fmt.Errorf("memdev %s (%s): setting up kept %s: %w", s, memdev, region, err)
 	case err != nil:
 		return "", "", false, err
 	case created:
@@ -224,16 +224,16 @@ func (e *Engine) setUpLocal(ctx context.Context, req *GrantRequest, memdev strin
 func (e *Engine) remakeAliased(ctx context.Context, req *GrantRequest, memdev, region string, aliased uint64, try int) error {
 	s := req.Serial.String()
 	if try > 0 {
-		return fmt.Errorf("memdev %s (serial %s): %s of %d bytes still aliases", memdev, s, region, aliased)
+		return fmt.Errorf("memdev %s (%s): %s of %d bytes still aliases", s, memdev, region, aliased)
 	}
 	above, err := e.destroyAliased(ctx, req, memdev, region)
 	if err != nil {
-		return fmt.Errorf("memdev %s (serial %s): releasing aliased %s: %w", memdev, s, region, err)
+		return fmt.Errorf("memdev %s (%s): destroying aliased %s: %w", s, memdev, region, err)
 	}
 	if len(above) > 0 {
 		return &aliasedBelowError{memdev: memdev, serial: req.Serial, region: region, usable: aliased}
 	}
-	klog.Infof("engine: local memdev %s (%s): released aliased %s, creating a region of %d bytes", s, memdev, region, e.usableSize(req))
+	klog.Infof("engine: local memdev %s (%s): destroyed aliased %s, creating a region of %d bytes", s, memdev, region, e.usableSize(req))
 	return nil
 }
 
@@ -288,7 +288,7 @@ type localKindError struct {
 
 // Error returns the refusal in words.
 func (e *localKindError) Error() string {
-	return fmt.Sprintf("memdev %s (serial %s): used %s by claims %v; %s", e.memdev, e.serial.String(), e.how, e.claims, e.refusal)
+	return fmt.Sprintf("memdev %s (%s): used %s by claims %v; %s", e.serial.String(), e.memdev, e.how, e.claims, e.refusal)
 }
 
 // checkLocalKind returns an error when grants of other claims use the local
@@ -729,14 +729,14 @@ func (e *Engine) deleteSlice(ctx context.Context, g *state.Grant, trigger state.
 	start := time.Now()
 	blocks, err := e.offlineDax(ctx, dax)
 	if err != nil {
-		return fmt.Errorf("memdev %s (serial %s): releasing slice %s: %w", memdev, g.Serial.String(), dax, err)
+		return fmt.Errorf("memdev %s (%s): deleting slice %s: %w", g.Serial.String(), memdev, dax, err)
 	}
 	if len(blocks) > 0 {
 		logStep("offlined", start, fmt.Sprintf(" blocks %v", blocks))
 	}
 	start = time.Now()
 	if err := e.locked(func() error { return e.k.DeleteDaxDevice(ctx, region, dax) }); err != nil {
-		return fmt.Errorf("memdev %s (serial %s): releasing slice %s: %w", memdev, g.Serial.String(), dax, err)
+		return fmt.Errorf("memdev %s (%s): deleting slice %s: %w", g.Serial.String(), memdev, dax, err)
 	}
 	logStep("deleted", start, "")
 	return e.commit(ctx, func(r *state.Records) error { return deletedOwnSlice(r, g.Ref, g.Got.Region, dax, trigger) })

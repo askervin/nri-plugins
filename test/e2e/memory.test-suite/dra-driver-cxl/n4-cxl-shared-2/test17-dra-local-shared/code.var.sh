@@ -616,7 +616,7 @@ DRA_DRIVER_CONFIG=""
 dra-install
 dra-trace-driver-follow "$VM2"
 # The node plugin itself released the region: its log says so.
-dra-plugin-log-wait "$VM2" "local memdev $DRA_LOCAL_SERIAL ($SHARED_MEMDEV): not configured shared any more, releasing its region" 60
+dra-plugin-log-wait "$VM2" "local memdev $DRA_LOCAL_SERIAL ($SHARED_MEMDEV): not in sharedMemdevs any more, destroying its region" 60
 dra-local-slices-none "$VM2" unshared
 dra-wait "$VM2" sliced-again resourceslices \
     "attr($LD, 'shared') == False and sorted(k.split('/')[-1] for k in ${LD}['attributes']) == ['memoryBlockSize', 'numaNode', 'persistent', 'serial', 'shared', 'size', 'source', 'type'] and quantity(capacity($LD, 'memory')) == $DRA_LOCAL_SIZE" 60

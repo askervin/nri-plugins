@@ -615,8 +615,8 @@ func (e *Engine) destroyRegions(ctx context.Context, serial state.Serial, memdev
 			return false, err
 		}
 		if source != state.SourcePool {
-			// the pool logs the release of its memdev
-			klog.Infof("engine: local memdev %s (%s): released %s in %s", serial.String(), memdev, name, since(start))
+			// the pool logs the disable of its memdev
+			klog.Infof("engine: local memdev %s (%s): destroyed %s in %s", serial.String(), memdev, name, since(start))
 		}
 	}
 	return false, nil
@@ -634,7 +634,7 @@ func (e *Engine) disableMemdev(ctx context.Context, source state.Source, serial 
 	if err := e.locked(func() error { return e.k.DisableMemdev(ctx, memdev) }); err != nil {
 		return err
 	}
-	klog.Infof("engine: %s (%s): released", memdevText(source, serial), memdev)
+	klog.Infof("engine: %s (%s): disabled", memdevText(source, serial), memdev)
 	return nil
 }
 

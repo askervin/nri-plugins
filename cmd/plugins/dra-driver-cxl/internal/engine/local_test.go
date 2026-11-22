@@ -155,7 +155,7 @@ func TestLocalRegionErrors(t *testing.T) {
 	v.mustUnprepare(localDriver, "l1")
 
 	v.f.FailCommand("cxl create-region", fake.ErrAddDev, fake.ErrAddDev)
-	if err := v.prepare(localDriver, "l1", req); err == nil || err.Error() != "memdev mem0 (serial 0x11): cxl region: cmd_create_region: region0: add_dev() failed" {
+	if err := v.prepare(localDriver, "l1", req); err == nil || err.Error() != "memdev 0x11 (mem0): cxl region: cmd_create_region: region0: add_dev() failed" {
 		t.Fatalf("error %v", err)
 	}
 	wantPreparation(t, v, localDriver, "l1", "")
@@ -217,13 +217,13 @@ func TestLocalSliceFailures(t *testing.T) {
 	}{
 		{"no devdax", noDevdax, dax("l1"), "bind dax0.0 to device_dax: device_dax: enable failed"},
 		{"zeroing", func(v *env) { v.f.ZeroErr = errors.New("mmap: no such device") }, dax("l1"),
-			"memdev mem0 (serial 0x11): zeroing dax0.0: mmap: no such device"},
+			"memdev 0x11 (mem0): zeroing dax0.0: mmap: no such device"},
 		{"kmem bind", func(v *env) { v.f.FailWrite("bus/dax/drivers/kmem/bind", syscall.EIO) }, numa("l1", 128*mib),
-			"memdev mem0 (serial 0x11): bind dax0.0 to kmem: input/output error"},
+			"memdev 0x11 (mem0): bind dax0.0 to kmem: input/output error"},
 		{"online", func(v *env) { v.f.FailWrite(blockState(75), syscall.EIO) }, numa("l1", 256*mib),
-			"memdev mem0 (serial 0x11): memory75: online_movable: input/output error"},
+			"memdev 0x11 (mem0): memory75: online_movable: input/output error"},
 		{"no room for whole blocks", func(v *env) { v.f.SetBlockSize(2 * gib) }, numa("l1", 128*mib),
-			"memdev mem0 (serial 0x11): no room for the slice: 1073741824 bytes free in region0, the slice needs 2147483648"},
+			"memdev 0x11 (mem0): no room for the slice: 1073741824 bytes free in region0, the slice needs 2147483648"},
 		{"block size unreadable", func(v *env) { v.f.Write("devices/system/memory/block_size_bytes", "bogus") }, dax("l1"),
 			`cannot parse the memory block size "bogus" in <sys>/devices/system/memory/block_size_bytes`},
 	} {
@@ -247,10 +247,10 @@ func TestLocalSliceFailures(t *testing.T) {
 			err  string
 		}{
 			{func() { v.f.FailWrite("bus/dax/devices/dax0.1/size", syscall.EIO) }, dax("d2"),
-				"memdev mem0 (serial 0x11): dax0.1: set size 134217728: input/output error"},
-			{func() { noDevdax(v) }, dax("d2"), "memdev mem0 (serial 0x11): bind dax0.1 to device_dax: device_dax: enable failed"},
+				"memdev 0x11 (mem0): dax0.1: set size 134217728: input/output error"},
+			{func() { noDevdax(v) }, dax("d2"), "memdev 0x11 (mem0): bind dax0.1 to device_dax: device_dax: enable failed"},
 			{func() { v.f.FailWrite(blockState(76), syscall.EIO) }, numa("d2", 256*mib),
-				"memdev mem0 (serial 0x11): memory76: online_movable: input/output error"},
+				"memdev 0x11 (mem0): memory76: online_movable: input/output error"},
 		} {
 			tc.fail()
 			failed(t, v, "d2", tc.req, tc.err)
@@ -270,7 +270,7 @@ func TestLocalSliceFailures(t *testing.T) {
 		v.mustPrepare(localDriver, "d2", dax("d2"))
 		d2 := v.grant("d2", 0).Got.Dax
 		v.f.FailWrite("bus/cxl/devices/region0/dax_region0/dax_region/delete", syscall.EBUSY)
-		if err := v.unprepare(localDriver, "d2"); err == nil || err.Error() != "memdev mem0 (serial 0x11): releasing slice dax0.1: region0: delete dax0.1: device or resource busy" {
+		if err := v.unprepare(localDriver, "d2"); err == nil || err.Error() != "memdev 0x11 (mem0): deleting slice dax0.1: region0: delete dax0.1: device or resource busy" {
 			t.Fatalf("error %v", err)
 		}
 		if g := v.grant("d2", 0); !v.f.DaxExists(d2) || g == nil || g.State != state.GrantReleasing {
@@ -314,15 +314,15 @@ func TestLocalPlacementFailures(t *testing.T) {
 	}
 
 	v.f.FailWrite("bus/dax/devices/dax0.0/size", nil, syscall.EIO)
-	failed("first-fit device not deleted", numa, "memdev mem0 (serial 0x11): dax0.0: set size 0: input/output error")
+	failed("first-fit device not deleted", numa, "memdev 0x11 (mem0): dax0.0: set size 0: input/output error")
 	v.clean("first-fit device not deleted")
 
 	v.mustPrepare(localDriver, "d1", localReq("d1", 0, serialL, state.ModeDax, state.KindExclusive, bs))
 	d1 := v.grant("d1", 0).Got.Dax
 	v.f.FailWrite("bus/dax/devices/dax0.2/mapping", syscall.EIO)
-	failed("not mapped", numa, "memdev mem0 (serial 0x11): dax0.2: map 0x280000000-0x29fffffff: input/output error")
+	failed("not mapped", numa, "memdev 0x11 (mem0): dax0.2: map 0x280000000-0x29fffffff: input/output error")
 	v.f.FailWrite("bus/dax/drivers/kmem/bind", syscall.EIO)
-	failed("not bound", numa, "memdev mem0 (serial 0x11): bind dax0.2 to kmem: input/output error")
+	failed("not bound", numa, "memdev 0x11 (mem0): bind dax0.2 to kmem: input/output error")
 
 	size := v.f.Read("bus/cxl/devices/region0/size")
 	v.f.Before("write bus/dax/devices/dax0.0/size 0", func() { v.f.Write("bus/cxl/devices/region0/size", "bogus") })
@@ -334,20 +334,20 @@ func TestLocalPlacementFailures(t *testing.T) {
 		free += g.Size()
 	}
 	v.f.Write("bus/cxl/devices/region0/dax_region0/dax_region/available_size", fmt.Sprint(free))
-	if want := `memdev mem0 (serial 0x11): cannot parse region region0 resource "0x250000000" size "bogus"`; err == nil || err.Error() != want {
+	if want := `memdev 0x11 (mem0): cannot parse region region0 resource "0x250000000" size "bogus"`; err == nil || err.Error() != want {
 		t.Fatalf("region unreadable: error %v, want %q", err, want)
 	}
 	v.check("region unreadable")
 
 	v.f.NoKmemBlocks, v.prepareTimeout = true, 50*time.Millisecond
-	failed("no memory blocks", numa, "memdev mem0 (serial 0x11): dax0.2: 0 of 1 memory blocks appeared: context deadline exceeded")
+	failed("no memory blocks", numa, "memdev 0x11 (mem0): dax0.2: 0 of 1 memory blocks appeared: context deadline exceeded")
 	v.f.NoKmemBlocks, v.prepareTimeout = false, 0
 
 	// the free memory is left only across block boundaries
 	v.mustPrepare(localDriver, "d2", localReq("d2", 0, serialL, state.ModeDax, state.KindExclusive, bs))
 	v.mustPrepare(localDriver, "d3", localReq("d3", 0, serialL, state.ModeDax, state.KindExclusive, bs))
 	err = v.prepare(localDriver, "n1", numa)
-	if want := "memdev mem0 (serial 0x11): no room for the slice: no 536870912 bytes of whole free memory blocks in region0 " +
+	if want := "memdev 0x11 (mem0): no room for the slice: no 536870912 bytes of whole free memory blocks in region0 " +
 		"(free [0x250000000-0x25fffffff 0x2c0000000-0x2cfffffff], memory block size 536870912)"; !errors.Is(err, kernel.ErrNoRoom) || err.Error() != want {
 		t.Fatalf("no whole blocks: error %v, want %q", err, want)
 	}
@@ -595,25 +595,25 @@ func TestLocalKindConflicts(t *testing.T) {
 		want  string
 	}{
 		{"sliced on shared", fake.MemdevSpec{Serial: serialL, Ram: gib}, sharedReq("u1"), sliceReq("x", 0, state.ModeDax, 256*mib),
-			"memdev mem0 (serial 0x11): used shared by claims [u1]; a sliced device cannot be shared"},
+			"memdev 0x11 (mem0): used shared by claims [u1]; a sliced device cannot be shared"},
 		{"shared on sliced", fake.MemdevSpec{Serial: serialL, Ram: gib}, sliceReq("n1", 0, state.ModeNUMA, 256*mib), sharedReq("x"),
-			"memdev mem0 (serial 0x11): used as slices by claims [n1]; a shared device cannot be sliced"},
+			"memdev 0x11 (mem0): used as slices by claims [n1]; a shared device cannot be sliced"},
 		{"sliced on persistent", fake.MemdevSpec{Serial: serialP, Pmem: gib}, sharedPmem("w", false),
 			localReq("x", 0, serialP, state.ModeDax, state.KindExclusive, 256*mib),
-			"memdev mem0 (serial 0x91): used as a persistent device by claims [w]; a sliced device cannot be a persistent device"},
+			"memdev 0x91 (mem0): used as a persistent device by claims [w]; a sliced device cannot be a persistent device"},
 		{"shared on persistent", fake.MemdevSpec{Serial: serialP, Pmem: gib}, sharedPmem("w", false),
 			localReq("x", 0, serialP, state.ModeDax, state.KindShared, gib),
-			"memdev mem0 (serial 0x91): used as a persistent device by claims [w]; a shared device cannot be a persistent device"},
+			"memdev 0x91 (mem0): used as a persistent device by claims [w]; a shared device cannot be a persistent device"},
 		{"persistent on sliced", fake.MemdevSpec{Serial: serialL, Ram: gib}, sliceReq("n1", 0, state.ModeNUMA, 256*mib),
 			localReq("x", 0, serialL, state.ModeBlock, state.KindPersistent, 0),
-			"memdev mem0 (serial 0x11): used as slices by claims [n1]; a persistent device cannot be used so"},
+			"memdev 0x11 (mem0): used as slices by claims [n1]; a persistent device cannot be used so"},
 		{"persistent on shared", fake.MemdevSpec{Serial: serialL, Ram: gib}, sharedReq("u1"),
 			localReq("x", 0, serialL, state.ModeBlock, state.KindPersistent, 0),
-			"memdev mem0 (serial 0x11): used shared by claims [u1]; a persistent device cannot be used so"},
+			"memdev 0x11 (mem0): used shared by claims [u1]; a persistent device cannot be used so"},
 		{"unshared on shared persistent", fake.MemdevSpec{Serial: serialP, Pmem: gib}, sharedPmem("w", true), sharedPmem("x", false),
-			"memdev mem0 (serial 0x91): used as a shared persistent device by claims [w]; it is not shared now (sharedMemdevs)"},
+			"memdev 0x91 (mem0): used as a shared persistent device by claims [w]; it is not shared now (sharedMemdevs)"},
 		{"shared on unshared persistent", fake.MemdevSpec{Serial: serialP, Pmem: gib}, sharedPmem("w", false), sharedPmem("x", true),
-			"memdev mem0 (serial 0x91): used as a not shared persistent device by claims [w]; it is shared now (sharedMemdevs)"},
+			"memdev 0x91 (mem0): used as a not shared persistent device by claims [w]; it is shared now (sharedMemdevs)"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			v := newEnv(t, c.spec)
@@ -654,8 +654,8 @@ func TestLocalKindIdleReleasedFirst(t *testing.T) {
 	logs := klogtest.Capture(t, 3)
 	v.mustPrepare(localDriver, "n", sliceReq("n", 0, state.ModeDax, 256*mib))
 	out := logs()
-	wantLog(t, out, "engine: local memdev 0x11 (mem0): released region0 in ", "engine: local memdev 0x11 (mem0): created region0 ")
-	if i, j := strings.Index(out, "released region0 in "), strings.Index(out, "created region0 "); j < i {
+	wantLog(t, out, "engine: local memdev 0x11 (mem0): destroyed region0 in ", "engine: local memdev 0x11 (mem0): created region0 ")
+	if i, j := strings.Index(out, "destroyed region0 in "), strings.Index(out, "created region0 "); j < i {
 		t.Fatalf("the region was not released first:\n%s", out)
 	}
 	if m := v.records().Memdev(serialL); m.Facts.Shared || m.State != state.MemdevActive {
@@ -706,7 +706,7 @@ func TestLocalLogLines(t *testing.T) {
 		out := logs()
 		wantMessages(t, out,
 			memdev+"created region0 (devdax, dax dax0.0, node 2) in <t>",
-			memdev+"released region0 in <t>",
+			memdev+"destroyed region0 in <t>",
 			memdev+"claim d: zeroed slice dax0.0 mode dax size 134217728 in <t>",
 			memdev+"claim d: created slice dax0.0 mode dax size 134217728 at [0x250000000-0x257ffffff] in <t>",
 			memdev+"claim d: deleted slice dax0.0 mode dax size 134217728 in <t>",

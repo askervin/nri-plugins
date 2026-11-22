@@ -53,9 +53,9 @@ func TestLocalRecoverShared(t *testing.T) {
 	}{
 		{"configured with claims", true, true, "engine: local memdev 0x11 (mem0): keeping shared region0 and dax0.0, claims [s1]", false},
 		{"configured idle", false, true, "engine: local memdev 0x11 (mem0): keeping shared region0 and dax0.0, claims []", false},
-		{"not configured with claims", true, false, "engine: local memdev 0x11 (mem0): not configured shared any more: keeping region0 for " +
+		{"not configured with claims", true, false, "engine: local memdev 0x11 (mem0): not in sharedMemdevs any more: keeping region0 for " +
 			"claims [s1], not publishing the memdev until they are gone", false},
-		{"not configured idle", false, false, "engine: local memdev 0x11 (mem0): not configured shared any more, releasing its region", true},
+		{"not configured idle", false, false, "engine: local memdev 0x11 (mem0): not in sharedMemdevs any more, destroying its region", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			v := newEnv(t, fake.MemdevSpec{Serial: serialL, Ram: gib})
@@ -75,7 +75,7 @@ func TestLocalRecoverShared(t *testing.T) {
 				t.Fatalf("no %q in\n%s", c.want, out)
 			}
 			if c.released {
-				if released := logLine(out, "released region0 in "); released == "" {
+				if released := logLine(out, "destroyed region0 in "); released == "" {
 					t.Errorf("no line of the region release in\n%s", out)
 				}
 				v.clean("released")
@@ -114,13 +114,13 @@ func TestLocalRecoverPersistent(t *testing.T) {
 	v.f.SetHolder(pmem, "dm-0")
 	logs = klogtest.Capture(t, 3)
 	v.restart()
-	wantLog(t, logs(), "engine: local memdev 0x91 (mem0): keeping region0 of the idle persistent device: device 0x91: "+pmem+" is still in use",
+	wantLog(t, logs(), "engine: local memdev 0x91 (mem0): keeping region0 of the idle persistent device: memdev 0x91: "+pmem+" is still in use",
 		"engine: local memdev 0x91: "+pmem+" is held: in use")
 	wantRegion(t, v, "region0", state.RegionOwned)
 	v.f.SetHolder(pmem, "")
 	logs = klogtest.Capture(t, 3)
 	v.restart()
-	wantLog(t, logs(), "engine: local memdev 0x91 (mem0): released region0 in ")
+	wantLog(t, logs(), "engine: local memdev 0x91 (mem0): destroyed region0 in ")
 	v.clean("released")
 }
 
@@ -147,7 +147,7 @@ func TestLocalRecoverSlicedIdle(t *testing.T) {
 	v.restart()
 	wantLog(t, logs(), "engine: local memdev 0x11 (mem0): dax0.0 (mode dax, 268435456 bytes) belongs to no claim, deleting it",
 		"engine: local memdev 0x11 (mem0): dax0.1 (mode numa, 134217728 bytes) belongs to no claim, deleting it",
-		"engine: local memdev 0x11 (mem0): released region0 in ")
+		"engine: local memdev 0x11 (mem0): destroyed region0 in ")
 	v.clean("released")
 }
 
@@ -424,7 +424,7 @@ func TestLocalRecoverHeldBlockDevice(t *testing.T) {
 	v.f.SetHolder(pmem, "")
 	logs = klogtest.Capture(t, 3)
 	v.mustUnprepare(localDriver, "b")
-	wantLog(t, logs(), "engine: local memdev 0x91 (mem0): released region0 in ")
+	wantLog(t, logs(), "engine: local memdev 0x91 (mem0): destroyed region0 in ")
 	v.clean("unprepared")
 }
 

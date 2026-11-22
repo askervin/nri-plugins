@@ -357,7 +357,7 @@ func (p *Plugin) logPrepared(pr *prepare) {
 		if m := r.Memdev(g.Serial); m != nil {
 			memdev = m.Name
 		}
-		what := fmt.Sprintf("%s: claim %s: prepared %s (serial 0x%x, shared %v, mode %s, read-only %v) as %s %s",
+		what := fmt.Sprintf("%s: claim %s: prepared %s (memdev 0x%x, share %v, mode %s, read-only %v) as %s %s",
 			p.rules.Name, pr.claimName, pr.device(req.Ref), uint64(g.Serial), sharedGrant(g), g.Asked.Mode, g.Asked.ReadOnly,
 			memdev, g.Got.Region)
 		if g.Asked.Mode == state.ModeBlock || g.Asked.Mode == state.ModeFS {
@@ -502,7 +502,7 @@ func (p *Plugin) deviceError(pr *prepare, err error) error {
 	}
 	for i := range pr.reqs {
 		if req := &pr.reqs[i]; req.Ref == ge.Ref {
-			return fmt.Errorf("device %s serial 0x%x: %w", pr.device(req.Ref), uint64(req.Serial), ge.Err)
+			return fmt.Errorf("device %s (memdev 0x%x): %w", pr.device(req.Ref), uint64(req.Serial), ge.Err)
 		}
 	}
 	return err

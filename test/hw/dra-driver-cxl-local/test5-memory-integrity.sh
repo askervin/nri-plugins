@@ -37,7 +37,7 @@ log "0. the first region of the memdev and its address line probe"
 before=$(capacity)
 { claim_yaml probe cxl-local memory=2Gi mode=dax; echo ---; pod_yaml probe claim=probe; } | kapply
 wait_pod probe Running 300 || fail "pod probe is not Running"
-driver_log 10m | grep -E "address line probe|using only|creating a region of|released aliased" | sed 's/^[^]]*] //; s/^/    /'
+driver_log 10m | grep -E "address line probe|using only|creating a region of|destroyed aliased" | sed 's/^[^]]*] //; s/^/    /'
 delete_all
 settled() { [ "$(capacity)" != "$before" ] || ! driver_log 10m | grep -q "using only"; }
 wait_for 60 "the capacity is republished" settled

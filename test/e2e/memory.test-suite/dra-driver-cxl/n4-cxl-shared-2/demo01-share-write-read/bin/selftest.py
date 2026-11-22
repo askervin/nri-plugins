@@ -354,8 +354,8 @@ def trace_fs_test():
                  "vm2 reader-a: unmounted hello", "vm1 remove pmem0 region0",
                  "vm2 pmem0 read-only", "vm2 node mount pmem0 erofs ro", "vm1 node mount pmem0 erofs ro",
                  "vm2 node mount unmounted", "vm1 node mount unmounted", "shared0 on vm1: not exclusive",
-                 "reader-c: shared0 on vm1 already", "vm2 reader-a releases: ctr gone", "vm2 released mem0",
-                 "shared0 detaching from vm2", "vm1 released mem0", "vm1 bind mem0"):
+                 "reader-c: shared0 on vm1 already", "vm2 reader-a releases: ctr gone", "vm2 disabled mem0",
+                 "shared0 detaching from vm2", "vm1 disabled mem0", "vm1 bind mem0"):
         expect("trace-fs", want in texts, "no %r" % want)
     expect("trace-fs vm1 kept", "detach shared0 from vm1" not in texts[:texts.index("vm2 reader-a asks fs ro share") + 30],
            "shared0 detached from vm1 at F6")
@@ -383,9 +383,9 @@ def trace_formats_test():
         'lease broker: lease 3f2a91c0: releasing (released by main, was Ready)',
         'lease broker: lease 3f2a91c0: released',
         # pool.go
-        'cxl-pool.nri.io: claim cxl-demo/cxl-lease-3f2a91c0: prepared fs0 (serial 0xc1ae0001, shared true, mode fs, read-only false) as '
+        'cxl-pool.nri.io: claim cxl-demo/cxl-lease-3f2a91c0: prepared fs0 (memdev 0xc1ae0001, share true, mode fs, read-only false) as '
         'mem0 region0 namespace namespace0.0 block /dev/pmem0 access "direct" fs "ext4" mount "%s" loop ""' % mnt,
-        'cxl-pool.nri.io: claim cxl-demo/cxl-lease-51aa7b09: prepared shared0 (serial 0xc1ae0001, shared true, mode dax, read-only true) '
+        'cxl-pool.nri.io: claim cxl-demo/cxl-lease-51aa7b09: prepared shared0 (memdev 0xc1ae0001, share true, mode dax, read-only true) '
         'as mem0 region0 dax dax0.0 node -1',
         'cxl-pool.nri.io: unprepared claim cxl-demo/cxl-lease-3f2a91c0 (c1a10006-0000-4000-8000-000000000000)',
         # persistent.go
@@ -398,13 +398,13 @@ def trace_formats_test():
         'engine: lease 3f2a91c0: unbound %s' % lease_fs,
         'engine: pool memdev 0xc1ae0001: unmounted %s' % mnt,
         # local.go
-        'engine: local memdev 0xc100e2e1 (mem0): released region0 in 35ms',
-        'engine: local memdev 0xc100e2e1 (mem0): not configured shared any more, releasing its region',
-        'engine: local memdev 0xc100e2e1 (mem0): not configured shared any more: keeping region0 for claims [a b], '
+        'engine: local memdev 0xc100e2e1 (mem0): destroyed region0 in 35ms',
+        'engine: local memdev 0xc100e2e1 (mem0): not in sharedMemdevs any more, destroying its region',
+        'engine: local memdev 0xc100e2e1 (mem0): not in sharedMemdevs any more: keeping region0 for claims [a b], '
         'not publishing the memdev until they are gone',
         'engine: local memdev 0xc100e2e1 (mem0): claim c1a10006-0000-4000-8000-000000000000: released shared dax0.0, claims left [a b]',
         'lease broker: lease 3f2a91c0: releasing (requester container gone, was Ready)',
-        'engine: pool memdev 0xc1ae0001 (mem0): released',
+        'engine: pool memdev 0xc1ae0001 (mem0): disabled',
     ]
     controller = [
         'attach fs0 to %s for %s: exclusive for a read-write ext4 claim' % (vm1, want),
@@ -428,9 +428,9 @@ def trace_formats_test():
               "vm1 writer: lease released", "vm1 writer: prepared ext4 rw direct", "vm1 reader-b asks dax ro share", "vm1 reader-b: prepared dax0.0 ro",
               "vm1 writer: unprepared", "vm1 node mount pmem0 ext4 rw", "vm1 node mount loop0 erofs ro",
               "vm1 node mount now read-only", "vm1 pmem0 read-write", "vm1 writer: mounted data", "vm1 writer: mounted data again",
-              "vm1 writer: unmounted data", "vm1 node mount unmounted", "vm1 released region0",
-              "vm1 unshared: releasing the region", "vm1 unshared: keeping the region", "vm1 c1a10006: released, 2 left",
-              "vm1 writer releases: ctr gone", "vm1 released mem0", "writer: fs0 on vm1 already",
+              "vm1 writer: unmounted data", "vm1 node mount unmounted", "vm1 destroyed region0",
+              "vm1 unshared: destroying the region", "vm1 unshared: keeping the region", "vm1 c1a10006: released, 2 left",
+              "vm1 writer releases: ctr gone", "vm1 disabled mem0", "writer: fs0 on vm1 already",
               "writer: fs0 excl: rw ext4", "reader-b: fs0 not on vm2: Conflict", "writer: attach fs0 to vm1 excl",
               "detach fs0 from vm1"):
         expect("trace formats", w in texts, "no %r in %s" % (w, texts))

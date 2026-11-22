@@ -249,7 +249,7 @@ func (e *Engine) pmemChain(ctx context.Context, req *GrantRequest, memdev string
 		return "", nil, err
 	}
 	if !ok {
-		return "", nil, fmt.Errorf("device %s: %s has no persistent memory", req.Serial.String(), memdev)
+		return "", nil, fmt.Errorf("memdev %s: %s has no persistent memory", req.Serial.String(), memdev)
 	}
 	wctx, cancel := context.WithTimeout(ctx, e.settle(req.Asked.Source))
 	defer cancel()
@@ -332,7 +332,7 @@ func (e *Engine) pmemNamespace(ctx context.Context, req *GrantRequest, nd string
 		return ns, nil
 	}
 	if req.Asked.Mode == state.ModeFS || req.Asked.ReadOnly {
-		return nil, fmt.Errorf("device %s: no fsdax namespace in %s: has a writer written the device?", req.Serial.String(), nd)
+		return nil, fmt.Errorf("memdev %s: no fsdax namespace in %s: has a writer written the device?", req.Serial.String(), nd)
 	}
 	existing := ""
 	if len(nss) > 0 {
@@ -365,7 +365,7 @@ func (e *Engine) preparePmemGrant(ctx context.Context, req *GrantRequest, dev st
 	s := req.Serial.String()
 	blockWriter := slices.ContainsFunc(others, func(o pmemGrant) bool { return o.mode == state.ModeBlock && o.writer() })
 	if blockWriter || (req.Asked.Mode == state.ModeBlock && !req.Asked.ReadOnly && len(others) > 0) {
-		return u, fmt.Errorf("device %s: mode block read-write needs the device alone on this node", s)
+		return u, fmt.Errorf("memdev %s: mode block read-write needs the device alone on this node", s)
 	}
 	if req.Asked.Mode != state.ModeFS {
 		if u.writer() {
@@ -426,7 +426,7 @@ func (s *signature) get() (*kernel.FSSignature, error) {
 	if s.sig == nil {
 		sg, err := s.e.k.ReadFSSignature(s.dev)
 		if err != nil {
-			return nil, fmt.Errorf("device %s: reading %s: %w", s.serial, s.dev, err)
+			return nil, fmt.Errorf("memdev %s: reading %s: %w", s.serial, s.dev, err)
 		}
 		s.sig = &sg
 	}
@@ -453,7 +453,7 @@ func (e *Engine) fsTypeOf(req *GrantRequest, dev string, sig *signature) (string
 	}
 	if mounted != nil {
 		if req.Asked.FSType != "" && req.Asked.FSType != mounted.FSType {
-			return "", fmt.Errorf("device %s: %s has a filesystem of type %s, not %s", sig.serial, dev, mounted.FSType, req.Asked.FSType)
+			return "", fmt.Errorf("memdev %s: %s has a filesystem of type %s, not %s", sig.serial, dev, mounted.FSType, req.Asked.FSType)
 		}
 		return mounted.FSType, nil
 	}
@@ -472,7 +472,7 @@ func (e *Engine) fsTypeOf(req *GrantRequest, dev string, sig *signature) (string
 // coherent memory.
 func (e *Engine) checkFsType(req *GrantRequest, typ string, sig *signature) (string, error) {
 	fail := func(format string, args ...any) (string, error) {
-		return "", fmt.Errorf("device "+sig.serial+": "+format, args...)
+		return "", fmt.Errorf("memdev "+sig.serial+": "+format, args...)
 	}
 	allowed := strings.Join(e.opts.FSTypes, ", ")
 	if allowed == "" {
@@ -515,7 +515,7 @@ func checkCluster(req *GrantRequest, typ string, sig *signature) error {
 		ok, why = false, "the device is not coherent between hosts"
 	}
 	if !ok {
-		return fmt.Errorf("device %s: read-write on several hosts needs a cluster filesystem on coherent memory: %s", sig.serial, why)
+		return fmt.Errorf("memdev %s: read-write on several hosts needs a cluster filesystem on coherent memory: %s", sig.serial, why)
 	}
 	return nil
 }
@@ -529,13 +529,13 @@ func checkNodeRules(req *GrantRequest, access string, others []pmemGrant) error 
 	accesses := fsAccesses(others)
 	switch {
 	case other != nil && other.access != access:
-		return fmt.Errorf("device %s: it is mounted read-write with access %s on this node: access %s would mount it a second time",
+		return fmt.Errorf("memdev %s: it is mounted read-write with access %s on this node: access %s would mount it a second time",
 			s, other.access, access)
 	case !req.Asked.ReadOnly && len(accesses) == 2:
-		return fmt.Errorf("device %s: it is mounted with access %s and %s on this node: a read-write claim needs one access only",
+		return fmt.Errorf("memdev %s: it is mounted with access %s and %s on this node: a read-write claim needs one access only",
 			s, api.AccessDirect, api.AccessCached)
 	case !req.Asked.ReadOnly && len(accesses) == 1 && accesses[0] != access:
-		return fmt.Errorf("device %s: it is mounted with access %s only on this node: a read-write claim with access %s would mount it a second time",
+		return fmt.Errorf("memdev %s: it is mounted with access %s only on this node: a read-write claim with access %s would mount it a second time",
 			s, accesses[0], access)
 	}
 	return nil
@@ -560,7 +560,7 @@ func (e *Engine) nodeMount(req *GrantRequest, u *pmemGrant, typ, access, mnt str
 	}
 	switch {
 	case u.writer() && mi.SuperReadOnly() && !config.FSTypeRemountable(typ):
-		return "", fmt.Errorf("device %s: %s is mounted read-only on this node and cannot be remounted read-write: a read-write claim waits until the read-only claims of the node are gone",
+		return "", fmt.Errorf("memdev %s: %s is mounted read-only on this node and cannot be remounted read-write: a read-write claim waits until the read-only claims of the node are gone",
 			sig.serial, typ)
 	case u.writer() && mi.SuperReadOnly():
 		if err := e.remountReadWrite(source, serial, dev, loop, mnt, append(nodeMounts(others), mnt)); err != nil {
@@ -593,7 +593,7 @@ func (e *Engine) mountFresh(source state.Source, serial state.Serial, dev, acces
 // errNeedsRecovery returns the error of a filesystem that a read-only
 // mount cannot recover.
 func errNeedsRecovery(serial, fsType, dev string) error {
-	return fmt.Errorf("device %s: %s on %s needs recovery (it was not unmounted cleanly): a read-only mount cannot recover it, a read-write claim on one node does",
+	return fmt.Errorf("memdev %s: %s on %s needs recovery (it was not unmounted cleanly): a read-only mount cannot recover it, a read-write claim on one node does",
 		serial, fsType, dev)
 }
 
@@ -732,7 +732,7 @@ func (e *Engine) mountFs(source state.Source, serial state.Serial, dev, src, fsT
 		if ro && errors.Is(err, syscall.EROFS) {
 			return errNeedsRecovery(s, fsType, dev)
 		}
-		return fmt.Errorf("device %s: %s has no %s filesystem: %w", s, dev, fsType, err)
+		return fmt.Errorf("memdev %s: %s has no %s filesystem: %w", s, dev, fsType, err)
 	}
 	if loop != nil {
 		if err := loop.Close(); err != nil {
@@ -754,7 +754,7 @@ func (e *Engine) configureCachedLoop(source state.Source, serial state.Serial, d
 	})
 	if err != nil {
 		e.removeMountDir(mnt)
-		return nil, fmt.Errorf("device %s: a loop device over %s: %w", serial.String(), dev, err)
+		return nil, fmt.Errorf("memdev %s: a loop device over %s: %w", serial.String(), dev, err)
 	}
 	if !readOnlyType {
 		if err := e.setReadOnly(source, serial, l.Path(), ro); err != nil {
@@ -774,7 +774,7 @@ func (e *Engine) verifyNodeDax(source state.Source, serial state.Serial, dev, fs
 	s := serial.String()
 	mi, err := e.k.Mounted(mnt)
 	if err == nil && (mi == nil || !mi.HasSuperOpt(daxAlways)) {
-		err = fmt.Errorf("device %s: %s on %s was mounted without DAX", s, fsType, dev)
+		err = fmt.Errorf("memdev %s: %s on %s was mounted without DAX", s, fsType, dev)
 	}
 	if err == nil {
 		return nil
@@ -812,7 +812,7 @@ func (e *Engine) remountReadWrite(source state.Source, serial state.Serial, dev,
 		if rerr := e.setReadOnly(source, serial, dev, true); rerr != nil {
 			klog.Errorf("engine: %v", rerr)
 		}
-		return fmt.Errorf("device %s: remounting %s read-write: %w", s, mnt, err)
+		return fmt.Errorf("memdev %s: remounting %s read-write: %w", s, mnt, err)
 	}
 	if err := e.setReadOnly(source, serial, dev, false); err != nil {
 		return fail(err)
@@ -835,10 +835,10 @@ func (e *Engine) remountReadWrite(source state.Source, serial state.Serial, dev,
 func (e *Engine) remountReadOnly(source state.Source, serial state.Serial, dev, loop, mnt string) error {
 	s := serial.String()
 	if err := e.locked(func() error { return e.k.Syncfs(mnt) }); err != nil {
-		return fmt.Errorf("device %s: remounting %s read-only: %w", s, mnt, err)
+		return fmt.Errorf("memdev %s: remounting %s read-only: %w", s, mnt, err)
 	}
 	if err := e.locked(func() error { return e.k.Remount(mnt, false) }); err != nil {
-		return fmt.Errorf("device %s: remounting %s read-only: %w", s, mnt, err)
+		return fmt.Errorf("memdev %s: remounting %s read-only: %w", s, mnt, err)
 	}
 	klog.Infof("engine: %s memdev %s: remounted %s read-only", source, s, mnt)
 	if loop != "" {
@@ -864,7 +864,7 @@ func (e *Engine) setReadOnly(source state.Source, serial state.Serial, dev strin
 		changed, err = e.k.SetBlockDeviceReadOnly(dev, readOnly)
 		return err
 	}); err != nil {
-		return fmt.Errorf("device %s: %w", s, err)
+		return fmt.Errorf("memdev %s: %w", s, err)
 	}
 	if changed {
 		klog.Infof("engine: %s memdev %s: %s %s", source, s, dev, kernel.RoWord(readOnly))
@@ -881,7 +881,7 @@ func (e *Engine) checkUnexplained(serial state.Serial, dev string, explained []s
 	s := serial.String()
 	sbs, err := e.k.Superblocks(dev)
 	if err != nil {
-		return fmt.Errorf("device %s: the superblocks of %s: %w", s, dev, err)
+		return fmt.Errorf("memdev %s: the superblocks of %s: %w", s, dev, err)
 	}
 	known := map[string]bool{}
 	for _, mnt := range explained {
@@ -895,7 +895,7 @@ func (e *Engine) checkUnexplained(serial state.Serial, dev string, explained []s
 	}
 	for _, sb := range sbs {
 		if !known[sb.Device] {
-			return fmt.Errorf("device %s: %s has a superblock that no claim of this node explains (%s mounted %s in %s): it is not used until that mount is gone",
+			return fmt.Errorf("memdev %s: %s has a superblock that no claim of this node explains (%s mounted %s in %s): it is not used until that mount is gone",
 				s, dev, sb.Source, roWord(sb.ReadOnly), sb.Where)
 		}
 	}
@@ -934,16 +934,16 @@ func (e *Engine) checkNodeMount(serial state.Serial, dev, access, fsType string,
 		if access == api.AccessCached {
 			want = "a loop device over " + dev
 		}
-		return "", fmt.Errorf("device %s: %s is a %s mount of %s, not of %s", s, mi.Target, mi.FSType, mi.Source, want)
+		return "", fmt.Errorf("memdev %s: %s is a %s mount of %s, not of %s", s, mi.Target, mi.FSType, mi.Source, want)
 	}
 	if fsType != "" && mi.FSType != fsType {
-		return "", fmt.Errorf("device %s: %s is a %s mount of %s, not %s", s, mi.Target, mi.FSType, mi.Source, fsType)
+		return "", fmt.Errorf("memdev %s: %s is a %s mount of %s, not %s", s, mi.Target, mi.FSType, mi.Source, fsType)
 	}
 	if access == api.AccessCached {
 		return mi.Source, nil
 	}
 	if config.FSTypeDax(mi.FSType) && !mi.HasSuperOpt(daxAlways) {
-		return "", fmt.Errorf("device %s: %s on %s was mounted without DAX", s, mi.FSType, dev)
+		return "", fmt.Errorf("memdev %s: %s on %s was mounted without DAX", s, mi.FSType, dev)
 	}
 	return "", nil
 }
@@ -964,7 +964,7 @@ func (e *Engine) unmountNode(source state.Source, serial state.Serial, mnt strin
 	}
 	if mi != nil {
 		if err := e.locked(func() error { return e.k.Unmount(mnt) }); err != nil {
-			return fmt.Errorf("device %s: unmounting %s: %w", serial.String(), mnt, err)
+			return fmt.Errorf("memdev %s: unmounting %s: %w", serial.String(), mnt, err)
 		}
 		klog.Infof("engine: %s memdev %s: unmounted %s", source, serial.String(), mnt)
 	}
@@ -1054,11 +1054,11 @@ func (e *Engine) waitNoHolder(ctx context.Context, source state.Source, serial s
 		}
 		if !time.Now().Before(deadline) {
 			klog.Warningf("engine: %s memdev %s: %s is held: %s", source, s, dev, holder)
-			return fmt.Errorf("device %s: %s is still in use", s, dev)
+			return fmt.Errorf("memdev %s: %s is still in use", s, dev)
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("device %s: %s is still in use: %w", s, dev, ctx.Err())
+			return fmt.Errorf("memdev %s: %s is still in use: %w", s, dev, ctx.Err())
 		case <-time.After(holderPoll):
 		}
 	}
@@ -1076,7 +1076,7 @@ func (e *Engine) checkRecordedBlockDevice(serial state.Serial, blockDev string) 
 			return e.checkBlockDevice(g)
 		}
 	}
-	return fmt.Errorf("device %s: no prepared device has %s", serial.String(), blockDev)
+	return fmt.Errorf("memdev %s: no prepared device has %s", serial.String(), blockDev)
 }
 
 // checkBlockDevice returns an error if the block device of a grant is not
@@ -1086,20 +1086,20 @@ func (e *Engine) checkBlockDevice(g *state.Grant) error {
 	s := g.Serial.String()
 	nss, nd, err := e.regionNamespaces(g.Serial)
 	if err != nil {
-		return fmt.Errorf("device %s: %w", s, err)
+		return fmt.Errorf("memdev %s: %w", s, err)
 	}
 	cur := kernel.FsdaxNamespace(nss)
 	bd := g.Got.BlockDevice
 	switch {
 	case cur == nil:
-		return fmt.Errorf("device %s: no fsdax namespace in %s", s, nd)
+		return fmt.Errorf("memdev %s: no fsdax namespace in %s", s, nd)
 	case bd == nil || cur.BlockDevice != bd.Name || cur.Name != g.Got.Namespace || cur.Major != bd.Dev.Major || cur.Minor != bd.Dev.Minor:
 		var name string
 		var major, minor int
 		if bd != nil {
 			name, major, minor = bd.Name, bd.Dev.Major, bd.Dev.Minor
 		}
-		return fmt.Errorf("device %s: its fsdax namespace is %s with %s (%d:%d), not %s with %s (%d:%d) as prepared",
+		return fmt.Errorf("memdev %s: its fsdax namespace is %s with %s (%d:%d), not %s with %s (%d:%d) as prepared",
 			s, cur.Name, cur.BlockDevice, cur.Major, cur.Minor, g.Got.Namespace, name, major, minor)
 	}
 	return nil
@@ -1178,7 +1178,7 @@ func (e *Engine) leaveNodeMount(ctx context.Context, g *state.Grant, call *relea
 	}
 	err := e.releasePmemGrants(g.Asked.Source, g.Serial, e.gonePmemGrants(r, g, call), remaining)
 	if err != nil {
-		err = fmt.Errorf("releasing %s (serial %s): %w", e.deviceNameOf(g.Ref), g.Serial.String(), err)
+		err = fmt.Errorf("releasing %s (memdev %s): %w", e.deviceNameOf(g.Ref), g.Serial.String(), err)
 	}
 	call.released[g.Serial] = err
 	if err != nil {
@@ -1354,7 +1354,7 @@ func (e *Engine) otherBlockDevice(bd *state.BlockDevice) bool {
 // none). A type that the plugin does not know is taken as declared when
 // the device has no signature of a known type.
 func fsType(s kernel.FSSignature, serial, dev, declared string) (string, error) {
-	prefix := "device " + serial + ": "
+	prefix := "memdev " + serial + ": "
 	switch {
 	case len(s.Types) == 1 && (declared == "" || declared == s.Types[0]):
 		return s.Types[0], nil

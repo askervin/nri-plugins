@@ -902,7 +902,7 @@ status data `persistent`, `shared`, `exclusive`, `singleHost` and
 
 and of both drivers, for an allocation of a shared device whose
 `consumedCapacity` has less than one share (a claim with `shares: "0"`):
-`device 0x<serial>: consumed shares "<q>" is less than 1: request shares: 1 (a share) or no shares (exclusive)`
+`memdev 0x<serial>: consumed shares "<q>" is less than 1: request shares: 1 (a share) or no shares (exclusive)`
 (`<q>` the consumed quantity, `""` when there is none).
 
 ### Persistent memory
@@ -1084,7 +1084,7 @@ claims of a device on the node:
   mount whose superblock is read-only with a writer, or read-write
   without one, is upgraded or downgraded (a failure is logged, the next
   Prepare or Unprepare of the device tries again; a type that cannot be
-  upgraded logs `device 0x<serial>: <mnt> is mounted read-only and
+  upgraded logs `memdev 0x<serial>: <mnt> is mounted read-only and
   cannot be remounted read-write (<type>)`); the block devices get
   their read-only flag again; mounts in the directory of node mounts that
   no prepared claim uses are unmounted.
@@ -1165,7 +1165,7 @@ refused on every node before anything is mounted.
 #### Errors of persistent devices
 
 Errors of the Prepare after the configuration checks above, each starting
-with `device 0x<serial>: ` (`<dev>` `/dev/pmemK`):
+with `memdev 0x<serial>: ` (`<dev>` `/dev/pmemK`):
 
 - `memN has no persistent memory`: the status data says `persistent`,
   the memdev has no persistent capacity.
@@ -1234,10 +1234,10 @@ When a Prepare fails after the region was created, the plugin releases
 the region again only when nothing holds `/dev/pmemK` (as Unprepare
 does); else it leaves the region and logs it.
 
-Errors of the Unprepare: `device 0x<serial>: remounting <mnt> read-only: <error>`
+Errors of the Unprepare: `memdev 0x<serial>: remounting <mnt> read-only: <error>`
 (the downgrade, `device or resource busy` while a file is open for
-writing), `device 0x<serial>: unmounting <mount>: device or resource
-busy` and `device 0x<serial>: /dev/pmemK is still in use`.
+writing), `memdev 0x<serial>: unmounting <mount>: device or resource
+busy` and `memdev 0x<serial>: /dev/pmemK is still in use`.
 
 #### Filesystem images
 

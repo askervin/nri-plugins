@@ -224,7 +224,7 @@ func TestReleaseFailedParts(t *testing.T) {
 		v.mustPrepare(localDriver, "n1", numa("n1", 256*mib))
 		v.mustPrepare(localDriver, "d1", dax("d1"))
 		v.f.FailWrite(blockState(75), syscall.EBUSY)
-		wantErrText(t, v.unprepare(localDriver, "n1"), "memdev mem0 (serial 0x11): releasing slice dax0.0: cannot offline its memory (in use?): memory75: offline: device or resource busy")
+		wantErrText(t, v.unprepare(localDriver, "n1"), "memdev 0x11 (mem0): deleting slice dax0.0: cannot offline its memory (in use?): memory75: offline: device or resource busy")
 		wantOnline(t, v, 75)
 		wantPart(t, v, "n1", "dax0.0", 256*mib, kernel.DriverKmem, state.GrantReleasing)
 		wantPreparation(t, v, localDriver, "n1", state.PreparationUnpreparing)
@@ -237,7 +237,7 @@ func TestReleaseFailedParts(t *testing.T) {
 		n2 := v.grant("n2", 0).Got.Dax
 		wantOnline(t, v, 77)
 		v.f.FailWrite("bus/dax/devices/"+n2+"/size", syscall.EBUSY)
-		wantErrText(t, v.unprepare(localDriver, "n2"), "memdev mem0 (serial 0x11): releasing slice "+n2+": "+n2+": set size 0: device or resource busy")
+		wantErrText(t, v.unprepare(localDriver, "n2"), "memdev 0x11 (mem0): deleting slice "+n2+": "+n2+": set size 0: device or resource busy")
 		wantOnline(t, v)
 		wantPart(t, v, "n2", n2, 128*mib, "", state.GrantReleasing)
 		v.mustUnprepare(localDriver, "n2")
@@ -253,7 +253,7 @@ func TestReleaseFailedParts(t *testing.T) {
 		// dax0.0 again, on the free blocks 74 and 77
 		v.f.FailWrite(blockState(77), syscall.EIO)
 		v.f.FailWrite(blockState(74), nil, syscall.EBUSY)
-		wantErrText(t, v.prepare(localDriver, "n4", numa("n4", 256*mib)), "memdev mem0 (serial 0x11): memory77: online_movable: input/output error")
+		wantErrText(t, v.prepare(localDriver, "n4", numa("n4", 256*mib)), "memdev 0x11 (mem0): memory77: online_movable: input/output error")
 		wantPart(t, v, "n4", "dax0.0", 256*mib, kernel.DriverKmem, state.GrantReleasing)
 		if r := v.f.DaxRanges("dax0.0"); len(r) != 2 || r[0].Start != 74*128*mib || r[1].Start != 77*128*mib {
 			t.Fatalf("dax0.0 at %v", r)

@@ -131,7 +131,7 @@ func consumedShares(serial uint64, r *resourcev1.DeviceRequestAllocationResult) 
 		if ok {
 			got = q.String()
 		}
-		return 0, fmt.Errorf("device %s: consumed %s %q is less than 1: request %s: 1 (a share) or no %s (exclusive)",
+		return 0, fmt.Errorf("memdev %s: consumed %s %q is less than 1: request %s: 1 (a share) or no %s (exclusive)",
 			api.FormatSerial(serial), device.CapacityShares, got, device.CapacityShares, device.CapacityShares)
 	}
 	return q.Value(), nil
@@ -389,7 +389,7 @@ func (p *Plugin) memdevRequest(pr *prepare, r *resourcev1.DeviceRequestAllocatio
 		return req, nil
 	}
 	if _, ok := r.ConsumedCapacity[device.CapacityShares]; ok {
-		return req, lasting(fmt.Errorf("request %s: device %s: allocated as a shared device, which it is not any more", r.Request, api.FormatSerial(dev.Serial)))
+		return req, lasting(fmt.Errorf("request %s: memdev %s: allocated as a shared device, which it is not any more", r.Request, api.FormatSerial(dev.Serial)))
 	}
 	size := dev.Size
 	if dev.BlockSize > 0 {
@@ -413,7 +413,7 @@ func (p *Plugin) persistentRequest(pr *prepare, req *engine.GrantRequest, r *res
 		return fmt.Errorf("request %s: %w", r.Request, lasting(err))
 	}
 	if _, ok := r.ConsumedCapacity[device.CapacityMemory]; ok {
-		return fail(fmt.Errorf("device %s: allocated as a device of volatile memory, which it is not any more", api.FormatSerial(dev.Serial)))
+		return fail(fmt.Errorf("memdev %s: allocated as a device of volatile memory, which it is not any more", api.FormatSerial(dev.Serial)))
 	}
 	shares, err := consumedShares(dev.Serial, r)
 	if err != nil {
@@ -474,7 +474,7 @@ func (p *Plugin) poolResult(claim *resourcev1.ResourceClaim, pr *prepare, r *res
 	}
 	mode, err := cfg.PoolMode(poolFacts(data))
 	if err != nil {
-		return nil, fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, lasting(err))
+		return nil, fmt.Errorf("device %s (memdev 0x%x): %w", r.Device, data.Serial, lasting(err))
 	}
 	asked := state.Asked{Source: state.SourcePool, Kind: grantKind(data.Shared, data.Persistent), Mode: state.Mode(mode),
 		ReadOnly: cfg.IsReadOnly(), Size: data.Size, Shared: data.Shared}
@@ -484,7 +484,7 @@ func (p *Plugin) poolResult(claim *resourcev1.ResourceClaim, pr *prepare, r *res
 		asked.Access, asked.Path, asked.FSType = state.Access(cfg.Access), cmp.Or(cfg.Path, defaultFsPath(key)), cfg.FSType
 	}
 	if err := p.checkSamePreparation(data, asked, pr.uid); err != nil {
-		return nil, fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, err)
+		return nil, fmt.Errorf("device %s (memdev 0x%x): %w", r.Device, data.Serial, err)
 	}
 	req := poolRequest(pr, n, data, asked)
 	return &req, nil

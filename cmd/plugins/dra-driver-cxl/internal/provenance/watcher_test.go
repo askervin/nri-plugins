@@ -100,7 +100,7 @@ func TestPoolSlicesFirstListFails(t *testing.T) {
 		"until a list succeeds")
 	e.plug(localSerial)
 	e.wantHeld("never listed", localSerial)
-	wantLogLine(t, logs(), holdingBack+" mem0 (serial 0xc100e2e1): it may be a pool device: the ResourceSlices "+
+	wantLogLine(t, logs(), holdingBack+" 0xc100e2e1 (mem0): it may be a pool device: the ResourceSlices "+
 		"of pool controllers were never listed")
 	e.advance(2 * MaxHold)
 	e.wantHeld("never listed, later", localSerial)
@@ -122,7 +122,7 @@ func TestHeldUntilPoolBack(t *testing.T) {
 	e.publish()
 	e.plug(otherLocalSerial)
 	e.wantHeld("pool-c missing", otherLocalSerial)
-	wantLogLine(t, logs(), holdingBack+" mem0 (serial 0xa1): it may be a pool device: pools without "+
+	wantLogLine(t, logs(), holdingBack+" 0xa1 (mem0): it may be a pool device: pools without "+
 		"ResourceSlices: "+poolC)
 	since := e.held(otherLocalSerial)
 	e.advance(time.Minute)
@@ -130,14 +130,14 @@ func TestHeldUntilPoolBack(t *testing.T) {
 	if got := e.held(otherLocalSerial); !got.Equal(since) {
 		t.Fatalf("held since %v, expected %v", got, since)
 	}
-	if n := countLogLines(logs(), holdingBack+" mem0"); n != 1 {
+	if n := countLogLines(logs(), holdingBack+" 0xa1 (mem0)"); n != 1 {
 		t.Fatalf("%d lines of the hold, expected 1", n)
 	}
 	e.publish("0xc1ee2001")
 	e.wantHeld("pool-c back")
 	e.wantState(otherLocalSerial, state.ProvenanceLocal)
-	wantLogLine(t, logs(), "provenance: publishing memdev mem0 (serial 0xa1) as a local memory device: no pool is missing now")
-	wantLogLine(t, logs(), "provenance: memdev mem0 (serial 0xa1) is a local memory device")
+	wantLogLine(t, logs(), "provenance: publishing memdev 0xa1 (mem0) as a local memory device: no pool is missing now")
+	wantLogLine(t, logs(), "provenance: memdev 0xa1 (mem0) is a local memory device")
 	if r := e.record(otherLocalSerial); r == nil || r.State != state.ProvenanceLocal || r.Pool != "" || !r.LastSeen.Equal(e.now()) {
 		t.Fatalf("record %+v", r)
 	}
@@ -289,7 +289,7 @@ func TestClaimEvidence(t *testing.T) {
 	e.claim("attaching", testNode, "c-pooled0", "")
 	e.plug(otherLocalSerial)
 	e.wantHeld("attach in flight", otherLocalSerial)
-	wantLogLine(t, logs(), holdingBack+" mem2 (serial 0xa1): it may be a pool device: pool claims of the "+
+	wantLogLine(t, logs(), holdingBack+" 0xa1 (mem2): it may be a pool device: pool claims of the "+
 		"node are not attached yet: "+testNS+"/attaching")
 	e.advance(2 * MaxHold)
 	e.wantHeld("attach in flight, later", otherLocalSerial)
@@ -305,7 +305,7 @@ func TestClaimEvidence(t *testing.T) {
 	e.wantHeld("claims not listable", 0xa2)
 	out := logs()
 	wantLogLine(t, out, "provenance: listing the pool claims of the node: apiserver unavailable")
-	wantLogLine(t, out, holdingBack+" mem3 (serial 0xa2): it may be a pool device: the pool claims of the "+
+	wantLogLine(t, out, holdingBack+" 0xa2 (mem3): it may be a pool device: the pool claims of the "+
 		"node cannot be listed")
 	e.advance(MaxHold)
 	e.wantHeld("claims not listable, held for long enough")
@@ -329,7 +329,7 @@ func TestPoolDeviceUsedByLocalClaims(t *testing.T) {
 			t.Fatalf("pool %v held %v", pool, held)
 		}
 	}
-	const text = "provenance: memdev mem0 (serial 0xc100e2e1) is a pool device, but local claims use it: it is no longer " +
+	const text = "provenance: memdev 0xc100e2e1 (mem0) is a pool device, but local claims use it: it is no longer " +
 		"published, and no local claim is prepared on it; release the local claims ([u1]) and check its memory"
 	if n := countLogLines(logs(), text); n != 1 {
 		t.Fatalf("%d lines %q:\n%s", n, text, logs())

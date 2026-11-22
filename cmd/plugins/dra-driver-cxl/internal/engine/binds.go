@@ -103,7 +103,7 @@ func (e *Engine) bindLease(u *pmemGrant, target string, otherBind func(string) b
 	case err != nil:
 		return false, err
 	case node == nil:
-		return false, fmt.Errorf("device %s: %s is not mounted", s, u.nodeMount)
+		return false, fmt.Errorf("memdev %s: %s is not mounted", s, u.nodeMount)
 	}
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		return false, err
@@ -123,7 +123,7 @@ func (e *Engine) bindLease(u *pmemGrant, target string, otherBind func(string) b
 	})
 	if err != nil {
 		e.removeMountDir(target)
-		return false, fmt.Errorf("device %s: binding %s at %s: %w", s, u.nodeMount, target, err)
+		return false, fmt.Errorf("memdev %s: binding %s at %s: %w", s, u.nodeMount, target, err)
 	}
 	return false, e.verifyBind(u, target, node)
 }
@@ -135,9 +135,9 @@ func checkExistingBind(u *pmemGrant, target string, mi, node *kernel.MountInfo, 
 	s := u.serial.String()
 	switch {
 	case !isLeaseBind(mi, node, u.readOnly):
-		return fmt.Errorf("device %s: %s is a %s mount of %s, not of %s", s, target, mi.FSType, mi.Source, u.nodeMount)
+		return fmt.Errorf("memdev %s: %s is a %s mount of %s, not of %s", s, target, mi.FSType, mi.Source, u.nodeMount)
 	case otherBind != nil && otherBind(target):
-		return fmt.Errorf("device %s: %s is the bind of another lease", s, target)
+		return fmt.Errorf("memdev %s: %s is the bind of another lease", s, target)
 	}
 	return nil
 }
@@ -149,7 +149,7 @@ func (e *Engine) verifyBind(u *pmemGrant, target string, node *kernel.MountInfo)
 	s := u.serial.String()
 	mi, err := e.k.Mounted(target)
 	if err == nil && (mi == nil || !isLeaseBind(mi, node, u.readOnly)) {
-		err = fmt.Errorf("device %s: the bind of %s at %s is not a %s nosuid nodev %s mount", s, u.nodeMount, target, kernel.RoWord(u.readOnly), node.FSType)
+		err = fmt.Errorf("memdev %s: the bind of %s at %s is not a %s nosuid nodev %s mount", s, u.nodeMount, target, kernel.RoWord(u.readOnly), node.FSType)
 	}
 	if err == nil {
 		return nil

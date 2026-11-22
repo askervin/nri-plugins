@@ -65,7 +65,7 @@ func TestRemountLocal(t *testing.T) {
 	wantLogText(t, logs(), "cxl.nri.io: claim demo/claim-r1 (r1) has no CDI device: node mount \""+mnt+"\": "+why.Error()+
 		"; a new container of it fails on its CDI device, its Prepare again tries to mount it again, its Unprepare releases the device")
 	res := e.prepare(e.local, claim)
-	if want := "cxl.nri.io: claim demo/claim-r1: device 0xc100f5e1: its node mount " + mnt + " is not mounted and cannot be mounted again: " +
+	if want := "cxl.nri.io: claim demo/claim-r1: memdev 0xc100f5e1: its node mount " + mnt + " is not mounted and cannot be mounted again: " +
 		why.Error() + "; unprepare the claim (delete its pods) to prepare it anew"; res.Err == nil || res.Err.Error() != want {
 		t.Fatalf("error %v, expected %q", res.Err, want)
 	}
@@ -129,7 +129,7 @@ func TestRemountCompanion(t *testing.T) {
 	e.takeEvents()
 	logs := klogCapture(t)
 	why := e.unrestore(e.pool, "c1", mnt, dev)
-	wantErrText(t, e.prepare(e.pool, claim).Err, "cxl-pool.nri.io: claim demo/cxl-lease-l1: device 0xc1af0001: its node mount "+mnt+
+	wantErrText(t, e.prepare(e.pool, claim).Err, "cxl-pool.nri.io: claim demo/cxl-lease-l1: memdev 0xc1af0001: its node mount "+mnt+
 		" is not mounted and cannot be mounted again: "+why.Error()+"; unprepare the claim (delete its pods) to prepare it anew")
 	e.wantState(e.pool, "c1", state.PreparationUnrestored)
 	e.wantEvents("unrestored")

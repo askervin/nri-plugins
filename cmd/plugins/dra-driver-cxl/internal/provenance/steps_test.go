@@ -127,7 +127,7 @@ func TestFailedCommitHold(t *testing.T) {
 	if since := e.held(otherLocalSerial); !since.Equal(e.now()) {
 		t.Fatalf("held since %v, expected %v", since, e.now())
 	}
-	wantLogLine(t, logs(), holdingBack+" mem0 (serial 0xa1)")
+	wantLogLine(t, logs(), holdingBack+" 0xa1 (mem0)")
 	if !e.w.Holding() || e.w.retrying() {
 		t.Fatalf("holding %v, retrying %v", e.w.Holding(), e.w.retrying())
 	}

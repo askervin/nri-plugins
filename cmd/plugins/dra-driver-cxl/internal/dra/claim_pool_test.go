@@ -169,12 +169,12 @@ func TestPoolDaxAndShared(t *testing.T) {
 	// before the devices are touched
 	e.mark()
 	wantErrText(t, e.prepare(e.pool, poolClaim("s3", "shared0", poolSharedData, cfgNUMA)).Err,
-		"cxl-pool.nri.io: claim demo/claim-s3: device shared0 serial 0xc1ae0001: MemoryConfig: device: a shared device is used as dax only")
+		"cxl-pool.nri.io: claim demo/claim-s3: device shared0 (memdev 0xc1ae0001): MemoryConfig: device: a shared device is used as dax only")
 	notShared := `{"serial":"0xc1ae0001","shared":false,"size":268435456}`
 	wantErrText(t, e.prepare(e.pool, poolClaim("s4", "shared0", notShared)).Err,
-		"cxl-pool.nri.io: claim demo/claim-s4: device shared0 serial 0xc1ae0001: shared=false, but another claim prepared it with shared=true")
+		"cxl-pool.nri.io: claim demo/claim-s4: device shared0 (memdev 0xc1ae0001): shared=false, but another claim prepared it with shared=true")
 	wantErrText(t, e.prepare(e.pool, poolClaim("x2", "pooled0", poolExclusiveData)).Err,
-		"cxl-pool.nri.io: claim demo/claim-x2: device pooled0 serial 0xc1ee0001: mode numa, but another claim prepared it in mode dax")
+		"cxl-pool.nri.io: claim demo/claim-x2: device pooled0 (memdev 0xc1ee0001): mode numa, but another claim prepared it in mode dax")
 	e.wantNoCommands("refused claims")
 	for _, uid := range []string{"x1", "s1", "s2"} {
 		e.mustUnprepare(e.pool, uid)

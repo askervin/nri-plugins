@@ -217,7 +217,7 @@ mount, which has the node mount's flags (`ro`, or `rw` for a writer;
 the containers. After the bind its mountinfo must show the type and the
 source of the node mount and the flags of the lease, else the plugin
 unmounts it and the Prepare of the companion claim fails with
-`device 0x<serial>: the bind of <node mount> at <target> is not a read-only nosuid nodev <t> mount`
+`memdev 0x<serial>: the bind of <node mount> at <target> is not a read-only nosuid nodev <t> mount`
 (or `... is not a read-write nosuid nodev <t> mount`). `access: direct`
 maps the file pages to the memory of the device, `access: cached` reads
 them into the page cache of the node; the default is `direct` for the
