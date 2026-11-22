@@ -148,7 +148,7 @@ func TestOracleDeviations(t *testing.T) {
 			r := &o.VMs["vm0"].Regions[len(o.VMs["vm0"].Regions)-1]
 			r.Dax = r.Dax[:len(r.Dax)-1]
 		}, VWait, "local region region9: 1 numa and 0 dax slices (0 others), want 1 and 1"},
-		{"memtotal", func(o *Observation) { o.VMs["vm0"].Nodes["2"] = ObsNUMANode{MemTotal: 0} }, VWait, "vm0: node 2 MemTotal 0"},
+		{"memTotal", func(o *Observation) { o.VMs["vm0"].Nodes["2"] = ObsNUMANode{MemTotal: 0} }, VWait, "vm0: NUMA node 2 MemTotal 0"},
 		{"memdev not detached", func(o *Observation) {
 			o.VMs["vm0"].Memdevs = append(o.VMs["vm0"].Memdevs, ObsMemdev{Name: "mem9", Serial: "0xc1ee1001"})
 		}, VWait, "memdev of b-pooled0 present"},
@@ -159,7 +159,7 @@ func TestOracleDeviations(t *testing.T) {
 					o.VMs["vm1"].Regions[j].Node = &n
 				}
 			}
-		}, VWait, "on node 2, want 3 (--node-hb1)"},
+		}, VWait, "on NUMA node 2, want 3 (--numa-node-hb1)"},
 		// O4
 		{"pool claims", func(o *Observation) { o.VMs["vm1"].State.Prepared[poolDriver] = nil }, VWait, "prepared claims of cxl-pool.nri.io"},
 		{"unused dax devices", func(o *Observation) {
@@ -203,10 +203,10 @@ func TestOracleDeviations(t *testing.T) {
 		}, VWait, "has fenced CXL node 2"},
 		{"numa claimer without its node", func(o *Observation) {
 			ctrOf(t, o, "vm1", "mbt-xnuma-c").MemsEffective = "0-1"
-		}, VWait, "lacks its node 3"},
+		}, VWait, "lacks its NUMA node 3"},
 		{"lease node not lent", func(o *Observation) {
 			ctrOf(t, o, "vm1", "mbt-lease").MemsEffective = "0-1"
-		}, VWait, "lacks its node 2"},
+		}, VWait, "lacks its NUMA node 2"},
 		{"companion has the lent node", func(o *Observation) {
 			ctrOf(t, o, "vm1", "cxl-lease").MemsEffective = "0-2"
 		}, VWait, "has fenced CXL node 2"},

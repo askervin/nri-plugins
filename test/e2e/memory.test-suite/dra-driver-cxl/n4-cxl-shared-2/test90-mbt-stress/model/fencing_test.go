@@ -74,8 +74,8 @@ func TestFencingExactAllowedMems(t *testing.T) {
 	checkMemsCases(t, s, []memsCase{
 		{"vm0", "mbt-xnuma-c", "0,1,3", VOK, "ok"},
 		{"vm0", "mbt-xnuma-c", "0-3", VWait, "has fenced CXL node 2"},
-		{"vm0", "mbt-xnuma-c", "0-1", VWait, "lacks its node 3"},
-		{"vm0", "mbt-xnuma-c", "1,3", VWait, "lacks DRAM node 0"},
+		{"vm0", "mbt-xnuma-c", "0-1", VWait, "lacks its NUMA node 3"},
+		{"vm0", "mbt-xnuma-c", "1,3", VWait, "lacks DRAM NUMA node 0"},
 		{"vm0", "mbt-xnuma-c", "0,1,3,4", VWait, "has node 4"},
 		{"vm0", "mbt-lnuma", "0-2", VOK, "ok"},
 		{"vm0", "mbt-lnuma", "0-3", VWait, "has fenced CXL node 3"},
@@ -90,8 +90,8 @@ func TestFencingExactAllowedMems(t *testing.T) {
 	}
 	checkMemsCases(t, s, []memsCase{
 		{"vm1", "mbt-dnuma", "0-3", VOK, "ok"},
-		{"vm1", "mbt-dnuma", "0-2", VWait, "lacks its node 3"},
-		{"vm1", "mbt-dnuma", "0,1,3", VWait, "lacks its node 2"},
+		{"vm1", "mbt-dnuma", "0-2", VWait, "lacks its NUMA node 3"},
+		{"vm1", "mbt-dnuma", "0,1,3", VWait, "lacks its NUMA node 2"},
 		{"vm1", "mbt-plain", "0-1", VOK, "ok"},
 		{"vm1", "mbt-plain", "0-2", VWait, "has fenced CXL node 2"},
 	})
@@ -100,7 +100,7 @@ func TestFencingExactAllowedMems(t *testing.T) {
 	checkMemsCases(t, s, []memsCase{
 		{"vm2", "mbt-lsteer", "0,2", VOK, "ok"},
 		{"vm2", "mbt-lsteer", "0-2", VOK, "ok"},
-		{"vm2", "mbt-lsteer", "0", VWait, "lacks its node 2"},
+		{"vm2", "mbt-lsteer", "0", VWait, "lacks its NUMA node 2"},
 	})
 	s = steps(t, newState(cfg), "create lsteer@vm2#0", "settle")
 	checkMemsCases(t, s, []memsCase{
@@ -110,7 +110,7 @@ func TestFencingExactAllowedMems(t *testing.T) {
 	s = steps(t, newState(cfg), "create lease@vm1#0", "settle", "lease-get lease@vm1#0 numa", "settle")
 	checkMemsCases(t, s, []memsCase{
 		{"vm1", "mbt-lease", "0-2", VOK, "ok"},
-		{"vm1", "mbt-lease", "0-1", VWait, "lacks its node 2"},
+		{"vm1", "mbt-lease", "0-1", VWait, "lacks its NUMA node 2"},
 		{"vm1", "cxl-lease", "0-2", VWait, "has fenced CXL node 2"},
 	})
 }
@@ -153,16 +153,16 @@ func TestFencingExactNone(t *testing.T) {
 	}
 	checkMemsCases(t, s, []memsCase{
 		{"vm0", "mbt-plain", "0-3", VOK, "ok"},
-		{"vm0", "mbt-plain", "0-1", VWait, "lacks CXL node 2 with memory"},
-		{"vm0", "mbt-xnuma-c", "0,1,3", VWait, "lacks CXL node 2 with memory"},
+		{"vm0", "mbt-plain", "0-1", VWait, "lacks CXL NUMA node 2 with memory"},
+		{"vm0", "mbt-xnuma-c", "0,1,3", VWait, "lacks CXL NUMA node 2 with memory"},
 		{"vm0", "mbt-lnuma", "0-3", VOK, "ok"},
 	})
 	s = steps(t, newState(cfg), "create lease@vm1#0", "create dnuma@vm1#0", "settle", "lease-get lease@vm1#0 numa", "settle")
 	checkMemsCases(t, s, []memsCase{
 		{"vm1", "mbt-dnuma", "0-3", VOK, "ok"},
-		{"vm1", "mbt-dnuma", "0-2", VWait, "lacks its node 3"},
+		{"vm1", "mbt-dnuma", "0-2", VWait, "lacks its NUMA node 3"},
 		{"vm1", "mbt-lease", "0-3", VOK, "ok"},
-		{"vm1", "mbt-lease", "0-2", VWait, "lacks CXL node 3 with memory"},
+		{"vm1", "mbt-lease", "0-2", VWait, "lacks CXL NUMA node 3 with memory"},
 		{"vm1", "cxl-lease", "0-3", VOK, "ok"},
 	})
 	// a node without memory is never there
@@ -207,7 +207,7 @@ func TestFencingSwitch(t *testing.T) {
 	checkMemsCases(t, n, []memsCase{
 		{"vm0", "mbt-plain", "0-1", VOK, "ok"}, // as before
 		{"vm0", "mbt-plain", "0-2", VOK, "ok"}, // as without fencing
-		{"vm0", "mbt-plain", "0,2", VWait, "lacks DRAM node 1"},
+		{"vm0", "mbt-plain", "0,2", VWait, "lacks DRAM NUMA node 1"},
 		{"vm0", "mbt-plain", "0,1,3", VWait, "has CXL node 3"},
 		{"vm1", "cxl-lease", "0-1", VOK, "ok"},
 		{"vm1", "cxl-lease", "0-2", VOK, "ok"},
@@ -220,7 +220,7 @@ func TestFencingSwitch(t *testing.T) {
 	}
 	checkMemsCases(t, n, []memsCase{
 		{"vm0", "mbt-plain", "0-2", VOK, "ok"},
-		{"vm0", "mbt-plain", "0-1", VWait, "lacks CXL node 2 with memory"},
+		{"vm0", "mbt-plain", "0-1", VWait, "lacks CXL NUMA node 2 with memory"},
 	})
 	// and back: the first fence pass makes every container exact
 	n = steps(t, n, "fencing-switch", "settle")
@@ -274,7 +274,7 @@ func TestFencingExecutorEvidence(t *testing.T) {
 	wantVerdict(t, v, VOK, "ok")
 	ctrOf(t, o, "vm1", "mbt-lease").MemsEffective = "0-1" // bug-18
 	v, _ = checkState(n, o, "")
-	wantVerdict(t, v, VWait, "lacks CXL node 2 with memory")
+	wantVerdict(t, v, VWait, "lacks CXL NUMA node 2 with memory")
 	o = observation(t, n)
 	am := "allowed-mems"
 	o.VMs["vm2"].DriverLog.Fencing = &am
@@ -352,7 +352,7 @@ func TestDualOccupancy(t *testing.T) {
 	o = observation(t, s)
 	o.VMs["vm1"].Nodes["3"] = ObsNUMANode{MemTotal: 0}
 	v, _ = checkState(s, o, "")
-	wantVerdict(t, v, VWait, "vm1: node 3 MemTotal 0")
+	wantVerdict(t, v, VWait, "vm1: NUMA node 3 MemTotal 0")
 	// deleted: both regions go, the waiter of c-pooled0 gets it
 	s = steps(t, s, "delete dnuma@vm1#0")
 	wantPhase(t, s, "xnuma-c@vm2#0", Starting)

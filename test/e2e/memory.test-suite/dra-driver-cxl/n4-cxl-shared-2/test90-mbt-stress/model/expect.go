@@ -96,8 +96,8 @@ type PDevJSON struct {
 	Tok      string `json:"tok"` // hello.txt: quoted, "?" unknown
 	Raw      string `json:"raw"` // bytes 0-63
 	UUID     string `json:"uuid,omitempty"`
-	LSAHash  string `json:"lsaSha,omitempty"`
-	HeadHash string `json:"headSha,omitempty"`
+	LSAHash  string `json:"lsaHash,omitempty"`
+	HeadHash string `json:"headHash,omitempty"`
 }
 
 // PoolJSON is a pool controller; Att is what is known of the attachments

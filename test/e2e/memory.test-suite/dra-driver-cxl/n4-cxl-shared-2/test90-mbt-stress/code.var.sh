@@ -95,8 +95,8 @@ MBT_AVOID="${MBT_AVOID:-}"
 MBT_REPLAY="${MBT_REPLAY:-}"
 MBT_SCRIPT="${MBT_SCRIPT:-}"
 MBT_TRACE="${MBT_TRACE:-1}"
-NODE_HB0=2   # the NUMA node of the CXL memory under host bridge 0 (local memdev, pool-a, pool-b)
-NODE_HB1=3   # and under host bridge 1 (pool-c)
+NUMA_NODE_HB0=2   # the NUMA node of the CXL memory under host bridge 0 (local memdev, pool-a, pool-b)
+NUMA_NODE_HB1=3   # and under host bridge 1 (pool-c)
 
 case "$MBT_MODE" in
     online) ;;
@@ -289,7 +289,7 @@ for vm in "${VMS[@]}"; do
 done
 LOCAL_BLOCKS=$(mbt-local-blocks) ||
     error "a node does not publish the local memdev memdev-${MBT_LOCAL_HEX,,} with its capacity in its cxl.nri.io ResourceSlice"
-echo "local memdevs in blocks of $MBT_SLICE: $LOCAL_BLOCKS"
+echo "local memdevs in blocks of $MBT_LOCAL_SIZE: $LOCAL_BLOCKS"
 
 echo "### 0: images, tools, claim templates, the observer"
 for vm in "${VMS[@]}"; do
@@ -343,8 +343,8 @@ MBT_FLAGS+=(
     --steps="$MBT_STEPS"
     --settle-timeout="${MBT_SETTLE_TIMEOUT}s"
     --local-blocks="$LOCAL_BLOCKS"
-    --node-hb0="$NODE_HB0"
-    --node-hb1="$NODE_HB1"
+    --numa-node-hb0="$NUMA_NODE_HB0"
+    --numa-node-hb1="$NUMA_NODE_HB1"
     --out="$TEST_OUTPUT_DIR"
 )
 [ -z "$MBT_AVOID" ] || MBT_FLAGS+=(--avoid="$MBT_AVOID")

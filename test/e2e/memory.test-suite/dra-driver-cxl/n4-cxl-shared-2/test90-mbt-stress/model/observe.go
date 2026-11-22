@@ -49,10 +49,10 @@ type Observation struct {
 // ObsPDev is the content of a persistent device's backing files (A24).
 type ObsPDev struct {
 	LSA      string  `json:"lsa"` // zero or labels
-	LSAHash  string  `json:"lsaSha"`
-	HeadHash string  `json:"headSha"`
+	LSAHash  string  `json:"lsaHash"`
+	HeadHash string  `json:"headHash"`
 	PFN      bool    `json:"pfn"`
-	DataOff  *uint64 `json:"dataoff"`
+	DataOff  *uint64 `json:"dataOff"`
 	Erofs    bool    `json:"erofs"`
 	Token    *string `json:"token"`
 	Raw      *string `json:"raw"`
@@ -200,7 +200,7 @@ type ObsVM struct {
 	BootID     string                 `json:"bootID"`
 	Memdevs    []ObsMemdev            `json:"memdevs"`
 	Regions    []ObsRegion            `json:"regions"`
-	Nodes      map[string]ObsNUMANode `json:"nodes"`
+	Nodes      map[string]ObsNUMANode `json:"numaNodes"`
 	State      *ObsDriverState        `json:"state"`
 	CDI        map[string][]string    `json:"cdi"`
 	Containers []ObsContainer         `json:"containers"`
@@ -450,7 +450,7 @@ type ObsDax struct {
 }
 
 type ObsNUMANode struct {
-	MemTotal uint64 `json:"memtotal"`
+	MemTotal uint64 `json:"memTotal"`
 }
 
 // ObsDriverState is what the observer derives from the driver's
@@ -489,8 +489,8 @@ type ObsContainer struct {
 	Name          string `json:"name"`
 	ID            string `json:"id"`
 	Mems          string `json:"mems"`
-	MemsEffective string `json:"mems_effective"`
-	MemoryHigh    string `json:"memory_high"`
+	MemsEffective string `json:"memsEffective"`
+	MemoryHigh    string `json:"memoryHigh"`
 	// DevNodes: its device nodes (A44 "devices"), raw: absent = not
 	// checked, null = not read (wait); DevicesFrom: proc, or spec when
 	// the executor took them from the runtime spec

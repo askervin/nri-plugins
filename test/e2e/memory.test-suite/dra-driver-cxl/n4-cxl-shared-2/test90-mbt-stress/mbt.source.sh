@@ -32,7 +32,7 @@ MBT_OBSERVER_VM=/usr/local/bin/mbt-observe.py   # and in the VMs (mbt-observer-i
 MBT_SLOT_LABEL=mbt.slot
 MBT_LOCAL_SERIAL=0xc100e2e1                     # the local memdev of every VM
 MBT_LOCAL_HEX=C100E2E1
-MBT_SLICE=128Mi                                 # a local claim or lease
+MBT_LOCAL_SIZE=128Mi                                 # a local claim or lease
 MBT_LEASE_WAIT=60s                              # cxl-request request --wait
 MBT_EXEC_TIMEOUT=150                            # seconds of a kubectl exec in a pod
 MBT_EXEC_RETRY=30                               # seconds to retry a kubectl exec that cannot connect
@@ -380,7 +380,7 @@ mbt-template-yaml() {
     #
     # Print the ResourceClaimTemplate mbt-KIND of the claim of the kind
     # KIND (contract 2): pool devices by serial, local slices of
-    # $MBT_SLICE of class cxl-local, the lease claim.
+    # $MBT_LOCAL_SIZE of class cxl-local, the lease claim.
     local kind="$1" pool="${1##*-}" pc=cxl-pool-persistent
     case "$kind" in
         xnuma-?) dra-shared-claim-yaml x "${MBT_POOLED_SERIAL[$pool]}" "" "" cxl-pool | mbt-claim-to-template "mbt-$kind";;
@@ -397,9 +397,9 @@ mbt-template-yaml() {
         pbad-?) dra-shared-claim-yaml x "${MBT_PMEM_SERIAL[$pool]}" 1 "mode: block" $pc | mbt-claim-to-template "mbt-$kind";;
         xpb-?) dra-shared-claim-yaml x "${MBT_XPMEM_SERIAL[$pool]}" "" "mode: block" $pc | mbt-claim-to-template "mbt-$kind";;
         xpf-?) dra-shared-claim-yaml x "${MBT_XPMEM_SERIAL[$pool]}" "" "mode: fs, readOnly: true" $pc | mbt-claim-to-template "mbt-$kind";;
-        lnuma) dra-claim-yaml template mbt-lnuma cxl-local "$MBT_SLICE";;
-        ldax) dra-claim-yaml template mbt-ldax cxl-local "$MBT_SLICE" dax;;
-        lsteer) dra-claim-yaml template mbt-lsteer cxl-local "$MBT_SLICE" "container=steering: {policy: auto}";;
+        lnuma) dra-claim-yaml template mbt-lnuma cxl-local "$MBT_LOCAL_SIZE";;
+        ldax) dra-claim-yaml template mbt-ldax cxl-local "$MBT_LOCAL_SIZE" dax;;
+        lsteer) dra-claim-yaml template mbt-lsteer cxl-local "$MBT_LOCAL_SIZE" "container=steering: {policy: auto}";;
         lease) dra-lease-template-yaml mbt-lease;;
         *) return 2;;
     esac
@@ -674,7 +674,7 @@ mbt-act-lease-get() {
     local slot="$1" mode="$2" rc json args=() serial=${MBT_PMEM_SERIAL[c]}
     mbt-slot "$slot" || return 2
     case "$MBT_BASE:$mode" in
-        lease:numa|lease:dax) args=(--source local --mode "$mode" --size "$MBT_SLICE");;
+        lease:numa|lease:dax) args=(--source local --mode "$mode" --size "$MBT_LOCAL_SIZE");;
         plse:pbw) args=(--serial "$serial" --mode block);;
         plse:pbr) args=(--serial "$serial" --share --read-only --mode block);;
         plse:pfd) args=(--serial "$serial" --share --read-only --mode fs --name "$MBT_FS_LEASE_NAME");;
@@ -2072,12 +2072,12 @@ mbt-local-blocks() {
     #
     # Print the --local-blocks of the generator: vm2=N,vm1=N,vm0=N, N the
     # capacity.memory of the local memdev in the cxl.nri.io ResourceSlice
-    # of the node of the VM in blocks of $MBT_SLICE. Return non-zero if a
+    # of the node of the VM in blocks of $MBT_LOCAL_SIZE. Return non-zero if a
     # node does not publish it.
     local json vm n out=""
     json=$(vmdir-command-q "$OUTPUT_DIR" "kubectl get resourceslices -o json") || return 1
     for vm in "${MBT_VMIDS[@]}"; do
-        n=$(dra-py eval "$json" "quantity(capacity(device('memdev-${MBT_LOCAL_HEX,,}', '$DRA_LOCAL_DRIVER', '${MBT_NODE[$vm]}'), 'memory') or 0) // quantity('$MBT_SLICE')") || return 1
+        n=$(dra-py eval "$json" "quantity(capacity(device('memdev-${MBT_LOCAL_HEX,,}', '$DRA_LOCAL_DRIVER', '${MBT_NODE[$vm]}'), 'memory') or 0) // quantity('$MBT_LOCAL_SIZE')") || return 1
         [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt 0 ] || return 1
         out+="${out:+,}$vm=$n"
     done

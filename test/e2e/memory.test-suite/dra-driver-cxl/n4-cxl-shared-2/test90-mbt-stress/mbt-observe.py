@@ -206,11 +206,11 @@ holder check and a concurrent erofs mount would fail):
                 its leases
   pdevs         (assemble, on the host: --pdev NAME=DATA:LSA) the content
                 of the backing files of a persistent device: lsa zero|
-                labels, lsaSha, headSha (sha256 of the first 4 MiB of the
-                data file), pfn ("NVDIMM_PFN_INFO" at 4096), dataoff (le64
-                at 4152), erofs (its magic at dataoff+1024), token (the 32
-                bytes at dataoff+4096, stripped, if erofs, else null), raw
-                (the string in bytes 0-63 at dataoff; null without pfn)
+                labels, lsaHash, headHash (sha256 of the first 4 MiB of the
+                data file), pfn ("NVDIMM_PFN_INFO" at 4096), dataOff (le64
+                at 4152), erofs (its magic at dataOff+1024), token (the 32
+                bytes at dataOff+4096, stripped, if erofs, else null), raw
+                (the string in bytes 0-63 at dataOff; null without pfn)
 
   mbt-observe.py kill-at --marker region|ns|mount|bind [--timeout S]
                          [--interval MS]
@@ -550,7 +550,7 @@ def numa_nodes():
             for line in f:
                 w = line.split()
                 if len(w) >= 4 and w[2] == "MemTotal:":
-                    out[n] = {"memtotal": int(w[3]) * 1024}
+                    out[n] = {"memTotal": int(w[3]) * 1024}
                     break
     return out
 
@@ -711,7 +711,7 @@ def containers(ns, errors, ctr_mounts=None):
             "pod": lb.get("io.kubernetes.pod.name"),
             "name": lb.get("io.kubernetes.container.name") or md.get("name"),
             "id": st.get("id"),
-            "mems": None, "mems_effective": None, "memory_high": None,
+            "mems": None, "memsEffective": None, "memoryHigh": None,
             "devices": None, "devicesFrom": None,
         }
         pid = (c.get("info") or {}).get("pid") or 0
@@ -725,13 +725,13 @@ def containers(ns, errors, ctr_mounts=None):
                 cg = "/sys/fs/cgroup" + [l[3:].strip() for l in f if l.startswith("0::")][0]
             mems = read(cg + "/cpuset.mems")
             eff = read(cg + "/cpuset.mems.effective")
-            entry["memory_high"] = read(cg + "/memory.high") or None
+            entry["memoryHigh"] = read(cg + "/memory.high") or None
             if not eff:
                 # Never empty for a live cgroup: unreadable.
                 raise OSError("empty cpuset.mems.effective in %s" % cg)
-            entry["mems_effective"] = eff
+            entry["memsEffective"] = eff
             entry["mems"] = mems or eff
-            if entry["memory_high"] is None:
+            if entry["memoryHigh"] is None:
                 errors.append("container %s/%s/%s: empty memory.high" % (entry["ns"], entry["pod"], entry["name"]))
         except (OSError, IndexError) as e:
             if pid and os.path.exists("/proc/%d" % pid):
@@ -1353,7 +1353,7 @@ def vm_observation(ns):
     obs["memdevs"] = part(errors, "memdevs", memdevs, errors)
     obs["regions"] = part(errors, "regions", regions, errors)
     obs["ports"] = part(errors, "ports", ports, errors)
-    obs["nodes"] = part(errors, "nodes", numa_nodes)
+    obs["numaNodes"] = part(errors, "numaNodes", numa_nodes)
     doc, doc_read = state_document(errors)
     obs["state"] = part(errors, "state", driver_state, doc, errors)
     obs["cdi"] = part(errors, "cdi", cdi, errors)
@@ -2176,26 +2176,26 @@ def cmd_kill_at_disarm(args):
 PFN_SIG = b"NVDIMM_PFN_INFO\0"
 EROFS_MAGIC = b"\xe2\xe1\xf5\xe0"
 PFN_OFF = 4096       # the pfn info block in the namespace
-HEAD = 4 << 20       # headSha: the first 4 MiB of the data file
+HEAD = 4 << 20       # headHash: the first 4 MiB of the data file
 
 
 def pdev(data, lsa):
     """The content of a persistent device in its backing files (A24
     pdevs): no guest involved."""
-    out = {"lsa": None, "lsaSha": None, "headSha": None, "pfn": False, "dataoff": None, "erofs": False,
+    out = {"lsa": None, "lsaHash": None, "headHash": None, "pfn": False, "dataOff": None, "erofs": False,
            "token": None, "raw": None}
     with open(lsa, "rb") as f:
         lb = f.read()
     out["lsa"] = "zero" if lb.count(0) == len(lb) else "labels"
-    out["lsaSha"] = hashlib.sha256(lb).hexdigest()
+    out["lsaHash"] = hashlib.sha256(lb).hexdigest()
     with open(data, "rb") as f:
         head = f.read(HEAD)
-        out["headSha"] = hashlib.sha256(head).hexdigest()
+        out["headHash"] = hashlib.sha256(head).hexdigest()
         if head[PFN_OFF:PFN_OFF + len(PFN_SIG)] != PFN_SIG:
             return out
         out["pfn"] = True
         off = struct.unpack_from("<Q", head, PFN_OFF + 56)[0]
-        out["dataoff"] = off
+        out["dataOff"] = off
         f.seek(off)
         img = f.read(8192)
     out["raw"] = img[:64].split(b"\0", 1)[0].decode(errors="replace")
@@ -2251,7 +2251,7 @@ def mark_missing(obs, errors):
                 got = seen.get(c["id"])
                 if got is None:
                     why = "the pod status says it runs, crictl does not list it"
-                elif not got.get("mems_effective"):
+                elif not got.get("memsEffective"):
                     why = "its cpuset cannot be read"
                 else:
                     continue

@@ -735,13 +735,13 @@ func (k *checker) checkPods() {
 		case Unsched:
 			switch {
 			case p == nil:
-				k.waitf("%s: no pod, want Pending for the slices of pool %s", name, sl.Pool)
+				k.waitf("%s: no pod, want Pending for the ResourceSlices of pool %s", name, sl.Pool)
 			case p.Deleting:
-				k.failf("%s: being deleted, want Pending for the slices of pool %s", name, sl.Pool)
+				k.failf("%s: being deleted, want Pending for the ResourceSlices of pool %s", name, sl.Pool)
 			case p.Phase == "Running":
 				k.failf("%s: Running on %s, but pool %s has no ResourceSlices", name, nodeOf(p), sl.Pool)
 			case p.Phase != "Pending":
-				k.waitf("%s: phase %s, want Pending for the slices of pool %s", name, p.Phase, sl.Pool)
+				k.waitf("%s: phase %s, want Pending for the ResourceSlices of pool %s", name, p.Phase, sl.Pool)
 			case p.claimAllocated():
 				k.waitf("%s: claim allocated, but pool %s has no ResourceSlices", name, sl.Pool)
 			case !p.Unschedulable:
@@ -881,7 +881,7 @@ func (k *checker) checkMissing(v VM, ov *ObsVM) {
 // local memdev and no pool serial (A13, D I12).
 func (k *checker) checkSlices(v VM) {
 	if k.o.Slices == nil {
-		k.notef("slices not observed: no check of the cxl.nri.io ResourceSlices")
+		k.notef("ResourceSlices not observed: no check of the cxl.nri.io ResourceSlices")
 		return
 	}
 	devs, ok := k.o.Slices[v.String()]
@@ -1194,7 +1194,7 @@ func (k *checker) checkPoolSlices() {
 	for _, p := range k.cfg.poolsUsed() {
 		list, ok := k.o.PoolSlices[p.String()]
 		if !ok {
-			k.waitf("pool %s: slices not observed", p)
+			k.waitf("pool %s: ResourceSlices not observed", p)
 			continue
 		}
 		switch st := k.rs.Ctrl[p].ResourceSlices; {
@@ -1741,7 +1741,7 @@ func (k *checker) checkRegions(v VM, ov *ObsVM, pr *vmPred) {
 		if km, dd, _, _, _, _ := daxSummary(r); km+dd > 0 {
 			k.waitf("%s: local region %s has %d slices, want none", v, r.Name, km+dd)
 		} else {
-			k.waitf("%s: local region %s not released", v, r.Name)
+			k.waitf("%s: local region %s not destroyed", v, r.Name)
 		}
 	case n == 0:
 	case r == nil:
@@ -1764,7 +1764,7 @@ func (k *checker) checkRegions(v VM, ov *ObsVM, pr *vmPred) {
 			}
 		}
 		if km > 0 && r.Node != nil && *r.Node != k.cfg.bridgeNUMANode(HB0) {
-			k.waitf("%s: local region %s on node %d, want %d (--node-hb0)", v, r.Name, *r.Node, k.cfg.bridgeNUMANode(HB0))
+			k.waitf("%s: local region %s on NUMA node %d, want %d (--numa-node-hb0)", v, r.Name, *r.Node, k.cfg.bridgeNUMANode(HB0))
 		}
 	}
 	for j := range ov.Regions {
@@ -1791,7 +1791,7 @@ func (k *checker) checkPoolRegion(v VM, d DevID, numa bool, r *ObsRegion) {
 		case online[0] != dev.Size:
 			k.waitf("%s: region %s of %s: %d bytes online, want %d", v, r.Name, d, online[0], dev.Size)
 		case r.Node != nil && *r.Node != want:
-			k.waitf("%s: region %s of %s on node %d, want %d (--node-hb%d)", v, r.Name, d, *r.Node, want, poolBridge[dev.Pool])
+			k.waitf("%s: region %s of %s on NUMA node %d, want %d (--numa-node-hb%d)", v, r.Name, d, *r.Node, want, poolBridge[dev.Pool])
 		}
 		return
 	}
@@ -1808,7 +1808,7 @@ func (k *checker) checkNodes(v VM, ov *ObsVM, pr *vmPred) {
 	for _, n := range k.cfg.cxlNUMANodes() {
 		got := ov.Nodes[strconv.Itoa(n)].MemTotal
 		if got != pr.memTotal[n] {
-			k.waitf("%s: node %d MemTotal %d (%dMi), want %d (%dMi)", v, n, got, got>>20, pr.memTotal[n], pr.memTotal[n]>>20)
+			k.waitf("%s: NUMA node %d MemTotal %d (%dMi), want %d (%dMi)", v, n, got, got>>20, pr.memTotal[n], pr.memTotal[n]>>20)
 		}
 	}
 }
@@ -2051,11 +2051,11 @@ func (k *checker) checkFencing(v VM, ov *ObsVM, pr *vmPred) {
 		for _, n := range (r.must &^ gotSet).nodes() {
 			switch {
 			case claimed&numaBit(n) != 0:
-				k.waitf("%s: container of %s: cpuset.mems %q lacks its node %d (%s)", v, name, memsStr, n, r)
+				k.waitf("%s: container of %s: cpuset.mems %q lacks its NUMA node %d (%s)", v, name, memsStr, n, r)
 			case dram&numaBit(n) != 0:
-				k.waitf("%s: container of %s: cpuset.mems %q lacks DRAM node %d (%s)", v, name, memsStr, n, r)
+				k.waitf("%s: container of %s: cpuset.mems %q lacks DRAM NUMA node %d (%s)", v, name, memsStr, n, r)
 			default:
-				k.waitf("%s: container of %s: cpuset.mems %q lacks CXL node %d with memory (%s)", v, name, memsStr, n, r)
+				k.waitf("%s: container of %s: cpuset.mems %q lacks CXL NUMA node %d with memory (%s)", v, name, memsStr, n, r)
 			}
 		}
 		for _, n := range (gotSet &^ r.allowed).nodes() {

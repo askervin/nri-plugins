@@ -330,7 +330,7 @@ func TestNodeRebootFencing(t *testing.T) {
 	}
 	checkMemsCases(t, n, []memsCase{
 		{"vm1", "mbt-plain", "0-2", VOK, "ok"},
-		{"vm1", "mbt-plain", "0-1", VWait, "lacks CXL node 2 with memory"},
+		{"vm1", "mbt-plain", "0-1", VWait, "lacks CXL NUMA node 2 with memory"},
 	})
 	// and allowed-mems: fenced again from the claims of the new boot
 	n = steps(t, n, "fencing-switch", "settle", "node-reboot vm1", "settle")

@@ -135,8 +135,8 @@ func (c *commonFlags) register(fs *flag.FlagSet, online bool) {
 	fs.IntVar(&c.unsettled, "unsettled", 3, "operations in flight before a forced settle")
 	fs.StringVar(&c.avoid, "avoid", "", "comma list of VERB or VERB:ARG to leave out (ARG: slot, VM, pool, kind, mode)")
 	fs.StringVar(&c.localBlocks, "local-blocks", "vm2=8,vm1=2,vm0=2", "128Mi blocks of the local memdev of each VM")
-	fs.IntVar(&c.nodeHB0, "node-hb0", 2, "NUMA node of the regions under host bridge 0 (local, pool-a, pool-b)")
-	fs.IntVar(&c.nodeHB1, "node-hb1", 3, "NUMA node of the regions under host bridge 1 (pool-c)")
+	fs.IntVar(&c.nodeHB0, "numa-node-hb0", 2, "NUMA node of the regions under host bridge 0 (local, pool-a, pool-b)")
+	fs.IntVar(&c.nodeHB1, "numa-node-hb1", 3, "NUMA node of the regions under host bridge 1 (pool-c)")
 	fs.StringVar(&c.coverage, "coverage", defaultCoverage, "coverage criteria with optional weights xN: C1 actions, C2 faults in context, C3 action pairs, C4 abstract states, or all")
 	fs.IntVar(&c.randomness, "randomness", 1, "gofmbt randomness level (0 none, 1 among equally good, ... 4 any increasing path)")
 	fs.IntVar(&c.maxRestarts, "max-restarts", 2, "crash and driver-kill only below this many restarts (CrashLoopBackOff)")
@@ -172,7 +172,7 @@ func (c *commonFlags) options(online bool, stderr io.Writer) (runOpts, error) {
 	}
 	cfg.NUMANodeHB = [nBridges]int{HB0: c.nodeHB0, HB1: c.nodeHB1}
 	if c.nodeHB0 == c.nodeHB1 {
-		return runOpts{}, errors.New("--node-hb0 and --node-hb1 must differ")
+		return runOpts{}, errors.New("--numa-node-hb0 and --numa-node-hb1 must differ")
 	}
 	cfg.Unsettled = c.unsettled
 	if cfg.Unsettled < 1 || cfg.Unsettled > 255 {
@@ -243,7 +243,7 @@ func (c *commonFlags) options(online bool, stderr io.Writer) (runOpts, error) {
 		outDir:         c.out,
 		unblockTimeout: c.unblock,
 	}
-	o.header = fmt.Sprintf("--profile %s --seed %d --depth %d --coverage %s --randomness %d --unsettled %d --max-restarts %d --local-blocks %s --node-hb0 %d --node-hb1 %d --avoid %q --avoid-holes=%v --stall-window %s --fencing %s --reboot=%s --max-paths %d --plan-states %d",
+	o.header = fmt.Sprintf("--profile %s --seed %d --depth %d --coverage %s --randomness %d --unsettled %d --max-restarts %d --local-blocks %s --numa-node-hb0 %d --numa-node-hb1 %d --avoid %q --avoid-holes=%v --stall-window %s --fencing %s --reboot=%s --max-paths %d --plan-states %d",
 		cfg.Profile, seed, c.depth, cov, c.randomness, c.unsettled, c.maxRestarts, formatLocalBlocks(cfg.LocalBlocks), c.nodeHB0, c.nodeHB1, c.avoid, c.avoidHoles, c.stallWindow, cfg.Fencing, cfg.Reboot, c.maxPaths, c.planStates)
 	if online {
 		o.header += fmt.Sprintf(" --steps %d --duration %s --settle-timeout %s --unblock-timeout %s --plan-ahead=%v --plan-time %s", c.steps, c.duration, c.settleTimeout, c.unblock, c.planAhead, c.planTime)
@@ -305,7 +305,7 @@ func runOnline(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 // modelFlags are the flags of a steps file's header that define the
 // model of a replay or --from (A16): they win over the command line
 // (--fencing and --reboot must agree with it: clusterFlags). The
-// measured facts of the cluster (--local-blocks, --node-hb0/1) stay the
+// measured facts of the cluster (--local-blocks, --numa-node-hb0/1) stay the
 // command line's (EXEC warns when they differ from the header), and so
 // do the budget, the timeouts and the planner.
 var modelFlags = map[string]bool{
