@@ -58,7 +58,7 @@ type Config struct {
 	// get the next free serial above the base of shared devices or of the
 	// others.
 	SharedSerialBase *api.Serial `json:"sharedSerialBase,omitempty"`
-	SerialBase       *api.Serial `json:"exclusiveSerialBase,omitempty"`
+	SerialBase       *api.Serial `json:"serialBase,omitempty"`
 	// Dir is the directory of the device backing files.
 	Dir           string          `json:"dir,omitempty"`
 	Devices       []DeviceConfig  `json:"devices,omitempty"`

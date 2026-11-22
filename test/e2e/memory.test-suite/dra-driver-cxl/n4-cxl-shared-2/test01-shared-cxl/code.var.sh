@@ -184,7 +184,7 @@ host-command "strings $SHARED_FILE | grep -F '$TAG'" ||
 
 echo "### F: release shared0 in both VMs, detach it from both"
 for vm in "$VM2" "$VM1"; do
-    pool-client "$vm" guest release shared0 || command-error "cannot release shared0 in $(vmdir-label "$vm")"
+    pool-client "$vm" guest disable shared0 || command-error "cannot release shared0 in $(vmdir-label "$vm")"
     pool-cxl-dump "$vm" shared0-released
     cxl-assert "regions == [] and not enabled(by_serial($SHARED_SERIAL))"
 done
@@ -208,7 +208,7 @@ pool-assert "$COMMAND_OUTPUT" "j['qemuDeviceID'] != '$SHARED_QEMU_ID'"
 pool-client "$VM2" guest wait shared0 || command-error "shared0 did not show up in VM2 again"
 pool-cxl-wait "$VM2" shared0-reattached "by_serial($SHARED_SERIAL) is not None"
 cxl-assert "by_serial($SHARED_SERIAL)['ramSize'] == $MEM_SIZE"
-pool-client "$VM2" guest release shared0 || command-error "cannot release shared0 in VM2"
+pool-client "$VM2" guest disable shared0 || command-error "cannot release shared0 in VM2"
 client-detach shared0 --self
 pool-cxl-wait "$VM2" shared0-redetached "by_serial($SHARED_SERIAL) is None"
 cxl-assert 'memdevs == [] and regions == []'

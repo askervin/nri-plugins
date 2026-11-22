@@ -2205,7 +2205,7 @@ mbt-exit-trap() {
         echo "mbt-exit-trap: persistent pool devices are still held, not releasing or detaching anything:$held
   By hand in each VM above: stop what uses the mount (fuser -vm MOUNT), umount MOUNT (never umount -l;
   the lease binds first), check that no /sys/block/loop*/loop/backing_file names a pmem device, then
-  fake-cxl-pool-client --server <pool-c URL> guest release SERIAL; or let the next test restart the
+  fake-cxl-pool-client --server <pool-c URL> guest disable SERIAL; or let the next test restart the
   VM (pool-vm-reset). Then remove the files: ${MBT_PDEV_FILES[*]}"
         pool-server-stop
         return 0

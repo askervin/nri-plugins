@@ -194,7 +194,7 @@ exit-cleanup() {
     # Usage: exit-cleanup
     #
     # The EXIT trap after dra-install: fs-exit-cleanup of llm0.
-    fs-exit-cleanup "$LLM_DEVICE" "guest release $LLM_SERIAL" "$VM2 $VM1" "$LLM_DATA" "$LLM_LSA"
+    fs-exit-cleanup "$LLM_DEVICE" "guest disable $LLM_SERIAL" "$VM2 $VM1" "$LLM_DATA" "$LLM_LSA"
 }
 
 reader-kind() {

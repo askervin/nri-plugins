@@ -18,7 +18,7 @@ listen: 127.0.0.1:9909
 # 0xee = exclusive pool devices; 0xc100.... are devices present at boot
 # (the e2e topology's local devices are 0xc100e2e0+i).
 sharedSerialBase: 0xc1ae0000
-exclusiveSerialBase: 0xc1ee0000
+serialBase: 0xc1ee0000
 
 # The directory of the device backing files <dir>/<device>.raw, created
 # if missing. The persistent state (devices created over the API,
@@ -95,7 +95,7 @@ detachTimeout: 15s
 #   name: pool-b
 #   listen: 127.0.0.1:9910
 #   sharedSerialBase: 0xc1ae1000
-#   exclusiveSerialBase: 0xc1ee1000
+#   serialBase: 0xc1ee1000
 #   dir: /tmp/fake-cxl-pool-b
 #   devices:
 #     - name: b-pooled0            # not a device name of another server

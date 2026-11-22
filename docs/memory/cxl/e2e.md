@@ -1355,7 +1355,7 @@ detach it in VM2 (the driver leaves the memdev enabled when it destroys
 its last region):
 
 ```bash
-sudo fake-cxl-pool-client guest release 0xc100e2e1
+sudo fake-cxl-pool-client guest disable 0xc100e2e1
 fake-cxl-pool-client detach "$(hostname).memdev0" --self
 ```
 

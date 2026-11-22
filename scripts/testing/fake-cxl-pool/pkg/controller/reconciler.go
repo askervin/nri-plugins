@@ -174,7 +174,7 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 		}
 		node := device.AllocationNode(claim.Status.Allocation)
 		for _, r := range claim.Status.Allocation.Devices.Results {
-			if r.Driver != c.cfg.DriverName || r.Pool != c.cfg.DRAPoolName {
+			if r.Driver != device.PoolDriverName || r.Pool != c.cfg.DRAPoolName {
 				continue
 			}
 			w := &want{claim: claim, result: r, node: node, allShares: c.allShares(&r)}

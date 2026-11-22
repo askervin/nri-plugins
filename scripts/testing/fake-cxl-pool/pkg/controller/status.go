@@ -46,8 +46,8 @@ const (
 	EventDetached     = "Detached"
 )
 
-func (c *Controller) condAttached() string { return device.AttachedCondition(c.cfg.DriverName) }
-func (c *Controller) condFailed() string   { return device.AttachFailedCondition(c.cfg.DriverName) }
+func (c *Controller) condAttached() string { return device.AttachedCondition(device.PoolDriverName) }
+func (c *Controller) condFailed() string   { return device.AttachFailedCondition(device.PoolDriverName) }
 
 // DeviceData is the status data of an attached device: the pool contract
 // that the node plugin reads, and the attachment of the pool server.

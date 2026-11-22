@@ -735,7 +735,7 @@ load-levels() {
 load-level-args() {
     # Usage: load-level-args LEVEL
     #
-    # Print the arguments of cxl-load for the level LEVEL besides -nodes
+    # Print the arguments of cxl-load for the level LEVEL besides -numa-nodes
     # and -cpus, which are the memory and the CPUs of the far package.
     # Fail for another level.
     # Every far CPU writes to its own buffer, with a pause of 120 us after
@@ -855,7 +855,7 @@ load-start() {
     # a level; fail if the load ends before.
     local args pid start
     [ -n "$LATENCY_LOAD" ] || return 0
-    args="-nodes $(list-compact "$FAR_NODES") -cpus $FAR_CPUS $(load-level-args "$LATENCY_LOAD") ${LATENCY_LOAD_ARGS:-}"
+    args="-numa-nodes $(list-compact "$FAR_NODES") -cpus $FAR_CPUS $(load-level-args "$LATENCY_LOAD") ${LATENCY_LOAD_ARGS:-}"
     LOAD_SAVED="$LATENCY_LOAD $args"
     LOAD_LAUNCHED=1
     rm -f "$LOAD_PIDFILE"

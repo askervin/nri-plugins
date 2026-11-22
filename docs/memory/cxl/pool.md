@@ -530,7 +530,7 @@ invalid steering policy fails it); it checks no device fields.
 `fsType` is a cluster filesystem (gfs2) and the device is coherent.
 
 **The reference controller.** fake-cxl-pool-controller has the key
-`fake-cxl-pool` (flag `-config-key`) and the object:
+`fake-cxl-pool` (flag `-controller-key`) and the object:
 
 | field | type | |
 |:--|:--|:--|

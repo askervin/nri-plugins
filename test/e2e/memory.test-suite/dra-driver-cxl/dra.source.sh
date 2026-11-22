@@ -964,7 +964,7 @@ dra-local-detach() {
     # dra-local-device) if it is attached, and wait until cxl-dump does not
     # see it any more. While the driver runs on the node, wait first until
     # it has released the regions of the device. Then release what is left of it
-    # in the VM (fake-cxl-pool-client guest release: offline, destroy the
+    # in the VM (fake-cxl-pool-client guest disable: offline, destroy the
     # regions, disable the memdev) and detach it through
     # fake-cxl-pool-server NAME (default: the first started server).
     local server=() vmdir host label expr
@@ -984,7 +984,7 @@ dra-local-detach() {
     if dra-driver-pod "$vmdir" >/dev/null; then
         pool-cxl-wait "$vmdir" local-released "$expr" 60
     fi
-    pool-client "${server[@]}" "$vmdir" guest release "$DRA_LOCAL_SERIAL" ||
+    pool-client "${server[@]}" "$vmdir" guest disable "$DRA_LOCAL_SERIAL" ||
         command-error "cannot release $DRA_LOCAL_NAME in $label"
     pool-host-client "${server[@]}" detach "$DRA_LOCAL_NAME" --host "$host" ||
         command-error "cannot detach $DRA_LOCAL_NAME from $label"
@@ -1532,7 +1532,7 @@ dra-local-shared-cleanup() {
     # VMDIR shared (DRA_DRIVER_CONFIG sharedMemdevs): such a device keeps
     # its region while the driver runs. dra-cleanup, then, with the driver
     # gone, release the regions of the device in the VM (fake-cxl-pool-client
-    # guest release) and wait until none is left, then pool-cleanup, which
+    # guest disable) and wait until none is left, then pool-cleanup, which
     # detaches the device. If a region is left, or the device cannot be
     # read, stop the server only and leave the device attached: a detach
     # cannot hot-remove it, and pool-vm-reset of the next test restarts the
@@ -1543,12 +1543,12 @@ dra-local-shared-cleanup() {
     if [ -n "$DRA_LOCAL_SERIAL" ] && dra-memdev-sysfs "$vmdir" "$DRA_LOCAL_SERIAL" &&
            dra-py assert "$DRA_MEMDEV" "j['memdev'] and j['regions']"; then
         echo "dra-local-shared-cleanup: $label: the local device $DRA_LOCAL_SERIAL has regions, releasing them"
-        pool-client "$vmdir" guest release "$DRA_LOCAL_SERIAL"
+        pool-client "$vmdir" guest disable "$DRA_LOCAL_SERIAL"
     fi
     if [ -n "$DRA_LOCAL_SERIAL" ] && ! retry-until --timeout 60 --interval 1 --message "$label: no region of the local device $DRA_LOCAL_SERIAL" \
            'dra-memdev-sysfs "$vmdir" "$DRA_LOCAL_SERIAL" && dra-py assert "$DRA_MEMDEV" "j[\"regions\"] == []"'; then
         echo "dra-local-shared-cleanup: $label: the local device $DRA_LOCAL_SERIAL still has regions or cannot be read, not detaching it: $DRA_MEMDEV
-  The next test restarts the VM (pool-vm-reset), or by hand in the VM: fake-cxl-pool-client guest release $DRA_LOCAL_SERIAL"
+  The next test restarts the VM (pool-vm-reset), or by hand in the VM: fake-cxl-pool-client guest disable $DRA_LOCAL_SERIAL"
         pool-server-stop
         return 0
     fi

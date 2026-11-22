@@ -47,7 +47,7 @@ const (
 	defaultInterval = 5 * time.Second
 )
 
-const usage = `Usage: cxl-load -nodes LIST -cpus LIST [OPTIONS]
+const usage = `Usage: cxl-load -numa-nodes LIST -cpus LIST [OPTIONS]
 
 Streams reads and writes over a buffer of each thread, bound to the memory of
 the nodes and touched before the load starts, from threads pinned to the CPUs,
@@ -56,7 +56,7 @@ Prints the achieved bandwidth every interval, and a summary when it stops: after
 -duration, or at SIGINT or SIGTERM.
 
 Options:
-  -nodes LIST       NUMA nodes whose memory the buffers are bound to, like 2,3 or 2-3
+  -numa-nodes LIST       NUMA nodes whose memory the buffers are bound to, like 2,3 or 2-3
   -cpus LIST        CPUs of the threads, like 64-79: the first CPUs of the nodes' CPUs
                     are the cores; the buffers of all threads should be larger than the
                     caches of the CPUs, or the load stays in the cache
@@ -136,7 +136,7 @@ func (c *cli) logf(format string, args ...any) {
 func (c *cli) parseArgs(args []string) (*config, error) {
 	fs := flag.NewFlagSet("cxl-load", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	nodes := fs.String("nodes", "", "")
+	nodes := fs.String("numa-nodes", "", "")
 	cpus := fs.String("cpus", "", "")
 	threads := fs.Int("threads", 0, "")
 	buffer := fs.String("buffer", defaultBuffer, "")
@@ -155,12 +155,12 @@ func (c *cli) parseArgs(args []string) (*config, error) {
 		return nil, usagef("unexpected argument %q", fs.Arg(0))
 	}
 	if *nodes == "" || *cpus == "" {
-		return nil, usagef("-nodes and -cpus are required")
+		return nil, usagef("-numa-nodes and -cpus are required")
 	}
 	cfg := &config{writePercent: *writes, pause: *pause, duration: *duration, interval: *interval}
 	var err error
 	if cfg.nodes, err = parseList(*nodes); err != nil {
-		return nil, usagef("-nodes: %v", err)
+		return nil, usagef("-numa-nodes: %v", err)
 	}
 	if cfg.cpus, err = parseList(*cpus); err != nil {
 		return nil, usagef("-cpus: %v", err)

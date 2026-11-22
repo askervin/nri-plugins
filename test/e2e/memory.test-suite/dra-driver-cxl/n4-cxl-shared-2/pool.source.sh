@@ -440,7 +440,7 @@ pool-server-start() {
         echo "listen: 127.0.0.1:$port"
         if [ -n "$index" ]; then
             echo "sharedSerialBase: 0xc1ae${index,,}000"
-            echo "exclusiveSerialBase: 0xc1ee${index,,}000"
+            echo "serialBase: 0xc1ee${index,,}000"
         fi
         cat <<EOF
 dir: $dir
@@ -619,7 +619,7 @@ for a in json.load(sys.stdin) or []:
         for line in "${lines[@]}"; do
             read -r dev host serial <<< "$line"
             vmdir=$(pool-vm-dir "$host") || continue
-            vmdir-command "$vmdir" "fake-cxl-pool-client guest release $serial"
+            vmdir-command "$vmdir" "fake-cxl-pool-client guest disable $serial"
             pool-host-client "${pool[@]}" detach "$dev" --host "$host"
         done
     fi

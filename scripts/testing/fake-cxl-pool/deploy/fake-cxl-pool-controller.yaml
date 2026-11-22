@@ -17,7 +17,7 @@
 # controller per server in a cluster; several clusters may share one
 # server. For a second server, copy the Deployment with another name and
 # app.kubernetes.io/instance, and its -server: the pool name is the name of
-# the server (no -pool-name).
+# the server (no -dra-pool-name).
 apiVersion: v1
 kind: Namespace
 metadata:

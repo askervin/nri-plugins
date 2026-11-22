@@ -123,7 +123,7 @@ if [ -n "$local_attached" ] && [ "$DEMO_CASE" != wizard ]; then
         # shellcheck disable=SC2016 # retry-until evaluates the condition
         retry-until --timeout 90 --interval 2 --message "the driver destroys the region of $DRA_LOCAL_SERIAL" \
             'pool-cxl-dump-json "$VM2" unconfigured && cxl-py assert "$gone" >/dev/null' ||
-            echo "demo teardown: WARNING: the region of $DRA_LOCAL_SERIAL is still there after the restart without sharedMemdevs; the guest release of dra-local-detach destroys it"
+            echo "demo teardown: WARNING: the region of $DRA_LOCAL_SERIAL is still there after the restart without sharedMemdevs; the guest disable of dra-local-detach destroys it"
     fi
 fi
 

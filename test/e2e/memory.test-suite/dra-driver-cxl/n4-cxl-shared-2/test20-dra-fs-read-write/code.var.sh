@@ -132,7 +132,7 @@ exit-cleanup() {
     # Usage: exit-cleanup
     #
     # The EXIT trap after dra-install: fs-exit-cleanup of fs0.
-    fs-exit-cleanup "$FS_DEVICE" "guest release $FS_SERIAL" "$VM2 $VM1" "$FS_DATA" "$FS_LSA"
+    fs-exit-cleanup "$FS_DEVICE" "guest disable $FS_SERIAL" "$VM2 $VM1" "$FS_DATA" "$FS_LSA"
 }
 
 attached-assert() {

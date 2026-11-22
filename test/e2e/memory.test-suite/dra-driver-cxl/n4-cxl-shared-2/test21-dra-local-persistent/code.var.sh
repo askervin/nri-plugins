@@ -92,7 +92,7 @@ exit-cleanup() {
     #
     # The EXIT trap after dra-install: fs-exit-cleanup of lp0 (pool-cleanup
     # releases and detaches lp0 if it is still attached).
-    fs-exit-cleanup "$LP_DEVICE" "--server http://192.168.76.2:$LP_PORT guest release $LP_SERIAL" "$VM2" "$LP_DATA" "$LP_LSA"
+    fs-exit-cleanup "$LP_DEVICE" "--server http://192.168.76.2:$LP_PORT guest disable $LP_SERIAL" "$VM2" "$LP_DATA" "$LP_LSA"
 }
 
 region-wait() {
@@ -281,7 +281,7 @@ retry-until --timeout 60 --interval 1 --message "VM2 has nothing under $DRA_LEAS
     error "VM2 still has under $DRA_LEASE_FS_DIR: $(vmdir-command-q "$VM2" "find $DRA_LEASE_FS_DIR -mindepth 1")"
 # The memdev is the node's: the driver never disables it. The server's
 # client releases it in the VM, then the server detaches it.
-pool-client --pool "$LP_SERVER" "$VM2" guest release "$LP_SERIAL" ||
+pool-client --pool "$LP_SERVER" "$VM2" guest disable "$LP_SERIAL" ||
     command-error "cannot release $LP_DEVICE in VM2"
 pool-host-client --pool "$LP_SERVER" detach "$LP_DEVICE" --host "$VM2_NAME" ||
     command-error "cannot detach $LP_DEVICE from VM2"

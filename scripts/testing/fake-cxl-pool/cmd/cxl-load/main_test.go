@@ -95,22 +95,22 @@ func TestUsage(t *testing.T) {
 		code int
 		err  string
 	}{
-		{args: nil, code: exitUsage, err: "-nodes and -cpus are required"},
-		{args: []string{"-nodes", "1"}, code: exitUsage, err: "-nodes and -cpus are required"},
-		{args: []string{"-nodes", "1", "-cpus", "0-3", "x"}, code: exitUsage, err: `unexpected argument "x"`},
-		{args: []string{"-nodes", "1", "-cpus", "0-3", "-speed", "1"}, code: exitUsage, err: "flag provided but not defined: -speed"},
-		{args: []string{"-nodes", "b", "-cpus", "0-3"}, code: exitUsage, err: `-nodes: list "b": "b" is not a number`},
-		{args: []string{"-nodes", "1", "-cpus", "3-2"}, code: exitUsage, err: "-cpus: list"},
-		{args: []string{"-nodes", "1", "-cpus", "0-3", "-threads", "5"}, code: exitUsage, err: "-threads 5: from 0 to the 4 CPUs"},
-		{args: []string{"-nodes", "1", "-cpus", "0-3", "-threads", "-1"}, code: exitUsage, err: "-threads -1"},
-		{args: []string{"-nodes", "1", "-cpus", "0-3", "-buffer", "lots"}, code: exitUsage, err: `-buffer: "lots" is not a size`},
-		{args: []string{"-nodes", "1", "-cpus", "0-3", "-block", "0"}, code: exitUsage, err: `-block: "0" is not a size`},
-		{args: []string{"-nodes", "1", "-cpus", "0-3", "-writes", "101"}, code: exitUsage, err: "from 0 to 100"},
-		{args: []string{"-nodes", "1", "-cpus", "0-3", "-pause", "fast"}, code: exitUsage, err: "invalid value"},
-		{args: []string{"-nodes", "1", "-cpus", "0-3", "-block", "1M", "-buffer", "64K"}, code: exitUsage, err: "smaller than the block"},
-		{args: []string{"-nodes", "1", "-cpus", "0-9"}, code: exitUsage, err: "CPU 8 is not available"},
-		{args: []string{"-nodes", "3", "-cpus", "0-3"}, code: exitUsage, err: "node 3 is not available (the nodes with memory: 0-1)"},
-		{args: []string{"-nodes", "0", "-cpus", "0-7", "-buffer", "3G"}, code: exitError, err: "8 buffers of 3 GiB need 24.0 GiB of the 16.0 GiB that is free on nodes 0: at most 50% of it is taken"},
+		{args: nil, code: exitUsage, err: "-numa-nodes and -cpus are required"},
+		{args: []string{"-numa-nodes", "1"}, code: exitUsage, err: "-numa-nodes and -cpus are required"},
+		{args: []string{"-numa-nodes", "1", "-cpus", "0-3", "x"}, code: exitUsage, err: `unexpected argument "x"`},
+		{args: []string{"-numa-nodes", "1", "-cpus", "0-3", "-speed", "1"}, code: exitUsage, err: "flag provided but not defined: -speed"},
+		{args: []string{"-numa-nodes", "b", "-cpus", "0-3"}, code: exitUsage, err: `-numa-nodes: list "b": "b" is not a number`},
+		{args: []string{"-numa-nodes", "1", "-cpus", "3-2"}, code: exitUsage, err: "-cpus: list"},
+		{args: []string{"-numa-nodes", "1", "-cpus", "0-3", "-threads", "5"}, code: exitUsage, err: "-threads 5: from 0 to the 4 CPUs"},
+		{args: []string{"-numa-nodes", "1", "-cpus", "0-3", "-threads", "-1"}, code: exitUsage, err: "-threads -1"},
+		{args: []string{"-numa-nodes", "1", "-cpus", "0-3", "-buffer", "lots"}, code: exitUsage, err: `-buffer: "lots" is not a size`},
+		{args: []string{"-numa-nodes", "1", "-cpus", "0-3", "-block", "0"}, code: exitUsage, err: `-block: "0" is not a size`},
+		{args: []string{"-numa-nodes", "1", "-cpus", "0-3", "-writes", "101"}, code: exitUsage, err: "from 0 to 100"},
+		{args: []string{"-numa-nodes", "1", "-cpus", "0-3", "-pause", "fast"}, code: exitUsage, err: "invalid value"},
+		{args: []string{"-numa-nodes", "1", "-cpus", "0-3", "-block", "1M", "-buffer", "64K"}, code: exitUsage, err: "smaller than the block"},
+		{args: []string{"-numa-nodes", "1", "-cpus", "0-9"}, code: exitUsage, err: "CPU 8 is not available"},
+		{args: []string{"-numa-nodes", "3", "-cpus", "0-3"}, code: exitUsage, err: "node 3 is not available (the nodes with memory: 0-1)"},
+		{args: []string{"-numa-nodes", "0", "-cpus", "0-7", "-buffer", "3G"}, code: exitError, err: "8 buffers of 3 GiB need 24.0 GiB of the 16.0 GiB that is free on nodes 0: at most 50% of it is taken"},
 	} {
 		c, stdout, stderr := testCLI(t, "0-1", cpus)
 		code := c.run(context.Background(), tc.args)
@@ -128,14 +128,14 @@ func TestHelp(t *testing.T) {
 	if code := c.run(context.Background(), []string{"-h"}); code != exitOK {
 		t.Errorf("-h: exit %d, stderr %q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "Usage: cxl-load -nodes LIST -cpus LIST") {
+	if !strings.Contains(stdout.String(), "Usage: cxl-load -numa-nodes LIST -cpus LIST") {
 		t.Errorf("-h printed %q", stdout.String())
 	}
 }
 
 func TestParseArgs(t *testing.T) {
 	c, _, _ := testCLI(t, "0", []int{0})
-	cfg, err := c.parseArgs([]string{"-nodes", "2-3", "-cpus", "64-71", "-threads", "3", "-buffer", "1G",
+	cfg, err := c.parseArgs([]string{"-numa-nodes", "2-3", "-cpus", "64-71", "-threads", "3", "-buffer", "1G",
 		"-block", "128K", "-writes", "25", "-pause", "30us", "-duration", "1m", "-interval", "2s"})
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +149,7 @@ func TestParseArgs(t *testing.T) {
 		cfg.duration != want.duration || cfg.interval != want.interval {
 		t.Errorf("parseArgs = %+v, want %+v", cfg, want)
 	}
-	cfg, err = c.parseArgs([]string{"-nodes", "0", "-cpus", "0-1"})
+	cfg, err = c.parseArgs([]string{"-numa-nodes", "0", "-cpus", "0-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestParseArgs(t *testing.T) {
 func TestRunForTheDuration(t *testing.T) {
 	cfg := bindableConfig(t)
 	c, stdout, stderr := testCLI(t, "0-1023", cfg.cpus)
-	args := []string{"-nodes", formatList(cfg.nodes), "-cpus", formatList(cfg.cpus), "-buffer", "4M", "-block", "64K",
+	args := []string{"-numa-nodes", formatList(cfg.nodes), "-cpus", formatList(cfg.cpus), "-buffer", "4M", "-block", "64K",
 		"-writes", "10", "-duration", "300ms", "-interval", "100ms"}
 	if code := c.run(context.Background(), args); code != exitOK {
 		t.Fatalf("exit %d, stderr %q, stdout %q", code, stderr.String(), stdout.String())
@@ -186,7 +186,7 @@ func TestRunUntilCancelled(t *testing.T) {
 	cfg := bindableConfig(t)
 	c, stdout, stderr := testCLI(t, "0-1023", cfg.cpus)
 	ctx, cancel := context.WithCancel(context.Background())
-	args := []string{"-nodes", formatList(cfg.nodes), "-cpus", formatList(cfg.cpus), "-buffer", "4M", "-block", "64K",
+	args := []string{"-numa-nodes", formatList(cfg.nodes), "-cpus", formatList(cfg.cpus), "-buffer", "4M", "-block", "64K",
 		"-pause", "1s", "-interval", "50ms"}
 	go func() {
 		for !strings.Contains(stdout.String(), "running") {

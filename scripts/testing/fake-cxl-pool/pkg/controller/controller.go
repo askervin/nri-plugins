@@ -59,10 +59,9 @@ const (
 	Component = "fake-cxl-pool-controller"
 )
 
-// Config configures the controller. PoolName "" is the name of the server
-// (GET /status).
+// Config configures the controller of the pool driver's devices of one
+// server. DRAPoolName "" is the name of the server (GET /status).
 type Config struct {
-	DriverName    string
 	DRAPoolName   string
 	SyncInterval  time.Duration
 	AttachTimeout time.Duration
@@ -80,9 +79,6 @@ type Config struct {
 }
 
 func (c *Config) complete() {
-	if c.DriverName == "" {
-		c.DriverName = device.PoolDriverName
-	}
 	if c.SyncInterval <= 0 {
 		c.SyncInterval = DefaultSyncInterval
 	}
@@ -227,9 +223,9 @@ func (c *Controller) Run(ctx context.Context) error {
 		fromServer, err = c.resolvePoolName(ctx)
 	}
 	if fromServer {
-		c.logf("driver %s, pool %s (from the server), server %s, sync interval %s, config key %s", c.cfg.DriverName, c.cfg.DRAPoolName, c.pool.BaseURL, c.cfg.SyncInterval, c.cfg.ControllerKey)
+		c.logf("driver %s, pool %s (from the server), server %s, sync interval %s, config key %s", device.PoolDriverName, c.cfg.DRAPoolName, c.pool.BaseURL, c.cfg.SyncInterval, c.cfg.ControllerKey)
 	} else {
-		c.logf("driver %s, pool %s, server %s, sync interval %s, config key %s", c.cfg.DriverName, c.cfg.DRAPoolName, c.pool.BaseURL, c.cfg.SyncInterval, c.cfg.ControllerKey)
+		c.logf("driver %s, pool %s, server %s, sync interval %s, config key %s", device.PoolDriverName, c.cfg.DRAPoolName, c.pool.BaseURL, c.cfg.SyncInterval, c.cfg.ControllerKey)
 	}
 	if err := c.start(ctx); err != nil {
 		if ctx.Err() != nil {

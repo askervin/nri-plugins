@@ -53,7 +53,7 @@ Commands:
   devices [NAME]
   create --size 256Mi [--shared] [--persistent] [--name N] [--serial 0x..]
   delete NAME [--force]
-  attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--timeout 30s] [--single-host]
+  attach DEVICE (--self | --host HOST) [--slot BUS] [--numa-node N] [--owner O] [--timeout 30s] [--single-host]
   detach DEVICE (--self | --host HOST) [--timeout 30s] [--force]
   attachments [--self | --host H] [--device D]
   events                                  stream server events (JSON lines)
@@ -64,7 +64,7 @@ Guest commands (run inside the VM, as root; DEVICE is a device name or a serial,
   guest region create DEVICE --mode numa|dax [--decoder decoderX.Y]
   guest online DEVICE [--movable]         online the memory of the region (mode numa)
   guest info DEVICE                       print memdev, region, dax device, mode, node
-  guest release DEVICE                    offline, destroy regions, disable memdev
+  guest disable DEVICE                    offline, destroy regions, disable memdev
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 conflict/timeout (device still held).
 `
@@ -518,13 +518,13 @@ func (c *cli) cmdAttach(ctx context.Context, args []string) error {
 	self := fs.Bool("self", false, "attach to this VM")
 	host := fs.String("host", "", "target host (name or uuid)")
 	slot := fs.String("slot", "", "qemu bus of the slot")
-	numa := fs.Int("numa", -1, "prefer a slot on this NUMA node")
+	numa := fs.Int("numa-node", -1, "prefer a slot on this NUMA node")
 	owner := fs.String("owner", "", "attachment owner")
 	timeout := fs.String("timeout", "", "qemu timeout (default 30s)")
 	exclusive := fs.Bool("single-host", false, "shared device: no other host may attach it meanwhile")
 	pos, err := parse(fs, args)
 	if err != nil || len(pos) != 1 {
-		return firstErr(err, usagef("attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--single-host]"))
+		return firstErr(err, usagef("attach DEVICE (--self | --host HOST) [--slot BUS] [--numa-node N] [--owner O] [--single-host]"))
 	}
 	h, err := c.hostArg(ctx, *host, *self)
 	if err != nil {

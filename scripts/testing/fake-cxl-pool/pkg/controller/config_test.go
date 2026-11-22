@@ -63,7 +63,7 @@ func TestConfigSettingsPassed(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name   string
-		key    string // -config-key, "" for the default
+		key    string // -controller-key, "" for the default
 		config []resourceapi.DeviceAllocationConfiguration
 		want   string // settings of the attach request
 		slot   string // slot in the Attached message

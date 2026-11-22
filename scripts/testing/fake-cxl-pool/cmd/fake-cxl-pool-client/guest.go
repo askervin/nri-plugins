@@ -26,7 +26,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
-// The guest commands prepare and release hotplugged CXL memory in the VM
+// The guest commands prepare and disable hotplugged CXL memory in the VM
 // through package kernel. They bind dax devices through sysfs only, never
 // with daxctl.
 
@@ -53,7 +53,7 @@ type regionInfo struct {
 
 func (c *cli) cmdGuest(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return usagef("guest wait|memdev|region|online|info|release ...")
+		return usagef("guest wait|memdev|region|online|info|disable ...")
 	}
 	sub, args := args[0], args[1:]
 	switch sub {
@@ -155,27 +155,27 @@ func (c *cli) cmdGuest(ctx context.Context, args []string) error {
 			return err
 		}
 		return c.printRegionInfo(ri)
-	case "release":
-		fs := c.flagSet("guest release")
+	case "disable":
+		fs := c.flagSet("guest disable")
 		pos, err := parse(fs, args)
 		if err != nil || len(pos) != 1 {
-			return firstErr(err, usagef("guest release DEVICE"))
+			return firstErr(err, usagef("guest disable DEVICE"))
 		}
 		m, _, err := c.guestMemdev(ctx, pos[0])
 		if errors.Is(err, kernel.ErrNotFound) {
 			if !c.json() {
-				_, _ = fmt.Fprintf(c.stdout, "%s: not present, nothing to release\n", pos[0])
+				_, _ = fmt.Fprintf(c.stdout, "%s: not present, nothing to disable\n", pos[0])
 			}
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		if err := c.release(ctx, m); err != nil {
+		if err := c.disable(ctx, m); err != nil {
 			return err
 		}
 		if !c.json() {
-			_, _ = fmt.Fprintf(c.stdout, "%s: released\n", m)
+			_, _ = fmt.Fprintf(c.stdout, "%s: disabled\n", m)
 		}
 		return nil
 	}
@@ -377,9 +377,9 @@ func (c *cli) online(ctx context.Context, serial uint64, movable bool) (*regionI
 	return ri, nil
 }
 
-// release releases the regions of the memdev (offline, disable, destroy)
+// disable releases the regions of the memdev (offline, disable, destroy)
 // and disables it, so that the pool can detach it.
-func (c *cli) release(ctx context.Context, memdev string) error {
+func (c *cli) disable(ctx context.Context, memdev string) error {
 	k := c.kernel()
 	for _, r := range k.Regions(memdev) {
 		if err := k.DestroyRegion(ctx, r); err != nil {

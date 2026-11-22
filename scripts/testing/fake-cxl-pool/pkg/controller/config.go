@@ -20,6 +20,7 @@ import (
 	resourceapi "k8s.io/api/resource/v1"
 
 	"github.com/containers/nri-plugins/pkg/cxl/config"
+	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
 // PoolSettings is the object of the controller in pool.opaque.<config key>
@@ -54,10 +55,10 @@ func (c *Controller) poolSettings(claim *resourceapi.ResourceClaim, r *resourcea
 	var s PoolSettings
 	// every entry of the driver, also of other requests: the node driver
 	// refuses the whole claim for any of them
-	if err := config.CheckEntries(claim, c.cfg.DriverName); err != nil {
+	if err := config.CheckEntries(claim, device.PoolDriverName); err != nil {
 		return s, nil, err
 	}
-	res, err := config.Resolve(claim, c.cfg.DriverName, r.Request)
+	res, err := config.Resolve(claim, device.PoolDriverName, r.Request)
 	if err != nil {
 		return s, nil, err
 	}

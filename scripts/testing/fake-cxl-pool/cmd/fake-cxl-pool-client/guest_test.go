@@ -121,7 +121,7 @@ func TestGuestRegionNUMA(t *testing.T) {
 	}
 	f.Write("devices/system/memory/memory75/valid_zones", "Movable")
 	guestInfo(t, c, "online", serial0, "--movable")
-	if rc, _, errs := guest(t, c, "release", serial0); rc != exitOK {
+	if rc, _, errs := guest(t, c, "disable", serial0); rc != exitOK {
 		t.Fatalf("release: rc %d %q", rc, errs)
 	}
 	if want := "cxl disable-region region0\ncxl destroy-region region0\ncxl disable-memdev mem0"; !strings.HasSuffix(f.Commands(), want) {
@@ -129,7 +129,7 @@ func TestGuestRegionNUMA(t *testing.T) {
 	}
 	// a released memdev and a missing one are released again
 	for _, dev := range []string{serial0, "0xc1f00007"} {
-		if rc, _, errs := guest(t, c, "release", dev); rc != exitOK {
+		if rc, _, errs := guest(t, c, "disable", dev); rc != exitOK {
 			t.Fatalf("release %s again: rc %d %q", dev, rc, errs)
 		}
 	}

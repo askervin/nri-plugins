@@ -36,7 +36,6 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/record"
 
-	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/client"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/controller"
 )
@@ -50,13 +49,12 @@ func run() int {
 	var cfg controller.Config
 	server := flag.String("server", client.DefaultURL(), "fake-cxl-pool server URL (env FAKE_CXL_POOL_SERVER)")
 	kubeconfig := flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "kubeconfig file (env KUBECONFIG; \"\": in-cluster config)")
-	flag.StringVar(&cfg.DriverName, "driver-name", device.PoolDriverName, "DRA driver name")
-	flag.StringVar(&cfg.DRAPoolName, "pool-name", "", "DRA pool name of the published devices (default: the name of the server)")
+	flag.StringVar(&cfg.DRAPoolName, "dra-pool-name", "", "DRA pool name of the published devices (default: the name of the server)")
 	flag.DurationVar(&cfg.SyncInterval, "sync-interval", controller.DefaultSyncInterval, "interval of full reconciles")
 	flag.DurationVar(&cfg.AttachTimeout, "attach-timeout", controller.DefaultAttachTimeout, "attach request timeout")
 	flag.DurationVar(&cfg.DetachTimeout, "detach-timeout", controller.DefaultDetachTimeout, "detach request timeout")
 	flag.StringVar(&cfg.OwnerPrefix, "owner-prefix", controller.DefaultOwnerPrefix, "prefix of the attachment owners of this controller")
-	flag.StringVar(&cfg.ControllerKey, "config-key", controller.DefaultControllerKey, "key of the controller's settings in pool.opaque of MemoryConfig entries")
+	flag.StringVar(&cfg.ControllerKey, "controller-key", controller.DefaultControllerKey, "key of the controller's settings in pool.opaque of MemoryConfig entries")
 	flag.BoolVar(&cfg.Verbose, "v", false, "log reconcile details")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [flags]\n", os.Args[0])

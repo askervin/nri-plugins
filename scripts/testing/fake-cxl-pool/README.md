@@ -21,7 +21,7 @@ A fake CXL memory pooling and sharing appliance for testing on one host:
   bandwidth that a pause per block sets, and prints the bandwidth it
   achieves. On the CPUs of the far socket it queues up the far memory, which
   raises the latency that the near CPUs see to it, like a busy CXL link or
-  device (`cxl-load -nodes NODES -cpus CPUS -pause 10us`).
+  device (`cxl-load -numa-nodes NODES -cpus CPUS -pause 10us`).
 
 One server is one pool appliance; several servers on one host are several
 appliances, each with a controller of its own (see
@@ -91,7 +91,7 @@ get the next free one above the base of their kind:
 `0xc1` = CXL, then `00` = present at boot (the e2e topology's local devices
 are `0xc100e2e0+i`), `ae` = shared pool devices (`sharedSerialBase`,
 default `0xc1ae0000`: `0xc1ae0001`, ...), `ee` = exclusive pool devices
-(`exclusiveSerialBase`, default `0xc1ee0000`: `0xc1ee0001`, ...).
+(`serialBase`, default `0xc1ee0000`: `0xc1ee0001`, ...).
 
 ### Persistent devices
 
@@ -182,7 +182,7 @@ fake-cxl-pool-client [--server URL] [-o table|json] COMMAND
   devices [NAME]
   create --size 256Mi [--shared] [--persistent] [--name N] [--serial 0x..]
   delete NAME [--force]
-  attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--timeout 30s] [--single-host]
+  attach DEVICE (--self | --host HOST) [--slot BUS] [--numa-node N] [--owner O] [--timeout 30s] [--single-host]
   detach DEVICE (--self | --host HOST) [--timeout 30s] [--force]
   attachments [--self | --host H] [--device D]
   events
@@ -191,7 +191,7 @@ fake-cxl-pool-client [--server URL] [-o table|json] COMMAND
   guest region create DEVICE --mode numa|dax [--decoder decoderX.Y]
   guest online DEVICE [--movable]            # mode numa
   guest info DEVICE                          # memdev, region, dax device, mode numa|dax, node
-  guest release DEVICE
+  guest disable DEVICE
 ```
 
 `--host` takes a host name or uuid. `--self` resolves the VM the client
@@ -226,7 +226,7 @@ sudo fake-cxl-pool-client guest wait shared0
 sudo fake-cxl-pool-client guest region create shared0 --mode dax   # -> /dev/daxN.M
 #   apps: open /dev/daxN.M, mmap MAP_SHARED (length multiple of 2Mi)
 # done, in each VM:
-sudo fake-cxl-pool-client guest release shared0
+sudo fake-cxl-pool-client guest disable shared0
 fake-cxl-pool-client detach shared0 --self
 ```
 
@@ -242,7 +242,7 @@ sudo fake-cxl-pool-client guest wait pooled0
 sudo fake-cxl-pool-client guest region create pooled0 --mode numa
 sudo fake-cxl-pool-client guest online pooled0 --movable   # a new NUMA node
 ...
-sudo fake-cxl-pool-client guest release pooled0            # offline, destroy region, disable memdev
+sudo fake-cxl-pool-client guest disable pooled0            # offline, destroy region, disable memdev
 fake-cxl-pool-client detach pooled0 --self
 ```
 
@@ -267,7 +267,7 @@ the server, the controller and the driver in the e2e VMs. The controller:
 
 - publishes the pool devices of the server (`GET /devices?scope=pool`) as
   cluster-scoped ResourceSlices of the pool named after the server (the
-  `name` of `GET /status`; `-pool-name` overrides it), at most 128 devices
+  `name` of `GET /status`; `-dra-pool-name` overrides it), at most 128 devices
   in a slice, with the
   node selector `kubernetes.io/hostname In [...]` of the nodes whose VMs
   the server reaches (the Nodes that map to a server host as below; a
@@ -350,13 +350,12 @@ are one cluster of three nodes (n4-cxl-shared-2 the control plane, -1 and
 
 ```
 fake-cxl-pool-controller [-server http://192.168.76.2:9909] [-kubeconfig FILE]
-    [-driver-name cxl-pool.nri.io] [-pool-name ""]
-    [-sync-interval 10s] [-attach-timeout 60s] [-detach-timeout 60s]
-    [-owner-prefix k8s:] [-config-key fake-cxl-pool] [-v]
+    [-dra-pool-name ""] [-sync-interval 10s] [-attach-timeout 60s] [-detach-timeout 60s]
+    [-owner-prefix k8s:] [-controller-key fake-cxl-pool] [-v]
 ```
 
 `-server` defaults to `$FAKE_CXL_POOL_SERVER`, `-kubeconfig` to
-`$KUBECONFIG`, else the in-cluster config. `-pool-name ""` (the default)
+`$KUBECONFIG`, else the in-cluster config. `-dra-pool-name ""` (the default)
 is the name of the server; the controller logs it at start: `driver
 cxl-pool.nri.io, pool <name> (from the server), server <url>, sync
 interval 10s, config key fake-cxl-pool`. In the e2e VMs, on the control
@@ -392,7 +391,7 @@ a Deployment per server, named like the systemd units below).
 
 The `MemoryConfig` entries of `cxl-pool.nri.io` in a claim or its
 DeviceClass may choose the slot of the host that the server attaches the
-device to, under the controller key (`-config-key`, default
+device to, under the controller key (`-controller-key`, default
 `fake-cxl-pool`) in `pool.opaque`:
 
 ```yaml
@@ -461,7 +460,7 @@ Each server has a config file of its own (see "Several pool servers" in
   state file), and `discovery.names` of the VMs it is cabled to;
 - serials unique over all servers of the cluster, because the guests and
   the DRA drivers find a device by its serial: the serial bases
-  `sharedSerialBase: 0xc1aeP000` and `exclusiveSerialBase: 0xc1eeP000` for
+  `sharedSerialBase: 0xc1aeP000` and `serialBase: 0xc1eeP000` for
   pool index P (one hex digit; 0 is the default of a single server);
 - device names unique over the servers cabled to one VM: the qemu ids are
   `fcp_<device>.hp<N>`, a second server's device of the same name would
@@ -477,7 +476,7 @@ Each server has a config file of its own (see "Several pool servers" in
 The e2e tests (test/e2e/memory.test-suite/dra-driver-cxl, `pool-server-start
 --name NAME ...`) run the controller of the default server as the systemd
 unit `fake-cxl-pool-controller` and the controller of every other server
-as `fake-cxl-pool-controller-<name>`, all without `-pool-name`.
+as `fake-cxl-pool-controller-<name>`, all without `-dra-pool-name`.
 
 ## REST API
 

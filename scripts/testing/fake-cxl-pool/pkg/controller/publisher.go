@@ -188,7 +188,7 @@ func (c *Controller) publish(ctx context.Context, hm hostMap) error {
 	res := c.driverResources(devs, sel)
 	if c.resourceSlices == nil {
 		sc, err := resourceslice.StartController(ctx, resourceslice.Options{
-			DriverName: c.cfg.DriverName,
+			DriverName: device.PoolDriverName,
 			KubeClient: c.kube,
 			Owner:      nil,
 			Resources:  res,
@@ -229,13 +229,13 @@ func deviceNames(devs []resourceapi.Device) []string {
 func (c *Controller) deleteResourceSlices(ctx context.Context) error {
 	rs := c.kube.ResourceV1().ResourceSlices()
 	list, err := rs.List(ctx, metav1.ListOptions{
-		FieldSelector: fields.OneTermEqualSelector("spec.driver", c.cfg.DriverName).String(),
+		FieldSelector: fields.OneTermEqualSelector("spec.driver", device.PoolDriverName).String(),
 	})
 	if err != nil {
 		return err
 	}
 	for _, s := range list.Items {
-		if s.Spec.Driver != c.cfg.DriverName || s.Spec.Pool.Name != c.cfg.DRAPoolName || ptr.Deref(s.Spec.NodeName, "") != "" {
+		if s.Spec.Driver != device.PoolDriverName || s.Spec.Pool.Name != c.cfg.DRAPoolName || ptr.Deref(s.Spec.NodeName, "") != "" {
 			continue
 		}
 		if err := rs.Delete(ctx, s.Name, metav1.DeleteOptions{}); err != nil {

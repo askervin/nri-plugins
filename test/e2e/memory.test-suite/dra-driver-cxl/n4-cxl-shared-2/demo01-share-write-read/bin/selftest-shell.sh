@@ -303,7 +303,7 @@ load-test() {
     pid=$!
     out=$( (latency-source
             echo "$pid" > "$LOAD_PIDFILE"
-            LOAD_LAUNCHED=1 LOAD_SAVED="700 -nodes 1"
+            LOAD_LAUNCHED=1 LOAD_SAVED="700 -numa-nodes 1"
             load-save-launched
             load-save-launched
             echo "LINES: $(grep -c $'^load\t' "$STATE")"

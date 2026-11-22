@@ -123,7 +123,7 @@ func newTestEnv(t *testing.T, extraConfig string) *testEnv {
 	e.fakes["/e2e/vm2/qmp.sock"] = f2
 	cfgText := `
 listen: 127.0.0.1:0
-exclusiveSerialBase: 0xc1ee0000
+serialBase: 0xc1ee0000
 dir: ` + filepath.Join(dir, "pool") + `
 devices:
   - name: shared0
