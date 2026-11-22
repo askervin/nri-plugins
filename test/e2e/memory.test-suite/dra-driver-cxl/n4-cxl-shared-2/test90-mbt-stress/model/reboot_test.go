@@ -27,7 +27,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 )
 
 // rebootConfig is a profile with --reboot=guest.
@@ -595,100 +594,6 @@ func TestRefPoolQemuRestart(t *testing.T) {
 		}
 		if f := refSequence(cfg, allActs(cfg), 3, 0, lines, &fuzzStats{verbs: map[Verb]int{}, ref: map[string]int{}}); f != nil {
 			t.Fatalf("%s: %s", profile, f)
-		}
-	}
-}
-
-// Disagreements of the simulated SUT with the reference that the fuzz of
-// the review of 2026-10-29 found in the reboot and fencing variants (the
-// fuzz's seeds and sequences; each fails without its fix in sim.go or
-// simref.go; TestRefPoolNarrowedRaceKill has the fourth).
-func TestRefPoolReviewRegressions(t *testing.T) {
-	for _, r := range []struct {
-		why     string
-		profile string
-		reboot  RebootRun
-		fencing FencingRun
-		stall   time.Duration
-		seed    int64
-		steps   string
-		// refused: the step that the fixed simulator's truth no longer
-		// allows (the steps before it, then a settle, must pass)
-		refused string
-	}{
-		// a dnuma pod waits for the block of vm0's local memdev that a
-		// dax lease holds; the boot releases the lease, and the
-		// reference's requeue after it (inside the step) must see the
-		// block free: the simulated SUT answered from the truth before
-		// the step, the dnuma pod was never allocated (sim.next)
-		{"full qemu seed 270849: dnuma after the boot", "full", RebootQemu, FencingAM, 0, 270849,
-			"ctrl-restart b | create xdax-b@vm0#0 | create sdax-c@vm2#0 | settle | create lease@vm0#0 | " +
-				"create sro-c@vm2#0 | create sdax-b@vm0#1 | settle | create sdax-c@vm0#0 | create sdax-a@vm2#0 | create sdax-a@vm1#0 | " +
-				"settle | create sro-b@vm0#0 | create ldax@vm0#0 | kubelet-restart vm2 | settle | lease-get lease@vm0#0 dax | " +
-				"create dnuma@vm0#0 | create plain@vm0#0 | settle | ctrl-restart c | ctrl-restart a | ctrl-restart b | settle | " +
-				"driver-restart vm0 | delete sdax-a@vm1#0 | create xnuma-a@vm2#0 | settle | node-reboot vm0 | settle", ""},
-		// an "any" pod bound on vm2 while the detach of its device from
-		// vm0 (a deleted claim's) was not done: the truth's node side
-		// took vm0 (a tie of the node and the attachment), its env named
-		// a dax device of vm0 (refFactWeight)
-		{"full guest seed 652722: the node of an any pod", "full", RebootGuest, FencingNone, 0, 652722,
-			"ctrl-restart a | create xnuma-a@vm1#0 | create xdax-c@vm2#0 | settle | create xnuma-b@vm0#0 | create xdax-a@vm2#0 | " +
-				"ctrl-restart c | settle | node-reboot vm0 | settle | server-restart c | server-restart c | driver-kill vm1 | settle | " +
-				"node-reboot vm1 | settle | create xdax-c@any#0 | server-restart a | delete xnuma-a@vm1#0 | settle | server-restart a | " +
-				"settle | ctrl-restart c | create sdax-c@vm2#0 | create xnuma-a@vm1#0 | settle | create sro-c@vm2#0 | create sdax-c@vm0#0 | " +
-				"create lsteer@vm1#0 | settle | delete xdax-c@any#0 | create xdax-b@vm0#0 | delete sro-c@vm2#0 | settle | " +
-				"delete sdax-c@vm0#0 | delete xnuma-a@vm1#0 | delete xnuma-b@vm0#0 | settle | create sdax-c@vm0#0 | create sro-b@vm0#0 | " +
-				"delete sro-b@vm0#0 | settle | delete xdax-b@vm0#0 | delete sdax-c@vm2#0 | ctrl-kill a | settle | create sro-c@vm2#0 | " +
-				"create sdax-b@vm0#1 | create ldax@vm1#0 | settle | ctrl-start a | create sexcl-b@vm0#0 | delete xdax-a@vm2#0 | settle | " +
-				"create sdax-c@any#0 | delete sdax-c@vm0#0 | server-restart c | settle", ""},
-		// lease-get plse@vm0#0 pfd cut by the bind watcher of vm0 (A29
-		// d): the reference released the lease, the truth kept it (the
-		// detach of c-pmem0@vm0 not done at the settle's first poll
-		// tied with the lease); "attachment c-pmem0@vm0: missing" at
-		// the next settle (refFactWeight). Fixed, the lease is released
-		// at that settle: the fuzz's hold of it is not enabled.
-		{"fullp qemu switch 30s seed 1380903: a lease cut at its bind", "fullp", RebootQemu, FencingSwitch, 30 * time.Second, 1380903,
-			"create pwr-c@any#0 | server-restart c | create sdax-b@vm0#1 | settle | server-restart a | " +
-				"ctrl-kill c | driver-kill-at vm2 mount | pwrite pwr-c@any#0 junk | pwrite pwr-c@any#0 img | " +
-				"pwrite pwr-c@any#0 img | settle | create sexcl-c@vm1#0 | settle | delete sdax-b@vm0#1 | " +
-				"pwrite pwr-c@any#0 junk | create sdax-c@any#0 | create pwr-c@vm2#0 | settle | create sexcl-b@vm0#0 | " +
-				"create xnuma-b@vm0#0 | delete sexcl-c@vm1#0 | pwrite pwr-c@any#0 img | settle | create plse@vm2#0 | " +
-				"driver-kill-at vm1 mount | driver-kill-at vm0 bind | settle | ctrl-kill b | create sdax-a@vm1#0 | " +
-				"create plse@vm0#0 | pwrite pwr-c@any#0 junk | pwrite pwr-c@any#0 img | settle | delete sexcl-b@vm0#0 | " +
-				"settle | create xdax-b@vm0#0 | delete sdax-c@any#0 | create sexcl-b@vm0#0 | pwrite pwr-c@any#0 img | " +
-				"settle | create xpb-c@vm1#0 | ctrl-kill a | create xdax-c@vm2#0 | pwrite pwr-c@any#0 img | settle | " +
-				"delete xnuma-b@vm0#0 | create lnuma@vm0#0 | delete pwr-c@any#0 | settle | ctrl-start b | " +
-				"delete xpb-c@vm1#0 | create pbro-c@vm1#0 | settle | delete sdax-a@vm1#0 | create xpf-c@vm0#0 | " +
-				"create xnuma-c@vm2#0 | settle | create sdax-a@vm1#0 | delete xdax-c@vm2#0 | delete xdax-b@vm0#0 | " +
-				"settle | create sdax-a@vm2#0 | delete sdax-a@vm1#0 | create sro-b@vm0#0 | settle | " +
-				"create xnuma-c@vm0#0 | delete xnuma-c@vm0#0 | create xdax-c@any#0 | settle | create sro-a@vm1#0 | " +
-				"delete pwr-c@vm2#0 | create sdax-c@vm0#0 | settle | create sro-a@vm2#0 | create pbad-c@vm0#0 | " +
-				"delete xpf-c@vm0#0 | settle | delete sro-a@vm2#0 | ctrl-start a | create pfsc-c@vm2#0 | settle | " +
-				"create xpb-c@vm1#0 | delete pfsc-c@vm2#0 | delete pbad-c@vm0#0 | settle | ctrl-kill a | " +
-				"delete sdax-a@vm2#0 | create sexcl-c@vm1#0 | settle | create sexcl-a@vm2#0 | create pfsc-c@vm2#0 | " +
-				"fencing-switch | settle | kubelet-restart vm2 | ctrl-start c | ctrl-kill b | settle | " +
-				"delete pfsc-c@vm2#0 | driver-kill-at vm0 bind | lease-get plse@vm0#0 pfd | settle | " +
-				"delete xpb-c@vm1#0 | delete sro-a@vm1#0 | driver-kill-at vm2 region | hold plse@vm0#0 | " +
-				"pwrite pbro-c@vm1#0 img | settle", "hold plse@vm0#0"},
-	} {
-		cfg := testConfig(t, r.profile, true)
-		cfg.Unsettled = 3
-		cfg.Reboot, cfg.Fencing = r.reboot, r.fencing
-		if r.stall > 0 {
-			cfg.StallWindow, cfg.StallStrict = r.stall, r.stall <= 180*time.Second
-		}
-		lines := strings.Split(r.steps, " | ")
-		if r.refused != "" {
-			k := slices.Index(lines, r.refused)
-			f := refSequence(cfg, allActs(cfg), r.seed, 0, lines, &fuzzStats{verbs: map[Verb]int{}, ref: map[string]int{}})
-			if k < 0 || f == nil || f.msg != "not enabled: "+r.refused || len(f.steps) != k+1 {
-				t.Errorf("%s: want step %d %q refused, got %v", r.why, k+1, r.refused, f)
-				continue
-			}
-			lines = lines[:k]
-		}
-		if f := refSequence(cfg, allActs(cfg), r.seed, 0, lines, &fuzzStats{verbs: map[Verb]int{}, ref: map[string]int{}}); f != nil {
-			t.Errorf("%s: %s", r.why, f)
 		}
 	}
 }
