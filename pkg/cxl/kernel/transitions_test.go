@@ -258,7 +258,7 @@ func TestRegionTransitions(t *testing.T) {
 		"DISABLED->ABSENT#0": func(t *testing.T) (kernel.RegionState, kernel.RegionState) {
 			_, k, r := disabled(t)
 			from := state(k, r)
-			noErr(t, k.DestroyDisabled(ctx, r))
+			noErr(t, k.DestroyRegion(ctx, r))
 			return from, state(k, r)
 		},
 		"ENABLED->HOLLOW#0": func(t *testing.T) (kernel.RegionState, kernel.RegionState) {

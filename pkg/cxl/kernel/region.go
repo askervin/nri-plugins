@@ -489,35 +489,6 @@ func (k *Kernel) DisableRegion(ctx context.Context, region string) error {
 	return nil
 }
 
-// destroyDisabled destroys a disabled region (cxl destroy-region). A region
-// that does not exist is not an error. Errors: ErrBusyOnline when memory
-// blocks of the region are online, an error for a locked region, for an
-// enabled region (DisableRegion first) and for a hollow one, which only
-// DeleteHollowRegion removes.
-func (k *Kernel) destroyDisabled(ctx context.Context, region string) error {
-	state := regionState(k.cxlDev(region))
-	if state == RegionAbsent {
-		return nil
-	}
-	if err := k.checkNotLocked(region); err != nil {
-		return err
-	}
-	switch state {
-	case RegionHollow:
-		return fmt.Errorf("%s is hollow: cxl destroy-region cannot remove it, delete it", region)
-	case RegionEnabled:
-		return fmt.Errorf("%s is enabled: disable it before destroying it", region)
-	}
-	if online := k.onlineRegionBlocks(region); len(online) > 0 {
-		return errorf(ErrBusyOnline, "%s: memory blocks %v are online (the kernel could not remove them, see dmesg): not destroying the region, the memory would read garbage", region, online)
-	}
-	if err := k.regionCommand(ctx, "destroy-region", region); err != nil {
-		return err
-	}
-	k.logf("destroyed %s", region)
-	return nil
-}
-
 // regionCommand runs cxl disable-region or destroy-region of the region
 // holding daxBus: the command removes the dax devices of a ram region.
 func (k *Kernel) regionCommand(ctx context.Context, command, region string) error {
