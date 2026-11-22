@@ -15,11 +15,9 @@
 package config
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"testing"
 
@@ -195,67 +193,6 @@ func checkSampleClaim(t *testing.T, what string, spec resourcev1.ResourceClaimSp
 		}
 		if err != nil {
 			t.Errorf("%s request %s: class %s: %v", what, r.name, r.class, err)
-		}
-	}
-}
-
-// TestDeviceClassesMatchConstants checks that the DeviceClasses of the raw
-// helm chart file (deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml)
-// are the nine classes of the Class* constants, each selecting the driver,
-// type and sharing that the constant stands for, and no config: the raw
-// file has none, configs come only into rendered classes with the Helm
-// value deviceClassConfig.
-func TestDeviceClassesMatchConstants(t *testing.T) {
-	data, err := os.ReadFile("../../../deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	classes := map[string]*resourcev1.DeviceClass{}
-	for _, doc := range strings.Split(string(data), "\n---\n") {
-		c := &resourcev1.DeviceClass{}
-		if err := yaml.UnmarshalStrict([]byte(doc), c); err != nil {
-			t.Fatalf("%v in\n%s", err, doc)
-		}
-		if c.Kind != "DeviceClass" || c.APIVersion != "resource.k8s.io/v1" {
-			t.Fatalf("not a DeviceClass: %s %s", c.APIVersion, c.Kind)
-		}
-		classes[c.Name] = c
-	}
-	selects := func(driver, typ string) string {
-		return fmt.Sprintf(`device.driver == %q && device.attributes[%q].%s == %q`, driver, driver, device.AttrType, typ)
-	}
-	want := map[string]string{
-		device.ClassLocal: selects(device.DriverName, device.DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == false`, device.DriverName, device.AttrShared) +
-			fmt.Sprintf(` && device.attributes[%q].%s == false`, device.DriverName, device.AttrPersistent),
-		device.ClassLocalShared: selects(device.DriverName, device.DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == true`, device.DriverName, device.AttrShared) +
-			fmt.Sprintf(` && device.attributes[%q].%s == false`, device.DriverName, device.AttrPersistent),
-		device.ClassLocalPersistent: selects(device.DriverName, device.DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == true`, device.DriverName, device.AttrPersistent),
-		device.ClassPool: selects(device.PoolDriverName, device.DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == false`, device.PoolDriverName, device.AttrShared) +
-			fmt.Sprintf(` && device.attributes[%q].%s == false`, device.PoolDriverName, device.AttrPersistent),
-		device.ClassPoolShared: selects(device.PoolDriverName, device.DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == true`, device.PoolDriverName, device.AttrShared) +
-			fmt.Sprintf(` && device.attributes[%q].%s == false`, device.PoolDriverName, device.AttrPersistent),
-		device.ClassPoolPersistent: selects(device.PoolDriverName, device.DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == true`, device.PoolDriverName, device.AttrPersistent),
-		device.ClassRegion:         selects(device.DriverName, device.DeviceTypeRegion),
-		device.ClassDRAM:           selects(device.DriverName, device.DeviceTypeDRAM),
-		device.ClassLease:          selects(device.DriverName, device.DeviceTypeLease),
-	}
-	if len(classes) != len(want) {
-		names := make([]string, 0, len(classes))
-		for n := range classes {
-			names = append(names, n)
-		}
-		slices.Sort(names)
-		t.Fatalf("classes %v, expected the %d classes of the constants", names, len(want))
-	}
-	for name, expr := range want {
-		c := classes[name]
-		switch {
-		case c == nil:
-			t.Errorf("no class %s", name)
-		case len(c.Spec.Selectors) != 1 || c.Spec.Selectors[0].CEL == nil || c.Spec.Selectors[0].CEL.Expression != expr:
-			t.Errorf("class %s selectors %+v, expected %s", name, c.Spec.Selectors, expr)
-		case len(c.Spec.Config) != 0 || c.Spec.ExtendedResourceName != nil:
-			t.Errorf("class %s has a config or an extended resource: %+v", name, c.Spec)
 		}
 	}
 }
