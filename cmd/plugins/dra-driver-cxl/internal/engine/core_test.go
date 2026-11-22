@@ -453,7 +453,7 @@ func (r *coreRun) teardown() {
 		}
 	}
 	// the shared memdev unconfigured: its idle region is destroyed at the
-	// start (03a T3 IDLE_KEPT -> NONE, unconfigured shared)
+	// start (Memdev IDLE_KEPT -> NONE, unconfigured shared)
 	w := r.state.clone()
 	if m := &w.mds[mdS]; m.rec == state.MemdevIdleKept {
 		w.destroy(mdS)

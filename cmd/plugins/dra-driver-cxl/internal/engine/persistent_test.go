@@ -794,7 +794,7 @@ func TestPersistentReleaseWithoutRegion(t *testing.T) {
 }
 
 // The type of the filesystem of a block device from its signatures and
-// the declared type, with the texts of the refusals (P1, P2, P3).
+// the declared type, with the texts of the refusals.
 func TestFsSignatureType(t *testing.T) {
 	const dev = "/dev/pmem0"
 	for _, tc := range []struct {

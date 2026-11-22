@@ -27,13 +27,13 @@ import (
 
 // The core model: a gofmbt model of the engine and the store over the fake
 // kernel, its actors being kubelet's Prepare and Unprepare of claims in a
-// fixed set of slots, the kernel's one-shot faults, the process stopping in
-// a request or in the recovery of its start, restarts and reboots, and the
-// pool appliance and other tools changing the CXL topology. Its predictions
-// are written from 03-design 5.4 (the release policy), 5.6 (the recovery)
-// and 03a (the transition tables), never from the engine's code: where the
-// documents leave a choice open, the prediction is a list of alternatives
-// and the observation picks one.
+// fixed set of slots, the kernel's one-shot faults, the process stopping in a
+// request or in the recovery of its start, restarts and reboots, and the pool
+// appliance and other tools changing the CXL topology. Its predictions are
+// written from the release policy and the recovery of design.md and from the
+// transition tables of states.md, never from the engine's code: where the
+// documents leave a choice open, the prediction is a list of alternatives and
+// the observation picks one.
 
 // serialS is the local memdev that the core model configures shared.
 const serialS = 0x51
@@ -142,7 +142,7 @@ type coreSlotState struct {
 	prep  state.PreparationState
 	grant state.GrantState
 	// user: a dax device or a node mount of a region of ours lists the
-	// grant as a user (03-design 5.2 Users), for mode block its Got names
+	// grant as a user (its Users), for mode block its Got names
 	// its region; the RELEASING grant of an UNPREPARING claim that is none
 	// holds no region (its objects released, its region gone).
 	user bool
@@ -427,13 +427,14 @@ func (s *coreState) enabled(ca *coreAction) bool {
 }
 
 // isPrepared tells whether a preparation is prepared: kubelet's Prepare
-// again returns its result (6.3, 03a T1).
+// again returns its result (the Preparation table of states.md).
 func isPrepared(prep state.PreparationState) bool {
 	return prep == state.PreparationPrepared || prep == state.PreparationUnrestored || prep == state.PreparationUnpreparing
 }
 
 // unpreparedState returns the state of a preparation after the front-end's
-// UNPREPARING commit of an Unprepare (03a T1 PREPARED | PREPARED_UNRESTORED
+// UNPREPARING commit of an Unprepare (Preparation PREPARED |
+// PREPARED_UNRESTORED
 // -> UNPREPARING).
 func unpreparedState(prep state.PreparationState) state.PreparationState {
 	if prep == state.PreparationPrepared || prep == state.PreparationUnrestored {
@@ -507,8 +508,8 @@ func (s *coreState) requestEnabled(ca *coreAction) bool {
 			// kubelet's Prepare again of a prepared claim
 			return !s.avoided(ca)
 		}
-		// not modelled: a Prepare of a claim whose memdev is GONE (03a T1
-		// and T3 do not say what it does)
+		// not modelled: a Prepare of a claim whose memdev is GONE (Preparation
+		// and Memdev do not say what it does)
 		return (prep == "" || prep == state.PreparationKept || prep == state.PreparationPreparing ||
 			prep == state.PreparationStale) && s.mds[sl.md].rec != state.MemdevGone && !s.avoided(ca)
 	}
@@ -556,9 +557,9 @@ func (s *coreState) armEnabled(n int) bool {
 }
 
 // reaches tells whether the request reaches the armed fault or cut, by the
-// steps of 03-design 5.3 (a Prepare: journal, the memdev, the region, the
-// set-up, per mode) and 5.5 (a release: unmount, offline, the dax device,
-// the region per 5.4).
+// steps of a Prepare (journal, the memdev, the region, the set-up, per
+// mode) and of a release (unmount, offline, the dax device, the region by
+// the release policy).
 func (s *coreState) reaches(arm *coreArm, ca *coreAction) bool {
 	sl := &coreSlots[ca.slot]
 	if ca.verb == "prepare" && isPrepared(s.slots[ca.slot].prep) || s.mountsAgain(ca) {
@@ -621,7 +622,7 @@ func (s *coreState) usersOf(md int, except ...int) []int {
 
 // nextToBlock tells whether the slot is of mode fs and a writer of mode
 // block of this boot has a use of its memdev (blockUses): it needs the
-// device alone (P9c).
+// device alone.
 func (s *coreState) nextToBlock(i int) bool {
 	if coreSlots[i].mode != state.ModeFS {
 		return false
@@ -639,7 +640,7 @@ func (s *coreState) nextToBlock(i int) bool {
 
 // regionUsers returns the slots of usersOf whose grants hold the region of
 // the memdev: all but those of unfinished Unprepares that no dax device or
-// node mount lists as a user (5.2 Users), and those of unfinished Prepares
+// node mount lists as a user (its Users), and those of unfinished Prepares
 // (a numa companion that a start kept) that name no region.
 func (s *coreState) regionUsers(md int, except ...int) []int {
 	var out []int
@@ -661,7 +662,7 @@ func (s *coreState) hasHole(hb int) bool {
 }
 
 // regionsAbove tells whether a region of another memdev lies above the
-// region of the memdev in its decoder stack (03-design 5.4 "in order").
+// region of the memdev in its decoder stack (the release policy: in order).
 func (s *coreState) regionsAbove(md int) bool {
 	st := s.stacks[coreMemdevs[md].hb]
 	i := slices.Index(st, coreMemdevs[md].id)
@@ -728,7 +729,7 @@ func (s *coreState) detach(md int) {
 
 // fsUsers tells whether the memdev has realised grants of mode fs of this
 // boot, or grants of unfinished Unprepares that its node mount lists
-// (5.2 Users), and whether one of them writes.
+// (its Users), and whether one of them writes.
 func (s *coreState) fsUsers(md int) (users, writer bool) {
 	for i, ss := range s.slots {
 		sl := &coreSlots[i]
@@ -743,7 +744,7 @@ func (s *coreState) fsUsers(md int) (users, writer bool) {
 }
 
 // mountAfter returns the node mount of the memdev after a grant of mode fs
-// left it (5.5 as ruled, D2): unmounted when no grant is a user of it,
+// left it: unmounted when no grant is a user of it,
 // remounted read-only when no listed writer remains, else as it is.
 func (s *coreState) mountAfter(md int) string {
 	users, writer := s.fsUsers(md)
@@ -760,7 +761,7 @@ func (s *coreState) mountAfter(md int) string {
 }
 
 // blockUses tells whether a grant of the persistent memdev but the slot's
-// is a use that a block writer must be alone of (5.3 P9c): a realised one
+// is a use that a block writer must be alone of: a realised one
 // of a prepared claim of this boot (or of one whose Unprepare was cut
 // before its release), or one of an unfinished Unprepare that a node mount
 // lists or of mode block.
@@ -778,7 +779,7 @@ func (s *coreState) blockUses(md, except int) bool {
 	return false
 }
 
-// The release policy of 03-design 5.4 for the last grant of a memdev.
+// The release policy of design.md for the last grant of a memdev.
 const (
 	policyDestroy = "destroy"
 	policyKeep    = "keep"
@@ -788,7 +789,7 @@ const (
 )
 
 // unprepareDestroys returns the policy of the Unprepare of the last grant
-// of the memdev (5.4, column Unprepare): pool devices and local
+// of the memdev (the release policy, column Unprepare): pool devices and local
 // memdevs destroy always (a hole is ok), a local shared memdev keeps its
 // region while configured shared, a local persistent memdev keeps its
 // region idle while regions lie above it.
@@ -805,9 +806,9 @@ func unprepareDestroys(s *coreState, md int) string {
 	return policyDestroy
 }
 
-// rollbackPolicy returns the policy of the rollback of a failed Prepare
-// (5.4, column rollback): pool devices destroy always, local memdevs in
-// order.
+// rollbackPolicy returns the policy of the rollback of a failed Prepare (the
+// release policy, column rollback): pool devices destroy always, local memdevs
+// in order.
 func rollbackPolicy(md int) string {
 	if coreMemdevs[md].source == state.SourcePool {
 		return policyDestroy
@@ -823,10 +824,10 @@ const (
 	madeUsed           // the region of other grants, or an idle kept one
 )
 
-// prepareRegion returns what the Prepare of the slot does with the region
-// of its memdev (5.3), and the error class of a Prepare that fails before
-// it: a pool grant waits for its absent memdev, then fails; a FOREIGN
-// region refuses the memdev; a decoder hole is a typed error.
+// prepareRegion returns what the Prepare of the slot does with the region of
+// its memdev (design.md, How a claim becomes memory), and the error class of a
+// Prepare that fails before it: a pool grant waits for its absent memdev, then
+// fails; a FOREIGN region refuses the memdev; a decoder hole is a typed error.
 func (s *coreState) prepareRegion(i int) (int, string) {
 	md := coreSlots[i].md
 	m := &s.mds[md]
@@ -846,15 +847,15 @@ func (s *coreState) prepareRegion(i int) (int, string) {
 		return madeEnabled, ""
 	}
 	if m.reg == state.RegionKept {
-		// a kept region left enabled (D6): KEPT -> OWNED, set up again
+		// a kept region left enabled: KEPT -> OWNED, set up again
 		return madeEnabled, ""
 	}
 	return madeUsed, ""
 }
 
-// prepareOutcome returns the state after the Prepare of the claim of the
-// slot without a fault (03a T1, T2, T4; 03-design 5.3), and what it did
-// with the region. A failure is rolled back (rollback).
+// prepareOutcome returns the state after the Prepare of the claim of the slot
+// without a fault (the Preparation, Grant and Region tables; design.md), and
+// what it did with the region. A failure is rolled back (rollback).
 func (s *coreState) prepareOutcome(i int) (*coreState, int) {
 	w := s.leftoverReleased(i)
 	w.err = ""
@@ -876,7 +877,7 @@ func (s *coreState) prepareOutcome(i int) (*coreState, int) {
 	}
 	m.rec = state.MemdevActive
 	if sl.mode == state.ModeBlock && !sl.readOnly && w.blockUses(md, i) || w.nextToBlock(i) {
-		// mode block read-write needs the device alone on this node (P9c)
+		// mode block read-write needs the device alone on this node
 		w.rollback(i, made, "failed")
 		return w, made
 	}
@@ -903,12 +904,13 @@ func (s *coreState) prepareOutcome(i int) (*coreState, int) {
 
 // leftoverReleased returns the state before the Prepare of the slot
 // journals: a RELEASING grant of the claim (a failed or cut release of a KEPT
-// claim) is released first, as a rollback (5.3 "its leftovers are released
-// first"; the rollback column of the release policy).
+// claim) is released first, as a rollback (its leftovers are released first;
+// the rollback column of the release policy).
 func (s *coreState) leftoverReleased(i int) *coreState {
 	w := s.clone()
 	if w.slots[i].grant != state.GrantReleasing || w.slots[i].prep == state.PreparationStale {
-		// a grant of another boot is dropped with the PREPARING commit (T1)
+		// a grant of another boot is dropped with the PREPARING commit (the
+		// Preparation table)
 		return w
 	}
 	prep := w.slots[i].prep
@@ -921,7 +923,7 @@ func (s *coreState) leftoverReleased(i int) *coreState {
 
 // preparing commits the preparation of the slot PREPARING with its grant
 // JOURNALED and its memdev ACTIVE, the grant of another boot dropped
-// (03a T1 PREPARED_STALE -> PREPARING).
+// (Preparation PREPARED_STALE -> PREPARING).
 func (w *coreState) preparing(i int) {
 	md := coreSlots[i].md
 	if w.slots[i].prep == "" {
@@ -931,11 +933,11 @@ func (w *coreState) preparing(i int) {
 	w.mds[md].rec = state.MemdevActive
 }
 
-// rollback releases the grant of the failed Prepare of the slot (03a T2
-// REALISING -> RELEASING -> NONE, or -> JOURNALED with the region KEPT)
-// per the rollback column of 5.4 when it was the last user of the region,
-// and ends the Prepare with the error class (T1 PREPARING -> NONE or
-// KEPT).
+// rollback releases the grant of the failed Prepare of the slot (Grant
+// REALISING -> RELEASING -> NONE, or -> JOURNALED with the region KEPT) per
+// the rollback column of the release policy when it was the last user of the
+// region, and ends the Prepare with the error class (Preparation PREPARING ->
+// NONE or KEPT).
 func (w *coreState) rollback(i, made int, class string) {
 	md := coreSlots[i].md
 	m := &w.mds[md]
@@ -969,18 +971,18 @@ func numaCompanionSlot(i int) bool {
 	return coreSlots[i].lease && coreSlots[i].mode == state.ModeNUMA
 }
 
-// keptCompanion returns the states of a numa companion of a cut Prepare
-// that a start keeps for kubelet (5.6; "stay KEPT": its preparation
-// PREPARING or KEPT): its grant as the cut left it, journaled, realising,
-// realised or releasing (a cut rollback or release of the claim, which D-70
-// calls a cut Prepare), a user of its dax device or not yet, its memory
-// online or not.
+// keptCompanion returns the states of a numa companion of a cut Prepare that a
+// start keeps for kubelet (design.md, How a restart recovers; "stay KEPT": its
+// preparation PREPARING or KEPT): its grant as the cut left it, journaled,
+// realising, realised or releasing (a cut rollback or release of the claim,
+// which the recovery calls a cut Prepare), a user of its dax device or not
+// yet, its memory online or not.
 func (s *coreState) keptCompanion(i int) []*coreState {
 	md := coreSlots[i].md
 	regions := [][2]string{{s.mds[md].kreg, string(s.mds[md].reg)}}
 	if s.mds[md].kreg == kregOff {
-		// a region that a failed release left disabled is enabled again
-		// (KEPT -> OWNED) before its set-up (5.3)
+		// a region that a failed release left disabled is enabled again (KEPT ->
+		// OWNED) before its set-up (design.md, How a claim becomes memory)
 		regions = append(regions, [2]string{kregOn, string(state.RegionOwned)}, [2]string{kregOn, string(state.RegionKept)},
 			[2]string{kregOff, string(state.RegionKept)})
 	}
@@ -1138,8 +1140,8 @@ func (s *coreState) predictPrepare(i int) []*coreState {
 		if m := &s.mds[md]; m.rec == state.MemdevIdleKept && coreMemdevs[md].kind.Persistent() &&
 			!s.regionsAbove(md) {
 			// the keep reason of an idle persistent region is gone: the
-			// next Prepare destroys it first (5.4 the idle row, T3
-			// IDLE_KEPT -> NONE)
+			// next Prepare destroys it first (the idle row of
+			// the release policy, Memdev IDLE_KEPT -> NONE)
 			d := s.clone()
 			d.destroy(md)
 			anew, _ := d.prepareOutcome(i)
@@ -1161,8 +1163,8 @@ func (s *coreState) predictPrepare(i int) []*coreState {
 		if f.slots[i].prep != state.PreparationKept {
 			return []*coreState{f}
 		}
-		// kept in order: disabled (5.4), or as it was when the regions
-		// above were there before (D6)
+		// kept in order: disabled (the release policy), or as it was when the
+		// regions above were there before
 		on := f.clone()
 		on.mds[coreSlots[i].md].kreg = kregOn
 		return []*coreState{f, on}
@@ -1178,7 +1180,7 @@ func (s *coreState) predictPrepare(i int) []*coreState {
 }
 
 // preparedAgain returns the states after kubelet's Prepare again of the
-// prepared claim of the slot (03a T1): PREPARED and UNPREPARING stay, the
+// prepared claim of the slot (Preparation): PREPARED and UNPREPARING stay, the
 // result returned; PREPARED_UNRESTORED -> PREPARED, its node mount mounted
 // again for every grant that lists it (remountAll).
 func (s *coreState) preparedAgain(i int) []*coreState {
@@ -1218,9 +1220,10 @@ func (w *coreState) remount(md int) {
 }
 
 // lost returns the states after a start at which the node mount of the
-// persistent memdev was gone and could not be mounted again: its claims
-// (all prepared, of mode fs) PREPARED_UNRESTORED with their grants
-// REALISED_UNRESTORED, without CDI devices (03a T1, T2; 5.6 restore).
+// persistent memdev was gone and could not be mounted again: its claims (all
+// prepared, of mode fs) PREPARED_UNRESTORED with their grants
+// REALISED_UNRESTORED, without CDI devices (the Preparation and Grant tables;
+// the restore of a start).
 func (s *coreState) lost(md int) []*coreState {
 	w := s.clone()
 	w.arm = 0
@@ -1244,8 +1247,8 @@ func (s *coreState) lost(md int) []*coreState {
 func (s *coreState) cutPrepare(i int, arm *coreArm, w *coreState, made int) []*coreState {
 	var mids []*coreState
 	if coreFront && arm.cut == "commit" {
-		// cut after the front-end's PREPARING commit, before the engine
-		// journals: a grant of another boot is dropped in that commit (6.3)
+		// cut after the front-end's PREPARING commit, before the engine journals: a
+		// grant of another boot is dropped in that commit (design.md)
 		mid := s.clone()
 		mid.arm, mid.err = 0, "cut"
 		ss := &mid.slots[i]
@@ -1279,7 +1282,7 @@ func (s *coreState) cutPrepare(i int, arm *coreArm, w *coreState, made int) []*c
 		}
 		if m := &s.mds[coreSlots[i].md]; m.reg == state.RegionOwned && m.kreg == kregOff {
 			// a region left disabled by a failed release is recorded KEPT
-			// before it is enabled again (T4)
+			// before it is enabled again (the Region table)
 			k := mid.clone()
 			k.mds[coreSlots[i].md].reg = state.RegionKept
 			k.mds[coreSlots[i].md].est = true
@@ -1301,7 +1304,7 @@ func (s *coreState) cutPrepare(i int, arm *coreArm, w *coreState, made int) []*c
 		mids = append(mids, mid)
 		// cut before the set-up of a region that the Prepare made or
 		// enabled again: not established (a shared region in use is set
-		// up again with its zeroing, D-100)
+		// up again with its zeroing)
 		md := coreSlots[i].md
 		if made != madeUsed || coreMemdevs[md].kind.Shared() && coreMemdevs[md].source == state.SourceLocal {
 			n := mid.clone()
@@ -1344,8 +1347,8 @@ func (s *coreState) predictUnprepare(i int) []*coreState {
 }
 
 // unprepareOutcome returns the state after the Unprepare of the claim of
-// the slot without a fault (03a T1 -> NONE; T2 -> NONE; 03-design
-// 5.5, the region per the Unprepare column of 5.4).
+// the slot without a fault (Preparation -> NONE; Grant -> NONE; design.md:
+// a release, the region per the Unprepare column of the release policy).
 func (s *coreState) unprepareOutcome(i int) *coreState {
 	w := s.clone()
 	w.err = ""
@@ -1380,17 +1383,17 @@ func (s *coreState) unprepareOutcome(i int) *coreState {
 		m.rec = state.MemdevActive
 	}
 	if m.kreg == kregOff {
-		// T4 OWNED -> KEPT: kept, the region stays disabled
+		// Region OWNED -> KEPT: kept, the region stays disabled
 		m.reg = state.RegionKept
 	}
 	return w
 }
 
-// failedRelease returns the state after an Unprepare of the slot whose
-// release failed at the kernel action fail (03a T2 RELEASING -> RELEASING,
-// T1 UNPREPARING -> UNPREPARING: the records in their last committed state,
-// an error to kubelet). Before the region: the mounts are unmounted and the
-// memory offline (5.5).
+// failedRelease returns the state after an Unprepare of the slot whose release
+// failed at the kernel action fail (Grant RELEASING -> RELEASING, Preparation
+// UNPREPARING -> UNPREPARING: the records in their last committed state, an
+// error to kubelet). Before the region: the mounts are unmounted and the
+// memory offline (design.md, How memory is released).
 func (s *coreState) failedRelease(i int, fail string) *coreState {
 	w := s.clone()
 	w.arm, w.err = 0, "failed"
@@ -1404,7 +1407,7 @@ func (s *coreState) failedRelease(i int, fail string) *coreState {
 	}
 	// a part's own dax device deleted, a node mount unmounted; the Whole
 	// device of a region lists every grant of the memdev until the region
-	// goes (5.2)
+	// goes (design.md, The objects)
 	d := &coreMemdevs[sl.md]
 	if sl.mode == state.ModeFS || d.kind == state.KindLocal {
 		ss.user = false
@@ -1426,14 +1429,14 @@ func (s *coreState) failedRelease(i int, fail string) *coreState {
 // preparation stays (UNPREPARING for a prepared one), its grant RELEASING
 // or released, the kernel objects anywhere between their state before and
 // after the release; the start finishes nothing of an UNPREPARING
-// preparation (5.6).
+// preparation (design.md, How a restart recovers).
 func (s *coreState) cutUnprepare(i int, arm *coreArm, ws []*coreState) []*coreState {
 	sl := &coreSlots[i]
 	md := sl.md
 	w := ws[0]
 	before, after := s.mds[md], w.mds[md]
 	prep := unpreparedState(s.slots[i].prep)
-	// the grant is removed after the region is released (T2 RELEASING ->
+	// the grant is removed after the region is released (Grant RELEASING ->
 	// NONE): a cut after it leaves the kernel as the release does
 	var out []*coreState
 	if coreFront && arm.cut == "commit" && isPrepared(s.slots[i].prep) {
@@ -1533,10 +1536,10 @@ func uniq[T comparable](vals ...T) []T {
 	return out
 }
 
-// rebooted changes the state as a reboot does (03-design 4.4): the kernel
-// has no region, memory or mount of the old boot; the preparations of the
-// old boot are PREPARED_STALE, their grants kept (Got cleared); the memdev
-// and region records of the old boot are dropped.
+// rebooted changes the state as a reboot does (design.md, How a restart
+// recovers): the kernel has no region, memory or mount of the old boot; the
+// preparations of the old boot are PREPARED_STALE, their grants kept (Got
+// cleared); the memdev and region records of the old boot are dropped.
 func (w *coreState) rebooted() {
 	for i := range w.slots {
 		if w.slots[i].prep != "" {
@@ -1550,21 +1553,20 @@ func (w *coreState) rebooted() {
 	w.stacks = [2][]string{}
 }
 
-// restarted returns the states after a start of the process (03-design 5.6
-// in its order; 03a T1-T4 on recover): memdevs absent at load are
-// GONE (T3); a region of ours recorded but gone is forgotten; the grants of
-// cut Prepares (PREPARING) and the kept grants of KEPT claims are released
-// per the recovery column of the release policy (releaseKept, releaseCut);
-// the node mounts that no
-// realised grant of a prepared claim and no grant of an unfinished release
-// lists are swept (D1); an idle persistent region with nothing above goes
-// (T3 IDLE_KEPT -> NONE).
+// restarted returns the states after a start of the process (design.md, How a
+// restart recovers, in its order; the tables of states.md on recover): memdevs
+// absent at load are GONE (the Memdev table); a region of ours recorded but
+// gone is forgotten; the grants of cut Prepares (PREPARING) and the kept
+// grants of KEPT claims are released per the recovery column of the release
+// policy (releaseKept, releaseCut); the node mounts that no realised grant of
+// a prepared claim and no grant of an unfinished release lists are swept; an
+// idle persistent region with nothing above goes (Memdev IDLE_KEPT -> NONE).
 func (w *coreState) restarted() []*coreState {
 	w.arm = 0
 	for i := range w.slots {
 		if w.slots[i].prep == state.PreparationKept && w.slots[i].grant == "" {
 			// an Unprepare cut after it released the kept grant: nothing
-			// is kept for the claim (03a T1 KEPT -> NONE on recover)
+			// is kept for the claim (Preparation KEPT -> NONE on recover)
 			w.slots[i] = coreSlotState{}
 		}
 	}
@@ -1578,7 +1580,7 @@ func (w *coreState) restarted() []*coreState {
 			w.detach(md)
 			m.rec = rec
 		}
-		// T3 any -> GONE: the memdev ABSENT at load, its grants kept for
+		// Memdev any -> GONE: the memdev ABSENT at load, its grants kept for
 		// kubelet's Unprepare; GONE -> ACTIVE: present again
 		switch {
 		case !m.plugged && m.rec != "":
@@ -1588,8 +1590,8 @@ func (w *coreState) restarted() []*coreState {
 		}
 	}
 	if coreFront {
-		// the node mounts of unrestored claims mounted again (03a T1
-		// PREPARED_UNRESTORED -> PREPARED on recover, D-31)
+		// the node mounts of unrestored claims mounted again (Preparation
+		// PREPARED_UNRESTORED -> PREPARED on recover)
 		for md := range w.mds {
 			for i := range w.slots {
 				if coreSlots[i].md == md && w.slots[i].prep == state.PreparationUnrestored {
@@ -1631,15 +1633,15 @@ func (w *coreState) restarted() []*coreState {
 	return out
 }
 
-// releaseKept returns the states after the start released the KEPT claims
-// as the grants of cut Prepares are (5.6; the code table's KEPT -> NONE on
-// recover, D8): a KEPT claim whose region another grant holds, or with a
-// cut Prepare's grant on its memdev, is not the region's last holder and is
-// released; one that holds the region alone goes by the recovery column of
-// the release policy: kept for the claim below newer regions in order
-// (pool, local), released with the region destroyed on top; on a
-// local shared or persistent memdev released, the region kept idle (while
-// regions lie above it, persistent) or destroyed.
+// releaseKept returns the states after the start released the KEPT claims as
+// the grants of cut Prepares are (design.md, How a restart recovers; the code
+// table's KEPT -> NONE on recover): a KEPT claim whose region another grant
+// holds, or with a cut Prepare's grant on its memdev, is not the region's last
+// holder and is released; one that holds the region alone goes by the recovery
+// column of the release policy: kept for the claim below newer regions in
+// order (pool, local), released with the region destroyed on top; on a local
+// shared or persistent memdev released, the region kept idle (while regions
+// lie above it, persistent) or destroyed.
 func (w *coreState) releaseKept() []*coreState {
 	alts := []*coreState{w}
 	for md := range w.mds {
@@ -1647,7 +1649,7 @@ func (w *coreState) releaseKept() []*coreState {
 		for i, ss := range w.slots {
 			if coreSlots[i].md == md && ss.prep == state.PreparationKept && ss.grant == state.GrantJournaled && w.mds[md].plugged &&
 				!numaCompanionSlot(i) {
-				// (numa companions are kept for kubelet, 5.6)
+				// (numa companions are kept for kubelet)
 				kept = append(kept, i)
 			}
 		}
@@ -1666,7 +1668,7 @@ func (w *coreState) releaseKept() []*coreState {
 // releaseKeptOf returns the states after the start released the KEPT claims
 // kept of the memdev (releaseKept); when none of them is released for
 // another holder, each may be the last of them, which the policy decides.
-// Next to a cut Prepare's grant they are released, or (D8) released with it
+// Next to a cut Prepare's grant they are released, or released with it
 // as cut grants by the recovery column of the policy (releaseCut).
 func (w *coreState) releaseKeptOf(md int, kept []int) []*coreState {
 	others := false
@@ -1724,14 +1726,14 @@ func (w *coreState) hasCut(md int) bool {
 	return false
 }
 
-// releaseCut returns the states after the recovery released the grant of
-// the cut Prepare of the slot (5.6) per the recovery column of the release
-// policy (the matrix that rules 5.4, D3): pool devices and local in
-// order; local shared established keep idle; local persistent established
-// in order idle; a new (not established) local region in order. A region
-// kept in order is KEPT for the claim, the preparation KEPT (D4), the
-// region disabled or as it was (D6); one kept idle stays as it is for the
-// memdev, the claim PREPARING.
+// releaseCut returns the states after the recovery released the grant of the
+// cut Prepare of the slot (design.md, How a restart recovers) per the recovery
+// column of the release policy (its matrix): pool devices and local in order;
+// local shared established keep idle; local persistent established in order
+// idle; a new (not established) local region in order. A region kept in order
+// is KEPT for the claim, the preparation KEPT, the region disabled or as
+// it was; one kept idle stays as it is for the memdev, the claim
+// PREPARING.
 func (w *coreState) releaseCut(i int) []*coreState {
 	md := coreSlots[i].md
 	r := w.clone()

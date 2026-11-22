@@ -270,15 +270,14 @@ func (fe *frontEnd) claim(sl engine.CoreSlot, uid string) *resourcev1.ResourceCl
 	return c
 }
 
-// Check returns the violations of the CDI specs, the lends and the lease
-// binds against the records and the kernel now (6.2, 6.3, 5.3, O6): the
-// spec of each driver has the devices of the results of its PREPARED and
-// UNPREPARING claims that are not companions, each naming the dax device,
-// the block device or the node mount that the records and the kernel
-// have; a NUMA node is lent only for a grant that records the lend, and
-// every prepared numa companion's node is lent; a lease bind is mounted
-// only for a grant that records it, and every prepared fs companion's
-// bind is mounted.
+// Check returns the violations of the CDI specs, the lends and the lease binds
+// against the records and the kernel now (design.md, How a restart recovers):
+// the spec of each driver has the devices of the results of its PREPARED and
+// UNPREPARING claims that are not companions, each naming the dax device, the
+// block device or the node mount that the records and the kernel have; a NUMA
+// node is lent only for a grant that records the lend, and every prepared numa
+// companion's node is lent; a lease bind is mounted only for a grant that
+// records it, and every prepared fs companion's bind is mounted.
 func (fe *frontEnd) Check() []string {
 	doc := fe.st.Snapshot()
 	snap, err := fe.f.Kernel().Observe(context.Background())

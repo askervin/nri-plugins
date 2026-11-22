@@ -252,7 +252,7 @@ var RegionTable = Table[RegionState]{
 			From: fsm.List(RegionOwned), To: RegionKept, Triggers: releasers,
 			When: "a release with Policy \"in order\" found a newer region of another memdev above after cxl " +
 				"disable-region; or the recovery keeps a cut Prepare's region untouched below a newer region (Policy keep) " +
-				"and no grant of it was REALISED; or prepare (5.3) or an idle keep finds an OWNED region that the kernel has disabled (a release failed " +
+				"and no grant of it was REALISED; or a Prepare or an idle keep finds an OWNED region that the kernel has disabled (a release failed " +
 				"after cxl disable-region): recorded KEPT, enabled and set up again by the Prepare",
 			Effects: "the region stays disabled (in order) or as it is (recovery); SetUp false; commit (d)",
 		},
@@ -361,7 +361,7 @@ var DaxDeviceTable = Table[DaxDeviceState]{
 		{
 			From: fsm.List(DaxCreating), To: DaxNone, Triggers: fsm.List(TriggerPrepare, TriggerUnprepare),
 			When: "size or ranges failed, or the verification failed; or the Unprepare of a claim whose Prepare did not " +
-				"finish (PREPARING or KEPT, 03a T1 PREPARING -> NONE) deletes the device its cut Prepare was making",
+				"finish (PREPARING or KEPT, Preparation PREPARING -> NONE) deletes the device its cut Prepare was making",
 			Effects: "deleted; error",
 		},
 		{
