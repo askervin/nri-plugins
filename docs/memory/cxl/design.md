@@ -5,8 +5,8 @@ CAUTION: experimental. Interfaces may change.
 This page tells how `nri-dra-driver-cxl` works inside: the objects it
 keeps, how a claim becomes memory that a container uses, how a restart
 of the driver finds its way back, and which files it keeps on the node.
-It is written for users who want to know what the driver does with their
-devices and for maintainers who change it. [usage.md](usage.md) tells
+It is written for the developers who change the driver, and for users
+who want to know what it does with their devices. [usage.md](usage.md) tells
 how to deploy and use the driver; [states.md](states.md), generated from
 the code, lists every state of every record and every transition that
 the driver allows, with its trigger, guard and effects. This page links
@@ -17,6 +17,7 @@ to it for every state that it names.
 - [How a claim becomes memory](#how-a-claim-becomes-memory)
 - [How memory is released](#how-memory-is-released)
 - [How a restart recovers](#how-a-restart-recovers)
+- [The life of a lease](#the-life-of-a-lease)
 - [Files on the node](#files-on-the-node)
 
 ## The parts of the driver
@@ -118,8 +119,8 @@ grants that use it: the slice of one claim of a local memdev, or the
 whole device of a shared memdev that every claim maps. Bound to `kmem`
 its memory is system RAM of a NUMA node
 ([KMEM_ONLINE](states.md#daxdevicestate)); bound to `device_dax` it is a
-device node that a container maps (DEVICE_DAX). `daxN.0` of a sliced
-region stays as the SEED at size 0, which the kernel never deletes.
+device node that a container maps (DEVICE_DAX). `daxN.0` of the region
+of an unshared memdev stays as the SEED at size 0, which the kernel never deletes.
 
 ### Mount and bind
 
@@ -181,8 +182,8 @@ that an Unprepare can revoke it also after the lease record is gone.
 ### Container and fence
 
 The NRI plugin keeps a record of every container of the node in memory
-([Container (in memory)](states.md#container-in-memory)): how the plugin
-manages its memory (STEERED, FENCED or NONE, decided once when the
+([Container (in memory)](states.md#container-in-memory)): how the NRI
+plugin manages its memory (STEERED, FENCED or UNFENCED, decided once when the
 container is created), its own NUMA nodes, the nodes of its results and
 the nodes lent to it. The record is built again from the runtime after a
 restart. The fence is the set of NUMA nodes on which the driver onlined
@@ -307,7 +308,7 @@ its Unprepare releases it.
 
 ### A local memdev
 
-On the first claim of a sliced memdev the engine notes the name of the
+On the first claim of an unshared local memdev the engine notes the name of the
 region to come, creates a RAM region over the memdev and, with
 `verifyAddressing`, runs the address line probe on it (a region whose
 memory aliases is made again with the usable size). Every claim gets a
@@ -438,7 +439,7 @@ exists.
 
 The release policy, by kind of memdev:
 
-- A sliced local memdev: its region is destroyed with its last slice. A
+- An unshared local memdev: its region is destroyed with its last slice. A
   rollback or a recovery releases it in order only: one below a newer
   region of another memdev stays for its claim.
 - A shared local device: its region stays while the device is in
@@ -610,7 +611,7 @@ once, with that command, about each one that is not the driver's.
 "add_dev() failed"; the pool driver tries a region creation once more
 after 3 s.
 
-### The life of a lease
+## The life of a lease
 
 The lease is committed before any companion object is created, and the
 driver that prepares the companion claim records the lend with the

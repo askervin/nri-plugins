@@ -16,7 +16,9 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -31,6 +33,7 @@ const (
 	engineDir     = "../engine"
 	kernelDir     = "../../../../../pkg/cxl/kernel"
 	statesFile    = "../../../../../docs/memory/cxl/states.md"
+	designFile    = "../../../../../docs/memory/cxl/design.md"
 )
 
 // TestStatesFileIsCurrent checks that docs/memory/cxl/states.md is what
@@ -60,6 +63,58 @@ func TestStatesFileIsCurrent(t *testing.T) {
 			t.Fatalf("docs/memory/cxl/states.md is stale, run go generate ./cmd/plugins/dra-driver-cxl; line %d:\n  have: %s\n  want: %s", i+1, g, w)
 		}
 	}
+}
+
+// TestDesignLinksIntoStates checks that every link of design.md into
+// states.md names a heading of states.md. The anchors are the slugs that
+// the documentation gives headings of levels 1 to 4 (myst_heading_anchors).
+func TestDesignLinksIntoStates(t *testing.T) {
+	states, err := os.ReadFile(statesFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	design, err := os.ReadFile(designFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchors := headingAnchors(string(states))
+	links := regexp.MustCompile(`\]\(states\.md#([^)]+)\)`).FindAllStringSubmatch(string(design), -1)
+	if len(links) == 0 {
+		t.Fatal("design.md has no links into states.md")
+	}
+	for _, m := range links {
+		if !anchors[m[1]] {
+			t.Errorf("design.md links states.md#%s, which no heading of states.md has", m[1])
+		}
+	}
+}
+
+// headingAnchors returns the anchors of the headings of levels 1 to 4 of
+// a markdown document: the heading in lower case without its markup and
+// punctuation, spaces as "-", and "-N" after the Nth repeat.
+func headingAnchors(doc string) map[string]bool {
+	heading := regexp.MustCompile(`^#{1,4}\s+(.*?)\s*$`)
+	drop := regexp.MustCompile(`[^\p{L}\p{N}_\s-]`)
+	anchors, seen, fence := map[string]bool{}, map[string]int{}, false
+	for _, line := range strings.Split(doc, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			fence = !fence
+			continue
+		}
+		m := heading.FindStringSubmatch(line)
+		if fence || m == nil {
+			continue
+		}
+		slug := drop.ReplaceAllString(strings.ToLower(strings.ReplaceAll(m[1], "`", "")), "")
+		slug = strings.Join(strings.Fields(slug), "-")
+		if n := seen[slug]; n > 0 {
+			anchors[fmt.Sprintf("%s-%d", slug, n)] = true
+		} else {
+			anchors[slug] = true
+		}
+		seen[slug]++
+	}
+	return anchors
 }
 
 // TestEveryObjectHasItsHeader checks that the doc comment of every record
