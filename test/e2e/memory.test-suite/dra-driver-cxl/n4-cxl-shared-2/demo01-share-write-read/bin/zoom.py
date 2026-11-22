@@ -104,8 +104,10 @@ def show_device(state, spec, d):
     """Print one device of a ResourceSlice: where, attributes, capacity."""
     drv, pool = spec.get("driver"), (spec.get("pool") or {}).get("name")
     print("%s  driver %s, pool %s, %s" % (d.get("name"), drv, pool, slice_scope(spec, state)))
-    for name in sorted(d.get("attributes") or {}):
-        print("  %-14s %s" % (name, c.device_attr(d, name)))
+    attrs = sorted(d.get("attributes") or {})
+    width = max([14] + [len(name) for name in attrs])
+    for name in attrs:
+        print("  %-*s %s" % (width, name, c.device_attr(d, name)))
     for name, cap in sorted((d.get("capacity") or {}).items()):
         pol = cap.get("requestPolicy")
         print("  capacity %s: %s%s" % (name, cap.get("value"), " policy %s" % json.dumps(pol) if pol else " (no request policy)"))

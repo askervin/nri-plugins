@@ -702,7 +702,7 @@ func TestPoolSerialsHeldRegion(t *testing.T) {
 		t.Fatalf("reason %q", r)
 	}
 	e.advance(provenance.MaxHold)
-	e.wantScan("published", "region0-node2")
+	e.wantScan("published", "region0-numa2")
 }
 
 // TestPoolSerialsCheckLocal pins CheckLocal, the fresh list of the

@@ -22,6 +22,7 @@ import (
 	"fmt"
 
 	resourcev1 "k8s.io/api/resource/v1"
+	"k8s.io/dynamic-resource-allocation/deviceattribute"
 
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 )
@@ -62,10 +63,16 @@ const (
 	AttrShared          resourcev1.QualifiedName = "shared"
 	AttrPersistent      resourcev1.QualifiedName = "persistent"
 	AttrSize            resourcev1.QualifiedName = "size"
-	AttrMemoryNUMANode  resourcev1.QualifiedName = "node"
-	AttrMemoryNUMANodes resourcev1.QualifiedName = "nodes"
-	AttrNodeAffinity    resourcev1.QualifiedName = "nodeAffinity"
 	AttrMemoryBlockSize resourcev1.QualifiedName = "memoryBlockSize"
+	// AttrMemoryNUMANode of a region is the NUMA node of its online
+	// memory; AttrMemoryNUMANodes of the DRAM device are the NUMA nodes
+	// of the DRAM (a cpuset list).
+	AttrMemoryNUMANode  resourcev1.QualifiedName = "memoryNUMANode"
+	AttrMemoryNUMANodes resourcev1.QualifiedName = "memoryNUMANodes"
+	// AttrNUMANode of a memdev, or of a region whose memdevs agree on it,
+	// is the CPU NUMA node of the device; absent if unknown. It is the
+	// standard attribute: a claim can match it with other drivers' devices.
+	AttrNUMANode = deviceattribute.StandardDeviceAttributeNUMANode
 	// AttrCoherent of a pool device tells whether the hardware keeps its
 	// memory coherent between the hosts that share it; absent is false.
 	AttrCoherent resourcev1.QualifiedName = "coherent"

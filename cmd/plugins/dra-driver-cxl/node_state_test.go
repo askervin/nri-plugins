@@ -61,7 +61,7 @@ func injectDevices(e *driverTestEnv, infos ...*dra.DeviceInfo) {
 func memoryConfigClaim(uid string, configs ...resourcev1.DeviceAllocationConfiguration) *resourcev1.ResourceClaim {
 	c := localClaim(uid, localBlockSize)
 	c.Status.Allocation.Devices.Results[0].Request = "numa"
-	for _, r := range []struct{ request, dev string }{{"region", "region5-node4"}, {"dram", "dram"}, {"lease", device.LeaseDeviceName}} {
+	for _, r := range []struct{ request, dev string }{{"region", "region5-numa4"}, {"dram", "dram"}, {"lease", device.LeaseDeviceName}} {
 		c.Status.Allocation.Devices.Results = append(c.Status.Allocation.Devices.Results,
 			resourcev1.DeviceRequestAllocationResult{Request: r.request, Driver: device.DriverName, Pool: testNode, Device: r.dev})
 	}
@@ -93,7 +93,7 @@ func TestContainerOfResultSettings(t *testing.T) {
 	e.start()
 	e.synchronize()
 	injectDevices(e,
-		&dra.DeviceInfo{Name: "region5-node4", Dev: &dra.Region{Name: "region5", NUMANode: 4, Size: 1 << 30}},
+		&dra.DeviceInfo{Name: "region5-numa4", Dev: &dra.Region{Name: "region5", NUMANode: 4, Size: 1 << 30}},
 		&dra.DeviceInfo{Name: "dram", Dev: &dra.DRAM{NUMANodes: []int{0}, Size: 1 << 30}},
 		&dra.DeviceInfo{Name: device.LeaseDeviceName, Dev: &dra.Lease{}})
 	const (

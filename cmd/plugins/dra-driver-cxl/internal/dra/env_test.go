@@ -350,7 +350,7 @@ func (e *driverEnv) addRegion(name string, node int, size uint64) string {
 	pubRegion(&e.extra, name, node, size, 0xeeee)
 	e.extra.Memdevs = append(e.extra.Memdevs, pubMem("mem9", 0xeeee, 0, 1))
 	e.rescan()
-	return fmt.Sprintf("%s-node%d", name, node)
+	return fmt.Sprintf("%s-numa%d", name, node)
 }
 
 // lend sets the lender of both drivers: the fake of NRI (nil: NRI is not

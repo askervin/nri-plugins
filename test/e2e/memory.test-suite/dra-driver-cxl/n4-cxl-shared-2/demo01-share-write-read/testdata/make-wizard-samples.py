@@ -60,7 +60,7 @@ def sliced(name, serial, size):
     return {"name": name, "allowMultipleAllocations": True,
             "attributes": {"type": {"string": "memdev"}, "source": {"string": "local"}, "serial": {"string": serial},
                            "shared": {"bool": False}, "persistent": {"bool": False}, "size": {"int": size},
-                           "nodeAffinity": {"int": 0}, "memoryBlockSize": {"int": BLOCK}},
+                           "resource.kubernetes.io/numaNode": {"int": 0}, "memoryBlockSize": {"int": BLOCK}},
             "capacity": {"memory": {"value": common.k8s_size(size),
                                     "requestPolicy": {"default": common.k8s_size(size),
                                                       "validRange": {"min": "128Mi", "step": "128Mi"}}}},
@@ -71,7 +71,7 @@ def persistent_local(name, serial, size):
     return {"name": name, "allowMultipleAllocations": True,
             "attributes": {"type": {"string": "memdev"}, "source": {"string": "local"}, "serial": {"string": serial},
                            "shared": {"bool": False}, "persistent": {"bool": True}, "size": {"int": size},
-                           "nodeAffinity": {"int": 1}},
+                           "resource.kubernetes.io/numaNode": {"int": 1}},
             "capacity": {"shares": {"value": "1M"}}}
 
 

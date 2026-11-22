@@ -5,7 +5,7 @@
 # device of the node like the local memdevs of test14, but its data
 # outlives the claims: the cxl.nri.io driver publishes it whole as
 # memdev-<serial>, attributes type memdev, source local, serial, shared
-# false, persistent true, size and nodeAffinity, capacity shares 1M
+# false, persistent true, size and numaNode, capacity shares 1M
 # without a requestPolicy, and DeviceClass cxl-local-persistent selects it
 # (cxl-local does not). Its claims have the modes of persistent pool
 # devices (test16, test20): block, the block device /dev/pmemK of an fsdax
@@ -168,7 +168,7 @@ SLICES="$COMMAND_OUTPUT"
 dra-kubectl "$VM2" "get resourceslices"
 dra-assert "$SLICES" "attr($LP, 'type') == 'memdev' and attr($LP, 'source') == 'local' and attr($LP, 'serial') == '$LP_SERIAL' and attr($LP, 'shared') == False and attr($LP, 'persistent') == True and attr($LP, 'size') == $LP_SIZE"
 # No memoryBlockSize, no memory capacity: nothing of it is onlined.
-dra-assert "$SLICES" "set(k.split('/')[-1] for k in ${LP}['attributes']) - {'nodeAffinity'} == {'persistent', 'serial', 'shared', 'size', 'source', 'type'}"
+dra-assert "$SLICES" "set(k.split('/')[-1] for k in ${LP}['attributes']) - {'numaNode'} == {'persistent', 'serial', 'shared', 'size', 'source', 'type'}"
 dra-assert "$SLICES" "sorted(${LP}.get('capacity') or {}) == ['shares'] and quantity(capacity($LP, 'shares')) == $DRA_SHARES and request_policy($LP, 'shares') is None"
 dra-assert "$SLICES" "${LP}.get('allowMultipleAllocations') == True and not ${LP}.get('nodeAllocatableResources')"
 dra-assert "$SLICES" "not any(attr(d, 'serial') == '$LP_SERIAL' for d in devices('$DRA_POOL_DRIVER'))"

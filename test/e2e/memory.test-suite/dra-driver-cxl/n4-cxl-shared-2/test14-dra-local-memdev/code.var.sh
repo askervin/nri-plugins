@@ -6,8 +6,9 @@
 # itself: cabled to it, there from boot. nri-dra-driver-cxl offers such a
 # local device whole, as device memdev-<serial> of the node's cxl.nri.io
 # ResourceSlice (attributes type memdev, source local, shared false,
-# serial, size, nodeAffinity and memoryBlockSize; capacity memory in steps
-# of the memory block size of the node, any number of claims), and carves
+# serial, size, numaNode (resource.kubernetes.io) and memoryBlockSize;
+# capacity memory in steps of the memory block size of the node, any
+# number of claims), and carves
 # a slice of the device for every claim of DeviceClass cxl-local that it
 # prepares, a multiple of the block size, in the mode of the device section
 # of the claim's opaque MemoryConfig:
@@ -335,9 +336,9 @@ SLICES="$COMMAND_OUTPUT"
 # mode, no name of the memdev in the VM.
 dra-assert "$SLICES" "attr($LD, 'type') == 'memdev' and attr($LD, 'source') == 'local' and attr($LD, 'shared') == False and attr($LD, 'persistent') == False"
 dra-assert "$SLICES" "attr($LD, 'serial') == '$DRA_LOCAL_SERIAL' and attr($LD, 'size') == $DRA_LOCAL_SIZE"
-dra-assert "$SLICES" "sorted(k.split('/')[-1] for k in ${LD}['attributes']) == ['memoryBlockSize', 'nodeAffinity', 'persistent', 'serial', 'shared', 'size', 'source', 'type']"
+dra-assert "$SLICES" "sorted(k.split('/')[-1] for k in ${LD}['attributes']) == ['memoryBlockSize', 'numaNode', 'persistent', 'serial', 'shared', 'size', 'source', 'type']"
 # Host bridge 0 is on CPU node 0 (pxb-cxl numa_node=0).
-dra-assert "$SLICES" "attr($LD, 'nodeAffinity') == $AFFINITY and $AFFINITY == 0"
+dra-assert "$SLICES" "attr($LD, 'resource.kubernetes.io/numaNode') == $AFFINITY and $AFFINITY == 0"
 # Capacity in steps of the memory block size, the smallest claim one
 # block, the whole device for a request without an amount, any number of
 # claims.

@@ -413,7 +413,7 @@ func (e *env) createClaimConfig(name, devName, nodeName string, shareID string, 
 			Allocation: &resourceapi.AllocationResult{
 				Devices: resourceapi.DeviceAllocationResult{Results: []resourceapi.DeviceRequestAllocationResult{
 					// a result of another driver is ignored
-					{Request: "local", Driver: "cxl.nri.io", Pool: "node1", Device: "region0-node2"},
+					{Request: "local", Driver: "cxl.nri.io", Pool: "node1", Device: "region0-numa2"},
 					r,
 				}, Config: config},
 				NodeSelector: &corev1.NodeSelector{NodeSelectorTerms: []corev1.NodeSelectorTerm{{

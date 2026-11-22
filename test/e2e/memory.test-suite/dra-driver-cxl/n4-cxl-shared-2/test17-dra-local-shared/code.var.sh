@@ -6,7 +6,7 @@
 # shared instead, like a shared device of the pool (test13, test19): the
 # driver configuration lists it, sharedMemdevs: ["<serial>"], and the node
 # plugin then publishes it whole as a shared device, attributes type
-# memdev, source local, shared true, serial, size and nodeAffinity, and
+# memdev, source local, shared true, serial, size and numaNode, and
 # one capacity, "shares", 1M without a requestPolicy. Claims of class
 # cxl-local-shared get the whole device as one devdax device:
 # - A claim without a shares request consumes all shares: the device is
@@ -341,7 +341,7 @@ SLICES="$COMMAND_OUTPUT"
 dra-assert "$SLICES" "attr($LD, 'type') == 'memdev' and attr($LD, 'source') == 'local' and attr($LD, 'shared') == True"
 dra-assert "$SLICES" "attr($LD, 'serial') == '$DRA_LOCAL_SERIAL' and attr($LD, 'size') == $DRA_LOCAL_SIZE"
 # No memoryBlockSize: a shared device is never sliced.
-dra-assert "$SLICES" "sorted(k.split('/')[-1] for k in ${LD}['attributes']) == ['nodeAffinity', 'persistent', 'serial', 'shared', 'size', 'source', 'type'] and attr($LD, 'persistent') == False"
+dra-assert "$SLICES" "sorted(k.split('/')[-1] for k in ${LD}['attributes']) == ['numaNode', 'persistent', 'serial', 'shared', 'size', 'source', 'type'] and attr($LD, 'persistent') == False"
 # One capacity, shares, without a requestPolicy: no memory to consume,
 # and nothing to put online.
 dra-assert "$SLICES" "sorted(${LD}.get('capacity') or {}) == ['shares'] and quantity(capacity($LD, 'shares')) == $DRA_SHARES and request_policy($LD, 'shares') is None"
@@ -619,7 +619,7 @@ dra-trace-driver-follow "$VM2"
 dra-plugin-log-wait "$VM2" "local memdev $DRA_LOCAL_SERIAL ($SHARED_MEMDEV): not configured shared any more, releasing its region" 60
 dra-local-slices-none "$VM2" unshared
 dra-wait "$VM2" sliced-again resourceslices \
-    "attr($LD, 'shared') == False and sorted(k.split('/')[-1] for k in ${LD}['attributes']) == ['memoryBlockSize', 'nodeAffinity', 'persistent', 'serial', 'shared', 'size', 'source', 'type'] and quantity(capacity($LD, 'memory')) == $DRA_LOCAL_SIZE" 60
+    "attr($LD, 'shared') == False and sorted(k.split('/')[-1] for k in ${LD}['attributes']) == ['memoryBlockSize', 'numaNode', 'persistent', 'serial', 'shared', 'size', 'source', 'type'] and quantity(capacity($LD, 'memory')) == $DRA_LOCAL_SIZE" 60
 
 # The templates of the claims that went with their pods (dra-claim-pod)
 # and of the lease claims.

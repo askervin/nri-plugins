@@ -334,7 +334,7 @@ name), in ResourceSlices of at most 128 devices, under the driver
     shared:          {bool: false}
     persistent:      {bool: false}
     size:            {int: 1073741824}          # RAM capacity of the memdev
-    nodeAffinity:    {int: 0}                   # CPU NUMA node; absent if unknown
+    resource.kubernetes.io/numaNode: {int: 0}   # CPU NUMA node; absent if unknown
     memoryBlockSize: {int: 134217728}           # every slice is a multiple of it
   capacity:
     memory: {value: 1Gi, requestPolicy: {default: 1Gi, validRange: {min: 128Mi, step: 128Mi}}}
@@ -348,7 +348,7 @@ name), in ResourceSlices of at most 128 devices, under the driver
     shared:          {bool: true}
     persistent:      {bool: false}
     size:            {int: 1073741824}
-    nodeAffinity:    {int: 0}
+    resource.kubernetes.io/numaNode: {int: 0}
   capacity:
     shares: {value: 1M}                         # no requestPolicy
   allowMultipleAllocations: true
@@ -360,17 +360,17 @@ name), in ResourceSlices of at most 128 devices, under the driver
     shared:          {bool: false}              # true when in sharedMemdevs
     persistent:      {bool: true}
     size:            {int: 536870912}           # persistent capacity of the memdev
-    nodeAffinity:    {int: 0}
+    resource.kubernetes.io/numaNode: {int: 0}
   capacity:
     shares: {value: 1M}                         # no requestPolicy
   allowMultipleAllocations: true
-- name: region0-node2                # region0, online as NUMA node 2
+- name: region0-numa2                # region0, online as NUMA node 2
   attributes:
     type:            {string: region}
     source:          {string: local}
-    node:            {int: 2}
+    memoryNUMANode:  {int: 2}
     size:            {int: 2147483648}
-    nodeAffinity:    {int: 0}                   # if all memdevs of the region agree
+    resource.kubernetes.io/numaNode: {int: 0}   # if all memdevs of the region agree
   capacity: {memory: {value: 2Gi}}
   allowMultipleAllocations: true
   nodeAllocatableResources: {memory: {mapping: {capacityKey: memory, capacityMultiplier: "1"}}}
@@ -378,7 +378,7 @@ name), in ResourceSlices of at most 128 devices, under the driver
   attributes:
     type:            {string: dram}
     source:          {string: local}
-    nodes:           {string: "0-1"}            # cpuset syntax
+    memoryNUMANodes: {string: "0-1"}            # cpuset syntax
     size:            {int: 16777216000}
   capacity: {memory: {value: 16000Mi}}
   allowMultipleAllocations: true
@@ -397,9 +397,9 @@ name), in ResourceSlices of at most 128 devices, under the driver
 | `serial` | `memdev` | `0x` and lower-case hex |
 | `shared` | `memdev` | `false`: every claim gets a slice of its own, or a persistent memdev that no other host uses; `true`: a shared local device, whose claims map the same bytes, or a persistent memdev in `sharedMemdevs` |
 | `persistent` | `memdev` | `true`: a memdev of persistent memory, used in modes `block` and `fs`; `false`: every other memdev |
-| `node` | `region` | the NUMA node of the region |
-| `nodes` | `dram` | the DRAM NUMA nodes, cpuset syntax |
-| `nodeAffinity` | `memdev`, `region` | the CPU NUMA node of the device; absent if unknown (for a region: unless all its memdevs agree) |
+| `memoryNUMANode` | `region` | the NUMA node of the region's memory |
+| `memoryNUMANodes` | `dram` | the DRAM NUMA nodes, cpuset syntax |
+| `resource.kubernetes.io/numaNode` | `memdev`, `region` | the CPU NUMA node of the device; absent if unknown (for a region: unless all its memdevs agree). The standard attribute: `matchAttribute` aligns it with other drivers' devices |
 | `memoryBlockSize` | `memdev`, not shared, not persistent | the memory block size of the node in bytes |
 
 - `memdev-<serial hex>`, type `memdev`: a CXL memory device without a
@@ -413,7 +413,7 @@ name), in ResourceSlices of at most 128 devices, under the driver
   its block device or a filesystem on it, as for pool devices of
   persistent memory ([local.md](local.md#persistent-local-memdevs),
   [Persistent memory](#persistent-memory)).
-- `<region>-node<N>`, type `region`: a region of RAM that exists already
+- `<region>-numa<N>`, type `region`: a region of RAM that exists already
   (created by the BIOS or an admin), is enabled and has memory online as
   NUMA node N; its size is that of its online memory. A region without
   online memory (offline, devdax) and a region of persistent memory are

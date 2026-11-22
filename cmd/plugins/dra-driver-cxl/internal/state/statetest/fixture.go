@@ -311,7 +311,7 @@ func Records() state.Records {
 				UID: ClaimMixed, Driver: LocalDriver, ClaimName: "demo/c-mixed", State: state.PreparationPrepared,
 				Results: []state.Result{
 					{
-						Index: 0, Kind: state.ResultRegion, Request: "region", Pool: Node, Device: "region5-node5",
+						Index: 0, Kind: state.ResultRegion, Request: "region", Pool: Node, Device: "region5-numa5",
 						Region: &state.RegionResult{Name: "region5", NUMANode: 5, Size: 2 * gi, Consumed: int64(gi), NUMAAffinity: []int{1}},
 					},
 					grantResult(ClaimMixed, 1, "shared", Node, "memdev-c100e2e2"),

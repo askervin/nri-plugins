@@ -131,7 +131,7 @@ dra-assert "$SLICES" "${P0}['bindsToNode'] == True and ${P0}['bindingConditions'
 dra-assert "$SLICES" "${P0}['bindingFailureConditions'] == ['$DRA_POOL_DRIVER/AttachFailed']"
 dra-assert "$SLICES" "len(slices('$DRA_LOCAL_DRIVER', '$VM2_NAME')) == 1"
 DRAM="device('dram', '$DRA_LOCAL_DRIVER', '$VM2_NAME')"
-dra-assert "$SLICES" "attr($DRAM, 'type') == 'dram' and attr($DRAM, 'source') == 'local' and attr($DRAM, 'size') > 0 and attr($DRAM, 'nodes')"
+dra-assert "$SLICES" "attr($DRAM, 'type') == 'dram' and attr($DRAM, 'source') == 'local' and attr($DRAM, 'size') > 0 and attr($DRAM, 'memoryNUMANodes')"
 dra-assert "$SLICES" "not any(attr(d, 'type') == 'region' for d in devices('$DRA_LOCAL_DRIVER', '$VM2_NAME'))"
 # The pool itself says the same.
 pool-client "$VM2" devices || command-error "cannot list the devices of the pool"

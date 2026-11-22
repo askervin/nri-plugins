@@ -119,7 +119,7 @@ def local_slice(node, memdev=True):
         devs.insert(0, {"name": "memdev-c100e2e1", "allowMultipleAllocations": True,
                         "attributes": {"type": {"string": "memdev"}, "source": {"string": "local"}, "serial": {"string": LOCAL},
                                        "shared": {"bool": True}, "persistent": {"bool": False}, "size": {"int": GI},
-                                       "nodeAffinity": {"int": 0}},
+                                       "resource.kubernetes.io/numaNode": {"int": 0}},
                         "capacity": {"shares": {"value": "1M"}}})
     return {"apiVersion": "resource.k8s.io/v1", "kind": "ResourceSlice",
             "metadata": {"name": node + "-cxl.nri.io-x"},
@@ -687,7 +687,7 @@ def llm_node_slice(node):
             "metadata": {"name": "cxl.nri.io-" + node},
             "spec": {"driver": "cxl.nri.io", "nodeName": node, "pool": {"name": node, "generation": 1, "resourceSliceCount": 1},
                      "devices": [{"name": "dram", "attributes": {"type": {"string": "dram"}, "source": {"string": "local"},
-                                                                 "nodes": {"string": "0-1"}, "size": {"int": 8 * GI}}},
+                                                                 "memoryNUMANodes": {"string": "0-1"}, "size": {"int": 8 * GI}}},
                                  {"name": "lease", "attributes": {"type": {"string": "lease"}}}]}}
 
 

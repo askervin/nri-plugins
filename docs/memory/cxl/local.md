@@ -139,7 +139,7 @@ again.
     shared:          {bool: false}
     persistent:      {bool: false}
     size:            {int: 1073741824}
-    nodeAffinity:    {int: 0}
+    resource.kubernetes.io/numaNode: {int: 0}
     memoryBlockSize: {int: 134217728}
   capacity:
     memory:
@@ -159,7 +159,7 @@ again.
 | `shared` | `false`: every claim gets a slice of its own (`true` for a [shared local device](#shared-local-devices)) |
 | `persistent` | `false` (`true` for a [persistent local memdev](#persistent-local-memdevs)) |
 | `size` | RAM capacity of the memdev in bytes |
-| `nodeAffinity` | CPU NUMA node of the memdev; absent if unknown |
+| `resource.kubernetes.io/numaNode` | CPU NUMA node of the memdev; absent if unknown |
 | `memoryBlockSize` | memory block size of the node in bytes: every slice is a multiple of it |
 
 Every slice, `numa` or `dax`, is a multiple of the memory block size of
@@ -476,7 +476,7 @@ keeps serving those claims ([Life cycle](#life-cycle-of-a-shared-local-device)).
     shared:       {bool: true}
     persistent:   {bool: false}
     size:         {int: 1073741824}   # RAM capacity of the memdev
-    nodeAffinity: {int: 0}            # absent if unknown
+    resource.kubernetes.io/numaNode: {int: 0}   # absent if unknown
   allowMultipleAllocations: true
   capacity:
     shares: {value: 1M}               # no requestPolicy: no request = all, "1" = one share
@@ -640,7 +640,7 @@ verbosity 4:
     shared:       {bool: false}       # true when the memdev is in sharedMemdevs
     persistent:   {bool: true}
     size:         {int: 536870912}    # persistent capacity of the memdev
-    nodeAffinity: {int: 0}            # absent if unknown
+    resource.kubernetes.io/numaNode: {int: 0}   # absent if unknown
   allowMultipleAllocations: true
   capacity:
     shares: {value: 1M}               # no requestPolicy: no request = all, "1" = one share

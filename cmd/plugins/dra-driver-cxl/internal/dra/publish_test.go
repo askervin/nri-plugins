@@ -202,7 +202,7 @@ func TestBuildDevInfosLocalMemdevs(t *testing.T) {
 	pool := map[uint64]bool{0xa3: true}
 	devInfos := BuildDevices(cfg, devices, pool, nil, local)
 	got := pubNames(devInfos)
-	want := []string{"dram", "memdev-a1", "memdev-a5", "region0-node2"}
+	want := []string{"dram", "memdev-a1", "memdev-a5", "region0-numa2"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("published %v, expected %v", got, want)
 	}
@@ -237,7 +237,7 @@ func TestBuildDevInfosLocalMemdevs(t *testing.T) {
 		t.Fatalf("capacity %v of a 1 GiB memdev with 512 MiB blocks", c.Value)
 	}
 	devInfos = BuildDevices(cfg, devices, pool, nil, &localRecords{Memdevs: local.Memdevs})
-	if got := pubNames(devInfos); !slices.Equal(got, []string{"dram", "region0-node2"}) {
+	if got := pubNames(devInfos); !slices.Equal(got, []string{"dram", "region0-numa2"}) {
 		t.Fatalf("published %v without a block size", got)
 	}
 	// the node of the plugin's region is not DRAM
@@ -248,14 +248,14 @@ func TestBuildDevInfosLocalMemdevs(t *testing.T) {
 	// manageMemdevs: false publishes regions only
 	cfg.ManageMemdevs = false
 	devInfos = BuildDevices(cfg, devices, pool, nil, nil)
-	if got := pubNames(devInfos); !slices.Equal(got, []string{"dram", "region0-node2", "region1-node3"}) {
+	if got := pubNames(devInfos); !slices.Equal(got, []string{"dram", "region0-numa2", "region1-numa3"}) {
 		t.Fatalf("published %v without managed memdevs", got)
 	}
 }
 
 // TestGetResourcesLocalMemdev pins the published device of a local memdev:
 // its attributes, its capacity with the request policy of memory blocks,
-// no nodeAffinity when unknown.
+// no numaNode when unknown.
 func TestGetResourcesLocalMemdev(t *testing.T) {
 	devs := BuildDevices(PublishConfig{IgnoreDRAM: true, ManageMemdevs: true}, &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{pubMemdev()}},
 		nil, nil, &localRecords{BlockSize: pubBlockSize})
@@ -266,14 +266,14 @@ func TestGetResourcesLocalMemdev(t *testing.T) {
 	want := []resourcev1.Device{{
 		Name: pubLocalDeviceName,
 		Attributes: map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
-			"type":            {StringValue: ptr("memdev")},
-			"source":          {StringValue: ptr("local")},
-			"serial":          {StringValue: ptr("0xc100e2e1")},
-			"shared":          {BoolValue: ptr(false)},
-			"persistent":      {BoolValue: ptr(false)},
-			"size":            {IntValue: ptr(int64(pubRegionSize))},
-			"nodeAffinity":    {IntValue: ptr(int64(0))},
-			"memoryBlockSize": {IntValue: ptr(int64(134217728))},
+			"type":                            {StringValue: ptr("memdev")},
+			"source":                          {StringValue: ptr("local")},
+			"serial":                          {StringValue: ptr("0xc100e2e1")},
+			"shared":                          {BoolValue: ptr(false)},
+			"persistent":                      {BoolValue: ptr(false)},
+			"size":                            {IntValue: ptr(int64(pubRegionSize))},
+			"resource.kubernetes.io/numaNode": {IntValue: ptr(int64(0))},
+			"memoryBlockSize":                 {IntValue: ptr(int64(134217728))},
 		},
 		Capacity: map[resourcev1.QualifiedName]resourcev1.DeviceCapacity{
 			"memory": {
@@ -293,16 +293,16 @@ func TestGetResourcesLocalMemdev(t *testing.T) {
 	if p := got[0].Capacity["memory"].RequestPolicy; p.Default.String() != "1Gi" || p.ValidRange.Min.String() != "128Mi" || p.ValidRange.Step.String() != "128Mi" {
 		t.Fatalf("request policy %v %v %v", p.Default, p.ValidRange.Min, p.ValidRange.Step)
 	}
-	// no nodeAffinity when unknown
+	// no numaNode when unknown
 	d := LocalMemdevDevice("x", &Memdev{Size: pubRegionSize, NUMAAffinity: -1, BlockSize: pubBlockSize})
-	if _, ok := d.Attributes["nodeAffinity"]; ok {
+	if _, ok := d.Attributes["resource.kubernetes.io/numaNode"]; ok {
 		t.Fatalf("memdev %+v", d)
 	}
 }
 
 // TestGetResourcesRegionDRAMLease pins the devices of regions, DRAM and the
 // lease device: every memory device has type, source and size, a region
-// the nodeAffinity of its memdevs when they agree.
+// the numaNode of its memdevs when they agree.
 func TestGetResourcesRegionDRAMLease(t *testing.T) {
 	devices := &kernel.Snapshot{NUMANodes: pubNodes(0, 1, 2, 3), Memdevs: []kernel.MemdevInfo{
 		pubMem("mem1", 1, 1<<30, 0), pubMem("mem2", 2, 1<<30, 0), pubMem("mem3", 3, 1<<30, 0), pubMem("mem4", 4, 1<<30, 1),
@@ -317,16 +317,16 @@ func TestGetResourcesRegionDRAMLease(t *testing.T) {
 	for _, d := range p.Resources().Pools[pubNode].Slices[0].Devices {
 		got[d.Name] = d
 	}
-	if names := slices.Sorted(maps.Keys(got)); !slices.Equal(names, []string{"dram", "lease", "region0-node2", "region1-node3"}) {
+	if names := slices.Sorted(maps.Keys(got)); !slices.Equal(names, []string{"dram", "lease", "region0-numa2", "region1-numa3"}) {
 		t.Fatalf("published %v", names)
 	}
 	wantAttrs := map[string]map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
-		"region0-node2": {"type": {StringValue: ptr("region")}, "source": {StringValue: ptr("local")}, "node": {IntValue: ptr(int64(2))},
-			"size": {IntValue: ptr(int64(2 << 30))}, "nodeAffinity": {IntValue: ptr(int64(0))}},
-		// the memdevs of the region do not agree: no nodeAffinity
-		"region1-node3": {"type": {StringValue: ptr("region")}, "source": {StringValue: ptr("local")}, "node": {IntValue: ptr(int64(3))},
+		"region0-numa2": {"type": {StringValue: ptr("region")}, "source": {StringValue: ptr("local")}, "memoryNUMANode": {IntValue: ptr(int64(2))},
+			"size": {IntValue: ptr(int64(2 << 30))}, "resource.kubernetes.io/numaNode": {IntValue: ptr(int64(0))}},
+		// the memdevs of the region do not agree: no numaNode
+		"region1-numa3": {"type": {StringValue: ptr("region")}, "source": {StringValue: ptr("local")}, "memoryNUMANode": {IntValue: ptr(int64(3))},
 			"size": {IntValue: ptr(int64(1 << 30))}},
-		"dram": {"type": {StringValue: ptr("dram")}, "source": {StringValue: ptr("local")}, "nodes": {StringValue: ptr("0-1")},
+		"dram": {"type": {StringValue: ptr("dram")}, "source": {StringValue: ptr("local")}, "memoryNUMANodes": {StringValue: ptr("0-1")},
 			"size": {IntValue: ptr(int64(2 << 30))}},
 		"lease": {"type": {StringValue: ptr("lease")}},
 	}
@@ -335,7 +335,7 @@ func TestGetResourcesRegionDRAMLease(t *testing.T) {
 			t.Errorf("%s: attributes %+v, expected %+v", name, got[name].Attributes, want)
 		}
 	}
-	for _, name := range []string{"region0-node2", "region1-node3", "dram"} {
+	for _, name := range []string{"region0-numa2", "region1-numa3", "dram"} {
 		d := got[name]
 		c := d.Capacity["memory"]
 		if c.Value.Value() != *d.Attributes["size"].IntValue || d.NodeAllocatableResources == nil || !*d.AllowMultipleAllocations {
@@ -402,13 +402,13 @@ func TestBuildDevInfosSkipsPoolRegions(t *testing.T) {
 	pubRegion(devices, "region0", 2, 1<<30, 0xa1)
 	pubRegion(devices, "region1", 3, 1<<30, 0xa2)
 	devInfos := BuildDevices(PublishConfig{}, devices, map[uint64]bool{0xa2: true}, nil, nil)
-	if got := pubNames(devInfos); !slices.Equal(got, []string{"dram", "region0-node2"}) {
+	if got := pubNames(devInfos); !slices.Equal(got, []string{"dram", "region0-numa2"}) {
 		t.Fatalf("published %v", got)
 	}
 	if dram, ok := devInfos["dram"].Dev.(*DRAM); !ok || !slices.Equal(dram.NUMANodes, []int{0}) {
 		t.Fatalf("DRAM %+v", devInfos["dram"].Dev)
 	}
-	if got := pubNames(BuildDevices(PublishConfig{}, devices, nil, nil, nil)); !slices.Equal(got, []string{"dram", "region0-node2", "region1-node3"}) {
+	if got := pubNames(BuildDevices(PublishConfig{}, devices, nil, nil, nil)); !slices.Equal(got, []string{"dram", "region0-numa2", "region1-numa3"}) {
 		t.Fatalf("published %v without the pool driver", got)
 	}
 }
@@ -425,10 +425,10 @@ func TestRegionOnlineMemory(t *testing.T) {
 	s.Blocks[0].State, s.Blocks[3].State, s.Blocks[4].State = kernel.BlockOffline, kernel.BlockOffline, kernel.BlockOffline
 	s.Regions[2].State = kernel.RegionDisabled
 	devs := BuildDevices(PublishConfig{}, s, nil, nil, nil)
-	if got := pubNames(devs); !slices.Equal(got, []string{"dram", "region0-node2"}) {
+	if got := pubNames(devs); !slices.Equal(got, []string{"dram", "region0-numa2"}) {
 		t.Fatalf("published %v", got)
 	}
-	if r := devs["region0-node2"].Dev.(*Region); r.Size != 2*pubBlockSize {
+	if r := devs["region0-numa2"].Dev.(*Region); r.Size != 2*pubBlockSize {
 		t.Fatalf("region0 of %d bytes, expected its 2 online blocks", r.Size)
 	}
 	if dram := devs[device.DRAMDeviceName].Dev.(*DRAM); !slices.Equal(dram.NUMANodes, []int{0}) {
@@ -452,7 +452,7 @@ func TestBuildDevInfosHollowRegion(t *testing.T) {
 		Range: kernel.Range{Start: 0x850000000, End: 0x850000000 + 1<<28 - 1}, NUMANode: 3, RootDecoder: "decoder0.1"})
 	devices.Blocks = append(devices.Blocks, kernel.MemoryBlock{Index: 0x85, State: kernel.BlockOnline, Zones: "Movable", NUMANode: 3})
 	devInfos := BuildDevices(PublishConfig{ManageMemdevs: true}, devices, nil, nil, nil)
-	if devInfos["region0-node2"] == nil || devInfos["region1-node3"] != nil || len(devInfos) != 2 {
+	if devInfos["region0-numa2"] == nil || devInfos["region1-numa3"] != nil || len(devInfos) != 2 {
 		t.Fatalf("devices %v", pubNames(devInfos))
 	}
 	if dram, ok := devInfos["dram"].Dev.(*DRAM); !ok || !slices.Equal(dram.NUMANodes, []int{0}) {

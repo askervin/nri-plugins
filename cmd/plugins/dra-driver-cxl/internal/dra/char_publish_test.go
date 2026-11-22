@@ -43,7 +43,7 @@ func TestCharIgnoreRegions(t *testing.T) {
 	logs := klogtest.Capture(t, 4)
 	cfg := PublishConfig{IgnoreRegions: []string{"region0"}}
 	devs := BuildDevices(cfg, charRegions(), nil, nil, nil)
-	if got := pubNames(devs); !slices.Equal(got, []string{"dram", "region1-node3"}) {
+	if got := pubNames(devs); !slices.Equal(got, []string{"dram", "region1-numa3"}) {
 		t.Fatalf("published %v", got)
 	}
 	if dram := devs[device.DRAMDeviceName].Dev.(*DRAM); !slices.Equal(dram.NUMANodes, []int{0}) {
@@ -59,7 +59,7 @@ func TestCharIgnoreNodes(t *testing.T) {
 	logs := klogtest.Capture(t, 4)
 	cfg := PublishConfig{IgnoreNUMANodes: []int{3}}
 	devs := BuildDevices(cfg, charRegions(), nil, nil, nil)
-	if got := pubNames(devs); !slices.Equal(got, []string{"dram", "region0-node2"}) {
+	if got := pubNames(devs); !slices.Equal(got, []string{"dram", "region0-numa2"}) {
 		t.Fatalf("published %v", got)
 	}
 	wantLogLineText(t, logs(), `- ignoring region device "region1": region is on node 3`)
@@ -67,7 +67,7 @@ func TestCharIgnoreNodes(t *testing.T) {
 	logs = klogtest.Capture(t, 4)
 	cfg = PublishConfig{IgnoreRegions: []string{"region0"}, IgnoreNUMANodes: []int{2}}
 	devs = BuildDevices(cfg, charRegions(), nil, nil, nil)
-	if got := pubNames(devs); !slices.Equal(got, []string{"dram", "region1-node3"}) {
+	if got := pubNames(devs); !slices.Equal(got, []string{"dram", "region1-numa3"}) {
 		t.Fatalf("published %v", got)
 	}
 	out := logs()
@@ -82,12 +82,12 @@ func TestCharIgnoreNodes(t *testing.T) {
 // periodic rescan that finds the same devices does not log that it changed
 // them.
 func TestCharPublishOrder(t *testing.T) {
-	names := []string{"memdev-a5", device.DRAMDeviceName, "memdev-a1", "region0-node2", device.LeaseDeviceName}
+	names := []string{"memdev-a5", device.DRAMDeviceName, "memdev-a1", "region0-numa2", device.LeaseDeviceName}
 	devs := DevicesInfo{
 		"memdev-a5":            {Name: "memdev-a5", Dev: &Memdev{Name: "mem5", Serial: 0xa5, Size: 1 << 30, NUMAAffinity: -1, BlockSize: pubBlockSize}},
 		device.DRAMDeviceName:  {Name: device.DRAMDeviceName, Dev: &DRAM{NUMANodes: []int{0}, Size: 1 << 30}},
 		"memdev-a1":            {Name: "memdev-a1", Dev: &Memdev{Name: "mem1", Serial: 0xa1, Size: 1 << 30, NUMAAffinity: -1, BlockSize: pubBlockSize}},
-		"region0-node2":        {Name: "region0-node2", Dev: &Region{Name: "region0", Size: 1 << 30, NUMANode: 2}},
+		"region0-numa2":        {Name: "region0-numa2", Dev: &Region{Name: "region0", Size: 1 << 30, NUMANode: 2}},
 		device.LeaseDeviceName: {Name: device.LeaseDeviceName, Dev: &Lease{}},
 	}
 	p := pubPublisher(t, PublishOptions{NodeName: pubNode})

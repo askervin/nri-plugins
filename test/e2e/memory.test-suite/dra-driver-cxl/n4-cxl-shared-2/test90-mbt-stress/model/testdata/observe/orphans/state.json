@@ -897,7 +897,7 @@
           "kind": "region",
           "request": "region",
           "pool": "node-1",
-          "device": "region5-node5",
+          "device": "region5-numa5",
           "region": {
             "name": "region5",
             "numaNode": 5,

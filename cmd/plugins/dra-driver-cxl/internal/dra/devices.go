@@ -285,7 +285,7 @@ func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held ma
 		for _, m := range mems {
 			dev.NUMAAffinity = append(dev.NUMAAffinity, m.NUMAAffinity)
 		}
-		name := fmt.Sprintf("%s-node%d", r.Name, node)
+		name := fmt.Sprintf("%s-numa%d", r.Name, node)
 		devInfos[name] = &DeviceInfo{Name: name, Dev: dev}
 	}
 	if cfg.ManageMemdevs {
@@ -817,7 +817,7 @@ func regionDevice(name string, dev *Region) resourcev1.Device {
 		device.AttrSize:           {IntValue: ptr(int64(dev.Size))},
 	}
 	if a, ok := regionNUMAAffinity(dev); ok {
-		attrs[device.AttrNodeAffinity] = resourcev1.DeviceAttribute{IntValue: ptr(int64(a))}
+		attrs[device.AttrNUMANode] = resourcev1.DeviceAttribute{IntValue: ptr(int64(a))}
 	}
 	return resourcev1.Device{
 		Name:                     name,
@@ -877,7 +877,7 @@ func LocalMemdevDevice(name string, dev *Memdev) resourcev1.Device {
 		device.AttrMemoryBlockSize: {IntValue: ptr(int64(dev.BlockSize))},
 	}
 	if dev.NUMAAffinity >= 0 {
-		attrs[device.AttrNodeAffinity] = resourcev1.DeviceAttribute{IntValue: ptr(int64(dev.NUMAAffinity))}
+		attrs[device.AttrNUMANode] = resourcev1.DeviceAttribute{IntValue: ptr(int64(dev.NUMAAffinity))}
 	}
 	return resourcev1.Device{
 		Name:       name,
@@ -909,7 +909,7 @@ func sharedMemdevDevice(name string, dev *Memdev) resourcev1.Device {
 		device.AttrSize:       {IntValue: ptr(int64(dev.Size))},
 	}
 	if dev.NUMAAffinity >= 0 {
-		attrs[device.AttrNodeAffinity] = resourcev1.DeviceAttribute{IntValue: ptr(int64(dev.NUMAAffinity))}
+		attrs[device.AttrNUMANode] = resourcev1.DeviceAttribute{IntValue: ptr(int64(dev.NUMAAffinity))}
 	}
 	return resourcev1.Device{
 		Name:       name,
