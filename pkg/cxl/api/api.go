@@ -100,7 +100,7 @@ const (
 // MaxWait is the longest wait of a request.
 const MaxWait = time.Hour
 
-// maxRequestID is the longest requestId in bytes.
+// maxRequestID is the longest requestID in bytes.
 const maxRequestID = 64
 
 // Request is one request line on a lease socket. Only Op is required.
@@ -108,7 +108,7 @@ type Request struct {
 	Op     string `json:"op"`
 	Source string `json:"source,omitempty"`
 	Mode   string `json:"mode,omitempty"`
-	Share  bool   `json:"shared,omitempty"`
+	Share  bool   `json:"share,omitempty"`
 	// ReadOnly absent is the mode's default: read-only for fs, read-write
 	// for dax and block (EffectiveReadOnly).
 	ReadOnly  *bool  `json:"readOnly,omitempty"`
@@ -118,7 +118,7 @@ type Request struct {
 	Size      string `json:"size,omitempty"`
 	Serial    string `json:"serial,omitempty"`
 	Wait      string `json:"wait,omitempty"`
-	RequestID string `json:"requestId,omitempty"`
+	RequestID string `json:"requestID,omitempty"`
 	Lease     string `json:"lease,omitempty"`
 	All       bool   `json:"all,omitempty"`
 }
@@ -134,14 +134,14 @@ type Response struct {
 	State    string            `json:"state,omitempty"`
 	Source   string            `json:"source,omitempty"`
 	Mode     string            `json:"mode,omitempty"`
-	Share    bool              `json:"shared"`
+	Share    bool              `json:"share"`
 	ReadOnly bool              `json:"readOnly"`
 	Access   string            `json:"access,omitempty"`
 	FSType   string            `json:"fsType,omitempty"`
 	Path     string            `json:"path,omitempty"`
 	Size     uint64            `json:"size,omitempty"`
 	Serial   string            `json:"serial,omitempty"`
-	NUMANode *int              `json:"node,omitempty"`
+	NUMANode *int              `json:"numaNode,omitempty"`
 	Dax      string            `json:"dax,omitempty"`
 	Block    string            `json:"block,omitempty"`
 	Env      map[string]string `json:"env,omitempty"`
@@ -149,8 +149,8 @@ type Response struct {
 	Leases   *[]Response       `json:"leases,omitempty"`
 }
 
-// EffectiveMode returns the mode of a request: Mode, or dax for shared
-// memory and numa otherwise when Mode is empty.
+// EffectiveMode returns the mode of a request: Mode, or dax for a share
+// and numa otherwise when Mode is empty.
 func (r *Request) EffectiveMode() string {
 	switch {
 	case r.Mode != "":
@@ -183,7 +183,7 @@ func (r *Request) Validate() error {
 		}
 	}
 	if r.RequestID != "" && !portableName(r.RequestID, maxRequestID) {
-		return fmt.Errorf(`invalid requestId %q (1 to %d letters, digits, ".", "_" and "-")`, r.RequestID, maxRequestID)
+		return fmt.Errorf(`invalid requestID %q (1 to %d letters, digits, ".", "_" and "-")`, r.RequestID, maxRequestID)
 	}
 	if r.Lease != "" && !validLease(r.Lease) {
 		return fmt.Errorf("invalid lease %q (8 lower-case hex digits)", r.Lease)
@@ -193,11 +193,11 @@ func (r *Request) Validate() error {
 		return r.validateRequest()
 	case OpRelease:
 		if (r.Lease == "") == !r.All {
-			return errors.New("release takes --lease ID or --all")
+			return errors.New("release takes lease or all")
 		}
 	case OpFd, OpEnv:
 		if r.Lease == "" {
-			return fmt.Errorf("%s needs --lease ID", r.Op)
+			return fmt.Errorf("%s needs lease", r.Op)
 		}
 	case OpList:
 	default:
@@ -227,7 +227,7 @@ func (r *Request) validateRequest() error {
 	case r.FSType != "" && !ValidFSType(r.FSType):
 		return fmt.Errorf(`invalid fsType %q (lower-case letters, digits, "_" and "-")`, r.FSType)
 	case mode == ModeBlock && r.Share && !readOnly:
-		return errors.New("mode block with shared needs readOnly")
+		return errors.New("mode block with share needs readOnly")
 	case readOnly && mode != ModeDax && mode != ModeFS && mode != ModeBlock:
 		return errors.New("readOnly needs mode dax, fs or block")
 	case !r.Share && r.Serial == "" && r.Size == "":

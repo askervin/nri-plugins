@@ -701,9 +701,9 @@ companion pod and lend it to the container, as a NUMA node or as an open
 dax file descriptor. A device of persistent memory is lent in mode
 `block`, as an open file descriptor of its block device
 (`cxl-request request --serial ... --mode block`, the writer, or
-`--shared --read-only --mode block`), or in mode `fs`: its filesystem is
+`--share --read-only --mode block`), or in mode `fs`: its filesystem is
 mounted into the running container at `/run/cxl/fs/<name>`, read-only
-(`cxl-request request --serial ... --shared --mode fs`) or read-write
+(`cxl-request request --serial ... --share --mode fs`) or read-write
 (`--read-only=false`). The companion claim of a read-write lease is a claim
 like any other: ReadWriteOnce applies to it, and its lease waits while
 another host has the device. See [leases.md](leases.md).

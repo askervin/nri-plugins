@@ -31,7 +31,7 @@
 # - Two readers mount the device dynamically, into their running
 #   container: direct-b on VM2 and cached-c on VM1 start with a lease
 #   claim only (DeviceClass cxl-lease), and the container asks for the
-#   erofs itself with "cxl-request request --serial 0xc1ae0001 --shared
+#   erofs itself with "cxl-request request --serial 0xc1ae0001 --share
 #   --read-only --mode fs --access direct|cached [--name models] --exec
 #   sh /tmp/reader.sh". The driver creates a companion claim of class
 #   cxl-pool-persistent for the lease, prepares it on the node like the
@@ -401,8 +401,8 @@ lease-check() {
         error "$r: the command of cxl-request has CXL_LEASE=$(dra-env-value "$log" CXL_LEASE), expected $lease"
     env=$(grep -E "^CXL_${LLM_HEX}_[A-Z][A-Z_]*=" <<< "$log" | LC_ALL=C sort)
     dra-leases "$VM2" "$r/main"
-    dra-assert "$DRA_LEASES" "[(l['lease'], l['state'], l.get('source'), l.get('mode'), l.get('access'), l.get('fsType'), l.get('shared'), l.get('readOnly'), l.get('serial'), int(l.get('size', 0)), l.get('path')) for l in j] == [('$lease', 'Ready', 'pool', 'fs', '$access', 'erofs', True, True, '$LLM_SERIAL', $LLM_NS_SIZE, '$path')]"
-    dra-assert "$DRA_LEASES" "'node' not in j[0] and 'dax' not in j[0]"
+    dra-assert "$DRA_LEASES" "[(l['lease'], l['state'], l.get('source'), l.get('mode'), l.get('access'), l.get('fsType'), l.get('share'), l.get('readOnly'), l.get('serial'), int(l.get('size', 0)), l.get('path')) for l in j] == [('$lease', 'Ready', 'pool', 'fs', '$access', 'erofs', True, True, '$LLM_SERIAL', $LLM_NS_SIZE, '$path')]"
+    dra-assert "$DRA_LEASES" "'numaNode' not in j[0] and 'dax' not in j[0]"
     dra-assert "$DRA_LEASES" "j[0].get('env') == $(python3 -c 'import json, sys; print(json.dumps(dict(l.split("=", 1) for l in sys.argv[1].splitlines())))' "$env")"
     # The environment again, with the lease, and no fd: the lease has none.
     dra-exec "$VM2" "$r/main" "$DRA_REQUEST_CTR_BIN" env --lease "$lease" ||

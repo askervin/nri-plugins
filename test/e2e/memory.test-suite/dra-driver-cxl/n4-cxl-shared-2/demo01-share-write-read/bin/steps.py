@@ -62,7 +62,7 @@ def steps(case, serial, fstype="ext4", access="direct", repeat=3):
         Step("three readers start" + (": two on vm2, one on vm1" if case == "pool" else ""),
              "kubectl apply -f %s/readers.yaml" % case, check_running(READERS)),
         Step("readers ask for a read-only share: they must wait",
-             "for r in reader-a reader-b reader-c; do kubectl exec $r -- cxl-request request --serial %s --shared --read-only --wait 0s; done" % S,
+             "for r in reader-a reader-b reader-c; do kubectl exec $r -- cxl-request request --serial %s --share --read-only --wait 0s; done" % S,
              check_leases),
         Step("the writer is done and releases the device",
              "kubectl exec writer -- cxl-request release --all", check_readers_get_it),
@@ -89,7 +89,7 @@ def fs_steps(S):
         Step("three readers start: two on vm2, one on vm1",
              "kubectl apply -f %s/readers.yaml" % case, check_running(READERS)),
         Step("readers ask for the file system: they must wait",
-             "for r in reader-a reader-b reader-c; do kubectl exec $r -- cxl-request request --serial %s --shared --read-only --mode fs --name hello --wait 0s; done" % S,
+             "for r in reader-a reader-b reader-c; do kubectl exec $r -- cxl-request request --serial %s --share --read-only --mode fs --name hello --wait 0s; done" % S,
              check_leases),
         Step("the writer is done and releases the device",
              "kubectl exec writer -- cxl-request release --all", check_readers_get_it),
@@ -113,14 +113,14 @@ def poolfs_steps(S, fstype):
         Step("the writer makes an empty %s filesystem on it" % fstype,
              "kubectl exec writer -- /demo/mkfs --type %s" % fstype, check_last_line),
         Step("the writer mounts it read-write instead",
-             "kubectl exec writer -- sh -c 'cxl-request release --all && cxl-request request --serial %s --shared --mode fs "
+             "kubectl exec writer -- sh -c 'cxl-request release --all && cxl-request request --serial %s --share --mode fs "
              "--read-only=false --name data'" % S, check_fs_writer),
         Step("the writer writes hello.txt",
              'kubectl exec writer -- /demo/fswrite "Hello from the writer, $(date +%T)"', check_last_line),
         Step("three readers start: two on vm2, one on vm1",
              "kubectl apply -f %s/readers.yaml" % case, check_running(READERS)),
         Step("readers ask to read: vm1's reader at once, vm2's must wait",
-             "for r in reader-a reader-b reader-c; do kubectl exec $r -- cxl-request request --serial %s --shared --mode fs "
+             "for r in reader-a reader-b reader-c; do kubectl exec $r -- cxl-request request --serial %s --share --mode fs "
              "--name data --wait 0s; done" % S, check_join, rows=2),
         Step("the writer adds a line; vm1's reader sees it at once",
              'kubectl exec writer -- /demo/fswrite --append "A second line, $(date +%%T)"; '
@@ -237,7 +237,7 @@ def lease_words(r):
         words.append(r["mode"])
     words.append("ro" if r.get("readOnly") else "rw")
     if r.get("state") == "Ready":
-        words.append("(share)" if r.get("shared") else "(exclusive)")
+        words.append("(share)" if r.get("share") else "(exclusive)")
     # "-> lease " goes before the words in T1.
     if r.get("mode") == "fs" and r.get("access") and len(" ".join(words + ["(%s)" % r["access"]])) + 9 <= c.WIDTH:
         words.append("(%s)" % r["access"])

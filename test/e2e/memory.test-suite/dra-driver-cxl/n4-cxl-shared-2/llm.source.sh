@@ -203,7 +203,7 @@ llm-lease-reader-script() {
     # (cxl-request request --exec). Its log has the command line of
     # cxl-request, then CXL_LEASE=<id> and the lines of llm-reader-script.
     local key="$1" access="$2" name="$3" threads="$4" request
-    request="cxl-request request --serial 0x${key,,} --shared --read-only --mode fs --access $access${name:+ --name $name} --wait 120s --exec sh /tmp/reader.sh"
+    request="cxl-request request --serial 0x${key,,} --share --read-only --mode fs --access $access${name:+ --name $name} --wait 120s --exec sh /tmp/reader.sh"
     cat <<SCRIPT
 cat > /tmp/reader.sh <<'LLM_READER_EOF'
 echo "CXL_LEASE=\$CXL_LEASE"

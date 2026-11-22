@@ -257,7 +257,7 @@ func TestRequestOptions(t *testing.T) {
 		// persistent local memdevs serve modes fs and block
 		{req: api.Request{Size: "1Gi", Mode: "fs", ReadOnly: ptr(true)}, want: askedText{Size: "1Gi", Mode: "fs", ReadOnly: true}},
 		{req: api.Request{Size: "1Gi", Mode: "block"}, want: askedText{Size: "1Gi", Mode: "block"}},
-		// shared local devices serve --shared
+		// shared local devices serve --share
 		{req: api.Request{Share: true, Size: "64Mi"}, want: askedText{Shared: true, SharedDevice: true, Size: "64Mi", Mode: "dax"}},
 		{req: api.Request{Serial: "0xc100e2e2", Share: true}, want: askedText{Serial: "0xc100e2e2", Shared: true, SharedDevice: true, DeviceSource: "local", Mode: "dax"}},
 		{req: api.Request{Size: "1Gi"}, want: askedText{Size: "1Gi", Mode: "numa"}},

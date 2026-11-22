@@ -512,7 +512,7 @@ of each case is in [usage.md](usage.md#example-claims) (examples 13-15);
 [local-shared-writer-readers.yaml](blob:/deployment/samples/dra-driver-cxl/local-shared-writer-readers.yaml)
 has a writer and three readers. A running container leases the device
 with `cxl-request request --serial 0xc100e2e1` (exclusively) or
-`--serial 0xc100e2e1 --shared --read-only` (one read-only share), see
+`--serial 0xc100e2e1 --share --read-only` (one read-only share), see
 [leases.md](leases.md#cxl-request).
 
 ### What Prepare does for a shared device

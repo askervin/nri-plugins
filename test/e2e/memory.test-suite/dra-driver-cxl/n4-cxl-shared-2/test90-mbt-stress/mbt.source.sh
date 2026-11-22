@@ -676,9 +676,9 @@ mbt-act-lease-get() {
     case "$MBT_BASE:$mode" in
         lease:numa|lease:dax) args=(--source local --mode "$mode" --size "$MBT_SLICE");;
         plse:pbw) args=(--serial "$serial" --mode block);;
-        plse:pbr) args=(--serial "$serial" --shared --read-only --mode block);;
-        plse:pfd) args=(--serial "$serial" --shared --read-only --mode fs --name "$MBT_FS_LEASE_NAME");;
-        plse:pfc) args=(--serial "$serial" --shared --read-only --mode fs --access cached);;
+        plse:pbr) args=(--serial "$serial" --share --read-only --mode block);;
+        plse:pfd) args=(--serial "$serial" --share --read-only --mode fs --name "$MBT_FS_LEASE_NAME");;
+        plse:pfc) args=(--serial "$serial" --share --read-only --mode fs --access cached);;
         lease:*|plse:*) MBT_ERR="lease mode '$mode' is not one of $MBT_BASE (lease: numa, dax; plse: pbw, pbr, pfd, pfc)"; return 2;;
         *) MBT_ERR="$MBT_KIND is not a lease kind (lease, plse)"; return 2;;
     esac

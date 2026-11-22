@@ -84,10 +84,10 @@ numa-lease() {
     local size="$1" source="$2"
     dra-request "$VM2" borrower/main request --size "$size" ${source:+--source "$source"} --wait 120s
     [ "$DRA_REQ_STATUS" == 0 ] || error "cxl-request request --size $size${source:+ --source $source} exited $DRA_REQ_STATUS"
-    dra-assert "$DRA_REQ_JSON" "j.get('state') == 'Ready' and j.get('mode') == 'numa' and not j.get('shared') and not j.get('readOnly') and int(j['node']) >= $CPU_NODES"
-    dra-assert "$DRA_REQ_JSON" "j['env']['CXL_%s_NUMA_NODE' % j['serial'][2:].upper()] == str(j['node']) and j['env']['CXL_%s_MODE' % j['serial'][2:].upper()] == 'numa'"
+    dra-assert "$DRA_REQ_JSON" "j.get('state') == 'Ready' and j.get('mode') == 'numa' and not j.get('share') and not j.get('readOnly') and int(j['numaNode']) >= $CPU_NODES"
+    dra-assert "$DRA_REQ_JSON" "j['env']['CXL_%s_NUMA_NODE' % j['serial'][2:].upper()] == str(j['numaNode']) and j['env']['CXL_%s_MODE' % j['serial'][2:].upper()] == 'numa'"
     LEASE=$(dra-value "$DRA_REQ_JSON" "j['lease']")
-    LEASE_NODE=$(dra-value "$DRA_REQ_JSON" "j['node']")
+    LEASE_NODE=$(dra-value "$DRA_REQ_JSON" "j['numaNode']")
     dra-lease-new "$LEASE"
     echo "lease $LEASE: $size from ${source:-local, then pool}, NUMA node $LEASE_NODE, Ready"
 }
@@ -101,7 +101,7 @@ local-numa-lease() {
     # environment, and its companion objects (see companion-check). LEASE:
     # see numa-lease.
     numa-lease "$(dra-mi "$1")" local
-    dra-assert "$DRA_REQ_JSON" "j.get('source') == 'local' and j.get('serial') == '$DRA_LOCAL_SERIAL' and int(j['node']) == $NUMA_NODE and int(j['size']) == $(dra-local-round "$1")"
+    dra-assert "$DRA_REQ_JSON" "j.get('source') == 'local' and j.get('serial') == '$DRA_LOCAL_SERIAL' and int(j['numaNode']) == $NUMA_NODE and int(j['size']) == $(dra-local-round "$1")"
     dra-assert "$DRA_REQ_JSON" "j['env'] == {'CXL_${DRA_LOCAL_HEX}_SERIAL': '$DRA_LOCAL_SERIAL', 'CXL_${DRA_LOCAL_HEX}_SHARED': '0', 'CXL_${DRA_LOCAL_HEX}_MODE': 'numa', 'CXL_${DRA_LOCAL_HEX}_SIZE': '$(dra-local-round "$1")', 'CXL_${DRA_LOCAL_HEX}_NUMA_NODE': '$NUMA_NODE'}"
     companion-check "$LEASE" "$LOCAL_CLASS" "$1" "$(dra-local-round "$1")" numa
 }
@@ -456,7 +456,7 @@ dra-local-slices-wait "$VM2" lease-1 "$NUMA_NODE" "numa:$STATIC_A" "numa:$LEASE1
 dra-local-node-size "$VM2" lease-1 "$NUMA_NODE" $(( STATIC_A + LEASE1 ))
 lent-check "$NUMA_NODE" B "$DRA_NS/static-a/main"
 dra-leases "$VM2" borrower/main
-dra-assert "$DRA_LEASES" "[(l['lease'], l['state'], l.get('mode'), bool(l.get('shared')), l.get('source'), l.get('serial'), int(l.get('size') or 0)) for l in j] == [('$NUMA_LEASE1', 'Ready', 'numa', False, 'local', '$DRA_LOCAL_SERIAL', $LEASE1)]"
+dra-assert "$DRA_LEASES" "[(l['lease'], l['state'], l.get('mode'), bool(l.get('share')), l.get('source'), l.get('serial'), int(l.get('size') or 0)) for l in j] == [('$NUMA_LEASE1', 'Ready', 'numa', False, 'local', '$DRA_LOCAL_SERIAL', $LEASE1)]"
 # Container main uses the memory, it keeps it until D.
 dra-touch-start "$VM2" borrower/main "$TOUCH_MIB" "$NUMA_NODE"
 pages=$(dra-touch-log-pages "$DRA_TOUCH_LOG" "$NUMA_NODE")
@@ -590,7 +590,7 @@ dra-local-node-size "$VM2" mixed-static "$NUMA_NODE" "$STATIC_A"
 dra-exec "$VM2" mixed/main "$DRA_REQUEST_CTR_BIN" request --source local --size "$(dra-mi "$LEASE1")" --wait 120s ||
     command-error "cxl-request request in mixed/main failed: a container with a static NUMA claim that is not steered must get a NUMA lease"
 DRA_REQ_JSON=$(dra-last-json "$COMMAND_OUTPUT") || error "cxl-request request in mixed/main printed no JSON response"
-dra-assert "$DRA_REQ_JSON" "j.get('state') == 'Ready' and j.get('mode') == 'numa' and j.get('source') == 'local' and int(j['node']) == $NUMA_NODE and int(j['size']) == $LEASE1"
+dra-assert "$DRA_REQ_JSON" "j.get('state') == 'Ready' and j.get('mode') == 'numa' and j.get('source') == 'local' and int(j['numaNode']) == $NUMA_NODE and int(j['size']) == $LEASE1"
 MIXED_LEASE=$(dra-value "$DRA_REQ_JSON" "j['lease']")
 dra-lease-new "$MIXED_LEASE"
 dra-local-node-size "$VM2" mixed-lease "$NUMA_NODE" $(( STATIC_A + LEASE1 ))
@@ -613,7 +613,7 @@ echo "### E: without --source: local memory first, the pool when the local devic
 numa-lease "$(dra-mi "$DRA_LOCAL_SIZE")"
 ANY1_LEASE="$LEASE"
 ANY1_NODE="$LEASE_NODE"
-dra-assert "$DRA_REQ_JSON" "j.get('source') == 'local' and j.get('serial') == '$DRA_LOCAL_SERIAL' and int(j['node']) == $NUMA_NODE and int(j['size']) == $DRA_LOCAL_SIZE"
+dra-assert "$DRA_REQ_JSON" "j.get('source') == 'local' and j.get('serial') == '$DRA_LOCAL_SERIAL' and int(j['numaNode']) == $NUMA_NODE and int(j['size']) == $DRA_LOCAL_SIZE"
 dra-local-node-size "$VM2" any-local "$NUMA_NODE" "$DRA_LOCAL_SIZE"
 dra-pod-wait "$VM2" "cxl-lease-$ANY1_LEASE" Running 60
 dra-json "$VM2" resourceclaim -n "$DRA_NS" "cxl-lease-$ANY1_LEASE"

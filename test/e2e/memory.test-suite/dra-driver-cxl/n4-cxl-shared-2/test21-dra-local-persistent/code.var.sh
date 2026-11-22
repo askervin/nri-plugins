@@ -31,7 +31,7 @@
 # mount the ext4, and is installed again with fsTypes: [erofs, ext4]; C a
 # read-write and a read-only fs claim (one share each) share the ext4 on
 # VM2 (the image outlived the region of the writer); D an fs lease of one
-# share (--shared) in a running container reads, next to them, what the
+# share (--share) in a running container reads, next to them, what the
 # read-write claim wrote; E the claims go, the region is released, the
 # memdev stays enabled, the second server detaches the device, the driver
 # withdraws it, nothing is left.
@@ -244,7 +244,7 @@ LEASE_SCRIPT='env | grep "^CXL_'"$LP_HEX"'_" | sort
 p="$CXL_'"$LP_HEX"'_PATH"
 echo "read: $(cat "$p/c.txt")"
 if out=$(touch "$p/lease-probe" 2>&1); then echo "write: done"; else echo "write refused: $out"; fi'
-dra-exec "$VM2" leaser/main "$DRA_REQUEST_CTR_BIN" request --source local --serial "$LP_SERIAL" --shared --mode fs --name data --wait 120s \
+dra-exec "$VM2" leaser/main "$DRA_REQUEST_CTR_BIN" request --source local --serial "$LP_SERIAL" --share --mode fs --name data --wait 120s \
     --exec sh -c "$LEASE_SCRIPT" || command-error "leaser: the fs lease of $LP_DEVICE failed"
 LOG="$COMMAND_OUTPUT"
 dra-env-assert leaser "$LOG" "$LP_HEX" \

@@ -1035,7 +1035,7 @@
     {
       "id": "0a1b2c3d",
       "claim": "11111111-0000-0000-0000-000000000007",
-      "requestId": "req-1",
+      "requestID": "req-1",
       "pod": {
         "namespace": "demo",
         "name": "requester",

@@ -361,7 +361,7 @@ def size_reason(a):
 def serial_any_reason(a):
     """Return None if --serial any is valid with the answers A, else why not."""
     if a["kind"] == "lease" and a.get("size") == "whole" and not is_shared(a):
-        return "cxl-request needs --size, --serial or --shared: name a device, or a size"
+        return "cxl-request needs --size, --serial or --share: name a device, or a size"
     return None
 
 
@@ -711,7 +711,7 @@ def lease_args(a):
         args += ["--source", a["source"]]
     args += ["--mode", a["mode"]]
     if is_shared(a):
-        args.append("--shared")
+        args.append("--share")
     if a["mode"] in ("dax", "block") and read_only(a):
         args.append("--read-only")
     if a["mode"] == "fs":

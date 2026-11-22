@@ -23,7 +23,7 @@ claim), and on a read-only fd (a read-only lease).
 
 With --fd N the device is not opened: N is a file descriptor that the
 process inherited, for instance from "cxl-request request --serial SERIAL
---shared --exec" (fd 3, CXL_<KEY>_FD=3), which received it from
+--share --exec" (fd 3, CXL_<KEY>_FD=3), which received it from
 nri-dra-driver-cxl over a unix socket. The container needs no device node
 for it. The size of the mapping comes from the sysfs of the device the fd
 refers to, from CXL_<KEY>_SIZE of the KEY whose CXL_<KEY>_FD is N, or, for

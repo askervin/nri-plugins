@@ -957,7 +957,7 @@ kubectl get pods,resourceclaims -l cxl.nri.io/lease
 ```
 
 ```
-{"lease":"319ab5d0","state":"Ready","source":"local","mode":"numa","shared":false,"readOnly":false,"size":134217728,"serial":"0xc100e2e1","node":2,"env":{"CXL_C100E2E1_MODE":"numa","CXL_C100E2E1_NUMA_NODE":"2","CXL_C100E2E1_SERIAL":"0xc100e2e1","CXL_C100E2E1_SHARED":"0","CXL_C100E2E1_SIZE":"134217728"}}
+{"lease":"319ab5d0","state":"Ready","source":"local","mode":"numa","share":false,"readOnly":false,"size":134217728,"serial":"0xc100e2e1","numaNode":2,"env":{"CXL_C100E2E1_MODE":"numa","CXL_C100E2E1_NUMA_NODE":"2","CXL_C100E2E1_SERIAL":"0xc100e2e1","CXL_C100E2E1_SHARED":"0","CXL_C100E2E1_SIZE":"134217728"}}
 0-2
 NAME                     READY   STATUS              RESTARTS   AGE
 pod/cxl-lease-319ab5d0   0/1     ContainerCreating   0          1s
@@ -992,7 +992,7 @@ CXL_CLAIM_<uid>_0=1
 CXL_LEASE=11ff3fc6
 CXL_LEASE_SOCKET=/run/cxl/cxl.sock
 /dev/dax2.0
-{"shared":false,"readOnly":false,"leases":[{"lease":"11ff3fc6","state":"Ready","source":"pool","mode":"dax","shared":false,"readOnly":false,"size":536870912,"serial":"0xc1ee0001","dax":"/dev/dax2.0","env":{...}},{"lease":"319ab5d0","state":"Ready","source":"local","mode":"numa",...}]}
+{"share":false,"readOnly":false,"leases":[{"lease":"11ff3fc6","state":"Ready","source":"pool","mode":"dax","share":false,"readOnly":false,"size":536870912,"serial":"0xc1ee0001","dax":"/dev/dax2.0","env":{...}},{"lease":"319ab5d0","state":"Ready","source":"local","mode":"numa",...}]}
 ```
 
 `CXL_CLAIM_<uid>_0` is the marker of the pod's own lease claim. The whole
@@ -1008,7 +1008,7 @@ kubectl delete pod/borrower resourceclaimtemplate/cxl-lease
 ```
 
 ```
-{"shared":false,"readOnly":false,"leases":[{"lease":"11ff3fc6","state":"Released","shared":false,"readOnly":false},{"lease":"319ab5d0","state":"Released","shared":false,"readOnly":false}]}
+{"share":false,"readOnly":false,"leases":[{"lease":"11ff3fc6","state":"Released","share":false,"readOnly":false},{"lease":"319ab5d0","state":"Released","share":false,"readOnly":false}]}
 0-1
 pod "borrower" deleted from default namespace
 resourceclaimtemplate.resource.k8s.io "cxl-lease" deleted from default namespace

@@ -31,7 +31,7 @@
 #   container of the node is kept off the node, whatever its cpuset.mems.
 #   "cxl-request env --lease ID" prints the environment that a claim of
 #   the same memory gives a container (CXL_<KEY>_NUMA_NODE and the rest).
-# - "cxl-request request --serial 0xc1ae0001 --shared --exec CMD" joins a
+# - "cxl-request request --serial 0xc1ae0001 --share --exec CMD" joins a
 #   shared device (test19). The container gets no device node: the plugin
 #   opens the devdax device and passes the open file descriptor over the
 #   socket. cxl-request runs CMD with it as fd 3, CXL_<KEY>_FD=3.
@@ -176,10 +176,10 @@ lend-memory() {
         command-error "cxl-request request --source pool --size 512Mi failed"
     json=$(dra-last-json "$COMMAND_OUTPUT") || error "cxl-request printed no JSON response"
     # Exclusive, read-write NUMA memory: the defaults.
-    dra-assert "$json" "j.get('state') == 'Ready' and j.get('source') == 'pool' and j.get('mode') == 'numa' and not j.get('shared') and not j.get('readOnly')"
-    dra-assert "$json" "j.get('serial') == '$POOLED0_SERIAL' and int(j['size']) == $POOLED0_SIZE and int(j['node']) >= $CPU_NODES and not j.get('dax')"
+    dra-assert "$json" "j.get('state') == 'Ready' and j.get('source') == 'pool' and j.get('mode') == 'numa' and not j.get('share') and not j.get('readOnly')"
+    dra-assert "$json" "j.get('serial') == '$POOLED0_SERIAL' and int(j['size']) == $POOLED0_SIZE and int(j['numaNode']) >= $CPU_NODES and not j.get('dax')"
     MEM_LEASE=$(dra-value "$json" "j['lease']")
-    MEM_NODE=$(dra-value "$json" "j['node']")
+    MEM_NODE=$(dra-value "$json" "j['numaNode']")
     dra-lease-new "$MEM_LEASE"
     echo "lease $MEM_LEASE, pooled memory is NUMA node $MEM_NODE"
     # The response has the environment that a claim of pooled0 gives.
@@ -213,7 +213,7 @@ lend-memory() {
     grep -q "set_mempolicy.*Invalid argument" <<< "$COMMAND_OUTPUT" ||
         error "numa-touch.py in idle failed for another reason than an invalid node"
     dra-leases "$VM2" borrower/main
-    dra-assert "$DRA_LEASES" "[(l['lease'], l['state'], l.get('source'), l.get('mode'), bool(l.get('shared'))) for l in j] == [('$MEM_LEASE', 'Ready', 'pool', 'numa', False)]"
+    dra-assert "$DRA_LEASES" "[(l['lease'], l['state'], l.get('source'), l.get('mode'), bool(l.get('share'))) for l in j] == [('$MEM_LEASE', 'Ready', 'pool', 'numa', False)]"
     lease-env-check
     # Container main uses the memory: 256 MiB on the lent node.
     dra-touch-start "$VM2" borrower/main "$TOUCH_MIB" "$MEM_NODE"
@@ -299,18 +299,18 @@ share() {
     # it back through the fd again, and releases. No /dev/dax device in the
     # container, no change in its device cgroup.
     local tag="$TAG" lease lease_env shared_file found dax devices majmin
-    echo "--- cxl-request request --serial $SHARED_SERIAL --shared --exec dax-rw.py --fd 3 write"
-    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" request --serial "$SHARED_SERIAL" --shared --wait 120s \
+    echo "--- cxl-request request --serial $SHARED_SERIAL --share --exec dax-rw.py --fd 3 write"
+    dra-exec "$VM2" borrower/main "$DRA_REQUEST_CTR_BIN" request --serial "$SHARED_SERIAL" --share --wait 120s \
         --exec python3 /tools/dax-rw.py --fd 3 write 0 "$tag" ||
-        command-error "cxl-request request --serial $SHARED_SERIAL --shared --exec ... write failed"
+        command-error "cxl-request request --serial $SHARED_SERIAL --share --exec ... write failed"
     dra-leases "$VM2" borrower/main
-    # --shared: mode dax, the default for shared memory, read-write.
-    dra-assert "$DRA_LEASES" "[(l['state'], l.get('source'), l.get('mode'), bool(l.get('shared')), bool(l.get('readOnly')), l.get('serial')) for l in j] == [('Ready', 'pool', 'dax', True, False, '$SHARED_SERIAL')]"
+    # --share: mode dax, the default for shared memory, read-write.
+    dra-assert "$DRA_LEASES" "[(l['state'], l.get('source'), l.get('mode'), bool(l.get('share')), bool(l.get('readOnly')), l.get('serial')) for l in j] == [('Ready', 'pool', 'dax', True, False, '$SHARED_SERIAL')]"
     lease=$(dra-value "$DRA_LEASES" "j[0]['lease']")
     dra-lease-new "$lease"
     echo "lease $lease"
     companion-check "$lease" shared0 cxl-pool-shared dax
-    # One share of the device: --shared requests shares: "1" (without it
+    # One share of the device: --share requests shares: "1" (without it
     # the claim would take all shares, the device exclusively).
     dra-assert "$CLAIM_JSON" "[s.get('capacity') for s in subrequests()] == [{'requests': {'shares': '1'}}] and quantity(j['status']['allocation']['devices']['results'][0].get('consumedCapacity', {}).get('shares', 0)) == 1"
     # In the VM the device is a devdax region, never system RAM.
@@ -480,14 +480,14 @@ echo "### A2: requests that cxl-request refuses, and some that the node plugin r
 # unit tests have every check), the node plugin checks them again and
 # knows the devices: pooled0 is not shared, shared0 is not persistent.
 # Nothing of a refused request is left.
-dra-request-refused "$VM2" borrower/main 2 "shared memory is never onlined as RAM: use mode dax" request --shared --mode numa --size 64Mi
-dra-request-refused "$VM2" borrower/main 1 "memdev $POOLED0_SERIAL: not shareable" request --serial "$POOLED0_SERIAL" --shared
+dra-request-refused "$VM2" borrower/main 2 "shared memory is never onlined as RAM: use mode dax" request --share --mode numa --size 64Mi
+dra-request-refused "$VM2" borrower/main 1 "memdev $POOLED0_SERIAL: not shareable" request --serial "$POOLED0_SERIAL" --share
 # shared0 is volatile: it has no filesystem and no block device. mode fs,
 # read-only by default or with --read-only=false, passes cxl-request and
 # reaches the node plugin.
-dra-request-refused "$VM2" borrower/main 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --shared --read-only --mode fs
-dra-request-refused "$VM2" borrower/main 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --shared --mode fs
-dra-request-refused "$VM2" borrower/main 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --shared --mode fs --read-only=false --fs-type ext4
+dra-request-refused "$VM2" borrower/main 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --share --read-only --mode fs
+dra-request-refused "$VM2" borrower/main 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --share --mode fs
+dra-request-refused "$VM2" borrower/main 1 "memdev $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --share --mode fs --read-only=false --fs-type ext4
 dra-request-refused "$VM2" borrower/main 1 "memdev $SHARED_SERIAL: mode block needs a persistent device" request --serial "$SHARED_SERIAL" --mode block
 dra-leases "$VM2" borrower/main
 dra-assert "$DRA_LEASES" "j == []"

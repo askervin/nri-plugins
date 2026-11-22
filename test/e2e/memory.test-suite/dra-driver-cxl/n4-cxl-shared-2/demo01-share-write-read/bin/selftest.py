@@ -527,7 +527,7 @@ def poolfs_helper_test():
         expect("check_join", got[0] == "reader-c Ready on vm1, next to the writer" and
                got[1].startswith("reader-a reader-b waiting: Conflict ("), str(got))
         fsw = ('{"leases": [{"lease": "3f2a91c0", "state": "Released"}]}\n{"lease": "7b3e5a10", "state": "Ready", "mode": "fs", '
-               '"readOnly": false, "shared": true, "access": "direct", "fsType": "ext4", "path": "/run/cxl/fs/data"}\n')
+               '"readOnly": false, "share": true, "access": "direct", "fsType": "ext4", "path": "/run/cxl/fs/data"}\n')
         got = steps.check_fs_writer(state, fsw, 0)
         expect("check_fs_writer", got == ["lease 7b3e5a10 Ready ext4 rw (direct)", "path /run/cxl/fs/data",
                                           "attached to vm1 only (ReadWriteOnce)"], str(got))
@@ -593,10 +593,10 @@ def helper_test():
         {"type": "cxl-pool.nri.io/AttachFailed", "status": "True", "reason": "Timeout"}]}]
     expect("lease_memory failed", c.lease_memory(pending) == "waiting (Timeout)", c.lease_memory(pending))
     expect("MemoryConfig only", c.claim_params(fs_claim({"mode": "fs"}, "1", "1", kind="DeviceConfig")) == {})
-    block = '{"lease": "3f2a91c0", "state": "Ready", "mode": "block", "readOnly": false, "shared": false, "block": "/dev/pmem0"}'
+    block = '{"lease": "3f2a91c0", "state": "Ready", "mode": "block", "readOnly": false, "share": false, "block": "/dev/pmem0"}'
     expect("check_lease block", steps.check_lease({}, block, 0) == ["lease 3f2a91c0 Ready block rw (exclusive)", "block /dev/pmem0"],
            str(steps.check_lease({}, block, 0)))
-    fs = ('{"lease": "8c1d02e4", "state": "Ready", "mode": "fs", "readOnly": true, "shared": true, "access": "direct", "fsType": "erofs", '
+    fs = ('{"lease": "8c1d02e4", "state": "Ready", "mode": "fs", "readOnly": true, "share": true, "access": "direct", "fsType": "erofs", '
           '"path": "/run/cxl/fs/hello", "env": {"CXL_C1AE0001_FS_TYPE": "erofs"}}')
     expect("check_lease fs", steps.check_lease({}, fs, 0) == ["lease 8c1d02e4 Ready fs ro (share) (direct)", "path /run/cxl/fs/hello"],
            str(steps.check_lease({}, fs, 0)))

@@ -510,11 +510,11 @@ echo "### L: leases of the shared device for a running container"
 dra-apply "$VM2" <<< "$(dra-lease-template-yaml)"
 dra-lease-pod-start "$VM2" leaser "$VM2_NAME"
 LEASER_CLAIM_UID="$DRA_LEASE_CLAIM_UID"
-# Without --shared a lease takes the device exclusively, as the writer's
+# Without --share a lease takes the device exclusively, as the writer's
 # claim did, and reads what the writer left in the kept region.
 dra-request "$VM2" leaser request --serial "$DRA_LOCAL_SERIAL" --wait 60s
 [ "$DRA_REQ_STATUS" == 0 ] || error "cxl-request request --serial $DRA_LOCAL_SERIAL exited $DRA_REQ_STATUS"
-dra-assert "$DRA_REQ_JSON" "(j.get('state'), j.get('source'), j.get('mode'), bool(j.get('shared')), bool(j.get('readOnly'))) == ('Ready', 'local', 'dax', False, False)"
+dra-assert "$DRA_REQ_JSON" "(j.get('state'), j.get('source'), j.get('mode'), bool(j.get('share')), bool(j.get('readOnly'))) == ('Ready', 'local', 'dax', False, False)"
 LEASE=$(dra-value "$DRA_REQ_JSON" "j['lease']")
 dra-exec "$VM2" leaser "$DRA_REQUEST_CTR_BIN" fd --lease "$LEASE" --exec python3 /tools/dax-rw.py --fd 3 read 0 ||
     command-error "cannot read through the fd of the exclusive lease $LEASE"
@@ -522,25 +522,25 @@ dra-exec "$VM2" leaser "$DRA_REQUEST_CTR_BIN" fd --lease "$LEASE" --exec python3
     error "the exclusive lease read '$(tail -n 1 <<< "$COMMAND_OUTPUT")', expected '$TEXT0'"
 # shared is what the lease asked for; the device is shared all the same.
 dra-leases "$VM2" leaser
-dra-assert "$DRA_LEASES" "[(l['lease'], bool(l.get('shared')), (l.get('env') or {}).get('CXL_${DRA_LOCAL_HEX}_SHARED')) for l in j] == [('$LEASE', False, '1')]"
+dra-assert "$DRA_LEASES" "[(l['lease'], bool(l.get('share')), (l.get('env') or {}).get('CXL_${DRA_LOCAL_HEX}_SHARED')) for l in j] == [('$LEASE', False, '1')]"
 lease-companion "$LEASE"
 dra-assert "$COMPANION_JSON" "[(s['deviceClassName'], s.get('capacity')) for s in subrequests()] == [('$SHARED_CLASS', None)] and quantity((results()[0].get('consumedCapacity') or {}).get('shares', 0)) == $DRA_SHARES"
 same-region || error "the exclusive lease has another region or dax device: $DRA_MEMDEV"
 lease-release "$LEASE"
 # One share by size: the companion request has one share and a size
 # selector.
-dra-request "$VM2" leaser request --source local --shared --size 64Mi --wait 60s
-[ "$DRA_REQ_STATUS" == 0 ] || error "cxl-request request --source local --shared --size 64Mi exited $DRA_REQ_STATUS"
-dra-assert "$DRA_REQ_JSON" "(j.get('state'), j.get('source'), j.get('serial'), j.get('mode'), bool(j.get('shared'))) == ('Ready', 'local', '$DRA_LOCAL_SERIAL', 'dax', True)"
+dra-request "$VM2" leaser request --source local --share --size 64Mi --wait 60s
+[ "$DRA_REQ_STATUS" == 0 ] || error "cxl-request request --source local --share --size 64Mi exited $DRA_REQ_STATUS"
+dra-assert "$DRA_REQ_JSON" "(j.get('state'), j.get('source'), j.get('serial'), j.get('mode'), bool(j.get('share'))) == ('Ready', 'local', '$DRA_LOCAL_SERIAL', 'dax', True)"
 LEASE=$(dra-value "$DRA_REQ_JSON" "j['lease']")
 lease-companion "$LEASE"
 dra-assert "$COMPANION_JSON" "[(s['name'], s['deviceClassName'], s.get('capacity')) for s in subrequests()] == [('lease', '$SHARED_CLASS', {'requests': {'shares': '1'}})]"
 dra-assert "$COMPANION_JSON" "any('size' in (sel.get('cel') or {}).get('expression', '') for sel in subrequests()[0].get('selectors') or [])"
 lease-release "$LEASE"
-# --shared without --source: the local device first, then the pool
+# --share without --source: the local device first, then the pool
 # (shared0 would do), one share of either in a firstAvailable request.
-dra-request "$VM2" leaser request --shared --size 64Mi --wait 60s
-[ "$DRA_REQ_STATUS" == 0 ] || error "cxl-request request --shared --size 64Mi exited $DRA_REQ_STATUS"
+dra-request "$VM2" leaser request --share --size 64Mi --wait 60s
+[ "$DRA_REQ_STATUS" == 0 ] || error "cxl-request request --share --size 64Mi exited $DRA_REQ_STATUS"
 dra-assert "$DRA_REQ_JSON" "(j.get('state'), j.get('source'), j.get('serial')) == ('Ready', 'local', '$DRA_LOCAL_SERIAL')"
 LEASE=$(dra-value "$DRA_REQ_JSON" "j['lease']")
 lease-companion "$LEASE"
@@ -558,7 +558,7 @@ grep -qF "memdev $DRA_LOCAL_SERIAL: not a pool device" <<< "$DRA_REQ_OUT" ||
 # its companion and the lease directories of the pod go, the node plugin
 # has no leases left, and the region stays.
 # shellcheck disable=SC2016 # expanded by sh in the container
-dra-exec "$VM2" leaser sh -c 'setsid sh -c "$1 request --serial $2 --shared --read-only --wait 60s --exec sh -c \"python3 /tools/dax-rw.py --fd 3 check-ro 0; exec python3 /tools/dax-rw.py --fd 3 watch 0 /tmp/stop\"" > /tmp/hold.log 2>&1 < /dev/null &' sh "$DRA_REQUEST_CTR_BIN" "$DRA_LOCAL_SERIAL" ||
+dra-exec "$VM2" leaser sh -c 'setsid sh -c "$1 request --serial $2 --share --read-only --wait 60s --exec sh -c \"python3 /tools/dax-rw.py --fd 3 check-ro 0; exec python3 /tools/dax-rw.py --fd 3 watch 0 /tmp/stop\"" > /tmp/hold.log 2>&1 < /dev/null &' sh "$DRA_REQUEST_CTR_BIN" "$DRA_LOCAL_SERIAL" ||
     command-error "cannot start a read-only lease in leaser"
 # shellcheck disable=SC2016 # evaluated by retry-until
 retry-until --timeout 60 --interval 1 --message "leaser holds a read-only share" \
@@ -569,7 +569,7 @@ echo "$log"
 grep -qxF "read: $TEXT0" <<< "$log" || error "the read-only lease did not read '$TEXT0'"
 grep -qxF "writable mapping refused: EACCES" <<< "$log" || error "the read-only lease could map the memory for writing"
 dra-leases "$VM2" leaser
-dra-assert "$DRA_LEASES" "[(l['state'], bool(l.get('shared')), bool(l.get('readOnly'))) for l in j] == [('Ready', True, True)]"
+dra-assert "$DRA_LEASES" "[(l['state'], bool(l.get('share')), bool(l.get('readOnly'))) for l in j] == [('Ready', True, True)]"
 dra-delete-pod "$VM2" leaser
 dra-delete "$VM2" resourceclaimtemplate cxl-lease --wait=true --timeout=60s
 dra-wait "$VM2" no-lease-objects "pods,resourceclaims -n $DRA_NS" "items == []" 60

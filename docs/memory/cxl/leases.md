@@ -121,7 +121,7 @@ container: cxl-request request --size 512Mi
      NUMA node N; the label cxl.nri.io/lease=L names the lease        (Lending)
   -> NRI UpdateContainers: cpuset.mems of THAT container = its own nodes
      without the CXL nodes of the driver + N
-  -> response {"lease":"L","state":"Ready","node":N,...}              (Ready)
+  -> response {"lease":"L","state":"Ready","numaNode":N,...}              (Ready)
 container: cxl-request release --lease L
   -> revoke (cpuset.mems shrinks, the kernel migrates the pages back)
   -> delete Pod and ResourceClaim cxl-lease-L                        (Releasing)
@@ -148,9 +148,9 @@ capabilities of the container.
 
 A shared device of volatile memory, local or pool, is `dax` only, a
 device of persistent memory, local or pool, `block` or `fs` only.
-`--shared` takes one share of a device with a `shares` capacity: a shared
+`--share` takes one share of a device with a `shares` capacity: a shared
 device, or a persistent local memdev, also one with `shared: false`; a
-request that names such a device by `--serial` without `--shared` takes
+request that names such a device by `--serial` without `--share` takes
 the whole device (the writer of single-writer sharing). A local memdev
 of volatile memory that is not configured shared is never shared through
 a lease; several pods share its slice by referencing one ResourceClaim
@@ -178,8 +178,8 @@ container: cxl-request fd --lease L --exec CMD                       # the fd ag
 container: cxl-request release --lease L                             # close the fd first
 ```
 
-Without `--shared` the lease takes the whole device, exclusively, and may
-write it (the writer); `--shared --read-only` takes one share, read-only
+Without `--share` the lease takes the whole device, exclusively, and may
+write it (the writer); `--share --read-only` takes one share, read-only
 (a reader); a share is never writable. The fd can be read, written
 (`write`, `pwrite`) and fsynced; it cannot be given to a tool that wants a
 path: reopening it through `/proc/self/fd` is refused by the device cgroup,
@@ -192,7 +192,7 @@ mounts, read-only unless the request says `--read-only=false`; no fd
 and no device node:
 
 ```
-container: cxl-request request --serial 0xc1ae0001 --shared --mode fs [--read-only=false] [--fs-type ext4] [--access cached] [--name data]
+container: cxl-request request --serial 0xc1ae0001 --share --mode fs [--read-only=false] [--fs-type ext4] [--access cached] [--name data]
   -> companion claim cxl-lease-L of class cxl-pool-persistent (cxl-local-persistent for a local memdev),
      MemoryConfig device {mode: fs, readOnly: true|false, access, fsType}
   -> kubelet prepares cxl-lease-L as a claim of mode fs: pmem region, the node mount
@@ -229,7 +229,7 @@ companion claims of leases with the claims. `CXL_<KEY>_PATH` is
 `/run/cxl/fs/<name>`, `CXL_<KEY>_FS_TYPE` the type of the filesystem
 (also `fsType` of the response and of `cxl-request list`), and
 `CXL_<KEY>_SHARED` of a device of persistent memory (modes `fs` and
-`block`) its attribute `shared`, whatever `--shared`.
+`block`) its attribute `shared`, whatever `--share`.
 
 The companion claim of a read-write lease is a claim like any other: a
 read-write `fs` lease of a single-host filesystem on a pool device makes
@@ -250,7 +250,7 @@ The first word is the operation; every other input is `--opt` or
 line is the command.
 
 ```
-cxl-request request [--source local|pool] [--mode numa|dax|fs|block] [--shared]
+cxl-request request [--source local|pool] [--mode numa|dax|fs|block] [--share]
                     [--read-only[=false]] [--access direct|cached] [--fs-type TYPE]
                     [--name NAME] [--size SIZE] [--serial SERIAL] [--wait DURATION]
                     [--request-id ID] [--exec CMD [ARG...]]
@@ -273,8 +273,8 @@ cxl-request help
 |:-------|:----------------|:-|
 | `--source` | `local`, `pool`; omitted: local first, then pool | which devices |
 | `--mode` | `numa`, `dax`, `fs`, `block`; omitted: `numa`, or `dax` for a shared device | how the memory is given: a NUMA node, a devdax fd, the filesystem of a device of persistent memory at `/run/cxl/fs/NAME`, or an fd of the block device of a device of persistent memory (`fs` and `block` are never a default) |
-| `--shared` | default off | one share of a shared device (default: the whole device, exclusive) |
-| `--read-only` | `true` (the flag alone), `false`; default `false`, `true` for `fs` | `dax`, `block`: the fd allows reads only; `block` with `--shared` needs it; `fs`: the filesystem is mounted read-only, read-write with `--read-only=false` |
+| `--share` | default off | one share of a shared device (default: the whole device, exclusive) |
+| `--read-only` | `true` (the flag alone), `false`; default `false`, `true` for `fs` | `dax`, `block`: the fd allows reads only; `block` with `--share` needs it; `fs`: the filesystem is mounted read-only, read-write with `--read-only=false` |
 | `--access` | `direct`, `cached`; default `direct` when the filesystem has DAX, else `cached` | `fs`: `direct` maps the file pages to the memory of the device, `cached` reads them into the page cache of the node |
 | `--fs-type` | a filesystem type: lower-case letters, digits, `_` and `-`; default detected | `fs`: the expected filesystem type |
 | `--name` | 1 to 255 letters, digits, `.`, `_`, `-`, not `.` or `..`; default the lease id | `fs`: the mount point `/run/cxl/fs/NAME`, unique among the leases of the lease claim |
@@ -288,7 +288,7 @@ cxl-request help
 
 The defaults are the safe ones: exclusive, read-write, `numa`, local
 first, then pool; a filesystem is read-only unless `--read-only=false`.
-A request needs `--size`, `--serial` or `--shared`.
+A request needs `--size`, `--serial` or `--share`.
 
 `cxl-request` refuses these command lines with exit code 2 before
 anything is sent, checked in this order; the plugin checks requests from
@@ -300,30 +300,30 @@ other clients the same way and answers `{"error": ...}`:
 | `fd` without `--exec` | `fd needs --exec` |
 | `--wait` not a duration, or negative | `invalid wait "..."` |
 | `--wait` longer than `1h` | `invalid wait "..." (at most 1h0m0s)` |
-| `--request-id` not 1 to 64 bytes of letters, digits, `.`, `_` and `-` | `invalid requestId "..." (1 to 64 letters, digits, ".", "_" and "-")` |
+| `--request-id` not 1 to 64 bytes of letters, digits, `.`, `_` and `-` | `invalid requestID "..." (1 to 64 letters, digits, ".", "_" and "-")` |
 | `--lease` not 8 lower-case hex digits | `invalid lease "..." (8 lower-case hex digits)` |
 | `--source` other than `local`, `pool` | `invalid source "..." (local or pool)` |
 | `--mode` other than `numa`, `dax`, `fs`, `block` | `invalid mode "..." (numa, dax, fs or block)` |
 | `--access` other than `direct`, `cached` | `invalid access "..." (direct or cached)` |
-| `--shared` with `--mode numa` | `shared memory is never onlined as RAM: use mode dax` |
+| `--share` with `--mode numa` | `shared memory is never onlined as RAM: use mode dax` |
 | `--access` without `--mode fs` | `access needs mode fs` |
 | `--name` without `--mode fs` | `name needs mode fs` |
 | `--name` not 1 to 255 bytes of letters, digits, `.`, `_` and `-`, or `.` or `..` | `invalid name "..." (letters, digits, ".", "_" and "-", not "." or "..")` |
 | `--fs-type` without `--mode fs` | `fsType needs mode fs` |
 | `--fs-type` not 1 to 32 lower-case letters, digits, `_` and `-` | `invalid fsType "..." (lower-case letters, digits, "_" and "-")` |
-| `--mode block` with `--shared` without `--read-only` (a share of a device is read-only; the whole device, without `--shared`, may be written) | `mode block with shared needs readOnly` |
-| `--read-only` without `--mode dax`, `--mode fs`, `--mode block` or `--shared` | `readOnly needs mode dax, fs or block` |
-| `request` without `--shared`, `--serial` and `--size` | `size or serial is required` |
+| `--mode block` with `--share` without `--read-only` (a share of a device is read-only; the whole device, without `--share`, may be written) | `mode block with share needs readOnly` |
+| `--read-only` without `--mode dax`, `--mode fs`, `--mode block` or `--share` | `readOnly needs mode dax, fs or block` |
+| `request` without `--share`, `--serial` and `--size` | `size or serial is required` |
 | `--serial` not a number | `invalid serial "..."` |
-| `fd` or `env` without `--lease` | `fd needs --lease ID`, `env needs --lease ID` |
-| `release` with neither or both of `--lease` and `--all` | `release takes --lease ID or --all` |
+| `fd` or `env` without `--lease` | `fd needs lease`, `env needs lease` |
+| `release` with neither or both of `--lease` and `--all` | `release takes lease or all` |
 
 The plugin refuses further requests that only it can judge:
 
 | case | message |
 |:-----|:--------|
 | `--size` not a positive quantity | `invalid size "..."` |
-| `--shared` with the serial of a device without a `shares` capacity (an exclusive pool device, a local memdev of volatile memory that is not configured shared; a persistent local memdev has shares) | `memdev 0x...: not shareable` |
+| `--share` with the serial of a device without a `shares` capacity (an exclusive pool device, a local memdev of volatile memory that is not configured shared; a persistent local memdev has shares) | `memdev 0x...: not shareable` |
 | `--source local` with the serial of a pool device | `memdev 0x...: not a local device` |
 | `--source pool` with the serial of a local device | `memdev 0x...: not a pool device` |
 | `--mode fs` or `--mode block` with the serial of a device of volatile memory | `memdev 0x...: mode fs needs a persistent device`, `memdev 0x...: mode block needs a persistent device` |
@@ -339,7 +339,7 @@ The plugin refuses further requests that only it can judge:
 
 A serial that names a shared device of volatile memory makes the mode
 `dax` when `--mode` is omitted; the CLI cannot know that, so
-`--read-only` needs `--shared`, `--mode dax`, `--mode fs` or `--mode block`
+`--read-only` needs `--share`, `--mode dax`, `--mode fs` or `--mode block`
 with it. A persistent device is never `block` or `fs` by default: name the
 mode. The checks of a claim of the device (the filesystem, the rules of
 one node, ReadWriteOnce) are those of the companion claim: they fail its
@@ -399,34 +399,34 @@ ext4, and the persistent local memdev `0xc100f5e1`:
 
 ```
 cxl-request request --size 512Mi
-  -> {"lease":"1a2b3c4d","state":"Ready","source":"local","mode":"numa","shared":false,"readOnly":false,
-      "size":536870912,"serial":"0xc100e2e1","node":2,"env":{"CXL_C100E2E1_MODE":"numa",...}}
+  -> {"lease":"1a2b3c4d","state":"Ready","source":"local","mode":"numa","share":false,"readOnly":false,
+      "size":536870912,"serial":"0xc100e2e1","numaNode":2,"env":{"CXL_C100E2E1_MODE":"numa",...}}
 cxl-request request --source pool --size 512Mi --mode dax --exec python3 app.py
   -> app.py sees CXL_C1EE0001_FD=3 CXL_C1EE0001_MODE=dax CXL_C1EE0001_SIZE=536870912
      CXL_C1EE0001_SERIAL=0xc1ee0001 CXL_C1EE0001_SHARED=0 CXL_C1EE0001_READ_ONLY=0 CXL_LEASE=1a2b3c4d
 cxl-request request --source local --size 64Mi --mode dax --read-only --exec prog
 cxl-request request --serial 0xc1ae0001                       # the shared device, exclusively (writer)
-cxl-request request --serial 0xc1ae0001 --shared --read-only --exec prog   # a reader
+cxl-request request --serial 0xc1ae0001 --share --read-only --exec prog   # a reader
 cxl-request request --serial 0xc100e2e2                       # the shared local device, exclusively
-cxl-request request --serial 0xc100e2e2 --shared --read-only  # one read-only share of it
-cxl-request request --shared --size 256Mi                     # one share of any shared device of 256Mi or more, local first, then pool
-cxl-request request --source local --shared --size 64Mi       # one share of a shared local device
+cxl-request request --serial 0xc100e2e2 --share --read-only  # one read-only share of it
+cxl-request request --share --size 256Mi                     # one share of any shared device of 256Mi or more, local first, then pool
+cxl-request request --source local --share --size 64Mi       # one share of a shared local device
 cxl-request request --size 1Gi --wait 0s --request-id r1      # asynchronous: Pending
-cxl-request request --serial 0xc1ae0002 --shared --read-only --mode fs \
+cxl-request request --serial 0xc1ae0002 --share --read-only --mode fs \
     --exec sh -c 'exec llama-server -m "$CXL_C1AE0002_PATH/model.gguf"'   # direct: /run/cxl/fs/<lease id>
-  -> {"lease":"1a2b3c4e","state":"Ready","source":"pool","mode":"fs","shared":true,"readOnly":true,"access":"direct",
+  -> {"lease":"1a2b3c4e","state":"Ready","source":"pool","mode":"fs","share":true,"readOnly":true,"access":"direct",
       "path":"/run/cxl/fs/1a2b3c4e","size":534773760,"serial":"0xc1ae0002","env":{"CXL_C1AE0002_PATH":"/run/cxl/fs/1a2b3c4e",...}}
-cxl-request request --serial 0xc1ae0002 --shared --read-only --mode fs --access cached --name models \
+cxl-request request --serial 0xc1ae0002 --share --read-only --mode fs --access cached --name models \
     --exec llama-server -m /run/cxl/fs/models/model.gguf         # cached, at a fixed path
-cxl-request request --serial 0xc1ae0003 --shared --mode fs --read-only=false --fs-type ext4 --name data \
+cxl-request request --serial 0xc1ae0003 --share --mode fs --read-only=false --fs-type ext4 --name data \
     --exec sh -c 'date > /run/cxl/fs/data/stamp'               # read-write ext4 (fsTypes lists ext4), ReadWriteOnce
 cxl-request request --source local --serial 0xc100f5e1 --mode fs   # a persistent local memdev, read-only
 cxl-request request --serial 0xc1ae0002 --mode block \
     --exec sh -c 'cat /tmp/model.erofs >&3'                   # the writer: an erofs image into the device
-  -> {"lease":"1a2b3c4f","state":"Ready","source":"pool","mode":"block","shared":false,"readOnly":false,
+  -> {"lease":"1a2b3c4f","state":"Ready","source":"pool","mode":"block","share":false,"readOnly":false,
       "size":534773760,"serial":"0xc1ae0002","block":"/dev/pmem0","env":{"CXL_C1AE0002_PATH":"/dev/pmem0",...}}
 cxl-request fd --lease 1a2b3c4f --exec sh -c 'cat /tmp/model.erofs >&3'   # the same through the fd again
-cxl-request request --serial 0xc1ae0002 --shared --read-only --mode block --exec prog   # a reader of the block device
+cxl-request request --serial 0xc1ae0002 --share --read-only --mode block --exec prog   # a reader of the block device
 cxl-request env --lease 1a2b3c4d                              # KEY=VALUE lines (DAX, not FD)
 cxl-request fd --lease 1a2b3c4d --wait 60s --exec prog        # the fd again after a restart of prog
 cxl-request env --lease 1a2b3c4d --exec numactl --membind=2 prog   # a numa lease: CXL_C100E2E1_NUMA_NODE=2
@@ -450,7 +450,7 @@ It answers data after the object with
 | `op` | `request`, `release`, `list`, `fd`, `env` |
 | `source` | `local`, `pool`; omitted: local first, then pool |
 | `mode` | `numa`, `dax`, `fs`, `block` |
-| `shared` | bool |
+| `share` | bool: one share of a shared device |
 | `readOnly` | bool; omitted: `true` for mode `fs`, else `false` |
 | `fsType` | filesystem type; mode `fs` only |
 | `access` | `direct`, `cached`; mode `fs` only |
@@ -458,7 +458,7 @@ It answers data after the object with
 | `size` | quantity string |
 | `serial` | string, `0x` hex or decimal |
 | `wait` | Go duration string, at most `1h` |
-| `requestId` | 1 to 64 letters, digits, `.`, `_`, `-` |
+| `requestID` | 1 to 64 letters, digits, `.`, `_`, `-` |
 | `lease` | lease id: 8 lower-case hex digits |
 | `all` | bool |
 
@@ -466,22 +466,22 @@ For example:
 
 | request | |
 |:--------|:-|
-| `{"op":"request","size":"512Mi","wait":"120s","requestId":"r1"}` | 512Mi, local first, then pool, lent as a NUMA node |
+| `{"op":"request","size":"512Mi","wait":"120s","requestID":"r1"}` | 512Mi, local first, then pool, lent as a NUMA node |
 | `{"op":"request","source":"pool","size":"512Mi","mode":"dax","readOnly":true}` | an exclusive pool device as dax, read-only fd passed |
 | `{"op":"request","source":"local","size":"64Mi","mode":"dax"}` | a dax slice of a local memdev, fd passed |
 | `{"op":"request","source":"local","size":"64Mi","serial":"0xc100e2e1"}` | memory of the device with the serial |
-| `{"op":"request","serial":"0xc1ae0001","shared":true}` | one share of a shared device, fd passed |
+| `{"op":"request","serial":"0xc1ae0001","share":true}` | one share of a shared device, fd passed |
 | `{"op":"request","serial":"0xc1ae0001"}` | the shared device, nobody else meanwhile, fd passed |
-| `{"op":"request","serial":"0xc1ae0002","shared":true,"readOnly":true,"mode":"fs","access":"cached","name":"models"}` | one share of a persistent device, its filesystem at `/run/cxl/fs/models`, page-cached |
+| `{"op":"request","serial":"0xc1ae0002","share":true,"readOnly":true,"mode":"fs","access":"cached","name":"models"}` | one share of a persistent device, its filesystem at `/run/cxl/fs/models`, page-cached |
 | `{"op":"request","serial":"0xc1ae0002","mode":"block"}` | a persistent device whole, the fd of its block device passed, read-write |
-| `{"op":"request","serial":"0xc1ae0003","shared":true,"mode":"fs","readOnly":false,"fsType":"ext4"}` | one share of a persistent device, its ext4 read-write at `/run/cxl/fs/<lease id>` |
+| `{"op":"request","serial":"0xc1ae0003","share":true,"mode":"fs","readOnly":false,"fsType":"ext4"}` | one share of a persistent device, its ext4 read-write at `/run/cxl/fs/<lease id>` |
 | `{"op":"release","lease":"1a2b3c4d","wait":"120s"}` | release one lease of the pod |
 | `{"op":"release","all":true}` | release all leases of the pod |
 | `{"op":"list"}` | leases of the pod |
 | `{"op":"fd","lease":"1a2b3c4d"}` | send the fd of a Ready dax or block lease again |
 | `{"op":"env","lease":"1a2b3c4d"}` | the lease with its environment |
 
-Response (`shared` and `readOnly` are always present, the other fields
+Response (`share` and `readOnly` are always present, the other fields
 only when they have a value):
 
 | field | |
@@ -490,14 +490,14 @@ only when they have a value):
 | `state` | `Creating`, `Pending`, `Lending`, `Ready`, `Releasing`, `Failed`, `Released` (in responses only: the lease is gone) |
 | `source` | `local` or `pool`: the requested one, the allocated one once Ready; omitted while undecided |
 | `mode` | `numa`, `dax`, `fs` or `block`, effective |
-| `shared` | bool, effective: `false` for a lease that uses a shared device exclusively |
+| `share` | bool, effective: `false` for a lease that uses a shared device exclusively |
 | `readOnly` | bool |
 | `access` | `direct` or `cached`, mode `fs` |
 | `fsType` | the type of the filesystem, mode `fs` once Ready |
 | `path` | the directory of the filesystem in the container, `/run/cxl/fs/<name>`, mode `fs` once Ready |
 | `size` | bytes: once Ready the size of the slice or the device (a pool device may be larger than requested; modes `fs` and `block`: the size of the fsdax namespace), the requested size before |
 | `serial` | `0x` hex, once known |
-| `node` | NUMA node, mode `numa` once Ready |
+| `numaNode` | NUMA node, mode `numa` once Ready |
 | `dax` | `/dev/daxX.Y`, mode `dax` once Ready; informational, the container has no such device node |
 | `block` | `/dev/pmemK`, mode `block` once Ready; informational, the container has no such device node |
 | `env` | once Ready: the variables a claim of this memory would inject, with `DAX` for `dax` leases and `PATH` the host path of the block device for `block` leases |
@@ -517,7 +517,7 @@ Else it answers `opening <device>: lease <id> is <state> now`.
   `timeout: not Ready after <wait>`; `fd` and `env` report the state at
   their timeout and keep the lease. `"wait":"0s"` returns the current
   state at once and keeps the lease.
-- `requestId`: a repeated request with the same id from the same
+- `requestID`: a repeated request with the same id from the same
   container on the same socket returns the same lease (a retry after a
   lost connection).
 - A release waits up to `wait` for the companion objects to disappear and
@@ -559,7 +559,7 @@ The companion objects of lease `<id>` live in the requester's namespace:
 
   The class is `cxl-local` for a local slice, `cxl-local-shared` for a
   shared local device, `cxl-pool` for an exclusive pool device and
-  `cxl-pool-shared` for a shared one; a shared lease (`--shared`) asks the
+  `cxl-pool-shared` for a shared one; a shared lease (`--share`) asks the
   shared classes only. A lease in mode `block` or `fs` asks the classes of
   persistent devices only, `cxl-local-persistent` and
   `cxl-pool-persistent` (shared or not), local first as other leases. The selectors are
@@ -567,27 +567,27 @@ The companion objects of lease `<id>` live in the requester's namespace:
   given and `device.attributes["<driver>"].size >= <bytes>` on a shared
   class when a size is given. The capacity request is `memory: <size>` on
   a slice or an exclusive pool device, `shares: "1"` for a share
-  (`--shared`), and none when a shared device is taken whole
+  (`--share`), and none when a shared device is taken whole
   (exclusively). For example:
 
   | request | `spec.devices.requests` of the companion claim |
   |:--------|:-----------------------------------------------|
   | `--serial S`, S a shared local device (the writer) | `exactly`: `cxl-local-shared`, serial selector, no capacity |
-  | `--serial S --shared --read-only`, S a shared local device (a reader) | `exactly`: `cxl-local-shared`, serial selector, `shares: "1"`, `readOnly: true` |
+  | `--serial S --share --read-only`, S a shared local device (a reader) | `exactly`: `cxl-local-shared`, serial selector, `shares: "1"`, `readOnly: true` |
   | `--serial S`, S a shared pool device | `exactly`: `cxl-pool-shared`, serial selector, no capacity |
   | `--serial S --size N`, S an exclusive local or pool device | `exactly`: `cxl-local` or `cxl-pool`, serial selector, `memory: N` |
-  | `--serial S --shared`, S in no ResourceSlice | `firstAvailable`: `cxl-local-shared`, then `cxl-pool-shared`, serial selector and `shares: "1"` each |
-  | `--shared --size 64Mi` | `firstAvailable`: `cxl-local-shared`, then `cxl-pool-shared`, `size >= 67108864` and `shares: "1"` each |
-  | `--source local --shared --size 64Mi` | `exactly`: `cxl-local-shared`, `size >= 67108864`, `shares: "1"` |
+  | `--serial S --share`, S in no ResourceSlice | `firstAvailable`: `cxl-local-shared`, then `cxl-pool-shared`, serial selector and `shares: "1"` each |
+  | `--share --size 64Mi` | `firstAvailable`: `cxl-local-shared`, then `cxl-pool-shared`, `size >= 67108864` and `shares: "1"` each |
+  | `--source local --share --size 64Mi` | `exactly`: `cxl-local-shared`, `size >= 67108864`, `shares: "1"` |
   | `--size 512Mi` | `firstAvailable`: `cxl-local`, then `cxl-pool`, `memory: 512Mi` each |
-  | `--serial S --shared --mode fs`, S a shared persistent pool device | `exactly`: `cxl-pool-persistent`, serial selector, `shares: "1"` |
+  | `--serial S --share --mode fs`, S a shared persistent pool device | `exactly`: `cxl-pool-persistent`, serial selector, `shares: "1"` |
   | `--serial S --mode fs`, S a shared persistent pool device | `exactly`: `cxl-pool-persistent`, serial selector, no capacity |
-  | `--serial S --shared --mode fs --read-only=false`, S a shared persistent pool device | `exactly`: `cxl-pool-persistent`, serial selector, `shares: "1"`, `readOnly: false` |
+  | `--serial S --share --mode fs --read-only=false`, S a shared persistent pool device | `exactly`: `cxl-pool-persistent`, serial selector, `shares: "1"`, `readOnly: false` |
   | `--serial S --mode fs`, S a persistent local memdev | `exactly`: `cxl-local-persistent`, serial selector, no capacity |
-  | `--source pool --shared --mode fs --size 256Mi` | `exactly`: `cxl-pool-persistent`, `size >= 268435456`, `shares: "1"` |
-  | `--shared --mode fs --size 256Mi` | `firstAvailable`: `cxl-local-persistent`, then `cxl-pool-persistent`, `size >= 268435456` and `shares: "1"` each |
+  | `--source pool --share --mode fs --size 256Mi` | `exactly`: `cxl-pool-persistent`, `size >= 268435456`, `shares: "1"` |
+  | `--share --mode fs --size 256Mi` | `firstAvailable`: `cxl-local-persistent`, then `cxl-pool-persistent`, `size >= 268435456` and `shares: "1"` each |
   | `--serial S --mode block`, S a shared persistent pool device (the writer) | `exactly`: `cxl-pool-persistent`, serial selector, no capacity: the whole device |
-  | `--serial S --shared --read-only --mode block`, S a shared persistent pool device (a reader) | `exactly`: `cxl-pool-persistent`, serial selector, `shares: "1"` |
+  | `--serial S --share --read-only --mode block`, S a shared persistent pool device (a reader) | `exactly`: `cxl-pool-persistent`, serial selector, `shares: "1"` |
 
   Every source
   driver gets a `MemoryConfig` (apiVersion `cxl.nri.io/v1alpha1`) whose

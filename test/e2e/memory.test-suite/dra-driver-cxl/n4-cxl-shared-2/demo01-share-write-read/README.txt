@@ -198,7 +198,7 @@ L4 "three readers start"
    T2 reader-a..c Running, lease "-".
 L5 "readers ask for a read-only share: they must wait"
    $ for r in reader-a reader-b reader-c; do kubectl exec $r -- cxl-request
-     request --serial S --shared --read-only --wait 0s; done
+     request --serial S --share --read-only --wait 0s; done
    T2 three "waiting". T3 "waiting: reader-a reader-b reader-c". T5 sched
    "reader-a waits: cannot allocate" three times.
    Pause here: the writer holds the device exclusively; nothing moves
@@ -298,7 +298,7 @@ F4 "three readers start: two on vm2, one on vm1"
    $ kubectl apply -f pool-shared-fs/readers.yaml
 F5 "readers ask for the file system: they must wait"
    $ for r in reader-a reader-b reader-c; do kubectl exec $r -- cxl-request
-     request --serial S --shared --read-only --mode fs --name hello
+     request --serial S --share --read-only --mode fs --name hello
      --wait 0s; done
    T2 three "waiting". T3 "waiting: reader-a reader-b reader-c". T5
    "reader-a waits: cannot allocate" three times. Pause: the writer holds
@@ -389,7 +389,7 @@ R3 "the writer makes an empty ext4 filesystem on it"
    container has no device node) and checks the superblock on the device.
 R4 "the writer mounts it read-write instead"
    $ kubectl exec writer -- sh -c 'cxl-request release --all && cxl-request
-     request --serial S --shared --mode fs --read-only=false --name data'
+     request --serial S --share --mode fs --read-only=false --name data'
    T1 "lease L Ready ext4 rw (direct)", "path /run/cxl/fs/data", "attached
    to vm1 only (ReadWriteOnce)". T2 writer "fs rw (vm1 only)". T3 "writer
    on vm1 only: writer rw". T4 vm1 "node mount ext4 rw (dax)", "mounted:
@@ -414,7 +414,7 @@ R6 "three readers start: two on vm2, one on vm1"
    $ kubectl apply -f pool-fs/readers.yaml
 R7 "readers ask to read: vm1's reader at once, vm2's must wait"
    $ for r in reader-a reader-b reader-c; do kubectl exec $r -- cxl-request
-     request --serial S --shared --mode fs --name data --wait 0s; done
+     request --serial S --share --mode fs --name data --wait 0s; done
    T1 "reader-c Ready on vm1, next to the writer", "reader-a reader-b
    waiting: Conflict (N s)". T2 reader-c "fs ro share", reader-a and
    reader-b "waiting (Conflict)". T3 "shared: reader-c ro", "waiting

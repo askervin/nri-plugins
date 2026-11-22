@@ -8,7 +8,7 @@
 # request --serial SERIAL" in the container, the plugin passes a dax
 # device fd.
 #
-# - Exclusive: "cxl-request request --serial SERIAL" without --shared asks
+# - Exclusive: "cxl-request request --serial SERIAL" without --share asks
 #   for no "shares" of the device, which takes all of them (1M in the pool
 #   ResourceSlice, without a requestPolicy): the device exclusively.
 #   While the writer has it, the scheduler cannot allocate the device to
@@ -16,7 +16,7 @@
 #   fake-cxl-pool-server refuses to attach the device to any other host
 #   (the attachment is exclusive, which also keeps out other clusters
 #   sharing the pool).
-# - Read-only: "cxl-request request --serial SERIAL --shared --read-only"
+# - Read-only: "cxl-request request --serial SERIAL --share --read-only"
 #   takes one share of the device (shares: "1") and gets an fd opened
 #   O_RDONLY: the reader can map the memory for reading only, a writable
 #   mapping is refused (EACCES) whatever the capabilities of the
@@ -173,7 +173,7 @@ dra-assert "$COMMAND_OUTPUT" "all(attr(device('lease', '$DRA_LOCAL_DRIVER', n), 
 dra-assert "$COMMAND_OUTPUT" "sorted(${S0}.get('capacity') or {}) == ['shares'] and quantity(capacity($S0, 'shares')) == $DRA_SHARES and request_policy($S0, 'shares') is None"
 
 echo "### B: the writer on VM1 gets shared0 exclusively and writes"
-# Without --shared, a request of a shared device takes all of its shares.
+# Without --share, a request of a shared device takes all of its shares.
 dra-apply "$VM2" <<< "$(lease-pod-yaml writer "$VM1" "echo \"writer: cxl-request request --serial $SHARED_SERIAL\"
 cxl-request request --serial $SHARED_SERIAL --wait 120s --exec sh -c '
 echo \"lease \$CXL_LEASE read-only \$CXL_${SHARED_HEX}_READ_ONLY shared \$CXL_${SHARED_HEX}_SHARED fd \$CXL_${SHARED_HEX}_FD\"
@@ -209,8 +209,8 @@ echo "host read at 0 of $SHARED_FILE: '$found'"
 
 echo "### C: three readers ask meanwhile, two on VM2 and one on VM1: they wait"
 for r in "${READERS[@]}"; do
-    dra-apply "$VM2" <<< "$(lease-pod-yaml "$r" "${READER_VM[$r]}" "echo \"$r: cxl-request request --serial $SHARED_SERIAL --shared --read-only\"
-cxl-request request --serial $SHARED_SERIAL --shared --read-only --wait 300s --exec sh -c '
+    dra-apply "$VM2" <<< "$(lease-pod-yaml "$r" "${READER_VM[$r]}" "echo \"$r: cxl-request request --serial $SHARED_SERIAL --share --read-only\"
+cxl-request request --serial $SHARED_SERIAL --share --read-only --wait 300s --exec sh -c '
 echo \"lease \$CXL_LEASE read-only \$CXL_${SHARED_HEX}_READ_ONLY\"
 python3 /tools/dax-rw.py --fd 3 check-ro 0 || exit 1
 exec python3 /tools/dax-rw.py --fd 3 watch 0 /tmp/stop'
@@ -233,7 +233,7 @@ for r in "${READERS[@]}"; do
     dra-json "$VM2" resourceclaim -n "$DRA_NS" "$companion"
     dra-assert "$COMMAND_OUTPUT" "j['status'].get('allocation') is None"
     dra-leases "${READER_VM[$r]}" "$r"
-    dra-assert "$DRA_LEASES" "[(l['state'], bool(l.get('readOnly')), bool(l.get('shared')), l.get('mode')) for l in j] == [('Pending', True, True, 'dax')]"
+    dra-assert "$DRA_LEASES" "[(l['state'], bool(l.get('readOnly')), bool(l.get('share')), l.get('mode')) for l in j] == [('Pending', True, True, 'dax')]"
 done
 pool-attachments shared0
 pool-assert "$COMMAND_OUTPUT" "[(a['host'], a.get('exclusive', False)) for a in j] == [('$VM1_NAME', True)]"
@@ -258,7 +258,7 @@ for r in "${READERS[@]}"; do
     grep -qE '^lease [0-9a-f]{8} read-only 1$' <<< "$COMMAND_OUTPUT" ||
         error "$r has no read-only lease"
     dra-leases "${READER_VM[$r]}" "$r"
-    dra-assert "$DRA_LEASES" "[(l['state'], l.get('mode'), bool(l.get('shared')), bool(l.get('readOnly')), l.get('serial')) for l in j] == [('Ready', 'dax', True, True, '$SHARED_SERIAL')]"
+    dra-assert "$DRA_LEASES" "[(l['state'], l.get('mode'), bool(l.get('share')), bool(l.get('readOnly')), l.get('serial')) for l in j] == [('Ready', 'dax', True, True, '$SHARED_SERIAL')]"
 done
 # All three hold their mapping now: none has its stop file yet.
 for r in "${READERS[@]}"; do

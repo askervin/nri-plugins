@@ -55,7 +55,7 @@ import (
 type Lease struct {
 	ID        string     `json:"id"`
 	Claim     string     `json:"claim"`
-	RequestID string     `json:"requestId,omitempty"`
+	RequestID string     `json:"requestID,omitempty"`
 	Pod       PodRef     `json:"pod"`
 	Container string     `json:"container"`
 	Asked     LeaseAsked `json:"asked"`

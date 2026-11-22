@@ -18,7 +18,7 @@
 // containers of claims on DeviceClass cxl-lease. See
 // docs/memory/cxl/leases.md.
 //
-//	cxl-request request [--source local|pool] [--mode numa|dax|fs|block] [--shared]
+//	cxl-request request [--source local|pool] [--mode numa|dax|fs|block] [--share]
 //	                    [--read-only[=false]] [--access direct|cached] [--fs-type TYPE]
 //	                    [--name NAME] [--size SIZE] [--serial SERIAL] [--wait DURATION]
 //	                    [--request-id ID] [--exec CMD [ARG...]]
@@ -68,7 +68,7 @@ const (
 )
 
 const usage = `usage:
-  cxl-request request [--source local|pool] [--mode numa|dax|fs|block] [--shared]
+  cxl-request request [--source local|pool] [--mode numa|dax|fs|block] [--share]
                       [--read-only[=false]] [--access direct|cached] [--fs-type TYPE]
                       [--name NAME] [--size SIZE] [--serial SERIAL] [--wait DURATION]
                       [--request-id ID] [--exec CMD [ARG...]]
@@ -77,13 +77,13 @@ const usage = `usage:
   cxl-request fd  --lease ID [--wait DURATION] --exec CMD [ARG...]
   cxl-request env --lease ID [--wait DURATION] [--exec CMD [ARG...]]
   cxl-request help
-request: memory for this container, exclusive unless --shared:
+request: memory for this container, the whole device unless --share:
   --source    local (a memdev of this node) or pool; default local, then pool
-  --mode      numa (lent as a NUMA node), dax (a devdax fd), fs (the
+  --mode      numa (lent as a NUMA node), dax (a dax device fd), fs (the
               filesystem of a persistent device at /run/cxl/fs/NAME) or
               block (an fd of the block device of a persistent device);
-              default numa, dax with --shared or for a shared device
-  --shared    one share of a shared device (default: the whole device, exclusive)
+              default numa, dax with --share or for a shared device
+  --share     one share of a shared device (default: the whole device)
   --read-only a dax or block fd that allows reads only; fs is read-only
               unless --read-only=false
   --access    fs: direct (file pages are the memory of the device) or
@@ -103,7 +103,7 @@ The socket is $CXL_LEASE_SOCKET.
 
 // options lists the options of each operation; --exec is the last one.
 var options = map[string][]string{
-	api.OpRequest: {"--source", "--mode", "--shared", "--read-only", "--access", "--fs-type", "--name", "--size", "--serial", "--wait",
+	api.OpRequest: {"--source", "--mode", "--share", "--read-only", "--access", "--fs-type", "--name", "--size", "--serial", "--wait",
 		"--request-id", "--exec"},
 	api.OpRelease: {"--lease", "--all", "--wait"},
 	api.OpList:    {},
@@ -183,7 +183,7 @@ func (cmd *command) values() map[string]*string {
 // command: true, or the value given inline (--read-only=false).
 func (cmd *command) flags() map[string]func(bool) {
 	return map[string]func(bool){
-		"--shared":    func(b bool) { cmd.req.Share = b },
+		"--share":     func(b bool) { cmd.req.Share = b },
 		"--read-only": func(b bool) { cmd.req.ReadOnly = &b },
 		"--all":       func(b bool) { cmd.req.All = b },
 	}

@@ -545,7 +545,7 @@ LEASE_SCRIPT='env | grep "^CXL_'"$FS_HEX"'_" | sort
 p="$CXL_'"$FS_HEX"'_PATH"
 echo "read: $(cat "$p/$1")"
 if out=$(touch "$p/lease-probe" 2>&1); then echo "write: done"; else echo "write refused: $out"; fi'
-dra-exec "$VM2" lease-a/main "$DRA_REQUEST_CTR_BIN" request --serial "$FS_SERIAL" --shared --mode fs --name ro --wait 120s \
+dra-exec "$VM2" lease-a/main "$DRA_REQUEST_CTR_BIN" request --serial "$FS_SERIAL" --share --mode fs --name ro --wait 120s \
     --exec sh -c "$LEASE_SCRIPT" sh g.txt || command-error "lease-a: the read-only lease of $FS_DEVICE failed"
 LOG_RO="$COMMAND_OUTPUT"
 dra-env-assert "lease-a ro" "$LOG_RO" "$FS_HEX" \
@@ -559,7 +559,7 @@ LEASE_RO=$(dra-value "$DRA_LEASES" "j[0]['lease']")
 lease-bind-assert "$VM2" "$LEASE_A_UID" ro ro
 # A read-write lease on the same node: its companion claim writes, its
 # file reaches rw-g.
-dra-exec "$VM2" lease-a/main "$DRA_REQUEST_CTR_BIN" request --serial "$FS_SERIAL" --shared --mode fs --read-only=false --name rw --wait 120s \
+dra-exec "$VM2" lease-a/main "$DRA_REQUEST_CTR_BIN" request --serial "$FS_SERIAL" --share --mode fs --read-only=false --name rw --wait 120s \
     --exec sh -c 'env | grep "^CXL_'"$FS_HEX"'_" | sort; printf "%s\n" "$1" > "$CXL_'"$FS_HEX"'_PATH/l.txt" && sync && echo "write: done"' sh "$TEXT_L" ||
     command-error "lease-a: the read-write lease of $FS_DEVICE failed"
 LOG_RW="$COMMAND_OUTPUT"
@@ -585,7 +585,7 @@ fs-ctr-read-assert rw-g "$FS_PATH" l.txt "$TEXT_L"
 # --wait it times out, is released and Failed; with --wait 0s it stays,
 # its companion claim waiting with AttachFailed reason Conflict.
 lease-pod-start lease-b "$VM1"
-dra-exec "$VM2" lease-b/main "$DRA_REQUEST_CTR_BIN" request --serial "$FS_SERIAL" --shared --mode fs --read-only=false --wait 30s &&
+dra-exec "$VM2" lease-b/main "$DRA_REQUEST_CTR_BIN" request --serial "$FS_SERIAL" --share --mode fs --read-only=false --wait 30s &&
     error "lease-b: a read-write lease on VM1 got Ready while rw-g writes on VM2"
 [ "$COMMAND_STATUS" == 3 ] || error "lease-b: cxl-request request exited $COMMAND_STATUS, expected 3 (not Ready in time)"
 LEASE_B_JSON=$(dra-last-json "$COMMAND_OUTPUT
@@ -593,7 +593,7 @@ $DRA_EXEC_STDERR") || error "lease-b: no response of cxl-request request"
 dra-assert "$LEASE_B_JSON" "j.get('state') == 'Failed' and 'timeout: not Ready after' in (j.get('error') or '')"
 LEASE_B=$(dra-value "$LEASE_B_JSON" "j['lease']")
 dra-wait "$VM2" "lease-$LEASE_B-gone" "pods,resourceclaims -n $DRA_NS" "'cxl-lease-$LEASE_B' not in names()" 90
-dra-exec "$VM2" lease-b/main "$DRA_REQUEST_CTR_BIN" request --serial "$FS_SERIAL" --shared --mode fs --read-only=false --wait 0s ||
+dra-exec "$VM2" lease-b/main "$DRA_REQUEST_CTR_BIN" request --serial "$FS_SERIAL" --share --mode fs --read-only=false --wait 0s ||
     command-error "lease-b: cxl-request request --wait 0s failed"
 LEASE_B_JSON=$(dra-last-json "$COMMAND_OUTPUT") || error "lease-b: no response of cxl-request request"
 dra-assert "$LEASE_B_JSON" "j.get('state') in ('Creating', 'Pending', 'Lending') and j.get('lease')"

@@ -28,7 +28,7 @@ func TestRequestResponseRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"op":"request","source":"pool","mode":"fs","shared":true,"readOnly":false,"access":"cached","fsType":"ext4","name":"models","size":"256Mi","serial":"0xc1ae0001","wait":"10s","requestId":"r1","lease":"1a2b3c4d","all":true}`
+	want := `{"op":"request","source":"pool","mode":"fs","share":true,"readOnly":false,"access":"cached","fsType":"ext4","name":"models","size":"256Mi","serial":"0xc1ae0001","wait":"10s","requestID":"r1","lease":"1a2b3c4d","all":true}`
 	if string(data) != want {
 		t.Fatalf("request JSON\n%s\nwant\n%s", data, want)
 	}
@@ -48,7 +48,7 @@ func TestRequestResponseRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = `{"lease":"1a2b3c4d","state":"Ready","source":"local","mode":"numa","shared":false,"readOnly":false,"size":536870912,"serial":"0xc100e2e1","node":2,"env":{"CXL_C100E2E1_MODE":"numa"},"leases":[{"lease":"00000001","state":"Pending","shared":false,"readOnly":false}]}`
+	want = `{"lease":"1a2b3c4d","state":"Ready","source":"local","mode":"numa","share":false,"readOnly":false,"size":536870912,"serial":"0xc100e2e1","numaNode":2,"env":{"CXL_C100E2E1_MODE":"numa"},"leases":[{"lease":"00000001","state":"Pending","share":false,"readOnly":false}]}`
 	if string(data) != want {
 		t.Fatalf("response JSON\n%s\nwant\n%s", data, want)
 	}
@@ -63,7 +63,7 @@ func TestRequestResponseRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = `{"lease":"1a2b3c4d","state":"Ready","source":"pool","mode":"fs","shared":true,"readOnly":true,"access":"direct","fsType":"erofs","path":"/run/cxl/fs/models","size":534773760,"serial":"0xc1ae0001"}`
+	want = `{"lease":"1a2b3c4d","state":"Ready","source":"pool","mode":"fs","share":true,"readOnly":true,"access":"direct","fsType":"erofs","path":"/run/cxl/fs/models","size":534773760,"serial":"0xc1ae0001"}`
 	if string(data) != want {
 		t.Fatalf("fs response JSON\n%s\nwant\n%s", data, want)
 	}
@@ -74,7 +74,7 @@ func TestRequestResponseRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = `{"lease":"1a2b3c4d","state":"Ready","source":"pool","mode":"block","shared":false,"readOnly":false,"size":534773760,"serial":"0xc1ae0001","block":"/dev/pmem0"}`
+	want = `{"lease":"1a2b3c4d","state":"Ready","source":"pool","mode":"block","share":false,"readOnly":false,"size":534773760,"serial":"0xc1ae0001","block":"/dev/pmem0"}`
 	if string(data) != want {
 		t.Fatalf("block response JSON\n%s\nwant\n%s", data, want)
 	}
@@ -104,8 +104,8 @@ func TestValidate(t *testing.T) {
 		{Request{Op: OpRequest, Serial: "0xc1ae0001", Mode: ModeBlock, Source: SourcePool, ReadOnly: ptr(true)}, ""},
 		{Request{Op: OpRequest, Serial: "0xc1ae0001", Mode: ModeBlock, Share: true, ReadOnly: ptr(true)}, ""},
 		{Request{Op: OpRequest, Size: "1Gi", Mode: ModeBlock}, ""},
-		{Request{Op: OpRequest, Serial: "0xc1ae0001", Mode: ModeBlock, Share: true}, "mode block with shared needs readOnly"},
-		{Request{Op: OpRequest, Mode: ModeBlock, Share: true, Source: SourceLocal}, "mode block with shared needs readOnly"},
+		{Request{Op: OpRequest, Serial: "0xc1ae0001", Mode: ModeBlock, Share: true}, "mode block with share needs readOnly"},
+		{Request{Op: OpRequest, Mode: ModeBlock, Share: true, Source: SourceLocal}, "mode block with share needs readOnly"},
 		{Request{Op: OpRequest, Mode: ModeBlock, Access: AccessDirect, Size: "64Mi"}, "access needs mode fs"},
 		{Request{Op: OpRequest, Mode: ModeBlock, Name: "x", Size: "64Mi"}, "name needs mode fs"},
 		// local persistent memdevs have mode block
@@ -166,21 +166,21 @@ func TestValidate(t *testing.T) {
 		{Request{Op: OpRequest, Size: "1Gi", ReadOnly: ptr(true), Mode: ModeNUMA}, "readOnly needs mode dax, fs or block"},
 		{Request{Op: OpRequest}, "size or serial is required"},
 		{Request{Op: OpRequest, Serial: "c1ae0001"}, `invalid serial "c1ae0001"`},
-		{Request{Op: OpRelease}, "release takes --lease ID or --all"},
-		{Request{Op: OpRelease, Lease: "1a2b3c4d", All: true}, "release takes --lease ID or --all"},
+		{Request{Op: OpRelease}, "release takes lease or all"},
+		{Request{Op: OpRelease, Lease: "1a2b3c4d", All: true}, "release takes lease or all"},
 		{Request{Op: OpRequest, Size: "1Gi", Wait: "soon"}, `invalid wait "soon"`},
 		{Request{Op: OpRelease, All: true, Wait: "-1s"}, `invalid wait "-1s"`},
 		{Request{Op: OpRequest, Size: "1Gi", Wait: "1h"}, ""},
 		{Request{Op: OpRequest, Size: "1Gi", Wait: "61m"}, `invalid wait "61m" (at most 1h0m0s)`},
 		{Request{Op: OpRequest, Size: "1Gi", RequestID: "Pod-1_a." + strings.Repeat("r", 56)}, ""},
-		{Request{Op: OpRequest, Size: "1Gi", RequestID: strings.Repeat("r", 65)}, `invalid requestId "rrr`},
-		{Request{Op: OpList, RequestID: "a/b"}, `invalid requestId "a/b" (1 to 64 letters, digits, ".", "_" and "-")`},
+		{Request{Op: OpRequest, Size: "1Gi", RequestID: strings.Repeat("r", 65)}, `invalid requestID "rrr`},
+		{Request{Op: OpList, RequestID: "a/b"}, `invalid requestID "a/b" (1 to 64 letters, digits, ".", "_" and "-")`},
 		{Request{Op: OpRelease, Lease: "1A2B3C4D"}, `invalid lease "1A2B3C4D" (8 lower-case hex digits)`},
 		{Request{Op: OpFd, Lease: "1a2b3c4"}, `invalid lease "1a2b3c4"`},
 		{Request{Op: OpEnv, Lease: "1a2b3c4d5"}, `invalid lease "1a2b3c4d5"`},
 		{Request{Op: OpEnv, Lease: "1a2b3c4g"}, `invalid lease "1a2b3c4g"`},
-		{Request{Op: OpFd}, "fd needs --lease ID"},
-		{Request{Op: OpEnv}, "env needs --lease ID"},
+		{Request{Op: OpFd}, "fd needs lease"},
+		{Request{Op: OpEnv}, "env needs lease"},
 		{Request{Op: "lease"}, `unknown op "lease"`},
 	} {
 		err := c.req.Validate()
