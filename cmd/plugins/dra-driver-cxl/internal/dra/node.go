@@ -246,7 +246,7 @@ func (n *Node) Recover(ctx context.Context) (*engine.Recovered, error) {
 	// prepares and the remembered ones
 	known := map[uint64]bool{}
 	maps.Copy(known, n.Pool.Serials())
-	maps.Copy(known, n.Watcher.PoolSerials())
+	maps.Copy(known, n.Watcher.RecordedPoolSerials())
 	n.setShared(SharedSerials(n.opts.Publish, snap.Memdevs, known))
 	rec := &engine.Recovered{Why: map[state.GrantRef]error{}}
 	if err := n.opts.Store.Lost(); err != nil {
@@ -303,7 +303,7 @@ func (n *Node) WriteCDI() error {
 
 // SetLenders sets the lenders of the companion claims of both drivers:
 // nodes lends NUMA nodes, hooks tell the lease broker.
-func (n *Node) SetLenders(nodes NodeLender, hooks lend.LeaseHooks) {
+func (n *Node) SetLenders(nodes NUMALender, hooks lend.LeaseHooks) {
 	n.Local.Lender().Set(nodes, hooks)
 	n.Pool.Lender().Set(nodes, hooks)
 }

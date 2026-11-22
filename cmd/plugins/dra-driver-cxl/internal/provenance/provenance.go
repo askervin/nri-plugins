@@ -52,7 +52,7 @@ import (
 //   - otherwise a new memdev is LOCAL at once, unless a pool that the
 //     watcher remembers has been observed without ResourceSlices for less
 //     than MissingWindow, the list fails, or the records were lost: then it
-//     is HELD for HoldBack, or until the pool is back; if the pool's slices
+//     is HELD for MaxHold, or until the pool is back; if the pool's slices
 //     list it, it is POOL.
 //
 // Absence is observed: the watch scans at least every Poll (plus a tick),
@@ -95,9 +95,9 @@ var (
 	// MissingWindow is how long a pool observed without ResourceSlices (or
 	// lost records) holds new memdevs.
 	MissingWindow = time.Hour
-	// HoldBack is how long a new memdev is held at most while a pool is
+	// MaxHold is how long a new memdev is held at most while a pool is
 	// missing.
-	HoldBack = 5 * time.Minute
+	MaxHold = 5 * time.Minute
 	// Refresh is how often the times of last sight are committed at most
 	// when nothing else changes.
 	Refresh = time.Hour
@@ -126,7 +126,7 @@ func recorded(p *state.Provenance) bool {
 	return p.State == state.ProvenancePool || p.State == state.ProvenanceLocal
 }
 
-// expires tells whether a hold for the reason expires after HoldBack.
+// expires tells whether a hold for the reason expires after MaxHold.
 func expires(reason state.HeldReason) bool {
 	return reason != state.HeldNeverListed && reason != state.HeldAttaching
 }
@@ -285,7 +285,7 @@ func (s *step) noteLocal(r *state.Records, m *kernel.MemdevInfo, trigger state.T
 
 // hold holds the new memdev m (its record p, nil for none, else HELD) for
 // the reason why (reason), and tells whether it stays HELD: a reason that
-// does not expire holds it; one that expires holds it for HoldBack from the
+// does not expire holds it; one that expires holds it for MaxHold from the
 // start of the hold, or from the change of its reason from one that does
 // not expire.
 func (s *step) hold(r *state.Records, m *kernel.MemdevInfo, p *state.Provenance, why string, reason state.HeldReason) bool {
@@ -309,7 +309,7 @@ func (s *step) hold(r *state.Records, m *kernel.MemdevInfo, p *state.Provenance,
 			s.changed, s.durable = true, true
 		}
 	}
-	return !expires(reason) || s.now.Sub(p.HeldSince) < HoldBack
+	return !expires(reason) || s.now.Sub(p.HeldSince) < MaxHold
 }
 
 // forget removes the POOL or LOCAL record of the serial, as the operator
@@ -531,7 +531,7 @@ func (w *Watcher) open() {
 	if err := st.Lost(); err != nil {
 		w.lost = err.Error()
 		klog.Errorf("pool serials: %s: %v: the remembered pool serials are lost; new memory devices are held back for up to %v each in the next %v",
-			w.opts.Name, err, HoldBack, MissingWindow)
+			w.opts.Name, err, MaxHold, MissingWindow)
 		return
 	}
 	w.st, w.storeCommit = st, st.Commit
@@ -602,7 +602,7 @@ func orPrepared(pool string) string {
 }
 
 // uncertainLocked returns why a new memdev cannot be taken as local now but
-// may be after HoldBack, and its reason: the list fails, pools of r have
+// may be after MaxHold, and its reason: the list fails, pools of r have
 // been observed without ResourceSlices for less than MissingWindow, or the
 // records were lost less than MissingWindow ago. "" if it can. Called with
 // w.mu held.
@@ -789,7 +789,7 @@ func (g *gateScan) observeNew(s *step, r *state.Records, m *kernel.MemdevInfo, p
 	}
 	s.log(func() {
 		klog.Warningf("pool serials: publishing memdev %s (serial 0x%x) as a local memory device after holding it back for %v (%s)",
-			name, serial, HoldBack, why)
+			name, serial, MaxHold, why)
 	})
 	s.noteLocal(r, m, triggerExpire)
 	return false

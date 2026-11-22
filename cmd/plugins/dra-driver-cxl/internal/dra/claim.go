@@ -151,10 +151,10 @@ func lasting(err error) error {
 	return lastingError{err}
 }
 
-// shareUse returns how an allocation result that consumed shares of a device
+// sharesText returns how an allocation result that consumed shares of a device
 // of total shares uses it: "exclusive" when it consumed all of them, else
 // "1 share" or "<n> shares".
-func shareUse(shares, total int64) string {
+func sharesText(shares, total int64) string {
 	switch {
 	case shares >= total:
 		return "exclusive"
@@ -385,7 +385,7 @@ func (p *Plugin) memdevRequest(pr *prepare, r *resourcev1.DeviceRequestAllocatio
 	req.Asked.Mode = state.Mode(mode)
 	if dev.Shared {
 		req.Asked.Kind, req.Asked.Shared = state.KindShared, true
-		pr.uses[req.Ref] = shareUse(shares, device.SharesUnlimited)
+		pr.uses[req.Ref] = sharesText(shares, device.SharesUnlimited)
 		return req, nil
 	}
 	if _, ok := r.ConsumedCapacity[device.CapacityShares]; ok {

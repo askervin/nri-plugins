@@ -146,7 +146,7 @@ func publishedDevice(node *dra.Node) func(serial uint64) (string, *resourcev1.De
 // requests and companion claims fail with errLendingUnavailable.
 func wireLenders(nri *containers.Plugin, broker *leases.Broker, node *dra.Node) leases.Containers {
 	var lender leases.Containers
-	var nodes dra.NodeLender
+	var nodes dra.NUMALender
 	if nri != nil {
 		lender, nodes = nri, nri
 	}
@@ -348,7 +348,7 @@ func nodeOptions(config *pluginConfig, driverConfig *DriverConfig, k *kernel.Ker
 // block of a CXL region.
 func fenceSeed(ctx context.Context, st *store.Store, k *kernel.Kernel, drivers ...string) ([]int, error) {
 	if st.Lost() == nil {
-		return dra.NumaNodes(&st.Snapshot().Records, drivers...), nil
+		return dra.NUMANodes(&st.Snapshot().Records, drivers...), nil
 	}
 	snap, err := k.ObserveTopology(ctx)
 	if err != nil {

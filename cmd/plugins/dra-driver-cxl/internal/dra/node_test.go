@@ -87,8 +87,8 @@ func TestNodeLocalSnapshot(t *testing.T) {
 		})
 		_, err := n.Recover(context.Background())
 		mustOK(t, err)
-		snap := n.Publisher.LocalSnapshot()
-		if managed != (snap != nil) || snap != nil && len(snap.Uses) != 0 {
+		snap := n.Publisher.LocalRecords()
+		if managed != (snap != nil) || snap != nil && len(snap.Memdevs) != 0 {
 			t.Fatalf("managed %v: local snapshot %+v", managed, snap)
 		}
 	}

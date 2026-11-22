@@ -486,22 +486,22 @@ type frontNodes struct {
 	lent map[string]bool // "<node> <holder>"
 }
 
-// LendNode lends a node to the container on behalf of holder.
-func (n *frontNodes) LendNode(_ context.Context, _, _ string, node int, holder string) error {
+// LendNUMANode lends a node to the container on behalf of holder.
+func (n *frontNodes) LendNUMANode(_ context.Context, _, _ string, numaNode int, lease string) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.lent == nil {
 		n.lent = map[string]bool{}
 	}
-	n.lent[fmt.Sprintf("%d %s", node, holder)] = true
+	n.lent[fmt.Sprintf("%d %s", numaNode, lease)] = true
 	return nil
 }
 
-// RevokeNode drops holder of the node.
-func (n *frontNodes) RevokeNode(_ context.Context, _, _ string, node int, holder string) error {
+// RevokeNUMANode drops holder of the node.
+func (n *frontNodes) RevokeNUMANode(_ context.Context, _, _ string, numaNode int, lease string) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	delete(n.lent, fmt.Sprintf("%d %s", node, holder))
+	delete(n.lent, fmt.Sprintf("%d %s", numaNode, lease))
 	return nil
 }
 

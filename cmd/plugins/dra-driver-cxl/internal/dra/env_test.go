@@ -361,7 +361,7 @@ func (e *driverEnv) lend(nodes *fakeNodes, hooks lend.LeaseHooks) {
 }
 
 // nodeLender returns the node lender of the env, nil for none.
-func (e *driverEnv) nodeLender() NodeLender {
+func (e *driverEnv) nodeLender() NUMALender {
 	if e.nodes == nil {
 		return nil
 	}
@@ -727,15 +727,15 @@ type fakeNodes struct {
 	lent             map[int][]string // node -> holders
 }
 
-// LendNode lends a node to the container on behalf of holder.
-func (f *fakeNodes) LendNode(_ context.Context, podUID, name string, node int, holder string) error {
-	f.e.event("lend %s/%s %d %s", podUID, name, node, holder)
+// LendNUMANode lends a node to the container on behalf of holder.
+func (f *fakeNodes) LendNUMANode(_ context.Context, podUID, name string, numaNode int, lease string) error {
+	f.e.event("lend %s/%s %d %s", podUID, name, numaNode, lease)
 	f.mu.Lock()
 	on, cut := f.onLend, f.cut
 	f.cut = false
 	f.mu.Unlock()
 	if on != nil {
-		on(node)
+		on(numaNode)
 	}
 	if cut {
 		panic(fake.ErrCut)
@@ -748,20 +748,20 @@ func (f *fakeNodes) LendNode(_ context.Context, podUID, name string, node int, h
 	if f.lent == nil {
 		f.lent = map[int][]string{}
 	}
-	if !slices.Contains(f.lent[node], holder) {
-		f.lent[node] = append(f.lent[node], holder)
+	if !slices.Contains(f.lent[numaNode], lease) {
+		f.lent[numaNode] = append(f.lent[numaNode], lease)
 	}
 	return nil
 }
 
-// RevokeNode drops holder of the node.
-func (f *fakeNodes) RevokeNode(_ context.Context, podUID, name string, node int, holder string) error {
-	f.e.event("revoke %s/%s %d %s", podUID, name, node, holder)
+// RevokeNUMANode drops holder of the node.
+func (f *fakeNodes) RevokeNUMANode(_ context.Context, podUID, name string, numaNode int, lease string) error {
+	f.e.event("revoke %s/%s %d %s", podUID, name, numaNode, lease)
 	f.mu.Lock()
 	on, err := f.onRevoke, f.revokeErr
 	f.mu.Unlock()
 	if on != nil {
-		on(node)
+		on(numaNode)
 	}
 	if err != nil {
 		return err
@@ -771,9 +771,9 @@ func (f *fakeNodes) RevokeNode(_ context.Context, podUID, name string, node int,
 	if f.lent == nil {
 		return nil
 	}
-	f.lent[node] = slices.DeleteFunc(f.lent[node], func(h string) bool { return h == holder })
-	if len(f.lent[node]) == 0 {
-		delete(f.lent, node)
+	f.lent[numaNode] = slices.DeleteFunc(f.lent[numaNode], func(h string) bool { return h == lease })
+	if len(f.lent[numaNode]) == 0 {
+		delete(f.lent, numaNode)
 	}
 	return nil
 }
@@ -1035,5 +1035,5 @@ func wantLogText(t *testing.T, log, text string) {
 	}
 }
 
-// errSteered is an error of a fake.
-var errSteered = errors.New("steered failure")
+// errFake is an error of a fake.
+var errFake = errors.New("steered failure")

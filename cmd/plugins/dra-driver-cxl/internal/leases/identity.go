@@ -38,12 +38,12 @@ type Containers interface {
 	// Running tells whether an instance of the container name of the pod
 	// is created or started.
 	Running(podUID, container string) bool
-	// LendNode lends the NUMA node to the container on behalf of holder,
-	// a lease id. Idempotent per node and holder.
-	LendNode(ctx context.Context, podUID, container string, node int, holder string) error
-	// RevokeNode drops holder of the NUMA node of the container; a
+	// LendNUMANode lends the NUMA node to the container for the lease (its
+	// id). Idempotent per NUMA node and lease.
+	LendNUMANode(ctx context.Context, podUID, container string, numaNode int, lease string) error
+	// RevokeNUMANode drops the lease of the NUMA node of the container; a
 	// container that is gone is not an error. Idempotent.
-	RevokeNode(ctx context.Context, podUID, container string, node int, holder string) error
+	RevokeNUMANode(ctx context.Context, podUID, container string, numaNode int, lease string) error
 	// OnContainerGone registers fn, called in a goroutine of its own for
 	// a container that stopped or was removed.
 	OnContainerGone(fn func(pod state.PodRef, container string))

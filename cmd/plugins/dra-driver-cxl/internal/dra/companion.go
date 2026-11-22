@@ -48,15 +48,15 @@ import (
 // into the lease claim's directory by the engine, and the broker gets the
 // memdevs (state.DeviceInfo) when the claim is prepared.
 
-// NodeLender lends NUMA nodes to running containers.
-type NodeLender interface {
-	// LendNode lends NUMA node to the container on behalf of holder.
-	// Idempotent per node and holder.
-	LendNode(ctx context.Context, podUID, name string, node int, holder string) error
-	// RevokeNode drops holder of the node; the node leaves the container's
-	// cpuset.mems when it has no holder left. Idempotent; a container that
-	// is gone is not an error.
-	RevokeNode(ctx context.Context, podUID, name string, node int, holder string) error
+// NUMALender lends NUMA nodes to running containers.
+type NUMALender interface {
+	// LendNUMANode lends the NUMA node to the container for the lease.
+	// Idempotent per NUMA node and lease.
+	LendNUMANode(ctx context.Context, podUID, name string, numaNode int, lease string) error
+	// RevokeNUMANode drops the lease of the NUMA node; the NUMA node leaves
+	// the container's cpuset.mems when it has no lease left. Idempotent; a
+	// container that is gone is not an error.
+	RevokeNUMANode(ctx context.Context, podUID, name string, numaNode int, lease string) error
 }
 
 var (
@@ -91,7 +91,7 @@ type Lender struct {
 	driver string
 	// mu guards the fields below: a leaf lock.
 	mu    sync.Mutex
-	nodes NodeLender      // nil: NRI not connected
+	nodes NUMALender      // nil: NRI not connected
 	hooks lend.LeaseHooks // nil: lending disabled
 	isSet bool
 }
@@ -105,7 +105,7 @@ func NewLender(driver string) *Lender {
 // Set enables lending: nodes lends NUMA nodes (nil when NRI is not
 // connected, then companion claims fail), hooks is the lease broker (nil
 // disables lending).
-func (c *Lender) Set(nodes NodeLender, hooks lend.LeaseHooks) {
+func (c *Lender) Set(nodes NUMALender, hooks lend.LeaseHooks) {
 	if c == nil {
 		return
 	}
@@ -117,7 +117,7 @@ func (c *Lender) Set(nodes NodeLender, hooks lend.LeaseHooks) {
 }
 
 // get returns the node lender and the hooks.
-func (c *Lender) get() (NodeLender, lend.LeaseHooks) {
+func (c *Lender) get() (NUMALender, lend.LeaseHooks) {
 	if c == nil {
 		return nil, nil
 	}
@@ -168,7 +168,7 @@ func checkSpecHash(hooks lend.LeaseHooks, id string, claim *resourcev1.ResourceC
 func (c *Lender) Lend(ctx context.Context, rec *lend.Companion, devs []state.DeviceInfo) error {
 	nodes, _ := c.get()
 	for i := range devs {
-		node := deviceNumaNode(&devs[i])
+		node := deviceNUMANode(&devs[i])
 		if node < 0 {
 			continue
 		}
@@ -176,7 +176,7 @@ func (c *Lender) Lend(ctx context.Context, rec *lend.Companion, devs []state.Dev
 			return fmt.Errorf("lease %s: %w", rec.Lease, lend.ErrLendingUnavailable)
 		}
 		rec.NUMANodes = append(rec.NUMANodes, node)
-		if err := nodes.LendNode(ctx, rec.Pod.UID, rec.Container, node, rec.Lease); err != nil {
+		if err := nodes.LendNUMANode(ctx, rec.Pod.UID, rec.Container, node, rec.Lease); err != nil {
 			return fmt.Errorf("lease %s: lending node %d to %s/%s/%s: %w", rec.Lease, node, rec.Pod.Namespace, rec.Pod.Name, rec.Container, err)
 		}
 		klog.Infof("%s: lease %s: lent node %d to %s/%s/%s", c.driver, rec.Lease, node, rec.Pod.Namespace, rec.Pod.Name, rec.Container)
@@ -204,7 +204,7 @@ func (c *Lender) Revoke(ctx context.Context, rec *lend.Companion, claimName stri
 	}
 	var errs []error
 	for _, n := range rec.NUMANodes {
-		if err := nodes.RevokeNode(ctx, rec.Pod.UID, rec.Container, n, rec.Lease); err != nil {
+		if err := nodes.RevokeNUMANode(ctx, rec.Pod.UID, rec.Container, n, rec.Lease); err != nil {
 			errs = append(errs, fmt.Errorf("lease %s: revoking node %d from %s/%s/%s: %w", rec.Lease, n, rec.Pod.Namespace, rec.Pod.Name, rec.Container, err))
 		}
 	}
@@ -232,9 +232,9 @@ func (c *Lender) Prepared(id string, source state.Source, devs []state.DeviceInf
 	}
 }
 
-// Reprepared tells the broker again that a stored companion claim is
+// PreparedAgain tells the broker again that a stored companion claim is
 // prepared and lent, as kubelet asks to prepare a prepared claim again.
-func (c *Lender) Reprepared(rec *lend.Companion, claim *resourcev1.ResourceClaim, source state.Source, devs []state.DeviceInfo) {
+func (c *Lender) PreparedAgain(rec *lend.Companion, claim *resourcev1.ResourceClaim, source state.Source, devs []state.DeviceInfo) {
 	_, hooks := c.get()
 	if hooks == nil || rec == nil {
 		return

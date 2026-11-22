@@ -47,13 +47,13 @@ func TestPoolSlicesSerials(t *testing.T) {
 	)
 	w := New(Options{Client: client, NodeName: testNode})
 	ctx := context.Background()
-	serials, known := w.Serials(ctx)
+	serials, known := w.ListPoolSerials(ctx)
 	if !known || w.Failing() || !maps.Equal(serials, map[uint64]bool{0xc1ee0001: true}) {
 		t.Fatalf("serials %v known %v failing %v", serials, known, w.Failing())
 	}
 	// another pool driver name
 	other := New(Options{Client: client, Driver: "other.example.com", NodeName: testNode})
-	if serials, _ := other.Serials(ctx); !maps.Equal(serials, map[uint64]bool{3238060770: true}) {
+	if serials, _ := other.ListPoolSerials(ctx); !maps.Equal(serials, map[uint64]bool{3238060770: true}) {
 		t.Fatalf("serials of other.example.com %v", serials)
 	}
 
@@ -62,14 +62,14 @@ func TestPoolSlicesSerials(t *testing.T) {
 	client.PrependReactor("list", "resourceslices", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, errors.New("apiserver unavailable")
 	})
-	serials, known = w.Serials(ctx)
+	serials, known = w.ListPoolSerials(ctx)
 	if !known || !w.Failing() || !serials[0xc1ee0001] {
 		t.Fatalf("after a failed list: serials %v known %v failing %v", serials, known, w.Failing())
 	}
 	wantLogLine(t, logs(), "listing the ResourceSlices of pool controllers: apiserver unavailable; using the serials of the last list")
 
 	var none *Watcher
-	if serials, known := none.Serials(ctx); serials != nil || !known || none.Failing() || none.Holding() {
+	if serials, known := none.ListPoolSerials(ctx); serials != nil || !known || none.Failing() || none.Holding() {
 		t.Fatalf("nil watcher: serials %v known %v", serials, known)
 	}
 	none.NotePrepared(map[uint64]bool{1: true})
@@ -92,7 +92,7 @@ func TestPoolSlicesFirstListFails(t *testing.T) {
 		}
 		return false, nil, nil
 	})
-	serials, known := e.w.Serials(t.Context())
+	serials, known := e.w.ListPoolSerials(t.Context())
 	if known || !e.w.Failing() || len(serials) != 0 {
 		t.Fatalf("serials %v known %v failing %v before the first successful list", serials, known, e.w.Failing())
 	}
@@ -102,10 +102,10 @@ func TestPoolSlicesFirstListFails(t *testing.T) {
 	e.wantHeld("never listed", localSerial)
 	wantLogLine(t, logs(), holdingBack+" mem0 (serial 0xc100e2e1): it may be a pool device: the ResourceSlices "+
 		"of pool controllers were never listed")
-	e.advance(2 * HoldBack)
+	e.advance(2 * MaxHold)
 	e.wantHeld("never listed, later", localSerial)
 	fail = false
-	serials, known = e.w.Serials(t.Context())
+	serials, known = e.w.ListPoolSerials(t.Context())
 	if !known || e.w.Failing() || !maps.Equal(serials, map[uint64]bool{0xc1ee0001: true}) {
 		t.Fatalf("serials %v known %v failing %v after the first successful list", serials, known, e.w.Failing())
 	}
@@ -181,7 +181,7 @@ func TestHeldBecomesPool(t *testing.T) {
 	e.plug(sharedPoolSerial)
 	e.wantHeld("held", sharedPoolSerial)
 	e.publish("0xc1ee2001", "0xc1ae2001")
-	_, _ = e.w.Serials(t.Context())
+	_, _ = e.w.ListPoolSerials(t.Context())
 	if r := e.st.Snapshot().ProvenanceOf(sharedPoolSerial); r == nil || r.State != state.ProvenancePool || r.Pool != poolC {
 		t.Fatalf("record %+v", r)
 	}
@@ -272,7 +272,7 @@ func TestAbsenceExpires(t *testing.T) {
 // TestClaimEvidence pins the pool claims of the node: the serial of an
 // attached one is POOL with its pool, an attaching one holds new memdevs
 // without expiry, failed attaches and claims of other nodes do not count,
-// and claims that cannot be listed hold new memdevs for HoldBack.
+// and claims that cannot be listed hold new memdevs for MaxHold.
 func TestClaimEvidence(t *testing.T) {
 	logs := klogtest.Capture(t, 4)
 	e := newWatchEnv(t)
@@ -291,7 +291,7 @@ func TestClaimEvidence(t *testing.T) {
 	e.wantHeld("attach in flight", otherLocalSerial)
 	wantLogLine(t, logs(), holdingBack+" mem2 (serial 0xa1): it may be a pool device: pool claims of the "+
 		"node are not attached yet: "+testNS+"/attaching")
-	e.advance(2 * HoldBack)
+	e.advance(2 * MaxHold)
 	e.wantHeld("attach in flight, later", otherLocalSerial)
 	e.claim("attaching", testNode, "c-pooled0", "0xc1ee2001")
 	e.wantHeld("attached")
@@ -307,7 +307,7 @@ func TestClaimEvidence(t *testing.T) {
 	wantLogLine(t, out, "pool serials: listing the pool claims of the node: apiserver unavailable")
 	wantLogLine(t, out, holdingBack+" mem3 (serial 0xa2): it may be a pool device: the pool claims of the "+
 		"node cannot be listed")
-	e.advance(HoldBack)
+	e.advance(MaxHold)
 	e.wantHeld("claims not listable, held for long enough")
 	e.wantState(0xa2, state.ProvenanceLocal)
 	// no new memdev: the claims are not listed
@@ -321,7 +321,7 @@ func TestPoolDeviceUsedByLocalClaims(t *testing.T) {
 	e := newWatchEnv(t)
 	e.publish("0xc100e2e1")
 	e.plug(localSerial)
-	serials, _ := e.w.Serials(t.Context())
+	serials, _ := e.w.ListPoolSerials(t.Context())
 	local := map[uint64][]string{localSerial: {"u1"}}
 	for range 2 {
 		pool, held := e.w.Gate(t.Context(), e.devices(), serials, local)
@@ -426,7 +426,7 @@ func TestWatch(t *testing.T) {
 	var calls []bool
 	last := time.Now()
 	scan := func() {
-		serials, _ := w.Serials(ctx)
+		serials, _ := w.ListPoolSerials(ctx)
 		w.Gate(ctx, &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{{Name: "mem0", Serial: otherLocalSerial}}}, serials, nil)
 	}
 	rescan := func(_ context.Context, periodic bool) {
@@ -562,7 +562,7 @@ func TestCheckLocalOwnList(t *testing.T) {
 			}
 			go func() {
 				defer close(scanned)
-				e.w.Serials(ctx)
+				e.w.ListPoolSerials(ctx)
 			}()
 			<-started
 			// the scan's list ends after CheckLocal's list is recorded,

@@ -295,9 +295,9 @@ func TestFenceLend(t *testing.T) {
 	e.expectUpdates()
 
 	// the DRAM nodes and the lent node, back to the DRAM nodes
-	noErr(t, e.p.LendNode(ctx, "u1", "app", 2, "l1"))
+	noErr(t, e.p.LendNUMANode(ctx, "u1", "app", 2, "l1"))
 	e.expectUpdates("c1 mems=0-2")
-	noErr(t, e.p.LendNode(ctx, "u1", "app", 2, "l2"))
+	noErr(t, e.p.LendNUMANode(ctx, "u1", "app", 2, "l2"))
 	e.expectUpdates()
 	e.check()
 	if got := e.baseOf("u1", "app"); got != "0-1" || e.specOf("c1") != "0-2" {
@@ -306,17 +306,17 @@ func TestFenceLend(t *testing.T) {
 	// a pass keeps the lent node
 	e.p.Fence(ctx, 3)
 	e.expectUpdates()
-	noErr(t, e.p.RevokeNode(ctx, "u1", "app", 2, "l1"))
+	noErr(t, e.p.RevokeNUMANode(ctx, "u1", "app", 2, "l1"))
 	e.expectUpdates()
-	noErr(t, e.p.RevokeNode(ctx, "u1", "app", 2, "l2"))
+	noErr(t, e.p.RevokeNUMANode(ctx, "u1", "app", 2, "l2"))
 	e.expectUpdates("c1 mems=0-1")
-	noErr(t, e.p.RevokeNode(ctx, "u1", "app", 2, "l2"))
+	noErr(t, e.p.RevokeNUMANode(ctx, "u1", "app", 2, "l2"))
 	e.expectUpdates()
 
 	// own nodes unknown
 	e.hasMemory("")
 	e.run(testPod("u2"), "c2", "app", 201, "0-2")
-	if err := e.p.LendNode(ctx, "u2", "app", 2, "l1"); err == nil || !strings.Contains(err.Error(), "base memory nodes unknown") {
+	if err := e.p.LendNUMANode(ctx, "u2", "app", 2, "l1"); err == nil || !strings.Contains(err.Error(), "base memory nodes unknown") {
 		t.Fatalf("lend without own nodes: %v", err)
 	}
 	e.expectUpdates()
@@ -339,7 +339,7 @@ func TestFenceRestart(t *testing.T) {
 	noErr(t, err)
 	e.passes()
 	e.expectUpdates()
-	noErr(t, e.p.LendNode(ctx, "u1", "app", 2, "l1"))
+	noErr(t, e.p.LendNUMANode(ctx, "u1", "app", 2, "l1"))
 	e.expectUpdates()
 	e.p.LendsRestored()
 	e.passes()
@@ -476,7 +476,7 @@ func TestLendRestartedRequester(t *testing.T) {
 	e.readyFence()
 	pod := testPod("u1")
 	c1 := e.run(pod, "c1", "main", 101, "0-1")
-	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	noErr(t, e.p.LendNUMANode(ctx, "u1", "main", 2, "l1"))
 	e.expectUpdates("c1 mems=0-2")
 	e.setLeases("u1", "main", 2, "l1")
 
@@ -492,12 +492,12 @@ func TestLendRestartedRequester(t *testing.T) {
 		t.Fatalf("lent %v at the creation", got)
 	}
 	// the reconcile of the broker before its start: done
-	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	noErr(t, e.p.LendNUMANode(ctx, "u1", "main", 2, "l1"))
 	// its task is created from the spec; then the broker lends again
 	e.proc(102, "kubepods/u1/c2", "0-2", "0-2")
 	e.startCtr(pod, c2)
 	e.passes()
-	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	noErr(t, e.p.LendNUMANode(ctx, "u1", "main", 2, "l1"))
 	e.expectUpdates()
 	e.check()
 	if got := e.baseOf("u1", "main"); got != "0-1" {
@@ -513,7 +513,7 @@ func TestLendRestartedRequester(t *testing.T) {
 	}
 	// the lease is released
 	e.setLeases("u1", "main", 2)
-	noErr(t, e.p.RevokeNode(ctx, "u1", "main", 2, "l1"))
+	noErr(t, e.p.RevokeNUMANode(ctx, "u1", "main", 2, "l1"))
 	e.expectUpdates("c2 mems=0-1")
 	if got := e.cgroupMems("kubepods/u1/c2"); got != "0-1" {
 		t.Fatalf("cgroup mems %s after the release", got)
@@ -526,13 +526,13 @@ func TestLendRestartedRequester(t *testing.T) {
 		t.Fatalf("adjustment %s", got)
 	}
 	e.setLeases("u1", "main", 2)
-	noErr(t, e.p.RevokeNode(ctx, "u1", "main", 2, "l2"))
+	noErr(t, e.p.RevokeNUMANode(ctx, "u1", "main", 2, "l2"))
 	e.expectUpdates("c3 mems=0-1")
 	if got := e.p.LentNodes("u1", "main"); len(got) != 0 || e.specOf("c3") != "0-1" {
 		t.Fatalf("lent %v, mems %q after the revoke", got, e.specOf("c3"))
 	}
-	noErr(t, e.p.RevokeNode(ctx, "u1", "main", 2, "l2"))
-	if err := e.p.LendNode(ctx, "u1", "main", 2, "l2"); err == nil || !strings.Contains(err.Error(), "not started") {
+	noErr(t, e.p.RevokeNUMANode(ctx, "u1", "main", 2, "l2"))
+	if err := e.p.LendNUMANode(ctx, "u1", "main", 2, "l2"); err == nil || !strings.Contains(err.Error(), "not started") {
 		t.Fatalf("lend before the start: %v", err)
 	}
 	e.expectUpdates()
@@ -564,7 +564,7 @@ func TestLendRestartedRequester(t *testing.T) {
 	if got := n.createMems(np, testCtr(np, "c5", "main", 0)); got != "-" {
 		t.Fatalf("adjustment %s in mode none", got)
 	}
-	noErr(t, n.p.RevokeNode(ctx, "u3", "main", 2, "l4"))
+	noErr(t, n.p.RevokeNUMANode(ctx, "u3", "main", 2, "l4"))
 	if got := n.p.LentNodes("u3", "main"); len(got) != 0 {
 		t.Fatalf("lent %v after the revoke", got)
 	}
@@ -592,7 +592,7 @@ func TestLendUpdateBeforeStart(t *testing.T) {
 		t.Fatalf("lifecycle %s", c.Lifecycle)
 	}
 	e.stub.setSpecOnly("c1", true)
-	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	noErr(t, e.p.LendNUMANode(ctx, "u1", "main", 2, "l1"))
 	e.expectUpdates("c1 mems=0-2")
 	if got := e.cgroupMems("kubepods/u1/c1"); got != "0-1" {
 		t.Fatalf("cgroup mems %s", got)
@@ -603,11 +603,11 @@ func TestLendUpdateBeforeStart(t *testing.T) {
 	if got := e.cgroupMems("kubepods/u1/c1"); got != "0-2" {
 		t.Fatalf("cgroup mems %s after the start", got)
 	}
-	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	noErr(t, e.p.LendNUMANode(ctx, "u1", "main", 2, "l1"))
 	e.expectUpdates()
 	// lost after the start (no such runtime): the next lend repeats it
 	e.setCgroupMems("kubepods/u1/c1", "0-1")
-	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	noErr(t, e.p.LendNUMANode(ctx, "u1", "main", 2, "l1"))
 	e.expectUpdates("c1 mems=0-2")
 
 	n := newEnv(t)
@@ -619,16 +619,16 @@ func TestLendUpdateBeforeStart(t *testing.T) {
 	n.proc(201, "kubepods/u2/c2", "0-1", "0-1")
 	noErr(t, n.p.StartContainer(ctx, np, c2))
 	n.stub.setSpecOnly("c2", true)
-	noErr(t, n.p.LendNode(ctx, "u2", "main", 2, "l1"))
+	noErr(t, n.p.LendNUMANode(ctx, "u2", "main", 2, "l1"))
 	n.expectUpdates("c2 mems=0-2")
 	n.startCtr(np, c2)
 	n.expectUpdates()
-	noErr(t, n.p.LendNode(ctx, "u2", "main", 2, "l1"))
+	noErr(t, n.p.LendNUMANode(ctx, "u2", "main", 2, "l1"))
 	n.expectUpdates("c2 mems=0-2")
 	if got := n.cgroupMems("kubepods/u2/c2"); got != "0-2" {
 		t.Fatalf("cgroup mems %s", got)
 	}
-	noErr(t, n.p.LendNode(ctx, "u2", "main", 2, "l1"))
+	noErr(t, n.p.LendNUMANode(ctx, "u2", "main", 2, "l1"))
 	n.expectUpdates()
 }
 
@@ -692,8 +692,8 @@ func TestLendSynchronizeKept(t *testing.T) {
 	_, err := e.p.Synchronize(ctx, []*api.PodSandbox{pod, other}, []*api.Container{c2, c3})
 	noErr(t, err)
 	// the reconcile of the broker, then the first pass
-	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
-	noErr(t, e.p.LendNode(ctx, "u2", "main", 2, "l2"))
+	noErr(t, e.p.LendNUMANode(ctx, "u1", "main", 2, "l1"))
+	noErr(t, e.p.LendNUMANode(ctx, "u2", "main", 2, "l2"))
 	e.expectUpdates("c3 mems=0-2")
 	e.p.LendsRestored()
 	e.passes()
@@ -747,10 +747,10 @@ func TestReviewSubCgroupUpdatesForever(t *testing.T) {
 	// a later pass (any Fence of a new node) finds it fenced
 	e.p.pass(ctx, "")
 	e.expectUpdates()
-	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	noErr(t, e.p.LendNUMANode(ctx, "u1", "main", 2, "l1"))
 	e.expectUpdates("c1 mems=0-2")
 	for i := 0; i < 3; i++ { // three reconciles
-		noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+		noErr(t, e.p.LendNUMANode(ctx, "u1", "main", 2, "l1"))
 		e.expectUpdates()
 	}
 	if n := strings.Count(logs(), "updating again"); n != 0 {
@@ -814,11 +814,11 @@ func TestReviewSeededNoneLogsUpdatingAgain(t *testing.T) {
 	}
 	e.proc(102, "kubepods/u1/c2", "0-1", "0-1")
 	e.startCtr(pod, c2)
-	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1")) // the broker at PostStart
+	noErr(t, e.p.LendNUMANode(ctx, "u1", "main", 2, "l1")) // the broker at PostStart
 	e.expectUpdates("c2 mems=0-2")
 	// a lost update is: the cgroup loses the node again
 	e.setCgroupMems("kubepods/u1/c2", "0-1")
-	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	noErr(t, e.p.LendNUMANode(ctx, "u1", "main", 2, "l1"))
 	e.expectUpdates("c2 mems=0-2")
 	if n := strings.Count(logs(), "updating again"); n != 1 {
 		t.Errorf("%d \"updating again\" lines, expected 1 (the lost update):\n%s", n, logs())

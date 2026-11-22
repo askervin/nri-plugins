@@ -51,7 +51,7 @@ func TestConsumedShares(t *testing.T) {
 		switch {
 		case tc.err != "" && (err == nil || err.Error() != tc.err):
 			t.Errorf("%q: error %v, expected %q", tc.shares, err, tc.err)
-		case tc.err == "" && (err != nil || got != tc.want || shareUse(got, device.SharesUnlimited) != tc.use):
+		case tc.err == "" && (err != nil || got != tc.want || sharesText(got, device.SharesUnlimited) != tc.use):
 			t.Errorf("%q: %d %v, expected %d %s", tc.shares, got, err, tc.want, tc.use)
 		}
 	}

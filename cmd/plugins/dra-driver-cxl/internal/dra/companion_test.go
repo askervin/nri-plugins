@@ -136,7 +136,7 @@ func TestCompanionLenderWithoutNRI(t *testing.T) {
 	n.Prepared("l1", state.SourceLocal, nil)
 	n.Failed("l1", errors.New("lend failed"))
 	n.Releasing("l1")
-	n.Reprepared(rec, e.companionOf(e.local), state.SourceLocal, nil)
+	n.PreparedAgain(rec, e.companionOf(e.local), state.SourceLocal, nil)
 	_, err := n.Check("l1", e.companionOf(e.local))
 	wantErrText(t, err, "lease l1: lending to running containers is disabled (--leases=false)")
 	e.wantEvents("lender without NRI and nil lender")
@@ -257,7 +257,7 @@ func TestCompanionLendNUMA(t *testing.T) {
 				info.Lend.Pod.UID != envPodUID || info.Lend.Container != envCtr {
 				t.Fatalf("claim info %+v", info)
 			}
-			if got := NumaNodes(e.records(), p.Name()); !slices.Equal(got, []int{2}) {
+			if got := NUMANodes(e.records(), p.Name()); !slices.Equal(got, []int{2}) {
 				t.Fatalf("NUMA nodes %v", got)
 			}
 			e.mark()
@@ -421,11 +421,11 @@ func TestCompanionLendFails(t *testing.T) {
 		t.Run(p.Name(), func(t *testing.T) {
 			e.t = t
 			nodes, _ := e.lending()
-			nodes.setErrors(errSteered, nil)
+			nodes.setErrors(errFake, nil)
 			var online []bool
 			nodes.onRevoke = func(int) { online = append(online, e.onlineBlocks() > 0) }
 			res := e.prepare(p, e.companionOf(p))
-			lendErr := "lease l1: lending node 2 to demo/borrower/app: " + errSteered.Error()
+			lendErr := "lease l1: lending node 2 to demo/borrower/app: " + errFake.Error()
 			wantErrText(t, res.Err, e.prefix(p)+lendErr)
 			e.wantEvents("failed", "lending l1 cxl-lease-l1", "lend pod-uid-1/app 2 l1", "revoke pod-uid-1/app 2 l1", "failed l1: "+lendErr)
 			if !slices.Equal(online, []bool{true}) {
@@ -569,12 +569,12 @@ func TestCompanionOtherBoot(t *testing.T) {
 func TestCompanionRevokeEveryNode(t *testing.T) {
 	e := lendEnv(t)
 	nodes, _ := e.lending()
-	nodes.setErrors(nil, errSteered)
+	nodes.setErrors(nil, errFake)
 	rec := &lend.Companion{Lease: "l1", Pod: state.PodRef{Namespace: envNS, Name: envPod, UID: envPodUID}, Container: envCtr, NUMANodes: []int{2, 3}}
 	err := e.pool.Lender().Revoke(context.Background(), rec, "demo/cxl-lease-l1")
 	e.wantEvents("revoke", "revoke pod-uid-1/app 2 l1", "revoke pod-uid-1/app 3 l1")
 	for _, n := range []int{2, 3} {
-		if want := fmt.Sprintf("lease l1: revoking node %d from demo/borrower/app: %v", n, errSteered); err == nil || !strings.Contains(err.Error(), want) {
+		if want := fmt.Sprintf("lease l1: revoking node %d from demo/borrower/app: %v", n, errFake); err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %v, expected %q in it", err, want)
 		}
 	}
@@ -598,7 +598,7 @@ func TestCompanionUnfinishedRevoke(t *testing.T) {
 			e.restart()
 			p = e.pluginOf(local)
 			e.wantState(p, "c1", state.PreparationPreparing)
-			if got := NumaNodes(e.records(), p.Name()); !slices.Equal(got, []int{2}) {
+			if got := NUMANodes(e.records(), p.Name()); !slices.Equal(got, []int{2}) {
 				t.Fatalf("NUMA nodes of the unfinished companion %v", got)
 			}
 			e.takeEvents()

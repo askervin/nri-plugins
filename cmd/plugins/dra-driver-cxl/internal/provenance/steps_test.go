@@ -49,7 +49,7 @@ func TestFailedCommitPool(t *testing.T) {
 	gen := e.generation()
 	restore := e.loseWrites()
 	e.publish("0xc1ee2001", "0xc100e2e1")
-	serials, _ := e.w.Serials(ctx)
+	serials, _ := e.w.ListPoolSerials(ctx)
 	pool, held := e.w.Gate(ctx, e.devices(), serials, nil)
 	if !serials[localSerial] || !pool[localSerial] || len(held) != 0 {
 		t.Fatalf("listed serials %v, pool %v, held %v", serials, pool, held)
@@ -57,7 +57,7 @@ func TestFailedCommitPool(t *testing.T) {
 	e.w.NotePrepared(map[uint64]bool{0xa2: true})
 	e.wantState(localSerial, state.ProvenanceLocal)
 	e.wantState(0xa2, state.ProvenanceUnknown)
-	if ps := e.w.PoolSerials(); ps[localSerial] || ps[0xa2] {
+	if ps := e.w.RecordedPoolSerials(); ps[localSerial] || ps[0xa2] {
 		t.Fatalf("pool serials %v without their commit", ps)
 	}
 	if g := e.generation(); g != gen {
@@ -72,7 +72,7 @@ func TestFailedCommitPool(t *testing.T) {
 		t.Fatal("the watch does not scan again")
 	}
 	e.publish("0xc1ee2001")
-	serials, _ = e.w.Serials(ctx)
+	serials, _ = e.w.ListPoolSerials(ctx)
 	if pool, held := e.w.Gate(ctx, e.devices(), serials, nil); pool[localSerial] || held[localSerial] {
 		t.Fatalf("the slice gone: pool %v, held %v", pool, held)
 	}
@@ -85,7 +85,7 @@ func TestFailedCommitPool(t *testing.T) {
 	e.wantState(localSerial, state.ProvenancePool)
 	e.wantState(0xa2, state.ProvenancePool)
 	e.publish("0xc1ee2001")
-	serials, _ = e.w.Serials(ctx)
+	serials, _ = e.w.ListPoolSerials(ctx)
 	if pool, _ := e.w.Gate(ctx, e.devices(), serials, nil); !pool[localSerial] {
 		t.Fatalf("the slice gone after the commit: pool %v", pool)
 	}
@@ -120,8 +120,8 @@ func TestFailedCommitHold(t *testing.T) {
 	if !e.w.retrying() {
 		t.Fatal("the watch does not scan again")
 	}
-	e.advance(HoldBack)
-	e.wantHeld("held, not committed, a HoldBack later", otherLocalSerial)
+	e.advance(MaxHold)
+	e.wantHeld("held, not committed, a MaxHold later", otherLocalSerial)
 	restore()
 	e.wantHeld("held", otherLocalSerial)
 	if since := e.held(otherLocalSerial); !since.Equal(e.now()) {
@@ -176,7 +176,7 @@ func TestFailedCommitExpire(t *testing.T) {
 	e.publish()
 	e.plug(otherLocalSerial)
 	e.wantHeld("held", otherLocalSerial)
-	e.advance(HoldBack)
+	e.advance(MaxHold)
 	restore := e.refuseCommits()
 	e.wantHeld("hold expired, not committed", otherLocalSerial)
 	e.wantState(otherLocalSerial, state.ProvenanceHeld)
@@ -191,7 +191,7 @@ func TestFailedCommitExpire(t *testing.T) {
 	e.wantState(otherLocalSerial, state.ProvenanceLocal)
 
 	// absent since t0 for Retention: forgotten at the scan after it
-	e.idle(Retention - HoldBack)
+	e.idle(Retention - MaxHold)
 	e.wantState(0xc1ee2001, state.ProvenancePool)
 	restore = e.refuseCommits()
 	e.advance(Poll)
@@ -200,7 +200,7 @@ func TestFailedCommitExpire(t *testing.T) {
 	if pools := e.w.records().ListedPools; len(pools) != 1 {
 		t.Fatalf("listed pools %+v", pools)
 	}
-	if !e.w.PoolSerials()[0xc1ee2001] {
+	if !e.w.RecordedPoolSerials()[0xc1ee2001] {
 		t.Fatal("a pool serial forgotten without its commit")
 	}
 	if n := countLogLines(logs(), "pool serials: forgetting "); n != 0 {

@@ -175,13 +175,13 @@ func New(opts Options) *Watcher {
 	return w
 }
 
-// Serials lists the ResourceSlices and returns the serials of the devices
+// ListPoolSerials lists the ResourceSlices and returns the serials of the devices
 // of the pool driver and the remembered pool serials, and whether the
 // ResourceSlices are known; the listed serials are made POOL. After a
 // failed list it returns the serials of the last successful one and the
 // remembered ones, not known before the first one succeeded. A nil watcher
 // knows that there are none.
-func (w *Watcher) Serials(ctx context.Context) (map[uint64]bool, bool) {
+func (w *Watcher) ListPoolSerials(ctx context.Context) (map[uint64]bool, bool) {
 	if w == nil {
 		return nil, true
 	}
@@ -302,9 +302,9 @@ func (w *Watcher) PoolDevice(serial uint64) (resourcev1.Device, bool) {
 	return d.device, ok
 }
 
-// PoolSerials returns the serials of the POOL records, without a list; nil
+// RecordedPoolSerials returns the serials of the POOL records, without a list; nil
 // for a nil watcher.
-func (w *Watcher) PoolSerials() map[uint64]bool {
+func (w *Watcher) RecordedPoolSerials() map[uint64]bool {
 	if w == nil {
 		return nil
 	}

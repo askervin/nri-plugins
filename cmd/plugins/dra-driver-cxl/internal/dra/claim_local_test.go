@@ -81,7 +81,7 @@ func TestLocalSlicedNUMA(t *testing.T) {
 	if cd == nil || !slices.Equal(cd.ContainerEdits.Env, wantEnv) || len(cd.ContainerEdits.DeviceNodes) != 0 {
 		t.Fatalf("CDI device %+v, expected env %v", cd, wantEnv)
 	}
-	if got := NumaNodes(e.records(), device.DriverName); !slices.Equal(got, []int{node}) {
+	if got := NUMANodes(e.records(), device.DriverName); !slices.Equal(got, []int{node}) {
 		t.Fatalf("NUMA nodes %v", got)
 	}
 	e.mustUnprepare(e.local, "u1")
@@ -107,7 +107,7 @@ func TestLocalSlicedDax(t *testing.T) {
 	if cd == nil || !reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, wantNodes) || !slices.Equal(cd.ContainerEdits.Env, wantEnv) {
 		t.Fatalf("CDI device %+v, expected nodes %+v env %v", cd, wantNodes, wantEnv)
 	}
-	if got := NumaNodes(e.records(), device.DriverName); len(got) != 0 {
+	if got := NUMANodes(e.records(), device.DriverName); len(got) != 0 {
 		t.Fatalf("NUMA nodes of a dax slice %v", got)
 	}
 	e.mustUnprepare(e.local, "u1")
@@ -230,7 +230,7 @@ func TestLocalPersistentFs(t *testing.T) {
 	}{{"w1", false}, {"r1", true}} {
 		cd := e.cdiDevice(e.local, "claim-"+c.uid+"-0")
 		hasEnv(t, cd, "CXL_C100F5E1_MODE=fs", "CXL_C100F5E1_FSTYPE=ext4", "CXL_C100F5E1_ACCESS=direct", "CXL_C100F5E1_PATH=/run/cxl-fs/C100F5E1")
-		if want := []*cdiSpecs.Mount{FsCDIMount(w.NodeMount, w.Path, c.readOnly)}; !reflect.DeepEqual(cd.ContainerEdits.Mounts, want) {
+		if want := []*cdiSpecs.Mount{fsCDIMount(w.NodeMount, w.Path, c.readOnly)}; !reflect.DeepEqual(cd.ContainerEdits.Mounts, want) {
 			t.Fatalf("%s: mounts %+v, expected %+v", c.uid, cd.ContainerEdits.Mounts, want)
 		}
 	}
@@ -310,9 +310,9 @@ func TestLocalLeaseDevice(t *testing.T) {
 		t.Fatalf("CDI device %+v", cd)
 	}
 	// a socket that does not open: rolled back
-	e.leases.setErrors(errSteered, nil)
+	e.leases.setErrors(errFake, nil)
 	res = e.prepare(e.local, localClaim("u2", device.LeaseDeviceName, 0))
-	wantErrText(t, res.Err, "claim demo/claim-u2: lease socket: "+errSteered.Error())
+	wantErrText(t, res.Err, "claim demo/claim-u2: lease socket: "+errFake.Error())
 	e.wantState(e.local, "u2", state.PreparationNone)
 	e.leases.setErrors(nil, nil)
 	e.takeEvents()
@@ -323,8 +323,8 @@ func TestLocalLeaseDevice(t *testing.T) {
 	}
 	// a lease claim that does not close: kubelet retries, nothing else
 	e.mustPrepare(e.local, localClaim("u3", device.LeaseDeviceName, 0))
-	e.leases.setErrors(nil, errSteered)
-	if err := e.unprepare(e.local, "u3"); !errors.Is(err, errSteered) {
+	e.leases.setErrors(nil, errFake)
+	if err := e.unprepare(e.local, "u3"); !errors.Is(err, errFake) {
 		t.Fatalf("unprepare: %v", err)
 	}
 	e.wantState(e.local, "u3", state.PreparationPrepared)

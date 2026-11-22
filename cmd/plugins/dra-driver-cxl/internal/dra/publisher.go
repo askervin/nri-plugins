@@ -130,10 +130,10 @@ type PublishConfig struct {
 	IgnoreDevices, SharedDevices []MemdevSpec
 	// IgnoreRegions and IgnoreNodes are regions and NUMA nodes that are not
 	// published.
-	IgnoreRegions []string
-	IgnoreNodes   []int
-	// IgnoreDRAMNodes: the DRAM of the node is not published.
-	IgnoreDRAMNodes bool
+	IgnoreRegions   []string
+	IgnoreNUMANodes []int
+	// IgnoreDRAM: the DRAM of the node is not published.
+	IgnoreDRAM bool
 	// ManageMemdevs: the local memdevs are published.
 	ManageMemdevs bool
 	// PublishLeaseDevice: the lease device is published.
@@ -439,7 +439,7 @@ func (p *Publisher) scanWith(ctx context.Context, cfg PublishConfig, poolSerials
 	if err != nil {
 		return nil, fmt.Errorf("failed to detect devices: %v", err)
 	}
-	local := p.LocalSnapshot()
+	local := p.LocalRecords()
 	poolSerials, held := p.opts.Watcher.Gate(ctx, snap, poolSerials, local.claims())
 	if len(snap.Regions) == 0 {
 		klog.Info("No region devices detected")
@@ -470,7 +470,7 @@ func (p *Publisher) ScanInput(ctx context.Context) (PublishConfig, map[uint64]bo
 	}
 	w := p.opts.Watcher
 	w.NotePrepared(serials)
-	remote, known := w.Serials(ctx)
+	remote, known := w.ListPoolSerials(ctx)
 	for s := range remote {
 		serials[s] = true
 	}
@@ -483,28 +483,28 @@ func (p *Publisher) ScanInput(ctx context.Context) (PublishConfig, map[uint64]bo
 	return cfg, serials
 }
 
-// LocalSnapshot returns the uses of the local memdevs that the records
+// LocalRecords returns the uses of the local memdevs that the records
 // have, the memory block size and the probed usable sizes; nil when the
 // local memdevs are not managed.
-func (p *Publisher) LocalSnapshot() *LocalSnapshot {
+func (p *Publisher) LocalRecords() *localRecords {
 	if !p.opts.Config.ManageMemdevs {
 		return nil
 	}
-	snap := &LocalSnapshot{Uses: map[uint64]LocalUse{}, Probed: map[uint64]uint64{}}
+	snap := &localRecords{Memdevs: map[uint64]localMemdev{}, Probed: map[uint64]uint64{}}
 	r := &p.opts.Store.Snapshot().Records
 	for i := range r.Memdevs {
 		m := &r.Memdevs[i]
 		if m.Source != state.SourceLocal {
 			continue
 		}
-		u := LocalUse{Shared: m.Facts.Shared, Persistent: m.Facts.Persistent, Claims: []string{}}
+		u := localMemdev{Shared: m.Facts.Shared, Persistent: m.Facts.Persistent, Claims: []string{}}
 		for _, ref := range m.Grants {
 			if !slices.Contains(u.Claims, ref.Claim) {
 				u.Claims = append(u.Claims, ref.Claim)
 			}
 		}
 		slices.Sort(u.Claims)
-		snap.Uses[uint64(m.Serial)] = u
+		snap.Memdevs[uint64(m.Serial)] = u
 	}
 	if p.opts.Probes != nil {
 		for serial, pr := range p.opts.Probes() {

@@ -534,7 +534,7 @@ func (p *Plugin) lendCompanion(ctx context.Context, pr *prepare) error {
 	}
 	var err error
 	for _, d := range claimInfo(p.st.Snapshot(), p.preparation(pr.uid), p.roots).Devices {
-		if node := deviceNumaNode(&d); node >= 0 {
+		if node := deviceNUMANode(&d); node >= 0 {
 			if err = p.engine.RecordLend(ctx, state.GrantRef{Claim: pr.uid, Result: d.Result}, node); err != nil {
 				break
 			}
@@ -637,7 +637,7 @@ func (p *Plugin) preparedAgain(ctx context.Context, claim *resourcev1.ResourceCl
 		}
 	}
 	if prep.State == state.PreparationUnrestored {
-		if err := p.remount(ctx, prep); err != nil {
+		if err := p.restoreMounts(ctx, prep); err != nil {
 			if serr := stays(prep, state.TriggerPrepare); serr != nil {
 				klog.Errorf("%s: claim %s: %v", p.rules.Name, prep.ClaimName, serr)
 			}
@@ -647,15 +647,15 @@ func (p *Plugin) preparedAgain(ctx context.Context, claim *resourcev1.ResourceCl
 	}
 	if prep.Lease != "" {
 		lend, devs := p.lendAndDevices(prep)
-		p.lender.Reprepared(lend, claim, p.rules.Source, devs)
+		p.lender.PreparedAgain(lend, claim, p.rules.Source, devs)
 	}
 	return prepareResult(prep, p.rules.CDIKind())
 }
 
-// remount mounts again the node mounts of a prepared claim that the start
+// restoreMounts mounts again the node mounts of a prepared claim that the start
 // could not mount, commits it PREPARED when every grant is REALISED again,
 // and rewrites the CDI spec.
-func (p *Plugin) remount(ctx context.Context, prep *state.Preparation) error {
+func (p *Plugin) restoreMounts(ctx context.Context, prep *state.Preparation) error {
 	r := p.records()
 	var reqs []engine.GrantRequest
 	var mounts []string

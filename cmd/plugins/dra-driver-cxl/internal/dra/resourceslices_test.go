@@ -148,8 +148,8 @@ func TestNodeSliceBackAfterKubeletWipe(t *testing.T) {
 	if got := nodeSliceDevices(t, client, pubNode); got != nil {
 		t.Fatalf("slice not deleted: %v", got)
 	}
-	took := waitNodeSlice(t, client, pubNode, nodeResourceSliceSyncDelay+5*time.Second, device.LeaseDeviceName)
-	t.Logf("slice back %v after the wipe (sync delay %v)", took.Round(time.Millisecond), nodeResourceSliceSyncDelay)
+	took := waitNodeSlice(t, client, pubNode, resourceSliceSyncDelay+5*time.Second, device.LeaseDeviceName)
+	t.Logf("slice back %v after the wipe (sync delay %v)", took.Round(time.Millisecond), resourceSliceSyncDelay)
 
 	// A publish of the driver (e.g. a udev rescan) syncs at once, also
 	// right after an informer event of the slice (its re-creation above):
@@ -173,7 +173,7 @@ func TestNodeSliceBackAfterKubeletWipe(t *testing.T) {
 	}
 	pubNoErr(t, client.ResourceV1().ResourceSlices().Delete(ctx, list.Items[0].Name, metav1.DeleteOptions{}))
 	p.Rescan(ctx, false)
-	time.Sleep(nodeResourceSliceSyncDelay + 500*time.Millisecond)
+	time.Sleep(resourceSliceSyncDelay + 500*time.Millisecond)
 	if got := nodeSliceDevices(t, client, pubNode); got != nil {
 		t.Errorf("slice re-created after Stop: %v", got)
 	}

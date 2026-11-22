@@ -65,31 +65,31 @@ type scanDevice struct {
 type scanCase struct {
 	cfg        PublishConfig
 	pool, held map[uint64]bool
-	local      *LocalSnapshot
+	local      *localRecords
 }
 
 // scanCases returns the configurations of the publisher that the
 // characterization applies to every topology with the serials.
 func scanCases(t *testing.T, serials []uint64) map[string]scanCase {
-	managed := func() *LocalSnapshot {
-		return &LocalSnapshot{Uses: map[uint64]LocalUse{}, Probed: map[uint64]uint64{}, BlockSize: scanBlockSize}
+	managed := func() *localRecords {
+		return &localRecords{Memdevs: map[uint64]localMemdev{}, Probed: map[uint64]uint64{}, BlockSize: scanBlockSize}
 	}
 	at := func(i int) uint64 { return serials[i%len(serials)] }
 	shared := []string{}
 	used := managed()
 	for i, s := range serials {
 		shared = append(shared, fmt.Sprintf("0x%x", s))
-		used.Uses[s] = LocalUse{Shared: i == len(serials)-1, Claims: []string{"claim-a"}}
+		used.Memdevs[s] = localMemdev{Shared: i == len(serials)-1, Claims: []string{"claim-a"}}
 	}
 	return map[string]scanCase{
 		"unmanaged": {cfg: PublishConfig{PublishLeaseDevice: true}},
 		"managed":   {cfg: PublishConfig{ManageMemdevs: true}, local: managed()},
-		"ignored": {cfg: PublishConfig{ManageMemdevs: true, IgnoreRegions: []string{"region1"}, IgnoreNodes: []int{3},
+		"ignored": {cfg: PublishConfig{ManageMemdevs: true, IgnoreRegions: []string{"region1"}, IgnoreNUMANodes: []int{3},
 			IgnoreDevices: memdevSpecs(t, "mem0", "cxl/mem1", "251:2", strconv.FormatUint(at(3), 10), fmt.Sprintf("0X%X", at(4)))},
 			local: managed()},
 		"shared": {cfg: PublishConfig{ManageMemdevs: true, SharedDevices: memdevSpecs(t, shared...)}, local: managed()},
 		"pool":   {cfg: PublishConfig{ManageMemdevs: true}, pool: map[uint64]bool{at(0): true}, held: map[uint64]bool{at(1): true}, local: managed()},
-		"used":   {cfg: PublishConfig{ManageMemdevs: true, IgnoreDRAMNodes: true}, local: used},
+		"used":   {cfg: PublishConfig{ManageMemdevs: true, IgnoreDRAM: true}, local: used},
 	}
 }
 

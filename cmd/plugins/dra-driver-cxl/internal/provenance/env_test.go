@@ -194,7 +194,7 @@ func (e *watchEnv) devices() *kernel.Snapshot {
 func (e *watchEnv) scan() []uint64 {
 	e.t.Helper()
 	ctx := context.Background()
-	serials, _ := e.w.Serials(ctx)
+	serials, _ := e.w.ListPoolSerials(ctx)
 	_, held := e.w.Gate(ctx, e.devices(), serials, nil)
 	return slices.Sorted(maps.Keys(held))
 }

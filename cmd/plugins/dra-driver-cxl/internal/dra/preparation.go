@@ -199,10 +199,10 @@ func unrestoredMount(r *state.Records, g *state.Grant) string {
 	return g.Intent.MountPath
 }
 
-// unfinishedNodes returns the NUMA nodes of the grants of mode numa of a
+// cutNUMANodes returns the NUMA nodes of the grants of mode numa of a
 // preparation whose Prepare did not finish: the node of the grant, else of
 // its region.
-func unfinishedNodes(r *state.Records, prep *state.Preparation) []int {
+func cutNUMANodes(r *state.Records, prep *state.Preparation) []int {
 	var nodes []int
 	for _, res := range prep.Results {
 		g := grantOf(r, &res)
@@ -226,11 +226,11 @@ func unfinishedNodes(r *state.Records, prep *state.Preparation) []int {
 	return nodes
 }
 
-// NumaNodes returns the NUMA nodes on which the claims of the drivers have
+// NUMANodes returns the NUMA nodes on which the claims of the drivers have
 // memory that the engine onlined: the grants in mode numa of prepared
 // claims, and of claims whose Prepare did not finish (a numa companion kept
 // at the start), sorted.
-func NumaNodes(r *state.Records, drivers ...string) []int {
+func NUMANodes(r *state.Records, drivers ...string) []int {
 	var nodes []int
 	for i := range r.Preparations {
 		prep := &r.Preparations[i]
@@ -245,7 +245,7 @@ func NumaNodes(r *state.Records, drivers ...string) []int {
 				}
 			}
 		case prep.State == state.PreparationPreparing || prep.State == state.PreparationKept:
-			nodes = append(nodes, unfinishedNodes(r, prep)...)
+			nodes = append(nodes, cutNUMANodes(r, prep)...)
 		}
 	}
 	slices.Sort(nodes)

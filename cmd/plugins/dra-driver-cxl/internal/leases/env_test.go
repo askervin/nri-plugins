@@ -481,11 +481,11 @@ func (f *fakeContainers) Running(podUID, container string) bool {
 	return f.running[podUID+"/"+container]
 }
 
-// LendNode records the lend.
-func (f *fakeContainers) LendNode(_ context.Context, podUID, container string, node int, holder string) error {
+// LendNUMANode records the lend.
+func (f *fakeContainers) LendNUMANode(_ context.Context, podUID, container string, numaNode int, lease string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, fmt.Sprintf("lend %s/%s %d", podUID, container, node))
+	f.calls = append(f.calls, fmt.Sprintf("lend %s/%s %d", podUID, container, numaNode))
 	if f.lendErr != nil {
 		return f.lendErr
 	}
@@ -493,28 +493,28 @@ func (f *fakeContainers) LendNode(_ context.Context, podUID, container string, n
 	if f.lent[k] == nil {
 		f.lent[k] = map[int][]string{}
 	}
-	if !slices.Contains(f.lent[k][node], holder) {
-		f.lent[k][node] = append(f.lent[k][node], holder)
+	if !slices.Contains(f.lent[k][numaNode], lease) {
+		f.lent[k][numaNode] = append(f.lent[k][numaNode], lease)
 	}
 	return nil
 }
 
-// RevokeNode drops the holder of the node.
-func (f *fakeContainers) RevokeNode(_ context.Context, podUID, container string, node int, holder string) error {
+// RevokeNUMANode drops the holder of the node.
+func (f *fakeContainers) RevokeNUMANode(_ context.Context, podUID, container string, numaNode int, lease string) error {
 	f.mu.Lock()
 	on := f.onRevoke
 	f.mu.Unlock()
 	if on != nil {
-		on(podUID, container, node, holder)
+		on(podUID, container, numaNode, lease)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, fmt.Sprintf("revoke %s/%s %d", podUID, container, node))
+	f.calls = append(f.calls, fmt.Sprintf("revoke %s/%s %d", podUID, container, numaNode))
 	k := podUID + "/" + container
-	if h := slices.DeleteFunc(f.lent[k][node], func(s string) bool { return s == holder }); len(h) > 0 {
-		f.lent[k][node] = h
+	if h := slices.DeleteFunc(f.lent[k][numaNode], func(s string) bool { return s == lease }); len(h) > 0 {
+		f.lent[k][numaNode] = h
 	} else {
-		delete(f.lent[k], node)
+		delete(f.lent[k], numaNode)
 	}
 	return nil
 }

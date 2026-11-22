@@ -171,8 +171,8 @@ func TestLifecycleOfContainers(t *testing.T) {
 	if c := i.record("c7"); c.Lifecycle != LifecycleStarted || c.Management != ManagementNone {
 		t.Fatalf("record %+v", c)
 	}
-	noErr(t, i.p.LendNode(ctx, "u1", "inherits", 2, "l1"))
-	noErr(t, i.p.RevokeNode(ctx, "u1", "inherits", 2, "l1"))
+	noErr(t, i.p.LendNUMANode(ctx, "u1", "inherits", 2, "l1"))
+	noErr(t, i.p.RevokeNUMANode(ctx, "u1", "inherits", 2, "l1"))
 	i.expectUpdates()
 	if got := i.cgroupMems("kubepods/u1/c7"); got != "" {
 		t.Fatalf("cgroup mems %q", got)
@@ -196,13 +196,13 @@ func TestLendsAtCreationAndStart(t *testing.T) {
 	if got := e.createMems(pod, c1); got != "0-2" {
 		t.Fatalf("adjustment %s", got)
 	}
-	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
-	wantErr(t, e.p.LendNode(ctx, "u1", "main", 3, "l2"), "lend node 3 to ns/pod-u1/main: container not started yet")
+	noErr(t, e.p.LendNUMANode(ctx, "u1", "main", 2, "l1"))
+	wantErr(t, e.p.LendNUMANode(ctx, "u1", "main", 3, "l2"), "lend node 3 to ns/pod-u1/main: container not started yet")
 	e.expectUpdates()
 	e.proc(101, "kubepods/u1/c1", "0-2", "0-2")
 	e.startCtr(pod, c1)
 	e.expectUpdates()
-	noErr(t, e.p.LendNode(ctx, "u1", "main", 3, "l2"))
+	noErr(t, e.p.LendNUMANode(ctx, "u1", "main", 3, "l2"))
 	e.expectUpdates("c1 mems=0-3")
 	if got := e.p.LentNodes("u1", "main"); !reflect.DeepEqual(got, []int{2, 3}) {
 		t.Fatalf("lent %v", got)
@@ -488,7 +488,7 @@ func TestNRIConnectionLostStub(t *testing.T) {
 		if !strings.Contains(logs(), "NRI fence: NRI not connected, containers are not fenced from CXL node 2") {
 			t.Fatalf("no warning:\n%s", logs())
 		}
-		wantErr(t, p.LendNode(context.Background(), "u1", "app", 2, "l1"), "lending unavailable: NRI not connected")
+		wantErr(t, p.LendNUMANode(context.Background(), "u1", "app", 2, "l1"), "lending unavailable: NRI not connected")
 	})
 	if _, err := New(Options{}); err == nil {
 		t.Fatal("a plugin without a store")

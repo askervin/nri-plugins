@@ -198,7 +198,7 @@ func TestBuildDevInfosLocalMemdevs(t *testing.T) {
 	pubRegion(devices, "region0", 2, 1<<30, 0xa2)
 	pubRegion(devices, "region1", 3, 1<<30, 0xa5)
 	cfg := PublishConfig{IgnoreDevices: memdevSpecs(t, "0xa4"), ManageMemdevs: true}
-	local := &LocalSnapshot{Uses: map[uint64]LocalUse{0xa5: {}}, BlockSize: pubBlockSize}
+	local := &localRecords{Memdevs: map[uint64]localMemdev{0xa5: {}}, BlockSize: pubBlockSize}
 	pool := map[uint64]bool{0xa3: true}
 	devInfos := BuildDevices(cfg, devices, pool, nil, local)
 	got := pubNames(devInfos)
@@ -225,7 +225,7 @@ func TestBuildDevInfosLocalMemdevs(t *testing.T) {
 	}
 	free.RamSize = pubBlockSize
 	// a block of 512 MiB is not sure to fit 512 MiB
-	devInfos = BuildDevices(cfg, devices, pool, nil, &LocalSnapshot{Uses: local.Uses, BlockSize: pubBlockSize * 4})
+	devInfos = BuildDevices(cfg, devices, pool, nil, &localRecords{Memdevs: local.Memdevs, BlockSize: pubBlockSize * 4})
 	if _, ok := devInfos["memdev-a1"]; ok {
 		t.Fatal("a memdev of one large block published")
 	}
@@ -236,7 +236,7 @@ func TestBuildDevInfosLocalMemdevs(t *testing.T) {
 	if c := LocalMemdevDevice("x", m).Capacity["memory"]; c.Value.Value() != 512*pubMiB {
 		t.Fatalf("capacity %v of a 1 GiB memdev with 512 MiB blocks", c.Value)
 	}
-	devInfos = BuildDevices(cfg, devices, pool, nil, &LocalSnapshot{Uses: local.Uses})
+	devInfos = BuildDevices(cfg, devices, pool, nil, &localRecords{Memdevs: local.Memdevs})
 	if got := pubNames(devInfos); !slices.Equal(got, []string{"dram", "region0-node2"}) {
 		t.Fatalf("published %v without a block size", got)
 	}
@@ -257,8 +257,8 @@ func TestBuildDevInfosLocalMemdevs(t *testing.T) {
 // its attributes, its capacity with the request policy of memory blocks,
 // no nodeAffinity when unknown.
 func TestGetResourcesLocalMemdev(t *testing.T) {
-	devs := BuildDevices(PublishConfig{IgnoreDRAMNodes: true, ManageMemdevs: true}, &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{pubMemdev()}},
-		nil, nil, &LocalSnapshot{BlockSize: pubBlockSize})
+	devs := BuildDevices(PublishConfig{IgnoreDRAM: true, ManageMemdevs: true}, &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{pubMemdev()}},
+		nil, nil, &localRecords{BlockSize: pubBlockSize})
 	p := pubPublisher(t, PublishOptions{NodeName: pubNode})
 	p.SetDevices(devs)
 	got := p.Resources().Pools[pubNode].Slices[0].Devices
@@ -538,7 +538,7 @@ func TestSharedLocalPrecedence(t *testing.T) {
 		ManageMemdevs: true,
 	}
 	pool := map[uint64]bool{0xa6: true}
-	local := &LocalSnapshot{BlockSize: pubBlockSize, Uses: map[uint64]LocalUse{
+	local := &localRecords{BlockSize: pubBlockSize, Memdevs: map[uint64]localMemdev{
 		0xa8: {Claims: []string{"s1"}},
 		0xa9: {Shared: true, Claims: []string{"h1"}},
 	}}
@@ -571,8 +571,8 @@ func TestSharedLocalPrecedence(t *testing.T) {
 	}
 
 	// the hidden ones come back when the other use has no claims
-	local.Uses[0xa8] = LocalUse{Claims: []string{}}
-	local.Uses[0xa9] = LocalUse{Shared: true, Claims: []string{}}
+	local.Memdevs[0xa8] = localMemdev{Claims: []string{}}
+	local.Memdevs[0xa9] = localMemdev{Shared: true, Claims: []string{}}
 	devInfos = BuildDevices(cfg, devices, pool, nil, local)
 	for name, s := range map[string]bool{"memdev-a8": true, "memdev-a9": false} {
 		if m, ok := devInfos[name].Dev.(*Memdev); !ok || m.Shared != s {
@@ -590,9 +590,9 @@ func TestSharedRefusalLogged(t *testing.T) {
 	for _, reason := range []string{heldReason, "pool device"} {
 		sharedRefusalsLogged.Delete("mem31\x00" + reason)
 	}
-	cfg := PublishConfig{SharedDevices: memdevSpecs(t, "mem31"), ManageMemdevs: true, IgnoreDRAMNodes: true}
+	cfg := PublishConfig{SharedDevices: memdevSpecs(t, "mem31"), ManageMemdevs: true, IgnoreDRAM: true}
 	detected := &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{pubMem("mem31", 0xa1f, 1<<30, -1)}}
-	local := &LocalSnapshot{BlockSize: pubBlockSize}
+	local := &localRecords{BlockSize: pubBlockSize}
 	for range 2 {
 		if devs := BuildDevices(cfg, detected, nil, map[uint64]bool{0xa1f: true}, local); len(devs) != 0 {
 			t.Fatalf("published %v", pubNames(devs))
@@ -624,8 +624,8 @@ func TestBuildDevInfosPersistentMemdevs(t *testing.T) {
 	}
 	devices.Memdevs[0].NUMAAffinity = 1
 	devices.Memdevs[3].PmemSize = 0
-	cfg := PublishConfig{SharedDevices: memdevSpecs(t, "0xb2"), IgnoreDRAMNodes: true, ManageMemdevs: true}
-	local := &LocalSnapshot{BlockSize: pubBlockSize, Uses: map[uint64]LocalUse{
+	cfg := PublishConfig{SharedDevices: memdevSpecs(t, "0xb2"), IgnoreDRAM: true, ManageMemdevs: true}
+	local := &localRecords{BlockSize: pubBlockSize, Memdevs: map[uint64]localMemdev{
 		0xb1: {Persistent: true},
 		0xb4: {Persistent: true, Claims: []string{"u3"}},
 	}}
@@ -658,19 +658,19 @@ func TestPersistentMemdevRefusals(t *testing.T) {
 	detected := &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{pubMem("mem3", 0xc100f5e1, 0, -1)}}
 	m := &detected.Memdevs[0]
 	m.PmemSize = 512 * pubMiB
-	cfg := PublishConfig{ManageMemdevs: true, IgnoreDRAMNodes: true}
-	local := &LocalSnapshot{BlockSize: pubBlockSize}
+	cfg := PublishConfig{ManageMemdevs: true, IgnoreDRAM: true}
+	local := &localRecords{BlockSize: pubBlockSize}
 	if devs := BuildDevices(cfg, detected, nil, nil, local); !slices.Equal(pubNames(devs), []string{"memdev-c100f5e1"}) {
 		t.Fatalf("published %v", pubNames(devs))
 	}
 	serial := map[uint64]bool{0xc100f5e1: true}
-	sharedUse := map[uint64]LocalUse{0xc100f5e1: {Shared: true, Persistent: true, Claims: []string{"ro1"}}}
-	exclusiveUse := map[uint64]LocalUse{0xc100f5e1: {Persistent: true, Claims: []string{"rw1"}}}
-	sliceUse := map[uint64]LocalUse{0xc100f5e1: {Claims: []string{"s1"}}}
+	sharedUse := map[uint64]localMemdev{0xc100f5e1: {Shared: true, Persistent: true, Claims: []string{"ro1"}}}
+	exclusiveUse := map[uint64]localMemdev{0xc100f5e1: {Persistent: true, Claims: []string{"rw1"}}}
+	sliceUse := map[uint64]localMemdev{0xc100f5e1: {Claims: []string{"s1"}}}
 	for _, tc := range []struct {
 		pool, held map[uint64]bool
 		enabled    bool
-		uses       map[uint64]LocalUse
+		uses       map[uint64]localMemdev
 		reason     string
 		set        func(cfg *PublishConfig, s *kernel.Snapshot)
 	}{
@@ -695,7 +695,7 @@ func TestPersistentMemdevRefusals(t *testing.T) {
 		if tc.set != nil {
 			tc.set(&c, s)
 		}
-		local.Uses = tc.uses
+		local.Memdevs = tc.uses
 		if devs := BuildDevices(c, s, tc.pool, tc.held, local); len(devs) != 0 {
 			t.Fatalf("%s: published %v", tc.reason, pubNames(devs))
 		}
@@ -703,7 +703,7 @@ func TestPersistentMemdevRefusals(t *testing.T) {
 			t.Fatalf("%d lines with %q:\n%s", n, tc.reason, logs())
 		}
 	}
-	local.Uses = map[uint64]LocalUse{0xc100f5e1: {Shared: true, Persistent: true, Claims: []string{}}}
+	local.Memdevs = map[uint64]localMemdev{0xc100f5e1: {Shared: true, Persistent: true, Claims: []string{}}}
 	if m, ok := BuildDevices(cfg, detected, nil, nil, local)["memdev-c100f5e1"].Dev.(*Memdev); !ok || m.Shared || !m.Persistent {
 		t.Fatalf("published %+v", m)
 	}
@@ -736,7 +736,7 @@ func TestMemdevSettings(t *testing.T) {
 		{m2, 0, 2 << 30},
 		{m2, 1 << 30, 1 << 30},
 	} {
-		snap := &LocalSnapshot{Probed: map[uint64]uint64{tc.m.Serial: tc.probed}}
+		snap := &localRecords{Probed: map[uint64]uint64{tc.m.Serial: tc.probed}}
 		if got := memdevUsableSize(cfg, tc.m, snap); got != tc.want {
 			t.Errorf("%s probed %d: usable size %d, expected %d", tc.m.Name, tc.probed, got, tc.want)
 		}
@@ -759,15 +759,15 @@ func TestLocalSnapshot(t *testing.T) {
 	blockSize := func() (uint64, error) { return bs, err }
 	opts := PublishOptions{NodeName: pubNode, Config: PublishConfig{ManageMemdevs: true}, Probes: probes, BlockSize: blockSize}
 	p := pubPublisher(t, opts)
-	if got := p.LocalSnapshot(); !maps.Equal(got.Probed, map[uint64]uint64{0x11: 512 << 20}) || got.BlockSize != 0 {
+	if got := p.LocalRecords(); !maps.Equal(got.Probed, map[uint64]uint64{0x11: 512 << 20}) || got.BlockSize != 0 {
 		t.Fatalf("probed %v, block size %d while it is unknown", got.Probed, got.BlockSize)
 	}
 	bs, err = 2<<30, nil
-	if got := p.LocalSnapshot().BlockSize; got != 2<<30 {
+	if got := p.LocalRecords().BlockSize; got != 2<<30 {
 		t.Fatalf("block size %d", got)
 	}
 	opts.Config.ManageMemdevs = false
-	if off := pubPublisher(t, opts); off.LocalSnapshot() != nil {
+	if off := pubPublisher(t, opts); off.LocalRecords() != nil {
 		t.Fatal("a snapshot of unmanaged local memdevs")
 	}
 }
@@ -779,7 +779,7 @@ func TestRescanBeforeStart(t *testing.T) {
 	logs := klogtest.Capture(t, 0)
 	client := sliceTestClient(pubNode, nil)
 	p := pubPublisher(t, PublishOptions{
-		Config:   PublishConfig{IgnoreDRAMNodes: true, PublishLeaseDevice: true},
+		Config:   PublishConfig{IgnoreDRAM: true, PublishLeaseDevice: true},
 		NodeName: pubNode,
 		Client:   client,
 		Scan:     pubNoScan,

@@ -77,8 +77,8 @@ type Memdev struct {
 // capacity and can be allocated any number of times.
 type LeaseToken struct{}
 
-// LocalUse is how the device engine uses a local memdev.
-type LocalUse struct {
+// localMemdev is how the device engine uses a local memdev.
+type localMemdev struct {
 	// Shared is true when the memdev is used as a shared device, false
 	// when it is sliced; of a persistent device, whether it is shared.
 	Shared bool
@@ -88,12 +88,12 @@ type LocalUse struct {
 	Claims []string
 }
 
-// LocalSnapshot is what the publisher of local memdevs needs from the
+// localRecords is what the publisher of local memdevs needs from the
 // records of the device engine.
-type LocalSnapshot struct {
-	// Uses are the uses of the local memdevs that the engine has records
-	// of, by serial.
-	Uses map[uint64]LocalUse
+type localRecords struct {
+	// Memdevs are the local memdevs that the engine has records of, by
+	// serial.
+	Memdevs map[uint64]localMemdev
 	// BlockSize is the memory block size in bytes, 0 if unknown.
 	BlockSize uint64
 	// Probed are the usable sizes that the address line probe found, by
@@ -103,40 +103,40 @@ type LocalSnapshot struct {
 
 // ProbedSize returns the usable size that the address line probe found for
 // the memdev with the serial, 0 if none.
-func (l *LocalSnapshot) ProbedSize(serial uint64) uint64 {
+func (l *localRecords) ProbedSize(serial uint64) uint64 {
 	if l == nil {
 		return 0
 	}
 	return l.Probed[serial]
 }
 
-// InUse tells whether the engine uses the local memdev with the serial.
-func (l *LocalSnapshot) InUse(serial uint64) bool {
+// known tells whether the engine uses the local memdev with the serial.
+func (l *localRecords) known(serial uint64) bool {
 	if l == nil {
 		return false
 	}
-	_, ok := l.Uses[serial]
+	_, ok := l.Memdevs[serial]
 	return ok
 }
 
-// Use returns how the engine uses the local memdev with the serial, and
+// memdev returns how the engine uses the local memdev with the serial, and
 // whether it uses it.
-func (l *LocalSnapshot) Use(serial uint64) (LocalUse, bool) {
+func (l *localRecords) memdev(serial uint64) (localMemdev, bool) {
 	if l == nil {
-		return LocalUse{}, false
+		return localMemdev{}, false
 	}
-	u, ok := l.Uses[serial]
+	u, ok := l.Memdevs[serial]
 	return u, ok
 }
 
 // claims returns the claims of the local memdevs that the engine uses, by
 // serial.
-func (l *LocalSnapshot) claims() map[uint64][]string {
+func (l *localRecords) claims() map[uint64][]string {
 	if l == nil {
 		return nil
 	}
 	out := map[uint64][]string{}
-	for s, u := range l.Uses {
+	for s, u := range l.Memdevs {
 		out[s] = u.Claims
 	}
 	return out
@@ -262,8 +262,8 @@ func regionMemdevs(snap *kernel.Snapshot, r *kernel.RegionInfo) []kernel.MemdevI
 // devices, neither they nor their regions are published. Regions on memdevs
 // that the device engine uses (local) are skipped too: the engine created
 // them, and the memdevs are published as memdev devices.
-func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held map[uint64]bool, local *LocalSnapshot) DevicesInfo {
-	cxlNodes := make(map[int]bool)
+func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held map[uint64]bool, local *localRecords) DevicesInfo {
+	cxlNUMANodes := make(map[int]bool)
 	devInfos := make(map[string]*DeviceInfo)
 	for i := range snap.Regions {
 		r := &snap.Regions[i]
@@ -271,7 +271,7 @@ func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held ma
 		klog.V(3).Infof("discovered CXL region device: %+v", *r)
 		// the memory of a region is not DRAM, published or not, hollow
 		// with memory that kmem could not remove included
-		cxlNodes[r.NUMANode] = true
+		cxlNUMANodes[r.NUMANode] = true
 		if r.State == kernel.RegionHollow {
 			klog.V(4).Infof("- ignoring region device %q: it has no target decoder", r.Name)
 			continue
@@ -291,8 +291,8 @@ func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held ma
 	if cfg.ManageMemdevs {
 		addLocalMemdevs(devInfos, cfg, snap, poolSerials, held, local)
 	}
-	if !cfg.IgnoreDRAMNodes {
-		addDRAM(devInfos, cfg, snap, cxlNodes)
+	if !cfg.IgnoreDRAM {
+		addDRAM(devInfos, cfg, snap, cxlNUMANodes)
 	}
 	if cfg.PublishLeaseDevice {
 		devInfos[device.LeaseDeviceName] = &DeviceInfo{
@@ -308,7 +308,7 @@ func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held ma
 // it is: on a pool or held memdev, on a memdev of the engine, disabled, of
 // persistent memory, without online memory, in ignoreRegions, on a node of
 // ignoreNodes, with a memdev of ignoreDevices; the first reason only.
-func regionIgnoreReason(cfg PublishConfig, r *kernel.RegionInfo, node int, mems []kernel.MemdevInfo, poolSerials, held map[uint64]bool, local *LocalSnapshot) string {
+func regionIgnoreReason(cfg PublishConfig, r *kernel.RegionInfo, node int, mems []kernel.MemdevInfo, poolSerials, held map[uint64]bool, local *localRecords) string {
 	reason := poolIgnoreReason(mems, poolSerials, held)
 	if reason == "" {
 		reason = localIgnoreReason(mems, local)
@@ -326,7 +326,7 @@ func regionIgnoreReason(cfg PublishConfig, r *kernel.RegionInfo, node int, mems 
 	if slices.Contains(cfg.IgnoreRegions, r.Name) {
 		return fmt.Sprintf("region name %q", r.Name)
 	}
-	if slices.Contains(cfg.IgnoreNodes, node) {
+	if slices.Contains(cfg.IgnoreNUMANodes, node) {
 		return fmt.Sprintf("region is on node %d", node)
 	}
 	for i := range mems {
@@ -339,17 +339,17 @@ func regionIgnoreReason(cfg PublishConfig, r *kernel.RegionInfo, node int, mems 
 
 // addDRAM adds the DRAM device of the memory nodes that are not CXL nodes
 // to devInfos.
-func addDRAM(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snapshot, cxlNodes map[int]bool) {
+func addDRAM(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snapshot, cxlNUMANodes map[int]bool) {
 	dramDev := &DRAM{}
 	for _, node := range numaNodesByName(snap) {
-		if cxlNodes[node.ID] {
+		if cxlNUMANodes[node.ID] {
 			continue
 		}
 		ignoreReason := ""
 		switch {
 		case node.MemTotal == 0:
 			ignoreReason = "node has 0 size"
-		case slices.Contains(cfg.IgnoreNodes, node.ID):
+		case slices.Contains(cfg.IgnoreNUMANodes, node.ID):
 			ignoreReason = fmt.Sprintf("node ID %d is in ignoreNodes", node.ID)
 		}
 		if ignoreReason != "" {
@@ -390,9 +390,9 @@ const heldReason = "held back: it may be a pool device"
 // localIgnoreReason returns why a region on the memdevs mems, a local
 // memdev that the engine uses among them, is not published, "" if it is not
 // on one.
-func localIgnoreReason(mems []kernel.MemdevInfo, local *LocalSnapshot) string {
+func localIgnoreReason(mems []kernel.MemdevInfo, local *localRecords) string {
 	for _, memDev := range mems {
-		if local.InUse(memDev.Serial) {
+		if local.known(memDev.Serial) {
 			return fmt.Sprintf("created by the plugin on local memory device %s", MemdevDeviceName(memDev.Serial))
 		}
 	}
@@ -565,13 +565,13 @@ func logSharedRefusal(memDev *kernel.MemdevInfo, reason string) {
 // devInfos. Per memdev, ignoreDevices takes precedence over pool devices,
 // pool devices over sharedDevices, and sharedDevices over sliced memdevs. A
 // memdev of persistent memory only (no RAM capacity) is a persistent
-// memdev, shared when sharedDevices lists it (addPersistentMemdev). A shared
+// memdev, shared when sharedDevices lists it (addLocalPersistent). A shared
 // memdev is published when it is enabled, has RAM capacity, no regions but
 // the engine's and no claims of slices. A sliced memdev is published when it
 // is enabled, its RAM capacity is sure to hold a whole memory block, it has
 // no regions but the engine's and no claims that use it shared or
 // persistent.
-func addLocalMemdevs(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held map[uint64]bool, local *LocalSnapshot) {
+func addLocalMemdevs(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held map[uint64]bool, local *localRecords) {
 	bs := uint64(0)
 	if local != nil {
 		bs = local.BlockSize
@@ -589,18 +589,18 @@ func addLocalMemdevs(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snaps
 			logSharedRefusal(memDev, refusal)
 		}
 		if memDev.PmemSize > 0 && memDev.RamSize == 0 {
-			addPersistentMemdev(devInfos, cfg, memDev, listed && refusal == "", poolSerials, held, regions[memDev.Serial], local)
+			addLocalPersistent(devInfos, cfg, memDev, listed && refusal == "", poolSerials, held, regions[memDev.Serial], local)
 			continue
 		}
 		if memDev.PmemSize > 0 {
 			klog.V(3).Infof("- memory device %q: persistent capacity of a memdev with RAM capacity is not used", memDev.Name)
 		}
 		if listed && refusal == "" {
-			addSharedMemdev(devInfos, memDev, memdevUsableSize(cfg, memDev, local), regions[memDev.Serial], local, bs)
+			addLocalShared(devInfos, memDev, memdevUsableSize(cfg, memDev, local), regions[memDev.Serial], local, bs)
 			continue
 		}
 		size := memdevUsableSize(cfg, memDev, local)
-		if reason := partsRefusal(cfg, memDev, size, bs, poolSerials, held, regions[memDev.Serial], local); reason != "" {
+		if reason := localRefusal(cfg, memDev, size, bs, poolSerials, held, regions[memDev.Serial], local); reason != "" {
 			klog.V(4).Infof("- not publishing memory device %q as a local memory device: %s", memDev.Name, reason)
 			continue
 		}
@@ -619,13 +619,13 @@ func addLocalMemdevs(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snaps
 	}
 }
 
-// partsRefusal returns why a memdev of usable size bytes with memory
+// localRefusal returns why a memdev of usable size bytes with memory
 // blocks of bs bytes is not published as a sliced local memdev, "" if it
 // is: no RAM, an unknown block size, too small, disabled, a pool or held
 // memdev, regions that the engine did not create, claims that use it
 // persistent or shared, ignoreDevices.
-func partsRefusal(cfg PublishConfig, memDev *kernel.MemdevInfo, size, bs uint64, poolSerials, held map[uint64]bool, regions []string, local *LocalSnapshot) string {
-	use, used := local.Use(memDev.Serial)
+func localRefusal(cfg PublishConfig, memDev *kernel.MemdevInfo, size, bs uint64, poolSerials, held map[uint64]bool, regions []string, local *localRecords) string {
+	use, used := local.memdev(memDev.Serial)
 	switch {
 	case memDev.RamSize == 0:
 		return "no RAM capacity"
@@ -652,7 +652,7 @@ func partsRefusal(cfg PublishConfig, memDev *kernel.MemdevInfo, size, bs uint64,
 // memdevUsableSize returns the bytes of a local memdev that the engine
 // uses: its RAM capacity, or less when memdevSettings or the address line
 // probe limit it, rounded down to the alignment of CXL regions.
-func memdevUsableSize(cfg PublishConfig, memDev *kernel.MemdevInfo, local *LocalSnapshot) uint64 {
+func memdevUsableSize(cfg PublishConfig, memDev *kernel.MemdevInfo, local *localRecords) uint64 {
 	size := memDev.RamSize
 	for _, limit := range []uint64{cfg.usableSize(memDev.Name, memDev.Serial), local.ProbedSize(memDev.Serial)} {
 		if limit > 0 && limit < size {
@@ -662,13 +662,13 @@ func memdevUsableSize(cfg PublishConfig, memDev *kernel.MemdevInfo, local *Local
 	return size
 }
 
-// addSharedMemdev adds a memdev of sharedDevices to devInfos as a shared
+// addLocalShared adds a memdev of sharedDevices to devInfos as a shared
 // local device, unless it is disabled, has no RAM capacity, has regions that
 // the engine did not create or claims that use it as slices.
 //   - regions: the regions on the memdev
 //   - bs: the memory block size, 0 if unknown
-func addSharedMemdev(devInfos DevicesInfo, memDev *kernel.MemdevInfo, size uint64, regions []string, local *LocalSnapshot, bs uint64) {
-	use, used := local.Use(memDev.Serial)
+func addLocalShared(devInfos DevicesInfo, memDev *kernel.MemdevInfo, size uint64, regions []string, local *localRecords, bs uint64) {
+	use, used := local.memdev(memDev.Serial)
 	reason := ""
 	switch {
 	case memDev.RamSize == 0:
@@ -701,7 +701,7 @@ func addSharedMemdev(devInfos DevicesInfo, memDev *kernel.MemdevInfo, size uint6
 	klog.V(3).Infof("discovered shared local memory device %s: %s serial 0x%x size %d", name, memDev.Name, memDev.Serial, memDev.RamSize)
 }
 
-// addPersistentMemdev adds a memdev of persistent memory to devInfos as a
+// addLocalPersistent adds a memdev of persistent memory to devInfos as a
 // persistent local device, shared when sharedDevices lists it, unless it is
 // ignored, a pool device or held, disabled, has regions that the engine did
 // not create, or claims that use it as slices, as a volatile shared device,
@@ -709,8 +709,8 @@ func addSharedMemdev(devInfos DevicesInfo, memDev *kernel.MemdevInfo, size uint6
 //   - shared: sharedDevices lists the memdev, which is neither ignored nor
 //     a pool device
 //   - regions: the regions on the memdev
-func addPersistentMemdev(devInfos DevicesInfo, cfg PublishConfig, memDev *kernel.MemdevInfo, shared bool, poolSerials, held map[uint64]bool, regions []string, local *LocalSnapshot) {
-	use, used := local.Use(memDev.Serial)
+func addLocalPersistent(devInfos DevicesInfo, cfg PublishConfig, memDev *kernel.MemdevInfo, shared bool, poolSerials, held map[uint64]bool, regions []string, local *localRecords) {
+	use, used := local.memdev(memDev.Serial)
 	reason := memdevMatches(cfg.IgnoreDevices, memDev)
 	switch {
 	case reason != "":

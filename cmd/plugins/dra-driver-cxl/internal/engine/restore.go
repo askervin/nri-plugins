@@ -68,7 +68,7 @@ func (e *Engine) restoreGrantsOf(ctx context.Context, serial state.Serial, why m
 		return nil
 	}
 	return e.commit(ctx, func(r *state.Records) error {
-		remounted(r, rs.loops)
+		restored(r, rs.loops)
 		if err := unrestored(r, rs.failed, rs.restored); err != nil {
 			return err
 		}
@@ -205,9 +205,9 @@ func preparationUnrestored(r *state.Records, ref state.GrantRef) error {
 	return nil
 }
 
-// remounted records the loop devices of the cached node mounts that are on
+// restored records the loop devices of the cached node mounts that are on
 // another one now (loops by node mount path) in their mounts.
-func remounted(r *state.Records, loops map[string]string) {
+func restored(r *state.Records, loops map[string]string) {
 	for i := range r.Regions {
 		for j := range r.Regions[i].Mounts {
 			if m := &r.Regions[i].Mounts[j]; loops[m.Path] != "" {

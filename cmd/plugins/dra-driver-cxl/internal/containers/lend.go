@@ -33,19 +33,19 @@ import (
 // steering manager steers.
 var ErrSteered = errors.New("container is memory-steered (container.steering.policy of its claims or the node defaults); lending is not supported together with steering yet")
 
-// LendNode lends the NUMA node to the newest container of the pod with the
-// name on behalf of holder: the node is in its cpuset.mems. Idempotent per
-// node and holder.
-func (p *Plugin) LendNode(ctx context.Context, podUID, name string, node int, holder string) error {
-	return p.changeLend(ctx, lendChange{podUID: podUID, name: name, numaNode: node, holder: holder, lend: true})
+// LendNUMANode lends the NUMA node to the newest container of the pod with
+// the name for the lease: the NUMA node is in its cpuset.mems. Idempotent
+// per NUMA node and lease.
+func (p *Plugin) LendNUMANode(ctx context.Context, podUID, name string, numaNode int, lease string) error {
+	return p.changeLend(ctx, lendChange{podUID: podUID, name: name, numaNode: numaNode, holder: lease, lend: true})
 }
 
-// RevokeNode drops holder of the node lent to the newest container of the
-// pod with the name; the node leaves its cpuset.mems (its pages migrate
-// back) when it has no holder left. Idempotent per node and holder; a
-// container that is gone is not an error.
-func (p *Plugin) RevokeNode(ctx context.Context, podUID, name string, node int, holder string) error {
-	return p.changeLend(ctx, lendChange{podUID: podUID, name: name, numaNode: node, holder: holder})
+// RevokeNUMANode drops the lease of the NUMA node lent to the newest
+// container of the pod with the name; the NUMA node leaves its cpuset.mems
+// (its pages migrate back) when it has no lease left. Idempotent per NUMA
+// node and lease; a container that is gone is not an error.
+func (p *Plugin) RevokeNUMANode(ctx context.Context, podUID, name string, numaNode int, lease string) error {
+	return p.changeLend(ctx, lendChange{podUID: podUID, name: name, numaNode: numaNode, holder: lease})
 }
 
 // lendChange is a lend (lend) or a revoke of a node to a container for a

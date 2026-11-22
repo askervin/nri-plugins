@@ -90,7 +90,7 @@ func TestFenceSeed(t *testing.T) {
 	e.start()
 	e.synchronize()
 	e.mustPrepare(e.d.local, localClaim("u1", 64*mib))
-	want := dra.NumaNodes(e.records(), device.DriverName)
+	want := dra.NUMANodes(e.records(), device.DriverName)
 	if len(want) != 1 {
 		t.Fatalf("NUMA nodes of the prepared claim %v", want)
 	}

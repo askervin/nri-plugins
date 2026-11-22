@@ -57,7 +57,7 @@ func TestCharIgnoreRegions(t *testing.T) {
 // ignoreNodes refuse has the reason of ignoreRegions only.
 func TestCharIgnoreNodes(t *testing.T) {
 	logs := klogtest.Capture(t, 4)
-	cfg := PublishConfig{IgnoreNodes: []int{3}}
+	cfg := PublishConfig{IgnoreNUMANodes: []int{3}}
 	devs := BuildDevices(cfg, charRegions(), nil, nil, nil)
 	if got := pubNames(devs); !slices.Equal(got, []string{"dram", "region0-node2"}) {
 		t.Fatalf("published %v", got)
@@ -65,7 +65,7 @@ func TestCharIgnoreNodes(t *testing.T) {
 	wantLogLineText(t, logs(), `- ignoring region device "region1": region is on node 3`)
 
 	logs = klogtest.Capture(t, 4)
-	cfg = PublishConfig{IgnoreRegions: []string{"region0"}, IgnoreNodes: []int{2}}
+	cfg = PublishConfig{IgnoreRegions: []string{"region0"}, IgnoreNUMANodes: []int{2}}
 	devs = BuildDevices(cfg, charRegions(), nil, nil, nil)
 	if got := pubNames(devs); !slices.Equal(got, []string{"dram", "region1-node3"}) {
 		t.Fatalf("published %v", got)
@@ -108,7 +108,7 @@ func TestCharPublishOrder(t *testing.T) {
 	}
 
 	q := pubPublisher(t, PublishOptions{
-		Config:   PublishConfig{IgnoreDRAMNodes: true, PublishLeaseDevice: true},
+		Config:   PublishConfig{IgnoreDRAM: true, PublishLeaseDevice: true},
 		NodeName: pubNode,
 		Scan:     pubNoScan,
 	})
@@ -129,8 +129,8 @@ func TestCharPersistentCapacityOfRAMMemdev(t *testing.T) {
 	logs := klogtest.Capture(t, 3)
 	m := pubMemdev()
 	m.PmemSize = 256 * pubMiB
-	devs := BuildDevices(PublishConfig{IgnoreDRAMNodes: true, ManageMemdevs: true}, &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{m}}, nil, nil,
-		&LocalSnapshot{BlockSize: pubBlockSize})
+	devs := BuildDevices(PublishConfig{IgnoreDRAM: true, ManageMemdevs: true}, &kernel.Snapshot{Memdevs: []kernel.MemdevInfo{m}}, nil, nil,
+		&localRecords{BlockSize: pubBlockSize})
 	dev, ok := devs[pubLocalDeviceName]
 	if !ok {
 		t.Fatalf("published %v", pubNames(devs))

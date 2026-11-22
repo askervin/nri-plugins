@@ -73,9 +73,9 @@ func TestLendToUnsteeredNUMAClaim(t *testing.T) {
 	e.startCtr(pod, c1)
 	e.passes()
 	e.expectUpdates()
-	noErr(t, e.p.LendNode(ctx, "u1", "app", 3, "l1"))
+	noErr(t, e.p.LendNUMANode(ctx, "u1", "app", 3, "l1"))
 	e.expectUpdates("c1 mems=0-3")
-	noErr(t, e.p.RevokeNode(ctx, "u1", "app", 3, "l1"))
+	noErr(t, e.p.RevokeNUMANode(ctx, "u1", "app", 3, "l1"))
 	e.expectUpdates("c1 mems=0-2")
 
 	e.proc(102, "kubepods/u1/c2", "0-2", "")
@@ -83,7 +83,7 @@ func TestLendToUnsteeredNUMAClaim(t *testing.T) {
 	if got := e.createMems(pod, c2); got != "-" {
 		t.Fatalf("adjustment %s of a steered container", got)
 	}
-	err := e.p.LendNode(ctx, "u1", "steered", 3, "l1")
+	err := e.p.LendNUMANode(ctx, "u1", "steered", 3, "l1")
 	if !errors.Is(err, ErrSteered) || !strings.Contains(err.Error(), "lend node 3 to ns/pod-u1/steered: container is memory-steered") {
 		t.Fatalf("lend to a steered container: %v", err)
 	}
@@ -131,12 +131,12 @@ func TestSynchronizeManagement(t *testing.T) {
 	e.p.LendsRestored()
 	e.passes()
 	e.expectUpdates("c1 mems=0-2", "c2 mems=0-2", "c3 mems=0-1,3", "c4 mems=0-1")
-	noErr(t, e.p.LendNode(ctx, "u1", "c1", 3, "l1"))
+	noErr(t, e.p.LendNUMANode(ctx, "u1", "c1", 3, "l1"))
 	e.expectUpdates("c1 mems=0-3")
-	if err := e.p.LendNode(ctx, "u1", "c5", 3, "l1"); !errors.Is(err, ErrSteered) {
+	if err := e.p.LendNUMANode(ctx, "u1", "c5", 3, "l1"); !errors.Is(err, ErrSteered) {
 		t.Fatalf("lend to a container with conflicting settings: %v", err)
 	}
-	noErr(t, e.p.LendNode(ctx, "u1", "c2", 3, "l1"))
+	noErr(t, e.p.LendNUMANode(ctx, "u1", "c2", 3, "l1"))
 	e.expectUpdates("c2 mems=0-3")
 }
 
@@ -227,11 +227,11 @@ func TestSynchronizeReleasesSteering(t *testing.T) {
 	e.expectUpdates("c1 mems=0-2", "c2 mems=0-1,3", "c3 mems=0-2", "c4 mems=0-2", "c7 mems=0-2")
 	e.check()
 	// lent to, as containers that are not steered
-	noErr(t, e.p.LendNode(ctx, "u1", "app", 3, "l1"))
+	noErr(t, e.p.LendNUMANode(ctx, "u1", "app", 3, "l1"))
 	e.expectUpdates("c1 mems=0-3")
-	noErr(t, e.p.RevokeNode(ctx, "u1", "app", 3, "l1"))
+	noErr(t, e.p.RevokeNUMANode(ctx, "u1", "app", 3, "l1"))
 	e.expectUpdates("c1 mems=0-2")
-	if err := e.p.LendNode(ctx, "u1", "conflict", 3, "l1"); !errors.Is(err, ErrSteered) {
+	if err := e.p.LendNUMANode(ctx, "u1", "conflict", 3, "l1"); !errors.Is(err, ErrSteered) {
 		t.Fatalf("lend to a container taken as steered: %v", err)
 	}
 
@@ -266,7 +266,7 @@ func TestSynchronizeReleasesSteering(t *testing.T) {
 	if ids := e.steered(); !reflect.DeepEqual(ids, map[string]string{"c6": cg6}) {
 		t.Fatalf("steering records %v, expected c6", ids)
 	}
-	if err := e.p.LendNode(ctx, "u1", "app", 3, "l1"); !errors.Is(err, ErrSteered) {
+	if err := e.p.LendNUMANode(ctx, "u1", "app", 3, "l1"); !errors.Is(err, ErrSteered) {
 		t.Fatalf("lend to the restarted steered container: %v", err)
 	}
 	e.p.pass(ctx, "")
@@ -374,7 +374,7 @@ func TestSteeringStartFails(t *testing.T) {
 					t.Fatalf("memory.high %s of others replaced", got)
 				}
 			}
-			noErr(t, e.p.LendNode(ctx, "u1", "app", 3, "l1"))
+			noErr(t, e.p.LendNUMANode(ctx, "u1", "app", 3, "l1"))
 			e.expectUpdates("c1 mems=0-3")
 		})
 	}
@@ -392,7 +392,7 @@ func TestSteeringStartFails(t *testing.T) {
 	if c := e.record("c1"); c.Management != ManagementNone || len(e.managers()) != 0 || len(e.steered()) != 0 {
 		t.Fatalf("record %+v, managers %v", c, e.managers())
 	}
-	noErr(t, e.p.LendNode(context.Background(), "u1", "app", 3, "l1"))
+	noErr(t, e.p.LendNUMANode(context.Background(), "u1", "app", 3, "l1"))
 	e.expectUpdates()
 }
 

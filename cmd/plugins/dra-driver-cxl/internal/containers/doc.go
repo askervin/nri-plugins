@@ -20,7 +20,7 @@
 // not steer: one computation (wantMems) and one writer (applyMems) under the
 // update token. The Plugin implements the NRI events, the fence of the
 // device engine (Fence) and the lender of the lease broker and of the
-// companion claims (LendNode, RevokeNode).
+// companion claims (LendNUMANode, RevokeNUMANode).
 //
 // The table of the containers is in memory; the Steered records and the
 // leases that seed the lends are in the store. The transitions of

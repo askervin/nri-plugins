@@ -76,7 +76,7 @@ func TestRecordsCommitted(t *testing.T) {
 	// a new pool serial is committed durably: the snapshot has it when the
 	// list returns
 	e.publish("0xc1ee2001", "0xc1ee2002")
-	_, _ = e.w.Serials(t.Context())
+	_, _ = e.w.ListPoolSerials(t.Context())
 	if r := e.st.Snapshot().ProvenanceOf(0xc1ee2002); r == nil || r.State != state.ProvenancePool {
 		t.Fatalf("the new pool serial is not committed durably: %+v", r)
 	}
@@ -160,7 +160,7 @@ func TestRecordsLoaded(t *testing.T) {
 
 // TestLoadHeldRecord pins that a HELD record is loaded: the hold
 // goes on from its HeldSince, so a memdev held before a restart is
-// published HoldBack after its first hold, not after the restart.
+// published MaxHold after its first hold, not after the restart.
 func TestLoadHeldRecord(t *testing.T) {
 	logs := klogtest.Capture(t, 4)
 	e := newWatchEnv(t)
@@ -171,7 +171,7 @@ func TestLoadHeldRecord(t *testing.T) {
 	e.advance(time.Minute)
 	e.plug(otherLocalSerial)
 	e.wantHeld("pool-c missing", otherLocalSerial)
-	e.advance(HoldBack - time.Minute)
+	e.advance(MaxHold - time.Minute)
 	e.restart()
 	wantLogLine(t, logs(), "pool serials: 1 memdevs held back before the restart stay held")
 	e.wantState(otherLocalSerial, state.ProvenanceHeld)
@@ -182,7 +182,7 @@ func TestLoadHeldRecord(t *testing.T) {
 }
 
 // TestLostStore pins the records of a LOST store: the error with the lost
-// reason at New, a new memdev held for HoldBack within MissingWindow and
+// reason at New, a new memdev held for MaxHold within MissingWindow and
 // then published as local, a new memdev local at once after MissingWindow,
 // and no commit tried on the store.
 func TestLostStore(t *testing.T) {
@@ -203,7 +203,7 @@ func TestLostStore(t *testing.T) {
 	if reason := e.watched(localSerial).HeldReason; reason != state.HeldLost {
 		t.Fatalf("held reason %q", reason)
 	}
-	e.advance(HoldBack - time.Second)
+	e.advance(MaxHold - time.Second)
 	e.wantHeld("lost records, before the hold back time", localSerial)
 	e.advance(time.Second)
 	e.wantHeld("lost records, held back for long enough")
@@ -215,7 +215,7 @@ func TestLostStore(t *testing.T) {
 		t.Fatalf("%d failed commits logged:\n%s", n, logs())
 	}
 	// another new memdev within MissingWindow of the first scan
-	e.advance(MissingWindow - HoldBack - time.Second)
+	e.advance(MissingWindow - MaxHold - time.Second)
 	e.plug(otherLocalSerial)
 	e.wantHeld("lost records, in the window", otherLocalSerial)
 	e.advance(time.Second)

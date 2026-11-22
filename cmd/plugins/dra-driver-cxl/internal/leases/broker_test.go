@@ -925,7 +925,7 @@ func TestCloseClaimDoesNotWaitForCompanions(t *testing.T) {
 	_, err := e.b.OnLending(r.Lease, companionClaim(r.Lease))
 	mustOK(t, err)
 	e.b.OnPrepared(r.Lease, state.SourceLocal, []state.DeviceInfo{preparedDev(serialSliced, 64<<20, api.ModeNUMA, 2)})
-	mustOK(t, e.ctrs.LendNode(context.Background(), envPodUID, envCtr, 2, r.Lease))
+	mustOK(t, e.ctrs.LendNUMANode(context.Background(), envPodUID, envCtr, 2, r.Lease))
 	stay.Store(true)
 
 	start := time.Now()

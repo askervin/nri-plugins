@@ -194,10 +194,10 @@ func TestCompanionUnpreparedBehind(t *testing.T) {
 // and lease-<uid> (the broker's edits) in the spec of cxl.nri.io, its
 // socket; its Unprepare closes the lease claim first and removes them.
 func TestLeaseClaimPrepare(t *testing.T) {
-	if devs := dra.BuildDevices(dra.PublishConfig{IgnoreDRAMNodes: true, PublishLeaseDevice: true}, &kernel.Snapshot{}, nil, nil, nil); devs["lease"] == nil {
+	if devs := dra.BuildDevices(dra.PublishConfig{IgnoreDRAM: true, PublishLeaseDevice: true}, &kernel.Snapshot{}, nil, nil, nil); devs["lease"] == nil {
 		t.Fatalf("no lease device in %v", devs)
 	}
-	if devs := dra.BuildDevices(dra.PublishConfig{IgnoreDRAMNodes: true}, &kernel.Snapshot{}, nil, nil, nil); len(devs) != 0 {
+	if devs := dra.BuildDevices(dra.PublishConfig{IgnoreDRAM: true}, &kernel.Snapshot{}, nil, nil, nil); len(devs) != 0 {
 		t.Fatalf("lease device published without --leases: %v", devs)
 	}
 	e := brokerEnv(t)

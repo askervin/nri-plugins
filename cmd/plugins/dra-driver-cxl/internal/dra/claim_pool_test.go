@@ -75,7 +75,7 @@ func TestPoolNUMA(t *testing.T) {
 	if cd == nil || !slices.Equal(cd.ContainerEdits.Env, want) || len(cd.ContainerEdits.DeviceNodes) != 0 {
 		t.Fatalf("CDI device %+v, expected env %v", cd, want)
 	}
-	if got := NumaNodes(e.records(), e.pool.Name()); !slices.Equal(got, []int{2}) {
+	if got := NUMANodes(e.records(), e.pool.Name()); !slices.Equal(got, []int{2}) {
 		t.Fatalf("NUMA nodes %v", got)
 	}
 	e.mustUnprepare(e.pool, "u1")
@@ -153,7 +153,7 @@ func TestPoolDaxAndShared(t *testing.T) {
 	x := e.devices(e.pool, "x1")[0]
 	cd := e.cdiDevice(e.pool, "claim-x1-0")
 	if x.Mode != api.ModeDax || x.DaxDevice == "" || len(x.NUMANodes) != 0 || cd == nil ||
-		!reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, []*cdiSpecs.DeviceNode{DaxDeviceNode(x.DaxDevice, x.DaxMajor, x.DaxMinor, false)}) {
+		!reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, []*cdiSpecs.DeviceNode{daxDeviceNode(x.DaxDevice, x.DaxMajor, x.DaxMinor, false)}) {
 		t.Fatalf("device %+v, CDI device %+v", x, cd)
 	}
 	e.mustPrepare(e.pool, poolClaim("s1", "shared0", poolSharedData))
@@ -210,7 +210,7 @@ func TestPoolPersistent(t *testing.T) {
 		t.Fatalf("devices %+v %+v", r1, r2)
 	}
 	cd = e.cdiDevice(e.pool, "claim-r1-0")
-	if want := []*cdiSpecs.Mount{FsCDIMount(mnt, "/run/cxl-fs/C1AF0001", true)}; cd == nil || !reflect.DeepEqual(cd.ContainerEdits.Mounts, want) {
+	if want := []*cdiSpecs.Mount{fsCDIMount(mnt, "/run/cxl-fs/C1AF0001", true)}; cd == nil || !reflect.DeepEqual(cd.ContainerEdits.Mounts, want) {
 		t.Fatalf("CDI device %+v", cd)
 	}
 	e.mustUnprepare(e.pool, "r1")

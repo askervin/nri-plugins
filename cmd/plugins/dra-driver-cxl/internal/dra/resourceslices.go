@@ -26,7 +26,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
-// nodeResourceSliceSyncDelay is the SyncDelay of the controller of the node's
+// resourceSliceSyncDelay is the SyncDelay of the controller of the node's
 // cxl.nri.io ResourceSlices: how long it waits after an informer event of
 // a slice (someone else created, changed or deleted it) before it puts
 // the slice back as the driver publishes it.
@@ -47,7 +47,7 @@ import (
 // slice of the old owner) make the slice flap about once a second instead
 // of once in 30 s. Accepted: one pool of a slice per 128 devices, one
 // write of each a second at most.
-const nodeResourceSliceSyncDelay = time.Second
+const resourceSliceSyncDelay = time.Second
 
 // errorLogInterval is how long the publisher does not log an error of the
 // controller of the node's slices again: the controller retries a failed
@@ -58,7 +58,7 @@ const errorLogInterval = 10 * time.Minute
 // startController starts the controller of the node's ResourceSlices with
 // the resources res, like kubeletplugin.Helper.PublishResources does (the
 // same owner and names), but with the SyncDelay
-// nodeResourceSliceSyncDelay, which the helper has no option for, and the
+// resourceSliceSyncDelay, which the helper has no option for, and the
 // publisher's error handler. The controller runs until ctx ends. It returns
 // once the informer of the controller has synced, or ctx ended.
 func (p *Publisher) startController(ctx context.Context, res *resourceslice.DriverResources) (*resourceslice.Controller, error) {
@@ -69,7 +69,7 @@ func (p *Publisher) startController(ctx context.Context, res *resourceslice.Driv
 		// The UID is found by the controller.
 		Owner:        &resourceslice.Owner{APIVersion: "v1", Kind: "Node", Name: p.opts.NodeName},
 		Resources:    res, // a deep copy
-		SyncDelay:    ptr(nodeResourceSliceSyncDelay),
+		SyncDelay:    ptr(resourceSliceSyncDelay),
 		ErrorHandler: p.handleError,
 	})
 }

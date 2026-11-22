@@ -47,7 +47,7 @@ func TestStartOnALostStore(t *testing.T) {
 	if r := e.d.pool.Records(); len(r.Preparations) != 0 || len(e.d.pool.Serials()) != 0 {
 		t.Errorf("pool driver: preparations %v, serials %v", r.Preparations, e.d.pool.Serials())
 	}
-	if uses := e.d.publisher.LocalSnapshot().Uses; len(uses) != 0 {
+	if uses := e.d.publisher.LocalRecords().Memdevs; len(uses) != 0 {
 		t.Errorf("local uses %v", uses)
 	}
 	e.synchronize()

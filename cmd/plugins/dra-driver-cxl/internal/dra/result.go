@@ -252,9 +252,9 @@ func deviceMemory(d *state.DeviceInfo, keys envKeys) (api.Memory, bool) {
 	return m, true
 }
 
-// deviceNumaNode returns the NUMA node of a memdev in mode numa, -1 for
+// deviceNUMANode returns the NUMA node of a memdev in mode numa, -1 for
 // another device.
-func deviceNumaNode(d *state.DeviceInfo) int {
+func deviceNUMANode(d *state.DeviceInfo) int {
 	if d.DeviceType == device.DeviceTypeMemdev && d.Mode == api.ModeNUMA && len(d.NUMANodes) > 0 {
 		return d.NUMANodes[0]
 	}

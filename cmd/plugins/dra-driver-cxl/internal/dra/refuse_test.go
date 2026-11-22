@@ -189,7 +189,7 @@ func TestPrepareRefusedKeepsStale(t *testing.T) {
 	e.mustPrepare(e.local, localClaim("l1", localDev, envBlockSize))
 	e.mustPrepare(e.local, localClaim("l2", localDev, envBlockSize))
 	drivers := []string{device.DriverName, device.PoolDriverName}
-	if len(NumaNodes(e.records(), drivers...)) == 0 {
+	if len(NUMANodes(e.records(), drivers...)) == 0 {
 		t.Fatal("no NUMA node before the reboot")
 	}
 	logs := klogCapture(t)
@@ -207,7 +207,7 @@ func TestPrepareRefusedKeepsStale(t *testing.T) {
 	if names := append(e.cdiNames(e.pool), e.cdiNames(e.local)...); len(names) != 0 {
 		t.Fatalf("CDI devices of stale claims %v", names)
 	}
-	if got := NumaNodes(e.records(), drivers...); len(got) != 0 {
+	if got := NUMANodes(e.records(), drivers...); len(got) != 0 {
 		t.Fatalf("NUMA nodes of stale claims %v", got)
 	}
 	wantErrText(t, e.prepare(e.pool, poolClaim("u1", "pooled0", "")).Err, "cxl-pool.nri.io: claim demo/claim-u1: ")

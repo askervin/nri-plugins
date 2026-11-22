@@ -66,11 +66,11 @@ func (k envKeys) next(base string) string {
 	return api.Nth(base, k[base])
 }
 
-// DaxDeviceNode returns the CDI device node of a devdax device. A read-only
+// daxDeviceNode returns the CDI device node of a devdax device. A read-only
 // node has permissions "r": the runtime turns that into a device cgroup
 // rule that refuses opens for writing, whatever the container's
 // capabilities.
-func DaxDeviceNode(path string, major, minor int, readOnly bool) *cdiSpecs.DeviceNode {
+func daxDeviceNode(path string, major, minor int, readOnly bool) *cdiSpecs.DeviceNode {
 	node := &cdiSpecs.DeviceNode{
 		Path:  path,
 		Type:  "c",
@@ -93,9 +93,9 @@ func BlockDeviceNode(dev string, major, minor int, readOnly bool) *cdiSpecs.Devi
 	return node
 }
 
-// FsCDIMount returns the CDI mount of a node mount at path in a container:
+// fsCDIMount returns the CDI mount of a node mount at path in a container:
 // options bind, ro, nosuid, nodev, without ro for a use that writes.
-func FsCDIMount(nodeMount, path string, readOnly bool) *cdiSpecs.Mount {
+func fsCDIMount(nodeMount, path string, readOnly bool) *cdiSpecs.Mount {
 	options := []string{"bind", "ro", "nosuid", "nodev"}
 	if !readOnly {
 		options = []string{"bind", "nosuid", "nodev"}
@@ -170,11 +170,11 @@ func cdiDevice(uid string, d *state.DeviceInfo, keys envKeys) cdiSpecs.Device {
 	}
 	switch {
 	case d.Mode == api.ModeDax && d.DaxDevice != "":
-		edits.DeviceNodes = []*cdiSpecs.DeviceNode{DaxDeviceNode(d.DaxDevice, d.DaxMajor, d.DaxMinor, d.ReadOnly)}
+		edits.DeviceNodes = []*cdiSpecs.DeviceNode{daxDeviceNode(d.DaxDevice, d.DaxMajor, d.DaxMinor, d.ReadOnly)}
 	case d.Persistent && d.Mode == api.ModeBlock:
 		edits.DeviceNodes = []*cdiSpecs.DeviceNode{BlockDeviceNode(d.BlockDevice, d.BlockMajor, d.BlockMinor, d.ReadOnly)}
 	case d.Persistent && d.Mode == api.ModeFS && d.NodeMount != "":
-		edits.Mounts = []*cdiSpecs.Mount{FsCDIMount(d.NodeMount, d.Path, d.ReadOnly)}
+		edits.Mounts = []*cdiSpecs.Mount{fsCDIMount(d.NodeMount, d.Path, d.ReadOnly)}
 	}
 	edits.Env = api.EnvList(env)
 	return cdiSpecs.Device{Name: ClaimCDIDeviceName(uid, d.Result), ContainerEdits: edits}

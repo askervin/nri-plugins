@@ -108,7 +108,7 @@ func (e *pubSerialsEnv) restart() {
 // publish) whose scans detect the devices of scan.
 func (e *pubSerialsEnv) publisher(scan func(context.Context) (*kernel.Snapshot, error)) *Publisher {
 	return pubPublisher(e.t, PublishOptions{
-		Config:    PublishConfig{IgnoreDRAMNodes: true, ManageMemdevs: true},
+		Config:    PublishConfig{IgnoreDRAM: true, ManageMemdevs: true},
 		NodeName:  pubNode,
 		Scan:      scan,
 		Watcher:   e.w,
@@ -375,7 +375,7 @@ func TestPoolSerialsNewMemdevHeldBack(t *testing.T) {
 	if logMatches(out, "pool serials: holding back new memdev") != 1 {
 		t.Fatalf("no line of the hold:\n%s", out)
 	}
-	e.advance(provenance.HoldBack / 2)
+	e.advance(provenance.MaxHold / 2)
 	e.wantScan("half the hold back time later", pubLocalDeviceName)
 	e.publish("0xc1ee2001", "0xc1ae2001")
 	e.wantScan("pool-c lists it", pubLocalDeviceName)
@@ -383,12 +383,12 @@ func TestPoolSerialsNewMemdevHeldBack(t *testing.T) {
 		t.Fatal("a pool device is held back")
 	}
 	e.publish()
-	e.advance(2 * provenance.HoldBack)
+	e.advance(2 * provenance.MaxHold)
 	e.wantScan("pool-c missing again", pubLocalDeviceName)
 }
 
 // TestPoolSerialsHoldBackEnds pins a new memdev held back while a pool is
-// missing: published as a local one after HoldBack, and at once when the
+// missing: published as a local one after MaxHold, and at once when the
 // pool is back without it; a pool observed missing for longer than
 // MissingWindow holds back nothing, but only when its absence was observed.
 func TestPoolSerialsHoldBackEnds(t *testing.T) {
@@ -398,7 +398,7 @@ func TestPoolSerialsHoldBackEnds(t *testing.T) {
 	e.publish()
 	e.plug(pubLocalSerial)
 	e.wantScan("held back")
-	e.advance(provenance.HoldBack)
+	e.advance(provenance.MaxHold)
 	e.wantScan("after the hold back time", pubLocalDeviceName)
 	if e.w.Holding() {
 		t.Fatal("still holding")
@@ -512,7 +512,7 @@ func TestPoolSerialsPrepared(t *testing.T) {
 	// the pool driver's serials of a scan
 	e.plug(pubOtherLocalSerial)
 	e.p = pubPublisher(t, PublishOptions{
-		Config:      PublishConfig{IgnoreDRAMNodes: true, ManageMemdevs: true},
+		Config:      PublishConfig{IgnoreDRAM: true, ManageMemdevs: true},
 		NodeName:    pubNode,
 		Scan:        func(context.Context) (*kernel.Snapshot, error) { return e.devices(), nil },
 		Watcher:     e.w,
@@ -528,14 +528,14 @@ func TestPoolSerialsPrepared(t *testing.T) {
 
 // TestPoolSerialsBadFile pins a store whose state.json does not decode
 // (LOST): the remembered serials are lost, a new memdev is held back as
-// while a pool is missing, for HoldBack within MissingWindow. The LOST
+// while a pool is missing, for MaxHold within MissingWindow. The LOST
 // store is not written.
 func TestPoolSerialsBadFile(t *testing.T) {
 	e := newPubSerialsEnv(t)
 	e.lose("{bogus")
 	e.plug(pubLocalSerial)
 	e.wantScan("bad file")
-	e.advance(provenance.HoldBack)
+	e.advance(provenance.MaxHold)
 	e.wantScan("bad file, held back for long enough", pubLocalDeviceName)
 	e.idle(provenance.MissingWindow)
 	e.plug(pubOtherLocalSerial)
@@ -641,7 +641,7 @@ func TestPoolSerialsClaimEvidence(t *testing.T) {
 	e.claim("attaching", pubNode, "c-pooled0", "")
 	e.plug(pubOtherLocalSerial)
 	e.wantScan("attach in flight", pubLocalDeviceName)
-	e.advance(2 * provenance.HoldBack)
+	e.advance(2 * provenance.MaxHold)
 	e.wantScan("attach in flight, later", pubLocalDeviceName)
 	// its status tells another serial
 	e.claim("attaching", pubNode, "c-pooled0", "0xc1ee2001")
@@ -676,14 +676,14 @@ func TestPoolSerialsHoldWhileNotListed(t *testing.T) {
 	e.restart()
 	e.plug(pubLocalSerial)
 	e.wantScan("not listed")
-	e.advance(2 * provenance.HoldBack)
+	e.advance(2 * provenance.MaxHold)
 	e.wantScan("not listed, later")
 	if !e.w.Holding() {
 		t.Fatal("not holding")
 	}
 	fail.Store(false)
 	e.wantScan("listed, pool-c missing")
-	e.advance(provenance.HoldBack)
+	e.advance(provenance.MaxHold)
 	e.wantScan("held back for long enough", pubLocalDeviceName)
 }
 
@@ -701,7 +701,7 @@ func TestPoolSerialsHeldRegion(t *testing.T) {
 	if r := poolIgnoreReason(regionMemdevs(devs, &devs.Regions[0]), nil, map[uint64]bool{pubOtherLocalSerial: true}); !strings.Contains(r, "held back") {
 		t.Fatalf("reason %q", r)
 	}
-	e.advance(provenance.HoldBack)
+	e.advance(provenance.MaxHold)
 	e.wantScan("published", "region0-node2")
 }
 
@@ -808,7 +808,7 @@ func TestPoolWatch(t *testing.T) {
 	}
 	// held back: the ticks rescan, it is published after the hold-back
 	provenance.ListRetry, provenance.Poll = 5*time.Millisecond, time.Hour
-	e.advance(provenance.HoldBack)
+	e.advance(provenance.MaxHold)
 	watch("memdev-a1", pubLocalDeviceName)
 	// pool-c is back and lists the local memdev: a periodic rescan
 	// withdraws it
@@ -831,7 +831,7 @@ func poolTestDevices() *kernel.Snapshot {
 func scanNames(t *testing.T, ctx context.Context, st *store.Store, w *provenance.Watcher) ([]string, PublishConfig) {
 	t.Helper()
 	p := pubPublisher(t, PublishOptions{
-		Config:    PublishConfig{IgnoreDRAMNodes: true, ManageMemdevs: true},
+		Config:    PublishConfig{IgnoreDRAM: true, ManageMemdevs: true},
 		NodeName:  pubNode,
 		Scan:      func(context.Context) (*kernel.Snapshot, error) { return poolTestDevices(), nil },
 		Watcher:   w,

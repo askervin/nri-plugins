@@ -50,7 +50,7 @@ func TestNumaNodes(t *testing.T) {
 		{[]string{device.PoolDriverName}, []int{3}},
 		{nil, nil},
 	} {
-		if got := NumaNodes(r, tc.drivers...); !slices.Equal(got, tc.want) {
+		if got := NUMANodes(r, tc.drivers...); !slices.Equal(got, tc.want) {
 			t.Errorf("%v: %v, expected %v", tc.drivers, got, tc.want)
 		}
 	}
@@ -58,7 +58,7 @@ func TestNumaNodes(t *testing.T) {
 		e.mustUnprepare(e.local, uid)
 	}
 	e.mustUnprepare(e.pool, "p1")
-	if got := NumaNodes(e.records(), device.DriverName, device.PoolDriverName); len(got) != 0 {
+	if got := NUMANodes(e.records(), device.DriverName, device.PoolDriverName); len(got) != 0 {
 		t.Fatalf("NUMA nodes %v", got)
 	}
 }
@@ -76,11 +76,11 @@ func TestNumaNodesUnfinished(t *testing.T) {
 	if g := e.records().Grant(state.GrantRef{Claim: "c1"}); g == nil || g.Got.NUMANode != nil {
 		t.Fatalf("grant %+v", g)
 	}
-	if got := NumaNodes(e.records(), e.pool.Name()); !slices.Equal(got, []int{2}) || e.pool.ClaimInfo("c1") != nil {
+	if got := NUMANodes(e.records(), e.pool.Name()); !slices.Equal(got, []int{2}) || e.pool.ClaimInfo("c1") != nil {
 		t.Fatalf("NUMA nodes %v, claim info %+v", got, e.pool.ClaimInfo("c1"))
 	}
 	e.mustUnprepare(e.pool, "c1")
-	if got := NumaNodes(e.records(), e.pool.Name()); len(got) != 0 {
+	if got := NUMANodes(e.records(), e.pool.Name()); len(got) != 0 {
 		t.Fatalf("NUMA nodes %v", got)
 	}
 	e.wantClean()
