@@ -99,6 +99,10 @@ type Container struct {
 	unsteered Management
 	// manager steers its memory from its start until it stops.
 	manager *steering.Manager
+	// starting is the manager whose Start runs, and startEnd the reason
+	// why its steering ended before startSteering made it the manager.
+	starting *steering.Manager
+	startEnd error
 	// seq orders the records by their creation.
 	seq uint64
 }

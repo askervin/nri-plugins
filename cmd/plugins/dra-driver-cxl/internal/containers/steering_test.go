@@ -494,6 +494,49 @@ func TestSteeringEnded(t *testing.T) {
 	}
 }
 
+// TestSteeringEndedAtStart ends the steering of a container while its
+// manager starts, before startSteering records the manager: the end is
+// handled once the manager is recorded, as TestSteeringEnded's.
+func TestSteeringEndedAtStart(t *testing.T) {
+	e := newEnvWith(t, envOptions{})
+	e.p.Seed([]int{2, 3})
+	e.hasMemory("0-3")
+	e.local.set(nriClaims())
+	e.readyFence()
+	logs := klogtest.Capture(t, 3)
+	pod := testPod("u1")
+	old := startManager
+	t.Cleanup(func() { startManager = old })
+	startManager = func(m *steering.Manager) error {
+		err := old(m)
+		e.p.mu.Lock()
+		c := e.p.ctrs["c1"]
+		e.p.mu.Unlock()
+		e.p.steeringEnded(c, m, errors.New("memory policy refused: pid 101: operation not permitted"))
+		return err
+	}
+	cg1 := e.proc(101, "kubepods/u1/c1", "0-3", "")
+	steerable(t, cg1, "max")
+	c1 := withClaims(testCtr(pod, "c1", "app", 101), "auto")
+	e.createMems(pod, c1)
+	e.startCtr(pod, c1)
+	e.passes()
+	if c := e.record("c1"); c.Management != ManagementFenced || len(e.managers()) != 0 {
+		t.Fatalf("management %s managers %v, expected fenced without a manager", c.Management, e.managers())
+	}
+	if ids := e.steered(); len(ids) != 0 {
+		t.Fatalf("steering records %v", ids)
+	}
+	if got := memoryHigh(t, cg1); got != "max" {
+		t.Errorf("memory.high %s", got)
+	}
+	want := "NRI: ctr=ns/pod-u1/app id=c1: memory steering ended: memory policy refused: pid 101: " +
+		"operation not permitted; memory " + ManagementFenced.text()
+	if got := logs(); strings.Count(got, want) != 1 {
+		t.Errorf("no warning %q:\n%s", want, got)
+	}
+}
+
 // TestSteeredRecordBeforeStart checks that the Steered record of a
 // container is in the store when its manager starts to write its cgroup,
 // that a Start that fails leaves no record, and that no manager starts

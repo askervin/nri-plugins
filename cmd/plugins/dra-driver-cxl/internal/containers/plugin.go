@@ -471,7 +471,7 @@ func (p *Plugin) Record(id string) (Container, bool) {
 	for n, leases := range c.Lends {
 		out.Lends = out.Lends.set(n, maps.Clone(leases))
 	}
-	out.manager = nil
+	out.manager, out.starting, out.startEnd = nil, nil, nil
 	return out, true
 }
 

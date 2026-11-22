@@ -135,7 +135,8 @@ func quantityBytes(s string) (int64, error) {
 // startSteering starts steering the memory of a container whose task the
 // runtime has created along its plan, recorded in the store before the
 // manager writes its cgroup. A container whose steering does not start is
-// managed as a container that is not steered (notSteered).
+// managed as a container that is not steered (notSteered); one whose
+// steering ends while its manager starts, as steeringEnded says.
 func (p *Plugin) startSteering(c *Container, ctr *api.Container, plan *steering.Plan) {
 	name := c.name()
 	dir, err := resolveContainerCgroupDir(ctr)
@@ -164,11 +165,18 @@ func (p *Plugin) startSteering(c *Container, ctr *api.Container, plan *steering.
 		p.notSteered(c, false, fmt.Errorf("failed to record memory steering: %w", err))
 		return
 	}
-	if err := startManager(mgr); err != nil {
+	p.mu.Lock()
+	c.starting = mgr
+	p.mu.Unlock()
+	err = startManager(mgr)
+	p.mu.Lock()
+	ended := c.startEnd
+	c.starting, c.startEnd = nil, nil
+	if err != nil {
+		p.mu.Unlock()
 		p.notSteered(c, true, err)
 		return
 	}
-	p.mu.Lock()
 	if p.ctrs[c.ID] != c {
 		p.mu.Unlock()
 		p.stopManager(c.ID, name, mgr)
@@ -177,6 +185,9 @@ func (p *Plugin) startSteering(c *Container, ctr *api.Container, plan *steering.
 	c.manager = mgr
 	p.mu.Unlock()
 	klog.V(3).Infof("NRI StartContainer: ctr=%s: started memory steering (cgroup=%s)", name, dir)
+	if ended != nil {
+		p.steeringEnded(c, mgr, ended)
+	}
 }
 
 // steerNodes returns the nodes that the cpuset.mems of a steered
@@ -218,8 +229,14 @@ func (p *Plugin) notSteered(c *Container, added bool, why error) {
 // mgr has set memory.high to max. A fenced container gets wantMems by the
 // repair pass; one with fencing none gets back its cpuset.mems of before
 // the steering. A container that stopped meanwhile is left to its stop.
+// An end that comes while the manager starts is left to startSteering.
 func (p *Plugin) steeringEnded(c *Container, mgr *steering.Manager, why error) {
 	p.mu.Lock()
+	if c.starting == mgr {
+		c.startEnd = why
+		p.mu.Unlock()
+		return
+	}
 	if p.ctrs[c.ID] != c || c.manager != mgr {
 		p.mu.Unlock()
 		return
