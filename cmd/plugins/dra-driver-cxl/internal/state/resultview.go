@@ -19,8 +19,8 @@ import (
 )
 
 // DeviceInfo is one allocation result of a prepared claim of either
-// driver with what it got, as package dra derives it from the records for
-// the CDI spec, the lease broker and the NRI plugin.
+// driver with what it got, derived from the records: what the CDI spec,
+// the lease broker and the NRI plugin need of it.
 type DeviceInfo struct {
 	RequestName string
 	DeviceName  string // device name in the pool

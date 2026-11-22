@@ -17,8 +17,7 @@
 // (with its DaxDevices and Mounts), Provenance, Lease, LeaseClaim, Steered,
 // ListedPool and Probe (the address line probe of a local memdev, in a file
 // of its own). Every State field is an enum with its transition table as
-// data next to the type; Apply refuses a transition that is not in the
-// table.
-// The tables and the record headers are rendered into
-// docs/memory/cxl/states.md by go generate (internal/statedoc).
+// data next to the type; fsm.Apply refuses a transition that is not in
+// the table. The tables and the record headers are rendered into
+// docs/memory/cxl/states.md by go generate.
 package state
