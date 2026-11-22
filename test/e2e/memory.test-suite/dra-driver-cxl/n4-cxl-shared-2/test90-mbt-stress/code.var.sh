@@ -5,7 +5,7 @@
 # pool controllers) with the local memdev of every VM attached, where a
 # model (model/, the Go program mbt-cxl, built here with the
 # github.com/askervin/gofmbt of model/go.mod) chooses the steps of a long
-# run: pods with CXL memory of every kind (exclusive and shared pool
+# run: pods with CXL memory of every kind (unshared and shared pool
 # devices in numa and dax mode, read-only shares, local slices, steering,
 # leases, no claim) created, deleted and crashed, data written and read,
 # persistent pool devices (amendments A22-A27: a block writer, erofs

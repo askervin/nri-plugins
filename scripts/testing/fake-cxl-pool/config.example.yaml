@@ -15,7 +15,7 @@ listen: 127.0.0.1:9909
 
 # Serials of devices created without one: the next free serial above the
 # base of their kind (base+1, +2, ...). 0xc1 = CXL, then 0xae = shared,
-# 0xee = exclusive pool devices; 0xc100.... are devices present at boot
+# 0xee = unshared pool devices; 0xc100.... are devices present at boot
 # (the e2e topology's local devices are 0xc100e2e0+i).
 sharedSerialBase: 0xc1ae0000
 serialBase: 0xc1ee0000

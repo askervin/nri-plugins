@@ -53,7 +53,7 @@ func (s *serials) Free(serial uint64) {
 }
 
 // Next allocates the lowest free serial above the base of the device kind
-// (shared or exclusive) for a device.
+// (shared or unshared) for a device.
 func (s *serials) Next(device string, shared bool) uint64 {
 	return s.NextExcept(device, shared, nil)
 }

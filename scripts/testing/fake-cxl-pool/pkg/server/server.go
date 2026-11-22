@@ -72,7 +72,7 @@ type Server struct {
 	atts    map[string]*attachment
 
 	// adoptWarned remembers the qemu devices that were not adopted because
-	// their serial is not the device's, or the device is exclusive and
+	// their serial is not the device's, or the device is unshared and
 	// attached elsewhere (warn once).
 	adoptWarned map[string]bool
 

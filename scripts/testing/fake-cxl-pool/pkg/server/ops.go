@@ -671,11 +671,11 @@ func (s *Server) attachStoppedLocked(h *host, a *attachment) error {
 }
 
 // updateExistingLocked updates an existing attachment for an attach
-// request. The exclusive flag becomes that of the request: exclusive needs
-// the device attached to no other host. An attachment without owner
-// (adopted, or attached without one) gets the owner of the request: the
-// owner takes it over, and fake-cxl-pool-controller detaches only the
-// attachments that it owns.
+// request. The single-host flag becomes that of the request: a single-host
+// attachment needs the device attached to no other host. An attachment
+// without owner (adopted, or attached without one) gets the owner of the
+// request: the owner takes it over, and fake-cxl-pool-controller detaches
+// only the attachments that it owns.
 func (s *Server) updateExistingLocked(d *device, h *host, a *attachment, req api.AttachRequest) error {
 	changed := false
 	if a.SingleHost != req.SingleHost {

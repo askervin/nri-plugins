@@ -521,7 +521,7 @@ func (c *cli) cmdAttach(ctx context.Context, args []string) error {
 	numa := fs.Int("numa-node", -1, "prefer a slot on this NUMA node")
 	owner := fs.String("owner", "", "attachment owner")
 	timeout := fs.String("timeout", "", "qemu timeout (default 30s)")
-	exclusive := fs.Bool("single-host", false, "shared device: no other host may attach it meanwhile")
+	singleHost := fs.Bool("single-host", false, "shared device: no other host may attach it meanwhile")
 	pos, err := parse(fs, args)
 	if err != nil || len(pos) != 1 {
 		return firstErr(err, usagef("attach DEVICE (--self | --host HOST) [--slot BUS] [--numa-node N] [--owner O] [--single-host]"))
@@ -530,7 +530,7 @@ func (c *cli) cmdAttach(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	req := api.AttachRequest{Host: h, Slot: *slot, Owner: *owner, Timeout: *timeout, SingleHost: *exclusive}
+	req := api.AttachRequest{Host: h, Slot: *slot, Owner: *owner, Timeout: *timeout, SingleHost: *singleHost}
 	if *numa >= 0 {
 		req.NUMANode = numa
 	}
