@@ -363,7 +363,7 @@ func syncForeign(r *state.Records, seen map[string]kernel.RegionInfo, names []st
 			node := ri.NUMANode
 			reg.NUMANode = &node
 		}
-		if err := state.Apply(&state.RegionTable, &reg.State, state.RegionForeign, trigger); err != nil {
+		if err := fsm.Apply(&state.RegionTable, &reg.State, state.RegionForeign, trigger); err != nil {
 			return err
 		}
 		r.Regions = append(r.Regions, reg)
@@ -391,7 +391,7 @@ func forgetForeign(r *state.Records, ref state.RegionRef, trigger state.Trigger)
 	if reg == nil || reg.State != state.RegionForeign {
 		return nil
 	}
-	if err := state.Apply(&state.RegionTable, &reg.State, state.RegionNone, trigger); err != nil {
+	if err := fsm.Apply(&state.RegionTable, &reg.State, state.RegionNone, trigger); err != nil {
 		return err
 	}
 	removeRecord(&r.Regions, func(x *state.Region) bool { return x.Ref() == ref })

@@ -29,6 +29,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/containers"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/engine"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
@@ -155,7 +156,7 @@ func renderKernel(b *bytes.Buffer, docs map[string][]kernelParagraph, kernelDir 
 }
 
 // renderTable writes a transition table as a markdown table.
-func renderTable(b *bytes.Buffer, t state.TableText) {
+func renderTable(b *bytes.Buffer, t fsm.TableText) {
 	fmt.Fprintf(b, "### %s.%s\n\n", t.Object, t.Field)
 	fmt.Fprintf(b, "States: %s.\n\n", strings.Join(t.States, ", "))
 	b.WriteString("| from | to | trigger | guard | effects |\n")

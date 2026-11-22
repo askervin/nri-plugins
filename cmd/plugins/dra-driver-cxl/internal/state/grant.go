@@ -254,11 +254,11 @@ var releasers = fsm.List(TriggerUnprepare, TriggerPrepare, TriggerRecover)
 var grantStored = fsm.List(GrantJournaled, GrantRealising, GrantRealised, GrantUnrestored, GrantReleasing)
 
 // GrantTable is the transition table of Grant.State.
-var GrantTable = Table[GrantState]{
+var GrantTable = fsm.Table[GrantState]{
 	Object: "Grant",
 	Field:  "State",
 	States: fsm.List(GrantRequested, GrantJournaled, GrantRealising, GrantRealised, GrantUnrestored, GrantReleasing, GrantNone),
-	Rows: []Transition[GrantState]{
+	Rows: []fsm.Transition[GrantState]{
 		{
 			From: fsm.List(GrantRequested), To: GrantJournaled, Triggers: fsm.List(TriggerPrepare),
 			When: "the grant request is built from the result and the config",
@@ -373,18 +373,18 @@ var GrantTable = Table[GrantState]{
 			Effects: "dropped with the preparation, commit (l)",
 		},
 	},
-	Refused: []Refusal[GrantState]{
+	Refused: []fsm.Refusal[GrantState]{
 		{From: fsm.List(GrantRequested), To: fsm.List(GrantRealising, GrantRealised), Why: "nothing is created without the intent"},
 		{From: fsm.List(GrantNone), Why: "a released grant is gone"},
 	},
 }
 
 // BindTable is the transition table of Bind.State.
-var BindTable = Table[BindState]{
+var BindTable = fsm.Table[BindState]{
 	Object: "Bind",
 	Field:  "State",
 	States: fsm.List(BindAbsent, BindBound, BindStale),
-	Rows: []Transition[BindState]{
+	Rows: []fsm.Transition[BindState]{
 		{
 			From: fsm.List(BindAbsent), To: BindBound, Triggers: fsm.List(TriggerPrepare),
 			When:  "companion Prepare of an fs lease, after the node mount exists",

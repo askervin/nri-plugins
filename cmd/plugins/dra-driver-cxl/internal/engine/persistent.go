@@ -30,6 +30,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
@@ -290,7 +291,7 @@ func (e *Engine) pmemChain(ctx context.Context, req *GrantRequest, memdev string
 		g := r.Grant(req.Ref)
 		g.Got.Region, g.Got.Namespace, g.Got.BlockDevice = state.RegionRef(region), ns.Name, dev
 		if !reg.SetUp {
-			return state.Apply(&state.RegionSetUpTable, &reg.SetUp, true, state.TriggerPrepare)
+			return fsm.Apply(&state.RegionSetUpTable, &reg.SetUp, true, state.TriggerPrepare)
 		}
 		return nil
 	})
@@ -312,7 +313,7 @@ func (e *Engine) bindCompanion(ctx context.Context, req *GrantRequest, u pmemGra
 		return &BindError{Err: err}
 	}
 	got.Bind = &state.Bind{Target: req.BindTarget, State: state.BindAbsent}
-	if err := state.Apply(&state.BindTable, &got.Bind.State, state.BindBound, state.TriggerPrepare); err != nil {
+	if err := fsm.Apply(&state.BindTable, &got.Bind.State, state.BindBound, state.TriggerPrepare); err != nil {
 		return err
 	}
 	if req.Lend != nil {
@@ -626,7 +627,7 @@ func (e *Engine) recordNodeMount(ctx context.Context, req *GrantRequest, region 
 		if writer {
 			want = state.MountedRW
 		}
-		if err := state.Apply(&state.MountTable, &m.State, want, state.TriggerPrepare); err != nil {
+		if err := fsm.Apply(&state.MountTable, &m.State, want, state.TriggerPrepare); err != nil {
 			return err
 		}
 		m.Path, m.Loop, m.FSType = u.nodeMount, u.loop, u.fsType
@@ -646,12 +647,12 @@ func remountedUsers(r *state.Records, m *state.Mount, ref state.GrantRef) error 
 		if user == ref || g == nil || g.State != state.GrantUnrestored {
 			continue
 		}
-		if err := state.Apply(&state.GrantTable, &g.State, state.GrantRealised, state.TriggerPrepare); err != nil {
+		if err := fsm.Apply(&state.GrantTable, &g.State, state.GrantRealised, state.TriggerPrepare); err != nil {
 			return err
 		}
 		p := r.PreparationOf(user)
 		if p != nil && p.State == state.PreparationUnrestored && r.AllRealised(p) {
-			if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationPrepared, state.TriggerPrepare); err != nil {
+			if err := fsm.Apply(&state.PreparationTable, &p.State, state.PreparationPrepared, state.TriggerPrepare); err != nil {
 				return err
 			}
 		}
@@ -1286,11 +1287,11 @@ func leftMount(m *state.Mount, writer bool, trigger state.Trigger) (bool, error)
 	switch {
 	case m.State == state.MountForeign:
 	case len(m.Users) == 0:
-		return true, state.Apply(&state.MountTable, &m.State, state.MountNone, trigger)
+		return true, fsm.Apply(&state.MountTable, &m.State, state.MountNone, trigger)
 	case m.State == state.MountedRW && !writer:
-		return false, state.Apply(&state.MountTable, &m.State, state.MountedRO, trigger)
+		return false, fsm.Apply(&state.MountTable, &m.State, state.MountedRO, trigger)
 	case m.State == state.MountedRO || m.State == state.MountedRW:
-		return false, state.Apply(&state.MountTable, &m.State, m.State, trigger)
+		return false, fsm.Apply(&state.MountTable, &m.State, m.State, trigger)
 	}
 	return false, nil
 }

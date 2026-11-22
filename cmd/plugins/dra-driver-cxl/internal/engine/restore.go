@@ -26,6 +26,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
@@ -184,7 +185,7 @@ func badBlocks(r *state.Records, bad map[state.GrantRef]error) error {
 			continue
 		}
 		if g.State == state.GrantRealised {
-			if err := state.Apply(&state.GrantTable, &g.State, state.GrantUnrestored, state.TriggerRecover); err != nil {
+			if err := fsm.Apply(&state.GrantTable, &g.State, state.GrantUnrestored, state.TriggerRecover); err != nil {
 				return err
 			}
 		}
@@ -200,7 +201,7 @@ func badBlocks(r *state.Records, bad map[state.GrantRef]error) error {
 // PREPARED_UNRESTORED.
 func preparationUnrestored(r *state.Records, ref state.GrantRef) error {
 	if p := r.PreparationOf(ref); p != nil && (p.State == state.PreparationPrepared || p.State == state.PreparationUnrestored) {
-		return state.Apply(&state.PreparationTable, &p.State, state.PreparationUnrestored, state.TriggerRecover)
+		return fsm.Apply(&state.PreparationTable, &p.State, state.PreparationUnrestored, state.TriggerRecover)
 	}
 	return nil
 }
@@ -419,7 +420,7 @@ func unrestored(r *state.Records, failed map[state.GrantRef]error, restored []st
 		if p.State != state.PreparationUnrestored || !r.AllRealised(p) {
 			continue
 		}
-		if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationPrepared, state.TriggerRecover); err != nil {
+		if err := fsm.Apply(&state.PreparationTable, &p.State, state.PreparationPrepared, state.TriggerRecover); err != nil {
 			return err
 		}
 	}
@@ -430,7 +431,7 @@ func unrestored(r *state.Records, failed map[state.GrantRef]error, restored []st
 // why.
 func grantUnrestored(r *state.Records, ref state.GrantRef, why error) error {
 	g := r.Grant(ref)
-	if err := state.Apply(&state.GrantTable, &g.State, state.GrantUnrestored, state.TriggerRecover); err != nil {
+	if err := fsm.Apply(&state.GrantTable, &g.State, state.GrantUnrestored, state.TriggerRecover); err != nil {
 		return err
 	}
 	if reg := r.Region(g.Got.Region); reg != nil && g.Got.Mount != "" {
@@ -439,7 +440,7 @@ func grantUnrestored(r *state.Records, ref state.GrantRef, why error) error {
 			to = state.MountForeign
 		}
 		if m := reg.Mount(g.Got.Mount); m != nil && m.State != state.MountUnrestored && m.State != state.MountForeign {
-			if err := state.Apply(&state.MountTable, &m.State, to, state.TriggerRecover); err != nil {
+			if err := fsm.Apply(&state.MountTable, &m.State, to, state.TriggerRecover); err != nil {
 				return err
 			}
 		}
@@ -451,7 +452,7 @@ func grantUnrestored(r *state.Records, ref state.GrantRef, why error) error {
 // again.
 func grantRestored(r *state.Records, ref state.GrantRef) error {
 	g := r.Grant(ref)
-	if err := state.Apply(&state.GrantTable, &g.State, state.GrantRealised, state.TriggerRecover); err != nil {
+	if err := fsm.Apply(&state.GrantTable, &g.State, state.GrantRealised, state.TriggerRecover); err != nil {
 		return err
 	}
 	reg := r.Region(g.Got.Region)
@@ -466,7 +467,7 @@ func grantRestored(r *state.Records, ref state.GrantRef) error {
 	if mountWriter(r, m) {
 		want = state.MountedRW
 	}
-	return state.Apply(&state.MountTable, &m.State, want, state.TriggerRecover)
+	return fsm.Apply(&state.MountTable, &m.State, want, state.TriggerRecover)
 }
 
 // mountWriter tells whether a user of the node mount writes.
@@ -515,7 +516,7 @@ func (e *Engine) remountGrant(ctx context.Context, req *GrantRequest) error {
 	var users []state.GrantRef
 	err := e.commit(ctx, func(r *state.Records) error {
 		g := r.Grant(req.Ref)
-		if err := state.Apply(&state.GrantTable, &g.State, state.GrantRealised, state.TriggerPrepare); err != nil {
+		if err := fsm.Apply(&state.GrantTable, &g.State, state.GrantRealised, state.TriggerPrepare); err != nil {
 			return err
 		}
 		reg := r.Region(g.Got.Region)
@@ -535,7 +536,7 @@ func (e *Engine) remountGrant(ctx context.Context, req *GrantRequest) error {
 			if mountWriter(r, m) {
 				want = state.MountedRW
 			}
-			if err := state.Apply(&state.MountTable, &m.State, want, state.TriggerPrepare); err != nil {
+			if err := fsm.Apply(&state.MountTable, &m.State, want, state.TriggerPrepare); err != nil {
 				return err
 			}
 		}

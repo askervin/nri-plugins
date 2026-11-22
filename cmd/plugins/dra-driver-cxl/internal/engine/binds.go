@@ -31,6 +31,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
@@ -244,7 +245,7 @@ func boundTo(r *state.Records, ref state.GrantRef, target string, to state.BindS
 	if rg == nil || rg.Got.Bind == nil {
 		return nil
 	}
-	if err := state.Apply(&state.BindTable, &rg.Got.Bind.State, to, trigger); err != nil {
+	if err := fsm.Apply(&state.BindTable, &rg.Got.Bind.State, to, trigger); err != nil {
 		return err
 	}
 	if m := r.Memdev(rg.Serial); m != nil {
@@ -517,7 +518,7 @@ func forgetStale(r *state.Records, serial state.Serial, gone []string, trigger s
 		m.StaleBinds = removeRef(m.StaleBinds, path)
 		for i := range r.Grants {
 			if b := r.Grants[i].Got.Bind; b != nil && b.Target == path && b.State == state.BindStale {
-				if err := state.Apply(&state.BindTable, &b.State, state.BindAbsent, trigger); err != nil {
+				if err := fsm.Apply(&state.BindTable, &b.State, state.BindAbsent, trigger); err != nil {
 					return err
 				}
 			}

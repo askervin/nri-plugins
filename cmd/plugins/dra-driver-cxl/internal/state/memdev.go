@@ -86,11 +86,11 @@ const (
 )
 
 // MemdevTable is the transition table of Memdev.State.
-var MemdevTable = Table[MemdevState]{
+var MemdevTable = fsm.Table[MemdevState]{
 	Object: "Memdev",
 	Field:  "State",
 	States: fsm.List(MemdevNone, MemdevActive, MemdevIdleKept, MemdevGone),
-	Rows: []Transition[MemdevState]{
+	Rows: []fsm.Transition[MemdevState]{
 		{
 			From: fsm.List(MemdevNone), To: MemdevActive, Triggers: fsm.List(TriggerPrepare),
 			When:  "the first grant of the serial is JOURNALED",
@@ -155,7 +155,7 @@ var MemdevTable = Table[MemdevState]{
 			Effects: "the record dropped: its regions, dax devices, mounts and binds did not survive the reboot",
 		},
 	},
-	Refused: []Refusal[MemdevState]{
+	Refused: []fsm.Refusal[MemdevState]{
 		{From: fsm.List(MemdevNone), To: fsm.List(MemdevIdleKept), Why: "a kept region always had a grant or a cut first"},
 	},
 }

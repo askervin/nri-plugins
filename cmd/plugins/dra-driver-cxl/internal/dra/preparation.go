@@ -21,6 +21,7 @@ import (
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
 // Preparation: the commits of the record of a claim as one driver prepares
@@ -38,7 +39,7 @@ import (
 // and removes the record once every grant is released.
 //
 // Transitions: state.PreparationTable (docs/memory/cxl/states.md), applied
-// by state.Apply in the commits below; a transition not in it is refused.
+// by fsm.Apply in the commits below; a transition not in it is refused.
 //
 // Invariants: those of state.Preparation; a PREPARED preparation's CDI
 // devices are in the CDI spec of its driver.
@@ -81,7 +82,7 @@ func preparing(doc *store.Document, driver, uid, claimName, lease string, result
 		}
 	}
 	prep.ClaimName, prep.Results, prep.Lease = claimName, slices.Clone(results), lease
-	return state.Apply(&state.PreparationTable, &prep.State, state.PreparationPreparing, state.TriggerPrepare)
+	return fsm.Apply(&state.PreparationTable, &prep.State, state.PreparationPreparing, state.TriggerPrepare)
 }
 
 // prepared commits the preparation of the claim uid of the driver, whose
@@ -91,7 +92,7 @@ func prepared(doc *store.Document, driver, uid string) error {
 	if prep == nil {
 		return errNoRecord(uid)
 	}
-	return state.Apply(&state.PreparationTable, &prep.State, state.PreparationPrepared, state.TriggerPrepare)
+	return fsm.Apply(&state.PreparationTable, &prep.State, state.PreparationPrepared, state.TriggerPrepare)
 }
 
 // restored commits a PREPARED_UNRESTORED preparation of the claim uid of
@@ -101,7 +102,7 @@ func restored(doc *store.Document, driver, uid string) error {
 	if cur == nil || cur.State != state.PreparationUnrestored || !doc.AllRealised(cur) {
 		return nil
 	}
-	return state.Apply(&state.PreparationTable, &cur.State, state.PreparationPrepared, state.TriggerPrepare)
+	return fsm.Apply(&state.PreparationTable, &cur.State, state.PreparationPrepared, state.TriggerPrepare)
 }
 
 // failedCommit commits the preparation of the claim uid of the driver whose
@@ -118,7 +119,7 @@ func failedCommit(doc *store.Document, driver, uid string) (bool, error) {
 		return res.Grant == nil || doc.Grant(*res.Grant) == nil
 	})
 	if len(prep.Results) > 0 {
-		return true, state.Apply(&state.PreparationTable, &prep.State, state.PreparationKept, state.TriggerPrepare)
+		return true, fsm.Apply(&state.PreparationTable, &prep.State, state.PreparationKept, state.TriggerPrepare)
 	}
 	return false, remove(doc, driver, uid, state.TriggerPrepare)
 }
@@ -133,7 +134,7 @@ func unpreparing(doc *store.Document, driver, uid string) error {
 	if prep.State == state.PreparationUnpreparing {
 		return nil
 	}
-	return state.Apply(&state.PreparationTable, &prep.State, state.PreparationUnpreparing, state.TriggerUnprepare)
+	return fsm.Apply(&state.PreparationTable, &prep.State, state.PreparationUnpreparing, state.TriggerUnprepare)
 }
 
 // remove removes the preparation of the claim uid of the driver (->
@@ -143,7 +144,7 @@ func remove(doc *store.Document, driver, uid string, trigger state.Trigger) erro
 	if prep == nil {
 		return nil
 	}
-	if err := state.Apply(&state.PreparationTable, &prep.State, state.PreparationNone, trigger); err != nil {
+	if err := fsm.Apply(&state.PreparationTable, &prep.State, state.PreparationNone, trigger); err != nil {
 		return err
 	}
 	doc.Preparations = slices.DeleteFunc(doc.Preparations, func(x state.Preparation) bool {
@@ -156,7 +157,7 @@ func remove(doc *store.Document, driver, uid string, trigger state.Trigger) erro
 // a preparation on the trigger, without a commit.
 func stays(prep *state.Preparation, trigger state.Trigger) error {
 	s := prep.State
-	return state.Apply(&state.PreparationTable, &s, s, trigger)
+	return fsm.Apply(&state.PreparationTable, &s, s, trigger)
 }
 
 // dropGrant removes the record of a grant of another boot and its memdev's

@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"slices"
 	"testing"
+
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
 // checkTable checks the data of a transition table and returns its name:
@@ -25,7 +27,7 @@ import (
 // its states are states of the table and a row that stays has no To; no
 // two rows have the same transition and trigger; every state of the table
 // is in a row; no row has a transition that the table refuses.
-func checkTable[S comparable](t *testing.T, tb *Table[S]) string {
+func checkTable[S comparable](t *testing.T, tb *fsm.Table[S]) string {
 	t.Helper()
 	name := tb.Object + "." + tb.Field
 	var zero S

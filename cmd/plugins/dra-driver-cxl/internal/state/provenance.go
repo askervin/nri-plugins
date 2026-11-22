@@ -91,11 +91,11 @@ const (
 )
 
 // ProvenanceTable is the transition table of Provenance.State.
-var ProvenanceTable = Table[ProvenanceState]{
+var ProvenanceTable = fsm.Table[ProvenanceState]{
 	Object: "Provenance",
 	Field:  "State",
 	States: fsm.List(ProvenanceUnknown, ProvenanceHeld, ProvenanceLocal, ProvenancePool),
-	Rows: []Transition[ProvenanceState]{
+	Rows: []fsm.Transition[ProvenanceState]{
 		{
 			From: fsm.List(ProvenanceUnknown), To: ProvenancePool, Triggers: fsm.List(TriggerList, TriggerPrepare),
 			When: "a pool ResourceSlice lists the serial; or a pool claim's status data names it; or a pool grant " +
@@ -169,7 +169,7 @@ var ProvenanceTable = Table[ProvenanceState]{
 			Effects: "commit (d) removing the record; a memdev of the serial is new again",
 		},
 	},
-	Refused: []Refusal[ProvenanceState]{
+	Refused: []fsm.Refusal[ProvenanceState]{
 		{From: fsm.List(ProvenancePool), To: fsm.List(ProvenanceLocal, ProvenanceHeld), Why: "POOL is sticky"},
 	},
 }

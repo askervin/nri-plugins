@@ -50,7 +50,7 @@ func TestMain(m *testing.M) {
 func reportRows(rows *fsm.Rows) int {
 	code := 0
 	names := map[string]bool{}
-	for _, t := range []state.TableText{state.LeaseTable.Text(), state.LeaseClaimTable.Text()} {
+	for _, t := range []fsm.TableText{state.LeaseTable.Text(), state.LeaseClaimTable.Text()} {
 		unapplied := map[int]bool{}
 		for _, i := range rows.Unapplied(t) {
 			unapplied[i] = true

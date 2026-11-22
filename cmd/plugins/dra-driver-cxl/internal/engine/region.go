@@ -25,6 +25,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
@@ -165,7 +166,7 @@ func (e *Engine) useRegion(ctx context.Context, req *GrantRequest, memdev string
 		klog.Infof("engine: %s memdev %s (%s): enabled kept %s", req.Asked.Source, req.Serial.String(), memdev, name)
 		if err := e.commit(ctx, func(r *state.Records) error {
 			rec := r.Region(state.RegionRef(name))
-			if err := state.Apply(&state.RegionTable, &rec.State, state.RegionOwned, state.TriggerPrepare); err != nil {
+			if err := fsm.Apply(&state.RegionTable, &rec.State, state.RegionOwned, state.TriggerPrepare); err != nil {
 				return err
 			}
 			return setIntentRegion(r, req.Ref, rec.Ref())
@@ -245,7 +246,7 @@ func noteRegion(r *state.Records, req *GrantRequest, name string, mode state.Reg
 	}
 	reg := state.Region{NotedName: name, Mode: mode, Targets: []state.Serial{req.Serial}, Owner: state.OwnerOurs,
 		State: state.RegionNone}
-	if err := state.Apply(&state.RegionTable, &reg.State, state.RegionNoted, state.TriggerPrepare); err != nil {
+	if err := fsm.Apply(&state.RegionTable, &reg.State, state.RegionNoted, state.TriggerPrepare); err != nil {
 		return err
 	}
 	r.Regions = append(r.Regions, reg)
@@ -265,7 +266,7 @@ func createdRegion(r *state.Records, req *GrantRequest, noted, created string, m
 		}
 		reg := state.Region{NotedName: created, Mode: mode, Targets: []state.Serial{req.Serial}, Owner: state.OwnerOurs,
 			State: state.RegionNone}
-		if err := state.Apply(&state.RegionTable, &reg.State, state.RegionNoted, state.TriggerPrepare); err != nil {
+		if err := fsm.Apply(&state.RegionTable, &reg.State, state.RegionNoted, state.TriggerPrepare); err != nil {
 			return err
 		}
 		r.Regions = append(r.Regions, reg)
@@ -275,7 +276,7 @@ func createdRegion(r *state.Records, req *GrantRequest, noted, created string, m
 	if reg == nil {
 		return fmt.Errorf("region %s has no record", noted)
 	}
-	if err := state.Apply(&state.RegionTable, &reg.State, state.RegionOwned, state.TriggerPrepare); err != nil {
+	if err := fsm.Apply(&state.RegionTable, &reg.State, state.RegionOwned, state.TriggerPrepare); err != nil {
 		return err
 	}
 	reg.Name, reg.NotedName = created, ""
@@ -302,7 +303,7 @@ func (e *Engine) clearNote(ctx context.Context, req *GrantRequest, noted string)
 		if reg == nil {
 			return nil
 		}
-		if err := state.Apply(&state.RegionTable, &reg.State, state.RegionNone, state.TriggerPrepare); err != nil {
+		if err := fsm.Apply(&state.RegionTable, &reg.State, state.RegionNone, state.TriggerPrepare); err != nil {
 			return err
 		}
 		removeRecord(&r.Regions, func(x *state.Region) bool { return x.Ref() == ref })
@@ -426,7 +427,7 @@ func (e *Engine) recordWhole(ctx context.Context, req *GrantRequest, region, dax
 		if driver == kernel.DriverDeviceDax {
 			to = state.DaxDeviceDax
 		}
-		if err := state.Apply(&state.DaxDeviceTable, &d.State, to, state.TriggerPrepare); err != nil {
+		if err := fsm.Apply(&state.DaxDeviceTable, &d.State, to, state.TriggerPrepare); err != nil {
 			return err
 		}
 		d.Driver = state.DaxDriver(driver)
@@ -451,7 +452,7 @@ func (e *Engine) commitWhole(ctx context.Context, req *GrantRequest, region, dax
 		d.Whole = true
 		d.Size, d.Dev = info.Size, state.DevNumbers{Major: info.Major, Minor: info.Minor}
 		if !reg.SetUp {
-			return state.Apply(&state.RegionSetUpTable, &reg.SetUp, true, state.TriggerPrepare)
+			return fsm.Apply(&state.RegionSetUpTable, &reg.SetUp, true, state.TriggerPrepare)
 		}
 		return nil
 	})
@@ -472,11 +473,11 @@ func bindRecord(d *state.DaxDevice, driver string) error {
 	switch d.State {
 	case state.DaxKmemOffline, state.DaxSeed, state.DaxDeviceDax:
 		// unbound from the other driver first
-		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxUnbound, state.TriggerPrepare); err != nil {
+		if err := fsm.Apply(&state.DaxDeviceTable, &d.State, state.DaxUnbound, state.TriggerPrepare); err != nil {
 			return err
 		}
 	}
-	if err := state.Apply(&state.DaxDeviceTable, &d.State, want, state.TriggerPrepare); err != nil {
+	if err := fsm.Apply(&state.DaxDeviceTable, &d.State, want, state.TriggerPrepare); err != nil {
 		return err
 	}
 	d.Driver = state.DaxDriver(driver)
@@ -560,7 +561,7 @@ func (e *Engine) onlineMemory(ctx context.Context, region, dax string, blocks []
 		d := reg.DaxDevice(dax)
 		reg.NUMANode = state.NUMANodePtr(node)
 		if d.State == state.DaxKmemOffline {
-			return state.Apply(&state.DaxDeviceTable, &d.State, state.DaxKmemOnline, state.TriggerPrepare)
+			return fsm.Apply(&state.DaxDeviceTable, &d.State, state.DaxKmemOnline, state.TriggerPrepare)
 		}
 		return nil
 	})
@@ -652,7 +653,7 @@ func dropRegion(r *state.Records, ref state.RegionRef, trigger state.Trigger) er
 	if reg == nil {
 		return nil
 	}
-	if err := state.Apply(&state.RegionTable, &reg.State, state.RegionNone, trigger); err != nil {
+	if err := fsm.Apply(&state.RegionTable, &reg.State, state.RegionNone, trigger); err != nil {
 		return err
 	}
 	removeRecord(&r.Regions, func(x *state.Region) bool { return x.Ref() == ref })
@@ -704,13 +705,13 @@ func (e *Engine) keepMemdev(ctx context.Context, serial state.Serial, trigger st
 
 // keepRegion records an OWNED region KEPT: disabled, to be set up again.
 func keepRegion(reg *state.Region, trigger state.Trigger) error {
-	if err := state.Apply(&state.RegionTable, &reg.State, state.RegionKept, trigger); err != nil {
+	if err := fsm.Apply(&state.RegionTable, &reg.State, state.RegionKept, trigger); err != nil {
 		return err
 	}
 	// set up again, a kept region is zeroed again
 	reg.Zeroed = false
 	if reg.SetUp {
-		return state.Apply(&state.RegionSetUpTable, &reg.SetUp, false, trigger)
+		return fsm.Apply(&state.RegionSetUpTable, &reg.SetUp, false, trigger)
 	}
 	return nil
 }
@@ -763,7 +764,7 @@ func hollowRegion(r *state.Records, ref state.RegionRef) error {
 	if reg == nil || reg.State == state.RegionHollowOwned {
 		return nil
 	}
-	if err := state.Apply(&state.RegionTable, &reg.State, state.RegionHollowOwned, state.TriggerObserve); err != nil {
+	if err := fsm.Apply(&state.RegionTable, &reg.State, state.RegionHollowOwned, state.TriggerObserve); err != nil {
 		return err
 	}
 	for _, serial := range reg.Targets {

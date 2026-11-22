@@ -69,12 +69,12 @@ const (
 )
 
 // LeaseClaimTable is the transition table of LeaseClaim.State.
-var LeaseClaimTable = Table[LeaseClaimState]{
+var LeaseClaimTable = fsm.Table[LeaseClaimState]{
 	Object: "LeaseClaim",
 	Field:  "State",
 	States: fsm.List(LeaseClaimNone, LeaseClaimOpen, LeaseClaimOpenNoListener,
 		LeaseClaimClosing, LeaseClaimClosed, LeaseClaimRemoving),
-	Rows: []Transition[LeaseClaimState]{
+	Rows: []fsm.Transition[LeaseClaimState]{
 		{
 			From: fsm.List(LeaseClaimNone), To: LeaseClaimOpen, Triggers: fsm.List(TriggerPrepare),
 			When: "a Prepare of a claim with a lease result (OpenClaim)",
@@ -148,7 +148,7 @@ var LeaseClaimTable = Table[LeaseClaimState]{
 			When:     "the socket directory removed",
 		},
 	},
-	Refused: []Refusal[LeaseClaimState]{
+	Refused: []fsm.Refusal[LeaseClaimState]{
 		{
 			From: fsm.List(LeaseClaimClosing), To: fsm.List(LeaseClaimOpen), Except: fsm.List(TriggerPrepare),
 			Why: "a closing claim is opened again only by a Prepare of the claim",

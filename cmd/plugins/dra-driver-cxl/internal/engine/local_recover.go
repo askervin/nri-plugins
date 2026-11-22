@@ -24,6 +24,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
 // The start of the local memdevs, after the release of the cut Prepares:
@@ -106,7 +107,7 @@ func forgotSlices(r *state.Records, gone []state.GrantRef, present map[string]bo
 		if len(d.Users) > 0 || present[dax] {
 			continue
 		}
-		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxNone, state.TriggerRecover); err != nil {
+		if err := fsm.Apply(&state.DaxDeviceTable, &d.State, state.DaxNone, state.TriggerRecover); err != nil {
 			return err
 		}
 		removeRecord(&reg.DaxDevices, func(x *state.DaxDevice) bool { return x.Name == dax })
@@ -258,7 +259,7 @@ func forgetMemdev(r *state.Records, serial state.Serial) error {
 	m := r.Memdev(serial)
 	for _, ref := range m.Grants {
 		if g := r.Grant(ref); g != nil {
-			if err := state.Apply(&state.GrantTable, &g.State, state.GrantNone, state.TriggerRecover); err != nil {
+			if err := fsm.Apply(&state.GrantTable, &g.State, state.GrantNone, state.TriggerRecover); err != nil {
 				return err
 			}
 			removeRecord(&r.Grants, func(x *state.Grant) bool { return x.Ref == ref })
@@ -269,7 +270,7 @@ func forgetMemdev(r *state.Records, serial state.Serial) error {
 		if reg == nil {
 			continue
 		}
-		if err := state.Apply(&state.RegionTable, &reg.State, state.RegionNone, state.TriggerRecover); err != nil {
+		if err := fsm.Apply(&state.RegionTable, &reg.State, state.RegionNone, state.TriggerRecover); err != nil {
 			return err
 		}
 		removeRecord(&r.Regions, func(x *state.Region) bool { return x.Ref() == ref })

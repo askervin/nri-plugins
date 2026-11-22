@@ -29,6 +29,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
@@ -197,7 +198,7 @@ func (s *step) log(line func()) {
 // allows, and tells whether it did; a refused transition is a line of the
 // step and leaves p as it is.
 func (s *step) transit(p *state.Provenance, to state.ProvenanceState, trigger state.Trigger) bool {
-	if err := state.Apply(&state.ProvenanceTable, &p.State, to, trigger); err != nil {
+	if err := fsm.Apply(&state.ProvenanceTable, &p.State, to, trigger); err != nil {
 		serial := p.Serial
 		s.log(func() { klog.Errorf("provenance: serial %s: %v", serial, err) })
 		return false

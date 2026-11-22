@@ -173,12 +173,12 @@ const (
 var leaseStored = fsm.List(LeaseCreating, LeasePending, LeaseLending, LeaseReady, LeaseReleasing, LeaseReleasingBusy, LeaseFailed)
 
 // LeaseTable is the transition table of Lease.State.
-var LeaseTable = Table[LeaseState]{
+var LeaseTable = fsm.Table[LeaseState]{
 	Object: "Lease",
 	Field:  "State",
 	States: fsm.List(LeaseNone, LeaseCreating, LeasePending, LeaseLending,
 		LeaseReady, LeaseReleasing, LeaseReleasingBusy, LeaseFailed),
-	Rows: []Transition[LeaseState]{
+	Rows: []fsm.Transition[LeaseState]{
 		{
 			From: fsm.List(LeaseNone), To: LeaseCreating, Triggers: fsm.List(TriggerRequest),
 			When:    "a request on a lease claim's socket: authenticated, validated, the serial resolved, the id chosen",
@@ -292,7 +292,7 @@ var LeaseTable = Table[LeaseState]{
 			Effects: "dropped; the companions deleted by the first reconcile",
 		},
 	},
-	Refused: []Refusal[LeaseState]{
+	Refused: []fsm.Refusal[LeaseState]{
 		{From: fsm.List(LeaseReady), To: fsm.List(LeasePending), Why: "a lent lease does not go back"},
 		{From: fsm.List(LeaseReleasing), To: fsm.List(LeaseReady), Why: "a release is not undone"},
 	},

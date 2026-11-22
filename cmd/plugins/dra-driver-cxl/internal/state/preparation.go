@@ -145,12 +145,12 @@ var preparationStored = fsm.List(PreparationPreparing, PreparationPrepared, Prep
 	PreparationUnpreparing, PreparationKept)
 
 // PreparationTable is the transition table of Preparation.State.
-var PreparationTable = Table[PreparationState]{
+var PreparationTable = fsm.Table[PreparationState]{
 	Object: "Preparation",
 	Field:  "State",
 	States: fsm.List(PreparationNone, PreparationPreparing, PreparationPrepared, PreparationUnrestored,
 		PreparationStale, PreparationUnpreparing, PreparationKept),
-	Rows: []Transition[PreparationState]{
+	Rows: []fsm.Transition[PreparationState]{
 		{
 			From: fsm.List(PreparationNone), To: PreparationPreparing, Triggers: fsm.List(TriggerPrepare),
 			When: "validation and the companion gate passed",
@@ -292,7 +292,7 @@ var PreparationTable = Table[PreparationState]{
 				"Unprepare finds nothing",
 		},
 	},
-	Refused: []Refusal[PreparationState]{
+	Refused: []fsm.Refusal[PreparationState]{
 		{
 			From: fsm.List(PreparationPrepared),
 			To:   fsm.List(PreparationPreparing),

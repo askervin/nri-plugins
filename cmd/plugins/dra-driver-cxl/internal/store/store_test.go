@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
 // hookFiles are file operations that call hook before each operation and
@@ -218,9 +219,9 @@ func TestRefusedTransitionFailsTheCommit(t *testing.T) {
 	err := s.Commit(context.Background(), Durable, func(doc *Document) error {
 		doc.Preparations = append(doc.Preparations, state.Preparation{UID: "u", Driver: "d", State: state.PreparationNone})
 		p := &doc.Preparations[0]
-		return state.Apply(&state.PreparationTable, &p.State, state.PreparationPrepared, state.TriggerPrepare)
+		return fsm.Apply(&state.PreparationTable, &p.State, state.PreparationPrepared, state.TriggerPrepare)
 	})
-	if !errors.Is(err, state.ErrTransition) {
+	if !errors.Is(err, fsm.ErrTransition) {
 		t.Errorf("Commit: %v, want a refused transition", err)
 	}
 	if len(s.Snapshot().Preparations) != 0 {

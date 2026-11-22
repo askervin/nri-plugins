@@ -25,6 +25,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
@@ -318,7 +319,7 @@ func (e *Engine) startReleases(ctx context.Context, refs []state.GrantRef, call 
 		for _, ref := range start {
 			if g := r.Grant(ref); g != nil {
 				realised := g.State != state.GrantJournaled && g.State != state.GrantRealising
-				if err := state.Apply(&state.GrantTable, &g.State, state.GrantReleasing, call.trigger); err != nil {
+				if err := fsm.Apply(&state.GrantTable, &g.State, state.GrantReleasing, call.trigger); err != nil {
 					return err
 				}
 				if !realised {
@@ -462,7 +463,7 @@ func (e *Engine) keptForClaim(ctx context.Context, ref state.GrantRef, trigger s
 		if g == nil || g.State == state.GrantRealised {
 			return nil
 		}
-		if err := state.Apply(&state.GrantTable, &g.State, state.GrantJournaled, trigger); err != nil {
+		if err := fsm.Apply(&state.GrantTable, &g.State, state.GrantJournaled, trigger); err != nil {
 			return err
 		}
 		g.Reason = ""
@@ -487,7 +488,7 @@ func releasedGrant(r *state.Records, ref state.GrantRef, trigger state.Trigger) 
 	if g == nil {
 		return nil
 	}
-	if err := state.Apply(&state.GrantTable, &g.State, state.GrantNone, trigger); err != nil {
+	if err := fsm.Apply(&state.GrantTable, &g.State, state.GrantNone, trigger); err != nil {
 		return err
 	}
 	serial := g.Serial
@@ -503,13 +504,13 @@ func releasedGrant(r *state.Records, ref state.GrantRef, trigger state.Trigger) 
 	switch {
 	case len(m.Grants) > 0:
 		if m.State == state.MemdevActive {
-			return state.Apply(&state.MemdevTable, &m.State, state.MemdevActive, trigger)
+			return fsm.Apply(&state.MemdevTable, &m.State, state.MemdevActive, trigger)
 		}
 		return nil
 	case unused(m):
 		return dropMemdev(r, serial, trigger)
 	case m.State == state.MemdevActive && len(m.Regions) > 0:
-		return state.Apply(&state.MemdevTable, &m.State, state.MemdevIdleKept, trigger)
+		return fsm.Apply(&state.MemdevTable, &m.State, state.MemdevIdleKept, trigger)
 	}
 	return nil
 }
@@ -526,7 +527,7 @@ func dropMemdev(r *state.Records, serial state.Serial, trigger state.Trigger) er
 	if m == nil {
 		return nil
 	}
-	if err := state.Apply(&state.MemdevTable, &m.State, state.MemdevNone, trigger); err != nil {
+	if err := fsm.Apply(&state.MemdevTable, &m.State, state.MemdevNone, trigger); err != nil {
 		return err
 	}
 	removeRecord(&r.Memdevs, func(x *state.Memdev) bool { return x.Serial == serial })
@@ -543,7 +544,7 @@ func leaveUsers(r *state.Records, ref state.GrantRef, trigger state.Trigger) err
 				continue
 			}
 			if d.State != state.DaxUnbound && d.State != state.DaxCreating {
-				if err := state.Apply(&state.DaxDeviceTable, &d.State, d.State, trigger); err != nil {
+				if err := fsm.Apply(&state.DaxDeviceTable, &d.State, d.State, trigger); err != nil {
 					return err
 				}
 			}
@@ -688,7 +689,7 @@ func (e *Engine) releaseStale(ctx context.Context, ref state.GrantRef, trigger s
 		if g == nil {
 			return nil
 		}
-		if err := state.Apply(&state.GrantTable, &g.State, state.GrantNone, trigger); err != nil {
+		if err := fsm.Apply(&state.GrantTable, &g.State, state.GrantNone, trigger); err != nil {
 			return err
 		}
 		removeRecord(&r.Grants, func(x *state.Grant) bool { return x.Ref == ref })

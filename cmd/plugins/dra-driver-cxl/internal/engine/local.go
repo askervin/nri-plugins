@@ -25,6 +25,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
@@ -452,7 +453,7 @@ func (e *Engine) sliceRoom(req *GrantRequest, memdev, region string, bs uint64) 
 func sizedSlice(r *state.Records, ref state.GrantRef, region, dax string, size uint64, dev state.DevNumbers) error {
 	d := r.Region(state.RegionRef(region)).DaxDevice(dax)
 	if d.State == state.DaxCreating {
-		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxUnbound, state.TriggerPrepare); err != nil {
+		if err := fsm.Apply(&state.DaxDeviceTable, &d.State, state.DaxUnbound, state.TriggerPrepare); err != nil {
 			return err
 		}
 	}
@@ -472,12 +473,12 @@ func sliceRecord(r *state.Records, ref state.GrantRef, region, dax string, reuse
 	}
 	switch {
 	case reused && (d.State == state.DaxDeviceDax || d.State == state.DaxSeed):
-		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxUnbound, state.TriggerPrepare); err != nil {
+		if err := fsm.Apply(&state.DaxDeviceTable, &d.State, state.DaxUnbound, state.TriggerPrepare); err != nil {
 			return err
 		}
 		d.Whole, d.Driver = false, ""
 	case d.State == state.DaxNone:
-		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxCreating, state.TriggerPrepare); err != nil {
+		if err := fsm.Apply(&state.DaxDeviceTable, &d.State, state.DaxCreating, state.TriggerPrepare); err != nil {
 			return err
 		}
 	}
@@ -541,9 +542,9 @@ func deletedSlice(r *state.Records, ref state.GrantRef, region, dax string) erro
 	d.Users = nil
 	if strings.HasSuffix(dax, ".0") {
 		d.Size = 0
-		return state.Apply(&state.DaxDeviceTable, &d.State, state.DaxSeed, state.TriggerPrepare)
+		return fsm.Apply(&state.DaxDeviceTable, &d.State, state.DaxSeed, state.TriggerPrepare)
 	}
-	if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxNone, state.TriggerPrepare); err != nil {
+	if err := fsm.Apply(&state.DaxDeviceTable, &d.State, state.DaxNone, state.TriggerPrepare); err != nil {
 		return err
 	}
 	removeRecord(&reg.DaxDevices, func(x *state.DaxDevice) bool { return x.Name == dax })
@@ -756,7 +757,7 @@ func deletedOwnSlice(r *state.Records, ref state.GrantRef, region state.RegionRe
 		rg.Got.Dax = ""
 	}
 	if d.State == state.DaxCreating {
-		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxNone, trigger); err != nil {
+		if err := fsm.Apply(&state.DaxDeviceTable, &d.State, state.DaxNone, trigger); err != nil {
 			return err
 		}
 		removeRecord(&reg.DaxDevices, func(x *state.DaxDevice) bool { return x.Name == dax })
@@ -765,9 +766,9 @@ func deletedOwnSlice(r *state.Records, ref state.GrantRef, region state.RegionRe
 	d.Users = nil
 	if strings.HasSuffix(dax, ".0") {
 		d.Driver, d.Size, d.Dev = "", 0, state.DevNumbers{}
-		return state.Apply(&state.DaxDeviceTable, &d.State, state.DaxSeed, trigger)
+		return fsm.Apply(&state.DaxDeviceTable, &d.State, state.DaxSeed, trigger)
 	}
-	if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxNone, trigger); err != nil {
+	if err := fsm.Apply(&state.DaxDeviceTable, &d.State, state.DaxNone, trigger); err != nil {
 		return err
 	}
 	removeRecord(&reg.DaxDevices, func(x *state.DaxDevice) bool { return x.Name == dax })

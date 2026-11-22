@@ -30,6 +30,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/klogtest"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
@@ -574,7 +575,7 @@ func TestRecoverBind(t *testing.T) {
 			if unpreparing {
 				if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
 					p := doc.Preparation(poolDriver, "c")
-					return state.Apply(&state.PreparationTable, &p.State, state.PreparationUnpreparing, state.TriggerUnprepare)
+					return fsm.Apply(&state.PreparationTable, &p.State, state.PreparationUnpreparing, state.TriggerUnprepare)
 				}); err != nil {
 					t.Fatal(err)
 				}

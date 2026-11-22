@@ -28,6 +28,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
@@ -136,7 +137,7 @@ func dropUnused(r *state.Records, owns func(state.Source) bool) error {
 		if !owns(m.Source) || !unused(m) || m.State == state.MemdevIdleKept {
 			continue
 		}
-		if err := state.Apply(&state.MemdevTable, &m.State, state.MemdevNone, state.TriggerRecover); err != nil {
+		if err := fsm.Apply(&state.MemdevTable, &m.State, state.MemdevNone, state.TriggerRecover); err != nil {
 			return err
 		}
 	}
@@ -209,14 +210,14 @@ func (e *Engine) recoverMemdevs(ctx context.Context, snap *kernel.Snapshot) erro
 func memdevsSeen(r *state.Records, gone, back []state.Serial) error {
 	for _, serial := range gone {
 		if m := r.Memdev(serial); m != nil {
-			if err := state.Apply(&state.MemdevTable, &m.State, state.MemdevGone, state.TriggerRecover); err != nil {
+			if err := fsm.Apply(&state.MemdevTable, &m.State, state.MemdevGone, state.TriggerRecover); err != nil {
 				return err
 			}
 		}
 	}
 	for _, serial := range back {
 		if m := r.Memdev(serial); m != nil {
-			if err := state.Apply(&state.MemdevTable, &m.State, state.MemdevActive, state.TriggerRecover); err != nil {
+			if err := fsm.Apply(&state.MemdevTable, &m.State, state.MemdevActive, state.TriggerRecover); err != nil {
 				return err
 			}
 		}
@@ -314,7 +315,7 @@ func recoverNoted(r *state.Records, reg *state.Region, k regionSeen) error {
 	ref := reg.Ref()
 	switch {
 	case k.hollow:
-		if err := state.Apply(&state.RegionTable, &reg.State, state.RegionHollowOwned, state.TriggerRecover); err != nil {
+		if err := fsm.Apply(&state.RegionTable, &reg.State, state.RegionHollowOwned, state.TriggerRecover); err != nil {
 			return err
 		}
 		reg.Name = string(ref)
@@ -325,14 +326,14 @@ func recoverNoted(r *state.Records, reg *state.Region, k regionSeen) error {
 			}
 		}
 	case k.mine:
-		if err := state.Apply(&state.RegionTable, &reg.State, state.RegionOwned, state.TriggerRecover); err != nil {
+		if err := fsm.Apply(&state.RegionTable, &reg.State, state.RegionOwned, state.TriggerRecover); err != nil {
 			return err
 		}
 		reg.Name, reg.NotedName = string(ref), ""
 		reg.NUMANode = state.NUMANodePtr(k.info.NUMANode)
 		reg.Size = k.info.Range.Size()
 	default:
-		if err := state.Apply(&state.RegionTable, &reg.State, state.RegionNone, state.TriggerRecover); err != nil {
+		if err := fsm.Apply(&state.RegionTable, &reg.State, state.RegionNone, state.TriggerRecover); err != nil {
 			return err
 		}
 		removeRecord(&r.Regions, func(x *state.Region) bool { return x.Ref() == ref })
@@ -351,7 +352,7 @@ func recoverNoted(r *state.Records, reg *state.Region, k regionSeen) error {
 // hollowRecovered records a region of ours that a start finds hollow.
 func hollowRecovered(r *state.Records, ref state.RegionRef) error {
 	reg := r.Region(ref)
-	if err := state.Apply(&state.RegionTable, &reg.State, state.RegionHollowOwned, state.TriggerRecover); err != nil {
+	if err := fsm.Apply(&state.RegionTable, &reg.State, state.RegionHollowOwned, state.TriggerRecover); err != nil {
 		return err
 	}
 	for _, serial := range reg.Targets {
@@ -400,7 +401,7 @@ func (e *Engine) restoreBind(ctx context.Context, r *state.Records, g *state.Gra
 	klog.Infof("engine: claim %s: %s: bound %s at %s again", claim, what, u.nodeMount, b.Target)
 	if err := e.commit(ctx, func(r *state.Records) error {
 		rb := r.Grant(ref).Got.Bind
-		return state.Apply(&state.BindTable, &rb.State, state.BindBound, trigger)
+		return fsm.Apply(&state.BindTable, &rb.State, state.BindBound, trigger)
 	}); err != nil {
 		klog.Errorf("engine: %v", err)
 	}
@@ -661,14 +662,14 @@ func preparingRecovered(r *state.Records, released, kept []state.GrantRef) error
 		}
 		switch {
 		case isKept:
-			if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationKept, state.TriggerRecover); err != nil {
+			if err := fsm.Apply(&state.PreparationTable, &p.State, state.PreparationKept, state.TriggerRecover); err != nil {
 				return err
 			}
 			p.Results = slices.DeleteFunc(p.Results, func(res state.Result) bool {
 				return res.Grant != nil && r.Grant(*res.Grant) == nil
 			})
 		case touched:
-			if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationPreparing, state.TriggerRecover); err != nil {
+			if err := fsm.Apply(&state.PreparationTable, &p.State, state.PreparationPreparing, state.TriggerRecover); err != nil {
 				return err
 			}
 		}
@@ -696,12 +697,12 @@ func keptReleased(r *state.Records, released []state.GrantRef) error {
 			return res.Grant != nil && r.Grant(*res.Grant) == nil
 		})
 		if slices.ContainsFunc(p.Results, func(res state.Result) bool { return res.Grant != nil }) {
-			if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationKept, state.TriggerRecover); err != nil {
+			if err := fsm.Apply(&state.PreparationTable, &p.State, state.PreparationKept, state.TriggerRecover); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationNone, state.TriggerRecover); err != nil {
+		if err := fsm.Apply(&state.PreparationTable, &p.State, state.PreparationNone, state.TriggerRecover); err != nil {
 			return err
 		}
 		gone = append(gone, key{p.UID, p.Driver})
@@ -903,7 +904,7 @@ func (e *Engine) deleteDax(ctx context.Context, reg *state.Region, dax string) e
 		if d == nil {
 			return nil
 		}
-		if err := state.Apply(&state.DaxDeviceTable, &d.State, state.DaxNone, state.TriggerRecover); err != nil {
+		if err := fsm.Apply(&state.DaxDeviceTable, &d.State, state.DaxNone, state.TriggerRecover); err != nil {
 			return err
 		}
 		removeRecord(&reg.DaxDevices, func(x *state.DaxDevice) bool { return x.Name == dax })

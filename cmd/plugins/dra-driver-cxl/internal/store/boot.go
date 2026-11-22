@@ -20,6 +20,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
 // applyBoot changes the records of doc as a load in the boot running
@@ -55,7 +56,7 @@ func stalePreparations(doc *Document, running string) error {
 		}
 		klog.Warningf("store: claim %s (%s) of %s was prepared in boot %s, this is %s: not prepared any more",
 			p.ClaimName, p.UID, p.Driver, doc.BootID, running)
-		if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationStale, state.TriggerLoad); err != nil {
+		if err := fsm.Apply(&state.PreparationTable, &p.State, state.PreparationStale, state.TriggerLoad); err != nil {
 			return err
 		}
 		if err := clearGrants(doc, p); err != nil {

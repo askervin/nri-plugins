@@ -22,6 +22,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
@@ -153,7 +154,7 @@ func (e *Engine) journal(ctx context.Context, req *GrantRequest) error {
 		}
 		switch g.State {
 		case state.GrantRequested:
-			if err := state.Apply(&state.GrantTable, &g.State, state.GrantJournaled, state.TriggerPrepare); err != nil {
+			if err := fsm.Apply(&state.GrantTable, &g.State, state.GrantJournaled, state.TriggerPrepare); err != nil {
 				return err
 			}
 		case state.GrantJournaled, state.GrantRealising, state.GrantRealised:
@@ -182,12 +183,12 @@ func journalMemdev(r *state.Records, req *GrantRequest) error {
 	}
 	switch m.State {
 	case state.MemdevNone, state.MemdevIdleKept:
-		if err := state.Apply(&state.MemdevTable, &m.State, state.MemdevActive, state.TriggerPrepare); err != nil {
+		if err := fsm.Apply(&state.MemdevTable, &m.State, state.MemdevActive, state.TriggerPrepare); err != nil {
 			return err
 		}
 	case state.MemdevActive:
 		if !m.HasGrant(req.Ref) {
-			if err := state.Apply(&state.MemdevTable, &m.State, state.MemdevActive, state.TriggerPrepare); err != nil {
+			if err := fsm.Apply(&state.MemdevTable, &m.State, state.MemdevActive, state.TriggerPrepare); err != nil {
 				return err
 			}
 		}
@@ -236,7 +237,7 @@ func (e *Engine) realise(ctx context.Context, req *GrantRequest) error {
 	if err := e.commit(ctx, func(r *state.Records) error {
 		g := r.Grant(req.Ref)
 		if g.State == state.GrantJournaled {
-			if err := state.Apply(&state.GrantTable, &g.State, state.GrantRealising, state.TriggerPrepare); err != nil {
+			if err := fsm.Apply(&state.GrantTable, &g.State, state.GrantRealising, state.TriggerPrepare); err != nil {
 				return err
 			}
 		}
@@ -313,7 +314,7 @@ func (e *Engine) realised(ctx context.Context, req *GrantRequest, got state.Got,
 		if g.State == state.GrantRealised {
 			return nil
 		}
-		return state.Apply(&state.GrantTable, &g.State, state.GrantRealised, state.TriggerPrepare)
+		return fsm.Apply(&state.GrantTable, &g.State, state.GrantRealised, state.TriggerPrepare)
 	})
 }
 
@@ -327,7 +328,7 @@ func addDaxUser(reg *state.Region, dax string, ref state.GrantRef) error {
 		return nil
 	}
 	if len(d.Users) > 0 && d.State != state.DaxUnbound {
-		if err := state.Apply(&state.DaxDeviceTable, &d.State, d.State, state.TriggerPrepare); err != nil {
+		if err := fsm.Apply(&state.DaxDeviceTable, &d.State, d.State, state.TriggerPrepare); err != nil {
 			return err
 		}
 	}

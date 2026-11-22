@@ -28,6 +28,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
@@ -381,7 +382,7 @@ func (v *env) prepare(driver, uid string, reqs ...GrantRequest) error {
 				p.Results = append(p.Results, grantResult(uid, reqs[i].Ref.Result))
 			}
 		}
-		return state.Apply(&state.PreparationTable, &p.State, state.PreparationPreparing, state.TriggerPrepare)
+		return fsm.Apply(&state.PreparationTable, &p.State, state.PreparationPreparing, state.TriggerPrepare)
 	}); err != nil {
 		v.t.Fatal(err)
 	}
@@ -399,7 +400,7 @@ func (v *env) prepare(driver, uid string, reqs ...GrantRequest) error {
 	if cerr := v.st.Commit(ctx, store.Durable, func(doc *store.Document) error {
 		p := doc.Preparation(driver, uid)
 		if err == nil {
-			return state.Apply(&state.PreparationTable, &p.State, state.PreparationPrepared, state.TriggerPrepare)
+			return fsm.Apply(&state.PreparationTable, &p.State, state.PreparationPrepared, state.TriggerPrepare)
 		}
 		return failedPreparation(&doc.Records, p)
 	}); cerr != nil {
@@ -422,9 +423,9 @@ func failedPreparation(r *state.Records, p *state.Preparation) error {
 	}
 	p.Results = results
 	if left {
-		return state.Apply(&state.PreparationTable, &p.State, state.PreparationKept, state.TriggerPrepare)
+		return fsm.Apply(&state.PreparationTable, &p.State, state.PreparationKept, state.TriggerPrepare)
 	}
-	if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationNone, state.TriggerPrepare); err != nil {
+	if err := fsm.Apply(&state.PreparationTable, &p.State, state.PreparationNone, state.TriggerPrepare); err != nil {
 		return err
 	}
 	uid, driver := p.UID, p.Driver
@@ -453,7 +454,7 @@ func (v *env) unprepare(driver, uid string) error {
 	if p.Prepared() && p.State != state.PreparationUnpreparing {
 		if err := v.st.Commit(ctx, store.Durable, func(doc *store.Document) error {
 			p := doc.Preparation(driver, uid)
-			return state.Apply(&state.PreparationTable, &p.State, state.PreparationUnpreparing, state.TriggerUnprepare)
+			return fsm.Apply(&state.PreparationTable, &p.State, state.PreparationUnpreparing, state.TriggerUnprepare)
 		}); err != nil {
 			v.t.Fatal(err)
 		}
@@ -466,7 +467,7 @@ func (v *env) unprepare(driver, uid string) error {
 		if p == nil {
 			return nil
 		}
-		if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationNone, state.TriggerUnprepare); err != nil {
+		if err := fsm.Apply(&state.PreparationTable, &p.State, state.PreparationNone, state.TriggerUnprepare); err != nil {
 			return err
 		}
 		removeRecord(&doc.Preparations, func(x *state.Preparation) bool { return x.UID == uid && x.Driver == driver })

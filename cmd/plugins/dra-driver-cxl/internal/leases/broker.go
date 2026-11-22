@@ -35,6 +35,7 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/lend"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
 // The lease broker serves the lease sockets of lease claims. A request
@@ -451,7 +452,7 @@ func (b *Broker) change(fn func(r *state.Records)) bool {
 // has the transition, and reports whether it did; a refused transition is
 // logged.
 func apply(l *state.Lease, to state.LeaseState, trigger state.Trigger) bool {
-	if err := state.Apply(&state.LeaseTable, &l.State, to, trigger); err != nil {
+	if err := fsm.Apply(&state.LeaseTable, &l.State, to, trigger); err != nil {
 		klog.Errorf("lease broker: lease %s: %v", l.ID, err)
 		return false
 	}
@@ -461,7 +462,7 @@ func apply(l *state.Lease, to state.LeaseState, trigger state.Trigger) bool {
 // applyClaim takes the lease claim to the state to on trigger, if the
 // lease claim table has the transition; a refused transition is logged.
 func applyClaim(c *state.LeaseClaim, to state.LeaseClaimState, trigger state.Trigger) bool {
-	if err := state.Apply(&state.LeaseClaimTable, &c.State, to, trigger); err != nil {
+	if err := fsm.Apply(&state.LeaseClaimTable, &c.State, to, trigger); err != nil {
 		klog.Errorf("lease broker: lease claim %s: %v", c.UID, err)
 		return false
 	}

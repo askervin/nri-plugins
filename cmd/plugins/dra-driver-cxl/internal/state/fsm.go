@@ -69,37 +69,3 @@ var Triggers = []Trigger{
 	TriggerExpire, TriggerRequest, TriggerRelease, TriggerReconcile, TriggerOnLending,
 	TriggerOnPrepared, TriggerOnLendFailed, TriggerOnReleasing,
 }
-
-// Transition is one row of a transition table (fsm.Transition).
-type Transition[S comparable] = fsm.Transition[S]
-
-// Refusal is a set of transitions that a table refuses on purpose
-// (fsm.Refusal).
-type Refusal[S comparable] = fsm.Refusal[S]
-
-// Table is the transition table of one State field of a record: its
-// states and the transitions that the code may apply (fsm.Table, applied,
-// never observed). A transition that is not a row of the table is refused.
-// A change of other fields of a record that keeps its state is not a
-// transition; a Stays row documents an action that keeps the state, and may
-// be applied for it.
-type Table[S comparable] = fsm.Table[S]
-
-// TransitionError is a transition that a table refused.
-type TransitionError = fsm.TransitionError
-
-// TableText is a transition table in words, for the documentation.
-type TableText = fsm.TableText
-
-// RowText is a row of a transition table in words.
-type RowText = fsm.RowText
-
-// ErrTransition is the kind of the error of a transition that is not in a
-// table.
-var ErrTransition = fsm.ErrTransition
-
-// Apply sets *state to to if the table allows the transition on trigger,
-// and returns a *TransitionError, leaving *state unchanged, otherwise.
-func Apply[S comparable](t *Table[S], state *S, to S, trigger Trigger) error {
-	return fsm.Apply(t, state, to, trigger)
-}

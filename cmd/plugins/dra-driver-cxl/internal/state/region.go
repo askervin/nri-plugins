@@ -212,11 +212,11 @@ const (
 var regionStored = fsm.List(RegionNoted, RegionOwned, RegionKept, RegionHollowOwned, RegionForeign)
 
 // RegionTable is the transition table of Region.State.
-var RegionTable = Table[RegionState]{
+var RegionTable = fsm.Table[RegionState]{
 	Object: "Region",
 	Field:  "State",
 	States: fsm.List(RegionNone, RegionNoted, RegionOwned, RegionKept, RegionHollowOwned, RegionForeign),
-	Rows: []Transition[RegionState]{
+	Rows: []fsm.Transition[RegionState]{
 		{
 			From: fsm.List(RegionNone), To: RegionNoted, Triggers: fsm.List(TriggerPrepare),
 			When:    "a Prepare needs a region on the memdev",
@@ -303,7 +303,7 @@ var RegionTable = Table[RegionState]{
 			Effects: "the record dropped: region names are given anew at every boot",
 		},
 	},
-	Refused: []Refusal[RegionState]{
+	Refused: []fsm.Refusal[RegionState]{
 		{From: fsm.List(RegionNone), To: fsm.List(RegionOwned), Why: "no creation without the note"},
 		{
 			From: fsm.List(RegionForeign),
@@ -314,11 +314,11 @@ var RegionTable = Table[RegionState]{
 }
 
 // RegionSetUpTable is the transition table of Region.SetUp.
-var RegionSetUpTable = Table[bool]{
+var RegionSetUpTable = fsm.Table[bool]{
 	Object: "Region",
 	Field:  "SetUp",
 	States: fsm.List(false, true),
-	Rows: []Transition[bool]{
+	Rows: []fsm.Transition[bool]{
 		{
 			From: fsm.List(false), To: true, Triggers: fsm.List(TriggerPrepare),
 			When: "the Whole or first dax device made (local shared: zeroed; pool numa: kmem; pool dax: " +
@@ -338,11 +338,11 @@ var RegionSetUpTable = Table[bool]{
 var daxBound = fsm.List(DaxDeviceDax, DaxKmemOffline, DaxKmemOnline)
 
 // DaxDeviceTable is the transition table of DaxDevice.State.
-var DaxDeviceTable = Table[DaxDeviceState]{
+var DaxDeviceTable = fsm.Table[DaxDeviceState]{
 	Object: "DaxDevice",
 	Field:  "State",
 	States: fsm.List(DaxNone, DaxCreating, DaxUnbound, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline, DaxSeed),
-	Rows: []Transition[DaxDeviceState]{
+	Rows: []fsm.Transition[DaxDeviceState]{
 		{
 			From: fsm.List(DaxNone), To: DaxCreating, Triggers: fsm.List(TriggerPrepare),
 			When:    "a grant needs a dax device (or the Whole device at set-up)",
@@ -437,7 +437,7 @@ var DaxDeviceTable = Table[DaxDeviceState]{
 			Effects: "deleted",
 		},
 	},
-	Refused: []Refusal[DaxDeviceState]{
+	Refused: []fsm.Refusal[DaxDeviceState]{
 		{From: fsm.List(DaxUnbound), To: fsm.List(DaxKmemOnline), Why: "never online without the fence step"},
 	},
 }
@@ -446,11 +446,11 @@ var DaxDeviceTable = Table[DaxDeviceState]{
 var mounted = fsm.List(MountedRO, MountedRW)
 
 // MountTable is the transition table of Mount.State.
-var MountTable = Table[MountState]{
+var MountTable = fsm.Table[MountState]{
 	Object: "Mount",
 	Field:  "State",
 	States: fsm.List(MountNone, MountedRO, MountedRW, MountForeign, MountUnrestored),
-	Rows: []Transition[MountState]{
+	Rows: []fsm.Transition[MountState]{
 		{
 			From: fsm.List(MountNone), To: MountedRO, Triggers: fsm.List(TriggerPrepare),
 			When:  "the first fs grant of the access, no writer grant",
@@ -518,7 +518,7 @@ var MountTable = Table[MountState]{
 			Effects: "error logged; never used, never unmounted by the driver; the grants REALISED_UNRESTORED",
 		},
 	},
-	Refused: []Refusal[MountState]{
+	Refused: []fsm.Refusal[MountState]{
 		{
 			From: fsm.List(MountForeign),
 			To:   fsm.List(MountedRO, MountedRW, MountNone),
