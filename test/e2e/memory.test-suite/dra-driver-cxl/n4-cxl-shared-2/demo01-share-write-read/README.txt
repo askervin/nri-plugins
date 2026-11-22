@@ -941,9 +941,9 @@ direct access and 1.4 times with cached access (Qwen3.5-2B), and 2.4 and
                       fs.py those of pool-fs; hello.erofs.hex a real
                       image of mkfs.erofs, pool-fs-super.json the
                       superblocks of real empty ext4, xfs and btrfs;
-                      make-wizard-samples.py those of the wizard;
-                      record-sample.py writes a sample from a live demo:
-                      llm-share-M9 and llm-share-M14)
+                      make-wizard-samples.py those of the wizard; the
+                      llm-share steps M9 and M14 are of make-samples.py
+                      too)
   manifests/local, manifests/pool, manifests/pool-shared-fs, manifests/pool-fs
                       the pods and the lease claim template
   manifests/llm-share the writer, the readers' claim templates (direct,

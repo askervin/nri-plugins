@@ -615,6 +615,137 @@ def local_trace(sdir, t0=1792500000.0):
         f.write(state("local", LOCAL))
 
 
+# llm-share: the model Qwen3-0.6B on the persistent pool device llm0, its
+# erofs mounted on all three nodes; the writer (a lease claim on vm1) put
+# it there, reader-0..2 (one per node) serve it, the client asks them. M9:
+# the readers map the model directly (dax); M14: again through the page
+# cache (a loop device).
+VM0 = "n4-cxl-shared-0-fedora-43-containerd"
+LLM_FILE = "Qwen3-0.6B-Q4_K_M.gguf"
+LLM_SIZE = 512 * MI
+LLM_NODES = [VM0, VM1, VM2]   # of reader-0, reader-1, reader-2
+
+
+def llm_state():
+    """The state of demo setup llm-share."""
+    return "\n".join([
+        "# generated state of demo setup llm-share (make-samples.py)",
+        "DEMO_CASE=llm-share", "DEMO_FSTYPE=",
+        "VM2_DIR=/nonexistent/" + VM2, "VM1_DIR=/nonexistent/" + VM1, "VM0_DIR=/nonexistent/" + VM0,
+        "VM2_NODE=" + VM2, "VM1_NODE=" + VM1, "VM0_NODE=" + VM0,
+        "NS=" + NS, "SERIAL=" + SHARED, "POOL_DEVICE=llm0", "POOL_URL=http://127.0.0.1:9909",
+        "DEMO_LLM_MODEL=qwen3-0.6b", "DEMO_LLM_ACCESS=direct", "DEMO_LLM_LATENCY=off",
+        "LLM_MODEL_FILE=" + LLM_FILE, "LLM_DEVICE_SIZE=512Mi", ""])
+
+
+def llm_pod(name, node, step, ref=None, claim=None):
+    """A Running pod of llm-share with the claim CLAIM of its claim reference REF; its uid is of
+    the step (the readers of M14 are new pods)."""
+    p = {"apiVersion": "v1", "kind": "Pod",
+         "metadata": {"name": name, "namespace": NS, "uid": uid("%s-%s" % (name, step)), "labels": {}, "annotations": {}},
+         "spec": {"nodeName": node}, "status": {"phase": "Running"}}
+    if claim:
+        p["status"]["resourceClaimStatuses"] = [{"name": ref, "resourceClaimName": claim}]
+    return p
+
+
+def llm_reader_claim(reader, step, access):
+    """The claim of READER of the model's file system on llm0: one share, read-only, ACCESS direct or cached."""
+    name = "%s-model-%s" % (reader, step.lower())
+    return {"apiVersion": "resource.k8s.io/v1", "kind": "ResourceClaim",
+            "metadata": {"name": name, "namespace": NS, "uid": uid(name), "annotations": {},
+                         "ownerReferences": [{"kind": "Pod", "name": reader, "uid": uid("%s-%s" % (reader, step))}]},
+            "spec": {"devices": {"requests": [{"name": "model", "exactly": {
+                "deviceClassName": "cxl-pool-persistent", "allocationMode": "ExactCount", "count": 1, "capacity": {},
+                "selectors": [{"cel": {"expression": 'device.attributes["cxl-pool.nri.io"].serial == "%s"' % SHARED}}]}}]}},
+            "status": {"allocation": {"devices": {
+                "config": [{"opaque": {"driver": "cxl-pool.nri.io", "parameters": {
+                    "apiVersion": "cxl.nri.io/v1alpha1", "kind": "MemoryConfig",
+                    "device": {"access": access, "mode": "fs", "readOnly": True}}}}],
+                "results": [{"request": "model", "driver": "cxl-pool.nri.io", "pool": "fake-cxl-pool", "device": "llm0",
+                             "consumedCapacity": {"shares": "1"}}]}},
+                "devices": [{"driver": "cxl-pool.nri.io", "pool": "fake-cxl-pool", "device": "llm0",
+                             "conditions": [{"type": "cxl-pool.nri.io/Attached", "status": "True"}]}],
+                "reservedFor": [{"resource": "pods", "name": reader}]}}
+
+
+def llm_writer_claim(step):
+    """The lease claim of the writer on vm1."""
+    name = "writer-cxl-llm"
+    return {"apiVersion": "resource.k8s.io/v1", "kind": "ResourceClaim",
+            "metadata": {"name": name, "namespace": NS, "uid": uid(name),
+                         "ownerReferences": [{"kind": "Pod", "name": "writer", "uid": uid("writer-%s" % step)}]},
+            "spec": {"devices": {"requests": [{"name": "lease", "exactly": {
+                "deviceClassName": "cxl-lease", "allocationMode": "ExactCount", "count": 1}}]}},
+            "status": {"allocation": {"devices": {"results": [{"request": "lease", "driver": "cxl.nri.io", "pool": VM1,
+                                                               "device": "lease"}]}}}}
+
+
+def llm_node_slice(node):
+    """The cxl.nri.io slice of NODE: its DRAM and the lease device."""
+    return {"apiVersion": "resource.k8s.io/v1", "kind": "ResourceSlice",
+            "metadata": {"name": "cxl.nri.io-" + node},
+            "spec": {"driver": "cxl.nri.io", "nodeName": node, "pool": {"name": node, "generation": 1, "resourceSliceCount": 1},
+                     "devices": [{"name": "dram", "attributes": {"type": {"string": "dram"}, "source": {"string": "local"},
+                                                                 "nodes": {"string": "0-1"}, "size": {"int": 8 * GI}}},
+                                 {"name": "lease", "attributes": {"type": {"string": "lease"}}}]}}
+
+
+def llm_pool_slice():
+    """The cxl-pool.nri.io slice of llm0."""
+    return {"apiVersion": "resource.k8s.io/v1", "kind": "ResourceSlice",
+            "metadata": {"name": "cxl-pool.nri.io-fake-cxl-pool"},
+            "spec": {"driver": "cxl-pool.nri.io", "pool": {"name": "fake-cxl-pool", "generation": 1, "resourceSliceCount": 1},
+                     "devices": [{"name": "llm0", "attributes": {"serial": {"string": SHARED}, "shared": {"bool": True},
+                                                                 "persistent": {"bool": True}, "size": {"int": LLM_SIZE}},
+                                  "capacity": {"shares": {"value": "1M"}}}]}}
+
+
+def llm_driver(i):
+    """The driver pod of the node of reader-I, ready."""
+    node = LLM_NODES[i]
+    return {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "nri-dra-driver-cxl-vm%d" % i, "namespace": "kube-system"},
+            "spec": {"nodeName": node}, "status": {"phase": "Running", "containerStatuses": [{"ready": True}]}}
+
+
+def llm_node(reader, step, cached):
+    """What probe.py prints on the node of READER: llm0 as mem0 region0 pmem0, its erofs mounted
+    (directly, or through loop0 when CACHED) and the model file mapped by the reader."""
+    return {"node": {
+        "memdevs": [{"name": "mem0", "serial": SHARED, "size": LLM_SIZE}],
+        "regions": [{"name": "region0", "mode": "pmem", "memdevs": ["mem0"], "namespaces": [{"block": "pmem0", "fs": "erofs"}]}],
+        "mounts": [fs_mount("node", loop=cached)],
+        "mappers": [{"podUID": uid("%s-%s" % (reader, step)), "path": "/models/" + LLM_FILE,
+                     "source": "loop0" if cached else "pmem0"}]}}
+
+
+def llm_pool():
+    """The pool server's llm0 and the erofs of the model in it."""
+    return {"device": {"name": "llm0", "path": "/dev/shm/fake-cxl-pool-llm/llm0.raw", "size": LLM_SIZE, "state": "attached",
+                       "shared": True, "persistent": True,
+                       "attachments": [{"host": n, "state": "attached"} for n in LLM_NODES]},
+            "fileResident": 399077376,
+            "fs": {"type": "erofs", "files": [{"name": LLM_FILE, "type": "file", "size": 396705472,
+                                               "text": "GGUF....6....... ...............general.architec"}]}}
+
+
+def llm_scenarios():
+    """llm-share-M9 and llm-share-M14: vm2, vm1, vm0 and pool."""
+    out = {}
+    for step, access in (("M9", "direct"), ("M14", "cached")):
+        readers = ["reader-%d" % i for i in range(3)]
+        claims = [llm_reader_claim(r, step, access) for r in readers] + [llm_writer_claim(step)]
+        pods = [llm_pod("client", VM2, step)] + \
+            [llm_pod(r, LLM_NODES[i], step, "model", claims[i]["metadata"]["name"]) for i, r in enumerate(readers)] + \
+            [llm_pod("writer", VM1, step, "cxl", claims[3]["metadata"]["name"])]
+        k8s = {"pods": lst(pods), "claims": lst(claims), "drivers": lst([llm_driver(i) for i in range(3)]),
+               "slices": lst([llm_pool_slice()] + [llm_node_slice(n) for n in LLM_NODES])}
+        nodes = [llm_node(r, step, access == "cached") for r in readers]
+        vm2 = dict(nodes[2], k8s=k8s)
+        out["llm-share-" + step] = (vm2, nodes[1], nodes[0], llm_pool())
+    return out
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit("usage: %s DIR" % os.path.basename(sys.argv[0]))
@@ -641,6 +772,15 @@ def main():
             f.write(state("pool-shared-fs", SHARED))
         write(sdir, "vm2.json", v2)
         write(sdir, "vm1.json", v1)
+        write(sdir, "pool.json", pl)
+    for name, (v2, v1, v0, pl) in llm_scenarios().items():
+        sdir = os.path.join(base, name)
+        os.makedirs(sdir, exist_ok=True)
+        with open(os.path.join(sdir, "state.env"), "w") as f:
+            f.write(llm_state())
+        write(sdir, "vm2.json", v2)
+        write(sdir, "vm1.json", v1)
+        write(sdir, "vm0.json", v0)
         write(sdir, "pool.json", pl)
     local_trace(os.path.join(base, "trace-local"))
     fs_trace(os.path.join(base, "trace-fs"))
