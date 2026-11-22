@@ -3,11 +3,11 @@
 CAUTION: experimental. The demo runs on emulated hardware only: qemu VMs
 and a fake memory pool.
 
-The demo shows CXL memory sharing live, in the cluster of the e2e suite:
-a container asks for CXL memory while it runs, the scheduler gives it a
-share of a device only when the rules allow, the node maps the device
-into the container, every sharer sees the same bytes, and readers cannot
-write. It needs this repository and no CXL hardware. This page tells how
+The demo shows CXL memory sharing live, in the cluster of the e2e suite.
+A container asks for CXL memory while it runs, and the scheduler gives
+it a share of a device only when the rules allow. The node maps the
+device into the container, every sharer sees the same bytes, and readers
+cannot write. It needs this repository and no CXL hardware. This page tells how
 to prepare a host, how to run each story of the demo in front of an
 audience, and how to read the results of its language model story.
 
@@ -133,9 +133,9 @@ demo() { "$D01"/bin/demo "$@"; }
 demo selftest
 ```
 
-`demo selftest` needs no VM: it renders every view from recorded samples
-and checks that it fits a terminal of 50 x 10, runs the wizard's checks,
-and runs the host scripts (`pool-tmpfs.sh`, `latency.sh`) against stubs
+`demo selftest` needs no VM. It renders every view from recorded samples
+and checks that it fits a terminal of 50 x 10, and runs the wizard's
+checks. It also runs the host scripts (`pool-tmpfs.sh`, `latency.sh`) against stubs
 of `sudo`, `mount` and `taskset` and a fake `/sys`.
 
 ### The model
@@ -233,10 +233,12 @@ skips), run through `run_tests.sh`; it refuses to start while another
   `pool-shared-fs`: `shared0` persistent and empty; `pool-fs`: `fs0`
   persistent and empty; `wizard`: the devices of [the wizard](#the-wizard);
   `llm-share`: `llm0` on a tmpfs of its own);
-- installs the driver on every node with helm (`local`: VM2's device in
-  `sharedMemdevs`; `pool-fs`: `fsTypes: [erofs, <type>]`; `wizard`:
-  `fsTypes: [erofs, ext4, xfs, btrfs]`), and the pool controller as a
-  Deployment, its image built with docker and imported into every node;
+- installs the driver on every node with helm: for `local` with VM2's
+  device in `sharedMemdevs`, for `pool-fs` with
+  `fsTypes: [erofs, <type>]`, for `wizard` with
+  `fsTypes: [erofs, ext4, xfs, btrfs]`;
+- installs the pool controller as a Deployment, its image built with
+  docker and imported into every node;
 - imports the demo image where the story needs it, creates the ConfigMap
   `demo-tools` (`/demo/write`, `/demo/read`, `/demo/hold`, `/demo/mkfs`,
   `/demo/fswrite`, ... in the pods), copies the manifests to `/root/demo`
@@ -253,11 +255,11 @@ errors and are not (`curl: (7) Failed to connect to localhost port
 Teardown unconfigures VM2's shared device first, then removes the rest,
 and checks that no VM has CXL memory devices left. Before it detaches a
 pool device it checks that no filesystem mount, lease bind or loop
-device over pmem is left in the VMs: if one is, it stops with a WARNING
+device over pmem is left in the VMs. If one is, it stops with a WARNING
 and the manual cleanup, and `demo teardown` again goes on from there. It
 removes the files of the persistent devices. qemu keeps the backing file
 of a detached device mapped until the next memory change of the VM or
-its restart; on a tmpfs that memory stays allocated, so teardown
+its restart. On a tmpfs that memory stays allocated, so teardown
 unmounts the pool tmpfs lazily
 (`tmpfs unmounted lazily, processes ... still map removed files of it`).
 To get the memory back, restart the VMs: `vagrant halt` in the output
@@ -305,9 +307,9 @@ holds them. What is new:
 ## pool-shared-fs
 
 The pool story once more, with a filesystem instead of bytes at offset
-0: the writer gets `shared0` as a block device (an fd of `/dev/pmem0`, no
-device node), makes an erofs with `hello.txt` and writes it into the
-device; the readers find it mounted at `/run/cxl/fs/hello` in their
+0. The writer gets `shared0` as a block device (an fd of `/dev/pmem0`,
+no device node), makes an erofs with `hello.txt` and writes it into the
+device. The readers find it mounted at `/run/cxl/fs/hello` in their
 running containers. `S = 0xc1ae0001`, the writer on VM1, reader-a and
 reader-b on VM2, reader-c on VM1. The steps are F1 to F9:
 
@@ -374,9 +376,9 @@ no DAX, so its access is cached, through a loop device.
 lease, among the combinations that the driver accepts, shows the YAML,
 creates it in the demo namespace and deletes it again. Each question
 lists its choices numbered, the default marked `*`, and the choices that
-the driver refuses with the reason; then the request in words, the
-warnings (the pod will wait, and why), the same as a command line, and
-"Enter create, y the YAML, q quit". `demo setup wizard` makes every kind
+the driver refuses with the reason. Then it shows the request in words,
+the warnings (the pod will wait, and why), the same as a command line,
+and "Enter create, y the YAML, q quit". `demo setup wizard` makes every kind
 of device:
 
 - the local memdevs of VM2 (1Gi) and VM1 (256Mi), both with the serial
@@ -431,10 +433,10 @@ container (`mkfs.erofs -b4096 --dsunit=512 -Enoinline_data`: one plain,
 through its block lease. Then a reader starts on each VM: stock
 llama.cpp, `llama-server -nr` with the model at `/models` from a
 read-only `fs` claim of `llm0`, with as many threads as its CPU limit.
-A client pod on VM2 asks them the way an agent asks its model: a system
-prompt, the question "What is the weather like in Helsinki right now,
-and should I take an umbrella?" and one tool, `get_weather`; the model
-answers with a call of the tool.
+A client pod on VM2 asks them the way an agent asks its model, with a
+system prompt, a question and one tool, `get_weather`. The question is
+"What is the weather like in Helsinki right now, and should I take an
+umbrella?", and the model answers with a call of the tool.
 
 - Direct access: each node mounts the erofs with DAX, so `llama-server`
   maps the gguf from the device. Every qemu maps the same backing file,
@@ -475,12 +477,13 @@ The options are environment variables of `demo setup llm-share`:
 
 The pool directory is where the pool server creates the files that are
 the memory of its devices. Setup mounts a tmpfs there with
-`huge=within_size` (2 MiB pages where the file is large enough) and
-`mpol=interleave:<nodes>` over the NUMA nodes of the host that have both
-memory and CPUs (none on a host with one such node; the memory of a CXL
-device or HBM is left out). Without the policy a page lands on the node
-of the CPU that first writes it, where the writer's vCPU happened to run,
-and the readers all wait on that node: in one run three direct readers
+`huge=within_size`, which gives 2 MiB pages where the file is large
+enough. It adds `mpol=interleave:<nodes>` over the NUMA nodes of the
+host that have both memory and CPUs, which leaves out the memory of a
+CXL device or HBM; a host with one such node gets no policy. Without the
+policy a page lands on the node of the CPU that first writes it, where
+the writer's vCPU happened to run, and the readers all wait on that
+node. In one run three direct readers
 at once decoded about 1.8 times as slowly with the file on one node as
 with it spread over the four nodes of a two-socket host. A node list has
 a comma, which mount(8) splits options at, so the mount runs with
@@ -597,11 +600,11 @@ terminal (`demo zoom help` lists them):
 | `bytes [OFFSET]` | a hex dump of the device |
 | `last` | the full output of the last step |
 
-`demo capture LABEL` writes each view once to `captures/`, and
-`demo truth LABEL` the ground truth of the moment (kubectl objects,
-`cxl list`, dax and pmem devices, mounts, the mappings and fds of the pod
-processes, the pool server and its backing file) to check the views
-against.
+`demo capture LABEL` writes each view once to `captures/`.
+`demo truth LABEL` writes the ground truth of the moment to check the
+views against: kubectl objects, `cxl list`, dax and pmem devices,
+mounts, the mappings and fds of the pod processes, the pool server and
+its backing file.
 
 In VM2, the cluster:
 
@@ -623,11 +626,11 @@ curl -s --noproxy '*' "http://$ip:8080/v1/chat/completions" -H 'Content-Type: ap
 ```
 
 On the host, `demo llm mem LABEL` prints where the model is in memory
-and saves it to `run/llm-mem-LABEL.json` (M9 and M14 run it): how much of
-`llm0.raw` is in host memory, what each qemu maps (`Rss`, and `Pss`,
-which splits shared pages among the qemus that map them), how much in
-2 MiB pages, on which NUMA nodes, and how much page cache each reader is
-charged for in its VM. `cxl-numa-place where /tmp/fake-cxl-pool-llm/llm0.raw`
+and saves it to `run/llm-mem-LABEL.json`; M9 and M14 run it. It tells
+how much of `llm0.raw` is in host memory, how much of it in 2 MiB pages
+and on which NUMA nodes. It tells what each qemu maps (`Rss`, and `Pss`,
+which splits shared pages among the qemus that map them), and how much
+page cache each reader is charged for in its VM. `cxl-numa-place where /tmp/fake-cxl-pool-llm/llm0.raw`
 shows the nodes of the pages of the file, and
 `kubectl -n cxl-demo exec reader-0 -- /demo/llm-mem reader-0` the memory
 of a reader in one line.
@@ -642,9 +645,10 @@ reader-0 TTFT <ms> (<min>-<max>) TPOT <ms> <tok/s> tok/s
 
 the median and the range of the samples. TTFT is the time from sending
 the request to the first streamed piece of the answer. TPOT is the time
-per predicted token after the first: the server's for an answer with a
-tool call (the parser of tool calls streams it in a few pieces), else
-the client's (last piece minus first piece) / (tokens - 1). The answer
+per predicted token after the first. For an answer with a tool call it
+is the server's, because the parser of tool calls streams the answer in
+a few pieces. Else it is the client's: (last piece minus first piece) /
+(tokens - 1). The answer
 is a tool call of a few dozen tokens. `demo llm results` merges the
 saved benchmarks into one table with the model, the latency setup
 (`off`, `local`, `far` or `far+700`), the `huge=` option of the pool
@@ -695,10 +699,10 @@ at it. In `far` the direct readers are about twice as slow, and with the
 load more than three times, while the cached readers do not move: their
 copy is in the RAM of the VM, on socket 0. In `off` both accesses are
 slower than in `local`: the VMs are not pinned, and about half of the
-model is on the other socket. Both accesses read the DRAM of socket 0
-through huge pages of the host in `local`; the page size differs inside
-the guest only (2 MiB entries for the DAX mapping, 4 KiB for the page
-cache), and a decode step streams the whole model, which hides most
+model is on the other socket. In `local` both accesses read the DRAM of
+socket 0 through huge pages of the host. The page size differs inside
+the guest only: 2 MiB entries for the DAX mapping, 4 KiB for the page
+cache. A decode step streams the whole model, which hides most
 translation misses. The numbers are from one model and a few runs: use
 them for the direction, not as a benchmark.
 
@@ -711,11 +715,11 @@ and the page cache of the VMs did not grow: `llama-server` maps the file
 from the device.
 
 After M14, with cached access, every reader is charged the size of the
-model in page cache, and the page cache of each VM grew by as much: the
+model in page cache, and the page cache of each VM grew by as much. The
 model costs four times its size, one copy on the host and one in each
 VM, against once with direct access. The host sees the copies in the
 private memory of the qemus only where the guest touched memory that
-the host had not backed yet: a fresh VM grows by the copy, a VM that has
+the host had not backed yet. A fresh VM grows by the copy, a VM that has
 run a while hardly at all. The cache is reclaimable, and it did not push
 other cached data out in these runs.
 
