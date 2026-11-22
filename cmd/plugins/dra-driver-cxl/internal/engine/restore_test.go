@@ -79,13 +79,13 @@ func TestRestoreFlags(t *testing.T) {
 			if out := v.restart(); !slices.Equal(out.Released, []state.GrantRef{{Claim: "w"}}) {
 				t.Fatalf("recovered %+v", out)
 			}
-			wantMountCalls(t, v, n, "syncfs "+direct, "reconfigure "+direct+" ro", "blkroset "+pmem+" 1")
+			wantMountCalls(t, v, n, "syncfs "+direct, "remount "+direct+" ro", "blkroset "+pmem+" 1")
 			wantFlags("downgraded", direct, true)
 
 			// a writer again, the superblock and the block device made
 			// read-only behind it: made read-write
 			v.mustPrepare(driver, "w", fsUse(source, "w", false, ""))
-			if err := k.Reconfigure(direct, false); err != nil {
+			if err := k.Remount(direct, false); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := k.SetBlockDeviceReadOnly(pmem, true); err != nil {
@@ -93,7 +93,7 @@ func TestRestoreFlags(t *testing.T) {
 			}
 			n = mountCalls(v)
 			v.restart()
-			wantMountCalls(t, v, n, "blkroset "+pmem+" 0", "reconfigure "+direct+" rw")
+			wantMountCalls(t, v, n, "blkroset "+pmem+" 0", "remount "+direct+" rw")
 			wantFlags("upgraded", direct, false)
 			if viol := v.f.Violations(); len(viol) > 0 {
 				t.Fatalf("violations %v", viol)
@@ -317,7 +317,7 @@ func TestRecoverLoopRecorded(t *testing.T) {
 	if err := os.WriteFile(other, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := k.AttachLoop(other, false); err != nil {
+	if _, err := k.ConfigureLoop(other, false); err != nil {
 		t.Fatal(err)
 	}
 	v.restart()

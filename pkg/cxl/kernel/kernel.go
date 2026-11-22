@@ -61,17 +61,17 @@ type Kernel struct {
 type Sys interface {
 	// Mount mounts the filesystem of source at target (mount(2)).
 	Mount(source, target, fstype string, flags uintptr, data string) error
-	// FsMount mounts the filesystem of source at target with the new mount
+	// FSMount mounts the filesystem of source at target with the new mount
 	// API: fsopen(fstype), the source, the flag "ro" unless readWrite, the
 	// options ("key=value" as strings, others as flags),
 	// FSCONFIG_CMD_CREATE, fsmount with MOUNT_ATTR_NOSUID|MOUNT_ATTR_NODEV,
 	// move_mount. Its error wraps the errno and has the messages that the
 	// filesystem context logged.
-	FsMount(source, target, fstype string, readWrite bool, options []string) error
-	// Reconfigure makes the superblock of the mount at target read-write
+	FSMount(source, target, fstype string, readWrite bool, options []string) error
+	// Remount makes the superblock of the mount at target read-write
 	// or read-only (fspick, the flag "rw" or "ro",
 	// FSCONFIG_CMD_RECONFIGURE).
-	Reconfigure(target string, readWrite bool) error
+	Remount(target string, readWrite bool) error
 	// Syncfs writes the dirty data of the filesystem of the mount at
 	// target to its device (syncfs(2)).
 	Syncfs(target string) error
@@ -89,10 +89,10 @@ type Sys interface {
 	// OpenExclusive opens a block device exclusively and closes it again:
 	// EBUSY when something holds it.
 	OpenExclusive(dev string) error
-	// AttachLoop returns a new direct-I/O, autoclear loop device over the
+	// ConfigureLoop returns a new direct-I/O, autoclear loop device over the
 	// file or block device backing: read-only, or with writable a loop
 	// device whose backing is opened read-write.
-	AttachLoop(backing string, writable bool) (Loop, error)
+	ConfigureLoop(backing string, writable bool) (Loop, error)
 	// LoopRdevice returns the device number of the backing file of the
 	// loop device node loop (lo_rdevice of LOOP_GET_STATUS64), 0 when the
 	// backing is not a block device.
@@ -111,15 +111,16 @@ type Sys interface {
 	OpenDax(major, minor int, readOnly bool) (*os.File, error)
 }
 
-// Loop is a loop device set up by Sys.AttachLoop, held open until
-// Release.
+// Loop is a loop device set up by Sys.ConfigureLoop, held open until
+// Close or Clear.
 type Loop interface {
 	// Path returns the device node of the loop device (/dev/loopN).
 	Path() string
-	// Release closes the loop device; with detach it first clears its
-	// backing file. Without detach an autoclear loop device goes away
+	// Close closes the loop device: an autoclear loop device goes away
 	// when its last user (a mount) does.
-	Release(detach bool) error
+	Close() error
+	// Clear clears the backing file of the loop device and closes it.
+	Clear() error
 }
 
 // Events tells when the kernel objects change.

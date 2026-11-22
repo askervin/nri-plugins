@@ -356,8 +356,8 @@ func fenceSeed(ctx context.Context, st *store.Store, k *kernel.Kernel, drivers .
 	}
 	var nodes []int
 	for _, b := range snap.Blocks {
-		if b.State == kernel.BlockOnline && b.NumaNode >= 0 && !slices.Contains(nodes, b.NumaNode) {
-			nodes = append(nodes, b.NumaNode)
+		if b.State == kernel.BlockOnline && b.NUMANode >= 0 && !slices.Contains(nodes, b.NUMANode) {
+			nodes = append(nodes, b.NUMANode)
 		}
 	}
 	slices.Sort(nodes)

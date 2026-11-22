@@ -84,19 +84,19 @@ func TestRange(t *testing.T) {
 // zone (auto-onlined into ZONE_NORMAL, never removable).
 func TestOnlineBlocks(t *testing.T) {
 	f, k := newNode(t)
-	nodes := k.NumaNodes()
+	nodes := k.NUMANodes()
 	if len(nodes) != 6 || !nodes[0].HasMemory || nodes[0].MemTotal != 8<<30 || nodes[2].HasMemory {
 		t.Fatalf("nodes %+v", nodes)
 	}
 	// has_memory is a list of ranges and numbers: an item that is no
 	// number is left out
 	f.Write("devices/system/node/has_memory", "0-1, 3,x")
-	if nodes := k.NumaNodes(); !nodes[1].HasMemory || nodes[2].HasMemory || !nodes[3].HasMemory {
+	if nodes := k.NUMANodes(); !nodes[1].HasMemory || nodes[2].HasMemory || !nodes[3].HasMemory {
 		t.Fatalf("nodes of has_memory 0-1, 3,x: %+v", nodes)
 	}
 	f.Write("devices/system/node/has_memory", "0-1")
 	createRegion(t, k, "mem0", kernel.RegionRAM, 0)
-	if n, ok := observe(t, k).NumaNode(2); !ok || n.HasMemory || n.MemTotal != 0 {
+	if n, ok := observe(t, k).NUMANode(2); !ok || n.HasMemory || n.MemTotal != 0 {
 		t.Fatalf("node 2 before online %+v", n)
 	}
 	noErr(t, k.OnlineBlocks([]int{74, 75}, true))
@@ -104,11 +104,11 @@ func TestOnlineBlocks(t *testing.T) {
 		if st := f.BlockState(b); st != kernel.BlockStateOnline {
 			t.Fatalf("memory%d %q", b, st)
 		}
-		if mb := k.MemoryBlock(b); mb.State != kernel.BlockOnline || mb.Zones != "Movable" || mb.NumaNode != 2 {
+		if mb := k.MemoryBlock(b); mb.State != kernel.BlockOnline || mb.Zones != "Movable" || mb.NUMANode != 2 {
 			t.Fatalf("memory block %+v", mb)
 		}
 	}
-	if n, _ := observe(t, k).NumaNode(2); !n.HasMemory || n.MemTotal != 256*mib {
+	if n, _ := observe(t, k).NUMANode(2); !n.HasMemory || n.MemTotal != 256*mib {
 		t.Fatalf("node 2 after online %+v", n)
 	}
 	// idempotent
@@ -116,13 +116,13 @@ func TestOnlineBlocks(t *testing.T) {
 	f.Write("devices/system/memory/memory75/valid_zones", "Normal")
 	wantErr(t, k.OnlineBlocks([]int{74, 75}, true), nil, "memory75 is already online in zone Normal, not Movable (auto-onlined?): offline it first")
 	noErr(t, k.OnlineBlocks([]int{75}, false))
-	if mb := k.MemoryBlock(99); mb.State != kernel.BlockAbsent || mb.NumaNode != -1 {
+	if mb := k.MemoryBlock(99); mb.State != kernel.BlockAbsent || mb.NUMANode != -1 {
 		t.Fatalf("absent block %+v", mb)
 	}
-	if n := k.BlocksNode([]int{99, 75}); n != 2 {
+	if n := k.BlocksNUMANode([]int{99, 75}); n != 2 {
 		t.Fatalf("node %d", n)
 	}
-	if n := k.BlocksNode([]int{99}); n != -1 {
+	if n := k.BlocksNUMANode([]int{99}); n != -1 {
 		t.Fatalf("node %d of no block", n)
 	}
 	// a block that cannot be offlined: EBUSY

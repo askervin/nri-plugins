@@ -58,11 +58,11 @@ func mixedNode(t *testing.T) (*fake.Fake, *kernel.Kernel, string) {
 	noErr(t, err)
 	dev := ns.BlockDevice
 	direct := mountPoint(t, "direct")
-	noErr(t, k.FsMount(dev, direct, "ext4", true, []string{"dax=always"}))
-	loop, err := k.AttachLoop(dev, false)
+	noErr(t, k.FSMount(dev, direct, "ext4", true, []string{"dax=always"}))
+	loop, err := k.ConfigureLoop(dev, false)
 	noErr(t, err)
 	noErr(t, k.Mount(loop.Path(), mountPoint(t, "cached"), "erofs", syscall.MS_RDONLY, "dax=never"))
-	noErr(t, loop.Release(false))
+	noErr(t, loop.Close())
 	f.AddForeign(300, dev, "/run/cxl/fs/x", "ext4", false)
 	h := f.HollowRegion("decoder0.0", 256*mib)
 	if h != "region2" {
@@ -101,10 +101,10 @@ func TestObserve(t *testing.T) {
 			}
 		}
 	}
-	if r := s.Region("region0"); r.NumaNode != 2 || r.Mode != kernel.RegionRAM || !reflect.DeepEqual(r.Serials, []uint64{serial0}) {
+	if r := s.Region("region0"); r.NUMANode != 2 || r.Mode != kernel.RegionRAM || !reflect.DeepEqual(r.Serials, []uint64{serial0}) {
 		t.Errorf("region0 %+v", r)
 	}
-	if r := s.Region("region1"); r.NdRegion != "region1" || r.Mode != kernel.RegionPmem || r.NumaNode != -1 {
+	if r := s.Region("region1"); r.NdRegion != "region1" || r.Mode != kernel.RegionPmem || r.NUMANode != -1 {
 		t.Errorf("region1 %+v", r)
 	}
 	if rs := s.RegionsOf(serial0); len(rs) != 1 || rs[0].Name != "region0" {
@@ -124,7 +124,7 @@ func TestObserve(t *testing.T) {
 	if ds := s.DaxDevicesOf("region0"); len(ds) != 2 {
 		t.Errorf("dax devices %+v", ds)
 	}
-	if b := s.Block(74); b.State != kernel.BlockOnline || b.NumaNode != 2 || b.Zones != "Movable" {
+	if b := s.Block(74); b.State != kernel.BlockOnline || b.NUMANode != 2 || b.Zones != "Movable" {
 		t.Errorf("memory74 %+v", b)
 	}
 	if b := s.Block(75); b.State != kernel.BlockAbsent {
@@ -133,7 +133,7 @@ func TestObserve(t *testing.T) {
 	if online := s.OnlineBlocks([]int{74, 75}); !reflect.DeepEqual(online, []int{74}) {
 		t.Errorf("online %v", online)
 	}
-	if n, ok := s.NumaNode(2); !ok || !n.HasMemory || n.MemTotal != bs {
+	if n, ok := s.NUMANode(2); !ok || !n.HasMemory || n.MemTotal != bs {
 		t.Errorf("node 2 %+v", n)
 	}
 	if len(s.Pmem) != 1 || s.Pmem[0].Region != "region1" || s.Pmem[0].State != kernel.NdSettled || len(s.Pmem[0].Namespaces) != 1 ||
@@ -248,7 +248,7 @@ func TestChanges(t *testing.T) {
 // of its character device: its numbers, its size and the align of its
 // region; a device of size 0 has no aliasing.
 func TestProbeAndZero(t *testing.T) {
-	f, k := sliceNode(t)
+	f, k := daxNode(t)
 	ctx := context.Background()
 	noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 256*mib))
 	noErr(t, k.BindDax(ctx, "dax0.0", kernel.DriverDeviceDax))
@@ -323,7 +323,7 @@ func TestObserveTopology(t *testing.T) {
 		"regions":      reflect.DeepEqual(s.Regions, full.Regions),
 		"dax devices":  len(daxes) == 2 && reflect.DeepEqual(s.DaxDevices, daxes),
 		"blocks":       reflect.DeepEqual(s.Blocks, full.Blocks),
-		"NUMA nodes":   reflect.DeepEqual(s.NumaNodes, full.NumaNodes),
+		"NUMA nodes":   reflect.DeepEqual(s.NUMANodes, full.NUMANodes),
 		"the lookups":  s.Memdev(serial1).Name == "mem1" && s.Region("region2").State == kernel.RegionHollow,
 		"a dax lookup": s.DaxDevice("dax0.1").State == kernel.DaxDeviceDax,
 	} {
@@ -366,7 +366,7 @@ func TestObserveTopologyWithoutCXLBus(t *testing.T) {
 	f.Remove("bus/cxl")
 	k := f.Kernel()
 	s, err := k.ObserveTopology(context.Background())
-	if err != nil || len(s.Memdevs) != 0 || len(s.Regions) != 0 || len(s.NumaNodes) == 0 || k.HasCXLBus() {
+	if err != nil || len(s.Memdevs) != 0 || len(s.Regions) != 0 || len(s.NUMANodes) == 0 || k.HasCXLBus() {
 		t.Fatalf("snapshot %+v, %v, bus %v", s, err, k.HasCXLBus())
 	}
 	if !fake.New(t).Kernel().HasCXLBus() {

@@ -71,7 +71,7 @@ func TestPmemWriterThenReader(t *testing.T) {
 	if !strings.Contains(f.Commands(), "ndctl create-namespace -f -r region0 -m fsdax -M mem") {
 		t.Fatalf("commands:\n%s", f.Commands())
 	}
-	noErr(t, k.ReleaseRegion(ctx, r))
+	noErr(t, k.DestroyRegion(ctx, r))
 	noErr(t, k.DisableMemdev(ctx, "mem0"))
 	if !strings.HasSuffix(f.Commands(), "cxl disable-region region0\ncxl destroy-region region0\ncxl disable-memdev mem0") {
 		t.Fatalf("commands:\n%s", f.Commands())

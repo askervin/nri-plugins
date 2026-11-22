@@ -279,7 +279,7 @@ func createdRegion(r *state.Records, req *GrantRequest, noted, created string, m
 		return err
 	}
 	reg.Name, reg.NotedName = created, ""
-	reg.NumaNode = state.NumaNodePtr(ri.NumaNode)
+	reg.NumaNode = state.NumaNodePtr(ri.NUMANode)
 	reg.Size = ri.Range.Size()
 	if m := r.Memdev(req.Serial); m != nil {
 		m.Regions = addRef(removeRef(m.Regions, state.RegionRef(noted)), state.RegionRef(created))
@@ -546,7 +546,7 @@ func (e *Engine) onlineMemory(ctx context.Context, region, dax string, blocks []
 	}
 	node := e.k.TargetNode(dax)
 	if node < 0 {
-		node = e.k.BlocksNode(blocks)
+		node = e.k.BlocksNUMANode(blocks)
 	}
 	if node < 0 {
 		return -1, nil
@@ -589,10 +589,10 @@ func (e *Engine) releaseRegions(ctx context.Context, serial state.Serial, memdev
 		err := e.locked(func() error {
 			if decision.inOrder() {
 				var err error
-				rs, err = e.k.ReleaseRegionInOrder(ctx, memdev, name)
+				rs, err = e.k.DestroyRegionInOrder(ctx, memdev, name)
 				return err
 			}
-			return e.k.ReleaseRegion(ctx, name)
+			return e.k.DestroyRegion(ctx, name)
 		})
 		if err != nil {
 			return false, err

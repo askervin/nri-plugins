@@ -72,7 +72,7 @@ func memdevSpecs(t *testing.T, specs ...string) []MemdevSpec {
 // pubMem returns an observed memdev with a driver, of RAM capacity ram and
 // with the CPU NUMA node affinity.
 func pubMem(name string, serial, ram uint64, affinity int) kernel.MemdevInfo {
-	return kernel.MemdevInfo{Name: name, Serial: serial, State: kernel.MemdevReady, RamSize: ram, NodeAffinity: affinity}
+	return kernel.MemdevInfo{Name: name, Serial: serial, State: kernel.MemdevReady, RamSize: ram, NUMAAffinity: affinity}
 }
 
 // pubRegion adds a region of RAM of size bytes on the memdevs with the
@@ -87,24 +87,24 @@ func pubRegion(s *kernel.Snapshot, name string, node int, size uint64, serials .
 	for _, r := range s.Regions {
 		start = max(start, (r.Range.End+s.BlockSize)/s.BlockSize*s.BlockSize)
 	}
-	r := kernel.RegionInfo{Name: name, State: kernel.RegionEnabled, Mode: kernel.RegionRAM, NumaNode: node,
+	r := kernel.RegionInfo{Name: name, State: kernel.RegionEnabled, Mode: kernel.RegionRAM, NUMANode: node,
 		Range: kernel.Range{Start: start, End: start + size - 1}, Serials: serials}
 	if node < 0 {
 		r.State = kernel.RegionDisabled
 	} else {
 		s.DaxDevices = append(s.DaxDevices, kernel.DaxDeviceInfo{Name: "dax-" + name, Region: name, Size: size, TargetNode: node})
 		for _, b := range r.Range.Blocks(s.BlockSize) {
-			s.Blocks = append(s.Blocks, kernel.MemoryBlock{Index: b, State: kernel.BlockOnline, NumaNode: node})
+			s.Blocks = append(s.Blocks, kernel.MemoryBlock{Index: b, State: kernel.BlockOnline, NUMANode: node})
 		}
 	}
 	s.Regions = append(s.Regions, r)
 }
 
 // pubNodes returns NUMA nodes of 1 GiB of memory with the ids.
-func pubNodes(ids ...int) []kernel.NumaNode {
-	var out []kernel.NumaNode
+func pubNodes(ids ...int) []kernel.NUMANode {
+	var out []kernel.NUMANode
 	for _, id := range ids {
-		out = append(out, kernel.NumaNode{ID: id, HasMemory: true, MemTotal: 1 << 30})
+		out = append(out, kernel.NUMANode{ID: id, HasMemory: true, MemTotal: 1 << 30})
 	}
 	return out
 }
@@ -151,7 +151,7 @@ func dramScan(dram *atomic.Bool) func(context.Context) (*kernel.Snapshot, error)
 		if !dram.Load() {
 			return &kernel.Snapshot{}, nil
 		}
-		return &kernel.Snapshot{NumaNodes: []kernel.NumaNode{{ID: 0, HasMemory: true, MemTotal: 8 << 30}}}, nil
+		return &kernel.Snapshot{NUMANodes: []kernel.NUMANode{{ID: 0, HasMemory: true, MemTotal: 8 << 30}}}, nil
 	}
 }
 
@@ -187,12 +187,12 @@ func logMatches(log, text string) int {
 // size, not pooled, ignored, disabled or without RAM; the node of the
 // plugin's region is not DRAM; without managed memdevs regions only.
 func TestBuildDevInfosLocalMemdevs(t *testing.T) {
-	devices := &kernel.Snapshot{NumaNodes: pubNodes(0, 2, 3)}
+	devices := &kernel.Snapshot{NUMANodes: pubNodes(0, 2, 3)}
 	for i, name := range []string{"mem1", "mem2", "mem3", "mem4", "mem5", "mem6", "mem7"} {
 		devices.Memdevs = append(devices.Memdevs, pubMem(name, 0xa1+uint64(i), 1<<30, -1))
 	}
 	free := &devices.Memdevs[0]
-	free.NodeAffinity = 1
+	free.NUMAAffinity = 1
 	devices.Memdevs[5].State = kernel.MemdevUnbound
 	devices.Memdevs[6].RamSize = 0
 	pubRegion(devices, "region0", 2, 1<<30, 0xa2)
@@ -304,10 +304,10 @@ func TestGetResourcesLocalMemdev(t *testing.T) {
 // lease device: every memory device has type, source and size, a region
 // the nodeAffinity of its memdevs when they agree.
 func TestGetResourcesRegionDRAMLease(t *testing.T) {
-	devices := &kernel.Snapshot{NumaNodes: pubNodes(0, 1, 2, 3), Memdevs: []kernel.MemdevInfo{
+	devices := &kernel.Snapshot{NUMANodes: pubNodes(0, 1, 2, 3), Memdevs: []kernel.MemdevInfo{
 		pubMem("mem1", 1, 1<<30, 0), pubMem("mem2", 2, 1<<30, 0), pubMem("mem3", 3, 1<<30, 0), pubMem("mem4", 4, 1<<30, 1),
 	}}
-	devices.NumaNodes[2].MemTotal = 2 << 30
+	devices.NUMANodes[2].MemTotal = 2 << 30
 	pubRegion(devices, "region0", 2, 2<<30, 1, 2)
 	pubRegion(devices, "region1", 3, 1<<30, 3, 4)
 	devs := BuildDevices(PublishConfig{PublishLeaseDevice: true}, devices, nil, nil, nil)
@@ -353,7 +353,7 @@ func TestGetResourcesRegionDRAMLease(t *testing.T) {
 // TestDRAMNodeOrder pins the order of the nodes of the DRAM, which a
 // Prepare records: that of their names.
 func TestDRAMNodeOrder(t *testing.T) {
-	devs := BuildDevices(PublishConfig{}, &kernel.Snapshot{NumaNodes: pubNodes(0, 1, 2, 10)}, nil, nil, nil)
+	devs := BuildDevices(PublishConfig{}, &kernel.Snapshot{NUMANodes: pubNodes(0, 1, 2, 10)}, nil, nil, nil)
 	if dram, ok := devs["dram"].Dev.(*DRAM); !ok || !slices.Equal(dram.Nodes, []int{0, 1, 10, 2}) {
 		t.Fatalf("DRAM %+v", devs["dram"].Dev)
 	}
@@ -398,7 +398,7 @@ func TestLocalRequestPolicy(t *testing.T) {
 // A region of a memdev of the pool driver is not published and its node
 // is not DRAM; without the pool driver it is a region device.
 func TestBuildDevInfosSkipsPoolRegions(t *testing.T) {
-	devices := &kernel.Snapshot{NumaNodes: pubNodes(0, 2, 3), Memdevs: []kernel.MemdevInfo{pubMem("mem0", 0xa1, 0, -1), pubMem("mem1", 0xa2, 0, -1)}}
+	devices := &kernel.Snapshot{NUMANodes: pubNodes(0, 2, 3), Memdevs: []kernel.MemdevInfo{pubMem("mem0", 0xa1, 0, -1), pubMem("mem1", 0xa2, 0, -1)}}
 	pubRegion(devices, "region0", 2, 1<<30, 0xa1)
 	pubRegion(devices, "region1", 3, 1<<30, 0xa2)
 	devInfos := BuildDevices(PublishConfig{}, devices, map[uint64]bool{0xa2: true}, nil, nil)
@@ -418,7 +418,7 @@ func TestBuildDevInfosSkipsPoolRegions(t *testing.T) {
 // disabled is not published, and its node is not DRAM either.
 func TestRegionOnlineMemory(t *testing.T) {
 	logs := klogtest.Capture(t, 4)
-	s := &kernel.Snapshot{NumaNodes: pubNodes(0, 2, 3, 4)}
+	s := &kernel.Snapshot{NUMANodes: pubNodes(0, 2, 3, 4)}
 	pubRegion(s, "region0", 2, 4*pubBlockSize)
 	pubRegion(s, "region1", 3, pubBlockSize)
 	pubRegion(s, "region2", 4, pubBlockSize)
@@ -445,12 +445,12 @@ func TestRegionOnlineMemory(t *testing.T) {
 // has a node: memory of its address range that kmem could not remove is
 // online, so the scan finds the node; that node is not DRAM either.
 func TestBuildDevInfosHollowRegion(t *testing.T) {
-	devices := &kernel.Snapshot{NumaNodes: pubNodes(0, 2, 3), Memdevs: []kernel.MemdevInfo{pubMem("mem0", 0xc100e2e0, 0, -1)}, BlockSize: 1 << 28}
-	devices.NumaNodes[2].MemTotal = 1 << 28
+	devices := &kernel.Snapshot{NUMANodes: pubNodes(0, 2, 3), Memdevs: []kernel.MemdevInfo{pubMem("mem0", 0xc100e2e0, 0, -1)}, BlockSize: 1 << 28}
+	devices.NUMANodes[2].MemTotal = 1 << 28
 	pubRegion(devices, "region0", 2, 1<<30, 0xc100e2e0)
 	devices.Regions = append(devices.Regions, kernel.RegionInfo{Name: "region1", State: kernel.RegionHollow, Mode: kernel.RegionRAM,
-		Range: kernel.Range{Start: 0x850000000, End: 0x850000000 + 1<<28 - 1}, NumaNode: 3, RootDecoder: "decoder0.1"})
-	devices.Blocks = append(devices.Blocks, kernel.MemoryBlock{Index: 0x85, State: kernel.BlockOnline, Zones: "Movable", NumaNode: 3})
+		Range: kernel.Range{Start: 0x850000000, End: 0x850000000 + 1<<28 - 1}, NUMANode: 3, RootDecoder: "decoder0.1"})
+	devices.Blocks = append(devices.Blocks, kernel.MemoryBlock{Index: 0x85, State: kernel.BlockOnline, Zones: "Movable", NUMANode: 3})
 	devInfos := BuildDevices(PublishConfig{ManageMemdevs: true}, devices, nil, nil, nil)
 	if devInfos["region0-node2"] == nil || devInfos["region1-node3"] != nil || len(devInfos) != 2 {
 		t.Fatalf("devices %v", pubNames(devInfos))
@@ -622,7 +622,7 @@ func TestBuildDevInfosPersistentMemdevs(t *testing.T) {
 		m.PmemSize = 4 << 30
 		devices.Memdevs = append(devices.Memdevs, m)
 	}
-	devices.Memdevs[0].NodeAffinity = 1
+	devices.Memdevs[0].NUMAAffinity = 1
 	devices.Memdevs[3].PmemSize = 0
 	cfg := PublishConfig{SharedDevices: memdevSpecs(t, "0xb2"), IgnoreDRAMNodes: true, ManageMemdevs: true}
 	local := &LocalSnapshot{BlockSize: pubBlockSize, Uses: map[uint64]LocalUse{

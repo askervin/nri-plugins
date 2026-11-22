@@ -196,7 +196,7 @@ func (e *Engine) logHollow(snap *kernel.Snapshot) {
 			decoder = "<its root decoder>"
 		}
 		klog.Warningf("engine: %s is hollow (NUMA node %d): it is deleted when its memory blocks are offline: echo %s > /sys/bus/cxl/devices/%s/delete_region",
-			ri.Name, ri.NumaNode, ri.Name, decoder)
+			ri.Name, ri.NUMANode, ri.Name, decoder)
 	}
 	e.qmu.Lock()
 	for name := range e.hollowLogged {
@@ -331,7 +331,7 @@ func (e *Engine) memdevRegions(snap *kernel.Snapshot) []string {
 func (e *Engine) kernelRegion(name string) kernel.RegionInfo {
 	ri, err := e.k.Region(name)
 	if err != nil {
-		return kernel.RegionInfo{Name: name, State: kernel.RegionAbsent, NumaNode: -1}
+		return kernel.RegionInfo{Name: name, State: kernel.RegionAbsent, NUMANode: -1}
 	}
 	return ri
 }
@@ -359,8 +359,8 @@ func syncForeign(r *state.Records, seen map[string]kernel.RegionInfo, names []st
 		if ri.Range.End > 0 {
 			reg.Size = ri.Range.Size()
 		}
-		if ri.NumaNode >= 0 {
-			node := ri.NumaNode
+		if ri.NUMANode >= 0 {
+			node := ri.NUMANode
 			reg.NumaNode = &node
 		}
 		if err := state.Apply(&state.RegionTable, &reg.State, state.RegionForeign, trigger); err != nil {

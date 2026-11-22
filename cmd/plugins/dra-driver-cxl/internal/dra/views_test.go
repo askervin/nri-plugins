@@ -121,7 +121,7 @@ func TestSerials(t *testing.T) {
 	if got := e.local.Serials(); !reflect.DeepEqual(got, map[uint64]bool{serialSliced: true}) {
 		t.Fatalf("serials after the Prepare %v", got)
 	}
-	mustOK(t, k.ReleaseRegion(t.Context(), region))
+	mustOK(t, k.DestroyRegion(t.Context(), region))
 	e.mustUnprepare(e.local, "l1")
 	e.mustUnprepare(e.pool, "p1")
 	if len(e.local.Serials())+len(e.pool.Serials()) != 0 {

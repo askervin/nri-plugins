@@ -30,7 +30,7 @@ import (
 // not the driver's, region0 on node 2 and region1 on node 3, and the DRAM
 // nodes 0, 2 and 3.
 func charRegions() *kernel.Snapshot {
-	s := &kernel.Snapshot{NumaNodes: pubNodes(0, 2, 3), Memdevs: []kernel.MemdevInfo{pubMem("mem0", 0xb0, 1<<30, 0), pubMem("mem1", 0xb1, 1<<30, 0)}}
+	s := &kernel.Snapshot{NUMANodes: pubNodes(0, 2, 3), Memdevs: []kernel.MemdevInfo{pubMem("mem0", 0xb0, 1<<30, 0), pubMem("mem1", 0xb1, 1<<30, 0)}}
 	pubRegion(s, "region0", 2, 1<<30, 0xb0)
 	pubRegion(s, "region1", 3, 1<<30, 0xb1)
 	return s

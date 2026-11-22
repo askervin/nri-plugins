@@ -382,7 +382,7 @@ func (c *cli) online(ctx context.Context, serial uint64, movable bool) (*regionI
 func (c *cli) release(ctx context.Context, memdev string) error {
 	k := c.kernel()
 	for _, r := range k.Regions(memdev) {
-		if err := k.ReleaseRegion(ctx, r); err != nil {
+		if err := k.DestroyRegion(ctx, r); err != nil {
 			return err
 		}
 	}

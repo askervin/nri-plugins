@@ -346,9 +346,9 @@ func TestStartWithoutAPIServer(t *testing.T) {
 // empty slice for no devices.
 func TestSliceChunks(t *testing.T) {
 	// the DRAM of node 0, the lease and 130 regions
-	snap := &kernel.Snapshot{NumaNodes: pubNodes(0)}
+	snap := &kernel.Snapshot{NUMANodes: pubNodes(0)}
 	for i := 1; i <= 130; i++ {
-		snap.NumaNodes = append(snap.NumaNodes, pubNodes(i)...)
+		snap.NUMANodes = append(snap.NUMANodes, pubNodes(i)...)
 		snap.Memdevs = append(snap.Memdevs, pubMem(fmt.Sprintf("mem%d", i), uint64(i), 1<<30, 0))
 		pubRegion(snap, fmt.Sprintf("region%d", i), i, 1<<30, uint64(i))
 	}

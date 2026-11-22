@@ -43,8 +43,8 @@ import (
 // its mounts, "ro"); the DAX option may be silently off (xfs, erofs drop
 // it). A block device is read-only or read-write (BLKROSET): a read-only
 // one refuses a dirty filesystem (EROFS) and read-write mounts (EACCES).
-// Transitions: Mount and FsMount make a mount (a new superblock or the
-// existing one); Reconfigure changes the superblock of every mount of it;
+// Transitions: Mount and FSMount make a mount (a new superblock or the
+// existing one); Remount changes the superblock of every mount of it;
 // Unmount removes one mount (never detached: a lazy unmount under a live
 // DAX mapping crashes the guest); the last unmount of a cached node mount
 // clears its autoclear loop device.
@@ -63,7 +63,7 @@ type MountInfo struct {
 	Root string `json:"root"`
 	// Target is the mount point.
 	Target string `json:"target"`
-	FsType string `json:"fsType"`
+	FSType string `json:"fsType"`
 	Source string `json:"source"`
 	// SuperOpts are the super options, like dax=always.
 	SuperOpts []string `json:"superOpts,omitempty"`
@@ -96,7 +96,7 @@ type Superblock struct {
 	DevNum string `json:"devNum"`
 	// Source is the source of the mount.
 	Source string `json:"source"`
-	FsType string `json:"fsType"`
+	FSType string `json:"fsType"`
 	// ReadOnly: the superblock is read-only.
 	ReadOnly bool `json:"readOnly"`
 	// Where is the mount: "pid P at <mount point>".
@@ -129,7 +129,7 @@ func ParseMountInfo(r io.Reader) ([]MountInfo, error) {
 			Root:       unescapeMountInfo(f[3]),
 			Target:     unescapeMountInfo(f[4]),
 			MountFlags: strings.Split(f[5], ","),
-			FsType:     f[sep+1],
+			FSType:     f[sep+1],
 			Source:     unescapeMountInfo(f[sep+2]),
 		}
 		if len(f) > sep+3 {
@@ -267,7 +267,7 @@ func (k *Kernel) superblocksOf(devs map[string]string) ([]Superblock, error) {
 				continue
 			}
 			seen[mi.DevNum] = true
-			out = append(out, Superblock{Device: d, DevNum: mi.DevNum, Source: mi.Source, FsType: mi.FsType,
+			out = append(out, Superblock{Device: d, DevNum: mi.DevNum, Source: mi.Source, FSType: mi.FSType,
 				ReadOnly: mi.SuperReadOnly(), Where: "pid " + pid + " at " + mi.Target})
 		}
 	}
@@ -299,7 +299,7 @@ func (k *Kernel) unmatchedBtrfs(devs map[string]string, found []Superblock) []Su
 			continue
 		}
 		fsid := filepath.Base(filepath.Dir(filepath.Dir(m[0])))
-		out = append(out, Superblock{Device: d, Source: d, FsType: api.FsTypeBtrfs, Where: "btrfs " + fsid + ", no mount of it found"})
+		out = append(out, Superblock{Device: d, Source: d, FSType: api.FsTypeBtrfs, Where: "btrfs " + fsid + ", no mount of it found"})
 	}
 	return out
 }
@@ -395,18 +395,18 @@ func (k *Kernel) Mount(source, target, fstype string, flags uintptr, data string
 	return k.sys().Mount(source, target, fstype, flags, data)
 }
 
-// FsMount mounts the filesystem of source at target with the new mount API,
+// FSMount mounts the filesystem of source at target with the new mount API,
 // nosuid and nodev, its superblock read-only unless readWrite (see
-// Sys.FsMount).
-func (k *Kernel) FsMount(source, target, fstype string, readWrite bool, options []string) error {
-	return k.sys().FsMount(source, target, fstype, readWrite, options)
+// Sys.FSMount).
+func (k *Kernel) FSMount(source, target, fstype string, readWrite bool, options []string) error {
+	return k.sys().FSMount(source, target, fstype, readWrite, options)
 }
 
-// Reconfigure makes the superblock of the mount at target read-write or
+// Remount makes the superblock of the mount at target read-write or
 // read-only: every mount of the superblock changes. A reconfiguration to
 // read-only while a file is open for writing fails with EBUSY.
-func (k *Kernel) Reconfigure(target string, readWrite bool) error {
-	return k.sys().Reconfigure(target, readWrite)
+func (k *Kernel) Remount(target string, readWrite bool) error {
+	return k.sys().Remount(target, readWrite)
 }
 
 // Syncfs writes the dirty data of the filesystem of the mount at target to

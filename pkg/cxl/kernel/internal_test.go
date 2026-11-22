@@ -327,8 +327,8 @@ func TestSuperblocksNamespaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []Superblock{
-		{Device: "/dev/pmem0", DevNum: "259:0", Source: "/dev/pmem0", FsType: "ext4", Where: "pid 100 at /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct"},
-		{Device: "/dev/loop3", DevNum: "7:3", Source: "/dev/loop3", FsType: "ext4", ReadOnly: true, Where: "pid 300 at /run/cxl/fs/x"},
+		{Device: "/dev/pmem0", DevNum: "259:0", Source: "/dev/pmem0", FSType: "ext4", Where: "pid 100 at /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct"},
+		{Device: "/dev/loop3", DevNum: "7:3", Source: "/dev/loop3", FSType: "ext4", ReadOnly: true, Where: "pid 300 at /run/cxl/fs/x"},
 	}
 	if !reflect.DeepEqual(sbs, want) {
 		t.Fatalf("superblocks %+v", sbs)

@@ -96,9 +96,9 @@ type MemdevInfo struct {
 	// in bytes.
 	RamSize  uint64 `json:"ramSize,omitempty"`
 	PmemSize uint64 `json:"pmemSize,omitempty"`
-	// NodeAffinity is the NUMA node of the CPUs near the memdev, -1 if not
+	// NUMAAffinity is the NUMA node of the CPUs near the memdev, -1 if not
 	// known.
-	NodeAffinity int `json:"nodeAffinity"`
+	NUMAAffinity int `json:"nodeAffinity"`
 	// Major and Minor are the numbers of its character device.
 	Major int `json:"major,omitempty"`
 	Minor int `json:"minor,omitempty"`
@@ -145,11 +145,11 @@ func (k *Kernel) FindMemdev(serial uint64) (string, error) {
 func (k *Kernel) Memdev(serial uint64) MemdevInfo {
 	name, err := k.FindMemdev(serial)
 	if err != nil {
-		return MemdevInfo{Serial: serial, State: MemdevAbsent, NodeAffinity: -1}
+		return MemdevInfo{Serial: serial, State: MemdevAbsent, NUMAAffinity: -1}
 	}
 	m, err := k.memdev(name, k.endpoints())
 	if err != nil {
-		return MemdevInfo{Serial: serial, State: MemdevAbsent, NodeAffinity: -1}
+		return MemdevInfo{Serial: serial, State: MemdevAbsent, NUMAAffinity: -1}
 	}
 	return m
 }
@@ -161,13 +161,13 @@ func (k *Kernel) memdev(name string, endpoints map[string]string) (MemdevInfo, e
 	if err != nil {
 		return MemdevInfo{}, fmt.Errorf("%s: serial: %w", name, err)
 	}
-	m := MemdevInfo{Name: name, Serial: serial, State: MemdevUnbound, NodeAffinity: -1}
+	m := MemdevInfo{Name: name, Serial: serial, State: MemdevUnbound, NUMAAffinity: -1}
 	numa, err := ReadTrim(k.cxlDev(name, "numa_node"))
 	if err == nil {
-		m.NodeAffinity, err = strconv.Atoi(numa)
+		m.NUMAAffinity, err = strconv.Atoi(numa)
 	}
 	if err != nil {
-		m.NodeAffinity = -1
+		m.NUMAAffinity = -1
 	}
 	k.factErr(err)
 	var ramErr, pmemErr error

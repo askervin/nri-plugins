@@ -328,7 +328,7 @@ func (e *driverEnv) setOnScan(fn func()) {
 // local memdevs, the extra regions and two NUMA nodes of DRAM.
 func (e *driverEnv) detected() *kernel.Snapshot {
 	d := &kernel.Snapshot{BlockSize: e.extra.BlockSize, Regions: e.extra.Regions, DaxDevices: e.extra.DaxDevices,
-		Blocks: e.extra.Blocks, NumaNodes: []kernel.NumaNode{
+		Blocks: e.extra.Blocks, NUMANodes: []kernel.NUMANode{
 			{ID: 0, HasMemory: true, MemTotal: 8 << 30}, {ID: 1, HasMemory: true, MemTotal: 8 << 30},
 		}}
 	for _, s := range slices.Sorted(maps.Keys(e.memdevs)) {
@@ -951,9 +951,9 @@ func (e *driverEnv) formatPmem(serial uint64, typ string) string {
 	ns, err := k.CreateFsdaxNamespace(ctx, nd, "")
 	mustOK(e.t, err)
 	if typ != "" {
-		e.k.SetImage(ns.BlockDevice, fake.FsImage(typ))
+		e.k.SetImage(ns.BlockDevice, fake.FSImage(typ))
 	}
-	mustOK(e.t, k.ReleaseRegion(ctx, region))
+	mustOK(e.t, k.DestroyRegion(ctx, region))
 	e.mark()
 	return ns.BlockDevice
 }

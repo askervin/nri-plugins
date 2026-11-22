@@ -329,7 +329,7 @@ func recoverNoted(r *state.Records, reg *state.Region, k regionSeen) error {
 			return err
 		}
 		reg.Name, reg.NotedName = string(ref), ""
-		reg.NumaNode = state.NumaNodePtr(k.info.NumaNode)
+		reg.NumaNode = state.NumaNodePtr(k.info.NUMANode)
 		reg.Size = k.info.Range.Size()
 	default:
 		if err := state.Apply(&state.RegionTable, &reg.State, state.RegionNone, state.TriggerRecover); err != nil {

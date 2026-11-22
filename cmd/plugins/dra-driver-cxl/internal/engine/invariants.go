@@ -313,7 +313,7 @@ func checkI5(c *checker) {
 			continue
 		}
 		for _, b := range c.s.OnlineBlocks(ri.Range.Blocks(c.s.BlockSize)) {
-			if node := c.s.Block(b).NumaNode; node >= 0 && !slices.Contains(c.opts.Fenced, node) {
+			if node := c.s.Block(b).NUMANode; node >= 0 && !slices.Contains(c.opts.Fenced, node) {
 				c.add("region "+string(reg.Ref()), "memory%d is online on NUMA node %d, which is not fenced", b, node)
 			}
 		}
@@ -452,7 +452,7 @@ func checkI12(c *checker) {
 		if l.State != state.LeaseReady || l.Lend == nil || l.Lend.NumaNode == nil {
 			continue
 		}
-		if n, ok := c.s.NumaNode(*l.Lend.NumaNode); !ok || !n.HasMemory {
+		if n, ok := c.s.NUMANode(*l.Lend.NumaNode); !ok || !n.HasMemory {
 			c.add("lease "+l.ID, "lends NUMA node %d, which has no memory online", *l.Lend.NumaNode)
 		}
 	}

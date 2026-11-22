@@ -262,7 +262,7 @@ func TestRegionTransitions(t *testing.T) {
 		"DISABLED->ABSENT#0": func(t *testing.T) (kernel.RegionState, kernel.RegionState) {
 			_, k, r := disabled(t)
 			from := state(k, r)
-			noErr(t, k.DestroyRegion(ctx, r))
+			noErr(t, k.DestroyDisabled(ctx, r))
 			return from, state(k, r)
 		},
 		"ENABLED->HOLLOW#0": func(t *testing.T) (kernel.RegionState, kernel.RegionState) {
@@ -287,7 +287,7 @@ func TestRegionTransitions(t *testing.T) {
 		"ENABLED->ABSENT#0": func(t *testing.T) (kernel.RegionState, kernel.RegionState) {
 			_, k, r := enabled(t)
 			from := state(k, r)
-			noErr(t, k.ReleaseRegion(ctx, r))
+			noErr(t, k.DestroyRegion(ctx, r))
 			return from, state(k, r)
 		},
 		"HOLLOW->ABSENT#0": func(t *testing.T) (kernel.RegionState, kernel.RegionState) {
@@ -306,7 +306,7 @@ func TestDaxTransitions(t *testing.T) {
 	// seed returns a slice node with dax0.0 of half the region, unbound,
 	// and a new dax0.1 of size 0
 	seed := func(t *testing.T) (*fake.Fake, *kernel.Kernel) {
-		f, k := sliceNode(t)
+		f, k := daxNode(t)
 		noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 512*mib))
 		noErr(t, f.WriteAttr(f.P("bus/cxl/devices/region0/dax_region0/dax_region/create"), "1"))
 		return f, k
@@ -362,7 +362,7 @@ func TestDaxTransitions(t *testing.T) {
 			return from, state(k, "dax0.0")
 		},
 		"ABSENT->SEED#0": func(t *testing.T) (kernel.DaxState, kernel.DaxState) {
-			f, k := sliceNode(t)
+			f, k := daxNode(t)
 			noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 512*mib))
 			from := state(k, "dax0.1")
 			noErr(t, f.WriteAttr(f.P("bus/cxl/devices/region0/dax_region0/dax_region/create"), "1"))
@@ -370,7 +370,7 @@ func TestDaxTransitions(t *testing.T) {
 		},
 		// a part on the seed daxN.0: sized and bound by one Prepare
 		"SEED->KMEM#0": func(t *testing.T) (kernel.DaxState, kernel.DaxState) {
-			_, k := sliceNode(t)
+			_, k := daxNode(t)
 			noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 0))
 			from := state(k, "dax0.0")
 			noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", bs))
@@ -378,7 +378,7 @@ func TestDaxTransitions(t *testing.T) {
 			return from, state(k, "dax0.0")
 		},
 		"SEED->DEVICE_DAX#0": func(t *testing.T) (kernel.DaxState, kernel.DaxState) {
-			_, k := sliceNode(t)
+			_, k := daxNode(t)
 			noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 0))
 			from := state(k, "dax0.0")
 			noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", bs))
@@ -479,7 +479,7 @@ func TestDaxTransitions(t *testing.T) {
 			return from, state(k, "dax0.1")
 		},
 		"ABSENT->UNBOUND#0": func(t *testing.T) (kernel.DaxState, kernel.DaxState) {
-			_, k := sliceNode(t)
+			_, k := daxNode(t)
 			noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 512*mib))
 			from := state(k, "dax0.1")
 			d, err := k.CreateDaxDevice(ctx, "region0", bs)
@@ -509,19 +509,19 @@ func TestBlockTransitions(t *testing.T) {
 	const block = 74
 	state := func(k *kernel.Kernel) kernel.BlockState { return k.MemoryBlock(block).State }
 	kmem := func(t *testing.T) (*fake.Fake, *kernel.Kernel) {
-		f, k := sliceNode(t)
+		f, k := daxNode(t)
 		noErr(t, k.BindDax(ctx, "dax0.0", kernel.DriverKmem))
 		return f, k
 	}
 	checkTable(t, "block", kernel.BlockTransitions, map[string]scenario[kernel.BlockState]{
 		"ABSENT->OFFLINE#0": func(t *testing.T) (kernel.BlockState, kernel.BlockState) {
-			_, k := sliceNode(t)
+			_, k := daxNode(t)
 			from := state(k)
 			noErr(t, k.BindDax(ctx, "dax0.0", kernel.DriverKmem))
 			return from, state(k)
 		},
 		"ABSENT->ONLINE#0": func(t *testing.T) (kernel.BlockState, kernel.BlockState) {
-			f, k := sliceNode(t)
+			f, k := daxNode(t)
 			f.AutoOnline = 1
 			from := state(k)
 			noErr(t, k.BindDax(ctx, "dax0.0", kernel.DriverKmem))
@@ -549,7 +549,7 @@ func TestBlockTransitions(t *testing.T) {
 			r := createRegion(t, k, "mem0", kernel.RegionRAM, 0)
 			noErr(t, k.OnlineBlocks([]int{block}, true))
 			from := state(k)
-			noErr(t, k.ReleaseRegion(ctx, r))
+			noErr(t, k.DestroyRegion(ctx, r))
 			return from, state(k)
 		},
 		"OFFLINE->ABSENT#0": func(t *testing.T) (kernel.BlockState, kernel.BlockState) {

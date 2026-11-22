@@ -55,7 +55,7 @@ func TestCreateRegionNoted(t *testing.T) {
 		t.Fatalf("next region %q %v", next, err)
 	}
 	// a note that fails: no create-region
-	noErr(t, k.ReleaseRegion(ctx, r))
+	noErr(t, k.DestroyRegion(ctx, r))
 	before := f.Commands()
 	req.Note = func(string) error { return errors.New("no room") }
 	if _, err := k.CreateRegion(ctx, req); err == nil || err.Error() != "no room" || f.Commands() != before {
@@ -140,7 +140,7 @@ func TestRegionEnableDisable(t *testing.T) {
 	noErr(t, err)
 	want := kernel.RegionInfo{Name: "region0", State: kernel.RegionEnabled, Mode: kernel.RegionRAM, Committed: true,
 		Range: kernel.Range{Start: window0, End: window0 + 256*mib - 1}, Targets: []string{"decoder4.0"}, Memdevs: []string{"mem0"},
-		Serials: []uint64{serial0}, RootDecoder: "decoder0.0", NumaNode: 2, DaxRegion: "dax_region0"}
+		Serials: []uint64{serial0}, RootDecoder: "decoder0.0", NUMANode: 2, DaxRegion: "dax_region0"}
 	if !reflect.DeepEqual(info, want) {
 		t.Fatalf("region %+v\nwant %+v", info, want)
 	}
@@ -148,13 +148,13 @@ func TestRegionEnableDisable(t *testing.T) {
 		t.Fatalf("dax0.0 bound to %q", d)
 	}
 	noErr(t, k.DisableRegion(ctx, r))
-	if info, _ := k.Region(r); info.State != kernel.RegionDisabled || info.DaxRegion != "" || !info.Committed || info.NumaNode != -1 {
+	if info, _ := k.Region(r); info.State != kernel.RegionDisabled || info.DaxRegion != "" || !info.Committed || info.NUMANode != -1 {
 		t.Fatalf("disabled region %+v", info)
 	}
 	if _, err := k.DaxRegion(r); err == nil {
 		t.Fatal("a disabled region has a dax region")
 	}
-	noErr(t, k.DestroyRegion(ctx, "region9"))
+	noErr(t, k.DestroyDisabled(ctx, "region9"))
 	noErr(t, k.EnableRegion(ctx, r))
 	if !strings.HasSuffix(f.Commands(), "cxl enable-region region0") {
 		t.Fatalf("commands:\n%s", f.Commands())
@@ -168,21 +168,21 @@ func TestRegionEnableDisable(t *testing.T) {
 		t.Fatalf("enabled region %+v", info)
 	}
 	// destroying needs a disabled region with its memory offline
-	wantErr(t, k.DestroyRegion(ctx, r), nil, "is enabled: disable it")
+	wantErr(t, k.DestroyDisabled(ctx, r), nil, "is enabled: disable it")
 	noErr(t, k.DisableRegion(ctx, r))
-	noErr(t, k.DestroyRegion(ctx, r))
+	noErr(t, k.DestroyDisabled(ctx, r))
 	if info, err := k.Region(r); !errors.Is(err, kernel.ErrNotFound) || info.State != kernel.RegionAbsent {
 		t.Fatalf("destroyed region %+v %v", info, err)
 	}
 	noErr(t, k.DisableRegion(ctx, r))
-	noErr(t, k.DestroyRegion(ctx, r))
+	noErr(t, k.DestroyDisabled(ctx, r))
 }
 
 // Releasing a region offlines its memory, disables and destroys it; a
 // region whose memory is online after it is disabled (the kernel could not
 // remove it) is never destroyed, its memory would read garbage. A block
 // whose state cannot be read counts as online.
-func TestReleaseRegion(t *testing.T) {
+func TestDestroyRegion(t *testing.T) {
 	f, k := newNode(t)
 	ctx := context.Background()
 	r := createRegion(t, k, "mem0", kernel.RegionRAM, 0)
@@ -191,11 +191,11 @@ func TestReleaseRegion(t *testing.T) {
 		t.Fatalf("blocks %v %v", blocks, err)
 	}
 	noErr(t, k.OnlineBlocks(blocks, true))
-	if n := k.BlocksNode(blocks); n != 2 {
+	if n := k.BlocksNUMANode(blocks); n != 2 {
 		t.Fatalf("node %d of the blocks", n)
 	}
 	before := f.Commands()
-	noErr(t, k.ReleaseRegion(ctx, r))
+	noErr(t, k.DestroyRegion(ctx, r))
 	if got := f.CommandsSince(before); got != "cxl disable-region region0\ncxl destroy-region region0" {
 		t.Fatalf("commands:\n%s", got)
 	}
@@ -204,13 +204,13 @@ func TestReleaseRegion(t *testing.T) {
 			t.Fatalf("memory%d %q after the release", b, st)
 		}
 	}
-	noErr(t, k.ReleaseRegion(ctx, r))
+	noErr(t, k.DestroyRegion(ctx, r))
 
 	// online without kmem: a failed driver switch left the memory online
 	r = createRegion(t, k, "mem0", kernel.RegionRAM, 0)
 	noErr(t, k.OnlineBlocks(blocks, true))
 	f.Remove("bus/dax/devices/dax0.0/driver")
-	noErr(t, k.ReleaseRegion(ctx, r))
+	noErr(t, k.DestroyRegion(ctx, r))
 	if !strings.HasSuffix(f.Commands(), "cxl destroy-region region0") {
 		t.Fatalf("region not destroyed:\n%s", f.Commands())
 	}
@@ -225,31 +225,31 @@ func TestReleaseRegion(t *testing.T) {
 		noErr(t, os.Mkdir(state, 0o755))
 	})
 	before = f.Commands()
-	err = k.ReleaseRegion(ctx, r)
+	err = k.DestroyRegion(ctx, r)
 	wantErr(t, err, kernel.ErrBusyOnline, "memory blocks [75] are online after disabling it")
 	if cmds := f.CommandsSince(before); strings.Contains(cmds, "destroy-region") {
 		t.Fatalf("destroyed with a block of unknown state:\n%s", cmds)
 	}
 	noErr(t, os.Remove(state))
 	f.SetBlockState(75, kernel.BlockStateOffline)
-	noErr(t, k.DestroyRegion(ctx, r))
+	noErr(t, k.DestroyDisabled(ctx, r))
 
 	// kmem could not remove memory75, and it is online again
 	r = createRegion(t, k, "mem0", kernel.RegionRAM, 0)
 	f.After("cxl disable-region "+r, func() { f.SetBlockState(75, kernel.BlockStateOnline) })
-	err = k.ReleaseRegion(ctx, r)
+	err = k.DestroyRegion(ctx, r)
 	wantErr(t, err, kernel.ErrBusyOnline, "memory blocks [75] are online after disabling it")
 	if info, _ := k.Region(r); info.State != kernel.RegionDisabled {
 		t.Fatalf("region %v after the refusal", info.State)
 	}
-	wantErr(t, k.DestroyRegion(ctx, r), kernel.ErrBusyOnline, "memory blocks [75] are online")
+	wantErr(t, k.DestroyDisabled(ctx, r), kernel.ErrBusyOnline, "memory blocks [75] are online")
 
 	// memory that cannot be offlined
 	f.SetBlockState(75, kernel.BlockStateOffline)
 	noErr(t, k.EnableRegion(ctx, r))
 	noErr(t, k.OnlineBlocks([]int{74, 75}, true))
 	f.FailWrite("devices/system/memory/memory74/state", syscall.EBUSY)
-	err = k.ReleaseRegion(ctx, r)
+	err = k.DestroyRegion(ctx, r)
 	wantErr(t, err, unix.EBUSY, "region0: cannot offline memory (in use?): memory74: offline")
 }
 
@@ -263,10 +263,10 @@ func TestLockedRegion(t *testing.T) {
 		t.Fatal("region not locked")
 	}
 	before := f.Commands()
-	wantErr(t, k.ReleaseRegion(ctx, r), nil, "region0 is locked")
-	_, err := k.ReleaseRegionInOrder(ctx, "mem0", r)
+	wantErr(t, k.DestroyRegion(ctx, r), nil, "region0 is locked")
+	_, err := k.DestroyRegionInOrder(ctx, "mem0", r)
 	wantErr(t, err, nil, "region0 is locked")
-	wantErr(t, k.DestroyRegion(ctx, r), nil, "locked")
+	wantErr(t, k.DestroyDisabled(ctx, r), nil, "locked")
 	if f.Commands() != before {
 		t.Fatalf("commands on a locked region:\n%s", f.CommandsSince(before))
 	}
@@ -286,13 +286,13 @@ func TestDeleteHollowRegion(t *testing.T) {
 		t.Fatalf("hollow: %s %v, region9 %v", r, k.HollowRegion(r), k.HollowRegion("region9"))
 	}
 	// a hollow region has the node of its memory that is online
-	if info, _ := k.Region(r); info.State != kernel.RegionHollow || info.NumaNode != 2 || info.Targets != nil || info.DaxRegion != "" {
+	if info, _ := k.Region(r); info.State != kernel.RegionHollow || info.NUMANode != 2 || info.Targets != nil || info.DaxRegion != "" {
 		t.Fatalf("hollow region %+v", info)
 	}
 	if d, err := k.RegionRootDecoder(r); err != nil || d != "decoder0.0" {
 		t.Fatalf("root decoder %q %v", d, err)
 	}
-	wantErr(t, k.DestroyRegion(ctx, r), nil, "is hollow")
+	wantErr(t, k.DestroyDisabled(ctx, r), nil, "is hollow")
 	wantErr(t, k.DeleteHollowRegion(r), kernel.ErrBusyOnline, "memory blocks [75] of its address range are not offline")
 	f.SetBlockState(75, kernel.BlockStateOffline)
 	noErr(t, k.DeleteHollowRegion(r))

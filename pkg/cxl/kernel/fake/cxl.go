@@ -58,17 +58,17 @@ type Window struct {
 	Type string
 	// Base and Size are its addresses.
 	Base, Size uint64
-	// Node is the NUMA node of its memory.
-	Node int
+	// NUMANode is the NUMA node of its memory.
+	NUMANode int
 }
 
 // windows are the root decoders of the fake: one ram and one pmem window
 // per host bridge, each with a NUMA node of its own.
 var windows = []Window{
-	{Decoder: "decoder0.0", HostBridge: 12, Type: kernel.RegionRAM, Base: 0x250000000, Size: 0x400000000, Node: 2},
-	{Decoder: "decoder0.1", HostBridge: 24, Type: kernel.RegionRAM, Base: 0x850000000, Size: 0x400000000, Node: 3},
-	{Decoder: "decoder0.2", HostBridge: 12, Type: kernel.RegionPmem, Base: 0xc50000000, Size: 0x400000000, Node: 4},
-	{Decoder: "decoder0.3", HostBridge: 24, Type: kernel.RegionPmem, Base: 0x1050000000, Size: 0x400000000, Node: 5},
+	{Decoder: "decoder0.0", HostBridge: 12, Type: kernel.RegionRAM, Base: 0x250000000, Size: 0x400000000, NUMANode: 2},
+	{Decoder: "decoder0.1", HostBridge: 24, Type: kernel.RegionRAM, Base: 0x850000000, Size: 0x400000000, NUMANode: 3},
+	{Decoder: "decoder0.2", HostBridge: 12, Type: kernel.RegionPmem, Base: 0xc50000000, Size: 0x400000000, NUMANode: 4},
+	{Decoder: "decoder0.3", HostBridge: 24, Type: kernel.RegionPmem, Base: 0x1050000000, Size: 0x400000000, NUMANode: 5},
 }
 
 // window returns the window of a root decoder.
@@ -152,7 +152,7 @@ func (f *Fake) addWindow(w Window) {
 	f.Write(dir+"/cap_pmem", map[bool]string{true: "1", false: "0"}[w.Type == kernel.RegionPmem])
 	f.Write(dir+"/delete_region", "")
 	f.LinkTo("bus/cxl/devices/"+w.Decoder, dir)
-	f.Write(fmt.Sprintf("devices/system/node/node%d/meminfo", w.Node), fmt.Sprintf("Node %d MemTotal:       0 kB", w.Node))
+	f.Write(fmt.Sprintf("devices/system/node/node%d/meminfo", w.NUMANode), fmt.Sprintf("Node %d MemTotal:       0 kB", w.NUMANode))
 	f.nextRegionNames()
 }
 
@@ -377,7 +377,7 @@ func (f *Fake) hollow(region string) {
 		f.Write(rel+"/"+t, "")
 	}
 	f.Write(rel+"/commit", "0")
-	f.releaseDecoders(region)
+	f.resetDecoders(region)
 }
 
 // enableMemdev runs cxl enable-memdev.
@@ -505,10 +505,10 @@ func (f *Fake) SetStack(port string, regions ...string) {
 	f.Write(dir+"/decoders_committed", strconv.Itoa(len(regions)))
 }
 
-// releaseDecoders releases the decoders of a region in every port: a region
+// resetDecoders releases the decoders of a region in every port: a region
 // on the top decoder is popped with the holes below it, another one leaves
 // a hole.
-func (f *Fake) releaseDecoders(region string) {
+func (f *Fake) resetDecoders(region string) {
 	for _, rel := range f.portDirs() {
 		id, regions := f.portStack(rel)
 		i := slices.Index(regions, region)
@@ -754,7 +754,7 @@ func (f *Fake) disableRegion(region string) error {
 			f.setBlock(b, kernel.BlockStateOffline)
 		}
 	}
-	f.updateNodes()
+	f.updateNUMANodes()
 	f.takeDown(region)
 	return nil
 }
@@ -774,7 +774,7 @@ func (f *Fake) destroyRegion(region string) error {
 		return fmt.Errorf("cxl region: destroy_region: %s active, abort", region)
 	}
 	f.takeDown(region)
-	f.releaseDecoders(region)
+	f.resetDecoders(region)
 	f.removeRegion(region)
 	return nil
 }
@@ -806,7 +806,7 @@ func (f *Fake) deleteRegion(decoder, region string) error {
 	if f.Exists("bus/cxl/devices/" + region + "/driver") {
 		f.takeDown(region)
 	}
-	f.releaseDecoders(region)
+	f.resetDecoders(region)
 	f.removeRegion(region)
 	return nil
 }
@@ -872,7 +872,7 @@ func (f *Fake) Reboot() {
 		f.addEndpoint(md)
 	}
 	f.boot()
-	f.updateNodes()
+	f.updateNUMANodes()
 	f.changed()
 }
 

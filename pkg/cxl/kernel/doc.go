@@ -32,7 +32,7 @@
 //     region with memory, else the node of a memory block of the region
 //     (RegionInfo.NumaNode).
 //
-// The operations of Kernel (EnableMemdev, CreateRegion, ReleaseRegionInOrder,
+// The operations of Kernel (EnableMemdev, CreateRegion, DestroyRegionInOrder,
 // BindDax, OnlineBlocks, CreateFsdaxNamespace, Mount, ...) return typed errors
 // (errors.go). The package never runs daxctl and never writes the new_id of
 // kmem: dax devices are bound through the sysfs attributes of the dax bus,

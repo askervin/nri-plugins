@@ -602,8 +602,8 @@ func (v *env) formatPmem(memdev string, typ string) {
 	if err != nil {
 		v.t.Fatal(err)
 	}
-	v.f.SetImage(ns.BlockDevice, fake.FsImage(typ))
-	if err := k.ReleaseRegion(ctx, region); err != nil {
+	v.f.SetImage(ns.BlockDevice, fake.FSImage(typ))
+	if err := k.DestroyRegion(ctx, region); err != nil {
 		v.t.Fatal(err)
 	}
 }
@@ -711,7 +711,7 @@ func regionAboveNext(t *testing.T, v *env, memdev string) {
 // dropRaw destroys a region that rawRegion made.
 func dropRaw(t *testing.T, v *env, region string) {
 	t.Helper()
-	if err := v.f.Kernel().ReleaseRegion(context.Background(), region); err != nil {
+	if err := v.f.Kernel().DestroyRegion(context.Background(), region); err != nil {
 		t.Fatal(err)
 	}
 }

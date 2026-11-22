@@ -104,7 +104,7 @@ func TestPersistentBindChecks(t *testing.T) {
 		v, target, node := setup(t)
 		tmpfs(t, v, target)
 		refused(t, v, "c", target, "device 0x91: "+target+" is a tmpfs mount of tmpfs, not of "+node)
-		if mi, _ := v.f.Kernel().Mounted(target); mi == nil || mi.FsType != "tmpfs" {
+		if mi, _ := v.f.Kernel().Mounted(target); mi == nil || mi.FSType != "tmpfs" {
 			t.Fatalf("the mount at the target was used or unmounted: %+v", mi)
 		}
 		if err := v.f.Kernel().Unmount(target); err != nil {

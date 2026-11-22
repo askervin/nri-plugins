@@ -732,7 +732,7 @@ Region: a CXL region regionN (/sys/bus/cxl/devices/regionN, a child of its root 
 
 **Facts.** Mode ram or pmem, address range, root decoder, target decoders and their memdevs, locked, the NUMA node of its memory (one per CFMWS window, fixed at boot).
 
-**States (RegionState).** HOLLOW (not committed and no target decoder set: left when its memdev was removed before the region was destroyed, or by a cxl create-region killed half-way, and for a moment while cxl create-region sets the region up; cxl destroy-region refuses it, DeleteHollowRegion deletes it), DISABLED (not hollow, the cxl_region driver not bound: what a release that stopped after cxl disable-region leaves, and what ReleaseRegionInOrder keeps when a region of another memdev came above), ENABLED (cxl_region bound: a ram region has a dax region, a pmem region an nd region). A region being created cannot be told from a hollow or disabled one: the driver knows it from its note.
+**States (RegionState).** HOLLOW (not committed and no target decoder set: left when its memdev was removed before the region was destroyed, or by a cxl create-region killed half-way, and for a moment while cxl create-region sets the region up; cxl destroy-region refuses it, DeleteHollowRegion deletes it), DISABLED (not hollow, the cxl_region driver not bound: what a destroy that stopped after cxl disable-region leaves, and what DestroyRegionInOrder keeps when a region of another memdev came above), ENABLED (cxl_region bound: a ram region has a dax region, a pmem region an nd region). A region being created cannot be told from a hollow or disabled one: the driver knows it from its note.
 
 **Transitions.** RegionTransitions.
 
@@ -757,7 +757,7 @@ States: ABSENT, HOLLOW, DISABLED, ENABLED.
 | DISABLED | HOLLOW | hot-remove of its memdev | - | - |
 | HOLLOW | ABSENT | DeleteHollowRegion, a reboot | every memory block of its range offline | - |
 | HOLLOW | DISABLED | observed while cxl create-region sets the region up (its target set, not yet bound) | - | - |
-| ENABLED | ABSENT | ReleaseRegion, ReleaseRegionInOrder (disable, then destroy), observed across them; a reboot | every memory block of the region offline after the disable; not locked; in order: no region of another memdev above | popped from the decoder stacks if on top (and the holes below reaped), else a hole left |
+| ENABLED | ABSENT | DestroyRegion, DestroyRegionInOrder (disable, then destroy), observed across them; a reboot | every memory block of the region offline after the disable; not locked; in order: no region of another memdev above | popped from the decoder stacks if on top (and the holes below reaped), else a hole left |
 
 ## DaxRegion and DaxDevice (kernel)
 
@@ -836,7 +836,7 @@ States: ABSENT, OFFLINE, ONLINE.
 | OFFLINE | ONLINE | OnlineBlocks, or a udev rule (StayedOffline tells it within its settle time) | online_movable: not online in another zone | - |
 | ONLINE | OFFLINE | OfflineBlocks | its pages can be moved (EBUSY otherwise) | - |
 | OFFLINE | ABSENT | kmem unbound (UnbindDax, DeleteDaxDevice), DisableRegion, hot-remove of its memdev | - | - |
-| ONLINE | ABSENT | ReleaseRegion (offline, then disable), observed across it; a numa slice release (OfflineBlocks, then UnbindDax) | its pages can be moved | - |
+| ONLINE | ABSENT | DestroyRegion (offline, then disable), observed across it; a numa slice release (OfflineBlocks, then UnbindDax) | its pages can be moved | - |
 
 ## NumaNode (kernel)
 
@@ -903,7 +903,7 @@ Superblock and Mount: the filesystem of a block device (/dev/pmemK, or a loop de
 
 **States.** A superblock is read-only or read-write (the super options of its mounts, "ro"); the DAX option may be silently off (xfs, erofs drop it). A block device is read-only or read-write (BLKROSET): a read-only one refuses a dirty filesystem (EROFS) and read-write mounts (EACCES).
 
-**Transitions.** Mount and FsMount make a mount (a new superblock or the existing one); Reconfigure changes the superblock of every mount of it; Unmount removes one mount (never detached: a lazy unmount under a live DAX mapping crashes the guest); the last unmount of a cached node mount clears its autoclear loop device.
+**Transitions.** Mount and FSMount make a mount (a new superblock or the existing one); Remount changes the superblock of every mount of it; Unmount removes one mount (never detached: a lazy unmount under a live DAX mapping crashes the guest); the last unmount of a cached node mount clears its autoclear loop device.
 
 **Invariants.** A block device is never made read-only under a read-write superblock anywhere on the node, and not when the superblocks cannot be read (SetBlockDeviceReadOnly). Every mount namespace is read: a superblock that a container holds outlives the node mount.
 
@@ -915,6 +915,6 @@ LoopDevice: a loop device /dev/loopN over a block device, the device of a cached
 
 **Identity.** Its name; its backing is identified by the device number of the backing (LOOP_GET_STATUS64 lo_rdevice): the path in sysfs (loop/backing_file) is the path of the backing file as the reader sees it, relative to the root of a mount that the reader may not see ("/pmem1" for "/dev/pmem1" after a restart of the driver container).
 
-**States.** CONFIGURED (held by the fd of AttachLoop), MOUNTED (the fd closed, held by its mount), CLEARED (the kernel clears an autoclear loop device at its last close; Loop.Release with detach clears it before a mount). The loop driver does not hold its backing exclusively: Holder lists loop devices by backing.
+**States.** CONFIGURED (held by the fd of ConfigureLoop), MOUNTED (the fd closed, held by its mount), CLEARED (the kernel clears an autoclear loop device at its last close; Loop.Clear clears it before a mount). The loop driver does not hold its backing exclusively: Holder lists loop devices by backing.
 
-**Waits.** None; AttachLoop retries LOOP_CONFIGURE when another process took the free device first.
+**Waits.** None; ConfigureLoop retries LOOP_CONFIGURE when another process took the free device first.

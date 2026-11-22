@@ -246,8 +246,8 @@ func (e *driverEnv) formatPmemAgain(serial uint64, typ string) {
 	if ns == nil {
 		e.t.Fatalf("%s has no fsdax namespace", memdev)
 	}
-	e.k.SetImage(ns.BlockDevice, fake.FsImage(typ))
-	mustOK(e.t, k.ReleaseRegion(ctx, region))
+	e.k.SetImage(ns.BlockDevice, fake.FSImage(typ))
+	mustOK(e.t, k.DestroyRegion(ctx, region))
 	e.mark()
 }
 
@@ -283,7 +283,7 @@ func TestPoolRollbackKept(t *testing.T) {
 		t.Fatal("results of a KEPT claim")
 	}
 	// the foreign region goes; the Unprepare forgets its record
-	mustOK(t, k.ReleaseRegion(context.Background(), region))
+	mustOK(t, k.DestroyRegion(context.Background(), region))
 	e.mustUnprepare(e.pool, "u1")
 	e.wantClean()
 }

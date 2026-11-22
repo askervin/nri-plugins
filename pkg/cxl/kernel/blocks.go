@@ -86,7 +86,7 @@ var BlockTransitions = fsm.Table[BlockState]{
 		{From: fsm.List(BlockOnline), To: BlockOffline, When: "OfflineBlocks",
 			Guard: "its pages can be moved (EBUSY otherwise)"},
 		{From: fsm.List(BlockOffline), To: BlockAbsent, When: "kmem unbound (UnbindDax, DeleteDaxDevice), DisableRegion, hot-remove of its memdev"},
-		{From: fsm.List(BlockOnline), To: BlockAbsent, When: "ReleaseRegion (offline, then disable), observed across it; a numa slice release (OfflineBlocks, then UnbindDax)",
+		{From: fsm.List(BlockOnline), To: BlockAbsent, When: "DestroyRegion (offline, then disable), observed across it; a numa slice release (OfflineBlocks, then UnbindDax)",
 			Guard: "its pages can be moved"},
 	},
 }
@@ -97,8 +97,8 @@ type MemoryBlock struct {
 	State BlockState `json:"state"`
 	// Zones is its valid_zones.
 	Zones string `json:"zones,omitempty"`
-	// NumaNode is the NUMA node of its memory, -1 if not known.
-	NumaNode int `json:"numaNode"`
+	// NUMANode is the NUMA node of its memory, -1 if not known.
+	NUMANode int `json:"numaNode"`
 }
 
 // Range is a range of physical addresses from Start to End, both included,
@@ -195,12 +195,12 @@ func (k *Kernel) blockState(n int) BlockState {
 
 // MemoryBlock returns the observation of memory block n.
 func (k *Kernel) MemoryBlock(n int) MemoryBlock {
-	b := MemoryBlock{Index: n, State: k.blockState(n), NumaNode: -1}
+	b := MemoryBlock{Index: n, State: k.blockState(n), NUMANode: -1}
 	if b.State == BlockAbsent {
 		return b
 	}
 	b.Zones, _ = ReadTrim(k.block(n, "valid_zones"))
-	b.NumaNode = k.BlocksNode([]int{n})
+	b.NUMANode = k.BlocksNUMANode([]int{n})
 	return b
 }
 
@@ -252,9 +252,9 @@ func (k *Kernel) WaitRegionBlocks(ctx context.Context, region string) error {
 	return err
 }
 
-// BlocksNode returns the NUMA node of memory blocks (memoryN/nodeM of the
+// BlocksNUMANode returns the NUMA node of memory blocks (memoryN/nodeM of the
 // first block with one), -1 if not found.
-func (k *Kernel) BlocksNode(blocks []int) int {
+func (k *Kernel) BlocksNUMANode(blocks []int) int {
 	for _, b := range blocks {
 		m, _ := filepath.Glob(k.block(b, "node*"))
 		for _, path := range m {
@@ -335,8 +335,8 @@ func (k *Kernel) StayedOffline(ctx context.Context, blocks []int, settle time.Du
 // memory blocks. States: has memory or not (has_memory); MemTotal is the
 // sum of its online memory.
 
-// NumaNode is the observation of a NUMA node.
-type NumaNode struct {
+// NUMANode is the observation of a NUMA node.
+type NUMANode struct {
 	ID int `json:"id"`
 	// HasMemory: the node is in has_memory.
 	HasMemory bool `json:"hasMemory"`
@@ -344,9 +344,9 @@ type NumaNode struct {
 	MemTotal uint64 `json:"memTotal"`
 }
 
-// NumaNodes returns the NUMA nodes of the system in the order of their
+// NUMANodes returns the NUMA nodes of the system in the order of their
 // ids.
-func (k *Kernel) NumaNodes() []NumaNode {
+func (k *Kernel) NUMANodes() []NUMANode {
 	dir := filepath.Join(k.sysRoot(), "devices", "system", "node")
 	m, _ := filepath.Glob(filepath.Join(dir, "node[0-9]*"))
 	sortNat(m)
@@ -356,13 +356,13 @@ func (k *Kernel) NumaNodes() []NumaNode {
 			hasMemory[id] = true
 		}
 	}
-	var out []NumaNode
+	var out []NUMANode
 	for _, p := range m {
 		id, err := strconv.Atoi(strings.TrimPrefix(filepath.Base(p), "node"))
 		if err != nil {
 			continue
 		}
-		n := NumaNode{ID: id, HasMemory: hasMemory[id]}
+		n := NUMANode{ID: id, HasMemory: hasMemory[id]}
 		data, err := os.ReadFile(filepath.Join(p, "meminfo"))
 		if err == nil {
 			err = fmt.Errorf("%s: no MemTotal in its meminfo", filepath.Base(p))

@@ -25,20 +25,20 @@ import (
 )
 
 // The filesystem of a block device of a persistent device is known by the
-// signatures of the known types in its first FsProbeBytes
+// signatures of the known types in its first FSProbeBytes
 // (docs/memory/cxl/usage.md "Persistent memory").
 
 const (
-	// FsProbeBytes is how much of a block device the probe reads.
-	FsProbeBytes = 128 << 10
+	// FSProbeBytes is how much of a block device the probe reads.
+	FSProbeBytes = 128 << 10
 	// gfs2SuperOffset is the offset of the gfs2 superblock.
 	gfs2SuperOffset = 65536
 	// Gfs2LockProtoDLM is the gfs2 lock protocol of a cluster.
 	Gfs2LockProtoDLM = "lock_dlm"
 )
 
-// FsSignature is what the probe found in the head of a block device.
-type FsSignature struct {
+// FSSignature is what the probe found in the head of a block device.
+type FSSignature struct {
 	// Types are the known types whose signature the head has, in the order
 	// erofs, squashfs, ext4, xfs, btrfs, gfs2.
 	Types []string `json:"types,omitempty"`
@@ -49,10 +49,10 @@ type FsSignature struct {
 	Ext4NeedsRecovery bool `json:"ext4NeedsRecovery,omitempty"`
 }
 
-// ParseFsSignature returns the signatures of the known filesystem types in
+// ParseFSSignature returns the signatures of the known filesystem types in
 // the head of a block device. A short head matches the signatures that it
 // covers.
-func ParseFsSignature(head []byte) FsSignature {
+func ParseFSSignature(head []byte) FSSignature {
 	le32 := func(off int) (uint32, bool) {
 		if off+4 > len(head) {
 			return 0, false
@@ -68,7 +68,7 @@ func ParseFsSignature(head []byte) FsSignature {
 	at := func(off int, magic string) bool {
 		return off+len(magic) <= len(head) && string(head[off:off+len(magic)]) == magic
 	}
-	var s FsSignature
+	var s FSSignature
 	if v, ok := le32(1024); ok && v == 0xE0F5E1E2 {
 		s.Types = append(s.Types, api.FsTypeErofs)
 	}
@@ -102,19 +102,19 @@ func ParseFsSignature(head []byte) FsSignature {
 	return s
 }
 
-// ReadFsSignature returns the signatures in the head of the block device
+// ReadFSSignature returns the signatures in the head of the block device
 // dev.
-func (k *Kernel) ReadFsSignature(dev string) (FsSignature, error) {
-	head, err := k.ReadHead(dev, FsProbeBytes)
+func (k *Kernel) ReadFSSignature(dev string) (FSSignature, error) {
+	head, err := k.ReadHead(dev, FSProbeBytes)
 	if err != nil {
-		return FsSignature{}, err
+		return FSSignature{}, err
 	}
-	return ParseFsSignature(head), nil
+	return ParseFSSignature(head), nil
 }
 
-// NodevFsType tells whether the kernel lists the filesystem type as one
+// NodevFSType tells whether the kernel lists the filesystem type as one
 // that mounts no block device ("nodev" in /proc/filesystems).
-func (k *Kernel) NodevFsType(fsType string) (bool, error) {
+func (k *Kernel) NodevFSType(fsType string) (bool, error) {
 	data, err := os.ReadFile(filepath.Join(k.procRoot(), "filesystems"))
 	if err != nil {
 		return false, err

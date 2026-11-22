@@ -320,7 +320,7 @@ func TestPersistentUpgradeFails(t *testing.T) {
 	if c := v.f.MountCalls("fsmount"); m.Loop == "" || !slices.Equal(c, []string{"fsmount " + m.Loop + " " + m.Path + " xfs ro dax=never,nouuid"}) {
 		t.Fatalf("mounts %q, loop device %q", c, m.Loop)
 	}
-	v.f.SetReconfigureError(m.Path, syscall.EINVAL)
+	v.f.SetRemountError(m.Path, syscall.EINVAL)
 	err := v.prepare(localDriver, "w", localPmemReq("w", 0, state.ModeFs, false, state.AccessCached))
 	if want := "device 0x91: remounting " + m.Path + " read-write: invalid argument"; err == nil || err.Error() != want {
 		t.Fatalf("error %v, want %q", err, want)
@@ -409,7 +409,7 @@ func TestPersistentUnexplainedSuperblocks(t *testing.T) {
 			var loop kernel.Loop
 			if c.loop {
 				var err error
-				if loop, err = v.f.Kernel().AttachLoop(dev, false); err != nil {
+				if loop, err = v.f.Kernel().ConfigureLoop(dev, false); err != nil {
 					t.Fatal(err)
 				}
 				src = loop.Path()
@@ -433,7 +433,7 @@ func TestPersistentUnexplainedSuperblocks(t *testing.T) {
 				}
 				v.f.RemoveForeign(4242)
 				if loop != nil {
-					if err := loop.Release(true); err != nil {
+					if err := loop.Clear(); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -504,13 +504,13 @@ func TestPersistentCachedOrder(t *testing.T) {
 				t.Fatalf("mount %+v", m)
 			}
 			wantMountCalls(t, v, n, "blkroset "+pmem+" 1", "loop "+loop+" "+pmem+" rw", "blkroset "+loop+" 1",
-				"fsmount "+loop+" "+cached+" ext4 ro dax=never", "loop-release "+loop+" detach=false")
+				"fsmount "+loop+" "+cached+" ext4 ro dax=never", "loop-close "+loop)
 			n = mountCalls(v)
 			v.mustPrepare(driver, "w", fsUse(source, "w", false, state.AccessCached))
-			wantMountCalls(t, v, n, "blkroset "+pmem+" 0", "blkroset "+loop+" 0", "reconfigure "+cached+" rw")
+			wantMountCalls(t, v, n, "blkroset "+pmem+" 0", "blkroset "+loop+" 0", "remount "+cached+" rw")
 			n = mountCalls(v)
 			v.mustUnprepare(driver, "w")
-			wantMountCalls(t, v, n, "syncfs "+cached, "reconfigure "+cached+" ro", "blkroset "+loop+" 1", "blkroset "+pmem+" 1")
+			wantMountCalls(t, v, n, "syncfs "+cached, "remount "+cached+" ro", "blkroset "+loop+" 1", "blkroset "+pmem+" 1")
 			v.mustUnprepare(driver, "r")
 			if mounts, loops := v.f.MountTable(), v.f.Kernel().LoopDevices(); len(mounts) != 0 || len(loops) != 0 {
 				t.Fatalf("left: mounts %+v loops %+v", mounts, loops)
@@ -815,7 +815,7 @@ func TestFsSignatureType(t *testing.T) {
 		{nil, "f2fs", "f2fs", ""}, // mounted as declared
 		{nil, "xfs", "", "device 0xc1ae0001: /dev/pmem0 has no filesystem of type xfs (no signature of a type that the plugin knows)"}, // P3b
 	} {
-		got, err := fsType(kernel.FsSignature{Types: tc.types}, "0xc1ae0001", dev, tc.declared)
+		got, err := fsType(kernel.FSSignature{Types: tc.types}, "0xc1ae0001", dev, tc.declared)
 		switch {
 		case tc.err != "" && (err == nil || !strings.Contains(err.Error(), tc.err)):
 			t.Errorf("%v %q: error %v, expected %q", tc.types, tc.declared, err, tc.err)
@@ -831,16 +831,16 @@ func TestFsSignatureType(t *testing.T) {
 // and the reason says why.
 func TestFsSignatureCluster(t *testing.T) {
 	for _, tc := range []struct {
-		sig    kernel.FsSignature
+		sig    kernel.FSSignature
 		fsType string
 		ok     bool
 		why    string
 	}{
-		{kernel.FsSignature{Types: []string{"gfs2"}, Gfs2LockProto: kernel.Gfs2LockProtoDLM}, "gfs2", true, ""},
-		{kernel.FsSignature{Types: []string{"gfs2"}, Gfs2LockProto: "lock_nolock"}, "gfs2", false, "gfs2 with lock_nolock is a single-host filesystem"},
-		{kernel.FsSignature{Types: []string{"gfs2"}}, "gfs2", false, "gfs2 without a lock protocol is a single-host filesystem"},
-		{kernel.FsSignature{Types: []string{"ext4"}}, "ext4", false, "ext4 is a single-host filesystem"},
-		{kernel.FsSignature{Types: []string{"erofs"}}, "f2fs", false, "f2fs is a single-host filesystem"},
+		{kernel.FSSignature{Types: []string{"gfs2"}, Gfs2LockProto: kernel.Gfs2LockProtoDLM}, "gfs2", true, ""},
+		{kernel.FSSignature{Types: []string{"gfs2"}, Gfs2LockProto: "lock_nolock"}, "gfs2", false, "gfs2 with lock_nolock is a single-host filesystem"},
+		{kernel.FSSignature{Types: []string{"gfs2"}}, "gfs2", false, "gfs2 without a lock protocol is a single-host filesystem"},
+		{kernel.FSSignature{Types: []string{"ext4"}}, "ext4", false, "ext4 is a single-host filesystem"},
+		{kernel.FSSignature{Types: []string{"erofs"}}, "f2fs", false, "f2fs is a single-host filesystem"},
 	} {
 		if ok, why := cluster(tc.sig, tc.fsType); ok != tc.ok || why != tc.why {
 			t.Errorf("%+v %s: %v %q", tc.sig, tc.fsType, ok, why)

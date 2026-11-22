@@ -418,13 +418,13 @@ func (e *Engine) prepareFs(ctx context.Context, req *GrantRequest, u pmemGrant, 
 type signature struct {
 	e           *Engine
 	serial, dev string
-	sig         *kernel.FsSignature
+	sig         *kernel.FSSignature
 }
 
 // get returns the signature of the block device.
-func (s *signature) get() (*kernel.FsSignature, error) {
+func (s *signature) get() (*kernel.FSSignature, error) {
 	if s.sig == nil {
-		sg, err := s.e.k.ReadFsSignature(s.dev)
+		sg, err := s.e.k.ReadFSSignature(s.dev)
 		if err != nil {
 			return nil, fmt.Errorf("device %s: reading %s: %w", s.serial, s.dev, err)
 		}
@@ -452,10 +452,10 @@ func (e *Engine) fsTypeOf(req *GrantRequest, dev string, sig *signature) (string
 		}
 	}
 	if mounted != nil {
-		if req.Asked.FsType != "" && req.Asked.FsType != mounted.FsType {
-			return "", fmt.Errorf("device %s: %s has a filesystem of type %s, not %s", sig.serial, dev, mounted.FsType, req.Asked.FsType)
+		if req.Asked.FsType != "" && req.Asked.FsType != mounted.FSType {
+			return "", fmt.Errorf("device %s: %s has a filesystem of type %s, not %s", sig.serial, dev, mounted.FSType, req.Asked.FsType)
 		}
-		return mounted.FsType, nil
+		return mounted.FSType, nil
 	}
 	sg, err := sig.get()
 	if err != nil {
@@ -600,7 +600,7 @@ func errNeedsRecovery(serial, fsType, dev string) error {
 // nodevType tells whether the kernel lists the filesystem type as one
 // without a block device.
 func (e *Engine) nodevType(fsType string) bool {
-	nodev, err := e.k.NodevFsType(fsType)
+	nodev, err := e.k.NodevFSType(fsType)
 	if err != nil {
 		klog.V(3).Infof("engine: %v", err)
 	}
@@ -722,7 +722,7 @@ func (e *Engine) mountFs(source state.Source, serial state.Serial, dev, src, fsT
 		if config.FsTypeReadOnly(fsType) {
 			return e.k.Mount(src, mnt, fsType, fsMountFlags, strings.Join(data, ","))
 		}
-		return e.k.FsMount(src, mnt, fsType, !ro, data)
+		return e.k.FSMount(src, mnt, fsType, !ro, data)
 	})
 	if err != nil {
 		if loop != nil {
@@ -735,7 +735,7 @@ func (e *Engine) mountFs(source state.Source, serial state.Serial, dev, src, fsT
 		return fmt.Errorf("device %s: %s has no %s filesystem: %w", s, dev, fsType, err)
 	}
 	if loop != nil {
-		if err := loop.Release(false); err != nil {
+		if err := loop.Close(); err != nil {
 			klog.Warningf("engine: %s memdev %s: closing %s: %v", source, s, loop.Path(), err)
 		}
 	}
@@ -749,7 +749,7 @@ func (e *Engine) attachCachedLoop(source state.Source, serial state.Serial, dev,
 	var l kernel.Loop
 	err := e.locked(func() error {
 		var err error
-		l, err = e.k.AttachLoop(dev, !readOnlyType)
+		l, err = e.k.ConfigureLoop(dev, !readOnlyType)
 		return err
 	})
 	if err != nil {
@@ -789,7 +789,7 @@ func (e *Engine) verifyNodeDax(source state.Source, serial state.Serial, dev, fs
 
 // detachLoop detaches a loop device that no mount uses.
 func (e *Engine) detachLoop(source state.Source, serial state.Serial, loop kernel.Loop) {
-	if err := e.locked(func() error { return loop.Release(true) }); err != nil {
+	if err := e.locked(func() error { return loop.Clear() }); err != nil {
 		klog.Errorf("engine: %s memdev %s: detaching %s: %v", source, serial.String(), loop.Path(), err)
 	}
 }
@@ -822,7 +822,7 @@ func (e *Engine) upgrade(source state.Source, serial state.Serial, dev, loop, mn
 			return fail(err)
 		}
 	}
-	if err := e.locked(func() error { return e.k.Reconfigure(mnt, true) }); err != nil {
+	if err := e.locked(func() error { return e.k.Remount(mnt, true) }); err != nil {
 		return fail(err)
 	}
 	klog.Infof("engine: %s memdev %s: remounted %s read-write", source, s, mnt)
@@ -837,7 +837,7 @@ func (e *Engine) downgrade(source state.Source, serial state.Serial, dev, loop, 
 	if err := e.locked(func() error { return e.k.Syncfs(mnt) }); err != nil {
 		return fmt.Errorf("device %s: remounting %s read-only: %w", s, mnt, err)
 	}
-	if err := e.locked(func() error { return e.k.Reconfigure(mnt, false) }); err != nil {
+	if err := e.locked(func() error { return e.k.Remount(mnt, false) }); err != nil {
 		return fmt.Errorf("device %s: remounting %s read-only: %w", s, mnt, err)
 	}
 	klog.Infof("engine: %s memdev %s: remounted %s read-only", source, s, mnt)
@@ -934,16 +934,16 @@ func (e *Engine) checkNodeMount(serial state.Serial, dev, access, fsType string,
 		if access == api.AccessCached {
 			want = "a loop device over " + dev
 		}
-		return "", fmt.Errorf("device %s: %s is a %s mount of %s, not of %s", s, mi.Target, mi.FsType, mi.Source, want)
+		return "", fmt.Errorf("device %s: %s is a %s mount of %s, not of %s", s, mi.Target, mi.FSType, mi.Source, want)
 	}
-	if fsType != "" && mi.FsType != fsType {
-		return "", fmt.Errorf("device %s: %s is a %s mount of %s, not %s", s, mi.Target, mi.FsType, mi.Source, fsType)
+	if fsType != "" && mi.FSType != fsType {
+		return "", fmt.Errorf("device %s: %s is a %s mount of %s, not %s", s, mi.Target, mi.FSType, mi.Source, fsType)
 	}
 	if access == api.AccessCached {
 		return mi.Source, nil
 	}
-	if config.FsTypeDAX(mi.FsType) && !mi.HasSuperOpt(daxAlways) {
-		return "", fmt.Errorf("device %s: %s on %s was mounted without DAX", s, mi.FsType, dev)
+	if config.FsTypeDAX(mi.FSType) && !mi.HasSuperOpt(daxAlways) {
+		return "", fmt.Errorf("device %s: %s on %s was mounted without DAX", s, mi.FSType, dev)
 	}
 	return "", nil
 }
@@ -1353,7 +1353,7 @@ func (e *Engine) otherBlockDevice(bd *state.BlockDevice) bool {
 // device with the serial with the signatures s and the declared type ("":
 // none). A type that the plugin does not know is taken as declared when
 // the device has no signature of a known type.
-func fsType(s kernel.FsSignature, serial, dev, declared string) (string, error) {
+func fsType(s kernel.FSSignature, serial, dev, declared string) (string, error) {
 	prefix := "device " + serial + ": "
 	switch {
 	case len(s.Types) == 1 && (declared == "" || declared == s.Types[0]):
@@ -1375,7 +1375,7 @@ func fsType(s kernel.FsSignature, serial, dev, declared string) (string, error) 
 // cluster returns true if a filesystem of the type with the signatures s
 // is a cluster filesystem (gfs2 with lock_dlm), else why it is
 // single-host.
-func cluster(s kernel.FsSignature, fsType string) (bool, string) {
+func cluster(s kernel.FSSignature, fsType string) (bool, string) {
 	switch {
 	case !config.FsTypeCluster(fsType):
 		return false, fsType + " is a single-host filesystem"

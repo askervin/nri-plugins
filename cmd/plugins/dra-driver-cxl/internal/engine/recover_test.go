@@ -239,7 +239,7 @@ func TestRecoverClaimKeptInPart(t *testing.T) {
 	if rs := k.Regions("mem2"); len(rs) != 1 || v.grant("c", 0).Got.Region != state.RegionRef(rs[0]) {
 		t.Fatalf("the released part is not realised anew: %v", rs)
 	}
-	if err := k.ReleaseRegion(context.Background(), above); err != nil {
+	if err := k.DestroyRegion(context.Background(), above); err != nil {
 		t.Fatal(err)
 	}
 	v.mustUnprepare(poolDriver, "c")
@@ -289,7 +289,7 @@ func TestRecoverKeptReleasedInPart(t *testing.T) {
 		released []state.GrantRef
 		results  int
 	}{{both[1:], 1}, {both[:1], 0}} {
-		if err := k.ReleaseRegion(context.Background(), above[1-i]); err != nil {
+		if err := k.DestroyRegion(context.Background(), above[1-i]); err != nil {
 			t.Fatal(err)
 		}
 		if out := v.restart(); !slices.Equal(out.Released, want.released) {
@@ -604,7 +604,7 @@ func TestRecoverForeignMount(t *testing.T) {
 	if err := k.Unmount(mnt); err != nil {
 		t.Fatal(err)
 	}
-	if err := k.FsMount(g.Got.BlockDevice.Name, mnt, "ext4", false, []string{"dax=never"}); err != nil {
+	if err := k.FSMount(g.Got.BlockDevice.Name, mnt, "ext4", false, []string{"dax=never"}); err != nil {
 		t.Fatal(err)
 	}
 	out := v.restart()
@@ -831,7 +831,7 @@ func TestRecoverOwnDeviceOtherOptions(t *testing.T) {
 	if err := k.Unmount(mnt); err != nil {
 		t.Fatal(err)
 	}
-	if err := k.FsMount(g.Got.BlockDevice.Name, mnt, "ext4", false, []string{"dax=never"}); err != nil {
+	if err := k.FSMount(g.Got.BlockDevice.Name, mnt, "ext4", false, []string{"dax=never"}); err != nil {
 		t.Fatal(err)
 	}
 	logs := klogtest.Capture(t, 3)
@@ -927,7 +927,7 @@ func TestRecoverSweepsBindsBeforeNodeMounts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := k.FsMount(filepath.Join(v.e.devRoot(), "pmem6"), node, "ext4", true, nil); err != nil {
+	if err := k.FSMount(filepath.Join(v.e.devRoot(), "pmem6"), node, "ext4", true, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := k.Mount(node, bind, "", unix.MS_BIND, ""); err != nil {
@@ -955,7 +955,7 @@ func TestRecoverOrphanBind(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := k.FsMount(filepath.Join(v.e.devRoot(), "pmem6"), gone, "ext4", true, nil); err != nil {
+	if err := k.FSMount(filepath.Join(v.e.devRoot(), "pmem6"), gone, "ext4", true, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := k.Mount(gone, orphan, "", unix.MS_BIND, ""); err != nil {
@@ -1092,7 +1092,7 @@ func TestRecoverKeptWithoutGrant(t *testing.T) {
 		t.Fatalf("preparation %+v", p)
 	}
 	// the region above, of another tool
-	if err := v.f.Kernel().ReleaseRegion(context.Background(), "region1"); err != nil {
+	if err := v.f.Kernel().DestroyRegion(context.Background(), "region1"); err != nil {
 		t.Fatal(err)
 	}
 	v.clean("unprepared")

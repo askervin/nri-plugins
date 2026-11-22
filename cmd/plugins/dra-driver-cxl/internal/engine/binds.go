@@ -116,7 +116,7 @@ func (e *Engine) bindLease(u *pmemGrant, target string, otherBind func(string) b
 		return true, checkExistingBind(u, target, mi, node, otherBind)
 	}
 	err = e.locked(func() error {
-		if u.readOnly && !config.FsTypeReadOnly(node.FsType) {
+		if u.readOnly && !config.FsTypeReadOnly(node.FSType) {
 			return e.k.BindReadOnly(u.nodeMount, target)
 		}
 		return e.k.Mount(u.nodeMount, target, "", syscall.MS_BIND, "")
@@ -135,7 +135,7 @@ func checkExistingBind(u *pmemGrant, target string, mi, node *kernel.MountInfo, 
 	s := u.serial.String()
 	switch {
 	case !isLeaseBind(mi, node, u.readOnly):
-		return fmt.Errorf("device %s: %s is a %s mount of %s, not of %s", s, target, mi.FsType, mi.Source, u.nodeMount)
+		return fmt.Errorf("device %s: %s is a %s mount of %s, not of %s", s, target, mi.FSType, mi.Source, u.nodeMount)
 	case otherBind != nil && otherBind(target):
 		return fmt.Errorf("device %s: %s is the bind of another lease", s, target)
 	}
@@ -149,7 +149,7 @@ func (e *Engine) verifyBind(u *pmemGrant, target string, node *kernel.MountInfo)
 	s := u.serial.String()
 	mi, err := e.k.Mounted(target)
 	if err == nil && (mi == nil || !isLeaseBind(mi, node, u.readOnly)) {
-		err = fmt.Errorf("device %s: the bind of %s at %s is not a %s nosuid nodev %s mount", s, u.nodeMount, target, kernel.RoWord(u.readOnly), node.FsType)
+		err = fmt.Errorf("device %s: the bind of %s at %s is not a %s nosuid nodev %s mount", s, u.nodeMount, target, kernel.RoWord(u.readOnly), node.FSType)
 	}
 	if err == nil {
 		return nil
@@ -166,7 +166,7 @@ func (e *Engine) verifyBind(u *pmemGrant, target string, node *kernel.MountInfo)
 // isLeaseBind tells whether a mount is a bind of the node mount node with
 // the flags of a lease bind, ro or rw by readOnly.
 func isLeaseBind(mi, node *kernel.MountInfo, readOnly bool) bool {
-	if mi.FsType != node.FsType || mi.Source != node.Source || mi.Root != node.Root {
+	if mi.FSType != node.FSType || mi.Source != node.Source || mi.Root != node.Root {
 		return false
 	}
 	for _, f := range []string{roWord(readOnly), "nosuid", "nodev"} {
@@ -180,7 +180,7 @@ func isLeaseBind(mi, node *kernel.MountInfo, readOnly bool) bool {
 // leaseBindType tells whether a mount may be a lease bind: of a block
 // device, of a filesystem type that mode fs mounts.
 func (e *Engine) leaseBindType(mi *kernel.MountInfo) bool {
-	return strings.HasPrefix(mi.Source, e.devRoot()+"/") && (api.KnownFsType(mi.FsType) || slices.Contains(e.opts.FsTypes, mi.FsType))
+	return strings.HasPrefix(mi.Source, e.devRoot()+"/") && (api.KnownFsType(mi.FSType) || slices.Contains(e.opts.FsTypes, mi.FSType))
 }
 
 // releaseBind unbinds the lease bind of a companion grant. A bind that is
@@ -269,7 +269,7 @@ func (e *Engine) unbind(source state.Source, what, target string) error {
 			break
 		}
 		if err == nil && !e.leaseBindType(mi) {
-			return fmt.Errorf("%s: %s is a %s mount of %s, not a lease bind", what, target, mi.FsType, mi.Source)
+			return fmt.Errorf("%s: %s is a %s mount of %s, not a lease bind", what, target, mi.FSType, mi.Source)
 		}
 		if err == nil && i >= maxUnbinds {
 			err = errors.New("still mounted")
@@ -292,7 +292,7 @@ func (e *Engine) unbindStale(source state.Source, target string) error {
 	switch {
 	case err != nil, mi == nil:
 	case !e.leaseBindType(mi):
-		err = fmt.Errorf("a %s mount of %s is on it", mi.FsType, mi.Source)
+		err = fmt.Errorf("a %s mount of %s is on it", mi.FSType, mi.Source)
 	default:
 		if err = e.locked(func() error { return e.k.Unmount(target) }); err == nil {
 			klog.Infof("engine: unbound stale lease bind %s", target)

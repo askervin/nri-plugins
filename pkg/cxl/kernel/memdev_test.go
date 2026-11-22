@@ -50,7 +50,7 @@ func TestFindAndWaitMemdev(t *testing.T) {
 		t.Fatalf("expected timeout, got %v", err)
 	}
 	m := k.Memdev(serial0)
-	if m.State != kernel.MemdevReady || m.Endpoint != "endpoint4" || m.RamSize != 256*mib || m.NodeAffinity != 0 ||
+	if m.State != kernel.MemdevReady || m.Endpoint != "endpoint4" || m.RamSize != 256*mib || m.NUMAAffinity != 0 ||
 		strings.Join(m.Ports, ",") != "port1,endpoint4" {
 		t.Fatalf("memdev %+v", m)
 	}
@@ -123,7 +123,7 @@ func TestMemdevStates(t *testing.T) {
 	}
 	err = k.DisableMemdev(ctx, "mem0")
 	wantErr(t, err, nil, "mem0 is part of an active region")
-	noErr(t, k.ReleaseRegion(ctx, r))
+	noErr(t, k.DestroyRegion(ctx, r))
 	noErr(t, k.DisableMemdev(ctx, "mem0"))
 	if m := k.Memdev(serial0); m.State != kernel.MemdevUnbound || m.Endpoint != "" {
 		t.Fatalf("disabled memdev %+v", m)

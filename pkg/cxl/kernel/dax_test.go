@@ -30,9 +30,9 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
 
-// sliceNode returns a fake with a 1 GiB ram region0 on mem0 whose dax0.0
+// daxNode returns a fake with a 1 GiB ram region0 on mem0 whose dax0.0
 // is unbound with all of the memory, its blocks gone.
-func sliceNode(t *testing.T) (*fake.Fake, *kernel.Kernel) {
+func daxNode(t *testing.T) (*fake.Fake, *kernel.Kernel) {
 	t.Helper()
 	f := fake.New(t)
 	f.Plug(fake.MemdevSpec{Serial: serial0, Ram: gib})
@@ -44,8 +44,8 @@ func sliceNode(t *testing.T) (*fake.Fake, *kernel.Kernel) {
 
 // A region is sliced into dax devices, which are bound, deleted, and
 // recognized by their state.
-func TestDaxSlices(t *testing.T) {
-	f, k := sliceNode(t)
+func TestDaxDevices(t *testing.T) {
+	f, k := daxNode(t)
 	ctx := context.Background()
 	d, err := k.DaxRegion("region0")
 	if err != nil || d.Name != "dax_region0" || d.Available != 0 || d.Align != fake.DaxAlign || !reflect.DeepEqual(d.Devices, []string{"dax0.0"}) {
@@ -122,7 +122,7 @@ func TestDaxSlices(t *testing.T) {
 // First-fit placement of a slice that grows across gaps: a device of two
 // ranges, its whole memory blocks, and the gaps of the region.
 func TestDaxDeviceRanges(t *testing.T) {
-	f, k := sliceNode(t)
+	f, k := daxNode(t)
 	ctx := context.Background()
 	if r, err := k.DaxDeviceRanges("dax0.0"); err != nil || !reflect.DeepEqual(r, []kernel.Range{{Start: window0, End: window0 + gib - 1}}) {
 		t.Fatalf("ranges %v %v", r, err)
@@ -190,7 +190,7 @@ func TestDaxDeviceRanges(t *testing.T) {
 // is taken fails (ErrNoRoom), a length that the kernel ignores deletes the
 // device.
 func TestCreateDaxDeviceRanges(t *testing.T) {
-	f, k := sliceNode(t)
+	f, k := daxNode(t)
 	ctx := context.Background()
 	noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 64*mib))
 	// the block-aligned second block
@@ -306,7 +306,7 @@ func TestBindDaxWrites(t *testing.T) {
 // first, also one that another tool left.
 func TestDaxIDsNotLeft(t *testing.T) {
 	for _, left := range []bool{false, true} {
-		f, k := sliceNode(t)
+		f, k := daxNode(t)
 		ctx := context.Background()
 		noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 128*mib))
 		other, err := k.CreateDaxDevice(ctx, "region0", 64*mib)
@@ -377,7 +377,7 @@ func itoa(n uint64) string { return strconv.FormatUint(n, 10) }
 // reader waits for the writer (drivers/dax/bus.c). The read then has the
 // memory after the write.
 func TestResizeDaxDeviceExcludesMappingReads(t *testing.T) {
-	f, k := sliceNode(t)
+	f, k := daxNode(t)
 	ctx := context.Background()
 	noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 128*mib))
 	first := kernel.Range{Start: window0, End: window0 + 128*mib - 1}
@@ -410,7 +410,7 @@ func TestResizeDaxDeviceExcludesMappingReads(t *testing.T) {
 // dax_region_rwsem across the removal of the device while the size write
 // to it waits for the rwsem inside the attribute (drivers/dax/bus.c).
 func TestDaxRemovalsExcludeSizeWrites(t *testing.T) {
-	f, k := sliceNode(t)
+	f, k := daxNode(t)
 	ctx := context.Background()
 	noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 128*mib))
 	other, err := k.CreateDaxDevice(ctx, "region0", 128*mib)
@@ -427,7 +427,7 @@ func TestDaxRemovalsExcludeSizeWrites(t *testing.T) {
 	noErr(t, k.DeleteDaxDevice(ctx, "region0", other))
 	f.Before("cxl disable-region region0", resizeDuring("disable-region"))
 	f.Before("cxl destroy-region region0", resizeDuring("destroy-region"))
-	noErr(t, k.ReleaseRegion(ctx, "region0"))
+	noErr(t, k.DestroyRegion(ctx, "region0"))
 	for _, d := range done {
 		<-d
 	}
@@ -441,7 +441,7 @@ func TestDaxRemovalsExcludeSizeWrites(t *testing.T) {
 // which reads the memory of the dax devices, waits and has the memory
 // after the write.
 func TestObserveTopologyDuringDaxWrite(t *testing.T) {
-	f, k := sliceNode(t)
+	f, k := daxNode(t)
 	ctx := context.Background()
 	noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 128*mib))
 	var top, full *kernel.Snapshot
@@ -474,7 +474,7 @@ func TestObserveTopologyDuringDaxWrite(t *testing.T) {
 // run beside them without an error. The readers run until the writer has
 // made its changes a number of times.
 func TestDaxMappingsRace(t *testing.T) {
-	f, k := sliceNode(t)
+	f, k := daxNode(t)
 	ctx := context.Background()
 	noErr(t, k.ResizeDaxDevice(ctx, "dax0.0", 0))
 	first := []kernel.Range{{Start: window0, End: window0 + 128*mib - 1}}

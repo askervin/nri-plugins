@@ -32,12 +32,12 @@ import (
 // (loop/backing_file) is the path of the backing file as the reader sees
 // it, relative to the root of a mount that the reader may not see ("/pmem1"
 // for "/dev/pmem1" after a restart of the driver container).
-// States: CONFIGURED (held by the fd of AttachLoop), MOUNTED (the fd closed,
+// States: CONFIGURED (held by the fd of ConfigureLoop), MOUNTED (the fd closed,
 // held by its mount), CLEARED (the kernel clears an autoclear loop device at
-// its last close; Loop.Release with detach clears it before a mount). The
+// its last close; Loop.Clear clears it before a mount). The
 // loop driver does not hold its backing exclusively: Holder lists loop
 // devices by backing.
-// Waits: none; AttachLoop retries LOOP_CONFIGURE when another process took
+// Waits: none; ConfigureLoop retries LOOP_CONFIGURE when another process took
 // the free device first.
 
 // LoopDevice is the observation of a loop device with a backing.
@@ -143,8 +143,8 @@ func SameDevice(backing, dev string) bool {
 	return backing == dev || (filepath.Dir(backing) == "/dev" && filepath.Base(backing) == filepath.Base(dev))
 }
 
-// AttachLoop returns a new direct-I/O, autoclear loop device over the file
-// or block device backing (see Sys.AttachLoop).
-func (k *Kernel) AttachLoop(backing string, writable bool) (Loop, error) {
-	return k.sys().AttachLoop(backing, writable)
+// ConfigureLoop returns a new direct-I/O, autoclear loop device over the file
+// or block device backing (see Sys.ConfigureLoop).
+func (k *Kernel) ConfigureLoop(backing string, writable bool) (Loop, error) {
+	return k.sys().ConfigureLoop(backing, writable)
 }

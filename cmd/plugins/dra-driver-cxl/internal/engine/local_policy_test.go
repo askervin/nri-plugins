@@ -198,7 +198,7 @@ func TestLocalPolicySharedConfigured(t *testing.T) {
 		v := newShared(t)
 		v.mustPrepare(localDriver, "s1", sharedReq("s1"))
 		v.mustUnprepare(localDriver, "s1")
-		if err := v.f.Kernel().ReleaseRegion(context.Background(), "region0"); err != nil {
+		if err := v.f.Kernel().DestroyRegion(context.Background(), "region0"); err != nil {
 			t.Fatal(err)
 		}
 		logs := klogtest.Capture(t, 3)

@@ -171,7 +171,7 @@ func TestLocalRegionErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	refused("foreign region", "memdev mem0 has region region0 that the plugin did not create", errForeignRegion)
-	if err := k.ReleaseRegion(ctx, region); err != nil {
+	if err := k.DestroyRegion(ctx, region); err != nil {
 		t.Fatal(err)
 	}
 

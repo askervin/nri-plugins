@@ -54,7 +54,7 @@ func (f *Fake) makeDaxRegion(region string) {
 	f.Write(attrs+"/delete", "")
 	f.Write(attrs+"/seed", "")
 	dax := "dax" + strings.TrimPrefix(region, "region") + ".0"
-	f.newDax(region, dax, w.Node)
+	f.newDax(region, dax, w.NUMANode)
 	f.setRanges(dax, []kernel.Range{rr})
 	f.available(region)
 	if f.HasDaxID(kernel.DriverDeviceDax, dax) {
@@ -285,7 +285,7 @@ func (f *Fake) daxCreate(dir, val string) error {
 			break
 		}
 	}
-	f.newDax(region, dax, w.Node)
+	f.newDax(region, dax, w.NUMANode)
 	f.Write(dir+"/create", dax)
 	return nil
 }
@@ -405,7 +405,7 @@ func (f *Fake) daxDriverAttr(driver, attr, dax string) error {
 		f.setDaxDriver(dax, driver)
 	case "new_id":
 		f.SetDaxID(driver, dax)
-		f.attach(driver)
+		f.driverAttach(driver)
 	case "remove_id":
 		f.mu.Lock()
 		delete(f.ids[driver], dax)
@@ -433,10 +433,10 @@ func (f *Fake) setDaxDriver(dax, driver string) {
 	}
 }
 
-// attach binds a dax driver to every unbound dax device that it matches, as
+// driverAttach binds a dax driver to every unbound dax device that it matches, as
 // driver_attach does: by an id of the driver, and kmem also by type (every
 // dax device of a CXL ram region). A device of size 0 fails its probe.
-func (f *Fake) attach(driver string) {
+func (f *Fake) driverAttach(driver string) {
 	for _, r := range f.regionNames() {
 		for _, dax := range f.daxNames(r) {
 			if f.daxDriverOf(dax) != "" || f.DaxSize(dax) == 0 {
@@ -475,12 +475,12 @@ func (f *Fake) blocksOf(dax string) []int {
 	return out
 }
 
-// nodeOf returns the NUMA node of the memory at addr: the node of its
+// numaNodeOf returns the NUMA node of the memory at addr: the node of its
 // window, 0 outside the windows.
-func nodeOf(addr uint64) int {
+func numaNodeOf(addr uint64) int {
 	for _, w := range windows {
 		if w.Base <= addr && addr < w.Base+w.Size {
-			return w.Node
+			return w.NUMANode
 		}
 	}
 	return 0
@@ -500,10 +500,10 @@ func (f *Fake) addBlocks(dax string) {
 		f.Write(blockRel(b)+"/state", kernel.BlockStateOffline)
 		f.Write(blockRel(b)+"/valid_zones", "Normal Movable")
 		f.Write(blockRel(b)+"/online", "0")
-		f.mkdir(blockRel(b) + "/node" + strconv.Itoa(nodeOf(uint64(b)*bs)))
+		f.mkdir(blockRel(b) + "/node" + strconv.Itoa(numaNodeOf(uint64(b)*bs)))
 		f.udevOnline(b)
 	}
-	f.updateNodes()
+	f.updateNUMANodes()
 }
 
 // removeBlocks removes the memory blocks of a dax device that are offline;
@@ -514,7 +514,7 @@ func (f *Fake) removeBlocks(dax string) {
 			f.Remove(blockRel(b))
 		}
 	}
-	f.updateNodes()
+	f.updateNUMANodes()
 }
 
 // AddBlocks makes the memory blocks with the indexes exist, offline.
@@ -524,9 +524,9 @@ func (f *Fake) AddBlocks(blocks ...int) {
 		f.Write(blockRel(b)+"/state", kernel.BlockStateOffline)
 		f.Write(blockRel(b)+"/valid_zones", "Normal Movable")
 		f.Write(blockRel(b)+"/online", "0")
-		f.mkdir(blockRel(b) + "/node" + strconv.Itoa(nodeOf(uint64(b)*bs)))
+		f.mkdir(blockRel(b) + "/node" + strconv.Itoa(numaNodeOf(uint64(b)*bs)))
 	}
-	f.updateNodes()
+	f.updateNUMANodes()
 }
 
 // BlockState returns the state of memory block n, "" if it does not exist.
@@ -538,7 +538,7 @@ func (f *Fake) BlockState(n int) string {
 // ("online" for every online state), with its zone.
 func (f *Fake) SetBlockState(n int, state string) {
 	f.setBlock(n, state)
-	f.updateNodes()
+	f.updateNUMANodes()
 }
 
 // setBlock writes the state and the zones of memory block n.
@@ -585,7 +585,7 @@ func (f *Fake) blockWrite(dir, val string) error {
 	default:
 		return syscall.EINVAL
 	}
-	f.updateNodes()
+	f.updateNUMANodes()
 	return nil
 }
 
@@ -605,14 +605,14 @@ func (f *Fake) udevOnline(n int) {
 		time.Sleep(2 * time.Millisecond)
 		if f.Read(blockRel(n)+"/state") == kernel.BlockStateOffline {
 			f.setBlock(n, kernel.BlockStateOnline)
-			f.updateNodes()
+			f.updateNUMANodes()
 		}
 	})
 }
 
-// updateNodes writes has_memory and the MemTotal of the NUMA nodes of the
+// updateNUMANodes writes has_memory and the MemTotal of the NUMA nodes of the
 // windows from the memory blocks that are online.
-func (f *Fake) updateNodes() {
+func (f *Fake) updateNUMANodes() {
 	bs := f.blockSize()
 	online := map[int]uint64{}
 	m, _ := filepath.Glob(f.P("devices/system/memory/memory*"))
@@ -621,14 +621,14 @@ func (f *Fake) updateNodes() {
 		if err != nil || strings.TrimSpace(readFile(p+"/state")) == kernel.BlockStateOffline || readFile(p+"/state") == "" {
 			continue
 		}
-		online[nodeOf(uint64(n)*bs)] += bs
+		online[numaNodeOf(uint64(n)*bs)] += bs
 	}
 	nodes := []int{0, 1}
 	for _, w := range windows {
-		kb := online[w.Node] >> 10
-		f.Write(fmt.Sprintf("devices/system/node/node%d/meminfo", w.Node), fmt.Sprintf("Node %d MemTotal:       %d kB", w.Node, kb))
-		if kb > 0 && !slices.Contains(nodes, w.Node) {
-			nodes = append(nodes, w.Node)
+		kb := online[w.NUMANode] >> 10
+		f.Write(fmt.Sprintf("devices/system/node/node%d/meminfo", w.NUMANode), fmt.Sprintf("Node %d MemTotal:       %d kB", w.NUMANode, kb))
+		if kb > 0 && !slices.Contains(nodes, w.NUMANode) {
+			nodes = append(nodes, w.NUMANode)
 		}
 	}
 	slices.Sort(nodes)

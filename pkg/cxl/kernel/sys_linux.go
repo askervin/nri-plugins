@@ -61,7 +61,7 @@ func (s *SysCalls) Unmount(target string) error {
 	return unix.Unmount(target, 0)
 }
 
-func (s *SysCalls) FsMount(source, target, fstype string, readWrite bool, options []string) error {
+func (s *SysCalls) FSMount(source, target, fstype string, readWrite bool, options []string) error {
 	fd, err := unix.Fsopen(fstype, unix.FSOPEN_CLOEXEC)
 	if err != nil {
 		return fmt.Errorf("fsopen %s: %w", fstype, err)
@@ -100,7 +100,7 @@ func (s *SysCalls) FsMount(source, target, fstype string, readWrite bool, option
 	return nil
 }
 
-func (s *SysCalls) Reconfigure(target string, readWrite bool) error {
+func (s *SysCalls) Remount(target string, readWrite bool) error {
 	fd, err := unix.Fspick(unix.AT_FDCWD, target, unix.FSPICK_CLOEXEC)
 	if err != nil {
 		return fmt.Errorf("fspick %s: %w", target, err)
@@ -210,19 +210,18 @@ type sysLoop struct {
 
 func (l *sysLoop) Path() string { return l.path }
 
-func (l *sysLoop) Release(detach bool) error {
-	var err error
-	if detach {
-		err = unix.IoctlSetInt(int(l.f.Fd()), unix.LOOP_CLR_FD, 0)
-	}
+func (l *sysLoop) Close() error { return l.f.Close() }
+
+func (l *sysLoop) Clear() error {
+	err := unix.IoctlSetInt(int(l.f.Fd()), unix.LOOP_CLR_FD, 0)
 	return errors.Join(err, l.f.Close())
 }
 
-// loopAttachTries is how many free loop devices AttachLoop tries when
+// loopAttachTries is how many free loop devices ConfigureLoop tries when
 // another process configures the one it got first.
 const loopAttachTries = 5
 
-func (s *SysCalls) AttachLoop(backing string, writable bool) (Loop, error) {
+func (s *SysCalls) ConfigureLoop(backing string, writable bool) (Loop, error) {
 	// the kernel makes a loop device read-only when either its backing or
 	// the loop device itself is not opened for writing
 	mode := os.O_RDONLY

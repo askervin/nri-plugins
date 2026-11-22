@@ -210,7 +210,7 @@ func (e *leaseEnv) plugLocal(spec fake.MemdevSpec) string {
 		ram = 256 << 20
 	}
 	e.memdevs[spec.Serial] = kernel.MemdevInfo{Name: name, Serial: spec.Serial, State: kernel.MemdevReady, RamSize: ram, PmemSize: pmem,
-		NodeAffinity: 0}
+		NUMAAffinity: 0}
 	return name
 }
 
@@ -344,7 +344,7 @@ func (e *leaseEnv) publishConfig() dra.PublishConfig {
 
 // detected returns the observation of the node that a scan makes.
 func (e *leaseEnv) detected() *kernel.Snapshot {
-	d := &kernel.Snapshot{NumaNodes: []kernel.NumaNode{{ID: 0, HasMemory: true, MemTotal: 8 << 30}}}
+	d := &kernel.Snapshot{NUMANodes: []kernel.NUMANode{{ID: 0, HasMemory: true, MemTotal: 8 << 30}}}
 	for _, s := range slices.Sorted(maps.Keys(e.memdevs)) {
 		d.Memdevs = append(d.Memdevs, e.memdevs[s])
 	}
@@ -716,9 +716,9 @@ func (e *leaseEnv) formatPmem(serial uint64, typ string) string {
 	ns, err := k.CreateFsdaxNamespace(ctx, nd, "")
 	noErr(e.t, err)
 	if typ != "" {
-		e.k.SetImage(ns.BlockDevice, fake.FsImage(typ))
+		e.k.SetImage(ns.BlockDevice, fake.FSImage(typ))
 	}
-	noErr(e.t, k.ReleaseRegion(ctx, region))
+	noErr(e.t, k.DestroyRegion(ctx, region))
 	e.pmem = ns.BlockDevice
 	return ns.BlockDevice
 }

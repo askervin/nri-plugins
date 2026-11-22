@@ -261,7 +261,7 @@ func (e *Engine) releaseAliased(ctx context.Context, req *GrantRequest, memdev, 
 	var above []string
 	if err := e.locked(func() error {
 		var err error
-		above, err = e.k.ReleaseRegionInOrder(ctx, memdev, region)
+		above, err = e.k.DestroyRegionInOrder(ctx, memdev, region)
 		return err
 	}); err != nil {
 		return nil, err

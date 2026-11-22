@@ -38,7 +38,7 @@ type Snapshot struct {
 	// DaxDevices are the dax devices of the regions.
 	DaxDevices []DaxDeviceInfo `json:"daxDevices,omitempty"`
 	Blocks     []MemoryBlock   `json:"blocks,omitempty"`
-	NumaNodes  []NumaNode      `json:"numaNodes,omitempty"`
+	NUMANodes  []NUMANode      `json:"numaNodes,omitempty"`
 	Pmem       []NdRegion      `json:"pmem,omitempty"`
 	Devices    []BlockDevice   `json:"blockDevices,omitempty"`
 	Mounts     []MountInfo     `json:"mounts,omitempty"`
@@ -170,7 +170,7 @@ func (k *Kernel) observeSysfs(ctx context.Context, s *Snapshot, problem func(str
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	s.NumaNodes = k.NumaNodes()
+	s.NUMANodes = k.NUMANodes()
 	return nil
 }
 
@@ -309,7 +309,7 @@ func (s *Snapshot) Memdev(serial uint64) MemdevInfo {
 	if i, ok := find(s.bySerial, len(s.Memdevs), serial, func(i int) uint64 { return s.Memdevs[i].Serial }); ok {
 		return s.Memdevs[i]
 	}
-	return MemdevInfo{Serial: serial, State: MemdevAbsent, NodeAffinity: -1}
+	return MemdevInfo{Serial: serial, State: MemdevAbsent, NUMAAffinity: -1}
 }
 
 // Region returns the region with the name, in state RegionAbsent if the
@@ -318,7 +318,7 @@ func (s *Snapshot) Region(name string) RegionInfo {
 	if i, ok := find(s.byRegion, len(s.Regions), name, func(i int) string { return s.Regions[i].Name }); ok {
 		return s.Regions[i]
 	}
-	return RegionInfo{Name: name, State: RegionAbsent, NumaNode: -1}
+	return RegionInfo{Name: name, State: RegionAbsent, NUMANode: -1}
 }
 
 // RegionsOf returns the regions with a target decoder of the memdev with
@@ -359,7 +359,7 @@ func (s *Snapshot) Block(index int) MemoryBlock {
 	if i, ok := find(s.byBlock, len(s.Blocks), index, func(i int) int { return s.Blocks[i].Index }); ok {
 		return s.Blocks[i]
 	}
-	return MemoryBlock{Index: index, State: BlockAbsent, NumaNode: -1}
+	return MemoryBlock{Index: index, State: BlockAbsent, NUMANode: -1}
 }
 
 // OnlineBlocks returns the memory blocks of blocks that are online.
@@ -373,15 +373,15 @@ func (s *Snapshot) OnlineBlocks(blocks []int) []int {
 	return out
 }
 
-// NumaNode returns the NUMA node with the id, false if the snapshot has
+// NUMANode returns the NUMA node with the id, false if the snapshot has
 // none.
-func (s *Snapshot) NumaNode(id int) (NumaNode, bool) {
-	for _, n := range s.NumaNodes {
+func (s *Snapshot) NUMANode(id int) (NUMANode, bool) {
+	for _, n := range s.NUMANodes {
 		if n.ID == id {
 			return n, true
 		}
 	}
-	return NumaNode{ID: id}, false
+	return NUMANode{ID: id}, false
 }
 
 // BlockDevice returns the block device with the /dev path, false if the

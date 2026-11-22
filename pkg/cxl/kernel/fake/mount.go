@@ -38,7 +38,7 @@ import (
 // a block device the superblock (and the super options) of the first one,
 // refuses it with EBUSY when it would change the read-only state of the
 // superblock, changes the superblock of every mount of a source at a
-// reconfigure, removes an autoclear loop device with its last mount,
+// remount, removes an autoclear loop device with its last mount,
 // refuses a read-write superblock on a read-only block device, and makes a
 // read-only mount of a dirty filesystem on a read-only device fail with
 // EROFS. It records the violations of the rules of persistent devices: a
@@ -52,29 +52,29 @@ type mountTable struct {
 	f  *Fake
 	mu sync.Mutex
 	// cutAt stops the process after a mount at that target, "" for none.
-	cutAt     string
-	mounts    []kernel.MountInfo
-	calls     []string
-	loops     map[string]string // loop device -> backing
-	nextLoop  int
-	mountErr  map[string]error    // source -> error of Mount and FsMount
-	ctxMsgs   map[string]string   // source -> messages of the filesystem context of a failed FsMount
-	superOpts map[string][]string // source -> super options of a new superblock
-	busy      map[string]bool     // targets whose Unmount fails with EBUSY
-	bindRoot  string              // the root of a new bind, "": that of its source
-	holders   map[string]string   // block device -> holder, like a container's bind mount
-	holderErr error               // error of OpenExclusive
-	detachErr error               // error of Release(true) of a loop device
-	bindFlags []string            // the per-mount flags of a new bind, nil: those of its source
-	ro        map[string]bool     // read-only flags (BLKROSET)
-	roErr     map[string]error    // device -> error of SetReadOnly
-	devices   map[string]uint64   // block device -> the serial of its memdev
-	data      map[uint64][]byte   // serial -> the head of its block device
-	dirty     map[uint64]bool     // serial -> its filesystem needs recovery
-	loopRW    map[string]bool     // loop devices whose backing is opened read-write
-	writing   map[string]bool     // targets with a file open for writing: a reconfigure to ro is EBUSY
-	syncErr   error               // error of Syncfs
-	reconfErr map[string]error    // target -> error of Reconfigure
+	cutAt      string
+	mounts     []kernel.MountInfo
+	calls      []string
+	loops      map[string]string // loop device -> backing
+	nextLoop   int
+	mountErr   map[string]error    // source -> error of Mount and FSMount
+	ctxMsgs    map[string]string   // source -> messages of the filesystem context of a failed FSMount
+	superOpts  map[string][]string // source -> super options of a new superblock
+	busy       map[string]bool     // targets whose Unmount fails with EBUSY
+	bindRoot   string              // the root of a new bind, "": that of its source
+	holders    map[string]string   // block device -> holder, like a container's bind mount
+	holderErr  error               // error of OpenExclusive
+	detachErr  error               // error of Clear of a loop device
+	bindFlags  []string            // the per-mount flags of a new bind, nil: those of its source
+	ro         map[string]bool     // read-only flags (BLKROSET)
+	roErr      map[string]error    // device -> error of SetReadOnly
+	devices    map[string]uint64   // block device -> the serial of its memdev
+	data       map[uint64][]byte   // serial -> the head of its block device
+	dirty      map[uint64]bool     // serial -> its filesystem needs recovery
+	loopRW     map[string]bool     // loop devices whose backing is opened read-write
+	writing    map[string]bool     // targets with a file open for writing: a remount read-only is EBUSY
+	syncErr    error               // error of Syncfs
+	remountErr map[string]error    // target -> error of Remount
 	// foreign are mounts in other mount namespaces (a container's), which
 	// the process does not see, by the pid of a process in them
 	foreign map[int][]kernel.MountInfo
@@ -88,23 +88,23 @@ var _ kernel.Sys = &mountTable{}
 
 func newMountTable(f *Fake) *mountTable {
 	return &mountTable{
-		f:         f,
-		loops:     map[string]string{},
-		mountErr:  map[string]error{},
-		ctxMsgs:   map[string]string{},
-		superOpts: map[string][]string{},
-		busy:      map[string]bool{},
-		holders:   map[string]string{},
-		ro:        map[string]bool{},
-		roErr:     map[string]error{},
-		devices:   map[string]uint64{},
-		data:      map[uint64][]byte{},
-		dirty:     map[uint64]bool{},
-		loopRW:    map[string]bool{},
-		writing:   map[string]bool{},
-		reconfErr: map[string]error{},
-		foreign:   map[int][]kernel.MountInfo{},
-		anon:      map[string]string{},
+		f:          f,
+		loops:      map[string]string{},
+		mountErr:   map[string]error{},
+		ctxMsgs:    map[string]string{},
+		superOpts:  map[string][]string{},
+		busy:       map[string]bool{},
+		holders:    map[string]string{},
+		ro:         map[string]bool{},
+		roErr:      map[string]error{},
+		devices:    map[string]uint64{},
+		data:       map[uint64][]byte{},
+		dirty:      map[uint64]bool{},
+		loopRW:     map[string]bool{},
+		writing:    map[string]bool{},
+		remountErr: map[string]error{},
+		foreign:    map[int][]kernel.MountInfo{},
+		anon:       map[string]string{},
 	}
 }
 
@@ -197,7 +197,7 @@ func (m *mountTable) render() {
 				opts = "rw"
 			}
 			fmt.Fprintf(&b, "%d 1 %s %s %s %s - %s %s %s\n", 100+i, mi.DevNum, escape(mi.Root), escape(mi.Target),
-				strings.Join(mi.MountFlags, ","), mi.FsType, escape(mi.Source), opts)
+				strings.Join(mi.MountFlags, ","), mi.FSType, escape(mi.Source), opts)
 		}
 		m.f.writeProc(pid+"/mountinfo", b.String())
 		if pid != "self" {
@@ -272,14 +272,14 @@ func (m *mountTable) Mount(source, target, fstype string, flags uintptr, data st
 		}
 		opts = mi.SuperOpts
 	}
-	m.mounts = append(m.mounts, kernel.MountInfo{DevNum: m.devNum(source, fstype), Root: "/", Target: filepath.Clean(target), FsType: fstype,
+	m.mounts = append(m.mounts, kernel.MountInfo{DevNum: m.devNum(source, fstype), Root: "/", Target: filepath.Clean(target), FSType: fstype,
 		Source: source, SuperOpts: slices.Clone(opts), MountFlags: []string{"ro", "nosuid", "nodev"}})
 	m.render()
 	m.cut(target)
 	return nil
 }
 
-func (m *mountTable) FsMount(source, target, fstype string, readWrite bool, options []string) error {
+func (m *mountTable) FSMount(source, target, fstype string, readWrite bool, options []string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.call("fsmount %s %s %s %s %s", source, target, fstype, map[bool]string{true: "rw", false: "ro"}[readWrite], strings.Join(options, ","))
@@ -329,18 +329,18 @@ func (m *mountTable) FsMount(source, target, fstype string, readWrite bool, opti
 			opts = o
 		}
 	}
-	m.mounts = append(m.mounts, kernel.MountInfo{DevNum: m.devNum(source, fstype), Root: "/", Target: filepath.Clean(target), FsType: fstype,
+	m.mounts = append(m.mounts, kernel.MountInfo{DevNum: m.devNum(source, fstype), Root: "/", Target: filepath.Clean(target), FSType: fstype,
 		Source: source, SuperOpts: slices.Clone(opts), MountFlags: []string{"rw", "nosuid", "nodev"}})
 	m.render()
 	m.cut(target)
 	return nil
 }
 
-func (m *mountTable) Reconfigure(target string, readWrite bool) error {
+func (m *mountTable) Remount(target string, readWrite bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.call("reconfigure %s %s", target, map[bool]string{true: "rw", false: "ro"}[readWrite])
-	if err := m.reconfErr[target]; err != nil {
+	m.call("remount %s %s", target, map[bool]string{true: "rw", false: "ro"}[readWrite])
+	if err := m.remountErr[target]; err != nil {
 		return err
 	}
 	mi := kernel.FindMount(m.mounts, target)
@@ -519,22 +519,26 @@ type loop struct {
 
 func (l *loop) Path() string { return l.path }
 
-func (l *loop) Release(detach bool) error {
+func (l *loop) Close() error {
 	l.m.mu.Lock()
 	defer l.m.mu.Unlock()
-	l.m.call("loop-release %s detach=%v", l.path, detach)
-	if detach && l.m.detachErr != nil {
-		return l.m.detachErr
-	}
-	if detach {
-		l.m.clearLoop(l.path)
-	} else {
-		l.m.autoclear(l.path)
-	}
+	l.m.call("loop-close %s", l.path)
+	l.m.autoclear(l.path)
 	return nil
 }
 
-func (m *mountTable) AttachLoop(backing string, writable bool) (kernel.Loop, error) {
+func (l *loop) Clear() error {
+	l.m.mu.Lock()
+	defer l.m.mu.Unlock()
+	l.m.call("loop-clear %s", l.path)
+	if l.m.detachErr != nil {
+		return l.m.detachErr
+	}
+	l.m.clearLoop(l.path)
+	return nil
+}
+
+func (m *mountTable) ConfigureLoop(backing string, writable bool) (kernel.Loop, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	st, err := os.Stat(backing)
@@ -658,11 +662,11 @@ func (m *mountTable) reboot() {
 	m.render()
 }
 
-// FsImage returns the head of a block device with the signatures of the
+// FSImage returns the head of a block device with the signatures of the
 // filesystem types (none for ""): erofs, squashfs, ext4 (ext4-dirty: needs
 // recovery), xfs, btrfs, gfs2 (lock_dlm), gfs2-nolock (lock_nolock).
-func FsImage(types ...string) []byte {
-	img := make([]byte, kernel.FsProbeBytes)
+func FSImage(types ...string) []byte {
+	img := make([]byte, kernel.FSProbeBytes)
 	for _, t := range types {
 		switch t {
 		case "":
@@ -690,7 +694,7 @@ func FsImage(types ...string) []byte {
 			}
 			copy(img[65536+96:], proto+"\x00")
 		default:
-			panic("FsImage: unknown type " + t)
+			panic("FSImage: unknown type " + t)
 		}
 	}
 	return img
@@ -726,7 +730,7 @@ func (f *Fake) SetBusy(target string, busy bool) {
 }
 
 // SetWriting tells whether a file is open for writing under target: a
-// reconfigure to read-only fails with EBUSY.
+// remount read-only fails with EBUSY.
 func (f *Fake) SetWriting(target string, writing bool) {
 	m := f.mnt
 	m.mu.Lock()
@@ -777,12 +781,12 @@ func (f *Fake) SetSyscallErrors(holder, detach, sync error) {
 	m.holderErr, m.detachErr, m.syncErr = holder, detach, sync
 }
 
-// SetReconfigureError makes the reconfigure of target fail with err.
-func (f *Fake) SetReconfigureError(target string, err error) {
+// SetRemountError makes the remount of target fail with err.
+func (f *Fake) SetRemountError(target string, err error) {
 	m := f.mnt
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.reconfErr[target] = err
+	m.remountErr[target] = err
 }
 
 // SetBind sets the root and the per-mount flags of the next binds ("" and
@@ -800,7 +804,7 @@ func (f *Fake) AddForeign(pid int, source, target, fstype string, readOnly bool)
 	m := f.mnt
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.foreign[pid] = append(m.foreign[pid], kernel.MountInfo{DevNum: m.devNum(source, fstype), Root: "/", Target: target, FsType: fstype, Source: source,
+	m.foreign[pid] = append(m.foreign[pid], kernel.MountInfo{DevNum: m.devNum(source, fstype), Root: "/", Target: target, FSType: fstype, Source: source,
 		SuperOpts: []string{map[bool]string{true: "ro", false: "rw"}[readOnly]}, MountFlags: []string{"ro", "nosuid", "nodev"}})
 	m.render()
 }

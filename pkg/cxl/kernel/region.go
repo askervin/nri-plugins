@@ -42,8 +42,8 @@ import (
 // cxl create-region killed half-way, and for a moment while cxl
 // create-region sets the region up; cxl destroy-region refuses it,
 // DeleteHollowRegion deletes it), DISABLED (not hollow, the cxl_region
-// driver not bound: what a release that stopped after cxl disable-region
-// leaves, and what ReleaseRegionInOrder keeps when a region of another
+// driver not bound: what a destroy that stopped after cxl disable-region
+// leaves, and what DestroyRegionInOrder keeps when a region of another
 // memdev came above), ENABLED (cxl_region bound: a ram region has a dax
 // region, a pmem region an nd region). A region being created cannot be
 // told from a hollow or disabled one: the driver knows it from its note.
@@ -114,7 +114,7 @@ var RegionTransitions = fsm.Table[RegionState]{
 			Guard: "every memory block of its range offline"},
 		// changes that one call makes between two observations
 		{From: fsm.List(RegionHollow), To: RegionDisabled, When: "observed while cxl create-region sets the region up (its target set, not yet bound)"},
-		{From: fsm.List(RegionEnabled), To: RegionAbsent, When: "ReleaseRegion, ReleaseRegionInOrder (disable, then destroy), observed across them; a reboot",
+		{From: fsm.List(RegionEnabled), To: RegionAbsent, When: "DestroyRegion, DestroyRegionInOrder (disable, then destroy), observed across them; a reboot",
 			Guard:   "every memory block of the region offline after the disable; not locked; in order: no region of another memdev above",
 			Effects: "popped from the decoder stacks if on top (and the holes below reaped), else a hole left"},
 	},
@@ -138,9 +138,9 @@ type RegionInfo struct {
 	Serials []uint64 `json:"serials,omitempty"`
 	// RootDecoder is the root decoder of the region (decoder0.N).
 	RootDecoder string `json:"rootDecoder,omitempty"`
-	// NumaNode is the NUMA node of the memory of the region, -1 if not
+	// NUMANode is the NUMA node of the memory of the region, -1 if not
 	// known (see Kernel.regionNode).
-	NumaNode int `json:"numaNode"`
+	NUMANode int `json:"numaNode"`
 	// DaxRegion is the dax region of an enabled ram region
 	// (dax_regionN), "" for none.
 	DaxRegion string `json:"daxRegion,omitempty"`
@@ -236,7 +236,7 @@ func (k *Kernel) Region(region string) (RegionInfo, error) {
 // memdevs of t.
 func (k *Kernel) region(region string, t topology) (RegionInfo, error) {
 	dir := k.cxlDev(region)
-	r := RegionInfo{Name: region, State: regionState(dir), NumaNode: -1}
+	r := RegionInfo{Name: region, State: regionState(dir), NUMANode: -1}
 	if r.State == RegionAbsent {
 		return r, errorf(ErrNotFound, "%s: %w", region, os.ErrNotExist)
 	}
@@ -268,14 +268,14 @@ func (k *Kernel) region(region string, t topology) (RegionInfo, error) {
 	if r.Mode == RegionPmem && r.State == RegionEnabled {
 		r.NdRegion, _ = k.NdRegionOf(region)
 	}
-	r.NumaNode = k.regionNode(region, r.Range)
+	r.NUMANode = k.regionNUMANode(region, r.Range)
 	return r, nil
 }
 
-// regionNode returns the NUMA node of the memory of a region: the
+// regionNUMANode returns the NUMA node of the memory of a region: the
 // target_node of a dax device of the region with memory, else the node of a
 // memory block wholly in its range, -1 if neither tells.
-func (k *Kernel) regionNode(region string, rr Range) int {
+func (k *Kernel) regionNUMANode(region string, rr Range) int {
 	for _, dax := range k.DaxDevices(region) {
 		if size, err := k.DaxDeviceSize(dax); err != nil || size == 0 {
 			continue
@@ -291,7 +291,7 @@ func (k *Kernel) regionNode(region string, rr Range) int {
 	if err != nil {
 		return -1
 	}
-	return k.BlocksNode(rr.blocks(bs))
+	return k.BlocksNUMANode(rr.blocks(bs))
 }
 
 // RegionRange returns the physical address range of a region.
@@ -489,12 +489,12 @@ func (k *Kernel) DisableRegion(ctx context.Context, region string) error {
 	return nil
 }
 
-// DestroyRegion destroys a disabled region (cxl destroy-region). A region
+// destroyDisabled destroys a disabled region (cxl destroy-region). A region
 // that does not exist is not an error. Errors: ErrBusyOnline when memory
 // blocks of the region are online, an error for a locked region, for an
 // enabled region (DisableRegion first) and for a hollow one, which only
 // DeleteHollowRegion removes.
-func (k *Kernel) DestroyRegion(ctx context.Context, region string) error {
+func (k *Kernel) destroyDisabled(ctx context.Context, region string) error {
 	state := regionState(k.cxlDev(region))
 	if state == RegionAbsent {
 		return nil
@@ -545,7 +545,7 @@ func (k *Kernel) onlineRegionBlocks(region string) []int {
 	return k.onlineBlocks(blocks)
 }
 
-// ReleaseRegion offlines the memory of a region, and disables and destroys
+// DestroyRegion offlines the memory of a region, and disables and destroys
 // the region. Namespaces and labels of a region of persistent memory are
 // not touched. A missing region is not an error.
 //
@@ -553,31 +553,31 @@ func (k *Kernel) onlineRegionBlocks(region string) []int {
 // destroyed (ErrBusyOnline): the kernel could not remove the memory (kmem
 // keeps it "until the next reboot"), and destroying the region would leave
 // online memory that no decoder maps, which reads garbage.
-func (k *Kernel) ReleaseRegion(ctx context.Context, region string) error {
-	_, err := k.releaseRegion(ctx, region, nil)
+func (k *Kernel) DestroyRegion(ctx context.Context, region string) error {
+	_, err := k.destroyRegion(ctx, region, nil)
 	return err
 }
 
-// ReleaseRegionInOrder releases a region of the memdev as ReleaseRegion
+// DestroyRegionInOrder destroys a region of the memdev as DestroyRegion
 // does, unless regions of other memdevs lie above the memdev's regions in
 // the decoders of its ports (RegionsAbove): destroying it would leave a
 // hole below them (DecoderHole). It returns those regions then, and the
-// region stays: as it was if they were there before the release, disabled
-// if they came during it. Decoders that cannot be read are an error, before
-// the release (the region untouched) or after its disable (the region
+// region stays: as it was if they were there before, disabled if they
+// came during it. Decoders that cannot be read are an error, before the
+// disable (the region untouched) or after its disable (the region
 // disabled). A missing region is not an error.
-func (k *Kernel) ReleaseRegionInOrder(ctx context.Context, memdev, region string) ([]string, error) {
+func (k *Kernel) DestroyRegionInOrder(ctx context.Context, memdev, region string) ([]string, error) {
 	above, err := k.RegionsAbove(memdev)
 	if err != nil || len(above) > 0 {
 		return above, err
 	}
-	return k.releaseRegion(ctx, region, func() ([]string, error) { return k.RegionsAbove(memdev) })
+	return k.destroyRegion(ctx, region, func() ([]string, error) { return k.RegionsAbove(memdev) })
 }
 
-// releaseRegion releases a region (ReleaseRegion). With above (nil: none),
+// destroyRegion destroys a region (DestroyRegion). With above (nil: none),
 // the region is destroyed only if above, called after cxl disable-region,
 // returns no region and no error; else it returns them.
-func (k *Kernel) releaseRegion(ctx context.Context, region string, above func() ([]string, error)) ([]string, error) {
+func (k *Kernel) destroyRegion(ctx context.Context, region string, above func() ([]string, error)) ([]string, error) {
 	if _, err := os.Stat(k.cxlDev(region)); err != nil {
 		return nil, nil
 	}

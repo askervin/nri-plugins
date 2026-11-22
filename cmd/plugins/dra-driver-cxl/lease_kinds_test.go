@@ -522,7 +522,7 @@ func TestFsLease(t *testing.T) {
 		Path: "/run/cxl/fs/000000a1", Size: pmemBytes, Serial: "0xc1af0001", Env: fsEnv("erofs", "direct", "/run/cxl/fs/000000a1", "1")})
 	bind := filepath.Join(fsDir, "000000a1")
 	direct, cached := e.nodeMount(serialPoolP, "direct"), e.nodeMount(serialPoolP, "cached")
-	if mi := e.mounted(bind); mi == nil || mi.FsType != "erofs" || mi.Source != e.pmem {
+	if mi := e.mounted(bind); mi == nil || mi.FSType != "erofs" || mi.Source != e.pmem {
 		t.Fatalf("bind %+v", mi)
 	}
 	if len(e.k.MountCalls(fake.BindCall(direct, bind))) != 1 {
@@ -635,7 +635,7 @@ func TestFsLeaseReadWrite(t *testing.T) {
 		Path: "/run/cxl/fs/rw", Size: pmemBytes, Serial: "0xc1af0001", Env: fsEnv("ext4", "direct", "/run/cxl/fs/rw", "0")})
 	fsDir := filepath.Join(e.dir, "lease-fs", envLeaseClaim)
 	direct := e.nodeMount(serialPoolP, "direct")
-	if mi := e.mounted(filepath.Join(fsDir, "rw")); mi == nil || !slices.Equal(mi.MountFlags, []string{"rw", "nosuid", "nodev"}) || mi.FsType != "ext4" {
+	if mi := e.mounted(filepath.Join(fsDir, "rw")); mi == nil || !slices.Equal(mi.MountFlags, []string{"rw", "nosuid", "nodev"}) || mi.FSType != "ext4" {
 		t.Fatalf("read-write bind %+v", mi)
 	}
 	if mi := e.mounted(direct); mi == nil || len(mi.SuperOpts) == 0 || mi.SuperOpts[0] != "rw" {

@@ -39,10 +39,10 @@ func localRegionNode(e *driverTestEnv) int {
 	}
 	ri, err := k.Region(rs[0])
 	noErr(e.t, err)
-	if ri.NumaNode < 0 {
+	if ri.NUMANode < 0 {
 		e.t.Fatalf("region %+v without a node", ri)
 	}
-	return ri.NumaNode
+	return ri.NUMANode
 }
 
 // injectDevices adds devices of regions, DRAM or the lease device to the

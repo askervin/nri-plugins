@@ -71,7 +71,7 @@ func TestDecoderHoles(t *testing.T) {
 	if h := holes(t, k, "mem1"); h != nil {
 		t.Fatalf("in-order decoders: holes %+v", h)
 	}
-	noErr(t, k.ReleaseRegion(ctx, "region1"))
+	noErr(t, k.DestroyRegion(ctx, "region1"))
 	want := []kernel.DecoderHole{
 		{Port: "port1", Committed: 3, Free: []string{"decoder1.1"}, Blocking: []string{"region2"}},
 		{Port: "port3", Committed: 3, Free: []string{"decoder3.1"}, Blocking: []string{"region2"}},
@@ -99,7 +99,7 @@ func TestDecoderHoles(t *testing.T) {
 		t.Fatal("the error of cxl create-region is not wrapped")
 	}
 	// the top region goes: the hole is reaped
-	noErr(t, k.ReleaseRegion(ctx, "region2"))
+	noErr(t, k.DestroyRegion(ctx, "region2"))
 	if h := holes(t, k, "mem1"); h != nil {
 		t.Fatalf("holes after the top went: %+v", h)
 	}
@@ -119,7 +119,7 @@ func TestDecoderHoles(t *testing.T) {
 	k = f.Kernel()
 	createRegion(t, k, "mem0", kernel.RegionRAM, 256*mib)
 	createRegion(t, k, "mem0", kernel.RegionRAM, 256*mib)
-	noErr(t, k.ReleaseRegion(ctx, "region0"))
+	noErr(t, k.DestroyRegion(ctx, "region0"))
 	want = []kernel.DecoderHole{
 		{Port: "port1", Committed: 2, Free: []string{"decoder1.0"}, Blocking: []string{"region1"}},
 		{Port: "endpoint4", Committed: 2, Free: []string{"decoder4.0"}, Blocking: []string{"region1"}},
@@ -149,11 +149,11 @@ func TestRegionsAbove(t *testing.T) {
 		}
 	}
 	ctx := context.Background()
-	noErr(t, k.ReleaseRegion(ctx, "region2"))
+	noErr(t, k.DestroyRegion(ctx, "region2"))
 	if got := above(t, k, "mem1"); got != nil {
 		t.Errorf("top: RegionsAbove(mem1) = %v", got)
 	}
-	noErr(t, k.ReleaseRegion(ctx, "region1"))
+	noErr(t, k.DestroyRegion(ctx, "region1"))
 	if got := above(t, k, "mem1"); got != nil {
 		t.Errorf("no region: RegionsAbove(mem1) = %v", got)
 	}
@@ -189,29 +189,29 @@ func TestDecoderUnreadable(t *testing.T) {
 				t.Fatalf("DecoderHoles %v %v", h, err)
 			}
 			before := f.Commands()
-			if _, err := k.ReleaseRegionInOrder(context.Background(), "mem0", "region0"); err == nil || f.Commands() != before {
+			if _, err := k.DestroyRegionInOrder(context.Background(), "mem0", "region0"); err == nil || f.Commands() != before {
 				t.Fatalf("release in order: %v\n%s", err, f.CommandsSince(before))
 			}
 		})
 	}
 	// unreadable after the disable: the region stays disabled
 	f, k := stackNode(t)
-	noErr(t, k.ReleaseRegion(context.Background(), "region1"))
-	noErr(t, k.ReleaseRegion(context.Background(), "region2"))
+	noErr(t, k.DestroyRegion(context.Background(), "region1"))
+	noErr(t, k.DestroyRegion(context.Background(), "region2"))
 	f.After("cxl disable-region region0", func() { f.Write("devices/platform/ACPI0017:00/root0/port1/decoders_committed", "bogus") })
-	_, err := k.ReleaseRegionInOrder(context.Background(), "mem0", "region0")
+	_, err := k.DestroyRegionInOrder(context.Background(), "mem0", "region0")
 	wantErr(t, err, nil, "not destroying disabled region0: the decoders of port1")
 	if r, _ := k.Region("region0"); r.State != kernel.RegionDisabled {
 		t.Fatalf("region0 %v", r.State)
 	}
 }
 
-// TestReleaseRegionInOrder: a region is released when no region of another
+// TestDestroyRegionInOrder: a region is released when no region of another
 // memdev lies above it in the host bridge and the switch, and not touched
 // when one does; a region that comes above it during the release (a
 // creation between the first check and cxl destroy-region) keeps it
 // disabled.
-func TestReleaseRegionInOrder(t *testing.T) {
+func TestDestroyRegionInOrder(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name  string
@@ -238,7 +238,7 @@ func TestReleaseRegionInOrder(t *testing.T) {
 			createRegion(t, k, "mem0", kernel.RegionRAM, 0)
 			tc.setup(t, f, k)
 			before := f.Commands()
-			got, err := k.ReleaseRegionInOrder(ctx, "mem0", "region0")
+			got, err := k.DestroyRegionInOrder(ctx, "mem0", "region0")
 			noErr(t, err)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("above %v, want %v", got, tc.want)
@@ -253,7 +253,7 @@ func TestReleaseRegionInOrder(t *testing.T) {
 	}
 	// a missing region
 	f, k := newNode(t)
-	if a, err := k.ReleaseRegionInOrder(ctx, "mem0", "region7"); a != nil || err != nil || f.Commands() != "" {
+	if a, err := k.DestroyRegionInOrder(ctx, "mem0", "region7"); a != nil || err != nil || f.Commands() != "" {
 		t.Errorf("missing region: above %v, error %v, commands %q", a, err, f.Commands())
 	}
 }

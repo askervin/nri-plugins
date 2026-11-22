@@ -341,7 +341,7 @@ func (x *coreExec) run(ca *coreAction, start *coreState) coreOutcome {
 		if len(regions) != 1 {
 			return coreOutcome{msg: fmt.Sprintf("memdev %s has regions %v", coreMemdevs[ca.md].id, regions)}
 		}
-		if err := k.ReleaseRegion(context.Background(), regions[0]); err != nil {
+		if err := k.DestroyRegion(context.Background(), regions[0]); err != nil {
 			return coreOutcome{msg: err.Error()}
 		}
 	case "unplug":

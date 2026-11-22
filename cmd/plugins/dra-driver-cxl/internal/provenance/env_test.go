@@ -166,7 +166,7 @@ func (e *watchEnv) publish(serials ...string) {
 func (e *watchEnv) plug(serial uint64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.devs[serial] = kernel.MemdevInfo{Name: fmt.Sprintf("mem%d", e.plugged), RamSize: 1 << 30, Serial: serial, NodeAffinity: 0,
+	e.devs[serial] = kernel.MemdevInfo{Name: fmt.Sprintf("mem%d", e.plugged), RamSize: 1 << 30, Serial: serial, NUMAAffinity: 0,
 		State: kernel.MemdevReady}
 	e.plugged++
 }

@@ -151,7 +151,7 @@ func TestPrepareRefusedKeepsKept(t *testing.T) {
 		t.Fatalf("the kept region %s is not reused: %+v", kept.Intent.Region, g)
 	}
 	e.mustUnprepare(e.pool, "u1")
-	mustOK(t, k.ReleaseRegion(context.Background(), above))
+	mustOK(t, k.DestroyRegion(context.Background(), above))
 	e.wantClean()
 }
 
@@ -258,7 +258,7 @@ func TestPrepareFailedAfterIntent(t *testing.T) {
 		t.Fatalf("region record %+v", reg)
 	}
 	// the Prepare again, the foreign region gone, forgets its record
-	mustOK(t, k.ReleaseRegion(context.Background(), region))
+	mustOK(t, k.DestroyRegion(context.Background(), region))
 	if res = e.prepare(e.local, localClaim("u2", localDev, envBlockSize)); res.Err != nil {
 		t.Fatal(res.Err)
 	}

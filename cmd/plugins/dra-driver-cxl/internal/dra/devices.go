@@ -225,9 +225,9 @@ func regionSize(r kernel.RegionInfo) uint64 {
 func regionMemory(snap *kernel.Snapshot, r *kernel.RegionInfo) (int, uint64) {
 	node, size := -1, uint64(0)
 	for _, i := range r.Range.Blocks(snap.BlockSize) {
-		if b := snap.Block(i); b.State == kernel.BlockOnline && b.NumaNode >= 0 {
+		if b := snap.Block(i); b.State == kernel.BlockOnline && b.NUMANode >= 0 {
 			if node < 0 {
-				node = b.NumaNode
+				node = b.NUMANode
 			}
 			size += snap.BlockSize
 		}
@@ -237,9 +237,9 @@ func regionMemory(snap *kernel.Snapshot, r *kernel.RegionInfo) (int, uint64) {
 
 // numaNodesByName returns the NUMA nodes of the snapshot in the order of
 // their names (node10 before node2).
-func numaNodesByName(snap *kernel.Snapshot) []kernel.NumaNode {
-	nodes := slices.Clone(snap.NumaNodes)
-	slices.SortStableFunc(nodes, func(a, b kernel.NumaNode) int { return strings.Compare(strconv.Itoa(a.ID), strconv.Itoa(b.ID)) })
+func numaNodesByName(snap *kernel.Snapshot) []kernel.NUMANode {
+	nodes := slices.Clone(snap.NUMANodes)
+	slices.SortStableFunc(nodes, func(a, b kernel.NUMANode) int { return strings.Compare(strconv.Itoa(a.ID), strconv.Itoa(b.ID)) })
 	return nodes
 }
 
@@ -271,7 +271,7 @@ func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held ma
 		klog.V(3).Infof("discovered CXL region device: %+v", *r)
 		// the memory of a region is not DRAM, published or not, hollow
 		// with memory that kmem could not remove included
-		cxlNodes[r.NumaNode] = true
+		cxlNodes[r.NUMANode] = true
 		if r.State == kernel.RegionHollow {
 			klog.V(4).Infof("- ignoring region device %q: it has no target decoder", r.Name)
 			continue
@@ -283,7 +283,7 @@ func BuildDevices(cfg PublishConfig, snap *kernel.Snapshot, poolSerials, held ma
 		}
 		dev := &Region{Name: r.Name, NumaNode: node, Size: size}
 		for _, m := range mems {
-			dev.NodeAffinity = append(dev.NodeAffinity, m.NodeAffinity)
+			dev.NodeAffinity = append(dev.NodeAffinity, m.NUMAAffinity)
 		}
 		name := fmt.Sprintf("%s-node%d", r.Name, node)
 		devInfos[name] = &DeviceInfo{Name: name, Dev: dev}
@@ -611,7 +611,7 @@ func addLocalMemdevs(devInfos DevicesInfo, cfg PublishConfig, snap *kernel.Snaps
 				Name:         memDev.Name,
 				Serial:       memDev.Serial,
 				Size:         size,
-				NodeAffinity: memDev.NodeAffinity,
+				NodeAffinity: memDev.NUMAAffinity,
 				BlockSize:    bs,
 			},
 		}
@@ -693,7 +693,7 @@ func addSharedMemdev(devInfos DevicesInfo, memDev *kernel.MemdevInfo, size uint6
 			Name:         memDev.Name,
 			Serial:       memDev.Serial,
 			Size:         size,
-			NodeAffinity: memDev.NodeAffinity,
+			NodeAffinity: memDev.NUMAAffinity,
 			BlockSize:    bs,
 			Shared:       true,
 		},
@@ -741,7 +741,7 @@ func addPersistentMemdev(devInfos DevicesInfo, cfg PublishConfig, memDev *kernel
 			Name:         memDev.Name,
 			Serial:       memDev.Serial,
 			Size:         memDev.PmemSize,
-			NodeAffinity: memDev.NodeAffinity,
+			NodeAffinity: memDev.NUMAAffinity,
 			Shared:       shared,
 			Persistent:   true,
 		},

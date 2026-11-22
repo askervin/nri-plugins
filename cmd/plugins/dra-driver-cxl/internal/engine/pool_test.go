@@ -147,9 +147,6 @@ func TestPoolForeignRegion(t *testing.T) {
 	}
 	destroy := func(name string) {
 		t.Helper()
-		if err := k.DisableRegion(context.Background(), name); err != nil {
-			t.Fatal(err)
-		}
 		if err := k.DestroyRegion(context.Background(), name); err != nil {
 			t.Fatal(err)
 		}

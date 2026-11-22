@@ -55,7 +55,7 @@ func TestParseMountInfo(t *testing.T) {
 		DevNum:     "259:0",
 		Root:       "/",
 		Target:     "/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct",
-		FsType:     "erofs",
+		FSType:     "erofs",
 		Source:     "/dev/pmem0",
 		SuperOpts:  []string{"ro", "user_xattr", "acl", "dax=always"},
 		MountFlags: []string{"ro", "nosuid", "nodev", "relatime"},
@@ -70,7 +70,7 @@ func TestParseMountInfo(t *testing.T) {
 	if mi := kernel.FindMount(mounts, "/mnt/sub"); mi == nil || mi.Root != "/sub dir" || mi.Source != "/dev/pmem0" {
 		t.Fatalf("bind of a subdirectory: %+v", mi)
 	}
-	if mi := kernel.FindMount(mounts, "/mnt/with space"); mi == nil || mi.FsType != "tmpfs" || mi.SuperReadOnly() {
+	if mi := kernel.FindMount(mounts, "/mnt/with space"); mi == nil || mi.FSType != "tmpfs" || mi.SuperReadOnly() {
 		t.Fatalf("escaped mount point: %+v", mi)
 	}
 	if mi := kernel.FindMount(mounts, "/mnt/stacked"); mi == nil || mi.Source != "second" {
@@ -116,18 +116,18 @@ func TestSuperblocks(t *testing.T) {
 	f, k, dev := fsdaxNode(t)
 	direct := mountPoint(t, "direct")
 	noErr(t, setRO(k, dev, false))
-	noErr(t, k.FsMount(dev, direct, "ext4", true, []string{"dax=always"}))
-	loop, err := k.AttachLoop(dev, false)
+	noErr(t, k.FSMount(dev, direct, "ext4", true, []string{"dax=always"}))
+	loop, err := k.ConfigureLoop(dev, false)
 	noErr(t, err)
 	cached := mountPoint(t, "cached")
 	noErr(t, k.Mount(loop.Path(), cached, "erofs", syscall.MS_RDONLY, "dax=never"))
-	noErr(t, loop.Release(false))
+	noErr(t, loop.Close())
 	f.AddForeign(300, dev, "/run/cxl/fs/y", "ext4", false)
 	sbs, err := k.Superblocks(dev)
 	noErr(t, err)
 	want := []kernel.Superblock{
-		{Device: dev, DevNum: "259:0", Source: dev, FsType: "ext4", Where: "pid 1 at " + direct},
-		{Device: loop.Path(), DevNum: "7:0", Source: loop.Path(), FsType: "erofs", ReadOnly: true, Where: "pid 1 at " + cached},
+		{Device: dev, DevNum: "259:0", Source: dev, FSType: "ext4", Where: "pid 1 at " + direct},
+		{Device: loop.Path(), DevNum: "7:0", Source: loop.Path(), FSType: "erofs", ReadOnly: true, Where: "pid 1 at " + cached},
 	}
 	if !reflect.DeepEqual(sbs, want) {
 		t.Fatalf("superblocks %+v\nwant %+v", sbs, want)
@@ -200,7 +200,7 @@ func TestBtrfsSuperblocks(t *testing.T) {
 	f, k, dev := fsdaxNode(t)
 	noErr(t, setRO(k, dev, false))
 	target := mountPoint(t, "btrfs")
-	noErr(t, k.FsMount(dev, target, "btrfs", true, nil))
+	noErr(t, k.FSMount(dev, target, "btrfs", true, nil))
 	sbs, err := k.Superblocks(dev)
 	noErr(t, err)
 	if len(sbs) != 1 || sbs[0].Device != dev || !strings.HasPrefix(sbs[0].DevNum, "0:") || sbs[0].ReadOnly {
@@ -219,7 +219,7 @@ func TestBtrfsSuperblocks(t *testing.T) {
 	f.Write("fs/btrfs/e9a4c1d2/devices/"+filepath.Base(dev), "")
 	sbs, err = k.Superblocks(dev)
 	noErr(t, err)
-	want := []kernel.Superblock{{Device: dev, Source: dev, FsType: "btrfs", Where: "btrfs e9a4c1d2, no mount of it found"}}
+	want := []kernel.Superblock{{Device: dev, Source: dev, FSType: "btrfs", Where: "btrfs e9a4c1d2, no mount of it found"}}
 	if !reflect.DeepEqual(sbs, want) {
 		t.Fatalf("superblocks %+v, want %+v", sbs, want)
 	}
@@ -234,7 +234,7 @@ func TestHolder(t *testing.T) {
 	if h, err := k.Holder(dev); err != nil || h != "" {
 		t.Fatalf("holder %q %v", h, err)
 	}
-	loop, err := k.AttachLoop(dev, false)
+	loop, err := k.ConfigureLoop(dev, false)
 	noErr(t, err)
 	if h, err := k.Holder(dev); err != nil || h != filepath.Base(loop.Path()) {
 		t.Fatalf("holder %q %v", h, err)
@@ -254,7 +254,7 @@ func TestHolder(t *testing.T) {
 	if b, err := k.LoopBackingFile("/dev/loop9"); err != nil || b != "" {
 		t.Fatalf("backing of a missing loop device %q %v", b, err)
 	}
-	noErr(t, loop.Release(true))
+	noErr(t, loop.Clear())
 	if h, err := k.Holder(dev); err != nil || h != "" {
 		t.Fatalf("holder after the clear %q %v", h, err)
 	}
@@ -277,31 +277,31 @@ func TestHolder(t *testing.T) {
 	}
 }
 
-// Reconfigure changes the superblock of every mount of it; a reconfigure
+// Remount changes the superblock of every mount of it; a remount
 // to read-only with a file open for writing is EBUSY; a read-only bind of a
 // node mount reaches its target read-only.
-func TestReconfigureAndBind(t *testing.T) {
+func TestRemountAndBind(t *testing.T) {
 	f, k, dev := fsdaxNode(t)
 	node := mountPoint(t, "node")
 	noErr(t, setRO(k, dev, false))
-	noErr(t, k.FsMount(dev, node, "ext4", true, nil))
+	noErr(t, k.FSMount(dev, node, "ext4", true, nil))
 	bind := mountPoint(t, "bind")
 	noErr(t, k.BindReadOnly(node, bind))
 	if mi, _ := k.Mounted(bind); mi == nil || !slices.Contains(mi.MountFlags, "ro") || mi.SuperReadOnly() {
 		t.Fatalf("bind %+v", mi)
 	}
 	f.SetWriting(node, true)
-	if err := k.Reconfigure(node, false); !errors.Is(err, unix.EBUSY) {
-		t.Fatalf("reconfigure while writing: %v", err)
+	if err := k.Remount(node, false); !errors.Is(err, unix.EBUSY) {
+		t.Fatalf("remount while writing: %v", err)
 	}
 	f.SetWriting(node, false)
 	noErr(t, k.Syncfs(node))
-	noErr(t, k.Reconfigure(node, false))
+	noErr(t, k.Remount(node, false))
 	if mi, _ := k.Mounted(bind); mi == nil || !mi.SuperReadOnly() {
-		t.Fatalf("bind after the reconfigure %+v", mi)
+		t.Fatalf("bind after the remount %+v", mi)
 	}
 	noErr(t, setRO(k, dev, true))
-	if err := k.Reconfigure(node, true); !errors.Is(err, syscall.EACCES) {
+	if err := k.Remount(node, true); !errors.Is(err, syscall.EACCES) {
 		t.Fatalf("read-write on a read-only device: %v", err)
 	}
 	if v := f.Violations(); len(v) != 0 {
@@ -329,28 +329,28 @@ func TestParseFsSignature(t *testing.T) {
 		{[]string{"gfs2-nolock"}, []string{"gfs2"}, "lock_nolock", false},
 		{[]string{"xfs", "ext4"}, []string{"ext4", "xfs"}, "", false},
 	} {
-		s := kernel.ParseFsSignature(fake.FsImage(tc.image...))
+		s := kernel.ParseFSSignature(fake.FSImage(tc.image...))
 		if !slices.Equal(s.Types, tc.types) || s.Gfs2LockProto != tc.proto || s.Ext4NeedsRecovery != tc.recovery {
 			t.Errorf("%v: %+v", tc.image, s)
 		}
 	}
 	// every filesystem type that the drivers know has its signature
 	for _, name := range api.KnownFsTypes {
-		if s := kernel.ParseFsSignature(fake.FsImage(name)); !slices.Equal(s.Types, []string{name}) {
+		if s := kernel.ParseFSSignature(fake.FSImage(name)); !slices.Equal(s.Types, []string{name}) {
 			t.Errorf("%s: %+v", name, s)
 		}
 	}
 	// a gfs2 magic without the superblock meta type is not gfs2
-	img := fake.FsImage("gfs2")
+	img := fake.FSImage("gfs2")
 	img[65543] = 2
-	if s := kernel.ParseFsSignature(img); len(s.Types) != 0 {
+	if s := kernel.ParseFSSignature(img); len(s.Types) != 0 {
 		t.Errorf("gfs2 of meta type 2: %+v", s)
 	}
 	// a short head matches what it covers
-	if s := kernel.ParseFsSignature(fake.FsImage("ext4", "btrfs")[:4096]); !slices.Equal(s.Types, []string{"ext4"}) {
+	if s := kernel.ParseFSSignature(fake.FSImage("ext4", "btrfs")[:4096]); !slices.Equal(s.Types, []string{"ext4"}) {
 		t.Errorf("short head: %+v", s)
 	}
-	if s := kernel.ParseFsSignature([]byte("XF")); len(s.Types) != 0 {
+	if s := kernel.ParseFSSignature([]byte("XF")); len(s.Types) != 0 {
 		t.Errorf("tiny head: %+v", s)
 	}
 }
@@ -359,15 +359,15 @@ func TestParseFsSignature(t *testing.T) {
 // persistent memdev outlives its block device.
 func TestReadFsSignature(t *testing.T) {
 	f, k, dev := fsdaxNode(t)
-	f.SetImage(dev, fake.FsImage("erofs"))
-	s, err := k.ReadFsSignature(dev)
+	f.SetImage(dev, fake.FSImage("erofs"))
+	s, err := k.ReadFSSignature(dev)
 	if err != nil || !slices.Equal(s.Types, []string{api.FsTypeErofs}) {
 		t.Fatalf("signature %+v %v", s, err)
 	}
 	if head, err := k.ReadHead(dev, 10); err != nil || len(head) != 10 {
 		t.Fatalf("head %d bytes %v", len(head), err)
 	}
-	if _, err := k.ReadFsSignature(f.DevRoot() + "/pmem9"); err == nil {
+	if _, err := k.ReadFSSignature(f.DevRoot() + "/pmem9"); err == nil {
 		t.Fatal("signature of a missing device")
 	}
 	// a reboot: the data stay, the block device comes back
@@ -379,7 +379,7 @@ func TestReadFsSignature(t *testing.T) {
 	if ns == nil {
 		t.Fatalf("namespaces after a reboot %+v", nss)
 	}
-	if s, err := k.ReadFsSignature(ns.BlockDevice); err != nil || !slices.Equal(s.Types, []string{api.FsTypeErofs}) || ns.Minor == 0 {
+	if s, err := k.ReadFSSignature(ns.BlockDevice); err != nil || !slices.Equal(s.Types, []string{api.FsTypeErofs}) || ns.Minor == 0 {
 		t.Fatalf("after a reboot: %s %d:%d signature %+v %v", ns.BlockDevice, ns.Major, ns.Minor, s, err)
 	}
 	// a new probe gives the block device another name and numbers
@@ -389,7 +389,7 @@ func TestReadFsSignature(t *testing.T) {
 	if ns := kernel.FsdaxNamespace(nss); ns == nil || ns.BlockDevice != renamed || ns.Minor != 9 {
 		t.Fatalf("renamed: %+v", nss)
 	}
-	if s, err := k.ReadFsSignature(renamed); err != nil || !slices.Equal(s.Types, []string{api.FsTypeErofs}) {
+	if s, err := k.ReadFSSignature(renamed); err != nil || !slices.Equal(s.Types, []string{api.FsTypeErofs}) {
 		t.Fatalf("renamed signature %+v %v", s, err)
 	}
 }

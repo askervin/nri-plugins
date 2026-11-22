@@ -119,7 +119,7 @@ func TestReboot(t *testing.T) {
 	if st := f.Stack("port1"); len(st) != 0 {
 		t.Fatalf("port1 after the reboot %v", st)
 	}
-	if n, _ := s.NumaNode(2); n.HasMemory {
+	if n, _ := s.NUMANode(2); n.HasMemory {
 		t.Fatalf("node 2 has memory after the reboot")
 	}
 }
@@ -176,10 +176,10 @@ func TestKernelRules(t *testing.T) {
 	if err := k.Mount(source, targets[1], "erofs", 0, ""); !errors.Is(err, syscall.EBUSY) {
 		t.Fatalf("read-write mount of a read-only superblock: %v", err)
 	}
-	if err := k.FsMount(source, targets[1], "erofs", true, nil); !errors.Is(err, syscall.EBUSY) {
+	if err := k.FSMount(source, targets[1], "erofs", true, nil); !errors.Is(err, syscall.EBUSY) {
 		t.Fatalf("read-write fsmount of a read-only superblock: %v", err)
 	}
-	noErr(t, k.FsMount(source, targets[1], "erofs", false, nil))
+	noErr(t, k.FSMount(source, targets[1], "erofs", false, nil))
 }
 
 func noErr(t *testing.T, err error) {
