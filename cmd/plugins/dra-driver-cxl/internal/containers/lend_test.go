@@ -702,8 +702,8 @@ func TestLendNoneParentRestricts(t *testing.T) {
 // TestLendsRestoredLogged checks that the plugin logs once when
 // NRI has synchronized and the lends are restored, in either order, with
 // fencing none too, where no fence pass runs; the readiness line comes
-// after the line of the containers that Synchronize tracks, which test90
-// waits for first.
+// after the line of the containers that Synchronize tracks, which a test
+// that reads the log waits for first.
 func TestLendsRestoredLogged(t *testing.T) {
 	const (
 		none   = "NRI fence: lends restored (fencing none)"

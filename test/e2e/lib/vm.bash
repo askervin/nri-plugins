@@ -2097,8 +2097,8 @@ vm-thp-patch-vagrantfile() {
     # When the host's THP mode is "always", Ruby calls
     # prctl(PR_SET_THP_DISABLE, 1) at its start. A process and its children
     # then get no huge pages (THP_enabled: 0 in /proc/PID/status), so the
-    # guest RAM and any file-backed memory of a VM, the CXL pool memory of the
-    # fake-cxl-pool included, would have 4 KiB pages only. A VM gets the
+    # guest RAM and any file-backed memory of a VM, the backing files of CXL
+    # memory devices included, would have 4 KiB pages only. A VM gets the
     # change at the next start of its qemu. The patch goes into the
     # Vagrantfile of the VM, not into files/Vagrantfile.in, which belongs to
     # the box recipe: editing it would change the box key without changing

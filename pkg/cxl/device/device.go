@@ -90,7 +90,7 @@ const (
 	// time, a bound of the model rather than a limit.
 	SharesUnlimited = 1000000
 
-	// DeviceClasses (deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml).
+	// DeviceClasses of the driver: the names that its Helm chart installs.
 	ClassLocal = "cxl-local"
 	// ClassLocalShared selects local memdevs that the driver
 	// configuration declares shared.

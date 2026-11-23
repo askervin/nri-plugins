@@ -90,7 +90,7 @@ detachTimeout: 15s
 # another server holds over QMP uses HMP (discovery.control: hmp, a
 # connection per command on monitor.sock, device events polled) and CXL
 # ports of its own (discovery.slots).
-# A second server, cabled to the VM n4-cxl-shared-0:
+# A second server, cabled to the VMs whose names start with vm0-:
 #
 #   name: pool-b
 #   listen: 127.0.0.1:9910
@@ -102,6 +102,6 @@ detachTimeout: 15s
 #       size: 512Mi
 #       serial: 0xc1ee1001
 #   discovery:
-#     names: ["n4-cxl-shared-0-*"]
+#     names: ["vm0-*"]
 #     # control: hmp            # if another server holds the VM over QMP
 #     # slots: ["*hb1"]         # the CXL ports this server is cabled to

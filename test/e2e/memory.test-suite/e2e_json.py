@@ -20,9 +20,8 @@ Usage: e2e_json.py assert|eval KIND EXPRESSION [FILE]
 The document is FILE, or stdin without FILE. KIND gives the names that
 EXPRESSION can use besides the document j, json, decimal and node_list:
 
-  k8s   kubectl JSON and the state document of the DRA driver (dra-py of
-        dra-driver-cxl/dra.source.sh lists the names)
-  pool  the JSON of fake-cxl-pool (pool-py of pool.source.sh): j only
+  k8s   kubectl JSON and the state document of the CXL DRA driver
+  pool  the JSON of a CXL memory pool server: j only
   cxl   the output of cxl-dump (cxl-py of cxl.source.sh lists the names)
 
 assert exits 0 if the value is true, 1 if not (cxl prints why on

@@ -7,10 +7,7 @@
 # localhost/fake-cxl-pool-controller:testing (../Dockerfile) and saves it to
 # bin/fake-cxl-pool-controller-image.tar. Without a registry, import that
 # into the container runtime of every node, for instance with
-# "ctr -n k8s.io images import FILE". The setup of the demo
-# demo01-share-write-read does all of it (controller.source.sh of
-# test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test98-demo-setup);
-# the e2e tests run the controller as a transient systemd unit in the VM.
+# "ctr -n k8s.io images import FILE".
 #
 # hostNetwork: the pod reaches the fake-cxl-pool server on the VM host at
 # the slirp gateway 192.168.76.2, from any node of the e2e VMs. Run one

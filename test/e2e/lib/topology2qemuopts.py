@@ -135,8 +135,8 @@ CXL structures:
                                   VMs to make them see the same device.
                                   Scheme: 0xc100.... boot-time devices of one
                                   VM (the default), 0xc1ae.... shared and
-                                  0xc1ee.... exclusive CXL memory pool
-                                  devices (fake-cxl-pool).
+                                  0xc1ee.... unshared devices of a CXL
+                                  memory pool.
                         "shared"  (optional) true declares that the device is
                                   meant to be shared with other VMs. Requires
                                   "file". Changes nothing in qemu options:
@@ -194,7 +194,7 @@ CXL structures:
       [
           {"switch": [
               {"mem": "256M", "present": false, "shared": true,
-               "file": "/tmp/fake-cxl-pool/static-shared0.raw", "sn": "0xc1ae0000"},
+               "file": "/tmp/cxl-pool/static-shared0.raw", "sn": "0xc1ae0000"},
               {"pool-slot": "1G"},
               {"pool-slot": "1G"}
           ]}

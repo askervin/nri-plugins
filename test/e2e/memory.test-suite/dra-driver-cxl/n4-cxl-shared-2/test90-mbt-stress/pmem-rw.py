@@ -2,9 +2,9 @@
 """Write and read a persistent CXL pool device in the pods of test90.
 
 dra-tools-install puts this into the ConfigMap tools (/tools in the
-pods), next to the erofs template hello.erofs.hex (demo01-share-write-read/
-testdata: 8192 bytes of mkfs.erofs 1.9 -b4096 -Enoinline_data with one
-32-byte hello.txt in block 1).
+pods), next to the erofs template hello.erofs.hex (8192 bytes of
+mkfs.erofs 1.9 -b4096 -Enoinline_data with one 32-byte hello.txt in
+block 1).
 
 Usage:
   pmem-rw.py image DEV TOKEN     write the template with hello.txt = TOKEN

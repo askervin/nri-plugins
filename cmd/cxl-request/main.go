@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Command cxl-request requests CXL memory for the running container, of
-// the node's local memdevs or of a memory pool, from nri-dra-driver-cxl
+// the node's local memdevs or of a memory pool, from the CXL DRA driver
 // through the lease socket $CXL_LEASE_SOCKET, which the driver mounts into
 // containers of claims on DeviceClass cxl-lease. See
 // docs/memory/cxl/leases.md.

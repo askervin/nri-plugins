@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Package api is what containers see of the CXL DRA driver: the lease
-// protocol of the socket $CXL_LEASE_SOCKET that cxl-request speaks, and
+// protocol of the socket $CXL_LEASE_SOCKET that a lease client speaks, and
 // the names of the environment variables of the memory that claims and
 // leases give a container. It uses the standard library only. See
 // docs/memory/cxl/leases.md (protocol) and docs/memory/cxl/usage.md
@@ -38,7 +38,8 @@ const (
 	// FSDir is the directory of the mounts of fs leases in containers of
 	// lease claims.
 	FSDir = "/run/cxl/fs"
-	// LeaseEnv is the lease id in the environment of cxl-request --exec.
+	// LeaseEnv is the lease id in the environment of a command that a lease
+	// client runs with the memory of a lease.
 	LeaseEnv = "CXL_LEASE"
 	// ClaimEnvPrefix is the prefix of the claim marker
 	// CXL_CLAIM_<uid with underscores>=1 of the claims of both drivers.

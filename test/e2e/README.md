@@ -112,8 +112,8 @@ Before running E2E tests ensure that you have all the required components locall
 When the host has transparent huge pages (THP) set to `always`
 (`cat /sys/kernel/mm/transparent_hugepage/enabled`), Ruby turns them off for
 its own process, and the qemu that vagrant starts inherits that: the guest
-RAM and any file-backed memory of the VM, like the pool memory of
-`fake-cxl-pool`, then have 4 KiB pages only (`THP_enabled: 0` in
+RAM and any file-backed memory of the VM, like the backing file of a CXL
+memory device, then have 4 KiB pages only (`THP_enabled: 0` in
 `/proc/<qemu pid>/status`). `vm-setup` therefore adds a few lines of Ruby to
 the `Vagrantfile` and `Vagrantfile.erb` of every VM, new or existing, that
 allow them again (`vm-thp-patch-vagrantfile`). An existing VM gets huge pages
@@ -917,14 +917,13 @@ its feature gates and kubelet settings. `vm-k8s-reinit` and
 `vm-vmnet-ensure` refuse to run against a host which is not a VM.
 Pods run on every node, and every node has the admin kubeconfig. A rebuild
 loses all cluster state, so a test suite makes its shape once, in one test,
-and the other tests only check it: in `memory.test-suite/dra-driver-cxl`,
-`n4-cxl-shared-2/test00-up` makes one cluster of three VMs, and the other
-tests of `n4-cxl-shared-2` fail at once, pointing to `test00-up`, if the
-VMs have another shape.
+and the other tests only check it: the first test of the topology makes
+one cluster of its VMs, and the other tests fail at once, pointing to
+that test, if the VMs have another shape.
 
 The VMs of a multi-node cluster need a VM network: their topologies set
-`vm_network` (`vm_network.var.sh`, for instance `cxl-pool` in
-`memory.test-suite/dra-driver-cxl`). Each such VM gets a
+`vm_network`, the name of the network, in a `vm_network.var.sh` of the
+suite. Each such VM gets a
 second NIC on a qemu multicast socket of the host loopback, which needs no
 host privileges. The address and MAC of the VM and the multicast group of
 the network are derived and recorded as `VMNET_*` in the `env` file of the
@@ -936,6 +935,6 @@ Only the bridge CNI is supported.
 
 To bring the VMs back to single-node clusters by hand, call
 `vm-k8s-reinit` with one VM per cluster, for instance in the interactive
-mode of a test (`breakpoint`). `n4-cxl-shared-2/test00-up` makes its
+mode of a test (`breakpoint`). The first test of the topology makes its
 cluster again.
 
