@@ -72,7 +72,7 @@ jobs:
           make verify-build
 
   verify-unit-tests-cxl:
-    name: Unit Tests (dra-driver-cxl)
+    name: Unit Tests (CXL)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
