@@ -141,6 +141,17 @@ func fakeCgroup(t *testing.T, high, mems string) string {
 
 // readFile returns the content of the file of the cgroup without white
 // space around it.
+// replaceFile replaces the file at path with data in one rename, as the
+// kernel shows a cgroup file that a manager reads when it steps: a
+// running manager reads the old content or the new one, never a truncated
+// file. memory.events, which the manager watches, is written in place.
+func replaceFile(t *testing.T, path, data string) {
+	t.Helper()
+	tmp := path + ".new"
+	require.NoError(t, os.WriteFile(tmp, []byte(data), 0o644))
+	require.NoError(t, os.Rename(tmp, path))
+}
+
 func readFile(t *testing.T, dir, name string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(dir, name))
@@ -232,7 +243,7 @@ func TestPastLastWaypoint(t *testing.T) {
 	cg := fakeCgroup(t, "max", "")
 	numaStat := func(n0, n1 int64) {
 		data := fmt.Sprintf("anon N0=%d N1=%d\nshmem N0=0 N1=0\n", n0, n1)
-		require.NoError(t, os.WriteFile(filepath.Join(cg, "memory.numa_stat"), []byte(data), 0o644))
+		replaceFile(t, filepath.Join(cg, "memory.numa_stat"), data)
 	}
 	numaStat(8*MiB, 9*MiB)
 	m, err := New(cg, plan, cpuset.New(0, 1), WithSysRoot(writeNodes(t, "0", "")))
@@ -258,7 +269,7 @@ func TestPastLastWaypoint(t *testing.T) {
 	// when the kernel throttles the cgroup at the bound
 	child := filepath.Join(cg, "init.scope")
 	require.NoError(t, os.Mkdir(child, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(child, "cgroup.procs"), []byte("4343\n"), 0o644))
+	replaceFile(t, filepath.Join(child, "cgroup.procs"), "4343\n")
 	numaStat(8*MiB, 9*MiB)
 	require.NoError(t, os.WriteFile(filepath.Join(cg, "memory.events"), []byte("low 0\nhigh 1\nmax 0\noom 0\noom_kill 0\n"), 0o644))
 	require.Eventually(t, func() bool { return readFile(t, cg, "memory.high") == "max" }, 5*time.Second, waitTimeout)
@@ -292,7 +303,7 @@ func TestPolicyRefused(t *testing.T) {
 	require.Equal(t, "0-1", readFile(t, cg, "cpuset.mems"))
 
 	// a new process refuses the policy at the next step
-	require.NoError(t, os.WriteFile(filepath.Join(cg, "cgroup.procs"), []byte("4242\n4343\n"), 0o644))
+	replaceFile(t, filepath.Join(cg, "cgroup.procs"), "4242\n4343\n")
 	require.NoError(t, os.WriteFile(filepath.Join(cg, "memory.events"), []byte("low 0\nhigh 1\nmax 0\noom 0\noom_kill 0\n"), 0o644))
 	select {
 	case err := <-ended:
